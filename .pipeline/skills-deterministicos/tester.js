@@ -60,6 +60,27 @@ const NODE_TEST_PER_TEST_TIMEOUT_MS = 120 * 1000;
 const NODE_TEST_WALL_TIMEOUT_MS = 12 * 60 * 1000;
 const NODE_TEST_IDLE_LOG_INTERVAL_MS = 30 * 1000;
 
+// Presupuesto de longitud para la porción de archivos de la línea de comandos
+// de `node --test <files...>` (rebote #3953).
+//
+// Causa raíz del rebote: `runNodeTests` volcaba TODAS las rutas absolutas de
+// los .test.js (307 al momento del fallo) en un único spawn. En Windows el
+// límite de `CreateProcess` es 32767 chars para toda la línea; con rutas de
+// worktree largas (`C:\Workspaces\Intrale\platform.agent-XXXX-...\.pipeline\...`)
+// la línea alcanzó 32906 chars y el spawn falló con `ENAMETOOLONG`, abortando
+// el tester antes de correr un solo test.
+//
+// Fix: (a) pasar rutas RELATIVAS a repoRoot (cwd ya es repoRoot) — independiza
+// la longitud del prefijo del worktree y la reduce a ~1/3; (b) si aun así la
+// porción de archivos supera este presupuesto, partir en batches secuenciales
+// que comparten deadline de wall-clock y se agregan en un solo summary.
+//
+// 28000 deja ~4700 chars de headroom bajo 32767 para el resto de la línea
+// (execPath ~60, flags y rutas de reporters ~400). A 307 archivos en rutas
+// relativas (~10KB) entra en un solo batch; el batching solo se activa si el
+// pipeline crece mucho más.
+const NODE_TEST_MAX_CMDLINE = 28000;
+
 // Anti-stale de XML reports (rebote #2892):
 // Cuando gradle aborta antes de ejecutar tests (ej. cmd.exe no entiende
 // `./gradlew` y devuelve `"." no se reconoce`), el exit_code es ≠0 y el
@@ -594,6 +615,156 @@ function ensureGitInPath(env) {
 }
 
 /**
+ * Parte la lista de archivos de test en batches cuya porción de línea de
+ * comandos no excede `maxLen` chars (rebote #3953). Devuelve los archivos como
+ * rutas RELATIVAS a `repoRoot` (que es el cwd del spawn), lo que:
+ *   - independiza la longitud del prefijo del worktree (puede ser muy largo);
+ *   - reduce la línea a ~1/3 respecto de las rutas absolutas.
+ *
+ * Función pura (sin I/O ni spawn) para poder testearla sin ejecutar tests.
+ * Un archivo cuya ruta relativa por sí sola excede `maxLen` se emite igual en
+ * su propio batch (no se puede partir más); `node --test` lo recibirá solo.
+ *
+ * @param {string[]} files  rutas absolutas de los .test.js
+ * @param {string} repoRoot raíz (== cwd del child); base de las rutas relativas
+ * @param {number} maxLen   presupuesto de chars para la porción de archivos
+ * @returns {string[][]} batches de rutas relativas
+ */
+function buildNodeTestBatches(files, repoRoot, maxLen = NODE_TEST_MAX_CMDLINE) {
+    const rels = files.map((f) => {
+        const rel = path.relative(repoRoot, f);
+        // Si por algún motivo la relativa sale vacía o sube fuera del root,
+        // caemos a la absoluta (correctitud por sobre brevedad).
+        return rel && !rel.startsWith('..') ? rel : f;
+    });
+    const batches = [];
+    let cur = [];
+    let curLen = 0;
+    for (const rel of rels) {
+        const add = rel.length + 1; // +1 por el separador de argumentos
+        if (cur.length > 0 && curLen + add > maxLen) {
+            batches.push(cur);
+            cur = [];
+            curLen = 0;
+        }
+        cur.push(rel);
+        curLen += add;
+    }
+    if (cur.length > 0) batches.push(cur);
+    return batches;
+}
+
+/**
+ * Spawnea un único batch de `node --test ... <files>` y resuelve con el
+ * resultado parseado de ese batch. Comparte la mecánica de heartbeat +
+ * wall-timeout del run completo: `remainingMs` es el presupuesto de tiempo
+ * que le queda al run global cuando arranca este batch.
+ */
+function spawnNodeTestBatch({ repoRoot, childEnv, batchFiles, reportFile, remainingMs, onLog, batchLabel }) {
+    return new Promise((resolve) => {
+        const started = Date.now();
+        // Borrar reporte previo para evitar parsear cache de runs anteriores
+        try { fs.unlinkSync(reportFile); } catch {}
+        const args = [
+            '--test',
+            `--test-timeout=${NODE_TEST_PER_TEST_TIMEOUT_MS}`,
+            '--test-force-exit',
+            '--test-reporter=junit',
+            `--test-reporter-destination=${reportFile}`,
+            '--test-reporter=spec',
+            '--test-reporter-destination=stdout',
+            ...batchFiles,
+        ];
+        let stdout = '';
+        let stderr = '';
+        let lastProgressLine = '';
+        let lastOutputAt = Date.now();
+        let timedOut = false;
+        let resolved = false;
+        const finish = (result) => {
+            if (resolved) return;
+            resolved = true;
+            resolve(result);
+        };
+        const readSummary = () => {
+            let xml = '';
+            try { xml = fs.readFileSync(reportFile, 'utf8'); } catch {}
+            return parseNodeTestJunit(xml);
+        };
+        // #3897 rev-2 — `stdin: 'ignore'`: evita que un test que lea stdin
+        // accidentalmente espere EOF para siempre.
+        const child = spawn(process.execPath, args, {
+            cwd: repoRoot, env: childEnv, shell: false, windowsHide: true,
+            stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        const trackProgress = (chunk) => {
+            lastOutputAt = Date.now();
+            const lines = chunk.toString().split(/\r?\n/).filter((l) => l.trim());
+            if (lines.length) lastProgressLine = lines[lines.length - 1].slice(0, 240);
+        };
+        if (child.stdout) child.stdout.on('data', (d) => { stdout += d.toString(); trackProgress(d); });
+        if (child.stderr) child.stderr.on('data', (d) => { stderr += d.toString(); trackProgress(d); });
+
+        const heartbeat = setInterval(() => {
+            const elapsed = Math.round((Date.now() - started) / 1000);
+            const idle = Math.round((Date.now() - lastOutputAt) / 1000);
+            onLog(`[tester:node-test] batch ${batchLabel} alive elapsed=${elapsed}s idle=${idle}s last="${lastProgressLine}"`);
+        }, NODE_TEST_IDLE_LOG_INTERVAL_MS);
+        heartbeat.unref?.();
+
+        // Wall-clock: el batch no puede consumir más que el tiempo restante del
+        // run global. Si lo excede, matamos el child (árbol en Windows).
+        const wallMs = Math.max(1, remainingMs);
+        const wallTimer = setTimeout(() => {
+            timedOut = true;
+            const elapsed = Math.round((Date.now() - started) / 1000);
+            onLog(`[tester:node-test] WALL-TIMEOUT batch ${batchLabel} ${elapsed}s — matando child (PID ${child.pid}). last="${lastProgressLine}"`);
+            try {
+                if (process.platform === 'win32' && child.pid) {
+                    spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
+                } else {
+                    child.kill('SIGKILL');
+                }
+            } catch {}
+        }, wallMs);
+        wallTimer.unref?.();
+
+        child.on('error', (e) => {
+            clearInterval(heartbeat);
+            clearTimeout(wallTimer);
+            stderr += `\n[spawn-error] ${e.message}\n`;
+            finish({
+                exit_code: 2, stdout, stderr,
+                timed_out: false,
+                last_progress_line: lastProgressLine,
+                summary: { valid: false, tests: 0, failures: 0, errors: 0, skipped: 0,
+                           time_seconds: 0, suites: 0, failed_tests: [] },
+            });
+        });
+        child.on('exit', (code, signal) => {
+            clearInterval(heartbeat);
+            clearTimeout(wallTimer);
+            const summary = readSummary();
+            let exitCode;
+            if (timedOut) {
+                exitCode = 124; // POSIX timeout
+            } else if (code != null) {
+                exitCode = code;
+            } else {
+                exitCode = 1; // killed por señal sin code
+            }
+            finish({
+                exit_code: exitCode,
+                stdout, stderr,
+                timed_out: timedOut,
+                last_progress_line: lastProgressLine,
+                summary,
+            });
+        });
+    });
+}
+
+/**
  * Corre `node --test --test-reporter=junit` sobre los tests del pipeline.
  * Devuelve resultado con shape compatible con `aggregateTestResults`.
  *
@@ -603,50 +774,37 @@ function ensureGitInPath(env) {
  * `NODE_TEST_WALL_TIMEOUT_MS`, matamos el child con árbol y reportamos
  * `exit_code=124` (convención POSIX para timeout) + last_progress_line para
  * diagnóstico.
+ *
+ * Rebote #3953: la batería se parte en batches (`buildNodeTestBatches`) con
+ * rutas relativas para que la línea de comandos nunca exceda el límite de
+ * Windows (`ENAMETOOLONG`). Los batches corren en secuencia compartiendo un
+ * único deadline de wall-clock y se agregan en un solo summary.
  */
-function runNodeTests(repoRoot, env, opts = {}) {
+async function runNodeTests(repoRoot, env, opts = {}) {
     const onLog = typeof opts.onLog === 'function' ? opts.onLog : () => {};
-    return new Promise((resolve) => {
-        const started = Date.now();
-        const files = findNodeTestFiles(repoRoot);
-        if (files.length === 0) {
-            return resolve({
-                exit_code: 0, no_tests: true,
-                stdout: '', stderr: '',
-                wall_ms: Date.now() - started,
-                report_file: null, files: [],
-                summary: { valid: false, tests: 0, failures: 0, errors: 0, skipped: 0,
-                           time_seconds: 0, suites: 0, failed_tests: [] },
-            });
-        }
-        const reportFile = path.join(repoRoot, '.pipeline', 'logs', 'node-tests-junit.xml');
-        try { fs.mkdirSync(path.dirname(reportFile), { recursive: true }); } catch {}
-        // Borrar reporte previo para evitar parsear cache de runs anteriores
-        try { fs.unlinkSync(reportFile); } catch {}
+    const started = Date.now();
+    const files = findNodeTestFiles(repoRoot);
+    if (files.length === 0) {
+        return {
+            exit_code: 0, no_tests: true,
+            stdout: '', stderr: '',
+            wall_ms: Date.now() - started,
+            report_file: null, files: [],
+            summary: { valid: false, tests: 0, failures: 0, errors: 0, skipped: 0,
+                       time_seconds: 0, suites: 0, failed_tests: [] },
+        };
+    }
+    const logsDir = path.join(repoRoot, '.pipeline', 'logs');
+    try { fs.mkdirSync(logsDir, { recursive: true }); } catch {}
 
-        // #3897 rev-2 — endurecimiento anti-cuelgue (exit 124 sin JUnit):
-        //
+        // #3897 rev-2 — endurecimiento anti-cuelgue (exit 124 sin JUnit), ahora
+        // por batch en `spawnNodeTestBatch`:
         //   a) `--test-force-exit`: el runner sale al terminar los tests aunque
-        //      algún .test.js haya dejado un handle vivo (timer/socket/watcher
-        //      sin clausurar). Era la clase de cuelgue más probable del run
-        //      real: 2/2 runs del tester colgaron 12 min con JUnit de 52 bytes
-        //      (solo header) mientras la misma batería pasaba en ~79s corrida
-        //      a mano. El reporter flushea antes del exit (diseño de la flag).
-        //      Soportado por Node >= 22; el pipeline corre Node 24.
+        //      algún .test.js haya dejado un handle vivo. El reporter flushea
+        //      antes del exit. Soportado por Node >= 22; el pipeline corre 24.
         //   b) Reporter dual: `junit` al archivo (lo parsea el tester) + `spec`
-        //      a stdout. Antes junit era el ÚNICO reporter → stdout vacío →
-        //      `lastProgressLine` siempre "" y el heartbeat no podía decir qué
-        //      archivo estaba corriendo al momento del wall-timeout.
-        const args = [
-            '--test',
-            `--test-timeout=${NODE_TEST_PER_TEST_TIMEOUT_MS}`,
-            '--test-force-exit',
-            '--test-reporter=junit',
-            `--test-reporter-destination=${reportFile}`,
-            '--test-reporter=spec',
-            '--test-reporter-destination=stdout',
-            ...files,
-        ];
+        //      a stdout (heartbeat con la última línea de progreso).
+        //
         // Strip NODE_TEST_CONTEXT del env del child: si tester.js corre dentro
         // de `node --test` (caso típico en self-tests), Node propaga esa env
         // al child y el sub-runner rechaza ejecutar files con un warning
@@ -708,103 +866,84 @@ function runNodeTests(repoRoot, env, opts = {}) {
                     : extraNodePaths.join(sep);
             }
         }
+        // Partir la batería en batches que respeten el límite de línea de
+        // comandos de Windows (rebote #3953). Con rutas relativas la inmensa
+        // mayoría de los runs entra en un único batch; el batching solo se
+        // activa si el pipeline crece muy por encima de los ~900 test files.
+        const maxCmdline = Number.isInteger(opts.maxCmdline) && opts.maxCmdline > 0
+            ? opts.maxCmdline : NODE_TEST_MAX_CMDLINE;
+        const batches = buildNodeTestBatches(files, repoRoot, maxCmdline);
+        const singleBatch = batches.length === 1;
+        onLog(`[tester:node-test] ${files.length} archivos en ${batches.length} batch(es) (límite cmdline ${maxCmdline} chars)`);
+
+        // Acumulador del summary agregado (shape compatible con parseNodeTestJunit).
+        const agg = {
+            valid: true, tests: 0, failures: 0, errors: 0, skipped: 0,
+            time_seconds: 0, suites: 0, failed_tests: [],
+        };
         let stdout = '';
         let stderr = '';
-        // Última línea de progreso conocida; útil cuando matamos por timeout
-        // para identificar qué archivo estaba corriendo al momento del cuelgue.
-        let lastProgressLine = '';
-        let lastOutputAt = Date.now();
+        let exitCode = 0;
         let timedOut = false;
-        let resolved = false;
-        const finish = (result) => {
-            if (resolved) return;
-            resolved = true;
-            resolve(result);
-        };
-        // #3897 rev-2 — `stdin: 'ignore'`: el default (pipe) deja un stdin
-        // abierto que el tester jamás cierra; cualquier lectura accidental de
-        // stdin en un test/módulo esperaría EOF para siempre. Con 'ignore' el
-        // child ve stdin cerrado desde el arranque (mismo comportamiento que
-        // la batería corrida a mano, que nunca colgó).
-        const child = spawn(process.execPath, args, {
-            cwd: repoRoot, env: childEnv, shell: false, windowsHide: true,
-            stdio: ['ignore', 'pipe', 'pipe'],
-        });
-        const trackProgress = (chunk) => {
-            lastOutputAt = Date.now();
-            const lines = chunk.toString().split(/\r?\n/).filter((l) => l.trim());
-            if (lines.length) lastProgressLine = lines[lines.length - 1].slice(0, 240);
-        };
-        if (child.stdout) child.stdout.on('data', (d) => { stdout += d.toString(); trackProgress(d); });
-        if (child.stderr) child.stderr.on('data', (d) => { stderr += d.toString(); trackProgress(d); });
+        let lastProgressLine = '';
+        let lastReportFile = null;
 
-        // Heartbeat de progreso: cada 30s, escribimos al log del agente el
-        // elapsed/idle y la última línea de spec. Permite reconstruir POST-MORTEM
-        // qué archivo estaba activo cuando el wall-timeout disparó SIGKILL.
-        const heartbeat = setInterval(() => {
-            const elapsed = Math.round((Date.now() - started) / 1000);
-            const idle = Math.round((Date.now() - lastOutputAt) / 1000);
-            onLog(`[tester:node-test] alive elapsed=${elapsed}s idle=${idle}s last="${lastProgressLine}"`);
-        }, NODE_TEST_IDLE_LOG_INTERVAL_MS);
-        heartbeat.unref?.();
+        // Deadline global compartido por todos los batches: el wall-clock total
+        // de la batería no puede exceder NODE_TEST_WALL_TIMEOUT_MS.
+        const deadlineAt = started + NODE_TEST_WALL_TIMEOUT_MS;
 
-        // Wall-clock duro: si la batería completa no termina en
-        // NODE_TEST_WALL_TIMEOUT_MS, matamos al child (y a sus hijos en Windows
-        // con taskkill /T /F porque SIGKILL no recursivo).
-        const wallTimer = setTimeout(() => {
-            timedOut = true;
-            const elapsed = Math.round((Date.now() - started) / 1000);
-            onLog(`[tester:node-test] WALL-TIMEOUT ${elapsed}s — matando child (PID ${child.pid}). last="${lastProgressLine}"`);
-            try {
-                if (process.platform === 'win32' && child.pid) {
-                    spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
-                } else {
-                    child.kill('SIGKILL');
-                }
-            } catch {}
-        }, NODE_TEST_WALL_TIMEOUT_MS);
-        wallTimer.unref?.();
-
-        child.on('error', (e) => {
-            clearInterval(heartbeat);
-            clearTimeout(wallTimer);
-            stderr += `\n[spawn-error] ${e.message}\n`;
-            finish({
-                exit_code: 2, stdout, stderr,
-                wall_ms: Date.now() - started,
-                report_file: reportFile, files,
-                last_progress_line: lastProgressLine,
-                summary: { valid: false, tests: 0, failures: 0, errors: 0, skipped: 0,
-                           time_seconds: 0, suites: 0, failed_tests: [] },
-            });
-        });
-        child.on('exit', (code, signal) => {
-            clearInterval(heartbeat);
-            clearTimeout(wallTimer);
-            let xml = '';
-            try { xml = fs.readFileSync(reportFile, 'utf8'); } catch {}
-            const summary = parseNodeTestJunit(xml);
-            let exitCode;
-            if (timedOut) {
-                // 124 = exit code POSIX de `timeout(1)` para distinguir del
-                // success (0) y de los failures genéricos (1).
+        for (let i = 0; i < batches.length; i++) {
+            const batchLabel = `${i + 1}/${batches.length}`;
+            const remainingMs = deadlineAt - Date.now();
+            if (remainingMs <= 0) {
+                timedOut = true;
                 exitCode = 124;
-            } else if (code != null) {
-                exitCode = code;
-            } else {
-                exitCode = signal ? 1 : 1;
+                onLog(`[tester:node-test] WALL-TIMEOUT antes del batch ${batchLabel} — sin tiempo restante`);
+                break;
             }
-            finish({
-                exit_code: exitCode,
-                stdout, stderr,
-                wall_ms: Date.now() - started,
-                report_file: reportFile, files,
-                timed_out: timedOut,
-                last_progress_line: lastProgressLine,
-                summary,
+            // Un solo batch conserva el nombre histórico del reporte (consumido
+            // por logs y eventuales lectores); múltiples batches usan sufijo.
+            const reportFile = path.join(logsDir, singleBatch ? 'node-tests-junit.xml' : `node-tests-junit.${i}.xml`);
+            const res = await spawnNodeTestBatch({
+                repoRoot, childEnv, batchFiles: batches[i],
+                reportFile, remainingMs, onLog, batchLabel,
             });
-        });
-    });
+            lastReportFile = reportFile;
+            stdout += res.stdout;
+            stderr += res.stderr;
+            if (res.last_progress_line) lastProgressLine = res.last_progress_line;
+            const s = res.summary;
+            agg.tests += s.tests;
+            agg.failures += s.failures;
+            agg.errors += s.errors;
+            agg.skipped += s.skipped;
+            agg.time_seconds += s.time_seconds;
+            agg.suites += s.suites;
+            if (Array.isArray(s.failed_tests)) agg.failed_tests.push(...s.failed_tests);
+            // El agregado es válido solo si CADA batch produjo un JUnit parseable.
+            agg.valid = agg.valid && s.valid;
+            // Primer exit code no-cero gana (preserva el detalle del fallo); un
+            // timeout en cualquier batch corta la secuencia (el deadline global
+            // ya está vencido o por vencerse).
+            if (res.timed_out) {
+                timedOut = true;
+                exitCode = 124;
+                break;
+            }
+            if (res.exit_code !== 0 && exitCode === 0) {
+                exitCode = res.exit_code;
+            }
+        }
+
+        return {
+            exit_code: timedOut ? 124 : exitCode,
+            stdout, stderr,
+            wall_ms: Date.now() - started,
+            report_file: lastReportFile, files,
+            timed_out: timedOut,
+            last_progress_line: lastProgressLine,
+            summary: agg,
+        };
 }
 
 // ── Parseo de argumentos ────────────────────────────────────────────
@@ -1460,6 +1599,7 @@ module.exports = {
     findIssueWorktree,
     findNodeTestFiles,
     parseNodeTestJunit,
+    buildNodeTestBatches,
     runNodeTests,
     ensureGitInPath,
     getChangedFilesVsMain,
