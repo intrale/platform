@@ -197,6 +197,25 @@ function classifyRebote(opts = {}) {
         ? opts.rebote_categoria.trim().toLowerCase()
         : null;
 
+    // 1.5 infra_no_apk — Issue #4046
+    //
+    // Issues de dashboard/pipeline (sin flavor real de app) que cayeron en el
+    // path de "APK faltante" NO deben contar contra el circuit breaker ni
+    // disparar la alerta de atascamiento. El bypass primario vive en
+    // `preflightQaChecks` (corta antes de retornar `apk_missing`), pero si el
+    // motivo `infra-no-apk` llega al barrido general por otra vía, lo
+    // clasificamos explícitamente como infra que no penaliza.
+    if (explicitCategory === 'infra_no_apk' || /infra[-_]no[-_]apk/i.test(motivo)) {
+        return {
+            category: 'infra',
+            label: null,
+            dependsOn: [],
+            counts_against_circuit_breaker: false,
+            autounlock: null,
+            reason_summary: 'Issue de dashboard/pipeline sin APK — no genera artefacto, no penaliza circuit breaker',
+        };
+    }
+
     if (explicitCategory === 'dependency_block') {
         // Confiamos en el agente — usamos el dependsOn que pasó (sanitizado)
         // y NO corremos los regex (evitamos falsos negativos por motivos

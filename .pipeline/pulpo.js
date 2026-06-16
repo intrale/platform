@@ -4462,6 +4462,49 @@ function getIssueLabels(issueNum) {
   return getIssueInfo(issueNum).labels;
 }
 
+/**
+ * #4046 — Resuelve los paths tocados por el trabajo de un issue, priorizando el
+ * diff real del worktree del agente contra `origin/main`. Función defensiva e
+ * inyectable: si no puede resolver un origen de cambios conocido, devuelve
+ * `{ files: [], known: false }` para que el gate de APK haga FAIL-CLOSED (no
+ * relajar por ausencia de datos).
+ *
+ * @param {string|number} issue
+ * @param {object} [deps]
+ * @param {Function} [deps.execSyncImpl] — inyectable para tests.
+ * @returns {{ files: string[], known: boolean }}
+ */
+function getChangedFilesForIssue(issue, { execSyncImpl } = {}) {
+  const _execSync = execSyncImpl || execSync;
+  try {
+    // Localizar el worktree del issue (mismo needle que resolveDeterministicScript).
+    const needle = `platform.agent-${issue}-`;
+    let issueWorktree = null;
+    const worktrees = _execSync('git worktree list --porcelain', {
+      cwd: ROOT, encoding: 'utf8', timeout: 5000, windowsHide: true,
+    });
+    for (const line of String(worktrees).split('\n')) {
+      if (line.startsWith('worktree ') && line.includes(needle)) {
+        issueWorktree = line.replace('worktree ', '').trim();
+        break;
+      }
+    }
+    if (!issueWorktree) {
+      return { files: [], known: false };
+    }
+    // Diff de la rama del worktree contra la base origin/main (three-dot:
+    // sólo cambios introducidos por la rama, sin ruido de avances de main).
+    const raw = _execSync('git diff --name-only origin/main...HEAD', {
+      cwd: issueWorktree, encoding: 'utf8', timeout: 10000, windowsHide: true,
+    });
+    const files = String(raw).split('\n').map(s => s.trim()).filter(Boolean);
+    return { files, known: true };
+  } catch (e) {
+    log('preflight', `#${issue}: no se pudieron resolver changed-files (fail-closed): ${String(e.message).slice(0, 80)}`);
+    return { files: [], known: false };
+  }
+}
+
 /** Verifica si un issue está cerrado en GitHub (usa cache) */
 function isIssueClosed(issueNum) {
   return getIssueInfo(issueNum).state === 'CLOSED';
@@ -4579,6 +4622,17 @@ function sortByPriority(archivos, config) {
  */
 function reboteVerificacionABuild(issue, pipelineName, preflightResult) {
   const MAX_REBOTES_APK = 3;
+
+  // #4046 — Fail-open defensivo: si el preflight resolvió que el issue NO
+  // genera APK (dashboard/pipeline sin cambios de app), no rebotar a build, no
+  // escribir `rebote_numero` y no encolar build. Esto evita que un "APK
+  // faltante" espurio cuente contra MAX_REBOTES_APK y dispare la alerta de
+  // atascamiento. El bypass primario corta en preflightQaChecks (retorna ok),
+  // este guard es defensa por si el motivo llega por otra vía.
+  if (preflightResult && (preflightResult.reason === 'infra-no-apk' || preflightResult.requiresEmulator === false)) {
+    log('lanzamiento', `🟢 #${issue}: reboteVerificacionABuild fail-open (reason=${preflightResult.reason}, requiresEmulator=${preflightResult.requiresEmulator}) — issue no produce APK, no se rebota ni cuenta contra circuit breaker`);
+    return false;
+  }
 
   try {
     const verPendDir = path.join(fasePath(pipelineName, 'verificacion'), 'pendiente');
@@ -5187,7 +5241,10 @@ function brazoLanzamiento(config) {
 
 const APP_LABELS = ['app:client', 'app:business', 'app:delivery'];
 const LABEL_TO_FLAVOR = { 'app:client': 'client', 'app:business': 'business', 'app:delivery': 'delivery' };
-const ROUTING_LABELS = [...APP_LABELS, 'area:backend', 'area:infra', 'area:pipeline', 'tipo:infra', 'docs'];
+// #4046 — `area:dashboard` agregado como label de ruteo: un issue de dashboard
+// no debe disparar auto-clasificación (que lo reetiquetaría y rompería el
+// bypass infra-no-apk). El dashboard es dominio pipeline-dev determinístico.
+const ROUTING_LABELS = [...APP_LABELS, 'area:backend', 'area:infra', 'area:pipeline', 'area:dashboard', 'tipo:infra', 'docs'];
 
 // Keywords para auto-clasificación inteligente de issues sin labels de ruteo
 const AUTO_CLASSIFY_RULES = [
@@ -5549,12 +5606,16 @@ function checkDynamoDbRemote(issue) {
   return { ok, checks };
 }
 
-function preflightQaChecks(issue) {
+function preflightQaChecks(issue, {
+  getLabels = getIssueLabels,
+  getChangedFiles = getChangedFilesForIssue,
+  qaArtifactsDir = QA_ARTIFACTS_DIR,
+} = {}) {
   const startMs = Date.now();
   const checks = {};
 
   // --- Check 1: Clasificar issue (requiere emulador o no) ---
-  let labels = getIssueLabels(issue);
+  let labels = getLabels(issue);
 
   // Auto-clasificación: si el issue no tiene ningún label de ruteo, inferir y asignar
   const hasRoutingLabel = labels.some(l => ROUTING_LABELS.includes(l));
@@ -5563,11 +5624,40 @@ function preflightQaChecks(issue) {
     const assignedLabel = autoClassifyIssue(issue);
     if (assignedLabel) {
       // Re-leer labels después de la asignación
-      labels = getIssueLabels(issue);
+      labels = getLabels(issue);
       sendTelegram(`🏷️ Issue #${issue} auto-clasificado como \`${assignedLabel}\` (no tenía label de ruteo QA).`);
     } else {
       log('preflight', `#${issue}: auto-clasificación falló — cae en structural por defecto`);
     }
+  }
+
+  // #4046 — Decidir el requerimiento de APK por flavor REAL, no por label
+  // `app:client` a secas. Un issue de dashboard/pipeline sin cambios en
+  // app/composeApp/ no produce binario: el gate no debe exigirlo ni rebotar.
+  const changed = getChangedFiles(issue);
+  const apkReq = qaEvidenceGate.resolveApkRequirement({
+    labels,
+    changedFiles: changed.files,
+    changedFilesKnown: changed.known,
+  });
+  if (apkReq.reason === 'infra-no-apk') {
+    const qaMode = 'structural';
+    qaModeByIssue.set(String(issue), qaMode);
+    checks.classify = 'infra-no-apk';
+    checks.apk = 'bypass:infra-no-apk';
+    const bypassEvent = {
+      event: 'gate-bypass',
+      issue: String(issue),
+      qaMode,
+      source: 'preflight',
+      reason: 'infra-no-apk',
+      decision: 'skip-apk',
+      labels: Array.isArray(labels) ? labels.slice() : [],
+      changedFiles: changed.files.slice(0, 20),
+    };
+    log('preflight', `🟢 gate-bypass #${issue} reason=infra-no-apk — área pipeline/dashboard sin cambios en app/composeApp/ → no exige APK ${JSON.stringify(bypassEvent)}`);
+    logPreflight(issue, checks, 'pass', startMs);
+    return { ok: true, result: 'pass', reason: 'infra-no-apk', flavors: [], requiresEmulator: false, qaMode, apkRequirement: 'infra-no-apk' };
   }
 
   const appLabels = labels.filter(l => APP_LABELS.includes(l));
@@ -5654,11 +5744,11 @@ function preflightQaChecks(issue) {
   }
 
   // --- Check 2: APK disponible (solo si requiere emulador) ---
-  fs.mkdirSync(QA_ARTIFACTS_DIR, { recursive: true });
+  fs.mkdirSync(qaArtifactsDir, { recursive: true });
   const missingApks = [];
   for (const flavor of flavors) {
     const apkName = `${issue}-composeApp-${flavor}-debug.apk`;
-    const apkPath = path.join(QA_ARTIFACTS_DIR, apkName);
+    const apkPath = path.join(qaArtifactsDir, apkName);
     if (!fs.existsSync(apkPath)) {
       missingApks.push(apkName);
     }
@@ -13457,6 +13547,10 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     _setBuildPriorityState: (active, manual) => { buildPriorityActive = active; buildPriorityManual = manual || false; },
     // #2893 — resolver de script determinístico (preferencia worktree-first).
     resolveDeterministicScript,
+    // #4046 — preflight de APK por flavor real + resolución de changed-files.
+    preflightQaChecks,
+    getChangedFilesForIssue,
+    reboteVerificacionABuild,
     // #2957 — counter de fase build expuesto para tests del filtro por allowlist.
     countPendingBuild,
     // #3059 — wrapper robusto + watchdog del brazo de desbloqueo (testing).
