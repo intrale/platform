@@ -291,3 +291,60 @@ test('formatEta: parciales con etasMissing añade sufijo', () => {
     });
     assert.match(out, /\(\+2 sin estimación\)/);
 });
+
+// -----------------------------------------------------------------------------
+// #4026 — columna de rebotes en la fila de la tabla
+// -----------------------------------------------------------------------------
+
+function baseRowIssue(overrides = {}) {
+    return {
+        id: 3953, status: 'dev', faseAbbrev: 'verif (7/10)', pct: 70,
+        agente: 'security', isClosed: false, bounces: 0,
+        ...overrides,
+    };
+}
+
+test('CA-1 (#4026): renderTableRow con bounces: 2 incluye el indicador "↩2"', () => {
+    const row = _internal.renderTableRow(baseRowIssue({ bounces: 2 }));
+    // Contiene la flecha (con su variation selector de texto) seguida del contador.
+    assert.ok(
+        row.includes(`${_internal.BOUNCE_ARROW}2`),
+        `la fila debería contener el indicador de rebotes: ${JSON.stringify(row)}`,
+    );
+    // Y la flecha base U+21A9 está presente (formato "↩N" que pide el CA).
+    assert.match(row, /↩/, 'la fila debería mostrar la flecha de rebote');
+});
+
+test('CA-2 (#4026): renderTableRow con bounces: 0 deja la columna vacía de ancho fijo', () => {
+    const row = _internal.renderTableRow(baseRowIssue({ bounces: 0 }));
+    assert.ok(!row.includes('↩'), `bounces:0 no debería mostrar flecha: ${JSON.stringify(row)}`);
+    assert.ok(!row.includes('↩0'), 'no debe renderizar "↩0"');
+});
+
+test('CA-3 (#4026): la columna de rebotes preserva ancho visible constante', () => {
+    // Ancho visible: 0 rebotes → BOUNCE_COL_WIDTH espacios; N rebotes → flecha+dígitos
+    // rellenados al mismo ancho visible. El VS (U+FE0E) es de ancho cero.
+    const VS = '︎';
+    const visibleWidth = (s) => s.replace(new RegExp(VS, 'g'), '').length;
+
+    const empty = _internal.formatBouncesCol(0);
+    const one = _internal.formatBouncesCol(1);
+    const two = _internal.formatBouncesCol(2);
+    const big = _internal.formatBouncesCol(99);
+
+    assert.equal(visibleWidth(empty), _internal.BOUNCE_COL_WIDTH, 'vacío de ancho fijo');
+    assert.equal(visibleWidth(one), _internal.BOUNCE_COL_WIDTH, 'un rebote, ancho fijo');
+    assert.equal(visibleWidth(two), _internal.BOUNCE_COL_WIDTH, 'dos rebotes, ancho fijo');
+    assert.equal(visibleWidth(big), _internal.BOUNCE_COL_WIDTH, '↩99 entra en el ancho fijo');
+    assert.equal(empty.trim(), '', 'cero rebotes → columna vacía (sin "—")');
+});
+
+test('CA-4 (#4026): formatBouncesCol coerciona valores no-enteros a 0', () => {
+    const VS = '︎';
+    const visibleWidth = (s) => s.replace(new RegExp(VS, 'g'), '').length;
+    for (const bad of [undefined, null, 'x', NaN, -1]) {
+        const col = _internal.formatBouncesCol(bad);
+        assert.ok(!col.includes('↩'), `valor ${String(bad)} no debe mostrar flecha`);
+        assert.equal(visibleWidth(col), _internal.BOUNCE_COL_WIDTH, 'ancho fijo aún con valor inválido');
+    }
+});

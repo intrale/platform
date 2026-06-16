@@ -144,24 +144,52 @@ function renderInterventionSection(items) {
     return lines.join('\n');
 }
 
+// Indicador de rebotes (#4026). Flecha de retorno U+21A9 con el variation
+// selector de presentación de TEXTO U+FE0E para evitar que Telegram (sobre todo
+// móvil) la mute a emoji de doble ancho `↩️`, lo que rompería la alineación
+// monoespaciada del code block (riesgo G2 de UX). El VS es de ancho cero, así
+// que el padding de la columna se calcula sobre el ancho VISIBLE (flecha +
+// dígitos), no sobre String.length — ver formatBouncesCol.
+const BOUNCE_ARROW = '↩︎'; // ↩︎
+const BOUNCE_COL_WIDTH = 3; // cubre hasta "↩99"
+
+/**
+ * Formatea la columna de rebotes con ancho VISIBLE fijo (BOUNCE_COL_WIDTH).
+ * - 0 rebotes → columna vacía (espacios), para no agregar ruido visual (G3).
+ * - N rebotes → "↩N" rellenado a ancho visible fijo, preservando alineación.
+ * Coerciona defensivamente a entero (requisito de security), aunque el snapshot
+ * ya entrega `bounces` como entero.
+ */
+function formatBouncesCol(rawBounces) {
+    const bounces = Number(rawBounces) || 0;
+    if (bounces <= 0) return ' '.repeat(BOUNCE_COL_WIDTH);
+    const digits = String(bounces);
+    const visibleWidth = 1 + digits.length; // flecha (1 celda) + dígitos
+    const pad = Math.max(0, BOUNCE_COL_WIDTH - visibleWidth);
+    return `${BOUNCE_ARROW}${digits}${' '.repeat(pad)}`;
+}
+
 /**
  * Formatea una fila de issue para mostrarla en el bloque tabular monoespaciado.
  * El bloque va en un code block ``` para preservar alineación en Telegram.
  *
  * Layout columnas (ancho fijo aproximado):
- *   ICON  #issue   fase            % avance   agente
+ *   ICON  #issue   fase           % avance   rebotes   agente
  *
- * Para evitar sobrepasar el ancho típico de un cliente móvil (~ 36 chars en
- * monospace), recortamos agente y fase si exceden.
+ * La columna de rebotes (#4026) se ubica inmediatamente a la derecha del % para
+ * reforzar la asociación visual causa→efecto (rebote → baja de avance). Para
+ * compensar su ancho sin pasar de ~36 chars monospace (clientes móviles) se
+ * recorta `fase` 12→11 y `agente` 9→8.
  */
 function renderTableRow(issue) {
     const icon = STATUS_EMOJI[issue.status] || '🟡';
     const issueId = `#${issue.id}`.padEnd(6);
-    const fase = (issue.faseAbbrev || '—').padEnd(12).slice(0, 12);
+    const fase = (issue.faseAbbrev || '—').padEnd(11).slice(0, 11);
     const pctText = issue.pct === 0 && !issue.isClosed ? '—' : `${issue.pct}%`;
     const pctCol = pctText.padStart(4);
-    const agente = (issue.agente || '—').slice(0, 9);
-    return `${icon} ${issueId} ${fase} ${pctCol}  ${agente}`;
+    const bouncesCol = formatBouncesCol(issue.bounces);
+    const agente = (issue.agente || '—').slice(0, 8);
+    return `${icon} ${issueId} ${fase} ${pctCol} ${bouncesCol} ${agente}`;
 }
 
 /**
@@ -356,6 +384,9 @@ module.exports = {
     _internal: {
         renderTable,
         renderTableRow,
+        formatBouncesCol,
+        BOUNCE_ARROW,
+        BOUNCE_COL_WIDTH,
         renderBlocksSection,
         renderInterventionSection,
         renderTraceLine,
