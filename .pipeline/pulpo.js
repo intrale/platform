@@ -7299,6 +7299,44 @@ function brazoHuerfanos(config) {
         const info = activeProcesses.get(key);
         if (info && isProcessAlive(info.pid)) continue;
 
+        // #4052 CA-3 — Atribución provider-aware ANTES de tocar orphanRetries.
+        // Si la muerte del proceso fue un spawn-failure de Codex (marker dejado
+        // por la instrumentación CA-1 en agent-launcher.js), NO es un fallo del
+        // issue: es infra del provider. En ese caso NO incrementamos el retry
+        // del issue ni lo rebotamos; apagamos el provider con TTL (la cadena de
+        // fallback elegirá otro eslabón en el próximo despacho) y devolvemos el
+        // archivo a pendiente/. Fail-closed: si no hay marker o algo falla,
+        // seguimos el camino de huérfano normal (consume retry como hoy).
+        try {
+          const sfState = require('./lib/agent-launcher/spawn-failure-state');
+          const marker = sfState.consumeSpawnFailure({
+            pipelineDir: PIPELINE,
+            provider: 'openai-codex',
+            skill,
+            issue,
+          });
+          if (marker) {
+            try {
+              const providerDisabled = require('./lib/provider-disabled');
+              providerDisabled.setProviderDisabled('openai-codex', { source: 'orphan-spawn-failure' });
+            } catch (e) {
+              log('huerfanos', `No se pudo apagar openai-codex tras spawn-failure de ${archivo.name}: ${e.message}`);
+            }
+            log('huerfanos', `${archivo.name}: muerte = spawn-failure de Codex (sig=${marker.signature}, kind=${marker.launcher_kind}) → NO consume retry del issue; provider apagado con TTL, devuelvo a pendiente/.`);
+            try {
+              moveFile(archivo.path, pendienteDir);
+              sendTelegram(`🔌 ${skill}:#${issue} NO rebotado: Codex murió al spawnear (infra del provider, no fallo del issue). Provider apagado con TTL; reintento con otro provider de la cadena.`);
+            } catch (e) {
+              log('huerfanos', `Error devolviendo ${archivo.name} a pendiente tras spawn-failure: ${e.message}`);
+            }
+            activeProcesses.delete(key);
+            continue;
+          }
+        } catch (e) {
+          // Fail-closed: si el chequeo de spawn-failure falla, seguimos normal.
+          log('huerfanos', `chequeo spawn-failure de ${archivo.name} falló (sigo flujo normal): ${e.message}`);
+        }
+
         const retryKey = `${pipelineName}/${fase}/${archivo.name}`;
         const retries = (orphanRetries.get(retryKey) || 0) + 1;
         orphanRetries.set(retryKey, retries);
