@@ -76,6 +76,12 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+// #4052 — clasificador puro de "muerte al spawnear del provider". Distingue una
+// muerte de spawn-failure (infra del provider) de un fallo legítimo del issue,
+// para que onSpawnExit emita `decision: 'provider-spawn-failure'` y el caller no
+// penalice el retry del issue (CA-3 / SEC-3).
+const { classifySpawnFailure } = require('./spawn-failure-classifier');
+
 const { resolveProviderForSkill, getProviderHandler } = require('./resolve-provider');
 // MP-05 (#3803) — reutilizamos la validación de credenciales del precheck del
 // Commander para hacer pre-check de credenciales también en los skills antes de
@@ -193,6 +199,21 @@ function spawnExitAuditFile(pipelineDir, now = new Date()) {
     return path.join(pipelineDir, 'logs', `spawn-exit-${yyyy}-${mm}-${dd}.jsonl`);
 }
 
+// #4052 SEC-1 — el spawn-exit JSONL puede contener excerpts de stderr (ya
+// sanitizados). Garantizamos que el archivo se cree con permisos 0o600, ya que
+// `audit-log.appendChained` usa `appendFileSync` sin mode explícito. Best-effort
+// e idempotente: en Windows el mode es nominal, pero en POSIX cierra el archivo
+// a solo-dueño. Nunca tira.
+function ensureSecureAuditFile(file, fsImpl) {
+    const _fs = fsImpl || fs;
+    try {
+        _fs.mkdirSync(path.dirname(file), { recursive: true });
+        const fd = _fs.openSync(file, 'a', 0o600);
+        _fs.closeSync(fd);
+        try { _fs.chmodSync(file, 0o600); } catch { /* best-effort (Windows) */ }
+    } catch { /* best-effort */ }
+}
+
 // -----------------------------------------------------------------------------
 // _selectErrorTypeForFlag — réplica del helper del Commander
 // (lib/commander/multi-provider.js:820). Lo duplicamos acá para evitar
@@ -272,6 +293,13 @@ function onSpawnExit(opts = {}) {
             timedOut,
             durationMs,
             firstByteAt,
+            // #4052 — código de `child.on('error')` (ej ENOENT) cuando el proceso
+            // NUNCA llegó a arrancar. Opcional; ausente en el path post-exit normal.
+            errorCode,
+            // #4052 — true SOLO desde la instrumentación CA-1 del launcher (que
+            // rastrea de verdad el primer byte). Habilita la firma 3 del
+            // clasificador sin afectar a los callers post-exit legacy.
+            spawnInstrumented,
             issue,
             pipelineDir,
             parserModule,
@@ -286,6 +314,78 @@ function onSpawnExit(opts = {}) {
         const _parser = parserModule || require('./provider-error-parser');
         const _quota = quotaModule || require('../quota-exhausted');
         const _now = Number.isFinite(now) ? now : Date.now();
+
+        // ---------------------------------------------------------------------
+        // #4052 CA-1/CA-3 — Clasificación de spawn-failure ANTES del parser.
+        //
+        // Si la muerte tiene firma inequívoca de "el proceso del provider no
+        // arrancó" (ENOENT/EACCES, exit 127, o exit antes del primer byte muy
+        // temprano), la atribuimos al provider, NO al issue. Devolvemos
+        // `decision: 'provider-spawn-failure'` para que el caller (instrumentación
+        // del launcher) registre el marker y el brazoHuerfanos no penalice el
+        // retry del issue. NO seteamos flag de cuota (esto no es cuota).
+        //
+        // Fail-closed: si la firma no es inequívoca, seguimos al parser normal
+        // (la muerte se trata como fallo-del-issue, consume retry como hoy).
+        // ---------------------------------------------------------------------
+        let spawnFailure = { isSpawnFailure: false, signature: null };
+        try {
+            spawnFailure = classifySpawnFailure({ errorCode, exitCode, firstByteAt, durationMs, spawnInstrumented });
+        } catch { spawnFailure = { isSpawnFailure: false, signature: null }; }
+
+        if (spawnFailure.isSpawnFailure) {
+            const sanitize = (_quota && typeof _quota.sanitizeRawExcerpt === 'function')
+                ? _quota.sanitizeRawExcerpt
+                : ((s) => String(s == null ? '' : s).slice(0, 200));
+            const safeRaw = sanitize(rawOutput || '');
+            const evidence = `spawn-failure:${spawnFailure.signature}`;
+            // Audit hash-chained (igual que el resto del hook), con error_class
+            // dedicado. Best-effort: nunca rompe el lifecycle.
+            if (pipelineDir) {
+                try {
+                    const _audit = auditLog || require('../audit-log');
+                    const file = spawnExitAuditFile(pipelineDir, new Date(_now));
+                    ensureSecureAuditFile(file, fsImpl);
+                    _audit.appendChained({
+                        file,
+                        entry: {
+                            ts: new Date(_now).toISOString(),
+                            skill: skill || null,
+                            issue: (issue == null) ? null : Number(issue) || String(issue),
+                            provider: provider || null,
+                            transport: transport || null,
+                            error_class: 'provider_spawn_failure',
+                            evidence,
+                            raw_excerpt: safeRaw,
+                            should_fallback: true,
+                            retriable: false,
+                            flag_set: false,
+                            exit_code: (exitCode === null || exitCode === undefined) ? null : Number(exitCode),
+                            error_code: errorCode || null,
+                            timed_out: timedOut === true,
+                            duration_ms: Number.isFinite(durationMs) ? Math.round(durationMs) : null,
+                            first_byte_at: Number.isFinite(firstByteAt) ? Math.round(firstByteAt) : null,
+                            codepath: 'generalized',
+                        },
+                        fsImpl,
+                    });
+                } catch (e) {
+                    try { log('lanzamiento', `${CODEPATH_EMOJI.generalized} onSpawnExit: audit spawn-failure tiró (best-effort): ${e && e.message}`); } catch {}
+                }
+            }
+            return {
+                errorClass: 'provider_spawn_failure',
+                shouldFallback: true,
+                retriable: false,
+                raw: safeRaw,
+                evidence,
+                flagSet: false,
+                auditLogged: !!pipelineDir,
+                decision: 'provider-spawn-failure',
+                signature: spawnFailure.signature,
+                codepath: 'generalized',
+            };
+        }
 
         // 1. Clasificar via parser generalizado. El parser ya es defensivo y
         // NUNCA tira — pero envolvemos por defense in depth.
@@ -339,6 +439,7 @@ function onSpawnExit(opts = {}) {
             try {
                 const _audit = auditLog || require('../audit-log');
                 const file = spawnExitAuditFile(pipelineDir, new Date(_now));
+                ensureSecureAuditFile(file, fsImpl);
                 const auditEntry = {
                     ts: new Date(_now).toISOString(),
                     skill: skill || null,
