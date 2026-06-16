@@ -97,6 +97,16 @@ const MAX_VALID_DURATION_MS = etaMarkers.MAX_VALID_DURATION_MS;
 // Cache TTL del análisis histórico (sigue el patrón de waves.js).
 const ANALYSIS_CACHE_TTL_MS = 30 * 1000;
 
+// ─── Constantes de velocidad de ola (#4039) ────────────────────────────────
+// Mínimo de snapshots de la ola actual para proyectar por velocidad. Por
+// debajo → fallback (CA-4). Δt mínimo entre el primero y el último de la
+// ventana para no proyectar sobre ruido / división por ~0.
+const WAVE_MIN_SNAPSHOTS = 2;
+const WAVE_MIN_DELTA_MS = 60 * 1000;
+// Ventana de suavizado (media móvil): se toman los últimos N snapshots de la
+// ola; si hay menos, se usan los que haya (≥ WAVE_MIN_SNAPSHOTS).
+const WAVE_VELOCITY_WINDOW = 5;
+
 // ─── Paths (con override por env para tests) ───────────────────────────────
 
 function pipelineRoot() {
@@ -107,6 +117,9 @@ function pipelineRoot() {
 
 function pipelineDir() { return path.join(pipelineRoot(), '.pipeline'); }
 function metricsHistoryPath() { return path.join(pipelineDir(), 'metrics-history.jsonl'); }
+// #4039 — serie temporal de avance de ola. Path FIJO; este módulo SOLO lee
+// (el writer vive en `lib/wave-progress.js`).
+function waveProgressPath() { return path.join(pipelineDir(), 'wave-progress.jsonl'); }
 function roadmapPath() { return path.join(pipelineRoot(), 'scripts', 'roadmap.json'); }
 
 // ─── Validación de inputs (CA-5..CA-8) ─────────────────────────────────────
@@ -601,12 +614,160 @@ async function calculateOlaETA(issueList, concurrency) {
     };
 }
 
+// ─── Streaming wave-progress.jsonl (#4039, read-only) ──────────────────────
+
+/**
+ * Recorre `.pipeline/wave-progress.jsonl` por streaming (mismo patrón
+ * read-only que `_streamMetricsHistory`) y devuelve los snapshots válidos de
+ * un `waveKey` dado, ordenados por `ts`.
+ *
+ * Tolerante a líneas corruptas (SEC-6): cada línea se parsea con try/catch;
+ * inválida → skip silencioso. Si el archivo no existe → `[]`.
+ *
+ * IMPORTANTE: este módulo NO escribe nunca sobre este archivo (CA-7); el
+ * writer es `lib/wave-progress.js`.
+ *
+ * @param {number} waveKey
+ * @returns {Promise<Array<{ts:number, avancePct:number}>>}
+ */
+function _streamWaveProgress(waveKey) {
+    return new Promise((resolve) => {
+        const file = waveProgressPath();
+        let exists = false;
+        try { exists = fs.existsSync(file); } catch { exists = false; }
+        if (!exists) { resolve([]); return; }
+
+        const out = [];
+        const stream = fs.createReadStream(file, { encoding: 'utf8' });
+        const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+        rl.on('line', (line) => {
+            if (!line) return;
+            let rec;
+            try { rec = JSON.parse(line); } catch { return; }
+            if (!rec || typeof rec !== 'object') return;
+            if (rec.waveKey !== waveKey) return;
+            if (typeof rec.ts !== 'number' || !Number.isFinite(rec.ts)) return;
+            if (typeof rec.avancePct !== 'number' || !Number.isFinite(rec.avancePct)) return;
+            out.push({ ts: rec.ts, avancePct: rec.avancePct });
+        });
+        rl.on('close', () => { out.sort((a, b) => a.ts - b.ts); resolve(out); });
+        rl.on('error', () => { out.sort((a, b) => a.ts - b.ts); resolve(out); });
+    });
+}
+
+// ─── calculateWaveVelocityETA (#4039) ──────────────────────────────────────
+
+/**
+ * ETA de ola por VELOCIDAD MEDIA del conjunto (#4039).
+ *
+ * En vez de sumar promedios teóricos por issue (`calculateOlaETA`), mide el
+ * ritmo real observado de la ola — `Δ(avancePct) / Δ(tiempo)` sobre una
+ * ventana reciente de snapshots — y proyecta el restante:
+ *   `remainingMs = (100 − avancePctActual) / velocidad`.
+ *
+ * Propiedad clave (CA-1/CA-5): si la ola avanza a ritmo estable, el restante
+ * BAJA con cada lectura y la hora meta (`now + remaining`) converge en vez de
+ * alejarse 1 min por minuto.
+ *
+ * Suavizado (CA-2 / nota técnica): la velocidad se calcula como pendiente
+ * global sobre la VENTANA de los últimos `WAVE_VELOCITY_WINDOW` snapshots
+ * (media móvil por ventana), no entre dos puntos sueltos → evita oscilación
+ * ante un snapshot ruidoso.
+ *
+ * Fallback documentado (CA-4): con < `WAVE_MIN_SNAPSHOTS` snapshots de la ola
+ * o `Δt < WAVE_MIN_DELTA_MS`, devuelve `{ source: 'fallback' }` y el caller
+ * usa su modelo previo (`calculateOlaETA` / `computeLaneEmptyEta`).
+ *
+ * Clamp (CA-14): velocidad ≤ 0 / no finita (por rebotes o `/wave add` que
+ * bajan el avancePct) → `{ source: 'fallback' }`; NUNCA propaga
+ * `NaN`/`Infinity`/restante negativo.
+ *
+ * Reset al resembrar (CA-6): al cambiar `waveKey`, la serie anterior no
+ * matchea → cae a fallback hasta acumular snapshots propios.
+ *
+ * Read-only (CA-7): solo lee la serie; no escribe nada.
+ *
+ * @param {number} waveKey — entero positivo (`waves.getActiveWave().number`).
+ * @param {number} avancePctActual — `snapshot.totalPct` (0..100).
+ * @param {number} [now=Date.now()] — inyectable para tests determinísticos.
+ * @returns {Promise<
+ *   {source:'velocity', remainingMs:number, absoluteMs:number, velocityPctPerMin:number, snapshots:number}
+ *   | {source:'fallback', reason:string}
+ * >}
+ */
+async function calculateWaveVelocityETA(waveKey, avancePctActual, now) {
+    const ts = (typeof now === 'number' && Number.isFinite(now)) ? now : Date.now();
+
+    // Validación de inputs (CA-11/CA-14).
+    if (!Number.isInteger(waveKey) || waveKey <= 0) {
+        return { source: 'fallback', reason: 'invalid-wavekey' };
+    }
+    if (typeof avancePctActual !== 'number' || !Number.isFinite(avancePctActual)) {
+        return { source: 'fallback', reason: 'invalid-avance' };
+    }
+
+    let snapshots;
+    try { snapshots = await _streamWaveProgress(waveKey); }
+    catch { return { source: 'fallback', reason: 'read-error' }; }
+
+    // Ventana de suavizado: últimos N snapshots de la ola (CA / media móvil).
+    if (snapshots.length > WAVE_VELOCITY_WINDOW) {
+        snapshots = snapshots.slice(snapshots.length - WAVE_VELOCITY_WINDOW);
+    }
+
+    if (snapshots.length < WAVE_MIN_SNAPSHOTS) {
+        return { source: 'fallback', reason: 'insufficient-snapshots' };  // CA-4
+    }
+
+    const first = snapshots[0];
+    const last = snapshots[snapshots.length - 1];
+    const deltaMs = last.ts - first.ts;
+    if (!Number.isFinite(deltaMs) || deltaMs < WAVE_MIN_DELTA_MS) {
+        return { source: 'fallback', reason: 'delta-too-small' };  // CA-4
+    }
+
+    // Pendiente global sobre la ventana (%/ms). Media móvil por ventana.
+    const velocity = (last.avancePct - first.avancePct) / deltaMs;
+
+    // Clamp (CA-14): velocidad ≤ 0 / no finita → fallback, sin proyectar
+    // restante negativo / Infinity / NaN.
+    if (!Number.isFinite(velocity) || velocity <= 0) {
+        return { source: 'fallback', reason: 'non-positive-velocity' };
+    }
+
+    const remainingPct = 100 - avancePctActual;
+    if (remainingPct <= 0) {
+        // Ola completada — restante 0, meta = ahora.
+        return {
+            source: 'velocity',
+            remainingMs: 0,
+            absoluteMs: ts,
+            velocityPctPerMin: velocity * 60000,
+            snapshots: snapshots.length,
+        };
+    }
+
+    const remainingMs = remainingPct / velocity;
+    if (!Number.isFinite(remainingMs) || remainingMs < 0) {
+        return { source: 'fallback', reason: 'degenerate-remaining' };
+    }
+
+    return {
+        source: 'velocity',
+        remainingMs,
+        absoluteMs: ts + remainingMs,
+        velocityPctPerMin: velocity * 60000,
+        snapshots: snapshots.length,
+    };
+}
+
 // ─── Exports ──────────────────────────────────────────────────────────────
 
 module.exports = {
     // API pública (CA-1)
     calculateIssueETA,
     calculateOlaETA,
+    calculateWaveVelocityETA,   // #4039 — ETA por velocidad media del conjunto
     analyzeHistoricalMetrics,
     mapSizeToCanonical,
     // Helpers expuestos como API estable
@@ -630,8 +791,13 @@ module.exports = {
         _invalidateRoadmapCache,
         _collectMarkers,
         _streamMetricsHistory,
+        _streamWaveProgress,
         pipelineRoot,
         metricsHistoryPath,
+        waveProgressPath,
         roadmapPath,
+        WAVE_MIN_SNAPSHOTS,
+        WAVE_MIN_DELTA_MS,
+        WAVE_VELOCITY_WINDOW,
     },
 };

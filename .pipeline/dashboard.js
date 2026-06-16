@@ -56,6 +56,20 @@ try { etaLib = require('./lib/eta'); } catch { /* opcional */ }
 let etaWaveLib = null;
 try { etaWaveLib = require('./lib/eta-wave'); } catch { /* opcional */ }
 
+// #4039 — writer de la serie temporal de avance de ola + módulos para resolver
+// la ola activa y su `totalPct`. Best-effort: si no cargan, el dashboard sigue
+// con el ETA por presupuesto teórico (fallback).
+let waveProgressLib = null;
+let wavesLib = null;
+let waveResolverLib = null;
+let waveSnapshotLib = null;
+let waveStateLib = null;
+try { waveProgressLib = require('./lib/wave-progress'); } catch { /* opcional */ }
+try { wavesLib = require('./lib/waves'); } catch { /* opcional */ }
+try { waveResolverLib = require('./lib/wave-resolver'); } catch { /* opcional */ }
+try { waveSnapshotLib = require('./lib/wave-snapshot'); } catch { /* opcional */ }
+try { waveStateLib = require('./lib/wave-state'); } catch { /* opcional */ }
+
 // Infra compartida de scanning de markers FS (#3517). Best-effort require:
 // si el módulo no está, el builder de `state.etaAverages` cae al inline
 // histórico para no romper el dashboard.
@@ -488,9 +502,33 @@ function _scheduleOlaETARefresh(state) {
     .then(async () => {
       const olaResult = await etaWaveLib.calculateOlaETA(olaIssues, OLA_ETA_CONCURRENCY);
       const historical = await etaWaveLib.analyzeHistoricalMetrics();
-      return { olaResult, historical };
+      // #4039 — punto natural del writer periódico de la serie de avance de ola.
+      // Computa el `totalPct` de la ola activa (misma fuente que el `/wave`:
+      // resolver → wave-state → buildWaveSnapshot), registra un snapshot y
+      // proyecta el ETA por velocidad media para que el dashboard consuma el
+      // mismo ETA que el Commander (CA-8). Best-effort: si algo falla, queda el
+      // presupuesto teórico (fallback) sin romper el refresh.
+      let velocityETA = null;
+      try {
+        if (waveProgressLib && wavesLib && waveResolverLib && waveSnapshotLib && waveStateLib) {
+          const activeWave = wavesLib.getActiveWave();
+          const waveKey = activeWave && activeWave.number;
+          if (Number.isInteger(waveKey) && waveKey > 0) {
+            const wave = waveResolverLib.resolveActiveWave({});
+            const wState = waveStateLib.getCachedWaveState({});
+            const wSnap = waveSnapshotLib.buildWaveSnapshot({ state: wState, wave });
+            if (wSnap && Number.isFinite(wSnap.totalPct)) {
+              const nowTs = Date.now();
+              waveProgressLib.appendSnapshot({ waveKey, avancePct: wSnap.totalPct, now: nowTs });
+              const vel = await etaWaveLib.calculateWaveVelocityETA(waveKey, wSnap.totalPct, nowTs);
+              if (vel && vel.source === 'velocity') velocityETA = { ...vel, totalPct: wSnap.totalPct };
+            }
+          }
+        }
+      } catch { /* fallback: sin velocityETA */ }
+      return { olaResult, historical, velocityETA };
     })
-    .then(({ olaResult, historical }) => {
+    .then(({ olaResult, historical, velocityETA }) => {
       _olaETACache = {
         issues: olaIssues,
         totalP50: olaResult.totalP50,
@@ -500,6 +538,9 @@ function _scheduleOlaETARefresh(state) {
         concurrencyUsed: olaResult.concurrencyUsed,
         bySize: historical.bySize,
         rebounceRate: historical.rebounceRate,
+        // #4039 — ETA por velocidad (null si no hay ritmo medido todavía).
+        velocityETA: velocityETA || null,
+        etaSource: velocityETA ? 'velocity' : 'fallback',
         refreshedAt: Date.now(),
       };
       _olaETACacheAt = Date.now();
