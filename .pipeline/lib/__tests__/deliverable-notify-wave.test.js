@@ -214,6 +214,73 @@ test('CA-5 · runGh que tira excepción → null (capturado)', () => {
     assert.equal(out, null);
 });
 
+// Captura temporal de console.warn para verificar el logger por DEFAULT.
+function captureWarn(fn) {
+    const original = console.warn;
+    const messages = [];
+    console.warn = (...args) => { messages.push(args.join(' ')); };
+    try {
+        fn();
+    } finally {
+        console.warn = original;
+    }
+    return messages;
+}
+
+test('CA-5 · el logger por DEFAULT (sin inyectar logFail) deja traza del fallo de gh', () => {
+    // Reproduce el cableado de PRODUCCIÓN: NO se inyecta `logFail`, solo los
+    // stubs imprescindibles. El default debe ser console.warn, no un no-op,
+    // o el fallo se traga en silencio (lo que el rebote rev-1 detectó).
+    const wave = { number: 3, name: 'Ola 3', issues: [1, 2] };
+    const runGh = fakeRunGh([{ number: 1, state: 'CLOSED' }], { exitCode: 1 });
+    let out;
+    const warnings = captureWarn(() => {
+        out = buildWaveProgressSection({
+            issue: 1,
+            pipelineRoot: '/tmp/x',
+            deps: { resolveWaveForIssue: fakeResolveWave(wave), runGh },
+        });
+    });
+    assert.equal(out, null);
+    assert.equal(warnings.length, 1, 'debe loguear exactamente un warning');
+    assert.match(warnings[0], /\[deliverable-notify\]/);
+    assert.match(warnings[0], /gh issue list/);
+});
+
+test('CA-5 · el logger por DEFAULT deja traza ante JSON inválido', () => {
+    const wave = { number: 3, name: 'Ola 3', issues: [1, 2] };
+    const runGh = () => ({ exit_code: 0, stdout: 'no-es-json', stderr: '' });
+    let out;
+    const warnings = captureWarn(() => {
+        out = buildWaveProgressSection({
+            issue: 1,
+            pipelineRoot: '/tmp/x',
+            deps: { resolveWaveForIssue: fakeResolveWave(wave), runGh },
+        });
+    });
+    assert.equal(out, null);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /\[deliverable-notify\]/);
+    assert.match(warnings[0], /JSON inválido/);
+});
+
+test('CA-5 · el logger por DEFAULT deja traza ante excepción inesperada', () => {
+    const wave = { number: 3, name: 'Ola 3', issues: [1, 2] };
+    const runGh = () => { throw new Error('spawn falló'); };
+    let out;
+    const warnings = captureWarn(() => {
+        out = buildWaveProgressSection({
+            issue: 1,
+            pipelineRoot: '/tmp/x',
+            deps: { resolveWaveForIssue: fakeResolveWave(wave), runGh },
+        });
+    });
+    assert.equal(out, null);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /\[deliverable-notify\]/);
+    assert.match(warnings[0], /excepción inesperada/);
+});
+
 // -----------------------------------------------------------------------------
 // CA-6 — seguridad: una sola llamada, sin shell, solo números
 // -----------------------------------------------------------------------------

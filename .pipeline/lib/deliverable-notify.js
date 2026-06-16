@@ -884,9 +884,19 @@ function buildWaveProgressSection(args) {
     const { issue, pipelineRoot, deps } = args || {};
     const resolveWave = (deps && deps.resolveWaveForIssue) || waveResolver.resolveWaveForIssue;
     const runGh = (deps && deps.runGh) || gitOps.runGh;
+    // CA-5 / UX G-6 — el fallo del cálculo de ola DEBE quedar logueado, también
+    // en producción (donde `notify` no inyecta `deps`). El default no puede ser
+    // un no-op: usa `console.warn` con el prefijo convencional del módulo
+    // (consistente con la línea ~1785), para que gh-error/JSON-inválido/excepción
+    // dejen traza sin que el call site de producción tenga que cablear nada.
     const logFail = (deps && typeof deps.logFail === 'function')
         ? deps.logFail
-        : () => {};
+        : (msg, detail) => {
+            // eslint-disable-next-line no-console
+            console.warn(
+                `[deliverable-notify] wave-progress: ${msg}${detail ? `: ${detail}` : ''}`,
+            );
+        };
 
     try {
         // CA-4 — issue sin ola → sin sección, comportamiento de hoy.
