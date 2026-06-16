@@ -34,6 +34,20 @@ const { CONFIRM_MODAL_JS } = require('./confirm-modal.js');
 // abrir un segundo cache del sprite (mantiene paridad con satellites.js).
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 
+// #3954 EP8-H1 — Semáforo global explicable (pulpo + infra + cuota + anomalía).
+// Función pura compartida con dashboard.js (sin dependencia circular).
+const { computeInfraHealthLevel } = require('../../lib/infra-health-level');
+
+// #3954 EP8-H1 — Store del audit de la bandeja de alertas (ack/snooze). Require
+// defensivo: en tests aislados o checkouts viejos el módulo puede faltar; el
+// renderer degrada a "sin acciones registradas" sin romper.
+let _alertTrayAudit = null;
+try { _alertTrayAudit = require('../../lib/alert-tray-audit'); } catch { /* opcional */ }
+let _quotaExhaustedState = null;
+try { _quotaExhaustedState = require('../../lib/quota-exhausted-state'); } catch { /* opcional */ }
+let _restModeState = null;
+try { _restModeState = require('../../lib/rest-mode-state'); } catch { /* opcional */ }
+
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 
 function loadTheme() {
@@ -99,6 +113,94 @@ function homeStyles() {
     gap: 16px;
     padding: 16px 22px;
 }
+
+/* #3954 EP8-H1 — Mission control de 3 bandas. CA-1: el contenedor raiz del
+   home fija la altura del viewport y oculta el overflow de PAGINA; cada banda
+   resuelve su propio exceso con scroll/carrusel interno (CA-2). El modifier
+   mission-frame SOLO se emite en el home (renderHomeHTML); el router cliente
+   lo agrega/quita al navegar para no recortar las otras vistas. */
+.kiosk-frame.mission-frame { height: 100vh; min-height: 0; overflow: hidden; }
+.kiosk-frame.mission-frame .kiosk-body { overflow: hidden; min-height: 0; }
+.mission-grid {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: 20fr 50fr 30fr;   /* Salud 20% · Ahora 50% · Flujo 30% */
+    gap: 12px;
+    overflow: hidden;
+}
+.mission-band {
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.mission-band-head {
+    display: grid;
+    grid-template-columns: minmax(220px, 1fr) 2fr;
+    gap: 12px;
+    align-items: stretch;
+}
+/* Banda 1 — semáforo explicable */
+.semaforo {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    background: var(--in-bg-2);
+    border: 1px solid var(--in-border);
+    border-radius: var(--in-radius);
+    padding: 14px 16px;
+    box-shadow: var(--in-shadow);
+}
+.semaforo-disc { font-size: 26px; line-height: 1; }
+.semaforo-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.semaforo-label { font-size: 15px; font-weight: 700; letter-spacing: 0.6px; }
+.semaforo-ok    .semaforo-label { color: var(--in-ok); }
+.semaforo-warn  .semaforo-label { color: var(--in-warn); }
+.semaforo-alert .semaforo-label { color: var(--in-bad); }
+.semaforo-stale .semaforo-label { color: var(--in-fg-dim); }
+.semaforo-reasons { margin: 0; padding-left: 16px; font-size: 11px; color: var(--in-fg-dim); list-style: disc; max-height: 64px; overflow: auto; }
+.semaforo-reason-alert { color: var(--in-bad); }
+.semaforo-reason-warn  { color: var(--in-warn); }
+/* Banda 1 — 3 KPIs decisorios */
+.mission-kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+/* Banda 1 — bandeja de alertas (scroll vertical interno acotado, CA-2) */
+.alert-tray {
+    display: flex; flex-direction: column; gap: 6px; min-height: 0; overflow: hidden;
+    background: var(--in-bg-2); border: 1px solid var(--in-border);
+    border-radius: var(--in-radius); padding: 10px 14px; box-shadow: var(--in-shadow);
+}
+.alert-tray-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; min-height: 0; }
+.alert-tray-row {
+    display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 10px;
+    padding: 6px 8px; border-radius: 8px; border-left: 4px solid var(--in-border);
+    background: var(--in-bg-1);
+}
+.alert-tray-row.alert-alert { border-left-color: var(--in-bad); }
+.alert-tray-row.alert-warn  { border-left-color: var(--in-warn); }
+.alert-tray-row.alert-stale { border-left-color: var(--in-fg-dim); }
+.alert-tray-text { font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.alert-tray-status { font-size: 11px; color: var(--in-fg-dim); white-space: nowrap; }
+.alert-tray-actions { display: flex; gap: 4px; }
+.alert-ack-btn, .alert-snooze-btn {
+    font-size: 11px; padding: 4px 8px; min-height: 24px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--in-border); background: var(--in-bg-2); color: var(--in-fg);
+}
+.alert-snooze-max { border-color: var(--in-warn); }
+.alert-tray-empty { font-size: 12px; color: var(--in-fg-dim); padding: 6px 4px; }
+.alert-tray-audit { font-size: 11px; color: var(--in-fg-soft); border-top: 1px solid var(--in-border-soft); padding-top: 4px; max-height: 60px; overflow: auto; }
+.deeplink-selected { outline: 2px solid var(--in-focus, #38bdf8); outline-offset: 1px; }
+/* Banda 2 — carrusel/scroll horizontal acotado a la banda (CA-2) */
+.mission-band-now { flex: 1; min-height: 0; overflow-x: auto; overflow-y: hidden; }
+.mission-band-now .active-list { display: flex; flex-direction: row; gap: 12px; flex-wrap: nowrap; }
+.mission-band-now .active-list > * { flex: 0 0 auto; }
+/* Banda 1 — detalle (infra + bandeja) lado a lado, scroll interno acotado */
+.mission-band-salud-detail { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(220px, 1fr) 2fr; gap: 12px; overflow: hidden; }
+.mission-band-salud-detail > * { min-width: 0; overflow: auto; }
+/* Banda 3 — flujo: dos columnas con scroll interno acotado */
+.mission-band-flow { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; overflow: hidden; }
+.mission-flow-col { min-width: 0; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
 
 /* KPI grid */
 .kpi-grid {
@@ -3014,6 +3116,8 @@ function loadView(slug, opts){
         if(typeof window[initName] === 'function'){
             try { window[initName](); } catch(e) { try { console.warn(initName, e.message); } catch(_) {} }
         }
+        // #3954 — alternar el modifier mission-frame según la vista cargada.
+        if(typeof _applyMissionFrame === 'function') _applyMissionFrame();
         return true;
     })
     .catch(function(e){
@@ -3055,6 +3159,161 @@ document.addEventListener('click', function(e){
     e.preventDefault();
     loadView(slug, { replace: false });
 });
+
+// =============================================================================
+// #3954 EP8-H1 — Cliente del mission control de 3 bandas.
+// =============================================================================
+
+// El modifier .mission-frame (height:100vh; overflow:hidden) sólo debe aplicar
+// cuando el #view-content contiene el grid de bandas (home). Al navegar a otra
+// vista vía SPA se quita para no recortar contenidos con scroll propio.
+function _applyMissionFrame(){
+    try {
+        var frame = document.querySelector('.kiosk-frame');
+        if(!frame) return;
+        var hasGrid = !!document.getElementById('mission-grid');
+        frame.classList.toggle('mission-frame', hasGrid);
+    } catch(_) {}
+}
+
+// CA-4 — espejar los contadores ya hidratados (active-count / longitud de la
+// cola) en los KPIs decisorios de Banda 1, sin un fetch extra.
+function _missionMirrorKpis(){
+    try {
+        var ac = document.getElementById('active-count');
+        var ka = document.getElementById('kpi-active-value');
+        if(ac && ka){ var v = (ac.textContent || '').trim(); if(v && v !== '…') ka.textContent = v; }
+        var ql = document.getElementById('queue-list');
+        var kq = document.getElementById('kpi-queue-value');
+        if(ql && kq){ kq.textContent = String(ql.children ? ql.children.length : 0); }
+    } catch(_) {}
+}
+
+// CA-5 — bandeja de alertas: registro de acciones del operador + estado de
+// supresión por alerta. Todo dato dinámico se inyecta con textContent (cero
+// innerHTML sobre datos) — defensa XSS dura (REQ-SEC-5).
+function _fmtAlertActor(e){
+    if(!e) return '';
+    if(e.action === 'snooze') return 'snooze hasta ' + fmtHHMMLocal(e.snooze_until) + ' · ' + (e.actor || '');
+    if(e.action === 'ack') return 'visto por ' + (e.actor || '') + ' · ' + fmtHHMMLocal(e.timestamp);
+    return (e.action || '') + ' · ' + (e.actor || '');
+}
+async function tickAlertTray(){
+    var tray = document.getElementById('alert-tray'); if(!tray) return;
+    var d = await fetchJson('/api/dash/alert-tray'); if(!d) return;
+    // Contador + registro de acciones.
+    var auditBox = document.getElementById('alert-tray-audit');
+    if(auditBox){
+        auditBox.textContent = '';
+        var entries = Array.isArray(d.entries) ? d.entries : [];
+        if(d.chain_broken){
+            var warn = document.createElement('div');
+            warn.className = 'alert-tray-chain-broken';
+            warn.textContent = '⚠ Cadena de audit rota — revisar integridad';
+            auditBox.appendChild(warn);
+        }
+        for(var i = entries.length - 1; i >= 0; i--){
+            var en = entries[i];
+            var line = document.createElement('div');
+            line.className = 'alert-tray-audit-line';
+            line.textContent = fmtHHMMLocal(en.timestamp) + ' · ' + (en.actor || '') + ' · ' + (en.action || '') + (en.alert_id ? ' · ' + en.alert_id : '');
+            auditBox.appendChild(line);
+        }
+    }
+    // Estado de supresión vigente por alerta (quién atendió).
+    var sup = d.suppressions || {};
+    var rows = tray.querySelectorAll('.alert-tray-row');
+    for(var r = 0; r < rows.length; r++){
+        var id = rows[r].getAttribute('data-alert-id');
+        var st = rows[r].querySelector('[data-alert-status]');
+        if(!st) continue;
+        if(sup[id]) st.textContent = _fmtAlertActor(sup[id]);
+    }
+}
+
+// Acciones ack/snooze — POST a los endpoints mutantes (mismo origen). El actor
+// lo graba el server (operador-local); el cliente NUNCA lo manda (REQ-SEC-3).
+async function _postAlertAction(action, alertId, hours){
+    var url = action === 'snooze' ? '/dashboard/alert/snooze' : '/dashboard/alert/ack';
+    var body = { alertId: alertId };
+    if(action === 'snooze') body.hours = hours;
+    var res = await fetchJson(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+    if(res && res.applied){
+        if(typeof showToast === 'function') showToast(action === 'snooze' ? 'Alerta silenciada' : 'Alerta marcada como vista', true);
+        try { await tickAlertTray(); } catch(_) {}
+    } else {
+        if(typeof showToast === 'function') showToast('No se pudo registrar la acción', false);
+    }
+}
+
+document.addEventListener('click', function(e){
+    var t = e.target; if(!t || !t.closest) return;
+    var btn = t.closest('[data-alert-action]');
+    if(!btn) return;
+    e.preventDefault(); e.stopPropagation();
+    var action = btn.getAttribute('data-alert-action');
+    var id = btn.getAttribute('data-alert-id');
+    var hours = Number(btn.getAttribute('data-alert-hours')) || undefined;
+    if(!id) return;
+    _postAlertAction(action, id, hours);
+});
+
+// CA-11 / REQ-SEC-5 — deep-links de estado de elemento (?alert/?agent/?phase).
+// El value se valida contra una regex allowlist antes de tocar la URL y nunca
+// se refleja crudo (sólo se usa para resaltar el elemento por data-attr).
+var _DEEPLINK_KEYS = { alert: 1, agent: 1, phase: 1 };
+var _DEEPLINK_RE = /^[a-z0-9][a-z0-9:_-]{0,63}$/i;
+function _setElementState(key, value){
+    if(!_DEEPLINK_KEYS[key]) return;
+    try {
+        var u = new URL(location.href);
+        if(value && _DEEPLINK_RE.test(value)) u.searchParams.set(key, value);
+        else u.searchParams.delete(key);
+        history.replaceState(history.state || {}, '', u.pathname + u.search);
+    } catch(_) {}
+    _applyDeeplinkHighlight(key, value);
+}
+function _applyDeeplinkHighlight(key, value){
+    try {
+        var prev = document.querySelectorAll('[data-deeplink-key="' + key + '"].deeplink-selected');
+        for(var i = 0; i < prev.length; i++) prev[i].classList.remove('deeplink-selected');
+        if(value && _DEEPLINK_RE.test(value)){
+            var nodes = document.querySelectorAll('[data-deeplink-key="' + key + '"]');
+            for(var j = 0; j < nodes.length; j++){
+                if(nodes[j].getAttribute('data-deeplink-value') === value) nodes[j].classList.add('deeplink-selected');
+            }
+        }
+    } catch(_) {}
+}
+document.addEventListener('click', function(e){
+    var t = e.target; if(!t || !t.closest) return;
+    if(t.closest('[data-alert-action]')) return; // los botones ack/snooze no seleccionan
+    var el = t.closest('[data-deeplink-key]');
+    if(!el) return;
+    var key = el.getAttribute('data-deeplink-key');
+    var value = el.getAttribute('data-deeplink-value');
+    _setElementState(key, value);
+});
+function _restoreDeeplinksFromBoot(){
+    var sel = (__VIEW_BOOT && __VIEW_BOOT.selected) || {};
+    ['alert', 'agent', 'phase'].forEach(function(k){
+        if(sel[k]) _applyDeeplinkHighlight(k, sel[k]);
+    });
+}
+
+// Arranque + polling del mission control (sólo si el grid está presente).
+_applyMissionFrame();
+if(document.getElementById('mission-grid')){
+    try { tickAlertTray(); } catch(_) {}
+    _restoreDeeplinksFromBoot();
+    setInterval(function(){ try { tickAlertTray(); } catch(_) {} }, 30000);
+    setInterval(_missionMirrorKpis, 5000);
+    setTimeout(_missionMirrorKpis, 1500);
+}
 
 // SSR inicial: sincronizamos document.title con el view rendereado y
 // disparamos el toast CA-U5 si el SSR cayó al fallback por slug desconocido.
@@ -3229,16 +3488,75 @@ function _collectInfraHealth(pipelineDir, nowIso) {
     };
 }
 
+// #3954 EP8-H1 CA-2/CA-3 — Semáforo global explicable para Banda 1. Lee
+// `infra-health.json` (mismo shape que dashboard.js), el flag de cuota y la
+// anomalía de costo, y delega en la función pura `computeInfraHealthLevel`.
+// `pulpoAlive` queda null en SSR (el tick cliente lo recomputa con el header).
+// Defensivo de punta a punta: cualquier error degrada a semáforo 'ok' sin
+// razones (nunca rompe el render del home).
+function _collectSemaforo(pipelineDir, quotaState) {
+    let infraData = null;
+    try {
+        const raw = _safeReadJsonHome(path.join(pipelineDir, 'infra-health.json'));
+        if (raw && typeof raw === 'object') infraData = raw;
+    } catch { /* noop */ }
+    let costAnomaly = null;
+    try {
+        if (_restModeState && typeof _restModeState.getAlertState === 'function') {
+            const alert = _restModeState.getAlertState({ pipelineDir });
+            costAnomaly = { active: !!(alert && alert.active) };
+        }
+    } catch { /* noop */ }
+    try {
+        return computeInfraHealthLevel(infraData || {}, {
+            pulpoAlive: null,
+            quotaState: quotaState && quotaState.active ? quotaState : null,
+            costAnomaly,
+        });
+    } catch {
+        return { level: 'ok', label: 'SALUDABLE', reasons: [] };
+    }
+}
+
+// #3954 EP8-H1 CA-5 — Estado vigente de la bandeja de alertas (supresiones
+// ack/snooze) leído del store del audit. Vacío si el módulo no está.
+function _collectAlertSuppressions() {
+    try {
+        if (_alertTrayAudit && typeof _alertTrayAudit.activeSuppressions === 'function') {
+            return _alertTrayAudit.activeSuppressions();
+        }
+    } catch { /* noop */ }
+    return {};
+}
+
+// #3954 EP8-H1 CA-11 / REQ-SEC-5 — Deep-link params de estado de elemento.
+// Cada uno se valida contra regex allowlist; un valor inválido se descarta
+// (queda null) y NUNCA se refleja crudo. El cliente los conserva en la URL.
+const _SELECTED_RE = /^[a-z0-9][a-z0-9:_-]{0,63}$/i;
+function _validateSelected(opts) {
+    const pick = (v) => (typeof v === 'string' && _SELECTED_RE.test(v)) ? v : null;
+    return {
+        alert: pick(opts && opts.selectedAlert),
+        agent: pick(opts && opts.selectedAgent),
+        phase: pick(opts && opts.selectedPhase),
+    };
+}
+
 // Composer: resuelve TODO el I/O (markers, os.uptime) y arma el `state` plano
 // que consumen las sub-funciones puras. Es el único lugar con efectos.
 function collectHomeState(opts) {
     const _opts = opts || {};
     const pipelineDir = path.join(__dirname, '..', '..'); // .pipeline/
     const nowIso = new Date().toISOString();
+    const quotaState = _opts.quotaState || getInitialQuotaState();
     return {
-        quotaState: _opts.quotaState || getInitialQuotaState(),
+        quotaState,
         currentView: typeof _opts.currentView === 'string' ? _opts.currentView : 'home',
         unknownViewRequested: _opts.unknownViewRequested === true,
+        // #3954 — semáforo global + supresiones de alertas + selección deep-link.
+        semaforo: _collectSemaforo(pipelineDir, quotaState),
+        alertSuppressions: _collectAlertSuppressions(),
+        selected: _validateSelected(_opts),
         build: _readBuildStatus(pipelineDir),
         infra: _collectInfraHealth(pipelineDir, nowIso),
         // System card: whitelist cpu/mem/disk/uptime. cpu/mem se hidratan
@@ -3377,7 +3695,12 @@ function renderKpiGrid(state) {
 // / renderWaveRowSkeleton se invocan client-side; acá se emiten los containers
 // con sus IDs intactos). Títulos de issue (atacante-controlables) se escapan en
 // el cliente vía textContent / escapeHtml (R-G1, CA-3725.5).
-function renderQueueDetailed(state) {
+// #3954 EP8-H1 — Sub-piezas de la cola, extraídas para que las consuman tanto
+// el `renderQueueDetailed` legacy (composición, mantiene el test #3725) como
+// las bandas nuevas del mission-control (Banda 2 reusa `_activeSectionHtml`,
+// Banda 3 reusa `_wavePanelHtml` + `_queueSectionHtml`). Mismos IDs invariantes
+// ⇒ la hidratación client-side (tickActive/tickQueue/tickWaves) no cambia.
+function _olaEtaSectionHtml() {
     return `
     <!--
       #3492 — Panel "Ola actual · ETA" (probabilístico p50/p75/p90).
@@ -3432,8 +3755,11 @@ function renderQueueDetailed(state) {
       <div class="ola-eta-empty" id="ola-eta-empty">
         Sin issues activos. La ETA aparece cuando el pipeline está trabajando.
       </div>
-    </section>
+    </section>`;
+}
 
+function _activeSectionHtml() {
+    return `
     <section class="active-section">
       <h2 class="in-section-title">
         <span class="in-section-title-icon">🟢</span>
@@ -3445,8 +3771,11 @@ function renderQueueDetailed(state) {
         <div class="active-empty-icon">⏸</div>
         <div class="active-empty-msg">No hay agentes corriendo. Verificar pausa, cola y blocked:dependencies.</div>
       </div>
-    </section>
+    </section>`;
+}
 
+function _recentSectionHtml() {
+    return `
     <section class="in-section">
       <div class="in-section-title-row">
         <h2 class="in-section-title">
@@ -3465,26 +3794,32 @@ function renderQueueDetailed(state) {
         </button>
       </div>
       <div class="line-list" id="recent-list"></div>
-    </section>
+    </section>`;
+}
 
+function _queueSectionHtml() {
+    return `
     <section class="in-section">
       <div class="in-section-title-row">
         <h2 class="in-section-title">
           <span class="in-section-title-icon">⏩</span>
-          Próximos 10 en cola
+          Próximos en cola
         </h2>
         <!-- #3023 — Badge "filtrado por pausa parcial". Hidden por
              default, tickQueue() lo muestra cuando partialPause.active. -->
         <span class="in-pill-partial-filter"
               id="queue-partial-filter-badge"
               style="display:none"
-              title="Mostrando solo issues de la allowlist activa. Levantá la pausa para ver el top 10 completo.">
+              title="Mostrando solo issues de la allowlist activa. Levantá la pausa para ver el top completo.">
           ⏸ filtrado por pausa parcial
         </span>
       </div>
       <div class="line-list" id="queue-list"></div>
-    </section>
+    </section>`;
+}
 
+function _wavePanelHtml() {
+    return `
     <!--
       #3487 — Widget "Próximas Olas" (Spike #3378 H3).
       Layout vertical para kiosk 1080×1920. El container #wave-panel SIEMPRE
@@ -3512,6 +3847,12 @@ function renderQueueDetailed(state) {
     </section>`;
 }
 
+// Composición legacy (se mantiene exportada para el test #3725 y para `/legacy`).
+function renderQueueDetailed(state) {
+    return _olaEtaSectionHtml() + '\n' + _activeSectionHtml() + '\n'
+        + _recentSectionHtml() + '\n' + _queueSectionHtml() + '\n' + _wavePanelHtml();
+}
+
 // --- Sub-función pura: system card (CPU / RAM / disco / uptime) -------------
 // Whitelist estricta (CA-3725.6): SOLO cpu_pct, mem_pct, disk_pct, uptime_s.
 // PROHIBIDO os.hostname()/process.cwd()/os.userInfo()/paths/process.env. cpu y
@@ -3534,6 +3875,152 @@ function renderSystemCard(state) {
     <section class="system-card" aria-label="Recursos del sistema">
       <h2 class="in-section-title"><span class="in-section-title-icon">🖥</span> Recursos del host</h2>
       <div class="sys-grid">${cellHtml}</div>
+    </section>`;
+}
+
+// =============================================================================
+// #3954 EP8-H1 — Mission control de 3 bandas (Salud / Ahora / Flujo).
+// =============================================================================
+
+// Mapeo nivel → ícono (severidad por forma + texto, NO sólo color — WCAG AA).
+const _SEM_ICON = { ok: '🟢', warn: '🟡', stale: '⚪', alert: '🔴' };
+
+// --- Banda 1: semáforo global explicable (CA-2/CA-3) ------------------------
+// El tooltip enumera cada razón que degradó el semáforo (CA-2). Cada razón se
+// escapa al render (REQ-SEC-6). Sistema sano → "Sin degradaciones".
+function renderSemaforo(state) {
+    const sem = (state && state.semaforo) || { level: 'ok', label: 'SALUDABLE', reasons: [] };
+    const level = (sem.level === 'warn' || sem.level === 'alert' || sem.level === 'stale') ? sem.level : 'ok';
+    const reasons = Array.isArray(sem.reasons) ? sem.reasons : [];
+    const tooltip = reasons.length
+        ? reasons.map(r => '• ' + ((r && r.text) || '')).join('\n')
+        : 'Sin degradaciones';
+    const reasonItems = reasons.length
+        ? reasons.map(r => `<li class="semaforo-reason semaforo-reason-${escapeHtmlAttr((r && r.level) || 'ok')}">${escapeHtmlText((r && r.text) || '')}</li>`).join('')
+        : '<li class="semaforo-reason semaforo-reason-ok">Sin degradaciones</li>';
+    return `
+    <div class="semaforo semaforo-${escapeHtmlAttr(level)}" id="semaforo-global"
+         title="${escapeHtmlAttr(tooltip)}" role="status" aria-label="Salud global: ${escapeHtmlAttr(sem.label || '')}">
+      <span class="semaforo-disc" aria-hidden="true">${_SEM_ICON[level] || '⚪'}</span>
+      <div class="semaforo-body">
+        <span class="semaforo-label" id="semaforo-label">${escapeHtmlText(sem.label || '')}</span>
+        <ul class="semaforo-reasons" id="semaforo-reasons" role="list">${reasonItems}</ul>
+      </div>
+    </div>`;
+}
+
+// --- Banda 1: bandeja de alertas (CA-5/CA-6) --------------------------------
+// Reemplaza los banners dispersos. Cada alerta activa (derivada de las razones
+// del semáforo) muestra su estado de atención ("quién la atendió" + timestamp,
+// grabado server-side, REQ-SEC-3) + botones ack y snooze (allowlist 1/4/24h,
+// REQ-SEC-2). Todo dato derivado se escapa (REQ-SEC-5/6). El registro de
+// acciones (#alert-tray-audit) lo hidrata tickAlertTray desde /api/dash/alert-tray.
+function renderAlertTray(state) {
+    const sem = (state && state.semaforo) || { reasons: [] };
+    const sup = (state && state.alertSuppressions) || {};
+    const reasons = Array.isArray(sem.reasons) ? sem.reasons : [];
+    const rows = reasons.map((r) => {
+        const id = (r && r.code) || '';
+        const s = sup[id];
+        let status = 'activa';
+        if (s && s.action === 'snooze') {
+            status = 'snooze hasta ' + fmtHHMMLocalSsr(s.snoozeUntil) + ' · ' + escapeHtmlText(s.actor || '');
+        } else if (s && s.action === 'ack') {
+            status = 'visto por ' + escapeHtmlText(s.actor || '') + ' · ' + fmtHHMMLocalSsr(s.timestamp);
+        }
+        return `
+        <div class="alert-tray-row alert-${escapeHtmlAttr((r && r.level) || 'ok')}"
+             data-alert-id="${escapeHtmlAttr(id)}" data-deeplink-key="alert" data-deeplink-value="${escapeHtmlAttr(id)}">
+          <span class="alert-tray-text">${escapeHtmlText((r && r.text) || '')}</span>
+          <span class="alert-tray-status" data-alert-status>${status}</span>
+          <span class="alert-tray-actions">
+            <button type="button" class="alert-ack-btn" data-alert-action="ack" data-alert-id="${escapeHtmlAttr(id)}" title="Marcar la alerta como vista">Ya lo vi</button>
+            <button type="button" class="alert-snooze-btn" data-alert-action="snooze" data-alert-hours="1" data-alert-id="${escapeHtmlAttr(id)}" title="Silenciar 1 hora">1h</button>
+            <button type="button" class="alert-snooze-btn" data-alert-action="snooze" data-alert-hours="4" data-alert-id="${escapeHtmlAttr(id)}" title="Silenciar 4 horas">4h</button>
+            <button type="button" class="alert-snooze-btn alert-snooze-max" data-alert-action="snooze" data-alert-hours="24" data-alert-id="${escapeHtmlAttr(id)}" title="Silenciar 24 horas (cap máximo)">24h</button>
+          </span>
+        </div>`;
+    }).join('');
+    const empty = reasons.length ? '' : '<div class="alert-tray-empty">Sin alertas activas.</div>';
+    return `
+    <section class="alert-tray" id="alert-tray" aria-label="Bandeja de alertas">
+      <h2 class="in-section-title">
+        <span class="in-section-title-icon">🔔</span> Bandeja de alertas
+        <span class="in-section-title-count" id="alert-tray-count">${reasons.length}</span>
+      </h2>
+      <div class="alert-tray-list" id="alert-tray-list">${rows}${empty}</div>
+      <div class="alert-tray-audit" id="alert-tray-audit" aria-label="Registro de acciones del operador"></div>
+    </section>`;
+}
+
+// --- Banda 1: 3 KPIs decisorios (CA-4) --------------------------------------
+// bouncePct / activeAgents / nextInQueue. Sin mocks: los valores los hidrata el
+// polling client-side (kpi-bounce-value ya lo sirve tickKpis; los otros dos se
+// mirrorean desde tickActive/tickQueue).
+function _missionKpis() {
+    return `
+    <div class="mission-kpis" aria-label="KPIs decisorios">
+      ${renderKpiCard({ id: 'kpi-band-bounce', valueId: 'kpi-bounce-value', icon: '↩', label: '% Rebote · 7d', sub: 'issues con ≥1 rebote', title: '% de issues con ≥1 rebote sobre issues terminados en los últimos 7 días.' })}
+      ${renderKpiCard({ id: 'kpi-band-active', valueId: 'kpi-active-value', icon: '🟢', label: 'Agentes activos', sub: 'ejecutando ahora', title: 'Agentes en ejecución (incluye Commander cuando atiende).' })}
+      ${renderKpiCard({ id: 'kpi-band-queue', valueId: 'kpi-queue-value', icon: '⏩', label: 'En cola', sub: 'próximos a lanzar', title: 'Issues esperando en la cola del pipeline.' })}
+    </div>`;
+}
+
+// --- Banda 1 (Salud) --------------------------------------------------------
+// Semáforo explicable + EXACTAMENTE 3 KPIs decisorios (CA-4) + salud de infra
+// por servicio + bandeja de alertas. La salud de infra (`renderInfraHealth`) se
+// conserva acá porque alimenta el detalle del semáforo y mantiene viva su
+// hidratación (tickHeader). El detalle de KPIs legacy NO va en Salud (CA-4):
+// vive en Banda 3.
+function renderHealthBand(state) {
+    return `
+    <section class="mission-band mission-band-salud" id="band-salud" aria-label="Salud">
+      <div class="mission-band-head">
+        ${renderSemaforo(state)}
+        ${_missionKpis()}
+      </div>
+      <div class="mission-band-salud-detail">
+        ${renderInfraHealth(state)}
+        ${renderAlertTray(state)}
+      </div>
+    </section>`;
+}
+
+// --- Banda 2 (Ahora) --------------------------------------------------------
+// Tarjetas grandes de agentes en ejecución (CA-7). El Commander va pinned
+// primero — el slice `activeAgents` ya lo `unshift`ea (#3948), por eso reusar
+// #active-list mantiene esa garantía sin código extra. El excedente se resuelve
+// con scroll/carrusel horizontal acotado a la banda (CA-2), nunca a la página.
+// El panel ETA de la ola actual acompaña como contexto del "ahora".
+function renderNowBand(state) {
+    return `
+    <section class="mission-band mission-band-ahora" id="band-ahora" aria-label="Ahora">
+      ${_olaEtaSectionHtml()}
+      <div class="mission-band-now" id="mission-now-scroll">
+        ${_activeSectionHtml()}
+      </div>
+    </section>`;
+}
+
+// --- Banda 3 (Flujo) --------------------------------------------------------
+// Mini-kanban de la ola (wave-panel) + próximos en cola (CA-10) + últimos
+// ejecutados. El detalle de KPIs legacy + recursos del host se conservan acá
+// (su hidratación sigue viva: tickKpis/tickQuota/tickHeader) sin saturar la
+// Banda 1. Scroll interno contenido por sub-componente (CA-2).
+function renderFlowBand(state) {
+    return `
+    <section class="mission-band mission-band-flujo" id="band-flujo" aria-label="Flujo">
+      <div class="mission-band-flow">
+        <div class="mission-flow-col">
+          ${_wavePanelHtml()}
+          ${_queueSectionHtml()}
+        </div>
+        <div class="mission-flow-col">
+          ${_recentSectionHtml()}
+          ${renderKpiGrid(state)}
+          ${renderSystemCard(state)}
+        </div>
+      </div>
     </section>`;
 }
 
@@ -3611,7 +4098,7 @@ ${/* #3953 (CA-2) — banner discreto de dato desactualizado. Oculto por default
       el wrapper fetchJson lo muestra ante fallo de polling y lo limpia al
       recuperar. Si faltara, fetchJson lo recrea en caliente (defensa). */ ''}
 ${renderStaleBanner()}
-<div class="kiosk-frame">
+<div class="kiosk-frame mission-frame">
   <header class="in-header">
     ${renderBrandBar(state)}
     ${renderControlBar(state)}
@@ -3649,15 +4136,17 @@ ${renderStaleBanner()}
        inline aca (CA-S8) - todos los listeners se enganchan en JS post-render. -->
   <main class="kiosk-body" id="view-content" data-current-view="${currentView}">
 
-    ${renderInfraHealth(state)}
-
-    ${renderKpiGrid(state)}
-
     ${navHtml}
 
-    ${renderQueueDetailed(state)}
-
-    ${renderSystemCard(state)}
+    <!-- #3954 EP8-H1 — Mission control de 3 bandas (20% / 50% / 30%). El grid
+         tiene height:100% + overflow:hidden; cada banda resuelve su propio
+         exceso con scroll/carrusel interno acotado (CA-1/CA-2). El contrato
+         SSR↔morph se preserva: cada banda morphea su sub-árbol por id (CA-13). -->
+    <div class="mission-grid" id="mission-grid">
+      ${renderHealthBand(state)}
+      ${renderNowBand(state)}
+      ${renderFlowBand(state)}
+    </div>
 
   </main>
 
@@ -3677,6 +4166,10 @@ window.__VIEW_BOOT__ = ${JSON.stringify({
     currentView,
     unknownViewRequested,
     titles: { home: 'Operación' },
+    // #3954 CA-11 — selección deep-link ya validada server-side contra regex
+    // allowlist (valores inválidos llegan null). JSON.stringify escapa el
+    // contenido; el cliente nunca lo refleja crudo en el DOM (REQ-SEC-5).
+    selected: state.selected || { alert: null, agent: null, phase: null },
 })};
 </script>
 <script>${FETCH_CLIENT_JS}
@@ -3698,4 +4191,10 @@ module.exports = {
     renderKpiGrid,
     renderQueueDetailed,
     renderSystemCard,
+    // #3954 EP8-H1 — sub-renderers del mission control de 3 bandas.
+    renderSemaforo,
+    renderAlertTray,
+    renderHealthBand,
+    renderNowBand,
+    renderFlowBand,
 };
