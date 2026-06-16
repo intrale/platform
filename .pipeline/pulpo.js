@@ -174,6 +174,9 @@ const costAnomalyAlert = require('./lib/cost-anomaly-alert');
 const restModeState = require('./lib/rest-mode-state');
 // #2890 PR-A — Gating horario del modo descanso (ventana + bypass labels).
 const restModeWindow = require('./lib/rest-mode-window');
+// #4051 — Ventana nocturna de presión (umbrales relajados + piso de
+// concurrencia). Mecanismo NUEVO e INDEPENDIENTE de rest_mode.
+const { isNightWindow } = require('./lib/night-window');
 // #2975 — Notificador Telegram del modo cuota Anthropic agotada (lifecycle:
 // inicial + recordatorios A→B→C→D rotando + cierre + canned a texto libre).
 // Depende del flag .pipeline/quota-exhausted.json producido por #2974.
@@ -1917,12 +1920,71 @@ const DEADLOCK_TIER2_CYCLES = 6;        // ~3 min: forzar lanzamiento del más l
 const EMERGENCY_TELEGRAM_COOLDOWN = 300000; // 5 minutos entre mensajes de RED
 let proactiveCycleCounter = 0;
 
+// #4051 — Estado de la ventana nocturna para detectar la transición
+// diurno→nocturno (null = aún sin evaluar). Al ENTRAR a la ventana se dispara
+// una limpieza agresiva una sola vez (ver proactiveCleanup).
+let lastNightWindowState = null;
+
+/**
+ * #4051 — Devuelve los límites de recursos efectivos para el instante `now`.
+ *
+ * Base = `config.resource_limits`. Si `now` cae dentro de la ventana nocturna
+ * (`resource_limits.night_window`), hace un merge superficial sobreescribiendo
+ * SOLO las claves presentes en `night_window` (yellow/orange/red_max_percent,
+ * green_max_percent, min_concurrency_floor, max_concurrent_devs). Fuera de la
+ * ventana, o si el helper tira, devuelve la base intacta (fail-open a diurno).
+ *
+ * Esto permite relajar los umbrales y garantizar un piso de concurrencia
+ * durante la franja nocturna de Anthropic OFF sin tocar el comportamiento
+ * diurno ni el modo descanso (rest_mode).
+ *
+ * @param {object} config
+ * @param {number|Date} [now] — instante a evaluar (default: ahora).
+ * @returns {object} límites efectivos (siempre un objeto, nunca null).
+ */
+function getEffectiveResourceLimits(config, now) {
+  const base = (config && config.resource_limits) || {};
+  const nw = base.night_window;
+  if (!nw || typeof nw !== 'object') return base;
+  try {
+    if (!isNightWindow(now != null ? now : Date.now(), nw)) return base;
+  } catch (e) {
+    return base; // fail-open: ante cualquier error, umbrales diurnos
+  }
+  // Merge superficial: solo las claves de override presentes en night_window.
+  const OVERRIDE_KEYS = [
+    'green_max_percent', 'yellow_max_percent', 'orange_max_percent',
+    'red_max_percent', 'min_concurrency_floor', 'max_concurrent_devs',
+  ];
+  const effective = Object.assign({}, base);
+  for (const k of OVERRIDE_KEYS) {
+    if (nw[k] != null) effective[k] = nw[k];
+  }
+  effective._nightWindowActive = true; // marca para logging (no afecta lógica)
+  return effective;
+}
+
+/**
+ * #4051 — Decisión pura del piso de concurrencia en ORANGE.
+ * Devuelve true si hay que BLOQUEAR nuevos lanzamientos (se alcanzó el piso),
+ * false si todavía hay margen hasta el piso. El piso por defecto es 1 (diurno);
+ * la ventana nocturna puede subirlo vía `min_concurrency_floor`.
+ *
+ * @param {number} totalRunning — agentes totales corriendo.
+ * @param {object} effectiveLimits — salida de getEffectiveResourceLimits.
+ * @returns {boolean} true = bloquear; false = dejar pasar.
+ */
+function orangeFloorReached(totalRunning, effectiveLimits) {
+  const floor = (effectiveLimits && effectiveLimits.min_concurrency_floor) || 1;
+  return totalRunning >= floor;
+}
+
 /**
  * Determinar el nivel de presión del sistema basado en CPU y RAM.
  * Retorna { level, cpuPercent, memPercent, maxOfBoth }
  */
 function getResourcePressure(config) {
-  const limits = config.resource_limits || {};
+  const limits = getEffectiveResourceLimits(config);
   const greenMax  = limits.green_max_percent  || 50;
   const yellowMax = limits.yellow_max_percent || 65;
   const orangeMax = limits.orange_max_percent || 80;
@@ -2016,14 +2078,19 @@ function isSystemOverloaded(config) {
         return false;
       }
     }
-    // Orange: permitir solo si hay menos de 1 agente total
+    // Orange: permitir hasta el piso de concurrencia configurable.
+    // #4051 — De día el piso es 1 (hardcoded histórico). De noche el
+    // sub-bloque night_window puede subirlo (min_concurrency_floor: 2) para
+    // que la RAM baseline nocturna no clave el pipeline en 1 agente.
+    const effectiveLimits = getEffectiveResourceLimits(config);
+    const floor = effectiveLimits.min_concurrency_floor || 1;
     const totalRunning = countTotalRunningAgents(config);
-    if (totalRunning >= 1) {
-      log('recursos', `🟠 ORANGE — ${totalRunning} agente(s) corriendo, bloqueando nuevos — CPU: ${cpuPercent}% | RAM: ${memPercent}%`);
+    if (orangeFloorReached(totalRunning, effectiveLimits)) {
+      log('recursos', `🟠 ORANGE — ${totalRunning}/${floor} agente(s) corriendo (piso), bloqueando nuevos — CPU: ${cpuPercent}% | RAM: ${memPercent}%`);
       lastResourceLog = Date.now();
       return true;
     }
-    return false; // Dejar pasar 1 agente
+    return false; // Dejar pasar hasta alcanzar el piso
   }
 
   // RED: bloqueo total + limpieza de daemons (SIN kill de agentes/procesos Claude)
@@ -2884,6 +2951,21 @@ function handleDeadlock(candidates, config) {
  * Mata daemons huérfanos que se acumulan silenciosamente.
  */
 function proactiveCleanup(config) {
+  // #4051 — Detectar transición diurno→nocturno: al ENTRAR a la ventana,
+  // disparar una limpieza agresiva UNA sola vez para bajar el baseline de RAM
+  // antes de que el gate evalúe (no altera el ciclo periódico de abajo).
+  try {
+    const nw = (config.resource_limits || {}).night_window;
+    if (nw && typeof nw === 'object') {
+      const inNight = isNightWindow(Date.now(), nw);
+      if (inNight && lastNightWindowState === false) {
+        const { freed, killed } = tryFreeResources('aggressive');
+        log('proactivo', `🌙 Entrando a ventana nocturna — limpieza agresiva${freed ? `: ${killed.join(', ')}` : ' (nada que liberar)'}`);
+      }
+      lastNightWindowState = inNight;
+    }
+  } catch (e) { /* fail-open: nunca romper el ciclo por el trigger nocturno */ }
+
   const interval = config.resource_limits?.proactive_cleanup_cycles || 10;
   proactiveCycleCounter++;
   if (proactiveCycleCounter < interval) return;
@@ -5019,7 +5101,8 @@ function brazoLanzamiento(config) {
     // 5b. PIEZA 1: Límite global de devs — si este skill es de desarrollo,
     // verificar que no se exceda el máximo total de devs simultáneos
     if (DEV_SKILLS.includes(skill)) {
-      const maxDevs = (config.resource_limits || {}).max_concurrent_devs;
+      // #4051 — Leer el cap efectivo (override nocturno permite piso de devs).
+      const maxDevs = getEffectiveResourceLimits(config).max_concurrent_devs;
       if (maxDevs != null) {
         const totalDevs = countRunningDevs();
         if (totalDevs >= maxDevs) {
@@ -13535,6 +13618,9 @@ process.on('SIGTERM', () => {
 // Útil para tests unitarios y scripts de evidencia del gate predictivo.
 if (process.env.PULPO_NO_AUTOSTART === '1') {
   module.exports = {
+    // #4051 — ventana nocturna: límites efectivos + piso de concurrencia.
+    getEffectiveResourceLimits,
+    orangeFloorReached,
     // MP-01/MP-02 (#3803) — decisión pura del disclaimer por soft-timeout.
     shouldEmitSoftTimeoutDisclaimer,
     predictResourceImpact,

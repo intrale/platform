@@ -189,6 +189,26 @@ resource_limits:
   qa_env_max_mem_percent: 60       # QA env: DynamoDB + Gradle + emulador consumen mucha RAM
   max_concurrent_devs: 1           # Máximo de desarrolladores simultáneos
 
+  # #4051 — Ventana nocturna: umbrales relajados + piso de concurrencia garantizado.
+  # Durante la ventana de inactividad de Anthropic (22:00–07:00) el trabajo cae a
+  # la cadena de respaldo (Codex / free tiers). La RAM baseline nocturna (70-77%)
+  # clavaba el gate en ORANGE → techo de 1 agente → ~0,67 agentes promedio. Acá
+  # relajamos los umbrales y garantizamos un piso para que el pipeline avance.
+  # Mecanismo INDEPENDIENTE de rest_mode (que corre 24/7 con schedule vacío).
+  # red_max_percent se mantiene como tope duro (RED sigue bloqueando todo) para
+  # evitar swap/OOM. enabled:false desactiva el modo nocturno por completo.
+  night_window:
+    enabled: true
+    start: "22:00"
+    end: "07:00"
+    timezone: "America/Argentina/Buenos_Aires"
+    green_max_percent: 55          # Mismo criterio diurno, leve holgura
+    yellow_max_percent: 78         # RAM 70-77% pasa a YELLOW (no ORANGE)
+    orange_max_percent: 88         # Naranja recién sobre 88%
+    red_max_percent: 93            # Tope duro: RED sigue bloqueando todo
+    min_concurrency_floor: 2       # Piso de agentes simultáneos aunque haya naranja
+    max_concurrent_devs: 2         # Piso de devs nocturno (override del 1 diurno)
+
   # Limpieza proactiva
   proactive_cleanup_cycles: 10     # Cada N ciclos del Pulpo, limpiar aunque no haya presión
   kotlin_daemon_kill: true         # Matar también Kotlin compile daemons huérfanos

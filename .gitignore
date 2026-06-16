@@ -202,6 +202,7 @@ scripts/planner-plan.json
 !.pipeline/metrics/aggregator.js
 !.pipeline/metrics/projections.js
 !.pipeline/metrics/report-daily.js
+!.pipeline/metrics/night-throughput.js
 !.pipeline/metrics/pricing.json
 !.pipeline/metrics/__tests__/
 !.pipeline/metrics/__tests__/**
