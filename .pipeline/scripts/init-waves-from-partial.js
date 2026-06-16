@@ -73,6 +73,69 @@ function normalizeIssue(issue) {
     return Number.isInteger(n) && n > 0 ? n : null;
 }
 
+// ─── #4030 — Metadata real de la ola (nombre/número del plan maestro) ────────
+//
+// El seeder recupera el nombre/número reales de la ola activa para que
+// sobrevivan a un `/restart` sin renombrado manual. Fuente de verdad en orden
+// de preferencia:
+//   1. Campos estructurados `wave_number`/`wave_name`/`wave_goal` (robusto).
+//   2. Parseo del `note` de texto libre (fallback de compatibilidad, tolerante).
+//   3. `Ola seed #N` (último recurso, en el constructor del seed).
+//
+// Ambos extractores son TOLERANTES A FALLO: nunca lanzan ni convierten el
+// payload en `aborted_invalid_partial`. Un meta inválido degrada al fallback.
+
+/**
+ * Saneado fail-closed de los campos estructurados (security #4030):
+ *   - `wave_number`: entero positivo.
+ *   - `wave_name`: string, strip de control-chars (U+0000..U+001F), cap 120.
+ *   - `wave_goal`: string opcional, strip de control-chars, cap 500.
+ * Convención de display (UX #4030): el `name` guarda SÓLO el título; si viene
+ * con prefijo "Ola N — " se normaliza quitándolo. Devuelve null si falta
+ * número+nombre válidos.
+ */
+function sanitizeWaveMeta(parsed) {
+    if (!parsed || typeof parsed !== 'object') return null;
+    const stripCtl = (s) => String(s).replace(/[\x00-\x1f]/g, '').trim();
+    const num = Number.isInteger(parsed.wave_number) && parsed.wave_number > 0
+        ? parsed.wave_number : null;
+    const rawName = typeof parsed.wave_name === 'string' ? stripCtl(parsed.wave_name) : '';
+    const name = rawName
+        ? rawName.replace(/^Ola\s+\d+\s*[—–-]\s*/i, '').slice(0, 120)
+        : null;
+    const goal = typeof parsed.wave_goal === 'string'
+        ? stripCtl(parsed.wave_goal).slice(0, 500) : '';
+    if (num === null || !name) return null;
+    return { number: num, name, goal };
+}
+
+/**
+ * Fallback de compatibilidad: parsea el `note` de texto libre del Commander
+ * (ej. "Ola 4 'Memoria + dashboard operativo núcleo' habilitada por..."). Tolera
+ * comillas simples, dobles y tipográficas. NO lanza ni loguea el contenido
+ * crudo (security req 3). Si no matchea, devuelve null.
+ */
+function parseWaveMetaFromNote(note) {
+    if (typeof note !== 'string' || !note) return null;
+    const stripCtl = (s) => String(s).replace(/[\x00-\x1f]/g, '').trim();
+    const m = note.match(/Ola\s+(\d+)\s+['"‘’“”]([^'"‘’“”]+)['"‘’“”]/);
+    if (!m) return null;
+    const num = Number(m[1]);
+    if (!Number.isInteger(num) || num <= 0) return null;
+    const name = stripCtl(m[2]).slice(0, 120);
+    if (!name) return null;
+    return { number: num, name, goal: '' };
+}
+
+/**
+ * Extrae la metadata de ola del payload, preferencia estructurado > note > null.
+ * Tolerante a fallo: nunca lanza.
+ */
+function extractWaveMeta(parsed) {
+    if (!parsed || typeof parsed !== 'object') return null;
+    return sanitizeWaveMeta(parsed) || parseWaveMetaFromNote(parsed.note) || null;
+}
+
 function nowIso() {
     return new Date().toISOString();
 }
@@ -159,7 +222,10 @@ function readPartialStrict() {
     }
     // Deduplicar manteniendo orden de aparición.
     const unique = [...new Set(allowed)];
-    return { ok: true, allowedIssues: unique, errors: [] };
+    // #4030 — Extracción tolerante de metadata de ola (aditiva, NO fail-closed):
+    // un meta ausente/inválido degrada a null y el seed cae al fallback genérico.
+    const waveMeta = extractWaveMeta(parsed);
+    return { ok: true, allowedIssues: unique, errors: [], waveMeta };
 }
 
 /**
@@ -342,12 +408,31 @@ function initWavesFromPartial(opts = {}) {
     }
 
     // 5. Construir el seed: ola activa con los issues del allowlist.
-    //    Numeración: max(archived.number) + 1, default 1.
-    const waveNumber = wavesState.maxArchivedNumber + 1;
+    //    Numeración por defecto: max(archived/planned.number) + 1, default 1.
+    //    #4030 — Si el partial-pause trae metadata real de la ola (campos
+    //    estructurados o, como fallback, el `note`), usamos nombre/número reales
+    //    del plan maestro en vez de `Ola seed #N`.
+    //    Guard de colisión OBLIGATORIO (riesgo guru #1 + security #4): sólo
+    //    confiamos en el número externo si es estrictamente mayor que cualquier
+    //    archived/planned. Si choca, lo ignoramos y caemos al cálculo seguro
+    //    `maxArchivedNumber + 1` con nombre genérico (no se confía en el número
+    //    provisto desde una fuente semi-confiable).
+    let waveNumber = wavesState.maxArchivedNumber + 1;
+    let name = `Ola seed #${waveNumber}`;
+    let goal = 'Seed inicial generado desde .partial-pause.json (issue #3616).';
+    if (partial.waveMeta && partial.waveMeta.number > wavesState.maxArchivedNumber) {
+        waveNumber = partial.waveMeta.number;
+        name = partial.waveMeta.name;
+        goal = partial.waveMeta.goal || goal;
+        logInfo(`Metadata de ola recuperada del plan maestro: ola #${waveNumber} "${name}".`);
+    } else if (partial.waveMeta) {
+        logWarn(`Número de ola provisto (#${partial.waveMeta.number}) colisiona con ` +
+            `archived/planned (max=${wavesState.maxArchivedNumber}) — uso fallback #${waveNumber}.`);
+    }
     const seededWave = {
         number: waveNumber,
-        name: `Ola seed #${waveNumber}`,
-        goal: 'Seed inicial generado desde .partial-pause.json (issue #3616).',
+        name,
+        goal,
         started_at: nowIso(),
         issues: partial.allowedIssues.map((n) => ({ number: n, status: 'in_progress' })),
     };
@@ -392,8 +477,11 @@ function initWavesFromPartial(opts = {}) {
             updated_at: nowIso(),
             updated_by: 'init-waves-from-partial',
             source: 'auto-seed',
-            note: `Seed inicial desde .partial-pause.json (#3616). ` +
-                `${partial.allowedIssues.length} issue(s) sembrados en ola #${waveNumber}.`,
+            note: (partial.waveMeta && waveNumber === partial.waveMeta.number)
+                ? `Seed desde .partial-pause.json (#3616/#4030): ola #${waveNumber} "${name}" ` +
+                    `con ${partial.allowedIssues.length} issue(s).`
+                : `Seed inicial desde .partial-pause.json (#3616). ` +
+                    `${partial.allowedIssues.length} issue(s) sembrados en ola #${waveNumber}.`,
         },
         active_wave: seededWave,
         planned_waves: Array.isArray(prev.planned_waves) ? prev.planned_waves : [],
@@ -461,6 +549,10 @@ module.exports = {
         readWavesState,
         normalizeIssue,
         _resetDedupeForTests,
+        // #4030 — extractores de metadata de ola (expuestos para tests).
+        sanitizeWaveMeta,
+        parseWaveMetaFromNote,
+        extractWaveMeta,
     },
 };
 

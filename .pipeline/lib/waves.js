@@ -1401,10 +1401,26 @@ function promoteWaveAtomic(waveNumber, metadata = {}) {
         // partial-pause acepte los removals que provoca la rotación de olas.
         newAllowlist = getAllowlist();
         const partialPause = require('./partial-pause');
+        // #4030 — Recuperar metadata real de la ola recién promovida para que
+        // sobreviva al seeder tras un /restart. Reutilizamos la misma fuente que
+        // ya expone active_wave (no duplicamos lógica de naming). Best-effort:
+        // si no podemos leerla, el seeder cae a su fallback genérico.
+        let waveMetaForPartial = {};
+        try {
+            const activeNow = loadWaves().active_wave;
+            if (activeNow && Number.isInteger(activeNow.number)) {
+                waveMetaForPartial = {
+                    waveNumber: activeNow.number,
+                    waveName: activeNow.name || '',
+                    waveGoal: activeNow.goal || '',
+                };
+            }
+        } catch { /* defensivo: degradar al fallback del seeder */ }
         partialPause.setPartialPauseAtomic(newAllowlist, {
             source: metadata.source || 'wave-promote-atomic',
             authorizedBy: 'wave-promote',
             justification: metadata.note || `promote wave ${waveNumber} → active (atomic)`,
+            ...waveMetaForPartial,
         });
     } catch (err) {
         // Rollback inmediato: ambos archivos vuelven al snapshot.
