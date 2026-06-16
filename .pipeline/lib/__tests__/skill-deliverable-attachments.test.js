@@ -471,9 +471,16 @@ test('CA-5 — coherencia inversa: todo skill notificable tiene source en SKILL_
     const catalog = helper.getSkillSourcesCatalog();
     const catalogSkills = new Set(Object.keys(catalog));
 
-    // Cada skill de la whitelist de notificación debe poder recolectar (tener
-    // entrada en SKILL_SOURCES); sino sería "notificable pero sin adjuntos".
+    // #4019 — `delivery` es notificable de TEXTO PURO: la notificación de
+    // entrega anexa el avance de ola como sección de texto en el cuerpo del
+    // mensaje (ver `buildWaveProgressSection` en deliverable-notify.js), no como
+    // adjunto. Por eso no tiene entrada en SKILL_SOURCES y queda exento de la
+    // invariante "notificable ⟹ tiene adjuntos" (a runtime `collectAttachments`
+    // devuelve [] sin crash). Toda otra skill notificable sí debe poder recolectar.
+    const TEXT_ONLY = new Set(['delivery']);
+
     for (const skill of dn.skills) {
+        if (TEXT_ONLY.has(skill)) continue;
         assert.ok(catalogSkills.has(skill),
             `${skill} está en deliverable_notifications.skills pero falta en SKILL_SOURCES`);
     }

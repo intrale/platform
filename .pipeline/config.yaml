@@ -638,7 +638,9 @@ deliverable_notifications:
   # EP3-H2 (#3928) — whitelist ampliada a 13 skills. Sincronizada con
   # `attachments_per_skill` (abajo) y `SKILL_SOURCES`
   # (.pipeline/lib/skill-deliverable-attachments.js). Los 3 cambios van juntos.
-  skills: [guru, po, ux, planner, qa, tester, security, build, architect, backend-dev, android-dev, web-dev, pipeline-dev]
+  # #4019 — `delivery` sumado para notificar el avance de ola al entregar/mergear
+  # un issue (la sección de ola solo se calcula para skill=delivery, fase=entrega).
+  skills: [guru, po, ux, planner, qa, tester, security, build, architect, backend-dev, android-dev, web-dev, pipeline-dev, delivery]
   truncate_chars: 1500
   attachment_root: ".pipeline/assets/mockups"
   dedup_window_hours: 24
