@@ -903,13 +903,19 @@ function getPipelineState() {
   state.qaRemote = { active: false, url: '', ref: '', startedAt: '' };
   try {
     const qaState = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'qa-env-state.json'), 'utf8'));
+    // PID máximo válido en Windows (rango DWORD). Claves de metadata como
+    // `lastStartedAt` guardan timestamps que superan este rango: si se las
+    // pasa a `tasklist /FI "PID eq <n>"`, el comando responde "No se reconoce
+    // el filtro de búsqueda" y floodea el log. Por eso filtramos a PIDs reales.
+    const MAX_PID = 0xFFFFFFFF;
     for (const [svc, pid] of Object.entries(qaState)) {
-      if (pid) {
-        try {
-          const r = execSync(`tasklist /FI "PID eq ${pid}" /NH /FO CSV`, { encoding: 'utf8', timeout: 3000, windowsHide: true });
-          state.qaEnv[svc] = r.includes(`"${pid}"`);
-        } catch {}
-      }
+      const n = Number(pid);
+      if (!Number.isInteger(n) || n <= 0 || n > MAX_PID) continue;
+      try {
+        // `stdio` ignora stderr para que un filtro inválido nunca floodee el log.
+        const r = execSync(`tasklist /FI "PID eq ${n}" /NH /FO CSV`, { encoding: 'utf8', timeout: 3000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+        state.qaEnv[svc] = r.includes(`"${n}"`);
+      } catch {}
     }
   } catch {}
   // QA Remote state
@@ -10435,11 +10441,36 @@ const server = http.createServer((req, res) => {
 // Override controlado por env (`DASHBOARD_HOST`) para no bloquear setups
 // excepcionales donde el dashboard se expone en LAN intencionalmente.
 const HOST = process.env.DASHBOARD_HOST || '127.0.0.1';
-server.listen(PORT, HOST, () => {
-  log(`Dashboard en http://${HOST}:${PORT}`);
-  log(`API: /api/state | Logs: /logs/{file} | SSE: /events | V3 kiosk: /v3 | Multi-Provider: /multi-provider`);
-  try { require('./lib/ready-marker').signalReady('dashboard', { port: PORT, host: HOST }); } catch {}
+
+// Red de contención para EADDRINUSE: durante un restart hay una carrera entre
+// el proceso viejo soltando el puerto y el watchdog relanzando el nuevo. Sin
+// este handler, `listen` tira `EADDRINUSE` no capturado y el proceso muere en
+// seco (crash-loop), haciendo fallar el smoke del restart. Reintentamos unas
+// pocas veces con backoff antes de rendirnos.
+let _listenRetries = 0;
+const MAX_LISTEN_RETRIES = 5;
+const LISTEN_RETRY_MS = 1500;
+function startListen() {
+  server.listen(PORT, HOST, () => {
+    _listenRetries = 0;
+    log(`Dashboard en http://${HOST}:${PORT}`);
+    log(`API: /api/state | Logs: /logs/{file} | SSE: /events | V3 kiosk: /v3 | Multi-Provider: /multi-provider`);
+    try { require('./lib/ready-marker').signalReady('dashboard', { port: PORT, host: HOST }); } catch {}
+  });
+}
+server.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE' && _listenRetries < MAX_LISTEN_RETRIES) {
+    _listenRetries++;
+    log(`Puerto ${PORT} ocupado (EADDRINUSE), reintento ${_listenRetries}/${MAX_LISTEN_RETRIES} en ${LISTEN_RETRY_MS}ms`);
+    setTimeout(() => { try { server.close(); } catch {} startListen(); }, LISTEN_RETRY_MS);
+    return;
+  }
+  const msg = `[${new Date().toISOString()}] [dashboard] listen error: ${err?.stack || err}\n`;
+  try { fs.appendFileSync(path.join(LOG_DIR, 'dashboard.log'), msg); } catch {}
+  console.error(msg);
+  process.exit(1);
 });
+startListen();
 
 // dashboard.pid se mantiene como hint informativo (útil para mtime →
 // uptime y para diagnóstico humano). NO es fuente de verdad: el dashboard
