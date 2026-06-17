@@ -851,6 +851,24 @@ function getPipelineState() {
     }
   } catch {}
 
+  // #3957 (EP8-H4 / CA-4) — Stats del header de Bloqueados (SLA promedio de
+  // desbloqueo + resueltos hoy) computadas desde el trace activity-log con
+  // ventana acotada. Hoy `bloqueadosStats` nunca se computaba → header en "—".
+  state.bloqueadosStats = { avgSla: null, resolvedToday: 0 };
+  try {
+    const { computeBloqueadosStats } = require('./lib/bloqueados-stats');
+    state.bloqueadosStats = computeBloqueadosStats({});
+  } catch {}
+
+  // #3957 (CA-3) — username PÚBLICO del bot de Telegram para el deep-link de
+  // cada fila. Validado contra el charset de Telegram antes de exponerlo; si
+  // falta/inválido queda undefined y la vista no renderiza el deep-link.
+  try {
+    const rawUser = config && config.telegram && config.telegram.bot_username;
+    const u = (rawUser == null ? '' : String(rawUser)).trim();
+    state.telegramBotUsername = /^[A-Za-z0-9_]{5,32}$/.test(u) ? u : undefined;
+  } catch { state.telegramBotUsername = undefined; }
+
   // Servicios
   state.servicios = {};
   try {

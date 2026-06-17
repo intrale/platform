@@ -888,3 +888,18 @@ waves:
   capacity: 9
   max_horizon: 12
 
+# =============================================================================
+# Telegram — config PÚBLICA del bot (#3957, EP8-H4 / CA-3)
+# =============================================================================
+# bot_username es el handle público del bot (sin @). Se usa para construir el
+# deep-link `https://t.me/<username>?start=<payload>` de la ventana Bloqueados.
+# Validado contra `^[A-Za-z0-9_]{5,32}$` antes de exponerse al dashboard.
+#
+# SEGURIDAD: acá SÓLO va información pública. El `bot_token` y el `chat_id`
+# (secretos) viven en `~/.claude/secrets/credentials.json`, NUNCA en este
+# archivo ni en el HTML renderizado. Si bot_username falta o es inválido, el
+# dashboard simplemente no renderiza el deep-link de Telegram (degradación
+# limpia: queda el deep-link a GitHub).
+telegram:
+  bot_username: "intrale_bot"
+
