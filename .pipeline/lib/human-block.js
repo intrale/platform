@@ -21,6 +21,7 @@
 const fs = require('fs');
 const path = require('path');
 const trace = require('./traceability');
+const { redactAll } = require('./sherlock-audit-jsonl');
 
 const PIPELINE_DIR = path.join(trace.REPO_ROOT, '.pipeline');
 const PIPELINES = ['desarrollo', 'definicion'];
@@ -620,6 +621,80 @@ function auditQuickAction(entry = {}) {
     }
 }
 
+/**
+ * Construye el guion narrable corto (español) para el audio TTS de la alerta
+ * `needs-human` (issue #4067, split de #4050). Único lugar donde vive la
+ * redacción explícita del texto fuente y el armado del guion.
+ *
+ * SEC-3: `reason` y `question` crudos pasan por `redactAll` ANTES de armar el
+ * texto y ANTES de cualquier síntesis de voz aguas abajo. Un secreto sintetizado
+ * en audio no se puede redactar después; `sanitizeForTts` del adapter es defensa
+ * en profundidad, NO sustituto de esta llamada.
+ *
+ * G-2 (UX): el guion arranca SIEMPRE con el encabezado fijo de alerta, que
+ * funciona como "earcon verbal" reconocible. No se parametriza por issue.
+ * G-3 (UX): orden narrativo fijo (alerta → motivo → decisión) y cap de longitud
+ * para que el audio se escuche de corrido sin fatiga. Degrada a alerta mínima si
+ * el input viene vacío/parcial (mejor un alerta genérico que un audio roto).
+ *
+ * @param {object} opts
+ * @param {string} [opts.reason]   — Motivo crudo del bloqueo.
+ * @param {string} [opts.question] — Decisión/pregunta cruda que requiere humano.
+ * @returns {string} Guion narrable, redactado y acotado (≤ 600 chars).
+ */
+function buildNeedHumanAudioText({ reason, question } = {}) {
+    const motivo = redactAll(String(reason || '').trim());
+    const decision = redactAll(String(question || '').trim());
+    const partes = [];
+    if (motivo) partes.push(`El motivo del bloqueo es: ${motivo}.`);
+    if (decision) partes.push(`La decisión que necesitamos es: ${decision}.`);
+    const cuerpo = partes.length ? ` ${partes.join(' ')}` : '';
+    return `Atención: un issue requiere intervención humana.${cuerpo}`.slice(0, 600);
+}
+
+/**
+ * Orquesta el envío best-effort del audio TTS de la alerta needs-human (#4067).
+ * Dependencias inyectadas (multimedia/credenciales) para mantener este módulo
+ * libre de la cadena pesada de `multimedia.js` y para que el flujo sea testeable.
+ *
+ * SEC-4: NUNCA lanza. Cualquier error (TTS/timeout/red) queda contenido y se
+ * devuelve en el resultado. El call-site ya envió el texto antes de llamar acá,
+ * así que una falla de audio jamás rompe la notificación de texto ni el barrido.
+ * SEC-3: la redacción del texto fuente ocurre dentro de `buildNeedHumanAudioText`.
+ *
+ * NOTA SEC-5: este helper NO conoce el estado de bloqueo; la idempotencia la
+ * garantiza el call-site invocándolo SOLO dentro del gate `if (!yaBloqueado)`.
+ *
+ * @param {object} deps
+ * @param {string} [deps.reason]
+ * @param {string} [deps.question]
+ * @param {string} [deps.profile='need-human']
+ * @param {string} [deps.botToken]
+ * @param {string} [deps.chatId]
+ * @param {function} [deps.textToSpeechWithMeta] — (text, {profile}) => Promise<{buffer}>
+ * @param {function} [deps.sendVoiceTelegram]    — (buffer, token, chatId) => Promise<boolean>
+ * @returns {Promise<{sent: boolean, skipped?: string, error?: string}>}
+ */
+async function sendNeedHumanAudio(deps = {}) {
+    const {
+        reason, question, profile = 'need-human',
+        botToken, chatId, textToSpeechWithMeta, sendVoiceTelegram,
+    } = deps;
+    try {
+        if (!botToken || !chatId) return { sent: false, skipped: 'no-credentials' };
+        if (typeof textToSpeechWithMeta !== 'function' || typeof sendVoiceTelegram !== 'function') {
+            return { sent: false, skipped: 'no-tts' };
+        }
+        const audioText = buildNeedHumanAudioText({ reason, question });
+        const meta = await textToSpeechWithMeta(audioText, { profile });
+        if (!meta || !meta.buffer) return { sent: false, skipped: 'no-buffer' };
+        const ok = await sendVoiceTelegram(meta.buffer, botToken, chatId);
+        return { sent: !!ok };
+    } catch (e) {
+        return { sent: false, error: e && e.message ? e.message : String(e) };
+    }
+}
+
 module.exports = {
     reportHumanBlock,
     unblockIssue,
@@ -630,6 +705,8 @@ module.exports = {
     isHumanBlockReason,
     inferHumanBlockQuestion,
     buildBlockedSummaryMarkdown,
+    buildNeedHumanAudioText,
+    sendNeedHumanAudio,
     enqueueNeedsHumanLabel,
     HUMAN_BLOCK_PATTERNS,
     PIPELINE_DIR,

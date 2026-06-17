@@ -3552,6 +3552,34 @@ function brazoBarrido(config) {
                 log('barrido', `Error enviando resumen Telegram needs-human #${issue}: ${e.message}`);
               }
 
+              // #4067 (split de #4050) — Audio TTS best-effort de la alerta needs-human.
+              // SEC-4: corre DESPUÉS del sendTelegram(summary) de texto, como
+              // fire-and-forget (brazoBarrido es síncrono). humanBlock.sendNeedHumanAudio
+              // NUNCA lanza: una falla/timeout de Edge TTS jamás rompe la notificación de
+              // texto (ya enviada) ni el barrido.
+              // SEC-5: vive dentro del gate `if (!yaBloqueado)` → audio solo en la
+              // transición, nunca en cada tick del barrido. Sin contadores nuevos.
+              // SEC-3: la redacción del texto fuente se aplica dentro del helper
+              // (buildNeedHumanAudioText), antes de sintetizar. NO loguear la URL/token.
+              try {
+                const { textToSpeechWithMeta, sendVoiceTelegram } = require('./multimedia');
+                humanBlock.sendNeedHumanAudio({
+                  reason: motivoTxt,
+                  question,
+                  profile: 'need-human',
+                  botToken: getTelegramToken(),
+                  chatId: getTelegramChatId(),
+                  textToSpeechWithMeta,
+                  sendVoiceTelegram,
+                }).then((r) => {
+                  if (r && r.error) {
+                    log('barrido', `Audio needs-human #${issue} best-effort falló (texto OK): ${r.error}`);
+                  }
+                });
+              } catch (e) {
+                log('barrido', `Audio needs-human #${issue} best-effort no se pudo iniciar (texto OK): ${e.message}`);
+              }
+
               log('barrido', `🚧 #${issue} → bloqueado-humano (skill=${skillBloq}, fase=${fase}). NO incrementa rev. Esperando humano.`);
             } else {
               log('barrido', `🔁 #${issue} ya estaba en bloqueado-humano (skill=${yaBloqueado.skill}). Cleanup de residuales sin re-notificar.`);

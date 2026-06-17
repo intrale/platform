@@ -597,3 +597,68 @@ test('#4068 HUMAN_BLOCK_ACTIONS son las 4 acciones sin pausar', () => {
     assert.deepEqual([...hb.HUMAN_BLOCK_ACTIONS].sort(),
         ['devolver-definicion', 'mas-contexto', 'priorizar', 'unblock']);
 });
+
+// =============================================================================
+// #4067 (split de #4050) — buildNeedHumanAudioText: guion narrable del audio TTS
+// de la alerta needs-human. Cubre formato (CA-2), redacción SEC-3 y degradación.
+// =============================================================================
+
+test('buildNeedHumanAudioText narra motivo + decisión en español con encabezado fijo', () => {
+    const txt = hb.buildNeedHumanAudioText({
+        reason: 'el PR quedó bloqueado por CODEOWNERS',
+        question: 'mergealo a mano o reasigná el review',
+    });
+    // G-2: encabezado fijo de alerta (earcon verbal) siempre presente.
+    assert.ok(txt.startsWith('Atención: un issue requiere intervención humana.'),
+        'arranca con el encabezado de alerta fijo');
+    assert.ok(txt.includes('El motivo del bloqueo es: el PR quedó bloqueado por CODEOWNERS.'),
+        'incluye el motivo narrado');
+    assert.ok(txt.includes('La decisión que necesitamos es: mergealo a mano o reasigná el review.'),
+        'incluye la decisión narrada');
+});
+
+test('buildNeedHumanAudioText SEC-3: redacta un AWS key del motivo antes de narrar', () => {
+    const txt = hb.buildNeedHumanAudioText({
+        reason: 'falló con la clave AKIAIOSFODNN7EXAMPLE en el deploy',
+        question: 'rotá la credencial',
+    });
+    assert.ok(!txt.includes('AKIAIOSFODNN7EXAMPLE'),
+        'el AWS key NO aparece literal en el texto narrable');
+    assert.ok(txt.includes('[REDACTED]'), 'el secreto fue reemplazado por el marcador');
+});
+
+test('buildNeedHumanAudioText SEC-3: redacta un github_pat_* de la decisión', () => {
+    const pat = 'github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345';
+    const txt = hb.buildNeedHumanAudioText({
+        reason: 'el token expiró',
+        question: `usá ${pat} para reautenticar`,
+    });
+    assert.ok(!txt.includes(pat), 'el PAT NO aparece literal en el texto narrable');
+    assert.ok(txt.includes('[REDACTED]'), 'el PAT fue reemplazado por el marcador');
+});
+
+test('buildNeedHumanAudioText SEC-3: redacta un JWT embebido en el motivo', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+    const txt = hb.buildNeedHumanAudioText({ reason: `bearer ${jwt}`, question: 'revocá' });
+    assert.ok(!txt.includes(jwt), 'el JWT NO aparece literal');
+    assert.ok(txt.includes('[REDACTED]'), 'el JWT fue reemplazado por el marcador');
+});
+
+test('buildNeedHumanAudioText degrada a alerta mínima con input vacío (no rompe)', () => {
+    const vacio = hb.buildNeedHumanAudioText({});
+    assert.equal(vacio, 'Atención: un issue requiere intervención humana.',
+        'sin motivo/decisión devuelve solo el encabezado de alerta');
+    const sinArgs = hb.buildNeedHumanAudioText();
+    assert.equal(sinArgs, 'Atención: un issue requiere intervención humana.',
+        'sin argumentos no lanza y devuelve el encabezado');
+    // input parcial: solo motivo.
+    const parcial = hb.buildNeedHumanAudioText({ reason: 'solo motivo' });
+    assert.ok(parcial.includes('El motivo del bloqueo es: solo motivo.'));
+    assert.ok(!parcial.includes('La decisión'), 'sin question no agrega la cláusula de decisión');
+});
+
+test('buildNeedHumanAudioText acota la longitud a 600 chars (CA-NF / G-3)', () => {
+    const largo = 'x'.repeat(2000);
+    const txt = hb.buildNeedHumanAudioText({ reason: largo, question: largo });
+    assert.ok(txt.length <= 600, `longitud ${txt.length} <= 600`);
+});
