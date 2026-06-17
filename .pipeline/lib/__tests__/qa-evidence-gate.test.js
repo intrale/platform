@@ -263,3 +263,26 @@ test('#4046 · normalizeLabels tolera strings y objetos {name}', () => {
         ['app:client', 'area:pipeline', 'bug'],
     );
 });
+
+// ─── hasQaSkippedLabel — bypass del gate de evidencia audiovisual (Issue #3956) ──
+// El gate `validateQaEvidence` (pulpo.js) honra el label explícito `qa:skipped`
+// para no rechazar issues de infra/dashboard sin video. Estos tests fijan el
+// contrato del helper que ese gate consulta.
+const { hasQaSkippedLabel } = require('../qa-evidence-gate');
+
+test('#3956 · hasQaSkippedLabel detecta qa:skipped en labels reales del issue', () => {
+    const labels = ['Ready', 'area:dashboard', 'app:client', 'ux', 'qa:skipped', 'size:medium'];
+    assert.equal(hasQaSkippedLabel(labels), true);
+});
+
+test('#3956 · hasQaSkippedLabel tolera objetos {name} y case-insensitive', () => {
+    assert.equal(hasQaSkippedLabel([{ name: 'QA:Skipped' }]), true);
+    assert.equal(hasQaSkippedLabel(['QA:SKIPPED']), true);
+});
+
+test('#3956 · hasQaSkippedLabel false cuando no está el label (sigue exigiendo evidencia)', () => {
+    assert.equal(hasQaSkippedLabel(['app:client', 'area:dashboard']), false);
+    assert.equal(hasQaSkippedLabel([]), false);
+    assert.equal(hasQaSkippedLabel(null), false);
+    assert.equal(hasQaSkippedLabel(undefined), false);
+});

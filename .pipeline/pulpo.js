@@ -2181,6 +2181,24 @@ function validateQaEvidence(issue, qaData, authoritativeQaMode = null) {
   // inventando un `modo` falso si el preflight ya determinó 'android'.
   //
   // R3 (CA-3): cada bypass emite un log estructurado para auditoría.
+
+  // Bypass por label explícito `qa:skipped` (#3956). Es el bypass documentado en
+  // CLAUDE.md para cambios de infra/pipeline/dashboard sin impacto en producto de
+  // usuario, asignado por dev/PO con justificación escrita. El gate de intake
+  // (`hasVisualReference`) ya lo honra; este gate de evidencia audiovisual debía
+  // honrarlo también — sin esto, un issue correctamente etiquetado `qa:skipped`
+  // (caso #3956, dashboard kanban sin cambios en app/composeApp/) se rechazaba por
+  // "sin evidencia: no hay .mp4". A diferencia del `modo` del YAML (manipulable por
+  // el agente, ver R1 #2351), el label vive en GitHub y requiere permisos de
+  // escritura para asignarse: es una whitelist explícita y confiable.
+  const issueLabels = (Array.isArray(qaData && qaData.labels) && qaData.labels.length)
+    ? qaData.labels
+    : getIssueLabels(issue);
+  if (qaEvidenceGate.hasQaSkippedLabel(issueLabels)) {
+    log('gate-bypass', `🟢 gate-bypass #${issue} reason=qa-skipped — label explícito qa:skipped, no requiere evidencia audiovisual ${JSON.stringify({ event: 'gate-bypass', issue: String(issue), source: 'label', decision: 'skip-video', reason: 'qa-skipped' })}`);
+    return [];
+  }
+
   const resolution = qaEvidenceGate.resolveQaMode({
     authoritative: authoritativeQaMode,
     yamlMode: qaData && qaData.modo,

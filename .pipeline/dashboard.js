@@ -95,9 +95,9 @@ const { isMarkerArtifact } = require('./lib/marker-artifact');
 let laneLineLib = null;
 try { laneLineLib = require('./lib/pipeline-lane-line'); } catch { /* opcional */ }
 
-// EP8-H3 (#3956) — resolución de la ola activa para la etapa "No ingresados".
-let waveResolverLib = null;
-try { waveResolverLib = require('./lib/wave-resolver'); } catch { /* opcional */ }
+// EP8-H3 (#3956) — la resolución de la ola activa para la etapa "No ingresados"
+// reusa `waveResolverLib`, ya declarado/cargado más arriba (#4039). No se
+// re-declara para evitar el "Identifier already declared" del merge.
 
 // EP8-H3 (#3956) — info de PR mergeado para la etapa "Finalizados". El fetch
 // (`gh pr list`) es bloqueante (spawnSync 5s), así que se consume vía un cache
