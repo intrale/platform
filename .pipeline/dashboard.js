@@ -56,6 +56,20 @@ try { etaLib = require('./lib/eta'); } catch { /* opcional */ }
 let etaWaveLib = null;
 try { etaWaveLib = require('./lib/eta-wave'); } catch { /* opcional */ }
 
+// #4039 — writer de la serie temporal de avance de ola + módulos para resolver
+// la ola activa y su `totalPct`. Best-effort: si no cargan, el dashboard sigue
+// con el ETA por presupuesto teórico (fallback).
+let waveProgressLib = null;
+let wavesLib = null;
+let waveResolverLib = null;
+let waveSnapshotLib = null;
+let waveStateLib = null;
+try { waveProgressLib = require('./lib/wave-progress'); } catch { /* opcional */ }
+try { wavesLib = require('./lib/waves'); } catch { /* opcional */ }
+try { waveResolverLib = require('./lib/wave-resolver'); } catch { /* opcional */ }
+try { waveSnapshotLib = require('./lib/wave-snapshot'); } catch { /* opcional */ }
+try { waveStateLib = require('./lib/wave-state'); } catch { /* opcional */ }
+
 // Infra compartida de scanning de markers FS (#3517). Best-effort require:
 // si el módulo no está, el builder de `state.etaAverages` cae al inline
 // histórico para no romper el dashboard.
@@ -488,9 +502,33 @@ function _scheduleOlaETARefresh(state) {
     .then(async () => {
       const olaResult = await etaWaveLib.calculateOlaETA(olaIssues, OLA_ETA_CONCURRENCY);
       const historical = await etaWaveLib.analyzeHistoricalMetrics();
-      return { olaResult, historical };
+      // #4039 — punto natural del writer periódico de la serie de avance de ola.
+      // Computa el `totalPct` de la ola activa (misma fuente que el `/wave`:
+      // resolver → wave-state → buildWaveSnapshot), registra un snapshot y
+      // proyecta el ETA por velocidad media para que el dashboard consuma el
+      // mismo ETA que el Commander (CA-8). Best-effort: si algo falla, queda el
+      // presupuesto teórico (fallback) sin romper el refresh.
+      let velocityETA = null;
+      try {
+        if (waveProgressLib && wavesLib && waveResolverLib && waveSnapshotLib && waveStateLib) {
+          const activeWave = wavesLib.getActiveWave();
+          const waveKey = activeWave && activeWave.number;
+          if (Number.isInteger(waveKey) && waveKey > 0) {
+            const wave = waveResolverLib.resolveActiveWave({});
+            const wState = waveStateLib.getCachedWaveState({});
+            const wSnap = waveSnapshotLib.buildWaveSnapshot({ state: wState, wave });
+            if (wSnap && Number.isFinite(wSnap.totalPct)) {
+              const nowTs = Date.now();
+              waveProgressLib.appendSnapshot({ waveKey, avancePct: wSnap.totalPct, now: nowTs });
+              const vel = await etaWaveLib.calculateWaveVelocityETA(waveKey, wSnap.totalPct, nowTs);
+              if (vel && vel.source === 'velocity') velocityETA = { ...vel, totalPct: wSnap.totalPct };
+            }
+          }
+        }
+      } catch { /* fallback: sin velocityETA */ }
+      return { olaResult, historical, velocityETA };
     })
-    .then(({ olaResult, historical }) => {
+    .then(({ olaResult, historical, velocityETA }) => {
       _olaETACache = {
         issues: olaIssues,
         totalP50: olaResult.totalP50,
@@ -500,6 +538,9 @@ function _scheduleOlaETARefresh(state) {
         concurrencyUsed: olaResult.concurrencyUsed,
         bySize: historical.bySize,
         rebounceRate: historical.rebounceRate,
+        // #4039 — ETA por velocidad (null si no hay ritmo medido todavía).
+        velocityETA: velocityETA || null,
+        etaSource: velocityETA ? 'velocity' : 'fallback',
         refreshedAt: Date.now(),
       };
       _olaETACacheAt = Date.now();
@@ -862,13 +903,19 @@ function getPipelineState() {
   state.qaRemote = { active: false, url: '', ref: '', startedAt: '' };
   try {
     const qaState = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'qa-env-state.json'), 'utf8'));
+    // PID máximo válido en Windows (rango DWORD). Claves de metadata como
+    // `lastStartedAt` guardan timestamps que superan este rango: si se las
+    // pasa a `tasklist /FI "PID eq <n>"`, el comando responde "No se reconoce
+    // el filtro de búsqueda" y floodea el log. Por eso filtramos a PIDs reales.
+    const MAX_PID = 0xFFFFFFFF;
     for (const [svc, pid] of Object.entries(qaState)) {
-      if (pid) {
-        try {
-          const r = execSync(`tasklist /FI "PID eq ${pid}" /NH /FO CSV`, { encoding: 'utf8', timeout: 3000, windowsHide: true });
-          state.qaEnv[svc] = r.includes(`"${pid}"`);
-        } catch {}
-      }
+      const n = Number(pid);
+      if (!Number.isInteger(n) || n <= 0 || n > MAX_PID) continue;
+      try {
+        // `stdio` ignora stderr para que un filtro inválido nunca floodee el log.
+        const r = execSync(`tasklist /FI "PID eq ${n}" /NH /FO CSV`, { encoding: 'utf8', timeout: 3000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+        state.qaEnv[svc] = r.includes(`"${n}"`);
+      } catch {}
     }
   } catch {}
   // QA Remote state
@@ -1186,25 +1233,12 @@ function formatInfraTs(iso) {
 }
 
 // Determina el semáforo global a partir de los 3 criterios del PO (CA-3).
-function computeInfraHealthLevel(h) {
-  // Stale: sin lastCheck o último healthcheck hace > 5 min (300000 ms)
-  const lastCheck = h && h.dns && h.dns.lastCheck;
-  const dnsAge = lastCheck ? (Date.now() - new Date(lastCheck).getTime()) : Infinity;
-  if (!isFinite(dnsAge) || dnsAge > 300000) return { level: 'stale', label: 'STALE' };
-
-  // Alert (rojo): circuit breaker abierto, DNS FAIL o retries > 20%
-  if (h.circuitBreaker && h.circuitBreaker.state === 'open') return { level: 'alert', label: 'CRITICO' };
-  if (h.dns && h.dns.status === 'FAIL') return { level: 'alert', label: 'CRITICO' };
-  const rate = h.retries && typeof h.retries.ratePercent === 'number' ? h.retries.ratePercent : 0;
-  if (rate > 20) return { level: 'alert', label: 'CRITICO' };
-
-  // Warn (amarillo): retries entre 5% y 20% o latencia DNS > 3s
-  if (rate >= 5) return { level: 'warn', label: 'DEGRADADO' };
-  const lat = h.dns && typeof h.dns.latencyMs === 'number' ? h.dns.latencyMs : 0;
-  if (lat > 3000) return { level: 'warn', label: 'DEGRADADO' };
-
-  return { level: 'ok', label: 'SALUDABLE' };
-}
+// #3954 EP8-H1 CA-2/CA-3 — Semáforo global explicable. La lógica pura se
+// extrajo a `lib/infra-health-level.js` para que la compartan SIN dependencia
+// circular `dashboard.js` y `views/dashboard/home.js` (Banda 1 del kiosk).
+// Extendido de "solo infra" a `pulpo + infra + cuota + anomalía` con `reasons[]`
+// para el tooltip CA-2. La firma sigue siendo retrocompatible (sólo `h`).
+const { computeInfraHealthLevel } = require('./lib/infra-health-level');
 
 // Renderiza la sección "Salud de Infra" como HTML. Devuelve '' si no hay
 // datos (feature flag OFF → CA-11).
@@ -10407,11 +10441,36 @@ const server = http.createServer((req, res) => {
 // Override controlado por env (`DASHBOARD_HOST`) para no bloquear setups
 // excepcionales donde el dashboard se expone en LAN intencionalmente.
 const HOST = process.env.DASHBOARD_HOST || '127.0.0.1';
-server.listen(PORT, HOST, () => {
-  log(`Dashboard en http://${HOST}:${PORT}`);
-  log(`API: /api/state | Logs: /logs/{file} | SSE: /events | V3 kiosk: /v3 | Multi-Provider: /multi-provider`);
-  try { require('./lib/ready-marker').signalReady('dashboard', { port: PORT, host: HOST }); } catch {}
+
+// Red de contención para EADDRINUSE: durante un restart hay una carrera entre
+// el proceso viejo soltando el puerto y el watchdog relanzando el nuevo. Sin
+// este handler, `listen` tira `EADDRINUSE` no capturado y el proceso muere en
+// seco (crash-loop), haciendo fallar el smoke del restart. Reintentamos unas
+// pocas veces con backoff antes de rendirnos.
+let _listenRetries = 0;
+const MAX_LISTEN_RETRIES = 5;
+const LISTEN_RETRY_MS = 1500;
+function startListen() {
+  server.listen(PORT, HOST, () => {
+    _listenRetries = 0;
+    log(`Dashboard en http://${HOST}:${PORT}`);
+    log(`API: /api/state | Logs: /logs/{file} | SSE: /events | V3 kiosk: /v3 | Multi-Provider: /multi-provider`);
+    try { require('./lib/ready-marker').signalReady('dashboard', { port: PORT, host: HOST }); } catch {}
+  });
+}
+server.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE' && _listenRetries < MAX_LISTEN_RETRIES) {
+    _listenRetries++;
+    log(`Puerto ${PORT} ocupado (EADDRINUSE), reintento ${_listenRetries}/${MAX_LISTEN_RETRIES} en ${LISTEN_RETRY_MS}ms`);
+    setTimeout(() => { try { server.close(); } catch {} startListen(); }, LISTEN_RETRY_MS);
+    return;
+  }
+  const msg = `[${new Date().toISOString()}] [dashboard] listen error: ${err?.stack || err}\n`;
+  try { fs.appendFileSync(path.join(LOG_DIR, 'dashboard.log'), msg); } catch {}
+  console.error(msg);
+  process.exit(1);
 });
+startListen();
 
 // dashboard.pid se mantiene como hint informativo (útil para mtime →
 // uptime y para diagnóstico humano). NO es fuente de verdad: el dashboard

@@ -153,3 +153,113 @@ test('R3 · formatBypassLogLine incluye JSON parseable + prefijo legible', () =>
     assert.match(line, /#2023/);
     assert.match(line, /qaMode=api/);
 });
+
+// ─── resolveApkRequirement (Issue #4046) ────────────────────────────────────
+const {
+    resolveApkRequirement,
+    normalizeLabels,
+    normalizeRepoPath,
+} = require('../qa-evidence-gate');
+
+test('#4046 · area:pipeline + app:client con paths .pipeline/* → infra-no-apk (caso #3954)', () => {
+    const r = resolveApkRequirement({
+        labels: ['area:pipeline', 'app:client'],
+        changedFiles: ['.pipeline/lib/qa-evidence-gate.js', '.pipeline/pulpo.js'],
+    });
+    assert.equal(r.requiresApk, false);
+    assert.equal(r.reason, 'infra-no-apk');
+    assert.deepEqual(r.flavors, []);
+});
+
+test('#4046 · area:dashboard con paths .pipeline/* → infra-no-apk', () => {
+    const r = resolveApkRequirement({
+        labels: [{ name: 'area:dashboard' }],
+        changedFiles: ['.pipeline/dashboard-v2.js'],
+    });
+    assert.equal(r.requiresApk, false);
+    assert.equal(r.reason, 'infra-no-apk');
+});
+
+test('#4046 · app:client con cambios en app/composeApp/ → requiere APK client', () => {
+    const r = resolveApkRequirement({
+        labels: ['app:client'],
+        changedFiles: ['app/composeApp/src/commonMain/Foo.kt'],
+    });
+    assert.equal(r.requiresApk, true);
+    assert.equal(r.reason, 'app-flavor');
+    assert.deepEqual(r.flavors, ['client']);
+});
+
+test('#4046 · area:pipeline + app:client PERO con cambios en app/composeApp/ → NO afloja, requiere APK', () => {
+    // Si el issue de pipeline igual toca la app, el binario sí se produce.
+    const r = resolveApkRequirement({
+        labels: ['area:pipeline', 'app:client'],
+        changedFiles: ['.pipeline/pulpo.js', 'app/composeApp/src/androidMain/Bar.kt'],
+    });
+    assert.equal(r.requiresApk, true);
+    assert.equal(r.reason, 'app-flavor');
+    assert.deepEqual(r.flavors, ['client']);
+});
+
+test('#4046 · app:business y app:delivery conservan flavor correcto', () => {
+    const biz = resolveApkRequirement({
+        labels: ['app:business'],
+        changedFiles: ['app/composeApp/src/businessMain/X.kt'],
+    });
+    assert.deepEqual(biz.flavors, ['business']);
+    assert.equal(biz.requiresApk, true);
+
+    const del = resolveApkRequirement({
+        labels: ['app:delivery'],
+        changedFiles: ['app/composeApp/src/deliveryMain/Y.kt'],
+    });
+    assert.deepEqual(del.flavors, ['delivery']);
+    assert.equal(del.requiresApk, true);
+});
+
+test('#4046 · FAIL-CLOSED: area:pipeline + app:client SIN origen conocido → requiere APK (no relaja por ausencia de datos)', () => {
+    const r = resolveApkRequirement({
+        labels: ['area:pipeline', 'app:client'],
+        changedFiles: [],
+        changedFilesKnown: false,
+    });
+    assert.equal(r.requiresApk, true);
+    assert.equal(r.reason, 'app-flavor');
+});
+
+test('#4046 · area:pipeline + app:client con origen conocido pero diff vacío → infra-no-apk', () => {
+    const r = resolveApkRequirement({
+        labels: ['area:pipeline', 'app:client'],
+        changedFiles: [],
+        changedFilesKnown: true,
+    });
+    assert.equal(r.requiresApk, false);
+    assert.equal(r.reason, 'infra-no-apk');
+});
+
+test('#4046 · sin label app y sin área infra → no-app-label (no requiere APK)', () => {
+    const r = resolveApkRequirement({
+        labels: ['area:backend'],
+        changedFiles: ['users/src/Foo.kt'],
+    });
+    assert.equal(r.requiresApk, false);
+    assert.equal(r.reason, 'no-app-label');
+    assert.deepEqual(r.flavors, []);
+});
+
+test('#4046 · path con backslashes y ./ se normaliza para el prefijo app/composeApp/', () => {
+    assert.equal(normalizeRepoPath('app\\composeApp\\src\\X.kt'), 'app/composeApp/src/X.kt');
+    assert.equal(normalizeRepoPath('./app/composeApp/X.kt'), 'app/composeApp/X.kt');
+    const r = resolveApkRequirement({
+        labels: ['app:client'],
+        changedFiles: ['app\\composeApp\\src\\androidMain\\Z.kt'],
+    });
+    assert.equal(r.requiresApk, true);
+});
+
+test('#4046 · normalizeLabels tolera strings y objetos {name}', () => {
+    assert.deepEqual(
+        normalizeLabels(['App:Client', { name: 'AREA:Pipeline' }, null, 42, '  Bug ']),
+        ['app:client', 'area:pipeline', 'bug'],
+    );
+});

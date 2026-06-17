@@ -55,6 +55,96 @@ function fakeQuotaModule(opts = {}) {
 }
 
 // -----------------------------------------------------------------------------
+// #4052 — Clasificación de spawn-failure del provider (CA-1/CA-3).
+// -----------------------------------------------------------------------------
+
+test('#4052 clasifica exit 127 de codex como provider-spawn-failure (no setFlag)', () => {
+    const tmp = makeTmpPipeline();
+    const quota = fakeQuotaModule();
+    const result = dispatcher.onSpawnExit({
+        skill: 'pipeline-dev',
+        issue: 4052,
+        provider: 'openai-codex',
+        transport: 'cli',
+        rawOutput: '',
+        exitCode: 127,
+        durationMs: 40,
+        firstByteAt: null,
+        pipelineDir: tmp,
+        quotaModule: quota,
+    });
+    assert.equal(result.errorClass, 'provider_spawn_failure');
+    assert.equal(result.decision, 'provider-spawn-failure');
+    assert.equal(result.shouldFallback, true);
+    assert.equal(result.retriable, false);
+    assert.equal(result.flagSet, false, 'spawn-failure NO es cuota: no debe setFlag');
+    assert.equal(quota._setCalls.length, 0);
+    assert.match(result.signature, /exit_code:127/);
+});
+
+test('#4052 clasifica child.on error (ENOENT) de codex como provider-spawn-failure', () => {
+    const tmp = makeTmpPipeline();
+    const quota = fakeQuotaModule();
+    const result = dispatcher.onSpawnExit({
+        skill: 'pipeline-dev',
+        issue: 4052,
+        provider: 'openai-codex',
+        transport: 'cli',
+        rawOutput: '',
+        exitCode: null,
+        errorCode: 'ENOENT',
+        durationMs: 5,
+        firstByteAt: null,
+        pipelineDir: tmp,
+        quotaModule: quota,
+    });
+    assert.equal(result.decision, 'provider-spawn-failure');
+    assert.equal(result.flagSet, false);
+});
+
+test('#4052 SEC-1: el stderr del spawn-failure se saniza y el JSONL se crea 0o600', () => {
+    const tmp = makeTmpPipeline();
+    const quota = fakeQuotaModule();
+    // Usamos el sanitizer real para validar la redacción de un secret realista.
+    delete quota.sanitizeRawExcerpt;
+    const realQuota = require('../../quota-exhausted');
+    const result = dispatcher.onSpawnExit({
+        skill: 'pipeline-dev', issue: 4052, provider: 'openai-codex', transport: 'cli',
+        rawOutput: 'codex boom AKIA' + 'B'.repeat(16) + ' sk-' + 'a'.repeat(48) + ' fin',
+        exitCode: 127, durationMs: 30, firstByteAt: null, spawnInstrumented: true,
+        pipelineDir: tmp, quotaModule: realQuota,
+    });
+    assert.equal(result.decision, 'provider-spawn-failure');
+    const dir = path.join(tmp, 'logs');
+    const f = fs.readdirSync(dir).find((x) => x.startsWith('spawn-exit-'));
+    const full = path.join(dir, f);
+    const content = fs.readFileSync(full, 'utf8');
+    assert.ok(!/AKIAB{16}/.test(content), 'AKIA key debe estar redactada');
+    assert.ok(!/sk-a{48}/.test(content), 'sk- key debe estar redactada');
+    if (process.platform !== 'win32') {
+        assert.equal(fs.statSync(full).mode & 0o777, 0o600);
+    }
+});
+
+test('#4052 muerte ambigua (output presente) NO es provider-spawn-failure', () => {
+    const tmp = makeTmpPipeline();
+    const quota = fakeQuotaModule();
+    const result = dispatcher.onSpawnExit({
+        skill: 'pipeline-dev',
+        issue: 4052,
+        provider: 'openai-codex',
+        transport: 'cli',
+        rawOutput: 'algun stderr legitimo del agente',
+        exitCode: 1,
+        durationMs: 120,
+        firstByteAt: Date.now(),
+        pipelineDir: tmp,
+        quotaModule: quota,
+    });
+    assert.notEqual(result.decision, 'provider-spawn-failure');
+});
+
+// -----------------------------------------------------------------------------
 // 1. Contrato básico
 // -----------------------------------------------------------------------------
 

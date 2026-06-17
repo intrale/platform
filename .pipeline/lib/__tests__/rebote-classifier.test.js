@@ -405,3 +405,28 @@ test('SMOKE #3086: motivo realístico del guru → dependency_block con #3083', 
     assert.ok(r.dependsOn.includes(3083), '#3083 debe estar en dependsOn');
     assert.equal(r.label, 'blocked:dependencies');
 });
+
+// ─── #4046 · infra_no_apk no penaliza circuit breaker ───────────────────────
+test('#4046 · rebote_categoria=infra_no_apk → infra, counts_against_circuit_breaker=false', () => {
+    const r = rc.classifyRebote({
+        rebote_categoria: 'infra_no_apk',
+        motivo: 'Issue de dashboard sin cambios de app',
+    });
+    assert.equal(r.category, 'infra');
+    assert.equal(r.counts_against_circuit_breaker, false);
+    assert.equal(r.label, null);
+});
+
+test('#4046 · motivo con "infra-no-apk" en texto → infra, no penaliza', () => {
+    const r = rc.classifyRebote({
+        motivo: 'preflight resolvió reason=infra-no-apk (área pipeline sin app/composeApp)',
+    });
+    assert.equal(r.category, 'infra');
+    assert.equal(r.counts_against_circuit_breaker, false);
+});
+
+test('#4046 · rechazo técnico normal sigue contando contra circuit breaker', () => {
+    const r = rc.classifyRebote({ motivo: 'la función X no respeta el patrón Do' });
+    assert.equal(r.category, 'code');
+    assert.equal(r.counts_against_circuit_breaker, true);
+});

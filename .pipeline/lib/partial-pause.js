@@ -88,6 +88,32 @@ function normalizeIssue(issue) {
     return Number.isInteger(n) && n > 0 ? n : null;
 }
 
+// #4030 — Metadata estructurada de la ola activa (campos aditivos). Permite que
+// el seeder (init-waves-from-partial) recupere nombre/número reales tras un
+// `/restart` sin tener que parsear el `note` de texto libre. Saneado fail-closed
+// (mismo criterio que el resto del marker + hardening de security #4030):
+//   - `wave_number`: entero positivo.
+//   - `wave_name`: string, strip de control-chars (U+0000..U+001F), cap 120.
+//   - `wave_goal`: string opcional, strip de control-chars, cap 500.
+// Convención de display (UX #4030): `wave_name` guarda SÓLO el título; si el
+// caller trae el prefijo "Ola N — " lo normalizamos quitándolo, para que cada
+// consumidor (/wave, dashboard) componga "Ola N — <título>" sin duplicar.
+// Devuelve null si falta número+nombre válidos (el seeder cae al fallback).
+function sanitizeWaveMetaForWrite(opts) {
+    if (!opts || typeof opts !== 'object') return null;
+    const stripCtl = (s) => String(s).replace(/[\x00-\x1f]/g, '').trim();
+    const num = Number.isInteger(opts.waveNumber) && opts.waveNumber > 0
+        ? opts.waveNumber : null;
+    const rawName = typeof opts.waveName === 'string' ? stripCtl(opts.waveName) : '';
+    const name = rawName
+        ? rawName.replace(/^Ola\s+\d+\s*[—–-]\s*/i, '').slice(0, 120)
+        : null;
+    const goal = typeof opts.waveGoal === 'string'
+        ? stripCtl(opts.waveGoal).slice(0, 500) : '';
+    if (num === null || !name) return null;
+    return { wave_number: num, wave_name: name, wave_goal: goal };
+}
+
 function readPartialFile() {
     try {
         const raw = fs.readFileSync(partialFile(), 'utf8');
@@ -408,6 +434,14 @@ function setPartialPause(issues, opts = {}) {
     if (uniqueSkills.length > 0) {
         data.allowed_skills = uniqueSkills;
     }
+    // #4030 — Metadata estructurada de la ola (aditiva). Sólo se persiste
+    // cuando el caller la provee por opts y pasa el saneado fail-closed.
+    const waveMeta = sanitizeWaveMetaForWrite(opts);
+    if (waveMeta) {
+        data.wave_number = waveMeta.wave_number;
+        data.wave_name = waveMeta.wave_name;
+        if (waveMeta.wave_goal) data.wave_goal = waveMeta.wave_goal;
+    }
     if (opts.acceptedDepRisk === true) data.accepted_dep_risk = true;
     if (opts.depSources && typeof opts.depSources === 'object') {
         // Filtrar a las claves que efectivamente terminaron en el allowlist.
@@ -560,6 +594,13 @@ function setPartialPauseAtomic(issues, opts = {}) {
     };
     if (uniqueSkills.length > 0) {
         data.allowed_skills = uniqueSkills;
+    }
+    // #4030 — Metadata estructurada de la ola (aditiva, igual que setPartialPause).
+    const waveMeta = sanitizeWaveMetaForWrite(opts);
+    if (waveMeta) {
+        data.wave_number = waveMeta.wave_number;
+        data.wave_name = waveMeta.wave_name;
+        if (waveMeta.wave_goal) data.wave_goal = waveMeta.wave_goal;
     }
     if (opts.acceptedDepRisk === true) data.accepted_dep_risk = true;
     if (opts.depSources && typeof opts.depSources === 'object') {
@@ -776,5 +817,7 @@ module.exports = {
     // #3625 — exportados para callers que quieran leer estado raw y para tests.
     readPreviousAllowlist,
     evaluateAndAudit,
+    // #4030 — saneado de metadata de ola (expuesto para tests).
+    sanitizeWaveMetaForWrite,
     _paths: () => ({ PARTIAL_FILE: partialFile(), PAUSE_FILE: pauseFile() }),
 };

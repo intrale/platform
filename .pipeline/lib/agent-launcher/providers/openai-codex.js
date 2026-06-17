@@ -154,6 +154,11 @@ function buildSpawn({ args, cwd, env, interactive_supported }) {
     return {
         cmd: launcher.cmd,
         args: [...launcher.prefixArgs, ...codexArgs],
+        // #4052 CA-1 — exponemos el tier del launcher resuelto por detectLauncher()
+        // hacia el caller (agent-launcher.js) para loguearlo en el evento de
+        // spawn-exit. Revela qué tier muere (native-exe / node-wrapper-js /
+        // cmd-shim / path-fallback) — los shell:true son los más sospechosos.
+        kind: launcher.kind,
         spawnOpts: {
             cwd,
             stdio: [stdin, 'pipe', 'pipe'],
@@ -163,6 +168,87 @@ function buildSpawn({ args, cwd, env, interactive_supported }) {
             env,
         },
     };
+}
+
+// -----------------------------------------------------------------------------
+// probeCodexHealth — pre-flight health-check de Codex (#4052 CA-2 / SEC-2).
+//
+// Ejecuta `codex --version` en forma ARGV (jamás string-concat al shell) con un
+// timeout corto, para validar que el binario de Codex levanta sano ANTES de
+// asignarle una fase. Si falla, marca el provider `openai-codex` como disabled
+// con TTL para que la cadena de fallback elija otro provider, evitando los 3
+// reintentos en seco que queman el circuit breaker.
+//
+// SEGURIDAD (SEC-2):
+//  - Comando ESTÁTICO y benigno (`--version`). NUNCA recibe contenido del issue,
+//    prompt del usuario, ni dato no controlado → cero superficie de inyección.
+//  - Args en forma de array (argv). Preferimos los tiers shell:false
+//    (native-exe / node-wrapper-js). El tier se hereda de detectLauncher().
+//
+// @param {object} [opts]
+// @param {function} [opts.spawnSyncImpl]  override de child_process.spawnSync (tests)
+// @param {object}   [opts.launcher]       override del launcher resuelto (tests)
+// @param {object}   [opts.disabledModule] override de provider-disabled (tests)
+// @param {number}   [opts.ttlMs]          TTL del disable al fallar
+// @param {number}   [opts.timeoutMs]      timeout del probe (default 5000)
+// @param {number}   [opts.now]
+// @returns {{ ok:boolean, status:number|null, signal:string|null,
+//             timedOut:boolean, launcherKind:string, disabled:boolean,
+//             error:string|null }}
+// -----------------------------------------------------------------------------
+function probeCodexHealth(opts = {}) {
+    const launcher = opts.launcher || getLauncher();
+    const timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : 5000;
+    // Args 100% estáticos — sin contenido del issue (SEC-2).
+    const probeArgs = [...(launcher.prefixArgs || []), '--version'];
+    const result = {
+        ok: false,
+        status: null,
+        signal: null,
+        timedOut: false,
+        launcherKind: launcher.kind || null,
+        disabled: false,
+        error: null,
+    };
+    try {
+        const spawnSync = opts.spawnSyncImpl || require('node:child_process').spawnSync;
+        const r = spawnSync(launcher.cmd, probeArgs, {
+            // shell heredado del tier; preferimos shell:false (native/node-wrapper).
+            // Aún con shell:true los args son constantes estáticas (sin injection).
+            shell: launcher.shell === true,
+            timeout: timeoutMs,
+            windowsHide: true,
+            encoding: 'utf8',
+        });
+        // spawnSync devuelve { status, signal, error }. error suele venir en
+        // ENOENT/timeout; status null + signal en kill por timeout.
+        result.status = (r && typeof r.status === 'number') ? r.status : null;
+        result.signal = (r && r.signal) || null;
+        result.timedOut = !!(r && r.error && r.error.code === 'ETIMEDOUT');
+        if (r && r.error) {
+            result.error = r.error.code || r.error.message || 'spawn_error';
+        }
+        result.ok = !!(r && !r.error && r.status === 0);
+    } catch (e) {
+        result.error = (e && (e.code || e.message)) || 'probe_exception';
+        result.ok = false;
+    }
+
+    if (!result.ok) {
+        // Marca el provider disabled con TTL → la cadena de fallback lo saltea.
+        try {
+            const disabled = opts.disabledModule || require('../../provider-disabled');
+            const ttlMs = Number.isFinite(opts.ttlMs) && opts.ttlMs > 0 ? opts.ttlMs : undefined;
+            const setOpts = { source: 'health-probe' };
+            if (ttlMs !== undefined) setOpts.ttlMs = ttlMs;
+            if (Number.isFinite(opts.now)) setOpts.now = opts.now;
+            const r = disabled.setProviderDisabled('openai-codex', setOpts);
+            result.disabled = !!(r && r.ok);
+        } catch {
+            result.disabled = false;
+        }
+    }
+    return result;
 }
 
 // -----------------------------------------------------------------------------
@@ -274,6 +360,8 @@ module.exports = {
     buildSpawn,
     parseTokensFromLog,
     detectQuotaExhausted,
+    // #4052 CA-2 — pre-flight health-check.
+    probeCodexHealth,
     // exports internos para tests
     _detectLauncherFresh: detectLauncher,
     _translateClaudeArgsToCodex: translateClaudeArgsToCodex,

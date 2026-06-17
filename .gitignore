@@ -133,6 +133,9 @@ scripts/planner-plan.json
 .pipeline/last-restart.json
 .pipeline/listener-offset.json
 .pipeline/commander-history.jsonl
+.pipeline/commander-summary.json
+.pipeline/commander-summary.json.tmp
+.pipeline/wave-progress.jsonl
 .pipeline/commander-presence.json
 .pipeline/.commander-presence.json.*.tmp
 .pipeline/node_modules/
@@ -199,6 +202,7 @@ scripts/planner-plan.json
 !.pipeline/metrics/aggregator.js
 !.pipeline/metrics/projections.js
 !.pipeline/metrics/report-daily.js
+!.pipeline/metrics/night-throughput.js
 !.pipeline/metrics/pricing.json
 !.pipeline/metrics/__tests__/
 !.pipeline/metrics/__tests__/**

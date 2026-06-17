@@ -1883,6 +1883,33 @@ async function handleWaveStatus({ pipelineRoot, audio }) {
     }
 
     const snapshot = snapshotMod.buildWaveSnapshot({ state, wave, blocked, closedIssues });
+
+    // #4039 — ETA por velocidad media de la ola. Cada lectura del operador es
+    // un punto válido de la serie temporal (la tabla del issue son dos lecturas
+    // de `/wave`). Registramos el snapshot y, si hay ritmo medido, sobrescribimos
+    // el ETA absoluto (presupuesto teórico → velocidad observada). Si no hay
+    // suficientes snapshots, dejamos el `etaAbsoluteMs` de `computeLaneEmptyEta`
+    // (fallback documentado, CA-4/CA-8).
+    let etaSource = 'fallback';
+    try {
+        const waves = require('./waves');
+        const waveProgress = require('./wave-progress');
+        const etaWave = require('./eta-wave');
+        const activeWave = waves.getActiveWave();
+        const waveKey = activeWave && activeWave.number;
+        const now = typeof snapshot.generatedAt === 'number' ? snapshot.generatedAt : Date.now();
+        if (Number.isInteger(waveKey) && waveKey > 0 && Number.isFinite(snapshot.totalPct)) {
+            waveProgress.appendSnapshot({ pipelineRoot, waveKey, avancePct: snapshot.totalPct, now });
+            const vel = await etaWave.calculateWaveVelocityETA(waveKey, snapshot.totalPct, now);
+            if (vel && vel.source === 'velocity' && Number.isFinite(vel.absoluteMs)) {
+                snapshot.etaAbsoluteMs = vel.absoluteMs;
+                snapshot.etaAvailable = true;
+                etaSource = 'velocity';
+            }
+        }
+    } catch (_) { /* ante cualquier error, queda el ETA fallback ya calculado */ }
+    snapshot.etaSource = etaSource;
+
     const snapshotMd = rendererMod.renderWaveSnapshot(snapshot);
     const audioText = audio ? rendererMod.renderAudioText(snapshot) : null;
     // CA-13 — render por template wave-status (`{{{snapshot}}}` triple-brace para

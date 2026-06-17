@@ -230,12 +230,60 @@ function launchAgent({
     //    Los providers LLM reciben `args` ya construidos por el caller (pulpo
     //    arma --system-prompt-file, --output-format, etc.).
     const handler = effective.handler;
+
+    // #4052 CA-2 — Pre-flight health-check de Codex (gated, default OFF para
+    // rollout seguro: PIPELINE_CODEX_HEALTHCHECK_ENABLED=1). Valida que el
+    // binario de Codex levanta sano ANTES de asignarle la fase. Si falla, marca
+    // el provider disabled con TTL (lo hace probeCodexHealth) y tira un error de
+    // infra para que el pulpo rebote el archivo a pendiente/ y el próximo
+    // despacho elija otro provider de la cadena — evitando los 3 reintentos en
+    // seco que queman el circuit breaker.
+    if (effective.provider === 'openai-codex'
+        && process.env.PIPELINE_CODEX_HEALTHCHECK_ENABLED === '1'
+        && typeof handler.probeCodexHealth === 'function') {
+        try {
+            const probe = handler.probeCodexHealth({});
+            if (!probe.ok) {
+                log('agent-launcher', `🩺 ${skill}:#${issue} codex health-probe FALLÓ (kind=${probe.launcherKind}, status=${probe.status}, error=${probe.error}) — provider deshabilitado con TTL.`);
+                throw new Error(`[provider-spawn-failure] codex health-probe falló (kind=${probe.launcherKind}, status=${probe.status}, error=${probe.error})`);
+            }
+        } catch (e) {
+            // Si el throw vino del probe fallido, propagarlo (pulpo lo rebota).
+            // Si vino un error inesperado del propio probe, fail-open: seguimos
+            // al spawn normal (no bloqueamos por un bug del health-check).
+            if (e && /provider-spawn-failure/.test(e.message || '')) throw e;
+            log('agent-launcher', `⚠️ ${skill}:#${issue} codex health-probe lanzó excepción inesperada (fail-open, sigo al spawn): ${e && e.message}`);
+        }
+    }
+
     const spawnDef = handler.buildSpawn({
         args, cwd, env,
         // #3605 — Opt-in por skill+provider. Default false preserva I3.
         interactive_supported: effective.interactive_supported === true,
     });
     const child = _spawn(spawnDef.cmd, spawnDef.args, spawnDef.spawnOpts);
+
+    // #4052 CA-1 — Instrumentación de la muerte temprana de Codex. SOLO para
+    // openai-codex (no toca el path determinístico ni anthropic). Observacional:
+    // captura exit/error + firstByte + stderr acotado, clasifica vía onSpawnExit
+    // y registra un marker de spawn-failure para que el brazoHuerfanos (CA-3) no
+    // penalice el retry del issue. NUNCA rompe el lifecycle (pulpo sigue siendo
+    // dueño de su propio on-exit handler — invariante I5).
+    if (effective.provider === 'openai-codex') {
+        try {
+            instrumentCodexSpawn({
+                child,
+                skill,
+                issue,
+                pipelineDir: PIPELINE,
+                launcherKind: spawnDef.kind || null,
+                onLog: log,
+            });
+        } catch (e) {
+            log('agent-launcher', `⚠️ ${skill}:#${issue} no se pudo instrumentar el spawn de codex (best-effort): ${e && e.message}`);
+        }
+    }
+
     return {
         child,
         provider: effective.provider,
@@ -245,6 +293,94 @@ function launchAgent({
         handler,
         interactive_supported: effective.interactive_supported === true,
     };
+}
+
+// -----------------------------------------------------------------------------
+// instrumentCodexSpawn — #4052 CA-1. Adjunta listeners observacionales al child
+// de Codex para detectar y registrar la "muerte al spawnear".
+//
+// Diseño:
+//  - Listeners ADICIONALES (no exclusivos): pulpo conserva sus propios
+//    on('exit')/pipe(stdout) (invariante I5). Los eventos 'data'/'exit' se
+//    transmiten a todos los listeners; no robamos bytes del pipe del pulpo.
+//    Como launchAgent es síncrono y retorna antes de que el event loop ceda,
+//    nuestros listeners y los de pulpo quedan registrados antes del primer byte.
+//  - firstByteAt: primer dato de stdout/stderr. Si nunca llega, el clasificador
+//    usa la firma "exit antes del primer byte".
+//  - stderr acotado (8KB) SOLO para el excerpt del audit (pasa por
+//    sanitizeRawExcerpt dentro de onSpawnExit). NO logueamos env (SEC-1).
+//  - child.on('error'): evita además que un 'error' sin listener tumbe el
+//    proceso (ENOENT de tiers shell:false).
+// -----------------------------------------------------------------------------
+function instrumentCodexSpawn({ child, skill, issue, pipelineDir, launcherKind, onLog }) {
+    if (!child) return;
+    const log = (typeof onLog === 'function') ? onLog : () => {};
+    const startedAt = Date.now();
+    let firstByteAt = null;
+    let stderrBuf = '';
+    const STDERR_CAP = 8192;
+    let settled = false;
+
+    const onFirstByte = () => { if (firstByteAt == null) firstByteAt = Date.now(); };
+    try {
+        if (child.stdout) child.stdout.on('data', onFirstByte);
+        if (child.stderr) {
+            child.stderr.on('data', (d) => {
+                onFirstByte();
+                if (stderrBuf.length < STDERR_CAP) {
+                    stderrBuf += d.toString('utf8');
+                    if (stderrBuf.length > STDERR_CAP) stderrBuf = stderrBuf.slice(0, STDERR_CAP);
+                }
+            });
+        }
+    } catch { /* best-effort */ }
+
+    const settle = ({ exitCode, signal, errorCode }) => {
+        if (settled) return;
+        settled = true;
+        const durationMs = Date.now() - startedAt;
+        try {
+            const dispatcher = require('./agent-launcher/dispatch-with-fallback');
+            const verdict = dispatcher.onSpawnExit({
+                skill,
+                issue,
+                provider: 'openai-codex',
+                transport: 'cli',
+                rawOutput: stderrBuf,
+                exitCode: (exitCode === undefined) ? null : exitCode,
+                errorCode: errorCode || null,
+                timedOut: false,
+                durationMs,
+                firstByteAt,
+                // #4052 — opt-in de la firma 3 (exit antes del primer byte): acá
+                // sí rastreamos el primer byte de stdout/stderr de verdad.
+                spawnInstrumented: true,
+                pipelineDir,
+                onLog: log,
+            });
+            if (verdict && verdict.decision === 'provider-spawn-failure') {
+                try {
+                    const sfState = require('./agent-launcher/spawn-failure-state');
+                    sfState.recordSpawnFailure({
+                        pipelineDir,
+                        provider: 'openai-codex',
+                        skill,
+                        issue,
+                        signature: verdict.signature || null,
+                        launcherKind,
+                    });
+                } catch { /* fail-open */ }
+                log('agent-launcher', `💥 ${skill}:#${issue} codex spawn-failure detectado (kind=${launcherKind}, sig=${verdict.signature}) — marker registrado, no penaliza retry del issue.`);
+            }
+        } catch (e) {
+            try { log('agent-launcher', `⚠️ ${skill}:#${issue} onSpawnExit (codex) tiró (best-effort): ${e && e.message}`); } catch {}
+        }
+    };
+
+    try {
+        child.once('error', (err) => settle({ exitCode: null, signal: null, errorCode: err && err.code }));
+        child.once('exit', (code, signal) => settle({ exitCode: code, signal }));
+    } catch { /* best-effort */ }
 }
 
 module.exports = {
