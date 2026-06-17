@@ -1088,6 +1088,11 @@ function emitCanonicalValidationAudit({ pipelineDir, session, canonicalResults, 
                     // desde resolveClaim (`c.source`). El writer lo persiste solo si pasa
                     // AUDIT_SOURCE_ENUM. Insumo de `not_verifiable_by_source` (EP8-H8).
                     source: c.source,
+                    // #3936 EP4-H3 (CA-5a) — dominio del claim (`repo_state`/`other`)
+                    // derivado del diccionario canónico. Permite filtrar la métrica
+                    // de reducción de correcciones de Sherlock por estado del repo
+                    // sin reparsear el texto libre del claim.
+                    claim_domain: canonicalFactsModule.claimDomain(c.claim),
                     // CA-3/SEC-3 (#3921) — same_provider del intento que produjo el
                     // veredicto. Booleano explícito (incl. false) para que el % del
                     // dashboard cuente la verificación en el denominador.

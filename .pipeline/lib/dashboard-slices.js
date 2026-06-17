@@ -1615,6 +1615,69 @@ function partialPauseAuditSlice(state, ctx) {
     };
 }
 
+// #3954 EP8-H1 CA-5 — Bandeja de alertas del Home mission-control. Slice
+// modelado 1:1 sobre `partialPauseAuditSlice`: tail de acciones del operador
+// (ack/snooze) con timestamp/actor/justificación truncada a 80, stats de 24h,
+// verificación de la cadena de hashes y supresiones vigentes.
+//
+// El actor SIEMPRE es `operador-local` (grabado server-side, REQ-SEC-3) — el
+// slice no lo deriva del cliente. Degrada a `{error}` si el store no está
+// disponible (espejo de partial-pause), sin romper el dashboard.
+function alertTraySlice(state, ctx) {
+    const _ctx = ctx || {};
+    const limit = Number.isFinite(_ctx.limit) && _ctx.limit > 0 ? _ctx.limit : 5;
+    let entries = [];
+    let stats = { total: 0, ack: 0, snooze: 0, rejected: 0, since: null };
+    let chainStatus = { ok: true, entriesChecked: 0 };
+    let suppressions = {};
+    try {
+        const ata = require('./alert-tray-audit');
+        entries = ata.tail(limit);
+        stats = ata.statsSince({});
+        chainStatus = ata.verifyChain();
+        suppressions = ata.activeSuppressions();
+    } catch (err) {
+        return {
+            entries: [],
+            stats,
+            suppressions: {},
+            chain_broken: false,
+            chain_error: err && err.message,
+            error: 'alert_tray_audit_unavailable',
+        };
+    }
+
+    const mapped = entries.map((e) => {
+        let visual = 'ack';
+        if (e.action === 'reject') visual = 'rejected';
+        else if (e.action === 'snooze') visual = 'snooze';
+        else visual = 'ack';
+        return {
+            timestamp: e.timestamp,
+            actor: e.actor || null,
+            action: e.action,
+            alert_id: e.alert_id || null,
+            snooze_until: e.snooze_until || null,
+            snooze_hours: e.snooze_hours || null,
+            justification: (e.justification || '').slice(0, 80),
+            justification_truncated: (e.justification || '').length > 80,
+            justification_redacted: !!e.justification_redacted,
+            reject_reason: e.reject_reason || null,
+            visual,
+        };
+    });
+
+    return {
+        entries: mapped,
+        stats,
+        suppressions,
+        chain_broken: !chainStatus.ok,
+        chain_broken_at: chainStatus.brokenAt || null,
+        chain_broken_reason: chainStatus.reason || null,
+        chain_entries_checked: chainStatus.entriesChecked || 0,
+    };
+}
+
 // #3642 — Widget architect 4 estados. Slice consume el resolver puro
 // (lib/architect-state-resolver) y devuelve la informacion que el badge del
 // dashboard necesita para un issue dado. Defensivo si el resolver falta.
@@ -1682,6 +1745,8 @@ module.exports = {
     handoffMetricsSlice,
     // #3625 — widget de audit trail de allowlist
     partialPauseAuditSlice,
+    // #3954 EP8-H1 — bandeja de alertas del Home mission-control
+    alertTraySlice,
     // #3897 CA-4 — métrica de precisión de Sherlock (solo agregados, SEC-6)
     sherlockPrecisionSlice,
     _sherlockRecordCorrecto,

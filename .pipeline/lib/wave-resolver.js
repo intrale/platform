@@ -247,8 +247,106 @@ function resolveActiveWave(opts) {
     return { ...fromFs, resolved: fromFs.issues.length > 0 };
 }
 
+// =============================================================================
+// resolveWaveForIssue — lookup issue→ola multi-lista (issue #4019).
+//
+// A diferencia de `resolveActiveWave` (que solo resuelve la ola ACTIVA), este
+// helper escanea las TRES listas de `waves.json` (`active_wave`,
+// `planned_waves`, `archived_waves`) y devuelve la ola que contiene al issue.
+// Necesario para notificar la entrega de un issue que ya cayó a una ola
+// archivada (su PR mergeado cierra vía `Closes #`, pero la ola pudo rotar).
+//
+// Reglas:
+// - Sin red, solo filesystem (delega en `lib/waves.js::loadWaves`, fuente
+//   canónica con cache TTL — mismo override de `PIPELINE_DIR_OVERRIDE` que
+//   `readFromWavesJson` para soportar tests con tmp dirs).
+// - `normalizeIssueNumber` castea cada issue a int positivo y descarta `null`
+//   (defensa security CA-6: los issues de `waves.json` son editables a mano).
+// - Devuelve `null` si el issue no pertenece a ninguna ola (CA-4: la
+//   notificación se comporta como hoy, sin sección de avance).
+// - Sin throw a callers: cualquier excepción de I/O degrada a `null`.
+// =============================================================================
+
+/**
+ * Lee el documento completo de `waves.json` delegando en `lib/waves.js`
+ * (fuente canónica) respetando el override temporal de `PIPELINE_DIR_OVERRIDE`
+ * — mismo patrón que `readFromWavesJson` — para que los tests con tmp dirs
+ * funcionen y producción herede la cache TTL.
+ *
+ * @param {string} pipelineRoot
+ * @returns {{active_wave: object|null, planned_waves: object[], archived_waves: object[]}|null}
+ */
+function readWavesDoc(pipelineRoot) {
+    const wavesDir = effectiveWavesPipelineDir();
+    const needsOverride = path.resolve(pipelineRoot) !== path.resolve(wavesDir);
+    const prevOverride = process.env.PIPELINE_DIR_OVERRIDE;
+
+    if (needsOverride) {
+        process.env.PIPELINE_DIR_OVERRIDE = pipelineRoot;
+        waves.invalidateCache();
+    }
+
+    let doc = null;
+    try {
+        doc = waves.loadWaves();
+    } catch {
+        doc = null;
+    } finally {
+        if (needsOverride) {
+            if (prevOverride === undefined) delete process.env.PIPELINE_DIR_OVERRIDE;
+            else process.env.PIPELINE_DIR_OVERRIDE = prevOverride;
+            waves.invalidateCache();
+        }
+    }
+
+    return (doc && typeof doc === 'object') ? doc : null;
+}
+
+/**
+ * Resuelve la ola a la que pertenece un issue escaneando active+planned+archived.
+ *
+ * @param {number|string|object} issueNumber - acepta `3501`, `"#3501"`, `{number}`.
+ * @param {object} opts
+ * @param {string} opts.pipelineRoot - Path absoluto al directorio `.pipeline`.
+ * @returns {{number: number|null, name: string, issues: number[]}|null}
+ *          La ola con sus issues normalizados a int, o `null` si no pertenece a
+ *          ninguna (o si falta `pipelineRoot` / `waves.json` no es legible).
+ */
+function resolveWaveForIssue(issueNumber, opts) {
+    const target = normalizeIssueNumber(issueNumber);
+    if (target === null) return null;
+
+    const pipelineRoot = opts && opts.pipelineRoot;
+    if (!pipelineRoot) return null;
+
+    const doc = readWavesDoc(pipelineRoot);
+    if (!doc) return null;
+
+    const allWaves = [
+        doc.active_wave,
+        ...(Array.isArray(doc.planned_waves) ? doc.planned_waves : []),
+        ...(Array.isArray(doc.archived_waves) ? doc.archived_waves : []),
+    ].filter(Boolean);
+
+    for (const w of allWaves) {
+        const nums = (Array.isArray(w.issues) ? w.issues : [])
+            .map(normalizeIssueNumber)
+            .filter((n) => n !== null);
+        if (nums.includes(target)) {
+            const nameTrim = typeof w.name === 'string' ? w.name.trim() : '';
+            return {
+                number: Number.isInteger(w.number) ? w.number : null,
+                name: nameTrim,
+                issues: [...new Set(nums)].sort((a, b) => a - b),
+            };
+        }
+    }
+    return null;
+}
+
 module.exports = {
     resolveActiveWave,
+    resolveWaveForIssue,
     // Exports internos para tests
     _internal: {
         readFromWavesJson,
@@ -256,5 +354,6 @@ module.exports = {
         collectActiveIssuesFromFs,
         normalizeIssueNumber,
         effectiveWavesPipelineDir,
+        readWavesDoc,
     },
 };

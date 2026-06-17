@@ -28,6 +28,114 @@
 const SKIPPABLE_QA_MODES = Object.freeze(['api', 'structural']);
 
 // =============================================================================
+// resolveApkRequirement — Issue #4046
+//
+// Decide si un issue requiere efectivamente un APK por el flavor REAL de su
+// trabajo, no por la mera presencia de `app:client` (que puede convivir con
+// trabajo 100% de dashboard/pipeline, caso #3954 "Home Kiosk → mission
+// control").
+//
+// La heurística clave es "¿este issue produce un artefacto APK?", no "¿tiene
+// label app:client?":
+//
+//   - Un issue con `area:pipeline`/`area:dashboard` y SIN cambios reales en
+//     `app/composeApp/` resuelve `{ requiresApk:false, reason:'infra-no-apk' }`
+//     (equivalente al bypass `qa:skipped`), aunque tenga `app:client`.
+//   - Un issue con cambios reales en `app/composeApp/` + `app:*` sigue
+//     exigiendo APK del flavor correspondiente (no se afloja el gate legítimo).
+//
+// FAIL-CLOSED: el bypass `infra-no-apk` se habilita SÓLO con evidencia positiva
+// del origen de cambios (paths conocidos). Si `changedFiles` no se pudo
+// resolver (sin worktree/PR), NO se relaja el gate sólo por ausencia de datos:
+// se cae a la decisión por label (`app:*` → requiere APK). El llamador indica
+// si el origen es conocido vía `changedFilesKnown`; si no lo pasa, se infiere
+// de la presencia de paths.
+//
+// Pure JS — sin fs/net — para testear con `node --test`.
+// =============================================================================
+
+const APP_LABELS = Object.freeze(['app:client', 'app:business', 'app:delivery']);
+const LABEL_TO_FLAVOR = Object.freeze({
+    'app:client': 'client',
+    'app:business': 'business',
+    'app:delivery': 'delivery',
+});
+const INFRA_AREA_LABELS = Object.freeze(['area:pipeline', 'area:dashboard']);
+const APP_PATH_PREFIX = 'app/composeApp/';
+
+/**
+ * Normaliza un label (string o {name}) a string lowercase trimado. '' si inválido.
+ */
+function normalizeLabelName(label) {
+    if (typeof label === 'string') return label.trim().toLowerCase();
+    if (label && typeof label === 'object' && typeof label.name === 'string') {
+        return label.name.trim().toLowerCase();
+    }
+    return '';
+}
+
+/**
+ * Normaliza una lista de labels a strings lowercase (descarta vacíos).
+ */
+function normalizeLabels(labels) {
+    if (!Array.isArray(labels)) return [];
+    return labels.map(normalizeLabelName).filter(Boolean);
+}
+
+/**
+ * Normaliza un path de archivo a separadores POSIX, sin `./` ni `/` inicial,
+ * lowercase-insensitive para el prefijo de comparación.
+ */
+function normalizeRepoPath(file) {
+    return String(file == null ? '' : file)
+        .replace(/\\/g, '/')
+        .replace(/^\.\//, '')
+        .replace(/^\/+/, '')
+        .trim();
+}
+
+/**
+ * Resuelve si un issue requiere APK y qué flavors, dado sus labels y los
+ * archivos tocados. PURE — la lectura de `changedFiles` queda fuera (la hace
+ * el llamador con una función defensiva/inyectable).
+ *
+ * @param {object} opts
+ * @param {Array<string|{name:string}>} [opts.labels]
+ * @param {string[]} [opts.changedFiles] — paths tocados (relativos al repo).
+ * @param {boolean} [opts.changedFilesKnown] — true si el origen de cambios se
+ *        pudo resolver. Si se omite, se infiere de la presencia de paths.
+ * @returns {{ requiresApk: boolean, reason: 'infra-no-apk'|'app-flavor'|'no-app-label', flavors: string[] }}
+ */
+function resolveApkRequirement({ labels = [], changedFiles = [], changedFilesKnown } = {}) {
+    const names = normalizeLabels(labels);
+    const appLabels = APP_LABELS.filter((label) => names.includes(label));
+    const files = Array.isArray(changedFiles)
+        ? changedFiles.map(normalizeRepoPath).filter(Boolean)
+        : [];
+    const touchesApp = files.some((file) => file.startsWith(APP_PATH_PREFIX));
+    const isInfraArea = INFRA_AREA_LABELS.some((l) => names.includes(l));
+
+    // Evidencia positiva del origen de cambios: explícito o por presencia de paths.
+    const known = changedFilesKnown === undefined ? files.length > 0 : Boolean(changedFilesKnown);
+
+    // Bypass infra-no-apk: área pipeline/dashboard, origen de cambios conocido y
+    // ningún path en app/composeApp/. Fail-closed si el origen es desconocido.
+    if (isInfraArea && known && !touchesApp) {
+        return { requiresApk: false, reason: 'infra-no-apk', flavors: [] };
+    }
+
+    if (appLabels.length > 0) {
+        return {
+            requiresApk: true,
+            reason: 'app-flavor',
+            flavors: appLabels.map((label) => LABEL_TO_FLAVOR[label]),
+        };
+    }
+
+    return { requiresApk: false, reason: 'no-app-label', flavors: [] };
+}
+
+// =============================================================================
 // hasVisualReference — Issue #3383 (CA-1, CA-3, CA-7, CA-UX-3)
 //
 // Valida que el body de un issue tenga sección "## Screenshots & Mockups" con
@@ -250,6 +358,14 @@ function formatBypassLogLine(event) {
 
 module.exports = {
     SKIPPABLE_QA_MODES,
+    // Issue #4046 — requerimiento de APK por flavor real, no por label.
+    resolveApkRequirement,
+    normalizeLabels,
+    normalizeLabelName,
+    normalizeRepoPath,
+    APP_LABELS,
+    LABEL_TO_FLAVOR,
+    INFRA_AREA_LABELS,
     normalizeMode,
     resolveQaMode,
     shouldSkipVisualEvidence,

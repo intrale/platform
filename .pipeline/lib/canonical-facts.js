@@ -441,6 +441,39 @@ const CANONICAL_FACTS = {
     },
 };
 
+// =============================================================================
+// CLAIM_DOMAINS — #3936 EP4-H3 (CA-5a). Dominio de cada claim para que la métrica
+// de "reducción de correcciones de Sherlock por estado del repo" sea filtrable
+// del audit JSONL SIN reparsear texto libre. Los claims que refieren a una de las
+// 5 dimensiones del bloque de estado (issues, branches, PRs, ola, builds) son
+// `repo_state`; el resto (liveness de procesos, fase del work-file) es `other`.
+// Enum cerrado en lockstep con CLAIM_DOMAIN_ENUM (sherlock-audit-jsonl.js).
+// =============================================================================
+const CLAIM_DOMAINS = Object.freeze({
+    // branches activas
+    rama_contiene_commits: 'repo_state',
+    entregable_en_main: 'repo_state',
+    // issues abiertos / cerrados
+    issue_cerrado: 'repo_state',
+    // PRs abiertos / mergeados / labels
+    pr_mergeado: 'repo_state',
+    labels_qa_pr: 'repo_state',
+    // ola activa
+    ola_activa: 'repo_state',
+    // estado de builds / CI
+    workflow_paso: 'repo_state',
+    // fuera de las 5 dimensiones del pack de estado
+    estado_fase_issue: 'other',
+    agentes_activos: 'other',
+    proceso_vivo: 'other',
+});
+
+// claimDomain — devuelve el dominio de un claim (default 'other' para claims
+// desconocidos). Pura, sin side-effects.
+function claimDomain(claimKey) {
+    return CLAIM_DOMAINS[claimKey] || 'other';
+}
+
 // -----------------------------------------------------------------------------
 // compareToExpected — traduce el `value` canónico + el `expected` del claim a un
 // status tri-estado. Los claims son ASERCIONES POSITIVAS: por defecto el claim
@@ -600,6 +633,8 @@ async function resolveClaim(claimKey, params = {}, impls = {}) {
 
 module.exports = {
     CANONICAL_FACTS,
+    CLAIM_DOMAINS,
+    claimDomain,
     resolveClaim,
     // exports para tests / reuso
     _SHA_RE: SHA_RE,

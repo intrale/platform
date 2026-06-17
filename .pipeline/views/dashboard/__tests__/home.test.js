@@ -28,6 +28,12 @@ const {
     renderKpiGrid,
     renderQueueDetailed,
     renderSystemCard,
+    // #3954 EP8-H1 — mission control de 3 bandas
+    renderSemaforo,
+    renderAlertTray,
+    renderHealthBand,
+    renderNowBand,
+    renderFlowBand,
 } = home;
 
 // Payloads canónicos (los exige CA-3725.13 / análisis /security).
@@ -225,4 +231,91 @@ test('snapshot IDs: cada referencia literal del client script existe en SSR', ()
 
     assert.deepEqual(dangling, [],
         'IDs referenciados por el script pero ausentes en SSR (R-G1): ' + JSON.stringify(dangling));
+});
+
+// =============================================================================
+// #3954 EP8-H1 — Mission control de 3 bandas (Salud / Ahora / Flujo).
+// CA-1 (grid sin scroll de página), CA-2 (semáforo explicable, razones
+// escapadas REQ-SEC-6), CA-5 (bandeja reemplaza banners), CA-11 (deep-links
+// reflejados escapados REQ-SEC-5).
+// =============================================================================
+
+test('CA-1: renderHomeHTML emite el grid de 3 bandas con overflow:hidden', () => {
+    const html = renderHomeHTML({});
+    assert.ok(html.includes('class="mission-grid"'), 'debe emitir el contenedor mission-grid');
+    assert.ok(/grid-template-rows:\s*20fr 50fr 30fr/.test(html), 'bandas 20/50/30');
+    assert.ok(html.includes('mission-frame'), 'el frame del home lleva el modifier mission-frame');
+    assert.ok(/\.kiosk-frame\.mission-frame\s*\{[^}]*height:\s*100vh/.test(html), 'frame con height:100vh');
+    assert.ok(/\.kiosk-frame\.mission-frame\s*\{[^}]*overflow:\s*hidden/.test(html), 'frame con overflow:hidden');
+    assert.ok(html.includes('id="band-salud"') && html.includes('id="band-ahora"') && html.includes('id="band-flujo"'),
+        'las 3 bandas tienen sus ids invariantes (CA-13 morphing)');
+});
+
+test('CA-3: semáforo sano informa "sin degradaciones"', () => {
+    const out = renderSemaforo({ semaforo: { level: 'ok', label: 'SALUDABLE', reasons: [] } });
+    assert.ok(out.includes('Sin degradaciones'));
+    assert.ok(out.includes('id="semaforo-global"'));
+});
+
+test('CA-2 / REQ-SEC-6: el tooltip del semáforo enumera razones ESCAPADAS', () => {
+    const out = renderSemaforo({
+        semaforo: {
+            level: 'alert', label: 'CRITICO',
+            reasons: [
+                { code: 'x', level: 'alert', text: '<script>alert(1)</script>' },
+                { code: 'y', level: 'warn', text: 'Cuota agotada' },
+            ],
+        },
+    });
+    assert.ok(!out.includes('<script>alert(1)</script>'), 'no debe reflejar el payload crudo');
+    assert.ok(out.includes('&lt;script&gt;'), 'la razón XSS debe salir escapada');
+    assert.ok(out.includes('Cuota agotada'), 'enumera la segunda razón');
+});
+
+test('CA-5: la bandeja reemplaza banners y emite ack + snooze (allowlist 1/4/24)', () => {
+    const state = {
+        semaforo: { level: 'warn', reasons: [{ code: 'cuota:exhausted', level: 'warn', text: 'Cuota agotada' }] },
+        alertSuppressions: {},
+    };
+    const out = renderAlertTray(state);
+    assert.ok(out.includes('id="alert-tray-list"'), 'hay bandeja de alertas');
+    assert.ok(out.includes('data-alert-action="ack"'), 'botón ack');
+    assert.ok(/data-alert-action="snooze" data-alert-hours="1"/.test(out), 'snooze 1h');
+    assert.ok(/data-alert-hours="4"/.test(out), 'snooze 4h');
+    assert.ok(/data-alert-hours="24"/.test(out), 'snooze 24h');
+    // El home no debe seguir mostrando los banners legacy dispersos como sección.
+    assert.ok(!out.includes('infra-health'), 'la bandeja no es el banner de infra');
+});
+
+test('CA-5 / REQ-SEC-3: la bandeja muestra "quién atendió" desde supresiones server-side', () => {
+    const state = {
+        semaforo: { level: 'warn', reasons: [{ code: 'cuota:exhausted', level: 'warn', text: 'Cuota agotada' }] },
+        alertSuppressions: { 'cuota:exhausted': { action: 'ack', actor: 'operador-local', timestamp: '2026-06-15T12:00:00Z', snoozeUntil: null } },
+    };
+    const out = renderAlertTray(state);
+    assert.ok(out.includes('operador-local'), 'muestra el actor server-side');
+});
+
+test('CA-5 / REQ-SEC-5: alert id con payload XSS se escapa en data-attr', () => {
+    const state = {
+        semaforo: { level: 'alert', reasons: [{ code: '"><img src=x onerror=alert(1)>', level: 'alert', text: 'mal' }] },
+        alertSuppressions: {},
+    };
+    const out = renderAlertTray(state);
+    assert.ok(!out.includes('<img src=x onerror=alert(1)>'), 'no refleja el payload crudo en el atributo');
+});
+
+test('CA-11 / REQ-SEC-5: deep-link inválido NO se refleja; válido viaja escapado en boot', () => {
+    const evil = renderHomeHTML({ selectedAlert: '"><script>alert(1)</script>' });
+    assert.ok(!evil.includes('<script>alert(1)</script>'), 'un deep-link inválido nunca se refleja crudo');
+    const good = renderHomeHTML({ selectedAlert: 'cuota:exhausted' });
+    assert.ok(good.includes('"selected"') && good.includes('cuota:exhausted'),
+        'un deep-link válido viaja en __VIEW_BOOT__.selected');
+});
+
+test('las bandas no lanzan con state vacío', () => {
+    for (const fn of [renderSemaforo, renderAlertTray, renderHealthBand, renderNowBand, renderFlowBand]) {
+        assert.equal(typeof fn({}), 'string');
+        assert.equal(typeof fn({ semaforo: { reasons: [] } }), 'string');
+    }
 });
