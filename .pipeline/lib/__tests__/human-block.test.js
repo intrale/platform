@@ -465,3 +465,135 @@ test('e2e: cuando humano desbloquea, el siguiente ciclo del pulpo procesa normal
         .filter(f => f.startsWith(String(issue) + '.') && !f.endsWith('.guidance.txt'));
     assert.equal(archivos.length, 1, 'el archivo del issue volvió a pendiente/');
 });
+
+// =============================================================================
+// #4068 — Botones de acción rápida en la alerta de needs-human
+// =============================================================================
+
+// Fake del módulo action-token: firma determinística sin secreto real.
+const fakeActionToken = {
+    sign: ({ issue, action }) => `v1.${action}-${issue}.sig`,
+};
+
+test('#4068 buildBlockedActionMarkup devuelve inline_keyboard 2×2 con exactamente los 4 botones', () => {
+    const markup = hb.buildBlockedActionMarkup(4068, { actionToken: fakeActionToken, dashboardUrl: 'http://localhost:3200' });
+    assert.ok(markup && Array.isArray(markup.inline_keyboard), 'devuelve inline_keyboard');
+    const buttons = markup.inline_keyboard.flat();
+    assert.equal(buttons.length, 4, 'exactamente 4 botones');
+    assert.equal(markup.inline_keyboard.length, 2, 'layout 2×2');
+    // CA-1: cada URL lleva action, issue=N y token no vacío.
+    const expected = ['unblock', 'mas-contexto', 'devolver-definicion', 'priorizar'];
+    for (const action of expected) {
+        const btn = buttons.find(b => b.url.includes(`action=${action}&`));
+        assert.ok(btn, `existe botón para ${action}`);
+        assert.match(btn.url, new RegExp(`issue=4068`), `${action} lleva issue=4068`);
+        assert.match(btn.url, /token=[^&]+/, `${action} lleva token no vacío`);
+        assert.ok(btn.text.length > 0, `${action} tiene label`);
+    }
+    // CA-PO: NO existe botón pausar.
+    assert.ok(!buttons.some(b => /action=pausar/.test(b.url)), 'no hay botón pausar');
+});
+
+test('#4068 buildBlockedActionMarkup devuelve undefined si el token no se puede firmar (degradación)', () => {
+    const brokenToken = { sign: () => { throw new Error('sin secreto'); } };
+    const markup = hb.buildBlockedActionMarkup(10, { actionToken: brokenToken });
+    assert.equal(markup, undefined);
+});
+
+test('#4068 buildBlockedActionMarkup rechaza issue inválido', () => {
+    assert.equal(hb.buildBlockedActionMarkup(0, { actionToken: fakeActionToken }), undefined);
+    assert.equal(hb.buildBlockedActionMarkup('x', { actionToken: fakeActionToken }), undefined);
+});
+
+test('#4068 buildBlockedSummaryMarkdown NO cambió su firma (CA-Q1, no-regresión)', () => {
+    // Acepta opts object y devuelve string — contrato intacto para callers sin botones.
+    const md = hb.buildBlockedSummaryMarkdown({});
+    assert.equal(typeof md, 'string');
+});
+
+// --- executeQuickAction con deps inyectadas (sin tocar GH real) -------------
+function makeExecDeps(blockedMarkers) {
+    const enqueued = [];
+    let unblockCalls = 0;
+    return {
+        enqueued,
+        get unblockCalls() { return unblockCalls; },
+        deps: {
+            enqueueGithub: (action, payload) => { enqueued.push({ action, ...payload }); return true; },
+            findBlockedMarker: (i) => (blockedMarkers && blockedMarkers.has(i) ? { issue: i, skill: 'po', phase: 'dev', pipeline: 'desarrollo' } : null),
+            dismissBlockedIssue: ({ issue }) => { if (blockedMarkers) blockedMarkers.delete(issue); return { ok: true, issue }; },
+            unblockIssue: ({ issue }) => {
+                if (blockedMarkers && blockedMarkers.has(issue)) { blockedMarkers.delete(issue); unblockCalls++; return { ok: true, issue, skill: 'po', from_phase: 'dev', to_phase: 'dev' }; }
+                return { ok: false, error: 'no bloqueado' };
+            },
+        },
+    };
+}
+
+test('#4068 executeQuickAction unblock: desbloquea y encola remove-label + comment', () => {
+    const blocked = new Set([4068]);
+    const h = makeExecDeps(blocked);
+    const r = hb.executeQuickAction({ issue: 4068, action: 'unblock', deps: h.deps });
+    assert.equal(r.ok, true);
+    assert.equal(r.reactivated, 1);
+    assert.ok(h.enqueued.some(e => e.action === 'remove-label' && e.label === hb.NEEDS_HUMAN_LABEL));
+    assert.ok(h.enqueued.some(e => e.action === 'comment'));
+});
+
+test('#4068 executeQuickAction unblock idempotente: issue ya no bloqueado → noop sin error', () => {
+    const h = makeExecDeps(new Set()); // nada bloqueado
+    const r = hb.executeQuickAction({ issue: 4068, action: 'unblock', deps: h.deps });
+    assert.equal(r.ok, true);
+    assert.equal(r.noop, true);
+});
+
+test('#4068 executeQuickAction mas-contexto: mantiene bloqueo, solo comenta', () => {
+    const h = makeExecDeps(new Set([1]));
+    const r = hb.executeQuickAction({ issue: 1, action: 'mas-contexto', deps: h.deps });
+    assert.equal(r.ok, true);
+    assert.ok(h.enqueued.every(e => e.action === 'comment'), 'solo comentario, no toca labels');
+});
+
+test('#4068 executeQuickAction devolver-definicion: dismiss + needs-definition + quita needs-human', () => {
+    const blocked = new Set([2]);
+    const h = makeExecDeps(blocked);
+    const r = hb.executeQuickAction({ issue: 2, action: 'devolver-definicion', deps: h.deps });
+    assert.equal(r.ok, true);
+    assert.equal(r.dismissed, true);
+    assert.ok(h.enqueued.some(e => e.action === 'label' && e.label === 'needs-definition'));
+    assert.ok(h.enqueued.some(e => e.action === 'remove-label' && e.label === hb.NEEDS_HUMAN_LABEL));
+});
+
+test('#4068 executeQuickAction priorizar: sube priority:high y desbloquea', () => {
+    const blocked = new Set([3]);
+    const h = makeExecDeps(blocked);
+    const r = hb.executeQuickAction({ issue: 3, action: 'priorizar', deps: h.deps });
+    assert.equal(r.ok, true);
+    assert.ok(h.enqueued.some(e => e.action === 'label' && e.label === 'priority:high'));
+    assert.equal(r.reactivated, 1);
+});
+
+test('#4068 executeQuickAction rechaza action no permitida e issue inválido', () => {
+    assert.equal(hb.executeQuickAction({ issue: 1, action: 'pausar', deps: {} }).ok, false);
+    assert.equal(hb.executeQuickAction({ issue: 0, action: 'unblock', deps: {} }).ok, false);
+});
+
+test('#4068 auditQuickAction asienta result_status y campos extra', () => {
+    const records = [];
+    const fakeCreate = () => ({ record: (row) => { records.push(row); return row; } });
+    const row = hb.auditQuickAction({
+        issue: 4068, action: 'unblock', from: 'dashboard-local', result_status: 'authorized',
+        remote_address: '127.0.0.1',
+        deps: { createAuditLog: fakeCreate, redact: (s) => s },
+    });
+    assert.equal(records.length, 1);
+    assert.equal(records[0].result_status, 'authorized');
+    assert.equal(records[0].issue, 4068);
+    assert.equal(records[0].action, 'unblock');
+    assert.equal(records[0].remote_address, '127.0.0.1');
+});
+
+test('#4068 HUMAN_BLOCK_ACTIONS son las 4 acciones sin pausar', () => {
+    assert.deepEqual([...hb.HUMAN_BLOCK_ACTIONS].sort(),
+        ['devolver-definicion', 'mas-contexto', 'priorizar', 'unblock']);
+});

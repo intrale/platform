@@ -409,6 +409,217 @@ function buildBlockedSummaryMarkdown(opts = {}) {
     return lines.join('\n');
 }
 
+// =============================================================================
+// #4068 — Botones de acción rápida en la alerta de needs-human (Opción A).
+//
+// Metadata de las 4 acciones que SÍ cierran el ciclo del bloqueo. `pausar` queda
+// FUERA por decisión de producto (PO #4068): no resuelve el bloqueo, solo lo
+// congela, y la pausa global ya tiene su propio mecanismo.
+//
+// Orden del teclado 2×2 (guideline UX #4068): acción positiva/segura arriba-
+// izquierda; la de mayor impacto (devolver a definición, descarta trabajo) abajo.
+// =============================================================================
+const ACTION_META = Object.freeze({
+    'unblock':             { emoji: '✅', label: 'Aprobar (unblock)',     highImpact: false,
+        consequence: 'Vas a desbloquear el issue y devolverlo a la cola del pipeline.' },
+    'mas-contexto':        { emoji: '💬', label: 'Pedir contexto',        highImpact: false,
+        consequence: 'Vas a pedir más contexto; el issue queda bloqueado hasta que respondas.' },
+    'devolver-definicion': { emoji: '↩️', label: 'Devolver a definición', highImpact: true,
+        consequence: 'Vas a devolver el issue a definición. Se descarta el trabajo de desarrollo en curso y vuelve a re-analizarse.' },
+    'priorizar':           { emoji: '⬆️', label: 'Priorizar',            highImpact: false,
+        consequence: 'Vas a subir la prioridad de este issue y desbloquearlo.' },
+});
+// Filas del teclado (2×2). Single source para markup y validación de cobertura.
+const ACTION_KEYBOARD_ROWS = Object.freeze([
+    ['unblock', 'mas-contexto'],
+    ['devolver-definicion', 'priorizar'],
+]);
+const HUMAN_BLOCK_ACTIONS = Object.freeze(ACTION_KEYBOARD_ROWS.flat());
+
+function isQuickAction(action) {
+    return HUMAN_BLOCK_ACTIONS.includes(action);
+}
+
+// Encolar una orden genérica en la cola del servicio-github (label / remove-label
+// / comment). Generaliza enqueueNeedsHumanLabel. Fire-and-forget vía filesystem:
+// nunca bloquea ni invoca `gh` en proceso (regla "el pipeline no puede morir").
+function enqueueGithub(action, payload = {}) {
+    try {
+        fs.mkdirSync(GH_QUEUE_DIR, { recursive: true });
+        const issue = Number(payload.issue);
+        const rnd = Math.random().toString(36).slice(2, 8);
+        const filename = `${issue}-${action}-hb-${Date.now()}-${rnd}.json`;
+        fs.writeFileSync(
+            path.join(GH_QUEUE_DIR, filename),
+            JSON.stringify({ ...payload, action, issue }),
+        );
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * #4068 / CA-1 — Construye el `reply_markup` (inline_keyboard 2×2) con los 4
+ * botones URL no-mutantes hacia el dashboard. Cada URL lleva un token HMAC
+ * firmado (un solo uso + exp) que autoriza la acción sobre ESE issue.
+ *
+ * NO cambia la firma de buildBlockedSummaryMarkdown (CA-Q1) — es un helper
+ * aparte. Si el secreto del token no está disponible, devuelve `undefined`:
+ * el caller manda igual el resumen de texto, solo sin botones (degradación
+ * con gracia, nunca rompe la notificación).
+ *
+ * @param {number} issue
+ * @param {object} [opts]
+ * @param {object} [opts.actionToken]   - módulo de token (inyectable en tests).
+ * @param {string} [opts.dashboardUrl]  - base URL del dashboard.
+ * @returns {object|undefined} `{ inline_keyboard: [...] }` o undefined.
+ */
+function buildBlockedActionMarkup(issue, opts = {}) {
+    const i = Number(issue);
+    if (!Number.isInteger(i) || i <= 0 || i > 999999) return undefined;
+    let actionToken;
+    try { actionToken = opts.actionToken || require('./action-token'); }
+    catch { return undefined; }
+    const dashUrl = (opts.dashboardUrl || process.env.DASHBOARD_URL || 'http://localhost:3200').replace(/\/+$/, '');
+    const makeBtn = (action) => {
+        const meta = ACTION_META[action];
+        if (!meta) return null;
+        let token;
+        try { token = actionToken.sign({ issue: i, action }); }
+        catch { return null; }
+        if (!token) return null;
+        return {
+            text: `${meta.emoji} ${meta.label}`,
+            url: `${dashUrl}/?action=${action}&issue=${i}&token=${encodeURIComponent(token)}`,
+        };
+    };
+    const rows = ACTION_KEYBOARD_ROWS
+        .map((row) => row.map(makeBtn).filter(Boolean))
+        .filter((row) => row.length > 0);
+    if (!rows.length) return undefined;
+    return { inline_keyboard: rows };
+}
+
+// Reactiva TODOS los markers bloqueados de un issue (un issue puede tener varios
+// skills pausados en paralelo). Idempotente: si no hay ninguno, no-op.
+function reactivateAllBlocked(issue, opts = {}) {
+    const unblock = opts.unblockIssue || unblockIssue;
+    const reactivated = [];
+    for (let k = 0; k < 20; k++) {
+        let r;
+        try { r = unblock({ issue, guidance: opts.guidance || '', unlocker: opts.unlocker || 'human-block-action' }); }
+        catch { break; }
+        if (!r || !r.ok) break;
+        reactivated.push(r);
+    }
+    return reactivated;
+}
+
+/**
+ * #4068 / CA-2 — Ejecuta la acción rápida sobre el issue. Mutaciones vía la cola
+ * del servicio-github (no `gh` en proceso). Idempotente / state-checked: si el
+ * issue ya no está bloqueado, las acciones que dependen del bloqueo son no-op
+ * (link viejo / doble-click = no-op, SEC-5).
+ *
+ * NO autoriza: el caller (handler dashboard con token válido, o commander con
+ * allowlist de operadores) decide autorización ANTES de invocar.
+ *
+ * @param {object} args
+ * @param {number} args.issue
+ * @param {string} args.action  - una de HUMAN_BLOCK_ACTIONS.
+ * @param {object} [args.deps]  - overrides para tests.
+ * @returns {{ok:boolean, action?:string, issue?:number, msg?:string, error?:string}}
+ */
+function executeQuickAction({ issue, action, deps = {} } = {}) {
+    const i = Number(issue);
+    if (!Number.isInteger(i) || i <= 0 || i > 999999) return { ok: false, error: 'issue inválido' };
+    if (!isQuickAction(action)) return { ok: false, error: 'action inválida' };
+
+    const enqueue = deps.enqueueGithub || enqueueGithub;
+    const findBlocked = deps.findBlockedMarker || findBlockedMarker;
+    const dismiss = deps.dismissBlockedIssue || dismissBlockedIssue;
+    const reactivate = (extra) => reactivateAllBlocked(i, { ...deps, ...extra });
+
+    switch (action) {
+        case 'unblock': {
+            const reactivated = reactivate({ unlocker: 'human-block-action:unblock' });
+            enqueue('remove-label', { issue: i, label: NEEDS_HUMAN_LABEL });
+            if (reactivated.length === 0) {
+                return { ok: true, action, issue: i, noop: true, msg: `#${i} ya no estaba bloqueado (acción ya resuelta).` };
+            }
+            enqueue('comment', { issue: i, body: `## ✅ Desbloqueado desde la alerta de Telegram\n\nSkills reactivados: ${reactivated.map((r) => `\`${r.skill}\``).join(', ')}. Vuelve a la cola del pipeline.` });
+            return { ok: true, action, issue: i, reactivated: reactivated.length, msg: `#${i} desbloqueado (${reactivated.length} skill${reactivated.length === 1 ? '' : 's'}).` };
+        }
+        case 'mas-contexto': {
+            // Mantiene el bloqueo; registra el pedido de contexto.
+            enqueue('comment', { issue: i, body: `## 💬 Se pidió más contexto\n\nUn humano pidió más contexto desde la alerta de Telegram. El issue queda en \`needs-human\` hasta que se responda.` });
+            return { ok: true, action, issue: i, msg: `Se pidió más contexto en #${i}; queda bloqueado.` };
+        }
+        case 'devolver-definicion': {
+            const blocked = findBlocked(i);
+            let dismissed = false;
+            if (blocked) {
+                try { const r = dismiss({ issue: i, reason: 'Devuelto a definición desde la alerta de Telegram', unlocker: 'human-block-action:devolver' }); dismissed = !!(r && r.ok); }
+                catch { /* best-effort */ }
+            }
+            enqueue('remove-label', { issue: i, label: NEEDS_HUMAN_LABEL });
+            enqueue('label', { issue: i, label: 'needs-definition' });
+            enqueue('comment', { issue: i, body: `## ↩️ Devuelto a definición\n\nUn humano devolvió #${i} a definición desde la alerta de Telegram. Se descarta el trabajo de desarrollo en curso y el issue vuelve a re-analizarse.` });
+            return { ok: true, action, issue: i, dismissed, msg: `#${i} devuelto a definición.` };
+        }
+        case 'priorizar': {
+            // Sube prioridad Y desbloquea (PO #4068: "sube prioridad y sigue").
+            const reactivated = reactivate({ unlocker: 'human-block-action:priorizar' });
+            enqueue('label', { issue: i, label: 'priority:high' });
+            enqueue('remove-label', { issue: i, label: NEEDS_HUMAN_LABEL });
+            enqueue('comment', { issue: i, body: `## ⬆️ Prioridad elevada\n\nUn humano subió la prioridad de #${i} a \`priority:high\` desde la alerta de Telegram${reactivated.length ? ' y lo desbloqueó' : ''}.` });
+            return { ok: true, action, issue: i, reactivated: reactivated.length, msg: `Prioridad de #${i} elevada a priority:high.` };
+        }
+        default:
+            return { ok: false, error: 'action inválida' };
+    }
+}
+
+/**
+ * #4068 / CA-SEC-2 — Asienta la acción rápida (autorizada o rechazada) en un
+ * audit-log dedicado `audit/human-block-actions-YYYY-MM-DD.jsonl`. Nunca lanza:
+ * el audit no debe romper la operación.
+ */
+function auditQuickAction(entry = {}) {
+    try {
+        const deps = entry.deps || {};
+        const dir = deps.auditDir || path.join(PIPELINE_DIR, 'audit');
+        const createAuditLog = deps.createAuditLog || require('./commander/audit-log').createAuditLog;
+        let redact = deps.redact;
+        if (typeof redact !== 'function') {
+            try { redact = require('./redact').redactSensitive; } catch { redact = (s) => s; }
+        }
+        const audit = createAuditLog({
+            dir,
+            filenamePrefix: 'human-block-actions',
+            redact,
+            extraFields: ['issue', 'action', 'remote_address', 'message_id'],
+        });
+        return audit.record({
+            from: entry.from || null,
+            chat_id: entry.chat_id,
+            raw_command: entry.action ? `/${entry.action} ${entry.issue || ''}`.trim() : '',
+            intent_class: 'human-block-action',
+            handler: entry.action || null,
+            result_status: entry.result_status || 'ok',
+            duration_ms: entry.duration_ms,
+            issue: Number.isFinite(Number(entry.issue)) ? Number(entry.issue) : null,
+            action: entry.action || null,
+            remote_address: entry.remote_address || null,
+            message_id: entry.message_id || null,
+        });
+    } catch (e) {
+        try { process.stderr.write(`[human-block] auditQuickAction falló: ${e.message}\n`); } catch (_) {}
+        return null;
+    }
+}
+
 module.exports = {
     reportHumanBlock,
     unblockIssue,
@@ -426,4 +637,13 @@ module.exports = {
     BLOCK_SUBDIR,
     NEEDS_HUMAN_LABEL,
     isMarkerArtifact,
+    // #4068 — acciones rápidas de needs-human
+    ACTION_META,
+    ACTION_KEYBOARD_ROWS,
+    HUMAN_BLOCK_ACTIONS,
+    isQuickAction,
+    enqueueGithub,
+    buildBlockedActionMarkup,
+    executeQuickAction,
+    auditQuickAction,
 };

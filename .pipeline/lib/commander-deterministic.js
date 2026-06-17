@@ -91,6 +91,11 @@ const DETERMINISTIC_SLASH = new Set([
     'restart',
     'bloqueados',
     'unblock',
+    // Issue #4068 — acciones rápidas de needs-human (path tipeado, complemento
+    // de los botones URL de la alerta de Telegram). `pausar` queda FUERA (PO).
+    'mas-contexto',
+    'devolver-definicion',
+    'priorizar',
     'stop',
     // Issue #3415 — `/rechazar` y sus aliases. El handler vive en
     // `commander/rechazar-handler.js` y se inyecta como default handler.
@@ -508,7 +513,27 @@ const ARG_SCHEMAS = {
         allowedValues: ['pr <numero>', 'issue <numero>', 'rama <numero>', 'main <numero>'],
         hint: 'Alias de `verificar`.',
     },
+    // Issue #4068 — acciones rápidas de needs-human: `<accion> <issue>` (entero).
+    'mas-contexto':        quickActionArgSchema('mas-contexto'),
+    'devolver-definicion': quickActionArgSchema('devolver-definicion'),
+    'priorizar':           quickActionArgSchema('priorizar'),
 };
+
+// Issue #4068 — schema de args para las acciones rápidas de needs-human. Solo
+// acepta un entero positivo (issue), con `#` opcional. Cap 999999 (CA-SEC-3).
+function quickActionArgSchema(action) {
+    return {
+        allow(args) {
+            const m = String(args || '').trim().match(/^#?(\d+)$/);
+            if (!m) return false;
+            const n = Number(m[1]);
+            return n > 0 && n <= 999999;
+        },
+        usage: `${action} <issue>`,
+        allowedValues: [`${action} <issue>`],
+        hint: `Indicá el número de issue. Ej: \`/${action} 4068\`.`,
+    };
+}
 
 function validateArgs(command, args) {
     const schema = ARG_SCHEMAS[command];
@@ -686,6 +711,9 @@ function createDispatcher(opts) {
         // defaults reales de canonical-facts (#3895).
         canonicalImpls: options.canonicalImpls || null,
         canonicalFacts: options.canonicalFacts || null,
+        // Issue #4068 — módulo human-block inyectable para los handlers de
+        // acciones rápidas (tests usan fake; producción usa el real).
+        humanBlock: options.humanBlock || null,
     });
     const handlers = { ...defaultHandlers, ...customHandlers };
 
@@ -1072,11 +1100,59 @@ function buildDefaultHandlers(ctx) {
         });
     };
 
+    // =========================================================================
+    // Issue #4068 — Acciones rápidas de needs-human por slash-command (path
+    // Telegram tipeado, complemento de los botones URL de la Opción A). Cada
+    // handler re-valida el origen contra la allowlist de operadores (CA-SEC-6) y
+    // asienta audit authorized/unauthorized (CA-SEC-2). La ejecución se delega en
+    // human-block.executeQuickAction — single source con el endpoint del dashboard.
+    // =========================================================================
+    const quickActionOperatorChatIds = Array.isArray(ctx.rechazarDeps && ctx.rechazarDeps.cuaOperatorChatIds)
+        ? ctx.rechazarDeps.cuaOperatorChatIds.map(String)
+        : [];
+    function quickActionAuthorized(message) {
+        // Sin allowlist configurada, el filtro CHAT_ID del listener es el gate.
+        if (quickActionOperatorChatIds.length === 0) return true;
+        const chatId = message && message.chat_id !== undefined && message.chat_id !== null ? String(message.chat_id) : null;
+        let fromId = null;
+        if (message && message.from && typeof message.from === 'object' && message.from.id !== undefined) fromId = String(message.from.id);
+        else if (message && typeof message.from === 'string') fromId = message.from;
+        return (!!chatId && quickActionOperatorChatIds.includes(chatId))
+            || (!!fromId && quickActionOperatorChatIds.includes(fromId));
+    }
+    function makeQuickActionHandler(action) {
+        return async ({ args, message }) => {
+            const hb = ctx.humanBlock || require('./human-block');
+            const m = String(args || '').trim().match(/^#?(\d+)$/);
+            const issue = m ? Number(m[1]) : null;
+            if (!issue || issue > 999999) return `❌ Uso: \`/${action} <issue>\` — ej: \`/${action} 4068\`.`;
+            const from = message && message.from;
+            const chat_id = message && message.chat_id;
+            if (!quickActionAuthorized(message)) {
+                hb.auditQuickAction({ issue, action, from, chat_id, result_status: 'unauthorized' });
+                return '🔒 No estás autorizado para ejecutar esta acción.';
+            }
+            let result;
+            try { result = hb.executeQuickAction({ issue, action }); }
+            catch (e) {
+                hb.auditQuickAction({ issue, action, from, chat_id, result_status: 'error' });
+                return `❌ Error ejecutando \`${action}\` sobre #${issue}: ${e.message}`;
+            }
+            hb.auditQuickAction({ issue, action, from, chat_id, result_status: result.ok ? 'authorized' : 'error' });
+            return result.ok ? `✅ ${result.msg}` : `❌ ${result.error || 'error ejecutando acción'}`;
+        };
+    }
+
     return {
         // Issue #3415 — aliases todos mapean al mismo handler.
         rechazar: rechazarHandler.handle,
         reject: rechazarHandler.handle,
         rebobinar: rechazarHandler.handle,
+
+        // Issue #4068 — acciones rápidas de needs-human.
+        'mas-contexto': makeQuickActionHandler('mas-contexto'),
+        'devolver-definicion': makeQuickActionHandler('devolver-definicion'),
+        'priorizar': makeQuickActionHandler('priorizar'),
 
         // Issue #3897 — `/verificar` + alias inglés.
         verificar: verificarHandler,

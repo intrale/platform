@@ -3533,11 +3533,16 @@ function brazoBarrido(config) {
               }
 
               // Notificación Telegram con listado completo de incidentes.
+              // #4068 — con botones de acción rápida (inline_keyboard). Si el
+              // markup no se puede armar (sin secreto de token), se manda igual
+              // el resumen de texto sin botones (degradación con gracia).
               try {
                 const summary = humanBlock.buildBlockedSummaryMarkdown({
                   highlight: { issue: parseInt(issue), skill: skillBloq, reason: motivoTxt, question },
                 });
-                sendTelegram(summary);
+                let markup;
+                try { markup = humanBlock.buildBlockedActionMarkup(parseInt(issue)); } catch { markup = undefined; }
+                sendTelegramWithMarkup(summary, markup || null);
               } catch (e) {
                 log('barrido', `Error enviando resumen Telegram needs-human #${issue}: ${e.message}`);
               }
@@ -5077,7 +5082,10 @@ function brazoLanzamiento(config) {
           const summary = humanBlock.buildBlockedSummaryMarkdown({
             highlight: { issue: parseInt(issue), skill, reason: reasonTxt, question: questionTxt },
           });
-          sendTelegram(summary);
+          // #4068 — botones de acción rápida (degradación con gracia si no hay markup).
+          let markup;
+          try { markup = humanBlock.buildBlockedActionMarkup(parseInt(issue)); } catch { markup = undefined; }
+          sendTelegramWithMarkup(summary, markup || null);
         } catch (e) {
           log('lanzamiento', `Error enviando resumen Telegram needs-human #${issue}: ${e.message}`);
         }
