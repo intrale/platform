@@ -1,0 +1,393 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 35 — EP8-H3 (#3956): Pipeline → kanban con zoom semantico y pills legibles
+  -----------------------------------------------------------------------------
+  Mockup OBJETIVO de la fase definicion/criterios. Es la referencia visual que
+  implementa pipeline-dev sobre `.pipeline/dashboard.js` (laneMeta L1940,
+  lanesHTML L2382-2428, doneLaneHTML L2429, popover L6269-6317, badge pausa
+  L4913, grid CSS L4413).
+
+  Idea central (alineada con el ajuste de scope de Leo 2026-06-11 y los 10 CAs
+  del PO): LA OLA COMPLETA VIVE EN UNA SOLA LINEA DE PROCESO. No existe ninguna
+  bandeja "fuera de flujo". La linea horizontal va:
+
+      [⏳ No ingresados]  →  [fases del pipeline...]  →  [✅ Finalizados]
+
+  con scroll horizontal e indicador "+N fases" cuando hay overflow.
+
+  Lo que muestra este mockup:
+    A. Header + BADGE UNICO de pausa (estados: pausado / fuera de allowlist).
+    B. Selector de ZOOM SEMANTICO: lejos (kiosk) / normal / foco.
+    C. La LINEA de la ola en densidad "normal" con las dos etapas terminales
+       integradas + indicador "+N fases".
+    D. POPOVER del agente a nivel card (issue, skill, fase, estado, edad,
+       motivo del ultimo rebote, botones log/pausar).
+    E. Variante KIOSK (zoom "lejos") — conteos y semaforos legibles a 3 m.
+    F. Variante FOCO — columna expandida con timeline.
+
+  Convenciones del sistema (design-tokens.css · EP8-H0 #3953):
+    - Colores: var() inlineados aca por ser SVG standalone. Mapean 1:1 a tokens.
+      surface-0 #0D1117 · surface-1 #161B22 · surface-2 #1C2128 · surface-3 #252B33
+      border #30363D · border-subtle #21262D · text-primary #E6EDF3
+      text-secondary #B1BAC4 · text-dim #8B949E
+      success #3FB950 · warning #D29922 · danger #F85149 · info #58A6FF
+      retry #F59E0B · purple #BC8CFF · teal #2DD4BF · brand-cyan #00D6FF
+    - Iconos: del sprite.svg via #ic-* (aca redibujados como symbols m-*).
+      Nuevos de este issue: ic-stage-not-entered, ic-stage-finalized,
+      ic-overflow-more.
+    - Toda info de estado va con icono + texto, nunca solo color (WCAG AA).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 1500" font-family="-apple-system, 'Segoe UI', Roboto, sans-serif">
+  <defs>
+    <!-- iconos locales (espejo del sprite real) -->
+    <symbol id="m-not-entered" viewBox="0 0 24 24">
+      <path d="M6.5 4 H17.5 M6.5 20 H17.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <path d="M7.5 4 C7.5 8.5 16.5 8.5 16.5 4" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linejoin="round"/>
+      <path d="M7.5 20 C7.5 15.5 16.5 15.5 16.5 20" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linejoin="round"/>
+      <path d="M10.6 17.8 C10.6 15.4 13.4 15.4 13.4 17.8 Z" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-finalized" viewBox="0 0 24 24">
+      <path d="M6 3.5 V20.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <path d="M6 4.5 H18.5 L15.5 8.5 L18.5 12.5 H6 Z" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linejoin="round"/>
+      <path d="M9 7 L11 9 L14.5 5.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-more" viewBox="0 0 24 24">
+      <path d="M8.5 6 L14.5 12 L8.5 18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M14 6 L20 12 L14 18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>
+    </symbol>
+    <symbol id="m-pause" viewBox="0 0 24 24">
+      <rect x="6" y="5" width="3.5" height="14" rx="1.2" fill="currentColor"/>
+      <rect x="14.5" y="5" width="3.5" height="14" rx="1.2" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-lock" viewBox="0 0 24 24">
+      <rect x="5" y="10.5" width="14" height="9.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/>
+      <path d="M8 10.5 V8 a4 4 0 0 1 8 0 V10.5" fill="none" stroke="currentColor" stroke-width="1.7"/>
+    </symbol>
+    <symbol id="m-doc" viewBox="0 0 24 24">
+      <path d="M7 3.5 H14 L18 7.5 V20.5 H7 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M9.5 11 H15 M9.5 14 H15 M9.5 17 H13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-out" viewBox="0 0 24 24">
+      <path d="M14 5 H19 V10 M19 5 L11 13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M17 14 V18.5 A1.5 1.5 0 0 1 15.5 20 H6 A1.5 1.5 0 0 1 4.5 18.5 V9 A1.5 1.5 0 0 1 6 7.5 H10.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+    </symbol>
+  </defs>
+
+  <!-- ===== fondo ===== -->
+  <rect width="1440" height="1500" fill="#0D1117"/>
+
+  <!-- ===== A. HEADER ===== -->
+  <g transform="translate(40,32)">
+    <text x="0" y="22" fill="#E6EDF3" font-size="26" font-weight="700">Pipeline</text>
+    <rect x="118" y="2" width="40" height="22" rx="11" fill="rgba(45,212,191,0.14)" stroke="#2DD4BF" stroke-width="1"/>
+    <text x="138" y="17" fill="#2DD4BF" font-size="12" font-weight="700" text-anchor="middle">V3</text>
+    <text x="0" y="46" fill="#8B949E" font-size="14">La ola completa, de punta a punta, en una sola linea de proceso</text>
+
+    <!-- BADGE UNICO de pausa (CA-3) — estado actual: pausado -->
+    <g transform="translate(1100,4)">
+      <rect x="0" y="0" width="260" height="36" rx="18" fill="rgba(245,158,11,0.14)" stroke="#F59E0B" stroke-width="1.3"/>
+      <use href="#m-pause" x="14" y="8" width="20" height="20" color="#F59E0B"/>
+      <text x="42" y="23" fill="#F59E0B" font-size="14" font-weight="700">Pausado</text>
+      <line x1="118" y1="9" x2="118" y2="27" stroke="#30363D" stroke-width="1"/>
+      <use href="#m-lock" x="128" y="9" width="18" height="18" color="#8B949E"/>
+      <text x="152" y="23" fill="#8B949E" font-size="13">fuera de allowlist: 2</text>
+    </g>
+    <text x="1100" y="58" fill="#6E7681" font-size="11">CA-3 · un solo badge, 2 estados claros (reemplaza running/paused/partial)</text>
+  </g>
+
+  <!-- ===== B. SELECTOR DE ZOOM SEMANTICO (CA-1) ===== -->
+  <g transform="translate(40,110)">
+    <text x="0" y="14" fill="#8B949E" font-size="12" font-weight="600">ZOOM</text>
+    <g transform="translate(48,0)">
+      <rect x="0" y="0" width="76" height="28" rx="8" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+      <text x="38" y="19" fill="#B1BAC4" font-size="13" text-anchor="middle">lejos</text>
+    </g>
+    <g transform="translate(130,0)">
+      <rect x="0" y="0" width="76" height="28" rx="8" fill="rgba(0,214,255,0.14)" stroke="#00D6FF" stroke-width="1.3"/>
+      <text x="38" y="19" fill="#00D6FF" font-size="13" font-weight="700" text-anchor="middle">normal</text>
+    </g>
+    <g transform="translate(212,0)">
+      <rect x="0" y="0" width="76" height="28" rx="8" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+      <text x="38" y="19" fill="#B1BAC4" font-size="13" text-anchor="middle">foco</text>
+    </g>
+    <text x="310" y="19" fill="#6E7681" font-size="11">lejos = kiosk (legible a 3 m) · normal = pills ≥14px + popover · foco = columna con timeline</text>
+  </g>
+
+  <!-- ===== C. LINEA DE LA OLA — densidad NORMAL ===== -->
+  <text x="40" y="178" fill="#E6EDF3" font-size="15" font-weight="600">Ola activa · 9 issues — linea unica del proceso</text>
+  <text x="40" y="196" fill="#6E7681" font-size="11">scroll horizontal → · ninguna bandeja fuera de flujo (CA-7)</text>
+
+  <!-- contenedor con clip para simular scroll horizontal -->
+  <g transform="translate(40,210)">
+    <!-- carriles -->
+    <!-- Etapa terminal inicial: No ingresados (CA-5) -->
+    <g transform="translate(0,0)">
+      <rect x="0" y="0" width="244" height="300" rx="12" fill="#161B22" stroke="#21262D" stroke-width="1"/>
+      <use href="#m-not-entered" x="14" y="14" width="20" height="20" color="#8B949E"/>
+      <text x="42" y="29" fill="#B1BAC4" font-size="15" font-weight="700">No ingresados</text>
+      <rect x="196" y="14" width="34" height="22" rx="11" fill="rgba(139,148,158,0.12)"/>
+      <text x="213" y="29" fill="#8B949E" font-size="13" font-weight="700" text-anchor="middle">3</text>
+
+      <!-- issue bloqueado por deps (con link al bloqueante) -->
+      <g transform="translate(12,48)">
+        <rect x="0" y="0" width="220" height="62" rx="8" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+        <text x="10" y="20" fill="#E6EDF3" font-size="13" font-weight="600">#3960 Wizard de olas</text>
+        <rect x="10" y="30" width="200" height="22" rx="6" fill="rgba(248,81,73,0.12)"/>
+        <text x="18" y="45" fill="#F85149" font-size="11">deps abiertas →</text>
+        <text x="92" y="45" fill="#58A6FF" font-size="11" text-decoration="underline">#3958</text>
+        <use href="#m-out" x="124" y="33" width="14" height="14" color="#58A6FF"/>
+      </g>
+      <!-- issue esperando slot -->
+      <g transform="translate(12,118)">
+        <rect x="0" y="0" width="220" height="54" rx="8" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+        <text x="10" y="20" fill="#E6EDF3" font-size="13" font-weight="600">#3961 Filtro por skill</text>
+        <rect x="10" y="28" width="150" height="20" rx="6" fill="rgba(139,148,158,0.12)"/>
+        <text x="18" y="42" fill="#8B949E" font-size="11">esperando slot · pos. 2</text>
+      </g>
+      <g transform="translate(12,180)">
+        <rect x="0" y="0" width="220" height="54" rx="8" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+        <text x="10" y="20" fill="#E6EDF3" font-size="13" font-weight="600">#3962 Export CSV</text>
+        <rect x="10" y="28" width="150" height="20" rx="6" fill="rgba(139,148,158,0.12)"/>
+        <text x="18" y="42" fill="#8B949E" font-size="11">esperando slot · pos. 3</text>
+      </g>
+      <text x="12" y="256" fill="#6E7681" font-size="10">degrada a "esperando slot" si no hay dato de deps</text>
+    </g>
+
+    <!-- Fase: Definicion -->
+    <g transform="translate(256,0)">
+      <rect x="0" y="0" width="224" height="300" rx="12" fill="#161B22" stroke="#21262D" stroke-width="1"/>
+      <use href="#m-doc" x="14" y="14" width="18" height="18" color="#BC8CFF"/>
+      <text x="40" y="29" fill="#B1BAC4" font-size="15" font-weight="700">Definicion</text>
+      <rect x="178" y="14" width="34" height="22" rx="11" fill="rgba(188,140,255,0.14)"/>
+      <text x="195" y="29" fill="#BC8CFF" font-size="13" font-weight="700" text-anchor="middle">2</text>
+      <!-- card agente activa -->
+      <g transform="translate(12,48)">
+        <rect x="0" y="0" width="200" height="78" rx="8" fill="#1C2128" stroke="#BC8CFF" stroke-width="1.2"/>
+        <circle cx="14" cy="16" r="5" fill="#3FB950"/>
+        <text x="26" y="20" fill="#E6EDF3" font-size="13" font-weight="600">#3956 · ux</text>
+        <text x="12" y="40" fill="#B1BAC4" font-size="11">criterios · trabajando</text>
+        <rect x="12" y="50" width="80" height="20" rx="6" fill="rgba(63,185,80,0.14)"/>
+        <text x="20" y="64" fill="#3FB950" font-size="11">edad 2m · ok</text>
+      </g>
+      <g transform="translate(12,134)">
+        <rect x="0" y="0" width="200" height="60" rx="8" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+        <circle cx="14" cy="16" r="5" fill="#8B949E"/>
+        <text x="26" y="20" fill="#E6EDF3" font-size="13" font-weight="600">#3957 · po</text>
+        <text x="12" y="40" fill="#8B949E" font-size="11">analisis · pendiente</text>
+      </g>
+    </g>
+
+    <!-- Fase: Desarrollo (con popover abierto - D) -->
+    <g transform="translate(490,0)">
+      <rect x="0" y="0" width="224" height="300" rx="12" fill="#161B22" stroke="#21262D" stroke-width="1"/>
+      <use href="#m-doc" x="14" y="14" width="18" height="18" color="#58A6FF"/>
+      <text x="40" y="29" fill="#B1BAC4" font-size="15" font-weight="700">Desarrollo</text>
+      <rect x="178" y="14" width="34" height="22" rx="11" fill="rgba(88,166,255,0.14)"/>
+      <text x="195" y="29" fill="#58A6FF" font-size="13" font-weight="700" text-anchor="middle">1</text>
+      <g transform="translate(12,48)">
+        <rect x="0" y="0" width="200" height="78" rx="8" fill="#1C2128" stroke="#F59E0B" stroke-width="1.4"/>
+        <circle cx="14" cy="16" r="5" fill="#F59E0B"/>
+        <text x="26" y="20" fill="#E6EDF3" font-size="13" font-weight="600">#3954 · android-dev</text>
+        <text x="12" y="40" fill="#B1BAC4" font-size="11">dev · reintentando</text>
+        <rect x="12" y="50" width="120" height="20" rx="6" fill="rgba(245,158,11,0.14)"/>
+        <text x="20" y="64" fill="#F59E0B" font-size="11">rebote 1 · edad 14m</text>
+      </g>
+    </g>
+
+    <!-- Fase: QA (parcialmente recortada para sugerir overflow) -->
+    <g transform="translate(724,0)">
+      <rect x="0" y="0" width="224" height="300" rx="12" fill="#161B22" stroke="#21262D" stroke-width="1"/>
+      <use href="#m-doc" x="14" y="14" width="18" height="18" color="#2DD4BF"/>
+      <text x="40" y="29" fill="#B1BAC4" font-size="15" font-weight="700">QA + Entrega</text>
+      <rect x="178" y="14" width="34" height="22" rx="11" fill="rgba(45,212,191,0.14)"/>
+      <text x="195" y="29" fill="#2DD4BF" font-size="13" font-weight="700" text-anchor="middle">1</text>
+      <g transform="translate(12,48)">
+        <rect x="0" y="0" width="200" height="78" rx="8" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+        <circle cx="14" cy="16" r="5" fill="#3FB950"/>
+        <text x="26" y="20" fill="#E6EDF3" font-size="13" font-weight="600">#3953 · qa</text>
+        <text x="12" y="40" fill="#B1BAC4" font-size="11">verificacion · ok</text>
+      </g>
+    </g>
+
+    <!-- Etapa terminal final: Finalizados (CA-6) — recortada por overflow -->
+    <g transform="translate(958,0)">
+      <rect x="0" y="0" width="224" height="300" rx="12" fill="#161B22" stroke="#21262D" stroke-width="1" opacity="0.65"/>
+      <use href="#m-finalized" x="14" y="14" width="20" height="20" color="#3FB950"/>
+      <text x="42" y="29" fill="#B1BAC4" font-size="15" font-weight="700">Finalizados</text>
+      <rect x="180" y="14" width="34" height="22" rx="11" fill="rgba(63,185,80,0.14)"/>
+      <text x="197" y="29" fill="#3FB950" font-size="13" font-weight="700" text-anchor="middle">2</text>
+      <g transform="translate(12,48)" opacity="0.7">
+        <rect x="0" y="0" width="200" height="64" rx="8" fill="#1C2128" stroke="#196C2E" stroke-width="1"/>
+        <text x="10" y="20" fill="#E6EDF3" font-size="13" font-weight="600">#3952 Epica EP8</text>
+        <text x="10" y="38" fill="#8B949E" font-size="11">cerrado 06-14 ·</text>
+        <text x="100" y="38" fill="#58A6FF" font-size="11" text-decoration="underline">PR #4028</text>
+        <use href="#m-out" x="158" y="27" width="14" height="14" color="#58A6FF"/>
+      </g>
+    </g>
+
+    <!-- INDICADOR "+N fases" (CA-4) — overflow horizontal -->
+    <g transform="translate(1186,120)">
+      <rect x="0" y="0" width="60" height="60" rx="30" fill="rgba(88,166,255,0.14)" stroke="#58A6FF" stroke-width="1.3"/>
+      <use href="#m-more" x="14" y="8" width="22" height="22" color="#58A6FF"/>
+      <text x="30" y="46" fill="#58A6FF" font-size="13" font-weight="700" text-anchor="middle">+3</text>
+    </g>
+    <text x="1158" y="200" fill="#6E7681" font-size="10" text-anchor="middle">+3 fases</text>
+
+    <!-- gradiente de fade al borde derecho (afordance de scroll) -->
+    <rect x="1150" y="0" width="60" height="300" fill="url(#fadeR)"/>
+  </g>
+  <defs>
+    <linearGradient id="fadeR" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#0D1117" stop-opacity="0"/>
+      <stop offset="1" stop-color="#0D1117" stop-opacity="0.85"/>
+    </linearGradient>
+  </defs>
+
+  <!-- ===== D. POPOVER DEL AGENTE (CA-2) ===== -->
+  <g transform="translate(40,540)">
+    <text x="0" y="14" fill="#E6EDF3" font-size="15" font-weight="600">D · Popover del agente (al hacer click/hover sobre una card)</text>
+    <g transform="translate(0,28)">
+      <rect x="0" y="0" width="420" height="244" rx="12" fill="#252B33" stroke="#484F58" stroke-width="1.3"/>
+      <!-- flecha del popover -->
+      <path d="M40 0 L52 -12 L64 0 Z" fill="#252B33" stroke="#484F58" stroke-width="1.3"/>
+      <text x="18" y="30" fill="#E6EDF3" font-size="16" font-weight="700">#3954</text>
+      <rect x="74" y="16" width="120" height="22" rx="11" fill="rgba(88,166,255,0.14)"/>
+      <text x="84" y="31" fill="#58A6FF" font-size="12" font-weight="600">android-dev</text>
+
+      <line x1="18" y1="46" x2="402" y2="46" stroke="#30363D" stroke-width="1"/>
+      <text x="18" y="70" fill="#8B949E" font-size="12">Fase</text>
+      <text x="160" y="70" fill="#E6EDF3" font-size="13" font-weight="600">desarrollo · dev</text>
+      <text x="18" y="94" fill="#8B949E" font-size="12">Estado</text>
+      <use href="#m-not-entered" x="160" y="80" width="0" height="0"/>
+      <circle cx="166" cy="89" r="5" fill="#F59E0B"/>
+      <text x="178" y="94" fill="#F59E0B" font-size="13" font-weight="600">reintentando (rebote 1)</text>
+      <text x="18" y="118" fill="#8B949E" font-size="12">Edad</text>
+      <text x="160" y="118" fill="#E6EDF3" font-size="13">14 min</text>
+
+      <text x="18" y="146" fill="#8B949E" font-size="12">Motivo del ultimo rebote</text>
+      <rect x="18" y="154" width="384" height="44" rx="8" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+      <text x="28" y="172" fill="#B1BAC4" font-size="11.5">build: assembleClientDebug fallo — recurso</text>
+      <text x="28" y="188" fill="#B1BAC4" font-size="11.5">ic_launcher ausente en flavor delivery (escapado)</text>
+
+      <!-- botones log / pausar -->
+      <g transform="translate(18,210)">
+        <rect x="0" y="0" width="120" height="30" rx="8" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+        <use href="#m-doc" x="12" y="6" width="18" height="18" color="#58A6FF"/>
+        <text x="38" y="20" fill="#E6EDF3" font-size="13">Ver log</text>
+      </g>
+      <g transform="translate(150,210)">
+        <rect x="0" y="0" width="120" height="30" rx="8" fill="rgba(245,158,11,0.14)" stroke="#F59E0B" stroke-width="1"/>
+        <use href="#m-pause" x="12" y="6" width="18" height="18" color="#F59E0B"/>
+        <text x="38" y="20" fill="#F59E0B" font-size="13">Pausar</text>
+      </g>
+    </g>
+    <text x="0" y="300" fill="#6E7681" font-size="11">log → /logs/view/&lt;file&gt; con encodeURIComponent · botones reusan endpoints existentes · motivo/skill escapados (CA-8)</text>
+  </g>
+
+  <!-- ===== E. VARIANTE KIOSK (zoom lejos · CA-1) ===== -->
+  <g transform="translate(500,540)">
+    <text x="0" y="14" fill="#E6EDF3" font-size="15" font-weight="600">E · Kiosk (zoom "lejos") — legible a ~3 m</text>
+    <g transform="translate(0,28)">
+      <rect x="0" y="0" width="900" height="244" rx="12" fill="#161B22" stroke="#21262D" stroke-width="1"/>
+      <!-- 4 etapas resumidas con conteo gigante + semaforo grande -->
+      <g transform="translate(20,20)">
+        <use href="#m-not-entered" x="0" y="6" width="34" height="34" color="#8B949E"/>
+        <text x="44" y="32" fill="#B1BAC4" font-size="22" font-weight="700">No ingres.</text>
+        <text x="44" y="120" fill="#E6EDF3" font-size="72" font-weight="800">3</text>
+        <circle cx="180" cy="100" r="16" fill="#8B949E"/>
+      </g>
+      <line x1="230" y1="20" x2="230" y2="224" stroke="#21262D" stroke-width="1"/>
+      <g transform="translate(250,20)">
+        <use href="#m-doc" x="0" y="6" width="34" height="34" color="#BC8CFF"/>
+        <text x="44" y="32" fill="#B1BAC4" font-size="22" font-weight="700">En fases</text>
+        <text x="44" y="120" fill="#E6EDF3" font-size="72" font-weight="800">4</text>
+        <circle cx="170" cy="76" r="16" fill="#3FB950"/>
+        <circle cx="210" cy="76" r="16" fill="#F59E0B"/>
+      </g>
+      <line x1="470" y1="20" x2="470" y2="224" stroke="#21262D" stroke-width="1"/>
+      <g transform="translate(490,20)">
+        <use href="#m-doc" x="0" y="6" width="34" height="34" color="#2DD4BF"/>
+        <text x="44" y="32" fill="#B1BAC4" font-size="22" font-weight="700">QA</text>
+        <text x="44" y="120" fill="#E6EDF3" font-size="72" font-weight="800">1</text>
+        <circle cx="150" cy="76" r="16" fill="#3FB950"/>
+      </g>
+      <line x1="650" y1="20" x2="650" y2="224" stroke="#21262D" stroke-width="1"/>
+      <g transform="translate(670,20)">
+        <use href="#m-finalized" x="0" y="6" width="34" height="34" color="#3FB950"/>
+        <text x="44" y="32" fill="#B1BAC4" font-size="22" font-weight="700">Finaliz.</text>
+        <text x="44" y="120" fill="#3FB950" font-size="72" font-weight="800">2</text>
+      </g>
+    </g>
+    <text x="0" y="300" fill="#6E7681" font-size="11">conteos 72px + semaforos 32px · detalle de card oculto · misma linea, misma fuente de datos</text>
+  </g>
+
+  <!-- ===== F. VARIANTE FOCO — columna expandida con timeline ===== -->
+  <g transform="translate(40,900)">
+    <text x="0" y="14" fill="#E6EDF3" font-size="15" font-weight="600">F · Foco (zoom "foco") — columna expandida con timeline del agente</text>
+    <g transform="translate(0,28)">
+      <rect x="0" y="0" width="380" height="430" rx="12" fill="#161B22" stroke="#58A6FF" stroke-width="1.3"/>
+      <use href="#m-doc" x="16" y="16" width="20" height="20" color="#58A6FF"/>
+      <text x="44" y="31" fill="#E6EDF3" font-size="16" font-weight="700">Desarrollo</text>
+      <text x="16" y="60" fill="#8B949E" font-size="12">#3954 · android-dev · rebote 1</text>
+
+      <!-- timeline vertical -->
+      <line x1="36" y1="84" x2="36" y2="400" stroke="#30363D" stroke-width="2"/>
+      <g transform="translate(0,90)">
+        <circle cx="36" cy="0" r="7" fill="#3FB950"/>
+        <text x="56" y="-2" fill="#E6EDF3" font-size="13" font-weight="600">dev — completado</text>
+        <text x="56" y="16" fill="#8B949E" font-size="11">09:42 · 3m 18s</text>
+      </g>
+      <g transform="translate(0,160)">
+        <circle cx="36" cy="0" r="7" fill="#F85149"/>
+        <text x="56" y="-2" fill="#E6EDF3" font-size="13" font-weight="600">build — rechazado</text>
+        <text x="56" y="16" fill="#F85149" font-size="11">09:48 · recurso ausente</text>
+      </g>
+      <g transform="translate(0,230)">
+        <circle cx="36" cy="0" r="7" fill="#F59E0B"/>
+        <text x="56" y="-2" fill="#E6EDF3" font-size="13" font-weight="600">dev — reintentando</text>
+        <text x="56" y="16" fill="#F59E0B" font-size="11">09:56 · en curso (14m)</text>
+      </g>
+      <g transform="translate(0,300)">
+        <circle cx="36" cy="0" r="7" fill="none" stroke="#6E7681" stroke-width="2"/>
+        <text x="56" y="-2" fill="#8B949E" font-size="13">build</text>
+      </g>
+      <g transform="translate(0,350)">
+        <circle cx="36" cy="0" r="7" fill="none" stroke="#6E7681" stroke-width="2"/>
+        <text x="56" y="-2" fill="#8B949E" font-size="13">verificacion · aprobacion · entrega</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ===== nota CA mapping ===== -->
+  <g transform="translate(460,940)">
+    <rect x="0" y="0" width="940" height="390" rx="12" fill="#161B22" stroke="#21262D" stroke-width="1"/>
+    <text x="20" y="32" fill="#E6EDF3" font-size="15" font-weight="700">Mapa de criterios de aceptacion → mockup</text>
+    <g fill="#B1BAC4" font-size="13">
+      <text x="20" y="66">CA-1  Zoom semantico (lejos/normal/foco) + kiosk legible a 3 m</text>
+      <text x="700" y="66" fill="#3FB950">B · C · E · F</text>
+      <text x="20" y="92">CA-2  Popover: issue/skill/fase/estado/edad/rebote + log/pausar</text>
+      <text x="700" y="92" fill="#3FB950">D</text>
+      <text x="20" y="118">CA-3  Badge unico de pausa (pausado / fuera de allowlist)</text>
+      <text x="700" y="118" fill="#3FB950">A (header)</text>
+      <text x="20" y="144">CA-4  Indicador "+N fases" ante overflow horizontal</text>
+      <text x="700" y="144" fill="#3FB950">C (chip +3)</text>
+      <text x="20" y="170">CA-5  Etapa "No ingresados" en la linea (motivo + link bloqueante)</text>
+      <text x="700" y="170" fill="#3FB950">C (col. izq.)</text>
+      <text x="20" y="196">CA-6  Etapa "Finalizados" en la linea (fecha cierre + link PR)</text>
+      <text x="700" y="196" fill="#3FB950">C (col. der.)</text>
+      <text x="20" y="222">CA-7  Sin bandeja fuera de flujo — todo en la misma linea</text>
+      <text x="700" y="222" fill="#3FB950">C (linea unica)</text>
+      <text x="20" y="248">CA-8  Escaping de todo texto dinamico (XSS · motivo/skill/titulo)</text>
+      <text x="700" y="248" fill="#3FB950">D (nota)</text>
+      <text x="20" y="274">CA-9  Links seguros (esquema https://github.com, rel noopener)</text>
+      <text x="700" y="274" fill="#3FB950">C · D (links)</text>
+      <text x="20" y="300">CA-10 Sin datos sensibles en payloads de popover/finalizados</text>
+      <text x="700" y="300" fill="#3FB950">D (payload)</text>
+    </g>
+    <line x1="20" y1="320" x2="920" y2="320" stroke="#30363D" stroke-width="1"/>
+    <text x="20" y="348" fill="#8B949E" font-size="12">Tokens: design-tokens.css §14 (zoom semantico/kiosk) · Iconos: sprite.svg (ic-stage-not-entered, ic-stage-finalized, ic-overflow-more)</text>
+    <text x="20" y="372" fill="#6E7681" font-size="11">Validacion de cierre: render real con curl + grep del HTML servido (no solo sintaxis JS) para los 10 CAs + caso XSS con &lt;script&gt;</text>
+  </g>
+
+  <text x="40" y="1480" fill="#6E7681" font-size="11">Mockup 35 · EP8-H3 #3956 · agente ux (fase definicion/criterios) · 2026-06-15</text>
+</svg>
