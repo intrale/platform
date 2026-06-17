@@ -89,13 +89,45 @@ function downloadTelegramFile(fileId, botToken) {
 // campo `source` para que el resto del pipeline (logs, extras) siga auditando
 // qué motor respondió. La arquitectura de fallback se mantiene: si mañana se
 // suma otro motor gratuito, este orquestador es el punto de extensión.
+// El motor local (`whisper-local`) corre un solo audio a la vez (lock single-flight
+// por los ~2 GB de RAM del modelo large-v3-turbo). Cuando llega un audio mientras
+// otro se está transcribiendo, devuelve `busy`. ANTES eso descartaba el audio sin
+// avisar: si el operador mandaba varias notas de voz pegadas, las del medio se
+// perdían. Ahora, en vez de tirarlas, ESPERAMOS a que se libere el lock y
+// reintentamos — de hecho encolamos: cada audio se serializa detrás del que está
+// en curso. Presupuesto de espera generoso porque una transcripción larga puede
+// tardar minutos (timeout del motor = 5 min); pisable con env si hace falta.
+const BUSY_RETRY_DELAY_MS = Number(process.env.WHISPER_BUSY_RETRY_DELAY_MS || 3000);
+const BUSY_MAX_WAIT_MS = Number(process.env.WHISPER_BUSY_MAX_WAIT_MS || 360000); // 6 min
+
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
 async function transcribeAudioWithFallback(audioBuffer, audioPath, filename) { // eslint-disable-line no-unused-vars
   if (!whisperLocalAvailable()) {
     log('whisper local no está disponible (binario ausente)');
     return { ok: false, text: '', source: 'local', errorKind: 'unavailable', raw: 'whisper CLI no encontrado' };
   }
 
-  const localResult = await whisperLocal({ audioPath, audioBuffer, logger: log });
+  // Reintento ante `busy`: esperamos a que el lock single-flight se libere en vez de
+  // descartar el audio. Total acotado por BUSY_MAX_WAIT_MS para no colgar el turno
+  // indefinidamente; si tras ese presupuesto sigue ocupado, devolvemos `busy` y el
+  // caller aplica el mensaje de fallback.
+  let localResult = await whisperLocal({ audioPath, audioBuffer, logger: log });
+  if (!localResult.ok && localResult.errorKind === 'busy') {
+    const waitStart = Date.now();
+    let waited = 0;
+    while (localResult.errorKind === 'busy' && (Date.now() - waitStart) < BUSY_MAX_WAIT_MS) {
+      waited += BUSY_RETRY_DELAY_MS;
+      log(`[whisper local] motor ocupado, esperando turno (${Math.round((Date.now() - waitStart) / 1000)}s)...`);
+      await sleep(BUSY_RETRY_DELAY_MS);
+      localResult = await whisperLocal({ audioPath, audioBuffer, logger: log });
+    }
+    if (localResult.ok) {
+      log(`[whisper local] lock liberado tras esperar ~${Math.round((Date.now() - waitStart) / 1000)}s — audio transcripto (no se perdió)`);
+    } else if (localResult.errorKind === 'busy') {
+      log(`[whisper local] motor sigue ocupado tras ${Math.round(BUSY_MAX_WAIT_MS / 1000)}s — me rindo, fallback a texto`);
+    }
+  }
   if (localResult.ok) {
     // #3918: propagamos `confidence` cuando el motor local la expone (whisper
     // local deriva la métrica de los logprobs del JSON). Extensión aditiva: si
@@ -123,6 +155,7 @@ function transcriptionFailureMessage(errorKind, _localErrorKind = null) {
     case 'no_input':
     case 'missing_file':return '🎤 Audio recibido pero no encontré el archivo para transcribir — reintentá o repetímelo por texto.';
     case 'spawn_error': return '🎤 Audio recibido. No pude lanzar whisper local — repetímelo por texto. Revisá que `WHISPER_LOCAL_BIN`/PATH apunten al binario.';
+    case 'busy':        return '🎤 Audio recibido. El motor de transcripción estuvo ocupado un buen rato con otros audios y no se liberó a tiempo — repetímelo por texto, o reenvialo en unos segundos.';
     default:            return '🎤 Audio recibido pero no pude transcribirlo — repetímelo por texto cuando puedas.';
   }
 }
