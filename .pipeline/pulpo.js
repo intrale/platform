@@ -2167,7 +2167,10 @@ const QA_MIN_FRAME_PNGS = 3;             // Mínimo de frames PNG del agente QA 
  * El campo `video_size_kb` del YAML es solo informativo; si el archivo en disco
  * cumple el umbral, se acepta.
  */
-function validateQaEvidence(issue, qaData, authoritativeQaMode = null) {
+function validateQaEvidence(issue, qaData, authoritativeQaMode = null, deps = {}) {
+  // `getLabels` es inyectable para tests (default: la fuente autoritativa de
+  // GitHub). NUNCA se cae al YAML del agente para resolver labels (R1 #2351).
+  const getLabels = deps.getLabels || getIssueLabels;
   // El preflight clasifica cada issue en uno de tres modos (qaMode):
   //   - 'android'    → requiere emulador + APK → debe haber video/frames
   //   - 'api'        → testing via HTTP, sin UI → no produce video
@@ -2188,13 +2191,16 @@ function validateQaEvidence(issue, qaData, authoritativeQaMode = null) {
   // (`hasVisualReference`) ya lo honra; este gate de evidencia audiovisual debía
   // honrarlo también — sin esto, un issue correctamente etiquetado `qa:skipped`
   // (caso #3956, dashboard kanban sin cambios en app/composeApp/) se rechazaba por
-  // "sin evidencia: no hay .mp4". A diferencia del `modo` del YAML (manipulable por
-  // el agente, ver R1 #2351), el label vive en GitHub y requiere permisos de
-  // escritura para asignarse: es una whitelist explícita y confiable.
-  const issueLabels = (Array.isArray(qaData && qaData.labels) && qaData.labels.length)
-    ? qaData.labels
-    : getIssueLabels(issue);
-  if (qaEvidenceGate.hasQaSkippedLabel(issueLabels)) {
+  // "sin evidencia: no hay .mp4".
+  //
+  // SEGURIDAD (R1 #2351): la fuente de los labels para esta decisión de bypass es
+  // EXCLUSIVAMENTE GitHub (`getIssueLabels`), nunca el YAML del agente
+  // (`qaData.labels`). El YAML es input escribible por el agente QA: si lo
+  // consultáramos, un agente podría inyectar `labels: ['qa:skipped']` y saltear
+  // el gate sin que el label exista realmente en GitHub. El label vive en GitHub
+  // y requiere permisos de escritura para asignarse: es una whitelist explícita y
+  // confiable, no manipulable por el agente.
+  if (qaEvidenceGate.hasQaSkippedLabel(getLabels(issue))) {
     log('gate-bypass', `🟢 gate-bypass #${issue} reason=qa-skipped — label explícito qa:skipped, no requiere evidencia audiovisual ${JSON.stringify({ event: 'gate-bypass', issue: String(issue), source: 'label', decision: 'skip-video', reason: 'qa-skipped' })}`);
     return [];
   }
@@ -13689,6 +13695,9 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     _setBuildPriorityState: (active, manual) => { buildPriorityActive = active; buildPriorityManual = manual || false; },
     // #2893 — resolver de script determinístico (preferencia worktree-first).
     resolveDeterministicScript,
+    // #3956 — gate de evidencia QA: expuesto para test de integración del bypass
+    // `qa:skipped` (la fuente de labels debe ser GitHub, nunca el YAML del agente).
+    validateQaEvidence,
     // #4046 — preflight de APK por flavor real + resolución de changed-files.
     preflightQaChecks,
     getChangedFilesForIssue,
