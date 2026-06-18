@@ -21,7 +21,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { renderWaveSnapshot, renderAudioText, _internal } = require('../wave-renderer');
+const { renderWaveSnapshot, renderWaveSnapshotMessages, renderAudioText, _internal } = require('../wave-renderer');
 
 const NOW = 1747440000000;
 
@@ -133,10 +133,10 @@ test('CA-13: ola con todos cerrados → header ola completada', () => {
 });
 
 // -----------------------------------------------------------------------------
-// CA-14 — truncado a 12 issues
+// #4075 Frente 2 — listado completo sin truncar "+N más"
 // -----------------------------------------------------------------------------
 
-test('CA-14: con >12 issues, truncar tabla y agregar sufijo "+N en X"', () => {
+test('#4075: con 18 issues renderiza TODAS las filas, sin "+N más"', () => {
     const issues = [];
     for (let i = 1; i <= 18; i++) {
         issues.push({
@@ -149,11 +149,51 @@ test('CA-14: con >12 issues, truncar tabla y agregar sufijo "+N en X"', () => {
     }
     const snap = baseSnapshot({ totalIssues: 18, activeCount: 18, closedCount: 0, issues, totalPct: 29 });
     const out = renderWaveSnapshot(snap, { now: NOW });
-    // Debe contener "+6 más"
-    assert.match(out, /\+6 más/);
+    // NO debe truncar con "+N más".
+    assert.doesNotMatch(out, /\+\d+ más/, 'no debe ocultar issues con +N más');
+    // Las 18 filas deben estar presentes.
+    for (let i = 1; i <= 18; i++) {
+        assert.ok(out.includes(`#${4000 + i}`), `falta el issue #${4000 + i} en la tabla`);
+    }
     // No debe romper el code block.
     const codeBlocks = (out.match(/```/g) || []).length;
     assert.equal(codeBlocks % 2, 0, 'code blocks deben estar balanceados');
+});
+
+test('#4075: ola gigante se parte en mensajes consecutivos sin ocultar issues', () => {
+    const issues = [];
+    for (let i = 1; i <= 200; i++) {
+        issues.push({
+            id: 5000 + i, title: '', labels: [], faseActual: 'desarrollo/dev',
+            faseAbbrev: 'dev (2/7)', faseIdx: 1, denominador: 7, pct: 29,
+            agente: 'backend-dev', status: 'dev',
+            isClosed: false, isBlocked: false, isPaused: false, isStale: false,
+            staleMin: 5, bounces: 0, hasEta: true, etaAbsoluteMs: NOW + 600000,
+        });
+    }
+    const snap = baseSnapshot({ totalIssues: 200, activeCount: 200, closedCount: 0, issues, totalPct: 29 });
+    const messages = renderWaveSnapshotMessages(snap, { now: NOW });
+    assert.ok(messages.length > 1, 'una ola de 200 issues debe partirse en varios mensajes');
+    // Cada mensaje cabe en el límite por mensaje.
+    for (const m of messages) {
+        assert.ok(m.length <= _internal.MSG_LIMIT, `mensaje de ${m.length} chars supera MSG_LIMIT`);
+        const fences = (m.match(/```/g) || []).length;
+        assert.equal(fences % 2, 0, 'code blocks balanceados por mensaje');
+    }
+    // Ningún mensaje contiene "+N más".
+    const joined = messages.join('\n');
+    assert.doesNotMatch(joined, /\+\d+ más/);
+    // Los 200 issues están visibles repartidos entre los mensajes.
+    for (let i = 1; i <= 200; i++) {
+        assert.ok(joined.includes(`#${5000 + i}`), `falta el issue #${5000 + i}`);
+    }
+});
+
+test('#4075: ola chica devuelve un solo mensaje (compat con renderWaveSnapshot)', () => {
+    const snap = baseSnapshot();
+    const messages = renderWaveSnapshotMessages(snap, { now: NOW });
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0], renderWaveSnapshot(snap, { now: NOW }));
 });
 
 // -----------------------------------------------------------------------------
@@ -347,4 +387,61 @@ test('CA-4 (#4026): formatBouncesCol coerciona valores no-enteros a 0', () => {
         assert.ok(!col.includes('↩'), `valor ${String(bad)} no debe mostrar flecha`);
         assert.equal(visibleWidth(col), _internal.BOUNCE_COL_WIDTH, 'ancho fijo aún con valor inválido');
     }
+});
+
+// -----------------------------------------------------------------------------
+// #4075 Frente 1 — dependencias inline en bloqueos
+// -----------------------------------------------------------------------------
+
+test('#4075: renderDependencyClause con deps en/fuera de ola', () => {
+    const clause = _internal.renderDependencyClause([
+        { id: 4067, statusText: 'en ola, dev 5/10' },
+        { id: 4068, statusText: 'en ola, verif 7/10' },
+    ]);
+    assert.match(clause, /bloqueado por/);
+    assert.match(clause, /\\#4067/);
+    assert.match(clause, /\\#4068/);
+    assert.match(clause, / y /, 'une dos deps con "y"');
+    // statusText escapado MarkdownV2 (los paréntesis del clause sí están escapados).
+    assert.match(clause, /\\\(en ola, dev 5\/10\\\)/);
+});
+
+test('#4075: bloqueo con dependencies[] renderiza inline', () => {
+    const snap = baseSnapshot({
+        blocks: [{
+            id: 4050,
+            motivo: 'dependencias abiertas en GitHub',
+            dependencies: [
+                { id: 4067, inWave: true, statusText: 'en ola, dev 5/10' },
+                { id: 4068, inWave: true, statusText: 'en ola, verif 7/10' },
+            ],
+        }],
+    });
+    const out = renderWaveSnapshot(snap, { now: NOW });
+    assert.match(out, /🛑 \*Bloqueos/);
+    assert.match(out, /\\#4050 → bloqueado por \\#4067/);
+    assert.match(out, /en ola, dev 5\/10/);
+    assert.match(out, /en ola, verif 7\/10/);
+});
+
+test('#4075: bloqueo con dep fuera de ola se marca explícitamente', () => {
+    const snap = baseSnapshot({
+        blocks: [{
+            id: 4090,
+            motivo: 'dependencias abiertas en GitHub',
+            dependencies: [{ id: 9999, inWave: false, statusText: 'fuera de ola, abierto' }],
+        }],
+    });
+    const out = renderWaveSnapshot(snap, { now: NOW });
+    assert.match(out, /\\#9999/);
+    assert.match(out, /fuera de ola, abierto/);
+});
+
+test('#4075: bloqueo SIN dependencies resolubles mantiene motivo genérico (fallback)', () => {
+    const snap = baseSnapshot({
+        blocks: [{ id: 4050, motivo: 'dependencias abiertas en GitHub' }],
+    });
+    const out = renderWaveSnapshot(snap, { now: NOW });
+    assert.match(out, /\\#4050 → dependencias abiertas en GitHub/);
+    assert.doesNotMatch(out, /bloqueado por/);
 });

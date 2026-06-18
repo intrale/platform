@@ -219,6 +219,49 @@ function collectActiveIssuesFromFs(pipelineRoot) {
 }
 
 /**
+ * Resuelve el mapa de dependencias parent→children desde `.partial-pause.json`
+ * (#4075). Las dependencias de un issue bloqueado se modelan en
+ * `authorization_ttls`, donde cada entrada `<childId>: { parent: <parentId> }`
+ * expresa que `childId` fue autorizado a la ola POR ser dependencia de
+ * `parentId`. Invertimos esa relación para responder "¿qué issues bloquean a
+ * #parentId?" → la lista de sus children.
+ *
+ * Fuente de verdad real (no hardcodeo): el mismo archivo que la allowlist usa
+ * para autorizar issues recursivamente (recursive-deps). Si el archivo no
+ * existe / no parsea / no tiene `authorization_ttls`, devuelve `{}` (fallback
+ * grácil → el renderer mantiene el motivo genérico).
+ *
+ * @param {object} opts
+ * @param {string} opts.pipelineRoot - Path absoluto al directorio `.pipeline`.
+ * @returns {Object<number, number[]>} mapa parentId → [childId, ...] ordenado asc.
+ */
+function resolveBlockDependencies(opts) {
+    const pipelineRoot = opts && opts.pipelineRoot;
+    if (!pipelineRoot) return {};
+    const file = path.join(pipelineRoot, '.partial-pause.json');
+    let parsed;
+    try {
+        parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {
+        return {};
+    }
+    if (!parsed || typeof parsed !== 'object') return {};
+    const ttls = parsed.authorization_ttls && typeof parsed.authorization_ttls === 'object'
+        ? parsed.authorization_ttls
+        : {};
+    const map = {};
+    for (const [childKey, info] of Object.entries(ttls)) {
+        const child = normalizeIssueNumber(childKey);
+        const parent = info && typeof info === 'object' ? normalizeIssueNumber(info.parent) : null;
+        if (child === null || parent === null) continue;
+        if (!map[parent]) map[parent] = [];
+        if (!map[parent].includes(child)) map[parent].push(child);
+    }
+    for (const k of Object.keys(map)) map[k].sort((a, b) => a - b);
+    return map;
+}
+
+/**
  * Resuelve la ola activa con la cascada de fuentes.
  *
  * @param {object} opts
@@ -347,6 +390,7 @@ function resolveWaveForIssue(issueNumber, opts) {
 module.exports = {
     resolveActiveWave,
     resolveWaveForIssue,
+    resolveBlockDependencies,
     // Exports internos para tests
     _internal: {
         readFromWavesJson,
