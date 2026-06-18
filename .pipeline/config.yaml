@@ -378,6 +378,22 @@ staleness:
   build_log_max_age_hours: 24     # Default — logs de build más viejos se consideran stale
   max_resets_per_issue: 5         # Tope duro: más de 5 resets por stale-log → escalar, no resetear
 
+# =============================================================================
+# Watchdog resiliente (#4077) — auto-supervisión del watchdog
+# =============================================================================
+# El watchdog (.pipeline/watchdog.ps1) escribe un heartbeat propio en cada
+# ciclo (.pipeline/logs/watchdog.heartbeat). Una 2da tarea de Task Scheduler
+# (Intrale-Pipeline-V2-Watchdog-Supervisor → watchdog-supervisor.ps1) lee ese
+# heartbeat y relanza el watchdog si está stale. La lógica de decisión vive en
+# .pipeline/lib/watchdog-supervisor.js (testeada con node --test).
+# Override por env: WATCHDOG_STALE_MINUTES (entero positivo; inválido → default,
+# NUNCA "nunca stale" — SEC-2).
+watchdog:
+  stale_minutes: 6                 # heartbeat más viejo que esto = watchdog stale (3 ciclos de 2 min)
+  supervisor_max_restarts: 3       # SEC-4: cap duro de relanzamientos por ventana antes de escalar a needs-human
+  supervisor_cooldown_seconds: 90  # mín. entre relanzamientos (reusa semántica del cooldown de last-restart.json)
+  supervisor_window_minutes: 60    # ventana para contar relanzamientos contra el cap
+
 # Dashboard — opciones del dashboard del pipeline
 dashboard:
   # #2895 — Threshold (% del promedio histórico) a partir del cual un agente
