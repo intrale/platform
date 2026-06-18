@@ -123,6 +123,7 @@ function main() {
     issueComments: issue.comments,
     type: inferredType,
     description: args.description,
+    issueNumber: args.issue,
   });
 
   // 5. Construir pr-body
