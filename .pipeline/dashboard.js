@@ -7340,6 +7340,72 @@ function toggleSection(name) {
   } catch (e) {}
 })();
 
+// #4068 — Pantalla de confirmación NO-MUTANTE de las acciones rápidas de
+// needs-human. El botón de Telegram abre /?action=A&issue=N&token=T (GET); acá
+// solo renderizamos una confirmación con la consecuencia de la acción. La
+// mutación real recién ocurre al confirmar (POST /api/human-block/action detrás
+// del gate CA-Sec). Anti-CSRF: jamás se muta en GET.
+(function applyHumanBlockActionConfirm(){
+  try {
+    var params = new URLSearchParams(location.search);
+    var action = params.get('action');
+    var issue = params.get('issue');
+    var token = params.get('token');
+    var ACTIONS = {
+      'unblock':             { title: 'Aprobar (desbloquear)',  consequence: 'Vas a desbloquear el issue y devolverlo a la cola del pipeline.', high: false },
+      'mas-contexto':        { title: 'Pedir más contexto',     consequence: 'Vas a pedir más contexto; el issue queda bloqueado hasta que respondas.', high: false },
+      'devolver-definicion': { title: 'Devolver a definición',  consequence: '⚠️ Vas a devolver el issue a definición. Se descarta el trabajo de desarrollo en curso y vuelve a re-analizarse.', high: true },
+      'priorizar':           { title: 'Priorizar',              consequence: 'Vas a subir la prioridad de este issue y desbloquearlo.', high: false }
+    };
+    if (!action || !ACTIONS[action] || !issue || !/^[0-9]+$/.test(issue) || !token) return;
+    var meta = ACTIONS[action];
+    var primary = meta.high ? '#d9822b' : '#2e7d32';
+    var ov = document.createElement('div');
+    ov.id = 'hb-action-overlay';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px;';
+    var card = document.createElement('div');
+    card.style.cssText = 'background:#1b1f27;color:#e8eaed;max-width:440px;width:100%;border-radius:12px;padding:22px;box-shadow:0 8px 40px rgba(0,0,0,.5);font-family:system-ui,Segoe UI,sans-serif;';
+    var btnBase = 'border:0;border-radius:8px;padding:10px 16px;cursor:pointer;font-size:14px;';
+    card.innerHTML =
+      '<div style="font-size:13px;opacity:.7;margin-bottom:6px;">Issue #' + issue + '</div>' +
+      '<div style="font-size:19px;font-weight:600;margin-bottom:12px;">' + meta.title + '</div>' +
+      '<div id="hb-action-body" style="font-size:14px;line-height:1.5;margin-bottom:20px;">' + meta.consequence + '</div>' +
+      '<div id="hb-action-cta" style="display:flex;gap:10px;justify-content:flex-end;">' +
+        '<button id="hb-cancel" style="' + btnBase + 'background:#33373f;color:#e8eaed;">Cancelar</button>' +
+        '<button id="hb-confirm" style="' + btnBase + 'background:' + primary + ';color:#fff;font-weight:600;">Confirmar</button>' +
+      '</div>';
+    ov.appendChild(card);
+    document.body.appendChild(ov);
+    function cleanUrl(){ try { history.replaceState({}, document.title, location.pathname); } catch (e) {} }
+    function close(){ try { ov.remove(); } catch (e) {} cleanUrl(); }
+    function showCloseOnly(html){
+      document.getElementById('hb-action-body').innerHTML = html;
+      var cta = document.getElementById('hb-action-cta');
+      cta.innerHTML = '<button id="hb-close2" style="' + btnBase + 'background:#33373f;color:#e8eaed;">Cerrar</button>';
+      document.getElementById('hb-close2').onclick = close;
+      cleanUrl();
+    }
+    document.getElementById('hb-cancel').onclick = close;
+    document.getElementById('hb-confirm').onclick = function(){
+      document.getElementById('hb-action-cta').innerHTML = '<span style="opacity:.7;">Procesando…</span>';
+      fetch('/api/human-block/action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ issue: Number(issue), action: action, token: token })
+      })
+        .then(function(r){ return r.json().then(function(j){ return { status: r.status, j: j }; }); })
+        .then(function(o){
+          if (o.status === 200 && o.j && o.j.ok) {
+            showCloseOnly('✅ Hecho — ' + (o.j.msg || ('#' + issue + ' actualizado')));
+          } else {
+            showCloseOnly((o.j && o.j.msg) ? o.j.msg : '🔒 No se pudo ejecutar la acción.');
+          }
+        })
+        .catch(function(e){ showCloseOnly('⚠️ Error de red: ' + e.message); });
+    };
+  } catch (e) {}
+})();
+
 // Toggle de la sección "Salud de Infra" — colapsable + persistente (default: colapsada)
 function toggleInfraHealth() {
   const sec = document.querySelector('section.infra-health');
@@ -9683,6 +9749,17 @@ const server = http.createServer((req, res) => {
   if (req.url && req.url.startsWith('/api/agent-chat')) {
     const agentChat = require('./lib/agent-chat-handler');
     return agentChat.handle(req, res, { PIPELINE, LOG_DIR, log });
+  }
+
+  // =========================================================================
+  // #4068 — Acción rápida de needs-human (botones de la alerta de Telegram).
+  // POST mutante detrás del gate CA-Sec + token HMAC. El GET del botón es
+  // no-mutante: lo maneja el cliente (renderiza confirmación) — ver IIFE
+  // applyHumanBlockActionConfirm en el HTML. La mutación SOLO ocurre acá.
+  // =========================================================================
+  if (req.url && req.url.split('?')[0] === '/api/human-block/action') {
+    const hbActionHandler = require('./lib/human-block-action-handler');
+    return hbActionHandler.handle(req, res, { log });
   }
 
   // =========================================================================
