@@ -95,13 +95,13 @@ test('CA-7/FP-3: "el issue sigue abierto" → canonical issue_cerrado = consiste
 // real DISCREPA. Verificamos que la inversión de lógica distingue ambos casos.
 // -----------------------------------------------------------------------------
 test('CA-7: si el hecho real SÍ discrepa, el árbitro contradice con fuente (inconsistent legítimo)', async () => {
-    // Issue sin rama mergeada: el claim "está en main" es falso de verdad.
-    const impls = {
-        gitImpl: () => Promise.resolve({ ok: true, stdout: '\n' }), // sin ramas
-        ghApi: fakeGhApi,
-    };
-    const r = await resolveClaim('entregable_en_main', { issue: 9999, expected: true }, impls);
-    assert.equal(r.value, false);
+    // #4074: entregable_en_main ya NO emite un `false` especulativo (el tip de la
+    // rama no refuta un squash-merge). La contradicción legítima surge cuando el
+    // Commander afirma lo CONTRARIO al hecho positivo: "el entregable NO está en
+    // main" (expected:false) mientras la rama agent/3729-* SÍ está mergeada →
+    // value=true discrepa de expected=false → inconsistent respaldado por la fuente.
+    const r = await resolveClaim('entregable_en_main', { issue: 3729, expected: false }, IMPLS);
+    assert.equal(r.value, true, 'la rama agent/3729-* está alcanzable desde origin/main');
     assert.equal(r.status, 'inconsistent', 'contradicción LEGÍTIMA respaldada por el hecho canónico');
 });
 

@@ -2276,12 +2276,16 @@ test('#3895 CA-3: claim DISCREPA del canónico → status inconsistent (árbitro
         dispatchModule: fakeDispatcher({ providerChain: CHAIN_HTTP }),
         residencyModule: fakeResidencyOk(),
         independentVerifier: fakeIndependentVerifier({}),
-        // git devuelve VACÍO (rama no existe / no mergeada) → claim positivo discrepa.
+        // git devuelve VACÍO (rama no existe) y el issue está OPEN sin PR mergeado.
+        // rama_contiene_commits e issue_cerrado discrepan (inconsistent). Para
+        // entregable_en_main, #4074 cambia el contrato: rama ausente sin señal de
+        // merge ya NO se concluye `false` (era el falso negativo "s/main") →
+        // not_verifiable (no se puede afirmar ni negar la presencia en main).
         gitImpl: async () => ({ ok: true, stdout: '\n', code: 0 }),
         ghApi: async () => ({ ok: true, stdout: '{"state":"OPEN","closed":false}', code: 0 }),
     });
     const byClaim = Object.fromEntries(result.canonicalFacts.map(c => [c.claim, c.status]));
-    assert.equal(byClaim.entregable_en_main, 'inconsistent', 'el canónico arbitra: NO está en main');
+    assert.equal(byClaim.entregable_en_main, 'not_verifiable', 'rama borrada/ausente sin merge corroborable → no concluir false (#4074)');
     assert.equal(byClaim.rama_contiene_commits, 'inconsistent');
     assert.equal(byClaim.issue_cerrado, 'inconsistent', 'issue OPEN discrepa del claim de cerrado');
 });

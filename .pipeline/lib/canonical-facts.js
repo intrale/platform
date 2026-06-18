@@ -172,6 +172,52 @@ function parseBranchPresence(stdout) {
 }
 
 // -----------------------------------------------------------------------------
+// Helpers de corroboración del claim entregable_en_main (#4074). SEC-5: cualquier
+// error de parse → valor neutro ([]/null), NUNCA throw. Se usan SOLO en la rama
+// de corroboración cuando la rama agent/<n>-* fue borrada tras squash-merge.
+// -----------------------------------------------------------------------------
+
+// parseClosedByPrNumbers — extrae los números de PR que cerraron el issue del
+// JSON de `gh issue view <n> --json closedByPullRequestsReferences`. Cada número
+// pasa por `normalizeIssueNumber` (entero estricto) ANTES de poder usarse como
+// arg (SEC-1: nunca se concatena un número crudo del JSON al comando). JSON
+// malformado o sin el campo → [].
+function parseClosedByPrNumbers(stdout) {
+    try {
+        const j = JSON.parse(String(stdout == null ? '' : stdout));
+        const refs = Array.isArray(j.closedByPullRequestsReferences)
+            ? j.closedByPullRequestsReferences
+            : [];
+        const nums = [];
+        for (const r of refs) {
+            const n = normalizeIssueNumber(r && r.number);
+            if (n != null) nums.push(n);
+        }
+        return nums;
+    } catch {
+        return [];
+    }
+}
+
+// parseMergedCommitOid — del JSON de `gh pr view <pr> --json state,mergedAt,
+// mergeCommit`, devuelve el oid del merge-commit SOLO si el PR está realmente
+// mergeado (`mergedAt` presente) y el oid es hex válido (SHA_RE). Si el PR no
+// está mergeado, no tiene merge-commit, o el JSON es inválido → null. Esto evita
+// falsos positivos: sin un oid verificable NO se puede afirmar "en main".
+function parseMergedCommitOid(stdout) {
+    try {
+        const j = JSON.parse(String(stdout == null ? '' : stdout));
+        if (!j.mergedAt) return null; // PR no mergeado → no corrobora
+        const oid = (j.mergeCommit && typeof j.mergeCommit.oid === 'string')
+            ? j.mergeCommit.oid
+            : '';
+        return SHA_RE.test(oid) ? oid : null;
+    } catch {
+        return null;
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Helpers de parse nuevos (#3923). Todos SEC-5: try/catch → not_verifiable,
 // NUNCA throw. El loader YAML es `js-yaml` ≥4 `load` (safe-by-default).
 // -----------------------------------------------------------------------------
@@ -238,6 +284,70 @@ const CANONICAL_FACTS = {
             return ['branch', '--all', '--merged', 'origin/main', '--list', `*agent/${n}-*`];
         },
         parse(stdout) { return parseBranchPresence(stdout); },
+        // ---------------------------------------------------------------------
+        // resolve() (#4074) — anti-falso-negativo del flag "s/main".
+        //
+        // `--merged origin/main --list *agent/<n>-*` devuelve vacío para CUALQUIER
+        // entregable integrado por **squash-merge**: el squash crea un commit
+        // nuevo, así que el tip de la rama agent/<n>-* NUNCA es ancestro de
+        // origin/main — exista la rama o haya sido borrada tras el merge. El parse
+        // plano concluía `false` en ese caso → falso negativo "s/main" para
+        // issues que SÍ están en main (incidente #4052/#4051/#4039).
+        //
+        // Diseño conservador (CA #4074: "ante la duda, not_verifiable; nunca un
+        // true espurio"). Sólo afirma con señales POSITIVAS verificables y JAMÁS
+        // emite un `false` (la presencia real en main vía squash no se puede
+        // refutar con el tip de la rama):
+        //   1. rama agent/<n>-* mergeada a origin/main (merge no-squash) → true.
+        //   2. PR que cerró el issue + mergeado + merge-commit ES ancestro de
+        //      origin/main (cubre squash-merge, con o sin rama borrada)    → true.
+        //   3. sin ninguna señal positiva verificable → not_verifiable (NO false).
+        //
+        // Usa `origin/main` (no main local stale, ver #3846). fail-open (SEC-5):
+        // cualquier fallo de git/gh → not_verifiable, jamás throw.
+        async resolve({ issue } = {}, helpers = {}) {
+            const git = typeof helpers.git === 'function' ? helpers.git : null;
+            const gh = typeof helpers.gh === 'function' ? helpers.gh : null;
+            const n = normalizeIssueNumber(issue);
+            if (n == null || !git) return { value: null, verifiable: false };
+
+            // (1) Señal primaria: rama agent/<n>-* MERGEADA a origin/main. Sólo
+            // detecta merges no-squash (tip ancestro). Positivo → true.
+            const merged = await git(['branch', '--all', '--merged', 'origin/main', '--list', `*agent/${n}-*`]);
+            if (merged && merged.ok) {
+                const p = parseBranchPresence(merged.stdout);
+                if (p.status === 'ok' && p.value === true) return { value: true, verifiable: true };
+            }
+
+            // (2) Corroboración robusta (cubre squash-merge): el/los PR que
+            // cerraron el issue, mergeado(s), cuyo merge-commit ES ancestro de
+            // origin/main. NO se usa la mera EXISTENCIA de la rama como señal de
+            // ausencia (un squash-merge la deja sin mergear-por-tip aunque el
+            // entregable esté en main).
+            if (!gh) return { value: null, verifiable: false };
+            let prNumbers = [];
+            try {
+                const iv = await gh(['issue', 'view', String(n), '--json', 'closedByPullRequestsReferences']);
+                if (iv && iv.ok) prNumbers = parseClosedByPrNumbers(iv.stdout);
+            } catch { /* fail-open */ }
+
+            for (const pr of prNumbers) {
+                let oid = null;
+                try {
+                    const pv = await gh(['pr', 'view', String(pr), '--json', 'state,mergedAt,mergeCommit']);
+                    if (pv && pv.ok) oid = parseMergedCommitOid(pv.stdout);
+                } catch { /* fail-open: probar el siguiente PR */ }
+                if (oid) {
+                    // SEC-1: `oid` ya pasó SHA_RE en parseMergedCommitOid (hex puro).
+                    const anc = await git(['merge-base', '--is-ancestor', oid, 'origin/main']);
+                    if (anc && anc.ok) return { value: true, verifiable: true };
+                }
+            }
+
+            // (3) Sin señal positiva verificable → not_verifiable (NUNCA false ni
+            // true espurio). Ante la duda, el flag "s/main" no se muestra (#4074).
+            return { value: null, verifiable: false };
+        },
     },
 
     // -------------------------------------------------------------------------
@@ -534,6 +644,27 @@ async function resolveClaim(claimKey, params = {}, impls = {}) {
     const cwd = impls.cwd;
     const timeoutMs = Number.isFinite(impls.timeoutMs) ? impls.timeoutMs : DEFAULT_CLAIM_TIMEOUT_MS;
 
+    // ---- Hook resolve() OPCIONAL (#4074): resolución multi-señal -------------
+    // Si la entrada define resolve(), orquesta sus propias llamadas (git/gh) y
+    // devuelve { value, verifiable }. Permite corroboración anti-falso-negativo
+    // sin romper el patrón single-command del resto de los claims. fail-open
+    // (SEC-5): cualquier throw o `verifiable !== true` → not_verifiable.
+    if (typeof fact.resolve === 'function') {
+        const gitImpl = typeof impls.gitImpl === 'function' ? impls.gitImpl : iv._cachedGitImpl;
+        const ghApi = typeof impls.ghApi === 'function' ? impls.ghApi : iv._cachedGhApi;
+        const runGit = (a) => gitImpl({ args: a, cwd, timeoutMs });
+        const runGh = (a) => ghApi({ args: a, cwd, timeoutMs });
+        try {
+            const out = await fact.resolve(params || {}, { git: runGit, gh: runGh });
+            if (!out || out.verifiable !== true || out.value == null) {
+                return { value: out ? out.value : null, status: 'not_verifiable', source };
+            }
+            return { value: out.value, status: compareToExpected(out.value, expected), source };
+        } catch {
+            return { value: null, status: 'not_verifiable', source };
+        }
+    }
+
     // ---- source 'heartbeat': process check directo (sin execFile) ----------
     if (source === 'heartbeat') {
         const proc = typeof impls.processCheck === 'function'
@@ -645,6 +776,8 @@ module.exports = {
     _statusFor: statusFor,
     _parseJsonField: parseJsonField,
     _parseBranchPresence: parseBranchPresence,
+    _parseClosedByPrNumbers: parseClosedByPrNumbers,
+    _parseMergedCommitOid: parseMergedCommitOid,
     _parseWorkFilePhase: parseWorkFilePhase,
     _parseQaLabels: parseQaLabels,
     _parseActiveAgents: parseActiveAgents,
