@@ -116,9 +116,115 @@ function relTime(whenIso, nowMs) {
 
 const REASON_MAX = 280;
 
+// CA-2 — Pretty-print del motivo. Si `reason`/`question` es JSON estructurado
+// conocido (`dependency_block`, `rebote_categoria`, rebote estructurado #3167)
+// lo traduce a una frase legible en español; si es texto plano lo deja igual
+// (recortado a REASON_MAX). IMPORTANTE: este helper NO emite HTML — devuelve
+// texto plano que SIEMPRE se escapa aguas abajo con escapeHtmlText. Defensas:
+//   - Prototype pollution: se itera con Object.keys() (no incluye `__proto__`),
+//     nunca se hace merge ni se accede a `__proto__`/`constructor`.
+//   - DoS: el input se recorta a REASON_MAX antes de parsear; los objetos
+//     anidados NO se recorren (se colapsan a "[…]"); se acotan las claves.
+const PRETTY_MAX_KEYS = 12;
+function prettyReason(raw) {
+    const s = (raw == null ? '' : String(raw)).slice(0, REASON_MAX);
+    const t = s.trim();
+    if (t[0] !== '{' && t[0] !== '[') return s;            // texto plano: tal cual
+    let obj;
+    try { obj = JSON.parse(t); } catch { return s; }        // JSON inválido → crudo recortado
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return s;
+
+    // Formas conocidas (orden de prioridad). Los values se vuelcan como texto;
+    // el escape por contexto se aplica en el render, no acá.
+    if (obj.dependency_block != null) {
+        const dep = String(obj.dependency_block).replace(/[^0-9]/g, '');
+        return dep ? ('Bloqueado por dependencia: #' + dep) : s;
+    }
+    if (obj.rebote_categoria != null) {
+        const cat = String(obj.rebote_categoria);
+        const motivo = obj.motivo != null ? String(obj.motivo) : '';
+        return 'Rebote (' + cat + ')' + (motivo ? ': ' + motivo : '');
+    }
+    // Rebote estructurado #3167: { motivo_rechazo, rechazado_en_fase, ... }.
+    if (obj.motivo_rechazo != null) {
+        const fase = obj.rechazado_en_fase != null ? String(obj.rechazado_en_fase) : '';
+        return (fase ? ('Rechazado en ' + fase + ': ') : 'Rechazado: ') + String(obj.motivo_rechazo);
+    }
+    // Genérico: aplanar claves PROPIAS (Object.keys NO devuelve `__proto__`).
+    const keys = Object.keys(obj).slice(0, PRETTY_MAX_KEYS);
+    if (keys.length === 0) return s;
+    const parts = keys.map(k => {
+        const v = obj[k];
+        const vs = (v != null && typeof v === 'object') ? '[…]' : String(v);
+        return k + ': ' + vs;
+    });
+    return parts.join(' · ').slice(0, REASON_MAX);
+}
+
+// CA-1 — sort compuesto severidad×edad. Rank danger>warning>info; tie-break por
+// edad descendente (más viejo primero). Copia la lista (no muta el input).
+const SEV_RANK = { danger: 3, warning: 2, info: 1 };
+function sortBySeverityAge(list) {
+    const arr = Array.isArray(list) ? list.slice() : [];
+    return arr.sort((a, b) =>
+        (SEV_RANK[severityOf(b && b.age_hours)] - SEV_RANK[severityOf(a && a.age_hours)])
+        || (Number(b && b.age_hours) || 0) - (Number(a && a.age_hours) || 0));
+}
+
+// CA-3 — username público del bot de Telegram. Validado contra el charset que
+// Telegram acepta para handles. NUNCA se usa el `bot_token` (secreto). Devuelve
+// el username saneado o null.
+const TELEGRAM_USERNAME_RE = /^[A-Za-z0-9_]{5,32}$/;
+function safeBotUsername(raw) {
+    const u = (raw == null ? '' : String(raw)).trim();
+    return TELEGRAM_USERNAME_RE.test(u) ? u : null;
+}
+
+// CA-3 — deep-link al bot: https://t.me/<user>?start=<payload>. El payload va
+// URL-encoded y restringido a [A-Za-z0-9_-]. Devuelve null si no hay username
+// válido o el issue no es entero positivo ("cuando aplica").
+function telegramDeepLink(issueNum, botUsername) {
+    const user = safeBotUsername(botUsername);
+    if (!user || !Number.isInteger(issueNum) || issueNum <= 0) return null;
+    const payload = ('unblock_' + issueNum).replace(/[^A-Za-z0-9_-]/g, '');
+    return 'https://t.me/' + user + '?start=' + encodeURIComponent(payload);
+}
+
+// CA-5 — clasificador determinístico de CTA primario sobre `reason`+`question`
+// (+`labels` si el caller los provee). Prioridad: Aprobar > Reintentar >
+// Responder (default seguro). Nunca lanza con input desconocido.
+const CTA_RETRY_RE = /circuit|rebote|reintent|dependency[_\s]block|dependencia|\binfra\b|\bbuild\b|quota|cuota|stale|estancad/i;
+const CTA_APPROVE_RE = /aprob|recomendaci|recommendation|go[\/-]no[\/-]go|acceptance|acept|gate de aprob/i;
+
+function isJsonRecoverable(raw) {
+    const t = (raw == null ? '' : String(raw)).trim();
+    if (t[0] !== '{' && t[0] !== '[') return false;
+    let obj;
+    try { obj = JSON.parse(t.slice(0, REASON_MAX)); } catch { return false; }
+    if (!obj || typeof obj !== 'object') return false;
+    return obj.dependency_block != null || obj.rebote_categoria != null
+        || obj.motivo_rechazo != null || obj.rebote === true;
+}
+
+function classifyCta(b) {
+    const reason = (b && b.reason != null) ? String(b.reason) : '';
+    const question = (b && b.question != null) ? String(b.question) : '';
+    const labels = Array.isArray(b && b.labels) ? b.labels.map(x => String(x).toLowerCase()) : [];
+    const txt = reason + ' ' + question;
+
+    if (labels.includes('tipo:recomendacion') || labels.includes('recommendation') || CTA_APPROVE_RE.test(txt)) {
+        return { verb: 'Aprobar', kind: 'approve', glyph: '✓', cls: 'v3-bloqueados-cta-approve' };
+    }
+    if (CTA_RETRY_RE.test(txt) || isJsonRecoverable(reason) || isJsonRecoverable(question)) {
+        return { verb: 'Reintentar', kind: 'retry', glyph: '↻', cls: 'v3-bloqueados-cta-retry' };
+    }
+    return { verb: 'Responder', kind: 'respond', glyph: '✉', cls: 'v3-bloqueados-cta-respond' };
+}
+
 // Una fila de issue bloqueado. Devuelve '' (fila descartada) si `b.issue` no
 // coacciona a entero positivo (CA-D1). Todo dato externo escapado por contexto.
-function renderRowSsr(b, nowMs) {
+function renderRowSsr(b, nowMs, ctx) {
+    const c = ctx || {};
     const issueNum = safeIssueNumber(b && b.issue);
     if (issueNum === null) {
         try { console.warn(JSON.stringify({ event: 'bloqueados_row_discarded', reason: 'invalid_issue', ts: new Date(nowMs).toISOString() })); } catch { /* logger no debe romper el render */ }
@@ -127,9 +233,12 @@ function renderRowSsr(b, nowMs) {
     const sev = severityOf(b.age_hours);
     const ageTxt = fmtAge(b.age_hours);
     const titleTxt = (b.title == null) ? '' : String(b.title);
-    const reasonRaw = (b.question || b.reason || '').toString();
-    const reasonTxt = reasonRaw.slice(0, REASON_MAX);
-    const reasonTrunc = reasonRaw.length > REASON_MAX;
+    // CA-2 — el motivo pasa por prettyReason (traduce JSON conocido a texto
+    // legible); el resultado SIEMPRE se escapa por contexto en el render.
+    const reasonSource = (b.question || b.reason || '').toString();
+    const reasonPretty = prettyReason(reasonSource);
+    const reasonTxt = reasonPretty.slice(0, REASON_MAX);
+    const reasonTrunc = reasonSource.length > REASON_MAX || reasonPretty.length > REASON_MAX;
     const summaryTxt = (b.summary || '').toString();
     const events = Array.isArray(b.recent_events) ? b.recent_events : [];
 
@@ -155,11 +264,22 @@ function renderRowSsr(b, nowMs) {
             ? '<div class="v3-bloqueados-summary needs-human-summary needs-human-summary-loading">📄 <em>Cargando resumen funcional…</em></div>'
             : '');
 
+    const skillTxt = (b.skill == null) ? '' : String(b.skill);
+    const phaseTxt = (b.phase == null) ? '' : String(b.phase);
     const skillPhase = (b.skill || b.phase)
         ? `<span class="v3-bloqueados-meta"> · ${escapeHtmlText(b.skill || '?')} en ${escapeHtmlText(b.phase || '?')}</span>`
         : '';
 
-    return `<div class="v3-bloqueados-row needs-human-row v3-bloqueados-sev-${sev}" id="bloqueados-row-${issueNum}" data-issue="${issueNum}" data-severity="${sev}">
+    // CA-5 — CTA primario explícito (un solo verbo sólido por fila). CA-3 —
+    // deep-link Telegram (sólo si hay bot_username público válido en el ctx).
+    const cta = classifyCta(b);
+    const tgUrl = telegramDeepLink(issueNum, c.telegramBotUsername);
+    const ctaHtml = `<button class="v3-bloqueados-cta ${cta.cls}" onclick="needsHumanCta(${issueNum}, '${cta.kind}')" title="${escapeHtmlAttr(cta.verb + ' #' + issueNum)}" aria-label="${escapeHtmlAttr(cta.verb + ' issue #' + issueNum)}">${cta.glyph} ${escapeHtmlText(cta.verb)}</button>`;
+    const tgHtml = tgUrl
+        ? `<a class="v3-bloqueados-tg" data-tg="1" href="${escapeHtmlAttr(tgUrl)}" target="_blank" rel="noopener noreferrer" title="${escapeHtmlAttr('Abrir #' + issueNum + ' en Telegram para responder')}" aria-label="${escapeHtmlAttr('Responder #' + issueNum + ' por Telegram')}">✉ Telegram</a>`
+        : '';
+
+    return `<div class="v3-bloqueados-row needs-human-row v3-bloqueados-sev-${sev}" id="bloqueados-row-${issueNum}" data-issue="${issueNum}" data-severity="${sev}" data-skill="${escapeHtmlAttr(skillTxt)}" data-phase="${escapeHtmlAttr(phaseTxt)}">
       <span class="v3-bloqueados-rail" aria-hidden="true"></span>
       <div class="v3-bloqueados-row-head needs-human-row-head">
         <div class="v3-bloqueados-row-info needs-human-row-info">
@@ -167,6 +287,8 @@ function renderRowSsr(b, nowMs) {
           <span class="v3-bloqueados-age v3-bloqueados-age-${sev}" title="${escapeHtmlAttr('Bloqueado hace ' + ageTxt + ' · severidad ' + sev)}" aria-label="${escapeHtmlAttr('Bloqueado hace ' + ageTxt)}">⏱ hace ${escapeHtmlText(ageTxt)}</span>
         </div>
         <div class="v3-bloqueados-row-actions needs-human-row-actions">
+          ${ctaHtml}
+          ${tgHtml}
           <button class="v3-bloqueados-btn nh-btn nh-btn-reactivate" onclick="needsHumanReactivate(${issueNum})" title="${escapeHtmlAttr('Reactivar #' + issueNum + ': quita el label needs-human y devuelve el issue a la cola del pipeline')}" aria-label="${escapeHtmlAttr('Reactivar issue #' + issueNum)}">▶ Reactivar</button>
           <button class="v3-bloqueados-btn nh-btn nh-btn-dismiss" onclick="needsHumanDismiss(${issueNum})" title="${escapeHtmlAttr('Desestimar #' + issueNum + ': cierra el issue como no planificado y lo quita del panel')}" aria-label="${escapeHtmlAttr('Desestimar issue #' + issueNum)}">✕ Desestimar</button>
         </div>
@@ -186,6 +308,42 @@ function renderEmptyStatsSsr(stats) {
     return '<div class="v3-bloqueados-empty-stats">'
         + `<div class="v3-bloqueados-empty-stat"><span class="v3-bloqueados-empty-stat-value">${escapeHtmlText(sla)}</span><span class="v3-bloqueados-empty-stat-label">SLA promedio</span></div>`
         + `<div class="v3-bloqueados-empty-stat"><span class="v3-bloqueados-empty-stat-value">${escapeHtmlText(resolved)}</span><span class="v3-bloqueados-empty-stat-label">Resueltos hoy</span></div>`
+        + '</div>';
+}
+
+// CA-4 — chips de stats del header del panel (SLA promedio de desbloqueo +
+// resueltos hoy). Valores ya computados por lib/bloqueados-stats.js y pasados
+// vía state.bloqueadosStats. Si faltan → "—". Todo escapado por contexto.
+function renderHeaderStatsSsr(stats) {
+    const s = stats || {};
+    const sla = (s.avgSla != null && s.avgSla !== '') ? String(s.avgSla) : '—';
+    const resolved = (s.resolvedToday != null) ? String(s.resolvedToday) : '—';
+    return '<div class="v3-bloqueados-headstats" role="group" aria-label="Métricas de desbloqueo">'
+        + `<div class="v3-bloqueados-headstat"><span class="v3-bloqueados-headstat-glyph" aria-hidden="true">⏱</span><span class="v3-bloqueados-headstat-value">${escapeHtmlText(sla)}</span><span class="v3-bloqueados-headstat-label">SLA promedio</span></div>`
+        + `<div class="v3-bloqueados-headstat"><span class="v3-bloqueados-headstat-glyph" aria-hidden="true">✓</span><span class="v3-bloqueados-headstat-value">${escapeHtmlText(resolved)}</span><span class="v3-bloqueados-headstat-label">Resueltos hoy</span></div>`
+        + '</div>';
+}
+
+// CA-1 — barra de filtros/búsqueda SSR. Las opciones de skill/fase se derivan de
+// la lista ya cargada. El filtrado real es client-side (sobre filas escapadas
+// server-side); esta función sólo emite el markup de los controles.
+function renderFilterBarSsr(list) {
+    const skills = Array.from(new Set((list || []).map(b => b && b.skill).filter(Boolean).map(String))).sort();
+    const phases = Array.from(new Set((list || []).map(b => b && b.phase).filter(Boolean).map(String))).sort();
+    const opt = (v) => `<option value="${escapeHtmlAttr(v)}">${escapeHtmlText(v)}</option>`;
+    return '<div class="v3-bloqueados-filterbar" id="bloqueados-filterbar" role="search">'
+        + '<input type="text" id="bloqueados-search" class="v3-bloqueados-search" placeholder="Buscar incidente…" aria-label="Buscar incidente" autocomplete="off" oninput="bloqueadosApplyFilters()">'
+        + '<select id="bloqueados-filter-sev" class="v3-bloqueados-select" aria-label="Filtrar por severidad" onchange="bloqueadosApplyFilters()">'
+        + '<option value="">Toda severidad</option><option value="danger">Crítico (≥24h)</option><option value="warning">Atención (4-24h)</option><option value="info">Reciente (&lt;4h)</option>'
+        + '</select>'
+        + '<select id="bloqueados-filter-skill" class="v3-bloqueados-select" aria-label="Filtrar por skill" onchange="bloqueadosApplyFilters()">'
+        + '<option value="">Todo skill</option>' + skills.map(opt).join('')
+        + '</select>'
+        + '<select id="bloqueados-filter-phase" class="v3-bloqueados-select" aria-label="Filtrar por fase" onchange="bloqueadosApplyFilters()">'
+        + '<option value="">Toda fase</option>' + phases.map(opt).join('')
+        + '</select>'
+        + '<button type="button" id="bloqueados-filter-clear" class="v3-bloqueados-filter-clear" onclick="bloqueadosClearFilters()">Limpiar</button>'
+        + '<span class="v3-bloqueados-filter-count" id="bloqueados-filter-count" aria-live="polite"></span>'
         + '</div>';
 }
 
@@ -214,6 +372,9 @@ function renderBloqueadosSsr(state, opts) {
     const o = opts || {};
     const nowMs = Number.isFinite(o.nowMs) ? o.nowMs : Date.now();
     const list = Array.isArray(state && state.bloqueados) ? state.bloqueados : [];
+    // CA-3 — el username público del bot se pasa por ctx a cada fila. Validado
+    // aguas arriba (dashboard.js) pero re-saneado por telegramDeepLink.
+    const ctx = { telegramBotUsername: state && state.telegramBotUsername };
 
     if (list.length === 0) {
         return '<main id="view-content" data-slug="bloqueados" class="v3-bloqueados-view">'
@@ -221,7 +382,9 @@ function renderBloqueadosSsr(state, opts) {
             + '</main>';
     }
 
-    const rows = list.map(b => renderRowSsr(b, nowMs)).filter(Boolean).join('');
+    // CA-1 — orden compuesto severidad×edad antes de mapear filas.
+    const ordered = sortBySeverityAge(list);
+    const rows = ordered.map(b => renderRowSsr(b, nowMs, ctx)).filter(Boolean).join('');
     // Si TODAS las filas se descartaron por coerción (input corrupto), caer al
     // empty-state en vez de un panel vacío sin sentido.
     if (!rows) {
@@ -239,10 +402,13 @@ function renderBloqueadosSsr(state, opts) {
         + '<span class="needs-human-pulse v3-bloqueados-pulse" aria-hidden="true">🚨</span>'
         + 'Necesitan intervención humana'
         + `<span class="needs-human-badge v3-bloqueados-badge">${escapeHtmlText(badge)}</span>`
+        + renderHeaderStatsSsr(state && state.bloqueadosStats)
         + '<span class="needs-human-chevron v3-bloqueados-chevron" aria-hidden="true">▼</span>'
         + '<a class="section-popout v3-bloqueados-popout" href="/dashboard?view=bloqueados" target="_blank" rel="noopener noreferrer" title="Abrir Bloqueados en ventana independiente" aria-label="Abrir Bloqueados en ventana independiente" onclick="event.stopPropagation()">↗</a>'
         + '</h2>'
         + '<div class="needs-human-body v3-bloqueados-body">'
+        + renderFilterBarSsr(ordered)
+        + '<div class="v3-bloqueados-empty-filtered" id="bloqueados-empty-filtered" role="status" hidden>Sin incidentes que coincidan con los filtros.</div>'
         + '<div class="v3-bloqueados-list" id="bloqueados-list">' + rows + '</div>'
         + '<div class="v3-bloqueados-hint" id="bloqueados-hint">'
         + 'Desbloquear desde Telegram: <code>/unblock &lt;issue&gt; &lt;orientación&gt;</code> · o quitá el label <code>needs-human</code> en GitHub'
@@ -313,11 +479,74 @@ async function needsHumanDismiss(issueNum){
     } else { alert('Error desestimando: ' + (j.msg || 'desconocido')); location.reload(); }
   } catch(e){ alert('Error desestimando: ' + e.message); location.reload(); }
 }
+// CA-5 — CTA primario explícito. 'approve' y 'retry' resumen el incidente a la
+// cola (reusan el endpoint /reactivate ya existente + CSRF + modal), variando
+// sólo el copy según el verbo. 'respond' abre el flujo de respuesta: deep-link
+// Telegram de la fila si está configurado, si no enfoca la guía de /unblock.
+async function needsHumanCta(issueNum, kind){
+  if(kind === 'respond'){ return needsHumanRespond(issueNum); }
+  var copy = (kind === 'approve')
+    ? { title:'Aprobar incidente', message:'Se aprueba y vuelve a la cola del pipeline.', confirmLabel:'Aprobar' }
+    : { title:'Reintentar incidente', message:'Se reintenta: vuelve a la cola del pipeline.', confirmLabel:'Reintentar' };
+  if(!(await inConfirm({ title:copy.title, message:copy.message, confirmLabel:copy.confirmLabel, danger:false, preview:[{label:'Issue', value:'#'+issueNum}] }))) return;
+  nhDisableButtons(issueNum);
+  try {
+    var r = await fetch('/api/needs-human/' + issueNum + '/reactivate', { method: 'POST', headers: nhCsrfHeaders() });
+    var j = await r.json();
+    if(j.ok) location.reload();
+    else { alert('Error: ' + (j.msg || 'desconocido')); location.reload(); }
+  } catch(e){ alert('Error: ' + e.message); location.reload(); }
+}
+// 'respond' no cambia estado server-side: abre Telegram (deep-link de la fila,
+// ya escapado/validado server-side) o, si no hay bot configurado, enfoca la guía.
+function needsHumanRespond(issueNum){
+  var row = document.getElementById('bloqueados-row-' + issueNum);
+  var tg = row ? row.querySelector('.v3-bloqueados-tg') : null;
+  if(tg){ window.open(tg.href, '_blank', 'noopener,noreferrer'); return; }
+  var hint = document.getElementById('bloqueados-hint');
+  if(hint){ hint.scrollIntoView({behavior:'smooth', block:'center'}); hint.classList.add('v3-bloqueados-hint-flash'); setTimeout(function(){ hint.classList.remove('v3-bloqueados-hint-flash'); }, 1600); }
+}
+// CA-1 — filtro/búsqueda client-side. Opera SOLO sobre filas ya renderizadas y
+// escapadas server-side: matchea por dataset (severity/skill/phase) y por
+// textContent (término de búsqueda). NUNCA reconstruye innerHTML desde el
+// término ni refleja el query crudo (el contador y el empty usan textContent).
+function bloqueadosApplyFilters(){
+  var term = (document.getElementById('bloqueados-search') || {}).value || '';
+  term = term.toLowerCase().trim();
+  var sev = (document.getElementById('bloqueados-filter-sev') || {}).value || '';
+  var skill = (document.getElementById('bloqueados-filter-skill') || {}).value || '';
+  var phase = (document.getElementById('bloqueados-filter-phase') || {}).value || '';
+  var rows = document.querySelectorAll('#bloqueados-list .v3-bloqueados-row');
+  var visible = 0;
+  rows.forEach(function(row){
+    var ok = true;
+    if(sev && row.getAttribute('data-severity') !== sev) ok = false;
+    if(ok && skill && row.getAttribute('data-skill') !== skill) ok = false;
+    if(ok && phase && row.getAttribute('data-phase') !== phase) ok = false;
+    if(ok && term && (row.textContent || '').toLowerCase().indexOf(term) === -1) ok = false;
+    row.style.display = ok ? '' : 'none';
+    if(ok) visible++;
+  });
+  var empty = document.getElementById('bloqueados-empty-filtered');
+  if(empty) empty.hidden = (visible !== 0);
+  var counter = document.getElementById('bloqueados-filter-count');
+  if(counter) counter.textContent = (visible === rows.length) ? '' : (visible + ' de ' + rows.length);
+}
+function bloqueadosClearFilters(){
+  ['bloqueados-search','bloqueados-filter-sev','bloqueados-filter-skill','bloqueados-filter-phase'].forEach(function(id){
+    var el = document.getElementById(id); if(el) el.value = '';
+  });
+  bloqueadosApplyFilters();
+}
 // nhCsrfHeaders() lo provee FETCH_CLIENT_JS (#3953) — centralizado para que
 // todo POST destructivo adjunte X-CSRF-Token de forma uniforme (R2).
 window.toggleNeedsHumanPanel = toggleNeedsHumanPanel;
 window.needsHumanReactivate = needsHumanReactivate;
 window.needsHumanDismiss = needsHumanDismiss;
+window.needsHumanCta = needsHumanCta;
+window.needsHumanRespond = needsHumanRespond;
+window.bloqueadosApplyFilters = bloqueadosApplyFilters;
+window.bloqueadosClearFilters = bloqueadosClearFilters;
 `;
 }
 
@@ -404,9 +633,16 @@ module.exports = {
     renderBloqueados,
     renderRowSsr,
     renderEmptyStateSsr,
+    renderHeaderStatsSsr,
+    renderFilterBarSsr,
     safeIssueNumber,
     severityOf,
     fmtAge,
+    prettyReason,
+    sortBySeverityAge,
+    classifyCta,
+    safeBotUsername,
+    telegramDeepLink,
     escapeHtmlSsr,
     loadTheme,
 };

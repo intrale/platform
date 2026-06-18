@@ -519,9 +519,57 @@ a:hover { color: var(--in-accent); }
 .v3-bloqueados-empty-stat-value { font-size: 22px; font-weight: 800; color: var(--in-fg); font-variant-numeric: tabular-nums; }
 .v3-bloqueados-empty-stat-label { font-size: 11px; color: var(--in-fg-dim); text-transform: uppercase; letter-spacing: 0.5px; }
 
+/* #3957 (EP8-H4) — Header stats (CA-4), filterbar (CA-1) y CTA primario (CA-5).
+   Sin tokens ni colores nuevos: todo sale de --in-* (D11). */
+.v3-bloqueados-headstats { display: flex; gap: 16px; margin-left: 14px; align-items: center; }
+.v3-bloqueados-headstat { display: inline-flex; align-items: baseline; gap: 5px; font-size: 12px; color: var(--in-fg-dim); }
+.v3-bloqueados-headstat-glyph { font-size: 12px; opacity: 0.8; }
+.v3-bloqueados-headstat-value { font-weight: 800; font-size: 14px; color: var(--in-fg); font-variant-numeric: tabular-nums; }
+.v3-bloqueados-headstat-label { text-transform: uppercase; letter-spacing: 0.5px; font-size: 10px; }
+
+.v3-bloqueados-filterbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+.v3-bloqueados-search, .v3-bloqueados-select {
+  background: var(--in-bg); color: var(--in-fg);
+  border: 1px solid var(--in-border); border-radius: var(--in-radius-sm);
+  padding: 5px 9px; font-size: 12px; font-family: inherit;
+}
+.v3-bloqueados-search { flex: 1; min-width: 160px; }
+.v3-bloqueados-search:focus-visible, .v3-bloqueados-select:focus-visible { outline: 2px solid var(--in-accent); outline-offset: 1px; }
+.v3-bloqueados-filter-clear {
+  background: transparent; color: var(--in-fg-dim);
+  border: 1px solid var(--in-border); border-radius: var(--in-radius-sm);
+  padding: 5px 10px; font-size: 12px; cursor: pointer;
+}
+.v3-bloqueados-filter-clear:hover { background: var(--in-bg); color: var(--in-fg); }
+.v3-bloqueados-filter-count { font-size: 11px; color: var(--in-fg-dim); font-variant-numeric: tabular-nums; }
+.v3-bloqueados-empty-filtered { padding: 14px; text-align: center; font-size: 13px; color: var(--in-fg-dim); }
+
+/* CTA primario: un único botón sólido por fila. Triple encoding (relleno +
+   glifo + verbo); color por tipo desde --in-* (success/info/accent). */
+.v3-bloqueados-cta {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 12px; border-radius: var(--in-radius-sm);
+  font-size: 12px; font-weight: 700; cursor: pointer;
+  border: 1px solid transparent; color: #fff; text-decoration: none;
+}
+.v3-bloqueados-cta:focus-visible { outline: 2px solid var(--in-accent); outline-offset: 2px; }
+.v3-bloqueados-cta-approve { background: var(--in-ok); border-color: var(--in-ok); }
+.v3-bloqueados-cta-retry { background: var(--in-info); border-color: var(--in-info); }
+.v3-bloqueados-cta-respond { background: var(--in-accent); border-color: var(--in-accent); color: var(--in-bg); }
+.v3-bloqueados-cta:hover { filter: brightness(1.08); }
+.v3-bloqueados-tg {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 10px; border-radius: var(--in-radius-sm);
+  font-size: 12px; text-decoration: none;
+  border: 1px solid var(--in-accent); color: var(--in-accent); background: var(--in-accent-soft);
+}
+.v3-bloqueados-tg:hover { filter: brightness(1.1); }
+.v3-bloqueados-hint-flash { background: var(--in-accent-soft); border-radius: var(--in-radius-sm); transition: background 0.3s; }
+
 @media (prefers-reduced-motion: reduce) {
   .v3-bloqueados-pulse { animation: none; }
   .v3-bloqueados-chevron { transition: none; }
+  .v3-bloqueados-hint-flash { transition: none; }
 }
 
 /* =============================================================================
