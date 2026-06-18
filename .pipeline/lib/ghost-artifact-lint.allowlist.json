@@ -1,7 +1,12 @@
 {
   "_doc": "Allowlist del ghost-artifact-lint (#3638 CA-F-11). Cada entry requiere razón documentada. files = archivo entero excluido. rules = excepción puntual {file,line,reason}. Revisar trimestralmente.",
+  "_files_doc": {
+    "test-concurrencia.js": "Test de node --test (convención test-*.js). Lee colas operacionales temporales en tmpdir, no estado runtime del pulpo. No aplica isMarkerArtifact por ser fixture de test.",
+    "test-watchdog-supervisor.js": "Test de node --test (#4077). readDrops() hace fs.readdirSync sobre un servicios/telegram/pendiente temporal en tmpdir para verificar los drops del supervisor; no es consumidor runtime de carpetas operacionales del pulpo. El linter excluye *.test.js y __tests__/ pero no la convención test-*.js del root .pipeline/."
+  },
   "files": [
-    "test-concurrencia.js"
+    "test-concurrencia.js",
+    "test-watchdog-supervisor.js"
   ],
   "rules": [
     {

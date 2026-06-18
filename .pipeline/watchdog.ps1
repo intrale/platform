@@ -12,6 +12,9 @@ $RepoRoot = 'C:\Workspaces\Intrale\platform'
 $PipelineDir = "$RepoRoot\.pipeline"
 $LogDir = "$PipelineDir\logs"
 $LogFile = "$LogDir\watchdog.log"
+# #4077 — Heartbeat propio del watchdog. Lo lee el supervisor externo
+# (watchdog-supervisor.ps1) para detectar si el watchdog dejó de correr.
+$HeartbeatFile = "$LogDir\watchdog.heartbeat"
 
 if (-not (Test-Path $LogDir)) { New-Item -Path $LogDir -ItemType Directory -Force | Out-Null }
 
@@ -19,6 +22,27 @@ function Write-Log($Message) {
     $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     "[$ts] $Message" | Out-File -Append -FilePath $LogFile -Encoding utf8
 }
+
+# #4077 (SEC-1) — Heartbeat atómico. Contiene el PID del proceso powershell que
+# ejecuta ESTE ciclo + timestamp ISO8601, para que el supervisor pueda cruzar
+# contra el SO (no decidir sólo por mtime/contenido). Escritura tmp +
+# Move-Item -Force: el supervisor nunca lee un archivo a medio escribir.
+function Write-Heartbeat {
+    try {
+        $payload = @{ pid = $PID; ts = (Get-Date).ToString('o') } | ConvertTo-Json -Compress
+        $tmp = "$HeartbeatFile.tmp"
+        $payload | Out-File -FilePath $tmp -Encoding utf8 -NoNewline
+        Move-Item -Path $tmp -Destination $HeartbeatFile -Force
+    } catch {
+        Write-Log "WARN no se pudo escribir heartbeat: $_"
+    }
+}
+
+# Emitir el heartbeat lo antes posible: es señal de "el watchdog corrió este
+# ciclo", no de "actué". Se escribe incluso en ciclos de stand-by (restart
+# reciente) y antes del scan de servicios, de modo que un fallo posterior de
+# Get-CimInstance no suprima la señal de vida.
+Write-Heartbeat
 
 # Si hay un restart en curso (lock o last-restart.json muy reciente), no
 # tocar nada — el restart mata todo y relanza, y un spawn nuestro acá
