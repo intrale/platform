@@ -119,6 +119,9 @@ function classifyStatus({ isClosed, isBlocked, isPaused, faseActual, pct }) {
  *                                            Si no se pasa, se infiere desde `state.issueMatrix[id].labels`.
  * @param {number} [opts.now]               - epoch ms; default Date.now()
  * @param {number} [opts.staleThresholdMin] - default 90 min (PO-CA-6)
+ * @param {Object<number,number[]>} [opts.blockDependencies] - #4075: mapa
+ *        parentId → [childId,...] (resolveBlockDependencies). Cada bloqueo cuya
+ *        clave figure acá se enriquece con `dependencies[]` (estado inline).
  * @returns {object} snapshot estructurado (ver shape inline)
  */
 function buildWaveSnapshot(opts) {
@@ -356,6 +359,30 @@ function buildWaveSnapshot(opts) {
         }
     }
 
+    // #4075 — Enriquecer bloqueos con dependencias inline. La relación
+    // parent→children llega en `opts.blockDependencies` (resuelta por
+    // wave-resolver desde `.partial-pause.json` → authorization_ttls). Reusamos
+    // el estado de ejecución YA calculado en `issuesOut` (no duplicamos lógica
+    // ni agregamos latencia: CA "se resuelve contra la fuente de verdad real").
+    const blockDependencies = options.blockDependencies && typeof options.blockDependencies === 'object'
+        ? options.blockDependencies
+        : {};
+    const issueById = new Map(issuesOut.map((i) => [i.id, i]));
+    const waveSet = new Set(
+        (Array.isArray(wave.issues) ? wave.issues : [])
+            .map((n) => Number(n))
+            .filter((n) => Number.isInteger(n)),
+    );
+    for (const blk of blocks) {
+        const depIds = Array.isArray(blockDependencies[blk.id]) ? blockDependencies[blk.id] : [];
+        if (depIds.length === 0) continue;
+        blk.dependencies = depIds.map((depId) => describeDependencyState(depId, {
+            issueById,
+            waveSet,
+            closedSet,
+        }));
+    }
+
     // CA-3: % total
     const totalIssues = wave.issues.length;
     const totalPct = totalIssues > 0
@@ -468,6 +495,50 @@ function buildInterventionMotive({ blockedHuman, labelNames, isStale, staleMin, 
     return 'revisar estado';
 }
 
+/**
+ * #4075 — Describe el estado de ejecución de una dependencia para el render
+ * inline de bloqueos. Distingue si la dependencia está DENTRO de la ola
+ * (presente en la allowlist → `waveSet`) o FUERA, y su estado actual:
+ *
+ *   - En ola + cerrada       → "en ola, cerrado"
+ *   - En ola + activa         → "en ola, <fase> <idx/denom>"  (ej. "en ola, dev 5/10")
+ *   - En ola + sin fase       → "en ola, pendiente"
+ *   - Fuera de ola            → "fuera de ola, abierto|cerrado"  (best-effort)
+ *
+ * El estado de la dependencia se toma del `issueById` (el mismo `issuesOut` que
+ * ya se calculó para la tabla principal). Para dependencias fuera de la ola no
+ * tenemos su fase (no se computa su matriz), así que sólo distinguimos
+ * abierto/cerrado con la info disponible (`closedSet`).
+ *
+ * @param {number} depId
+ * @param {{issueById: Map, waveSet: Set, closedSet: Set}} ctx
+ * @returns {{id: number, inWave: boolean, isClosed: boolean, statusText: string}}
+ */
+function describeDependencyState(depId, ctx) {
+    const id = Number(depId);
+    const inWave = ctx.waveSet.has(id);
+    if (inWave) {
+        const issue = ctx.issueById.get(id);
+        if (issue && issue.isClosed) {
+            return { id, inWave: true, isClosed: true, statusText: 'en ola, cerrado' };
+        }
+        if (issue && issue.faseAbbrev && issue.faseAbbrev !== '—') {
+            // "dev (5/10)" → "dev 5/10" (sin paréntesis para no colisionar con
+            // los del clause "#NNNN (…)" en el render).
+            const faseText = issue.faseAbbrev.replace(/[()]/g, '').replace(/\s+/g, ' ').trim();
+            return { id, inWave: true, isClosed: false, statusText: `en ola, ${faseText}` };
+        }
+        return { id, inWave: true, isClosed: false, statusText: 'en ola, pendiente' };
+    }
+    const isClosed = ctx.closedSet.has(id);
+    return {
+        id,
+        inWave: false,
+        isClosed,
+        statusText: `fuera de ola, ${isClosed ? 'cerrado' : 'abierto'}`,
+    };
+}
+
 function formatStale(min) {
     if (!Number.isFinite(min) || min <= 0) return '0m';
     if (min < 60) return `${min}m`;
@@ -489,6 +560,7 @@ module.exports = {
         abbreviateFase,
         buildBlockMotive,
         buildInterventionMotive,
+        describeDependencyState,
         formatStale,
     },
 };

@@ -460,3 +460,66 @@ test('resolveWaveForIssue: waves.json ilegible devuelve null (CA-5 degradación)
         assert.equal(resolveWaveForIssue(4019, { pipelineRoot: dir }), null);
     } finally { resetCache(); rmrf(dir); }
 });
+
+// =============================================================================
+// #4075 — resolveBlockDependencies: parent→children desde authorization_ttls
+// =============================================================================
+
+const { resolveBlockDependencies } = require('../wave-resolver');
+
+test('resolveBlockDependencies: invierte authorization_ttls a parent→children', () => {
+    const dir = mkTmpPipeline();
+    try {
+        fs.writeFileSync(path.join(dir, '.partial-pause.json'), JSON.stringify({
+            allowed_issues: [4050, 4067, 4068],
+            authorization_ttls: {
+                4067: { parent: 4050, authorized_by: 'recursive-deps:from-4050' },
+                4068: { parent: 4050, authorized_by: 'recursive-deps:from-4050' },
+            },
+        }));
+        const map = resolveBlockDependencies({ pipelineRoot: dir });
+        assert.deepEqual(map[4050], [4067, 4068]);
+    } finally { resetCache(); rmrf(dir); }
+});
+
+test('resolveBlockDependencies: sin authorization_ttls devuelve {}', () => {
+    const dir = mkTmpPipeline();
+    try {
+        fs.writeFileSync(path.join(dir, '.partial-pause.json'), JSON.stringify({
+            allowed_issues: [4050],
+        }));
+        const map = resolveBlockDependencies({ pipelineRoot: dir });
+        assert.deepEqual(map, {});
+    } finally { resetCache(); rmrf(dir); }
+});
+
+test('resolveBlockDependencies: archivo ausente / ilegible degrada a {}', () => {
+    const dir = mkTmpPipeline();
+    try {
+        // Sin .partial-pause.json.
+        assert.deepEqual(resolveBlockDependencies({ pipelineRoot: dir }), {});
+        // Archivo corrupto.
+        fs.writeFileSync(path.join(dir, '.partial-pause.json'), '{ no es json');
+        assert.deepEqual(resolveBlockDependencies({ pipelineRoot: dir }), {});
+        // Sin pipelineRoot.
+        assert.deepEqual(resolveBlockDependencies({}), {});
+    } finally { resetCache(); rmrf(dir); }
+});
+
+test('resolveBlockDependencies: descarta entradas con parent inválido', () => {
+    const dir = mkTmpPipeline();
+    try {
+        fs.writeFileSync(path.join(dir, '.partial-pause.json'), JSON.stringify({
+            authorization_ttls: {
+                4067: { parent: 4050 },
+                4068: { parent: 'no-num' },
+                'no-num': { parent: 4051 },
+                4069: {},
+            },
+        }));
+        const map = resolveBlockDependencies({ pipelineRoot: dir });
+        assert.deepEqual(map[4050], [4067]);
+        assert.equal(map[4051], undefined, 'child no numérico se descarta');
+        assert.equal(Object.keys(map).length, 1);
+    } finally { resetCache(); rmrf(dir); }
+});

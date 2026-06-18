@@ -456,3 +456,101 @@ test('abbreviateFase: nombres acortados con (idx/total)', () => {
     assert.equal(_internal.abbreviateFase('desarrollo/aprobacion', 5, 7), 'aprob (6/7)');
     assert.equal(_internal.abbreviateFase(null, -1, 0), '—');
 });
+
+// -----------------------------------------------------------------------------
+// #4075 — dependencias inline en bloqueos
+// -----------------------------------------------------------------------------
+
+test('#4075: describeDependencyState distingue en ola / fuera de ola / cerrado', () => {
+    const byId = new Map([
+        [4067, { id: 4067, isClosed: false, faseAbbrev: 'dev (5/10)' }],
+        [4068, { id: 4068, isClosed: false, faseAbbrev: 'verif (7/10)' }],
+        [4070, { id: 4070, isClosed: true, faseAbbrev: 'done' }],
+        [4071, { id: 4071, isClosed: false, faseAbbrev: '—' }],
+    ]);
+    const ctx = {
+        issueById: byId,
+        waveSet: new Set([4067, 4068, 4070, 4071]),
+        closedSet: new Set([4070]),
+    };
+    assert.equal(_internal.describeDependencyState(4067, ctx).statusText, 'en ola, dev 5/10');
+    assert.equal(_internal.describeDependencyState(4068, ctx).statusText, 'en ola, verif 7/10');
+    assert.equal(_internal.describeDependencyState(4070, ctx).statusText, 'en ola, cerrado');
+    assert.equal(_internal.describeDependencyState(4071, ctx).statusText, 'en ola, pendiente');
+    // Fuera de ola → abierto/cerrado best-effort.
+    const fuera = _internal.describeDependencyState(9999, ctx);
+    assert.equal(fuera.inWave, false);
+    assert.equal(fuera.statusText, 'fuera de ola, abierto');
+});
+
+test('#4075: buildWaveSnapshot enriquece blocks con dependencies inline', () => {
+    const state = makeState({
+        issues: {
+            '4050': {
+                title: 'Padre bloqueado',
+                labels: ['blocked:dependencies'],
+                fases: { 'desarrollo/dev': [entry({ skill: 'backend-dev', estado: 'pendiente', fase: 'dev', startedAt: NOW - 1000, durationMs: 1000 })] },
+                faseActual: 'desarrollo/dev',
+                estadoActual: 'pendiente',
+                bounces: 0,
+                staleMin: 0,
+            },
+            '4067': {
+                title: 'Hijo en dev',
+                labels: ['Ready'],
+                fases: { 'desarrollo/dev': [entry({ skill: 'backend-dev', estado: 'trabajando', fase: 'dev', startedAt: NOW - 60000, durationMs: 60000 })] },
+                faseActual: 'desarrollo/dev',
+                estadoActual: 'trabajando',
+                bounces: 0,
+                staleMin: 0,
+            },
+            '4068': {
+                title: 'Hijo en verif',
+                labels: ['Ready'],
+                fases: { 'desarrollo/verificacion': [entry({ skill: 'tester', estado: 'trabajando', fase: 'verificacion', startedAt: NOW - 60000, durationMs: 60000 })] },
+                faseActual: 'desarrollo/verificacion',
+                estadoActual: 'trabajando',
+                bounces: 0,
+                staleMin: 0,
+            },
+        },
+    });
+    const snap = buildWaveSnapshot({
+        state,
+        wave: { label: 'N+1', issues: [4050, 4067, 4068], source: 'test' },
+        blockDependencies: { 4050: [4067, 4068] },
+        now: NOW,
+    });
+    const blk = snap.blocks.find((b) => b.id === 4050);
+    assert.ok(blk, 'debe existir el bloqueo de #4050');
+    assert.ok(Array.isArray(blk.dependencies) && blk.dependencies.length === 2);
+    const ids = blk.dependencies.map((d) => d.id);
+    assert.deepEqual(ids, [4067, 4068]);
+    assert.ok(blk.dependencies.every((d) => d.inWave === true));
+    assert.match(blk.dependencies[0].statusText, /en ola, dev/);
+    assert.match(blk.dependencies[1].statusText, /en ola, verif/);
+});
+
+test('#4075: bloqueo sin blockDependencies queda sin dependencies (fallback)', () => {
+    const state = makeState({
+        issues: {
+            '5000': {
+                title: 'Bloqueado solo',
+                labels: ['blocked:dependencies'],
+                fases: { 'desarrollo/dev': [entry({ skill: 'backend-dev', estado: 'pendiente', fase: 'dev', startedAt: NOW - 1000, durationMs: 1000 })] },
+                faseActual: 'desarrollo/dev',
+                estadoActual: 'pendiente',
+                bounces: 0,
+                staleMin: 0,
+            },
+        },
+    });
+    const snap = buildWaveSnapshot({
+        state,
+        wave: { label: 'N+1', issues: [5000], source: 'test' },
+        now: NOW,
+    });
+    const blk = snap.blocks.find((b) => b.id === 5000);
+    assert.ok(blk);
+    assert.equal(blk.dependencies, undefined);
+});

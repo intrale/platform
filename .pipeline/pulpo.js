@@ -10560,6 +10560,18 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
       // #3934 (CA-2 / SEC-6) — Ya no se escribe `session.context`: el contexto
       // conversacional vive únicamente en `commander-history.jsonl` por chat.
       sendTelegram(respuesta);
+
+      // #4075 — Mensajes de continuación del paginado (ej. `/wave status` con
+      // una ola grande que no entra en un solo mensaje). Se envían consecutivos
+      // tras el reply principal, preservando TODOS los issues (nunca "+N más").
+      // Fail-safe: si falla el envío de un extra, no afecta el reply ya enviado.
+      const extraMessages = result && Array.isArray(result.extraMessages) ? result.extraMessages : [];
+      for (const extra of extraMessages) {
+        if (extra && typeof extra === 'string' && extra.trim().length > 0) {
+          try { sendTelegram(extra); } catch (e) { log('commander', `[wave-paginado] fallo enviar extra: ${e.message}`); }
+        }
+      }
+
       appendCommanderHistory(historyFile, {
         direction: 'out',
         text: respuesta.slice(0, 1000),

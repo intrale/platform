@@ -41,6 +41,10 @@ const MAX_INTERVENTIONS = 8;
 // pueden inflar significativamente el conteo final).
 const TELEGRAM_LIMIT = 4096;
 const SAFETY_MARGIN = 200;
+// #4075 — Límite por mensaje del paginado. `sendTelegram` (pulpo.js) trunca
+// duro a 4000 chars; dejamos margen para el wrap del template `wave-status`
+// (nota legacy/audio en el 1er mensaje) y para el escape MarkdownV2.
+const MSG_LIMIT = 3500;
 
 const STATUS_EMOJI = {
     closed: '✅',
@@ -118,7 +122,33 @@ function formatEta({ etaAbsoluteMs, etaAvailable, etasMissing, now, etaSource })
 }
 
 /**
+ * #4075 — Clausula inline de dependencias de un bloqueo.
+ * Construye "bloqueado por #4067 \\(en ola, dev 5/10\\) y #4068 \\(…\\)".
+ * Une con coma + "y" final para legibilidad ("#A, #B y #C").
+ * El `statusText` viene del snapshot (texto controlado) pero igual se escapa
+ * MarkdownV2 por defensa en profundidad.
+ *
+ * @param {Array<{id:number, statusText:string}>} deps
+ * @returns {string}
+ */
+function renderDependencyClause(deps) {
+    const parts = deps.map((d) => `\\#${d.id} \\(${escapeMarkdownV2(d.statusText || 'estado desconocido')}\\)`);
+    let joined;
+    if (parts.length === 1) {
+        joined = parts[0];
+    } else {
+        joined = `${parts.slice(0, -1).join(', ')} y ${parts[parts.length - 1]}`;
+    }
+    return `bloqueado por ${joined}`;
+}
+
+/**
  * Sección "Bloqueos" formateada en MarkdownV2.
+ *
+ * #4075 — Si el bloqueo trae `dependencies[]` (resueltas contra la fuente de
+ * verdad real: allowlist + estado de fase), las renderiza inline con número,
+ * pertenencia a la ola y estado de ejecución. Si no hay dependencias
+ * resolubles, mantiene el motivo genérico actual como fallback.
  */
 function renderBlocksSection(blocks) {
     if (!blocks || blocks.length === 0) return '';
@@ -126,8 +156,12 @@ function renderBlocksSection(blocks) {
     const rest = blocks.length - visible.length;
     const lines = [`🛑 *Bloqueos \\(${blocks.length}\\)*`];
     for (const b of visible) {
-        const motivo = escapeMarkdownV2(b.motivo || 'bloqueado');
-        lines.push(`• \\#${b.id} → ${motivo}`);
+        if (Array.isArray(b.dependencies) && b.dependencies.length > 0) {
+            lines.push(`• \\#${b.id} → ${renderDependencyClause(b.dependencies)}`);
+        } else {
+            const motivo = escapeMarkdownV2(b.motivo || 'bloqueado');
+            lines.push(`• \\#${b.id} → ${motivo}`);
+        }
     }
     if (rest > 0) {
         lines.push(`_\\+${rest} bloqueos adicionales_`);
@@ -202,47 +236,39 @@ function renderTableRow(issue) {
 }
 
 /**
- * Construye el bloque tabular completo aplicando truncado CA-14 + sufijo.
+ * #4075 — Devuelve TODAS las filas de la tabla (sin truncar), ordenadas por
+ * número de issue desc. Reemplaza el viejo cap CA-14 a 12 filas + sufijo
+ * "+N más" que ocultaba issues de la ola. El listado completo es la fuente
+ * para `renderTable` (un code block) y para el paginado por longitud
+ * (`renderWaveSnapshotMessages`).
+ *
+ * @param {object} snapshot
+ * @returns {string[]} filas monospace listas (sin code fence).
+ */
+function buildAllTableRows(snapshot) {
+    if (!snapshot || !Array.isArray(snapshot.issues) || snapshot.issues.length === 0) return [];
+    const ordered = [...snapshot.issues].sort((a, b) => b.id - a.id);
+    return ordered.map(renderTableRow);
+}
+
+/**
+ * Envuelve un set de filas en un code block MarkdownV2.
+ * Code block — no requiere escape interno (CA-UX-2 sin separadores ASCII).
+ */
+function wrapTableRows(rows) {
+    return '```\n' + rows.join('\n') + '\n```';
+}
+
+/**
+ * Construye el bloque tabular COMPLETO (#4075): todas las filas de la ola, sin
+ * truncado ni línea "+N más". La garantía de no exceder Telegram se delega al
+ * paginado por longitud de `renderWaveSnapshotMessages` (parte el cuadro en
+ * mensajes consecutivos en vez de ocultar filas).
  */
 function renderTable(snapshot) {
-    const total = snapshot.issues.length;
-    if (total === 0) return null;
-
-    // CA-14: ordenar por prioridad de visibilidad (no por número de issue) cuando
-    // hay > MAX_ROWS. Cuando hay ≤ MAX_ROWS se mantiene el orden numérico desc
-    // para coherencia con el listado tradicional.
-    let ordered;
-    if (total > MAX_ROWS) {
-        ordered = [...snapshot.issues].sort((a, b) => {
-            const r = rankForTruncate(a) - rankForTruncate(b);
-            if (r !== 0) return r;
-            return b.id - a.id;
-        });
-    } else {
-        ordered = [...snapshot.issues].sort((a, b) => b.id - a.id);
-    }
-
-    const visible = ordered.slice(0, MAX_ROWS);
-    const hidden = ordered.slice(MAX_ROWS);
-
-    const rows = visible.map(renderTableRow);
-
-    // Sufijo agregado por fase para los issues ocultos (CA-14).
-    let suffix = '';
-    if (hidden.length > 0) {
-        const byFase = new Map();
-        for (const i of hidden) {
-            const key = i.faseAbbrev || '—';
-            byFase.set(key, (byFase.get(key) || 0) + 1);
-        }
-        const parts = [...byFase.entries()]
-            .sort((a, b) => b[1] - a[1])
-            .map(([f, n]) => `${n} en ${f}`);
-        suffix = `\n+${hidden.length} más (${parts.join(', ')})`;
-    }
-
-    // Code block — no requiere escape interno (CA-UX-2 sin separadores ASCII).
-    return '```\n' + rows.join('\n') + suffix + '\n```';
+    const rows = buildAllTableRows(snapshot);
+    if (rows.length === 0) return null;
+    return wrapTableRows(rows);
 }
 
 /**
@@ -259,33 +285,38 @@ function renderTraceLine(now) {
 }
 
 /**
- * Render principal. Devuelve string MarkdownV2 listo.
+ * Arma las partes del cuadro (header + secciones de footer) SIN la tabla.
+ * Compartido por `renderWaveSnapshot` (un mensaje) y `renderWaveSnapshotMessages`
+ * (paginado). Devuelve `{ degraded, text }` para los render degradados (sin
+ * issues / todo cerrado), o las piezas discretas para el render completo.
  *
- * @param {object} snapshot - Output de buildWaveSnapshot.
- * @param {object} [opts]   - { now }
- * @returns {string}
+ * @param {object} snapshot
+ * @param {number} now
  */
-function renderWaveSnapshot(snapshot, opts) {
-    const options = opts || {};
-    const now = typeof options.now === 'number' ? options.now : Date.now();
-
+function composeWaveParts(snapshot, now) {
     // CA-13: ola sin issues activos → render degradado.
     if (!snapshot || !snapshot.totalIssues || snapshot.totalIssues === 0) {
         const label = escapeMarkdownV2((snapshot && snapshot.waveLabel) || 'Ola actual (sin label)');
-        return [
-            `🌊 *${label}*`,
-            `_Sin issues activos en este momento_`,
-            renderTraceLine(now),
-        ].join('\n\n');
+        return {
+            degraded: true,
+            text: [
+                `🌊 *${label}*`,
+                `_Sin issues activos en este momento_`,
+                renderTraceLine(now),
+            ].join('\n\n'),
+        };
     }
     if (snapshot.activeCount === 0 && snapshot.closedCount > 0) {
         // Todos cerrados — mostrar header con totalPct=100 y línea informativa.
         const label = escapeMarkdownV2(snapshot.waveLabel);
-        return [
-            `🌊 *${label}* · *100%* avance · ola completada`,
-            `_${snapshot.closedCount}/${snapshot.totalIssues} issues cerrados · sin activos_`,
-            renderTraceLine(now),
-        ].join('\n\n');
+        return {
+            degraded: true,
+            text: [
+                `🌊 *${label}* · *100%* avance · ola completada`,
+                `_${snapshot.closedCount}/${snapshot.totalIssues} issues cerrados · sin activos_`,
+                renderTraceLine(now),
+            ].join('\n\n'),
+        };
     }
 
     // Header (CA-11, CA-UX jerarquía bold).
@@ -320,43 +351,120 @@ function renderWaveSnapshot(snapshot, opts) {
     if (snapshot.blocks && snapshot.blocks.length > 0) counts.push(`${snapshot.blocks.length} bloqueados`);
     const headerLine2 = `_${escapeMarkdownV2(counts.join(' · '))}_`;
 
-    const sections = [headerLine1, headerLine2];
+    return {
+        degraded: false,
+        headerLine1,
+        headerLine2,
+        blocksSection: renderBlocksSection(snapshot.blocks),
+        interventionsSection: renderInterventionSection(snapshot.humanInterventions),
+        traceLine: renderTraceLine(now),
+    };
+}
 
-    // Tabla (CA-7).
+/**
+ * Render principal. Devuelve UN string MarkdownV2 listo con la tabla COMPLETA
+ * (#4075 — sin truncado "+N más"). Para olas grandes que superan el límite de
+ * Telegram, el caller debe usar `renderWaveSnapshotMessages` (paginado por
+ * longitud, nunca oculta issues). Esta función se mantiene para compat y para
+ * el caso común (ola que entra en un solo mensaje).
+ *
+ * @param {object} snapshot - Output de buildWaveSnapshot.
+ * @param {object} [opts]   - { now }
+ * @returns {string}
+ */
+function renderWaveSnapshot(snapshot, opts) {
+    const options = opts || {};
+    const now = typeof options.now === 'number' ? options.now : Date.now();
+
+    const parts = composeWaveParts(snapshot, now);
+    if (parts.degraded) return parts.text;
+
+    const sections = [parts.headerLine1, parts.headerLine2];
     const table = renderTable(snapshot);
     if (table) sections.push(table);
+    if (parts.blocksSection) sections.push(parts.blocksSection);
+    if (parts.interventionsSection) sections.push(parts.interventionsSection);
+    sections.push(parts.traceLine);
 
-    // Bloqueos (CA-5).
-    const blocks = renderBlocksSection(snapshot.blocks);
-    if (blocks) sections.push(blocks);
+    return sections.join('\n\n');
+}
 
-    // Intervención humana (CA-6, CA-UX-5).
-    const interventions = renderInterventionSection(snapshot.humanInterventions);
-    if (interventions) sections.push(interventions);
+/**
+ * #4075 — Render PAGINADO. Devuelve un array de 1+ mensajes MarkdownV2, cada
+ * uno ≤ `MSG_LIMIT` chars, garantizando que TODOS los issues de la ola queden
+ * visibles (nunca un "+N más"). Para el caso común (ola chica) devuelve un solo
+ * mensaje idéntico a `renderWaveSnapshot`. Cuando la tabla excede el límite,
+ * parte las FILAS en mensajes consecutivos:
+ *   - mensaje 1: header + primer bloque de filas.
+ *   - mensajes intermedios: "_(continúa)_" + bloque de filas.
+ *   - footer (bloqueos + intervención + trace) en el último mensaje (o uno
+ *     propio si no entra).
+ *
+ * @param {object} snapshot
+ * @param {object} [opts] - { now }
+ * @returns {string[]}
+ */
+function renderWaveSnapshotMessages(snapshot, opts) {
+    const options = opts || {};
+    const now = typeof options.now === 'number' ? options.now : Date.now();
 
-    // Trace line (CA-18).
-    sections.push(renderTraceLine(now));
+    const single = renderWaveSnapshot(snapshot, opts);
+    if (single.length <= MSG_LIMIT) return [single];
 
-    // Join con doble newline (CA-UX-2 sin separadores).
-    let out = sections.join('\n\n');
+    const parts = composeWaveParts(snapshot, now);
+    // Degradados nunca superan el límite, pero por las dudas: un solo mensaje.
+    if (parts.degraded) return [parts.text];
 
-    // CA-10: garantizar ≤ 4096 chars con margen.
-    if (out.length > TELEGRAM_LIMIT - SAFETY_MARGIN) {
-        // Truncamiento defensivo (caso patológico, ej. titles muy largos).
-        // Re-armamos sin secciones opcionales en orden de menor prioridad.
-        const minimal = [
-            headerLine1,
-            headerLine2,
-            table || '',
-            renderTraceLine(now),
-            `_⚠ Reporte truncado para entrar en Telegram_`,
-        ].filter(Boolean).join('\n\n');
-        out = minimal.length > TELEGRAM_LIMIT - SAFETY_MARGIN
-            ? minimal.slice(0, TELEGRAM_LIMIT - SAFETY_MARGIN) + '\n…'
-            : minimal;
+    const headerText = `${parts.headerLine1}\n\n${parts.headerLine2}`;
+    const footerText = [parts.blocksSection, parts.interventionsSection, parts.traceLine]
+        .filter(Boolean)
+        .join('\n\n');
+    const rows = buildAllTableRows(snapshot);
+
+    return paginateTableRows(rows, headerText, footerText, MSG_LIMIT);
+}
+
+/**
+ * Empaqueta filas en mensajes por longitud (greedy). Cada mensaje lleva su
+ * propio code block; el header va en el primero, el footer en el último (o en
+ * uno propio si no entra). Nunca descarta filas.
+ *
+ * @param {string[]} rows
+ * @param {string} headerText
+ * @param {string} footerText
+ * @param {number} limit
+ * @returns {string[]}
+ */
+function paginateTableRows(rows, headerText, footerText, limit) {
+    const messages = [];
+    const FENCE_OVERHEAD = 8; // "```\n" + "\n```"
+    let i = 0;
+    let first = true;
+    while (i < rows.length) {
+        const prefix = first ? `${headerText}\n\n` : '_\\(continúa\\)_\n\n';
+        const block = [];
+        let blockLen = 0;
+        while (i < rows.length) {
+            const rowLen = rows[i].length + 1; // + newline
+            const projected = prefix.length + FENCE_OVERHEAD + blockLen + rowLen;
+            if (block.length > 0 && projected > limit) break;
+            block.push(rows[i]);
+            blockLen += rowLen;
+            i += 1;
+        }
+        messages.push(prefix + wrapTableRows(block));
+        first = false;
     }
 
-    return out;
+    if (footerText) {
+        const last = messages[messages.length - 1];
+        if ((last.length + 2 + footerText.length) <= limit) {
+            messages[messages.length - 1] = `${last}\n\n${footerText}`;
+        } else {
+            messages.push(footerText);
+        }
+    }
+    return messages;
 }
 
 /**
@@ -395,21 +503,28 @@ function renderAudioText(snapshot, opts) {
 
 module.exports = {
     renderWaveSnapshot,
+    renderWaveSnapshotMessages,
     renderAudioText,
     // Exports internos para tests.
     _internal: {
         renderTable,
+        buildAllTableRows,
+        wrapTableRows,
+        paginateTableRows,
+        composeWaveParts,
         renderTableRow,
         formatBouncesCol,
         BOUNCE_ARROW,
         BOUNCE_COL_WIDTH,
         renderBlocksSection,
+        renderDependencyClause,
         renderInterventionSection,
         renderTraceLine,
         formatEta,
         formatRemainingMs,
         rankForTruncate,
         MAX_ROWS,
+        MSG_LIMIT,
         TELEGRAM_LIMIT,
         STATUS_EMOJI,
     },

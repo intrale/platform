@@ -879,6 +879,7 @@ function createDispatcher(opts) {
 
         let reply = null;
         let audioText = null;
+        let extraMessages = [];
         let status = 'ok';
         // Issue #3541 — Si el comando ejecutado está en `cua.allowed_commands`
         // y el feature está habilitado, emitimos automáticamente `init` antes
@@ -918,6 +919,10 @@ function createDispatcher(opts) {
                 // si invocar sendVoiceTelegram. Si el caller no lo soporta,
                 // simplemente lo ignora — el reply Markdown llega igual.
                 audioText = result.audioText || null;
+                // #4075 — mensajes de continuación del paginado de `/wave`. El
+                // caller (pulpo.brazoCommander) los envía consecutivos tras el
+                // reply principal. Si no los soporta, se ignoran sin romper.
+                if (Array.isArray(result.extraMessages)) extraMessages = result.extraMessages;
             }
         } catch (e) {
             status = 'error';
@@ -957,7 +962,7 @@ function createDispatcher(opts) {
             result_status: status,
             duration_ms: durationMs,
         });
-        return { reply, audioText, status, handler: intent.command, intent, durationMs };
+        return { reply, audioText, extraMessages, status, handler: intent.command, intent, durationMs };
     }
 
     /**
@@ -1958,7 +1963,17 @@ async function handleWaveStatus({ pipelineRoot, audio }) {
         }
     }
 
-    const snapshot = snapshotMod.buildWaveSnapshot({ state, wave, blocked, closedIssues });
+    // #4075 — Dependencias inline en bloqueos: mapa parent→children desde
+    // `.partial-pause.json` (authorization_ttls). Fail-open: si no se puede
+    // resolver, el snapshot queda con bloqueos genéricos (fallback).
+    let blockDependencies = {};
+    try {
+        if (typeof resolver.resolveBlockDependencies === 'function') {
+            blockDependencies = resolver.resolveBlockDependencies({ pipelineRoot }) || {};
+        }
+    } catch (_) { /* sin dependencias resueltas */ }
+
+    const snapshot = snapshotMod.buildWaveSnapshot({ state, wave, blocked, closedIssues, blockDependencies });
 
     // #4039 — ETA por velocidad media de la ola. Cada lectura del operador es
     // un punto válido de la serie temporal (la tabla del issue son dos lecturas
@@ -1986,16 +2001,23 @@ async function handleWaveStatus({ pipelineRoot, audio }) {
     } catch (_) { /* ante cualquier error, queda el ETA fallback ya calculado */ }
     snapshot.etaSource = etaSource;
 
-    const snapshotMd = rendererMod.renderWaveSnapshot(snapshot);
+    // #4075 — Render paginado: la ola se lista COMPLETA, sin "+N más". Para olas
+    // que entran en un mensaje, `messages` tiene un solo elemento (comportamiento
+    // idéntico al anterior). Para olas que exceden el límite de Telegram, se
+    // parte en mensajes consecutivos sin ocultar issues.
+    const messages = rendererMod.renderWaveSnapshotMessages(snapshot);
+    const firstMd = messages[0] || '';
+    const extraMessages = messages.slice(1);
     const audioText = audio ? rendererMod.renderAudioText(snapshot) : null;
     // CA-13 — render por template wave-status (`{{{snapshot}}}` triple-brace para
-    // no re-escapar MarkdownV2 ya producido por wave-renderer).
+    // no re-escapar MarkdownV2 ya producido por wave-renderer). La nota legacy/
+    // audio va sólo en el 1er mensaje; los de continuación van crudos.
     const reply = fillTemplate('wave-status', {
-        snapshot: snapshotMd,
+        snapshot: firstMd,
         'using-legacy': usingLegacy,
         'audio-sent': !!audioText,
     });
-    return { reply, audioText };
+    return { reply, audioText, extraMessages };
 }
 
 /**
