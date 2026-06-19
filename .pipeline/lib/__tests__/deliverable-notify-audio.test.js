@@ -62,12 +62,17 @@ function fakeBuffer(size) {
     return Buffer.alloc(size || 256, 'A');
 }
 
-function fakeTts({ delayMs, fail, profileCapture, textCapture, succeedAfter } = {}) {
+function fakeTts({ delayMs, hang, fail, profileCapture, textCapture, succeedAfter } = {}) {
     let calls = 0;
     return async (text, opts) => {
         calls++;
         if (textCapture) textCapture.push(text);
         if (profileCapture) profileCapture.push(opts && opts.profile);
+        // `hang: true` devuelve una promise que nunca resuelve: fuerza que el
+        // único timer en juego sea el de `withTimeout`, de modo que el TIMEOUT
+        // dispare de forma DETERMINÍSTICA sin depender de una carrera 10ms vs
+        // delayMs (que flakeaba bajo carga concurrente del tester — rebote #4096).
+        if (hang) await new Promise(() => {});
         if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
         if (fail && (!succeedAfter || calls < succeedAfter)) throw new Error('simulated tts failure');
         return { buffer: fakeBuffer(256), provider: 'openai', profile: opts && opts.profile };
@@ -365,7 +370,9 @@ test('CA-TEST-5 · dedup ignora records con kind:"audio" (solo cuenta records de
 test('CA-TEST-6 · timeout por chunk registra audio_error TIMEOUT y no bloquea', async () => {
     const { root, cleanup } = mkTmpRoot();
     try {
-        // TTS que tarda 100ms; timeout configurado a 10ms → debe disparar.
+        // TTS que nunca resuelve; timeout configurado a 10ms → debe disparar
+        // SIEMPRE. Determinístico bajo carga (antes: delayMs:100 vs 10ms, race
+        // que flakeaba en el tester concurrente — rebote #4096).
         const patch = await dn.generateAudioNotifications({
             issue: 3539,
             skill: 'guru',
@@ -376,7 +383,7 @@ test('CA-TEST-6 · timeout por chunk registra audio_error TIMEOUT y no bloquea',
             config: audioCfg({ tts_chunk_timeout_ms: 10 }),
             pipelineRoot: root,
             deps: {
-                textToSpeechWithMeta: fakeTts({ delayMs: 100 }),
+                textToSpeechWithMeta: fakeTts({ hang: true }),
                 sendVoiceTelegram: fakeSend(),
                 loadTelegramSecrets: fakeCreds(),
                 loadTtsConfig: fakeTtsCfg(),
