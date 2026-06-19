@@ -88,14 +88,21 @@ function findFaseIdx(lifecycle, faseActual) {
 
 /**
  * Clasifica el estado visual del issue según las reglas UX-2 (precedencia):
- * blocked > paused > closed > approval > dev > definition.
+ * closed > blocked > paused > approval > dev > definition.
+ *
+ * #4099 — CLOSED es un estado terminal y le gana a cualquier label de bloqueo
+ * residual (`blocked:dependencies`, `blocked:routing-manual`, `needs-human`) o
+ * `paused`. Un issue que GitHub reporta CLOSED nunca puede pintarse 🛑: el
+ * usuario lee el ícono como verdad (guideline UX-1). Antes el orden era
+ * `blocked > paused > closed`, lo que dejaba `isClosed` inalcanzable cuando
+ * arrastraba un label de bloqueo (caso #4050, épico cerrado por merge de hijos).
  *
  * @returns {'closed'|'blocked'|'paused'|'approval'|'dev'|'definition'|'pending'}
  */
 function classifyStatus({ isClosed, isBlocked, isPaused, faseActual, pct }) {
+    if (isClosed) return 'closed';
     if (isBlocked) return 'blocked';
     if (isPaused) return 'paused';
-    if (isClosed) return 'closed';
     if (!faseActual) return 'pending';
     // Por fase: aprobacion/entrega = approval; dev/build/verif/linteo = dev; resto = definition.
     if (faseActual.endsWith('/aprobacion') || faseActual.endsWith('/entrega')) return 'approval';
@@ -262,12 +269,18 @@ function buildWaveSnapshot(opts) {
         //   - blockedByIssue (file system `bloqueado-humano/`)
         //   - label `blocked:dependencies` / `blocked:routing-manual` / `needs-human`
         const blockedHuman = blockedByIssue.get(Number(id));
-        const isBlocked = !!blockedHuman
+        // #4099 — CLOSED es terminal: un issue cerrado NUNCA está bloqueado,
+        // aunque arrastre un label de bloqueo residual. Forzar isBlocked=false
+        // mantiene el objeto consistente (el renderer usa isBlocked para
+        // ranking de truncado y la lista de bloqueos) y evita el falso 🛑.
+        const isBlocked = !isClosed && (
+            !!blockedHuman
             || labelNames.has('blocked:dependencies')
             || labelNames.has('blocked:routing-manual')
-            || labelNames.has('needs-human');
+            || labelNames.has('needs-human')
+        );
 
-        const isPaused = !!labelNames.has('paused');
+        const isPaused = !isClosed && !!labelNames.has('paused');
 
         // Stale: agente activo sin avance > N min.
         const staleMin = Number(data.staleMin || 0);
@@ -334,7 +347,9 @@ function buildWaveSnapshot(opts) {
         });
 
         // CA-5: armar línea de bloqueo concreto.
-        if (isBlocked) {
+        // #4099 — un issue CLOSED no se lista como bloqueado aunque arrastre un
+        // label de bloqueo residual (estado terminal le gana al label).
+        if (isBlocked && !isClosed) {
             const motivo = buildBlockMotive({ blockedHuman, labelNames, data });
             blocks.push({
                 id: Number(id),
@@ -344,11 +359,16 @@ function buildWaveSnapshot(opts) {
 
         // CA-6: intervención humana — needs-human, bug-en-pipeline, esperando
         // decisión de Leo, sin avance > N minutos.
+        // #4099 — un issue CLOSED no requiere intervención humana: ya está
+        // entregado/cerrado, sin importar labels residuales.
         if (
-            isBlocked
-            || isStale
-            || labelNames.has('bug-en-pipeline')
-            || (labelNames.has('needs-definition') && staleMin >= staleThresholdMin)
+            !isClosed
+            && (
+                isBlocked
+                || isStale
+                || labelNames.has('bug-en-pipeline')
+                || (labelNames.has('needs-definition') && staleMin >= staleThresholdMin)
+            )
         ) {
             humanInterventions.push({
                 id: Number(id),

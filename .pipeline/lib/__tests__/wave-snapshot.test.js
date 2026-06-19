@@ -441,14 +441,85 @@ test('formatStale: minutos → string compacto', () => {
     assert.equal(_internal.formatStale(125), '2h5m');
 });
 
-test('classifyStatus: precedencia blocked > paused > closed > approval > dev > definition', () => {
-    assert.equal(_internal.classifyStatus({ isBlocked: true, isClosed: true, isPaused: true, faseActual: 'desarrollo/dev' }), 'blocked');
-    assert.equal(_internal.classifyStatus({ isPaused: true, isClosed: true, faseActual: 'desarrollo/dev' }), 'paused');
+test('classifyStatus: precedencia closed > blocked > paused > approval > dev > definition (#4099)', () => {
+    // #4099 — CLOSED es terminal: le gana a blocked y paused.
+    assert.equal(_internal.classifyStatus({ isBlocked: true, isClosed: true, isPaused: true, faseActual: 'desarrollo/dev' }), 'closed');
+    assert.equal(_internal.classifyStatus({ isBlocked: true, isPaused: true, faseActual: 'desarrollo/dev' }), 'blocked');
+    assert.equal(_internal.classifyStatus({ isPaused: true, faseActual: 'desarrollo/dev' }), 'paused');
     assert.equal(_internal.classifyStatus({ isClosed: true, faseActual: null }), 'closed');
     assert.equal(_internal.classifyStatus({ faseActual: 'desarrollo/aprobacion' }), 'approval');
     assert.equal(_internal.classifyStatus({ faseActual: 'desarrollo/dev' }), 'dev');
     assert.equal(_internal.classifyStatus({ faseActual: 'definicion/analisis' }), 'definition');
     assert.equal(_internal.classifyStatus({ faseActual: null }), 'pending');
+});
+
+// -----------------------------------------------------------------------------
+// #4099 — CLOSED de GitHub es la fuente de verdad de entrega (CA-1, CA-2, CA-4)
+// -----------------------------------------------------------------------------
+
+test('#4099 CA-2: classifyStatus devuelve "closed" cuando isClosed y isBlocked son true', () => {
+    // Un issue CLOSED con label de bloqueo residual no puede pintarse 🛑.
+    assert.equal(
+        _internal.classifyStatus({ isClosed: true, isBlocked: true, faseActual: 'desarrollo/dev' }),
+        'closed',
+    );
+});
+
+test('#4099 CA-1/CA-4: épico CLOSED sin matriz ni label closed/done → ✅ (closed, 100%, no bloqueado)', () => {
+    // Caso #4050: cerrado por merge de hijos. No tiene matriz (issueMatrix[id]
+    // undefined) pero el caller alimenta closedSet desde el state real CLOSED.
+    // Arrastra un label de bloqueo residual en la cache de títulos.
+    const snap = buildWaveSnapshot({
+        state: makeState({
+            issues: {},
+        }),
+        wave: { label: 'N+1', issues: [4050], source: 'test' },
+        closedIssues: new Set([4050]),
+        now: NOW,
+    });
+    const iss = snap.issues.find((i) => i.id === 4050);
+    assert.ok(iss, 'debe existir el issue 4050');
+    assert.equal(iss.status, 'closed');
+    assert.equal(iss.isClosed, true);
+    assert.equal(iss.isBlocked, false);
+    assert.equal(iss.pct, 100);
+    assert.equal(snap.closedCount, 1);
+    // No debe aparecer en bloqueos ni en intervención humana.
+    assert.equal(snap.blocks.find((b) => b.id === 4050), undefined);
+    assert.equal(snap.humanInterventions.find((h) => h.id === 4050), undefined);
+});
+
+test('#4099 CA-2: issue CLOSED con label de bloqueo residual (con matriz) → closed, fuera de bloqueos', () => {
+    // El issue tiene matriz Y label de bloqueo, pero el caller lo marca cerrado.
+    const state = makeState({
+        issues: {
+            '4050': {
+                title: 'Épico cerrado por merge de hijos',
+                labels: ['enhancement', 'area:infra', 'blocked:dependencies'],
+                fases: {
+                    'desarrollo/dev': [entry({ skill: 'pipeline-dev', estado: 'pendiente', fase: 'dev', startedAt: NOW - 1000, durationMs: 1000 })],
+                },
+                faseActual: 'desarrollo/dev',
+                estadoActual: 'pendiente',
+                bounces: 0,
+                staleMin: 0,
+            },
+        },
+    });
+    const snap = buildWaveSnapshot({
+        state,
+        wave: { label: 'N+1', issues: [4050], source: 'test' },
+        closedIssues: new Set([4050]),
+        now: NOW,
+    });
+    const iss = snap.issues.find((i) => i.id === 4050);
+    assert.equal(iss.status, 'closed');
+    assert.equal(iss.isClosed, true);
+    assert.equal(iss.isBlocked, false);
+    assert.equal(iss.pct, 100);
+    // Aunque el label de bloqueo esté presente, no se lista como bloqueo.
+    assert.equal(snap.blocks.find((b) => b.id === 4050), undefined);
+    assert.equal(snap.humanInterventions.find((h) => h.id === 4050), undefined);
 });
 
 test('abbreviateFase: nombres acortados con (idx/total)', () => {
