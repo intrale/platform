@@ -2118,6 +2118,57 @@ function invalidateKnownIssuesCache(pipelineRoot) {
 }
 
 /**
+ * #4099 — Calcula el set de issues CERRADOS de la ola, usando el estado real
+ * de GitHub como fuente de verdad de entrega.
+ *
+ * Fuentes (en orden de precedencia):
+ *   1. `state.issueTitles[id].state === 'CLOSED'` — estado real cacheado en
+ *      `.issue-title-cache.json` (presente desde #3905). Cubre épicos cerrados
+ *      por merge de hijos, que no tienen matriz en el pipeline.
+ *   2. Labels `closed`/`done` (camino viejo) desde la matriz o la cache — se
+ *      mantiene como fallback de compatibilidad.
+ *
+ * Función PURA: no toca disco ni red, no construye queries `gh` (sin vector de
+ * inyección). Sólo lee el `state` ya materializado por wave-state.js.
+ *
+ * @param {object} opts
+ * @param {object} opts.wave  - { issues: number[] }
+ * @param {object} opts.state - getCachedWaveState() output (issueMatrix, issueTitles)
+ * @returns {Set<number>} números de issue cerrados
+ */
+function computeClosedSet({ wave, state } = {}) {
+    const closedIssues = new Set();
+    const issues = wave && Array.isArray(wave.issues) ? wave.issues : [];
+    const titleCache = (state && state.issueTitles) || {};
+    const issueMatrix = (state && state.issueMatrix) || {};
+    for (const id of issues) {
+        const idNum = Number(id);
+        if (!Number.isInteger(idNum)) continue;
+        const key = String(id);
+
+        // Camino primario: estado real CLOSED de GitHub (cache cruda). Cubre el
+        // caso de épicos cerrados por merge de hijos, que no tienen matriz.
+        const cached = titleCache[key];
+        if (cached && cached.state === 'CLOSED') {
+            closedIssues.add(idNum);
+            continue;
+        }
+
+        // Fallback (camino viejo): labels `closed`/`done` desde matriz o cache.
+        const data = issueMatrix[key];
+        const matrixLabels = data && Array.isArray(data.labels) ? data.labels : [];
+        const cacheLabels = cached && Array.isArray(cached.labels) ? cached.labels : [];
+        const labelNames = [...matrixLabels, ...cacheLabels]
+            .map((l) => (typeof l === 'string' ? l : (l && l.name) || ''))
+            .filter(Boolean);
+        if (labelNames.includes('closed') || labelNames.includes('done')) {
+            closedIssues.add(idNum);
+        }
+    }
+    return closedIssues;
+}
+
+/**
  * `/wave status [--audio]` — Reusa el snapshot ejecutivo de #3262 (CA-3 DRY).
  *
  * Post-#3502: el resolver delega internamente en `lib/waves.js` como
@@ -2145,18 +2196,10 @@ async function handleWaveStatus({ pipelineRoot, audio }) {
         }
     } catch (_) { /* sin bloqueados */ }
 
-    const closedIssues = new Set();
-    for (const id of wave.issues) {
-        const data = state.issueMatrix && state.issueMatrix[String(id)];
-        if (!data) continue;
-        const labels = Array.isArray(data.labels) ? data.labels : [];
-        const labelNames = labels
-            .map((l) => (typeof l === 'string' ? l : (l && l.name) || ''))
-            .filter(Boolean);
-        if (labelNames.includes('closed') || labelNames.includes('done')) {
-            closedIssues.add(Number(id));
-        }
-    }
+    // #4099 — `closedSet` = fuente de verdad de entrega (estado real CLOSED de
+    // GitHub, no labels). Ver `computeClosedSet`. Sin query `gh` nueva → sin
+    // vector de inyección.
+    const closedIssues = computeClosedSet({ wave, state });
 
     // #4075 — Dependencias inline en bloqueos: mapa parent→children desde
     // `.partial-pause.json` (authorization_ttls). Fail-open: si no se puede
@@ -2654,6 +2697,8 @@ module.exports = {
     // #4090 — exports para tests de `/entregado` (estado de entrega determinístico).
     parseEntregadoArgs,
     deliveryCitationFor,
+    // #4099 — helper puro para tests del closedSet (estado CLOSED real de GitHub).
+    computeClosedSet,
     _waveInternal: {
         handleWaveStatus,
         handleWaveNext,

@@ -87,6 +87,8 @@ try { restModeWindow = require('./lib/rest-mode-window'); } catch { /* opcional 
 // Artifacts auxiliares: detección centralizada en `lib/marker-artifact.js`
 // (#3638 CA-F-1).
 const { isMarkerArtifact } = require('./lib/marker-artifact');
+// #4099 — predicado puro de frescura del title-cache (reactiva TITLE_CACHE_TTL).
+const { needsRefetch: titleCacheNeedsRefetch } = require('./lib/title-cache-freshness');
 
 // EP8-H3 (#3956) — "ola en una sola línea". Lógica pura + requisitos de
 // seguridad (escaping CA-8, links GitHub CA-9, etapas terminales No
@@ -773,14 +775,17 @@ function getPipelineState() {
     allowlistIds = (pp.readPreviousAllowlist() || []).map(String);
   } catch { /* módulo opcional: degradamos sin allowlist */ }
   const wantedIds = [...new Set([...issueIds, ...allowlistIds])];
-  // missing = sin cache, O cacheado sin `state` (entradas previas a #3905).
+  // missing = sin cache, O cacheado sin `state` (entradas previas a #3905), O
+  // entrada vencida por TTL (#4099 — refrescar labels/state obsoletos).
   // Los notFound quedan excluidos (negative cache) para no re-consultar gh
-  // cada tick (SEC-3 resource exhaustion). Converge: tras el fetch, las
-  // entradas tienen `state` → dejan de re-pedirse.
-  const missing = wantedIds.filter(id => {
-    const e = titleCache[id];
-    return !e || (!e.notFound && e.state === undefined);
-  });
+  // cada tick (SEC-3 resource exhaustion). El batching GraphQL (50/query) de
+  // fetchIssueTitles acota la carga del refetch.
+  // #4099 — TITLE_CACHE_TTL estaba definido pero nunca usado: una entrada con
+  // `state` quedaba congelada para siempre, así un issue que se cierra (o le
+  // cambian los labels) en GitHub nunca se refrescaba (caso #4050). Reactivamos
+  // el chequeo de TTL respetando negative-cache y batching.
+  const now = Date.now();
+  const missing = wantedIds.filter(id => titleCacheNeedsRefetch(titleCache[id], { now, ttlMs: TITLE_CACHE_TTL }));
   if (missing.length > 0) fetchIssueTitles(missing, titleCache);
   state.issueTitles = titleCache;
 
