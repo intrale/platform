@@ -60,13 +60,75 @@ const health = require('./lib/telegram-health');
 // (espeja `notifyDriveFailure` de servicio-drive.js).
 const { notifyTelegram } = require('./lib/notify-telegram');
 const { redactSensitive, redactSecretValue } = require('./lib/redact');
+// #4082 — Bus de recibos cross-proceso. svc-telegram escribe un recibo `enviado`
+// (con los message_id que prueban la entrega) o `fallido` ligado por
+// `correlationId`; el Commander lo lee y reconcilia el historial. Módulo puro.
+const telegramReceipt = require('./lib/telegram-receipt');
 
 const FALLIDO = path.join(QUEUE_DIR, 'fallido');
+// #4082 — Carpeta del bus de recibos (servicios/telegram/recibos/).
+const RECIBOS = telegramReceipt.receiptsDir(PIPELINE);
 // Máximo de intentos de envío antes de mover un dropfile a fallido/. El contador
 // se persiste en el propio archivo (`_telegramAttempts`) porque cada fallo lo
 // devuelve a pendiente/ y se reprocesa en un ciclo de poll posterior. Margen para
 // tolerar fallos transitorios (red/rate-limit) sin loopear para siempre.
+// #4082 — Es el DEFAULT/fallback; el valor efectivo sale de `loadOutboundConfig()`
+// (config.yaml → telegram_outbound.max_retries). Se mantiene exportado por
+// back-compat con tests existentes.
 const MAX_SEND_RETRIES = 5;
+
+// #4082 — Config de reintentos de SALIENTES (cola lógica), NO confundir con los
+// reintentos de RED de una sola request del http-client. Defaults seguros +
+// clamping defensivo: config inválida/ausente nunca rompe el servicio.
+const OUTBOUND_DEFAULTS = {
+  max_retries: MAX_SEND_RETRIES,
+  backoff_base_ms: 5000,
+  backoff_max_ms: 300000,
+  stale_ttl_ms: 86400000,
+  sweep_stagger_ms: 3000,
+};
+function loadOutboundConfig() {
+  const cfg = (loadPipelineConfig() || {}).telegram_outbound || {};
+  const num = (v, def, min, max) => {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < min || n > max) return def;
+    return n;
+  };
+  return {
+    max_retries: num(cfg.max_retries, OUTBOUND_DEFAULTS.max_retries, 1, 100),
+    backoff_base_ms: num(cfg.backoff_base_ms, OUTBOUND_DEFAULTS.backoff_base_ms, 100, 600000),
+    backoff_max_ms: num(cfg.backoff_max_ms, OUTBOUND_DEFAULTS.backoff_max_ms, 1000, 3600000),
+    stale_ttl_ms: num(cfg.stale_ttl_ms, OUTBOUND_DEFAULTS.stale_ttl_ms, 60000, 30 * 86400000),
+    sweep_stagger_ms: num(cfg.sweep_stagger_ms, OUTBOUND_DEFAULTS.sweep_stagger_ms, 0, 600000),
+  };
+}
+
+// #4082 — SEC-2 fail-closed: sin prueba de entrega (`ok:true` + `message_id`) un
+// saliente NO se marca enviado. Lanza para caer en `handleSendFailure` (reintento).
+function assertDelivered(body, idx, total) {
+  if (!body || body.ok !== true || !body.result || body.result.message_id == null) {
+    throw new Error(`Telegram respondio ok:false o sin message_id (chunk ${idx + 1}/${total})`);
+  }
+}
+
+// #4082 — Escribe recibo `enviado` con los message_id que prueban la entrega,
+// pero SOLO si el dropfile trae un `_correlationId` válido (los salientes del
+// Commander lo traen; las notificaciones internas no — para esas es no-op).
+// El recibo NO contiene texto de error ni la URL → no hay superficie de leak
+// de BOT_TOKEN (SEC-1). Best-effort: un fallo de escritura del recibo no debe
+// revertir una entrega ya confirmada.
+function writeSentReceiptIfAny(data, messageIds) {
+  if (!data || !telegramReceipt.isValidCorrelationId(data._correlationId)) return;
+  try {
+    telegramReceipt.writeReceipt(RECIBOS, {
+      correlationId: data._correlationId,
+      status: telegramReceipt.STATUS_ENVIADO,
+      messageIds,
+    });
+  } catch (e) {
+    log(`No se pudo escribir recibo enviado (${data._correlationId}): ${e.message}`);
+  }
+}
 
 function log(msg) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -206,12 +268,27 @@ function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
+// #4082 — ¿el dropfile está en período de backoff? Lee `_nextRetryAt` (ISO) y
+// devuelve true si todavía no venció. Un archivo ilegible NO se difiere (false):
+// el flujo normal lo tomará y lo mandará a fallido/ por malformado. Lectura
+// best-effort — cualquier error es "no diferir".
+function isRetryDeferred(filePath) {
+  try {
+    const d = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (d && typeof d._nextRetryAt === 'string') {
+      const t = Date.parse(d._nextRetryAt);
+      if (Number.isFinite(t) && t > Date.now()) return true;
+    }
+  } catch { /* ilegible → no diferir */ }
+  return false;
+}
+
 // CA-3 / RS-3 (#3927): "fallo de envío de CUALQUIER adjunto SIEMPRE notifica
 // (nunca más silencio)". Emite una alerta a Telegram cuando un dropfile no se
 // pudo enviar de forma terminal. El texto pasa SIEMPRE por `redactSensitive`
 // + `redactSecretValue` (RS-3) — nunca volcamos `err.message`/`err.stack` crudo
 // al usuario. Espeja `notifyDriveFailure` de servicio-drive.js.
-function notifyTelegramFailure(fileName, reason) {
+function notifyTelegramFailure(fileName, reason, maxRetries = MAX_SEND_RETRIES) {
   // Guard anti-recursión: el propio `notifyTelegram` escribe un dropfile de texto
   // en esta MISMA cola (`alert-svc-telegram-*.json`). Si esa alerta fallara de
   // forma terminal (p.ej. outage del API de Telegram), notificar de nuevo crearía
@@ -228,7 +305,7 @@ function notifyTelegramFailure(fileName, reason) {
     notifyTelegram({
       level: 'error',
       component: 'svc-telegram',
-      message: `Fallo terminal al enviar un adjunto/mensaje (${fileName}) tras ${MAX_SEND_RETRIES} intentos: ${safeReason}`,
+      message: `Fallo terminal al enviar un adjunto/mensaje (${fileName}) tras ${maxRetries} intentos: ${safeReason}`,
       context: { archivo: fileName },
     });
     return true;
@@ -244,6 +321,8 @@ function notifyTelegramFailure(fileName, reason) {
 // posterior) y, al agotarlos —o si el archivo es ilegible/malformado y nunca
 // podrá enviarse—, lo mueve a fallido/ y notifica. Retorna 'failed' | 'retry'.
 function handleSendFailure(file, trabajandoPath, err) {
+  const oc = loadOutboundConfig();
+  const maxRetries = oc.max_retries;
   let attempts = 0;
   let cur = null;
   let parsedOk = false;
@@ -257,17 +336,33 @@ function handleSendFailure(file, trabajandoPath, err) {
   const errMsg = err && err.message ? err.message : String(err);
   // Terminal si agotó los reintentos o si el archivo no se puede ni parsear
   // (reintentarlo infinitamente nunca lo haría enviable).
-  const terminal = !parsedOk || attempts >= MAX_SEND_RETRIES;
+  const terminal = !parsedOk || attempts >= maxRetries;
 
   if (terminal) {
-    log(`Fallo terminal enviando ${file.name} (intento ${attempts}/${MAX_SEND_RETRIES}): ${errMsg}`);
+    log(`Fallo terminal enviando ${file.name} (intento ${attempts}/${maxRetries}): ${errMsg}`);
     if (parsedOk && cur) {
       try {
         cur._error = errMsg;
         cur._failedAt = new Date().toISOString();
         cur._telegramAttempts = attempts;
+        delete cur._nextRetryAt;
         fs.writeFileSync(trabajandoPath, JSON.stringify(cur, null, 2));
       } catch {}
+      // #4082 — Recibo `fallido` ligado por correlationId para que el Commander
+      // reconcilie el historial a `fallido` (la lógica "ya te respondí" no debe
+      // contar un saliente que nunca se entregó). El recibo NO lleva texto de
+      // error → cero superficie de leak de BOT_TOKEN (SEC-1).
+      if (telegramReceipt.isValidCorrelationId(cur._correlationId)) {
+        try {
+          telegramReceipt.writeReceipt(RECIBOS, {
+            correlationId: cur._correlationId,
+            status: telegramReceipt.STATUS_FALLIDO,
+            messageIds: [],
+          });
+        } catch (e) {
+          log(`No se pudo escribir recibo fallido (${cur._correlationId}): ${e.message}`);
+        }
+      }
     }
     ensureDir(FALLIDO);
     try {
@@ -277,14 +372,19 @@ function handleSendFailure(file, trabajandoPath, err) {
       try { fs.renameSync(trabajandoPath, file.path); } catch {}
     }
     // CA-3: fallo de envío de CUALQUIER adjunto SIEMPRE notifica.
-    notifyTelegramFailure(file.name, errMsg);
+    notifyTelegramFailure(file.name, errMsg, maxRetries);
     return 'failed';
   }
 
-  // Reintento acotado: persistir el contador y devolver a pendiente/.
-  log(`Error procesando ${file.name} (intento ${attempts}/${MAX_SEND_RETRIES}), reencolando: ${errMsg}`);
+  // #4082 — Reintento con BACKOFF (no reencolado inmediato): el dropfile vuelve a
+  // pendiente/ con `_nextRetryAt` futuro; el poll de selección lo saltea hasta
+  // que venza. Backoff exponencial escalonado a partir del nº de intento.
+  const backoffMs = Math.min(oc.backoff_base_ms * 2 ** (attempts - 1), oc.backoff_max_ms);
+  const nextRetryAt = new Date(Date.now() + backoffMs).toISOString();
+  log(`Error procesando ${file.name} (intento ${attempts}/${maxRetries}), reintento en ${Math.round(backoffMs / 1000)}s: ${errMsg}`);
   try {
     cur._telegramAttempts = attempts;
+    cur._nextRetryAt = nextRetryAt;
     fs.writeFileSync(trabajandoPath, JSON.stringify(cur, null, 2));
   } catch {}
   try { fs.renameSync(trabajandoPath, file.path); } catch {}
@@ -318,6 +418,56 @@ function recoverOrphans() {
   if (discarded > 0) log(`Recovery: ${discarded} zombies viejos (>${ORPHAN_MAX_AGE_MS/60000}min) movidos a listo/ (no se reintentan)`);
 }
 
+// #4082 (CA-B5) — Barredor one-shot de fallido/ al boot. Los salientes que
+// fallaron bajo la lógica vieja (sin backoff, sin confirmación de entrega) se
+// reprocesan con la nueva: se reencolan a pendiente/ con `_nextRetryAt`
+// ESCALONADO (SEC-3 anti retry-storm → no gatillar HTTP 429) y el contador de
+// intentos reseteado para darles un presupuesto limpio. Los `-cmd.json` más
+// viejos que `stale_ttl_ms` se DESCARTAN a listo/ con marcador en vez de
+// reenviarse fuera de contexto (SEC-4). Best-effort: nunca rompe el arranque.
+function sweepFallidoOnce() {
+  const oc = loadOutboundConfig();
+  const failed = listWorkFiles(FALLIDO);
+  if (failed.length === 0) return { requeued: 0, discarded: 0 };
+  const now = Date.now();
+  let requeued = 0, discarded = 0, idx = 0;
+  for (const file of failed) {
+    let cur;
+    try {
+      cur = JSON.parse(fs.readFileSync(file.path, 'utf8'));
+    } catch {
+      // Ilegible: no se puede reprocesar ni decidir staleness — dejar en fallido/.
+      continue;
+    }
+    // staleness: preferir `_failedAt`, fallback a mtime del archivo.
+    let failedAtMs = Date.parse(cur._failedAt || '');
+    if (!Number.isFinite(failedAtMs)) {
+      try { failedAtMs = fs.statSync(file.path).mtimeMs; } catch { failedAtMs = now; }
+    }
+    const isCmd = /-cmd\.json$/.test(file.name);
+    if (isCmd && (now - failedAtMs) > oc.stale_ttl_ms) {
+      // SEC-4: saliente del Commander demasiado viejo → descartar, no reenviar.
+      const destName = file.name.replace(/\.json$/, '-stale-descartado.json');
+      try { fs.renameSync(file.path, path.join(LISTO, destName)); discarded++; } catch {}
+      continue;
+    }
+    // SEC-3: reencolar con backoff escalonado (idx creciente) y presupuesto limpio.
+    cur._telegramAttempts = 0;
+    cur._nextRetryAt = new Date(now + (idx + 1) * oc.sweep_stagger_ms).toISOString();
+    delete cur._error;
+    delete cur._failedAt;
+    try {
+      fs.writeFileSync(file.path, JSON.stringify(cur, null, 2));
+      fs.renameSync(file.path, path.join(PENDIENTE, file.name));
+      requeued++;
+      idx++;
+    } catch { /* no se pudo mover — dejar en fallido/ */ }
+  }
+  if (requeued > 0) log(`Barredor fallido/: ${requeued} reencolados con backoff escalonado (cada ${oc.sweep_stagger_ms}ms)`);
+  if (discarded > 0) log(`Barredor fallido/: ${discarded} salientes stale descartados a listo/ (>${oc.stale_ttl_ms}ms)`);
+  return { requeued, discarded };
+}
+
 // #3668 — Procesa un grupo de burst (N>=2 archivos del mismo skill+issue+pid+type
 // dentro de la ventana). Mueve cada archivo a trabajando/, manda 1 solo mensaje
 // consolidado, y archiva todos los demás a listo/ con suffix
@@ -340,12 +490,39 @@ async function processBurstGroup(group, consolidatedText) {
   }
   if (trabajandoPaths.length === 0) return;
 
+  // #4082 — Recolectar correlationIds del grupo: un burst consolida N salientes,
+  // y cada uno puede traer su `_correlationId`. Al confirmar la entrega del
+  // consolidado emitimos un recibo `enviado` por cada uno.
+  const correlationIds = [];
+  for (const entry of trabajandoPaths) {
+    try {
+      const d = JSON.parse(fs.readFileSync(entry.path, 'utf8'));
+      if (telegramReceipt.isValidCorrelationId(d._correlationId)) correlationIds.push(d._correlationId);
+    } catch { /* ilegible: sin correlationId, sin recibo */ }
+  }
+
   // 2) Mandar 1 solo mensaje consolidado.
   try {
     const params = { text: consolidatedText, parse_mode: 'MarkdownV2' };
     const chunks = splitLongMessage(consolidatedText);
+    // #4082 — SEC-2 fail-closed: validar ok:true + message_id por chunk.
+    const messageIds = [];
     for (let i = 0; i < chunks.length; i++) {
-      await telegramSend('sendMessage', { ...params, text: chunks[i] });
+      const body = await telegramSend('sendMessage', { ...params, text: chunks[i] });
+      assertDelivered(body, i, chunks.length);
+      messageIds.push(body.result.message_id);
+    }
+    // #4082 — Entrega confirmada: recibo `enviado` por cada correlationId del grupo.
+    for (const cid of correlationIds) {
+      try {
+        telegramReceipt.writeReceipt(RECIBOS, {
+          correlationId: cid,
+          status: telegramReceipt.STATUS_ENVIADO,
+          messageIds,
+        });
+      } catch (e) {
+        log(`No se pudo escribir recibo enviado de burst (${cid}): ${e.message}`);
+      }
     }
   } catch (e) {
     log(`Error enviando consolidado de burst (${trabajandoPaths.length} archivos, key=${group.key}): ${e.message}`);
@@ -369,7 +546,14 @@ async function processBurstGroup(group, consolidatedText) {
 }
 
 async function processQueue() {
-  const files = listWorkFiles(PENDIENTE);
+  const allFiles = listWorkFiles(PENDIENTE);
+  if (allFiles.length === 0) return;
+
+  // #4082 — Backoff: excluir dropfiles cuyo `_nextRetryAt` sea futuro ANTES de
+  // agrupar/procesar. Se filtra acá (no sólo en el loop de singletons) porque dos
+  // `-cmd.json` reencolados podrían compartir clave de burst (`unknown|...`) y un
+  // burst-group bypassearía la ventana de reintento.
+  const files = allFiles.filter((f) => !isRetryDeferred(f.path));
   if (files.length === 0) return;
 
   // #3668 — Burst grouping previo al sendMessage. Cargamos config + agrupamos.
@@ -439,12 +623,16 @@ async function processQueue() {
         if (data.caption) extra.caption = data.caption;
         if (data.parse_mode) extra.parse_mode = data.parse_mode;
         if (data.filename) extra.filename = data.filename;
-        await telegramSendMultipart(
+        const mpBody = await telegramSendMultipart(
           methodByType[multipartType],
           multipartType,
           data[multipartType],
           extra,
         );
+        // #4082 — SEC-2 fail-closed: el multipart también valida ok:true antes de
+        // dar por entregado (antes aceptaba cualquier respuesta sin excepción).
+        assertDelivered(mpBody, 0, 1);
+        writeSentReceiptIfAny(data, [mpBody.result.message_id]);
         // CA-SEC-EXT-5 — Telegram bot rate limit por chat ~20 msg/min.
         // Sleep conservador entre envíos de adjuntos para no superar.
         // Solo aplica a multimedia (texto puro queda con la velocidad histórica).
@@ -457,13 +645,23 @@ async function processQueue() {
         const parseMode = data.parse_mode || 'Markdown';
         const chunks = splitLongMessage(data.text);
         const hasReplyMarkup = data.reply_markup && typeof data.reply_markup === 'object';
+        // #4082 — SEC-2 fail-closed: validar ok:true + message_id por chunk y
+        // acumular los ids (multi-chunk → N ids). Si algún chunk no confirma,
+        // `assertDelivered` lanza → cae a handleSendFailure (entrega parcial =
+        // fallido, se reintenta el dropfile completo).
+        const messageIds = [];
         for (let i = 0; i < chunks.length; i++) {
           const params = { text: chunks[i], parse_mode: parseMode };
           if (hasReplyMarkup && i === chunks.length - 1) {
             params.reply_markup = data.reply_markup;
           }
-          await telegramSend('sendMessage', params);
+          const body = await telegramSend('sendMessage', params);
+          assertDelivered(body, i, chunks.length);
+          messageIds.push(body.result.message_id);
         }
+        // #4082 — Entrega confirmada: recibo `enviado` si el saliente trae
+        // correlationId (los del Commander lo traen).
+        writeSentReceiptIfAny(data, messageIds);
       }
 
       const listoPath = path.join(LISTO, file.name);
@@ -481,6 +679,9 @@ async function processQueue() {
 async function main() {
   log('Servicio Telegram iniciado');
   recoverOrphans();
+  // #4082 (CA-B5) — reprocesar los fallidos heredados con la nueva lógica
+  // (backoff escalonado + descarte de stale). One-shot al boot.
+  try { sweepFallidoOnce(); } catch (e) { log(`Barredor fallido/ falló (best-effort): ${e.message}`); }
   try { require('./lib/ready-marker').signalReady('svc-telegram'); } catch {}
   while (true) {
     try { await processQueue(); } catch (e) { log(`Error: ${e.message}`); }
@@ -496,6 +697,14 @@ module.exports = {
   handleSendFailure,
   notifyTelegramFailure,
   MAX_SEND_RETRIES,
+  // #4082 — expuestos para tests `node --test` (funciones puras del path de
+  // reintento/barredor; no arrancan el servicio ni tocan red).
+  loadOutboundConfig,
+  sweepFallidoOnce,
+  isRetryDeferred,
+  assertDelivered,
+  writeSentReceiptIfAny,
+  RECIBOS,
 };
 
 // Arranque del servicio: SOLO cuando se ejecuta directamente (`node servicio-telegram.js`),

@@ -624,6 +624,32 @@ sherlock_max_reelaboraciones: 1
 telegram_burst_window_ms: 60000
 
 # =============================================================================
+# Reintentos de salientes Telegram (#4082)
+# =============================================================================
+# Confirmación de entrega real: `svc-telegram` marca un saliente como `enviado`
+# SOLO cuando el API de Telegram responde `ok:true` con `message_id`. Si la
+# entrega falla, el dropfile se reintenta con BACKOFF (no reencolado inmediato):
+# `handleSendFailure` estampa `_nextRetryAt` y el poll de selección saltea los
+# dropfiles cuyo `_nextRetryAt` sea futuro.
+#
+# IMPORTANTE: NO confundir con `precheck.max_retries` ni con el `max_retries` de
+# RED de una sola request del http-client. Estas claves gobiernan los reintentos
+# de la COLA de salientes (entrega lógica, cross-poll).
+#
+# SEC-3 (anti retry-storm): el barredor one-shot de `fallido/` al boot estampa
+# `_nextRetryAt` escalonado para no reencolar los fallidos de golpe (HTTP 429).
+# SEC-4 (anti stale): `stale_ttl_ms` descarta salientes `-cmd.json` más viejos
+# que el TTL en vez de reenviarlos fuera de contexto.
+#
+# Valores fuera de rango caen al default con warning — nunca rompen el servicio.
+telegram_outbound:
+  max_retries: 5            # Tope estricto de reintentos antes de fallido/ terminal
+  backoff_base_ms: 5000     # Base del backoff exponencial: base * 2^(intento-1)
+  backoff_max_ms: 300000    # Tope del backoff por intento (5 min)
+  stale_ttl_ms: 86400000    # TTL de descarte de salientes viejos (24h) — SEC-4
+  sweep_stagger_ms: 3000    # Escalonado entre fallidos reencolados por el barredor — SEC-3
+
+# =============================================================================
 # Notificación de entregables del pipeline (#3414)
 # =============================================================================
 # Cuando un skill notificable (guru, po, ux, planner) cierra una fase del
