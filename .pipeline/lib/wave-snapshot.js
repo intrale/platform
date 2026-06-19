@@ -87,26 +87,15 @@ function findFaseIdx(lifecycle, faseActual) {
 }
 
 /**
- * #4098 — Normaliza el enum `state` del cache de títulos / matriz como fuente
- * autoritativa de "cerrado". Comparación defensiva (security CA-7): se castea a
- * String y se baja a minúsculas, nunca se interpola el valor crudo. Devuelve
- * `false` ante `undefined`/`null` para conservar el fallback por label/archivo
- * cuando el cache está frío (sin campo `state`).
- *
- * @param {object} entry - entrada de `issueTitles[id]` o `issueMatrix[id]`.
- * @returns {boolean}
- */
-function isClosedState(entry) {
-    return String((entry && entry.state) || '').toLowerCase() === 'closed';
-}
-
-/**
  * Clasifica el estado visual del issue según las reglas UX-2 (precedencia):
  * closed > blocked > paused > approval > dev > definition.
  *
- * #4098 — `closed` gana a todo lo demás: un issue cerrado en GitHub
- * (`state: CLOSED`) nunca debe renderizar como bloqueado/pausado aunque arrastre
- * un label de bloqueo residual (`blocked:dependencies`) en el cache.
+ * #4099 — CLOSED es un estado terminal y le gana a cualquier label de bloqueo
+ * residual (`blocked:dependencies`, `blocked:routing-manual`, `needs-human`) o
+ * `paused`. Un issue que GitHub reporta CLOSED nunca puede pintarse 🛑: el
+ * usuario lee el ícono como verdad (guideline UX-1). Antes el orden era
+ * `blocked > paused > closed`, lo que dejaba `isClosed` inalcanzable cuando
+ * arrastraba un label de bloqueo (caso #4050, épico cerrado por merge de hijos).
  *
  * @returns {'closed'|'blocked'|'paused'|'approval'|'dev'|'definition'|'pending'}
  */
@@ -198,16 +187,8 @@ function buildWaveSnapshot(opts) {
                 || labelNamesNoMatrix.has('blocked:routing-manual')
                 || labelNamesNoMatrix.has('needs-human');
 
-            // #4098 — Fuente autoritativa de cerrado para issues fuera de la
-            // matriz (ej. épico #4050 cerrado por sus hijos): `state: CLOSED` del
-            // cache de títulos. Se honra ANTES que `isBlockedNoMatrix` para que un
-            // cerrado con label de bloqueo residual caiga en la rama `closed` y no
-            // se pinte 🛑. Fallback: si el cache no trae `state`, queda el
-            // `isClosedFromLabel` (label/archivo del caller).
-            const isClosedNoMatrix = isClosedFromLabel || isClosedState(cachedEntry);
-
-            // Si está cerrado (por caller o por `state` del cache), 100%.
-            if (isClosedNoMatrix) {
+            // Si está marcado cerrado por el caller, lo contamos como 100%.
+            if (isClosedFromLabel) {
                 closedCount += 1;
                 issuesOut.push({
                     id: Number(id),
@@ -278,11 +259,7 @@ function buildWaveSnapshot(opts) {
         const hasEntregaProcesada = finalFaseEntries.some(
             (e) => e.estado === 'procesado' && e.resultado === 'aprobado',
         );
-        // #4098 — `state: CLOSED` (cache de títulos o matriz) es fuente
-        // autoritativa de cerrado, además del label/archivo de entrega.
-        const titleEntry = state.issueTitles && state.issueTitles[id];
-        const isClosedFromCache = isClosedState(data) || isClosedState(titleEntry);
-        const isClosed = isClosedFromLabel || hasEntregaProcesada || isClosedFromCache;
+        const isClosed = isClosedFromLabel || hasEntregaProcesada;
         if (isClosed) pct = 100;
 
         const labels = Array.isArray(data.labels) ? data.labels : [];
@@ -291,14 +268,17 @@ function buildWaveSnapshot(opts) {
         // CA-5: bloqueos. Fuentes determinísticas:
         //   - blockedByIssue (file system `bloqueado-humano/`)
         //   - label `blocked:dependencies` / `blocked:routing-manual` / `needs-human`
-        // #4098 — cerrado gana a bloqueado/pausado: un issue CLOSED no se reporta
-        // como bloqueado aunque arrastre un label de bloqueo residual, así no
-        // ensucia `blocks`/`humanInterventions` ni se pinta 🛑.
         const blockedHuman = blockedByIssue.get(Number(id));
-        const isBlocked = !isClosed && (!!blockedHuman
+        // #4099 — CLOSED es terminal: un issue cerrado NUNCA está bloqueado,
+        // aunque arrastre un label de bloqueo residual. Forzar isBlocked=false
+        // mantiene el objeto consistente (el renderer usa isBlocked para
+        // ranking de truncado y la lista de bloqueos) y evita el falso 🛑.
+        const isBlocked = !isClosed && (
+            !!blockedHuman
             || labelNames.has('blocked:dependencies')
             || labelNames.has('blocked:routing-manual')
-            || labelNames.has('needs-human'));
+            || labelNames.has('needs-human')
+        );
 
         const isPaused = !isClosed && !!labelNames.has('paused');
 
@@ -367,7 +347,9 @@ function buildWaveSnapshot(opts) {
         });
 
         // CA-5: armar línea de bloqueo concreto.
-        if (isBlocked) {
+        // #4099 — un issue CLOSED no se lista como bloqueado aunque arrastre un
+        // label de bloqueo residual (estado terminal le gana al label).
+        if (isBlocked && !isClosed) {
             const motivo = buildBlockMotive({ blockedHuman, labelNames, data });
             blocks.push({
                 id: Number(id),
@@ -377,11 +359,16 @@ function buildWaveSnapshot(opts) {
 
         // CA-6: intervención humana — needs-human, bug-en-pipeline, esperando
         // decisión de Leo, sin avance > N minutos.
+        // #4099 — un issue CLOSED no requiere intervención humana: ya está
+        // entregado/cerrado, sin importar labels residuales.
         if (
-            isBlocked
-            || isStale
-            || labelNames.has('bug-en-pipeline')
-            || (labelNames.has('needs-definition') && staleMin >= staleThresholdMin)
+            !isClosed
+            && (
+                isBlocked
+                || isStale
+                || labelNames.has('bug-en-pipeline')
+                || (labelNames.has('needs-definition') && staleMin >= staleThresholdMin)
+            )
         ) {
             humanInterventions.push({
                 id: Number(id),
@@ -583,14 +570,12 @@ function formatStale(min) {
 
 module.exports = {
     buildWaveSnapshot,
-    isClosedState,
     LIFECYCLE_FULL,
     LIFECYCLE_DEV_ONLY,
     DEFAULT_STALE_THRESHOLD_MIN,
     _internal: {
         pickLifecycle,
         findFaseIdx,
-        isClosedState,
         classifyStatus,
         abbreviateFase,
         buildBlockMotive,
