@@ -431,6 +431,141 @@ test('Edge: issue cerrado en GitHub (sin matrix) cuenta como 100%', () => {
 });
 
 // -----------------------------------------------------------------------------
+// #4098 — state: CLOSED como fuente autoritativa de cerrado
+// -----------------------------------------------------------------------------
+
+test('#4098 CA-2: épico cerrado por hijos (state CLOSED) sin matriz ni archivo → closed', () => {
+    // Réplica del caso #4050: cerrado en GitHub, NO está en issueMatrix ni tiene
+    // archivo en entrega/procesado. El dato autoritativo viene de issueTitles.
+    const state = {
+        issueMatrix: {},
+        etaAverages: {},
+        allFases: LIFECYCLE_FULL,
+        issueTitles: {
+            '4050': { title: 'Épico cerrado por hijos', state: 'CLOSED', labels: ['epic', 'split'] },
+        },
+    };
+    const snap = buildWaveSnapshot({
+        state,
+        wave: { label: 'N+1', issues: [4050], source: 'test' },
+        now: NOW,
+    });
+    const i = snap.issues[0];
+    assert.equal(i.isClosed, true);
+    assert.equal(i.status, 'closed');
+    assert.equal(i.pct, 100);
+    assert.equal(snap.closedCount, 1);
+    assert.equal(snap.activeCount, 0);
+});
+
+test('#4098 CA-3: issue cerrado con label de bloqueo residual SIN matriz → closed, nunca blocked', () => {
+    const state = {
+        issueMatrix: {},
+        etaAverages: {},
+        allFases: LIFECYCLE_FULL,
+        issueTitles: {
+            '4050': { title: 'Cerrado con bloqueo residual', state: 'CLOSED', labels: ['blocked:dependencies'] },
+        },
+    };
+    const snap = buildWaveSnapshot({
+        state,
+        wave: { label: 'N+1', issues: [4050], source: 'test' },
+        now: NOW,
+    });
+    const i = snap.issues[0];
+    assert.equal(i.status, 'closed');
+    assert.equal(i.isClosed, true);
+    assert.equal(i.isBlocked, false);
+    assert.equal(snap.closedCount, 1);
+    // No debe figurar como bloqueo ni intervención humana.
+    assert.equal(snap.blocks.length, 0);
+    assert.equal(snap.humanInterventions.length, 0);
+});
+
+test('#4098 CA-3: issue cerrado con label de bloqueo residual CON matriz → closed, nunca blocked', () => {
+    const state = {
+        issueMatrix: {
+            '4050': {
+                title: 'Cerrado con bloqueo residual (en matriz)',
+                state: 'CLOSED',
+                labels: ['blocked:dependencies'],
+                fases: { 'desarrollo/dev': [entry({ skill: 'pipeline-dev', estado: 'pendiente', fase: 'dev', startedAt: NOW - 1000, durationMs: 0 })] },
+                faseActual: 'desarrollo/dev',
+                estadoActual: 'pendiente',
+                bounces: 0,
+                staleMin: 0,
+                motivo_rechazo: 'espera cierre de #4067',
+            },
+        },
+        etaAverages: {},
+        allFases: LIFECYCLE_FULL,
+    };
+    const snap = buildWaveSnapshot({
+        state,
+        wave: { label: 'N+1', issues: [4050], source: 'test' },
+        now: NOW,
+    });
+    const i = snap.issues[0];
+    assert.equal(i.status, 'closed');
+    assert.equal(i.isClosed, true);
+    assert.equal(i.pct, 100);
+    assert.equal(snap.closedCount, 1);
+    assert.equal(snap.blocks.length, 0);
+});
+
+test('#4098 CA-6: issue ACTIVO bloqueado sin state CLOSED sigue blocked (no-regresión)', () => {
+    const state = {
+        issueMatrix: {
+            '4096': {
+                title: 'Activo bloqueado',
+                state: 'OPEN',
+                labels: ['blocked:dependencies'],
+                fases: { 'desarrollo/dev': [entry({ skill: 'pipeline-dev', estado: 'pendiente', fase: 'dev', startedAt: NOW - 1000, durationMs: 0 })] },
+                faseActual: 'desarrollo/dev',
+                estadoActual: 'pendiente',
+                bounces: 0,
+                staleMin: 0,
+                motivo_rechazo: 'espera cierre de #4067',
+            },
+        },
+        etaAverages: {},
+        allFases: LIFECYCLE_FULL,
+    };
+    const snap = buildWaveSnapshot({
+        state,
+        wave: { label: 'N+1', issues: [4096], source: 'test' },
+        now: NOW,
+    });
+    const i = snap.issues[0];
+    assert.equal(i.status, 'blocked');
+    assert.equal(i.isClosed, false);
+    assert.equal(i.isBlocked, true);
+    assert.equal(snap.closedCount, 0);
+});
+
+test('#4098 CA-5: fallback cache frío sin state pero con closedSet (label done) sigue cerrado', () => {
+    // Sin campo `state` en el cache → isClosedState=false; el caller marca cerrado
+    // por label (closedSet). Debe seguir contando como cerrado (degradación con gracia).
+    const state = {
+        issueMatrix: {},
+        etaAverages: {},
+        allFases: LIFECYCLE_FULL,
+        issueTitles: {
+            '4050': { title: 'Cerrado por label done (sin state)', labels: ['done'] },
+        },
+    };
+    const snap = buildWaveSnapshot({
+        state,
+        wave: { label: 'N+1', issues: [4050], source: 'test' },
+        closedIssues: new Set([4050]),
+        now: NOW,
+    });
+    assert.equal(snap.issues[0].isClosed, true);
+    assert.equal(snap.issues[0].status, 'closed');
+    assert.equal(snap.closedCount, 1);
+});
+
+// -----------------------------------------------------------------------------
 // Internal helpers
 // -----------------------------------------------------------------------------
 
@@ -441,14 +576,30 @@ test('formatStale: minutos → string compacto', () => {
     assert.equal(_internal.formatStale(125), '2h5m');
 });
 
-test('classifyStatus: precedencia blocked > paused > closed > approval > dev > definition', () => {
-    assert.equal(_internal.classifyStatus({ isBlocked: true, isClosed: true, isPaused: true, faseActual: 'desarrollo/dev' }), 'blocked');
-    assert.equal(_internal.classifyStatus({ isPaused: true, isClosed: true, faseActual: 'desarrollo/dev' }), 'paused');
+test('classifyStatus: precedencia closed > blocked > paused > approval > dev > definition (#4098)', () => {
+    // #4098 — cerrado gana a bloqueado y pausado: un issue CLOSED con label de
+    // bloqueo residual nunca debe pintarse 🛑.
+    assert.equal(_internal.classifyStatus({ isBlocked: true, isClosed: true, isPaused: true, faseActual: 'desarrollo/dev' }), 'closed');
+    assert.equal(_internal.classifyStatus({ isPaused: true, isClosed: true, faseActual: 'desarrollo/dev' }), 'closed');
     assert.equal(_internal.classifyStatus({ isClosed: true, faseActual: null }), 'closed');
+    // No-regresión: bloqueado activo (sin closed) sigue 'blocked'.
+    assert.equal(_internal.classifyStatus({ isBlocked: true, isPaused: true, faseActual: 'desarrollo/dev' }), 'blocked');
+    assert.equal(_internal.classifyStatus({ isPaused: true, faseActual: 'desarrollo/dev' }), 'paused');
     assert.equal(_internal.classifyStatus({ faseActual: 'desarrollo/aprobacion' }), 'approval');
     assert.equal(_internal.classifyStatus({ faseActual: 'desarrollo/dev' }), 'dev');
     assert.equal(_internal.classifyStatus({ faseActual: 'definicion/analisis' }), 'definition');
     assert.equal(_internal.classifyStatus({ faseActual: null }), 'pending');
+});
+
+test('isClosedState: normaliza el enum state case-insensitive y degrada con gracia (#4098)', () => {
+    assert.equal(_internal.isClosedState({ state: 'CLOSED' }), true);
+    assert.equal(_internal.isClosedState({ state: 'closed' }), true);
+    assert.equal(_internal.isClosedState({ state: 'Closed' }), true);
+    assert.equal(_internal.isClosedState({ state: 'OPEN' }), false);
+    // Cache frío / sin campo state → false (conserva fallback por label).
+    assert.equal(_internal.isClosedState({}), false);
+    assert.equal(_internal.isClosedState(null), false);
+    assert.equal(_internal.isClosedState(undefined), false);
 });
 
 test('abbreviateFase: nombres acortados con (idx/total)', () => {

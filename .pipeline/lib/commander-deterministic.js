@@ -2145,11 +2145,26 @@ async function handleWaveStatus({ pipelineRoot, audio }) {
         }
     } catch (_) { /* sin bloqueados */ }
 
+    // #4098 — Detección de cerrados con `state: CLOSED` como fuente autoritativa.
+    // El cache de títulos (`state.issueTitles`) ya trae el `state` por issue, así
+    // que no requiere llamadas extra a la API de GitHub. Se cubre el caso del
+    // épico cerrado por sus hijos (#4050) que puede NO estar en `issueMatrix`:
+    // por eso ya no salteamos issues fuera de la matriz, leemos el `state` desde
+    // `issueTitles`. Fallback con gracia: si el cache no trae `state`, se conserva
+    // la detección por label literal `closed`/`done`.
+    const { isClosedState } = snapshotMod;
     const closedIssues = new Set();
     for (const id of wave.issues) {
-        const data = state.issueMatrix && state.issueMatrix[String(id)];
-        if (!data) continue;
-        const labels = Array.isArray(data.labels) ? data.labels : [];
+        const key = String(id);
+        const titleEntry = state.issueTitles && state.issueTitles[key];
+        const matrixEntry = state.issueMatrix && state.issueMatrix[key];
+        // 1) Fuente autoritativa: state CLOSED del cache (sin API extra).
+        if (isClosedState(titleEntry) || isClosedState(matrixEntry)) {
+            closedIssues.add(Number(id));
+            continue;
+        }
+        // 2) Fallback: labels literales (degradación con gracia si el cache está frío).
+        const labels = Array.isArray(matrixEntry && matrixEntry.labels) ? matrixEntry.labels : [];
         const labelNames = labels
             .map((l) => (typeof l === 'string' ? l : (l && l.name) || ''))
             .filter(Boolean);
