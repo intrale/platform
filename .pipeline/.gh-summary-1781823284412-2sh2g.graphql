@@ -1,0 +1,1 @@
+{ repository(owner:"intrale",name:"platform") { i0: issue(number:4067) { number body comments(last:20) { nodes { author { login } body createdAt } } } } }
