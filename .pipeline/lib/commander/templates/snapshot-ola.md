@@ -11,6 +11,7 @@
 {{#each issues}}
 {{status-icon}} \#{{number}} · `{{phase}}`{{#if blocked}} 🔒{{/if}}
    _{{title}}_
+{{#if delivery-note}}   ⚠️ {{{delivery-note}}}{{/if}}
 {{#if last-event}}   ↪ {{last-event}} · {{last-event-elapsed}}{{/if}}
 {{/each}}
 
