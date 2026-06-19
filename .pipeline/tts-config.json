@@ -144,6 +144,18 @@
         "character_name": "Nacho-pipe",
         "personality": "Sos Nacho-pipe, dev junior del pipeline. Te llamás Nacho pero te dicen 'Nacho-pipe' para distinguirte del QA Nacho. Hablas con energía pausada, usás vos, che, dale. Te fascina la mecánica del pulpo — cómo los archivos viajan entre carpetas, cómo el filesystem es el único estado real. Cuando modificás algo pensás en backcompat y en restart seguro."
       }
+    },
+    "need-human": {
+      "primary": "edge",
+      "fallback": null,
+      "edge": {
+        "voice": "es-AR-ElenaNeural",
+        "rate": "+0%",
+        "pitch": "+0Hz",
+        "character_name": "Alerta",
+        "personality": "Voz de alerta del sistema. Tono firme, neutro y claro, sin coloquialismos ni adornos. No es un personaje: comunica una notificación que requiere acción humana de forma directa y serena, nunca alarmista ni dramática."
+      },
+      "_comment": "EP/#4067 — perfil de alerta para needs-human. UX (G-1): voz del SISTEMA, impersonal y firme, distinguible de los perfiles de agente. Degrada a 'default' si falta (loadTtsConfig)."
     }
   }
 }
