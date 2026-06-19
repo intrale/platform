@@ -209,9 +209,17 @@ function saveIssueTitleCache(cache) {
 
 function fetchIssueTitles(issueIds, cache) {
   const ghPath = GH_BIN;
+  // SEC-1 (#4096, CWE-78 command injection): los IDs se derivan de nombres de
+  // archivo del filesystem (`<issue>.<skill>`) y terminan interpolados en
+  // `issue(number:${id})` (GraphQL) y `gh issue view ${id}` (fallback shell).
+  // El worker de snapshot corre desatendido en background, así que blindamos:
+  // sólo IDs estrictamente numéricos pasan a cualquier `gh`/execSync. Un
+  // nombre no-numérico (ej. `4096; rm -rf .build`) se descarta acá.
+  const safeIds = (Array.isArray(issueIds) ? issueIds : [])
+    .filter(id => /^\d+$/.test(String(id)));
   // GraphQL batch: up to 50 issues per query
   const batches = [];
-  for (let i = 0; i < issueIds.length; i += 50) batches.push(issueIds.slice(i, i + 50));
+  for (let i = 0; i < safeIds.length; i += 50) batches.push(safeIds.slice(i, i + 50));
   for (const batch of batches) {
     const tmpQuery = path.join(PIPELINE, '.gh-query-' + Date.now() + '.graphql');
     try {
@@ -456,6 +464,20 @@ let _stateCache = null;
 let _stateCacheAt = 0;
 const STATE_CACHE_TTL_MS = 2000;
 
+// #4096 — Snapshot servido por /api/state, poblado FUERA del request por un
+// worker en background (ver refreshStateSnapshot + arranque en startListen).
+// Motivación: getPipelineState() es un escaneo sincrónico O(N archivos) del
+// histórico; ejecutarlo en el hot path del request clava un núcleo de CPU al
+// 100% y deja /api/state colgado bajo carga. El smoke (paso 2) lo detectaba
+// como caída → rollback en loop del restart. La solución estructural es sacar
+// el cómputo pesado del request: el handler sirve SIEMPRE esta vista en
+// memoria en O(1) y el refresh ocurre en un setInterval con setImmediate.
+let _stateSnapshot = null;          // última vista computada (o null en cold start)
+let _stateSnapshotAt = 0;           // timestamp del último refresh exitoso
+let _stateRefreshInflight = false;  // evita solapar cómputos pesados
+let _stateRefreshTimer = null;      // handle del setInterval (para clearInterval)
+const STATE_REFRESH_MS = 3000;      // cadencia de refresh fuera del hot path
+
 // #3492 — Cache de la ETA agregada por ola actual. El cálculo es async (depende
 // de streaming de metrics-history.jsonl + markers FS) pero el `state` se construye
 // sync. Patrón fire-and-forget: cada llamada a `getPipelineState()` programa un
@@ -621,6 +643,27 @@ function getCachedPipelineState() {
   _stateCache = getPipelineState();
   _stateCacheAt = now;
   return _stateCache;
+}
+
+// #4096 — Worker de refresh del snapshot de estado. Corre FUERA del request
+// (arrancado por startListen via setInterval). Cada tick computa el estado
+// pesado dentro de un setImmediate para no bloquear el tick actual del event
+// loop, y un flag inflight evita solapar cómputos cuando un escaneo tarda más
+// que el intervalo. El request de /api/state NUNCA llama a esto: lee el último
+// `_stateSnapshot` ya armado en O(1).
+function refreshStateSnapshot() {
+  if (_stateRefreshInflight) return;   // no solapar escaneos pesados
+  _stateRefreshInflight = true;
+  setImmediate(() => {
+    try {
+      _stateSnapshot = getPipelineState();
+      _stateSnapshotAt = Date.now();
+    } catch (e) {
+      try { log(`state snapshot refresh error: ${e && e.message ? e.message : e}`); } catch {}
+    } finally {
+      _stateRefreshInflight = false;
+    }
+  });
 }
 
 function getPipelineState() {
@@ -9244,6 +9287,22 @@ try {
 } catch (e) { log(`wizard-providers unavailable: ${e.message}`); }
 
 const server = http.createServer((req, res) => {
+  // #4096 — /api/health: readiness liviano para el smoke (paso 2). DEBE ser lo
+  // primero del handler, antes de cualquier ruta que toque el FS, y O(1): nunca
+  // lee el histórico ni computa estado. El gate de rollback del restart depende
+  // de este endpoint, así que no puede colgarse bajo carga.
+  // SEC (#4096, CWE-200): responde únicamente { ok, uptime }. PROHIBIDO exponer
+  // paths, PIDs, versiones, motivos de rechazo o estado del pipeline.
+  if (req.url === '/api/health') {
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    res.end(JSON.stringify({ ok: true, uptime: Math.round(process.uptime()) }));
+    return;
+  }
+
   // #3724 — Wizards: endpoint POST mount-first (antes del catch-all GET-only).
   if (wizardSession && wizardSession.route(req, res)) return;
 
@@ -10710,9 +10769,22 @@ const server = http.createServer((req, res) => {
   }
 
   // API JSON
+  // GUARDRAIL (#4096): este handler NO debe invocar getPipelineState() ni hacer
+  // I/O sincrónico sobre el histórico. Sirve SIEMPRE desde `_stateSnapshot`,
+  // poblado por refreshStateSnapshot() en background. Reintroducir un escaneo
+  // pesado acá vuelve a clavar la CPU y a colgar el smoke (paso 2) → rollback en
+  // loop del restart. El test dashboard-state-hotpath.test.js falla si alguien
+  // reintroduce getPipelineState() en este bloque. La vista puede tener hasta
+  // STATE_REFRESH_MS (~3s) de antigüedad: aceptable para un dashboard.
   if (req.url === '/api/state' || req.url === '/api/status') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(getPipelineState(), null, 2));
+    if (!_stateSnapshot) {
+      // Cold start: todavía no corrió el primer refresh. Responder liviano, NO
+      // computar sincrónicamente. El consumidor degrada con gracia (G-1/CA-3).
+      res.end(JSON.stringify({ ready: false, snapshotAt: 0 }, null, 2));
+      return;
+    }
+    res.end(JSON.stringify(_stateSnapshot, null, 2));
     return;
   }
 
@@ -10915,6 +10987,15 @@ function startListen() {
     log(`Dashboard en http://${HOST}:${PORT}`);
     log(`API: /api/state | Logs: /logs/{file} | SSE: /events | V3 kiosk: /v3 | Multi-Provider: /multi-provider`);
     try { require('./lib/ready-marker').signalReady('dashboard', { port: PORT, host: HOST }); } catch {}
+    // #4096 — Arranque del worker de snapshot DESPUÉS de signalReady: el primer
+    // refresh es async (setImmediate) para no demorar el listen/ready, y el
+    // setInterval mantiene la vista fresca fuera del hot path. `.unref()` evita
+    // que el timer mantenga vivo el proceso al cerrar.
+    refreshStateSnapshot();
+    if (!_stateRefreshTimer) {
+      _stateRefreshTimer = setInterval(refreshStateSnapshot, STATE_REFRESH_MS);
+      if (_stateRefreshTimer.unref) _stateRefreshTimer.unref();
+    }
   });
 }
 server.on('error', (err) => {
@@ -10935,8 +11016,8 @@ startListen();
 // uptime y para diagnóstico humano). NO es fuente de verdad: el dashboard
 // descubre sus peers vía pid-discovery.
 try { fs.writeFileSync(path.join(PIPELINE, 'dashboard.pid'), String(process.pid)); } catch {}
-process.on('SIGINT', () => { server.close(); process.exit(0); });
-process.on('SIGTERM', () => { server.close(); process.exit(0); });
+process.on('SIGINT', () => { if (_stateRefreshTimer) clearInterval(_stateRefreshTimer); server.close(); process.exit(0); });
+process.on('SIGTERM', () => { if (_stateRefreshTimer) clearInterval(_stateRefreshTimer); server.close(); process.exit(0); });
 
 // Crash handlers — loguear antes de morir para diagnóstico
 process.on('uncaughtException', (err) => {

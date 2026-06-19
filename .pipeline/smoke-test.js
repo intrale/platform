@@ -9,14 +9,15 @@
 // Chequeos:
 //   1. Todos los componentes del pipeline escribieron su .ready marker
 //      y su PID sigue vivo.
-//   2. Dashboard responde HTTP 200 en :3200 (/api/state).
+//   2. Dashboard responde HTTP 200 en :3200 (/api/health, gate liviano O(1);
+//      /api/state se chequea como secundario no-bloqueante). Ver #4096.
 //   3. last-restart.json existe y es reciente.
 //   4. No quedaron mensajes huérfanos en commander/trabajando/ (warn).
 //
 // Exit codes:
 //   0 → pipeline sano (todos los componentes ready + dashboard responde)
 //   1 → componente no llegó a "ready" en el timeout, o su PID murió (stale)
-//   2 → dashboard no responde en :3200
+//   2 → dashboard no responde en :3200 (/api/health caído)
 //   3 → last-restart.json ausente
 //
 // Uso:
@@ -110,12 +111,12 @@ function fail(msg, code = 1) {
   process.exit(code);
 }
 
-async function checkDashboardHttp(port, timeoutMs = 5000) {
+async function checkDashboardHttp(port, timeoutMs = 5000, urlPath = '/api/health') {
   return new Promise(resolve => {
     const req = http.get({
       host: '127.0.0.1',
       port,
-      path: '/api/state',
+      path: urlPath,
       timeout: timeoutMs,
     }, res => {
       res.resume();
@@ -155,19 +156,35 @@ async function main() {
     fail(`Componentes no-ready tras ${waitedSec}s: ${bad.join(', ')}`, 1);
   }
 
-  // 2) Dashboard HTTP. Timeout holgado (30s) porque /api/state lee bastante
-  // estado del filesystem (issueMatrix + servicios + bloqueados-humano +
-  // métricas). Con la cola creciendo se acerca al límite anterior de 5s y
-  // dispara rollbacks falsos positivos. 30s es margen amplio sin retrasar
-  // demasiado el restart cuando hay un problema real.
+  // 2) Dashboard HTTP — gate de rollback contra /api/health (#4096).
+  // ANTES: el gate apuntaba a /api/state, que reconstruía todo el histórico
+  // sincrónicamente en cada request (O(N archivos)). Con la cola crecida eso
+  // clavaba un núcleo de CPU al 100% y /api/state nunca devolvía 200 dentro del
+  // timeout → fail(...,2) → rollback en loop del restart (cambios nunca
+  // aplicados). AHORA el gate usa /api/health: endpoint O(1) garantizado
+  // liviano (no toca el FS), así que un timeout de 5s vuelve a ser sano y un
+  // fallo acá indica un problema real (dashboard caído), no carga histórica.
+  // /api/state queda como chequeo SECUNDARIO no-bloqueante (warn): puede
+  // devolver { ready:false } en cold start o el snapshot ya armado; nunca
+  // dispara rollback.
   if (args.http) {
-    log('Verificando dashboard HTTP :3200...');
+    log('Verificando dashboard HTTP :3200 (/api/health)...');
     const dashPort = parseInt(process.env.DASHBOARD_PORT || '3200', 10);
-    const httpRes = await checkDashboardHttp(dashPort, 30000);
-    if (!httpRes.ok) {
-      fail(`Dashboard no responde en :${dashPort} (status=${httpRes.status})`, 2);
+    const healthRes = await checkDashboardHttp(dashPort, 5000, '/api/health');
+    if (!healthRes.ok) {
+      fail(`Dashboard /api/health no responde en :${dashPort} (status=${healthRes.status})`, 2);
     }
-    log(`  OK dashboard HTTP 200`);
+    log(`  OK dashboard /api/health HTTP 200`);
+
+    // Chequeo secundario no-bloqueante: /api/state sirve desde el snapshot en
+    // memoria (O(1)). No gatea rollback; sólo informa. Cold start legítimo
+    // devuelve { ready:false } con 200.
+    const stateRes = await checkDashboardHttp(dashPort, 5000, '/api/state');
+    if (stateRes.ok) {
+      log(`  OK dashboard /api/state HTTP 200 (snapshot)`);
+    } else {
+      log(`  WARN dashboard /api/state status=${stateRes.status} (secundario, no bloquea rollback)`);
+    }
   }
 
   // 3) last-restart.json.
