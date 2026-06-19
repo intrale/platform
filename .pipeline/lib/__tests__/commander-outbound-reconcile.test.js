@@ -19,7 +19,12 @@ const path = require('node:path');
 
 const pulpo = require('../../pulpo');
 const rec = require('../telegram-receipt');
-const { commanderOutboundStatus, reconcileTelegramReceipts } = pulpo;
+const {
+  commanderOutboundStatus,
+  reconcileTelegramReceipts,
+  resolveChatIdForCorrelation,
+  selectCommanderHistoryForChat,
+} = pulpo;
 
 function sandbox() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cmd-reconcile-'));
@@ -117,4 +122,90 @@ test('reconcileTelegramReceipts: sin recibos → no-op', () => {
   const dir = sandbox();
   const res = reconcileTelegramReceipts({ pipelineDir: dir });
   assert.deepEqual(res, { reconciled: 0, quarantined: 0 });
+});
+
+// -----------------------------------------------------------------------------
+// resolveChatIdForCorrelation (fix rebote rev-2 — cierre del lazo al contexto LLM)
+// -----------------------------------------------------------------------------
+test('resolveChatIdForCorrelation: hereda chat_id del out por correlation_id', () => {
+  const raw = jsonl(
+    { direction: 'in', from: 'leo', text: 'hola', chat_id: 999 },
+    { direction: 'out', status: 'encolado', correlation_id: 'cmd-c1-abcdef', text: 'respondo', chat_id: 42 },
+  );
+  assert.equal(resolveChatIdForCorrelation(raw, 'cmd-c1-abcdef'), 42);
+});
+
+test('resolveChatIdForCorrelation: sin out para ese correlation_id → null', () => {
+  const raw = jsonl({ direction: 'out', status: 'encolado', correlation_id: 'cmd-otro', text: 'x', chat_id: 42 });
+  assert.equal(resolveChatIdForCorrelation(raw, 'cmd-c2-abcdef'), null);
+  assert.equal(resolveChatIdForCorrelation('', 'cmd-x'), null);
+  assert.equal(resolveChatIdForCorrelation('basura\n{no json', 'cmd-x'), null);
+});
+
+// -----------------------------------------------------------------------------
+// CIERRE DEL LAZO (fix rebote rev-2): la reconcile con chat_id heredado del out
+// SOBREVIVE al filtro per-chat y llega al contexto que ve el LLM del Commander.
+// Este es el bug del rechazo: antes la reconcile se appendeaba SIN chat_id y
+// `commanderEntryBelongsToChat` la descartaba → el estado real de entrega nunca
+// fluía al prompt.
+// -----------------------------------------------------------------------------
+test('reconcile hereda chat_id del out y aparece en selectCommanderHistoryForChat', () => {
+  const dir = sandbox();
+  const historyFile = path.join(dir, 'commander-history.jsonl');
+  // El flujo de envío ya dejó el `out` (encolado) con chat_id del chat activo.
+  fs.writeFileSync(historyFile, jsonl(
+    { direction: 'out', status: 'encolado', correlation_id: 'cmd-loop-abcdef', text: 'te respondo', chat_id: 7777 },
+  ) + '\n');
+  // Llega el recibo de entrega confirmada del servicio Telegram.
+  rec.writeReceipt(rec.receiptsDir(dir), { correlationId: 'cmd-loop-abcdef', status: 'enviado', messageIds: [11] });
+
+  const res = reconcileTelegramReceipts({ pipelineDir: dir });
+  assert.equal(res.reconciled, 1);
+
+  const raw = fs.readFileSync(historyFile, 'utf8');
+  const reconcileEntry = raw.trim().split('\n').map(JSON.parse).find(e => e.direction === 'reconcile');
+  // La entry reconcile heredó el chat_id del out original.
+  assert.equal(reconcileEntry.chat_id, 7777);
+
+  // Y por tanto el selector per-chat del contexto del LLM la incluye para ese chat.
+  const visibles = selectCommanderHistoryForChat(raw, { activeChatId: 7777, limit: 50 });
+  const reconcileVisible = visibles.map(JSON.parse).find(e => e.direction === 'reconcile');
+  assert.ok(reconcileVisible, 'la reconcile con chat_id debe llegar al contexto del LLM para ese chat');
+  assert.equal(reconcileVisible.status, 'enviado');
+  assert.match(reconcileVisible.text, /entrega confirmada/);
+
+  // Aislamiento: NO se filtra a otro chat (SEC-3).
+  const otroChat = selectCommanderHistoryForChat(raw, { activeChatId: 1234, limit: 50 });
+  assert.equal(otroChat.map(JSON.parse).some(e => e.direction === 'reconcile'), false);
+});
+
+test('reconcile fallido es visible al LLM con aviso de NO entrega', () => {
+  const dir = sandbox();
+  const historyFile = path.join(dir, 'commander-history.jsonl');
+  fs.writeFileSync(historyFile, jsonl(
+    { direction: 'out', status: 'encolado', correlation_id: 'cmd-fail-abcdef', text: 'hola', chat_id: 555 },
+  ) + '\n');
+  rec.writeReceipt(rec.receiptsDir(dir), { correlationId: 'cmd-fail-abcdef', status: 'fallido', messageIds: [] });
+
+  reconcileTelegramReceipts({ pipelineDir: dir });
+  const raw = fs.readFileSync(historyFile, 'utf8');
+  const visible = selectCommanderHistoryForChat(raw, { activeChatId: 555, limit: 50 })
+    .map(JSON.parse).find(e => e.direction === 'reconcile');
+  assert.ok(visible, 'reconcile fallido debe llegar al contexto del chat');
+  assert.equal(visible.status, 'fallido');
+  assert.match(visible.text, /NO llego/);
+});
+
+test('reconcile sin out previo NO estampa chat_id (degrada, nunca cross-chat)', () => {
+  const dir = sandbox();
+  // No hay `out` con este correlation_id en el historial.
+  rec.writeReceipt(rec.receiptsDir(dir), { correlationId: 'cmd-huerfano-abcdef', status: 'enviado', messageIds: [3] });
+
+  reconcileTelegramReceipts({ pipelineDir: dir });
+  const raw = fs.readFileSync(path.join(dir, 'commander-history.jsonl'), 'utf8');
+  const entry = raw.trim().split('\n').map(JSON.parse).find(e => e.direction === 'reconcile');
+  // Sin out previo → reconcile queda NO-ASIGNADA (sin chat_id): no se inyecta a
+  // ningún chat concreto. El estado sigue disponible vía commanderOutboundStatus.
+  assert.equal(entry.chat_id, undefined);
+  assert.equal(commanderOutboundStatus(raw, 'cmd-huerfano-abcdef'), 'enviado');
 });

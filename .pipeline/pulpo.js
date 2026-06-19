@@ -7868,6 +7868,11 @@ function reconcileTelegramReceipts(opts = {}) {
     const files = telegramReceipt.listReceiptFiles(recibosDir);
     if (files.length === 0) return { reconciled: 0, quarantined: 0 };
     const historyFile = path.join(pipelineDir, 'commander-history.jsonl');
+    // #4082 (fix rebote rev-2) — Snapshot del historial para resolver el `chat_id`
+    // del `out` original por correlation_id. Se lee UNA vez por tick: el chat_id que
+    // necesitamos lo escribió el flujo de envío, no este loop de reconciliación.
+    let historyRaw = '';
+    try { historyRaw = fs.readFileSync(historyFile, 'utf8'); } catch { historyRaw = ''; }
     let reconciled = 0;
     let quarantined = 0;
     for (const f of files) {
@@ -7885,11 +7890,20 @@ function reconcileTelegramReceipts(opts = {}) {
       // Entry de reconciliación append-only ligada por correlation_id. La lógica
       // "ya te respondí" (CA-A4) debe basarse en una entry `reconcile` con
       // status:'enviado' — nunca en el `encolado` del momento de encolar.
+      // #4082 (fix rebote rev-2) — Hereda el `chat_id` del `out` original (por
+      // correlation_id) para que la reconcile sobreviva al filtro per-chat
+      // (commanderEntryBelongsToChat) y el estado real de entrega llegue al
+      // contexto del LLM (selectCommanderHistoryForChat). Sin `out` previo con
+      // chat_id (fallback directo / sin token), queda NO-ASIGNADA: degrada al
+      // comportamiento previo (no se inyecta a ningún chat), nunca cross-chat.
+      const chatId = resolveChatIdForCorrelation(historyRaw, receipt.correlationId);
       appendCommanderHistory(historyFile, {
         direction: 'reconcile',
         status: receipt.status, // 'enviado' | 'fallido'
         correlation_id: receipt.correlationId,
         message_ids: receipt.messageIds,
+        ...(chatId != null ? { chat_id: chatId } : {}),
+        text: reconcileStatusText(receipt.status),
       });
       telegramReceipt.archiveReceipt(f.path, archivedDir);
       reconciled++;
@@ -7976,6 +7990,43 @@ function commanderOutboundStatus(rawContent, correlationId) {
     }
   }
   return status;
+}
+
+// #4082 (CA-A4, fix rebote rev-2) — Resuelve el `chat_id` de un saliente a partir
+// de su `correlation_id`, buscando en el historial la entry `out` que sí lo lleva.
+// La entry `reconcile` la appendea el tick de reconciliación (`reconcileTelegramReceipts`),
+// que lee recibos del filesystem y NO conoce el chat. Sin chat_id, la reconcile
+// queda NO-ASIGNADA y `commanderEntryBelongsToChat` la descarta del contexto del
+// LLM (pulpo.js:selectCommanderHistoryForChat) — el bug del rechazo: el estado real
+// de entrega nunca llegaba al Commander. Heredando el chat_id del `out` original,
+// la reconcile sobrevive al filtro per-chat y el LLM ve el estado honesto de entrega.
+// Función PURA (recibe el JSONL crudo) → testeable sin tocar disco. La PRIMERA entry
+// con chat_id para ese correlation_id gana (el `out` original; el `in` no lleva
+// correlation_id de salida).
+function resolveChatIdForCorrelation(rawContent, correlationId) {
+  if (!rawContent || typeof rawContent !== 'string' || !correlationId) return null;
+  for (const line of rawContent.trim().split('\n')) {
+    let e;
+    try { e = JSON.parse(line); } catch { continue; }
+    if (!e || e.correlation_id !== correlationId) continue;
+    if (e.chat_id != null) return e.chat_id;
+  }
+  return null;
+}
+
+// #4082 (CA-A4, fix rebote rev-2) — Texto legible para el LLM en la entry
+// `reconcile`. El historial se inyecta verbatim (líneas JSON crudas) al contexto
+// del Commander; un `text` explícito hace inequívoco el estado de entrega y es la
+// señal que cierra el lazo "ya te respondí": en 'fallido' el LLM sabe que el
+// mensaje NO llegó y no debe afirmar que ya respondió.
+function reconcileStatusText(status) {
+  if (status === 'enviado') {
+    return '[entrega confirmada] el mensaje anterior se entrego al usuario.';
+  }
+  if (status === 'fallido') {
+    return '[entrega fallida] el mensaje anterior NO llego al usuario; no asumas que ya respondiste.';
+  }
+  return `[entrega ${status}]`;
 }
 
 // #3934 — Devuelve las últimas `lookback` líneas crudas del historial. Si se
@@ -13888,6 +13939,7 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // #4082 — confirmación de entrega real de salientes Telegram (recibos).
     commanderOutboundStatus,
     reconcileTelegramReceipts,
+    resolveChatIdForCorrelation,
   };
   return; // No arrancar singleton ni mainLoop
 }
