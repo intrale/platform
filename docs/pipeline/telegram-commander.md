@@ -40,6 +40,8 @@ handler determinístico puede romper.
 | `/help`, `/start`          | determinística | `pulpo.cmdHelp` (legacy)                  | —                      |
 | `/restart`, `/limpiar`     | determinística | handlers legacy                            | —                      |
 | `/bloqueados`, `/unblock`  | determinística | handlers legacy                            | —                      |
+| `/entregado <issue> [pr <n>]` | determinística | `commander-det` → `resolveDeliveryState` | `estado-entrega.md`    |
+| `está entregado <n>`       | determinística | `commander-det` → `resolveDeliveryState` | `estado-entrega.md`    |
 | `/intake <num>`            | **LLM**        | `pulpo.cmdIntake` con Claude              | —                      |
 | `/proponer`                | **LLM**        | `pulpo.cmdProponer` con Claude            | —                      |
 | Texto libre > 80 chars     | **LLM**        | `ejecutarClaude(prompt)`                  | —                      |
@@ -327,6 +329,38 @@ node -e "console.log(require('./.pipeline/lib/commander/multi-provider').resolve
 ```
 
 ---
+
+## Comando `/entregado` — estado de entrega determinístico (#4090)
+
+`/entregado <issue> [pr <numero>]` (alias `/estado-entrega`; NLP "¿está entregado
+4090?", "se mergeó 4090") responde la **fuente única** de la verdad sobre si un
+issue está realmente entregado = **su PR mergeado en `main`**. Erradica el patrón
+recurrente en que el Commander bajaba a git "a mano", comparaba contra la rama del
+agente o un estado intermedio, y se contradecía entre mensajes.
+
+- **Read-only**: nunca mergea, pushea ni cierra issues. Re-valida `chat_id` + rate
+  limit como cualquier comando determinístico.
+- **Sin inferencia ad-hoc**: el handler invoca `canonical.resolveDeliveryState(...)`
+  (ver [`canonical-facts.md`](./canonical-facts.md)) — NO arma `gh`/`git` propios.
+- **4 estados** con glifo inequívoco (UX G1, escaneo en <1s):
+
+  | Estado | Glifo | Mensaje |
+  |--------|-------|---------|
+  | `mergeado_en_main` | ✅ | Entregado — mergeado en `main` |
+  | `pusheado_sin_merge` | 🟡 | Pusheado, SIN merge a `main` todavía |
+  | `en_pipeline` | 🔵 | En pipeline — fase X |
+  | `not_verifiable` | 🤷 | No verificable — no asumir "no entregado" |
+
+- **CA-4 en el snapshot de ola**: cuando un issue figura en fase avanzada
+  (`aprobacion`/`entrega`) pero `resolveDeliveryState` lo da como
+  `pusheado_sin_merge`, el render anota literalmente **"fase completa, NO mergeado
+  en main"** con respaldo determinístico — sin colapsar "fase 100%" con "entregado".
+- **A03/SEC-1**: el `<issue>`/`<pr>` se validan con entero estricto
+  (`parseEntregadoArgs`), rechazando `5;rm`, `--flag`, backticks, floats y vacío.
+- **A09**: la cita pasa por `renderCanonicalCitation` (redacción de tokens/paths).
+- **SEC-5**: fail-open a `not_verifiable` (jamás "no entregado" especulativo).
+
+Plantilla: `.pipeline/lib/commander/templates/estado-entrega.md`.
 
 ## Referencias
 

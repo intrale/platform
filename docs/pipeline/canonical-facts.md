@@ -123,3 +123,54 @@ node --test .pipeline/lib/__tests__/canonical-facts.test.js
 node --test .pipeline/lib/__tests__/sherlock-verifier.test.js
 node --test .pipeline/lib/__tests__/sherlock-independent-verifier.test.js
 ```
+
+## Compositor `resolveDeliveryState` (#4090)
+
+Fuente **única y determinística** de "¿está entregado = mergeado en `main`?".
+Colapsa 4 hechos canónicos en **un** estado de entrega mutuamente excluyente, para
+que el Commander deje de inferir comparando ramas a mano (patrón recurrente que
+producía reportes contradictorios entre mensajes).
+
+```js
+resolveDeliveryState(issue, params = {}, impls = {})
+  → { state, fase?, facts }
+```
+
+`state ∈ { 'mergeado_en_main' | 'pusheado_sin_merge' | 'en_pipeline' | 'not_verifiable' }`
+
+### Precedencia determinística
+
+| # | Estado | Condición |
+|---|--------|-----------|
+| 1 | `mergeado_en_main` | `pr_mergeado=true` **OR** `entregable_en_main=true` |
+| 2 | `pusheado_sin_merge` | no mergeado, pero `rama_contiene_commits=true` |
+| 3 | `en_pipeline` (con `fase`) | ni merge ni rama, con `estado_fase_issue` resoluble |
+| 4 | `not_verifiable` | ningún hecho verificable → **NO** colapsa a "no entregado" |
+
+- `params.pr` (opcional) habilita el hecho `pr_mergeado`.
+- `params.{pipeline,fase,estado,skill}` (opcionales) habilitan `estado_fase_issue`
+  (el comando `/entregado` no las provee; las usa el cableado del snapshot por fase).
+- **SEC**: el compositor SOLO compone vía `resolveClaim` — prohibido `execFile`/
+  `spawn`/`--jq` directos (test estático lo verifica). `entregable_en_main` ya usa
+  `--merged origin/main` (no `main` local, ref #3846) y su `resolve()` (#4074)
+  corrige el falso negativo de squash-merge + rama borrada.
+- **Determinismo (CA-5)**: sin estado mutable → dos consultas idénticas dan lo
+  mismo salvo cambio real en GitHub/git.
+- **Fail-open (SEC-5)**: `not_verifiable` **nunca** se interpreta como "no entregado".
+
+> El estado `estado_fase_issue` es categórico (value = nombre de fase). Sin
+> `expected` explícito, `statusFor` lo marca `not_verifiable` (no hay aserción que
+> refutar); por eso la detección de `en_pipeline` se basa en `value` no-vacío.
+
+### Comando del Commander
+
+`/entregado <issue> [pr <numero>]` (alias `/estado-entrega`) — ver
+[`telegram-commander.md`](./telegram-commander.md). Read-only; cita redactada (A09)
+vía `renderCanonicalCitation`.
+
+Tests:
+
+```bash
+node --test .pipeline/lib/__tests__/canonical-delivery-state.test.js
+node --test .pipeline/lib/__tests__/commander-estado-entrega.test.js
+```

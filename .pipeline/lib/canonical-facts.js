@@ -783,11 +783,82 @@ async function resolveClaim(claimKey, params = {}, impls = {}) {
     return { value: parsed.value, status: compareToExpected(parsed.value, expected), source };
 }
 
+// =============================================================================
+// resolveDeliveryState(issue, params, impls) → { state, fase?, facts }  (#4090)
+//
+// Compositor determinístico que colapsa 4 hechos canónicos en UN estado de
+// entrega mutuamente excluyente. Da al Commander la fuente ÚNICA de la verdad
+// sobre "¿está entregado?" para que deje de inferir comparando ramas a mano.
+//
+//   state ∈ { 'mergeado_en_main' | 'pusheado_sin_merge' | 'en_pipeline'
+//             | 'not_verifiable' }
+//
+// Precedencia (determinística, sin estado mutable → dos consultas idénticas dan
+// lo mismo salvo cambio real en GitHub/git, CA-5):
+//   1) mergeado_en_main   ⟸ pr_mergeado=true  OR  entregable_en_main=true
+//   2) pusheado_sin_merge ⟸ no mergeado, pero rama_contiene_commits=true
+//   3) en_pipeline (fase) ⟸ ni merge ni rama, con estado_fase_issue resoluble
+//   4) not_verifiable     ⟸ ningún hecho verificable → NO colapsar a "no entregado"
+//
+// SEC: NO arma `gh`/`git` a mano — SOLO compone vía `resolveClaim`, reusando los
+// hechos ya endurecidos (SEC-1 en los argsBuilder, A09 redacción aguas arriba,
+// SEC-5 fail-open). Prohibido agregar `execFile`/`spawn` acá (test estático lo
+// verifica). `entregable_en_main` ya usa `--merged origin/main` (no main local,
+// ref #3846) y su resolve() #4074 corrige el falso negativo squash-merge → no
+// reintroducir comparación contra rama local.
+//
+//   params: { pr?, pipeline?, fase?, estado?, skill? } — opcionales. `pr` habilita
+//           el hecho pr_mergeado; las coords de fase habilitan estado_fase_issue.
+//   impls:  inyectables (gitImpl/ghApi/fsImpl/...) — se pasan tal cual a resolveClaim.
+//
+// NOTA: estado_fase_issue es CATEGÓRICO (value = nombre de fase). Sin `expected`
+// explícito, `statusFor` lo marca 'not_verifiable' (no hay aserción que refutar);
+// por eso la detección de `en_pipeline` se basa en `value` no-vacío, no en status.
+// =============================================================================
+async function resolveDeliveryState(issue, params = {}, impls = {}) {
+    const p = params || {};
+    const pr = p.pr;
+
+    // 1) ¿mergeado en main?  pr_mergeado=true OR entregable_en_main=true.
+    const enMain = await resolveClaim('entregable_en_main', { issue }, impls);
+    const prMerged = (pr != null)
+        ? await resolveClaim('pr_mergeado', { pr }, impls)
+        : { value: false, status: 'not_verifiable', source: 'github-api' };
+    if (enMain.value === true || prMerged.value === true) {
+        return { state: 'mergeado_en_main', facts: { enMain, prMerged } };
+    }
+
+    // 2) ¿pusheado sin merge?  la rama existe pero no está mergeada.
+    const rama = await resolveClaim('rama_contiene_commits', { issue }, impls);
+    if (rama.value === true) {
+        return { state: 'pusheado_sin_merge', facts: { enMain, prMerged, rama } };
+    }
+
+    // 3) ¿en pipeline?  estado de fase del work-file (requiere coords completas).
+    let fase = { value: null, status: 'not_verifiable', source: 'pipeline-state' };
+    if (p.pipeline && p.fase && p.estado && p.skill) {
+        fase = await resolveClaim('estado_fase_issue', {
+            issue,
+            pipeline: p.pipeline,
+            fase: p.fase,
+            estado: p.estado,
+            skill: p.skill,
+        }, impls);
+    }
+    if (typeof fase.value === 'string' && fase.value.length > 0) {
+        return { state: 'en_pipeline', fase: fase.value, facts: { enMain, prMerged, rama, fase } };
+    }
+
+    // 4) Ningún hecho verificable → NO colapsar a "no entregado" (SEC-5).
+    return { state: 'not_verifiable', facts: { enMain, prMerged, rama, fase } };
+}
+
 module.exports = {
     CANONICAL_FACTS,
     CLAIM_DOMAINS,
     claimDomain,
     resolveClaim,
+    resolveDeliveryState,
     // exports para tests / reuso
     _SHA_RE: SHA_RE,
     _MARKER_RE: MARKER_RE,

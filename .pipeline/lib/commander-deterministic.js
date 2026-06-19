@@ -107,6 +107,11 @@ const DETERMINISTIC_SLASH = new Set([
     // comando canónico ejecutado en forma hecho+fuente legible.
     'verificar',
     'verify',
+    // Issue #4090 — `/entregado <issue> [pr <n>]`: fuente ÚNICA determinística de
+    // "¿está entregado = mergeado en main?". Compone hechos canónicos vía
+    // `resolveDeliveryState` (sin inferencia ad-hoc contra ramas). Alias legible.
+    'entregado',
+    'estado-entrega',
 ]);
 
 // Slash-commands que SE clasifican como `llm` (creación/análisis con razonamiento).
@@ -159,6 +164,11 @@ const NLP_PATTERNS = [
     // del replace queda como args ("pr 3890", "issue #3897"). Solo verbos al
     // inicio del mensaje para no colisionar con conversación libre.
     { regex: /^(?:verific[áa](?:r|me)?|verify)\s+/i, command: 'verificar', argsFromResidual: true },
+    // Issue #4090 — NLP para `/entregado` (texto natural corto). Captura
+    // "¿está entregado <n>?", "entregado <n>", "<n> mergeado en main", "se mergeó
+    // <n>". El residual queda como args (ej. "4090", "4090 pr 4091"). Solo formas
+    // acotadas al inicio para no colisionar con conversación libre.
+    { regex: /^(?:(?:est[áa]\s+)?entregad[oa]|se\s+merge[óo]|mergead[oa]\s+en\s+main)\b/i, command: 'entregado', argsFromResidual: true },
 ];
 
 const MAX_SHORT_LENGTH = 80;     // Texto > 80 chars es conversación libre (CA-18)
@@ -393,6 +403,37 @@ function parseVerificarArgs(rawArgs) {
     return { tipo, claimKey: meta.claimKey, param: meta.param, numero };
 }
 
+/**
+ * Issue #4090 — parsea `args` de `/entregado` → `{ issue, pr? }` o `null`.
+ *
+ * Sintaxis estricta (SEC-1 / A03 — el `<issue>` llega de texto Telegram no
+ * confiable): `<issue>` o `<issue> pr <numero>`. Enteros decimales puros (con
+ * `#` opcional), positivos. Rechaza `5;rm`, backticks, `--flag`, floats, vacío y
+ * tokens extra. El SEC-1 profundo lo re-valida el argsBuilder de canonical-facts.
+ *
+ * @param {string} rawArgs
+ * @returns {{ issue: number, pr: number|null } | null}
+ */
+function parseEntregadoArgs(rawArgs) {
+    const tokens = String(rawArgs || '').trim().split(/\s+/).filter(Boolean);
+    if (tokens.length !== 1 && tokens.length !== 3) return null;
+
+    const issueTok = tokens[0].startsWith('#') ? tokens[0].slice(1) : tokens[0];
+    if (!/^\d+$/.test(issueTok)) return null;
+    const issue = parseInt(issueTok, 10);
+    if (!Number.isInteger(issue) || issue < 1) return null;
+
+    let pr = null;
+    if (tokens.length === 3) {
+        if (tokens[1].toLowerCase() !== 'pr') return null;
+        const prTok = tokens[2].startsWith('#') ? tokens[2].slice(1) : tokens[2];
+        if (!/^\d+$/.test(prTok)) return null;
+        pr = parseInt(prTok, 10);
+        if (!Number.isInteger(pr) || pr < 1) return null;
+    }
+    return { issue, pr };
+}
+
 // UX-2 — lenguaje claro y honesto cuando no hay hecho canónico verificable.
 // Nunca inventar una fuente ni volcar el error crudo del comando.
 const VERIFICAR_NOT_VERIFIABLE_MSG =
@@ -463,6 +504,48 @@ function canonicalCitationFor(claimKey, numero, result) {
     const builder = VERIFICAR_CITATION_BUILDERS[claimKey];
     if (!builder) return VERIFICAR_NOT_VERIFIABLE_MSG;
     return renderCanonicalCitation(builder(numero, result.value === true));
+}
+
+/**
+ * Issue #4090 — cita determinística (forma lógica hecho+fuente) para un estado
+ * de entrega resuelto por `resolveDeliveryState`. Siempre redactada (A09) vía
+ * `renderCanonicalCitation` — nunca vuelca argv crudo, paths ni tokens. La fuente
+ * cita el hecho canónico que decidió el estado, NO el comando con flags.
+ *
+ * @param {number} issue — issue validado.
+ * @param {{state: string, fase?: string}} delivery — retorno de resolveDeliveryState.
+ * @returns {string}
+ */
+function deliveryCitationFor(issue, delivery) {
+    const state = delivery && delivery.state;
+    switch (state) {
+        case 'mergeado_en_main': {
+            const prMerged = delivery.facts && delivery.facts.prMerged;
+            // Si el PR confirmó el merge, citamos el PR; sino la rama mergeada en main.
+            if (prMerged && prMerged.value === true) {
+                return renderCanonicalCitation({
+                    hecho: `#${issue} entregado en main`,
+                    fuente: 'gh pr view → state: MERGED',
+                });
+            }
+            return renderCanonicalCitation({
+                hecho: `#${issue} entregado en main`,
+                fuente: `git branch --merged origin/main → rama agent/${issue}-* mergeada`,
+            });
+        }
+        case 'pusheado_sin_merge':
+            return renderCanonicalCitation({
+                hecho: `#${issue} pusheado, SIN merge a main`,
+                fuente: `git branch --list agent/${issue}-* → presente; --merged origin/main → ausente`,
+            });
+        case 'en_pipeline':
+            return renderCanonicalCitation({
+                hecho: `#${issue} en pipeline — fase ${delivery.fase || '—'}`,
+                fuente: `work-file .pipeline → fase: ${delivery.fase || '—'}`,
+            });
+        default:
+            return VERIFICAR_NOT_VERIFIABLE_MSG;
+    }
 }
 
 const ARG_SCHEMAS = {
@@ -542,6 +625,21 @@ const ARG_SCHEMAS = {
         usage: 'verify <pr|issue|rama|main> <numero>',
         allowedValues: ['pr <numero>', 'issue <numero>', 'rama <numero>', 'main <numero>'],
         hint: 'Alias de `verificar`.',
+    },
+    // Issue #4090 — `/entregado <issue> [pr <n>]`. Sintaxis estricta (enteros
+    // decimales puros). SEC-1 profundo (anti-inyección) re-validado en el
+    // argsBuilder de canonical-facts. Read-only: no merge/push/cierre.
+    entregado: {
+        allow(args) { return parseEntregadoArgs(args) !== null; },
+        usage: 'entregado <issue> [pr <numero>]',
+        allowedValues: ['<issue>', '<issue> pr <numero>'],
+        hint: 'Ej: `entregado 4090` (¿mergeado en main?), `entregado 4090 pr 4091` (corrobora con el PR).',
+    },
+    'estado-entrega': {
+        allow(args) { return parseEntregadoArgs(args) !== null; },
+        usage: 'estado-entrega <issue> [pr <numero>]',
+        allowedValues: ['<issue>', '<issue> pr <numero>'],
+        hint: 'Alias de `entregado`.',
     },
     // Issue #4068 — acciones rápidas de needs-human: `<accion> <issue>` (entero).
     'mas-contexto':        quickActionArgSchema('mas-contexto'),
@@ -1135,6 +1233,44 @@ function buildDefaultHandlers(ctx) {
         });
     };
 
+    // Issue #4090 — handler de `/entregado <issue> [pr <n>]`: fuente ÚNICA de la
+    // verdad sobre entrega. Compone hechos canónicos vía `resolveDeliveryState`
+    // (NO infiere comparando ramas a mano). Read-only, fail-open a `not_verifiable`
+    // (NUNCA colapsa a "no entregado"), timeout duro, cita redactada (A09).
+    const entregadoHandler = async ({ args }) => {
+        const parsed = parseEntregadoArgs(args);
+        if (!parsed) {
+            // Defensa redundante: ARG_SCHEMAS ya rechazó esta forma.
+            throw new Error('entregado: args inválidos');
+        }
+        let delivery = null;
+        try {
+            const canonical = ctx.canonicalFacts || require('./canonical-facts');
+            delivery = await canonical.resolveDeliveryState(
+                parsed.issue,
+                (parsed.pr != null ? { pr: parsed.pr } : {}),
+                {
+                    cwd: path.dirname(PIPELINE),
+                    timeoutMs: VERIFICAR_TIMEOUT_MS,
+                    ...(ctx.canonicalImpls || {}),
+                }
+            );
+        } catch {
+            delivery = null; // fail-open → not_verifiable (SEC-5, NUNCA "no entregado")
+        }
+        const state = (delivery && delivery.state) || 'not_verifiable';
+        return fillTemplate('estado-entrega', {
+            numero: parsed.issue,
+            state,
+            'is-mergeado': state === 'mergeado_en_main',
+            'is-pusheado': state === 'pusheado_sin_merge',
+            'is-pipeline': state === 'en_pipeline',
+            'is-no-verificable': state === 'not_verifiable',
+            fase: delivery && delivery.fase ? delivery.fase : '',
+            citation: deliveryCitationFor(parsed.issue, delivery),
+        });
+    };
+
     // =========================================================================
     // Issue #4068 — Acciones rápidas de needs-human por slash-command (path
     // Telegram tipeado, complemento de los botones URL de la Opción A). Cada
@@ -1192,6 +1328,10 @@ function buildDefaultHandlers(ctx) {
         // Issue #3897 — `/verificar` + alias inglés.
         verificar: verificarHandler,
         verify: verificarHandler,
+
+        // Issue #4090 — `/entregado` + alias `/estado-entrega`.
+        entregado: entregadoHandler,
+        'estado-entrega': entregadoHandler,
 
         // Issue #3253 — CA-1: `/quota` read-only. Lee
         // `.pipeline/quota-exhausted.json` con whitelist estricta de campos
@@ -1445,10 +1585,19 @@ function buildDefaultHandlers(ctx) {
             const progressBar = renderProgressBar(progressPercent);
 
             // Render: orden por issue desc, máximo 12 issues para no pasarnos del límite.
-            const issues = [...issuesMap.entries()]
+            const shown = [...issuesMap.entries()]
                 .sort((a, b) => b[0] - a[0])
-                .slice(0, 12)
-                .map(([num, meta]) => ({
+                .slice(0, 12);
+            // Issue #4090 (CA-4) — NO colapsar "fase 100%" con "entregado". Para
+            // issues en fase avanzada (aprobacion/entrega) consultamos la fuente
+            // ÚNICA `resolveDeliveryState`; si NO está mergeado_en_main, anotamos
+            // literalmente "fase completa, NO mergeado en main" con respaldo
+            // determinístico — sin comparar ramas a mano. Best-effort y fail-open:
+            // cualquier falla deja el issue SIN nota (jamás afirma "no entregado").
+            const canonical = ctx.canonicalFacts || require('./canonical-facts');
+            const issues = [];
+            for (const [num, meta] of shown) {
+                const item = {
                     number: num,
                     phase: meta.phase,
                     title: `(${meta.file})`,
@@ -1456,7 +1605,23 @@ function buildDefaultHandlers(ctx) {
                     blocked: false,
                     'last-event': null,
                     'last-event-elapsed': null,
-                }));
+                    'delivery-note': null,
+                };
+                if (advancedPhases.has(meta.phase)) {
+                    try {
+                        const delivery = await canonical.resolveDeliveryState(
+                            num, {},
+                            { cwd: path.dirname(PIPELINE), timeoutMs: 4000, ...(ctx.canonicalImpls || {}) }
+                        );
+                        // Solo anotamos cuando el estado es VERIFICABLE y no mergeado.
+                        // `not_verifiable` NO se anota (no afirmar lo que no se sabe).
+                        if (delivery && (delivery.state === 'pusheado_sin_merge' || delivery.state === 'en_pipeline')) {
+                            item['delivery-note'] = 'fase completa, *NO mergeado en main*';
+                        }
+                    } catch (_) { /* fail-open: sin nota */ }
+                }
+                issues.push(item);
+            }
 
             // Número de ola: best-effort. Si existe `.pipeline/ola-actual.json` lo
             // usamos, sino lo dejamos en "—" (no inventamos).
@@ -2486,6 +2651,9 @@ module.exports = {
     canonicalCitationFor,
     VERIFICAR_NOT_VERIFIABLE_MSG,
     VERIFICAR_CLAIM_TYPES,
+    // #4090 — exports para tests de `/entregado` (estado de entrega determinístico).
+    parseEntregadoArgs,
+    deliveryCitationFor,
     _waveInternal: {
         handleWaveStatus,
         handleWaveNext,
