@@ -164,6 +164,24 @@ const NLP_PATTERNS = [
 const MAX_SHORT_LENGTH = 80;     // Texto > 80 chars es conversación libre (CA-18)
 const RAW_TRUNC_LEN = 120;       // Para echo en plantillas de error
 
+// #4089 — Detector "sticky" de pedido de estado de la ola. Un pedido EXPLÍCITO
+// de estado de la ola debe rutearse SIEMPRE al handler determinístico `wave`,
+// sin importar el largo del mensaje. Antes, un pedido con contexto/correcciones
+// (ej. "el tablero marca 100% pero no está en main") superaba los 80 chars y
+// caía al camino LLM, que armaba la tabla a mano rompiendo el formato fijo que
+// pidió Leo. Por eso el detector se evalúa ANTES del corte por longitud.
+//
+// SEGURIDAD (SEC-1, ReDoS): el regex corre sobre input arbitrario de Telegram
+// (longitud no acotada, evaluado antes del corte por 80 chars). Es LINEAL y
+// anclado a un verbo de pedido: sin cuantificadores anidados ni alternancias
+// solapadas. El puente entre el verbo y "ola" usa una clase negada acotada
+// (`[^.!?\n]{0,40}?`, lazy) que limita el backtracking a una ventana fija.
+//
+// FALSOS POSITIVOS (CA-4): es ESTRICTO — exige un verbo de pedido
+// (estado/cómo va/avance/status/situación/resumen) + "ola". NO captura
+// conversación libre que sólo menciona "la ola" (ej. "la ola de calor de ayer").
+const WAVE_INTENT_RE = /\b(?:estado|c[oó]mo (?:va|viene|anda)|avance|status|situaci[oó]n|resumen)\b[^.!?\n]{0,40}?\bola\b/i;
+
 // El preprocesador (multimedia.js) añade anotaciones entre paréntesis/corchetes
 // al final del texto transcripto: "(mensaje de voz transcripto · whisper local)",
 // "(audio sin transcribir: ...)", "(audio no disponible)", "(imagen no disponible)",
@@ -207,6 +225,18 @@ function classify(text) {
             return { class: 'llm', command: cmd, args, raw, rawTruncated };
         }
         return { class: 'unknown', command: cmd, args, raw, rawTruncated };
+    }
+
+    // #4089 — Sticky wave: un pedido EXPLÍCITO de estado de la ola se rutea
+    // forzosamente al handler determinístico `wave`, sin importar el largo del
+    // mensaje. Se evalúa ANTES del corte por longitud para que un pedido con
+    // contexto/correcciones (>80 chars) no caiga a LLM y rompa el formato fijo.
+    // El residual (texto menos la frase de intent) viaja en `waveResidual` para
+    // que brazoCommander decida si hay contexto extra que aclarar (CA-2). La
+    // tabla del handler `wave` es inviolable; el residual NUNCA la reescribe.
+    if (WAVE_INTENT_RE.test(trimmed)) {
+        const waveResidual = trimmed.replace(WAVE_INTENT_RE, ' ').replace(/\s+/g, ' ').trim();
+        return { class: 'deterministic', command: 'wave', args: '', waveResidual, raw, rawTruncated };
     }
 
     // Texto largo → conversación libre → LLM
