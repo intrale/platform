@@ -237,7 +237,131 @@ const CANONICAL_FACTS = {
             // branch DERIVADA del issue (glob), NUNCA cruda del claim (SEC-1).
             return ['branch', '--all', '--merged', 'origin/main', '--list', `*agent/${n}-*`];
         },
+        // parse() se conserva por compatibilidad (tests / introspección); con
+        // resolve() presente, la autoridad de resolución es resolve().
         parse(stdout) { return parseBranchPresence(stdout); },
+        // ---------------------------------------------------------------------
+        // resolve() (#4074) — corrige el FALSO NEGATIVO del squash-merge + rama
+        // borrada. El flujo normal de merge (squash + delete branch) deja sin
+        // rama `agent/<n>-*`, por lo que el viejo parseBranchPresence devolvía
+        // `false` y el cuadro de la ola mostraba `⚠️ s/main` para entregables
+        // que SÍ estaban en main. Ahora:
+        //   (1) rama mergeada a origin/main          → true   (positivo fuerte)
+        //   (2) rama existe pero NO mergeada         → false  (negativo real)
+        //   (3) sin rama → corroborar con GitHub:
+        //        issue cerrado + PR mergeado atado a ESTE issue (headRefName
+        //        agent/<n>-*, persiste tras borrar la rama) + commit squash
+        //        `(#<pr>)` alcanzable desde origin/main → true
+        //   (4) cualquier otra cosa / señal no verificable → not_verifiable
+        // CRÍTICO: ante la duda, not_verifiable. NUNCA `true` espurio.
+        async resolve({ params, args, git, gh, cwd, timeoutMs }) {
+            const n = normalizeIssueNumber(params && params.issue);
+            if (n == null) return { value: null, status: 'not_verifiable' };
+
+            // (1) Señal positiva fuerte: rama agent/<n>-* mergeada a origin/main.
+            //     `args` = ['branch','--all','--merged','origin/main','--list',...].
+            let mergedRes;
+            try {
+                mergedRes = await git({ args, cwd, timeoutMs });
+            } catch {
+                return { value: null, status: 'not_verifiable' };
+            }
+            if (!mergedRes || !mergedRes.ok) {
+                // git no ejecutable (rate limit / herramienta ausente) → fail-open.
+                return { value: null, status: 'not_verifiable' };
+            }
+            const mergedParsed = parseBranchPresence(mergedRes.stdout);
+            if (mergedParsed.status === 'ok' && mergedParsed.value === true) {
+                return { value: true, status: 'ok' };
+            }
+
+            // (2) No hay rama mergeada. ¿Existe la rama (sin --merged)? Si existe
+            //     pero NO está mergeada → verdadero negativo: NO está en main.
+            let anyRes;
+            try {
+                anyRes = await git({
+                    args: ['branch', '--all', '--list', `*agent/${n}-*`],
+                    cwd, timeoutMs,
+                });
+            } catch {
+                return { value: null, status: 'not_verifiable' };
+            }
+            if (anyRes && anyRes.ok) {
+                const anyParsed = parseBranchPresence(anyRes.stdout);
+                if (anyParsed.status === 'ok' && anyParsed.value === true) {
+                    // Rama presente, no mergeada → false legítimo (no squash+del).
+                    return { value: false, status: 'ok' };
+                }
+            }
+
+            // (3) No existe rama agent/<n>-*. Caso squash-merge + rama borrada
+            //     (flujo normal) O issue que nunca entregó. NO concluir false
+            //     (ése era el bug #4074). Corroborar con GitHub.
+            if (typeof gh !== 'function') return { value: null, status: 'not_verifiable' };
+
+            let issueClosed = false;
+            try {
+                const issRes = await gh({
+                    args: ['issue', 'view', String(n), '--json', 'state,closed'],
+                    cwd, timeoutMs,
+                });
+                if (!issRes || !issRes.ok) return { value: null, status: 'not_verifiable' };
+                const j = JSON.parse(issRes.stdout);
+                issueClosed = j.closed === true || String(j.state || '').toUpperCase() === 'CLOSED';
+            } catch {
+                return { value: null, status: 'not_verifiable' };
+            }
+            if (!issueClosed) {
+                // Issue abierto y sin rama: no podemos afirmar negativo ni
+                // positivo sin riesgo → not_verifiable (jamás false espurio).
+                return { value: null, status: 'not_verifiable' };
+            }
+
+            // PR(s) asociados al issue. headRefName se CONSERVA tras borrar la
+            // rama → ata el PR a ESTE issue vía la convención agent/<n>-*.
+            let mergedPr = null;
+            try {
+                const prRes = await gh({
+                    args: ['pr', 'list', '--state', 'all', '--search', String(n),
+                        '--json', 'number,mergedAt,headRefName', '--limit', '20'],
+                    cwd, timeoutMs,
+                });
+                if (prRes && prRes.ok) {
+                    const prs = JSON.parse(prRes.stdout);
+                    if (Array.isArray(prs)) {
+                        const branchRe = new RegExp(`(^|/)agent/${n}-`);
+                        mergedPr = prs.find(p =>
+                            p && p.mergedAt &&
+                            normalizeIssueNumber(p.number) != null &&
+                            branchRe.test(String(p.headRefName || ''))) || null;
+                    }
+                }
+            } catch {
+                return { value: null, status: 'not_verifiable' };
+            }
+            if (!mergedPr) {
+                // Sin PR mergeado atado a este issue → no verificable.
+                return { value: null, status: 'not_verifiable' };
+            }
+
+            // Confirmación final anti-falso-positivo: el commit squash `(#<pr>)`
+            // debe ser ALCANZABLE desde origin/main. Si no aparece (base distinta,
+            // remoto desincronizado) → not_verifiable, nunca `true` espurio.
+            const prNum = normalizeIssueNumber(mergedPr.number);
+            try {
+                const logRes = await git({
+                    args: ['log', 'origin/main', '--fixed-strings',
+                        '--grep', `(#${prNum})`, '--format=%H', '-n', '1'],
+                    cwd, timeoutMs,
+                });
+                if (logRes && logRes.ok && String(logRes.stdout || '').trim()) {
+                    return { value: true, status: 'ok' };
+                }
+            } catch {
+                /* fail-open abajo */
+            }
+            return { value: null, status: 'not_verifiable' };
+        },
     },
 
     // -------------------------------------------------------------------------
@@ -533,6 +657,34 @@ async function resolveClaim(claimKey, params = {}, impls = {}) {
     const iv = require('./sherlock-independent-verifier');
     const cwd = impls.cwd;
     const timeoutMs = Number.isFinite(impls.timeoutMs) ? impls.timeoutMs : DEFAULT_CLAIM_TIMEOUT_MS;
+
+    // ---- hook resolve() OPCIONAL (#4074): resolución compuesta multi-comando --
+    // Algunos claims (ej. entregable_en_main) necesitan CORROBORAR varias señales
+    // para evitar falsos negativos (squash-merge + rama borrada). Cuando la entrada
+    // define `resolve`, ÉSTA es la autoridad: recibe las impls git/gh ya resueltas
+    // (cacheadas o inyectadas) y devuelve { value, status:'ok'|'not_verifiable' }.
+    // FAIL-OPEN (SEC-5): throw o status≠ok → not_verifiable, NUNCA contradicción.
+    if (typeof fact.resolve === 'function') {
+        const gitFn = typeof impls.gitImpl === 'function' ? impls.gitImpl : iv._cachedGitImpl;
+        const ghFn = typeof impls.ghApi === 'function' ? impls.ghApi : iv._cachedGhApi;
+        let out;
+        try {
+            out = await fact.resolve({
+                params: params || {},
+                args,
+                git: gitFn,
+                gh: ghFn,
+                cwd,
+                timeoutMs,
+            });
+        } catch {
+            return { value: null, status: 'not_verifiable', source };
+        }
+        if (!out || out.status !== 'ok') {
+            return { value: out ? out.value : null, status: 'not_verifiable', source };
+        }
+        return { value: out.value, status: compareToExpected(out.value, expected), source };
+    }
 
     // ---- source 'heartbeat': process check directo (sin execFile) ----------
     if (source === 'heartbeat') {

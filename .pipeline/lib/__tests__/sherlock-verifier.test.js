@@ -2281,7 +2281,10 @@ test('#3895 CA-3: claim DISCREPA del canónico → status inconsistent (árbitro
         ghApi: async () => ({ ok: true, stdout: '{"state":"OPEN","closed":false}', code: 0 }),
     });
     const byClaim = Object.fromEntries(result.canonicalFacts.map(c => [c.claim, c.status]));
-    assert.equal(byClaim.entregable_en_main, 'inconsistent', 'el canónico arbitra: NO está en main');
+    // #4074 — sin rama agent/<n>-* y con issue ABIERTO no se puede distinguir
+    // "squash-merge con rama borrada" de "nunca entregado": el árbitro NO afirma
+    // false espurio → not_verifiable (corrige el falso negativo `s/main`).
+    assert.equal(byClaim.entregable_en_main, 'not_verifiable', 'sin rama + issue abierto → no verificable, jamás false espurio');
     assert.equal(byClaim.rama_contiene_commits, 'inconsistent');
     assert.equal(byClaim.issue_cerrado, 'inconsistent', 'issue OPEN discrepa del claim de cerrado');
 });

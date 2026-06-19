@@ -95,9 +95,17 @@ test('CA-7/FP-3: "el issue sigue abierto" → canonical issue_cerrado = consiste
 // real DISCREPA. Verificamos que la inversión de lógica distingue ambos casos.
 // -----------------------------------------------------------------------------
 test('CA-7: si el hecho real SÍ discrepa, el árbitro contradice con fuente (inconsistent legítimo)', async () => {
-    // Issue sin rama mergeada: el claim "está en main" es falso de verdad.
+    // Negativo REAL bajo el modelo #4074: la rama agent/9999-* EXISTE pero NO
+    // está mergeada a origin/main. Ahí el claim "está en main" es falso de verdad
+    // y el árbitro contradice legítimamente (false / inconsistent).
     const impls = {
-        gitImpl: () => Promise.resolve({ ok: true, stdout: '\n' }), // sin ramas
+        gitImpl: ({ args }) => {
+            if (args.includes('--merged')) {
+                return Promise.resolve({ ok: true, stdout: '\n' }); // ninguna mergeada
+            }
+            // `branch --all --list *agent/9999-*` → la rama existe (no mergeada).
+            return Promise.resolve({ ok: true, stdout: '  remotes/origin/agent/9999-foo\n' });
+        },
         ghApi: fakeGhApi,
     };
     const r = await resolveClaim('entregable_en_main', { issue: 9999, expected: true }, impls);
