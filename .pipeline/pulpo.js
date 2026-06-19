@@ -7868,6 +7868,13 @@ function reconcileTelegramReceipts(opts = {}) {
     const files = telegramReceipt.listReceiptFiles(recibosDir);
     if (files.length === 0) return { reconciled: 0, quarantined: 0 };
     const historyFile = path.join(pipelineDir, 'commander-history.jsonl');
+    // #4082 (CA-A4) — Leemos el historial UNA vez para resolver el `chat_id` de
+    // cada saliente a partir de su `correlation_id` (entry `out` previa). Sin
+    // este chat_id la entry `reconcile` queda NO-ASIGNADA y el filtro per-chat
+    // (`commanderEntryBelongsToChat`) la descarta → nunca llegaría al contexto
+    // del Commander y la causa raíz seguiría sin cerrarse end-to-end.
+    let historyRaw = '';
+    try { historyRaw = fs.readFileSync(historyFile, 'utf8'); } catch { historyRaw = ''; }
     let reconciled = 0;
     let quarantined = 0;
     for (const f of files) {
@@ -7885,11 +7892,17 @@ function reconcileTelegramReceipts(opts = {}) {
       // Entry de reconciliación append-only ligada por correlation_id. La lógica
       // "ya te respondí" (CA-A4) debe basarse en una entry `reconcile` con
       // status:'enviado' — nunca en el `encolado` del momento de encolar.
+      // Estampamos el `chat_id` resuelto contra la entry `out` previa para que la
+      // entry sobreviva al filtro per-chat y se inyecte al contexto del chat
+      // correcto (pulpo.js:11058). Si no se resuelve (saliente sin cola/recibo
+      // huérfano), queda sin chat_id (no-asignada) — comportamiento conservador.
+      const chatId = resolveChatIdForCorrelation(historyRaw, receipt.correlationId);
       appendCommanderHistory(historyFile, {
         direction: 'reconcile',
         status: receipt.status, // 'enviado' | 'fallido'
         correlation_id: receipt.correlationId,
         message_ids: receipt.messageIds,
+        ...(chatId != null ? { chat_id: chatId } : {}),
       });
       telegramReceipt.archiveReceipt(f.path, archivedDir);
       reconciled++;
@@ -7962,6 +7975,28 @@ function selectCommanderHistoryForChat(rawContent, opts = {}) {
 //   'encolado'  → se encoló pero todavía no hay recibo (entrega indeterminada)
 //   'unknown'   → no hay ninguna entry para ese correlation_id
 // La última reconcile gana (append-only; reintentos pueden producir varias).
+// #4082 (CA-A4) — Resuelve el `chat_id` de un saliente a partir de su
+// `correlation_id`, buscando la entry `out` previa (la que registra el momento
+// de encolar con `chat_id` del chat activo). Permite estampar `chat_id` en la
+// entry `reconcile` que escribe el reconciliador, de modo que sobreviva al
+// filtro estricto per-chat (`commanderEntryBelongsToChat`) y se inyecte al
+// contexto del chat correcto. Función PURA (recibe el JSONL crudo) → testeable
+// sin tocar disco. Devuelve el chat_id (string|number) o null si no se encuentra
+// una entry `out` con chat_id para ese correlation_id (la última gana).
+function resolveChatIdForCorrelation(rawContent, correlationId) {
+  if (!rawContent || typeof rawContent !== 'string' || !correlationId) return null;
+  let chatId = null;
+  for (const line of rawContent.trim().split('\n')) {
+    let e;
+    try { e = JSON.parse(line); } catch { continue; }
+    if (!e || e.correlation_id !== correlationId) continue;
+    if (e.direction === 'out' && e.chat_id != null) {
+      chatId = e.chat_id; // la última entry `out` gana
+    }
+  }
+  return chatId;
+}
+
 function commanderOutboundStatus(rawContent, correlationId) {
   if (!rawContent || typeof rawContent !== 'string' || !correlationId) return 'unknown';
   let status = 'unknown';
@@ -13888,6 +13923,7 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // #4082 — confirmación de entrega real de salientes Telegram (recibos).
     commanderOutboundStatus,
     reconcileTelegramReceipts,
+    resolveChatIdForCorrelation,
   };
   return; // No arrancar singleton ni mainLoop
 }

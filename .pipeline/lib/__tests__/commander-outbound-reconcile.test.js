@@ -19,7 +19,12 @@ const path = require('node:path');
 
 const pulpo = require('../../pulpo');
 const rec = require('../telegram-receipt');
-const { commanderOutboundStatus, reconcileTelegramReceipts } = pulpo;
+const {
+  commanderOutboundStatus,
+  reconcileTelegramReceipts,
+  resolveChatIdForCorrelation,
+  selectCommanderHistoryForChat,
+} = pulpo;
 
 function sandbox() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cmd-reconcile-'));
@@ -117,4 +122,64 @@ test('reconcileTelegramReceipts: sin recibos → no-op', () => {
   const dir = sandbox();
   const res = reconcileTelegramReceipts({ pipelineDir: dir });
   assert.deepEqual(res, { reconciled: 0, quarantined: 0 });
+});
+
+// -----------------------------------------------------------------------------
+// resolveChatIdForCorrelation (CA-A4 — base del estampado de chat_id en reconcile)
+// -----------------------------------------------------------------------------
+test('resolveChatIdForCorrelation: toma el chat_id de la entry out previa', () => {
+  const raw = jsonl(
+    { direction: 'in', text: 'hola', chat_id: 42 },
+    { direction: 'out', status: 'encolado', correlation_id: 'cmd-5-abcdef', text: 'chau', chat_id: 42 },
+  );
+  assert.equal(resolveChatIdForCorrelation(raw, 'cmd-5-abcdef'), 42);
+});
+
+test('resolveChatIdForCorrelation: correlation_id desconocido / out sin chat_id → null', () => {
+  assert.equal(resolveChatIdForCorrelation(jsonl({ direction: 'out', correlation_id: 'cmd-6-abcdef' }), 'cmd-6-abcdef'), null);
+  assert.equal(resolveChatIdForCorrelation(jsonl({ direction: 'in', text: 'x', chat_id: 9 }), 'cmd-x'), null);
+  assert.equal(resolveChatIdForCorrelation('', 'cmd-x'), null);
+  assert.equal(resolveChatIdForCorrelation('basura\n{no json', 'cmd-x'), null);
+});
+
+// -----------------------------------------------------------------------------
+// CA-A4 END-TO-END: la entry `reconcile` lleva chat_id y SOBREVIVE al filtro
+// per-chat → llega al contexto del Commander (causa raíz cerrada).
+// -----------------------------------------------------------------------------
+test('reconcileTelegramReceipts: estampa chat_id resuelto del out previo en la reconcile', () => {
+  const dir = sandbox();
+  const historyFile = path.join(dir, 'commander-history.jsonl');
+  // Saliente ya encolado y registrado con su chat_id (como en runtime real).
+  fs.writeFileSync(historyFile, jsonl(
+    { direction: 'out', status: 'encolado', correlation_id: 'cmd-e2e-abcdef', text: 'respuesta', chat_id: 777 },
+  ) + '\n');
+
+  rec.writeReceipt(rec.receiptsDir(dir), { correlationId: 'cmd-e2e-abcdef', status: 'enviado', messageIds: [11] });
+  const res = reconcileTelegramReceipts({ pipelineDir: dir });
+  assert.equal(res.reconciled, 1);
+
+  const raw = fs.readFileSync(historyFile, 'utf8');
+  const reconcileEntry = raw.trim().split('\n').map(JSON.parse).find(e => e.direction === 'reconcile');
+  assert.equal(reconcileEntry.chat_id, 777, 'la reconcile hereda el chat_id del out');
+
+  // CA-A4: el selector per-chat (el que arma el contexto del Commander) AHORA
+  // incluye la reconcile → el LLM ve el estado de entrega real, no solo el
+  // `encolado`. Esto es lo que cierra el falso "ya te respondí".
+  const visibles = selectCommanderHistoryForChat(raw, { activeChatId: 777, limit: 50 });
+  const entries = visibles.map(JSON.parse);
+  assert.ok(entries.some(e => e.direction === 'reconcile' && e.status === 'enviado'),
+    'la reconcile enviada llega al contexto del chat activo');
+  assert.equal(commanderOutboundStatus(raw, 'cmd-e2e-abcdef'), 'enviado');
+});
+
+test('reconcileTelegramReceipts: sin out previo, reconcile queda no-asignada (sin chat_id)', () => {
+  const dir = sandbox();
+  rec.writeReceipt(rec.receiptsDir(dir), { correlationId: 'cmd-orf-abcdef', status: 'fallido', messageIds: [] });
+  reconcileTelegramReceipts({ pipelineDir: dir });
+
+  const raw = fs.readFileSync(path.join(dir, 'commander-history.jsonl'), 'utf8');
+  const reconcileEntry = raw.trim().split('\n').map(JSON.parse).find(e => e.direction === 'reconcile');
+  assert.ok(!('chat_id' in reconcileEntry), 'sin out previo no se inventa chat_id');
+  // No-asignada → no se filtra cross-chat hacia ningún chat concreto.
+  assert.equal(selectCommanderHistoryForChat(raw, { activeChatId: 1 }).length, 0);
 });
