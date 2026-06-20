@@ -1,0 +1,471 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 37 — EP8-H2 (#3955): Equipo, acordeon por skill con agentes individuales,
+  kill por agente (preview + confirmacion), cooldowns con cuenta regresiva y
+  sparkline de carga 24h.
+  =============================================================================
+  Mockup OBJETIVO de la fase definicion/criterios. Referencia visual de alta
+  fidelidad que implementa `pipeline-dev` sobre:
+    - .pipeline/views/dashboard/equipo.js  (renderEquipoSsr + eqAreaGrid, #3727)
+    - .pipeline/views/dashboard/home.js    (killAgent + active-card)
+    - .pipeline/dashboard.js               (/api/dash/active ~L3041, /api/kill-agent ~L10131)
+
+  Evoluciona el grid de chips compactos 2x2 (eqAreaGrid actual) a un ACORDEON
+  POR SKILL: cada card de skill se expande mostrando sus agentes vivos con
+  issue, fase, progreso %, duracion y acceso al log, + un sparkline de carga 24h.
+
+  Mapa de los 5 CAs funcionales del issue (consolidados por `po`):
+    CA-1  Detalle por agente inline (issue, fase, progreso %, duracion, log) —
+          datos ya en /api/dash/active, solo agrupar por skill.
+    CA-2  Confirmacion con preview antes de matar (issue, fase, tiempo invertido).
+    CA-3  Commander visible como skill especial NO cancelable (lock, sin kill).
+    CA-4  Cooldowns por fast-fail con cuenta regresiva (fuente cooldowns.json).
+    CA-5  Sparkline de carga 24h por skill (derivado de mtimes de procesado/).
+
+  Requisitos de seguridad SEC-1..6 (de `security`, validados por `guru`) que la
+  UI debe respetar — representados visualmente en el sidebar y en el modal:
+    SEC-1  Validacion de inputs server-side (allowlist pipeline/fase, regex issue/skill) -> 400
+    SEC-2  CSRF en TODOS los call sites del kill (Equipo + Issues) -> 403 sin token
+    SEC-3  Commander no-cancelable enforced server-side -> 403
+    SEC-4  Redaccion de secrets en log inline (handoff.sanitize) + tail acotado
+    SEC-5  Escape XSS de todo dato dinamico (titulo issue atacante-controlable)
+    SEC-6  Cooldown server-authoritative; el front solo muestra la cuenta regresiva
+
+  Convenciones del sistema (design-tokens.css - EP8-H0 #3953). Colores var()
+  inlineados por ser SVG standalone; mapean 1:1 a los tokens:
+    surface-0 #0D1117 - surface-1 #161B22 - surface-2 #1C2128 - surface-3 #252B33
+    border #30363D - border-subtle #21262D - border-strong #484F58
+    text-primary #E6EDF3 - text-secondary #B1BAC4 - text-dim #8B949E
+    success #3FB950 - warning #D29922 - danger #F85149 - info #58A6FF
+    retry #F59E0B - purple #BC8CFF - teal #2DD4BF - brand-cyan #00D6FF
+    brand-blue #1890FF
+  Iconografia: del sprite.svg real via #ic-* (aca redibujada como symbols m-*).
+    Reutilizados: ic-expand/ic-collapse (chevron acordeon), ic-shield-lock
+    (commander protegido), ic-revoke/ic-remove-circle (kill agente),
+    ic-ttl-countdown (cooldown), ic-live-tail (log en vivo), ic-link-out (popout).
+    Sin iconos nuevos en este issue.
+  Regla inquebrantable: TODA info de estado va con icono + texto/forma, nunca
+  solo color (WCAG AA, dual-encoding). El agente en cooldown lleva borde ambar +
+  reloj + texto "cooldown 02:14"; el commander lleva candado + "no cancelable".
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 980"
+     font-family="-apple-system, 'Segoe UI', Roboto, sans-serif">
+  <defs>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#00D6FF"/>
+      <stop offset="1" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="railGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#00D6FF"/>
+      <stop offset="0.5" stop-color="#BC8CFF"/>
+      <stop offset="1" stop-color="#3FB950"/>
+    </linearGradient>
+    <linearGradient id="progGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#1890FF"/>
+      <stop offset="1" stop-color="#58A6FF"/>
+    </linearGradient>
+
+    <!-- iconos locales (espejo del sprite real) -->
+    <symbol id="m-chevron" viewBox="0 0 24 24">
+      <path d="M7 10 L12 15 L17 10" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-lock" viewBox="0 0 24 24">
+      <rect x="5.5" y="10.5" width="13" height="9.5" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.8"/>
+      <path d="M8 10.5 V7.8 A4 4 0 0 1 16 7.8 V10.5" fill="none" stroke="currentColor" stroke-width="1.8"/>
+      <circle cx="12" cy="15" r="1.4" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-kill" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="8.4" fill="none" stroke="currentColor" stroke-width="1.8"/>
+      <path d="M9 9 L15 15 M15 9 L9 15" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-clock" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="8.2" fill="none" stroke="currentColor" stroke-width="1.8"/>
+      <path d="M12 7.5 V12 L15.4 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-log" viewBox="0 0 24 24">
+      <circle cx="6.5" cy="17.5" r="1.9" fill="currentColor"/>
+      <path d="M6 11.5 A6 6 0 0 1 12.5 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+      <path d="M6 6.5 A11 11 0 0 1 17.5 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" opacity="0.6"/>
+    </symbol>
+    <symbol id="m-shield" viewBox="0 0 24 24">
+      <path d="M12 3 L19 6 V11 C19 16 16 19.4 12 21 C8 19.4 5 16 5 11 V6 Z" fill="none" stroke="currentColor" stroke-width="1.7"/>
+      <path d="M9.3 12 L11.2 13.9 L15 10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-eye" viewBox="0 0 24 24">
+      <path d="M2.5 12 C5 7 9 5 12 5 C15 5 19 7 21.5 12 C19 17 15 19 12 19 C9 19 5 17 2.5 12 Z" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <circle cx="12" cy="12" r="2.7" fill="none" stroke="currentColor" stroke-width="1.6"/>
+    </symbol>
+
+    <clipPath id="winClip"><rect x="0" y="0" width="1010" height="980" rx="0"/></clipPath>
+  </defs>
+
+  <!-- ===================== FONDO ===================== -->
+  <rect width="1440" height="980" fill="#0D1117"/>
+
+  <!-- ===================== VENTANA EQUIPO (izquierda) ===================== -->
+  <g>
+    <rect x="24" y="24" width="980" height="932" rx="12" fill="#161B22" stroke="#30363D"/>
+    <!-- rail gradient cyan->purple->success -->
+    <rect x="24" y="24" width="5" height="932" rx="2.5" fill="url(#railGrad)"/>
+
+    <!-- ----- eq-head ----- -->
+    <g transform="translate(48,52)">
+      <use href="#m-chevron" x="0" y="2" width="18" height="18" color="#8B949E"/>
+      <text x="24" y="16" font-size="18" font-weight="700" fill="#E6EDF3">🧠 Equipo</text>
+      <use href="#m-chevron" x="118" y="2" width="14" height="14" color="#8B949E" transform="rotate(180 125 9)"/>
+      <text x="146" y="16" font-size="11.5" fill="#8B949E">popout ↗</text>
+      <!-- eq-summary -->
+      <g transform="translate(560,4)" font-size="12">
+        <text x="0" y="11" fill="#B1BAC4">Activos <tspan font-weight="700" fill="#E6EDF3">7</tspan>/24</text>
+        <text x="92" y="11" fill="#8B949E">·</text>
+        <text x="108" y="11" fill="#B1BAC4">Utilizacion <tspan font-weight="700" fill="#3FB950">29%</tspan></text>
+        <text x="232" y="11" fill="#8B949E">·</text>
+        <text x="248" y="11" fill="#B1BAC4">Cola <tspan font-weight="700" fill="#D29922">5</tspan></text>
+      </g>
+    </g>
+    <line x1="40" y1="80" x2="988" y2="80" stroke="#21262D"/>
+
+    <!-- ----- active-strip (resumen de agentes vivos) ----- -->
+    <g transform="translate(48,96)">
+      <text x="0" y="12" font-size="11" font-weight="600" fill="#8B949E" letter-spacing="0.4">AGENTES VIVOS · 7</text>
+      <!-- chips de provider:model -->
+      <g transform="translate(150,0)" font-size="10.5">
+        <rect x="0" y="0" width="118" height="18" rx="9" fill="rgba(188,140,255,0.14)" stroke="#8957E5"/>
+        <circle cx="11" cy="9" r="3.2" fill="#BC8CFF"/>
+        <text x="20" y="13" fill="#C9B6FF">anthropic:opus</text>
+        <rect x="128" y="0" width="104" height="18" rx="9" fill="rgba(45,212,191,0.14)" stroke="#0D9488"/>
+        <circle cx="139" cy="9" r="3.2" fill="#2DD4BF"/>
+        <text x="148" y="13" fill="#7FE9DA">codex:gpt-5</text>
+        <rect x="242" y="0" width="120" height="18" rx="9" fill="rgba(177,186,196,0.10)" stroke="#484F58"/>
+        <circle cx="253" cy="9" r="3.2" fill="#B1BAC4"/>
+        <text x="262" y="13" fill="#B1BAC4">deterministico ×2</text>
+      </g>
+    </g>
+
+    <!-- ============ ACORDEON POR SKILL ============ -->
+    <!-- Cada bloque = una card de skill. Estado: colapsada (chip+contador) o
+         EXPANDIDA (lista de agentes vivos). CA-1 + CA-5. -->
+
+    <!-- ---- SKILL 1: android-dev — EXPANDIDO (2 agentes) ---- -->
+    <g transform="translate(48,128)">
+      <rect x="0" y="0" width="690" height="184" rx="10" fill="#1C2128" stroke="#30363D"/>
+      <!-- cabecera del acordeon (clickable) -->
+      <use href="#m-chevron" x="14" y="14" width="16" height="16" color="#B1BAC4"/>
+      <circle cx="46" cy="22" r="10" fill="#3FB950"/>
+      <text x="46" y="26" font-size="11" text-anchor="middle" fill="#0D1117" font-weight="700">A</text>
+      <text x="66" y="20" font-size="13.5" font-weight="700" fill="#E6EDF3">android-dev</text>
+      <text x="66" y="34" font-size="10.5" fill="#8B949E">Ensamblador Android · Compose</text>
+      <!-- badge contador agentes -->
+      <rect x="250" y="12" width="74" height="20" rx="10" fill="rgba(63,185,80,0.14)" stroke="#196C2E"/>
+      <text x="287" y="26" font-size="11" text-anchor="middle" fill="#56D364" font-weight="600">2 vivos</text>
+      <!-- sparkline 24h (CA-5) -->
+      <g transform="translate(488,10)">
+        <text x="0" y="9" font-size="9" fill="#8B949E">carga 24h</text>
+        <g transform="translate(0,12)">
+          <rect x="0" y="0" width="190" height="22" rx="4" fill="#0D1117" stroke="#21262D"/>
+          <!-- barras horarias -->
+          <g fill="#1F6FEB">
+            <rect x="6" y="14" width="5" height="6"/><rect x="14" y="11" width="5" height="9"/>
+            <rect x="22" y="8" width="5" height="12"/><rect x="30" y="13" width="5" height="7"/>
+            <rect x="38" y="16" width="5" height="4"/><rect x="46" y="9" width="5" height="11"/>
+            <rect x="54" y="6" width="5" height="14"/><rect x="62" y="5" width="5" height="15"/>
+            <rect x="70" y="10" width="5" height="10"/><rect x="78" y="14" width="5" height="6"/>
+            <rect x="86" y="12" width="5" height="8"/><rect x="94" y="15" width="5" height="5"/>
+            <rect x="102" y="9" width="5" height="11"/><rect x="110" y="7" width="5" height="13"/>
+            <rect x="118" y="11" width="5" height="9"/><rect x="126" y="13" width="5" height="7"/>
+            <rect x="134" y="8" width="5" height="12"/><rect x="142" y="6" width="5" height="14"/>
+          </g>
+          <!-- ultimas horas resaltadas (activo) -->
+          <g fill="#58A6FF">
+            <rect x="150" y="4" width="5" height="16"/><rect x="158" y="3" width="5" height="17"/>
+            <rect x="166" y="5" width="5" height="15"/><rect x="174" y="2" width="5" height="18"/>
+          </g>
+        </g>
+      </g>
+
+      <line x1="14" y1="46" x2="676" y2="46" stroke="#21262D"/>
+
+      <!-- AGENTE 1 (row inline) -->
+      <g transform="translate(14,56)">
+        <rect x="0" y="0" width="662" height="54" rx="8" fill="#161B22" stroke="#30363D"/>
+        <text x="14" y="22" font-size="12.5" font-weight="700" fill="#58A6FF">#3964</text>
+        <!-- fase pill -->
+        <rect x="70" y="10" width="58" height="18" rx="9" fill="rgba(88,166,255,0.14)" stroke="#1F6FEB"/>
+        <text x="99" y="23" font-size="10" text-anchor="middle" fill="#79C0FF">dev</text>
+        <!-- titulo (escapado SEC-5) -->
+        <text x="140" y="22" font-size="11.5" fill="#B1BAC4">Pantalla de pedidos &#8212; lista vacia</text>
+        <!-- progreso % + barra -->
+        <text x="14" y="44" font-size="10" fill="#8B949E">progreso</text>
+        <rect x="66" y="37" width="180" height="7" rx="3.5" fill="#0D1117" stroke="#21262D"/>
+        <rect x="66" y="37" width="115" height="7" rx="3.5" fill="url(#progGrad)"/>
+        <text x="254" y="44" font-size="10" fill="#79C0FF" font-weight="600">64%</text>
+        <!-- duracion -->
+        <use href="#m-clock" x="300" y="33" width="13" height="13" color="#8B949E"/>
+        <text x="318" y="44" font-size="10.5" fill="#B1BAC4">8m 12s</text>
+        <!-- log -->
+        <use href="#m-log" x="388" y="33" width="13" height="13" color="#2DD4BF"/>
+        <text x="406" y="44" font-size="10.5" fill="#2DD4BF">log</text>
+        <!-- KILL (CA-2) -->
+        <g transform="translate(560,13)">
+          <rect x="0" y="0" width="86" height="28" rx="7" fill="rgba(248,81,73,0.12)" stroke="#8B1A14"/>
+          <use href="#m-kill" x="9" y="6" width="16" height="16" color="#F85149"/>
+          <text x="32" y="19" font-size="11" fill="#FF7B72" font-weight="600">cancelar</text>
+        </g>
+      </g>
+
+      <!-- AGENTE 2 (row inline) -->
+      <g transform="translate(14,116)">
+        <rect x="0" y="0" width="662" height="54" rx="8" fill="#161B22" stroke="#30363D"/>
+        <text x="14" y="22" font-size="12.5" font-weight="700" fill="#58A6FF">#3971</text>
+        <rect x="70" y="10" width="78" height="18" rx="9" fill="rgba(245,158,11,0.14)" stroke="#B8730A"/>
+        <text x="109" y="23" font-size="10" text-anchor="middle" fill="#F5B454">verificacion</text>
+        <text x="160" y="22" font-size="11.5" fill="#B1BAC4">Boton de confirmar &#8212; estado loading</text>
+        <text x="14" y="44" font-size="10" fill="#8B949E">progreso</text>
+        <rect x="66" y="37" width="180" height="7" rx="3.5" fill="#0D1117" stroke="#21262D"/>
+        <rect x="66" y="37" width="34" height="7" rx="3.5" fill="url(#progGrad)"/>
+        <text x="254" y="44" font-size="10" fill="#79C0FF" font-weight="600">19%</text>
+        <use href="#m-clock" x="300" y="33" width="13" height="13" color="#8B949E"/>
+        <text x="318" y="44" font-size="10.5" fill="#B1BAC4">2m 04s</text>
+        <use href="#m-log" x="388" y="33" width="13" height="13" color="#2DD4BF"/>
+        <text x="406" y="44" font-size="10.5" fill="#2DD4BF">log</text>
+        <g transform="translate(560,13)">
+          <rect x="0" y="0" width="86" height="28" rx="7" fill="rgba(248,81,73,0.12)" stroke="#8B1A14"/>
+          <use href="#m-kill" x="9" y="6" width="16" height="16" color="#F85149"/>
+          <text x="32" y="19" font-size="11" fill="#FF7B72" font-weight="600">cancelar</text>
+        </g>
+      </g>
+    </g>
+
+    <!-- ---- SKILL 2: backend-dev — COLAPSADO con agente en COOLDOWN (CA-4) ---- -->
+    <g transform="translate(48,326)">
+      <rect x="0" y="0" width="690" height="96" rx="10" fill="#1C2128" stroke="#30363D"/>
+      <use href="#m-chevron" x="14" y="14" width="16" height="16" color="#B1BAC4" transform="rotate(-90 22 22)"/>
+      <circle cx="46" cy="22" r="10" fill="#1890FF"/>
+      <text x="46" y="26" font-size="11" text-anchor="middle" fill="#0D1117" font-weight="700">B</text>
+      <text x="66" y="20" font-size="13.5" font-weight="700" fill="#E6EDF3">backend-dev</text>
+      <text x="66" y="34" font-size="10.5" fill="#8B949E">Ensamblador Ktor · Lambda</text>
+      <rect x="250" y="12" width="74" height="20" rx="10" fill="rgba(245,158,11,0.14)" stroke="#B8730A"/>
+      <text x="287" y="26" font-size="11" text-anchor="middle" fill="#F5B454" font-weight="600">1 vivo</text>
+      <!-- sparkline mini colapsado -->
+      <g transform="translate(488,12)">
+        <rect x="0" y="0" width="190" height="20" rx="4" fill="#0D1117" stroke="#21262D"/>
+        <g fill="#1F6FEB">
+          <rect x="8" y="12" width="5" height="5"/><rect x="18" y="8" width="5" height="9"/>
+          <rect x="28" y="14" width="5" height="3"/><rect x="38" y="6" width="5" height="11"/>
+          <rect x="48" y="10" width="5" height="7"/><rect x="58" y="13" width="5" height="4"/>
+          <rect x="68" y="9" width="5" height="8"/><rect x="78" y="11" width="5" height="6"/>
+          <rect x="88" y="7" width="5" height="10"/><rect x="98" y="14" width="5" height="3"/>
+          <rect x="108" y="12" width="5" height="5"/><rect x="118" y="8" width="5" height="9"/>
+          <rect x="128" y="13" width="5" height="4"/><rect x="138" y="10" width="5" height="7"/>
+          <rect x="148" y="6" width="5" height="11"/><rect x="158" y="9" width="5" height="8"/>
+        </g>
+        <g fill="#F59E0B"><rect x="168" y="11" width="5" height="6"/><rect x="178" y="13" width="5" height="4"/></g>
+      </g>
+      <line x1="14" y1="46" x2="676" y2="46" stroke="#21262D"/>
+      <!-- fila colapsada: agente en cooldown por fast-fail -->
+      <g transform="translate(14,54)">
+        <rect x="0" y="0" width="662" height="34" rx="8" fill="#161B22" stroke="#B8730A"/>
+        <text x="14" y="22" font-size="12" font-weight="700" fill="#58A6FF">#3958</text>
+        <rect x="66" y="8" width="44" height="18" rx="9" fill="rgba(88,166,255,0.14)" stroke="#1F6FEB"/>
+        <text x="88" y="21" font-size="10" text-anchor="middle" fill="#79C0FF">dev</text>
+        <!-- pill cooldown (CA-4 / SEC-6) -->
+        <g transform="translate(124,7)">
+          <rect x="0" y="0" width="180" height="20" rx="10" fill="rgba(245,158,11,0.14)" stroke="#B8730A"/>
+          <use href="#m-clock" x="6" y="3" width="14" height="14" color="#F59E0B"/>
+          <text x="24" y="14" font-size="10.5" fill="#F5B454">cooldown 02:14 · 2 fallos</text>
+        </g>
+        <text x="320" y="22" font-size="10" fill="#8B949E">re-lanzamiento bloqueado por el server</text>
+        <!-- sin kill habilitado mientras cuenta regresiva server-authoritative -->
+        <g transform="translate(560,4)">
+          <rect x="0" y="0" width="86" height="26" rx="7" fill="rgba(177,186,196,0.07)" stroke="#30363D"/>
+          <text x="43" y="17" font-size="10.5" text-anchor="middle" fill="#6E7681">en espera</text>
+        </g>
+      </g>
+    </g>
+
+    <!-- ---- SKILL 3: COMMANDER — especial NO CANCELABLE (CA-3 / SEC-3) ---- -->
+    <g transform="translate(48,436)">
+      <rect x="0" y="0" width="690" height="74" rx="10" fill="#1C2128" stroke="#8957E5"/>
+      <rect x="0" y="0" width="4" height="74" rx="2" fill="#BC8CFF"/>
+      <use href="#m-shield" x="16" y="14" width="20" height="20" color="#BC8CFF"/>
+      <text x="46" y="22" font-size="13.5" font-weight="700" fill="#E6EDF3">commander</text>
+      <text x="46" y="36" font-size="10.5" fill="#8B949E">Orquestador conversacional · presencia observacional</text>
+      <!-- badge especial -->
+      <g transform="translate(250,12)">
+        <rect x="0" y="0" width="150" height="20" rx="10" fill="rgba(188,140,255,0.14)" stroke="#8957E5"/>
+        <use href="#m-lock" x="6" y="3" width="14" height="14" color="#BC8CFF"/>
+        <text x="24" y="14" font-size="10.5" fill="#C9B6FF">skill no cancelable</text>
+      </g>
+      <line x1="14" y1="46" x2="676" y2="46" stroke="#21262D"/>
+      <g transform="translate(14,52)">
+        <use href="#m-eye" x="0" y="2" width="15" height="15" color="#BC8CFF"/>
+        <text x="22" y="14" font-size="11" fill="#B1BAC4">observa &#8212; no ocupa slot ni se puede cancelar</text>
+        <!-- en vez de kill: candado deshabilitado -->
+        <g transform="translate(546,-4)">
+          <rect x="0" y="0" width="100" height="26" rx="7" fill="rgba(137,87,229,0.10)" stroke="#8957E5"/>
+          <use href="#m-lock" x="10" y="5" width="15" height="15" color="#8957E5"/>
+          <text x="32" y="17" font-size="10.5" fill="#9D7BE0">protegido</text>
+        </g>
+      </g>
+    </g>
+
+    <!-- ---- SKILLS COLAPSADOS RESTANTES (areas) ---- -->
+    <g transform="translate(48,524)" font-size="11">
+      <text x="0" y="10" font-size="10.5" font-weight="600" fill="#8B949E" letter-spacing="0.4">RESTO DEL EQUIPO &#8212; sin agentes vivos (click para expandir)</text>
+      <!-- fila de chips colapsados -->
+      <g transform="translate(0,20)">
+        <!-- chip helper -->
+        <g>
+          <rect x="0" y="0" width="128" height="30" rx="8" fill="#1C2128" stroke="#30363D"/>
+          <use href="#m-chevron" x="8" y="7" width="14" height="14" color="#8B949E" transform="rotate(-90 15 14)"/>
+          <circle cx="36" cy="15" r="7" fill="#BC8CFF"/><text x="36" y="19" font-size="8.5" text-anchor="middle" fill="#0D1117" font-weight="700">P</text>
+          <text x="48" y="19" font-size="11" fill="#B1BAC4">po</text>
+          <circle cx="116" cy="15" r="3" fill="#6E7681"/>
+        </g>
+        <g transform="translate(140,0)">
+          <rect x="0" y="0" width="128" height="30" rx="8" fill="#1C2128" stroke="#30363D"/>
+          <use href="#m-chevron" x="8" y="7" width="14" height="14" color="#8B949E" transform="rotate(-90 15 14)"/>
+          <circle cx="36" cy="15" r="7" fill="#2DD4BF"/><text x="36" y="19" font-size="8.5" text-anchor="middle" fill="#0D1117" font-weight="700">Q</text>
+          <text x="48" y="19" font-size="11" fill="#B1BAC4">qa</text>
+          <circle cx="116" cy="15" r="3" fill="#6E7681"/>
+        </g>
+        <g transform="translate(280,0)">
+          <rect x="0" y="0" width="146" height="30" rx="8" fill="#1C2128" stroke="#30363D"/>
+          <use href="#m-chevron" x="8" y="7" width="14" height="14" color="#8B949E" transform="rotate(-90 15 14)"/>
+          <circle cx="36" cy="15" r="7" fill="#F59E0B"/><text x="36" y="19" font-size="8.5" text-anchor="middle" fill="#0D1117" font-weight="700">T</text>
+          <text x="48" y="19" font-size="11" fill="#B1BAC4">tester</text>
+          <circle cx="134" cy="15" r="3" fill="#6E7681"/>
+        </g>
+        <g transform="translate(438,0)">
+          <rect x="0" y="0" width="150" height="30" rx="8" fill="#1C2128" stroke="#30363D"/>
+          <use href="#m-chevron" x="8" y="7" width="14" height="14" color="#8B949E" transform="rotate(-90 15 14)"/>
+          <circle cx="36" cy="15" r="7" fill="#58A6FF"/><text x="36" y="19" font-size="8.5" text-anchor="middle" fill="#0D1117" font-weight="700">G</text>
+          <text x="48" y="19" font-size="11" fill="#B1BAC4">guru</text>
+          <circle cx="138" cy="15" r="3" fill="#6E7681"/>
+        </g>
+      </g>
+    </g>
+
+    <!-- ============ MODAL DE CONFIRMACION (CA-2) — overlay ============ -->
+    <rect x="24" y="600" width="980" height="356" fill="#0D1117" opacity="0.55"/>
+    <g transform="translate(280,624)">
+      <rect x="0" y="0" width="470" height="300" rx="14" fill="#252B33" stroke="#484F58" stroke-width="1.5"/>
+      <!-- header -->
+      <use href="#m-kill" x="22" y="22" width="22" height="22" color="#F85149"/>
+      <text x="54" y="38" font-size="15.5" font-weight="700" fill="#E6EDF3">Cancelar agente</text>
+      <line x1="22" y1="56" x2="448" y2="56" stroke="#30363D"/>
+      <text x="22" y="80" font-size="12" fill="#B1BAC4">Se cancelara el agente en curso.</text>
+      <text x="22" y="98" font-size="12" fill="#FF7B72">Esta accion no se puede deshacer.</text>
+
+      <!-- preview (issue, fase, tiempo invertido) -->
+      <g transform="translate(22,116)">
+        <rect x="0" y="0" width="426" height="108" rx="9" fill="#161B22" stroke="#30363D"/>
+        <g font-size="11.5" transform="translate(16,0)">
+          <text x="0" y="26" fill="#8B949E">Skill</text>
+          <text x="120" y="26" fill="#E6EDF3" font-weight="600">android-dev</text>
+          <line x1="0" y1="36" x2="394" y2="36" stroke="#21262D"/>
+          <text x="0" y="56" fill="#8B949E">Issue</text>
+          <text x="120" y="56" fill="#58A6FF" font-weight="600">#3964</text>
+          <line x1="0" y1="66" x2="394" y2="66" stroke="#21262D"/>
+          <text x="0" y="86" fill="#8B949E">Fase</text>
+          <text x="120" y="86" fill="#79C0FF" font-weight="600">dev</text>
+          <text x="230" y="86" fill="#8B949E">Tiempo invertido</text>
+          <text x="372" y="86" fill="#F5B454" font-weight="700">8m 12s</text>
+        </g>
+      </g>
+
+      <!-- nota CSRF (SEC-2) -->
+      <g transform="translate(22,232)">
+        <use href="#m-shield" x="0" y="0" width="14" height="14" color="#3FB950"/>
+        <text x="20" y="11" font-size="10" fill="#8B949E">peticion same-origin con token CSRF &#8212; el server valida (403 sin token)</text>
+      </g>
+
+      <!-- botones -->
+      <g transform="translate(22,254)">
+        <rect x="0" y="0" width="200" height="34" rx="8" fill="transparent" stroke="#484F58"/>
+        <text x="100" y="22" font-size="12" text-anchor="middle" fill="#B1BAC4">Mantener vivo</text>
+        <rect x="226" y="0" width="200" height="34" rx="8" fill="#DA3633" stroke="#F85149"/>
+        <use href="#m-kill" x="246" y="8" width="18" height="18" color="#fff"/>
+        <text x="338" y="22" font-size="12" text-anchor="middle" fill="#fff" font-weight="600">Cancelar agente</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ===================== SIDEBAR (derecha) ===================== -->
+  <g transform="translate(1028,24)">
+    <rect x="0" y="0" width="388" height="932" rx="12" fill="#161B22" stroke="#30363D"/>
+
+    <!-- titulo -->
+    <text x="24" y="42" font-size="15" font-weight="700" fill="#E6EDF3">EP8-H2 · Acordeon por skill</text>
+    <text x="24" y="62" font-size="11" fill="#8B949E">#3955 — Equipo, agentes individuales</text>
+    <line x1="24" y1="76" x2="364" y2="76" stroke="#21262D"/>
+
+    <!-- Mapa de CAs -->
+    <text x="24" y="100" font-size="12" font-weight="700" fill="#BC8CFF">Criterios de aceptacion</text>
+    <g font-size="10.5" transform="translate(24,108)">
+      <text x="0" y="20" fill="#3FB950" font-weight="700">CA-1</text><text x="40" y="20" fill="#B1BAC4">Detalle inline: issue · fase · % · dur · log</text>
+      <text x="0" y="40" fill="#3FB950" font-weight="700">CA-2</text><text x="40" y="40" fill="#B1BAC4">Preview (issue · fase · tiempo) + confirmar</text>
+      <text x="0" y="60" fill="#3FB950" font-weight="700">CA-3</text><text x="40" y="60" fill="#B1BAC4">Commander visible, no cancelable</text>
+      <text x="0" y="80" fill="#3FB950" font-weight="700">CA-4</text><text x="40" y="80" fill="#B1BAC4">Cooldown fast-fail con cuenta regresiva</text>
+      <text x="0" y="100" fill="#3FB950" font-weight="700">CA-5</text><text x="40" y="100" fill="#B1BAC4">Sparkline de carga 24h por skill</text>
+    </g>
+    <line x1="24" y1="228" x2="364" y2="228" stroke="#21262D"/>
+
+    <!-- Requisitos de seguridad -->
+    <text x="24" y="252" font-size="12" font-weight="700" fill="#FF7B72">Seguridad (verificable en verificacion)</text>
+    <g font-size="10" transform="translate(24,260)">
+      <text x="0" y="18" fill="#F85149" font-weight="700">SEC-1</text><text x="48" y="18" fill="#B1BAC4">Validar inputs server-side &#8594; 400 (bloq.)</text>
+      <text x="0" y="36" fill="#F85149" font-weight="700">SEC-2</text><text x="48" y="36" fill="#B1BAC4">CSRF en todos los kill &#8594; 403 (bloq.)</text>
+      <text x="0" y="54" fill="#F85149" font-weight="700">SEC-3</text><text x="48" y="54" fill="#B1BAC4">Commander no-cancelable &#8594; 403 (bloq.)</text>
+      <text x="0" y="72" fill="#D29922" font-weight="700">SEC-4</text><text x="48" y="72" fill="#B1BAC4">Redactar secrets en log inline</text>
+      <text x="0" y="90" fill="#D29922" font-weight="700">SEC-5</text><text x="48" y="90" fill="#B1BAC4">Escape XSS de titulo issue (+test)</text>
+      <text x="0" y="108" fill="#8B949E" font-weight="700">SEC-6</text><text x="48" y="108" fill="#B1BAC4">Cooldown server-authoritative</text>
+    </g>
+    <line x1="24" y1="392" x2="364" y2="392" stroke="#21262D"/>
+
+    <!-- Dual encoding / iconografia -->
+    <text x="24" y="416" font-size="12" font-weight="700" fill="#58A6FF">Iconografia (sprite real, sin nuevos)</text>
+    <g font-size="10.5" transform="translate(24,424)">
+      <use href="#m-chevron" x="0" y="8" width="15" height="15" color="#B1BAC4"/><text x="24" y="20" fill="#B1BAC4">chevron — expandir/colapsar (ic-expand)</text>
+      <use href="#m-kill" x="0" y="28" width="15" height="15" color="#F85149"/><text x="24" y="40" fill="#B1BAC4">cancelar agente (ic-revoke)</text>
+      <use href="#m-lock" x="0" y="48" width="15" height="15" color="#BC8CFF"/><text x="24" y="60" fill="#B1BAC4">no cancelable (ic-shield-lock)</text>
+      <use href="#m-clock" x="0" y="68" width="15" height="15" color="#F59E0B"/><text x="24" y="80" fill="#B1BAC4">cooldown (ic-ttl-countdown)</text>
+      <use href="#m-log" x="0" y="88" width="15" height="15" color="#2DD4BF"/><text x="24" y="100" fill="#B1BAC4">log en vivo (ic-live-tail)</text>
+    </g>
+    <line x1="24" y1="540" x2="364" y2="540" stroke="#21262D"/>
+
+    <!-- Tabla de contrastes WCAG AA -->
+    <text x="24" y="564" font-size="12" font-weight="700" fill="#2DD4BF">Contrastes WCAG AA (sobre surface-2)</text>
+    <g font-size="9.5" transform="translate(24,574)">
+      <text x="0" y="16" fill="#79C0FF">% progreso #79C0FF</text><text x="300" y="16" fill="#3FB950">7.1:1 AA</text>
+      <text x="0" y="34" fill="#F5B454">cooldown #F5B454</text><text x="300" y="34" fill="#3FB950">6.9:1 AA</text>
+      <text x="0" y="52" fill="#FF7B72">danger #FF7B72</text><text x="300" y="52" fill="#3FB950">5.4:1 AA</text>
+      <text x="0" y="70" fill="#C9B6FF">commander #C9B6FF</text><text x="300" y="70" fill="#3FB950">7.6:1 AA</text>
+      <text x="0" y="88" fill="#8B949E">dim #8B949E</text><text x="300" y="88" fill="#3FB950">4.6:1 AA</text>
+    </g>
+    <line x1="24" y1="678" x2="364" y2="678" stroke="#21262D"/>
+
+    <!-- Regla inquebrantable -->
+    <text x="24" y="702" font-size="12" font-weight="700" fill="#D29922">Regla de oro</text>
+    <text x="24" y="724" font-size="10.5" fill="#B1BAC4">Todo estado lleva icono + texto/forma,</text>
+    <text x="24" y="740" font-size="10.5" fill="#B1BAC4">nunca solo color. El cooldown lleva reloj +</text>
+    <text x="24" y="756" font-size="10.5" fill="#B1BAC4">"02:14"; el commander, candado + "protegido".</text>
+
+    <line x1="24" y1="776" x2="364" y2="776" stroke="#21262D"/>
+    <!-- Microcopy -->
+    <text x="24" y="800" font-size="12" font-weight="700" fill="#E6EDF3">Microcopy</text>
+    <g font-size="10" transform="translate(24,808)" fill="#B1BAC4">
+      <text x="0" y="18">Modal: "Se cancelara el agente en curso.</text>
+      <text x="0" y="32">Esta accion no se puede deshacer."</text>
+      <text x="0" y="52">Cooldown: "cooldown 02:14 · 2 fallos"</text>
+      <text x="0" y="66">Commander: "observa — no ocupa slot ni</text>
+      <text x="0" y="80">se puede cancelar"</text>
+      <text x="0" y="100">Botones: "Mantener vivo" / "Cancelar agente"</text>
+    </g>
+
+    <!-- footer fuentes de datos -->
+    <line x1="24" y1="900" x2="364" y2="900" stroke="#21262D"/>
+    <text x="24" y="920" font-size="9" fill="#6E7681">Fuentes: /api/dash/active · cooldowns.json · mtimes procesado/</text>
+  </g>
+</svg>
