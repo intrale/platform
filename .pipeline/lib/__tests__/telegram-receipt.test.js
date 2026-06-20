@@ -187,3 +187,51 @@ test('receiptsDir / archivedReceiptsDir resuelven bajo servicios/telegram', () =
   const a = rec.archivedReceiptsDir('/x/.pipeline');
   assert.ok(a.endsWith(path.join('recibos', 'archivado')));
 });
+
+// -----------------------------------------------------------------------------
+// resolveMessageId — #4105 (CA-6): captura async del message_id, fail-closed e
+// idempotente. El message_id es la única prueba de entrega (R1).
+// -----------------------------------------------------------------------------
+test('resolveMessageId: recibo enviado válido → primer message_id (idempotente)', () => {
+  const dir = sandbox();
+  rec.writeReceipt(dir, { correlationId: 'cmd-123456', status: 'enviado', messageIds: [777, 778] });
+  assert.equal(rec.resolveMessageId('cmd-123456', dir), 777);
+  // resolución repetida (recibo duplicado / fuera de orden) → mismo resultado
+  assert.equal(rec.resolveMessageId('cmd-123456', dir), 777);
+});
+
+test('resolveMessageId: correlationId inválido / path-traversal → null (R3)', () => {
+  const dir = sandbox();
+  assert.equal(rec.resolveMessageId('../../etc/passwd', dir), null);
+  assert.equal(rec.resolveMessageId('a/b', dir), null);
+  assert.equal(rec.resolveMessageId('cmd..123456', dir), null);
+  assert.equal(rec.resolveMessageId('', dir), null);
+});
+
+test('resolveMessageId: recibo ausente → null (fail-closed)', () => {
+  const dir = sandbox();
+  assert.equal(rec.resolveMessageId('cmd-ausente1', dir), null);
+});
+
+test('resolveMessageId: recibo fallido (sin entrega) → null', () => {
+  const dir = sandbox();
+  rec.writeReceipt(dir, { correlationId: 'cmd-falla12', status: 'fallido', messageIds: [] });
+  assert.equal(rec.resolveMessageId('cmd-falla12', dir), null);
+});
+
+test('resolveMessageId: recibo forjado/malformado → null (no resuelve, cuarentena)', () => {
+  const dir = sandbox();
+  // recibo "enviado" forjado SIN messageIds (R1: no hay prueba de entrega)
+  fs.writeFileSync(path.join(dir, 'cmd-forjado1.json'), JSON.stringify({
+    correlationId: 'cmd-forjado1', status: 'enviado', messageIds: [], at: new Date().toISOString(),
+  }));
+  assert.equal(rec.resolveMessageId('cmd-forjado1', dir), null);
+  // JSON roto
+  fs.writeFileSync(path.join(dir, 'cmd-roto1234.json'), '{ no json');
+  assert.equal(rec.resolveMessageId('cmd-roto1234', dir), null);
+});
+
+test('resolveMessageId: recibosDir inválido → null (no lanza)', () => {
+  assert.equal(rec.resolveMessageId('cmd-123456', ''), null);
+  assert.equal(rec.resolveMessageId('cmd-123456', null), null);
+});

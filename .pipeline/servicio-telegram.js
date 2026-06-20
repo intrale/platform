@@ -189,6 +189,30 @@ async function telegramSend(method, params) {
   }
 }
 
+/**
+ * Editar el texto de un mensaje ya enviado (#4105 · CA-5). Despacha vía
+ * `telegramSend('editMessageText', …)` — mismo patrón seguro que `sendMessage`.
+ * Lo usa el camino optimista de Sherlock para CORREGIR una respuesta de TEXTO ya
+ * entregada cuando el veredicto background difiere. Un voice note NO es editable:
+ * su corrección es siempre un follow-up (ver sherlock-optimistic.decideCorrection).
+ *
+ * @param {number|string} chatId   chat destino (Telegram exige chat_id explícito
+ *                                  en editMessageText; `telegramSend` ya inyecta
+ *                                  el default, pero acá lo pasamos explícito).
+ * @param {number}        messageId message_id del mensaje a editar (única prueba
+ *                                  de entrega — R1 del bus de recibos #4082).
+ * @param {string}        text      nuevo texto (ya saneado por el caller).
+ * @param {object}        [extra]   campos extra del API (parse_mode, etc.).
+ */
+async function editMessageText(chatId, messageId, text, extra = {}, _send = telegramSend) {
+  return _send('editMessageText', {
+    chat_id: chatId,
+    message_id: messageId,
+    text,
+    ...extra,
+  });
+}
+
 /** Enviar documento/foto/video/animation via multipart form-data usando http-client seguro.
  *
  * #3540 (CA-UX-EXT-3): el caller puede pasar `extra.filename` para sobreescribir
@@ -662,6 +686,20 @@ async function processQueue() {
         // #4082 — Entrega confirmada: recibo `enviado` si el saliente trae
         // correlationId (los del Commander lo traen).
         writeSentReceiptIfAny(data, messageIds);
+      } else if (data.method === 'editMessageText' && Number.isFinite(data.message_id)) {
+        // #4105 (CA-5) — corrección de TEXTO del camino optimista de Sherlock:
+        // editar un mensaje ya enviado. El payload trae `message_id` + `text`.
+        // SEC-2 fail-closed: validar ok:true antes de dar por hecha la edición.
+        const editBody = await editMessageText(
+          CHAT_ID,
+          data.message_id,
+          data.text,
+          data.parse_mode ? { parse_mode: data.parse_mode } : {},
+        );
+        assertDelivered(editBody, 0, 1);
+        // El edit devuelve el mismo message_id; escribimos recibo `enviado` para
+        // que el reconciliador del Commander cierre el correlationId del edit.
+        writeSentReceiptIfAny(data, [editBody.result.message_id]);
       }
 
       const listoPath = path.join(LISTO, file.name);
@@ -705,6 +743,10 @@ module.exports = {
   assertDelivered,
   writeSentReceiptIfAny,
   RECIBOS,
+  // #4105 — wrapper de edición para el camino optimista de Sherlock (CA-5).
+  // Exportado para tests `node --test` (dispatch vía telegramSend; no arranca
+  // el servicio ni toca red en el test, que inyecta un fake de telegramSend).
+  editMessageText,
 };
 
 // Arranque del servicio: SOLO cuando se ejecuta directamente (`node servicio-telegram.js`),
