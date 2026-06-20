@@ -1,0 +1,296 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 36 — EP8-H7 (#3960): Ops, topologia de servicios con log inline y
+  restart auditado.
+  =============================================================================
+  Mockup OBJETIVO de la fase definicion/criterios. Referencia visual de alta
+  fidelidad que implementa `pipeline-dev` sobre `.pipeline/views/dashboard/ops.js`
+  (modulo SSR + polling ya existente, #3732) y `.pipeline/dashboard.js`
+  (SSE /logs/stream/:file ~L9441, /api/action ~L9532).
+
+  Reemplaza el grid plano de cards de procesos (ver actual-ops.png) por una
+  TOPOLOGIA JERARQUICA navegable:
+
+      pulpo (orquestador)
+        |
+        +.. listener-tg   svc-drive   svc-github   svc-emulador   (capa servicios)
+        |
+        +.. dashboard / reconciler (output)
+
+  Idea central de los 4 CAs del issue:
+    CA-1  Cada nodo muestra salud + "desde cuando" (uptime) y, al caer, el
+          ULTIMO ERROR COMPLETO + historial de transiciones vivo<->muerto con causa.
+    CA-2  Panel de LOG EN VIVO (SSE) de solo lectura con follow automatico,
+          lazy-open SOLO del nodo seleccionado (evita agotar las ~6 conexiones
+          HTTP/1.1 del browser — recomendacion guru).
+    CA-3  Boton "Restart" por servicio: confirma (confirm-modal.js de EP8-H0) +
+          audita (quien/cuando/source) reutilizando stop+start del componente,
+          SIN gatillar el killAll/smoke/rollback global de restart.js.
+    CA-4  Reconciler con breakdown por motivo + serie temporal (sparkline 7d).
+
+  Convenciones del sistema (design-tokens.css - EP8-H0 #3953). Colores var()
+  inlineados por ser SVG standalone; mapean 1:1 a los tokens:
+    surface-0 #0D1117 - surface-1 #161B22 - surface-2 #1C2128 - surface-3 #252B33
+    border #30363D - border-subtle #21262D - border-strong #484F58
+    text-primary #E6EDF3 - text-secondary #B1BAC4 - text-dim #8B949E
+    success #3FB950 - warning #D29922 - danger #F85149 - info #58A6FF
+    retry #F59E0B - purple #BC8CFF - teal #2DD4BF - brand-cyan #00D6FF
+    brand-blue #1890FF
+  Iconografia: del sprite.svg real via #ic-* (aca redibujada como symbols m-*).
+    Nuevos de este issue: ic-restart, ic-health-dead, ic-live-tail,
+    ic-transition-history.
+  Regla inquebrantable: TODA info de estado va con icono + texto/forma, nunca
+  solo color (WCAG AA, dual-encoding). El nodo caido lleva borde rojo + punto
+  rojo + cruz (ic-health-dead) + label "caido hace 41 m".
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 900"
+     font-family="-apple-system, 'Segoe UI', Roboto, sans-serif">
+  <defs>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#00D6FF"/>
+      <stop offset="1" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="barDup" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#1890FF"/>
+      <stop offset="1" stop-color="#58A6FF"/>
+    </linearGradient>
+
+    <!-- iconos locales (espejo del sprite real) -->
+    <symbol id="m-restart" viewBox="0 0 24 24">
+      <path d="M5.5 12 A6.5 6.5 0 1 1 8 17.2" fill="none" stroke="currentColor"
+            stroke-width="1.85" stroke-linecap="round"/>
+      <path d="M5.2 7.5 L5.6 12.2 L10.2 11.4" fill="none" stroke="currentColor"
+            stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-dead" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="8.2" fill="none" stroke="currentColor" stroke-width="1.8"/>
+      <path d="M9 9 L15 15 M15 9 L9 15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-live" viewBox="0 0 24 24">
+      <circle cx="6.5" cy="17.5" r="1.9" fill="currentColor"/>
+      <path d="M6 11.5 A6 6 0 0 1 12.5 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+      <path d="M6 6.5 A11 11 0 0 1 17.5 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" opacity="0.6"/>
+    </symbol>
+    <symbol id="m-hist" viewBox="0 0 24 24">
+      <path d="M3.8 12 A8.2 8.2 0 1 0 6.2 6.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+      <path d="M3.4 7 L3.9 11.6 L8.4 10.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M12 8.5 V12.3 L14.8 14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-hourglass" viewBox="0 0 24 24">
+      <path d="M6.5 4 H17.5 M6.5 20 H17.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <path d="M7.5 4 C7.5 8.5 16.5 8.5 16.5 4" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linejoin="round"/>
+      <path d="M7.5 20 C7.5 15.5 16.5 15.5 16.5 20" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linejoin="round"/>
+      <path d="M10.6 17.8 C10.6 15.4 13.4 15.4 13.4 17.8 Z" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-radar" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.5"/>
+      <circle cx="12" cy="12" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.5"/>
+      <path d="M12 12 L18 7.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+      <circle cx="12" cy="12" r="1.6" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-check" viewBox="0 0 24 24">
+      <path d="M5 12.5 L10 17.5 L19 6.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+  </defs>
+
+  <!-- fondo -->
+  <rect width="1440" height="900" fill="#0D1117"/>
+
+  <!-- ===================================================================== -->
+  <!-- HEADER de identidad global (patron EP8-H0 / mockup 18 redesign)        -->
+  <!-- ===================================================================== -->
+  <g>
+    <rect x="0" y="0" width="1440" height="62" fill="#161B22"/>
+    <rect x="0" y="61" width="1440" height="1" fill="#21262D"/>
+    <circle cx="36" cy="31" r="9" fill="url(#brandGrad)"/>
+    <circle cx="36" cy="31" r="4" fill="#3FB950"/>
+    <text x="58" y="37" font-size="17" font-weight="700" letter-spacing="0.5">
+      <tspan fill="#00D6FF">INTRALE</tspan><tspan fill="#E6EDF3"> · PIPELINE</tspan>
+    </text>
+    <text x="250" y="37" font-size="13" fill="#8B949E">Ops · topología de servicios</text>
+    <circle cx="452" cy="33" r="3.5" fill="#3FB950"/>
+    <text x="462" y="37" font-size="12" fill="#3FB950">actualizado hace 3 s</text>
+    <!-- nav tabs -->
+    <g font-size="13" fill="#B1BAC4">
+      <text x="1010" y="37" text-anchor="end" fill="#B1BAC4">Home</text>
+      <text x="1078" y="37" text-anchor="end" fill="#B1BAC4">Equipo</text>
+      <text x="1152" y="37" text-anchor="end" fill="#B1BAC4">Pipeline</text>
+      <text x="1238" y="37" text-anchor="end" fill="#B1BAC4">Bloqueados</text>
+      <text x="1296" y="37" text-anchor="end" fill="#B1BAC4">Issues</text>
+      <!-- Ops activo -->
+      <rect x="1306" y="20" width="46" height="24" rx="6" fill="rgba(88,166,255,0.14)" stroke="#1F6FEB"/>
+      <text x="1329" y="37" text-anchor="middle" fill="#58A6FF" font-weight="600">Ops</text>
+      <text x="1404" y="37" text-anchor="end" fill="#B1BAC4">KPIs</text>
+    </g>
+  </g>
+
+  <!-- ===================================================================== -->
+  <!-- PANEL IZQUIERDO — TOPOLOGIA                                            -->
+  <!-- ===================================================================== -->
+  <g>
+    <rect x="16" y="80" width="806" height="330" rx="12" fill="#161B22" stroke="#21262D"/>
+    <g transform="translate(34,104)" fill="#8B949E">
+      <use href="#m-radar" x="0" y="-12" width="16" height="16" color="#8B949E"/>
+      <text x="22" y="0" font-size="12" font-weight="700" letter-spacing="1">TOPOLOGÍA</text>
+    </g>
+
+    <!-- conectores jerarquicos pulpo -> servicios -->
+    <g stroke="#30363D" stroke-width="1.5" fill="none">
+      <path d="M415 199 V214"/>
+      <path d="M205 214 H625"/>
+      <path d="M205 214 V228 M345 214 V228 M485 214 V228 M625 214 V228"/>
+    </g>
+
+    <!-- NODO pulpo (orquestador, raiz) -->
+    <g>
+      <rect x="345" y="130" width="140" height="70" rx="10" fill="#1C2128" stroke="#30363D"/>
+      <circle cx="415" cy="150" r="5.5" fill="#3FB950"/>
+      <circle cx="415" cy="150" r="5.5" fill="none" stroke="#196C2E" stroke-width="1"/>
+      <text x="415" y="174" text-anchor="middle" font-size="13" font-weight="700" fill="#E6EDF3">pulpo</text>
+      <text x="415" y="190" text-anchor="middle" font-size="10.5" fill="#8B949E">PID 9512 · 2 d 4 h</text>
+    </g>
+
+    <!-- capa servicios -->
+    <!-- listener-tg (ok) -->
+    <g>
+      <rect x="145" y="228" width="120" height="64" rx="10" fill="#1C2128" stroke="#30363D"/>
+      <circle cx="205" cy="246" r="5" fill="#3FB950"/>
+      <text x="205" y="270" text-anchor="middle" font-size="12" font-weight="700" fill="#E6EDF3">listener-tg</text>
+      <text x="205" y="285" text-anchor="middle" font-size="10" fill="#8B949E">PID 10244 · 2 d</text>
+    </g>
+    <!-- svc-drive (DOWN, seleccionado) -->
+    <g>
+      <rect x="285" y="228" width="120" height="64" rx="10" fill="rgba(248,81,73,0.10)" stroke="#F85149" stroke-width="1.6"/>
+      <use href="#m-dead" x="338" y="240" width="13" height="13" color="#F85149"/>
+      <text x="345" y="270" text-anchor="middle" font-size="12" font-weight="700" fill="#E6EDF3">svc-drive</text>
+      <text x="345" y="285" text-anchor="middle" font-size="10" fill="#F85149">caído hace 41 m</text>
+    </g>
+    <!-- svc-github (ok) -->
+    <g>
+      <rect x="425" y="228" width="120" height="64" rx="10" fill="#1C2128" stroke="#30363D"/>
+      <circle cx="485" cy="246" r="5" fill="#3FB950"/>
+      <text x="485" y="270" text-anchor="middle" font-size="12" font-weight="700" fill="#E6EDF3">svc-github</text>
+      <text x="485" y="285" text-anchor="middle" font-size="10" fill="#8B949E">PID 11820 · 2 d</text>
+    </g>
+    <!-- svc-emulador (ok) -->
+    <g>
+      <rect x="565" y="228" width="120" height="64" rx="10" fill="#1C2128" stroke="#30363D"/>
+      <circle cx="625" cy="246" r="5" fill="#3FB950"/>
+      <text x="625" y="270" text-anchor="middle" font-size="12" font-weight="700" fill="#E6EDF3">svc-emulador</text>
+      <text x="625" y="285" text-anchor="middle" font-size="10" fill="#8B949E">PID 12087 · 6 h</text>
+    </g>
+
+    <!-- PANEL de nodo seleccionado: log en vivo + historial + restart -->
+    <g>
+      <rect x="34" y="306" width="770" height="92" rx="10" fill="#0D1117" stroke="#21262D"/>
+      <use href="#m-live" x="46" y="316" width="14" height="14" color="#58A6FF"/>
+      <text x="66" y="328" font-size="11" font-weight="700" letter-spacing="0.5" fill="#B1BAC4">SVC-DRIVE · LOG EN VIVO (SSE) + HISTORIAL</text>
+      <!-- lineas de log (monospace) -->
+      <g font-family="'SF Mono','Consolas',monospace" font-size="10.5">
+        <text x="46" y="348" fill="#B1BAC4"><tspan fill="#8B949E">16:02:11</tspan> <tspan fill="#F85149">[drive] ECONNRESET</tspan> subiendo maestro-3905.mp4 (intento 3/3)</text>
+        <text x="46" y="364" fill="#B1BAC4"><tspan fill="#8B949E">16:02:11</tspan> <tspan fill="#8B949E">[drive]</tspan> worker detenido — exit 1</text>
+      </g>
+      <!-- historial de caidas con causa (CA-1) -->
+      <use href="#m-hist" x="46" y="376" width="13" height="13" color="#8B949E"/>
+      <text x="65" y="386" font-size="10.5" fill="#8B949E">caídas 7 d: <tspan fill="#B1BAC4" font-weight="600">2</tspan> (ECONNRESET ×2) · último error completo en tooltip</text>
+      <!-- boton restart confirma + audita (CA-3) -->
+      <g>
+        <rect x="620" y="368" width="170" height="24" rx="6" fill="rgba(88,166,255,0.14)" stroke="#1F6FEB"/>
+        <use href="#m-restart" x="630" y="374" width="12" height="12" color="#58A6FF"/>
+        <text x="648" y="384" font-size="11" fill="#58A6FF" font-weight="600">Restart (confirma + audita)</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ===================================================================== -->
+  <!-- PANEL DERECHO — RECONCILER (CA-4)                                      -->
+  <!-- ===================================================================== -->
+  <g>
+    <rect x="838" y="80" width="586" height="148" rx="12" fill="#161B22" stroke="#21262D"/>
+    <g transform="translate(856,104)">
+      <use href="#m-hourglass" x="0" y="-12" width="15" height="15" color="#8B949E"/>
+      <text x="20" y="0" font-size="12" font-weight="700" letter-spacing="1" fill="#8B949E">RECONCILER · STALE ORDERS 24 H</text>
+    </g>
+    <!-- numero grande -->
+    <text x="856" y="150" font-size="36" font-weight="800" fill="#E6EDF3">147</text>
+    <!-- breakdown por motivo -->
+    <g font-size="11">
+      <text x="916" y="124" fill="#B1BAC4">duplicado</text>
+      <rect x="982" y="116" width="240" height="9" rx="4.5" fill="#21262D"/>
+      <rect x="982" y="116" width="170" height="9" rx="4.5" fill="url(#barDup)"/>
+      <text x="1408" y="124" text-anchor="end" fill="#B1BAC4">91</text>
+
+      <text x="916" y="139" fill="#B1BAC4">timeout</text>
+      <rect x="982" y="131" width="240" height="9" rx="4.5" fill="#21262D"/>
+      <rect x="982" y="131" width="77" height="9" rx="4.5" fill="#D29922"/>
+      <text x="1408" y="139" text-anchor="end" fill="#B1BAC4">41</text>
+
+      <text x="916" y="154" fill="#B1BAC4">validación</text>
+      <rect x="982" y="146" width="240" height="9" rx="4.5" fill="#21262D"/>
+      <rect x="982" y="146" width="28" height="9" rx="4.5" fill="#F85149"/>
+      <text x="1408" y="154" text-anchor="end" fill="#B1BAC4">15</text>
+    </g>
+    <!-- serie temporal 7d (sparkline) -->
+    <text x="856" y="178" font-size="10.5" fill="#8B949E">serie 7 d:</text>
+    <polyline points="912,200 936,194 960,202 984,188 1008,196 1032,182 1056,176 1080,184"
+              fill="none" stroke="#D29922" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="1080" cy="184" r="2.6" fill="#D29922"/>
+  </g>
+
+  <!-- QA ENVIRONMENT (pills compactas) -->
+  <g>
+    <rect x="838" y="240" width="586" height="92" rx="12" fill="#161B22" stroke="#21262D"/>
+    <g transform="translate(856,264)">
+      <use href="#m-radar" x="0" y="-12" width="15" height="15" color="#8B949E"/>
+      <text x="20" y="0" font-size="12" font-weight="700" letter-spacing="1" fill="#8B949E">QA ENVIRONMENT</text>
+    </g>
+    <!-- pills -->
+    <g font-size="11" font-weight="600">
+      <rect x="856" y="282" width="78" height="22" rx="11" fill="rgba(63,185,80,0.14)" stroke="#196C2E"/>
+      <use href="#m-check" x="864" y="288" width="11" height="11" color="#3FB950"/>
+      <text x="880" y="297" fill="#3FB950">emulador</text>
+
+      <rect x="942" y="282" width="74" height="22" rx="11" fill="rgba(63,185,80,0.14)" stroke="#196C2E"/>
+      <use href="#m-check" x="950" y="288" width="11" height="11" color="#3FB950"/>
+      <text x="966" y="297" fill="#3FB950">backend</text>
+
+      <rect x="1024" y="282" width="56" height="22" rx="11" fill="rgba(63,185,80,0.14)" stroke="#196C2E"/>
+      <use href="#m-check" x="1032" y="288" width="11" height="11" color="#3FB950"/>
+      <text x="1048" y="297" fill="#3FB950">infra</text>
+
+      <rect x="1088" y="282" width="60" height="22" rx="11" fill="rgba(248,81,73,0.14)" stroke="#8B1A14"/>
+      <use href="#m-dead" x="1096" y="288" width="11" height="11" color="#F85149"/>
+      <text x="1112" y="297" fill="#F85149">drive</text>
+    </g>
+    <text x="856" y="322" font-size="10.5" fill="#8B949E">la alerta de <tspan fill="#F85149">drive</tspan> también está en la bandeja del Home con "desde cuándo" y último error completo</text>
+  </g>
+
+  <!-- ===================================================================== -->
+  <!-- LEYENDA / dual-encoding (franja inferior)                              -->
+  <!-- ===================================================================== -->
+  <g>
+    <rect x="16" y="424" width="1408" height="62" rx="12" fill="#161B22" stroke="#21262D"/>
+    <text x="34" y="446" font-size="11" font-weight="700" letter-spacing="1" fill="#8B949E">LEYENDA · ESTADO POR NODO (color + forma + texto — nunca solo color)</text>
+    <g font-size="11.5">
+      <circle cx="42" cy="465" r="5" fill="#3FB950"/>
+      <text x="54" y="469" fill="#B1BAC4">vivo — PID + uptime</text>
+
+      <use href="#m-dead" x="150" y="459" width="12" height="12" color="#F85149"/>
+      <text x="168" y="469" fill="#B1BAC4">caído — borde rojo + "desde cuándo" + último error</text>
+
+      <use href="#m-live" x="470" y="459" width="12" height="12" color="#58A6FF"/>
+      <text x="488" y="469" fill="#B1BAC4">log en vivo (SSE, follow auto, lazy-open del nodo)</text>
+
+      <use href="#m-hist" x="790" y="459" width="12" height="12" color="#8B949E"/>
+      <text x="808" y="469" fill="#B1BAC4">historial de transiciones con causa</text>
+
+      <use href="#m-restart" x="1080" y="459" width="12" height="12" color="#58A6FF"/>
+      <text x="1098" y="469" fill="#B1BAC4">restart aislado (stop+start) · confirma + audita</text>
+    </g>
+  </g>
+
+  <!-- pie -->
+  <text x="1424" y="888" text-anchor="end" font-size="10" fill="#6E7681">
+    Mockup 36 · EP8-H7 #3960 · tokens design-system.css · sprite.svg real
+  </text>
+</svg>
