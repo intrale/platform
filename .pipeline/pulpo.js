@@ -10391,6 +10391,42 @@ function parseCommand(text) {
   return null; // Texto libre — delegar a Claude
 }
 
+// EP3-H4 (#3930) — CA-SEC-6: resolución del operador autorizado a `/rechazar`
+// entregables CUA. El chat_id NO se hardcodea en `config.yaml` (archivo público
+// del repo); la convención del proyecto mantiene los chat_ids en
+// `credentials.json` (ver config.yaml §"información pública" + telegram-secrets.js
+// + el handler #3384 en telegram-notifier.js que lee TELEGRAM_LEO_OPERATOR_CHAT_ID).
+//
+// Precedencia (todas las fuentes se mergean, deduplicadas):
+//   1. `cua.operator_chat_ids` del config.yaml — allowlist explícita opcional
+//      (queda vacía por default; sirve para sumar operadores extra sin tocar
+//      credentials.json, p.ej. un chat secundario público no sensible).
+//   2. `TELEGRAM_LEO_OPERATOR_CHAT_ID` (credential dedicada del operador, #3384).
+//   3. Fallback a `getTelegramChatId()` — el chat principal autorizado. Es el
+//      único chat que pasa el filtro `expectedChatId` del dispatcher, así que
+//      es el operador natural; sin este fallback, activar `cua.enabled` con
+//      `operator_chat_ids: []` y sin la credential dedicada dejaría `/rechazar`
+//      fail-closed (nadie autorizado).
+//
+// Devuelve siempre un array de strings deduplicado (no vacío salvo que falten
+// TODAS las fuentes, incluido el chat principal — caso degradado seguro).
+function resolveCuaOperatorChatIds(configChatIds) {
+  const ids = new Set();
+  if (Array.isArray(configChatIds)) {
+    for (const raw of configChatIds) {
+      const s = String(raw == null ? '' : raw).trim();
+      if (s) ids.add(s);
+    }
+  }
+  const envOperator = String(process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID || '').trim();
+  if (envOperator) ids.add(envOperator);
+  if (ids.size === 0) {
+    const mainChat = String(getTelegramChatId() || '').trim();
+    if (mainChat) ids.add(mainChat);
+  }
+  return Array.from(ids);
+}
+
 // #3257 — Singleton del dispatcher determinístico. Vive en module scope para
 // que audit-log + rate-limit (token bucket) persistan entre invocaciones del
 // brazo Commander. Lazy init para no leer FS hasta que llegue el primer mensaje.
@@ -10432,9 +10468,9 @@ function getCommanderDispatcher() {
     // `unauthorized_rebobinar`/`invalid_cua_command` aunque el operador
     // legítimo esté wireado en `cua.operator_chat_ids`.
     rechazarDeps: {
-      cuaOperatorChatIds: Array.isArray(_cuaCfg.operator_chat_ids)
-        ? _cuaCfg.operator_chat_ids
-        : [],
+      // EP3-H4 (#3930) — operador resuelto desde credentials.json (env), NO
+      // hardcodeado en el config.yaml público. Ver resolveCuaOperatorChatIds.
+      cuaOperatorChatIds: resolveCuaOperatorChatIds(_cuaCfg.operator_chat_ids),
       allowedCuaCommands: Array.isArray(_cuaCfg.allowed_commands)
         ? _cuaCfg.allowed_commands
         : [],
@@ -13994,6 +14030,8 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     _precheckState: () => ({ lastPrecheckResult, lastPrecheckAt, lastInfraBlockedIssues: Array.from(lastInfraBlockedIssues) }),
     _setPrecheckState: (r) => { lastPrecheckResult = r; lastPrecheckAt = Date.now(); },
     _resetPrecheckState: () => { lastPrecheckResult = null; lastPrecheckAt = 0; lastPrecheckOkStreak = 0; lastInfraBlockedIssues = new Set(); },
+    // EP3-H4 (#3930) — resolución del operador CUA desde credentials.json (env).
+    resolveCuaOperatorChatIds,
     // #2516 — cross-phase rebote: utilidades para tests.
     MAX_CROSSPHASE_REBOTES,
     getFaseGlobalOrder,
