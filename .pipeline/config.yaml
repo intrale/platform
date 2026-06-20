@@ -709,7 +709,9 @@ deliverable_notifications:
   audit_file: ".pipeline/audit/deliverable-notifications.jsonl"
   # #3539 — audio TTS opcional. Default OFF (rollout gradual). Activar con OK
   # operativo y monitorear audit JSONL para records `kind:'audio'`.
-  audio_enabled: false
+  # EP3-H4 (#3930) paso 2: rollout reanudado — audio del entregable con Edge TTS
+  # (stack gratuito EP-1). Corte en caliente sin reiniciar: kill_switch_audio: true.
+  audio_enabled: true
   kill_switch_audio: false
   audio_root: ".pipeline/audio/notifications"
   max_tts_chunks: 3
