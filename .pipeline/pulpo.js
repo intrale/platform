@@ -115,6 +115,7 @@ const commanderDocCreate = require('./lib/commander/doc-create');
 const transcriptEcho = require('./lib/commander/transcript-echo');
 const sttConfidence = require('./lib/commander/stt-confidence');
 const commanderRequestLog = require('./lib/commander/request-log'); // #3949 EP7-H2
+const commanderRequestClassify = require('./lib/commander/request-classify'); // #3951 EP7-H4
 // #3935 (EP4-H2) — Resumen incremental de la conversación: compacta turnos
 // viejos a un bloque "resumen no autoritativo" + últimos K verbatim, acotando el
 // prompt sin perder coherencia. Módulo puro; la recompactación corre en
@@ -9177,6 +9178,20 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       resolution = { provider: 'anthropic', model: null, gated: false, crossProvider: false, primaryProvider: 'anthropic', chainTried: ['anthropic'], fallbackUsed: null, handler: null, source: 'fallback-resolver-error' };
     }
 
+    // #3951 EP7-H4 — exponer la resolución efectiva al caller vía `_trace` para
+    // que el cierre del turno la correlacione (provider/crossProvider/fallback)
+    // bajo el mismo `commanderReqId`. SOLO strings/booleans (SEC-3: nunca el
+    // objeto de config de providers ni el `handler`). Se actualiza in-flight si
+    // un fallback no-Anthropic gana (ver punto de `resolve` más abajo).
+    if (_trace) {
+      _trace.resolution = {
+        provider: resolution.provider || 'anthropic',
+        crossProvider: resolution.crossProvider === true,
+        fallbackUsed: resolution.fallbackUsed != null ? String(resolution.fallbackUsed) : null,
+        primaryProvider: resolution.primaryProvider || 'anthropic',
+      };
+    }
+
     if (resolution.gated) {
       // Toda la chain está sin cuota. Canned response al usuario.
       log('commander', `🚫 Chain de fallback agotada (chain_tried=${(resolution.chainTried || []).join('->')})`);
@@ -9508,6 +9523,15 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
                 requestId: turnRequestId, // #3577 CA-S6
               });
             } catch { /* best-effort */ }
+            // #3951 EP7-H4 — un fallback no-Anthropic ganó: reflejar el provider
+            // EFECTIVO en el trace para que el cierre del turno clasifique como
+            // `fallback` con el provider correcto (anti log-forging: el provider
+            // sale del resolver, NUNCA del texto de la respuesta).
+            if (_trace && _trace.resolution) {
+              _trace.resolution.provider = res.provider;
+              _trace.resolution.crossProvider = true;
+              _trace.resolution.fallbackUsed = String(res.provider);
+            }
             return resolve(extracted.text);
           }
           // Respuesta vacía → audit + intentar el siguiente provider de la
@@ -10969,6 +10993,50 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     // el turno tira excepción antes del envío (CA-6).
     const commanderReqId = commanderRequestLog.buildRequestId(chatId, Date.now());
     const requestLog = commanderRequestLog.openRequestLog(LOG_DIR, commanderReqId);
+
+    // #3951 EP7-H4 — Vars de correlación del turno para clasificar el resultado
+    // al cierre. Viven FUERA del `try` para ser visibles también en el `finally`
+    // (early-return / excepción). Defaults = camino feliz Anthropic sin ajustes.
+    let commanderDispatch = { provider: 'anthropic', crossProvider: false, fallbackUsed: null };
+    let commanderSherlockVerdict = null;      // verdict.verdict de la 1ra verificación
+    let commanderSameProviderVerif = false;   // sherlockVerdict.sameProvider efectivo
+    let commanderDisclaimerType = null;       // disclaimer F-5/F-6 si aplicó
+    let commanderTurnHadError = false;        // hubo excepción en el bloque
+    let commanderResultPersisted = false;     // idempotencia: no clasificar 2 veces
+
+    // Clasifica + persiste el sidecar + agrega la etapa `resultado` al log. Es
+    // un closure (cierra sobre las vars de arriba + requestLog) para poder
+    // invocarlo tanto en el camino feliz como en el `catch`/`finally`. Best-effort:
+    // un fallo de clasificación NUNCA tira el turno (CA-5 / "el pipeline no muere").
+    const persistCommanderResult = (hadError) => {
+      if (commanderResultPersisted) return;
+      try {
+        const classification = commanderRequestClassify.classifyCommanderResult({
+          dispatchResolution: commanderDispatch,
+          sherlockVerdict: { verdict: commanderSherlockVerdict, sameProvider: commanderSameProviderVerif },
+          sherlockDisclaimerType: commanderDisclaimerType,
+          hadError: hadError === true || commanderTurnHadError === true,
+        });
+        // Etapa visible en el log consolidado (SEC-3: SOLO strings/booleans).
+        requestLog.stage('resultado', {
+          resultado: classification.resultado,
+          provider: classification.provider,
+          same_provider: classification.sameProviderVerification,
+          cross_provider: classification.crossProviderDispatch,
+        });
+        // Sidecar que lee el dashboard sin parsear el cuerpo del log.
+        commanderRequestLog.writeRequestMeta(LOG_DIR, commanderReqId, {
+          resultado: classification.resultado,
+          provider: classification.provider,
+          sameProviderVerification: classification.sameProviderVerification,
+          crossProviderDispatch: classification.crossProviderDispatch,
+        });
+        commanderResultPersisted = true;
+      } catch (e) {
+        try { log('commander', `#3951 clasificación de resultado falló (no bloqueante): ${e.message}`); } catch {}
+      }
+    };
+
     try {
 
     // --- EP1-H4 (#3919, CA-1) — Caso STT mixto: al menos un audio falló pero hay
@@ -11401,7 +11469,11 @@ ${commanderConversation}`;
       // tool_use_sequence + tool_results_summary + subprocess metadata. Solo
       // lo aprovechamos para audit log + clasificación cuando
       // `wantsIssueCreation` (no inflamos audit para texto libre genérico).
-      const claudeTrace = wantsIssueCreation ? {} : undefined;
+      // #3951 EP7-H4 — `claudeTrace` SIEMPRE es objeto (antes `undefined` en el
+      // path free-text) para que `ejecutarClaude` reporte la resolución efectiva
+      // de provider/fallback vía `_trace.resolution`. Para el path issue-creation
+      // ya se usaba para el trace de tool-use; ambos coexisten sin cambios.
+      const claudeTrace = {};
       // #3948 (CA-5) — transición a `pensando` al entrar al dispatch LLM.
       try { if (commanderPresence) commanderPresence.updatePhase('pensando'); } catch { /* no bloqueante */ }
       skillInvocationStartedAt = Date.now();
@@ -11411,14 +11483,27 @@ ${commanderConversation}`;
       });
       log('commander', `Claude respondió: ${(respuesta || '').length} chars`);
 
+      // #3951 EP7-H4 — Correlación: capturar el provider EFECTIVO + flags de
+      // fallback/cross-provider reales que `ejecutarClaude` resolvió (anti
+      // log-forging: salen del resolver, NUNCA del texto de la respuesta). Si el
+      // trace no trae resolución (edge), conservamos el default Anthropic.
+      if (claudeTrace && claudeTrace.resolution && typeof claudeTrace.resolution === 'object') {
+        commanderDispatch = {
+          provider: claudeTrace.resolution.provider || 'anthropic',
+          crossProvider: claudeTrace.resolution.crossProvider === true,
+          fallbackUsed: claudeTrace.resolution.fallbackUsed != null ? claudeTrace.resolution.fallbackUsed : null,
+        };
+      }
+
       // #3949 EP7-H2 — Etapa 2: dispatch/provider. SEC-3: SOLO strings
       // (intent_class + provider + modelo + resultado). NUNCA el objeto de
-      // config de providers (API keys). El free-text del Commander se resuelve
-      // siempre vía el path Anthropic (ejecutarClaude → claude CLI).
+      // config de providers (API keys). #3951: el provider ya no se hardcodea —
+      // refleja la resolución efectiva (Anthropic primario o el fallback ganador).
       requestLog.stage('dispatch', {
         intent_class: 'llm',
-        provider: 'anthropic',
-        model: 'claude-cli',
+        provider: commanderDispatch.provider,
+        cross_provider: commanderDispatch.crossProvider,
+        fallback_used: commanderDispatch.fallbackUsed || 'ninguno',
         issue_creation: !!wantsIssueCreation,
         respuesta_chars: (respuesta || '').length,
       });
@@ -11768,6 +11853,13 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
         });
         sherlockInvoked = verdict.verdict !== 'skipped';
 
+        // #3951 EP7-H4 — capturar el verdict de la 1ra verificación para la
+        // clasificación del resultado. `rechazado` ⇒ Sherlock reelaboró/ajustó
+        // (resultado `ajustada`). Las vars viven en el scope del turno (fuera del
+        // try) para sobrevivir al cierre de la IIFE.
+        commanderSherlockVerdict = verdict.verdict;
+        commanderSameProviderVerif = verdict.sameProvider === true;
+
         if (verdict.verdict === 'rechazado' && verdict.inconsistencies.length >= 1) {
           // CA-F-3 — reelaborar UNA vez (cap hardcoded en verifier).
           log('commander', `🔍 Sherlock rechazó respuesta (provider=${verdict.sherlockProvider}, transport=${verdict.transport}, same_provider=${verdict.sameProvider}, inconsistencies=${verdict.inconsistencies.length}). Reelaborando...`);
@@ -12008,7 +12100,16 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
         });
         requestLog.line(`respuesta: ${respuesta}`);
       }
+
+      // #3951 EP7-H4 — cierre del turno (camino feliz): correlacionar el
+      // disclaimer + sameProvider FINAL (refleja el último verify ganador,
+      // incluida la reelaboración) y clasificar. Respuesta vacía ⇒ `error`.
+      commanderDisclaimerType = sherlockDisclaimerType || null;
+      commanderSameProviderVerif = sherlockSameProvider === true;
+      persistCommanderResult(!respuesta || !String(respuesta).trim());
     } catch (e) {
+      // #3951 EP7-H4 — el turno tiró excepción ⇒ resultado `error`.
+      commanderTurnHadError = true;
       log('commander', `Error Claude: ${e.message}`);
       // #3250 — Si el flow venía de un intent de creación de issue (CA-5),
       // usamos copy variado por causa para no dar el genérico "Error procesando".
@@ -12057,6 +12158,12 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
     const logFile = path.join(LOG_DIR, 'commander.log');
     fs.appendFileSync(logFile, `[${new Date().toISOString()}] TEXT (${textoLibre.length} msgs consolidados)\n---\n`);
     } finally {
+      // #3951 EP7-H4 — red de seguridad: si ningún camino (envío feliz / catch)
+      // persistió el resultado (ej. early-return en un path gated), clasificamos
+      // acá con lo que se sepa antes de cerrar el log. Idempotente (no-op si ya
+      // se persistió). Va ANTES del close para que la etapa `resultado` quede en
+      // el log consolidado.
+      persistCommanderResult(commanderTurnHadError);
       // #3949 CA-6 — cierre garantizado del writer (fd) aun ante early-return o
       // excepción dentro del bloque. `close()` es async (flushea el sanitize
       // stream antes de cerrar el archivo).

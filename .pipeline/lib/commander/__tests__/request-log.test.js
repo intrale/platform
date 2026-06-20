@@ -142,3 +142,83 @@ test('openRequestLog expone path/fileName/reqId correctos', () => {
   assert.equal(rl.path, path.join(dir, `commander-${reqId}.log`));
   return rl.close();
 });
+
+// --- #3951 EP7-H4 — writeRequestMeta + metaFileName --------------------------
+
+test('metaFileName produce commander-<id>.meta.json (mismo prefijo que el .log)', () => {
+  assert.equal(mod.metaFileName('-100-1718000000000'), 'commander--100-1718000000000.meta.json');
+});
+
+test('metaFileName es filename-safe (limpia caracteres no permitidos)', () => {
+  assert.equal(mod.metaFileName('ab:cd/ef gh'), 'commander-abcdefgh.meta.json');
+  assert.match(mod.metaFileName('x:y/z'), /^commander-[a-zA-Z0-9-]+\.meta\.json$/);
+});
+
+test('writeRequestMeta persiste un sidecar con shape ACOTADO', () => {
+  const dir = tmpDir();
+  const reqId = mod.buildRequestId(-100, 1718000000010);
+  const p = mod.writeRequestMeta(dir, reqId, {
+    resultado: 'ajustada',
+    provider: 'gemini-google',
+    sameProviderVerification: true,
+    crossProviderDispatch: false,
+  });
+  assert.equal(p, path.join(dir, `commander-${reqId}.meta.json`));
+  const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+  assert.deepEqual(parsed, {
+    resultado: 'ajustada',
+    provider: 'gemini-google',
+    sameProviderVerification: true,
+    crossProviderDispatch: false,
+  });
+});
+
+test('writeRequestMeta descarta campos extra (no filtra config de providers)', () => {
+  const dir = tmpDir();
+  const reqId = mod.buildRequestId(7, 1718000000011);
+  const p = mod.writeRequestMeta(dir, reqId, {
+    resultado: 'ok',
+    provider: 'anthropic',
+    sameProviderVerification: false,
+    crossProviderDispatch: false,
+    // Campos que NUNCA deben llegar al sidecar (SEC-3):
+    providersConfig: { anthropic: { ANTHROPIC_API_KEY: 'sk-secret-xyz' } },
+    apiKey: 'sk-leak',
+  });
+  const raw = fs.readFileSync(p, 'utf8');
+  assert.ok(!raw.includes('sk-secret-xyz'), 'no debe filtrar API keys');
+  assert.ok(!raw.includes('sk-leak'), 'no debe filtrar credenciales');
+  assert.ok(!raw.includes('providersConfig'), 'no debe incluir config de providers');
+  const parsed = JSON.parse(raw);
+  assert.deepEqual(Object.keys(parsed).sort(), ['crossProviderDispatch', 'provider', 'resultado', 'sameProviderVerification']);
+});
+
+test('writeRequestMeta coacciona tipos (strings/booleans) defensivamente', () => {
+  const dir = tmpDir();
+  const reqId = mod.buildRequestId(1, 1718000000012);
+  const p = mod.writeRequestMeta(dir, reqId, {
+    resultado: 123,            // no-string → ''
+    provider: null,            // no-string → ''
+    sameProviderVerification: 'yes', // no-boolean → false
+    crossProviderDispatch: 1,  // no-boolean estricto → false
+  });
+  const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+  assert.equal(parsed.resultado, '');
+  assert.equal(parsed.provider, '');
+  assert.equal(parsed.sameProviderVerification, false);
+  assert.equal(parsed.crossProviderDispatch, false);
+});
+
+test('writeRequestMeta es best-effort: dir inexistente → null sin tirar', () => {
+  const p = mod.writeRequestMeta(path.join(os.tmpdir(), 'no', 'existe', 'dir', 'xyz123'), 'abc-1', { resultado: 'ok' });
+  assert.equal(p, null);
+});
+
+test('writeRequestMeta es idempotente (sobreescribe)', () => {
+  const dir = tmpDir();
+  const reqId = mod.buildRequestId(2, 1718000000013);
+  mod.writeRequestMeta(dir, reqId, { resultado: 'ok', provider: 'anthropic' });
+  const p = mod.writeRequestMeta(dir, reqId, { resultado: 'error', provider: 'anthropic' });
+  const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+  assert.equal(parsed.resultado, 'error');
+});
