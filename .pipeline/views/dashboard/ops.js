@@ -330,14 +330,14 @@ ${renderBannerSsr(tgHealth)}
 
 <section class="in-section" aria-labelledby="ops-topo-h">
   <h2 id="ops-topo-h" class="in-section-title"><span class="in-section-title-icon" aria-hidden="true">🛰</span>Topología de servicios</h2>
-  <div id="ops-topo-wrap" aria-label="Topología jerárquica de procesos del pipeline">${renderTopologySsr(state.procesos, { tgDown })}</div>
+  <div id="ops-procesos" aria-label="Topología jerárquica de procesos del pipeline">${renderTopologySsr(state.procesos, { tgDown })}</div>
 </section>
 
 <section class="in-section" aria-labelledby="ops-recon-h">
   <h2 id="ops-recon-h" class="in-section-title"><span class="in-section-title-icon" aria-hidden="true">⏳</span>Reconciler · órdenes descartadas (stale)</h2>
   <div class="ops-recon" id="ops-recon">
     <div class="ops-recon-top">
-      <div class="ops-recon-count" id="ops-recon-count"
+      <div class="ops-recon-count" id="stale-orders-count"
            title="Órdenes que el reconciler descartó en las últimas 24 horas"
            aria-label="total de órdenes descartadas en 24 horas">…</div>
       <div class="ops-recon-caption">últimas 24h</div>
@@ -350,7 +350,7 @@ ${renderBannerSsr(tgHealth)}
   </div>
 </section>
 
-<section class="in-section" aria-labelledby="ops-qa-h">
+<section class="in-section" id="ops-qaenv" aria-labelledby="ops-qa-h">
   <h2 id="ops-qa-h" class="in-section-title"><span class="in-section-title-icon" aria-hidden="true">📡</span>QA Environment</h2>
   <div id="ops-qa-pills" class="ops-qa-pills" aria-label="Salud de entornos QA y Telegram">${renderQaPillsSsr(state)}</div>
   <div class="ops-qa-note">La alerta de un entorno caído también vive en la bandeja del Home con su "desde cuándo" y último error completo (misma fuente de verdad).</div>
@@ -571,7 +571,7 @@ function reasonKind(reason){
 async function tickReconciler(){
     const d = await fetchJson('/api/dash/reconciler-stale-orders');
     if(!d) return;
-    const countEl = document.getElementById('ops-recon-count');
+    const countEl = document.getElementById('stale-orders-count');
     const barsEl = document.getElementById('ops-recon-bars');
     if(!countEl || !barsEl) return;
     const total = Number(d.total_24h) || 0;
