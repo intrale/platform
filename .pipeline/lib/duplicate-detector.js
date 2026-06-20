@@ -115,15 +115,18 @@ function jaccard(a, b) {
  * @param {object} [opts]
  * @param {number} [opts.limit=50]
  * @param {string} [opts.ghPath] — path al binario gh.
+ * @param {function} [opts._exec] — runner inyectable (tests). Default: execSync
+ *   real. Permite verificar el cache sin spawnear un subproceso (determinístico
+ *   y robusto bajo carga del suite completo — rebote #4109).
  * @returns {Array<{number: number, title: string}>}
  */
-function fetchOpenIssues({ limit = 50, ghPath = 'gh' } = {}) {
+function fetchOpenIssues({ limit = 50, ghPath = 'gh', _exec = execSync } = {}) {
     const now = Date.now();
     if (cache.issues && (now - cache.fetchedAt) < CACHE_TTL_MS) {
         return cache.issues;
     }
     try {
-        const out = execSync(
+        const out = _exec(
             `${ghPath} issue list --state open --limit ${limit} --json number,title`,
             { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000 }
         );
