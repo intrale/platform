@@ -27,6 +27,16 @@ const fs = require('fs');
 // Enum cerrado de resultado. Congelado para que no se mute en runtime.
 const RESULTADOS = Object.freeze(['ok', 'ajustada', 'fallback', 'error']);
 
+// #3951 rebote — verdicts de Sherlock que representan una verificación EFECTIVA:
+// Sherlock CORRIÓ y emitió un veredicto comparando el análisis contra el estado
+// real (mismo criterio que `sherlockInvoked = verdict.verdict !== 'skipped'` en
+// `pulpo.js`). Sólo en estos casos el flag `sameProvider` tiene sentido. Un
+// `skipped` (config OFF / provider no disponible) o la AUSENCIA de verdict
+// (Sherlock no invocado) significan "no hubo verificación" ⇒ el clasificador
+// emite `sameProviderVerification: null` (tri-estado) para que el render NO
+// invente un estado cross/same-provider (CA-3 / guideline UX).
+const VERIFIED_VERDICTS = Object.freeze(['ok', 'rechazado', 'aborted']);
+
 // Valor de coerción cuando el provider no matchea la allowlist de
 // `agent-models.json` (anti log-forging). NO es un provider real.
 const PROVIDER_DESCONOCIDO = 'desconocido';
@@ -118,8 +128,15 @@ function validateProvider(provider, opts) {
  *   provider: string,
  *   fallbackUsed: boolean,
  *   crossProviderDispatch: boolean,
- *   sameProviderVerification: boolean,
+ *   sameProviderVerification: boolean|null,
  * }}
+ *
+ * `sameProviderVerification` es TRI-ESTADO:
+ *   - `true`  ← hubo verificación efectiva (verdict ∈ {ok,rechazado,aborted}) y el
+ *               verificador usó el MISMO proveedor (`sameProvider === true`).
+ *   - `false` ← hubo verificación efectiva pero con OTRO proveedor (cross).
+ *   - `null`  ← NO hubo verificación efectiva (verdict `skipped` / Sherlock no
+ *               invocado). El render NO debe emitir chip cross/same (CA-3).
  */
 function classifyCommanderResult(args) {
   const {
@@ -137,6 +154,14 @@ function classifyCommanderResult(args) {
   // patrón laxo para no acoplar el clasificador puro a esas constantes.
   const isErrorDisclaimer = !!sherlockDisclaimerType
     && /timeout|no.?provider|persistent|persistente|sin.?provider/i.test(String(sherlockDisclaimerType));
+
+  // ¿Hubo verificación efectiva de Sherlock? Sólo entonces `sameProvider` aplica.
+  // En otro caso el flag queda `null` (no inventar estado — CA-3 / guideline UX).
+  const sherlockVerificationHappened = !!(
+    sherlockVerdict
+    && typeof sherlockVerdict.verdict === 'string'
+    && VERIFIED_VERDICTS.includes(sherlockVerdict.verdict)
+  );
 
   let resultado;
   if (hadError === true || emptyResponse === true || isErrorDisclaimer) {
@@ -157,7 +182,9 @@ function classifyCommanderResult(args) {
     provider: validateProvider(dispatchResolution && dispatchResolution.provider, _providerOpts),
     fallbackUsed: !!(dispatchResolution && dispatchResolution.fallbackUsed != null),
     crossProviderDispatch: !!(dispatchResolution && dispatchResolution.crossProvider === true),
-    sameProviderVerification: !!(sherlockVerdict && sherlockVerdict.sameProvider === true),
+    sameProviderVerification: sherlockVerificationHappened
+      ? (sherlockVerdict.sameProvider === true)
+      : null,
   };
 }
 
@@ -166,5 +193,6 @@ module.exports = {
   validateProvider,
   resolveDeclaredProviders,
   RESULTADOS,
+  VERIFIED_VERDICTS,
   PROVIDER_DESCONOCIDO,
 };

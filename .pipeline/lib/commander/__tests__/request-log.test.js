@@ -199,14 +199,38 @@ test('writeRequestMeta coacciona tipos (strings/booleans) defensivamente', () =>
   const p = mod.writeRequestMeta(dir, reqId, {
     resultado: 123,            // no-string → ''
     provider: null,            // no-string → ''
-    sameProviderVerification: 'yes', // no-boolean → false
+    sameProviderVerification: 'yes', // no-boolean → OMITIDO (tri-estado, #3951)
     crossProviderDispatch: 1,  // no-boolean estricto → false
   });
   const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
   assert.equal(parsed.resultado, '');
   assert.equal(parsed.provider, '');
-  assert.equal(parsed.sameProviderVerification, false);
+  // #3951 rebote — un valor no-boolean NO se persiste (no es ni same ni cross):
+  // el campo se omite para que el render no invente chip de verificación.
+  assert.ok(!('sameProviderVerification' in parsed), 'no-boolean ⇒ campo omitido');
   assert.equal(parsed.crossProviderDispatch, false);
+});
+
+test('writeRequestMeta persiste sameProviderVerification:false (cross) como boolean', () => {
+  // false NO debe omitirse: es un estado real (verificación cross-provider).
+  const dir = tmpDir();
+  const reqId = mod.buildRequestId(8, 1718000000014);
+  const p = mod.writeRequestMeta(dir, reqId, {
+    resultado: 'ok', provider: 'anthropic', sameProviderVerification: false, crossProviderDispatch: false,
+  });
+  const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+  assert.ok('sameProviderVerification' in parsed, 'false es un estado real, debe persistir');
+  assert.equal(parsed.sameProviderVerification, false);
+});
+
+test('writeRequestMeta OMITE sameProviderVerification cuando es null (sin verificación, #3951)', () => {
+  const dir = tmpDir();
+  const reqId = mod.buildRequestId(9, 1718000000015);
+  const p = mod.writeRequestMeta(dir, reqId, {
+    resultado: 'ok', provider: 'anthropic', sameProviderVerification: null, crossProviderDispatch: false,
+  });
+  const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+  assert.ok(!('sameProviderVerification' in parsed), 'null ⇒ campo ausente en el sidecar');
 });
 
 test('writeRequestMeta es best-effort: dir inexistente → null sin tirar', () => {

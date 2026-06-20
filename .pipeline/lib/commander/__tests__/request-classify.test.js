@@ -136,14 +136,37 @@ test('deterministic NO es un provider válido para el Historial', () => {
   assert.equal(r.provider, PROVIDER_DESCONOCIDO);
 });
 
-// --- T-7 sameProviderVerification ---------------------------------------------
-test('sameProviderVerification refleja verdict.sameProvider === true', () => {
+// --- T-7 sameProviderVerification (TRI-ESTADO, #3951 rebote) -------------------
+test('sameProviderVerification refleja verdict.sameProvider cuando hubo verificación', () => {
   const yes = classifyCommanderResult({ sherlockVerdict: { verdict: 'ok', sameProvider: true }, dispatchResolution: { provider: 'anthropic' } });
   assert.equal(yes.sameProviderVerification, true);
   const no = classifyCommanderResult({ sherlockVerdict: { verdict: 'ok', sameProvider: false }, dispatchResolution: { provider: 'anthropic' } });
   assert.equal(no.sameProviderVerification, false);
+  // verdict efectivo (ok) pero sin flag sameProvider → cross (false), no null.
   const missing = classifyCommanderResult({ sherlockVerdict: { verdict: 'ok' }, dispatchResolution: { provider: 'anthropic' } });
   assert.equal(missing.sameProviderVerification, false);
+});
+
+test('sameProviderVerification es NULL cuando NO hubo verificación efectiva de Sherlock', () => {
+  // verdict 'skipped' (config OFF / provider no disponible): NO hubo verificación.
+  // Aunque venga sameProvider:false, el clasificador NO debe emitir boolean — si
+  // lo hiciera, el render pintaría "cross-provider" inventando estado (el defecto
+  // que motivó el rebote). Debe ser null para que el sidecar OMITA el campo.
+  const skipped = classifyCommanderResult({ sherlockVerdict: { verdict: 'skipped', sameProvider: false }, dispatchResolution: { provider: 'anthropic' } });
+  assert.equal(skipped.sameProviderVerification, null);
+  // Sherlock no invocado (verdict ausente) → null.
+  const noVerdict = classifyCommanderResult({ dispatchResolution: { provider: 'anthropic' } });
+  assert.equal(noVerdict.sameProviderVerification, null);
+  // verdict no-string (input corrupto) → null.
+  const garbage = classifyCommanderResult({ sherlockVerdict: { verdict: 42, sameProvider: true }, dispatchResolution: { provider: 'anthropic' } });
+  assert.equal(garbage.sameProviderVerification, null);
+});
+
+test('sameProviderVerification es boolean para verdict aborted (hubo verificación, aunque degradada)', () => {
+  // `aborted` cuenta como "Sherlock corrió" (mismo criterio que sherlockInvoked en
+  // pulpo): emite boolean, NO null.
+  const aborted = classifyCommanderResult({ sherlockVerdict: { verdict: 'aborted', sameProvider: false }, dispatchResolution: { provider: 'anthropic' } });
+  assert.equal(aborted.sameProviderVerification, false);
 });
 
 // --- T-8 robustez -------------------------------------------------------------
@@ -154,7 +177,8 @@ test('input vacío / undefined no tira y devuelve shape completo', () => {
     assert.equal(r.provider, PROVIDER_DESCONOCIDO);
     assert.equal(typeof r.fallbackUsed, 'boolean');
     assert.equal(typeof r.crossProviderDispatch, 'boolean');
-    assert.equal(typeof r.sameProviderVerification, 'boolean');
+    // TRI-ESTADO: sin verdict de Sherlock no hubo verificación ⇒ null (no boolean).
+    assert.equal(r.sameProviderVerification, null);
   }
 });
 

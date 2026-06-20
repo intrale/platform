@@ -150,8 +150,12 @@ function metaFileName(reqId) {
  *
  * SEC: el shape se acota explícitamente a un subconjunto de campos del enum
  * clasificado. NO se serializa el objeto recibido tal cual — se reconstruye un
- * objeto plano con sólo los 4 campos esperados, coaccionados a string/boolean.
+ * objeto plano con sólo los campos esperados, coaccionados a string/boolean.
  * Así un caller equivocado no puede filtrar config de providers ni secretos.
+ *
+ * `sameProviderVerification` es TRI-ESTADO: se persiste SÓLO si es un boolean
+ * real; `null`/ausente (no hubo verificación efectiva de Sherlock) ⇒ el campo
+ * se OMITE para que el render no emita chip cross/same (CA-3).
  *
  * @param {string} logDir  directorio de logs (ej. `.pipeline/logs`).
  * @param {string} reqId   id ya construido con `buildRequestId`.
@@ -164,9 +168,18 @@ function writeRequestMeta(logDir, reqId, meta) {
     const safe = {
       resultado: typeof m.resultado === 'string' ? m.resultado : '',
       provider: typeof m.provider === 'string' ? m.provider : '',
-      sameProviderVerification: m.sameProviderVerification === true,
       crossProviderDispatch: m.crossProviderDispatch === true,
     };
+    // #3951 rebote — TRI-ESTADO de la verificación de Sherlock. SÓLO se persiste
+    // `sameProviderVerification` cuando es un boolean real (hubo verificación
+    // efectiva: same=true / cross=false). Si llega `null`/ausente/no-boolean
+    // (no hubo verificación), el campo se OMITE del sidecar para que el render
+    // (`result-badge.js`) caiga en su camino "sin chip" y no invente un estado
+    // cross/same-provider (CA-3 / guideline UX). Coaccionar a `false` —como hacía
+    // antes— pintaba "cross-provider" en peticiones sin verificación (el defecto).
+    if (typeof m.sameProviderVerification === 'boolean') {
+      safe.sameProviderVerification = m.sameProviderVerification;
+    }
     const filePath = path.join(logDir, metaFileName(reqId));
     fs.writeFileSync(filePath, JSON.stringify(safe), 'utf8');
     return filePath;
