@@ -612,6 +612,14 @@ sherlock_enabled: true
 # (NO-OP por CA-SEC-7). Input malformado cae al default 40000 (clamp fail-safe).
 sherlock_provider_budget_ms: 40000
 sherlock_max_reelaboraciones: 1
+# Modelo optimista de Sherlock (#4105, EP2-H5b). DEFAULT OFF (rollout gradual):
+# con `sherlock_optimistic_enabled: true`, al agotar el techo de espera percibida
+# (`sherlock_optimistic_ceiling_ms`, ≤90 s) se libera la respuesta YA con el
+# disclaimer F-7 ("pendiente") en vez del F-6 terminal, y la verificación sigue
+# en background. Con el flag en false/ausente el comportamiento es idéntico al
+# histórico (cutoff generoso + F-6). El techo se clampea a 90 s (CA-3/CA-10).
+sherlock_optimistic_enabled: false
+sherlock_optimistic_ceiling_ms: 90000
 
 # =============================================================================
 # Agrupamiento de bursts de notificaciones Telegram (#3668)

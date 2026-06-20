@@ -206,6 +206,37 @@ function readReceiptFile(filePath) {
 }
 
 /**
+ * resolveMessageId — #4105 (EP2-H5b · CA-6). Resuelve el `message_id` real de
+ * entrega dado un `correlationId`, leyendo el bus de recibos. El `message_id` es
+ * la ÚNICA prueba de entrega (R1 #4082): solo un recibo `enviado` válido con
+ * `messageIds` no vacío resuelve. Nunca deriva el id del nombre de archivo.
+ *
+ * Propiedades (necesarias para la corrección async idempotente del modelo
+ * optimista):
+ *  - **Idempotente:** dado el mismo `correlationId` devuelve siempre el mismo id
+ *    (el primero del array `messageIds`); no muta estado.
+ *  - **Fail-closed:** recibo ausente / malformado / forjado / `fallido` /
+ *    `correlationId` inválido → `null` (cuarentena). Reusa `parseReceipt` (R2).
+ *  - **Out-of-order safe:** lee el recibo por nombre `<correlationId>.json`; si
+ *    aún no llegó, devuelve `null` y el caller reintenta cuando el recibo exista.
+ *
+ * @param {string} recibosDir directorio del bus de recibos
+ * @param {string} correlationId id de correlación del saliente
+ * @returns {number|null} message_id de entrega, o `null` si aún no hay prueba
+ */
+function resolveMessageId(recibosDir, correlationId) {
+  if (!isValidCorrelationId(correlationId)) return null;
+  if (typeof recibosDir !== 'string' || recibosDir.length === 0) return null;
+  const filePath = path.join(recibosDir, `${correlationId}.json`);
+  const receipt = readReceiptFile(filePath); // fail-closed (R2)
+  if (!receipt) return null;
+  if (receipt.status !== STATUS_ENVIADO) return null; // solo entrega probada
+  if (receipt.correlationId !== correlationId) return null; // sanity vs forja
+  if (!isValidMessageIds(receipt.messageIds, { requireNonEmpty: true })) return null;
+  return receipt.messageIds[0];
+}
+
+/**
  * archiveReceipt — mueve un recibo consumido a `recibos/archivado/`. Best-effort:
  * si no se puede mover (otro proceso lo tomó), devuelve false sin lanzar.
  */
@@ -234,5 +265,6 @@ module.exports = {
   writeReceipt,
   listReceiptFiles,
   readReceiptFile,
+  resolveMessageId,
   archiveReceipt,
 };

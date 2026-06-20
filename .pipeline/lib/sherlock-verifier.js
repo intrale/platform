@@ -215,6 +215,26 @@ const DISCLAIMER_F6_VERIFICATION_FAILED = (
     'ℹ️ No pude verificar esta respuesta; te muestro la original.'
 );
 
+// CA-11 (#4105 · EP2-H5b) — disclaimer F-7 del ENVÍO OPTIMISTA. Cuando se agota
+// el presupuesto de verificación (#4104), se libera la respuesta YA con este
+// aviso de estado "pendiente" y la verificación sigue en background. NO reusa
+// F-6 (que es el caso terminal "no pude verificar"): F-7 promete una corrección
+// activa si algo no cuadra. Arranca con `\n\n` para componer aditivamente.
+// Guidelines UX (#4105 CA-11): voseo, primera persona, empático, sin jerga.
+const DISCLAIMER_F7_PENDING_VERIFICATION = (
+    '\n\n' +
+    '⏳ Te respondo ya así no esperás; estoy terminando de chequear los datos y, ' +
+    'si algo no cuadra, te lo corrijo acá mismo.'
+);
+
+// CA-5/CA-11 (#4105) — follow-up de corrección para el canal de VOZ. Un voice
+// note no es editable, así que la corrección llega como mensaje de texto nuevo
+// (camino principal del canal de voz). El caller concatena el detalle concreto
+// después de este prefijo. NO reusa F-5 (que es para EDICIÓN de texto).
+const CORRECTION_FOLLOWUP_VOICE = (
+    '🔍 Revisé lo que te respondí recién y necesito corregir algo: '
+);
+
 // CA-2 (#3921) — disclaimer same-provider. Aviso fail-loud al operador cuando la
 // verificación se hizo con el MISMO motor que generó la respuesta (adversariality
 // degradada; solo ocurre en el último recurso, con la chain alternativa agotada).
@@ -232,6 +252,8 @@ const DISCLAIMER_TYPES = Object.freeze({
     TIMEOUT_OR_NO_PROVIDER: 'timeout',
     PERSISTENT_INCONSISTENCY: 'rechazado-persistente',
     SAME_PROVIDER:          'same-provider',
+    // #4105 (EP2-H5b) — estado "pendiente" del envío optimista (F-7, CA-11).
+    PENDING_VERIFICATION:   'pending-verification',
 });
 
 // -----------------------------------------------------------------------------
@@ -2077,6 +2099,10 @@ function applyDisclaimer(text, disclaimerType) {
     if (disclaimerType === DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER) {
         return String(text || '') + DISCLAIMER_F6_VERIFICATION_FAILED;
     }
+    // #4105 (EP2-H5b · CA-11) — envío optimista: estado "pendiente" (F-7).
+    if (disclaimerType === DISCLAIMER_TYPES.PENDING_VERIFICATION) {
+        return String(text || '') + DISCLAIMER_F7_PENDING_VERIFICATION;
+    }
     // CA-2 (#3921) — same-provider es ADITIVO: el caller lo aplica encadenado
     // sobre el primario (ej. applyDisclaimer(applyDisclaimer(t, F5), SAME_PROVIDER))
     // y el texto arranca con `\n\n`, así que queda debajo sin pisar el primario.
@@ -2182,6 +2208,9 @@ module.exports = {
     HTTP_COMPATIBLE_PROVIDERS: HTTP_COMPLETION_PROVIDERS,
     DISCLAIMER_F5_PERSISTENT_INCONSISTENCY,
     DISCLAIMER_F6_VERIFICATION_FAILED,
+    // #4105 (EP2-H5b) — F-7 envío optimista + follow-up de corrección de voz.
+    DISCLAIMER_F7_PENDING_VERIFICATION,
+    CORRECTION_FOLLOWUP_VOICE,
     DISCLAIMER_TYPES,
 
     // exports para tests

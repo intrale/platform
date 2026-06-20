@@ -189,6 +189,26 @@ async function telegramSend(method, params) {
   }
 }
 
+/**
+ * editMessageText — #4105 (EP2-H5b · CA-5/CA-8). Edita el texto de un mensaje ya
+ * enviado (corrección del modelo optimista para el canal de TEXTO). Despacha vía
+ * `telegramSend('editMessageText', …)`, mismo patrón que `sendMessage` (L511/658):
+ * `telegramSend` ya inyecta `chat_id`, así que el caller solo aporta el
+ * `message_id` (resuelto del bus de recibos), el nuevo `text` y `extra` opcional
+ * (p.ej. `parse_mode`). Devuelve el body crudo del API (`{ ok, result }`).
+ *
+ * Voz: un voice note NO es editable — su corrección es un follow-up de texto
+ * (no usa esta función). Ver `decideCorrection` en `lib/sherlock-optimistic.js`.
+ */
+async function editMessageText(chatId, messageId, text, extra = {}) {
+  return telegramSend('editMessageText', {
+    chat_id: chatId,
+    message_id: messageId,
+    text,
+    ...extra,
+  });
+}
+
 /** Enviar documento/foto/video/animation via multipart form-data usando http-client seguro.
  *
  * #3540 (CA-UX-EXT-3): el caller puede pasar `extra.filename` para sobreescribir
@@ -704,6 +724,8 @@ module.exports = {
   isRetryDeferred,
   assertDelivered,
   writeSentReceiptIfAny,
+  // #4105 (EP2-H5b) — edición de texto para la corrección del modelo optimista.
+  editMessageText,
   RECIBOS,
 };
 

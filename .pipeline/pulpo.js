@@ -94,6 +94,12 @@ const inflightFallback = require('./lib/commander/inflight-fallback');
 // con un provider distinto al del Commander. Bypass total si
 // config.yaml.sherlock_enabled=false. Ver lib/sherlock-verifier.js.
 const sherlockVerifier = require('./lib/sherlock-verifier');
+// #4105 (EP2-H5b) — modelo optimista de Sherlock: registry de tareas background
+// con cap+timeout, decisión de corrección por canal y fail-closed del verdict.
+// Módulo puro y testeable; pulpo.js solo lo orquesta. Gated por config (default
+// OFF, rollout gradual): si `sherlock_optimistic_enabled` no está en true, el
+// camino optimista no se activa y el comportamiento es idéntico al actual.
+const sherlockOptimistic = require('./lib/sherlock-optimistic');
 // #3343 — Sherlock necesita generar `turnId` para correlación cross-event
 // del audit log (sherlock_verification ↔ commander_response). Usamos
 // crypto.randomBytes(8) → 16 hex; bastante para forenses cruzados.
@@ -11773,6 +11779,38 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
         return 420_000; // 7 min — supera 2×180s (verify) + reelaboración Claude.
       })();
 
+      // #4105 (EP2-H5b · CA-3) — modelo optimista: techo de espera percibida
+      // ≤90 s. Cuando está habilitado (`sherlock_optimistic_enabled` en
+      // config.yaml, default OFF para rollout gradual), si la verificación no
+      // resolvió dentro de este techo se libera la respuesta YA con el disclaimer
+      // F-7 ("pendiente") en vez del F-6 terminal, y la verificación sigue en
+      // background (registry con cap + timeout duro). El techo se clampea a 90 s
+      // (acota el timeout duro de limpieza de zombis del registry — CA-3/CA-10).
+      const sherlockOptimisticEnabled = (() => {
+        try {
+          const cfg = loadConfig();
+          return cfg && cfg.sherlock_optimistic_enabled === true;
+        } catch { return false; }
+      })();
+      const SHERLOCK_OPTIMISTIC_CEILING_MS = (() => {
+        try {
+          const cfg = loadConfig();
+          const v = cfg && cfg.sherlock_optimistic_ceiling_ms;
+          if (Number.isFinite(v) && v >= 1_000) {
+            return Math.min(v, sherlockOptimistic.HARD_TIMEOUT_MAX_MS);
+          }
+        } catch { /* fallback al default */ }
+        return sherlockOptimistic.DEFAULT_HARD_TIMEOUT_MS; // 90 s
+      })();
+      // Registry de verificación background (cap de concurrencia + limpieza de
+      // zombis ≤90 s). Solo se instancia si el modo optimista está habilitado.
+      const sherlockBgRegistry = sherlockOptimisticEnabled
+        ? sherlockOptimistic.createBackgroundRegistry({
+            cap: 16,
+            hardTimeoutMs: SHERLOCK_OPTIMISTIC_CEILING_MS,
+          })
+        : null;
+
       const sherlockBlock = (async () => {
         // #3948 (CA-5) — transición a `verificando` al invocar Sherlock (sólo
         // camino LLM; el determinístico nunca llega acá).
@@ -11945,12 +11983,19 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
 
       try {
         startTypingLoop();
+        // #4105 (CA-3) — con modo optimista, el techo de espera percibida baja a
+        // ≤90 s; sin él, se conserva el cutoff generoso histórico (420 s). El
+        // disclaimer lo decide igual el verdict (ver `sherlockResolved`): el
+        // reloj solo libera el chat, nunca pisa un OK real.
+        const sherlockReleaseMs = sherlockOptimisticEnabled
+          ? SHERLOCK_OPTIMISTIC_CEILING_MS
+          : SHERLOCK_SOFT_TIMEOUT_MS;
         await Promise.race([
           sherlockBlock,
           new Promise((resolve) => setTimeout(() => {
             sherlockSoftTimedOut = true;
             resolve();
-          }, SHERLOCK_SOFT_TIMEOUT_MS)),
+          }, sherlockReleaseMs)),
         ]);
       } catch (sherlockErr) {
         // Defensa: un fallo de Sherlock NUNCA debe tirar el turno. Degradamos
@@ -11962,19 +12007,56 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
       }
 
       if (shouldEmitSoftTimeoutDisclaimer(sherlockSoftTimedOut, sherlockResolved)) {
-        // CA-UX-2 — soft-timeout del turn handler, SOLO cuando Sherlock no
-        // alcanzó un verdict (cuelgue genuino). Avisamos al usuario sin jerga
-        // técnica y degradamos a F-6. La respuesta original se envía igual
-        // debajo. El audit post-turn registra el outcome para telemetría.
-        log('commander', `⏱️ Sherlock soft-timeout ${SHERLOCK_SOFT_TIMEOUT_MS}ms disparó SIN verdict — liberando chat con mensaje UX-2`);
-        try {
-          sendTelegramPlain(
-            'Esta respuesta me está tomando más tiempo de lo normal. ' +
-            'Te muestro la versión sin verificar — si querés, podemos ' +
-            'revisarla juntos cuando me confirmes.'
-          );
-        } catch { /* best-effort */ }
-        sherlockDisclaimerType = sherlockVerifier.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER;
+        if (sherlockOptimisticEnabled) {
+          // #4105 (CA-3/CA-4/CA-11) — ENVÍO OPTIMISTA: en vez del F-6 terminal,
+          // liberamos la respuesta YA con el disclaimer F-7 ("pendiente") y la
+          // verificación SIGUE en background (la promesa `sherlockBlock` no se
+          // cancela: cuando resuelva, su verdict queda disponible para corregir).
+          // Registramos la tarea background (cap + timeout duro ≤90 s) y auditamos
+          // el envío optimista (CA-12). Todo guardado fail-safe: ante cualquier
+          // excepción degradamos al F-6 histórico (nunca tiramos el turno).
+          try {
+            const channel = esAudio
+              ? sherlockOptimistic.CHANNEL_VOICE
+              : sherlockOptimistic.CHANNEL_TEXT;
+            if (sherlockBgRegistry) {
+              sherlockBgRegistry.enqueueCorrection({
+                verificationId: turnId,
+                correlationId: turnId,
+                channel,
+              });
+            }
+            try {
+              commanderMP.auditCommanderRequest({
+                pipelineDir: PIPELINE,
+                event: sherlockOptimistic.AUDIT_OPTIMISTIC_SEND,
+                providerEffective: 'anthropic',
+                chatId,
+                prompt: '',
+                requestId: turnId,
+              });
+            } catch { /* audit best-effort (SEC-6) */ }
+            log('commander', `⏱️ Sherlock optimista: techo ${SHERLOCK_OPTIMISTIC_CEILING_MS}ms — libero con F-7 (pendiente), verificación sigue en background [canal=${channel}]`);
+            sherlockDisclaimerType = sherlockVerifier.DISCLAIMER_TYPES.PENDING_VERIFICATION;
+          } catch (optErr) {
+            log('commander', `⚠️ Sherlock optimista falló (${optErr && optErr.message}) — degradando a F-6 histórico`);
+            sherlockDisclaimerType = sherlockVerifier.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER;
+          }
+        } else {
+          // CA-UX-2 — soft-timeout del turn handler, SOLO cuando Sherlock no
+          // alcanzó un verdict (cuelgue genuino). Avisamos al usuario sin jerga
+          // técnica y degradamos a F-6. La respuesta original se envía igual
+          // debajo. El audit post-turn registra el outcome para telemetría.
+          log('commander', `⏱️ Sherlock soft-timeout ${SHERLOCK_SOFT_TIMEOUT_MS}ms disparó SIN verdict — liberando chat con mensaje UX-2`);
+          try {
+            sendTelegramPlain(
+              'Esta respuesta me está tomando más tiempo de lo normal. ' +
+              'Te muestro la versión sin verificar — si querés, podemos ' +
+              'revisarla juntos cuando me confirmes.'
+            );
+          } catch { /* best-effort */ }
+          sherlockDisclaimerType = sherlockVerifier.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER;
+        }
       } else if (sherlockSoftTimedOut && sherlockResolved) {
         // MP-01: el reloj ganó la carrera por microsegundos pero el bloque YA
         // había resuelto. Honramos el verdict real (que ya seteó o no el
