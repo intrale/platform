@@ -299,6 +299,11 @@ async function main() {
                     '\\.pipeline\\/.*\\.heartbeat',
                     '\\.pipeline\\/logs\\/.*',
                     '\\.pipeline\\/locks\\/.*',
+                    // #3922: los `.ready` son estado de runtime (pid/puerto/timestamps)
+                    // que el pipeline reescribe en cada arranque de servicio. Si se
+                    // commitean, el rebase de delivery choca contra la versión de main
+                    // y rebota al agente por un conflicto puramente cosmético.
+                    '\\.pipeline\\/ready\\/.*',
                     '\\.pipeline\\/audit\\/.*',
                     '\\.pipeline\\/audio\\/.*',
                     '\\.pipeline\\/archivado\\/.*',

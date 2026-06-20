@@ -240,6 +240,7 @@ const SAFE_IGNORE_2551 = new RegExp(
         '\\.pipeline\\/.*\\.heartbeat',
         '\\.pipeline\\/logs\\/.*',
         '\\.pipeline\\/locks\\/.*',
+        '\\.pipeline\\/ready\\/.*',
         '\\.pipeline\\/audit\\/.*',
         '\\.pipeline\\/audio\\/.*',
         '\\.pipeline\\/archivado\\/.*',
@@ -260,6 +261,14 @@ test('#2551 CA-3 — SAFE_IGNORE captura .pipeline/logs/* y .pipeline/locks/*', 
     assert.equal(SAFE_IGNORE_2551.test('.pipeline/logs/2551-delivery.log'), true);
     assert.equal(SAFE_IGNORE_2551.test('.pipeline/logs/foo/bar.txt'), true);
     assert.equal(SAFE_IGNORE_2551.test('.pipeline/locks/delivery-2551.lock'), true);
+});
+
+test('#3922 — SAFE_IGNORE captura .pipeline/ready/*.ready (estado de runtime)', () => {
+    // Causa raíz del rebote de #3922: delivery commiteó dashboard.ready (pid/puerto/
+    // timestamps que el pipeline reescribe en cada arranque) y el rebase chocó contra main.
+    assert.equal(SAFE_IGNORE_2551.test('.pipeline/ready/dashboard.ready'), true);
+    assert.equal(SAFE_IGNORE_2551.test('.pipeline/ready/pulpo.ready'), true);
+    assert.equal(SAFE_IGNORE_2551.test('.pipeline/ready/svc-telegram.ready'), true);
 });
 
 test('#2551 CA-3 — SAFE_IGNORE captura qa/evidence/*', () => {
