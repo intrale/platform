@@ -1543,10 +1543,14 @@ function showToast(msg, ok){
     t._timeout = setTimeout(() => { t.style.opacity = '0'; }, 3500);
 }
 
-async function killAgent(issue, skill, pipeline, fase){
-    if(!(await inConfirm({ title:'Cancelar agente', message:'Se cancelará el agente en curso. Esta acción no se puede deshacer.', confirmLabel:'Cancelar agente', preview:[{label:'Skill', value:skill},{label:'Issue', value:'#'+issue}] }))) return;
+async function killAgent(issue, skill, pipeline, fase, durationMs){
+    // CA-2 — preview con Skill · Issue · Fase · Tiempo invertido antes de matar.
+    const preview = [{label:'Skill', value:skill},{label:'Issue', value:'#'+issue}];
+    if(fase) preview.push({label:'Fase', value:fase});
+    if(durationMs != null) preview.push({label:'Tiempo invertido', value:fmtDur(durationMs)});
+    if(!(await inConfirm({ title:'Cancelar agente', message:'Se cancelará el agente en curso. Esta acción no se puede deshacer.', confirmLabel:'Cancelar agente', preview:preview }))) return;
     try{
-        const r = await fetch('/api/kill-agent', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({issue, skill, pipeline, fase})});
+        const r = await killAgentPost({issue, skill, pipeline, fase});
         const j = await r.json();
         showToast(j.msg || (j.ok?'Agente cancelado':'Falló'), j.ok);
         setTimeout(() => tickActive().catch(()=>{}), 600);
@@ -2297,7 +2301,7 @@ async function tickActive(){
                 <div class="active-card-progress"><div class="in-bar"><span></span></div></div>
             \`;
             const killBtn = card.querySelector('.active-card-kill');
-            if(killBtn) killBtn.addEventListener('click', () => killAgent(a.issue, a.skill, a.pipeline, a.fase));
+            if(killBtn) killBtn.addEventListener('click', () => killAgent(a.issue, a.skill, a.pipeline, a.fase, a.durationMs));
             list.appendChild(card);
             requestAnimationFrame(() => card.classList.remove('entering'));
         }

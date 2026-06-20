@@ -130,10 +130,14 @@ function showToast(msg, ok){
     t._timeout = setTimeout(() => { t.style.opacity = '0'; t.style.transform = 'translateX(-50%) translateY(8px)'; }, 3500);
 }
 
-async function killAgent(issue, skill, pipeline, fase){
-    if(!(await inConfirm({ title:'Cancelar agente', message:'Se cancelará el agente en curso. Esta acción no se puede deshacer.', confirmLabel:'Cancelar agente', preview:[{label:'Skill', value:skill},{label:'Issue', value:'#'+issue}] }))) return;
+async function killAgent(issue, skill, pipeline, fase, durationMs){
+    // CA-2 / SEC-2 — preview con fase + tiempo y POST con token CSRF (killAgentPost).
+    const preview = [{label:'Skill', value:skill},{label:'Issue', value:'#'+issue}];
+    if(fase) preview.push({label:'Fase', value:fase});
+    if(durationMs != null) preview.push({label:'Tiempo invertido', value:fmtDur(durationMs)});
+    if(!(await inConfirm({ title:'Cancelar agente', message:'Se cancelará el agente en curso. Esta acción no se puede deshacer.', confirmLabel:'Cancelar agente', preview:preview }))) return;
     try{
-        const r = await fetch('/api/kill-agent', {method:'POST', headers:Object.assign({'Content-Type':'application/json'}, nhCsrfHeaders()), body: JSON.stringify({issue, skill, pipeline, fase})});
+        const r = await killAgentPost({issue, skill, pipeline, fase});
         const j = await r.json();
         showToast(j.msg || (j.ok?'Agente cancelado':'Falló la cancelación'), j.ok);
         if(typeof runAll === 'function') setTimeout(runAll, 600);
@@ -146,7 +150,7 @@ async function killSkillGroup(skill, agents){
     let ok=0, fail=0;
     for(const a of agents){
         try{
-            const r = await fetch('/api/kill-agent', {method:'POST', headers:Object.assign({'Content-Type':'application/json'}, nhCsrfHeaders()), body: JSON.stringify({issue: a.issue, skill: a.skill, pipeline: a.pipeline, fase: a.fase})});
+            const r = await killAgentPost({issue: a.issue, skill: a.skill, pipeline: a.pipeline, fase: a.fase});
             const j = await r.json();
             if(j.ok) ok++; else fail++;
         } catch{ fail++; }

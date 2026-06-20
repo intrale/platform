@@ -57,6 +57,33 @@ function nhCsrfHeaders(){
     return (m && m.content) ? { 'X-CSRF-Token': m.content } : {};
   } catch(e){ return {}; }
 }
+// #3955 EP8-H2 (SEC-2) — token CSRF para /api/kill-agent. A diferencia de
+// nhCsrfHeaders (lee un <meta> embebido en wizards), acá no hay meta en la
+// home: el token se pide al server y se cachea en memoria. force=true lo
+// reobtiene (usar tras un 403). Mismo origen → el browser adjunta la cookie
+// ka_csrf automáticamente; mandamos el mismo valor en el header (double-submit).
+var _kaCsrfToken = null;
+async function killCsrfHeaders(force){
+  try {
+    if(force) _kaCsrfToken = null;
+    if(!_kaCsrfToken){
+      var r = await fetch('/api/kill-agent/csrf-token', { cache: 'no-store' });
+      if(r && r.ok){ var j = await r.json(); _kaCsrfToken = (j && j.csrf_token) || null; }
+    }
+    return _kaCsrfToken ? { 'X-CSRF-Token': _kaCsrfToken } : {};
+  } catch(e){ return {}; }
+}
+// Ejecuta el POST de kill con CSRF; reintenta una vez si el server responde 403
+// (token expirado/rotado por restart). Devuelve el Response final.
+async function killAgentPost(payload){
+  var doPost = async function(){
+    var headers = Object.assign({ 'Content-Type': 'application/json' }, await killCsrfHeaders());
+    return fetch('/api/kill-agent', { method: 'POST', headers: headers, body: JSON.stringify(payload) });
+  };
+  var r = await doPost();
+  if(r && r.status === 403){ await killCsrfHeaders(true); r = await doPost(); }
+  return r;
+}
 function _inStaleBannerEl(){
   var el = document.getElementById('in-stale-banner');
   if(!el){

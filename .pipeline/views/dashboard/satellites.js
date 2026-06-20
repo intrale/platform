@@ -109,10 +109,16 @@ function showToast(msg, ok){
     t._timeout = setTimeout(() => { t.style.opacity = '0'; t.style.transform = 'translateX(-50%) translateY(8px)'; }, 3500);
 }
 
-async function killAgent(issue, skill, pipeline, fase){
-    if(!(await inConfirm({ title:'Cancelar agente', message:'Se cancelará el agente en curso. Esta acción no se puede deshacer.', confirmLabel:'Cancelar agente', preview:[{label:'Skill', value:skill},{label:'Issue', value:'#'+issue}] }))) return;
+async function killAgent(issue, skill, pipeline, fase, durationMs){
+    // CA-2 — preview con Skill · Issue · Fase · Tiempo invertido. SEC-2 — el POST
+    // viaja con token CSRF (killAgentPost) en vez del nhCsrfHeaders (meta) que
+    // esta vista no embebe.
+    const preview = [{label:'Skill', value:skill},{label:'Issue', value:'#'+issue}];
+    if(fase) preview.push({label:'Fase', value:fase});
+    if(durationMs != null) preview.push({label:'Tiempo invertido', value:fmtDur(durationMs)});
+    if(!(await inConfirm({ title:'Cancelar agente', message:'Se cancelará el agente en curso. Esta acción no se puede deshacer.', confirmLabel:'Cancelar agente', preview:preview }))) return;
     try{
-        const r = await fetch('/api/kill-agent', {method:'POST', headers:Object.assign({'Content-Type':'application/json'}, nhCsrfHeaders()), body: JSON.stringify({issue, skill, pipeline, fase})});
+        const r = await killAgentPost({issue, skill, pipeline, fase});
         const j = await r.json();
         showToast(j.msg || (j.ok?'Agente cancelado':'Falló la cancelación'), j.ok);
         if(typeof runAll === 'function') setTimeout(runAll, 600);
@@ -125,7 +131,7 @@ async function killSkillGroup(skill, agents){
     let ok=0, fail=0;
     for(const a of agents){
         try{
-            const r = await fetch('/api/kill-agent', {method:'POST', headers:Object.assign({'Content-Type':'application/json'}, nhCsrfHeaders()), body: JSON.stringify({issue: a.issue, skill: a.skill, pipeline: a.pipeline, fase: a.fase})});
+            const r = await killAgentPost({issue: a.issue, skill: a.skill, pipeline: a.pipeline, fase: a.fase});
             const j = await r.json();
             if(j.ok) ok++; else fail++;
         } catch{ fail++; }
@@ -249,75 +255,238 @@ ${extraCss}
 
 // ─────────────────── Equipo ───────────────────
 function renderEquipo() {
+    // #3955 EP8-H2 — Acordeón por skill con agentes individuales. El detalle por
+    // agente (issue/fase/progreso/duración/log + kill) sale de /api/dash/active;
+    // la carga y el sparkline 24h de /api/dash/equipo. Construcción 100% por DOM
+    // (textContent/setAttribute) → XSS-safe por construcción (SEC-5). El kill por
+    // agente reusa killAgent() (token CSRF, SEC-2). Commander = no cancelable
+    // (CA-3); cooldown = cuenta regresiva server-authoritative (CA-4/SEC-6).
     const body = `
 <section class="in-section">
-  <h2 class="in-section-title"><span class="in-section-title-icon">👥</span>Equipo · carga por skill</h2>
-  <div id="equipo-grid" class="eq-grid"></div>
+  <h2 class="in-section-title"><span class="in-section-title-icon">👥</span>Equipo · acordeón por skill</h2>
+  <div id="equipo-accordion" class="eq-accordion"><div class="eq-acc-empty">Cargando agentes…</div></div>
 </section>`;
     const css = `
-.eq-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
-.eq-card { background: var(--in-bg-3); border: 1px solid var(--in-border); border-radius: var(--in-radius-sm); padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; transition: border-color 0.2s; }
-.eq-card.busy { border-color: var(--in-accent); }
-.eq-card-head { display: flex; align-items: center; gap: 10px; }
-.eq-avatar { width: 32px; height: 32px; border-radius: 9px; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 16px; }
-.eq-name { font-weight: 600; font-size: 13px; }
-.eq-load { font-size: 12px; color: var(--in-fg-dim); margin-left: auto; font-variant-numeric: tabular-nums; }
-.eq-bar { height: 6px; border-radius: 3px; background: var(--in-bg); overflow: hidden; }
-.eq-bar > span { display: block; height: 100%; background: var(--in-fg-dim); transition: width 0.4s, background 0.2s; }
-.eq-kill { background: transparent; border: 1px solid var(--in-bad); color: var(--in-bad); border-radius: 6px; padding: 3px 9px; font-size: 11px; cursor: pointer; transition: background 0.15s; margin-left: 6px; }
-.eq-kill:hover { background: var(--in-bad-soft); }
-.eq-card.busy .eq-kill { display: inline-block; }
-.eq-kill { display: none; }`;
+.eq-accordion { display: flex; flex-direction: column; gap: 10px; }
+.eq-acc-empty { color: var(--in-fg-dim); font-size: 13px; padding: 18px; text-align: center; }
+.eq-acc-card { background: var(--in-bg-3); border: 1px solid var(--in-border); border-radius: var(--in-radius-sm); overflow: hidden; }
+.eq-acc-card.eq-acc-card-obs { border-color: #a371f7; border-left: 3px solid #a371f7; }
+.eq-acc-card.eq-acc-card-cooldown { border-left: 3px solid #f5b454; }
+.eq-acc-head { display: flex; align-items: center; gap: 10px; padding: 11px 14px; cursor: pointer; user-select: none; }
+.eq-acc-head:hover { background: var(--in-bg); }
+.eq-acc-chevron { font-size: 11px; color: var(--in-fg-dim); transition: transform 0.2s; width: 12px; }
+.eq-acc-card.collapsed .eq-acc-chevron { transform: rotate(-90deg); }
+.eq-acc-card.collapsed .eq-acc-body { display: none; }
+.eq-acc-avatar { width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 15px; flex: 0 0 auto; }
+.eq-acc-name { font-weight: 600; font-size: 13px; }
+.eq-acc-count { font-size: 11px; color: var(--in-fg-dim); font-variant-numeric: tabular-nums; }
+.eq-acc-obs-badge { font-size: 11px; color: #c9b6ff; }
+.eq-acc-spark { display: inline-flex; align-items: flex-end; gap: 1px; height: 20px; margin-left: auto; }
+.eq-acc-spark .bar { width: 3px; background: #1f6feb; border-radius: 1px; min-height: 1px; }
+.eq-acc-spark .bar.recent { background: #58a6ff; }
+.eq-acc-body { display: flex; flex-direction: column; border-top: 1px solid var(--in-border); }
+.eq-ag-row { display: flex; flex-direction: column; gap: 5px; padding: 9px 14px 9px 34px; border-bottom: 1px solid var(--in-border); }
+.eq-ag-row:last-child { border-bottom: none; }
+.eq-ag-row.cooldown { background: rgba(245,180,84,0.06); }
+.eq-ag-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.eq-ag-issue { color: #58a6ff; font-weight: 700; font-size: 12px; }
+.eq-ag-issue.obs { color: #c9b6ff; }
+.eq-ag-fase { font-size: 10px; padding: 1px 7px; border-radius: 9px; background: var(--in-bg); color: var(--in-fg-dim); border: 1px solid var(--in-border); }
+.eq-ag-title { font-size: 12px; color: var(--in-fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
+.eq-ag-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.eq-ag-bar { flex: 0 0 90px; height: 6px; border-radius: 3px; background: var(--in-bg); overflow: hidden; }
+.eq-ag-bar > span { display: block; height: 100%; background: #58a6ff; transition: width 0.4s; }
+.eq-ag-bar.indeterminate > span { width: 30%; animation: eqIndet 1.2s ease-in-out infinite; }
+@keyframes eqIndet { 0%{margin-left:-30%} 100%{margin-left:100%} }
+.eq-ag-pct { font-size: 11px; color: #79c0ff; font-variant-numeric: tabular-nums; min-width: 30px; }
+.eq-ag-dur { font-size: 11px; color: var(--in-fg-dim); font-variant-numeric: tabular-nums; }
+.eq-ag-log { font-size: 11px; color: #2dd4bf; text-decoration: none; }
+.eq-ag-log:hover { text-decoration: underline; }
+.eq-ag-kill { margin-left: auto; background: transparent; border: 1px solid var(--in-bad); color: var(--in-bad); border-radius: 6px; padding: 3px 10px; font-size: 11px; cursor: pointer; }
+.eq-ag-kill:hover { background: var(--in-bad-soft); }
+.eq-ag-protected { margin-left: auto; font-size: 11px; color: #c9b6ff; border: 1px solid #a371f7; border-radius: 6px; padding: 3px 10px; }
+.eq-ag-cooldown { font-size: 11px; color: #f5b454; }
+.eq-ag-wait { margin-left: auto; font-size: 11px; color: var(--in-fg-dim); border: 1px solid var(--in-border); border-radius: 6px; padding: 3px 10px; opacity: 0.7; }`;
     const script = `
-// Cachea agents activos para que el botón × del skill sepa a quién matar.
+// Estado client de la vista Equipo (acordeón). _activeAgents y _equipoSkills se
+// refrescan por polling; buildAccordion() re-renderiza el DOM in-place.
 let _activeAgents = [];
+let _equipoSkills = {};
+
+// Agrupar agentes vivos por skill, preservando orden de llegada (el server ya
+// ordena por duración desc + commander al frente).
+function groupAgentsBySkill(agents){
+    const order = [];
+    const map = {};
+    for(const a of (agents||[])){
+        const s = a.skill || '';
+        if(!map[s]){ map[s] = []; order.push(s); }
+        map[s].push(a);
+    }
+    return { order, map };
+}
+
+// Progreso %: min(100, dur/eta*100); sin eta → indeterminado (nunca NaN).
+function agentProgress(durationMs, etaMs){
+    if(!etaMs || etaMs <= 0) return { pct: 0, indeterminate: true };
+    return { pct: Math.min(100, Math.round((durationMs/etaMs)*100)), indeterminate: false };
+}
+
+// Sparkline 24h: 24 barras normalizadas; últimas 6 horas resaltadas.
+function buildSparkline(buckets){
+    const wrap = document.createElement('span');
+    wrap.className = 'eq-acc-spark';
+    const arr = Array.isArray(buckets) ? buckets : [];
+    const max = arr.reduce((a,b)=>Math.max(a,b||0),0);
+    let total = 0;
+    for(let i=0;i<arr.length;i++){
+        const v = arr[i]||0; total += v;
+        const bar = document.createElement('span');
+        bar.className = 'bar' + (i >= arr.length-6 ? ' recent' : '');
+        bar.style.height = (max>0 ? Math.max(8, Math.round((v/max)*100)) : 4) + '%';
+        const hoursAgo = arr.length-1-i;
+        bar.title = v + ' marker' + (v===1?'':'s') + ' · hace ' + hoursAgo + 'h';
+        wrap.appendChild(bar);
+    }
+    wrap.setAttribute('aria-label', 'Carga ultimas 24 horas: ' + total + ' markers');
+    return wrap;
+}
+
+// Fila de un agente (DOM seguro: textContent / setAttribute).
+function buildAgentRow(a){
+    const row = document.createElement('div');
+    const observational = a.observational === true || a.cancelable === false;
+    const cooldown = a.cooldown || null;
+    row.className = 'eq-ag-row' + (cooldown ? ' cooldown' : '');
+
+    const head = document.createElement('div'); head.className = 'eq-ag-head';
+    const issue = document.createElement('span');
+    issue.className = 'eq-ag-issue' + (observational ? ' obs' : '');
+    issue.textContent = observational ? (a.title || 'Commander') : ('#' + a.issue);
+    head.appendChild(issue);
+    const fase = document.createElement('span'); fase.className = 'eq-ag-fase';
+    fase.textContent = a.fase || ''; head.appendChild(fase);
+    if(!observational && a.title){
+        const title = document.createElement('span'); title.className = 'eq-ag-title';
+        title.textContent = a.title; title.title = a.title; head.appendChild(title);
+    }
+    row.appendChild(head);
+
+    const meta = document.createElement('div'); meta.className = 'eq-ag-meta';
+    const prog = agentProgress(a.durationMs||0, a.etaMs);
+    const bar = document.createElement('span'); bar.className = 'eq-ag-bar' + (prog.indeterminate ? ' indeterminate' : '');
+    const barFill = document.createElement('span');
+    if(!prog.indeterminate) barFill.style.width = prog.pct + '%';
+    bar.appendChild(barFill); meta.appendChild(bar);
+    const pct = document.createElement('span'); pct.className = 'eq-ag-pct';
+    pct.textContent = prog.indeterminate ? '—' : (prog.pct + '%'); meta.appendChild(pct);
+    const dur = document.createElement('span'); dur.className = 'eq-ag-dur';
+    dur.textContent = '⏱ ' + fmtDur(a.durationMs||0); meta.appendChild(dur);
+    if(!observational && a.hasLog && a.logFile){
+        const log = document.createElement('a'); log.className = 'eq-ag-log';
+        log.href = '/logs/view/' + encodeURIComponent(a.logFile) + '?live=1';
+        log.target = '_blank'; log.rel = 'noopener noreferrer';
+        log.textContent = '📄 log'; meta.appendChild(log);
+    }
+
+    if(observational){
+        const prot = document.createElement('span'); prot.className = 'eq-ag-protected';
+        prot.textContent = '🔒 protegido'; prot.title = 'Skill no cancelable — presencia observacional';
+        meta.appendChild(prot);
+    } else if(cooldown){
+        const cd = document.createElement('span'); cd.className = 'eq-ag-cooldown';
+        cd.setAttribute('data-cooldown-until', cooldown.cooldownUntil || '');
+        cd.textContent = '⏳ cooldown · ' + (cooldown.failures||0) + ' fallos';
+        meta.appendChild(cd);
+        const wait = document.createElement('span'); wait.className = 'eq-ag-wait';
+        wait.textContent = 'en espera'; wait.setAttribute('aria-disabled','true');
+        meta.appendChild(wait);
+    } else {
+        const kill = document.createElement('button'); kill.className = 'eq-ag-kill';
+        kill.textContent = '✕ cancelar'; kill.title = 'Cancelar este agente';
+        kill.addEventListener('click', () => killAgent(a.issue, a.skill, a.pipeline, a.fase, a.durationMs));
+        meta.appendChild(kill);
+    }
+    row.appendChild(meta);
+    return row;
+}
+
+// Estado de colapso persistido en sessionStorage (patrón del dashboard).
+function accCollapsed(skill){ try { return sessionStorage.getItem('eqacc:'+skill) === '1'; } catch(e){ return false; } }
+function accToggle(skill, card){
+    const now = card.classList.toggle('collapsed');
+    try { sessionStorage.setItem('eqacc:'+skill, now ? '1' : '0'); } catch(e){}
+}
+
+function buildAccordion(){
+    const cont = document.getElementById('equipo-accordion');
+    if(!cont) return;
+    const { order, map } = groupAgentsBySkill(_activeAgents);
+    if(order.length === 0){
+        cont.innerHTML = '<div class="eq-acc-empty">Sin agentes vivos</div>';
+        return;
+    }
+    cont.innerHTML = '';
+    for(const skill of order){
+        const list = map[skill];
+        const isObs = list.some(a => a.observational === true || a.cancelable === false);
+        const hasCooldown = list.some(a => a.cooldown);
+        const card = document.createElement('div');
+        card.className = 'eq-acc-card' + (isObs ? ' eq-acc-card-obs' : '') + (hasCooldown ? ' eq-acc-card-cooldown' : '');
+        card.dataset.skill = skill;
+        if(accCollapsed(skill)) card.classList.add('collapsed');
+
+        const head = document.createElement('div'); head.className = 'eq-acc-head';
+        const chev = document.createElement('span'); chev.className = 'eq-acc-chevron'; chev.textContent = '▼'; head.appendChild(chev);
+        const av = document.createElement('span'); av.className = 'eq-acc-avatar';
+        av.style.background = SKILL_COLORS[skill] || '#8b949e'; av.textContent = SKILL_ICONS[skill] || '⚙'; head.appendChild(av);
+        const name = document.createElement('span'); name.className = 'eq-acc-name'; name.textContent = skill; head.appendChild(name);
+        const cnt = document.createElement('span'); cnt.className = 'eq-acc-count'; cnt.textContent = list.length + ' vivo' + (list.length===1?'':'s'); head.appendChild(cnt);
+        if(isObs){ const b = document.createElement('span'); b.className = 'eq-acc-obs-badge'; b.textContent = '🔒 no cancelable'; head.appendChild(b); }
+        const sk = _equipoSkills[skill];
+        head.appendChild(buildSparkline(sk && sk.spark24h));
+        head.addEventListener('click', () => accToggle(skill, card));
+        card.appendChild(head);
+
+        const bodyEl = document.createElement('div'); bodyEl.className = 'eq-acc-body';
+        for(const a of list) bodyEl.appendChild(buildAgentRow(a));
+        card.appendChild(bodyEl);
+        cont.appendChild(card);
+    }
+}
+
+// Cuenta regresiva de cooldown (CA-4): el front SOLO pinta; no habilita acciones
+// (eso lo dicta el server vía /api/dash/active en el próximo poll, SEC-6).
+function tickCooldownCountdowns(){
+    const now = Date.now();
+    document.querySelectorAll('.eq-ag-cooldown[data-cooldown-until]').forEach(el => {
+        const until = Date.parse(el.getAttribute('data-cooldown-until'));
+        if(!until || isNaN(until)) return;
+        const leftMs = until - now;
+        const base = el.textContent.split(' · ')[1] || '';
+        if(leftMs <= 0){ el.textContent = '⏳ por expirar · ' + base; return; }
+        const s = Math.floor(leftMs/1000), mm = Math.floor(s/60), ss = s%60;
+        el.textContent = '⏳ cooldown ' + mm + ':' + (ss<10?'0':'') + ss + ' · ' + base;
+    });
+}
+
 async function refreshActiveAgents(){
     const d = await fetchJson('/api/dash/active');
     if(d) _activeAgents = d.agents || [];
 }
 
-async function killSkillFromCard(skill){
-    if(!_activeAgents.length) await refreshActiveAgents();
-    const agents = _activeAgents.filter(a => a.skill === skill);
-    if(!agents.length){ showToast('Sin agentes '+skill+' corriendo', false); return; }
-    await killSkillGroup(skill, agents);
-}
-
 async function tickEquipo(){
     await refreshActiveAgents();
     const d = await fetchJson('/api/dash/equipo');
-    if(!d) return;
-    const grid = document.getElementById('equipo-grid');
-    if(!grid) return;
-    const seen = new Set();
-    for(const sk of (d.skills || [])){
-        seen.add(sk.skill);
-        let card = grid.querySelector('[data-skill="'+sk.skill+'"]');
-        if(!card){
-            card = document.createElement('div');
-            card.className = 'eq-card';
-            card.dataset.skill = sk.skill;
-            card.innerHTML = '<div class="eq-card-head"><span class="eq-avatar"></span><span class="eq-name"></span><span class="eq-load"></span><button class="eq-kill" title="Cancelar agentes de este skill">✕</button></div><div class="eq-bar"><span></span></div>';
-            card.querySelector('.eq-kill').addEventListener('click', () => killSkillFromCard(sk.skill));
-            grid.appendChild(card);
-        }
-        card.classList.toggle('busy', sk.running > 0);
-        const av = card.querySelector('.eq-avatar');
-        av.style.background = SKILL_COLORS[sk.skill] || '#8b949e';
-        av.textContent = SKILL_ICONS[sk.skill] || '⚙';
-        card.querySelector('.eq-name').textContent = sk.skill;
-        card.querySelector('.eq-load').textContent = sk.running + '/' + sk.max;
-        const bar = card.querySelector('.eq-bar > span');
-        bar.style.width = Math.min(100, sk.utilization * 100) + '%';
-        bar.style.background = sk.utilization >= 1 ? 'var(--in-bad)' : sk.utilization > 0 ? 'var(--in-accent)' : 'var(--in-fg-soft)';
-    }
-    for(const card of [...grid.children]){ if(!seen.has(card.dataset.skill)) card.remove(); }
+    if(d){ _equipoSkills = {}; for(const sk of (d.skills||[])) _equipoSkills[sk.skill] = sk; }
+    buildAccordion();
 }
 const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickEquipo, ms: 5000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
-for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('Equipo', 'Carga y disponibilidad por skill', body, script, css, 'equipo');
+for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }
+setInterval(tickCooldownCountdowns, 1000);`;
+    return pageShell('Equipo', 'Agentes vivos por skill · kill individual', body, script, css, 'equipo');
 }
 
 // ─────────────────── Pipeline ───────────────────
