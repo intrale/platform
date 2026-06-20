@@ -675,12 +675,11 @@ test('CA-SEC-9: sherlock_max_reelaboraciones=99 se clampea a 1', () => {
     assert.equal(cfg.maxReelaboraciones, 1);
 });
 
-// 2026-06-02 (Leo) — el timeout se eliminó por completo. Sherlock ya NO impone
-// ningún cap; la resiliencia ante un provider que no responde la da la cascada
-// multi-provider, no un timer. `sherlock_timeout_ms` queda como NO-OP: aunque
-// config diga `999999`, el cargador devuelve DEFAULT_TIMEOUT_MS (0 = sin
-// timeout) sin romper.
-test('CA-SEC-9: sherlock_timeout_ms en config se ignora — sin timeout (2026-06-02)', () => {
+// #4104 — `sherlock_timeout_ms` (deprecada) sigue NO-OP: el cargador NO la lee
+// ni la clampea. El budget config-driven vive en `sherlock_provider_budget_ms`.
+// Con `sherlock_timeout_ms: 999999` presente pero SIN budget declarado, el
+// timeoutMs cae al default del budget (40000), NO al valor deprecado y NO a 0.
+test('CA-SEC-9 / #4104: sherlock_timeout_ms (deprecada) se ignora — timeoutMs cae al default budget', () => {
     const cfg = sherlock._loadSherlockConfig({
         configLoader: () => ({
             sherlock_enabled: true,
@@ -688,19 +687,222 @@ test('CA-SEC-9: sherlock_timeout_ms en config se ignora — sin timeout (2026-06
             sherlock_max_reelaboraciones: 1,
         }),
     });
-    // El cargador devuelve siempre DEFAULT_TIMEOUT_MS (0 = sin timeout).
-    assert.equal(cfg.timeoutMs, sherlock.DEFAULT_TIMEOUT_MS);
-    assert.equal(cfg.timeoutMs, 0);
+    // La deprecada NO se lee; sin `sherlock_provider_budget_ms` → default 40000.
+    assert.equal(cfg.timeoutMs, sherlock.BUDGET_DEFAULT_MS);
+    assert.equal(cfg.timeoutMs, 40000);
+    assert.notEqual(cfg.timeoutMs, 0); // jamás 0 (SEC-A): desactivaría la protección.
 });
 
-test('CA-SEC-9 (#3484): sin sherlock_timeout_ms — también devuelve DEFAULT', () => {
+test('#4104: sin sherlock_provider_budget_ms — timeoutMs cae al default budget (40000)', () => {
     const cfg = sherlock._loadSherlockConfig({
         configLoader: () => ({
             sherlock_enabled: true,
             sherlock_max_reelaboraciones: 1,
         }),
     });
-    assert.equal(cfg.timeoutMs, sherlock.DEFAULT_TIMEOUT_MS);
+    assert.equal(cfg.timeoutMs, 40000);
+});
+
+// =============================================================================
+// #4104 — Budget por provider: clamp config-driven [30000,45000] (CA-2 / SEC-A).
+// El presupuesto se reintroduce a propósito (revierte "timeout 0" del 2026-06-02,
+// ver #3925/#3920). Se propaga como `timeoutMs` a los spawn helpers.
+// =============================================================================
+test('#4104: sherlock_provider_budget_ms válido se lee tal cual (35000)', () => {
+    const cfg = sherlock._loadSherlockConfig({
+        configLoader: () => ({ sherlock_enabled: true, sherlock_provider_budget_ms: 35000 }),
+    });
+    assert.equal(cfg.timeoutMs, 35000);
+});
+
+test('#4104: bordes del rango [30000,45000] se conservan idénticos', () => {
+    const lo = sherlock._loadSherlockConfig({
+        configLoader: () => ({ sherlock_provider_budget_ms: 30000 }),
+    });
+    assert.equal(lo.timeoutMs, 30000);
+    const hi = sherlock._loadSherlockConfig({
+        configLoader: () => ({ sherlock_provider_budget_ms: 45000 }),
+    });
+    assert.equal(hi.timeoutMs, 45000);
+});
+
+test('#4104: valor por encima del rango se clampea a BUDGET_MAX_MS (999999 → 45000)', () => {
+    const cfg = sherlock._loadSherlockConfig({
+        configLoader: () => ({ sherlock_provider_budget_ms: 999999 }),
+    });
+    assert.equal(cfg.timeoutMs, sherlock.BUDGET_MAX_MS);
+    assert.equal(cfg.timeoutMs, 45000);
+});
+
+test('#4104: valor por debajo del rango se clampea a BUDGET_MIN_MS (1000 → 30000)', () => {
+    const cfg = sherlock._loadSherlockConfig({
+        configLoader: () => ({ sherlock_provider_budget_ms: 1000 }),
+    });
+    assert.equal(cfg.timeoutMs, sherlock.BUDGET_MIN_MS);
+    assert.equal(cfg.timeoutMs, 30000);
+});
+
+// SEC-A — inputs hostiles: TODOS resuelven dentro de [30000,45000]; NINGUNO
+// devuelve 0 ni < 30000 (sería regresión del fix / vector DoS / degradación de
+// la verificación adversarial CA-SEC-1..6).
+test('#4104 SEC-A: inputs hostiles caen al default 40000 (nunca 0 ni <30000)', () => {
+    const hostiles = [-1, 'abc', 0, null, Infinity, -Infinity, NaN, undefined, {}, [], '40000abc'];
+    for (const raw of hostiles) {
+        const cfg = sherlock._loadSherlockConfig({
+            configLoader: () => ({ sherlock_enabled: true, sherlock_provider_budget_ms: raw }),
+        });
+        assert.equal(cfg.timeoutMs, sherlock.BUDGET_DEFAULT_MS,
+            `input hostil ${JSON.stringify(raw)} debería caer a 40000, dio ${cfg.timeoutMs}`);
+        assert.ok(cfg.timeoutMs >= 30000 && cfg.timeoutMs <= 45000,
+            `input hostil ${JSON.stringify(raw)} fuera de rango: ${cfg.timeoutMs}`);
+        assert.notEqual(cfg.timeoutMs, 0);
+    }
+});
+
+test('#4104 SEC-A: "999999" string numérica también clampea a 45000', () => {
+    const cfg = sherlock._loadSherlockConfig({
+        configLoader: () => ({ sherlock_provider_budget_ms: '999999' }),
+    });
+    assert.equal(cfg.timeoutMs, 45000); // Number("999999")=999999 finito >0 → clamp.
+});
+
+// =============================================================================
+// #4104 — SIGTERM por eslabón: con `timeoutMs > 0` el spawn helper mata el child
+// con SIGTERM al vencer el presupuesto y devuelve `error.type === 'timeout'`.
+// Es el cimiento del salto de cascada (un eslabón colgado deja de retener el
+// child indefinidamente).
+// =============================================================================
+function makeNeverFinishingChild() {
+    let sigtermSent = null;
+    const child = {
+        stdin: { write: () => {}, end: () => {} },
+        stdout: { on: () => {} },
+        stderr: { on: () => {} },
+        on: () => {},
+        kill: (sig) => { sigtermSent = sig; },
+        get _sigtermSent() { return sigtermSent; },
+    };
+    return child;
+}
+const fakeSpawnHandler = {
+    buildSpawn: () => ({
+        cmd: 'fake-cli', args: [],
+        spawnOpts: { stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true },
+    }),
+};
+
+test('#4104: _spawnAnthropicComplete con timeoutMs>0 mata el child con SIGTERM y devuelve error.type=timeout', async () => {
+    const child = makeNeverFinishingChild();
+    const result = await sherlock._spawnAnthropicComplete({
+        prompt: 'x',
+        timeoutMs: 1000, // mínimo permitido para no esperar 40s reales en el test.
+        spawnImpl: () => child,
+        anthropicHandler: fakeSpawnHandler,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.error.type, 'timeout');
+    assert.equal(child._sigtermSent, 'SIGTERM', 'el child colgado debe recibir SIGTERM por eslabón');
+});
+
+test('#4104: _spawnCodexComplete con timeoutMs>0 mata el child con SIGTERM y devuelve error.type=timeout', async () => {
+    const child = makeNeverFinishingChild();
+    const result = await sherlock._spawnCodexComplete({
+        prompt: 'x',
+        model: 'gpt-5',
+        timeoutMs: 1000,
+        spawnImpl: () => child,
+        codexHandler: fakeSpawnHandler,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.error.type, 'timeout');
+    assert.equal(child._sigtermSent, 'SIGTERM', 'el child codex colgado debe recibir SIGTERM por eslabón');
+});
+
+test('#4104: timeoutMs===0 NO arma timer — el child NO recibe SIGTERM (back-compat DEFAULT_TIMEOUT_MS)', async () => {
+    // Con timeoutMs ausente/0 el spawn helper corre sin timer. Simulamos un child
+    // que resuelve OK rápido; el punto es que kill('SIGTERM') NUNCA se invoque por reloj.
+    const child = {
+        stdin: { write: () => {}, end: () => {} },
+        _stdout: [], _exit: [],
+        stdout: { on(ev, cb) { if (ev === 'data') child._stdout.push(cb); } },
+        stderr: { on: () => {} },
+        on(ev, cb) { if (ev === 'exit') child._exit.push(cb); },
+        killed: false,
+        kill() { child.killed = true; },
+    };
+    const spawnImpl = () => {
+        setImmediate(() => {
+            for (const h of child._stdout) h(Buffer.from('{"verdict":"ok","reason":"x","inconsistencies":[]}'));
+            for (const h of child._exit) h(0);
+        });
+        return child;
+    };
+    const result = await sherlock._spawnAnthropicComplete({
+        prompt: 'x',
+        timeoutMs: 0,
+        spawnImpl,
+        anthropicHandler: fakeSpawnHandler,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(child.killed, false, 'sin budget (timeoutMs=0) no debe matarse el child por reloj');
+});
+
+// =============================================================================
+// #4104 — Propagación + salto de cascada (CA-1): el budget config-driven se
+// propaga como `timeoutMs` al spawn helper; cuando el primer eslabón agota el
+// presupuesto (error.type=timeout), la cascada salta al siguiente provider SIN
+// abortar la verificación global. Es el comportamiento end-to-end que pide CA-1.
+// =============================================================================
+test('#4104 CA-1: budget se propaga al spawn helper y timeout salta al siguiente provider sin abortar global', async () => {
+    const dir = mkTmpPipelineDir();
+    let propagatedTimeout = null;
+    // Primer eslabón (anthropic, spawn) agota el budget → error de timeout.
+    const spawnTimeout = async (opts) => {
+        propagatedTimeout = opts.timeoutMs; // capturamos lo que recibió del cfg.
+        return { ok: false, error: { type: 'timeout', detail: `superó timeoutMs=${opts.timeoutMs}` }, durationMs: 1 };
+    };
+    // Siguiente eslabón HTTP responde OK → la verificación global NO se aborta.
+    const okResp = {
+        ok: true,
+        content: JSON.stringify({ verdict: 'ok', reason: 'consistente', inconsistencies: [] }),
+        inputTokens: 0, outputTokens: 0, durationMs: 50,
+    };
+    const result = await sherlock.verify({
+        analysis: 'a', originalRequest: '?', systemState: 's',
+        commanderProvider: 'cerebras', // excluido por cross-provider → arranca por anthropic
+        pipelineDir: dir,
+        configLoader: defaultConfigLoader({ sherlock_provider_budget_ms: 35000 }),
+        completionClient: fakeCompletionClient(okResp),
+        spawnAnthropic: spawnTimeout,
+        quotaModule: fakeQuotaAllPass(),
+        dispatchModule: fakeDispatcher({ providerChain: CHAIN_ANTH_FIRST }),
+        residencyModule: fakeResidencyOk(),
+    });
+    assert.equal(propagatedTimeout, 35000, 'el budget de config (35000) debe propagarse como timeoutMs al spawn helper');
+    assert.equal(result.verdict, 'ok', 'el timeout de un eslabón NO debe abortar la verificación global');
+    assert.notEqual(result.sherlockProvider, 'anthropic', 'la cascada saltó del provider que agotó el budget');
+    assert.ok(result.fallbackUsed, 'hubo salto de cascada tras el timeout por budget');
+});
+
+test('#4104 SEC-C: si TODOS los eslabones agotan el budget la verificación queda aborted + F-6 (jamás aprobación silenciosa)', async () => {
+    const dir = mkTmpPipelineDir();
+    const spawnTimeout = async (opts) => ({ ok: false, error: { type: 'timeout', detail: `superó timeoutMs=${opts.timeoutMs}` }, durationMs: 1 });
+    const httpTimeout = { ok: false, error: { type: 'timeout', detail: 'sin respuesta' }, durationMs: 1 };
+    const result = await sherlock.verify({
+        analysis: 'a', originalRequest: '?', systemState: 's',
+        commanderProvider: 'cerebras',
+        pipelineDir: dir,
+        configLoader: defaultConfigLoader({ sherlock_provider_budget_ms: 30000 }),
+        completionClient: fakeCompletionClient(httpTimeout),
+        spawnAnthropic: spawnTimeout,
+        spawnCodex: spawnTimeout,
+        quotaModule: fakeQuotaAllPass(),
+        dispatchModule: fakeDispatcher({ providerChain: CHAIN_ANTH_FIRST }),
+        residencyModule: fakeResidencyOk(),
+    });
+    assert.equal(result.verdict, 'aborted', 'chain agotada por budget → fail-closed, NUNCA aprobación silenciosa');
+    assert.equal(result.errorCode, 'timeout');
+    assert.equal(result.suggestedDisclaimer, sherlock.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER);
 });
 
 // =============================================================================
@@ -811,8 +1013,10 @@ test('config sin sherlock_enabled defaultea a enabled=true', () => {
 test('config con configLoader que tira devuelve defaults seguros', () => {
     const cfg = sherlock._loadSherlockConfig({ configLoader: () => { throw new Error('boom'); } });
     assert.equal(cfg.enabled, true);
-    // #3484 — el default es DEFAULT_TIMEOUT_MS (90s) ya no 10s.
-    assert.equal(cfg.timeoutMs, sherlock.DEFAULT_TIMEOUT_MS);
+    // #4104 — ante config ilegible, el budget cae al default fail-safe (40000),
+    // nunca a 0 (SEC-A): aun sin config la protección por eslabón queda activa.
+    assert.equal(cfg.timeoutMs, sherlock.BUDGET_DEFAULT_MS);
+    assert.equal(cfg.timeoutMs, 40000);
     assert.equal(cfg.maxReelaboraciones, 1);
 });
 
