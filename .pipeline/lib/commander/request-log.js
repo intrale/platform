@@ -28,6 +28,7 @@
 'use strict';
 
 const path = require('path');
+const fs = require('fs');
 const { createLogFileWriter } = require('../sanitize-log-stream');
 
 // SEC-4: caracteres permitidos en el `<id>`. El chat_id de grupos de Telegram es
@@ -120,4 +121,78 @@ function openRequestLog(logDir, reqId, opts) {
   return { reqId, fileName, path: logPath, writable, stage, line, close };
 }
 
-module.exports = { buildRequestId, logFileName, openRequestLog, ID_SAFE_RE };
+// =============================================================================
+// #3951 EP7-H4 — Sidecar de metadata por petición.
+//
+// Un `commander-<reqId>.meta.json` por turno, hermano del `.log`. Es la fuente
+// que lee el render del dashboard SIN tener que parsear el cuerpo del log. El
+// shape es ACOTADO a strings/booleans del enum clasificado (resultado/provider/
+// flags de verificación) — NUNCA el objeto de config de providers (SEC-3,
+// heredado de este módulo). El `<reqId>` reutiliza `ID_SAFE_RE` para el nombre.
+// =============================================================================
+
+/**
+ * Devuelve el nombre de archivo (sin directorio) del sidecar de metadata para
+ * un reqId dado. Mismo prefijo `commander-` que el `.log` para que el cleanup
+ * de logs viejos lo barra junto con su par.
+ * @param {string} reqId
+ * @returns {string}
+ */
+function metaFileName(reqId) {
+  const safeId = String(reqId == null ? '' : reqId).replace(ID_SAFE_RE, '');
+  return `commander-${safeId}.meta.json`;
+}
+
+/**
+ * Persiste el sidecar de metadata clasificada de una petición. Idempotente
+ * (sobreescribe). Best-effort: NUNCA tira (el cierre del turno no puede morir
+ * por un fallo de escritura de metadata).
+ *
+ * SEC: el shape se acota explícitamente a un subconjunto de campos del enum
+ * clasificado. NO se serializa el objeto recibido tal cual — se reconstruye un
+ * objeto plano con sólo los campos esperados, coaccionados a string/boolean.
+ * Así un caller equivocado no puede filtrar config de providers ni secretos.
+ *
+ * `sameProviderVerification` es TRI-ESTADO: se persiste SÓLO si es un boolean
+ * real; `null`/ausente (no hubo verificación efectiva de Sherlock) ⇒ el campo
+ * se OMITE para que el render no emita chip cross/same (CA-3).
+ *
+ * @param {string} logDir  directorio de logs (ej. `.pipeline/logs`).
+ * @param {string} reqId   id ya construido con `buildRequestId`.
+ * @param {object} meta    `{ resultado, provider, sameProviderVerification, crossProviderDispatch }`.
+ * @returns {string|null}  path del sidecar escrito, o `null` si falló.
+ */
+function writeRequestMeta(logDir, reqId, meta) {
+  try {
+    const m = (meta && typeof meta === 'object') ? meta : {};
+    const safe = {
+      resultado: typeof m.resultado === 'string' ? m.resultado : '',
+      provider: typeof m.provider === 'string' ? m.provider : '',
+      crossProviderDispatch: m.crossProviderDispatch === true,
+    };
+    // #3951 rebote — TRI-ESTADO de la verificación de Sherlock. SÓLO se persiste
+    // `sameProviderVerification` cuando es un boolean real (hubo verificación
+    // efectiva: same=true / cross=false). Si llega `null`/ausente/no-boolean
+    // (no hubo verificación), el campo se OMITE del sidecar para que el render
+    // (`result-badge.js`) caiga en su camino "sin chip" y no invente un estado
+    // cross/same-provider (CA-3 / guideline UX). Coaccionar a `false` —como hacía
+    // antes— pintaba "cross-provider" en peticiones sin verificación (el defecto).
+    if (typeof m.sameProviderVerification === 'boolean') {
+      safe.sameProviderVerification = m.sameProviderVerification;
+    }
+    const filePath = path.join(logDir, metaFileName(reqId));
+    fs.writeFileSync(filePath, JSON.stringify(safe), 'utf8');
+    return filePath;
+  } catch {
+    return null;
+  }
+}
+
+module.exports = {
+  buildRequestId,
+  logFileName,
+  openRequestLog,
+  metaFileName,
+  writeRequestMeta,
+  ID_SAFE_RE,
+};

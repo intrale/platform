@@ -76,6 +76,10 @@ try { waveStateLib = require('./lib/wave-state'); } catch { /* opcional */ }
 let etaMarkersLib = null;
 try { etaMarkersLib = require('./lib/eta-markers'); } catch { /* opcional */ }
 
+// #3951 EP7-H4 — Render puro de los badges de resultado del Commander.
+let commanderResultBadge = null;
+try { commanderResultBadge = require('./lib/commander/result-badge'); } catch { /* opcional */ }
+
 // #2892 PR-C — Estado del banner de alerta de consumo anómalo + cap de snooze.
 let restModeState = null;
 try { restModeState = require('./lib/rest-mode-state'); } catch { /* opcional */ }
@@ -1699,11 +1703,22 @@ function renderGhostArtifactsWidget(ghost) {
   </details>`;
 }
 
+// #3951 EP7-H4 — Wrapper local que delega en el módulo puro `result-badge.js`
+// inyectándole el `escapeHtml` del dashboard (fuente única de escape). Si el
+// módulo no cargó (require opcional falló) → '' (degradación: render sin badge).
+function renderCommanderResultBadges(meta) {
+  if (!commanderResultBadge) return '';
+  try { return commanderResultBadge.buildResultBadges(meta, escapeHtml); }
+  catch { return ''; }
+}
+
 // #3949 EP7-H2 — Render de los logs recientes del Commander (un log por
 // petición atendida) dentro de la card de Commander Routing. Reutiliza el
 // patrón `<a class="log-link">` (G1) y un label legible HH:MM:SS + chat (G3),
 // con estado vacío explícito (G4). El `<id>` es `<chat_id>-<epochms>`; el
 // epochms es el último segmento `-` del id.
+// #3951 EP7-H4 — enriquece cada item con el badge de resultado leyendo su
+// sidecar `commander-<id>.meta.json` (lectura defensiva: sin sidecar → sin badge).
 function renderCommanderRequestLogs(logDir, limit) {
   const MAX = limit || 8;
   let files = [];
@@ -1733,7 +1748,17 @@ function renderCommanderRequestLogs(logDir, limit) {
   const items = files.map(it => {
     const hora = it.epochms ? new Date(it.epochms).toTimeString().slice(0, 8) : '??:??:??';
     const label = `${hora} · chat ${escapeHtml(it.chat)}`;
-    return `<a class="log-link" href="/logs/view/${encodeURIComponent(it.f)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" title="${escapeHtml(it.id)}" style="display:block;font-size:0.8em;padding:1px 0;color:var(--ac)">📄 ${label}</a>`;
+    // #3951 EP7-H4 — lectura defensiva del sidecar de metadata. Si no existe
+    // (peticiones previas al cambio) o está corrupto → sin badge, sin error.
+    let badges = '';
+    try {
+      const metaPath = path.join(logDir, `commander-${it.id}.meta.json`);
+      if (fs.existsSync(metaPath)) {
+        const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+        badges = renderCommanderResultBadges(meta);
+      }
+    } catch { /* sidecar ausente/corrupto → render sin badge */ }
+    return `<a class="log-link" href="/logs/view/${encodeURIComponent(it.f)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" title="${escapeHtml(it.id)}" style="display:block;font-size:0.8em;padding:1px 0;color:var(--ac)">📄 ${label}${badges}</a>`;
   }).join('');
 
   return `
@@ -4091,6 +4116,21 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 @keyframes pulseBlue{0%,100%{opacity:1;box-shadow:0 0 4px rgba(88,166,255,0.3)}50%{opacity:0.5;box-shadow:none}}
 .log-link{text-decoration:none}
 .log-link:hover .chip{text-decoration:underline;filter:brightness(1.15)}
+
+/* ── #3951 EP7-H4 — Badge de resultado de la petición del Commander.
+ *    Mapea el enum cerrado (ok/ajustada/fallback/error) a los 4 tokens
+ *    semánticos del design system. Glyph + label SIEMPRE (CA-4: no depender
+ *    sólo del color). Tokens con fallback legacy por si design-tokens.css no
+ *    está cargado. */
+.cmd-result{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:5px;font-size:0.72em;font-weight:600;line-height:1.5;border:1px solid transparent;margin-left:6px}
+.cmd-result-ok       {color:var(--success,var(--gn));background:var(--success-bg,rgba(63,185,80,0.14));border-color:var(--success-dim,var(--gn2))}
+.cmd-result-ajustada {color:var(--warning,var(--yl));background:var(--warning-bg,rgba(210,153,34,0.14));border-color:var(--warning-dim,var(--yl2))}
+.cmd-result-fallback {color:var(--info,var(--ac));   background:var(--info-bg,rgba(88,166,255,0.14));   border-color:var(--info-dim,var(--ac2))}
+.cmd-result-error    {color:var(--danger,var(--rd)); background:var(--danger-bg,rgba(248,81,73,0.14));  border-color:var(--danger-dim,var(--rd2))}
+.cmd-provider{font-size:0.72em;color:var(--dim);font-family:inherit;padding:1px 6px;border:1px solid var(--bd);border-radius:5px;margin-left:4px}
+.cmd-verif{font-size:0.72em;padding:1px 6px;border:1px solid var(--bd);border-radius:5px;margin-left:4px}
+.cmd-verif-cross{color:var(--info,var(--ac));border-color:var(--info-dim,var(--ac2));background:var(--info-bg,rgba(88,166,255,0.14))}
+.cmd-verif-same {color:var(--dim);border-color:var(--bd)}
 
 /* ── Log Viewer Panel ──────────────────────────────────────────────────── */
 .log-overlay{
