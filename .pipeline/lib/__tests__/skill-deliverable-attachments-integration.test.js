@@ -44,15 +44,15 @@ function defaultCfg() {
         kill_switch: false,
         skills: ['guru', 'po', 'ux', 'planner'],
         truncate_chars: 1500,
-        attachment_root: '.pipeline/assets/mockups',
+        // #3931 — sin `attachment_root` legacy; `video` → qa/evidence (B9);
+        // ux sin `animation`/`.gif` (sin productor real).
         attachment_roots: {
             document:  '.pipeline/assets/docs',
             image:     '.pipeline/assets/mockups',
-            video:     '.pipeline/assets/videos',
-            animation: '.pipeline/assets/animations',
+            video:     'qa/evidence',
         },
         attachments_per_skill: {
-            ux: { types: ['image', 'video', 'animation'], formats: ['.png', '.jpg', '.jpeg', '.mp4', '.webm', '.gif'] },
+            ux: { types: ['image', 'video'], formats: ['.png', '.jpg', '.jpeg', '.mp4', '.webm'] },
         },
         attachment_max_count: 5,
         attachment_max_size_bytes: 50 * 1024 * 1024,

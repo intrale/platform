@@ -670,7 +670,9 @@ telegram_outbound:
 #   - kill_switch:           override de enabled (true → apagado total runtime).
 #   - skills:                subset notificable. Cambios requieren OK humano.
 #   - truncate_chars:        cap del preview de `notas:` en el mensaje.
-#   - attachment_root:       root allowlisteado para adjuntos PNG del UX.
+#   - attachment_roots:      root allowlisteado por tipo de adjunto (ver abajo).
+#                            (#3931 — el legacy `attachment_root` plano se eliminó;
+#                            era redundante con `attachment_roots.image`.)
 #   - dedup_window_hours:    ventana de dedup por content_hash.
 #   - audit_file:            JSONL append-only. Path relativo al repo root.
 #
@@ -704,7 +706,6 @@ deliverable_notifications:
   # un issue (la sección de ola solo se calcula para skill=delivery, fase=entrega).
   skills: [guru, po, ux, planner, qa, tester, security, build, architect, backend-dev, android-dev, web-dev, pipeline-dev, delivery]
   truncate_chars: 1500
-  attachment_root: ".pipeline/assets/mockups"
   dedup_window_hours: 24
   audit_file: ".pipeline/audit/deliverable-notifications.jsonl"
   # #3539 — audio TTS opcional. Default OFF (rollout gradual). Activar con OK
@@ -726,7 +727,11 @@ deliverable_notifications:
     guru:    { types: [document],                   formats: [.pdf, .md] }
     po:      { types: [document],                   formats: [.pdf, .md] }
     planner: { types: [document],                   formats: [.pdf, .md] }
-    ux:      { types: [image, video, animation],    formats: [.png, .jpg, .jpeg, .mp4, .webm, .gif] }
+    # #3931 — ux produce imágenes (PNG/JPG mockups) y videos (MP4/WEBM demos).
+    # El type `animation` y el format `.gif` se quitaron: ningún productor de ux
+    # los emite (los `.gif` se descubrían como `image`, no como `animation`).
+    # El engine sigue soportando `animation` para futuros productores (#3540).
+    ux:      { types: [image, video],               formats: [.png, .jpg, .jpeg, .mp4, .webm] }
     qa:      { types: [video, document],            formats: [.mp4, .webm, .pdf] }
     # EP3-H2 (#3928) — perfiles nuevos. SEC-1: `build` SOLO .md/.pdf curado, NO
     # .log crudo (filtra secretos). SEC-4: devs adjuntan resumen .md, no código.
@@ -741,11 +746,15 @@ deliverable_notifications:
 
   # CA-SEC-EXT-1: root allowlisteado por tipo. Cualquier path fuera del root
   # configurado se rechaza con `outside_root` SIN tocar disco.
+  # #3931 (B9) — `video` repunta a `qa/evidence` (donde ux/qa realmente graban
+  # los .mp4: `qa/evidence/<issue>/`). Antes apuntaba a `.pipeline/assets/videos`,
+  # un dir inexistente sin productor → todo video real se rechazaba `outside_root`.
+  # El root `animation` se eliminó (sin productor; el engine usa su default JS si
+  # algún productor futuro emite type `animation`).
   attachment_roots:
     document:  ".pipeline/assets/docs"
     image:     ".pipeline/assets/mockups"
-    video:     ".pipeline/assets/videos"
-    animation: ".pipeline/assets/animations"
+    video:     "qa/evidence"
 
   # CA-SEC-EXT-5: caps absolutos contra resource exhaustion.
   attachment_max_count: 5                     # >5 adjuntos por notificación → resto rechazado
