@@ -1448,4 +1448,48 @@
           stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>
   </symbol>
 
+  <!-- ===================================================================== -->
+  <!-- EP8-H7 (#3960) — Ops: topologia de servicios con log inline y restart  -->
+  <!-- ===================================================================== -->
+
+  <!-- ic-restart: flecha circular de reinicio. Accion "Restart por nodo"
+       (CA-3). Distinta de ic-renew (renovar key) y ic-reset-default (volver
+       a valores de fabrica): aca es relanzar un proceso (stop+start aislado). -->
+  <symbol id="ic-restart" viewBox="0 0 24 24">
+    <path d="M5.5 12 A6.5 6.5 0 1 1 8 17.2" fill="none" stroke="currentColor"
+          stroke-width="1.85" stroke-linecap="round"/>
+    <path d="M5.2 7.5 L5.6 12.2 L10.2 11.4" fill="none" stroke="currentColor"
+          stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+
+  <!-- ic-health-dead: nodo caido. Cruz dentro de circulo — refuerza por FORMA
+       el estado rojo del semaforo de un nodo (dual-encoding WCAG: nunca solo
+       color). Complementa ic-health-ok / ic-health-warn ya existentes. -->
+  <symbol id="ic-health-dead" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="8.2" fill="none" stroke="currentColor" stroke-width="1.8"/>
+    <path d="M9 9 L15 15 M15 9 L9 15" stroke="currentColor" stroke-width="1.8"
+          stroke-linecap="round"/>
+  </symbol>
+
+  <!-- ic-live-tail: onda emitiendo — log en vivo (SSE) con follow automatico
+       (CA-2). Tres ondas crecientes desde un punto = stream activo. -->
+  <symbol id="ic-live-tail" viewBox="0 0 24 24">
+    <circle cx="6.5" cy="17.5" r="1.9" fill="currentColor"/>
+    <path d="M6 11.5 A6 6 0 0 1 12.5 18" fill="none" stroke="currentColor"
+          stroke-width="1.7" stroke-linecap="round"/>
+    <path d="M6 6.5 A11 11 0 0 1 17.5 18" fill="none" stroke="currentColor"
+          stroke-width="1.7" stroke-linecap="round" opacity="0.6"/>
+  </symbol>
+
+  <!-- ic-transition-history: reloj con flecha de retroceso — historial de
+       transiciones vivo<->muerto con causa (CA-1). "Desde cuando" + caidas. -->
+  <symbol id="ic-transition-history" viewBox="0 0 24 24">
+    <path d="M3.8 12 A8.2 8.2 0 1 0 6.2 6.2" fill="none" stroke="currentColor"
+          stroke-width="1.8" stroke-linecap="round"/>
+    <path d="M3.4 7 L3.9 11.6 L8.4 10.8" fill="none" stroke="currentColor"
+          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M12 8.5 V12.3 L14.8 14" fill="none" stroke="currentColor"
+          stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+
 </svg>

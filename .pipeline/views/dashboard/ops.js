@@ -1,33 +1,29 @@
 'use strict';
 
 // =============================================================================
-// ops.js — Vista "Ops" del Dashboard V3 (issue #3732, padre #3715).
+// ops.js — Vista "Ops" del Dashboard V3.
 //
-// Extracción de la ventana Ops desde el monolito `satellites.js` (renderOps)
-// a su propio módulo, siguiendo la plantilla canónica de `multi-provider.js`:
-//   - loadTheme() + nav bar V3 (renderNavTabsSsr) + sprite inline.
-//   - escape SSR unificado via lib/escape-html.js (#3722).
-//   - render SERVER-SIDE de los datos del slice (banner Telegram, grid de
-//     procesos, mini-cards QA env) + client JS que refresca por polling.
+// Origen (issue #3732, padre #3715): extracción de la ventana Ops del monolito
+// `satellites.js` a su propio módulo SSR + polling.
 //
-// Rediseño V3 (decisiones congeladas del UX en #3732, #3715):
-//   1. <pre> con JSON crudo de QA env eliminado (CA-C2) → mini-cards por
-//      entorno con badge de salud + meta key:value + último error truncado.
-//   2. Banner Telegram dual-encoding (color + icono + texto), oculto cuando ok.
-//   3. Grid de 5 procesos; listener/svc-telegram heredan estado bot-down.
-//   4. Tooltips informativos (CA-C5) en cada zona: title= + aria-label.
-//   5. Stale orders: número grande + breakdown por motivo (client-fill).
+// Rediseño EP8-H7 (#3960, épica #3952) — "topología de servicios con log inline
+// y restart auditado". Reemplaza el grid plano de cards por un PANEL DE CONTROL:
+//   CA-1  Topología jerárquica (pulpo → servicios → dashboard) con dual-encoding;
+//         cada nodo muestra "desde cuándo" (uptime sano / "caído hace N m") y, al
+//         seleccionarlo, el último error completo + historial de transiciones.
+//   CA-2  Log inline en vivo (SSE) de solo lectura con follow automático,
+//         lazy-open SOLO del nodo seleccionado (no N EventSource simultáneos).
+//   CA-3  Botón Restart por servicio: confirma (confirm-modal.js) + audita +
+//         stop+start AISLADO (jamás el killAll global de restart.js).
+//   CA-4  Reconciler con breakdown por motivo (color + texto) + sparkline 7 d.
+//   CA-5  Render como grafo con conectores, fiel al mockup 36-ops-topologia-v3.
 //
-// Seguridad (formaliza REQ-SEC-1..7 del análisis security de #3732):
-//   - REQ-SEC-1/CA-D1: toda interpolación dinámica pasa por escapeHtmlText
-//     (contexto body) o escapeHtmlAttr (contexto atributo title=/aria-label).
-//   - REQ-SEC-6/CA-D3: el texto runtime (lastError.description, etc.) pasa por
-//     sanitizeRuntime() → sanitizer.js (redacta secrets) ANTES del escape.
-//   - REQ-SEC-7/CA-A3: si el require del módulo o el state fallan, render
-//     inerte VISIBLE ("Ventana Ops no disponible"), nunca string vacío.
-//
-// CA-F2: este módulo usa `lib/escape-html.js` (split #1 del épico #3715 ya
-// aterrizó en main — verificado). No queda escape inline duplicado.
+// Seguridad (REQ-SEC-1..7 de #3732 + REQ-SEC-H7-1..6 de #3960):
+//   - Todo texto runtime nuevo (último error, motivo, timestamps, líneas de log)
+//     pasa por sanitizeRuntime()/sanitizer.js (redact secrets) y luego por
+//     escapeHtmlText/escapeHtmlAttr (anti-XSS log poisoning).
+//   - El SSE redacta server-side en dash.js (REQ-SEC-H7-1); el cliente escapa.
+//   - Render inerte VISIBLE si el state falla (REQ-SEC-7), nunca string vacío.
 // =============================================================================
 
 const fs = require('node:fs');
@@ -35,6 +31,7 @@ const path = require('node:path');
 
 const { escapeHtmlText, escapeHtmlAttr } = require('../../lib/escape-html.js');
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
+const { CONFIRM_MODAL_JS } = require('./confirm-modal');
 
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 function loadTheme() {
@@ -64,12 +61,22 @@ const PROC_QUEUES = {
 };
 const TG_PROCS = new Set(['listener', 'svc-telegram']);
 
-// Entornos QA mostrados como mini-cards (reemplazo del <pre> JSON crudo).
-const QA_ENV_CARDS = [
-    { key: 'qaEnv', label: 'Local · qa-env' },
-    { key: 'qaRemote', label: 'AWS Lambda · qa-remote' },
-    { key: 'infraHealth', label: 'Infraestructura' },
-    { key: 'telegramHealth', label: 'Telegram listener' },
+// EP8-H7 (#3960) — topología jerárquica. `root` es el orquestador; `services`
+// la capa intermedia; `output` la capa de salida. El render es data-driven:
+// sólo se dibujan los nodos presentes en `state.procesos`, pero este orden
+// fija la jerarquía y los conectores (CA-5, fiel al mockup 36).
+const TOPOLOGY = {
+    root: 'pulpo',
+    services: ['listener', 'svc-telegram', 'svc-github', 'svc-drive', 'svc-reconciler', 'outbox-drain'],
+    output: ['dashboard'],
+};
+
+// Entornos QA mostrados como pills compactas (CA-5, mockup 36 §2.5).
+const QA_ENV_PILLS = [
+    { key: 'qaEnv', label: 'emulador' },
+    { key: 'qaRemote', label: 'backend' },
+    { key: 'infraHealth', label: 'infra' },
+    { key: 'telegramHealth', label: 'telegram' },
 ];
 
 // Deriva el estado de salud ('ok' | 'warn' | 'bad') de un sub-objeto del slice.
@@ -89,66 +96,111 @@ function fmtDurSsr(ms) {
     const n = Number(ms) || 0;
     if (n <= 0) return '—';
     const totalSec = Math.floor(n / 1000);
-    const h = Math.floor(totalSec / 3600);
+    const d = Math.floor(totalSec / 86400);
+    const h = Math.floor((totalSec % 86400) / 3600);
     const m = Math.floor((totalSec % 3600) / 60);
     const s = totalSec % 60;
+    if (d >= 1) return d + 'd ' + h + 'h';
     if (h >= 1) return h + 'h ' + m + 'm';
     if (m >= 1) return m + 'm ' + s + 's';
     return s + 's';
 }
 
 const OPS_CSS = `
-.ops-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
-.ops-card { background: var(--in-bg-3); padding: 12px 14px; border-radius: var(--in-radius-sm); border: 1px solid var(--in-border); display: flex; flex-direction: column; gap: 4px; }
-.ops-card.alive { border-color: var(--in-ok); }
-.ops-card.dead { border-color: var(--in-bad); opacity: 0.7; }
-.ops-card.bot-down { border-color: var(--in-bad); background: var(--in-bad-soft); }
-.ops-card-name { font-weight: 600; }
-.ops-card-meta { font-size: 11px; color: var(--in-fg-dim); font-family: var(--in-mono); }
-.ops-card-error { font-size: 11px; color: var(--in-bad); font-weight: 600; margin-top: 2px; }
-.ops-queues { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-.ops-queue-group { display: flex; align-items: center; gap: 3px; padding: 2px 6px; border-radius: 999px; background: var(--in-bg-2); border: 1px solid var(--in-border); font-size: 10px; font-family: var(--in-mono); font-variant-numeric: tabular-nums; }
-.ops-queue-group .ops-queue-name { color: var(--in-fg-dim); margin-right: 2px; font-weight: 600; text-transform: lowercase; }
-.ops-chip { display: inline-flex; align-items: center; gap: 2px; padding: 0 4px; border-radius: 6px; color: var(--in-fg-dim); }
-.ops-chip.hot { color: var(--in-warn); font-weight: 600; }
-.ops-chip.work { color: var(--in-info); font-weight: 600; }
+/* EP8-H7 (#3960) — topología jerárquica de servicios (CA-5). */
+.ops-topo { display: flex; flex-direction: column; align-items: center; gap: 0; padding: 6px 0 2px; }
+.ops-topo-row { display: flex; justify-content: center; flex-wrap: wrap; gap: 14px; position: relative; }
+.ops-topo-bus { width: 2px; height: 16px; background: var(--in-border); }
+.ops-topo-services { padding-top: 9px; }
+.ops-topo-services::before { content: ''; position: absolute; top: 0; left: 8%; right: 8%; height: 2px; background: var(--in-border); }
+.ops-topo-output { padding-top: 9px; }
+.ops-topo-output::before { content: ''; position: absolute; top: 0; left: 50%; width: 2px; height: 9px; background: var(--in-border); transform: translateX(-50%); }
+.ops-topo-services .ops-node::before { content: ''; position: absolute; top: -9px; left: 50%; width: 2px; height: 9px; background: var(--in-border); transform: translateX(-50%); }
+
+.ops-node { position: relative; min-width: 132px; background: var(--in-bg-3); border: 1px solid var(--in-border); border-radius: var(--in-radius-sm); padding: 10px 12px; display: flex; flex-direction: column; align-items: center; gap: 3px; cursor: pointer; color: var(--in-fg); font: inherit; text-align: center; transition: border-color .12s, background .12s; }
+.ops-node:hover { border-color: var(--in-fg-dim); }
+.ops-node:focus-visible { outline: 2px solid var(--in-info); outline-offset: 1px; }
+.ops-node.is-alive { border-color: var(--in-ok); }
+.ops-node.is-dead { border-color: var(--in-bad); background: var(--in-bad-soft); }
+.ops-node.is-bot-down { border-color: var(--in-bad); background: var(--in-bad-soft); }
+.ops-node.selected { box-shadow: 0 0 0 2px var(--in-info) inset; }
+.ops-node-head { display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 13px; }
+.ops-node-dot { width: 11px; height: 11px; border-radius: 50%; display: inline-block; flex: none; }
+.ops-node-dot.alive { background: var(--in-ok); box-shadow: 0 0 0 1px var(--in-ok) inset; }
+.ops-node-ico { width: 13px; height: 13px; flex: none; }
+.ops-node-meta { font-size: 10.5px; color: var(--in-fg-dim); font-family: var(--in-mono); }
+.ops-node-meta.dead { color: var(--in-bad); font-weight: 600; }
+.ops-topo-root .ops-node { min-width: 150px; }
+
+/* Panel de detalle del nodo seleccionado (CA-1 + CA-2 + CA-3). */
+.ops-detail { margin-top: 14px; background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: var(--in-radius-sm); padding: 12px 14px; }
+.ops-detail-empty { color: var(--in-fg-dim); font-size: 12px; text-align: center; padding: 8px; }
+.ops-detail-head { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 12px; letter-spacing: .4px; color: var(--in-fg-soft, var(--in-fg-dim)); text-transform: uppercase; margin-bottom: 8px; }
+.ops-detail-head .ops-node-ico { color: var(--in-info); }
+.ops-log { background: var(--in-bg-0, #0D1117); border: 1px solid var(--in-border-subtle, var(--in-border)); border-radius: 6px; font-family: var(--in-mono); font-size: 11px; line-height: 1.45; padding: 8px 10px; max-height: 180px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+.ops-log-line { color: var(--in-fg); }
+.ops-log-line .ts { color: var(--in-fg-dim); }
+.ops-log-line.err { color: var(--in-bad); }
+.ops-log-empty { color: var(--in-fg-dim); }
+.ops-detail-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; flex-wrap: wrap; }
+.ops-hist { display: flex; align-items: center; gap: 6px; font-size: 10.5px; color: var(--in-fg-dim); font-family: var(--in-mono); }
+.ops-hist .ops-node-ico { color: var(--in-fg-dim); }
+.ops-hist strong { color: var(--in-fg); }
+.ops-restart-btn { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 6px; font-size: 11px; font-weight: 600; cursor: pointer; background: var(--in-info-soft, rgba(88,166,255,0.14)); color: var(--in-info); border: 1px solid var(--in-info); font-family: inherit; }
+.ops-restart-btn:hover { background: var(--in-info-soft, rgba(88,166,255,0.22)); }
+.ops-restart-btn:disabled { opacity: .6; cursor: progress; }
+.ops-restart-btn .ops-node-ico { width: 12px; height: 12px; }
+
+/* Reconciler (CA-4): número + barras por motivo + sparkline. */
+.ops-recon { display: flex; flex-direction: column; gap: 10px; }
+.ops-recon-top { display: flex; align-items: baseline; gap: 14px; }
+.ops-recon-count { font-family: var(--in-mono); font-size: 34px; font-weight: 800; color: var(--in-fg); font-variant-numeric: tabular-nums; line-height: 1; }
+.ops-recon-count.is-zero { color: var(--in-fg-dim); }
+.ops-recon-caption { font-size: 11px; color: var(--in-fg-dim); }
+.ops-recon-bars { display: flex; flex-direction: column; gap: 6px; }
+.ops-recon-bar-row { display: grid; grid-template-columns: 92px 1fr 36px; align-items: center; gap: 10px; font-size: 11px; }
+.ops-recon-bar-label { color: var(--in-fg); }
+.ops-recon-bar-track { background: var(--in-bg-2); border-radius: 5px; height: 9px; overflow: hidden; }
+.ops-recon-bar-fill { height: 9px; border-radius: 5px; background: var(--in-info); }
+.ops-recon-bar-fill[data-kind="warn"] { background: var(--in-warn); }
+.ops-recon-bar-fill[data-kind="bad"] { background: var(--in-bad); }
+.ops-recon-bar-val { text-align: right; color: var(--in-fg-dim); font-family: var(--in-mono); font-variant-numeric: tabular-nums; }
+.ops-recon-empty { color: var(--in-fg-dim); font-size: 12px; }
+.ops-recon-spark { display: flex; align-items: center; gap: 8px; }
+.ops-recon-spark-label { font-size: 10.5px; color: var(--in-fg-dim); }
+
+/* QA environment pills (CA-5, mockup §2.5). */
+.ops-qa-pills { display: flex; flex-wrap: wrap; gap: 8px; }
+.ops-qa-pill { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; border: 1px solid transparent; }
+.ops-qa-pill[data-health="ok"] { background: var(--in-ok-soft); color: var(--in-ok); border-color: var(--in-ok); }
+.ops-qa-pill[data-health="warn"] { background: var(--in-warn-soft); color: var(--in-warn); border-color: var(--in-warn); }
+.ops-qa-pill[data-health="bad"] { background: var(--in-bad-soft); color: var(--in-bad); border-color: var(--in-bad); }
+.ops-qa-pill .ops-node-ico { width: 11px; height: 11px; }
+.ops-qa-note { font-size: 10.5px; color: var(--in-fg-dim); margin-top: 8px; }
+
+/* Leyenda dual-encoding (franja inferior). */
+.ops-legend { display: flex; flex-wrap: wrap; gap: 18px; align-items: center; }
+.ops-legend-title { font-size: 10.5px; font-weight: 700; letter-spacing: .6px; color: var(--in-fg-dim); text-transform: uppercase; width: 100%; }
+.ops-legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--in-fg-dim); }
+.ops-legend-item .ops-node-ico { width: 12px; height: 12px; }
+
+/* Banner Telegram (heredado de #3732). */
 .ops-banner-hidden { display: none; }
 .ops-banner { display: block; padding: 12px 16px; margin-bottom: 14px; border-radius: var(--in-radius-sm); border: 1px solid var(--in-bad); border-left: 4px solid var(--in-bad); background: var(--in-bad-soft); color: var(--in-bad); font-weight: 600; }
 .ops-banner-title { display: flex; align-items: center; gap: 8px; }
 .ops-banner-sub { font-weight: 400; font-size: 12px; color: var(--in-fg-dim); margin-top: 4px; font-family: var(--in-mono); word-break: break-word; }
-
-/* #2994 — panel del reconciler stale orders. */
-.stale-orders-panel { display: flex; flex-direction: column; gap: 12px; padding: 12px 14px; background: var(--in-bg-3); border: 1px solid var(--in-border); border-radius: var(--in-radius-sm); min-width: 260px; max-width: 520px; }
-.stale-orders-main { display: flex; flex-direction: column; gap: 2px; }
-.stale-orders-count { font-family: var(--in-mono, monospace); font-size: 32px; font-weight: 600; color: var(--warning, var(--in-warn, #D29922)); font-variant-numeric: tabular-nums; line-height: 1.1; }
-.stale-orders-count.is-zero { color: var(--in-fg-dim); }
-.stale-orders-caption { font-size: 12px; color: var(--in-fg-dim); }
-.stale-orders-breakdown { display: flex; flex-direction: column; gap: 4px; }
-.stale-orders-breakdown-row { display: flex; justify-content: space-between; gap: 12px; font-family: var(--in-mono, monospace); font-size: 12px; font-variant-numeric: tabular-nums; padding: 2px 0; }
-.stale-orders-breakdown-reason { color: var(--in-fg-default, var(--in-fg)); }
-.stale-orders-breakdown-value { color: var(--warning, var(--in-warn, #D29922)); font-weight: 600; }
-.stale-orders-empty { color: var(--in-fg-dim); font-size: 12px; }
-
-/* NUEVO -- mini-cards QA env (reemplazo del <pre> JSON crudo, CA-C2). */
-.ops-env-grid  { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
-.ops-env-card  { background: var(--in-bg-3); border: 1px solid var(--in-border); border-left: 3px solid var(--in-fg-dim); border-radius: var(--in-radius-sm); padding: 12px; display: flex; flex-direction: column; gap: 6px; }
-.ops-env-card[data-health="ok"]   { border-left-color: var(--in-ok); }
-.ops-env-card[data-health="warn"] { border-left-color: var(--in-warn); }
-.ops-env-card[data-health="bad"]  { border-left-color: var(--in-bad); }
-.ops-env-card-head { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13px; }
-.ops-env-card-meta { font-family: var(--in-mono); font-size: 11px; color: var(--in-fg-dim); display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; }
-.ops-env-card-meta dt { color: var(--in-fg-soft, var(--in-fg-dim)); }
-.ops-env-card-meta dd { margin: 0; color: var(--in-fg); word-break: break-word; }
-.ops-env-card-error { font-size: 11px; color: var(--in-bad); margin-top: 2px; font-family: var(--in-mono); word-break: break-word; }
-.ops-env-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 12px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; font-weight: 600; border: 1px solid transparent; }
-.ops-env-badge[data-health="ok"]   { background: var(--in-ok-soft); color: var(--in-ok); border-color: var(--in-ok); }
-.ops-env-badge[data-health="warn"] { background: var(--in-warn-soft); color: var(--in-warn); border-color: var(--in-warn); }
-.ops-env-badge[data-health="bad"]  { background: var(--in-bad-soft); color: var(--in-bad); border-color: var(--in-bad); }
 `;
+
+// ───────────────────────── SVG icon helper ─────────────────────────
+function icoSsr(id, cls) {
+    const c = cls ? ' ' + cls : '';
+    return '<svg class="ops-node-ico' + c + '" aria-hidden="true" focusable="false" viewBox="0 0 24 24">' +
+        '<use href="#' + id + '"></use></svg>';
+}
 
 // ───────────────────────── SSR helpers (server-side) ─────────────────────────
 
-// Banner Telegram (SSR). Visible solo cuando tgHealth.ok === false (CA-B1 #1).
+// Banner Telegram (SSR). Visible solo cuando tgHealth.ok === false.
 function renderBannerSsr(tgHealth) {
     const tgDown = tgHealth && tgHealth.ok === false;
     if (!tgDown) {
@@ -173,97 +225,101 @@ function renderBannerSsr(tgHealth) {
         '</div>';
 }
 
-function chipSsr(icon, n, kind) {
-    const v = Number(n) || 0;
-    const cls = (kind === 'pend' && v > 0) ? 'ops-chip hot'
-        : (kind === 'work' && v > 0) ? 'ops-chip work'
-        : 'ops-chip';
-    return '<span class="' + cls + '" title="' + escapeHtmlAttr('cola ' + kind) + '">' +
-        icon + ' ' + v + '</span>';
+// Render de un nodo de la topología (CA-1, dual-encoding). El nodo es un
+// <button> (accesible: clickeable + foco por teclado). Nodo caído: borde rojo
+// + ícono ic-health-dead + label "caído" — nunca solo color.
+function nodeCardSsr(name, p, opts) {
+    const proc = p || {};
+    const alive = !!proc.alive;
+    const isTg = TG_PROCS.has(name);
+    const botDown = isTg && opts && opts.tgDown;
+    let cls = 'ops-node ' + (alive ? 'is-alive' : 'is-dead');
+    if (botDown) cls += ' is-bot-down';
+    const stateLabel = alive ? 'vivo' : 'caído';
+
+    const head = alive
+        ? '<span class="ops-node-dot alive" aria-hidden="true"></span>'
+        : icoSsr('ic-health-dead');
+    const meta = alive
+        ? '<div class="ops-node-meta">PID ' + escapeHtmlText(proc.pid != null ? String(proc.pid) : '—') +
+            ' · ' + escapeHtmlText(fmtDurSsr(proc.uptime)) + '</div>'
+        : '<div class="ops-node-meta dead" data-deadlabel="1">caído</div>';
+
+    return '<button type="button" class="' + cls + '"' +
+        ' data-node="' + escapeHtmlAttr(name) + '"' +
+        ' data-alive="' + (alive ? '1' : '0') + '"' +
+        ' title="' + escapeHtmlAttr('Proceso ' + name + ' — ' + stateLabel + ' · click para log + historial + restart') + '"' +
+        ' aria-label="' + escapeHtmlAttr('Proceso ' + name + ' ' + stateLabel + ', abrir detalle') + '">' +
+        '<span class="ops-node-head">' + head + escapeHtmlText(name) + '</span>' +
+        meta +
+        '</button>';
 }
 
-function queuesHtmlSsr(name, servicios) {
-    const queues = PROC_QUEUES[name] || [];
-    if (!queues.length) return '';
-    let html = '<div class="ops-queues">';
-    for (const q of queues) {
-        const s = (servicios && servicios[q]) || { pendiente: 0, trabajando: 0, listo: 0 };
-        html += '<span class="ops-queue-group"' +
-            ' title="' + escapeHtmlAttr('Cola ' + q + ': pendiente / trabajando / listo') + '"' +
-            ' aria-label="' + escapeHtmlAttr('Cola ' + q) + '">' +
-            '<span class="ops-queue-name">' + escapeHtmlText(q) + '</span>' +
-            chipSsr('⏳', s.pendiente, 'pend') +
-            chipSsr('⚙', s.trabajando, 'work') +
-            chipSsr('✓', s.listo, 'done') +
-            '</span>';
+// Grafo jerárquico completo (CA-5).
+function renderTopologySsr(procesos, opts) {
+    const procs = procesos || {};
+    const present = (names) => names.filter(n => Object.prototype.hasOwnProperty.call(procs, n));
+    const rootName = TOPOLOGY.root;
+    const services = present(TOPOLOGY.services);
+    const output = present(TOPOLOGY.output);
+
+    // Cualquier proceso reportado que no esté en la jerarquía declarada cae en
+    // la capa de servicios (degradación defensiva — no perdemos nodos).
+    const declared = new Set([rootName, ...TOPOLOGY.services, ...TOPOLOGY.output]);
+    for (const n of Object.keys(procs)) if (!declared.has(n)) services.push(n);
+
+    if (!Object.keys(procs).length) {
+        return '<div class="ops-detail-empty">Sin procesos reportados todavía.</div>';
+    }
+
+    let html = '<div class="ops-topo" role="group" aria-label="Topología de servicios del pipeline">';
+    if (Object.prototype.hasOwnProperty.call(procs, rootName)) {
+        html += '<div class="ops-topo-row ops-topo-root">' + nodeCardSsr(rootName, procs[rootName], opts) + '</div>';
+        if (services.length || output.length) html += '<div class="ops-topo-bus" aria-hidden="true"></div>';
+    }
+    if (services.length) {
+        html += '<div class="ops-topo-row ops-topo-services">';
+        for (const n of services) html += nodeCardSsr(n, procs[n], opts);
+        html += '</div>';
+    }
+    if (output.length) {
+        html += '<div class="ops-topo-row ops-topo-output">';
+        for (const n of output) html += nodeCardSsr(n, procs[n], opts);
+        html += '</div>';
     }
     html += '</div>';
+
+    // Panel de detalle (se llena client-side al seleccionar un nodo).
+    html += '<div class="ops-detail" id="ops-detail">' +
+        '<div class="ops-detail-empty" id="ops-detail-empty">Seleccioná un nodo para ver su log en vivo, su historial de caídas y reiniciarlo.</div>' +
+        '<div id="ops-detail-body" hidden></div>' +
+        '</div>';
     return html;
 }
 
-function renderProcCardsSsr(procesos, servicios, tgDown, tgHealth) {
-    const entries = Object.entries(procesos || {});
-    if (!entries.length) {
-        return '<div class="ops-card-meta">Sin procesos reportados todavía.</div>';
-    }
+// Pills QA (CA-5). Dual-encoding: check/cruz + texto, nunca solo color.
+function renderQaPillsSsr(state) {
     let html = '';
-    for (const [name, p] of entries) {
-        const proc = p || {};
-        const isTg = TG_PROCS.has(name);
-        let cls = proc.alive ? 'alive' : 'dead';
-        if (isTg && tgDown) cls = (proc.alive ? 'alive ' : 'dead ') + 'bot-down';
-        const dot = proc.alive ? '🟢' : '🔴';
-        const errLine = (isTg && tgDown)
-            ? '<div class="ops-card-error">⚠ ' +
-                escapeHtmlText(sanitizeRuntime(String((tgHealth.lastError || {}).description || 'API rechazada'), 80)) +
-                '</div>'
-            : '';
-        html += '<div class="ops-card ' + cls + '"' +
-            ' title="' + escapeHtmlAttr('Proceso ' + name + ' — ' + (proc.alive ? 'vivo' : 'caído')) + '"' +
-            ' aria-label="' + escapeHtmlAttr('Proceso ' + name + ' ' + (proc.alive ? 'vivo' : 'caído')) + '">' +
-            '<div class="ops-card-name"><span aria-hidden="true">' + dot + '</span> ' + escapeHtmlText(name) + '</div>' +
-            '<div class="ops-card-meta">PID ' + escapeHtmlText(proc.pid != null ? String(proc.pid) : '—') + '</div>' +
-            '<div class="ops-card-meta">uptime ' + escapeHtmlText(fmtDurSsr(proc.uptime)) + '</div>' +
-            errLine +
-            queuesHtmlSsr(name, servicios) +
-            '</div>';
+    for (const c of QA_ENV_PILLS) {
+        const h = healthOf(state[c.key]);
+        const ico = h === 'ok' ? icoSsr('ic-ok') : (h === 'bad' ? icoSsr('ic-health-dead') : icoSsr('ic-health-warn'));
+        html += '<span class="ops-qa-pill" data-health="' + h + '"' +
+            ' title="' + escapeHtmlAttr('Entorno ' + c.label + ' — estado ' + h) + '"' +
+            ' aria-label="' + escapeHtmlAttr(c.label + ' ' + h) + '">' +
+            ico + escapeHtmlText(c.label) + '</span>';
     }
     return html;
 }
 
-function envMetaSsr(data) {
-    if (!data || typeof data !== 'object') return '';
-    let html = '';
-    for (const [k, v] of Object.entries(data)) {
-        if (k === 'lastError') continue;
-        if (v === null || typeof v === 'object') continue;
-        html += '<dt>' + escapeHtmlText(k) + '</dt>' +
-            '<dd>' + escapeHtmlText(sanitizeRuntime(String(v), 60)) + '</dd>';
-    }
-    return html;
-}
-
-function renderEnvCardsSsr(state) {
-    let html = '';
-    for (const c of QA_ENV_CARDS) {
-        const data = state[c.key];
-        const h = healthOf(data);
-        const lastErr = (data && data.lastError && data.lastError.description) || '';
-        const errLine = lastErr
-            ? '<div class="ops-env-card-error">' +
-                escapeHtmlText(sanitizeRuntime(String(lastErr), 80)) + '</div>'
-            : '';
-        html += '<div class="ops-env-card" data-health="' + h + '"' +
-            ' title="' + escapeHtmlAttr('Salud del entorno ' + c.label) + '"' +
-            ' aria-label="' + escapeHtmlAttr(c.label + ' — estado ' + h) + '">' +
-            '<div class="ops-env-card-head">' +
-            '<span class="ops-env-badge" data-health="' + h + '">' + h.toUpperCase() + '</span> ' +
-            escapeHtmlText(c.label) + '</div>' +
-            '<dl class="ops-env-card-meta">' + envMetaSsr(data) + '</dl>' +
-            errLine +
-            '</div>';
-    }
-    return html;
+function renderLegendSsr() {
+    return '<div class="ops-legend">' +
+        '<div class="ops-legend-title">Leyenda · estado por nodo (color + forma + texto — nunca solo color)</div>' +
+        '<span class="ops-legend-item"><span class="ops-node-dot alive" aria-hidden="true"></span>vivo — PID + uptime</span>' +
+        '<span class="ops-legend-item">' + icoSsr('ic-health-dead') + 'caído — borde rojo + "desde cuándo" + último error</span>' +
+        '<span class="ops-legend-item">' + icoSsr('ic-live-tail') + 'log en vivo (SSE, follow auto, lazy-open del nodo)</span>' +
+        '<span class="ops-legend-item">' + icoSsr('ic-transition-history') + 'historial de transiciones con causa</span>' +
+        '<span class="ops-legend-item">' + icoSsr('ic-restart') + 'restart aislado (stop+start) · confirma + audita</span>' +
+        '</div>';
 }
 
 function opsBodyHtml(state) {
@@ -272,31 +328,41 @@ function opsBodyHtml(state) {
     return `
 ${renderBannerSsr(tgHealth)}
 
-<section class="in-section" aria-labelledby="ops-procesos-h">
-  <h2 id="ops-procesos-h" class="in-section-title"><span class="in-section-title-icon" aria-hidden="true">🛠</span>Procesos del pipeline</h2>
-  <div id="ops-procesos" class="ops-grid" aria-label="Procesos vivos del pipeline">${renderProcCardsSsr(state.procesos, state.servicios, tgDown, tgHealth || {})}</div>
+<section class="in-section" aria-labelledby="ops-topo-h">
+  <h2 id="ops-topo-h" class="in-section-title"><span class="in-section-title-icon" aria-hidden="true">🛰</span>Topología de servicios</h2>
+  <div id="ops-procesos" aria-label="Topología jerárquica de procesos del pipeline">${renderTopologySsr(state.procesos, { tgDown })}</div>
 </section>
 
-<section class="in-section" aria-labelledby="ops-stale-h">
-  <h2 id="ops-stale-h" class="in-section-title"><span class="in-section-title-icon" aria-hidden="true">⏳</span>Reconciler · órdenes descartadas (stale)</h2>
-  <div class="stale-orders-panel" id="stale-orders-panel">
-    <div class="stale-orders-main">
-      <div class="stale-orders-count" id="stale-orders-count"
+<section class="in-section" aria-labelledby="ops-recon-h">
+  <h2 id="ops-recon-h" class="in-section-title"><span class="in-section-title-icon" aria-hidden="true">⏳</span>Reconciler · órdenes descartadas (stale)</h2>
+  <div class="ops-recon" id="ops-recon">
+    <div class="ops-recon-top">
+      <div class="ops-recon-count" id="stale-orders-count"
            title="Órdenes que el reconciler descartó en las últimas 24 horas"
            aria-label="total de órdenes descartadas en 24 horas">…</div>
-      <div class="stale-orders-caption">últimas 24h</div>
+      <div class="ops-recon-caption">últimas 24h</div>
     </div>
-    <div class="stale-orders-breakdown" id="stale-orders-breakdown"></div>
+    <div class="ops-recon-bars" id="ops-recon-bars"></div>
+    <div class="ops-recon-spark">
+      <span class="ops-recon-spark-label">serie 7 d:</span>
+      <span id="ops-recon-spark" aria-label="tendencia de órdenes descartadas en 7 días"></span>
+    </div>
   </div>
 </section>
 
-<section class="in-section" aria-labelledby="ops-qaenv-h">
-  <h2 id="ops-qaenv-h" class="in-section-title"><span class="in-section-title-icon" aria-hidden="true">📡</span>QA Environment</h2>
-  <div id="ops-qaenv" class="ops-env-grid" aria-label="Salud de entornos QA y Telegram">${renderEnvCardsSsr(state)}</div>
+<section class="in-section" id="ops-qaenv" aria-labelledby="ops-qa-h">
+  <h2 id="ops-qa-h" class="in-section-title"><span class="in-section-title-icon" aria-hidden="true">📡</span>QA Environment</h2>
+  <div id="ops-qa-pills" class="ops-qa-pills" aria-label="Salud de entornos QA y Telegram">${renderQaPillsSsr(state)}</div>
+  <div class="ops-qa-note">La alerta de un entorno caído también vive en la bandeja del Home con su "desde cuándo" y último error completo (misma fuente de verdad).</div>
+</section>
+
+<section class="in-section" aria-labelledby="ops-legend-h">
+  <h2 id="ops-legend-h" class="in-section-title" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Leyenda</h2>
+  ${renderLegendSsr()}
 </section>`;
 }
 
-// ───────────────────────── Client JS (polling) ─────────────────────────
+// ───────────────────────── Client JS (polling + interacción) ─────────────────────────
 
 const OPS_CLIENT_JS = `
 function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c])); }
@@ -304,42 +370,152 @@ async function fetchJson(url){
     try { const r = await fetch(url, { cache: 'no-store' }); if(!r.ok) return null; return await r.json(); }
     catch { return null; }
 }
+function ico(id){ return '<svg class="ops-node-ico" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><use href="#'+id+'"></use></svg>'; }
 function fmtDur(ms){
     const n = Number(ms)||0; if(n<=0) return '—';
-    const t = Math.floor(n/1000), h = Math.floor(t/3600), m = Math.floor((t%3600)/60), s = t%60;
-    if(h>=1) return h+'h '+m+'m'; if(m>=1) return m+'m '+s+'s'; return s+'s';
+    const t = Math.floor(n/1000), d = Math.floor(t/86400), h = Math.floor((t%86400)/3600), m = Math.floor((t%3600)/60), s = t%60;
+    if(d>=1) return d+'d '+h+'h'; if(h>=1) return h+'h '+m+'m'; if(m>=1) return m+'m '+s+'s'; return s+'s';
 }
-const PROC_QUEUES = ${JSON.stringify(PROC_QUEUES)};
+function fmtAgo(ms){
+    const n = Number(ms)||0; if(n<0) return '';
+    const t = Math.floor(n/60000); if(t<1) return 'recién'; if(t<60) return 'hace '+t+' m';
+    const h = Math.floor(t/60), m = t%60; if(h<24) return 'hace '+h+' h '+m+' m';
+    return 'hace '+Math.floor(h/24)+' d';
+}
 const TG_PROCS = new Set(${JSON.stringify(Array.from(TG_PROCS))});
-const QA_ENV_CARDS = ${JSON.stringify(QA_ENV_CARDS)};
-function healthOf(data){
-    if(!data || typeof data !== 'object') return 'warn';
-    if(data.ok === true) return 'ok';
-    if(data.ok === false) return 'bad';
-    const s = String(data.status||'').toLowerCase();
-    if(s==='ok'||s==='healthy'||s==='up') return 'ok';
-    if(s==='degraded'||s==='warn'||s==='warning'||s==='stale') return 'warn';
-    if(s==='down'||s==='error'||s==='bad'||s==='fail') return 'bad';
-    return 'warn';
-}
-function chip(icon, n, kind){
-    const v = Number(n)||0;
-    const c = (kind==='pend'&&v>0)?'ops-chip hot':(kind==='work'&&v>0)?'ops-chip work':'ops-chip';
-    return '<span class="'+c+'" title="'+escapeHtml('cola '+kind)+'">'+icon+' '+v+'</span>';
-}
-function queuesHTML(name, servicios){
-    const queues = PROC_QUEUES[name] || [];
-    if(!queues.length) return '';
-    let html = '<div class="ops-queues">';
-    for(const q of queues){
-        const s = (servicios && servicios[q]) || { pendiente:0, trabajando:0, listo:0 };
-        html += '<span class="ops-queue-group" title="'+escapeHtml('Cola '+q+': pendiente / trabajando / listo')+'" aria-label="'+escapeHtml('Cola '+q)+'">'
-            + '<span class="ops-queue-name">'+escapeHtml(q)+'</span>'
-            + chip('⏳', s.pendiente, 'pend') + chip('⚙', s.trabajando, 'work') + chip('✓', s.listo, 'done')
-            + '</span>';
+
+// Estado de transiciones por servicio (CA-1) — se refresca por polling y
+// alimenta el label "caído hace N m" de los nodos y el panel de detalle.
+let OPS_TRANS = {};
+async function tickTransitions(){
+    const d = await fetchJson('/api/dash/ops-transitions');
+    if(!d || !Array.isArray(d.transitions)) return;
+    // Agrupar por servicio: último 'dead' ts + summary + lastError.
+    const by = {};
+    for(const ev of d.transitions){
+        const s = ev.service; if(!s) continue;
+        (by[s] = by[s] || []).push(ev);
     }
-    return html + '</div>';
+    const out = {};
+    for(const s in by){
+        const evs = by[s].slice().sort((a,b)=> Date.parse(a.ts)-Date.parse(b.ts));
+        let deadSince = null, lastError = '', downCount = 0; const reasons = {};
+        for(const ev of evs){
+            if(ev.to === 'dead'){ deadSince = Date.parse(ev.ts); lastError = ev.lastError || lastError; downCount++; const r = ev.reason||'unknown'; reasons[r]=(reasons[r]||0)+1; }
+            else if(ev.to === 'alive'){ /* recuperado: el deadSince deja de aplicar si está vivo */ }
+        }
+        const reasonStr = Object.entries(reasons).sort((a,b)=>b[1]-a[1]).map(([r,n])=>r+' ×'+n).join(', ');
+        out[s] = { deadSince, lastError, downCount, summary: downCount? ('caídas 7 d: '+downCount+(reasonStr?' ('+reasonStr+')':'')):'caídas 7 d: 0' };
+    }
+    OPS_TRANS = out;
+    annotateDeadNodes();
+    if(SELECTED) renderDetailMeta(SELECTED);
 }
+function annotateDeadNodes(){
+    document.querySelectorAll('.ops-node[data-alive="0"]').forEach(function(btn){
+        const name = btn.getAttribute('data-node');
+        const meta = btn.querySelector('[data-deadlabel="1"]');
+        if(!meta) return;
+        const t = OPS_TRANS[name];
+        const txt = (t && t.deadSince) ? ('caído '+fmtAgo(Date.now()-t.deadSince)) : 'caído';
+        if(meta.textContent !== txt) meta.textContent = txt;
+    });
+}
+
+// ── Selección de nodo + log inline lazy-SSE (CA-2) ──
+let SELECTED = null;
+let LOG_ES = null;       // único EventSource abierto a la vez (lazy-open)
+let LOG_FOLLOW = true;
+function closeLog(){ if(LOG_ES){ try{ LOG_ES.close(); }catch(e){} LOG_ES = null; } }
+function openLog(service){
+    closeLog();
+    const box = document.getElementById('ops-log-' + cssId(service));
+    if(!box) return;
+    box.innerHTML = '<div class="ops-log-empty">conectando al stream…</div>';
+    let started = false;
+    try {
+        LOG_ES = new EventSource('/logs/stream/' + encodeURIComponent(service + '.log'));
+    } catch(e){ box.innerHTML = '<div class="ops-log-empty">no se pudo abrir el log</div>'; return; }
+    LOG_ES.onmessage = function(ev){
+        let data; try { data = JSON.parse(ev.data); } catch(e){ return; }
+        const lines = Array.isArray(data.lines) ? data.lines : [];
+        if(data.type === 'init'){ box.innerHTML = ''; started = true; }
+        for(const ln of lines) appendLogLine(box, ln);
+        if(LOG_FOLLOW) box.scrollTop = box.scrollHeight;
+    };
+    LOG_ES.onerror = function(){ if(!started){ box.innerHTML = '<div class="ops-log-empty">stream no disponible</div>'; } };
+}
+function appendLogLine(box, raw){
+    // El server ya redacta secrets (REQ-SEC-H7-1). El cliente SOLO escapa HTML
+    // (anti log-poisoning XSS). Resaltado de timestamp y nivel ERROR.
+    const text = String(raw == null ? '' : raw);
+    const isErr = /\\bERROR\\b|Exception|ECONNRESET|ETIMEDOUT|EPIPE|fatal/i.test(text);
+    const m = text.match(/^(\\d{2}:\\d{2}:\\d{2})\\s+([\\s\\S]*)$/);
+    const div = document.createElement('div');
+    div.className = 'ops-log-line' + (isErr ? ' err' : '');
+    if(m){ div.innerHTML = '<span class="ts">'+escapeHtml(m[1])+'</span> '+escapeHtml(m[2]); }
+    else { div.textContent = text; }
+    box.appendChild(div);
+    while(box.children.length > 500) box.removeChild(box.firstChild);
+}
+function cssId(s){ return String(s).replace(/[^a-zA-Z0-9_-]/g,'-'); }
+
+function selectNode(name){
+    if(SELECTED === name){ return; }
+    SELECTED = name;
+    document.querySelectorAll('.ops-node').forEach(function(b){ b.classList.toggle('selected', b.getAttribute('data-node')===name); });
+    const empty = document.getElementById('ops-detail-empty');
+    const body = document.getElementById('ops-detail-body');
+    if(empty) empty.hidden = true;
+    if(!body) return;
+    body.hidden = false;
+    body.innerHTML =
+        '<div class="ops-detail-head">'+ico('ic-live-tail')+'<span>'+escapeHtml(name.toUpperCase())+' · LOG EN VIVO (SSE) + HISTORIAL</span></div>'+
+        '<div class="ops-log" id="ops-log-'+cssId(name)+'" role="log" aria-readonly="true" aria-label="Log en vivo de '+escapeHtml(name)+'" tabindex="0"><div class="ops-log-empty">conectando…</div></div>'+
+        '<div class="ops-detail-foot">'+
+          '<span class="ops-hist" id="ops-hist-'+cssId(name)+'">'+ico('ic-transition-history')+'<span>cargando historial…</span></span>'+
+          '<button type="button" class="ops-restart-btn" id="ops-restart-'+cssId(name)+'" data-svc="'+escapeHtml(name)+'">'+ico('ic-restart')+'Restart (confirma + audita)</button>'+
+        '</div>';
+    const btn = document.getElementById('ops-restart-'+cssId(name));
+    if(btn) btn.addEventListener('click', function(){ doRestart(name, btn); });
+    // log box auto-follow: si el usuario scrollea arriba, pausamos el follow.
+    const lb = document.getElementById('ops-log-'+cssId(name));
+    if(lb) lb.addEventListener('scroll', function(){ LOG_FOLLOW = (lb.scrollTop + lb.clientHeight >= lb.scrollHeight - 8); });
+    LOG_FOLLOW = true;
+    openLog(name);          // lazy-open SOLO del nodo seleccionado
+    renderDetailMeta(name);
+}
+function renderDetailMeta(name){
+    const h = document.getElementById('ops-hist-'+cssId(name));
+    if(!h) return;
+    const t = OPS_TRANS[name] || { summary: 'caídas 7 d: 0', lastError: '' };
+    const tip = t.lastError ? (' · último error: '+t.lastError) : '';
+    h.innerHTML = ico('ic-transition-history')+'<span title="'+escapeHtml(t.summary+tip)+'">'+escapeHtml(t.summary)+(t.lastError?' · último error en tooltip':'')+'</span>';
+}
+
+// ── Restart con confirmación + audit (CA-3) ──
+async function doRestart(service, btn){
+    const ok = await inConfirm({
+        title: '¿Reiniciar '+service+'?',
+        message: 'Se detiene y vuelve a levantar SOLO este servicio (stop+start aislado). Queda registrado en el audit con origen e IP.',
+        preview: [{ label: 'servicio', value: service }, { label: 'acción', value: 'restart aislado (no afecta al resto)' }],
+        confirmLabel: 'Reiniciar', cancelLabel: 'Cancelar', danger: true,
+    });
+    if(!ok) return;
+    if(btn){ btn.disabled = true; btn.innerHTML = ico('ic-restart')+'reiniciando…'; }
+    let res = null;
+    try {
+        const r = await fetch('/api/action', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'restart', target: service, source:'dashboard-ui' }) });
+        res = await r.json().catch(()=>null);
+    } catch(e){ res = { ok:false, msg:'error de red' }; }
+    // REQ-SEC-H7-5: mantener el botón deshabilitado ~5s (anti doble-click/bucle).
+    setTimeout(function(){
+        if(btn){ btn.disabled = false; btn.innerHTML = ico('ic-restart')+'Restart (confirma + audita)'; }
+    }, 5200);
+    if(res && res.ok === false && btn){ btn.title = String(res.msg||'falló'); }
+}
+
+// ── Polling de procesos (refresca la topología sin perder selección) ──
 async function tickOps(){
     const d = await fetchJson('/api/dash/ops');
     if(!d) return;
@@ -360,70 +536,131 @@ async function tickOps(){
             banner.className = 'ops-banner-hidden'; banner.innerHTML = '';
         }
     }
-    const grid = document.getElementById('ops-procesos');
-    if(grid){
-        let html = '';
-        for(const [name, p] of Object.entries(d.procesos || {})){
-            const proc = p || {};
-            const isTg = TG_PROCS.has(name);
-            let cls = proc.alive ? 'alive' : 'dead';
-            if(isTg && tgDown) cls = (proc.alive?'alive ':'dead ') + 'bot-down';
-            const errLine = (isTg && tgDown)
-                ? '<div class="ops-card-error">⚠ '+escapeHtml(String((tgHealth.lastError||{}).description || 'API rechazada').slice(0,80))+'</div>' : '';
-            html += '<div class="ops-card '+cls+'" title="'+escapeHtml('Proceso '+name+' — '+(proc.alive?'vivo':'caído'))+'" aria-label="'+escapeHtml('Proceso '+name+' '+(proc.alive?'vivo':'caído'))+'">'
-                + '<div class="ops-card-name"><span aria-hidden="true">'+(proc.alive?'🟢':'🔴')+'</span> '+escapeHtml(name)+'</div>'
-                + '<div class="ops-card-meta">PID '+escapeHtml(proc.pid!=null?String(proc.pid):'—')+'</div>'
-                + '<div class="ops-card-meta">uptime '+escapeHtml(fmtDur(proc.uptime))+'</div>'
-                + errLine + queuesHTML(name, d.servicios) + '</div>';
+    // Actualizar estado de cada nodo presente sin re-render del grafo (anti-flicker,
+    // preserva la selección y el log abierto).
+    for(const [name, p] of Object.entries(d.procesos || {})){
+        const btn = document.querySelector('.ops-node[data-node="'+cssEsc(name)+'"]');
+        if(!btn) continue;
+        const proc = p || {};
+        const alive = !!proc.alive;
+        btn.setAttribute('data-alive', alive ? '1':'0');
+        const isTg = TG_PROCS.has(name);
+        btn.className = 'ops-node ' + (alive?'is-alive':'is-dead') + ((isTg&&tgDown)?' is-bot-down':'') + (SELECTED===name?' selected':'');
+        const head = btn.querySelector('.ops-node-head');
+        if(head){
+            const dot = alive ? '<span class="ops-node-dot alive" aria-hidden="true"></span>' : ico('ic-health-dead');
+            head.innerHTML = dot + escapeHtml(name);
         }
-        if(grid.innerHTML !== html) grid.innerHTML = html;
-    }
-    const env = document.getElementById('ops-qaenv');
-    if(env){
-        let html = '';
-        for(const c of QA_ENV_CARDS){
-            const data = d[c.key];
-            const h = healthOf(data);
-            let meta = '';
-            if(data && typeof data === 'object'){
-                for(const [k,v] of Object.entries(data)){
-                    if(k==='lastError' || v===null || typeof v === 'object') continue;
-                    meta += '<dt>'+escapeHtml(k)+'</dt><dd>'+escapeHtml(String(v).slice(0,60))+'</dd>';
-                }
-            }
-            const lastErr = (data && data.lastError && data.lastError.description) || '';
-            const errLine = lastErr ? '<div class="ops-env-card-error">'+escapeHtml(String(lastErr).slice(0,80))+'</div>' : '';
-            html += '<div class="ops-env-card" data-health="'+h+'" title="'+escapeHtml('Salud del entorno '+c.label)+'" aria-label="'+escapeHtml(c.label+' — estado '+h)+'">'
-                + '<div class="ops-env-card-head"><span class="ops-env-badge" data-health="'+h+'">'+h.toUpperCase()+'</span> '+escapeHtml(c.label)+'</div>'
-                + '<dl class="ops-env-card-meta">'+meta+'</dl>'+errLine+'</div>';
+        let meta = btn.querySelector('.ops-node-meta');
+        if(meta){
+            if(alive){ meta.className='ops-node-meta'; meta.removeAttribute('data-deadlabel'); meta.textContent = 'PID '+(proc.pid!=null?String(proc.pid):'—')+' · '+fmtDur(proc.uptime); }
+            else { meta.className='ops-node-meta dead'; meta.setAttribute('data-deadlabel','1'); }
         }
-        if(env.innerHTML !== html) env.innerHTML = html;
     }
+    annotateDeadNodes();
 }
-async function tickStaleOrders(){
+function cssEsc(s){ return String(s).replace(/["\\\\]/g, '\\\\$&'); }
+
+// ── Reconciler: número + barras por motivo (CA-4) ──
+function reasonKind(reason){
+    const r = String(reason||'').toLowerCase();
+    if(/valida|invalid|reject|error/.test(r)) return 'bad';
+    if(/timeout|stale|retry|expir/.test(r)) return 'warn';
+    return 'info';
+}
+async function tickReconciler(){
     const d = await fetchJson('/api/dash/reconciler-stale-orders');
     if(!d) return;
     const countEl = document.getElementById('stale-orders-count');
-    const breakdownEl = document.getElementById('stale-orders-breakdown');
-    if(!countEl || !breakdownEl) return;
+    const barsEl = document.getElementById('ops-recon-bars');
+    if(!countEl || !barsEl) return;
     const total = Number(d.total_24h) || 0;
     const txt = String(total);
     if(countEl.textContent !== txt) countEl.textContent = txt;
-    countEl.className = total === 0 ? 'stale-orders-count is-zero' : 'stale-orders-count';
-    const reasons = d.by_reason || {};
+    countEl.className = total === 0 ? 'ops-recon-count is-zero' : 'ops-recon-count';
+    const reasons = Object.entries(d.by_reason || {}).sort((a,b)=>b[1]-a[1]);
+    const max = reasons.length ? reasons[0][1] : 1;
     let html = '';
-    if(total === 0){
-        html = '<div class="stale-orders-empty">Sin descartes en 24h — saludable</div>';
+    if(!reasons.length){
+        html = '<div class="ops-recon-empty">Sin descartes en 24h — saludable</div>';
     } else {
-        for(const [reason, n] of Object.entries(reasons).sort((a,b)=>b[1]-a[1])){
-            html += '<div class="stale-orders-breakdown-row"><span class="stale-orders-breakdown-reason">— '+escapeHtml(reason)+'</span><span class="stale-orders-breakdown-value">'+(Number(n)||0)+'</span></div>';
+        for(const [reason, n] of reasons){
+            const pct = Math.max(4, Math.round((Number(n)||0)/max*100));
+            const kind = reasonKind(reason);
+            html += '<div class="ops-recon-bar-row">'
+                + '<span class="ops-recon-bar-label">'+escapeHtml(reason)+'</span>'
+                + '<span class="ops-recon-bar-track"><span class="ops-recon-bar-fill" data-kind="'+kind+'" style="width:'+pct+'%"></span></span>'
+                + '<span class="ops-recon-bar-val">'+(Number(n)||0)+'</span></div>';
         }
     }
-    if(breakdownEl.innerHTML !== html) breakdownEl.innerHTML = html;
+    if(barsEl.innerHTML !== html) barsEl.innerHTML = html;
 }
+async function tickReconcilerSpark(){
+    const d = await fetchJson('/api/dash/reconciler-history');
+    const el = document.getElementById('ops-recon-spark');
+    if(!el) return;
+    const totals = (d && Array.isArray(d.totals)) ? d.totals : [];
+    if(totals.length < 2){ el.innerHTML = '<span class="ops-recon-spark-label">sin serie todavía</span>'; return; }
+    const W = 160, H = 26, pad = 2;
+    const max = Math.max.apply(null, totals), min = Math.min.apply(null, totals);
+    const span = (max - min) || 1;
+    const pts = totals.map(function(v, i){
+        const x = pad + (i/(totals.length-1))*(W-2*pad);
+        const y = pad + (1 - (v-min)/span)*(H-2*pad);
+        return x.toFixed(1)+','+y.toFixed(1);
+    }).join(' ');
+    const lastX = (pad + (W-2*pad)).toFixed(1);
+    const lastY = (pad + (1 - (totals[totals.length-1]-min)/span)*(H-2*pad)).toFixed(1);
+    el.innerHTML = '<svg width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'" aria-hidden="true">'
+        + '<polyline points="'+pts+'" fill="none" stroke="var(--in-warn)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+        + '<circle cx="'+lastX+'" cy="'+lastY+'" r="2.4" fill="var(--in-warn)"/></svg>';
+}
+
+// ── QA pills ──
+function healthOf(data){
+    if(!data || typeof data !== 'object') return 'warn';
+    if(data.ok === true) return 'ok';
+    if(data.ok === false) return 'bad';
+    const s = String(data.status||'').toLowerCase();
+    if(s==='ok'||s==='healthy'||s==='up') return 'ok';
+    if(s==='degraded'||s==='warn'||s==='warning'||s==='stale') return 'warn';
+    if(s==='down'||s==='error'||s==='bad'||s==='fail') return 'bad';
+    return 'warn';
+}
+const QA_PILLS = ${JSON.stringify(QA_ENV_PILLS)};
+async function tickQaPills(){
+    const d = await fetchJson('/api/dash/ops');
+    if(!d) return;
+    const wrap = document.getElementById('ops-qa-pills');
+    if(!wrap) return;
+    let html = '';
+    for(const c of QA_PILLS){
+        const h = healthOf(d[c.key]);
+        const id = h==='ok' ? 'ic-ok' : (h==='bad' ? 'ic-health-dead' : 'ic-health-warn');
+        html += '<span class="ops-qa-pill" data-health="'+h+'" title="'+escapeHtml('Entorno '+c.label+' — estado '+h)+'" aria-label="'+escapeHtml(c.label+' '+h)+'">'+ico(id)+escapeHtml(c.label)+'</span>';
+    }
+    if(wrap.innerHTML !== html) wrap.innerHTML = html;
+}
+
 function tickClock(){ const c = document.getElementById('hdr-clock'); if(c) c.textContent = new Date().toLocaleTimeString('es-AR'); }
-const POLLS = [{ fn: tickOps, ms: 5000 }, { fn: tickStaleOrders, ms: 30000 }, { fn: tickClock, ms: 1000 }];
-async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
+
+// Delegación de click en la topología (los nodos pueden re-renderizarse).
+document.addEventListener('click', function(ev){
+    const node = ev.target.closest && ev.target.closest('.ops-node');
+    if(node && node.getAttribute('data-node')){ selectNode(node.getAttribute('data-node')); }
+});
+// Cerrar el SSE al salir de la página (libera la conexión).
+window.addEventListener('beforeunload', closeLog);
+
+const POLLS = [
+    { fn: tickOps, ms: 5000 },
+    { fn: tickTransitions, ms: 15000 },
+    { fn: tickReconciler, ms: 30000 },
+    { fn: tickReconcilerSpark, ms: 60000 },
+    { fn: tickQaPills, ms: 15000 },
+    { fn: tickClock, ms: 1000 },
+];
+async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch(e){} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { Promise.resolve(p.fn()).catch(()=>{}); }, p.ms); }
 `;
@@ -432,8 +669,7 @@ for(const p of POLLS){ setInterval(() => { Promise.resolve(p.fn()).catch(()=>{})
 
 /**
  * Render SSR de la ventana Ops.
- * @param {object} state — slice de `lib/dashboard-slices.js` opsSlice(state):
- *   { procesos, servicios, infraHealth, qaEnv, qaRemote, resources, telegramHealth }.
+ * @param {object} state — slice de `lib/dashboard-slices.js` opsSlice(state).
  * @param {object} [opts] — opciones de routing (currentView, etc.). Reservado.
  * @returns {string} HTML completo de la ventana.
  */
@@ -466,7 +702,7 @@ ${OPS_CSS}
       <div class="in-header-logo">i</div>
       <div>
         <div class="in-header-title">Ops</div>
-        <div class="in-header-subtitle">Procesos, servicios e infraestructura</div>
+        <div class="in-header-subtitle">Topología de servicios · log en vivo · restart auditado</div>
       </div>
     </div>
     <div class="in-header-meta">
@@ -476,10 +712,11 @@ ${OPS_CSS}
   ${navHtml}
   <main class="satellite-body">${opsBodyHtml(state)}</main>
   <footer class="in-footer">
-    <span>Solo lectura · estado en vivo del pipeline</span>
-    <span>Intrale V3 · #3732</span>
+    <span>Solo lectura del estado · acciones (restart) confirmadas y auditadas</span>
+    <span>Intrale V3 · EP8-H7 #3960</span>
   </footer>
 </div>
+<script>${CONFIRM_MODAL_JS}</script>
 <script>${OPS_CLIENT_JS}</script>
 </body>
 </html>`;
@@ -487,8 +724,6 @@ ${OPS_CSS}
 
 /**
  * Render inerte (CA-A3 / REQ-SEC-7): visible cuando require()/state fallan.
- * Evita pantalla en blanco (DoS por carga parcial donde el operador no ve el
- * estado real del pipeline).
  * @param {string} reason — motivo (se escapa antes de interpolar).
  * @returns {string} HTML mínimo visible.
  */
@@ -510,7 +745,12 @@ module.exports = {
     renderInert,
     sanitizeRuntime,
     healthOf,
+    fmtDurSsr,
+    renderTopologySsr,
+    nodeCardSsr,
+    renderQaPillsSsr,
     OPS_CSS,
+    TOPOLOGY,
     // Alias de compat para callers que esperen el nombre canónico de escape SSR.
     escapeHtmlSsr: escapeHtmlText,
 };

@@ -84,9 +84,13 @@ test('CA-G1.1 · renderOps(opsSlice(estado válido)) incluye los 4 IDs DOM', () 
     assert.ok(html.includes('<title>Intrale · Ops</title>'), 'falta el title de la ventana');
     // No debe quedar el anti-patrón <pre> envolviendo el dump JSON (CA-C2).
     assert.ok(!/<pre[^>]*id="ops-qaenv"/.test(html), 'el <pre> de JSON crudo debe estar eliminado (CA-C2)');
-    // Mini-cards QA env presentes (las 4).
-    assert.ok(html.includes('Local · qa-env'), 'falta mini-card qaEnv');
-    assert.ok(html.includes('AWS Lambda · qa-remote'), 'falta mini-card qaRemote');
+    // QA env rediseñado a pills (EP8-H7 #3960, CA-5 · mockup §2.5): el bloque
+    // de mini-cards pasó a pills compactas con dual-encoding. Se sigue exigiendo
+    // que los entornos local (qaEnv→emulador) y remoto (qaRemote→backend) estén
+    // presentes — la intención del contrato se preserva, cambia el primitivo.
+    assert.ok(html.includes('class="ops-qa-pills"'), 'falta el contenedor de pills QA env');
+    assert.ok(/aria-label="emulador /.test(html), 'falta pill qaEnv (entorno local · emulador)');
+    assert.ok(/aria-label="backend /.test(html), 'falta pill qaRemote (entorno remoto · backend)');
 });
 
 test('CA-G1.2 · estado degradado → banner Telegram visible + card bot-down', () => {
@@ -96,8 +100,10 @@ test('CA-G1.2 · estado degradado → banner Telegram visible + card bot-down', 
     assert.ok(html.includes('Bot de Telegram caído'), 'falta el texto del banner');
     // listener + svc-telegram heredan bot-down cuando tgHealth.ok === false.
     assert.ok(html.includes('bot-down'), 'debe haber al menos una card con clase bot-down');
-    // svc-emulador muerto → card dead.
-    assert.ok(/class="ops-card dead"[^>]*>[\s\S]*?svc-emulador/.test(html), 'svc-emulador debe renderizar como dead');
+    // svc-emulador muerto → nodo dead. EP8-H7 (#3960) reemplazó la card
+    // (`ops-card dead`) por el nodo de topología (`ops-node is-dead`); la
+    // intención (proceso caído marcado como muerto, no solo color) se conserva.
+    assert.ok(/<button[^>]*class="ops-node is-dead"[^>]*data-node="svc-emulador"/.test(html), 'svc-emulador debe renderizar como nodo dead');
 });
 
 test('CA-G1.2b · estado saludable → banner OCULTO', () => {

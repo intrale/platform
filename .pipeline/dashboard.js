@@ -94,6 +94,20 @@ const { isMarkerArtifact } = require('./lib/marker-artifact');
 // #4099 — predicado puro de frescura del title-cache (reactiva TITLE_CACHE_TTL).
 const { needsRefetch: titleCacheNeedsRefetch } = require('./lib/title-cache-freshness');
 
+// EP8-H7 (#3960) — sanitizer central para redactar secrets del SSE de logs
+// (REQ-SEC-H7-1, crítico) ANTES de emitir al browser. Best-effort: si falta,
+// usamos identidad (mejor un texto sin redactar que romper el stream).
+let _sanitizeLog = (s) => s;
+try { _sanitizeLog = require('./sanitizer').sanitize; } catch { /* opcional */ }
+// EP8-H7 (#3960) — store de transiciones vivo↔muerto (CA-1) + audit del
+// restart por servicio (CA-3) + serie temporal del reconciler (CA-4).
+let processTransitions = null;
+try { processTransitions = require('./lib/process-transitions'); } catch { /* opcional */ }
+let opsRestartAudit = null;
+try { opsRestartAudit = require('./lib/ops-restart-audit'); } catch { /* opcional */ }
+let reconcilerHistory = null;
+try { reconcilerHistory = require('./lib/reconciler-history'); } catch { /* opcional */ }
+
 // EP8-H3 (#3956) — "ola en una sola línea". Lógica pura + requisitos de
 // seguridad (escaping CA-8, links GitHub CA-9, etapas terminales No
 // ingresados/Finalizados CA-5/CA-6). Best-effort require: si falta, el board
@@ -317,6 +331,26 @@ function startComponent(name) {
     return { ok: true, msg: `${name} iniciado (PID ${child.pid})` };
   } catch (e) { return { ok: false, msg: `Error iniciando ${name}: ${e.message}` }; }
 }
+
+// EP8-H7 (#3960) — restart por servicio AISLADO (CA-3, REQ-SEC-H7-3).
+// `restartComponent` = stopComponent + startComponent sobre el MISMO `name`
+// resuelto en COMPONENTS (allowlist canónica, REQ-SEC-H7-2). NO importa ni
+// invoca nada de `restart.js`: aquél hace killAll() global + smoke-test +
+// launchRollbackOrphan(), que tumbaría todo el pipeline desde un click de UI.
+// Un restart por nodo NUNCA debe gatillar ese plano global.
+function restartComponent(name) {
+  const comp = COMPONENTS.find(c => c.name === name);   // allowlist estricta
+  if (!comp) return { ok: false, msg: `Componente "${name}" no permitido` };
+  const stop = stopComponent(name);                     // stop+start AISLADO
+  const start = startComponent(name);
+  return { ok: stop.ok && start.ok, msg: `${stop.msg} | ${start.msg}` };
+}
+
+// EP8-H7 (#3960) — orquestador puro del restart (allowlist + rate-limit +
+// audit) en `lib/ops-restart-handler.js`. El rate-limiter (REQ-SEC-H7-5) es un
+// Map en memoria por target que rechaza ráfagas < 5s (DoS auto-infligido).
+const _opsRestartHandler = require('./lib/ops-restart-handler');
+const _opsRestartRateLimiter = _opsRestartHandler.makeRateLimiter(5000);
 
 // QA Environment
 const QA_ENV_SCRIPT = path.join(PIPELINE, 'qa-environment.js');
@@ -1029,6 +1063,14 @@ function getPipelineState() {
     } else {
       state.procesos[comp] = { pid: null, alive: false };
     }
+  }
+
+  // EP8-H7 (#3960) CA-1 — registrar el flanco vivo↔muerto por componente contra
+  // el snapshot previo en memoria. Idempotente si no hay cambio de estado; sólo
+  // persiste y lee el log (último error, redactado) cuando hay una transición.
+  if (processTransitions) {
+    try { processTransitions.recordSnapshot(state.procesos, { pipelineDir: PIPELINE }); }
+    catch { /* best-effort: el store de transiciones no debe romper el state */ }
   }
 
   // QA Environment
@@ -9493,9 +9535,14 @@ const server = http.createServer((req, res) => {
     });
 
     // Send initial content (last 1000 lines)
+    // EP8-H7 (#3960) REQ-SEC-H7-1 (crítico) — redacción server-side de secrets
+    // ANTES de emitir el SSE. El stream embebido en cada nodo del rediseño Ops
+    // muestra logs heterogéneos que pueden contener AWS keys / JWT / tokens;
+    // `_sanitizeLog` los redacta a `[REDACTED:...]`. Sin esto, los secrets
+    // llegarían crudos al browser.
     const content = fs.readFileSync(logPath, 'utf8');
     const lines = content.split('\n');
-    const initialLines = lines.slice(-1000);
+    const initialLines = lines.slice(-1000).map(l => _sanitizeLog(l));
     res.write(`data: ${JSON.stringify({ type: 'init', lines: initialLines })}\n\n`);
 
     // Watch for changes
@@ -9509,7 +9556,7 @@ const server = http.createServer((req, res) => {
           const buf = Buffer.alloc(stat.size - lastSize);
           fs.readSync(fd, buf, 0, buf.length, lastSize);
           fs.closeSync(fd);
-          const newLines = buf.toString('utf8').split('\n').filter(l => l.length > 0);
+          const newLines = buf.toString('utf8').split('\n').filter(l => l.length > 0).map(l => _sanitizeLog(l));
           if (newLines.length > 0) {
             res.write(`data: ${JSON.stringify({ type: 'append', lines: newLines })}\n\n`);
           }
@@ -9574,7 +9621,8 @@ const server = http.createServer((req, res) => {
     req.on('data', chunk => { body += chunk; });
     req.on('end', () => {
       try {
-        const { target, action, component } = JSON.parse(body);
+        const parsed = JSON.parse(body);
+        const { target, action, component } = parsed;
         let result;
         if (target === 'qa') {
           result = qaAction(action, component); // component: 'emulator' (dynamo/backend are remote AWS)
@@ -9582,6 +9630,31 @@ const server = http.createServer((req, res) => {
           result = startComponent(target);
         } else if (action === 'stop') {
           result = stopComponent(target);
+        } else if (action === 'restart') {
+          // EP8-H7 (#3960) CA-3 — restart por servicio aislado + auditado.
+          // Delega la decisión a la lib pura: allowlist (REQ-SEC-H7-2, 400 si
+          // fuera de COMPONENTS), rate-limit (REQ-SEC-H7-5, 429 en ráfaga <5s),
+          // ejecución AISLADA vía restartComponent (REQ-SEC-H7-3: stop+start,
+          // NUNCA killAll/rollback global de restart.js) y audit (REQ-SEC-H7-4).
+          const decision = _opsRestartHandler.runRestart(
+            {
+              target,
+              source: parsed.source || 'dashboard-ui',
+              sourceIp: (req.socket && req.socket.remoteAddress) || '',
+              actor: parsed.actor || '',
+            },
+            {
+              allowlist: COMPONENTS.map(c => c.name),
+              restartFn: restartComponent,
+              rateLimiter: _opsRestartRateLimiter,
+              audit: opsRestartAudit
+                ? (rec) => opsRestartAudit.appendOpsRestartAudit(rec, { pipelineDir: PIPELINE })
+                : null,
+            }
+          );
+          log(`Action: restart ${target} → ${decision.body.ok ? '✓' : '✗'} (${decision.status}) ${decision.body.msg}`);
+          res.writeHead(decision.status, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify(decision.body));
         } else {
           result = { ok: false, msg: `Acción "${action}" no válida` };
         }

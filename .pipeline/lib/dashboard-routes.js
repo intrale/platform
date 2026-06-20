@@ -49,6 +49,14 @@ catch (e) {
     try { console.warn('[dashboard-routes] ops view unavailable: ' + (e && e.message)); } catch { /* logger no debe romper el require */ }
 }
 
+// EP8-H7 (#3960) — store de transiciones vivo↔muerto (CA-1) y serie temporal
+// del reconciler (CA-4). Best-effort: si faltan, los endpoints degradan a
+// payload vacío sin romper el resto del dashboard.
+let opsTransitions = null;
+try { opsTransitions = require('./process-transitions'); } catch { /* opcional */ }
+let opsReconcilerHistory = null;
+try { opsReconcilerHistory = require('./reconciler-history'); } catch { /* opcional */ }
+
 // Render de la ventana Ops con el state en vivo (opsSlice) + fallback inerte.
 // Consumido por el path legacy `/ops` (HTML_ROUTES) y por `?view=ops` (VIEW_SLUGS).
 // Ambos resuelven al MISMO thunk para que no diverjan (riesgo declarado en #3732).
@@ -739,8 +747,36 @@ const API_ROUTES = {
     // dashboard kiosk y `/api/diagnostico/*` es el alias documentado en CA5
     // para que humanos puedan consultarlo con `curl` sin acordarse del
     // namespace interno.
-    '/api/dash/reconciler-stale-orders': (state, ctx) => slices.reconcilerStaleOrdersSlice(state, ctx),
+    '/api/dash/reconciler-stale-orders': (state, ctx) => {
+        const payload = slices.reconcilerStaleOrdersSlice(state, ctx);
+        // EP8-H7 (#3960) CA-4 — persistir un snapshot del breakdown para la
+        // serie temporal (debounceado a ~1/hora dentro del lib). Best-effort.
+        if (opsReconcilerHistory && ctx && ctx.PIPELINE) {
+            try { opsReconcilerHistory.recordSnapshot({ total: payload.total_24h, by_reason: payload.by_reason }, { pipelineDir: ctx.PIPELINE }); }
+            catch { /* no romper el endpoint por el snapshot */ }
+        }
+        return payload;
+    },
     '/api/diagnostico/reconciler-stale-orders': (state, ctx) => slices.reconcilerStaleOrdersSlice(state, ctx),
+    // EP8-H7 (#3960) CA-1 — historial de transiciones vivo↔muerto por servicio
+    // con agregación por motivo en ventana 7d. `?service=<svc>` filtra; sin
+    // param devuelve todos. El `lastError` ya viene redactado del store
+    // (REQ-SEC-H7-1). Degrada a payload vacío si el lib no cargó.
+    '/api/dash/ops-transitions': (state, ctx, query) => {
+        if (!opsTransitions) return { service: null, downCount: 0, byReason: {}, summary: 'caídas 7 d: 0', lastError: '', transitions: [] };
+        const service = query && typeof query.get === 'function' ? (query.get('service') || null) : null;
+        const pipelineDir = (ctx && ctx.PIPELINE) || undefined;
+        try { return opsTransitions.readTransitions(service, { pipelineDir }); }
+        catch { return { service, downCount: 0, byReason: {}, summary: 'caídas 7 d: 0', lastError: '', transitions: [] }; }
+    },
+    // EP8-H7 (#3960) CA-4 — serie temporal 7d del reconciler (sparkline). Lee
+    // del store persistido por el endpoint reconciler-stale-orders.
+    '/api/dash/reconciler-history': (state, ctx) => {
+        if (!opsReconcilerHistory) return { points: [], totals: [], windowDays: 7 };
+        const pipelineDir = (ctx && ctx.PIPELINE) || undefined;
+        try { return opsReconcilerHistory.readSeries({ pipelineDir }); }
+        catch { return { points: [], totals: [], windowDays: 7 }; }
+    },
     // #2993 — widget de handoff cross-agente. CA-C2: % hit rate, ahorro USD
     // estimado mensual, sparkline 7d. Refresh natural cada 30s desde el
     // cliente (el endpoint es stateless). Bajo `/api/dash/*` para seguir la
