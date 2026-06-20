@@ -709,7 +709,9 @@ deliverable_notifications:
   audit_file: ".pipeline/audit/deliverable-notifications.jsonl"
   # #3539 — audio TTS opcional. Default OFF (rollout gradual). Activar con OK
   # operativo y monitorear audit JSONL para records `kind:'audio'`.
-  audio_enabled: false
+  # EP3-H4 (#3930) paso 2: rollout reanudado — audio del entregable con Edge TTS
+  # (stack gratuito EP-1). Corte en caliente sin reiniciar: kill_switch_audio: true.
+  audio_enabled: true
   kill_switch_audio: false
   audio_root: ".pipeline/audio/notifications"
   max_tts_chunks: 3
@@ -800,7 +802,10 @@ deliverable_notifications:
 #   3. Una vez estable, `audio_enabled: true` para activar TTS.
 #   4. Si aparece ruido inesperado, `kill_switch: true` corta sin reiniciar.
 cua:
-  enabled: false
+  # EP3-H4 (#3930) — rollout reanudado (paso 1: CUA texto-only). El operador
+  # autorizado a /rechazar se resuelve desde credentials.json (env), ver
+  # operator_chat_ids más abajo. Corte en caliente: kill_switch: true.
+  enabled: true
   kill_switch: false
   notifiable_stages: [init, validation, analysis, completion]
   # Sincronizado con security SEC-3. AGREGAR comandos nuevos solo después de
@@ -836,9 +841,19 @@ cua:
   max_attachment_bytes: 5242880  # 5 MB (CA-SEC-2)
   attachment_subroot: ""           # default: directo bajo .pipeline/cua-outputs/
   audit_file: ".pipeline/audit/deliverable-notifications.jsonl"
-  # Issue #3541 — CA-SEC-6: chat_ids autorizados a `/rechazar` CUA. Vacío =
-  # nadie autorizado (fail closed). Sumar el chat_id del operador Leo cuando
-  # se active el feature.
+  # Issue #3541 — CA-SEC-6: chat_ids autorizados a `/rechazar` CUA.
+  #
+  # EP3-H4 (#3930): el chat_id del operador NO se hardcodea acá — este es un
+  # archivo público del repo y la convención mantiene los chat_ids en
+  # credentials.json (mismo criterio que el bot_token/chat_id y el handler
+  # #3384). El wiring `resolveCuaOperatorChatIds` (pulpo.js) resuelve el
+  # operador por precedencia:
+  #   1. esta lista (allowlist explícita, para operadores extra no sensibles)
+  #   2. TELEGRAM_LEO_OPERATOR_CHAT_ID (credential dedicada del operador)
+  #   3. fallback al chat principal autorizado (getTelegramChatId) — el único
+  #      que pasa el filtro expectedChatId del dispatcher.
+  # Por eso esta lista queda vacía: el operador (Leo) ya viene del chat
+  # principal de credentials.json. NO es fail-closed pese al `[]`.
   operator_chat_ids: []
   # Audio TTS opt-in (CA-FUNC-3, CA-UX-3). Default OFF — el rollout texto se
   # estabiliza antes.
