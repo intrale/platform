@@ -19,9 +19,6 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const os = require('node:os');
 
 const sd = require('../semantic-dedup');
 const dd = require('../duplicate-detector');
@@ -193,29 +190,23 @@ test('CA-11a: input enorme → body truncado en el payload', async () => {
 });
 
 test('CA-11b: 2da llamada idéntica a fetchOpenIssues → cache hit (CACHE_TTL_MS)', () => {
-    // fake gh: cuenta invocaciones en un archivo y emite JSON estático.
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sd-cache-'));
-    const counterFile = path.join(tmp, 'count.txt');
-    const fakeGh = path.join(tmp, 'fake-gh.js');
-    fs.writeFileSync(
-        fakeGh,
-        `const fs=require('fs');const f=${JSON.stringify(counterFile)};` +
-        `let n=0;try{n=parseInt(fs.readFileSync(f,'utf8'),10)||0;}catch{}` +
-        `fs.writeFileSync(f,String(n+1));` +
-        `process.stdout.write(JSON.stringify([{number:1,title:"uno"}]));`,
-    );
-    const ghPath = `node "${fakeGh}"`;
+    // _exec inyectable: cuenta invocaciones en memoria y emite JSON estático.
+    // No spawnea subproceso → determinístico y robusto bajo carga del suite
+    // completo (rebote #4109: el spawn de `node` cold-start excedía el timeout
+    // de execSync bajo CPU saturada y caía al catch → []).
+    let invocations = 0;
+    const fakeExec = () => {
+        invocations += 1;
+        return JSON.stringify([{ number: 1, title: 'uno' }]);
+    };
 
     dd._resetCache();
-    const first = dd.fetchOpenIssues({ ghPath });
-    const second = dd.fetchOpenIssues({ ghPath });
+    const first = dd.fetchOpenIssues({ _exec: fakeExec });
+    const second = dd.fetchOpenIssues({ _exec: fakeExec });
 
     assert.deepEqual(first, [{ number: 1, title: 'uno' }]);
     assert.deepEqual(second, first);
-    const invocations = parseInt(fs.readFileSync(counterFile, 'utf8'), 10);
     assert.equal(invocations, 1, 'la 2da llamada debe servirse del cache (gh invocado una sola vez)');
-
-    fs.rmSync(tmp, { recursive: true, force: true });
 });
 
 // -----------------------------------------------------------------------------
