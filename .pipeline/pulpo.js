@@ -11315,6 +11315,18 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
         }
       } catch { /* fire-and-forget, nunca bloquea el turno */ }
 
+      // #3922 (EP2-H2) — contexto conversacional para Sherlock. Capturamos los
+      // últimos K turnos ESTRUCTURADOS verbatim de `_convoLines` (misma fuente
+      // que `historial`, NO el resumen LLM #3935 que es no-autoritativo). Cap duro
+      // K=8 turnos (CA-SEC-E3) anti-token-budget cross-provider (#3921); el segundo
+      // cinturón (.slice(0, 4000) chars) lo aplica buildFiscalPrompt. Prohibido
+      // inyectar los 50 turnos crudos. `_convoLines` permanece en scope hasta las
+      // dos llamadas a `sherlockVerifier.verify` más abajo.
+      const SHERLOCK_CONVO_TURNS = 8;
+      const sherlockConvoContext = Array.isArray(_convoLines)
+        ? _convoLines.slice(-SHERLOCK_CONVO_TURNS).join('\n')
+        : '';
+
       // #3934 (CA-2 / SEC-6) — Eliminado el contexto de sesión de 30 min
       // (`session.context` + ventana `ageMin < 30`). Era la doble fuente de verdad
       // que esta historia cierra: el contexto conversacional pasa a derivarse
@@ -11746,6 +11758,7 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
           originalRequest: mensajeConsolidado,
           systemState: systemStateSnapshot,
           lastHourLogs: '', // por ahora vacío — extracción de logs queda para iteración futura
+          conversationContext: sherlockConvoContext, // #3922 EP2-H2
           commanderProvider,
           issueNumbers: sherlockIssueNumbers,
           pipelineDir: PIPELINE,
@@ -11781,6 +11794,7 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
                 originalRequest: mensajeConsolidado,
                 systemState: systemStateSnapshot,
                 lastHourLogs: '',
+                conversationContext: sherlockConvoContext, // #3922 EP2-H2
                 commanderProvider,
                 issueNumbers: sherlockIssueNumbers,
                 pipelineDir: PIPELINE,

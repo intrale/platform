@@ -308,6 +308,10 @@ const FISCAL_SECTION_TAGS = Object.freeze([
     'independent_evidence',
     // #3895 — sección del árbitro determinístico canonical-facts.
     'canonical_facts',
+    // #3922 (EP2-H2) — contexto conversacional estructurado. CA-SEC-E1: incluirlo
+    // acá hace que neutralizeFiscalDelimiters reescriba cualquier tag de sección
+    // forjado desde el historial (campo más atacante-controlable del prompt fiscal).
+    'conversation_context',
 ]);
 const FISCAL_DELIMITER_RE = new RegExp(
     `<\\s*/?\\s*(?:${FISCAL_SECTION_TAGS.join('|')})\\s*>`,
@@ -320,7 +324,7 @@ function neutralizeFiscalDelimiters(text) {
     );
 }
 
-function buildFiscalPrompt({ analysis, originalRequest, systemState, lastHourLogs, independentEvidence, canonicalFacts }) {
+function buildFiscalPrompt({ analysis, originalRequest, systemState, lastHourLogs, independentEvidence, canonicalFacts, conversationContext }) {
     // SEC-E — neutralizar los delimitadores de sección en TODO campo embebido
     // antes de armarlos dentro del prompt. Aplica a evidence/analysis/etc por
     // igual: cualquiera puede contener contenido atacante-controlable.
@@ -333,6 +337,11 @@ function buildFiscalPrompt({ analysis, originalRequest, systemState, lastHourLog
     // #3895 — hechos canónicos resueltos determinísticamente (árbitro CA-3).
     const canonical = neutralizeFiscalDelimiters(String(canonicalFacts || '').trim());
     const hasCanonical = canonical.length > 0;
+    // #3922 (EP2-H2) — contexto conversacional estructurado (últimos K turnos).
+    // CA-SEC-E1: neutralizado igual que el resto. Back-compat: sin contenido, no
+    // se emite ninguna sección ni instrucción (prompt idéntico al actual).
+    const convo = neutralizeFiscalDelimiters(String(conversationContext || '').trim());
+    const hasConversation = convo.length > 0;
 
     const baseInstructions = (
         'Sos Sherlock, un verificador adversarial. No sos asistente; sos fiscal. ' +
@@ -388,6 +397,17 @@ function buildFiscalPrompt({ analysis, originalRequest, systemState, lastHourLog
         'consistent o not_verifiable.\n\n'
     ) : '';
 
+    // #3922 (EP2-H2) — instrucción fiscal acotada (CA-3 anti-ruido): solo
+    // contradicción EXPLÍCITA de un acuerdo previo, nunca diferencias de fraseo.
+    const conversationInstructions = hasConversation ? (
+        '<conversation_context> contiene los últimos turnos ESTRUCTURADOS de la ' +
+        'conversación. Contrastá el análisis contra lo acordado en turnos previos: ' +
+        'si el análisis CONTRADICE EXPLÍCITAMENTE un acuerdo previo, reportá la ' +
+        'inconsistencia con el claim textual y el turno que lo contradice. NO ' +
+        'reportes diferencias de fraseo ni reinterpretaciones — solo contradicción ' +
+        'explícita de un acuerdo.\n\n'
+    ) : '';
+
     const outputRules = (
         'REGLAS DE SALIDA — devolvé EXACTAMENTE este JSON, nada más:\n' +
         '{\n' +
@@ -413,11 +433,24 @@ function buildFiscalPrompt({ analysis, originalRequest, systemState, lastHourLog
         '\n</canonical_facts>\n\n'
     ) : '';
 
+    // #3922 — CA-SEC-E3: cap duro de chars alineado a last_hour_logs (4000).
+    // El cap de K turnos se aplica aguas arriba (pulpo.js); este es el segundo
+    // cinturón anti-token-budget para providers free-tier (#3921).
+    const conversationSection = hasConversation ? (
+        '<conversation_context>\n' +
+        convo.slice(0, 4000) +
+        '\n</conversation_context>\n\n'
+    ) : '';
+
     return (
         baseInstructions +
         evidenceInstructions +
         canonicalInstructions +
+        conversationInstructions +
         outputRules +
+        // El contexto conversacional va ANTES del análisis para que el modelo lea
+        // los acuerdos previos antes de fiscalizar el análisis actual.
+        conversationSection +
         '<original_request>\n' +
         safeOriginalRequest.slice(0, 4000) +
         '\n</original_request>\n\n' +
@@ -1154,6 +1187,9 @@ async function verify(opts = {}) {
         originalRequest,
         systemState,
         lastHourLogs,
+        // #3922 (EP2-H2) — contexto conversacional opcional (últimos K turnos
+        // estructurados). Ausente → prompt idéntico al actual (back-compat).
+        conversationContext,
         pipelineDir,
 
         // #3846 — evidencia independiente. `issueNumber` habilita el collector;
@@ -1256,6 +1292,23 @@ async function verify(opts = {}) {
     const safeAnalysis = san.sanitized;
     if (san.truncated) {
         _log('sherlock', `🛡️ CA-SEC-1: analysis recortado (injection patterns=${san.hits.join('|')})`);
+    }
+
+    // #3922 (EP2-H2) — CA-SEC-E2: el contexto conversacional viene del historial
+    // del Commander (texto crudo del usuario vía Telegram), el campo MÁS
+    // atacante-controlable del prompt fiscal. Doble defensa: sanitizeUserPrompt
+    // (patrones imperativos / handoff / system-reminder) acá + neutralizeFiscalDelimiters
+    // (SEC-E) dentro de buildFiscalPrompt. CA-SEC-E5: solo se loguean los patrones
+    // detectados, nunca el texto plano del historial. CA-SEC-E4: el campo se sanitiza
+    // y arma dentro de verify; el prompt resultante solo se despacha tras pasar el
+    // gate enforceDataResidency (fail-closed) más abajo en la cascada.
+    let safeConversationContext = '';
+    if (conversationContext) {
+        const sanConvo = commanderMP.sanitizeUserPrompt(conversationContext);
+        safeConversationContext = sanConvo.sanitized;
+        if (sanConvo.truncated) {
+            _log('sherlock', `🛡️ CA-SEC-1: conversationContext recortado (injection patterns=${sanConvo.hits.join('|')})`);
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -1508,6 +1561,7 @@ async function verify(opts = {}) {
         lastHourLogs,
         independentEvidence: safeIndependentEvidence,
         canonicalFacts: canonicalFactsText,
+        conversationContext: safeConversationContext,
     });
 
     // #3766 — `modelSwap` queda como shape estable (siempre `swapped:false`)
