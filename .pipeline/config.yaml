@@ -604,6 +604,13 @@ pipeline:
 # =============================================================================
 sherlock_enabled: true
 # sherlock_timeout_ms: 10000      # DEPRECATED (#3484) — ahora delegado al cliente.
+# Presupuesto por provider de la cascada Sherlock (#4104, revierte "timeout 0"
+# del 2026-06-02 — ver #3925 / #3920). Default 40000, rango válido 30000–45000.
+# Se propaga como timeoutMs a los spawn helpers; cuando un eslabón supera el
+# presupuesto recibe SIGTERM y la cascada salta al siguiente provider sin abortar
+# la verificación global. NO confundir con la deprecada sherlock_timeout_ms
+# (NO-OP por CA-SEC-7). Input malformado cae al default 40000 (clamp fail-safe).
+sherlock_provider_budget_ms: 40000
 sherlock_max_reelaboraciones: 1
 
 # =============================================================================

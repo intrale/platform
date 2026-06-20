@@ -172,12 +172,28 @@ const SPAWN_COMPLETION_PROVIDERS = Object.freeze(new Set([
 ]));
 
 // Timeout default que Sherlock pasa al completion-client / spawn helper.
-// 0 = SIN timeout (decisión Leo 2026-06-02 voz): la verificación adversarial
-// nunca se corta por reloj. La resiliencia ante un provider que no responde la
-// da la cascada multi-provider de `verify()` (si un provider falla con error,
-// salta al siguiente de la chain), no un timeout. Histórico: 10s → 90s (#3484)
-// → sin timeout (esta versión). Se mantiene exportado por back-compat.
+// 0 = SIN timeout (decisión Leo 2026-06-02 voz). Histórico: 10s → 90s (#3484)
+// → sin timeout (esta versión).
+//
+// #4104 — A PARTIR DE ESTA VERSIÓN el presupuesto por eslabón se reintroduce a
+// propósito: `loadSherlockConfig` lee `sherlock_provider_budget_ms` de config y
+// SOBREESCRIBE este default con un budget config-driven (clamp [30000,45000],
+// default 40000) — revierte la decisión "timeout 0" del 2026-06-02 (ver #3925 /
+// #3920). Cuando un provider supera el budget recibe SIGTERM por eslabón y la
+// cascada multi-provider de `verify()` salta al siguiente sin abortar la
+// verificación global (error.type === 'timeout' → ERROR PATH). `DEFAULT_TIMEOUT_MS`
+// se conserva exportado en 0 por back-compat: lo usan callers / `_spawn*` cuando
+// `timeoutMs` viene ausente (sin config cargada).
 const DEFAULT_TIMEOUT_MS = 0;
+
+// #4104 — límites del budget config-driven (SEC-A, clamp fail-safe). El default
+// 40000 es el fallback ante cualquier input no finito/hostil; el rango
+// [30000,45000] evita tanto desactivar la protección (< default DoS) como matar
+// providers prematuramente (< 30000 degradaría la verificación adversarial
+// CA-SEC-1..6). Ver `loadSherlockConfig`.
+const BUDGET_DEFAULT_MS = 40000;
+const BUDGET_MIN_MS = 30000;
+const BUDGET_MAX_MS = 45000;
 
 // -----------------------------------------------------------------------------
 // Disclaimers (CA-F-5/F-6) — constantes string en español, voseo argentino.
@@ -229,18 +245,20 @@ function hashFor(s) {
 }
 
 // -----------------------------------------------------------------------------
-// loadSherlockConfig — lee config.yaml (sherlock_enabled, max_reelaboraciones).
-// Aplica clamps defensivos (CA-SEC-9).
+// loadSherlockConfig — lee config.yaml (sherlock_enabled, provider_budget_ms,
+// max_reelaboraciones). Aplica clamps defensivos (CA-SEC-9, #4104 SEC-A).
 //
-// CA-SEC-7: solo lee del archivo, NUNCA acepta `enabled` por argumento del
-// usuario. El caller (pulpo.js) lo pasa con `configLoader` inyectable solo
-// para tests; en producción siempre es el `loadConfig` real.
+// CA-SEC-7: solo lee del archivo, NUNCA acepta `enabled` ni el budget por
+// argumento del usuario. El caller (pulpo.js) lo pasa con `configLoader`
+// inyectable solo para tests; en producción siempre es el `loadConfig` real.
+// El `timeoutMs` se origina EXCLUSIVAMENTE acá (SEC-B): ningún caller puede
+// forzar `timeoutMs=0`/disable — leen `cfg.timeoutMs`, nunca lo setean.
 //
-// #3484: `sherlock_timeout_ms` se ignora — el presupuesto vive en el
-// completion-client. Si está presente en config viejas, devolvemos `timeoutMs`
-// con el DEFAULT_TIMEOUT_MS pero NO clampeamos al valor declarado. La compat
-// es importante: configs en producción todavía tienen el campo y el cargador
-// debe tolerarlo sin warn-spammear.
+// #3484: `sherlock_timeout_ms` (deprecada) sigue NO-OP — no se lee ni se
+// clampea al valor declarado; el cargador la tolera sin warn-spammear.
+// #4104: el presupuesto config-driven es `sherlock_provider_budget_ms` (NO la
+// deprecada). Reintroduce el budget por eslabón (revierte "timeout 0" del
+// 2026-06-02, ver #3925/#3920).
 // -----------------------------------------------------------------------------
 function loadSherlockConfig({ configLoader } = {}) {
     let cfg = {};
@@ -250,10 +268,16 @@ function loadSherlockConfig({ configLoader } = {}) {
         cfg = {};
     }
     const enabled = cfg.sherlock_enabled === false ? false : true; // default ON
-    // #3484 — `sherlock_timeout_ms` deprecated. Devolvemos DEFAULT_TIMEOUT_MS
-    // siempre. El campo se mantiene en el shape de retorno por compat con
-    // callers/tests que lo lean, pero NO refleja config user-facing.
-    const timeoutMs = DEFAULT_TIMEOUT_MS;
+    // #4104 — budget por provider reintroducido a propósito (revierte "timeout 0"
+    // del 2026-06-02, ver #3925/#3920). SEC-A: clamp fail-safe — cualquier input
+    // hostil (NaN, negativo, string, 0, Infinity, ausente) cae al default 40000;
+    // nunca a 0 (desactivaría la protección = regresión del fix + vector DoS) ni
+    // < 30000 (mataría providers antes de tiempo, degradando la verificación
+    // adversarial CA-SEC-1..6). `sherlock_timeout_ms` (deprecada) NO se lee acá.
+    const rawBudget = Number(cfg.sherlock_provider_budget_ms);
+    const timeoutMs = Number.isFinite(rawBudget) && rawBudget > 0
+        ? Math.min(Math.max(rawBudget, BUDGET_MIN_MS), BUDGET_MAX_MS)
+        : BUDGET_DEFAULT_MS;
     // CA-SEC-9 — el cap es 1, no importa qué diga config.
     const maxRaw = Number(cfg.sherlock_max_reelaboraciones);
     const maxReelab = Number.isFinite(maxRaw) && maxRaw >= 0
@@ -2145,6 +2169,10 @@ module.exports = {
     // constantes
     HARDCODED_MAX_REELABORACIONES,
     DEFAULT_TIMEOUT_MS,
+    // #4104 — límites del budget config-driven por provider (SEC-A clamp).
+    BUDGET_DEFAULT_MS,
+    BUDGET_MIN_MS,
+    BUDGET_MAX_MS,
     MAX_INCONSISTENCIES,
     HTTP_COMPLETION_PROVIDERS,
     SPAWN_COMPLETION_PROVIDERS,
