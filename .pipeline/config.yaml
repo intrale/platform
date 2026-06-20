@@ -612,6 +612,17 @@ sherlock_enabled: true
 # (NO-OP por CA-SEC-7). Input malformado cae al default 40000 (clamp fail-safe).
 sherlock_provider_budget_ms: 40000
 sherlock_max_reelaboraciones: 1
+# #4105 (EP2-H5b) — Modelo OPTIMISTA de Sherlock. Techo de espera percibida (CA-3):
+# si la verificación no resuelve antes de este techo, se libera la respuesta con un
+# disclaimer ⏳ "pendiente" (F-7) y la verificación sigue en BACKGROUND; cuando
+# resuelve, se corrige el mensaje ya enviado (texto→editMessageText, voz→follow-up).
+# Clamp duro ≤90000ms (HARD_TIMEOUT_CEILING_MS en lib/sherlock-optimistic.js): un
+# valor mayor se recorta a 90s. Mínimo aceptado 10000ms; fuera de rango cae al
+# default 90s. Acota también el hard-timeout de limpieza de tareas background (CA-10).
+sherlock_optimistic_ceiling_ms: 90000
+# Cap de concurrencia de verificaciones background (CA-10, anti-DoS). Superarlo
+# DEGRADA (el ⏳ queda sin corrección background), nunca spawnea ilimitado. Default 16.
+sherlock_optimistic_cap: 16
 
 # =============================================================================
 # Agrupamiento de bursts de notificaciones Telegram (#3668)

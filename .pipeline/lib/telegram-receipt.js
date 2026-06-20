@@ -220,6 +220,42 @@ function archiveReceipt(filePath, archivedDir) {
   }
 }
 
+/**
+ * resolveMessageId — #4105 (CA-6). Dado un `correlationId`, devuelve el primer
+ * `message_id` de un recibo `enviado` VÁLIDO en `recibosDir`. Es la base de la
+ * captura asíncrona del `message_id` para el camino optimista de Sherlock: el
+ * Commander obtiene un `correlationId` al encolar, y el `message_id` (única
+ * prueba de entrega — R1) llega después por recibo.
+ *
+ * Fail-closed (R1/R2/R3):
+ *   - `correlationId` inválido / con path-traversal → `null` (NUNCA toca disco
+ *     con un nombre derivado de input inseguro).
+ *   - recibo ausente / malformado / forjado → `null` (parseReceipt fail-closed).
+ *   - recibo `fallido` o `enviado` sin `messageIds` → `null` (no hubo entrega).
+ *   - El `message_id` se deriva SOLO del contenido del recibo, NUNCA del nombre
+ *     de archivo.
+ *
+ * Idempotente y determinístico: ante el MISMO recibo `enviado` válido devuelve
+ * siempre el mismo `message_id` (el primero del array). El llamador (registry)
+ * dedupea ediciones por `verificationId`+`correlationId`, así que una resolución
+ * repetida (recibo duplicado / fuera de orden) nunca dispara una doble edición.
+ *
+ * @param {string} correlationId
+ * @param {string} recibosDir   directorio del bus de recibos.
+ * @returns {number|null} el message_id, o null si no se puede resolver.
+ */
+function resolveMessageId(correlationId, recibosDir) {
+  if (!isValidCorrelationId(correlationId)) return null;
+  if (typeof recibosDir !== 'string' || recibosDir.length === 0) return null;
+  const filePath = path.join(recibosDir, `${correlationId}.json`);
+  const receipt = readReceiptFile(filePath);
+  if (!receipt) return null; // ausente / malformado / forjado (R2)
+  if (receipt.status !== STATUS_ENVIADO) return null; // solo entrega confirmada (R1)
+  if (!Array.isArray(receipt.messageIds) || receipt.messageIds.length === 0) return null;
+  const id = receipt.messageIds[0];
+  return Number.isFinite(id) ? id : null;
+}
+
 module.exports = {
   STATUS_ENVIADO,
   STATUS_FALLIDO,
@@ -235,4 +271,6 @@ module.exports = {
   listReceiptFiles,
   readReceiptFile,
   archiveReceipt,
+  // #4105 — captura async del message_id para el camino optimista (CA-6).
+  resolveMessageId,
 };
