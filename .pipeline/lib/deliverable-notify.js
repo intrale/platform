@@ -102,11 +102,15 @@ const DEFAULT_ATTACHMENT_ROOT = '.pipeline/assets/mockups';
 //      `attachments[0] = { type: 'image', path: <photo> }` para ux.
 //
 // CA-SEC-EXT-1 — roots por tipo (declarados en config.attachment_roots).
-// Si un tipo no tiene root explícito, cae al `attachment_root` legacy (image).
+// Si un tipo no tiene root explícito, cae a DEFAULT_ATTACHMENT_ROOT (mockups).
+// #3931 (B9) — `video` apunta a `qa/evidence`, donde ux/qa graban los .mp4
+// (`qa/evidence/<issue>/`). `animation` se mantiene como default de engine
+// (type soportado por #3540) aunque ya no esté en config: si un productor futuro
+// emite type `animation`, este root lo cubre sin reintroducir una clave huérfana.
 const DEFAULT_ATTACHMENT_ROOTS = Object.freeze({
     document:  '.pipeline/assets/docs',
     image:     '.pipeline/assets/mockups',
-    video:     '.pipeline/assets/videos',
+    video:     'qa/evidence',
     animation: '.pipeline/assets/animations',
 });
 
@@ -122,7 +126,9 @@ const DEFAULT_ATTACHMENTS_PER_SKILL = Object.freeze({
     guru:    { types: ['document'], formats: ['.pdf', '.md'] },
     po:      { types: ['document'], formats: ['.pdf', '.md'] },
     planner: { types: ['document'], formats: ['.pdf', '.md'] },
-    ux:      { types: ['image', 'video', 'animation'], formats: ['.png', '.jpg', '.jpeg', '.mp4', '.webm', '.gif'] },
+    // #3931 — ux: sin `animation`/`.gif` (sin productor real; los .gif se
+    // descubrían como `image`). Engine sigue soportando `animation` (#3540).
+    ux:      { types: ['image', 'video'], formats: ['.png', '.jpg', '.jpeg', '.mp4', '.webm'] },
     qa:      { types: ['video', 'document'], formats: ['.mp4', '.webm', '.pdf'] },
 });
 

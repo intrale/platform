@@ -64,7 +64,7 @@ const SKILL_SOURCES = Object.freeze({
         {
             dirTemplate: '.pipeline/assets/mockups/{issue}',
             nameMustInclude: [],          // dir issue-scoped → no exigir {issue} en filename
-            formats: ['.png', '.jpg', '.jpeg', '.gif'],
+            formats: ['.png', '.jpg', '.jpeg'],
             type: 'image',
             descriptorHint: 'mockup',
         },
@@ -72,7 +72,7 @@ const SKILL_SOURCES = Object.freeze({
         {
             dirTemplate: 'qa/evidence/{issue}',
             nameMustInclude: [],
-            formats: ['.png', '.jpg', '.jpeg', '.gif'],
+            formats: ['.png', '.jpg', '.jpeg'],
             type: 'image',
             descriptorHint: 'evidence',
         },
@@ -80,7 +80,7 @@ const SKILL_SOURCES = Object.freeze({
         {
             dirTemplate: '.pipeline/assets/mockups',
             nameMustInclude: ['{issue}'],
-            formats: ['.png', '.jpg', '.jpeg', '.gif'],
+            formats: ['.png', '.jpg', '.jpeg'],
             type: 'image',
             descriptorHint: 'mockup',
         },

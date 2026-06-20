@@ -56,18 +56,18 @@ function defaultCfg(overrides) {
         kill_switch: false,
         skills: ['guru', 'po', 'ux', 'planner'],
         truncate_chars: 1500,
-        attachment_root: '.pipeline/assets/mockups',
+        // #3931 — sin `attachment_root` legacy; `video` repuntado a qa/evidence (B9);
+        // root `animation` provisto por el default de engine (DEFAULT_ATTACHMENT_ROOTS).
         attachment_roots: {
             document:  '.pipeline/assets/docs',
             image:     '.pipeline/assets/mockups',
-            video:     '.pipeline/assets/videos',
-            animation: '.pipeline/assets/animations',
+            video:     'qa/evidence',
         },
         attachments_per_skill: {
             guru:    { types: ['document'],                formats: ['.pdf', '.md'] },
             po:      { types: ['document'],                formats: ['.pdf', '.md'] },
             planner: { types: ['document'],                formats: ['.pdf', '.md'] },
-            ux:      { types: ['image', 'video', 'animation'], formats: ['.png', '.jpg', '.jpeg', '.mp4', '.webm', '.gif'] },
+            ux:      { types: ['image', 'video'],          formats: ['.png', '.jpg', '.jpeg', '.mp4', '.webm'] },
             qa:      { types: ['video', 'document'],       formats: ['.mp4', '.webm', '.pdf'] },
         },
         attachment_max_count: 5,
@@ -77,6 +77,15 @@ function defaultCfg(overrides) {
         audit_file: '.pipeline/audit/deliverable-notifications.jsonl',
     }, overrides || {});
 }
+
+// #3931 — ux ya no declara `animation`/`.gif` en config de producción (sin
+// productor real). El engine, sin embargo, SIGUE soportando el type `animation`
+// (#3540: ATTACHMENT_DROPFILE_FIELD/emoji/sendAnimation) para futuros productores.
+// Los tests de capacidad del engine sobre `animation` usan este override para
+// habilitar el type sin reintroducirlo en la whitelist de producción.
+const UX_ENGINE_ANIMATION = {
+    ux: { types: ['image', 'video', 'animation'], formats: ['.png', '.jpg', '.jpeg', '.mp4', '.webm', '.gif'] },
+};
 
 // Stub de probeVideoDurationSeconds — para tests no necesitamos ffprobe real.
 function fakeProbe(durationS) {
@@ -238,7 +247,7 @@ test('CA-FUNC-2 · resolveAttachments acepta múltiples adjuntos (image + video)
     const { root, cleanup } = mkTmpRoot();
     try {
         const png = path.join(root, '.pipeline/assets/mockups/3540.png');
-        const mp4 = path.join(root, '.pipeline/assets/videos/3540.mp4');
+        const mp4 = path.join(root, 'qa/evidence/3540/3540.mp4');
         writeFixture(png, PNG_SIGNATURE, 128);
         writeFixture(mp4, MP4_SIGNATURE, 512);
         const records = dn.resolveAttachments({
@@ -247,7 +256,7 @@ test('CA-FUNC-2 · resolveAttachments acepta múltiples adjuntos (image + video)
             yaml: {
                 attachments: [
                     { type: 'image', path: '.pipeline/assets/mockups/3540.png' },
-                    { type: 'video', path: '.pipeline/assets/videos/3540.mp4' },
+                    { type: 'video', path: 'qa/evidence/3540/3540.mp4' },
                 ],
             },
             config: defaultCfg(),
@@ -336,12 +345,12 @@ test('CA-SEC-EXT-2 · resolveAttachments rechaza archivo con magic bytes mismatc
 test('CA-SEC-EXT-3 · resolveAttachments rechaza video con duración > cap (duration_exceeded)', () => {
     const { root, cleanup } = mkTmpRoot();
     try {
-        const mp4 = path.join(root, '.pipeline/assets/videos/long.mp4');
+        const mp4 = path.join(root, 'qa/evidence/3540/long.mp4');
         writeFixture(mp4, MP4_SIGNATURE);
         const records = dn.resolveAttachments({
             issue: 3540,
             skill: 'ux',
-            yaml: { attachments: [{ type: 'video', path: '.pipeline/assets/videos/long.mp4' }] },
+            yaml: { attachments: [{ type: 'video', path: 'qa/evidence/3540/long.mp4' }] },
             config: defaultCfg({ attachment_video_max_duration_s: 60 }),
             pipelineRoot: root,
             deps: { probeVideoDurationSeconds: fakeProbe(120) }, // 120 > 60
@@ -355,12 +364,12 @@ test('CA-SEC-EXT-3 · resolveAttachments rechaza video con duración > cap (dura
 test('CA-SEC-EXT-3 · resolveAttachments deja pasar video si ffprobe falla (duration_probe_failed)', () => {
     const { root, cleanup } = mkTmpRoot();
     try {
-        const mp4 = path.join(root, '.pipeline/assets/videos/short.mp4');
+        const mp4 = path.join(root, 'qa/evidence/3540/short.mp4');
         writeFixture(mp4, MP4_SIGNATURE);
         const records = dn.resolveAttachments({
             issue: 3540,
             skill: 'ux',
-            yaml: { attachments: [{ type: 'video', path: '.pipeline/assets/videos/short.mp4' }] },
+            yaml: { attachments: [{ type: 'video', path: 'qa/evidence/3540/short.mp4' }] },
             config: defaultCfg(),
             pipelineRoot: root,
             deps: { probeVideoDurationSeconds: () => ({ ok: false, reason: 'spawn_failed' }) },
@@ -495,7 +504,7 @@ test('CA-UX-EXT-4 · buildPreview multi-adjunto produce text + extraDropfiles en
     const { root, cleanup } = mkTmpRoot();
     try {
         const png = path.join(root, '.pipeline/assets/mockups/3540.png');
-        const mp4 = path.join(root, '.pipeline/assets/videos/3540.mp4');
+        const mp4 = path.join(root, 'qa/evidence/3540/3540.mp4');
         const gif = path.join(root, '.pipeline/assets/animations/3540.gif');
         writeFixture(png, PNG_SIGNATURE);
         writeFixture(mp4, MP4_SIGNATURE);
@@ -511,11 +520,11 @@ test('CA-UX-EXT-4 · buildPreview multi-adjunto produce text + extraDropfiles en
                 attachments: [
                     // Orden de entrada deliberadamente inverso al de envío.
                     { type: 'animation', path: '.pipeline/assets/animations/3540.gif' },
-                    { type: 'video', path: '.pipeline/assets/videos/3540.mp4' },
+                    { type: 'video', path: 'qa/evidence/3540/3540.mp4' },
                     { type: 'image', path: '.pipeline/assets/mockups/3540.png' },
                 ],
             },
-            config: defaultCfg(),
+            config: defaultCfg({ attachments_per_skill: UX_ENGINE_ANIMATION }),
             pipelineRoot: root,
             deps: { probeVideoDurationSeconds: fakeProbe(45) },
         });
@@ -536,14 +545,14 @@ test('CA-UX-EXT-4 · buildPreview multi-adjunto produce text + extraDropfiles en
 test('CA-FUNC-3 · sendVideo payload tiene caption canónico + filename legible', () => {
     const { root, cleanup } = mkTmpRoot();
     try {
-        const mp4 = path.join(root, '.pipeline/assets/videos/3540.mp4');
+        const mp4 = path.join(root, 'qa/evidence/3540/3540.mp4');
         writeFixture(mp4, MP4_SIGNATURE);
         const out = dn.buildPreview({
             issue: 3540,
             skill: 'ux',
             fase: 'criterios',
             pipeline: 'definicion',
-            yaml: { notas: 'demo', attachments: [{ type: 'video', path: '.pipeline/assets/videos/3540.mp4', descriptor: 'demo' }] },
+            yaml: { notas: 'demo', attachments: [{ type: 'video', path: 'qa/evidence/3540/3540.mp4', descriptor: 'demo' }] },
             config: defaultCfg(),
             pipelineRoot: root,
             deps: { probeVideoDurationSeconds: fakeProbe(30) },
@@ -596,7 +605,7 @@ test('CA-FUNC-4 · sendAnimation payload para ux con GIF', () => {
             fase: 'criterios',
             pipeline: 'definicion',
             yaml: { notas: 'demo gif', attachments: [{ type: 'animation', path: '.pipeline/assets/animations/3540.gif' }] },
-            config: defaultCfg(),
+            config: defaultCfg({ attachments_per_skill: UX_ENGINE_ANIMATION }),
             pipelineRoot: root,
         });
         const gifDrop = out.extraDropfiles[0];
@@ -683,7 +692,7 @@ test('CA-FUNC-5 · notify encola múltiples dropfiles en orden con sufijos -NN',
     const { root, cleanup } = mkTmpRoot();
     try {
         const png = path.join(root, '.pipeline/assets/mockups/3540.png');
-        const mp4 = path.join(root, '.pipeline/assets/videos/3540.mp4');
+        const mp4 = path.join(root, 'qa/evidence/3540/3540.mp4');
         writeFixture(png, PNG_SIGNATURE);
         writeFixture(mp4, MP4_SIGNATURE);
         const calls = [];
@@ -693,7 +702,7 @@ test('CA-FUNC-5 · notify encola múltiples dropfiles en orden con sufijos -NN',
                 notas: 'multi',
                 attachments: [
                     { type: 'image', path: '.pipeline/assets/mockups/3540.png' },
-                    { type: 'video', path: '.pipeline/assets/videos/3540.mp4' },
+                    { type: 'video', path: 'qa/evidence/3540/3540.mp4' },
                 ],
             },
             config: defaultCfg(),
