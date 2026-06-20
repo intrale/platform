@@ -454,6 +454,25 @@ function loadConfig() {
   catch { return { pipelines: {}, concurrencia: {} }; }
 }
 
+// #3955 EP8-H2 (SEC-4) — Redacta secrets (AWS keys, JWT, gh/Anthropic/OpenAI
+// tokens, Authorization, password/token genéricos) de los logs antes de
+// servirlos inline en el dashboard. Reusa el redactor central de lib/handoff.
+// Defensivo: si el módulo no carga, devuelve el texto tal cual (mejor servir el
+// log que romper el visor) — el redactor es una capa, no la única defensa.
+let _handoffSanitizer = undefined;
+function redactLogText(text) {
+  if (typeof text !== 'string') return text;
+  if (_handoffSanitizer === undefined) {
+    try { _handoffSanitizer = require('./lib/handoff').sanitize; }
+    catch { _handoffSanitizer = null; }
+  }
+  if (!_handoffSanitizer) return text;
+  try {
+    const r = _handoffSanitizer(text);
+    return (r && typeof r.text === 'string') ? r.text : text;
+  } catch { return text; }
+}
+
 function listWorkFiles(dir) {
   try {
     return fs.readdirSync(dir).filter(f => {
@@ -5216,6 +5235,41 @@ body.standalone .section-collapsed .section-body{display:block !important}
 
 /* Areas grid 2×2 */
 .eq-areas-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+/* #3955 EP8-H2 — Acordeón por skill (renderTeamAccordion SSR). */
+.eq-accordion{display:flex;flex-direction:column;gap:8px;margin-bottom:12px}
+.eq-accordion-empty{padding:12px;color:var(--muted,#8b949e)}
+.eq-acc-card{background:var(--sf2);border:1px solid var(--bd);border-radius:var(--radius);overflow:hidden}
+.eq-acc-card-obs{border-color:#a371f7;border-left:3px solid #a371f7}
+.eq-acc-head{display:flex;align-items:center;gap:8px;padding:8px 11px;cursor:pointer}
+.eq-acc-head:hover{background:var(--sf)}
+.eq-acc-avatar{width:26px;height:26px;border-radius:7px;display:inline-flex;align-items:center;justify-content:center;color:#fff;font-size:14px;flex:0 0 auto}
+.eq-acc-name{font-weight:600;font-size:0.82em}
+.eq-acc-count{font-size:0.7em;color:var(--muted,#8b949e)}
+.eq-acc-obs-badge{font-size:0.7em;color:#c9b6ff}
+.eq-acc-spark-wrap{margin-left:auto}
+.eq-spark{display:inline-flex;align-items:flex-end;gap:1px;height:18px}
+.eq-spark-bar{width:3px;background:#1f6feb;border-radius:1px;min-height:1px}
+.eq-spark-bar-recent{background:#58a6ff}
+.eq-acc-body{display:flex;flex-direction:column;border-top:1px solid var(--bd)}
+.eq-ag-row{display:flex;flex-direction:column;gap:4px;padding:7px 12px 7px 30px;border-bottom:1px solid var(--bd)}
+.eq-ag-row:last-child{border-bottom:none}
+.eq-ag-row-cooldown{background:rgba(245,180,84,0.06)}
+.eq-ag-head{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.eq-ag-issue{color:#58a6ff;font-weight:700;font-size:0.74em}
+.eq-ag-issue-obs{color:#c9b6ff}
+.eq-ag-fase{font-size:0.66em;padding:1px 6px;border-radius:9px;background:var(--sf);color:var(--muted,#8b949e);border:1px solid var(--bd)}
+.eq-ag-title{font-size:0.74em;color:var(--muted,#8b949e);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:300px}
+.eq-ag-meta{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.eq-ag-bar{flex:0 0 80px;height:6px;border-radius:3px;background:var(--sf);overflow:hidden}
+.eq-ag-bar>span{display:block;height:100%;background:#58a6ff}
+.eq-ag-bar-indeterminate>span{width:30%;opacity:0.5}
+.eq-ag-pct{font-size:0.7em;color:#79c0ff;min-width:28px}
+.eq-ag-dur{font-size:0.7em;color:var(--muted,#8b949e)}
+.eq-ag-log{font-size:0.7em;color:#2dd4bf;text-decoration:none}
+.eq-ag-kill{margin-left:auto;background:transparent;border:1px solid var(--rd,#f85149);color:var(--rd,#f85149);border-radius:6px;padding:2px 9px;font-size:0.7em;cursor:pointer}
+.eq-ag-protected{margin-left:auto;font-size:0.7em;color:#c9b6ff;border:1px solid #a371f7;border-radius:6px;padding:2px 9px}
+.eq-ag-cooldown{font-size:0.7em;color:#f5b454}
+.eq-ag-wait{margin-left:auto;font-size:0.7em;color:var(--muted,#8b949e);border:1px solid var(--bd);border-radius:6px;padding:2px 9px;opacity:0.7}
 .eq-area-card{background:var(--sf2);border:1px solid var(--bd);border-radius:var(--radius);padding:8px 10px}
 .eq-area-card-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:0.66em;text-transform:uppercase;letter-spacing:0.7px;font-weight:700}
 .eq-area-card-name{display:flex;align-items:center;gap:5px;color:var(--muted,#8b949e)}
@@ -5630,11 +5684,19 @@ body.standalone .section-collapsed .section-body{display:block !important}
   </section>`;
   })()}
 
-  ${equipoView ? equipoView.renderEquipoSsr({
+  ${equipoView ? equipoView.renderEquipoSsr(Object.assign({
     skillsByCategory, recentBySkill, skillUsageCount, skillStats,
     agentPersona: AGENT_PERSONA, categoryMeta: CATEGORY_META,
     pendientes, activeStripHTML, svcCardsHTML,
-  }) : `<div class="bar-section panel-equipo panel-equipo-full" id="equipo"><span class="empty-label">Equipo no disponible</span></div>`}
+  }, (function(){
+    // #3955 EP8-H2 — acordeón por skill: agentes vivos + sparkline 24h.
+    try {
+      return {
+        teamAgents: _architectSlices ? _architectSlices.activeAgents(state) : [],
+        teamSpark: _architectSlices ? _architectSlices.skillSpark24h(state) : {},
+      };
+    } catch { return { teamAgents: [], teamSpark: {} }; }
+  })())) : `<div class="bar-section panel-equipo panel-equipo-full" id="equipo"><span class="empty-label">Equipo no disponible</span></div>`}
 
   <!-- #2800 — matrixHTML antes vivía aquí (post Equipo/Servicios). Migrado al
        centerpiece debajo del header de infra para el rediseño V3. -->
@@ -6570,15 +6632,35 @@ async function qaComponentAction(component, action) {
   if (btn) btn.classList.remove('loading');
 }
 
+// #3955 (SEC-2) — token CSRF para /api/kill-agent en la home legacy (sin
+// fetch-client.js). Mismo patrón: pedir token, cachear, reintentar 1 vez si 403.
+let _kaCsrfTokenLegacy = null;
+async function killCsrfHeadersLegacy(force) {
+  try {
+    if (force) _kaCsrfTokenLegacy = null;
+    if (!_kaCsrfTokenLegacy) {
+      const r = await fetch('/api/kill-agent/csrf-token', { cache: 'no-store' });
+      if (r && r.ok) { const j = await r.json(); _kaCsrfTokenLegacy = (j && j.csrf_token) || null; }
+    }
+    return _kaCsrfTokenLegacy ? { 'X-CSRF-Token': _kaCsrfTokenLegacy } : {};
+  } catch (e) { return {}; }
+}
+async function killAgentPost(payload) {
+  const doPost = async () => fetch('/api/kill-agent', {
+    method: 'POST',
+    headers: Object.assign({ 'Content-Type': 'application/json' }, await killCsrfHeadersLegacy()),
+    body: JSON.stringify(payload)
+  });
+  let r = await doPost();
+  if (r && r.status === 403) { await killCsrfHeadersLegacy(true); r = await doPost(); }
+  return r;
+}
+
 // Kill agent
 async function killAgent(issue, skill, pipeline, fase) {
   if (!confirm('¿Cancelar agente ' + skill + ' en #' + issue + '?')) return;
   try {
-    const resp = await fetch('/api/kill-agent', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ issue, skill, pipeline, fase })
-    });
+    const resp = await killAgentPost({ issue, skill, pipeline, fase });
     const result = await resp.json();
     showToast(result.msg, result.ok);
     setTimeout(() => location.reload(), 1500);
@@ -6593,11 +6675,7 @@ async function killSkillGroup(skill, agents) {
   let ok = 0, fail = 0;
   for (const a of agents) {
     try {
-      const resp = await fetch('/api/kill-agent', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ issue: a.issue, skill: a.skill, pipeline: a.pipeline, fase: a.fase })
-      });
+      const resp = await killAgentPost({ issue: a.issue, skill: a.skill, pipeline: a.pipeline, fase: a.fase });
       const result = await resp.json();
       if (result.ok) ok++; else fail++;
     } catch { fail++; }
@@ -9321,6 +9399,12 @@ try { bloqueadosView = require('./views/dashboard/bloqueados'); } catch (e) { lo
 let equipoView = null;
 try { equipoView = require('./views/dashboard/equipo'); } catch (e) { log(`equipo view unavailable: ${e.message}`); }
 
+// #3955 EP8-H2 — CSRF para el endpoint destructivo /api/kill-agent (SEC-2).
+// Lazy require defensivo: si falla, el guard del handler degrada a "sin token
+// no se mata" (fail-closed) en lugar de crashear el dashboard.
+let killAgentCsrf = null;
+try { killAgentCsrf = require('./lib/kill-agent-csrf'); } catch (e) { log(`kill-agent-csrf unavailable: ${e.message}`); }
+
 // #3724 — Wizard session endpoint (split de #3715 / paraguas #3669).
 // Lazy require — si el módulo falla, el dashboard arranca sin wizards.
 let wizardSession = null;
@@ -9512,7 +9596,9 @@ const server = http.createServer((req, res) => {
       const headers = { 'Content-Type': contentType, 'Cache-Control': 'no-cache' };
       if (isPdf) headers['Content-Disposition'] = `inline; filename="${filename}"`;
       res.writeHead(200, headers);
-      res.end(fs.readFileSync(logPath));
+      // SEC-4 — PDFs se sirven binarios tal cual; los logs de texto pasan por
+      // el redactor de secrets antes de salir al browser.
+      res.end(isPdf ? fs.readFileSync(logPath) : redactLogText(fs.readFileSync(logPath, 'utf8')));
     } else {
       res.writeHead(404); res.end('Log no encontrado: ' + filename);
     }
@@ -10241,12 +10327,67 @@ const server = http.createServer((req, res) => {
   }
 
   // API: Kill agent (cancelar agente activo)
+  // #3955 EP8-H2 — Emisión de token CSRF para el kill por agente (SEC-2). GET
+  // mismo-origen: el front lo pide antes del primer POST y lo cachea. Devuelve
+  // el token en el body + setea cookie ka_csrf (double-submit).
+  if (req.url === '/api/kill-agent/csrf-token' && req.method === 'GET') {
+    if (!killAgentCsrf) {
+      res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ ok: false, msg: 'CSRF no disponible' }));
+      return;
+    }
+    killAgentCsrf.issueTokenResponse(req, res);
+    return;
+  }
+
   if (req.url === '/api/kill-agent' && req.method === 'POST') {
+    // SEC-2 — CSRF ANTES de leer el body o tocar el FS. Fail-closed: si el
+    // módulo no cargó, rechazamos en vez de degradar a "sin protección".
+    if (!killAgentCsrf) {
+      res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ ok: false, msg: 'CSRF no disponible — kill deshabilitado' }));
+      return;
+    }
+    if (!killAgentCsrf.requireCSRF(req, res)) return; // ya respondió 403
+
     let body = '';
-    req.on('data', chunk => { body += chunk; });
+    req.on('data', chunk => { body += chunk; if (body.length > 16 * 1024) req.destroy(); });
     req.on('end', () => {
       try {
-        const { issue, skill, pipeline: pl, fase } = JSON.parse(body);
+        const parsed = JSON.parse(body);
+        const { issue, skill, pipeline: pl, fase } = parsed;
+
+        // SEC-1 — validación estricta de inputs ANTES de cualquier path.join /
+        // renameSync. Sin esto, `pipeline="../.."` o `fase` con segmentos
+        // relativos permite operar fuera del árbol del pipeline (A03/CWE-22).
+        const cfg = loadConfig();
+        const pipelineCfg = cfg && cfg.pipelines && cfg.pipelines[pl];
+        if (!pipelineCfg || !Array.isArray(pipelineCfg.fases) || !pipelineCfg.fases.includes(fase)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: `pipeline/fase inválido: ${pl}/${fase}` }));
+          return;
+        }
+        if (!/^[0-9]+$/.test(String(issue))) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: 'issue inválido (se espera numérico)' }));
+          return;
+        }
+        if (!/^[a-z0-9-]+$/.test(String(skill))) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: 'skill inválido' }));
+          return;
+        }
+
+        // SEC-3 — guard server-side de skills no cancelables (commander). El
+        // front oculta el botón, pero el endpoint es la barrera real: rechaza
+        // 403 aunque se invoque directo.
+        const NO_CANCELABLE = new Set(['commander']);
+        if (NO_CANCELABLE.has(String(skill))) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: `skill no cancelable: ${skill}` }));
+          return;
+        }
+
         const trabajandoDir = path.join(PIPELINE, pl, fase, 'trabajando');
         const pendienteDir = path.join(PIPELINE, pl, fase, 'pendiente');
         const filename = `${issue}.${skill}`;

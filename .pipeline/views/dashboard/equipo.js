@@ -158,6 +158,144 @@ function eqAreaGrid(state) {
     return { html, totalBusy: totalBusyAll, totalSkills: totalSkillsAll };
 }
 
+// #3955 EP8-H2 — Formateo de duración server-side (espejo del fmtDur cliente).
+// Acotado y sin dependencias para mantener equipo.js como render puro testeable.
+function fmtDur(ms) {
+    if (!ms || ms < 0) return '—';
+    const s = Math.round(ms / 1000);
+    if (s < 60) return s + 's';
+    const m = Math.floor(s / 60), r = s % 60;
+    if (m < 60) return m + 'm ' + r + 's';
+    const h = Math.floor(m / 60), rm = m % 60;
+    return h + 'h ' + rm + 'm';
+}
+
+// #3955 EP8-H2 (CA-1) — Progreso % de un agente. progreso = min(100,
+// durationMs/etaMs*100); si falta etaMs → 0 (barra indeterminada, nunca NaN).
+function agentProgress(durationMs, etaMs) {
+    if (!etaMs || etaMs <= 0) return { pct: 0, indeterminate: true };
+    return { pct: Math.min(100, Math.round((durationMs / etaMs) * 100)), indeterminate: false };
+}
+
+// #3955 EP8-H2 (CA-5) — Sparkline 24h SSR. `buckets` es number[24] (índice 0 =
+// hace 23h, 23 = hora actual). Barras normalizadas al máximo del array; las
+// horas recientes (últimas 6) se resaltan con la clase `eq-spark-bar-recent`.
+// Dual-encoding: además del color, el title expone el conteo exacto por hora.
+function skillSparkline(buckets) {
+    const arr = Array.isArray(buckets) ? buckets : [];
+    const max = arr.reduce((a, b) => Math.max(a, b || 0), 0);
+    const total = arr.reduce((a, b) => a + (b || 0), 0);
+    const bars = arr.map((v, i) => {
+        const h = max > 0 ? Math.max(8, Math.round((v / max) * 100)) : 4;
+        const recent = i >= arr.length - 6;
+        const cls = 'eq-spark-bar' + (recent ? ' eq-spark-bar-recent' : '');
+        const hoursAgo = arr.length - 1 - i;
+        const label = (v || 0) + ' marker' + ((v || 0) === 1 ? '' : 's') + ' · hace ' + hoursAgo + 'h';
+        return `<span class="${cls}" style="height:${h}%" title="${escapeHtmlAttr(label)}"></span>`;
+    }).join('');
+    return `<span class="eq-spark" title="${escapeHtmlAttr('Carga 24h: ' + total + ' markers')}" aria-label="${escapeHtmlAttr('Carga ultimas 24 horas: ' + total + ' markers')}">${bars}</span>`;
+}
+
+// #3955 EP8-H2 (CA-1) — Fila de un agente vivo dentro del acordeón. Renderiza
+// issue, fase, título (escapado, SEC-5), progreso %, duración, log y la acción
+// (cancelar / protegido / en espera por cooldown). El kill por agente se cablea
+// vía onclick a la función global killAgent(...) que ya viaja con token CSRF.
+function teamAgentRow(a) {
+    a = a || {};
+    const issue = String(a.issue == null ? '' : a.issue);
+    const skill = String(a.skill || '');
+    const fase = String(a.fase || '');
+    const pipeline = String(a.pipeline || '');
+    const title = String(a.title || '');
+    const durationMs = a.durationMs || 0;
+    const observational = a.observational === true || a.cancelable === false;
+    const cooldown = a.cooldown || null;
+    const prog = agentProgress(durationMs, a.etaMs);
+
+    const issueHtml = observational
+        ? `<span class="eq-ag-issue eq-ag-issue-obs">${escapeHtmlText(a.title || 'Commander')}</span>`
+        : `<span class="eq-ag-issue">#${escapeHtmlText(issue)}</span>`;
+    const faseHtml = `<span class="eq-ag-fase" title="${escapeHtmlAttr('Fase: ' + fase)}">${escapeHtmlText(fase)}</span>`;
+    const titleHtml = observational ? '' : `<span class="eq-ag-title">${escapeHtmlText(title)}</span>`;
+    const barHtml = prog.indeterminate
+        ? `<span class="eq-ag-bar eq-ag-bar-indeterminate"><span></span></span><span class="eq-ag-pct">—</span>`
+        : `<span class="eq-ag-bar"><span style="width:${prog.pct}%"></span></span><span class="eq-ag-pct">${prog.pct}%</span>`;
+    const durHtml = `<span class="eq-ag-dur" title="Tiempo invertido">⏱ ${escapeHtmlText(fmtDur(durationMs))}</span>`;
+    const logHref = (!observational && a.hasLog) ? safeLogHref(a.logFile, true) : null;
+    const logHtml = logHref
+        ? `<a class="eq-ag-log" href="${escapeHtmlAttr(logHref)}" target="_blank" rel="noopener noreferrer" title="Ver log en vivo" onclick="event.stopPropagation()">\u{1F4C4} log</a>`
+        : '';
+
+    // Acción por agente: commander/observacional → protegido; cooldown → en
+    // espera (deshabilitado); resto → botón cancelar con confirmación + CSRF.
+    let actionHtml;
+    if (observational) {
+        actionHtml = `<span class="eq-ag-protected" title="Skill no cancelable — presencia observacional">\u{1F512} protegido</span>`;
+    } else if (cooldown) {
+        const failures = cooldown.failures || 0;
+        actionHtml = `<span class="eq-ag-cooldown" data-cooldown-until="${escapeHtmlAttr(String(cooldown.cooldownUntil || ''))}" title="${escapeHtmlAttr('Cooldown por fast-fail · ' + failures + ' fallos — re-lanzamiento bloqueado por el server')}">⏳ <span class="eq-ag-cooldown-left">cooldown</span> · ${escapeHtmlText(String(failures))} fallos</span><span class="eq-ag-wait" aria-disabled="true">en espera</span>`;
+    } else {
+        const onclick = `event.stopPropagation();killAgent('${escapeHtmlAttr(issue)}','${escapeHtmlAttr(skill)}','${escapeHtmlAttr(pipeline)}','${escapeHtmlAttr(fase)}',${durationMs})`;
+        actionHtml = `<button class="eq-ag-kill" title="Cancelar este agente" onclick="${onclick}">✕ cancelar</button>`;
+    }
+
+    const rowCls = 'eq-ag-row' + (observational ? ' eq-ag-row-obs' : '') + (cooldown ? ' eq-ag-row-cooldown' : '');
+    return `<div class="${rowCls}">
+      <div class="eq-ag-head">${issueHtml}${faseHtml}${titleHtml}</div>
+      <div class="eq-ag-meta">${barHtml}${durHtml}${logHtml}${actionHtml}</div>
+    </div>`;
+}
+
+// #3955 EP8-H2 (CA-1/CA-3/CA-5) — Acordeón por skill. Agrupa los agentes vivos
+// por skill y, por cada uno, una card colapsable (toggleSection + sessionStorage,
+// patrón ya usado en el dashboard) con cabecera (avatar + nombre + N vivos +
+// sparkline 24h) y una fila por agente. El Commander (observacional) se muestra
+// como card especial no cancelable. `state`:
+//   { teamAgents: [...activeAgents], teamSpark: {skill:[24]}, agentPersona }
+function renderTeamAccordion(state) {
+    state = state || {};
+    const agents = Array.isArray(state.teamAgents) ? state.teamAgents : [];
+    const spark = state.teamSpark || {};
+    const agentPersona = state.agentPersona || {};
+
+    // Agrupar por skill preservando el orden de llegada (activeAgents ya ordena
+    // por duración desc + commander al frente).
+    const order = [];
+    const groups = new Map();
+    for (const a of agents) {
+        const skill = String(a.skill || '');
+        if (!groups.has(skill)) { groups.set(skill, []); order.push(skill); }
+        groups.get(skill).push(a);
+    }
+    if (order.length === 0) {
+        return '<div class="eq-accordion eq-accordion-empty"><span class="empty-label">Sin agentes vivos</span></div>';
+    }
+
+    const cards = order.map(skill => {
+        const list = groups.get(skill);
+        const p = agentPersona[skill] || Object.assign({}, FALLBACK_PERSONA, { name: skill });
+        const isObs = list.some(a => a.observational === true || a.cancelable === false);
+        const count = list.length;
+        const secId = 'eqacc-' + skill.replace(/[^a-z0-9-]/gi, '');
+        const headerCls = 'eq-acc-card' + (isObs ? ' eq-acc-card-obs' : '');
+        const obsBadge = isObs ? `<span class="eq-acc-obs-badge" title="Skill no cancelable">\u{1F512} skill no cancelable</span>` : '';
+        const rows = list.map(teamAgentRow).join('');
+        return `<div class="${headerCls}" data-skill="${escapeHtmlAttr(skill)}">
+      <div class="eq-acc-head section-title-clickable" onclick="toggleSection('${escapeHtmlAttr(secId)}')" data-section="${escapeHtmlAttr(secId)}">
+        <span class="section-chevron">▼</span>
+        <span class="eq-acc-avatar" style="background:${safeColor(p.color)}">${escapeHtmlText(p.icon)}</span>
+        <span class="eq-acc-name">${escapeHtmlText(p.name || skill)}</span>
+        <span class="eq-acc-count">${count} vivo${count === 1 ? '' : 's'}</span>
+        ${obsBadge}
+        <span class="eq-acc-spark-wrap">${skillSparkline(spark[skill])}</span>
+      </div>
+      <div class="eq-acc-body" id="${escapeHtmlAttr(secId)}">${rows}</div>
+    </div>`;
+    }).join('');
+
+    return `<div class="eq-accordion" id="equipo-accordion">${cards}</div>`;
+}
+
 // Entry point SSR único de la ventana Equipo. `state` agrupa los derivados que
 // calcula dashboard.js:
 //   {
@@ -192,11 +330,15 @@ function renderEquipoSsr(state) {
         </div>
       </div>
       <div class="section-body">
-      ${activeStripHTML}
+      ${(state.teamAgents && state.teamAgents.length) ? renderTeamAccordion(state) : activeStripHTML}
       ${grid.html || '<span class="empty-label">Sin skills configurados</span>'}
       ${svcCardsHTML ? '<div class="eq-svc-section"><div class="eq-svc-head">⚙ Servicios</div><div class="svc-grid eq-svc-grid">' + svcCardsHTML + '</div></div>' : ''}
       </div>
     </div>`;
 }
 
-module.exports = { renderEquipoSsr, eqAreaGrid, personaCard, skillHistoryStrip, safeColor, safeLogHref };
+module.exports = {
+    renderEquipoSsr, eqAreaGrid, personaCard, skillHistoryStrip, safeColor, safeLogHref,
+    // #3955 EP8-H2 — acordeón por skill + helpers (exportados para test SSR).
+    renderTeamAccordion, teamAgentRow, skillSparkline, agentProgress, fmtDur,
+};

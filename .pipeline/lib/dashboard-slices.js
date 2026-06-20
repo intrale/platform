@@ -56,6 +56,24 @@ try { commanderPresence = require('./commander-presence'); } catch { /* opcional
 // colgada más de ~5 min.
 const COMMANDER_PRESENCE_TTL_MS = 5 * 60 * 1000;
 
+// #3955 EP8-H2 (CA-4 / SEC-6) — Cooldowns por fast-fail. Fuente única y
+// server-authoritative: `<pipeline>/cooldowns.json`, escrita por pulpo.js
+// (`registerFastFail`), con shape `{ "<skill>:<issue>": { failures, cooldownUntil } }`.
+// El dashboard SOLO lee y expone; nunca habilita acciones por su cuenta.
+const COOLDOWNS_FILE = path.join(__dirname, '..', 'cooldowns.json');
+
+// Lee el cooldown vigente para un par skill+issue. Devuelve `null` si no hay
+// cooldown o si ya venció (no exponemos contadores stale como activos). El
+// objeto de cooldowns se pasa pre-leído para no pegarle al FS por agente.
+function cooldownFor(cooldowns, skill, issue, now) {
+    if (!cooldowns) return null;
+    const entry = cooldowns[`${skill}:${issue}`];
+    if (!entry || !entry.cooldownUntil) return null;
+    const untilMs = Date.parse(entry.cooldownUntil);
+    if (!Number.isFinite(untilMs) || untilMs <= now) return null;
+    return { failures: entry.failures || 0, cooldownUntil: entry.cooldownUntil };
+}
+
 function isDeterministicSkill(skill) {
     return DETERMINISTIC_SKILLS.has(String(skill || '').trim().toLowerCase());
 }
@@ -67,6 +85,9 @@ function safeReadJson(filepath, fallback) {
 
 function activeAgents(state) {
     const out = [];
+    // #3955 — Cooldowns leídos una sola vez por request (CA-4/SEC-6).
+    const cooldowns = safeReadJson(COOLDOWNS_FILE, null);
+    const now = Date.now();
     for (const [issueId, data] of Object.entries(state.issueMatrix || {})) {
         if (data.estadoActual !== 'trabajando') continue;
         const entries = data.fases[data.faseActual] || [];
@@ -84,6 +105,12 @@ function activeAgents(state) {
                 logFile: e.logFile,
                 etaMs: (state.etaAverages && state.etaAverages[`${e.fase}/${e.skill}`]?.avgMs) ||
                        (state.etaAverages && state.etaAverages[e.fase]?.avgMs) || null,
+                // #3955 CA-3 — defaults explícitos para que el front no tenga que
+                // inferir; el Commander (más abajo) los pisa con false/true.
+                cancelable: true,
+                observational: false,
+                // #3955 CA-4/SEC-6 — estado de cooldown server-authoritative.
+                cooldown: cooldownFor(cooldowns, e.skill, issueId, now),
             });
         }
     }
@@ -826,13 +853,59 @@ function sherlockPrecisionSlice(state, ctx) {
     }
 }
 
+// #3955 EP8-H2 (CA-5) — Sparkline de carga 24h por skill. Fuente: mtimes de los
+// archivos en `<pipeline>/<fase>/procesado/` agrupados en 24 buckets horarios.
+// NO introduce proceso de muestreo nuevo: deriva del FS existente (documentado
+// en el PR). Cada bucket cuenta cuántos markers terminó ese skill en esa hora.
+// El array tiene 24 enteros, índice 0 = hace 23h … índice 23 = hora actual.
+const SPARK_BUCKETS = 24;
+const SPARK_HOUR_MS = 3600 * 1000;
+const SPARK_CACHE_TTL_MS = 30 * 1000;
+let _sparkCache = { at: 0, data: null };
+
+function skillSpark24h(state, now) {
+    now = now || Date.now();
+    if (_sparkCache.data && (now - _sparkCache.at) < SPARK_CACHE_TTL_MS) {
+        return _sparkCache.data;
+    }
+    const PIPELINE = path.join(__dirname, '..');
+    const windowStart = now - SPARK_BUCKETS * SPARK_HOUR_MS;
+    const bySkill = {};
+    const fases = Array.isArray(state.allFases) ? state.allFases : [];
+    for (const { pipeline: pName, fase } of fases) {
+        const dir = path.join(PIPELINE, pName, fase, 'procesado');
+        let files;
+        try { files = fs.readdirSync(dir); } catch { continue; }
+        for (const f of files) {
+            if (f.startsWith('.') || isMarkerArtifact(f)) continue;
+            // marker `<issue>.<skill>` → skill es lo que sigue al primer punto.
+            const dot = f.indexOf('.');
+            if (dot < 0) continue;
+            const skill = f.slice(dot + 1);
+            if (!/^[a-z0-9-]+$/.test(skill)) continue;
+            let mtime;
+            try { mtime = fs.statSync(path.join(dir, f)).mtimeMs; } catch { continue; }
+            if (mtime < windowStart || mtime > now) continue;
+            const bucket = Math.min(SPARK_BUCKETS - 1, Math.floor((mtime - windowStart) / SPARK_HOUR_MS));
+            if (!bySkill[skill]) bySkill[skill] = new Array(SPARK_BUCKETS).fill(0);
+            bySkill[skill][bucket]++;
+        }
+    }
+    _sparkCache = { at: now, data: bySkill };
+    return bySkill;
+}
+
 function equipoSlice(state) {
     const skillLoad = state.skillLoad || {};
+    const spark = skillSpark24h(state);
     const skills = Object.entries(skillLoad).map(([skill, load]) => ({
         skill,
         running: load.running,
         max: load.max,
         utilization: load.max > 0 ? load.running / load.max : 0,
+        // #3955 CA-5 — sparkline de carga 24h (vacío si el skill no tuvo
+        // actividad en la ventana).
+        spark24h: spark[skill] || new Array(SPARK_BUCKETS).fill(0),
     }));
     return { skills };
 }
@@ -1734,6 +1807,9 @@ module.exports = {
     headerSlice,
     kpisSlice,
     equipoSlice,
+    // #3955 EP8-H2 — helpers exportados para test unitario.
+    skillSpark24h,
+    cooldownFor,
     pipelineSlice,
     bloqueadosSlice,
     opsSlice,
