@@ -80,31 +80,33 @@ gh pr list --repo intrale/platform --state open --json number,title,url,author
 
 Recibís una descripción en lenguaje natural (ej: "Agregar búsqueda por voz en el catálogo de productos del cliente").
 
-### Paso 1: Buscar duplicados (#3625 CA-4)
+### Paso 1: Buscar duplicados (#3625 CA-4 / #4110 CA-2)
 
 Antes de crear, verificar si ya existe uno similar en GitHub usando el
-detector **determinístico** del pipeline (Jaccard sobre tokens normalizados,
-umbral 0.7).
+**service único de deduplicación semántica** del pipeline
+(`semantic-dedup.checkSemanticDuplicate`). Este es uno de los **4 puntos de
+entrada** (`/doc nueva`, `/doc refinar`, `/planner split`, `/planner
+proponer`) que **DEBEN** invocar el mismo service (CA-2).
 
-**No improvises la búsqueda con `gh issue list --search`**. Usar el módulo:
+**No improvises la búsqueda con `gh issue list --search`**. Usar el módulo
+(es **async** → `await` dentro de una función o IIFE):
 
 ```bash
-# Título propuesto (escapar comillas con \").
-node -e "const d=require('./.pipeline/lib/duplicate-detector'); const r=d.findSimilar(process.argv[1]); console.log(JSON.stringify(r, null, 2));" "Título propuesto del nuevo issue"
+# Título + cuerpo propuestos (escapar comillas con \"). El service compara por
+# CONTENIDO (LLM-judge), no por coincidencia textual.
+node -e "(async () => { const d=require('./.pipeline/lib/semantic-dedup'); const r=await d.checkSemanticDuplicate(process.argv[1], process.argv[2]); console.log(JSON.stringify(r, null, 2)); })()" "Título propuesto del nuevo issue" "Cuerpo / descripción del nuevo issue"
 ```
 
-El módulo:
-- Trae los 50 issues OPEN más recientes vía `gh issue list` (cache 30s).
-- Tokeniza el título eliminando stopwords ES/EN, signos, acentos.
-- Calcula Jaccard contra cada candidato.
-- Devuelve los matches con score ≥ 0.7 ordenados desc.
+El service devuelve:
+`{ level: 'alta'|'parcial'|'ninguna', score, topMatch: {number,title}|null, matches: [{number,title,score}], sanitized, redacted }`.
 
-**Decisión:**
-- Si `hasDuplicate: true` (al menos un match ≥ 0.7) → **NO crear** el issue.
-  Mostrar al usuario:
+**Decisión por `level`:**
+- **`level: 'alta'` → NO crear** el issue: se comunica el vínculo al existente.
+  Mostrar al usuario (copy sin jerga interna — "similitud X%", nunca "Jaccard"
+  / "LLM-judge" / "embeddings"):
   ```
-  ⚠️ Posible duplicado detectado:
-    #<topMatch.number> "<topMatch.title>" — <score>% match (umbral 70%)
+  ⚠️ No creé el issue: ya existe uno muy parecido.
+    • #<topMatch.number> "<topMatch.title>" (similitud <score>%)
     <otros matches si los hay>
 
   Opciones:
@@ -115,20 +117,29 @@ El módulo:
   ```
   Esperar respuesta del operador. Sin respuesta en 5 min → cancelar y avisar.
 
+- **`level: 'parcial'` → crear igual, avisando el ajuste** (CA-4): se crea el
+  issue pero se comunica con qué se solapa y por qué, para revisar si conviene
+  acotar el contenido y no duplicar. No bloquea el flujo.
+
+- **`level: 'ninguna'` → continuar** con el flujo normal sin interrupciones.
+
 - Si `--force-duplicate "razón válida"` viene en el argumento original
   (regex: `--force-duplicate\s+"([^"]{20,})"`) → permitir creación pero
   ANTES, loguear el override en el audit dedicado:
   ```bash
-  node -e "const d=require('./.pipeline/lib/duplicate-detector'); const r=d.findSimilar(process.argv[1]); const log=d.logForceDuplicate({title:process.argv[1], matches:r.matches, justification:process.argv[2], author:'commander:leo'}); console.log(JSON.stringify(log));" "TÍTULO" "RAZÓN DEL OVERRIDE >= 20 chars"
+  node -e "(async () => { const sd=require('./.pipeline/lib/semantic-dedup'); const dd=require('./.pipeline/lib/duplicate-detector'); const r=await sd.checkSemanticDuplicate(process.argv[1], process.argv[2]); const log=dd.logForceDuplicate({title:process.argv[1], matches:r.matches, justification:process.argv[3], author:'commander:leo'}); console.log(JSON.stringify(log)); })()" "TÍTULO" "CUERPO" "RAZÓN DEL OVERRIDE >= 20 chars"
   ```
   La razón corta (< 20 chars) hace fallar el log y aborta la creación.
 
-- Si `hasDuplicate: false` → continuar con el flujo normal sin interrupciones.
+**Fail-open (A04 / CA-10)**: si el service falla (sin red, provider caído,
+circuit-breaker), el chequeo cae a "crear sin chequear por contenido" — NUNCA
+bloquea la creación. Avisar discreto: "dedup semántico no disponible, se creó
+sin chequear por contenido".
 
-**Threat model**: la métrica es Jaccard puro sobre strings (no LLM, no
-embeddings), así que `title` es seguro contra prompt-injection. Si en el
-futuro se cambia a embeddings/LLM, se DEBE sanitizar el input antes y
-re-evaluar el threat model (documentado en `lib/duplicate-detector.js`).
+**Threat model**: el service consume título+body de issues (input no
+confiable). El propio módulo `semantic-dedup` sanitiza contra prompt-injection
+y redacta secrets ANTES de mandar al LLM-judge (CA-7/CA-8); el contenido se
+trata como dato, nunca instrucción. Documentado en `lib/semantic-dedup.js`.
 
 ### Paso 2: Analizar el codebase
 
@@ -374,6 +385,33 @@ ls docs/ui-specs/ 2>/dev/null || ls docs/specs/ 2>/dev/null | head -10
 ```
 
 Si existen specs → agregar o actualizar la sección "Specs de referencia" en el body del issue.
+
+### Paso 2.6: Chequeo de duplicados semánticos (#4110 CA-2)
+
+`refinar` es uno de los **4 puntos de entrada** que invocan el **mismo
+service** de deduplicación (CA-2). Antes de reescribir el body, verificar si el
+issue que estás refinando solapa por **contenido** con otro issue abierto
+(p. ej. dos issues que describen el mismo problema y convendría fusionar):
+
+```bash
+# title + body del issue a refinar; EXCLUIR su propio número del set de
+# candidatos (si no, se auto-detecta como duplicado de sí mismo).
+node -e "(async () => { const d=require('./.pipeline/lib/semantic-dedup'); const gh=require('child_process'); const self=Number(process.argv[3]); const open=JSON.parse(gh.execSync('gh issue list --repo intrale/platform --state open --limit 50 --json number,title').toString()).filter(i => i.number !== self); const r=await d.checkSemanticDuplicate(process.argv[1], process.argv[2], { openIssues: open }); console.log(JSON.stringify(r, null, 2)); })()" "TÍTULO DEL ISSUE" "BODY ACTUAL DEL ISSUE" "$ISSUE_NUMBER"
+```
+
+**Decisión:**
+- `level: 'alta'` → el refinamiento describe un issue que ya existe abierto.
+  **No reescribir a ciegas**: avisar al operador el vínculo
+  (`#<topMatch.number>` "similitud X%") y sugerir consolidar vía `/planner`
+  (la **decisión** crear/redefinir/fusionar la concentra el planner — CA-5; la
+  fusión/cierre de un issue abierto NUNCA es automática, pasa por el gate
+  humano — CA-6). Continuar el refinamiento solo si el operador confirma que
+  son distintos.
+- `level: 'parcial'` → refinar igual, anotando en el body con qué se solapa.
+- `level: 'ninguna'` → continuar normal.
+
+Copy sin jerga interna ("similitud X%", nunca "Jaccard"/"LLM-judge"). Fail-open
+(A04): si el service falla, refinar igual sin chequear por contenido.
 
 ### Paso 3: Redactar el body refinado
 

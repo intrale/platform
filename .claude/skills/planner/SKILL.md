@@ -744,6 +744,59 @@ Mostrar el plan completo y obtener confirmación antes de crear los issues.
 
 **Si el modo es autónomo** (invocado por otro agente o con flag `--auto`): crear directamente sin confirmación.
 
+### Paso SP3.5: Chequeo de duplicados semánticos por sub-historia (#4110 CA-2/CA-5/CA-6)
+
+`split` es uno de los **4 puntos de entrada** que invocan el **mismo service**
+de deduplicación (`semantic-dedup.checkSemanticDuplicate`) — CA-2. Antes de
+crear cada sub-historia vía `/doc nueva`, chequear que su contenido no duplique
+un issue abierto existente:
+
+```bash
+# Por cada sub-historia propuesta (título + descripción). Service async.
+node -e "(async () => { const d=require('./.pipeline/lib/semantic-dedup'); const r=await d.checkSemanticDuplicate(process.argv[1], process.argv[2]); console.log(JSON.stringify(r)); })()" "TÍTULO SUB-HISTORIA" "DESCRIPCIÓN SUB-HISTORIA"
+```
+
+**La decisión la concentra el planner (CA-5)** — los puntos de entrada solo
+**detectan**; acá se decide crear / redefinir / fusionar:
+
+- `level: 'alta'` → **no crear** la sub-historia: vincularla al issue existente
+  (`#<topMatch.number>`, "similitud X%"). Si la decisión implica
+  **fusionar/cerrar un issue abierto**, eso pasa **obligatoriamente por el gate
+  humano** (ver Paso SP3.6) — NUNCA automático (CA-6).
+- `level: 'parcial'` → crear, acotando el alcance para no solapar; documentar el
+  ajuste en el body de la sub-historia.
+- `level: 'ninguna'` → crear normal.
+
+Copy sin jerga ("similitud X%", nunca "Jaccard"/"LLM-judge"/"embeddings").
+Fail-open (A04): si el service falla, crear sin chequear por contenido (jamás
+cerrar/fusionar por un error del service).
+
+### Paso SP3.6: Gate humano para fusión/cierre destructivo (#4110 CA-6 — BLOCKER)
+
+Cuando la decisión del planner implica **cerrar o fusionar un issue abierto**,
+NUNCA hacerlo de forma automática. Reusar los primitivos existentes (no rodar
+auth propia): `lib/human-block.js#reportHumanBlock` (operador autenticado
+SEC-1..SEC-5 de `commander-deterministic`) + `lib/audit-log.js#appendChained`
+(hash-chain SHA-256, fail-closed con lock):
+
+```bash
+# 1) Bloquear y pedir confirmación explícita del operador autenticado.
+node -e "const { reportHumanBlock } = require('./.pipeline/lib/human-block'); reportHumanBlock({ issue: Number(process.argv[1]), skill: 'planner', phase: 'criterios', reason: process.argv[2], question: process.argv[3] });" "<ISSUE_GANADOR>" "Fusión/cierre de #<victima> contra #<ganador> (similitud <nivel>, score <pct>%)" "¿Confirmás cerrar #<victima> y fusionar en #<ganador>? Requiere operador autenticado."
+
+# 2) SOLO tras la confirmación del operador, registrar en el audit hash-chain
+#    (quién/qué/score/decisión — también los RECHAZOS, no solo aprobaciones).
+node -e "const { appendChained } = require('./.pipeline/lib/audit-log'); appendChained({ file: '.pipeline/audit/dedup-decisions.jsonl', entry: { operator: process.argv[1], victima: Number(process.argv[2]), ganador: Number(process.argv[3]), score: Number(process.argv[4]), nivel: process.argv[5], decision: process.argv[6], issue: Number(process.argv[3]) } });" "<OPERADOR>" "<VICTIMA>" "<GANADOR>" "<SCORE>" "<NIVEL>" "fusion|cierre|rechazo"
+```
+
+Reglas inquebrantables del gate:
+- **NUNCA** `writeFileSync`/append manual sobre `dedup-decisions.jsonl` — rompe
+  la cadena. Exclusivamente `appendChained`.
+- El gate **no acepta** confirmaciones de identidad no verificada (A07): valida
+  operador autenticado, no mera presencia en el canal.
+- El mensaje del gate es auto-explicativo (G2): qué issue se cerraría, contra
+  cuál se fusiona, score+nivel en %, opciones confirmar/rechazar explícitas; en
+  español neutro, sin IDs internos ni stack traces.
+
 ### Paso SP4: Crear cada sub-historia con `/doc nueva`
 
 Para cada sub-historia propuesta, invocar `/doc nueva` con el body completo.
@@ -1045,6 +1098,34 @@ Para cada nueva historia sugerida, mostrar al usuario:
 ```
 
 Presentar máximo 5 propuestas a la vez.
+
+### Chequeo de duplicados semánticos por propuesta (#4110 CA-2/CA-5/CA-6)
+
+`proponer` es uno de los **4 puntos de entrada** que invocan el **mismo service**
+de deduplicación (`semantic-dedup.checkSemanticDuplicate`) — CA-2. Antes de
+persistir cada propuesta en `planner-proposals.json`, chequear que su contenido
+no duplique un issue abierto existente:
+
+```bash
+# Por cada propuesta (título + body). Service async.
+node -e "(async () => { const d=require('./.pipeline/lib/semantic-dedup'); const r=await d.checkSemanticDuplicate(process.argv[1], process.argv[2]); console.log(JSON.stringify(r)); })()" "TÍTULO PROPUESTA" "BODY PROPUESTA"
+```
+
+**La decisión la concentra el planner (CA-5)** — el chequeo solo **detecta**;
+acá se decide crear / redefinir / fusionar:
+
+- `level: 'alta'` → **no persistir** la propuesta: vincularla al issue existente
+  (`#<topMatch.number>`, "similitud X%"). Si la decisión implica
+  **fusionar/cerrar un issue abierto**, eso pasa **obligatoriamente por el gate
+  humano** (mismos pasos SP3.6: `human-block.reportHumanBlock` +
+  `audit-log.appendChained`) — NUNCA automático (CA-6).
+- `level: 'parcial'` → persistir, acotando el alcance para no solapar; documentar
+  el ajuste en el `body` de la propuesta.
+- `level: 'ninguna'` → persistir normal.
+
+Copy sin jerga ("similitud X%", nunca "Jaccard"/"LLM-judge"/"embeddings").
+Fail-open (A04): si el service falla, persistir sin chequear por contenido
+(jamás cerrar/fusionar por un error del service).
 
 ### Persistir propuestas y enviar botones Telegram
 

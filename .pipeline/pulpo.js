@@ -11279,7 +11279,8 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
       const forceDuplicate = /\b(forz[aá]r?|es distinto|igual cre[aá]lo|cre[aá]lo igual)\b/i.test(mensajeConsolidado);
       let docResult;
       try {
-        docResult = commanderDocCreate.createIssue({
+        // #4110: createIssue es async (dedup semántico vía checkSemanticDuplicate).
+        docResult = await commanderDocCreate.createIssue({
           description: mensajeConsolidado,
           from: textoLibre[0].from || undefined,
           pipelineDir: PIPELINE,
