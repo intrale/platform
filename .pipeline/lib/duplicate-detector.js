@@ -238,12 +238,23 @@ function logForceDuplicate({ title, matches, justification, author }) {
 function formatDuplicateAlert(title, result) {
     if (!result || !result.topMatch) return '';
     const m = result.topMatch;
-    const score = (m.score * 100).toFixed(1);
+    // Copy operador-facing sin jerga interna (G1, #4110): "similitud X%", nunca
+    // "Jaccard"/"LLM-judge"/"embeddings". Robusto al contrato del service
+    // semántico, donde `topMatch` no trae `score` y no hay `threshold`
+    // top-level: se cae al `score` del resultado o al del primer match.
+    const matches = Array.isArray(result.matches) ? result.matches : [];
+    const rawScore = (typeof m.score === 'number') ? m.score
+        : (typeof result.score === 'number') ? result.score
+        : (matches[0] && typeof matches[0].score === 'number') ? matches[0].score
+        : null;
+    const pct = (rawScore != null && Number.isFinite(rawScore))
+        ? ` (similitud ${(rawScore * 100).toFixed(1)}%)`
+        : '';
     return (
-        `⚠️ *Posible duplicado detectado* (Jaccard ${score}% > ${(result.threshold * 100).toFixed(0)}%):\n\n` +
+        `⚠️ *Posible duplicado detectado*${pct}:\n\n` +
         `Tu título: ${title}\n` +
         `Issue similar: #${m.number} — ${m.title}\n\n` +
-        `${result.matches.length > 1 ? `(${result.matches.length} matches en total)\n\n` : ''}` +
+        `${matches.length > 1 ? `(${matches.length} matches en total)\n\n` : ''}` +
         `Si igual querés crear el nuevo issue, usá:\n` +
         `\`/doc nueva --force-duplicate "razón ≥ 20 chars" ...\``
     );
