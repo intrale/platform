@@ -304,19 +304,20 @@ function _defaultAddToProject({ issueNumber, backlog }) {
  * @param {string} [args.repo]            Repo override (default intrale/platform).
  *
  * Inyectables para test:
- * @param {function} [args.runDuplicateCheck]  (title) => {hasDuplicate, matches}
+ * @param {function} [args.runDuplicateCheck]  (title, body) => Promise<{level,score,topMatch,matches}>|{hasDuplicate,matches}
  * @param {function} [args.runGhCreate]        ({title,body,labels,repo,ghPath}) => {url,issueNumber}
  * @param {function} [args.runAddToProject]    ({issueNumber,backlog}) => result
  * @param {function} [args.logAudit]           (entry, opts) => void
  * @param {function} [args.now]                () => epoch ms
  * @param {function} [args.log]                (tag, msg) => void
  *
- * @returns {{ status: 'created'|'duplicate'|'error',
+ * @returns {Promise<{ status: 'created'|'duplicate'|'error',
  *             issueNumber?: number, url?: string, title?: string,
  *             labels?: string[], backlog?: string, matches?: object[],
- *             error?: string, durationMs: number }}
+ *             topMatch?: object, partialDuplicate?: object,
+ *             error?: string, durationMs: number }>}
  */
-function createIssue(args = {}) {
+async function createIssue(args = {}) {
     const log = typeof args.log === 'function' ? args.log : () => {};
     const now = typeof args.now === 'function' ? args.now : () => Date.now();
     const logAudit = typeof args.logAudit === 'function'
@@ -365,15 +366,30 @@ function createIssue(args = {}) {
     const backlog = resolveBacklog(inferred.app);
     const repo = args.repo || REPO;
 
-    // --- Detección de duplicados (reusa duplicate-detector) ---
+    // --- Detección de duplicados semántica (#4110: swap a semantic-dedup) ---
+    // CA-2: este es uno de los 4 puntos de entrada que invocan el MISMO service
+    // (`semantic-dedup.checkSemanticDuplicate`). El service es async y razona por
+    // `level` ('alta'|'parcial'|'ninguna'), no por `hasDuplicate`.
+    let partialDup = null;
     if (!args.force) {
         try {
+            // `runDuplicateCheck` queda inyectable (tests/regresión). El default
+            // ahora es el service semántico, async, con firma (title, body).
             const dupFn = typeof args.runDuplicateCheck === 'function'
                 ? args.runDuplicateCheck
-                : (ttl) => require('../duplicate-detector').findSimilar(ttl, { limit: 50 });
-            const dup = dupFn(title);
-            if (dup && dup.hasDuplicate) {
-                log('commander', `doc-create: posible duplicado de "${title}" — no se crea`);
+                : (t, b) => require('../semantic-dedup').checkSemanticDuplicate(t, b, { limit: 50 });
+            // `await` tolera tanto el service async como inyecciones síncronas
+            // de los tests (un valor no-promesa se resuelve igual).
+            const dup = await dupFn(title, body);
+            // Retrocompat: si la inyección vieja devuelve `{hasDuplicate}` sin
+            // `level`, lo mapeamos a 'alta'/'ninguna' (CA-3 conserva el contrato).
+            const level = dup
+                ? (dup.level || (dup.hasDuplicate ? 'alta' : 'ninguna'))
+                : 'ninguna';
+            if (level === 'alta') {
+                // CA-3: similitud alta → NO se crea, se comunica el vínculo al
+                // existente (consistente con formatDuplicateAlert: nivel + score %).
+                log('commander', `doc-create: duplicado semántico (alta) de "${title}" — no se crea`);
                 audit({
                     skillResult: issueCreation.SKILL_RESULT_BLOCKED,
                     error: 'duplicate_detected',
@@ -382,13 +398,27 @@ function createIssue(args = {}) {
                     status: 'duplicate',
                     title,
                     matches: dup.matches || [],
+                    topMatch: dup.topMatch || null,
+                    score: typeof dup.score === 'number' ? dup.score : undefined,
                     durationMs: now() - startedAt,
                 };
             }
+            if (level === 'parcial') {
+                // CA-4: similitud parcial → NO se bloquea la creación; se anota el
+                // ajuste para comunicar qué se solapa y por qué se creó igual.
+                partialDup = {
+                    matches: dup.matches || [],
+                    topMatch: dup.topMatch || null,
+                    score: typeof dup.score === 'number' ? dup.score : undefined,
+                };
+                log('commander', `doc-create: duplicado semántico (parcial) de "${title}" — se crea con aviso`);
+            }
+            // level === 'ninguna' → flujo normal sin interrupciones.
         } catch (e) {
-            // La detección de duplicados NO debe bloquear la creación: si falla
-            // (sin red, gh caído), seguimos adelante y lo dejamos en audit.
-            log('commander', `doc-create: dup-check falló (no bloquea): ${e.message}`);
+            // A04 (fail-open en dirección NO destructiva): la detección de
+            // duplicados NUNCA bloquea la creación. Si el service falla (sin red,
+            // gh caído, circuit-breaker), seguimos adelante y lo dejamos en audit.
+            log('commander', `doc-create: dup-check falló (no bloquea, fail-open): ${e.message}`);
         }
     }
 
@@ -446,8 +476,26 @@ function createIssue(args = {}) {
         labels,
         backlog,
         projectAdded: projectOk,
+        // CA-4: si hubo solapamiento parcial, se informa junto a la creación.
+        partialDuplicate: partialDup || undefined,
         durationMs: now() - startedAt,
     };
+}
+
+/**
+ * Deriva el sufijo " (similitud X%)" para un match. El service semántico no
+ * pone `score` en `topMatch`, así que cae al `score` top-level del resultado.
+ * Copy operador-facing sin jerga interna (G1): nunca "Jaccard"/"LLM-judge".
+ *
+ * @param {object} item — match con `score` opcional.
+ * @param {number} [fallbackScore] — score top-level del resultado.
+ * @returns {string} sufijo formateado o '' si no hay score utilizable.
+ */
+function matchPercent(item, fallbackScore) {
+    const raw = (item && typeof item.score === 'number') ? item.score
+        : (typeof fallbackScore === 'number' ? fallbackScore : null);
+    if (raw == null || !Number.isFinite(raw)) return '';
+    return ` (similitud ${(raw * 100).toFixed(0)}%)`;
 }
 
 /**
@@ -461,17 +509,28 @@ function formatResultMessage(result) {
     switch (result.status) {
         case 'created': {
             const proj = result.projectAdded ? '' : '\n⚠️ No pude agregarlo al Project V2 — revisalo manual.';
+            // CA-4: solapamiento parcial → se creó igual, pero se avisa con qué
+            // se cruza (copy sin jerga: "similitud X%", G1).
+            let partial = '';
+            const pd = result.partialDuplicate;
+            const pdTop = pd && ((pd.matches || [])[0] || pd.topMatch);
+            if (pdTop) {
+                const pct = matchPercent(pdTop, pd && pd.score);
+                partial = `\nℹ️ Se solapa parcialmente con #${pdTop.number} "${pdTop.title}"${pct}. Lo creé igual; revisá si conviene ajustarlo para no duplicar contenido.`;
+            }
             return [
                 `✅ Issue #${result.issueNumber} creado: ${result.title}`,
                 `🏷️ Labels: ${(result.labels || []).join(', ')}`,
                 `📋 Backlog: ${result.backlog}`,
                 result.url ? `🔗 ${result.url}` : '',
-            ].filter(Boolean).join('\n') + proj;
+            ].filter(Boolean).join('\n') + proj + partial;
         }
         case 'duplicate': {
-            const top = (result.matches || [])[0];
+            // CA-3: alta similitud → no se creó, se vincula al existente.
+            // Copy sin jerga interna (G1): "similitud X%", nunca "Jaccard".
+            const top = (result.matches || [])[0] || result.topMatch;
             const detail = top
-                ? `\n• #${top.number} "${top.title}" (${Math.round((top.score || 0) * 100)}% match)`
+                ? `\n• #${top.number} "${top.title}"${matchPercent(top, result.score)}`
                 : '';
             return [
                 `⚠️ No creé el issue: ya existe uno muy parecido.${detail}`,

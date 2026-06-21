@@ -144,9 +144,9 @@ function makeDeps(overrides = {}) {
     };
 }
 
-test('createIssue: happy path crea issue, labels base, project, audit success', () => {
+test('createIssue: happy path crea issue, labels base, project, audit success', async () => {
     const { deps, auditCalls } = makeDeps();
-    const r = dc.createIssue({ description: 'agregar filtro de productos para el cliente', ...deps });
+    const r = await dc.createIssue({ description: 'agregar filtro de productos para el cliente', ...deps });
     assert.equal(r.status, 'created');
     assert.equal(r.issueNumber, 4321);
     assert.equal(r.projectAdded, true);
@@ -157,77 +157,77 @@ test('createIssue: happy path crea issue, labels base, project, audit success', 
     assert.equal(auditCalls[0].issueCreated, 4321);
 });
 
-test('createIssue: duplicado → status duplicate, no crea, audit blocked', () => {
+test('createIssue: duplicado → status duplicate, no crea, audit blocked', async () => {
     let createCalled = false;
     const { deps, auditCalls } = makeDeps({
         runDuplicateCheck: () => ({ hasDuplicate: true, matches: [{ number: 99, title: 'parecido', score: 0.85 }] }),
         runGhCreate: () => { createCalled = true; return { issueNumber: 1 }; },
     });
-    const r = dc.createIssue({ description: 'algo parecido a otro', ...deps });
+    const r = await dc.createIssue({ description: 'algo parecido a otro', ...deps });
     assert.equal(r.status, 'duplicate');
     assert.equal(createCalled, false, 'no debe crear si hay duplicado');
     assert.equal(r.matches[0].number, 99);
     assert.equal(auditCalls[0].skillResult, require('../issue-creation').SKILL_RESULT_BLOCKED);
 });
 
-test('createIssue: force ignora el duplicado y crea', () => {
+test('createIssue: force ignora el duplicado y crea', async () => {
     const { deps } = makeDeps({
         runDuplicateCheck: () => ({ hasDuplicate: true, matches: [{ number: 99 }] }),
     });
-    const r = dc.createIssue({ description: 'algo', force: true, ...deps });
+    const r = await dc.createIssue({ description: 'algo', force: true, ...deps });
     assert.equal(r.status, 'created');
 });
 
-test('createIssue: gh falla → status error, nunca lanza (fail-safe)', () => {
+test('createIssue: gh falla → status error, nunca lanza (fail-safe)', async () => {
     const { deps, auditCalls } = makeDeps({
         runGhCreate: () => { throw new Error('gh boom'); },
     });
     let r;
-    assert.doesNotThrow(() => { r = dc.createIssue({ description: 'algo', ...deps }); });
+    await assert.doesNotReject(async () => { r = await dc.createIssue({ description: 'algo', ...deps }); });
     assert.equal(r.status, 'error');
     assert.ok(/gh_create_failed/.test(r.error));
     assert.equal(auditCalls[0].skillResult, require('../issue-creation').SKILL_RESULT_ERROR);
 });
 
-test('createIssue: dup-check que tira excepción NO bloquea la creación', () => {
+test('createIssue: dup-check que tira excepción NO bloquea la creación', async () => {
     const { deps } = makeDeps({
         runDuplicateCheck: () => { throw new Error('sin red'); },
     });
-    const r = dc.createIssue({ description: 'algo', ...deps });
+    const r = await dc.createIssue({ description: 'algo', ...deps });
     assert.equal(r.status, 'created');
 });
 
-test('createIssue: alta en Project falla → igual created (best-effort) con projectAdded false', () => {
+test('createIssue: alta en Project falla → igual created (best-effort) con projectAdded false', async () => {
     const { deps } = makeDeps({
         runAddToProject: () => { throw new Error('graphql down'); },
     });
-    const r = dc.createIssue({ description: 'algo', ...deps });
+    const r = await dc.createIssue({ description: 'algo', ...deps });
     assert.equal(r.status, 'created');
     assert.equal(r.projectAdded, false);
 });
 
-test('createIssue: descripción vacía → error invalid_args sin crear', () => {
+test('createIssue: descripción vacía → error invalid_args sin crear', async () => {
     let createCalled = false;
     const { deps } = makeDeps({
         runGhCreate: () => { createCalled = true; return { issueNumber: 1 }; },
     });
-    const r = dc.createIssue({ description: '   ', ...deps });
+    const r = await dc.createIssue({ description: '   ', ...deps });
     assert.equal(r.status, 'error');
     assert.equal(r.error, 'descripcion_vacia');
     assert.equal(createCalled, false);
 });
 
-test('createIssue: gh devuelve sin issueNumber → error skill_failed', () => {
+test('createIssue: gh devuelve sin issueNumber → error skill_failed', async () => {
     const { deps, auditCalls } = makeDeps({
         runGhCreate: () => ({ url: 'x', issueNumber: null }),
     });
-    const r = dc.createIssue({ description: 'algo', ...deps });
+    const r = await dc.createIssue({ description: 'algo', ...deps });
     assert.equal(r.status, 'error');
     assert.equal(r.error, 'gh_create_no_issue_number');
     assert.equal(auditCalls[0].skillResult, require('../issue-creation').SKILL_RESULT_SKILL_FAILED);
 });
 
-test('createIssue: siempre escribe exactamente una línea de audit log', () => {
+test('createIssue: siempre escribe exactamente una línea de audit log', async () => {
     for (const scenario of [
         { description: 'ok normal' },
         { description: '   ' },
@@ -236,7 +236,7 @@ test('createIssue: siempre escribe exactamente una línea de audit log', () => {
     ]) {
         const { description, ...ov } = scenario;
         const { deps, auditCalls } = makeDeps(ov);
-        dc.createIssue({ description, ...deps });
+        await dc.createIssue({ description, ...deps });
         assert.equal(auditCalls.length, 1, `audit únicó para: ${description}`);
     }
 });
