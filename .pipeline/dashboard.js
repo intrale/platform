@@ -18,7 +18,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execSync, execFile, spawn, spawnSync } = require('child_process');
+const { exec, execSync, execFile, spawn, spawnSync } = require('child_process');
 const yaml = require('js-yaml');
 const pidDiscovery = require('./pid-discovery');
 const {
@@ -288,6 +288,92 @@ function fetchIssueTitles(issueIds, cache) {
     }
   }
   saveIssueTitleCache(cache);
+}
+
+// #4128 — `exec` async (mismo shell que la versión sync: preserva la resolución
+// de `gh` por PATH y el arg `query=@tmpfile`) envuelto en Promise. La diferencia
+// crítica vs `execSync` es que el event loop sigue atendiendo /api/health y el
+// resto de rutas mientras gh hace su llamada de red (hasta 30s).
+function _execGhAsync(cmd, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    exec(cmd, { encoding: 'utf8', timeout: timeoutMs, windowsHide: true }, (err, stdout) => {
+      if (err) reject(err); else resolve(stdout);
+    });
+  });
+}
+
+// #4128 — versión ASÍNCRONA de fetchIssueTitles. El fetch a GitHub es de red y
+// puede tardar segundos; hacerlo con execSync DENTRO del worker de snapshot
+// clavaba el event loop entero durante la llamada → /api/health no respondía y
+// el smoke del restart lo leía como caída y disparaba rollback en loop. Esa era
+// la pata que #4096/#4126 no cubrieron: trocearon el escaneo del FS y movieron
+// wmic/tasklist a async, pero dejaron este execSync(gh) sincrónico en el camino.
+// La lógica (batch GraphQL 50/query, negative-cache, fallback 1×1) es idéntica a
+// la sync; sólo cambia execSync → await _execGhAsync.
+async function fetchIssueTitlesAsync(issueIds, cache) {
+  const ghPath = GH_BIN;
+  const safeIds = (Array.isArray(issueIds) ? issueIds : [])
+    .filter(id => /^\d+$/.test(String(id)));
+  const batches = [];
+  for (let i = 0; i < safeIds.length; i += 50) batches.push(safeIds.slice(i, i + 50));
+  for (const batch of batches) {
+    const tmpQuery = path.join(PIPELINE, '.gh-query-' + Date.now() + '.graphql');
+    try {
+      const fields = batch.map((id, i) => `i${i}: issue(number:${id}) { number title state labels(first:10) { nodes { name } } }`).join(' ');
+      const query = `{ repository(owner:"intrale",name:"platform") { ${fields} } }`;
+      fs.writeFileSync(tmpQuery, query);
+      const cmd = `${ghPath} api graphql -F query=@${tmpQuery}`;
+      const out = await _execGhAsync(cmd, 30000);
+      const data = JSON.parse(out)?.data?.repository || {};
+      batch.forEach((id, i) => {
+        const val = data[`i${i}`];
+        if (val?.number) {
+          cache[String(val.number)] = {
+            title: val.title,
+            state: val.state,
+            labels: (val.labels?.nodes || []).map(l => l.name),
+            fetchedAt: Date.now()
+          };
+        } else {
+          cache[String(id)] = { title: '', labels: [], notFound: true, fetchedAt: Date.now() };
+        }
+      });
+    } catch (e) {
+      for (const id of batch) {
+        try {
+          const cmd2 = `${ghPath} issue view ${id} --repo intrale/platform --json title,labels,state`;
+          const out2 = await _execGhAsync(cmd2, 10000);
+          const iss = JSON.parse(out2);
+          cache[id] = { title: iss.title, state: iss.state, labels: (iss.labels || []).map(l => l.name), fetchedAt: Date.now() };
+        } catch {
+          cache[String(id)] = { title: '', labels: [], notFound: true, fetchedAt: Date.now() };
+        }
+      }
+    } finally {
+      try { fs.unlinkSync(tmpQuery); } catch {}
+    }
+  }
+  saveIssueTitleCache(cache);
+}
+
+// #4128 — refresh fire-and-forget del cache de títulos/labels. El worker de
+// snapshot ya NO resuelve títulos sincrónicamente (clavaba el event loop con
+// execSync(gh)). En su lugar registra los ids faltantes en el snapshot y acá los
+// resolvemos async, FUERA del tick. El siguiente refresh lee el cache en disco
+// ya poblado (mismo patrón fire-and-forget que prInfo/olaETA). Un flag inflight
+// evita solapar fetches y un cap acota cuántos ids consulta por ronda.
+let _titleRefreshInflight = false;
+const TITLE_REFRESH_BATCH_CAP = Number(process.env.DASHBOARD_TITLE_BATCH_CAP) || 100;
+function _scheduleTitleRefresh(missingIds) {
+  if (_titleRefreshInflight) return;
+  const ids = Array.isArray(missingIds) ? missingIds.filter(id => /^\d+$/.test(String(id))) : [];
+  if (ids.length === 0) return;
+  _titleRefreshInflight = true;
+  const batch = ids.slice(0, TITLE_REFRESH_BATCH_CAP);
+  Promise.resolve()
+    .then(() => fetchIssueTitlesAsync(batch, loadIssueTitleCache()))
+    .catch((err) => { try { log(`title refresh error: ${err && err.message ? err.message : err}`); } catch {} })
+    .finally(() => { _titleRefreshInflight = false; });
 }
 
 function isProcessAlive(pid) {
@@ -751,7 +837,13 @@ function refreshStateSnapshot() {
   _stateRefreshInflight = true;
   setImmediate(() => {
     getPipelineStateAsync()
-      .then((snap) => { _stateSnapshot = snap; _stateSnapshotAt = Date.now(); })
+      .then((snap) => {
+        _stateSnapshot = snap;
+        _stateSnapshotAt = Date.now();
+        // #4128 — fire-and-forget: resolver títulos/labels faltantes async, fuera
+        // del tick. El próximo refresh ya lee el cache poblado.
+        if (snap && snap._missingTitleIds) _scheduleTitleRefresh(snap._missingTitleIds);
+      })
       .catch((e) => { try { log(`state snapshot refresh error: ${e && e.message ? e.message : e}`); } catch {} })
       .finally(() => { _stateRefreshInflight = false; });
   });
@@ -1034,7 +1126,14 @@ function* _genPipelineState() {
   // el chequeo de TTL respetando negative-cache y batching.
   const now = Date.now();
   const missing = wantedIds.filter(id => titleCacheNeedsRefetch(titleCache[id], { now, ttlMs: TITLE_CACHE_TTL }));
-  if (missing.length > 0) fetchIssueTitles(missing, titleCache);
+  // #4128 — NO resolver títulos acá: fetchIssueTitles usaba execSync(gh) (red,
+  // hasta 30s) y, aun corriendo dentro del generador troceado, clavaba el event
+  // loop ENTERO durante la llamada → /api/health no respondía y el smoke del
+  // restart disparaba rollback en loop. Sólo registramos los faltantes; el
+  // worker de snapshot los resuelve async fire-and-forget (_scheduleTitleRefresh)
+  // y el próximo refresh lee el cache ya poblado. La vista de este tick usa lo
+  // que haya en cache (igual que prInfo/olaETA degradan al cache previo).
+  if (missing.length > 0) state._missingTitleIds = missing;
   state.issueTitles = titleCache;
 
   // #2337 CA8 — snapshot del estado `reintentando` activo en este refresh.
@@ -11126,7 +11225,11 @@ const server = http.createServer((req, res) => {
     try {
       const titleCache = loadIssueTitleCache();
       delete titleCache[issueNum];
-      fetchIssueTitles([issueNum], titleCache);
+      saveIssueTitleCache(titleCache);
+      // #4128 — refresh async fire-and-forget en vez de execSync(gh) en el path
+      // del request: el borrado + persist ya fuerza el refetch en el próximo
+      // refresh del worker; esto sólo lo adelanta sin bloquear el event loop.
+      _scheduleTitleRefresh([issueNum]);
     } catch (e) { log(`pauseIssue: cache refresh failed for #${issueNum}: ${e.message}`); }
     _stateCache = null; _stateCacheAt = 0;
     log(`pauseIssue: #${issueNum} ${action === 'pause' ? 'pausado (+blocked:dependencies)' : 'reanudado (-blocked:dependencies)'}`);
