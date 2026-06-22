@@ -14,7 +14,7 @@
 //   invalidateCache()         → fuerza refresh del próximo scan
 //   SCRIPT_MAP                → mapa nombre → scriptfile
 
-const { spawnSync } = require('child_process');
+const { spawnSync, exec } = require('child_process');
 
 const SCRIPT_MAP = {
   'pulpo': 'pulpo.js',
@@ -32,50 +32,62 @@ const CACHE_TTL_MS = 2000;
 let _scanCache = null;
 let _scanCacheAt = 0;
 
+// Comando del scan de procesos node por plataforma. Extraído para que el
+// scan SÍNCRONO (spawnSync) y el ASÍNCRONO (exec) compartan exactamente el
+// mismo comando + parser, evitando divergencias.
+// Sin WHERE en wmic: con shell, cmd.exe /c quita las comillas externas y el
+// filtro "name='node.exe'" llega sin comillas → "No se reconoce el filtro de
+// búsqueda" en loop. Solución: traer todos y filtrar Name=node.exe en JS.
+const _WMIC_CMD = 'wmic process get Name,ProcessId,CommandLine,CreationDate /format:csv';
+
+function _parseWmicCsv(stdout) {
+  const processes = [];
+  const lines = (stdout || '').split('\n');
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t || !t.includes(',')) continue;
+    // header: Node,CommandLine,CreationDate,Name,ProcessId
+    if (/^Node,/i.test(t)) continue;
+    const parts = t.split(',');
+    if (parts.length < 5) continue;
+    const pid = parseInt(parts[parts.length - 1], 10);
+    if (!pid || Number.isNaN(pid)) continue;
+    const name = (parts[parts.length - 2] || '').trim();
+    if (name.toLowerCase() !== 'node.exe') continue;
+    const creationDate = parts[parts.length - 3] || '';
+    const commandLine = parts.slice(1, -3).join(',');
+    processes.push({ pid, commandLine, creationDate });
+  }
+  return processes;
+}
+
+function _parsePsOutput(stdout) {
+  const processes = [];
+  const lines = (stdout || '').split('\n').slice(1);
+  for (const line of lines) {
+    const m = line.match(/^\s*(\d+)\s+(.{24})\s+(.+)$/);
+    if (!m) continue;
+    const cmd = m[3];
+    if (!cmd.includes('node')) continue;
+    processes.push({ pid: parseInt(m[1], 10), commandLine: cmd, creationDate: m[2] });
+  }
+  return processes;
+}
+
 function scanNodeProcesses() {
   const now = Date.now();
   if (_scanCache && (now - _scanCacheAt) < CACHE_TTL_MS) return _scanCache;
 
-  const processes = [];
+  let processes = [];
   if (process.platform === 'win32') {
     try {
-      // Sin WHERE. Cuando el comando se pasa con shell:true, Node lanza
-      // cmd.exe /d /s /c "<cmd>"; cmd.exe /c quita las comillas externas y
-      // el filtro "name='node.exe'" llega a wmic sin comillas (name=node.exe),
-      // disparando "No se reconoce el filtro de búsqueda" en loop.
-      // Solución: traer todos los procesos y filtrar Name=node.exe en JS.
-      const r = spawnSync(
-        'wmic process get Name,ProcessId,CommandLine,CreationDate /format:csv',
-        { encoding: 'utf8', timeout: 15000, windowsHide: true, shell: true }
-      );
-      const lines = (r.stdout || '').split('\n');
-      for (const line of lines) {
-        const t = line.trim();
-        if (!t || !t.includes(',')) continue;
-        // header: Node,CommandLine,CreationDate,Name,ProcessId
-        if (/^Node,/i.test(t)) continue;
-        const parts = t.split(',');
-        if (parts.length < 5) continue;
-        const pid = parseInt(parts[parts.length - 1], 10);
-        if (!pid || Number.isNaN(pid)) continue;
-        const name = (parts[parts.length - 2] || '').trim();
-        if (name.toLowerCase() !== 'node.exe') continue;
-        const creationDate = parts[parts.length - 3] || '';
-        const commandLine = parts.slice(1, -3).join(',');
-        processes.push({ pid, commandLine, creationDate });
-      }
+      const r = spawnSync(_WMIC_CMD, { encoding: 'utf8', timeout: 15000, windowsHide: true, shell: true });
+      processes = _parseWmicCsv(r.stdout);
     } catch {}
   } else {
     try {
       const r = spawnSync('ps', ['-eo', 'pid,lstart,command'], { encoding: 'utf8', timeout: 5000 });
-      const lines = (r.stdout || '').split('\n').slice(1);
-      for (const line of lines) {
-        const m = line.match(/^\s*(\d+)\s+(.{24})\s+(.+)$/);
-        if (!m) continue;
-        const cmd = m[3];
-        if (!cmd.includes('node')) continue;
-        processes.push({ pid: parseInt(m[1], 10), commandLine: cmd, creationDate: m[2] });
-      }
+      processes = _parsePsOutput(r.stdout);
     } catch {}
   }
 
@@ -84,9 +96,45 @@ function scanNodeProcesses() {
   return processes;
 }
 
+// Variante ASÍNCRONA del scan (#4126). Idéntica salida que scanNodeProcesses()
+// pero usando `exec` para NO bloquear el event loop: spawnSync(wmic) podía
+// clavar el loop hasta 15s y starvar el smoke (/api/health) del restart. El
+// dashboard la consume desde un refresh en background con TTL; el resto del
+// pipeline puede seguir usando la versión sync. Comparte `_scanCache`, así que
+// cualquier llamada sync posterior dentro del TTL reusa el resultado caliente.
+function scanNodeProcessesAsync() {
+  return new Promise((resolve) => {
+    const now = Date.now();
+    if (_scanCache && (now - _scanCacheAt) < CACHE_TTL_MS) return resolve(_scanCache);
+
+    const onDone = (stdout, parser) => {
+      let processes = [];
+      try { processes = parser(stdout); } catch { processes = []; }
+      _scanCache = processes;
+      _scanCacheAt = Date.now();
+      resolve(processes);
+    };
+
+    if (process.platform === 'win32') {
+      exec(_WMIC_CMD, { encoding: 'utf8', timeout: 15000, windowsHide: true },
+        (err, stdout) => onDone(err ? '' : stdout, _parseWmicCsv));
+    } else {
+      exec('ps -eo pid,lstart,command', { encoding: 'utf8', timeout: 5000 },
+        (err, stdout) => onDone(err ? '' : stdout, _parsePsOutput));
+    }
+  });
+}
+
 function findPidByScript(scriptName) {
-  for (const p of scanNodeProcesses()) {
-    if (p.commandLine && p.commandLine.includes(scriptName)) return p;
+  return findPidByScriptIn(scanNodeProcesses(), scriptName);
+}
+
+// Matcher PURO (sin syscalls) sobre una lista ya obtenida. Permite que un
+// consumidor que ya escaneó async (scanNodeProcessesAsync) resuelva varios
+// componentes sin re-spawnear nada. (#4126)
+function findPidByScriptIn(list, scriptName) {
+  for (const p of (Array.isArray(list) ? list : [])) {
+    if (p && p.commandLine && p.commandLine.includes(scriptName)) return p;
   }
   return null;
 }
@@ -133,7 +181,9 @@ function invalidateCache() {
 module.exports = {
   SCRIPT_MAP,
   scanNodeProcesses,
+  scanNodeProcessesAsync,
   findPidByScript,
+  findPidByScriptIn,
   findPidByComponent,
   findPidByPort,
   pidAlive,

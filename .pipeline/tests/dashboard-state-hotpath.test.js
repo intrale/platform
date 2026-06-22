@@ -84,7 +84,52 @@ test('refreshStateSnapshot usa setImmediate + flag inflight (no bloquea el tick)
   const body = src.slice(start, start + 800);
   assert.match(body, /_stateRefreshInflight/, 'debe usar el flag inflight para no solapar');
   assert.match(body, /setImmediate\(/, 'debe sacar el cómputo pesado del tick con setImmediate');
-  assert.match(body, /_stateSnapshot\s*=\s*getPipelineState\(\)/, 'el worker (no el request) computa el estado');
+  // #4126 — el worker computa el snapshot con el driver ASÍNCRONO chunked
+  // (getPipelineStateAsync cede el loop entre chunks). NUNCA con getPipelineState()
+  // sync a fondo: ese bloque monolítico starvaba /api/health y disparaba el
+  // rollback en loop del restart.
+  assert.match(body, /getPipelineStateAsync\(\)/, 'el worker usa el driver async-chunked (no el sync a fondo)');
+  assert.match(body, /_stateSnapshot\s*=\s*snap/, 'swap atómico del snapshot recién al terminar el cómputo');
+});
+
+// #4126 — GUARDRAIL: el snapshot se construye con un generador con yields reales
+// y dos drivers (sync para legacy, async-chunked para el worker). Congelar esta
+// estructura evita que una ola futura vuelva a un escaneo síncrono monolítico.
+test('GUARDRAIL #4126 — getPipelineState se construye con generador + driver async-chunked', () => {
+  assert.match(src, /function\*\s*_genPipelineState\s*\(/, 'debe existir el generador _genPipelineState');
+  // El driver async cede el event loop con setImmediate en cada yield.
+  const asyncStart = src.indexOf('async function getPipelineStateAsync()');
+  assert.ok(asyncStart > 0, 'getPipelineStateAsync debe existir');
+  const asyncBody = src.slice(asyncStart, asyncStart + 400);
+  assert.match(asyncBody, /setImmediate/, 'el driver async debe ceder el loop entre chunks');
+  assert.match(asyncBody, /\.next\(\)/, 'el driver async debe pumpear el generador');
+  // El driver sync corre el generador a fondo (legacy callers).
+  assert.match(src, /function getPipelineState\(\)\s*\{[\s\S]*?_genPipelineState\(\)/, 'getPipelineState (sync) maneja el mismo generador');
+});
+
+// #4126 — GUARDRAIL: los scans del SO (wmic/tasklist) NO pueden vivir síncronos
+// dentro del generador del snapshot — eran el bloqueo principal del event loop.
+test('GUARDRAIL #4126 — el generador del snapshot no spawnea wmic/tasklist sync', () => {
+  const genStart = src.indexOf('function* _genPipelineState()');
+  assert.ok(genStart > 0, 'el generador debe existir');
+  // Acotar al cuerpo del generador: hasta la próxima función top-level que le
+  // sigue (readGhostArtifactSummary). Los drivers sync/async están definidos
+  // ANTES del generador, así que no sirven como cota inferior.
+  const genEnd = src.indexOf('\nfunction readGhostArtifactSummary', genStart);
+  assert.ok(genEnd > genStart, 'el cierre del generador debe ubicarse');
+  const genBody = src.slice(genStart, genEnd);
+  // Stripear comentarios (de línea y de bloque) para chequear CÓDIGO real: los
+  // comentarios documentan justamente lo que se sacó (execSync(tasklist), etc.).
+  const genCode = genBody
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+  assert.doesNotMatch(genCode, /execSync\s*\(/, 'REGRESIÓN #4126: execSync sync dentro del snapshot bloquea el loop');
+  assert.doesNotMatch(genCode, /spawnSync\s*\(/, 'REGRESIÓN #4126: spawnSync sync dentro del snapshot bloquea el loop');
+  assert.doesNotMatch(genCode, /tasklist/, 'REGRESIÓN #4126: tasklist debe resolverse async (cache), no en el snapshot');
+  assert.doesNotMatch(genCode, /invalidateCache\s*\(\)/, 'REGRESIÓN #4126: invalidar el cache de PIDs forzaba un wmic fresco por tick');
+  // Procesos + QA env se sirven desde el cache async.
+  assert.match(genCode, /_scheduleProcStatusRefresh\s*\(\)/, 'procesos/QA se agendan async');
+  assert.match(genCode, /_procStatusCache/, 'procesos/QA se leen del cache async');
 });
 
 test('startListen arranca el worker de snapshot (refresh + setInterval unref)', () => {
