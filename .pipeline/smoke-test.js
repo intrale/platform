@@ -127,6 +127,30 @@ async function checkDashboardHttp(port, timeoutMs = 5000, urlPath = '/api/health
   });
 }
 
+// Gate de rollback resiliente al pico de arranque (#4131).
+// El dashboard responde /api/health en ~0,2-0,7s ya estabilizado, pero durante
+// el arranque (pulpo + 7 servicios peleando CPU al mismo tiempo) ese tiempo se
+// estira y un único tiro de 5s gatillaba un FALSO rollback. Reintentamos varias
+// veces con espera corta: damos una ventana holgada (~30s) para que el health
+// responda 200 cuando sólo está lento por contención, pero un dashboard
+// realmente caído (ECONNREFUSED inmediato) sigue fallando todas las pasadas y
+// el gate lo detecta igual. No relaja la condición de salud, sólo la espera.
+async function checkDashboardHttpWithRetry(port, urlPath, { attempts = 5, perAttemptMs = 5000, delayMs = 1500 } = {}) {
+  let last = { ok: false, status: 'unknown' };
+  for (let i = 1; i <= attempts; i++) {
+    last = await checkDashboardHttp(port, perAttemptMs, urlPath);
+    if (last.ok) {
+      if (i > 1) log(`  ${urlPath} respondió 200 en intento ${i}/${attempts}`);
+      return last;
+    }
+    if (i < attempts) {
+      log(`  ${urlPath} intento ${i}/${attempts} status=${last.status} — reintento en ${delayMs}ms`);
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+  return last;
+}
+
 async function main() {
   const args = parseArgs(process.argv);
   const components = args.components || DEFAULT_COMPONENTS;
@@ -170,9 +194,9 @@ async function main() {
   if (args.http) {
     log('Verificando dashboard HTTP :3200 (/api/health)...');
     const dashPort = parseInt(process.env.DASHBOARD_PORT || '3200', 10);
-    const healthRes = await checkDashboardHttp(dashPort, 5000, '/api/health');
+    const healthRes = await checkDashboardHttpWithRetry(dashPort, '/api/health');
     if (!healthRes.ok) {
-      fail(`Dashboard /api/health no responde en :${dashPort} (status=${healthRes.status})`, 2);
+      fail(`Dashboard /api/health no responde en :${dashPort} tras reintentos (status=${healthRes.status})`, 2);
     }
     log(`  OK dashboard /api/health HTTP 200`);
 
@@ -224,7 +248,11 @@ async function main() {
   process.exit(0);
 }
 
-main().catch(e => {
-  log(`Smoke test error: ${e.stack || e.message}`);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch(e => {
+    log(`Smoke test error: ${e.stack || e.message}`);
+    process.exit(1);
+  });
+}
+
+module.exports = { checkDashboardHttp, checkDashboardHttpWithRetry };
