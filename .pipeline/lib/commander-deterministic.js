@@ -1008,6 +1008,12 @@ function createDispatcher(opts) {
         let reply = null;
         let audioText = null;
         let extraMessages = [];
+        // #4130 — parse_mode del reply. Por defecto null (el caller usa el
+        // legacy 'Markdown'). Handlers que producen MarkdownV2 (ej. `/wave`,
+        // cuyo cuadro lo genera `wave-renderer` con escapes `\#`/`\(`) lo
+        // declaran explícito para que el saliente se envíe con el dialecto
+        // correcto y no muestre los escapes literales en pantalla.
+        let parseMode = null;
         let status = 'ok';
         // Issue #3541 — Si el comando ejecutado está en `cua.allowed_commands`
         // y el feature está habilitado, emitimos automáticamente `init` antes
@@ -1051,6 +1057,9 @@ function createDispatcher(opts) {
                 // caller (pulpo.brazoCommander) los envía consecutivos tras el
                 // reply principal. Si no los soporta, se ignoran sin romper.
                 if (Array.isArray(result.extraMessages)) extraMessages = result.extraMessages;
+                // #4130 — parse_mode opcional del handler (ej. MarkdownV2 para
+                // `/wave`). Si el caller no lo soporta, lo ignora y usa su default.
+                if (typeof result.parseMode === 'string') parseMode = result.parseMode;
             }
         } catch (e) {
             status = 'error';
@@ -1090,7 +1099,7 @@ function createDispatcher(opts) {
             result_status: status,
             duration_ms: durationMs,
         });
-        return { reply, audioText, extraMessages, status, handler: intent.command, intent, durationMs };
+        return { reply, audioText, extraMessages, parseMode, status, handler: intent.command, intent, durationMs };
     }
 
     /**
@@ -1488,20 +1497,32 @@ function buildDefaultHandlers(ctx) {
             // (no debería suceder por ARG_SCHEMAS.wave.allow), respondemos error
             // en español sin colgar el dispatcher.
             if (!parsed) {
-                return fillTemplate('wave-error', {
-                    'error-kind': 'subcomando-invalido',
-                    message: 'Subcomando inválido. Usá: `status` · `next` · `add <num> #issue` · `promote`.',
-                });
+                return {
+                    reply: fillTemplate('wave-error', {
+                        'error-kind': 'subcomando-invalido',
+                        message: 'Subcomando inválido. Usá: `status` · `next` · `add <num> #issue` · `promote`.',
+                    }),
+                    parseMode: 'MarkdownV2', // #4130 — el template wave-error es MarkdownV2
+                };
             }
 
-            // Mapeo subcomando → handler dedicado. Cada uno responde { reply, audioText? }.
+            // Mapeo subcomando → handler dedicado. Cada uno responde { reply, audioText? }
+            // (o un string para los de error). TODO el árbol `/wave` produce
+            // MarkdownV2: el cuadro lo arma `wave-renderer` y los templates
+            // (`wave-error`/`wave-next`/`wave-add-ok`/`wave-promote-ok`) escapan
+            // con `\#`/`\(`/`\-`. #4130 — normalizamos a objeto con
+            // `parseMode: 'MarkdownV2'` para que el saliente NO se envíe con el
+            // legacy 'Markdown' (que mostraría los escapes literales en pantalla).
+            let res;
             switch (parsed.subcommand) {
                 case 'status':
-                    return handleWaveStatus({ pipelineRoot: PIPELINE, audio: parsed.audio });
+                    res = await handleWaveStatus({ pipelineRoot: PIPELINE, audio: parsed.audio });
+                    break;
                 case 'next':
-                    return handleWaveNext({ pipelineRoot: PIPELINE });
+                    res = await handleWaveNext({ pipelineRoot: PIPELINE });
+                    break;
                 case 'add':
-                    return handleWaveAdd({
+                    res = await handleWaveAdd({
                         pipelineRoot: PIPELINE,
                         waveNumber: parsed.waveNumber,
                         issueNumber: parsed.issueNumber,
@@ -1509,19 +1530,26 @@ function buildDefaultHandlers(ctx) {
                         chatId: message && message.chat_id !== undefined ? String(message.chat_id) : null,
                         from: message && message.from ? String(message.from) : 'Leo',
                     });
+                    break;
                 case 'promote':
-                    return handleWavePromote({
+                    res = await handleWavePromote({
                         pipelineRoot: PIPELINE,
                         cooldown: waveSubCooldown,
                         chatId: message && message.chat_id !== undefined ? String(message.chat_id) : null,
                         from: message && message.from ? String(message.from) : 'Leo',
                     });
+                    break;
                 default:
-                    return fillTemplate('wave-error', {
+                    res = fillTemplate('wave-error', {
                         'error-kind': 'subcomando-no-soportado',
                         message: `Subcomando "${parsed.subcommand}" no soportado.`,
                     });
             }
+            // #4130 — stamp MarkdownV2 preservando el resto del shape (audioText,
+            // extraMessages). Un string se promueve a { reply, parseMode }.
+            if (typeof res === 'string') return { reply: res, parseMode: 'MarkdownV2' };
+            if (res && typeof res === 'object') return { ...res, parseMode: 'MarkdownV2' };
+            return res;
         },
 
         snapshot: async () => {

@@ -49,6 +49,21 @@ test('RS-1: escapa metacaracteres Markdown legacy (* _ ` [)', () => {
     assert.match(out, /\\\[link/);
 });
 
+test('#4130: markdownV2 escapa metacaracteres V2 que el legacy deja crudos (. ! - ( ) #)', () => {
+    const txt = 'estado de la ola (urgente)! ola #1 - 50%';
+    const legacy = echo.formatTranscriptEcho([txt]);
+    const v2 = echo.formatTranscriptEcho([txt], { markdownV2: true });
+    // El legacy NO escapa paréntesis / punto / guion / `!` / `#` (no son
+    // metacaracteres del dialecto viejo) → saldrían crudos en un mensaje V2.
+    assert.match(legacy, /\(urgente\)/);
+    // En V2 esos caracteres DEBEN quedar escapados o el mensaje completo rompe
+    // (Telegram 400 → el saliente con el cuadro de `/wave` nunca se entrega).
+    assert.match(v2, /\\\(urgente\\\)/);
+    assert.match(v2, /\\!/);
+    assert.match(v2, /\\#1/);
+    assert.match(v2, /\\-/);
+});
+
 test('RS-1: caracteres especiales no rompen ni dejan entidad sin cerrar', () => {
     // Asteriscos/underscores impares (caso clásico de rechazo 400 de Telegram).
     const out = echo.formatTranscriptEcho(['*_[]()<>& ` un solo asterisco *']);
