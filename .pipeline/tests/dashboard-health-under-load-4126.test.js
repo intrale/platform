@@ -40,6 +40,15 @@ const dashboardPath = path.join(PIPELINE_SRC, 'dashboard.js');
 const TOTAL_MARKERS = 6000;
 const HEALTH_BUDGET_MS = 500;
 const HAMMER_MS = 3000;
+// Piso de muestras a recolectar antes de evaluar la latencia. NO se deriva del
+// wall-clock: el tester corre las 355 suites Node en UN proceso, así que el
+// proceso padre que mide (este test) está saturado y recoge menos muestras por
+// segundo. Atar la cantidad esperada a HAMMER_MS hacía el test flaky (hubo 12
+// muestras healthy <500ms en 3s y el `>= 20` rebotaba). Martillamos hasta
+// juntar MIN_SAMPLES con un cap duro; la regresión real (loop starvado) la
+// detectan las aserciones de fallos/latencia, no la cantidad.
+const MIN_SAMPLES = 12;
+const HAMMER_HARD_CAP_MS = 20000;
 
 let tmpDir, child, port;
 
@@ -145,13 +154,27 @@ test('CA-1/CA-4 — /api/health responde < 500ms mientras el worker computa el s
   // y, sobre un pipeline de miles de markers, en pleno escaneo.
   await new Promise((r) => setTimeout(r, 300));
 
+  // Martillar al menos HAMMER_MS (para cruzar varios ciclos del worker) y, además,
+  // hasta juntar MIN_SAMPLES. Bajo carga del tester el padre recoge pocas muestras
+  // por segundo, así que extendemos el martilleo en vez de exigir un ritmo fijo.
+  // Cap duro para no colgar si el loop está realmente starvado: en ese caso cada
+  // `timedHealth` tarda ~2s (su timeout HTTP) y las aserciones de abajo lo marcan
+  // como regresión.
   const samples = [];
-  const tEnd = Date.now() + HAMMER_MS;
-  while (Date.now() < tEnd) {
+  const tStart = Date.now();
+  while (
+    (Date.now() - tStart < HAMMER_MS || samples.length < MIN_SAMPLES) &&
+    Date.now() - tStart < HAMMER_HARD_CAP_MS
+  ) {
     samples.push(await timedHealth(port));
   }
 
-  assert.ok(samples.length >= 20, `se esperaban muchas muestras de health, hubo ${samples.length}`);
+  assert.ok(
+    samples.length >= MIN_SAMPLES,
+    `se esperaban al menos ${MIN_SAMPLES} muestras de health en ${HAMMER_HARD_CAP_MS}ms, hubo ${samples.length}: ` +
+    `el event loop del dashboard está starvado (cada request demora ~su timeout). ` +
+    `Muestras lentas/fallidas: ${JSON.stringify(samples.filter((s) => !s.ok || s.elapsed >= HEALTH_BUDGET_MS).slice(0, 3))}`,
+  );
 
   const failures = samples.filter((s) => !s.ok);
   assert.deepStrictEqual(
