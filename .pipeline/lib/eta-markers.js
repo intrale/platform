@@ -180,10 +180,19 @@ function hasRejectionMarker(filePath) {
  *   totalRejected: number,
  * }}
  */
-function collectMarkers(opts) {
+// Tamaño de chunk del walk troceado (#4126). Cada N archivos el generador
+// cede al driver para que un consumidor async no bloquee el event loop.
+const COLLECT_CHUNK = 250;
+
+// Cuerpo ÚNICO del walk, expresado como generador (#4126). `collectMarkers`
+// (sync) y `collectMarkersChunked` (para `yield*` desde un generador async)
+// comparten exactamente esta lógica → cero divergencia de output. `chunkSize`
+// finito hace que ceda cada N archivos; 0/Infinity nunca cede (modo sync).
+function* _collectMarkersGen(opts, chunkSize) {
   const o = opts || {};
   const root = o.root || defaultPipelineDir();
   const includeRejection = o.includeRejection === true;
+  const chunk = (Number.isFinite(chunkSize) && chunkSize > 0) ? chunkSize : 0;
 
   // Resolver lista de (pipeline, fase) a recorrer.
   let pairs = [];
@@ -214,11 +223,16 @@ function collectMarkers(opts) {
   const perFaseSkill = {};
   let totalProcessed = 0;
   let totalRejected = 0;
+  let scanned = 0;
 
   for (const { pipeline: pName, fase } of pairs) {
     const faseDir = path.join(root, pName, fase);
     const files = listProcessedFiles(faseDir);
     for (const { dir, name } of files) {
+      // #4126 — yield troceado: contamos archivos VISTOS (antes de filtrar) para
+      // ceder de forma pareja aunque muchos se descarten.
+      if (chunk && (++scanned % chunk) === 0) yield;
+
       const fullPath = path.join(dir, name);
       const st = safeLstat(fullPath);
       if (!st) continue;
@@ -295,6 +309,24 @@ function collectMarkers(opts) {
   return { perIssue, perFase, perFaseSkill, totalProcessed, totalRejected };
 }
 
+function collectMarkers(opts) {
+  // Driver SÍNCRONO: corre el walk a fondo sin ceder (chunkSize 0). Contrato y
+  // output idénticos a la implementación previa (CA #3517).
+  const g = _collectMarkersGen(opts, 0);
+  let r = g.next();
+  while (!r.done) r = g.next();
+  return r.value;
+}
+
+// #4126 — Variante TROCEADA para consumidores async. Devuelve el generador para
+// usar con `yield*` desde otro generador (p.ej. el builder del snapshot del
+// dashboard): cada ~COLLECT_CHUNK archivos cede el event loop, evitando que el
+// lstat-walk de miles de `procesado/` starve /api/health. El valor de retorno
+// del `yield*` es el mismo objeto que devuelve `collectMarkers`.
+function collectMarkersChunked(opts) {
+  return _collectMarkersGen(opts, COLLECT_CHUNK);
+}
+
 // ─── fmtAbsoluteHHMM — re-uso del helper desde eta.js (#2895) ─────────────
 
 /**
@@ -316,6 +348,7 @@ function fmtAbsoluteHHMM(epochMs) {
 module.exports = {
   // API pública
   collectMarkers,
+  collectMarkersChunked,
   listProcessedFiles,
   fmtAbsoluteHHMM,
   // Constantes

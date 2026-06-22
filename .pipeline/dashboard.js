@@ -18,14 +18,15 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execSync, spawn, spawnSync } = require('child_process');
+const { execSync, execFile, spawn, spawnSync } = require('child_process');
 const yaml = require('js-yaml');
+const pidDiscovery = require('./pid-discovery');
 const {
   findPidByComponent,
   findPidByPort,
   pidAlive,
   invalidateCache,
-} = require('./pid-discovery');
+} = pidDiscovery;
 // #2337 CA8 — estado `reintentando` (anti-parpadeo FS-driven).
 // Best-effort require: si el modulo no existe (pipeline antiguo), degradamos
 // silenciosamente sin el estado `retrying`.
@@ -535,7 +536,32 @@ let _stateSnapshot = null;          // última vista computada (o null en cold s
 let _stateSnapshotAt = 0;           // timestamp del último refresh exitoso
 let _stateRefreshInflight = false;  // evita solapar cómputos pesados
 let _stateRefreshTimer = null;      // handle del setInterval (para clearInterval)
-const STATE_REFRESH_MS = 3000;      // cadencia de refresh fuera del hot path
+// #4126 — cadencia configurable por env para que los tests puedan forzar un
+// worker casi-siempre-activo y verificar que /api/health no se cuelga.
+const STATE_REFRESH_MS = Number(process.env.DASHBOARD_STATE_REFRESH_MS) || 3000;
+// Tamaño de chunk del scan del FS: cada N archivos procesados el generador
+// cede el event loop (setImmediate) para que /api/health y el resto de rutas
+// sigan respondiendo mientras el worker reconstruye el snapshot.
+const STATE_SCAN_CHUNK = Number(process.env.DASHBOARD_STATE_SCAN_CHUNK) || 250;
+
+// #4126 — Cache async de estado de procesos + QA env. Los scans del SO
+// (`wmic` para PIDs, `tasklist` para servicios QA) eran spawnSync/execSync
+// DENTRO del worker de snapshot: un único `wmic` podía clavar el event loop
+// hasta 15s y dejaba /api/health sin responder → el smoke del restart lo leía
+// como caída y disparaba rollback en loop (regresión #4119). Ahora se computan
+// con `exec`/`execFile` async, fuera del tick, y el snapshot lee este cache en
+// O(1). Swap atómico del objeto (nunca mutación in-place).
+let _procStatusCache = null;        // { procesos, qaEnv } | null en cold start
+let _procStatusCacheAt = 0;
+let _procStatusInflight = false;
+const PROC_STATUS_TTL_MS = Number(process.env.DASHBOARD_PROC_STATUS_TTL_MS) || 10000;
+
+// #4126 — Cache TTL del walk de eta-markers. Es una agregación histórica
+// (lstat sobre ~todos los `procesado/`) que cambia lento; recomputarla en cada
+// tick (cada 3s) era trabajo de FS caro e innecesario.
+let _etaAveragesCache = null;
+let _etaAveragesCacheAt = 0;
+const ETA_AVERAGES_TTL_MS = Number(process.env.DASHBOARD_ETA_TTL_MS) || 30000;
 
 // #3492 — Cache de la ETA agregada por ola actual. El cálculo es async (depende
 // de streaming de metrics-history.jsonl + markers FS) pero el `state` se construye
@@ -697,6 +723,13 @@ function _schedulePrInfoRefresh(doneIssues) {
 }
 
 function getCachedPipelineState() {
+  // #4126 — preferir SIEMPRE el snapshot que el worker ya computó en background
+  // (no bloquea: está armado). Esto saca el escaneo pesado del path de render de
+  // `/` (legacy), SSE y dashRoutes, que antes llamaban getPipelineState() sync.
+  // Solo en cold start (el worker todavía no pobló _stateSnapshot) caemos a un
+  // cómputo sync acotado por el TTL para no romper vistas que necesitan estado
+  // inmediato.
+  if (_stateSnapshot) return _stateSnapshot;
   const now = Date.now();
   if (_stateCache && (now - _stateCacheAt) < STATE_CACHE_TTL_MS) return _stateCache;
   _stateCache = getPipelineState();
@@ -704,30 +737,183 @@ function getCachedPipelineState() {
   return _stateCache;
 }
 
-// #4096 — Worker de refresh del snapshot de estado. Corre FUERA del request
-// (arrancado por startListen via setInterval). Cada tick computa el estado
-// pesado dentro de un setImmediate para no bloquear el tick actual del event
-// loop, y un flag inflight evita solapar cómputos cuando un escaneo tarda más
-// que el intervalo. El request de /api/state NUNCA llama a esto: lee el último
-// `_stateSnapshot` ya armado en O(1).
+// #4096 / #4126 — Worker de refresh del snapshot de estado. Corre FUERA del
+// request (arrancado por startListen via setInterval). El cómputo se trocea en
+// chunks con yields reales (`getPipelineStateAsync` cede el loop con setImmediate
+// entre chunks) para no starvar el event loop: /api/health y el resto de rutas
+// siguen respondiendo mientras el worker escanea el FS. Un flag inflight evita
+// solapar cómputos cuando un escaneo tarda más que el intervalo. El request de
+// /api/state NUNCA llama a esto: lee el último `_stateSnapshot` ya armado en O(1).
+// Swap atómico: se asigna el snapshot nuevo recién al terminar (nunca se muta
+// _stateSnapshot in-place durante el scan).
 function refreshStateSnapshot() {
   if (_stateRefreshInflight) return;   // no solapar escaneos pesados
   _stateRefreshInflight = true;
   setImmediate(() => {
-    try {
-      _stateSnapshot = getPipelineState();
-      _stateSnapshotAt = Date.now();
-    } catch (e) {
-      try { log(`state snapshot refresh error: ${e && e.message ? e.message : e}`); } catch {}
-    } finally {
-      _stateRefreshInflight = false;
-    }
+    getPipelineStateAsync()
+      .then((snap) => { _stateSnapshot = snap; _stateSnapshotAt = Date.now(); })
+      .catch((e) => { try { log(`state snapshot refresh error: ${e && e.message ? e.message : e}`); } catch {} })
+      .finally(() => { _stateRefreshInflight = false; });
   });
 }
 
+// #4126 — Refresh async (fire-and-forget, TTL) del estado de procesos + QA env.
+// Reemplaza los spawnSync(wmic)/execSync(tasklist) que vivían sincrónicos dentro
+// de getPipelineState(). El generador del snapshot solo lo agenda y lee el cache.
+function _scheduleProcStatusRefresh() {
+  const now = Date.now();
+  if (_procStatusInflight) return;
+  if (_procStatusCache && (now - _procStatusCacheAt) < PROC_STATUS_TTL_MS) return;
+  _procStatusInflight = true;
+  Promise.resolve()
+    .then(() => _computeProcStatusAsync())
+    .then((snap) => { _procStatusCache = snap; _procStatusCacheAt = Date.now(); })
+    .catch((err) => { try { log(`proc status refresh error: ${err && err.message ? err.message : err}`); } catch {} })
+    .finally(() => { _procStatusInflight = false; });
+}
+
+// tasklist async (Windows) para chequear si un PID de servicio QA sigue vivo.
+// Fuera de Windows no hay tasklist → degradamos a "no vivo" (mismo efecto que el
+// catch silencioso del código sync previo). Timeout corto + stderr ignorado para
+// que un filtro inválido nunca floodee el log.
+function _tasklistAliveAsync(n) {
+  return new Promise((resolve) => {
+    if (process.platform !== 'win32') return resolve(false);
+    try {
+      execFile('tasklist', ['/FI', `PID eq ${n}`, '/NH', '/FO', 'CSV'],
+        { encoding: 'utf8', timeout: 3000, windowsHide: true },
+        (err, stdout) => { resolve(!err && String(stdout || '').includes(`"${n}"`)); });
+    } catch { resolve(false); }
+  });
+}
+
+async function _computeProcStatusAsync() {
+  // PIDs de componentes: un único scan async del SO + matcher puro por componente.
+  let list = [];
+  try { list = await pidDiscovery.scanNodeProcessesAsync(); } catch { list = []; }
+  const procesos = {};
+  for (const comp of ['pulpo', 'listener', 'svc-telegram', 'svc-github', 'svc-drive', 'svc-reconciler', 'outbox-drain', 'dashboard']) {
+    const script = pidDiscovery.SCRIPT_MAP[comp] || `${comp}.js`;
+    const found = pidDiscovery.findPidByScriptIn(list, script);
+    if (found && pidAlive(found.pid)) {
+      procesos[comp] = { pid: String(found.pid), alive: true, uptime: getProcessUptime(comp) };
+    } else {
+      procesos[comp] = { pid: null, alive: false };
+    }
+  }
+
+  // EP8-H7 (#3960) CA-1 — registrar el flanco vivo↔muerto por componente. Se
+  // movió acá desde getPipelineState() para que la persistencia/lectura del log
+  // de transiciones tampoco viva en el path sync del snapshot.
+  if (processTransitions) {
+    try { processTransitions.recordSnapshot(procesos, { pipelineDir: PIPELINE }); }
+    catch { /* best-effort: el store de transiciones no debe romper el state */ }
+  }
+
+  // QA env: tasklist async por PID de servicio QA registrado.
+  const qaEnv = { emulator: false };
+  try {
+    const qaState = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'qa-env-state.json'), 'utf8'));
+    // PID máximo válido en Windows (rango DWORD). Claves de metadata (timestamps)
+    // superan este rango y dispararían "filtro inválido" → se filtran.
+    const MAX_PID = 0xFFFFFFFF;
+    const checks = [];
+    for (const [svc, pid] of Object.entries(qaState)) {
+      const n = Number(pid);
+      if (!Number.isInteger(n) || n <= 0 || n > MAX_PID) continue;
+      checks.push(_tasklistAliveAsync(n).then((alive) => { qaEnv[svc] = alive; }).catch(() => {}));
+    }
+    await Promise.all(checks);
+  } catch {}
+
+  return { procesos, qaEnv };
+}
+
+// #4126 — etaAverages cacheado con TTL. collectMarkers hace un lstat-walk de
+// todos los `procesado/` (caro y de cambio lento). El fallback inline se usa solo
+// si la lib no cargó.
+function _getEtaAveragesCached(allFases) {
+  const now = Date.now();
+  if (_etaAveragesCache && (now - _etaAveragesCacheAt) < ETA_AVERAGES_TTL_MS) return _etaAveragesCache;
+  let result = {};
+  if (etaMarkersLib) {
+    try {
+      const markers = etaMarkersLib.collectMarkers({ root: PIPELINE, allFases, includeRejection: false });
+      result = markers.perFaseSkill || {};
+    } catch { result = {}; }
+  } else {
+    result = _computeEtaAveragesFallback(allFases);
+  }
+  _etaAveragesCache = result;
+  _etaAveragesCacheAt = now;
+  return result;
+}
+
+// Fallback histórico inline (idéntico al previo) por si el extracto a
+// `eta-markers.js` no está disponible. Mantiene vivo el dashboard.
+function _computeEtaAveragesFallback(allFases) {
+  const out = {};
+  for (const { pipeline: pName, fase } of allFases) {
+    const procesadoDir = path.join(PIPELINE, pName, fase, 'procesado');
+    const listoDir = path.join(PIPELINE, pName, fase, 'listo');
+    for (const dir of [procesadoDir, listoDir]) {
+      for (const f of listWorkFiles(dir)) {
+        const skill = f.split('.').slice(1).join('.');
+        const st = fileStat(path.join(dir, f));
+        if (!st) continue;
+        const dur = st.ctimeMs - st.birthtimeMs;
+        if (dur <= 5000 || dur > 4 * 3600000) continue;
+        const key = `${fase}/${skill}`;
+        if (!out[key]) out[key] = { total: 0, count: 0 };
+        out[key].total += dur;
+        out[key].count++;
+      }
+    }
+  }
+  for (const [key, data] of Object.entries(out)) {
+    data.avgMs = Math.round(data.total / data.count);
+    const fase = key.split('/')[0];
+    if (!out[fase]) out[fase] = { total: 0, count: 0 };
+    out[fase].total += data.total;
+    out[fase].count += data.count;
+  }
+  for (const [key, data] of Object.entries(out)) {
+    if (!key.includes('/')) data.avgMs = Math.round(data.total / data.count);
+  }
+  return out;
+}
+
+// #4126 — Driver SÍNCRONO del generador: corre el builder a fondo ignorando los
+// yields. Lo usan los callers legacy (cold start, getMetricsData, tests). Bloquea
+// igual que antes, pero esos callers NO están en el path del smoke (/api/health).
 function getPipelineState() {
+  const g = _genPipelineState();
+  let r = g.next();
+  while (!r.done) r = g.next();
+  return r.value;
+}
+
+// #4126 — Driver ASÍNCRONO: cede el event loop (setImmediate) en cada yield del
+// generador, de modo que el HTTP server atiende /api/health y otras rutas entre
+// chunks. Lo usa el worker de snapshot.
+async function getPipelineStateAsync() {
+  const g = _genPipelineState();
+  let r = g.next();
+  while (!r.done) {
+    await new Promise((resolve) => setImmediate(resolve));
+    r = g.next();
+  }
+  return r.value;
+}
+
+// #4126 — Generador del snapshot. Un único cuerpo (fuente de verdad) que cede
+// el event loop con `yield` en los loops pesados del FS. Lo manejan dos drivers:
+// getPipelineState() (sync, corre a fondo) y getPipelineStateAsync() (cede el
+// loop con setImmediate en cada yield). Así el worker no starva /api/health.
+function* _genPipelineState() {
   const config = loadConfig();
   const state = { config };
+  let _scanCount = 0;   // contador de archivos para trocear el scan en chunks
 
   // Todas las fases de ambos pipelines en orden
   const allFases = [];
@@ -814,6 +1000,11 @@ function getPipelineState() {
             state.issueMatrix[issue].estadoActual = estado;
           }
         }
+
+        // #4126 — yield cada STATE_SCAN_CHUNK archivos: en el driver async esto
+        // cede el event loop (setImmediate) y deja respirar a /api/health; en el
+        // driver sync es un no-op.
+        if ((++_scanCount % STATE_SCAN_CHUNK) === 0) yield;
       }
     }
   }
@@ -920,57 +1111,30 @@ function getPipelineState() {
     } catch { /* defensivo */ }
   }
 
-  // ETA: calcular promedios históricos por skill+fase desde archivos procesados.
-  // Usa ctime (movido a procesado) - birthtime (creación) como proxy de duración.
-  //
-  // #3517 — el walk + filtros + agregación viven ahora en `lib/eta-markers.js`;
-  // este builder solo expone la vista `perFaseSkill` como `state.etaAverages`.
-  // El shape, las keys (`${fase}/${skill}` finegrain + `${fase}` coarse) y los
-  // valores `{ total, count, avgMs }` son byte-a-byte iguales al inline previo.
-  // Si el módulo no está disponible (best-effort require falló), caemos al
-  // inline histórico para no degradar el dashboard en ningún caso.
-  state.etaAverages = {};
-  if (etaMarkersLib) {
+  // ETA: promedios históricos por skill+fase desde archivos procesados.
+  // #3517 — el walk + filtros + agregación viven en `lib/eta-markers.js`.
+  // #4126 — doble defensa contra el bloqueo del event loop:
+  //   1) cache TTL (`_etaAveragesCache`): el walk es un lstat sobre todos los
+  //      `procesado/`, caro y de cambio lento; no se recomputa en cada tick.
+  //   2) cuando SÍ recomputa, lo hace con `collectMarkersChunked` vía `yield*`:
+  //      cede el event loop cada ~250 archivos (en el driver async). El shape
+  //      (`${fase}/${skill}` + `${fase}` coarse, `{ total, count, avgMs }`) es
+  //      idéntico al de `collectMarkers`.
+  yield;
+  const _nowEta = Date.now();
+  if (_etaAveragesCache && (_nowEta - _etaAveragesCacheAt) < ETA_AVERAGES_TTL_MS) {
+    state.etaAverages = _etaAveragesCache;
+  } else if (etaMarkersLib && typeof etaMarkersLib.collectMarkersChunked === 'function') {
+    let markers = null;
     try {
-      const markers = etaMarkersLib.collectMarkers({
-        root: PIPELINE,
-        allFases,
-        includeRejection: false,
-      });
-      state.etaAverages = markers.perFaseSkill || {};
-    } catch {
-      state.etaAverages = {};
-    }
+      markers = yield* etaMarkersLib.collectMarkersChunked({ root: PIPELINE, allFases, includeRejection: false });
+    } catch { markers = null; }
+    state.etaAverages = (markers && markers.perFaseSkill) || {};
+    _etaAveragesCache = state.etaAverages;
+    _etaAveragesCacheAt = _nowEta;
   } else {
-    // Fallback: inline histórico (mantener vivo el dashboard si el extracto
-    // a `eta-markers.js` falla por cualquier motivo). Idéntico al previo.
-    for (const { pipeline: pName, fase } of allFases) {
-      const procesadoDir = path.join(PIPELINE, pName, fase, 'procesado');
-      const listoDir = path.join(PIPELINE, pName, fase, 'listo');
-      for (const dir of [procesadoDir, listoDir]) {
-        for (const f of listWorkFiles(dir)) {
-          const skill = f.split('.').slice(1).join('.');
-          const st = fileStat(path.join(dir, f));
-          if (!st) continue;
-          const dur = st.ctimeMs - st.birthtimeMs;
-          if (dur <= 5000 || dur > 4 * 3600000) continue;
-          const key = `${fase}/${skill}`;
-          if (!state.etaAverages[key]) state.etaAverages[key] = { total: 0, count: 0 };
-          state.etaAverages[key].total += dur;
-          state.etaAverages[key].count++;
-        }
-      }
-    }
-    for (const [key, data] of Object.entries(state.etaAverages)) {
-      data.avgMs = Math.round(data.total / data.count);
-      const fase = key.split('/')[0];
-      if (!state.etaAverages[fase]) state.etaAverages[fase] = { total: 0, count: 0 };
-      state.etaAverages[fase].total += data.total;
-      state.etaAverages[fase].count += data.count;
-    }
-    for (const [key, data] of Object.entries(state.etaAverages)) {
-      if (!key.includes('/')) data.avgMs = Math.round(data.total / data.count);
-    }
+    // Fallback sin lib (pipeline antiguo): TTL + cómputo inline.
+    state.etaAverages = _getEtaAveragesCached(allFases);
   }
 
   // V3 — Bloqueados esperando humano (issue #2478)
@@ -1071,48 +1235,21 @@ function getPipelineState() {
     }
   } catch {}
 
-  // Procesos — descubiertos al vuelo desde el SO, no desde archivos .pid.
-  state.procesos = {};
-  invalidateCache();
-  for (const comp of ['pulpo', 'listener', 'svc-telegram', 'svc-github', 'svc-drive', 'svc-reconciler', 'outbox-drain', 'dashboard']) {
-    const found = findPidByComponent(comp);
-    if (found && pidAlive(found.pid)) {
-      const uptime = getProcessUptime(comp);
-      state.procesos[comp] = { pid: String(found.pid), alive: true, uptime };
-    } else {
-      state.procesos[comp] = { pid: null, alive: false };
-    }
-  }
+  // Procesos + QA env — #4126: servidos desde el cache async (_procStatusCache),
+  // poblado por `_computeProcStatusAsync` con `exec`/`execFile` FUERA del tick.
+  // Antes esto hacía spawnSync(wmic) (invalidando el cache cada tick → ~15s de
+  // bloqueo posible) y execSync(tasklist) por servicio QA, clavando el event
+  // loop y colgando /api/health. El generador ahora solo agenda el refresh y
+  // lee el último valor en O(1). En cold start (cache aún null) degrada a vacío;
+  // el próximo tick ya trae datos. El registro de transiciones de proceso
+  // (#3960) también vive ahora en el refresh async.
+  _scheduleProcStatusRefresh();
+  const _ps = _procStatusCache || { procesos: {}, qaEnv: { emulator: false } };
+  state.procesos = _ps.procesos || {};
+  state.qaEnv = { emulator: false, ...(_ps.qaEnv || {}) };
 
-  // EP8-H7 (#3960) CA-1 — registrar el flanco vivo↔muerto por componente contra
-  // el snapshot previo en memoria. Idempotente si no hay cambio de estado; sólo
-  // persiste y lee el log (último error, redactado) cuando hay una transición.
-  if (processTransitions) {
-    try { processTransitions.recordSnapshot(state.procesos, { pipelineDir: PIPELINE }); }
-    catch { /* best-effort: el store de transiciones no debe romper el state */ }
-  }
-
-  // QA Environment
-  state.qaEnv = { emulator: false };
-  state.qaRemote = { active: false, url: '', ref: '', startedAt: '' };
-  try {
-    const qaState = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'qa-env-state.json'), 'utf8'));
-    // PID máximo válido en Windows (rango DWORD). Claves de metadata como
-    // `lastStartedAt` guardan timestamps que superan este rango: si se las
-    // pasa a `tasklist /FI "PID eq <n>"`, el comando responde "No se reconoce
-    // el filtro de búsqueda" y floodea el log. Por eso filtramos a PIDs reales.
-    const MAX_PID = 0xFFFFFFFF;
-    for (const [svc, pid] of Object.entries(qaState)) {
-      const n = Number(pid);
-      if (!Number.isInteger(n) || n <= 0 || n > MAX_PID) continue;
-      try {
-        // `stdio` ignora stderr para que un filtro inválido nunca floodee el log.
-        const r = execSync(`tasklist /FI "PID eq ${n}" /NH /FO CSV`, { encoding: 'utf8', timeout: 3000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
-        state.qaEnv[svc] = r.includes(`"${n}"`);
-      } catch {}
-    }
-  } catch {}
   // QA Remote state
+  state.qaRemote = { active: false, url: '', ref: '', startedAt: '' };
   try {
     const remoteStateFile = path.join(ROOT, 'qa', '.qa-remote-state');
     if (fs.existsSync(remoteStateFile)) {
@@ -1152,18 +1289,20 @@ function getPipelineState() {
     } catch {}
   }
 
-  // Rechazos recientes
+  // Rechazos recientes — #4126: derivados del `issueMatrix` ya construido (que
+  // ya leyó resultado/motivo de cada `procesado/`), en vez de re-walkear y
+  // re-parsear TODOS los YAML de procesado en cada tick. Eran ~miles de
+  // readYamlSafe extra por refresh que, junto con wmic/tasklist, starvaban el
+  // event loop. Mismo shape y mismo orden de salida (sort por ts desc + top 10).
   state.rechazos = [];
-  for (const { pipeline: pName, fase } of allFases) {
-    const procesadoDir = path.join(PIPELINE, pName, fase, 'procesado');
-    for (const f of listWorkFiles(procesadoDir)) {
-      const data = readYamlSafe(path.join(procesadoDir, f));
-      if (data.resultado === 'rechazado') {
-        const stat = fileStat(path.join(procesadoDir, f));
+  for (const [issueId, data] of Object.entries(state.issueMatrix)) {
+    for (const entries of Object.values(data.fases || {})) {
+      for (const e of entries) {
+        if (e.estado !== 'procesado' || e.resultado !== 'rechazado') continue;
         state.rechazos.push({
-          issue: f.split('.')[0], skill: f.split('.').slice(1).join('.'),
-          fase, pipeline: pName, motivo: data.motivo || '',
-          ts: stat?.mtimeMs || 0
+          issue: issueId, skill: e.skill,
+          fase: e.fase, pipeline: e.pipeline, motivo: e.motivo || '',
+          ts: e.updatedAt || 0,
         });
       }
     }
@@ -9690,7 +9829,9 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
     const send = () => {
       try {
-        const state = getPipelineState();
+        // #4126 — leer el snapshot del worker (no recomputar en el path del SSE):
+        // antes este tick reescaneaba todo el FS cada 5s por cada cliente SSE.
+        const state = getCachedPipelineState();
         const hash = crypto.createHash('md5').update(JSON.stringify(state.issueMatrix)).digest('hex').slice(0, 8);
         res.write(`data: ${hash}\n\n`);
       } catch {}
@@ -11220,8 +11361,10 @@ const server = http.createServer((req, res) => {
     log(`dashboard-routes error: ${e.message}`);
   }
 
-  // HTML dashboard legacy (accesible vía /legacy o como fallback de URLs no matcheadas).
-  const state = getPipelineState();
+  // HTML dashboard legacy (accesible vía /legacy o como fallback de URLs no
+  // matcheadas). #4126 — sirve desde el snapshot del worker (no recomputa en el
+  // request) para que `/` no se cuelgue bajo el ciclo de refresh (CA-3).
+  const state = getCachedPipelineState();
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(generateHTML(state));
 });
