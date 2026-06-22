@@ -785,15 +785,18 @@ function _schedulePrInfoRefresh(doneIssues) {
   });
   if (stale.length === 0) return;
   _prInfoInflight = true;
-  // fire-and-forget: el fetch corre tras devolver el HTML del tick actual; el
-  // siguiente poll ya lee el cache poblado (igual que la ETA de ola).
+  // #4133 — fire-and-forget REAL: usa fetchPrInfoForIssueAsync (execFile no
+  // bloqueante). Antes llamaba la versión sync (spawnSync) dentro de este
+  // Promise.then, lo cual NO la hacía async: clavaba el event loop hasta 5s por
+  // issue (15s/tick con batch 3) → /api/health no respondía → rollback falso del
+  // smoke. Ahora los fetches del batch corren en paralelo sin bloquear el loop.
   Promise.resolve()
-    .then(() => {
+    .then(async () => {
       const batch = stale.slice(0, PRINFO_BATCH_PER_TICK);
-      for (const n of batch) {
+      await Promise.all(batch.map(async (n) => {
         let info = null;
         try {
-          info = prInfoFetcherLib.fetchPrInfoForIssue(n, { cwd: ROOT });
+          info = await prInfoFetcherLib.fetchPrInfoForIssueAsync(n, { cwd: ROOT });
         } catch { info = null; }
         const ok = info && !info.error;
         _prInfoCache.set(String(n), {
@@ -802,7 +805,7 @@ function _schedulePrInfoRefresh(doneIssues) {
           state: ok ? (info.state || null) : null,
           fetchedAt: Date.now(),
         });
-      }
+      }));
     })
     .catch((err) => { try { log(`prInfo refresh error: ${err && err.message ? err.message : err}`); } catch {} })
     .finally(() => { _prInfoInflight = false; });
