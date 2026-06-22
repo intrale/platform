@@ -10786,7 +10786,12 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
         // reply sale igual.
         if (m._esAudio && m._audio && m._audio.ok && m._audio.transcript) {
           try {
-            const eco = transcriptEcho.formatTranscriptEcho([m._audio.transcript]);
+            // #4130 — el eco se prepende al reply y viaja en el MISMO mensaje, así
+            // que su escape debe coincidir con el dialecto del reply. Si el handler
+            // declaró MarkdownV2 (ej. `/wave`), el eco se escapa con reglas V2 o el
+            // mensaje completo rompe (Telegram 400 → el saliente no se entrega).
+            const markdownV2 = !!(result && result.parseMode === 'MarkdownV2');
+            const eco = transcriptEcho.formatTranscriptEcho([m._audio.transcript], { markdownV2 });
             if (eco) respuesta = eco + '\n\n' + respuesta;
           } catch { /* fail-open */ }
         }
@@ -10859,7 +10864,11 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
       session.lastTimestamp = new Date().toISOString();
       // #3934 (CA-2 / SEC-6) — Ya no se escribe `session.context`: el contexto
       // conversacional vive únicamente en `commander-history.jsonl` por chat.
-      sendTelegram(respuesta);
+      // #4130 — dialecto del saliente. Sólo el dispatcher declara parseMode; los
+      // handlers legacy del switch responden siempre en 'Markdown' (default).
+      const replyParseMode = (result && typeof result.parseMode === 'string') ? result.parseMode : undefined;
+      const replySendOpts = replyParseMode ? { parseMode: replyParseMode } : undefined;
+      sendTelegram(respuesta, replySendOpts);
 
       // #4075 — Mensajes de continuación del paginado (ej. `/wave status` con
       // una ola grande que no entra en un solo mensaje). Se envían consecutivos
@@ -10868,7 +10877,10 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
       const extraMessages = result && Array.isArray(result.extraMessages) ? result.extraMessages : [];
       for (const extra of extraMessages) {
         if (extra && typeof extra === 'string' && extra.trim().length > 0) {
-          try { sendTelegram(extra); } catch (e) { log('commander', `[wave-paginado] fallo enviar extra: ${e.message}`); }
+          // #4130 — los extras del paginado de `/wave` comparten dialecto con el
+          // reply principal (mismo renderer MarkdownV2). Si salieran en 'Markdown'
+          // mostrarían los escapes literales igual que el cuadro original.
+          try { sendTelegram(extra, replySendOpts); } catch (e) { log('commander', `[wave-paginado] fallo enviar extra: ${e.message}`); }
         }
       }
 
@@ -12229,8 +12241,11 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
   saveSession(session);
 }
 
-function sendTelegram(text) {
-  return sendTelegramWithMarkup(text, null);
+// #4130 — `opts.parseMode` permite que el caller declare el dialecto del
+// saliente (ej. 'MarkdownV2' para el cuadro de `/wave`, cuyos escapes `\#`/`\(`
+// sólo los entiende V2). Si no se pasa, se usa el legacy 'Markdown'.
+function sendTelegram(text, opts) {
+  return sendTelegramWithMarkup(text, null, opts);
 }
 
 // #2975 — Variante texto plano (CA-13): omite `parse_mode: 'Markdown'` para
@@ -12251,6 +12266,11 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
 
   const msg = text.length > 4000 ? text.slice(0, 4000) + '...' : text;
   const plain = !!(opts && opts.plain);
+  // #4130 — dialecto del saliente. Default legacy 'Markdown'; un handler que
+  // produce escapes V2 (ej. `/wave`) lo declara vía opts.parseMode. `plain` gana
+  // (omite parse_mode por completo, defensa anti-inyección del canned de cuota).
+  const parseMode = (opts && typeof opts.parseMode === 'string' && opts.parseMode)
+    ? opts.parseMode : 'Markdown';
 
   // #4082 — correlationId que liga este saliente con el recibo que escribirá
   // `svc-telegram` al confirmar (o fallar) la entrega. Se estampa en el dropfile
@@ -12262,7 +12282,7 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
   const svcDir = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
   const filename = `${Date.now()}-cmd.json`;
   try {
-    const payload = plain ? { text: msg } : { text: msg, parse_mode: 'Markdown' };
+    const payload = plain ? { text: msg } : { text: msg, parse_mode: parseMode };
     if (replyMarkup && typeof replyMarkup === 'object') payload.reply_markup = replyMarkup;
     payload._correlationId = correlationId;
     fs.writeFileSync(path.join(svcDir, filename), JSON.stringify(payload));

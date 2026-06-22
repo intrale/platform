@@ -15,6 +15,7 @@
 //         por audio) con elipsis.
 
 const { redactSensitive, redactSecretValue } = require('../redact');
+const { escapeMarkdownV2 } = require('./fill-template');
 
 const DEFAULT_MAX_LEN = 200;
 
@@ -33,6 +34,15 @@ const MD_LEGACY_SPECIALS = /([_*`\[])/g;
 function escapeMarkdown(text) {
     if (text === null || text === undefined) return '';
     return String(text).replace(MD_LEGACY_SPECIALS, '\\$1');
+}
+
+// #4130 — Cuando el eco se prepende a un reply MarkdownV2 (ej. `/wave` por
+// audio), debe escaparse con las reglas de MarkdownV2 (muchos más metacaracteres:
+// `. ! - ( ) #` …). Un `.` o `(` sin escapar en la transcripción rompería el
+// parseo del MENSAJE COMPLETO (Telegram 400 → el saliente nunca se entrega). El
+// dialecto del escape debe coincidir con el `parse_mode` del saliente.
+function escapeForMode(text, markdownV2) {
+    return markdownV2 ? escapeMarkdownV2(text) : escapeMarkdown(text);
 }
 
 /**
@@ -64,7 +74,10 @@ function redactEcho(text) {
  *   5. Escapar Markdown (RS-1) — último paso, sobre el texto ya acotado.
  *
  * @param {string[]} transcripts - transcripciones a consolidar.
- * @param {{maxLen?: number}} [opts]
+ * @param {{maxLen?: number, markdownV2?: boolean}} [opts] - #4130: `markdownV2`
+ *   escapa con las reglas del dialecto V2 cuando el eco se prepende a un reply
+ *   MarkdownV2 (ej. `/wave` por audio). El dialecto del escape DEBE coincidir
+ *   con el `parse_mode` del saliente o el mensaje completo rompe (Telegram 400).
  * @returns {string} eco listo para enviar, o '' si no hay nada que ecoar.
  */
 function formatTranscriptEcho(transcripts, opts = {}) {
@@ -81,7 +94,7 @@ function formatTranscriptEcho(transcripts, opts = {}) {
     const truncated = redacted.length > maxLen
         ? redacted.slice(0, maxLen).trimEnd() + '…'
         : redacted;
-    const escaped = escapeMarkdown(truncated);
+    const escaped = escapeForMode(truncated, !!opts.markdownV2);
     return `🎤 Entendí: «${escaped}»`;
 }
 
