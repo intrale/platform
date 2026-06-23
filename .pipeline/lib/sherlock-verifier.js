@@ -215,26 +215,13 @@ const DISCLAIMER_F6_VERIFICATION_FAILED = (
     'ℹ️ No pude verificar esta respuesta; te muestro la original.'
 );
 
-// F-7 (#4105 · CA-11) — disclaimer "pendiente" del camino OPTIMISTA. Cuando se
-// agota el presupuesto de verificación, se libera la respuesta YA con este aviso
-// y la verificación sigue en background. NO reusa F-6 (ese es "no pude verificar
-// y te muestro la original"; F-7 es "te respondo ya pero sigo chequeando"). El
-// ⏳ solo se remueve ante un veredicto `approved` explícito (fail-closed, CA-7).
-// Texto exacto fijado por PO/UX (#4105). Voseo, natural, fija expectativa de
-// "respuesta provisoria + posible corrección".
-const DISCLAIMER_F7_PENDING_VERIFICATION = (
-    '\n\n' +
-    '⏳ Te respondo ya así no esperás; estoy terminando de chequear los datos y, si algo no cuadra, te lo corrijo acá mismo.'
-);
-
-// F-7b (#4105 · CA-11) — prefijo del FOLLOW-UP de corrección (canal de voz, y
-// fallback de texto cuando la edición no es posible). Un voice note no es
-// editable: la corrección llega como mensaje de texto nuevo. El caller concatena
-// el detalle de la corrección después de este prefijo. La corrección de TEXTO
-// editable reusa F-5 (`🔍 Ajusté la respuesta con el verificador.`).
-const FOLLOWUP_F7_VOICE_CORRECTION = (
-    '🔍 Revisé lo que te respondí recién y necesito corregir algo: '
-);
+// #4139 — F-7 (`PENDING_VERIFICATION` / ⏳) y el follow-up de corrección por voz
+// (`FOLLOWUP_F7_VOICE_CORRECTION`) fueron REMOVIDOS. El Commander ahora consolida:
+// espera SIEMPRE el verdict de Sherlock antes de despachar (texto y audio) y
+// entrega un único mensaje final ya verificado. Ya no hay liberación optimista
+// (⏳ "pendiente") ni segundo mensaje de corrección. Se conservan F-5
+// (`PERSISTENT_INCONSISTENCY`) y F-6 (`TIMEOUT_OR_NO_PROVIDER`), que siguen
+// aplicando al despacho síncrono.
 
 // CA-2 (#3921) — disclaimer same-provider. Aviso fail-loud al operador cuando la
 // verificación se hizo con el MISMO motor que generó la respuesta (adversariality
@@ -253,8 +240,6 @@ const DISCLAIMER_TYPES = Object.freeze({
     TIMEOUT_OR_NO_PROVIDER: 'timeout',
     PERSISTENT_INCONSISTENCY: 'rechazado-persistente',
     SAME_PROVIDER:          'same-provider',
-    // #4105 (CA-11) — disclaimer "pendiente" del camino optimista (F-7).
-    PENDING_VERIFICATION:   'pendiente-verificacion',
 });
 
 // -----------------------------------------------------------------------------
@@ -2100,12 +2085,6 @@ function applyDisclaimer(text, disclaimerType) {
     if (disclaimerType === DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER) {
         return String(text || '') + DISCLAIMER_F6_VERIFICATION_FAILED;
     }
-    // #4105 (CA-11) — F-7 "pendiente": camino optimista. Se aplica al envío
-    // inicial cuando se libera la respuesta antes de verificar. El ⏳ solo se
-    // retira luego ante `approved` explícito (CA-7, lo decide el caller).
-    if (disclaimerType === DISCLAIMER_TYPES.PENDING_VERIFICATION) {
-        return String(text || '') + DISCLAIMER_F7_PENDING_VERIFICATION;
-    }
     // CA-2 (#3921) — same-provider es ADITIVO: el caller lo aplica encadenado
     // sobre el primario (ej. applyDisclaimer(applyDisclaimer(t, F5), SAME_PROVIDER))
     // y el texto arranca con `\n\n`, así que queda debajo sin pisar el primario.
@@ -2211,10 +2190,6 @@ module.exports = {
     HTTP_COMPATIBLE_PROVIDERS: HTTP_COMPLETION_PROVIDERS,
     DISCLAIMER_F5_PERSISTENT_INCONSISTENCY,
     DISCLAIMER_F6_VERIFICATION_FAILED,
-    // #4105 (CA-11) — F-7 "pendiente" del camino optimista + prefijo de follow-up
-    // de corrección de voz.
-    DISCLAIMER_F7_PENDING_VERIFICATION,
-    FOLLOWUP_F7_VOICE_CORRECTION,
     DISCLAIMER_TYPES,
 
     // exports para tests

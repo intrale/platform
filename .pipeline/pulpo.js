@@ -94,11 +94,11 @@ const inflightFallback = require('./lib/commander/inflight-fallback');
 // con un provider distinto al del Commander. Bypass total si
 // config.yaml.sherlock_enabled=false. Ver lib/sherlock-verifier.js.
 const sherlockVerifier = require('./lib/sherlock-verifier');
-// #4105 (EP2-H5b) — Modelo OPTIMISTA de Sherlock: registry de verificación
-// background con cap + hard-timeout ≤90s, decisión de corrección por canal
-// (texto→edit, voz→follow-up) y fail-closed del disclaimer ⏳. Toda la lógica
-// testeable vive acá; pulpo solo orquesta. Ver lib/sherlock-optimistic.js.
-const sherlockOptimistic = require('./lib/sherlock-optimistic');
+// #4139 — El modelo OPTIMISTA de Sherlock (#4105: liberación ⏳ + corrección
+// diferida en background) fue REEMPLAZADO por un flujo SÍNCRONO: el Commander
+// espera siempre el verdict antes de despachar y entrega un único mensaje final
+// consolidado (texto + audio ya verificados). El módulo lib/sherlock-optimistic.js
+// fue removido junto con su andamiaje.
 // #3343 — Sherlock necesita generar `turnId` para correlación cross-event
 // del audit log (sherlock_verification ↔ commander_response). Usamos
 // crypto.randomBytes(8) → 16 hex; bastante para forenses cruzados.
@@ -11801,13 +11801,6 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
       // legítimo con un F-6 espurio. El disclaimer SIEMPRE lo manda el verdict,
       // no el reloj.
       let sherlockResolved = false;
-      // #4105 (CA-7) — señal de aprobación FINAL del bloque Sherlock, fail-closed:
-      // arranca en `false` y SOLO un verdict `ok` (1ra pasada o reelaboración) lo
-      // pone en `true`. Lo lee la corrección background del camino optimista para
-      // decidir si retira el ⏳ (approved) o corrige el contenido (rechazado).
-      // Default false ⇒ ante cualquier no-OK (rechazo persistente, aborted,
-      // excepción, timeout) el ⏳ persiste.
-      let sherlockFinalApproved = false;
 
       // CA-UX-1: typing refresh loop. Se arranca antes y se limpia en finally.
       let typingTimer = null;
@@ -11825,21 +11818,16 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
       // contra el bloque completo de verificación; si gana el timeout, libera el
       // chat con un mensaje honesto (evita el chat colgado indefinidamente — UX-2).
       //
-      // #4105 (EP2-H5b · CA-3/CA-4) — modelo OPTIMISTA. El cutoff ya NO es un
-      // soft-timeout generoso de 7 min que bloquea el chat; es un TECHO de espera
-      // percibida ≤90 s. Si Sherlock no resolvió antes del techo, se LIBERA la
-      // respuesta con un disclaimer ⏳ "pendiente" (F-7) y la verificación SIGUE en
-      // background (el Promise `sherlockBlock` no se cancela al perder el race).
-      // Cuando resuelve, se corrige el mensaje ya enviado (texto→edit, voz→
-      // follow-up). El disclaimer lo sigue decidiendo el verdict, no el reloj
-      // (`sherlockResolved`); el reloj solo decide CUÁNDO liberar optimistamente.
+      // #4139 — flujo SÍNCRONO (reemplaza el modelo OPTIMISTA de #4105). Esperamos
+      // SIEMPRE el verdict de Sherlock antes de despachar (texto y audio), con un
+      // PRESUPUESTO MÁXIMO de espera. Si el presupuesto se agota sin verdict, se
+      // DEGRADA a F-6 ("no pude verificar; te muestro la original") y se despacha
+      // igual — nunca se cuelga el chat. Ya no hay liberación optimista ⏳ ni
+      // corrección diferida en background: un único mensaje final consolidado. El
+      // disclaimer lo sigue decidiendo el verdict, no el reloj (`sherlockResolved`).
       // Si Sherlock está deshabilitado, el bloque resuelve `skipped` al instante y
-      // el techo nunca dispara → sin envío optimista ni registry (CA-SEC-7).
-      const SHERLOCK_SOFT_TIMEOUT_MS = getSherlockOptimisticCeilingMs();
-      // Canal del turno para la corrección diferenciada (CA-5).
-      const optimisticChannel = esAudio ? sherlockOptimistic.CHANNEL_VOICE : sherlockOptimistic.CHANNEL_TEXT;
-      // Marca que la respuesta se liberó optimistamente (techo disparó sin verdict).
-      let sherlockOptimisticReleased = false;
+      // el presupuesto nunca dispara (CA-SEC-7).
+      const SHERLOCK_WAIT_BUDGET_MS = getSherlockWaitBudgetMs();
 
       const sherlockBlock = (async () => {
         // #3948 (CA-5) — transición a `verificando` al invocar Sherlock (sólo
@@ -11977,9 +11965,6 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
               if (verdict2.verdict === 'ok' || verdict2.verdict === 'rechazado') {
                 sherlockSameProvider = verdict2.sameProvider === true;
               }
-              // #4105 (CA-7) — aprobación final fail-closed: SOLO un `ok` de la
-              // reelaboración aprueba. `rechazado`/`aborted` dejan el ⏳.
-              sherlockFinalApproved = verdict2.verdict === 'ok';
             }
           } catch (re) {
             log('commander', `⚠️ Reelaboración Sherlock falló: ${re.message}. Manteniendo respuesta original.`);
@@ -11995,8 +11980,6 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
           // CA-2 (#3921) — si el veredicto OK vino de un intento same-provider
           // (último recurso, chain alternativa agotada), avisamos al operador.
           sherlockSameProvider = verdict.sameProvider === true;
-          // #4105 (CA-7) — OK en 1ra pasada (sin reelaboración) ⇒ aprobado.
-          sherlockFinalApproved = true;
         }
         // MP-01/MP-02: el bloque alcanzó un verdict conclusivo. A partir de acá
         // el disclaimer (o su ausencia) refleja la decisión REAL de Sherlock.
@@ -12016,14 +11999,24 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
         } catch { /* best-effort */ }
       })();
 
+      // #4139 — defensa anti-unhandled-rejection: si el presupuesto gana el race,
+      // `sherlockBlock` queda detached y podría rechazar tarde. Le adjuntamos un
+      // handler para que una rechazo tardío nunca tumbe el proceso (su mutación
+      // tardía de `respuesta` es inocua: abajo congelamos el texto antes de enviar).
+      sherlockBlock.catch((e) => {
+        try { log('commander', `Sherlock (detached) terminó con error tras el presupuesto: ${e && e.message}`); } catch {}
+      });
+
       try {
         startTypingLoop();
+        // #4139 — esperamos SIEMPRE el verdict, acotado por el presupuesto máximo.
+        // Si el presupuesto gana, `sherlockSoftTimedOut=true` → degradamos a F-6.
         await Promise.race([
           sherlockBlock,
           new Promise((resolve) => setTimeout(() => {
             sherlockSoftTimedOut = true;
             resolve();
-          }, SHERLOCK_SOFT_TIMEOUT_MS)),
+          }, SHERLOCK_WAIT_BUDGET_MS)),
         ]);
       } catch (sherlockErr) {
         // Defensa: un fallo de Sherlock NUNCA debe tirar el turno. Degradamos
@@ -12035,26 +12028,23 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
       }
 
       if (shouldEmitSoftTimeoutDisclaimer(sherlockSoftTimedOut, sherlockResolved)) {
-        // #4105 (CA-4/CA-11) — el techo de espera percibida disparó SIN verdict.
-        // En vez de degradar a F-6 ("no pude verificar, te muestro la original"),
-        // LIBERAMOS optimistamente: ⏳ "pendiente" (F-7) y la verificación sigue en
-        // background. Cuando resuelva, corregimos el mensaje ya enviado. El ⏳ solo
-        // se retira ante `approved` explícito (CA-7, fail-closed).
-        log('commander', `⏳ Sherlock techo ${SHERLOCK_SOFT_TIMEOUT_MS}ms — liberando OPTIMISTA con disclaimer pendiente (verificación sigue en background)`);
-        sherlockDisclaimerType = sherlockVerifier.DISCLAIMER_TYPES.PENDING_VERIFICATION;
-        sherlockOptimisticReleased = true;
+        // #4139 — el presupuesto máximo de espera se agotó SIN verdict. DEGRADAMOS
+        // a F-6 ("no pude verificar; te muestro la original") y despachamos igual
+        // — nunca colgamos el chat. Ya NO liberamos optimistamente (sin ⏳, sin
+        // corrección diferida). El texto F-6 nunca embebe stacks ni excepciones.
+        log('commander', `⏱️ Sherlock no resolvió en el presupuesto ${SHERLOCK_WAIT_BUDGET_MS}ms — degradando a F-6 y despachando la original`);
+        sherlockDisclaimerType = sherlockVerifier.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER;
       } else if (sherlockSoftTimedOut && sherlockResolved) {
         // MP-01: el reloj ganó la carrera por microsegundos pero el bloque YA
         // había resuelto. Honramos el verdict real (que ya seteó o no el
         // disclaimer correspondiente). NUNCA pisamos un OK con un F-6 espurio.
-        log('commander', `⏱️ soft-timeout disparó pero Sherlock ya tenía verdict — se honra el resultado real (sin F-6 espurio)`);
+        log('commander', `⏱️ presupuesto disparó pero Sherlock ya tenía verdict — se honra el resultado real (sin F-6 espurio)`);
       }
 
-      // #4105 — en la ruta OPTIMISTA NO mutamos la `respuesta` compartida: el
-      // bloque Sherlock sigue corriendo en background y la lee para corregir. El
-      // ⏳ se aplica más abajo a una COPIA local `outboundText` que se envía. En
-      // la ruta normal (sherlock resolvió) sí mutamos como siempre.
-      if (sherlockDisclaimerType && respuesta && !sherlockOptimisticReleased) {
+      // #4139 — flujo síncrono: el verdict ya está (o se degradó a F-6). Mutamos
+      // la `respuesta` final con el disclaimer correspondiente ANTES de generar el
+      // TTS y el texto, así audio y texto salen consolidados y coherentes.
+      if (sherlockDisclaimerType && respuesta) {
         respuesta = sherlockVerifier.applyDisclaimer(respuesta, sherlockDisclaimerType);
       }
       // CA-2 (#3921) — disclaimer same-provider ADITIVO: se concatena DEBAJO del
@@ -12088,19 +12078,15 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
       // --- ENVIAR RESPUESTA ---
       // #3948 (CA-5) — transición a `enviando` antes de despachar la respuesta.
       try { if (commanderPresence) commanderPresence.updatePhase('enviando'); } catch { /* no bloqueante */ }
-      // #4105 — correlationId del saliente, hoisted para que la corrección
-      // background (camino optimista) pueda resolver el message_id por recibo.
-      let outboundCorrelationId = null;
       if (respuesta) {
         let enviado = false;
 
-        // #4105 — TEXTO de salida FROZEN. En la ruta optimista, el ⏳ (F-7) se
-        // aplica acá a una copia local (NO a la `respuesta` compartida que el
-        // background lee). La captura es atómica con la decisión (sin `await`
-        // intermedio): el background no puede pisar `respuesta` en esta ventana.
-        const outboundText = sherlockOptimisticReleased
-          ? sherlockVerifier.applyDisclaimer(respuesta, sherlockVerifier.DISCLAIMER_TYPES.PENDING_VERIFICATION)
-          : respuesta;
+        // #4139 — TEXTO de salida FROZEN: snapshot atómico de la `respuesta` ya
+        // verificada (con su disclaimer F-5/F-6/same-provider aplicado arriba). Se
+        // captura sin `await` intermedio. El MISMO `outboundText` alimenta el TTS y
+        // el texto, garantizando coherencia audio↔texto (CA-4) y blindando contra
+        // una mutación tardía de `respuesta` por el bloque Sherlock detached.
+        const outboundText = respuesta;
 
         // Si hubo audio → intentar TTS
         if (esAudio) {
@@ -12111,8 +12097,10 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
             // la propia frase repetida es redundante y consume el cap de 1500
             // chars de Edge TTS. INVARIANTE: no inyectar el eco en `respuesta`.
             // Cap a 1500 chars para evitar truncado interno de Edge TTS en español (#3485).
-            const chatChunks = splitTextForTTSChunks(respuesta, 1500);
-            log('commander', `[chat] TTS chunks generados: total_parts=${chatChunks.length} (texto=${respuesta.length} chars, cap=1500)`);
+            // #4139 — el TTS se genera del MISMO `outboundText` ya verificado que el
+            // texto: audio y texto consolidados y coherentes (CA-4).
+            const chatChunks = splitTextForTTSChunks(outboundText, 1500);
+            log('commander', `[chat] TTS chunks generados: total_parts=${chatChunks.length} (texto=${outboundText.length} chars, cap=1500)`);
             let prevProvider = loadTtsState().lastProvider;
             // EP1-H4 (#3919, CA-2/CA-3): si algún chunk falla TTS (meta===null) la
             // respuesta sale solo por texto. Acumulamos el fallo y avisamos UNA
@@ -12158,12 +12146,10 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
           }
         }
 
-        // #4105 — el TEXTO lleva el ⏳ en la ruta optimista (`outboundText`); el
-        // audio TTS de arriba se generó de la `respuesta` LIMPIA (no se lee ⏳ en
-        // voz — la señal "pendiente" viaja por el texto acompañante, decisión del
-        // arquitecto para CA-5/CA-11). En la ruta normal `outboundText === respuesta`.
+        // #4139 — envío consolidado: el texto verificado sale como único saliente
+        // (el audio de arriba, si aplica, es el MISMO `outboundText`). No hay
+        // segundo mensaje de corrección: lo que se manda ya está verificado.
         const outCorrelationId = sendTelegram(outboundText);
-        outboundCorrelationId = outCorrelationId;
         log('telegram', `Texto encolado como ${enviado ? 'backup' : 'principal'} (${outboundText.length} chars)`);
         // #4082 (CA-A3) — registrar el saliente como `encolado` (NO `enviado`):
         // el mensaje se encoló pero todavía no hay prueba de entrega del API. El
@@ -12187,29 +12173,9 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
           disclaimer: sherlockDisclaimerType || 'ninguno',
         });
         requestLog.line(`respuesta: ${outboundText}`);
-
-        // #4105 (EP2-H5b) — si la respuesta se liberó OPTIMISTAMENTE, registramos
-        // la verificación background y agendamos la corrección diferida (CA-4/5/6/
-        // 7/8/9/10/12). Solo si hubo correlationId (sin él no podemos resolver el
-        // message_id para corregir → no registramos). Toda la decisión fail-closed
-        // vive en lib/sherlock-optimistic.js (testeada); acá solo orquestamos.
-        if (sherlockOptimisticReleased && outboundCorrelationId) {
-          scheduleOptimisticCorrection({
-            registry: getSherlockOptimisticRegistry(),
-            verificationId: turnId,
-            correlationId: outboundCorrelationId,
-            channel: optimisticChannel,
-            block: sherlockBlock,
-            getApproved: () => sherlockFinalApproved,
-            getFinalText: () => String(respuesta || ''),
-            getDisclaimerType: () => sherlockDisclaimerType,
-          });
-        } else if (sherlockOptimisticReleased) {
-          // Sin correlationId (fallback directo / sin token) NO podemos corregir
-          // el mensaje. El ⏳ queda puesto (fail-closed). La verificación sigue
-          // corriendo igual (sherlockBlock) pero sin canal de corrección.
-          log('commander', '⏳ optimista sin correlationId — ⏳ queda sin corrección background (no hay canal de edición)');
-        }
+        // #4139 — sin corrección diferida: el flujo síncrono espera el verdict
+        // antes de despachar, así que el saliente ya es definitivo. Eliminado el
+        // segundo envío (`scheduleOptimisticCorrection` / follow-up por voz).
       }
 
       // #3951 EP7-H4 — cierre del turno (camino feliz): correlacionar el
@@ -12382,250 +12348,36 @@ function sendChatActionTyping() {
 }
 
 // =============================================================================
-// #4105 (EP2-H5b) — Camino OPTIMISTA de Sherlock: helpers de orquestación.
-// La lógica fail-closed (cap, dedupe, decisión por canal) vive testeada en
-// lib/sherlock-optimistic.js; acá solo está el pegamento con Telegram/FS que no
-// es unit-testeable.
+// #4139 — Flujo SÍNCRONO de Sherlock: presupuesto máximo de espera del verdict.
+// Reemplaza al camino OPTIMISTA de #4105 (registry background, corrección
+// diferida, follow-up por voz, disclaimer ⏳), que fue removido junto con
+// lib/sherlock-optimistic.js. Ahora el Commander espera SIEMPRE el verdict antes
+// de despachar; si el presupuesto se agota, degrada a F-6 y envía la original.
 // =============================================================================
 
-// Registry singleton de tareas de verificación background. Cap + hard-timeout
-// ≤90s (CA-3/CA-10). El hard-timeout acota la espera percibida y limpia zombis.
-let _sherlockOptimisticRegistry = null;
-function getSherlockOptimisticRegistry() {
-  if (_sherlockOptimisticRegistry) return _sherlockOptimisticRegistry;
-  let cap = 16;
-  let hardTimeoutMs = sherlockOptimistic.HARD_TIMEOUT_CEILING_MS; // 90s
+// Presupuesto máximo de espera del verdict de Sherlock antes de degradar a F-6.
+// Config-driven (`sherlock_wait_budget_ms`) con clamp duro [10s, 90s]: un valor
+// fuera de rango cae al default 90s. NO cuelga el chat: al agotarse se despacha
+// la respuesta original con disclaimer F-6.
+const SHERLOCK_WAIT_BUDGET_DEFAULT_MS = 90_000;
+const SHERLOCK_WAIT_BUDGET_CEILING_MS = 90_000;
+const SHERLOCK_WAIT_BUDGET_FLOOR_MS = 10_000;
+// `cfgOverride` (opcional) permite a los tests inyectar config sin tocar disco.
+function getSherlockWaitBudgetMs(cfgOverride) {
+  let v = SHERLOCK_WAIT_BUDGET_DEFAULT_MS;
   try {
-    const cfg = loadConfig();
-    if (cfg && Number.isInteger(cfg.sherlock_optimistic_cap) && cfg.sherlock_optimistic_cap > 0) {
-      cap = cfg.sherlock_optimistic_cap;
-    }
-  } catch { /* defaults */ }
-  _sherlockOptimisticRegistry = sherlockOptimistic.createBackgroundRegistry({ cap, hardTimeoutMs });
-  return _sherlockOptimisticRegistry;
-}
-
-// Techo de espera percibida del camino optimista (CA-3): ≤90s. Config-driven con
-// clamp duro. Si Sherlock no resuelve antes de este techo, se libera la respuesta
-// con ⏳ y la verificación sigue en background.
-function getSherlockOptimisticCeilingMs() {
-  let v = sherlockOptimistic.HARD_TIMEOUT_CEILING_MS; // default 90s
-  try {
-    const cfg = loadConfig();
-    const c = cfg && cfg.sherlock_optimistic_ceiling_ms;
-    if (Number.isFinite(c) && c >= 10_000) v = c;
+    const cfg = cfgOverride || loadConfig();
+    const c = cfg && cfg.sherlock_wait_budget_ms;
+    if (Number.isFinite(c) && c >= SHERLOCK_WAIT_BUDGET_FLOOR_MS) v = c;
   } catch { /* default */ }
-  return Math.min(sherlockOptimistic.HARD_TIMEOUT_CEILING_MS, v);
+  return Math.min(SHERLOCK_WAIT_BUDGET_CEILING_MS, v);
 }
 
-// Encola un editMessageText en el bus de svc-telegram (CA-5 texto). svc-telegram
-// despacha el edit vía su processQueue (rama method:'editMessageText'). Devuelve
-// el correlationId del dropfile, o null si no se pudo encolar.
-function enqueueTelegramEdit(messageId, text) {
-  const token = getTelegramToken();
-  const chatId = getTelegramChatId();
-  if (!token || !chatId || !Number.isFinite(messageId)) return null;
-  const correlationId = telegramReceipt.generateCorrelationId('cmdedit');
-  const svcDir = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
-  const filename = `${Date.now()}-cmdedit.json`;
-  try {
-    const msg = text.length > 4000 ? text.slice(0, 4000) + '...' : text;
-    fs.writeFileSync(path.join(svcDir, filename), JSON.stringify({
-      method: 'editMessageText',
-      message_id: messageId,
-      text: msg,
-      parse_mode: 'Markdown',
-      _correlationId: correlationId,
-    }));
-    log('telegram', `Edit encolado (msg ${messageId}, ${msg.length} chars) → ${filename}`);
-    return correlationId;
-  } catch (e) {
-    log('telegram', `No se pudo encolar edit: ${e.message}`);
-    return null;
-  }
-}
-
-// Resuelve el message_id de un saliente optimista a partir de su correlationId.
-// El recibo llega async (svc-telegram lo escribe al confirmar entrega — R1 del
-// bus #4082). Polleamos acotado (CA-3: el total nunca supera el techo). Devuelve
-// el message_id o null si no se resolvió a tiempo (→ fallback follow-up, CA-8).
-async function resolveOptimisticMessageId(correlationId, { attempts = 8, intervalMs = 1000 } = {}) {
-  if (!correlationId) return null;
-  const recibosDir = telegramReceipt.receiptsDir(PIPELINE);
-  for (let i = 0; i < attempts; i++) {
-    const id = telegramReceipt.resolveMessageId(correlationId, recibosDir);
-    if (Number.isFinite(id)) return id;
-    await new Promise((r) => setTimeout(r, intervalMs));
-  }
-  return null;
-}
-
-// Gate de salida fail-closed para la corrección (CA-9). Reusa el data-residency
-// filter (CA-SEC-3) — el gate de OUTPUT real. `sanitizeUserPrompt` es un gate de
-// INPUT (se aplica al prompt del usuario ANTES del LLM, no al output propio: re-
-// correrlo sobre la respuesta la mutilaría al primer imperativo). El commander es
-// `anthropic` → data-residency es passthrough explícito, pero lo invocamos
-// siempre para que la ruta optimista pase por el mismo filtro fail-closed.
-function correctionPassesPreFilters(text) {
-  try {
-    const dr = commanderMP.enforceDataResidency({
-      pipelineDir: PIPELINE,
-      provider: 'anthropic',
-      paths: [],
-      chatId: getTelegramChatId(),
-      prompt: text,
-      log: (l, m) => log(l || 'commander', m),
-    });
-    return !!(dr && dr.ok);
-  } catch (e) {
-    // Fail-closed: si el filtro no carga, NO despachamos la corrección.
-    log('commander', `data-residency en corrección falló (fail-closed, no se corrige): ${e.message}`);
-    return false;
-  }
-}
-
-// Emite un evento de audit del camino optimista (CA-12). Best-effort: nunca tira.
-function auditOptimistic(payload) {
-  try {
-    commanderMP.auditCommanderRequest({
-      pipelineDir: PIPELINE,
-      event: payload.event,
-      prompt: payload.verificationHash || '',
-      errorCode: payload.verdict || payload.editOutcome || null,
-    });
-  } catch { /* best-effort */ }
-}
-
-// scheduleOptimisticCorrection — #4105. Orquesta la corrección DIFERIDA del camino
-// optimista: registra la verificación background (cap CA-10), espera a que el
-// bloque Sherlock resuelva (acotado por el hard-timeout ≤90s — CA-3), y según el
-// veredicto FINAL corrige el mensaje ya enviado:
-//   - approved (CA-7) → retira el ⏳ editando el mensaje de texto (ambos canales:
-//     el ⏳ vive en el texto). Si la edición no es posible → follow-up (CA-8).
-//   - NO aprobado → corrige el CONTENIDO: texto ⇒ edit con F-5; voz ⇒ follow-up
-//     (F-7b, el voice note es inmutable — CA-5).
-// Fail-closed (CA-7): si el bloque muere / hace timeout, el ⏳ persiste y NO se
-// corrige. Idempotente (CA-6): dedupe atómico por verificationId+correlationId.
-// Detached (fire-and-forget): nunca bloquea el turn handler; `.catch` defensivo.
-function scheduleOptimisticCorrection({ registry, verificationId, correlationId, channel, block, getApproved, getFinalText, getDisclaimerType }) {
-  const SO = sherlockOptimistic;
-  // CA-10 — registro con cap atómico. Si el cap está lleno → degradar: el ⏳
-  // queda, NO se spawnea la corrección background.
-  const reg = registry.register({ verificationId, correlationId, channel });
-  if (!reg.accepted) {
-    log('commander', `⏳ optimista NO registrado (${reg.reason}) — ⏳ queda sin corrección (degradación CA-10)`);
-    return;
-  }
-  auditOptimistic(SO.buildAuditPayload({ event: SO.AUDIT_OPTIMISTIC_SEND, channel, verificationId }));
-
-  (async () => {
-    // Esperar al bloque, acotado por el hard-timeout del registry (≤90s). Si no
-    // resuelve a tiempo → timeout fail-closed (⏳ queda).
-    const finished = await Promise.race([
-      Promise.resolve(block).then(() => true, () => true), // resuelve o rechaza → "terminó"
-      new Promise((r) => setTimeout(() => r(false), registry.hardTimeoutMs)),
-    ]);
-    if (!finished) {
-      registry.reap();
-      auditOptimistic(SO.buildAuditPayload({ event: SO.AUDIT_BACKGROUND_VERDICT, channel, verificationId, verdict: 'timeout' }));
-      log('commander', `⏳ verificación background timeout (≤${registry.hardTimeoutMs}ms) — ⏳ queda (fail-closed CA-7)`);
-      return;
-    }
-
-    // Tri-estado del veredicto FINAL:
-    //   - approved      → un `ok` explícito (CA-7) → retirar ⏳.
-    //   - rejected      → inconsistencia persistente (F-5) → corregir contenido.
-    //   - unverified    → aborted/excepción/timeout (F-6/otro) → NO corregir: el ⏳
-    //     queda (fail-closed estricto: una verificación que NO concluyó no debe
-    //     gatillar una "corrección" que afirme haber ajustado la respuesta).
-    const approved = getApproved() === true;
-    const disclaimerType = typeof getDisclaimerType === 'function' ? getDisclaimerType() : null;
-    let verdictOutcome;
-    if (approved) verdictOutcome = 'approved';
-    else if (disclaimerType === sherlockVerifier.DISCLAIMER_TYPES.PERSISTENT_INCONSISTENCY) verdictOutcome = 'rejected';
-    else verdictOutcome = 'unverified';
-
-    const verdict = verdictOutcome === 'approved' ? SO.VERDICT_APPROVED : (verdictOutcome === 'rejected' ? 'rejected' : 'error');
-    auditOptimistic(SO.buildAuditPayload({ event: SO.AUDIT_BACKGROUND_VERDICT, channel, verificationId, verdict }));
-
-    if (verdictOutcome === 'unverified') {
-      // Resolvemos la tarea como no-aprobada (libera el slot del cap) pero NO
-      // corregimos: el ⏳ persiste (CA-7).
-      registry.resolveVerdict({ verificationId, verdict: 'error' });
-      log('commander', `⏳ verificación background no concluyó (unverified) — ⏳ queda sin corrección (fail-closed CA-7)`);
-      return;
-    }
-
-    const rv = registry.resolveVerdict({ verificationId, verdict });
-    if (!rv.ok) return; // ya resuelto / timeouteado (CA-6/CA-7)
-
-    // Resolver el message_id por recibo (llega async — CA-6). Acotado.
-    const messageId = await resolveOptimisticMessageId(correlationId);
-    if (Number.isFinite(messageId)) registry.attachMessageId({ verificationId, messageId });
-    const editAvailable = Number.isFinite(messageId);
-
-    // Texto de la corrección + canal efectivo de corrección.
-    const finalText = getFinalText();
-    let correctedText;
-    let correctionChannel;
-    if (rv.removeDisclaimer) {
-      // approved → retirar ⏳: el contenido correcto es la respuesta LIMPIA. El ⏳
-      // vivía en el mensaje de TEXTO (ambos canales) → se edita ese mensaje.
-      correctedText = finalText;
-      correctionChannel = SO.CHANNEL_TEXT;
-    } else if (channel === SO.CHANNEL_VOICE) {
-      // voz no aprobada → follow-up (el voice note es inmutable, CA-5).
-      correctedText = sherlockVerifier.FOLLOWUP_F7_VOICE_CORRECTION + finalText;
-      correctionChannel = SO.CHANNEL_VOICE;
-    } else {
-      // texto no aprobado → edición con F-5 "ajusté la respuesta con el verificador".
-      correctedText = sherlockVerifier.applyDisclaimer(finalText, sherlockVerifier.DISCLAIMER_TYPES.PERSISTENT_INCONSISTENCY);
-      correctionChannel = SO.CHANNEL_TEXT;
-    }
-
-    // Caso approved SIN edición disponible (message_id no resuelto a tiempo): NO
-    // reenviamos la respuesta entera como follow-up (sería ruido duplicado). El ⏳
-    // queda — es un borde raro (el recibo casi siempre resuelve en segundos). El
-    // contenido ya entregado era correcto (approved), solo falta retirar el ⏳.
-    if (verdictOutcome === 'approved' && !editAvailable) {
-      auditOptimistic(SO.buildAuditPayload({ event: SO.AUDIT_EDIT_RESULT, channel, verificationId, editOutcome: 'fail' }));
-      log('commander', '⏳ approved sin message_id resuelto — no se pudo retirar el ⏳ (sin reenvío duplicado)');
-      return;
-    }
-
-    // CA-9 — pre-filtro fail-closed (data-residency) ANTES de despachar. Si no
-    // pasa, NO corregimos: el ⏳ queda.
-    if (!correctionPassesPreFilters(correctedText)) {
-      auditOptimistic(SO.buildAuditPayload({ event: SO.AUDIT_EDIT_RESULT, channel, verificationId, editOutcome: 'fail' }));
-      return;
-    }
-
-    // CA-6 — dedupe atómico de la corrección (nunca doble edición).
-    const corr = registry.enqueueCorrection({ verificationId, correlationId, channel: correctionChannel, editAvailable });
-    if (!corr.accepted) return;
-
-    // CA-5/CA-8 — despachar según la acción decidida.
-    let outcome;
-    if (corr.action === SO.CORRECTION_EDIT && editAvailable) {
-      const editCid = enqueueTelegramEdit(messageId, correctedText);
-      if (editCid) {
-        outcome = 'success';
-      } else {
-        // CA-8 — fallback obligatorio a follow-up si la edición no se pudo encolar.
-        try { sendTelegram(correctedText); } catch { /* best-effort */ }
-        outcome = 'fallback';
-      }
-    } else {
-      // follow-up (voz, o texto sin message_id resuelto → fallback CA-8).
-      try { sendTelegram(correctedText); } catch { /* best-effort */ }
-      outcome = 'fallback';
-    }
-    auditOptimistic(SO.buildAuditPayload({ event: SO.AUDIT_EDIT_RESULT, channel, verificationId, editOutcome: outcome }));
-    log('commander', `🔍 corrección optimista despachada (canal=${correctionChannel}, acción=${corr.action}, outcome=${outcome})`);
-  })().catch((e) => {
-    log('commander', `corrección background falló (fail-closed, ⏳ queda): ${e && e.message}`);
-  });
-}
+// #4139 — `enqueueTelegramEdit` (productor de `method:'editMessageText'`),
+// `resolveOptimisticMessageId`, `correctionPassesPreFilters`, `auditOptimistic` y
+// `scheduleOptimisticCorrection` fueron REMOVIDOS: eran exclusivos de la
+// corrección diferida del camino optimista. El flujo síncrono no edita ni
+// reenvía mensajes ya despachados.
 
 function _loadTgSecrets() {
   try {
@@ -14493,6 +14245,8 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     orangeFloorReached,
     // MP-01/MP-02 (#3803) — decisión pura del disclaimer por soft-timeout.
     shouldEmitSoftTimeoutDisclaimer,
+    // #4139 — presupuesto máximo de espera del verdict de Sherlock (flujo síncrono).
+    getSherlockWaitBudgetMs,
     predictResourceImpact,
     getEstimatedImpact,
     measureEmulatorMemPercent,
