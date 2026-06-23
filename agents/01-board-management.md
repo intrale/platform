@@ -6,7 +6,7 @@ Creación de issues:
 - Nunca dejar issues fuera del proyecto o sin columna.
 
 Progresión:
-- Antes de trabajar: mover a **In Progress**.
+- Antes de trabajar: mover a **In Progress** (al tomar de Todo; ver `16-status-transitions.md`).
 - Impedimentos: mover a **Blocked** y comentar motivo técnico.
 - Con PR creado y asignado correctamente: mover a **Ready**.
 
