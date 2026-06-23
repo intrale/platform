@@ -623,6 +623,7 @@ let _stateSnapshotAt = 0;           // timestamp del último refresh exitoso
 let _stateRefreshInflight = false;  // evita solapar cómputos pesados
 let _stateRefreshTimer = null;      // handle del setInterval (para clearInterval)
 let _loopMonitor = null;            // #4131-followup — handle del monitor de lag del event loop
+let _freezeWatchdog = null;         // #4131-followup-2 — handle del watchdog externo de freeze
 // #4126 — cadencia configurable por env para que los tests puedan forzar un
 // worker casi-siempre-activo y verificar que /api/health no se cuelga.
 const STATE_REFRESH_MS = Number(process.env.DASHBOARD_STATE_REFRESH_MS) || 3000;
@@ -11531,6 +11532,30 @@ function startListen() {
         });
       } catch (e) { try { log(`no se pudo arrancar el monitor de event-loop: ${e && e.message ? e.message : e}`); } catch {} }
     }
+    // #4131-followup-2 — Watchdog EXTERNO de freeze. El monitor de arriba es
+    // ciego al freeze TOTAL (su timer vive dentro del loop congelado y nunca
+    // dispara). Este corre en un Worker thread con su propio loop y un heartbeat
+    // por SharedArrayBuffer: detecta cuando el main deja de latir AUNQUE esté
+    // 100% clavado, y deja en `logs/freeze-watchdog.log` el timestamp, la
+    // duración y la operación que estaba en vuelo al congelarse. Es el testigo
+    // que nos faltaba para el cuelgue intermitente del /restart.
+    if (!_freezeWatchdog) {
+      try {
+        const { startFreezeWatchdog } = require('./lib/freeze-watchdog');
+        _freezeWatchdog = startFreezeWatchdog({
+          logDir: LOG_DIR,
+          thresholdMs: Number(process.env.DASHBOARD_FREEZE_THRESHOLD_MS) || 3000,
+          getInflight: () => ({
+            stateSnapshot: _stateRefreshInflight,
+            procStatus: _procStatusInflight,
+            prInfo: _prInfoInflight,
+            olaETA: _olaETARefreshInflight,
+            titleRefresh: _titleRefreshInflight,
+          }),
+          onLog: (line) => { try { log(line.replace(/^\[[^\]]+\]\s*/, '')); } catch {} },
+        });
+      } catch (e) { try { log(`no se pudo arrancar el watchdog de freeze: ${e && e.message ? e.message : e}`); } catch {} }
+    }
   });
 }
 server.on('error', (err) => {
@@ -11551,8 +11576,8 @@ startListen();
 // uptime y para diagnóstico humano). NO es fuente de verdad: el dashboard
 // descubre sus peers vía pid-discovery.
 try { fs.writeFileSync(path.join(PIPELINE, 'dashboard.pid'), String(process.pid)); } catch {}
-process.on('SIGINT', () => { if (_stateRefreshTimer) clearInterval(_stateRefreshTimer); if (_loopMonitor) _loopMonitor.stop(); server.close(); process.exit(0); });
-process.on('SIGTERM', () => { if (_stateRefreshTimer) clearInterval(_stateRefreshTimer); if (_loopMonitor) _loopMonitor.stop(); server.close(); process.exit(0); });
+process.on('SIGINT', () => { if (_stateRefreshTimer) clearInterval(_stateRefreshTimer); if (_loopMonitor) _loopMonitor.stop(); if (_freezeWatchdog) _freezeWatchdog.stop(); server.close(); process.exit(0); });
+process.on('SIGTERM', () => { if (_stateRefreshTimer) clearInterval(_stateRefreshTimer); if (_loopMonitor) _loopMonitor.stop(); if (_freezeWatchdog) _freezeWatchdog.stop(); server.close(); process.exit(0); });
 
 // Crash handlers — loguear antes de morir para diagnóstico
 process.on('uncaughtException', (err) => {
