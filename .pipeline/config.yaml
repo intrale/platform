@@ -499,6 +499,23 @@ handoff:
     - aprobacion
     - entrega
 
+# #4136 — Frontera activo/histórico.
+#
+# El Pulpo muda al `historico/` (raíz aparte, mismo volumen → rename atómico) los
+# artefactos `procesado/` de issues en REPOSO TOTAL (sin archivos en
+# pendiente/trabajando/listo de ninguna fase, y que alcanzaron su fase terminal o
+# están `closed` en GitHub). Así el camino vivo se mantiene acotado solo y el
+# snapshot del dashboard (`_genPipelineState`) deja de congelar el event loop.
+# El histórico se consulta on-demand por id validado; NO lo walkea el snapshot.
+#
+#   - enabled:        habilita el barrido (rollout gradual; default true).
+#   - max_per_tick:   tope de issues archivados por tick del Pulpo.
+#   - retention_days: ventana de retención del histórico (limpieza futura).
+historico:
+  enabled: true
+  max_per_tick: 200
+  retention_days: 90
+
 # #3416 — Rebobinado del pipeline tras rechazo del operador.
 #
 # El operador dispara `/rechazar <issue> <alias>` desde Telegram. El Commander

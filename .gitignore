@@ -186,6 +186,12 @@ scripts/planner-plan.json
 .pipeline/archivado/
 .pipeline/audit/
 
+# #4136 — histórico de artefactos del pipeline (frontera activo/histórico).
+# Contiene YAML de tareas terminadas (motivos de rechazo, metadata interna).
+# Igual que `archivado/`: efímero por máquina, NO se versiona.
+.pipeline/historico/
+.pipeline/historico-transitions.jsonl
+
 # #3539 — audios .ogg generados por deliverable-notify (CA-SEC-8).
 # El cleanup/retencion sera tratado en #3544.
 .pipeline/audio/
