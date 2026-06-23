@@ -2855,33 +2855,20 @@ test('#3922 CA-SEC-E3: conversationContext >4000 chars se capea a 4000', () => {
 });
 
 // =============================================================================
-// #4105 (CA-11) — F-7 disclaimer "pendiente" del camino optimista + follow-up
-// de corrección de voz. Aditivo: NO toca F-5/F-6.
+// #4139 — F-7 (`PENDING_VERIFICATION` / ⏳) y el follow-up de corrección por voz
+// (`FOLLOWUP_F7_VOICE_CORRECTION`) fueron removidos al consolidar la respuesta de
+// Sherlock en un único mensaje final. Los tests verifican la ausencia.
 // =============================================================================
-test('#4105 F-7: applyDisclaimer PENDING_VERIFICATION agrega el ⏳ pendiente', () => {
-    const out = sherlock.applyDisclaimer('Respuesta provisoria', sherlock.DISCLAIMER_TYPES.PENDING_VERIFICATION);
-    assert.match(out, /^Respuesta provisoria/);
-    assert.match(out, /⏳ Te respondo ya así no esperás/);
-    assert.match(out, /si algo no cuadra, te lo corrijo acá mismo\./);
+test('#4139 F-7 removido: PENDING_VERIFICATION ya no existe en DISCLAIMER_TYPES', () => {
+    assert.equal(sherlock.DISCLAIMER_TYPES.PENDING_VERIFICATION, undefined);
+    assert.equal(sherlock.DISCLAIMER_F7_PENDING_VERIFICATION, undefined);
+    assert.equal(sherlock.FOLLOWUP_F7_VOICE_CORRECTION, undefined);
 });
 
-test('#4105 F-7: el texto exacto del disclaimer respeta el CA-11', () => {
-    assert.equal(
-        sherlock.DISCLAIMER_F7_PENDING_VERIFICATION,
-        '\n\n⏳ Te respondo ya así no esperás; estoy terminando de chequear los datos y, si algo no cuadra, te lo corrijo acá mismo.',
-    );
-});
-
-test('#4105 F-7 NO reusa ni pisa F-5/F-6 (constantes distintas)', () => {
-    assert.notEqual(sherlock.DISCLAIMER_F7_PENDING_VERIFICATION, sherlock.DISCLAIMER_F5_PERSISTENT_INCONSISTENCY);
-    assert.notEqual(sherlock.DISCLAIMER_F7_PENDING_VERIFICATION, sherlock.DISCLAIMER_F6_VERIFICATION_FAILED);
-    // F-5 (edición de texto) sigue intacto.
+test('#4139 F-5/F-6 se conservan tras remover F-7', () => {
     assert.match(sherlock.DISCLAIMER_F5_PERSISTENT_INCONSISTENCY, /🔍 Ajusté la respuesta con el verificador\./);
-});
-
-test('#4105 follow-up de voz: prefijo exacto para corrección no-editable (CA-5/CA-11)', () => {
-    assert.equal(
-        sherlock.FOLLOWUP_F7_VOICE_CORRECTION,
-        '🔍 Revisé lo que te respondí recién y necesito corregir algo: ',
-    );
+    assert.match(sherlock.DISCLAIMER_F6_VERIFICATION_FAILED, /No pude verificar esta respuesta; te muestro la original\./);
+    // applyDisclaimer sigue aplicando F-5/F-6.
+    assert.match(sherlock.applyDisclaimer('x', sherlock.DISCLAIMER_TYPES.PERSISTENT_INCONSISTENCY), /Ajusté la respuesta/);
+    assert.match(sherlock.applyDisclaimer('x', sherlock.DISCLAIMER_TYPES.TIMEOUT_OR_NO_PROVIDER), /No pude verificar/);
 });

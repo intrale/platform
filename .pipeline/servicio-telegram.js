@@ -190,11 +190,12 @@ async function telegramSend(method, params) {
 }
 
 /**
- * Editar el texto de un mensaje ya enviado (#4105 · CA-5). Despacha vía
+ * Editar el texto de un mensaje ya enviado. Despacha vía
  * `telegramSend('editMessageText', …)` — mismo patrón seguro que `sendMessage`.
- * Lo usa el camino optimista de Sherlock para CORREGIR una respuesta de TEXTO ya
- * entregada cuando el veredicto background difiere. Un voice note NO es editable:
- * su corrección es siempre un follow-up (ver sherlock-optimistic.decideCorrection).
+ * Primitiva de transporte genérica. #4139 — el camino optimista de Sherlock que
+ * la consumía (corrección diferida de respuestas ya entregadas) fue removido al
+ * pasar al flujo síncrono consolidado; la primitiva se conserva como capacidad
+ * reutilizable (con su propio test), sin productor activo en el Commander.
  *
  * @param {number|string} chatId   chat destino (Telegram exige chat_id explícito
  *                                  en editMessageText; `telegramSend` ya inyecta
@@ -687,8 +688,9 @@ async function processQueue() {
         // correlationId (los del Commander lo traen).
         writeSentReceiptIfAny(data, messageIds);
       } else if (data.method === 'editMessageText' && Number.isFinite(data.message_id)) {
-        // #4105 (CA-5) — corrección de TEXTO del camino optimista de Sherlock:
-        // editar un mensaje ya enviado. El payload trae `message_id` + `text`.
+        // #4139 — rama de edición genérica de un mensaje ya enviado (payload con
+        // `message_id` + `text`). El productor del camino optimista de Sherlock fue
+        // removido; la rama se conserva como capacidad de transporte reutilizable.
         // SEC-2 fail-closed: validar ok:true antes de dar por hecha la edición.
         const editBody = await editMessageText(
           CHAT_ID,
@@ -743,9 +745,9 @@ module.exports = {
   assertDelivered,
   writeSentReceiptIfAny,
   RECIBOS,
-  // #4105 — wrapper de edición para el camino optimista de Sherlock (CA-5).
-  // Exportado para tests `node --test` (dispatch vía telegramSend; no arranca
-  // el servicio ni toca red en el test, que inyecta un fake de telegramSend).
+  // #4139 — wrapper de edición de mensajes (primitiva genérica). Exportado para
+  // tests `node --test` (dispatch vía telegramSend; no arranca el servicio ni
+  // toca red en el test, que inyecta un fake de telegramSend).
   editMessageText,
 };
 
