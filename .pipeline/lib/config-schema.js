@@ -122,6 +122,17 @@ const SCHEMA = {
             },
         },
 
+        // --- historico: frontera activo/histórico (#4136) -------------------
+        historico: {
+            type: 'object',
+            additionalProperties: true,
+            properties: {
+                enabled: { type: 'boolean' },
+                max_per_tick: { type: 'integer', minimum: 1 },
+                retention_days: { type: 'integer', minimum: 1 },
+            },
+        },
+
         // --- pipelines: cada pipeline DEBE declarar skills_por_fase ----------
         pipelines: {
             type: 'object',

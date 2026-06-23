@@ -4876,6 +4876,51 @@ function reboteVerificacionABuild(issue, pipelineName, preflightResult) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// #4136 — Brazo de ARCHIVADO: muda al `historico/` los artefactos `procesado/`
+// de issues en reposo total (frontera activo/histórico). Mantiene el camino
+// vivo acotado solo, sin re-acumular, así `stateSnapshot` no se congela.
+//
+// Idempotente: recorre `procesado/` cada tick y archiva solo lo archivable
+// (predicado en `lib/historico.js`). Cubre también el histórico previo al deploy
+// (CA-6, sin script de migración aparte). Best-effort: nunca rompe el tick.
+// ---------------------------------------------------------------------------
+
+// Tope de issues archivados por tick: el barrido es idempotente y `procesado/`
+// queda acotado tras la primera corrida, así que un cap alto absorbe la
+// migración inicial sin saturar un solo tick.
+const ARCHIVADO_MAX_PER_TICK = 200;
+
+/** Construye un predicado isClosed(issue) best-effort desde el title-cache. */
+function makeIsClosedFromTitleCache() {
+  let cache = {};
+  try {
+    const file = path.join(PIPELINE, '.issue-title-cache.json');
+    cache = JSON.parse(fs.readFileSync(file, 'utf8')) || {};
+  } catch {
+    return null; // sin cache → solo se archiva por fase terminal alcanzada
+  }
+  return (issue) => {
+    const entry = cache[String(issue)];
+    return Boolean(entry && String(entry.state).toUpperCase() === 'CLOSED');
+  };
+}
+
+function brazoArchivado(config) {
+  try {
+    if (config.historico && config.historico.enabled === false) return; // rollout gradual
+    const historico = require('./lib/historico');
+    const max = (config.historico && config.historico.max_per_tick) || ARCHIVADO_MAX_PER_TICK;
+    const isClosed = makeIsClosedFromTitleCache();
+    const r = historico.barrerHistorico({ config, pipelineDir: PIPELINE, isClosed, max });
+    if (r.archivedIssues.length) {
+      log('archivado', `mudados ${r.movedCount} artefacto(s) de ${r.archivedIssues.length} issue(s) a historico/: ${r.archivedIssues.join(', ')}`);
+    }
+  } catch (e) {
+    log('archivado', `error en brazo (no fatal): ${e.message}`);
+  }
+}
+
 /**
  * #3939 (CA-4) — Barrido de claims huérfanos (`*.claimed-<pid>`) en todos los
  * `pendiente/`. Un proceso que muere entre el `renameSync(c.path, claimPath)` y
@@ -14384,6 +14429,7 @@ async function mainLoop() {
         // barrido ni lanzamiento; el guard interno previene re-entrada.
         brazoDesbloqueo(config).catch(e => log('desbloqueo', `error en brazo async: ${e.message}`));
         brazoBarrido(config);     // Cuarto: promover entre fases
+        brazoArchivado(config);   // #4136 — mudar procesado/ de issues en reposo a historico/
         sweepClaimsHuerfanos(config); // #3939 — restaurar claims huérfanos antes de lanzar
         brazoLanzamiento(config); // Quinto: asignar trabajo a agentes
         brazoHuerfanos(config);   // Sexto: recuperar trabajo trabado
@@ -14438,6 +14484,10 @@ process.on('SIGTERM', () => {
 // Útil para tests unitarios y scripts de evidencia del gate predictivo.
 if (process.env.PULPO_NO_AUTOSTART === '1') {
   module.exports = {
+    // #4136 — brazo de archivado (frontera activo/histórico).
+    brazoArchivado,
+    makeIsClosedFromTitleCache,
+    ARCHIVADO_MAX_PER_TICK,
     // #4051 — ventana nocturna: límites efectivos + piso de concurrencia.
     getEffectiveResourceLimits,
     orangeFloorReached,
