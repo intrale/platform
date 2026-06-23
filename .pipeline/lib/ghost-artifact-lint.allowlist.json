@@ -36,8 +36,8 @@
     },
     {
       "file": "smoke-test.js",
-      "line": 206,
-      "reason": "Lee `servicios/commander/trabajando/` (no es definicion/desarrollo) buscando mensajes .json del commander. Filtro explícito endsWith('.json'). (línea recalculada por #4096: el bloque desacoplado de checks /api/state + /api/health desplazó el readdir de 189 a 206)."
+      "line": 230,
+      "reason": "Lee `servicios/commander/trabajando/` (no es definicion/desarrollo) buscando mensajes .json del commander. Filtro explícito endsWith('.json'). (línea recalculada por #4136: el merge de #4131 —gate de rollback resiliente al pico de arranque— agregó código antes del readdir y lo desplazó de 206 a 230)."
     }
   ]
 }
