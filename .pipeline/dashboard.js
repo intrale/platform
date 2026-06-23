@@ -622,6 +622,7 @@ let _stateSnapshot = null;          // última vista computada (o null en cold s
 let _stateSnapshotAt = 0;           // timestamp del último refresh exitoso
 let _stateRefreshInflight = false;  // evita solapar cómputos pesados
 let _stateRefreshTimer = null;      // handle del setInterval (para clearInterval)
+let _loopMonitor = null;            // #4131-followup — handle del monitor de lag del event loop
 // #4126 — cadencia configurable por env para que los tests puedan forzar un
 // worker casi-siempre-activo y verificar que /api/health no se cuelga.
 const STATE_REFRESH_MS = Number(process.env.DASHBOARD_STATE_REFRESH_MS) || 3000;
@@ -11504,6 +11505,32 @@ function startListen() {
       _stateRefreshTimer = setInterval(refreshStateSnapshot, STATE_REFRESH_MS);
       if (_stateRefreshTimer.unref) _stateRefreshTimer.unref();
     }
+    // #4131-followup — Monitor de lag del event loop. Tras toda la cadena de
+    // fixes async (#4128/#4126/#4132) el dashboard seguía colgándose de forma
+    // intermitente y parchábamos a ciegas porque NO sabíamos qué operación
+    // clavaba el loop. Esto deja evidencia dura: cuando el loop estuvo clavado
+    // por encima del umbral, logueamos el lag pico Y qué refresh estaba inflight
+    // en ese instante. El próximo cuelgue se diagnostica con datos, no teoría.
+    if (!_loopMonitor) {
+      try {
+        const { startEventLoopMonitor } = require('./lib/event-loop-monitor');
+        _loopMonitor = startEventLoopMonitor({
+          thresholdMs: Number(process.env.DASHBOARD_LOOP_LAG_THRESHOLD_MS) || 1500,
+          onStall: ({ lagMs, meanMs, p99Ms }) => {
+            // Qué operación pesada estaba en vuelo durante el stall. La que esté
+            // en `true` es la principal sospechosa de haber bloqueado el loop.
+            const inflight = [];
+            if (_stateRefreshInflight) inflight.push('stateSnapshot');
+            if (_procStatusInflight) inflight.push('procStatus');
+            if (_prInfoInflight) inflight.push('prInfo');
+            if (_olaETARefreshInflight) inflight.push('olaETA');
+            if (_titleRefreshInflight) inflight.push('titleRefresh');
+            const who = inflight.length ? inflight.join('+') : 'ninguno-inflight';
+            log(`⚠️ event-loop STALL: lag pico ${lagMs}ms (mean ${meanMs}ms, p99 ${p99Ms}ms) — inflight: ${who}`);
+          },
+        });
+      } catch (e) { try { log(`no se pudo arrancar el monitor de event-loop: ${e && e.message ? e.message : e}`); } catch {} }
+    }
   });
 }
 server.on('error', (err) => {
@@ -11524,8 +11551,8 @@ startListen();
 // uptime y para diagnóstico humano). NO es fuente de verdad: el dashboard
 // descubre sus peers vía pid-discovery.
 try { fs.writeFileSync(path.join(PIPELINE, 'dashboard.pid'), String(process.pid)); } catch {}
-process.on('SIGINT', () => { if (_stateRefreshTimer) clearInterval(_stateRefreshTimer); server.close(); process.exit(0); });
-process.on('SIGTERM', () => { if (_stateRefreshTimer) clearInterval(_stateRefreshTimer); server.close(); process.exit(0); });
+process.on('SIGINT', () => { if (_stateRefreshTimer) clearInterval(_stateRefreshTimer); if (_loopMonitor) _loopMonitor.stop(); server.close(); process.exit(0); });
+process.on('SIGTERM', () => { if (_stateRefreshTimer) clearInterval(_stateRefreshTimer); if (_loopMonitor) _loopMonitor.stop(); server.close(); process.exit(0); });
 
 // Crash handlers — loguear antes de morir para diagnóstico
 process.on('uncaughtException', (err) => {
