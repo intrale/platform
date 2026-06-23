@@ -7,7 +7,7 @@ Estados (usar EXACTAMENTE estos nombres):
 - Refined: historias detalladas (funcional + técnico) listas para priorizar.
 - Todo: priorizadas para empezar; DEBEN venir de Refined.
 - In Progress: en desarrollo activo (tomadas desde Todo).
-- Ready: desarrollo completo; listas para prueba/validación.
+- Ready: desarrollo completo (PR creado y asignado a `leitolarreta` con `Closes #<n>`); listo para QA/validación. **Definición canónica** — otros módulos referencian esta, no la redefinen.
 - Done: verificadas; cumplen todos los criterios de aceptación.
 - Blocked: impedidas en cualquier etapa; requiere causa/documento.
 
@@ -18,3 +18,8 @@ Reglas de validación:
   `Status cambiado a "<Estado>"` + link al item del Project.
 - Si la issue no está en el Project: agregarla antes de cambiar.
 - Al pasar a Blocked: registrar causa técnica (error/log/enlace).
+
+> **Semántica:** estos Status son del **tablero declarativo** de GitHub Projects V2
+> (`leitocodexbot`). El estado operativo real del pipeline V3 vive en el filesystem
+> (carpetas `pendiente/trabajando/listo/procesado`, gestionadas por el Pulpo). No
+> confundir un Status del tablero con la carpeta de estado del Pulpo.
