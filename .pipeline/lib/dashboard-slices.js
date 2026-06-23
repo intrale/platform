@@ -1615,6 +1615,28 @@ function handoffMetricsSlice(state, ctx) {
     };
 }
 
+// #3932 EP3-H6 — Slice del KPI "Entregables por skill". Thin wrapper que delega
+// en el módulo agregador `lib/kpi-deliverables-by-skill.js` (mismo patrón que
+// `handoffMetricsSlice` delega en `readActivityLog`). NO mete lógica de parsing
+// acá: resuelve REPO_ROOT/config desde ctx/env y devuelve SÓLO agregados
+// numéricos (CA-5: nunca preview/content_hash/dropfile/attachment_path).
+function deliverablesBySkillSlice(state, ctx) {
+    const repoRoot = (ctx && ctx.REPO_ROOT)
+        || process.env.PIPELINE_REPO_ROOT
+        || process.env.CLAUDE_PROJECT_DIR
+        || path.resolve(__dirname, '..', '..');
+    // Config: preferimos el ya cargado en state/ctx (evita re-parsear el YAML).
+    const config = (state && state.config) || (ctx && ctx.config) || null;
+    try {
+        const agg = require('./kpi-deliverables-by-skill');
+        return agg.getDeliverablesBySkill({ REPO_ROOT: repoRoot, config });
+    } catch (e) {
+        // Módulo opcional / error de lectura → payload vacío, nunca rompe el
+        // endpoint (read-only, fail-open).
+        return { skills: [], meta: { numeratorAvailable: false, generatedAt: new Date().toISOString(), error: true } };
+    }
+}
+
 // #3625 CA-5 — Widget de audit trail de mutaciones a la allowlist.
 //
 // Devuelve un slice consumible por el dashboard con:
@@ -1819,6 +1841,8 @@ module.exports = {
     reconcilerStaleOrdersSlice,
     // #2993 — widget de handoff
     handoffMetricsSlice,
+    // #3932 EP3-H6 — KPI entregables por skill
+    deliverablesBySkillSlice,
     // #3625 — widget de audit trail de allowlist
     partialPauseAuditSlice,
     // #3954 EP8-H1 — bandeja de alertas del Home mission-control

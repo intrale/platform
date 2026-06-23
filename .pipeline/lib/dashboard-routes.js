@@ -213,9 +213,14 @@ function renderKpisView(ctx, opts) {
         const state = (ctx && typeof ctx.getState === 'function') ? ctx.getState() : {};
         const kSlice = slices.kpisSlice(state || {}, ctx || {});
         const metricsSlice = (ctx && typeof ctx.getMetricsData === 'function') ? ctx.getMetricsData() : null;
+        // #3932 EP3-H6 — panel "Entregables por skill" (sólo agregados, CA-5).
+        let deliverablesBySkill = null;
+        try { deliverablesBySkill = slices.deliverablesBySkillSlice(state || {}, ctx || {}); }
+        catch { deliverablesBySkill = null; }
         return kpisView.renderKpis(Object.assign({}, opts || {}, {
             kpisSlice: kSlice,
             metricsSlice,
+            deliverablesBySkill,
             matrixDerived: _deriveKpiCounts(state || {}, ctx),
             sysMini: _deriveSysMini(state || {}),
             routingMetrics: _computeRoutingMetricsSafe(),
@@ -784,6 +789,11 @@ const API_ROUTES = {
     // documentado en CA-C2 (nombre humano-friendly para curl/debug).
     '/api/dash/handoff-metrics': (state, ctx) => slices.handoffMetricsSlice(state, ctx),
     '/api/handoff-metrics': (state, ctx) => slices.handoffMetricsSlice(state, ctx),
+    // #3932 EP3-H6 — KPI "Entregables por skill" (% de cierres de fase con
+    // entregable notificado, por skill). Sólo agregados numéricos (CA-5: el
+    // payload NO contiene preview/content_hash/dropfile/attachment_path).
+    // Refresh natural ~30s desde el cliente; cache 5min server-side en el lib.
+    '/api/dash/deliverables-by-skill': (state, ctx) => slices.deliverablesBySkillSlice(state, ctx),
     // #3625 CA-5 — widget de audit trail de mutaciones a la allowlist
     // (partial-pause). Devuelve las últimas N entries del audit log, stats
     // de 24h y estado del hash-chain. Refresh natural 30s desde el cliente.
