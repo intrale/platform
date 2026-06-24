@@ -143,6 +143,14 @@ const {
 // crea marker en `bloqueado-humano/`, se aplica label `blocked:dependencies`
 // y el brazoDesbloqueo (ya existente) destraba cuando todas las deps cierren.
 const reboteClassifier = require('./lib/rebote-classifier');
+// EP5-H1 (#3938) — frontera FS: derivación de issue+skill desde nombre de
+// work-file. `issueFromFile`/`skillFromFile` (lenientes) delegan acá; la
+// validación estricta (anti path-traversal, CA-7) vive en `parseWorkfileName`.
+const workfileName = require('./lib/workfile-name');
+// EP5-H1 (#3938) — lógica pura de los brazos extraída a módulos testeables.
+const brazoBarridoCore = require('./lib/brazo-barrido-core');
+const brazoLanzamientoCore = require('./lib/brazo-lanzamiento-core');
+const brazoDesbloqueoCore = require('./lib/brazo-desbloqueo-core');
 // #2374 — Destino del rebote (faseRechazo para código, misma fase para infra)
 const { resolveReboteDestino } = require('./lib/rebote-destino');
 // #2893 — Detección de dependencias del allowlist en pausa parcial
@@ -1214,14 +1222,17 @@ function listWorkFiles(dir) {
   } catch { return []; }
 }
 
-/** Extraer issue number del nombre de archivo (ej: "1732.po" → "1732") */
+/** Extraer issue number del nombre de archivo (ej: "1732.po" → "1732").
+ *  EP5-H1 (#3938): delega en `workfile-name.js` (comportamiento legacy exacto).
+ *  Para validación estricta de la frontera FS usar `workfileName.parseWorkfileName`. */
 function issueFromFile(filename) {
-  return filename.split('.')[0];
+  return workfileName.issueFromFile(filename);
 }
 
-/** Extraer skill del nombre de archivo (ej: "1732.po" → "po") */
+/** Extraer skill del nombre de archivo (ej: "1732.po" → "po").
+ *  EP5-H1 (#3938): delega en `workfile-name.js` (comportamiento legacy exacto). */
 function skillFromFile(filename) {
-  return filename.split('.').slice(1).join('.');
+  return workfileName.skillFromFile(filename);
 }
 
 /** Mover archivo entre carpetas (atómico en filesystem) */
@@ -4971,11 +4982,9 @@ function brazoLanzamiento(config) {
   const pressure = getResourcePressure(config);
   const multiplier = concurrencyMultiplier(pressure.level);
 
-  // Fases bloqueadas según ventana activa (autoexcluyentes: QA > Build > Dev)
-  // QA Priority: bloquea dev + validacion + build (QA necesita recursos exclusivos)
-  // Build Priority: bloquea dev + validacion (build corre, QA sigue si hay)
-  const DEV_PHASES = ['dev', 'validacion'];
-  const QA_BLOCKED_PHASES = ['dev', 'validacion', 'build']; // QA bloquea también build
+  // Fases bloqueadas según ventana activa (autoexcluyentes: QA > Build > Dev).
+  // #3938 — las listas DEV_PHASES/QA_BLOCKED_PHASES y la decisión de bloqueo
+  // viven en brazo-lanzamiento-core (isPhaseBlockedByWindow).
 
   // --- PIEZA 2+3: Recolectar TODOS los pendientes de TODAS las fases ---
   // En vez de iterar fase por fase (que prioriza fases avanzadas),
@@ -4987,9 +4996,9 @@ function brazoLanzamiento(config) {
     for (let faseIdx = 0; faseIdx < fases.length; faseIdx++) {
       const fase = fases[faseIdx];
 
-      // PRIORITY WINDOWS (autoexcluyentes): QA bloquea dev+build, Build bloquea solo dev
-      if (qaPriority && QA_BLOCKED_PHASES.includes(fase)) continue;
-      if (buildPriority && !qaPriority && DEV_PHASES.includes(fase)) continue;
+      // PRIORITY WINDOWS (autoexcluyentes): QA bloquea dev+build, Build bloquea solo dev.
+      // #3938 — delegado a brazo-lanzamiento-core (lógica pura, comportamiento invariante).
+      if (brazoLanzamientoCore.isPhaseBlockedByWindow(fase, { qaPriority, buildPriority })) continue;
 
       const pendienteDir = path.join(fasePath(pipelineName, fase), 'pendiente');
       const archivos = listWorkFiles(pendienteDir);
@@ -5006,20 +5015,13 @@ function brazoLanzamiento(config) {
     }
   }
 
-  // Ordenar candidatos: feature priority (menor=mejor) > fase inversa (mayor idx=más avanzada=primero)
-  candidates.sort((a, b) => {
-    const issueA = issueFromFile(a.archivo.name);
-    const issueB = issueFromFile(b.archivo.name);
-    const prioA = calcularPrioridad(issueA, config);
-    const prioB = calcularPrioridad(issueB, config);
-
-    // Primer criterio: prioridad de feature (menor = más prioritario)
-    if (prioA !== prioB) return prioA - prioB;
-
-    // Segundo criterio (desempate): fase inversa — fases más avanzadas primero
-    // faseIdx mayor = fase más avanzada = debe procesarse antes
-    return b.faseIdx - a.faseIdx;
-  });
+  // Ordenar candidatos: feature priority (menor=mejor) > fase inversa (mayor idx=más avanzada=primero).
+  // #3938 — la prioridad se calcula en la frontera (acceso a labels/config) y el
+  // orden puro (priority asc > fase inversa) se delega a brazo-lanzamiento-core.
+  for (const c of candidates) {
+    c.priority = calcularPrioridad(issueFromFile(c.archivo.name), config);
+  }
+  candidates.sort(brazoLanzamientoCore.compareCandidates);
 
   // --- Procesar candidatos en orden unificado ---
   let anyLaunched = false;
@@ -14339,6 +14341,13 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     readYamlSafe,
     WorkFileCorruptionError,
     PAUSE_FILE,
+    // EP5-H1 (#3938) — módulos puros de los brazos + frontera FS, expuestos
+    // para tests de integración del cableado (la lógica pura se testea en
+    // lib/__tests__/brazo-*-core.test.js y workfile-name.test.js).
+    workfileName,
+    brazoBarridoCore,
+    brazoLanzamientoCore,
+    brazoDesbloqueoCore,
     // #3934 (EP4-H1) — conversación persistida por chat: helpers puros/IO
     // expuestos para los tests de aislamiento, sanitización, rehidratación y
     // retención.

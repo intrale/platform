@@ -432,14 +432,25 @@ test('performance: 10MB adversarial sin catastrophic backtracking', () => {
     while (payload.length < target) payload += block;
     payload = payload.slice(0, target);
 
-    const t0 = Date.now();
-    const out = sanitize(payload);
-    const elapsed = Date.now() - t0;
+    // Warmup (neutraliza JIT) + best-of-N: el mejor run refleja el costo
+    // algorítmico real del regex, inmune a un pico puntual de contención de CPU
+    // del runner paralelo (que era lo que hacía flaky al umbral absoluto de un
+    // solo run, aun con el techo generoso de 2000ms — rebote #3938 bajo carga
+    // de la suite completa). Un backtracking catastrófico O(n²) tardaría >>10s
+    // en CADA run, así que el best-of-N no lo puede esconder.
+    let out;
+    sanitize(payload); // warmup
+    let best = Infinity;
+    for (let i = 0; i < 3; i++) {
+        const t0 = Date.now();
+        out = sanitize(payload);
+        best = Math.min(best, Date.now() - t0);
+    }
 
     assert.ok(out.includes('[REDACTED:AWS_ACCESS_KEY]'));
     // Umbral generoso (2000ms) para tolerar concurrencia del runner;
     // catastrophic backtracking sería >>10s, así que igual lo cazamos.
-    assert.ok(elapsed < 2000, `elapsed=${elapsed}ms (sospecha de catastrophic backtracking)`);
+    assert.ok(best < 2000, `best=${best}ms (sospecha de catastrophic backtracking)`);
 });
 
 // =============================================================================
