@@ -158,7 +158,11 @@ test('decide — facts ausente/no objeto => skip (defensivo)', () => {
 const RUNNER = path.join(__dirname, '..', 'pulpo-liveness-run.js');
 
 function runRunner(env) {
-  const out = execFileSync('node', [RUNNER], {
+  // Usar process.execPath (ruta absoluta al binario node en ejecución) en vez
+  // del literal 'node'. El runner del tester spawnea este test en un contexto
+  // donde 'node' no está en PATH → execFileSync('node', ...) tira ENOENT.
+  // process.execPath siempre resuelve al mismo node que corre los tests.
+  const out = execFileSync(process.execPath, [RUNNER], {
     env: Object.assign({}, process.env, env),
     encoding: 'utf8',
   });
