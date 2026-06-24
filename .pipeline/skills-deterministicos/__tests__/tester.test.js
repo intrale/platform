@@ -1402,3 +1402,176 @@ test('GIT_FALLBACK_DIRS_WIN32 — incluye Git for Windows estándar', () => {
     assert.ok(tester.GIT_FALLBACK_DIRS_WIN32.includes('C:\\Program Files\\Git\\cmd'));
     assert.ok(tester.GIT_FALLBACK_DIRS_WIN32.includes('C:\\Program Files\\Git\\mingw64\\bin'));
 });
+
+// ── #4155 — lock global de Gradle ────────────────────────────────────
+// El tester (concurrencia 2) puede coexistir con la fase build y con los devs;
+// esa es parte de la causa raíz del incidente inter-agente del 2026-06-24.
+// `runGradle` debe envolver el spawn con el lock global para que la suite de
+// tests encole en vez de competir por CPU/RAM (CA-4).
+test('runGradle del tester envuelve el spawn con el lock global de Gradle (#4155)', async () => {
+    const savedLock = process.env.GRADLE_LOCK_PATH;
+    const lockLogical = path.join(TMP, 'tester-gradle.lock');
+    const lockFile = `${lockLogical}.lock`;
+    const marker = path.join(TMP, 'tester-lock-probe.marker');
+    const probe = path.join(TMP, 'tester-lock-probe.js');
+    process.env.GRADLE_LOCK_PATH = lockLogical;
+    fs.writeFileSync(
+        probe,
+        "const fs=require('fs');"
+        + "fs.writeFileSync(process.env.MARKER, fs.existsSync(process.env.LOCKFILE)?'held':'free');",
+    );
+    try {
+        delete require.cache[require.resolve('../../lib/gradle-lock')];
+        delete require.cache[require.resolve('../tester')];
+        const t = require('../tester');
+        const res = await t.runGradle({
+            cmd: 'node',
+            args: [probe],
+            cwd: TMP,
+            env: { ...process.env, LOCKFILE: lockFile, MARKER: marker },
+        });
+        assert.equal(res.exit_code, 0, 'el proceso probe debe salir 0');
+        assert.equal(fs.readFileSync(marker, 'utf8'), 'held', 'el lock debe estar tomado durante el spawn');
+        assert.equal(fs.existsSync(lockFile), false, 'el lock debe liberarse tras el spawn');
+    } finally {
+        if (savedLock === undefined) delete process.env.GRADLE_LOCK_PATH;
+        else process.env.GRADLE_LOCK_PATH = savedLock;
+        delete require.cache[require.resolve('../tester')];
+        require('../tester');
+    }
+});
+
+test('spawnGradle del tester NO toma el lock global (#4155)', async () => {
+    const savedLock = process.env.GRADLE_LOCK_PATH;
+    const lockLogical = path.join(TMP, 'tester-spawn.lock');
+    const lockFile = `${lockLogical}.lock`;
+    const marker = path.join(TMP, 'tester-spawn-probe.marker');
+    const probe = path.join(TMP, 'tester-spawn-probe.js');
+    process.env.GRADLE_LOCK_PATH = lockLogical;
+    fs.writeFileSync(
+        probe,
+        "const fs=require('fs');"
+        + "fs.writeFileSync(process.env.MARKER, fs.existsSync(process.env.LOCKFILE)?'held':'free');",
+    );
+    try {
+        const res = await tester.spawnGradle({
+            cmd: 'node',
+            args: [probe],
+            cwd: TMP,
+            env: { ...process.env, LOCKFILE: lockFile, MARKER: marker },
+        });
+        assert.equal(res.exit_code, 0);
+        assert.equal(fs.readFileSync(marker, 'utf8'), 'free', 'spawnGradle no debe tomar el lock');
+    } finally {
+        if (savedLock === undefined) delete process.env.GRADLE_LOCK_PATH;
+        else process.env.GRADLE_LOCK_PATH = savedLock;
+    }
+});
+
+// ── Rebote #4155 rev-1 ────────────────────────────────────────────────
+// Cambio que toca SOLO config de Gradle (gradle.properties + build.gradle.kts):
+// en `verificacion` el tester corre Gradle en REPO_ROOT (main), las tasks de
+// test salen UP-TO-DATE (inputs de test sin cambios), Gradle no re-ejecuta ni
+// escribe XMLs nuevos, y el filtro `minMtimeMs` descarta los XMLs existentes →
+// `tests.valid=false` → rebote "No se encontraron reportes JUnit" pese a que los
+// tests están verdes. Verificación empírica en `.pipeline/logs/4155-tester.log`:
+//   [tester] git diff vs main: 11 archivos · pipeline_only=false
+//   [tester] gradle exit_code=0 wall_ms=59562 (BUILD SUCCESSFUL, 226 up-to-date)
+//   - No se encontraron reportes JUnit
+// Fix: detectar el caso "todas las tasks de test UP-TO-DATE + exit 0" y releer
+// los reportes JUnit existentes sin filtro de mtime (UP-TO-DATE garantiza que
+// pasaron). Una task SKIPPED NO cuenta como UP-TO-DATE (protege CA-1).
+
+test('#4155 — expectedTestTasks mapea módulos a sus tasks de test (app = 3 flavors)', () => {
+    assert.deepEqual(tester.expectedTestTasks(['backend']), [':backend:test']);
+    assert.deepEqual(tester.expectedTestTasks(['users']), [':users:test']);
+    assert.deepEqual(tester.expectedTestTasks(['app']), [
+        ':app:composeApp:testClientDebugUnitTest',
+        ':app:composeApp:testBusinessDebugUnitTest',
+        ':app:composeApp:testDeliveryDebugUnitTest',
+    ]);
+    assert.deepEqual(tester.expectedTestTasks(['backend', 'users', 'app']).slice(0, 2),
+        [':backend:test', ':users:test']);
+    assert.deepEqual(tester.expectedTestTasks([]), []);
+});
+
+test('#4155 — allExpectedTestTasksUpToDate true cuando TODAS las tasks salen UP-TO-DATE', () => {
+    const stdout = [
+        '> Task :backend:test UP-TO-DATE',
+        '> Task :backend:koverXmlReport UP-TO-DATE',
+        '> Task :users:test UP-TO-DATE',
+        '> Task :app:composeApp:testClientDebugUnitTest UP-TO-DATE',
+        '> Task :app:composeApp:testBusinessDebugUnitTest UP-TO-DATE',
+        '> Task :app:composeApp:testDeliveryDebugUnitTest UP-TO-DATE',
+        'BUILD SUCCESSFUL in 59s',
+    ].join('\n');
+    assert.equal(tester.allExpectedTestTasksUpToDate(stdout, ['backend', 'users', 'app']), true);
+    assert.equal(tester.allExpectedTestTasksUpToDate(stdout, ['backend']), true);
+});
+
+test('#4155 — allExpectedTestTasksUpToDate false si alguna task NO está UP-TO-DATE', () => {
+    // backend ejecutó (no UP-TO-DATE) → no aplica el atajo (habría XMLs frescos).
+    const ejecutada = [
+        '> Task :backend:test',
+        '> Task :users:test UP-TO-DATE',
+    ].join('\n');
+    assert.equal(tester.allExpectedTestTasksUpToDate(ejecutada, ['backend', 'users']), false);
+    // Falta la task de app entre las esperadas.
+    const sinApp = '> Task :backend:test UP-TO-DATE\n> Task :users:test UP-TO-DATE';
+    assert.equal(tester.allExpectedTestTasksUpToDate(sinApp, ['backend', 'users', 'app']), false);
+});
+
+test('#4155 — allExpectedTestTasksUpToDate NO cuenta SKIPPED como UP-TO-DATE (protege CA-1)', () => {
+    // Una task SKIPPED = test excluido → debe seguir rebotando.
+    const skipped = [
+        '> Task :backend:test UP-TO-DATE',
+        '> Task :users:test SKIPPED',
+    ].join('\n');
+    assert.equal(tester.allExpectedTestTasksUpToDate(skipped, ['backend', 'users']), false);
+});
+
+test('#4155 — allExpectedTestTasksUpToDate false con stdout vacío o sin módulos', () => {
+    assert.equal(tester.allExpectedTestTasksUpToDate('', ['backend']), false);
+    assert.equal(tester.allExpectedTestTasksUpToDate(null, ['backend']), false);
+    assert.equal(tester.allExpectedTestTasksUpToDate('> Task :backend:test UP-TO-DATE', []), false);
+});
+
+test('#4155 — re-lectura sin filtro de mtime recupera XMLs UP-TO-DATE (escenario del rebote)', () => {
+    // Reproduce la cadena: XML válido en disco pero "viejo". Con filtro de mtime
+    // se descarta (tests.valid=false); sin filtro se recupera y queda verde.
+    const fresh = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-tester-4155-'));
+    const dir = path.join(fresh, 'backend', 'build', 'test-results', 'test');
+    fs.mkdirSync(dir, { recursive: true });
+    const xmlPath = path.join(dir, 'TEST-Green.xml');
+    const xml = '<?xml version="1.0" encoding="UTF-8"?>\n'
+        + '<testsuite name="GreenSuite" tests="3" failures="0" errors="0" skipped="0" time="0.4">\n'
+        + '<testcase classname="ar.com.intrale.ConfigTest" name="ok1" time="0.1"/>\n'
+        + '<testcase classname="ar.com.intrale.ConfigTest" name="ok2" time="0.1"/>\n'
+        + '<testcase classname="ar.com.intrale.ConfigTest" name="ok3" time="0.2"/>\n'
+        + '</testsuite>\n';
+    fs.writeFileSync(xmlPath, xml);
+    setMtime(xmlPath, 60 * 60 * 1000); // 1h viejo
+
+    const savedRepo = process.env.PIPELINE_REPO_ROOT;
+    const savedDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.PIPELINE_REPO_ROOT = fresh;
+    process.env.CLAUDE_PROJECT_DIR = fresh;
+    delete require.cache[require.resolve('../tester')];
+    const t2 = require('../tester');
+    try {
+        // Con filtro reciente → descarta el XML viejo (causa del falso negativo).
+        const cutoff = Date.now() - 5 * 60 * 1000;
+        const conFiltro = t2.collectTestReports(['backend'], { minMtimeMs: cutoff });
+        assert.equal(conFiltro.valid, false, 'el filtro de mtime descarta el XML viejo');
+        // Sin filtro → lo recupera, verde (lo que hace el atajo #4155).
+        const sinFiltro = t2.collectTestReports(['backend'], {});
+        assert.equal(sinFiltro.valid, true);
+        assert.equal(sinFiltro.tests, 3);
+        assert.equal(sinFiltro.failures, 0);
+        assert.equal(sinFiltro.errors, 0);
+    } finally {
+        process.env.PIPELINE_REPO_ROOT = savedRepo;
+        process.env.CLAUDE_PROJECT_DIR = savedDir;
+        delete require.cache[require.resolve('../tester')];
+    }
+});

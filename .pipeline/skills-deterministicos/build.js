@@ -26,6 +26,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const trace = require('../lib/traceability');
 const { parseGradleOutput, renderMarkdownReport } = require('./lib/gradle-parser');
+const { withGradleLock } = require('../lib/gradle-lock');
 
 // ── Constantes y paths ──────────────────────────────────────────────
 // REPO_ROOT: main checkout (shared outputs — logs, QA artifacts, hooks).
@@ -162,7 +163,15 @@ function resolveBashCommand(cmd) {
 }
 
 // ── Spawn con captura completa ───────────────────────────────────────
+// #4155 — `runGradle` envuelve el spawn con el lock global de Gradle para que
+// NUNCA corra en simultáneo con otra invocación pesada (build/tester) de otro
+// agente (CA-4). Si el lock está tomado, encola hasta que se libera. El lock se
+// libera en `finally` aunque el spawn falle (auto-release, CA-5).
 function runGradle({ cmd, args, cwd, env }) {
+    return withGradleLock(() => spawnGradle({ cmd, args, cwd, env }));
+}
+
+function spawnGradle({ cmd, args, cwd, env }) {
     return new Promise((resolve) => {
         const started = Date.now();
         let stdout = '';
@@ -414,6 +423,10 @@ module.exports = {
     startHeartbeat,
     copyArtifacts,
     updateMarker,
+    // Exportados para tests del lock global de Gradle (#4155): `runGradle` es la
+    // variante con lock, `spawnGradle` el spawn crudo sin lock.
+    runGradle,
+    spawnGradle,
     // Exportados para tests de regresión del split REPO_ROOT/WORKTREE_ROOT
     // (rebote build #3073 rev-1).
     _paths: { REPO_ROOT, WORKTREE_ROOT, QA_ARTIFACTS_DIR, LOG_DIR },
