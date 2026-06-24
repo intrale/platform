@@ -1667,13 +1667,11 @@ function fmtUptime(ms) {
   return Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
 }
 
-// Categorías semánticas de skills (para agrupación en Equipo Disponible)
-const SKILL_CATEGORY = {
-  po: 'product', ux: 'product', planner: 'product',
-  'backend-dev': 'dev', 'android-dev': 'dev', 'web-dev': 'dev',
-  tester: 'quality', qa: 'quality', review: 'quality', security: 'quality',
-  guru: 'ops', perf: 'ops', build: 'ops', delivery: 'ops',
-};
+// Categorías semánticas de skills (para agrupación en Equipo Disponible).
+// #3959 (CA-4) — fuente única en lib/skill-catalog.js para que Matriz/Pipeline/
+// Equipo compartan el mismo orden. La estructura re-exportada es idéntica a la
+// que vivía inline acá, así el resto de dashboard.js no cambia su uso.
+const { SKILL_CATEGORY, CATEGORY_META } = require('./lib/skill-catalog');
 // Etiquetas cortas por fase (2 chars) para mostrar debajo de cada dot
 const FASE_LABEL_SHORT = {
   analisis: 'An', criterios: 'Cr', sizing: 'Si',
@@ -1681,12 +1679,7 @@ const FASE_LABEL_SHORT = {
   verificacion: 'Vf', linteo: 'Li', aprobacion: 'Ap', entrega: 'En',
 };
 
-const CATEGORY_META = {
-  product:  { label: 'Producto', icon: '🎯', color: '#d29922' },
-  dev:      { label: 'Desarrollo', icon: '🛠', color: '#3fb950' },
-  quality:  { label: 'Calidad', icon: '🛡', color: '#d2a8ff' },
-  ops:      { label: 'Operaciones', icon: '⚙', color: '#58a6ff' },
-};
+// CATEGORY_META se importa desde lib/skill-catalog.js (ver require de arriba).
 
 // Capas semánticas de servicios
 const SERVICE_LAYER = {
