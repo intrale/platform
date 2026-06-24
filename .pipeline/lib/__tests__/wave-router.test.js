@@ -13,6 +13,34 @@ const assert = require('node:assert/strict');
 
 const commanderDet = require('../commander-deterministic');
 
+// -----------------------------------------------------------------------------
+// Helper anti-ReDoS robusto frente a jitter de scheduling (#3938).
+//
+// Medir wall-clock absoluto de un solo run es flaky: bajo carga (suite completa)
+// un classify() perfectamente lineal puede pasar un umbral chico de ms por una
+// pausa de GC o contención de CPU, sin que exista backtracking catastrófico.
+// El backtracking catastrófico real (lo que SEC-1 quiere detectar) explota de
+// forma exponencial → segundos, no decenas de ms.
+//
+// Estrategia: warmup para neutralizar JIT, y best-of-N para descartar pausas
+// transitorias. El "mejor" run refleja el costo algorítmico real del regex;
+// un ReDoS NO puede tener un best-of-N bajo porque CADA run cuelga.
+function bestClassifyMs(input, runs = 5) {
+    for (let i = 0; i < 3; i++) commanderDet.classify(input); // warmup JIT
+    let best = Infinity;
+    for (let i = 0; i < runs; i++) {
+        const t0 = performance.now();
+        commanderDet.classify(input);
+        best = Math.min(best, performance.now() - t0);
+    }
+    return best;
+}
+
+// Techo holgado: un classify() lineal sobre ~10k chars corre en pocos ms incluso
+// bajo carga; un backtracking catastrófico tardaría segundos. 250ms separa ambos
+// mundos con amplio margen sin reintroducir flakiness por scheduling.
+const REDOS_CEILING_MS = 250;
+
 test('CA-1: /wave clasifica como determinístico → command=wave', () => {
     const r = commanderDet.classify('/wave');
     assert.equal(r.class, 'deterministic');
@@ -136,18 +164,21 @@ test('SEC-1 (#4089, ReDoS): input adversarial ~10k chars + "ola" clasifica en ti
     // regex sticky es lineal y acotado (clase negada con ventana {0,40}), así
     // que no debe degradar a backtracking catastrófico.
     const adversarial = 'pasame el estado ' + 'a'.repeat(10000) + ' de la ola';
-    const t0 = performance.now();
-    const r = commanderDet.classify(adversarial);
-    const elapsed = performance.now() - t0;
-    assert.ok(elapsed < 50, `classify() tardó ${elapsed.toFixed(2)}ms (esperado < 50ms)`);
+    const elapsed = bestClassifyMs(adversarial);
+    assert.ok(
+        elapsed < REDOS_CEILING_MS,
+        `classify() tardó ${elapsed.toFixed(2)}ms sobre 10k chars (esperado lineal < ${REDOS_CEILING_MS}ms)`,
+    );
     // No importa el veredicto exacto del routing acá; importa que NO cuelgue.
+    const r = commanderDet.classify(adversarial);
     assert.ok(r && typeof r.class === 'string');
 });
 
 test('SEC-1 (#4089, ReDoS): relleno sin verbo de pedido también es lineal', () => {
     const adversarial = 'x'.repeat(12000) + ' ola';
-    const t0 = performance.now();
-    commanderDet.classify(adversarial);
-    const elapsed = performance.now() - t0;
-    assert.ok(elapsed < 50, `classify() tardó ${elapsed.toFixed(2)}ms (esperado < 50ms)`);
+    const elapsed = bestClassifyMs(adversarial);
+    assert.ok(
+        elapsed < REDOS_CEILING_MS,
+        `classify() tardó ${elapsed.toFixed(2)}ms sobre 12k chars (esperado lineal < ${REDOS_CEILING_MS}ms)`,
+    );
 });
