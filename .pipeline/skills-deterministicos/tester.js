@@ -1114,16 +1114,22 @@ function allExpectedTestTasksUpToDate(stdout, modules) {
 // es parte de la causa raíz del incidente inter-agente del 2026-06-24. Con el
 // lock, la suite de tests encola en vez de competir por CPU/RAM (CA-4). El lock
 // se libera en `finally` aunque el spawn falle (auto-release, CA-5).
-function runGradle({ cmd, args, cwd, env }) {
-    return withGradleLock(() => spawnGradle({ cmd, args, cwd, env }));
+// `spawnFn` es un parámetro de inyección OPCIONAL exclusivo para tests (#4164):
+// permite reemplazar el `spawn` real por un stub in-process y volver determinista
+// el test del probe. SEGURIDAD: NUNCA debe leerse de env/config/runtime — solo se
+// inyecta como argumento de función desde el test — para no convertir la DI en un
+// sink de RCE. El default preserva el comportamiento productivo exacto.
+function runGradle({ cmd, args, cwd, env, spawnFn }) {
+    return withGradleLock(() => spawnGradle({ cmd, args, cwd, env, spawnFn }));
 }
 
-function spawnGradle({ cmd, args, cwd, env }) {
+function spawnGradle({ cmd, args, cwd, env, spawnFn }) {
+    const _spawn = spawnFn || spawn;
     return new Promise((resolve) => {
         const started = Date.now();
         let stdout = '';
         let stderr = '';
-        const child = spawn(cmd, args, { cwd, env, shell: process.platform === 'win32', windowsHide: true });
+        const child = _spawn(cmd, args, { cwd, env, shell: process.platform === 'win32', windowsHide: true });
         if (child.stdout) child.stdout.on('data', (d) => { stdout += d.toString(); });
         if (child.stderr) child.stderr.on('data', (d) => { stderr += d.toString(); });
         child.on('error', (e) => {

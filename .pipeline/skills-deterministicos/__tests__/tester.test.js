@@ -13,6 +13,26 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { EventEmitter } = require('events');
+
+// #4164 — Stub in-process del probe del lock (idéntico al de build.test.js).
+// Reemplaza el spawn real de `node` (load-sensitive: EAGAIN/EMFILE al forkear bajo
+// saturación → rebotaba con exit_code 1) por una réplica determinista: lee el
+// lockfile y escribe el marker síncronamente, luego emite exit 0. Solo se inyecta
+// vía el parámetro `spawnFn` de runGradle/spawnGradle (DI exclusiva de test).
+function fakeProbeSpawn(_cmd, _args, opts) {
+    const env = (opts && opts.env) || {};
+    try {
+        if (env.MARKER) {
+            fs.writeFileSync(env.MARKER, fs.existsSync(env.LOCKFILE) ? 'held' : 'free');
+        }
+    } catch {}
+    const child = new EventEmitter();
+    child.stdout = null;
+    child.stderr = null;
+    process.nextTick(() => child.emit('exit', 0));
+    return child;
+}
 
 // rebote #2891 rev-3: garantizar git en PATH antes de invocar `execSync('git ...')`.
 // El test `findIssueWorktree` arma un repo temporal con `git init` y depende
@@ -1413,22 +1433,17 @@ test('runGradle del tester envuelve el spawn con el lock global de Gradle (#4155
     const lockLogical = path.join(TMP, 'tester-gradle.lock');
     const lockFile = `${lockLogical}.lock`;
     const marker = path.join(TMP, 'tester-lock-probe.marker');
-    const probe = path.join(TMP, 'tester-lock-probe.js');
     process.env.GRADLE_LOCK_PATH = lockLogical;
-    fs.writeFileSync(
-        probe,
-        "const fs=require('fs');"
-        + "fs.writeFileSync(process.env.MARKER, fs.existsSync(process.env.LOCKFILE)?'held':'free');",
-    );
     try {
         delete require.cache[require.resolve('../../lib/gradle-lock')];
         delete require.cache[require.resolve('../tester')];
         const t = require('../tester');
         const res = await t.runGradle({
             cmd: 'node',
-            args: [probe],
+            args: [],
             cwd: TMP,
             env: { ...process.env, LOCKFILE: lockFile, MARKER: marker },
+            spawnFn: fakeProbeSpawn,
         });
         assert.equal(res.exit_code, 0, 'el proceso probe debe salir 0');
         assert.equal(fs.readFileSync(marker, 'utf8'), 'held', 'el lock debe estar tomado durante el spawn');
@@ -1446,19 +1461,14 @@ test('spawnGradle del tester NO toma el lock global (#4155)', async () => {
     const lockLogical = path.join(TMP, 'tester-spawn.lock');
     const lockFile = `${lockLogical}.lock`;
     const marker = path.join(TMP, 'tester-spawn-probe.marker');
-    const probe = path.join(TMP, 'tester-spawn-probe.js');
     process.env.GRADLE_LOCK_PATH = lockLogical;
-    fs.writeFileSync(
-        probe,
-        "const fs=require('fs');"
-        + "fs.writeFileSync(process.env.MARKER, fs.existsSync(process.env.LOCKFILE)?'held':'free');",
-    );
     try {
         const res = await tester.spawnGradle({
             cmd: 'node',
-            args: [probe],
+            args: [],
             cwd: TMP,
             env: { ...process.env, LOCKFILE: lockFile, MARKER: marker },
+            spawnFn: fakeProbeSpawn,
         });
         assert.equal(res.exit_code, 0);
         assert.equal(fs.readFileSync(marker, 'utf8'), 'free', 'spawnGradle no debe tomar el lock');
@@ -1466,6 +1476,44 @@ test('spawnGradle del tester NO toma el lock global (#4155)', async () => {
         if (savedLock === undefined) delete process.env.GRADLE_LOCK_PATH;
         else process.env.GRADLE_LOCK_PATH = savedLock;
     }
+});
+
+// #4164 — Wiring de la inyección: `spawnGradle` del tester debe invocar el `spawnFn`
+// provisto (espía) en vez del spawn real, forwardeando cmd/args intactos.
+test('spawnGradle del tester invoca el spawnFn inyectado (wiring #4164)', async () => {
+    let calls = 0;
+    let seenCmd = null;
+    let seenArgs = null;
+    const spy = (cmd, args) => {
+        calls += 1;
+        seenCmd = cmd;
+        seenArgs = args;
+        const child = new EventEmitter();
+        child.stdout = null;
+        child.stderr = null;
+        process.nextTick(() => child.emit('exit', 0));
+        return child;
+    };
+    const res = await tester.spawnGradle({ cmd: 'node', args: ['--version'], cwd: TMP, env: process.env, spawnFn: spy });
+    assert.equal(calls, 1, 'el spawnFn inyectado debe invocarse exactamente una vez');
+    assert.equal(seenCmd, 'node', 'el cmd debe forwardearse sin cambios');
+    assert.deepEqual(seenArgs, ['--version'], 'los args deben forwardearse intactos');
+    assert.equal(res.exit_code, 0);
+});
+
+// #4164 — Determinismo del caso de fallo del tester: si el proceso emite `error`,
+// el helper resuelve exit_code 1 de forma determinista.
+test('spawnGradle del tester resuelve exit_code 1 ante error del proceso (#4164)', async () => {
+    const failingSpawn = () => {
+        const child = new EventEmitter();
+        child.stdout = null;
+        child.stderr = null;
+        process.nextTick(() => child.emit('error', new Error('EAGAIN simulado')));
+        return child;
+    };
+    const res = await tester.spawnGradle({ cmd: 'node', args: [], cwd: TMP, env: process.env, spawnFn: failingSpawn });
+    assert.equal(res.exit_code, 1, 'el error del proceso debe mapear a exit_code 1 de forma determinista');
+    assert.match(res.stderr, /\[spawn-error\]/, 'el stderr debe registrar el spawn-error');
 });
 
 // ── Rebote #4155 rev-1 ────────────────────────────────────────────────

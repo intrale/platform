@@ -8,6 +8,26 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { EventEmitter } = require('events');
+
+// #4164 — Stub in-process del probe del lock. Reemplaza el spawn real de un
+// proceso `node` (load-sensitive: EAGAIN/EMFILE al forkear bajo saturación → el
+// test rebotaba con exit_code 1) por una réplica determinista de la lógica del
+// probe: lee el lockfile y escribe el marker síncronamente, luego emite exit 0.
+// Solo se inyecta vía el parámetro `spawnFn` de runGradle/spawnGradle (DI de test).
+function fakeProbeSpawn(_cmd, _args, opts) {
+    const env = (opts && opts.env) || {};
+    try {
+        if (env.MARKER) {
+            fs.writeFileSync(env.MARKER, fs.existsSync(env.LOCKFILE) ? 'held' : 'free');
+        }
+    } catch {}
+    const child = new EventEmitter();
+    child.stdout = null;
+    child.stderr = null;
+    process.nextTick(() => child.emit('exit', 0));
+    return child;
+}
 
 // Aislar REPO_ROOT a un tmp — el módulo resuelve paths a partir de env vars.
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-build-'));
@@ -266,22 +286,17 @@ test('runGradle envuelve el spawn con el lock global de Gradle (#4155)', async (
     const lockLogical = path.join(TMP, 'build-gradle.lock');
     const lockFile = `${lockLogical}.lock`;
     const marker = path.join(TMP, 'lock-probe.marker');
-    const probe = path.join(TMP, 'lock-probe.js');
     process.env.GRADLE_LOCK_PATH = lockLogical;
-    fs.writeFileSync(
-        probe,
-        "const fs=require('fs');"
-        + "fs.writeFileSync(process.env.MARKER, fs.existsSync(process.env.LOCKFILE)?'held':'free');",
-    );
     try {
         delete require.cache[require.resolve('../../lib/gradle-lock')];
         delete require.cache[require.resolve('../build')];
         const b = require('../build');
         const res = await b.runGradle({
             cmd: 'node',
-            args: [probe],
+            args: [],
             cwd: TMP,
             env: { ...process.env, LOCKFILE: lockFile, MARKER: marker },
+            spawnFn: fakeProbeSpawn,
         });
         assert.equal(res.exit_code, 0, 'el proceso probe debe salir 0');
         assert.equal(fs.readFileSync(marker, 'utf8'), 'held', 'el lock debe estar tomado durante el spawn');
@@ -300,20 +315,15 @@ test('spawnGradle NO toma el lock global (#4155)', async () => {
     const lockLogical = path.join(TMP, 'build-spawn.lock');
     const lockFile = `${lockLogical}.lock`;
     const marker = path.join(TMP, 'spawn-probe.marker');
-    const probe = path.join(TMP, 'spawn-probe.js');
     process.env.GRADLE_LOCK_PATH = lockLogical;
-    fs.writeFileSync(
-        probe,
-        "const fs=require('fs');"
-        + "fs.writeFileSync(process.env.MARKER, fs.existsSync(process.env.LOCKFILE)?'held':'free');",
-    );
     try {
         const b = require('../build');
         const res = await b.spawnGradle({
             cmd: 'node',
-            args: [probe],
+            args: [],
             cwd: TMP,
             env: { ...process.env, LOCKFILE: lockFile, MARKER: marker },
+            spawnFn: fakeProbeSpawn,
         });
         assert.equal(res.exit_code, 0);
         assert.equal(fs.readFileSync(marker, 'utf8'), 'free', 'spawnGradle no debe tomar el lock');
@@ -321,4 +331,46 @@ test('spawnGradle NO toma el lock global (#4155)', async () => {
         if (savedLock === undefined) delete process.env.GRADLE_LOCK_PATH;
         else process.env.GRADLE_LOCK_PATH = savedLock;
     }
+});
+
+// #4164 — Wiring de la inyección: `spawnGradle` debe invocar el `spawnFn` provisto
+// (espía) en vez del spawn real, forwardeando cmd/args/opts intactos. Prueba que el
+// punto de DI funciona sin forkear ningún proceso.
+test('spawnGradle invoca el spawnFn inyectado (wiring #4164)', async () => {
+    const b = require('../build');
+    let calls = 0;
+    let seenCmd = null;
+    let seenArgs = null;
+    const spy = (cmd, args) => {
+        calls += 1;
+        seenCmd = cmd;
+        seenArgs = args;
+        const child = new EventEmitter();
+        child.stdout = null;
+        child.stderr = null;
+        process.nextTick(() => child.emit('exit', 0));
+        return child;
+    };
+    const res = await b.spawnGradle({ cmd: 'node', args: ['--version'], cwd: TMP, env: process.env, spawnFn: spy });
+    assert.equal(calls, 1, 'el spawnFn inyectado debe invocarse exactamente una vez');
+    assert.equal(seenCmd, 'node', 'el cmd debe forwardearse sin cambios (resolveBashCommand solo reescribe cmd === "bash")');
+    assert.deepEqual(seenArgs, ['--version'], 'los args deben forwardearse intactos');
+    assert.equal(res.exit_code, 0);
+});
+
+// #4164 — Determinismo del caso de fallo: si el proceso emite `error`, el helper
+// resuelve exit_code 1 de forma determinista (cubre el path de retry/fallo sin
+// depender de saturación real del SO).
+test('spawnGradle resuelve exit_code 1 ante error del proceso (fallo determinista #4164)', async () => {
+    const b = require('../build');
+    const failingSpawn = () => {
+        const child = new EventEmitter();
+        child.stdout = null;
+        child.stderr = null;
+        process.nextTick(() => child.emit('error', new Error('EAGAIN simulado')));
+        return child;
+    };
+    const res = await b.spawnGradle({ cmd: 'node', args: [], cwd: TMP, env: process.env, spawnFn: failingSpawn });
+    assert.equal(res.exit_code, 1, 'el error del proceso debe mapear a exit_code 1 de forma determinista');
+    assert.match(res.stderr, /\[spawn-error\]/, 'el stderr debe registrar el spawn-error');
 });
