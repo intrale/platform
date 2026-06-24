@@ -65,6 +65,15 @@ function emitTtsGenerated(opts) {
         cost_estimate_usd: estimateTtsCost(provider, Number(audio_s), chars),
         ts: new Date().toISOString(),
     };
+    // #3961 EP8-H8 (CA-5c) — latencia de GENERACIÓN del TTS (no la duración del
+    // audio). Insumo del p95 de voz del dashboard. Decisión de producto (PO,
+    // opción b): instrumentar 1 campo. `wrapTts()` ya computa el `elapsedMs` y lo
+    // pasa acá. Sólo se persiste cuando el caller lo provee (>= 0), para que los
+    // records que no lo traen no contaminen el p95 con un 0 espurio.
+    const lat = Number(opts.latency_ms);
+    if (Number.isFinite(lat) && lat >= 0) {
+        evt.latency_ms = Math.round(lat);
+    }
     appendEvent(evt);
     return evt;
 }
@@ -115,6 +124,8 @@ async function wrapTts(ctx, generatorFn) {
         voice: ctx && ctx.voice,
         chars: ctx && ctx.chars,
         audio_seconds: audio_s,
+        // #3961 EP8-H8 (CA-5c) — latencia real de generación, antes descartada.
+        latency_ms: elapsedMs,
     });
 
     return result;

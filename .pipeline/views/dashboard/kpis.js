@@ -96,6 +96,87 @@ function fmtNum(v) {
     return Number.isFinite(n) ? String(n) : '—';
 }
 
+// Ratio 0..1 → "NN%" (entero). "—" si no es finito.
+function pctText(ratio, digits) {
+    const n = Number(ratio);
+    if (!Number.isFinite(n)) return '—';
+    return (n * 100).toFixed(digits || 0) + '%';
+}
+
+// Milisegundos → "NNNms" / "N.Ns". "—" si no es finito.
+function fmtMs(ms) {
+    const n = Number(ms);
+    if (!Number.isFinite(n) || n < 0) return '—';
+    if (n < 1000) return Math.round(n) + 'ms';
+    return (n / 1000).toFixed(1) + 's';
+}
+
+// =============================================================================
+// #3961 EP8-H8 (CA-2) — Sparkline con banda de rango normal. SVG decorativo
+// (aria-hidden) generado server-side. SEGURIDAD: sólo recibe NÚMEROS (la serie)
+// y constantes de color elegidas server-side — NUNCA strings derivados de log →
+// no hay vector XSS por el SVG (los nombres provider/skill se escapan aparte en
+// el texto de la card). Si hay < 2 puntos válidos, no dibuja una línea engañosa:
+// devuelve un placeholder de "muestra insuficiente" (G-5), igual que la rama
+// `data.length < 2` del sparklineSVG legacy.
+//
+// @param {number[]} values - serie temporal (índice 0 = más viejo).
+// @param {object} opts - { w, h, color, max, bandLo, bandHi, target, insufficient }
+//   bandLo/bandHi en unidades de valor → rect de rango normal superpuesto.
+//   target en unidades de valor → línea de referencia punteada.
+// @returns {string} - `<svg…>` o `<div class="kpi-spark-empty">…`.
+// =============================================================================
+function sparklineWithBand(values, opts) {
+    const o = opts || {};
+    const w = Number.isFinite(o.w) ? o.w : 120;
+    const h = Number.isFinite(o.h) ? o.h : 30;
+    // Color: SIEMPRE constante server-side. Se sanea a un subset seguro de chars
+    // (hex, var(--…), nombres) por defensa en profundidad aunque no sea log-derived.
+    const rawColor = typeof o.color === 'string' ? o.color : '#58a6ff';
+    const color = /^[#a-zA-Z0-9(),.\- ]+$/.test(rawColor) ? rawColor : '#58a6ff';
+    const vals = Array.isArray(values) ? values.filter((v) => Number.isFinite(v)) : [];
+
+    if (o.insufficient || vals.length < 2) {
+        return `<div class="kpi-spark-empty">muestra insuficiente</div>`;
+    }
+
+    let max = o.max;
+    if (!Number.isFinite(max) || max <= 0) max = Math.max(1, ...vals);
+    const y = (v) => h - (Math.min(Math.max(v, 0), max) / max) * (h - 2) - 1;
+    const n = vals.length;
+    const stepX = w / (n - 1);
+    const pts = vals.map((v, i) => `${(i * stepX).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+
+    // Banda de rango normal: rect semitransparente entre bandLo y bandHi.
+    let band = '';
+    if (Number.isFinite(o.bandLo) && Number.isFinite(o.bandHi) && o.bandHi > o.bandLo) {
+        const yHi = y(o.bandHi), yLo = y(o.bandLo);
+        const top = Math.min(yHi, yLo);
+        const height = Math.abs(yLo - yHi);
+        band = `<rect x="0" y="${top.toFixed(1)}" width="${w}" height="${height.toFixed(1)}" fill="${color}" fill-opacity="0.14"/>`;
+    }
+    // Línea de target punteada (como radialGauge para el threshold).
+    let targetLine = '';
+    if (Number.isFinite(o.target)) {
+        const yt = y(o.target);
+        targetLine = `<line x1="0" y1="${yt.toFixed(1)}" x2="${w}" y2="${yt.toFixed(1)}" stroke="${color}" stroke-opacity="0.5" stroke-width="1" stroke-dasharray="2 2"/>`;
+    }
+    const lastY = y(vals[n - 1]);
+    return `<svg class="kpi-spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true" focusable="false">`
+        + band
+        + targetLine
+        + `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/>`
+        + `<circle cx="${w}" cy="${lastY.toFixed(1)}" r="2" fill="${color}"/>`
+        + `</svg>`;
+}
+
+// Tokens semánticos (constantes server-side, NUNCA log-derived). Alineados al
+// color-map de la guía UX (G-1).
+const SPARK_COLORS = {
+    info: '#58a6ff', purple: '#d2a8ff', danger: '#f85149', warning: '#d29922',
+    success: '#3fb950', teal: '#39c5cf', dim: '#6e7681',
+};
+
 // =============================================================================
 // CSS — extraído del bloque global de dashboard.js (.kpis-row/.kpi/...) y
 // adaptado a los tokens del theme V3. Exportado (decisión cerrada #7) para
@@ -173,6 +254,49 @@ a.kpi:hover { border-color: var(--in-accent, #58a6ff); }
     border-radius: 8px; font-size: 13px; font-weight: 600;
 }
 .kpis-metrics-cta:hover { filter: brightness(1.08); }
+
+/* #3961 EP8-H8 — sparkline + banda de rango normal por KPI (CA-2). El SVG es
+   decorativo (aria-hidden); la card lleva aria-label con valor + tendencia. */
+.kpi-spark { display: block; margin-top: 8px; }
+.dora-mini-card .kpi-spark { margin-top: 10px; }
+.kpi-spark-empty { font-size: 10px; color: var(--in-fg-soft, #6e7681); margin-top: 6px; font-style: italic; }
+
+/* Grid de KPIs operativos (sherlock/voz). Mismo lenguaje que dora-mini-grid. */
+.kpis-op-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+@media (max-width: 900px) { .kpis-op-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 560px) { .kpis-op-grid { grid-template-columns: 1fr; } }
+.kpis-op-card { background: var(--in-bg-3, #1c2128); border: 1px solid var(--in-border, #30363d); border-radius: 8px; padding: 14px; }
+.kpis-op-value { font-size: 24px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.1; color: var(--in-fg, #e6edf3); }
+.kpis-op-label { color: var(--in-fg-dim, #8b949e); font-size: 11px; font-weight: 600; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+.kpis-op-target { font-size: 10px; color: var(--in-fg-soft, #6e7681); margin-top: 4px; }
+.kpis-op-insufficient .kpis-op-value { color: var(--in-fg-soft, #6e7681); font-size: 13px; font-weight: 600; }
+
+/* CA-6 / G-3 — KPI fuera de umbral: dual-encoding (color + icono ⚠), NUNCA
+   sólo color (accesibilidad daltonismo). */
+.kpis-op-card.kpi-over-threshold,
+.dora-mini-card.kpi-over-threshold { border-color: var(--in-bad, #f85149); }
+.kpis-op-card.kpi-over-threshold .kpis-op-value,
+.dora-mini-card.kpi-over-threshold .dora-mini-value { color: var(--in-bad, #f85149); }
+.kpis-op-card.kpi-over-threshold.kpi-warn,
+.dora-mini-card.kpi-over-threshold.kpi-warn { border-color: var(--in-warn, #d29922); }
+.kpis-op-card.kpi-over-threshold.kpi-warn .kpis-op-value,
+.dora-mini-card.kpi-over-threshold.kpi-warn .dora-mini-value { color: var(--in-warn, #d29922); }
+.kpi-alert-icon { font-size: 13px; margin-left: 5px; }
+
+/* Bandeja de alertas de umbral (CA-6). */
+.kpis-alert-tray { display: flex; flex-direction: column; gap: 8px; }
+.kpis-alert-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px; background: var(--in-bg-3, #1c2128); border: 1px solid var(--in-border, #30363d); font-size: 12px; }
+.kpis-alert-row.sev-bad { border-left: 3px solid var(--in-bad, #f85149); }
+.kpis-alert-row.sev-warn { border-left: 3px solid var(--in-warn, #d29922); }
+.kpis-alert-icon-cell { font-size: 14px; }
+.kpis-alert-msg { color: var(--in-fg, #e6edf3); }
+.kpis-alert-kpi { color: var(--in-fg-dim, #8b949e); font-size: 11px; text-transform: uppercase; letter-spacing: .3px; }
+.kpis-alert-empty { color: var(--in-fg-dim, #8b949e); font-size: 12px; }
+
+/* Chips de rechazo por proveedor (CA-5a). */
+.kpis-prov-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.kpis-prov-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 14px; font-size: 11px; background: var(--in-bg-3, #1c2128); border: 1px solid var(--in-border, #30363d); color: var(--in-fg-dim, #8b949e); cursor: help; }
+.kpis-prov-chip.over { border-color: var(--in-bad, #f85149); color: var(--in-bad, #f85149); }
 `;
 
 // =============================================================================
@@ -248,12 +372,18 @@ function renderDoraAndCommanderHTML(opts) {
     const today = routing.today || {};
     const bounceOverall = (k.bouncePct && typeof k.bouncePct.overall !== 'undefined') ? k.bouncePct.overall : null;
 
-    const dora = `<div class="kpis-section"><h2>📐 DORA adaptado <span class="kpi-tooltip" tabindex="0" role="img" aria-label="Métricas DORA adaptadas al pipeline de agentes (Forsgren · Accelerate)." data-tip="Métricas DORA adaptadas al pipeline de agentes (Forsgren · Accelerate).">i</span></h2>`
+    // #3961 EP8-H8 (CA-4) — series diarias de tendencia (pueden faltar → la
+    // sparkline degrada a "muestra insuficiente"). El throughput diario lo deriva
+    // dashboard-routes de las entregas; el resto degrada con elegancia (G-5).
+    const ds = o.doraSpark || {};
+    const trend = (serie, color) => sparklineWithBand(serie, { color: color || SPARK_COLORS.info });
+
+    const dora = `<div class="kpis-section"><h2>📐 DORA adaptado <span class="kpi-tooltip" tabindex="0" role="img" aria-label="Métricas DORA adaptadas al pipeline de agentes (Forsgren · Accelerate). Cada métrica con sparkline de tendencia 7d." data-tip="Métricas DORA adaptadas al pipeline de agentes (Forsgren · Accelerate). Cada métrica con sparkline de tendencia 7d.">i</span></h2>`
         + `<div class="dora-mini-grid">`
-        + `<div class="dora-mini-card"><div class="dora-mini-value">${escapeHtmlText(fmtDuration(k.issueCycleTimeMs))}</div><div class="dora-mini-label">Cycle Time</div><div class="dora-mini-target">creación → cierre</div></div>`
-        + `<div class="dora-mini-card"><div class="dora-mini-value">${escapeHtmlText(fmtDuration(k.agentDurationMedianMs))}</div><div class="dora-mini-label">Duración agente (mediana)</div><div class="dora-mini-target">por fase/skill</div></div>`
-        + `<div class="dora-mini-card"><div class="dora-mini-value">${escapeHtmlText(bounceOverall == null ? '—' : fmtNum(bounceOverall) + '%')}</div><div class="dora-mini-label">Tasa de rebote</div><div class="dora-mini-target">target &lt; 15%</div></div>`
-        + `<div class="dora-mini-card"><div class="dora-mini-value">${escapeHtmlText(fmtNum(k.prsLast7d))}</div><div class="dora-mini-label">PRs 7d</div><div class="dora-mini-target">throughput</div></div>`
+        + `<div class="dora-mini-card"><div class="dora-mini-value">${escapeHtmlText(fmtDuration(k.issueCycleTimeMs))}</div><div class="dora-mini-label">Cycle Time</div><div class="dora-mini-target">creación → cierre · tendencia 7d</div>${trend(ds.cycle, SPARK_COLORS.info)}</div>`
+        + `<div class="dora-mini-card"><div class="dora-mini-value">${escapeHtmlText(fmtDuration(k.agentDurationMedianMs))}</div><div class="dora-mini-label">Duración agente (mediana)</div><div class="dora-mini-target">por fase/skill · tendencia 7d</div>${trend(ds.duration, SPARK_COLORS.info)}</div>`
+        + `<div class="dora-mini-card"><div class="dora-mini-value">${escapeHtmlText(bounceOverall == null ? '—' : fmtNum(bounceOverall) + '%')}</div><div class="dora-mini-label">Tasa de rebote</div><div class="dora-mini-target">target &lt; 15% · tendencia 7d</div>${trend(ds.bounce, SPARK_COLORS.warning)}</div>`
+        + `<div class="dora-mini-card"><div class="dora-mini-value">${escapeHtmlText(fmtNum(k.prsLast7d))}</div><div class="dora-mini-label">PRs 7d</div><div class="dora-mini-target">throughput · tendencia 7d</div>${trend(ds.prs, SPARK_COLORS.success)}</div>`
         + `</div></div>`;
 
     const commander = `<div class="kpis-section"><h2>⚙️ Commander Routing <span class="kpi-tooltip" tabindex="0" role="img" aria-label="Comandos resueltos de forma determinística vs vía LLM (hoy)." data-tip="Comandos resueltos de forma determinística vs vía LLM (hoy).">i</span></h2>`
@@ -342,6 +472,158 @@ function renderDeliverablesBySkillHTML(slice) {
 }
 
 /**
+ * #3961 EP8-H8 (CA-5a/CA-5b/CA-5c) — Panel de KPIs operativos con sparkline +
+ * banda de rango normal + tooltip "cómo se calcula" + pintado por umbral.
+ * Cubre: precisión de Sherlock (global + por proveedor), % same-provider y p95
+ * de latencia de voz. Consumidor puro: recibe los slices ya computados.
+ *
+ * Seguridad: los valores numéricos van directo al SVG (sin riesgo). Los nombres
+ * de provider (keys de by_provider, vector SEC-1) pasan SIEMPRE por
+ * escapeHtmlText/escapeHtmlAttr. Las sparklines reciben SÓLO números + colores
+ * constantes server-side.
+ *
+ * @param {object} opts — { sherlock, voice, thresholds }
+ */
+function renderOperationalKpisHTML(opts) {
+    const o = opts || {};
+    const sh = o.sherlock || {};
+    const vo = o.voice || {};
+    const t = o.thresholds || {};
+    const precTarget = Number.isFinite(t.sherlock_precision_target) ? t.sherlock_precision_target : 0.90;
+    const precAlert = Number.isFinite(t.sherlock_precision_alert_below) ? t.sherlock_precision_alert_below : 0.80;
+    const spTarget = Number.isFinite(t.sherlock_same_provider_target) ? t.sherlock_same_provider_target : 0.10;
+    const voMax = Number.isFinite(t.voice_p95_max_ms) ? t.voice_p95_max_ms : 8000;
+
+    // --- Card 1: Precisión de Sherlock (global) ---
+    const shInsufficient = sh.insufficient_sample || sh.ratio == null;
+    let shCls = '', shIcon = '';
+    if (!shInsufficient && Number.isFinite(sh.ratio)) {
+        if (sh.ratio < precAlert) { shCls = ' kpi-over-threshold'; shIcon = ' <span class="kpi-alert-icon" aria-hidden="true">🚨</span>'; }
+        else if (sh.ratio < precTarget) { shCls = ' kpi-over-threshold kpi-warn'; shIcon = ' <span class="kpi-alert-icon" aria-hidden="true">⚠</span>'; }
+    }
+    const shTip = `Veredictos correctos de Sherlock / total evaluados (rolling 7d). Fuente: sherlock-*.jsonl. Target: ≥ ${pctText(precTarget)}; alerta < ${pctText(precAlert)}.`;
+    const shVal = shInsufficient ? 'muestra insuficiente' : pctText(sh.ratio);
+    const shSpark = sparklineWithBand(sh.spark7d, {
+        color: SPARK_COLORS.info, max: 1, bandLo: precTarget, bandHi: 1, target: precTarget,
+        insufficient: shInsufficient,
+    });
+    const shCard = `<div class="kpis-op-card${shCls}${shInsufficient ? ' kpis-op-insufficient' : ''}" `
+        + `aria-label="Precisión de Sherlock ${escapeHtmlAttr(shVal)}${shCls ? ', fuera de umbral' : ''}">`
+        + `<div class="kpis-op-value">${escapeHtmlText(shVal)}${shIcon}</div>`
+        + `<div class="kpis-op-label">Precisión Sherlock`
+        + `<span class="kpi-tooltip" tabindex="0" role="img" aria-label="${escapeHtmlAttr(shTip)}" data-tip="${escapeHtmlAttr(shTip)}">i</span></div>`
+        + `<div class="kpis-op-target">target ≥ ${escapeHtmlText(pctText(precTarget))}</div>`
+        + shSpark
+        + `</div>`;
+
+    // --- Card 2: % same-provider (meta < target) ---
+    const spInsufficient = sh.same_provider_ratio == null;
+    const spOver = !spInsufficient && Number.isFinite(sh.same_provider_ratio) && sh.same_provider_ratio >= spTarget;
+    const spCls = spOver ? ' kpi-over-threshold' : '';
+    const spIcon = spOver ? ' <span class="kpi-alert-icon" aria-hidden="true">⚠</span>' : '';
+    const spTip = `Veredictos donde Sherlock y el agente evaluado comparten proveedor / total (7d). Meta: < ${pctText(spTarget)} para preservar la independencia del juez.`;
+    const spVal = spInsufficient ? 'muestra insuficiente' : pctText(sh.same_provider_ratio);
+    const spSpark = sparklineWithBand(sh.same_provider_spark7d, {
+        color: spOver ? SPARK_COLORS.danger : SPARK_COLORS.purple, max: 1,
+        bandLo: 0, bandHi: spTarget, target: spTarget, insufficient: spInsufficient,
+    });
+    const spCard = `<div class="kpis-op-card${spCls}${spInsufficient ? ' kpis-op-insufficient' : ''}" `
+        + `aria-label="Same-provider ${escapeHtmlAttr(spVal)}${spOver ? ', sobre la meta' : ''}">`
+        + `<div class="kpis-op-value">${escapeHtmlText(spVal)}${spIcon}</div>`
+        + `<div class="kpis-op-label">% Same-provider`
+        + `<span class="kpi-tooltip" tabindex="0" role="img" aria-label="${escapeHtmlAttr(spTip)}" data-tip="${escapeHtmlAttr(spTip)}">i</span></div>`
+        + `<div class="kpis-op-target">meta &lt; ${escapeHtmlText(pctText(spTarget))}</div>`
+        + spSpark
+        + `</div>`;
+
+    // --- Card 3: p95 latencia de voz ---
+    const voInsufficient = vo.insufficient_sample || vo.p95_ms == null;
+    const voOver = !voInsufficient && Number.isFinite(vo.p95_ms) && vo.p95_ms > voMax;
+    const voCls = voOver ? ' kpi-over-threshold' : '';
+    const voIcon = voOver ? ' <span class="kpi-alert-icon" aria-hidden="true">⚠</span>' : '';
+    const voTip = `Percentil 95 de latency_ms del evento tts:generated (7d). Fuente: .claude/activity-log.jsonl. Mide tiempo de generación, no duración del audio. Banda saludable ≤ ${fmtMs(voMax)}.`;
+    const voVal = voInsufficient ? 'muestra insuficiente' : fmtMs(vo.p95_ms);
+    const voSpark = sparklineWithBand(vo.spark7d, {
+        color: SPARK_COLORS.teal, bandLo: 0, bandHi: voMax, target: voMax, insufficient: voInsufficient,
+    });
+    const voCard = `<div class="kpis-op-card${voCls}${voInsufficient ? ' kpis-op-insufficient' : ''}" `
+        + `aria-label="p95 latencia de voz ${escapeHtmlAttr(voVal)}${voOver ? ', sobre la banda saludable' : ''}">`
+        + `<div class="kpis-op-value">${escapeHtmlText(voVal)}${voIcon}</div>`
+        + `<div class="kpis-op-label">p95 latencia de voz`
+        + `<span class="kpi-tooltip" tabindex="0" role="img" aria-label="${escapeHtmlAttr(voTip)}" data-tip="${escapeHtmlAttr(voTip)}">i</span></div>`
+        + `<div class="kpis-op-target">banda ≤ ${escapeHtmlText(fmtMs(voMax))}</div>`
+        + voSpark
+        + `</div>`;
+
+    // --- Rechazo de Sherlock por proveedor (CA-5a) — chips ---
+    let chips = '';
+    const bp = (sh.by_provider && typeof sh.by_provider === 'object') ? sh.by_provider : {};
+    const provNames = Object.keys(bp);
+    if (provNames.length) {
+        const maxReject = 1 - precTarget;
+        for (const prov of provNames) {
+            const row = bp[prov] || {};
+            const insuf = row.insufficient_sample || row.rejection_rate == null;
+            const over = !insuf && Number.isFinite(row.rejection_rate) && row.rejection_rate > maxReject;
+            const rrTxt = insuf ? 'muestra insuficiente' : pctText(row.rejection_rate);
+            // SEC-1: el nombre de provider es log-derived → escapado en texto y attr.
+            const chipTip = `Tasa de rechazo de ${prov} = incorrectos / total de ${prov} (7d).`;
+            chips += `<span class="kpis-prov-chip${over ? ' over' : ''}" tabindex="0" role="img" `
+                + `aria-label="${escapeHtmlAttr(prov + ': ' + rrTxt)}" data-tip="${escapeHtmlAttr(chipTip)}">`
+                + `${over ? '<span aria-hidden="true">⚠</span> ' : ''}`
+                + `<strong>${escapeHtmlText(prov)}</strong> ${escapeHtmlText(rrTxt)}</span>`;
+        }
+    }
+    const provBlock = `<div class="kpis-op-label" style="margin-top:14px">Rechazo de Sherlock por proveedor`
+        + `<span class="kpi-tooltip" tabindex="0" role="img" aria-label="${escapeHtmlAttr('Tasa de rechazo (incorrectos/total) de cada proveedor del verifier (7d). Muestra baja → muestra insuficiente.')}" data-tip="${escapeHtmlAttr('Tasa de rechazo (incorrectos/total) de cada proveedor del verifier (7d). Muestra baja → muestra insuficiente.')}">i</span></div>`
+        + (chips
+            ? `<div class="kpis-prov-chips">${chips}</div>`
+            : `<p class="kpis-prov-empty">Sin muestra por proveedor todavía (records de Sherlock sin provider o vacíos).</p>`);
+
+    return `<div class="kpis-section"><h2>🔍 Calidad del juez & voz `
+        + `<span class="kpi-tooltip" tabindex="0" role="img" aria-label="${escapeHtmlAttr('KPIs operativos del verifier (Sherlock) y de la latencia de voz, con sparkline 7d, banda de rango normal y umbrales.')}" data-tip="${escapeHtmlAttr('KPIs operativos del verifier (Sherlock) y de la latencia de voz, con sparkline 7d, banda de rango normal y umbrales.')}">i</span></h2>`
+        + `<div class="kpis-op-grid">${shCard}${spCard}${voCard}</div>`
+        + provBlock
+        + `</div>`;
+}
+
+/**
+ * #3961 EP8-H8 (CA-6) — Bandeja de alertas de umbral. Lista las entradas
+ * `threshold_alerts` que devuelve alertTraySlice (read-only, derivadas de los
+ * KPIs que exceden su umbral). Seguridad: `message` es template constante +
+ * números; `provider`/`skill` son log-derived → escapados.
+ *
+ * @param {object} alertTray — salida de slices.alertTraySlice (con threshold_alerts)
+ */
+function renderThresholdAlertsHTML(alertTray) {
+    const at = alertTray || {};
+    const alerts = Array.isArray(at.threshold_alerts) ? at.threshold_alerts : [];
+    const tip = 'KPIs que exceden su umbral configurable (config.yaml → dashboard.thresholds). Se actualizan en cada poll; no son acciones del operador.';
+    let body;
+    if (alerts.length) {
+        body = `<div class="kpis-alert-tray">`;
+        for (const a of alerts) {
+            const sev = a.severity === 'bad' ? 'sev-bad' : 'sev-warn';
+            const icon = a.severity === 'bad' ? '🚨' : '⚠';
+            // `message` es template constante + números (no log-derived), pero se
+            // escapa igual por defensa en profundidad.
+            body += `<div class="kpis-alert-row ${sev}">`
+                + `<span class="kpis-alert-icon-cell" aria-hidden="true">${icon}</span>`
+                + `<span class="kpis-alert-msg">${escapeHtmlText(a.message)}</span>`
+                + `<span class="kpis-alert-kpi">${escapeHtmlText(a.provider || a.skill || a.kpi || '')}</span>`
+                + `</div>`;
+        }
+        body += `</div>`;
+    } else {
+        body = `<p class="kpis-alert-empty">Sin alertas de umbral — todos los KPIs dentro de rango.</p>`;
+    }
+    return `<div class="kpis-section"><h2>🔔 Bandeja de alertas `
+        + `<span class="kpi-tooltip" tabindex="0" role="img" aria-label="${escapeHtmlAttr(tip)}" data-tip="${escapeHtmlAttr(tip)}">i</span></h2>`
+        + body
+        + `</div>`;
+}
+
+/**
  * Resumen compacto de rendimiento por agente (skill). Los nombres de skill
  * vienen de loadConfig() / del filesystem → escapados (R8, CA-14.b). Lista las
  * top sesiones por consumo con session ID coercionado (CA-14.c / CA-17).
@@ -406,7 +688,11 @@ function renderKpis(opts) {
 
     const body = `<main class="satellite-body" id="kpis-body">`
         + renderKpiCardsHTML(o.matrixDerived, o.sysMini)
-        + renderDoraAndCommanderHTML({ kpisSlice: o.kpisSlice, routingMetrics: o.routingMetrics })
+        // #3961 EP8-H8 (CA-6) — bandeja de alertas de umbral arriba (accionable).
+        + renderThresholdAlertsHTML(o.alertTray)
+        + renderDoraAndCommanderHTML({ kpisSlice: o.kpisSlice, routingMetrics: o.routingMetrics, doraSpark: o.doraSpark })
+        // #3961 EP8-H8 (CA-5a/b/c) — KPIs operativos: Sherlock + voz.
+        + renderOperationalKpisHTML({ sherlock: o.sherlock, voice: o.voice, thresholds: o.thresholds })
         + renderProvidersHTML(o.kpisSlice)
         + renderDeliverablesBySkillHTML(o.deliverablesBySkill)
         + renderAgentPerfHTML(o.metricsSlice)
@@ -769,8 +1055,14 @@ module.exports = {
     renderMetricsCta,
     renderMetricsPage,
     renderInert,
+    // #3961 EP8-H8 — KPIs operativos, bandeja de umbral y sparkline con banda.
+    renderOperationalKpisHTML,
+    renderThresholdAlertsHTML,
+    sparklineWithBand,
     KPIS_CSS,
     escapeHtmlSsr,
     safeSessionId,
     fmtDuration,
+    pctText,
+    fmtMs,
 };

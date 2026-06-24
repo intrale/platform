@@ -201,6 +201,21 @@ function appendSherlockAudit({ session, record, pipelineDir, fsImpl } = {}) {
         entry.claim_domain = String(record.claim_domain);
     }
 
+    // #3961 EP8-H8 (CA-5a) — `provider` del verifier que produjo el veredicto
+    // (anthropic/openai/groq/gemini/cerebras/openai-codex/…). Mismo patrón
+    // conditional que `same_provider`/`source`: sólo se persiste cuando el caller
+    // lo provee. Es el ID del provider (no transporta secrets) → NO se redacta.
+    // Insumo de la tasa de rechazo de Sherlock por proveedor (by_provider del
+    // slice de precisión). NOTA: hasta este issue los records NO traían provider;
+    // el slice degrada a insufficient_sample por provider mientras no haya muestra.
+    if (record.provider !== undefined && record.provider !== null
+        && String(record.provider).trim() !== '') {
+        const p = String(record.provider).trim();
+        if (p !== '__proto__' && p !== 'constructor' && p !== 'prototype') {
+            entry.provider = p;
+        }
+    }
+
     // appendChained agrega created_at + hash_prev/hash_self y escribe
     // exactamente UNA línea (`JSON.stringify(entry)+'\n'`) con O_APPEND + lock.
     // Resuelve SEC-3 por construcción.

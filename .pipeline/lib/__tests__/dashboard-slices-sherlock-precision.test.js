@@ -253,6 +253,9 @@ const ALLOWED_KEYS = new Set([
     // #3923 EP2-H3 — tasa not_verifiable por fuente: objeto de contadores con
     // claves de ENUM cerrado (sin claims/comandos/stdout). Validado aparte abajo.
     'not_verifiable_by_source',
+    // #3961 EP8-H8 — desglose por provider (objeto de agregados numéricos) +
+    // sparklines diarias (arrays de numbers). Sin claims/comandos/stdout/PII.
+    'by_provider', 'spark7d', 'same_provider_spark7d',
 ]);
 
 // #3923 — claves permitidas dentro de not_verifiable_by_source (enum cerrado).
@@ -278,6 +281,26 @@ test('SEC-6: el payload contiene SOLO campos numéricos/booleanos/null de agrega
                 assert.ok(NV_SOURCE_KEYS.has(src), `SEC-6: fuente fuera del enum cerrado: "${src}"`);
                 assert.equal(typeof count, 'number', `SEC-6: contador "${src}" no es number`);
             }
+            continue;
+        }
+        // #3961 EP8-H8 — by_provider: objeto cuyos valores son SOLO agregados
+        // numéricos/booleanos/null por provider (sin texto del audit).
+        if (key === 'by_provider') {
+            assert.ok(value && typeof value === 'object' && !Array.isArray(value),
+                'SEC-6: by_provider debe ser objeto plano');
+            for (const acc of Object.values(value)) {
+                for (const [f, v] of Object.entries(acc)) {
+                    const tt = typeof v;
+                    assert.ok(v === null || tt === 'number' || tt === 'boolean',
+                        `SEC-6: by_provider.${f} tipo ${tt} — solo number/boolean/null`);
+                }
+            }
+            continue;
+        }
+        // #3961 EP8-H8 — sparklines: arrays de numbers, nada más.
+        if (key === 'spark7d' || key === 'same_provider_spark7d') {
+            assert.ok(Array.isArray(value), `SEC-6: ${key} debe ser array`);
+            for (const n of value) assert.equal(typeof n, 'number', `SEC-6: ${key} con no-number`);
             continue;
         }
         const t = typeof value;

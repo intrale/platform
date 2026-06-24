@@ -36,6 +36,9 @@
 
 const path = require('path');
 const slices = require('./dashboard-slices');
+// #3961 EP8-H8 — loader de umbrales configurables del dashboard (CA-6/CA-9).
+let dashboardThresholds = null;
+try { dashboardThresholds = require('./dashboard-thresholds'); } catch { /* opcional */ }
 const home = require('../views/dashboard/home');
 const sat = require('../views/dashboard/satellites');
 
@@ -209,6 +212,54 @@ try { kpisView = require('../views/dashboard/kpis'); } catch { /* opcional */ }
 //   - sysMini (CPU/RAM/salud) desde state.resources.
 //   - routingMetrics (Commander determinístico vs LLM, 7d).
 //   - metricsSlice (agentPerf + sesiones) vía ctx.getMetricsData (DI desde dashboard.js).
+// #3961 EP8-H8 — helper try/catch que nunca rompe el render (fail-open).
+function _safe(fn) {
+    try { return fn(); } catch { return null; }
+}
+
+// #3961 EP8-H8 (CA-4) — series diarias de tendencia para las cards DORA. Deriva
+// el throughput/PRs por día contando las entregas con timestamp; las métricas
+// sin serie disponible quedan en `null` → la sparkline muestra "muestra
+// insuficiente" (degrade honesto, G-5). No instrumenta nada nuevo.
+function _buildDoraSpark(metricsSlice) {
+    try {
+        const entregas = (metricsSlice && Array.isArray(metricsSlice.entregas)) ? metricsSlice.entregas : [];
+        const items = entregas
+            .map((e) => (e && (e.ts != null) ? { ts: e.ts } : null))
+            .filter(Boolean);
+        const prs = slices.dailyBuckets(items, { days: 7, agg: 'count' });
+        return { prs, cycle: null, duration: null, bounce: null };
+    } catch {
+        return { prs: null, cycle: null, duration: null, bounce: null };
+    }
+}
+
+// #3961 EP8-H8 (CA-6) — normaliza los valores DORA para el chequeo de umbral.
+function _buildDoraForAlerts(kSlice, metricsSlice) {
+    try {
+        const k = kSlice || {};
+        const m = metricsSlice || {};
+        const now = Date.now();
+        const entregas = Array.isArray(m.entregas) ? m.entregas : [];
+        const toMs = (ts) => (typeof ts === 'number' ? ts : Date.parse(String(ts || '')));
+        const delivered7d = entregas.filter((e) => {
+            const ms = e ? toMs(e.ts) : NaN;
+            return Number.isFinite(ms) && (now - ms) < 7 * 86400000;
+        }).length;
+        const throughputPerDay = Math.round((delivered7d / 7) * 10) / 10;
+        const totalProcessed = Number(m.totalProcessed) || 0;
+        const totalRejected = Number(m.totalRejected) || 0;
+        const failRatePct = totalProcessed > 0 ? (totalRejected / totalProcessed) * 100 : null;
+        return {
+            leadTimeMs: Number.isFinite(k.issueCycleTimeMs) ? k.issueCycleTimeMs : null,
+            throughputPerDay,
+            failRatePct,
+        };
+    } catch {
+        return { leadTimeMs: null, throughputPerDay: null, failRatePct: null };
+    }
+}
+
 function renderKpisView(ctx, opts) {
     if (!kpisView || typeof kpisView.renderKpis !== 'function') {
         return _kpisInertFallback('módulo views/dashboard/kpis no disponible (require falló)');
@@ -221,6 +272,32 @@ function renderKpisView(ctx, opts) {
         let deliverablesBySkill = null;
         try { deliverablesBySkill = slices.deliverablesBySkillSlice(state || {}, ctx || {}); }
         catch { deliverablesBySkill = null; }
+
+        // #3961 EP8-H8 — umbrales configurables + KPIs operativos + alertas.
+        const config = (ctx && typeof ctx.loadConfig === 'function') ? _safe(() => ctx.loadConfig())
+            : ((state && state.config) || null);
+        const thresholds = dashboardThresholds
+            ? dashboardThresholds.loadThresholds(config)
+            : null;
+        const sherlock = _safe(() => slices.sherlockPrecisionSlice(state || {}, ctx || {}));
+        const voice = _safe(() => slices.voiceLatencySlice(state || {}, ctx || {}));
+
+        // CA-4 — series diarias de tendencia DORA. El throughput/PRs diario sale
+        // de las entregas (count por día); el resto degrada a insuficiente (G-5).
+        const doraSpark = _buildDoraSpark(metricsSlice);
+
+        // CA-6 — objeto DORA para detectar excesos de umbral.
+        const dora = _buildDoraForAlerts(kSlice, metricsSlice);
+
+        // CA-6 — bandeja de alertas de umbral derivada por alertTraySlice
+        // (read-only; NO escribe en alert-tray-audit). Le pasamos los KPIs ya
+        // computados + thresholds por ctx para no releer el FS.
+        const alertCtx = Object.assign({}, ctx || {}, {
+            kpis: { sherlock, voice, deliverables: deliverablesBySkill, dora },
+            thresholds,
+        });
+        const alertTray = _safe(() => slices.alertTraySlice(state || {}, alertCtx));
+
         return kpisView.renderKpis(Object.assign({}, opts || {}, {
             kpisSlice: kSlice,
             metricsSlice,
@@ -228,6 +305,12 @@ function renderKpisView(ctx, opts) {
             matrixDerived: _deriveKpiCounts(state || {}, ctx),
             sysMini: _deriveSysMini(state || {}),
             routingMetrics: _computeRoutingMetricsSafe(),
+            // #3961 EP8-H8
+            sherlock,
+            voice,
+            thresholds,
+            doraSpark,
+            alertTray,
         }));
     } catch (e) {
         if (typeof kpisView.renderInert === 'function') return kpisView.renderInert((e && e.message) || 'error de render');
