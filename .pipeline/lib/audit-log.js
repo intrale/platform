@@ -153,11 +153,30 @@ function _acquireFileLockSync(file, fsImpl, options = {}) {
             try { _fs.closeSync(fd); } catch {}
             return { ok: true, lockPath: lp };
         } catch (e) {
-            if (e.code !== 'EEXIST') {
+            // EEXIST es el caso POSIX de "lock ya tomado". En Windows,
+            // `openSync(lp, 'wx')` (O_CREAT|O_EXCL) puede devolver EPERM/EACCES
+            // TRANSITORIOS cuando el lockfile está siendo creado/borrado por
+            // otro worker concurrente (race con el `unlinkSync` del release) o
+            // cuando antivirus/indexer mantiene un handle momentáneo. Antes
+            // fallábamos cerrado ante esos códigos, lo que producía un EPERM
+            // flaky bajo concurrencia (#3961 rebote rev-2). Los tratamos como
+            // contención y reintentamos dentro del budget; un problema de
+            // permisos REAL degrada a `lock_timeout` al agotar `maxMs`.
+            const isContention =
+                e.code === 'EEXIST' || e.code === 'EPERM' || e.code === 'EACCES';
+            if (!isContention) {
                 // Errores inesperados: no podemos adquirir → fallar cerrado.
                 return { ok: false, reason: e.code || 'lock_open_error', error: e.message };
             }
-            // EEXIST: lock tomado. Chequear staleness.
+            // Lock posiblemente tomado. Chequear staleness si el lockfile existe.
+            // Si el lockfile está huérfano (mtime > staleMs) lo borramos y
+            // reintentamos de inmediato. Si statSync falla (el lock no existe
+            // —EPERM espurio del openSync— o desapareció en una race), NO
+            // hacemos `continue`: caemos al chequeo de timeout + backoff de
+            // abajo. Esto es crítico: un `continue` acá saltaría el chequeo de
+            // `maxMs` y, ante un EPERM persistente con lockfile inexistente,
+            // produciría un loop infinito (#3961 rebote rev-3: el rev-2 colgaba
+            // 116s hasta el --test-timeout en el test de EPERM persistente).
             try {
                 const st = _fs.statSync(lp);
                 const age = Date.now() - Number(st.mtimeMs || 0);
@@ -165,7 +184,7 @@ function _acquireFileLockSync(file, fsImpl, options = {}) {
                     try { _fs.unlinkSync(lp); } catch { /* otro lo limpió */ }
                     continue;
                 }
-            } catch { /* lock desapareció → reintentar */ continue; }
+            } catch { /* lock no existe / desapareció → seguir al timeout+backoff */ }
 
             if (Date.now() - start > maxMs) {
                 return { ok: false, reason: 'lock_timeout', heldFor: Date.now() - start };

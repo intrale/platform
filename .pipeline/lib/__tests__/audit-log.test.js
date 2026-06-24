@@ -152,3 +152,77 @@ test('readLastHash detecta y lanza ante chain rota (última línea inválida)', 
     fs.writeFileSync(file, 'this is not json\n');
     assert.throws(() => auditLog.readLastHash(file), /chain roto/);
 });
+
+// =============================================================================
+// #3961 rebote rev-2 — EPERM/EACCES transitorios en la adquisición del lock.
+// En Windows `openSync(lp, 'wx')` (O_CREAT|O_EXCL) puede devolver EPERM/EACCES
+// en vez de EEXIST cuando otro worker concurrente está creando/borrando el
+// lockfile. Antes fallábamos cerrado y el test de concurrencia CA-8 rebotaba
+// con un EPERM flaky. Ahora esos códigos se tratan como contención.
+// =============================================================================
+
+// fakeFs que devuelve `code` en las primeras `failTimes` aperturas del lockfile
+// y luego deja crear el lock. Simula el lockfile "ocupado" transitoriamente.
+function makeFlakyLockFs(code, failTimes) {
+    let attempts = 0;
+    const created = new Set();
+    return {
+        attemptsMade: () => attempts,
+        openSync(p, flags) {
+            if (typeof flags === 'string' && flags.includes('x')) {
+                attempts += 1;
+                if (attempts <= failTimes) {
+                    const e = new Error(`${code}: operation not permitted, open '${p}'`);
+                    e.code = code;
+                    throw e;
+                }
+                if (created.has(p)) {
+                    const e = new Error(`EEXIST: file already exists, open '${p}'`);
+                    e.code = 'EEXIST';
+                    throw e;
+                }
+                created.add(p);
+                return 100; // fd ficticio
+            }
+            return 100;
+        },
+        writeSync() { return 0; },
+        closeSync() {},
+        // El lockfile no "existe" para statSync: forzamos el camino de reintento.
+        statSync() { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; },
+        unlinkSync() {},
+    };
+}
+
+test('_acquireFileLockSync reintenta ante EPERM transitorio y adquiere el lock (#3961)', () => {
+    const fakeFs = makeFlakyLockFs('EPERM', 3);
+    const r = auditLog._acquireFileLockSync('/tmp/x/log.jsonl', fakeFs, { maxMs: 5000 });
+    assert.equal(r.ok, true, 'el lock debe adquirirse tras los EPERM transitorios');
+    assert.ok(fakeFs.attemptsMade() >= 4, 'debe haber reintentado, no fallar al primer EPERM');
+});
+
+test('_acquireFileLockSync reintenta ante EACCES transitorio y adquiere el lock (#3961)', () => {
+    const fakeFs = makeFlakyLockFs('EACCES', 2);
+    const r = auditLog._acquireFileLockSync('/tmp/x/log.jsonl', fakeFs, { maxMs: 5000 });
+    assert.equal(r.ok, true);
+});
+
+test('_acquireFileLockSync degrada a lock_timeout si el EPERM persiste (no falla cerrado instantáneo) (#3961)', () => {
+    // failTimes enorme: el EPERM nunca cede; debe agotar el budget y reportar
+    // lock_timeout, NO un fallo inmediato con reason=EPERM.
+    // Regresión rev-3: con el fakeFs cuyo statSync siempre lanza ENOENT, el
+    // rev-2 hacía `continue` saltándose el chequeo de maxMs → loop infinito que
+    // colgaba ~116s hasta el --test-timeout. Ahora el timeout se evalúa en cada
+    // iteración y este test cierra en ~maxMs.
+    const fakeFs = makeFlakyLockFs('EPERM', Number.MAX_SAFE_INTEGER);
+    const r = auditLog._acquireFileLockSync('/tmp/x/log.jsonl', fakeFs, { maxMs: 50 });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'lock_timeout', 'EPERM persistente degrada a timeout, no a fallo inmediato');
+});
+
+test('_acquireFileLockSync sigue fallando cerrado ante un código inesperado (ej. ENOSPC) (#3961)', () => {
+    const fakeFs = makeFlakyLockFs('ENOSPC', 1);
+    const r = auditLog._acquireFileLockSync('/tmp/x/log.jsonl', fakeFs, { maxMs: 5000 });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'ENOSPC', 'errores no-contención siguen fallando cerrado');
+});
