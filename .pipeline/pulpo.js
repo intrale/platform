@@ -313,6 +313,27 @@ const ROOT = path.resolve(__dirname, '..');
 const PIPELINE = path.resolve(__dirname);
 const CONFIG_PATH = path.join(PIPELINE, 'config.yaml');
 const LOG_DIR = path.join(PIPELINE, 'logs');
+
+// #4154 — Heartbeat de liveness del Pulpo.
+// Persiste el timestamp de la última iteración del loop principal en
+// `.pipeline/last-tick.json`. El watchdog (watchdog.ps1) lo lee para detectar
+// un Pulpo zombi: proceso vivo a nivel SO pero loop colgado. El read-side de
+// `/salud` (commander-deterministic.js) ya lee este archivo (`tick.timestamp`).
+//   - Campo canónico `timestamp` (ISO8601): NO renombrar a `ts`, rompería /salud.
+//   - `pid`: lo usa el watchdog como cross-check PID↔SO antes de matar (SEC-1).
+//   - Escritura atómica tmp+rename: el watchdog nunca lee un archivo a medio escribir.
+//   - Best-effort try/catch (CA-1.1): un fallo de FS jamás tumba el loop del Pulpo.
+const LAST_TICK_PATH = path.join(PIPELINE, 'last-tick.json');
+function writeHeartbeat() {
+  try {
+    const payload = JSON.stringify({ pid: process.pid, timestamp: new Date().toISOString() });
+    const tmp = LAST_TICK_PATH + '.tmp';
+    fs.writeFileSync(tmp, payload);
+    fs.renameSync(tmp, LAST_TICK_PATH); // atómico en el mismo FS
+  } catch (_) {
+    /* fail-soft: un fallo de FS jamás tumba el loop principal (CA-1.1) */
+  }
+}
 // Detector multi-capa del launcher de Claude Code.
 // La estructura del paquete cambió entre versiones (2.1.114 eliminó cli.js
 // y lo reemplazó con bin/claude.exe nativo + cli-wrapper.cjs fallback).
@@ -14108,6 +14129,14 @@ async function mainLoop() {
 
   while (running) {
     try {
+      // #4154 CA-1 — Heartbeat de liveness. Persistir el timestamp de esta
+      // iteración para que el watchdog distinga un Pulpo sano de un zombi
+      // (proceso vivo pero loop colgado). Best-effort + atómico: jamás tumba
+      // el loop (CA-1.1). El campo canónico es `timestamp` (ISO8601) porque el
+      // read-side de `/salud` (commander-deterministic.js) lee `tick.timestamp`.
+      // `pid` permite el cross-check PID↔SO del watchdog (SEC-1).
+      writeHeartbeat();
+
       checkPauseFile();
       checkDesyncFlag();
 
