@@ -90,6 +90,106 @@ function Test-ServiceAlive($Script) {
     return $false
 }
 
+# #4154 — Devuelve el ProcessId del proceso node que corre $Script, o $null.
+# Reusa el mismo scan SO ($allNodeProcs) que Test-ServiceAlive. Es la única
+# fuente de verdad del PID a matar (SEC-1: nunca matamos por el PID del JSON).
+function Get-ServicePid($Script) {
+    foreach ($p in $allNodeProcs) {
+        if ($p.CommandLine -and $p.CommandLine -like "*$Script*") {
+            try {
+                $proc = Get-Process -Id $p.ProcessId -ErrorAction Stop
+                if ($proc.ProcessName -eq 'node') { return [int]$p.ProcessId }
+            } catch {}
+        }
+    }
+    return $null
+}
+
+# #4154 — Liveness real del Pulpo (detección de zombi).
+# El chequeo de existencia de proceso (Test-ServiceAlive) da por sano a un Pulpo
+# zombi: proceso vivo pero loop colgado. Acá, SÓLO para el pulpo y SÓLO si su
+# proceso existe, validamos que su heartbeat (last-tick.json) sea reciente.
+# La decisión vive en Node (lib/pulpo-liveness.js, testeado); PowerShell sólo
+# recolecta hechos del SO y, si Node devuelve kill-respawn, mata el PID del scan
+# SO (no el del JSON) y respawnea. Va DESPUÉS del guard de last-restart (CA-3.2).
+function Invoke-PulpoLivenessCheck {
+    $soPid = Get-ServicePid 'pulpo.js'
+    if (-not $soPid) {
+        # Proceso ausente: lo cubre el path normal de spawn más abajo. No es zombi.
+        return
+    }
+
+    $tickFile = "$PipelineDir\last-tick.json"
+    $hbExists = '0'
+    $hbAgeMs = ''
+    $hbContent = ''
+    if (Test-Path $tickFile) {
+        $hbExists = '1'
+        try {
+            $age = (Get-Date) - (Get-Item $tickFile).LastWriteTime
+            $hbAgeMs = [string][int]$age.TotalMilliseconds
+        } catch {}
+        try {
+            # Contenido crudo: el runner Node lo parsea defensivo (SEC-2) y sólo
+            # usa el pid como cross-check contra $soPid. Nunca derivamos kill de acá.
+            $hbContent = Get-Content -Path $tickFile -Raw -ErrorAction Stop
+        } catch {}
+    }
+
+    $runner = "$PipelineDir\pulpo-liveness-run.js"
+    if (-not (Test-Path $runner)) { return }
+
+    $env:NODE_PATH = "$RepoRoot\node_modules"
+    $env:PLV_HB_EXISTS = $hbExists
+    $env:PLV_HB_AGE_MS = $hbAgeMs
+    $env:PLV_HB_CONTENT = $hbContent
+    $env:PLV_SO_PID = [string]$soPid
+
+    $action = ''
+    try {
+        $out = & node $runner 2>$null
+        if ($out) { $action = ($out | Select-String -Pattern '^ACTION:(.+)$' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Select-Object -First 1) }
+    } catch {
+        Write-Log "  pulpo-liveness : ERROR ejecutando runner - $_"
+        return
+    } finally {
+        Remove-Item Env:\PLV_HB_EXISTS, Env:\PLV_HB_AGE_MS, Env:\PLV_HB_CONTENT, Env:\PLV_SO_PID -ErrorAction SilentlyContinue
+    }
+
+    if ($action -ne 'kill-respawn') {
+        # 'skip' (sano / sin heartbeat / discrepancia de PID): no tocar nada.
+        return
+    }
+
+    # Zombi confirmado: matar SOLO el PID del scan SO (SEC-1) y respawnear.
+    # CA-3.3: auditar el kill-zombi con (ts implícito del log, pid, lag).
+    Write-Log "  pulpo-liveness : ZOMBI detectado (pid $soPid, lag ${hbAgeMs}ms > umbral) — matando y respawneando"
+    try {
+        Stop-Process -Id $soPid -Force -ErrorAction Stop
+        Write-Log "  pulpo-liveness : proceso zombi $soPid terminado"
+    } catch {
+        Write-Log "  pulpo-liveness : ERROR al matar pid $soPid - $_"
+        return
+    }
+
+    # Sincronizar con main antes de relanzar (scripts actualizados), igual que
+    # el path de proceso ausente.
+    try {
+        git -C $RepoRoot fetch origin main 2>$null
+        git -C $RepoRoot reset --hard FETCH_HEAD 2>$null
+    } catch {}
+
+    $env:NODE_PATH = "$RepoRoot\node_modules"
+    try {
+        $proc = Start-Process -FilePath 'node' -ArgumentList @("$PipelineDir\pulpo.js") -WorkingDirectory $RepoRoot -WindowStyle Hidden -PassThru
+        Write-Log "  pulpo-liveness : pulpo respawneado PID $($proc.Id)"
+    } catch {
+        Write-Log "  pulpo-liveness : ERROR al respawnear pulpo - $($_.Exception.Message)"
+    }
+}
+
+Invoke-PulpoLivenessCheck
+
 $dead = @()
 foreach ($svc in $Services) {
     if (-not (Test-ServiceAlive $svc.Script)) {

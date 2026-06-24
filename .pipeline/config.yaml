@@ -393,6 +393,15 @@ watchdog:
   supervisor_max_restarts: 3       # SEC-4: cap duro de relanzamientos por ventana antes de escalar a needs-human
   supervisor_cooldown_seconds: 90  # mín. entre relanzamientos (reusa semántica del cooldown de last-restart.json)
   supervisor_window_minutes: 60    # ventana para contar relanzamientos contra el cap
+  # #4154 — Liveness real del Pulpo. El Pulpo emite un heartbeat por iteración
+  # (.pipeline/last-tick.json); el watchdog lo lee y, si su edad supera este
+  # umbral con el proceso vivo, lo declara zombi (loop colgado) y lo reinicia.
+  # DESACOPLADO del display: /salud usa "esperado < 30s" sólo para MOSTRAR salud;
+  # 30s == 1 poll_interval del Pulpo, un ciclo lento lo rozaría sin ser zombi.
+  # 90s = max(90, 3×poll_interval) evita falsos positivos (CA-4) y restart-storms
+  # (SEC-3). Override por env PULPO_LIVENESS_KILL_SECONDS (entero positivo;
+  # inválido → default, NUNCA "nunca stale" — SEC-2).
+  pulpo_liveness_kill_seconds: 90
 
 # Dashboard — opciones del dashboard del pipeline
 dashboard:
