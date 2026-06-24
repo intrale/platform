@@ -35,6 +35,7 @@ const trace = require('../lib/traceability');
 const gradleParser = require('./lib/gradle-parser');
 const kover = require('./lib/kover-parser');
 const { ensureGitInEnv } = require('../lib/ensure-git-in-path');
+const { withGradleLock } = require('../lib/gradle-lock');
 
 // ── Constantes y paths ──────────────────────────────────────────────
 const REPO_ROOT = process.env.PIPELINE_REPO_ROOT || process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
@@ -1058,7 +1059,16 @@ function buildGradleCommand(module, coverage) {
 }
 
 // ── Spawn con captura completa ───────────────────────────────────────
+// #4155 — `runGradle` envuelve el spawn con el lock global de Gradle: el tester
+// (concurrencia 2) puede coexistir con la fase `build` y con los devs, lo que
+// es parte de la causa raíz del incidente inter-agente del 2026-06-24. Con el
+// lock, la suite de tests encola en vez de competir por CPU/RAM (CA-4). El lock
+// se libera en `finally` aunque el spawn falle (auto-release, CA-5).
 function runGradle({ cmd, args, cwd, env }) {
+    return withGradleLock(() => spawnGradle({ cmd, args, cwd, env }));
+}
+
+function spawnGradle({ cmd, args, cwd, env }) {
     return new Promise((resolve) => {
         const started = Date.now();
         let stdout = '';
@@ -1594,6 +1604,9 @@ module.exports = {
     collectKoverReports,
     copyArtifacts,
     renderReport,
+    // Lock global de Gradle (#4155): `runGradle` con lock, `spawnGradle` crudo.
+    runGradle,
+    spawnGradle,
     // Pipeline-only routing (issue #2891 + worktree fix #2892)
     isPipelineOnlyChange,
     findIssueWorktree,

@@ -1402,3 +1402,68 @@ test('GIT_FALLBACK_DIRS_WIN32 — incluye Git for Windows estándar', () => {
     assert.ok(tester.GIT_FALLBACK_DIRS_WIN32.includes('C:\\Program Files\\Git\\cmd'));
     assert.ok(tester.GIT_FALLBACK_DIRS_WIN32.includes('C:\\Program Files\\Git\\mingw64\\bin'));
 });
+
+// ── #4155 — lock global de Gradle ────────────────────────────────────
+// El tester (concurrencia 2) puede coexistir con la fase build y con los devs;
+// esa es parte de la causa raíz del incidente inter-agente del 2026-06-24.
+// `runGradle` debe envolver el spawn con el lock global para que la suite de
+// tests encole en vez de competir por CPU/RAM (CA-4).
+test('runGradle del tester envuelve el spawn con el lock global de Gradle (#4155)', async () => {
+    const savedLock = process.env.GRADLE_LOCK_PATH;
+    const lockLogical = path.join(TMP, 'tester-gradle.lock');
+    const lockFile = `${lockLogical}.lock`;
+    const marker = path.join(TMP, 'tester-lock-probe.marker');
+    const probe = path.join(TMP, 'tester-lock-probe.js');
+    process.env.GRADLE_LOCK_PATH = lockLogical;
+    fs.writeFileSync(
+        probe,
+        "const fs=require('fs');"
+        + "fs.writeFileSync(process.env.MARKER, fs.existsSync(process.env.LOCKFILE)?'held':'free');",
+    );
+    try {
+        delete require.cache[require.resolve('../../lib/gradle-lock')];
+        delete require.cache[require.resolve('../tester')];
+        const t = require('../tester');
+        const res = await t.runGradle({
+            cmd: 'node',
+            args: [probe],
+            cwd: TMP,
+            env: { ...process.env, LOCKFILE: lockFile, MARKER: marker },
+        });
+        assert.equal(res.exit_code, 0, 'el proceso probe debe salir 0');
+        assert.equal(fs.readFileSync(marker, 'utf8'), 'held', 'el lock debe estar tomado durante el spawn');
+        assert.equal(fs.existsSync(lockFile), false, 'el lock debe liberarse tras el spawn');
+    } finally {
+        if (savedLock === undefined) delete process.env.GRADLE_LOCK_PATH;
+        else process.env.GRADLE_LOCK_PATH = savedLock;
+        delete require.cache[require.resolve('../tester')];
+        require('../tester');
+    }
+});
+
+test('spawnGradle del tester NO toma el lock global (#4155)', async () => {
+    const savedLock = process.env.GRADLE_LOCK_PATH;
+    const lockLogical = path.join(TMP, 'tester-spawn.lock');
+    const lockFile = `${lockLogical}.lock`;
+    const marker = path.join(TMP, 'tester-spawn-probe.marker');
+    const probe = path.join(TMP, 'tester-spawn-probe.js');
+    process.env.GRADLE_LOCK_PATH = lockLogical;
+    fs.writeFileSync(
+        probe,
+        "const fs=require('fs');"
+        + "fs.writeFileSync(process.env.MARKER, fs.existsSync(process.env.LOCKFILE)?'held':'free');",
+    );
+    try {
+        const res = await tester.spawnGradle({
+            cmd: 'node',
+            args: [probe],
+            cwd: TMP,
+            env: { ...process.env, LOCKFILE: lockFile, MARKER: marker },
+        });
+        assert.equal(res.exit_code, 0);
+        assert.equal(fs.readFileSync(marker, 'utf8'), 'free', 'spawnGradle no debe tomar el lock');
+    } finally {
+        if (savedLock === undefined) delete process.env.GRADLE_LOCK_PATH;
+        else process.env.GRADLE_LOCK_PATH = savedLock;
+    }
+});

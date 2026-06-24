@@ -254,3 +254,71 @@ test('paths — WORKTREE_ROOT respeta PIPELINE_WORKTREE cuando está seteado', (
         require('../build');
     }
 });
+
+// ── #4155 — lock global de Gradle ────────────────────────────────────
+// `runGradle` debe envolver el spawn con el lock global: mientras corre el
+// proceso de Gradle, el archivo de lock existe; al terminar, se libera. Así se
+// garantiza que dos invocaciones pesadas (build/tester de distintos agentes) no
+// corran a la vez (CA-4). Probamos con un proceso `node` que registra si el lock
+// estaba tomado durante su ejecución.
+test('runGradle envuelve el spawn con el lock global de Gradle (#4155)', async () => {
+    const savedLock = process.env.GRADLE_LOCK_PATH;
+    const lockLogical = path.join(TMP, 'build-gradle.lock');
+    const lockFile = `${lockLogical}.lock`;
+    const marker = path.join(TMP, 'lock-probe.marker');
+    const probe = path.join(TMP, 'lock-probe.js');
+    process.env.GRADLE_LOCK_PATH = lockLogical;
+    fs.writeFileSync(
+        probe,
+        "const fs=require('fs');"
+        + "fs.writeFileSync(process.env.MARKER, fs.existsSync(process.env.LOCKFILE)?'held':'free');",
+    );
+    try {
+        delete require.cache[require.resolve('../../lib/gradle-lock')];
+        delete require.cache[require.resolve('../build')];
+        const b = require('../build');
+        const res = await b.runGradle({
+            cmd: 'node',
+            args: [probe],
+            cwd: TMP,
+            env: { ...process.env, LOCKFILE: lockFile, MARKER: marker },
+        });
+        assert.equal(res.exit_code, 0, 'el proceso probe debe salir 0');
+        assert.equal(fs.readFileSync(marker, 'utf8'), 'held', 'el lock debe estar tomado durante el spawn');
+        assert.equal(fs.existsSync(lockFile), false, 'el lock debe liberarse tras el spawn');
+    } finally {
+        if (savedLock === undefined) delete process.env.GRADLE_LOCK_PATH;
+        else process.env.GRADLE_LOCK_PATH = savedLock;
+        delete require.cache[require.resolve('../build')];
+        require('../build');
+    }
+});
+
+// `spawnGradle` es el spawn crudo SIN lock — no debe tomar el lock global.
+test('spawnGradle NO toma el lock global (#4155)', async () => {
+    const savedLock = process.env.GRADLE_LOCK_PATH;
+    const lockLogical = path.join(TMP, 'build-spawn.lock');
+    const lockFile = `${lockLogical}.lock`;
+    const marker = path.join(TMP, 'spawn-probe.marker');
+    const probe = path.join(TMP, 'spawn-probe.js');
+    process.env.GRADLE_LOCK_PATH = lockLogical;
+    fs.writeFileSync(
+        probe,
+        "const fs=require('fs');"
+        + "fs.writeFileSync(process.env.MARKER, fs.existsSync(process.env.LOCKFILE)?'held':'free');",
+    );
+    try {
+        const b = require('../build');
+        const res = await b.spawnGradle({
+            cmd: 'node',
+            args: [probe],
+            cwd: TMP,
+            env: { ...process.env, LOCKFILE: lockFile, MARKER: marker },
+        });
+        assert.equal(res.exit_code, 0);
+        assert.equal(fs.readFileSync(marker, 'utf8'), 'free', 'spawnGradle no debe tomar el lock');
+    } finally {
+        if (savedLock === undefined) delete process.env.GRADLE_LOCK_PATH;
+        else process.env.GRADLE_LOCK_PATH = savedLock;
+    }
+});

@@ -30,6 +30,17 @@ allprojects {
     extensions.findByType<KotlinMultiplatformExtension>()?.apply {
         jvmToolchain(targetJavaVersion.asInt())
     }
+
+    // #4155 — guardarraíl: forks de test serializados dentro de cada módulo.
+    // El default de Gradle para `maxParallelForks` ya es 1; lo fijamos explícito
+    // para impedir que un módulo lo suba y dispare N JVMs de varios GB a la vez
+    // (incidente 2026-06-24, CPU al 100%). NO excluye ningún test: cambia sólo el
+    // grado de paralelismo intra-módulo. Cubre tests JVM y Android-unit (tipo
+    // `Test`: :backend:test, :users:test, :app:composeApp:test*UnitTest/desktopTest,
+    // :qa:test). iosTest/wasmJsTest no son tipo `Test` y no fueron el problema.
+    tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+        maxParallelForks = 1
+    }
 }
 
 plugins {
