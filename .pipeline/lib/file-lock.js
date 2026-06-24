@@ -94,6 +94,43 @@ function jitter(min, max) {
     return min + Math.floor(Math.random() * (max - min + 1));
 }
 
+// Buffer compartido (4 bytes) reutilizado por sleepSync. Es de solo lectura para
+// nuestro uso (nunca hacemos Atomics.notify), así que un único buffer global
+// alcanza — Atomics.wait sobre un valor que nunca cambia siempre retorna
+// 'timed-out' tras el tiempo pedido.
+const SLEEP_SHARED = new Int32Array(new SharedArrayBuffer(4));
+
+/**
+ * Sleep SÍNCRONO que CEDE la CPU (a diferencia de un busy-wait `while`).
+ *
+ * Causa raíz que esto elimina (rebote #3961 / regresión CA-8 #3518)
+ * ----------------------------------------------------------------------
+ * El backoff sync previo era un busy-wait (`while (Date.now() < deadline) {}`)
+ * que NO libera el core. Bajo fork-storm (la suite forkea ~375 files + 10
+ * workers de waves-concurrency en paralelo) la CPU se satura: los N
+ * contendientes giran en busy-wait quemando ciclos y el holder del lock NUNCA
+ * se schedulea para terminar su read-modify-write y liberar. Resultado: la
+ * mayoría timeoutea a los 5000ms (ELOCK_TIMEOUT → worker exit 1) y la cuota de
+ * éxito cae por debajo del 50% que tolera el test (síntoma: "solo 4/10
+ * workers exitosos").
+ *
+ * `Atomics.wait` bloquea el hilo de forma cooperativa (el SO puede schedulear
+ * al holder), sin SharedArrayBuffer compartido entre procesos ni notify: lo
+ * usamos puramente como "sleep que cede CPU". En Node está permitido sobre el
+ * main thread (a diferencia del browser). Si por alguna razón no estuviera
+ * disponible, caemos al busy-wait original (degradación, no rotura).
+ */
+function sleepSync(ms) {
+    if (!(ms > 0)) return;
+    try {
+        Atomics.wait(SLEEP_SHARED, 0, 0, ms);
+    } catch {
+        // Fallback defensivo: busy-wait acotado si Atomics.wait no está disponible.
+        const deadline = Date.now() + ms;
+        while (Date.now() < deadline) { /* busy wait */ }
+    }
+}
+
 // Contador por proceso para nombres de tmp únicos (JS es single-thread, así
 // que un counter + pid + random alcanza para no colisionar entre procesos).
 let lockTmpSeq = 0;
@@ -297,11 +334,12 @@ function isStale(meta, lockPath) {
  * eran sync (ej. partial-pause.setPartialPause) y romperían contrato al
  * convertirse en async.
  *
- * Costo: el busy-wait ocupa CPU durante la espera. Es aceptable porque:
- *   - jitter máximo es 200ms por intento, max 3 intentos = 600ms peor caso.
- *   - los writes de partial-pause son raros (humano por Telegram).
- *   - alternativas como Atomics.wait requieren SharedArrayBuffer y agregan
- *     complejidad sin beneficio real a esta escala.
+ * Espera: usa `sleepSync` (Atomics.wait) que CEDE la CPU entre reintentos en
+ * vez de un busy-wait. Esto es clave bajo contención de N workers + CPU
+ * saturada (fork-storm de la suite): el busy-wait original starvaba al holder
+ * del lock y disparaba ELOCK_TIMEOUT espurios (rebote #3961, CA-8 #3518). Con
+ * sleep cooperativo el holder se schedulea, termina su write y libera, y los
+ * contendientes convergen dentro del timeout.
  */
 function acquireLockSync(filePath, opts) {
     const lockPath = lockPathOf(filePath);
@@ -335,8 +373,10 @@ function acquireLockSync(filePath, opts) {
             const remaining = timeoutMs - (Date.now() - startedAt);
             if (remaining <= 0) break;
             const wait = Math.min(jitter(50, 200), remaining);
-            const deadline = Date.now() + wait;
-            while (Date.now() < deadline) { /* busy wait */ }
+            // Sleep que CEDE la CPU (no busy-wait): permite que el SO schedulee
+            // al holder del lock para que termine su write y libere. Ver
+            // sleepSync (rebote #3961).
+            sleepSync(wait);
             continue;
         } catch (err) {
             lastErr = err;
