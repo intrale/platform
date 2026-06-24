@@ -47,6 +47,9 @@ try { recommendationsLib = require('./lib/recommendations'); } catch { /* opcion
 // con `etaHTML = ''` para no romper el render por una utility opcional.
 let etaLib = null;
 try { etaLib = require('./lib/eta'); } catch { /* opcional */ }
+// #3958 EP8-H5 — Riesgo explicable (server-side) para la vista tabla + drawer.
+let issueRiskLib = null;
+try { issueRiskLib = require('./lib/issue-risk'); } catch { /* opcional */ }
 
 // ETA por ola (issue #3492 / Spike #3378 H4): calculadora probabilística
 // p50/p75/p90 a partir de markers FS + metrics-history.jsonl. Best-effort
@@ -156,6 +159,23 @@ function loadIconSprite() {
     _iconSpriteCache = '';
   }
   return _iconSpriteCache;
+}
+// #3958 EP8-H5 — Inyección isomórfica de la lógica pura de la vista tabla de
+// issues (CSV anti-injection + filtros con allowlist). El MISMO código que se
+// testea con `node --test` (lib/issue-csv.js, lib/issue-filters.js, UMD) corre
+// en el browser expuesto como window.IssueCsv / window.IssueFilters. Así no
+// diverge cliente/servidor. Degrada a '' si falta el archivo (la tabla cae a
+// filtrado básico inline sin romper el board).
+let _issueLibsClientCache = null;
+function loadIssueLibsClientJs() {
+  if (_issueLibsClientCache !== null) return _issueLibsClientCache;
+  let out = '';
+  for (const f of ['issue-csv.js', 'issue-filters.js']) {
+    try { out += fs.readFileSync(path.join(__dirname, 'lib', f), 'utf8') + '\n'; }
+    catch { /* opcional: degrada */ }
+  }
+  _issueLibsClientCache = out ? `<script>\n${out}</script>` : '';
+  return _issueLibsClientCache;
 }
 // #3642 R2 — Setter test-only para resetear _iconSpriteCache desde tests sin
 // que la produccion pueda alterar el cache. El guard NODE_ENV=test garantiza
@@ -1213,6 +1233,25 @@ function* _genPipelineState() {
         }
       }
     } catch { /* defensivo */ }
+  }
+
+  // #3958 EP8-H5 (CA-4) — p90 de edad para la regla de riesgo "edad > p90".
+  // Población = issues ACTIVOS (con staleMin>0, i.e. con un agente trabajando),
+  // NO el histórico procesado/. Decisión cerrada (guru/PO): mantiene la regla
+  // estable y no ruidosa. Una sola pasada sobre issueMatrix; resultado en
+  // state.issueAgeP90 (Infinity si no hay población → la regla nunca dispara).
+  {
+    const ages = [];
+    for (const data of Object.values(state.issueMatrix)) {
+      if (data && typeof data.staleMin === 'number' && data.staleMin > 0) ages.push(data.staleMin);
+    }
+    if (ages.length === 0) {
+      state.issueAgeP90 = Infinity;
+    } else {
+      ages.sort((a, b) => a - b);
+      const idx = Math.ceil(ages.length * 0.9) - 1;
+      state.issueAgeP90 = ages[Math.max(0, Math.min(idx, ages.length - 1))];
+    }
   }
 
   // ETA: promedios históricos por skill+fase desde archivos procesados.
@@ -3037,6 +3076,183 @@ function generateHTML(state) {
   // bandeja fuera del flujo.
   const doneLaneHTML = '';
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // #3958 EP8-H5 — Vista TABLA configurable + drawer lateral con timeline.
+  // Render server-side (igual que las lane cards), reusa state.issueMatrix.
+  // Lógica pura (riesgo/CSV/filtros) en lib/ testeada; acá sólo se ubican los
+  // componentes con el vocabulario V3 (tokens + sprite), per UX narrativa H5.
+  // Seguridad: TODO valor interpolado pasa por escapeHtml (SEC-2). El href de
+  // íconos se arma SOLO desde allowlists internas, nunca desde input externo.
+  // ═══════════════════════════════════════════════════════════════════════════
+  const IT_FASE_LABELS = {
+    analisis: 'Análisis', criterios: 'Criterios', sizing: 'Sizing',
+    validacion: 'Validación', dev: 'Dev', build: 'Build',
+    verificacion: 'Verificación', linteo: 'Linteo', aprobacion: 'Aprobación', entrega: 'Entrega',
+  };
+  const IT_TABLE_COLUMNS = [
+    { key: 'estado', label: 'Estado' },
+    { key: 'fase', label: 'Fase' },
+    { key: 'skill', label: 'Skill' },
+    { key: 'rebotes', label: 'Rebotes' },
+    { key: 'edad', label: 'Edad' },
+    { key: 'eta', label: 'ETA p50' },
+    { key: 'riesgo', label: 'Riesgo' },
+  ];
+  const _itAgeP90 = state.issueAgeP90;
+  const _computeRisk = (issueRiskLib && typeof issueRiskLib.computeRisk === 'function')
+    ? issueRiskLib.computeRisk
+    : ({ bounces = 0 }) => ({ level: bounces >= 2 ? 'medio' : 'bajo', reasons: [], score: bounces });
+  const _itRiskMeta = { alto: { icon: 'bad' }, medio: { icon: 'warn' }, bajo: { icon: 'ok' } };
+  const itRiskBadge = (risk, withText) => {
+    const m = _itRiskMeta[risk.level] || _itRiskMeta.bajo;
+    const tip = risk.reasons.length ? risk.reasons.join(' · ') : 'sin factores de riesgo';
+    return `<span class="it-risk-badge rk-${escapeHtml(risk.level)}" title="${escapeHtml(tip)}">${ic(m.icon, risk.level)}${withText ? ' ' + escapeHtml(risk.level) : ''}</span>`;
+  };
+  // Datos derivados por issue (una sola pasada), reusados por tabla + drawer + enums.
+  const _itEstados = new Set();
+  const _itFases = new Set();
+  const _itSkills = new Set();
+  const itRows = [];
+  for (const [issueNum, data] of sorted) {
+    const complete = isComplete(data);
+    const fa = data.faseActual || '';
+    const curPipe = fa ? fa.split('/')[0] : '';
+    const curFase = fa ? fa.split('/')[1] : '';
+    let curSkill = '';
+    if (fa) {
+      const ents = data.fases[fa] || [];
+      const w = ents.find(e => e.estado === 'trabajando') || ents.find(e => e.estado === 'pendiente') || ents[ents.length - 1];
+      curSkill = (w && w.skill) || '';
+    }
+    const estado = complete ? 'finalizado' : (data.estadoActual || '');
+    const bounces = data.bounces || 0;
+    const ageMin = Math.round(data.staleMin || 0);
+    const risk = _computeRisk({ bounces, ageMin: data.staleMin || 0, ageP90: _itAgeP90, labels: data.labels || [] });
+    let etaStr = '—';
+    if (etaLib) {
+      try {
+        const e = etaLib.computeIssueEta({ issueData: data, etaAverages: state.etaAverages, allFases, now: Date.now() });
+        if (e && e.hasEta) etaStr = '~' + fmtDuration(e.remainingMs);
+      } catch { /* degrada */ }
+    }
+    if (estado) _itEstados.add(estado);
+    if (curFase && IT_FASE_LABELS[curFase]) _itFases.add(curFase);
+    if (curSkill) _itSkills.add(curSkill);
+    itRows.push({ issueNum, data, complete, curPipe, curFase, curSkill, estado, bounces, ageMin, risk, etaStr });
+  }
+  // ── Filas de la tabla ──
+  const _faseCell = (curFase) => {
+    if (!curFase || !IT_FASE_LABELS[curFase]) return '<span class="it-dim">—</span>';
+    return `${ic('fase-' + curFase, IT_FASE_LABELS[curFase])} ${escapeHtml(IT_FASE_LABELS[curFase])}`;
+  };
+  const _estadoCell = (estado) => {
+    const dotCls = estado === 'trabajando' ? 'st-working' : estado === 'finalizado' ? 'st-processed' : estado === 'listo' ? 'st-done' : 'st-pending';
+    return `<span class="it-state-dot ${dotCls}"></span>${escapeHtml(estado || '—')}`;
+  };
+  const issueTableRows = itRows.map(r => {
+    const ageOver = (_itAgeP90 !== Infinity && r.ageMin > _itAgeP90) ? ' it-age-over' : '';
+    const bounceCls = r.bounces >= 2 ? ' it-bounce-hi' : '';
+    const ghHref = 'https://github.com/intrale/platform/issues/' + encodeURIComponent(r.issueNum);
+    return `<tr class="it-row" data-issue="${escapeHtml(r.issueNum)}" data-estado="${escapeHtml(r.estado)}" data-fase="${escapeHtml(r.curFase)}" data-skill="${escapeHtml(r.curSkill)}" data-bounces="${r.bounces}" data-age="${r.ageMin}" data-eta="${escapeHtml(r.etaStr)}" data-risk="${escapeHtml(r.risk.level)}" data-title="${escapeHtml(r.data.title || '')}" tabindex="0" onclick="openIssueDrawer('${escapeHtml(r.issueNum)}')" onkeydown="if(event.key==='Enter')openIssueDrawer('${escapeHtml(r.issueNum)}')">
+      <td class="it-col-id"><a href="${escapeHtml(ghHref)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">#${escapeHtml(r.issueNum)}</a></td>
+      <td class="it-col-title"><span class="it-title-txt">${escapeHtml(r.data.title || '(sin título)')}</span></td>
+      <td class="it-col col-estado">${_estadoCell(r.estado)}</td>
+      <td class="it-col col-fase">${_faseCell(r.curFase)}</td>
+      <td class="it-col col-skill">${escapeHtml(r.curSkill || '—')}</td>
+      <td class="it-col col-rebotes"><span class="it-bounces${bounceCls}">${r.bounces}</span></td>
+      <td class="it-col col-edad"><span class="it-age${ageOver}">${r.ageMin}m</span></td>
+      <td class="it-col col-eta">${escapeHtml(r.etaStr)}</td>
+      <td class="it-col col-riesgo">${itRiskBadge(r.risk, true)}</td>
+    </tr>`;
+  }).join('');
+  const issueTableHeadCols = IT_TABLE_COLUMNS
+    .map(c => `<th class="it-col col-${c.key}">${escapeHtml(c.label)}</th>`).join('');
+  const issueTableHTML = `<table class="it-table" id="it-table">
+    <thead><tr>
+      <th class="it-col-id">#</th>
+      <th class="it-col-title">Título</th>
+      ${issueTableHeadCols}
+    </tr></thead>
+    <tbody id="it-table-body">${issueTableRows || `<tr><td colspan="9" class="it-table-empty">Sin issues</td></tr>`}</tbody>
+  </table>`;
+
+  // ── Drawer: contenido pre-renderizado server-side por issue (hidden hosts).
+  // El cliente CLONA el nodo (no innerHTML de string) → escaping garantizado.
+  const _itTimeline = (data) => {
+    const segs = [];
+    let total = 0;
+    for (const { pipeline, fase } of allFases) {
+      const ents = data.fases[`${pipeline}/${fase}`] || [];
+      let dur = 0;
+      let started = false;
+      for (const e of ents) { if (e.durationMs) dur += e.durationMs; if (e.startedAt) started = true; }
+      segs.push({ pipeline, fase, dur, started, ents });
+      total += dur;
+    }
+    const bars = segs.map(s => {
+      if (s.dur <= 0) return '';
+      const pct = total > 0 ? (s.dur / total) * 100 : 0;
+      const famCls = s.pipeline === 'definicion' ? 'tl-def' : 'tl-dev';
+      const lbl = IT_FASE_LABELS[s.fase] || s.fase;
+      return `<span class="it-tl-seg ${famCls}" style="width:${Number(pct).toFixed(2)}%" title="${escapeHtml(lbl + ': ' + fmtDuration(s.dur))}"></span>`;
+    }).join('');
+    const rows = segs.map(s => {
+      const lbl = IT_FASE_LABELS[s.fase] || s.fase;
+      const cls = s.dur > 0 ? '' : ' it-tl-row-empty';
+      const skills = [...new Set(s.ents.map(e => e.skill).filter(Boolean))].join(', ');
+      const icName = IT_FASE_LABELS[s.fase] ? 'fase-' + s.fase : 'stage-not-entered';
+      return `<div class="it-tl-row${cls}">${ic(icName, lbl)} <span class="it-tl-name">${escapeHtml(lbl)}</span>
+        <span class="it-tl-dur">${s.dur > 0 ? escapeHtml(fmtDuration(s.dur)) : '—'}</span>
+        <span class="it-tl-skill">${escapeHtml(skills || '')}</span></div>`;
+    }).join('');
+    return `<div class="it-tl-bar">${bars || '<span class="it-dim">Sin actividad registrada</span>'}</div><div class="it-tl-rows">${rows}</div>`;
+  };
+  const issueDrawerHostsHTML = itRows.map(r => {
+    const d = r.data;
+    const ghHref = 'https://github.com/intrale/platform/issues/' + encodeURIComponent(r.issueNum);
+    const reasonsHTML = r.risk.reasons.length
+      ? `<ul class="it-risk-reasons">${r.risk.reasons.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul>`
+      : '<p class="it-dim">Sin factores de riesgo.</p>';
+    const chips = [
+      `<span class="it-chip">${_estadoCell(r.estado)}</span>`,
+      r.curFase && IT_FASE_LABELS[r.curFase] ? `<span class="it-chip">${_faseCell(r.curFase)}</span>` : '',
+      r.curSkill ? `<span class="it-chip">${escapeHtml(r.curSkill)}</span>` : '',
+    ].filter(Boolean).join('');
+    return `<div class="it-drawer-src" id="it-drawer-src-${escapeHtml(r.issueNum)}" hidden>
+      <div class="it-drawer-inner">
+        <div class="it-drawer-head">
+          <span class="it-drawer-id">#${escapeHtml(r.issueNum)}</span>
+          <a class="it-drawer-link" href="${escapeHtml(ghHref)}" target="_blank" rel="noopener noreferrer" title="Abrir en GitHub">${ic('link-out', 'Abrir en GitHub')}</a>
+          <button class="it-drawer-close" onclick="closeIssueDrawer()" title="Cerrar panel">${ic('collapse', 'Cerrar')}</button>
+        </div>
+        <div class="it-drawer-title">${escapeHtml(d.title || '(sin título)')}</div>
+        <div class="it-drawer-chips">${chips}</div>
+        <div class="it-drawer-risk">
+          <div class="it-drawer-sectlabel">Riesgo: ${itRiskBadge(r.risk, true)}</div>
+          ${reasonsHTML}
+        </div>
+        <div class="it-drawer-timeline">
+          <div class="it-drawer-sectlabel">Timeline de fases <span class="it-dim">(ancho ∝ tiempo)</span></div>
+          ${_itTimeline(d)}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  // ── Filtros (CA-3): selects poblados desde la población (enums) + search q.
+  const _optsFrom = (set, labelMap) => [...set].sort().map(v =>
+    `<option value="${escapeHtml(v)}">${escapeHtml(labelMap ? (labelMap[v] || v) : v)}</option>`).join('');
+  const issueFiltersHTML = `<div class="it-filters" role="search" aria-label="Filtros de la tabla de issues">
+    <div class="it-filter-q">
+      ${ic('search')}
+      <input type="text" id="it-tfilter-q" class="it-tfilter-input" placeholder="filtrar por # o título…" oninput="onIssueFilterChange()" />
+    </div>
+    <select id="it-tfilter-estado" class="it-tfilter-sel" aria-label="Filtrar por estado" onchange="onIssueFilterChange()"><option value="">Estado</option>${_optsFrom(_itEstados)}</select>
+    <select id="it-tfilter-fase" class="it-tfilter-sel" aria-label="Filtrar por fase" onchange="onIssueFilterChange()"><option value="">Fase</option>${_optsFrom(_itFases, IT_FASE_LABELS)}</select>
+    <select id="it-tfilter-skill" class="it-tfilter-sel" aria-label="Filtrar por skill" onchange="onIssueFilterChange()"><option value="">Skill</option>${_optsFrom(_itSkills)}</select>
+    <span class="it-url-mirror" id="it-url-mirror" title="URL compartible — este link reconstruye exactamente esta vista">${ic('link-out')} <span id="it-url-mirror-q" class="it-url-mirror-q"></span></span>
+  </div>`;
+
   // V3 — Bloqueados esperando humano (issue #2478, refuerzo visual #2549)
   const bloqueados = Array.isArray(state.bloqueados) ? state.bloqueados : [];
   // #3729 — el panel se extrajo a views/dashboard/bloqueados.js (split de #3715).
@@ -3074,14 +3290,39 @@ function generateHTML(state) {
           <button class="it-zoom-btn it-zoom-active" data-zoom="normal" onclick="setBoardZoom('normal')" title="Densidad normal (default)">Normal</button>
           <button class="it-zoom-btn" data-zoom="foco" onclick="setBoardZoom('foco')" title="Columna expandida con timeline">Foco</button>
         </div>
+        ${/* #3958 CA-1 — toggle board ↔ tabla. Junto al it-zoom, mismo patrón de
+             segmented control. El estado se preserva en __it_state (SEC-4). */''}
+        <div class="it-viewtoggle" role="group" aria-label="Vista de issues">
+          <button class="it-view-btn it-view-active" data-view="board" onclick="setIssueView('board')" title="Tablero kanban (board)">Board</button>
+          <button class="it-view-btn" data-view="tabla" onclick="setIssueView('tabla')" title="Tabla densa configurable">Tabla</button>
+        </div>
+        ${/* #3958 CA-2 — selector de columnas (solo aplica a la vista tabla). */''}
+        <div class="it-colsel" data-view-tabla hidden>
+          <button class="it-colsel-btn" onclick="toggleColumnsMenu(event)" aria-haspopup="true" aria-expanded="false" title="Mostrar/ocultar columnas">${ic('expand')} Columnas <span class="it-colsel-count" id="it-colsel-count">7</span></button>
+          <div class="it-colsel-menu" id="it-colsel-menu" hidden>
+            ${IT_TABLE_COLUMNS.map(c => `<label class="it-colsel-item"><input type="checkbox" checked data-col="${escapeHtml(c.key)}" onchange="toggleColumn('${escapeHtml(c.key)}', this.checked)"> ${escapeHtml(c.label)}</label>`).join('')}
+          </div>
+        </div>
+        ${/* #3958 CA-6 — Export CSV del listado FILTRADO (client-side, anti-formula). */''}
+        <button class="it-csv-btn" data-view-tabla hidden onclick="exportIssuesCsv()" title="Descargar CSV del listado filtrado">${ic('archive-box')} CSV</button>
       </div>
       <div class="section-body">
       ${/* #3956 CA-4 — la línea hace scroll horizontal cuando hay más etapas que
            ancho visible; el indicador "+N fases" lo calcula el cliente
            (updateLaneOverflow) midiendo scrollWidth vs clientWidth. */''}
-      <div class="it-lanes-wrap">
+      <div class="it-lanes-wrap" data-view-board>
         <div class="it-lanes zoom-normal" id="it-lanes" onscroll="updateLaneOverflow()">${lanesHTML}</div>
         <button class="it-lanes-overflow" id="it-lanes-overflow" style="display:none" onclick="scrollLanesToEnd()" aria-hidden="true" title="Hay etapas fuera de vista — click para ver el final">${ic('overflow-more')} <span id="it-lanes-overflow-n">+0</span> fases</button>
+      </div>
+      ${/* #3958 EP8-H5 — Vista TABLA (oculta por default; el toggle la activa).
+           Drawer lado a lado (no modal): la tabla queda visible detrás (CA-5). */''}
+      <div class="it-tableview" data-view-tabla hidden>
+        ${issueFiltersHTML}
+        <div class="it-table-layout">
+          <div class="it-table-wrap" id="it-table-wrap">${issueTableHTML}</div>
+          <aside class="it-drawer" id="it-drawer" hidden aria-label="Detalle del issue"></aside>
+        </div>
+        <div id="it-drawer-hosts" hidden aria-hidden="true">${issueDrawerHostsHTML}</div>
       </div>
       ${doneLaneHTML}
       <div id="dot-popup" class="dot-popup" style="display:none">
@@ -5113,6 +5354,82 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .it-search::placeholder{color:var(--dim)}
 .it-search-clear{position:absolute;right:8px;color:var(--dim);cursor:pointer;font-size:1.1em;padding:0 4px}
 .it-search-clear:hover{color:var(--rd)}
+/* ── #3958 EP8-H5 — Vista tabla configurable + drawer + riesgo explicable ── */
+.it-viewtoggle{display:inline-flex;gap:2px;margin-left:8px;background:var(--surface-2,#161b22);border:1px solid var(--border,#30363d);border-radius:6px;padding:2px}
+.it-view-btn{background:transparent;border:none;color:var(--text-secondary,#8b949e);font-size:0.72em;font-weight:600;padding:3px 9px;border-radius:4px;cursor:pointer;text-transform:uppercase;letter-spacing:0.4px}
+.it-view-btn:hover{color:var(--text-primary,#e6edf3)}
+.it-view-active{background:var(--info-dim,#1f6feb);color:var(--text-primary,#e6edf3)!important}
+.it-colsel{position:relative;display:inline-block;margin-left:8px}
+.it-colsel-btn,.it-csv-btn{display:inline-flex;align-items:center;gap:5px;background:var(--surface-2,#161b22);border:1px solid var(--border,#30363d);color:var(--text-secondary,#8b949e);font-size:0.72em;font-weight:600;padding:4px 9px;border-radius:6px;cursor:pointer;text-transform:uppercase;letter-spacing:0.4px}
+.it-colsel-btn:hover,.it-csv-btn:hover{color:var(--text-primary,#e6edf3);border-color:var(--info,#58a6ff)}
+.it-csv-btn{margin-left:6px}
+.it-csv-btn .pl-ic{color:var(--success,#3fb950)}
+.it-colsel-count{background:var(--info-dim,#1f6feb);color:var(--text-primary,#e6edf3);border-radius:var(--radius-full,999px);padding:0 6px;font-size:0.92em}
+.it-colsel-menu{position:absolute;top:calc(100% + 4px);right:0;z-index:30;background:var(--surface-2,#161b22);border:1px solid var(--border,#30363d);border-radius:8px;padding:6px;min-width:160px;box-shadow:0 8px 24px rgba(0,0,0,0.4)}
+.it-colsel-item{display:flex;align-items:center;gap:7px;padding:4px 6px;font-size:0.8em;color:var(--text-secondary,#e6edf3);cursor:pointer;border-radius:4px}
+.it-colsel-item:hover{background:var(--surface-3,#21262d)}
+.it-filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 4px;border-bottom:1px solid var(--border-subtle,#21262d);margin-bottom:8px}
+.it-filter-q{display:inline-flex;align-items:center;gap:5px;background:var(--surface-2,#161b22);border:1px solid var(--border,#30363d);border-radius:6px;padding:4px 9px}
+.it-filter-q .pl-ic{color:var(--text-dim,#8b949e)}
+.it-tfilter-input{background:transparent;border:none;outline:none;color:var(--text-primary,#e6edf3);font-size:0.82em;min-width:180px}
+.it-tfilter-input::placeholder{color:var(--text-disabled,#6e7681)}
+.it-tfilter-sel{background:var(--surface-2,#161b22);border:1px solid var(--border,#30363d);color:var(--text-secondary,#e6edf3);font-size:0.78em;padding:5px 8px;border-radius:6px;cursor:pointer}
+.it-url-mirror{display:inline-flex;align-items:center;gap:5px;margin-left:auto;font-family:var(--font-mono,monospace);font-size:0.72em;color:var(--text-dim,#8b949e)}
+.it-url-mirror .pl-ic{color:var(--info,#58a6ff)}
+.it-url-mirror-q{max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.it-table-layout{display:flex;gap:12px;align-items:flex-start}
+.it-table-wrap{flex:1;min-width:0;overflow-x:auto;max-height:620px;overflow-y:auto}
+.it-table{width:100%;border-collapse:collapse;font-size:var(--fs-xs,12px)}
+.it-table thead th{position:sticky;top:0;z-index:1;background:var(--surface-2,#161b22);color:var(--text-dim,#8b949e);text-align:left;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.4px;padding:8px 10px;border-bottom:1px solid var(--border,#30363d);white-space:nowrap}
+.it-table tbody td{padding:7px 10px;border-bottom:1px solid var(--border-subtle,#21262d);color:var(--text-secondary,#c9d1d9);vertical-align:middle}
+.it-row{cursor:pointer;transition:background 0.1s}
+.it-row:hover{background:var(--surface-1,#161b22)}
+.it-row.it-row-sel{background:rgba(88,166,255,0.10);box-shadow:inset 3px 0 0 var(--info,#58a6ff)}
+.it-row.it-row-hidden{display:none}
+.it-col-id a{color:var(--info,#58a6ff);text-decoration:none;font-weight:600}
+.it-col-title{max-width:340px}
+.it-title-txt{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-primary,#e6edf3)}
+.it-state-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle;background:var(--text-dim,#8b949e)}
+.it-state-dot.st-working{background:var(--success,#3fb950)}
+.it-state-dot.st-pending{background:var(--info,#58a6ff)}
+.it-state-dot.st-done{background:var(--info,#58a6ff)}
+.it-state-dot.st-processed{background:var(--text-dim,#8b949e)}
+.it-dim{color:var(--text-dim,#8b949e)}
+.it-bounces{color:var(--text-dim,#8b949e);font-weight:600}
+.it-bounces.it-bounce-hi{color:var(--danger,#f85149)}
+.it-age{color:var(--text-secondary,#c9d1d9)}
+.it-age.it-age-over{color:var(--warning,#d29922);font-weight:600}
+.it-table-empty,.it-table-no-match{text-align:center;color:var(--text-dim,#8b949e);padding:24px}
+.it-risk-badge{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600;padding:2px 9px;border-radius:var(--radius-full,999px);border:1px solid;text-transform:capitalize}
+.it-risk-badge .pl-ic{width:13px;height:13px}
+.rk-alto{color:var(--danger,#f85149);background:var(--danger-bg,rgba(248,81,73,0.12));border-color:var(--danger-dim,#f85149)}
+.rk-medio{color:var(--warning,#d29922);background:var(--warning-bg,rgba(210,153,34,0.12));border-color:var(--warning-dim,#d29922)}
+.rk-bajo{color:var(--success,#3fb950);background:var(--success-bg,rgba(63,185,80,0.12));border-color:var(--success-dim,#3fb950)}
+/* Drawer lateral (no modal) */
+.it-drawer{flex:0 0 360px;max-width:42%;align-self:stretch;background:var(--surface-2,#161b22);border:1px solid var(--border,#30363d);border-left:3px solid transparent;border-image:linear-gradient(180deg,var(--teal,#2dd4bf),var(--info,#58a6ff)) 1;border-radius:8px;max-height:620px;overflow-y:auto}
+.it-drawer-inner{padding:14px}
+.it-drawer-head{display:flex;align-items:center;gap:8px}
+.it-drawer-id{font-weight:700;color:var(--info,#58a6ff);font-size:1.05em}
+.it-drawer-link{color:var(--info,#58a6ff);margin-left:2px}
+.it-drawer-close{margin-left:auto;background:transparent;border:none;color:var(--text-dim,#8b949e);cursor:pointer;padding:2px}
+.it-drawer-close:hover{color:var(--text-primary,#e6edf3)}
+.it-drawer-title{margin:8px 0;font-size:0.95em;color:var(--text-primary,#e6edf3);font-weight:600;line-height:1.35}
+.it-drawer-chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.it-chip{display:inline-flex;align-items:center;gap:4px;font-size:0.74em;padding:3px 8px;border-radius:var(--radius-full,999px);background:var(--surface-3,#21262d);color:var(--text-secondary,#c9d1d9)}
+.it-drawer-sectlabel{font-size:0.72em;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-dim,#8b949e);font-weight:600;margin:14px 0 6px;display:flex;align-items:center;gap:6px}
+.it-risk-reasons{margin:0;padding-left:18px;font-size:0.82em;color:var(--text-secondary,#c9d1d9)}
+.it-risk-reasons li{margin:2px 0}
+.it-tl-bar{display:flex;height:14px;border-radius:4px;overflow:hidden;background:var(--surface-3,#21262d);margin-bottom:8px}
+.it-tl-seg{height:100%}
+.it-tl-seg.tl-def{background:var(--purple,#bc8cff)}
+.it-tl-seg.tl-dev{background:var(--info,#58a6ff)}
+.it-tl-rows{display:flex;flex-direction:column;gap:3px}
+.it-tl-row{display:flex;align-items:center;gap:7px;font-size:0.78em;color:var(--text-secondary,#c9d1d9)}
+.it-tl-row-empty{color:var(--text-disabled,#6e7681)}
+.it-tl-name{flex:1}
+.it-tl-dur{color:var(--text-dim,#8b949e);font-variant-numeric:tabular-nums}
+.it-tl-skill{color:var(--text-dim,#8b949e);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:900px){.it-table-layout{flex-direction:column}.it-drawer{flex-basis:auto;max-width:100%;width:100%}}
 
 /* Stepper cell (dot + initial) */
 .stepper-cell{display:inline-flex;flex-direction:column;align-items:center;gap:1px;position:relative}
@@ -5986,6 +6303,10 @@ body.standalone .section-collapsed .section-body{display:block !important}
   </div>
 </div>
 
+${/* #3958 EP8-H5 \u2014 l\u00f3gica pura isom\u00f3rfica (CSV anti-injection + filtros allowlist)
+     inyectada como window.IssueCsv / window.IssueFilters. Mismo c\u00f3digo testeado
+     con node --test \u2192 cero divergencia cliente/servidor. */''}
+${loadIssueLibsClientJs()}
 <script>
 // #2523 CA-10 \u2014 escape HTML client-side unico (antes habia replace inline en renderLine y esc duplicado en otro script).
 // Cubre los 5 caracteres XSS-relevantes (& < > " '), igual que el esc() server-side.
@@ -6020,7 +6341,18 @@ function saveIssueTrackerState() {
       if (lane) subFilters[lane] = sf;
     });
     const scrollY = window.scrollY || document.documentElement.scrollTop || 0;
-    sessionStorage.setItem('__it_state', JSON.stringify({ expanded, laneExpanded, filter, subFilters, scrollY }));
+    // #3958 — estado de la vista tabla (sobrevive el DOM morphing de softRefresh).
+    const viewBtn = document.querySelector('.it-view-btn.it-view-active');
+    const view = viewBtn ? (viewBtn.dataset.view || 'board') : 'board';
+    const columns = {};
+    document.querySelectorAll('.it-colsel-item input[data-col]').forEach(cb => {
+      columns[cb.dataset.col] = cb.checked;
+    });
+    const drawerEl = document.getElementById('it-drawer');
+    const drawer = { open: !!(drawerEl && !drawerEl.hidden), issue: (window.__itDrawerIssue || null) };
+    const tableWrap = document.getElementById('it-table-wrap');
+    const tableScroll = tableWrap ? (tableWrap.scrollTop || 0) : 0;
+    sessionStorage.setItem('__it_state', JSON.stringify({ expanded, laneExpanded, filter, subFilters, scrollY, view, columns, drawer, tableScroll }));
   } catch(_) {}
 }
 
@@ -6236,8 +6568,26 @@ function restoreIssueTrackerState() {
   try {
     const saved = sessionStorage.getItem('__it_state');
     if (!saved) return;
-    const { expanded, laneExpanded, filter, subFilters, scrollY } = JSON.parse(saved);
+    const { expanded, laneExpanded, filter, subFilters, scrollY, view, columns, drawer, tableScroll } = JSON.parse(saved);
     __itRestoring = true;
+    // #3958 — restaurar vista tabla/board + columnas + drawer + scroll de tabla.
+    if (columns && typeof columns === 'object') {
+      document.querySelectorAll('.it-colsel-item input[data-col]').forEach(cb => {
+        if (Object.prototype.hasOwnProperty.call(columns, cb.dataset.col)) {
+          cb.checked = !!columns[cb.dataset.col];
+          applyColumnVisibility(cb.dataset.col, cb.checked);
+        }
+      });
+      updateColumnsCount();
+    }
+    if (view === 'tabla') setIssueView('tabla', true);
+    // Filtros desde URL SIEMPRE (SEC-4: re-validar en cada rehidratación).
+    hydrateIssueFiltersFromUrl();
+    if (drawer && drawer.open && drawer.issue) openIssueDrawer(drawer.issue, true);
+    if (tableScroll) {
+      const tw = document.getElementById('it-table-wrap');
+      if (tw) requestAnimationFrame(() => { tw.scrollTop = tableScroll; });
+    }
     if (expanded && expanded.length > 0) {
       expanded.forEach(id => {
         const detail = document.getElementById('detail-' + id);
@@ -6273,6 +6623,181 @@ function restoreIssueTrackerState() {
     __itRestoring = false;
     if (scrollY > 0) requestAnimationFrame(() => window.scrollTo(0, scrollY));
   } catch(_) { __itRestoring = false; }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// #3958 EP8-H5 — Vista TABLA: toggle, columnas, filtros URL, CSV, drawer.
+// La lógica pura (parse/serialize de filtros con allowlist, CSV anti-injection)
+// vive en window.IssueFilters / window.IssueCsv (inyectado, mismo código que
+// node --test). Acá sólo el wiring del DOM. Todo el contenido del drawer se
+// CLONA de nodos server-rendered (escaping garantizado, SEC-2).
+// ═══════════════════════════════════════════════════════════════════════════
+window.__itDrawerIssue = null;
+
+function setIssueView(view, skipSave) {
+  view = (view === 'tabla') ? 'tabla' : 'board';
+  document.querySelectorAll('.it-view-btn').forEach(b => {
+    const on = b.dataset.view === view;
+    b.classList.toggle('it-view-active', on);
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  document.querySelectorAll('[data-view-board]').forEach(el => { el.hidden = (view !== 'board'); });
+  document.querySelectorAll('[data-view-tabla]').forEach(el => { el.hidden = (view !== 'tabla'); });
+  // Al entrar a la tabla, hidratar filtros desde la URL (SEC-1/SEC-4: revalida).
+  if (view === 'tabla') hydrateIssueFiltersFromUrl();
+  if (!skipSave) saveIssueTrackerState();
+}
+
+function toggleColumnsMenu(ev) {
+  if (ev) ev.stopPropagation();
+  const menu = document.getElementById('it-colsel-menu');
+  const btn = document.querySelector('.it-colsel-btn');
+  if (!menu) return;
+  const willOpen = menu.hidden;
+  menu.hidden = !willOpen;
+  if (btn) btn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+}
+document.addEventListener('click', function(e) {
+  const menu = document.getElementById('it-colsel-menu');
+  if (!menu || menu.hidden) return;
+  if (e.target.closest && e.target.closest('.it-colsel')) return;
+  menu.hidden = true;
+  const btn = document.querySelector('.it-colsel-btn');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+});
+function applyColumnVisibility(key, visible) {
+  document.querySelectorAll('.it-table .col-' + key).forEach(c => { c.style.display = visible ? '' : 'none'; });
+}
+function updateColumnsCount() {
+  const n = document.querySelectorAll('.it-colsel-item input[data-col]:checked').length;
+  const el = document.getElementById('it-colsel-count');
+  if (el) el.textContent = String(n);
+}
+function toggleColumn(key, visible) {
+  applyColumnVisibility(key, visible);
+  updateColumnsCount();
+  saveIssueTrackerState();
+}
+
+function itAllowlists() {
+  const grab = (id) => Array.from(document.querySelectorAll('#' + id + ' option')).map(o => o.value).filter(Boolean);
+  return { estados: grab('it-tfilter-estado'), fases: grab('it-tfilter-fase'), skills: grab('it-tfilter-skill') };
+}
+function currentIssueFilters() {
+  return {
+    estado: (document.getElementById('it-tfilter-estado') || {}).value || '',
+    fase: (document.getElementById('it-tfilter-fase') || {}).value || '',
+    skill: (document.getElementById('it-tfilter-skill') || {}).value || '',
+    q: (document.getElementById('it-tfilter-q') || {}).value || '',
+  };
+}
+function applyIssueFilters() {
+  const f = currentIssueFilters();
+  const q = f.q.trim().toLowerCase();
+  let shown = 0;
+  document.querySelectorAll('#it-table-body .it-row').forEach(row => {
+    let ok = true;
+    if (f.estado && row.dataset.estado !== f.estado) ok = false;
+    if (ok && f.fase && row.dataset.fase !== f.fase) ok = false;
+    if (ok && f.skill && row.dataset.skill !== f.skill) ok = false;
+    if (ok && q) {
+      const hay = ('#' + row.dataset.issue + ' ' + (row.dataset.title || '')).toLowerCase();
+      if (hay.indexOf(q) === -1) ok = false;
+    }
+    row.classList.toggle('it-row-hidden', !ok);
+    if (ok) shown++;
+  });
+  const body = document.getElementById('it-table-body');
+  let empty = document.getElementById('it-table-nomatch');
+  if (shown === 0 && body) {
+    if (!empty) {
+      empty = document.createElement('tr');
+      empty.id = 'it-table-nomatch';
+      // Texto fijo (sin input externo) → innerHTML estático seguro.
+      empty.innerHTML = '<td colspan="9" class="it-table-no-match">Sin issues que coincidan con el filtro</td>';
+      body.appendChild(empty);
+    }
+    empty.hidden = false;
+  } else if (empty) {
+    empty.hidden = true;
+  }
+  updateUrlFromFilters(f);
+}
+function onIssueFilterChange() { applyIssueFilters(); saveIssueTrackerState(); }
+function updateUrlFromFilters(f) {
+  const qs = window.IssueFilters ? window.IssueFilters.serializeFilters(f) : '';
+  const mirror = document.getElementById('it-url-mirror-q');
+  if (mirror) mirror.textContent = qs ? ('?' + qs) : '(sin filtros)';
+  try {
+    const url = new URL(window.location.href);
+    ['estado', 'fase', 'skill', 'q'].forEach(k => url.searchParams.delete(k));
+    if (f.estado) url.searchParams.set('estado', f.estado);
+    if (f.fase) url.searchParams.set('fase', f.fase);
+    if (f.skill) url.searchParams.set('skill', f.skill);
+    if (f.q) url.searchParams.set('q', f.q);
+    // Preserva ?section= (kiosk) y cualquier otro param no-filtro.
+    history.replaceState(null, '', url.pathname + (url.search || '') + url.hash);
+  } catch(_) {}
+}
+function hydrateIssueFiltersFromUrl() {
+  if (!window.IssueFilters) { applyIssueFilters(); return; }
+  let parsed;
+  try { parsed = window.IssueFilters.parseFilters(window.location.search, itAllowlists()); }
+  catch(_) { applyIssueFilters(); return; }
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ''; };
+  set('it-tfilter-estado', parsed.estado);
+  set('it-tfilter-fase', parsed.fase);
+  set('it-tfilter-skill', parsed.skill);
+  set('it-tfilter-q', parsed.q);
+  applyIssueFilters();
+}
+function exportIssuesCsv() {
+  if (!window.IssueCsv) return;
+  const colMeta = [
+    { key: 'issue', label: '#' }, { key: 'title', label: 'Título' }, { key: 'estado', label: 'Estado' },
+    { key: 'fase', label: 'Fase' }, { key: 'skill', label: 'Skill' }, { key: 'bounces', label: 'Rebotes' },
+    { key: 'age', label: 'Edad (min)' }, { key: 'eta', label: 'ETA p50' }, { key: 'risk', label: 'Riesgo' },
+  ];
+  const rows = [];
+  document.querySelectorAll('#it-table-body .it-row').forEach(row => {
+    if (row.classList.contains('it-row-hidden')) return;
+    rows.push({
+      issue: row.dataset.issue, title: row.dataset.title || '', estado: row.dataset.estado || '',
+      fase: row.dataset.fase || '', skill: row.dataset.skill || '', bounces: row.dataset.bounces || '0',
+      age: row.dataset.age || '0', eta: row.dataset.eta || '', risk: row.dataset.risk || '',
+    });
+  });
+  const csv = window.IssueCsv.toCsv(rows, colMeta);
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'issues-pipeline.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function openIssueDrawer(issue, skipSave) {
+  const host = document.getElementById('it-drawer-src-' + issue);
+  const drawer = document.getElementById('it-drawer');
+  if (!host || !drawer) return;
+  const node = host.firstElementChild;
+  drawer.textContent = '';
+  if (node) drawer.appendChild(node.cloneNode(true));
+  drawer.hidden = false;
+  window.__itDrawerIssue = String(issue);
+  document.querySelectorAll('#it-table-body .it-row').forEach(r => {
+    r.classList.toggle('it-row-sel', r.dataset.issue === String(issue));
+  });
+  if (!skipSave) saveIssueTrackerState();
+}
+function closeIssueDrawer() {
+  const drawer = document.getElementById('it-drawer');
+  if (drawer) { drawer.hidden = true; drawer.textContent = ''; }
+  window.__itDrawerIssue = null;
+  document.querySelectorAll('#it-table-body .it-row.it-row-sel').forEach(r => r.classList.remove('it-row-sel'));
+  saveIssueTrackerState();
 }
 
 // KPI Tooltips
