@@ -816,6 +816,18 @@ deliverable_notifications:
 #                             agent. Doble check con regex `^[a-z][a-z0-9-]{0,40}$`.
 #                             Comandos fuera de esta lista → audit
 #                             `invalid_command` y NO notifican.
+#   - query_only_commands:    (#4145) subconjunto de `allowed_commands` que son
+#                             solo-consulta de estado. Saltean el auto-emit de
+#                             notis `init`/`completion` (y su envelope
+#                             `<!-- pipeline-meta -->`): la respuesta del handler
+#                             ya es la entrega, las notis serían ruido en Telegram.
+#                             NUNCA incluir comandos con efecto lateral (pausar,
+#                             reanudar, restart, stop, limpiar, load-wave,
+#                             allowlist, dashboard-up/down, ghostbusters, descanso):
+#                             esos SÍ deben emitir trazabilidad. Un comando aquí
+#                             que no esté en `allowed_commands` simplemente no
+#                             tiene efecto (el gate exige ambas listas). El audit
+#                             (`auditLog.record`) corre igual para todos.
 #   - truncate_chars:         max chars del preview narrable. Excede →
 #                             truncatePreserveLines + ' (continúa en el issue)'.
 #                             Default 1500 (igual que pipeline issues).
@@ -876,6 +888,19 @@ cua:
     - restart
     - bloqueados
     - stop
+  # Comandos solo-consulta: saltean el auto-emit de notis init/completion
+  # (#4145). La respuesta del handler ya es la entrega; las notis serían ruido.
+  # NO incluir comandos con efecto lateral (ver doc del bloque arriba).
+  query_only_commands:
+    - wave
+    - status
+    - listado
+    - snapshot
+    - salud
+    - quota
+    - actividad
+    - costos
+    - bloqueados
   truncate_chars: 1500
   dedup_window_hours: 1
   max_attachment_bytes: 5242880  # 5 MB (CA-SEC-2)

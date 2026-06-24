@@ -697,7 +697,7 @@ function validateArgs(command, args) {
  * @param {string} opts.telegramQueueDir
  * @param {object} [opts.deps]
  * @param {function} [opts.log] - logger del caller (pulpo.log) para visibilidad.
- * @returns {{ emit: function, enabled: boolean, notifiableStages: string[], allowedCommands: string[] }}
+ * @returns {{ emit: function, enabled: boolean, notifiableStages: string[], allowedCommands: string[], queryOnlyCommands: string[] }}
  */
 function createCuaEmitter(opts) {
     const o = opts || {};
@@ -707,6 +707,11 @@ function createCuaEmitter(opts) {
         ? cfg.notifiable_stages
         : [];
     const allowedCommands = Array.isArray(cfg.allowed_commands) ? cfg.allowed_commands : [];
+    // #4145 — comandos solo-consulta: saltean el auto-emit de notis
+    // `init`/`completion`. La respuesta del handler ya es la entrega; las notis
+    // serían ruido (header `⚙️ /wave · init` + envelope `<!-- pipeline-meta -->`).
+    // Default `[]` si ausente (rollout seguro: sin la lista, comportamiento previo).
+    const queryOnlyCommands = Array.isArray(cfg.query_only_commands) ? cfg.query_only_commands : [];
     const log = typeof o.log === 'function' ? o.log : (() => {});
 
     function emit(entregable) {
@@ -760,6 +765,7 @@ function createCuaEmitter(opts) {
         enabled,
         notifiableStages,
         allowedCommands,
+        queryOnlyCommands,
     };
 }
 
@@ -1020,9 +1026,16 @@ function createDispatcher(opts) {
         // del handler y `completion` después. Los handlers pueden también
         // emitir `validation`/`analysis` desde dentro usando `ctx.cuaEmit`.
         // Cumple CA-FUNC-6 (enqueue por stage) y CA-TEC-2 (filtro en caller).
+        // #4145 — los comandos solo-consulta (`cua.query_only_commands`, ej.
+        // `wave`) saltean el auto-emit: su respuesta YA es la entrega y las
+        // notis init/completion (con su envelope) son ruido en Telegram. NO se
+        // toca `ctx.cuaEmit` (un handler query-only puede emitir stages manuales
+        // si los necesita) ni `buildCuaText`/`buildCuaEnvelope` (el envelope
+        // legítimo del path reply-to de entregables de issues queda intacto).
         const cuaShouldAutoEmit = cuaEmitter.enabled
             && cuaEmitter.allowedCommands.length > 0
-            && cuaEmitter.allowedCommands.includes(intent.command);
+            && cuaEmitter.allowedCommands.includes(intent.command)
+            && !cuaEmitter.queryOnlyCommands.includes(intent.command);
         const handlerStartedAt = now();
         if (cuaShouldAutoEmit) {
             cuaEmitter.emit({

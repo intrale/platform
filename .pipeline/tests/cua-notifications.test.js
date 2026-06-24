@@ -590,6 +590,96 @@ test('handler puede emitir stages intermedios via ctx.cuaEmit', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// #4145 — comandos query-only saltean el auto-emit init/completion
+// ---------------------------------------------------------------------------
+
+test('#4145 — createCuaEmitter expone queryOnlyCommands desde config', () => {
+    const e = cd.createCuaEmitter({ config: { enabled: true, query_only_commands: ['wave', 'status'] } });
+    assert.deepEqual(e.queryOnlyCommands, ['wave', 'status']);
+    // Ausente o no-array → default [] (rollout seguro: comportamiento previo).
+    const e2 = cd.createCuaEmitter({ config: { enabled: true } });
+    assert.deepEqual(e2.queryOnlyCommands, []);
+    const e3 = cd.createCuaEmitter({ config: { enabled: true, query_only_commands: 'wave' } });
+    assert.deepEqual(e3.queryOnlyCommands, []);
+});
+
+test('#4145 — comando query-only (wave) NO dispara auto-emit init/completion', async () => {
+    const tmp = mkTmp('query-only');
+    const calls = [];
+    const fakeMod = {
+        notifyCua: (a) => { calls.push(a.entregable); return { ok: true, action: 'enqueued' }; },
+    };
+    cd.DETERMINISTIC_SLASH.add('wave');
+    try {
+        const d = cd.createDispatcher({
+            pipelineRoot: tmp,
+            logsDir: tmp,
+            expectedChatId: '1',
+            handlers: { 'wave': () => ({ reply: 'TABLA DE ESTADO' }) },
+            cua: {
+                config: {
+                    enabled: true,
+                    allowed_commands: ['wave'],
+                    query_only_commands: ['wave'],
+                    notifiable_stages: ['init', 'completion'],
+                    audit_file: path.join(tmp, 'audit.jsonl'),
+                },
+                pipelineRoot: tmp,
+                telegramQueueDir: path.join(tmp, 'queue'),
+                deps: { deliverableNotify: fakeMod },
+            },
+        });
+        const r = await d.dispatch({ chat_id: '1', text: '/wave', from: 'tester' });
+        assert.equal(r.status, 'ok');
+        assert.equal(r.reply, 'TABLA DE ESTADO', 'la tabla del handler llega intacta');
+        assert.equal(calls.length, 0, 'query-only NO debe emitir notis CUA (sin init/completion ni envelope)');
+        // CA-3: ninguna noti se encoló → la tabla queda como único contenido.
+        const queueFiles = fs.readdirSync(path.join(tmp, 'queue'));
+        assert.equal(queueFiles.length, 0, 'no debe encolarse ninguna noti CUA para wave');
+    } finally {
+        cd.DETERMINISTIC_SLASH.delete('wave');
+    }
+});
+
+test('#4145 — comando mutador (pausar) SIGUE emitiendo init/completion (no-regresión)', async () => {
+    const tmp = mkTmp('mutator');
+    const calls = [];
+    const fakeMod = {
+        notifyCua: (a) => { calls.push(a.entregable); return { ok: true, action: 'enqueued' }; },
+    };
+    cd.DETERMINISTIC_SLASH.add('pausar');
+    try {
+        const d = cd.createDispatcher({
+            pipelineRoot: tmp,
+            logsDir: tmp,
+            expectedChatId: '1',
+            handlers: { 'pausar': () => ({ reply: 'OK' }) },
+            cua: {
+                config: {
+                    enabled: true,
+                    // `pausar` está en allowed pero NO en query_only → mutador.
+                    allowed_commands: ['pausar', 'wave'],
+                    query_only_commands: ['wave'],
+                    notifiable_stages: ['init', 'completion'],
+                    audit_file: path.join(tmp, 'audit.jsonl'),
+                },
+                pipelineRoot: tmp,
+                telegramQueueDir: path.join(tmp, 'queue'),
+                deps: { deliverableNotify: fakeMod },
+            },
+        });
+        const r = await d.dispatch({ chat_id: '1', text: '/pausar', from: 'tester' });
+        assert.equal(r.status, 'ok');
+        assert.equal(calls.length, 2, 'init + completion siguen emitiéndose para mutadores');
+        assert.equal(calls[0].stage, 'init');
+        assert.equal(calls[1].stage, 'completion');
+        assert.equal(calls[1].status, 'ok');
+    } finally {
+        cd.DETERMINISTIC_SLASH.delete('pausar');
+    }
+});
+
+// ---------------------------------------------------------------------------
 // parseCuaTextArgs
 // ---------------------------------------------------------------------------
 
