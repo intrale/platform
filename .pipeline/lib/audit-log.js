@@ -134,6 +134,38 @@ function lockPathFor(file) {
     return file + '.lock';
 }
 
+// Buffer compartido (4 bytes) reutilizado por _sleepSync. Solo lo usamos como
+// "sleep que cede CPU" (nunca Atomics.notify), así que un único buffer global
+// alcanza: Atomics.wait sobre un valor que nunca cambia retorna 'timed-out'
+// tras el tiempo pedido.
+const _SLEEP_SHARED = new Int32Array(new SharedArrayBuffer(4));
+
+/**
+ * Sleep SÍNCRONO que CEDE la CPU entre reintentos del lock, en vez de un
+ * busy-wait `while` que la quema.
+ *
+ * Causa raíz que elimina (rebote #3961)
+ * --------------------------------------
+ * El backoff previo era un busy-wait (`while (Date.now() < until) {}`) que NO
+ * libera el core. Bajo fork-storm de la suite (N workers de
+ * partial-pause-concurrency + ~375 files en paralelo) la CPU se satura: los
+ * contendientes giran quemando ciclos y el holder del lock nunca se schedulea
+ * para terminar su append y liberar → algún worker agota `maxMs` y degrada a
+ * `lock_timeout` (worker exit 1), rompiendo el test que exige que TODOS los 8
+ * workers salgan 0. `Atomics.wait` bloquea cooperativamente (el SO puede
+ * schedulear al holder) sin notify cross-process. En Node está permitido sobre
+ * el main thread. Fallback defensivo al busy-wait si no estuviera disponible.
+ */
+function _sleepSync(ms) {
+    if (!(ms > 0)) return;
+    try {
+        Atomics.wait(_SLEEP_SHARED, 0, 0, ms);
+    } catch {
+        const until = Date.now() + ms;
+        while (Date.now() < until) { /* busy wait fallback */ }
+    }
+}
+
 function _acquireFileLockSync(file, fsImpl, options = {}) {
     const _fs = fsImpl || fs;
     const lp = lockPathFor(file);
@@ -189,9 +221,10 @@ function _acquireFileLockSync(file, fsImpl, options = {}) {
             if (Date.now() - start > maxMs) {
                 return { ok: false, reason: 'lock_timeout', heldFor: Date.now() - start };
             }
-            // Busy-wait sync acotado (no podemos await en sync API).
-            const until = Date.now() + Math.min(backoff, LOCK_RETRY_BACKOFF_MAX_MS);
-            while (Date.now() < until) { /* spin */ }
+            // Backoff que CEDE la CPU (no busy-wait): permite que el SO
+            // schedulee al holder para que termine su append y libere bajo
+            // fork-storm (rebote #3961). Ver _sleepSync.
+            _sleepSync(Math.min(backoff, LOCK_RETRY_BACKOFF_MAX_MS));
             backoff = Math.min(backoff * 2, LOCK_RETRY_BACKOFF_MAX_MS);
         }
     }
