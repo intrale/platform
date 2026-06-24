@@ -38,6 +38,12 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+// #3932 rebote rev-1 — `procesado/` es carpeta operacional del pipeline: además
+// de los markers `<issue>.<skill>` puede contener artifacts auxiliares
+// (`.reason.json`, `.guidance.txt`, `.comment.md`). El ghost-artifact-lint
+// (#3638) exige aplicar `isMarkerArtifact` a todo readdir sobre carpetas
+// operacionales para no contar fantasmas como fases cerradas.
+const { isMarkerArtifact } = require('./marker-artifact');
 
 // Path FIJO del audit JSONL (relativo al repoRoot). NUNCA derivado de input.
 const AUDIT_REL_PATH = path.join('.pipeline', 'audit', 'deliverable-notifications.jsonl');
@@ -186,6 +192,9 @@ function _readDenominatorFs(repoRoot, config, skillsWhitelist) {
             const dir = path.join(repoRoot, '.pipeline', String(pipeName), String(fase), 'procesado');
             let entries;
             try { entries = fs.readdirSync(dir); } catch { continue; }
+            // Filtrar artifacts auxiliares (`.reason.json`, `.guidance.txt`,
+            // `.comment.md`, dotfiles) — sólo cuentan markers `<issue>.<skill>`.
+            entries = entries.filter((f) => !f.startsWith('.') && !isMarkerArtifact(f));
             for (const name of entries) {
                 // Formato esperado: "<issue>.<skill>". El skill puede contener
                 // guiones (pipeline-dev) pero no puntos → split por el PRIMER punto.
