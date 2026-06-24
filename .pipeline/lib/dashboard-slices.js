@@ -1030,6 +1030,14 @@ function pipelineSlice(state, ctx) {
     // (pendiente/trabajando/listo); procesado/archivado no cuentan porque
     // ya salieron del flujo.
     const matrixCounts = {};
+    // #3959 (CA-1) — matrixIssues[faseKey][skill] = [issueId, ...]: lista
+    // server-authoritative de los issues que componen cada celda. Evita que el
+    // drill-down del cliente diverja del conteo de la celda.
+    const matrixIssues = {};
+    // #3959 (CA-3) — acumulador de edad para la edad media por celda. Se divide
+    // por matrixCounts al final para obtener matrixAgeAvg (cuello de botella =
+    // conteo × edad media). Derivado server-side para no recalcular en cliente.
+    const matrixAgeSum = {};
     const ACTIVE_STATES = new Set(['pendiente', 'trabajando', 'listo']);
     // #2894 — Umbral para marcar un issue como "estancado" en su fase
     // actual. Configurable vía env para que el operador pueda calibrar
@@ -1080,7 +1088,25 @@ function pipelineSlice(state, ctx) {
                 if (!ACTIVE_STATES.has(e.estado)) continue;
                 if (!matrixCounts[faseKey]) matrixCounts[faseKey] = {};
                 matrixCounts[faseKey][e.skill] = (matrixCounts[faseKey][e.skill] || 0) + 1;
+                // CA-1: registrar el issue en la celda (mismo loop → mismo
+                // criterio de conteo, consistencia garantizada).
+                if (!matrixIssues[faseKey]) matrixIssues[faseKey] = {};
+                if (!matrixIssues[faseKey][e.skill]) matrixIssues[faseKey][e.skill] = [];
+                matrixIssues[faseKey][e.skill].push(String(issueId));
+                // CA-3: acumular edad para la media por celda.
+                if (!matrixAgeSum[faseKey]) matrixAgeSum[faseKey] = {};
+                matrixAgeSum[faseKey][e.skill] = (matrixAgeSum[faseKey][e.skill] || 0) + (Number(e.ageMin) || 0);
             }
+        }
+    }
+    // CA-3 — edad media por celda = suma de edades ÷ conteo. Server-side para
+    // que el cliente solo compare `conteo × edadMedia` sin recalcular.
+    const matrixAgeAvg = {};
+    for (const [faseKey, bySkill] of Object.entries(matrixAgeSum)) {
+        matrixAgeAvg[faseKey] = {};
+        for (const [skill, sum] of Object.entries(bySkill)) {
+            const count = (matrixCounts[faseKey] && matrixCounts[faseKey][skill]) || 0;
+            matrixAgeAvg[faseKey][skill] = count > 0 ? Math.round(sum / count) : 0;
         }
     }
     // Orden manual de prioridad (#2801) — el cliente lo usa para ordenar
@@ -1135,11 +1161,37 @@ function pipelineSlice(state, ctx) {
         }
     } catch { /* wave-snapshot opcional: degradamos a franja vacía */ }
 
+    // #3959 (CA-4) — orden canónico de skills desde la fuente única
+    // (lib/skill-catalog). Matriz lo consume para ordenar filas y así coincidir
+    // con Equipo/Pipeline. Degrada a [] si el módulo no cargó.
+    let skillOrder = [];
+    try {
+        skillOrder = require('./skill-catalog').skillOrder();
+    } catch { /* lib opcional */ }
+
+    // #3959 (CA-2) — tendencia ▲▼ por celda: el slice expone el `matrixCounts`
+    // de ≈24h atrás (baseline) leído del historial horario. El cliente solo
+    // dibuja la flecha comparando el conteo actual contra este baseline. Si no
+    // hay historial de 24h, queda {} y la UI no muestra flecha (degrada sin
+    // romper). El delta se calcula server-side acá, no en el cliente.
+    let matrixTrend = {};
+    try {
+        const matrixHistory = require('./matrix-history');
+        const baseline = matrixHistory.baselineCounts({
+            pipelineDir: ctx && ctx.PIPELINE ? ctx.PIPELINE : undefined,
+        });
+        if (baseline && typeof baseline === 'object') matrixTrend = baseline;
+    } catch { /* lib opcional / sin historial → sin flecha */ }
+
     return {
         matrix,
         fases: state.allFases,
         priorityOrder,
         matrixCounts,
+        matrixIssues,
+        matrixAgeAvg,
+        skillOrder,
+        matrixTrend,
         staleThresholdMin: STALE_THRESHOLD_MIN,
         waveIssues,
     };

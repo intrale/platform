@@ -56,6 +56,10 @@ let opsTransitions = null;
 try { opsTransitions = require('./process-transitions'); } catch { /* opcional */ }
 let opsReconcilerHistory = null;
 try { opsReconcilerHistory = require('./reconciler-history'); } catch { /* opcional */ }
+// #3959 (EP8-H6) CA-2 — historial horario de matrixCounts para la tendencia
+// ▲▼ por celda de la Matriz. Opcional: si no cargó, el slice degrada sin flecha.
+let matrixHistory = null;
+try { matrixHistory = require('./matrix-history'); } catch { /* opcional */ }
 
 // Render de la ventana Ops con el state en vivo (opsSlice) + fallback inerte.
 // Consumido por el path legacy `/ops` (HTML_ROUTES) y por `?view=ops` (VIEW_SLUGS).
@@ -724,7 +728,18 @@ const API_ROUTES = {
         return { queue, partialPause: { active, allowedIssues } };
     },
     '/api/dash/equipo': (state) => slices.equipoSlice(state),
-    '/api/dash/pipeline': (state) => slices.pipelineSlice(state),
+    '/api/dash/pipeline': (state, ctx) => {
+        const payload = slices.pipelineSlice(state, ctx);
+        // #3959 (EP8-H6) CA-2 — persistir un snapshot horario de matrixCounts
+        // para la serie temporal de la tendencia por celda (debounceado a
+        // ~1/hora dentro del lib). Best-effort: no romper el endpoint si falla
+        // (mismo patrón que /api/dash/reconciler-stale-orders).
+        if (matrixHistory && ctx && ctx.PIPELINE && payload && payload.matrixCounts) {
+            try { matrixHistory.recordSnapshot(payload.matrixCounts, { pipelineDir: ctx.PIPELINE }); }
+            catch { /* no romper el endpoint por el snapshot */ }
+        }
+        return payload;
+    },
     '/api/dash/bloqueados': (state) => slices.bloqueadosSlice(state),
     '/api/dash/ops': (state) => slices.opsSlice(state),
     '/api/dash/historial': (state) => slices.historialSlice(state),
