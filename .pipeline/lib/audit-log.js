@@ -134,6 +134,38 @@ function lockPathFor(file) {
     return file + '.lock';
 }
 
+// Buffer compartido (4 bytes) reutilizado por _sleepSync. Solo lo usamos como
+// "sleep que cede CPU" (nunca Atomics.notify), así que un único buffer global
+// alcanza: Atomics.wait sobre un valor que nunca cambia retorna 'timed-out'
+// tras el tiempo pedido.
+const _SLEEP_SHARED = new Int32Array(new SharedArrayBuffer(4));
+
+/**
+ * Sleep SÍNCRONO que CEDE la CPU entre reintentos del lock, en vez de un
+ * busy-wait `while` que la quema.
+ *
+ * Causa raíz que elimina (rebote #3961)
+ * --------------------------------------
+ * El backoff previo era un busy-wait (`while (Date.now() < until) {}`) que NO
+ * libera el core. Bajo fork-storm de la suite (N workers de
+ * partial-pause-concurrency + ~375 files en paralelo) la CPU se satura: los
+ * contendientes giran quemando ciclos y el holder del lock nunca se schedulea
+ * para terminar su append y liberar → algún worker agota `maxMs` y degrada a
+ * `lock_timeout` (worker exit 1), rompiendo el test que exige que TODOS los 8
+ * workers salgan 0. `Atomics.wait` bloquea cooperativamente (el SO puede
+ * schedulear al holder) sin notify cross-process. En Node está permitido sobre
+ * el main thread. Fallback defensivo al busy-wait si no estuviera disponible.
+ */
+function _sleepSync(ms) {
+    if (!(ms > 0)) return;
+    try {
+        Atomics.wait(_SLEEP_SHARED, 0, 0, ms);
+    } catch {
+        const until = Date.now() + ms;
+        while (Date.now() < until) { /* busy wait fallback */ }
+    }
+}
+
 function _acquireFileLockSync(file, fsImpl, options = {}) {
     const _fs = fsImpl || fs;
     const lp = lockPathFor(file);
@@ -153,11 +185,30 @@ function _acquireFileLockSync(file, fsImpl, options = {}) {
             try { _fs.closeSync(fd); } catch {}
             return { ok: true, lockPath: lp };
         } catch (e) {
-            if (e.code !== 'EEXIST') {
+            // EEXIST es el caso POSIX de "lock ya tomado". En Windows,
+            // `openSync(lp, 'wx')` (O_CREAT|O_EXCL) puede devolver EPERM/EACCES
+            // TRANSITORIOS cuando el lockfile está siendo creado/borrado por
+            // otro worker concurrente (race con el `unlinkSync` del release) o
+            // cuando antivirus/indexer mantiene un handle momentáneo. Antes
+            // fallábamos cerrado ante esos códigos, lo que producía un EPERM
+            // flaky bajo concurrencia (#3961 rebote rev-2). Los tratamos como
+            // contención y reintentamos dentro del budget; un problema de
+            // permisos REAL degrada a `lock_timeout` al agotar `maxMs`.
+            const isContention =
+                e.code === 'EEXIST' || e.code === 'EPERM' || e.code === 'EACCES';
+            if (!isContention) {
                 // Errores inesperados: no podemos adquirir → fallar cerrado.
                 return { ok: false, reason: e.code || 'lock_open_error', error: e.message };
             }
-            // EEXIST: lock tomado. Chequear staleness.
+            // Lock posiblemente tomado. Chequear staleness si el lockfile existe.
+            // Si el lockfile está huérfano (mtime > staleMs) lo borramos y
+            // reintentamos de inmediato. Si statSync falla (el lock no existe
+            // —EPERM espurio del openSync— o desapareció en una race), NO
+            // hacemos `continue`: caemos al chequeo de timeout + backoff de
+            // abajo. Esto es crítico: un `continue` acá saltaría el chequeo de
+            // `maxMs` y, ante un EPERM persistente con lockfile inexistente,
+            // produciría un loop infinito (#3961 rebote rev-3: el rev-2 colgaba
+            // 116s hasta el --test-timeout en el test de EPERM persistente).
             try {
                 const st = _fs.statSync(lp);
                 const age = Date.now() - Number(st.mtimeMs || 0);
@@ -165,14 +216,15 @@ function _acquireFileLockSync(file, fsImpl, options = {}) {
                     try { _fs.unlinkSync(lp); } catch { /* otro lo limpió */ }
                     continue;
                 }
-            } catch { /* lock desapareció → reintentar */ continue; }
+            } catch { /* lock no existe / desapareció → seguir al timeout+backoff */ }
 
             if (Date.now() - start > maxMs) {
                 return { ok: false, reason: 'lock_timeout', heldFor: Date.now() - start };
             }
-            // Busy-wait sync acotado (no podemos await en sync API).
-            const until = Date.now() + Math.min(backoff, LOCK_RETRY_BACKOFF_MAX_MS);
-            while (Date.now() < until) { /* spin */ }
+            // Backoff que CEDE la CPU (no busy-wait): permite que el SO
+            // schedulee al holder para que termine su append y libere bajo
+            // fork-storm (rebote #3961). Ver _sleepSync.
+            _sleepSync(Math.min(backoff, LOCK_RETRY_BACKOFF_MAX_MS));
             backoff = Math.min(backoff * 2, LOCK_RETRY_BACKOFF_MAX_MS);
         }
     }

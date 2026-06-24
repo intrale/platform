@@ -1127,7 +1127,7 @@ function mapCanonicalStatus(status) {
 // JSONL (#3896). Best-effort: un fallo del writer NUNCA aborta `verify()`.
 // Reusa el pattern de hashes/no-prompt-crudo de `emitAuditEvent`: sólo persiste
 // claim derivado + comando reconstruido + valor canónico, nunca el prompt.
-function emitCanonicalValidationAudit({ pipelineDir, session, canonicalResults, sameProvider, timestamp, fsImpl, log }) {
+function emitCanonicalValidationAudit({ pipelineDir, session, canonicalResults, sameProvider, provider, timestamp, fsImpl, log }) {
     const _log = typeof log === 'function' ? log : () => {};
     if (!pipelineDir || !Array.isArray(canonicalResults) || canonicalResults.length === 0) return;
     for (const c of canonicalResults) {
@@ -1139,6 +1139,10 @@ function emitCanonicalValidationAudit({ pipelineDir, session, canonicalResults, 
                 fsImpl,
                 record: {
                     timestamp,
+                    // #3961 EP8-H8 (CA-5a) — provider del verifier ganador (insumo
+                    // de la tasa de rechazo de Sherlock por proveedor). Null cuando
+                    // la chain abortó sin provider resuelto.
+                    provider: provider || null,
                     claim: `#${c.issue}/${c.claim}`,
                     canonical_command: buildCanonicalCommand(c.claim, { issue: c.issue }),
                     // `value` canónico = stdout interpretado (true/false/null). El
@@ -1560,7 +1564,7 @@ async function verify(opts = {}) {
             : String(_normalizedIssues[0] || '');
     })();
     let _canonicalAuditEmitted = false;
-    const emitCanonicalAuditOnce = (winningSameProvider) => {
+    const emitCanonicalAuditOnce = (winningSameProvider, winningProvider) => {
         if (_canonicalAuditEmitted) return;
         _canonicalAuditEmitted = true;
         if (canonicalResults.length === 0) return;
@@ -1569,6 +1573,9 @@ async function verify(opts = {}) {
             session: _auditSession,
             canonicalResults,
             sameProvider: !!winningSameProvider,
+            // #3961 EP8-H8 (CA-5a) — provider del intento ganador (string ID) o
+            // null si la chain abortó sin resolver provider.
+            provider: winningProvider || null,
             timestamp: new Date(_now).toISOString(),
             fsImpl,
             log: _log,
@@ -1917,7 +1924,8 @@ async function verify(opts = {}) {
         });
 
         // CA-3 (#3921) — audit canónico con el sameProvider del intento GANADOR.
-        emitCanonicalAuditOnce(sameProvider);
+        // #3961 EP8-H8 (CA-5a) — + provider ganador para el desglose by_provider.
+        emitCanonicalAuditOnce(sameProvider, resolved.provider);
 
         return {
             verdict: parsed.data.verdict,

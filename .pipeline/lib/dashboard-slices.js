@@ -779,6 +779,19 @@ function sherlockPrecisionSlice(state, ctx) {
         // #3923 EP2-H3 — tasa de not_verifiable POR FUENTE (insumo EP8-H8). SEC-6:
         // solo contadores por enum cerrado, nunca claims/comandos/stdout.
         const notVerifiableBySource = _emptyNvBySource();
+        // #3961 EP8-H8 (CA-5a) — desglose por proveedor del verifier. La clave es
+        // `rec.provider` (el provider de Sherlock que produjo el veredicto; lo
+        // persiste el writer cuando el verifier lo provee, mismo patrón que
+        // `same_provider`). SEC-1: el provider es un enum acotado de IDs
+        // (anthropic/openai/...), pero NO se confía — el render lo escapa igual.
+        // SEC-2: sólo contadores numéricos por provider, nunca líneas crudas.
+        // Tasa de rechazo por provider = incorrectas / total (1 - precisión).
+        const byProvider = Object.create(null);
+        // #3961 EP8-H8 (CA-2) — muestras temporales para la sparkline diaria:
+        // precisión por día (v=1 correcta / 0 incorrecta) y same-provider por día.
+        const _now = (ctx && Number.isFinite(ctx.now)) ? ctx.now : Date.now();
+        const verdictSamples = [];
+        const sameProviderSamples = [];
         for (const f of files) {
             let raw = '';
             try { raw = fs.readFileSync(path.join(auditDir, f), 'utf8'); }
@@ -790,6 +803,7 @@ function sherlockPrecisionSlice(state, ctx) {
                 if (typeof (rec && rec.same_provider) === 'boolean') {
                     sameProviderTotal += 1;
                     if (rec.same_provider === true) sameProviderCount += 1;
+                    sameProviderSamples.push({ ts: rec.timestamp, v: rec.same_provider ? 1 : 0 });
                 }
                 const resultado = rec && rec.resultado;
                 if (resultado === 'not_verifiable') {
@@ -805,8 +819,37 @@ function sherlockPrecisionSlice(state, ctx) {
                 }
                 if (resultado !== 'true' && resultado !== 'false') continue;
                 totales += 1;
-                if (_sherlockRecordCorrecto(rec)) correctas += 1;
+                const correcto = _sherlockRecordCorrecto(rec);
+                if (correcto) correctas += 1;
+                verdictSamples.push({ ts: rec.timestamp, v: correcto ? 1 : 0 });
+                // #3961 EP8-H8 (CA-5a) — acumulado por provider. Sólo cuando el
+                // record trae un `provider` string no vacío (records viejos sin el
+                // campo no crean una clave espuria). Guarda contra prototype
+                // pollution: nunca usar `__proto__`/`constructor`/`prototype`.
+                const prov = rec && typeof rec.provider === 'string' ? rec.provider.trim() : '';
+                if (prov && prov !== '__proto__' && prov !== 'constructor' && prov !== 'prototype') {
+                    let acc = byProvider[prov];
+                    if (!acc) { acc = { totales: 0, correctas: 0 }; byProvider[prov] = acc; }
+                    acc.totales += 1;
+                    if (correcto) acc.correctas += 1;
+                }
             }
+        }
+
+        // #3961 EP8-H8 (CA-5a) — materializa el desglose por provider con la tasa
+        // de rechazo (incorrectas/total) y el flag de muestra insuficiente por
+        // provider (mismo umbral que el global). Sin strings derivados de logs.
+        const by_provider = {};
+        for (const prov of Object.keys(byProvider)) {
+            const acc = byProvider[prov];
+            const incorrectas = acc.totales - acc.correctas;
+            by_provider[prov] = {
+                totales: acc.totales,
+                correctas: acc.correctas,
+                incorrectas,
+                rejection_rate: acc.totales > 0 ? incorrectas / acc.totales : null,
+                insufficient_sample: acc.totales < SHERLOCK_PRECISION_MIN_SAMPLE,
+            };
         }
 
         const ratio = totales > 0 ? correctas / totales : null; // null => muestra vacía
@@ -821,6 +864,12 @@ function sherlockPrecisionSlice(state, ctx) {
             not_verifiable_by_source: notVerifiableBySource,
             ratio,                                              // number|null, sin string
             insufficient_sample: totales < SHERLOCK_PRECISION_MIN_SAMPLE,
+            // #3961 EP8-H8 (CA-5a) — tasa de rechazo por provider (derivada).
+            by_provider,
+            // #3961 EP8-H8 (CA-2) — sparkline diaria 7d: precisión por día (0..1)
+            // y same-provider por día (0..1). 0 en días sin muestra.
+            spark7d: dailyBuckets(verdictSamples, { days: 7, now: _now, agg: 'avg' }),
+            same_provider_spark7d: dailyBuckets(sameProviderSamples, { days: 7, now: _now, agg: 'avg' }),
             target: SHERLOCK_PRECISION_TARGET,
             alert: ratio !== null && ratio < SHERLOCK_PRECISION_ALERT_BELOW,
             // CA-3 (#3921) — % verificaciones same-provider (meta < 10%).
@@ -841,6 +890,10 @@ function sherlockPrecisionSlice(state, ctx) {
             not_verifiable_by_source: _emptyNvBySource(),
             ratio: null,
             insufficient_sample: true,
+            // #3961 EP8-H8 (CA-5a) — degrade: sin desglose por provider.
+            by_provider: {},
+            spark7d: new Array(7).fill(0),
+            same_provider_spark7d: new Array(7).fill(0),
             target: SHERLOCK_PRECISION_TARGET,
             alert: false,
             same_provider_count: 0,
@@ -893,6 +946,144 @@ function skillSpark24h(state, now) {
     }
     _sparkCache = { at: now, data: bySkill };
     return bySkill;
+}
+
+// -----------------------------------------------------------------------------
+// #3961 EP8-H8 — Helpers de agregación histórica (CA-1) reutilizables.
+// -----------------------------------------------------------------------------
+
+const DAY_MS = 24 * 3600 * 1000;
+
+// Percentil (interpolación lineal, método "linear"/R-7) sobre una copia
+// ordenada. Devuelve null para muestra vacía. p en [0,100].
+function _percentile(values, p) {
+    if (!Array.isArray(values) || values.length === 0) return null;
+    const arr = values.filter((v) => Number.isFinite(v)).slice().sort((a, b) => a - b);
+    if (arr.length === 0) return null;
+    if (arr.length === 1) return arr[0];
+    const rank = (Math.min(100, Math.max(0, p)) / 100) * (arr.length - 1);
+    const lo = Math.floor(rank);
+    const hi = Math.ceil(rank);
+    if (lo === hi) return arr[lo];
+    const frac = rank - lo;
+    return arr[lo] + (arr[hi] - arr[lo]) * frac;
+}
+
+// Bucketización por día reutilizable (CA-1). Agrupa items con timestamp en `days`
+// cubetas diarias terminando en `now`. Cada item es `{ ts, v }` donde ts es ms
+// epoch o ISO string y v un número (default 1 → conteo). Devuelve un array de
+// longitud `days`: índice 0 = día más viejo, índice days-1 = hoy. La agregación
+// se elige con `agg`: 'count' | 'sum' | 'avg' | 'p95' | 'median'. Items fuera de
+// la ventana se descartan. Robusto a entradas basura (no lanza).
+function dailyBuckets(items, opts) {
+    const o = opts || {};
+    const days = Number.isFinite(o.days) && o.days > 0 ? Math.floor(o.days) : 7;
+    const now = Number.isFinite(o.now) ? o.now : Date.now();
+    const agg = o.agg || 'count';
+    const windowStart = now - days * DAY_MS;
+    const perBucket = Array.from({ length: days }, () => []);
+    if (Array.isArray(items)) {
+        for (const it of items) {
+            if (!it) continue;
+            let tsMs = it.ts;
+            if (typeof tsMs === 'string') tsMs = Date.parse(tsMs);
+            if (!Number.isFinite(tsMs)) continue;
+            if (tsMs < windowStart || tsMs > now) continue;
+            let idx = Math.floor((tsMs - windowStart) / DAY_MS);
+            if (idx < 0) idx = 0;
+            if (idx > days - 1) idx = days - 1;
+            const v = Number.isFinite(it.v) ? it.v : 1;
+            perBucket[idx].push(v);
+        }
+    }
+    return perBucket.map((vals) => {
+        if (vals.length === 0) return 0;
+        switch (agg) {
+            case 'sum': return vals.reduce((a, b) => a + b, 0);
+            case 'avg': return vals.reduce((a, b) => a + b, 0) / vals.length;
+            case 'p95': return _percentile(vals, 95) || 0;
+            case 'median': return _percentile(vals, 50) || 0;
+            case 'count':
+            default: return vals.length;
+        }
+    });
+}
+
+// -----------------------------------------------------------------------------
+// #3961 EP8-H8 (CA-5c) — p95 de latencia de voz. Lee eventos `tts:generated` del
+// activity-log persistido y computa SÓLO agregados numéricos (p95, conteo, serie
+// 7d). SEC-2: nunca vuelca líneas crudas (que traen cost/provider/voice). SEC-4:
+// ruta fija derivada de REPO_ROOT, sin concatenar input externo.
+//
+// Fuente del dato: `latency_ms` (instrumentación de 1 campo aprobada por PO,
+// opción (b) — el `elapsedMs` ya se computaba y se descartaba en tts-logger.js).
+// Con muestra baja (< MIN) devuelve insufficient_sample en vez de un p95 que
+// engañaría al operador (riesgo de muestra insuficiente, hoy ~1 evento TTS).
+// -----------------------------------------------------------------------------
+const VOICE_MIN_SAMPLE = 5;
+const VOICE_WINDOW_DAYS = 7;
+
+function _repoRootFromCtx(ctx) {
+    return (ctx && ctx.REPO_ROOT)
+        || process.env.PIPELINE_REPO_ROOT
+        || process.env.CLAUDE_PROJECT_DIR
+        || path.resolve(__dirname, '..', '..');
+}
+
+function voiceLatencySlice(state, ctx) {
+    const now = (ctx && Number.isFinite(ctx.now)) ? ctx.now : Date.now();
+    const windowStart = now - VOICE_WINDOW_DAYS * DAY_MS;
+    try {
+        const repoRoot = _repoRootFromCtx(ctx);
+        const logPath = path.join(repoRoot, '.claude', 'activity-log.jsonl');
+        let raw = '';
+        try { raw = fs.readFileSync(logPath, 'utf8'); }
+        catch { raw = ''; /* archivo ausente → muestra vacía, no error */ }
+
+        const samples = [];   // { ts, v: latency_ms } dentro de la ventana
+        for (const line of raw.split('\n')) {
+            if (!line.trim()) continue;
+            let rec = null;
+            try { rec = JSON.parse(line); } catch { continue; }
+            if (!rec || rec.event !== 'tts:generated') continue;
+            const lat = Number(rec.latency_ms);
+            if (!Number.isFinite(lat) || lat < 0) continue;   // sólo records con latencia fiel
+            let tsMs = rec.ts;
+            if (typeof tsMs === 'string') tsMs = Date.parse(tsMs);
+            if (!Number.isFinite(tsMs)) continue;
+            if (tsMs < windowStart || tsMs > now) continue;
+            samples.push({ ts: tsMs, v: lat });
+        }
+
+        const latencies = samples.map((s) => s.v);
+        const count = latencies.length;
+        const insufficient = count < VOICE_MIN_SAMPLE;
+        const p95 = insufficient ? null : Math.round(_percentile(latencies, 95));
+        const median = insufficient ? null : Math.round(_percentile(latencies, 50));
+        // Serie 7d para la sparkline: p95 por día (0 en días sin muestra).
+        const spark7d = dailyBuckets(samples, { days: VOICE_WINDOW_DAYS, now, agg: 'p95' })
+            .map((v) => Math.round(v));
+        return {
+            p95_ms: p95,                 // number|null
+            median_ms: median,           // number|null
+            count,
+            insufficient_sample: insufficient,
+            min_sample: VOICE_MIN_SAMPLE,
+            window_days: VOICE_WINDOW_DAYS,
+            spark7d,                     // array<number> longitud 7
+        };
+    } catch {
+        return {
+            p95_ms: null,
+            median_ms: null,
+            count: 0,
+            insufficient_sample: true,
+            min_sample: VOICE_MIN_SAMPLE,
+            window_days: VOICE_WINDOW_DAYS,
+            spark7d: new Array(VOICE_WINDOW_DAYS).fill(0),
+            error: 'voice_latency_unavailable',
+        };
+    }
 }
 
 function equipoSlice(state) {
@@ -1762,6 +1953,130 @@ function partialPauseAuditSlice(state, ctx) {
     };
 }
 
+// -----------------------------------------------------------------------------
+// #3961 EP8-H8 (CA-6) — Deriva las alertas de umbral de los KPIs. NO escribe en
+// `alert-tray-audit.js` (que es audit trail append-only de acciones del operador):
+// estas alertas surfacean como datos read-only a través de `alertTraySlice()`.
+//
+// Cada entrada tiene shape acotado: { id, kpi, severity, message, value,
+// threshold, provider?, skill? }. `message` se arma con templates constantes +
+// números; `provider`/`skill` son strings de log (vector XSS SEC-1) → el RENDER
+// los escapa con escapeHtmlText/Attr (no acá, para no romper igualdad de tests).
+//
+// @param {object} kpis - { sherlock, voice, deliverables, dora } (slices ya
+//                        computados; cualquiera puede faltar → se omite su check).
+// @param {object} thresholds - salida de lib/dashboard-thresholds.loadThresholds.
+// @returns {Array<object>} - lista de alertas (vacía si nada excede umbral).
+// -----------------------------------------------------------------------------
+function computeThresholdAlerts(kpis, thresholds) {
+    const out = [];
+    const k = kpis || {};
+    const t = thresholds || {};
+    const num = (x) => (Number.isFinite(x) ? x : null);
+
+    // Sherlock precisión global: ratio por debajo del piso de alerta.
+    const sh = k.sherlock;
+    if (sh && sh.ratio !== null && sh.ratio !== undefined && !sh.insufficient_sample) {
+        const below = num(t.sherlock_precision_alert_below);
+        if (below !== null && sh.ratio < below) {
+            out.push({
+                id: 'sherlock_precision', kpi: 'sherlock_precision', severity: 'bad',
+                message: `Precisión de Sherlock ${(sh.ratio * 100).toFixed(0)}% < ${(below * 100).toFixed(0)}%`,
+                value: sh.ratio, threshold: below,
+            });
+        }
+        // Same-provider por encima de la meta (independencia del juez degradada).
+        const spTarget = num(t.sherlock_same_provider_target);
+        if (spTarget !== null && sh.same_provider_ratio !== null && sh.same_provider_ratio !== undefined
+            && sh.same_provider_ratio >= spTarget) {
+            out.push({
+                id: 'sherlock_same_provider', kpi: 'sherlock_same_provider', severity: 'warn',
+                message: `Same-provider ${(sh.same_provider_ratio * 100).toFixed(0)}% ≥ meta ${(spTarget * 100).toFixed(0)}%`,
+                value: sh.same_provider_ratio, threshold: spTarget,
+            });
+        }
+        // Rechazo por provider: tasa de rechazo por encima del complemento del target.
+        const precTarget = num(t.sherlock_precision_target);
+        if (precTarget !== null && sh.by_provider && typeof sh.by_provider === 'object') {
+            const maxReject = 1 - precTarget;
+            for (const prov of Object.keys(sh.by_provider)) {
+                const bp = sh.by_provider[prov];
+                if (bp && !bp.insufficient_sample && bp.rejection_rate !== null
+                    && bp.rejection_rate > maxReject) {
+                    out.push({
+                        id: `sherlock_provider:${prov}`, kpi: 'sherlock_provider', severity: 'warn',
+                        provider: prov,
+                        message: `Rechazo de Sherlock ${(bp.rejection_rate * 100).toFixed(0)}% > ${(maxReject * 100).toFixed(0)}%`,
+                        value: bp.rejection_rate, threshold: maxReject,
+                    });
+                }
+            }
+        }
+    }
+
+    // p95 latencia de voz por encima de la banda saludable.
+    const vo = k.voice;
+    if (vo && !vo.insufficient_sample && vo.p95_ms !== null && vo.p95_ms !== undefined) {
+        const maxMs = num(t.voice_p95_max_ms);
+        if (maxMs !== null && vo.p95_ms > maxMs) {
+            out.push({
+                id: 'voice_p95', kpi: 'voice_p95', severity: 'warn',
+                message: `p95 latencia de voz ${vo.p95_ms}ms > ${maxMs}ms`,
+                value: vo.p95_ms, threshold: maxMs,
+            });
+        }
+    }
+
+    // % entregables por skill por debajo del mínimo.
+    const de = k.deliverables;
+    const minPct = num(t.deliverables_min_pct);
+    if (de && Array.isArray(de.skills) && minPct !== null) {
+        for (const row of de.skills) {
+            if (row && row.pct !== null && row.pct !== undefined && Number.isFinite(row.pct)
+                && row.total > 0 && row.pct < minPct) {
+                out.push({
+                    id: `deliverables:${row.skill}`, kpi: 'deliverables', severity: 'warn',
+                    skill: row.skill,
+                    message: `Entregables ${Math.round(row.pct)}% < ${minPct}%`,
+                    value: row.pct, threshold: minPct,
+                });
+            }
+        }
+    }
+
+    // DORA: lead time / throughput / fail rate fuera de target.
+    const dora = k.dora;
+    if (dora && typeof dora === 'object') {
+        const ltMaxH = num(t.dora_lead_time_max_h);
+        if (ltMaxH !== null && Number.isFinite(dora.leadTimeMs) && dora.leadTimeMs > 0
+            && dora.leadTimeMs > ltMaxH * 3600 * 1000) {
+            out.push({
+                id: 'dora_lead_time', kpi: 'dora_lead_time', severity: 'warn',
+                message: `Lead time ${(dora.leadTimeMs / 3600000).toFixed(1)}h > ${ltMaxH}h`,
+                value: dora.leadTimeMs, threshold: ltMaxH,
+            });
+        }
+        const tpMin = num(t.dora_throughput_min_per_day);
+        if (tpMin !== null && Number.isFinite(dora.throughputPerDay) && dora.throughputPerDay < tpMin) {
+            out.push({
+                id: 'dora_throughput', kpi: 'dora_throughput', severity: 'warn',
+                message: `Throughput ${dora.throughputPerDay}/d < ${tpMin}/d`,
+                value: dora.throughputPerDay, threshold: tpMin,
+            });
+        }
+        const frMax = num(t.dora_fail_rate_max_pct);
+        if (frMax !== null && Number.isFinite(dora.failRatePct) && dora.failRatePct > frMax) {
+            out.push({
+                id: 'dora_fail_rate', kpi: 'dora_fail_rate', severity: 'bad',
+                message: `Failure rate ${Math.round(dora.failRatePct)}% > ${frMax}%`,
+                value: dora.failRatePct, threshold: frMax,
+            });
+        }
+    }
+
+    return out;
+}
+
 // #3954 EP8-H1 CA-5 — Bandeja de alertas del Home mission-control. Slice
 // modelado 1:1 sobre `partialPauseAuditSlice`: tail de acciones del operador
 // (ack/snooze) con timestamp/actor/justificación truncada a 80, stats de 24h,
@@ -1770,6 +2085,10 @@ function partialPauseAuditSlice(state, ctx) {
 // El actor SIEMPRE es `operador-local` (grabado server-side, REQ-SEC-3) — el
 // slice no lo deriva del cliente. Degrada a `{error}` si el store no está
 // disponible (espejo de partial-pause), sin romper el dashboard.
+//
+// #3961 EP8-H8 (CA-6) — si el caller pasa `ctx.kpis` + `ctx.thresholds`, el
+// slice deriva las alertas de umbral con computeThresholdAlerts() y las expone
+// en `threshold_alerts` (read-only, NO se escriben al audit trail).
 function alertTraySlice(state, ctx) {
     const _ctx = ctx || {};
     const limit = Number.isFinite(_ctx.limit) && _ctx.limit > 0 ? _ctx.limit : 5;
@@ -1790,6 +2109,9 @@ function alertTraySlice(state, ctx) {
             suppressions: {},
             chain_broken: false,
             chain_error: err && err.message,
+            // #3961 EP8-H8 (CA-6) — aún sin audit trail, las alertas de umbral
+            // surfacean (son independientes del store de acciones del operador).
+            threshold_alerts: _safeThresholdAlerts(_ctx),
             error: 'alert_tray_audit_unavailable',
         };
     }
@@ -1822,7 +2144,18 @@ function alertTraySlice(state, ctx) {
         chain_broken_at: chainStatus.brokenAt || null,
         chain_broken_reason: chainStatus.reason || null,
         chain_entries_checked: chainStatus.entriesChecked || 0,
+        // #3961 EP8-H8 (CA-6) — alertas de umbral derivadas (read-only).
+        threshold_alerts: _safeThresholdAlerts(_ctx),
     };
+}
+
+// Wrapper defensivo: deriva las alertas de umbral si el caller pasó kpis +
+// thresholds en ctx; nunca lanza (un fallo del cómputo no debe romper la bandeja).
+function _safeThresholdAlerts(ctx) {
+    try {
+        if (!ctx || !ctx.kpis || !ctx.thresholds) return [];
+        return computeThresholdAlerts(ctx.kpis, ctx.thresholds);
+    } catch { return []; }
 }
 
 // #3642 — Widget architect 4 estados. Slice consume el resolver puro
@@ -1902,6 +2235,11 @@ module.exports = {
     // #3897 CA-4 — métrica de precisión de Sherlock (solo agregados, SEC-6)
     sherlockPrecisionSlice,
     _sherlockRecordCorrecto,
+    // #3961 EP8-H8 — p95 latencia de voz, helpers de agregación y alertas de umbral
+    voiceLatencySlice,
+    dailyBuckets,
+    computeThresholdAlerts,
+    _percentile,
     // #3642 — widget architect 4 estados
     architectStateSlice,
     architectBadgeHTML,

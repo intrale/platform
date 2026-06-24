@@ -402,6 +402,23 @@ dashboard:
   # los promedios todavía son ruidosos por pocas muestras.
   eta_stuck_threshold_pct: 150
 
+  # #3961 EP8-H8 — Umbrales configurables de los KPIs del panel de métricas.
+  # Migrados desde los hardcodeados (SHERLOCK_PRECISION_TARGET / _SAME_PROVIDER
+  # de dashboard-slices.js y los targets DORA de dashboard.js). El loader
+  # (lib/dashboard-thresholds.js) valida tipo/rango con default seguro y clamp;
+  # un valor ausente/invalido cae al default y un valor fuera de rango se acota.
+  # Cuando un KPI excede su umbral, la card se pinta y se genera una entrada en
+  # la bandeja de alertas (a traves de alertTraySlice()).
+  thresholds:
+    sherlock_precision_target: 0.90        # [0..1] verde >= target
+    sherlock_precision_alert_below: 0.80   # [0..1] alerta visible < este valor
+    sherlock_same_provider_target: 0.10    # [0..1] meta < 10% (independencia del juez)
+    voice_p95_max_ms: 8000                 # [0..600000] banda saludable de p95 latencia de voz
+    deliverables_min_pct: 80               # [0..100] % minimo de fases con entregable por skill
+    dora_lead_time_max_h: 6                # [0..720] target lead time < 6h
+    dora_throughput_min_per_day: 2         # [0..1000] target throughput > 2/dia
+    dora_fail_rate_max_pct: 15             # [0..100] target change fail rate < 15%
+
 # =============================================================================
 # Detector de cuota Anthropic agotada (#2974, hija de #2955)
 # =============================================================================
