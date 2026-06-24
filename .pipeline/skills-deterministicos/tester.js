@@ -1058,6 +1058,56 @@ function buildGradleCommand(module, coverage) {
     };
 }
 
+// ── Detección "todas las tasks de test UP-TO-DATE" (rebote #4155) ─────
+// Mapea cada módulo a sus tasks de test reales (mismo criterio que
+// buildGradleCommand). app/composeApp enumera las tres variantes de flavor.
+function expectedTestTasks(modules) {
+    const map = {
+        backend: [':backend:test'],
+        users:   [':users:test'],
+        app:     [
+            ':app:composeApp:testClientDebugUnitTest',
+            ':app:composeApp:testBusinessDebugUnitTest',
+            ':app:composeApp:testDeliveryDebugUnitTest',
+        ],
+    };
+    const out = [];
+    for (const m of modules) out.push(...(map[m] || []));
+    return out;
+}
+
+/**
+ * True si el stdout de Gradle muestra TODA task de test esperada como
+ * `UP-TO-DATE` (rebote #4155).
+ *
+ * Contexto: en `verificacion` el tester corre Gradle en REPO_ROOT (main). Un
+ * cambio que toca SOLO inputs de configuración de Gradle (p. ej.
+ * `gradle.properties` / `build.gradle.kts`, como este issue) no invalida los
+ * inputs de las tasks de test, así que Gradle las reporta UP-TO-DATE: no las
+ * re-ejecuta y no escribe XMLs JUnit nuevos. El filtro `minMtimeMs` descarta los
+ * XMLs existentes (de un run previo) → `tests.valid=false` → el tester rebotaba
+ * con "No se encontraron reportes JUnit" pese a que los tests están verdes.
+ *
+ * UP-TO-DATE GARANTIZA que la task corrió y pasó con esos mismos inputs (Gradle
+ * NUNCA marca UP-TO-DATE una task de test fallida: una falla deja la task
+ * desactualizada y la re-ejecuta hasta que pase). Por eso los XMLs en disco son
+ * válidos para el código actual y se pueden releer sin el filtro de mtime.
+ *
+ * IMPORTANTE: sólo cuenta `UP-TO-DATE`. Una task `SKIPPED` (test excluido —
+ * violaría CA-1 de #4155) NO matchea → el tester sigue rebotando, como debe.
+ */
+function allExpectedTestTasksUpToDate(stdout, modules) {
+    if (!stdout) return false;
+    const tasks = expectedTestTasks(modules);
+    if (tasks.length === 0) return false;
+    return tasks.every((t) => {
+        const escaped = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        // Línea Gradle: "> Task :backend:test UP-TO-DATE"
+        const re = new RegExp(`>\\s*Task\\s+${escaped}\\s+UP-TO-DATE`);
+        return re.test(stdout);
+    });
+}
+
 // ── Spawn con captura completa ───────────────────────────────────────
 // #4155 — `runGradle` envuelve el spawn con el lock global de Gradle: el tester
 // (concurrencia 2) puede coexistir con la fase `build` y con los devs, lo que
@@ -1360,6 +1410,32 @@ async function main() {
                 artifacts = copyArtifacts(koverData.files);
             }
 
+            // #4155 — Falso negativo "No se encontraron reportes JUnit" en
+            // cambios que tocan SOLO config de Gradle (gradle.properties /
+            // build.gradle.kts, como este issue). En `verificacion` el tester
+            // corre Gradle en REPO_ROOT (main); si los inputs de test no
+            // cambiaron, las tasks salen UP-TO-DATE → Gradle no re-ejecuta ni
+            // escribe XMLs nuevos → el filtro `minMtimeMs` descarta los XMLs
+            // existentes y `tests.valid` queda false → rebote espurio.
+            //
+            // UP-TO-DATE garantiza que la task de test corrió y pasó con esos
+            // mismos inputs (Gradle nunca marca UP-TO-DATE un test fallido), así
+            // que los XMLs en disco son válidos para el código actual. Cuando
+            // TODAS las tasks de test esperadas están UP-TO-DATE y Gradle salió
+            // 0, releemos los reportes JUnit SIN filtro de mtime para recuperar
+            // los resultados reales. NO releemos Kover: los tests no se
+            // re-ejecutaron, así que no medimos cobertura nueva (evita un rechazo
+            // espurio por cobertura baseline del repo, ajena a un cambio de
+            // paralelismo). Una task SKIPPED (test excluido) NO cuenta como
+            // UP-TO-DATE → el rebote se mantiene, protegiendo CA-1.
+            if (!tests.valid
+                && gradleResult.exit_code === 0
+                && allExpectedTestTasksUpToDate(gradleResult.stdout, cmd.modules)) {
+                logAppend('[tester] todas las tasks de test UP-TO-DATE (ya verdes en run previo con mismos inputs); releyendo reportes JUnit existentes sin filtro de mtime (#4155)');
+                tests = collectTestReports(cmd.modules, {});
+                logAppend(`[tester] re-lectura sin filtro de mtime: tests=${tests.tests} valid=${tests.valid} failures=${tests.failures} errors=${tests.errors}`);
+            }
+
             // Detección temprana: gradle abortó sin ejecutar tests.
             // Síntoma: exit_code ≠ 0 + wall_ms muy bajo (típicamente <2s) +
             // ningún XML fresco. Esto pasa cuando el shell no entiende
@@ -1604,6 +1680,10 @@ module.exports = {
     collectKoverReports,
     copyArtifacts,
     renderReport,
+    // Recuperación de falso negativo "No se encontraron reportes JUnit" cuando
+    // todas las tasks de test salen UP-TO-DATE (rebote #4155).
+    expectedTestTasks,
+    allExpectedTestTasksUpToDate,
     // Lock global de Gradle (#4155): `runGradle` con lock, `spawnGradle` crudo.
     runGradle,
     spawnGradle,
