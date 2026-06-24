@@ -272,6 +272,17 @@ circuit_breaker:
   # SEC-R1: debe ser entero ≥ 1; un valor inválido (0, negativo, no numérico)
   # cae al default 3 con warning — nunca deshabilita el fail-closed de #2305.
   auto_resume_ok_threshold: 3
+  # #4160 — auto-promoción por convergencia. Cuando un issue rebota de
+  # `verificacion` a `dev` sin una observación accionable real y el dev produce
+  # el MISMO diff que en el rebote anterior (convergencia) con el build verde, el
+  # Pulpo auto-promueve en lugar de seguir rebotando hasta agotar el breaker.
+  auto_promote_on_convergence: true
+  # Condición necesaria: el build del issue debe estar verde para auto-promover.
+  convergence_requires_build_green: true
+  # Gate RIESGO-1 (NO NEGOCIABLE): rechazos originados por estos skills NUNCA se
+  # auto-promueven por convergencia — siguen el circuit breaker hacia humano.
+  # `security` queda además excluido por código (defensa-en-profundidad).
+  convergence_excludes_skills: [security]
 
 # GitHub
 github:

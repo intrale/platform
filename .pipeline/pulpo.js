@@ -143,6 +143,10 @@ const {
 // crea marker en `bloqueado-humano/`, se aplica label `blocked:dependencies`
 // y el brazoDesbloqueo (ya existente) destraba cuando todas las deps cierren.
 const reboteClassifier = require('./lib/rebote-classifier');
+// #4160 — detección de convergencia + clasificación accionable/ruido para
+// auto-promover rebotes "en falso" de `verificacion` en lugar de loopear.
+const convergence = require('./lib/convergence-detector');
+const observationClassifier = require('./lib/observation-classifier');
 // EP5-H1 (#3938) — frontera FS: derivación de issue+skill desde nombre de
 // work-file. `issueFromFile`/`skillFromFile` (lenientes) delegan acá; la
 // validación estricta (anti path-traversal, CA-7) vive en `parseWorkfileName`.
@@ -3646,6 +3650,10 @@ function brazoBarrido(config) {
           // infinitos si la clasificacion infra se rompiera).
           let reboteCount = 0;
           let reboteInfraCount = 0;
+          // #4160 — capturar también el diff-hash y los motivos del ciclo previo
+          // (escritos en el YAML del rebote anterior) para el gate de convergencia.
+          let diffHashPrevio = null;
+          const prevMotivos = [];
           for (const estado of ['pendiente', 'trabajando', 'procesado']) {
             const dir = path.join(fasePath(pipelineName, faseRechazo), estado);
             try {
@@ -3661,7 +3669,10 @@ function brazoBarrido(config) {
                   }
                   if (data.rebote_numero && data.rebote_numero > reboteCount) {
                     reboteCount = data.rebote_numero;
+                    // El hash que importa es el del rebote más reciente (mayor número).
+                    diffHashPrevio = data.diff_hash_previo || diffHashPrevio;
                   }
+                  if (data.motivo_rechazo) prevMotivos.push(String(data.motivo_rechazo));
                 }
               }
             } catch {}
@@ -3798,6 +3809,158 @@ function brazoBarrido(config) {
             }
             continue;
           }
+
+          // =====================================================================
+          // #4160 — GATE DE AUTO-PROMOCIÓN POR CONVERGENCIA
+          // ---------------------------------------------------------------------
+          // Antes de rebotar a dev, evaluar si este es un rebote "en falso": el
+          // dev produjo el MISMO diff que en el rebote anterior, no apareció una
+          // observación accionable nueva, y el build está verde. En ese caso el
+          // pipeline NO debe seguir loopeando hasta el circuit breaker: auto-
+          // promueve a la fase siguiente.
+          //
+          // Sólo aplica a rebotes de CÓDIGO (no infra, no routing) en la fase
+          // `verificacion`. Todas las condiciones son fail-closed: ante cualquier
+          // dato faltante, NO auto-promueve y cae al rebote normal.
+          //
+          // INVARIANTE RIESGO-1 (NO NEGOCIABLE): un rechazo de `security` (o con
+          // claim accionable) NUNCA es elegible — sigue el circuit breaker.
+          // =====================================================================
+          const cbCfg = (config && config.circuit_breaker) || {};
+          const autoPromoteOn = cbCfg.auto_promote_on_convergence === true;
+          if (autoPromoteOn
+              && fase === 'verificacion'
+              && !esReboteDeInfra
+              && !esRoutingMismatch
+              && i < fases.length - 1) {
+            // Clasificar cada rechazo como accionable vs ruido.
+            const rechazosClasificados = rechazados.map(r => {
+              const skill = skillFromFile(r.file.name);
+              const { accionable } = observationClassifier.classifyObservation({
+                motivo: r.motivo || '',
+                skill,
+                prevMotivos,
+              });
+              return { skill, accionable, motivo: r.motivo || '' };
+            });
+
+            const excludeSkills = Array.isArray(cbCfg.convergence_excludes_skills)
+              ? cbCfg.convergence_excludes_skills
+              : convergence.DEFAULT_EXCLUDE_SKILLS;
+
+            // buildGreen: el issue está en `verificacion`, que es downstream de
+            // `build`. Llegar acá implica que el build aprobó el diff actual.
+            // Fail-closed: exigir que `build` exista y sea anterior a la fase.
+            const buildIdx = fases.indexOf('build');
+            const buildGreen = (!cbCfg.convergence_requires_build_green)
+              || (buildIdx >= 0 && i > buildIdx);
+
+            // Sólo computamos el diff-hash (toca git) si la elegibilidad pasa.
+            const elegibilidad = convergence.isEligibleForAutoPromote({
+              rechazos: rechazosClasificados,
+              excludeSkills,
+            });
+
+            if (elegibilidad.eligible) {
+              const currentDiff = convergence.computeDiffHash(issue, { root: ROOT });
+              const decision = convergence.decideAutoPromote({
+                rechazos: rechazosClasificados,
+                prevMotivos,
+                diffHashPrevio,
+                currentHash: currentDiff.hash,
+                buildGreen,
+                excludeSkills,
+              });
+
+              if (decision.promote) {
+                // AUTO-PROMOVER: NO rebotar. Seguir el path de promoción a la
+                // fase siguiente. Auditar la observación descartada (RIESGO-1).
+                const siguienteFase = fases[i + 1];
+                const siguientePendiente = path.join(fasePath(pipelineName, siguienteFase), 'pendiente');
+                fs.mkdirSync(siguientePendiente, { recursive: true });
+                const siguienteSkills = pipelineConfig.skills_por_fase[siguienteFase] || [];
+
+                if (siguienteFase === 'dev' || siguienteFase === 'build' || siguienteFase === 'entrega') {
+                  const skill = siguienteFase === 'dev'
+                    ? determinarDevSkill(issue, config)
+                    : (siguienteSkills[0] || siguienteFase);
+                  writeYaml(path.join(siguientePendiente, `${issue}.${skill}`), {
+                    issue: parseInt(issue), fase: siguienteFase, pipeline: pipelineName,
+                    promovido_por: 'convergencia',
+                  });
+                } else {
+                  for (const skill of siguienteSkills) {
+                    writeYaml(path.join(siguientePendiente, `${issue}.${skill}`), {
+                      issue: parseInt(issue), fase: siguienteFase, pipeline: pipelineName,
+                      promovido_por: 'convergencia',
+                    });
+                  }
+                }
+
+                const observacionDescartada = rechazosClasificados
+                  .map(rc => `[${rc.skill}] ${sanitizePipelineText(rc.motivo).slice(0, 300)}`)
+                  .join(' | ');
+
+                // Auditoría JSONL (RIESGO-1): registrar cada auto-promoción con la
+                // observación descartada para que el operador pueda revisar.
+                try {
+                  fs.mkdirSync(LOG_DIR, { recursive: true });
+                  fs.appendFileSync(
+                    path.join(LOG_DIR, 'audit-convergence.jsonl'),
+                    JSON.stringify({
+                      ts: new Date().toISOString(),
+                      event: 'auto_promote_convergence',
+                      issue: parseInt(issue),
+                      pipeline: pipelineName,
+                      fase_origen: fase,
+                      fase_destino: siguienteFase,
+                      diff_hash: currentDiff.hash,
+                      rebote_numero: reboteCount,
+                      skills_rechazo: rechazosClasificados.map(rc => rc.skill),
+                      observacion_descartada: observacionDescartada,
+                    }) + '\n',
+                  );
+                } catch (e) {
+                  log('barrido', `#${issue} audit-convergence append falló (best-effort): ${e.message}`);
+                }
+
+                log('barrido', `🟰 #${issue} AUTO-PROMOVIDO por convergencia: diff idéntico al rebote previo, observación descartada como ruido (no-accionable), sin rechazos de security. ${fase} → ${siguienteFase}`);
+                sendTelegram(`🟰 #${issue} auto-promovido por convergencia: el diff no cambió entre 2 intentos y la observación se descartó como ruido (no-accionable), sin rechazos de security. Avanzó \`${fase}\` → \`${siguienteFase}\` sin intervención humana.\n\nObservación descartada:\n> ${observacionDescartada.slice(0, 400)}`);
+                ghCommentOnIssue(
+                  issue,
+                  `🟰 **Auto-promoción por convergencia** (#4160) — \`${fase}\` → \`${siguienteFase}\`.\n\nEl diff producido por el dev no cambió respecto del rebote anterior, la observación se clasificó como **ruido (no-accionable)** y **ningún rechazo provino de \`security\`** (invariante RIESGO-1). El build está verde. El pipeline avanzó sin intervención humana en lugar de seguir rebotando.\n\n<details><summary>Observación descartada</summary>\n\n\`\`\`\n${observacionDescartada.slice(0, 1000)}\n\`\`\`\n</details>`,
+                );
+
+                // Mover archivos evaluados a procesado/ — el issue ya avanzó.
+                for (const a of archivos) {
+                  try { moveFile(a.path, procesadoDir); } catch {}
+                }
+
+                // Cleanup downstream: archivar residuales de fases posteriores
+                // para que no contaminen la nueva evaluación.
+                for (let downstream = i + 1; downstream < fases.length; downstream++) {
+                  const downFase = fases[downstream];
+                  for (const estado of ['pendiente', 'trabajando', 'listo']) {
+                    const dir = path.join(fasePath(pipelineName, downFase), estado);
+                    try {
+                      for (const f of fs.readdirSync(dir)) {
+                        if (f.startsWith('.') || isMarkerArtifactPulpo(f)) continue;
+                        if (f.startsWith(issue + '.')) {
+                          const archDir = path.join(fasePath(pipelineName, downFase), 'archivado');
+                          fs.mkdirSync(archDir, { recursive: true });
+                          try { moveFile(path.join(dir, f), archDir); } catch {}
+                        }
+                      }
+                    } catch {}
+                  }
+                }
+                continue; // saltar el path de rebote
+              }
+            } else {
+              log('barrido', `#${issue} convergencia NO elegible (${elegibilidad.razon}) — sigue rebote normal a ${faseRechazo}`);
+            }
+          }
+          // ===================== fin gate convergencia #4160 ===================
 
           // --- ROUTING MISMATCH: devolver a definición en vez de reencolar aquí ---
           if (esRoutingMismatch) {
@@ -4120,6 +4283,16 @@ function brazoBarrido(config) {
           };
           if (nuevoReboteInfraNumero > 0) {
             yamlOut.rebote_numero_infra = nuevoReboteInfraNumero;
+          }
+          // #4160 — persistir el hash del diff actual para que el próximo ciclo
+          // pueda detectar convergencia (diff idéntico entre rebotes). Sólo para
+          // rebotes de código (los de infra no tocan el diff del dev). Fail-closed:
+          // si no se resuelve el worktree, queda null y el gate no convergerá.
+          if (!esReboteDeInfra) {
+            try {
+              const dh = convergence.computeDiffHash(issue, { root: ROOT });
+              if (dh && dh.hash) yamlOut.diff_hash_previo = dh.hash;
+            } catch { /* best-effort, fail-closed */ }
           }
           for (const skill of skillsDestino) {
             const destinoFile = path.join(destinoPendiente, `${issue}.${skill}`);
