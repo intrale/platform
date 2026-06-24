@@ -163,6 +163,8 @@ a.kpi:hover { border-color: var(--in-accent, #58a6ff); }
 .kpis-prov-table th, .kpis-prov-table td { padding: 6px 10px; border-bottom: 1px solid var(--in-border, #30363d); text-align: left; }
 .kpis-prov-table th { color: var(--in-fg-dim, #8b949e); font-weight: 600; font-size: 11px; text-transform: uppercase; }
 .kpis-prov-empty, .kpis-sessions-empty { color: var(--in-fg-dim, #8b949e); font-size: 12px; }
+.kpis-deliv-partial { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 8px; font-size: 10px; text-transform: uppercase; letter-spacing: .3px; background: var(--in-bg-3, #21262d); color: var(--in-fg-dim, #8b949e); border: 1px solid var(--in-border, #30363d); cursor: help; }
+.kpis-deliv-empty-badge { color: var(--in-fg-dim, #8b949e); font-size: 11px; }
 
 .kpis-metrics-cta {
     display: inline-flex; align-items: center; gap: 8px;
@@ -291,6 +293,55 @@ function renderProvidersHTML(kpisSlice) {
 }
 
 /**
+ * #3932 EP3-H6 — Panel "Entregables por skill". Por cada skill con entregable
+ * definido muestra `% = delivered/total` + conteos + badge de severidad.
+ *
+ * Reutiliza el design system del dashboard (UX guidelines):
+ *   - Contenedor `.kpis-section` + tooltip accesible `kpi-tooltip` (semántica %).
+ *   - G-UX-1: severidad nunca sólo por color → `renderStatusBadge` (ícono+texto)
+ *     mapeando ok/warn/bad. El % numérico es señal redundante.
+ *   - G-UX-2: dato `parcial` con sufijo textual + tooltip (no sólo color).
+ *   - G-UX-3: orden por accionabilidad (peores primero) ya viene del agregador.
+ *   - G-UX-4: skill sin cierres (total=0) → "—", nunca 0% rojo.
+ *   - Toda interpolación dinámica pasa por escapeHtmlText/escapeHtmlAttr (R8).
+ *
+ * Recibe SÓLO agregados numéricos (CA-5). No accede a campos sensibles.
+ */
+function renderDeliverablesBySkillHTML(slice) {
+    const s = (slice && Array.isArray(slice.skills)) ? slice.skills : null;
+    const tip = '% de cierres de fase de este skill que dejaron entregable notificado. '
+        + 'Numerador: audit JSONL del notificador. Denominador: fases cerradas (procesado/); '
+        + 'si no hay datos de cierres se estima desde config.yaml y se marca como parcial.';
+    const partialTip = 'Denominador estimado desde config.yaml (procesado/ no disponible para este skill).';
+
+    let body = '';
+    if (s && s.length) {
+        for (const row of s) {
+            const pctTxt = row.pct == null ? '—' : `${fmtNum(row.pct)}%`;
+            // total=0 → sin cierres: mostramos "—" y badge neutro, no 0% rojo.
+            const badge = (row.pct == null)
+                ? `<span class="kpis-deliv-empty-badge">sin cierres</span>`
+                : renderStatusBadge({ severity: row.severity, label: pctTxt });
+            const partialBadge = row.partial
+                ? ` <span class="kpis-deliv-partial" tabindex="0" role="img" `
+                  + `aria-label="${escapeHtmlAttr(partialTip)}" data-tip="${escapeHtmlAttr(partialTip)}">parcial</span>`
+                : '';
+            const counts = `${escapeHtmlText(fmtNum(row.delivered))}/${escapeHtmlText(fmtNum(row.total))}`;
+            body += `<tr><td>${escapeHtmlText(row.skill)}${partialBadge}</td>`
+                + `<td>${badge}</td>`
+                + `<td>${counts}</td></tr>`;
+        }
+    }
+
+    return `<div class="kpis-section"><h2>📦 Entregables por skill `
+        + `<span class="kpi-tooltip" tabindex="0" role="img" aria-label="${escapeHtmlAttr(tip)}" data-tip="${escapeHtmlAttr(tip)}">i</span></h2>`
+        + (body
+            ? `<table class="kpis-prov-table"><thead><tr><th>Skill</th><th>%</th><th>Entregados/Total</th></tr></thead><tbody>${body}</tbody></table>`
+            : `<p class="kpis-prov-empty">Sin datos de entregables por skill (audit JSONL vacío o no disponible).</p>`)
+        + `</div>`;
+}
+
+/**
  * Resumen compacto de rendimiento por agente (skill). Los nombres de skill
  * vienen de loadConfig() / del filesystem → escapados (R8, CA-14.b). Lista las
  * top sesiones por consumo con session ID coercionado (CA-14.c / CA-17).
@@ -357,6 +408,7 @@ function renderKpis(opts) {
         + renderKpiCardsHTML(o.matrixDerived, o.sysMini)
         + renderDoraAndCommanderHTML({ kpisSlice: o.kpisSlice, routingMetrics: o.routingMetrics })
         + renderProvidersHTML(o.kpisSlice)
+        + renderDeliverablesBySkillHTML(o.deliverablesBySkill)
         + renderAgentPerfHTML(o.metricsSlice)
         + renderMetricsCta()
         + `</main>`;
@@ -712,6 +764,7 @@ module.exports = {
     renderKpiCardsHTML,
     renderDoraAndCommanderHTML,
     renderProvidersHTML,
+    renderDeliverablesBySkillHTML,
     renderAgentPerfHTML,
     renderMetricsCta,
     renderMetricsPage,
