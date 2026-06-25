@@ -823,6 +823,28 @@ if command -v node &>/dev/null && [ -f "$SCRIPT_DIR/qa-video-share.js" ]; then
             --total "${TOTAL_TESTS:-0}" \
             2>&1 | tail -5 &
     fi
+
+    # ── 10b. Subir assets binarios restantes (png/zip/html/mp3) a Drive (#4173) ──
+    # Sacar la evidencia binaria de git: se sube a Drive y se registran los links
+    # en qa/evidence/<issue>/qa-results.json. Best-effort, no bloquea $MAESTRO_EXIT.
+    ASSETS_LIST=""
+    for adir in "$RECORDINGS_DIR" "${PROJECT_ROOT}/qa/evidence/${ISSUE_NUMBER:-0}"; do
+        [ -d "$adir" ] || continue
+        for af in "$adir"/*.png "$adir"/*.zip "$adir"/*.html "$adir"/*.mp3; do
+            [ -f "$af" ] || continue
+            ASSETS_LIST="${ASSETS_LIST:+$ASSETS_LIST,}$af"
+        done
+    done
+    if [ -n "$ASSETS_LIST" ]; then
+        echo ""
+        echo "[10b] Subiendo assets de evidencia (png/zip/html/mp3) a Google Drive..."
+        node "$SCRIPT_DIR/qa-video-share.js" \
+            --issue "${ISSUE_NUMBER:-0}" \
+            --title "${ISSUE_TITLE:-}" \
+            --sprint "${SPRINT_ID:-}" \
+            --assets "$ASSETS_LIST" \
+            2>&1 | tail -5 &
+    fi
 fi
 
 exit $MAESTRO_EXIT

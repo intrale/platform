@@ -64,11 +64,21 @@ qa/artifacts/
 # QA E2E — tests generados (efímeros, se regeneran con /qa validate)
 qa/generated/
 
-# QA E2E — evidencias versionadas (NO ignorar)
+# QA E2E — evidencias versionadas (NO ignorar la carpeta)
 !qa/evidence/
-# QA E2E — videos locales (pesados, se suben a Google Drive)
+# QA E2E — assets binarios locales (pesados / posible PII, se suben a Google Drive — #4173)
 qa/evidence/**/*.mp4
 qa/evidence/**/*.mp4.tmp
+qa/evidence/**/*.png
+qa/evidence/**/*.zip
+qa/evidence/**/*.html
+qa/evidence/**/*.mp3
+# Re-incluir SOLO los metadatos tracked (orden importa: el ! va DESPUES del ignore — #4173)
+!qa/evidence/**/*.json
+!qa/evidence/**/.gitkeep
+# SEC-3 — configs con credenciales nunca a git (defensivo, aunque no existan hoy — #4173)
+qa/scripts/telegram-config.json
+**/service-account*.json
 .maestro/tests/
 
 # Claude Code — estado de sesión y logs (no commitear)
