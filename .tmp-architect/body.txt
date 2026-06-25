@@ -1,0 +1,81 @@
+Parte de la épica EP-8 (#3952).
+
+## Objetivo
+Línea de tiempo agrupada por día con filtros (skill, resultado, issue) y búsqueda; cada entrada expandible con detalle (fases, rebotes, costo, links a log/PR/entregable); agregados del período visible. El historial se vuelve el archivo navegable de la solución de cada issue (conecta con EP-3).
+
+## Criterios de aceptación
+- [ ] Filtros + búsqueda + paginación por fecha
+- [ ] Entregables parciales adjuntos por ejecución
+- [ ] Header con ejecuciones, % aprobado y duración mediana del período
+- [ ] Timestamps humanos ("hace 5 min")
+
+## Referencia visual
+
+**Pantalla actual (captura en vivo 2026-06-10):**
+
+![actual](https://raw.githubusercontent.com/intrale/platform/docs/auditoria-dashboard-2026-06/docs/auditoria-2026-06/img/actual-historial.png)
+
+**Pantalla objetivo (mockup del rediseño):**
+
+![rediseño](https://raw.githubusercontent.com/intrale/platform/docs/auditoria-dashboard-2026-06/docs/auditoria-2026-06/img/mock-historial.png)
+
+
+## Referencias
+- Reporte: Auditoría del Modelo Operativo 2026-06-10 (v5)
+- Épica: #3952
+
+---
+
+## Detalles Técnicos
+
+> Receta técnica de pre-admisión (skill `architect`, fase `criterios`). Reduce el costo cognitivo del dev fijando archivos, patrón y reutilización antes de `Ready`. Construida sobre el análisis de `guru` y los REQ-SEC-1..6 de `security`. Stack: Node puro + SSR (Dashboard V3), **sin app/backend Kotlin**.
+
+### Archivos a tocar
+
+- **`.pipeline/lib/dashboard-slices.js`** — agregar `historialTimelineSlice(state, ctx, opts)` (nuevo, ubicarlo junto al `historialSlice` actual en `:1426-1428`). Es el **núcleo lógico server-side**: recibe `agentHistory[]`, aplica filtros (skill / resultado / issue / query literal), agrupa por día, pagina y computa agregados del set visible. Reutiliza helpers **ya presentes en este archivo**: `_percentile(values, p)` (`:959-970`, para la duración mediana p50) y el patrón de `dailyBuckets(items, opts)` (`:978-1010`, agrupación diaria con `DAY_MS`). NO duplicar lógica de mediana.
+- **`.pipeline/dashboard.js:3705-3739`** — extender el armado de `agentHistory[]`. Hoy cada entry trae `{issue, titulo, skill, pipeline, fase, estado, resultado, duration, startedAt, finishedAt, hasLog, logFile, hasRejectionPdf, rejectionPdf}`. Agregar para el detalle expandible: `prUrl` (link a PR), `costo` (best-effort a nivel ejecución; degradar a issue/fase si no hay match), `rebote_numero`/`crossphaseCount` (ya se leen en `:1090,1199,1229` — exponerlos) y `attachments[]` (entregables parciales, fuente abajo). El orden actual (`:3733-3739`, running primero + ts desc) se mantiene; la agrupación por día la hace el slice/vista, no este armado.
+- **`.pipeline/dashboard.js`** — registrar un **endpoint GET paginado/filtrado** `/api/historial` en el dispatcher de `req.url` (modelo de handler: `/logs/view/` en `:10339-10348`). Parsea querystring (`skill`, `resultado`, `issue`, `q`, `page`/`cursor`), delega el cómputo a `historialTimelineSlice` y responde `application/json` (mismo header que `:10440`). El endpoint **no devuelve el historial completo**: aplica el límite máximo por request adentro del slice.
+- **`.pipeline/views/dashboard/historial.js`** — reescribir `renderHistorialSsr(state, opts)` (`:141-187`) de lista plana a **timeline agrupado por día** con header de agregados, controles de filtro/búsqueda y cards expandibles. Conservar `renderHistCard` (`:67-135`), `isSafeFilename` (`:58-60`) y los escapes ya cableados. Reemplazar el cap fijo `HIST_VISIBLE=15`/`HIST_CAP=50` (`:62-63`) por la paginación server-side (mantener las constantes como fallback del render embebido del monolito).
+- **`.pipeline/views/dashboard/theme.css`** — agregar clases `.ah-*` nuevas: encabezado de grupo de día (`.ah-day`), header de agregados (`.ah-aggr`), barra de filtros/búsqueda (`.ah-filters`), panel expandible del detalle (`.ah-detail`). Respetar los fundamentos de diseño de EP8-H0 (#3953, cerrado). El monolito conserva su copia inline para el render embebido (ver nota en `historial.js:39-42`).
+- **`.pipeline/views/dashboard/__tests__/historial.test.js`** — extender cobertura (ver "Tests obligatorios").
+
+### Patrón técnico recomendado
+
+- **Lógica en `lib/`, no en el monolito.** `dashboard.js` ya tiene ~12.1k líneas (#4143). El cómputo de filtros/agrupación/paginación/agregados vive en `dashboard-slices.js` (función pura testeable); `dashboard.js` solo arma el array fuente, registra la ruta y delega. La vista solo renderiza.
+- **Contrato del slice (sugerido):**
+  ```js
+  // historialTimelineSlice(state, ctx, { skill, resultado, issue, q, limit, cursor })
+  //   -> { groups: [{ dayLabel, dayKey, items: [...] }],
+  //        aggregates: { count, pctApproved, medianMs },
+  //        nextCursor, total }
+  ```
+  Mediana con `_percentile(durations, 50)` (reusar `:959`). `pctApproved = approved / count`.
+- **Búsqueda literal, NO regex cruda (REQ-SEC-5 / CA-6).** Match `String.prototype.includes` case-insensitive sobre `titulo` / `skill` / `motivo_rechazo`. Si se usa `RegExp`, escapar metacaracteres primero. Límite máximo de resultados por request obligatorio (paginación server-side).
+- **Timestamps humanos (CA-5).** Helper SSR de tiempo relativo ("hace 5 min", "hace 2 h") manteniendo el timestamp absoluto en `title=` (precisión). `renderHistCard` ya formatea con `toLocaleString` (`:78-80`) — extender, no romper.
+- **Links a entregables/logs (REQ-SEC-2).** Reusar el saneo existente `path.basename(x).replace(/[^a-zA-Z0-9\-\.]/g,'')` + confinamiento a base dir (`/logs/view/` en `:10341`, `/logs/` en `:10352`) y la whitelist `isSafeFilename` (`historial.js:58`). Prohibido construir paths con input crudo, `..` o rutas absolutas.
+- **Entregables parciales (CA-2).** Fuente: `lib/skill-deliverable-attachments.js` (`getSkillSourcesCatalog`, recolección issue-scoped `[{type,path,descriptor}]`) + `lib/write-deliverable.js`. Conexión **soft** con EP-3 #3926 (OPEN): la vista degrada elegante si un entregable no existe (CA-3), no se bloquea.
+
+### Riesgos identificados
+
+- Riesgo: **engrosar el monolito `dashboard.js`** (#4143). | Mitigación: toda la lógica nueva va en `dashboard-slices.js`; el monolito solo arma el array, registra ruta y delega render.
+- Riesgo: **ReDoS / DoS** por query del usuario o historial grande (REQ-SEC-5). | Mitigación: match literal `includes` (sin `new RegExp` crudo) + límite máximo por request + paginación server-side.
+- Riesgo: **XSS reflejado** del término de búsqueda y datos dinámicos (REQ-SEC-1). | Mitigación: todo dato dinámico (título, skill, `motivo_rechazo`, chips de filtro, **echo del query**) pasa por `escapeHtmlText`/`escapeHtmlAttr` (`lib/escape-html.js`, ya importado en `historial.js:48`).
+- Riesgo: **granularidad de costo por ejecución** — el costo hoy se agrega por issue/skill/fase, no por ejecución individual. | Mitigación: best-effort join por (issue,skill,fase,ts); si no hay match exacto, degradar a "costo a nivel issue/fase" (CA-3 lo permite).
+- Riesgo: **retención/profundidad del historial** — `matrixEntries` solo cubre issues con markers en FS; `metrics-history.jsonl` es muestreo de recursos, no log de ejecuciones. | Mitigación: paginar sobre lo disponible (markers `procesado/` + entregables archivados); persistencia de largo plazo fuera de scope (anotado por guru, no bloquea).
+- Riesgo: **path traversal / secrets en entregables servidos** (REQ-SEC-2/3). | Mitigación: saneo de filename + confinamiento a base dir; contenido de texto por `redactLogText` (`:10362`); PDFs binarios — si se adjuntan entregables PDF, validar que no expongan secrets.
+- Riesgo: **regresión del dashboard** al reemplazar la lista plana. | Mitigación: mantener el contrato `renderHistorialSsr(state, opts)` + fallback a string vacío (`dashboard.js:3746-3751`); suite `historial.test.js` verde antes de cerrar.
+
+### Tests obligatorios
+
+- `views/dashboard/__tests__/historial.test.js` — agrupación por día (orden desc, "Hoy/Ayer"), header de agregados (count, %aprobado, mediana p50), card expandible con detalle (fases, rebotes, costo, links), estado vacío ("Sin ejecuciones para estos filtros"), timestamps humanos. Correr con `node --test .pipeline/views/dashboard/__tests__/historial.test.js`.
+- Cobertura de seguridad (REQ-SEC-1/5): test de **XSS reflejado del query** (input `<script>` -> output escapado) y test de **búsqueda literal** (query con metacaracteres regex no rompe ni hace ReDoS).
+- Si se agrega lógica al slice: test unitario de `historialTimelineSlice` (filtros combinables, paginación con límite, mediana correcta).
+- Suite Node existente del dashboard verde (no romper `home.test.js`, `matriz.test.js`, etc.).
+
+### Pre-checklist
+
+- [ ] merge `origin/main` antes de pushear.
+- [ ] `node --test .pipeline/views/dashboard/__tests__/historial.test.js` verde.
+- [ ] verificar diff vs main sin archivos espurios (no tocar app/backend Kotlin — es `area:dashboard`).
+- [ ] QA structural/E2E del dashboard en `localhost:3200` (no requiere video de app: no hay label `app:*`).
+

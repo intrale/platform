@@ -971,6 +971,37 @@ const API_ROUTES = {
             return { error: 'coverage_unavailable', reason: 'io_error', _status: 503 };
         }
     },
+    // #3963 EP8 — Historial como timeline agrupado por día, paginado y filtrado
+    // server-side. Parsea el querystring (skill / resultado / issue / q / period
+    // / cursor / limit) y delega el cómputo a `historialTimelineSlice`. NUNCA
+    // devuelve el historial completo: el slice acota el límite máximo por request
+    // (HIST_PAGE_MAX) y la búsqueda es match literal (no RegExp → ReDoS-safe).
+    // Hereda Cache-Control: no-store de sendJson() como el resto de /api/dash/*.
+    '/api/dash/historial': (state, ctx, query) => {
+        const q = query || new URLSearchParams();
+        // Colector de entregables best-effort (CA-2). Issue-scoped, repo-root
+        // como base. Si el módulo no carga o falla, degrada a [] (CA-3).
+        const repoRoot = (ctx && ctx.ROOT) ? ctx.ROOT : process.cwd();
+        let collectAttachments = null;
+        try {
+            const deliverables = require('./skill-deliverable-attachments');
+            collectAttachments = (skill, issue, fase) => {
+                try { return deliverables.collectAttachmentsForSkill(skill, issue, fase, { pipelineRoot: repoRoot }); }
+                catch { return []; }
+            };
+        } catch { collectAttachments = null; }
+        return slices.historialTimelineSlice(state, ctx, {
+            skill: q.get('skill') || null,
+            resultado: q.get('resultado') || null,
+            issue: q.get('issue') || null,
+            q: q.get('q') || null,
+            period: q.get('period') || 'all',
+            cursor: q.get('cursor'),
+            limit: q.get('limit'),
+            collectAttachments,
+        });
+    },
+    '/api/historial': (state, ctx, query) => API_ROUTES['/api/dash/historial'](state, ctx, query),
 };
 
 // #3259 / CA-5 — Rutas ASYNC (devuelven Promise). El handler las awaitea.
