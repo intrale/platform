@@ -13,6 +13,13 @@
 const fs = require("fs");
 const path = require("path");
 
+// #4174 — mecanismo único de rotación gzip+retención. Require guardado: si el
+// helper no está disponible (worktree parcial), la rotación by-entries sigue.
+let jsonlRotation = null;
+try {
+    jsonlRotation = require(path.resolve(__dirname, "..", "..", ".pipeline", "lib", "jsonl-rotation.js"));
+} catch (e) { /* helper no disponible — degradar a solo by-entries */ }
+
 const HOOKS_DIR = path.dirname(require.main ? require.main.filename : __filename);
 const DRY_RUN = process.argv.includes("--dry-run");
 const VERBOSE = process.argv.includes("--verbose");
@@ -21,6 +28,16 @@ const VERBOSE = process.argv.includes("--verbose");
 
 const LOG_MAX_BYTES = 100 * 1024; // 100 KB
 const JSONL_MAX_ENTRIES = 200;
+const ARCHIVE_RETENTION_DAYS = 30; // #4174 — retención de `.gz` archivados.
+
+/**
+ * #4174 — JSONL que crecen by-size (no by-entries) y van directo al pipeline
+ * gzip+retención del helper. Antes quedaban sin política.
+ */
+const BY_SIZE_JSONL_FILES = [
+    "agent-metrics-history.jsonl",
+    "sprint-history.jsonl",
+];
 
 /** Archivos .log que requieren rotación por tamaño */
 const LOG_FILES = [
@@ -140,6 +157,18 @@ function rotateJsonlFile(fileName) {
         fs.appendFileSync(archivePath, excess.join("\n") + "\n", "utf8");
         // Escribir solo las entradas recientes
         fs.writeFileSync(filePath, keep.join("\n") + "\n", "utf8");
+        // #4174 — el `.archive.jsonl` ya no crece sin política: cuando supera
+        // el umbral se gzipea y se le aplica retención (mecanismo único).
+        if (jsonlRotation) {
+            try {
+                jsonlRotation.rotateIfNeeded({ path: archivePath, redact: true });
+                jsonlRotation.cleanupOldArchives({
+                    dir: path.dirname(archivePath),
+                    basename: path.basename(archivePath, ".jsonl"),
+                    retentionDays: ARCHIVE_RETENTION_DAYS,
+                });
+            } catch (e) { log(`  [WARN] gzip/retención del archive falló: ${e.message}`); }
+        }
     }
 
     return {
@@ -149,6 +178,41 @@ function rotateJsonlFile(fileName) {
         archived: archivedCount,
         reason: `${count} entradas > 200`,
     };
+}
+
+// ─── Rotación by-size (gzip + retención) ─────────────────────────────────────
+
+/**
+ * #4174 — Rota by-size los JSONL de BY_SIZE_JSONL_FILES delegando en el helper
+ * `jsonl-rotation.js` (gzip cuando supera el umbral + retención 30d + redacción
+ * de secrets pre-gzip). Unifica el mecanismo: no quedan JSONL creciendo sin
+ * política. Si el helper no está disponible, no hace nada.
+ *
+ * @returns {Array<{ file: string, rotated: boolean, reason?: string }>}
+ */
+function rotateBySizeJsonl() {
+    const results = [];
+    if (!jsonlRotation) return results;
+    for (const fileName of BY_SIZE_JSONL_FILES) {
+        const filePath = path.join(HOOKS_DIR, fileName);
+        if (!fs.existsSync(filePath)) {
+            results.push({ file: fileName, rotated: false, reason: "no existe" });
+            continue;
+        }
+        let r = { rotated: false, reason: "dry-run" };
+        if (!DRY_RUN) {
+            try {
+                r = jsonlRotation.rotateIfNeeded({ path: filePath, redact: true });
+                jsonlRotation.cleanupOldArchives({
+                    dir: HOOKS_DIR,
+                    basename: path.basename(filePath, ".jsonl"),
+                    retentionDays: ARCHIVE_RETENTION_DAYS,
+                });
+            } catch (e) { r = { rotated: false, error: e.message }; }
+        }
+        results.push({ file: fileName, ...r });
+    }
+    return results;
 }
 
 // ─── Función principal ───────────────────────────────────────────────────────
@@ -167,6 +231,7 @@ function rotate(opts = {}) {
     const results = {
         logs: [],
         jsonl: [],
+        bySize: [],
     };
 
     if (isVerbose) {
@@ -182,21 +247,26 @@ function rotate(opts = {}) {
         results.logs.push({ file: fileName, ...result });
     }
 
-    // Rotar archivos JSONL
+    // Rotar archivos JSONL (by-entries)
     if (isVerbose) console.log("\nArchivos JSONL:");
     for (const fileName of JSONL_FILES) {
         const result = rotateJsonlFile(fileName);
         results.jsonl.push({ file: fileName, ...result });
     }
 
+    // Rotar archivos JSONL by-size (gzip + retención, #4174)
+    if (isVerbose) console.log("\nArchivos JSONL by-size (gzip + retención):");
+    results.bySize = rotateBySizeJsonl();
+
     // Resumen
     const rotatedLogs = results.logs.filter(r => r.rotated).length;
     const rotatedJsonl = results.jsonl.filter(r => r.rotated).length;
-    const total = rotatedLogs + rotatedJsonl;
+    const rotatedBySize = results.bySize.filter(r => r.rotated).length;
+    const total = rotatedLogs + rotatedJsonl + rotatedBySize;
 
     results.summary = total === 0
         ? "Sin rotaciones necesarias — todos los logs dentro del límite"
-        : `${total} archivo(s) rotado(s): ${rotatedLogs} .log, ${rotatedJsonl} JSONL`;
+        : `${total} archivo(s) rotado(s): ${rotatedLogs} .log, ${rotatedJsonl} JSONL, ${rotatedBySize} by-size`;
 
     if (isVerbose || require.main) {
         console.log(`\n${isDry ? "[DRY-RUN] " : ""}${results.summary}`);
@@ -214,4 +284,4 @@ if (require.main === module) {
     process.exit(0);
 }
 
-module.exports = { rotate, LOG_FILES, JSONL_FILES, LOG_MAX_BYTES, JSONL_MAX_ENTRIES };
+module.exports = { rotate, rotateBySizeJsonl, LOG_FILES, JSONL_FILES, BY_SIZE_JSONL_FILES, LOG_MAX_BYTES, JSONL_MAX_ENTRIES, ARCHIVE_RETENTION_DAYS };

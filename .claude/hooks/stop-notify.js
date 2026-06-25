@@ -259,6 +259,11 @@ function flushMetrics(sessionId) {
             };
             fs.appendFileSync(SESSIONS_HISTORY_FILE, JSON.stringify(historyRecord) + "\n", "utf8");
             log("Session " + shortId + " persistida a sessions-history.jsonl");
+            // #4174 — rotación + gzip + retención del JSONL si supera el umbral.
+            try {
+                const jsonlRotation = require(path.join(REPO_ROOT, ".pipeline", "lib", "jsonl-rotation.js"));
+                jsonlRotation.rotateIfNeeded({ path: SESSIONS_HISTORY_FILE, redact: true });
+            } catch (e) { log("Error rotando sessions-history: " + e.message); }
         } catch (e) { log("Error persistiendo sesión a history: " + e.message); }
 
         // Consolidar al repo principal si estamos en un worktree (#1419)
