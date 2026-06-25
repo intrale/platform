@@ -22,6 +22,13 @@ const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 const { FETCH_CLIENT_JS } = require('./fetch-client.js');
 const { CONFIRM_MODAL_JS } = require('./confirm-modal.js');
 
+// #4190 (Ola 7.1) — Rediseño integral de la pantalla PIPELINE (lenguaje MIZPÁ:
+// brand bar + selector + banner de misión + flujo de fases + issues por fase).
+// Degradación defensiva: si el módulo no carga, renderPipeline cae al board
+// legacy (ver fallback en la propia función).
+let pipelineRedesign = null;
+try { pipelineRedesign = require('./pipeline-redesign'); } catch (_) { /* fallback legacy */ }
+
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 function loadTheme() {
     try { return fs.readFileSync(THEME_CSS_PATH, 'utf8'); } catch { return ''; }
@@ -206,6 +213,8 @@ document.addEventListener('visibilitychange', () => { if(document.visibilityStat
 // puede inyectar su propia barra de marca (`opts.brandHtml`) en lugar del
 // `in-header-brand` legacy, y una miga de pan (`opts.breadcrumbHtml`) debajo de
 // la nav. Sin `opts` el shell se comporta igual que antes (sisters no migradas).
+// #4190 — Pipeline usa `opts.brandHtml` para inyectar la marca MIZPÁ completa
+// (logo + tagline + selector multiproyecto), por la misma vía que Equipo (#4195).
 function pageShell(title, subtitle, bodyHtml, scripts, extraCss = '', activeSlug = '', opts = {}) {
     const theme = loadTheme();
     const spriteInline = loadIconSprite();
@@ -732,400 +741,64 @@ setInterval(tickCooldownCountdowns, 1000);`;
 
 // ─────────────────── Pipeline ───────────────────
 function renderPipeline() {
-    // #3045 — Toggle de filtro "solo issues habilitados" (allowlist de la
-    // pausa parcial). Markup accesible (role=switch, aria-checked, foco
-    // visible). Hidden por default — refreshAllowlistToggleVisibility lo
-    // muestra cuando pipelineModeState.mode === 'partial_pause'.
+    // #4190 (Ola 7.1) — Rediseño integral MIZPÁ. La pantalla se reorganiza en
+    // DOS bloques (Flujo de fases + Issues por fase), con marca + selector +
+    // banner de misión consistentes con la HOME (#4189). El render concreto lo
+    // produce el módulo views/dashboard/pipeline-redesign.js. Si el módulo no
+    // cargó, se degrada al board legacy (defensa en profundidad — CA-A3).
+    if (!pipelineRedesign) return renderPipelineLegacy();
+
+    const brandHtml = pipelineRedesign.renderBrandBarPipeline();
+    const body = pipelineRedesign.renderPipelineRedesignBody();
+    const css = pipelineRedesign.PIPELINE_REDESIGN_CSS;
+    const script = pipelineRedesign.pipelineRedesignClientScript();
+    return pageShell('Pipeline', 'Issues por fase · centro de mando MIZPÁ', body, script, css, 'pipeline', { brandHtml });
+}
+
+// Board legacy (pre-#4190) — fallback si el módulo de rediseño no carga. Misma
+// hidratación client-side sobre /api/dash/pipeline; columna por fase con scroll
+// horizontal. Se conserva sólo como red de seguridad.
+function renderPipelineLegacy() {
     const body = `
 <section class="in-section">
   <div class="pl-section-head">
     <h2 class="in-section-title"><span class="in-section-title-icon">🔄</span>Pipeline · issues por fase</h2>
-    <div class="pl-allowlist-toggle" id="pl-allowlist-toggle" role="switch"
-         aria-checked="false" tabindex="0"
-         title="Mostrar solo los issues incluidos en la pausa parcial activa"
-         style="display:none">
-      <span class="pl-toggle-track"><span class="pl-toggle-thumb"></span></span>
-      <span class="pl-toggle-label">Solo issues habilitados</span>
-    </div>
   </div>
   <div id="pipeline-board" class="pl-board"></div>
-  <!-- #3905 — Franja terminal "Ola — fuera de flujo": cards de issues de la
-       allowlist sin fase actual (no-ingreso) o cerrados (finalizado). Vive
-       FUERA del board flex para quedar debajo de las columnas, no como una
-       columna más (decisión de producto: franja, no pseudo-columnas). -->
   <div id="pipeline-wave-band"></div>
 </section>`;
     const css = `
-/* #3045 — Header de la sección con título a la izquierda y toggle a la derecha. */
-.pl-section-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
-.pl-section-head .in-section-title { margin: 0; }
-.pl-allowlist-toggle {
-    margin-left: auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 11px;
-    color: var(--in-fg-dim);
-    cursor: pointer;
-    user-select: none;
-    border-radius: 999px;
-    padding: 4px 8px;
-    transition: color 0.15s, background 0.15s;
-}
-.pl-allowlist-toggle:hover { color: var(--in-fg); background: var(--in-bg-3); }
-.pl-allowlist-toggle:focus-visible { outline: 2px solid var(--in-accent); outline-offset: 2px; }
-.pl-allowlist-toggle[aria-checked="true"] { color: var(--in-ok); }
-.pl-allowlist-toggle .pl-toggle-track {
-    width: 28px; height: 14px;
-    background: var(--in-bg-3);
-    border: 1px solid var(--in-border);
-    border-radius: 999px;
-    position: relative;
-    transition: background 0.15s, border-color 0.15s;
-    flex: 0 0 28px;
-}
-.pl-allowlist-toggle[aria-checked="true"] .pl-toggle-track {
-    background: var(--in-ok-soft);
-    border-color: var(--in-ok);
-}
-.pl-allowlist-toggle .pl-toggle-thumb {
-    position: absolute; top: 1px; left: 1px;
-    width: 10px; height: 10px;
-    background: var(--in-fg-soft);
-    border-radius: 50%;
-    transition: left 0.15s, background 0.15s;
-}
-.pl-allowlist-toggle[aria-checked="true"] .pl-toggle-thumb {
-    left: 15px;
-    background: var(--in-ok);
-}
 .pl-board { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 8px; }
 .pl-col { min-width: 220px; flex: 1; background: var(--in-bg-3); border-radius: var(--in-radius-sm); padding: 10px; border: 1px solid var(--in-border); }
 .pl-col-head { display: flex; align-items: center; justify-content: space-between; font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--in-fg-dim); margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--in-border); }
 .pl-col-count { background: var(--in-bg); padding: 1px 8px; border-radius: 9px; font-size: 10px; color: var(--in-fg); }
-.pl-card { background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; font-size: 12px; transition: border-color 0.2s, background 0.2s; color: var(--in-fg); }
-.pl-card:hover { border-color: var(--in-accent); background: var(--in-bg-3); }
-.pl-card-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
-.pl-card-issue { font-weight: 600; color: var(--in-info); }
-.pl-card-issue a { color: inherit; text-decoration: none; }
-.pl-card-issue a:hover { text-decoration: underline; }
-.pl-card-prio { color: var(--in-fg-soft); font-size: 10px; margin-left: auto; font-variant-numeric: tabular-nums; }
-.pl-card-title { font-size: 11px; color: var(--in-fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pl-card-actions { display: flex; gap: 3px; margin-top: 6px; opacity: 0.55; transition: opacity 0.15s; }
-.pl-card:hover .pl-card-actions { opacity: 1; }
-.pl-card-btn { background: transparent; border: 1px solid var(--in-border); color: var(--in-fg-dim); border-radius: 3px; width: 22px; height: 20px; font-size: 10px; cursor: pointer; padding: 0; line-height: 1; transition: background 0.12s, border-color 0.12s, color 0.12s; }
-.pl-card-btn:hover { background: var(--in-bg); border-color: var(--in-accent); color: var(--in-accent); }
-.pl-card-btn.pause:hover { border-color: var(--in-warn); color: var(--in-warn); }
-.pl-card-btn.paused { border-color: var(--in-warn); color: var(--in-warn); }
-.pl-card-state-trabajando { border-color: var(--in-accent); }
-.pl-card-state-listo { border-color: var(--in-ok); }
-.pl-card-state-pendiente { border-color: var(--in-fg-soft); }
-/* #3045 — Card "habilitada" por la pausa parcial activa. Borde verde +
-   halo sutil para que se distinga a la distancia (operación en kiosko).
-   Si la card está simultáneamente "trabajando" Y "allowlisted", la spec UX
-   prioriza el borde de estado de flujo (trabajando, accent) — la clase
-   .pl-card-state-allowlisted se aplica SOLO cuando el estado del flujo
-   no es trabajando, para evitar el ruido visual de dos bordes en pugna. */
-.pl-card-state-allowlisted { border-color: var(--in-ok); box-shadow: 0 0 0 1px var(--in-ok-soft); }
-.pl-card-allowlist-badge {
-    display: inline-block;
-    font-size: 9px;
-    font-weight: 600;
-    color: var(--in-ok);
-    background: var(--in-ok-soft);
-    border: 1px solid var(--in-ok);
-    border-radius: 3px;
-    padding: 0 5px;
-    margin-left: 4px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    line-height: 1.4;
-}
-.pl-card-paused-badge { display: inline-block; font-size: 9px; color: var(--in-warn); border: 1px solid var(--in-warn); border-radius: 3px; padding: 0 4px; margin-left: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
-.pl-card-rebote { display: inline-block; font-size: 9px; font-weight: 600; color: var(--in-bad); border: 1px solid var(--in-bad); background: var(--in-bad-soft); border-radius: 3px; padding: 0 4px; margin-top: 4px; cursor: help; }
-/* #2894 — Pills de agentes esperados en la fase activa (ux spec) */
-.pl-card-agents { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 0 0; padding-top: 6px; border-top: 1px dashed var(--in-border-soft); }
-.pl-card-agent { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; padding: 1px 6px; border-radius: 999px; background: var(--in-bg-3); border: 1px solid var(--in-border); cursor: pointer; transition: background 0.15s, border-color 0.15s, transform 0.15s; font-variant-numeric: tabular-nums; text-decoration: none; color: var(--in-fg); }
-.pl-card-agent.no-log { cursor: default; }
-.pl-card-agent:hover { border-color: var(--in-accent); background: var(--in-bg); transform: translateY(-1px); }
-.pl-card-agent-icon { font-size: 11px; line-height: 1; }
-.pl-card-agent-state { font-size: 10px; line-height: 1; font-weight: 600; }
-.pl-card-agent.state-listo { border-color: var(--in-ok); }
-.pl-card-agent.state-listo .pl-card-agent-state { color: var(--in-ok); }
-.pl-card-agent.state-trabajando { border-color: var(--in-accent); animation: pl-agent-pulse 1.6s ease-in-out infinite; }
-.pl-card-agent.state-trabajando .pl-card-agent-state { color: var(--in-accent); }
-.pl-card-agent.state-pendiente .pl-card-agent-state { color: var(--in-fg-soft); }
-.pl-card-agent.state-bloqueado { border-color: var(--in-warn); }
-.pl-card-agent.state-bloqueado .pl-card-agent-state { color: var(--in-warn); }
-.pl-card-agent.state-fallido { border-color: var(--in-bad); background: var(--in-bad-soft); }
-.pl-card-agent.state-fallido .pl-card-agent-state { color: var(--in-bad); }
-.pl-card-agent.is-blocker { box-shadow: 0 0 0 1px var(--in-warn); }
-@keyframes pl-agent-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
-.pl-card-stale-badge { display: inline-flex; align-items: center; gap: 3px; font-size: 9px; font-weight: 600; color: var(--in-warn); border: 1px solid var(--in-warn); background: var(--in-warn-soft); border-radius: 3px; padding: 1px 5px; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; width: fit-content; }
-/* #3905 — Franja terminal "Ola — fuera de flujo" (estados no-ingreso /
-   finalizado). Separada del board por border-top + margin para que NO se lea
-   como una columna del kanban. */
-.pl-wave-band { margin-top: 16px; border-top: 1px solid var(--in-border); padding-top: 10px; }
-.pl-wave-band-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--in-fg-dim); margin-bottom: 8px; }
-.pl-wave-band-cards { display: flex; flex-wrap: wrap; gap: 6px; }
-.pl-wave-band-cards .pl-card { min-width: 200px; flex: 0 0 auto; margin-bottom: 0; }
-.pl-card-wave-state { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; color: var(--in-fg-dim); margin-top: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
-.pl-wave-ic { width: 12px; height: 12px; fill: currentColor; flex: 0 0 12px; }
-/* Diferenciación por borde + icono + microcopy (anti-info-solo-por-color).
-   El texto se mantiene a opacidad/contraste plenos (WCAG AA): NO se aplica
-   opacity al contenedor de la card para no degradar el ratio del título. */
-.pl-card-state-no-ingreso { border-color: var(--in-fg-soft); border-style: dashed; }
-.pl-card-state-no-ingreso .pl-card-wave-state { color: var(--in-fg-dim); }
-.pl-card-state-finalizado { border-color: var(--in-ok-soft); background: var(--in-ok-soft); }
-.pl-card-state-finalizado .pl-card-wave-state { color: var(--in-ok); }`;
+.pl-card { background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; font-size: 12px; color: var(--in-fg); }
+.pl-card-title { font-size: 11px; color: var(--in-fg-dim); line-height: 1.4; }
+.pl-card-issue a { color: var(--in-info); text-decoration: none; }`;
     const script = `
-function compareByPriority(orderMap){
-    return (a, b) => {
-        const trab = (b.estado==='trabajando'?1:0) - (a.estado==='trabajando'?1:0);
-        if(trab !== 0) return trab;
-        const oa = orderMap.get(String(a.issue));
-        const ob = orderMap.get(String(b.issue));
-        if(oa != null && ob != null) return oa - ob;
-        if(oa != null) return -1;
-        if(ob != null) return 1;
-        return Number(a.issue) - Number(b.issue);
-    };
-}
-
-// #3045/#3905 — Estado del filtro de allowlist. Persistido en sessionStorage
-// (no localStorage: el modo del pipeline cambia entre sesiones y un valor
-// stale ahí confunde al operador; sessionStorage acota la preferencia a la
-// pestaña/sesión activa). REQ-SEC-3 enforced (no se interpola crudo a HTML;
-// se escribe vía aria-checked + classList).
-// #3905 — default ON: nace ACTIVO en sesión nueva (sessionStorage limpio) para
-// dar al operador la vista 1:1 con la allowlist de la ola; respeta la
-// preferencia del usuario si ya lo toggleó en esta sesión.
-let onlyAllowlistFilter = (function(){
-    try {
-        var v = sessionStorage.getItem('pl-only-allowlist');
-        return v === null ? true : v === '1';
-    } catch(e) { return true; }
-})();
-
-// #3045 — Issue está en la allowlist activa? Coerción estricta a integer > 0
-// (REQ-SEC-2). Sin partial_pause, NO matchea: el badge sigue oculto en running.
-function _allowlistOk(issue){
-    if(pipelineModeState.mode !== 'partial_pause') return false;
-    const n = Number(issue);
-    if(!Number.isInteger(n) || n <= 0) return false;
-    return pipelineModeState.allowedIssues.includes(n);
-}
-
-// #3045 — Mostrar/ocultar el toggle según el modo. Llamada desde tickHeader
-// cuando muta pipelineModeState; idempotente.
-function refreshAllowlistToggleVisibility(){
-    const toggle = document.getElementById('pl-allowlist-toggle');
-    if(!toggle) return;
-    const visible = pipelineModeState.mode === 'partial_pause'
-        && pipelineModeState.allowedIssues.length > 0;
-    toggle.style.display = visible ? 'inline-flex' : 'none';
-    if(!visible && onlyAllowlistFilter){
-        // Si dejó de haber pausa parcial, desactivar el filtro para no
-        // ocultar issues "fantasma" en running.
-        onlyAllowlistFilter = false;
-        toggle.setAttribute('aria-checked', 'false');
-        // Re-renderizar con el filtro apagado.
-        if(typeof tickPipeline === 'function') tickPipeline().catch(()=>{});
-    }
-}
-
-// #3045 — Wiring del toggle. Single source of truth: el atributo aria-checked
-// del propio elemento. Soporta click + Space + Enter (CA-UX-2).
-function wireAllowlistToggle(){
-    const toggle = document.getElementById('pl-allowlist-toggle');
-    if(!toggle || toggle.dataset.wired === '1') return;
-    toggle.dataset.wired = '1';
-    // #3905 — reflejar el valor inicial (default ON / sessionStorage) en el
-    // atributo aria-checked: el markup nace con aria-checked="false" pero el
-    // estado real lo decide onlyAllowlistFilter.
-    toggle.setAttribute('aria-checked', onlyAllowlistFilter ? 'true' : 'false');
-    function flip(){
-        if(toggle.style.display === 'none') return; // oculto = no operable
-        onlyAllowlistFilter = !onlyAllowlistFilter;
-        toggle.setAttribute('aria-checked', onlyAllowlistFilter ? 'true' : 'false');
-        // #3905 — persistir la preferencia del operador en la sesión.
-        try { sessionStorage.setItem('pl-only-allowlist', onlyAllowlistFilter ? '1' : '0'); } catch(e) {}
-        if(typeof tickPipeline === 'function') tickPipeline().catch(()=>{});
-    }
-    toggle.addEventListener('click', (ev) => { ev.preventDefault(); flip(); });
-    toggle.addEventListener('keydown', (ev) => {
-        if(ev.key === ' ' || ev.key === 'Enter'){ ev.preventDefault(); flip(); }
-    });
-}
-
-async function tickPipeline(){
+async function tickPipelineLegacy(){
     const d = await fetchJson('/api/dash/pipeline');
     if(!d) return;
     const board = document.getElementById('pipeline-board');
     if(!board) return;
     const fases = d.fases || [];
     const matrix = d.matrix || {};
-    const orderMap = new Map((d.priorityOrder || []).map((id, idx) => [String(id), idx]));
     const cols = {};
-    for(const { pipeline: p, fase } of fases){
-        const key = p+'/'+fase;
-        cols[key] = { p, fase, items: [] };
-    }
+    for(const { pipeline: p, fase } of fases){ cols[p+'/'+fase] = []; }
     for(const [issue, data] of Object.entries(matrix)){
         if(data.faseActual && cols[data.faseActual]){
-            const labels = data.labels || [];
-            const paused = labels.includes('blocked:dependencies');
-            cols[data.faseActual].items.push({
-                issue, title: data.title, estado: data.estadoActual,
-                bounces: data.bounces, staleMin: data.staleMin, paused,
-                rebote: data.rebote, rebote_tipo: data.rebote_tipo,
-                motivo_rechazo: data.motivo_rechazo,
-                rechazado_en_fase: data.rechazado_en_fase,
-                rechazado_skill_previo: data.rechazado_skill_previo,
-                // #2894 — agentes esperados en la fase actual + flags de stale
-                agents: data.agents || [],
-                stale: !!data.stale,
-                blockerSkill: data.blockerSkill || null,
-                blockerAgeMin: data.blockerAgeMin || 0,
-            });
+            cols[data.faseActual].push({ issue, title: data.title });
         }
     }
-    const cmp = compareByPriority(orderMap);
-    // #2894 — glifos de estado (pills) — coinciden con la spec del UX en el issue
-    const AGENT_STATE_GLYPH = { listo:'☑', trabajando:'►', pendiente:'☐', bloqueado:'⚠', fallido:'✗' };
-    const AGENT_STATE_LABEL = { listo:'listo', trabajando:'trabajando', pendiente:'pendiente', bloqueado:'bloqueado', fallido:'fallido' };
-    function renderAgentPills(item){
-        if(!item.agents || item.agents.length === 0) return '';
-        const pills = item.agents.map(a => {
-            const icon = SKILL_ICONS[a.skill] || '·';
-            const glyph = AGENT_STATE_GLYPH[a.estado] || '?';
-            const label = AGENT_STATE_LABEL[a.estado] || a.estado;
-            const ageStr = (a.ageMin != null && a.ageMin > 0) ? (' · ' + a.ageMin + 'm') : '';
-            const motivoStr = (a.estado === 'fallido' && a.motivo) ? ' · ' + String(a.motivo).slice(0, 60) : '';
-            const tip = a.skill + ' · ' + label + ageStr + motivoStr;
-            const isBlocker = item.stale && item.blockerSkill === a.skill;
-            const cls = ['pl-card-agent', 'state-' + a.estado];
-            if(isBlocker) cls.push('is-blocker');
-            if(!a.hasLog) cls.push('no-log');
-            const dataLog = a.hasLog && a.logFile ? ' data-log="'+escapeHtml(a.logFile)+'"' : '';
-            return '<span class="'+cls.join(' ')+'" data-skill="'+escapeHtml(a.skill)+'"'+dataLog+' title="'+escapeHtml(tip)+'">'
-                + '<span class="pl-card-agent-icon">'+icon+'</span>'
-                + '<span class="pl-card-agent-state">'+glyph+'</span>'
-                + '</span>';
-        }).join('');
-        return '<div class="pl-card-agents">' + pills + '</div>';
-    }
-    function renderStaleBadge(item){
-        if(!item.stale) return '';
-        const tip = 'Sin avance en la fase hace '+item.blockerAgeMin+'m'+(item.blockerSkill?' (bloqueador: '+item.blockerSkill+')':'');
-        return '<div class="pl-card-stale-badge" title="'+escapeHtml(tip)+'">⏱ estancado · '+item.blockerAgeMin+'m</div>';
-    }
     let html = '';
-    for(const [key, col] of Object.entries(cols)){
-        col.items.sort(cmp);
-        // #3045 — Filtro "solo issues habilitados". Se aplica POR COLUMNA antes
-        // del slice(0, 12) — si filtramos después del slice, perderíamos cards
-        // habilitadas que cayeron fuera del top 12 de la columna.
-        const visible = onlyAllowlistFilter
-            ? col.items.filter(i => _allowlistOk(i.issue))
-            : col.items;
-        const cards = visible.slice(0, 12).map(i => {
-            const prio = orderMap.has(String(i.issue)) ? '#' + (orderMap.get(String(i.issue)) + 1) : '';
-            const pausedBadge = i.paused ? '<span class="pl-card-paused-badge">⏸ pausado</span>' : '';
-            // #3045 — Badge "✅ habilitado" + clase de borde verde cuando el
-            // issue está en la allowlist activa. Si simultáneamente está
-            // "trabajando", priorizamos el borde de estado del flujo (accent)
-            // y el badge sigue siendo señal suficiente — UX-5.
-            const isAllowed = _allowlistOk(i.issue);
-            const allowlistBadge = isAllowed
-              ? '<span class="pl-card-allowlist-badge" title="Habilitado por la pausa parcial activa">✅ habilitado</span>'
-              : '';
-            const allowlistCls = (isAllowed && i.estado !== 'trabajando') ? ' pl-card-state-allowlisted' : '';
-            const reboteBadge = i.rebote
-              ? '<div class="pl-card-rebote" title="Rechazado en ' + escapeHtml(i.rechazado_en_fase||'?') + (i.rechazado_skill_previo?'/'+escapeHtml(i.rechazado_skill_previo):'') + ': ' + escapeHtml((i.motivo_rechazo||'').replace(/"/g,"\\u0027").slice(0,400)) + '">↩ rebote' + (i.rebote_tipo?' · '+escapeHtml(i.rebote_tipo):'') + '</div>'
-              : '';
-            const pauseBtn = '<button class="pl-card-btn pause' + (i.paused?' paused':'') + '" data-issue="'+escapeHtml(i.issue)+'" data-action="' + (i.paused?'resume':'pause') + '" title="' + (i.paused?'Reanudar issue':'Pausar issue') + '">' + (i.paused?'▶':'⏸') + '</button>';
-            return '<div class="pl-card pl-card-state-'+escapeHtml(i.estado||'')+allowlistCls+'" data-issue="'+escapeHtml(i.issue)+'">'
-              + '<div class="pl-card-head"><span class="pl-card-issue"><a href="https://github.com/intrale/platform/issues/'+escapeHtml(i.issue)+'" target="_blank" rel="noopener">#'+escapeHtml(i.issue)+'</a></span>'+pausedBadge+allowlistBadge+'<span class="pl-card-prio">'+prio+'</span></div>'
-              + '<div class="pl-card-title" title="'+escapeHtml(i.title||'')+'">'+escapeHtml((i.title||'').slice(0,60))+'</div>'
-              + reboteBadge
-              + renderAgentPills(i)
-              + renderStaleBadge(i)
-              + '<div class="pl-card-actions">'
-              +   '<button class="pl-card-btn" data-issue="'+escapeHtml(i.issue)+'" data-action="move-top" title="Máxima prioridad">⏫</button>'
-              +   '<button class="pl-card-btn" data-issue="'+escapeHtml(i.issue)+'" data-action="move-up" title="Subir">▲</button>'
-              +   '<button class="pl-card-btn" data-issue="'+escapeHtml(i.issue)+'" data-action="move-down" title="Bajar">▼</button>'
-              +   '<button class="pl-card-btn" data-issue="'+escapeHtml(i.issue)+'" data-action="move-bottom" title="Mínima prioridad">⏬</button>'
-              +   pauseBtn
-              + '</div>'
-              + '</div>';
-        }).join('');
-        // #3045 — Cuenta visible vs total cuando hay filtro activo, para
-        // que el operador entienda por qué la columna se ve "vacía".
-        const countLabel = (onlyAllowlistFilter && visible.length !== col.items.length)
-            ? (visible.length + '/' + col.items.length)
-            : String(col.items.length);
-        html += '<div class="pl-col"><div class="pl-col-head"><span>'+escapeHtml(key)+'</span><span class="pl-col-count">'+countLabel+'</span></div>'+(cards || '<div class="in-empty" style="padding:14px 4px;font-size:11px">vacío</div>')+'</div>';
+    for(const [key, items] of Object.entries(cols)){
+        const cards = items.map(i => '<div class="pl-card"><div class="pl-card-issue"><a href="https://github.com/intrale/platform/issues/'+escapeHtml(i.issue)+'" target="_blank" rel="noopener">#'+escapeHtml(i.issue)+'</a></div><div class="pl-card-title">'+escapeHtml(i.title||'')+'</div></div>').join('');
+        html += '<div class="pl-col"><div class="pl-col-head"><span>'+escapeHtml(key)+'</span><span class="pl-col-count">'+items.length+'</span></div>'+(cards||'<div class="in-empty">vacío</div>')+'</div>';
     }
-    // #3905 — Franja terminal "Ola — fuera de flujo". Solo con el filtro
-    // "solo habilitados" ACTIVO (CA-4: sin filtro = comportamiento previo, sin
-    // franja). Los estados no-ingreso/finalizado los deriva el server en
-    // d.waveIssues (cruce allowlist − matrix). Orden UX: no-ingreso primero
-    // (lo que falta arriba), finalizado después (lo cerrado abajo). SEC-1:
-    // todo (issue/título/estado) pasa por escapeHtml; el ícono va por <use>
-    // sobre el sprite controlado (no interpolado).
-    let waveBand = '';
-    if(onlyAllowlistFilter && Array.isArray(d.waveIssues) && d.waveIssues.length){
-        const orderW = { 'no-ingreso': 0, 'finalizado': 1 };
-        const sortedW = d.waveIssues.slice().sort((a, b) =>
-            ((orderW[a.estado] != null ? orderW[a.estado] : 9) - (orderW[b.estado] != null ? orderW[b.estado] : 9))
-            || (Number(a.issue) - Number(b.issue)));
-        const waveCards = sortedW.map(w => {
-            const isDone = w.estado === 'finalizado';
-            const icon = isDone ? 'ic-allowlist-check' : 'ic-llm-queued';
-            const label = isDone ? 'Finalizado' : 'Sin ingresar';
-            return '<div class="pl-card pl-card-state-'+escapeHtml(w.estado||'')+'" data-issue="'+escapeHtml(w.issue)+'">'
-              + '<div class="pl-card-head"><span class="pl-card-issue"><a href="https://github.com/intrale/platform/issues/'+escapeHtml(w.issue)+'" target="_blank" rel="noopener">#'+escapeHtml(w.issue)+'</a></span></div>'
-              + '<div class="pl-card-title" title="'+escapeHtml(w.title||'')+'">'+escapeHtml((w.title||'').slice(0,60))+'</div>'
-              + '<div class="pl-card-wave-state"><svg class="pl-wave-ic" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#'+icon+'"></use></svg>'+label+'</div>'
-              + '</div>';
-        }).join('');
-        waveBand = '<div class="pl-wave-band">'
-          + '<div class="pl-wave-band-title">Ola — fuera de flujo</div>'
-          + '<div class="pl-wave-band-cards">'+waveCards+'</div>'
-          + '</div>';
-    }
-    const waveBandEl = document.getElementById('pipeline-wave-band');
-    if(waveBandEl && waveBandEl.innerHTML !== waveBand) waveBandEl.innerHTML = waveBand;
-    if(board.innerHTML !== html){
-        board.innerHTML = html;
-        board.querySelectorAll('.pl-card-btn').forEach(b => {
-            const action = b.dataset.action;
-            b.addEventListener('click', (ev) => {
-                ev.preventDefault();
-                ev.stopPropagation();
-                const issue = b.dataset.issue;
-                if(action === 'pause' || action === 'resume') return pauseIssue(issue, action === 'resume');
-                return moveIssue(issue, action);
-            });
-        });
-        // #2894 — Click en pill = abrir log del agente en nueva pestaña.
-        // Event delegation: un solo listener en el board basta para todas las cards.
-        board.querySelectorAll('.pl-card-agent[data-log]').forEach(p => {
-            p.addEventListener('click', (ev) => {
-                ev.preventDefault();
-                ev.stopPropagation();
-                const log = p.dataset.log;
-                if(log) window.open('/logs/'+encodeURIComponent(log), '_blank', 'noopener');
-            });
-        });
-    }
+    if(board.innerHTML !== html) board.innerHTML = html;
 }
-const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickPipeline, ms: 5000 }];
+const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickPipelineLegacy, ms: 5000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
-// #3045 — Wirear el toggle ANTES del primer poll para que cuando tickHeader
-// llame a refreshAllowlistToggleVisibility() ya exista el handler.
-wireAllowlistToggle();
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
     return pageShell('Pipeline', 'Issues distribuidos por fase', body, script, css, 'pipeline');
