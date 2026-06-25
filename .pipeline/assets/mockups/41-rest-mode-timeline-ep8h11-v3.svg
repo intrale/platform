@@ -1,0 +1,381 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 41 — Modo descanso · timeline semanal editable · EP8-H11 (issue #3964, épica #3952)
+  Resolución target: 1080x1920 (kiosk vertical, familia 26..40)
+
+  OBJETIVO DE LA HISTORIA (issue #3964):
+    "Timeline 7 días × 24 h con bloques de descanso clickeables/arrastrables,
+     indicador 'ahora', guardado con confirmación explícita y preview del próximo
+     descanso (y qué agentes pausaría)."
+
+  Mapeo de criterios de aceptación (PO, fase criterios) → zonas de este mockup:
+    CA-1  Timeline semanal visual 7×24 con bloques posicionados ............ §A (timeline)
+    CA-2  Crear / mover / redimensionar por arrastre con snap ............... §A (handles + ghost)
+    CA-3  Solapamientos imposibles por UX + invariante server-side ......... §A (zona ocupada) + nota
+    CA-4  Indicador "ahora" derivado del server (no Date cliente) .......... §A (línea AHORA)
+    CA-5  Guardado explícito con confirmación + "Guardado ✓ + próximo" ..... §B (toolbar) + §F (modal)
+    CA-6  Preview próximo descanso + qué agentes pausaría (read-only) ...... §C (preview)
+    CA-7  Bypass como chips con tooltip del porqué (read-only) ............. §D (chips)
+    CA-8  Cambios auditados (quién best-effort, cuándo) ................... §E (audit)
+    CA-9  Fallback editable por teclado (no regresión accesibilidad) ...... §G (details)
+    CA-10 Endpoints/formato sin cambios (data-rm-editing, schedule) ....... (nota REQ)
+
+  PALETA: 100% design-tokens.css. Modo descanso usa la familia --rest-mode
+  (#7C5CFF indigo nocturno). Sin colores nuevos, sin librería de charting (SVG nativo).
+
+  ACCESIBILIDAD: cada estado lleva texto + forma/icono (nunca color-solo). Contraste
+  de texto sobre superficies cumple WCAG AA. Touch targets de acción y handles de
+  resize >=40px de zona activa (aunque la barra visible sea fina). Fallback teclado
+  por inputs time nativos (§G).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1920" viewBox="0 0 1080 1920"
+     font-family="'Inter','Segoe UI',system-ui,sans-serif">
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0D1117"/>
+      <stop offset="1" stop-color="#0A0E14"/>
+    </linearGradient>
+    <linearGradient id="restBlock" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="rgba(124,92,255,0.30)"/>
+      <stop offset="1" stop-color="rgba(124,92,255,0.16)"/>
+    </linearGradient>
+    <linearGradient id="brandChip" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#00D6FF"/>
+      <stop offset="1" stop-color="#1890FF"/>
+    </linearGradient>
+    <pattern id="ghostHatch" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <rect width="8" height="8" fill="rgba(124,92,255,0.10)"/>
+      <line x1="0" y1="0" x2="0" y2="8" stroke="rgba(197,183,255,0.45)" stroke-width="2"/>
+    </pattern>
+  </defs>
+
+  <rect width="1080" height="1920" fill="url(#bg)"/>
+
+  <!-- ============================================================= HEADER -->
+  <g>
+    <text x="48" y="60" fill="#E6EDF3" font-size="34" font-weight="700">Modo descanso</text>
+    <text x="48" y="90" fill="#8B949E" font-size="18">agenda semanal · arrastrá para editar · guardado con confirmación</text>
+
+    <!-- chip estado actual (derivado de describeRestModeNow del server) -->
+    <g transform="translate(720,30)">
+      <rect width="312" height="64" rx="12" fill="#161B22" stroke="#4B36B8"/>
+      <circle cx="30" cy="32" r="9" fill="#7C5CFF"/>
+      <text x="52" y="27" fill="#8B949E" font-size="12">AHORA · zona America/Argentina</text>
+      <text x="52" y="50" fill="#C5B7FF" font-size="19" font-weight="700">Activo · trabajando</text>
+    </g>
+  </g>
+
+  <!-- ============================================================= §B TOOLBAR / GUARDADO (CA-5) -->
+  <g transform="translate(48,116)">
+    <rect width="984" height="58" rx="10" fill="#161B22" stroke="#30363D"/>
+
+    <!-- estado de guardado: "Guardado ✓ + próximo descanso" -->
+    <g transform="translate(16,14)">
+      <rect width="430" height="30" rx="8" fill="rgba(63,185,80,0.14)" stroke="#196C2E"/>
+      <path d="M12 15 l5 5 l9 -11" fill="none" stroke="#3FB950" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="34" y="20" fill="#E6EDF3" font-size="14" font-weight="600">Guardado</text>
+      <text x="110" y="20" fill="#8B949E" font-size="13">· próximo descanso hoy 23:00</text>
+    </g>
+
+    <!-- pista de edición sin guardar (estado alternativo) -->
+    <g transform="translate(462,14)">
+      <rect width="232" height="30" rx="8" fill="rgba(210,153,34,0.14)" stroke="#9E6A03"/>
+      <circle cx="16" cy="15" r="4" fill="#D29922"/>
+      <text x="30" y="20" fill="#FFE099" font-size="13">cambios sin guardar…</text>
+    </g>
+
+    <!-- botón guardar (abre modal de confirmación, NO auto-POST) -->
+    <g transform="translate(800,11)">
+      <rect width="168" height="36" rx="8" fill="rgba(124,92,255,0.16)" stroke="#7C5CFF"/>
+      <text x="84" y="24" fill="#C5B7FF" font-size="15" font-weight="700" text-anchor="middle">Guardar agenda…</text>
+    </g>
+  </g>
+
+  <!-- ============================================================= §A TIMELINE 7×24 (CA-1..4) -->
+  <!-- geometría: gutter horas x=48..104 ; 7 columnas de 132px desde x=104 ; pxPerHour=32 ; top y=320 -->
+  <g>
+    <text x="48" y="212" fill="#E6EDF3" font-size="22" font-weight="700">Semana</text>
+    <text x="160" y="212" fill="#8B949E" font-size="14">7 días × 24 h · snap 30 min</text>
+
+    <!-- leyenda dual-encoding (no color-solo) -->
+    <g transform="translate(560,196)" font-size="12">
+      <rect width="22" height="14" rx="3" x="0" y="2" fill="url(#restBlock)" stroke="#7C5CFF"/>
+      <text x="30" y="13" fill="#B1BAC4">descanso</text>
+      <rect width="22" height="14" rx="3" x="118" y="2" fill="url(#ghostHatch)" stroke="#7C5CFF" stroke-dasharray="3 2"/>
+      <text x="148" y="13" fill="#B1BAC4">arrastrando (ghost)</text>
+      <line x1="300" y1="9" x2="330" y2="9" stroke="#F85149" stroke-width="2"/>
+      <circle cx="315" cy="9" r="3" fill="#F85149"/>
+      <text x="338" y="13" fill="#B1BAC4">ahora</text>
+    </g>
+
+    <!-- marco del timeline -->
+    <rect x="48" y="320" width="984" height="816" rx="12" fill="#0F141B" stroke="#30363D"/>
+
+    <!-- cabecera de días (columnas) -->
+    <g font-size="14" font-weight="600" text-anchor="middle">
+      <text x="170" y="346" fill="#B1BAC4">Lun</text>
+      <text x="302" y="346" fill="#B1BAC4">Mar</text>
+      <text x="434" y="346" fill="#C5B7FF">Mié · hoy</text>
+      <text x="566" y="346" fill="#B1BAC4">Jue</text>
+      <text x="698" y="346" fill="#B1BAC4">Vie</text>
+      <text x="830" y="346" fill="#B1BAC4">Sáb</text>
+      <text x="962" y="346" fill="#B1BAC4">Dom</text>
+    </g>
+
+    <!-- separadores verticales de columnas -->
+    <g stroke="#21262D" stroke-width="1">
+      <line x1="104" y1="360" x2="104" y2="1128"/>
+      <line x1="236" y1="360" x2="236" y2="1128"/>
+      <line x1="368" y1="360" x2="368" y2="1128"/>
+      <line x1="500" y1="360" x2="500" y2="1128"/>
+      <line x1="632" y1="360" x2="632" y2="1128"/>
+      <line x1="764" y1="360" x2="764" y2="1128"/>
+      <line x1="896" y1="360" x2="896" y2="1128"/>
+      <line x1="1028" y1="360" x2="1028" y2="1128"/>
+    </g>
+
+    <!-- líneas horarias + etiquetas (cada 3 h ; top=360, pxPerHour=32) -->
+    <g font-size="11" fill="#6E7681" text-anchor="end">
+      <line x1="104" y1="360"  x2="1028" y2="360"  stroke="#21262D"/>
+      <text x="96" y="364">00</text>
+      <line x1="104" y1="456"  x2="1028" y2="456"  stroke="#161B22"/>
+      <text x="96" y="460">03</text>
+      <line x1="104" y1="552"  x2="1028" y2="552"  stroke="#161B22"/>
+      <text x="96" y="556">06</text>
+      <line x1="104" y1="648"  x2="1028" y2="648"  stroke="#161B22"/>
+      <text x="96" y="652">09</text>
+      <line x1="104" y1="744"  x2="1028" y2="744"  stroke="#161B22"/>
+      <text x="96" y="748">12</text>
+      <line x1="104" y1="840"  x2="1028" y2="840"  stroke="#161B22"/>
+      <text x="96" y="844">15</text>
+      <line x1="104" y1="936"  x2="1028" y2="936"  stroke="#161B22"/>
+      <text x="96" y="940">18</text>
+      <line x1="104" y1="1032" x2="1028" y2="1032" stroke="#161B22"/>
+      <text x="96" y="1036">21</text>
+      <line x1="104" y1="1128" x2="1028" y2="1128" stroke="#21262D"/>
+      <text x="96" y="1124">24</text>
+    </g>
+
+    <!-- ===== BLOQUES DE DESCANSO (rectángulos posicionados, CA-1) ===== -->
+    <!-- Lun-Vie noche 01:00–06:00 : y=392 h=160 -->
+    <g font-size="11" fill="#C5B7FF">
+      <rect x="107" y="392" width="126" height="160" rx="6" fill="url(#restBlock)" stroke="#7C5CFF"/>
+      <text x="115" y="410">01:00–06:00</text>
+      <rect x="239" y="392" width="126" height="160" rx="6" fill="url(#restBlock)" stroke="#7C5CFF"/>
+      <text x="247" y="410">01:00–06:00</text>
+      <!-- Mié (hoy) noche 01:00–06:00 -->
+      <rect x="371" y="392" width="126" height="160" rx="6" fill="url(#restBlock)" stroke="#7C5CFF"/>
+      <text x="379" y="410">01:00–06:00</text>
+      <rect x="503" y="392" width="126" height="160" rx="6" fill="url(#restBlock)" stroke="#7C5CFF"/>
+      <text x="511" y="410">01:00–06:00</text>
+      <rect x="635" y="392" width="126" height="160" rx="6" fill="url(#restBlock)" stroke="#7C5CFF"/>
+      <text x="643" y="410">01:00–06:00</text>
+    </g>
+
+    <!-- Mié bloque seleccionado/editable con handles de resize (CA-2) -->
+    <g>
+      <!-- almuerzo Mié 13:00–14:00 seleccionado : y=360+13*32=776 h=32 -->
+      <rect x="371" y="776" width="126" height="32" rx="6" fill="rgba(124,92,255,0.28)" stroke="#C5B7FF" stroke-width="2"/>
+      <text x="379" y="797" font-size="11" fill="#E6EDF3">13:00–14:00 ✎</text>
+      <!-- handle superior (resize start) -->
+      <rect x="411" y="772" width="46" height="8" rx="4" fill="#C5B7FF"/>
+      <!-- handle inferior (resize end) -->
+      <rect x="411" y="804" width="46" height="8" rx="4" fill="#C5B7FF"/>
+    </g>
+
+    <!-- Sáb/Dom descanso extendido 00:00–08:00 : y=360 h=256 -->
+    <g font-size="11" fill="#C5B7FF">
+      <rect x="767" y="360" width="126" height="256" rx="6" fill="url(#restBlock)" stroke="#7C5CFF"/>
+      <text x="775" y="378">00:00–08:00</text>
+      <rect x="899" y="360" width="126" height="256" rx="6" fill="url(#restBlock)" stroke="#7C5CFF"/>
+      <text x="907" y="378">00:00–08:00</text>
+      <!-- Sáb tarde 14:00–16:00 : y=360+14*32=808 h=64 -->
+      <rect x="767" y="808" width="126" height="64" rx="6" fill="url(#restBlock)" stroke="#7C5CFF"/>
+      <text x="775" y="826">14:00–16:00</text>
+    </g>
+
+    <!-- GHOST de arrastre en Jue (drag-to-create en curso, snap 30') 10:00–12:30 -->
+    <!-- y=360+10*32=680 ; h=2.5*32=80 -->
+    <g>
+      <rect x="503" y="680" width="126" height="80" rx="6" fill="url(#ghostHatch)" stroke="#C5B7FF" stroke-width="2" stroke-dasharray="4 3"/>
+      <text x="511" y="700" font-size="11" fill="#E6EDF3">10:00–12:30</text>
+      <text x="511" y="748" font-size="10" fill="#C5B7FF">soltá para crear</text>
+    </g>
+
+    <!-- ===== LÍNEA "AHORA" (CA-4) Mié 14:20 → y=360+(14.333)*32 ≈ 819 ===== -->
+    <g>
+      <line x1="104" y1="819" x2="1028" y2="819" stroke="#F85149" stroke-width="2" stroke-dasharray="6 4"/>
+      <circle cx="434" cy="819" r="5" fill="#F85149"/>
+      <g transform="translate(936,806)">
+        <rect width="86" height="26" rx="13" fill="rgba(248,81,73,0.16)" stroke="#F85149"/>
+        <text x="43" y="18" fill="#FFD2DC" font-size="12" font-weight="700" text-anchor="middle">ahora 14:20</text>
+      </g>
+    </g>
+
+    <!-- intento de overlap rechazado (CA-3): bloque candidato que pisa la noche del Lun -->
+    <g>
+      <rect x="107" y="488" width="126" height="48" rx="6" fill="rgba(248,81,73,0.12)" stroke="#F85149" stroke-width="2" stroke-dasharray="4 3"/>
+      <path d="M115 500 l110 24 M225 500 l-110 24" stroke="#F85149" stroke-width="1.5"/>
+      <text x="115" y="516" font-size="10" fill="#FFD2DC">solapa · bloqueado</text>
+    </g>
+  </g>
+
+  <!-- ============================================================= §C PREVIEW PRÓXIMO DESCANSO (CA-6) -->
+  <g transform="translate(48,1158)">
+    <rect width="612" height="220" rx="12" fill="#161B22" stroke="#4B36B8"/>
+    <text x="20" y="34" fill="#E6EDF3" font-size="18" font-weight="700">Próximo descanso</text>
+    <text x="20" y="60" fill="#C5B7FF" font-size="15">hoy 23:00 → mañana 06:00  ·  en 8 h 40 m</text>
+
+    <text x="20" y="98" fill="#8B949E" font-size="13">QUÉ AGENTES PAUSARÍA (read-only · cómputo server-side acotado)</text>
+
+    <!-- chips de skills que quedarían pausados (textContent) -->
+    <g font-size="13" fill="#B1BAC4">
+      <g transform="translate(20,112)">
+        <rect width="118" height="30" rx="15" fill="rgba(177,186,196,0.10)" stroke="#30363D"/>
+        <text x="59" y="20" text-anchor="middle">android-dev</text>
+      </g>
+      <g transform="translate(146,112)">
+        <rect width="104" height="30" rx="15" fill="rgba(177,186,196,0.10)" stroke="#30363D"/>
+        <text x="52" y="20" text-anchor="middle">backend-dev</text>
+      </g>
+      <g transform="translate(258,112)">
+        <rect width="70" height="30" rx="15" fill="rgba(177,186,196,0.10)" stroke="#30363D"/>
+        <text x="35" y="20" text-anchor="middle">guru</text>
+      </g>
+      <g transform="translate(336,112)">
+        <rect width="64" height="30" rx="15" fill="rgba(177,186,196,0.10)" stroke="#30363D"/>
+        <text x="32" y="20" text-anchor="middle">qa</text>
+      </g>
+      <g transform="translate(408,112)">
+        <rect width="78" height="30" rx="15" fill="rgba(177,186,196,0.10)" stroke="#30363D"/>
+        <text x="39" y="20" text-anchor="middle">review</text>
+      </g>
+    </g>
+    <g transform="translate(20,154)">
+      <rect width="180" height="30" rx="15" fill="rgba(63,185,80,0.10)" stroke="#196C2E"/>
+      <text x="14" y="20" fill="#3FB950" font-size="12" font-weight="700">✓ no pausa</text>
+      <text x="86" y="20" fill="#B1BAC4" font-size="12">delivery · builder…</text>
+    </g>
+    <text x="20" y="206" fill="#6E7681" font-size="11">Sólo issues/skills ya visibles en el dashboard. Sin scan ilimitado.</text>
+  </g>
+
+  <!-- ============================================================= §D BYPASS CHIPS (CA-7) -->
+  <g transform="translate(680,1158)">
+    <rect width="352" height="220" rx="12" fill="#161B22" stroke="#30363D"/>
+    <text x="20" y="34" fill="#E6EDF3" font-size="18" font-weight="700">Bypass</text>
+    <text x="20" y="58" fill="#8B949E" font-size="13">no se pausan ni en descanso · read-only</text>
+
+    <!-- chip con tooltip (title) -->
+    <g transform="translate(20,78)">
+      <rect width="190" height="34" rx="17" fill="rgba(240,165,0,0.16)" stroke="#B57700"/>
+      <circle cx="22" cy="17" r="6" fill="#F0A500"/>
+      <text x="40" y="22" fill="#FFE5A8" font-size="14" font-weight="600">priority:critical</text>
+    </g>
+
+    <!-- tooltip popover (al hover/focus del chip) -->
+    <g transform="translate(20,122)">
+      <rect width="312" height="62" rx="8" fill="#252B33" stroke="#484F58"/>
+      <path d="M40 0 l8 -8 l8 8 z" fill="#252B33" stroke="#484F58"/>
+      <text x="14" y="24" fill="#E6EDF3" font-size="12">Los issues con esta etiqueta siguen</text>
+      <text x="14" y="42" fill="#B1BAC4" font-size="12">corriendo aunque el descanso esté activo.</text>
+    </g>
+    <text x="20" y="206" fill="#6E7681" font-size="11">Editable sólo desde config.yaml (no por UI).</text>
+  </g>
+
+  <!-- ============================================================= §E AUDIT TRAIL (CA-8) -->
+  <g transform="translate(48,1398)">
+    <rect width="612" height="190" rx="12" fill="#161B22" stroke="#30363D"/>
+    <text x="20" y="34" fill="#E6EDF3" font-size="18" font-weight="700">Cambios auditados</text>
+    <text x="20" y="56" fill="#8B949E" font-size="12">append-only · rest-mode-audit.jsonl · campos escapados con textContent</text>
+
+    <g font-size="12" font-family="'SF Mono',Consolas,monospace">
+      <g transform="translate(20,74)">
+        <text x="0" y="14" fill="#8B949E">2026-06-25 14:05</text>
+        <rect x="150" y="2" width="62" height="18" rx="9" fill="rgba(88,166,255,0.14)" stroke="#1F6FEB"/>
+        <text x="181" y="15" fill="#58A6FF" text-anchor="middle">manual</text>
+        <text x="226" y="14" fill="#B1BAC4">Mié +13:00–14:00</text>
+      </g>
+      <g transform="translate(20,100)">
+        <text x="0" y="14" fill="#8B949E">2026-06-24 23:41</text>
+        <rect x="150" y="2" width="62" height="18" rx="9" fill="rgba(177,186,196,0.10)" stroke="#30363D"/>
+        <text x="181" y="15" fill="#B1BAC4" text-anchor="middle">cron</text>
+        <text x="226" y="14" fill="#B1BAC4">Sáb 14:00–16:00 → 15:00</text>
+      </g>
+      <g transform="translate(20,126)">
+        <text x="0" y="14" fill="#8B949E">2026-06-24 09:12</text>
+        <rect x="150" y="2" width="62" height="18" rx="9" fill="rgba(88,166,255,0.14)" stroke="#1F6FEB"/>
+        <text x="181" y="15" fill="#58A6FF" text-anchor="middle">api</text>
+        <text x="226" y="14" fill="#B1BAC4">activó modo descanso</text>
+      </g>
+    </g>
+    <text x="20" y="176" fill="#6E7681" font-size="11">"quién" = origen (api/manual/cron/config) · best-effort, single-operator loopback.</text>
+  </g>
+
+  <!-- ============================================================= §G FALLBACK ACCESIBLE (CA-9) -->
+  <g transform="translate(680,1398)">
+    <rect width="352" height="190" rx="12" fill="#161B22" stroke="#30363D"/>
+    <g transform="translate(20,26)">
+      <path d="M0 0 l8 6 l-8 6 z" fill="#8B949E"/>
+      <text x="18" y="11" fill="#E6EDF3" font-size="16" font-weight="700">Edición precisa por teclado</text>
+    </g>
+    <text x="20" y="60" fill="#8B949E" font-size="12">&lt;details&gt; colapsable · inputs time nativos (no regresión)</text>
+
+    <!-- fila de inputs time (fallback) -->
+    <g transform="translate(20,76)" font-size="12">
+      <text x="0" y="16" fill="#B1BAC4">Mié</text>
+      <rect x="36" y="2" width="92" height="26" rx="6" fill="#0D1117" stroke="#30363D"/>
+      <text x="46" y="20" fill="#E6EDF3" font-family="monospace">01:00</text>
+      <text x="134" y="16" fill="#6E7681">→</text>
+      <rect x="150" y="2" width="92" height="26" rx="6" fill="#0D1117" stroke="#30363D"/>
+      <text x="160" y="20" fill="#E6EDF3" font-family="monospace">06:00</text>
+      <g transform="translate(254,2)">
+        <rect width="78" height="26" rx="6" fill="rgba(124,92,255,0.16)" stroke="#4B36B8"/>
+        <text x="39" y="18" fill="#C5B7FF" font-size="12" text-anchor="middle">+ período</text>
+      </g>
+    </g>
+    <g transform="translate(20,112)" font-size="12">
+      <text x="0" y="16" fill="#B1BAC4">Mié</text>
+      <rect x="36" y="2" width="92" height="26" rx="6" fill="#0D1117" stroke="#30363D"/>
+      <text x="46" y="20" fill="#E6EDF3" font-family="monospace">13:00</text>
+      <text x="134" y="16" fill="#6E7681">→</text>
+      <rect x="150" y="2" width="92" height="26" rx="6" fill="#0D1117" stroke="#30363D"/>
+      <text x="160" y="20" fill="#E6EDF3" font-family="monospace">14:00</text>
+    </g>
+    <text x="20" y="172" fill="#6E7681" font-size="11">El timeline y los inputs editan el mismo schedule.</text>
+  </g>
+
+  <!-- ============================================================= §F MODAL DE CONFIRMACIÓN (CA-5) -->
+  <g transform="translate(48,1612)">
+    <rect width="984" height="244" rx="12" fill="#0F141B" stroke="#30363D"/>
+    <text x="20" y="34" fill="#8B949E" font-size="13" font-weight="600">AL TOCAR "GUARDAR AGENDA…" → MODAL inConfirmPost (no auto-POST en el arrastre)</text>
+
+    <!-- modal card -->
+    <g transform="translate(252,52)">
+      <rect width="480" height="168" rx="14" fill="#1C2128" stroke="#484F58"/>
+      <text x="24" y="40" fill="#E6EDF3" font-size="18" font-weight="700">Confirmar agenda de descanso</text>
+      <text x="24" y="66" fill="#B1BAC4" font-size="13">Se aplicará en caliente, sin reiniciar el pipeline.</text>
+
+      <rect x="24" y="80" width="432" height="34" rx="8" fill="#0D1117" stroke="#30363D"/>
+      <text x="38" y="101" fill="#8B949E" font-size="12">Próximo descanso</text>
+      <text x="442" y="101" fill="#C5B7FF" font-size="13" font-weight="600" text-anchor="end">hoy 23:00 → 06:00</text>
+
+      <!-- acciones -->
+      <g transform="translate(24,126)">
+        <rect width="120" height="32" rx="8" fill="transparent" stroke="#30363D"/>
+        <text x="60" y="21" fill="#B1BAC4" font-size="14" text-anchor="middle">Cancelar</text>
+      </g>
+      <g transform="translate(316,126)">
+        <rect width="140" height="32" rx="8" fill="rgba(124,92,255,0.16)" stroke="#7C5CFF"/>
+        <text x="70" y="21" fill="#C5B7FF" font-size="14" font-weight="700" text-anchor="middle">Guardar</text>
+      </g>
+    </g>
+
+    <text x="20" y="226" fill="#6E7681" font-size="11">POST /api/rest-mode loopback-only · CSRF vía fetchJson · body cap 16KB · overlap revalidado server-side.</text>
+  </g>
+
+  <!-- ============================================================= FOOTER NOTAS -->
+  <g transform="translate(48,1884)" font-size="12" fill="#6E7681">
+    <text x="0" y="0">Tokens: familia --rest-mode (#7C5CFF) · estados con texto+forma (WCAG AA) · marcador "ahora" desde el server (no Date cliente) · sin charting lib (SVG nativo).</text>
+  </g>
+</svg>
