@@ -43,7 +43,7 @@ Enviar `/restart` al bot. Responde con:
 | `agent-progress-state.json` | Progreso de agentes |
 | `pending-questions.json` | Preguntas pendientes de permisos |
 | `telegram-messages.json` | Registro de mensajes Telegram |
-| `tg-session-store.json` | Sesión conversacional del commander |
+| `tg-session-store.json` | ⛔ **Descontinuado** — sesión conversacional del commander (componente dado de baja; se conserva la fila por contexto histórico) |
 | `tg-commander-offset.json` | Offset de polling de Telegram |
 | `launcher-last-check.json` | Último check del launcher |
 | `agent-metrics.json` | Métricas de agentes |

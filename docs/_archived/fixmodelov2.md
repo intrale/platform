@@ -1,3 +1,5 @@
+> ⚠️ **Documento archivado — obsoleto / no-autoritativo.** Ver [`docs/pipeline-estado-actual.md`](../pipeline-estado-actual.md). Archivado el 2026-06-25 (issue [#3945](https://github.com/intrale/platform/issues/3945)).
+
 # Fix Modelo V2 — Tracking de Avance
 
 > Ultima actualizacion: 2026-03-28T23:55
