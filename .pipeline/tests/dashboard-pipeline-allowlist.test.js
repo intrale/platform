@@ -275,18 +275,19 @@ test('theme.css declara .v3-nav con grid-template-columns: repeat(N, minmax(<px>
     );
 });
 
-test('nav-tabs.js sigue exportando 12 tabs (regression vs el conteo asumido por el grid V3)', () => {
-    // #3726 — el catálogo NAV_TABS reemplazó al array AREAS y quedó fijo en
-    // 12 entradas por decisión del architect (home, equipo, pipeline,
-    // bloqueados, issues, matriz, ops, kpis, historial, costos, descanso,
-    // providers). El grid .v3-nav usa `repeat(12, minmax(44px, 1fr))` —
-    // si alguien suma/saca una tab acá, también tiene que actualizar el
-    // literal en theme.css y los tests que dependen del conteo.
+test('nav-tabs.js sigue exportando 13 tabs (regression vs el conteo asumido por el grid V3)', () => {
+    // #3726 — el catálogo NAV_TABS reemplazó al array AREAS (home, equipo,
+    // pipeline, bloqueados, issues, matriz, ops, kpis, historial, costos,
+    // descanso, providers).
+    // #3965 (EP8-H12) — se sumó la 13ª tab "Salud MP" (/multi-provider-health).
+    // El grid .v3-nav usa `repeat(13, minmax(44px, 1fr))` — si alguien suma/saca
+    // una tab acá, también tiene que actualizar el literal en theme.css y los
+    // tests que dependen del conteo.
     const { NAV_TABS } = require(path.join(__dirname, '..', 'views', 'dashboard', 'nav-tabs.js'));
     assert.equal(
         NAV_TABS.length,
-        12,
-        'NAV_TABS debe seguir teniendo 12 elementos (catálogo cerrado en #3726)',
+        13,
+        'NAV_TABS debe tener 13 elementos (12 de #3726 + Salud MP de #3965)',
     );
     // Sanity: el array AREAS viejo no debe reaparecer. Si vuelve, hay que
     // refactorizar el call site para que use NAV_TABS y emitir nav SSR via

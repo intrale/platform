@@ -2,10 +2,10 @@
 // Tests de la barra de navegacion unificada V3 (#3726).
 //
 // Cubre:
-//   - NAV_TABS tiene exactamente 12 entradas con el orden esperado y la forma
-//     { slug, label, iconId, href, ariaLabel } (CA-1, CA-2).
+//   - NAV_TABS tiene exactamente 13 entradas con el orden esperado y la forma
+//     { slug, label, iconId, href, ariaLabel } (CA-1, CA-2). #3965 sumó "mp-health".
 //   - renderNavTabsSsr('equipo') marca exactamente 1 tab con aria-current="page"
-//     y emite los 12 <a class="v3-tab"> (CA-3).
+//     y emite los 13 <a class="v3-tab"> (CA-3).
 //   - renderNavTabsSsr('<slug-invalido>') NO inyecta el string crudo en el
 //     HTML (defensa anti-XSS reclamada por security en #3726, vector A03).
 //   - El HTML emitido NO contiene <script>, onclick=, ni javascript: (CA-4).
@@ -36,11 +36,12 @@ const SPRITE_PATH = path.resolve(__dirname, '..', '..', '..', 'assets', 'icons',
 // NAV_TABS — inventario y forma de cada entrada
 // ---------------------------------------------------------------------------
 
-test('NAV_TABS tiene exactamente 12 entradas en el orden esperado (CA-1)', () => {
-    assert.equal(NAV_TABS.length, 12, 'NAV_TABS debe tener 12 tabs');
+test('NAV_TABS tiene exactamente 13 entradas en el orden esperado (CA-1)', () => {
+    // #3965 (EP8-H12): se sumó la tab "mp-health" al final del catálogo.
+    assert.equal(NAV_TABS.length, 13, 'NAV_TABS debe tener 13 tabs');
     const expectedOrder = [
         'home', 'equipo', 'pipeline', 'bloqueados', 'issues', 'matriz',
-        'ops', 'kpis', 'historial', 'costos', 'descanso', 'providers',
+        'ops', 'kpis', 'historial', 'costos', 'descanso', 'providers', 'mp-health',
     ];
     assert.deepEqual(NAV_TABS.map(t => t.slug), expectedOrder);
 });
@@ -55,11 +56,13 @@ test('cada NAV_TABS tiene { slug, label, iconId, href, ariaLabel } no vacios (CA
     }
 });
 
-test('NAV_TABS preserva href reales para descanso/providers (CA-2)', () => {
+test('NAV_TABS preserva href reales para descanso/providers/mp-health (CA-2)', () => {
     const descanso = NAV_TABS.find(t => t.slug === 'descanso');
     const providers = NAV_TABS.find(t => t.slug === 'providers');
+    const mpHealth = NAV_TABS.find(t => t.slug === 'mp-health');
     assert.equal(descanso.href, '/modo-descanso');
     assert.equal(providers.href, '/multi-provider');
+    assert.equal(mpHealth.href, '/multi-provider-health');
 });
 
 // ---------------------------------------------------------------------------
@@ -72,10 +75,10 @@ test('renderNavTabsSsr emite <nav class="v3-nav"> con role=navigation y aria-lab
     assert.match(html, /<\/nav>$/);
 });
 
-test('renderNavTabsSsr emite exactamente 12 anchors class="v3-tab" (CA-3)', () => {
+test('renderNavTabsSsr emite exactamente 13 anchors class="v3-tab" (CA-3)', () => {
     const html = renderNavTabsSsr('equipo');
     const matches = html.match(/<a class="v3-tab(?: v3-tab-active)?"/g) || [];
-    assert.equal(matches.length, 12, `Esperaba 12 anchors v3-tab, obtuve ${matches.length}`);
+    assert.equal(matches.length, 13, `Esperaba 13 anchors v3-tab, obtuve ${matches.length}`);
 });
 
 test('renderNavTabsSsr marca SOLO la tab activa con aria-current="page" (CA-3)', () => {
@@ -95,8 +98,8 @@ test('renderNavTabsSsr sin activeSlug no marca ninguna tab', () => {
 test('cada anchor tiene aria-label no vacio (CA-4)', () => {
     const html = renderNavTabsSsr('home');
     const ariaMatches = html.match(/aria-label="[^"]+"/g) || [];
-    // 12 anchors + 1 del <nav> = 13 aria-labels
-    assert.ok(ariaMatches.length >= 13, `Esperaba >=13 aria-labels, obtuve ${ariaMatches.length}`);
+    // 13 anchors + 1 del <nav> = 14 aria-labels
+    assert.ok(ariaMatches.length >= 14, `Esperaba >=14 aria-labels, obtuve ${ariaMatches.length}`);
     // ninguno puede estar vacio
     for (const m of ariaMatches) {
         assert.doesNotMatch(m, /aria-label=""/);
@@ -106,7 +109,7 @@ test('cada anchor tiene aria-label no vacio (CA-4)', () => {
 test('cada <svg> del icono lleva aria-hidden="true" y focusable="false" (CA-4)', () => {
     const html = renderNavTabsSsr('home');
     const svgMatches = html.match(/<svg [^>]*>/g) || [];
-    assert.equal(svgMatches.length, 12, 'Debe haber 12 <svg> de tab');
+    assert.equal(svgMatches.length, 13, 'Debe haber 13 <svg> de tab');
     for (const svg of svgMatches) {
         assert.match(svg, /aria-hidden="true"/, `svg sin aria-hidden: ${svg}`);
         assert.match(svg, /focusable="false"/, `svg sin focusable=false: ${svg}`);

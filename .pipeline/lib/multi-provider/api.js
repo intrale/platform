@@ -683,6 +683,88 @@ async function handleProviderSchedule(req, res, params) {
     });
 }
 
+// =============================================================================
+// EP8-H12 (#3965) — Pantalla "Salud Multi-Provider". Handlers GET de agregación
+// read-only sobre datos ya persistidos. SIN CSRF (lectura pública del estado
+// interno, igual que handleHealthGet). Whitelist estricta: el módulo
+// health-screen ya devuelve SOLO metadatos; estos handlers nunca serializan el
+// config/snapshot crudo (CA-6 / A02).
+// =============================================================================
+let healthScreen = null;
+try { healthScreen = require('./health-screen'); } catch { /* opcional */ }
+
+/**
+ * GET /api/multi-provider/health-screen
+ * Health cards por provider (p50/p95 + despachos 24h + errores por clase incl.
+ * cli_1m_context_glitch) + resumen Sherlock. Solo metadatos agregados.
+ */
+async function handleHealthScreenGet(req, res) {
+    if (req.method !== 'GET') return sendError(res, 405, 'method_not_allowed', 'GET only');
+    if (!healthScreen) {
+        return sendError(res, 503, 'health_screen_unavailable', 'health-screen no está disponible en este build.');
+    }
+    try {
+        const data = healthScreen.buildScreenPayload();
+        // Whitelist: `data` ya es solo metadatos agregados (ver health-screen.js).
+        // Nunca adjuntamos el config crudo ni material sensible.
+        sendJson(res, { ok: true, ...data });
+    } catch (e) {
+        sendError(res, 500, 'health_screen_failed', e.message);
+    }
+}
+
+/**
+ * GET /api/multi-provider/sherlock-pct
+ * % same-provider de Sherlock (ventana 24h) con meta <10% y flag de alerta.
+ */
+async function handleSherlockPctGet(req, res) {
+    if (req.method !== 'GET') return sendError(res, 405, 'method_not_allowed', 'GET only');
+    if (!healthScreen) {
+        return sendError(res, 503, 'health_screen_unavailable', 'health-screen no está disponible en este build.');
+    }
+    try {
+        const s = healthScreen.sherlockSameProviderPct();
+        sendJson(res, {
+            ok: true,
+            pct: s.pct,
+            meta: s.meta,
+            alert: s.alert,
+            total: s.total,
+            same: s.same,
+        });
+    } catch (e) {
+        sendError(res, 500, 'sherlock_pct_failed', e.message);
+    }
+}
+
+/**
+ * GET /api/multi-provider/health-timeline
+ * Timeline cronológico 24h de transiciones gate/exhaustion/recovery. Whitelist
+ * explícita de campos (sin hashes de cadena). El texto se escapa en la vista.
+ */
+async function handleHealthTimelineGet(req, res) {
+    if (req.method !== 'GET') return sendError(res, 405, 'method_not_allowed', 'GET only');
+    if (!healthScreen) {
+        return sendError(res, 503, 'health_screen_unavailable', 'health-screen no está disponible en este build.');
+    }
+    try {
+        const events = healthScreen.timeline24h();
+        // Whitelist explícita: re-proyectamos cada evento a SOLO los campos
+        // permitidos, nunca el objeto crudo de audit (que trae hash_prev/self).
+        const safe = (events || []).map(e => ({
+            provider: e.provider,
+            from_state: e.from_state,
+            to_state: e.to_state,
+            reason_code: e.reason_code,
+            latency_ms: e.latency_ms,
+            created_at: e.created_at,
+        }));
+        sendJson(res, { ok: true, events: safe, count: safe.length });
+    } catch (e) {
+        sendError(res, 500, 'health_timeline_failed', e.message);
+    }
+}
+
 const ROUTES = [
     { method: 'GET',  pattern: /^\/api\/multi-provider\/csrf-token$/,            handler: handleCsrfToken },
     // #3811 — kill-switch por provider.
@@ -708,6 +790,10 @@ const ROUTES = [
     // Health snapshot (#3260): read-only sin CSRF, mutación con CSRF.
     { method: 'GET',  pattern: /^\/api\/multi-provider\/health$/,                handler: handleHealthGet },
     { method: 'POST', pattern: /^\/api\/multi-provider\/health\/run$/,           handler: handleHealthRun },
+    // EP8-H12 (#3965): agregadores read-only de la pantalla "Salud Multi-Provider".
+    { method: 'GET',  pattern: /^\/api\/multi-provider\/health-screen$/,         handler: handleHealthScreenGet },
+    { method: 'GET',  pattern: /^\/api\/multi-provider\/sherlock-pct$/,          handler: handleSherlockPctGet },
+    { method: 'GET',  pattern: /^\/api\/multi-provider\/health-timeline$/,       handler: handleHealthTimelineGet },
 ];
 
 function route(req, res) {
@@ -754,6 +840,9 @@ module.exports = {
     handleReload,
     handleHealthGet,
     handleHealthRun,
+    handleHealthScreenGet,
+    handleSherlockPctGet,
+    handleHealthTimelineGet,
     handleProvidersDisabledGet,
     handleProviderDisable,
     handleProviderEnable,
