@@ -11169,6 +11169,11 @@ const server = http.createServer((req, res) => {
       try {
         const parsed = JSON.parse(body);
         const { issue, skill, pipeline: pl, fase } = parsed;
+        // #4195 — "Reiniciar" usa el MISMO mecanismo que matar (kill PID +
+        // devolver el marker a pendiente/ para que el Pulpo lo relance); el flag
+        // `restart` solo ajusta el mensaje/log para reflejar la intención. El
+        // ciclo de vida sigue siendo dueño del Pulpo (no relanzamos nosotros).
+        const isRestart = parsed.restart === true;
 
         // SEC-1 — validación estricta de inputs ANTES de cualquier path.join /
         // renameSync. Sin esto, `pipeline="../.."` o `fase` con segmentos
@@ -11243,10 +11248,11 @@ const server = http.createServer((req, res) => {
           return;
         }
 
+        const verb = isRestart ? 'reiniciado' : 'cancelado';
         const msg = killed
-          ? `Agente ${skill} #${issue} cancelado (PIDs ${pidsKilled.join(', ')} + devuelto a pendiente)`
+          ? `Agente ${skill} #${issue} ${verb} (PIDs ${pidsKilled.join(', ')} + devuelto a pendiente)`
           : `Agente ${skill} #${issue} devuelto a pendiente (proceso no encontrado — ya terminó o nunca arrancó)`;
-        log(`Kill agent: ${skill} #${issue} en ${pl}/${fase} — ${killed ? `killed ${pidsKilled.join(',')}` : 'no PID'}`);
+        log(`${isRestart ? 'Restart' : 'Kill'} agent: ${skill} #${issue} en ${pl}/${fase} — ${killed ? `killed ${pidsKilled.join(',')}` : 'no PID'}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, msg }));
       } catch (e) {

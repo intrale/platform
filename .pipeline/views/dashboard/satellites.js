@@ -202,10 +202,23 @@ document.addEventListener('visibilitychange', () => { if(document.visibilityStat
 // dentro del <nav class="v3-nav"> que reemplaza al back-link "Operacion".
 // Si el caller no pasa activeSlug, ninguna tab queda activa pero la nav
 // igual se rendera completa (degradacion limpia).
-function pageShell(title, subtitle, bodyHtml, scripts, extraCss = '', activeSlug = '') {
+// #4195 — `opts` opcional (backward-compatible): un satélite migrado a MIZPÁ
+// puede inyectar su propia barra de marca (`opts.brandHtml`) en lugar del
+// `in-header-brand` legacy, y una miga de pan (`opts.breadcrumbHtml`) debajo de
+// la nav. Sin `opts` el shell se comporta igual que antes (sisters no migradas).
+function pageShell(title, subtitle, bodyHtml, scripts, extraCss = '', activeSlug = '', opts = {}) {
     const theme = loadTheme();
     const spriteInline = loadIconSprite();
     const navHtml = renderNavTabsSsr(activeSlug);
+    const brandHtml = (opts && opts.brandHtml) || `
+    <div class="in-header-brand">
+      <div class="in-header-logo">i</div>
+      <div>
+        <div class="in-header-title">${title}</div>
+        <div class="in-header-subtitle">${subtitle}</div>
+      </div>
+    </div>`;
+    const breadcrumbHtml = (opts && opts.breadcrumbHtml) || '';
     return `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -229,19 +242,14 @@ ${extraCss}
 <div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">${spriteInline}</div>
 <div class="satellite-frame">
   <header class="in-header">
-    <div class="in-header-brand">
-      <div class="in-header-logo">i</div>
-      <div>
-        <div class="in-header-title">${title}</div>
-        <div class="in-header-subtitle">${subtitle}</div>
-      </div>
-    </div>
+    ${brandHtml}
     <div class="in-header-meta">
       <span class="in-pill" id="hdr-mode">…</span>
       <span class="in-clock" id="hdr-clock">…</span>
     </div>
   </header>
   ${navHtml}
+  ${breadcrumbHtml}
   <main class="satellite-body">${bodyHtml}</main>
   <footer class="in-footer">
     <span>Refresh independiente · sin flicker</span>
@@ -254,239 +262,472 @@ ${extraCss}
 }
 
 // ─────────────────── Equipo ───────────────────
-function renderEquipo() {
-    // #3955 EP8-H2 — Acordeón por skill con agentes individuales. El detalle por
-    // agente (issue/fase/progreso/duración/log + kill) sale de /api/dash/active;
-    // la carga y el sparkline 24h de /api/dash/equipo. Construcción 100% por DOM
-    // (textContent/setAttribute) → XSS-safe por construcción (SEC-5). El kill por
-    // agente reusa killAgent() (token CSRF, SEC-2). Commander = no cancelable
-    // (CA-3); cooldown = cuenta regresiva server-authoritative (CA-4/SEC-6).
-    const body = `
-<section class="in-section">
-  <h2 class="in-section-title"><span class="in-section-title-icon">👥</span>Equipo · acordeón por skill</h2>
-  <div id="equipo-accordion" class="eq-accordion"><div class="eq-acc-empty">Cargando agentes…</div></div>
-</section>`;
-    const css = `
-.eq-accordion { display: flex; flex-direction: column; gap: 10px; }
-.eq-acc-empty { color: var(--in-fg-dim); font-size: 13px; padding: 18px; text-align: center; }
-.eq-acc-card { background: var(--in-bg-3); border: 1px solid var(--in-border); border-radius: var(--in-radius-sm); overflow: hidden; }
-.eq-acc-card.eq-acc-card-obs { border-color: #a371f7; border-left: 3px solid #a371f7; }
-.eq-acc-card.eq-acc-card-cooldown { border-left: 3px solid #f5b454; }
-.eq-acc-head { display: flex; align-items: center; gap: 10px; padding: 11px 14px; cursor: pointer; user-select: none; }
-.eq-acc-head:hover { background: var(--in-bg); }
-.eq-acc-chevron { font-size: 11px; color: var(--in-fg-dim); transition: transform 0.2s; width: 12px; }
-.eq-acc-card.collapsed .eq-acc-chevron { transform: rotate(-90deg); }
-.eq-acc-card.collapsed .eq-acc-body { display: none; }
-.eq-acc-avatar { width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 15px; flex: 0 0 auto; }
-.eq-acc-name { font-weight: 600; font-size: 13px; }
-.eq-acc-count { font-size: 11px; color: var(--in-fg-dim); font-variant-numeric: tabular-nums; }
-.eq-acc-obs-badge { font-size: 11px; color: #c9b6ff; }
-.eq-acc-spark { display: inline-flex; align-items: flex-end; gap: 1px; height: 20px; margin-left: auto; }
-.eq-acc-spark .bar { width: 3px; background: #1f6feb; border-radius: 1px; min-height: 1px; }
-.eq-acc-spark .bar.recent { background: #58a6ff; }
-.eq-acc-body { display: flex; flex-direction: column; border-top: 1px solid var(--in-border); }
-.eq-ag-row { display: flex; flex-direction: column; gap: 5px; padding: 9px 14px 9px 34px; border-bottom: 1px solid var(--in-border); }
-.eq-ag-row:last-child { border-bottom: none; }
-.eq-ag-row.cooldown { background: rgba(245,180,84,0.06); }
-.eq-ag-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.eq-ag-issue { color: #58a6ff; font-weight: 700; font-size: 12px; }
-.eq-ag-issue.obs { color: #c9b6ff; }
-.eq-ag-fase { font-size: 10px; padding: 1px 7px; border-radius: 9px; background: var(--in-bg); color: var(--in-fg-dim); border: 1px solid var(--in-border); }
-.eq-ag-title { font-size: 12px; color: var(--in-fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
-.eq-ag-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.eq-ag-bar { flex: 0 0 90px; height: 6px; border-radius: 3px; background: var(--in-bg); overflow: hidden; }
-.eq-ag-bar > span { display: block; height: 100%; background: #58a6ff; transition: width 0.4s; }
-.eq-ag-bar.indeterminate > span { width: 30%; animation: eqIndet 1.2s ease-in-out infinite; }
-@keyframes eqIndet { 0%{margin-left:-30%} 100%{margin-left:100%} }
-.eq-ag-pct { font-size: 11px; color: #79c0ff; font-variant-numeric: tabular-nums; min-width: 30px; }
-.eq-ag-dur { font-size: 11px; color: var(--in-fg-dim); font-variant-numeric: tabular-nums; }
-.eq-ag-log { font-size: 11px; color: #2dd4bf; text-decoration: none; }
-.eq-ag-log:hover { text-decoration: underline; }
-.eq-ag-kill { margin-left: auto; background: transparent; border: 1px solid var(--in-bad); color: var(--in-bad); border-radius: 6px; padding: 3px 10px; font-size: 11px; cursor: pointer; }
-.eq-ag-kill:hover { background: var(--in-bad-soft); }
-.eq-ag-protected { margin-left: auto; font-size: 11px; color: #c9b6ff; border: 1px solid #a371f7; border-radius: 6px; padding: 3px 10px; }
-.eq-ag-cooldown { font-size: 11px; color: #f5b454; }
-.eq-ag-wait { margin-left: auto; font-size: 11px; color: var(--in-fg-dim); border: 1px solid var(--in-border); border-radius: 6px; padding: 3px 10px; opacity: 0.7; }`;
-    const script = `
-// Estado client de la vista Equipo (acordeón). _activeAgents y _equipoSkills se
-// refrescan por polling; buildAccordion() re-renderiza el DOM in-place.
-let _activeAgents = [];
-let _equipoSkills = {};
-
-// Agrupar agentes vivos por skill, preservando orden de llegada (el server ya
-// ordena por duración desc + commander al frente).
-function groupAgentsBySkill(agents){
-    const order = [];
-    const map = {};
-    for(const a of (agents||[])){
-        const s = a.skill || '';
-        if(!map[s]){ map[s] = []; order.push(s); }
-        map[s].push(a);
-    }
-    return { order, map };
+// #4195 (Ola 7.1) — Rediseño integral MIZPÁ: la pantalla deja de ser un acordeón
+// vacío y pasa a ser la VISTA DE DOTACIÓN del equipo de agentes. Hereda la barra
+// de marca MIZPÁ + nav curada (popover «⋯ Más» con Equipo dentro + miga de pan),
+// un banner de misión en clave operativa (agentes en vivo, roles despiertos/total,
+// tok/min, el más veterano, en enfriamiento + visor de slots de concurrencia),
+// una ficha por agente vivo (rol, issue linkeado, fase, proveedor, tiempo, rebotes
+// y rama, con acciones matar/reiniciar) y el listado completo de roles
+// diferenciando despiertos de dormidos/congelados.
+//
+// Datos: /api/dash/equipo expone { skills, roster, banner, providersBySkill } y
+// /api/dash/active expone los agentes vivos enriquecidos (provider/branch/bounces).
+// Render 100% por DOM (textContent/setAttribute) → XSS-safe (SEC-5). Kill reusa
+// killAgent() (CSRF, SEC-2); reiniciar reusa restartAgent() (mismo endpoint con
+// flag restart). Commander = no cancelable (CA-3); cooldown server-authoritative.
+function renderEquipoBrandBar() {
+    const logoSvg = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">'
+        + '<path d="M12 2.5 5 6v5c0 4.6 3 8 7 9.5 4-1.5 7-4.9 7-9.5V6l-7-3.5Z" stroke="#06121a" stroke-width="1.6" fill="rgba(255,255,255,.16)"/>'
+        + '<path d="M9.5 12.5 11.3 14.3 14.8 10.4" stroke="#06121a" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    return `
+    <div class="in-header-brand">
+      <div class="mz-logo" aria-hidden="true" title="MIZPÁ · atalaya de agentes (Génesis 31:49)">${logoSvg}</div>
+      <div class="mz-id">
+        <div class="mz-name">MIZPÁ</div>
+        <div class="mz-sub">«Que el Señor vigile» · atalaya de agentes</div>
+      </div>
+      <div class="mz-projsel" role="button" tabindex="0"
+           title="Proyecto activo. MIZPÁ es el motor; el proyecto es intercambiable (multiproyecto — selección en evaluación)."
+           aria-label="Proyecto activo: Intrale, 1 de 3">
+        <span class="mz-proj-avatar" aria-hidden="true">i</span>
+        <span class="mz-proj-id">
+          <span class="mz-proj-name">Intrale</span>
+          <span class="mz-proj-state">PROYECTO ACTIVO</span>
+        </span>
+        <span class="mz-proj-badge">1 / 3</span>
+        <span class="mz-proj-caret" aria-hidden="true">▾</span>
+      </div>
+    </div>`;
 }
 
-// Progreso %: min(100, dur/eta*100); sin eta → indeterminado (nunca NaN).
+function renderEquipo() {
+    // Miga de pan: Equipo vive dentro de «⋯ Más» (tab secundario). La nav ya deja
+    // el popover abierto + Equipo marcado vía renderNavTabsSsr('equipo'); la miga
+    // refuerza la ubicación (CA-1).
+    const breadcrumb = `
+  <div class="mz-crumb" aria-label="Ubicación: Más › Equipo">
+    <span class="mz-crumb-sep">⋯ Más</span>
+    <span class="mz-crumb-sep">›</span>
+    <b>👥 Equipo</b>
+    <span class="mz-crumb-desc">· dotación de agentes por rol</span>
+  </div>`;
+
+    const body = `
+<section class="eq2" aria-label="Dotación del equipo de agentes">
+  <!-- Banner de misión -->
+  <div class="eqm" id="eq-banner">
+    <div class="eqm-live">
+      <span class="eqm-live-k">EN VIVO</span>
+      <span class="eqm-live-n" id="eq-live-n">—</span>
+      <span class="eqm-live-u">agentes activos</span>
+    </div>
+    <div class="eqm-text">
+      <div class="eqm-ttl">La dotación trabajando ahora
+        <span class="eqm-badge" id="eq-roles-badge">— / — roles despiertos</span>
+      </div>
+      <div class="eqm-desc">Cada agente es on-demand: nace para una fase, consume tokens mientras corre y se apaga al terminar. Acá ves quién está vivo, en qué issue, con qué proveedor — y podés matar o reiniciar cualquiera individualmente.</div>
+      <div class="eqm-metrics">
+        <div class="eqm-wm"><div class="eqm-wm-l">🔥 QUEMANDO AHORA</div><div class="eqm-wm-v" id="eq-tokmin">—</div><div class="eqm-wm-s">tok/min · ≈ promedio 24h</div></div>
+        <div class="eqm-wm"><div class="eqm-wm-l">⏱ EL MÁS VETERANO</div><div class="eqm-wm-v" id="eq-veteran-v">—</div><div class="eqm-wm-s" id="eq-veteran-s">sin agentes vivos</div></div>
+        <div class="eqm-wm"><div class="eqm-wm-l">❄ EN ENFRIAMIENTO</div><div class="eqm-wm-v" id="eq-cooling">—</div><div class="eqm-wm-s">terminaron, enfriando</div></div>
+      </div>
+    </div>
+    <div class="eqm-slots">
+      <div class="eqm-slots-head">⚡ SLOTS DE CONCURRENCIA <span id="eq-slots-count">—</span></div>
+      <div class="eqm-slots-bars" id="eq-slots-bars"></div>
+      <div class="eqm-slots-note" id="eq-slots-note">Cupos de agentes simultáneos.</div>
+    </div>
+  </div>
+
+  <!-- Resumen + búsqueda -->
+  <div class="eq2-bar">
+    <div class="eq2-chips">
+      <div class="eq2-chip"><b id="eq-chip-vivos">—</b> vivos</div>
+      <div class="eq2-chip"><b id="eq-chip-cool">—</b> enfriando</div>
+      <div class="eq2-chip"><b id="eq-chip-idle">—</b> ociosos</div>
+      <div class="eq2-chip eq2-chip-total"><b id="eq-chip-total">—</b> roles totales</div>
+    </div>
+    <input type="search" id="eq-search" class="eq2-search" placeholder="Buscar por rol, #issue o proveedor…" aria-label="Buscar rol, issue o proveedor">
+  </div>
+
+  <!-- Roster por categoría -->
+  <div id="eq-roster" class="eq2-roster"><div class="eq2-empty">Cargando dotación…</div></div>
+</section>`;
+
+    const css = `
+.eq2 { display: flex; flex-direction: column; gap: 16px; }
+.eq2-empty { color: var(--in-fg-dim); font-size: 13px; padding: 18px; text-align: center; }
+
+/* Banner de misión */
+.eqm { display: flex; align-items: stretch; gap: 20px; position: relative; overflow: hidden; flex-wrap: wrap;
+  background: linear-gradient(110deg, rgba(52,217,224,.14), rgba(124,92,255,.08) 45%, transparent 75%), linear-gradient(180deg, var(--in-bg-2,#11151E), var(--in-bg-3,#141925));
+  border: 1px solid rgba(52,217,224,.22); border-radius: 16px; padding: 18px 22px; }
+.eqm-live { display: flex; flex-direction: column; align-items: center; justify-content: center; min-width: 104px; padding: 12px 16px; border-radius: 14px; flex: none;
+  background: linear-gradient(135deg, rgba(52,217,224,.22), rgba(124,92,255,.16)); border: 1px solid rgba(52,217,224,.3); }
+.eqm-live-k { font-size: 10px; font-weight: 800; letter-spacing: 1.5px; color: #9fe9ee; }
+.eqm-live-n { font-size: 38px; font-weight: 800; color: #bff3f6; line-height: 1; font-variant-numeric: tabular-nums; }
+.eqm-live-u { font-size: 10px; color: var(--in-fg-dim,#8A93A6); font-weight: 600; margin-top: 4px; letter-spacing: .3px; }
+.eqm-text { flex: 1; min-width: 280px; }
+.eqm-ttl { font-size: 19px; font-weight: 800; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.eqm-badge { font-size: 11px; color: var(--brand-cyan,#34D9E0); background: rgba(52,217,224,.12); border: 1px solid rgba(52,217,224,.3); padding: 3px 9px; border-radius: 20px; font-weight: 700; letter-spacing: .3px; }
+.eqm-desc { font-size: 13px; color: var(--in-fg-dim,#8A93A6); margin-top: 5px; max-width: 620px; line-height: 1.45; }
+.eqm-metrics { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.eqm-wm { flex: 1; min-width: 150px; background: rgba(255,255,255,.035); border: 1px solid var(--in-border,rgba(255,255,255,.07)); border-radius: 11px; padding: 9px 12px; }
+.eqm-wm-l { font-size: 9.5px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#5B6376); }
+.eqm-wm-v { font-size: 18px; font-weight: 800; margin-top: 3px; line-height: 1; font-variant-numeric: tabular-nums; }
+.eqm-wm-s { font-size: 10px; color: var(--in-fg-dim,#5B6376); margin-top: 4px; }
+.eqm-slots { min-width: 230px; flex: 1; display: flex; flex-direction: column; gap: 8px; background: rgba(255,255,255,.03); border: 1px solid var(--in-border,rgba(255,255,255,.07)); border-radius: 12px; padding: 12px 14px; }
+.eqm-slots-head { font-size: 10px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#8A93A6); display: flex; justify-content: space-between; gap: 8px; }
+.eqm-slots-head span { color: #bff3f6; }
+.eqm-slots-bars { display: flex; gap: 7px; }
+.eqm-slot { flex: 1; height: 26px; border-radius: 7px; border: 1px solid var(--in-border); background: var(--in-bg); }
+.eqm-slot.busy { background: linear-gradient(135deg,#34D9E0,#7C5CFF); border-color: rgba(52,217,224,.5); }
+.eqm-slots-note { font-size: 10px; color: var(--in-fg-dim,#5B6376); line-height: 1.4; }
+
+/* Resumen + búsqueda */
+.eq2-bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.eq2-chips { display: flex; gap: 10px; flex-wrap: wrap; }
+.eq2-chip { font-size: 12px; color: var(--in-fg-dim); background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 999px; padding: 6px 13px; }
+.eq2-chip b { color: var(--in-fg); font-variant-numeric: tabular-nums; font-weight: 800; }
+.eq2-chip-total b { color: var(--brand-cyan,#34D9E0); }
+.eq2-search { margin-left: auto; flex: 1; min-width: 240px; max-width: 420px; background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 10px; padding: 9px 13px; color: var(--in-fg); font-size: 13px; }
+.eq2-search:focus-visible { outline: 2px solid var(--in-accent); outline-offset: 1px; }
+
+/* Roster por categoría */
+.eq2-roster { display: flex; flex-direction: column; gap: 14px; }
+.eq2-cat-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.eq2-cat-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.eq2-cat-name { font-size: 12px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; }
+.eq2-cat-meta { font-size: 11px; color: var(--in-fg-dim); background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 999px; padding: 2px 10px; }
+.eq2-cat-roles { font-size: 11px; color: var(--in-fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.eq2-cat-list { display: flex; flex-direction: column; gap: 8px; }
+
+/* Ficha de agente vivo */
+.eq2-card { display: flex; gap: 14px; background: var(--in-bg-3); border: 1px solid var(--in-border); border-left: 3px solid var(--in-ok); border-radius: var(--in-radius-sm); padding: 13px 15px; }
+.eq2-card-id { display: flex; flex-direction: column; gap: 6px; min-width: 168px; flex: none; }
+.eq2-card-persona { display: flex; align-items: center; gap: 9px; }
+.eq2-avatar { width: 34px; height: 34px; border-radius: 9px; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 17px; flex: none; }
+.eq2-card-name { font-size: 14px; font-weight: 700; }
+.eq2-card-tag { font-size: 10.5px; color: var(--in-fg-dim); }
+.eq2-card-pid { font-size: 10px; color: var(--in-fg-soft); font-variant-numeric: tabular-nums; word-break: break-all; }
+.eq2-state-live { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 700; color: var(--in-ok); border: 1px solid var(--in-ok); background: var(--in-ok-soft); border-radius: 999px; padding: 2px 9px; width: fit-content; text-transform: uppercase; letter-spacing: .5px; }
+.eq2-state-live::before { content: "●"; animation: eqPulse 1.6s ease-in-out infinite; }
+@keyframes eqPulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+.eq2-card-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 7px; }
+.eq2-card-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.eq2-issue { color: #58a6ff; font-weight: 800; font-size: 13px; text-decoration: none; }
+.eq2-issue:hover { text-decoration: underline; }
+.eq2-fase { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; padding: 2px 8px; border-radius: 9px; background: var(--in-bg); color: var(--in-fg-dim); border: 1px solid var(--in-border); }
+.eq2-card-title { font-size: 13px; color: var(--in-fg); }
+.eq2-card-facts { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--in-fg-dim); align-items: center; }
+.eq2-fact { display: inline-flex; align-items: center; gap: 5px; font-variant-numeric: tabular-nums; }
+.eq2-fact b { color: var(--in-fg); font-weight: 600; }
+.eq2-prov-dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+.eq2-rebotes { color: var(--in-warn); }
+.eq2-card-prog { display: flex; align-items: center; gap: 9px; }
+.eq2-bar { flex: 1; max-width: 240px; height: 6px; border-radius: 3px; background: var(--in-bg); overflow: hidden; }
+.eq2-bar > span { display: block; height: 100%; background: linear-gradient(90deg,#34D9E0,#7C5CFF); transition: width .4s; }
+.eq2-bar.indet > span { width: 30%; animation: eqIndet 1.2s ease-in-out infinite; }
+@keyframes eqIndet { 0%{margin-left:-30%} 100%{margin-left:100%} }
+.eq2-pct { font-size: 11px; color: #79c0ff; font-variant-numeric: tabular-nums; min-width: 34px; }
+.eq2-card-actions { display: flex; flex-direction: column; gap: 7px; flex: none; align-items: stretch; min-width: 124px; }
+.eq2-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; border-radius: 8px; padding: 7px 12px; cursor: pointer; text-decoration: none; border: 1px solid var(--in-border); background: var(--in-bg-2); color: var(--in-fg); }
+.eq2-btn:hover { border-color: var(--in-accent); }
+.eq2-btn-kill { color: #fff; font-weight: 700; border: none; background: linear-gradient(135deg,#f85149,#d1242f); }
+.eq2-btn-kill:hover { filter: brightness(1.08); }
+.eq2-btn-row { display: flex; gap: 7px; }
+.eq2-btn-row .eq2-btn { flex: 1; }
+.eq2-protected { display: inline-flex; align-items: center; justify-content: center; font-size: 11px; color: #c9b6ff; border: 1px solid #a371f7; border-radius: 8px; padding: 7px 10px; }
+
+/* Fila de rol dormido / congelado */
+.eq2-idle { display: flex; align-items: center; gap: 12px; background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: var(--in-radius-sm); padding: 10px 15px; }
+.eq2-idle .eq2-avatar { width: 30px; height: 30px; font-size: 15px; opacity: .85; }
+.eq2-idle-id { display: flex; flex-direction: column; }
+.eq2-idle-name { font-size: 13px; font-weight: 700; }
+.eq2-idle-tag { font-size: 11px; color: var(--in-fg-dim); }
+.eq2-idle-badge { margin-left: auto; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; border-radius: 999px; padding: 3px 11px; }
+.eq2-badge-idle { color: var(--in-fg-dim); border: 1px solid var(--in-border); background: var(--in-bg); }
+.eq2-badge-frozen { color: #d2a86a; border: 1px solid #6b5526; background: rgba(210,168,106,.1); }
+.eq2-hidden { display: none !important; }`;
+
+    const script = `
+// === Equipo MIZPÁ (#4195) — vista de dotación =================================
+const GH_ISSUE_BASE = 'https://github.com/intrale/platform/issues/';
+let _eq = { roster: null, banner: null, providersBySkill: {}, skills: {} };
+let _agentsBySkill = {};
+let _allAgents = [];
+
+function fmtModel(model){
+    if(!model) return '';
+    return String(model).replace(/^claude-/,'').replace(/^gpt-/,'gpt ').replace(/-/g,' ');
+}
 function agentProgress(durationMs, etaMs){
     if(!etaMs || etaMs <= 0) return { pct: 0, indeterminate: true };
     return { pct: Math.min(100, Math.round((durationMs/etaMs)*100)), indeterminate: false };
 }
-
-// Sparkline 24h: 24 barras normalizadas; últimas 6 horas resaltadas.
-function buildSparkline(buckets){
-    const wrap = document.createElement('span');
-    wrap.className = 'eq-acc-spark';
-    const arr = Array.isArray(buckets) ? buckets : [];
-    const max = arr.reduce((a,b)=>Math.max(a,b||0),0);
-    let total = 0;
-    for(let i=0;i<arr.length;i++){
-        const v = arr[i]||0; total += v;
-        const bar = document.createElement('span');
-        bar.className = 'bar' + (i >= arr.length-6 ? ' recent' : '');
-        bar.style.height = (max>0 ? Math.max(8, Math.round((v/max)*100)) : 4) + '%';
-        const hoursAgo = arr.length-1-i;
-        bar.title = v + ' marker' + (v===1?'':'s') + ' · hace ' + hoursAgo + 'h';
-        wrap.appendChild(bar);
-    }
-    wrap.setAttribute('aria-label', 'Carga ultimas 24 horas: ' + total + ' markers');
-    return wrap;
+function roleMetaFor(skill){
+    const r = (_eq.roster && _eq.roster._bySkill) ? _eq.roster._bySkill[skill] : null;
+    if(r) return r;
+    return { skill: skill, name: skill, tagline: '', icon: '⚙', color: '#8b949e', state: 'idle', liveCount: 0, max: 0 };
 }
 
-// Fila de un agente (DOM seguro: textContent / setAttribute).
-function buildAgentRow(a){
-    const row = document.createElement('div');
-    const observational = a.observational === true || a.cancelable === false;
-    const cooldown = a.cooldown || null;
-    row.className = 'eq-ag-row' + (cooldown ? ' cooldown' : '');
+// --- Banner ---------------------------------------------------------------
+function renderBanner(){
+    const b = _eq.banner;
+    if(!b) return;
+    setText('eq-live-n', b.agentsLive);
+    setText('eq-roles-badge', b.rolesAwake + ' / ' + b.rolesTotal + ' roles despiertos');
+    setText('eq-tokmin', b.tokPerMin != null ? fmtNum(b.tokPerMin) : '—');
+    if(b.veteran){
+        setText('eq-veteran-v', fmtDur(b.veteran.durationMs));
+        setText('eq-veteran-s', '#' + (b.veteran.issue||'?') + ' · ' + (b.veteran.name||b.veteran.skill||''));
+    } else {
+        setText('eq-veteran-v', '—'); setText('eq-veteran-s', 'sin agentes vivos');
+    }
+    setText('eq-cooling', b.coolingCount);
+    // Visor de slots.
+    const slots = b.slots || { used: 0, max: 0 };
+    setText('eq-slots-count', slots.used + ' / ' + slots.max);
+    const bars = document.getElementById('eq-slots-bars');
+    if(bars){
+        bars.innerHTML = '';
+        for(let i=0;i<slots.max;i++){
+            const s = document.createElement('span');
+            s.className = 'eqm-slot' + (i < slots.used ? ' busy' : '');
+            s.title = i < slots.used ? 'Cupo ocupado' : 'Cupo libre';
+            bars.appendChild(s);
+        }
+    }
+    const note = document.getElementById('eq-slots-note');
+    if(note){
+        note.textContent = slots.used >= slots.max && slots.max > 0
+            ? 'Límite alcanzado — los listos esperan turno. El cupo se libera al apagarse un agente.'
+            : (slots.max - slots.used) + ' cupo' + ((slots.max - slots.used)===1?'':'s') + ' libre' + ((slots.max - slots.used)===1?'':'s') + ' para nuevos agentes.';
+    }
+    // Chips.
+    let idle = 0;
+    if(_eq.roster){ for(const c of _eq.roster.categories) for(const r of c.roles) if(r.state==='idle') idle++; }
+    setText('eq-chip-vivos', b.agentsLive);
+    setText('eq-chip-cool', b.coolingCount);
+    setText('eq-chip-idle', idle);
+    setText('eq-chip-total', b.rolesTotal);
+}
 
-    const head = document.createElement('div'); head.className = 'eq-ag-head';
-    const issue = document.createElement('span');
-    issue.className = 'eq-ag-issue' + (observational ? ' obs' : '');
-    issue.textContent = observational ? (a.title || 'Commander') : ('#' + a.issue);
+// --- Ficha de agente vivo -------------------------------------------------
+function buildFicha(a){
+    const meta = roleMetaFor(a.skill);
+    const card = document.createElement('div'); card.className = 'eq2-card';
+    card.dataset.search = ((meta.name||a.skill) + ' ' + a.skill + ' #' + a.issue + ' ' + (a.provider && a.provider.label || '') + ' ' + (a.title||'')).toLowerCase();
+
+    // Columna identidad.
+    const id = document.createElement('div'); id.className = 'eq2-card-id';
+    const persona = document.createElement('div'); persona.className = 'eq2-card-persona';
+    const av = document.createElement('span'); av.className = 'eq2-avatar';
+    av.style.background = meta.color || '#8b949e'; av.textContent = meta.icon || '⚙'; persona.appendChild(av);
+    const pid = document.createElement('div');
+    const nm = document.createElement('div'); nm.className = 'eq2-card-name'; nm.textContent = meta.name || a.skill; pid.appendChild(nm);
+    const tg = document.createElement('div'); tg.className = 'eq2-card-tag'; tg.textContent = meta.tagline || ''; pid.appendChild(tg);
+    persona.appendChild(pid); id.appendChild(persona);
+    const live = document.createElement('span'); live.className = 'eq2-state-live'; live.textContent = 'trabajando'; id.appendChild(live);
+    const branchEl = document.createElement('div'); branchEl.className = 'eq2-card-pid';
+    branchEl.textContent = 'rama ' + (a.branch || '—'); branchEl.title = a.branch || ''; id.appendChild(branchEl);
+    card.appendChild(id);
+
+    // Columna principal.
+    const main = document.createElement('div'); main.className = 'eq2-card-main';
+    const head = document.createElement('div'); head.className = 'eq2-card-head';
+    const issue = document.createElement('a'); issue.className = 'eq2-issue';
+    issue.textContent = '#' + a.issue + ' ↗';
+    if(/^[0-9]+$/.test(String(a.issue))){ issue.href = GH_ISSUE_BASE + a.issue; issue.target = '_blank'; issue.rel = 'noopener noreferrer'; }
     head.appendChild(issue);
-    const fase = document.createElement('span'); fase.className = 'eq-ag-fase';
-    fase.textContent = a.fase || ''; head.appendChild(fase);
-    if(!observational && a.title){
-        const title = document.createElement('span'); title.className = 'eq-ag-title';
-        title.textContent = a.title; title.title = a.title; head.appendChild(title);
-    }
-    row.appendChild(head);
+    const fase = document.createElement('span'); fase.className = 'eq2-fase'; fase.textContent = 'fase · ' + (a.fase||''); head.appendChild(fase);
+    main.appendChild(head);
+    if(a.title){ const t = document.createElement('div'); t.className = 'eq2-card-title'; t.textContent = a.title; main.appendChild(t); }
 
-    const meta = document.createElement('div'); meta.className = 'eq-ag-meta';
+    const facts = document.createElement('div'); facts.className = 'eq2-card-facts';
+    // Proveedor.
+    const prov = document.createElement('span'); prov.className = 'eq2-fact';
+    const pdot = document.createElement('span'); pdot.className = 'eq2-prov-dot';
+    pdot.style.background = (meta.color || '#8b949e'); prov.appendChild(pdot);
+    const pl = a.provider ? (a.provider.label + (a.provider.model ? ' ' + fmtModel(a.provider.model) : '')) : 'proveedor —';
+    const provTxt = document.createElement('b'); provTxt.textContent = pl; prov.appendChild(provTxt);
+    prov.title = 'Proveedor asignado al rol (agent-models.json)'; facts.appendChild(prov);
+    // Tiempo en fase.
+    const dur = document.createElement('span'); dur.className = 'eq2-fact'; dur.textContent = '⏱ ' + fmtDur(a.durationMs||0); dur.title = 'Tiempo en fase'; facts.appendChild(dur);
+    // Rebotes.
+    const reb = document.createElement('span'); reb.className = 'eq2-fact' + ((a.bounces||0) > 0 ? ' eq2-rebotes' : '');
+    reb.textContent = '↩ ' + (a.bounces||0) + ' rebote' + ((a.bounces||0)===1?'':'s'); reb.title = 'Rebotes acumulados del issue'; facts.appendChild(reb);
+    main.appendChild(facts);
+
+    // Progreso.
     const prog = agentProgress(a.durationMs||0, a.etaMs);
-    const bar = document.createElement('span'); bar.className = 'eq-ag-bar' + (prog.indeterminate ? ' indeterminate' : '');
-    const barFill = document.createElement('span');
-    if(!prog.indeterminate) barFill.style.width = prog.pct + '%';
-    bar.appendChild(barFill); meta.appendChild(bar);
-    const pct = document.createElement('span'); pct.className = 'eq-ag-pct';
-    pct.textContent = prog.indeterminate ? '—' : (prog.pct + '%'); meta.appendChild(pct);
-    const dur = document.createElement('span'); dur.className = 'eq-ag-dur';
-    dur.textContent = '⏱ ' + fmtDur(a.durationMs||0); meta.appendChild(dur);
-    if(!observational && a.hasLog && a.logFile){
-        const log = document.createElement('a'); log.className = 'eq-ag-log';
-        log.href = '/logs/view/' + encodeURIComponent(a.logFile) + '?live=1';
-        log.target = '_blank'; log.rel = 'noopener noreferrer';
-        log.textContent = '📄 log'; meta.appendChild(log);
-    }
+    const progRow = document.createElement('div'); progRow.className = 'eq2-card-prog';
+    const bar = document.createElement('span'); bar.className = 'eq2-bar' + (prog.indeterminate ? ' indet' : '');
+    const fill = document.createElement('span'); if(!prog.indeterminate) fill.style.width = prog.pct + '%'; bar.appendChild(fill);
+    progRow.appendChild(bar);
+    const pct = document.createElement('span'); pct.className = 'eq2-pct'; pct.textContent = prog.indeterminate ? '—' : (prog.pct + '%'); progRow.appendChild(pct);
+    main.appendChild(progRow);
+    card.appendChild(main);
 
-    if(observational){
-        const prot = document.createElement('span'); prot.className = 'eq-ag-protected';
-        prot.textContent = '🔒 protegido'; prot.title = 'Skill no cancelable — presencia observacional';
-        meta.appendChild(prot);
-    } else if(cooldown){
-        const cd = document.createElement('span'); cd.className = 'eq-ag-cooldown';
+    // Columna acciones.
+    const actions = document.createElement('div'); actions.className = 'eq2-card-actions';
+    const cooldown = a.cooldown || null;
+    if(cooldown){
+        const cd = document.createElement('span'); cd.className = 'eq2-protected eq2-ag-cooldown';
         cd.setAttribute('data-cooldown-until', cooldown.cooldownUntil || '');
         cd.textContent = '⏳ cooldown · ' + (cooldown.failures||0) + ' fallos';
-        meta.appendChild(cd);
-        const wait = document.createElement('span'); wait.className = 'eq-ag-wait';
-        wait.textContent = 'en espera'; wait.setAttribute('aria-disabled','true');
-        meta.appendChild(wait);
+        actions.appendChild(cd);
     } else {
-        const kill = document.createElement('button'); kill.className = 'eq-ag-kill';
-        kill.textContent = '✕ cancelar'; kill.title = 'Cancelar este agente';
+        const kill = document.createElement('button'); kill.className = 'eq2-btn eq2-btn-kill';
+        kill.textContent = '⏹ Matar agente'; kill.title = 'Cancelar este agente';
         kill.addEventListener('click', () => killAgent(a.issue, a.skill, a.pipeline, a.fase, a.durationMs));
-        meta.appendChild(kill);
+        actions.appendChild(kill);
+        const restart = document.createElement('button'); restart.className = 'eq2-btn';
+        restart.textContent = '↻ Reiniciar'; restart.title = 'Reiniciar este agente (lo devuelve a la cola para relanzarse)';
+        restart.addEventListener('click', () => restartAgent(a.issue, a.skill, a.pipeline, a.fase, a.durationMs));
+        actions.appendChild(restart);
     }
-    row.appendChild(meta);
+    const row = document.createElement('div'); row.className = 'eq2-btn-row';
+    const issueBtn = document.createElement('a'); issueBtn.className = 'eq2-btn'; issueBtn.textContent = '↗ Issue';
+    if(/^[0-9]+$/.test(String(a.issue))){ issueBtn.href = GH_ISSUE_BASE + a.issue; issueBtn.target = '_blank'; issueBtn.rel = 'noopener noreferrer'; }
+    row.appendChild(issueBtn);
+    if(a.hasLog && a.logFile){
+        const log = document.createElement('a'); log.className = 'eq2-btn';
+        log.href = '/logs/view/' + encodeURIComponent(a.logFile) + '?live=1'; log.target = '_blank'; log.rel = 'noopener noreferrer';
+        log.textContent = '📄 Logs'; row.appendChild(log);
+    }
+    actions.appendChild(row);
+    card.appendChild(actions);
+    return card;
+}
+
+// --- Fila de rol dormido / congelado --------------------------------------
+function buildIdleRow(role){
+    const row = document.createElement('div'); row.className = 'eq2-idle';
+    row.dataset.search = (role.name + ' ' + role.skill).toLowerCase();
+    const av = document.createElement('span'); av.className = 'eq2-avatar';
+    av.style.background = role.color || '#8b949e'; av.textContent = role.icon || '⚙'; row.appendChild(av);
+    const idEl = document.createElement('div'); idEl.className = 'eq2-idle-id';
+    const nm = document.createElement('div'); nm.className = 'eq2-idle-name'; nm.textContent = role.name || role.skill; idEl.appendChild(nm);
+    const tg = document.createElement('div'); tg.className = 'eq2-idle-tag'; tg.textContent = role.tagline || ''; idEl.appendChild(tg);
+    row.appendChild(idEl);
+    const badge = document.createElement('span');
+    if(role.state === 'frozen'){ badge.className = 'eq2-idle-badge eq2-badge-frozen'; badge.textContent = 'congelado'; badge.title = 'Skill congelado · reactivable por issue'; }
+    else { badge.className = 'eq2-idle-badge eq2-badge-idle'; badge.textContent = 'ocioso'; badge.title = 'Sin tarea asignada'; }
+    row.appendChild(badge);
     return row;
 }
 
-// Estado de colapso persistido en sessionStorage (patrón del dashboard).
-function accCollapsed(skill){ try { return sessionStorage.getItem('eqacc:'+skill) === '1'; } catch(e){ return false; } }
-function accToggle(skill, card){
-    const now = card.classList.toggle('collapsed');
-    try { sessionStorage.setItem('eqacc:'+skill, now ? '1' : '0'); } catch(e){}
-}
-
-function buildAccordion(){
-    const cont = document.getElementById('equipo-accordion');
+// --- Roster por categoría -------------------------------------------------
+function renderRoster(){
+    const cont = document.getElementById('eq-roster');
     if(!cont) return;
-    const { order, map } = groupAgentsBySkill(_activeAgents);
-    if(order.length === 0){
-        cont.innerHTML = '<div class="eq-acc-empty">Sin agentes vivos</div>';
+    if(!_eq.roster || !_eq.roster.categories || _eq.roster.categories.length === 0){
+        cont.innerHTML = '<div class="eq2-empty">Sin roles configurados</div>';
         return;
     }
     cont.innerHTML = '';
-    for(const skill of order){
-        const list = map[skill];
-        const isObs = list.some(a => a.observational === true || a.cancelable === false);
-        const hasCooldown = list.some(a => a.cooldown);
-        const card = document.createElement('div');
-        card.className = 'eq-acc-card' + (isObs ? ' eq-acc-card-obs' : '') + (hasCooldown ? ' eq-acc-card-cooldown' : '');
-        card.dataset.skill = skill;
-        if(accCollapsed(skill)) card.classList.add('collapsed');
+    for(const cat of _eq.roster.categories){
+        const block = document.createElement('div'); block.className = 'eq2-cat';
+        const head = document.createElement('div'); head.className = 'eq2-cat-head';
+        const dot = document.createElement('span'); dot.className = 'eq2-cat-dot'; dot.style.background = cat.color || '#8b949e'; head.appendChild(dot);
+        const name = document.createElement('span'); name.className = 'eq2-cat-name'; name.textContent = cat.label; head.appendChild(name);
+        const m = document.createElement('span'); m.className = 'eq2-cat-meta'; m.textContent = cat.liveCount + ' vivo' + (cat.liveCount===1?'':'s') + ' · ' + cat.total + ' roles'; head.appendChild(m);
+        const roles = document.createElement('span'); roles.className = 'eq2-cat-roles';
+        roles.textContent = cat.roles.map(r => r.skill).join(', '); roles.title = roles.textContent; head.appendChild(roles);
+        block.appendChild(head);
 
-        const head = document.createElement('div'); head.className = 'eq-acc-head';
-        const chev = document.createElement('span'); chev.className = 'eq-acc-chevron'; chev.textContent = '▼'; head.appendChild(chev);
-        const av = document.createElement('span'); av.className = 'eq-acc-avatar';
-        av.style.background = SKILL_COLORS[skill] || '#8b949e'; av.textContent = SKILL_ICONS[skill] || '⚙'; head.appendChild(av);
-        const name = document.createElement('span'); name.className = 'eq-acc-name'; name.textContent = skill; head.appendChild(name);
-        const cnt = document.createElement('span'); cnt.className = 'eq-acc-count'; cnt.textContent = list.length + ' vivo' + (list.length===1?'':'s'); head.appendChild(cnt);
-        if(isObs){ const b = document.createElement('span'); b.className = 'eq-acc-obs-badge'; b.textContent = '🔒 no cancelable'; head.appendChild(b); }
-        const sk = _equipoSkills[skill];
-        head.appendChild(buildSparkline(sk && sk.spark24h));
-        head.addEventListener('click', () => accToggle(skill, card));
-        card.appendChild(head);
-
-        const bodyEl = document.createElement('div'); bodyEl.className = 'eq-acc-body';
-        for(const a of list) bodyEl.appendChild(buildAgentRow(a));
-        card.appendChild(bodyEl);
-        cont.appendChild(card);
+        const list = document.createElement('div'); list.className = 'eq2-cat-list';
+        for(const role of cat.roles){
+            if(role.state === 'live'){
+                const agents = _agentsBySkill[role.skill] || [];
+                if(agents.length){ for(const a of agents) list.appendChild(buildFicha(a)); }
+                else { list.appendChild(buildIdleRow(role)); } // defensivo: vivo sin agente listado
+            } else {
+                list.appendChild(buildIdleRow(role));
+            }
+        }
+        block.appendChild(list);
+        cont.appendChild(block);
     }
+    applySearch();
 }
 
-// Cuenta regresiva de cooldown (CA-4): el front SOLO pinta; no habilita acciones
-// (eso lo dicta el server vía /api/dash/active en el próximo poll, SEC-6).
-function tickCooldownCountdowns(){
-    const now = Date.now();
-    document.querySelectorAll('.eq-ag-cooldown[data-cooldown-until]').forEach(el => {
-        const until = Date.parse(el.getAttribute('data-cooldown-until'));
-        if(!until || isNaN(until)) return;
-        const leftMs = until - now;
-        const base = el.textContent.split(' · ')[1] || '';
-        if(leftMs <= 0){ el.textContent = '⏳ por expirar · ' + base; return; }
-        const s = Math.floor(leftMs/1000), mm = Math.floor(s/60), ss = s%60;
-        el.textContent = '⏳ cooldown ' + mm + ':' + (ss<10?'0':'') + ss + ' · ' + base;
+// --- Búsqueda -------------------------------------------------------------
+function applySearch(){
+    const input = document.getElementById('eq-search');
+    const q = (input && input.value || '').trim().toLowerCase();
+    document.querySelectorAll('#eq-roster [data-search]').forEach(el => {
+        const match = !q || el.dataset.search.indexOf(q) !== -1;
+        el.classList.toggle('eq2-hidden', !match);
+    });
+    // Ocultar categorías sin coincidencias visibles.
+    document.querySelectorAll('#eq-roster .eq2-cat').forEach(cat => {
+        const visible = cat.querySelectorAll('[data-search]:not(.eq2-hidden)').length;
+        cat.classList.toggle('eq2-hidden', q && visible === 0);
     });
 }
 
-async function refreshActiveAgents(){
-    const d = await fetchJson('/api/dash/active');
-    if(d) _activeAgents = d.agents || [];
+// --- Cooldown countdown ---------------------------------------------------
+function tickCooldownCountdowns(){
+    const now = Date.now();
+    document.querySelectorAll('.eq2-ag-cooldown[data-cooldown-until]').forEach(el => {
+        const until = Date.parse(el.getAttribute('data-cooldown-until'));
+        if(!until || isNaN(until)) return;
+        const leftMs = until - now;
+        const failsPart = el.textContent.split(' · ')[1] || '';
+        if(leftMs <= 0){ el.textContent = '⏳ por expirar · ' + failsPart; return; }
+        const s = Math.floor(leftMs/1000), mm = Math.floor(s/60), ss = s%60;
+        el.textContent = '⏳ ' + mm + ':' + (ss<10?'0':'') + ss + ' · ' + failsPart;
+    });
 }
 
-async function tickEquipo(){
-    await refreshActiveAgents();
-    const d = await fetchJson('/api/dash/equipo');
-    if(d){ _equipoSkills = {}; for(const sk of (d.skills||[])) _equipoSkills[sk.skill] = sk; }
-    buildAccordion();
+// --- Reiniciar agente -----------------------------------------------------
+async function restartAgent(issue, skill, pipeline, fase, durationMs){
+    const preview = [{label:'Skill', value:skill},{label:'Issue', value:'#'+issue}];
+    if(fase) preview.push({label:'Fase', value:fase});
+    if(durationMs != null) preview.push({label:'Tiempo en fase', value:fmtDur(durationMs)});
+    if(!(await inConfirm({ title:'Reiniciar agente', message:'Se cancela el agente en curso y se devuelve a la cola para que el Pulpo lo relance.', confirmLabel:'Reiniciar agente', preview:preview }))) return;
+    try{
+        const r = await killAgentPost({issue, skill, pipeline, fase, restart:true});
+        const j = await r.json();
+        showToast(j.msg || (j.ok?'Agente reiniciado':'Falló el reinicio'), j.ok);
+        if(typeof runAll === 'function') setTimeout(runAll, 600);
+    } catch(e){ showToast('Error: '+e.message, false); }
 }
+
+// --- Polling --------------------------------------------------------------
+function indexRoster(roster){
+    if(!roster) return;
+    roster._bySkill = {};
+    for(const c of roster.categories) for(const r of c.roles) roster._bySkill[r.skill] = r;
+}
+async function tickEquipo(){
+    const e = await fetchJson('/api/dash/equipo');
+    if(e){ _eq = { roster: e.roster, banner: e.banner, providersBySkill: e.providersBySkill||{}, skills: e.skills||[] }; indexRoster(_eq.roster); }
+    const a = await fetchJson('/api/dash/active');
+    if(a){
+        _allAgents = (a.agents||[]).filter(x => !(x.observational === true || x.cancelable === false));
+        _agentsBySkill = {};
+        for(const ag of _allAgents){ (_agentsBySkill[ag.skill] = _agentsBySkill[ag.skill] || []).push(ag); }
+    }
+    renderBanner();
+    renderRoster();
+}
+
+document.addEventListener('input', (ev) => { if(ev.target && ev.target.id === 'eq-search') applySearch(); });
+
 const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickEquipo, ms: 5000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }
 setInterval(tickCooldownCountdowns, 1000);`;
-    return pageShell('Equipo', 'Agentes vivos por skill · kill individual', body, script, css, 'equipo');
+
+    return pageShell('Equipo', 'Dotación de agentes · MIZPÁ', body, script, css, 'equipo', {
+        brandHtml: renderEquipoBrandBar(),
+        breadcrumbHtml: breadcrumb,
+    });
 }
 
 // ─────────────────── Pipeline ───────────────────

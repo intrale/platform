@@ -76,6 +76,39 @@ const COMMANDER_PRESENCE_TTL_MS = 5 * 60 * 1000;
 // El dashboard SOLO lee y expone; nunca habilita acciones por su cuenta.
 const COOLDOWNS_FILE = path.join(__dirname, '..', 'cooldowns.json');
 
+// #4195 — Catálogo de asignación de proveedores por skill (provider visible en
+// la ficha de cada agente y en el roster de Equipo). Lectura defensiva.
+const AGENT_MODELS_FILE = path.join(__dirname, '..', 'agent-models.json');
+
+// #4195 — Roster de dotación + agregados del banner de Equipo (módulo puro).
+let equipoRoster = null;
+try { equipoRoster = require('./equipo-roster'); } catch { /* opcional */ }
+
+// #4195 — Registro de agentes (branch/worktree por issue). Es fuente best-effort
+// (la fuente de verdad operativa es el filesystem): se usa solo para enriquecer
+// la rama mostrada en la ficha; si falta, se cae a la convención agent/<issue>.
+const AGENT_REGISTRY_FILE = path.join(__dirname, '..', '..', '.claude', 'hooks', 'agent-registry.json');
+
+// Construye un mapa issue → branch leyendo el agent-registry (best-effort). El
+// registry guarda el issue como "#1234"; normalizamos a numérico.
+function branchByIssueFromRegistry() {
+    const map = {};
+    const reg = safeReadJsonModule(AGENT_REGISTRY_FILE, null);
+    const agents = reg && reg.agents && typeof reg.agents === 'object' ? reg.agents : {};
+    for (const a of Object.values(agents)) {
+        if (!a || !a.branch) continue;
+        const num = String(a.issue || '').replace(/[^0-9]/g, '');
+        if (num) map[num] = String(a.branch);
+    }
+    return map;
+}
+
+// safeReadJson local hoisting: se define más abajo; alias para usar arriba.
+function safeReadJsonModule(filepath, fallback) {
+    try { return JSON.parse(fs.readFileSync(filepath, 'utf8')); }
+    catch { return fallback; }
+}
+
 // Lee el cooldown vigente para un par skill+issue. Devuelve `null` si no hay
 // cooldown o si ya venció (no exponemos contadores stale como activos). El
 // objeto de cooldowns se pasa pre-leído para no pegarle al FS por agente.
@@ -101,12 +134,21 @@ function activeAgents(state) {
     const out = [];
     // #3955 — Cooldowns leídos una sola vez por request (CA-4/SEC-6).
     const cooldowns = safeReadJson(COOLDOWNS_FILE, null);
+    // #4195 — Catálogo de proveedores + mapa de ramas, leídos una sola vez por
+    // request para enriquecer la ficha de cada agente (provider/branch/rebotes).
+    const agentModels = safeReadJson(AGENT_MODELS_FILE, null);
+    const branchMap = branchByIssueFromRegistry();
     const now = Date.now();
     for (const [issueId, data] of Object.entries(state.issueMatrix || {})) {
         if (data.estadoActual !== 'trabajando') continue;
         const entries = data.fases[data.faseActual] || [];
         for (const e of entries) {
             if (e.estado !== 'trabajando') continue;
+            // #4195 — Proveedor configurado para el skill (provider visible) y
+            // rama del worktree (registry best-effort → convención agent/<issue>).
+            const provider = equipoRoster ? equipoRoster.resolveProvider(agentModels, e.skill) : null;
+            const issueNum = String(issueId).replace(/[^0-9]/g, '');
+            const branch = branchMap[issueNum] || `agent/${issueNum || issueId}-${e.skill}`;
             out.push({
                 issue: issueId,
                 title: data.title || '',
@@ -117,6 +159,10 @@ function activeAgents(state) {
                 ageMin: e.ageMin || 0,
                 hasLog: !!e.hasLog,
                 logFile: e.logFile,
+                // #4195 — campos para la ficha de Equipo (additivos).
+                provider,
+                branch,
+                bounces: data.bounces || 0,
                 etaMs: (state.etaAverages && state.etaAverages[`${e.fase}/${e.skill}`]?.avgMs) ||
                        (state.etaAverages && state.etaAverages[e.fase]?.avgMs) || null,
                 // #3955 CA-3 — defaults explícitos para que el front no tenga que
@@ -1112,7 +1158,44 @@ function equipoSlice(state) {
         // actividad en la ventana).
         spark24h: spark[skill] || new Array(SPARK_BUCKETS).fill(0),
     }));
-    return { skills };
+
+    // #4195 — Vista de dotación (MIZPÁ): roster por categoría + banner de misión.
+    // Degrada limpio si el módulo no cargó: el cliente cae al acordeón simple.
+    let roster = null, banner = null, providersBySkill = {};
+    if (equipoRoster) {
+        try {
+            const liveAgents = activeAgents(state);
+            const agentModels = safeReadJson(AGENT_MODELS_FILE, null);
+            const cooldowns = safeReadJson(COOLDOWNS_FILE, null);
+            roster = equipoRoster.buildRoster({ skillLoad, liveAgents });
+            // tok/min agregado: proxy honesto = promedio de las últimas 24h
+            // (no hay resolución por-minuto en vivo). Etiquetado como aproximado
+            // en la UI. Lectura DIRECTA del snapshot de tokens (sin execSync de
+            // gh/git, a diferencia de kpisSlice) para no encarecer el poll.
+            let tokPerMin = null;
+            try {
+                const snapDir = path.join(__dirname, '..', 'metrics');
+                const snap = safeReadJson(path.join(snapDir, 'snapshot-24h.json'), null)
+                    || safeReadJson(path.join(snapDir, 'snapshot.json'), null);
+                const totals = snap && snap.totals;
+                if (totals) {
+                    const total24h = (totals.tokens_in || 0) + (totals.tokens_out || 0);
+                    if (total24h > 0) tokPerMin = Math.round(total24h / (24 * 60));
+                }
+            } catch { /* sin dato de tokens */ }
+            banner = equipoRoster.buildBanner({ liveAgents, roster, cooldowns, tokPerMin });
+            // Proveedor por skill para el roster (rol dormido también muestra su
+            // proveedor asignado).
+            for (const cat of roster.categories) {
+                for (const r of cat.roles) {
+                    const p = equipoRoster.resolveProvider(agentModels, r.skill);
+                    if (p) providersBySkill[r.skill] = p;
+                }
+            }
+        } catch { roster = null; banner = null; providersBySkill = {}; }
+    }
+
+    return { skills, roster, banner, providersBySkill };
 }
 
 // #2894 — Resolución del skill efectivo para fase `dev` cuando todavía no

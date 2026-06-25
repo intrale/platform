@@ -242,36 +242,49 @@ test('onlyAllowlistFilter es booleano de módulo con default ON desde sessionSto
     );
 });
 
-// ───────────── Grid de la nav bar V3 (CA-2 — #3358 → #3726) ─────────────
+// ───────────── Nav bar V3 → MIZPÁ (CA-2 — #3358 → #3726 → #4189/#4195) ─────────────
 
-test('theme.css declara .v3-nav con grid-template-columns: repeat(N, minmax(<px>px, 1fr)) (CA-2 — derivado del catálogo)', () => {
-    // Historia: #3045 (9→10) pasó de repeat(9, 1fr) a auto-fit minmax(96px, 1fr).
-    // #3239 (10→11) sumó "Provider" — auto-fit dejó de alcanzar al ancho
-    // operativo del kiosk (1036px usables) y la 11ª pill rebotó a 2 filas.
-    // #3358 → repeat(${AREAS.length}, minmax(0, 1fr)) interpolado: columnas
-    // DERIVADAS del array AREAS, así el patrón 9→10→11→… no rompe el wrap.
-    // #3726 → la botonera vieja .areas-bar/.area-pill quedó retirada.
-    // La nav V3 unificada (.v3-nav) vive en theme.css con
-    // `repeat(12, minmax(44px, 1fr))` — 12 corresponde a NAV_TABS.length
-    // (catálogo fijo decidido por el architect). El test bloquea:
-    //   * regresiones a literales sin `1fr` (que perdían reflow elástico),
-    //   * regresiones a auto-fit con minmax fijo (que rebotaba a 2 filas).
+test('theme.css declara .v3-nav con layout flex elástico MIZPÁ (CA-1 #4195: nav curada + popover)', () => {
+    // Historia: #3045 (9→10) auto-fit; #3239 (10→11); #3358 → repeat(N, minmax);
+    // #3726 nav unificada (grid de 12-13 columnas).
+    // #4189/#4195 — La nav MIZPÁ es CURADA: 5 tabs primarios SIEMPRE visibles +
+    // un botón «⋯ Más» (popover <details>) con el resto. Un grid de N columnas
+    // ya NO modela esto (el popover usa margin-left:auto para anclarse a la
+    // derecha, imposible en grid). theme.css pasa a FLEX con `flex-wrap` y tabs
+    // elásticos (`flex: 1 1 0`) que preservan el touch target >=44px (CA-5) vía
+    // `min-width`. El test bloquea regresiones al grid viejo (que con la nav
+    // curada dejaba 5-6 items dispersos en 12-13 columnas y rompía el anclaje
+    // del popover).
     const THEME_PATH = path.join(__dirname, '..', 'views', 'dashboard', 'theme.css');
     const THEME_SRC = fs.readFileSync(THEME_PATH, 'utf8');
+    // .v3-nav usa flex con wrap.
     assert.match(
         THEME_SRC,
-        /\.v3-nav\s*\{[\s\S]*?grid-template-columns:\s*repeat\(\d+,\s*minmax\(\d+px,\s*1fr\)\)/,
-        '.v3-nav debe usar repeat(N, minmax(<px>px, 1fr)) en theme.css (CA-2: columnas elásticas)',
+        /\.v3-nav\s*\{[\s\S]*?display:\s*flex[\s\S]*?flex-wrap:\s*wrap/,
+        '.v3-nav debe usar display:flex + flex-wrap (CA-1: nav curada MIZPÁ con popover)',
     );
+    // Las tabs son elásticas (flex: 1 1 0) y conservan el touch target >=44px.
+    assert.match(
+        THEME_SRC,
+        /\.v3-tab\s*\{[\s\S]*?flex:\s*1\s+1\s+0/,
+        '.v3-tab debe ser elástica (flex: 1 1 0) para repartir el ancho disponible',
+    );
+    assert.match(
+        THEME_SRC,
+        /\.v3-tab\s*\{[\s\S]*?min-width:\s*44px/,
+        '.v3-tab debe conservar min-width:44px (CA-5: touch target accesible)',
+    );
+    // El popover «⋯ Más» se ancla a la derecha.
+    assert.match(
+        THEME_SRC,
+        /\.v3-more\s*\{[\s\S]*?margin-left:\s*auto/,
+        '.v3-more debe anclarse a la derecha (margin-left:auto) — botón «⋯ Más»',
+    );
+    // No debe quedar el grid viejo de columnas fijas en .v3-nav.
     assert.doesNotMatch(
         THEME_SRC,
-        /\.v3-nav\s*\{[\s\S]*?grid-template-columns:\s*repeat\(\d+,\s*1fr\)\s*;/,
-        'no debe quedar un repeat(N, 1fr) sin minmax — perdería el touch target >=44px de CA-5',
-    );
-    assert.doesNotMatch(
-        THEME_SRC,
-        /\.v3-nav\s*\{[\s\S]*?grid-template-columns:\s*repeat\(auto-fit/,
-        'no debe quedar auto-fit (regresión #3358: rebote a 2 filas con > N tabs)',
+        /\.v3-nav\s*\{[\s\S]*?grid-template-columns:\s*repeat\(/,
+        'no debe quedar grid-template-columns:repeat(...) en .v3-nav (regresión pre-MIZPÁ)',
     );
 });
 
