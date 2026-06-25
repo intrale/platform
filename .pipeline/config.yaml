@@ -412,7 +412,7 @@ watchdog:
   # 90s = max(90, 3×poll_interval) evita falsos positivos (CA-4) y restart-storms
   # (SEC-3). Override por env PULPO_LIVENESS_KILL_SECONDS (entero positivo;
   # inválido → default, NUNCA "nunca stale" — SEC-2).
-  pulpo_liveness_kill_seconds: 90
+  pulpo_liveness_kill_seconds: 180
 
 # Dashboard — opciones del dashboard del pipeline
 dashboard:
