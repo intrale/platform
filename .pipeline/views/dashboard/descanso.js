@@ -31,6 +31,12 @@ const { escapeHtmlAttr } = require('../../lib/escape-html.js');
 const { FETCH_CLIENT_JS } = require('./fetch-client.js');
 const { CONFIRM_MODAL_JS } = require('./confirm-modal.js');
 
+// #3964 (EP8-H11) — Geometría pura del timeline (min↔px, snap, blockRect,
+// wouldOverlap), unit-testeable sin DOM. Se inyecta como `RestTimelineGeo`
+// (IIFE namespaced) en el script cliente, evitando colisiones de identificadores
+// con los helpers ya declarados en este mismo `<script>`.
+const { REST_TIMELINE_GEOMETRY_JS } = require('./rest-timeline-geometry.js');
+
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 function loadTheme() {
     try { return fs.readFileSync(THEME_CSS_PATH, 'utf8'); } catch { return ''; }
@@ -245,10 +251,26 @@ function buildParts() {
         <datalist id="rm-tz-list"></datalist>
       </label>
     </div>
-    <section class="rm-grid" id="rm-grid" data-rm-editing="0" aria-label="Calendario semanal de periodos de descanso">
-      <!-- 7 columnas inyectadas por buildGrid() -->
+    <div class="rm-legend" aria-hidden="false">
+      <span class="rm-legend-item"><span class="rm-legend-swatch rm-legend-rest"></span>Descanso</span>
+      <span class="rm-legend-item"><span class="rm-legend-swatch rm-legend-ghost"></span>Creando…</span>
+      <span class="rm-legend-item"><span class="rm-legend-swatch rm-legend-now"></span>Ahora</span>
+      <span class="rm-legend-hint">Arrastrá en una columna para crear · mové o redimensioná un bloque · snap 30 min.</span>
+    </div>
+    <!-- CA-1/CA-2/CA-10 — Timeline 7 días × 24 h. Conserva id="rm-grid" +
+         data-rm-editing para el patrón anti-flicker de tickRestMode. -->
+    <section class="rm-timeline" id="rm-grid" data-rm-editing="0" aria-label="Timeline semanal de periodos de descanso — arrastrá para crear o editar bloques">
+      <!-- eje + 7 columnas inyectados por buildTimeline() -->
     </section>
     <div class="rm-errors-box" id="rm-errors" hidden></div>
+    <!-- CA-9 — Fallback editable por teclado: la grilla de inputs time previa
+         se conserva bajo el timeline para no regresar en accesibilidad. -->
+    <details class="rm-fallback" id="rm-fallback">
+      <summary class="rm-fallback-summary">⌨ Edición precisa por teclado</summary>
+      <section class="rm-grid" id="rm-fallback-grid" aria-label="Edición por teclado de periodos de descanso">
+        <!-- 7 columnas inyectadas por buildFallbackGrid() -->
+      </section>
+    </details>
     <div class="rm-row rm-actions">
       <button type="submit" class="in-btn rm-save" id="rm-save"
               title="Hot-reload sin reinicio del pipeline. El backend revalida la grilla."
@@ -257,9 +279,22 @@ function buildParts() {
       <span id="rm-msg" class="rm-msg"></span>
     </div>
   </form>
+  <!-- CA-6 — Preview read-only: próximo descanso + qué skills pausaría.
+       Datos computados server-side (wouldPauseSkills); render con textContent. -->
+  <section class="rm-preview" id="rm-preview" aria-label="Preview del próximo descanso" hidden>
+    <div class="rm-preview-head">
+      <span class="rm-preview-icon">🔭</span>
+      <span class="rm-preview-title" id="rm-preview-title">Próximo descanso</span>
+    </div>
+    <div class="rm-preview-body">
+      <p class="rm-preview-line"><strong>Cuándo:</strong> <span id="rm-preview-when">—</span></p>
+      <p class="rm-preview-line"><strong>Pausaría:</strong></p>
+      <div class="rm-preview-skills" id="rm-preview-skills"></div>
+    </div>
+  </section>
   <div class="rm-meta">
-    <p><strong>Bypass labels</strong> (read-only, viven en <code>config.yaml</code>):
-      <span id="rm-bypass">…</span></p>
+    <p><strong>Bypass labels</strong> (read-only, viven en <code>config.yaml</code>) — estos issues no se pausan:</p>
+    <div class="rm-chips" id="rm-bypass" aria-label="Labels de bypass del modo descanso"></div>
     <p><strong>Última actualización:</strong> <span id="rm-updated">—</span></p>
   </div>
 </section>`;
@@ -323,10 +358,64 @@ function buildParts() {
 .rm-meta p { margin: 4px 0; }
 .rm-meta code { font-family: var(--in-mono); background: var(--in-bg-3); padding: 1px 6px; border-radius: 3px; }
 
+/* ===== Timeline 7×24 (CA-1/CA-2/CA-3/CA-4) — colores 100% desde tokens ===== */
+.rm-legend { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; font-size: 11px; color: var(--in-fg-dim); margin: 4px 0 8px 0; }
+.rm-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.rm-legend-swatch { width: 14px; height: 10px; border-radius: 2px; border: 1px solid var(--in-border); display: inline-block; }
+.rm-legend-rest { background: var(--rest-mode-bg, rgba(124,92,255,0.16)); border-color: rgba(124,92,255,0.55); }
+.rm-legend-ghost { background: repeating-linear-gradient(45deg, rgba(124,92,255,0.30), rgba(124,92,255,0.30) 3px, transparent 3px, transparent 6px); border-style: dashed; }
+.rm-legend-now { background: var(--danger, #F85149); height: 0; border: 0; border-top: 2px dashed var(--danger, #F85149); }
+.rm-legend-hint { color: var(--in-fg-soft); }
+
+.rm-timeline { display: grid; grid-template-columns: 40px repeat(7, minmax(0, 1fr)); gap: 0; border: 1px solid var(--in-border); border-radius: var(--in-radius-sm); background: var(--in-bg-3); overflow: hidden; touch-action: none; }
+.rm-tl-axis, .rm-tl-col { position: relative; }
+.rm-tl-axis { border-right: 1px solid var(--in-border); }
+.rm-tl-col { border-right: 1px solid var(--in-border); cursor: crosshair; }
+.rm-tl-col:last-child { border-right: 0; }
+.rm-tl-head { height: 26px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--in-fg); border-bottom: 1px solid var(--in-border); background: var(--in-bg); }
+.rm-tl-head.rm-tl-head-today { color: var(--rest-mode-fg, #C5B7FF); }
+.rm-tl-axis .rm-tl-head { background: var(--in-bg); }
+.rm-tl-body { position: relative; }
+.rm-tl-hourline { position: absolute; left: 0; right: 0; border-top: 1px solid var(--in-border); pointer-events: none; opacity: 0.5; }
+.rm-tl-hourlabel { position: absolute; right: 4px; font-size: 9px; font-family: var(--in-mono); color: var(--in-fg-soft); transform: translateY(-50%); pointer-events: none; }
+.rm-tl-block { position: absolute; left: 2px; right: 2px; border-radius: 3px; background: var(--rest-mode-bg, rgba(124,92,255,0.16)); border: 1px solid rgba(124,92,255,0.55); color: var(--rest-mode-fg, #C5B7FF); font-size: 9px; overflow: hidden; cursor: grab; box-sizing: border-box; user-select: none; }
+.rm-tl-block:active { cursor: grabbing; }
+.rm-tl-block.rm-tl-block-error { background: rgba(248,81,73,0.12); border-color: var(--danger, #F85149); color: var(--danger, #F85149); }
+.rm-tl-block-label { padding: 2px 4px; font-family: var(--in-mono); line-height: 1.2; pointer-events: none; }
+.rm-tl-block-handle { position: absolute; left: 0; right: 0; height: 10px; cursor: ns-resize; }
+.rm-tl-block-handle-top { top: -4px; }
+.rm-tl-block-handle-bottom { bottom: -4px; }
+.rm-tl-ghost { position: absolute; left: 2px; right: 2px; border-radius: 3px; background: repeating-linear-gradient(45deg, rgba(124,92,255,0.30), rgba(124,92,255,0.30) 4px, transparent 4px, transparent 8px); border: 1px dashed rgba(124,92,255,0.75); pointer-events: none; box-sizing: border-box; }
+.rm-tl-ghost.rm-tl-ghost-blocked { background: repeating-linear-gradient(45deg, rgba(248,81,73,0.28), rgba(248,81,73,0.28) 4px, transparent 4px, transparent 8px); border-color: var(--danger, #F85149); }
+.rm-tl-now { position: absolute; left: 0; right: 0; border-top: 2px dashed var(--danger, #F85149); pointer-events: none; z-index: 3; }
+.rm-tl-now-pill { position: absolute; right: 2px; top: -8px; font-size: 8px; font-family: var(--in-mono); background: var(--danger, #F85149); color: #fff; padding: 0 3px; border-radius: 2px; }
+
+/* ===== Preview próximo descanso (CA-6) ===== */
+.rm-preview { margin-top: 16px; padding: 12px 14px; border: 1px solid rgba(124,92,255,0.40); border-radius: var(--in-radius-sm); background: var(--rest-mode-bg, rgba(124,92,255,0.10)); }
+.rm-preview-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.rm-preview-title { font-weight: 600; font-size: 13px; color: var(--rest-mode-fg, #C5B7FF); }
+.rm-preview-body { font-size: 12px; color: var(--in-fg); }
+.rm-preview-line { margin: 2px 0; }
+.rm-preview-skills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+
+/* ===== Chips (bypass + preview) — XSS-safe via textContent (CA-7) ===== */
+.rm-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.rm-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-family: var(--in-mono); border: 1px solid var(--in-border); background: var(--in-bg-3); color: var(--in-fg-dim); cursor: default; }
+.rm-chip-bypass { border-color: rgba(210,153,34,0.55); background: var(--quota-degraded, rgba(210,153,34,0.14)); color: var(--warning, #D29922); }
+.rm-chip-pause { border-color: rgba(124,92,255,0.40); }
+.rm-chip-empty { font-style: italic; color: var(--in-fg-soft); border-style: dashed; }
+
+/* ===== Fallback de edición por teclado (CA-9) ===== */
+.rm-fallback { margin-top: 14px; border: 1px solid var(--in-border); border-radius: var(--in-radius-sm); background: var(--in-bg-3); }
+.rm-fallback-summary { cursor: pointer; padding: 8px 12px; font-size: 12px; color: var(--in-fg-dim); user-select: none; }
+.rm-fallback[open] .rm-fallback-summary { border-bottom: 1px dashed var(--in-border); }
+.rm-fallback .rm-grid { padding: 12px; margin: 0; }
+
 /* Mobile: el grid de 7 columnas se transforma en lista vertical. */
 @media (max-width: 900px) {
     .rm-grid { grid-template-columns: 1fr; }
     .rm-col { min-height: 0; }
+    .rm-timeline { grid-template-columns: 32px repeat(7, minmax(0, 1fr)); }
 }`;
     const script = `
 // nota: validacion cliente solo UX, backend revalida en POST /api/rest-mode (FE-SEC-2).
@@ -351,6 +440,16 @@ let scheduleState = makeEmptySchedule();
 let editingTimer = null;
 let bypassLabelsState = [];
 let updatedAtState = null;
+
+// #3964 (EP8-H11) — estado del timeline. nowLocalState/wouldPauseSkillsState se
+// hidratan del slice server-side (CA-4/CA-6); NO se computan con Date() del
+// browser (evita mismatch de TZ). tlGesture mantiene el arrastre en curso.
+let nowLocalState = null;
+let restSliceState = null;
+let wouldPauseSkillsState = [];
+const TL_PX_PER_HOUR = 28;   // alto de cada hora en px → 24h = 672px.
+const TL_SNAP_MIN = 30;      // resolución de snap del arrastre (CA-2).
+let tlGesture = null;        // { kind:'create'|'move'|'resize', day, idx, ... }
 
 function makeEmptySchedule(){
     return { monday: [], tuesday: [], wednesday: [], thursday: [], friday: [], saturday: [], sunday: [] };
@@ -478,8 +577,10 @@ function makeEl(tag, opts){
     return el;
 }
 
-function buildGrid(){
-    const grid = document.getElementById('rm-grid');
+// CA-9 — Grilla de inputs time como FALLBACK editable por teclado (vive en el
+// <details> bajo el timeline). Comparte scheduleState con el timeline.
+function buildFallbackGrid(){
+    const grid = document.getElementById('rm-fallback-grid');
     if(!grid) return;
     clearChildren(grid);
     const validation = validateScheduleClient(scheduleState);
@@ -508,7 +609,7 @@ function buildGrid(){
         addBtn.addEventListener('click', () => {
             scheduleState[day] = (scheduleState[day] || []).concat([{ start: '22:00', end: '07:00' }]);
             markEditing();
-            buildGrid();
+            renderEditor();
         });
         col.appendChild(addBtn);
 
@@ -528,7 +629,7 @@ function buildPeriodRow(day, idx, period, periodErrors){
     startIn.addEventListener('input', () => {
         scheduleState[day][idx].start = startIn.value;
         markEditing();
-        buildGrid();
+        renderEditor();
     });
     const dash = makeEl('span', { cls: 'rm-period-dash', text: '–' });
     const endIn = document.createElement('input');
@@ -538,7 +639,7 @@ function buildPeriodRow(day, idx, period, periodErrors){
     endIn.addEventListener('input', () => {
         scheduleState[day][idx].end = endIn.value;
         markEditing();
-        buildGrid();
+        renderEditor();
     });
     inputs.appendChild(startIn);
     inputs.appendChild(dash);
@@ -549,7 +650,7 @@ function buildPeriodRow(day, idx, period, periodErrors){
     removeBtn.addEventListener('click', () => {
         scheduleState[day].splice(idx, 1);
         markEditing();
-        buildGrid();
+        renderEditor();
     });
     inputs.appendChild(removeBtn);
 
@@ -603,6 +704,295 @@ function markEditing(){
     }, 3000);
 }
 
+// ===========================================================================
+// Timeline 7×24 (CA-1/CA-2/CA-3/CA-4) — render posicionado + pointer events.
+// Toda la geometría (min↔px, snap, blockRect, wouldOverlap) viene de
+// RestTimelineGeo (módulo puro inyectado). El overlap del cliente es SOLO UX:
+// el backend revalida en setWindow (FE-SEC-2).
+// ===========================================================================
+
+function makeChip(text, cls, title){
+    const chip = makeEl('span', { cls: cls || 'rm-chip', text: text });
+    if(title) chip.title = title;  // tooltip por atributo (textContent-safe, CA-7)
+    return chip;
+}
+
+function nextPeriodText(np){
+    if(!np || !np.start) return '—';
+    const whenLabels = { today: 'hoy', tomorrow: 'mañana' };
+    const dayLbl = DAY_LABELS[np.when] || whenLabels[np.when] || (np.when || '');
+    return (dayLbl ? dayLbl + ' ' : '') + np.start + (np.end ? '–' + np.end : '');
+}
+
+function pointerMinInBody(body, clientY){
+    const rect = body.getBoundingClientRect();
+    let min = RestTimelineGeo.yToMin(clientY - rect.top, TL_PX_PER_HOUR);
+    if(min < 0) min = 0;
+    if(min > 1440) min = 1440;
+    return min;
+}
+
+function setPeriodMinutes(day, idx, sMin, eMin){
+    const list = scheduleState[day];
+    if(!list || !list[idx]) return;
+    const s = ((Math.round(sMin) % 1440) + 1440) % 1440;
+    const e = ((Math.round(eMin) % 1440) + 1440) % 1440;
+    list[idx] = { start: RestTimelineGeo.minToHhmm(s), end: RestTimelineGeo.minToHhmm(e) };
+}
+
+function flashTimelineError(msg){
+    setMsg('✗ ' + msg, 'err');
+    if(typeof showToast === 'function') showToast(msg, false);
+}
+
+function buildTimelineBlock(day, idx, period, rect, isError){
+    const b = makeEl('div', { cls: 'rm-tl-block' + (isError ? ' rm-tl-block-error' : '') });
+    b.style.top = rect.top + 'px';
+    b.style.height = Math.max(rect.height, 6) + 'px';
+    b.setAttribute('data-day', day);
+    b.setAttribute('data-idx', String(idx));
+    b.setAttribute('title', period.start + '–' + period.end + (rect.crossesMidnight ? ' (cruza medianoche)' : ''));
+    const arrow = rect.crossesMidnight ? (rect.segment === 'head' ? ' ↧' : ' ↥') : '';
+    b.appendChild(makeEl('div', { cls: 'rm-tl-block-label', text: period.start + '–' + period.end + arrow }));
+    // Handles de resize sólo en el segmento principal (no en la cola del cruce).
+    if(rect.segment !== 'tail'){
+        b.appendChild(makeEl('div', { cls: 'rm-tl-block-handle rm-tl-block-handle-top', attrs: { 'data-handle': 'top', 'aria-hidden': 'true' } }));
+        b.appendChild(makeEl('div', { cls: 'rm-tl-block-handle rm-tl-block-handle-bottom', attrs: { 'data-handle': 'bottom', 'aria-hidden': 'true' } }));
+    }
+    b.addEventListener('pointerdown', (ev) => onBlockPointerDown(ev, day, idx));
+    return b;
+}
+
+function attachColumnPointer(body, day){
+    body.addEventListener('pointerdown', (ev) => {
+        if(ev.target && ev.target.closest && ev.target.closest('.rm-tl-block')) return;
+        ev.preventDefault();
+        const startMin = RestTimelineGeo.snapMin(pointerMinInBody(body, ev.clientY), TL_SNAP_MIN);
+        tlGesture = { kind: 'create', day: day, body: body, anchorMin: startMin, curMin: startMin };
+        markEditing();
+        startGestureListeners();
+        renderGhost();
+    });
+}
+
+function onBlockPointerDown(ev, day, idx){
+    ev.preventDefault();
+    ev.stopPropagation();
+    const body = ev.currentTarget.parentNode;
+    const handle = ev.target && ev.target.getAttribute ? ev.target.getAttribute('data-handle') : null;
+    const period = (scheduleState[day] || [])[idx];
+    if(!period) return;
+    const sMin = RestTimelineGeo.hhmmToMin(period.start);
+    const eMin = RestTimelineGeo.hhmmToMin(period.end);
+    if(sMin === null || eMin === null) return;
+    if(handle === 'top' || handle === 'bottom'){
+        tlGesture = { kind: 'resize', day: day, idx: idx, body: body, edge: handle, startS: sMin, startE: eMin };
+    } else {
+        tlGesture = { kind: 'move', day: day, idx: idx, body: body, grabMin: pointerMinInBody(body, ev.clientY), startS: sMin, startE: eMin };
+    }
+    markEditing();
+    startGestureListeners();
+}
+
+function startGestureListeners(){
+    document.addEventListener('pointermove', onGesturePointerMove);
+    document.addEventListener('pointerup', onGesturePointerUp);
+    document.addEventListener('pointercancel', onGesturePointerUp);
+}
+function stopGestureListeners(){
+    document.removeEventListener('pointermove', onGesturePointerMove);
+    document.removeEventListener('pointerup', onGesturePointerUp);
+    document.removeEventListener('pointercancel', onGesturePointerUp);
+}
+
+function onGesturePointerMove(ev){
+    const g = tlGesture;
+    if(!g) return;
+    markEditing();
+    if(g.kind === 'create'){
+        g.curMin = RestTimelineGeo.snapMin(pointerMinInBody(g.body, ev.clientY), TL_SNAP_MIN);
+        renderGhost();
+        return;
+    }
+    if(g.kind === 'move'){
+        const cur = pointerMinInBody(g.body, ev.clientY);
+        const delta = RestTimelineGeo.snapMin(cur - g.grabMin, TL_SNAP_MIN);
+        const dur = ((g.startE - g.startS) + 1440) % 1440;
+        const ns = ((g.startS + delta) % 1440 + 1440) % 1440;
+        setPeriodMinutes(g.day, g.idx, ns, ns + dur);
+        buildTimeline();
+        return;
+    }
+    if(g.kind === 'resize'){
+        const cur = RestTimelineGeo.snapMin(pointerMinInBody(g.body, ev.clientY), TL_SNAP_MIN);
+        let ns = g.startS, ne = g.startE;
+        if(g.edge === 'top') ns = cur; else ne = cur;
+        if(ns === ne) return;  // no permitir duración nula durante el drag
+        setPeriodMinutes(g.day, g.idx, ns, ne);
+        buildTimeline();
+        return;
+    }
+}
+
+function onGesturePointerUp(){
+    const g = tlGesture;
+    stopGestureListeners();
+    tlGesture = null;
+    removeGhost();
+    if(!g) return;
+    markEditing();
+    if(g.kind === 'create'){
+        const a = Math.min(g.anchorMin, g.curMin);
+        const b = Math.max(g.anchorMin, g.curMin);
+        if(b - a < TL_SNAP_MIN){ renderEditor(); return; }  // click sin arrastre real
+        if((scheduleState[g.day] || []).length >= MAX_PERIODS_PER_DAY){
+            flashTimelineError('Máximo 24 periodos por día'); renderEditor(); return;
+        }
+        const candidate = { start: RestTimelineGeo.minToHhmm(a), end: RestTimelineGeo.minToHhmm(b === 1440 ? 1439 : b) };
+        if(RestTimelineGeo.wouldOverlap(scheduleState, g.day, candidate)){
+            flashTimelineError('Se solaparía con otro bloque'); renderEditor(); return;
+        }
+        scheduleState[g.day] = (scheduleState[g.day] || []).concat([candidate]);
+        setMsg('Bloque creado · revisá y guardá.');
+        renderEditor();
+        return;
+    }
+    if(g.kind === 'move' || g.kind === 'resize'){
+        const cand = (scheduleState[g.day] || [])[g.idx];
+        if(cand && RestTimelineGeo.wouldOverlap(scheduleState, g.day, cand, g.idx)){
+            setPeriodMinutes(g.day, g.idx, g.startS, g.startE);  // CA-3: revertir overlap
+            flashTimelineError('Se solaparía — cambio revertido');
+        }
+        renderEditor();
+        return;
+    }
+}
+
+function renderGhost(){
+    removeGhost();
+    const g = tlGesture;
+    if(!g || g.kind !== 'create') return;
+    const a = Math.min(g.anchorMin, g.curMin);
+    const b = Math.max(g.anchorMin, g.curMin);
+    const ghost = makeEl('div', { cls: 'rm-tl-ghost' });
+    ghost.id = 'rm-tl-ghost';
+    ghost.style.top = RestTimelineGeo.minToY(a, TL_PX_PER_HOUR) + 'px';
+    ghost.style.height = Math.max(RestTimelineGeo.minToY(b - a, TL_PX_PER_HOUR), 2) + 'px';
+    const cand = { start: RestTimelineGeo.minToHhmm(a), end: RestTimelineGeo.minToHhmm(b === 1440 ? 1439 : b) };
+    if(b - a >= TL_SNAP_MIN && RestTimelineGeo.wouldOverlap(scheduleState, g.day, cand)){
+        ghost.classList.add('rm-tl-ghost-blocked');
+    }
+    ghost.appendChild(makeEl('div', { cls: 'rm-tl-block-label', text: cand.start + '–' + cand.end }));
+    g.body.appendChild(ghost);
+}
+function removeGhost(){
+    const el = document.getElementById('rm-tl-ghost');
+    if(el && el.parentNode) el.parentNode.removeChild(el);
+}
+
+function buildTimeline(){
+    const tl = document.getElementById('rm-grid');
+    if(!tl) return;
+    clearChildren(tl);
+    const validation = validateScheduleClient(scheduleState);
+    const colHeight = 24 * TL_PX_PER_HOUR;
+
+    // Columna 0: eje de horas.
+    const axis = makeEl('div', { cls: 'rm-tl-axis' });
+    axis.appendChild(makeEl('div', { cls: 'rm-tl-head', text: 'h' }));
+    const axisBody = makeEl('div', { cls: 'rm-tl-body' });
+    axisBody.style.height = colHeight + 'px';
+    for(let h = 0; h <= 24; h += 3){
+        const lab = makeEl('div', { cls: 'rm-tl-hourlabel', text: (h < 10 ? '0' + h : '' + h) + ':00' });
+        lab.style.top = (h * TL_PX_PER_HOUR) + 'px';
+        axisBody.appendChild(lab);
+    }
+    axis.appendChild(axisBody);
+    tl.appendChild(axis);
+
+    const todayKey = nowLocalState && nowLocalState.dayKey;
+    for(const day of DAY_KEYS){
+        const col = makeEl('div', { cls: 'rm-tl-col', attrs: { 'data-day': day } });
+        col.appendChild(makeEl('div', { cls: (day === todayKey ? 'rm-tl-head rm-tl-head-today' : 'rm-tl-head'), text: DAY_LABELS[day] }));
+        const body = makeEl('div', { cls: 'rm-tl-body', attrs: { 'data-day': day } });
+        body.style.height = colHeight + 'px';
+
+        for(let h = 1; h < 24; h++){
+            const line = makeEl('div', { cls: 'rm-tl-hourline' });
+            line.style.top = (h * TL_PX_PER_HOUR) + 'px';
+            body.appendChild(line);
+        }
+
+        const list = scheduleState[day] || [];
+        for(let i = 0; i < list.length; i++){
+            const isErr = (validation.perPeriod[day + ':' + i] || []).length > 0;
+            const rects = RestTimelineGeo.blockRect(list[i], TL_PX_PER_HOUR);
+            for(const r of rects){
+                body.appendChild(buildTimelineBlock(day, i, list[i], r, isErr));
+            }
+        }
+
+        // Marcador "ahora" (CA-4) — sólo en la columna del día local del server.
+        if(day === todayKey && nowLocalState && typeof nowLocalState.minuteOfDay === 'number'){
+            const now = makeEl('div', { cls: 'rm-tl-now' });
+            now.style.top = RestTimelineGeo.minToY(nowLocalState.minuteOfDay, TL_PX_PER_HOUR) + 'px';
+            const within = restSliceState && restSliceState.isWithinNow;
+            now.appendChild(makeEl('div', { cls: 'rm-tl-now-pill', text: (within ? '🌙 ' : '') + (nowLocalState.hhmm || '') }));
+            body.appendChild(now);
+        }
+
+        attachColumnPointer(body, day);
+        col.appendChild(body);
+        tl.appendChild(col);
+    }
+}
+
+// CA-6 — Preview read-only del próximo descanso + qué skills pausaría.
+function renderPreview(){
+    const box = document.getElementById('rm-preview');
+    if(!box) return;
+    const np = restSliceState && restSliceState.nextPeriod;
+    const active = restSliceState && restSliceState.active;
+    if(!active || !np){ box.hidden = true; return; }
+    box.hidden = false;
+    const when = document.getElementById('rm-preview-when');
+    if(when) when.textContent = nextPeriodText(np);
+    const skillsBox = document.getElementById('rm-preview-skills');
+    if(skillsBox){
+        clearChildren(skillsBox);
+        const skills = Array.isArray(wouldPauseSkillsState) ? wouldPauseSkillsState : [];
+        if(!skills.length){
+            skillsBox.appendChild(makeChip('(ninguno se pausaría)', 'rm-chip rm-chip-empty'));
+        } else {
+            for(const s of skills){ skillsBox.appendChild(makeChip(s, 'rm-chip rm-chip-pause')); }
+        }
+    }
+}
+
+// CA-7 — Bypass labels como chips con tooltip del porqué. Read-only desde
+// config; tooltip por atributo title (textContent-safe, nunca innerHTML).
+function renderBypassChips(labels){
+    const box = document.getElementById('rm-bypass');
+    if(!box) return;
+    clearChildren(box);
+    const list = Array.isArray(labels) ? labels : [];
+    if(!list.length){
+        box.appendChild(makeChip('(ninguno)', 'rm-chip rm-chip-empty'));
+        return;
+    }
+    for(const l of list){
+        box.appendChild(makeChip(l, 'rm-chip rm-chip-bypass',
+            'Los issues con el label "' + l + '" hacen bypass del gate: siguen corriendo durante los periodos de descanso. Read-only (config.yaml).'));
+    }
+}
+
+// Render maestro del editor: timeline + fallback por teclado + preview.
+function renderEditor(){
+    buildTimeline();
+    buildFallbackGrid();
+    renderPreview();
+}
+
 // ----- Status header (#rm-status) y bypass labels -----
 function renderStatus(payload){
     const status = document.getElementById('rm-status');
@@ -618,9 +1008,12 @@ function renderStatus(payload){
         status.classList.add('rm-active');
         status.appendChild(makeEl('span', { cls: 'rm-status-icon', text: '🌙' }));
         const txt = makeEl('span', { cls: 'rm-status-text' });
-        const cur = payload && payload.currentPeriod;
-        const next = payload && payload.nextPeriod;
-        const periodsToday = (payload && typeof payload.periodsToday === 'number') ? payload.periodsToday : null;
+        // El slice enriquecido (current/next/periodsToday) viaja en payload.restMode
+        // (describeRestModeNow); fallback a top-level por compat.
+        const slice = (payload && payload.restMode) || payload || {};
+        const cur = slice.currentPeriod;
+        const next = slice.nextPeriod;
+        const periodsToday = (typeof slice.periodsToday === 'number') ? slice.periodsToday : null;
         if(cur && cur.start && cur.end){
             txt.appendChild(makeEl('span', { cls: 'rm-status-title', text: 'Activa · ahora ' + cur.start + '–' + cur.end }));
             if(periodsToday != null && next && next.start){
@@ -638,11 +1031,8 @@ function renderStatus(payload){
         }
         status.appendChild(txt);
     }
-    // Bypass labels y updatedAt — textContent siempre (CA-XSS).
-    const bp = document.getElementById('rm-bypass');
-    if(bp) bp.textContent = (payload && Array.isArray(payload.bypassLabels) && payload.bypassLabels.length)
-        ? payload.bypassLabels.join(', ')
-        : '(ninguno)';
+    // Bypass labels como chips con tooltip (CA-7) — render XSS-safe (textContent).
+    renderBypassChips(payload && payload.bypassLabels);
     const upd = document.getElementById('rm-updated');
     if(upd) upd.textContent = rm.updatedAt ? new Date(rm.updatedAt).toLocaleString('es-AR') : '—';
 }
@@ -654,12 +1044,21 @@ function syncStateFromServer(payload){
     if(activeEl) activeEl.checked = !!w.active;
     const tzEl = document.getElementById('rm-timezone');
     if(tzEl) tzEl.value = w.timezone || '';
-    // Schema nuevo (CA-8.1): preferimos schedule:{} sobre window.start/end legacy.
-    if(payload.schedule && typeof payload.schedule === 'object'){
+    // #3964 — slices read-only del server para el timeline (CA-4/CA-6). NO se
+    // computan en el cliente: nowLocal viene en la TZ configurada server-side.
+    nowLocalState = payload.nowLocal || nowLocalState;
+    restSliceState = payload.restMode || restSliceState;
+    wouldPauseSkillsState = Array.isArray(payload.wouldPauseSkills) ? payload.wouldPauseSkills.slice() : wouldPauseSkillsState;
+    // Schema nuevo (CA-8.1): el schedule vive en window.schedule; aceptamos
+    // también payload.schedule top-level por compat.
+    const srvSchedule = (payload.schedule && typeof payload.schedule === 'object')
+        ? payload.schedule
+        : ((w.schedule && typeof w.schedule === 'object') ? w.schedule : null);
+    if(srvSchedule){
         const next = makeEmptySchedule();
         for(const k of DAY_KEYS){
-            if(Array.isArray(payload.schedule[k])){
-                next[k] = payload.schedule[k].map(p => ({ start: String(p.start || ''), end: String(p.end || '') }));
+            if(Array.isArray(srvSchedule[k])){
+                next[k] = srvSchedule[k].map(p => ({ start: String(p.start || ''), end: String(p.end || '') }));
             }
         }
         scheduleState = next;
@@ -676,7 +1075,7 @@ function syncStateFromServer(payload){
     }
     bypassLabelsState = Array.isArray(payload.bypassLabels) ? payload.bypassLabels.slice() : bypassLabelsState;
     updatedAtState = w.updatedAt || updatedAtState;
-    buildGrid();
+    renderEditor();
 }
 
 function buildTimezoneList(){
@@ -727,7 +1126,7 @@ async function tickRestMode(){
 
 document.addEventListener('DOMContentLoaded', () => {
     buildTimezoneList();
-    buildGrid();
+    renderEditor();
     const form = document.getElementById('rm-form');
     if(form){
         form.addEventListener('submit', async (ev) => {
@@ -744,20 +1143,46 @@ document.addEventListener('DOMContentLoaded', () => {
                 schedule: scheduleState,
                 manual: true,
             };
-            setMsg('Guardando…');
+            const totalPeriods = DAY_KEYS.reduce((acc, d) => acc + ((scheduleState[d] || []).length), 0);
+            const np = restSliceState && restSliceState.nextPeriod;
+            // CA-5 — guardado EXPLÍCITO con confirmación. El arrastre NO postea;
+            // sólo este submit, y recién tras el modal. inConfirmPost adjunta el
+            // X-CSRF-Token vía fetchJson (FETCH_CLIENT_JS).
+            setMsg('Confirmá para guardar…');
+            let j = null;
             try {
-                const r = await fetch('/api/rest-mode', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-                const j = await r.json();
-                if(j.ok){
-                    setMsg('✓ Guardado · hot-reload sin reinicio del pipeline.', 'ok');
-                    tickRestMode();
-                } else {
-                    const errs = Array.isArray(j.errors) ? j.errors.join(' · ') : (j.msg || 'Error');
-                    // textContent al setear el msg (FE-SEC-1).
-                    setMsg('✗ ' + errs, 'err');
-                }
+                j = await inConfirmPost({
+                    url: '/api/rest-mode',
+                    body: payload,
+                    title: 'Confirmar agenda de descanso',
+                    message: 'Se aplicará en caliente, sin reiniciar el pipeline. El backend revalida la grilla.',
+                    preview: [
+                        { label: 'Modo descanso', value: payload.active ? 'Activado' : 'Desactivado' },
+                        { label: 'Periodos', value: String(totalPeriods) },
+                        { label: 'Próximo descanso', value: nextPeriodText(np) },
+                    ],
+                    confirmLabel: 'Guardar',
+                    danger: false,
+                });
             } catch(e){
                 setMsg('✗ Error de red: ' + e.message, 'err');
+                return;
+            }
+            if(j === null){ setMsg('Cancelado.'); return; }  // el usuario no confirmó
+            if(j.ok){
+                // Liberar el lock de edición para que el refresh no se aborte.
+                const grid = document.getElementById('rm-grid');
+                if(grid) grid.setAttribute('data-rm-editing', '0');
+                if(editingTimer){ clearTimeout(editingTimer); editingTimer = null; }
+                // CA-5 — "Guardado ✓ + próximo descanso" derivado del round-trip.
+                const fresh = await fetchRestMode();
+                const freshNp = fresh && fresh.restMode && fresh.restMode.nextPeriod;
+                setMsg('✓ Guardado · próximo descanso ' + nextPeriodText(freshNp), 'ok');
+                if(typeof showToast === 'function') showToast('Agenda de descanso guardada', true);
+                if(fresh){ renderStatus(fresh); syncStateFromServer(fresh); }
+            } else {
+                const errs = Array.isArray(j.errors) ? j.errors.join(' · ') : (j.msg || 'Error');
+                setMsg('✗ ' + errs, 'err');  // textContent al setear el msg (FE-SEC-1)
             }
         });
     }
@@ -779,6 +1204,7 @@ function renderDescansoInner() {
 <style>${css}</style>
 <script>${FETCH_CLIENT_JS}
 ${CONFIRM_MODAL_JS}
+${REST_TIMELINE_GEOMETRY_JS}
 ${COMMON_HELPERS}
 ${script}</script>`;
 }

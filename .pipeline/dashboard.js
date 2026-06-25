@@ -11325,6 +11325,49 @@ const server = http.createServer((req, res) => {
   //                          (CA-Sec-A03). Audit trail en rest-mode-audit.jsonl
   //                          (CA-Sec-A08). bypass_labels NO editable (CA-Sec-A04a).
   // =========================================================================
+  // #3964 (EP8-H11) — helpers read-only del GET /api/rest-mode. Definidos como
+  // closures dentro del handler para no contaminar el scope del módulo; ambos
+  // son puros respecto del request (sólo leen config/window ya cargados).
+  function computeNowLocal(rmw, window, nowMs) {
+    try {
+      if (typeof rmw.partsInTz !== 'function') return null;
+      const tz = (window && window.timezone) || rmw.DEFAULT_TIMEZONE || 'America/Argentina/Buenos_Aires';
+      const parts = rmw.partsInTz(tz, nowMs);
+      if (!parts) return null;
+      const minuteOfDay = parts.hour * 60 + parts.minute;
+      const dayKeys = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+      const dayKey = dayKeys[parts.weekday] || 'monday';
+      const hhmm = (parts.hour < 10 ? '0' + parts.hour : '' + parts.hour)
+        + ':' + (parts.minute < 10 ? '0' + parts.minute : '' + parts.minute);
+      return { timezone: tz, weekday: parts.weekday, dayKey, hour: parts.hour, minute: parts.minute, minuteOfDay, hhmm };
+    } catch { return null; }
+  }
+  function computeWouldPauseSkills(rmw, window, cfg, nowMs) {
+    try {
+      const fullCfg = loadConfig() || {};
+      const pipelines = fullCfg.pipelines || {};
+      const catalog = new Set();
+      for (const pk of Object.keys(pipelines)) {
+        const spf = pipelines[pk] && pipelines[pk].skills_por_fase;
+        if (!spf) continue;
+        for (const fk of Object.keys(spf)) {
+          const arr = spf[fk];
+          if (Array.isArray(arr)) for (const s of arr) catalog.add(String(s));
+        }
+      }
+      const out = [];
+      for (const skill of catalog) {
+        // Un skill se pausa durante el descanso si NO es determinístico (el
+        // bypass es por-issue via label, no a nivel skill). `isSkillAllowedNow`
+        // expone `deterministic` de forma estable aun fuera de ventana.
+        const cls = rmw.isSkillAllowedNow(skill, nowMs, { window, cfg });
+        if (cls && cls.deterministic === false) out.push(skill);
+      }
+      out.sort();
+      return out;
+    } catch { return []; }
+  }
+
   if (req.url === '/api/rest-mode' && req.method === 'GET') {
     if (!restModeWindow) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
@@ -11340,6 +11383,15 @@ const server = http.createServer((req, res) => {
       // derivados sin recomputar.
       const describe = typeof restModeWindow.describeRestModeNow === 'function'
         ? restModeWindow.describeRestModeNow(window, now) : null;
+      // #3964 (EP8-H11) CA-4 — hora local en la TZ configurada, computada
+      // server-side. La UI del timeline posiciona el marcador "ahora" con esto
+      // y NO con `new Date()` del browser (evita mismatch de zona horaria).
+      const nowLocal = computeNowLocal(restModeWindow, window, now);
+      // #3964 (EP8-H11) CA-6 — preview read-only y acotado de qué skills
+      // quedarían pausados durante un periodo de descanso. Reutiliza la lista
+      // canónica DETERMINISTIC_SKILLS + isSkillAllowedNow; NO se mirrorea en el
+      // cliente. Catálogo de skills derivado de config (finito).
+      const wouldPauseSkills = computeWouldPauseSkills(restModeWindow, window, cfg, now);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         ok: true,
@@ -11349,6 +11401,9 @@ const server = http.createServer((req, res) => {
         now: new Date(now).toISOString(),
         // #3241 CA-Slice: shape enriquecido que la UI de #3242 va a consumir.
         restMode: describe,
+        // #3964 EP8-H11: slices nuevos read-only para el timeline.
+        nowLocal,
+        wouldPauseSkills,
       }));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
