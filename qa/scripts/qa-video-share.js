@@ -44,6 +44,15 @@ const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 2000;
 const R2_PRESIGNED_EXPIRY_SECONDS = 7 * 24 * 60 * 60; // 7 dias
 
+// #4173: mapa extension -> mime para subir assets de evidencia a Drive
+const ASSET_MIME = {
+    png: "image/png",
+    zip: "application/zip",
+    html: "text/html",
+    mp3: "audio/mpeg",
+    mp4: "video/mp4",
+};
+
 // --- Config ---
 
 const HOOKS_DIR = path.resolve(__dirname, "../../.claude/hooks");
@@ -91,6 +100,9 @@ function parseArgs() {
         criteriosFallidos: "",
         narratorProvider: "",
         rejectionPdf: "",
+        // #4173: modo assets — subir evidencia binaria (png/zip/html/mp3) a Drive
+        assets: "",
+        videoUrl: "",
     };
     for (let i = 0; i < args.length; i++) {
         switch (args[i]) {
@@ -106,6 +118,8 @@ function parseArgs() {
             case "--criterios-fallidos": result.criteriosFallidos = args[++i] || ""; break;
             case "--narrator": result.narratorProvider = args[++i] || ""; break;
             case "--rejection-pdf": result.rejectionPdf = args[++i] || ""; break;
+            case "--assets":  result.assets  = args[++i] || ""; break;
+            case "--video-url": result.videoUrl = args[++i] || ""; break;
         }
     }
     return result;
@@ -408,8 +422,9 @@ async function driveGetOrCreateFolder(accessToken, name, parentId) {
     return created.id;
 }
 
-// Subir video a Drive (multipart upload)
-function driveUploadFile(accessToken, videoBuffer, filename, folderId) {
+// Subir un asset a Drive (multipart upload). #4173: mimeType parametrizable
+// (default video/mp4 para preservar el comportamiento de los videos).
+function driveUploadFile(accessToken, assetBuffer, filename, folderId, mimeType = "video/mp4") {
     return new Promise((resolve, reject) => {
         const boundary = "----DriveBoundary" + Date.now().toString(36);
         const CRLF = "\r\n";
@@ -420,10 +435,10 @@ function driveUploadFile(accessToken, videoBuffer, filename, folderId) {
             "Content-Type: application/json; charset=UTF-8" + CRLF + CRLF +
             metadata + CRLF +
             "--" + boundary + CRLF +
-            "Content-Type: video/mp4" + CRLF + CRLF
+            "Content-Type: " + mimeType + CRLF + CRLF
         );
         const postamble = Buffer.from(CRLF + "--" + boundary + "--" + CRLF);
-        const body = Buffer.concat([preamble, videoBuffer, postamble]);
+        const body = Buffer.concat([preamble, assetBuffer, postamble]);
 
         const req = https.request({
             hostname: "www.googleapis.com",
@@ -509,8 +524,9 @@ function driveGetFileLink(accessToken, fileId) {
     });
 }
 
-// Subir video completo a Google Drive: auth + carpetas + upload + permisos
-async function uploadToDrive(videoBuffer, filename, issueNumber, issueTitle, sprintId) {
+// Subir cualquier asset a Google Drive: auth + carpetas + upload + permisos.
+// #4173: generalizado de "video" a "asset" (mismo camino para png/zip/html/mp3).
+async function uploadToDrive(assetBuffer, filename, issueNumber, issueTitle, sprintId, mimeType = "video/mp4") {
     const credentials = loadDriveCredentials();
     const accessToken = await getGoogleAccessToken(credentials);
 
@@ -524,8 +540,8 @@ async function uploadToDrive(videoBuffer, filename, issueNumber, issueTitle, spr
     console.log("[qa-video-share] Drive: creando/usando carpeta " + issueFolder);
     const issueFolderId = await driveGetOrCreateFolder(accessToken, issueFolder, rootFolderId);
 
-    console.log("[qa-video-share] Drive: subiendo " + filename + " (" + formatSize(videoBuffer.length) + ")...");
-    const uploaded = await driveUploadFile(accessToken, videoBuffer, filename, issueFolderId);
+    console.log("[qa-video-share] Drive: subiendo " + filename + " (" + formatSize(assetBuffer.length) + ")...");
+    const uploaded = await driveUploadFile(accessToken, assetBuffer, filename, issueFolderId, mimeType);
     await driveSetPublic(accessToken, uploaded.id);
 
     // Preferir webViewLink (abre el video en el navegador)
@@ -551,6 +567,109 @@ function updateQaReport(issueNumber, videoUrl) {
         console.log("[qa-video-share] qa-report.json actualizado con video_url");
     } catch (e) {
         console.error("[qa-video-share] No se pudo actualizar qa-report.json:", e.message);
+    }
+}
+
+// SEC-1 (#4173): una URL es segura para commitear solo si NO lleva material de
+// firma en el querystring. Las presigned de R2 emiten X-Amz-*/Signature= y NO
+// deben llegar al repo público; las webViewLink de Drive son canónicas.
+function isCanonicalUrl(url) {
+    if (!url || typeof url !== "string") return false;
+    return !/X-Amz-/i.test(url) && !/[?&]Signature=/i.test(url);
+}
+
+// #4173: registrar los links de assets (png/zip/html/mp3) + video en
+// qa/evidence/<issue>/qa-results.json (archivo distinto de qa-report.json).
+// Merge idempotente por nombre. Descarta cualquier URL con material de firma
+// (SEC-1). Crea el archivo y la carpeta si no existen.
+function updateQaResults(issueNumber, assets, videoUrl) {
+    const PROJECT_ROOT = path.resolve(__dirname, "../..");
+    const dir = path.join(PROJECT_ROOT, "qa", "evidence", String(issueNumber));
+    const resultsPath = path.join(dir, "qa-results.json");
+    try {
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+        let results = { video_url: "", assets: [] };
+        if (fs.existsSync(resultsPath)) {
+            try {
+                const parsed = JSON.parse(fs.readFileSync(resultsPath, "utf8"));
+                if (parsed && typeof parsed === "object") results = parsed;
+            } catch (_) { /* JSON corrupto: se reescribe limpio */ }
+        }
+        if (!Array.isArray(results.assets)) results.assets = [];
+
+        // video_url: solo canónica (SEC-1)
+        if (videoUrl) {
+            if (isCanonicalUrl(videoUrl)) results.video_url = videoUrl;
+            else console.error("[qa-video-share] video_url descartado por material de firma (SEC-1)");
+        }
+
+        // Merge por name; descartar URLs con material de firma (SEC-1)
+        const byName = new Map(results.assets.filter(a => a && a.name).map(a => [a.name, a]));
+        for (const a of (assets || [])) {
+            if (!a || !a.name || !a.url) continue;
+            if (!isCanonicalUrl(a.url)) {
+                console.error("[qa-video-share] URL de asset descartada por material de firma (SEC-1): " + a.name);
+                continue;
+            }
+            byName.set(a.name, { name: a.name, type: a.type || "", url: a.url });
+        }
+        results.assets = Array.from(byName.values());
+
+        fs.writeFileSync(resultsPath, JSON.stringify(results, null, 2) + "\n", "utf8");
+        console.log("[qa-video-share] qa-results.json actualizado (" + results.assets.length + " asset(s))");
+        return resultsPath;
+    } catch (e) {
+        console.error("[qa-video-share] No se pudo actualizar qa-results.json:", e.message);
+        return null;
+    }
+}
+
+// #4173: subir assets de evidencia binaria a Drive y registrar links en
+// qa-results.json. Best-effort: cada fallo registra fallback explícito con el
+// path local (CA-5/SEC-5), nunca vuelca secrets ni rompe el flujo.
+async function runAssetUpload(data) {
+    const issue = data.issue;
+    const assetPaths = String(data.assets).split(",").map(s => s.trim()).filter(Boolean);
+    if (assetPaths.length === 0) {
+        console.log("[qa-video-share] Modo assets: sin assets para subir");
+        return;
+    }
+    if (!driveAvailable()) {
+        // Fallback explícito — nunca fallar mudo (CA-5/SEC-5)
+        for (const p of assetPaths) {
+            console.error("[qa-video-share] Drive no configurado: no se pudo subir, evidencia local en " + path.resolve(p));
+        }
+        return;
+    }
+
+    const sprintId = data.sprint || readActiveSprint();
+    const uploaded = [];
+    for (const assetPath of assetPaths) {
+        const full = path.resolve(assetPath);
+        if (!fs.existsSync(full)) {
+            console.error("[qa-video-share] Asset no encontrado: " + full);
+            continue;
+        }
+        const name = path.basename(full);
+        const type = path.extname(full).replace(/^\./, "").toLowerCase();
+        const mimeType = ASSET_MIME[type] || "application/octet-stream";
+        try {
+            const buf = fs.readFileSync(full);
+            const url = await withRetry(
+                () => uploadToDrive(buf, name, issue, data.title, sprintId, mimeType),
+                "Drive asset upload " + name
+            );
+            uploaded.push({ name, type, url });
+            console.log("[qa-video-share] Asset subido a Drive: " + name);
+        } catch (e) {
+            // CA-5/SEC-5: fallback explícito con path local, sin volcar secrets
+            console.error("[qa-video-share] No se pudo subir " + name + ", evidencia local en " + full);
+        }
+    }
+
+    if (uploaded.length > 0 || data.videoUrl) {
+        updateQaResults(issue, uploaded, data.videoUrl || "");
     }
 }
 
@@ -736,6 +855,13 @@ function readActiveSprint() {
 
 async function main() {
     const data = parseArgs();
+
+    // #4173: modo assets — sube evidencia binaria (png/zip/html/mp3) a Drive y
+    // registra links en qa-results.json. No requiere Telegram; corta acá.
+    if (data.assets) {
+        await runAssetUpload(data);
+        return;
+    }
 
     if (!BOT_TOKEN || !CHAT_ID) {
         console.error("[qa-video-share] Telegram no configurado");
@@ -956,7 +1082,14 @@ async function sendFallback(filename, fullPath, stats, sizeStr, data, verdictIco
     }
 }
 
-main().catch(e => {
-    console.error("[qa-video-share] Error fatal:", e.message);
-    process.exit(1);
-});
+// #4173: guard require.main — permite `require()` desde otro script Node sin
+// disparar el flujo Telegram (evita doble envío). main() solo corre como CLI.
+if (require.main === module) {
+    main().catch(e => {
+        console.error("[qa-video-share] Error fatal:", e.message);
+        process.exit(1);
+    });
+}
+
+// #4173: API reusable para subir assets y registrar qa-results.json
+module.exports = { uploadToDrive, updateQaResults, isCanonicalUrl };
