@@ -2,22 +2,24 @@
 // issues.js — Vista SSR de la ventana Issues del dashboard V3 (ruta `/issues`
 // y `?view=issues`).
 //
-// Issue: #3730 (split de #3715 — rediseño UX integral del dashboard del operador).
+// Issue original: #3730 (split de #3715 — rediseño UX integral del dashboard).
+// Rediseño MIZPÁ: #4192 (Ola 7.1) — alinea la pantalla ISSUES al lenguaje
+// visual del centro de mando MIZPÁ, consistente con HOME/PIPELINE/LOGS:
+//   - Cabecera/marca MIZPÁ: barra + tagline + selector multiproyecto + banner
+//     de misión (ola protagonista: entregados N/M, ETA, velocidad).
+//   - Nav curada a 5 tabs (Inicio · Pipeline · Issues · Bloqueados · Costos) +
+//     botón «⋯ Más» colapsable con popover de secciones secundarias.
+//   - Toolbar de control: contadores grandes, buscador, selectores Orden /
+//     Agrupar y chips de filtro con contador.
+//   - Backlog AGRUPADO por estado (Trabajando → Listos → Bloqueados → Backlog),
+//     nunca un grid plano y nunca truncado (se ven TODOS los issues).
+//   - Acción primaria por estado en cada fila (Pausar / Lanzar / Destrabar /
+//     Definir) + menú «⋯» con acciones secundarias contextuales y mini-desc +
+//     accesos fijos 🔗 issue y 📄 logs (atenuado si el issue no corrió).
 //
-// Decisión arquitectónica cerrada — Interpretación B (vista OPERACIONAL):
-//   El módulo es la vista operacional del backlog (grilla de cards con estado,
-//   fase, rebotes, acciones + drilldown). REEMPLAZA a `satellites.renderIssues`
-//   (NO a la tabla telemétrica cliente de `/consumo`, que sigue viva hasta que
-//   #3735 — Costos — la absorba). Firmada por UX:
-//   https://github.com/intrale/platform/issues/3730#issuecomment-4584963619
-//   Aceptada por architect + po.
-//
-// Estructura (mockup `28-issues-panel-v3.svg` + narrativa
-// `narrativa-issues-panel-v3.md` en `.pipeline/assets/mockups/`):
-//   - renderIssuesHTML(opts)        → página completa de la ventana `/issues`.
-//   - renderIssueCard(issue)        → una card operacional (pura, testeable).
-//   - renderIssuesClientScript()    → script cliente (polling + filtro + drilldown).
-//   - escapeHtmlSsr / escapeHtmlAttr → helpers de escape expuestos para tests.
+// Decisión arquitectónica heredada (Interpretación B — vista OPERACIONAL):
+//   El módulo es la vista operacional del backlog. REEMPLAZA a
+//   `satellites.renderIssues`.
 //
 // Seguridad (análisis `security` + `guru` + CA-D1):
 //   - TODA interpolación dinámica pasa por escapeHtmlText/escapeHtmlAttr de
@@ -27,12 +29,11 @@
 //     interpolar `issue.number`; retorna '' si falla (R-6).
 //   - Cero `onclick="fn(' + valor + ')"`: delegación con data-issue/data-action.
 //   - Tooltips con `title=""` HTML nativo escapado con escapeHtmlAttr.
-//   - Drilldown con `<dialog>` nativo + showModal() (focus trap del browser) +
-//     cierre con Esc (R-5 / CA-UX-7).
+//   - Drilldown con `<dialog>` nativo + showModal() (focus trap del browser).
 //
 // Convención V3: SSR del chrome + cards iniciales; el cliente hidrata vía
 // fetch JSON (`/api/dash/pipeline`) + re-render del grid. IDs estables
-// (#issues-grid, #issues-filter-state, #issues-search, #issues-dialog).
+// (#issues-grid, #issues-search, #issues-dialog).
 // =============================================================================
 'use strict';
 
@@ -41,8 +42,6 @@ const path = require('node:path');
 
 // #3722 — Escape unificado server-side. escapeHtmlText para nodos texto,
 // escapeHtmlAttr para contexto atributo (title="", aria-label="", data-*="").
-// Require defensivo: si el módulo no aterrizó, helpers locales con la misma
-// semántica (escapa & < > " ' /) — el merge no rompe (R-3).
 let sharedEscape = null;
 try { sharedEscape = require('../../lib/escape-html.js'); } catch { /* opcional */ }
 
@@ -66,13 +65,11 @@ function escapeHtmlAttr(input) {
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/`/g, '&#96;');
 }
 
-// #3726 — Nav bar V3 unificada (tab activa = "issues") + sprite compartido.
-const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
+// #3726 — Sprite compartido (iconos vía <use href="#…">).
+const { loadIconSprite } = require('./nav-tabs');
 
-// #3953 (EP8-H0) — Wrapper único de fetchJson (CA-2: banner stale, nunca traga
-// el error en silencio) y framework de modal de confirmación con preview (CA-3)
-// que reemplazan el `fetch().catch` silencioso del polling y el confirm() nativo
-// de pauseIssue. Mismo patrón que home.js / satellites.js / descanso.js.
+// #3953 (EP8-H0) — Wrapper de fetchJson (banner stale) + framework de modal de
+// confirmación con preview. Mismo patrón que home.js / satellites.js.
 const { FETCH_CLIENT_JS, renderStaleBanner } = require('./fetch-client.js');
 const { CONFIRM_MODAL_JS } = require('./confirm-modal.js');
 
@@ -82,19 +79,13 @@ const TOKENS_CSS_PATH = path.join(__dirname, '..', '..', 'assets', 'design-token
 function loadTheme() {
     try { return fs.readFileSync(THEME_CSS_PATH, 'utf8'); } catch { return ''; }
 }
-
-// La narrativa UX vincula los estados a tokens semánticos de design-tokens.css
-// (--info, --success, --warning, --danger, --purple, --surface-*, --text-*).
-// theme.css NO los define (sólo --in-*), así que el módulo inyecta la paleta
-// semántica directamente. Si el archivo no existe, el render degrada con los
-// fallbacks de cada `var(--token, <in-token>)` del CSS del módulo.
 function loadDesignTokens() {
     try { return fs.readFileSync(TOKENS_CSS_PATH, 'utf8'); } catch { return ''; }
 }
 
 // =============================================================================
-// Modelo de estado operacional (narrativa §2). Cada estado = color semántico +
-// label de texto + ícono → NUNCA color-only (WCAG 1.4.1).
+// Modelo de estado operacional. Cada estado = color semántico + label de texto
+// + ícono → NUNCA color-only (WCAG 1.4.1).
 // =============================================================================
 const STATE_META = {
     trabajando:    { label: 'Trabajando',      cls: 'st-working' },
@@ -105,9 +96,8 @@ const STATE_META = {
     'needs-human': { label: 'Necesita humano', cls: 'st-human' },
 };
 
-// Deriva el estado operacional de un issue a partir de labels + estado del
-// pipeline. Prioridad: rebote > needs-human > bloqueado > estado activo.
-// Pura, sin efectos — reusable por SSR y replicada en el cliente.
+// deriveState — estado del chip (prioridad rebote > needs-human > bloqueado >
+// estado activo). Pura, replicada en el cliente.
 function deriveState(issue) {
     const labels = Array.isArray(issue && issue.labels) ? issue.labels : [];
     if (issue && issue.rebote) return 'rebote';
@@ -118,25 +108,63 @@ function deriveState(issue) {
     return 'pendiente';
 }
 
-// Fases canónicas del pipeline (orden de lectura del timeline del drilldown).
+// #4192 — deriveGroup — agrupa el issue en una de las 4 secciones del backlog
+// MIZPÁ. Distinto de deriveState: acá un issue rebotado se ubica en la sección
+// de su estado real (trabajando/listo/backlog), y el chip de rebote lo marca
+// transversalmente. Prioridad: bloqueado > trabajando > listo > backlog.
+function deriveGroup(issue) {
+    const labels = Array.isArray(issue && issue.labels) ? issue.labels : [];
+    if (labels.includes('needs-human') || labels.includes('blocked:dependencies')) return 'bloqueado';
+    const e = issue && issue.estadoActual;
+    if (e === 'trabajando') return 'trabajando';
+    if (e === 'listo') return 'listo';
+    return 'backlog';
+}
+
+// Orden + metadata de cada sección del backlog. `primary` = acción primaria
+// destacada de cada fila según su estado (CA-4 del rediseño).
+const GROUP_ORDER = ['trabajando', 'listo', 'bloqueado', 'backlog'];
+const GROUP_META = {
+    trabajando: {
+        label: 'Trabajando', dot: 'st-working',
+        primary: { kind: 'btn', action: 'pause', label: 'Pausar', glyph: '⏸',
+            desc: 'Suspende el agente sin perder el progreso' },
+    },
+    listo: {
+        label: 'Listos', dot: 'st-ready',
+        primary: { kind: 'btn', action: 'move-top', label: 'Lanzar', glyph: '▶',
+            desc: 'Fuerza el slot: salta al frente de la cola, sin esperar turno' },
+    },
+    bloqueado: {
+        label: 'Bloqueados', dot: 'st-blocked',
+        primary: { kind: 'btn', action: 'resume', label: 'Destrabar', glyph: '🔓',
+            desc: 'Override manual de la dependencia: reanuda el issue' },
+    },
+    backlog: {
+        label: 'Backlog', dot: 'st-pending',
+        primary: { kind: 'link', action: 'define', label: 'Definir', glyph: '✎',
+            desc: 'Abrí el issue para refinarlo con /doc' },
+    },
+};
+
+// Fases canónicas (orden del timeline del drilldown y del agrupado por fase).
 const FASE_ORDER = [
     'sizing', 'analisis', 'criterios', 'validacion', 'dev',
     'build', 'verificacion', 'linteo', 'aprobacion', 'entrega',
 ];
-
-// Ícono de fase del sprite. Si la fase no tiene ícono propio, cae a un genérico
-// (ic-issues-count) — documentado en el inventario, sin SVG inline.
-const FASE_WITH_ICON = new Set([
-    'sizing', 'analisis', 'criterios', 'validacion', 'dev',
-    'build', 'verificacion', 'linteo', 'aprobacion', 'entrega',
-]);
+const FASE_WITH_ICON = new Set(FASE_ORDER);
+function faseShort(faseActual) {
+    const raw = String(faseActual || '');
+    if (!raw) return '';
+    const parts = raw.split('/');
+    return parts[parts.length - 1] || raw;
+}
 function faseIconId(fase) {
     return FASE_WITH_ICON.has(fase) ? 'ic-fase-' + fase : 'ic-issues-count';
 }
 
 // Helper SSR: emite un <svg><use href="#id"></svg>. El `id` SIEMPRE viene de un
-// catálogo interno (jamás del usuario) → no requiere escape, pero se acota a
-// [a-z0-9-] por defensa.
+// catálogo interno (jamás del usuario) → se acota a [a-z0-9-] por defensa.
 function iconSvg(id, cls) {
     const safe = String(id || '').replace(/[^a-z0-9-]/g, '');
     const klass = cls ? ' class="' + cls + '"' : '';
@@ -145,11 +173,13 @@ function iconSvg(id, cls) {
 }
 
 // =============================================================================
-// Normalización de un issue del snapshot (matrix de pipelineSlice) al shape que
+// Normalización de un issue del snapshot (pipelineSlice.matrix) al shape que
 // consume renderIssueCard. Defensivo ante campos ausentes.
 // =============================================================================
 function normalizeIssue(id, data, priorityIndex) {
     const d = data || {};
+    const agents = Array.isArray(d.agents) ? d.agents : [];
+    const skill = (agents[0] && agents[0].skill) ? String(agents[0].skill) : null;
     return {
         number: Number(id),
         title: d.title || '',
@@ -161,23 +191,16 @@ function normalizeIssue(id, data, priorityIndex) {
         motivo_rechazo: d.motivo_rechazo || null,
         rechazado_en_fase: d.rechazado_en_fase || null,
         rechazado_skill_previo: d.rechazado_skill_previo || null,
+        logFile: d.logFile || null,
+        skill,
         priority: (typeof priorityIndex === 'number' && priorityIndex >= 0)
             ? priorityIndex + 1 : null,
     };
 }
 
-// Acciones operativas de cada card (narrativa §3.5). Glyph en `glyph` (texto
-// unicode, NO svg) o `icon` (sprite). Todas con tooltip `title` estático.
-const CARD_ACTIONS = [
-    { action: 'move-top',    icon: 'ic-promote', title: 'Mover a máxima prioridad' },
-    { action: 'move-up',     glyph: '▲',         title: 'Subir un puesto' },
-    { action: 'move-down',   glyph: '▼',         title: 'Bajar un puesto' },
-    { action: 'move-bottom', glyph: '▼▼',        title: 'Mover a mínima prioridad' },
-];
-
 // =============================================================================
 // renderIssueCard(issue) — una card operacional. PURA y testeable.
-// Retorna '' si el número de issue no es válido (R-6, CA-D1 test 4).
+// Retorna '' si el número de issue no es válido (R-6).
 // =============================================================================
 function renderIssueCard(issue) {
     const num = Number(issue && issue.number);
@@ -186,6 +209,7 @@ function renderIssueCard(issue) {
     const i = issue || {};
     const stateKey = deriveState(i);
     const meta = STATE_META[stateKey] || STATE_META.pendiente;
+    const group = deriveGroup(i);
     const labels = Array.isArray(i.labels) ? i.labels : [];
     const paused = labels.includes('blocked:dependencies');
 
@@ -193,14 +217,23 @@ function renderIssueCard(issue) {
     const titleEsc = escapeHtmlSsr(title);
     const titleAttr = escapeHtmlAttr(title);
 
-    const fase = i.faseActual || '—';
+    const fase = faseShort(i.faseActual) || '—';
     const faseEsc = escapeHtmlSsr(fase);
     const bounces = Number(i.bounces) || 0;
     const prio = (typeof i.priority === 'number' && i.priority > 0) ? '#' + i.priority : '—';
 
     const ghUrl = 'https://github.com/intrale/platform/issues/' + num;
 
-    // Chip de estado: color + ícono(glyph CSS) + texto (nunca solo color).
+    // Coordenadas para acciones contextuales (cancelar agente).
+    const pipelineSeg = String(i.faseActual || '').split('/')[0] || '';
+    const skill = i.skill || '';
+
+    // ¿Corrió alguna vez? Atenúa el acceso a logs si no hay log todavía.
+    const hasRun = !!i.logFile;
+    const logHref = i.logFile
+        ? '/logs/view/' + encodeURIComponent(i.logFile) + (i.estadoActual === 'trabajando' ? '?live=1' : '')
+        : '';
+
     const stateChip = '<span class="iss-state ' + meta.cls + '">'
         + escapeHtmlSsr(meta.label) + '</span>';
 
@@ -211,49 +244,95 @@ function renderIssueCard(issue) {
         const faseRej = i.rechazado_en_fase || '?';
         const skillRej = i.rechazado_skill_previo ? ('/' + i.rechazado_skill_previo) : '';
         const tip = 'Rechazado en ' + faseRej + skillRej + ': ' + motivo;
-        reboteChip = '<span class="iss-rebote" title="' + escapeHtmlAttr(tip) + '">'
-            + '↩ rechazo</span>';
+        reboteChip = '<span class="iss-rebote" title="' + escapeHtmlAttr(tip) + '">↩ rechazo</span>';
     }
 
-    // Badge de bounces (amber si > 2).
     const bouncesBadge = bounces > 0
         ? '<span class="iss-bounces' + (bounces > 2 ? ' warn' : '') + '" '
           + 'title="' + escapeHtmlAttr(bounces + ' rebote(s) acumulados') + '">'
           + escapeHtmlSsr(String(bounces)) + '×</span>'
         : '';
 
-    // Acciones de prioridad (delegación por data-action, sin onclick inline).
-    let actionsHtml = '';
-    for (const a of CARD_ACTIONS) {
-        const inner = a.icon ? iconSvg(a.icon, 'iss-ico') : escapeHtmlSsr(a.glyph);
-        actionsHtml += '<button type="button" class="iss-btn" '
-            + 'data-issue="' + num + '" data-action="' + a.action + '" '
-            + 'title="' + escapeHtmlAttr(a.title) + '" '
-            + 'aria-label="' + escapeHtmlAttr(a.title + ' (issue ' + num + ')') + '">'
-            + inner + '</button>';
+    // ── Acción primaria por estado (CA-4) ──────────────────────────────────
+    const gm = GROUP_META[group] || GROUP_META.backlog;
+    const p = gm.primary;
+    let primaryHtml;
+    const primaryTip = p.label + ' — ' + p.desc;
+    if (p.kind === 'link') {
+        // Definir: link directo al issue (lugar donde se refina con /doc).
+        primaryHtml = '<a class="iss-primary iss-primary-' + group + '" '
+            + 'href="' + escapeHtmlAttr(ghUrl) + '" target="_blank" rel="noopener" '
+            + 'title="' + escapeHtmlAttr(primaryTip) + '" '
+            + 'aria-label="' + escapeHtmlAttr(p.label + ' issue ' + num + ': ' + p.desc) + '">'
+            + '<span class="iss-primary-glyph" aria-hidden="true">' + escapeHtmlSsr(p.glyph) + '</span>'
+            + '<span>' + escapeHtmlSsr(p.label) + '</span></a>';
+    } else {
+        primaryHtml = '<button type="button" class="iss-primary iss-primary-' + group + '" '
+            + 'data-issue="' + num + '" data-action="' + escapeHtmlAttr(p.action) + '" '
+            + 'title="' + escapeHtmlAttr(primaryTip) + '" '
+            + 'aria-label="' + escapeHtmlAttr(p.label + ' issue ' + num + ': ' + p.desc) + '">'
+            + '<span class="iss-primary-glyph" aria-hidden="true">' + escapeHtmlSsr(p.glyph) + '</span>'
+            + '<span>' + escapeHtmlSsr(p.label) + '</span></button>';
     }
-    // Pausar / reanudar.
-    const pauseAction = paused ? 'resume' : 'pause';
-    const pauseTitle = paused ? 'Reanudar issue' : 'Pausar issue';
-    const pauseIcon = paused ? 'ic-play' : 'ic-pause-lock';
-    actionsHtml += '<button type="button" class="iss-btn iss-pause' + (paused ? ' is-paused' : '') + '" '
-        + 'data-issue="' + num + '" data-action="' + pauseAction + '" '
-        + 'title="' + escapeHtmlAttr(pauseTitle) + '" '
-        + 'aria-label="' + escapeHtmlAttr(pauseTitle + ' (issue ' + num + ')') + '">'
-        + iconSvg(pauseIcon, 'iss-ico') + '</button>';
-    // Abrir en GitHub (link, no acción de estado).
-    actionsHtml += '<a class="iss-btn iss-gh" href="' + escapeHtmlAttr(ghUrl) + '" '
-        + 'target="_blank" rel="noopener" '
-        + 'title="Abrir en GitHub" '
-        + 'aria-label="' + escapeHtmlAttr('Abrir issue ' + num + ' en GitHub') + '">'
-        + iconSvg('ic-link-out', 'iss-ico') + '</a>';
 
-    const ariaLabel = 'Issue ' + num + ': ' + title
-        + ', fase ' + fase + ', estado ' + meta.label;
+    // ── Accesos fijos por fila: 🔗 issue + 📄 logs (atenuado si no corrió) ──
+    let accessHtml = '<a class="iss-access iss-gh" href="' + escapeHtmlAttr(ghUrl) + '" '
+        + 'target="_blank" rel="noopener" '
+        + 'title="Ver issue en GitHub ↗" '
+        + 'aria-label="' + escapeHtmlAttr('Ver issue ' + num + ' en GitHub') + '">'
+        + iconSvg('ic-link-out', 'iss-ico') + '</a>';
+    if (hasRun) {
+        accessHtml += '<a class="iss-access iss-logs" href="' + escapeHtmlAttr(logHref) + '" '
+            + 'target="_blank" rel="noopener" '
+            + 'title="Ver log del agente" '
+            + 'aria-label="' + escapeHtmlAttr('Ver log del agente del issue ' + num) + '">'
+            + iconSvg('ic-tab-historial', 'iss-ico') + '</a>';
+    } else {
+        accessHtml += '<span class="iss-access iss-logs is-disabled" aria-disabled="true" '
+            + 'title="Sin logs: el issue todavía no corrió" '
+            + 'aria-label="' + escapeHtmlAttr('Sin logs: el issue ' + num + ' todavía no corrió') + '">'
+            + iconSvg('ic-tab-historial', 'iss-ico') + '</span>';
+    }
+
+    // ── Menú «⋯» con acciones secundarias contextuales (CA-5) ──────────────
+    const menuItems = [];
+    menuItems.push(_menuItem({ link: ghUrl, label: 'Ver issue', glyph: '🔗',
+        desc: 'Abrir el issue en GitHub' }));
+    menuItems.push(_menuItem({ link: hasRun ? logHref : null, label: 'Logs del agente', glyph: '📄',
+        desc: hasRun ? 'Ver el log del agente' : 'Todavía no corrió', disabled: !hasRun }));
+    menuItems.push(_menuItem({ issue: num, action: 'move-top', label: 'Mover a tope', glyph: '⤒',
+        desc: 'Saltar al frente de la cola de prioridad' }));
+    menuItems.push(_menuItem({ issue: num, action: 'move-bottom', label: 'Mover a fondo', glyph: '⤓',
+        desc: 'Enviar al final de la cola de prioridad' }));
+    if (group === 'trabajando') {
+        if (skill && pipelineSeg && fase !== '—') {
+            menuItems.push(_menuItem({ issue: num, action: 'cancel', label: 'Cancelar agente', glyph: '✕',
+                desc: 'Detiene el agente en ejecución', danger: true,
+                skill, pipeline: pipelineSeg, fase }));
+        }
+    } else if (group === 'listo') {
+        menuItems.push(_menuItem({ issue: num, action: 'pause', label: 'Pausar', glyph: '⏸',
+            desc: 'Suspender el issue antes de lanzarlo' }));
+    } else if (group === 'backlog') {
+        menuItems.push(_menuItem({ issue: num, action: 'move-up', label: 'Subir prioridad', glyph: '▲',
+            desc: 'Subir un puesto en la cola' }));
+    } else if (group === 'bloqueado') {
+        menuItems.push(_menuItem({ issue: num, action: 'pause', label: 'Pausar', glyph: '⏸',
+            desc: 'Mantener bloqueado explícitamente' }));
+    }
+    const menuHtml = '<div class="iss-menu-wrap">'
+        + '<button type="button" class="iss-menu-btn" data-menu-issue="' + num + '" '
+        +   'aria-haspopup="true" aria-expanded="false" '
+        +   'title="Más acciones" aria-label="' + escapeHtmlAttr('Más acciones del issue ' + num) + '">⋯</button>'
+        + '<div class="iss-menu" role="menu" hidden aria-label="' + escapeHtmlAttr('Acciones del issue ' + num) + '">'
+        +   menuItems.join('')
+        + '</div></div>';
+
+    const ariaLabel = 'Issue ' + num + ': ' + title + ', fase ' + fase + ', estado ' + meta.label;
     const titleCls = 'iss-title' + (paused ? ' is-paused' : '');
 
     return '<article class="iss-card" tabindex="0" role="article" '
-        + 'data-issue="' + num + '" data-state="' + stateKey + '" '
+        + 'data-issue="' + num + '" data-state="' + stateKey + '" data-group="' + group + '" '
         + 'data-fase="' + escapeHtmlAttr(fase) + '" '
         + 'aria-label="' + escapeHtmlAttr(ariaLabel) + '">'
         + '<div class="iss-top">'
@@ -261,34 +340,63 @@ function renderIssueCard(issue) {
         +     'title="' + escapeHtmlAttr(i.priority ? ('Prioridad ' + prio) : 'Sin orden manual') + '">'
         +     escapeHtmlSsr(prio) + '</span>'
         +   '<a class="iss-num" href="' + escapeHtmlAttr(ghUrl) + '" target="_blank" '
-        +     'rel="noopener" title="' + escapeHtmlAttr('Abrir issue ' + num + ' en GitHub') + '">#'
+        +     'rel="noopener" title="' + escapeHtmlAttr('Ver issue ' + num + ' en GitHub') + '">#'
         +     num + '</a>'
         +   stateChip
         + '</div>'
         + '<div class="' + titleCls + '" title="' + titleAttr + '">' + titleEsc + '</div>'
         + '<div class="iss-meta">'
-        +   '<span class="iss-fase">' + iconSvg(faseIconId(i.faseActual), 'iss-ico')
+        +   '<span class="iss-fase">' + iconSvg(faseIconId(fase), 'iss-ico')
         +     '<span>' + faseEsc + '</span></span>'
         +   bouncesBadge
         +   reboteChip
         + '</div>'
-        + '<div class="iss-actions" role="group" aria-label="' + escapeHtmlAttr('Acciones del issue ' + num) + '">'
-        +   actionsHtml
+        + '<div class="iss-actions">'
+        +   primaryHtml
+        +   '<div class="iss-access-row" role="group" aria-label="' + escapeHtmlAttr('Accesos del issue ' + num) + '">'
+        +     accessHtml
+        +     menuHtml
+        +   '</div>'
         + '</div>'
         + '</article>';
 }
 
+// _menuItem — un item del menú «⋯». Link (href), acción (data-action) o
+// deshabilitado. Cada item lleva su mini-descripción autodescriptiva.
+function _menuItem(o) {
+    const glyph = '<span class="iss-mi-glyph" aria-hidden="true">' + escapeHtmlSsr(o.glyph || '·') + '</span>';
+    const body = '<span class="iss-mi-body"><span class="iss-mi-label">' + escapeHtmlSsr(o.label)
+        + '</span><span class="iss-mi-desc">' + escapeHtmlSsr(o.desc || '') + '</span></span>';
+    const cls = 'iss-mi' + (o.danger ? ' iss-mi-danger' : '') + (o.disabled ? ' is-disabled' : '');
+    const tip = escapeHtmlAttr((o.label || '') + (o.desc ? ' — ' + o.desc : ''));
+    if (o.disabled) {
+        return '<span class="' + cls + '" role="menuitem" aria-disabled="true" title="' + tip + '">'
+            + glyph + body + '</span>';
+    }
+    if (o.link) {
+        return '<a class="' + cls + '" role="menuitem" href="' + escapeHtmlAttr(o.link) + '" '
+            + 'target="_blank" rel="noopener" title="' + tip + '">' + glyph + body + '</a>';
+    }
+    let dataAttrs = 'data-issue="' + escapeHtmlAttr(String(o.issue)) + '" data-action="' + escapeHtmlAttr(o.action) + '"';
+    if (o.skill) dataAttrs += ' data-skill="' + escapeHtmlAttr(o.skill) + '"';
+    if (o.pipeline) dataAttrs += ' data-pipeline="' + escapeHtmlAttr(o.pipeline) + '"';
+    if (o.fase) dataAttrs += ' data-fase="' + escapeHtmlAttr(o.fase) + '"';
+    return '<button type="button" class="' + cls + '" role="menuitem" ' + dataAttrs
+        + ' title="' + tip + '">' + glyph + body + '</button>';
+}
+
 // =============================================================================
-// renderIssuesFilterBar() — barra de filtros (narrativa §3.2). role="toolbar".
-// Chips de estado con aria-pressed + search + filtro de fase. Estática (sin
-// datos del usuario) → texto literal.
+// renderIssuesFilterBar() — toolbar de control (CA-2). Contadores grandes,
+// buscador, selectores Orden / Agrupar y chips de filtro con contador.
+// role="toolbar". Texto literal (sin datos del usuario).
 // =============================================================================
 const FILTER_CHIPS = [
-    { filter: 'all',        label: 'Todos',      tip: 'Mostrar todos los issues activos' },
+    { filter: 'all',        label: 'Todos',      tip: 'Mostrar todos los issues' },
     { filter: 'trabajando', label: 'Trabajando', tip: 'Sólo issues con un agente trabajando' },
     { filter: 'listo',      label: 'Listos',     tip: 'Sólo issues listos para la siguiente fase' },
-    { filter: 'bloqueado',  label: 'Bloqueados', tip: 'Sólo issues bloqueados por dependencias' },
+    { filter: 'bloqueado',  label: 'Bloqueados', tip: 'Sólo issues bloqueados o esperando humano' },
     { filter: 'rebote',     label: 'Rebotes',    tip: 'Sólo issues que rebotaron de una fase posterior' },
+    { filter: 'backlog',    label: 'Backlog',    tip: 'Sólo issues pendientes sin agente' },
 ];
 
 function renderIssuesFilterBar() {
@@ -300,21 +408,57 @@ function renderIssuesFilterBar() {
             + 'aria-pressed="' + (active ? 'true' : 'false') + '" '
             + 'title="' + escapeHtmlAttr(c.tip) + '" '
             + 'aria-label="' + escapeHtmlAttr(c.tip) + '">'
-            + escapeHtmlSsr(c.label) + '</button>';
+            + escapeHtmlSsr(c.label)
+            + '<span class="iss-chip-count" data-chip-count="' + c.filter + '">0</span>'
+            + '</button>';
     }
-    return '<div class="iss-filter-bar" role="toolbar" aria-label="Filtros de issues">'
-        + '<div class="iss-chips">' + chips + '</div>'
-        + '<input type="search" id="issues-search" class="iss-search" '
-        +   'placeholder="Filtrar por #número, fase o título…" '
-        +   'title="Filtrar issues por número, fase o título" '
-        +   'aria-label="Filtrar issues por número, fase o título">'
+    return '<div class="iss-filter-bar" role="toolbar" aria-label="Filtros y orden de issues">'
+        + '<div class="iss-toolbar-row">'
+        +   '<div class="iss-search-box">'
+        +     iconSvg('ic-issues-count', 'iss-ico')
+        +     '<input type="search" id="issues-search" class="iss-search" '
+        +       'placeholder="Filtrar por #número, fase o título…" '
+        +       'title="Filtrar issues por número, fase o título" '
+        +       'aria-label="Filtrar issues por número, fase o título">'
+        +   '</div>'
+        +   '<label class="iss-select-wrap" title="Criterio de orden del listado">'
+        +     '<span class="iss-select-label">Orden</span>'
+        +     '<select id="iss-order" class="iss-select" aria-label="Orden del listado">'
+        +       '<option value="manual">Manual</option>'
+        +       '<option value="numero">Nº issue</option>'
+        +     '</select>'
+        +   '</label>'
+        +   '<label class="iss-select-wrap" title="Cómo se agrupan los issues">'
+        +     '<span class="iss-select-label">Agrupar</span>'
+        +     '<select id="iss-group" class="iss-select" aria-label="Agrupar issues">'
+        +       '<option value="estado">Estado</option>'
+        +       '<option value="fase">Fase</option>'
+        +       '<option value="none">Sin agrupar</option>'
+        +     '</select>'
+        +   '</label>'
+        + '</div>'
+        + '<div class="iss-chips" role="group" aria-label="Filtros rápidos por estado">' + chips + '</div>'
+        + '</div>';
+}
+
+// Contadores grandes de la toolbar (CA-2). IDs estables para hidratación.
+function renderCounters(counts) {
+    const c = counts || { total: 0, trabajando: 0, listo: 0, bloqueado: 0 };
+    const cell = (id, label, value, cls, tip) =>
+        '<div class="iss-counter ' + cls + '" title="' + escapeHtmlAttr(tip) + '">'
+        + '<span class="iss-counter-value" id="' + id + '">' + escapeHtmlSsr(String(value)) + '</span>'
+        + '<span class="iss-counter-label">' + escapeHtmlSsr(label) + '</span></div>';
+    return '<div class="iss-counters" role="group" aria-label="Resumen del backlog">'
+        + cell('iss-count-total', 'Issues', c.total, 'cnt-total', 'Total de issues en el backlog')
+        + cell('iss-count-working', 'Trabajando', c.trabajando, 'cnt-working', 'Issues con un agente trabajando')
+        + cell('iss-count-ready', 'Listos', c.listo, 'cnt-ready', 'Issues listos para la siguiente fase')
+        + cell('iss-count-blocked', 'Bloqueados', c.blocked, 'cnt-blocked', 'Issues bloqueados o esperando humano')
         + '</div>';
 }
 
 // =============================================================================
-// renderIssuesDialog() — drilldown <dialog> nativo (narrativa §3.4). El
-// contenido se rellena client-side con textContent (sin innerHTML de datos
-// del usuario). focus trap nativo de showModal() + cierre con Esc (CA-UX-7).
+// renderIssuesDialog() — drilldown <dialog> nativo. El contenido se rellena
+// client-side con textContent (sin innerHTML de datos del usuario).
 // =============================================================================
 function renderIssuesDialog() {
     return '<dialog id="issues-dialog" class="iss-dialog" aria-labelledby="issues-dialog-title">'
@@ -332,32 +476,295 @@ function renderIssuesDialog() {
 }
 
 // =============================================================================
-// CSS del módulo. SOLO tokens (cero HEX literal en color:/background:, CA-UX-2).
-// Los `var(--token, var(--in-token))` usan tokens de fallback — nunca HEX.
+// Cabecera / marca MIZPÁ (CA-1). Barra + tagline + selector multiproyecto +
+// banner de misión + nav 5 tabs + «⋯ Más» colapsable.
+// Todos los textos son literales (no datos del usuario); `mission` se escapa.
+// =============================================================================
+const NAV_PRIMARY = [
+    { slug: 'home',       label: 'Inicio',     href: '/',            icon: 'ic-tab-home' },
+    { slug: 'pipeline',   label: 'Pipeline',   href: '/pipeline',    icon: 'ic-tab-pipeline' },
+    { slug: 'issues',     label: 'Issues',     href: '/issues',      icon: 'ic-issues-count' },
+    { slug: 'bloqueados', label: 'Bloqueados', href: '/bloqueados',  icon: 'ic-estado-needs-human' },
+    { slug: 'costos',     label: 'Costos',     href: '/costos',      icon: 'ic-tab-costos' },
+];
+const NAV_SECONDARY = [
+    { label: 'Equipo',    href: '/equipo',          icon: 'ic-agents-count', note: '' },
+    { label: 'Matriz',    href: '/matriz',          icon: 'ic-tab-matriz',   note: '' },
+    { label: 'Ops',       href: '/ops',             icon: 'ic-tab-ops',      note: '' },
+    { label: 'KPIs',      href: '/kpis',            icon: 'ic-tab-kpis',     note: '' },
+    { label: 'Historial', href: '/historial',       icon: 'ic-tab-historial', note: '' },
+    { label: 'Descanso',  href: '/modo-descanso',   icon: 'ic-rest-mode',    note: '' },
+    { label: 'Providers', href: '/multi-provider',  icon: 'ic-multi-provider', note: 'en evaluación' },
+];
+
+function _fmtDurMs(ms) {
+    if (!Number.isFinite(ms) || ms <= 0) return '—';
+    const min = Math.round(ms / 60000);
+    if (min < 60) return min + ' min';
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    if (h < 24) return m ? (h + ' h ' + m + ' min') : (h + ' h');
+    const d = Math.floor(h / 24);
+    const hr = h % 24;
+    return hr ? (d + ' d ' + hr + ' h') : (d + ' d');
+}
+
+function renderMizpaChrome(mission) {
+    const m = mission || {};
+    const total = Number.isFinite(m.total) ? m.total : 0;
+    const entregados = Number.isFinite(m.entregados) ? m.entregados : 0;
+    const pct = total > 0 ? Math.round((entregados / total) * 100) : 0;
+    const waveLabel = escapeHtmlSsr(m.label || 'Ola actual');
+    const etaTxt = escapeHtmlSsr(_fmtDurMs(m.etaRemainingMs));
+    let velTxt = '—';
+    if (Number.isFinite(m.velocityPctPerMin) && m.velocityPctPerMin > 0) {
+        const pctPerH = m.velocityPctPerMin * 60;
+        velTxt = (pctPerH >= 1 ? pctPerH.toFixed(1) : pctPerH.toFixed(2)) + ' %/h';
+    }
+    velTxt = escapeHtmlSsr(velTxt);
+
+    // Brand bar + selector multiproyecto.
+    const brand = '<div class="mz-brand">'
+        + '<div class="mz-logo" aria-hidden="true">M</div>'
+        + '<div class="mz-brand-text">'
+        +   '<div class="mz-wordmark">MIZPÁ</div>'
+        +   '<div class="mz-tagline">Centro de mando del pipeline</div>'
+        + '</div></div>';
+    const projSelector = '<div class="mz-proj-wrap">'
+        + '<button type="button" class="mz-proj" id="mz-proj-btn" aria-haspopup="true" aria-expanded="false" '
+        +   'title="Selector de proyecto (multiproyecto)" aria-label="Seleccionar proyecto. Activo: Intrale, 1 de 3">'
+        +   '<span class="mz-proj-name">Intrale</span>'
+        +   '<span class="mz-proj-count">1/3</span>'
+        +   '<span class="mz-proj-caret" aria-hidden="true">▾</span>'
+        + '</button>'
+        + '<div class="mz-proj-menu" id="mz-proj-menu" role="menu" hidden aria-label="Proyectos">'
+        +   '<button type="button" class="mz-proj-item is-active" role="menuitem" aria-current="true" title="Proyecto activo">Intrale</button>'
+        +   '<span class="mz-proj-item is-disabled" role="menuitem" aria-disabled="true" title="Próximamente">Proyecto 2 · en evaluación</span>'
+        +   '<span class="mz-proj-item is-disabled" role="menuitem" aria-disabled="true" title="Próximamente">Proyecto 3 · en evaluación</span>'
+        + '</div></div>';
+
+    // Banner de misión con la ola protagonista.
+    const mband = '<div class="mz-mission" role="group" aria-label="Misión: ola en curso">'
+        + '<div class="mz-mission-head">'
+        +   '<span class="mz-mission-eyebrow">Misión en curso</span>'
+        +   '<span class="mz-mission-wave">' + waveLabel + '</span>'
+        + '</div>'
+        + '<div class="mz-mission-stats">'
+        +   '<div class="mz-stat" title="Issues entregados sobre el total de la ola">'
+        +     '<span class="mz-stat-label">Entregados</span>'
+        +     '<span class="mz-stat-value"><span id="mz-delivered">' + entregados + '</span>/<span id="mz-total">' + total + '</span></span>'
+        +     '<span class="mz-bar"><span style="width:' + pct + '%"></span></span>'
+        +   '</div>'
+        +   '<div class="mz-stat" title="Tiempo estimado restante para cerrar la ola">'
+        +     '<span class="mz-stat-label">ETA</span>'
+        +     '<span class="mz-stat-value">' + etaTxt + '</span>'
+        +   '</div>'
+        +   '<div class="mz-stat" title="Velocidad de avance medida (porcentaje por hora)">'
+        +     '<span class="mz-stat-label">Velocidad</span>'
+        +     '<span class="mz-stat-value">' + velTxt + '</span>'
+        +   '</div>'
+        + '</div></div>';
+
+    // Nav curada (5 tabs) + «⋯ Más».
+    const tabs = NAV_PRIMARY.map((t) => {
+        const active = t.slug === 'issues';
+        return '<a class="mz-tab' + (active ? ' is-active' : '') + '" href="' + t.href + '" '
+            + (active ? 'aria-current="page" ' : '')
+            + 'title="' + escapeHtmlAttr('Ir a ' + t.label) + '" aria-label="' + escapeHtmlAttr('Ir a ' + t.label) + '">'
+            + iconSvg(t.icon, 'mz-tab-icon')
+            + '<span class="mz-tab-label">' + escapeHtmlSsr(t.label) + '</span></a>';
+    }).join('');
+    const moreItems = NAV_SECONDARY.map((t) => {
+        const note = t.note
+            ? '<span class="mz-more-note">' + escapeHtmlSsr(t.note) + '</span>' : '';
+        return '<a class="mz-more-item" role="menuitem" href="' + t.href + '" '
+            + 'title="' + escapeHtmlAttr('Ir a ' + t.label) + '">'
+            + iconSvg(t.icon, 'mz-tab-icon')
+            + '<span class="mz-more-label">' + escapeHtmlSsr(t.label) + '</span>' + note + '</a>';
+    }).join('');
+    const nav = '<nav class="mz-nav" role="navigation" aria-label="Ventanas del dashboard">'
+        + tabs
+        + '<div class="mz-more-wrap">'
+        +   '<button type="button" class="mz-more-btn" id="mz-more-btn" aria-haspopup="true" aria-expanded="false" '
+        +     'title="Más secciones del dashboard" aria-label="Más secciones del dashboard">⋯ Más</button>'
+        +   '<div class="mz-more-menu" id="mz-more-menu" role="menu" hidden aria-label="Secciones secundarias">'
+        +     moreItems
+        +   '</div>'
+        + '</div></nav>';
+
+    return '<header class="mz-header">'
+        + '<div class="mz-topbar">' + brand + projSelector + '</div>'
+        + mband
+        + nav
+        + '</header>';
+}
+
+// =============================================================================
+// CSS del módulo. SOLO tokens (cero HEX literal en color:/background:).
 // =============================================================================
 const ISSUES_CSS = `
-.iss-frame { max-width: 1440px; margin: 0 auto; padding: 0; }
-.iss-body { padding: 22px 28px; display: flex; flex-direction: column; gap: 18px; }
+.iss-frame { max-width: 1480px; margin: 0 auto; padding: 0; }
+.iss-body { padding: 20px 28px 32px; display: flex; flex-direction: column; gap: 18px; }
 
-.iss-rail {
-    height: 3px; border-radius: 2px; margin-bottom: 4px;
+/* ── Cabecera MIZPÁ ─────────────────────────────────────────────────────── */
+.mz-header {
+    display: flex; flex-direction: column; gap: 14px;
+    padding: 18px 28px 0;
+    background: linear-gradient(135deg, var(--surface-1, var(--in-bg-2)), transparent 70%);
+    border-bottom: 1px solid var(--border, var(--in-border));
+}
+.mz-topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.mz-brand { display: flex; align-items: center; gap: 12px; }
+.mz-logo {
+    width: 40px; height: 40px; border-radius: var(--radius-md, 10px);
+    background: linear-gradient(135deg, var(--brand-cyan, var(--in-accent)), var(--brand-blue, var(--in-brand)));
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; color: var(--surface-0, var(--in-bg)); font-size: 20px;
+    box-shadow: var(--shadow-sm, var(--in-shadow));
+}
+.mz-wordmark { font-size: 20px; font-weight: 800; letter-spacing: 2px; color: var(--text-primary, var(--in-fg)); }
+.mz-tagline { font-size: 12px; color: var(--text-secondary, var(--in-fg-dim)); margin-top: 1px; }
+
+.mz-proj-wrap { position: relative; }
+.mz-proj {
+    display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 14px;
+    border-radius: 999px; cursor: pointer;
+    background: var(--surface-2, var(--in-bg-3)); border: 1px solid var(--border, var(--in-border));
+    color: var(--text-primary, var(--in-fg)); font: inherit; font-size: 13px; font-weight: 600;
+}
+.mz-proj:hover { border-color: var(--border-strong, var(--in-accent)); }
+.mz-proj-count {
+    font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 999px;
+    background: var(--info-bg, var(--in-info-soft)); color: var(--info, var(--in-info));
+}
+.mz-proj-caret { font-size: 10px; color: var(--text-secondary, var(--in-fg-dim)); }
+.mz-proj-menu {
+    position: absolute; right: 0; top: calc(100% + 6px); z-index: 50; min-width: 220px;
+    display: flex; flex-direction: column; gap: 2px; padding: 6px;
+    background: var(--surface-1, var(--in-bg-2)); border: 1px solid var(--border, var(--in-border));
+    border-radius: var(--radius-md, 10px); box-shadow: var(--shadow-lg, var(--in-shadow));
+}
+.mz-proj-item {
+    display: block; text-align: left; padding: 8px 10px; border: 0; border-radius: 8px;
+    background: transparent; color: var(--text-primary, var(--in-fg)); font: inherit; font-size: 13px; cursor: pointer;
+}
+.mz-proj-item.is-active { background: var(--info-bg, var(--in-info-soft)); color: var(--info, var(--in-info)); font-weight: 700; }
+.mz-proj-item.is-disabled { color: var(--text-dim, var(--in-fg-dim)); cursor: not-allowed; }
+
+/* Banner de misión */
+.mz-mission {
+    display: flex; align-items: center; gap: 28px; flex-wrap: wrap;
+    padding: 14px 18px; border-radius: var(--radius-lg, 12px);
+    background: var(--surface-1, var(--in-bg-2)); border: 1px solid var(--border, var(--in-border));
+    border-left: 3px solid var(--brand-cyan, var(--in-accent));
+}
+.mz-mission-head { display: flex; flex-direction: column; gap: 2px; min-width: 160px; }
+.mz-mission-eyebrow {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 1.4px;
+    color: var(--text-dim, var(--in-fg-dim));
+}
+.mz-mission-wave { font-size: 16px; font-weight: 700; color: var(--text-primary, var(--in-fg)); }
+.mz-mission-stats { display: flex; align-items: center; gap: 26px; flex-wrap: wrap; }
+.mz-stat { display: flex; flex-direction: column; gap: 3px; min-width: 92px; }
+.mz-stat-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
+    color: var(--text-dim, var(--in-fg-dim));
+}
+.mz-stat-value {
+    font-size: 16px; font-weight: 700; color: var(--text-primary, var(--in-fg));
+    font-variant-numeric: tabular-nums;
+}
+.mz-bar { height: 5px; border-radius: 3px; background: var(--surface-3, var(--in-bg-3)); overflow: hidden; margin-top: 2px; }
+.mz-bar > span {
+    display: block; height: 100%;
     background: linear-gradient(90deg, var(--brand-cyan, var(--in-accent)), var(--brand-blue, var(--in-brand)));
 }
 
-.iss-summary {
-    font-size: 12px; color: var(--text-secondary, var(--in-fg-dim));
-    font-variant-numeric: tabular-nums; display: flex; gap: 6px; align-items: baseline;
+/* Nav 5 tabs + Más */
+.mz-nav { display: flex; align-items: stretch; gap: 4px; flex-wrap: wrap; }
+.mz-tab {
+    display: inline-flex; align-items: center; gap: 7px; padding: 10px 14px;
+    border-bottom: 2px solid transparent; text-decoration: none;
+    color: var(--text-secondary, var(--in-fg-dim)); font-size: 13px; font-weight: 600;
 }
-.iss-summary strong { color: var(--text-primary, var(--in-fg)); font-weight: 700; }
+.mz-tab:hover { color: var(--text-primary, var(--in-fg)); }
+.mz-tab.is-active {
+    color: var(--info, var(--in-info)); border-bottom-color: var(--info, var(--in-info));
+}
+.mz-tab-icon { width: 16px; height: 16px; fill: currentColor; }
+.mz-more-wrap { position: relative; display: flex; align-items: stretch; margin-left: 4px; }
+.mz-more-btn {
+    display: inline-flex; align-items: center; padding: 10px 14px; cursor: pointer;
+    background: transparent; border: 0; color: var(--text-secondary, var(--in-fg-dim));
+    font: inherit; font-size: 13px; font-weight: 600;
+}
+.mz-more-btn:hover { color: var(--text-primary, var(--in-fg)); }
+.mz-more-menu {
+    position: absolute; right: 0; top: calc(100% + 4px); z-index: 50; min-width: 230px;
+    display: flex; flex-direction: column; gap: 2px; padding: 6px;
+    background: var(--surface-1, var(--in-bg-2)); border: 1px solid var(--border, var(--in-border));
+    border-radius: var(--radius-md, 10px); box-shadow: var(--shadow-lg, var(--in-shadow));
+}
+.mz-more-item {
+    display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 8px;
+    text-decoration: none; color: var(--text-primary, var(--in-fg)); font-size: 13px;
+}
+.mz-more-item:hover { background: var(--surface-2, var(--in-bg-3)); }
+.mz-more-label { flex: 1; }
+.mz-more-note {
+    font-size: 10px; font-style: italic; color: var(--text-dim, var(--in-fg-dim));
+    border: 1px solid var(--border, var(--in-border)); border-radius: 999px; padding: 1px 7px;
+}
+
+/* ── Toolbar de control ─────────────────────────────────────────────────── */
+.iss-counters { display: flex; gap: 12px; flex-wrap: wrap; }
+.iss-counter {
+    display: flex; flex-direction: column; gap: 2px; min-width: 110px; flex: 1;
+    padding: 12px 16px; border-radius: var(--radius-lg, 12px);
+    background: var(--surface-1, var(--in-bg-2)); border: 1px solid var(--border, var(--in-border));
+    border-left: 3px solid var(--border-strong, var(--in-border));
+}
+.iss-counter.cnt-working { border-left-color: var(--info, var(--in-info)); }
+.iss-counter.cnt-ready { border-left-color: var(--success, var(--in-ok)); }
+.iss-counter.cnt-blocked { border-left-color: var(--warning, var(--in-warn)); }
+.iss-counter-value {
+    font-size: 26px; font-weight: 800; line-height: 1.1;
+    color: var(--text-primary, var(--in-fg)); font-variant-numeric: tabular-nums;
+}
+.iss-counter-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px;
+    color: var(--text-secondary, var(--in-fg-dim));
+}
 
 .iss-filter-bar {
     display: flex; flex-direction: column; gap: 12px;
     background: var(--surface-1, var(--in-bg-2)); border: 1px solid var(--border, var(--in-border));
-    border-radius: var(--in-radius, 12px); padding: 14px 16px;
+    border-radius: var(--radius-lg, 12px); padding: 14px 16px;
+}
+.iss-toolbar-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.iss-search-box {
+    display: flex; align-items: center; gap: 8px; flex: 1; min-width: 220px;
+    padding: 8px 12px; border-radius: var(--radius-sm, 8px);
+    background: var(--surface-2, var(--in-bg-3)); border: 1px solid var(--border, var(--in-border));
+}
+.iss-search-box .iss-ico { width: 15px; height: 15px; fill: var(--text-dim, var(--in-fg-dim)); }
+.iss-search {
+    flex: 1; border: 0; background: transparent; font: inherit; font-size: 13px;
+    color: var(--text-primary, var(--in-fg)); outline: none;
+}
+.iss-select-wrap { display: flex; align-items: center; gap: 6px; }
+.iss-select-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px;
+    color: var(--text-secondary, var(--in-fg-dim));
+}
+.iss-select {
+    padding: 7px 10px; border-radius: var(--radius-sm, 8px); font: inherit; font-size: 12px;
+    background: var(--surface-2, var(--in-bg-3)); border: 1px solid var(--border, var(--in-border));
+    color: var(--text-primary, var(--in-fg)); cursor: pointer;
 }
 .iss-chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .iss-chip {
-    display: inline-flex; align-items: center; min-height: 32px; padding: 0 14px;
+    display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 12px;
     border-radius: 999px; border: 1px solid var(--border, var(--in-border));
     background: var(--surface-2, var(--in-bg-3)); color: var(--text-secondary, var(--in-fg-dim));
     font-size: 12px; font-weight: 500; cursor: pointer; user-select: none;
@@ -369,34 +776,57 @@ const ISSUES_CSS = `
     color: var(--info, var(--in-info)); font-weight: 700;
 }
 .iss-chip:focus-visible { outline: 2px solid var(--border-strong, var(--in-accent)); outline-offset: 2px; }
-.iss-search {
-    width: 100%; box-sizing: border-box; padding: 10px 14px; font-size: 13px;
-    background: var(--surface-2, var(--in-bg-3)); color: var(--text-primary, var(--in-fg));
-    border: 1px solid var(--border, var(--in-border)); border-radius: var(--in-radius-sm, 8px);
+.iss-chip-count {
+    font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 999px;
+    background: var(--surface-3, var(--in-bg-2)); color: var(--text-secondary, var(--in-fg-dim));
+    font-variant-numeric: tabular-nums;
 }
-.iss-search:focus { outline: none; border-color: var(--info, var(--in-accent)); }
 
-.iss-grid {
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px;
+/* ── Backlog agrupado ──────────────────────────────────────────────────── */
+.iss-groups { display: flex; flex-direction: column; gap: 22px; }
+.iss-group-head {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
+    padding-bottom: 8px; border-bottom: 1px solid var(--border, var(--in-border));
+}
+.iss-group-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-dim, var(--in-fg-dim)); }
+.iss-group-dot.st-working { background: var(--info, var(--in-info)); }
+.iss-group-dot.st-ready { background: var(--success, var(--in-ok)); }
+.iss-group-dot.st-blocked { background: var(--warning, var(--in-warn)); }
+.iss-group-dot.st-pending { background: var(--text-dim, var(--in-fg-dim)); }
+.iss-group-title {
+    font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px;
+    color: var(--text-primary, var(--in-fg));
+}
+.iss-group-count {
+    font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 999px;
+    background: var(--surface-2, var(--in-bg-3)); color: var(--text-secondary, var(--in-fg-dim));
+    font-variant-numeric: tabular-nums;
+}
+.iss-group-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 14px;
 }
 .iss-empty {
-    grid-column: 1 / -1; text-align: center; padding: 40px 16px;
+    text-align: center; padding: 40px 16px;
     color: var(--text-dim, var(--in-fg-dim)); font-size: 13px;
 }
+.iss-group-empty {
+    grid-column: 1 / -1; padding: 14px 16px; font-size: 12px;
+    color: var(--text-dim, var(--in-fg-dim)); font-style: italic;
+}
 
+/* ── Card ──────────────────────────────────────────────────────────────── */
 .iss-card {
     position: relative; display: flex; flex-direction: column; gap: 10px;
     background: var(--surface-1, var(--in-bg-2)); border: 1px solid var(--border, var(--in-border));
-    border-radius: var(--in-radius, 12px); padding: 14px 16px;
-    box-shadow: var(--in-shadow, none); cursor: pointer; min-height: 148px;
-    transition: border-color 0.12s, transform 0.12s;
+    border-radius: var(--radius-lg, 12px); padding: 14px 16px;
+    box-shadow: var(--shadow-xs, var(--in-shadow)); cursor: pointer;
+    transition: border-color 0.12s;
 }
 .iss-card:hover { border-color: var(--border-strong, var(--in-accent)); }
 .iss-card:focus-visible { outline: 2px solid var(--border-strong, var(--in-accent)); outline-offset: 2px; }
 .iss-top { display: flex; align-items: center; gap: 10px; }
 .iss-prio {
-    font-size: 11px; color: var(--text-dim, var(--in-fg-soft)); font-variant-numeric: tabular-nums;
-    min-width: 26px;
+    font-size: 11px; color: var(--text-dim, var(--in-fg-soft)); font-variant-numeric: tabular-nums; min-width: 26px;
 }
 .iss-prio.set { color: var(--text-secondary, var(--in-fg-dim)); font-weight: 700; }
 .iss-num {
@@ -407,7 +837,7 @@ const ISSUES_CSS = `
 .iss-state {
     margin-left: auto; display: inline-flex; align-items: center; gap: 5px;
     font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 999px;
-    border: 1px solid transparent; text-transform: none; letter-spacing: 0.2px;
+    border: 1px solid transparent; letter-spacing: 0.2px;
 }
 .iss-state::before { content: "●"; font-size: 9px; }
 .st-working { color: var(--info, var(--in-info)); background: var(--info-bg, var(--in-info-soft)); border-color: var(--info, var(--in-info)); }
@@ -417,10 +847,10 @@ const ISSUES_CSS = `
 .st-bounce  { color: var(--danger, var(--in-bad)); background: var(--danger-bg, var(--in-bad-soft)); border-color: var(--danger, var(--in-bad)); }
 .st-human   { color: var(--purple, var(--in-accent)); background: var(--purple-bg, var(--in-accent-soft)); border-color: var(--purple, var(--in-accent)); }
 
+/* CA-7 — título completo con wrap, nunca truncado. */
 .iss-title {
-    font-size: 13px; line-height: 1.4; color: var(--text-primary, var(--in-fg));
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-    overflow: hidden; min-height: 36px;
+    font-size: 13px; line-height: 1.45; color: var(--text-primary, var(--in-fg));
+    overflow-wrap: anywhere; word-break: break-word;
 }
 .iss-title.is-paused::before { content: "⏸ "; color: var(--warning, var(--in-warn)); font-weight: 700; }
 
@@ -431,9 +861,7 @@ const ISSUES_CSS = `
     color: var(--text-secondary, var(--in-fg-dim));
 }
 .iss-ico { width: 14px; height: 14px; fill: currentColor; }
-.iss-bounces {
-    font-size: 11px; color: var(--text-dim, var(--in-fg-dim)); font-variant-numeric: tabular-nums;
-}
+.iss-bounces { font-size: 11px; color: var(--text-dim, var(--in-fg-dim)); font-variant-numeric: tabular-nums; }
 .iss-bounces.warn { color: var(--warning, var(--in-warn)); font-weight: 600; }
 .iss-rebote {
     display: inline-flex; align-items: center; font-size: 10px; font-weight: 600;
@@ -441,26 +869,70 @@ const ISSUES_CSS = `
     background: var(--danger-bg, var(--in-bad-soft)); border-radius: 4px; padding: 1px 6px; cursor: help;
 }
 
-.iss-actions { display: flex; gap: 4px; margin-top: auto; }
-.iss-btn {
-    display: inline-flex; align-items: center; justify-content: center;
-    width: 30px; height: 30px; padding: 0; border-radius: 6px; cursor: pointer;
-    background: transparent; border: 1px solid var(--border, var(--in-border));
-    color: var(--text-secondary, var(--in-fg-dim)); font-size: 12px; line-height: 1;
-    text-decoration: none; transition: border-color 0.12s, color 0.12s, background 0.12s;
+/* Acciones de la card: primaria + accesos + menú */
+.iss-actions { display: flex; align-items: center; gap: 8px; margin-top: auto; flex-wrap: wrap; }
+.iss-primary {
+    display: inline-flex; align-items: center; gap: 7px; min-height: 34px; padding: 0 16px;
+    border-radius: var(--radius-sm, 8px); font-size: 13px; font-weight: 700; cursor: pointer;
+    text-decoration: none; border: 1px solid transparent; flex: 1; justify-content: center;
 }
-.iss-btn:hover { border-color: var(--info, var(--in-accent)); color: var(--info, var(--in-accent)); }
-.iss-btn:focus-visible { outline: 2px solid var(--border-strong, var(--in-accent)); outline-offset: 1px; }
-.iss-btn.iss-pause:hover { border-color: var(--warning, var(--in-warn)); color: var(--warning, var(--in-warn)); }
-.iss-btn.iss-pause.is-paused { border-color: var(--warning, var(--in-warn)); color: var(--warning, var(--in-warn)); }
+.iss-primary-glyph { font-size: 13px; line-height: 1; }
+.iss-primary-trabajando { color: var(--info, var(--in-info)); background: var(--info-bg, var(--in-info-soft)); border-color: var(--info, var(--in-info)); }
+.iss-primary-listo { color: var(--surface-0, var(--in-bg)); background: var(--success, var(--in-ok)); border-color: var(--success, var(--in-ok)); }
+.iss-primary-bloqueado { color: var(--warning, var(--in-warn)); background: var(--warning-bg, var(--in-warn-soft)); border-color: var(--warning, var(--in-warn)); }
+.iss-primary-backlog { color: var(--text-primary, var(--in-fg)); background: var(--surface-2, var(--in-bg-3)); border-color: var(--border, var(--in-border)); }
+.iss-primary:hover { filter: brightness(1.06); }
+.iss-primary:focus-visible { outline: 2px solid var(--border-strong, var(--in-accent)); outline-offset: 2px; }
+
+.iss-access-row { display: flex; align-items: center; gap: 4px; }
+.iss-access {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 32px; height: 32px; border-radius: 7px; cursor: pointer; text-decoration: none;
+    background: transparent; border: 1px solid var(--border, var(--in-border));
+    color: var(--text-secondary, var(--in-fg-dim)); transition: border-color 0.12s, color 0.12s;
+}
+.iss-access:hover { border-color: var(--info, var(--in-accent)); color: var(--info, var(--in-accent)); }
+.iss-access:focus-visible { outline: 2px solid var(--border-strong, var(--in-accent)); outline-offset: 1px; }
+.iss-access.is-disabled { opacity: 0.4; cursor: not-allowed; }
+.iss-access.is-disabled:hover { border-color: var(--border, var(--in-border)); color: var(--text-secondary, var(--in-fg-dim)); }
+
+.iss-menu-wrap { position: relative; }
+.iss-menu-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 32px; height: 32px; border-radius: 7px; cursor: pointer; font-size: 18px; line-height: 1;
+    background: transparent; border: 1px solid var(--border, var(--in-border));
+    color: var(--text-secondary, var(--in-fg-dim));
+}
+.iss-menu-btn:hover { border-color: var(--info, var(--in-accent)); color: var(--info, var(--in-accent)); }
+.iss-menu-btn[aria-expanded="true"] { border-color: var(--info, var(--in-info)); color: var(--info, var(--in-info)); }
+.iss-menu {
+    position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 60; min-width: 250px;
+    display: flex; flex-direction: column; gap: 2px; padding: 6px;
+    background: var(--surface-1, var(--in-bg-2)); border: 1px solid var(--border, var(--in-border));
+    border-radius: var(--radius-md, 10px); box-shadow: var(--shadow-lg, var(--in-shadow));
+}
+.iss-mi {
+    display: flex; align-items: flex-start; gap: 9px; padding: 8px 10px; border-radius: 8px;
+    text-decoration: none; text-align: left; cursor: pointer; border: 0; width: 100%;
+    background: transparent; color: var(--text-primary, var(--in-fg)); font: inherit;
+}
+.iss-mi:hover { background: var(--surface-2, var(--in-bg-3)); }
+.iss-mi.is-disabled { opacity: 0.45; cursor: not-allowed; }
+.iss-mi.is-disabled:hover { background: transparent; }
+.iss-mi-glyph { font-size: 13px; line-height: 1.3; width: 16px; text-align: center; flex: none; }
+.iss-mi-body { display: flex; flex-direction: column; gap: 1px; }
+.iss-mi-label { font-size: 13px; font-weight: 600; }
+.iss-mi-desc { font-size: 11px; color: var(--text-secondary, var(--in-fg-dim)); }
+.iss-mi-danger .iss-mi-label { color: var(--danger, var(--in-bad)); }
+.iss-mi-danger:hover { background: var(--danger-bg, var(--in-bad-soft)); }
 
 /* Drilldown dialog */
 .iss-dialog {
     width: min(560px, 92vw); border: 1px solid var(--border, var(--in-border));
-    border-radius: var(--in-radius, 12px); background: var(--surface-1, var(--in-bg-2));
+    border-radius: var(--radius-lg, 12px); background: var(--surface-1, var(--in-bg-2));
     color: var(--text-primary, var(--in-fg)); padding: 0;
 }
-.iss-dialog::backdrop { background: rgba(1, 4, 9, 0.66); }
+.iss-dialog::backdrop { background: var(--overlay, rgba(1, 4, 9, 0.66)); }
 .iss-dialog-head {
     display: flex; align-items: center; gap: 10px; margin: 0;
     padding: 16px 18px; border-bottom: 1px solid var(--border, var(--in-border));
@@ -494,32 +966,24 @@ const ISSUES_CSS = `
 }
 .iss-dialog-actions a:hover, .iss-dialog-actions button:hover { border-color: var(--info, var(--in-accent)); }
 
-/* Toast de feedback para acciones de card (#3730). Tokens, sin HEX. */
+/* Toast de feedback. Tokens, sin HEX. */
 .iss-toast {
     position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
-    z-index: 9999; padding: 10px 18px; border-radius: var(--in-radius-sm, 8px);
+    z-index: 9999; padding: 10px 18px; border-radius: var(--radius-sm, 8px);
     font-size: 13px; font-weight: 600; line-height: 1.4; max-width: 80vw;
     text-align: center; pointer-events: none; opacity: 0;
-    transition: opacity 0.2s ease; box-shadow: var(--in-shadow, none);
+    transition: opacity 0.2s ease; box-shadow: var(--shadow-md, var(--in-shadow));
     color: var(--text-primary, var(--in-fg));
-    background: var(--success-bg, var(--in-ok-soft));
-    border: 1px solid var(--success, var(--in-ok));
+    background: var(--success-bg, var(--in-ok-soft)); border: 1px solid var(--success, var(--in-ok));
 }
 .iss-toast.is-show { opacity: 1; }
-.iss-toast.is-err {
-    background: var(--danger-bg, var(--in-bad-soft));
-    border-color: var(--danger, var(--in-bad));
-}
+.iss-toast.is-err { background: var(--danger-bg, var(--in-bad-soft)); border-color: var(--danger, var(--in-bad)); }
 `;
 
 // =============================================================================
 // renderIssuesClientScript() — JS cliente. Polling a /api/dash/pipeline +
-// re-render del grid + filtro + drilldown. Estado con nombres propios
-// (issuesSnapshot, selectedIssueId) para no colisionar con /consumo (R-2).
-//
-// El cliente escapa TODO valor dinámico con escapeHtml() (escapa & < > " ' /)
-// antes de componer markup — mismo patrón que satellites.renderIssues. El
-// contenido del drilldown se llena con textContent (sin innerHTML de datos).
+// re-render AGRUPADO del backlog + filtro + orden + drilldown + acciones.
+// Estado con nombres propios (issuesSnapshot, selectedIssueId).
 // =============================================================================
 function renderIssuesClientScript() {
     return `
@@ -529,19 +993,22 @@ function renderIssuesClientScript() {
   var STATE_LABEL = { trabajando:'Trabajando', listo:'Listo', pendiente:'Pendiente', bloqueado:'Bloqueado', rebote:'Rebote', 'needs-human':'Necesita humano' };
   var STATE_CLS = { trabajando:'st-working', listo:'st-ready', pendiente:'st-pending', bloqueado:'st-blocked', rebote:'st-bounce', 'needs-human':'st-human' };
   var FASE_ORDER = ['sizing','analisis','criterios','validacion','dev','build','verificacion','linteo','aprobacion','entrega'];
-  var FASE_ICON = {};
-  FASE_ORDER.forEach(function (f) { FASE_ICON[f] = 'ic-fase-' + f; });
-  var ACTIONS = [
-    { action:'move-top', icon:'ic-promote', title:'Mover a máxima prioridad' },
-    { action:'move-up', glyph:'▲', title:'Subir un puesto' },
-    { action:'move-down', glyph:'▼', title:'Bajar un puesto' },
-    { action:'move-bottom', glyph:'▼▼', title:'Mover a mínima prioridad' }
-  ];
+  var FASE_ICON = {}; FASE_ORDER.forEach(function (f) { FASE_ICON[f] = 'ic-fase-' + f; });
+  var GROUP_ORDER = ['trabajando','listo','bloqueado','backlog'];
+  var GROUP_META = {
+    trabajando: { label:'Trabajando', dot:'st-working', primary:{ kind:'btn', action:'pause', label:'Pausar', glyph:'⏸', desc:'Suspende el agente sin perder el progreso' } },
+    listo:      { label:'Listos', dot:'st-ready', primary:{ kind:'btn', action:'move-top', label:'Lanzar', glyph:'▶', desc:'Fuerza el slot: salta al frente de la cola, sin esperar turno' } },
+    bloqueado:  { label:'Bloqueados', dot:'st-blocked', primary:{ kind:'btn', action:'resume', label:'Destrabar', glyph:'🔓', desc:'Override manual de la dependencia: reanuda el issue' } },
+    backlog:    { label:'Backlog', dot:'st-pending', primary:{ kind:'link', action:'define', label:'Definir', glyph:'✎', desc:'Abrí el issue para refinarlo con /doc' } }
+  };
 
   var issuesSnapshot = null;
   var selectedIssueId = null;
   var activeFilter = 'all';
   var searchTerm = '';
+  var orderMode = 'manual';
+  var groupMode = 'estado';
+  var _kaCsrf = null;
 
   function escapeHtml(s) {
     if (s === null || s === undefined) return '';
@@ -552,6 +1019,8 @@ function renderIssuesClientScript() {
     var safe = String(id || '').replace(/[^a-z0-9-]/g, '');
     return '<svg class="' + cls + '" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><use href="#' + safe + '"></use></svg>';
   }
+  function faseShort(f) { var raw = String(f || ''); if (!raw) return ''; var p = raw.split('/'); return p[p.length - 1] || raw; }
+  function faseIconId(f) { return FASE_ICON[f] || 'ic-issues-count'; }
   function deriveState(d) {
     var labels = (d && d.labels) || [];
     if (d && d.rebote) return 'rebote';
@@ -561,7 +1030,14 @@ function renderIssuesClientScript() {
     if (e === 'trabajando' || e === 'listo' || e === 'pendiente') return e;
     return 'pendiente';
   }
-  function faseIconId(f) { return FASE_ICON[f] || 'ic-issues-count'; }
+  function deriveGroup(d) {
+    var labels = (d && d.labels) || [];
+    if (labels.indexOf('needs-human') >= 0 || labels.indexOf('blocked:dependencies') >= 0) return 'bloqueado';
+    var e = d && d.estadoActual;
+    if (e === 'trabajando') return 'trabajando';
+    if (e === 'listo') return 'listo';
+    return 'backlog';
+  }
 
   function orderedIssues() {
     if (!issuesSnapshot) return [];
@@ -573,18 +1049,25 @@ function renderIssuesClientScript() {
       var idx = orderMap.hasOwnProperty(String(id)) ? orderMap[String(id)] : -1;
       return { id: id, data: matrix[id], prio: idx };
     });
-    rows.sort(function (a, b) {
-      if (a.prio >= 0 && b.prio >= 0) return a.prio - b.prio;
-      if (a.prio >= 0) return -1;
-      if (b.prio >= 0) return 1;
-      return Number(a.id) - Number(b.id);
-    });
+    if (orderMode === 'numero') {
+      rows.sort(function (a, b) { return Number(a.id) - Number(b.id); });
+    } else {
+      rows.sort(function (a, b) {
+        if (a.prio >= 0 && b.prio >= 0) return a.prio - b.prio;
+        if (a.prio >= 0) return -1;
+        if (b.prio >= 0) return 1;
+        return Number(a.id) - Number(b.id);
+      });
+    }
     return rows;
   }
 
   function matchesFilter(row) {
-    var st = deriveState(row.data);
-    if (activeFilter !== 'all' && st !== activeFilter) return false;
+    if (activeFilter !== 'all') {
+      if (activeFilter === 'rebote') { if (!row.data.rebote) return false; }
+      else if (activeFilter === 'backlog') { if (deriveGroup(row.data) !== 'backlog') return false; }
+      else if (deriveGroup(row.data) !== activeFilter) return false;
+    }
     if (searchTerm) {
       var hay = (row.id + ' ' + (row.data.title || '') + ' ' + (row.data.faseActual || '')).toLowerCase();
       if (hay.indexOf(searchTerm) < 0) return false;
@@ -592,19 +1075,39 @@ function renderIssuesClientScript() {
     return true;
   }
 
+  function menuItemHtml(o) {
+    var glyph = '<span class="iss-mi-glyph" aria-hidden="true">' + escapeHtml(o.glyph || '·') + '</span>';
+    var body = '<span class="iss-mi-body"><span class="iss-mi-label">' + escapeHtml(o.label) + '</span><span class="iss-mi-desc">' + escapeHtml(o.desc || '') + '</span></span>';
+    var cls = 'iss-mi' + (o.danger ? ' iss-mi-danger' : '') + (o.disabled ? ' is-disabled' : '');
+    var tip = escapeHtml((o.label || '') + (o.desc ? ' — ' + o.desc : ''));
+    if (o.disabled) return '<span class="' + cls + '" role="menuitem" aria-disabled="true" title="' + tip + '">' + glyph + body + '</span>';
+    if (o.link) return '<a class="' + cls + '" role="menuitem" href="' + escapeHtml(o.link) + '" target="_blank" rel="noopener" title="' + tip + '">' + glyph + body + '</a>';
+    var attrs = 'data-issue="' + escapeHtml(String(o.issue)) + '" data-action="' + escapeHtml(o.action) + '"';
+    if (o.skill) attrs += ' data-skill="' + escapeHtml(o.skill) + '"';
+    if (o.pipeline) attrs += ' data-pipeline="' + escapeHtml(o.pipeline) + '"';
+    if (o.fase) attrs += ' data-fase="' + escapeHtml(o.fase) + '"';
+    return '<button type="button" class="' + cls + '" role="menuitem" ' + attrs + ' title="' + tip + '">' + glyph + body + '</button>';
+  }
+
   function cardHtml(row) {
     var num = Number(row.id);
     if (!isFinite(num) || num <= 0) return '';
     var d = row.data || {};
     var st = deriveState(d);
+    var group = deriveGroup(d);
     var cls = STATE_CLS[st] || 'st-pending';
     var label = STATE_LABEL[st] || 'Pendiente';
     var labels = d.labels || [];
     var paused = labels.indexOf('blocked:dependencies') >= 0;
     var prio = (row.prio >= 0) ? '#' + (row.prio + 1) : '—';
-    var fase = d.faseActual || '—';
+    var fase = faseShort(d.faseActual) || '—';
     var bounces = Number(d.bounces) || 0;
     var gh = ISS_GH + num;
+    var pipelineSeg = String(d.faseActual || '').split('/')[0] || '';
+    var agents = (d.agents && d.agents.length) ? d.agents : [];
+    var skill = (agents[0] && agents[0].skill) ? String(agents[0].skill) : '';
+    var hasRun = !!d.logFile;
+    var logHref = d.logFile ? ('/logs/view/' + encodeURIComponent(d.logFile) + (d.estadoActual === 'trabajando' ? '?live=1' : '')) : '';
 
     var rebote = '';
     if (d.rebote) {
@@ -616,50 +1119,123 @@ function renderIssuesClientScript() {
       ? '<span class="iss-bounces' + (bounces > 2 ? ' warn' : '') + '" title="' + escapeHtml(bounces + ' rebote(s) acumulados') + '">' + escapeHtml(String(bounces)) + '×</span>'
       : '';
 
-    var actions = '';
-    ACTIONS.forEach(function (a) {
-      var inner = a.icon ? iconSvg(a.icon, 'iss-ico') : escapeHtml(a.glyph);
-      actions += '<button type="button" class="iss-btn" data-issue="' + num + '" data-action="' + a.action + '" title="' + escapeHtml(a.title) + '" aria-label="' + escapeHtml(a.title + ' (issue ' + num + ')') + '">' + inner + '</button>';
-    });
-    var pAction = paused ? 'resume' : 'pause';
-    var pTitle = paused ? 'Reanudar issue' : 'Pausar issue';
-    var pIcon = paused ? 'ic-play' : 'ic-pause-lock';
-    actions += '<button type="button" class="iss-btn iss-pause' + (paused ? ' is-paused' : '') + '" data-issue="' + num + '" data-action="' + pAction + '" title="' + escapeHtml(pTitle) + '" aria-label="' + escapeHtml(pTitle + ' (issue ' + num + ')') + '">' + iconSvg(pIcon, 'iss-ico') + '</button>';
-    actions += '<a class="iss-btn iss-gh" href="' + escapeHtml(gh) + '" target="_blank" rel="noopener" title="Abrir en GitHub" aria-label="' + escapeHtml('Abrir issue ' + num + ' en GitHub') + '">' + iconSvg('ic-link-out', 'iss-ico') + '</a>';
+    var gm = GROUP_META[group] || GROUP_META.backlog;
+    var p = gm.primary;
+    var ptip = escapeHtml(p.label + ' — ' + p.desc);
+    var paria = escapeHtml(p.label + ' issue ' + num + ': ' + p.desc);
+    var primary;
+    if (p.kind === 'link') {
+      primary = '<a class="iss-primary iss-primary-' + group + '" href="' + escapeHtml(gh) + '" target="_blank" rel="noopener" title="' + ptip + '" aria-label="' + paria + '"><span class="iss-primary-glyph" aria-hidden="true">' + escapeHtml(p.glyph) + '</span><span>' + escapeHtml(p.label) + '</span></a>';
+    } else {
+      primary = '<button type="button" class="iss-primary iss-primary-' + group + '" data-issue="' + num + '" data-action="' + escapeHtml(p.action) + '" title="' + ptip + '" aria-label="' + paria + '"><span class="iss-primary-glyph" aria-hidden="true">' + escapeHtml(p.glyph) + '</span><span>' + escapeHtml(p.label) + '</span></button>';
+    }
+
+    var access = '<a class="iss-access iss-gh" href="' + escapeHtml(gh) + '" target="_blank" rel="noopener" title="Ver issue en GitHub ↗" aria-label="' + escapeHtml('Ver issue ' + num + ' en GitHub') + '">' + iconSvg('ic-link-out', 'iss-ico') + '</a>';
+    if (hasRun) access += '<a class="iss-access iss-logs" href="' + escapeHtml(logHref) + '" target="_blank" rel="noopener" title="Ver log del agente" aria-label="' + escapeHtml('Ver log del agente del issue ' + num) + '">' + iconSvg('ic-tab-historial', 'iss-ico') + '</a>';
+    else access += '<span class="iss-access iss-logs is-disabled" aria-disabled="true" title="Sin logs: el issue todavía no corrió" aria-label="' + escapeHtml('Sin logs: el issue ' + num + ' todavía no corrió') + '">' + iconSvg('ic-tab-historial', 'iss-ico') + '</span>';
+
+    var items = [];
+    items.push(menuItemHtml({ link: gh, label: 'Ver issue', glyph: '🔗', desc: 'Abrir el issue en GitHub' }));
+    items.push(menuItemHtml({ link: hasRun ? logHref : null, label: 'Logs del agente', glyph: '📄', desc: hasRun ? 'Ver el log del agente' : 'Todavía no corrió', disabled: !hasRun }));
+    items.push(menuItemHtml({ issue: num, action: 'move-top', label: 'Mover a tope', glyph: '⤒', desc: 'Saltar al frente de la cola de prioridad' }));
+    items.push(menuItemHtml({ issue: num, action: 'move-bottom', label: 'Mover a fondo', glyph: '⤓', desc: 'Enviar al final de la cola de prioridad' }));
+    if (group === 'trabajando') {
+      if (skill && pipelineSeg && fase !== '—') items.push(menuItemHtml({ issue: num, action: 'cancel', label: 'Cancelar agente', glyph: '✕', desc: 'Detiene el agente en ejecución', danger: true, skill: skill, pipeline: pipelineSeg, fase: fase }));
+    } else if (group === 'listo') {
+      items.push(menuItemHtml({ issue: num, action: 'pause', label: 'Pausar', glyph: '⏸', desc: 'Suspender el issue antes de lanzarlo' }));
+    } else if (group === 'backlog') {
+      items.push(menuItemHtml({ issue: num, action: 'move-up', label: 'Subir prioridad', glyph: '▲', desc: 'Subir un puesto en la cola' }));
+    } else if (group === 'bloqueado') {
+      items.push(menuItemHtml({ issue: num, action: 'pause', label: 'Pausar', glyph: '⏸', desc: 'Mantener bloqueado explícitamente' }));
+    }
+    var menu = '<div class="iss-menu-wrap"><button type="button" class="iss-menu-btn" data-menu-issue="' + num + '" aria-haspopup="true" aria-expanded="false" title="Más acciones" aria-label="' + escapeHtml('Más acciones del issue ' + num) + '">⋯</button><div class="iss-menu" role="menu" hidden aria-label="' + escapeHtml('Acciones del issue ' + num) + '">' + items.join('') + '</div></div>';
 
     var aria = 'Issue ' + num + ': ' + (d.title || '') + ', fase ' + fase + ', estado ' + label;
-    return '<article class="iss-card" tabindex="0" role="article" data-issue="' + num + '" data-state="' + st + '" data-fase="' + escapeHtml(fase) + '" aria-label="' + escapeHtml(aria) + '">'
+    return '<article class="iss-card" tabindex="0" role="article" data-issue="' + num + '" data-state="' + st + '" data-group="' + group + '" data-fase="' + escapeHtml(fase) + '" aria-label="' + escapeHtml(aria) + '">'
       + '<div class="iss-top"><span class="iss-prio' + (row.prio >= 0 ? ' set' : '') + '">' + escapeHtml(prio) + '</span>'
       + '<a class="iss-num" href="' + escapeHtml(gh) + '" target="_blank" rel="noopener">#' + num + '</a>'
       + '<span class="iss-state ' + cls + '">' + escapeHtml(label) + '</span></div>'
       + '<div class="iss-title' + (paused ? ' is-paused' : '') + '" title="' + escapeHtml(d.title || '') + '">' + escapeHtml(d.title || '') + '</div>'
-      + '<div class="iss-meta"><span class="iss-fase">' + iconSvg(faseIconId(d.faseActual), 'iss-ico') + '<span>' + escapeHtml(fase) + '</span></span>' + bbadge + rebote + '</div>'
-      + '<div class="iss-actions" role="group" aria-label="' + escapeHtml('Acciones del issue ' + num) + '">' + actions + '</div>'
+      + '<div class="iss-meta"><span class="iss-fase">' + iconSvg(faseIconId(fase), 'iss-ico') + '<span>' + escapeHtml(fase) + '</span></span>' + bbadge + rebote + '</div>'
+      + '<div class="iss-actions">' + primary + '<div class="iss-access-row" role="group" aria-label="' + escapeHtml('Accesos del issue ' + num) + '">' + access + menu + '</div></div>'
       + '</article>';
+  }
+
+  function groupKeyFor(row) {
+    if (groupMode === 'fase') return faseShort(row.data.faseActual) || 'sin-fase';
+    if (groupMode === 'none') return 'all';
+    return deriveGroup(row.data);
+  }
+  function sectionOrder() {
+    if (groupMode === 'fase') return FASE_ORDER.slice();
+    if (groupMode === 'none') return ['all'];
+    return GROUP_ORDER.slice();
+  }
+  function sectionLabel(key) {
+    if (groupMode === 'estado') return (GROUP_META[key] && GROUP_META[key].label) || key;
+    if (groupMode === 'none') return 'Todos los issues';
+    return key;
+  }
+  function sectionDot(key) {
+    if (groupMode === 'estado') return (GROUP_META[key] && GROUP_META[key].dot) || 'st-pending';
+    return 'st-pending';
   }
 
   function renderGrid() {
     var grid = document.getElementById('issues-grid');
     if (!grid || !issuesSnapshot) return;
     var rows = orderedIssues().filter(matchesFilter);
-    updateSummary();
+    updateCounters();
+    updateChipCounts();
     if (rows.length === 0) {
       grid.innerHTML = '<div class="iss-empty">Sin issues que coincidan con el filtro</div>';
       return;
     }
-    grid.innerHTML = rows.slice(0, 200).map(cardHtml).join('');
+    // CA-7 — nunca truncar: se agrupan y muestran TODOS los issues.
+    var buckets = {};
+    rows.forEach(function (r) { var k = groupKeyFor(r); (buckets[k] = buckets[k] || []).push(r); });
+    var order = sectionOrder();
+    // Claves no previstas (p. ej. fases fuera del orden canónico) van al final.
+    Object.keys(buckets).forEach(function (k) { if (order.indexOf(k) < 0) order.push(k); });
+    var html = '<div class="iss-groups">';
+    order.forEach(function (key) {
+      var list = buckets[key];
+      if (!list || !list.length) return;
+      html += '<section class="iss-group" data-group-key="' + escapeHtml(key) + '">'
+        + '<div class="iss-group-head"><span class="iss-group-dot ' + sectionDot(key) + '" aria-hidden="true"></span>'
+        + '<span class="iss-group-title">' + escapeHtml(sectionLabel(key)) + '</span>'
+        + '<span class="iss-group-count">' + list.length + '</span></div>'
+        + '<div class="iss-group-grid">' + list.map(cardHtml).join('') + '</div></section>';
+    });
+    html += '</div>';
+    grid.innerHTML = html;
   }
 
-  function updateSummary() {
-    var el = document.getElementById('issues-summary');
-    if (!el || !issuesSnapshot) return;
+  function counts() {
     var rows = orderedIssues();
-    var counts = { trabajando: 0, listo: 0, bloqueado: 0 };
-    rows.forEach(function (r) { var s = deriveState(r.data); if (counts.hasOwnProperty(s)) counts[s]++; });
-    el.innerHTML = '<strong>' + rows.length + '</strong> issues · '
-      + '<strong>' + counts.trabajando + '</strong> trabajando · '
-      + '<strong>' + counts.listo + '</strong> listos · '
-      + '<strong>' + counts.bloqueado + '</strong> bloqueados';
+    var c = { total: rows.length, trabajando: 0, listo: 0, bloqueado: 0, backlog: 0, rebote: 0 };
+    rows.forEach(function (r) {
+      var g = deriveGroup(r.data);
+      if (c.hasOwnProperty(g)) c[g]++;
+      if (r.data.rebote) c.rebote++;
+    });
+    return c;
+  }
+  function setText(id, v) { var el = document.getElementById(id); if (el) el.textContent = String(v); }
+  function updateCounters() {
+    var c = counts();
+    setText('iss-count-total', c.total);
+    setText('iss-count-working', c.trabajando);
+    setText('iss-count-ready', c.listo);
+    setText('iss-count-blocked', c.bloqueado);
+  }
+  function updateChipCounts() {
+    var c = counts();
+    var map = { all: c.total, trabajando: c.trabajando, listo: c.listo, bloqueado: c.bloqueado, rebote: c.rebote, backlog: c.backlog };
+    document.querySelectorAll('[data-chip-count]').forEach(function (el) {
+      var k = el.getAttribute('data-chip-count');
+      if (map.hasOwnProperty(k)) el.textContent = String(map[k]);
+    });
   }
 
   function openDrilldown(issueId) {
@@ -671,78 +1247,48 @@ function renderIssuesClientScript() {
     var num = Number(issueId);
     var st = deriveState(d);
     document.getElementById('issues-dialog-title').textContent = '#' + issueId + ' · ' + (d.title || '');
-    var meta = document.getElementById('issues-dialog-meta');
-    meta.textContent = 'Estado: ' + (STATE_LABEL[st] || st) + ' · Fase: ' + (d.faseActual || '—') + ' · Rebotes: ' + (Number(d.bounces) || 0);
-
+    document.getElementById('issues-dialog-meta').textContent = 'Estado: ' + (STATE_LABEL[st] || st) + ' · Fase: ' + (faseShort(d.faseActual) || '—') + ' · Rebotes: ' + (Number(d.bounces) || 0);
     var rej = document.getElementById('issues-dialog-reject');
     if (d.rebote && d.motivo_rechazo) {
       rej.textContent = 'Rechazado en ' + (d.rechazado_en_fase || '?') + (d.rechazado_skill_previo ? '/' + d.rechazado_skill_previo : '') + ': ' + String(d.motivo_rechazo).slice(0, 300);
       rej.hidden = false;
     } else { rej.hidden = true; rej.textContent = ''; }
-
     var tl = document.getElementById('issues-dialog-timeline');
     tl.innerHTML = '';
+    var curFase = faseShort(d.faseActual);
     FASE_ORDER.forEach(function (f) {
       var li = document.createElement('li');
       li.className = 'iss-dialog-phase';
-      if (f === d.faseActual) li.setAttribute('data-current', '1');
+      if (f === curFase) li.setAttribute('data-current', '1');
       li.innerHTML = iconSvg(faseIconId(f), 'iss-ico');
-      var span = document.createElement('span');
-      span.textContent = f;
-      li.appendChild(span);
+      var span = document.createElement('span'); span.textContent = f; li.appendChild(span);
       tl.appendChild(li);
     });
-
     var acts = document.getElementById('issues-dialog-actions');
     acts.innerHTML = '';
     var gh = document.createElement('a');
-    gh.href = ISS_GH + num; gh.target = '_blank'; gh.rel = 'noopener';
-    gh.textContent = 'Abrir en GitHub';
+    gh.href = ISS_GH + num; gh.target = '_blank'; gh.rel = 'noopener'; gh.textContent = 'Abrir en GitHub';
     acts.appendChild(gh);
-
-    if (typeof dlg.showModal === 'function') dlg.showModal();
-    else dlg.setAttribute('open', '');
+    if (typeof dlg.showModal === 'function') dlg.showModal(); else dlg.setAttribute('open', '');
   }
 
-  // Feedback transitorio autocontenido. Reusa window.showToast si la página
-  // anfitriona lo provee (parity con home.js); si no, fabrica un toast inline
-  // con estilos propios para no depender de scripts externos no cargados en
-  // /issues ni ?view=issues (#3730 — fix controles muertos).
   function issToast(msg, ok) {
-    if (typeof window.showToast === 'function') {
-      try { window.showToast(msg, ok); return; } catch (e) { /* fallback abajo */ }
-    }
+    if (typeof window.showToast === 'function') { try { window.showToast(msg, ok); return; } catch (e) {} }
     var t = document.getElementById('iss-toast');
-    if (!t) {
-      t = document.createElement('div');
-      t.id = 'iss-toast';
-      t.className = 'iss-toast';
-      t.setAttribute('role', 'status');
-      t.setAttribute('aria-live', 'polite');
-      document.body.appendChild(t);
-    }
-    t.textContent = msg;
-    t.classList.toggle('is-err', !ok);
-    t.classList.add('is-show');
-    clearTimeout(t._hide);
-    t._hide = setTimeout(function () { t.classList.remove('is-show'); }, 3200);
+    if (!t) { t = document.createElement('div'); t.id = 'iss-toast'; t.className = 'iss-toast'; t.setAttribute('role', 'status'); t.setAttribute('aria-live', 'polite'); document.body.appendChild(t); }
+    t.textContent = msg; t.classList.toggle('is-err', !ok); t.classList.add('is-show');
+    clearTimeout(t._hide); t._hide = setTimeout(function () { t.classList.remove('is-show'); }, 3200);
   }
 
-  // moveIssue(issue, action) — POST /api/issue/<id>/<action> para reordenar el
-  // backlog (action ∈ move-top|move-up|move-down|move-bottom). Espeja home.js:2346.
   async function moveIssue(issue, action) {
     try {
       var res = await fetch('/api/issue/' + encodeURIComponent(issue) + '/' + encodeURIComponent(action), { method: 'POST' });
-      var j = {};
-      try { j = await res.json(); } catch (e) { /* respuesta sin JSON */ }
+      var j = {}; try { j = await res.json(); } catch (e) {}
       issToast(j.msg || (res.ok ? 'Movido' : 'No se pudo mover'), res.ok && j.ok !== false);
       setTimeout(function () { tickIssues(); }, 400);
     } catch (e) { issToast('Error: ' + e.message, false); }
   }
 
-  // pauseIssue(issue, isResume) — POST /api/issue/<id>/<pause|resume>. Toggle del
-  // label blocked:dependencies (el pulpo saltea el issue mientras esté puesto).
-  // Espeja home.js:2411 (pauseIssueHome) + el resume del header.
   async function pauseIssue(issue, isResume) {
     var action = isResume ? 'resume' : 'pause';
     if (!isResume && !(await inConfirm({
@@ -750,33 +1296,74 @@ function renderIssuesClientScript() {
         message: 'Agrega label blocked:dependencies; el pulpo lo saltea hasta que lo reanudes.',
         confirmLabel: 'Pausar',
         preview: [{ label: 'Issue', value: '#' + issue }]
-      }))) {
-      return;
-    }
+      }))) { return; }
     try {
       var res = await fetch('/api/issue/' + encodeURIComponent(issue) + '/' + action, { method: 'POST' });
-      var j = {};
-      try { j = await res.json(); } catch (e) { /* respuesta sin JSON */ }
+      var j = {}; try { j = await res.json(); } catch (e) {}
       issToast(j.msg || (res.ok ? (isResume ? 'Reanudado' : 'Pausado') : 'No se pudo'), res.ok && j.ok !== false);
       setTimeout(function () { tickIssues(); }, 600);
     } catch (e) { issToast('Error: ' + e.message, false); }
+  }
+
+  // Cancelar agente en ejecución (kill-agent con CSRF, mismo patrón que home).
+  async function killCsrfHeaders(force) {
+    try {
+      if (force) _kaCsrf = null;
+      if (!_kaCsrf) { var r = await fetch('/api/kill-agent/csrf-token', { cache: 'no-store' }); if (r && r.ok) { var j = await r.json(); _kaCsrf = (j && j.csrf_token) || null; } }
+      return _kaCsrf ? { 'X-CSRF-Token': _kaCsrf } : {};
+    } catch (e) { return {}; }
+  }
+  async function cancelAgent(issue, skill, pipeline, fase) {
+    if (!(await inConfirm({
+        title: 'Cancelar agente #' + issue,
+        message: 'Detiene el agente ' + skill + ' en ejecución para este issue.',
+        confirmLabel: 'Cancelar agente', danger: true,
+        preview: [{ label: 'Issue', value: '#' + issue }, { label: 'Skill', value: skill }, { label: 'Fase', value: pipeline + '/' + fase }]
+      }))) { return; }
+    var payload = { issue: Number(issue), skill: skill, pipeline: pipeline, fase: fase };
+    async function doPost() { return fetch('/api/kill-agent', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, await killCsrfHeaders()), body: JSON.stringify(payload) }); }
+    try {
+      var res = await doPost();
+      if (res && res.status === 403) { await killCsrfHeaders(true); res = await doPost(); }
+      var j = {}; try { j = await res.json(); } catch (e) {}
+      issToast(j.msg || (res.ok ? 'Agente cancelado' : 'No se pudo cancelar'), res.ok && j.ok !== false);
+      setTimeout(function () { tickIssues(); }, 800);
+    } catch (e) { issToast('Error: ' + e.message, false); }
+  }
+
+  function closeAllMenus(except) {
+    document.querySelectorAll('.iss-menu').forEach(function (m) {
+      if (except && m === except) return;
+      m.hidden = true;
+      var btn = m.parentNode && m.parentNode.querySelector('.iss-menu-btn');
+      if (btn) btn.setAttribute('aria-expanded', 'false');
+    });
   }
 
   function bindGridDelegation() {
     var grid = document.getElementById('issues-grid');
     if (!grid) return;
     grid.addEventListener('click', function (ev) {
+      var menuBtn = ev.target.closest('.iss-menu-btn');
+      if (menuBtn) {
+        ev.stopPropagation();
+        var menu = menuBtn.parentNode.querySelector('.iss-menu');
+        var willOpen = menu.hidden;
+        closeAllMenus(willOpen ? menu : null);
+        menu.hidden = !willOpen;
+        menuBtn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+        return;
+      }
       var btn = ev.target.closest('button[data-action]');
       if (btn) {
         ev.stopPropagation();
         var action = btn.getAttribute('data-action');
         var issue = btn.getAttribute('data-issue');
-        if (action === 'pause' || action === 'resume') {
-          pauseIssue(issue, action === 'resume');
-        } else if (action === 'move-top' || action === 'move-up'
-                   || action === 'move-down' || action === 'move-bottom') {
-          moveIssue(issue, action);
-        }
+        if (action === 'pause') pauseIssue(issue, false);
+        else if (action === 'resume') pauseIssue(issue, true);
+        else if (action === 'cancel') cancelAgent(issue, btn.getAttribute('data-skill'), btn.getAttribute('data-pipeline'), btn.getAttribute('data-fase'));
+        else if (action === 'move-top' || action === 'move-up' || action === 'move-down' || action === 'move-bottom') moveIssue(issue, action);
+        closeAllMenus(null);
         return;
       }
       if (ev.target.closest('a')) return;
@@ -788,6 +1375,7 @@ function renderIssuesClientScript() {
       var card = ev.target.closest('.iss-card');
       if (card && ev.target === card) { ev.preventDefault(); openDrilldown(card.getAttribute('data-issue')); }
     });
+    document.addEventListener('click', function () { closeAllMenus(null); });
   }
 
   function bindFilters() {
@@ -795,21 +1383,35 @@ function renderIssuesClientScript() {
     chips.forEach(function (chip) {
       chip.addEventListener('click', function () {
         activeFilter = chip.getAttribute('data-filter');
-        chips.forEach(function (c) {
-          var on = c === chip;
-          c.classList.toggle('is-active', on);
-          c.setAttribute('aria-pressed', on ? 'true' : 'false');
-        });
+        chips.forEach(function (c) { var on = c === chip; c.classList.toggle('is-active', on); c.setAttribute('aria-pressed', on ? 'true' : 'false'); });
         renderGrid();
       });
     });
     var search = document.getElementById('issues-search');
     if (search) search.addEventListener('input', function (e) { searchTerm = (e.target.value || '').toLowerCase(); renderGrid(); });
+    var ord = document.getElementById('iss-order');
+    if (ord) ord.addEventListener('change', function (e) { orderMode = e.target.value || 'manual'; renderGrid(); });
+    var grp = document.getElementById('iss-group');
+    if (grp) grp.addEventListener('change', function (e) { groupMode = e.target.value || 'estado'; renderGrid(); });
+  }
+
+  function bindChrome() {
+    function toggle(btnId, menuId) {
+      var btn = document.getElementById(btnId); var menu = document.getElementById(menuId);
+      if (!btn || !menu) return;
+      btn.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        var open = menu.hidden;
+        menu.hidden = !open;
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+      document.addEventListener('click', function () { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); });
+    }
+    toggle('mz-proj-btn', 'mz-proj-menu');
+    toggle('mz-more-btn', 'mz-more-menu');
   }
 
   async function tickIssues() {
-    // #3953 (CA-2) — fetchJson (FETCH_CLIENT_JS) dispara el banner stale ante
-    // fallo en vez de tragar el error en silencio; mantiene el último snapshot.
     var snap = await fetchJson('/api/dash/pipeline');
     if (!snap) return;
     issuesSnapshot = snap;
@@ -819,6 +1421,7 @@ function renderIssuesClientScript() {
   function init() {
     bindGridDelegation();
     bindFilters();
+    bindChrome();
     tickIssues();
     setInterval(function () { tickIssues(); }, 60000);
   }
@@ -829,11 +1432,7 @@ function renderIssuesClientScript() {
 }
 
 // =============================================================================
-// renderIssuesHTML(opts) — página completa de la ventana `/issues`.
-//   opts.initialIssues — array de issues normalizados para SSR de cards (opt).
-//   opts.matrix / opts.priorityOrder — alternativamente, snapshot crudo del
-//     pipelineSlice; el render normaliza y ordena. El cliente re-hidrata
-//     igual vía /api/dash/pipeline.
+// SSR del backlog agrupado a partir de los issues iniciales. Nunca trunca.
 // =============================================================================
 function buildInitialIssues(opts) {
     const o = opts || {};
@@ -852,31 +1451,69 @@ function buildInitialIssues(opts) {
         if (b.prio >= 0) return 1;
         return Number(a.id) - Number(b.id);
     });
-    return rows.slice(0, 200).map((r) => normalizeIssue(r.id, r.data, r.prio));
+    // CA-7 — sin slice: se renderizan TODOS los issues.
+    return rows.map((r) => normalizeIssue(r.id, r.data, r.prio));
 }
 
+function renderGroupedSSR(initial) {
+    const buckets = { trabajando: [], listo: [], bloqueado: [], backlog: [] };
+    for (const it of initial) {
+        const g = deriveGroup(it);
+        (buckets[g] || buckets.backlog).push(it);
+    }
+    let html = '<div class="iss-groups">';
+    let any = false;
+    for (const key of GROUP_ORDER) {
+        const list = buckets[key];
+        if (!list || !list.length) continue;
+        any = true;
+        const gm = GROUP_META[key];
+        html += '<section class="iss-group" data-group-key="' + key + '">'
+            + '<div class="iss-group-head"><span class="iss-group-dot ' + gm.dot + '" aria-hidden="true"></span>'
+            + '<span class="iss-group-title">' + escapeHtmlSsr(gm.label) + '</span>'
+            + '<span class="iss-group-count">' + list.length + '</span></div>'
+            + '<div class="iss-group-grid">' + list.map(renderIssueCard).join('') + '</div></section>';
+    }
+    html += '</div>';
+    if (!any) return '<div class="iss-empty">El pipeline está al día — sin issues activos</div>';
+    return html;
+}
+
+function countGroups(initial) {
+    const c = { total: initial.length, trabajando: 0, listo: 0, blocked: 0 };
+    for (const it of initial) {
+        const g = deriveGroup(it);
+        if (g === 'trabajando') c.trabajando++;
+        else if (g === 'listo') c.listo++;
+        else if (g === 'bloqueado') c.blocked++;
+    }
+    return c;
+}
+
+// =============================================================================
+// renderIssuesHTML(opts) — página completa de la ventana `/issues`.
+//   opts.matrix / opts.priorityOrder — snapshot del pipelineSlice.
+//   opts.mission — datos de la ola para el banner (derivados en la ruta).
+//   opts.initialIssues — alternativa: array de issues ya normalizados.
+// =============================================================================
 function renderIssuesHTML(opts) {
     const theme = loadTheme();
     const tokens = loadDesignTokens();
     const spriteInline = loadIconSprite();
-    const navHtml = renderNavTabsSsr('issues');
+    const mission = (opts && opts.mission) || null;
 
     const initial = buildInitialIssues(opts);
-    const cards = initial.map(renderIssueCard).join('');
-    const gridInner = cards || '<div class="iss-empty">El pipeline está al día — sin issues activos</div>';
+    const counts = countGroups(initial);
+    const gridInner = renderGroupedSSR(initial);
 
     const body = '<main class="iss-body" id="issues-body">'
-        + '<div class="iss-rail" aria-hidden="true"></div>'
-        + '<div class="iss-summary" id="issues-summary" aria-live="polite">'
-        +   '<strong>' + initial.length + '</strong> issues activos</div>'
+        + renderCounters(counts)
         + renderIssuesFilterBar()
-        + '<div id="issues-grid" class="iss-grid" aria-live="polite" aria-label="Issues activos del pipeline">'
+        + '<div id="issues-grid" aria-live="polite" aria-label="Backlog agrupado por estado">'
         +   gridInner
         + '</div>'
         + renderIssuesDialog()
         + '</main>';
-
-    const clock = escapeHtmlSsr(new Date().toLocaleTimeString('es-AR'));
 
     return `<!DOCTYPE html>
 <html lang="es">
@@ -890,28 +1527,14 @@ function renderIssuesHTML(opts) {
 </head>
 <body>
 <div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">${spriteInline}</div>
-${/* #3953 (CA-2) — banner discreto de dato desactualizado; el wrapper fetchJson
-      lo muestra ante fallo de polling y lo limpia al recuperar. */ ''}
 ${renderStaleBanner()}
 <a href="#issues-grid" class="in-skip-link" style="position:absolute;left:-9999px">Saltar al listado de issues</a>
 <div class="iss-frame">
-  <header class="in-header">
-    <div class="in-header-brand">
-      <div class="in-header-logo">i</div>
-      <div>
-        <div class="in-header-title">Issues</div>
-        <div class="in-header-subtitle">Vista operacional del backlog · estado en vivo</div>
-      </div>
-    </div>
-    <div class="in-header-meta">
-      <span class="in-clock" id="hdr-clock">${clock}</span>
-    </div>
-  </header>
-  ${navHtml}
+  ${renderMizpaChrome(mission)}
   ${body}
   <footer class="in-footer">
-    <span>Vista operacional · datos en vivo cada 60s</span>
-    <span>Intrale V3 · #3730</span>
+    <span>Centro de mando MIZPÁ · backlog en vivo cada 60s</span>
+    <span>Intrale V3 · #4192</span>
   </footer>
 </div>
 <script>${FETCH_CLIENT_JS}
@@ -921,8 +1544,7 @@ ${renderIssuesClientScript()}</script>
 </html>`;
 }
 
-// Panel inerte visible (CA-A3 del épico) si el require/render fallara aguas
-// arriba. El render nunca queda en blanco.
+// Panel inerte visible (CA-A3) si el require/render fallara aguas arriba.
 function renderInert(reason) {
     const safe = escapeHtmlSsr(reason || 'módulo no disponible');
     return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
@@ -939,10 +1561,14 @@ module.exports = {
     renderIssueCard,
     renderIssuesClientScript,
     renderIssuesFilterBar,
+    renderCounters,
     renderIssuesDialog,
+    renderMizpaChrome,
     buildInitialIssues,
+    renderGroupedSSR,
     normalizeIssue,
     deriveState,
+    deriveGroup,
     renderInert,
     ISSUES_CSS,
     escapeHtmlSsr,

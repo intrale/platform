@@ -342,6 +342,36 @@ try { issuesView = require('../views/dashboard/issues'); } catch { /* fallback a
 // (VIEW_SLUGS), ambos al MISMO thunk para que no diverjan (CA-A2). El cliente
 // re-hidrata vía /api/dash/pipeline. Si el módulo nuevo no cargó o su render
 // tira, degrada a `sat.renderIssues` (defensa en profundidad, R-4).
+// #4192 — Banner de misión del rediseño MIZPÁ de la ventana Issues. Deriva la
+// ola protagonista (label/número), entregados N/M y ETA/velocidad desde el state
+// en vivo (activeWave + olaETA). Defensivo: si falta cualquier pieza, devuelve
+// null y la vista degrada a un banner neutro sin romper (CA-A3 del épico).
+function deriveIssuesMission(state) {
+    try {
+        const s = state || {};
+        const wave = s.activeWave || {};
+        const issuesArr = Array.isArray(wave.issues) ? wave.issues : [];
+        const titles = s.issueTitles || {};
+        let entregados = 0;
+        for (const it of issuesArr) {
+            const n = (it && typeof it === 'object') ? it.number : it;
+            const meta = titles[String(n)];
+            if (meta && String(meta.state).toUpperCase() === 'CLOSED') entregados++;
+        }
+        const eta = s.olaETA || null;
+        const vel = (eta && eta.velocityETA) || null;
+        return {
+            label: wave.name || wave.label || (wave.number ? ('Ola ' + wave.number) : 'Ola actual'),
+            number: Number.isInteger(wave.number) ? wave.number : null,
+            total: issuesArr.length,
+            entregados,
+            etaRemainingMs: (vel && Number.isFinite(vel.remainingMs)) ? vel.remainingMs : null,
+            velocityPctPerMin: (vel && Number.isFinite(vel.velocityPctPerMin)) ? vel.velocityPctPerMin : null,
+            totalPct: (vel && Number.isFinite(vel.totalPct)) ? vel.totalPct : null,
+        };
+    } catch { return null; }
+}
+
 function renderIssuesView(ctx, opts) {
     if (!issuesView || typeof issuesView.renderIssuesHTML !== 'function') {
         return sat.renderIssues();
@@ -351,14 +381,17 @@ function renderIssuesView(ctx, opts) {
     // y el cliente hidrata vía /api/dash/pipeline. NO degradamos a la tabla
     // legacy sólo por falta de datos iniciales.
     let pSlice = null;
+    let mission = null;
     try {
         const state = (ctx && typeof ctx.getState === 'function') ? ctx.getState() : {};
         pSlice = slices.pipelineSlice(state || {}, ctx || {});
+        mission = deriveIssuesMission(state || {});
     } catch { pSlice = null; }
     try {
         return issuesView.renderIssuesHTML(Object.assign({}, opts || {}, {
             matrix: pSlice ? pSlice.matrix : null,
             priorityOrder: pSlice ? pSlice.priorityOrder : [],
+            mission,
         }));
     } catch (e) {
         if (typeof issuesView.renderInert === 'function') {
