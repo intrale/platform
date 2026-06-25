@@ -240,15 +240,31 @@ test('snapshot IDs: cada referencia literal del client script existe en SSR', ()
 // reflejados escapados REQ-SEC-5).
 // =============================================================================
 
-test('CA-1: renderHomeHTML emite el grid de 3 bandas con overflow:hidden', () => {
+// #4189 — El home «MIZPÁ» (mockup v6) reemplaza las 3 bandas (#4172) por:
+// banner de misión → nav curada → panel estado+cuotas → grilla 2-col → diag.
+// El wrapper conserva id="mission-grid" para que _applyMissionFrame() siga
+// detectando el home sin tocar el cliente (R-G1).
+test('#4189: renderHomeHTML emite el layout MIZPÁ (banner + panel + grilla 2-col)', () => {
     const html = renderHomeHTML({});
-    assert.ok(html.includes('class="mission-grid"'), 'debe emitir el contenedor mission-grid');
-    assert.ok(/grid-template-rows:\s*22fr 48fr 30fr/.test(html), 'bandas 22/48/30 (#4172 rediseño Sala de Control)');
-    assert.ok(html.includes('mission-frame'), 'el frame del home lleva el modifier mission-frame');
-    assert.ok(/\.kiosk-frame\.mission-frame\s*\{[^}]*height:\s*100vh/.test(html), 'frame con height:100vh');
-    assert.ok(/\.kiosk-frame\.mission-frame\s*\{[^}]*overflow:\s*hidden/.test(html), 'frame con overflow:hidden');
-    assert.ok(html.includes('id="band-salud"') && html.includes('id="band-ahora"') && html.includes('id="band-flujo"'),
-        'las 3 bandas tienen sus ids invariantes (CA-13 morphing)');
+    assert.ok(html.includes('class="mz-home" id="mission-grid"'),
+        'el wrapper MIZPÁ conserva id="mission-grid" (compat _applyMissionFrame)');
+    assert.ok(html.includes('id="mz-mission"'), 'banner de misión con ola protagonista');
+    assert.ok(html.includes('id="mission-wave-num"') && html.includes('id="mission-avance-pct"')
+        && html.includes('id="mission-eta-value"') && html.includes('id="mission-delivered-value"'),
+        'el banner expone número de ola, avance, ETA y entregados (hidratables)');
+    assert.ok(html.includes('class="mz-sysquota"'), 'panel estado + cuotas');
+    assert.ok(html.includes('id="mz-quota-session-pct"') && html.includes('id="mz-quota-week-pct"'),
+        'cuotas de sesión y semanal con % agregado');
+    assert.ok(html.includes('id="mz-quota-session-anthropic-bar"') && html.includes('id="mz-quota-session-codex-bar"')
+        && html.includes('id="mz-quota-session-gemini-bar"'),
+        'desglose por proveedor Anthropic/Codex/Gemini (CA-6)');
+    assert.ok(html.includes('class="mz-grid"'), 'grilla de 2 columnas');
+    assert.ok(html.includes('class="mz-panel mz-now"') && html.includes('class="mz-panel mz-board"'),
+        'columna Ahora·Ejecución + Tablero de la Ola');
+    // Los IDs invariantes de los tickers siguen presentes (varios en el <details> de diag).
+    assert.ok(html.includes('id="active-list"') && html.includes('id="wave-panel"')
+        && html.includes('id="semaforo-global"') && html.includes('id="kpi-quota"'),
+        'sub-componentes con IDs hidratables preservados (telemetría viva)');
 });
 
 test('CA-3: semáforo sano informa "sin degradaciones"', () => {

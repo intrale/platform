@@ -193,3 +193,40 @@ test('renderNavTabsSsr sin badgeForSlug no emite area-pill-badge', () => {
     const html = renderNavTabsSsr('home');
     assert.doesNotMatch(html, /area-pill-badge/);
 });
+
+// ---------------------------------------------------------------------------
+// #4189 — Nav curada: 5 esenciales en la barra + popover "⋯ Más" con el resto
+// ---------------------------------------------------------------------------
+
+test('#4189: exactamente 5 tabs llevan primary y definen la barra', () => {
+    const primaries = NAV_TABS.filter(t => t.primary).sort((a, b) => a.primary - b.primary);
+    assert.equal(primaries.length, 5, 'deben ser 5 tabs esenciales');
+    assert.deepEqual(primaries.map(t => t.slug), ['home', 'pipeline', 'issues', 'bloqueados', 'costos'],
+        'orden de la barra: Inicio · Pipeline · Issues · Bloqueados · Costos');
+});
+
+test('#4189: el popover <details> agrupa las 8 secciones secundarias con contador', () => {
+    const html = renderNavTabsSsr('home');
+    assert.match(html, /<details class="v3-more"/, 'emite el contenedor del popover');
+    assert.match(html, /<summary class="v3-more-btn"/, 'tiene botón summary nativo (sin JS)');
+    const secondaryCount = NAV_TABS.filter(t => !t.primary).length;
+    assert.equal(secondaryCount, 8, 'hay 8 tabs secundarias');
+    assert.match(html, new RegExp('<span class="v3-more-count" aria-hidden="true">' + secondaryCount + '</span>'),
+        'el contador refleja la cantidad de secciones escondidas');
+    // El popover sigue conteniendo anchors v3-tab reales (no se pierde ninguna ruta).
+    assert.match(html, /<div class="v3-more-menu"[^>]*>[\s\S]*href="\/equipo"/, 'equipo vive dentro del popover');
+});
+
+test('#4189: vista secundaria activa abre el popover y lo marca activo', () => {
+    const html = renderNavTabsSsr('equipo');
+    assert.match(html, /<details class="v3-more v3-more-active" open>/,
+        'cuando la vista activa es secundaria, el popover queda abierto y marcado');
+    // Y sigue habiendo exactamente 1 aria-current (la tab activa dentro del popover).
+    assert.equal((html.match(/aria-current="page"/g) || []).length, 1);
+});
+
+test('#4189: vista primaria activa NO abre el popover', () => {
+    const html = renderNavTabsSsr('home');
+    assert.doesNotMatch(html, /v3-more-active/);
+    assert.doesNotMatch(html, /<details class="v3-more" open>/);
+});
