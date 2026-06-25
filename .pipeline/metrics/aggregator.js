@@ -18,6 +18,15 @@ const readline = require('readline');
 const { LOG_FILE, REPO_ROOT, estimateCostUsd, MODEL_PRICING } = require('../lib/traceability');
 const pricing = require('../lib/pricing');
 const { computeProjections } = require('./projections');
+// (#3962 EP8-H9 CA-4) Presupuesto mensual persistido — sobreescribe el default
+// `METRICS_QUOTA_MONTHLY_USD` que usa projections. Require defensivo: si el
+// módulo no cargó, el aggregator sigue con el default (degradación segura).
+let budgetConfig = null;
+try { budgetConfig = require('./budget-config'); } catch (_) { /* opcional */ }
+// (#3962 CA-3) Redacción del drill-down por skill (belt-and-suspenders sobre el
+// whitelist explícito de campos). Require defensivo.
+let redactLib = null;
+try { redactLib = require('../redact'); } catch (_) { /* opcional */ }
 
 const METRICS_DIR = path.join(REPO_ROOT, '.pipeline', 'metrics');
 const SNAPSHOT_FILE = path.join(METRICS_DIR, 'snapshot.json');
@@ -181,6 +190,14 @@ async function buildSnapshot(options) {
     // de tokens 24h. Mismo shape que `emptyBucket()` para reusar `addToBucket`.
     const tokensByProvider = new Map(); // provider → bucket (session:end)
     const dailySeries = new Map();    // YYYY-MM-DD → { cost_usd, tts_cost_usd, sessions } (para proyecciones)
+    // (#3962 EP8-H9 CA-1) Serie diaria CRUZADA por proveedor para el área
+    // apilada del gráfico de Costos. Clave "YYYY-MM-DD|provider". Costo marginal
+    // nulo: se acumula en el mismo recorrido O(n) sobre session:end.
+    const dailyByProvider = new Map(); // "YYYY-MM-DD|provider" → { cost_usd, sessions }
+    // (#3962 EP8-H9 CA-3) Drill-down por skill → sesiones individuales. WHITELIST
+    // EXPLÍCITO de campos: SOLO { provider, cost_usd, duration_ms, ts }. NUNCA
+    // issue, tokens_*, paths, prompts ni IDs internos (REQ-SEC A01/A02).
+    const sessionsBySkill = new Map(); // skill → [{ provider, cost_usd, duration_ms, ts }]
     const hourlyBuckets = new Map();  // "YYYY-MM-DD HH" → { cost_usd, tokens, sessions } (#2891 baseline horario)
     // Top consumidores por hora-del-dia (#2892 PR-C). Bucket "YYYY-MM-DD HH|skill" → cost_usd.
     // Permite que el alert builder de Telegram extraiga top 3 de la franja anómala.
@@ -283,6 +300,32 @@ async function buildSnapshot(options) {
             const provKey = provider || 'unknown';
             if (!tokensByProvider.has(provKey)) tokensByProvider.set(provKey, emptyBucket());
             addToBucket(tokensByProvider.get(provKey), evt);
+        }
+
+        // (#3962 EP8-H9 CA-1) Serie diaria por proveedor para el área apilada.
+        // Mismo fallback 'unknown' que `tokensByProvider`. Solo session:end aporta
+        // costo de tokens al gráfico (TTS se reporta aparte).
+        if (evt.event === 'session:end' && evt.ts) {
+            const day = String(evt.ts).substring(0, 10); // YYYY-MM-DD
+            const provKey = provider || 'unknown';
+            const dpKey = `${day}|${provKey}`;
+            if (!dailyByProvider.has(dpKey)) dailyByProvider.set(dpKey, { cost_usd: 0, sessions: 0 });
+            const dp = dailyByProvider.get(dpKey);
+            dp.cost_usd += estimateCostUsd(evt.provider || null, evt.model, evt);
+            dp.sessions += 1;
+        }
+
+        // (#3962 EP8-H9 CA-3) Drill-down por skill → sesiones individuales.
+        // WHITELIST EXPLÍCITO: solo estos 4 campos públicos. NO se toca `issue`,
+        // `tokens_*`, paths, prompts ni IDs internos (REQ-SEC A01/A02).
+        if (evt.event === 'session:end') {
+            if (!sessionsBySkill.has(skill)) sessionsBySkill.set(skill, []);
+            sessionsBySkill.get(skill).push({
+                provider: provider || 'unknown',
+                cost_usd: Math.round(estimateCostUsd(evt.provider || null, evt.model, evt) * 10000) / 10000,
+                duration_ms: Number(evt.duration_ms || 0),
+                ts: typeof evt.ts === 'string' ? evt.ts : null,
+            });
         }
 
         // Serie temporal diaria para proyecciones (#2488)
@@ -416,7 +459,52 @@ async function buildSnapshot(options) {
         .map(([day, d]) => ({ day, ...d, cost_usd: Math.round(d.cost_usd * 10000) / 10000, tts_cost_usd: Math.round(d.tts_cost_usd * 10000) / 10000 }))
         .sort((a, b) => a.day.localeCompare(b.day));
 
-    const projections = computeProjections({ daily, now: new Date(nowMs) });
+    // (#3962 EP8-H9 CA-1) Serie diaria por proveedor ordenada (día asc, luego
+    // provider alfabético para estabilidad de render).
+    const dailyByProviderArr = [...dailyByProvider.entries()]
+        .map(([key, v]) => {
+            const sep = key.lastIndexOf('|');
+            return {
+                day: key.slice(0, sep),
+                provider: key.slice(sep + 1),
+                cost_usd: Math.round(v.cost_usd * 10000) / 10000,
+                sessions: v.sessions,
+            };
+        })
+        .sort((a, b) => (a.day.localeCompare(b.day) || a.provider.localeCompare(b.provider)));
+
+    // (#3962 EP8-H9 CA-3) Drill-down por skill → sesiones. Belt-and-suspenders:
+    // los strings ya vienen por whitelist (4 campos), pero igual pasamos
+    // provider/ts por `redact()` para neutralizar cualquier path/token que se
+    // hubiera colado en un valor inesperado (REQ-SEC A01/A02). Orden: más
+    // reciente primero. Cap defensivo de 200 sesiones por skill (anti-payload).
+    const sessionsBySkillObj = {};
+    for (const [skill, list] of sessionsBySkill.entries()) {
+        const safe = list
+            .slice()
+            .sort((a, b) => String(b.ts || '').localeCompare(String(a.ts || '')))
+            .slice(0, 200)
+            .map((s) => ({
+                provider: redactLib ? redactLib.redact(String(s.provider || 'unknown')) : String(s.provider || 'unknown'),
+                cost_usd: Number(s.cost_usd || 0),
+                duration_ms: Number(s.duration_ms || 0),
+                ts: s.ts ? (redactLib ? redactLib.redact(String(s.ts)) : String(s.ts)) : null,
+            }));
+        sessionsBySkillObj[skill] = safe;
+    }
+
+    // (#3962 EP8-H9 CA-4) Presupuesto mensual persistido sobreescribe el default
+    // de projections. Lectura tolerante (default si no hay archivo).
+    let monthlyBudgetUsd = null;
+    if (budgetConfig) {
+        try { monthlyBudgetUsd = Number(budgetConfig.readBudget().monthly_usd); }
+        catch (_) { monthlyBudgetUsd = null; }
+    }
+    const projectionsOpts = { daily, now: new Date(nowMs) };
+    if (Number.isFinite(monthlyBudgetUsd) && monthlyBudgetUsd > 0) {
+        projectionsOpts.quotas = { monthly_token_usd: monthlyBudgetUsd };
+    }
+    const projections = computeProjections(projectionsOpts);
 
     // Baseline horario y hora actual (#2891 PR-B).
     // hourlySeries[HH] = promedio por hora-del-día calculado sobre los días en
@@ -460,6 +548,9 @@ async function buildSnapshot(options) {
         tts,
         llm_vs_deterministic: llmVsDeterministic,
         daily,
+        // (#3962 EP8-H9 CA-1/CA-3) Series para la pantalla Costos rediseñada.
+        dailyByProvider: dailyByProviderArr,
+        sessionsBySkill: sessionsBySkillObj,
         projections,
         hourlySeries: hourly.series,
         hourlyMeta: hourly.meta,
@@ -575,6 +666,9 @@ function emitEmptySnapshot(options) {
         tts: { by_provider: [], by_agent: [], by_issue: [] },
         llm_vs_deterministic: [],
         daily: [],
+        // (#3962 EP8-H9) Series vacías para que el slice/view no necesiten guard.
+        dailyByProvider: [],
+        sessionsBySkill: {},
         projections: computeProjections({ daily: [], now: new Date(nowMs) }),
         hourlySeries: hourly.series,
         hourlyMeta: hourly.meta,

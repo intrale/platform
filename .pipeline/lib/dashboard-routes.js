@@ -442,6 +442,39 @@ try { partialPause = require('./partial-pause'); } catch { /* opcional */ }
 let alertTrayAudit = null;
 try { alertTrayAudit = require('./alert-tray-audit'); } catch { /* opcional */ }
 
+// #3962 EP8-H9 — Presupuesto mensual persistido (endpoint mutante de Costos) +
+// módulo de render del rediseño. Requires defensivos: si no cargan, el endpoint
+// devuelve 503 y la vista cae al render legacy sin el bloque rediseñado.
+let budgetConfig = null;
+try { budgetConfig = require('../metrics/budget-config'); } catch { /* opcional */ }
+let costosView = null;
+try { costosView = require('../views/dashboard/costos'); } catch { /* opcional */ }
+// Cota máxima del presupuesto (REQ-SEC A03). Reusa la del módulo si está, sino
+// un default razonable.
+const BUDGET_MAX = (budgetConfig && budgetConfig.BUDGET_MAX) || 1000000;
+
+// #3962 EP8-H9 — Render de la pantalla Costos con el bloque rediseñado (gráfico
+// área apilada + presupuesto + proyecciones + drill-down) inyectado ARRIBA del
+// contenido legacy (cuota Plan Max + consumo). SSR: el slice se arma server-side
+// para que el deep-link `/dashboard?view=costos` y `/costos` muestren el gráfico
+// sin esperar JS. Aditivo (CA-7): si el módulo de render o el slice fallan, cae
+// al render legacy intacto. Resuelve al MISMO thunk desde `/costos` (HTML_ROUTES)
+// y `?view=costos` (VIEW_SLUGS) para que no diverjan (CA-A2).
+function renderCostosView(ctx, opts) {
+    let redesignHtml = '';
+    if (costosView && typeof costosView.renderCostosRedesign === 'function') {
+        try {
+            const state = (ctx && typeof ctx.getState === 'function') ? ctx.getState() : {};
+            const slice = slices.costosSlice(state || {}, ctx || {});
+            redesignHtml = costosView.renderCostosRedesign(slice);
+        } catch (e) {
+            try { console.warn('[dashboard-routes] costos redesign unavailable: ' + (e && e.message)); } catch { /* noop */ }
+            redesignHtml = '';
+        }
+    }
+    return sat.renderCostos(Object.assign({}, opts || {}, { redesignHtml }));
+}
+
 // #3259 — Health por provider (cache TTL 5min, allowlist live-ping) +
 // dispatch-by-provider (activity log 24h). Lectura defensiva: si el módulo
 // no carga, los endpoints devuelven 503.
@@ -605,7 +638,8 @@ const HTML_ROUTES = {
     // state en vivo. Mismo thunk que `?view=kpis` (VIEW_SLUGS) para no divergir.
     '/kpis': (ctx) => renderKpisView(ctx),
     '/historial': sat.renderHistorial,
-    '/costos': sat.renderCostos,
+    // #3962 EP8-H9 — /costos resuelve al render con el bloque rediseñado SSR.
+    '/costos': (ctx) => renderCostosView(ctx),
     // #3736 — guard: usa el módulo extraído si está disponible, si no el legacy.
     '/modo-descanso': () => (descansoView && descansoView.renderDescanso)
         ? descansoView.renderDescanso()
@@ -708,7 +742,9 @@ const VIEW_SLUGS = Object.freeze({
     // deep-link `/dashboard?view=costos` (CA-1.2).
     costos: {
         title: 'Costos',
-        render: (opts) => sat.renderCostos(opts),
+        // #3962 EP8-H9 — render con el bloque rediseñado SSR (mismo thunk que
+        // el path legacy `/costos`). Recibe ctx desde handle() para armar el slice.
+        render: (opts, ctx) => renderCostosView(ctx, opts),
     },
     // #3727..#3737 sumarán acá:
     // 'multi-provider':          { title: 'Multi-provider',          render: () => mp.renderMultiProvider() },
@@ -827,6 +863,11 @@ const API_ROUTES = {
     '/api/dash/ops': (state) => slices.opsSlice(state),
     '/api/dash/historial': (state) => slices.historialSlice(state),
     '/api/dash/quota': (state, ctx) => slices.quotaSlice(state, ctx),
+    // #3962 EP8-H9 — hidrata la pantalla Costos rediseñada: serie diaria por
+    // proveedor + presupuesto + estado de anomalía + proyecciones (con método)
+    // + drill-down REDACTADO. Hereda el gate loopback CA-S2 + Sec-Fetch-Site del
+    // dispatch de API_ROUTES.
+    '/api/dash/costos': (state, ctx) => slices.costosSlice(state, ctx),
     // #2976 — banner amarillo de cuota Anthropic agotada (modo determinístico).
     // Polling natural del dashboard cubre aparición/desaparición sin reload.
     '/api/dash/quota-exhausted': (state) => slices.quotaExhaustedSlice(state),
@@ -1142,6 +1183,91 @@ function handleAlertMutation(req, res) {
     return true;
 }
 
+// #3962 EP8-H9 CA-4 — Endpoint mutante del presupuesto mensual. Replica
+// LITERALMENTE el cinturón de gates de `handleAlertMutation`, en el MISMO orden:
+//   método≠POST → 405
+//   no-loopback → 403 (REQ-SEC-1/7, independiente del bind)
+//   cross-site  → 403 (anti-CSRF, REQ-SEC-1)
+//   Content-Type≠json → 415
+//   body sobre cap → 413 (REQ-SEC-8)
+//   valor inválido (no-number / NaN / Infinity / ≤0 / > cota / notación
+//     científica / string) → 400 SIN reflejar el input (REQ-SEC A03)
+// El actor se graba server-side FIJO (`operador-local`), NUNCA del body
+// (REQ-SEC-3). Persistencia atómica tmp+rename (en budget-config.writeBudget).
+function handleBudgetMutation(req, res) {
+    const pathnameOnly = (req.url || '').split('?')[0];
+    if (pathnameOnly !== '/dashboard/costos/budget') return false;
+
+    // Gate 1 — método.
+    if (req.method !== 'POST') {
+        _logPartialRejected(req, 'budget_method_not_allowed');
+        sendMutationJson(res, { error: 'method_not_allowed' }, 405);
+        return true;
+    }
+    // Gate 2 — loopback (REQ-SEC-1/7, independiente del bind).
+    if (!isLoopbackReq(req)) {
+        _logPartialRejected(req, 'budget_non_loopback');
+        sendMutationJson(res, { error: 'forbidden' }, 403);
+        return true;
+    }
+    // Gate 3 — same-origin (anti-CSRF, REQ-SEC-1).
+    if (!isSameOriginFetch(req)) {
+        _logPartialRejected(req, 'budget_cross_origin');
+        sendMutationJson(res, { error: 'forbidden' }, 403);
+        return true;
+    }
+    // Gate 4 — Content-Type debe ser JSON.
+    const ct = (req.headers && req.headers['content-type']) || '';
+    if (!/^application\/json\b/i.test(ct)) {
+        _logPartialRejected(req, 'budget_bad_content_type');
+        sendMutationJson(res, { error: 'unsupported_media_type' }, 415);
+        return true;
+    }
+    // Módulo de persistencia disponible.
+    if (!budgetConfig) {
+        sendMutationJson(res, { error: 'module_unavailable' }, 503);
+        return true;
+    }
+
+    // Gate 5 — body con cap (REQ-SEC-8) + parseo + validación estricta del valor.
+    readBodyCapped(req, ALERT_BODY_MAX_BYTES, (err, raw) => {
+        if (err) {
+            const tooLarge = err.message === 'body_too_large';
+            _logPartialRejected(req, tooLarge ? 'budget_body_too_large' : 'budget_body_read_error');
+            sendMutationJson(res, { error: tooLarge ? 'payload_too_large' : 'bad_request' }, tooLarge ? 413 : 400);
+            return;
+        }
+        let parsed = null;
+        try { parsed = raw ? JSON.parse(raw) : {}; } catch { parsed = null; }
+        if (!parsed || typeof parsed !== 'object') {
+            sendMutationJson(res, { error: 'bad_request' }, 400);
+            return;
+        }
+        // Validación server-side ESTRICTA (REQ-SEC A03):
+        const value = parsed.monthlyUsd;
+        const n = Number(value);
+        const rawStr = String(value);
+        const valid = typeof value === 'number'        // rechaza strings ("100")
+            && Number.isFinite(n)                       // rechaza NaN / Infinity
+            && n > 0                                     // rechaza ≤ 0
+            && n <= BUDGET_MAX                           // rechaza por encima de la cota
+            && !/[eE]/.test(rawStr);                     // rechaza notación científica (1e3)
+        if (!valid) {
+            // Body genérico — NO reflejamos el input crudo.
+            sendMutationJson(res, { error: 'bad_request', applied: false }, 400);
+            return;
+        }
+        try {
+            budgetConfig.writeBudget(n, { actor: 'operador-local' }); // actor FIJO, atómico tmp+rename
+            sendMutationJson(res, { ok: true, applied: true, actor: 'operador-local' }, 200);
+        } catch (e) {
+            try { console.error(JSON.stringify({ event: 'budget_mutation_error', msg: e && e.message, ts: new Date().toISOString() })); } catch {}
+            sendMutationJson(res, { error: 'internal_error' }, 500);
+        }
+    });
+    return true;
+}
+
 function sendJson(res, payload, status = 200) {
     const body = JSON.stringify(payload);
     res.writeHead(status, {
@@ -1172,6 +1298,9 @@ function handle(req, res, ctx) {
     // pasa su propio cinturón de gates (loopback + same-origin + Content-Type
     // + cap de body). El resto del dashboard sigue siendo read-only.
     if (handleAlertMutation(req, res)) return true;
+    // #3962 EP8-H9 CA-4 — endpoint mutante del presupuesto mensual. Mismo lugar
+    // que ack/snooze: ANTES del gate GET-only, con su propio cinturón de gates.
+    if (handleBudgetMutation(req, res)) return true;
 
     if (req.method !== 'GET') return false;
 
@@ -1385,5 +1514,9 @@ module.exports = {
         // #3954 — endpoints mutantes ack/snooze
         handleAlertMutation,
         ALERT_BODY_MAX_BYTES,
+        // #3962 EP8-H9 — endpoint mutante del presupuesto mensual
+        handleBudgetMutation,
+        BUDGET_MAX,
+        renderCostosView,
     },
 };

@@ -575,3 +575,41 @@ test('CA-9: fixtures usan placeholders FAKE — no hay API keys reales', () => {
     const nonFakeMatches = matches.filter(m => !/FAKE/i.test(m));
     assert.equal(nonFakeMatches.length, 0, 'no API keys reales en fixtures');
 });
+
+// =============================================================================
+// #3962 EP8-H9 — dailyByProvider (CA-1) + sessionsBySkill redactado (CA-3)
+// =============================================================================
+test('dailyByProvider expone serie cruzada día×proveedor (CA-1)', async () => {
+    // provider explícito por evento (el helper sessionEnd no lo incluye).
+    const events = [
+        { event: 'session:end', skill: 'guru', provider: 'anthropic', model: 'claude', tokens_in: 1000, tokens_out: 0, duration_ms: 1000, ts: '2026-06-09T10:00:00Z' },
+        { event: 'session:end', skill: 'po', provider: 'groq', model: 'llama', tokens_in: 500, tokens_out: 0, duration_ms: 1000, ts: '2026-06-09T11:00:00Z' },
+        { event: 'session:end', skill: 'guru', provider: 'anthropic', model: 'claude', tokens_in: 700, tokens_out: 0, duration_ms: 1000, ts: '2026-06-10T09:00:00Z' },
+    ];
+    fs.writeFileSync(trace.LOG_FILE, events.map(e => JSON.stringify(e)).join('\n') + '\n', 'utf8');
+    const snap = await aggregator.buildSnapshot({ nowMs: Date.parse('2026-06-10T12:00:00Z') });
+    assert.ok(Array.isArray(snap.dailyByProvider));
+    // Una entrada por día×proveedor.
+    const keys = snap.dailyByProvider.map(r => `${r.day}|${r.provider}`).sort();
+    assert.deepEqual(keys, ['2026-06-09|anthropic', '2026-06-09|groq', '2026-06-10|anthropic']);
+    for (const r of snap.dailyByProvider) {
+        assert.ok(typeof r.day === 'string' && typeof r.provider === 'string');
+        assert.ok(typeof r.cost_usd === 'number' && typeof r.sessions === 'number');
+    }
+});
+
+test('sessionsBySkill está REDACTADO: sin issue/tokens/paths/prompts (CA-3, REQ-SEC)', async () => {
+    const events = [
+        { event: 'session:end', skill: 'guru', provider: 'anthropic', model: 'claude', issue: '3962', tokens_in: 1234, tokens_out: 567, cache_read: 99, duration_ms: 4200, ts: '2026-06-09T10:00:00Z', prompt: '/c/Users/secret/path' },
+    ];
+    fs.writeFileSync(trace.LOG_FILE, events.map(e => JSON.stringify(e)).join('\n') + '\n', 'utf8');
+    const snap = await aggregator.buildSnapshot({ nowMs: Date.parse('2026-06-10T12:00:00Z') });
+    assert.ok(snap.sessionsBySkill && snap.sessionsBySkill.guru);
+    const sess = snap.sessionsBySkill.guru[0];
+    // Whitelist exacto: solo estos 4 campos.
+    assert.deepEqual(Object.keys(sess).sort(), ['cost_usd', 'duration_ms', 'provider', 'ts']);
+    const blob = JSON.stringify(snap.sessionsBySkill);
+    for (const forbidden of ['issue', '3962', 'tokens_in', 'tokens_out', 'prompt', '/Users', 'secret']) {
+        assert.ok(!blob.includes(forbidden), `el drill-down NO debe contener "${forbidden}"`);
+    }
+});

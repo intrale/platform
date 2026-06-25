@@ -1272,8 +1272,12 @@ for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
 }
 
 // ─────────────────── Costos ───────────────────
-function renderCostos() {
-    const body = `
+function renderCostos(opts) {
+    // #3962 EP8-H9 — bloque rediseñado (gráfico área apilada + presupuesto +
+    // proyecciones + drill-down) inyectado SSR arriba del contenido legacy.
+    // Aditivo: si no se pasa `redesignHtml`, el render es idéntico al previo.
+    const redesignHtml = (opts && typeof opts.redesignHtml === 'string') ? opts.redesignHtml : '';
+    const body = `${redesignHtml}
 <section class="in-section">
   <h2 class="in-section-title"><span class="in-section-title-icon">📊</span>Cuota Plan Max · sesión 5h + semanal (reset domingo 21:00 ART)</h2>
   <p style="color:var(--in-fg-dim);font-size:12px;margin:0 0 14px 0">Anthropic no expone API. Estimación basada en duration_ms del activity-log (solo agentes Claude del pipeline; tu uso interactivo en claude.ai cuenta aparte). Auto-ajuste pasivo del límite semanal cuando el observado lo supera sin bloqueos.</p>
