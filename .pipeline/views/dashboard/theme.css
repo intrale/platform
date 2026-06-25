@@ -232,15 +232,22 @@ a:hover { color: var(--in-accent); }
      --in-accent, --in-fg, --in-radius-sm. Sin colores hardcoded (CA-4).
    - :focus-visible mantiene outline para teclado (CA-4 — WCAG AA).
 */
+/* #4189/#4195 — Nav curada MIZPÁ: 5 tabs primarios + popover «⋯ Más». La nav
+   compartida (nav-tabs.js) emite SIEMPRE este markup; estos estilos viven en
+   theme.css para que TODOS los satélites (no solo la home) rendericen la barra
+   y el popover correctamente. */
 .v3-nav {
-  display: grid;
-  grid-template-columns: repeat(13, minmax(44px, 1fr));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
   gap: 8px;
   padding: 8px 28px;
   background: var(--in-bg);
   border-bottom: 1px solid var(--in-border);
+  position: relative;
 }
 .v3-tab {
+  flex: 1 1 0;
   position: relative;
   min-height: 64px;
   min-width: 44px;
@@ -291,6 +298,59 @@ a:hover { color: var(--in-accent); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* #4189/#4195 — Popover «⋯ Más» (nativo con <details>). Espejo de los estilos
+   que vivían inline en home.js; compartidos acá para los satélites. */
+.v3-tab-desc { display: none; }
+.v3-more { position: relative; margin-left: auto; flex: 0 0 auto; display: flex; }
+.v3-more > summary { list-style: none; }
+.v3-more > summary::-webkit-details-marker { display: none; }
+.v3-more-btn { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700;
+  color: #bff3f6; padding: 9px 15px; border-radius: 9px; cursor: pointer; user-select: none;
+  background: linear-gradient(135deg, rgba(52,217,224,.16), rgba(124,92,255,.13)); border: 1px solid rgba(52,217,224,.32); }
+.v3-more-active .v3-more-btn { box-shadow: 0 0 0 1px rgba(52,217,224,.5) inset; }
+.v3-more-dots { font-size: 17px; line-height: 1; letter-spacing: 2px; }
+.v3-more-count { font-size: 9.5px; font-weight: 800; color: #06121a; background: var(--brand-cyan,#34D9E0); border-radius: 7px; padding: 2px 6px; }
+.v3-more-menu { position: absolute; top: calc(100% + 8px); right: 0; z-index: 30; width: 264px;
+  background: linear-gradient(180deg, var(--in-bg-2,#11151E), var(--in-bg-3,#141925)); border: 1px solid rgba(52,217,224,.25);
+  border-radius: 14px; padding: 8px; box-shadow: 0 20px 50px rgba(0,0,0,.55); display: flex; flex-direction: column; gap: 2px; }
+.v3-more-head { font-size: 9.5px; font-weight: 800; letter-spacing: 1px; color: var(--in-fg-dim,#5B6376); padding: 6px 10px 8px; }
+.v3-more-menu .v3-tab { flex: none; min-height: 0; display: flex; align-items: center; gap: 11px; padding: 9px 10px; border-radius: 9px;
+  width: auto; flex-direction: row; justify-content: flex-start; }
+.v3-more-menu .v3-tab:hover { transform: none; }
+.v3-more-menu .v3-tab .v3-tab-icon { width: 18px; height: 18px; flex: none; }
+.v3-more-menu .v3-tab .v3-tab-label { font-size: 13px; font-weight: 600; white-space: normal; text-align: left; }
+.v3-more-menu .v3-tab .v3-tab-desc { display: block; font-size: 10px; color: var(--in-fg-dim,#5B6376); font-weight: 600; margin-top: 1px; white-space: normal; }
+.v3-more-menu .v3-tab > .v3-tab-label { display: flex; flex-direction: column; align-items: flex-start; gap: 0; }
+
+/* #4195 — Barra de marca MIZPÁ (logo + tagline + selector multiproyecto).
+   Compartida para satélites migrados; consume design-tokens con fallback. */
+.in-header-brand { display: flex; align-items: center; gap: 13px; flex-wrap: wrap; }
+.mz-logo { width: 46px; height: 46px; border-radius: 14px; flex: none;
+  background: linear-gradient(135deg, var(--brand-cyan,#34D9E0), #7C5CFF 90%);
+  display: flex; align-items: center; justify-content: center; box-shadow: 0 8px 26px rgba(124,92,255,.30); }
+.mz-logo svg { width: 26px; height: 26px; }
+.mz-id { display: flex; flex-direction: column; }
+.mz-name { font-size: 21px; font-weight: 800; line-height: 1; letter-spacing: 1px;
+  background: linear-gradient(90deg,#bff3f6,#c9bcff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.mz-sub { font-size: 10px; color: var(--in-fg-dim,#8A93A6); font-weight: 600; letter-spacing: 1.1px; margin-top: 5px; }
+.mz-projsel { display: flex; align-items: center; gap: 11px; background: var(--in-bg-2,#11151E);
+  border: 1px solid var(--in-border,rgba(255,255,255,.12)); border-radius: 13px; padding: 8px 9px 8px 12px; margin-left: 4px; cursor: pointer; }
+.mz-projsel:focus-visible { outline: 2px solid var(--in-focus,#38bdf8); outline-offset: 2px; }
+.mz-proj-avatar { width: 30px; height: 30px; border-radius: 9px; flex: none; color: #06121a; font-weight: 800; font-size: 15px;
+  background: linear-gradient(135deg,#34D9E0,#5A8DEE); display: flex; align-items: center; justify-content: center; }
+.mz-proj-id { display: flex; flex-direction: column; }
+.mz-proj-name { font-size: 14px; font-weight: 800; line-height: 1.05; }
+.mz-proj-state { font-size: 9.5px; color: var(--in-fg-dim,#5B6376); font-weight: 700; letter-spacing: .4px; margin-top: 2px; }
+.mz-proj-badge { font-size: 10px; font-weight: 800; color: #9fe9ee; background: rgba(52,217,224,.12);
+  border: 1px solid rgba(52,217,224,.3); border-radius: 8px; padding: 3px 8px; }
+.mz-proj-caret { color: var(--in-fg-dim,#8A93A6); font-size: 12px; }
+
+/* #4195 — Miga de pan «⋯ Más › Equipo» bajo la nav (Equipo vive en el popover). */
+.mz-crumb { display: flex; align-items: center; gap: 8px; padding: 10px 28px 0; font-size: 12px; color: var(--in-fg-dim,#8A93A6); }
+.mz-crumb b { color: var(--in-fg,#e6edf3); font-weight: 700; }
+.mz-crumb .mz-crumb-sep { opacity: .5; }
+.mz-crumb .mz-crumb-desc { color: var(--in-fg-dim,#5B6376); }
 
 /* ──────────────── Skill avatars ──────────────── */
 .in-skill {

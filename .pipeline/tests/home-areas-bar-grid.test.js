@@ -35,47 +35,45 @@ function renderForTest() {
     return renderHomeHTML({ quotaState: { state: 'green', percent: 50 } });
 }
 
-function extractNavGridColumns(html) {
-    // Captura el bloque .v3-nav { ... } y extrae grid-template-columns.
-    // Tolerante a whitespace/newlines dentro del bloque (la CSS de
-    // theme.css trae cada propiedad en su propia línea).
+function extractNavBlock(html) {
+    // Captura el PRIMER bloque .v3-nav { ... } (el de theme.css, compartido).
     const block = html.match(/\.v3-nav\s*\{([\s\S]*?)\}/);
-    if (!block) return null;
-    const gtc = block[1].match(/grid-template-columns:\s*([^;]+);/);
-    return gtc ? gtc[1].trim() : null;
+    return block ? block[1] : null;
 }
 
-test('v3-nav usa grid de N columnas iguales (no auto-fit con minmax fijo que rebote a 2 filas)', () => {
+// #4189/#4195 — La nav dejó de ser un grid de N columnas (un slot por tab) y
+// pasó a ser CURADA: 5 tabs primarios + popover «⋯ Más». Layout flex elástico
+// con wrap; el grid de columnas fijas ya no modela la barra (y rompía el anclaje
+// del popover). Estos tests validan el nuevo contrato MIZPÁ sin perder CA-5
+// (touch target ≥44px) ni la completitud del catálogo.
+test('v3-nav usa layout flex elástico MIZPÁ (CA-1 #4195: nav curada + popover, sin grid)', () => {
     const html = renderForTest();
-    const gtc = extractNavGridColumns(html);
-    assert.ok(gtc, 'No se encontró grid-template-columns en .v3-nav');
-    // Tiene que ser repeat(<N>, minmax(<min>px, 1fr)) — el `1fr` garantiza
-    // distribución equitativa del ancho restante. Un literal sin `1fr`
-    // (ej: repeat(12, 80px)) o auto-fit vuelven a romper el wrap a 2 filas
-    // cuando cambia el ancho del kiosk (regresión histórica de #3358).
-    assert.match(
-        gtc,
-        /^repeat\(\d+,\s*minmax\(\d+px,\s*1fr\)\)$/,
-        `grid-template-columns inesperado: "${gtc}"`,
+    const navCss = extractNavBlock(html);
+    assert.ok(navCss, 'No se encontró el bloque .v3-nav');
+    assert.match(navCss, /display:\s*flex/, '.v3-nav debe usar display:flex');
+    assert.match(navCss, /flex-wrap:\s*wrap/, '.v3-nav debe permitir wrap');
+    assert.doesNotMatch(
+        navCss,
+        /grid-template-columns:\s*repeat\(/,
+        'no debe quedar grid-template-columns:repeat(...) (regresión pre-MIZPÁ)',
     );
 });
 
-test('cantidad de columnas del grid coincide con NAV_TABS.length (derivado del catálogo)', () => {
+test('la nav renderiza TODAS las tabs del catálogo (5 en la barra + resto en «⋯ Más»)', () => {
     const html = renderForTest();
-    const gtc = extractNavGridColumns(html);
-    const cols = Number(gtc && gtc.match(/^repeat\((\d+),/)[1]);
     const tabs = (html.match(/class="v3-tab(?:\s+v3-tab-active)?"/g) || []).length;
     assert.ok(tabs > 0, 'No se renderizaron .v3-tab en el home');
+    // Todas las tabs siguen siendo anchors alcanzables (primarias en la barra,
+    // secundarias dentro del popover): el conteo total == NAV_TABS.length.
     assert.equal(
         tabs,
         NAV_TABS.length,
         `tabs renderizados (${tabs}) != NAV_TABS.length (${NAV_TABS.length})`,
     );
-    assert.equal(
-        cols,
-        NAV_TABS.length,
-        `columnas (${cols}) != NAV_TABS.length (${NAV_TABS.length}); el grid debe derivar del catálogo`,
-    );
+    // El popover «⋯ Más» debe existir y agrupar las tabs secundarias.
+    assert.match(html, /class="v3-more/, 'falta el botón/popover «⋯ Más»');
+    const primaries = NAV_TABS.filter((t) => t.primary).length;
+    assert.equal(primaries, 5, 'la nav curada MIZPÁ tiene exactamente 5 tabs primarios');
 });
 
 test('cada .v3-tab conserva su badge (cuando aplica), icon y label (CA-4 sin regresión visual)', () => {
