@@ -49,9 +49,21 @@ let _restModeState = null;
 try { _restModeState = require('../../lib/rest-mode-state'); } catch { /* opcional */ }
 
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
+// #4172 — Rediseño home V3 "Sala de Control": el nuevo sistema visual consume
+// la fuente única de tokens (paleta/espaciado/radios/sombras) de
+// `assets/design-tokens.css`, igual que las ventanas satélite (providers.js /
+// issues.js). El home NO lo cargaba (usaba sólo --in-* de theme.css); ahora se
+// inyecta ANTES de theme.css para que coexistan los dos namespaces (--surface-*,
+// --space-*, --brand-* de tokens + --in-* de theme) sin pisarse.
+const DESIGN_TOKENS_CSS_PATH = path.join(__dirname, '..', '..', 'assets', 'design-tokens.css');
 
 function loadTheme() {
     try { return fs.readFileSync(THEME_CSS_PATH, 'utf8'); }
+    catch { return ''; }
+}
+
+function loadDesignTokens() {
+    try { return fs.readFileSync(DESIGN_TOKENS_CSS_PATH, 'utf8'); }
     catch { return ''; }
 }
 
@@ -121,12 +133,16 @@ function homeStyles() {
    lo agrega/quita al navegar para no recortar las otras vistas. */
 .kiosk-frame.mission-frame { height: 100vh; min-height: 0; overflow: hidden; }
 .kiosk-frame.mission-frame .kiosk-body { overflow: hidden; min-height: 0; }
+/* #4172 — Rediseño "Sala de Control": narrativa de conciencia operativa en 3
+   actos (PULSO 22% / AHORA 48% / FLUJO 30%). Todo el sistema visual consume
+   design-tokens.css (--surface-*/--space-*/--brand-*/--radius-*/--shadow-*),
+   con fallback a literales por si el archivo de tokens no se pudo leer. */
 .mission-grid {
     flex: 1;
     min-height: 0;
     display: grid;
-    grid-template-rows: 20fr 50fr 30fr;   /* Salud 20% · Ahora 50% · Flujo 30% */
-    gap: 12px;
+    grid-template-rows: 22fr 48fr 30fr;   /* #4172 PULSO 22% · AHORA 48% · FLUJO 30% */
+    gap: var(--space-4, 16px);
     overflow: hidden;
 }
 .mission-band {
@@ -134,73 +150,147 @@ function homeStyles() {
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: var(--space-3, 12px);
 }
+
+/* #4172 — Eyebrow de banda: índice numerado + chip de icono + título + regla.
+   Da el ritmo de lectura vertical (01 PULSO → 02 AHORA → 03 FLUJO) y aporta
+   la "fluidez" pedida sin recargar. */
+.band-eyebrow { display: flex; align-items: center; gap: var(--space-3, 12px); flex: 0 0 auto; }
+.band-eyebrow .idx { font-family: var(--font-mono); font-size: 12px; font-weight: 700; color: var(--brand-cyan, #00d6ff); letter-spacing: 0.12em; }
+.band-eyebrow .chip {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 24px; height: 24px; border-radius: var(--radius-sm, 6px);
+    background: var(--surface-2, #1c2128); border: 1px solid var(--border-subtle, #21262d);
+    font-size: 13px; line-height: 1;
+}
+.band-eyebrow .ttl { font-size: 15px; font-weight: 800; letter-spacing: 0.4px; text-transform: uppercase; color: var(--text-primary, #e6edf3); }
+.band-eyebrow .rule { flex: 1; height: 1px; background: var(--border-subtle, #21262d); }
+.band-eyebrow .meta { font-size: 12px; color: var(--text-dim, #8b949e); font-family: var(--font-mono); }
+
+/* #4172 — Tarjeta canónica única: surface-1 + riel de estado (border-left 3px)
+   + radius-lg + shadow-sm. El estado se lee por posición+icono+texto, nunca
+   sólo por color (WCAG AA). Receta reusada por infra/alertas/secciones. */
+.infra-health, .system-card, .ola-eta-section, .wave-panel, .alert-tray,
+.mission-band-flujo .in-section {
+    background: var(--surface-1, #161b22);
+    border: 1px solid var(--border-subtle, #21262d);
+    border-left: 3px solid var(--border, #30363d);
+    border-radius: var(--radius-lg, 14px);
+    box-shadow: var(--shadow-sm, 0 2px 4px rgba(0,0,0,0.36));
+}
+.infra-health   { border-left-color: var(--success, #3fb950); padding: var(--space-4, 16px); }
+.system-card    { border-left-color: var(--info, #58a6ff); }
+.ola-eta-section{ border-left-color: var(--info, #58a6ff); }
+.wave-panel     { border-left-color: var(--brand-blue, #1890ff); }
+.alert-tray     { border-left-color: var(--warning, #d29922); }
+
+/* ── BANDA 1 — PULSO: héroe semáforo + 3 KPIs faro ── */
 .mission-band-head {
     display: grid;
-    grid-template-columns: minmax(220px, 1fr) 2fr;
-    gap: 12px;
+    grid-template-columns: minmax(300px, 1fr) 1.35fr;
+    gap: var(--space-4, 16px);
     align-items: stretch;
+    flex: 0 0 auto;
 }
-/* Banda 1 — semáforo explicable */
+/* Héroe: el semáforo elevado con el ÚNICO acento de gradiente de marca de la
+   home (cyan→blue) → dirige la mirada al dato más importante. */
 .semaforo {
     display: flex;
-    gap: 12px;
-    align-items: flex-start;
-    background: var(--in-bg-2);
-    border: 1px solid var(--in-border);
-    border-radius: var(--in-radius);
-    padding: 14px 16px;
-    box-shadow: var(--in-shadow);
+    gap: var(--space-5, 20px);
+    align-items: center;
+    background:
+      radial-gradient(120% 140% at 0% 0%, rgba(0,214,255,0.10), transparent 60%),
+      var(--surface-1, #161b22);
+    border: 1px solid var(--border, #30363d);
+    border-left: 4px solid var(--success, #3fb950);
+    border-radius: var(--radius-xl, 20px);
+    padding: var(--space-5, 20px) var(--space-6, 24px);
+    box-shadow: var(--shadow-md, 0 4px 12px rgba(0,0,0,0.40));
 }
-.semaforo-disc { font-size: 26px; line-height: 1; }
+.semaforo-ok    { border-left-color: var(--success, #3fb950); }
+.semaforo-warn  { border-left-color: var(--warning, #d29922); }
+.semaforo-alert { border-left-color: var(--danger, #f85149); }
+.semaforo-stale { border-left-color: var(--text-dim, #8b949e); }
+.semaforo-disc {
+    width: 60px; height: 60px; flex: 0 0 auto;
+    border-radius: var(--radius-full, 9999px);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 30px; line-height: 1; background: var(--surface-2, #1c2128);
+}
+.semaforo-ok    .semaforo-disc { background: var(--success-bg, rgba(63,185,80,0.14)); box-shadow: var(--shadow-glow-ok, 0 0 10px rgba(63,185,80,0.45)); }
+.semaforo-warn  .semaforo-disc { background: var(--warning-bg, rgba(210,153,34,0.14)); }
+.semaforo-alert .semaforo-disc { background: var(--danger-bg, rgba(248,81,73,0.14)); }
+.semaforo-stale .semaforo-disc { background: var(--surface-2, #1c2128); }
 .semaforo-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.semaforo-label { font-size: 15px; font-weight: 700; letter-spacing: 0.6px; }
-.semaforo-ok    .semaforo-label { color: var(--in-ok); }
-.semaforo-warn  .semaforo-label { color: var(--in-warn); }
-.semaforo-alert .semaforo-label { color: var(--in-bad); }
-.semaforo-stale .semaforo-label { color: var(--in-fg-dim); }
-.semaforo-reasons { margin: 0; padding-left: 16px; font-size: 11px; color: var(--in-fg-dim); list-style: disc; max-height: 64px; overflow: auto; }
-.semaforo-reason-alert { color: var(--in-bad); }
-.semaforo-reason-warn  { color: var(--in-warn); }
-/* Banda 1 — 3 KPIs decisorios */
-.mission-kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-/* Banda 1 — bandeja de alertas (scroll vertical interno acotado, CA-2) */
-.alert-tray {
-    display: flex; flex-direction: column; gap: 6px; min-height: 0; overflow: hidden;
-    background: var(--in-bg-2); border: 1px solid var(--in-border);
-    border-radius: var(--in-radius); padding: 10px 14px; box-shadow: var(--in-shadow);
+.semaforo-label { font-size: 23px; font-weight: 800; letter-spacing: 0.4px; }
+.semaforo-ok    .semaforo-label { color: var(--success, #3fb950); }
+.semaforo-warn  .semaforo-label { color: var(--warning, #d29922); }
+.semaforo-alert .semaforo-label { color: var(--danger, #f85149); }
+.semaforo-stale .semaforo-label { color: var(--text-dim, #8b949e); }
+.semaforo-reasons { margin: 2px 0 0; padding-left: var(--space-4, 16px); font-size: 12px; color: var(--text-dim, #8b949e); list-style: disc; max-height: 60px; overflow: auto; }
+.semaforo-reason-alert { color: var(--danger, #f85149); }
+.semaforo-reason-warn  { color: var(--warning, #d29922); }
+
+/* 3 KPIs faro (cuota sesión · cuota semana · PRs). El wrapper #kpi-quota usa
+   display:contents para que sus dos hijos participen del grid de 3 columnas
+   manteniendo el id invariante que hidrata renderQuotaCard. */
+.pulse-kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-3, 12px); align-items: stretch; }
+.kpi-quota-wrap { display: contents; }
+.kpi-faro {
+    background: var(--surface-1, #161b22);
+    border: 1px solid var(--border-subtle, #21262d);
+    border-top: 2px solid var(--info, #58a6ff);
+    border-radius: var(--radius-lg, 14px);
+    padding: var(--space-3, 12px) var(--space-4, 16px);
+    display: flex; flex-direction: column; gap: 4px; min-width: 0;
+    box-shadow: var(--shadow-xs, 0 1px 2px rgba(0,0,0,0.30));
 }
+.kpi-faro.kpi-ok   { border-top-color: var(--success, #3fb950); }
+.kpi-faro.kpi-warn { border-top-color: var(--warning, #d29922); }
+.kpi-faro.kpi-bad  { border-top-color: var(--danger, #f85149); }
+.kpi-faro-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim, #8b949e); display: flex; align-items: center; gap: 6px; }
+.kpi-faro-value { font-size: 28px; font-weight: 800; font-family: var(--font-mono); line-height: 1; color: var(--text-primary, #e6edf3); font-variant-numeric: tabular-nums; }
+.kpi-faro.kpi-ok   .kpi-faro-value { color: var(--success, #3fb950); }
+.kpi-faro.kpi-warn .kpi-faro-value { color: var(--warning, #d29922); }
+.kpi-faro.kpi-bad  .kpi-faro-value { color: var(--danger, #f85149); }
+.kpi-faro-foot { font-size: 11px; color: var(--text-dim, #8b949e); font-family: var(--font-mono); }
+
+/* Banda 1 — detalle (infra + bandeja) lado a lado, scroll interno acotado */
+.mission-band-salud-detail { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(280px, 1fr) 1.6fr; gap: var(--space-4, 16px); overflow: hidden; }
+.mission-band-salud-detail > * { min-width: 0; overflow: auto; }
+
+/* Banda 1 — bandeja de alertas (scroll vertical interno acotado, CA-2) */
+.alert-tray { display: flex; flex-direction: column; gap: 6px; min-height: 0; overflow: hidden; padding: var(--space-4, 16px); }
 .alert-tray-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; min-height: 0; }
 .alert-tray-row {
     display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 10px;
-    padding: 6px 8px; border-radius: 8px; border-left: 4px solid var(--in-border);
-    background: var(--in-bg-1);
+    padding: var(--space-2, 8px) var(--space-3, 12px); border-radius: var(--radius-md, 8px);
+    border-left: 3px solid var(--border, #30363d); background: var(--surface-2, #1c2128);
 }
-.alert-tray-row.alert-alert { border-left-color: var(--in-bad); }
-.alert-tray-row.alert-warn  { border-left-color: var(--in-warn); }
-.alert-tray-row.alert-stale { border-left-color: var(--in-fg-dim); }
+.alert-tray-row.alert-alert { border-left-color: var(--danger, #f85149); }
+.alert-tray-row.alert-warn  { border-left-color: var(--warning, #d29922); }
+.alert-tray-row.alert-stale { border-left-color: var(--text-dim, #8b949e); }
 .alert-tray-text { font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.alert-tray-status { font-size: 11px; color: var(--in-fg-dim); white-space: nowrap; }
+.alert-tray-status { font-size: 11px; color: var(--text-dim, #8b949e); white-space: nowrap; }
 .alert-tray-actions { display: flex; gap: 4px; }
 .alert-ack-btn, .alert-snooze-btn {
     font-size: 11px; padding: 4px 8px; min-height: 24px; border-radius: 6px; cursor: pointer;
-    border: 1px solid var(--in-border); background: var(--in-bg-2); color: var(--in-fg);
+    border: 1px solid var(--border, #30363d); background: var(--surface-2, #1c2128); color: var(--text-secondary, #b1bac4);
 }
-.alert-snooze-max { border-color: var(--in-warn); }
-.alert-tray-empty { font-size: 12px; color: var(--in-fg-dim); padding: 6px 4px; }
-.alert-tray-audit { font-size: 11px; color: var(--in-fg-soft); border-top: 1px solid var(--in-border-soft); padding-top: 4px; max-height: 60px; overflow: auto; }
+.alert-snooze-max { border-color: var(--warning, #d29922); }
+.alert-tray-empty { font-size: 12px; color: var(--text-dim, #8b949e); padding: 6px 4px; }
+.alert-tray-audit { font-size: 11px; color: var(--text-disabled, #6e7681); border-top: 1px solid var(--border-subtle, #21262d); padding-top: 4px; max-height: 56px; overflow: auto; }
 .deeplink-selected { outline: 2px solid var(--in-focus, #38bdf8); outline-offset: 1px; }
-/* Banda 2 — carrusel/scroll horizontal acotado a la banda (CA-2) */
+
+/* ── BANDA 2 — AHORA: carrusel horizontal acotado a la banda (CA-2) ── */
 .mission-band-now { flex: 1; min-height: 0; overflow-x: auto; overflow-y: hidden; }
-.mission-band-now .active-list { display: flex; flex-direction: row; gap: 12px; flex-wrap: nowrap; }
+.mission-band-now .active-list { display: flex; flex-direction: row; gap: var(--space-4, 16px); flex-wrap: nowrap; height: 100%; align-items: stretch; }
 .mission-band-now .active-list > * { flex: 0 0 auto; }
-/* Banda 1 — detalle (infra + bandeja) lado a lado, scroll interno acotado */
-.mission-band-salud-detail { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(220px, 1fr) 2fr; gap: 12px; overflow: hidden; }
-.mission-band-salud-detail > * { min-width: 0; overflow: auto; }
-/* Banda 3 — flujo: dos columnas con scroll interno acotado */
-.mission-band-flow { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; overflow: hidden; }
-.mission-flow-col { min-width: 0; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
+
+/* ── BANDA 3 — FLUJO: dos columnas con scroll interno acotado ── */
+.mission-band-flow { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4, 16px); overflow: hidden; }
+.mission-flow-col { min-width: 0; overflow: auto; display: flex; flex-direction: column; gap: var(--space-3, 12px); }
 
 /* KPI grid */
 .kpi-grid {
@@ -3667,31 +3757,52 @@ function renderInfraHealth(state) {
     </section>`;
 }
 
-// --- Sub-función pura: grid de KPIs principales (R-G2) ----------------------
-// 5 KPIs en main: PRs·7d, Tokens·24h, Duración por agente, %Rebote·7d, Cuota.
-// Costo USD y Coverage multi-provider viven SOLO en la ventana `kpis`.
+// --- Sub-función pura: grid de KPIs de flujo (R-G2) -------------------------
+// #4172 — Los KPIs faro de cuota/PRs se promovieron a la banda PULSO (ver
+// `_pulseFaroKpis`). Acá quedan las métricas de flujo secundarias: agentes
+// activos, en cola, %Rebote·7d, Tokens·24h y Duración por agente. Todos los IDs
+// (kpi-active-value/kpi-queue-value/kpi-bounce-value/kpi-tokens-value/
+// kpi-cycle-value) se conservan intactos para no romper la hidratación
+// (tickKpis + _missionMirrorKpis). Costo USD y Coverage multi-provider viven
+// SOLO en la ventana `kpis`.
 function renderKpiGrid(state) {
     return `
-    <section class="kpi-grid" aria-label="KPIs">
-      ${renderKpiCard({ id: 'kpi-prs', valueId: 'kpi-prs-value', icon: '✅', label: 'PRs · 7d', sub: 'mergeados', title: 'PRs mergeados en los últimos 7 días (ventana UTC). Fuente: gh pr list, cache 5min.' })}
+    <section class="kpi-grid" aria-label="KPIs de flujo">
+      ${renderKpiCard({ id: 'kpi-active', valueId: 'kpi-active-value', icon: '🟢', label: 'Agentes activos', sub: 'ejecutando ahora', title: 'Agentes en ejecución (incluye Commander cuando atiende).' })}
+      ${renderKpiCard({ id: 'kpi-queue', valueId: 'kpi-queue-value', icon: '⏩', label: 'En cola', sub: 'próximos a lanzar', title: 'Issues esperando en la cola del pipeline.' })}
+      ${renderKpiCard({ id: 'kpi-bounce', valueId: 'kpi-bounce-value', icon: '↩', label: '% Rebote · 7d', sub: 'issues con ≥1 rebote', title: '% de issues con ≥1 rebote sobre issues terminados en los últimos 7 días. Hover para breakdown por fase.' })}
       ${renderKpiCard({ id: 'kpi-tokens', valueId: 'kpi-tokens-value', icon: '⚡', label: 'Tokens · 24h', sub: 'todos los providers', title: 'Tokens consumidos en las últimas 24h, sumados todos los providers (Claude · Codex · Gemini · Cerebras · NVIDIA). Hover para breakdown.' })}
       ${renderKpiCard({ id: 'kpi-cycle', valueId: 'kpi-cycle-value', icon: '⏱', label: 'Duración por agente', sub: 'mediana por marker', title: 'Mediana de duración por agente/fase (cap 7d). NO es cycle time DORA — esa métrica vive separada.' })}
-      ${renderKpiCard({ id: 'kpi-bounce', valueId: 'kpi-bounce-value', icon: '↩', label: '% Rebote · 7d', sub: 'issues con ≥1 rebote', title: '% de issues con ≥1 rebote sobre issues terminados en los últimos 7 días. Hover para breakdown por fase.' })}
-      <div class="kpi-card kpi-quota-dual" id="kpi-quota" title="Cuota Plan Max (sin API pública de Anthropic — calibrado contra valores reales de claude.ai).">
-        <span class="kpi-icon">📊</span>
-        <span class="kpi-label">Cuota Plan Max</span>
-        <div class="kpi-quota-row" id="kpi-quota-session">
-          <span class="kpi-quota-row-label">Sesión 5h</span>
-          <span class="kpi-quota-row-value" id="kpi-quota-session-pct">…</span>
-          <span class="kpi-quota-row-eta" id="kpi-quota-session-eta">·</span>
+    </section>`;
+}
+
+// --- #4172 — 3 KPIs faro de la banda PULSO (CA-3) ---------------------------
+// Cuota sesión 5h · Cuota semanal · PRs·7d, las métricas decisorias que el
+// operador necesita destacadas. El wrapper #kpi-quota (display:contents en CSS)
+// preserva el id invariante que `renderQuotaCard` busca con getElementById
+// antes de hidratar; sus dos hijos (kpi-quota-session/-week) reciben el toggle
+// kpi-ok/warn/bad client-side. Sin nuevas fuentes de datos (CA-6).
+function _pulseFaroKpis() {
+    return `
+    <div class="pulse-kpis" aria-label="KPIs clave">
+      <div class="kpi-quota-wrap" id="kpi-quota" title="Cuota Plan Max (sin API pública de Anthropic — calibrado contra valores reales de claude.ai).">
+        <div class="kpi-faro" id="kpi-quota-session">
+          <span class="kpi-faro-label">⏳ Cuota sesión 5h</span>
+          <span class="kpi-faro-value" id="kpi-quota-session-pct">…</span>
+          <span class="kpi-faro-foot" id="kpi-quota-session-eta">·</span>
         </div>
-        <div class="kpi-quota-row" id="kpi-quota-week">
-          <span class="kpi-quota-row-label">Semanal</span>
-          <span class="kpi-quota-row-value" id="kpi-quota-week-pct">…</span>
-          <span class="kpi-quota-row-eta" id="kpi-quota-week-eta">·</span>
+        <div class="kpi-faro" id="kpi-quota-week">
+          <span class="kpi-faro-label">📊 Cuota semanal</span>
+          <span class="kpi-faro-value" id="kpi-quota-week-pct">…</span>
+          <span class="kpi-faro-foot" id="kpi-quota-week-eta">·</span>
         </div>
       </div>
-    </section>`;
+      <div class="kpi-faro" id="kpi-prs" title="PRs mergeados en los últimos 7 días (ventana UTC). Fuente: gh pr list, cache 5min.">
+        <span class="kpi-faro-label">✅ PRs · 7d</span>
+        <span class="kpi-faro-value" id="kpi-prs-value">…</span>
+        <span class="kpi-faro-foot">mergeados</span>
+      </div>
+    </div>`;
 }
 
 // --- Sub-función pura: cola detallada (ETA ola + ejecutando + cola + olas) --
@@ -3957,31 +4068,32 @@ function renderAlertTray(state) {
     </section>`;
 }
 
-// --- Banda 1: 3 KPIs decisorios (CA-4) --------------------------------------
-// bouncePct / activeAgents / nextInQueue. Sin mocks: los valores los hidrata el
-// polling client-side (kpi-bounce-value ya lo sirve tickKpis; los otros dos se
-// mirrorean desde tickActive/tickQueue).
-function _missionKpis() {
+// --- #4172 — Eyebrow de banda (índice + chip + título + regla + meta) --------
+// Aporta el ritmo de lectura vertical de la "Sala de Control". El `meta` es
+// texto estático descriptivo (no se hidrata) — sin nuevas fuentes de datos.
+function _bandEyebrow(idx, chip, title, meta) {
     return `
-    <div class="mission-kpis" aria-label="KPIs decisorios">
-      ${renderKpiCard({ id: 'kpi-band-bounce', valueId: 'kpi-bounce-value', icon: '↩', label: '% Rebote · 7d', sub: 'issues con ≥1 rebote', title: '% de issues con ≥1 rebote sobre issues terminados en los últimos 7 días.' })}
-      ${renderKpiCard({ id: 'kpi-band-active', valueId: 'kpi-active-value', icon: '🟢', label: 'Agentes activos', sub: 'ejecutando ahora', title: 'Agentes en ejecución (incluye Commander cuando atiende).' })}
-      ${renderKpiCard({ id: 'kpi-band-queue', valueId: 'kpi-queue-value', icon: '⏩', label: 'En cola', sub: 'próximos a lanzar', title: 'Issues esperando en la cola del pipeline.' })}
-    </div>`;
+      <div class="band-eyebrow">
+        <span class="idx">${idx} ·</span>
+        <span class="chip" aria-hidden="true">${chip}</span>
+        <span class="ttl">${title}</span>
+        <span class="rule"></span>
+        <span class="meta">${meta}</span>
+      </div>`;
 }
 
-// --- Banda 1 (Salud) --------------------------------------------------------
-// Semáforo explicable + EXACTAMENTE 3 KPIs decisorios (CA-4) + salud de infra
-// por servicio + bandeja de alertas. La salud de infra (`renderInfraHealth`) se
-// conserva acá porque alimenta el detalle del semáforo y mantiene viva su
-// hidratación (tickHeader). El detalle de KPIs legacy NO va en Salud (CA-4):
-// vive en Banda 3.
+// --- Banda 1 (PULSO) --------------------------------------------------------
+// #4172 "Sala de Control": semáforo elevado a HÉROE + 3 KPIs faro decisorios
+// (cuota sesión/semana + PRs, CA-3) + salud de infra por servicio + bandeja de
+// alertas. La salud de infra (`renderInfraHealth`) alimenta el detalle del
+// semáforo y mantiene viva su hidratación (tickHeader).
 function renderHealthBand(state) {
     return `
     <section class="mission-band mission-band-salud" id="band-salud" aria-label="Salud">
+      ${_bandEyebrow('01', '🩺', 'Pulso', 'estado del sistema')}
       <div class="mission-band-head">
         ${renderSemaforo(state)}
-        ${_missionKpis()}
+        ${_pulseFaroKpis()}
       </div>
       <div class="mission-band-salud-detail">
         ${renderInfraHealth(state)}
@@ -3995,11 +4107,13 @@ function renderHealthBand(state) {
 // primero — el slice `activeAgents` ya lo `unshift`ea (#3948), por eso reusar
 // #active-list mantiene esa garantía sin código extra. El excedente se resuelve
 // con scroll/carrusel horizontal acotado a la banda (CA-2), nunca a la página.
-// El panel ETA de la ola actual acompaña como contexto del "ahora".
+// #4172 — La banda AHORA es la protagonista visual (48%): sólo el carrusel de
+// agentes activos. El panel ETA de la ola se movió a la banda FLUJO (contexto
+// temporal "¿qué viene?"), alineado con el mockup aprobado por UX.
 function renderNowBand(state) {
     return `
     <section class="mission-band mission-band-ahora" id="band-ahora" aria-label="Ahora">
-      ${_olaEtaSectionHtml()}
+      ${_bandEyebrow('02', '🟢', 'Ahora', 'en ejecución')}
       <div class="mission-band-now" id="mission-now-scroll">
         ${_activeSectionHtml()}
       </div>
@@ -4014,8 +4128,10 @@ function renderNowBand(state) {
 function renderFlowBand(state) {
     return `
     <section class="mission-band mission-band-flujo" id="band-flujo" aria-label="Flujo">
+      ${_bandEyebrow('03', '🌊', 'Flujo', 'SLA · cola · recientes')}
       <div class="mission-band-flow">
         <div class="mission-flow-col">
+          ${_olaEtaSectionHtml()}
           ${_wavePanelHtml()}
           ${_queueSectionHtml()}
         </div>
@@ -4053,6 +4169,7 @@ function renderHomeHTML(opts) {
     const unknownViewRequested = state.unknownViewRequested;
 
     const theme = loadTheme();
+    const designTokens = loadDesignTokens();
     const styles = homeStyles();
     const script = renderClientScript();
     // #3726 — Sprite SVG inline compartido (cache unificado en nav-tabs.js).
@@ -4090,6 +4207,7 @@ function renderHomeHTML(opts) {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1080">
 <title>Intrale · Operación</title>
+<style>${designTokens}</style>
 <style>${theme}</style>
 <style>${styles}</style>
 </head>

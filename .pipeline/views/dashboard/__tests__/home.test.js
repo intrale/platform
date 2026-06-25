@@ -243,7 +243,7 @@ test('snapshot IDs: cada referencia literal del client script existe en SSR', ()
 test('CA-1: renderHomeHTML emite el grid de 3 bandas con overflow:hidden', () => {
     const html = renderHomeHTML({});
     assert.ok(html.includes('class="mission-grid"'), 'debe emitir el contenedor mission-grid');
-    assert.ok(/grid-template-rows:\s*20fr 50fr 30fr/.test(html), 'bandas 20/50/30');
+    assert.ok(/grid-template-rows:\s*22fr 48fr 30fr/.test(html), 'bandas 22/48/30 (#4172 rediseño Sala de Control)');
     assert.ok(html.includes('mission-frame'), 'el frame del home lleva el modifier mission-frame');
     assert.ok(/\.kiosk-frame\.mission-frame\s*\{[^}]*height:\s*100vh/.test(html), 'frame con height:100vh');
     assert.ok(/\.kiosk-frame\.mission-frame\s*\{[^}]*overflow:\s*hidden/.test(html), 'frame con overflow:hidden');
