@@ -209,6 +209,9 @@ scripts/planner-plan.json
 !.pipeline/metrics/projections.js
 !.pipeline/metrics/report-daily.js
 !.pipeline/metrics/night-throughput.js
+# #3962 EP8-H9 CA-4: código fuente del módulo de presupuesto sí se commitea
+# (el estado runtime budget-config.JSON queda ignorado por el patrón de arriba).
+!.pipeline/metrics/budget-config.js
 !.pipeline/metrics/pricing.json
 !.pipeline/metrics/__tests__/
 !.pipeline/metrics/__tests__/**
