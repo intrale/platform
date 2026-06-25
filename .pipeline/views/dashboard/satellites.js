@@ -1273,55 +1273,21 @@ for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
 
 // ─────────────────── Costos ───────────────────
 function renderCostos(opts) {
-    // #3962 EP8-H9 — bloque rediseñado (gráfico área apilada + presupuesto +
-    // proyecciones + drill-down) inyectado SSR arriba del contenido legacy.
-    // Aditivo: si no se pasa `redesignHtml`, el render es idéntico al previo.
+    // #4194 EP7.1 — la pantalla COSTOS es ahora el rediseño integral MIZPÁ
+    // (banner de misión + gráfico de barras apiladas 14d por proveedor +
+    // proyecciones + detalle por skill con columna de proveedor + «Cuota por
+    // proveedor» con las 5 tarjetas). El `redesignHtml` lo arma SSR el módulo
+    // views/dashboard/costos.js (renderCostosRedesign) desde costosSlice.
+    //
+    // El rediseño ABSORBE el contenido legacy: la antigua sección «Cuota Plan
+    // Max» (sólo Anthropic) la reemplazan las 5 tarjetas de cuota por proveedor
+    // (CA-2); la herramienta de calibración de Claude se preserva DENTRO del
+    // rediseño con los mismos IDs (calib-*), por lo que el script de abajo
+    // (tickQuota) la sigue cableando por getElementById sin cambios. Los IDs
+    // legacy que ya no existen (quota-grid/costos-grid/costos-detail) están
+    // guardados con `if(el)` en el script → no rompen.
     const redesignHtml = (opts && typeof opts.redesignHtml === 'string') ? opts.redesignHtml : '';
-    const body = `${redesignHtml}
-<section class="in-section">
-  <h2 class="in-section-title"><span class="in-section-title-icon">📊</span>Cuota Plan Max · sesión 5h + semanal (reset domingo 21:00 ART)</h2>
-  <p style="color:var(--in-fg-dim);font-size:12px;margin:0 0 14px 0">Anthropic no expone API. Estimación basada en duration_ms del activity-log (solo agentes Claude del pipeline; tu uso interactivo en claude.ai cuenta aparte). Auto-ajuste pasivo del límite semanal cuando el observado lo supera sin bloqueos.</p>
-  <div id="quota-grid" class="kp-grid"></div>
-  <div id="quota-bar-wrap" style="margin-top:14px"></div>
-  <div id="quota-meta" style="margin-top:10px;font-size:12px;color:var(--in-fg-dim)"></div>
-  <details id="quota-calib" style="margin-top:14px;border-top:1px solid var(--in-border);padding-top:12px">
-    <summary style="cursor:pointer;font-size:12px;color:var(--in-fg-dim);user-select:none">🎯 Calibrar con valores reales de claude.ai/settings/usage (con aprendizaje)</summary>
-    <p style="font-size:11px;color:var(--in-fg-dim);margin:10px 0 6px 0">Pegá los % que ves y, si querés mejorar la precisión del reset semanal, también el tiempo restante hasta cada reset. Cada calibración entra al historial — los factores se promedian con EMA (más muestras = más estables, menos sensibles a outliers).</p>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
-      <div>
-        <label style="font-size:11px;color:var(--in-fg-dim);display:block;margin-bottom:4px">% semanal real</label>
-        <input id="calib-weekly" type="number" step="0.1" min="0" max="100" placeholder="ej: 22" class="in-btn" style="width:100%;background:var(--in-bg-3);font-family:var(--in-mono)">
-      </div>
-      <div>
-        <label style="font-size:11px;color:var(--in-fg-dim);display:block;margin-bottom:4px">% sesión 5h real</label>
-        <input id="calib-session" type="number" step="0.1" min="0" max="100" placeholder="ej: 60" class="in-btn" style="width:100%;background:var(--in-bg-3);font-family:var(--in-mono)">
-      </div>
-      <div>
-        <label style="font-size:11px;color:var(--in-fg-dim);display:block;margin-bottom:4px">Sesión: día y hora del reset (opcional)</label>
-        <input id="calib-session-at" type="datetime-local" class="in-btn" style="width:100%;background:var(--in-bg-3);font-family:var(--in-mono)">
-      </div>
-      <div>
-        <label style="font-size:11px;color:var(--in-fg-dim);display:block;margin-bottom:4px">Semanal: día y hora del reset (opcional)</label>
-        <input id="calib-weekly-at" type="datetime-local" class="in-btn" style="width:100%;background:var(--in-bg-3);font-family:var(--in-mono)">
-      </div>
-    </div>
-    <div style="display:flex;gap:8px">
-      <button id="calib-save" class="in-btn" style="border-color:var(--in-accent);color:var(--in-accent)">▶ Aplicar y aprender</button>
-      <button id="calib-clear" class="in-btn" style="border-color:var(--in-fg-soft);color:var(--in-fg-dim)">✕ Borrar calibración</button>
-    </div>
-    <div id="calib-status" style="margin-top:10px;font-size:11px;color:var(--in-fg-dim)"></div>
-    <div id="calib-history" style="margin-top:14px"></div>
-  </details>
-</section>
-<section class="in-section">
-  <h2 class="in-section-title"><span class="in-section-title-icon">💰</span>Consumo · tokens y costo</h2>
-  <p style="color:var(--in-fg-dim);font-size:12px;margin:0 0 14px 0">Datos del aggregator V3 (.pipeline/metrics/snapshot.json). Reload cada 60s.</p>
-  <div id="costos-grid" class="kp-grid"></div>
-</section>
-<section class="in-section">
-  <h2 class="in-section-title"><span class="in-section-title-icon">📋</span>Por skill</h2>
-  <pre id="costos-detail" class="kp-pre"></pre>
-</section>`;
+    const body = redesignHtml || `<section class="in-section"><div class="in-empty">Pantalla de Costos no disponible (módulo de render no cargó). Reintentá el refresh.</div></section>`;
     const css = `
 .kp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
 .kp-tile { background: var(--in-bg-3); padding: 18px; border-radius: var(--in-radius); border: 1px solid var(--in-border); display: flex; flex-direction: column; gap: 6px; }
@@ -1556,7 +1522,7 @@ const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickQuota, ms: 60000 }, { fn:
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('Costos', 'Cuota Plan Max + tokens y consumo', body, script, css, 'costos');
+    return pageShell('Costos', 'Consumo diario por proveedor · presupuesto y cuota de los 5 proveedores', body, script, css, 'costos');
 }
 
 // ─────────────────── Modo descanso (#3230 / hija frontend #3242) ───────────────────

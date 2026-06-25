@@ -2494,6 +2494,41 @@ function costosSlice(state, ctx) {
         try { budget = budgetConfig.readBudget(); } catch { /* default */ }
     }
 
+    // #4194 — Totales por proveedor (leyenda del gráfico + tarjetas de cuota).
+    // El aggregator deja el desglose en `totals.by_provider`. Sólo exponemos
+    // campos públicos agregados (sessions/cost/duration); nunca tokens crudos.
+    const byProvider = {};
+    const rawByProvider = (snap.totals && snap.totals.by_provider && typeof snap.totals.by_provider === 'object')
+        ? snap.totals.by_provider : {};
+    for (const [prov, v] of Object.entries(rawByProvider)) {
+        if (!v || typeof v !== 'object') continue;
+        byProvider[_redact(String(prov))] = {
+            sessions: Number(v.sessions || 0),
+            cost_usd: Number(v.cost_usd || 0),
+            duration_ms: Number(v.duration_ms || 0),
+        };
+    }
+
+    // #4194 — Cuota estimada de Claude (Anthropic) para la tarjeta "Cuota por
+    // proveedor". Reusa quotaSlice (mismo cómputo que /api/dash/quota). Sólo
+    // Anthropic tiene adapter implementado: su % es real-estimado. El resto de
+    // los proveedores se muestran con su modelo de límite declarativo + uso del
+    // activity-log en la capa de vista. Defensivo: si quotaSlice falla, la
+    // tarjeta de Claude degrada a "estimado" sin romper el slice.
+    let claudeQuota = null;
+    try {
+        const q = quotaSlice(state || {}, { PIPELINE, ROOT });
+        const sess = (q && q.session) || {};
+        claudeQuota = {
+            sessionPct: Number.isFinite(Number(sess.pct)) ? Number(sess.pct) : null,
+            sessionStatus: sess.status || 'unknown',
+            weeklyPct: Number.isFinite(Number(q && q.pct)) ? Number(q.pct) : null,
+            weeklyStatus: (q && q.status) || 'unknown',
+            daysToReset: (q && Number.isFinite(Number(q.daysToReset))) ? Number(q.daysToReset) : null,
+            calibrated: !!(q && q.calibration),
+        };
+    } catch { claudeQuota = null; }
+
     // Estado de la anomalía + snooze (CA-2 / CA-5), derivado SOLO del estado
     // server-side (rest-mode-state). El startTs es el `raised_at` del detector;
     // el view lo valida como ISO antes de pintar.
@@ -2518,6 +2553,9 @@ function costosSlice(state, ctx) {
         snooze,
         projections,
         sessionsBySkill,
+        // #4194 — datos multi-proveedor para la pantalla COSTOS rediseñada.
+        byProvider,
+        claudeQuota,
     };
 }
 
