@@ -1427,6 +1427,233 @@ function historialSlice(state) {
     return { actividad: (state.actividad || []).slice(-30) };
 }
 
+// -----------------------------------------------------------------------------
+// #3963 EP8-H? — Historial como línea de tiempo agrupada por día (CA-1..CA-5).
+//
+// Núcleo lógico server-side del rediseño del Historial: recibe `agentHistory[]`
+// (o lo deriva de `state.issueMatrix`), aplica filtros (skill / resultado / issue
+// / query literal / período), agrupa por día, pagina (cursor + límite máximo) y
+// computa los agregados del período visible (count, %aprobado, mediana p50).
+//
+// Decisiones de diseño / seguridad:
+//   - REQ-SEC-5 / CA-6: la búsqueda es match LITERAL (`String.includes`
+//     case-insensitive), NUNCA `new RegExp(input)` — evita ReDoS y DoS.
+//   - Límite máximo por request (HIST_PAGE_MAX) obligatorio: el endpoint NUNCA
+//     devuelve el historial completo (paginación server-side).
+//   - Mediana reusa `_percentile(durations, 50)` (no duplica lógica, ver :959).
+//   - Pura y testeable: con `{ agentHistory: [...] }` no toca el filesystem.
+// -----------------------------------------------------------------------------
+
+const HIST_PAGE_DEFAULT = 50;
+const HIST_PAGE_MAX = 200;
+
+// Deriva el array plano `agentHistory[]` desde el estado del pipeline.
+// Si `state.agentHistory` ya viene armado (path SSR del monolito / tests), se
+// usa tal cual. Si no, se reconstruye desde `state.issueMatrix` + `state.prInfo`
+// (mismo shape que arma `dashboard.js:3705-3739`). Orden: en ejecución primero,
+// luego por timestamp descendente.
+function buildAgentHistory(state) {
+    if (state && Array.isArray(state.agentHistory)) return state.agentHistory;
+    const matrix = (state && state.issueMatrix) || {};
+    const prInfo = (state && state.prInfo) || {};
+    const out = [];
+    for (const [issueNum, data] of Object.entries(matrix)) {
+        if (!data || typeof data !== 'object') continue;
+        const pr = prInfo[String(issueNum)] || null;
+        for (const [faseKey, faseEntries] of Object.entries(data.fases || {})) {
+            if (!Array.isArray(faseEntries)) continue;
+            for (const e of faseEntries) {
+                if (!e) continue;
+                if (e.estado !== 'trabajando' && e.estado !== 'listo' && e.estado !== 'procesado') continue;
+                const [pline, fse] = String(faseKey).split('/');
+                out.push({
+                    issue: issueNum,
+                    titulo: data.titulo || data.title || '',
+                    skill: e.skill,
+                    pipeline: pline,
+                    fase: fse,
+                    estado: e.estado,
+                    resultado: e.resultado || null,
+                    motivo: e.motivo || data.motivo_rechazo || null,
+                    duration: e.durationMs || 0,
+                    startedAt: e.startedAt || 0,
+                    finishedAt: (e.estado !== 'trabajando') ? (e.updatedAt || 0) : 0,
+                    hasLog: !!e.hasLog,
+                    logFile: e.logFile,
+                    hasRejectionPdf: !!e.hasRejectionPdf,
+                    rejectionPdf: e.rejectionPdf,
+                    prUrl: (pr && pr.url) ? pr.url : null,
+                    reboteNumero: e.rebote_numero || 0,
+                    crossphaseCount: data.crossphaseCount || 0,
+                    costo: null, // best-effort; degrada a s/d (CA-3, no hay costo por ejecución)
+                });
+            }
+        }
+    }
+    out.sort((a, b) => {
+        if (a.estado === 'trabajando' && b.estado !== 'trabajando') return -1;
+        if (b.estado === 'trabajando' && a.estado !== 'trabajando') return 1;
+        const tsA = a.estado === 'trabajando' ? a.startedAt : a.finishedAt;
+        const tsB = b.estado === 'trabajando' ? b.startedAt : b.finishedAt;
+        return (tsB || 0) - (tsA || 0);
+    });
+    return out;
+}
+
+// Timestamp de referencia de una entrada (en ejecución → inicio; finalizada →
+// fin). Robusto a strings ISO y a 0/null.
+function _entryTs(h) {
+    let ts = (h && h.estado === 'trabajando') ? h.startedAt : (h && h.finishedAt);
+    if (!ts && h) ts = h.finishedAt || h.startedAt || 0;
+    if (typeof ts === 'string') ts = Date.parse(ts);
+    return Number.isFinite(ts) ? ts : 0;
+}
+
+// Clave de día local YYYY-MM-DD a partir de un epoch ms.
+function _dayKey(ts) {
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return '0000-00-00';
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+}
+
+// Etiqueta humana del día: "Hoy" / "Ayer" / "DD de <mes>" (es-AR). `now` ancla
+// la referencia para Hoy/Ayer.
+const _MESES_ES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+    'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+function _dayLabel(ts, now) {
+    const key = _dayKey(ts);
+    const todayKey = _dayKey(now);
+    const yesterdayKey = _dayKey(now - DAY_MS);
+    if (key === todayKey) return 'Hoy';
+    if (key === yesterdayKey) return 'Ayer';
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return key;
+    return `${d.getDate()} de ${_MESES_ES[d.getMonth()] || ''}`.trim();
+}
+
+function _toInt(v, def) {
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) ? n : def;
+}
+
+function historialTimelineSlice(state, ctx, opts) {
+    const o = opts || {};
+    const now = (ctx && Number.isFinite(ctx.now)) ? ctx.now
+        : (Number.isFinite(o.now) ? o.now : Date.now());
+
+    // --- normalización de filtros ---
+    const fSkill = (typeof o.skill === 'string' && o.skill.trim()) ? o.skill.trim() : null;
+    const fResultado = (typeof o.resultado === 'string' && o.resultado.trim()) ? o.resultado.trim().toLowerCase() : null;
+    const fIssue = (o.issue !== undefined && o.issue !== null && String(o.issue).trim() !== '')
+        ? String(o.issue).trim() : null;
+    // REQ-SEC-5 / CA-6 — query literal, NO regex. Se normaliza a minúsculas y se
+    // acota la longitud para no procesar inputs absurdos.
+    const fQuery = (typeof o.q === 'string' && o.q.trim()) ? o.q.trim().slice(0, 200).toLowerCase() : null;
+    // período: 'today' | '7d' | '30d' | 'all' (default all → sin recorte temporal).
+    const period = (typeof o.period === 'string') ? o.period.trim().toLowerCase() : 'all';
+
+    // --- paginación: límite acotado + cursor (offset) no negativo ---
+    let limit = _toInt(o.limit, HIST_PAGE_DEFAULT);
+    if (limit <= 0) limit = HIST_PAGE_DEFAULT;
+    if (limit > HIST_PAGE_MAX) limit = HIST_PAGE_MAX;
+    let cursor = _toInt(o.cursor, 0);
+    if (cursor < 0) cursor = 0;
+
+    let items = buildAgentHistory(state);
+
+    // Ventana temporal del período (sobre el ts de referencia de cada entrada).
+    let windowStart = null;
+    if (period === 'today') windowStart = new Date(_dayKey(now) + 'T00:00:00').getTime();
+    else if (period === '7d') windowStart = now - 7 * DAY_MS;
+    else if (period === '30d') windowStart = now - 30 * DAY_MS;
+    if (Number.isFinite(windowStart)) {
+        items = items.filter((h) => _entryTs(h) >= windowStart);
+    }
+
+    if (fSkill) items = items.filter((h) => h && h.skill === fSkill);
+    if (fResultado) {
+        items = items.filter((h) => {
+            if (!h) return false;
+            if (fResultado === 'trabajando' || fResultado === 'en ejecución') return h.estado === 'trabajando';
+            return String(h.resultado || '').toLowerCase() === fResultado;
+        });
+    }
+    if (fIssue) items = items.filter((h) => h && String(h.issue) === fIssue);
+    if (fQuery) {
+        items = items.filter((h) => {
+            if (!h) return false;
+            const hay = `${h.titulo || ''}\n${h.skill || ''}\n${h.motivo || ''}\n${h.issue || ''}`.toLowerCase();
+            return hay.includes(fQuery); // match literal — sin RegExp (ReDoS-safe)
+        });
+    }
+
+    // --- agregados del período visible (todo el set FILTRADO, no solo la página) ---
+    const total = items.length;
+    const approved = items.reduce((n, h) => n + (String(h.resultado || '').toLowerCase() === 'aprobado' ? 1 : 0), 0);
+    const finishedDurations = items
+        .filter((h) => h && h.estado !== 'trabajando')
+        .map((h) => Number(h.duration))
+        .filter((v) => Number.isFinite(v) && v > 0);
+    const medianMs = _percentile(finishedDurations, 50);
+    const pctApproved = total > 0 ? approved / total : 0;
+
+    // --- paginación + agrupación por día (solo la página) ---
+    const pageItems = items.slice(cursor, cursor + limit);
+    const nextCursor = (cursor + limit < total) ? (cursor + limit) : null;
+
+    // Entregables parciales (CA-2): inyección opcional de un colector
+    // issue-scoped. Se mantiene FUERA del slice (FS-free/testable) y se inyecta
+    // en la capa de ruta. Conexión soft con EP-3 #3926 (OPEN): si no hay colector
+    // o falla, los entregables degradan a [] (CA-3, no bloquea).
+    const collect = (typeof o.collectAttachments === 'function') ? o.collectAttachments : null;
+
+    const groups = [];
+    const byKey = new Map();
+    for (const h0 of pageItems) {
+        let h = h0;
+        if (collect) {
+            let attachments = [];
+            try {
+                const a = collect(h0.skill, h0.issue, h0.fase);
+                if (Array.isArray(a)) attachments = a;
+            } catch { attachments = []; }
+            h = Object.assign({}, h0, { attachments });
+        }
+        const ts = _entryTs(h);
+        const key = _dayKey(ts);
+        let g = byKey.get(key);
+        if (!g) {
+            g = {
+                dayKey: key,
+                dayLabel: _dayLabel(ts, now),
+                items: [],
+                count: 0,
+                approved: 0,
+            };
+            byKey.set(key, g);
+            groups.push(g); // preserva el orden de pageItems (trabajando-first + ts desc)
+        }
+        g.items.push(h);
+        g.count++;
+        if (String(h.resultado || '').toLowerCase() === 'aprobado') g.approved++;
+    }
+    for (const g of groups) {
+        g.pctApproved = g.count > 0 ? g.approved / g.count : 0;
+    }
+
+    return {
+        groups,
+        aggregates: { count: total, approved, pctApproved, medianMs },
+        nextCursor,
+        total,
+        page: { cursor, limit, returned: pageItems.length },
+        filters: { skill: fSkill, resultado: fResultado, issue: fIssue, q: fQuery, period },
+    };
+}
+
 // #2801 — Cuota semanal del Plan Max de Anthropic. Sin API pública,
 // aproximamos sumando duration_ms de session:end del activity-log.
 // Auto-ajuste pasivo: si el observado supera el effective_limit sin
@@ -2221,6 +2448,11 @@ module.exports = {
     bloqueadosSlice,
     opsSlice,
     historialSlice,
+    // #3963 — Historial timeline agrupado por día (CA-1..CA-5)
+    historialTimelineSlice,
+    buildAgentHistory,
+    HIST_PAGE_DEFAULT,
+    HIST_PAGE_MAX,
     quotaSlice,
     quotaExhaustedSlice,
     reconcilerStaleOrdersSlice,
