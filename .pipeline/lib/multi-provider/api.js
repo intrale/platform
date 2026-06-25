@@ -218,6 +218,11 @@ async function handlePing(req, res, { provider }) {
     if (!csrf.requireCSRF(req, res)) return;
     try {
         const result = await livePing.ping({ provider });
+        // #3965 CA-4 — el throttle server-side responde 429 sin disparar HTTP
+        // facturable. El body conserva { ok:false, reason:'rate_limited_local' }.
+        if (result && result.reason === 'rate_limited_local') {
+            return sendJson(res, result, 429);
+        }
         sendJson(res, result);
     } catch (e) {
         sendError(res, 500, 'ping_failed', e.message);

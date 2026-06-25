@@ -172,11 +172,39 @@ const PROVIDER_PING_ENDPOINTS = Object.freeze({
 const TIMEOUT_MS = 8_000;
 const MAX_BODY_EXCERPT = 512;
 
+// -----------------------------------------------------------------------------
+// #3965 CA-4 — Throttle server-side de la acción "probar proveedor ahora".
+//
+// Riesgo (OWASP A04 Insecure Design / A01 cost-abuse): el endpoint
+// POST /api/multi-provider/ping/:provider dispara una llamada HTTP FACTURABLE
+// al provider. El único control previo era client-side (mphState.pinging), que
+// es evitable: el token CSRF se obtiene del GET público /csrf-token y un atacante
+// puede martillar el POST en loop → N llamadas facturables.
+//
+// Defensa (server-side, en el único chokepoint que precede al HTTP):
+//   1. Cooldown por proveedor: lastPingAt[provider]; si now - lastPingAt <
+//      PING_MIN_INTERVAL_MS → 'rate_limited_local' SIN disparar HTTP saliente.
+//   2. Concurrencia: 1 ping in-flight por proveedor; un 2do request mientras el
+//      1ro está en vuelo → 'rate_limited_local' SIN HTTP saliente.
+//
+// El estado vive en memoria del proceso del dashboard (el ping es una acción
+// interactiva efímera; no requiere persistencia FS). `_resetPingThrottle` y los
+// params `nowMs` / `minIntervalMs` existen para tests deterministas.
+// -----------------------------------------------------------------------------
+const PING_MIN_INTERVAL_MS = 10_000;
+const _lastPingAt = Object.create(null);
+const _inFlight = Object.create(null);
+
+function _resetPingThrottle() {
+    for (const k of Object.keys(_lastPingAt)) delete _lastPingAt[k];
+    for (const k of Object.keys(_inFlight)) delete _inFlight[k];
+}
+
 function isAllowedProvider(provider) {
     return Object.prototype.hasOwnProperty.call(PROVIDER_PING_ENDPOINTS, provider);
 }
 
-async function ping({ provider, secretsPath, fsImpl, httpImpl } = {}) {
+async function ping({ provider, secretsPath, fsImpl, httpImpl, nowMs, minIntervalMs } = {}) {
     if (!isAllowedProvider(provider)) {
         return { ok: false, reason: 'unknown_provider', provider };
     }
@@ -184,6 +212,28 @@ async function ping({ provider, secretsPath, fsImpl, httpImpl } = {}) {
     if (!key) {
         return { ok: false, reason: 'no_key_configured', provider };
     }
+    // #3965 CA-4 — gate de throttle ANTES de cualquier HTTP facturable.
+    const now = typeof nowMs === 'number' ? nowMs : Date.now();
+    const interval = typeof minIntervalMs === 'number' ? minIntervalMs : PING_MIN_INTERVAL_MS;
+    if (_inFlight[provider]) {
+        // Ya hay un ping en vuelo para este provider: rechazar sin HTTP.
+        return { ok: false, reason: 'rate_limited_local', provider, rate_limited: true };
+    }
+    const last = _lastPingAt[provider];
+    if (typeof last === 'number' && now - last < interval) {
+        // Dentro del cooldown: rechazar sin HTTP.
+        return {
+            ok: false,
+            reason: 'rate_limited_local',
+            provider,
+            rate_limited: true,
+            retry_after_ms: interval - (now - last),
+        };
+    }
+    // Reservamos el slot ANTES del await: anchea el cooldown al inicio del
+    // request y bloquea pings concurrentes mientras éste está en vuelo.
+    _lastPingAt[provider] = now;
+    _inFlight[provider] = true;
     const spec = PROVIDER_PING_ENDPOINTS[provider];
     const startedAt = Date.now();
     let result;
@@ -198,6 +248,8 @@ async function ping({ provider, secretsPath, fsImpl, httpImpl } = {}) {
             provider,
             latency_ms: Date.now() - startedAt,
         };
+    } finally {
+        _inFlight[provider] = false;
     }
     const interpretation = spec.interpret(result.statusCode, result.bodyExcerpt || '');
     return {
@@ -257,6 +309,9 @@ module.exports = {
     isAllowedProvider,
     PROVIDER_PING_ENDPOINTS,
     TIMEOUT_MS,
+    // #3965 CA-4 — throttle server-side del ping.
+    PING_MIN_INTERVAL_MS,
+    _resetPingThrottle,
     // Exportado para tests del refactor #3486.
     _classifyForLivePing: classifyForLivePing,
 };

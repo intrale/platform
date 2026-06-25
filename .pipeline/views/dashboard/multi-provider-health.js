@@ -307,8 +307,14 @@ async function pingProvider(provider){
     showToast('Ping a '+provider+': '+lat, true);
   } else {
     const reason = (r&&(r.reason||r.message||r.code))||'error';
-    if(out){ out.textContent=' ✗ '+reason; out.style.color='var(--in-bad)'; }
-    showToast('Ping a '+provider+' falló: '+reason, false);
+    // #3965 CA-4 — el throttle server-side (429) devuelve 'rate_limited_local'.
+    if(reason==='rate_limited_local'){
+      if(out){ out.textContent=' ⏳ esperá unos segundos'; out.style.color='var(--in-warn, #b58900)'; }
+      showToast('Ping a '+provider+': demasiado seguido, esperá unos segundos', false);
+    } else {
+      if(out){ out.textContent=' ✗ '+reason; out.style.color='var(--in-bad)'; }
+      showToast('Ping a '+provider+' falló: '+reason, false);
+    }
   }
   // Refrescar métricas tras el ping puntual.
   await loadScreen();
