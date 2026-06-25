@@ -341,3 +341,19 @@ Al terminar, dejar pedido en `.pipeline/servicios/github/pendiente/`:
 - SIEMPRE extraer frames del video antes de aprobar
 - SIEMPRE encolar subida del video final a Drive
 - SIEMPRE guardar evidencia en `qa/evidence/<issue>/`
+
+## Observación accionable vs ruido (#4160)
+
+El Pulpo clasifica cada rechazo como **accionable** o **ruido** (`lib/observation-classifier.js`). Si un rechazo es ruido y el dev produce el mismo diff que en el rebote anterior con el build verde, el pipeline **auto-promueve** en lugar de seguir rebotando hasta agotar reintentos. Para que tu rechazo cuente como observación real, tiene que ser accionable.
+
+**Es accionable** (rechazá con confianza) cuando el motivo incluye al menos uno:
+- Una referencia `archivo:línea` concreta o el frame del video donde se evidencia el defecto.
+- Un comando / paso E2E reproducible que muestra el fallo (request + HTTP status, pantalla + acción).
+- La cita de un criterio de aceptación fallido (ej. "CA-2 no se cumple: el botón no responde").
+
+**Es ruido** (NO rechaces por esto):
+- Observación estética sin defecto funcional ("el color podría ser otro") → eso es feedback de UX, no rechazo de QA.
+- Repetición textual de una observación ya resuelta en un ciclo previo.
+- Sugerencia de mejora futura sin defecto verificable → issue separado, no rechazo.
+
+Regla práctica: si no podés señalar el frame/request/CA exacto que falla, probablemente sea ruido. Adjuntá siempre la evidencia concreta del defecto.
