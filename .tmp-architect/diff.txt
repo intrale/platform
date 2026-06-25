@@ -1,0 +1,1613 @@
+diff --git a/.pipeline/dashboard.js b/.pipeline/dashboard.js
+index f7e54bda..af0a1d59 100644
+--- a/.pipeline/dashboard.js
++++ b/.pipeline/dashboard.js
+@@ -3709,14 +3709,20 @@ function generateHTML(state) {
+         // Incluir trabajando (en ejecución) + listo + procesado (finalizados)
+         if (e.estado === 'trabajando' || e.estado === 'listo' || e.estado === 'procesado') {
+           const [pline, fse] = faseKey.split('/');
++          // #3963 — el detalle expandible del timeline necesita prUrl (link a
++          // PR), rebote/crossphase y motivo (causa parseada). `costo` queda
++          // best-effort → null (degrada a "s/d" en la vista, CA-3: no hay costo
++          // por ejecución individual hoy). prInfo se lee del cache del padre.
++          const pr = (state.prInfo || {})[String(issueNum)] || null;
+           agentHistory.push({
+             issue: issueNum,
+-            titulo: data.titulo || '',
++            titulo: data.titulo || data.title || '',
+             skill: e.skill,
+             pipeline: pline,
+             fase: fse,
+             estado: e.estado,
+             resultado: e.resultado || null,
++            motivo: e.motivo || data.motivo_rechazo || null,
+             duration: e.durationMs || 0,
+             startedAt: e.startedAt || 0,
+             finishedAt: (e.estado !== 'trabajando') ? (e.updatedAt || 0) : 0,
+@@ -3724,6 +3730,10 @@ function generateHTML(state) {
+             logFile: e.logFile,
+             hasRejectionPdf: !!e.hasRejectionPdf,
+             rejectionPdf: e.rejectionPdf,
++            prUrl: (pr && pr.url) ? pr.url : null,
++            reboteNumero: e.rebote_numero || 0,
++            crossphaseCount: data.crossphaseCount || 0,
++            costo: null,
+           });
+         }
+       }
+@@ -5752,39 +5762,65 @@ body.standalone .section-collapsed .section-body{display:block !important}
+ /* Agent History */
+ #agent-history .matrix-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--bd)}
+ #agent-history h2{margin:0;font-size:1.05em;font-weight:700}
++/* #3963 — Historial timeline (línea de tiempo agrupada por día). Copia inline
++   para el render embebido del monolito (la home no carga theme.css). */
+ .ah-count{font-size:0.76em;color:var(--dim)}
+-.ah-list{display:flex;flex-direction:column;gap:4px}
+-.ah-card{display:grid;grid-template-columns:28px 80px 1fr 80px 110px 60px 90px auto;gap:8px;align-items:center;padding:6px 12px;border-radius:var(--radius);border:1px solid var(--bd);border-left:3px solid var(--dim);text-decoration:none;font-size:0.78em;transition:background 0.15s,border-color 0.15s}
+-.ah-card:hover{background:rgba(255,255,255,0.04);border-color:var(--ac)}
+-.ah-running{border-left-color:var(--teal,#2dd4bf);background:rgba(45,212,191,0.05)}
+-.ah-ok{border-left-color:var(--gn,#3fb950)}
+-.ah-fail{border-left-color:var(--rd,#f85149)}
+-.ah-neutral{border-left-color:var(--dim)}
+-.ah-avatar{width:24px;height:24px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:0.9em;color:#fff;flex-shrink:0}
+-.ah-skill{font-weight:700;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++.ah-aggr{font-size:0.74em;color:var(--dim);margin-left:auto;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
++.ah-aggr b{color:var(--tx)}
++.ah-aggr-sep{opacity:0.5}
++.ah-aggr .ah-ok{color:var(--gn,#3fb950)}
++.ah-filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
++.ah-chips{display:inline-flex;gap:4px}
++.ah-chip{font-size:0.74em;color:var(--dim);background:var(--bg2,rgba(255,255,255,0.03));border:1px solid var(--bd);border-radius:var(--radius);padding:4px 10px;cursor:pointer;transition:all 0.15s}
++.ah-chip:hover{border-color:var(--ac);color:var(--tx)}
++.ah-chip-on{background:rgba(88,166,255,0.14);border-color:var(--ac);color:var(--ac);font-weight:600}
++.ah-sel{font-size:0.74em;color:var(--tx);background:var(--bg2,rgba(255,255,255,0.03));border:1px solid var(--bd);border-radius:var(--radius);padding:4px 8px;cursor:pointer}
++.ah-search{flex:1;min-width:160px;font-size:0.78em;color:var(--tx);background:var(--bg2,rgba(255,255,255,0.03));border:1px solid var(--bd);border-radius:var(--radius);padding:5px 10px}
++.ah-search:focus{outline:none;border-color:var(--ac)}
++.ah-timeline{display:flex;flex-direction:column;gap:12px}
++.ah-day-group{display:flex;flex-direction:column;gap:4px}
++.ah-day{display:flex;align-items:baseline;gap:8px;font-size:0.72em;text-transform:uppercase;letter-spacing:0.04em;color:var(--dim);font-weight:700;padding:2px 2px 4px;border-bottom:1px solid var(--bd)}
++.ah-day-label{color:var(--tx)}
++.ah-day-aggr{font-weight:400;text-transform:none;letter-spacing:0;opacity:0.8}
++.ah-day-items{display:flex;flex-direction:column;gap:4px}
++.ah-item{border-radius:var(--radius);border:1px solid var(--bd);border-left:3px solid var(--dim);overflow:hidden;transition:border-color 0.15s}
++.ah-item:hover{border-color:var(--ac)}
++.ah-item.ah-running{border-left-color:var(--teal,#2dd4bf);background:rgba(45,212,191,0.04)}
++.ah-item.ah-ok{border-left-color:var(--gn,#3fb950)}
++.ah-item.ah-fail{border-left-color:var(--rd,#f85149)}
++.ah-item.ah-neutral{border-left-color:var(--dim)}
++.ah-card{display:grid;grid-template-columns:18px 24px minmax(120px,1fr) 90px 130px 70px auto;gap:8px;align-items:center;padding:6px 12px;font-size:0.78em;cursor:pointer;list-style:none}
++.ah-card::-webkit-details-marker{display:none}
++.ah-card:hover{background:rgba(255,255,255,0.03)}
++.ah-status-ic{font-weight:700;text-align:center}
++.ah-running .ah-status-ic{color:var(--teal,#2dd4bf)}
++.ah-ok .ah-status-ic{color:var(--gn,#3fb950)}
++.ah-fail .ah-status-ic{color:var(--rd,#f85149)}
++.ah-neutral .ah-status-ic{color:var(--dim)}
++.ah-avatar{width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:0.85em;color:#fff;flex-shrink:0}
+ .ah-issue{color:var(--ac);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+-.ah-fase{color:var(--dim);font-size:0.9em}
+-.ah-status{font-weight:600;white-space:nowrap}
+-.ah-running .ah-status{color:var(--teal,#2dd4bf)}
+-.ah-ok .ah-status{color:var(--gn,#3fb950)}
+-.ah-fail .ah-status{color:var(--rd,#f85149)}
+-.ah-neutral .ah-status{color:var(--dim)}
+-.ah-dur{color:var(--teal,#2dd4bf);font-weight:700;font-variant-numeric:tabular-nums;text-align:right}
+-.ah-time{color:var(--dim);font-size:0.9em;font-variant-numeric:tabular-nums;text-align:right}
+-.ah-pdf{text-decoration:none;font-size:1.1em}
+-.ah-more{margin-top:4px}
+-.ah-more-btn{font-size:0.78em;color:var(--ac);cursor:pointer;padding:6px 12px;text-align:center;border-radius:var(--radius);background:rgba(88,166,255,0.06);border:1px solid rgba(88,166,255,0.15);list-style:none}
+-.ah-more-btn:hover{background:rgba(88,166,255,0.12)}
+-.ah-more-list{display:flex;flex-direction:column;gap:4px;margin-top:4px}
+-.ah-legend{display:inline-flex;gap:10px;flex-wrap:wrap;font-size:0.7em;color:var(--dim);margin-left:auto}
+-.ah-leg-item{display:inline-flex;align-items:center;gap:3px;white-space:nowrap}
+-.ah-leg-glyph{font-weight:700}
+-.ah-leg-glyph.ah-running{color:var(--teal,#2dd4bf)}
+-.ah-leg-glyph.ah-ok{color:var(--gn,#3fb950)}
+-.ah-leg-glyph.ah-fail{color:var(--rd,#f85149)}
+-.ah-leg-glyph.ah-neutral{color:var(--dim)}
+-@media(max-width:900px){.ah-card{grid-template-columns:24px 60px 1fr 70px 50px 70px auto;font-size:0.72em}}
+-@media(max-width:600px){.ah-card{grid-template-columns:24px 1fr 80px auto;}.ah-fase,.ah-dur,.ah-time{display:none}}
++.ah-issue .ah-title{color:var(--tx);font-weight:400}
++.ah-skill{font-weight:700;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:0.92em}
++.ah-meta{color:var(--dim);font-size:0.9em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++.ah-time{color:var(--dim);font-size:0.9em;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
++.ah-actions{display:inline-flex;gap:6px;justify-content:flex-end}
++.ah-act{font-size:0.92em;color:var(--ac);text-decoration:none;border:1px solid var(--bd);border-radius:var(--radius);padding:2px 8px;white-space:nowrap;background:rgba(88,166,255,0.06)}
++.ah-act:hover{background:rgba(88,166,255,0.14);border-color:var(--ac)}
++.ah-detail{padding:8px 12px 10px 42px;border-top:1px dashed var(--bd);font-size:0.76em;color:var(--dim)}
++.ah-d-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
++.ah-d-item b{color:var(--tx)}
++.ah-d-sep{opacity:0.4}
++.ah-d-warn{color:var(--retry,#F59E0B)}
++.ah-d-cause{color:var(--rd,#f85149);max-width:100%;overflow:hidden;text-overflow:ellipsis}
++.ah-d-attachments{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
++.ah-attach{font-size:0.95em;color:var(--tx);background:var(--bg2,rgba(255,255,255,0.04));border:1px solid var(--bd);border-radius:var(--radius);padding:1px 7px}
++.ah-empty{padding:24px 12px;text-align:center;color:var(--dim);font-size:0.82em}
++.ah-load-more{display:block;width:100%;margin-top:10px;font-size:0.78em;color:var(--ac);cursor:pointer;padding:7px 12px;text-align:center;border-radius:var(--radius);background:rgba(88,166,255,0.06);border:1px solid rgba(88,166,255,0.15)}
++.ah-load-more:hover{background:rgba(88,166,255,0.12)}
++.ah-ok{color:var(--gn,#3fb950)}
++.ah-fail{color:var(--rd,#f85149)}
++@media(max-width:900px){.ah-card{grid-template-columns:18px 22px 1fr 70px auto;font-size:0.72em}.ah-meta,.ah-time{display:none}}
++@media(max-width:600px){.ah-card{grid-template-columns:18px 1fr auto}.ah-avatar,.ah-skill{display:none}.ah-detail{padding-left:16px}}
+ 
+ /* Areas grid 2×2 */
+ .eq-areas-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+diff --git a/.pipeline/lib/__tests__/dashboard-slices-historial-timeline.test.js b/.pipeline/lib/__tests__/dashboard-slices-historial-timeline.test.js
+new file mode 100644
+index 00000000..79eda51d
+--- /dev/null
++++ b/.pipeline/lib/__tests__/dashboard-slices-historial-timeline.test.js
+@@ -0,0 +1,212 @@
++// =============================================================================
++// Tests del núcleo lógico del Historial timeline (#3963).
++//   - buildAgentHistory: deriva agentHistory[] desde issueMatrix + prInfo.
++//   - historialTimelineSlice: filtros (skill/resultado/issue/q literal/period),
++//     agrupación por día, paginación (cursor/límite), agregados (count,
++//     %aprobado, mediana p50).
++//   - REQ-SEC-5 / CA-6: búsqueda literal (no RegExp → ReDoS-safe) + límite
++//     máximo por request.
++//
++// node:test puro, sin filesystem (state inline).
++// =============================================================================
++'use strict';
++
++const test = require('node:test');
++const assert = require('node:assert/strict');
++const path = require('node:path');
++
++const slices = require(path.resolve(__dirname, '..', 'dashboard-slices.js'));
++const { historialTimelineSlice, buildAgentHistory, HIST_PAGE_MAX } = slices;
++
++const NOW = 1_718_000_000_000; // ancla fija (jun 2024)
++const MIN = 60_000;
++const HOUR = 60 * MIN;
++const DAY = 24 * HOUR;
++
++function entry(extra) {
++    return Object.assign({
++        issue: 100,
++        titulo: 'Algo',
++        skill: 'backend-dev',
++        pipeline: 'desarrollo',
++        fase: 'build',
++        estado: 'procesado',
++        resultado: 'aprobado',
++        motivo: null,
++        duration: 10 * MIN,
++        startedAt: NOW - 20 * MIN,
++        finishedAt: NOW - 5 * MIN,
++        hasLog: true,
++        logFile: '100-build.log',
++        hasRejectionPdf: false,
++        rejectionPdf: null,
++        prUrl: null,
++        reboteNumero: 0,
++        crossphaseCount: 0,
++        costo: null,
++    }, extra || {});
++}
++
++// --- buildAgentHistory desde issueMatrix ---
++test('buildAgentHistory deriva entradas desde issueMatrix + prInfo y ordena trabajando-first', () => {
++    const state = {
++        issueMatrix: {
++            '10': {
++                titulo: 'Uno', crossphaseCount: 1,
++                fases: { 'desarrollo/dev': [{ skill: 'pipeline-dev', estado: 'procesado', resultado: 'aprobado', durationMs: 5 * MIN, updatedAt: NOW - 2 * HOUR }] },
++            },
++            '20': {
++                titulo: 'Dos', crossphaseCount: 0,
++                fases: { 'desarrollo/build': [{ skill: 'build', estado: 'trabajando', startedAt: NOW - 3 * MIN }] },
++            },
++        },
++        prInfo: { '10': { url: 'https://github.com/intrale/platform/pull/5' } },
++    };
++    const list = buildAgentHistory(state);
++    assert.equal(list.length, 2);
++    // trabajando primero
++    assert.equal(list[0].estado, 'trabajando');
++    assert.equal(list[0].issue, '20');
++    // prUrl + crossphase mapeados
++    const uno = list.find((h) => h.issue === '10');
++    assert.equal(uno.prUrl, 'https://github.com/intrale/platform/pull/5');
++    assert.equal(uno.crossphaseCount, 1);
++});
++
++test('buildAgentHistory usa state.agentHistory tal cual si ya viene armado', () => {
++    const arr = [entry()];
++    assert.equal(buildAgentHistory({ agentHistory: arr }), arr);
++});
++
++// --- agregados: count, %aprobado, mediana p50 ---
++test('agregados — count, pctApproved y mediana p50 sobre el set filtrado', () => {
++    const items = [
++        entry({ issue: 1, resultado: 'aprobado', duration: 10 * MIN }),
++        entry({ issue: 2, resultado: 'aprobado', duration: 20 * MIN }),
++        entry({ issue: 3, resultado: 'rechazado', duration: 30 * MIN }),
++        entry({ issue: 4, estado: 'trabajando', resultado: null, duration: 0 }),
++    ];
++    const r = historialTimelineSlice({ agentHistory: items }, { now: NOW }, {});
++    assert.equal(r.aggregates.count, 4);
++    assert.equal(r.aggregates.approved, 2);
++    assert.equal(r.aggregates.pctApproved, 0.5);
++    // durations finalizadas: [10,20,30]m → p50 = 20m
++    assert.equal(r.aggregates.medianMs, 20 * MIN);
++});
++
++test('mediana null cuando no hay ejecuciones finalizadas', () => {
++    const r = historialTimelineSlice({ agentHistory: [entry({ estado: 'trabajando', resultado: null, duration: 0 })] }, { now: NOW }, {});
++    assert.equal(r.aggregates.medianMs, null);
++});
++
++// --- agrupación por día: Hoy / Ayer / fecha ---
++test('agrupación por día — Hoy, Ayer y fecha previa, orden descendente', () => {
++    const items = [
++        entry({ issue: 1, finishedAt: NOW - 1 * HOUR }),       // hoy
++        entry({ issue: 2, finishedAt: NOW - 26 * HOUR }),      // ayer
++        entry({ issue: 3, finishedAt: NOW - 3 * DAY }),        // hace 3 días
++    ];
++    const r = historialTimelineSlice({ agentHistory: items }, { now: NOW }, {});
++    assert.equal(r.groups.length, 3);
++    assert.equal(r.groups[0].dayLabel, 'Hoy');
++    assert.equal(r.groups[1].dayLabel, 'Ayer');
++    assert.match(r.groups[2].dayLabel, /de /); // "N de <mes>"
++    // agregados por día
++    assert.equal(r.groups[0].count, 1);
++    assert.equal(r.groups[0].pctApproved, 1);
++});
++
++// --- filtros combinables ---
++test('filtros — skill, resultado, issue se combinan', () => {
++    const items = [
++        entry({ issue: 1, skill: 'backend-dev', resultado: 'aprobado' }),
++        entry({ issue: 2, skill: 'android-dev', resultado: 'rechazado' }),
++        entry({ issue: 3, skill: 'backend-dev', resultado: 'rechazado' }),
++    ];
++    const st = { agentHistory: items };
++    assert.equal(historialTimelineSlice(st, { now: NOW }, { skill: 'backend-dev' }).total, 2);
++    assert.equal(historialTimelineSlice(st, { now: NOW }, { resultado: 'rechazado' }).total, 2);
++    assert.equal(historialTimelineSlice(st, { now: NOW }, { skill: 'backend-dev', resultado: 'rechazado' }).total, 1);
++    assert.equal(historialTimelineSlice(st, { now: NOW }, { issue: 2 }).total, 1);
++});
++
++test('filtro resultado=trabajando matchea por estado', () => {
++    const items = [entry({ issue: 1, estado: 'trabajando', resultado: null }), entry({ issue: 2 })];
++    assert.equal(historialTimelineSlice({ agentHistory: items }, { now: NOW }, { resultado: 'trabajando' }).total, 1);
++});
++
++// --- búsqueda literal (REQ-SEC-5 / CA-6) ---
++test('búsqueda literal — match case-insensitive sobre titulo/skill/motivo/issue', () => {
++    const items = [
++        entry({ issue: 1, titulo: 'Deep-link entre flavors', motivo: null }),
++        entry({ issue: 2, titulo: 'Otra cosa', motivo: 'falla en build' }),
++    ];
++    const st = { agentHistory: items };
++    assert.equal(historialTimelineSlice(st, { now: NOW }, { q: 'deep-link' }).total, 1);
++    assert.equal(historialTimelineSlice(st, { now: NOW }, { q: 'BUILD' }).total, 1);
++    assert.equal(historialTimelineSlice(st, { now: NOW }, { q: 'inexistente' }).total, 0);
++});
++
++test('búsqueda con metacaracteres regex NO rompe ni hace ReDoS (match literal)', () => {
++    // input catastrófico para un RegExp ingenuo: si se compilara como patrón,
++    // (a+)+$ contra una cadena larga colgaría. Acá es literal → no matchea, no cuelga.
++    const items = [entry({ issue: 1, titulo: 'a'.repeat(5000) })];
++    const start = process.hrtime.bigint();
++    const r = historialTimelineSlice({ agentHistory: items }, { now: NOW }, { q: '(a+)+$' });
++    const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
++    assert.equal(r.total, 0);
++    assert.ok(elapsedMs < 200, `la búsqueda literal debe ser rápida (fue ${elapsedMs.toFixed(1)}ms)`);
++    // un literal que SÍ está presente matchea
++    assert.equal(historialTimelineSlice({ agentHistory: items }, { now: NOW }, { q: 'aaa' }).total, 1);
++});
++
++// --- paginación: cursor + límite máximo ---
++test('paginación — cursor avanza y nextCursor se agota; límite por defecto', () => {
++    const items = Array.from({ length: 12 }, (_, i) => entry({ issue: i, finishedAt: NOW - i * MIN }));
++    const p1 = historialTimelineSlice({ agentHistory: items }, { now: NOW }, { limit: 5, cursor: 0 });
++    assert.equal(p1.page.returned, 5);
++    assert.equal(p1.nextCursor, 5);
++    assert.equal(p1.total, 12);
++    const p3 = historialTimelineSlice({ agentHistory: items }, { now: NOW }, { limit: 5, cursor: 10 });
++    assert.equal(p3.page.returned, 2);
++    assert.equal(p3.nextCursor, null);
++});
++
++test('límite máximo por request — el slice NUNCA devuelve más de HIST_PAGE_MAX', () => {
++    const items = Array.from({ length: HIST_PAGE_MAX + 50 }, (_, i) => entry({ issue: i, finishedAt: NOW - i * MIN }));
++    const r = historialTimelineSlice({ agentHistory: items }, { now: NOW }, { limit: 99999 });
++    assert.equal(r.page.limit, HIST_PAGE_MAX);
++    assert.ok(r.page.returned <= HIST_PAGE_MAX);
++    assert.equal(r.total, HIST_PAGE_MAX + 50); // total refleja todo, pero la página se acota
++});
++
++// --- período ---
++test('filtro period=today recorta a las ejecuciones del día actual', () => {
++    const items = [
++        entry({ issue: 1, finishedAt: NOW - 1 * HOUR }),   // hoy
++        entry({ issue: 2, finishedAt: NOW - 2 * DAY }),    // fuera
++    ];
++    assert.equal(historialTimelineSlice({ agentHistory: items }, { now: NOW }, { period: 'today' }).total, 1);
++    assert.equal(historialTimelineSlice({ agentHistory: items }, { now: NOW }, { period: '7d' }).total, 2);
++});
++
++// --- inyección de entregables (CA-2) ---
++test('collectAttachments inyectado enriquece las entradas de la página (best-effort)', () => {
++    const items = [entry({ issue: 1, skill: 'ux' })];
++    const r = historialTimelineSlice({ agentHistory: items }, { now: NOW }, {
++        collectAttachments: (skill, issue) => [{ type: 'document', descriptor: 'mockup', path: `assets/${issue}.md` }],
++    });
++    const it = r.groups[0].items[0];
++    assert.equal(it.attachments.length, 1);
++    assert.equal(it.attachments[0].descriptor, 'mockup');
++    // el objeto fuente NO se muta (copia defensiva)
++    assert.equal(items[0].attachments, undefined);
++});
++
++test('collectAttachments que lanza degrada a [] sin romper el slice (CA-3)', () => {
++    const items = [entry({ issue: 1 })];
++    const r = historialTimelineSlice({ agentHistory: items }, { now: NOW }, {
++        collectAttachments: () => { throw new Error('fs boom'); },
++    });
++    assert.deepEqual(r.groups[0].items[0].attachments, []);
++});
+diff --git a/.pipeline/lib/dashboard-routes.js b/.pipeline/lib/dashboard-routes.js
+index 7e7b0053..6d246b2b 100644
+--- a/.pipeline/lib/dashboard-routes.js
++++ b/.pipeline/lib/dashboard-routes.js
+@@ -971,6 +971,37 @@ const API_ROUTES = {
+             return { error: 'coverage_unavailable', reason: 'io_error', _status: 503 };
+         }
+     },
++    // #3963 EP8 — Historial como timeline agrupado por día, paginado y filtrado
++    // server-side. Parsea el querystring (skill / resultado / issue / q / period
++    // / cursor / limit) y delega el cómputo a `historialTimelineSlice`. NUNCA
++    // devuelve el historial completo: el slice acota el límite máximo por request
++    // (HIST_PAGE_MAX) y la búsqueda es match literal (no RegExp → ReDoS-safe).
++    // Hereda Cache-Control: no-store de sendJson() como el resto de /api/dash/*.
++    '/api/dash/historial': (state, ctx, query) => {
++        const q = query || new URLSearchParams();
++        // Colector de entregables best-effort (CA-2). Issue-scoped, repo-root
++        // como base. Si el módulo no carga o falla, degrada a [] (CA-3).
++        const repoRoot = (ctx && ctx.ROOT) ? ctx.ROOT : process.cwd();
++        let collectAttachments = null;
++        try {
++            const deliverables = require('./skill-deliverable-attachments');
++            collectAttachments = (skill, issue, fase) => {
++                try { return deliverables.collectAttachmentsForSkill(skill, issue, fase, { pipelineRoot: repoRoot }); }
++                catch { return []; }
++            };
++        } catch { collectAttachments = null; }
++        return slices.historialTimelineSlice(state, ctx, {
++            skill: q.get('skill') || null,
++            resultado: q.get('resultado') || null,
++            issue: q.get('issue') || null,
++            q: q.get('q') || null,
++            period: q.get('period') || 'all',
++            cursor: q.get('cursor'),
++            limit: q.get('limit'),
++            collectAttachments,
++        });
++    },
++    '/api/historial': (state, ctx, query) => API_ROUTES['/api/dash/historial'](state, ctx, query),
+ };
+ 
+ // #3259 / CA-5 — Rutas ASYNC (devuelven Promise). El handler las awaitea.
+diff --git a/.pipeline/lib/dashboard-slices.js b/.pipeline/lib/dashboard-slices.js
+index a3e4276f..41ee07c9 100644
+--- a/.pipeline/lib/dashboard-slices.js
++++ b/.pipeline/lib/dashboard-slices.js
+@@ -1427,6 +1427,233 @@ function historialSlice(state) {
+     return { actividad: (state.actividad || []).slice(-30) };
+ }
+ 
++// -----------------------------------------------------------------------------
++// #3963 EP8-H? — Historial como línea de tiempo agrupada por día (CA-1..CA-5).
++//
++// Núcleo lógico server-side del rediseño del Historial: recibe `agentHistory[]`
++// (o lo deriva de `state.issueMatrix`), aplica filtros (skill / resultado / issue
++// / query literal / período), agrupa por día, pagina (cursor + límite máximo) y
++// computa los agregados del período visible (count, %aprobado, mediana p50).
++//
++// Decisiones de diseño / seguridad:
++//   - REQ-SEC-5 / CA-6: la búsqueda es match LITERAL (`String.includes`
++//     case-insensitive), NUNCA `new RegExp(input)` — evita ReDoS y DoS.
++//   - Límite máximo por request (HIST_PAGE_MAX) obligatorio: el endpoint NUNCA
++//     devuelve el historial completo (paginación server-side).
++//   - Mediana reusa `_percentile(durations, 50)` (no duplica lógica, ver :959).
++//   - Pura y testeable: con `{ agentHistory: [...] }` no toca el filesystem.
++// -----------------------------------------------------------------------------
++
++const HIST_PAGE_DEFAULT = 50;
++const HIST_PAGE_MAX = 200;
++
++// Deriva el array plano `agentHistory[]` desde el estado del pipeline.
++// Si `state.agentHistory` ya viene armado (path SSR del monolito / tests), se
++// usa tal cual. Si no, se reconstruye desde `state.issueMatrix` + `state.prInfo`
++// (mismo shape que arma `dashboard.js:3705-3739`). Orden: en ejecución primero,
++// luego por timestamp descendente.
++function buildAgentHistory(state) {
++    if (state && Array.isArray(state.agentHistory)) return state.agentHistory;
++    const matrix = (state && state.issueMatrix) || {};
++    const prInfo = (state && state.prInfo) || {};
++    const out = [];
++    for (const [issueNum, data] of Object.entries(matrix)) {
++        if (!data || typeof data !== 'object') continue;
++        const pr = prInfo[String(issueNum)] || null;
++        for (const [faseKey, faseEntries] of Object.entries(data.fases || {})) {
++            if (!Array.isArray(faseEntries)) continue;
++            for (const e of faseEntries) {
++                if (!e) continue;
++                if (e.estado !== 'trabajando' && e.estado !== 'listo' && e.estado !== 'procesado') continue;
++                const [pline, fse] = String(faseKey).split('/');
++                out.push({
++                    issue: issueNum,
++                    titulo: data.titulo || data.title || '',
++                    skill: e.skill,
++                    pipeline: pline,
++                    fase: fse,
++                    estado: e.estado,
++                    resultado: e.resultado || null,
++                    motivo: e.motivo || data.motivo_rechazo || null,
++                    duration: e.durationMs || 0,
++                    startedAt: e.startedAt || 0,
++                    finishedAt: (e.estado !== 'trabajando') ? (e.updatedAt || 0) : 0,
++                    hasLog: !!e.hasLog,
++                    logFile: e.logFile,
++                    hasRejectionPdf: !!e.hasRejectionPdf,
++                    rejectionPdf: e.rejectionPdf,
++                    prUrl: (pr && pr.url) ? pr.url : null,
++                    reboteNumero: e.rebote_numero || 0,
++                    crossphaseCount: data.crossphaseCount || 0,
++                    costo: null, // best-effort; degrada a s/d (CA-3, no hay costo por ejecución)
++                });
++            }
++        }
++    }
++    out.sort((a, b) => {
++        if (a.estado === 'trabajando' && b.estado !== 'trabajando') return -1;
++        if (b.estado === 'trabajando' && a.estado !== 'trabajando') return 1;
++        const tsA = a.estado === 'trabajando' ? a.startedAt : a.finishedAt;
++        const tsB = b.estado === 'trabajando' ? b.startedAt : b.finishedAt;
++        return (tsB || 0) - (tsA || 0);
++    });
++    return out;
++}
++
++// Timestamp de referencia de una entrada (en ejecución → inicio; finalizada →
++// fin). Robusto a strings ISO y a 0/null.
++function _entryTs(h) {
++    let ts = (h && h.estado === 'trabajando') ? h.startedAt : (h && h.finishedAt);
++    if (!ts && h) ts = h.finishedAt || h.startedAt || 0;
++    if (typeof ts === 'string') ts = Date.parse(ts);
++    return Number.isFinite(ts) ? ts : 0;
++}
++
++// Clave de día local YYYY-MM-DD a partir de un epoch ms.
++function _dayKey(ts) {
++    const d = new Date(ts);
++    if (Number.isNaN(d.getTime())) return '0000-00-00';
++    const y = d.getFullYear();
++    const m = String(d.getMonth() + 1).padStart(2, '0');
++    const day = String(d.getDate()).padStart(2, '0');
++    return `${y}-${m}-${day}`;
++}
++
++// Etiqueta humana del día: "Hoy" / "Ayer" / "DD de <mes>" (es-AR). `now` ancla
++// la referencia para Hoy/Ayer.
++const _MESES_ES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
++    'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
++function _dayLabel(ts, now) {
++    const key = _dayKey(ts);
++    const todayKey = _dayKey(now);
++    const yesterdayKey = _dayKey(now - DAY_MS);
++    if (key === todayKey) return 'Hoy';
++    if (key === yesterdayKey) return 'Ayer';
++    const d = new Date(ts);
++    if (Number.isNaN(d.getTime())) return key;
++    return `${d.getDate()} de ${_MESES_ES[d.getMonth()] || ''}`.trim();
++}
++
++function _toInt(v, def) {
++    const n = parseInt(v, 10);
++    return Number.isFinite(n) ? n : def;
++}
++
++function historialTimelineSlice(state, ctx, opts) {
++    const o = opts || {};
++    const now = (ctx && Number.isFinite(ctx.now)) ? ctx.now
++        : (Number.isFinite(o.now) ? o.now : Date.now());
++
++    // --- normalización de filtros ---
++    const fSkill = (typeof o.skill === 'string' && o.skill.trim()) ? o.skill.trim() : null;
++    const fResultado = (typeof o.resultado === 'string' && o.resultado.trim()) ? o.resultado.trim().toLowerCase() : null;
++    const fIssue = (o.issue !== undefined && o.issue !== null && String(o.issue).trim() !== '')
++        ? String(o.issue).trim() : null;
++    // REQ-SEC-5 / CA-6 — query literal, NO regex. Se normaliza a minúsculas y se
++    // acota la longitud para no procesar inputs absurdos.
++    const fQuery = (typeof o.q === 'string' && o.q.trim()) ? o.q.trim().slice(0, 200).toLowerCase() : null;
++    // período: 'today' | '7d' | '30d' | 'all' (default all → sin recorte temporal).
++    const period = (typeof o.period === 'string') ? o.period.trim().toLowerCase() : 'all';
++
++    // --- paginación: límite acotado + cursor (offset) no negativo ---
++    let limit = _toInt(o.limit, HIST_PAGE_DEFAULT);
++    if (limit <= 0) limit = HIST_PAGE_DEFAULT;
++    if (limit > HIST_PAGE_MAX) limit = HIST_PAGE_MAX;
++    let cursor = _toInt(o.cursor, 0);
++    if (cursor < 0) cursor = 0;
++
++    let items = buildAgentHistory(state);
++
++    // Ventana temporal del período (sobre el ts de referencia de cada entrada).
++    let windowStart = null;
++    if (period === 'today') windowStart = new Date(_dayKey(now) + 'T00:00:00').getTime();
++    else if (period === '7d') windowStart = now - 7 * DAY_MS;
++    else if (period === '30d') windowStart = now - 30 * DAY_MS;
++    if (Number.isFinite(windowStart)) {
++        items = items.filter((h) => _entryTs(h) >= windowStart);
++    }
++
++    if (fSkill) items = items.filter((h) => h && h.skill === fSkill);
++    if (fResultado) {
++        items = items.filter((h) => {
++            if (!h) return false;
++            if (fResultado === 'trabajando' || fResultado === 'en ejecución') return h.estado === 'trabajando';
++            return String(h.resultado || '').toLowerCase() === fResultado;
++        });
++    }
++    if (fIssue) items = items.filter((h) => h && String(h.issue) === fIssue);
++    if (fQuery) {
++        items = items.filter((h) => {
++            if (!h) return false;
++            const hay = `${h.titulo || ''}\n${h.skill || ''}\n${h.motivo || ''}\n${h.issue || ''}`.toLowerCase();
++            return hay.includes(fQuery); // match literal — sin RegExp (ReDoS-safe)
++        });
++    }
++
++    // --- agregados del período visible (todo el set FILTRADO, no solo la página) ---
++    const total = items.length;
++    const approved = items.reduce((n, h) => n + (String(h.resultado || '').toLowerCase() === 'aprobado' ? 1 : 0), 0);
++    const finishedDurations = items
++        .filter((h) => h && h.estado !== 'trabajando')
++        .map((h) => Number(h.duration))
++        .filter((v) => Number.isFinite(v) && v > 0);
++    const medianMs = _percentile(finishedDurations, 50);
++    const pctApproved = total > 0 ? approved / total : 0;
++
++    // --- paginación + agrupación por día (solo la página) ---
++    const pageItems = items.slice(cursor, cursor + limit);
++    const nextCursor = (cursor + limit < total) ? (cursor + limit) : null;
++
++    // Entregables parciales (CA-2): inyección opcional de un colector
++    // issue-scoped. Se mantiene FUERA del slice (FS-free/testable) y se inyecta
++    // en la capa de ruta. Conexión soft con EP-3 #3926 (OPEN): si no hay colector
++    // o falla, los entregables degradan a [] (CA-3, no bloquea).
++    const collect = (typeof o.collectAttachments === 'function') ? o.collectAttachments : null;
++
++    const groups = [];
++    const byKey = new Map();
++    for (const h0 of pageItems) {
++        let h = h0;
++        if (collect) {
++            let attachments = [];
++            try {
++                const a = collect(h0.skill, h0.issue, h0.fase);
++                if (Array.isArray(a)) attachments = a;
++            } catch { attachments = []; }
++            h = Object.assign({}, h0, { attachments });
++        }
++        const ts = _entryTs(h);
++        const key = _dayKey(ts);
++        let g = byKey.get(key);
++        if (!g) {
++            g = {
++                dayKey: key,
++                dayLabel: _dayLabel(ts, now),
++                items: [],
++                count: 0,
++                approved: 0,
++            };
++            byKey.set(key, g);
++            groups.push(g); // preserva el orden de pageItems (trabajando-first + ts desc)
++        }
++        g.items.push(h);
++        g.count++;
++        if (String(h.resultado || '').toLowerCase() === 'aprobado') g.approved++;
++    }
++    for (const g of groups) {
++        g.pctApproved = g.count > 0 ? g.approved / g.count : 0;
++    }
++
++    return {
++        groups,
++        aggregates: { count: total, approved, pctApproved, medianMs },
++        nextCursor,
++        total,
++        page: { cursor, limit, returned: pageItems.length },
++        filters: { skill: fSkill, resultado: fResultado, issue: fIssue, q: fQuery, period },
++    };
++}
++
+ // #2801 — Cuota semanal del Plan Max de Anthropic. Sin API pública,
+ // aproximamos sumando duration_ms de session:end del activity-log.
+ // Auto-ajuste pasivo: si el observado supera el effective_limit sin
+@@ -2221,6 +2448,11 @@ module.exports = {
+     bloqueadosSlice,
+     opsSlice,
+     historialSlice,
++    // #3963 — Historial timeline agrupado por día (CA-1..CA-5)
++    historialTimelineSlice,
++    buildAgentHistory,
++    HIST_PAGE_DEFAULT,
++    HIST_PAGE_MAX,
+     quotaSlice,
+     quotaExhaustedSlice,
+     reconcilerStaleOrdersSlice,
+diff --git a/.pipeline/views/dashboard/__tests__/historial.test.js b/.pipeline/views/dashboard/__tests__/historial.test.js
+index 57218231..9501d2bc 100644
+--- a/.pipeline/views/dashboard/__tests__/historial.test.js
++++ b/.pipeline/views/dashboard/__tests__/historial.test.js
+@@ -1,21 +1,21 @@
+ // =============================================================================
+-// Tests SSR de la ventana Historial (#3734, split del épico #3715).
++// Tests SSR del Historial timeline (#3963, rediseño sobre el split #3734/#3715).
+ //
+-// Cubre los CA-11..CA-17 del PO + REQ-SEC del análisis security:
+-//   1.  CA-11 — render vacío → string vacío (no rendea wrapper).
+-//   2.        — render básico → wrapper + 1 card.
+-//   3.  CA-12 — XSS en `titulo` escapado.
+-//   4.  CA-13 — XSS en `logFile` → link omitido + fallback GitHub.
+-//   5.  CA-14 — XSS en `resultado` escapado.
+-//   6.        — XSS en `skill` escapado (body + atributo title).
+-//   7.        — XSS en `fase` escapado.
+-//   8.  CA-15 — path traversal en `logFile` → link omitido.
+-//   9.        — path traversal en `rejectionPdf` → <a ah-pdf> omitido.
+-//   10. CA-16 — anti-tabnabbing: todo <a target="_blank"> lleva rel.
+-//   11. CA-17 — orden trabajando-first respetado.
+-//   12.        — coerción de `issue` no numérico → prioActions omitido.
++// Estructura nueva: línea de tiempo agrupada por día, header de agregados, barra
++// de filtros/búsqueda y cards expandibles (<details>/<summary>) con detalle
++// (fases, rebotes, causa, costo, links a log/PR/reporte).
+ //
+-// node:test (sin Jest). Render directo del módulo, sin arrancar dashboard.js.
++// Cubre:
++//   - render vacío → '' (CA-11 back-compat).
++//   - timeline + grupo de día + header de agregados (count, %aprobado, mediana).
++//   - card expandible con detalle (causa, rebote, costo, links).
++//   - timestamps humanos ("hace N min/h/d") con absoluto en title=.
++//   - estado vacío para filtros sin match.
++//   - Seguridad: XSS escapado en titulo/resultado/skill/fase, path traversal en
++//     logFile/rejectionPdf, anti-tabnabbing (rel en target=_blank), URL de PR
++//     validada, query reflejado escapado (REQ-SEC-1).
++//
++// node:test (sin Jest). Render directo del módulo.
+ // =============================================================================
+ 'use strict';
+ 
+@@ -24,19 +24,21 @@ const assert = require('node:assert/strict');
+ const path = require('node:path');
+ 
+ const HIST_PATH = path.resolve(__dirname, '..', 'historial.js');
+-const { renderHistorialSsr, isSafeFilename } = require(HIST_PATH);
++const { renderHistorialSsr, isSafeFilename, isSafeHttpUrl, relativeTime } = require(HIST_PATH);
++
++const NOW = 1_718_000_000_000;
++const MIN = 60_000;
+ 
+-// Opts mínimos válidos (igual que los inyecta el padre).
+ function opts(extra) {
+     return Object.assign({
+         agentPersona: { 'pipeline-dev': { icon: '⚙', name: 'PipeDev', color: '#a371f7' } },
+         manualOrderIndex: new Map(),
+         fmtDuration: (ms) => `${Math.round((ms || 0) / 1000)}s`,
+         ghBaseUrl: 'https://github.com/intrale/platform/issues',
++        now: NOW,
+     }, extra || {});
+ }
+ 
+-// Entrada base finalizada aprobada.
+ function baseEntry(extra) {
+     return Object.assign({
+         issue: 1732,
+@@ -46,110 +48,171 @@ function baseEntry(extra) {
+         fase: 'dev',
+         estado: 'procesado',
+         resultado: 'aprobado',
++        motivo: null,
+         duration: 5000,
+-        startedAt: 1_700_000_000_000,
+-        finishedAt: 1_700_000_100_000,
++        startedAt: NOW - 100 * 1000,
++        finishedAt: NOW - 5 * MIN,
+         hasLog: true,
+         logFile: 'dev-1732.log',
+         hasRejectionPdf: false,
+         rejectionPdf: null,
++        prUrl: null,
++        reboteNumero: 0,
++        crossphaseCount: 0,
++        costo: null,
+     }, extra || {});
+ }
+ 
+-// --- 1. CA-11: render vacío ---
+-test('CA-11 — agentHistory vacío retorna string vacío (no rendea wrapper)', () => {
++// --- 1. render vacío ---
++test('agentHistory vacío retorna string vacío (no rendea wrapper)', () => {
+     assert.equal(renderHistorialSsr({ agentHistory: [] }, opts()), '');
+     assert.equal(renderHistorialSsr({}, opts()), '');
+     assert.equal(renderHistorialSsr(null, opts()), '');
+ });
+ 
+-// --- 2. render básico ---
+-test('render básico — 1 entrada aprobada produce wrapper + 1 card', () => {
++// --- 2. render timeline básico ---
++test('render básico — 1 entrada produce timeline + grupo de día + card', () => {
+     const html = renderHistorialSsr({ agentHistory: [baseEntry()] }, opts());
+     assert.match(html, /id="agent-history"/);
+     assert.match(html, /data-section="historial"/);
+-    assert.match(html, /class="ah-list"/);
+-    assert.match(html, /class="ah-card ah-ok"/);
++    assert.match(html, /data-ah-timeline/);
++    assert.match(html, /class="ah-day-group"/);
++    assert.match(html, /class="ah-item ah-ok"/);
+     assert.match(html, /1 ejecuciones/);
+ });
+ 
+-// --- 3. CA-12: XSS en titulo ---
+-test('CA-12 — XSS en titulo queda escapado (no inyecta <img>)', () => {
++// --- 3. header de agregados ---
++test('header de agregados — count, %aprobado y mediana del período', () => {
++    const list = [
++        baseEntry({ issue: 1, resultado: 'aprobado', duration: 10 * MIN }),
++        baseEntry({ issue: 2, resultado: 'rechazado', duration: 30 * MIN }),
++    ];
++    const html = renderHistorialSsr({ agentHistory: list }, opts({ fmtDuration: (ms) => `${Math.round(ms / MIN)} m` }));
++    assert.match(html, /class="ah-aggr"/);
++    assert.match(html, /50 %/);        // 1 de 2 aprobado
++    assert.match(html, /mediana 20 m/); // p50 de [10,30]m
++});
++
++// --- 4. card expandible con detalle ---
++test('card expandible — detalle con causa, rebote y costo s/d', () => {
++    const entry = baseEntry({
++        resultado: 'rechazado', motivo: 'deep-link entre flavors', reboteNumero: 2, costo: null,
++    });
++    const html = renderHistorialSsr({ agentHistory: [entry] }, opts());
++    assert.match(html, /<details class="ah-item ah-fail"/);
++    assert.match(html, /class="ah-detail"/);
++    assert.match(html, /causa: deep-link entre flavors/);
++    assert.match(html, /rebote ×2/);
++    assert.match(html, /costo: s\/d/);
++});
++
++test('costo numérico se formatea en USD en el detalle', () => {
++    const html = renderHistorialSsr({ agentHistory: [baseEntry({ costo: 0.84 })] }, opts());
++    assert.match(html, /costo: 0\.84 USD/);
++});
++
++// --- 5. timestamps humanos ---
++test('timestamps humanos — "hace N min" en card con absoluto en title', () => {
++    const html = renderHistorialSsr({ agentHistory: [baseEntry({ finishedAt: NOW - 5 * MIN })] }, opts());
++    assert.match(html, /hace 5 min/);
++    // el absoluto queda en un title= (precisión)
++    assert.match(html, /class="ah-time" title="[^"]+"/);
++});
++
++test('relativeTime — escalas min/h/d', () => {
++    assert.equal(relativeTime(NOW - 30 * 1000, NOW), 'ahora');
++    assert.equal(relativeTime(NOW - 5 * MIN, NOW), 'hace 5 min');
++    assert.equal(relativeTime(NOW - 3 * 60 * MIN, NOW), 'hace 3 h');
++    assert.equal(relativeTime(NOW - 50 * 60 * MIN, NOW), 'hace 2 d');
++});
++
++// --- 6. links: log / PR / reporte ---
++test('links — log seguro, PR válido y reporte PDF se emiten como acciones', () => {
++    const entry = baseEntry({
++        hasLog: true, logFile: 'dev-1732.log',
++        prUrl: 'https://github.com/intrale/platform/pull/42',
++        hasRejectionPdf: true, rejectionPdf: 'rejection-1732-qa.pdf', resultado: 'rechazado',
++    });
++    const html = renderHistorialSsr({ agentHistory: [entry] }, opts());
++    assert.match(html, /href="\/logs\/view\/dev-1732\.log"/);
++    assert.match(html, /href="https:\/\/github\.com\/intrale\/platform\/pull\/42"/);
++    assert.match(html, /href="\/logs\/rejection-1732-qa\.pdf"/);
++});
++
++test('PR con URL no-https (javascript:) se omite (isSafeHttpUrl)', () => {
++    assert.equal(isSafeHttpUrl('javascript:alert(1)'), false);
++    assert.equal(isSafeHttpUrl('http://github.com/x'), false);
++    assert.equal(isSafeHttpUrl('https://github.com/intrale/platform/pull/1'), true);
++    const html = renderHistorialSsr({ agentHistory: [baseEntry({ prUrl: 'javascript:alert(1)' })] }, opts());
++    assert.ok(!html.includes('javascript:alert(1)'), 'no debe inyectar prUrl peligroso');
++    assert.ok(!html.includes('ah-act-pr'), 'no debe emitir el botón PR con URL insegura');
++});
++
++// --- 7. estado vacío por filtros sin match ---
++test('estado vacío — filtro que no matchea muestra "Sin ejecuciones para estos filtros"', () => {
++    const html = renderHistorialSsr({ agentHistory: [baseEntry()] }, opts({ skill: 'no-existe' }));
++    assert.match(html, /Sin ejecuciones para estos filtros/);
++});
++
++// --- 8. XSS en titulo ---
++test('XSS en titulo queda escapado (no inyecta <img>)', () => {
+     const html = renderHistorialSsr(
+-        { agentHistory: [baseEntry({ titulo: '<img src=x onerror=alert(1)>' })] },
+-        opts()
+-    );
+-    assert.ok(!html.includes('<img src=x onerror=alert(1)>'), 'no debe contener el tag literal');
++        { agentHistory: [baseEntry({ titulo: '<img src=x onerror=alert(1)>' })] }, opts());
++    assert.ok(!html.includes('<img src=x onerror=alert(1)>'));
+     assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+ });
+ 
+-// --- 4. CA-13: XSS + breakout en logFile → link omitido, fallback GitHub ---
+-test('CA-13 — logFile con breakout de atributo se omite y cae a fallback GitHub', () => {
++// --- 9. logFile con breakout → fallback GitHub ---
++test('logFile con breakout de atributo se omite y cae a fallback GitHub', () => {
+     const entry = baseEntry({ logFile: '"><script>1</script>' });
+     const html = renderHistorialSsr({ agentHistory: [entry] }, opts());
+-    assert.ok(!html.includes('<script>1</script>'), 'no debe inyectar script sin escapar');
+-    assert.ok(!html.includes('/logs/view/"><script>'), 'no debe usar el logFile peligroso en href');
+-    // Fallback al issue de GitHub con issue numérico.
++    assert.ok(!html.includes('<script>1</script>'));
++    assert.ok(!html.includes('/logs/view/"><script>'));
+     assert.match(html, /href="https:\/\/github\.com\/intrale\/platform\/issues\/1732"/);
+ });
+ 
+-// --- 5. CA-14: XSS en resultado ---
+-test('CA-14 — XSS en resultado queda escapado', () => {
++// --- 10. XSS en resultado / skill / fase ---
++test('XSS en resultado queda escapado (contexto atributo)', () => {
+     const html = renderHistorialSsr(
+-        { agentHistory: [baseEntry({ estado: 'procesado', resultado: '"><svg onload=alert(1)>' })] },
+-        opts()
+-    );
+-    assert.ok(!html.includes('<svg onload=alert(1)>'), 'no debe inyectar svg');
+-    assert.match(html, /&lt;svg onload=alert\(1\)&gt;/);
++        { agentHistory: [baseEntry({ resultado: '"><svg onload=alert(1)>' })] }, opts());
++    assert.ok(!html.includes('<svg onload=alert(1)>'));
+ });
+ 
+-// --- 6. XSS en skill (body + atributo) ---
+-test('XSS en skill queda escapado en .ah-skill y en title=', () => {
+-    const persona = {}; // sin persona → usa h.skill como name
++test('XSS en skill queda escapado', () => {
+     const html = renderHistorialSsr(
+-        { agentHistory: [baseEntry({ skill: '<img onerror=alert(1)>', hasLog: true, logFile: 'x.log' })] },
+-        opts({ agentPersona: persona })
+-    );
+-    assert.ok(!html.includes('<img onerror=alert(1)>'), 'no debe inyectar img sin escapar');
++        { agentHistory: [baseEntry({ skill: '<img onerror=alert(1)>' })] }, opts({ agentPersona: {} }));
++    assert.ok(!html.includes('<img onerror=alert(1)>'));
+     assert.match(html, /&lt;img onerror=alert\(1\)&gt;/);
+ });
+ 
+-// --- 7. XSS en fase ---
+-test('XSS en fase queda escapado en .ah-fase', () => {
++test('XSS en fase queda escapado', () => {
+     const html = renderHistorialSsr(
+-        { agentHistory: [baseEntry({ fase: '"><svg onload=1>' })] },
+-        opts()
+-    );
+-    assert.ok(!html.includes('<svg onload=1>'), 'no debe inyectar svg');
++        { agentHistory: [baseEntry({ fase: '"><svg onload=1>' })] }, opts());
++    assert.ok(!html.includes('<svg onload=1>'));
+     assert.match(html, /&lt;svg onload=1&gt;/);
+ });
+ 
+-// --- 8. CA-15: path traversal en logFile ---
+-test('CA-15 — path traversal en logFile se omite (whitelist falla por /)', () => {
+-    const entry = baseEntry({ logFile: '../../etc/passwd' });
+-    const html = renderHistorialSsr({ agentHistory: [entry] }, opts());
+-    assert.ok(!html.includes('/logs/view/../../etc/passwd'), 'no debe inyectar el path traversal');
++// --- 11. path traversal en logFile / rejectionPdf ---
++test('path traversal en logFile se omite (whitelist falla por /)', () => {
++    const html = renderHistorialSsr({ agentHistory: [baseEntry({ logFile: '../../etc/passwd' })] }, opts());
++    assert.ok(!html.includes('/logs/view/../../etc/passwd'));
+     assert.match(html, /href="https:\/\/github\.com\/intrale\/platform\/issues\/1732"/);
+ });
+ 
+-// --- 9. path traversal en rejectionPdf ---
+-test('CA-15 — path traversal en rejectionPdf omite el link ah-pdf', () => {
+-    const entry = baseEntry({ hasRejectionPdf: true, rejectionPdf: '../../../config' });
++test('path traversal en rejectionPdf omite el link de reporte', () => {
++    const entry = baseEntry({ hasRejectionPdf: true, rejectionPdf: '../../../config', resultado: 'rechazado' });
+     const html = renderHistorialSsr({ agentHistory: [entry] }, opts());
+-    assert.ok(!html.includes('ah-pdf'), 'no debe emitir el link de PDF con path inseguro');
+-    // Filename seguro sí emite el link.
+-    const safe = baseEntry({ hasRejectionPdf: true, rejectionPdf: 'rejection-1732-qa.pdf' });
++    assert.ok(!html.includes('ah-act-pdf'), 'no debe emitir el link de PDF con path inseguro');
++    const safe = baseEntry({ hasRejectionPdf: true, rejectionPdf: 'rejection-1732-qa.pdf', resultado: 'rechazado' });
+     const htmlSafe = renderHistorialSsr({ agentHistory: [safe] }, opts());
+-    assert.match(htmlSafe, /class="ah-pdf" href="\/logs\/rejection-1732-qa\.pdf"/);
++    assert.match(htmlSafe, /href="\/logs\/rejection-1732-qa\.pdf"/);
+ });
+ 
+-// --- 10. CA-16: anti-tabnabbing ---
+-test('CA-16 — todo <a target="_blank"> lleva rel="noopener noreferrer"', () => {
++// --- 12. anti-tabnabbing ---
++test('todo <a target="_blank"> lleva rel="noopener noreferrer"', () => {
+     const html = renderHistorialSsr(
+-        { agentHistory: [baseEntry({ hasRejectionPdf: true, rejectionPdf: 'r.pdf' }), baseEntry({ issue: 99 })] },
+-        opts()
+-    );
+-    // Extraer cada apertura de <a ...> y verificar.
++        { agentHistory: [baseEntry({ prUrl: 'https://github.com/intrale/platform/pull/1', hasRejectionPdf: true, rejectionPdf: 'r.pdf', resultado: 'rechazado' })] },
++        opts());
+     const anchors = html.match(/<a\b[^>]*>/g) || [];
+     let blankCount = 0;
+     for (const a of anchors) {
+@@ -161,57 +224,43 @@ test('CA-16 — todo <a target="_blank"> lleva rel="noopener noreferrer"', () =>
+     assert.ok(blankCount >= 2, 'debe haber al menos 2 anchors target=_blank');
+ });
+ 
+-// --- 11. CA-17: orden trabajando-first ---
+-test('CA-17 — cards trabajando aparecen antes que procesado (respeta orden del padre)', () => {
+-    // El padre ya ordena; el módulo no reordena. Pasamos ya ordenado: 2 trabajando, 3 procesado.
++// --- 13. query reflejado escapado (REQ-SEC-1) ---
++test('query de búsqueda reflejado en el input queda escapado (XSS reflejado)', () => {
++    const html = renderHistorialSsr({ agentHistory: [baseEntry()] }, opts({ q: '"><script>alert(1)</script>' }));
++    assert.ok(!html.includes('<script>alert(1)</script>'), 'no debe reflejar el query sin escapar');
++    assert.match(html, /value="[^"]*&lt;script&gt;/);
++});
++
++// --- 14. orden trabajando-first preservado ---
++test('cards trabajando aparecen antes que procesado en el mismo día', () => {
+     const list = [
+-        baseEntry({ issue: 1, estado: 'trabajando', resultado: null }),
+-        baseEntry({ issue: 2, estado: 'trabajando', resultado: null }),
+-        baseEntry({ issue: 3, estado: 'procesado', resultado: 'aprobado' }),
+-        baseEntry({ issue: 4, estado: 'procesado', resultado: 'rechazado' }),
+-        baseEntry({ issue: 5, estado: 'procesado', resultado: 'aprobado' }),
++        baseEntry({ issue: 1, estado: 'trabajando', resultado: null, startedAt: NOW - 3 * MIN }),
++        baseEntry({ issue: 2, estado: 'procesado', resultado: 'aprobado', finishedAt: NOW - 4 * MIN }),
++        baseEntry({ issue: 3, estado: 'procesado', resultado: 'rechazado', finishedAt: NOW - 5 * MIN }),
+     ];
+     const html = renderHistorialSsr({ agentHistory: list }, opts());
+     const firstRunning = html.indexOf('ah-running');
+-    const firstOk = html.indexOf('ah-ok');
+-    const firstFail = html.indexOf('ah-fail');
++    const firstOk = html.indexOf('ah-item ah-ok');
++    const firstFail = html.indexOf('ah-item ah-fail');
+     assert.ok(firstRunning >= 0 && firstRunning < firstOk, 'running antes que ok');
+     assert.ok(firstRunning < firstFail, 'running antes que fail');
+ });
+ 
+-// --- 12. coerción de issue no numérico ---
+-test('coerción — issue no numérico (NaN) omite prioActions en card en ejecución', () => {
+-    const entry = baseEntry({ issue: '1234; alert(1)', estado: 'trabajando', resultado: null });
+-    const html = renderHistorialSsr({ agentHistory: [entry] }, opts());
+-    assert.ok(!html.includes('ah-prio-actions'), 'prioActions debe omitirse si Number(issue) es NaN');
+-    // El issue se rendea como texto escapado en .ah-issue (inofensivo), pero NO
+-    // debe aparecer en ningún contexto ejecutable (onclick / handlers de prio).
+-    assert.ok(!html.includes('issueMoveToTop'), 'no debe haber handler de prio con issue inválido');
+-    assert.ok(!/onclick="[^"]*alert\(1\)/.test(html), 'no debe inyectar el payload dentro de onclick');
+-    // Issue numérico válido en ejecución sí rendea prioActions.
+-    const ok = baseEntry({ issue: 55, estado: 'trabajando', resultado: null });
+-    const htmlOk = renderHistorialSsr({ agentHistory: [ok] }, opts());
+-    assert.match(htmlOk, /issueMoveToTop\(55\)/);
+-});
+-
+-// --- extra: isSafeFilename whitelist ---
+-test('isSafeFilename — acepta filenames simples y rechaza traversal/metachar', () => {
++// --- 15. paginación SSR + load-more ---
++test('más de 50 entradas pagina a 50 y emite botón "ver más"', () => {
++    const list = Array.from({ length: 70 }, (_, i) => baseEntry({ issue: i + 1, finishedAt: NOW - i * MIN }));
++    const html = renderHistorialSsr({ agentHistory: list }, opts());
++    const cards = (html.match(/class="ah-item/g) || []).length;
++    assert.ok(cards <= 50, `no debe rendear más de 50 cards (rendeó ${cards})`);
++    assert.match(html, /class="ah-load-more"/);
++});
++
++// --- 16. isSafeFilename whitelist (heredado) ---
++test('isSafeFilename — acepta simples y rechaza traversal/metachar', () => {
+     assert.equal(isSafeFilename('dev-1732.log'), true);
+-    assert.equal(isSafeFilename('rejection-1.pdf'), true);
+     assert.equal(isSafeFilename('../etc/passwd'), false);
+     assert.equal(isSafeFilename('a/b'), false);
+     assert.equal(isSafeFilename('"><script>'), false);
+     assert.equal(isSafeFilename(''), false);
+     assert.equal(isSafeFilename(null), false);
+-    assert.equal(isSafeFilename(undefined), false);
+-});
+-
+-// --- extra: cap de 50 + toggle "ver más" ---
+-test('cap de 50 — más de 15 entradas genera toggle "ver más" y no excede 50', () => {
+-    const list = Array.from({ length: 60 }, (_, i) => baseEntry({ issue: i + 1 }));
+-    const html = renderHistorialSsr({ agentHistory: list }, opts());
+-    assert.match(html, /class="ah-more"/);
+-    assert.match(html, /Ver 35 más…/); // min(60-15, 50-15) = 35
+-    const cards = (html.match(/class="ah-card/g) || []).length;
+-    assert.ok(cards <= 50, `no debe rendear más de 50 cards (rendeó ${cards})`);
+ });
+diff --git a/.pipeline/views/dashboard/historial.js b/.pipeline/views/dashboard/historial.js
+index acc486bc..ffaa1b2c 100644
+--- a/.pipeline/views/dashboard/historial.js
++++ b/.pipeline/views/dashboard/historial.js
+@@ -46,6 +46,11 @@ const fs = require('node:fs');
+ const path = require('node:path');
+ 
+ const { escapeHtmlText, escapeHtmlAttr } = require('../../lib/escape-html.js');
++// #3963 — el cómputo (filtros/agrupación/paginación/agregados) vive en el lib;
++// la vista solo lo invoca y renderiza. Si el módulo no carga (caso edge), el
++// render degrada a string vacío.
++let timelineSlice = null;
++try { timelineSlice = require('../../lib/dashboard-slices.js').historialTimelineSlice; } catch { timelineSlice = null; }
+ 
+ const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
+ function loadTheme() {
+@@ -134,56 +139,402 @@ function renderHistCard(h, persona, orderIdx, fmtDuration, ghBaseUrl) {
+       </a>`;
+ }
+ 
+-// state = { agentHistory: Array<{ issue, titulo, skill, pipeline, fase, estado,
+-//                                  resultado, duration, startedAt, finishedAt,
+-//                                  hasLog, logFile, hasRejectionPdf, rejectionPdf }> }
+-// opts  = { agentPersona, manualOrderIndex, fmtDuration, ghBaseUrl }
+-function renderHistorialSsr(state, opts) {
+-    const list = Array.isArray(state && state.agentHistory) ? state.agentHistory : [];
+-    if (list.length === 0) return '';
++// -----------------------------------------------------------------------------
++// #3963 — Helpers del timeline.
++// -----------------------------------------------------------------------------
++
++// Timestamp humano relativo (CA-5): "ahora", "hace 5 min", "hace 2 h",
++// "hace 3 d". Se mantiene el timestamp absoluto en `title=` para precisión.
++function relativeTime(ts, now) {
++    let t = ts;
++    if (typeof t === 'string') t = Date.parse(t);
++    if (!Number.isFinite(t) || t <= 0) return '';
++    const ref = Number.isFinite(now) ? now : Date.now();
++    let diff = ref - t;
++    if (diff < 0) diff = 0;
++    const min = Math.floor(diff / 60000);
++    if (min < 1) return 'ahora';
++    if (min < 60) return `hace ${min} min`;
++    const h = Math.floor(min / 60);
++    if (h < 24) return `hace ${h} h`;
++    const d = Math.floor(h / 24);
++    return `hace ${d} d`;
++}
++
++// Timestamp absoluto formateado (es-AR) para el atributo `title=`.
++function absTime(ts) {
++    let t = ts;
++    if (typeof t === 'string') t = Date.parse(t);
++    if (!Number.isFinite(t) || t <= 0) return '';
++    return new Date(t).toLocaleString('es-AR', {
++        day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
++    });
++}
++
++// URL segura para `href` de links externos (PR): solo https hacia github.com.
++// Evita `javascript:` y esquemas raros. Se escapa igualmente en el atributo.
++function isSafeHttpUrl(s) {
++    return typeof s === 'string' && /^https:\/\/(github\.com|.*\.github\.com)\//.test(s);
++}
++
++// Resumen de una métrica del header de agregados.
++function fmtPct(p) {
++    const v = Number(p);
++    if (!Number.isFinite(v)) return '—';
++    return `${Math.round(v * 100)} %`;
++}
++
++// Render del detalle expandible de una ejecución (CA: fases, rebotes, costo,
++// links a entregables). Todo dato dinámico escapado. `h.attachments` es
++// best-effort (CA-2/CA-3): si no viene, se omite.
++function renderDetail(h, fmtDuration) {
++    const bits = [];
++
++    // Fase + duración de esta ejecución.
++    bits.push(`<span class="ah-d-item">fase <b>${escapeHtmlText(h.fase || '—')}</b> · ${escapeHtmlText(fmtDuration(h.duration))}</span>`);
++
++    // Rebotes / cross-phase.
++    const reb = Number(h.reboteNumero) || 0;
++    const cross = Number(h.crossphaseCount) || 0;
++    if (reb > 0) bits.push(`<span class="ah-d-item ah-d-warn">rebote ×${escapeHtmlText(reb)}</span>`);
++    if (cross > 0) bits.push(`<span class="ah-d-item ah-d-warn">cross-phase ×${escapeHtmlText(cross)}</span>`);
++
++    // Causa parseada (motivo de rechazo) — truncada y escapada.
++    if (h.motivo) {
++        const causa = String(h.motivo).slice(0, 160);
++        bits.push(`<span class="ah-d-item ah-d-cause" title="${escapeHtmlAttr(String(h.motivo).slice(0, 500))}">causa: ${escapeHtmlText(causa)}</span>`);
++    }
++
++    // Costo (best-effort → "s/d" si null, CA-3).
++    const costoStr = (h.costo !== null && h.costo !== undefined && Number.isFinite(Number(h.costo)))
++        ? `${Number(h.costo).toFixed(2)} USD`
++        : 's/d';
++    bits.push(`<span class="ah-d-item">costo: ${escapeHtmlText(costoStr)}</span>`);
++
++    // Entregables parciales (CA-2): chips no-clickables (el serving de archivos
++    // de repo llega con EP-3 #3926). El reporte PDF de rechazo sí es link real
++    // (vía /logs/) y se muestra en las acciones de la card.
++    let attachHtml = '';
++    if (Array.isArray(h.attachments) && h.attachments.length > 0) {
++        const chips = h.attachments.slice(0, 8).map((a) => {
++            const label = a && (a.descriptor || a._basename || (a.path ? path.basename(String(a.path)) : '')) || 'entregable';
++            const tip = a && a.path ? String(a.path) : '';
++            return `<span class="ah-attach" title="${escapeHtmlAttr(tip)}">\u{1F4CE} ${escapeHtmlText(String(label).slice(0, 40))}</span>`;
++        }).join('');
++        attachHtml = `<div class="ah-d-attachments">${chips}</div>`;
++    }
++
++    return `<div class="ah-detail">
++        <div class="ah-d-row">${bits.join('<span class="ah-d-sep">·</span>')}</div>
++        ${attachHtml}
++      </div>`;
++}
++
++// Render de una card del timeline (expandible). Reusa los escapes y la
++// whitelist `isSafeFilename` ya cableados (#3734). Estructura:
++//   <details class="ah-item"> <summary class="ah-card">…acciones…</summary>
++//     <div class="ah-detail">…</div> </details>
++function renderTimelineCard(h, persona, fmtDuration, ghBaseUrl, now) {
++    const p = persona[h.skill] || { icon: '⚙', name: h.skill, color: 'var(--dim)' };
++    const isRunning = h.estado === 'trabajando';
++    const isOk = h.resultado === 'aprobado';
++    const isFail = h.resultado === 'rechazado';
++    const statusCls = isRunning ? 'ah-running' : isOk ? 'ah-ok' : isFail ? 'ah-fail' : 'ah-neutral';
++    const statusIcon = isRunning ? '●' : isOk ? '✓' : isFail ? '✗' : '—';
+ 
++    const ts = isRunning ? h.startedAt : h.finishedAt;
++    const rel = relativeTime(ts, now);
++    const abs = absTime(ts);
++    const durStr = fmtDuration(h.duration);
++
++    const titleSuffix = h.titulo ? ` ${escapeHtmlText(String(h.titulo).slice(0, 48))}` : '';
++
++    // --- acciones (links discretos, no toda la card es un link) ---
++    const actions = [];
++    // log (o fallback al issue de GitHub).
++    const useLog = h.hasLog && isSafeFilename(h.logFile);
++    const logHref = useLog
++        ? `/logs/view/${h.logFile}${isRunning ? '?live=1' : ''}`
++        : `${ghBaseUrl}/${Number(h.issue)}`;
++    actions.push(`<a class="ah-act" href="${escapeHtmlAttr(logHref)}" target="_blank" rel="noopener noreferrer" title="${escapeHtmlAttr(useLog ? 'Ver log' : 'Ver en GitHub')}" onclick="event.stopPropagation()">${useLog ? 'log' : 'GitHub'}</a>`);
++    // PR (si hay url válida).
++    if (isSafeHttpUrl(h.prUrl)) {
++        actions.push(`<a class="ah-act ah-act-pr" href="${escapeHtmlAttr(h.prUrl)}" target="_blank" rel="noopener noreferrer" title="Ver Pull Request" onclick="event.stopPropagation()">PR ↗</a>`);
++    }
++    // Reporte de rechazo (PDF, vía /logs/).
++    if (h.hasRejectionPdf && isSafeFilename(h.rejectionPdf)) {
++        actions.push(`<a class="ah-act ah-act-pdf" href="${escapeHtmlAttr('/logs/' + h.rejectionPdf)}" target="_blank" rel="noopener noreferrer" title="Ver reporte de rechazo (PDF)" onclick="event.stopPropagation()">\u{1F4C4} reporte</a>`);
++    }
++
++    return `<details class="ah-item ${statusCls}">
++        <summary class="ah-card">
++          <span class="ah-status-ic" title="${escapeHtmlAttr(isRunning ? 'En ejecución' : (h.resultado || 'finalizado'))}">${statusIcon}</span>
++          <span class="ah-avatar" style="background:${escapeHtmlAttr(p.color)}">${escapeHtmlText(p.icon)}</span>
++          <span class="ah-issue">#${escapeHtmlText(h.issue)}<span class="ah-title">${titleSuffix}</span></span>
++          <span class="ah-skill" title="${escapeHtmlAttr(String(p.name))}">${escapeHtmlText(p.name)}</span>
++          <span class="ah-meta">${escapeHtmlText(h.fase || '')} · ${escapeHtmlText(durStr)}</span>
++          <span class="ah-time" title="${escapeHtmlAttr(abs)}">${escapeHtmlText(rel)}</span>
++          <span class="ah-actions">${actions.join('')}</span>
++        </summary>
++        ${renderDetail(h, fmtDuration)}
++      </details>`;
++}
++
++// Construye las opciones de un <select> de filtro a partir de un set de valores.
++function buildSelect(name, label, values, selected) {
++    const opts = [`<option value="">${escapeHtmlText(label)}</option>`]
++        .concat(Array.from(values).sort().map((v) => {
++            const sel = (v === selected) ? ' selected' : '';
++            return `<option value="${escapeHtmlAttr(v)}"${sel}>${escapeHtmlText(v)}</option>`;
++        }));
++    return `<select class="ah-sel" data-ah-filter="${escapeHtmlAttr(name)}">${opts.join('')}</select>`;
++}
++
++// state = { agentHistory: [...] } | { issueMatrix, prInfo }
++// opts  = { agentPersona, manualOrderIndex, fmtDuration, ghBaseUrl, now, period, skill, resultado, issue, q, cursor }
++function renderHistorialSsr(state, opts) {
+     const o = opts || {};
+     const persona = o.agentPersona || {};
+-    const orderIdx = o.manualOrderIndex || new Map();
+     const fmtDuration = (typeof o.fmtDuration === 'function') ? o.fmtDuration : (() => '—');
+     const ghBaseUrl = o.ghBaseUrl || 'https://github.com/intrale/platform/issues';
++    const now = Number.isFinite(o.now) ? o.now : Date.now();
+ 
+-    const card = (h) => renderHistCard(h, persona, orderIdx, fmtDuration, ghBaseUrl);
++    // El render embebido del monolito SIEMPRE muestra el set completo (sin
++    // recorte temporal) en la primera página; los filtros se aplican client-side
++    // contra /api/dash/historial. Si no hay datos → string vacío (CA-11).
++    const rawList = Array.isArray(state && state.agentHistory) ? state.agentHistory : null;
++    if (rawList && rawList.length === 0) return '';
+ 
+-    const visible = list.slice(0, HIST_VISIBLE).map(card).join('');
+-    const hidden = list.length > HIST_VISIBLE
+-        ? list.slice(HIST_VISIBLE, HIST_CAP).map(card).join('')
+-        : '';
+-    const moreCount = Math.min(list.length - HIST_VISIBLE, HIST_CAP - HIST_VISIBLE);
+-    const moreToggle = hidden
+-        ? `<details class="ah-more"><summary class="ah-more-btn">Ver ${moreCount} más…</summary><div class="ah-more-list">${hidden}</div></details>`
+-        : '';
++    if (!timelineSlice) return '';
++    const slice = timelineSlice(state, { now }, {
++        period: o.period || 'all',
++        skill: o.skill || null,
++        resultado: o.resultado || null,
++        issue: o.issue || null,
++        q: o.q || null,
++        cursor: o.cursor,
++        limit: HIST_CAP,
++    });
+ 
+-    // CA-8: leyenda corta de estados + diferencia visible/toggle.
+-    const legend = `<span class="ah-legend" title="Leyenda de estados de las ejecuciones">
+-          <span class="ah-leg-item"><span class="ah-leg-glyph ah-running">●</span> en ejecución</span>
+-          <span class="ah-leg-item"><span class="ah-leg-glyph ah-ok">✓</span> aprobado</span>
+-          <span class="ah-leg-item"><span class="ah-leg-glyph ah-fail">✗</span> rechazado</span>
+-          <span class="ah-leg-item"><span class="ah-leg-glyph ah-neutral">—</span> finalizado</span>
++    if (!slice || slice.total === 0) {
++        // Sin datos en absoluto → no renderizar la sección (back-compat CA-11).
++        // Con datos pero filtros que no matchean → estado vacío explícito.
++        const hasAnyData = rawList ? rawList.length > 0
++            : (state && state.issueMatrix && Object.keys(state.issueMatrix).length > 0);
++        if (!hasAnyData) return '';
++    }
++
++    const { groups, aggregates, nextCursor, total } = slice;
++
++    // --- header de agregados (CA-3): ejecuciones · %aprobado · mediana ---
++    const medianStr = (aggregates.medianMs !== null && aggregates.medianMs !== undefined)
++        ? fmtDuration(aggregates.medianMs) : '—';
++    const aggrHtml = `<span class="ah-aggr" title="Agregados del período visible">
++          <b>${escapeHtmlText(aggregates.count)}</b> ejecuciones
++          <span class="ah-aggr-sep">·</span> ${escapeHtmlText(fmtPct(aggregates.pctApproved))} <span class="ah-ok">✓</span>
++          <span class="ah-aggr-sep">·</span> mediana ${escapeHtmlText(medianStr)}
+         </span>`;
+ 
++    // --- barra de filtros + búsqueda (CA-1) ---
++    // Valores para los selects: derivados del set completo disponible.
++    const allItems = (rawList || []);
++    const skillSet = new Set(allItems.map((h) => h && h.skill).filter(Boolean));
++    const skillSelect = buildSelect('skill', 'skill', skillSet, o.skill || '');
++    const resultadoSelect = buildSelect('resultado', 'resultado',
++        new Set(['aprobado', 'rechazado', 'trabajando']), o.resultado || '');
++    const periodChips = ['today', '7d', '30d', 'all'].map((pk) => {
++        const labels = { today: 'Hoy', '7d': '7 d', '30d': '30 d', all: 'Todo' };
++        const active = (o.period || 'all') === pk ? ' ah-chip-on' : '';
++        return `<button type="button" class="ah-chip${active}" data-ah-period="${pk}">${labels[pk]}</button>`;
++    }).join('');
++    const filtersHtml = `<div class="ah-filters" data-ah-filters>
++          <span class="ah-chips">${periodChips}</span>
++          ${skillSelect}
++          ${resultadoSelect}
++          <input class="ah-search" type="search" data-ah-filter="q" placeholder="\u{1F50D} issue o texto" autocomplete="off" maxlength="200" value="${escapeHtmlAttr(o.q || '')}">
++        </div>`;
++
++    // --- timeline agrupado por día ---
++    const timelineHtml = groups.length === 0
++        ? `<div class="ah-empty">Sin ejecuciones para estos filtros</div>`
++        : groups.map((g) => {
++            const cards = g.items.map((h) => renderTimelineCard(h, persona, fmtDuration, ghBaseUrl, now)).join('');
++            const dayAggr = `<span class="ah-day-aggr">${escapeHtmlText(g.count)} ejec. · ${escapeHtmlText(fmtPct(g.pctApproved))} ✓</span>`;
++            return `<div class="ah-day-group">
++              <div class="ah-day"><span class="ah-day-label">${escapeHtmlText(g.dayLabel)}</span> ${dayAggr}</div>
++              <div class="ah-day-items">${cards}</div>
++            </div>`;
++        }).join('');
++
++    const loadMore = (nextCursor !== null && nextCursor !== undefined)
++        ? `<button type="button" class="ah-load-more" data-ah-next="${escapeHtmlText(nextCursor)}">Ver más ejecuciones…</button>`
++        : '';
++
+     return `
+     <div class="matrix-section section-collapsible section-collapsed" id="agent-history" data-section="historial">
+       <div class="matrix-header">
+         <h2 class="section-title-clickable" onclick="toggleSection('historial')" title="Click para colapsar/expandir la sección">
+           <span class="section-chevron">▼</span> \u{1F4DC} Historial de Ejecuciones
+         </h2>
+-        ${legend}
++        ${aggrHtml}
+         <a class="section-popout" href="/?section=historial" target="_blank" rel="noopener noreferrer" title="Abrir en ventana independiente" onclick="event.stopPropagation()">↗</a>
+-        <span class="ah-count">${escapeHtmlText(list.length)} ejecuciones</span>
++        <span class="ah-count">${escapeHtmlText(total)} ejecuciones</span>
+       </div>
+       <div class="section-body">
+-      <div class="ah-list">
+-        ${visible}
+-        ${moreToggle}
++        ${filtersHtml}
++        <div class="ah-timeline" data-ah-timeline>
++          ${timelineHtml}
++        </div>
++        ${loadMore}
+       </div>
+-      </div>
+-    </div>`;
++    </div>
++    ${renderTimelineScript()}`;
++}
++
++// Script de progressive-enhancement (CA-1): cablea filtros/búsqueda/paginación
++// contra /api/dash/historial y re-renderiza el timeline client-side. Sin JS, el
++// render SSR inicial sigue mostrando el timeline. Se emite una sola vez (guard
++// por flag global). Todo dato dinámico insertado vía textContent (XSS-safe por
++// construcción) — NUNCA innerHTML con datos del server.
++function renderTimelineScript() {
++    return `<script>(function(){
++  if (window.__ahTimelineInit) return; window.__ahTimelineInit = true;
++  function esc(s){ return (s==null?'':String(s)); }
++  function relTime(ts, now){
++    var t = typeof ts==='string'?Date.parse(ts):ts; if(!isFinite(t)||t<=0) return '';
++    var d = now - t; if(d<0) d=0; var m=Math.floor(d/60000);
++    if(m<1) return 'ahora'; if(m<60) return 'hace '+m+' min';
++    var h=Math.floor(m/60); if(h<24) return 'hace '+h+' h'; return 'hace '+Math.floor(h/24)+' d';
++  }
++  function el(tag, cls, txt){ var e=document.createElement(tag); if(cls) e.className=cls; if(txt!=null) e.textContent=txt; return e; }
++  var root = document.getElementById('agent-history'); if(!root) return;
++  var timeline = root.querySelector('[data-ah-timeline]'); if(!timeline) return;
++  var filters = root.querySelector('[data-ah-filters]');
++  var state = { period:'all', skill:'', resultado:'', q:'' };
++  var debounce;
++  function buildQuery(cursor){
++    var p = new URLSearchParams();
++    if(state.period && state.period!=='all') p.set('period', state.period);
++    if(state.skill) p.set('skill', state.skill);
++    if(state.resultado) p.set('resultado', state.resultado);
++    if(state.q) p.set('q', state.q);
++    if(cursor) p.set('cursor', cursor);
++    return p.toString();
++  }
++  function actionLink(href, label, title){
++    var a=el('a','ah-act',label); a.href=href; a.target='_blank'; a.rel='noopener noreferrer';
++    if(title) a.title=title; a.addEventListener('click', function(ev){ ev.stopPropagation(); }); return a;
++  }
++  function renderCard(h){
++    var det = document.createElement('details');
++    det.className = 'ah-item ' + (h.estado==='trabajando'?'ah-running':(h.resultado==='aprobado'?'ah-ok':(h.resultado==='rechazado'?'ah-fail':'ah-neutral')));
++    var sum = el('summary','ah-card');
++    var ic = h.estado==='trabajando'?'\\u25CF':(h.resultado==='aprobado'?'\\u2713':(h.resultado==='rechazado'?'\\u2717':'\\u2014'));
++    sum.appendChild(el('span','ah-status-ic', ic));
++    var iss = el('span','ah-issue','#'+esc(h.issue)+(h.titulo? ' '+String(h.titulo).slice(0,48):''));
++    sum.appendChild(iss);
++    sum.appendChild(el('span','ah-skill', esc(h.skill)));
++    sum.appendChild(el('span','ah-meta', esc(h.fase)+' '));
++    var ts = h.estado==='trabajando'? h.startedAt : h.finishedAt;
++    sum.appendChild(el('span','ah-time', relTime(ts, Date.now())));
++    var acts = el('span','ah-actions');
++    var n = Number(h.issue);
++    var logHref = (h.hasLog && /^[A-Za-z0-9._-]+$/.test(String(h.logFile||''))) ? '/logs/view/'+h.logFile : ('https://github.com/intrale/platform/issues/'+(isFinite(n)?n:''));
++    acts.appendChild(actionLink(logHref, (h.hasLog?'log':'GitHub')));
++    if(h.prUrl && /^https:\\/\\/(github\\.com|.*\\.github\\.com)\\//.test(h.prUrl)) acts.appendChild(actionLink(h.prUrl,'PR \\u2197'));
++    if(h.hasRejectionPdf && /^[A-Za-z0-9._-]+$/.test(String(h.rejectionPdf||''))) acts.appendChild(actionLink('/logs/'+h.rejectionPdf,'\\u{1F4C4} reporte'));
++    sum.appendChild(acts);
++    det.appendChild(sum);
++    var detail = el('div','ah-detail');
++    var row = el('div','ah-d-row');
++    row.appendChild(el('span','ah-d-item','fase '+esc(h.fase)));
++    if(Number(h.reboteNumero)>0) row.appendChild(el('span','ah-d-item ah-d-warn','rebote \\u00D7'+Number(h.reboteNumero)));
++    if(Number(h.crossphaseCount)>0) row.appendChild(el('span','ah-d-item ah-d-warn','cross-phase \\u00D7'+Number(h.crossphaseCount)));
++    if(h.motivo) row.appendChild(el('span','ah-d-item ah-d-cause','causa: '+String(h.motivo).slice(0,160)));
++    var costo = (h.costo!=null && isFinite(Number(h.costo)))? Number(h.costo).toFixed(2)+' USD':'s/d';
++    row.appendChild(el('span','ah-d-item','costo: '+costo));
++    detail.appendChild(row);
++    if(Array.isArray(h.attachments) && h.attachments.length){
++      var at = el('div','ah-d-attachments');
++      h.attachments.slice(0,8).forEach(function(a){
++        var lbl = (a && (a.descriptor || a.path)) || 'entregable';
++        at.appendChild(el('span','ah-attach','\\u{1F4CE} '+String(lbl).slice(0,40)));
++      });
++      detail.appendChild(at);
++    }
++    det.appendChild(detail);
++    return det;
++  }
++  function pct(p){ var v=Number(p); return isFinite(v)? Math.round(v*100)+' %':'\\u2014'; }
++  function render(data, append){
++    if(!append) timeline.textContent='';
++    if(!data || !data.groups || !data.groups.length){
++      if(!append){ timeline.appendChild(el('div','ah-empty','Sin ejecuciones para estos filtros')); }
++      return;
++    }
++    data.groups.forEach(function(g){
++      var grp = el('div','ah-day-group');
++      var day = el('div','ah-day');
++      day.appendChild(el('span','ah-day-label', g.dayLabel));
++      day.appendChild(el('span','ah-day-aggr', g.count+' ejec. · '+pct(g.pctApproved)+' \\u2713'));
++      grp.appendChild(day);
++      var items = el('div','ah-day-items');
++      g.items.forEach(function(h){ items.appendChild(renderCard(h)); });
++      grp.appendChild(items);
++      timeline.appendChild(grp);
++    });
++  }
++  var loadMoreBtn = root.querySelector('.ah-load-more');
++  function fetchAndRender(cursor, append){
++    fetch('/api/dash/historial?'+buildQuery(cursor), { headers:{ 'Accept':'application/json' } })
++      .then(function(r){ return r.ok? r.json(): null; })
++      .then(function(data){
++        if(!data){ return; }
++        render(data, append);
++        // refrescar el header de agregados
++        var aggr = root.querySelector('.ah-aggr');
++        if(aggr && data.aggregates){ aggr.innerHTML=''; aggr.appendChild(el('b',null,String(data.aggregates.count))); aggr.appendChild(document.createTextNode(' ejecuciones · '+pct(data.aggregates.pctApproved)+' \\u2713')); }
++        // load-more
++        if(loadMoreBtn){
++          if(data.nextCursor!=null){ loadMoreBtn.style.display=''; loadMoreBtn.setAttribute('data-ah-next', data.nextCursor); }
++          else { loadMoreBtn.style.display='none'; }
++        }
++      }).catch(function(){});
++  }
++  if(filters){
++    filters.addEventListener('click', function(ev){
++      var chip = ev.target.closest('[data-ah-period]'); if(!chip) return;
++      state.period = chip.getAttribute('data-ah-period');
++      filters.querySelectorAll('[data-ah-period]').forEach(function(c){ c.classList.toggle('ah-chip-on', c===chip); });
++      fetchAndRender(0,false);
++    });
++    filters.addEventListener('change', function(ev){
++      var f = ev.target.getAttribute && ev.target.getAttribute('data-ah-filter'); if(!f) return;
++      state[f] = ev.target.value || ''; fetchAndRender(0,false);
++    });
++    filters.addEventListener('input', function(ev){
++      var f = ev.target.getAttribute && ev.target.getAttribute('data-ah-filter'); if(f!=='q') return;
++      clearTimeout(debounce); state.q = ev.target.value || '';
++      debounce = setTimeout(function(){ fetchAndRender(0,false); }, 300);
++    });
++  }
++  if(loadMoreBtn){
++    loadMoreBtn.addEventListener('click', function(){
++      var c = loadMoreBtn.getAttribute('data-ah-next'); if(c!=null) fetchAndRender(c, true);
++    });
++  }
++})();</script>`;
+ }
+ 
+-module.exports = { renderHistorialSsr, renderHistCard, loadTheme, isSafeFilename, HIST_VISIBLE, HIST_CAP };
++module.exports = {
++    renderHistorialSsr,
++    renderHistCard,
++    renderTimelineCard,
++    renderDetail,
++    relativeTime,
++    isSafeHttpUrl,
++    loadTheme,
++    isSafeFilename,
++    HIST_VISIBLE,
++    HIST_CAP,
++};
+diff --git a/.pipeline/views/dashboard/theme.css b/.pipeline/views/dashboard/theme.css
+index 57e49d3f..59c08560 100644
+--- a/.pipeline/views/dashboard/theme.css
++++ b/.pipeline/views/dashboard/theme.css
+@@ -333,70 +333,78 @@ a:hover { color: var(--in-accent); }
+  * conserva su copia inline de estas reglas para el render embebido; estas reglas
+  * sirven para el render standalone (router #3723) y son la fuente canónica.
+  * ============================================================================= */
++/* #3963 — Historial como línea de tiempo agrupada por día. Reemplaza la lista
++   plana del split #3734. Colores SOLO via tokens --in-* (CA-21 sin hex). */
+ .ah-count { font-size: 0.76em; color: var(--in-fg-dim); }
+-.ah-legend { display: inline-flex; gap: 10px; flex-wrap: wrap; font-size: 0.7em; color: var(--in-fg-dim); margin-left: auto; }
+-.ah-leg-item { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+-.ah-leg-glyph { font-weight: 700; }
+-.ah-leg-glyph.ah-running { color: var(--in-accent); }
+-.ah-leg-glyph.ah-ok { color: var(--in-ok); }
+-.ah-leg-glyph.ah-fail { color: var(--in-bad); }
+-.ah-leg-glyph.ah-neutral { color: var(--in-fg-dim); }
+-.ah-list { display: flex; flex-direction: column; gap: 4px; }
+-.ah-card {
+-  display: grid;
+-  grid-template-columns: 28px 80px 1fr 80px 110px 60px 90px auto;
+-  gap: 8px;
+-  align-items: center;
+-  padding: 6px 12px;
+-  border-radius: var(--in-radius-sm);
+-  border: 1px solid var(--in-border);
+-  border-left: 3px solid var(--in-fg-soft);
+-  text-decoration: none;
+-  font-size: 0.78em;
+-  transition: background 0.15s, border-color 0.15s;
+-}
+-.ah-card:hover { background: var(--in-border-soft); border-color: var(--in-accent); }
++.ah-aggr { font-size: 0.74em; color: var(--in-fg-dim); margin-left: auto; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
++.ah-aggr b { color: var(--in-fg); }
++.ah-aggr-sep { opacity: 0.5; }
++.ah-aggr .ah-ok { color: var(--in-ok); }
++/* Barra de filtros / búsqueda */
++.ah-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
++.ah-chips { display: inline-flex; gap: 4px; }
++.ah-chip { font-size: 0.74em; color: var(--in-fg-dim); background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: var(--in-radius-sm); padding: 4px 10px; cursor: pointer; transition: all 0.15s; }
++.ah-chip:hover { border-color: var(--in-accent); color: var(--in-fg); }
++.ah-chip-on { background: var(--in-info-soft); border-color: var(--in-accent); color: var(--in-info); font-weight: 600; }
++.ah-chip:focus-visible { outline: 2px solid var(--in-accent); outline-offset: 2px; }
++.ah-sel { font-size: 0.74em; color: var(--in-fg); background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: var(--in-radius-sm); padding: 4px 8px; cursor: pointer; }
++.ah-search { flex: 1; min-width: 160px; font-size: 0.78em; color: var(--in-fg); background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: var(--in-radius-sm); padding: 5px 10px; }
++.ah-search:focus { outline: none; border-color: var(--in-accent); }
++/* Timeline + grupos por día */
++.ah-timeline { display: flex; flex-direction: column; gap: 12px; }
++.ah-day-group { display: flex; flex-direction: column; gap: 4px; }
++.ah-day { display: flex; align-items: baseline; gap: 8px; font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.04em; color: var(--in-fg-dim); font-weight: 700; padding: 2px 2px 4px; border-bottom: 1px solid var(--in-border); }
++.ah-day-label { color: var(--in-fg); }
++.ah-day-aggr { font-weight: 400; text-transform: none; letter-spacing: 0; opacity: 0.8; }
++.ah-day-items { display: flex; flex-direction: column; gap: 4px; }
++/* Card expandible */
++.ah-item { border-radius: var(--in-radius-sm); border: 1px solid var(--in-border); border-left: 3px solid var(--in-fg-soft); overflow: hidden; transition: border-color 0.15s; }
++.ah-item:hover { border-color: var(--in-accent); }
++.ah-item.ah-running { border-left-color: var(--in-accent); background: var(--in-accent-soft); }
++.ah-item.ah-ok { border-left-color: var(--in-ok); }
++.ah-item.ah-fail { border-left-color: var(--in-bad); }
++.ah-item.ah-neutral { border-left-color: var(--in-fg-soft); }
++.ah-card { display: grid; grid-template-columns: 18px 24px minmax(120px,1fr) 90px 130px 70px auto; gap: 8px; align-items: center; padding: 6px 12px; font-size: 0.78em; cursor: pointer; list-style: none; }
++.ah-card::-webkit-details-marker { display: none; }
++.ah-card:hover { background: var(--in-border-soft); }
+ .ah-card:focus-visible { outline: 2px solid var(--in-accent); outline-offset: 2px; }
+-.ah-running { border-left-color: var(--in-accent); background: var(--in-accent-soft); }
+-.ah-ok { border-left-color: var(--in-ok); }
+-.ah-fail { border-left-color: var(--in-bad); }
+-.ah-neutral { border-left-color: var(--in-fg-soft); }
+-.ah-avatar {
+-  width: 24px; height: 24px;
+-  border-radius: 50%;
+-  display: inline-flex; align-items: center; justify-content: center;
+-  font-size: 0.9em; color: #fff; flex-shrink: 0;
+-}
+-.ah-skill { font-weight: 700; color: var(--in-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
++.ah-status-ic { font-weight: 700; text-align: center; }
++.ah-running .ah-status-ic { color: var(--in-accent); }
++.ah-ok .ah-status-ic { color: var(--in-ok); }
++.ah-fail .ah-status-ic { color: var(--in-bad); }
++.ah-neutral .ah-status-ic { color: var(--in-fg-dim); }
++.ah-avatar { width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 0.85em; color: #fff; flex-shrink: 0; }
+ .ah-issue { color: var(--in-info); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+-.ah-fase { color: var(--in-fg-dim); font-size: 0.9em; }
+-.ah-status { font-weight: 600; white-space: nowrap; }
+-.ah-running .ah-status { color: var(--in-accent); }
+-.ah-ok .ah-status { color: var(--in-ok); }
+-.ah-fail .ah-status { color: var(--in-bad); }
+-.ah-neutral .ah-status { color: var(--in-fg-dim); }
+-.ah-dur { color: var(--in-accent); font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+-.ah-time { color: var(--in-fg-dim); font-size: 0.9em; font-variant-numeric: tabular-nums; text-align: right; }
+-.ah-pdf { text-decoration: none; font-size: 1.1em; }
+-.ah-pdf:focus-visible { outline: 2px solid var(--in-accent); outline-offset: 2px; }
+-.ah-prio-actions { display: inline-flex; gap: 2px; margin-right: 4px; }
+-.ah-more { margin-top: 4px; }
+-.ah-more-btn {
+-  font-size: 0.78em; color: var(--in-info); cursor: pointer;
+-  padding: 6px 12px; text-align: center;
+-  border-radius: var(--in-radius-sm);
+-  background: var(--in-info-soft);
+-  border: 1px solid var(--in-border);
+-  list-style: none;
+-}
+-.ah-more-btn:hover { background: var(--in-brand-soft); }
+-.ah-more-list { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
++.ah-issue .ah-title { color: var(--in-fg); font-weight: 400; }
++.ah-skill { font-weight: 700; color: var(--in-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 0.92em; }
++.ah-meta { color: var(--in-fg-dim); font-size: 0.9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
++.ah-time { color: var(--in-fg-dim); font-size: 0.9em; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
++.ah-actions { display: inline-flex; gap: 6px; justify-content: flex-end; }
++.ah-act { font-size: 0.92em; color: var(--in-info); text-decoration: none; border: 1px solid var(--in-border); border-radius: var(--in-radius-sm); padding: 2px 8px; white-space: nowrap; background: var(--in-info-soft); }
++.ah-act:hover { background: var(--in-brand-soft); border-color: var(--in-accent); }
++.ah-act:focus-visible { outline: 2px solid var(--in-accent); outline-offset: 2px; }
++/* Detalle expandible */
++.ah-detail { padding: 8px 12px 10px 42px; border-top: 1px dashed var(--in-border); font-size: 0.76em; color: var(--in-fg-dim); }
++.ah-d-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
++.ah-d-item b { color: var(--in-fg); }
++.ah-d-sep { opacity: 0.4; }
++.ah-d-warn { color: var(--in-warn); }
++.ah-d-cause { color: var(--in-bad); max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
++.ah-d-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
++.ah-attach { font-size: 0.95em; color: var(--in-fg); background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: var(--in-radius-sm); padding: 1px 7px; }
++.ah-empty { padding: 24px 12px; text-align: center; color: var(--in-fg-dim); font-size: 0.82em; }
++.ah-load-more { display: block; width: 100%; margin-top: 10px; font-size: 0.78em; color: var(--in-info); cursor: pointer; padding: 7px 12px; text-align: center; border-radius: var(--in-radius-sm); background: var(--in-info-soft); border: 1px solid var(--in-border); }
++.ah-load-more:hover { background: var(--in-brand-soft); }
++.ah-ok { color: var(--in-ok); }
++.ah-fail { color: var(--in-bad); }
+ @media (max-width: 900px) {
+-  .ah-card { grid-template-columns: 24px 60px 1fr 70px 50px 70px auto; font-size: 0.72em; }
++  .ah-card { grid-template-columns: 18px 22px 1fr 70px auto; font-size: 0.72em; }
++  .ah-meta, .ah-time { display: none; }
+ }
+ @media (max-width: 600px) {
+-  .ah-card { grid-template-columns: 24px 1fr 80px auto; }
+-  .ah-fase, .ah-dur, .ah-time { display: none; }
++  .ah-card { grid-template-columns: 18px 1fr auto; }
++  .ah-avatar, .ah-skill { display: none; }
++  .ah-detail { padding-left: 16px; }
+ }
+ 
+ /* ───────────────────────────────────────────────────────────────────────────
