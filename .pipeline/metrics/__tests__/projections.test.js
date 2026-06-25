@@ -174,3 +174,25 @@ test('computeProjections forecast = mtd + avg × diasRestantes', () => {
     assert.equal(proj.tokens.month_to_date_usd, 6);
     assert.equal(proj.tokens.monthly_forecast_usd, 22);
 });
+
+// =============================================================================
+// #3962 EP8-H9 — campo `method` + presupuesto persistido override
+// =============================================================================
+test('cada dimensión incluye el campo method con los textos esperados (CA-6)', () => {
+    const proj = computeProjections({ daily: [mkDay('2026-06-01', 5)], now: new Date('2026-06-10T00:00:00Z') });
+    for (const dim of ['tokens', 'tts']) {
+        assert.ok(proj[dim].method, dim + ' debe tener method');
+        assert.equal(proj[dim].method.weekly, 'promedio diario × 7');
+        assert.equal(proj[dim].method.monthly, 'promedio diario × días del mes');
+        assert.equal(proj[dim].method.deviation, '(proyección mensual ÷ presupuesto) − 1');
+    }
+});
+
+test('el presupuesto persistido (quotas.monthly_token_usd) sobreescribe el default (CA-4)', () => {
+    const proj = computeProjections({
+        daily: [mkDay('2026-06-01', 5)],
+        now: new Date('2026-06-10T00:00:00Z'),
+        quotas: { monthly_token_usd: 42 },
+    });
+    assert.equal(proj.tokens.quota.monthly_usd, 42);
+});

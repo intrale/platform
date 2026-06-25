@@ -90,6 +90,14 @@ function buildDimension({ series, costField, quotaUsd, now, label, secondaryFiel
         daily_avg_usd: round(avgDaily, 4),
         weekly_projection_usd: round(weeklyProj, 4),
         monthly_projection_usd: round(monthlyProj, 4),
+        // (#3962 EP8-H9 CA-6) Método explicado de cada proyección, para que el
+        // view lo muestre como pastilla sin hardcodear el texto. El operador
+        // entiende de dónde sale cada número (UX §C).
+        method: {
+            weekly: 'promedio diario × 7',
+            monthly: 'promedio diario × días del mes',
+            deviation: '(proyección mensual ÷ presupuesto) − 1',
+        },
         month_to_date_usd: round(monthToDateUsd, 4),
         monthly_forecast_usd: round(monthlyForecast, 4),
         days_elapsed_this_month: daysElapsedThisMonth(now),

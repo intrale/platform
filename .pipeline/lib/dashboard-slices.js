@@ -15,6 +15,20 @@ const { execSync } = require('child_process');
 let restModeWindow = null;
 try { restModeWindow = require('./rest-mode-window'); } catch { /* opcional */ }
 
+// #3962 EP8-H9 — Pantalla Costos rediseñada. Requires defensivos: si alguno no
+// carga, el slice degrada (presupuesto default, sin anomalía) sin romper el
+// resto del dashboard.
+let budgetConfig = null;
+try { budgetConfig = require('../metrics/budget-config'); } catch { /* opcional */ }
+let restModeState = null;
+try { restModeState = require('./rest-mode-state'); } catch { /* opcional */ }
+let redactLib = null;
+try { redactLib = require('../redact'); } catch { /* opcional */ }
+function _redact(s) {
+    if (s == null) return s;
+    return redactLib ? redactLib.redact(String(s)) : String(s);
+}
+
 // #2976 — Estado del flag de cuota Anthropic agotada (lectura defensiva).
 // Tolerante a la ausencia del módulo: si #2974 todavía no aterrizó, el slice
 // degrada a `{ active: false }` y nada del dashboard se rompe.
@@ -2434,6 +2448,79 @@ function architectBadgeHTML(info, deps) {
     return `<span class="lc-state-badge lc-state-architect-${info.state}" title="${esc(a11y)}" aria-label="${esc(a11y)}">${svg} ${esc(text)}</span>`;
 }
 
+// #3962 EP8-H9 — Slice de la pantalla Costos rediseñada. Arma el payload desde
+// el snapshot del aggregator + presupuesto persistido + estado de la anomalía:
+//   - dailyByProvider : serie diaria por proveedor (área apilada, CA-1)
+//   - budget          : presupuesto mensual persistido (línea de presupuesto, CA-4)
+//   - anomaly         : { active, startTs } del detector (banda sombreada, CA-2)
+//   - snooze          : { until } derivado del estado server-side (CA-5)
+//   - projections     : proyecciones con `method` (CA-6)
+//   - sessionsBySkill : drill-down REDACTADO, solo campos públicos (CA-3)
+//
+// Redacción belt-and-suspenders: el aggregator ya pasa el drill-down por
+// whitelist + redact; el slice re-redacta provider/ts por defensa en
+// profundidad (REQ-SEC A01/A02).
+function costosSlice(state, ctx) {
+    const PIPELINE = (ctx && ctx.PIPELINE) || path.join(process.cwd(), '.pipeline');
+    const ROOT = ctx && ctx.ROOT;
+
+    // Snapshot all-time (mismo que consume el resto de Costos).
+    let snap = {};
+    try {
+        const snapPath = path.join(PIPELINE, 'metrics', 'snapshot.json');
+        try { if (ROOT) maybeRefreshSnapshot(ROOT, snapPath); } catch { /* refresh best-effort */ }
+        snap = safeReadJson(snapPath, null) || {};
+    } catch { snap = {}; }
+
+    const dailyByProvider = Array.isArray(snap.dailyByProvider) ? snap.dailyByProvider : [];
+    const projections = (snap.projections && typeof snap.projections === 'object') ? snap.projections : null;
+
+    // Drill-down redactado (CA-3). NUNCA exponemos issue/tokens/paths/prompts.
+    const sessionsBySkill = {};
+    const rawSessions = (snap.sessionsBySkill && typeof snap.sessionsBySkill === 'object') ? snap.sessionsBySkill : {};
+    for (const [skill, list] of Object.entries(rawSessions)) {
+        if (!Array.isArray(list)) continue;
+        sessionsBySkill[skill] = list.map((s) => ({
+            provider: _redact(String((s && s.provider) || 'unknown')),
+            cost_usd: Number((s && s.cost_usd) || 0),
+            duration_ms: Number((s && s.duration_ms) || 0),
+            ts: (s && s.ts) ? _redact(String(s.ts)) : null,
+        }));
+    }
+
+    // Presupuesto mensual persistido (CA-4). Default si no hay archivo.
+    let budget = { monthly_usd: (budgetConfig ? budgetConfig.DEFAULT_MONTHLY_USD : 100), source: 'default', updated_at: null, actor: null };
+    if (budgetConfig) {
+        try { budget = budgetConfig.readBudget(); } catch { /* default */ }
+    }
+
+    // Estado de la anomalía + snooze (CA-2 / CA-5), derivado SOLO del estado
+    // server-side (rest-mode-state). El startTs es el `raised_at` del detector;
+    // el view lo valida como ISO antes de pintar.
+    let anomaly = { active: false, startTs: null };
+    let snooze = { until: null };
+    if (restModeState) {
+        try {
+            const a = restModeState.getAlertState({ pipelineDir: PIPELINE });
+            const nowMs = Date.now();
+            const active = !!(a && a.active);
+            anomaly = { active, startTs: active ? (a.raised_at || null) : null };
+            const until = (a && a.snoozed_until && Date.parse(a.snoozed_until) > nowMs) ? a.snoozed_until : null;
+            snooze = { until };
+        } catch { /* sin anomalía */ }
+    }
+
+    return {
+        generated_at: snap.generated_at || null,
+        dailyByProvider,
+        budget,
+        anomaly,
+        snooze,
+        projections,
+        sessionsBySkill,
+    };
+}
+
 module.exports = {
     activeAgents,
     recentlyFinished,
@@ -2455,6 +2542,8 @@ module.exports = {
     HIST_PAGE_MAX,
     quotaSlice,
     quotaExhaustedSlice,
+    // #3962 EP8-H9 — slice de la pantalla Costos rediseñada
+    costosSlice,
     reconcilerStaleOrdersSlice,
     // #2993 — widget de handoff
     handoffMetricsSlice,
