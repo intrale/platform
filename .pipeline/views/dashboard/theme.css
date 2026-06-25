@@ -234,7 +234,7 @@ a:hover { color: var(--in-accent); }
 */
 .v3-nav {
   display: grid;
-  grid-template-columns: repeat(12, minmax(44px, 1fr));
+  grid-template-columns: repeat(13, minmax(44px, 1fr));
   gap: 8px;
   padding: 8px 28px;
   background: var(--in-bg);

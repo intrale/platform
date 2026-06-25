@@ -10118,6 +10118,11 @@ let multiProviderApi = null;
 let multiProviderView = null;
 try { multiProviderApi = require('./lib/multi-provider/api'); } catch (e) { log(`multi-provider api unavailable: ${e.message}`); }
 try { multiProviderView = require('./views/dashboard/multi-provider'); } catch (e) { log(`multi-provider view unavailable: ${e.message}`); }
+// EP8-H12 (#3965) — pantalla "Salud Multi-Provider" (aditiva). Lazy-require
+// defensivo igual que multiProviderView: si el módulo no carga, el dashboard
+// sigue funcionando sin la pantalla nueva.
+let mpHealthView = null;
+try { mpHealthView = require('./views/dashboard/multi-provider-health'); } catch (e) { log(`multi-provider-health view unavailable: ${e.message}`); }
 
 // #3737 — Panel UI Providers (NUEVO, split del épico #3715). Read-only: lista
 // credenciales gestionadas (masked + fingerprint). Lazy require defensivo
@@ -10349,6 +10354,15 @@ const server = http.createServer((req, res) => {
   if (multiProviderView && (req.url === '/multi-provider' || req.url === '/multi-provider/')) {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
     res.end(multiProviderView.renderMultiProvider());
+    return;
+  }
+
+  // EP8-H12 (#3965) — Salud Multi-Provider: HTML de la pantalla nueva. Montado
+  // antes del catch-all legacy para que `/multi-provider-health` no caiga al
+  // legacy. La API de agregación la sirve multiProviderApi.route (arriba).
+  if (mpHealthView && (req.url === '/multi-provider-health' || req.url === '/multi-provider-health/')) {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(mpHealthView.renderMultiProviderHealth());
     return;
   }
 

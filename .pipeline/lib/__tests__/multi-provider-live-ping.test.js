@@ -12,6 +12,13 @@ const os = require('node:os');
 
 const livePing = require('../multi-provider/live-ping');
 
+// #3965 CA-4 — `ping()` ahora mantiene un cooldown/concurrencia server-side por
+// proveedor en estado de módulo. Estos tests verifican la CLASIFICACIÓN del
+// status code (no el throttle), y cada uno pingea el mismo set de proveedores en
+// milisegundos: sin reset, el 2do ping de un proveedor caería en el cooldown y
+// devolvería `rate_limited_local`. Reseteamos antes de cada test para aislar.
+test.beforeEach(() => livePing._resetPingThrottle());
+
 function tmpDir() { return fs.mkdtempSync(path.join(os.tmpdir(), 'mp-ping-')); }
 function writeKeys(file, keys) { fs.writeFileSync(file, JSON.stringify(keys)); }
 
