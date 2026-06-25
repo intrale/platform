@@ -927,7 +927,7 @@ Reescribir los prompts de los ~15 roles del pipeline para que entiendan:
 
 ## Diagramas
 
-- Pipeline actual (fases × skills × hooks): `docs/pipeline-actual.html`
+- Pipeline actual (fases × skills × hooks): `docs/_archived/pipeline-actual.html` (archivado)
 - Pipeline V2: pendiente de crear
 
 ---
