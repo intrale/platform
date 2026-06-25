@@ -126,13 +126,12 @@ function homeStyles() {
     padding: 16px 22px;
 }
 
-/* #3954 EP8-H1 — Mission control de 3 bandas. CA-1: el contenedor raiz del
-   home fija la altura del viewport y oculta el overflow de PAGINA; cada banda
-   resuelve su propio exceso con scroll/carrusel interno (CA-2). El modifier
-   mission-frame SOLO se emite en el home (renderHomeHTML); el router cliente
-   lo agrega/quita al navegar para no recortar las otras vistas. */
-.kiosk-frame.mission-frame { height: 100vh; min-height: 0; overflow: hidden; }
-.kiosk-frame.mission-frame .kiosk-body { overflow: hidden; min-height: 0; }
+/* #4189 — HOME «MIZPÁ»: el rediseño fluye en vertical (banner → nav → panel →
+   grilla 2-col → diagnóstico) y scrollea naturalmente, a diferencia de las 3
+   bandas fijas de #4172. El modifier mission-frame SOLO se emite en el home
+   (renderHomeHTML); el router cliente lo agrega/quita al navegar. */
+.kiosk-frame.mission-frame { min-height: 100vh; height: auto; overflow: visible; }
+.kiosk-frame.mission-frame .kiosk-body { overflow: visible; min-height: 0; }
 /* #4172 — Rediseño "Sala de Control": narrativa de conciencia operativa en 3
    actos (PULSO 22% / AHORA 48% / FLUJO 30%). Todo el sistema visual consume
    design-tokens.css (--surface-*/--space-*/--brand-*/--radius-*/--shadow-*),
@@ -1556,6 +1555,157 @@ function homeStyles() {
     font-variant-numeric: tabular-nums;
     color: var(--in-fg, #e6edf3);
 }
+
+/* =========================================================================
+   #4189 — HOME «MIZPÁ» (mockup v6). Estilos del rediseño integral. Consumen
+   los design-tokens existentes (--in-* / --brand-*) con fallback a literales.
+   ========================================================================= */
+.mz-home { display: flex; flex-direction: column; gap: 16px; }
+
+/* --- Top bar: marca MIZPÁ + selector de proyecto --- */
+.in-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.in-header-brand { display: flex; align-items: center; gap: 13px; flex-wrap: wrap; }
+.mz-logo { width: 46px; height: 46px; border-radius: 14px; flex: none;
+    background: linear-gradient(135deg, var(--brand-cyan,#34D9E0), #7C5CFF 90%);
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 8px 26px rgba(124,92,255,.30); }
+.mz-logo svg { width: 26px; height: 26px; }
+.mz-id { display: flex; flex-direction: column; }
+.mz-name { font-size: 21px; font-weight: 800; line-height: 1; letter-spacing: 1px;
+    background: linear-gradient(90deg,#bff3f6,#c9bcff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.mz-sub { font-size: 10px; color: var(--in-fg-dim,#8A93A6); font-weight: 600; letter-spacing: 1.1px; margin-top: 5px; }
+.mz-projsel { display: flex; align-items: center; gap: 11px; background: var(--in-bg-2,#11151E);
+    border: 1px solid var(--in-border,rgba(255,255,255,.12)); border-radius: 13px; padding: 8px 9px 8px 12px;
+    margin-left: 4px; cursor: pointer; }
+.mz-projsel:focus-visible { outline: 2px solid var(--in-focus,#38bdf8); outline-offset: 2px; }
+.mz-proj-avatar { width: 30px; height: 30px; border-radius: 9px; flex: none; color: #06121a; font-weight: 800; font-size: 15px;
+    background: linear-gradient(135deg,#34D9E0,#5A8DEE); display: flex; align-items: center; justify-content: center; }
+.mz-proj-id { display: flex; flex-direction: column; }
+.mz-proj-name { font-size: 14px; font-weight: 800; line-height: 1.05; }
+.mz-proj-state { font-size: 9.5px; color: var(--in-fg-dim,#5B6376); font-weight: 700; letter-spacing: .4px; margin-top: 2px; }
+.mz-proj-badge { font-size: 10px; font-weight: 800; color: #9fe9ee; background: rgba(52,217,224,.12);
+    border: 1px solid rgba(52,217,224,.3); border-radius: 8px; padding: 3px 8px; }
+.mz-proj-caret { color: var(--in-fg-dim,#8A93A6); font-size: 12px; }
+
+/* --- Banner de misión --- */
+.mz-mission { display: flex; align-items: center; gap: 22px; position: relative; overflow: hidden;
+    background: linear-gradient(110deg, rgba(52,217,224,.14), rgba(124,92,255,.08) 45%, transparent 75%),
+                linear-gradient(180deg, var(--in-bg-2,#11151E), var(--in-bg-3,#141925));
+    border: 1px solid rgba(52,217,224,.22); border-radius: 16px; padding: 18px 24px; }
+.mz-mission::after { content: "🌊"; position: absolute; right: 18px; top: -14px; font-size: 90px; opacity: .06; }
+.mz-wavetag { display: flex; flex-direction: column; align-items: center; justify-content: center; min-width: 96px;
+    padding: 10px 14px; border-radius: 14px; flex: none;
+    background: linear-gradient(135deg, rgba(52,217,224,.22), rgba(124,92,255,.16)); border: 1px solid rgba(52,217,224,.3); }
+.mz-wavetag-k { font-size: 10px; font-weight: 800; letter-spacing: 1.5px; color: #9fe9ee; }
+.mz-wavetag-n { font-size: 34px; font-weight: 800; color: #bff3f6; line-height: 1; font-variant-numeric: tabular-nums; }
+.mz-mission-text { flex: 1; min-width: 0; }
+.mz-mission-ttl { font-size: 19px; font-weight: 800; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mz-mission-badge { font-size: 11px; color: var(--brand-cyan,#34D9E0); background: rgba(52,217,224,.12);
+    border: 1px solid rgba(52,217,224,.3); padding: 3px 9px; border-radius: 20px; font-weight: 700; letter-spacing: .3px; }
+.mz-mission-desc { font-size: 13px; color: var(--in-fg-dim,#8A93A6); margin-top: 5px; max-width: 560px; line-height: 1.45; }
+.mz-mission-metrics { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.mz-wm { flex: 1; min-width: 150px; background: rgba(255,255,255,.035); border: 1px solid var(--in-border,rgba(255,255,255,.07));
+    border-radius: 11px; padding: 9px 12px; }
+.mz-wm-l { font-size: 9.5px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#5B6376); }
+.mz-wm-v { font-size: 17px; font-weight: 800; margin-top: 3px; line-height: 1; font-variant-numeric: tabular-nums; }
+.mz-wm-u { font-size: 11px; color: var(--in-fg-dim,#5B6376); font-weight: 600; }
+.mz-wm-s { font-size: 10px; color: var(--in-fg-dim,#5B6376); margin-top: 3px; }
+.mz-mission-prog { min-width: 280px; }
+.mz-prog-head { display: flex; align-items: baseline; justify-content: space-between; font-size: 11.5px; color: var(--in-fg-dim,#8A93A6); font-weight: 600; }
+.mz-prog-pct { font-size: 26px; font-weight: 800; color: var(--brand-cyan,#34D9E0); font-variant-numeric: tabular-nums; }
+.mz-prog-bar { height: 8px; border-radius: 6px; background: rgba(255,255,255,.07); overflow: hidden; display: flex; margin: 9px 0 8px; }
+.mz-prog-bar i { height: 100%; transition: width .4s ease; }
+.mz-prog-legend { display: flex; gap: 14px; font-size: 11px; color: var(--in-fg-dim,#8A93A6); flex-wrap: wrap; }
+.mz-prog-legend span { display: flex; align-items: center; gap: 5px; }
+.mz-prog-legend b { font-variant-numeric: tabular-nums; }
+.mz-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
+
+/* --- Nav curada: botón ⋯ Más + popover (<details>) --- */
+.v3-nav { position: relative; flex-wrap: wrap; }
+.v3-tab-desc { display: none; }
+.v3-more { position: relative; margin-left: auto; }
+.v3-more > summary { list-style: none; }
+.v3-more > summary::-webkit-details-marker { display: none; }
+.v3-more-btn { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700;
+    color: #bff3f6; padding: 9px 15px; border-radius: 9px; cursor: pointer; user-select: none;
+    background: linear-gradient(135deg, rgba(52,217,224,.16), rgba(124,92,255,.13)); border: 1px solid rgba(52,217,224,.32); }
+.v3-more-active .v3-more-btn { box-shadow: 0 0 0 1px rgba(52,217,224,.5) inset; }
+.v3-more-dots { font-size: 17px; line-height: 1; letter-spacing: 2px; }
+.v3-more-count { font-size: 9.5px; font-weight: 800; color: #06121a; background: var(--brand-cyan,#34D9E0); border-radius: 7px; padding: 2px 6px; }
+.v3-more-menu { position: absolute; top: calc(100% + 8px); right: 0; z-index: 30; width: 264px;
+    background: linear-gradient(180deg, var(--in-bg-2,#11151E), var(--in-bg-3,#141925)); border: 1px solid rgba(52,217,224,.25);
+    border-radius: 14px; padding: 8px; box-shadow: 0 20px 50px rgba(0,0,0,.55); display: flex; flex-direction: column; gap: 2px; }
+.v3-more-head { font-size: 9.5px; font-weight: 800; letter-spacing: 1px; color: var(--in-fg-dim,#5B6376); padding: 6px 10px 8px; }
+.v3-more-menu .v3-tab { display: flex; align-items: center; gap: 11px; padding: 9px 10px; border-radius: 9px;
+    width: auto; flex-direction: row; justify-content: flex-start; }
+.v3-more-menu .v3-tab .v3-tab-icon { width: 18px; height: 18px; flex: none; }
+.v3-more-menu .v3-tab .v3-tab-label { font-size: 13px; font-weight: 600; }
+.v3-more-menu .v3-tab .v3-tab-desc { display: block; font-size: 10px; color: var(--in-fg-dim,#5B6376); font-weight: 600; margin-top: 1px; }
+.v3-more-menu .v3-tab-label + .v3-tab-desc { margin-left: -6px; }
+.v3-more-menu .v3-tab > .v3-tab-label { display: flex; flex-direction: column; align-items: flex-start; gap: 0; }
+
+/* --- Panel estado + cuotas (3 columnas) --- */
+.mz-sysquota { display: grid; grid-template-columns: 1.05fr 1.1fr 1.1fr; overflow: hidden;
+    background: linear-gradient(180deg, var(--in-bg-2,#11151E), var(--in-bg-3,#141925));
+    border: 1px solid var(--in-border,rgba(255,255,255,.07)); border-radius: 16px; }
+.mz-sq-cell { padding: 18px 20px; border-right: 1px solid var(--in-border,rgba(255,255,255,.07)); }
+.mz-sq-cell:last-child { border-right: 0; }
+.mz-sq-status { background: linear-gradient(135deg, rgba(251,191,36,.10), transparent 72%); }
+.mz-sq-head { font-size: 10.5px; color: var(--in-fg-dim,#8A93A6); font-weight: 800; letter-spacing: 1px; margin-bottom: 11px; }
+.mz-sq-chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 13px; }
+.mz-chip { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700;
+    background: rgba(255,255,255,.04); border: 1px solid var(--in-border,rgba(255,255,255,.12)); border-radius: 9px; padding: 6px 10px; }
+.mz-chip.mz-chip-ok { border-color: rgba(52,211,153,.3); }
+.mz-chip[data-on="0"] { opacity: .45; }
+.mz-chip[data-on="1"] { border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.08); opacity: 1; }
+.mz-chip b { font-variant-numeric: tabular-nums; color: #6ee7b7; }
+.mz-q-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.mz-q-klbl { font-size: 10.5px; color: var(--in-fg-dim,#8A93A6); font-weight: 700; letter-spacing: .6px; }
+.mz-q-kval { font-size: 24px; font-weight: 800; line-height: 1; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.mz-q-ksub { font-size: 10px; color: var(--in-fg-dim,#5B6376); text-align: right; }
+.mz-prov { display: flex; flex-direction: column; gap: 9px; margin-top: 13px; }
+.mz-prow { display: grid; grid-template-columns: 80px 1fr 42px; align-items: center; gap: 9px; }
+.mz-pname { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 700; }
+.mz-pdot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.mz-pbar { height: 6px; border-radius: 5px; background: rgba(255,255,255,.07); overflow: hidden; }
+.mz-pbar i { display: block; height: 100%; border-radius: 5px; transition: width .4s ease; }
+.mz-ppct { font-size: 11px; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; color: var(--in-fg-dim,#8A93A6); }
+
+/* --- Grilla 2-col + paneles --- */
+.mz-grid { display: grid; grid-template-columns: 1fr 1.62fr; gap: 16px; align-items: start; }
+.mz-panel { background: linear-gradient(180deg, var(--in-bg-2,#11151E), var(--in-bg-3,#141925));
+    border: 1px solid var(--in-border,rgba(255,255,255,.07)); border-radius: 16px; padding: 20px; min-width: 0; }
+.mz-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; }
+.mz-panel-t { display: flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 700; letter-spacing: .4px; }
+.mz-panel-ic { width: 22px; height: 22px; border-radius: 7px; display: flex; align-items: center; justify-content: center;
+    font-size: 13px; background: rgba(52,217,224,.15); flex: none; }
+.mz-panel-hint { font-size: 11px; color: var(--in-fg-dim,#5B6376); font-weight: 600; text-transform: uppercase; letter-spacing: .6px; }
+.mz-now-list { display: flex; flex-direction: column; gap: 11px; }
+.mz-now-empty { padding: 18px 14px; border-radius: 12px; border: 1px dashed var(--in-border,rgba(255,255,255,.12));
+    background: rgba(255,255,255,.02); text-align: center; }
+.mz-now-empty .active-empty-icon { font-size: 22px; opacity: .7; }
+.mz-now-empty .active-empty-msg { font-size: 12px; color: var(--in-fg-dim,#8A93A6); margin-top: 6px; line-height: 1.4; }
+.mz-board-legend { display: flex; gap: 13px; font-size: 10.5px; color: var(--in-fg-dim,#8A93A6); font-weight: 600; flex-wrap: wrap; }
+.mz-board-legend span { display: flex; align-items: center; gap: 5px; }
+.mz-board-body { position: relative; }
+.mz-board-updated { position: absolute; top: -34px; right: 0; font-size: 10.5px; color: var(--in-fg-dim,#5B6376); }
+.mz-board-foot { margin-top: 13px; padding-top: 12px; border-top: 1px dashed var(--in-border,rgba(255,255,255,.12));
+    font-size: 11px; color: var(--in-fg-dim,#5B6376); }
+
+/* --- Diagnóstico colapsable --- */
+.mz-diag { background: var(--in-bg-2,#11151E); border: 1px solid var(--in-border,rgba(255,255,255,.07)); border-radius: 14px; }
+.mz-diag-summary { cursor: pointer; padding: 14px 18px; font-size: 12px; font-weight: 700; color: var(--in-fg-dim,#8A93A6);
+    letter-spacing: .4px; user-select: none; }
+.mz-diag[open] .mz-diag-summary { border-bottom: 1px solid var(--in-border,rgba(255,255,255,.07)); }
+.mz-diag-body { padding: 18px; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+
+/* Responsive: en viewports angostos las grillas colapsan a 1 columna. */
+@media (max-width: 920px) {
+    .mz-sysquota { grid-template-columns: 1fr; }
+    .mz-sq-cell { border-right: 0; border-bottom: 1px solid var(--in-border,rgba(255,255,255,.07)); }
+    .mz-grid { grid-template-columns: 1fr; }
+    .mz-mission { flex-direction: column; align-items: stretch; }
+}
 `;
 }
 
@@ -1963,6 +2113,13 @@ function renderQuotaCard(d){
     setText('kpi-quota-session-pct', sessPct.toFixed(1)+'%');
     setText('kpi-quota-week-pct', weekPct.toFixed(1)+'%');
 
+    // #4189 — Espeja el % AGREGADO real en el panel de cuotas del home MIZPÁ.
+    // El desglose por proveedor (mz-quota-<bucket>-<prov>-*) requiere el backend
+    // de extracción por proveedor (split / child issue) y queda en "—" hasta
+    // entonces; el agregado de sesión/semana sí es dato real.
+    setText('mz-quota-session-pct', sessPct.toFixed(1)+'%');
+    setText('mz-quota-week-pct', weekPct.toFixed(1)+'%');
+
     // Cuenta regresiva: si tenemos session_resets_at o weekly_resets_at, usar
     // diferencia con now. Si no, usar daysToReset del backend (semanal) o
     // hoursRemaining (sesión, asume rolling 5h sin punto fijo).
@@ -1987,6 +2144,9 @@ function renderQuotaCard(d){
     }
     setText('kpi-quota-session-eta', sessETA);
     setText('kpi-quota-week-eta', weekETA);
+    // #4189 — mismo dato de reseteo en el panel del home MIZPÁ.
+    setText('mz-quota-session-eta', 'resetea ' + sessETA);
+    setText('mz-quota-week-eta', 'resetea ' + weekETA);
 
     const sessRow = document.getElementById('kpi-quota-session');
     const weekRow = document.getElementById('kpi-quota-week');
@@ -2990,6 +3150,80 @@ async function tickWaves(){
 
     bindWaveToggle(activeContainer);
     bindWaveToggle(nextContainer);
+
+    // #4189 — Espeja la ola activa en el banner de misión (mismo payload, sin
+    // fetch extra). El banner es protagonista; reusa los datos que ya muta el
+    // tablero (R-G1: IDs mission-* viven en el SSR).
+    _mzMirrorMission(d);
+}
+
+// #4189 — Mirror del banner de misión a partir del payload de /api/dash/waves.
+// Deriva número/nombre/descripción, contadores por estado (hecho/activo/
+// bloqueado/cola), avance %, entregados N/M y velocidad best-effort. Defensivo:
+// cualquier dato ausente degrada a neutro sin romper el render.
+function _mzMirrorMission(d){
+    try {
+        const wave = d && d.active_wave;
+        if(!wave){
+            setText('mission-wave-num', '—');
+            setText('mission-wave-name', 'Sin ola activa');
+            setText('mission-wave-desc', 'Esperando la planificación de la ola activa.');
+            return;
+        }
+        if(Number.isFinite(wave.number)) setText('mission-wave-num', String(wave.number));
+        setText('mission-wave-name', wave.name ? ('Ola ' + wave.number + ' · ' + wave.name) : ('Ola ' + wave.number));
+        const desc = wave.goal || wave.description || ('Issues de la ola ' + wave.number + ' en curso.');
+        setText('mission-wave-desc', desc);
+        const tag = document.getElementById('mission-wave-tag');
+        if(tag) tag.style.display = wave.isLast ? '' : 'none';
+
+        const issues = Array.isArray(wave.issues) ? wave.issues : [];
+        let done=0, active=0, blocked=0, queue=0;
+        for(const it of issues){
+            const s = it && it.status;
+            if(s === 'completed') done++;
+            else if(s === 'in-progress') active++;
+            else if(s === 'blocked') blocked++;
+            else queue++; // ready / needs-def / desconocido
+        }
+        const total = issues.length || 0;
+        const pct = total > 0 ? Math.round((done/total)*100) : 0;
+        setText('mission-avance-pct', pct + '%');
+        setText('mission-leg-done', String(done));
+        setText('mission-leg-active', String(active));
+        setText('mission-leg-blocked', String(blocked));
+        setText('mission-leg-queue', String(queue));
+        const w = (n) => total>0 ? ((n/total)*100).toFixed(1)+'%' : '0%';
+        const setW = (id,n) => { const el=document.getElementById(id); if(el) el.style.width = w(n); };
+        setW('mission-bar-done', done);
+        setW('mission-bar-active', active);
+        setW('mission-bar-blocked', blocked);
+        setW('mission-bar-queue', queue);
+        setText('mission-delivered-value', String(done));
+        const dsub = document.getElementById('mission-delivered-sub');
+        if(dsub) dsub.textContent = Math.max(0, total-done) + ' restantes';
+        // El "/ N" del entregados vive en el <span> hijo; lo actualizamos directo.
+        const dv = document.getElementById('mission-delivered-value');
+        if(dv) dv.innerHTML = done + '<span class="mz-wm-u"> / ' + total + '</span>';
+
+        // Velocidad best-effort: issues cerrados / horas desde la apertura de la
+        // ola (si el payload trae openedAt). Sin dato fiable → "—".
+        const openedAt = wave.openedAt ? Date.parse(wave.openedAt) : NaN;
+        const vv = document.getElementById('mission-vel-value');
+        if(vv){
+            if(Number.isFinite(openedAt) && done > 0){
+                const hours = (Date.now() - openedAt) / 3600000;
+                if(hours > 0.1){
+                    const rate = done / hours;
+                    vv.innerHTML = rate.toFixed(1) + ' <span class="mz-wm-u">iss/h</span>';
+                } else {
+                    vv.innerHTML = '— <span class="mz-wm-u">iss/h</span>';
+                }
+            } else {
+                vv.innerHTML = '— <span class="mz-wm-u">iss/h</span>';
+            }
+        }
+    } catch(_) {}
 }
 
 // Bind del botón "Reintentar ahora" del estado vacío. Fuerza un fetch
@@ -3053,6 +3287,14 @@ async function tickOlaETA(){
     setText('ola-eta-p50', fmtMin(d.totalP50));
     setText('ola-eta-p75', fmtMin(d.totalP75));
     setText('ola-eta-p90', fmtMin(d.totalP90));
+
+    // #4189 — Espeja el ETA en el banner de misión (mediana p50 como ETA
+    // "esperado" de la ola). El sub indica si la fuente es velocidad o teórica.
+    setText('mission-eta-value', fmtMin(d.totalP50));
+    const etaSub = document.getElementById('mission-eta-sub');
+    if(etaSub){
+        etaSub.textContent = (d.etaSource === 'velocity') ? 'proyección por velocidad' : 'estimación por percentiles';
+    }
 
     // Breakdown por size (CA-21 — labels en espanol). El endpoint manda
     // bySize: { S:{avgTime,stddev,samples}, M:{...}, L:{...} }.
@@ -3280,6 +3522,33 @@ function _missionMirrorKpis(){
         var ql = document.getElementById('queue-list');
         var kq = document.getElementById('kpi-queue-value');
         if(ql && kq){ kq.textContent = String(ql.children ? ql.children.length : 0); }
+
+        // #4189 — Chips del panel "Estado del sistema" del home MIZPÁ. Reusan
+        // datos ya hidratados (active-count, kpi-bounce-value) y el semáforo,
+        // sin fetch extra.
+        var agentsChip = document.getElementById('mz-chip-agents-value');
+        if(agentsChip && ac){
+            var m = (ac.textContent || '').match(/\d+/);
+            agentsChip.textContent = m ? m[0] : '0';
+        }
+        var reboteChip = document.getElementById('mz-chip-rebote-value');
+        var bounce = document.getElementById('kpi-bounce-value');
+        if(reboteChip && bounce){
+            var bv = (bounce.textContent || '').trim();
+            reboteChip.textContent = (bv && bv !== '…') ? bv : '—';
+        }
+        // Anomalía: refleja si el semáforo global tiene alguna razón de consumo
+        // anómalo (escaneo del texto de las razones renderizadas). Defensivo.
+        var anomalyChip = document.getElementById('mz-chip-anomaly');
+        if(anomalyChip){
+            var reasons = document.getElementById('semaforo-reasons');
+            var on = false;
+            if(reasons){
+                var txt = (reasons.textContent || '').toLowerCase();
+                on = txt.indexOf('anomal') !== -1 || txt.indexOf('consumo') !== -1;
+            }
+            anomalyChip.setAttribute('data-on', on ? '1' : '0');
+        }
     } catch(_) {}
 }
 
@@ -3680,12 +3949,32 @@ function renderBrandBar(state) {
     const tip = 'Estado del último build (marker local .pipeline/build-status.json, sin gh api). '
         + meta.label + (detail ? ' · ' + detail : '');
     const detailHtml = detail ? ' · <span class="in-build-detail">' + escapeHtmlText(detail) + '</span>' : '';
+    // #4189 — Marca producto MIZPÁ (atalaya de agentes, Génesis 31:49) + selector
+    // de proyecto multiproyecto. MIZPÁ es el motor; el proyecto es intercambiable
+    // (hoy Intrale, 1 de 3). El selector es informativo/estático en esta entrega
+    // (la conmutación real de proyecto es trabajo futuro); lleva tooltip que lo
+    // explica. El pill de build (id="bld-status") se conserva para el ticker
+    // tickHeader y los contratos de test (R-G1/CA-3725).
+    const logoSvg = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">'
+        + '<path d="M12 2.5 5 6v5c0 4.6 3 8 7 9.5 4-1.5 7-4.9 7-9.5V6l-7-3.5Z" stroke="#06121a" stroke-width="1.6" fill="rgba(255,255,255,.16)"/>'
+        + '<path d="M9.5 12.5 11.3 14.3 14.8 10.4" stroke="#06121a" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
     return `
     <div class="in-header-brand">
-      <div class="in-header-logo">i</div>
-      <div>
-        <div class="in-header-title">Intrale · Operación</div>
-        <div class="in-header-subtitle">Pipeline V3 · estado en vivo</div>
+      <div class="mz-logo" aria-hidden="true" title="MIZPÁ · atalaya de agentes (Génesis 31:49)">${logoSvg}</div>
+      <div class="mz-id">
+        <div class="mz-name">MIZPÁ</div>
+        <div class="mz-sub">«Que el Señor vigile» · atalaya de agentes</div>
+      </div>
+      <div class="mz-projsel" id="mz-projsel" role="button" tabindex="0"
+           title="Proyecto activo. MIZPÁ es el motor; el proyecto es intercambiable (multiproyecto — selección en evaluación)."
+           aria-label="Proyecto activo: Intrale, 1 de 3">
+        <span class="mz-proj-avatar" aria-hidden="true">i</span>
+        <span class="mz-proj-id">
+          <span class="mz-proj-name">Intrale</span>
+          <span class="mz-proj-state">PROYECTO ACTIVO</span>
+        </span>
+        <span class="mz-proj-badge">1 / 3</span>
+        <span class="mz-proj-caret" aria-hidden="true">▾</span>
       </div>
       <span class="in-pill in-build-status ${meta.cls}" id="bld-status"
             title="${escapeHtmlAttr(tip)}"
@@ -4144,6 +4433,215 @@ function renderFlowBand(state) {
     </section>`;
 }
 
+// =============================================================================
+// #4189 — Rediseño integral de la HOME · centro de mando «MIZPÁ» (Ola 7.1).
+// -----------------------------------------------------------------------------
+// El layout pasa de las 3 bandas (#4172) al esquema del mockup v6:
+//   marca MIZPÁ → banner de misión (ola protagonista) → nav curada (5 + Más) →
+//   panel estado+cuotas (3 columnas) → grilla 2-col (Ahora·Ejecución | Tablero
+//   de la Ola) → diagnóstico colapsable.
+// Contrato preservado (R-G1 / snapshot-IDs): TODO sub-componente con IDs
+// hidratados por tickers (semaforo, active-list, wave-panel, kpi-quota, kpis,
+// infra, sys, ola-eta, alert-tray, queue) sigue presente en el SSR — los que no
+// tienen lugar propio en el mockup viven en el <details> de diagnóstico. Así
+// los tickers (tickHeader/tickKpis/tickQuota/tickActive/tickWaves/tickOlaETA/
+// _missionMirrorKpis) siguen vivos sin cambios de endpoint.
+// =============================================================================
+
+// Banner de misión: la ola como protagonista. SSR con valores neutros; los
+// datos vivos los espejan tickWaves (número/nombre/desc/avance/segmentos/
+// entregados) y tickOlaETA (ETA/velocidad) en sus IDs `mission-*`. Sin nuevos
+// endpoints. Cada zona lleva tooltip autodescriptivo (CA-11).
+function renderMissionBanner(state) {
+    return `
+    <section class="mz-mission" id="mz-mission" aria-label="Misión de la ola activa"
+             title="Ola activa del plan: avance, ritmo de entrega y cierre estimado.">
+      <div class="mz-wavetag" title="Número de la ola activa.">
+        <span class="mz-wavetag-k">OLA</span>
+        <span class="mz-wavetag-n" id="mission-wave-num">—</span>
+      </div>
+      <div class="mz-mission-text">
+        <div class="mz-mission-ttl">
+          <span id="mission-wave-name">Sin ola activa</span>
+          <span class="mz-mission-badge" id="mission-wave-tag" style="display:none"
+                title="Marca contextual de la ola (p. ej. última del plan).">ÚLTIMA DEL PLAN</span>
+        </div>
+        <div class="mz-mission-desc" id="mission-wave-desc">Esperando la planificación de la ola activa.</div>
+        <div class="mz-mission-metrics">
+          <div class="mz-wm" title="Tiempo estimado para cerrar la ola (proyección por velocidad / percentiles de duración).">
+            <div class="mz-wm-l">⏳ ETA DE LA OLA</div>
+            <div class="mz-wm-v" id="mission-eta-value">—</div>
+            <div class="mz-wm-s" id="mission-eta-sub">cierre estimado</div>
+          </div>
+          <div class="mz-wm" title="Velocidad de entrega: issues cerrados por hora (media reciente).">
+            <div class="mz-wm-l">🚀 VELOCIDAD</div>
+            <div class="mz-wm-v" id="mission-vel-value">— <span class="mz-wm-u">iss/h</span></div>
+            <div class="mz-wm-s">media reciente</div>
+          </div>
+          <div class="mz-wm" title="Issues entregados sobre el total de la ola.">
+            <div class="mz-wm-l">📦 ENTREGADOS</div>
+            <div class="mz-wm-v" id="mission-delivered-value">—<span class="mz-wm-u"> / —</span></div>
+            <div class="mz-wm-s" id="mission-delivered-sub">restantes</div>
+          </div>
+        </div>
+      </div>
+      <div class="mz-mission-prog" title="Avance total de la ola, desglosado por estado de sus issues.">
+        <div class="mz-prog-head"><span>AVANCE</span><span class="mz-prog-pct" id="mission-avance-pct">0%</span></div>
+        <div class="mz-prog-bar">
+          <i id="mission-bar-done" style="width:0%;background:var(--in-ok,#3fb950)"></i>
+          <i id="mission-bar-active" style="width:0%;background:var(--in-info,#58a6ff)"></i>
+          <i id="mission-bar-blocked" style="width:0%;background:var(--in-bad,#f85149)"></i>
+          <i id="mission-bar-queue" style="width:0%;background:rgba(255,255,255,.10)"></i>
+        </div>
+        <div class="mz-prog-legend">
+          <span><i class="mz-dot" style="background:var(--in-ok,#3fb950)"></i> <b id="mission-leg-done">0</b> hechos</span>
+          <span><i class="mz-dot" style="background:var(--in-info,#58a6ff)"></i> <b id="mission-leg-active">0</b> activos</span>
+          <span><i class="mz-dot" style="background:var(--in-bad,#f85149)"></i> <b id="mission-leg-blocked">0</b> bloq.</span>
+          <span><i class="mz-dot" style="background:rgba(255,255,255,.25)"></i> <b id="mission-leg-queue">0</b> cola</span>
+        </div>
+      </div>
+    </section>`;
+}
+
+// Fila de proveedor para las cuotas desglosadas (CA-6). El % real por proveedor
+// (Anthropic/Codex/Gemini) requiere la extracción del consumo desde el cliente
+// de escritorio (Anthropic) / API (Codex/Gemini) — backend separado (split,
+// child issue). Hasta entonces la fila se muestra en estado neutro "—" con su
+// barra a 0; el % AGREGADO de sesión/semana sí es real (tickQuota). IDs listos
+// para hidratación futura sin re-render.
+function _mzProviderRow(bucket, key, name, color) {
+    return `
+        <div class="mz-prow" title="Consumo de ${escapeHtmlAttr(name)} en esta ventana (desglose por proveedor — en preparación).">
+          <span class="mz-pname"><span class="mz-pdot" style="background:${color}"></span>${escapeHtmlText(name)}</span>
+          <span class="mz-pbar"><i id="mz-quota-${bucket}-${key}-bar" style="width:0%;background:${color}"></i></span>
+          <span class="mz-ppct" id="mz-quota-${bucket}-${key}-pct">—</span>
+        </div>`;
+}
+
+function _mzProviderRows(bucket) {
+    return _mzProviderRow(bucket, 'anthropic', 'Anthropic', 'var(--in-warn,#d29922)')
+        + _mzProviderRow(bucket, 'codex', 'Codex', 'var(--in-ok,#3fb950)')
+        + _mzProviderRow(bucket, 'gemini', 'Gemini', 'var(--in-info,#58a6ff)');
+}
+
+// Panel "Estado del sistema + Cuotas" (3 columnas). Col 1: semáforo global
+// (reusa renderSemaforo, vivo) + chips de anomalía / % rebote ola / agentes
+// vivos. Col 2/3: cuota de Sesión y Semanal con % agregado real + desglose por
+// proveedor. Reemplaza la barra inferior de tokens/rebotes/PRs (CA-5).
+function renderSystemQuotaPanel(state) {
+    return `
+    <section class="mz-sysquota" aria-label="Estado del sistema y cuotas">
+      <div class="mz-sq-cell mz-sq-status" title="Salud global del sistema y alertas activas (anomalía de consumo, % de rebotes de la ola).">
+        <div class="mz-sq-head">📟 ESTADO DEL SISTEMA</div>
+        ${renderSemaforo(state)}
+        <div class="mz-sq-chips">
+          <span class="mz-chip" id="mz-chip-anomaly" data-on="0"
+                title="Alerta de consumo anómalo de tokens. Se integra junto al estado del sistema.">⚠ <span>Anomalía consumo</span></span>
+          <span class="mz-chip mz-chip-ok"
+                title="Porcentaje de issues de la ola que rebotaron al menos una vez.">↩ Rebote ola <b id="mz-chip-rebote-value">—</b></span>
+          <span class="mz-chip mz-chip-ok"
+                title="Agentes actualmente en ejecución.">● <b id="mz-chip-agents-value">0</b> agentes vivos</span>
+        </div>
+      </div>
+
+      <div class="mz-sq-cell" title="Cuota de la ventana de sesión (5h). % agregado real; desglose por proveedor en preparación.">
+        <div class="mz-q-head">
+          <div>
+            <div class="mz-q-klbl">⏱ CUOTA SESIÓN · 5H</div>
+            <div class="mz-q-kval" id="mz-quota-session-pct">…</div>
+          </div>
+          <div class="mz-q-ksub" id="mz-quota-session-eta">·</div>
+        </div>
+        <div class="mz-prov">${_mzProviderRows('session')}</div>
+      </div>
+
+      <div class="mz-sq-cell" title="Cuota semanal. % agregado real; desglose por proveedor en preparación.">
+        <div class="mz-q-head">
+          <div>
+            <div class="mz-q-klbl">📅 CUOTA SEMANAL</div>
+            <div class="mz-q-kval" id="mz-quota-week-pct">…</div>
+          </div>
+          <div class="mz-q-ksub" id="mz-quota-week-eta">·</div>
+        </div>
+        <div class="mz-prov">${_mzProviderRows('week')}</div>
+      </div>
+    </section>`;
+}
+
+// Columna izquierda "Ahora · En ejecución". Reusa el bloque de agentes activos
+// (active-list / active-count / active-empty, vivos via tickActive) restilados
+// como tarjetas del mockup, y conserva el hint de "próximo en cola".
+function renderNowColumn(state) {
+    return `
+    <section class="mz-panel mz-now" aria-label="Agentes en ejecución">
+      <div class="mz-panel-head">
+        <div class="mz-panel-t" title="Agentes con trabajo en vuelo: rol, issue, fase y proveedor que lo corre.">
+          <span class="mz-panel-ic">▶</span> AHORA · EN EJECUCIÓN
+        </div>
+        <div class="mz-panel-hint"><span id="active-count">…</span> en vuelo</div>
+      </div>
+      <div class="active-list mz-now-list" id="active-list"></div>
+      <div class="active-empty mz-now-empty" id="active-empty" style="display:none">
+        <div class="active-empty-icon">⏸</div>
+        <div class="active-empty-msg">No hay agentes corriendo. Verificar pausa parcial, cola y blocked:dependencies.</div>
+      </div>
+    </section>`;
+}
+
+// Columna derecha "Issues de la Ola". Reusa el wave-panel (wave-active-container
+// poblado por tickWaves) restilado como tablero del mockup. Nunca trunca: el
+// panel lista todos los issues de la ola activa (CA-8/CA-10).
+function renderWaveBoard(state) {
+    return `
+    <section class="mz-panel mz-board" aria-label="Tablero de issues de la ola">
+      <div class="mz-panel-head">
+        <div class="mz-panel-t" title="Todos los issues de la ola activa con su estado y avance. El # enlaza a GitHub.">
+          <span class="mz-panel-ic">🌊</span> ISSUES DE LA OLA
+        </div>
+        <div class="mz-board-legend">
+          <span><i class="mz-dot" style="background:#6ee7b7"></i>hecho</span>
+          <span><i class="mz-dot" style="background:#7eeef3"></i>ejecutando</span>
+          <span><i class="mz-dot" style="background:#9cc6fb"></i>listo</span>
+          <span><i class="mz-dot" style="background:var(--in-fg-dim,#8b949e)"></i>en cola</span>
+        </div>
+      </div>
+      <div class="wave-panel mz-board-body" id="wave-panel">
+        <div id="wave-active-container"></div>
+        <div id="wave-next-container"></div>
+        <div class="wave-panel-empty" id="wave-panel-empty" style="display:none">
+          <div class="wave-panel-empty-msg" id="wave-panel-empty-msg">Planificación no disponible — esperando próxima ola</div>
+          <button type="button" class="wave-panel-empty-retry" id="wave-panel-retry" title="Forzar refresh fuera del polling de 30s">Reintentar ahora</button>
+        </div>
+        <span class="mz-board-updated" id="wave-panel-updated">—</span>
+      </div>
+      <div class="mz-board-foot" title="Cada issue enlaza a su ficha de GitHub. La ola muestra siempre todos sus issues, sin truncar.">
+        ℹ️ El # de cada issue enlaza a GitHub. Se listan todos los issues de la ola, sin truncar (límite 3 agentes concurrentes).
+      </div>
+    </section>`;
+}
+
+// Diagnóstico colapsable: conserva en el SSR los sub-componentes que no tienen
+// lugar propio en el mockup pero cuyos IDs DEBEN existir para que sus tickers
+// sigan vivos (R-G1). Colapsado por default → look limpio del mockup.
+function renderDiagnostics(state) {
+    return `
+    <details class="mz-diag">
+      <summary class="mz-diag-summary" title="Métricas detalladas y salud de servicios (mantiene la telemetría existente del dashboard).">
+        🔎 Diagnóstico y métricas detalladas
+      </summary>
+      <div class="mz-diag-body">
+        ${renderInfraHealth(state)}
+        ${renderSystemCard(state)}
+        ${renderKpiGrid(state)}
+        ${_pulseFaroKpis()}
+        ${_olaEtaSectionHtml()}
+        ${_recentSectionHtml()}
+        ${_queueSectionHtml()}
+        ${renderAlertTray(state)}
+      </div>
+    </details>`;
+}
+
 function renderHomeHTML(opts) {
     // `opts.quotaState` permite al caller pasar el state precomputado (evita
     // doble lectura del flag si el dashboard ya lo tiene en mano). Sin opts,
@@ -4258,16 +4756,20 @@ ${renderStaleBanner()}
        inline aca (CA-S8) - todos los listeners se enganchan en JS post-render. -->
   <main class="kiosk-body" id="view-content" data-current-view="${currentView}">
 
-    ${navHtml}
-
-    <!-- #3954 EP8-H1 — Mission control de 3 bandas (20% / 50% / 30%). El grid
-         tiene height:100% + overflow:hidden; cada banda resuelve su propio
-         exceso con scroll/carrusel interno acotado (CA-1/CA-2). El contrato
-         SSR↔morph se preserva: cada banda morphea su sub-árbol por id (CA-13). -->
-    <div class="mission-grid" id="mission-grid">
-      ${renderHealthBand(state)}
-      ${renderNowBand(state)}
-      ${renderFlowBand(state)}
+    <!-- #4189 — HOME «MIZPÁ» (mockup v6). El wrapper conserva id="mission-grid"
+         para que _applyMissionFrame() siga detectando el home (sin tocar el
+         cliente). El layout fluye en vertical y scrollea naturalmente; los
+         sub-componentes con IDs hidratables viven dentro (varios en el
+         <details> de diagnóstico) para preservar la telemetría existente. -->
+    <div class="mz-home" id="mission-grid">
+      ${renderMissionBanner(state)}
+      ${navHtml}
+      ${renderSystemQuotaPanel(state)}
+      <div class="mz-grid">
+        ${renderNowColumn(state)}
+        ${renderWaveBoard(state)}
+      </div>
+      ${renderDiagnostics(state)}
     </div>
 
   </main>
@@ -4319,4 +4821,10 @@ module.exports = {
     renderHealthBand,
     renderNowBand,
     renderFlowBand,
+    // #4189 — sub-renderers del home MIZPÁ (mockup v6).
+    renderMissionBanner,
+    renderSystemQuotaPanel,
+    renderNowColumn,
+    renderWaveBoard,
+    renderDiagnostics,
 };

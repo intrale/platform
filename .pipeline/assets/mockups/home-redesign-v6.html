@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<style>
+  :root{
+    --bg:#0A0D13; --panel:#11151E; --panel2:#141925; --line:rgba(255,255,255,.07);
+    --line2:rgba(255,255,255,.12);
+    --txt:#E7ECF3; --mut:#8A93A6; --mut2:#5B6376;
+    --cy:#34D9E0; --gr:#34D399; --am:#FBBF24; --rd:#F87171; --vi:#A78BFA; --bl:#60A5FA; --or:#FB923C;
+    --r:16px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;font-family:'Segoe UI',-apple-system,Roboto,sans-serif}
+  body{background:
+      radial-gradient(1200px 600px at 80% -10%, rgba(52,217,224,.06), transparent 60%),
+      radial-gradient(900px 500px at -10% 20%, rgba(167,139,250,.05), transparent 55%),
+      var(--bg);
+    color:var(--txt); width:1280px; padding:24px 30px 30px; letter-spacing:.1px}
+  .mut{color:var(--mut)} .sm{font-size:12px} .xs{font-size:11px}
+  a{color:inherit;text-decoration:none}
+
+  /* ---------- TOP BAR (marca producto + selector proyecto) ---------- */
+  .top{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+  .brand{display:flex;align-items:center;gap:13px}
+  .logo{width:46px;height:46px;border-radius:14px;position:relative;
+    background:linear-gradient(135deg,#34D9E0,#7C5CFF 90%);
+    display:flex;align-items:center;justify-content:center;
+    box-shadow:0 8px 26px rgba(124,92,255,.30)}
+  .logo svg{width:26px;height:26px}
+  .brand .bn{font-size:21px;font-weight:800;line-height:1;letter-spacing:1px;
+    background:linear-gradient(90deg,#bff3f6,#c9bcff);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .brand .bt{font-size:10px;color:var(--mut);font-weight:600;letter-spacing:1.1px;margin-top:5px}
+  /* selector de proyecto — la multiplicidad */
+  .projsel{display:flex;align-items:center;gap:11px;background:var(--panel);border:1px solid var(--line2);
+    border-radius:13px;padding:8px 9px 8px 12px;margin-left:8px}
+  .projsel .pa{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,#34D9E0,#5A8DEE);
+    display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px;color:#06121a;flex:none}
+  .projsel .pn{font-size:14px;font-weight:800;line-height:1.05}
+  .projsel .ps{font-size:9.5px;color:var(--mut2);font-weight:700;letter-spacing:.4px;margin-top:2px}
+  .projsel .car{color:var(--mut);font-size:12px;margin-left:4px}
+  .projsel .badge{font-size:10px;font-weight:800;color:#9fe9ee;background:rgba(52,217,224,.12);
+    border:1px solid rgba(52,217,224,.3);border-radius:8px;padding:3px 8px}
+
+  .topright{display:flex;align-items:center;gap:10px}
+  .hpill{display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--line);
+    padding:9px 14px;border-radius:12px;font-size:12px;font-weight:600}
+  .clock{font-variant-numeric:tabular-nums;font-size:15px;font-weight:700;color:var(--txt);
+    background:var(--panel);border:1px solid var(--line);padding:8px 14px;border-radius:12px}
+
+  /* ---------- MISSION BANNER ---------- */
+  .mission{display:flex;align-items:center;gap:22px;background:
+      linear-gradient(110deg,rgba(52,217,224,.14),rgba(124,92,255,.08) 45%,transparent 75%),
+      linear-gradient(180deg,var(--panel),var(--panel2));
+    border:1px solid rgba(52,217,224,.22);border-radius:var(--r);padding:18px 24px;margin-bottom:14px;
+    position:relative;overflow:hidden}
+  .mission::after{content:"🌊";position:absolute;right:18px;top:-14px;font-size:90px;opacity:.06}
+  .wavetag{display:flex;flex-direction:column;align-items:center;justify-content:center;
+    min-width:96px;padding:10px 14px;border-radius:14px;
+    background:linear-gradient(135deg,rgba(52,217,224,.22),rgba(124,92,255,.16));
+    border:1px solid rgba(52,217,224,.3)}
+  .wavetag .k{font-size:10px;font-weight:800;letter-spacing:1.5px;color:#9fe9ee}
+  .wavetag .n{font-size:34px;font-weight:800;color:#bff3f6;line-height:1}
+  .mtext{flex:1}
+  .mtext .ttl{font-size:19px;font-weight:800;display:flex;align-items:center;gap:10px}
+  .mtext .desc{font-size:13px;color:var(--mut);margin-top:5px;max-width:520px;line-height:1.45}
+  .wmetrics{display:flex;gap:10px;margin-top:12px}
+  .wm{flex:1;background:rgba(255,255,255,.035);border:1px solid var(--line);border-radius:11px;padding:9px 12px}
+  .wm .wl{font-size:9.5px;font-weight:800;letter-spacing:.7px;color:var(--mut2);display:flex;align-items:center;gap:5px}
+  .wm .wv{font-size:17px;font-weight:800;margin-top:3px;line-height:1;font-variant-numeric:tabular-nums}
+  .wm .wsx{font-size:10px;color:var(--mut2);margin-top:3px}
+  .mprog{min-width:300px}
+  .mprog .pr{display:flex;align-items:baseline;justify-content:space-between;font-size:11.5px;color:var(--mut);font-weight:600}
+  .mprog .pct{font-size:26px;font-weight:800;color:var(--cy)}
+  .wbar{height:8px;border-radius:6px;background:rgba(255,255,255,.07);overflow:hidden;display:flex;margin:9px 0 8px}
+  .wbar i{height:100%}
+  .wlegend{display:flex;gap:14px;font-size:11px;color:var(--mut)}
+  .wlegend span{display:flex;align-items:center;gap:5px}
+  .dotc{width:7px;height:7px;border-radius:50%}
+
+  /* ---------- NAV ---------- */
+  .nav{display:flex;align-items:center;gap:6px;background:var(--panel);border:1px solid var(--line);padding:6px;
+    border-radius:14px;margin-bottom:16px;position:relative}
+  .nav a{font-size:13px;font-weight:600;color:var(--mut);padding:9px 16px;border-radius:9px;white-space:nowrap}
+  .nav a.on{background:linear-gradient(135deg,rgba(52,217,224,.18),rgba(124,92,255,.14));
+    color:#bff3f6;border:1px solid rgba(52,217,224,.3)}
+  /* botón compacto ⋯ — colapsa el resto de las secciones */
+  .morebtn{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;
+    color:#bff3f6;padding:9px 15px;border-radius:9px;cursor:pointer;
+    background:linear-gradient(135deg,rgba(52,217,224,.16),rgba(124,92,255,.13));
+    border:1px solid rgba(52,217,224,.32)}
+  .morebtn .dots{font-size:17px;line-height:1;letter-spacing:2px}
+  .morebtn .car{font-size:11px;color:var(--cy)}
+  .morebtn .cnt{font-size:9.5px;font-weight:800;color:#06121a;background:var(--cy);
+    border-radius:7px;padding:2px 6px;letter-spacing:.2px}
+  /* popover desplegado al presionar */
+  .moremenu{position:absolute;top:54px;right:6px;z-index:9;width:250px;
+    background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid rgba(52,217,224,.25);
+    border-radius:14px;padding:8px;box-shadow:0 20px 50px rgba(0,0,0,.55)}
+  .moremenu::before{content:"";position:absolute;top:-7px;right:24px;width:12px;height:12px;
+    background:var(--panel);border-left:1px solid rgba(52,217,224,.25);border-top:1px solid rgba(52,217,224,.25);
+    transform:rotate(45deg)}
+  .mmh{font-size:9.5px;font-weight:800;letter-spacing:1px;color:var(--mut2);padding:6px 10px 8px}
+  .mmi{display:flex;align-items:center;gap:11px;padding:9px 10px;border-radius:9px;font-size:13px;font-weight:600;color:var(--txt)}
+  .mmi.hl{background:rgba(52,217,224,.08)}
+  .mmi .em{width:24px;height:24px;border-radius:7px;display:flex;align-items:center;justify-content:center;
+    font-size:13px;background:rgba(255,255,255,.05);flex:none}
+  .mmi .mmt{flex:1}
+  .mmi .mms{font-size:10px;color:var(--mut2);font-weight:600;margin-top:1px}
+  .mmi .mmtag{font-size:8.5px;font-weight:800;color:var(--am);background:rgba(251,191,36,.12);
+    border:1px solid rgba(251,191,36,.3);border-radius:6px;padding:2px 6px}
+
+  /* ---------- PANEL ---------- */
+  .grid{display:grid;gap:16px}
+  .panel{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);
+    border-radius:var(--r);padding:20px}
+  .ph{display:flex;align-items:center;justify-content:space-between;margin-bottom:15px}
+  .ph .t{display:flex;align-items:center;gap:9px;font-size:13px;font-weight:700;letter-spacing:.4px}
+  .ph .t .ic{width:22px;height:22px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:13px}
+  .ph .hint{font-size:11px;color:var(--mut2);font-weight:600;text-transform:uppercase;letter-spacing:.6px}
+
+  /* ---------- SYSTEM STATUS + CUOTAS POR PROVEEDOR ---------- */
+  .sys{display:grid;grid-template-columns:1.05fr 1.1fr 1.1fr;gap:0;overflow:hidden;padding:0;margin-bottom:16px}
+  .sys>div{padding:18px 20px;border-right:1px solid var(--line)}
+  .sys>div:last-child{border-right:0}
+  .stcell{background:linear-gradient(135deg,rgba(251,191,36,.13),transparent 72%)}
+  .stbadge{display:flex;align-items:center;gap:13px}
+  .stdot{width:38px;height:38px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#FCD34D,#D97706);
+    box-shadow:0 0 22px rgba(251,191,36,.45);flex:none}
+  .stbadge .lbl{font-size:10.5px;color:var(--mut);font-weight:700;letter-spacing:1px}
+  .stbadge .val{font-size:22px;font-weight:800;color:#FCD34D;line-height:1}
+  .schips{display:flex;flex-wrap:wrap;gap:7px;margin-top:13px}
+  .schip{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;
+    background:rgba(255,255,255,.04);border:1px solid var(--line2);border-radius:9px;padding:6px 10px}
+  .schip.ok{border-color:rgba(52,211,153,.3)}
+  .schip.warn{border-color:rgba(251,191,36,.35);background:rgba(251,191,36,.08)}
+  .schip b{font-variant-numeric:tabular-nums}
+
+  .qhead{display:flex;align-items:baseline;justify-content:space-between}
+  .qhead .klbl{font-size:10.5px;color:var(--mut);font-weight:700;letter-spacing:.6px;display:flex;align-items:center;gap:7px}
+  .qhead .kval{font-size:24px;font-weight:800;line-height:1}
+  .qhead .ksub{font-size:10px;color:var(--mut2);margin-top:3px}
+  .prov{display:flex;flex-direction:column;gap:9px;margin-top:13px}
+  .prow{display:grid;grid-template-columns:78px 1fr 40px;align-items:center;gap:9px}
+  .pname{display:flex;align-items:center;gap:7px;font-size:11px;font-weight:700}
+  .pdot{width:8px;height:8px;border-radius:50%;flex:none}
+  .pbar{height:6px;border-radius:5px;background:rgba(255,255,255,.07);overflow:hidden}
+  .pbar i{display:block;height:100%;border-radius:5px}
+  .ppct{font-size:11px;font-weight:700;text-align:right;font-variant-numeric:tabular-nums}
+
+  /* ---------- AHORA · EN EJECUCIÓN (ahora a la izquierda) ---------- */
+  .agent{display:flex;align-items:flex-start;gap:12px;padding:13px;border-radius:12px;
+    background:rgba(255,255,255,.025);border:1px solid var(--line);margin-bottom:11px}
+  .av{width:38px;height:38px;border-radius:11px;display:flex;align-items:center;justify-content:center;
+    font-size:17px;flex:none;position:relative}
+  .av .spin{position:absolute;inset:-3px;border-radius:13px;border:2px solid transparent;
+    border-top-color:var(--cy);border-right-color:rgba(52,217,224,.4);animation:rot 1.4s linear infinite}
+  @keyframes rot{to{transform:rotate(360deg)}}
+  .ainfo{flex:1;min-width:0}
+  .arow1{display:flex;align-items:center;gap:8px}
+  .arole{font-size:13px;font-weight:700}
+  .aiss{font-size:11px;font-weight:700;color:var(--cy);font-variant-numeric:tabular-nums;
+    border-bottom:1px dotted rgba(52,217,224,.5)}
+  .aphase{font-size:9.5px;font-weight:800;letter-spacing:.5px;padding:2px 8px;border-radius:20px;
+    background:rgba(96,165,250,.16);color:#9cc6fb}
+  .aphase.qa{background:rgba(167,139,250,.16);color:#c4b5fd}
+  .aphase.build{background:rgba(251,146,60,.16);color:#fdba74}
+  .atask{font-size:11px;color:var(--mut);margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .aprog{display:flex;align-items:center;gap:9px;margin-top:8px}
+  .apbar{flex:1;height:5px;border-radius:4px;background:rgba(255,255,255,.07);overflow:hidden}
+  .apbar i{display:block;height:100%;border-radius:4px;background:linear-gradient(90deg,#34D9E0,#5A8DEE)}
+  .aprov{display:flex;align-items:center;gap:5px;font-size:10px;font-weight:700;color:var(--mut)}
+  /* accesos del agente: ver issue + ver logs */
+  .alinks{display:flex;gap:7px;margin-top:9px}
+  .alink{display:flex;align-items:center;gap:5px;font-size:10px;font-weight:700;padding:4px 9px;border-radius:8px;
+    border:1px solid var(--line2);background:rgba(255,255,255,.03);color:var(--mut)}
+  .alink.gh{color:#9cc6fb;border-color:rgba(96,165,250,.3)}
+  .alink.log{color:#c4b5fd;border-color:rgba(167,139,250,.3)}
+  .ameta{text-align:right;flex:none}
+  .ameta .amt{font-size:10px;color:var(--mut2);font-weight:700}
+  .ameta .amv{font-size:13px;font-weight:800;font-variant-numeric:tabular-nums}
+
+  /* ---------- TABLERO DE LA OLA (todos los issues, sin solapes) ---------- */
+  .legend{display:flex;gap:13px;font-size:10.5px;color:var(--mut);font-weight:600}
+  .legend span{display:flex;align-items:center;gap:5px}
+  /* grilla rígida: estado | num | título | avance | agente | accesos — sin overflow */
+  .iss{display:grid;grid-template-columns:20px 58px minmax(0,1fr) 104px 116px 64px;
+    align-items:center;gap:12px;padding:11px 12px;border-radius:11px;border:1px solid transparent}
+  .iss+.iss{margin-top:3px}
+  .iss:nth-child(even){background:rgba(255,255,255,.018)}
+  .iss.run{background:rgba(52,217,224,.06);border-color:rgba(52,217,224,.18)}
+  .iss.ready{background:rgba(96,165,250,.05);border-color:rgba(96,165,250,.16)}
+  .ist{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-size:11px;font-weight:800;flex:none}
+  .ist.done{background:rgba(52,211,153,.18);color:#6ee7b7}
+  .ist.run{background:rgba(52,217,224,.2);color:#7eeef3}
+  .ist.ready{background:rgba(96,165,250,.18);color:#9cc6fb}
+  .ist.queue{background:rgba(255,255,255,.06);color:var(--mut2);border:1px solid var(--line2)}
+  /* el número ES el link al issue de GitHub */
+  .inum{font-size:12.5px;font-weight:800;font-variant-numeric:tabular-nums;color:#9cc6fb;
+    display:flex;align-items:center;gap:3px;border-bottom:1px dotted rgba(96,165,250,.45);width:fit-content}
+  .inum .ghi{font-size:10px;opacity:.8}
+  .ittl{font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  .ittl.done{color:var(--mut)}
+  .iprog{display:flex;align-items:center;gap:8px;min-width:0}
+  .ipbar{flex:1;height:5px;border-radius:4px;background:rgba(255,255,255,.07);overflow:hidden}
+  .ipbar i{display:block;height:100%;border-radius:4px}
+  .ipct{font-size:10.5px;font-weight:700;width:30px;text-align:right;font-variant-numeric:tabular-nums;color:var(--mut)}
+  .iag{display:flex;align-items:center;justify-content:flex-end;min-width:0}
+  .iagp{font-size:9.5px;font-weight:800;letter-spacing:.2px;padding:4px 9px;border-radius:7px;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis;max-width:100%}
+  .iagp.run{background:rgba(52,217,224,.16);color:#7eeef3}
+  .iagp.ready{background:rgba(96,165,250,.15);color:#9cc6fb}
+  .iagp.queue{background:rgba(255,255,255,.05);color:var(--mut2);border:1px solid var(--line2)}
+  .iagp.done{color:var(--mut2);font-weight:700}
+  /* accesos por issue: GitHub + logs */
+  .iacts{display:flex;align-items:center;justify-content:flex-end;gap:6px}
+  .iact{width:26px;height:26px;border-radius:8px;display:flex;align-items:center;justify-content:center;
+    font-size:12px;border:1px solid var(--line2);background:rgba(255,255,255,.03);flex:none}
+  .iact.gh{color:#9cc6fb;border-color:rgba(96,165,250,.28)}
+  .iact.log{color:#c4b5fd;border-color:rgba(167,139,250,.28)}
+  .iact.off{color:var(--mut2);opacity:.4}
+</style>
+</head>
+<body>
+
+  <!-- TOP BAR -->
+  <div class="top">
+    <div class="brand">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M12 2.5 5 6v5c0 4.6 3 8 7 9.5 4-1.5 7-4.9 7-9.5V6l-7-3.5Z" stroke="#06121a" stroke-width="1.6" fill="rgba(255,255,255,.16)"/><path d="M9.5 12.5 11.3 14.3 14.8 10.4" stroke="#06121a" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div>
+        <div class="bn">MIZPÁ</div>
+        <div class="bt">«Que el Señor vigile» · atalaya de agentes</div>
+      </div>
+      <!-- selector de proyecto: la multiplicidad -->
+      <div class="projsel">
+        <div class="pa">i</div>
+        <div>
+          <div class="pn">Intrale</div>
+          <div class="ps">PROYECTO ACTIVO</div>
+        </div>
+        <span class="badge">1 / 3</span>
+        <span class="car">▾</span>
+      </div>
+    </div>
+    <div class="topright">
+      <div class="hpill"><span style="color:var(--gr)">●</span> Pulpo latiendo · 14s</div>
+      <div class="hpill">CPU 38% · RAM 64%</div>
+      <div class="clock">08:41</div>
+    </div>
+  </div>
+
+  <!-- MISSION BANNER -->
+  <div class="mission">
+    <div class="wavetag">
+      <div class="k">OLA</div>
+      <div class="n">7</div>
+    </div>
+    <div class="mtext">
+      <div class="ttl">Cierre y pulido <span class="xs" style="color:var(--cy);background:rgba(52,217,224,.12);border:1px solid rgba(52,217,224,.3);padding:3px 9px;border-radius:20px;font-weight:700">ÚLTIMA DEL PLAN</span></div>
+      <div class="desc">Documentación final, pantallas del dashboard y rediseño de la home. Foco de esta corrida.</div>
+      <div class="wmetrics">
+        <div class="wm">
+          <div class="wl">⏳ ETA DE LA OLA</div>
+          <div class="wv" style="color:var(--cy)">~2h 40m</div>
+          <div class="wsx">cierre estimado 11:20</div>
+        </div>
+        <div class="wm">
+          <div class="wl">🚀 VELOCIDAD</div>
+          <div class="wv" style="color:var(--gr)">1.8 <span style="font-size:11px;color:var(--mut2)">iss/h</span></div>
+          <div class="wsx">media últimas 3h</div>
+        </div>
+        <div class="wm">
+          <div class="wl">📦 ENTREGADOS</div>
+          <div class="wv">4<span style="font-size:11px;color:var(--mut2)"> / 9</span></div>
+          <div class="wsx">5 restantes</div>
+        </div>
+      </div>
+    </div>
+    <div class="mprog">
+      <div class="pr"><span>AVANCE</span><span class="pct">44%</span></div>
+      <div class="wbar">
+        <i style="width:44%;background:var(--gr)"></i>
+        <i style="width:33%;background:var(--bl)"></i>
+        <i style="width:0%;background:var(--rd)"></i>
+        <i style="width:23%;background:rgba(255,255,255,.10)"></i>
+      </div>
+      <div class="wlegend">
+        <span><i class="dotc" style="background:var(--gr)"></i> 4 hechos</span>
+        <span><i class="dotc" style="background:var(--bl)"></i> 3 activos</span>
+        <span><i class="dotc" style="background:var(--rd)"></i> 0 bloq.</span>
+        <span><i class="dotc" style="background:rgba(255,255,255,.25)"></i> 2 cola</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- NAV -->
+  <div class="nav">
+    <a class="on">⌂ Inicio</a>
+    <a>Pipeline</a>
+    <a>Issues</a>
+    <a>Bloqueados</a>
+    <a>Costos</a>
+
+    <!-- botón compacto: colapsa las secciones secundarias -->
+    <div class="morebtn"><span class="dots">⋯</span> Más <span class="cnt">7</span> <span class="car">▲</span></div>
+
+    <!-- popover desplegado al presionar el botón -->
+    <div class="moremenu">
+      <div class="mmh">SECCIONES ADICIONALES</div>
+      <div class="mmi hl"><span class="em">👥</span><div class="mmt">Equipo<div class="mms">Roles y agentes del pipeline</div></div></div>
+      <div class="mmi"><span class="em">🔲</span><div class="mmt">Matriz<div class="mms">Heatmap issues × fases</div></div></div>
+      <div class="mmi"><span class="em">🛰️</span><div class="mmt">Ops<div class="mms">Topología y salud de servicios</div></div></div>
+      <div class="mmi"><span class="em">📊</span><div class="mmt">KPIs<div class="mms">Métricas de entrega</div></div></div>
+      <div class="mmi"><span class="em">🕓</span><div class="mmt">Historial<div class="mms">Timeline de actividad</div></div></div>
+      <div class="mmi"><span class="em">🌙</span><div class="mmt">Descanso<div class="mms">Ventana y modo reposo</div></div></div>
+      <div class="mmi"><span class="em">🔌</span><div class="mmt mmt">Providers</div><span class="mmtag">EN EVALUACIÓN</span></div>
+    </div>
+  </div>
+
+  <!-- SYSTEM STATUS + CUOTAS -->
+  <div class="panel sys">
+    <div class="stcell">
+      <div class="stbadge">
+        <div class="stdot"></div>
+        <div>
+          <div class="lbl">ESTADO DEL SISTEMA</div>
+          <div class="val">DEGRADADO</div>
+        </div>
+      </div>
+      <div class="schips">
+        <div class="schip warn">⚠ <span>Anomalía consumo</span></div>
+        <div class="schip ok">↩ Rebote ola <b style="color:#6ee7b7">0%</b></div>
+        <div class="schip ok">● 3 agentes vivos</div>
+      </div>
+    </div>
+
+    <!-- CUOTA SESIÓN -->
+    <div>
+      <div class="qhead">
+        <div>
+          <div class="klbl">⏱ CUOTA SESIÓN · 5H</div>
+          <div class="kval" style="color:var(--gr)">52%</div>
+        </div>
+        <div class="ksub" style="text-align:right">resetea<br>en 2h 11m</div>
+      </div>
+      <div class="prov">
+        <div class="prow">
+          <div class="pname"><span class="pdot" style="background:var(--or)"></span>Anthropic</div>
+          <div class="pbar"><i style="width:71%;background:linear-gradient(90deg,#FB923C,#F87171)"></i></div>
+          <div class="ppct" style="color:#fdba74">71%</div>
+        </div>
+        <div class="prow">
+          <div class="pname"><span class="pdot" style="background:var(--gr)"></span>Codex</div>
+          <div class="pbar"><i style="width:34%;background:#34D399"></i></div>
+          <div class="ppct" style="color:#6ee7b7">34%</div>
+        </div>
+        <div class="prow">
+          <div class="pname"><span class="pdot" style="background:var(--bl)"></span>Gemini</div>
+          <div class="pbar"><i style="width:12%;background:#60A5FA"></i></div>
+          <div class="ppct" style="color:#9cc6fb">12%</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CUOTA SEMANAL -->
+    <div>
+      <div class="qhead">
+        <div>
+          <div class="klbl">📅 CUOTA SEMANAL</div>
+          <div class="kval" style="color:var(--rd)">87%</div>
+        </div>
+        <div class="ksub" style="text-align:right">resetea<br>en 3d 6h</div>
+      </div>
+      <div class="prov">
+        <div class="prow">
+          <div class="pname"><span class="pdot" style="background:var(--or)"></span>Anthropic</div>
+          <div class="pbar"><i style="width:100%;background:linear-gradient(90deg,#FBBF24,#F87171)"></i></div>
+          <div class="ppct" style="color:#fca5a5">100%</div>
+        </div>
+        <div class="prow">
+          <div class="pname"><span class="pdot" style="background:var(--gr)"></span>Codex</div>
+          <div class="pbar"><i style="width:58%;background:#34D399"></i></div>
+          <div class="ppct" style="color:#6ee7b7">58%</div>
+        </div>
+        <div class="prow">
+          <div class="pname"><span class="pdot" style="background:var(--bl)"></span>Gemini</div>
+          <div class="pbar"><i style="width:23%;background:#60A5FA"></i></div>
+          <div class="ppct" style="color:#9cc6fb">23%</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- AHORA · EN EJECUCIÓN (izquierda)  ·  TABLERO DE LA OLA (derecha) -->
+  <div class="grid" style="grid-template-columns:1fr 1.62fr">
+
+    <!-- AHORA · EN EJECUCIÓN -->
+    <div class="panel">
+      <div class="ph"><div class="t"><span class="ic" style="background:rgba(52,217,224,.15)">▶</span> AHORA · EN EJECUCIÓN</div><div class="hint">3 / 3 slots</div></div>
+
+      <div class="agent">
+        <div class="av" style="background:rgba(96,165,250,.14)">🛠️<span class="spin"></span></div>
+        <div class="ainfo">
+          <div class="arow1"><span class="arole">backend-dev</span><a class="aiss">#3962</a><span class="aphase">DEV</span></div>
+          <div class="atask">Costos → presupuesto y anomalía</div>
+          <div class="aprog"><div class="apbar"><i style="width:62%"></i></div><span class="aprov"><span class="pdot" style="background:var(--or)"></span>Anthropic</span></div>
+          <div class="alinks">
+            <a class="alink gh">🔗 Ver issue</a>
+            <a class="alink log">📄 Logs del agente</a>
+          </div>
+        </div>
+        <div class="ameta"><div class="amt">CORRE</div><div class="amv">3m 12s</div></div>
+      </div>
+
+      <div class="agent">
+        <div class="av" style="background:rgba(251,146,60,.14)">📱<span class="spin"></span></div>
+        <div class="ainfo">
+          <div class="arow1"><span class="arole">android-dev</span><a class="aiss">#3963</a><span class="aphase build">BUILD</span></div>
+          <div class="atask">Historial → timeline por día</div>
+          <div class="aprog"><div class="apbar"><i style="width:38%"></i></div><span class="aprov"><span class="pdot" style="background:var(--gr)"></span>Codex</span></div>
+          <div class="alinks">
+            <a class="alink gh">🔗 Ver issue</a>
+            <a class="alink log">📄 Logs del agente</a>
+          </div>
+        </div>
+        <div class="ameta"><div class="amt">CORRE</div><div class="amv">1m 47s</div></div>
+      </div>
+
+      <div class="agent">
+        <div class="av" style="background:rgba(167,139,250,.14)">🔍<span class="spin"></span></div>
+        <div class="ainfo">
+          <div class="arow1"><span class="arole">qa</span><a class="aiss">#3964</a><span class="aphase qa">QA E2E</span></div>
+          <div class="atask">Descanso → timeline semanal</div>
+          <div class="aprog"><div class="apbar"><i style="width:81%"></i></div><span class="aprov"><span class="pdot" style="background:var(--bl)"></span>Gemini</span></div>
+          <div class="alinks">
+            <a class="alink gh">🔗 Ver issue</a>
+            <a class="alink log">📄 Logs del agente</a>
+          </div>
+        </div>
+        <div class="ameta"><div class="amt">CORRE</div><div class="amv">5m 03s</div></div>
+      </div>
+
+      <div style="margin-top:6px;padding:11px 12px;border-radius:11px;border:1px dashed rgba(96,165,250,.3);background:rgba(96,165,250,.05);font-size:11.5px;color:#9cc6fb;display:flex;align-items:center;gap:8px">
+        ⏭ Próximo: <b style="color:#bff3f6">#3965 · pipeline-dev</b> entra al liberarse un slot
+      </div>
+    </div>
+
+    <!-- TABLERO DE LA OLA: los 9 issues, avance, estado de agente y accesos -->
+    <div class="panel">
+      <div class="ph">
+        <div class="t"><span class="ic" style="background:rgba(52,217,224,.15)">🌊</span> ISSUES DE LA OLA 7</div>
+        <div class="legend">
+          <span><span class="dotc" style="background:#6ee7b7"></span>hecho</span>
+          <span><span class="dotc" style="background:#7eeef3"></span>ejecutando</span>
+          <span><span class="dotc" style="background:#9cc6fb"></span>listo</span>
+          <span><span class="dotc" style="background:var(--mut2)"></span>en cola</span>
+        </div>
+      </div>
+
+      <!-- HECHOS -->
+      <div class="iss">
+        <div class="ist done">✓</div>
+        <a class="inum">#3945 <span class="ghi">↗</span></a>
+        <div class="ittl done">Documento único · estado del pipeline</div>
+        <div class="iprog"><div class="ipbar"><i style="width:100%;background:#34D399"></i></div><div class="ipct">100%</div></div>
+        <div class="iag"><span class="iagp done">✓ mergeado</span></div>
+        <div class="iacts"><a class="iact gh">🔗</a><a class="iact log">📄</a></div>
+      </div>
+      <div class="iss">
+        <div class="ist done">✓</div>
+        <a class="inum">#3946 <span class="ghi">↗</span></a>
+        <div class="ittl done">Evidencia QA fuera de git + rotación logs</div>
+        <div class="iprog"><div class="ipbar"><i style="width:100%;background:#34D399"></i></div><div class="ipct">100%</div></div>
+        <div class="iag"><span class="iagp done">✓ mergeado</span></div>
+        <div class="iacts"><a class="iact gh">🔗</a><a class="iact log">📄</a></div>
+      </div>
+
+      <!-- EJECUTANDO -->
+      <div class="iss run">
+        <div class="ist run">▶</div>
+        <a class="inum">#3962 <span class="ghi">↗</span></a>
+        <div class="ittl">Costos → presupuesto y anomalía sobre el gráfico</div>
+        <div class="iprog"><div class="ipbar"><i style="width:62%;background:linear-gradient(90deg,#34D9E0,#5A8DEE)"></i></div><div class="ipct">62%</div></div>
+        <div class="iag"><span class="iagp run">backend-dev · DEV</span></div>
+        <div class="iacts"><a class="iact gh">🔗</a><a class="iact log">📄</a></div>
+      </div>
+      <div class="iss run">
+        <div class="ist run">▶</div>
+        <a class="inum">#3963 <span class="ghi">↗</span></a>
+        <div class="ittl">Historial → timeline por día con entregables</div>
+        <div class="iprog"><div class="ipbar"><i style="width:38%;background:linear-gradient(90deg,#34D9E0,#5A8DEE)"></i></div><div class="ipct">38%</div></div>
+        <div class="iag"><span class="iagp run">android-dev · BUILD</span></div>
+        <div class="iacts"><a class="iact gh">🔗</a><a class="iact log">📄</a></div>
+      </div>
+      <div class="iss run">
+        <div class="ist run">▶</div>
+        <a class="inum">#3964 <span class="ghi">↗</span></a>
+        <div class="ittl">Descanso → timeline semanal visual editable</div>
+        <div class="iprog"><div class="ipbar"><i style="width:81%;background:linear-gradient(90deg,#34D9E0,#5A8DEE)"></i></div><div class="ipct">81%</div></div>
+        <div class="iag"><span class="iagp run">qa · QA E2E</span></div>
+        <div class="iacts"><a class="iact gh">🔗</a><a class="iact log">📄</a></div>
+      </div>
+
+      <!-- LISTO PARA EJECUTAR -->
+      <div class="iss ready">
+        <div class="ist ready">⏳</div>
+        <a class="inum">#3965 <span class="ghi">↗</span></a>
+        <div class="ittl">Multi-provider · pantalla nueva</div>
+        <div class="iprog"><div class="ipbar"><i style="width:0%"></i></div><div class="ipct">0%</div></div>
+        <div class="iag"><span class="iagp ready">pipeline-dev · listo ▸</span></div>
+        <div class="iacts"><a class="iact gh">🔗</a><a class="iact log off">📄</a></div>
+      </div>
+
+      <!-- EN COLA / HECHOS RESTANTES -->
+      <div class="iss">
+        <div class="ist queue">○</div>
+        <a class="inum">#4172 <span class="ghi">↗</span></a>
+        <div class="ittl">Rediseño integral de la home (este mockup)</div>
+        <div class="iprog"><div class="ipbar"><i style="width:0%"></i></div><div class="ipct">0%</div></div>
+        <div class="iag"><span class="iagp queue">ux · en cola</span></div>
+        <div class="iacts"><a class="iact gh">🔗</a><a class="iact log off">📄</a></div>
+      </div>
+      <div class="iss">
+        <div class="ist done">✓</div>
+        <a class="inum">#4173 <span class="ghi">↗</span></a>
+        <div class="ittl done">Evidencia QA → Drive + .gitignore</div>
+        <div class="iprog"><div class="ipbar"><i style="width:100%;background:#34D399"></i></div><div class="ipct">100%</div></div>
+        <div class="iag"><span class="iagp done">✓ mergeado</span></div>
+        <div class="iacts"><a class="iact gh">🔗</a><a class="iact log">📄</a></div>
+      </div>
+      <div class="iss">
+        <div class="ist done">✓</div>
+        <a class="inum">#4174 <span class="ghi">↗</span></a>
+        <div class="ittl done">Rotación + gzip + retención 30d de logs JSONL</div>
+        <div class="iprog"><div class="ipbar"><i style="width:100%;background:#34D399"></i></div><div class="ipct">100%</div></div>
+        <div class="iag"><span class="iagp done">✓ mergeado</span></div>
+        <div class="iacts"><a class="iact gh">🔗</a><a class="iact log">📄</a></div>
+      </div>
+
+      <div style="margin-top:13px;padding-top:12px;border-top:1px dashed var(--line2);font-size:11px;color:var(--mut2);display:flex;align-items:center;gap:8px">
+        ℹ️ Cada issue enlaza a su ficha de GitHub (🔗) y a los logs del agente que lo ejecutó (📄). 1 issue listo para arrancar — entra al liberarse un slot (límite 3 concurrentes).
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>
