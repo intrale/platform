@@ -732,6 +732,19 @@ function pointerMinInBody(body, clientY){
     return min;
 }
 
+// Resuelve el .rm-tl-body vivo del día desde el DOM actual. CRÍTICO para
+// move/resize: buildTimeline() reconstruye la grilla en cada frame (clearChildren
+// + nodos nuevos), por lo que la referencia cacheada en tlGesture.body queda
+// DESCONECTADA del DOM tras el primer frame y su getBoundingClientRect() pasa a
+// devolver top:0 → los minutos se computarían en coordenadas de viewport y el
+// bloque saltaría. Re-resolver el body fresco en cada pointermove mantiene la
+// geometría relativa correcta (y es robusto ante scroll durante el arrastre).
+function liveTimelineBody(day){
+    const tl = document.getElementById('rm-grid');
+    if(!tl || !tl.querySelector) return null;
+    return tl.querySelector('.rm-tl-body[data-day="' + day + '"]');
+}
+
 function setPeriodMinutes(day, idx, sMin, eMin){
     const list = scheduleState[day];
     if(!list || !list[idx]) return;
@@ -815,21 +828,26 @@ function onGesturePointerMove(ev){
         return;
     }
     if(g.kind === 'move'){
-        const cur = pointerMinInBody(g.body, ev.clientY);
+        // Body vivo del DOM (no g.body cacheado: queda stale tras buildTimeline).
+        const body = liveTimelineBody(g.day) || g.body;
+        const cur = pointerMinInBody(body, ev.clientY);
         const delta = RestTimelineGeo.snapMin(cur - g.grabMin, TL_SNAP_MIN);
         const dur = ((g.startE - g.startS) + 1440) % 1440;
         const ns = ((g.startS + delta) % 1440 + 1440) % 1440;
         setPeriodMinutes(g.day, g.idx, ns, ns + dur);
         buildTimeline();
+        g.body = liveTimelineBody(g.day) || g.body;  // re-cachear el body fresco
         return;
     }
     if(g.kind === 'resize'){
-        const cur = RestTimelineGeo.snapMin(pointerMinInBody(g.body, ev.clientY), TL_SNAP_MIN);
+        const body = liveTimelineBody(g.day) || g.body;
+        const cur = RestTimelineGeo.snapMin(pointerMinInBody(body, ev.clientY), TL_SNAP_MIN);
         let ns = g.startS, ne = g.startE;
         if(g.edge === 'top') ns = cur; else ne = cur;
         if(ns === ne) return;  // no permitir duración nula durante el drag
         setPeriodMinutes(g.day, g.idx, ns, ne);
         buildTimeline();
+        g.body = liveTimelineBody(g.day) || g.body;  // re-cachear el body fresco
         return;
     }
 }
