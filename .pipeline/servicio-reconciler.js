@@ -28,10 +28,12 @@
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const yaml = require('js-yaml');
 
 require('./lib/sanitize-console').install();
 const { sanitize } = require('./sanitizer');
 const humanBlock = require('./lib/human-block');
+const { isMarkerArtifact } = require('./lib/marker-artifact');
 const admissionGate = require('./lib/admission-gate');
 // #3381 — Gate de screenshots+mockup (default OFF, activable por env var).
 const screenshotsMockupGate = require('./hooks/screenshots-mockup-gate');
@@ -178,9 +180,112 @@ function isRecommendationIssue(labels) {
     return false;
 }
 
-function reconcileLabelToFilesystem(ghIssues, blockedByIssue) {
+// -----------------------------------------------------------------------------
+// #4222 — Cruce label needs-human ↔ avance físico de fases (anti bloqueo fantasma)
+// -----------------------------------------------------------------------------
+//
+// Caso #4191: un issue ya había avanzado físicamente a `verificacion`/`aprobacion`
+// (sus markers en disco existían), pero en GitHub quedó pegado un `needs-human`
+// stale. El reconciler veía el label, no lo cruzaba contra el avance real y
+// plantaba un placeholder de bloqueo "para no perderlo" → bloqueo fantasma que
+// figuraba como decisión humana pendiente cuando el issue ya venía resuelto.
+//
+// La guarda: antes de crear el placeholder, calcular la fase física más avanzada
+// que alcanzó el issue (markers en `listo/` o `procesado/`) y compararla con la
+// fase donde se plantaría el bloqueo. Si el issue progresó MÁS ALLÁ de esa fase,
+// el label es stale: se limpia en GitHub y NO se planta bloqueo.
+
+// Estados que evidencian que el issue YA superó (o cerró el trabajo de) una fase.
+//   - `listo`     = la fase terminó su trabajo y espera evaluación.
+//   - `procesado` = la fase siguiente ya tomó el issue (trabajo de la fase cerrado).
+// Deliberadamente NO miramos `pendiente`/`trabajando`: estar encolado o en curso
+// en una fase no implica haberla superado. Solo declaramos `stale` ante evidencia
+// fuerte de avance (conservador: minimiza el riesgo de limpiar un bloqueo legítimo).
+const PROGRESS_STATES = ['listo', 'procesado'];
+
+// Fallback canónico si no se puede leer config.yaml (degradación segura). Debe
+// mantenerse sincronizado con `pipelines.<p>.fases` de config.yaml.
+const FALLBACK_PHASE_ORDER = {
+    definicion: ['analisis', 'criterios', 'sizing'],
+    desarrollo: ['validacion', 'dev', 'build', 'verificacion', 'linteo', 'aprobacion', 'entrega'],
+};
+
+let _globalPhaseOrderCache = null;
+
+// Construye el orden GLOBAL de fases (pipeline+fase) leyendo el orden canónico
+// de config.yaml. El orden global encadena los pipelines en el orden en que
+// aparecen en config (definicion → desarrollo), reflejando el flujo natural del
+// issue. Se cachea: el orden de fases no cambia en runtime.
+function loadGlobalPhaseOrder() {
+    if (_globalPhaseOrderCache) return _globalPhaseOrderCache;
+    let orders = FALLBACK_PHASE_ORDER;
+    try {
+        const cfg = yaml.load(fs.readFileSync(path.join(PIPELINE, 'config.yaml'), 'utf8')) || {};
+        if (cfg.pipelines && typeof cfg.pipelines === 'object') {
+            const parsed = {};
+            for (const [pname, pcfg] of Object.entries(cfg.pipelines)) {
+                if (pcfg && Array.isArray(pcfg.fases)) parsed[pname] = pcfg.fases.slice();
+            }
+            if (Object.keys(parsed).length > 0) orders = parsed;
+        }
+    } catch {
+        // config.yaml ausente o ilegible (p. ej. entorno de test) → fallback.
+    }
+    const global = [];
+    for (const pname of Object.keys(orders)) {
+        for (const fase of orders[pname]) global.push({ pipeline: pname, phase: fase });
+    }
+    _globalPhaseOrderCache = global;
+    return global;
+}
+
+// Índice en el orden global de una terna (pipeline, fase). -1 si no existe.
+function globalPhaseIndex(globalOrder, pipeline, phase) {
+    return globalOrder.findIndex(g => g.pipeline === pipeline && g.phase === phase);
+}
+
+// Devuelve el índice (en el orden global) de la fase física más avanzada que
+// alcanzó el issue, mirando markers en `listo/`/`procesado/` de cada fase.
+// -1 si el issue no tiene evidencia física de avance en ninguna fase.
+function findFurthestPhysicalPhaseIndex(issueNum, globalOrder) {
+    const prefix = String(issueNum) + '.';
+    let furthest = -1;
+    for (let i = 0; i < globalOrder.length; i++) {
+        const { pipeline, phase } = globalOrder[i];
+        for (const state of PROGRESS_STATES) {
+            const dir = path.join(PIPELINE, pipeline, phase, state);
+            let entries;
+            try { entries = fs.readdirSync(dir); } catch { continue; }
+            const hasMarker = entries.some(
+                f => f.startsWith(prefix) && f !== '.gitkeep' && !isMarkerArtifact(f),
+            );
+            if (hasMarker) { furthest = i; break; }
+        }
+    }
+    return furthest;
+}
+
+// Decide si el `needs-human` de un issue es stale por avance físico de fases.
+// Devuelve { stale: bool, furthestPhase?: string } — stale cuando el issue
+// progresó ESTRICTAMENTE más allá de la fase donde se plantaría el bloqueo.
+function isNeedsHumanStaleByProgress(issueNum, placeholderPipeline, placeholderPhase, opts = {}) {
+    const globalOrder = opts.globalOrder || loadGlobalPhaseOrder();
+    const findFurthest = opts.findFurthest || findFurthestPhysicalPhaseIndex;
+    const placeholderIdx = globalPhaseIndex(globalOrder, placeholderPipeline, placeholderPhase);
+    if (placeholderIdx < 0) return { stale: false };
+    const furthestIdx = findFurthest(issueNum, globalOrder);
+    if (furthestIdx > placeholderIdx) {
+        return { stale: true, furthestPhase: `${globalOrder[furthestIdx].pipeline}/${globalOrder[furthestIdx].phase}` };
+    }
+    return { stale: false };
+}
+
+function reconcileLabelToFilesystem(ghIssues, blockedByIssue, opts = {}) {
     let created = 0;
     let skippedRecommendations = 0;
+    let staleCleared = 0;
+    const enqueueRemoveFn = opts.enqueueLabelRemove || enqueueLabelRemove;
+    const logStaleFn = opts.logStaleOrder || appendStaleOrderLog;
     for (const issue of ghIssues) {
         if (blockedByIssue.has(issue.number)) continue;
         // Skip: recomendaciones auto-generadas (security/guru/planner) que
@@ -192,6 +297,28 @@ function reconcileLabelToFilesystem(ghIssues, blockedByIssue) {
         }
         // Issue tiene label `needs-human` pero no hay marker físico → crear placeholder
         const { pipeline, phase, skill } = decidirFasePlaceholder(issue.labels);
+        // #4222 — Guarda anti bloqueo fantasma: si el issue ya progresó más allá
+        // de la fase donde se plantaría el bloqueo, el `needs-human` es stale.
+        // Limpiar el label en GitHub y NO crear placeholder.
+        const staleCheck = isNeedsHumanStaleByProgress(issue.number, pipeline, phase, opts);
+        if (staleCheck.stale) {
+            try { enqueueRemoveFn(issue.number, RECONCILER_LABEL); } catch (e) {
+                log(`Error encolando remove-label stale #${issue.number}: ${e.message.slice(0, 120)}`);
+            }
+            try {
+                logStaleFn({
+                    reason: 'stale-needs-human-phase-progress',
+                    issue: issue.number,
+                    label: RECONCILER_LABEL,
+                    snapshot_at: null,
+                    current_mtime: null,
+                    detail: `needs-human stale: issue progresó a ${staleCheck.furthestPhase} (más allá de ${pipeline}/${phase}); label limpiado, sin bloqueo`,
+                });
+            } catch {}
+            log(`#${issue.number} needs-human stale (progresó a ${staleCheck.furthestPhase} > ${pipeline}/${phase}) — label limpiado, sin placeholder`);
+            staleCleared++;
+            continue;
+        }
         const targetDir = path.join(PIPELINE, pipeline, phase, humanBlock.BLOCK_SUBDIR);
         const targetFile = path.join(targetDir, `${issue.number}.${skill}`);
         if (fs.existsSync(targetFile)) continue;
@@ -215,6 +342,9 @@ function reconcileLabelToFilesystem(ghIssues, blockedByIssue) {
     }
     if (skippedRecommendations > 0) {
         log(`Skipped ${skippedRecommendations} issues con labels de recomendación (no se crean placeholders)`);
+    }
+    if (staleCleared > 0) {
+        log(`Limpiados ${staleCleared} labels needs-human stale por avance físico de fases (sin bloqueo)`);
     }
     return created;
 }
@@ -948,6 +1078,13 @@ module.exports = {
     decidirFasePlaceholder,
     isRecommendationIssue,
     RECOMMENDATION_LABELS,
+    // #4222 — Cruce label↔avance físico de fases (anti bloqueo fantasma)
+    loadGlobalPhaseOrder,
+    globalPhaseIndex,
+    findFurthestPhysicalPhaseIndex,
+    isNeedsHumanStaleByProgress,
+    PROGRESS_STATES,
+    FALLBACK_PHASE_ORDER,
     listGhIssuesWithLabel,
     getIssueState,
     enqueueLabelApply,
