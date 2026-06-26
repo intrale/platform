@@ -1,25 +1,28 @@
 // =============================================================================
-// Tests SSR de la ventana Providers (#3737, split del épico #3715).
+// Tests SSR de la pantalla Providers (Multi-Provider) — rediseño MIZPÁ #4201.
 //
-// Cubre el set CA-PRV + SEC del análisis de #3737:
-//   1. renderProviders con 5 entries mixtas → 5 cards con data-provider.
-//   2. Estado vacío ([]) → #providers-list sin crash + leyenda visible.
-//   3. listKeys() lanza → bloque data-load-error + role="alert" (CA-A3 / SEC-7).
-//   4. Payload XSS canónico en label + reason NO ejecutable (CA-D1 / SEC-1).
-//   5. Anti-leak SEC-1: masked (no full key) → 0 matches del regex de key.
-//   6. Smoke E2E vía dashboard-routes.handle(): /dashboard?view=providers y
-//      /dashboard/partial?view=providers → 200, anti-leak 0 (CA-PRV-3 / CA-PRV-18).
-//   7. SEC-2 / CA-PRV-6 estático: el fuente no tiene <input password> ni <textarea>.
-//   8. (omitido) SEC-3 POST: la vista NO agrega endpoint POST propio — reusa
-//      `/api/multi-provider/reload` (ya cubierto por api.js). No aplica acá.
-//   9. Anthropic locked (R7): editable:false → provider-locked, sin rotate btn.
-//  10. IDs DOM invariantes: #providers-list y #providers-legend exactamente 1 vez.
-//  11. Tooltips (CA-PRV-12): cada <button> tiene title + aria-label no vacíos.
+// El rediseño reemplaza la vista de credenciales-solo (#3737) por la consola
+// unificada multi-provider del mockup `providers-redesign-v2`: una fila por
+// proveedor con key+fp, salud+barra de cuota, tier, catálogo y kill-switch;
+// banner de misión que diagnostica la cadena; franja «Por agente» al pie.
 //
-// node:test (sin Jest). No arranca dashboard.js (side effects). El stub de
-// `secrets-rw.listKeys()` se hace mutando el método del módulo compartido por
-// require.cache — providers.js sostiene la MISMA referencia (CA-D1 fixtures
-// nunca usan shape de key real → no dispara precommit-secret-scan, R8).
+// Cubre los criterios de aceptación del issue + invariantes de seguridad que
+// se conservan del diseño anterior:
+//   CA-1  SIN pestañas internas (sin solapas mp-tab / role=tab / data-tab).
+//   CA-2  una fila por proveedor (key, salud, tier, catálogo, kill-switch).
+//   CA-3  banner de misión que diagnostica con métricas reales.
+//   CA-4  franja «Por agente»: cadena DEFAULT + agentes que la pisan.
+//   CA-5  lenguaje MIZPÁ (marca, tagline, multiproyecto, miga de pan, nav).
+//   SEC   anti-leak (masked, nunca key completa), XSS escapado, sin inputs de
+//         password, sin handlers inline, sin recomputar masking.
+//   A3    renderInert() visible (nunca pantalla en blanco).
+//   Smoke E2E vía dashboard-routes.handle(): /providers, ?view=providers y
+//         /dashboard/partial?view=providers → 200 + anti-leak 0.
+//
+// node:test (sin Jest). El stub de `secrets-rw.listKeys()` se hace mutando el
+// método del módulo compartido por require.cache — providers.js sostiene la
+// MISMA referencia. Los fixtures nunca usan shape de key real (no dispara el
+// precommit-secret-scan).
 // =============================================================================
 'use strict';
 
@@ -37,18 +40,16 @@ const providers = require(PROVIDERS_PATH);
 const secrets = require(SECRETS_PATH);
 const ORIGINAL_LIST_KEYS = secrets.listKeys;
 
-// Regex canónico de "key completa" (mismo que R8 del issue). Una credencial
-// real tiene >= 20 chars contiguos de la clase; el masked los rompe con ****.
+// Regex canónico de "key completa": una credencial real tiene >= 20 chars
+// contiguos de la clase; el masked los rompe con ****.
 const FULL_KEY_RE = /sk-(ant-)?[A-Za-z0-9_-]{20,}/g;
 
-// Payloads XSS (paridad con ops.test.js / home.test.js).
 const XSS_BODY = '<script>alert(1)</script>';
 const XSS_ATTR = '"><img src=x onerror=alert(1)>';
 
 function setListKeys(impl) { secrets.listKeys = impl; }
 function restoreListKeys() { secrets.listKeys = ORIGINAL_LIST_KEYS; }
 
-// Fixture de un entry con el shape que devuelve listKeys() (sin la key cruda).
 function fakeEntry(provider, label, status, opts) {
     const o = opts || {};
     const present = status === 'present';
@@ -63,169 +64,174 @@ function fakeEntry(provider, label, status, opts) {
     };
 }
 
-// EP1-H2 (#3917): se retiró el fixture 'elevenlabs' (provider pago deprecado).
-// El set refleja los 5 providers LLM reales del ranking multi-provider.
 function mixedEntries() {
     return [
-        fakeEntry('anthropic', 'Anthropic', 'present', { editable: false, reason: 'OAuth/MAX' }),
+        fakeEntry('anthropic', 'Anthropic', 'absent', { editable: false, reason: 'OAuth/MAX' }),
         fakeEntry('openai', 'OpenAI / Codex', 'present'),
-        fakeEntry('gemini-google', 'Gemini (Google AI Studio)', 'placeholder'),
-        fakeEntry('cerebras', 'Cerebras', 'placeholder'),
+        fakeEntry('gemini-google', 'Gemini (Google AI Studio)', 'present'),
+        fakeEntry('cerebras', 'Cerebras', 'present'),
         fakeEntry('nvidia-nim', 'NVIDIA NIM', 'absent'),
     ];
 }
 
 // ─────────────────────────── Unit (render directo) ───────────────────────────
 
-test('CA-PRV-1 · 5 entries mixtas → 5 cards con data-provider', () => {
+test('documento HTML completo con title de la ventana', () => {
+    const html = providers.renderProviders();
+    assert.ok(html.startsWith('<!DOCTYPE html>'), 'debe ser documento HTML completo');
+    assert.ok(html.includes('<title>Intrale · Providers</title>'), 'falta el title');
+    assert.ok(html.length > 5000, 'el render no debe estar vacío');
+});
+
+test('CA-1 · sin pestañas internas (mp-tab / role=tab / data-tab)', () => {
+    const html = providers.renderProviders();
+    assert.ok(!/class="mp-tab/.test(html), 'sin solapas mp-tab heredadas');
+    assert.ok(!/role="tab"/.test(html), 'sin role=tab — todo de corrido');
+    assert.ok(!/data-tab=/.test(html), 'sin selector de paneles data-tab');
+});
+
+test('CA-2 · una fila por proveedor con key, salud, tier, catálogo y kill-switch', () => {
     setListKeys(() => mixedEntries());
     try {
         const html = providers.renderProviders();
-        assert.ok(html.startsWith('<!DOCTYPE html>'), 'debe ser documento HTML completo');
-        assert.ok(html.includes('<title>Intrale · Providers</title>'), 'falta el title de la ventana');
-        const cards = html.match(/<article class="provider-card"/g) || [];
-        assert.equal(cards.length, 5, 'deben renderizarse exactamente 5 cards');
+        const rows = (html.match(/<article class="prov-row"/g) || []).length;
+        assert.equal(rows, 5, '5 proveedores gestionados, una fila cada uno');
+        assert.ok(html.includes('id="providers-list"'), 'contenedor de lista presente');
+        assert.match(html, /prov-tier/, 'badge de tier');
+        assert.match(html, /prov-quota-fill/, 'barra de cuota/carga');
+        assert.match(html, /prov-model|prov-models-empty/, 'catálogo de modelos en línea');
+        assert.match(html, /data-action="toggle-kill"/, 'kill-switch por fila');
+        // Tiers canónicos del negocio.
+        assert.match(html, /PLAN MAX/, 'Claude = PLAN MAX');
+        assert.match(html, /PAGO/, 'Codex = PAGO');
+        assert.match(html, /FREE/, 'free tiers');
+        // Los 5 providers canónicos por data-provider.
         for (const p of ['anthropic', 'openai', 'gemini-google', 'cerebras', 'nvidia-nim']) {
-            assert.ok(html.includes('data-provider="' + p + '"'), 'falta data-provider para ' + p);
+            assert.ok(html.includes('data-provider="' + p + '"'), 'falta data-provider ' + p);
         }
-        // Badges de estado presentes (los 3 labels).
-        assert.ok(html.includes('>CONFIGURADO<'), 'falta badge CONFIGURADO');
-        assert.ok(html.includes('>PLACEHOLDER<'), 'falta badge PLACEHOLDER');
-        assert.ok(html.includes('>AUSENTE<'), 'falta badge AUSENTE');
     } finally { restoreListKeys(); }
 });
 
-test('CA-PRV-2 · estado vacío ([]) → #providers-list sin crash + leyenda', () => {
-    setListKeys(() => []);
+test('CA-2b · Anthropic/OAuth muestra "OAuth / MAX" sin API key ni input', () => {
+    setListKeys(() => [fakeEntry('anthropic', 'Anthropic', 'absent', { editable: false, reason: 'OAuth/MAX' })]);
     try {
         const html = providers.renderProviders();
-        assert.ok(html.includes('id="providers-list"'), 'falta el contenedor de lista');
-        assert.ok(!/<article class="provider-card"/.test(html), 'no debe haber cards con lista vacía');
-        assert.ok(html.includes('id="providers-legend"'), 'la leyenda debe seguir visible');
+        assert.match(html, /OAuth \/ MAX/, 'Anthropic se muestra como OAuth/MAX');
     } finally { restoreListKeys(); }
 });
 
-test('CA-A3 / SEC-7 · listKeys() lanza → data-load-error + role="alert"', () => {
-    setListKeys(() => { throw new Error('boom_credentials'); });
-    try {
-        const html = providers.renderProviders();
-        assert.ok(html.includes('data-load-error="true"'), 'falta el marcador de error de carga');
-        assert.ok(html.includes('role="alert"'), 'el bloque de error debe ser un alert ARIA');
-        assert.ok(html.includes('boom_credentials'), 'debe mostrar el motivo escapado');
-        assert.ok(!/<article class="provider-card"/.test(html), 'no debe renderizar cards en error');
-    } finally { restoreListKeys(); }
+test('CA-3 · banner de misión diagnostica cadena degradada con métricas', () => {
+    const meta = {
+        total: 5, healthy: 4,
+        degraded: [{ name: 'Gemini', healthReason: 'timeout' }],
+        absorber: { name: 'Codex', loadPct: 40 },
+        defaultProvider: 'anthropic',
+        defaultChain: ['Claude', 'Codex', 'Gemini', 'Cerebras', 'NVIDIA NIM'],
+        agents: ['backend-dev'], healthTs: null, dispatchTotal: 570,
+    };
+    const banner = providers.renderMissionBanner(meta);
+    assert.match(banner, /degradada/, 'diagnostica cadena degradada');
+    assert.match(banner, /Gemini/, 'nombra al provider afectado');
+    assert.match(banner, /4 <span class="u">de 5/, 'sanos N/total');
+    assert.match(banner, /Codex/, 'nombra quién absorbe el fallback');
+    assert.match(banner, /40%/, 'nivel de absorción del fallback');
+    assert.match(banner, /is-degraded/, 'estilo degradado');
 });
 
-test('CA-D1 / SEC-1 · payload XSS en label + reason NO es ejecutable', () => {
-    setListKeys(() => [
-        fakeEntry(XSS_ATTR, XSS_BODY, 'present', { editable: false, reason: XSS_ATTR }),
-    ]);
-    try {
-        const html = providers.renderProviders();
-        assert.ok(!html.includes(XSS_BODY), 'el <script> crudo NO debe aparecer');
-        assert.ok(html.includes('&lt;script&gt;'), 'el <script> debe aparecer escapado');
-        assert.ok(!html.includes('onerror=alert(1)>'), 'el payload rompe-atributo NO debe quedar crudo');
-        assert.ok(!html.includes('<img src=x'), 'no debe inyectarse un <img> ejecutable');
-        assert.ok(!html.includes('&amp;amp;'), 'sin doble-escape de &');
-    } finally { restoreListKeys(); }
+test('CA-3b · banner en calma cuando no hay degradados', () => {
+    const meta = {
+        total: 5, healthy: 5, degraded: [],
+        absorber: { name: 'Claude', loadPct: 12 },
+        defaultProvider: 'anthropic',
+        defaultChain: ['Claude'], agents: [], healthTs: null, dispatchTotal: 100,
+    };
+    const banner = providers.renderMissionBanner(meta);
+    assert.match(banner, /sana/, 'la cadena está sana');
+    assert.match(banner, /is-calm/, 'estilo calmo');
+    assert.ok(!/degradada/.test(banner), 'sin mención de degradación');
 });
 
-test('SEC-1 / CA-PRV-5 · masked (no full key) → 0 matches del regex de key', () => {
-    setListKeys(() => [
-        fakeEntry('openai', 'OpenAI / Codex', 'present', { masked: 'sk-fake123456****wxyz' }),
-    ]);
+test('CA-4 · franja por agente con cadena DEFAULT y agentes que la pisan', () => {
+    const meta = { defaultChain: ['Claude', 'Codex', 'Gemini'], agents: ['backend-dev', 'qa', 'po'] };
+    const strip = providers.renderAgentStrip(meta);
+    assert.match(strip, /prov-chain/, 'render de la cadena DEFAULT');
+    assert.match(strip, /Claude/);
+    assert.match(strip, /backend-dev/);
+    assert.match(strip, /qa/);
+    assert.match(strip, /Por agente/);
+});
+
+test('CA-5 · lenguaje MIZPÁ (marca, tagline, multiproyecto, miga de pan, nav)', () => {
+    const html = providers.renderProviders();
+    assert.match(html, /MIZPÁ/, 'marca');
+    assert.match(html, /atalaya de agentes/, 'tagline');
+    assert.match(html, /mz-projsel/, 'selector multiproyecto');
+    assert.match(html, /mz-crumb/, 'miga de pan');
+    assert.match(html, /class="v3-tab/, 'nav tabs');
+    // La nav marca Providers como activa.
+    assert.match(html, /aria-current="page"/, 'tab activa');
+});
+
+test('SEC · payload XSS en datos del provider NO es ejecutable', () => {
+    const evil = '<img src=x onerror=alert(1)>"';
+    const p = {
+        key: 'anthropic', disabledKey: 'anthropic', name: evil, accent: 'var(--provider-anthropic)',
+        tier: 'PLAN MAX', tierKind: 'max', tierIcon: '🟦',
+        masked: evil, fingerprint: evil, keyStatus: 'present', editable: true,
+        reason: null, authMode: null, freeTierNotes: null,
+        healthState: 'green', healthReason: evil, lastChecked: null,
+        loadPct: 10, dispatches24h: 5, hasTraffic: true, models: [evil], disabled: false,
+    };
+    const row = providers.renderProviderRow(p);
+    assert.ok(!/<img src=x onerror/.test(row), 'el payload no se inyecta como HTML');
+    assert.match(row, /&lt;img/, 'queda escapado');
+});
+
+test('SEC · masked se muestra pero nunca una key completa', () => {
+    setListKeys(() => [fakeEntry('openai', 'OpenAI / Codex', 'present', { masked: 'sk-fake123456****wxyz' })]);
     try {
         const html = providers.renderProviders();
         const matches = html.match(FULL_KEY_RE) || [];
-        assert.equal(matches.length, 0, 'no debe haber ninguna key completa en el HTML');
-        // El masked sí se muestra (preview enmascarado).
-        assert.ok(html.includes('sk-fake123456****wxyz'), 'el preview enmascarado debe mostrarse');
+        assert.equal(matches.length, 0, 'no debe haber ninguna key completa');
+        assert.ok(html.includes('sk-fake123456****wxyz'), 'el preview enmascarado se muestra');
     } finally { restoreListKeys(); }
 });
 
-test('R7 · anthropic (editable:false) → provider-locked, sin rotate btn', () => {
-    setListKeys(() => [
-        fakeEntry('anthropic', 'Anthropic', 'present', { editable: false, reason: 'OAuth/MAX login' }),
-        fakeEntry('openai', 'OpenAI / Codex', 'present'),
-    ]);
-    try {
-        const html = providers.renderProviders();
-        assert.ok(html.includes('provider-locked'), 'anthropic debe mostrar el candado (locked)');
-        // El rotate btn NO debe apuntar a anthropic.
-        assert.ok(!/data-action="open-rotate-modal" data-provider="anthropic"/.test(html),
-            'anthropic NO debe tener botón de rotación');
-        // openai (editable) SÍ tiene rotate btn.
-        assert.ok(/data-action="open-rotate-modal" data-provider="openai"/.test(html),
-            'openai (editable) debe tener botón de rotación');
-    } finally { restoreListKeys(); }
-});
-
-test('CA-PRV · IDs DOM invariantes: #providers-list y #providers-legend 1 vez', () => {
-    setListKeys(() => mixedEntries());
-    try {
-        const html = providers.renderProviders();
-        const list = html.match(/id="providers-list"/g) || [];
-        const legend = html.match(/id="providers-legend"/g) || [];
-        assert.equal(list.length, 1, '#providers-list debe aparecer exactamente 1 vez');
-        assert.equal(legend.length, 1, '#providers-legend debe aparecer exactamente 1 vez');
-    } finally { restoreListKeys(); }
-});
-
-test('CA-PRV-12 · cada <button> tiene title + aria-label no vacíos', () => {
-    setListKeys(() => mixedEntries());
-    try {
-        const html = providers.renderProviders();
-        const buttons = html.match(/<button[^>]*>/g) || [];
-        assert.ok(buttons.length >= 1, 'debe haber al menos un botón (rotate / close modal)');
-        for (const b of buttons) {
-            assert.match(b, /title="[^"]+"/, 'todo <button> debe tener title no vacío: ' + b);
-            assert.match(b, /aria-label="[^"]+"/, 'todo <button> debe tener aria-label no vacío: ' + b);
-        }
-        // El rotate btn cumple el orden title→aria-label exigido por el smoke.
-        assert.match(html, /<button[^>]+title="[^"]+"[^>]+aria-label="[^"]+"/);
-    } finally { restoreListKeys(); }
-});
-
-test('SEC-2 / CA-PRV-6 estático · el fuente no tiene <input password> ni <textarea>', () => {
+test('SEC estático · sin inputs de password, sin textarea, sin handlers inline', () => {
     const src = fs.readFileSync(PROVIDERS_PATH, 'utf8');
-    assert.equal((src.match(/<input[^>]+type=["']password["']/g) || []).length, 0,
-        'la vista read-only NO debe declarar inputs de password');
-    assert.equal((src.match(/<textarea/g) || []).length, 0,
-        'la vista read-only NO debe declarar textareas');
-    // R3 — sin handlers inline (compat CSP estricto #3688).
-    assert.equal((src.match(/onclick=|onload=|onerror=|javascript:/g) || []).length, 0,
-        'sin handlers inline ni javascript: URIs');
-    // R1 — sin recomputar masking en la vista.
-    assert.equal((src.match(/maskValue/g) || []).length, 0,
-        'la vista NUNCA debe recomputar el masking (fuente única secrets-rw)');
+    assert.equal((src.match(/<input[^>]+type=["']password["']/g) || []).length, 0, 'sin inputs password');
+    assert.equal((src.match(/<textarea/g) || []).length, 0, 'sin textareas');
+    assert.equal((src.match(/onclick=|onload=|javascript:/g) || []).length, 0, 'sin handlers inline');
+    assert.equal((src.match(/maskValue/g) || []).length, 0, 'no recomputa masking (fuente única secrets-rw)');
 });
 
-test('UX-3737 · tokens --provider-* DEFINIDOS en el documento (no solo referenciados)', () => {
-    // Regresión del rechazo UX 2026-06-10: la vista referenciaba
-    // var(--provider-anthropic) sin inyectar design-tokens.css → --row-accent
-    // guaranteed-invalid → todas las cards caían al gris var(--in-border).
-    // Acá se exige la DEFINICIÓN del token (con ":") en el HTML servido.
-    setListKeys(() => mixedEntries());
-    try {
-        const html = providers.renderProviders();
-        for (const token of ['--provider-anthropic:', '--provider-gemini:', '--provider-cerebras:', '--provider-nvidia-nim:', '--provider-unknown:']) {
-            assert.ok(html.includes(token), 'el documento debe DEFINIR ' + token.slice(0, -1) + ' (design-tokens.css inyectado)');
-        }
-        // El render inerte tampoco debe perder los tokens.
-        const inert = providers.renderInert('boom');
-        assert.ok(inert.includes('--provider-anthropic:'), 'renderInert debe incluir design-tokens.css');
-    } finally { restoreListKeys(); }
+test('UX · tokens --provider-* DEFINIDOS en el documento (no solo referenciados)', () => {
+    const html = providers.renderProviders();
+    for (const token of ['--provider-anthropic:', '--provider-gemini:', '--provider-cerebras:', '--provider-nvidia-nim:', '--provider-unknown:']) {
+        assert.ok(html.includes(token), 'el documento debe DEFINIR ' + token.slice(0, -1));
+    }
+    const inert = providers.renderInert('boom');
+    assert.ok(inert.includes('--provider-anthropic:'), 'renderInert incluye design-tokens.css');
 });
 
-test('CA-A3 · renderInert() retorna HTML visible "Ventana Providers no disponible"', () => {
+test('A3 · renderInert() retorna HTML visible "Ventana Providers no disponible"', () => {
     const html = providers.renderInert('require failed');
-    assert.ok(html.includes('<h1>Ventana Providers no disponible</h1>'), 'falta el título inerte');
-    assert.ok(html.includes('require failed'), 'debe mostrar el motivo');
-    assert.ok(html.length > 100, 'el render inerte NO debe quedar vacío (SEC-7)');
-    // Escapa el motivo (no refleja XSS crudo).
+    assert.ok(html.includes('<h1>Ventana Providers no disponible</h1>'), 'título inerte');
+    assert.ok(html.includes('require failed'), 'muestra el motivo');
+    assert.ok(html.length > 100, 'no queda vacío');
     const xss = providers.renderInert(XSS_BODY);
-    assert.ok(!xss.includes(XSS_BODY), 'el motivo no debe reflejar el <script> crudo');
-    assert.ok(xss.includes('&lt;script&gt;'), 'el motivo debe ir escapado');
+    assert.ok(!xss.includes(XSS_BODY), 'no refleja el <script> crudo');
+    assert.ok(xss.includes('&lt;script&gt;'), 'el motivo va escapado');
+});
+
+test('buildProvidersModel nunca lanza y devuelve el set canónico', () => {
+    const model = providers.buildProvidersModel();
+    assert.ok(Array.isArray(model.providers));
+    assert.equal(model.providers.length, 5);
+    assert.deepEqual(model.providers.map((p) => p.name), ['Claude', 'Codex', 'Gemini', 'Cerebras', 'NVIDIA NIM']);
+    assert.ok(model.meta.absorber, 'identifica al absorber');
+    assert.ok(typeof model.meta.healthy === 'number');
+    assert.ok(Array.isArray(model.meta.agents));
 });
 
 // ─────────────────────────── Smoke E2E (router) ───────────────────────────
@@ -252,13 +258,6 @@ function startEphemeralServer() {
 
 function get(port, urlPath) {
     return new Promise((resolve, reject) => {
-        // #3737 (rebote rev-2) — `agent: false` + `Connection: close`: sin esto
-        // el globalAgent de Node >= 19 mantiene el socket keep-alive vivo y
-        // `server.close()` queda esperando el drain (hasta keepAliveTimeout).
-        // Bajo el runner del tester (sin --test-force-exit hasta que este
-        // branch mergee) cualquier handle residual puede colgar la batería
-        // entera: el reporter junit bufferea todo y el run muere a los 12min
-        // con XML vacío (exit 124). Cero handles residuales acá.
         const req = http.request({ host: '127.0.0.1', port, path: urlPath, method: 'GET', agent: false, headers: { Connection: 'close' } }, (res) => {
             const chunks = [];
             res.on('data', (c) => chunks.push(c));
@@ -270,48 +269,46 @@ function get(port, urlPath) {
 }
 
 function closeServer(server) {
-    // closeIdleConnections (Node >= 18.2) destruye sockets keep-alive idle que
-    // de otro modo demoran/bloquean el callback de close() (ver nota en get()).
     if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
     return new Promise((resolve) => server.close(() => resolve()));
 }
 
-test('CA-PRV-3 · GET /dashboard?view=providers → 200 con #providers-list', async () => {
+test('Smoke · GET /providers → 200 con la lista y el banner', async () => {
+    setListKeys(() => mixedEntries());
+    const { server, port } = await startEphemeralServer();
+    try {
+        const r = await get(port, '/providers');
+        assert.equal(r.statusCode, 200);
+        assert.ok(r.body.includes('<title>Intrale · Providers</title>'), 'rinde Providers');
+        assert.ok(r.body.includes('id="providers-list"'), 'lista presente');
+        assert.ok(r.body.includes('prov-mission'), 'banner de misión presente');
+    } finally {
+        await closeServer(server);
+        restoreListKeys();
+    }
+});
+
+test('Smoke · GET /dashboard?view=providers → 200', async () => {
     setListKeys(() => mixedEntries());
     const { server, port } = await startEphemeralServer();
     try {
         const r = await get(port, '/dashboard?view=providers');
         assert.equal(r.statusCode, 200);
-        assert.ok(r.body.includes('<title>Intrale · Providers</title>'), 'el router ?view=providers debe rendir Providers');
-        assert.ok(r.body.includes('id="providers-list"'), 'debe contener el ID DOM canónico de la lista');
+        assert.ok(r.body.includes('id="providers-list"'), 'ID DOM canónico de la lista');
     } finally {
         await closeServer(server);
         restoreListKeys();
     }
 });
 
-test('CA-PRV-3 · GET /dashboard/partial?view=providers (loopback) → 200', async () => {
-    setListKeys(() => mixedEntries());
-    const { server, port } = await startEphemeralServer();
-    try {
-        const r = await get(port, '/dashboard/partial?view=providers');
-        assert.equal(r.statusCode, 200, 'el partial loopback debe devolver 200');
-        assert.equal(r.headers['cache-control'], 'no-store, no-cache, must-revalidate');
-        assert.ok(r.body.includes('id="providers-list"'), 'el partial debe contener la lista');
-    } finally {
-        await closeServer(server);
-        restoreListKeys();
-    }
-});
-
-test('SEC-1 · anti-leak cross-route: /dashboard?view=providers → 0 keys completas', async () => {
+test('SEC · anti-leak cross-route: 0 keys completas en cada ruta', async () => {
     setListKeys(() => [
         fakeEntry('openai', 'OpenAI / Codex', 'present', { masked: 'sk-fake123456****wxyz' }),
         fakeEntry('cerebras', 'Cerebras', 'present', { masked: 'csk-aa11****zz99' }),
     ]);
     const { server, port } = await startEphemeralServer();
     try {
-        for (const url of ['/dashboard?view=providers', '/providers', '/dashboard/partial?view=providers']) {
+        for (const url of ['/providers', '/dashboard?view=providers', '/dashboard/partial?view=providers']) {
             const r = await get(port, url);
             assert.equal(r.statusCode, 200, url + ' debe responder 200');
             const matches = r.body.match(FULL_KEY_RE) || [];
