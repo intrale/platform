@@ -297,6 +297,74 @@ a.kpi:hover { border-color: var(--in-accent, #58a6ff); }
 .kpis-prov-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
 .kpis-prov-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 14px; font-size: 11px; background: var(--in-bg-3, #1c2128); border: 1px solid var(--in-border, #30363d); color: var(--in-fg-dim, #8b949e); cursor: help; }
 .kpis-prov-chip.over { border-color: var(--in-bad, #f85149); color: var(--in-bad, #f85149); }
+
+/* =========================================================================
+   #4198 (Ola 7.1) — Rediseño integral MIZPÁ: la pantalla deja de mostrar
+   tarjetas sueltas y pasa a DIAGNOSTICAR. Banner de misión con medidor de
+   salud + lectura automática del cuello de botella + conclusión accionable.
+   El CSS va inline (KPIS_CSS) para funcionar standalone (carga theme.css) y
+   reusa las variables --in-* del tema; los tonos de alarma son los ya usados
+   por las hermanas MIZPÁ (#4189→#4197), sin introducir colores nuevos.
+   ========================================================================= */
+.kpis-mission { display: flex; align-items: center; gap: 22px; border-radius: 16px; padding: 18px 24px; margin-bottom: 4px; position: relative; overflow: hidden;
+    background: linear-gradient(110deg, rgba(251,191,36,.13), rgba(248,113,113,.07) 45%, transparent 75%), var(--in-bg-2, #11151E);
+    border: 1px solid rgba(251,191,36,.22); }
+.kpis-mission.sev-ok { background: linear-gradient(110deg, rgba(52,211,153,.13), rgba(57,197,207,.06) 45%, transparent 75%), var(--in-bg-2, #11151E); border-color: rgba(52,211,153,.26); }
+.kpis-mission.sev-bad { background: linear-gradient(110deg, rgba(248,113,113,.15), rgba(251,146,60,.07) 45%, transparent 75%), var(--in-bg-2, #11151E); border-color: rgba(248,113,113,.3); }
+.kpis-mission.sev-na { background: var(--in-bg-2, #11151E); border-color: var(--in-border, #30363d); }
+.kpis-gauge { min-width: 132px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 10px 14px; border-radius: 16px; flex: none;
+    background: linear-gradient(135deg, rgba(251,191,36,.2), rgba(248,113,113,.12)); border: 1px solid rgba(251,191,36,.34); }
+.kpis-gauge.sev-ok { background: linear-gradient(135deg, rgba(52,211,153,.2), rgba(57,197,207,.12)); border-color: rgba(52,211,153,.34); }
+.kpis-gauge.sev-bad { background: linear-gradient(135deg, rgba(248,113,113,.24), rgba(251,146,60,.12)); border-color: rgba(248,113,113,.4); }
+.kpis-gauge.sev-na { background: var(--in-bg-3, #1c2128); border-color: var(--in-border, #30363d); }
+.kpis-gauge-ring { width: 84px; height: 84px; border-radius: 50%; display: flex; align-items: center; justify-content: center; position: relative; }
+.kpis-gauge-ring::before { content: ""; position: absolute; inset: 9px; border-radius: 50%; background: var(--in-bg, #0d1117); }
+.kpis-gauge-val { position: relative; font-size: 27px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; color: var(--in-fg, #e6edf3); }
+.kpis-gauge-lbl { font-size: 9px; font-weight: 800; letter-spacing: 1px; margin-top: 9px; text-transform: uppercase; color: var(--in-fg-dim, #8A93A6); }
+.kpis-gauge-sub { font-size: 9px; font-weight: 700; margin-top: 2px; color: var(--in-fg-soft, #6e7681); }
+.kpis-mtext { flex: 1; min-width: 0; }
+.kpis-mttl { font-size: 19px; font-weight: 800; color: var(--in-fg, #e6edf3); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.kpis-mchip { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 20px; background: rgba(251,191,36,.12); border: 1px solid rgba(251,191,36,.3); color: var(--in-warn, #d29922); }
+.kpis-mchip.sev-ok { background: rgba(52,211,153,.12); border-color: rgba(52,211,153,.3); color: var(--in-ok, #3fb950); }
+.kpis-mchip.sev-bad { background: rgba(248,113,113,.12); border-color: rgba(248,113,113,.3); color: var(--in-bad, #f85149); }
+.kpis-mdesc { font-size: 13px; color: var(--in-fg-dim, #8A93A6); margin-top: 5px; max-width: 640px; line-height: 1.45; }
+.kpis-mdesc b { color: var(--in-fg, #e6edf3); }
+.kpis-wmetrics { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.kpis-wm { flex: 1; min-width: 150px; background: rgba(255,255,255,.035); border: 1px solid var(--in-border, rgba(255,255,255,.08)); border-radius: 11px; padding: 9px 12px; }
+.kpis-wm-l { font-size: 9.5px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-soft, #6e7681); text-transform: uppercase; }
+.kpis-wm-v { font-size: 17px; font-weight: 800; margin-top: 3px; line-height: 1; font-variant-numeric: tabular-nums; color: var(--in-fg, #e6edf3); }
+.kpis-wm-v.over { color: var(--in-bad, #f85149); }
+.kpis-wm-v.warn { color: var(--in-warn, #d29922); }
+.kpis-wm-s { font-size: 10px; color: var(--in-fg-soft, #6e7681); margin-top: 3px; }
+.kpis-mright { min-width: 240px; flex: none; }
+.kpis-reco { background: rgba(57,197,207,.06); border: 1px solid rgba(57,197,207,.26); border-radius: 12px; padding: 11px 13px; }
+.kpis-reco-l { font-size: 9.5px; font-weight: 800; letter-spacing: .6px; color: var(--in-accent, #39c5cf); display: flex; align-items: center; gap: 6px; text-transform: uppercase; }
+.kpis-reco-t { font-size: 12px; color: var(--in-fg, #e6edf3); margin-top: 8px; line-height: 1.4; }
+.kpis-reco-t b { color: var(--in-accent, #39c5cf); }
+.kpis-reco-btn { margin-top: 10px; display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 38px; font-size: 12px; font-weight: 800; color: var(--in-fg, #e6edf3); text-decoration: none; padding: 9px; border-radius: 10px; border: 1px solid rgba(57,197,207,.4); background: rgba(57,197,207,.12); }
+.kpis-reco-btn:hover { background: rgba(57,197,207,.2); }
+@media (max-width: 900px) { .kpis-mission { flex-wrap: wrap; } .kpis-mright { min-width: 0; flex-basis: 100%; } }
+
+/* Botón de salto contextual de cada alerta (CA-3 #4198). */
+.kpis-alert-row { justify-content: flex-start; }
+.kpis-alert-msg { flex: 1; }
+.kpis-alert-jump { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; padding: 5px 11px; border-radius: 9px; font-size: 11.5px; font-weight: 700; text-decoration: none; white-space: nowrap;
+    color: var(--in-accent, #39c5cf); background: rgba(57,197,207,.1); border: 1px solid rgba(57,197,207,.3); }
+.kpis-alert-jump:hover { background: rgba(57,197,207,.2); }
+
+/* Badge de estado + tendencia para las cards DORA (CA-4 #4198). */
+.dora-mini-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.dora-badge { font-size: 9.5px; font-weight: 800; letter-spacing: .4px; border-radius: 7px; padding: 3px 8px; white-space: nowrap; }
+.dora-badge.b-ok { color: var(--in-ok, #3fb950); background: rgba(52,211,153,.12); border: 1px solid rgba(52,211,153,.3); }
+.dora-badge.b-bad { color: var(--in-bad, #f85149); background: rgba(248,113,113,.12); border: 1px solid rgba(248,113,113,.3); }
+.dora-badge.b-warn { color: var(--in-warn, #d29922); background: rgba(251,191,36,.12); border: 1px solid rgba(251,191,36,.3); }
+.dora-badge.b-na { color: var(--in-fg-soft, #6e7681); background: rgba(255,255,255,.04); border: 1px solid var(--in-border, #30363d); }
+.dora-trend { font-size: 10.5px; font-weight: 700; margin-left: 6px; }
+.dora-trend.up { color: var(--in-bad, #f85149); }
+.dora-trend.dn { color: var(--in-ok, #3fb950); }
+.dora-trend.fl { color: var(--in-fg-soft, #6e7681); }
+.dora-mini-card.na { opacity: .72; }
+.dora-mini-card.na .dora-mini-value { color: var(--in-fg-soft, #6e7681); }
 `;
 
 // =============================================================================
@@ -376,14 +444,71 @@ function renderDoraAndCommanderHTML(opts) {
     // sparkline degrada a "muestra insuficiente"). El throughput diario lo deriva
     // dashboard-routes de las entregas; el resto degrada con elegancia (G-5).
     const ds = o.doraSpark || {};
+    const t = o.thresholds || {};
+    const doraVals = o.dora || {};
     const trend = (serie, color) => sparklineWithBand(serie, { color: color || SPARK_COLORS.info });
 
-    const dora = `<div class="kpis-section"><h2>📐 DORA adaptado <span class="kpi-tooltip" tabindex="0" role="img" aria-label="Métricas DORA adaptadas al pipeline de agentes (Forsgren · Accelerate). Cada métrica con sparkline de tendencia 7d." data-tip="Métricas DORA adaptadas al pipeline de agentes (Forsgren · Accelerate). Cada métrica con sparkline de tendencia 7d.">i</span></h2>`
+    // #4198 (CA-4) — cada card DORA con objetivo + badge de estado + flecha de
+    // tendencia + sparkline. El badge se computa server-side comparando el valor
+    // contra su umbral; "muestra insuficiente" (b-na) cuando el dato falta (CA-5).
+    const leadTarget = Number.isFinite(t.dora_lead_time_target_ms) ? t.dora_lead_time_target_ms : DEFAULT_LEAD_TARGET_MS;
+    const bounceTarget = Number.isFinite(t.dora_bounce_target_pct) ? t.dora_bounce_target_pct : DEFAULT_BOUNCE_TARGET_PCT;
+    const throughputFloor = Number.isFinite(t.dora_throughput_floor_per_day) ? t.dora_throughput_floor_per_day : DEFAULT_THROUGHPUT_FLOOR;
+    const throughputPerDay = Number.isFinite(doraVals.throughputPerDay) ? doraVals.throughputPerDay : null;
+
+    // Helper: arma una card DORA con head (label + badge), valor, objetivo,
+    // flecha de tendencia y sparkline. `badge` = { cls, text } o null (→ b-na).
+    const doraCard = (icon, label, valTxt, naFlag, badge, target, tr, spark) => {
+        const b = naFlag || !badge
+            ? { cls: 'b-na', text: 'muestra insuf.' }
+            : badge;
+        const trendHtml = tr
+            ? `<span class="dora-trend ${tr.cls}" aria-label="tendencia ${tr.label}">${tr.glyph} 7d</span>`
+            : '';
+        return `<div class="dora-mini-card${naFlag ? ' na' : ''}">`
+            + `<div class="dora-mini-head"><div class="dora-mini-label">${icon} ${escapeHtmlText(label)}</div>`
+            + `<span class="dora-badge ${b.cls}">${escapeHtmlText(b.text)}</span></div>`
+            + `<div class="dora-mini-value">${escapeHtmlText(valTxt)}</div>`
+            + `<div class="dora-mini-target">${escapeHtmlText(target)}${trendHtml}</div>`
+            + spark
+            + `</div>`;
+    };
+
+    // Cycle time / lead time
+    const cycleNa = !Number.isFinite(k.issueCycleTimeMs);
+    let cycleBadge = null;
+    if (!cycleNa && leadTarget > 0) {
+        const r = k.issueCycleTimeMs / leadTarget;
+        cycleBadge = r <= 1 ? { cls: 'b-ok', text: 'en objetivo' }
+            : (r <= 1.5 ? { cls: 'b-warn', text: 'en el límite' }
+                : { cls: 'b-bad', text: `${r.toFixed(1)}× alto` });
+    }
+    // Duración agente (mediana): sin umbral de salud → badge informativo o N/A.
+    const durNa = !Number.isFinite(k.agentDurationMedianMs);
+    const durBadge = durNa ? null : { cls: 'b-na', text: 'mediana' };
+    // Tasa de rebote
+    const bounceNa = bounceOverall == null;
+    let bounceBadge = null;
+    if (!bounceNa) {
+        bounceBadge = bounceOverall <= bounceTarget ? { cls: 'b-ok', text: 'sano' }
+            : (bounceOverall <= bounceTarget * 1.67 ? { cls: 'b-warn', text: 'elevado' }
+                : { cls: 'b-bad', text: 'alto' });
+    }
+    // PRs 7d / throughput
+    const prsNa = !Number.isFinite(k.prsLast7d);
+    let prsBadge = null;
+    if (!prsNa) {
+        prsBadge = (throughputPerDay != null && throughputPerDay < throughputFloor && k.prsLast7d > 0)
+            ? { cls: 'b-warn', text: 'se abren, no cierran' }
+            : { cls: 'b-ok', text: 'ok' };
+    }
+
+    const dora = `<div class="kpis-section"><h2>📐 DORA adaptado <span class="kpi-tooltip" tabindex="0" role="img" aria-label="Métricas DORA adaptadas al pipeline de agentes (Forsgren · Accelerate). Cada métrica con objetivo, tendencia 7d, sparkline y badge de estado." data-tip="Métricas DORA adaptadas al pipeline de agentes (Forsgren · Accelerate). Cada métrica con objetivo, tendencia 7d, sparkline y badge de estado.">i</span></h2>`
         + `<div class="dora-mini-grid">`
-        + `<div class="dora-mini-card"><div class="dora-mini-value">${escapeHtmlText(fmtDuration(k.issueCycleTimeMs))}</div><div class="dora-mini-label">Cycle Time</div><div class="dora-mini-target">creación → cierre · tendencia 7d</div>${trend(ds.cycle, SPARK_COLORS.info)}</div>`
-        + `<div class="dora-mini-card"><div class="dora-mini-value">${escapeHtmlText(fmtDuration(k.agentDurationMedianMs))}</div><div class="dora-mini-label">Duración agente (mediana)</div><div class="dora-mini-target">por fase/skill · tendencia 7d</div>${trend(ds.duration, SPARK_COLORS.info)}</div>`
-        + `<div class="dora-mini-card"><div class="dora-mini-value">${escapeHtmlText(bounceOverall == null ? '—' : fmtNum(bounceOverall) + '%')}</div><div class="dora-mini-label">Tasa de rebote</div><div class="dora-mini-target">target &lt; 15% · tendencia 7d</div>${trend(ds.bounce, SPARK_COLORS.warning)}</div>`
-        + `<div class="dora-mini-card"><div class="dora-mini-value">${escapeHtmlText(fmtNum(k.prsLast7d))}</div><div class="dora-mini-label">PRs 7d</div><div class="dora-mini-target">throughput · tendencia 7d</div>${trend(ds.prs, SPARK_COLORS.success)}</div>`
+        + doraCard('⏱', 'Cycle Time', fmtDuration(k.issueCycleTimeMs), cycleNa, cycleBadge, `objetivo ≤ ${fmtDuration(leadTarget)}`, _trendArrow(ds.cycle, true), trend(ds.cycle, SPARK_COLORS.info))
+        + doraCard('🤖', 'Duración agente (mediana)', fmtDuration(k.agentDurationMedianMs), durNa, durBadge, 'por fase/skill', _trendArrow(ds.duration, true), trend(ds.duration, SPARK_COLORS.info))
+        + doraCard('↩️', 'Tasa de rebote', bounceOverall == null ? '—' : fmtNum(bounceOverall) + '%', bounceNa, bounceBadge, `objetivo ≤ ${fmtNum(bounceTarget)}%`, _trendArrow(ds.bounce, true), trend(ds.bounce, SPARK_COLORS.warning))
+        + doraCard('🔀', 'PRs 7d', fmtNum(k.prsLast7d), prsNa, prsBadge, throughputPerDay == null ? 'throughput' : `throughput ${fmtNum(throughputPerDay)}/día`, _trendArrow(ds.prs, false), trend(ds.prs, SPARK_COLORS.success))
         + `</div></div>`;
 
     const commander = `<div class="kpis-section"><h2>⚙️ Commander Routing <span class="kpi-tooltip" tabindex="0" role="img" aria-label="Comandos resueltos de forma determinística vs vía LLM (hoy)." data-tip="Comandos resueltos de forma determinística vs vía LLM (hoy).">i</span></h2>`
@@ -587,30 +712,53 @@ function renderOperationalKpisHTML(opts) {
         + `</div>`;
 }
 
+// #4198 (CA-3) — destino de salto contextual de una alerta. Clasifica por el
+// `kpi`/`id`/`skill`/`provider` de la alerta y devuelve un href CONSTANTE +
+// label. SEGURIDAD: el href nunca refleja datos de la alerta (sólo se elige
+// entre rutas internas conocidas) → no hay vector de open-redirect ni XSS por
+// atributo. Default conservador: la vista Pipeline.
+function _alertJumpTarget(alert) {
+    const a = alert || {};
+    const key = String(a.kpi || a.id || '').toLowerCase();
+    const isDeliverable = key.includes('deliverable') || key.includes('entregable') || a.skill;
+    if (isDeliverable) return { href: '/issues', label: 'Ver issues' };
+    if (key.includes('lead') || key.includes('cycle')) return { href: '/matriz', label: 'Ver en Matriz' };
+    if (key.includes('throughput') || key.includes('pr') || key.includes('deploy')) return { href: '/pipeline', label: 'Ver Pipeline' };
+    if (key.includes('voice') || key.includes('sherlock') || key.includes('provider') || key.includes('latency')) return { href: '/ops', label: 'Ver en Ops' };
+    if (a.provider) return { href: '/multi-provider', label: 'Ver Providers' };
+    return { href: '/pipeline', label: 'Ver Pipeline' };
+}
+
 /**
  * #3961 EP8-H8 (CA-6) — Bandeja de alertas de umbral. Lista las entradas
  * `threshold_alerts` que devuelve alertTraySlice (read-only, derivadas de los
  * KPIs que exceden su umbral). Seguridad: `message` es template constante +
- * números; `provider`/`skill` son log-derived → escapados.
+ * números; `provider`/`skill` son log-derived → escapados. #4198 (CA-3): cada
+ * alerta lleva un botón de salto contextual a la vista relevante.
  *
  * @param {object} alertTray — salida de slices.alertTraySlice (con threshold_alerts)
  */
 function renderThresholdAlertsHTML(alertTray) {
     const at = alertTray || {};
     const alerts = Array.isArray(at.threshold_alerts) ? at.threshold_alerts : [];
-    const tip = 'KPIs que exceden su umbral configurable (config.yaml → dashboard.thresholds). Se actualizan en cada poll; no son acciones del operador.';
+    const tip = 'KPIs que exceden su umbral configurable (config.yaml → dashboard.thresholds). Cada alerta declara la métrica rota, el umbral superado y un botón de salto al detalle.';
     let body;
     if (alerts.length) {
         body = `<div class="kpis-alert-tray">`;
         for (const a of alerts) {
             const sev = a.severity === 'bad' ? 'sev-bad' : 'sev-warn';
             const icon = a.severity === 'bad' ? '🚨' : '⚠';
+            const jump = _alertJumpTarget(a);
             // `message` es template constante + números (no log-derived), pero se
             // escapa igual por defensa en profundidad.
             body += `<div class="kpis-alert-row ${sev}">`
                 + `<span class="kpis-alert-icon-cell" aria-hidden="true">${icon}</span>`
                 + `<span class="kpis-alert-msg">${escapeHtmlText(a.message)}</span>`
                 + `<span class="kpis-alert-kpi">${escapeHtmlText(a.provider || a.skill || a.kpi || '')}</span>`
+                // #4198 (CA-3) — botón de salto contextual (read-only: link de
+                // navegación, NO acción state-changing, R12). href constante por
+                // categoría, sin reflejar datos del alert (anti-XSS).
+                + `<a class="kpis-alert-jump" href="${jump.href}" aria-label="${escapeHtmlAttr(jump.label)}">${escapeHtmlText(jump.label)} →</a>`
                 + `</div>`;
         }
         body += `</div>`;
@@ -672,13 +820,268 @@ function renderMetricsCta() {
 }
 
 // =============================================================================
+// #4198 (Ola 7.1) — Shell MIZPÁ + banner de misión que diagnostica.
+// =============================================================================
+
+// CA-1 (#4198) — barra de marca MIZPÁ del shell standalone (marca + tagline
+// «Que el Señor vigile» Génesis 31:49 + selector multiproyecto). Hereda las
+// clases `.mz-*` de theme.css (compartidas con Home/Equipo/Bloqueados) para no
+// divergir visualmente con la serie #4189→#4197. Marca/tagline/selector son
+// strings literales — sin datos externos, no requieren escape.
+function renderMizpaBrandBar() {
+    const logoSvg = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">'
+        + '<path d="M12 2.5 5 6v5c0 4.6 3 8 7 9.5 4-1.5 7-4.9 7-9.5V6l-7-3.5Z" stroke="#06121a" stroke-width="1.6" fill="rgba(255,255,255,.16)"/>'
+        + '<path d="M9.5 12.5 11.3 14.3 14.8 10.4" stroke="#06121a" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    return `
+    <div class="in-header-brand">
+      <div class="mz-logo" aria-hidden="true" title="MIZPÁ · atalaya de agentes (Génesis 31:49)">${logoSvg}</div>
+      <div class="mz-id">
+        <div class="mz-name">MIZPÁ</div>
+        <div class="mz-sub">«Que el Señor vigile» · atalaya de agentes</div>
+      </div>
+      <div class="mz-projsel" role="button" tabindex="0"
+           title="Proyecto activo. MIZPÁ es el motor; el proyecto es intercambiable (multiproyecto — selección en evaluación)."
+           aria-label="Proyecto activo: Intrale, 1 de 3">
+        <span class="mz-proj-avatar" aria-hidden="true">i</span>
+        <span class="mz-proj-id">
+          <span class="mz-proj-name">Intrale</span>
+          <span class="mz-proj-state">PROYECTO ACTIVO</span>
+        </span>
+        <span class="mz-proj-badge">1 / 3</span>
+        <span class="mz-proj-caret" aria-hidden="true">▾</span>
+      </div>
+    </div>`;
+}
+
+// CA-1 (#4198) — miga de pan: KPIs vive dentro de «⋯ Más» (tab secundario). La
+// nav ya deja el popover abierto + KPIs marcado vía renderNavTabsSsr('kpis');
+// la miga refuerza la ubicación `⋯ Más › 📊 KPIs`.
+function renderKpisBreadcrumb() {
+    return `
+  <div class="mz-crumb" aria-label="Ubicación: Más › KPIs">
+    <span class="mz-crumb-sep">⋯ Más</span>
+    <span class="mz-crumb-sep">›</span>
+    <b>📊 KPIs</b>
+    <span class="mz-crumb-desc">· DORA adaptado · routing · calidad · consumo</span>
+  </div>`;
+}
+
+// Constantes de umbral con defaults seguros (alineadas a la guía DORA y a los
+// thresholds configurables de config.yaml → dashboard.thresholds).
+const DEFAULT_LEAD_TARGET_MS = 6 * 3600000;   // 6 h
+const DEFAULT_THROUGHPUT_FLOOR = 2;           // entregas/día
+const DEFAULT_BOUNCE_TARGET_PCT = 15;         // %
+
+// Flecha de tendencia a partir de una serie temporal (índice 0 = más viejo).
+// `higherIsWorse`: si true, una subida pinta rojo (peor); una baja, verde.
+// Devuelve null si no hay ≥2 puntos válidos (degrade honesto, sin señal falsa).
+function _trendArrow(series, higherIsWorse) {
+    const vals = Array.isArray(series) ? series.filter((v) => Number.isFinite(v)) : [];
+    if (vals.length < 2) return null;
+    const first = vals[0];
+    const last = vals[vals.length - 1];
+    const delta = last - first;
+    const eps = Math.abs(first) * 0.02;
+    if (Math.abs(delta) <= eps) return { glyph: '▬', cls: 'fl', label: 'estable 7d' };
+    const up = delta > 0;
+    const worse = higherIsWorse ? up : !up;
+    return {
+        glyph: up ? '▲' : '▼',
+        cls: worse ? 'up' : 'dn',
+        label: (up ? 'sube' : 'baja') + ' 7d',
+    };
+}
+
+// =============================================================================
+// CA-2 (#4198) — Diagnóstico de salud global. Deriva un score 0–100 + una
+// lectura del cuello de botella + una conclusión accionable a partir de los
+// slices YA computados (sin releer FS). Degrada honestamente a N/A cuando no
+// hay señal suficiente (CA-5): nunca inventa un score sobre datos vacíos.
+//
+// @param {object} opts — { kpisSlice, dora, alertTray, deliverablesBySkill,
+//                          sysMini, thresholds }
+// @returns {object} — { na, score, level, headline, chip, desc, metrics[], reco }
+// =============================================================================
+function _computeHealthDiagnosis(opts) {
+    const o = opts || {};
+    const k = o.kpisSlice || {};
+    const dora = o.dora || {};
+    const t = o.thresholds || {};
+    const sys = o.sysMini || {};
+    const alerts = (o.alertTray && Array.isArray(o.alertTray.threshold_alerts))
+        ? o.alertTray.threshold_alerts : [];
+    const skills = (o.deliverablesBySkill && Array.isArray(o.deliverablesBySkill.skills))
+        ? o.deliverablesBySkill.skills : [];
+
+    const leadTarget = Number.isFinite(t.dora_lead_time_target_ms) ? t.dora_lead_time_target_ms : DEFAULT_LEAD_TARGET_MS;
+    const throughputFloor = Number.isFinite(t.dora_throughput_floor_per_day) ? t.dora_throughput_floor_per_day : DEFAULT_THROUGHPUT_FLOOR;
+
+    const leadTimeMs = Number.isFinite(dora.leadTimeMs) ? dora.leadTimeMs
+        : (Number.isFinite(k.issueCycleTimeMs) ? k.issueCycleTimeMs : null);
+    const throughputPerDay = Number.isFinite(dora.throughputPerDay) ? dora.throughputPerDay : null;
+    const belowSkills = skills.filter((s) => s && s.pct != null && Number(s.pct) < 80);
+
+    const badCount = alerts.filter((a) => a && a.severity === 'bad').length;
+    const warnCount = alerts.filter((a) => a && a.severity !== 'bad').length;
+    const sysSev = _healthSeverity(sys.health);
+
+    // Disponibilidad de datos: si no hay NINGUNA señal medible, N/A honesto.
+    const haveSignal = (leadTimeMs != null) || (throughputPerDay != null)
+        || alerts.length > 0 || skills.length > 0 || (sysSev !== 'info');
+    if (!haveSignal) {
+        return {
+            na: true, score: null, level: 'na',
+            headline: 'Datos insuficientes para diagnosticar',
+            chip: 'SIN MUESTRA',
+            desc: 'Todavía no hay métricas suficientes (lead time, throughput, alertas o entregables) para calcular la salud del pipeline. El medidor se completa cuando el Pulpo acumula historia.',
+            metrics: [
+                { label: '⏱ Lead time', value: '—', sub: 'sin muestra', cls: '' },
+                { label: '🚀 Throughput 7d', value: '—', sub: 'sin muestra', cls: '' },
+                { label: '📦 Entregables', value: '—', sub: 'sin muestra', cls: '' },
+            ],
+            reco: { text: 'Sin datos para una conclusión. Mantené el Pulpo corriendo para acumular historia.', btnLabel: '🔎 Ver Pipeline', href: '/pipeline' },
+        };
+    }
+
+    // Score 0–100 por penalización acumulada (determinístico).
+    let score = 100;
+    score -= Math.min(50, badCount * 18 + warnCount * 8);
+    let leadRatio = null;
+    if (leadTimeMs != null && leadTarget > 0 && leadTimeMs > leadTarget) {
+        leadRatio = leadTimeMs / leadTarget;
+        score -= Math.min(25, (leadRatio - 1) * 8);
+    }
+    if (throughputPerDay != null && throughputPerDay < throughputFloor) {
+        const gap = throughputFloor > 0 ? (throughputFloor - throughputPerDay) / throughputFloor : 1;
+        score -= Math.min(20, gap * 20);
+    }
+    score -= Math.min(15, belowSkills.length * 5);
+    if (sysSev === 'bad') score -= 15;
+    else if (sysSev === 'warn') score -= 8;
+    score = Math.max(0, Math.min(100, Math.round(score)));
+
+    const level = score >= 80 ? 'ok' : (score >= 50 ? 'warn' : 'bad');
+
+    // Lectura del cuello de botella (una frase) + conclusión accionable.
+    const leadOver = leadRatio != null && leadRatio > 1;
+    const throughputLow = throughputPerDay != null && throughputPerDay < throughputFloor;
+    let headline, desc, reco;
+    if (sysSev === 'bad') {
+        headline = 'Hay un problema de infraestructura';
+        desc = 'El sistema reporta un estado crítico. La salud no es de flujo: revisá servicios e infra antes que el embudo de trabajo.';
+        reco = { text: 'El cuello es de <b>infra</b>, no de gente. Revisá los servicios caídos en Ops.', btnLabel: '🛰️ Ver en Ops', href: '/ops' };
+    } else if (leadOver && throughputLow) {
+        headline = 'El pipeline produce, pero va lento';
+        desc = `No hay nada caído, pero <b>el lead time está ${leadRatio.toFixed(1)}× sobre el objetivo</b> y el <b>throughput cayó a ${fmtNum(throughputPerDay)} entregas/día</b>. El cuello no es de gente: el trabajo terminado se amontona esperando aprobación.`;
+        reco = { text: 'Lo terminado no se cierra: se traba en <b>validación/aprobación</b>. Reforzar ahí baja el lead time sin tocar dev.', btnLabel: '🔎 Ver el embudo en Matriz', href: '/matriz' };
+    } else if (throughputLow) {
+        headline = 'El trabajo no se está cerrando';
+        desc = `El throughput está en <b>${fmtNum(throughputPerDay)}/día</b>, por debajo del piso de ${fmtNum(throughputFloor)}/día. Se abre trabajo pero no se entrega al ritmo esperado.`;
+        reco = { text: 'Mirá dónde se traban los issues en curso para destrabar entregas.', btnLabel: '🔎 Ver Pipeline', href: '/pipeline' };
+    } else if (leadOver) {
+        headline = 'El pipeline entrega, pero tarda';
+        desc = `El <b>lead time está ${leadRatio.toFixed(1)}× sobre el objetivo</b> (${fmtDuration(leadTimeMs)} vs ${fmtDuration(leadTarget)}). Las entregas salen, pero el ciclo es largo.`;
+        reco = { text: 'El ciclo se estira en las fases de validación. Reforzá ahí para acortar el lead time.', btnLabel: '🔎 Ver en Matriz', href: '/matriz' };
+    } else if (belowSkills.length) {
+        headline = 'Faltan entregables de algunos skills';
+        const names = belowSkills.slice(0, 3).map((s) => s.skill).filter(Boolean).join(', ');
+        desc = `<b>${belowSkills.length} skill(s)</b> por debajo del 80% de entregables comprometidos${names ? ` (${names})` : ''}. El flujo corre, pero hay deuda de entregables.`;
+        reco = { text: 'Revisá los issues en curso de esos skills para cerrar la deuda de entregables.', btnLabel: '📋 Ver issues', href: '/issues' };
+    } else if (badCount + warnCount > 0) {
+        headline = 'Hay alertas activas para revisar';
+        desc = `Sin cuello de botella de flujo, pero <b>${badCount + warnCount} alerta(s)</b> superaron su umbral. Revisá la bandeja para acción puntual.`;
+        reco = { text: 'Las alertas de umbral están abajo, cada una con su botón de salto al detalle.', btnLabel: '🔎 Ver Pipeline', href: '/pipeline' };
+    } else {
+        headline = 'El pipeline está sano';
+        desc = 'Sin cuellos de botella detectados: lead time, throughput, entregables y alertas dentro de rango. Seguí monitoreando.';
+        reco = { text: 'Sin acción requerida. El flujo está dentro de los objetivos.', btnLabel: '🔎 Ver Pipeline', href: '/pipeline' };
+    }
+
+    const totalAlerts = badCount + warnCount;
+    const chip = totalAlerts > 0
+        ? `${totalAlerts} ALERTA${totalAlerts === 1 ? '' : 'S'}${badCount ? ` · ${badCount} ROJA${badCount === 1 ? '' : 'S'}` : ''}`
+        : 'SIN ALERTAS';
+
+    const metrics = [
+        {
+            label: '⏱ Lead time',
+            value: leadTimeMs == null ? '—' : fmtDuration(leadTimeMs),
+            sub: leadTimeMs == null ? 'sin muestra' : `objetivo ≤ ${fmtDuration(leadTarget)}`,
+            cls: leadOver ? 'over' : '',
+        },
+        {
+            label: '🚀 Throughput 7d',
+            value: throughputPerDay == null ? '—' : `${fmtNum(throughputPerDay)}/día`,
+            sub: throughputPerDay == null ? 'sin muestra' : `piso ${fmtNum(throughputFloor)}/día · ${fmtNum(k.prsLast7d)} PRs`,
+            cls: throughputLow ? 'over' : '',
+        },
+        {
+            label: '📦 Entregables',
+            value: skills.length ? `${belowSkills.length} skills < 80%` : '—',
+            sub: skills.length ? (belowSkills.length ? 'deuda de entregables' : 'todos al objetivo') : 'sin muestra',
+            cls: belowSkills.length ? 'warn' : '',
+        },
+    ];
+
+    return { na: false, score, level, headline, chip, desc, metrics, reco };
+}
+
+// CA-2 (#4198) — render del banner de misión que DIAGNOSTICA: medidor de salud
+// global (gauge conic) + lectura del cuello de botella + conclusión accionable
+// con botón de salto. Read-only: el botón es un link de navegación (R12).
+function renderMissionBannerHTML(opts) {
+    const d = _computeHealthDiagnosis(opts);
+    const sevCls = `sev-${d.level}`;
+    // Gauge conic: el arco se rellena según el score; N/A → anillo gris sin arco.
+    const pct = d.na ? 0 : d.score;
+    const arcColor = d.level === 'ok' ? 'var(--in-ok,#3fb950)'
+        : (d.level === 'bad' ? 'var(--in-bad,#f85149)' : 'var(--in-warn,#d29922)');
+    const ringStyle = d.na
+        ? 'background:conic-gradient(rgba(255,255,255,.07) 0 100%)'
+        : `background:conic-gradient(${arcColor} 0 ${pct}%, rgba(255,255,255,.07) ${pct}% 100%)`;
+    const gaugeVal = d.na ? '—' : String(d.score);
+
+    let wmetrics = '';
+    for (const m of d.metrics) {
+        wmetrics += `<div class="kpis-wm">`
+            + `<div class="kpis-wm-l">${escapeHtmlText(m.label)}</div>`
+            + `<div class="kpis-wm-v ${m.cls}">${escapeHtmlText(m.value)}</div>`
+            + `<div class="kpis-wm-s">${escapeHtmlText(m.sub)}</div>`
+            + `</div>`;
+    }
+
+    return `<section class="kpis-mission ${sevCls}" id="kpis-mission" role="status" aria-label="Salud del pipeline: ${escapeHtmlAttr(d.headline)}">`
+        + `<div class="kpis-gauge ${sevCls}">`
+        + `<div class="kpis-gauge-ring" style="${ringStyle}"><span class="kpis-gauge-val">${escapeHtmlText(gaugeVal)}</span></div>`
+        + `<div class="kpis-gauge-lbl">Salud pipeline</div>`
+        + `<div class="kpis-gauge-sub">${escapeHtmlText(d.na ? 'sin muestra' : 'score 0–100')}</div>`
+        + `</div>`
+        + `<div class="kpis-mtext">`
+        + `<div class="kpis-mttl">${escapeHtmlText(d.headline)} <span class="kpis-mchip ${sevCls}">${escapeHtmlText(d.chip)}</span></div>`
+        // `desc` es template constante + números formateados (fmtDuration/fmtNum
+        // ya devuelven strings seguros); el <b> es markup propio, no input.
+        + `<div class="kpis-mdesc">${d.desc}</div>`
+        + `<div class="kpis-wmetrics">${wmetrics}</div>`
+        + `</div>`
+        + `<div class="kpis-mright">`
+        + `<div class="kpis-reco">`
+        + `<div class="kpis-reco-l">💡 Lectura automática</div>`
+        + `<div class="kpis-reco-t">${d.reco.text}</div>`
+        + `<a class="kpis-reco-btn" href="${escapeHtmlAttr(d.reco.href)}" aria-label="${escapeHtmlAttr(d.reco.btnLabel)}">${escapeHtmlText(d.reco.btnLabel)}</a>`
+        + `</div>`
+        + `</div>`
+        + `</section>`;
+}
+
+// =============================================================================
 // Render principal de la ventana `?view=kpis`.
 // =============================================================================
 /**
  * @param {object} [opts] — { kpisSlice, metricsSlice, matrixDerived, sysMini,
- *                            routingMetrics, currentView }. Todo opcional: el
- *                            router lo invoca solo con { currentView } y el SSR
- *                            degrada a placeholders que el cliente hidrata.
+ *                            routingMetrics, dora, alertTray, deliverablesBySkill,
+ *                            thresholds, currentView }. Todo opcional: el router
+ *                            lo invoca solo con { currentView } y el SSR degrada
+ *                            a placeholders honestos (N/A) que el cliente hidrata.
  */
 function renderKpis(opts) {
     const o = opts || {};
@@ -687,10 +1090,16 @@ function renderKpis(opts) {
     const navHtml = renderNavTabsSsr('kpis');
 
     const body = `<main class="satellite-body" id="kpis-body">`
+        // #4198 (CA-2) — banner de misión que diagnostica: medidor de salud +
+        // lectura del cuello de botella + conclusión accionable, arriba de todo.
+        + renderMissionBannerHTML({
+            kpisSlice: o.kpisSlice, dora: o.dora, alertTray: o.alertTray,
+            deliverablesBySkill: o.deliverablesBySkill, sysMini: o.sysMini, thresholds: o.thresholds,
+        })
         + renderKpiCardsHTML(o.matrixDerived, o.sysMini)
         // #3961 EP8-H8 (CA-6) — bandeja de alertas de umbral arriba (accionable).
         + renderThresholdAlertsHTML(o.alertTray)
-        + renderDoraAndCommanderHTML({ kpisSlice: o.kpisSlice, routingMetrics: o.routingMetrics, doraSpark: o.doraSpark })
+        + renderDoraAndCommanderHTML({ kpisSlice: o.kpisSlice, routingMetrics: o.routingMetrics, doraSpark: o.doraSpark, dora: o.dora, thresholds: o.thresholds })
         // #3961 EP8-H8 (CA-5a/b/c) — KPIs operativos: Sherlock + voz.
         + renderOperationalKpisHTML({ sherlock: o.sherlock, voice: o.voice, thresholds: o.thresholds })
         + renderProvidersHTML(o.kpisSlice)
@@ -712,22 +1121,17 @@ function renderKpis(opts) {
 <div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">${spriteInline}</div>
 <div class="satellite-frame">
   <header class="in-header">
-    <div class="in-header-brand">
-      <div class="in-header-logo">i</div>
-      <div>
-        <div class="in-header-title">KPIs</div>
-        <div class="in-header-subtitle">Indicadores del pipeline · DORA · routing · consumo</div>
-      </div>
-    </div>
+    ${renderMizpaBrandBar()}
     <div class="in-header-meta">
       <span class="in-clock" id="hdr-clock">${escapeHtmlText(new Date().toLocaleTimeString('es-AR'))}</span>
     </div>
   </header>
   ${navHtml}
+  ${renderKpisBreadcrumb()}
   ${body}
   <footer class="in-footer">
     <span>Vista read-only · datos en vivo cada 30s</span>
-    <span>Intrale V3 · #3733</span>
+    <span>Intrale V3 · #4198 · MIZPÁ</span>
   </footer>
 </div>
 </body>
@@ -1049,6 +1453,13 @@ module.exports = {
     renderKpis,
     renderKpiCardsHTML,
     renderDoraAndCommanderHTML,
+    // #4198 (Ola 7.1) — shell MIZPÁ + banner de misión que diagnostica.
+    renderMizpaBrandBar,
+    renderKpisBreadcrumb,
+    renderMissionBannerHTML,
+    _computeHealthDiagnosis,
+    _alertJumpTarget,
+    _trendArrow,
     renderProvidersHTML,
     renderDeliverablesBySkillHTML,
     renderAgentPerfHTML,
