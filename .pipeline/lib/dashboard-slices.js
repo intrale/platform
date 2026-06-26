@@ -1636,6 +1636,28 @@ function _toInt(v, def) {
     return Number.isFinite(n) ? n : def;
 }
 
+// #4199 — Clasificación del «tipo de evento» de una ejecución para el filtro de
+// la bitácora del Historial. Se DERIVA de los campos existentes (no hay un
+// store nuevo): el orden de prioridad refleja el evento más significativo de la
+// ejecución.
+//   - merge:      la ejecución tiene PR asociado (issue entregado/mergeable).
+//   - rebote:     hubo rebote (mismo skill repetido) o cross-phase.
+//   - rechazo:    la fase terminó rechazada.
+//   - aprobacion: la fase terminó aprobada.
+//   - ejecucion:  el agente está corriendo ahora (lanzamiento en curso).
+//   - fase:       cualquier otro cierre de fase sin resultado clasificable.
+const HIST_EVENT_TYPES = ['merge', 'rebote', 'rechazo', 'aprobacion', 'ejecucion', 'fase'];
+function _eventType(h) {
+    if (!h) return 'fase';
+    if (h.prUrl) return 'merge';
+    if (Number(h.reboteNumero) > 0 || Number(h.crossphaseCount) > 0) return 'rebote';
+    const r = String(h.resultado || '').toLowerCase();
+    if (r === 'rechazado') return 'rechazo';
+    if (r === 'aprobado') return 'aprobacion';
+    if (h.estado === 'trabajando') return 'ejecucion';
+    return 'fase';
+}
+
 function historialTimelineSlice(state, ctx, opts) {
     const o = opts || {};
     const now = (ctx && Number.isFinite(ctx.now)) ? ctx.now
@@ -1651,6 +1673,14 @@ function historialTimelineSlice(state, ctx, opts) {
     const fQuery = (typeof o.q === 'string' && o.q.trim()) ? o.q.trim().slice(0, 200).toLowerCase() : null;
     // período: 'today' | '7d' | '30d' | 'all' (default all → sin recorte temporal).
     const period = (typeof o.period === 'string') ? o.period.trim().toLowerCase() : 'all';
+    // #4199 — filtros nuevos: tipo de evento (derivado) y proveedor (join del
+    // activity-log). Ambos opcionales y aditivos.
+    const fEventType = (typeof o.eventType === 'string' && o.eventType.trim()) ? o.eventType.trim().toLowerCase() : null;
+    const fProvider = (typeof o.provider === 'string' && o.provider.trim()) ? o.provider.trim() : null;
+    // Resolver de proveedor inyectado por la capa de ruta (mismo patrón que
+    // collectAttachments): mantiene el slice FS-free/testable. Si no se provee,
+    // el provider degrada a null (filtro sin opciones, CA-3).
+    const resolveProvider = (typeof o.resolveProvider === 'function') ? o.resolveProvider : null;
 
     // --- paginación: límite acotado + cursor (offset) no negativo ---
     let limit = _toInt(o.limit, HIST_PAGE_DEFAULT);
@@ -1670,7 +1700,39 @@ function historialTimelineSlice(state, ctx, opts) {
         items = items.filter((h) => _entryTs(h) >= windowStart);
     }
 
+    // #4199 — Enriquecer cada entrada (de la ventana temporal) con `eventType`
+    // (derivado) y `provider` (join del activity-log). Se clona cada item para
+    // NO mutar `state.agentHistory` (buildAgentHistory puede devolver la misma
+    // referencia). Es la base tanto de los filtros nuevos como de las facetas.
+    items = items.map((h) => {
+        if (!h) return h;
+        const provider = resolveProvider ? (resolveProvider(h.skill, h.issue, h.fase) || null) : null;
+        return Object.assign({}, h, { eventType: _eventType(h), provider });
+    });
+
+    // Facetas para poblar los selects del cliente: se calculan sobre el set de
+    // la VENTANA TEMPORAL (antes de los filtros categóricos), para que las
+    // opciones disponibles no se vacíen al elegir un filtro. Orden estable.
+    const facetSkills = new Set();
+    const facetProviders = new Set();
+    const facetEventTypes = new Set();
+    for (const h of items) {
+        if (!h) continue;
+        if (h.skill) facetSkills.add(h.skill);
+        if (h.provider) facetProviders.add(h.provider);
+        if (h.eventType) facetEventTypes.add(h.eventType);
+    }
+    const facets = {
+        skills: Array.from(facetSkills).sort(),
+        providers: Array.from(facetProviders).sort(),
+        // Orden canónico de tipos de evento (HIST_EVENT_TYPES), filtrado a los
+        // presentes para no ofrecer opciones vacías.
+        eventTypes: HIST_EVENT_TYPES.filter((t) => facetEventTypes.has(t)),
+    };
+
     if (fSkill) items = items.filter((h) => h && h.skill === fSkill);
+    if (fEventType) items = items.filter((h) => h && h.eventType === fEventType);
+    if (fProvider) items = items.filter((h) => h && h.provider === fProvider);
     if (fResultado) {
         items = items.filter((h) => {
             if (!h) return false;
@@ -1747,7 +1809,10 @@ function historialTimelineSlice(state, ctx, opts) {
         nextCursor,
         total,
         page: { cursor, limit, returned: pageItems.length },
-        filters: { skill: fSkill, resultado: fResultado, issue: fIssue, q: fQuery, period },
+        // #4199 — facetas para los selects del cliente (tipos de evento, skills,
+        // proveedores disponibles en el período) + echo de los filtros nuevos.
+        facets,
+        filters: { skill: fSkill, resultado: fResultado, issue: fIssue, q: fQuery, period, eventType: fEventType, provider: fProvider },
     };
 }
 
@@ -2661,6 +2726,9 @@ module.exports = {
     buildAgentHistory,
     HIST_PAGE_DEFAULT,
     HIST_PAGE_MAX,
+    // #4199 — clasificación de tipo de evento de la bitácora del Historial
+    _eventType,
+    HIST_EVENT_TYPES,
     quotaSlice,
     quotaExhaustedSlice,
     // #3962 EP8-H9 — slice de la pantalla Costos rediseñada
