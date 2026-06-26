@@ -905,6 +905,9 @@ const ISSUES_CSS = `
 }
 .iss-menu-btn:hover { border-color: var(--info, var(--in-accent)); color: var(--info, var(--in-accent)); }
 .iss-menu-btn[aria-expanded="true"] { border-color: var(--info, var(--in-info)); color: var(--info, var(--in-info)); }
+/* Reset: el atributo [hidden] debe ganarle al display:flex de los menús flotantes,
+   sino todos los submenús se despliegan a la vez (bug visto en la ventana ISSUES). */
+.iss-menu[hidden], .mz-proj-menu[hidden], .mz-more-menu[hidden] { display: none !important; }
 .iss-menu {
     position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 60; min-width: 250px;
     display: flex; flex-direction: column; gap: 2px; padding: 6px;
