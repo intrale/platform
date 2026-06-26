@@ -172,6 +172,36 @@ test('CA-5 · lenguaje MIZPÁ (marca, tagline, multiproyecto, miga de pan, nav)'
     assert.match(html, /aria-current="page"/, 'tab activa');
 });
 
+test('#4246 · banner de ola común (② del marco MIZPÁ) presente y antes de la nav', () => {
+    const html = providers.renderProviders();
+    // ② cabecera de ola: section + tag de ola + bloque AVANCE + leyenda de puntitos.
+    assert.match(html, /class="mz-mission"/, 'section del banner de ola');
+    assert.match(html, /id="mission-wave-num"/, 'tag de ola (número)');
+    assert.match(html, /id="mission-wave-name"/, 'título de ola');
+    assert.match(html, /id="mission-avance-pct"/, 'bloque AVANCE (%)');
+    assert.match(html, /id="mission-leg-done"/, 'leyenda de puntitos · hechos');
+    assert.match(html, /id="mission-leg-queue"/, 'leyenda de puntitos · cola');
+    // Métricas de ola (ETA / velocidad / entregados).
+    assert.match(html, /id="mission-vel-value"/, 'métrica velocidad');
+    assert.match(html, /id="mission-delivered-value"/, 'métrica entregados');
+    // CSS del banner embebido (no vive en theme.css — replicado como en home/pipeline).
+    assert.match(html, /\.mz-prog-bar/, 'CSS del banner embebido');
+    // Hidratación cliente desde /api/dash/waves.
+    assert.match(html, /\/api\/dash\/waves/, 'tick hidrata desde el endpoint de olas');
+    // Orden del marco (marcadores únicos del shell SSR, no presentes en el CSS
+    // del <head> ni en los docs embebidos del sprite/nav). La miga de pan se
+    // renderiza inmediatamente DESPUÉS de la nav (renderProviders: mission → nav
+    // → breadcrumb), así que `mission < crumb < main` prueba el orden
+    // header(①) → banner de ola(②) → nav(③) → contenido(④).
+    const idxHeader = html.indexOf('<header class="in-header">');
+    const idxMission = html.indexOf('id="mz-mission"');
+    const idxCrumb = html.indexOf('Ubicación: Más › Providers');
+    const idxMain = html.indexOf('<main class="satellite-body">');
+    assert.ok(idxHeader >= 0 && idxHeader < idxMission, '① header antes del ② banner de ola');
+    assert.ok(idxMission >= 0 && idxMission < idxCrumb, '② banner de ola antes de la ③ nav/miga');
+    assert.ok(idxCrumb < idxMain, '③ nav/miga antes del ④ contenido propio de PROVIDERS');
+});
+
 test('SEC · payload XSS en datos del provider NO es ejecutable', () => {
     const evil = '<img src=x onerror=alert(1)>"';
     const p = {
