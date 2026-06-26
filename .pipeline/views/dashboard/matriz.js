@@ -6,25 +6,37 @@
 // satellites.js). Mide la carga actual del pipeline cruzando skill × fase:
 // cuántos issues activos tiene cada skill en cada fase de cada pipeline.
 //
+// #4196 (Ola 7.1) — Rediseño integral MIZPÁ: la pantalla deja de tirar números
+// crudos y pasa a DIAGNOSTICAR. Hereda el lenguaje visual MIZPÁ ya consensuado
+// en las pantallas hermanas (#4189 Home, #4195 Equipo, #4194 Costos…):
+//   - Barra de marca MIZPÁ (logo + tagline + selector multiproyecto) + nav curada
+//     5 tabs + «⋯ Más» (Matriz vive dentro, con miga de pan «⋯ Más › 🔲 Matriz»).
+//   - Banner de misión en clave diagnóstico: lee el cuadro por el operador
+//     (fase saturada + %, carga total, fase y skill más cargados) y propone una
+//     lectura accionable del cuello de botella.
+//   - Heatmap legible de un vistazo: ícono + rol por skill, fase con etiqueta
+//     legible, leyenda de carga, flecha de tendencia vs 24h y cuello resaltado.
+//   - Nunca truncar: títulos, roles y conteos completos.
+//
 // Estructura (decisiones cerradas del issue + patrón de las hermanas
-// descanso.js / ops.js / kpis.js):
-//   - renderMatriz()        → documento SSR completo (shell satélite + tabla).
+// descanso.js / ops.js / kpis.js / equipo):
+//   - renderMatriz()        → documento SSR completo (shell MIZPÁ + banner + tabla).
 //   - renderMatrizInner()   → fragmento embebible (sin <!DOCTYPE>) para el
 //                             DOM morphing del router cliente `?view=matriz`.
 //   - slug                  → 'matriz' (clave de la allowlist VIEW_SLUGS).
 //
 // Convención V3 (igual que las hermanas): el SSR emite la estructura estable
-// (sección + contenedor `#matriz-table` + leyenda) y un <script> embebido que
-// hidrata vía `fetch('/api/dash/pipeline')` cada 30s con DOM morphing
-// (sólo reescribe `innerHTML` si el HTML cambió → anti-flicker). El SSR provee
-// el esqueleto para que un deep-link directo no quede en blanco antes del JS.
+// (banner + sección + contenedor `#matriz-table` + leyenda) y un <script>
+// embebido que hidrata vía `fetch('/api/dash/pipeline')` cada 30s con DOM
+// morphing (sólo reescribe `innerHTML` si el HTML cambió → anti-flicker). El SSR
+// provee el esqueleto para que un deep-link directo no quede en blanco.
 //
 // Seguridad (CA-B3 / CA-D1):
-//   - El SSR de esta ventana NO interpola datos del servidor: la grilla se
-//     construye 100% client-side desde el JSON del endpoint. El único valor
-//     que podría llegar por `opts` es ignorado (no hay prefill).
+//   - El SSR de esta ventana NO interpola datos del servidor: la grilla y el
+//     banner se construyen 100% client-side desde el JSON del endpoint.
 //   - Toda interpolación dinámica del cliente (nombres de skill, claves
-//     pipeline/fase) pasa por `escapeHtml()` antes de tocar innerHTML.
+//     pipeline/fase) pasa por `escapeHtml()` antes de tocar innerHTML, o por
+//     `textContent`/`createElement` (banner) — nunca innerHTML de datos externos.
 //   - Para defensa en profundidad en el SSR se delega en `lib/escape-html.js`
 //     (#3722) — si en el futuro se interpolara algún campo dinámico server-side
 //     DEBE pasar por `escapeHtmlSsr()`.
@@ -58,8 +70,8 @@ function loadTheme() {
 const slug = 'matriz';
 
 // Defensa en profundidad (CA-D1). Hoy el SSR de Matriz no interpola ningún
-// dato dinámico (toda la grilla se hidrata client-side), pero dejamos el
-// helper canónico delegando en lib/escape-html.js para que cualquier
+// dato dinámico (toda la grilla y el banner se hidratan client-side), pero
+// dejamos el helper canónico delegando en lib/escape-html.js para que cualquier
 // interpolación futura tenga un único punto de paso. escapeHtmlSsr cubre el
 // contexto nodo-texto; para atributos usar escapeHtmlAttr directamente.
 function escapeHtmlSsr(s) {
@@ -67,28 +79,82 @@ function escapeHtmlSsr(s) {
     return escapeHtmlText(s);
 }
 
+// #4196 — Barra de marca MIZPÁ. Markup idéntico al de las hermanas (equipo,
+// costos): logo atalaya + nombre + tagline + selector multiproyecto. Las clases
+// `mz-*` viven en theme.css (compartidas) — replicamos sólo el markup para no
+// depender del monolito satellites.js en demolición. Todos los valores son
+// literales hardcoded (sin datos externos): no requieren escape.
+function renderMatrizBrandBar() {
+    const logoSvg = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">'
+        + '<path d="M12 2.5 5 6v5c0 4.6 3 8 7 9.5 4-1.5 7-4.9 7-9.5V6l-7-3.5Z" stroke="#06121a" stroke-width="1.6" fill="rgba(255,255,255,.16)"/>'
+        + '<path d="M9.5 12.5 11.3 14.3 14.8 10.4" stroke="#06121a" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    return `
+    <div class="in-header-brand">
+      <div class="mz-logo" aria-hidden="true" title="MIZPÁ · atalaya de agentes (Génesis 31:49)">${logoSvg}</div>
+      <div class="mz-id">
+        <div class="mz-name">MIZPÁ</div>
+        <div class="mz-sub">«Que el Señor vigile» · atalaya de agentes</div>
+      </div>
+      <div class="mz-projsel" role="button" tabindex="0"
+           title="Proyecto activo. MIZPÁ es el motor; el proyecto es intercambiable (multiproyecto — selección en evaluación)."
+           aria-label="Proyecto activo: Intrale, 1 de 3">
+        <span class="mz-proj-avatar" aria-hidden="true">i</span>
+        <span class="mz-proj-id">
+          <span class="mz-proj-name">Intrale</span>
+          <span class="mz-proj-state">PROYECTO ACTIVO</span>
+        </span>
+        <span class="mz-proj-badge">1 / 3</span>
+        <span class="mz-proj-caret" aria-hidden="true">▾</span>
+      </div>
+    </div>`;
+}
+
 // Snippet JS compartido por las vistas satélite (fetchJson, setText,
-// escapeHtml cliente, SKILL_ICONS/COLORS, tickHeader del header pill).
-// Copia del subconjunto de satellites.commonHelpers() que Matriz usa — se
-// prepende al script del cliente igual que hacía pageShell, para no depender
-// del monolito en demolición. tickMatriz consume escapeHtml + SKILL_* ;
-// tickHeader consume setText + fetchJson + pipelineModeState.
+// escapeHtml cliente, SKILL_ICONS/COLORS/ROLES, FASE_LABELS, tickHeader del
+// header pill). Copia del subconjunto que Matriz usa — se prepende al script
+// del cliente igual que hacía pageShell, para no depender del monolito en
+// demolición.
 const COMMON_HELPERS = `
 function setText(id, value){ const el=document.getElementById(id); if(el && el.textContent!==String(value)) el.textContent=value; }
 function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c])); }
+function fmtNum(n){ return (typeof n === 'number' ? n : Number(n)||0).toLocaleString('es-AR'); }
 
 const SKILL_ICONS = {
     'android-dev':'📱','backend-dev':'⚡','web-dev':'🌐','pipeline-dev':'🔧',
-    ux:'🎨', po:'📋', planner:'📐',
-    guru:'🧙', security:'🔒', tester:'🧪', qa:'✅', review:'👁',
-    linter:'🧹', build:'🛠', delivery:'🚚', commander:'🎖'
+    ux:'🎨', po:'📋', planner:'🗺️', architect:'🏛️',
+    guru:'📚', security:'🔒', tester:'🧪', qa:'✅', review:'🔍',
+    linter:'🧹', build:'📦', delivery:'🚚', commander:'🎖️'
 };
 const SKILL_COLORS = {
     'android-dev':'#58a6ff','backend-dev':'#3fb950','web-dev':'#79c0ff','pipeline-dev':'#a371f7',
-    ux:'#f778ba', po:'#d29922', planner:'#a371f7',
+    ux:'#f778ba', po:'#d29922', planner:'#a371f7', architect:'#a371f7',
     guru:'#58a6ff', security:'#f85149', tester:'#d2a8ff', qa:'#3fb950', review:'#ffa657',
     linter:'#8b949e', build:'#ffa657', delivery:'#2ee6c1', commander:'#f778ba'
 };
+// #4196 — Rol corto por skill (segunda línea de la celda de skill). Da contexto
+// sin truncar. Fallback: cadena vacía (no se muestra una segunda línea vacía).
+const SKILL_ROLES = {
+    'android-dev':'Compose · flavors', 'backend-dev':'Ktor · DynamoDB',
+    'web-dev':'Kotlin/Wasm · PWA', 'pipeline-dev':'Node · pipeline V3',
+    ux:'experiencia · diseño', po:'acceptance · criterios', planner:'estrategia · sizing',
+    architect:'arquitectura · diseño técnico', guru:'investigación técnica',
+    security:'OWASP · auditoría', tester:'tests · cobertura', qa:'E2E · video',
+    review:'code review · PR', linter:'estilo · forbidden strings',
+    build:'compilación · APK', delivery:'commit · PR · merge', commander:'orquestación'
+};
+// #4196 — Etiqueta legible por fase (encabezado de columna del heatmap). Las
+// fases crudas vienen del slice (analisis, criterios, validacion, …). Fallback:
+// capitalizar la fase cruda — nunca se trunca ni se inventa.
+const FASE_LABELS = {
+    analisis:'Análisis', criterios:'Criterios', sizing:'Sizing',
+    validacion:'Validación', dev:'Dev', build:'Build', verificacion:'Verific.',
+    linteo:'Linteo', aprobacion:'Aprob.', entrega:'Entrega'
+};
+function faseLabel(fase){
+    if(FASE_LABELS[fase]) return FASE_LABELS[fase];
+    const f = String(fase||'');
+    return f ? f.charAt(0).toUpperCase()+f.slice(1) : '?';
+}
 
 // #3045 — cache compartido entre tickHeader y otros poll de la página.
 let pipelineModeState = { mode: 'running', allowedIssues: [] };
@@ -121,16 +187,65 @@ async function tickHeader(){
 document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible' && typeof runAll === 'function') runAll(); });
 `;
 
-// CSS específico de la ventana Matriz. Heredado verbatim del legacy
-// (satellites.js::renderMatriz) + leyenda V3 nueva (CA-C3) + sistema visual
-// accesible #3959 (CA-5): cada estado se distingue por color + PATRÓN CSS +
-// glifo, nunca sólo por color. Patrones/colores tomados verbatim de la
-// narrativa UX (.pipeline/assets/mockups/narrativa-matriz-heatmap.md).
+// CSS específico de la ventana Matriz. Hereda el heatmap legacy (CA-5: cada
+// estado se distingue por color + PATRÓN CSS + glifo, nunca sólo por color) y
+// suma el banner de misión diagnóstico MIZPÁ (#4196) + la columna de skill con
+// ícono y rol. Patrones/colores tomados de la narrativa UX y del mockup
+// matriz-redesign-v1.
 const MATRIZ_CSS = `
+/* #4196 — Banner de misión diagnóstico (variante Matriz: acento rojo/ámbar). */
+.mtx-mission { display: flex; align-items: stretch; gap: 22px; position: relative; overflow: hidden; flex-wrap: wrap;
+  background: linear-gradient(110deg, rgba(248,113,113,.14), rgba(251,191,36,.08) 45%, transparent 75%), linear-gradient(180deg, var(--in-bg-2,#11151E), var(--in-bg-3,#141925));
+  border: 1px solid rgba(248,113,113,.22); border-radius: 16px; padding: 18px 24px; }
+/* Modo calmo: sin fase saturada → acento cian neutro, sin alarma. */
+.mtx-mission.is-calm { background: linear-gradient(110deg, rgba(52,217,224,.12), rgba(124,92,255,.07) 45%, transparent 75%), linear-gradient(180deg, var(--in-bg-2,#11151E), var(--in-bg-3,#141925));
+  border-color: rgba(52,217,224,.22); }
+.mtx-mission::after { content: "🔲"; position: absolute; right: 18px; top: -12px; font-size: 92px; opacity: .05; pointer-events: none; }
+.mtx-btag { display: flex; flex-direction: column; align-items: center; justify-content: center; min-width: 120px; padding: 12px 14px; border-radius: 14px; flex: none;
+  background: linear-gradient(135deg, rgba(248,113,113,.22), rgba(251,191,36,.14)); border: 1px solid rgba(248,113,113,.34); }
+.mtx-mission.is-calm .mtx-btag { background: linear-gradient(135deg, rgba(52,217,224,.22), rgba(124,92,255,.16)); border-color: rgba(52,217,224,.3); }
+.mtx-btag-k { font-size: 9.5px; font-weight: 800; letter-spacing: 1.2px; color: #fca5a5; }
+.mtx-mission.is-calm .mtx-btag-k { color: #9fe9ee; }
+.mtx-btag-n { font-size: 36px; font-weight: 800; color: #ffe0e0; line-height: 1; font-variant-numeric: tabular-nums; }
+.mtx-mission.is-calm .mtx-btag-n { color: #bff3f6; }
+.mtx-btag-s { font-size: 9px; font-weight: 700; color: #fca5a5; letter-spacing: .5px; margin-top: 3px; text-align: center; }
+.mtx-mission.is-calm .mtx-btag-s { color: #9fe9ee; }
+.mtx-mtext { flex: 1; min-width: 300px; }
+.mtx-m-ttl { font-size: 19px; font-weight: 800; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mtx-m-chip { font-size: 11px; color: #fca5a5; background: rgba(248,113,113,.12); border: 1px solid rgba(248,113,113,.3); padding: 3px 9px; border-radius: 20px; font-weight: 700; letter-spacing: .3px; }
+.mtx-mission.is-calm .mtx-m-chip { color: #9fe9ee; background: rgba(52,217,224,.12); border-color: rgba(52,217,224,.3); }
+.mtx-m-desc { font-size: 13px; color: var(--in-fg-dim,#8A93A6); margin-top: 5px; max-width: 620px; line-height: 1.45; }
+.mtx-m-desc b { color: #fca5a5; font-weight: 700; }
+.mtx-mission.is-calm .mtx-m-desc b { color: #9fe9ee; }
+.mtx-wmetrics { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.mtx-wm { flex: 1; min-width: 160px; background: rgba(255,255,255,.035); border: 1px solid var(--in-border,rgba(255,255,255,.07)); border-radius: 11px; padding: 9px 12px; }
+.mtx-wm-l { font-size: 9.5px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#5B6376); }
+.mtx-wm-v { font-size: 17px; font-weight: 800; margin-top: 3px; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.mtx-wm-v .u { font-size: 11px; color: var(--in-fg-dim,#5B6376); font-weight: 700; }
+.mtx-wm-s { font-size: 10px; color: var(--in-fg-dim,#5B6376); margin-top: 4px; }
+.mtx-mright { min-width: 250px; flex: 1; display: flex; flex-direction: column; gap: 9px; }
+.mtx-reco { background: rgba(251,191,36,.07); border: 1px solid rgba(251,191,36,.26); border-radius: 12px; padding: 11px 13px; }
+.mtx-mission.is-calm .mtx-reco { background: rgba(52,217,224,.06); border-color: rgba(52,217,224,.24); }
+.mtx-reco-l { font-size: 9.5px; font-weight: 800; letter-spacing: .6px; color: #fcd34d; display: flex; align-items: center; gap: 6px; }
+.mtx-mission.is-calm .mtx-reco-l { color: #9fe9ee; }
+.mtx-reco-t { font-size: 12px; color: var(--in-fg); margin-top: 8px; line-height: 1.45; }
+.mtx-reco-t b { color: #fcd34d; font-weight: 700; }
+.mtx-mission.is-calm .mtx-reco-t b { color: #9fe9ee; }
+
+/* Heatmap (heredado del legacy, #3959). */
 .mtx-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .mtx-table th, .mtx-table td { padding: 9px 11px; border: 1px solid var(--in-border); text-align: center; font-variant-numeric: tabular-nums; }
 .mtx-table th { background: var(--in-bg-3); font-weight: 600; color: var(--in-fg-dim); text-transform: uppercase; font-size: 10px; letter-spacing: 0.6px; }
 .mtx-table th.skill-h, .mtx-table td.skill { text-align: left; font-weight: 500; background: var(--in-bg-3); position: sticky; left: 0; }
+/* #4196 — encabezado de la fase del cuello: resaltado como embudo. */
+.mtx-table th.is-neck-col { color: var(--in-bad); }
+.mtx-table th .mtx-col-flag { display: block; font-size: 8px; font-weight: 700; color: var(--in-bad); margin-top: 2px; }
+/* #4196 — celda de skill con ícono + rol (nunca trunca). */
+.mtx-skcell { display: flex; align-items: center; gap: 9px; }
+.mtx-skic { width: 26px; height: 26px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 13px; flex: none; background: rgba(255,255,255,.04); border: 1px solid var(--in-border); }
+.mtx-skid { display: flex; flex-direction: column; min-width: 0; }
+.mtx-skn { font-size: 12.5px; font-weight: 700; line-height: 1.1; }
+.mtx-skr { font-size: 9px; color: var(--in-fg-soft); margin-top: 2px; }
 .mtx-cell-0 { color: var(--in-fg-soft); }
 /* CA-5 — carga normal: puntos sutiles */
 .mtx-cell-active {
@@ -165,6 +280,7 @@ const MATRIZ_CSS = `
 .mtx-trend.is-down { color: var(--in-ok); }
 .mtx-trend.is-flat { color: var(--in-fg-soft); }
 .mtx-totals td { background: var(--in-bg-3); font-weight: 600; color: var(--in-fg-dim); border-top: 2px solid var(--in-border); }
+.mtx-totals td.is-neck-col { color: var(--in-bad); }
 /* CA-C3 — leyenda del heat-map: explicar qué significan los estados de celda. */
 .mtx-legend { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; font-size: 11px; color: var(--in-fg-dim); margin-bottom: 12px; }
 .mtx-legend-item { display: inline-flex; align-items: center; gap: 6px; }
@@ -184,17 +300,61 @@ const MATRIZ_CSS = `
 .mtx-dialog-list { list-style: none; margin: 0; padding: 4px 18px 18px; display: flex; flex-direction: column; gap: 6px; max-height: 60vh; overflow-y: auto; }
 .mtx-dialog-item { display: flex; gap: 8px; align-items: baseline; font-size: 12px; padding: 6px 8px; border-radius: 6px; background: var(--in-bg-3); }
 .mtx-dialog-item a, .mtx-dialog-item .mtx-dialog-num { font-family: var(--in-mono, monospace); color: var(--in-info, #58a6ff); font-weight: 600; flex: 0 0 auto; }
-.mtx-dialog-item-title { color: var(--in-fg); overflow: hidden; text-overflow: ellipsis; }
+.mtx-dialog-item-title { color: var(--in-fg); }
 .mtx-dialog-empty { padding: 8px; color: var(--in-fg-dim); font-size: 12px; }`;
+
+// Banner de misión diagnóstico (skeleton SSR — el cliente lo hidrata por
+// textContent/createElement, XSS-safe). Arranca en modo calmo hasta el primer
+// tick; los valores «—» se reemplazan con datos reales.
+function renderMatrizMissionBanner() {
+    return `
+<div class="mtx-mission is-calm" id="mtx-mission" role="region" aria-label="Diagnóstico de carga del pipeline">
+  <div class="mtx-btag">
+    <div class="mtx-btag-k" id="mtx-btag-k">CARGA</div>
+    <div class="mtx-btag-n" id="mtx-btag-n">—</div>
+    <div class="mtx-btag-s" id="mtx-btag-s">FASES CON CARGA</div>
+  </div>
+  <div class="mtx-mtext">
+    <div class="mtx-m-ttl">Dónde se está amontonando el trabajo
+      <span class="mtx-m-chip" id="mtx-m-chip">leyendo el cuadro…</span>
+    </div>
+    <div class="mtx-m-desc" id="mtx-m-desc">Cada celda cuenta cuántos issues activos tiene un skill parado en una fase. Esta lectura detecta la fase saturada, el skill más cargado y dónde está el cuello.</div>
+    <div class="mtx-wmetrics">
+      <div class="mtx-wm">
+        <div class="mtx-wm-l">📦 CARGA TOTAL</div>
+        <div class="mtx-wm-v" id="mtx-wm-total">—</div>
+        <div class="mtx-wm-s" id="mtx-wm-total-s">issues activos en el pipeline</div>
+      </div>
+      <div class="mtx-wm">
+        <div class="mtx-wm-l">🚥 FASE MÁS CARGADA</div>
+        <div class="mtx-wm-v" id="mtx-wm-fase">—</div>
+        <div class="mtx-wm-s" id="mtx-wm-fase-s">la columna que concentra más trabajo</div>
+      </div>
+      <div class="mtx-wm">
+        <div class="mtx-wm-l">👤 SKILL MÁS CARGADO</div>
+        <div class="mtx-wm-v" id="mtx-wm-skill">—</div>
+        <div class="mtx-wm-s" id="mtx-wm-skill-s">el rol con más issues a cuestas</div>
+      </div>
+    </div>
+  </div>
+  <div class="mtx-mright">
+    <div class="mtx-reco">
+      <div class="mtx-reco-l">💡 LECTURA AUTOMÁTICA</div>
+      <div class="mtx-reco-t" id="mtx-reco-t">Esperando datos del pipeline para diagnosticar el cuello.</div>
+    </div>
+  </div>
+</div>`;
+}
 
 // Fragmento embebible (sin shell). Lo reusa renderMatriz() (full doc) y
 // renderMatrizInner() (DOM morphing del router cliente). Estructura estable:
-// sección + leyenda (CA-C3) + contenedor `#matriz-table` que el JS hidrata.
+// banner de misión + sección + leyenda (CA-C3) + contenedor `#matriz-table`.
 function renderMatrizBody() {
     return `
+${renderMatrizMissionBanner()}
 <section class="in-section">
-  <h2 class="in-section-title"><span class="in-section-title-icon">📈</span>Matriz · skill × fase (carga actual)</h2>
-  <p class="in-section-sub">Cuántos issues activos tiene cada skill en cada fase del pipeline. Lectura: una celda alta indica un cuello de botella de ese skill en esa fase.</p>
+  <h2 class="in-section-title"><span class="in-section-title-icon">🔲</span>Matriz · skill × fase (carga actual)</h2>
+  <p class="in-section-sub">Una celda alta = ese skill tiene muchos issues amontonados en esa fase. Pasá el mouse para ver los #issues; clic para abrir el detalle. La flecha indica la tendencia frente a hace 24h.</p>
   <div class="mtx-legend" aria-label="Leyenda del mapa de calor de la matriz">
     <span class="mtx-legend-item" title="La celda no tiene issues activos para ese skill en esa fase">
       <span class="mtx-legend-swatch is-0" aria-hidden="true"></span><span class="mtx-legend-glyph" aria-hidden="true">·</span>Sin carga
@@ -224,7 +384,7 @@ function renderMatrizBody() {
 function renderMatrizDialog() {
     // CA-6 — sin <form> (la ventana es READ-ONLY): el cierre se hace por JS
     // (mtx-dialog-close → dlg.close()) + Esc nativo del <dialog>. No hay submit
-    // ni POST. El test matriz.test.js:134-139 verifica la ausencia de <form>.
+    // ni POST. El test matriz.test.js verifica la ausencia de <form>.
     return `<dialog id="mtx-dialog" class="mtx-dialog" aria-labelledby="mtx-dialog-title">
   <div class="mtx-dialog-head">
     <div>
@@ -237,9 +397,9 @@ function renderMatrizDialog() {
 </dialog>`;
 }
 
-// Script de hidratación. tickMatriz hereda verbatim del legacy + tooltips
-// (CA-C1) en encabezados de columna y celdas, construidos con title="" sobre
-// valores escapados (escapeHtml).
+// Script de hidratación. tickMatriz construye el heatmap (heredado del legacy
+// #3959, con ícono+rol por skill #4196) y calcula el banner de misión
+// diagnóstico (carga total, fase y skill más cargados, cuello + lectura).
 const MATRIZ_SCRIPT = `
 // #3959 — último payload del endpoint, para que el drill-down lea títulos sin
 // re-pedir. La grilla se reconstruye en cada tick; el dialog lee de acá.
@@ -255,7 +415,8 @@ function openMtxDrilldown(faseKey, skill){
     const ids = ((MTX_DATA.matrixIssues||{})[faseKey]||{})[skill] || [];
     const matrix = MTX_DATA.matrix || {};
     const ageAvg = ((MTX_DATA.matrixAgeAvg||{})[faseKey]||{})[skill];
-    document.getElementById('mtx-dialog-title').textContent = skill + ' · ' + faseKey;
+    const faseName = faseLabel((faseKey.split('/')[1] || faseKey));
+    document.getElementById('mtx-dialog-title').textContent = skill + ' · ' + faseName;
     const sub = document.getElementById('mtx-dialog-sub');
     let subTxt = ids.length + ' issue' + (ids.length===1?'':'s') + ' activo' + (ids.length===1?'':'s');
     if(typeof ageAvg === 'number' && ageAvg > 0) subTxt += ' · edad media ' + ageAvg + ' min';
@@ -325,6 +486,158 @@ function wireMtxDelegation(c){
     });
 }
 
+// #4196 — rellena un elemento con partes mixtas texto/negrita SIN innerHTML
+// (XSS-safe). parts = [{t:'texto'}, {t:'dato', b:true}, …].
+function mtxFillParts(el, parts){
+    if(!el) return;
+    el.textContent = '';
+    for(const p of parts){
+        if(p.b){
+            const b = document.createElement('b');
+            b.textContent = p.t;
+            el.appendChild(b);
+        } else {
+            el.appendChild(document.createTextNode(p.t));
+        }
+    }
+}
+
+// #4196 — Banner de misión diagnóstico. Lee el cuadro por el operador a partir
+// de los agregados ya calculados en tickMatriz. Todo dato externo (skill/fase)
+// va por textContent → XSS-safe.
+function renderMtxMission(d){
+    const mission = document.getElementById('mtx-mission');
+    if(!mission) return;
+    const grandTotal = d.grandTotal || 0;
+    const topFase = d.topFase;       // { key, fase, label, count, pct, trend } | null
+    const topSkill = d.topSkill;     // { skill, count } | null
+    const runners = d.skillRunners || []; // [{skill,count}, …]
+    const neck = d.neck;             // { skill, faseKey, faseLabel, count } | null
+    const hotCount = d.hotCount || 0;
+    const nFasesConCarga = d.nFasesConCarga || 0;
+    const nSkills = d.nSkills || 0;
+    const nFases = d.nFases || 0;
+
+    // Umbral de saturación: una fase concentra ≥40% de la carga activa total.
+    const saturated = grandTotal > 0 && topFase && topFase.pct >= 40;
+    mission.classList.toggle('is-calm', !saturated);
+
+    // Tarjeta-tag (izquierda).
+    if(saturated){
+        setText('mtx-btag-k', 'CUELLO');
+        setText('mtx-btag-n', '1');
+        setText('mtx-btag-s', 'FASE SATURADA');
+    } else {
+        setText('mtx-btag-k', 'CARGA');
+        setText('mtx-btag-n', String(nFasesConCarga));
+        setText('mtx-btag-s', nFasesConCarga === 1 ? 'FASE CON CARGA' : 'FASES CON CARGA');
+    }
+
+    // Chip del título.
+    if(grandTotal === 0){
+        setText('mtx-m-chip', 'pipeline en calma');
+    } else if(saturated){
+        setText('mtx-m-chip', faseLabel(topFase.fase).toUpperCase() + ' AL ' + topFase.pct + '%');
+    } else {
+        setText('mtx-m-chip', 'CARGA DISTRIBUIDA');
+    }
+
+    // Descripción accionable.
+    const desc = document.getElementById('mtx-m-desc');
+    if(grandTotal === 0){
+        if(desc) desc.textContent = 'No hay issues activos en este momento: ningún skill está parado en ninguna fase. El cuadro está vacío, sin cuello que diagnosticar.';
+    } else if(saturated && neck){
+        mtxFillParts(desc, [
+            {t:'Cada celda cuenta cuántos issues activos tiene un skill parado en una fase. La columna '},
+            {t: faseLabel(topFase.fase) + ' concentra ' + topFase.count + ' de los ' + grandTotal + ' issues', b:true},
+            {t:' — es el embudo real del pipeline. El pico está en '},
+            {t: neck.skill + ' × ' + neck.faseLabel + ' (' + neck.count + ')', b:true},
+            {t:', marcado como cuello de botella.'},
+        ]);
+    } else if(saturated){
+        mtxFillParts(desc, [
+            {t:'La columna '},
+            {t: faseLabel(topFase.fase) + ' concentra ' + topFase.count + ' de los ' + grandTotal + ' issues', b:true},
+            {t:' activos (' + topFase.pct + '% del total) — es donde se está amontonando el trabajo.'},
+        ]);
+    } else {
+        mtxFillParts(desc, [
+            {t:'La carga está repartida: la fase más cargada ('},
+            {t: topFase ? faseLabel(topFase.fase) : '—', b:true},
+            {t:') no llega al 40% del total. No hay un cuello marcado; el flujo avanza sin embudo crítico.'},
+        ]);
+    }
+
+    // Métrica 1 — carga total.
+    const totalV = document.getElementById('mtx-wm-total');
+    if(totalV){ totalV.textContent = ''; totalV.appendChild(document.createTextNode(fmtNum(grandTotal) + ' ')); const u=document.createElement('span'); u.className='u'; u.textContent='issues activos'; totalV.appendChild(u); }
+    setText('mtx-wm-total-s', 'repartidos en ' + nFases + ' fase' + (nFases===1?'':'s') + ' · ' + nSkills + ' skill' + (nSkills===1?'':'s') + ' con carga');
+
+    // Métrica 2 — fase más cargada.
+    if(topFase){
+        const faseV = document.getElementById('mtx-wm-fase');
+        if(faseV) faseV.textContent = faseLabel(topFase.fase) + ' · ' + topFase.count;
+        let trendTxt = '';
+        if(topFase.trend === 'up') trendTxt = ' · ▲ vs 24h';
+        else if(topFase.trend === 'down') trendTxt = ' · ▼ vs 24h';
+        else if(topFase.trend === 'flat') trendTxt = ' · ▬ vs 24h';
+        setText('mtx-wm-fase-s', topFase.pct + '% de todo lo activo' + trendTxt);
+    } else {
+        setText('mtx-wm-fase', '—');
+        setText('mtx-wm-fase-s', 'sin carga activa');
+    }
+
+    // Métrica 3 — skill más cargado + runners.
+    if(topSkill){
+        const skV = document.getElementById('mtx-wm-skill');
+        if(skV) skV.textContent = (SKILL_ICONS[topSkill.skill]||'⚙') + ' ' + topSkill.skill + ' · ' + topSkill.count;
+        const others = runners.filter(r => r.skill !== topSkill.skill).slice(0,2);
+        if(others.length){
+            setText('mtx-wm-skill-s', 'seguido de ' + others.map(r => r.skill + ' (' + r.count + ')').join(' y '));
+        } else {
+            setText('mtx-wm-skill-s', SKILL_ROLES[topSkill.skill] || 'el rol con más issues a cuestas');
+        }
+    } else {
+        setText('mtx-wm-skill', '—');
+        setText('mtx-wm-skill-s', 'sin carga activa');
+    }
+
+    // Lectura automática (recomendación).
+    const reco = document.getElementById('mtx-reco-t');
+    if(grandTotal === 0){
+        if(reco) reco.textContent = 'Nada que destrabar: aprovechá para mergear lo pendiente o sumar trabajo nuevo al pipeline.';
+    } else if(saturated && neck){
+        const isDev = neck.fase === 'dev';
+        if(isDev){
+            mtxFillParts(reco, [
+                {t:'El embudo está en '},
+                {t:'desarrollo', b:true},
+                {t:'. Sumar capacidad de '},
+                {t: neck.skill, b:true},
+                {t:' ahí destraba el ' + topFase.pct + '% del backlog.'},
+            ]);
+        } else {
+            mtxFillParts(reco, [
+                {t:'El embudo no es de '},
+                {t:'dev', b:true},
+                {t:': es de '},
+                {t: faseLabel(neck.fase).toLowerCase(), b:true},
+                {t:'. Reforzar '},
+                {t: neck.skill, b:true},
+                {t:' ahí destraba el ' + topFase.pct + '% del backlog.'},
+            ]);
+        }
+    } else if(saturated && topFase){
+        mtxFillParts(reco, [
+            {t:'La fase '},
+            {t: faseLabel(topFase.fase), b:true},
+            {t:' concentra el ' + topFase.pct + '% del trabajo. Reforzá los skills de esa columna para destrabar el flujo.'},
+        ]);
+    } else {
+        if(reco) reco.textContent = 'Sin cuello marcado: el trabajo fluye repartido entre fases. Seguí monitoreando la tendencia vs 24h.';
+    }
+}
+
 async function tickMatriz(){
     const d = await fetchJson('/api/dash/pipeline');
     if(!d) return;
@@ -363,7 +676,7 @@ async function tickMatriz(){
 
     // CA-3 — cuello de botella = celda con mayor (conteo × edad media). Una sola
     // gana; empate → mayor edad media. Reemplaza el destaque por umbral n>=5.
-    let neckKey = null, neckScore = -1, neckAge = -1;
+    let neckKey = null, neckScore = -1, neckAge = -1, neckN = 0;
     for(const { pipeline: p, fase } of fases){
         const fk = p+'/'+fase;
         for(const sk of allSkills){
@@ -372,13 +685,67 @@ async function tickMatriz(){
             const a = (ageAvg[fk]||{})[sk] || 0;
             const score = n * a;
             if(score > neckScore || (score === neckScore && a > neckAge)){
-                neckScore = score; neckAge = a; neckKey = fk+'\\u0000'+sk;
+                neckScore = score; neckAge = a; neckKey = fk+'\\u0000'+sk; neckN = n;
             }
         }
     }
 
+    // #4196 — Agregados para el banner de misión diagnóstico.
+    // Fase más cargada (key con mayor total) + su tendencia (suma de baselines).
+    let topFaseKey = null, topFaseCount = -1;
+    for(const { pipeline: p, fase } of fases){
+        const fk = p+'/'+fase;
+        if(totalsByFase[fk] > topFaseCount){ topFaseCount = totalsByFase[fk]; topFaseKey = fk; }
+    }
+    let topFase = null;
+    if(topFaseKey && topFaseCount > 0){
+        const faseName = topFaseKey.split('/')[1] || topFaseKey;
+        let curSum = 0, baseSum = 0, hasBase = false;
+        for(const sk of allSkills){
+            curSum += (counts[topFaseKey]||{})[sk] || 0;
+            const b = (trend[topFaseKey]||{})[sk];
+            if(typeof b === 'number'){ baseSum += b; hasBase = true; }
+        }
+        let ftrend = null;
+        if(hasBase){ ftrend = curSum > baseSum ? 'up' : (curSum < baseSum ? 'down' : 'flat'); }
+        topFase = { key: topFaseKey, fase: faseName, count: topFaseCount,
+            pct: grandTotal > 0 ? Math.round((topFaseCount/grandTotal)*100) : 0, trend: ftrend };
+    }
+    // Skill más cargado + runners (top 3 por total).
+    const skillRunners = allSkills
+        .filter(sk => totalsBySkill[sk] > 0)
+        .map(sk => ({ skill: sk, count: totalsBySkill[sk] }))
+        .sort((a,b) => b.count - a.count)
+        .slice(0, 3);
+    const topSkill = skillRunners.length ? skillRunners[0] : null;
+    // Cuello desarmado en sus partes.
+    let neck = null;
+    if(neckKey){
+        const [fk, sk] = neckKey.split('\\u0000');
+        const faseName = fk.split('/')[1] || fk;
+        neck = { skill: sk, faseKey: fk, fase: faseName, faseLabel: faseLabel(faseName), count: neckN };
+    }
+    // Conteo de celdas en carga alta (n>=5).
+    let hotCount = 0, nFasesConCarga = 0;
+    for(const { pipeline: p, fase } of fases){
+        const fk = p+'/'+fase;
+        if(totalsByFase[fk] > 0) nFasesConCarga++;
+        for(const sk of allSkills){ if(((counts[fk]||{})[sk]||0) >= 5) hotCount++; }
+    }
+    const nSkills = skillRunners.length;
+    renderMtxMission({
+        grandTotal, topFase, topSkill, skillRunners, neck, hotCount,
+        nFasesConCarga, nSkills, nFases: fases.length,
+    });
+
+    // ----- Heatmap -----
     let html = '<table class="mtx-table"><thead><tr><th class="skill-h">Skill</th>';
-    for(const { pipeline: p, fase } of fases){ html += '<th title="'+escapeHtml(p+'/'+fase)+'">'+escapeHtml(p[0].toUpperCase()+':'+fase)+'</th>'; }
+    for(const { pipeline: p, fase } of fases){
+        const fk = p+'/'+fase;
+        const isNeckCol = neck && neck.faseKey === fk;
+        const flag = isNeckCol ? '<span class="mtx-col-flag">⚠ embudo</span>' : '';
+        html += '<th class="'+(isNeckCol?'is-neck-col':'')+'" title="'+escapeHtml(p+'/'+fase)+'">'+escapeHtml(faseLabel(fase))+flag+'</th>';
+    }
     html += '<th title="Total de issues activos del skill en todas las fases">Total</th></tr></thead><tbody>';
     // Solo mostrar skills con al menos 1 issue activo (los demás son ruido).
     const visibleSkills = allSkills.filter(sk => totalsBySkill[sk] > 0);
@@ -386,7 +753,15 @@ async function tickMatriz(){
         html += '<tr><td colspan="'+(fases.length+2)+'"><div class="in-empty">Sin issues activos en este momento</div></td></tr>';
     } else {
         for(const skill of visibleSkills){
-            html += '<tr><td class="skill"><span style="color:'+(SKILL_COLORS[skill]||'inherit')+'">'+(SKILL_ICONS[skill]||'⚙')+'</span> '+escapeHtml(skill)+'</td>';
+            // #4196 — celda de skill con ícono + rol (nunca trunca).
+            const color = SKILL_COLORS[skill] || 'var(--in-fg-dim)';
+            const icon = SKILL_ICONS[skill] || '⚙';
+            const role = SKILL_ROLES[skill] || '';
+            const roleHtml = role ? '<span class="mtx-skr">'+escapeHtml(role)+'</span>' : '';
+            html += '<tr><td class="skill"><div class="mtx-skcell">'
+                + '<span class="mtx-skic" style="color:'+color+'">'+icon+'</span>'
+                + '<span class="mtx-skid"><span class="mtx-skn">'+escapeHtml(skill)+'</span>'+roleHtml+'</span>'
+                + '</div></td>';
             for(const { pipeline: p, fase } of fases){
                 const fk = p+'/'+fase;
                 const n = (counts[fk]||{})[skill] || 0;
@@ -408,8 +783,9 @@ async function tickMatriz(){
                 }
                 const glyphHtml = '<span class="mtx-glyph" aria-hidden="true">'+glyph+'</span>';
                 if(n > 0){
-                    const tip = n+' issue'+(n===1?'':'s')+' de '+escapeHtml(skill)+' en '+escapeHtml(fk)+(isNeck?' — cuello de botella':'');
-                    const alabel = escapeHtml(skill)+' en '+escapeHtml(fk)+', '+n+' issue'+(n===1?'':'s')+', abrir detalle';
+                    const faseNm = faseLabel(fase);
+                    const tip = n+' issue'+(n===1?'':'s')+' de '+escapeHtml(skill)+' en '+escapeHtml(faseNm)+(isNeck?' — cuello de botella':'');
+                    const alabel = escapeHtml(skill)+' en '+escapeHtml(faseNm)+', '+n+' issue'+(n===1?'':'s')+', abrir detalle';
                     const badge = isNeck ? '<div class="mtx-neck-badge">⚠ cuello de botella</div>' : '';
                     html += '<td class="'+cls+' mtx-cell-btn" role="button" tabindex="0" data-fk="'+escapeHtml(fk)+'" data-sk="'+escapeHtml(skill)+'" aria-label="'+alabel+'" title="'+tip+'">'+glyphHtml+n+trendHtml+badge+'</td>';
                 } else {
@@ -420,8 +796,12 @@ async function tickMatriz(){
         }
     }
     // Totals row
-    html += '<tr class="mtx-totals"><td>Total fase</td>';
-    for(const { pipeline: p, fase } of fases){ html += '<td title="Total de issues activos en '+escapeHtml(p+'/'+fase)+'">'+(totalsByFase[p+'/'+fase] || 0)+'</td>'; }
+    html += '<tr class="mtx-totals"><td>Total por fase</td>';
+    for(const { pipeline: p, fase } of fases){
+        const fk = p+'/'+fase;
+        const isNeckCol = neck && neck.faseKey === fk;
+        html += '<td class="'+(isNeckCol?'is-neck-col':'')+'" title="Total de issues activos en '+escapeHtml(p+'/'+fase)+'">'+(totalsByFase[fk] || 0)+'</td>';
+    }
     html += '<td>'+grandTotal+'</td></tr>';
     html += '</tbody></table>';
     if(c.innerHTML !== html) c.innerHTML = html;
@@ -443,14 +823,26 @@ function renderMatrizInner() {
 }
 
 /**
- * Documento SSR completo de la ventana Matriz. Replica el shell satélite
- * (header + nav V3 + footer) inline, siguiendo el patrón de descanso.js /
- * kpis.js para no depender del monolito en demolición.
+ * Documento SSR completo de la ventana Matriz. #4196 — hereda el shell MIZPÁ:
+ * barra de marca MIZPÁ + nav curada 5+«⋯ Más» (Matriz dentro del popover) +
+ * miga de pan «⋯ Más › 🔲 Matriz». Replica la estructura inline siguiendo el
+ * patrón de las hermanas para no depender del monolito en demolición.
  */
 function renderMatriz() {
     const theme = loadTheme();
     const spriteInline = loadIconSprite();
     const navHtml = renderNavTabsSsr(slug);
+    const brandHtml = renderMatrizBrandBar();
+    // Miga de pan: Matriz vive dentro de «⋯ Más» (tab secundario). La nav ya
+    // deja el popover abierto + Matriz marcada vía renderNavTabsSsr('matriz');
+    // la miga refuerza la ubicación (CA-1).
+    const breadcrumb = `
+  <div class="mz-crumb" aria-label="Ubicación: Más › Matriz">
+    <span class="mz-crumb-sep">⋯ Más</span>
+    <span class="mz-crumb-sep">›</span>
+    <b>🔲 Matriz</b>
+    <span class="mz-crumb-desc">· carga de cada skill por fase del pipeline</span>
+  </div>`;
     return `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -473,23 +865,18 @@ ${MATRIZ_CSS}
 <div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">${spriteInline}</div>
 <div class="satellite-frame">
   <header class="in-header">
-    <div class="in-header-brand">
-      <div class="in-header-logo">i</div>
-      <div>
-        <div class="in-header-title">Matriz</div>
-        <div class="in-header-subtitle">Skill × Fase</div>
-      </div>
-    </div>
+    ${brandHtml}
     <div class="in-header-meta">
       <span class="in-pill" id="hdr-mode">…</span>
       <span class="in-clock" id="hdr-clock">…</span>
     </div>
   </header>
   ${navHtml}
+  ${breadcrumb}
   <main class="satellite-body">${renderMatrizInner()}</main>
   <footer class="in-footer">
     <span>Refresh independiente · sin flicker</span>
-    <span>Intrale V3</span>
+    <span>Intrale V3 · MIZPÁ</span>
   </footer>
 </div>
 </body>
@@ -499,6 +886,8 @@ ${MATRIZ_CSS}
 module.exports = {
     renderMatriz,
     renderMatrizInner,
+    renderMatrizBrandBar,
+    renderMatrizMissionBanner,
     slug,
     escapeHtmlSsr,
     MATRIZ_CSS,
