@@ -38,6 +38,35 @@ function loadTheme() {
     try { return fs.readFileSync(THEME_CSS_PATH, 'utf8'); } catch { return ''; }
 }
 
+// #4197 (Ola 7.1) — Barra de marca MIZPÁ. Markup idéntico al de las hermanas
+// (matriz.js / equipo.js / costos.js): logo atalaya + nombre + tagline + selector
+// multiproyecto. Las clases `mz-*` viven en theme.css (compartidas). Todos los
+// valores son literales hardcoded (sin datos externos): no requieren escape.
+function renderOpsBrandBar() {
+    const logoSvg = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">'
+        + '<path d="M12 2.5 5 6v5c0 4.6 3 8 7 9.5 4-1.5 7-4.9 7-9.5V6l-7-3.5Z" stroke="#06121a" stroke-width="1.6" fill="rgba(255,255,255,.16)"/>'
+        + '<path d="M9.5 12.5 11.3 14.3 14.8 10.4" stroke="#06121a" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    return `
+    <div class="in-header-brand">
+      <div class="mz-logo" aria-hidden="true" title="MIZPÁ · atalaya de agentes (Génesis 31:49)">${logoSvg}</div>
+      <div class="mz-id">
+        <div class="mz-name">MIZPÁ</div>
+        <div class="mz-sub">«Que el Señor vigile» · atalaya de agentes</div>
+      </div>
+      <div class="mz-projsel" role="button" tabindex="0"
+           title="Proyecto activo. MIZPÁ es el motor; el proyecto es intercambiable (multiproyecto — selección en evaluación)."
+           aria-label="Proyecto activo: Intrale, 1 de 3">
+        <span class="mz-proj-avatar" aria-hidden="true">i</span>
+        <span class="mz-proj-id">
+          <span class="mz-proj-name">Intrale</span>
+          <span class="mz-proj-state">PROYECTO ACTIVO</span>
+        </span>
+        <span class="mz-proj-badge">1 / 3</span>
+        <span class="mz-proj-caret" aria-hidden="true">▾</span>
+      </div>
+    </div>`;
+}
+
 // CA-D3 / REQ-SEC-6 — sanitiza payload runtime ANTES del SSR. Reutiliza el
 // sanitizer central del pipeline (redacta JWT, AWS keys, tokens, etc.). El
 // truncado se aplica DESPUÉS del sanitize para no cortar a la mitad de un
@@ -61,6 +90,27 @@ const PROC_QUEUES = {
 };
 const TG_PROCS = new Set(['listener', 'svc-telegram']);
 
+// #4197 (Ola 7.1) — Evaluación bloqueante de outbox-drain.
+// Conclusión empírica (documentada en el issue): outbox-drain es un FALLBACK,
+// no un servicio permanente. Por diseño se auto-mata cuando el Pulpo está vivo
+// (pulpo.js drena el outbox en su mainLoop — outbox-drain.js:73-81). El Commander
+// NO drena el outbox. Por lo tanto su ausencia con el Pulpo vivo es SALUD, no una
+// falla: representarlo siempre como "caído" sería una FALSA ALARMA. Decisión:
+// representación CONDICIONAL (opción c) — estado "standby/dormido" neutro cuando
+// el Pulpo cubre el drain, "fallback activo" cuando corre, y sólo alarma real
+// cuando el Pulpo TAMBIÉN está caído (nadie drena la cola).
+const FALLBACK_PROCS = new Set(['outbox-drain']);
+
+// Estado efectivo de un nodo: 'alive' | 'dead' | 'standby'.
+// 'standby' aplica sólo a procesos fallback que están caídos PERO cuyo titular
+// (el Pulpo) está vivo y cubre su función — no es una caída, es reposo sano.
+function nodeStateOf(name, proc, opts) {
+    const alive = !!(proc && proc.alive);
+    if (alive) return 'alive';
+    if (FALLBACK_PROCS.has(name) && opts && opts.pulpoAlive) return 'standby';
+    return 'dead';
+}
+
 // EP8-H7 (#3960) — topología jerárquica. `root` es el orquestador; `services`
 // la capa intermedia; `output` la capa de salida. El render es data-driven:
 // sólo se dibujan los nodos presentes en `state.procesos`, pero este orden
@@ -70,6 +120,28 @@ const TOPOLOGY = {
     services: ['listener', 'svc-telegram', 'svc-github', 'svc-drive', 'svc-reconciler', 'outbox-drain'],
     output: ['dashboard'],
 };
+
+// #4197 — Resumen de salud del entorno para el banner de misión. Cuenta vivos y
+// caídos REALES (los fallbacks en reposo/standby NO cuentan como caídos — su
+// ausencia con el Pulpo vivo es salud, no falla). Devuelve también el uptime del
+// Pulpo (raíz de la topología) para la métrica de estabilidad.
+function computeOpsHealth(procesos) {
+    const procs = procesos || {};
+    const rootName = TOPOLOGY.root;
+    const pulpoAlive = !!(procs[rootName] && procs[rootName].alive);
+    const nodeOpts = { pulpoAlive };
+    let alive = 0, total = 0, standby = 0;
+    const down = [];
+    for (const [name, p] of Object.entries(procs)) {
+        const st = nodeStateOf(name, p, nodeOpts);
+        if (st === 'standby') { standby++; continue; }   // reposo sano: ni vivo ni caído
+        total++;
+        if (st === 'alive') alive++;
+        else down.push(name);
+    }
+    const pulpoUptime = pulpoAlive ? (Number(procs[rootName].uptime) || 0) : 0;
+    return { pulpoAlive, alive, total, standby, down, pulpoUptime };
+}
 
 // Entornos QA mostrados como pills compactas (CA-5, mockup 36 §2.5).
 const QA_ENV_PILLS = [
@@ -122,14 +194,20 @@ const OPS_CSS = `
 .ops-node:focus-visible { outline: 2px solid var(--in-info); outline-offset: 1px; }
 .ops-node.is-alive { border-color: var(--in-ok); }
 .ops-node.is-dead { border-color: var(--in-bad); background: var(--in-bad-soft); }
+/* #4197 — fallback en reposo (outbox-drain con Pulpo vivo): NO es alarma. Borde
+   y fondo neutros (dim), punto hueco — se distingue por forma + texto, nunca rojo. */
+.ops-node.is-standby { border-color: var(--in-border); border-style: dashed; background: var(--in-bg-3); opacity: .82; }
+.ops-node.is-standby:hover { opacity: 1; border-color: var(--in-fg-dim); }
 .ops-node.is-bot-down { border-color: var(--in-bad); background: var(--in-bad-soft); }
 .ops-node.selected { box-shadow: 0 0 0 2px var(--in-info) inset; }
 .ops-node-head { display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 13px; }
 .ops-node-dot { width: 11px; height: 11px; border-radius: 50%; display: inline-block; flex: none; }
 .ops-node-dot.alive { background: var(--in-ok); box-shadow: 0 0 0 1px var(--in-ok) inset; }
+.ops-node-dot.standby { background: transparent; box-shadow: 0 0 0 2px var(--in-fg-dim) inset; }
 .ops-node-ico { width: 13px; height: 13px; flex: none; }
 .ops-node-meta { font-size: 10.5px; color: var(--in-fg-dim); font-family: var(--in-mono); }
 .ops-node-meta.dead { color: var(--in-bad); font-weight: 600; }
+.ops-node-meta.standby { color: var(--in-fg-dim); font-style: italic; }
 .ops-topo-root .ops-node { min-width: 150px; }
 
 /* Panel de detalle del nodo seleccionado (CA-1 + CA-2 + CA-3). */
@@ -189,6 +267,47 @@ const OPS_CSS = `
 .ops-banner { display: block; padding: 12px 16px; margin-bottom: 14px; border-radius: var(--in-radius-sm); border: 1px solid var(--in-bad); border-left: 4px solid var(--in-bad); background: var(--in-bad-soft); color: var(--in-bad); font-weight: 600; }
 .ops-banner-title { display: flex; align-items: center; gap: 8px; }
 .ops-banner-sub { font-weight: 400; font-size: 12px; color: var(--in-fg-dim); margin-top: 4px; font-family: var(--in-mono); word-break: break-word; }
+
+/* #4197 — Banner de misión OPS (variante "salud de servicios"). Hereda el
+   patrón MIZPÁ de las hermanas (mtx-mission de matriz.js): tarjeta-tag + texto
+   + métricas + recomendación. Modo alarma (rojo/ámbar) cuando hay caídos reales;
+   modo calmo (cian) cuando todo el entorno está vivo. */
+.ops-mission { display: flex; align-items: stretch; gap: 22px; position: relative; overflow: hidden; flex-wrap: wrap;
+  background: linear-gradient(110deg, rgba(248,113,113,.16), rgba(251,146,60,.08) 45%, transparent 75%), linear-gradient(180deg, var(--in-bg-2,#11151E), var(--in-bg-3,#141925));
+  border: 1px solid rgba(248,113,113,.24); border-radius: 16px; padding: 18px 24px; }
+.ops-mission.is-calm { background: linear-gradient(110deg, rgba(52,217,224,.12), rgba(124,92,255,.07) 45%, transparent 75%), linear-gradient(180deg, var(--in-bg-2,#11151E), var(--in-bg-3,#141925));
+  border-color: rgba(52,217,224,.22); }
+.ops-mission::after { content: "🛰"; position: absolute; right: 18px; top: -12px; font-size: 92px; opacity: .05; pointer-events: none; }
+.ops-btag { display: flex; flex-direction: column; align-items: center; justify-content: center; min-width: 120px; padding: 12px 14px; border-radius: 14px; flex: none;
+  background: linear-gradient(135deg, rgba(248,113,113,.22), rgba(251,146,60,.14)); border: 1px solid rgba(248,113,113,.34); }
+.ops-mission.is-calm .ops-btag { background: linear-gradient(135deg, rgba(52,217,224,.22), rgba(124,92,255,.16)); border-color: rgba(52,217,224,.3); }
+.ops-btag-k { font-size: 9.5px; font-weight: 800; letter-spacing: 1.2px; color: #fca5a5; }
+.ops-mission.is-calm .ops-btag-k { color: #9fe9ee; }
+.ops-btag-n { font-size: 36px; font-weight: 800; color: #ffe0e0; line-height: 1; font-variant-numeric: tabular-nums; }
+.ops-mission.is-calm .ops-btag-n { color: #bff3f6; }
+.ops-btag-s { font-size: 9px; font-weight: 700; color: #fca5a5; letter-spacing: .5px; margin-top: 3px; text-align: center; }
+.ops-mission.is-calm .ops-btag-s { color: #9fe9ee; }
+.ops-mtext { flex: 1; min-width: 300px; }
+.ops-m-ttl { font-size: 19px; font-weight: 800; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ops-m-chip { font-size: 11px; color: #fca5a5; background: rgba(248,113,113,.12); border: 1px solid rgba(248,113,113,.3); padding: 3px 9px; border-radius: 20px; font-weight: 700; letter-spacing: .3px; }
+.ops-mission.is-calm .ops-m-chip { color: #9fe9ee; background: rgba(52,217,224,.12); border-color: rgba(52,217,224,.3); }
+.ops-m-desc { font-size: 13px; color: var(--in-fg-dim,#8A93A6); margin-top: 5px; max-width: 640px; line-height: 1.45; }
+.ops-m-desc b { color: #fca5a5; font-weight: 700; }
+.ops-mission.is-calm .ops-m-desc b { color: #9fe9ee; }
+.ops-wmetrics { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.ops-wm { flex: 1; min-width: 150px; background: rgba(255,255,255,.035); border: 1px solid var(--in-border,rgba(255,255,255,.07)); border-radius: 11px; padding: 9px 12px; }
+.ops-wm-l { font-size: 9.5px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#5B6376); }
+.ops-wm-v { font-size: 17px; font-weight: 800; margin-top: 3px; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.ops-wm-v .u { font-size: 11px; color: var(--in-fg-dim,#5B6376); font-weight: 700; }
+.ops-wm-s { font-size: 10px; color: var(--in-fg-dim,#5B6376); margin-top: 4px; }
+.ops-mright { min-width: 240px; flex: 1; display: flex; flex-direction: column; gap: 9px; }
+.ops-reco { background: rgba(248,113,113,.08); border: 1px solid rgba(248,113,113,.26); border-radius: 12px; padding: 11px 13px; }
+.ops-mission.is-calm .ops-reco { background: rgba(52,217,224,.06); border-color: rgba(52,217,224,.24); }
+.ops-reco-l { font-size: 9.5px; font-weight: 800; letter-spacing: .6px; color: #fca5a5; display: flex; align-items: center; gap: 6px; }
+.ops-mission.is-calm .ops-reco-l { color: #9fe9ee; }
+.ops-reco-t { font-size: 12px; color: var(--in-fg); margin-top: 8px; line-height: 1.45; }
+.ops-reco-t b { color: #fecaca; font-weight: 700; }
+.ops-mission.is-calm .ops-reco-t b { color: #9fe9ee; }
 `;
 
 // ───────────────────────── SVG icon helper ─────────────────────────
@@ -231,24 +350,39 @@ function renderBannerSsr(tgHealth) {
 function nodeCardSsr(name, p, opts) {
     const proc = p || {};
     const alive = !!proc.alive;
+    const state = nodeStateOf(name, proc, opts);   // 'alive' | 'dead' | 'standby'
+    const standby = state === 'standby';
     const isTg = TG_PROCS.has(name);
     const botDown = isTg && opts && opts.tgDown;
-    let cls = 'ops-node ' + (alive ? 'is-alive' : 'is-dead');
+    let cls = 'ops-node ';
+    cls += alive ? 'is-alive' : (standby ? 'is-standby' : 'is-dead');
     if (botDown) cls += ' is-bot-down';
-    const stateLabel = alive ? 'vivo' : 'caído';
+    const stateLabel = alive ? 'vivo' : (standby ? 'en reposo' : 'caído');
 
-    const head = alive
-        ? '<span class="ops-node-dot alive" aria-hidden="true"></span>'
-        : icoSsr('ic-health-dead');
-    const meta = alive
-        ? '<div class="ops-node-meta">PID ' + escapeHtmlText(proc.pid != null ? String(proc.pid) : '—') +
-            ' · ' + escapeHtmlText(fmtDurSsr(proc.uptime)) + '</div>'
-        : '<div class="ops-node-meta dead" data-deadlabel="1">caído</div>';
+    let head, meta;
+    if (alive) {
+        head = '<span class="ops-node-dot alive" aria-hidden="true"></span>';
+        meta = '<div class="ops-node-meta">PID ' + escapeHtmlText(proc.pid != null ? String(proc.pid) : '—') +
+            ' · ' + escapeHtmlText(fmtDurSsr(proc.uptime)) + '</div>';
+    } else if (standby) {
+        // #4197 — fallback en reposo: el Pulpo cubre su función. Dual-encoding
+        // neutro (punto hueco + texto), NUNCA borde rojo (no es una caída).
+        head = '<span class="ops-node-dot standby" aria-hidden="true"></span>';
+        meta = '<div class="ops-node-meta standby">en reposo · el Pulpo drena</div>';
+    } else {
+        head = icoSsr('ic-health-dead');
+        meta = '<div class="ops-node-meta dead" data-deadlabel="1">caído</div>';
+    }
+
+    const titleTip = standby
+        ? 'Fallback ' + name + ' — en reposo: el Pulpo ya drena el outbox. Sólo se activa si el Pulpo cae. Click para log + historial + restart.'
+        : 'Proceso ' + name + ' — ' + stateLabel + ' · click para log + historial + restart';
 
     return '<button type="button" class="' + cls + '"' +
         ' data-node="' + escapeHtmlAttr(name) + '"' +
         ' data-alive="' + (alive ? '1' : '0') + '"' +
-        ' title="' + escapeHtmlAttr('Proceso ' + name + ' — ' + stateLabel + ' · click para log + historial + restart') + '"' +
+        ' data-state="' + state + '"' +
+        ' title="' + escapeHtmlAttr(titleTip) + '"' +
         ' aria-label="' + escapeHtmlAttr('Proceso ' + name + ' ' + stateLabel + ', abrir detalle') + '">' +
         '<span class="ops-node-head">' + head + escapeHtmlText(name) + '</span>' +
         meta +
@@ -258,8 +392,12 @@ function nodeCardSsr(name, p, opts) {
 // Grafo jerárquico completo (CA-5).
 function renderTopologySsr(procesos, opts) {
     const procs = procesos || {};
-    const present = (names) => names.filter(n => Object.prototype.hasOwnProperty.call(procs, n));
     const rootName = TOPOLOGY.root;
+    // #4197 — el estado del Pulpo decide si los fallbacks (outbox-drain) están en
+    // reposo sano (standby) o son una alarma real. Se propaga a cada nodeCardSsr.
+    const pulpoAlive = !!(procs[rootName] && procs[rootName].alive);
+    const nodeOpts = Object.assign({}, opts, { pulpoAlive });
+    const present = (names) => names.filter(n => Object.prototype.hasOwnProperty.call(procs, n));
     const services = present(TOPOLOGY.services);
     const output = present(TOPOLOGY.output);
 
@@ -274,17 +412,17 @@ function renderTopologySsr(procesos, opts) {
 
     let html = '<div class="ops-topo" role="group" aria-label="Topología de servicios del pipeline">';
     if (Object.prototype.hasOwnProperty.call(procs, rootName)) {
-        html += '<div class="ops-topo-row ops-topo-root">' + nodeCardSsr(rootName, procs[rootName], opts) + '</div>';
+        html += '<div class="ops-topo-row ops-topo-root">' + nodeCardSsr(rootName, procs[rootName], nodeOpts) + '</div>';
         if (services.length || output.length) html += '<div class="ops-topo-bus" aria-hidden="true"></div>';
     }
     if (services.length) {
         html += '<div class="ops-topo-row ops-topo-services">';
-        for (const n of services) html += nodeCardSsr(n, procs[n], opts);
+        for (const n of services) html += nodeCardSsr(n, procs[n], nodeOpts);
         html += '</div>';
     }
     if (output.length) {
         html += '<div class="ops-topo-row ops-topo-output">';
-        for (const n of output) html += nodeCardSsr(n, procs[n], opts);
+        for (const n of output) html += nodeCardSsr(n, procs[n], nodeOpts);
         html += '</div>';
     }
     html += '</div>';
@@ -316,10 +454,97 @@ function renderLegendSsr() {
         '<div class="ops-legend-title">Leyenda · estado por nodo (color + forma + texto — nunca solo color)</div>' +
         '<span class="ops-legend-item"><span class="ops-node-dot alive" aria-hidden="true"></span>vivo — PID + uptime</span>' +
         '<span class="ops-legend-item">' + icoSsr('ic-health-dead') + 'caído — borde rojo + "desde cuándo" + último error</span>' +
+        '<span class="ops-legend-item"><span class="ops-node-dot standby" aria-hidden="true"></span>en reposo — fallback cubierto por el Pulpo (no es una caída)</span>' +
         '<span class="ops-legend-item">' + icoSsr('ic-live-tail') + 'log en vivo (SSE, follow auto, lazy-open del nodo)</span>' +
         '<span class="ops-legend-item">' + icoSsr('ic-transition-history') + 'historial de transiciones con causa</span>' +
         '<span class="ops-legend-item">' + icoSsr('ic-restart') + 'restart aislado (stop+start) · confirma + audita</span>' +
         '</div>';
+}
+
+// #4197 — Banner de misión OPS. Lee la salud del entorno (computeOpsHealth) y la
+// presenta como diagnóstico accionable, igual que las hermanas MIZPÁ. El SSR ya
+// resuelve el texto real (deep-link no queda en blanco); el cliente lo refresca
+// por polling. Todo nombre de proceso dinámico se escapa (anti-XSS log poisoning).
+function opsMissionTexts(h) {
+    // Devuelve { tone:'calm'|'alarm', ttl, chip, desc, reco } con textos PLANOS
+    // (sin HTML) — el caller escapa. Mirror exacto en el cliente renderOpsMission.
+    const downNames = h.down.join(', ');
+    if (h.down.length === 0 && h.pulpoAlive) {
+        return {
+            tone: 'calm',
+            ttl: 'Todos los servicios del entorno están vivos',
+            chip: 'ENTORNO SANO',
+            desc: 'El Pulpo y sus servicios laten. El outbox-drain está en reposo: su drenado del outbox de Telegram lo cubre el Pulpo, y sólo se activa como fallback si el Pulpo cae.',
+            reco: 'Nada que reiniciar. Seguí el latido del Pulpo y los descartes del reconciler; cualquier caída aparece acá y en la bandeja del Inicio.',
+        };
+    }
+    if (!h.pulpoAlive) {
+        return {
+            tone: 'alarm',
+            ttl: 'El Pulpo (orquestador) se cayó',
+            chip: 'PULPO CAÍDO',
+            desc: 'El orquestador no late: no se promueven issues ni se drena el outbox de Telegram desde el mainLoop. Mientras el Pulpo esté caído, el outbox-drain toma el relevo del drenado como fallback.',
+            reco: 'Reiniciá el Pulpo desde su nodo (stop+start aislado, confirma + audita). Verificá que el outbox-drain esté drenando mientras tanto.',
+        };
+    }
+    return {
+        tone: 'alarm',
+        ttl: h.down.length === 1 ? ('Un servicio se cayó → ' + downNames) : (h.down.length + ' servicios caídos → ' + downNames),
+        chip: h.down.length + (h.down.length === 1 ? ' CAÍDO' : ' CAÍDOS'),
+        desc: 'El Pulpo sigue vivo y orquestando, pero ' + downNames + ' dejó de latir. Seleccioná el nodo en rojo para ver su último error completo, su historial de caídas y el log en vivo.',
+        reco: 'Reiniciá ' + downNames + ' de forma aislada (stop+start) desde su nodo. No toca al resto de la topología; queda auditado.',
+    };
+}
+
+function renderOpsMissionBanner(state) {
+    const h = computeOpsHealth(state.procesos);
+    const t = opsMissionTexts(h);
+    const calm = t.tone === 'calm';
+    const cls = 'ops-mission' + (calm ? ' is-calm' : '');
+    const badgeK = calm ? 'VIVOS' : 'CAÍDOS';
+    const badgeN = calm ? String(h.alive) : String(h.down.length);
+    const badgeS = calm ? ('DE ' + h.total + ' SERVICIOS') : ('DE ' + h.total + ' SERVICIOS');
+    const uptimeTxt = h.pulpoAlive ? fmtDurSsr(h.pulpoUptime) : 'caído';
+    const standbyNote = h.standby > 0
+        ? (h.standby + ' en reposo (fallback cubierto por el Pulpo)')
+        : 'sin fallbacks en reposo';
+    return `
+<div class="${cls}" id="ops-mission" role="region" aria-label="Salud del entorno de servicios">
+  <div class="ops-btag">
+    <div class="ops-btag-k" id="ops-btag-k">${escapeHtmlText(badgeK)}</div>
+    <div class="ops-btag-n" id="ops-btag-n">${escapeHtmlText(badgeN)}</div>
+    <div class="ops-btag-s" id="ops-btag-s">${escapeHtmlText(badgeS)}</div>
+  </div>
+  <div class="ops-mtext">
+    <div class="ops-m-ttl"><span id="ops-m-ttl-text">${escapeHtmlText(t.ttl)}</span>
+      <span class="ops-m-chip" id="ops-m-chip">${escapeHtmlText(t.chip)}</span>
+    </div>
+    <div class="ops-m-desc" id="ops-m-desc">${escapeHtmlText(t.desc)}</div>
+    <div class="ops-wmetrics">
+      <div class="ops-wm">
+        <div class="ops-wm-l">🟢 SERVICIOS VIVOS</div>
+        <div class="ops-wm-v" id="ops-wm-vivos">${escapeHtmlText(String(h.alive))} <span class="u">de ${escapeHtmlText(String(h.total))}</span></div>
+        <div class="ops-wm-s" id="ops-wm-vivos-s">${escapeHtmlText(standbyNote)}</div>
+      </div>
+      <div class="ops-wm">
+        <div class="ops-wm-l">⏱ UPTIME DEL PULPO</div>
+        <div class="ops-wm-v" id="ops-wm-uptime">${escapeHtmlText(uptimeTxt)}</div>
+        <div class="ops-wm-s" id="ops-wm-uptime-s">${h.pulpoAlive ? 'orquestador estable · latido continuo' : 'sin latido — orquestación detenida'}</div>
+      </div>
+      <div class="ops-wm">
+        <div class="ops-wm-l">♻ DESCARTES RECONCILER</div>
+        <div class="ops-wm-v" id="ops-wm-recon">…</div>
+        <div class="ops-wm-s" id="ops-wm-recon-s">órdenes stale · últimas 24h</div>
+      </div>
+    </div>
+  </div>
+  <div class="ops-mright">
+    <div class="ops-reco">
+      <div class="ops-reco-l">${calm ? '✓ SIN ACCIÓN PENDIENTE' : '⚠ ACCIÓN SUGERIDA'}</div>
+      <div class="ops-reco-t" id="ops-reco-t">${escapeHtmlText(t.reco)}</div>
+    </div>
+  </div>
+</div>`;
 }
 
 function opsBodyHtml(state) {
@@ -327,6 +552,7 @@ function opsBodyHtml(state) {
     const tgDown = tgHealth && tgHealth.ok === false;
     return `
 ${renderBannerSsr(tgHealth)}
+${renderOpsMissionBanner(state)}
 
 <section class="in-section" aria-labelledby="ops-topo-h">
   <h2 id="ops-topo-h" class="in-section-title"><span class="in-section-title-icon" aria-hidden="true">🛰</span>Topología de servicios</h2>
@@ -383,6 +609,14 @@ function fmtAgo(ms){
     return 'hace '+Math.floor(h/24)+' d';
 }
 const TG_PROCS = new Set(${JSON.stringify(Array.from(TG_PROCS))});
+const FALLBACK_PROCS = new Set(${JSON.stringify(Array.from(FALLBACK_PROCS))});
+const OPS_ROOT = ${JSON.stringify(TOPOLOGY.root)};
+// #4197 — espejo cliente de nodeStateOf(): 'alive' | 'dead' | 'standby'.
+function nodeState(name, alive, pulpoAlive){
+    if(alive) return 'alive';
+    if(FALLBACK_PROCS.has(name) && pulpoAlive) return 'standby';
+    return 'dead';
+}
 
 // Estado de transiciones por servicio (CA-1) — se refresca por polling y
 // alimenta el label "caído hace N m" de los nodos y el panel de detalle.
@@ -536,6 +770,9 @@ async function tickOps(){
             banner.className = 'ops-banner-hidden'; banner.innerHTML = '';
         }
     }
+    // #4197 — el estado del Pulpo decide el reposo (standby) de los fallbacks.
+    const pulpoProc = (d.procesos || {})[OPS_ROOT];
+    const pulpoAlive = !!(pulpoProc && pulpoProc.alive);
     // Actualizar estado de cada nodo presente sin re-render del grafo (anti-flicker,
     // preserva la selección y el log abierto).
     for(const [name, p] of Object.entries(d.procesos || {})){
@@ -543,23 +780,94 @@ async function tickOps(){
         if(!btn) continue;
         const proc = p || {};
         const alive = !!proc.alive;
+        const st = nodeState(name, alive, pulpoAlive);
+        const standby = st === 'standby';
         btn.setAttribute('data-alive', alive ? '1':'0');
+        btn.setAttribute('data-state', st);
         const isTg = TG_PROCS.has(name);
-        btn.className = 'ops-node ' + (alive?'is-alive':'is-dead') + ((isTg&&tgDown)?' is-bot-down':'') + (SELECTED===name?' selected':'');
+        const base = alive ? 'is-alive' : (standby ? 'is-standby' : 'is-dead');
+        btn.className = 'ops-node ' + base + ((isTg&&tgDown)?' is-bot-down':'') + (SELECTED===name?' selected':'');
         const head = btn.querySelector('.ops-node-head');
         if(head){
-            const dot = alive ? '<span class="ops-node-dot alive" aria-hidden="true"></span>' : ico('ic-health-dead');
+            const dot = alive ? '<span class="ops-node-dot alive" aria-hidden="true"></span>'
+                : (standby ? '<span class="ops-node-dot standby" aria-hidden="true"></span>' : ico('ic-health-dead'));
             head.innerHTML = dot + escapeHtml(name);
         }
         let meta = btn.querySelector('.ops-node-meta');
         if(meta){
             if(alive){ meta.className='ops-node-meta'; meta.removeAttribute('data-deadlabel'); meta.textContent = 'PID '+(proc.pid!=null?String(proc.pid):'—')+' · '+fmtDur(proc.uptime); }
+            else if(standby){ meta.className='ops-node-meta standby'; meta.removeAttribute('data-deadlabel'); meta.textContent = 'en reposo · el Pulpo drena'; }
             else { meta.className='ops-node-meta dead'; meta.setAttribute('data-deadlabel','1'); }
         }
     }
     annotateDeadNodes();
+    renderOpsMission(d);
 }
 function cssEsc(s){ return String(s).replace(/["\\\\]/g, '\\\\$&'); }
+
+// #4197 — Banner de misión OPS (cliente). Espejo de computeOpsHealth +
+// opsMissionTexts del SSR. Todo dato externo (nombres de proceso) entra por
+// textContent → XSS-safe (anti log-poisoning).
+function opsSetText(id, val){ const el=document.getElementById(id); if(el && el.textContent!==String(val)) el.textContent=String(val); }
+function computeOpsHealthClient(procesos){
+    const procs = procesos || {};
+    const pulpoProc = procs[OPS_ROOT];
+    const pulpoAlive = !!(pulpoProc && pulpoProc.alive);
+    let alive=0, total=0, standby=0; const down=[];
+    for(const [name,p] of Object.entries(procs)){
+        const a = !!(p && p.alive);
+        const st = nodeState(name, a, pulpoAlive);
+        if(st==='standby'){ standby++; continue; }
+        total++;
+        if(st==='alive') alive++; else down.push(name);
+    }
+    const pulpoUptime = pulpoAlive ? (Number(pulpoProc.uptime)||0) : 0;
+    return { pulpoAlive, alive, total, standby, down, pulpoUptime };
+}
+function opsMissionTextsClient(h){
+    const downNames = h.down.join(', ');
+    if(h.down.length===0 && h.pulpoAlive){
+        return { tone:'calm',
+            ttl:'Todos los servicios del entorno están vivos',
+            chip:'ENTORNO SANO',
+            desc:'El Pulpo y sus servicios laten. El outbox-drain está en reposo: su drenado del outbox de Telegram lo cubre el Pulpo, y sólo se activa como fallback si el Pulpo cae.',
+            reco:'Nada que reiniciar. Seguí el latido del Pulpo y los descartes del reconciler; cualquier caída aparece acá y en la bandeja del Inicio.' };
+    }
+    if(!h.pulpoAlive){
+        return { tone:'alarm',
+            ttl:'El Pulpo (orquestador) se cayó',
+            chip:'PULPO CAÍDO',
+            desc:'El orquestador no late: no se promueven issues ni se drena el outbox de Telegram desde el mainLoop. Mientras el Pulpo esté caído, el outbox-drain toma el relevo del drenado como fallback.',
+            reco:'Reiniciá el Pulpo desde su nodo (stop+start aislado, confirma + audita). Verificá que el outbox-drain esté drenando mientras tanto.' };
+    }
+    return { tone:'alarm',
+        ttl:(h.down.length===1?'Un servicio se cayó → ':(h.down.length+' servicios caídos → '))+downNames,
+        chip:h.down.length+(h.down.length===1?' CAÍDO':' CAÍDOS'),
+        desc:'El Pulpo sigue vivo y orquestando, pero '+downNames+' dejó de latir. Seleccioná el nodo en rojo para ver su último error completo, su historial de caídas y el log en vivo.',
+        reco:'Reiniciá '+downNames+' de forma aislada (stop+start) desde su nodo. No toca al resto de la topología; queda auditado.' };
+}
+function renderOpsMission(d){
+    const mission = document.getElementById('ops-mission');
+    if(!mission || !d) return;
+    const h = computeOpsHealthClient(d.procesos);
+    const t = opsMissionTextsClient(h);
+    const calm = t.tone==='calm';
+    mission.classList.toggle('is-calm', calm);
+    opsSetText('ops-btag-k', calm?'VIVOS':'CAÍDOS');
+    opsSetText('ops-btag-n', calm?String(h.alive):String(h.down.length));
+    opsSetText('ops-btag-s', 'DE '+h.total+' SERVICIOS');
+    opsSetText('ops-m-ttl-text', t.ttl);
+    opsSetText('ops-m-chip', t.chip);
+    opsSetText('ops-m-desc', t.desc);
+    const vv = document.getElementById('ops-wm-vivos');
+    if(vv){ vv.textContent=''; vv.appendChild(document.createTextNode(h.alive+' ')); const u=document.createElement('span'); u.className='u'; u.textContent='de '+h.total; vv.appendChild(u); }
+    opsSetText('ops-wm-vivos-s', h.standby>0 ? (h.standby+' en reposo (fallback cubierto por el Pulpo)') : 'sin fallbacks en reposo');
+    opsSetText('ops-wm-uptime', h.pulpoAlive ? fmtDur(h.pulpoUptime) : 'caído');
+    opsSetText('ops-wm-uptime-s', h.pulpoAlive ? 'orquestador estable · latido continuo' : 'sin latido — orquestación detenida');
+    const recoL = mission.querySelector('.ops-reco-l');
+    if(recoL) recoL.textContent = calm ? '✓ SIN ACCIÓN PENDIENTE' : '⚠ ACCIÓN SUGERIDA';
+    opsSetText('ops-reco-t', t.reco);
+}
 
 // ── Reconciler: número + barras por motivo (CA-4) ──
 function reasonKind(reason){
@@ -578,6 +886,9 @@ async function tickReconciler(){
     const txt = String(total);
     if(countEl.textContent !== txt) countEl.textContent = txt;
     countEl.className = total === 0 ? 'ops-recon-count is-zero' : 'ops-recon-count';
+    // #4197 — refleja el mismo número en la métrica del banner de misión.
+    opsSetText('ops-wm-recon', txt);
+    opsSetText('ops-wm-recon-s', total === 0 ? 'sin órdenes stale · saludable' : 'órdenes stale · últimas 24h');
     const reasons = Object.entries(d.by_reason || {}).sort((a,b)=>b[1]-a[1]);
     const max = reasons.length ? reasons[0][1] : 1;
     let html = '';
@@ -681,6 +992,17 @@ function renderOps(state, opts) {
     const theme = loadTheme();
     const spriteInline = loadIconSprite();
     const navHtml = renderNavTabsSsr('ops');
+    const brandHtml = renderOpsBrandBar();
+    // #4197 — Miga de pan: Ops vive dentro de «⋯ Más» (tab secundario). La nav ya
+    // deja el popover abierto + Ops marcada vía renderNavTabsSsr('ops'); la miga
+    // refuerza la ubicación, igual que las hermanas (matriz, kpis…).
+    const breadcrumb = `
+  <div class="mz-crumb" aria-label="Ubicación: Más › Ops">
+    <span class="mz-crumb-sep">⋯ Más</span>
+    <span class="mz-crumb-sep">›</span>
+    <b>🛰 Ops</b>
+    <span class="mz-crumb-desc">· topología de servicios · log en vivo · restart auditado</span>
+  </div>`;
     return `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -698,22 +1020,17 @@ ${OPS_CSS}
 <div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">${spriteInline}</div>
 <div class="satellite-frame">
   <header class="in-header">
-    <div class="in-header-brand">
-      <div class="in-header-logo">i</div>
-      <div>
-        <div class="in-header-title">Ops</div>
-        <div class="in-header-subtitle">Topología de servicios · log en vivo · restart auditado</div>
-      </div>
-    </div>
+    ${brandHtml}
     <div class="in-header-meta">
       <span class="in-clock" id="hdr-clock">${escapeHtmlText(new Date().toLocaleTimeString('es-AR'))}</span>
     </div>
   </header>
   ${navHtml}
+  ${breadcrumb}
   <main class="satellite-body">${opsBodyHtml(state)}</main>
   <footer class="in-footer">
     <span>Solo lectura del estado · acciones (restart) confirmadas y auditadas</span>
-    <span>Intrale V3 · EP8-H7 #3960</span>
+    <span>Intrale V3 · MIZPÁ · #4197</span>
   </footer>
 </div>
 <script>${CONFIRM_MODAL_JS}</script>
@@ -749,8 +1066,13 @@ module.exports = {
     renderTopologySsr,
     nodeCardSsr,
     renderQaPillsSsr,
+    renderOpsBrandBar,
+    renderOpsMissionBanner,
+    computeOpsHealth,
+    nodeStateOf,
     OPS_CSS,
     TOPOLOGY,
+    FALLBACK_PROCS,
     // Alias de compat para callers que esperen el nombre canónico de escape SSR.
     escapeHtmlSsr: escapeHtmlText,
 };
