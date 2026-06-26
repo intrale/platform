@@ -1235,7 +1235,7 @@ function renderHistorial() {
     <select class="hm-sel" data-hm-filter="eventType" aria-label="Filtrar por tipo de evento"><option value="">Todo evento</option></select>
     <select class="hm-sel" data-hm-filter="skill" aria-label="Filtrar por agente o skill"><option value="">Todo skill</option></select>
     <select class="hm-sel" data-hm-filter="provider" aria-label="Filtrar por proveedor"><option value="">Todo proveedor</option></select>
-    <input class="hm-issue" type="search" inputmode="numeric" data-hm-filter="issue" placeholder="# issue" autocomplete="off" maxlength="12" aria-label="Filtrar por número de issue">
+    <input class="hm-issue-filter" type="search" inputmode="numeric" data-hm-filter="issue" placeholder="# issue" autocomplete="off" maxlength="12" aria-label="Filtrar por número de issue">
     <input class="hm-search" type="search" data-hm-filter="q" placeholder="🔍 buscar texto…" autocomplete="off" maxlength="200" aria-label="Buscar texto libre">
   </div>
 
@@ -1275,9 +1275,9 @@ function renderHistorial() {
 .hm-chip { font-size: 12px; color: var(--in-fg-dim); background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 999px; padding: 6px 13px; cursor: pointer; transition: border-color .12s, color .12s; }
 .hm-chip:hover { color: var(--in-fg); border-color: var(--in-accent); }
 .hm-chip-on { color: #06121a; background: linear-gradient(135deg,#34D9E0,#7C5CFF); border-color: transparent; font-weight: 700; }
-.hm-sel, .hm-issue, .hm-search { background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 10px; padding: 8px 11px; color: var(--in-fg); font-size: 12px; }
-.hm-sel:focus-visible, .hm-issue:focus-visible, .hm-search:focus-visible { outline: 2px solid var(--in-accent); outline-offset: 1px; }
-.hm-issue { width: 92px; }
+.hm-sel, .hm-issue-filter, .hm-search { background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 10px; padding: 8px 11px; color: var(--in-fg); font-size: 12px; }
+.hm-sel:focus-visible, .hm-issue-filter:focus-visible, .hm-search:focus-visible { outline: 2px solid var(--in-accent); outline-offset: 1px; }
+.hm-issue-filter { width: 92px; }
 .hm-search { flex: 1; min-width: 200px; max-width: 360px; margin-left: auto; }
 
 /* Timeline */
