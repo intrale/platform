@@ -1571,5 +1571,7 @@ module.exports = {
         handleBudgetMutation,
         BUDGET_MAX,
         renderCostosView,
+        // #4192 — banner de misión de la ventana Issues (rediseño MIZPÁ).
+        deriveIssuesMission,
     },
 };

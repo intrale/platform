@@ -169,6 +169,137 @@ test('deriveState prioriza rebote > needs-human > bloqueado > estado', () => {
 // #3730 rebote — los botones de las cards no deben ser controles muertos.
 // El script cliente DEBE definir moveIssue/pauseIssue propios (no depender de
 // window.moveIssue/window.pauseIssue, que no se cargan en /issues ni ?view=issues).
+// =============================================================================
+// #4192 — Cobertura de las funciones puras del rediseño MIZPÁ.
+// Hasta acá las 6 funciones nuevas (deriveGroup, renderGroupedSSR, countGroups,
+// renderCounters, renderMizpaChrome, deriveIssuesMission) estaban exportadas y
+// marcadas "PURA y testeable" pero sin red. Estos tests cierran ese hueco +
+// la regresión CA-7 (no truncar el backlog).
+// =============================================================================
+
+// ── deriveGroup: prioridad bloqueado > trabajando > listo > backlog ───────────
+test('deriveGroup prioriza bloqueado sobre el estado real (needs-human/blocked)', () => {
+    // Un issue "trabajando" pero con label de bloqueo cae en "bloqueado": la
+    // prioridad de bloqueo gana sobre el estado del agente.
+    assert.strictEqual(issues.deriveGroup({ estadoActual: 'trabajando', labels: ['needs-human'] }), 'bloqueado');
+    assert.strictEqual(issues.deriveGroup({ estadoActual: 'listo', labels: ['blocked:dependencies'] }), 'bloqueado');
+    assert.strictEqual(issues.deriveGroup({ estadoActual: 'pendiente', labels: ['needs-human'] }), 'bloqueado');
+});
+
+test('deriveGroup mapea trabajando/listo/backlog según estadoActual cuando no hay bloqueo', () => {
+    assert.strictEqual(issues.deriveGroup({ estadoActual: 'trabajando', labels: [] }), 'trabajando');
+    assert.strictEqual(issues.deriveGroup({ estadoActual: 'listo', labels: [] }), 'listo');
+    // Cualquier estado que no sea trabajando/listo (pendiente, null, desconocido) → backlog.
+    assert.strictEqual(issues.deriveGroup({ estadoActual: 'pendiente', labels: [] }), 'backlog');
+    assert.strictEqual(issues.deriveGroup({ estadoActual: null }), 'backlog');
+    assert.strictEqual(issues.deriveGroup({}), 'backlog');
+    assert.strictEqual(issues.deriveGroup(null), 'backlog');
+});
+
+// ── renderGroupedSSR: secciones en GROUP_ORDER con encabezado+conteo ──────────
+const grpFixture = [
+    { number: 1, title: 'a', estadoActual: 'trabajando', labels: [] },
+    { number: 2, title: 'b', estadoActual: 'trabajando', labels: [] },
+    { number: 3, title: 'c', estadoActual: 'listo', labels: [] },
+    { number: 4, title: 'd', estadoActual: 'pendiente', labels: ['needs-human'] },
+    { number: 5, title: 'e', estadoActual: 'pendiente', labels: [] },
+];
+
+test('renderGroupedSSR agrupa en secciones siguiendo GROUP_ORDER, con encabezado y conteo', () => {
+    const html = issues.renderGroupedSSR(grpFixture);
+    // Las secciones presentes deben aparecer en el orden canónico de GROUP_ORDER.
+    const orden = (html.match(/data-group-key="([a-z]+)"/g) || []).map((s) => s.replace(/.*"([a-z]+)"/, '$1'));
+    assert.deepStrictEqual(orden, ['trabajando', 'listo', 'bloqueado', 'backlog'],
+        'las secciones respetan GROUP_ORDER y omiten las vacías');
+    // Encabezado con label + conteo por sección.
+    assert.match(html, /class="iss-group-title">Trabajando<\/span><span class="iss-group-count">2</);
+    assert.match(html, /class="iss-group-title">Listos<\/span><span class="iss-group-count">1</);
+    assert.match(html, /class="iss-group-title">Bloqueados<\/span><span class="iss-group-count">1</);
+    assert.match(html, /class="iss-group-title">Backlog<\/span><span class="iss-group-count">1</);
+});
+
+test('renderGroupedSSR omite secciones sin issues y muestra empty-state global cuando no hay ninguno', () => {
+    // Sólo "trabajando": no debe emitir secciones de listo/bloqueado/backlog.
+    const soloTrabajando = issues.renderGroupedSSR([{ number: 9, title: 'x', estadoActual: 'trabajando', labels: [] }]);
+    assert.match(soloTrabajando, /data-group-key="trabajando"/);
+    assert.ok(!/data-group-key="listo"/.test(soloTrabajando), 'sin sección listo si está vacía');
+    assert.ok(!/data-group-key="backlog"/.test(soloTrabajando), 'sin sección backlog si está vacía');
+    // Backlog totalmente vacío → empty-state.
+    const vacio = issues.renderGroupedSSR([]);
+    assert.match(vacio, /class="iss-empty"/);
+    assert.ok(!/data-group-key=/.test(vacio), 'sin secciones cuando no hay issues');
+});
+
+// ── countGroups / renderCounters: valores total/trabajando/listo/bloqueado ────
+test('countGroups cuenta total/trabajando/listo/blocked para un set fijo', () => {
+    const c = issues.countGroups(grpFixture);
+    assert.strictEqual(c.total, 5, 'total = cantidad de issues, sin perder ninguno');
+    assert.strictEqual(c.trabajando, 2);
+    assert.strictEqual(c.listo, 1);
+    assert.strictEqual(c.blocked, 1);
+    // El backlog (e) no tiene contador propio pero entra en el total.
+});
+
+test('renderCounters refleja los valores de countGroups en sus celdas', () => {
+    const html = issues.renderCounters(issues.countGroups(grpFixture));
+    assert.match(html, /id="iss-count-total">5</);
+    assert.match(html, /id="iss-count-working">2</);
+    assert.match(html, /id="iss-count-ready">1</);
+    assert.match(html, /id="iss-count-blocked">1</);
+});
+
+test('renderCounters sin argumento degrada a ceros sin emitir "undefined"', () => {
+    const html = issues.renderCounters();
+    assert.match(html, /id="iss-count-blocked">0</, 'la celda bloqueados cae a 0, no a undefined');
+    assert.ok(!/>undefined</.test(html), 'ninguna celda renderiza "undefined"');
+});
+
+// ── renderMizpaChrome: banner de misión defensivo ────────────────────────────
+test('renderMizpaChrome arma el banner de misión con entregados/total y barra de progreso', () => {
+    const html = issues.renderMizpaChrome({ label: 'Ola 7.1', total: 10, entregados: 4, etaRemainingMs: 3600000, velocityPctPerMin: 0.5 });
+    assert.match(html, /id="mz-delivered">4</);
+    assert.match(html, /id="mz-total">10</);
+    assert.match(html, /width:40%/, '40% = 4/10 entregados');
+    assert.match(html, /Ola 7\.1/);
+});
+
+test('renderMizpaChrome es defensivo ante mission null/parcial (sin NaN ni división por cero)', () => {
+    const html = issues.renderMizpaChrome(null);
+    assert.match(html, /id="mz-delivered">0</);
+    assert.match(html, /id="mz-total">0</);
+    assert.match(html, /width:0%/, 'total 0 → 0% sin dividir por cero');
+    assert.ok(!/NaN/.test(html), 'ningún NaN en el markup');
+    assert.match(html, /Ola actual/, 'label por defecto cuando falta');
+});
+
+// ── Regresión CA-7: el backlog NO se trunca (Gherkin de los 66 issues) ────────
+test('CA-7 renderGroupedSSR renderiza TODOS los issues sin truncar (>200)', () => {
+    const N = 240;
+    const many = Array.from({ length: N }, (_, i) => ({
+        number: i + 1, title: 'Issue ' + (i + 1), estadoActual: 'trabajando', labels: [],
+    }));
+    const html = issues.renderGroupedSSR(many);
+    const cards = (html.match(/role="article"/g) || []).length;
+    assert.strictEqual(cards, N, 'se renderizan los ' + N + ' issues, ningún slice() silencioso');
+    assert.match(html, /class="iss-group-count">240</, 'el conteo de la sección refleja los 240');
+});
+
+test('CA-7 renderIssuesHTML no trunca el backlog inyectado por matrix (>200)', () => {
+    const N = 210;
+    const matrix = {};
+    const priorityOrder = [];
+    for (let i = 1; i <= N; i++) {
+        matrix[String(i)] = { title: 'I' + i, faseActual: 'dev', estadoActual: 'trabajando', labels: [], bounces: 0 };
+        priorityOrder.push(String(i));
+    }
+    // Contamos sólo dentro del <main> SSR: el script cliente contiene un
+    // template '<article … role="article">' que sumaría un falso positivo.
+    const html = issues.renderIssuesHTML({ matrix, priorityOrder });
+    const main = html.slice(html.indexOf('id="issues-body"'), html.indexOf('</main>'));
+    const cards = (main.match(/role="article"/g) || []).length;
+    assert.strictEqual(cards, N, 'la página completa renderiza los ' + N + ' issues sin truncar');
+});
+
 test('el script cliente define moveIssue/pauseIssue propios (no gatea en window.*)', () => {
     const script = issues.renderIssuesClientScript();
     assert.match(script, /async function moveIssue\s*\(/, 'debe definir moveIssue local');

@@ -443,7 +443,7 @@ function renderIssuesFilterBar() {
 
 // Contadores grandes de la toolbar (CA-2). IDs estables para hidratación.
 function renderCounters(counts) {
-    const c = counts || { total: 0, trabajando: 0, listo: 0, bloqueado: 0 };
+    const c = counts || { total: 0, trabajando: 0, listo: 0, blocked: 0 };
     const cell = (id, label, value, cls, tip) =>
         '<div class="iss-counter ' + cls + '" title="' + escapeHtmlAttr(tip) + '">'
         + '<span class="iss-counter-value" id="' + id + '">' + escapeHtmlSsr(String(value)) + '</span>'
@@ -1562,6 +1562,8 @@ module.exports = {
     renderIssuesClientScript,
     renderIssuesFilterBar,
     renderCounters,
+    countGroups,
+    GROUP_ORDER,
     renderIssuesDialog,
     renderMizpaChrome,
     buildInitialIssues,
