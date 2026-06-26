@@ -234,7 +234,10 @@ function buildParts() {
     (delivery, builder, linter, tester). El resto se queda en cola y arranca al cerrar el periodo.
     Los issues con label <code>priority:critical</code> hacen bypass del gate.
   </p>
-  <div id="rm-status" class="rm-status">…</div>
+  <!-- CA-4 (#4200) — Banner de misión: diagnostica la ventana actual, las horas
+       de descanso/semana, la próxima apertura y qué quedó en cola por descanso.
+       Lo hidrata renderStatus() client-side (createElement + textContent). -->
+  <div id="rm-status" class="rm-status rm-mission" role="status" aria-live="polite">…</div>
   <form id="rm-form" class="rm-form" novalidate>
     <div class="rm-row">
       <label class="rm-label">
@@ -308,6 +311,30 @@ function buildParts() {
 .rm-status-text { display: flex; flex-direction: column; gap: 2px; }
 .rm-status-title { font-weight: 600; }
 .rm-status-sub { font-size: 11px; color: var(--in-fg-soft); }
+
+/* ===== Banner de misión MIZPÁ (CA-4 #4200) — diagnóstico de ventanas ===== */
+/* Hereda los tonos púrpura del modo descanso ya usados por las hermanas; cero
+   colores nuevos fuera de las vars --in-* / --rest-mode-*. */
+.rm-mission { display: flex; align-items: stretch; gap: 18px; padding: 16px 20px; border-radius: 14px; overflow: hidden; position: relative; flex-wrap: wrap;
+  background: linear-gradient(110deg, rgba(124,92,255,.16), rgba(124,92,255,.05) 48%, transparent 78%), var(--in-bg-2, #11151E);
+  border: 1px solid rgba(124,92,255,.30); }
+.rm-mission.rm-inactive { background: var(--in-bg-3); border-color: var(--in-border); }
+.rm-mission-tag { display: flex; flex-direction: column; align-items: center; justify-content: center; min-width: 104px; padding: 12px 14px; border-radius: 13px;
+  background: linear-gradient(135deg, rgba(124,92,255,.26), rgba(124,92,255,.12)); border: 1px solid rgba(124,92,255,.40); }
+.rm-mission.rm-inactive .rm-mission-tag { background: rgba(255,255,255,.04); border-color: var(--in-border); }
+.rm-mission-tag-ico { font-size: 30px; line-height: 1; }
+.rm-mission-tag-lbl { font-size: 9.5px; font-weight: 800; letter-spacing: .7px; margin-top: 7px; text-align: center; color: var(--rest-mode-fg, #C5B7FF); text-transform: uppercase; }
+.rm-mission.rm-inactive .rm-mission-tag-lbl { color: var(--in-fg-soft); }
+.rm-mission-text { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 5px; }
+.rm-mission-ttl { font-size: 17px; font-weight: 800; color: var(--in-fg, #e6edf3); line-height: 1.25; }
+.rm-mission-desc { font-size: 12.5px; color: var(--in-fg-dim, #8A93A6); line-height: 1.45; max-width: 560px; }
+.rm-mission-metrics { display: flex; gap: 10px; flex-wrap: wrap; align-items: stretch; }
+.rm-mission-tile { flex: 1 1 130px; min-width: 120px; background: rgba(255,255,255,.035); border: 1px solid var(--in-border, rgba(255,255,255,.08)); border-radius: 11px; padding: 9px 12px; }
+.rm-mission-tile-k { font-size: 9px; font-weight: 800; letter-spacing: .6px; color: var(--in-fg-soft, #5B6376); text-transform: uppercase; }
+.rm-mission-tile-v { font-size: 16px; font-weight: 800; margin-top: 4px; line-height: 1.15; color: var(--in-fg, #e6edf3); font-variant-numeric: tabular-nums; }
+.rm-mission-tile-s { font-size: 10.5px; color: var(--in-fg-dim, #8A93A6); margin-top: 3px; line-height: 1.3; }
+@media (max-width: 900px) { .rm-mission { flex-direction: column; } .rm-mission-metrics { width: 100%; } }
+
 .rm-form { display: flex; flex-direction: column; gap: 14px; }
 .rm-row { display: flex; flex-direction: column; gap: 6px; }
 .rm-row-tz { max-width: 360px; }
@@ -1011,44 +1038,115 @@ function renderEditor(){
     renderPreview();
 }
 
-// ----- Status header (#rm-status) y bypass labels -----
+// ----- Banner de misión (#rm-status) y bypass labels -----
+
+// CA-4 (#4200) — horas de descanso por semana, computadas desde scheduleState.
+// No hay campo server-side para esto; se deriva de los periodos ya cargados
+// usando expandPeriod (mismo cálculo que la validación de overlap). Los periodos
+// válidos no se solapan, así que la suma directa no doble-cuenta. Se acota a la
+// semana completa (10080 min) por defensa.
+function weeklyRestStats(){
+    let total = 0;
+    for(const day of DAY_KEYS){
+        for(const p of (scheduleState[day] || [])){
+            for(const iv of expandPeriod(day, p)){
+                const dur = iv.endAbs - iv.startAbs;
+                if(dur > 0) total += dur;
+            }
+        }
+    }
+    if(total > MIN_PER_WEEK) total = MIN_PER_WEEK;
+    const pct = Math.round((total / MIN_PER_WEEK) * 1000) / 10;  // 1 decimal
+    const h = Math.floor(total / 60);
+    const m = total % 60;
+    return { totalMin: total, pct: pct, label: (m ? h + 'h ' + m + 'm' : h + 'h') };
+}
+
+// Tile de métrica del banner (clave + valor + subtítulo). XSS-safe (textContent).
+function missionTile(parent, key, value, sub){
+    const tile = makeEl('div', { cls: 'rm-mission-tile' });
+    tile.appendChild(makeEl('div', { cls: 'rm-mission-tile-k', text: key }));
+    tile.appendChild(makeEl('div', { cls: 'rm-mission-tile-v', text: value }));
+    if(sub != null && sub !== '') tile.appendChild(makeEl('div', { cls: 'rm-mission-tile-s', text: sub }));
+    parent.appendChild(tile);
+}
+
+// CA-4 (#4200) — Banner de misión: lee el estado y lo cuenta en lenguaje natural.
+// Diagnostica ventana actual, horas/semana, próxima apertura y cola por descanso
+// (skills LLM gateados). Reusa el slice describeRestModeNow (payload.restMode) y
+// computa horas/semana desde scheduleState. Todo XSS-safe (createElement +
+// textContent, nunca innerHTML — FE-SEC-1). El llamador debe sincronizar
+// scheduleState ANTES (ver tickRestMode) para que las horas reflejen el último
+// schedule del server.
 function renderStatus(payload){
     const status = document.getElementById('rm-status');
     if(!status) return;
     clearChildren(status);
     status.classList.remove('rm-active','rm-inactive');
     const rm = (payload && payload.window) || {};
+    const slice = (payload && payload.restMode) || {};
+    const cur = slice.currentPeriod;
+    const next = slice.nextPeriod;
+    const within = !!slice.isWithinNow;
+    const wk = weeklyRestStats();
+    const gated = Array.isArray(payload && payload.wouldPauseSkills) ? payload.wouldPauseSkills : [];
+
+    // --- Lectura automática del estado: tag + título + descripción ---
+    let tagIco, tagLbl, title, desc;
     if(!rm.active){
         status.classList.add('rm-inactive');
-        status.appendChild(makeEl('span', { cls: 'rm-status-icon', text: '○' }));
-        status.appendChild(makeEl('span', { cls: 'rm-status-text', text: 'Inactivo · pipeline opera sin restricciones.' }));
+        tagIco = '○'; tagLbl = 'Apagado';
+        title = 'Modo descanso apagado';
+        desc = 'El pipeline opera sin restricciones horarias. Activá el modo descanso y cargá ventanas en el calendario para programar reposo.';
     } else {
         status.classList.add('rm-active');
-        status.appendChild(makeEl('span', { cls: 'rm-status-icon', text: '🌙' }));
-        const txt = makeEl('span', { cls: 'rm-status-text' });
-        // El slice enriquecido (current/next/periodsToday) viaja en payload.restMode
-        // (describeRestModeNow); fallback a top-level por compat.
-        const slice = (payload && payload.restMode) || payload || {};
-        const cur = slice.currentPeriod;
-        const next = slice.nextPeriod;
-        const periodsToday = (typeof slice.periodsToday === 'number') ? slice.periodsToday : null;
-        if(cur && cur.start && cur.end){
-            txt.appendChild(makeEl('span', { cls: 'rm-status-title', text: 'Activa · ahora ' + cur.start + '–' + cur.end }));
-            if(periodsToday != null && next && next.start){
-                txt.appendChild(makeEl('span', { cls: 'rm-status-sub', text: periodsToday + ' periodo' + (periodsToday === 1 ? '' : 's') + ' hoy · próximo ' + next.start }));
-            } else if(periodsToday != null){
-                txt.appendChild(makeEl('span', { cls: 'rm-status-sub', text: periodsToday + ' periodo' + (periodsToday === 1 ? '' : 's') + ' hoy' }));
-            }
+        if(within && cur && cur.end){
+            tagIco = '🌙'; tagLbl = 'Descansando';
+            title = 'Estás en una ventana de descanso · termina ' + cur.end;
+            desc = 'Sólo corren los skills determinísticos (delivery, builder, linter, tester). '
+                 + (gated.length ? gated.length + ' skill' + (gated.length === 1 ? '' : 's') + ' LLM esperan que se cierre la ventana.' : 'Ningún skill LLM quedó en cola.');
         } else if(next && next.start){
-            txt.appendChild(makeEl('span', { cls: 'rm-status-title', text: 'Programada · próximo ' + next.start + (next.end ? '–' + next.end : '') }));
-            if(periodsToday != null){
-                txt.appendChild(makeEl('span', { cls: 'rm-status-sub', text: periodsToday + ' periodo' + (periodsToday === 1 ? '' : 's') + ' hoy' }));
-            }
+            tagIco = '☀'; tagLbl = 'Operativo';
+            title = 'Pipeline operativo · próxima ventana ' + nextPeriodText(next);
+            desc = 'Todos los skills corren con normalidad. Al abrir la próxima ventana se pausan los skills LLM y siguen sólo los determinísticos.';
         } else {
-            txt.appendChild(makeEl('span', { cls: 'rm-status-title', text: 'Activa · sin periodos configurados todavía' }));
+            tagIco = '☀'; tagLbl = 'Sin ventanas';
+            title = 'Modo descanso activo, sin ventanas configuradas';
+            desc = 'No hay periodos de descanso cargados todavía. Arrastrá sobre el calendario para crear una ventana (snap 30 min).';
         }
-        status.appendChild(txt);
     }
+
+    const tag = makeEl('div', { cls: 'rm-mission-tag' });
+    tag.appendChild(makeEl('div', { cls: 'rm-mission-tag-ico', text: tagIco }));
+    tag.appendChild(makeEl('div', { cls: 'rm-mission-tag-lbl', text: tagLbl }));
+    status.appendChild(tag);
+
+    const textBox = makeEl('div', { cls: 'rm-mission-text' });
+    textBox.appendChild(makeEl('div', { cls: 'rm-mission-ttl', text: title }));
+    textBox.appendChild(makeEl('div', { cls: 'rm-mission-desc', text: desc }));
+    status.appendChild(textBox);
+
+    const metrics = makeEl('div', { cls: 'rm-mission-metrics' });
+    // Ventana actual
+    if(within && cur && cur.end){
+        missionTile(metrics, 'Ventana actual', '🌙 ' + (cur.start || '') + '–' + cur.end, 'en descanso');
+    } else if(rm.active){
+        missionTile(metrics, 'Ventana actual', '○ Operativo', 'sin ventana activa');
+    } else {
+        missionTile(metrics, 'Ventana actual', '— Off', 'sin restricciones');
+    }
+    // Horas de descanso por semana (CA-4)
+    missionTile(metrics, 'Descanso / semana', wk.label, wk.pct + '% de la semana');
+    // Próxima apertura de ventana (CA-4)
+    missionTile(metrics, 'Próxima apertura',
+        next && next.start ? nextPeriodText(next) : '—',
+        next && next.start ? 'se pausan skills LLM' : 'sin próxima ventana');
+    // Cola por descanso: skills LLM que el descanso deja esperando (CA-4)
+    missionTile(metrics, 'En cola por descanso',
+        String(gated.length) + ' skill' + (gated.length === 1 ? '' : 's'),
+        gated.length ? gated.slice(0, 3).join(' · ') + (gated.length > 3 ? ' …' : '') : 'nada esperando');
+    status.appendChild(metrics);
+
     // Bypass labels como chips con tooltip (CA-7) — render XSS-safe (textContent).
     renderBypassChips(payload && payload.bypassLabels);
     const upd = document.getElementById('rm-updated');
@@ -1138,8 +1236,10 @@ async function tickRestMode(){
     const d = await fetchRestMode();
     if(!d || !d.ok) return;
     if(grid && grid.getAttribute('data-rm-editing') === '1') return;  // post-fetch re-check
-    renderStatus(d);
+    // #4200 — sincronizar scheduleState ANTES del banner: weeklyRestStats() lee
+    // scheduleState para las horas/semana del banner de misión.
     syncStateFromServer(d);
+    renderStatus(d);
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -1197,7 +1297,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const freshNp = fresh && fresh.restMode && fresh.restMode.nextPeriod;
                 setMsg('✓ Guardado · próximo descanso ' + nextPeriodText(freshNp), 'ok');
                 if(typeof showToast === 'function') showToast('Agenda de descanso guardada', true);
-                if(fresh){ renderStatus(fresh); syncStateFromServer(fresh); }
+                if(fresh){ syncStateFromServer(fresh); renderStatus(fresh); }
             } else {
                 const errs = Array.isArray(j.errors) ? j.errors.join(' · ') : (j.msg || 'Error');
                 setMsg('✗ ' + errs, 'err');  // textContent al setear el msg (FE-SEC-1)
@@ -1227,8 +1327,41 @@ ${COMMON_HELPERS}
 ${script}</script>`;
 }
 
+// CA-5/CA-6 (#4200, Ola 7.1) — barra de marca MIZPÁ del shell standalone (marca
+// + tagline «Que el Señor vigile» Génesis 31:49 + selector multiproyecto Intrale
+// 1/3). Copia verbatim del patrón consensuado por las hermanas MIZPÁ ya mergeadas
+// (Home #4204, Ops #4197/#4213, Bloqueados #4209). Hereda las clases `.mz-*` de
+// theme.css para no divergir visualmente. Descanso es tab SECUNDARIO (vive en
+// «⋯ Más») → se acompaña de miga de pan en renderDescanso().
+function renderDescansoBrandBar() {
+    const logoSvg = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">'
+        + '<path d="M12 2.5 5 6v5c0 4.6 3 8 7 9.5 4-1.5 7-4.9 7-9.5V6l-7-3.5Z" stroke="#06121a" stroke-width="1.6" fill="rgba(255,255,255,.16)"/>'
+        + '<path d="M9.5 12.5 11.3 14.3 14.8 10.4" stroke="#06121a" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    return `
+    <div class="in-header-brand">
+      <div class="mz-logo" aria-hidden="true" title="MIZPÁ · atalaya de agentes (Génesis 31:49)">${logoSvg}</div>
+      <div class="mz-id">
+        <div class="mz-name">MIZPÁ</div>
+        <div class="mz-sub">«Que el Señor vigile» · centro de decisiones</div>
+      </div>
+      <div class="mz-projsel" role="button" tabindex="0"
+           title="Proyecto activo. MIZPÁ es el motor; el proyecto es intercambiable (multiproyecto — selección en evaluación)."
+           aria-label="Proyecto activo: Intrale, 1 de 3">
+        <span class="mz-proj-avatar" aria-hidden="true">i</span>
+        <span class="mz-proj-id">
+          <span class="mz-proj-name">Intrale</span>
+          <span class="mz-proj-state">PROYECTO ACTIVO</span>
+        </span>
+        <span class="mz-proj-badge">1 / 3</span>
+        <span class="mz-proj-caret" aria-hidden="true">▾</span>
+      </div>
+    </div>`;
+}
+
 // Documento HTML completo. Replica el shell de pageShell() (header con
 // pill+clock, nav V3, sprite inline, footer) sin depender de satellites.js.
+// #4200 — el header viejo (logo "i" + título plano) se reemplaza por la barra de
+// marca MIZPÁ + miga de pan, consistente con las pantallas hermanas.
 // `opts.tz` (opcional) prefilea el input de zona horaria, escapado (CA-D1);
 // el cliente lo reconcilia con /api/rest-mode en el primer tick.
 function renderDescanso(opts) {
@@ -1236,6 +1369,17 @@ function renderDescanso(opts) {
     const theme = loadTheme();
     const spriteInline = loadIconSprite();
     const navHtml = renderNavTabsSsr('descanso');
+    const brandHtml = renderDescansoBrandBar();
+    // #4200 CA-5 — Miga de pan: Descanso vive dentro de «⋯ Más» (tab secundario).
+    // renderNavTabsSsr('descanso') ya deja el popover abierto + Descanso marcada;
+    // la miga refuerza la ubicación igual que las hermanas (Ops, Matriz, KPIs).
+    const breadcrumb = `
+  <div class="mz-crumb" aria-label="Ubicación: Más › Descanso">
+    <span class="mz-crumb-sep">⋯ Más</span>
+    <span class="mz-crumb-sep">›</span>
+    <b>🌙 Descanso</b>
+    <span class="mz-crumb-desc">· calendario semanal · ventanas de reposo · gating de skills LLM</span>
+  </div>`;
     const { body, css, script } = buildParts();
     const tzAttr = o.tz ? ` value="${escapeHtmlSsr(o.tz)}"` : '';
     const bodyHtml = tzAttr
@@ -1263,23 +1407,18 @@ ${css}
 <div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">${spriteInline}</div>
 <div class="satellite-frame">
   <header class="in-header">
-    <div class="in-header-brand">
-      <div class="in-header-logo">i</div>
-      <div>
-        <div class="in-header-title">Modo descanso</div>
-        <div class="in-header-subtitle">Calendario semanal · gating de skills LLM</div>
-      </div>
-    </div>
+    ${brandHtml}
     <div class="in-header-meta">
       <span class="in-pill" id="hdr-mode">…</span>
       <span class="in-clock" id="hdr-clock">…</span>
     </div>
   </header>
   ${navHtml}
+  ${breadcrumb}
   <main class="satellite-body">${bodyHtml}</main>
   <footer class="in-footer">
     <span>Refresh independiente · sin flicker</span>
-    <span>Intrale V3</span>
+    <span>Intrale V3 · MIZPÁ · #4200</span>
   </footer>
 </div>
 <script>${FETCH_CLIENT_JS}

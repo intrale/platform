@@ -58,6 +58,49 @@ test('renderDescansoInner emite el fragmento embebible sin shell', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Rediseño MIZPÁ — cabecera, selector multiproyecto y miga de pan (#4200)
+// ---------------------------------------------------------------------------
+
+test('renderDescanso emite la barra de marca MIZPÁ con tagline y selector multiproyecto (CA-5)', () => {
+    const html = renderDescanso();
+    assert.match(html, /class="mz-name">MIZPÁ</, 'falta la marca MIZPÁ');
+    assert.match(html, /«Que el Señor vigile»/, 'falta el tagline Génesis 31:49');
+    assert.match(html, /class="mz-projsel"/, 'falta el selector multiproyecto');
+    assert.match(html, /class="mz-proj-name">Intrale</, 'falta el proyecto activo Intrale');
+    assert.match(html, /class="mz-proj-badge">1 \/ 3</, 'falta el badge 1 / 3 del selector');
+    // El header viejo (logo "i" + título plano) ya no debe estar.
+    assert.equal(/class="in-header-logo"/.test(html), false, 'el logo viejo no debe persistir');
+});
+
+test('renderDescanso emite la miga de pan «⋯ Más › 🌙 Descanso» (CA-5)', () => {
+    const html = renderDescanso();
+    assert.match(html, /class="mz-crumb"/, 'falta la miga de pan');
+    assert.match(html, /⋯ Más/, 'falta el nivel «⋯ Más» de la miga');
+    assert.match(html, /🌙 Descanso/, 'falta el nivel «Descanso» de la miga');
+});
+
+test('renderDescanso convierte el cartel de estado en banner de misión (CA-4)', () => {
+    const html = renderDescanso();
+    assert.match(html, /id="rm-status" class="rm-status rm-mission"/, 'el #rm-status debe ser un banner de misión');
+    assert.match(html, /\.rm-mission\s*\{/, 'falta la regla CSS del banner de misión');
+});
+
+test('el banner de misión diagnostica ventana, horas/semana, próxima apertura y cola (CA-4)', () => {
+    const html = renderDescanso();
+    // Los tiles del banner se construyen client-side: sus literales viajan en el JS.
+    const scriptMatch = html.match(/<script[^>]*>([\s\S]*?)<\/script>/);
+    assert.ok(scriptMatch, 'falta el <script> embebido');
+    const js = scriptMatch[1];
+    assert.match(js, /function weeklyRestStats\(/, 'falta el cómputo de horas/semana');
+    assert.match(js, /'Ventana actual'/, 'falta el tile de ventana actual');
+    assert.match(js, /'Descanso \/ semana'/, 'falta el tile de horas/semana');
+    assert.match(js, /'Próxima apertura'/, 'falta el tile de próxima apertura');
+    assert.match(js, /'En cola por descanso'/, 'falta el tile de cola por descanso');
+    // La cola se alimenta de wouldPauseSkills (skills LLM gateados).
+    assert.match(js, /wouldPauseSkills/, 'la cola debe leer wouldPauseSkills');
+});
+
+// ---------------------------------------------------------------------------
 // XSS guards
 // ---------------------------------------------------------------------------
 
