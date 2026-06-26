@@ -430,3 +430,91 @@ test('#4046 · rechazo técnico normal sigue contando contra circuit breaker', (
     assert.equal(r.category, 'code');
     assert.equal(r.counts_against_circuit_breaker, true);
 });
+
+// =============================================================================
+// #4223 — Rebote automático a dev cuando review rechaza por tests faltantes
+// =============================================================================
+//
+//   CA-1 · Rechazo por "tests faltantes para funcionalidad nueva" → code
+//          (rebota a dev), NO human_block.
+//   CA-2 · El motivo (lista de lo que falta testear) se preserva intacto en
+//          classifyRebote (no se trunca ni se reemplaza); el pulpo lo propaga
+//          como motivo_rechazo por el flujo `code` normal.
+//   CA-3 · counts_against_circuit_breaker=true → el breaker sigue activo.
+//   CA-4 · Rechazos de review por OTRA causa mantienen su comportamiento.
+
+test('#4223 · CA-1: "falta de tests para funcionalidad nueva" → code, no human_block', () => {
+    const r = rc.classifyRebote({ motivo: 'Falta de tests para funcionalidad nueva (gate de review).' });
+    assert.equal(r.category, 'code');
+    assert.equal(r.label, null);
+});
+
+test('#4223 · CA-1: variantes de motivo de tests faltantes → code', () => {
+    const motivos = [
+        'El PR agrega 6 funciones nuevas sin un solo test que las ejercite.',
+        'tests faltantes para los nuevos criterios de aceptación',
+        'La lógica nueva queda sin cobertura de tests.',
+        'ausencia de cobertura para la logica nueva',
+        'missing tests for the new pure functions',
+        'no hay tests que cubran el caso de uso nuevo',
+        'cobertura insuficiente: faltan tests del agrupado',
+    ];
+    for (const motivo of motivos) {
+        assert.equal(rc.isMissingTestsReason(motivo), true, `"${motivo}" debería ser missing-tests`);
+        assert.equal(rc.classifyRebote({ motivo }).category, 'code', `"${motivo}" debería clasificar como code`);
+    }
+});
+
+test('#4223 · CA-1 (incidente #4192): motivo que cita el label needs-human NO queda en human_block', () => {
+    // Motivo realístico del review de #4192: menciona el literal `needs-human`
+    // al describir la lógica de agrupado, lo que disparaba isHumanBlockReason.
+    const motivo = [
+        'Falta de tests para funcionalidad nueva (criterio de rechazo del gate de aprobación).',
+        'Introduce 9 criterios de aceptación y 6 funciones puras nuevas sin un solo test.',
+        'Cambios requeridos: deriveGroup debe priorizar bloqueado>trabajando>listo>backlog',
+        'y mapear labels needs-human/blocked:dependencies en el agrupado.',
+    ].join('\n');
+    const r = rc.classifyRebote({ motivo });
+    assert.equal(r.category, 'code', 'debe rebotar a dev, no a bloqueado-humano');
+    assert.match(r.reason_summary, /test/i);
+});
+
+test('#4223 · CA-3: rebote por tests faltantes cuenta contra el circuit breaker', () => {
+    const r = rc.classifyRebote({ motivo: 'falta de tests para la nueva función' });
+    assert.equal(r.counts_against_circuit_breaker, true);
+});
+
+test('#4223 · precedencia: hint explícito human_block del agente se respeta', () => {
+    // Si el agente declara DELIBERADAMENTE human_block, no lo pisamos aunque el
+    // texto mencione tests.
+    const r = rc.classifyRebote({
+        motivo: 'faltan tests pero requiere decisión humana sobre el alcance',
+        rebote_categoria: 'human_block',
+    });
+    assert.equal(r.category, 'human_block');
+});
+
+test('#4223 · precedencia: dependency_block gana sobre missing-tests', () => {
+    const r = rc.classifyRebote({
+        motivo: 'faltan tests, pero además depende de #3083 todavía OPEN',
+    });
+    assert.equal(r.category, 'dependency_block');
+});
+
+test('#4223 · CA-4: rechazo de review por OTRA causa no cambia (sigue human_block)', () => {
+    const r = rc.classifyRebote({ motivo: 'PR #4547 mergeable pero CODEOWNERS requiere review humano' });
+    assert.equal(r.category, 'human_block');
+});
+
+test('#4223 · CA-4: rechazo técnico sin tests no se clasifica como missing-tests', () => {
+    assert.equal(rc.isMissingTestsReason('la función X no respeta el patrón Do'), false);
+    assert.equal(rc.isMissingTestsReason('lógica de negocio fuera de asdo/'), false);
+    assert.equal(rc.isMissingTestsReason('nombres que no reflejan el dominio'), false);
+});
+
+test('#4223 · isMissingTestsReason robusto ante input inválido', () => {
+    assert.equal(rc.isMissingTestsReason(''), false);
+    assert.equal(rc.isMissingTestsReason(undefined), false);
+    assert.equal(rc.isMissingTestsReason(null), false);
+    assert.equal(rc.isMissingTestsReason(12345), false);
+});
