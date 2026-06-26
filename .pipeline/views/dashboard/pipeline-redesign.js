@@ -208,18 +208,45 @@ function renderPhaseFlowSsr() {
   </section>`;
 }
 
-// --- Bloque 2: Issues por fase (contenedor, hidratado client-side) -----------
+// --- Bloque 2: Vista total de la ola (contenedor, hidratado client-side) -----
+// #4234 — La sección pasa de "issues por fase activa" (solo lo que tiene agente)
+// a la VISTA TOTAL DE LA OLA: todos los hijos de la ola, incluidos entregados y
+// los de definición sin arrancar, agrupados por fase. La leyenda explica los 7
+// íconos de agentes y sus 3 estados (ejecutado / en curso / pendiente).
 function renderIssuesByPhaseSsr() {
     return `
-  <section class="pl-block" id="pl-block-issues" aria-label="Issues por fase activa">
+  <section class="pl-block" id="pl-block-issues" aria-label="Vista total de la ola — hijos por fase">
     <div class="pl-block-head">
-      <h2 class="pl-block-title"><span class="pl-block-ic" aria-hidden="true">🗂️</span>Issues por fase</h2>
-      <span class="pl-block-sub" id="pl-issues-sub" title="Cantidad de issues en la vista actual y columnas activas.">—</span>
+      <h2 class="pl-block-title"><span class="pl-block-ic" aria-hidden="true">🗂️</span>Vista total de la ola · hijos por fase</h2>
+      <span class="pl-block-sub" id="pl-issues-sub" title="Todos los hijos de la ola (incluidos entregados y los de definición sin arrancar). Solo se dibujan las columnas de fases con issues; el conteo total vive en el Flujo de fases.">—</span>
     </div>
     <div id="pipeline-cols" class="pl-cols">
-      <div class="pl-cols-loading">Cargando issues por fase…</div>
+      <div class="pl-cols-loading">Cargando hijos de la ola…</div>
     </div>
+    ${renderAgentsLegendSsr()}
   </section>`;
+}
+
+// --- Leyenda de agentes + estados (CA-6) -------------------------------------
+// Estática (no depende de datos). Los 7 agentes del flujo y los 3 estados
+// visuales. Se mantiene en sincronía con PL_AGENTS7 del client script.
+function renderAgentsLegendSsr() {
+    const ags = [
+        ['🧠', 'Guru'], ['📋', 'Doc/PO'], ['⚙', 'Dev'], ['🔨', 'Builder'],
+        ['▶', 'QA'], ['🔍', 'Review'], ['🚀', 'Delivery'],
+    ];
+    const agItems = ags.map(([ic, lbl]) =>
+        '<span class="pl-leg-i"><span class="plc-ag legdemo">' + escapeHtmlText(ic) + '</span>'
+        + escapeHtmlText(lbl) + '</span>').join('');
+    return `
+    <div class="pl-legend-box" aria-label="Leyenda de agentes y estados">
+      <span class="pl-leg-t">AGENTES</span>${agItems}
+      <span class="pl-leg-sep" aria-hidden="true"></span>
+      <span class="pl-leg-t">ESTADO</span>
+      <span class="pl-leg-i"><span class="plc-ag done" aria-hidden="true"></span>Ejecutado</span>
+      <span class="pl-leg-i"><span class="plc-ag now" aria-hidden="true"></span>En curso</span>
+      <span class="pl-leg-i"><span class="plc-ag pend" aria-hidden="true"></span>Pendiente</span>
+    </div>`;
 }
 
 // --- Cuerpo completo de la pantalla ------------------------------------------
@@ -230,7 +257,7 @@ function renderPipelineRedesignBody() {
   ${renderPhaseFlowSsr()}
   ${renderIssuesByPhaseSsr()}
   <div class="pl-legend" title="Convenciones de la pantalla.">
-    Las fases sin issues (atenuadas en el flujo) no abren columna, pero conservan su contador. Cada tarjeta enlaza al issue en GitHub y a los logs del agente que lo ejecutó. Nunca se trunca el título ni se resume la lista.
+    El Flujo de fases conserva siempre las 6 fases con su conteo (incluso las que están en 0). La vista total de abajo dibuja todos los hijos de la ola —entregados y los de definición sin arrancar incluidos— y solo abre columna para las fases con issues, repartiendo el ancho entre las que quedan. Nunca se trunca el título ni se resume la lista.
   </div>
 </div>`;
 }
@@ -382,6 +409,68 @@ const PIPELINE_REDESIGN_CSS = `
 
 .pl-legend { font-size: 11px; color: var(--in-fg-dim,#8A93A6); line-height: 1.5; padding: 2px 4px; }
 
+/* #4234 — Color por fase de las columnas (molde único, tinte por fase). */
+.pl-col.ph-def    { border-color: rgba(251,191,36,.24);  background: rgba(251,191,36,.035); }
+.pl-col.ph-dev    { border-color: rgba(96,165,250,.26);  background: rgba(96,165,250,.04); }
+.pl-col.ph-build  { border-color: rgba(251,146,60,.26);  background: rgba(251,146,60,.04); }
+.pl-col.ph-qa     { border-color: rgba(167,139,250,.26); background: rgba(167,139,250,.04); }
+.pl-col.ph-review { border-color: rgba(96,165,250,.22);  background: rgba(96,165,250,.03); }
+.pl-col.ph-done   { border-color: rgba(52,211,153,.26);  background: rgba(52,211,153,.035); }
+.pl-col.ph-def    .pl-col-name { color: #fcd34d; }
+.pl-col.ph-dev    .pl-col-name { color: #9cc6fb; }
+.pl-col.ph-build  .pl-col-name { color: #fdba74; }
+.pl-col.ph-qa     .pl-col-name { color: #c4b5fd; }
+.pl-col.ph-review .pl-col-name { color: #9cc6fb; }
+.pl-col.ph-done   .pl-col-name { color: #6ee7b7; }
+
+/* Ficha: barra de % por issue (CA-7) — barra + número, coloreada por fase. */
+.plc-prog-row { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
+.plc-prog-row .plc-prog { flex: 1; margin-top: 0; }
+.plc-pct { font-size: 10.5px; font-weight: 800; font-variant-numeric: tabular-nums;
+    min-width: 34px; text-align: right; line-height: 1; color: var(--in-fg-dim,#8A93A6); }
+.plc.ph-def    > .plc-prog-row .plc-prog > i,
+.plc.ph-def    .plc-prog > i { background: linear-gradient(90deg,#f59e0b,#fbbf24); }
+.plc.ph-dev    .plc-prog > i { background: linear-gradient(90deg,#3b82f6,#60a5fa); }
+.plc.ph-build  .plc-prog > i { background: linear-gradient(90deg,#ea580c,#fb923c); }
+.plc.ph-qa     .plc-prog > i { background: linear-gradient(90deg,#8b5cf6,#a78bfa); }
+.plc.ph-review .plc-prog > i { background: linear-gradient(90deg,#3b82f6,#60a5fa); }
+.plc.ph-done   .plc-prog > i { background: linear-gradient(90deg,#10b981,#34d399); }
+.plc.ph-def    .plc-pct { color: #fcd34d; }
+.plc.ph-dev    .plc-pct { color: #9cc6fb; }
+.plc.ph-build  .plc-pct { color: #fdba74; }
+.plc.ph-qa     .plc-pct { color: #c4b5fd; }
+.plc.ph-review .plc-pct { color: #9cc6fb; }
+.plc.ph-done   .plc-pct { color: #6ee7b7; }
+
+/* Ficha: fila fija de 7 agentes con 3 estados (CA-6). */
+.plc-agents7 { display: flex; align-items: center; gap: 4px; margin-top: 9px;
+    padding-top: 8px; border-top: 1px dashed var(--in-border,rgba(255,255,255,.10)); flex-wrap: wrap; }
+.plc-ag-lbl { font-size: 7.5px; font-weight: 800; letter-spacing: .4px; color: var(--in-fg-dim,#5B6376);
+    text-transform: uppercase; margin-right: 2px; }
+.plc-agsep { color: var(--in-fg-dim,#5B6376); font-size: 9px; margin: 0 1px; }
+.plc-ag { width: 19px; height: 19px; border-radius: 50%; display: inline-flex; align-items: center;
+    justify-content: center; font-size: 9.5px; flex: none; position: relative; border: 1.5px solid transparent; }
+.plc-ag.done { background: rgba(52,211,153,.16); border-color: rgba(52,211,153,.45); }
+.plc-ag.done::after { content: "✓"; position: absolute; right: -3px; bottom: -3px; font-size: 7px; font-weight: 900;
+    width: 9px; height: 9px; border-radius: 50%; background: var(--in-ok,#34d399); color: #06140d;
+    display: flex; align-items: center; justify-content: center; }
+.plc-ag.now { background: rgba(52,217,224,.20); border-color: var(--in-accent,#34D9E0);
+    box-shadow: 0 0 0 2px rgba(52,217,224,.16); }
+.plc-ag.now::after { content: ""; position: absolute; right: -2px; bottom: -2px; width: 7px; height: 7px;
+    border-radius: 50%; background: var(--in-accent,#34D9E0); box-shadow: 0 0 6px var(--in-accent,#34D9E0); }
+.plc-ag.pend { background: rgba(255,255,255,.03); border-style: dashed;
+    border-color: var(--in-border,rgba(255,255,255,.16)); opacity: .55; filter: grayscale(.4); }
+
+/* Caja de leyenda de agentes + estados (CA-6). */
+.pl-legend-box { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 14px;
+    padding: 11px 14px; border: 1px solid var(--in-border,rgba(255,255,255,.08)); border-radius: 11px;
+    background: rgba(255,255,255,.02); }
+.pl-leg-t { font-size: 9px; font-weight: 800; letter-spacing: .5px; color: var(--in-fg-dim,#5B6376); text-transform: uppercase; }
+.pl-leg-i { display: flex; align-items: center; gap: 7px; font-size: 10px; color: var(--in-fg-dim,#8A93A6); font-weight: 600; }
+.pl-leg-i .plc-ag.legdemo { width: 17px; height: 17px; font-size: 9px; background: rgba(255,255,255,.05); border-color: transparent; }
+.pl-leg-i .plc-ag.legdemo::after { display: none; }
+.pl-leg-sep { width: 1px; height: 18px; background: var(--in-border,rgba(255,255,255,.16)); }
+
 @media (max-width: 720px) {
   .mz-mission { flex-direction: column; align-items: stretch; }
   .mz-mission-prog { min-width: 0; }
@@ -449,19 +538,50 @@ function plWireToggle(){
     t.addEventListener('keydown', (ev) => { if(ev.key === ' ' || ev.key === 'Enter'){ ev.preventDefault(); flip(); } });
 }
 
-const PL_AGENT_GLYPH = { listo:'☑', trabajando:'►', pendiente:'☐', bloqueado:'⚠', fallido:'✗' };
-function plRenderAgents(item){
-    if(!item.agents || !item.agents.length) return '';
-    const pills = item.agents.map(a => {
-        const icon = SKILL_ICONS[a.skill] || '·';
-        const glyph = PL_AGENT_GLYPH[a.estado] || '?';
-        const age = (a.ageMin != null && a.ageMin > 0) ? (' · ' + a.ageMin + 'm') : '';
-        const motivo = (a.estado === 'fallido' && a.motivo) ? ' · ' + String(a.motivo).slice(0,60) : '';
-        const tip = a.skill + ' · ' + (a.estado||'') + age + motivo;
-        return '<span class="plc-agent state-' + escapeHtml(a.estado||'') + '" title="' + escapeHtml(tip) + '">'
-            + '<span>' + icon + '</span><span>' + glyph + '</span></span>';
-    }).join('');
-    return '<div class="plc-agents">' + pills + '</div>';
+// #4234 — Fila fija de 7 agentes del flujo, con 3 estados visuales (CA-6).
+// Cada agente mapea a una "stage" del flujo (def=0 … done=5). El estado se deriva
+// del avance del issue por fase y se REFINA con el estado real del agente en el
+// matrix cuando existe (trabajando→en curso, listo→ejecutado).
+const PL_AGENTS7 = [
+    { icon:'🧠', label:'Guru',     stage:0, skills:['guru'] },
+    { icon:'📋', label:'Doc/PO',   stage:0, skills:['doc','po','planner','historia','priorizar','refinar'] },
+    { icon:'⚙', label:'Dev',       stage:1, skills:['pipeline-dev','backend-dev','android-dev','web-dev','ios-dev','desktop-dev'] },
+    { icon:'🔨', label:'Builder',  stage:2, skills:['build','builder'] },
+    { icon:'▶', label:'QA',        stage:3, skills:['qa','tester'] },
+    { icon:'🔍', label:'Review',   stage:4, skills:['review','security'] },
+    { icon:'🚀', label:'Delivery', stage:5, skills:['delivery'] },
+];
+const PL_MACRO_IDX = { def:0, dev:1, build:2, qa:3, review:4, done:5 };
+function plAgentState7(agent, item){
+    const mi = PL_MACRO_IDX[item.macro];
+    if(mi == null) return 'pend';
+    if(item.macro === 'done') return 'done';            // entregado: todo hecho
+    const ags = Array.isArray(item.agents) ? item.agents : [];
+    if(ags.length){
+        // Hay datos reales de agentes en el matrix: confiamos en ellos. Solo el
+        // agente que realmente corre se enciende (evita prender toda la fase).
+        const match = ags.find(a => agent.skills.indexOf(a.skill) >= 0);
+        if(match){
+            if(match.estado === 'trabajando') return 'now';
+            if(match.estado === 'listo') return 'done';
+        }
+        return agent.stage < mi ? 'done' : 'pend';
+    }
+    // Sin datos de agentes (hijos terminales / sin work-file): determinista por fase.
+    if(agent.stage < mi) return 'done';                 // fases superadas
+    if(agent.stage === mi) return item.estado === 'trabajando' ? 'now' : 'pend';
+    return 'pend';                                      // fases por venir
+}
+function plRenderAgents7(item){
+    let cells = '';
+    for(let idx=0; idx<PL_AGENTS7.length; idx++){
+        const a = PL_AGENTS7[idx];
+        const st = plAgentState7(a, item);
+        const word = st === 'done' ? 'ejecutado' : (st === 'now' ? 'en curso' : 'pendiente');
+        const sep = idx === 2 ? '<span class="plc-agsep" aria-hidden="true">·</span>' : '';
+        cells += sep + '<span class="plc-ag ' + st + '" title="' + escapeHtml(a.label + ' · ' + word) + '">' + a.icon + '</span>';
+    }
+    return '<div class="plc-agents7"><span class="plc-ag-lbl">AGTS</span>' + cells + '</div>';
 }
 // Elige el log más relevante: el agente trabajando con log; si no, el último con log.
 function plPickLog(item){
@@ -498,15 +618,20 @@ function plRenderCard(i, macroKey){
     const progCls = macroKey === 'done' ? 'plc-prog is-done' : 'plc-prog';
     const runningCls = i.estado === 'trabajando' ? ' plc-running' : (i.rebote ? ' plc-rejected' : '');
     const eta = (macroKey === 'done') ? 'entregado' : (pct + '%');
-    return '<div class="plc' + runningCls + '" data-issue="' + escapeHtml(i.issue) + '">'
+    // #4234 — la ficha conoce su fase macro para colorearse y pintar los 7 agentes.
+    i.macro = macroKey;
+    return '<div class="plc ph-' + macroKey + runningCls + '" data-issue="' + escapeHtml(i.issue) + '">'
         + '<div class="plc-head">'
         +   '<a class="plc-num" href="' + ghHref + '" target="_blank" rel="noopener" title="Abrir issue #' + escapeHtml(i.issue) + ' en GitHub">#' + escapeHtml(i.issue) + ' ↗</a>'
         +   badge + '<span class="plc-spacer"></span>' + elapsed
         + '</div>'
         + '<div class="plc-title">' + escapeHtml(i.title || ('Issue #' + i.issue)) + '</div>'
         + flagsHtml
-        + plRenderAgents(i)
-        + '<div class="' + progCls + '" title="Avance por etapa del flujo"><i style="width:' + pct + '%"></i></div>'
+        + '<div class="plc-prog-row" title="Avance por etapa del flujo">'
+        +   '<div class="' + progCls + '"><i style="width:' + pct + '%"></i></div>'
+        +   '<span class="plc-pct">' + pct + '%</span>'
+        + '</div>'
+        + plRenderAgents7(i)
         + '<div class="plc-foot">'
         +   '<a class="plc-btn" href="' + ghHref + '" target="_blank" rel="noopener" title="Abrir el issue en GitHub">🔗 Issue</a>'
         +   logsBtn
@@ -515,28 +640,91 @@ function plRenderCard(i, macroKey){
         + '</div>';
 }
 
+// #4234 — Bucket helpers (construyen el item visual de cada fuente de datos).
+function plItemFromMatrix(issue, data, macro){
+    const labels = data.labels || [];
+    return {
+        issue: String(issue), title: data.title, estado: data.estadoActual,
+        staleMin: data.staleMin, labels: labels,
+        paused: labels.indexOf('blocked:dependencies') >= 0,
+        rebote: data.rebote, rebote_tipo: data.rebote_tipo, motivo_rechazo: data.motivo_rechazo,
+        rechazado_en_fase: data.rechazado_en_fase, rechazado_skill_previo: data.rechazado_skill_previo,
+        agents: data.agents || [], macro: macro,
+    };
+}
+function plItemTerminal(issue, title, macro, estado){
+    return {
+        issue: String(issue), title: title || ('Issue #' + issue), estado: estado || '',
+        staleMin: 0, labels: [], paused: false, rebote: false,
+        agents: [], macro: macro,
+    };
+}
+
 async function tickPipelineRedesign(){
-    const d = await fetchJson('/api/dash/pipeline');
+    // #4234 — VISTA TOTAL DE LA OLA: cruzamos la membresía de la ola activa
+    // (/api/dash/waves → solo IDs) con el matrix del pipeline (hijos en vuelo,
+    // con faseActual/agentes) y la franja terminal waveIssues (hijos sin
+    // work-file: 'finalizado'=entregado, 'no-ingreso'=definición sin arrancar).
+    const [d, w] = await Promise.all([
+        fetchJson('/api/dash/pipeline'),
+        fetchJson('/api/dash/waves').catch(function(){ return null; }),
+    ]);
     if(!d) return;
     const matrix = d.matrix || {};
-    // Bucketing por etapa macro.
+    const waveExtra = Array.isArray(d.waveIssues) ? d.waveIssues : [];
+    const extraById = {};
+    for(const e of waveExtra){ if(e && e.issue != null) extraById[String(e.issue)] = e; }
+
+    // Membresía de la ola (CA-1). Si hay ola activa, ES la fuente de verdad.
+    let waveMembers = null;
+    if(w && w.active_wave && Array.isArray(w.active_wave.issues)){
+        waveMembers = [];
+        for(const x of w.active_wave.issues){
+            if(x && x.id != null) waveMembers.push(String(x.id));
+        }
+    }
+
     const buckets = {};
     for(const p of PL_PHASE_FLOW) buckets[p.key] = [];
-    for(const [issue, data] of Object.entries(matrix)){
-        const macro = plMacroOf(data.faseActual);
-        if(!macro) continue;
-        if(plOnlyWave && !plAllowlistOk(issue)) continue;
-        const labels = data.labels || [];
-        buckets[macro].push({
-            issue: issue, title: data.title, estado: data.estadoActual,
-            staleMin: data.staleMin, labels: labels,
-            paused: labels.includes('blocked:dependencies'),
-            rebote: data.rebote, rebote_tipo: data.rebote_tipo, motivo_rechazo: data.motivo_rechazo,
-            rechazado_en_fase: data.rechazado_en_fase, rechazado_skill_previo: data.rechazado_skill_previo,
-            agents: data.agents || [],
-        });
+
+    if(waveMembers && waveMembers.length){
+        // WAVE MODE: todos los hijos de la ola, enriquecidos. Sin filtro allowlist:
+        // la membresía de la ola ya delimita la vista (CA-1).
+        for(const id of waveMembers){
+            const m = matrix[id];
+            if(m){
+                const macro = plMacroOf(m.faseActual);
+                if(macro){ buckets[macro].push(plItemFromMatrix(id, m, macro)); }
+                else { buckets.def.push(plItemTerminal(id, m.title, 'def', m.estadoActual)); }
+                continue;
+            }
+            const ex = extraById[id];
+            if(ex && ex.estado === 'finalizado'){
+                buckets.done.push(plItemTerminal(id, ex.title, 'done', 'finalizado'));
+            } else {
+                // no-ingreso (open, sin work-file) o desconocido → definición sin arrancar.
+                buckets.def.push(plItemTerminal(id, ex ? ex.title : '', 'def', 'no-ingreso'));
+            }
+        }
+    } else {
+        // FALLBACK (sin ola activa): vista legacy basada en el matrix, con el
+        // filtro de allowlist de la pausa parcial. Mantiene el pipeline vivo
+        // cuando waves.json no expone una ola activa.
+        for(const [issue, data] of Object.entries(matrix)){
+            const macro = plMacroOf(data.faseActual);
+            if(!macro) continue;
+            if(plOnlyWave && !plAllowlistOk(issue)) continue;
+            buckets[macro].push(plItemFromMatrix(issue, data, macro));
+        }
+        for(const ex of waveExtra){
+            if(plOnlyWave && !plAllowlistOk(ex.issue)) continue;
+            if(ex.estado === 'finalizado') buckets.done.push(plItemTerminal(ex.issue, ex.title, 'done', 'finalizado'));
+            else buckets.def.push(plItemTerminal(ex.issue, ex.title, 'def', 'no-ingreso'));
+        }
     }
-    // Bloque 1: contadores + atenuado.
+
+    // Bloque 1: Flujo de fases — SIEMPRE las 6 fases con su conteo (CA-3),
+    // atenuando las que están en 0 (su conteo se conserva acá).
     let totalVisible = 0, activeCols = 0;
     for(const p of PL_PHASE_FLOW){
         const n = buckets[p.key].length;
@@ -549,8 +737,8 @@ async function tickPipelineRedesign(){
             node.classList.toggle('pflow-active', n > 0);
         }
     }
-    setText('pl-issues-sub', totalVisible + ' issue' + (totalVisible === 1 ? '' : 's') + ' · ' + activeCols + ' fase' + (activeCols === 1 ? '' : 's') + ' activa' + (activeCols === 1 ? '' : 's'));
-    // Bloque 2: columnas SOLO de fases activas, TODOS los issues (sin slice).
+    setText('pl-issues-sub', totalVisible + ' hijo' + (totalVisible === 1 ? '' : 's') + ' de la ola · ' + activeCols + ' fase' + (activeCols === 1 ? '' : 's') + ' con issues · sin scroll');
+    // Bloque 2: columnas SOLO de fases con issues (CA-4), TODOS los hijos (sin slice).
     const cmp = (a, b) => {
         const trab = (b.estado==='trabajando'?1:0) - (a.estado==='trabajando'?1:0);
         if(trab !== 0) return trab;
@@ -562,14 +750,14 @@ async function tickPipelineRedesign(){
         if(!items.length) continue;
         items.sort(cmp);
         const cards = items.map(i => plRenderCard(i, p.key)).join('');
-        cols += '<div class="pl-col" data-key="' + p.key + '">'
+        cols += '<div class="pl-col ph-' + p.key + '" data-key="' + p.key + '">'
             + '<div class="pl-col-head"><span class="pl-col-ic" aria-hidden="true">' + p.icon + '</span>'
             + '<span class="pl-col-name">' + escapeHtml(p.label) + '</span>'
-            + '<span class="pl-col-count" title="Cantidad de issues en esta fase">' + items.length + '</span></div>'
+            + '<span class="pl-col-count" title="Cantidad de hijos de la ola en esta fase">' + items.length + '</span></div>'
             + '<div class="pl-col-cards">' + cards + '</div></div>';
     }
     if(!cols){
-        cols = '<div class="pl-cols-empty">' + (plOnlyWave ? 'No hay issues de la ola en fases activas.' : 'No hay issues en fases activas ahora mismo.') + '</div>';
+        cols = '<div class="pl-cols-empty">' + (waveMembers ? 'La ola activa no tiene hijos en ninguna fase.' : (plOnlyWave ? 'No hay issues de la ola en fases activas.' : 'No hay issues en fases activas ahora mismo.')) + '</div>';
     }
     const host = document.getElementById('pipeline-cols');
     if(host && host.innerHTML !== cols) host.innerHTML = cols;
@@ -666,6 +854,7 @@ module.exports = {
     renderMissionBannerPipeline,
     renderPhaseFlowSsr,
     renderIssuesByPhaseSsr,
+    renderAgentsLegendSsr,
     renderPipelineRedesignBody,
     PIPELINE_REDESIGN_CSS,
     pipelineRedesignClientScript,
