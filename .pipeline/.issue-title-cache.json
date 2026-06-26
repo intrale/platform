@@ -4572,6 +4572,18 @@
     ],
     "fetchedAt": 1779835015336
   },
+  "4199": {
+    "title": "Rediseño integral de la pantalla HISTORIAL del dashboard — centro de mando MIZPÁ (Ola 7.1)",
+    "state": "OPEN",
+    "labels": [
+      "enhancement",
+      "Ready",
+      "area:infra",
+      "priority:medium",
+      "size:large"
+    ],
+    "fetchedAt": 1782446582241
+  },
   "2519-comment": {
     "title": "",
     "labels": [],

@@ -1034,15 +1034,32 @@ const API_ROUTES = {
                 catch { return []; }
             };
         } catch { collectAttachments = null; }
+        // #4199 — Resolver de proveedor por ejecución (join issue/skill/fase →
+        // provider del activity-log). Inyectado como función (mismo patrón que
+        // collectAttachments) para que el slice quede FS-free/testable. Si el
+        // índice no carga, degrada a null → el filtro de proveedor no ofrece
+        // opciones pero la pantalla sigue funcionando (CA-3).
+        let resolveProvider = null;
+        try {
+            const providerIndex = require('./activity-provider-index');
+            const activityLogPath = path.join(repoRoot, '.claude', 'activity-log.jsonl');
+            const idx = providerIndex.buildProviderIndex(activityLogPath);
+            resolveProvider = (skill, issue, fase) => {
+                try { return idx.resolve(issue, skill, fase); } catch { return null; }
+            };
+        } catch { resolveProvider = null; }
         return slices.historialTimelineSlice(state, ctx, {
             skill: q.get('skill') || null,
             resultado: q.get('resultado') || null,
             issue: q.get('issue') || null,
             q: q.get('q') || null,
             period: q.get('period') || 'all',
+            eventType: q.get('eventType') || q.get('tipo') || null,
+            provider: q.get('provider') || q.get('proveedor') || null,
             cursor: q.get('cursor'),
             limit: q.get('limit'),
             collectAttachments,
+            resolveProvider,
         });
     },
     '/api/historial': (state, ctx, query) => API_ROUTES['/api/dash/historial'](state, ctx, query),
