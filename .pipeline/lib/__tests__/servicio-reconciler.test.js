@@ -697,3 +697,153 @@ test('#2994 CA5 appendStaleOrderLog persiste línea JSONL', () => {
     assert.equal(ev.snapshot_at, '2026-05-05T19:30:00Z');
     assert.ok(/^\d{4}-/.test(ev.ts));
 });
+
+// =============================================================================
+// #4222 — Cruce label needs-human ↔ avance físico de fases (anti bloqueo fantasma)
+// =============================================================================
+
+// Crea un marker físico de avance (`listo/` o `procesado/`) para un issue en una
+// fase concreta del pipeline desarrollo/definicion.
+function writeProgressMarker(pipeline, phase, state, issue, skill) {
+    const dir = path.join(PIPELINE, pipeline, phase, state);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${issue}.${skill}`), '');
+}
+
+function clearProgressMarkers() {
+    for (const pipeline of ['desarrollo', 'definicion']) {
+        const root = path.join(PIPELINE, pipeline);
+        if (!fs.existsSync(root)) continue;
+        for (const phase of fs.readdirSync(root)) {
+            for (const state of ['listo', 'procesado']) {
+                const dir = path.join(root, phase, state);
+                if (!fs.existsSync(dir)) continue;
+                for (const f of fs.readdirSync(dir)) {
+                    try { fs.unlinkSync(path.join(dir, f)); } catch {}
+                }
+            }
+        }
+    }
+}
+
+function listGhQueueRemoveLabels() {
+    return fs.readdirSync(GH_QUEUE)
+        .filter(f => f.endsWith('.json'))
+        .map(f => JSON.parse(fs.readFileSync(path.join(GH_QUEUE, f), 'utf8')))
+        .filter(c => c.action === 'remove-label');
+}
+
+test('#4222 findFurthestPhysicalPhaseIndex devuelve la fase física más avanzada', () => {
+    clearProgressMarkers();
+    const order = reconciler.loadGlobalPhaseOrder();
+    // Sin markers → -1
+    assert.equal(reconciler.findFurthestPhysicalPhaseIndex(4191, order), -1);
+    // Marker en verificacion/listo → índice de desarrollo/verificacion
+    writeProgressMarker('desarrollo', 'verificacion', 'listo', 4191, 'tester');
+    const idxVerif = reconciler.globalPhaseIndex(order, 'desarrollo', 'verificacion');
+    assert.equal(reconciler.findFurthestPhysicalPhaseIndex(4191, order), idxVerif);
+    // Agregar marker más avanzado (aprobacion/procesado) → debe ganar el más avanzado
+    writeProgressMarker('desarrollo', 'aprobacion', 'procesado', 4191, 'review');
+    const idxAprob = reconciler.globalPhaseIndex(order, 'desarrollo', 'aprobacion');
+    assert.equal(reconciler.findFurthestPhysicalPhaseIndex(4191, order), idxAprob);
+    clearProgressMarkers();
+});
+
+test('#4222 findFurthestPhysicalPhaseIndex ignora artifacts (.reason.json)', () => {
+    clearProgressMarkers();
+    const order = reconciler.loadGlobalPhaseOrder();
+    const dir = path.join(PIPELINE, 'desarrollo', 'verificacion', 'listo');
+    fs.mkdirSync(dir, { recursive: true });
+    // Solo un artifact, sin marker base → no cuenta como avance
+    fs.writeFileSync(path.join(dir, '4191.tester.reason.json'), '{}');
+    assert.equal(reconciler.findFurthestPhysicalPhaseIndex(4191, order), -1);
+    clearProgressMarkers();
+});
+
+test('#4222 isNeedsHumanStaleByProgress: stale cuando progresó más allá del placeholder', () => {
+    clearProgressMarkers();
+    // Placeholder de un issue Ready cae en desarrollo/dev. Marker físico en
+    // verificacion (posterior) → stale.
+    writeProgressMarker('desarrollo', 'verificacion', 'listo', 4191, 'tester');
+    const r = reconciler.isNeedsHumanStaleByProgress(4191, 'desarrollo', 'dev');
+    assert.equal(r.stale, true);
+    assert.equal(r.furthestPhase, 'desarrollo/verificacion');
+    clearProgressMarkers();
+});
+
+test('#4222 isNeedsHumanStaleByProgress: NO stale cuando avance == fase del placeholder', () => {
+    clearProgressMarkers();
+    // Marker en la MISMA fase del placeholder (dev) — done con dev pero el bloqueo
+    // en dev sigue siendo consistente. Conservador: no stale.
+    writeProgressMarker('desarrollo', 'dev', 'listo', 4300, 'pipeline-dev');
+    const r = reconciler.isNeedsHumanStaleByProgress(4300, 'desarrollo', 'dev');
+    assert.equal(r.stale, false);
+    clearProgressMarkers();
+});
+
+test('#4222 isNeedsHumanStaleByProgress: NO stale sin markers de avance', () => {
+    clearProgressMarkers();
+    const r = reconciler.isNeedsHumanStaleByProgress(4301, 'desarrollo', 'dev');
+    assert.equal(r.stale, false);
+    clearProgressMarkers();
+});
+
+// Escenario Gherkin 1: Label needs-human stale no genera bloqueo fantasma
+test('#4222 Gherkin: needs-human stale NO crea bloqueo y limpia el label', () => {
+    clearAllMarkers();
+    clearGhQueue();
+    clearProgressMarkers();
+    const logFile = path.join(PIPELINE, 'logs', 'stale-orders.log');
+    try { fs.unlinkSync(logFile); } catch {}
+
+    // Issue #4191: markers físicos en fase posterior (verificacion + aprobacion + listo),
+    // pero label needs-human viejo en GitHub (Ready → placeholder en dev).
+    writeProgressMarker('desarrollo', 'verificacion', 'procesado', 4191, 'tester');
+    writeProgressMarker('desarrollo', 'aprobacion', 'listo', 4191, 'review');
+
+    const ghIssues = [{ number: 4191, labels: ['ready', 'needs-human'] }];
+    const created = reconciler.reconcileLabelToFilesystem(ghIssues, new Map());
+
+    // No crea placeholder
+    assert.equal(created, 0, 'no debe crear placeholder para label stale');
+    const marker = path.join(PIPELINE, 'desarrollo', 'dev', 'bloqueado-humano', '4191.guru');
+    assert.equal(fs.existsSync(marker), false, 'no debe existir marker de bloqueo');
+
+    // Limpia el label stale (encola remove-label)
+    const removes = listGhQueueRemoveLabels();
+    assert.equal(removes.length, 1, 'debe encolar un remove-label');
+    assert.equal(removes[0].issue, 4191);
+    assert.equal(removes[0].label, 'needs-human');
+
+    // Registra el destrabe en el log para auditoría (CA-3)
+    const logRaw = fs.readFileSync(logFile, 'utf8').trim();
+    const ev = JSON.parse(logRaw.split('\n').pop());
+    assert.equal(ev.reason, 'stale-needs-human-phase-progress');
+    assert.equal(ev.issue, 4191);
+    assert.match(ev.detail, /progres/i);
+
+    clearProgressMarkers();
+});
+
+// Escenario Gherkin 2: Label needs-human legítimo mantiene el bloqueo
+test('#4222 Gherkin: needs-human legítimo (sin avance) mantiene el bloqueo', () => {
+    clearAllMarkers();
+    clearGhQueue();
+    clearProgressMarkers();
+
+    // Issue cuya fase física actual justifica decisión humana: sin markers de
+    // avance posterior. Mantiene el comportamiento actual (crea placeholder).
+    const ghIssues = [{ number: 4400, labels: ['ready', 'needs-human'] }];
+    const created = reconciler.reconcileLabelToFilesystem(ghIssues, new Map());
+
+    assert.equal(created, 1, 'debe crear placeholder legítimo');
+    const marker = path.join(PIPELINE, 'desarrollo', 'dev', 'bloqueado-humano', '4400.guru');
+    assert.equal(fs.existsSync(marker), true, 'debe existir marker de bloqueo');
+
+    // No limpia ningún label
+    const removes = listGhQueueRemoveLabels();
+    assert.equal(removes.length, 0, 'no debe encolar remove-label para bloqueo legítimo');
+
+    clearProgressMarkers();
+    clearAllMarkers();
+});
