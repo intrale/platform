@@ -1692,12 +1692,94 @@ function homeStyles() {
 .mz-board-foot { margin-top: 13px; padding-top: 12px; border-top: 1px dashed var(--in-border,rgba(255,255,255,.12));
     font-size: 11px; color: var(--in-fg-dim,#5B6376); }
 
-/* --- Diagnóstico colapsable --- */
-.mz-diag { background: var(--in-bg-2,#11151E); border: 1px solid var(--in-border,rgba(255,255,255,.07)); border-radius: 14px; }
-.mz-diag-summary { cursor: pointer; padding: 14px 18px; font-size: 12px; font-weight: 700; color: var(--in-fg-dim,#8A93A6);
-    letter-spacing: .4px; user-select: none; }
-.mz-diag[open] .mz-diag-summary { border-bottom: 1px solid var(--in-border,rgba(255,255,255,.07)); }
-.mz-diag-body { padding: 18px; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+/* --- Tablero de la ola alineado al mockup v6 (#4227 CA-3) ---------------- */
+/* El shell del panel ya es MIZPÁ, pero las filas usaban el estilo legacy
+   (chip de prioridad + tamaño + badge). El mockup pide una grilla limpia y
+   plana: indicador de estado | #num (link) | título | pill de estado. Se
+   declutteran prioridad/tamaño (no están en el mockup) y se quita el header
+   por-ola redundante (el panel ya titula "ISSUES DE LA OLA"). Scope acotado a
+   .mz-board para no alterar el wave-panel en otras vistas. */
+.mz-board .wave-panel-header { display: none; }
+.mz-board .wave-row { background: transparent; border: 0; border-left: 0; padding: 0; gap: 0; }
+.mz-board .wave-row-head { display: none; }
+/* El colapso por-ola no existe en el mockup; forzar issues siempre visibles
+   (evita quedar atrapado por un estado colapsado persistido en sessionStorage). */
+.mz-board .wave-row.is-collapsed .wave-row-issues { display: flex; }
+.mz-board .wave-row-issues { gap: 3px; }
+/* Fila: grilla rígida sin overflow (indicador | num | título | pill estado). */
+.mz-board .wave-issue {
+    grid-template-columns: 18px 60px minmax(0,1fr) auto;
+    align-items: center; gap: 12px;
+    padding: 11px 12px; border-radius: 11px;
+    background: rgba(255,255,255,.018); border: 1px solid transparent;
+    border-left: 2px solid var(--in-border,rgba(255,255,255,.12));
+}
+.mz-board .wave-issue:nth-child(even) { background: rgba(255,255,255,.035); }
+/* Indicador de estado (punto coloreado) como primer ítem de la grilla. */
+.mz-board .wave-issue::before {
+    content: ""; width: 9px; height: 9px; border-radius: 50%;
+    background: var(--in-fg-dim,#5B6376); justify-self: center;
+}
+/* Tinte por estado: borde izquierdo + color del indicador (hecho/curso/lista/cola). */
+.mz-board .wave-issue[data-status="completed"] { border-left-color: var(--in-ok,#3FB950); }
+.mz-board .wave-issue[data-status="completed"]::before { background: #6ee7b7; }
+.mz-board .wave-issue[data-status="in-progress"] { border-left-color: var(--brand-cyan,#34D9E0); background: rgba(52,217,224,.06); }
+.mz-board .wave-issue[data-status="in-progress"]::before { background: #7eeef3; }
+.mz-board .wave-issue[data-status="ready"] { border-left-color: var(--in-info,#58A6FF); }
+.mz-board .wave-issue[data-status="ready"]::before { background: #9cc6fb; }
+.mz-board .wave-issue[data-status="blocked"] { border-left-color: var(--in-bad,#F85149); }
+.mz-board .wave-issue[data-status="blocked"]::before { background: #fca5a5; }
+/* #num: link azul punteado, protagonista (como .inum del mockup). */
+.mz-board .wave-issue-id { font-size: 12.5px; font-weight: 800; }
+.mz-board .wave-issue-id a { color: #9cc6fb; border-bottom: 1px dotted rgba(96,165,250,.45); }
+.mz-board .wave-issue-title { font-size: 12.5px; font-weight: 600; }
+/* Declutter: prioridad y tamaño no están en el mockup. */
+.mz-board .wave-pill { display: none; }
+/* Pill de estado a la derecha (columna "agente/estado" del mockup). */
+.mz-board .wave-badge { justify-self: end; }
+
+/* --- Ahora · en ejecución alineado al mockup v6 (#4227 CA-4) ------------- */
+/* Las tarjetas de agentes activos ya eran tipo card; el mockup pide: fase como
+   pill coloreada por etapa, indicador de proveedor junto a la barra y el tiempo
+   con eyebrow "CORRE". Scope acotado a .mz-now (no toca la banda AHORA legacy). */
+.mz-now .active-card-fase {
+    text-transform: uppercase; letter-spacing: .5px;
+    font-size: 9.5px; font-weight: 800;
+    padding: 2px 8px; border-radius: 20px;
+    background: rgba(96,165,250,.16); color: #9cc6fb;
+}
+.mz-now .active-card-fase[data-phase*="build"] { background: rgba(251,146,60,.16); color: #fdba74; }
+.mz-now .active-card-fase[data-phase*="qa"],
+.mz-now .active-card-fase[data-phase*="veri"],
+.mz-now .active-card-fase[data-phase*="aprob"] { background: rgba(167,139,250,.16); color: #c4b5fd; }
+/* Barra + proveedor en una fila (mockup). */
+.mz-now .active-card-progress { display: flex; align-items: center; gap: 9px; }
+.mz-now .active-card-progress .in-bar { flex: 1; }
+.mz-now .active-card-prov {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 10px; font-weight: 700; color: var(--in-fg-dim,#8A93A6);
+    white-space: nowrap; flex: none;
+}
+.mz-now .active-card-prov::before {
+    content: ""; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--in-fg-dim,#5B6376); flex: none;
+}
+.mz-now .active-card-prov[data-prov="anthropic"]::before { background: #FB923C; }
+.mz-now .active-card-prov[data-prov="codex"]::before { background: #34D399; }
+.mz-now .active-card-prov[data-prov="gemini"]::before { background: #60A5FA; }
+/* Eyebrow "CORRE" sobre el tiempo (mockup .ameta). */
+.mz-now .active-card-time { position: relative; }
+.mz-now .active-card-time::before {
+    content: "CORRE"; display: block;
+    font-size: 9px; font-weight: 800; letter-spacing: .5px;
+    color: var(--in-fg-dim,#5B6376); font-family: var(--in-font, inherit);
+}
+
+/* --- Sink de telemetría oculto (#4227 CA-2) --- */
+/* Conserva en el SSR los nodos hidratables y controles heredados que el mockup
+   no muestra, sin ocupar espacio ni ser visibles. El atributo hidden ya aplica
+   display:none; reforzamos para que ningun estilo de hijo lo revele. */
+.mz-telemetry-sink[hidden] { display: none !important; }
 
 /* Responsive: en viewports angostos las grillas colapsan a 1 columna. */
 @media (max-width: 920px) {
@@ -2548,7 +2630,7 @@ async function tickActive(){
                 <div class="active-card-time"></div>
                 <button class="active-card-kill" title="Cancelar este agente">✕</button>
                 <div class="active-card-title"></div>
-                <div class="active-card-progress"><div class="in-bar"><span></span></div></div>
+                <div class="active-card-progress"><div class="in-bar"><span></span></div><span class="active-card-prov" aria-hidden="true"></span></div>
             \`;
             const killBtn = card.querySelector('.active-card-kill');
             if(killBtn) killBtn.addEventListener('click', () => killAgent(a.issue, a.skill, a.pipeline, a.fase, a.durationMs));
@@ -2573,12 +2655,29 @@ async function tickActive(){
         }
         const faseEl = card.querySelector('.active-card-fase');
         faseEl.textContent = isObs ? ((PRESENCE_PHASE_ICONS[a.fase] || '') + ' ' + a.fase).trim() : a.fase;
+        // #4227 (CA-4) — data-phase para colorear la pill de fase como el mockup
+        // (dev=azul / build=naranja / qa·verificación=violeta).
+        if(!isObs) faseEl.dataset.phase = (a.fase || '').toLowerCase();
         card.querySelector('.active-card-title').textContent = a.title || '';
         card.querySelector('.active-card-time').textContent = fmtDur(a.durationMs);
         if(!isObs){
             const bar = card.querySelector('.in-bar > span');
             const pct = a.etaMs && a.etaMs > 0 ? Math.min(100, Math.round((a.durationMs / a.etaMs) * 100)) : 4;
             bar.style.width = pct + '%';
+            // #4227 (CA-4) — indicador de proveedor junto a la barra (mockup v6).
+            // textContent → sin XSS; el dot toma el color por data-prov.
+            const provEl = card.querySelector('.active-card-prov');
+            if(provEl){
+                const prov = a.provider || null;
+                if(prov && prov.label){
+                    provEl.dataset.prov = (prov.id || '').toLowerCase();
+                    provEl.textContent = prov.label;
+                    provEl.style.display = '';
+                } else {
+                    provEl.textContent = '';
+                    provEl.style.display = 'none';
+                }
+            }
         }
     }
     for(const card of [...list.children]){
@@ -2955,6 +3054,10 @@ function morphWaveRow(row, wave){
             node = document.createElement('div');
             node.className = 'wave-issue';
             node.id = issueId;
+            // #4227 (CA-3) — data-status en la fila: el tablero MIZPÁ tinta el
+            // indicador de estado + el borde de la fila por estado (hecho /
+            // en curso / lista / en cola), replicando el grid del mockup v6.
+            node.dataset.status = issue.status || 'unknown';
             node.innerHTML =
                 '<span class="wave-issue-id" id="'+issueId+'-id"></span>'+
                 '<span class="wave-issue-title" id="'+issueId+'-title"></span>'+
@@ -2962,6 +3065,10 @@ function morphWaveRow(row, wave){
                 '<span class="wave-pill" data-kind="size" id="'+issueId+'-size"></span>'+
                 '<span class="wave-badge" id="'+issueId+'-status"></span>';
             list.appendChild(node);
+        }
+        // #4227 (CA-3) — mantener data-status de la fila sincronizado (morphing).
+        if (node.dataset.status !== (issue.status || 'unknown')) {
+            node.dataset.status = issue.status || 'unknown';
         }
         // ID + link (defensa en profundidad: textContent + href controlado)
         const idEl = document.getElementById(issueId+'-id');
@@ -3982,14 +4089,33 @@ function renderBrandBar(state) {
     </div>`;
 }
 
-// --- Sub-función pura: control bar (toggles/pills operativas + reloj) -------
-// Tooltips en `title=`/`aria-label=` con escapeHtmlAttr (CA-3725.2/10). El
-// menú inline de pausa parcial se preserva (R-G5) con hook a futuro wizard
-// (`data-view-link="wizard/partial-pause"`). Todos los IDs se mantienen para
-// no romper la hidratación client-side (tickHeader, R-G1).
+// --- Sub-función pura: control bar (header derecho del mockup) -------------
+// #4227 (CA-1) — El header del mockup v6 sólo lleva, a la derecha: Pulpo /
+// CPU·RAM / reloj. Las pastillas operativas heredadas del dashboard viejo
+// (estado del pipeline «Parcial», ventanas de prioridad QA/Build, modo
+// descanso) NO existen en el mockup y saturaban el header (CA-1). Se movieron
+// al sink de telemetría oculto (`renderHiddenControls`) para preservar sus IDs
+// y mantener vivos los tickers (tickHeader, R-G1) sin mostrarlas. Tooltips en
+// `title=`/`aria-label=` con escapeHtmlAttr (CA-3725.2/10).
 function renderControlBar(state) {
     return `
     <div class="in-header-meta">
+      <span class="in-pill" id="hdr-resources" title="CPU y RAM del sistema" aria-label="Recursos CPU y RAM">…</span>
+      <span class="in-pill" id="hdr-pulpo" aria-label="Estado del pulpo">…</span>
+      <span class="in-clock" id="hdr-clock" aria-label="Hora local">…</span>
+    </div>`;
+}
+
+// #4227 (CA-1) — Controles operativos heredados (estado del pipeline + ventanas
+// de prioridad + modo descanso) que el mockup v6 no contempla en el header. Se
+// emiten dentro del sink oculto (`renderDiagnostics`) para que sus IDs sigan
+// existiendo en el SSR (snapshot R-G1) y los tickers/handlers
+// (tickHeader/setWindowPill/bindModeToggle) no queden colgados. No se muestran:
+// el header limpio del mockup manda. La reubicación de estos controles a su
+// lugar propio en el nuevo diseño se trata fuera de este issue de pulido.
+function renderHiddenControls() {
+    return `
+    <div class="mz-legacy-controls" aria-hidden="true">
       <span class="in-pill" id="hdr-mode" data-mode-toggle title="Click para cambiar el estado del pipeline (running / pausa total / pausa parcial)" aria-label="Estado del pipeline">…
         <div class="in-mode-menu" id="hdr-mode-menu" role="menu" aria-hidden="true">
           <button class="in-mode-menu-item" data-mode-action="resume" type="button">
@@ -4009,9 +4135,6 @@ function renderControlBar(state) {
       <span class="in-pill" id="hdr-window-qa" title="Click para activar/desactivar la QA Priority Window" aria-label="Ventana de prioridad QA">…</span>
       <span class="in-pill" id="hdr-window-build" title="Click para activar/desactivar la Build Priority Window" aria-label="Ventana de prioridad Build">…</span>
       <a class="in-pill" id="hdr-rest-mode" href="/modo-descanso" target="_blank" rel="noopener" style="display:none;text-decoration:none" title="Modo descanso activo. Click para configurar." aria-label="Modo descanso">…</a>
-      <span class="in-pill" id="hdr-resources" title="CPU y RAM del sistema" aria-label="Recursos CPU y RAM">…</span>
-      <span class="in-pill" id="hdr-pulpo" aria-label="Estado del pulpo">…</span>
-      <span class="in-clock" id="hdr-clock" aria-label="Hora local">…</span>
     </div>`;
 }
 
@@ -4620,26 +4743,29 @@ function renderWaveBoard(state) {
     </section>`;
 }
 
-// Diagnóstico colapsable: conserva en el SSR los sub-componentes que no tienen
-// lugar propio en el mockup pero cuyos IDs DEBEN existir para que sus tickers
-// sigan vivos (R-G1). Colapsado por default → look limpio del mockup.
+// #4227 (CA-2) — La sección colapsable «🔎 Diagnóstico y métricas detalladas»
+// NO existe en el mockup v6 y se removió de la vista. Pero varios de sus
+// sub-componentes son el único lugar del SSR donde viven IDs que los tickers
+// hidratan (infra, system card, kpis, pulse faro, ola-eta, recientes, cola,
+// bandeja de alertas) — además de los controles operativos heredados (CA-1).
+// Para no romper el contrato snapshot R-G1 ni dejar tickers colgados, esos
+// nodos se conservan en un sink OCULTO (`hidden` + display:none): no se ven,
+// pero sus IDs existen y la telemetría sigue viva. Lo imprescindible que el
+// mockup sí prevé (ola/cuotas/estado) ya tiene lugar propio en el banner de
+// misión y el panel estado+cuotas.
 function renderDiagnostics(state) {
     return `
-    <details class="mz-diag">
-      <summary class="mz-diag-summary" title="Métricas detalladas y salud de servicios (mantiene la telemetría existente del dashboard).">
-        🔎 Diagnóstico y métricas detalladas
-      </summary>
-      <div class="mz-diag-body">
-        ${renderInfraHealth(state)}
-        ${renderSystemCard(state)}
-        ${renderKpiGrid(state)}
-        ${_pulseFaroKpis()}
-        ${_olaEtaSectionHtml()}
-        ${_recentSectionHtml()}
-        ${_queueSectionHtml()}
-        ${renderAlertTray(state)}
-      </div>
-    </details>`;
+    <div class="mz-telemetry-sink" id="mz-telemetry-sink" hidden aria-hidden="true">
+      ${renderHiddenControls()}
+      ${renderInfraHealth(state)}
+      ${renderSystemCard(state)}
+      ${renderKpiGrid(state)}
+      ${_pulseFaroKpis()}
+      ${_olaEtaSectionHtml()}
+      ${_recentSectionHtml()}
+      ${_queueSectionHtml()}
+      ${renderAlertTray(state)}
+    </div>`;
 }
 
 function renderHomeHTML(opts) {
