@@ -435,6 +435,96 @@ function reconcileClosedMarkers(blockedMarkers, ghIssueSet, getStateFn = getIssu
 }
 
 // -----------------------------------------------------------------------------
+// #4231 — Barrido de markers de fase huérfanos de issues CLOSED en colas normales
+// -----------------------------------------------------------------------------
+//
+// Hueco que cierra: `reconcileClosedMarkers` (arriba) solo archiva markers de
+// issues CLOSED que están en `bloqueado-humano/`. Los markers de fase normales
+// (pendiente/trabajando/listo/procesado) de un issue ya cerrado nunca se
+// archivaban — quedaban huérfanos y la vista del pipeline los leía como trabajo
+// activo. El limpiador de ghost artifacts tampoco los toca (por diseño no pisa
+// markers de fase, contrato Pulpo↔agente).
+//
+// Reusa el mismo patrón de archivado: rename del marker a `<pipeline>/<phase>/
+// archivado/`. Nunca borra. Solo archiva markers de issues CLOSED; los OPEN no
+// se tocan (trabajo activo).
+//
+// Costo `gh`: el caller (reconcileOnce) resuelve el estado con UNA sola consulta
+// batch (`gh issue list --state closed`) por ciclo y pasa un resolver sobre ese
+// Set, en vez de N `gh issue view`. Igual deduplicamos el chequeo por issue acá
+// (un issue puede tener markers en varias fases/colas) para no consultar de más
+// si el resolver hiciera I/O.
+function reconcileClosedPhaseMarkers(phaseMarkers, getStateFn = getIssueState, opts = {}) {
+    const now = opts.now || Date.now();
+    const logFn = opts.logStaleOrder || appendStaleOrderLog;
+    let archived = 0;
+    const stateCache = new Map(); // issue -> state (dedup del chequeo, no del archivado)
+    for (const m of phaseMarkers) {
+        let state = stateCache.get(m.issue);
+        if (state === undefined) {
+            state = getStateFn(m.issue);
+            stateCache.set(m.issue, state);
+        }
+        if (state !== 'CLOSED') continue; // OPEN/UNKNOWN → trabajo activo, no tocar
+
+        const baseName = `${m.issue}.${m.skill}`;
+        const srcMarker = m.marker_path
+            || path.join(PIPELINE, m.pipeline, m.phase, m.state, baseName);
+        const archiveDir = path.join(PIPELINE, m.pipeline, m.phase, 'archivado');
+        try {
+            if (!fs.existsSync(srcMarker)) continue; // movido entre listado y ahora
+            fs.mkdirSync(archiveDir, { recursive: true });
+            // Colisión: mismo issue.skill ya archivado (otra cola/ciclo previo) →
+            // sufijo timestamp Windows-safe para no pisar el histórico.
+            let dstMarker = path.join(archiveDir, baseName);
+            if (fs.existsSync(dstMarker)) {
+                dstMarker = path.join(archiveDir, `${baseName}.${safeTsSuffix(now)}`);
+            }
+            fs.renameSync(srcMarker, dstMarker);
+            // Sidecar .reason.json (raro en colas normales) — limpiar si quedó.
+            try { fs.unlinkSync(srcMarker + '.reason.json'); } catch {}
+            archived++;
+            try {
+                logFn({
+                    reason: 'closed-phase-marker-archived',
+                    issue: m.issue,
+                    label: null,
+                    snapshot_at: null,
+                    current_mtime: null,
+                    detail: `${m.pipeline}/${m.phase}/${m.state}/${baseName} → archivado/`,
+                });
+            } catch {}
+        } catch (e) {
+            log(`Error archivando phase marker #${m.issue}.${m.skill}: ${e.message.slice(0, 120)}`);
+        }
+    }
+    return archived;
+}
+
+// #4231 — Resuelve en UNA consulta el set de issues CLOSED del repo. El sweep de
+// markers de fase recorre ~decenas de issues por ciclo; un `gh issue view` por
+// cada uno multiplicaría las llamadas (nota de guru en #4231). Una sola
+// `gh issue list --state closed` cubre todo el histórico (gh pagina internamente)
+// y el resolver queda como lookup O(1) sobre el Set. Devuelve null si GitHub no
+// responde → el caller saltea el sweep (degradación segura: jamás archiva OPEN).
+const CLOSED_SWEEP_LIMIT = parseInt(process.env.RECONCILER_CLOSED_LIMIT || '5000', 10);
+
+function listClosedIssueNumbers(opts = {}) {
+    const limit = opts.limit || CLOSED_SWEEP_LIMIT;
+    try {
+        const raw = execSync(
+            `"${GH_BIN}" issue list --state closed --json number --limit ${limit}`,
+            { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true },
+        );
+        const issues = JSON.parse(raw || '[]');
+        return new Set(issues.map(i => i.number));
+    } catch (e) {
+        log(`Error listando closed issues (phase-marker sweep): ${e.message.slice(0, 120)}`);
+        return null;
+    }
+}
+
+// -----------------------------------------------------------------------------
 // CA3 (#2994) — Detectar destrabe humano y reconciliar siguiendo a GitHub
 // -----------------------------------------------------------------------------
 //
@@ -992,6 +1082,24 @@ function reconcileOnce() {
     const enqueued = reconcileMarkerToLabel(remaining, ghIssueSet);
     const archived = reconcileClosedMarkers(remaining, ghIssueSet);
 
+    // #4231 — Barrido de markers de fase huérfanos de issues CLOSED en las colas
+    // NORMALES (pendiente/trabajando/listo/procesado). reconcileClosedMarkers de
+    // arriba solo cubre bloqueado-humano/; este cierra el hueco. Fail-soft: si
+    // GitHub no responde para el batch de cerrados, se saltea (nunca archiva OPEN).
+    let archivedPhase = 0;
+    try {
+        const phaseMarkers = humanBlock.listPhaseMarkers();
+        if (phaseMarkers.length > 0) {
+            const closedSet = listClosedIssueNumbers();
+            if (closedSet) {
+                const closedResolver = (issueNum) => (closedSet.has(issueNum) ? 'CLOSED' : 'OPEN');
+                archivedPhase = reconcileClosedPhaseMarkers(phaseMarkers, closedResolver);
+            }
+        }
+    } catch (e) {
+        log(`Phase-marker sweep error: ${e.message.slice(0, 120)}`);
+    }
+
     // #3175 — Sweep paralelo del admission gate (defensa en profundidad).
     // Fallas del sweep son no-fatales: si GH no responde o falla la cola,
     // el ciclo del reconciler debe completar igual.
@@ -1021,8 +1129,9 @@ function reconcileOnce() {
     const screenshotsSummary = screenshotsResult && !screenshotsResult.skipped && !screenshotsResult.error && screenshotsResult.appliedCount
         ? `, +${screenshotsResult.appliedCount} screenshots-gate`
         : '';
-    if (created || enqueued || archived || detected || resolved || (admissionResult && admissionResult.appliedCount) || (screenshotsResult && screenshotsResult.appliedCount)) {
-        log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} → +${created} placeholders, +${enqueued} labels encolados, +${archived} archivados (closed), +${detected} destrabes humanos, +${resolved} resueltos por guardian/TTL (-${resolvedRemovedLabels} labels removidos)${admissionSummary}${screenshotsSummary}`);
+    const phaseSummary = archivedPhase ? `, +${archivedPhase} markers de fase archivados (closed)` : '';
+    if (created || enqueued || archived || archivedPhase || detected || resolved || (admissionResult && admissionResult.appliedCount) || (screenshotsResult && screenshotsResult.appliedCount)) {
+        log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} → +${created} placeholders, +${enqueued} labels encolados, +${archived} archivados (closed), +${detected} destrabes humanos, +${resolved} resueltos por guardian/TTL (-${resolvedRemovedLabels} labels removidos)${phaseSummary}${admissionSummary}${screenshotsSummary}`);
     } else {
         log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} — sincronizado`);
     }
@@ -1071,6 +1180,10 @@ module.exports = {
     reconcileLabelToFilesystem,
     reconcileMarkerToLabel,
     reconcileClosedMarkers,
+    // #4231 — barrido de markers de fase huérfanos (colas normales)
+    reconcileClosedPhaseMarkers,
+    listClosedIssueNumbers,
+    CLOSED_SWEEP_LIMIT,
     reconcileHumanUnblockDetected,
     reconcileResolvedMarkers,
     findGuardianResolution,

@@ -847,3 +847,196 @@ test('#4222 Gherkin: needs-human legítimo (sin avance) mantiene el bloqueo', ()
     clearProgressMarkers();
     clearAllMarkers();
 });
+
+// =============================================================================
+// #4231 — Barrido de markers de fase huérfanos al cerrar un issue.
+// listPhaseMarkers (human-block) recorre colas normales; reconcileClosedPhaseMarkers
+// archiva los markers de issues CLOSED de esas colas (no solo bloqueado-humano).
+// =============================================================================
+
+function writeNormalQueueMarker(pipeline, phase, state, issue, skill) {
+    const dir = path.join(PIPELINE, pipeline, phase, state);
+    fs.mkdirSync(dir, { recursive: true });
+    const p = path.join(dir, `${issue}.${skill}`);
+    fs.writeFileSync(p, '');
+    return p;
+}
+
+function clearNormalQueues() {
+    for (const pipeline of ['desarrollo', 'definicion']) {
+        const root = path.join(PIPELINE, pipeline);
+        if (!fs.existsSync(root)) continue;
+        for (const phase of fs.readdirSync(root)) {
+            for (const state of ['pendiente', 'trabajando', 'listo', 'procesado', 'archivado']) {
+                const dir = path.join(root, phase, state);
+                if (!fs.existsSync(dir)) continue;
+                for (const f of fs.readdirSync(dir)) {
+                    try { fs.unlinkSync(path.join(dir, f)); } catch {}
+                }
+            }
+        }
+    }
+}
+
+test('#4231 listPhaseMarkers recorre colas normales y omite artifacts/.gitkeep', () => {
+    clearNormalQueues();
+    writeNormalQueueMarker('definicion', 'analisis', 'listo', 3488, 'security');
+    writeNormalQueueMarker('desarrollo', 'validacion', 'listo', 3987, 'ux');
+    writeNormalQueueMarker('desarrollo', 'dev', 'trabajando', 4231, 'backend-dev');
+    // Artifacts que NO deben contar como markers
+    const dir = path.join(PIPELINE, 'definicion', 'analisis', 'listo');
+    fs.writeFileSync(path.join(dir, '3488.security.reason.json'), '{}');
+    fs.writeFileSync(path.join(dir, '.gitkeep'), '');
+
+    const markers = humanBlock.listPhaseMarkers();
+    const keys = markers.map(m => `${m.pipeline}/${m.phase}/${m.state}/${m.issue}.${m.skill}`).sort();
+    assert.deepEqual(keys, [
+        'definicion/analisis/listo/3488.security',
+        'desarrollo/dev/trabajando/4231.backend-dev',
+        'desarrollo/validacion/listo/3987.ux',
+    ]);
+    // El artifact .reason.json no aparece
+    assert.equal(markers.some(m => m.skill.includes('reason')), false);
+    clearNormalQueues();
+});
+
+test('#4231 listPhaseMarkers NO mira bloqueado-humano/', () => {
+    clearNormalQueues();
+    clearAllMarkers();
+    const blockedDir = path.join(PIPELINE, 'desarrollo', 'validacion', 'bloqueado-humano');
+    fs.mkdirSync(blockedDir, { recursive: true });
+    fs.writeFileSync(path.join(blockedDir, '9100.po'), '');
+    const markers = humanBlock.listPhaseMarkers();
+    assert.equal(markers.some(m => m.issue === 9100), false, 'bloqueado-humano fuera de scope');
+    clearNormalQueues();
+    clearAllMarkers();
+});
+
+test('#4231 reconcileClosedPhaseMarkers archiva marker de issue CLOSED (mueve, no borra)', () => {
+    clearNormalQueues();
+    const src = writeNormalQueueMarker('definicion', 'analisis', 'listo', 3488, 'security');
+    const markers = humanBlock.listPhaseMarkers();
+    const archived = reconciler.reconcileClosedPhaseMarkers(markers, () => 'CLOSED');
+
+    assert.equal(archived, 1);
+    assert.equal(fs.existsSync(src), false, 'marker movido fuera de la cola');
+    const dst = path.join(PIPELINE, 'definicion', 'analisis', 'archivado', '3488.security');
+    assert.equal(fs.existsSync(dst), true, 'marker presente en archivado/ (no borrado)');
+    clearNormalQueues();
+});
+
+test('#4231 reconcileClosedPhaseMarkers NO toca markers de issues OPEN', () => {
+    clearNormalQueues();
+    const src = writeNormalQueueMarker('desarrollo', 'dev', 'trabajando', 4231, 'backend-dev');
+    const markers = humanBlock.listPhaseMarkers();
+    const archived = reconciler.reconcileClosedPhaseMarkers(markers, () => 'OPEN');
+
+    assert.equal(archived, 0);
+    assert.equal(fs.existsSync(src), true, 'marker de issue OPEN permanece en su cola');
+    clearNormalQueues();
+});
+
+test('#4231 reconcileClosedPhaseMarkers NO toca UNKNOWN (degradación segura)', () => {
+    clearNormalQueues();
+    const src = writeNormalQueueMarker('desarrollo', 'dev', 'pendiente', 4500, 'backend-dev');
+    const markers = humanBlock.listPhaseMarkers();
+    const archived = reconciler.reconcileClosedPhaseMarkers(markers, () => 'UNKNOWN');
+    assert.equal(archived, 0);
+    assert.equal(fs.existsSync(src), true, 'UNKNOWN no se archiva');
+    clearNormalQueues();
+});
+
+test('#4231 reconcileClosedPhaseMarkers archiva markers del MISMO issue en varias fases/colas', () => {
+    clearNormalQueues();
+    // #3987 CLOSED con markers en 3 ubicaciones distintas (backfill real)
+    const s1 = writeNormalQueueMarker('definicion', 'analisis', 'listo', 3987, 'security');
+    const s2 = writeNormalQueueMarker('desarrollo', 'validacion', 'listo', 3987, 'guru');
+    const s3 = writeNormalQueueMarker('desarrollo', 'validacion', 'procesado', 3987, 'ux');
+
+    const markers = humanBlock.listPhaseMarkers();
+    const archived = reconciler.reconcileClosedPhaseMarkers(markers, () => 'CLOSED');
+
+    assert.equal(archived, 3, 'archiva los 3 markers del issue cerrado');
+    assert.equal(fs.existsSync(s1), false);
+    assert.equal(fs.existsSync(s2), false);
+    assert.equal(fs.existsSync(s3), false);
+    assert.equal(fs.existsSync(path.join(PIPELINE, 'definicion', 'analisis', 'archivado', '3987.security')), true);
+    assert.equal(fs.existsSync(path.join(PIPELINE, 'desarrollo', 'validacion', 'archivado', '3987.guru')), true);
+    assert.equal(fs.existsSync(path.join(PIPELINE, 'desarrollo', 'validacion', 'archivado', '3987.ux')), true);
+    clearNormalQueues();
+});
+
+test('#4231 reconcileClosedPhaseMarkers deduplica el chequeo de estado por issue', () => {
+    clearNormalQueues();
+    writeNormalQueueMarker('definicion', 'analisis', 'listo', 4110, 'security');
+    writeNormalQueueMarker('desarrollo', 'validacion', 'listo', 4110, 'guru');
+    writeNormalQueueMarker('desarrollo', 'validacion', 'listo', 4110, 'po');
+
+    const markers = humanBlock.listPhaseMarkers();
+    const seen = [];
+    const archived = reconciler.reconcileClosedPhaseMarkers(markers, (n) => { seen.push(n); return 'CLOSED'; });
+
+    assert.equal(archived, 3, 'archiva los 3 markers');
+    assert.equal(seen.length, 1, 'el estado se consulta una sola vez para el issue 4110');
+    assert.equal(seen[0], 4110);
+    clearNormalQueues();
+});
+
+test('#4231 reconcileClosedPhaseMarkers usa sufijo timestamp ante colisión en archivado/', () => {
+    clearNormalQueues();
+    // Ya existe un archivado previo con el mismo nombre.
+    const archDir = path.join(PIPELINE, 'desarrollo', 'dev', 'archivado');
+    fs.mkdirSync(archDir, { recursive: true });
+    fs.writeFileSync(path.join(archDir, '4600.backend-dev'), 'previo');
+    writeNormalQueueMarker('desarrollo', 'dev', 'pendiente', 4600, 'backend-dev');
+
+    const markers = humanBlock.listPhaseMarkers();
+    const archived = reconciler.reconcileClosedPhaseMarkers(markers, () => 'CLOSED', { now: Date.parse('2026-06-26T12:00:00.000Z') });
+
+    assert.equal(archived, 1);
+    // El archivado previo no se pisa
+    assert.equal(fs.readFileSync(path.join(archDir, '4600.backend-dev'), 'utf8'), 'previo');
+    const suffixed = fs.readdirSync(archDir).filter(f => f.startsWith('4600.backend-dev.'));
+    assert.equal(suffixed.length, 1, 'el nuevo se archiva con sufijo timestamp');
+    assert.match(suffixed[0], /4600\.backend-dev\.2026-06-26T12-00-00-000Z/);
+    clearNormalQueues();
+});
+
+test('#4231 reconcileClosedPhaseMarkers escribe stale-orders.log con reason closed-phase-marker-archived', () => {
+    clearNormalQueues();
+    const logFile = path.join(PIPELINE, 'logs', 'stale-orders.log');
+    try { fs.unlinkSync(logFile); } catch {}
+    writeNormalQueueMarker('definicion', 'analisis', 'listo', 3935, 'security');
+
+    const markers = humanBlock.listPhaseMarkers();
+    reconciler.reconcileClosedPhaseMarkers(markers, () => 'CLOSED');
+
+    const ev = JSON.parse(fs.readFileSync(logFile, 'utf8').trim().split('\n').pop());
+    assert.equal(ev.reason, 'closed-phase-marker-archived');
+    assert.equal(ev.issue, 3935);
+    assert.match(ev.detail, /definicion\/analisis\/listo\/3935\.security/);
+    clearNormalQueues();
+});
+
+// Escenario Gherkin 1: issue cerrado con marker en cola normal → se archiva
+test('#4231 Gherkin: issue CLOSED con marker en listo/ se archiva', () => {
+    clearNormalQueues();
+    const src = writeNormalQueueMarker('desarrollo', 'verificacion', 'listo', 3488, 'tester');
+    const markers = humanBlock.listPhaseMarkers();
+    const archived = reconciler.reconcileClosedPhaseMarkers(markers, () => 'CLOSED');
+    assert.equal(archived, 1);
+    assert.equal(fs.existsSync(src), false);
+    assert.equal(fs.existsSync(path.join(PIPELINE, 'desarrollo', 'verificacion', 'archivado', '3488.tester')), true);
+    clearNormalQueues();
+});
+
+// Escenario Gherkin 2: issue abierto con marker en trabajando/ → no se toca
+test('#4231 Gherkin: issue OPEN con marker en trabajando/ permanece', () => {
+    clearNormalQueues();
+    const src = writeNormalQueueMarker('desarrollo', 'dev', 'trabajando', 4231, 'backend-dev');
+    const markers = humanBlock.listPhaseMarkers();
+    const archived = reconciler.reconcileClosedPhaseMarkers(markers, () => 'OPEN');
+    assert.equal(archived, 0);
+    assert.equal(fs.existsSync(src), true);
+    clearNormalQueues();
+});
