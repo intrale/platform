@@ -1350,6 +1350,19 @@ function pipelineSlice(state, ctx) {
         }
         const stale = blockerAgeMin >= STALE_THRESHOLD_MIN;
 
+        // #4192 — logFile del agente para que la vista Issues (rediseño MIZPÁ)
+        // enlace al log y atenúe el acceso cuando el issue todavía no corrió.
+        // Prioridad: una entrada con log en la fase activa; si no hay, la última
+        // entrada con log de cualquier fase. Campo aditivo (no rompe consumidores).
+        let issueLogFile = null;
+        const _activeFaseEntries = (data.faseActual && data.fases && data.fases[data.faseActual]) || [];
+        for (const e of _activeFaseEntries) { if (e && e.hasLog && e.logFile) { issueLogFile = e.logFile; break; } }
+        if (!issueLogFile) {
+            for (const entries of Object.values(data.fases || {})) {
+                for (const e of (entries || [])) { if (e && e.hasLog && e.logFile) issueLogFile = e.logFile; }
+            }
+        }
+
         matrix[issueId] = {
             title: data.title,
             labels: data.labels,
@@ -1357,6 +1370,7 @@ function pipelineSlice(state, ctx) {
             estadoActual: data.estadoActual,
             bounces: data.bounces,
             staleMin: data.staleMin,
+            logFile: issueLogFile,
             rebote: !!data.rebote,
             rebote_tipo: data.rebote_tipo || null,
             motivo_rechazo: data.motivo_rechazo || null,
