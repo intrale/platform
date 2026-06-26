@@ -9778,6 +9778,28 @@ setInterval(refreshHandoff, 30 * 1000); // CA-C2: refresh cada 30s
 // --- Log Viewer (standalone page) ---
 
 function generateLogViewerHTML(filename, isLive) {
+  // Ola 7.1 (#4191) — nuevo shell MIZPÁ de la pantalla LOGS. Best-effort: si el
+  // módulo lanza (rollout transitorio, dep faltante, dato inesperado), caemos al
+  // viewer legacy de abajo. El pipeline no puede morir y el render nunca queda en
+  // blanco (CA-A3). El módulo parsea issue/skill del filename; acá sólo le
+  // inyectamos issueData desde el estado del pipeline (la ficha degrada a "sin
+  // datos" si falta), evitando que el módulo dependa de dashboard.js (sin ciclo).
+  try {
+    const logsView = require('./views/dashboard/logs');
+    let issueData = null;
+    try {
+      const parsed = require('./views/log-viewer/chat-panel').parseLogFileName(filename);
+      if (parsed && parsed.issue != null) {
+        const st = getPipelineState();
+        issueData = (st && st.issueMatrix && st.issueMatrix[parsed.issue]) || null;
+      }
+    } catch { /* ficha degrada a "sin datos" */ }
+    return logsView.renderLogViewer(filename, isLive, { issueData });
+  } catch (e) {
+    log(`logs viewer MIZPÁ deshabilitado, fallback legacy: ${e.message}`);
+  }
+
+  // ---- Viewer legacy (fallback ante fallo del módulo nuevo) ----
   const title = filename.replace('.log', '').replace(/-/g, ' ');
   // Import theme compartido (#2801) — el log viewer es un satélite más,
   // hereda paleta y tipografía del resto del dashboard nuevo.
