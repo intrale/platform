@@ -1,312 +1,673 @@
 'use strict';
 
 // =============================================================================
-// providers.js — Vista "Providers" del Dashboard V3 (issue #3737, padre #3715).
+// providers.js — Pantalla "Providers" (Multi-Provider) del dashboard del
+// pipeline. Rediseño integral MIZPÁ (Ola 7.1, issue #4201).
 //
-// Vista NUEVA (decisión D0/D1 del PO: no existe panel "Providers" en el
-// monolito — la ventana nace acá y COEXISTE con `/multi-provider`). Lista los
-// providers gestionados (Anthropic, OpenAI/Codex, Gemini, Cerebras, NVIDIA NIM)
-// mostrando estado de credencial + preview enmascarado + fingerprint, sin
-// exponer NUNCA la key completa.
+// Hereda el lenguaje visual MIZPÁ de las pantallas hermanas mergeadas
+// (#4204 Home, #4206 Costos, #4207 Equipo, #4209 Bloqueados, #4211 Pipeline,
+// #4212 Matriz, #4213 Ops): barra de marca (logo atalaya + tagline + selector
+// multiproyecto), nav 5 tabs + «⋯ Más» (Providers vive adentro, con miga de
+// pan), tooltips y footer redundante.
 //
-// Plantilla canónica espejada de `views/dashboard/ops.js` (#3732):
-//   - loadTheme() + nav bar V3 (renderNavTabsSsr) + sprite inline.
-//   - escape SSR unificado vía lib/escape-html.js (#3722) — CA-B3, sin escape
-//     inline duplicado.
-//   - render 100% server-side de las cards + leyenda (la fuente de datos es
-//     `secrets.listKeys()`, no un endpoint JSON: el estado de credenciales no
-//     cambia en caliente, no necesita polling salvo el reloj).
+// Cambios clave del rediseño (mockup `providers-redesign-v2`, aprobado por Leo
+// 2026-06-25):
+//   1. SIN pestañas internas. La vista antigua `/multi-provider`
+//      (multi-provider.js) partía la pantalla en solapas «Por agente»,
+//      «Catálogo», «Health», «Permission overrides». Acá todo se ve de corrido.
+//   2. UNA fila por proveedor: key enmascarada + fingerprint, salud en vivo con
+//      barra de carga/cuota, tier (🟦 PLAN MAX · 🟧 PAGO · FREE), catálogo de
+//      modelos en línea y kill-switch — todo unificado en una sola línea legible.
+//   3. Banner de misión que DIAGNOSTICA la cadena leyendo el estado real de
+//      salud (sanos N/5, quién absorbe el fallback y a qué nivel, riesgo). Nada
+//      hardcodeado: si Gemini está en `red` el banner lo nombra.
+//   4. Franja «Por agente» compacta al pie: la cadena DEFAULT + sólo los agentes
+//      que la pisan (los deterministas build/tester/linter/delivery no listan).
 //
-// Seguridad (formaliza SEC-1..SEC-7 + CA-PRV del análisis de #3737):
-//   - SEC-1 / CA-PRV-5: el masking es FUENTE ÚNICA (secrets-rw.listKeys()).
-//     Esta vista NUNCA recomputa masking ni toca la key cruda — sólo consume
-//     `entry.masked` + `entry.fingerprint`. Cierra el riesgo R1.
-//   - SEC-2 / CA-PRV-6: la vista es READ-ONLY. Sin campos de entrada (ni de
-//     password, ni areas de texto) ni formularios. El set/rotate de keys vive
-//     en terminal Windows (memoria feedback_api-keys-terminal-only) + el wizard
-//     (sub-historia aparte). El botón "Cómo rotar" sólo abre un modal con
-//     instrucciones. Cierra R2.
-//   - CA-PRV-9 / R3: sin handlers inline en atributos. Todo el JS de cliente
-//     usa addEventListener delegado → compatible con el CSP estricto futuro
-//     (#3688).
-//   - SEC-1 / CA-D1: toda interpolación dinámica pasa por escapeHtmlText
-//     (contexto body) o escapeHtmlAttr (contexto atributo title=/aria-label).
-//   - CA-A3 / SEC-7: si listKeys() falla, render inerte VISIBLE (bloque
-//     `data-load-error`), nunca pantalla en blanco.
+// SSR 100% server-side: el render se valida con `curl` (CA explícito). El único
+// JS de cliente es el reloj, los tooltips nativos y el toggle del kill-switch
+// (POST autenticado con CSRF a los endpoints ya existentes de multi-provider).
+//
+// Seguridad: la key real NUNCA viaja — sólo `entry.masked` + `entry.fingerprint`
+// vienen de la fuente única `secrets-rw.listKeys()`. Toda interpolación dinámica
+// pasa por escapeHtmlText / escapeHtmlAttr. Sin handlers inline (CSP-friendly).
 // =============================================================================
 
 const fs = require('node:fs');
 const path = require('node:path');
 
 const { escapeHtmlText, escapeHtmlAttr } = require('../../lib/escape-html.js');
-
-// #3953 (EP8-H0) — Componente compartido de badge de severidad (ícono + texto,
-// allowlist de íconos). Reemplaza el .provider-status-badge solo-texto por el
-// status-badge canónico (CA-1 + CA-4).
 const { renderStatusBadge } = require('./components');
-
-// Estado de credencial → severidad del status-badge compartido.
-const STATUS_SEVERITY = Object.freeze({
-    present: 'ok',
-    placeholder: 'warn',
-    absent: 'info',
-});
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 
-// Fuente ÚNICA de masking + fingerprint (#3737, R1). NUNCA recomputar acá.
+// Fuentes de datos (libs puras — sin req/res). Cada require va con guarda en el
+// colector correspondiente: si una lib falla, la pantalla degrada con "sin
+// datos" en vez de romper el render completo (CA-A3).
 const secrets = require('../../lib/multi-provider/secrets-rw');
 
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
-function loadTheme() {
-    try { return fs.readFileSync(THEME_CSS_PATH, 'utf8'); } catch { return ''; }
-}
-
-// Tokens V3 (`--provider-*`, sección 3.c/3.d) inyectados inline igual que
-// theme.css. Sin esto, `--row-accent` queda guaranteed-invalid y TODAS las
-// cards caen al fallback gris `var(--in-border)` — defecto detectado en la
-// validación UX de #3737. SSR-safe: try/catch → '' para no romper el render.
 const TOKENS_CSS_PATH = path.join(__dirname, '../../assets/design-tokens.css');
-function loadDesignTokens() {
-    try { return fs.readFileSync(TOKENS_CSS_PATH, 'utf8'); } catch { return ''; }
+function loadTheme() { try { return fs.readFileSync(THEME_CSS_PATH, 'utf8'); } catch { return ''; } }
+function loadDesignTokens() { try { return fs.readFileSync(TOKENS_CSS_PATH, 'utf8'); } catch { return ''; } }
+
+// ───────────────────────── Constantes de dominio ─────────────────────────
+
+// Orden canónico (memoria feedback_multi-provider-default-order: Claude > Codex
+// > … > FREE). El set real gestionado hoy es éste — Groq aún no está en
+// `agent-models.json`/`secrets-rw`, así que NO se inventa una fila para él
+// (honramos lo que está en código; si se agrega, aparece automáticamente).
+const PROVIDER_ORDER = Object.freeze(['anthropic', 'openai', 'gemini-google', 'cerebras', 'nvidia-nim']);
+
+// Metadata estable por provider (tier = constante de negocio, no estado de
+// salud). `disabledKey` mapea el nombre del provider de health/listKeys al de
+// `provider-disabled.VALID_PROVIDERS` (openai → openai-codex). `catalogKey`
+// mapea al `model-catalog`.
+const PROVIDER_META = Object.freeze({
+    anthropic:       { name: 'Claude',     accent: '--provider-anthropic',  tier: 'PLAN MAX', tierKind: 'max',  tierIcon: '🟦', disabledKey: 'anthropic',    catalogKey: 'anthropic' },
+    openai:          { name: 'Codex',      accent: '--provider-openai',     tier: 'PAGO',     tierKind: 'paid', tierIcon: '🟧', disabledKey: 'openai-codex', catalogKey: 'openai-codex' },
+    'gemini-google': { name: 'Gemini',     accent: '--provider-gemini',     tier: 'FREE',     tierKind: 'free', tierIcon: '🟩', disabledKey: 'gemini-google', catalogKey: 'gemini-google' },
+    cerebras:        { name: 'Cerebras',   accent: '--provider-cerebras',   tier: 'FREE',     tierKind: 'free', tierIcon: '🟨', disabledKey: 'cerebras',     catalogKey: 'cerebras' },
+    'nvidia-nim':    { name: 'NVIDIA NIM', accent: '--provider-nvidia-nim', tier: 'FREE',     tierKind: 'free', tierIcon: '🟩', disabledKey: 'nvidia-nim',   catalogKey: 'nvidia-nim' },
+});
+
+// Estado de salud → severidad del status-badge + etiqueta humana.
+const HEALTH_SEVERITY = Object.freeze({ green: 'ok', yellow: 'warn', red: 'bad', unknown: 'info' });
+const HEALTH_LABEL = Object.freeze({ green: 'SANO', yellow: 'DEGRADADO', red: 'CAÍDO', unknown: 'SIN DATOS' });
+
+// Traducción legible de los reason_code del health-cron (allowlist; lo demás se
+// muestra tal cual, escapado).
+const REASON_LABEL = Object.freeze({
+    cli_oauth_ok: 'OAuth CLI OK',
+    authenticated: 'autenticado',
+    timeout: 'timeout de red',
+    forbidden: 'FORBIDDEN (403)',
+    invalid_credentials: 'credencial inválida',
+    quota_exhausted: 'cuota agotada',
+    no_key_configured: 'sin key configurada',
+    unknown_provider: 'provider desconocido',
+    cli_unavailable: 'CLI no disponible',
+});
+function reasonHuman(code) {
+    if (!code) return '—';
+    return REASON_LABEL[code] || String(code).replace(/_/g, ' ');
 }
 
-// Etiqueta humana por estado de credencial (devuelto por listKeys()).
-const STATUS_LABEL = Object.freeze({
-    present: 'CONFIGURADO',
-    placeholder: 'PLACEHOLDER',
-    absent: 'AUSENTE',
-});
-
-// Acento de color por provider. Mapeo EXPLÍCITO provider → design token
-// (`assets/design-tokens.css`) porque el nombre del provider no siempre
-// coincide con el sufijo del token (ej. `gemini-google` → `--provider-gemini`).
-// Cualquier provider fuera del set cae a `--provider-unknown` (allowlist
-// cerrada, sin interpolar el nombre crudo en el CSS → no hay CSS-injection).
-const ACCENT_TOKEN = Object.freeze({
-    anthropic: '--provider-anthropic',
-    openai: '--provider-openai-codex',
-    'gemini-google': '--provider-gemini',
-    cerebras: '--provider-cerebras',
-    'nvidia-nim': '--provider-nvidia-nim',
-});
 function accentVar(provider) {
-    const token = ACCENT_TOKEN[provider];
-    return token ? `var(${token})` : 'var(--provider-unknown)';
+    const m = PROVIDER_META[provider];
+    return m ? `var(${m.accent})` : 'var(--provider-unknown)';
 }
 
-// Leyenda estática (CA-C3): explica los badges + qué significan el preview
-// enmascarado y el fingerprint. Sin datos dinámicos → no requiere escape.
-const LEGEND_HTML = `
-<h2 id="providers-legend-title" class="in-section-title">
-  <span class="in-section-title-icon" aria-hidden="true">📖</span>Leyenda
-</h2>
-<ul class="providers-legend-list">
-  <li>${renderStatusBadge({ severity: 'ok', label: 'CONFIGURADO' })}
-      credencial presente y válida (no placeholder).</li>
-  <li>${renderStatusBadge({ severity: 'warn', label: 'PLACEHOLDER' })}
-      valor de relleno (REVOKED / EXAMPLE / CHANGE_ME) — falta la key real.</li>
-  <li>${renderStatusBadge({ severity: 'info', label: 'AUSENTE' })}
-      sin credencial configurada para este provider.</li>
-  <li><span aria-hidden="true">🔑</span> <strong>Preview enmascarado</strong>:
-      primeros 6 + últimos 4 caracteres. La key completa NUNCA se muestra ni
-      se envía al browser.</li>
-  <li><span aria-hidden="true">🧬</span> <strong>fp</strong>: fingerprint
-      SHA-256 (primeros 16 chars) — permite detectar que la key cambió sin
-      exponerla.</li>
-</ul>`;
+// ───────────────────────── Colectores de datos (defensivos) ─────────────────────────
 
-// Modal de instrucciones de rotación (CA-PRV / SEC-2). READ-ONLY: sólo texto,
-// sin inputs. El set/rotate real se hace por terminal Windows o por el wizard.
-const ROTATE_MODAL_HTML = `
-<dialog id="providers-rotate-modal" class="providers-modal"
-        aria-labelledby="providers-rotate-title">
-  <div class="providers-modal-head">
-    <h3 id="providers-rotate-title" class="providers-modal-title">
-      Cómo rotar <code id="providers-rotate-provider">—</code>
-    </h3>
-    <button type="button" class="providers-modal-close" data-action="close-rotate-modal"
-            title="Cerrar este modal de instrucciones"
-            aria-label="Cerrar modal de rotación">✕</button>
+function collectKeys() {
+    const byProvider = {};
+    try {
+        const list = secrets.listKeys();
+        if (Array.isArray(list)) {
+            for (const e of list) { if (e && e.provider) byProvider[e.provider] = e; }
+        }
+    } catch { /* degradamos a {} */ }
+    return byProvider;
+}
+
+function collectHealthState() {
+    // Estado por provider escrito por el health-cron (cada ~15min). Fuente más
+    // rica para el banner de diagnóstico (state green/yellow/red + reason_code).
+    const out = { byProvider: {}, green: 0, yellow: 0, red: 0, ts: null };
+    try {
+        const p = path.join(__dirname, '../../state/multi-provider-health.json');
+        const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
+        out.ts = raw.ts || null;
+        out.green = raw.green_count | 0;
+        out.yellow = raw.yellow_count | 0;
+        out.red = raw.red_count | 0;
+        if (Array.isArray(raw.providers)) {
+            for (const pr of raw.providers) { if (pr && pr.provider) out.byProvider[pr.provider] = pr; }
+        }
+    } catch { /* sin estado de salud todavía */ }
+    return out;
+}
+
+function collectDispatch() {
+    // Carga 24h por provider (dispatches con fallback). Sirve para la barra de
+    // carga/cuota y para identificar quién absorbe el fallback.
+    const out = { byProvider: {}, total: 0 };
+    try {
+        const hs = require('../../lib/multi-provider/health-screen.js');
+        const payload = hs.buildScreenPayload({});
+        out.total = payload.dispatches_total_24h | 0;
+        if (Array.isArray(payload.cards)) {
+            for (const c of payload.cards) {
+                if (c && c.provider) out.byProvider[c.provider] = c.dispatches_24h | 0;
+            }
+        }
+    } catch { /* sin tráfico/logs */ }
+    return out;
+}
+
+function dispatchFor(dispatch, provider) {
+    // 'openai' y 'openai-codex' son el mismo proveedor visual (Codex). Sumamos
+    // ambos buckets para no subreportar su carga.
+    const d = dispatch.byProvider || {};
+    if (provider === 'openai') return (d['openai'] | 0) + (d['openai-codex'] | 0);
+    return d[provider] | 0;
+}
+
+function collectCatalog() {
+    const out = {};
+    try {
+        const mc = require('../../lib/multi-provider/model-catalog.js');
+        const r = mc.listModels();
+        if (r && r.catalog) {
+            for (const [k, models] of Object.entries(r.catalog)) {
+                out[k] = (models || []).map((m) => m.id).filter(Boolean);
+            }
+        }
+    } catch { /* sin catálogo */ }
+    return out;
+}
+
+function collectAgentConfig() {
+    // default_provider + cadenas por skill (para la franja «Por agente» y los
+    // modelos default por provider).
+    const out = { defaultProvider: 'anthropic', providers: {}, skills: {} };
+    try {
+        const am = require('../../lib/multi-provider/agent-models-rw.js');
+        const cfg = am.readConfig();
+        if (cfg && typeof cfg === 'object') {
+            out.defaultProvider = cfg.default_provider || 'anthropic';
+            out.providers = cfg.providers || {};
+            out.skills = cfg.skills || {};
+        }
+    } catch { /* sin config de agentes */ }
+    return out;
+}
+
+function collectDisabled() {
+    const out = { disabledSet: new Set(), valid: [] };
+    try {
+        const pd = require('../../lib/provider-disabled.js');
+        out.valid = Array.isArray(pd.VALID_PROVIDERS) ? pd.VALID_PROVIDERS.slice() : [];
+        const list = pd.listDisabledProviders();
+        if (list && Array.isArray(list.disabled)) {
+            for (const e of list.disabled) { if (e && e.name) out.disabledSet.add(e.name); }
+        }
+    } catch { /* sin estado de kill-switch */ }
+    return out;
+}
+
+// ───────────────────────── Modelo unificado ─────────────────────────
+
+/**
+ * Cruza todas las fuentes en un único modelo de la pantalla. Defensivo: cada
+ * colector ya degrada a vacío si su fuente falla, así que esto nunca lanza.
+ * @returns {{providers: object[], meta: object}}
+ */
+function buildProvidersModel() {
+    const keys = collectKeys();
+    const health = collectHealthState();
+    const dispatch = collectDispatch();
+    const catalog = collectCatalog();
+    const agents = collectAgentConfig();
+    const disabled = collectDisabled();
+
+    const providers = PROVIDER_ORDER.map((key) => {
+        const meta = PROVIDER_META[key];
+        const k = keys[key] || {};
+        const h = health.byProvider[key] || {};
+        const state = (h.state === 'green' || h.state === 'yellow' || h.state === 'red') ? h.state : 'unknown';
+        const disp = dispatchFor(dispatch, key);
+        const loadPct = dispatch.total > 0 ? Math.round((disp / dispatch.total) * 100) : 0;
+
+        // Modelos: catálogo explícito si existe; si no, el modelo default de
+        // agent-models.json (siempre hay al menos uno).
+        let models = catalog[meta.catalogKey] || [];
+        if (models.length === 0) {
+            const pdef = agents.providers[meta.catalogKey] || agents.providers[key] || {};
+            if (pdef.model) models = [pdef.model];
+        }
+
+        return {
+            key,
+            disabledKey: meta.disabledKey,
+            name: meta.name,
+            accent: accentVar(key),
+            tier: meta.tier,
+            tierKind: meta.tierKind,
+            tierIcon: meta.tierIcon,
+            masked: k.masked || null,
+            fingerprint: k.fingerprint || null,
+            keyStatus: k.status || h.key_status || 'absent',
+            editable: k.editable !== false,
+            reason: k.reason || null,
+            authMode: h.auth_mode || (k.editable === false ? 'oauth' : null),
+            freeTierNotes: k.free_tier_notes || h.free_tier_notes || null,
+            healthState: state,
+            healthReason: h.reason_code || null,
+            lastChecked: h.last_checked_at || null,
+            loadPct,
+            dispatches24h: disp,
+            hasTraffic: dispatch.total > 0,
+            models,
+            disabled: disabled.disabledSet.has(meta.disabledKey),
+        };
+    });
+
+    // Diagnóstico de la cadena.
+    const total = providers.length;
+    const degraded = providers.filter((p) => p.healthState === 'yellow' || p.healthState === 'red');
+    const healthy = providers.filter((p) => p.healthState === 'green').length;
+    // Quién absorbe el fallback: el provider con mayor carga 24h.
+    let absorber = null;
+    for (const p of providers) {
+        if (!absorber || p.loadPct > absorber.loadPct) absorber = p;
+    }
+
+    // Agentes que pisan la cadena DEFAULT: skills cuyo provider primario es el
+    // default (anthropic) — excluye los deterministas (build/tester/linter/
+    // delivery), que no usan la cadena LLM.
+    const agentChain = [];
+    for (const [skill, def] of Object.entries(agents.skills)) {
+        const primary = (def && def.provider) || agents.defaultProvider;
+        if (primary === agents.defaultProvider && primary !== 'deterministic') {
+            agentChain.push(skill);
+        }
+    }
+    agentChain.sort();
+
+    return {
+        providers,
+        meta: {
+            total,
+            healthy,
+            degraded,
+            absorber,
+            defaultProvider: agents.defaultProvider,
+            defaultChain: PROVIDER_ORDER.map((k) => PROVIDER_META[k].name),
+            agents: agentChain,
+            healthTs: health.ts,
+            dispatchTotal: dispatch.total,
+        },
+    };
+}
+
+// ───────────────────────── Render SSR ─────────────────────────
+
+function renderTierBadge(p) {
+    const cls = 'prov-tier prov-tier-' + p.tierKind;
+    const title = p.tierKind === 'max' ? 'Plan MAX (suscripción Claude, sin costo por token)'
+        : p.tierKind === 'paid' ? 'Tier pago (consume créditos de la cuenta)'
+        : 'Tier gratuito (free tier del proveedor)';
+    return `<span class="${cls}" title="${escapeHtmlAttr(title)}">`
+        + `<span aria-hidden="true">${p.tierIcon}</span>${escapeHtmlText(p.tier)}</span>`;
+}
+
+function renderQuotaBar(p) {
+    if (!p.hasTraffic) {
+        return `<div class="prov-quota" title="${escapeHtmlAttr('Sin despachos registrados en las últimas 24h')}">`
+            + `<div class="prov-quota-track"><div class="prov-quota-fill is-empty" style="width:0%"></div></div>`
+            + `<span class="prov-quota-lbl">sin tráfico 24h</span></div>`;
+    }
+    const lvl = p.loadPct >= 60 ? 'is-high' : p.loadPct >= 30 ? 'is-mid' : 'is-low';
+    const tip = `Carga 24h: ${p.dispatches24h} despachos · ${p.loadPct}% del total de la cadena`;
+    return `<div class="prov-quota" title="${escapeHtmlAttr(tip)}">`
+        + `<div class="prov-quota-track"><div class="prov-quota-fill ${lvl}" style="width:${p.loadPct}%"></div></div>`
+        + `<span class="prov-quota-lbl">${p.loadPct}% carga 24h</span></div>`;
+}
+
+function renderKeyCell(p) {
+    // Anthropic / OAuth-MAX: sin API key rotable por UI.
+    if (!p.editable || (p.keyStatus === 'absent' && p.authMode === 'oauth')) {
+        return `<div class="prov-key prov-key-oauth" title="${escapeHtmlAttr(p.reason || 'Autenticación vía OAuth del CLI — no hay API key que mostrar')}">`
+            + `<span aria-hidden="true">🔒</span> OAuth / MAX · sin API key</div>`;
+    }
+    if (p.masked) {
+        const fp = p.fingerprint
+            ? `<span class="prov-fp" title="${escapeHtmlAttr('Fingerprint SHA-256 (16 chars) — detecta cambios sin exponer la key')}">fp ${escapeHtmlText(p.fingerprint)}</span>`
+            : '';
+        return `<div class="prov-key" title="${escapeHtmlAttr('Preview enmascarado: primeros 6 + últimos 4 caracteres. La key completa nunca viaja por HTTP.')}">`
+            + `<span aria-hidden="true">🔑</span><code>${escapeHtmlText(p.masked)}</code>${fp}</div>`;
+    }
+    return `<div class="prov-key prov-key-absent" title="${escapeHtmlAttr('Sin credencial configurada para este proveedor')}">`
+        + `<span aria-hidden="true">∅</span> sin key</div>`;
+}
+
+function renderCatalogCell(p) {
+    if (!p.models || p.models.length === 0) {
+        return `<div class="prov-models prov-models-empty">— sin catálogo —</div>`;
+    }
+    const chips = p.models.map((m) => `<span class="prov-model">${escapeHtmlText(m)}</span>`).join('<span class="prov-model-sep" aria-hidden="true">·</span>');
+    return `<div class="prov-models" title="${escapeHtmlAttr('Modelos disponibles para ' + p.name)}">${chips}</div>`;
+}
+
+function renderKillSwitch(p) {
+    const on = !p.disabled; // "on" = habilitado (no apagado).
+    const cls = 'prov-kill' + (on ? ' is-on' : ' is-off');
+    const label = on ? 'ACTIVO' : 'APAGADO';
+    const tip = on
+        ? `Proveedor activo en la cadena. Click para apagarlo (kill-switch) — deja de recibir despachos.`
+        : `Proveedor apagado por kill-switch. Click para reactivarlo en la cadena.`;
+    return `<button type="button" class="${cls}" data-action="toggle-kill"`
+        + ` data-provider="${escapeHtmlAttr(p.disabledKey)}" data-on="${on ? '1' : '0'}"`
+        + ` title="${escapeHtmlAttr(tip)}" aria-pressed="${on ? 'true' : 'false'}"`
+        + ` aria-label="${escapeHtmlAttr('Kill-switch de ' + p.name + ': ' + label)}">`
+        + `<span class="prov-kill-dot" aria-hidden="true"></span>${label}</button>`;
+}
+
+/**
+ * Una fila por proveedor (mockup v2). Toda la info — key, salud, tier, catálogo,
+ * kill-switch — en una sola línea legible, sin solapas.
+ */
+function renderProviderRow(p) {
+    const sev = HEALTH_SEVERITY[p.healthState] || 'info';
+    const healthLabel = HEALTH_LABEL[p.healthState] || 'SIN DATOS';
+    const reasonTxt = reasonHuman(p.healthReason);
+    return `<article class="prov-row" data-provider="${escapeHtmlAttr(p.key)}" style="--row-accent:${p.accent};">
+  <div class="prov-id">
+    <span class="prov-dot" aria-hidden="true"></span>
+    <div class="prov-id-txt">
+      <span class="prov-name">${escapeHtmlText(p.name)}</span>
+      ${renderTierBadge(p)}
+    </div>
   </div>
-  <div class="providers-modal-body">
-    <p>Por seguridad, las API keys se setean y rotan <strong>desde la terminal
-      Windows</strong>, nunca desde esta UI ni por Telegram.</p>
-    <ol class="providers-modal-steps">
-      <li>Conseguí la nueva key del provider (panel del proveedor).</li>
-      <li>Editá <code>~/.claude/secrets/credentials.json</code> (fuera del repo)
-        bajo el path canónico del provider.</li>
-      <li>Dispará el reload del pipeline (botón <em>Recargar</em> del panel
-        Multi-Provider, que ya audita y valida vía CSRF).</li>
-    </ol>
-    <p class="providers-modal-note">El preview y el fingerprint de esta ventana
-      se actualizan en el próximo render una vez recargado el pipeline.</p>
+  <div class="prov-col prov-col-key">${renderKeyCell(p)}</div>
+  <div class="prov-col prov-col-health">
+    ${renderStatusBadge({ severity: sev, label: healthLabel, title: 'Salud en vivo: ' + healthLabel + ' (' + reasonTxt + ')' })}
+    <span class="prov-health-reason" title="${escapeHtmlAttr('Causa reportada por el health-cron')}">${escapeHtmlText(reasonTxt)}</span>
+    ${renderQuotaBar(p)}
   </div>
-</dialog>`;
+  <div class="prov-col prov-col-models">${renderCatalogCell(p)}</div>
+  <div class="prov-col prov-col-kill">${renderKillSwitch(p)}</div>
+</article>`;
+}
+
+/**
+ * Banner de misión: diagnostica la cadena. Lee estado real (no hardcodea).
+ */
+function renderMissionBanner(meta) {
+    const degradedCount = meta.degraded.length;
+    const calm = degradedCount === 0;
+    const cls = 'prov-mission' + (calm ? ' is-calm' : ' is-degraded');
+
+    let ttl, chip, desc;
+    if (calm) {
+        ttl = 'La cadena de providers está sana';
+        chip = 'TODO OK';
+        desc = `Los ${meta.total} proveedores responden. La cadena de fallback puede absorber caídas sin intervención.`;
+    } else {
+        const names = meta.degraded.map((p) => `${p.name} (${reasonHuman(p.healthReason)})`).join(', ');
+        ttl = 'La cadena de providers está degradada';
+        chip = degradedCount === 1 ? '1 PROVEEDOR CAÍDO' : `${degradedCount} PROVEEDORES CAÍDOS`;
+        desc = `Afectados: ${names}. La cadena sigue operativa por fallback, pero con menos redundancia.`;
+    }
+
+    const abs = meta.absorber;
+    const absName = abs ? abs.name : '—';
+    const absPct = abs ? abs.loadPct : 0;
+    const absRisk = absPct >= 50
+        ? `concentra >½ del tráfico — punto único de presión`
+        : absPct >= 30
+        ? `absorbe una porción alta de la cadena`
+        : `reparto de carga saludable`;
+
+    const badgeN = calm ? String(meta.healthy) : String(degradedCount);
+    const badgeK = calm ? 'SANOS' : 'CAÍDOS';
+
+    return `
+<div class="${cls}" id="prov-mission" role="region" aria-label="Diagnóstico de la cadena de proveedores">
+  <div class="prov-btag">
+    <div class="prov-btag-n">${escapeHtmlText(badgeN)}</div>
+    <div class="prov-btag-k">${escapeHtmlText(badgeK)}</div>
+    <div class="prov-btag-s">DE ${escapeHtmlText(String(meta.total))} PROVIDERS</div>
+  </div>
+  <div class="prov-mtext">
+    <div class="prov-m-ttl">${escapeHtmlText(ttl)}<span class="prov-m-chip">${escapeHtmlText(chip)}</span></div>
+    <div class="prov-m-desc">${escapeHtmlText(desc)}</div>
+    <div class="prov-wmetrics">
+      <div class="prov-wm">
+        <div class="prov-wm-l">🟢 PROVEEDORES SANOS</div>
+        <div class="prov-wm-v">${escapeHtmlText(String(meta.healthy))} <span class="u">de ${escapeHtmlText(String(meta.total))}</span></div>
+        <div class="prov-wm-s">${calm ? 'cadena completa' : escapeHtmlText(meta.degraded.map((p) => p.name).join(', ') + ' fuera')}</div>
+      </div>
+      <div class="prov-wm">
+        <div class="prov-wm-l">⚖ ABSORBE EL FALLBACK</div>
+        <div class="prov-wm-v">${escapeHtmlText(absName)} <span class="u">${escapeHtmlText(String(absPct))}%</span></div>
+        <div class="prov-wm-s">${escapeHtmlText(absRisk)}</div>
+      </div>
+      <div class="prov-wm">
+        <div class="prov-wm-l">📦 TRÁFICO 24H</div>
+        <div class="prov-wm-v">${escapeHtmlText(String(meta.dispatchTotal))} <span class="u">despachos</span></div>
+        <div class="prov-wm-s">base del cálculo de carga por provider</div>
+      </div>
+    </div>
+  </div>
+  <div class="prov-mright">
+    <div class="prov-reco">
+      <div class="prov-reco-l">${calm ? '✓ SIN ACCIÓN PENDIENTE' : '⚠ ACCIÓN SUGERIDA'}</div>
+      <div class="prov-reco-t">${calm
+          ? 'Monitorear. La cadena tiene redundancia para absorber una caída.'
+          : escapeHtmlText('Revisar ' + meta.degraded.map((p) => p.name).join(', ') + ' (terminal Windows / health-run). El resto cubre el fallback.')}</div>
+    </div>
+  </div>
+</div>`;
+}
+
+/**
+ * Franja «Por agente» al pie: cadena DEFAULT + agentes que la pisan.
+ */
+function renderAgentStrip(meta) {
+    const chainHtml = meta.defaultChain
+        .map((n) => `<span class="prov-chain-node">${escapeHtmlText(n)}</span>`)
+        .join('<span class="prov-chain-arrow" aria-hidden="true">→</span>');
+    const agentsHtml = meta.agents.length
+        ? meta.agents.map((a) => `<span class="prov-agent" title="${escapeHtmlAttr(a + ' usa la cadena DEFAULT')}">${escapeHtmlText(a)}</span>`).join('')
+        : '<span class="prov-agent-empty">sin agentes sobre la cadena DEFAULT</span>';
+    return `
+<section class="in-section prov-agents" aria-labelledby="prov-agents-title">
+  <h2 id="prov-agents-title" class="in-section-title">
+    <span class="in-section-title-icon" aria-hidden="true">🧩</span>Por agente
+    <span class="prov-agents-sub">— la cadena DEFAULT y quién la pisa</span>
+  </h2>
+  <div class="prov-chain" aria-label="Cadena DEFAULT de fallback">${chainHtml}</div>
+  <div class="prov-agent-grid">${agentsHtml}</div>
+</section>`;
+}
+
+function bodyHtml(model) {
+    const rows = model.providers.map(renderProviderRow).join('');
+    return `
+${renderMissionBanner(model.meta)}
+<section class="in-section" aria-labelledby="providers-title">
+  <h2 id="providers-title" class="in-section-title">
+    <span class="in-section-title-icon" aria-hidden="true">🔌</span>Proveedores
+    <span class="prov-list-sub">— key, salud, tier, catálogo y kill-switch en una sola fila</span>
+  </h2>
+  <div class="prov-list" id="providers-list">${rows}</div>
+</section>
+${renderAgentStrip(model.meta)}`;
+}
+
+// ───────────────────────── Barra de marca MIZPÁ (hereda de las hermanas) ─────────────────────────
+
+function renderBrandBar() {
+    const logoSvg = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">'
+        + '<path d="M12 2.5 5 6v5c0 4.6 3 8 7 9.5 4-1.5 7-4.9 7-9.5V6l-7-3.5Z" stroke="#06121a" stroke-width="1.6" fill="rgba(255,255,255,.16)"/>'
+        + '<path d="M9.5 12.5 11.3 14.3 14.8 10.4" stroke="#06121a" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    return `
+    <div class="in-header-brand">
+      <div class="mz-logo" aria-hidden="true" title="MIZPÁ · atalaya de agentes (Génesis 31:49)">${logoSvg}</div>
+      <div class="mz-id">
+        <div class="mz-name">MIZPÁ</div>
+        <div class="mz-sub">«Que el Señor vigile» · atalaya de agentes</div>
+      </div>
+      <div class="mz-projsel" role="button" tabindex="0"
+           title="Proyecto activo. MIZPÁ es el motor; el proyecto es intercambiable (multiproyecto — selección en evaluación)."
+           aria-label="Proyecto activo: Intrale, 1 de 3">
+        <span class="mz-proj-avatar" aria-hidden="true">i</span>
+        <span class="mz-proj-id">
+          <span class="mz-proj-name">Intrale</span>
+          <span class="mz-proj-state">PROYECTO ACTIVO</span>
+        </span>
+        <span class="mz-proj-badge">1 / 3</span>
+        <span class="mz-proj-caret" aria-hidden="true">▾</span>
+      </div>
+    </div>`;
+}
+
+// ───────────────────────── CSS de la pantalla ─────────────────────────
 
 const PANEL_CSS = `
 .satellite-frame { max-width: 1600px; margin: 0 auto; padding: 0; }
 .satellite-body { padding: 22px 28px; display: flex; flex-direction: column; gap: 18px; }
-.providers-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
-.provider-card { background: var(--in-bg-3); border: 1px solid var(--in-border); border-left: 4px solid var(--row-accent, var(--in-border)); border-radius: var(--in-radius-sm); padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
-.provider-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.provider-card-title { font-weight: 600; font-size: 14px; }
-.provider-status-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 12px; font-size: 10px; letter-spacing: 0.4px; font-weight: 600; border: 1px solid transparent; text-transform: uppercase; }
-.provider-status-badge.present { background: var(--in-ok-soft); color: var(--in-ok); border-color: var(--in-ok); }
-.provider-status-badge.placeholder { background: var(--in-warn-soft); color: var(--in-warn); border-color: var(--in-warn); }
-.provider-status-badge.absent { background: var(--in-bg-2); color: var(--in-fg-dim); border-color: var(--in-border); }
-.provider-mask, .provider-fp { display: flex; align-items: center; gap: 6px; font-family: var(--in-mono); font-size: 12px; color: var(--in-fg-dim); word-break: break-all; }
-.provider-mask code, .provider-fp code { color: var(--in-fg); }
-.provider-locked { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--in-fg-dim); font-weight: 600; }
-.provider-rotate-btn { align-self: flex-start; background: var(--in-bg-2); color: var(--in-fg); border: 1px solid var(--in-border); border-radius: var(--in-radius-sm); padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer; }
-.provider-rotate-btn:hover { border-color: var(--in-accent, var(--in-fg-dim)); }
-.providers-empty, .providers-error { padding: 18px; border: 1px dashed var(--in-border); border-radius: var(--in-radius-sm); color: var(--in-fg-dim); }
-.providers-error { border-color: var(--in-bad); color: var(--in-bad); }
-.providers-legend-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; font-size: 12px; color: var(--in-fg-dim); }
-.providers-legend-list strong { color: var(--in-fg); }
-.providers-modal { border: 1px solid var(--in-border); border-radius: var(--in-radius-sm); background: var(--in-bg-3); color: var(--in-fg); max-width: 520px; padding: 0; }
-.providers-modal::backdrop { background: rgba(0,0,0,0.5); }
-.providers-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--in-border); }
-.providers-modal-title { margin: 0; font-size: 15px; }
-.providers-modal-close { background: transparent; border: none; color: var(--in-fg-dim); font-size: 16px; cursor: pointer; }
-.providers-modal-body { padding: 14px 16px; font-size: 13px; line-height: 1.5; }
-.providers-modal-steps { margin: 8px 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
-.providers-modal-note { color: var(--in-fg-dim); font-size: 12px; margin-top: 8px; }
+.prov-list-sub, .prov-agents-sub { font-size: 12px; font-weight: 500; color: var(--in-fg-dim); margin-left: 8px; }
+
+/* Banner de misión */
+.prov-mission { display: grid; grid-template-columns: auto 1fr auto; gap: 22px; align-items: stretch;
+  background: var(--in-bg-3); border: 1px solid var(--in-border); border-radius: 14px; padding: 18px 22px; }
+.prov-mission.is-degraded { border-color: var(--in-bad); box-shadow: inset 3px 0 0 var(--in-bad); }
+.prov-mission.is-calm { border-color: var(--in-ok); box-shadow: inset 3px 0 0 var(--in-ok); }
+.prov-btag { display: flex; flex-direction: column; align-items: center; justify-content: center;
+  min-width: 120px; padding: 12px 16px; border-radius: 12px; background: var(--in-bg-2); border: 1px solid var(--in-border); }
+.prov-mission.is-degraded .prov-btag { background: var(--in-bad-soft); border-color: var(--in-bad); }
+.prov-mission.is-calm .prov-btag { background: var(--in-ok-soft); border-color: var(--in-ok); }
+.prov-btag-n { font-size: 42px; font-weight: 900; line-height: 1; }
+.prov-btag-k { font-size: 12px; font-weight: 800; letter-spacing: 1px; margin-top: 4px; }
+.prov-btag-s { font-size: 9.5px; font-weight: 700; color: var(--in-fg-dim); letter-spacing: .6px; margin-top: 3px; }
+.prov-mtext { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.prov-m-ttl { font-size: 17px; font-weight: 800; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.prov-m-chip { font-size: 10px; font-weight: 800; letter-spacing: .8px; padding: 3px 9px; border-radius: 8px;
+  background: var(--in-bg-2); border: 1px solid var(--in-border); color: var(--in-fg-dim); }
+.prov-mission.is-degraded .prov-m-chip { background: var(--in-bad-soft); border-color: var(--in-bad); color: var(--in-bad); }
+.prov-mission.is-calm .prov-m-chip { background: var(--in-ok-soft); border-color: var(--in-ok); color: var(--in-ok); }
+.prov-m-desc { font-size: 13px; color: var(--in-fg-dim); line-height: 1.5; }
+.prov-wmetrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 6px; }
+.prov-wm { background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 10px; padding: 10px 12px; }
+.prov-wm-l { font-size: 9.5px; font-weight: 800; letter-spacing: .6px; color: var(--in-fg-dim); }
+.prov-wm-v { font-size: 19px; font-weight: 800; margin-top: 4px; }
+.prov-wm-v .u { font-size: 12px; font-weight: 600; color: var(--in-fg-dim); }
+.prov-wm-s { font-size: 11px; color: var(--in-fg-dim); margin-top: 3px; }
+.prov-mright { display: flex; align-items: stretch; }
+.prov-reco { display: flex; flex-direction: column; justify-content: center; min-width: 210px; max-width: 250px;
+  background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 12px; padding: 12px 14px; }
+.prov-mission.is-degraded .prov-reco { border-color: var(--in-warn); }
+.prov-reco-l { font-size: 10px; font-weight: 800; letter-spacing: .6px; color: var(--in-fg-dim); }
+.prov-reco-t { font-size: 12.5px; font-weight: 600; margin-top: 6px; line-height: 1.45; }
+
+/* Lista de providers — una fila por proveedor */
+.prov-list { display: flex; flex-direction: column; gap: 10px; }
+.prov-row { display: grid; grid-template-columns: 200px 1.3fr 1.4fr 1.5fr auto; gap: 16px; align-items: center;
+  background: var(--in-bg-3); border: 1px solid var(--in-border); border-left: 4px solid var(--row-accent, var(--in-border));
+  border-radius: 12px; padding: 14px 18px; }
+.prov-id { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.prov-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; background: var(--row-accent, var(--in-fg-dim)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--row-accent, #888) 22%, transparent); }
+.prov-id-txt { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.prov-name { font-size: 15px; font-weight: 800; }
+.prov-tier { display: inline-flex; align-items: center; gap: 5px; font-size: 9.5px; font-weight: 800; letter-spacing: .5px;
+  padding: 2px 8px; border-radius: 7px; width: fit-content; border: 1px solid transparent; }
+.prov-tier-max  { background: rgba(52,217,224,.14); color: #9fe9ee; border-color: rgba(52,217,224,.4); }
+.prov-tier-paid { background: var(--provider-anthropic-bg); color: var(--provider-anthropic-fg); border-color: var(--provider-anthropic-dim); }
+.prov-tier-free { background: var(--in-bg-2); color: var(--in-fg-dim); border-color: var(--in-border); }
+.prov-col { min-width: 0; }
+.prov-key { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-family: var(--in-mono); font-size: 12px; color: var(--in-fg); word-break: break-all; }
+.prov-key code { color: var(--in-fg); }
+.prov-key-oauth, .prov-key-absent { color: var(--in-fg-dim); font-family: inherit; font-weight: 600; }
+.prov-fp { font-size: 10.5px; color: var(--in-fg-dim); }
+.prov-col-health { display: flex; flex-direction: column; gap: 6px; }
+.prov-health-reason { font-size: 11px; color: var(--in-fg-dim); }
+.prov-quota { display: flex; align-items: center; gap: 8px; }
+.prov-quota-track { flex: 1; height: 7px; border-radius: 4px; background: var(--in-bg-2); border: 1px solid var(--in-border); overflow: hidden; min-width: 70px; }
+.prov-quota-fill { height: 100%; border-radius: 4px; transition: width .3s; }
+.prov-quota-fill.is-low { background: var(--in-ok); }
+.prov-quota-fill.is-mid { background: var(--in-warn); }
+.prov-quota-fill.is-high { background: var(--in-bad); }
+.prov-quota-fill.is-empty { background: transparent; }
+.prov-quota-lbl { font-size: 10.5px; color: var(--in-fg-dim); white-space: nowrap; }
+.prov-models { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.prov-model { font-family: var(--in-mono); font-size: 11px; color: var(--in-fg); background: var(--in-bg-2);
+  border: 1px solid var(--in-border); border-radius: 6px; padding: 2px 7px; }
+.prov-model-sep { color: var(--in-fg-soft); }
+.prov-models-empty { font-size: 11px; color: var(--in-fg-soft); }
+.prov-kill { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 800; letter-spacing: .5px;
+  padding: 7px 12px; border-radius: 9px; cursor: pointer; border: 1px solid var(--in-border); background: var(--in-bg-2); color: var(--in-fg); }
+.prov-kill-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.prov-kill.is-on { border-color: var(--in-ok); color: var(--in-ok); background: var(--in-ok-soft); }
+.prov-kill.is-on .prov-kill-dot { background: var(--in-ok); }
+.prov-kill.is-off { border-color: var(--in-bad); color: var(--in-bad); background: var(--in-bad-soft); }
+.prov-kill.is-off .prov-kill-dot { background: var(--in-bad); }
+.prov-kill:hover { filter: brightness(1.12); }
+
+/* Franja por agente */
+.prov-chain { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 4px 0 12px; }
+.prov-chain-node { font-size: 12px; font-weight: 800; padding: 4px 11px; border-radius: 8px; background: var(--in-bg-2); border: 1px solid var(--in-border); }
+.prov-chain-arrow { color: var(--in-fg-dim); font-weight: 800; }
+.prov-agent-grid { display: flex; flex-wrap: wrap; gap: 7px; }
+.prov-agent { font-size: 11.5px; font-weight: 600; padding: 4px 10px; border-radius: 999px; background: var(--in-bg-2); border: 1px solid var(--in-border); color: var(--in-fg-dim); }
+.prov-agent-empty { font-size: 12px; color: var(--in-fg-soft); }
+
+@media (max-width: 1100px) {
+  .prov-row { grid-template-columns: 1fr 1fr; }
+  .prov-mission { grid-template-columns: 1fr; }
+  .prov-wmetrics { grid-template-columns: 1fr; }
+}
 `;
-
-// ───────────────────────── SSR helpers (server-side) ─────────────────────────
-
-/**
- * Render de una card de provider. `entry` viene de `secrets.listKeys()`:
- *   { provider, label, editable, reason, status, masked, fingerprint, ... }
- * El masking (`entry.masked`) y el fingerprint ya vienen calculados — esta
- * función NO los recomputa (SEC-1 / R1).
- * @param {object} entry
- * @returns {string} HTML de la <article>.
- */
-function renderProviderCard(entry) {
-    const e = entry || {};
-    const status = (e.status === 'present' || e.status === 'placeholder' || e.status === 'absent')
-        ? e.status : 'absent';
-    const statusLabel = STATUS_LABEL[status] || 'ERROR';
-    const provider = String(e.provider || '');
-    const isLocked = e.editable === false; // R7: anthropic no es editable vía UI.
-
-    const maskHtml = e.masked
-        ? `<div class="provider-mask" title="${escapeHtmlAttr('Preview enmascarado: primeros 6 + últimos 4 caracteres')}">` +
-            `<span aria-hidden="true">🔑</span><code>${escapeHtmlText(e.masked)}</code></div>`
-        : '';
-
-    const fpHtml = e.fingerprint
-        ? `<div class="provider-fp" title="${escapeHtmlAttr('Fingerprint SHA-256 (primeros 16 chars) para detectar cambios sin exponer la credencial')}">` +
-            `<span aria-hidden="true">🧬</span>fp: <code>${escapeHtmlText(e.fingerprint)}</code></div>`
-        : '';
-
-    const actionHtml = isLocked
-        ? `<div class="provider-locked" title="${escapeHtmlAttr(e.reason || 'No editable vía UI')}"` +
-            ` aria-label="${escapeHtmlAttr('No editable vía UI')}"><span aria-hidden="true">🔒</span>No editable</div>`
-        : `<button type="button" class="provider-rotate-btn" data-action="open-rotate-modal"` +
-            ` data-provider="${escapeHtmlAttr(provider)}"` +
-            ` title="${escapeHtmlAttr('Abrir instrucciones de rotación por terminal Windows')}"` +
-            ` aria-label="${escapeHtmlAttr('Cómo rotar ' + (e.label || provider))}">Cómo rotar</button>`;
-
-    return `<article class="provider-card" data-provider="${escapeHtmlAttr(provider)}"` +
-        ` style="--row-accent: ${accentVar(provider)};">` +
-        `<header class="provider-card-head">` +
-        `<span class="provider-card-title">${escapeHtmlText(e.label || provider)}</span>` +
-        renderStatusBadge({
-            severity: STATUS_SEVERITY[status] || 'info',
-            label: statusLabel,
-            title: 'Estado de la credencial: ' + statusLabel,
-        }) +
-        `</header>` +
-        maskHtml +
-        fpHtml +
-        actionHtml +
-        `</article>`;
-}
-
-/**
- * Cuerpo SSR de la ventana. Lee `secrets.listKeys()` con guarda defensiva
- * (CA-A3 / SEC-7): si lanza, devuelve un bloque de error VISIBLE en vez de
- * romper el render completo.
- * @returns {string}
- */
-function bodyHtml() {
-    let entries = [];
-    let loadError = null;
-    try {
-        entries = secrets.listKeys();
-        if (!Array.isArray(entries)) entries = [];
-    } catch (err) {
-        loadError = (err && err.message) ? err.message : 'unknown_error';
-    }
-
-    let listHtml;
-    if (loadError) {
-        listHtml = `<div id="providers-list" class="providers-error" data-load-error="true" role="alert">` +
-            `<strong>Error al leer credenciales</strong> (${escapeHtmlText(loadError)}). ` +
-            `Revisá los logs del dashboard.</div>`;
-    } else if (entries.length === 0) {
-        listHtml = `<div id="providers-list" class="providers-empty">` +
-            `Sin providers gestionados configurados todavía.</div>`;
-    } else {
-        listHtml = `<div id="providers-list" class="providers-grid">` +
-            entries.map(renderProviderCard).join('') + `</div>`;
-    }
-
-    return `
-<section class="in-section" aria-labelledby="providers-title">
-  <h2 id="providers-title" class="in-section-title">
-    <span class="in-section-title-icon" aria-hidden="true">🔌</span>Providers gestionados
-  </h2>
-  ${listHtml}
-</section>
-<section class="in-section" id="providers-legend" aria-labelledby="providers-legend-title">
-  ${LEGEND_HTML}
-</section>
-${ROTATE_MODAL_HTML}`;
-}
 
 // ───────────────────────── Client JS (sin handlers inline) ─────────────────────────
 
 const PROVIDERS_CLIENT_JS = `
 (function(){
-  var modal = document.getElementById('providers-rotate-modal');
-  var nameEl = document.getElementById('providers-rotate-provider');
-  function openModal(provider){
-    if(nameEl) nameEl.textContent = provider || '—';
-    if(!modal) return;
-    if(typeof modal.showModal === 'function'){ try { modal.showModal(); return; } catch(e){} }
-    modal.setAttribute('open','');
+  function tickClock(){ var c = document.getElementById('hdr-clock'); if(c) c.textContent = new Date().toLocaleTimeString('es-AR'); }
+  tickClock(); setInterval(tickClock, 1000);
+
+  var csrf = null;
+  function fetchJson(url, opts){
+    return fetch(url, Object.assign({ cache:'no-store' }, opts||{}))
+      .then(function(r){ return r.json().catch(function(){ return {}; }).then(function(d){ d.__status = r.status; d.__ok = r.ok; return d; }); })
+      .catch(function(e){ return { __ok:false, error: e.message }; });
   }
-  function closeModal(){
-    if(!modal) return;
-    if(typeof modal.close === 'function'){ try { modal.close(); return; } catch(e){} }
-    modal.removeAttribute('open');
+  function getCsrf(){
+    if(csrf) return Promise.resolve(csrf);
+    return fetchJson('/api/multi-provider/csrf-token').then(function(r){ csrf = r && r.csrf_token; return csrf; });
+  }
+  function toggleKill(btn){
+    var provider = btn.getAttribute('data-provider');
+    var on = btn.getAttribute('data-on') === '1';
+    var action = on ? 'disable' : 'enable'; // si está ON -> apagar.
+    btn.disabled = true;
+    getCsrf().then(function(token){
+      return fetchJson('/api/multi-provider/providers/' + encodeURIComponent(provider) + '/' + action, {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json', 'X-CSRF-Token': token || '', 'X-Requested-With':'XMLHttpRequest' },
+        body: '{}'
+      });
+    }).then(function(r){
+      btn.disabled = false;
+      if(r && r.__ok){ location.reload(); }
+      else { alert('No se pudo cambiar el kill-switch: ' + ((r && (r.error||r.message)) || ('HTTP ' + (r && r.__status)))); }
+    });
   }
   document.addEventListener('click', function(ev){
-    var opener = ev.target.closest ? ev.target.closest('[data-action="open-rotate-modal"]') : null;
-    if(opener){ openModal(opener.getAttribute('data-provider')); return; }
-    var closer = ev.target.closest ? ev.target.closest('[data-action="close-rotate-modal"]') : null;
-    if(closer){ closeModal(); return; }
+    var t = ev.target.closest ? ev.target.closest('[data-action="toggle-kill"]') : null;
+    if(t){ ev.preventDefault(); toggleKill(t); }
   });
-  function tickClock(){ var c = document.getElementById('hdr-clock'); if(c) c.textContent = new Date().toLocaleTimeString('es-AR'); }
-  tickClock();
-  setInterval(tickClock, 1000);
 })();
 `;
 
 // ───────────────────────── Render principal ─────────────────────────
 
-/**
- * Render SSR completo de la ventana Providers.
- * @returns {string} HTML completo de la ventana.
- */
 function renderProviders() {
     const tokens = loadDesignTokens();
     const theme = loadTheme();
     const spriteInline = loadIconSprite();
     const navHtml = renderNavTabsSsr('providers');
+    const brandHtml = renderBrandBar();
+    const model = buildProvidersModel();
+    const breadcrumb = `
+  <div class="mz-crumb" aria-label="Ubicación: Más › Providers">
+    <span class="mz-crumb-sep">⋯ Más</span>
+    <span class="mz-crumb-sep">›</span>
+    <b>🔌 Providers</b>
+    <span class="mz-crumb-desc">· proveedores LLM · salud y cuota · cadena de fallback</span>
+  </div>`;
     return `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -321,22 +682,17 @@ function renderProviders() {
 <div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">${spriteInline}</div>
 <div class="satellite-frame">
   <header class="in-header">
-    <div class="in-header-brand">
-      <div class="in-header-logo">i</div>
-      <div>
-        <div class="in-header-title">Providers</div>
-        <div class="in-header-subtitle">Credenciales de proveedores · solo lectura</div>
-      </div>
-    </div>
+    ${brandHtml}
     <div class="in-header-meta">
       <span class="in-clock" id="hdr-clock">${escapeHtmlText(new Date().toLocaleTimeString('es-AR'))}</span>
     </div>
   </header>
   ${navHtml}
-  <main class="satellite-body">${bodyHtml()}</main>
+  ${breadcrumb}
+  <main class="satellite-body">${bodyHtml(model)}</main>
   <footer class="in-footer">
-    <span>Solo lectura · el set/rotate de keys vive en terminal Windows</span>
-    <span>Intrale V3 · #3737</span>
+    <span>Solo lectura del estado · el set/rotate de keys vive en terminal Windows (nunca por Telegram)</span>
+    <span>Intrale · MIZPÁ · #4201</span>
   </footer>
 </div>
 <script>${PROVIDERS_CLIENT_JS}</script>
@@ -345,8 +701,7 @@ function renderProviders() {
 }
 
 /**
- * Render inerte (CA-A3 / SEC-7): visible cuando require()/render fallan aguas
- * arriba (lo invoca el thunk de dashboard-routes). Evita pantalla en blanco.
+ * Render inerte (CA-A3): visible cuando require()/render fallan aguas arriba.
  * @param {string} reason
  * @returns {string}
  */
@@ -360,14 +715,17 @@ function renderInert(reason) {
 <body><main style="padding:32px;max-width:800px;margin:0 auto">
 <h1>Ventana Providers no disponible</h1>
 <p>${safe}</p>
-<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3 / SEC-7).</p>
+<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3).</p>
 </main></body></html>`;
 }
 
 module.exports = {
     renderProviders,
     bodyHtml,
-    renderProviderCard,
+    buildProvidersModel,
+    renderProviderRow,
+    renderMissionBanner,
+    renderAgentStrip,
     renderInert,
     slug: 'providers',
 };

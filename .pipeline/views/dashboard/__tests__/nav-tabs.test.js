@@ -61,7 +61,9 @@ test('NAV_TABS preserva href reales para descanso/providers/mp-health (CA-2)', (
     const providers = NAV_TABS.find(t => t.slug === 'providers');
     const mpHealth = NAV_TABS.find(t => t.slug === 'mp-health');
     assert.equal(descanso.href, '/modo-descanso');
-    assert.equal(providers.href, '/multi-provider');
+    // #4201 — la tab Providers apunta a la consola unificada MIZPÁ (/providers),
+    // que reemplaza la vista con solapas internas servida en /multi-provider.
+    assert.equal(providers.href, '/providers');
     assert.equal(mpHealth.href, '/multi-provider-health');
 });
 

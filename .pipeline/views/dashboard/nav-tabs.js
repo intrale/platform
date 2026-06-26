@@ -59,7 +59,7 @@ const NAV_TABS = [
     { slug: 'historial',  label: 'Historial',  iconId: 'ic-tab-historial',      href: '/historial',      ariaLabel: 'Ir a Historial - eventos del pipeline',                    desc: 'Timeline de actividad' },
     { slug: 'costos',     label: 'Costos',     iconId: 'ic-tab-costos',         href: '/costos',         ariaLabel: 'Ir a Costos - tokens y consumo',                           primary: 5 },
     { slug: 'descanso',   label: 'Descanso',   iconId: 'ic-rest-mode',          href: '/modo-descanso',  ariaLabel: 'Ir a Descanso - ventana horaria',                          desc: 'Ventana y modo reposo' },
-    { slug: 'providers',  label: 'Providers',  iconId: 'ic-multi-provider',     href: '/multi-provider', ariaLabel: 'Ir a Providers - proveedores y fallbacks',                 desc: 'Proveedores y fallbacks · en evaluación' },
+    { slug: 'providers',  label: 'Providers',  iconId: 'ic-multi-provider',     href: '/providers',      ariaLabel: 'Ir a Providers - proveedores y fallbacks',                 desc: 'Proveedores · salud · cadena de fallback' },
     // EP8-H12 (#3965) — pantalla de salud multi-provider (metricas, matriz, Sherlock).
     { slug: 'mp-health',  label: 'Salud MP',   iconId: 'ic-health-ok',          href: '/multi-provider-health', ariaLabel: 'Ir a Salud Multi-Provider - metricas, matriz y Sherlock', desc: 'Salud multi-provider' },
 ];
