@@ -91,6 +91,7 @@ Al iniciar, parsear el primer argumento:
 | `mejorar <pantalla>` | Propuestas de mejora concreta | Seccion "Modo: Mejorar" |
 | `guia` | Generar/actualizar guia UX | Seccion "Modo: Guia" |
 | `screenshot-mockup <issue>` | Captura actual + genera mockup esperado por LLM | Seccion "Modo: Screenshot+Mockup" |
+| `validar-render <issue>` | Compara el render final implementado vs el mockup aprobado y emite veredicto pasa/rechaza | Seccion "Modo: Validar render vs mockup" |
 | `criterios-android <issue>` | Adjunta "Estado actual" + "Estado esperado" a un issue Android en definicion/criterios | Seccion "Modo: Criterios Android" |
 | sin argumento / `escalar` | Escalar issues UX detectados | Seccion "Modo: Escalar" |
 
@@ -729,6 +730,122 @@ Tokens en `docs/design-system/tokens.json`. Si no existe, el helper usa defaults
 
 ---
 
+## Modo: Validar render vs mockup (`/ux validar-render <issue>`)
+
+**Gate de validación UX (issue [#4228](https://github.com/intrale/platform/issues/4228), parte de #4227).** Este es el modo que UX corre **como gate** cuando participa en una fase de validación de un issue de rediseño: en lugar de aprobar por criterios genéricos, **compara el render final implementado contra el mockup aprobado del issue** y **rebota a dev** ante divergencias visibles relevantes.
+
+> Motivación: en la Ola 7.1 (rediseños del dashboard MIZPÁ) el gate dejó pasar entregas con divergencias visuales claras respecto del mockup propuesto (caso testigo #4189 / HOME). La causa raíz era de proceso: el gate **no validaba que el diseño final quede como el diseño propuesto**. Este modo cierra ese hueco.
+
+### Cuándo correr este modo
+
+- Issue de **rediseño** con un **mockup aprobado** embebido (sección `## Screenshots & Mockups` con la imagen "esperado") o un asset en `.pipeline/assets/mockups/<issue>/`.
+- Aplica a **todas** las pantallas de rediseño (Ola 7.1 y futuras), no a una sola.
+- Caso A — **Dashboard** (`area:pipeline`/`area:infra` que toca `dashboard.js` / `.pipeline/public/`): el render se captura del dashboard vivo en `http://localhost:3200` (`node .pipeline/dashboard.js`).
+- Si el issue NO tiene impacto visual o no tiene mockup de referencia → este gate no aprueba a ciegas: ver Paso V1.
+
+### Regla de oro del gate
+
+**No aprobás sin evidencia comparativa.** Está prohibido aprobar citando "se ve bien" o criterios genéricos sin haber capturado el render real y comparado contra el mockup en esta misma pasada. Si no podés capturar el render (dashboard caído) o no hay mockup → **no aprobás**: rebotás/anotás con el motivo concreto (la lógica determinística la centraliza `.pipeline/lib/ux-render-compare.js`).
+
+### Paso V1: Resolver el mockup de referencia
+
+```js
+const cmp = require('./.pipeline/lib/ux-render-compare');
+const body = /* gh issue view <N> --json body -q .body */;
+const ref = cmp.resolveMockupReference({ body, issue: N, repoRoot: process.cwd() });
+```
+
+- `ref.ok === true` → `ref.source` es `issue-body` o `local-assets`, `ref.refs` son las URLs/paths del mockup esperado.
+- `ref.ok === false` → **no hay contra qué comparar**. El gate **rechaza** con `causa: sin-mockup` (ver Paso V4): no aprobar sin mockup. Si el issue no debería tener mockup (no es rediseño), no corresponde este modo — devolver el control al flujo normal.
+
+### Paso V2: Capturar el render real
+
+**Caso A — Dashboard** (puerto 3200):
+
+```js
+const ts = /* timestamp del contexto */;
+const dir = cmp.evidenceDir(N, process.cwd()); // .pipeline/assets/mockups/<N>/validacion/
+const cap = await cmp.captureCurrentRender({
+  outputPath: `render-actual-${ts}.png`,
+  allowedRoot: dir,
+  dashboardPath: '/',           // o '/v3' (sólo paths de ALLOWED_PATHS)
+});
+const degradation = cmp.classifyDegradation(cap);
+```
+
+- `cap.ok === true` → tenés el PNG del render real en `cap.outputPath`.
+- `cap.ok === false` → `degradation.degraded === true`. Si `degradation.infra` (dashboard-down, timeout, puppeteer-missing) → es degradación de infra, **no defecto del dev**, pero **igual no se aprueba** (ver Paso V4). Anotar el motivo y dejar que se reprocese con el dashboard arriba.
+
+### Paso V3: Comparar (juicio vision-capable) y clasificar divergencias
+
+Sos vision-capable: abrí ambas imágenes (mockup esperado de `ref.refs` y render real de `cap.outputPath`) y compará **estructura, layout, jerarquía visual, paleta/tokens, tipografía, espaciado, componentes presentes/ausentes**. Por cada divergencia que detectes, clasificá su severidad:
+
+| Severidad | Criterio | ¿Bloquea? |
+|-----------|----------|-----------|
+| `critica` | Falta un componente clave, layout completamente distinto, pantalla no implementada | Sí |
+| `alta` | Estructura/jerarquía divergente, columnas/grid distintos, color de marca incorrecto | Sí |
+| `media` | Espaciados, tamaños o tokens claramente fuera de lo propuesto, visibles a simple vista | Sí (umbral default) |
+| `baja` | Diferencias cosméticas sub-perceptuales (1-2px, anti-aliasing, jitter de render) | No |
+
+Armá la lista de divergencias como objetos `{ aspecto, descripcion, severidad }`. Sé concreto y objetivable (citá el aspecto y qué difiere), nunca "no me gusta".
+
+### Paso V4: Veredicto determinístico
+
+```js
+const verdict = cmp.decideVerdict({
+  mockupResolved: ref.ok,
+  degradation,                       // de classifyDegradation
+  divergences,                       // las que clasificaste en V3
+  threshold: 'media',                // default: critica/alta/media bloquean
+});
+// verdict.resultado === 'aprobado' | 'rechazado'
+// verdict.causa === 'coincide' | 'divergencia' | 'no-verificable' | 'sin-mockup'
+// verdict.motivo === texto accionable
+```
+
+Reglas que aplica `decideVerdict` (no las reimplementes a mano):
+
+1. **Sin mockup** (`mockupResolved:false`) → `rechazado` / `sin-mockup`.
+2. **Captura degradada** → `rechazado` / `no-verificable` (no aprobar a ciegas; si es infra lo aclara en el motivo).
+3. **≥1 divergencia que alcanza el umbral** → `rechazado` / `divergencia` (**rebote a dev** con el detalle).
+4. **Sin divergencias bloqueantes** → `aprobado` / `coincide` (registra las menores como nota).
+
+### Paso V5: Producir evidencia y escribir el resultado
+
+1. **Evidencia comparativa** (CA del issue): dejá el render real (`render-actual-<ts>.png`) en `.pipeline/assets/mockups/<N>/validacion/` y, si el mockup vino del body como URL, descargá una copia local `mockup-esperado-<ts>.png` en el mismo dir. Esa carpeta es el artefacto de la fase.
+2. **Comentario auditable** en el issue con el veredicto y el detalle de divergencias (usá el marker `cmp.EVIDENCE_MARKER` para idempotencia):
+
+   ```bash
+   export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+   gh issue comment <N> --body "$(cat <<'EOF'
+   <!-- ux-render-compare:4228 -->
+   ## Gate UX — Validación render vs mockup
+
+   **Veredicto:** <APROBADO|RECHAZADO> (causa: <causa>)
+
+   <motivo del verdict>
+
+   ### Divergencias detectadas
+   1. [alta] layout: la card HOME usa 1 columna en vez de 3
+   ...
+
+   Evidencia: `.pipeline/assets/mockups/<N>/validacion/`
+   EOF
+   )"
+   ```
+
+3. **Resultado del gate** en tu archivo de trabajo del pipeline:
+   - `verdict.resultado === 'aprobado'` → `resultado: aprobado`.
+   - `verdict.resultado === 'rechazado'` → `resultado: rechazado` + `motivo: <verdict.motivo>` (rebote a dev por el mecanismo estándar del pipeline V2).
+
+### Seguridad
+
+- La URL del dashboard está **hardcodeada** en `screenshot-capture.js` (anti-SSRF). NO inventes URLs; usá sólo paths de `ALLOWED_PATHS`.
+- `captureCurrentRender` sanitiza el `outputPath` (anti path-traversal) y nunca tira por dashboard caído (devuelve `{ok:false, reason}`).
+- Screenshots **nunca con datos productivos** (PII/secrets): el dashboard del Pulpo es estado interno, sin datos de usuario.
+
+---
+
 ## Modo: Criterios Android (`/ux criterios-android <issue>`)
 
 **Workflow automatizado en fase `definicion/criterios`** para issues Android con impacto visual (#3408). Adjunta dos referencias visuales al issue:
@@ -1030,6 +1147,10 @@ duda o conflicto.
 - **Resolver disputas visuales** con argumentos basados en `design-system.md`,
   tokens existentes, accesibilidad. Si el conflicto es entre estilos
   intencionados, escalar a PO.
+- **Validar render vs mockup** cuando el issue es un rediseño con mockup
+  aprobado: corré el gate del modo "Validar render vs mockup"
+  (`/ux validar-render <issue>`) — captura el render real y rebota a dev ante
+  divergencias relevantes en vez de aprobar por criterios genéricos (#4228).
 - **No inventar paleta**: consumir `.pipeline/assets/design-tokens.css`. Cero
   paleta nueva sin issue dedicado.
 
