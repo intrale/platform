@@ -311,6 +311,9 @@ function renderKpisView(ctx, opts) {
             thresholds,
             doraSpark,
             alertTray,
+            // #4198 (Ola 7.1) — DORA normalizado (lead time / throughput / rebote)
+            // para el banner de misión que diagnostica + badges de las cards DORA.
+            dora,
         }));
     } catch (e) {
         if (typeof kpisView.renderInert === 'function') return kpisView.renderInert((e && e.message) || 'error de render');
