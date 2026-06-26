@@ -36,6 +36,11 @@ const {
     classifyCta,
     safeBotUsername,
     telegramDeepLink,
+    classifyMotivo,
+    groupByMotivo,
+    deriveBanner,
+    renderMissionBanner,
+    renderMizpaBrandBar,
 } = bloqueados;
 
 // "Ahora" fijo para tests deterministas del tiempo relativo de eventos.
@@ -461,4 +466,135 @@ test('CA-5 los CTA state-changing reusan CSRF y modal de confirmación', () => {
     assert.match(js, /inConfirm/);
     assert.match(js, /nhCsrfHeaders\(\)/);
     assert.match(js, /window\.needsHumanCta/);
+});
+
+// ---------------------------------------------------------------------------
+// #4193 (Ola 7.1) — Rediseño integral MIZPÁ (centro de decisiones)
+// ---------------------------------------------------------------------------
+
+test('#4193 exports del rediseño MIZPÁ presentes', () => {
+    assert.equal(typeof classifyMotivo, 'function');
+    assert.equal(typeof groupByMotivo, 'function');
+    assert.equal(typeof deriveBanner, 'function');
+    assert.equal(typeof renderMissionBanner, 'function');
+    assert.equal(typeof renderMizpaBrandBar, 'function');
+});
+
+test('#4193 classifyMotivo clasifica el motivo real de forma determinística', () => {
+    assert.equal(classifyMotivo({ reason: '{"dependency_block":4189}' }).key, 'dependencias');
+    assert.equal(classifyMotivo({ reason: 'depende de #4189' }).key, 'dependencias');
+    assert.equal(classifyMotivo({ reason: 'circuit breaker: 3 rebotes', labels: ['needs-human'] }).key, 'circuit');
+    assert.equal(classifyMotivo({ reason: 'rebote desde verificacion' }).key, 'rebote');
+    assert.equal(classifyMotivo({ reason: '{"motivo_rechazo":"falla"}' }).key, 'rebote');
+    assert.equal(classifyMotivo({ reason: 'esperando definición de criterios', labels: ['needs-definition'] }).key, 'definicion');
+    assert.equal(classifyMotivo({ question: '¿qué color usamos?' }).key, 'humano');
+    assert.equal(classifyMotivo({}).key, 'humano');
+});
+
+test('#4193 groupByMotivo agrupa, ordena por rank y nunca pierde filas', () => {
+    const list = [
+        { issue: 1, age_hours: 2, question: '¿color?' },           // humano
+        { issue: 2, age_hours: 3, reason: 'depende de #9' },        // dependencias
+        { issue: 3, age_hours: 4, reason: 'rebote' },               // rebote
+        { issue: 4, age_hours: 5, reason: 'depende de #8' },        // dependencias
+    ];
+    const groups = groupByMotivo(list);
+    const total = groups.reduce((n, g) => n + g.items.length, 0);
+    assert.equal(total, 4); // nunca trunca
+    // dependencias (rank 4) antes que rebote (rank 3) antes que humano (rank 1).
+    assert.deepEqual(groups.map(g => g.motivo.key), ['dependencias', 'rebote', 'humano']);
+    assert.equal(groups[0].items.length, 2);
+});
+
+test('#4193 banner de misión: contador, el que más espera, SLA superado y métricas', () => {
+    const html = renderBloqueadosSsr({
+        bloqueados: [
+            { issue: 100, age_hours: 40, title: 'el más viejo', reason: 'rebote' },
+            { issue: 101, age_hours: 2, question: '¿color?' },
+        ],
+        bloqueadosStats: { avgSla: '3h 10m', resolvedToday: 4 },
+    }, opts);
+    assert.match(html, /id="bloqueados-mission"/);
+    assert.match(html, /REQUIEREN TU/);
+    assert.match(html, /EL QUE MÁS ESPERA/);
+    assert.match(html, /#100/);             // el más viejo
+    assert.match(html, /SLA superado/);     // 40h ≥ 24h
+    assert.match(html, /Rebotes activos/);
+    assert.match(html, /3h 10m/);
+    assert.ok(!hasLiveTags(html));
+});
+
+test('#4193 deriveBanner deriva rebotes activos de la lista en vivo', () => {
+    const b = deriveBanner([
+        { issue: 1, age_hours: 5, reason: 'rebote' },
+        { issue: 2, age_hours: 6, reason: 'circuit breaker', labels: ['needs-human'] },
+        { issue: 3, age_hours: 1, question: '¿color?' },
+    ], { avgSla: '1h', resolvedToday: 2 }, NOW);
+    assert.equal(b.count, 3);
+    assert.equal(b.rebotesActivos, 2);
+    assert.equal(b.oldest.issue, 2);          // 6h es el más viejo
+    assert.equal(b.avgSla, '1h');
+    assert.equal(b.resolvedToday, '2');
+});
+
+test('#4193 banner NO aparece en el empty-state', () => {
+    const html = renderBloqueadosSsr({ bloqueados: [] }, opts);
+    assert.doesNotMatch(html, /id="bloqueados-mission"/);
+    assert.match(html, /id="bloqueados-empty"/);
+});
+
+test('#4193 cada bloqueo ofrece las acciones: destrabar, ver issue y ver logs', () => {
+    const html = renderBloqueadosSsr({
+        bloqueados: [{ issue: 555, age_hours: 5, reason: 'rebote' }],
+    }, opts);
+    assert.match(html, /needsHumanReactivate\(555\)/);                 // destrabar/override
+    assert.match(html, /Destrabar/);
+    assert.match(html, /href="https:\/\/github\.com\/intrale\/platform\/issues\/555"/); // ver issue
+    assert.match(html, /href="\/historial\?q=555"/);                  // ver logs
+    assert.ok(!hasLiveTags(html));
+});
+
+test('#4193 los bloqueos se agrupan por motivo con su decisión esperada', () => {
+    const html = renderBloqueadosSsr({
+        bloqueados: [
+            { issue: 10, age_hours: 5, reason: 'depende de #9' },
+            { issue: 11, age_hours: 3, reason: 'rebote' },
+        ],
+    }, opts);
+    assert.match(html, /v3-bloqueados-group/);
+    assert.match(html, /Esperando dependencias/);
+    assert.match(html, /Rebotado por una fase/);
+    assert.match(html, /v3-bloqueados-group-decision/);
+});
+
+test('#4193 nunca trunca: 30 bloqueos producen 30 filas (sin "+X más")', () => {
+    const many = Array.from({ length: 30 }, (_, i) => ({ issue: 1000 + i, age_hours: i + 1, reason: 'rebote' }));
+    const html = renderBloqueadosSsr({ bloqueados: many }, opts);
+    const rows = (html.match(/id="bloqueados-row-/g) || []).length;
+    assert.equal(rows, 30);
+    assert.doesNotMatch(html, /\+\s*\d+\s*más/i);
+    assert.doesNotMatch(html, /continúa/i);
+});
+
+test('#4193 brand bar MIZPÁ presente en el documento standalone', () => {
+    const doc = renderBloqueados({ bloqueados: [{ issue: 1, age_hours: 1 }] }, opts);
+    assert.match(doc, /MIZPÁ/);
+    assert.match(doc, /Que el Señor vigile/);
+    assert.match(doc, /mz-projsel/);          // selector multiproyecto
+    assert.match(doc, /1 \/ 3/);
+});
+
+test('#4193 XSS en el banner: title del más viejo escapado, sin tags vivos', () => {
+    for (const payload of XSS_PAYLOADS) {
+        const html = renderBloqueadosSsr({
+            bloqueados: [{ issue: 9, age_hours: 50, title: payload, reason: 'rebote' }],
+        }, opts);
+        assert.ok(!hasLiveTags(html), 'payload no debe producir tags vivos: ' + payload);
+    }
+});
+
+test('#4193 el filtro client-side oculta grupos sin filas visibles', () => {
+    const js = renderBloqueadosClientScript();
+    assert.match(js, /v3-bloqueados-group/);
+    assert.match(js, /anyVisible/);
 });

@@ -221,6 +221,178 @@ function classifyCta(b) {
     return { verb: 'Responder', kind: 'respond', glyph: '✉', cls: 'v3-bloqueados-cta-respond' };
 }
 
+// =============================================================================
+// #4193 (Ola 7.1) — Rediseño integral MIZPÁ: la pantalla deja de ser un panel
+// plano y pasa a ser el CENTRO DE DECISIONES. Cada bloqueo explica POR QUÉ está
+// trabado (motivo real, agrupado) y QUÉ decisión espera. Banner de misión en
+// clave alarma + acciones de decisión por bloqueo. Toda la infra de seguridad
+// (escape por contexto, safeIssueNumber, deep-link Telegram saneado) se preserva.
+// =============================================================================
+
+// Catálogo de motivos reales. Cada motivo describe POR QUÉ está trabado y QUÉ
+// decisión espera del operador. `rank` ordena los grupos (mayor = más urgente).
+// Los textos son literales (no datos externos) → no requieren escape, pero se
+// escapan igual aguas abajo por defensa en profundidad.
+const MOTIVOS = {
+    circuit: {
+        key: 'circuit', icon: '🛑', label: 'Circuit breaker',
+        decision: 'Revisar el bucle de rebotes y decidir: reactivar con orientación o desestimar.',
+        rank: 5,
+    },
+    dependencias: {
+        key: 'dependencias', icon: '🔗', label: 'Esperando dependencias',
+        decision: 'Destrabar manualmente (override) o esperar a que cierre la dependencia.',
+        rank: 4,
+    },
+    rebote: {
+        key: 'rebote', icon: '↩', label: 'Rebotado por una fase',
+        decision: 'Aprobar, reintentar o corregir según el motivo del rechazo.',
+        rank: 3,
+    },
+    definicion: {
+        key: 'definicion', icon: '📝', label: 'Esperando definición',
+        decision: 'Definir criterios/alcance para que el pipeline pueda avanzar.',
+        rank: 2,
+    },
+    humano: {
+        key: 'humano', icon: '🙋', label: 'Intervención humana',
+        decision: 'Responder la pregunta del agente para destrabar el flujo.',
+        rank: 1,
+    },
+};
+
+// ¿El reason/question es JSON de dependencia conocido? (reusa el parse acotado).
+function isDepJson(raw) {
+    const t = (raw == null ? '' : String(raw)).trim();
+    if (t[0] !== '{' && t[0] !== '[') return false;
+    let obj;
+    try { obj = JSON.parse(t.slice(0, REASON_MAX)); } catch { return false; }
+    return !!(obj && typeof obj === 'object' && obj.dependency_block != null);
+}
+
+// CA-3 (#4193) — clasificador determinístico del MOTIVO REAL de un bloqueo. Mira
+// reason+question (texto o JSON estructurado) y labels. Prioridad: circuit >
+// dependencias > rebote > definición > humano (default seguro). Nunca lanza.
+const MOTIVO_CIRCUIT_RE = /circuit|breaker|circuito|3\s*rebote|máx.*rebote|max.*bounce|needs-human/i;
+const MOTIVO_DEP_RE = /dependency[_\s]block|dependencia|depende de|bloqueado por #|esperando.*#\d/i;
+const MOTIVO_REBOTE_RE = /rebote|rechaz|motivo_rechazo|reintent|rebound|bounce/i;
+const MOTIVO_DEF_RE = /esperando definici|needs-definition|sin criterios|definir alcance|criterios de aceptaci|falta(n)? criterios/i;
+
+function classifyMotivo(b) {
+    const reason = (b && b.reason != null) ? String(b.reason) : '';
+    const question = (b && b.question != null) ? String(b.question) : '';
+    const labels = Array.isArray(b && b.labels) ? b.labels.map(x => String(x).toLowerCase()) : [];
+    const txt = reason + ' ' + question;
+
+    // Dependencias: señal más específica primero (JSON dependency_block o texto).
+    if (isDepJson(reason) || isDepJson(question) || MOTIVO_DEP_RE.test(txt)) {
+        return MOTIVOS.dependencias;
+    }
+    // Circuit breaker: needs-human por tope de rebotes / circuito explícito.
+    if (labels.includes('needs-human') && /circuit|breaker|3\s*rebote|máx.*rebote|max.*bounce/i.test(txt)) {
+        return MOTIVOS.circuit;
+    }
+    if (/circuit|breaker/i.test(txt)) return MOTIVOS.circuit;
+    // Rebote estructurado #3167 o texto.
+    if (isJsonRecoverable(reason) || isJsonRecoverable(question) || MOTIVO_REBOTE_RE.test(txt)) {
+        return MOTIVOS.rebote;
+    }
+    if (labels.includes('needs-definition') || MOTIVO_DEF_RE.test(txt)) {
+        return MOTIVOS.definicion;
+    }
+    return MOTIVOS.humano;
+}
+
+// CA-2 (#4193) — agrupa la lista por motivo real. Devuelve un array de grupos
+// `{ motivo, items }` ordenado por rank desc; dentro de cada grupo, las filas se
+// ordenan por severidad×edad (sortBySeverityAge). Nunca trunca (CA-5): todos los
+// bloqueos quedan en algún grupo.
+function groupByMotivo(list) {
+    const buckets = new Map();
+    (Array.isArray(list) ? list : []).forEach((b) => {
+        const m = classifyMotivo(b);
+        if (!buckets.has(m.key)) buckets.set(m.key, { motivo: m, items: [] });
+        buckets.get(m.key).items.push(b);
+    });
+    return Array.from(buckets.values())
+        .map(g => ({ motivo: g.motivo, items: sortBySeverityAge(g.items) }))
+        .sort((a, b) => (b.motivo.rank - a.motivo.rank)
+            || (b.items.length - a.items.length));
+}
+
+// SLA por defecto: un bloqueo con ≥ SLA_HOURS horas en espera se considera con
+// el SLA superado (severidad danger). Alineado con severityOf (≥24h = danger).
+const SLA_HOURS = 24;
+
+// CA-2 (#4193) — deriva las métricas del banner de misión desde la lista en vivo
+// y los stats ya computados (lib/bloqueados-stats). `rebotesActivos` se deriva
+// de la propia lista (motivo circuit/rebote) porque no hay métrica directa
+// (verificado: el slice no expone un contador de rebotes). Todo numérico.
+function deriveBanner(list, stats, nowMs) {
+    const valid = (Array.isArray(list) ? list : []).filter(b => safeIssueNumber(b && b.issue) !== null);
+    const count = valid.length;
+    let oldest = null;
+    valid.forEach((b) => {
+        const h = Number(b.age_hours);
+        const oh = oldest ? (Number(oldest.age_hours) || 0) : -1;
+        if (Number.isFinite(h) && h > oh) oldest = b;
+    });
+    const rebotesActivos = valid.filter((b) => {
+        const k = classifyMotivo(b).key;
+        return k === 'rebote' || k === 'circuit';
+    }).length;
+    const s = stats || {};
+    return {
+        count,
+        oldest,
+        oldestSlaBreached: oldest ? (Number(oldest.age_hours) >= SLA_HOURS) : false,
+        rebotesActivos,
+        avgSla: (s.avgSla != null && s.avgSla !== '') ? String(s.avgSla) : '—',
+        resolvedToday: (s.resolvedToday != null) ? String(s.resolvedToday) : '—',
+    };
+}
+
+// CA-2 (#4193) — banner de misión en clave alarma. Tag rojo grande con el
+// contador "N requieren tu decisión", indicador "El que más espera" (issue +
+// edad + marca SLA superado) y las tres métricas (SLA promedio · Resueltos hoy ·
+// Rebotes activos). Todo dato externo escapado por contexto.
+function renderMissionBanner(list, stats, nowMs) {
+    const m = deriveBanner(list, stats, nowMs);
+    const oldestNum = m.oldest ? safeIssueNumber(m.oldest.issue) : null;
+    const oldestAge = m.oldest ? fmtAge(m.oldest.age_hours) : '—';
+    const oldestTitle = (m.oldest && m.oldest.title) ? String(m.oldest.title) : '';
+    const slaTag = m.oldestSlaBreached
+        ? '<span class="blq-sla-breach" title="Tiempo en espera por encima del SLA de desbloqueo">⚠ SLA superado</span>'
+        : '';
+    const oldestHtml = oldestNum
+        ? `<div class="blq-oldest" role="group" aria-label="El bloqueo que más espera">
+        <div class="blq-oldest-k">🕰 EL QUE MÁS ESPERA</div>
+        <div class="blq-oldest-val"><a href="https://github.com/intrale/platform/issues/${oldestNum}" target="_blank" rel="noopener noreferrer">#${oldestNum}</a> · ${escapeHtmlText(oldestAge)} ${slaTag}</div>
+        ${oldestTitle ? `<div class="blq-oldest-sub" title="${escapeHtmlAttr(oldestTitle)}">${escapeHtmlText(oldestTitle)}</div>` : ''}
+      </div>`
+        : '';
+
+    const metric = (k, v, tip) =>
+        `<div class="blq-wm" title="${escapeHtmlAttr(tip)}"><div class="blq-wl">${escapeHtmlText(k)}</div><div class="blq-wv">${escapeHtmlText(String(v))}</div></div>`;
+
+    return `<section class="blq-mission" id="bloqueados-mission" role="status" aria-label="Decisiones humanas pendientes">
+    <div class="blq-alarmtag">
+      <div class="blq-alarmtag-n">${escapeHtmlText(String(m.count))}</div>
+      <div class="blq-alarmtag-s">REQUIEREN TU<br>DECISIÓN</div>
+    </div>
+    <div class="blq-mtext">
+      <div class="blq-mttl">🚨 Centro de decisiones humanas</div>
+      <div class="blq-mdesc">Cada bloqueo de abajo explica por qué está trabado y qué decisión espera de vos. Atacá primero el que más viene esperando.</div>
+      <div class="blq-wmetrics">
+        ${metric('SLA promedio', m.avgSla, 'Tiempo promedio que tarda un bloqueo en destrabarse (lib/bloqueados-stats).')}
+        ${metric('Resueltos hoy', m.resolvedToday, 'Bloqueos que se destrabaron en lo que va del día.')}
+        ${metric('Rebotes activos', m.rebotesActivos, 'Bloqueos cuyo motivo es un rebote o circuit breaker (derivado de la lista en vivo).')}
+      </div>
+    </div>
+    <div class="blq-mright">${oldestHtml}</div>
+  </section>`;
+}
+
 // Una fila de issue bloqueado. Devuelve '' (fila descartada) si `b.issue` no
 // coacciona a entero positivo (CA-D1). Todo dato externo escapado por contexto.
 function renderRowSsr(b, nowMs, ctx) {
@@ -289,7 +461,9 @@ function renderRowSsr(b, nowMs, ctx) {
         <div class="v3-bloqueados-row-actions needs-human-row-actions">
           ${ctaHtml}
           ${tgHtml}
-          <button class="v3-bloqueados-btn nh-btn nh-btn-reactivate" onclick="needsHumanReactivate(${issueNum})" title="${escapeHtmlAttr('Reactivar #' + issueNum + ': quita el label needs-human y devuelve el issue a la cola del pipeline')}" aria-label="${escapeHtmlAttr('Reactivar issue #' + issueNum)}">▶ Reactivar</button>
+          <button class="v3-bloqueados-btn nh-btn nh-btn-reactivate" onclick="needsHumanReactivate(${issueNum})" title="${escapeHtmlAttr('Destrabar #' + issueNum + ': override manual — quita el bloqueo (label needs-human) y devuelve el issue a la cola del pipeline')}" aria-label="${escapeHtmlAttr('Destrabar issue #' + issueNum)}">🔓 Destrabar</button>
+          <a class="v3-bloqueados-act v3-bloqueados-act-issue" href="https://github.com/intrale/platform/issues/${issueNum}" target="_blank" rel="noopener noreferrer" title="${escapeHtmlAttr('Abrir #' + issueNum + ' en GitHub')}" aria-label="${escapeHtmlAttr('Ver issue #' + issueNum + ' en GitHub')}">🔗 Ver issue ↗</a>
+          <a class="v3-bloqueados-act v3-bloqueados-act-logs" href="/historial?q=${issueNum}" target="_blank" rel="noopener noreferrer" title="${escapeHtmlAttr('Ver logs del agente que ejecutó #' + issueNum + ' (timeline del Historial filtrado por el issue)')}" aria-label="${escapeHtmlAttr('Ver logs del agente de #' + issueNum)}">📄 Ver logs</a>
           <button class="v3-bloqueados-btn nh-btn nh-btn-dismiss" onclick="needsHumanDismiss(${issueNum})" title="${escapeHtmlAttr('Desestimar #' + issueNum + ': cierra el issue como no planificado y lo quita del panel')}" aria-label="${escapeHtmlAttr('Desestimar issue #' + issueNum)}">✕ Desestimar</button>
         </div>
       </div>
@@ -297,6 +471,103 @@ function renderRowSsr(b, nowMs, ctx) {
       ${reasonTxt ? `<div class="v3-bloqueados-reason needs-human-reason">❓ ${escapeHtmlText(reasonTxt)}${reasonTrunc ? '…' : ''}</div>` : ''}
       ${eventsHtml}
     </div>`;
+}
+
+// CA-1 (#4193) — barra de marca MIZPÁ del shell standalone (marca + tagline
+// «Que el Señor vigile» Génesis 31:49 + selector multiproyecto). Hereda las
+// clases `.mz-*` definidas en theme.css (compartidas con Equipo/Home) para no
+// divergir visualmente. Bloqueados es tab PRIMARIA → sin miga de pan.
+function renderMizpaBrandBar() {
+    const logoSvg = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">'
+        + '<path d="M12 2.5 5 6v5c0 4.6 3 8 7 9.5 4-1.5 7-4.9 7-9.5V6l-7-3.5Z" stroke="#06121a" stroke-width="1.6" fill="rgba(255,255,255,.16)"/>'
+        + '<path d="M9.5 12.5 11.3 14.3 14.8 10.4" stroke="#06121a" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    return `
+    <div class="in-header-brand">
+      <div class="mz-logo" aria-hidden="true" title="MIZPÁ · atalaya de agentes (Génesis 31:49)">${logoSvg}</div>
+      <div class="mz-id">
+        <div class="mz-name">MIZPÁ</div>
+        <div class="mz-sub">«Que el Señor vigile» · centro de decisiones</div>
+      </div>
+      <div class="mz-projsel" role="button" tabindex="0"
+           title="Proyecto activo. MIZPÁ es el motor; el proyecto es intercambiable (multiproyecto — selección en evaluación)."
+           aria-label="Proyecto activo: Intrale, 1 de 3">
+        <span class="mz-proj-avatar" aria-hidden="true">i</span>
+        <span class="mz-proj-id">
+          <span class="mz-proj-name">Intrale</span>
+          <span class="mz-proj-state">PROYECTO ACTIVO</span>
+        </span>
+        <span class="mz-proj-badge">1 / 3</span>
+        <span class="mz-proj-caret" aria-hidden="true">▾</span>
+      </div>
+    </div>`;
+}
+
+// CA-1/CA-2 (#4193) — CSS inline del rediseño MIZPÁ (banner de misión + grupos +
+// acciones). Va inline en el fragmento para que funcione TANTO en el standalone
+// (carga theme.css) COMO embebido en el monolito (la home no carga theme.css).
+// Reusa las variables --in-* del tema; no introduce colores nuevos fuera de los
+// tonos de alarma ya usados por las hermanas MIZPÁ.
+function bloqueadosRedesignStyle() {
+    return `<style>
+.blq-mission{display:flex;align-items:center;gap:22px;border-radius:14px;padding:18px 24px;margin-bottom:16px;position:relative;overflow:hidden;
+  background:linear-gradient(110deg,rgba(248,113,113,.14),rgba(251,146,60,.07) 45%,transparent 75%),var(--in-bg-2,#11151E);
+  border:1px solid rgba(248,113,113,.26)}
+.blq-alarmtag{display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:108px;padding:12px 14px;border-radius:14px;
+  background:linear-gradient(135deg,rgba(248,113,113,.26),rgba(251,146,60,.14));border:1px solid rgba(248,113,113,.36)}
+.blq-alarmtag-n{font-size:34px;font-weight:800;color:#fecaca;line-height:1;font-variant-numeric:tabular-nums}
+.blq-alarmtag-s{font-size:9.5px;font-weight:800;color:#fca5a5;letter-spacing:.7px;margin-top:5px;text-align:center;line-height:1.2}
+.blq-mtext{flex:1;min-width:0}
+.blq-mttl{font-size:18px;font-weight:800;color:var(--in-fg,#e6edf3);display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.blq-mdesc{font-size:13px;color:var(--in-fg-dim,#8A93A6);margin-top:5px;max-width:640px;line-height:1.45}
+.blq-wmetrics{display:flex;gap:10px;margin-top:13px;flex-wrap:wrap}
+.blq-wm{flex:1;min-width:140px;background:rgba(255,255,255,.035);border:1px solid var(--in-border,rgba(255,255,255,.08));border-radius:11px;padding:9px 12px}
+.blq-wl{font-size:9.5px;font-weight:800;letter-spacing:.6px;color:var(--in-fg-soft,#5B6376);text-transform:uppercase}
+.blq-wv{font-size:18px;font-weight:800;margin-top:3px;line-height:1;color:var(--in-fg,#e6edf3);font-variant-numeric:tabular-nums}
+.blq-mright{min-width:240px}
+.blq-oldest{background:rgba(251,146,60,.09);border:1px solid rgba(251,146,60,.28);border-radius:12px;padding:11px 13px}
+.blq-oldest-k{font-size:9.5px;font-weight:800;letter-spacing:.6px;color:#fdba74;text-transform:uppercase}
+.blq-oldest-val{font-size:15px;font-weight:800;margin-top:5px;color:var(--in-fg,#e6edf3)}
+.blq-oldest-val a{color:var(--in-info,#58a6ff);text-decoration:none}
+.blq-oldest-val a:hover{text-decoration:underline}
+.blq-oldest-sub{font-size:11px;color:var(--in-fg-dim,#8A93A6);margin-top:4px;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.blq-sla-breach{font-size:9.5px;font-weight:800;color:#fecaca;background:rgba(248,113,113,.18);border:1px solid rgba(248,113,113,.4);border-radius:7px;padding:2px 7px;margin-left:6px;letter-spacing:.3px}
+@media (max-width:900px){.blq-mission{flex-wrap:wrap}.blq-mright{min-width:0;flex-basis:100%}}
+/* GRUPOS POR MOTIVO */
+.v3-bloqueados-group{margin-bottom:14px}
+.v3-bloqueados-group-head{display:flex;align-items:center;gap:9px;margin:0 0 9px;padding-bottom:7px;border-bottom:1px solid var(--in-border,rgba(255,255,255,.08));flex-wrap:wrap}
+.v3-bloqueados-group-ic{font-size:15px}
+.v3-bloqueados-group-label{font-size:12.5px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;color:var(--in-fg,#e6edf3)}
+.v3-bloqueados-group-count{font-size:11px;font-weight:800;color:#9fe9ee;background:rgba(52,217,224,.12);border:1px solid rgba(52,217,224,.3);border-radius:999px;padding:1px 9px;font-variant-numeric:tabular-nums}
+.v3-bloqueados-group-decision{font-size:11.5px;color:var(--in-fg-dim,#8A93A6);font-style:italic;margin-left:6px}
+/* ACCIONES DE DECISIÓN (links) */
+.v3-bloqueados-act{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:700;text-decoration:none;
+  padding:6px 11px;border-radius:8px;border:1px solid var(--in-border,rgba(255,255,255,.12));color:var(--in-fg-dim,#8A93A6);background:transparent;white-space:nowrap}
+.v3-bloqueados-act:hover{color:var(--in-fg,#e6edf3);border-color:var(--in-info,#58a6ff)}
+.v3-bloqueados-act:focus-visible{outline:2px solid var(--in-accent,#38bdf8);outline-offset:2px}
+.v3-bloqueados-act-issue{color:var(--in-info,#58a6ff)}
+</style>`;
+}
+
+// CA-2 (#4193) — render de un grupo de motivo: header (ícono + label + contador +
+// decisión esperada) seguido de sus filas. Todas las filas viven dentro de
+// `#bloqueados-list` (vía el contenedor padre) para que el filtro client-side las
+// siga matcheando. El grupo se descarta si todas sus filas se descartaron.
+function renderMotivoGroupSsr(group, nowMs, ctx) {
+    const g = group || {};
+    const motivo = g.motivo || MOTIVOS.humano;
+    const rows = (Array.isArray(g.items) ? g.items : [])
+        .map(b => renderRowSsr(b, nowMs, ctx)).filter(Boolean).join('');
+    if (!rows) return '';
+    const n = (Array.isArray(g.items) ? g.items : []).filter(b => safeIssueNumber(b && b.issue) !== null).length;
+    return `<section class="v3-bloqueados-group" data-motivo="${escapeHtmlAttr(motivo.key)}">
+      <div class="v3-bloqueados-group-head">
+        <span class="v3-bloqueados-group-ic" aria-hidden="true">${escapeHtmlText(motivo.icon)}</span>
+        <span class="v3-bloqueados-group-label">${escapeHtmlText(motivo.label)}</span>
+        <span class="v3-bloqueados-group-count" aria-label="${escapeHtmlAttr(n + ' bloqueos en este motivo')}">${escapeHtmlText(String(n))}</span>
+        <span class="v3-bloqueados-group-decision" title="Decisión que espera este grupo">${escapeHtmlText(motivo.decision)}</span>
+      </div>
+      ${rows}
+    </section>`;
 }
 
 // Mini-stat del empty-state. Los valores numéricos llegan ya computados desde el
@@ -382,12 +653,13 @@ function renderBloqueadosSsr(state, opts) {
             + '</main>';
     }
 
-    // CA-1 — orden compuesto severidad×edad antes de mapear filas.
+    // CA-1/CA-2 — orden compuesto severidad×edad + agrupado por motivo real.
     const ordered = sortBySeverityAge(list);
-    const rows = ordered.map(b => renderRowSsr(b, nowMs, ctx)).filter(Boolean).join('');
+    const groups = groupByMotivo(list);
+    const groupsHtml = groups.map(grp => renderMotivoGroupSsr(grp, nowMs, ctx)).filter(Boolean).join('');
     // Si TODAS las filas se descartaron por coerción (input corrupto), caer al
     // empty-state en vez de un panel vacío sin sentido.
-    if (!rows) {
+    if (!groupsHtml) {
         return '<main id="view-content" data-slug="bloqueados" class="v3-bloqueados-view">'
             + renderEmptyStateSsr(state)
             + '</main>';
@@ -397,6 +669,8 @@ function renderBloqueadosSsr(state, opts) {
     const badge = count > 99 ? '99+' : String(count);
 
     return '<main id="view-content" data-slug="bloqueados" class="v3-bloqueados-view">'
+        + bloqueadosRedesignStyle()
+        + renderMissionBanner(list, state && state.bloqueadosStats, nowMs)
         + '<section class="matrix-section needs-human-panel v3-bloqueados-panel" id="bloqueados-humano" data-section="needs-human">'
         + '<h2 class="needs-human-header v3-bloqueados-header" id="bloqueados-header" onclick="toggleNeedsHumanPanel()" title="Click para colapsar o expandir el panel">'
         + '<span class="needs-human-pulse v3-bloqueados-pulse" aria-hidden="true">🚨</span>'
@@ -409,7 +683,7 @@ function renderBloqueadosSsr(state, opts) {
         + '<div class="needs-human-body v3-bloqueados-body">'
         + renderFilterBarSsr(ordered)
         + '<div class="v3-bloqueados-empty-filtered" id="bloqueados-empty-filtered" role="status" hidden>Sin incidentes que coincidan con los filtros.</div>'
-        + '<div class="v3-bloqueados-list" id="bloqueados-list">' + rows + '</div>'
+        + '<div class="v3-bloqueados-list" id="bloqueados-list">' + groupsHtml + '</div>'
         + '<div class="v3-bloqueados-hint" id="bloqueados-hint">'
         + 'Desbloquear desde Telegram: <code>/unblock &lt;issue&gt; &lt;orientación&gt;</code> · o quitá el label <code>needs-human</code> en GitHub'
         + '</div>'
@@ -527,6 +801,12 @@ function bloqueadosApplyFilters(){
     row.style.display = ok ? '' : 'none';
     if(ok) visible++;
   });
+  // #4193 — ocultar el header de un grupo cuyas filas quedaron todas ocultas.
+  document.querySelectorAll('#bloqueados-list .v3-bloqueados-group').forEach(function(grp){
+    var anyVisible = false;
+    grp.querySelectorAll('.v3-bloqueados-row').forEach(function(r){ if(r.style.display !== 'none') anyVisible = true; });
+    grp.style.display = anyVisible ? '' : 'none';
+  });
   var empty = document.getElementById('bloqueados-empty-filtered');
   if(empty) empty.hidden = (visible !== 0);
   var counter = document.getElementById('bloqueados-filter-count');
@@ -602,13 +882,7 @@ function renderBloqueados(state, opts) {
 <div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">${spriteInline}</div>
 <div class="satellite-frame">
   <header class="in-header">
-    <div class="in-header-brand">
-      <div class="in-header-logo">i</div>
-      <div>
-        <div class="in-header-title">Bloqueados</div>
-        <div class="in-header-subtitle">Issues esperando intervención humana</div>
-      </div>
-    </div>
+    ${renderMizpaBrandBar()}
     <div class="in-header-meta">
       <span class="in-pill" id="hdr-mode">…</span>
       <span class="in-clock" id="hdr-clock">…</span>
@@ -645,4 +919,13 @@ module.exports = {
     telegramDeepLink,
     escapeHtmlSsr,
     loadTheme,
+    // #4193 (Ola 7.1) — rediseño integral MIZPÁ (centro de decisiones)
+    MOTIVOS,
+    classifyMotivo,
+    groupByMotivo,
+    deriveBanner,
+    renderMissionBanner,
+    renderMotivoGroupSsr,
+    renderMizpaBrandBar,
+    bloqueadosRedesignStyle,
 };

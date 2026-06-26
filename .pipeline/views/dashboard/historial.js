@@ -523,6 +523,18 @@ function renderTimelineScript() {
       var c = loadMoreBtn.getAttribute('data-ah-next'); if(c!=null) fetchAndRender(c, true);
     });
   }
+  // #4193 — deep-link desde Bloqueados («Ver logs»): /historial?q=<issue>&skill=<s>
+  // pre-filtra el timeline al issue/skill indicado. No-op si no hay params.
+  (function applyDeepLinkFilters(){
+    try {
+      var qp = new URLSearchParams(location.search);
+      var qq = qp.get('q'); var qs = qp.get('skill');
+      if(!qq && !qs) return;
+      if(qq){ state.q = qq; var qi = root.querySelector('[data-ah-filter="q"]'); if(qi) qi.value = qq; }
+      if(qs){ state.skill = qs; var si = root.querySelector('[data-ah-filter="skill"]'); if(si) si.value = qs; }
+      fetchAndRender(0, false);
+    } catch(e){}
+  })();
 })();</script>`;
 }
 
