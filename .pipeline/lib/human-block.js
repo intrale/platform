@@ -251,6 +251,57 @@ function listBlockedIssues() {
     return result.sort((a, b) => b.age_hours - a.age_hours);
 }
 
+// #4231 — Colas normales de fase (no bloqueado-humano). Un marker de fase en
+// cualquiera de estas colas representa trabajo del issue en esa etapa. La vista
+// del pipeline las lee como "trabajo activo".
+const PHASE_QUEUE_STATES = ['pendiente', 'trabajando', 'listo', 'procesado'];
+
+// #4231 — Lista los markers de fase que viven en las colas NORMALES
+// (pendiente/trabajando/listo/procesado), NO en bloqueado-humano/. Análogo a
+// listBlockedIssues() pero sobre el flujo normal del pipeline.
+//
+// El reconciler lo usa para cerrar el hueco de markers huérfanos: cuando un
+// issue cierra en GitHub, sus markers de fase en estas colas quedaban sin
+// archivar (el barrido de bloqueado-humano no las mira, y el limpiador de ghost
+// artifacts por diseño no toca markers de fase). Devuelve entries con la cola
+// (`state`) para que el caller sepa de dónde mover el marker a archivado/.
+//
+// @param {object} [opts]
+// @param {string[]} [opts.states] — subconjunto de colas a recorrer (default: todas).
+// @returns {Array<{issue,skill,phase,pipeline,state,marker_path}>}
+function listPhaseMarkers(opts = {}) {
+    const states = Array.isArray(opts.states) && opts.states.length
+        ? opts.states
+        : PHASE_QUEUE_STATES;
+    const result = [];
+    for (const pipeline of PIPELINES) {
+        const pipeRoot = path.join(PIPELINE_DIR, pipeline);
+        let phases = [];
+        try { phases = fs.readdirSync(pipeRoot).filter(f => fs.statSync(path.join(pipeRoot, f)).isDirectory()); }
+        catch { continue; }
+        for (const phase of phases) {
+            for (const state of states) {
+                const dir = path.join(pipeRoot, phase, state);
+                let entries = [];
+                try { entries = fs.readdirSync(dir); } catch { continue; }
+                for (const f of entries) {
+                    if (f === '.gitkeep' || isMarkerArtifact(f)) continue;
+                    const dot = f.indexOf('.');
+                    if (dot <= 0) continue;
+                    const issue = Number(f.slice(0, dot));
+                    const skill = f.slice(dot + 1);
+                    if (!Number.isInteger(issue) || !skill) continue;
+                    result.push({
+                        issue, skill, phase, pipeline, state,
+                        marker_path: path.join(dir, f),
+                    });
+                }
+            }
+        }
+    }
+    return result;
+}
+
 function unblockIssue(opts) {
     const issue = Number(opts.issue);
     if (!issue) throw new Error('unblockIssue requiere issue');
@@ -700,6 +751,8 @@ module.exports = {
     unblockIssue,
     dismissBlockedIssue,
     listBlockedIssues,
+    listPhaseMarkers,
+    PHASE_QUEUE_STATES,
     findActiveMarker,
     findBlockedMarker,
     isHumanBlockReason,
