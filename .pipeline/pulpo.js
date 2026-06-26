@@ -3502,7 +3502,25 @@ function brazoBarrido(config) {
           // etc), marcar el issue como `bloqueado-humano/` y NO incrementar rev.
           // Sin esto el pulpo relanza el skill cada ciclo y rebota infinitamente
           // (caso #2519 → 41 rebotes contra PR #2547 mergeable).
-          const motivosHumanos = motivosClasificados.filter(m => humanBlock.isHumanBlockReason(m.motivo));
+          // #4223 — un rechazo por "falta de tests para funcionalidad nueva" NO
+          // es bloqueo humano: es corrección automática → rebote a dev. Aunque el
+          // texto del motivo mencione `needs-human`/`aprobación humana` como parte
+          // de la descripción del cambio (incidente #4192, donde el review citaba
+          // el label `needs-human` al describir la lógica de agrupado), la
+          // detección de tests faltantes tiene precedencia y deja caer el motivo
+          // al flujo normal de rebote `code` → faseRechazo (dev), propagando la
+          // lista de lo que falta testear vía `motivo_rechazo`.
+          const motivosHumanos = motivosClasificados.filter(m => {
+            if (!humanBlock.isHumanBlockReason(m.motivo)) return false;
+            // Missing-tests gana sobre la heurística textual de human_block,
+            // salvo que el agente haya declarado `human_block` explícitamente
+            // (esa señal deliberada se respeta).
+            if (reboteClassifier.isMissingTestsReason(m.motivo)
+                && m.rebote_categoria !== 'human_block') {
+              return false;
+            }
+            return true;
+          });
           if (motivosHumanos.length > 0 && !esReboteDeInfra) {
             const principal = motivosHumanos[0];
             const skillBloq = principal.skill || skillFromFile(rechazados[0].file.name);

@@ -132,6 +132,71 @@ const STRUCTURED_DEPENDENCY_HINT = /\brebote_categoria\s*[:=]\s*['"]?dependency_
 const STRUCTURED_DEPS_LIST = /\b(?:depende_de|depends_on|dependencias)\s*[:=]\s*\[?\s*([\d,\s#]+)\]?/i;
 
 // -----------------------------------------------------------------------------
+// PATRONES MISSING_TESTS — issue #4223
+//
+// Cuando el gate de `review` (fase aprobacion) rechaza un PR porque la
+// funcionalidad nueva no tiene tests que la cubran, ese rechazo es una
+// CORRECCIÓN AUTOMÁTICA: el dev escribe los tests faltantes. NO es un bloqueo
+// humano.
+//
+// Causa raíz que motivó esta capa (incidente #4192): el motivo de un rechazo
+// legítimo por tests faltantes mencionaba el literal `needs-human` (describía
+// la lógica de agrupado de issues por label) y eso disparaba el patrón
+// `/\bneeds[-_:\s]?human\b/i` de `human-block.js` → el issue terminaba en
+// `bloqueado-humano/` esperando que un operador lo destrabe a mano, en vez de
+// rebotar a `dev` para escribir los tests.
+//
+// Estos patrones tienen PRECEDENCIA sobre la clasificación `human_block`
+// (tanto el hint explícito como la heurística textual): si el motivo describe
+// "falta de tests para funcionalidad nueva", clasifica como `code` (rebote a
+// la fase de rechazo = dev) y cuenta contra el circuit breaker.
+//
+// Acotados a frases que mencionan explícitamente test(s)/cobertura/coverage
+// para NO canibalizar rechazos legítimos de `human_block` ni otros rechazos de
+// review (CA-4): un patrón de bloqueo humano (merge/CODEOWNERS/aprobación
+// humana) nunca menciona "test" ni "cobertura".
+// -----------------------------------------------------------------------------
+const MISSING_TESTS_PATTERNS = [
+    // "falta(n) (de) test(s)" — cubre "Falta de tests para funcionalidad nueva"
+    /\bfalta(?:n)?\s+(?:de\s+)?tests?\b/i,
+    // "tests faltantes" / "test faltante"
+    /\btests?\s+faltantes?\b/i,
+    // "sin (un solo) test(s)" — cubre "sin un solo test"
+    /\bsin\s+(?:un\s+(?:solo\s+)?)?tests?\b/i,
+    // "no hay / no incluye / no agrega / no tiene / no existe(n) (ningún) test(s)"
+    /\bno\s+(?:hay|incluye[n]?|agrega[n]?|tiene[n]?|existe[n]?)\s+(?:ning[uú]n[oa]?\s+)?tests?\b/i,
+    // "sin cobertura" / "cobertura faltante|insuficiente|ausente|nula" / "ausencia de cobertura"
+    /\bsin\s+cobertura\b/i,
+    /\bcobertura\s+(?:de\s+tests?\s+)?(?:faltante|insuficiente|ausente|nula)\b/i,
+    /\bausencia\s+de\s+(?:cobertura|tests?)\b/i,
+    /\bfalta\s+(?:de\s+)?cobertura\b/i,
+    // "funcionalidad|código|función|criterios nuev@s sin cobertura|tests"
+    /\b(?:funcionalidad|c[oó]digo|funci[oó]n(?:es)?|criterios?)\s+nuev[oa]s?\s+sin\s+(?:cobertura|tests?)\b/i,
+    // Inglés: "missing tests" / "missing test coverage" / "no tests for|covering"
+    /\bmissing\s+tests?\b/i,
+    /\bmissing\s+test\s+coverage\b/i,
+    /\bno\s+tests?\s+(?:for|cover)/i,
+];
+
+/**
+ * Devuelve true si el motivo describe "falta de tests para funcionalidad
+ * nueva" (issue #4223). Usado por classifyRebote (precedencia sobre
+ * human_block) y por el consumer en pulpo.js (filtro de motivos humanos).
+ *
+ * @param {string} motivo
+ * @returns {boolean}
+ */
+function isMissingTestsReason(motivo) {
+    if (!motivo || typeof motivo !== 'string') return false;
+    const txt = truncateForClassify(motivo);
+    if (!txt.trim()) return false;
+    for (const re of MISSING_TESTS_PATTERNS) {
+        if (re.test(txt)) return true;
+    }
+    return false;
+}
+
+// -----------------------------------------------------------------------------
 // API PÚBLICA
 // -----------------------------------------------------------------------------
 
@@ -253,6 +318,31 @@ function classifyRebote(opts = {}) {
             reason_summary: depDetect.assetOnly
                 ? 'Espera asset/recurso no en main'
                 : 'Depende de issue(s) abierto(s): ' + depDetect.dependsOn.map(n => '#' + n).join(', '),
+        };
+    }
+
+    // 2.4 — #4223: MISSING_TESTS gana sobre human_block.
+    //
+    // Un rechazo de review por "falta de tests para funcionalidad nueva" es una
+    // corrección automática (el dev escribe los tests), NO un bloqueo humano.
+    // Se ubica ANTES de las dos vías de human_block (hint explícito + heurística
+    // textual) para que un motivo que mencione `needs-human`/`aprobación humana`
+    // como parte de la descripción del cambio (incidente #4192) no quede
+    // atrapado en `bloqueado-humano/`.
+    //
+    // Excepción: si el agente declaró EXPLÍCITAMENTE `rebote_categoria:
+    // human_block`, respetamos esa señal deliberada (no la pisamos por heurística
+    // textual). El caso #4192 NO declara categoría explícita, así que cae acá.
+    if (explicitCategory !== 'human_block'
+        && explicitCategory !== 'dependency_block'
+        && isMissingTestsReason(motivo)) {
+        return {
+            category: 'code',
+            label: null,
+            dependsOn: [],
+            counts_against_circuit_breaker: true,
+            autounlock: null,
+            reason_summary: 'Falta de tests para funcionalidad nueva — rebota a dev (corrección automática, #4223)',
         };
     }
 
@@ -855,6 +945,7 @@ function emitBlocked(opts) {
 module.exports = {
     classifyRebote,
     detectDependencyBlock,
+    isMissingTestsReason, // #4223
     buildDependencyComment,
     reportDependencyBlock,
     sanitizeDepsList,
@@ -867,6 +958,7 @@ module.exports = {
     sweepFastFailRebotesFromProcesado,
     DEPENDENCY_PATTERNS,
     DEPENDENCY_ASSET_PATTERNS,
+    MISSING_TESTS_PATTERNS, // #4223
     DEPS_LABEL,
     DEPS_BLOCK_SUBDIR,
     MAX_DEPS_PER_BLOCK,
