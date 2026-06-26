@@ -29,6 +29,14 @@ const { CONFIRM_MODAL_JS } = require('./confirm-modal.js');
 let pipelineRedesign = null;
 try { pipelineRedesign = require('./pipeline-redesign'); } catch (_) { /* fallback legacy */ }
 
+// #4240 (Ola 7.1) — EQUIPO adopta el marco común MIZPÁ. Se reutiliza el helper
+// compartido `renderMissionBanner` de la HOME (#4189) — el banner de ola común
+// (② del marco: tag OLA + título + métricas + bloque AVANCE) — en vez de
+// duplicar su markup (CA-5). Degradación defensiva: si el módulo no carga, el
+// slot `missionHtml` queda vacío y el resto del marco sigue intacto.
+let homeView = null;
+try { homeView = require('./home'); } catch (_) { /* sin banner de ola común */ }
+
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 function loadTheme() {
     try { return fs.readFileSync(THEME_CSS_PATH, 'utf8'); } catch { return ''; }
@@ -228,6 +236,11 @@ function pageShell(title, subtitle, bodyHtml, scripts, extraCss = '', activeSlug
       </div>
     </div>`;
     const breadcrumbHtml = (opts && opts.breadcrumbHtml) || '';
+    // #4240 — Slot opcional para el banner de ola común (② del marco MIZPÁ). Se
+    // inyecta entre el header (①) y la nav (③) para respetar el orden del marco
+    // (idéntico al de la HOME). Backward-compatible: sin `missionHtml` el shell
+    // se comporta igual que antes (satélites no migrados).
+    const missionHtml = (opts && opts.missionHtml) || '';
     return `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -238,6 +251,9 @@ function pageShell(title, subtitle, bodyHtml, scripts, extraCss = '', activeSlug
 <style>
 .satellite-frame { max-width: 1600px; margin: 0 auto; padding: 0; }
 .satellite-body { padding: 22px 28px; display: flex; flex-direction: column; gap: 18px; }
+/* #4240 — El banner de ola común (② del marco) vive fuera del .satellite-body
+   (entre header y nav), así que se alinea con el padding horizontal del cuerpo. */
+.satellite-frame > .mz-mission { margin: 18px 28px 0; }
 .in-mode-running { color: var(--in-ok); border-color: var(--in-ok); background: var(--in-ok-soft); }
 .in-mode-paused { color: var(--in-bad); border-color: var(--in-bad); background: var(--in-bad-soft); }
 .in-mode-partial { color: var(--in-warn); border-color: var(--in-warn); background: var(--in-warn-soft); }
@@ -257,6 +273,7 @@ ${extraCss}
       <span class="in-clock" id="hdr-clock">…</span>
     </div>
   </header>
+  ${missionHtml}
   ${navHtml}
   ${breadcrumbHtml}
   <main class="satellite-body">${bodyHtml}</main>
@@ -725,16 +742,88 @@ async function tickEquipo(){
     renderRoster();
 }
 
+// #4240 — Hidratación del banner de ola común (② del marco). El SSR llega neutro
+// (igual que en la HOME); este tick espeja /api/dash/waves a los IDs mission-*
+// del helper compartido renderMissionBanner. Defensivo: cualquier dato ausente
+// degrada a neutro sin romper el resto de la pantalla.
+async function tickEquipoMission(){
+    const d = await fetchJson('/api/dash/waves');
+    if(!d) return;
+    try {
+        const wave = d.active_wave;
+        if(!wave){
+            setText('mission-wave-num', '—');
+            setText('mission-wave-name', 'Sin ola activa');
+            setText('mission-wave-desc', 'Esperando la planificación de la ola activa.');
+            return;
+        }
+        if(Number.isFinite(wave.number)) setText('mission-wave-num', String(wave.number));
+        setText('mission-wave-name', wave.name ? ('Ola ' + wave.number + ' · ' + wave.name) : ('Ola ' + wave.number));
+        setText('mission-wave-desc', wave.goal || wave.description || ('Issues de la ola ' + wave.number + ' en curso.'));
+        const tag = document.getElementById('mission-wave-tag');
+        if(tag) tag.style.display = wave.isLast ? '' : 'none';
+        const issues = Array.isArray(wave.issues) ? wave.issues : [];
+        let done=0, active=0, blocked=0, queue=0;
+        for(const it of issues){
+            const s = it && it.status;
+            if(s === 'completed') done++;
+            else if(s === 'in-progress') active++;
+            else if(s === 'blocked') blocked++;
+            else queue++;
+        }
+        const total = issues.length || 0;
+        const pct = total > 0 ? Math.round((done/total)*100) : 0;
+        setText('mission-avance-pct', pct + '%');
+        setText('mission-leg-done', String(done));
+        setText('mission-leg-active', String(active));
+        setText('mission-leg-blocked', String(blocked));
+        setText('mission-leg-queue', String(queue));
+        const w = (n) => total>0 ? ((n/total)*100).toFixed(1)+'%' : '0%';
+        const setW = (id,n) => { const el=document.getElementById(id); if(el) el.style.width = w(n); };
+        setW('mission-bar-done', done);
+        setW('mission-bar-active', active);
+        setW('mission-bar-blocked', blocked);
+        setW('mission-bar-queue', queue);
+        const dv = document.getElementById('mission-delivered-value');
+        if(dv) dv.innerHTML = done + '<span class="mz-wm-u"> / ' + total + '</span>';
+        const dsub = document.getElementById('mission-delivered-sub');
+        if(dsub) dsub.textContent = Math.max(0, total-done) + ' restantes';
+        const openedAt = wave.openedAt ? Date.parse(wave.openedAt) : NaN;
+        const vv = document.getElementById('mission-vel-value');
+        if(vv){
+            if(Number.isFinite(openedAt) && done > 0){
+                const hours = (Date.now() - openedAt) / 3600000;
+                vv.innerHTML = hours > 0.1
+                    ? (done/hours).toFixed(1) + ' <span class="mz-wm-u">iss/h</span>'
+                    : '— <span class="mz-wm-u">iss/h</span>';
+            } else {
+                vv.innerHTML = '— <span class="mz-wm-u">iss/h</span>';
+            }
+        }
+    } catch(_) {}
+}
+
 document.addEventListener('input', (ev) => { if(ev.target && ev.target.id === 'eq-search') applySearch(); });
 
-const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickEquipo, ms: 5000 }];
+const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickEquipo, ms: 5000 }, { fn: tickEquipoMission, ms: 30000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }
 setInterval(tickCooldownCountdowns, 1000);`;
 
+    // #4240 — Marco común MIZPÁ: ① cabecera de marca (renderEquipoBrandBar, mismo
+    // markup/clases `.mz-*` del theme.css que el resto de las pantallas), ② banner
+    // de ola común (renderMissionBanner compartido de la HOME, vía `missionHtml`),
+    // ③ barra de accesos (renderNavTabsSsr('equipo'), ya inyectada por pageShell).
+    // El contenido propio de EQUIPO (`.eq2`) queda debajo del marco (CA-4). El
+    // banner de ola se sirve neutro en SSR (igual que la HOME) y lo hidrata
+    // tickEquipoMission() desde /api/dash/waves (CA-2/CA-6).
+    const missionHtml = (homeView && typeof homeView.renderMissionBanner === 'function')
+        ? homeView.renderMissionBanner()
+        : '';
     return pageShell('Equipo', 'Dotación de agentes · MIZPÁ', body, script, css, 'equipo', {
         brandHtml: renderEquipoBrandBar(),
+        missionHtml,
         breadcrumbHtml: breadcrumb,
     });
 }
