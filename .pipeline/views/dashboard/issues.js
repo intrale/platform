@@ -66,7 +66,16 @@ function escapeHtmlAttr(input) {
 }
 
 // #3726 — Sprite compartido (iconos vía <use href="#…">).
-const { loadIconSprite } = require('./nav-tabs');
+// #4237 — Nav común V3 (renderNavTabsSsr) para reusar la barra de accesos del
+// marco MIZPÁ en lugar de la nav bespoke (mz-nav) que tenía esta ventana.
+const { loadIconSprite, renderNavTabsSsr } = require('./nav-tabs');
+
+// #4237 — Marco común MIZPÁ (cabecera de marca + cabecera de ola) que entregó
+// #4234 como helpers reutilizables. ISSUES los consume en lugar de clonar el
+// markup (CA-5: no duplicar). Require defensivo: si el módulo no carga, el
+// chrome degrada a un marco inline mínimo y el pipeline no muere (R-4).
+let pipelineRedesign = null;
+try { pipelineRedesign = require('./pipeline-redesign'); } catch { /* fallback inline */ }
 
 // #3953 (EP8-H0) — Wrapper de fetchJson (banner stale) + framework de modal de
 // confirmación con preview. Mismo patrón que home.js / satellites.js.
@@ -476,127 +485,86 @@ function renderIssuesDialog() {
 }
 
 // =============================================================================
-// Cabecera / marca MIZPÁ (CA-1). Barra + tagline + selector multiproyecto +
-// banner de misión + nav 5 tabs + «⋯ Más» colapsable.
-// Todos los textos son literales (no datos del usuario); `mission` se escapa.
+// Marco común MIZPÁ (#4237). Los tres bloques superiores —① cabecera de marca,
+// ② cabecera de ola, ③ barra de accesos— son IDÉNTICOS al resto de las pantallas
+// (referencia canónica: PIPELINE, #4234). Se reutilizan los helpers compartidos
+// en vez de clonar el markup (CA-5):
+//   ① renderBrandBarPipeline() → in-header-brand + mz-projsel + pill de build.
+//   ② renderMissionBannerPipeline() → mz-wavetag + métricas + bloque AVANCE.
+//   ③ renderNavTabsSsr('issues') → nav v3 con la pestaña Issues activa.
+// El banner ② se hidrata client-side desde /api/dash/waves (mismos IDs
+// `mission-*`), igual que en HOME/PIPELINE; el `mission` SSR ya no se usa salvo
+// en el fallback inline (defensa en profundidad si el módulo común no carga).
 // =============================================================================
-const NAV_PRIMARY = [
-    { slug: 'home',       label: 'Inicio',     href: '/',            icon: 'ic-tab-home' },
-    { slug: 'pipeline',   label: 'Pipeline',   href: '/pipeline',    icon: 'ic-tab-pipeline' },
-    { slug: 'issues',     label: 'Issues',     href: '/issues',      icon: 'ic-issues-count' },
-    { slug: 'bloqueados', label: 'Bloqueados', href: '/bloqueados',  icon: 'ic-estado-needs-human' },
-    { slug: 'costos',     label: 'Costos',     href: '/costos',      icon: 'ic-tab-costos' },
-];
-const NAV_SECONDARY = [
-    { label: 'Equipo',    href: '/equipo',          icon: 'ic-agents-count', note: '' },
-    { label: 'Matriz',    href: '/matriz',          icon: 'ic-tab-matriz',   note: '' },
-    { label: 'Ops',       href: '/ops',             icon: 'ic-tab-ops',      note: '' },
-    { label: 'KPIs',      href: '/kpis',            icon: 'ic-tab-kpis',     note: '' },
-    { label: 'Historial', href: '/historial',       icon: 'ic-tab-historial', note: '' },
-    { label: 'Descanso',  href: '/modo-descanso',   icon: 'ic-rest-mode',    note: '' },
-    { label: 'Providers', href: '/multi-provider',  icon: 'ic-multi-provider', note: 'en evaluación' },
-];
 
-function _fmtDurMs(ms) {
-    if (!Number.isFinite(ms) || ms <= 0) return '—';
-    const min = Math.round(ms / 60000);
-    if (min < 60) return min + ' min';
-    const h = Math.floor(min / 60);
-    const m = min % 60;
-    if (h < 24) return m ? (h + ' h ' + m + ' min') : (h + ' h');
-    const d = Math.floor(h / 24);
-    const hr = h % 24;
-    return hr ? (d + ' d ' + hr + ' h') : (d + ' d');
+// Fallback inline mínimo — SOLO se usa si el require de pipeline-redesign falló
+// (R-4). No es un 3er clon del marco: es una red de seguridad para que la página
+// no quede sin cabecera. Reusa los mismos contenedores/IDs hidratables que el
+// helper común para que tickWaves siga funcionando aunque caiga en el fallback.
+function _missionBannerFallback() {
+    return ''
+        + '<section class="mz-mission" id="mz-mission" aria-label="Misión de la ola activa">'
+        +   '<div class="mz-wavetag"><span class="mz-wavetag-k">OLA</span>'
+        +     '<span class="mz-wavetag-n" id="mission-wave-num">—</span></div>'
+        +   '<div class="mz-mission-text"><div class="mz-mission-ttl">'
+        +     '<span id="mission-wave-name">Sin ola activa</span></div>'
+        +     '<div class="mz-mission-desc" id="mission-wave-desc">Backlog de la ola activa.</div></div>'
+        +   '<div class="mz-mission-prog">'
+        +     '<div class="mz-prog-head"><span>AVANCE</span><span class="mz-prog-pct" id="mission-avance-pct">0%</span></div>'
+        +     '<div class="mz-prog-bar">'
+        +       '<i id="mission-bar-done" style="width:0%;background:var(--in-ok,#3fb950)"></i>'
+        +       '<i id="mission-bar-active" style="width:0%;background:var(--in-info,#58a6ff)"></i>'
+        +       '<i id="mission-bar-blocked" style="width:0%;background:var(--in-bad,#f85149)"></i>'
+        +       '<i id="mission-bar-queue" style="width:0%;background:rgba(255,255,255,.10)"></i></div>'
+        +     '<div class="mz-prog-legend">'
+        +       '<span><b id="mission-leg-done">0</b> hechos</span>'
+        +       '<span><b id="mission-leg-active">0</b> activos</span>'
+        +       '<span><b id="mission-leg-blocked">0</b> bloq.</span>'
+        +       '<span><b id="mission-leg-queue">0</b> cola</span></div></div>'
+        + '</section>';
+}
+function _brandBarFallback() {
+    return ''
+        + '<div class="in-header-brand">'
+        +   '<div class="mz-logo" aria-hidden="true" title="MIZPÁ">M</div>'
+        +   '<div class="mz-id"><div class="mz-name">MIZPÁ</div>'
+        +     '<div class="mz-sub">«Que el Señor vigile» · atalaya de agentes</div></div>'
+        +   '<div class="mz-projsel" role="button" tabindex="0" '
+        +     'aria-label="Proyecto activo: Intrale, 1 de 3">'
+        +     '<span class="mz-proj-avatar" aria-hidden="true">i</span>'
+        +     '<span class="mz-proj-id"><span class="mz-proj-name">Intrale</span>'
+        +       '<span class="mz-proj-state">PROYECTO ACTIVO</span></span>'
+        +     '<span class="mz-proj-badge">1 / 3</span>'
+        +     '<span class="mz-proj-caret" aria-hidden="true">▾</span></div>'
+        + '</div>';
 }
 
-function renderMizpaChrome(mission) {
-    const m = mission || {};
-    const total = Number.isFinite(m.total) ? m.total : 0;
-    const entregados = Number.isFinite(m.entregados) ? m.entregados : 0;
-    const pct = total > 0 ? Math.round((entregados / total) * 100) : 0;
-    const waveLabel = escapeHtmlSsr(m.label || 'Ola actual');
-    const etaTxt = escapeHtmlSsr(_fmtDurMs(m.etaRemainingMs));
-    let velTxt = '—';
-    if (Number.isFinite(m.velocityPctPerMin) && m.velocityPctPerMin > 0) {
-        const pctPerH = m.velocityPctPerMin * 60;
-        velTxt = (pctPerH >= 1 ? pctPerH.toFixed(1) : pctPerH.toFixed(2)) + ' %/h';
-    }
-    velTxt = escapeHtmlSsr(velTxt);
+// renderMizpaChrome(_mission) — los 3 bloques superiores del marco común. El
+// parámetro se conserva por compatibilidad de firma (tests / callers), pero el
+// banner de ola se hidrata client-side; no se inyecta `mission` en el markup.
+function renderMizpaChrome(_mission) {
+    const hasShared = pipelineRedesign
+        && typeof pipelineRedesign.renderBrandBarPipeline === 'function'
+        && typeof pipelineRedesign.renderMissionBannerPipeline === 'function';
 
-    // Brand bar + selector multiproyecto.
-    const brand = '<div class="mz-brand">'
-        + '<div class="mz-logo" aria-hidden="true">M</div>'
-        + '<div class="mz-brand-text">'
-        +   '<div class="mz-wordmark">MIZPÁ</div>'
-        +   '<div class="mz-tagline">Centro de mando del pipeline</div>'
-        + '</div></div>';
-    const projSelector = '<div class="mz-proj-wrap">'
-        + '<button type="button" class="mz-proj" id="mz-proj-btn" aria-haspopup="true" aria-expanded="false" '
-        +   'title="Selector de proyecto (multiproyecto)" aria-label="Seleccionar proyecto. Activo: Intrale, 1 de 3">'
-        +   '<span class="mz-proj-name">Intrale</span>'
-        +   '<span class="mz-proj-count">1/3</span>'
-        +   '<span class="mz-proj-caret" aria-hidden="true">▾</span>'
-        + '</button>'
-        + '<div class="mz-proj-menu" id="mz-proj-menu" role="menu" hidden aria-label="Proyectos">'
-        +   '<button type="button" class="mz-proj-item is-active" role="menuitem" aria-current="true" title="Proyecto activo">Intrale</button>'
-        +   '<span class="mz-proj-item is-disabled" role="menuitem" aria-disabled="true" title="Próximamente">Proyecto 2 · en evaluación</span>'
-        +   '<span class="mz-proj-item is-disabled" role="menuitem" aria-disabled="true" title="Próximamente">Proyecto 3 · en evaluación</span>'
-        + '</div></div>';
-
-    // Banner de misión con la ola protagonista.
-    const mband = '<div class="mz-mission" role="group" aria-label="Misión: ola en curso">'
-        + '<div class="mz-mission-head">'
-        +   '<span class="mz-mission-eyebrow">Misión en curso</span>'
-        +   '<span class="mz-mission-wave">' + waveLabel + '</span>'
+    // ① Cabecera de marca (marca + selector de proyecto + pill de build) + el
+    // meta de la derecha (estado del pipeline + reloj), idéntico al shell común.
+    const brand = hasShared ? pipelineRedesign.renderBrandBarPipeline() : _brandBarFallback();
+    const header = '<header class="in-header">'
+        + brand
+        + '<div class="in-header-meta">'
+        +   '<span class="in-pill" id="hdr-mode">…</span>'
+        +   '<span class="in-clock" id="hdr-clock">…</span>'
         + '</div>'
-        + '<div class="mz-mission-stats">'
-        +   '<div class="mz-stat" title="Issues entregados sobre el total de la ola">'
-        +     '<span class="mz-stat-label">Entregados</span>'
-        +     '<span class="mz-stat-value"><span id="mz-delivered">' + entregados + '</span>/<span id="mz-total">' + total + '</span></span>'
-        +     '<span class="mz-bar"><span style="width:' + pct + '%"></span></span>'
-        +   '</div>'
-        +   '<div class="mz-stat" title="Tiempo estimado restante para cerrar la ola">'
-        +     '<span class="mz-stat-label">ETA</span>'
-        +     '<span class="mz-stat-value">' + etaTxt + '</span>'
-        +   '</div>'
-        +   '<div class="mz-stat" title="Velocidad de avance medida (porcentaje por hora)">'
-        +     '<span class="mz-stat-label">Velocidad</span>'
-        +     '<span class="mz-stat-value">' + velTxt + '</span>'
-        +   '</div>'
-        + '</div></div>';
-
-    // Nav curada (5 tabs) + «⋯ Más».
-    const tabs = NAV_PRIMARY.map((t) => {
-        const active = t.slug === 'issues';
-        return '<a class="mz-tab' + (active ? ' is-active' : '') + '" href="' + t.href + '" '
-            + (active ? 'aria-current="page" ' : '')
-            + 'title="' + escapeHtmlAttr('Ir a ' + t.label) + '" aria-label="' + escapeHtmlAttr('Ir a ' + t.label) + '">'
-            + iconSvg(t.icon, 'mz-tab-icon')
-            + '<span class="mz-tab-label">' + escapeHtmlSsr(t.label) + '</span></a>';
-    }).join('');
-    const moreItems = NAV_SECONDARY.map((t) => {
-        const note = t.note
-            ? '<span class="mz-more-note">' + escapeHtmlSsr(t.note) + '</span>' : '';
-        return '<a class="mz-more-item" role="menuitem" href="' + t.href + '" '
-            + 'title="' + escapeHtmlAttr('Ir a ' + t.label) + '">'
-            + iconSvg(t.icon, 'mz-tab-icon')
-            + '<span class="mz-more-label">' + escapeHtmlSsr(t.label) + '</span>' + note + '</a>';
-    }).join('');
-    const nav = '<nav class="mz-nav" role="navigation" aria-label="Ventanas del dashboard">'
-        + tabs
-        + '<div class="mz-more-wrap">'
-        +   '<button type="button" class="mz-more-btn" id="mz-more-btn" aria-haspopup="true" aria-expanded="false" '
-        +     'title="Más secciones del dashboard" aria-label="Más secciones del dashboard">⋯ Más</button>'
-        +   '<div class="mz-more-menu" id="mz-more-menu" role="menu" hidden aria-label="Secciones secundarias">'
-        +     moreItems
-        +   '</div>'
-        + '</div></nav>';
-
-    return '<header class="mz-header">'
-        + '<div class="mz-topbar">' + brand + projSelector + '</div>'
-        + mband
-        + nav
         + '</header>';
+
+    // ② Cabecera de ola (tag OLA + título + métricas + bloque AVANCE).
+    const mission = hasShared ? pipelineRedesign.renderMissionBannerPipeline() : _missionBannerFallback();
+
+    // ③ Barra de accesos a subventanas (nav v3 común, pestaña Issues activa).
+    const nav = renderNavTabsSsr('issues');
+
+    return header + mission + nav;
 }
 
 // =============================================================================
@@ -606,115 +574,18 @@ const ISSUES_CSS = `
 .iss-frame { max-width: 1480px; margin: 0 auto; padding: 0; }
 .iss-body { padding: 20px 28px 32px; display: flex; flex-direction: column; gap: 18px; }
 
-/* ── Cabecera MIZPÁ ─────────────────────────────────────────────────────── */
-.mz-header {
-    display: flex; flex-direction: column; gap: 14px;
-    padding: 18px 28px 0;
-    background: linear-gradient(135deg, var(--surface-1, var(--in-bg-2)), transparent 70%);
-    border-bottom: 1px solid var(--border, var(--in-border));
-}
-.mz-topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-.mz-brand { display: flex; align-items: center; gap: 12px; }
-.mz-logo {
-    width: 40px; height: 40px; border-radius: var(--radius-md, 10px);
-    background: linear-gradient(135deg, var(--brand-cyan, var(--in-accent)), var(--brand-blue, var(--in-brand)));
-    display: flex; align-items: center; justify-content: center;
-    font-weight: 800; color: var(--surface-0, var(--in-bg)); font-size: 20px;
-    box-shadow: var(--shadow-sm, var(--in-shadow));
-}
-.mz-wordmark { font-size: 20px; font-weight: 800; letter-spacing: 2px; color: var(--text-primary, var(--in-fg)); }
-.mz-tagline { font-size: 12px; color: var(--text-secondary, var(--in-fg-dim)); margin-top: 1px; }
-
-.mz-proj-wrap { position: relative; }
-.mz-proj {
-    display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 14px;
-    border-radius: 999px; cursor: pointer;
-    background: var(--surface-2, var(--in-bg-3)); border: 1px solid var(--border, var(--in-border));
-    color: var(--text-primary, var(--in-fg)); font: inherit; font-size: 13px; font-weight: 600;
-}
-.mz-proj:hover { border-color: var(--border-strong, var(--in-accent)); }
-.mz-proj-count {
-    font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 999px;
-    background: var(--info-bg, var(--in-info-soft)); color: var(--info, var(--in-info));
-}
-.mz-proj-caret { font-size: 10px; color: var(--text-secondary, var(--in-fg-dim)); }
-.mz-proj-menu {
-    position: absolute; right: 0; top: calc(100% + 6px); z-index: 50; min-width: 220px;
-    display: flex; flex-direction: column; gap: 2px; padding: 6px;
-    background: var(--surface-1, var(--in-bg-2)); border: 1px solid var(--border, var(--in-border));
-    border-radius: var(--radius-md, 10px); box-shadow: var(--shadow-lg, var(--in-shadow));
-}
-.mz-proj-item {
-    display: block; text-align: left; padding: 8px 10px; border: 0; border-radius: 8px;
-    background: transparent; color: var(--text-primary, var(--in-fg)); font: inherit; font-size: 13px; cursor: pointer;
-}
-.mz-proj-item.is-active { background: var(--info-bg, var(--in-info-soft)); color: var(--info, var(--in-info)); font-weight: 700; }
-.mz-proj-item.is-disabled { color: var(--text-dim, var(--in-fg-dim)); cursor: not-allowed; }
-
-/* Banner de misión */
-.mz-mission {
-    display: flex; align-items: center; gap: 28px; flex-wrap: wrap;
-    padding: 14px 18px; border-radius: var(--radius-lg, 12px);
-    background: var(--surface-1, var(--in-bg-2)); border: 1px solid var(--border, var(--in-border));
-    border-left: 3px solid var(--brand-cyan, var(--in-accent));
-}
-.mz-mission-head { display: flex; flex-direction: column; gap: 2px; min-width: 160px; }
-.mz-mission-eyebrow {
-    font-size: 10px; text-transform: uppercase; letter-spacing: 1.4px;
-    color: var(--text-dim, var(--in-fg-dim));
-}
-.mz-mission-wave { font-size: 16px; font-weight: 700; color: var(--text-primary, var(--in-fg)); }
-.mz-mission-stats { display: flex; align-items: center; gap: 26px; flex-wrap: wrap; }
-.mz-stat { display: flex; flex-direction: column; gap: 3px; min-width: 92px; }
-.mz-stat-label {
-    font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
-    color: var(--text-dim, var(--in-fg-dim));
-}
-.mz-stat-value {
-    font-size: 16px; font-weight: 700; color: var(--text-primary, var(--in-fg));
-    font-variant-numeric: tabular-nums;
-}
-.mz-bar { height: 5px; border-radius: 3px; background: var(--surface-3, var(--in-bg-3)); overflow: hidden; margin-top: 2px; }
-.mz-bar > span {
-    display: block; height: 100%;
-    background: linear-gradient(90deg, var(--brand-cyan, var(--in-accent)), var(--brand-blue, var(--in-brand)));
-}
-
-/* Nav 5 tabs + Más */
-.mz-nav { display: flex; align-items: stretch; gap: 4px; flex-wrap: wrap; }
-.mz-tab {
-    display: inline-flex; align-items: center; gap: 7px; padding: 10px 14px;
-    border-bottom: 2px solid transparent; text-decoration: none;
-    color: var(--text-secondary, var(--in-fg-dim)); font-size: 13px; font-weight: 600;
-}
-.mz-tab:hover { color: var(--text-primary, var(--in-fg)); }
-.mz-tab.is-active {
-    color: var(--info, var(--in-info)); border-bottom-color: var(--info, var(--in-info));
-}
-.mz-tab-icon { width: 16px; height: 16px; fill: currentColor; }
-.mz-more-wrap { position: relative; display: flex; align-items: stretch; margin-left: 4px; }
-.mz-more-btn {
-    display: inline-flex; align-items: center; padding: 10px 14px; cursor: pointer;
-    background: transparent; border: 0; color: var(--text-secondary, var(--in-fg-dim));
-    font: inherit; font-size: 13px; font-weight: 600;
-}
-.mz-more-btn:hover { color: var(--text-primary, var(--in-fg)); }
-.mz-more-menu {
-    position: absolute; right: 0; top: calc(100% + 4px); z-index: 50; min-width: 230px;
-    display: flex; flex-direction: column; gap: 2px; padding: 6px;
-    background: var(--surface-1, var(--in-bg-2)); border: 1px solid var(--border, var(--in-border));
-    border-radius: var(--radius-md, 10px); box-shadow: var(--shadow-lg, var(--in-shadow));
-}
-.mz-more-item {
-    display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 8px;
-    text-decoration: none; color: var(--text-primary, var(--in-fg)); font-size: 13px;
-}
-.mz-more-item:hover { background: var(--surface-2, var(--in-bg-3)); }
-.mz-more-label { flex: 1; }
-.mz-more-note {
-    font-size: 10px; font-style: italic; color: var(--text-dim, var(--in-fg-dim));
-    border: 1px solid var(--border, var(--in-border)); border-radius: 999px; padding: 1px 7px;
-}
+/* ── Marco común MIZPÁ (#4237) ───────────────────────────────────────────────
+   Los 3 bloques superiores ya NO tienen CSS propio acá: se renderizan con los
+   helpers compartidos (renderBrandBarPipeline / renderMissionBannerPipeline /
+   renderNavTabsSsr) y su estilo vive en theme.css (.in-header / .in-header-brand
+   / .mz-projsel / .v3-nav) + PIPELINE_REDESIGN_CSS (.mz-mission / .mz-wavetag /
+   .mz-prog-*). Esta ventana inyecta ambas hojas en el <head>; no se duplica
+   markup ni CSS del marco (CA-5). Las únicas reglas locales del marco son los
+   estados del pill de modo (que el shell común inyecta como extraCss y theme.css
+   no trae); se replican acá para que la cabecera rinda igual sin pageShell. */
+.in-mode-running { color: var(--in-ok); border-color: var(--in-ok); background: var(--in-ok-soft); }
+.in-mode-paused { color: var(--in-bad); border-color: var(--in-bad); background: var(--in-bad-soft); }
+.in-mode-partial { color: var(--in-warn); border-color: var(--in-warn); background: var(--in-warn-soft); }
 
 /* ── Toolbar de control ─────────────────────────────────────────────────── */
 .iss-counters { display: flex; gap: 12px; flex-wrap: wrap; }
@@ -907,7 +778,7 @@ const ISSUES_CSS = `
 .iss-menu-btn[aria-expanded="true"] { border-color: var(--info, var(--in-info)); color: var(--info, var(--in-info)); }
 /* Reset: el atributo [hidden] debe ganarle al display:flex de los menús flotantes,
    sino todos los submenús se despliegan a la vez (bug visto en la ventana ISSUES). */
-.iss-menu[hidden], .mz-proj-menu[hidden], .mz-more-menu[hidden] { display: none !important; }
+.iss-menu[hidden] { display: none !important; }
 .iss-menu {
     position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 60; min-width: 250px;
     display: flex; flex-direction: column; gap: 2px; padding: 6px;
@@ -1398,20 +1269,85 @@ function renderIssuesClientScript() {
     if (grp) grp.addEventListener('change', function (e) { groupMode = e.target.value || 'estado'; renderGrid(); });
   }
 
-  function bindChrome() {
-    function toggle(btnId, menuId) {
-      var btn = document.getElementById(btnId); var menu = document.getElementById(menuId);
-      if (!btn || !menu) return;
-      btn.addEventListener('click', function (ev) {
-        ev.stopPropagation();
-        var open = menu.hidden;
-        menu.hidden = !open;
-        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-      });
-      document.addEventListener('click', function () { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); });
+  // ── Hidratación del marco común MIZPÁ (#4237) ──────────────────────────────
+  // El banner de ola (② AVANCE) y la cabecera (reloj + estado + pill de build)
+  // se hidratan client-side con los MISMOS IDs mission-* / hdr-* / bld-status
+  // que el resto de las pantallas, consumiendo /api/dash/waves y /api/dash/header.
+  // No se duplica markup: sólo se reusa el contrato de IDs del marco compartido.
+  function setText(id, value) {
+    var el = document.getElementById(id);
+    if (el && el.textContent !== String(value)) el.textContent = String(value);
+  }
+  function setWidth(id, pct) { var el = document.getElementById(id); if (el) el.style.width = pct; }
+
+  function mirrorMission(d) {
+    try {
+      var wave = d && d.active_wave;
+      if (!wave) { setText('mission-wave-num', '—'); setText('mission-wave-name', 'Sin ola activa'); return; }
+      if (isFinite(wave.number)) setText('mission-wave-num', String(wave.number));
+      setText('mission-wave-name', wave.name ? ('Ola ' + wave.number + ' · ' + wave.name) : ('Ola ' + wave.number));
+      var desc = wave.goal || wave.description;
+      if (desc) setText('mission-wave-desc', desc);
+      var tag = document.getElementById('mission-wave-tag');
+      if (tag) tag.style.display = wave.isLast ? '' : 'none';
+      var issues = Array.isArray(wave.issues) ? wave.issues : [];
+      var done = 0, active = 0, blocked = 0, queue = 0;
+      for (var i = 0; i < issues.length; i++) {
+        var s = issues[i] && issues[i].status;
+        if (s === 'completed') done++;
+        else if (s === 'in-progress') active++;
+        else if (s === 'blocked') blocked++;
+        else queue++;
+      }
+      var total = issues.length || 0;
+      var pct = total > 0 ? Math.round((done / total) * 100) : 0;
+      setText('mission-avance-pct', pct + '%');
+      setText('mission-leg-done', String(done));
+      setText('mission-leg-active', String(active));
+      setText('mission-leg-blocked', String(blocked));
+      setText('mission-leg-queue', String(queue));
+      var w = function (n) { return total > 0 ? ((n / total) * 100).toFixed(1) + '%' : '0%'; };
+      setWidth('mission-bar-done', w(done));
+      setWidth('mission-bar-active', w(active));
+      setWidth('mission-bar-blocked', w(blocked));
+      setWidth('mission-bar-queue', w(queue));
+      var dv = document.getElementById('mission-delivered-value');
+      if (dv) dv.innerHTML = done + '<span class="mz-wm-u"> / ' + total + '</span>';
+      var dsub = document.getElementById('mission-delivered-sub');
+      if (dsub) dsub.textContent = Math.max(0, total - done) + ' restantes';
+    } catch (e) { /* defensivo: nunca romper el render por el banner */ }
+  }
+
+  async function tickWaves() {
+    var d = await fetchJson('/api/dash/waves');
+    if (d) mirrorMission(d);
+  }
+
+  async function tickHeader() {
+    setText('hdr-clock', new Date().toLocaleTimeString('es-AR'));
+    var d = await fetchJson('/api/dash/header');
+    if (!d) return;
+    var modePill = document.getElementById('hdr-mode');
+    if (modePill) {
+      modePill.classList.remove('in-mode-running', 'in-mode-paused', 'in-mode-partial');
+      if (d.mode === 'paused') { modePill.classList.add('in-mode-paused'); modePill.textContent = '⏸ Pausado'; }
+      else if (d.mode === 'partial_pause') {
+        var n = Array.isArray(d.allowedIssues) ? d.allowedIssues.length : 0;
+        modePill.classList.add('in-mode-partial'); modePill.textContent = '⏸ Parcial · ' + n + ' issues';
+      } else { modePill.classList.add('in-mode-running'); modePill.textContent = '🟢 Running'; }
     }
-    toggle('mz-proj-btn', 'mz-proj-menu');
-    toggle('mz-more-btn', 'mz-more-menu');
+    var bld = document.getElementById('bld-status');
+    if (bld && d.build) {
+      var META = {
+        passing: { cls: 'in-pill-ok', t: '🟢 Build OK' }, failing: { cls: 'in-pill-bad', t: '🔴 Build roto' },
+        running: { cls: 'in-pill-warn', t: '🟡 Build corriendo' }, unknown: { cls: 'in-pill-info', t: '○ Build ?' }
+      };
+      var m = META[d.build.status] || META.unknown;
+      bld.classList.remove('in-pill-ok', 'in-pill-bad', 'in-pill-warn', 'in-pill-info');
+      bld.classList.add(m.cls);
+      var detail = [d.build.branch, d.build.commit].filter(Boolean).join(' · ');
+      bld.textContent = m.t + (detail ? ' · ' + detail : '');
+    }
   }
 
   async function tickIssues() {
@@ -1424,9 +1360,12 @@ function renderIssuesClientScript() {
   function init() {
     bindGridDelegation();
     bindFilters();
-    bindChrome();
     tickIssues();
+    tickHeader();
+    tickWaves();
     setInterval(function () { tickIssues(); }, 60000);
+    setInterval(function () { tickHeader(); }, 5000);
+    setInterval(function () { tickWaves(); }, 30000);
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();
@@ -1504,6 +1443,10 @@ function renderIssuesHTML(opts) {
     const tokens = loadDesignTokens();
     const spriteInline = loadIconSprite();
     const mission = (opts && opts.mission) || null;
+    // #4237 — CSS del marco común MIZPÁ (cabecera de ola + brand): vive en
+    // PIPELINE_REDESIGN_CSS (helpers de #4234). Se inyecta para que el banner
+    // ② (mz-mission/mz-wavetag/mz-prog-*) y la marca rindan idéntico al resto.
+    const chromeCss = (pipelineRedesign && pipelineRedesign.PIPELINE_REDESIGN_CSS) || '';
 
     const initial = buildInitialIssues(opts);
     const counts = countGroups(initial);
@@ -1526,6 +1469,7 @@ function renderIssuesHTML(opts) {
 <title>Intrale · Issues</title>
 <style>${theme}</style>
 <style>${tokens}</style>
+<style>${chromeCss}</style>
 <style>${ISSUES_CSS}</style>
 </head>
 <body>
