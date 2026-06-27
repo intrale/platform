@@ -206,3 +206,37 @@ test('renderEquipo NO trunca textos del banner (sin estilos de overflow agresivo
     // La descripción de misión y la búsqueda están presentes completas.
     assert.ok(html.includes('Cada agente es on-demand'));
 });
+
+// #4240 — EQUIPO adopta el marco común MIZPÁ: además de su contenido propio,
+// muestra el banner de ola común (② del marco) reutilizando el helper compartido
+// renderMissionBanner de la HOME, en el orden ① marca → ② ola → ③ nav → ④ contenido.
+test('renderEquipo inyecta el banner de ola común y respeta el orden del marco (#4240)', () => {
+    const html = sat.renderEquipo();
+    // ② Banner de ola común: el helper compartido renderMissionBanner y sus zonas
+    // (tag OLA + título + métricas + bloque AVANCE con barra/leyenda).
+    assert.ok(html.includes('id="mz-mission"'), 'banner de ola común presente');
+    assert.ok(html.includes('id="mission-wave-num"'), 'tag de ola');
+    assert.ok(html.includes('id="mission-eta-value"'), 'métrica ETA');
+    assert.ok(html.includes('id="mission-avance-pct"'), 'bloque AVANCE');
+    assert.ok(html.includes('id="mission-leg-done"'), 'leyenda de puntitos');
+    // CSS compartido (CA-5): el banner se estiliza desde theme.css, no duplicado.
+    assert.ok(html.includes('.mz-mission {'), 'CSS .mz-mission compartido (theme.css)');
+    assert.ok(html.includes('.mz-wavetag-n'), 'CSS del tag de ola compartido');
+    // Hidratación cliente del banner desde /api/dash/waves (CA-2/CA-6).
+    assert.ok(html.includes('tickEquipoMission'), 'tick de hidratación del banner de ola');
+
+    // Orden del marco: ① cabecera (in-header) → ② ola (mz-mission) → ③ nav (v3-nav
+    // real) → ④ contenido propio (.eq2). Se compara por posición del nodo DOM.
+    const posHeader = html.indexOf('class="in-header"');
+    const posMission = html.indexOf('id="mz-mission"');
+    // El nodo <nav> real lleva role/aria-label; así se descarta el `<nav class="v3-nav">`
+    // que aparece dentro del comentario de documentación de nav-tabs.
+    const posNav = html.indexOf('<nav class="v3-nav" role=');
+    const posBody = html.indexOf('<main class="satellite-body"');
+    assert.ok(posHeader > -1 && posMission > -1 && posNav > -1 && posBody > -1, 'todos los bloques presentes');
+    assert.ok(posHeader < posMission, '① cabecera antes que ② ola');
+    assert.ok(posMission < posNav, '② ola antes que ③ nav');
+    assert.ok(posNav < posBody, '③ nav antes que ④ contenido');
+    // CA-4: el contenido propio de EQUIPO (roster + visor de slots) queda debajo.
+    assert.ok(html.indexOf('class="eq2"') > posMission, 'contenido propio debajo del banner común');
+});
