@@ -37,6 +37,10 @@ const path = require('node:path');
 
 const { escapeHtmlText, escapeHtmlAttr } = require('../../lib/escape-html.js');
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
+// Marco común MIZPÁ reutilizable (#4236 sobre #4234): cabecera de marca +
+// banner de la ola. Se CONSUME desde el módulo compartido en vez de duplicar
+// el markup acá (CA-5). collectWave() también vive ahí (lo usa el banner).
+const { collectWave, renderBrandBar, renderMissionBanner, MIZPA_FRAME_CSS } = require('./mizpa-frame');
 
 // chat-panel es best-effort: si el módulo o sus deps fallan, la pantalla sigue
 // rindiendo sin el panel de intervención (degradación, no caída).
@@ -46,7 +50,7 @@ try { chatPanelMod = require('../log-viewer/chat-panel'); } catch { /* sin chat 
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 const TOKENS_CSS_PATH = path.join(__dirname, '../../assets/design-tokens.css');
 const AGENT_MODELS_PATH = path.join(__dirname, '../../agent-models.json');
-const WAVES_PATH = path.join(__dirname, '../../waves.json');
+// waves.json lo lee collectWave() del marco común (./mizpa-frame, #4236).
 const SESSIONS_DIR = path.join(__dirname, '../../../.claude/sessions');
 const LOG_DIR = path.join(__dirname, '../../logs');
 
@@ -103,45 +107,7 @@ function shortFase(faseActual) {
 
 // ───────────────────────── Colectores de datos (defensivos) ─────────────────────────
 
-/**
- * Lee la ola activa de waves.json. Degrada a `{active:false}` cuando no hay ola
- * planificada (estado inicial real del repo). Mapea nombres de campo comunes
- * sin asumir un schema rígido (waves.json se puebla vía /planner).
- * @returns {{active:boolean, number?:string, name?:string, desc?:string, tag?:string,
- *            eta?:string, velocity?:string, delivered?:number, total?:number,
- *            done?:number, activeCount?:number, blocked?:number, queue?:number, pct?:number}}
- */
-function collectWave() {
-    try {
-        const raw = JSON.parse(fs.readFileSync(WAVES_PATH, 'utf8'));
-        const w = raw && raw.active_wave;
-        if (!w || typeof w !== 'object') return { active: false };
-        const total = Number(w.total ?? w.issues_total ?? (Array.isArray(w.issues) ? w.issues.length : 0)) || 0;
-        const done = Number(w.done ?? w.delivered ?? w.completed ?? 0) || 0;
-        const activeCount = Number(w.active ?? w.in_progress ?? 0) || 0;
-        const blocked = Number(w.blocked ?? 0) || 0;
-        const queue = Math.max(0, total - done - activeCount - blocked);
-        const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-        return {
-            active: true,
-            number: w.number != null ? String(w.number) : (w.id != null ? String(w.id) : '—'),
-            name: w.name || w.title || 'Ola activa',
-            desc: w.description || w.desc || '',
-            tag: w.tag || null,
-            eta: w.eta || null,
-            velocity: w.velocity != null ? String(w.velocity) : null,
-            delivered: done,
-            total,
-            done,
-            activeCount,
-            blocked,
-            queue,
-            pct,
-        };
-    } catch {
-        return { active: false };
-    }
-}
+// collectWave() ahora vive en ./mizpa-frame (marco común #4236) — se importa arriba.
 
 /**
  * Resuelve el proveedor + modelo de un skill leyendo agent-models.json.
@@ -266,97 +232,9 @@ function buildAgentFicha(filename, isLive, ctx) {
     };
 }
 
-// ───────────────────────── Barra de marca MIZPÁ (hereda de las hermanas) ─────────────────────────
-
-function renderBrandBar() {
-    const logoSvg = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">'
-        + '<path d="M12 2.5 5 6v5c0 4.6 3 8 7 9.5 4-1.5 7-4.9 7-9.5V6l-7-3.5Z" stroke="#06121a" stroke-width="1.6" fill="rgba(255,255,255,.16)"/>'
-        + '<path d="M9.5 12.5 11.3 14.3 14.8 10.4" stroke="#06121a" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-    return `
-    <div class="in-header-brand">
-      <div class="mz-logo" aria-hidden="true" title="MIZPÁ · atalaya de agentes (Génesis 31:49)">${logoSvg}</div>
-      <div class="mz-id">
-        <div class="mz-name">MIZPÁ</div>
-        <div class="mz-sub">«Que el Señor vigile» · atalaya de agentes</div>
-      </div>
-      <div class="mz-projsel" role="button" tabindex="0"
-           title="Proyecto activo. MIZPÁ es el motor; el proyecto es intercambiable (multiproyecto — selección en evaluación)."
-           aria-label="Proyecto activo: Intrale, 1 de 3">
-        <span class="mz-proj-avatar" aria-hidden="true">i</span>
-        <span class="mz-proj-id">
-          <span class="mz-proj-name">Intrale</span>
-          <span class="mz-proj-state">PROYECTO ACTIVO</span>
-        </span>
-        <span class="mz-proj-badge">1 / 3</span>
-        <span class="mz-proj-caret" aria-hidden="true">▾</span>
-      </div>
-    </div>`;
-}
-
-// ───────────────────────── Banner de misión (ola protagonista) ─────────────────────────
-
-function renderMissionBanner(wave) {
-    if (!wave || !wave.active) {
-        return `
-<section class="lv-mission is-empty" aria-label="Misión de la ola activa"
-         title="Ola activa del plan: avance, ritmo de entrega y cierre estimado. Sin ola activa por ahora.">
-  <div class="lv-wavetag" title="Número de la ola activa.">
-    <span class="lv-wavetag-k">OLA</span>
-    <span class="lv-wavetag-n">—</span>
-  </div>
-  <div class="lv-mtext">
-    <div class="lv-m-ttl">Sin ola activa</div>
-    <div class="lv-m-desc">Esperando la planificación de la ola activa. El agente igual se monitorea en vivo abajo.</div>
-  </div>
-</section>`;
-    }
-    const restantes = Math.max(0, wave.total - wave.delivered);
-    const seg = (n, total) => total > 0 ? Math.round((n / total) * 100) : 0;
-    return `
-<section class="lv-mission" aria-label="Misión de la ola activa"
-         title="Ola activa del plan: avance, ritmo de entrega y cierre estimado.">
-  <div class="lv-wavetag" title="Número de la ola activa.">
-    <span class="lv-wavetag-k">OLA</span>
-    <span class="lv-wavetag-n">${escapeHtmlText(wave.number)}</span>
-  </div>
-  <div class="lv-mtext">
-    <div class="lv-m-ttl">${escapeHtmlText(wave.name)}${wave.tag ? `<span class="lv-m-chip">${escapeHtmlText(wave.tag)}</span>` : ''}</div>
-    <div class="lv-m-desc">${escapeHtmlText(wave.desc || 'Ola en ejecución.')}</div>
-    <div class="lv-mmetrics">
-      <div class="lv-wm" title="Tiempo estimado para cerrar la ola.">
-        <div class="lv-wm-l">⏳ ETA DE LA OLA</div>
-        <div class="lv-wm-v">${escapeHtmlText(wave.eta || '—')}</div>
-        <div class="lv-wm-s">cierre estimado</div>
-      </div>
-      <div class="lv-wm" title="Velocidad de entrega: issues cerrados por hora.">
-        <div class="lv-wm-l">🚀 VELOCIDAD</div>
-        <div class="lv-wm-v">${escapeHtmlText(wave.velocity || '—')} <span class="lv-wm-u">iss/h</span></div>
-        <div class="lv-wm-s">media reciente</div>
-      </div>
-      <div class="lv-wm" title="Issues entregados sobre el total de la ola.">
-        <div class="lv-wm-l">📦 ENTREGADOS</div>
-        <div class="lv-wm-v">${escapeHtmlText(String(wave.delivered))}<span class="lv-wm-u"> / ${escapeHtmlText(String(wave.total))}</span></div>
-        <div class="lv-wm-s">${escapeHtmlText(String(restantes))} restantes</div>
-      </div>
-    </div>
-  </div>
-  <div class="lv-mprog" title="Avance total de la ola, desglosado por estado de sus issues.">
-    <div class="lv-prog-head"><span>AVANCE</span><span class="lv-prog-pct">${escapeHtmlText(String(wave.pct))}%</span></div>
-    <div class="lv-prog-bar">
-      <i style="width:${seg(wave.done, wave.total)}%;background:var(--in-ok,#3fb950)"></i>
-      <i style="width:${seg(wave.activeCount, wave.total)}%;background:var(--in-info,#58a6ff)"></i>
-      <i style="width:${seg(wave.blocked, wave.total)}%;background:var(--in-bad,#f85149)"></i>
-      <i style="width:${seg(wave.queue, wave.total)}%;background:rgba(255,255,255,.10)"></i>
-    </div>
-    <div class="lv-prog-legend">
-      <span><i class="lv-dot" style="background:var(--in-ok,#3fb950)"></i> <b>${escapeHtmlText(String(wave.done))}</b> hechos</span>
-      <span><i class="lv-dot" style="background:var(--in-info,#58a6ff)"></i> <b>${escapeHtmlText(String(wave.activeCount))}</b> activos</span>
-      <span><i class="lv-dot" style="background:var(--in-bad,#f85149)"></i> <b>${escapeHtmlText(String(wave.blocked))}</b> bloq.</span>
-      <span><i class="lv-dot" style="background:rgba(255,255,255,.25)"></i> <b>${escapeHtmlText(String(wave.queue))}</b> cola</span>
-    </div>
-  </div>
-</section>`;
-}
+// renderBrandBar() y renderMissionBanner() se importan del marco común
+// ./mizpa-frame (#4236). LOGS rinde EXACTAMENTE el mismo marco que el resto de
+// las pantallas (cabecera MIZPÁ + banner de ola `mz-*`), sin duplicar markup.
 
 // ───────────────────────── Ficha del agente ─────────────────────────
 
@@ -542,34 +420,8 @@ const PANEL_CSS = `
 .lv-section-sub { font-size: 12px; font-weight: 500; color: var(--in-fg-dim); margin-left: 8px; }
 .lv-na { color: var(--in-fg-soft); font-style: italic; }
 
-/* Banner de misión */
-.lv-mission { display: grid; grid-template-columns: auto 1fr auto; gap: 22px; align-items: stretch;
-  background: var(--in-bg-3); border: 1px solid var(--in-border); border-radius: 14px; padding: 18px 22px; }
-.lv-mission.is-empty { grid-template-columns: auto 1fr; }
-.lv-wavetag { display: flex; flex-direction: column; align-items: center; justify-content: center;
-  min-width: 96px; padding: 12px 16px; border-radius: 12px; background: var(--in-bg-2); border: 1px solid var(--in-border); }
-.lv-wavetag-k { font-size: 11px; font-weight: 800; letter-spacing: 1px; color: var(--in-fg-dim); }
-.lv-wavetag-n { font-size: 40px; font-weight: 900; line-height: 1; }
-.lv-mtext { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.lv-m-ttl { font-size: 17px; font-weight: 800; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.lv-m-chip { font-size: 10px; font-weight: 800; letter-spacing: .8px; padding: 3px 9px; border-radius: 8px;
-  background: var(--in-bg-2); border: 1px solid var(--in-border); color: var(--in-fg-dim); }
-.lv-m-desc { font-size: 13px; color: var(--in-fg-dim); line-height: 1.5; }
-.lv-mmetrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 6px; }
-.lv-wm { background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 10px; padding: 10px 12px; }
-.lv-wm-l { font-size: 9.5px; font-weight: 800; letter-spacing: .6px; color: var(--in-fg-dim); }
-.lv-wm-v { font-size: 19px; font-weight: 800; margin-top: 4px; }
-.lv-wm-v .lv-wm-u, .lv-wm-u { font-size: 12px; font-weight: 600; color: var(--in-fg-dim); }
-.lv-wm-s { font-size: 11px; color: var(--in-fg-dim); margin-top: 3px; }
-.lv-mprog { display: flex; flex-direction: column; justify-content: center; min-width: 220px; gap: 8px;
-  background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 12px; padding: 12px 14px; }
-.lv-prog-head { display: flex; justify-content: space-between; font-size: 11px; font-weight: 800; letter-spacing: .6px; color: var(--in-fg-dim); }
-.lv-prog-pct { color: var(--in-fg); }
-.lv-prog-bar { display: flex; height: 10px; border-radius: 6px; overflow: hidden; background: var(--in-bg-3); border: 1px solid var(--in-border); }
-.lv-prog-bar i { display: block; height: 100%; }
-.lv-prog-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; color: var(--in-fg-dim); }
-.lv-prog-legend b { color: var(--in-fg); }
-.lv-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; vertical-align: middle; margin-right: 2px; }
+/* Banner de misión (ola): el markup mz-* y su CSS viven en ./mizpa-frame
+   (MIZPA_FRAME_CSS, marco común #4236). Aca ya no se duplican esas reglas. */
 
 /* Ficha del agente */
 .lv-ficha { background: var(--in-bg-3); border: 1px solid var(--in-border); border-radius: 14px; padding: 16px 20px; display: flex; flex-direction: column; gap: 14px; }
@@ -662,8 +514,6 @@ const PANEL_CSS = `
 .lv-intervene-hint kbd { font-family: var(--in-mono); font-size: 11px; background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 4px; padding: 1px 5px; }
 
 @media (max-width: 1100px) {
-  .lv-mission, .lv-mission.is-empty { grid-template-columns: 1fr; }
-  .lv-mmetrics { grid-template-columns: 1fr; }
   .lv-ficha-grid { grid-template-columns: 1fr; }
   .lv-controls { margin-left: 0; }
 }
@@ -912,6 +762,7 @@ function renderLogViewer(filename, isLive, ctx) {
 <title>Intrale · Logs ${escapeHtmlText(titleTxt)}</title>
 <style>${tokens}</style>
 <style>${theme}</style>
+<style>${MIZPA_FRAME_CSS}</style>
 <style>${PANEL_CSS}</style>
 ${chatBundle ? `<style>${chatBundle.css}</style>` : ''}
 </head>
