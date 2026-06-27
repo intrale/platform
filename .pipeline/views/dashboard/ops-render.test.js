@@ -177,3 +177,31 @@ test('#4197 · nombre de servicio caído en el banner se escapa (anti-XSS)', () 
     assert.ok(!html.includes('<img src=x'), 'el nombre malicioso NO queda crudo');
     assert.ok(html.includes('&lt;img'), 'el nombre se renderiza escapado');
 });
+
+// #4242 (Ola 7.1) — OPS adopta el marco común MIZPÁ reusando el helper
+// compartido renderMissionBanner de la HOME (CA-5: no se duplica markup). El
+// marco respeta el orden ① marca → ② ola → ③ accesos → ④ contenido propio.
+test('#4242 · marco común MIZPÁ: banner de ola común (② AVANCE) presente, reusado de la HOME', () => {
+    const html = ops.renderOps(baseState(), {});
+    // ② cabecera de ola común (helper compartido renderMissionBanner)
+    assert.ok(html.includes('<section class="mz-mission"'), 'banner de ola común presente');
+    assert.ok(html.includes('mission-wave-num'), 'tag OLA con número de ola');
+    assert.ok(html.includes('ETA DE LA OLA') && html.includes('VELOCIDAD') && html.includes('ENTREGADOS'),
+        'métricas ⏱/🚀/📦 de la ola');
+    assert.ok(html.includes('mz-prog-head') && html.includes('>AVANCE<'), 'bloque AVANCE con barra de progreso');
+    assert.ok(/hechos/.test(html) && /activos/.test(html) && /bloq\./.test(html) && /cola/.test(html),
+        'leyenda de puntitos hechos · activos · bloq. · cola');
+    assert.ok(html.includes('tickOpsMission'), 'hidratación cliente del banner de ola (/api/dash/waves)');
+});
+
+test('#4242 · orden del marco común: ① marca → ② ola → ④ contenido propio', () => {
+    const html = ops.renderOps(baseState(), {});
+    const idxBrand = html.indexOf('in-header-brand');
+    const idxMission = html.indexOf('<section class="mz-mission"');
+    const idxBody = html.indexOf('<main class="satellite-body"');
+    assert.ok(idxBrand > -1 && idxMission > -1 && idxBody > -1, 'los tres bloques presentes');
+    assert.ok(idxBrand < idxMission, 'la marca (①) va antes del banner de ola (②)');
+    assert.ok(idxMission < idxBody, 'el banner de ola (②) va antes del contenido propio (④)');
+    // CSS de margen del banner común (alineado al padding del cuerpo)
+    assert.ok(html.includes('.satellite-frame > .mz-mission'), 'CSS de margen del banner común');
+});
