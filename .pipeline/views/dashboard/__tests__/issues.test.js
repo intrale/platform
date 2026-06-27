@@ -143,12 +143,16 @@ test('renderIssueCard usa iconos vía <use href="#ic-…"> sin <path> inline', (
 });
 
 test('el markup SSR (sin sprite ni style) no emite <path> propios', () => {
-    const html = stripSprite(stripStyles(issues.renderIssuesHTML({
+    let html = stripSprite(stripStyles(issues.renderIssuesHTML({
         matrix: { '7': { title: 'x', faseActual: 'dev', estadoActual: 'listo' } }, priorityOrder: ['7'],
     })));
     // El script cliente contiene strings 'ic-…' pero no <path>; lo dejamos.
-    const noScript = html.replace(/<script[\s\S]*?<\/script>/g, '');
-    assert.ok(!/<path/.test(noScript), 'sin <path> inline en el markup del módulo');
+    html = html.replace(/<script[\s\S]*?<\/script>/g, '');
+    // #4237 — El logo de marca MIZPÁ del marco común (in-header-brand) inline-a su
+    // propio <path>: es un brand mark, idéntico al resto de las pantallas (no es un
+    // ícono de UI vía sprite). Se excluye de la regla CA-UX-3 (que aplica a íconos).
+    const noBrand = html.replace(/<div class="mz-logo"[\s\S]*?<\/div>/, '');
+    assert.ok(!/<path/.test(noBrand), 'sin <path> inline en el markup del módulo (excepto el brand mark común)');
 });
 
 // ── Exports puros (CA-UX-1) ──────────────────────────────────────────────────
@@ -254,22 +258,42 @@ test('renderCounters sin argumento degrada a ceros sin emitir "undefined"', () =
     assert.ok(!/>undefined</.test(html), 'ninguna celda renderiza "undefined"');
 });
 
-// ── renderMizpaChrome: banner de misión defensivo ────────────────────────────
-test('renderMizpaChrome arma el banner de misión con entregados/total y barra de progreso', () => {
-    const html = issues.renderMizpaChrome({ label: 'Ola 7.1', total: 10, entregados: 4, etaRemainingMs: 3600000, velocityPctPerMin: 0.5 });
-    assert.match(html, /id="mz-delivered">4</);
-    assert.match(html, /id="mz-total">10</);
-    assert.match(html, /width:40%/, '40% = 4/10 entregados');
-    assert.match(html, /Ola 7\.1/);
+// ── renderMizpaChrome: marco común MIZPÁ (#4237) ──────────────────────────────
+// El chrome dejó de ser bespoke: rinde los 3 bloques compartidos idénticos al
+// resto (referencia PIPELINE de #4234). Los datos del banner de ola se hidratan
+// client-side (IDs mission-*), por eso el SSR trae placeholders, no valores.
+test('renderMizpaChrome rinde los 3 bloques del marco común (cabecera + ola + nav)', () => {
+    const html = issues.renderMizpaChrome();
+    // ① Cabecera de marca común (in-header-brand + selector de proyecto + pill build).
+    assert.match(html, /class="in-header-brand"/, 'cabecera de marca común');
+    assert.match(html, /class="mz-projsel"/, 'selector de proyecto');
+    assert.match(html, /id="bld-status"/, 'pill de build hidratable');
+    assert.match(html, /id="hdr-clock"/, 'reloj de la cabecera');
+    // ② Cabecera de ola común (tag OLA + AVANCE + leyenda de puntitos).
+    assert.match(html, /class="mz-wavetag"/, 'tag de ola');
+    assert.match(html, />AVANCE</, 'bloque AVANCE');
+    assert.match(html, /id="mission-leg-done"/, 'leyenda hechos');
+    assert.match(html, /id="mission-leg-queue"/, 'leyenda cola');
+    assert.match(html, /id="mission-avance-pct"/, 'porcentaje de avance hidratable');
+    // ③ Barra de accesos a subventanas (nav v3 con Issues activa).
+    assert.match(html, /<nav class="v3-nav"/, 'nav común v3');
+    assert.match(html, /href="\/issues" aria-label="Ir a Issues[^"]*" aria-current="page"/, 'pestaña Issues activa');
 });
 
-test('renderMizpaChrome es defensivo ante mission null/parcial (sin NaN ni división por cero)', () => {
-    const html = issues.renderMizpaChrome(null);
-    assert.match(html, /id="mz-delivered">0</);
-    assert.match(html, /id="mz-total">0</);
-    assert.match(html, /width:0%/, 'total 0 → 0% sin dividir por cero');
+test('renderMizpaChrome ya no emite el chrome bespoke previo (no se duplica markup)', () => {
+    const html = issues.renderMizpaChrome();
+    assert.ok(!/mz-mission-eyebrow/.test(html), 'sin el banner bespoke anterior');
+    assert.ok(!/mz-wordmark/.test(html), 'sin la marca bespoke anterior');
+    assert.ok(!/class="mz-tab/.test(html), 'sin la nav bespoke anterior');
+    assert.ok(!/id="mz-delivered"/.test(html), 'sin los stats bespoke anteriores');
+});
+
+test('renderMizpaChrome es defensivo: firma sin argumentos, sin NaN', () => {
+    const html = issues.renderMizpaChrome();
     assert.ok(!/NaN/.test(html), 'ningún NaN en el markup');
-    assert.match(html, /Ola actual/, 'label por defecto cuando falta');
+    // Compat de firma: aceptar mission (ignorado) sin romper.
+    assert.doesNotThrow(() => issues.renderMizpaChrome({ label: 'Ola 7.1', total: 10, entregados: 4 }));
+    assert.doesNotThrow(() => issues.renderMizpaChrome(null));
 });
 
 // ── Regresión CA-7: el backlog NO se trunca (Gherkin de los 66 issues) ────────
