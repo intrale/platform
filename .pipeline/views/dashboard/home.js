@@ -43,6 +43,14 @@ const { computeInfraHealthLevel } = require('../../lib/infra-health-level');
 // renderer degrada a "sin acciones registradas" sin romper.
 let _alertTrayAudit = null;
 try { _alertTrayAudit = require('../../lib/alert-tray-audit'); } catch { /* opcional */ }
+// #4235 — Marco común MIZPÁ. La «cabecera de ola» (banner de misión) es el helper
+// reutilizable que entregó #4234 (PR #4254) en pipeline-redesign.js. HOME lo
+// consume desde acá en vez de mantener una copia byte-a-byte del markup (CA: «no
+// se duplica markup / reutilizar helpers compartidos»). Require defensivo: si el
+// módulo no carga (checkout viejo / test aislado), `renderMissionBanner` degrada
+// al markup inline equivalente y el home sigue rindiendo — el pipeline no muere.
+let _pipelineRedesign = null;
+try { _pipelineRedesign = require('./pipeline-redesign'); } catch { /* opcional */ }
 let _quotaExhaustedState = null;
 try { _quotaExhaustedState = require('../../lib/quota-exhausted-state'); } catch { /* opcional */ }
 let _restModeState = null;
@@ -4576,6 +4584,18 @@ function renderFlowBand(state) {
 // entregados) y tickOlaETA (ETA/velocidad) en sus IDs `mission-*`. Sin nuevos
 // endpoints. Cada zona lleva tooltip autodescriptivo (CA-11).
 function renderMissionBanner(state) {
+    // #4235 — «Cabecera de ola» del marco común MIZPÁ. Se reutiliza el helper
+    // canónico `renderMissionBannerPipeline()` que entregó #4234 (PR #4254) para
+    // que HOME muestre EXACTAMENTE el mismo banner que el resto de las pantallas
+    // (mismos contenedores mz-*, mismos IDs hidratables: mission-wave-num/-name/
+    // -desc, mission-eta/-vel/-delivered-value, mz-prog-bar y la leyenda de
+    // puntitos hechos·activos·bloq·cola). Al delegar, ambas pantallas comparten
+    // una sola fuente de markup y no pueden divergir (CA: «no se duplica markup»).
+    if (_pipelineRedesign && typeof _pipelineRedesign.renderMissionBannerPipeline === 'function') {
+        return _pipelineRedesign.renderMissionBannerPipeline();
+    }
+    // Fallback defensivo (módulo común ausente): markup equivalente inline para
+    // que el home nunca quede sin banner. Conserva los mismos IDs/clases.
     return `
     <section class="mz-mission" id="mz-mission" aria-label="Misión de la ola activa"
              title="Ola activa del plan: avance, ritmo de entrega y cierre estimado.">

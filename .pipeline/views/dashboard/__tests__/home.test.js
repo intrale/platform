@@ -267,6 +267,43 @@ test('#4189: renderHomeHTML emite el layout MIZPÁ (banner + panel + grilla 2-co
         'sub-componentes con IDs hidratables preservados (telemetría viva)');
 });
 
+// =============================================================================
+// #4235 — Marco común MIZPÁ en HOME. La «cabecera de ola» (banner de misión)
+// debe REUTILIZAR el helper compartido `renderMissionBannerPipeline()` que
+// entregó #4234, no una copia byte-a-byte del markup. Este contrato evita que
+// HOME y el resto de las pantallas vuelvan a divergir (CA: «no se duplica
+// markup / reutilizar helpers compartidos del marco MIZPÁ»).
+// =============================================================================
+test('#4235: la cabecera de ola de HOME reutiliza el helper común (paridad exacta)', () => {
+    const pr = require('../pipeline-redesign.js');
+    const homeBanner = home.renderMissionBanner({});
+    const sharedBanner = pr.renderMissionBannerPipeline();
+    assert.equal(homeBanner, sharedBanner,
+        'renderMissionBanner debe delegar en renderMissionBannerPipeline (markup idéntico, sin duplicar)');
+});
+
+test('#4235: HOME muestra los tres bloques del marco común MIZPÁ', () => {
+    const html = renderHomeHTML({});
+    // ① Cabecera MIZPÁ: marca + selector de proyecto + Pulpo / CPU·RAM / reloj.
+    assert.ok(html.includes('class="mz-logo"') && html.includes('>MIZPÁ<')
+        && html.includes('id="mz-projsel"'),
+        '① cabecera MIZPÁ con marca y selector de proyecto');
+    assert.ok(html.includes('id="hdr-pulpo"') && html.includes('id="hdr-resources"')
+        && html.includes('id="hdr-clock"'),
+        '① Pulpo / CPU·RAM / reloj');
+    // ② Cabecera de ola: tag + título + métricas + bloque AVANCE con leyenda.
+    assert.ok(html.includes('class="mz-wavetag-k"') && html.includes('id="mission-eta-value"')
+        && html.includes('id="mission-vel-value"') && html.includes('id="mission-delivered-value"'),
+        '② cabecera de ola con tag y métricas (ETA · velocidad · entregados)');
+    assert.ok(html.includes('>AVANCE<') && html.includes('id="mission-leg-done"')
+        && html.includes('id="mission-leg-active"') && html.includes('id="mission-leg-blocked"')
+        && html.includes('id="mission-leg-queue"'),
+        '② bloque AVANCE con leyenda de puntitos (hechos · activos · bloq · cola)');
+    // ③ Barra de accesos a subventanas: la nav compartida v3-nav.
+    assert.ok(html.includes('class="v3-nav"'),
+        '③ barra de accesos a subventanas (nav común v3-nav)');
+});
+
 test('CA-3: semáforo sano informa "sin degradaciones"', () => {
     const out = renderSemaforo({ semaforo: { level: 'ok', label: 'SALUDABLE', reasons: [] } });
     assert.ok(out.includes('Sin degradaciones'));
