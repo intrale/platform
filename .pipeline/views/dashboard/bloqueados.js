@@ -49,6 +49,15 @@ const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 const { FETCH_CLIENT_JS } = require('./fetch-client.js');
 const { CONFIRM_MODAL_JS } = require('./confirm-modal.js');
 
+// #4238 (Ola 7.x) — BLOQUEADOS adopta el marco común de ventanas MIZPÁ. Se
+// reutiliza el helper compartido `renderMissionBanner` de la HOME (#4189) — la
+// cabecera de ola común (② del marco: tag OLA + título + métricas + bloque
+// AVANCE) — en vez de duplicar su markup (CA-5), tal como lo hizo EQUIPO (#4258).
+// Degradación defensiva: si el módulo no carga, el slot del banner queda vacío y
+// el resto del marco (① marca + ③ nav + ④ contenido propio) sigue intacto.
+let homeView = null;
+try { homeView = require('./home'); } catch (_) { /* sin cabecera de ola común */ }
+
 // #3722 — Escape HTML server-side unificado (CA-B3). escapeHtmlText para
 // contexto nodo-texto, escapeHtmlAttr para contexto atributo. Fallback inline
 // (defense-in-depth) por si el require fallara en un checkout transitorio.
@@ -846,8 +855,71 @@ async function tickHeader(){
     else { modePill.classList.add('in-mode-running'); modePill.textContent='🟢 Running'; }
   }
 }
+// #4238 — Hidratación de la cabecera de ola común (② del marco). El SSR llega
+// neutro (igual que en la HOME); este tick espeja /api/dash/waves a los IDs
+// mission-* del helper compartido renderMissionBanner. Defensivo: cualquier dato
+// ausente degrada a neutro sin romper el resto de la pantalla. Espeja la lógica
+// de _mzMirrorMission de la HOME y tickEquipoMission de EQUIPO (#4258).
+async function tickBloqueadosMission(){
+  var d = await fetchJson('/api/dash/waves');
+  if(!d) return;
+  try {
+    var wave = d.active_wave;
+    if(!wave){
+      setText('mission-wave-num', '—');
+      setText('mission-wave-name', 'Sin ola activa');
+      setText('mission-wave-desc', 'Esperando la planificación de la ola activa.');
+      return;
+    }
+    if(Number.isFinite(wave.number)) setText('mission-wave-num', String(wave.number));
+    setText('mission-wave-name', wave.name ? ('Ola ' + wave.number + ' · ' + wave.name) : ('Ola ' + wave.number));
+    setText('mission-wave-desc', wave.goal || wave.description || ('Issues de la ola ' + wave.number + ' en curso.'));
+    var tag = document.getElementById('mission-wave-tag');
+    if(tag) tag.style.display = wave.isLast ? '' : 'none';
+    var issues = Array.isArray(wave.issues) ? wave.issues : [];
+    var done=0, active=0, blocked=0, queue=0;
+    for(var i=0;i<issues.length;i++){
+      var s = issues[i] && issues[i].status;
+      if(s === 'completed') done++;
+      else if(s === 'in-progress') active++;
+      else if(s === 'blocked') blocked++;
+      else queue++;
+    }
+    var total = issues.length || 0;
+    var pct = total > 0 ? Math.round((done/total)*100) : 0;
+    setText('mission-avance-pct', pct + '%');
+    setText('mission-leg-done', String(done));
+    setText('mission-leg-active', String(active));
+    setText('mission-leg-blocked', String(blocked));
+    setText('mission-leg-queue', String(queue));
+    var w = function(n){ return total>0 ? ((n/total)*100).toFixed(1)+'%' : '0%'; };
+    var setW = function(id,n){ var el=document.getElementById(id); if(el) el.style.width = w(n); };
+    setW('mission-bar-done', done);
+    setW('mission-bar-active', active);
+    setW('mission-bar-blocked', blocked);
+    setW('mission-bar-queue', queue);
+    var dv = document.getElementById('mission-delivered-value');
+    if(dv) dv.innerHTML = done + '<span class="mz-wm-u"> / ' + total + '</span>';
+    var dsub = document.getElementById('mission-delivered-sub');
+    if(dsub) dsub.textContent = Math.max(0, total-done) + ' restantes';
+    var openedAt = wave.openedAt ? Date.parse(wave.openedAt) : NaN;
+    var vv = document.getElementById('mission-vel-value');
+    if(vv){
+      if(Number.isFinite(openedAt) && done > 0){
+        var hours = (Date.now() - openedAt) / 3600000;
+        vv.innerHTML = hours > 0.1
+          ? (done/hours).toFixed(1) + ' <span class="mz-wm-u">iss/h</span>'
+          : '— <span class="mz-wm-u">iss/h</span>';
+      } else {
+        vv.innerHTML = '— <span class="mz-wm-u">iss/h</span>';
+      }
+    }
+  } catch(_) {}
+}
 tickHeader();
 setInterval(function(){ tickHeader().catch(function(){}); }, 5000);
+tickBloqueadosMission();
+setInterval(function(){ tickBloqueadosMission().catch(function(){}); }, 30000);
 `;
 
 /**
@@ -863,6 +935,13 @@ function renderBloqueados(state, opts) {
     const spriteInline = loadIconSprite();
     const navHtml = renderNavTabsSsr(slug);
     const fragment = renderBloqueadosSsr(state, opts);
+    // #4238 — Cabecera de ola común (② del marco MIZPÁ): se reutiliza el helper
+    // compartido renderMissionBanner de la HOME (CA-5, sin duplicar markup). Se
+    // sirve neutro en SSR (igual que la HOME) y lo hidrata tickBloqueadosMission()
+    // desde /api/dash/waves (CA-2). Si el módulo no cargó, el slot queda vacío.
+    const missionHtml = (homeView && typeof homeView.renderMissionBanner === 'function')
+        ? homeView.renderMissionBanner()
+        : '';
     return `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -873,6 +952,10 @@ function renderBloqueados(state, opts) {
 <style>
 .satellite-frame { max-width: 1600px; margin: 0 auto; padding: 0; }
 .satellite-body { padding: 22px 28px; display: flex; flex-direction: column; gap: 18px; }
+/* #4238 — La cabecera de ola común (② del marco) vive fuera del .satellite-body
+   (entre header y nav), así que se alinea con el padding horizontal del cuerpo.
+   Misma regla que pageShell de los satélites migrados (EQUIPO #4258). */
+.satellite-frame > .mz-mission { margin: 18px 28px 0; }
 .in-mode-running { color: var(--in-ok); border-color: var(--in-ok); background: var(--in-ok-soft); }
 .in-mode-paused { color: var(--in-bad); border-color: var(--in-bad); background: var(--in-bad-soft); }
 .in-mode-partial { color: var(--in-warn); border-color: var(--in-warn); background: var(--in-warn-soft); }
@@ -888,6 +971,7 @@ function renderBloqueados(state, opts) {
       <span class="in-clock" id="hdr-clock">…</span>
     </div>
   </header>
+  ${missionHtml}
   ${navHtml}
   <main class="satellite-body">${fragment}</main>
   <footer class="in-footer">
