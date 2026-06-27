@@ -103,6 +103,69 @@ async function tickHeader(){
     }
 }
 
+// #4239 — Hidratación compartida del banner de ola común (② del marco MIZPÁ).
+// Generaliza tickEquipoMission (#4240) a un helper inyectado por commonHelpers(),
+// disponible en CUALQUIER pageShell que monte el banner común (renderMissionBanner
+// de la HOME). Espeja /api/dash/waves a los IDs mission-* sin duplicar markup
+// (CA-5). Defensivo: si el banner no está montado, los setText/getElementById son
+// no-op y no rompen la pantalla.
+async function tickMission(){
+    const d = await fetchJson('/api/dash/waves');
+    if(!d) return;
+    try {
+        const wave = d.active_wave;
+        if(!wave){
+            setText('mission-wave-num', '—');
+            setText('mission-wave-name', 'Sin ola activa');
+            setText('mission-wave-desc', 'Esperando la planificación de la ola activa.');
+            return;
+        }
+        if(Number.isFinite(wave.number)) setText('mission-wave-num', String(wave.number));
+        setText('mission-wave-name', wave.name ? ('Ola ' + wave.number + ' · ' + wave.name) : ('Ola ' + wave.number));
+        setText('mission-wave-desc', wave.goal || wave.description || ('Issues de la ola ' + wave.number + ' en curso.'));
+        const tag = document.getElementById('mission-wave-tag');
+        if(tag) tag.style.display = wave.isLast ? '' : 'none';
+        const issues = Array.isArray(wave.issues) ? wave.issues : [];
+        let done=0, active=0, blocked=0, queue=0;
+        for(const it of issues){
+            const s = it && it.status;
+            if(s === 'completed') done++;
+            else if(s === 'in-progress') active++;
+            else if(s === 'blocked') blocked++;
+            else queue++;
+        }
+        const total = issues.length || 0;
+        const pct = total > 0 ? Math.round((done/total)*100) : 0;
+        setText('mission-avance-pct', pct + '%');
+        setText('mission-leg-done', String(done));
+        setText('mission-leg-active', String(active));
+        setText('mission-leg-blocked', String(blocked));
+        setText('mission-leg-queue', String(queue));
+        const w = (n) => total>0 ? ((n/total)*100).toFixed(1)+'%' : '0%';
+        const setW = (id,n) => { const el=document.getElementById(id); if(el) el.style.width = w(n); };
+        setW('mission-bar-done', done);
+        setW('mission-bar-active', active);
+        setW('mission-bar-blocked', blocked);
+        setW('mission-bar-queue', queue);
+        const dv = document.getElementById('mission-delivered-value');
+        if(dv) dv.innerHTML = done + '<span class="mz-wm-u"> / ' + total + '</span>';
+        const dsub = document.getElementById('mission-delivered-sub');
+        if(dsub) dsub.textContent = Math.max(0, total-done) + ' restantes';
+        const openedAt = wave.openedAt ? Date.parse(wave.openedAt) : NaN;
+        const vv = document.getElementById('mission-vel-value');
+        if(vv){
+            if(Number.isFinite(openedAt) && done > 0){
+                const hours = (Date.now() - openedAt) / 3600000;
+                vv.innerHTML = hours > 0.1
+                    ? (done/hours).toFixed(1) + ' <span class="mz-wm-u">iss/h</span>'
+                    : '— <span class="mz-wm-u">iss/h</span>';
+            } else {
+                vv.innerHTML = '— <span class="mz-wm-u">iss/h</span>';
+            }
+        }
+    } catch(_) {}
+}
+
 // ─── Acciones (importadas del dashboard legacy) ───
 // Los endpoints POST viven en dashboard.js; el cliente solo los invoca.
 // Refresh tras la acción: forzar tick inmediato sin recargar la página
@@ -1890,11 +1953,24 @@ async function tickCostos(){
         }
     }
 }
-const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickQuota, ms: 60000 }, { fn: tickCostos, ms: 60000 }];
+const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickMission, ms: 30000 }, { fn: tickQuota, ms: 60000 }, { fn: tickCostos, ms: 60000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('Costos', 'Consumo diario por proveedor · presupuesto y cuota de los 5 proveedores', body, script, css, 'costos');
+    // #4239 — Marco común MIZPÁ aplicado a COSTOS: ① cabecera de marca
+    // (renderEquipoBrandBar, mismo helper/clases `.mz-*` del resto de pantallas),
+    // ② banner de ola común (renderMissionBanner compartido de la HOME, vía
+    // `missionHtml`, hidratado por tickMission desde /api/dash/waves), ③ barra de
+    // accesos (renderNavTabsSsr('costos'), ya inyectada por pageShell). El
+    // contenido propio de COSTOS (el rediseño #4194) queda debajo del marco (CA-4),
+    // sin duplicar markup (CA-5). El banner se sirve neutro en SSR igual que la HOME.
+    const missionHtml = (homeView && typeof homeView.renderMissionBanner === 'function')
+        ? homeView.renderMissionBanner()
+        : '';
+    return pageShell('Costos', 'Consumo diario por proveedor · presupuesto y cuota de los 5 proveedores', body, script, css, 'costos', {
+        brandHtml: renderEquipoBrandBar(),
+        missionHtml,
+    });
 }
 
 // ─────────────────── Modo descanso (#3230 / hija frontend #3242) ───────────────────
