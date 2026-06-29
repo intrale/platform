@@ -37,6 +37,16 @@ try { pipelineRedesign = require('./pipeline-redesign'); } catch (_) { /* fallba
 let homeView = null;
 try { homeView = require('./home'); } catch (_) { /* sin banner de ola común */ }
 
+// #4239 (Ola 7.1) — COSTOS adopta el marco común MIZPÁ. Reutiliza el helper
+// compartido del marco (`mizpa-frame`): ① cabecera de marca (renderBrandBar) y
+// ② banner de ola común SSR-poblado (renderMissionBanner(collectWave())), el
+// mismo markup/CSS `mz-*` del resto de las pantallas, en vez de duplicarlo
+// (CA-5). Es la misma vía que usa LOGS (#4236). Degradación defensiva: si el
+// módulo no carga, el marco cae a la cabecera legacy del shell y el resto del
+// satélite sigue intacto («el pipeline no puede morir»).
+let mizpaFrame = null;
+try { mizpaFrame = require('./mizpa-frame'); } catch (_) { /* sin marco común */ }
+
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 function loadTheme() {
     try { return fs.readFileSync(THEME_CSS_PATH, 'utf8'); } catch { return ''; }
@@ -1894,7 +1904,25 @@ const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickQuota, ms: 60000 }, { fn:
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('Costos', 'Consumo diario por proveedor · presupuesto y cuota de los 5 proveedores', body, script, css, 'costos');
+    // #4239 — Marco común MIZPÁ en COSTOS (de #4234): ① cabecera de marca
+    // (renderBrandBar), ② banner de ola común (renderMissionBanner(collectWave()),
+    // SSR-poblado igual que LOGS), ③ barra de accesos (renderNavTabsSsr('costos'),
+    // ya inyectada por pageShell vía el slot de nav). El contenido propio de COSTOS
+    // (`#costos-redesign`, incluido su banner de alarma de presupuesto) queda
+    // debajo del marco, sin tocarlo (CA-4). Reusa los helpers/CSS compartidos del
+    // marco (CA-5: no se duplica markup; el CSS `mz-*` ya vive en theme.css). Si el
+    // módulo del marco no cargó, `brandHtml`/`missionHtml` quedan vacíos y pageShell
+    // cae a su cabecera legacy (defensa en profundidad — el pipeline no puede morir).
+    const brandHtml = (mizpaFrame && typeof mizpaFrame.renderBrandBar === 'function')
+        ? mizpaFrame.renderBrandBar()
+        : undefined;
+    const missionHtml = (mizpaFrame && typeof mizpaFrame.renderMissionBanner === 'function')
+        ? mizpaFrame.renderMissionBanner(mizpaFrame.collectWave())
+        : '';
+    return pageShell('Costos', 'Consumo diario por proveedor · presupuesto y cuota de los 5 proveedores', body, script, css, 'costos', {
+        brandHtml,
+        missionHtml,
+    });
 }
 
 // ─────────────────── Modo descanso (#3230 / hija frontend #3242) ───────────────────
