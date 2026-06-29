@@ -526,6 +526,63 @@ test('#3871 · mix horario + cuota NO es todos_inactivos_por_horario', () => {
     } finally { cleanup(dir); }
 });
 
+// -----------------------------------------------------------------------------
+// #4282 · preventive_soft_gate (degradación preventiva por cuota)
+//
+// El guard marcó el primary para degradación preventiva (marker vigente). El
+// soft-gate PREFIERE el primer fallback resoluble, pero —a diferencia del hard
+// gate— NUNCA vacía la chain ni pausa: registra el skipReason
+// preventive_soft_gate para el primary y, si hay fallback resoluble, lo elige.
+// -----------------------------------------------------------------------------
+function makeSoftGateModule(degradedProviders = []) {
+    const set = new Set(degradedProviders);
+    // isPreventivelyDegraded es fail-open (false) salvo para los providers
+    // marcados. Firma compatible con providerQuotaGuardModule.
+    return { isPreventivelyDegraded: (provider) => set.has(provider) };
+}
+
+test('#4282 · primary en degradación preventiva → skipReason preventive_soft_gate + fallback elegido', () => {
+    const models = baseModels();
+    models.skills.guru = { provider: 'anthropic', fallbacks: ['openai-codex'] };
+    const dir = mkTmpPipelineDir(models);
+    try {
+        const r = resolveSpawnWithFallback({
+            skill: 'guru', issue: 4282, pipelineDir: dir,
+            quotaModule: makeQuotaModule([]),                  // sin hard gate
+            softGateModule: makeSoftGateModule(['anthropic']),  // soft-gate del primary
+            primaryResolver, providerHandlerResolver,
+            notify: silentNotify, processEnv: ENV_WITH_KEYS,
+        });
+        assert.equal(r.source, 'fallback', 'el soft-gate prefiere el fallback resoluble');
+        assert.equal(r.provider, 'openai-codex');
+        const skip = r.skipReasons.find(s => s.reason === SKIP_REASON_CODES.PREVENTIVE_SOFT_GATE);
+        assert.ok(skip, 'debe registrar preventive_soft_gate');
+        assert.equal(skip.provider, 'anthropic');
+        recordReasons(r.skipReasons);
+    } finally { cleanup(dir); }
+});
+
+test('#4282 · soft-gate sin fallback resoluble → usa el primary, chain NUNCA vacía', () => {
+    const models = baseModels();
+    // Sin fallbacks declarados: el soft-gate no tiene a dónde degradar.
+    models.skills['lone-soft'] = { provider: 'anthropic' };
+    const dir = mkTmpPipelineDir(models);
+    try {
+        const r = resolveSpawnWithFallback({
+            skill: 'lone-soft', issue: 4282, pipelineDir: dir,
+            quotaModule: makeQuotaModule([]),                  // sin hard gate
+            softGateModule: makeSoftGateModule(['anthropic']),
+            primaryResolver, providerHandlerResolver,
+            notify: silentNotify, processEnv: ENV_WITH_KEYS,
+        });
+        // El soft NUNCA vacía la chain ni pausa: cae al primary.
+        assert.equal(r.gated, false, 'el soft-gate no pausa');
+        assert.equal(r.provider, 'anthropic');
+        assert.equal(r.softGatedPrimaryUsed, true);
+        recordReasons(r.skipReasons);
+    } finally { cleanup(dir); }
+});
+
 // =============================================================================
 // Meta-cobertura: TODOS los códigos de razón documentados deben haberse
 // ejercitado por la suite (CA: "cada código de razón figura en al menos un
