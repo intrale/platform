@@ -613,6 +613,14 @@ function makeEl(tag, opts){
     return el;
 }
 
+// Hidrata un valor numérico seguido de su unidad/sufijo en un <span class="mz-wm-u">.
+// FE-SEC-1 / XSS guard: NO usa innerHTML; construye nodos con textContent + appendChild.
+function setValueUnit(el, valueText, unitText){
+    if(!el) return;
+    el.textContent = String(valueText);
+    el.appendChild(makeEl('span', { cls: 'mz-wm-u', text: unitText }));
+}
+
 // CA-9 — Grilla de inputs time como FALLBACK editable por teclado (vive en el
 // <details> bajo el timeline). Comparte scheduleState con el timeline.
 function buildFallbackGrid(){
@@ -1359,7 +1367,7 @@ async function tickDescansoMission(){
         setW('mission-bar-blocked', blocked);
         setW('mission-bar-queue', queue);
         const dv = document.getElementById('mission-delivered-value');
-        if(dv) dv.innerHTML = done + '<span class="mz-wm-u"> / ' + total + '</span>';
+        setValueUnit(dv, done, ' / ' + total);
         const dsub = document.getElementById('mission-delivered-sub');
         if(dsub) dsub.textContent = Math.max(0, total-done) + ' restantes';
         const openedAt = wave.openedAt ? Date.parse(wave.openedAt) : NaN;
@@ -1367,11 +1375,9 @@ async function tickDescansoMission(){
         if(vv){
             if(Number.isFinite(openedAt) && done > 0){
                 const hours = (Date.now() - openedAt) / 3600000;
-                vv.innerHTML = hours > 0.1
-                    ? (done/hours).toFixed(1) + ' <span class="mz-wm-u">iss/h</span>'
-                    : '— <span class="mz-wm-u">iss/h</span>';
+                setValueUnit(vv, hours > 0.1 ? (done/hours).toFixed(1) + ' ' : '— ', 'iss/h');
             } else {
-                vv.innerHTML = '— <span class="mz-wm-u">iss/h</span>';
+                setValueUnit(vv, '— ', 'iss/h');
             }
         }
     } catch(_) {}
