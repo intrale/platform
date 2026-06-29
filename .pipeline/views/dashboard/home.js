@@ -1678,6 +1678,9 @@ function homeStyles() {
 .mz-pbar { height: 6px; border-radius: 5px; background: rgba(255,255,255,.07); overflow: hidden; }
 .mz-pbar i { display: block; height: 100%; border-radius: 5px; transition: width .4s ease; }
 .mz-ppct { font-size: 11px; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; color: var(--in-fg-dim,#8A93A6); }
+/* #4249 CA-UX2 — estado "pendiente" (—): atenuado para no confundirlo con
+ * consumo 0% ni con un proveedor caído. Se quita al hidratar con #4202. */
+.mz-ppct-pending { opacity: .55; font-weight: 600; }
 
 /* --- Grilla 2-col + paneles --- */
 .mz-grid { display: grid; grid-template-columns: 1fr 1.62fr; gap: 16px; align-items: start; }
@@ -2207,6 +2210,17 @@ function renderQuotaCard(d){
     // El desglose por proveedor (mz-quota-<bucket>-<prov>-*) requiere el backend
     // de extracción por proveedor (split / child issue) y queda en "—" hasta
     // entonces; el agregado de sesión/semana sí es dato real.
+    //
+    // #4249 CA-A4 — ORIGEN CANONICO DE CADA METRICA DE CUOTA (auditoria):
+    //   - % sesion (5h) / semanal AGREGADO  -> endpoint /api/dash/quota
+    //     (ticker tickQuota, este archivo) -> lib/quota-adapters/* (Anthropic
+    //     real) + lib/weekly-quota.js, calibrado contra muestras de claude.ai.
+    //     Mide el Plan Max de Anthropic; NO es multi-proveedor. Dato real.
+    //   - Salud / disponibilidad por proveedor -> .pipeline/state/
+    //     multi-provider-health.json (campo last_checked_at); expone solo
+    //     key_status/auth_mode/state, NUNCA el secreto (guardrail A02/A01).
+    //   - Desglose de cuota POR PROVEEDOR (filas mz-quota-bucket-prov-*) ->
+    //     pendiente del backend #4202 (OPEN); hoy stub "—" por diseno.
     setText('mz-quota-session-pct', sessPct.toFixed(1)+'%');
     setText('mz-quota-week-pct', weekPct.toFixed(1)+'%');
 
@@ -4647,24 +4661,53 @@ function renderMissionBanner(state) {
 }
 
 // Fila de proveedor para las cuotas desglosadas (CA-6). El % real por proveedor
-// (Anthropic/Codex/Gemini) requiere la extracción del consumo desde el cliente
-// de escritorio (Anthropic) / API (Codex/Gemini) — backend separado (split,
-// child issue). Hasta entonces la fila se muestra en estado neutro "—" con su
-// barra a 0; el % AGREGADO de sesión/semana sí es real (tickQuota). IDs listos
-// para hidratación futura sin re-render.
+// requiere la extracción del consumo desde el cliente de escritorio (Anthropic)
+// / API (Codex/Gemini/Cerebras/NVIDIA) — backend separado #4202 (OPEN). Hasta
+// entonces la fila se muestra en estado neutro "—" con su barra a 0; el %
+// AGREGADO de sesión/semana sí es real (tickQuota). IDs listos para hidratación
+// futura sin re-render.
+//
+// CA-UX2 (#4249): el "—" debe leerse como *pendiente*, no como consumo 0% ni
+// caído. Se atenúa con la clase `mz-ppct-pending` (opacity reducida en
+// theme.css) y un `title` explícito.
 function _mzProviderRow(bucket, key, name, color) {
     return `
-        <div class="mz-prow" title="Consumo de ${escapeHtmlAttr(name)} en esta ventana (desglose por proveedor — en preparación).">
+        <div class="mz-prow" title="Consumo de ${escapeHtmlAttr(name)} en esta ventana (desglose por proveedor — en preparación, se hidrata con #4202).">
           <span class="mz-pname"><span class="mz-pdot" style="background:${color}"></span>${escapeHtmlText(name)}</span>
           <span class="mz-pbar"><i id="mz-quota-${bucket}-${key}-bar" style="width:0%;background:${color}"></i></span>
-          <span class="mz-ppct" id="mz-quota-${bucket}-${key}-pct">—</span>
+          <span class="mz-ppct mz-ppct-pending" id="mz-quota-${bucket}-${key}-pct" title="Pendiente — se hidrata cuando el backend de extracción por proveedor (#4202) entregue.">—</span>
         </div>`;
 }
 
+// FUENTE ÚNICA de proveedores del desglose de cuota (CA-A2 #4249). La lista NO
+// se hardcodea suelta: se deriva de este mapa, alineado con los `provider`
+// activos de `.pipeline/state/multi-provider-health.json` y la allowlist de
+// adapters `ALLOWED_PROVIDERS` en `lib/quota-adapters/index.js`.
+//
+// La `key` de cada entrada ES el id canónico de hidratación: las filas usan
+// `mz-quota-${bucket}-${key}-{bar,pct}`, por lo que la `key` DEBE coincidir
+// EXACTO con el id que emita el backend de #4202, o la fila queda en "—"
+// permanente (CA-A3 / CA-UX3). Se usan los ids de `ALLOWED_PROVIDERS`
+// (`openai-codex`, `gemini-google`) como canónicos.
+//
+// Colores: un hue perceptualmente distinto por proveedor (CA-UX1) — sin dos
+// puntos en la misma familia. `--in-accent2` (morado) se agrega en theme.css
+// para NVIDIA NIM y evitar el tercer verde.
+//
+// Groq fue descontinuado en #3353 — NO incluir.
+const MZ_PROVIDER_META = Object.freeze({
+    'anthropic':     { name: 'Anthropic',  color: 'var(--in-warn,#d29922)' },
+    'openai-codex':  { name: 'Codex',      color: 'var(--in-ok,#3fb950)' },
+    'gemini-google': { name: 'Gemini',     color: 'var(--in-info,#58a6ff)' },
+    'cerebras':      { name: 'Cerebras',   color: 'var(--in-accent,#2ee6c1)' },
+    'nvidia-nim':    { name: 'NVIDIA NIM', color: 'var(--in-accent2,#bc8cff)' },
+});
+const MZ_ACTIVE_PROVIDERS = Object.freeze(Object.keys(MZ_PROVIDER_META));
+
 function _mzProviderRows(bucket) {
-    return _mzProviderRow(bucket, 'anthropic', 'Anthropic', 'var(--in-warn,#d29922)')
-        + _mzProviderRow(bucket, 'codex', 'Codex', 'var(--in-ok,#3fb950)')
-        + _mzProviderRow(bucket, 'gemini', 'Gemini', 'var(--in-info,#58a6ff)');
+    return MZ_ACTIVE_PROVIDERS
+        .map((key) => _mzProviderRow(bucket, key, MZ_PROVIDER_META[key].name, MZ_PROVIDER_META[key].color))
+        .join('');
 }
 
 // Panel "Estado del sistema + Cuotas" (3 columnas). Col 1: semáforo global
@@ -4973,4 +5016,10 @@ module.exports = {
     renderNowColumn,
     renderWaveBoard,
     renderDiagnostics,
+    // #4249 — desglose de cuota por proveedor (Bloque A): fuente única +
+    // helpers puros expuestos para test aislado del render por proveedor.
+    _mzProviderRow,
+    _mzProviderRows,
+    MZ_PROVIDER_META,
+    MZ_ACTIVE_PROVIDERS,
 };
