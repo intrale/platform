@@ -1678,6 +1678,9 @@ function homeStyles() {
 .mz-pbar { height: 6px; border-radius: 5px; background: rgba(255,255,255,.07); overflow: hidden; }
 .mz-pbar i { display: block; height: 100%; border-radius: 5px; transition: width .4s ease; }
 .mz-ppct { font-size: 11px; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; color: var(--in-fg-dim,#8A93A6); }
+/* #4249 CA-UX2 — estado "pendiente" (—): atenuado para no confundirlo con
+ * consumo 0% ni con un proveedor caído. Se quita al hidratar con #4202. */
+.mz-ppct-pending { opacity: .55; font-weight: 600; }
 
 /* --- Grilla 2-col + paneles --- */
 .mz-grid { display: grid; grid-template-columns: 1fr 1.62fr; gap: 16px; align-items: start; }
@@ -2212,8 +2215,21 @@ function renderQuotaCard(d){
     setText('kpi-quota-week-pct', weekPct.toFixed(1)+'%');
 
     // #4189 — Espeja el % AGREGADO real en el panel de cuotas del home MIZPÁ.
-    // #4202 — el desglose por proveedor (mz-quota-bucket-prov-*) lo hidrata
-    // tickProviderQuota; aca solo tocamos el % AGREGADO de sesion/semana.
+    // Aca solo tocamos el % AGREGADO de sesion/semana. El desglose POR PROVEEDOR
+    // (filas mz-quota-<bucket>-<prov>-*) ya NO es stub: lo hidrata en vivo
+    // tickProviderQuota (#4202) desde /api/dash/quota; ver renderProviderQuotaRows.
+    //
+    // #4249 CA-A4 — ORIGEN CANONICO DE CADA METRICA DE CUOTA (auditoria):
+    //   - % sesion (5h) / semanal AGREGADO  -> endpoint /api/dash/quota
+    //     (ticker tickQuota, este archivo) -> lib/quota-adapters/* (Anthropic
+    //     real) + lib/weekly-quota.js, calibrado contra muestras de claude.ai.
+    //     Mide el Plan Max de Anthropic; NO es multi-proveedor. Dato real.
+    //   - Salud / disponibilidad por proveedor -> .pipeline/state/
+    //     multi-provider-health.json (campo last_checked_at); expone solo
+    //     key_status/auth_mode/state, NUNCA el secreto (guardrail A02/A01).
+    //   - Desglose de cuota POR PROVEEDOR (filas mz-quota-bucket-prov-*) ->
+    //     ya entregado por #4202 (tickProviderQuota). Las filas sin dato del
+    //     slice (cerebras / nvidia-nim) caen a "sin dato" de forma explicita.
     setText('mz-quota-session-pct', sessPct.toFixed(1)+'%');
     setText('mz-quota-week-pct', weekPct.toFixed(1)+'%');
 
@@ -2282,20 +2298,21 @@ async function tickQuota(){
     renderQuotaCard(d);
 }
 
-// #4202 — Desglose de cuota por proveedor (Anthropic / Codex / Gemini) en las
-// 2 ventanas (Sesion 5h y Semanal). Hidrata los 6 IDs ya emitidos por
-// _mzProviderRow (mz-quota-bucket-uiKey-bar / -pct) — NO re-render.
+// #4202 — Desglose de cuota por proveedor en las 2 ventanas (Sesion 5h y
+// Semanal). Hidrata los IDs emitidos por _mzProviderRow
+// (mz-quota-<bucket>-<key>-bar / -pct) — NO re-render.
 //
-// CRITICO (CA-6): las claves UI no coinciden con las del slice. El mapeo es
-// EXPLICITO (no substring matching).
-const PROVIDER_ID_MAP = { anthropic: 'anthropic', codex: 'openai-codex', gemini: 'gemini-google' };
+// CRITICO (CA-6 + #4249 CA-A3): la key de cada fila ES el id canonico del
+// slice (anthropic / openai-codex / gemini-google / cerebras / nvidia-nim). El
+// lookup en d.providers usa esa misma key directamente — sin tabla de
+// traduccion intermedia (la fuente unica es MZ_PROVIDER_META, ver mas abajo).
 
-// Motivo de "sin dato" por (bucket, uiKey) para el tooltip (UX G3): evita que
-// el operador lea la ausencia como un bug.
+// Motivo de "sin dato" por (bucket, key canonica) para el tooltip (UX G3): evita
+// que el operador lea la ausencia como un bug.
 const QUOTA_SINDATO_REASON = {
-    'session-codex': 'Codex opera por presupuesto mensual: no hay ventana de 5h.',
-    'session-gemini': 'Free tier de Gemini no expone consumo acumulado por API.',
-    'week-gemini': 'Free tier de Gemini no expone consumo acumulado por API.',
+    'session-openai-codex': 'Codex opera por presupuesto mensual: no hay ventana de 5h.',
+    'session-gemini-google': 'Free tier de Gemini no expone consumo acumulado por API.',
+    'week-gemini-google': 'Free tier de Gemini no expone consumo acumulado por API.',
 };
 const QUOTA_SINDATO_DEFAULT = 'Sin dato de consumo disponible para este proveedor en esta ventana.';
 
@@ -2349,11 +2366,15 @@ function renderProviderQuotaRows(d){
     if(!d || !d.providers) return;
     // UI usa bucket 'week'; el slice usa 'weekly'. Traduccion explicita.
     const BUCKET_SLICE = { session: 'session', week: 'weekly' };
+    // La key de la fila ES el id canonico del slice (#4249 CA-A2/A3): se itera la
+    // FUENTE UNICA MZ_ACTIVE_PROVIDERS y se busca d.providers[key] sin traduccion.
+    // Proveedores activos sin sub-shape en el slice (p.ej. cerebras / nvidia-nim)
+    // caen a "sin dato" explicito dentro de _hydrateProviderRow.
     for(const bucket of ['session','week']){
-        for(const uiKey of ['anthropic','codex','gemini']){
-            const p = d.providers[PROVIDER_ID_MAP[uiKey]];
+        for(const key of MZ_ACTIVE_PROVIDERS){
+            const p = d.providers[key];
             const b = p ? p[BUCKET_SLICE[bucket]] : null;
-            _hydrateProviderRow(bucket, uiKey, b);
+            _hydrateProviderRow(bucket, key, b);
         }
     }
 }
@@ -4741,23 +4762,57 @@ function renderMissionBanner(state) {
 }
 
 // Fila de proveedor para las cuotas desglosadas (CA-6). El % real por proveedor
-// (Anthropic/Codex/Gemini) lo hidrata `tickProviderQuota` (#4202) leyendo
-// `/api/dash/quota` → `providers[p].{session|weekly}` = {pct, confidence}.
+// lo hidrata `tickProviderQuota` (#4202) leyendo `/api/dash/quota` →
+// `providers[<id-canónico>].{session|weekly}` = {pct, confidence}. La `key` de la
+// fila ES ese id canónico (anthropic / openai-codex / gemini-google / cerebras /
+// nvidia-nim — ver MZ_PROVIDER_META), por lo que renderProviderQuotaRows itera
+// las mismas keys y no necesita tabla de traducción.
+//
 // La fila arranca en estado neutro "—" con su barra a 0; el ticker la actualiza
 // a % real (con color de confianza) o "sin dato" explícito sin re-render.
+//
+// CA-UX2 (#4249): mientras no llegó el primer tick, el "—" debe leerse como
+// *pendiente*, no como consumo 0% ni caído. Se atenúa con la clase
+// `mz-ppct-pending` (opacity reducida en theme.css) y un `title` explícito; el
+// primer tick de tickProviderQuota reemplaza el texto con el dato real.
 function _mzProviderRow(bucket, key, name, color) {
     return `
-        <div class="mz-prow" title="Consumo de ${escapeHtmlAttr(name)} en esta ventana (desglose por proveedor — en preparación).">
+        <div class="mz-prow" title="Consumo de ${escapeHtmlAttr(name)} en esta ventana (desglose por proveedor — en preparación, se hidrata con #4202).">
           <span class="mz-pname"><span class="mz-pdot" style="background:${color}"></span>${escapeHtmlText(name)}</span>
           <span class="mz-pbar"><i id="mz-quota-${bucket}-${key}-bar" style="width:0%;background:${color}"></i></span>
-          <span class="mz-ppct" id="mz-quota-${bucket}-${key}-pct">—</span>
+          <span class="mz-ppct mz-ppct-pending" id="mz-quota-${bucket}-${key}-pct" title="Pendiente — se hidrata cuando el backend de extracción por proveedor (#4202) entregue.">—</span>
         </div>`;
 }
 
+// FUENTE ÚNICA de proveedores del desglose de cuota (CA-A2 #4249). La lista NO
+// se hardcodea suelta: se deriva de este mapa, alineado con los `provider`
+// activos de `.pipeline/state/multi-provider-health.json` y la allowlist de
+// adapters `ALLOWED_PROVIDERS` en `lib/quota-adapters/index.js`.
+//
+// La `key` de cada entrada ES el id canónico de hidratación: las filas usan
+// `mz-quota-${bucket}-${key}-{bar,pct}`, por lo que la `key` DEBE coincidir
+// EXACTO con el id que emita el backend de #4202, o la fila queda en "—"
+// permanente (CA-A3 / CA-UX3). Se usan los ids de `ALLOWED_PROVIDERS`
+// (`openai-codex`, `gemini-google`) como canónicos.
+//
+// Colores: un hue perceptualmente distinto por proveedor (CA-UX1) — sin dos
+// puntos en la misma familia. `--in-accent2` (morado) se agrega en theme.css
+// para NVIDIA NIM y evitar el tercer verde.
+//
+// Groq fue descontinuado en #3353 — NO incluir.
+const MZ_PROVIDER_META = Object.freeze({
+    'anthropic':     { name: 'Anthropic',  color: 'var(--in-warn,#d29922)' },
+    'openai-codex':  { name: 'Codex',      color: 'var(--in-ok,#3fb950)' },
+    'gemini-google': { name: 'Gemini',     color: 'var(--in-info,#58a6ff)' },
+    'cerebras':      { name: 'Cerebras',   color: 'var(--in-accent,#2ee6c1)' },
+    'nvidia-nim':    { name: 'NVIDIA NIM', color: 'var(--in-accent2,#bc8cff)' },
+});
+const MZ_ACTIVE_PROVIDERS = Object.freeze(Object.keys(MZ_PROVIDER_META));
+
 function _mzProviderRows(bucket) {
-    return _mzProviderRow(bucket, 'anthropic', 'Anthropic', 'var(--in-warn,#d29922)')
-        + _mzProviderRow(bucket, 'codex', 'Codex', 'var(--in-ok,#3fb950)')
-        + _mzProviderRow(bucket, 'gemini', 'Gemini', 'var(--in-info,#58a6ff)');
+    return MZ_ACTIVE_PROVIDERS
+        .map((key) => _mzProviderRow(bucket, key, MZ_PROVIDER_META[key].name, MZ_PROVIDER_META[key].color))
+        .join('');
 }
 
 // Panel "Estado del sistema + Cuotas" (3 columnas). Col 1: semáforo global
@@ -5066,4 +5121,10 @@ module.exports = {
     renderNowColumn,
     renderWaveBoard,
     renderDiagnostics,
+    // #4249 — desglose de cuota por proveedor (Bloque A): fuente única +
+    // helpers puros expuestos para test aislado del render por proveedor.
+    _mzProviderRow,
+    _mzProviderRows,
+    MZ_PROVIDER_META,
+    MZ_ACTIVE_PROVIDERS,
 };

@@ -255,9 +255,15 @@ test('#4189: renderHomeHTML emite el layout MIZPÁ (banner + panel + grilla 2-co
     assert.ok(html.includes('class="mz-sysquota"'), 'panel estado + cuotas');
     assert.ok(html.includes('id="mz-quota-session-pct"') && html.includes('id="mz-quota-week-pct"'),
         'cuotas de sesión y semanal con % agregado');
-    assert.ok(html.includes('id="mz-quota-session-anthropic-bar"') && html.includes('id="mz-quota-session-codex-bar"')
-        && html.includes('id="mz-quota-session-gemini-bar"'),
-        'desglose por proveedor Anthropic/Codex/Gemini (CA-6)');
+    // #4249: el desglose por proveedor usa los ids canónicos de ALLOWED_PROVIDERS
+    // (`openai-codex`, `gemini-google`, etc.) para alinear con el backend de #4202,
+    // no las claves cortas viejas. Se renderizan los 5 proveedores activos.
+    assert.ok(html.includes('id="mz-quota-session-anthropic-bar"')
+        && html.includes('id="mz-quota-session-openai-codex-bar"')
+        && html.includes('id="mz-quota-session-gemini-google-bar"')
+        && html.includes('id="mz-quota-session-cerebras-bar"')
+        && html.includes('id="mz-quota-session-nvidia-nim-bar"'),
+        'desglose por proveedor con ids canónicos Anthropic/Codex/Gemini/Cerebras/NVIDIA NIM (CA-6, #4249)');
     assert.ok(html.includes('class="mz-grid"'), 'grilla de 2 columnas');
     assert.ok(html.includes('class="mz-panel mz-now"') && html.includes('class="mz-panel mz-board"'),
         'columna Ahora·Ejecución + Tablero de la Ola');

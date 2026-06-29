@@ -19,6 +19,11 @@
   --in-brand-soft: rgba(31,111,235,0.15);
   --in-accent: #2ee6c1;
   --in-accent-soft: rgba(46,230,193,0.15);
+  /* #4249 — segundo acento (morado) para distinguibilidad de proveedores en el
+   * desglose de cuota del home MIZPÁ. Sin este token, NVIDIA NIM caía a un
+   * tercer verde (colisión perceptual con Codex/Cerebras — defecto UX CA-UX1). */
+  --in-accent2: #bc8cff;
+  --in-accent2-soft: rgba(188,140,255,0.15);
 
   --in-ok: #3fb950;
   --in-ok-soft: rgba(63,185,80,0.18);
