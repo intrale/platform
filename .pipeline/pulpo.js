@@ -223,6 +223,11 @@ try { commanderPresence = require('./lib/commander-presence'); } catch { /* opci
 // resolución no-gated en lugar de devolver el archivo a pendiente/. Mantiene
 // hash-chain SHA-256 en logs/cross-provider-dispatch-*.jsonl + notify Telegram.
 const { resolveSpawnWithFallback, formatProviderResolutionLog } = require('./lib/agent-launcher/dispatch-with-fallback');
+// #4284 — marker de runtime del provider EFECTIVO por agente en curso. Best-effort:
+// el dashboard lo lee para mostrar el provider real (no el configurado por skill).
+// Require defensivo: si el módulo no carga, el spawn no se bloquea.
+let runningProviders = null;
+try { runningProviders = require('./lib/running-providers'); } catch { /* opcional */ }
 // #4274 — resolución de modo canónico por provider, usada como defense-in-depth
 // en launchResolveImpl y en bootResolveSkill para no defaultear al modo más
 // privilegiado cuando el `mode` no viene resuelto (SR-1, fail-fast).
@@ -6557,6 +6562,25 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // extracto de CLAUDE.md. Es no-op para los providers agénticos (anthropic,
   // openai-codex, gemini-google), que ya investigan el repo de verdad.
   let systemContent = `${base}\n\n${rol}`;
+  // #4284 — persistir el provider EFECTIVO (router decision real) para que el
+  // dashboard ("Ahora · En Ejecución") muestre con qué provider corre realmente
+  // el agente, no el configurado por skill. Best-effort: un fallo acá NUNCA
+  // bloquea el spawn (mismo estilo que el augment del system prompt contiguo).
+  // CA-5: el marker vive en la raíz de `.pipeline/`, no bajo `trabajando/` → no
+  // altera los contadores de concurrencia.
+  if (runningProviders && dispatchResolution && dispatchResolution.provider) {
+    try {
+      const key = `${pipeline}/${fase}/${skill}:${issue}`;
+      runningProviders.writeRunningProvider({
+        key,
+        provider: dispatchResolution.provider, // provider-key canónica (se normaliza en el helper)
+        model: dispatchResolution.model || null,
+        source: dispatchResolution.source || 'primary',
+      });
+    } catch (rpErr) {
+      log('lanzamiento', `⚠️ ${skill}:#${issue} no se pudo escribir el marker de provider efectivo (best-effort): ${rpErr.message}`);
+    }
+  }
   try {
     const effectiveProvider = (dispatchResolution && dispatchResolution.provider) || null;
     systemContent = commanderApiContext.augmentSystemPromptForProvider(
@@ -7252,6 +7276,16 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     try { agentLogWriter.close().catch(() => {}); } catch {}
     // Cancelar watchdog de timeout (ya terminó, por el motivo que sea)
     clearTimeout(watchdog);
+
+    // #4284 — limpiar el marker de provider efectivo (CA-6). Best-effort y al
+    // inicio del handler para que corra siempre, sin importar el codepath del
+    // quota-detector (generalizado/legacy) ni el resultado del agente. Si el
+    // proceso muriera sin llegar acá, el TTL de `readRunningProviders` descarta
+    // el marker stale (CA-4).
+    if (runningProviders) {
+      try { runningProviders.clearRunningProvider(`${pipeline}/${fase}/${skill}:${issue}`); }
+      catch { /* idempotente: best-effort, nunca rompe el lifecycle */ }
+    }
 
     // #3605 — Desregistrar del agent-ipc registry. Idempotente: si nunca se
     // registró (interactive_supported=false), unregister es no-op. Drena

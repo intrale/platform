@@ -91,6 +91,14 @@ const AGENT_MODELS_FILE = path.join(__dirname, '..', 'agent-models.json');
 let equipoRoster = null;
 try { equipoRoster = require('./equipo-roster'); } catch { /* opcional */ }
 
+// #4284 — Markers de runtime del provider EFECTIVO por agente en curso. El pulpo
+// los escribe en el spawn con la decisión real del router (`dispatchResolution`)
+// y los limpia en `onSpawnExit`. `activeAgents` los prioriza sobre el provider
+// CONFIGURADO por skill. Lectura defensiva: si el módulo no carga, se cae al
+// comportamiento previo (provider configurado) sin romper nada.
+let runningProviders = null;
+try { runningProviders = require('./running-providers'); } catch { /* opcional */ }
+
 // #4195 — Registro de agentes (branch/worktree por issue). Es fuente best-effort
 // (la fuente de verdad operativa es el filesystem): se usa solo para enriquecer
 // la rama mostrada en la ficha; si falta, se cae a la convención agent/<issue>.
@@ -145,6 +153,10 @@ function activeAgents(state) {
     // request para enriquecer la ficha de cada agente (provider/branch/rebotes).
     const agentModels = safeReadJson(AGENT_MODELS_FILE, null);
     const branchMap = branchByIssueFromRegistry();
+    // #4284 — Markers del provider EFECTIVO, leídos una sola vez por request (TTL
+    // aplicado al leer → markers stale descartados, CA-4). Mapa por clave
+    // canónica `<pipeline>/<fase>/<skill>:<issue>`.
+    const effectiveMarkers = runningProviders ? runningProviders.readRunningProviders() : {};
     const now = Date.now();
     for (const [issueId, data] of Object.entries(state.issueMatrix || {})) {
         if (data.estadoActual !== 'trabajando') continue;
@@ -153,8 +165,25 @@ function activeAgents(state) {
             if (e.estado !== 'trabajando') continue;
             // #4195 — Proveedor configurado para el skill (provider visible) y
             // rama del worktree (registry best-effort → convención agent/<issue>).
-            const provider = equipoRoster ? equipoRoster.resolveProvider(agentModels, e.skill) : null;
+            // #4284 — Si hay marker del provider EFECTIVO para este agente, lo
+            // priorizamos sobre el configurado (CA-1/CA-2); si no hay marker (TTL
+            // vencido o no escrito), caemos al configurado (CA-3, happy path
+            // intacto). Mantenemos el shape `{ id, label, model }` que consume el
+            // front; el `label` sale de `PROVIDER_LABELS` (CA-8 naming canónico).
             const issueNum = String(issueId).replace(/[^0-9]/g, '');
+            const markerKey = `${e.pipeline}/${e.fase}/${e.skill}:${issueNum}`;
+            const effective = effectiveMarkers[markerKey] || null;
+            let provider = equipoRoster ? equipoRoster.resolveProvider(agentModels, e.skill) : null;
+            if (effective && effective.provider) {
+                const labels = equipoRoster ? equipoRoster.PROVIDER_LABELS : null;
+                provider = {
+                    id: effective.provider,
+                    label: (labels && labels[effective.provider]) || effective.provider,
+                    // Modelo efectivo del marker; si no vino, preservamos el del
+                    // provider configurado (no romper el shape).
+                    model: effective.model || (provider && provider.model) || null,
+                };
+            }
             const branch = branchMap[issueNum] || `agent/${issueNum || issueId}-${e.skill}`;
             out.push({
                 issue: issueId,
