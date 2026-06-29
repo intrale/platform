@@ -363,5 +363,3 @@ definitivas.
   ejecutable.
 - **Documento vivo.** Se revisa al firmar B (#4010) y C (#4011) y al entrar a la Ola 9. Las marcas
   _sujeto a firma_ son deliberadas: señalan lo que no debe cerrarse antes de tiempo.
-</content>
-</invoke>
