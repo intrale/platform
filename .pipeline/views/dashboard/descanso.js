@@ -20,6 +20,15 @@ const path = require('path');
 // compartido del sprite.svg). Misma dependencia que home.js / satellites.js.
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 
+// #4245 (Ola 7.1) — DESCANSO adopta el marco común MIZPÁ. Se reutiliza el
+// helper compartido `renderMissionBanner` de la HOME (#4189) — el banner de ola
+// común (② del marco: tag OLA + título + métricas + bloque AVANCE) — en vez de
+// duplicar su markup (CA-5). Espeja lo que hizo EQUIPO (#4240). Degradación
+// defensiva: si el módulo no carga, el slot del banner queda vacío y el resto
+// del marco (① marca + ③ nav + ④ contenido) sigue intacto.
+let homeView = null;
+try { homeView = require('./home'); } catch (_) { /* sin banner de ola común */ }
+
 // #3722 — Escape HTML server-side unificado (lib/escape-html.js, cierra #2901).
 // CA-B3: las ventanas extraídas usan el helper compartido en vez de duplicar
 // un escapeHtmlSsr inline. escapeHtmlAttr cubre el contexto atributo
@@ -602,6 +611,14 @@ function makeEl(tag, opts){
         if(opts.attrs){ for(const k in opts.attrs){ el.setAttribute(k, String(opts.attrs[k])); } }
     }
     return el;
+}
+
+// Hidrata un valor numérico seguido de su unidad/sufijo en un <span class="mz-wm-u">.
+// FE-SEC-1 / XSS guard: NO usa innerHTML; construye nodos con textContent + appendChild.
+function setValueUnit(el, valueText, unitText){
+    if(!el) return;
+    el.textContent = String(valueText);
+    el.appendChild(makeEl('span', { cls: 'mz-wm-u', text: unitText }));
 }
 
 // CA-9 — Grilla de inputs time como FALLBACK editable por teclado (vive en el
@@ -1306,7 +1323,67 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
-const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickRestMode, ms: 8000 }];
+// #4245 — Hidratación del banner de ola común (② del marco). El SSR llega neutro
+// (igual que en la HOME / EQUIPO); este tick espeja /api/dash/waves a los IDs
+// mission-* del helper compartido renderMissionBanner. Defensivo: cualquier dato
+// ausente degrada a neutro sin romper el resto de la pantalla. Espejo de
+// tickEquipoMission() de #4240.
+async function tickDescansoMission(){
+    const d = await fetchJson('/api/dash/waves');
+    if(!d) return;
+    try {
+        const wave = d.active_wave;
+        if(!wave){
+            setText('mission-wave-num', '—');
+            setText('mission-wave-name', 'Sin ola activa');
+            setText('mission-wave-desc', 'Esperando la planificación de la ola activa.');
+            return;
+        }
+        if(Number.isFinite(wave.number)) setText('mission-wave-num', String(wave.number));
+        setText('mission-wave-name', wave.name ? ('Ola ' + wave.number + ' · ' + wave.name) : ('Ola ' + wave.number));
+        setText('mission-wave-desc', wave.goal || wave.description || ('Issues de la ola ' + wave.number + ' en curso.'));
+        const tag = document.getElementById('mission-wave-tag');
+        if(tag) tag.style.display = wave.isLast ? '' : 'none';
+        const issues = Array.isArray(wave.issues) ? wave.issues : [];
+        let done=0, active=0, blocked=0, queue=0;
+        for(const it of issues){
+            const s = it && it.status;
+            if(s === 'completed') done++;
+            else if(s === 'in-progress') active++;
+            else if(s === 'blocked') blocked++;
+            else queue++;
+        }
+        const total = issues.length || 0;
+        const pct = total > 0 ? Math.round((done/total)*100) : 0;
+        setText('mission-avance-pct', pct + '%');
+        setText('mission-leg-done', String(done));
+        setText('mission-leg-active', String(active));
+        setText('mission-leg-blocked', String(blocked));
+        setText('mission-leg-queue', String(queue));
+        const w = (n) => total>0 ? ((n/total)*100).toFixed(1)+'%' : '0%';
+        const setW = (id,n) => { const el=document.getElementById(id); if(el) el.style.width = w(n); };
+        setW('mission-bar-done', done);
+        setW('mission-bar-active', active);
+        setW('mission-bar-blocked', blocked);
+        setW('mission-bar-queue', queue);
+        const dv = document.getElementById('mission-delivered-value');
+        setValueUnit(dv, done, ' / ' + total);
+        const dsub = document.getElementById('mission-delivered-sub');
+        if(dsub) dsub.textContent = Math.max(0, total-done) + ' restantes';
+        const openedAt = wave.openedAt ? Date.parse(wave.openedAt) : NaN;
+        const vv = document.getElementById('mission-vel-value');
+        if(vv){
+            if(Number.isFinite(openedAt) && done > 0){
+                const hours = (Date.now() - openedAt) / 3600000;
+                setValueUnit(vv, hours > 0.1 ? (done/hours).toFixed(1) + ' ' : '— ', 'iss/h');
+            } else {
+                setValueUnit(vv, '— ', 'iss/h');
+            }
+        }
+    } catch(_) {}
+}
+
+const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickRestMode, ms: 8000 }, { fn: tickDescansoMission, ms: 30000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
@@ -1380,6 +1457,13 @@ function renderDescanso(opts) {
     <b>🌙 Descanso</b>
     <span class="mz-crumb-desc">· calendario semanal · ventanas de reposo · gating de skills LLM</span>
   </div>`;
+    // #4245 — Banner de ola común (② del marco MIZPÁ). Se reutiliza el helper
+    // compartido renderMissionBanner() de la HOME (CA-5: sin duplicar markup) y
+    // se sirve neutro en SSR; lo hidrata tickDescansoMission() desde
+    // /api/dash/waves (CA-2). Defensivo: si home.js no cargó, el slot queda vacío.
+    const missionHtml = (homeView && typeof homeView.renderMissionBanner === 'function')
+        ? homeView.renderMissionBanner()
+        : '';
     const { body, css, script } = buildParts();
     const tzAttr = o.tz ? ` value="${escapeHtmlSsr(o.tz)}"` : '';
     const bodyHtml = tzAttr
@@ -1395,6 +1479,10 @@ function renderDescanso(opts) {
 <style>
 .satellite-frame { max-width: 1600px; margin: 0 auto; padding: 0; }
 .satellite-body { padding: 22px 28px; display: flex; flex-direction: column; gap: 18px; }
+/* #4245 — El banner de ola común (② del marco) vive fuera del .satellite-body
+   (entre header y nav), así que se alinea con el padding horizontal del cuerpo.
+   Espeja la regla que satellites.js aplica al pageShell de los satélites. */
+.satellite-frame > .mz-mission { margin: 18px 28px 0; }
 .in-mode-running { color: var(--in-ok); border-color: var(--in-ok); background: var(--in-ok-soft); }
 .in-mode-paused { color: var(--in-bad); border-color: var(--in-bad); background: var(--in-bad-soft); }
 .in-mode-partial { color: var(--in-warn); border-color: var(--in-warn); background: var(--in-warn-soft); }
@@ -1413,6 +1501,7 @@ ${css}
       <span class="in-clock" id="hdr-clock">…</span>
     </div>
   </header>
+  ${missionHtml}
   ${navHtml}
   ${breadcrumb}
   <main class="satellite-body">${bodyHtml}</main>
