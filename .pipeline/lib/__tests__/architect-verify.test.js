@@ -641,3 +641,95 @@ test('R1 (estático) · architect-audit.js NO usa writeFileSync apuntando a mark
     assert.equal(/writeFileSync\s*\([^,]*markerMismatches/.test(codeOnly), false,
         'architect-audit.js NO debe ejecutar writeFileSync sobre markerMismatches (R1 append-only)');
 });
+
+// =============================================================================
+// #4246 — Gate de Fase 2: kill switch + grandfathering + dry-run
+// =============================================================================
+// Causa raíz: el rol architect en `aprobacion` rechazaba issues sanos porque
+// `verifyPrAdherence` exige PR + receta firmada, inexistentes cuando la feature
+// está apagada (enabled:false) o el issue es legacy. `evaluateGate` debe
+// cortocircuitar igual que el gate de Fase 1 (architect-signoff-gate.js).
+
+test('#4246 · kill switch: enabled !== true → aprobado + skipped sin tocar gh', () => {
+    let ghCalled = false;
+    const gh = () => { ghCalled = true; return '{}'; };
+    const r = verify.evaluateGate(
+        { issue: 4246, pr_number: 9999, config: { enabled: false, gate_mode: 'dry-run' } },
+        { gh },
+    );
+    assert.equal(r.decision, 'aprobado');
+    assert.equal(r.skipped, true);
+    assert.equal(r.gate_mode, 'disabled');
+    assert.equal(ghCalled, false, 'con kill switch OFF no debe invocar gh ni verificar adherencia');
+});
+
+test('#4246 · kill switch corta aunque falte pr_number (no existe PR en aprobacion)', () => {
+    const r = verify.evaluateGate(
+        { issue: 4246, config: { enabled: false } },
+        { gh: () => { throw new Error('gh no debería invocarse'); } },
+    );
+    assert.equal(r.decision, 'aprobado');
+    assert.equal(r.skipped, true);
+});
+
+test('#4246 · grandfathering: issue anterior a go_live_date → aprobado + skipped', () => {
+    let ghCalled = false;
+    const gh = () => { ghCalled = true; return '{}'; };
+    const r = verify.evaluateGate(
+        {
+            issue: 100, pr_number: 200,
+            config: { enabled: true, gate_mode: 'enforce', go_live_date: '2026-05-29T00:00:00Z' },
+            issue_created_at: '2026-01-01T00:00:00Z',
+        },
+        { gh },
+    );
+    assert.equal(r.decision, 'aprobado');
+    assert.equal(r.skipped, true);
+    assert.equal(ghCalled, false, 'issue grandfathered no debe verificar adherencia');
+});
+
+test('#4246 · dry-run activo: rechazo lógico NO bloquea (decision aprobado + original_decision)', () => {
+    const tmp = mkTmpPipeline();
+    try {
+        // gh sin PR / sin receta → verifyPrAdherence rechazaría.
+        const gh = fakeGh({ issueBody: 'sin receta', diffText: '', issueComments: [] });
+        const r = verify.evaluateGate(
+            {
+                issue: 4246, pr_number: 200,
+                config: { enabled: true, gate_mode: 'dry-run', go_live_date: '2026-05-29T00:00:00Z' },
+                issue_created_at: '2026-06-26T00:00:00Z',
+            },
+            { gh, pipelineDir: tmp.pipelineDir },
+        );
+        assert.equal(r.decision, 'aprobado', 'dry-run nunca bloquea efectivamente');
+        assert.equal(r.original_decision, 'rechazado');
+        assert.equal(r.gate_mode, 'dry-run');
+        assert.equal(r.skipped, false);
+    } finally {
+        tmp.cleanup();
+    }
+});
+
+test('#4246 · enforce activo: respeta el veredicto crudo de verifyPrAdherence', () => {
+    const tmp = mkTmpPipeline();
+    try {
+        // Receta con providers.js y diff que toca exactamente ese archivo → aprobado.
+        const file = '.pipeline/views/dashboard/providers.js';
+        const issueBody = recipeBody({ files: [file] });
+        const diffText = `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -1 +1 @@\n-foo\n+bar\n`;
+        const gh = fakeGh({ headRefOid: 'deadbeef123', issueBody, diffText, issueComments: [] });
+        const r = verify.evaluateGate(
+            {
+                issue: 4246, pr_number: 200,
+                config: { enabled: true, gate_mode: 'enforce', go_live_date: '2026-05-29T00:00:00Z' },
+                issue_created_at: '2026-06-26T00:00:00Z',
+            },
+            { gh, pipelineDir: tmp.pipelineDir },
+        );
+        assert.equal(r.decision, 'aprobado');
+        assert.equal(r.gate_mode, 'enforce');
+        assert.equal(r.skipped, false);
+    } finally {
+        tmp.cleanup();
+    }
+});

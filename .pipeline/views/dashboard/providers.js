@@ -45,6 +45,14 @@ const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 // datos" en vez de romper el render completo (CA-A3).
 const secrets = require('../../lib/multi-provider/secrets-rw');
 
+// #4246 — Banner de ola común (② del marco MIZPÁ de #4234). Se reutiliza el
+// helper compartido `renderMissionBanner()` de la HOME para NO duplicar el markup
+// (CA-5): mismo <section class="mz-mission"> con los IDs `mission-*` que hidrata
+// tickProvidersMission() desde /api/dash/waves. Defensivo: si home.js no carga,
+// el slot queda vacío y la pantalla sigue renderizando (CA-A3).
+let homeView = null;
+try { homeView = require('./home'); } catch (_) { /* sin banner de ola común */ }
+
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 const TOKENS_CSS_PATH = path.join(__dirname, '../../assets/design-tokens.css');
 function loadTheme() { try { return fs.readFileSync(THEME_CSS_PATH, 'utf8'); } catch { return ''; } }
@@ -521,6 +529,45 @@ const PANEL_CSS = `
 .satellite-body { padding: 22px 28px; display: flex; flex-direction: column; gap: 18px; }
 .prov-list-sub, .prov-agents-sub { font-size: 12px; font-weight: 500; color: var(--in-fg-dim); margin-left: 8px; }
 
+/* #4246 — Banner de ola común (② del marco MIZPÁ). El markup viene del helper
+   compartido homeView.renderMissionBanner() (CA-5: no se duplica markup); el CSS
+   .mz-* se replica acá porque no vive en theme.css — misma convención que
+   pipeline-redesign.js (#4234) y home.js. El banner vive entre el header y la nav
+   (fuera del .satellite-body), así que se alinea al padding horizontal del cuerpo. */
+.satellite-frame > .mz-mission { margin: 18px 28px 0; }
+.mz-mission { display: flex; align-items: center; gap: 22px; position: relative; overflow: hidden;
+    background: linear-gradient(110deg, rgba(52,217,224,.14), rgba(124,92,255,.08) 45%, transparent 75%),
+                linear-gradient(180deg, var(--in-bg-2,#11151E), var(--in-bg-3,#141925));
+    border: 1px solid rgba(52,217,224,.22); border-radius: 16px; padding: 18px 24px; }
+.mz-mission::after { content: "🌊"; position: absolute; right: 18px; top: -14px; font-size: 90px; opacity: .06; }
+.mz-wavetag { display: flex; flex-direction: column; align-items: center; justify-content: center; min-width: 92px;
+    padding: 10px 14px; border-radius: 14px; flex: none;
+    background: linear-gradient(135deg, rgba(52,217,224,.22), rgba(124,92,255,.16)); border: 1px solid rgba(52,217,224,.3); }
+.mz-wavetag-k { font-size: 10px; font-weight: 800; letter-spacing: 1.5px; color: #9fe9ee; }
+.mz-wavetag-n { font-size: 34px; font-weight: 800; color: #bff3f6; line-height: 1; font-variant-numeric: tabular-nums; }
+.mz-mission-text { flex: 1; min-width: 0; }
+.mz-mission-ttl { font-size: 19px; font-weight: 800; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mz-mission-badge { font-size: 11px; color: var(--brand-cyan,#34D9E0); background: rgba(52,217,224,.12);
+    border: 1px solid rgba(52,217,224,.3); padding: 3px 9px; border-radius: 20px; font-weight: 700; letter-spacing: .3px; }
+.mz-mission-desc { font-size: 13px; color: var(--in-fg-dim,#8A93A6); margin-top: 5px; max-width: 620px; line-height: 1.45; }
+.mz-mission-metrics { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.mz-wm { flex: 1; min-width: 150px; background: rgba(255,255,255,.035); border: 1px solid var(--in-border,rgba(255,255,255,.07));
+    border-radius: 11px; padding: 9px 12px; }
+.mz-wm-l { font-size: 9.5px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#5B6376); }
+.mz-wm-v { font-size: 17px; font-weight: 800; margin-top: 3px; line-height: 1; font-variant-numeric: tabular-nums; }
+.mz-wm-u { font-size: 11px; color: var(--in-fg-dim,#5B6376); font-weight: 600; }
+.mz-wm-s { font-size: 10px; color: var(--in-fg-dim,#5B6376); margin-top: 3px; }
+.mz-mission-prog { min-width: 260px; }
+.mz-prog-head { display: flex; align-items: baseline; justify-content: space-between; font-size: 11.5px; color: var(--in-fg-dim,#8A93A6); font-weight: 600; }
+.mz-prog-pct { font-size: 26px; font-weight: 800; color: var(--brand-cyan,#34D9E0); font-variant-numeric: tabular-nums; }
+.mz-prog-bar { height: 8px; border-radius: 6px; background: rgba(255,255,255,.07); overflow: hidden; display: flex; margin: 9px 0 8px; }
+.mz-prog-bar i { height: 100%; transition: width .4s ease; }
+.mz-prog-legend { display: flex; gap: 14px; font-size: 11px; color: var(--in-fg-dim,#8A93A6); flex-wrap: wrap; }
+.mz-prog-legend span { display: flex; align-items: center; gap: 5px; }
+.mz-prog-legend b { font-variant-numeric: tabular-nums; }
+.mz-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
+@media (max-width: 1100px) { .mz-mission { flex-direction: column; align-items: stretch; } }
+
 /* Banner de misión */
 .prov-mission { display: grid; grid-template-columns: auto 1fr auto; gap: 22px; align-items: stretch;
   background: var(--in-bg-3); border: 1px solid var(--in-border); border-radius: 14px; padding: 18px 22px; }
@@ -624,6 +671,71 @@ const PROVIDERS_CLIENT_JS = `
       .then(function(r){ return r.json().catch(function(){ return {}; }).then(function(d){ d.__status = r.status; d.__ok = r.ok; return d; }); })
       .catch(function(e){ return { __ok:false, error: e.message }; });
   }
+
+  // #4246 — Hidratación del banner de ola común (② del marco MIZPÁ). El SSR llega
+  // neutro (igual que HOME / EQUIPO / DESCANSO); este tick espeja /api/dash/waves
+  // a los IDs mission-* del helper compartido renderMissionBanner. Espejo de
+  // tickDescansoMission() (#4245). Defensivo: cualquier dato ausente degrada a
+  // neutro sin romper el resto de la pantalla.
+  function setText(id, value){ var el = document.getElementById(id); if(el && el.textContent !== String(value)) el.textContent = String(value); }
+  function tickMission(){
+    return fetchJson('/api/dash/waves').then(function(d){
+      if(!d || d.__ok === false) return;
+      try {
+        var wave = d.active_wave;
+        if(!wave){
+          setText('mission-wave-num', '—');
+          setText('mission-wave-name', 'Sin ola activa');
+          setText('mission-wave-desc', 'Esperando la planificación de la ola activa.');
+          return;
+        }
+        if(typeof wave.number === 'number' && isFinite(wave.number)) setText('mission-wave-num', String(wave.number));
+        setText('mission-wave-name', wave.name ? ('Ola ' + wave.number + ' · ' + wave.name) : ('Ola ' + wave.number));
+        setText('mission-wave-desc', wave.goal || wave.description || ('Issues de la ola ' + wave.number + ' en curso.'));
+        var tag = document.getElementById('mission-wave-tag');
+        if(tag) tag.style.display = wave.isLast ? '' : 'none';
+        var issues = Array.isArray(wave.issues) ? wave.issues : [];
+        var done=0, active=0, blocked=0, queue=0;
+        for(var i=0;i<issues.length;i++){
+          var s = issues[i] && issues[i].status;
+          if(s === 'completed') done++;
+          else if(s === 'in-progress') active++;
+          else if(s === 'blocked') blocked++;
+          else queue++;
+        }
+        var total = issues.length || 0;
+        var pct = total > 0 ? Math.round((done/total)*100) : 0;
+        setText('mission-avance-pct', pct + '%');
+        setText('mission-leg-done', String(done));
+        setText('mission-leg-active', String(active));
+        setText('mission-leg-blocked', String(blocked));
+        setText('mission-leg-queue', String(queue));
+        var w = function(n){ return total>0 ? ((n/total)*100).toFixed(1)+'%' : '0%'; };
+        var setW = function(id,n){ var el=document.getElementById(id); if(el) el.style.width = w(n); };
+        setW('mission-bar-done', done);
+        setW('mission-bar-active', active);
+        setW('mission-bar-blocked', blocked);
+        setW('mission-bar-queue', queue);
+        var dv = document.getElementById('mission-delivered-value');
+        if(dv) dv.innerHTML = done + '<span class="mz-wm-u"> / ' + total + '</span>';
+        var dsub = document.getElementById('mission-delivered-sub');
+        if(dsub) dsub.textContent = Math.max(0, total-done) + ' restantes';
+        var openedAt = wave.openedAt ? Date.parse(wave.openedAt) : NaN;
+        var vv = document.getElementById('mission-vel-value');
+        if(vv){
+          if(isFinite(openedAt) && done > 0){
+            var hours = (Date.now() - openedAt) / 3600000;
+            vv.innerHTML = hours > 0.1
+              ? (done/hours).toFixed(1) + ' <span class="mz-wm-u">iss/h</span>'
+              : '— <span class="mz-wm-u">iss/h</span>';
+          } else {
+            vv.innerHTML = '— <span class="mz-wm-u">iss/h</span>';
+          }
+        }
+      } catch(_) {}
+    });
+  }
+  tickMission(); setInterval(function(){ tickMission(); }, 30000);
   function getCsrf(){
     if(csrf) return Promise.resolve(csrf);
     return fetchJson('/api/multi-provider/csrf-token').then(function(r){ csrf = r && r.csrf_token; return csrf; });
@@ -660,6 +772,12 @@ function renderProviders() {
     const spriteInline = loadIconSprite();
     const navHtml = renderNavTabsSsr('providers');
     const brandHtml = renderBrandBar();
+    // #4246 — Banner de ola común (② del marco MIZPÁ). Markup reutilizado del
+    // helper compartido de la HOME (CA-5); se sirve neutro en SSR y lo hidrata
+    // tickMission() desde /api/dash/waves. Si home.js no cargó, el slot va vacío.
+    const missionHtml = (homeView && typeof homeView.renderMissionBanner === 'function')
+        ? homeView.renderMissionBanner()
+        : '';
     const model = buildProvidersModel();
     const breadcrumb = `
   <div class="mz-crumb" aria-label="Ubicación: Más › Providers">
@@ -687,6 +805,7 @@ function renderProviders() {
       <span class="in-clock" id="hdr-clock">${escapeHtmlText(new Date().toLocaleTimeString('es-AR'))}</span>
     </div>
   </header>
+  ${missionHtml}
   ${navHtml}
   ${breadcrumb}
   <main class="satellite-body">${bodyHtml(model)}</main>

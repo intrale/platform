@@ -675,6 +675,119 @@ function verifyPrAdherence(params, opts) {
 }
 
 // -----------------------------------------------------------------------------
+// Gate de Fase 2 — kill switch + grandfathering + dry-run (#4246)
+// -----------------------------------------------------------------------------
+//
+// PROBLEMA RAÍZ (#4246, recurrente en #3954 / #4235): `verifyPrAdherence` es el
+// chequeo determinístico crudo y SIEMPRE intenta leer el PR + la receta firmada.
+// Cuando la feature architect está apagada (`architect.enabled !== true`) o en
+// piloto (`gate_mode: dry-run`), o cuando el issue es legacy (anterior a
+// `go_live_date`), Fase 2 igual rechazaba — porque NO existe PR en `aprobacion`
+// (el PR lo crea `entrega`, fase posterior) ni receta (`## Detalles Técnicos`
+// la produce architect Fase 1, que con kill switch OFF nunca corrió).
+//
+// El gate de Fase 1 (`architect-signoff-gate.js`) ya respeta R1 (kill switch),
+// R3 (dry-run no bloquea) y R10 (grandfathering). Fase 2 carecía del guard
+// equivalente. `evaluateGate` cierra ese gap: es el entry point que el rol
+// `architect` en `aprobacion` debe invocar ANTES de rechazar, en vez de llamar
+// `verifyPrAdherence` directo.
+//
+// Reglas (espejo de architect-signoff-gate.js):
+//   R1 — kill switch: `config.enabled !== true` → no se verifica nada,
+//        decision `aprobado`, `skipped: true`, `gate_mode: 'disabled'`.
+//   R10 — grandfathering: `issue.createdAt < config.go_live_date` → `aprobado`,
+//        `skipped: true` (no se penaliza un issue anterior al rollout).
+//   R3 — dry-run: si el gate está activo (`enabled === true`) pero
+//        `gate_mode !== 'enforce'`, se ejecuta `verifyPrAdherence` para registrar
+//        la decisión lógica, pero el `decision` efectivo NUNCA es `rechazado`
+//        (se expone `original_decision` para auditoría).
+//   enforce — `gate_mode === 'enforce'` con `enabled === true`: delega tal cual
+//        a `verifyPrAdherence` y respeta su veredicto.
+//
+// `evaluateGate` NO toca disco por sí mismo (cuando saltea por kill switch /
+// grandfathering retorna sin invocar `verifyPrAdherence`, que es lo único que
+// escribe audit). Esto mantiene el cortocircuito limpio del kill switch.
+
+/**
+ * Entry point gateado de Fase 2. Aplica kill switch, grandfathering y dry-run
+ * antes de delegar en `verifyPrAdherence`.
+ *
+ * @param {object} params
+ * @param {number} params.issue
+ * @param {number} [params.pr_number] - puede faltar si aún no hay PR
+ * @param {object} [params.config] - sección `architect` de config.yaml
+ *   `{ enabled, gate_mode, go_live_date }`
+ * @param {string} [params.issue_created_at] - ISO8601 createdAt del issue (R10)
+ * @param {object} [opts] - inyección de `gh`/`pipelineDir` para tests
+ * @returns {{
+ *   decision: 'aprobado'|'rechazado',
+ *   original_decision?: 'aprobado'|'rechazado',
+ *   motivo: string,
+ *   gate_mode: 'disabled'|'dry-run'|'enforce',
+ *   skipped: boolean,
+ *   expected?: Array, actual?: Array,
+ *   structured_comment?: string|null,
+ *   already_rejected?: boolean,
+ *   head_oid?: string|null
+ * }}
+ */
+function evaluateGate(params, opts) {
+    params = params || {};
+    const config = params.config || {};
+    const gateMode = config.gate_mode === 'enforce' ? 'enforce' : 'dry-run';
+
+    // R1 — Kill switch: si la feature architect no está habilitada, Fase 2 no
+    // verifica nada. Cortocircuito completo (no se toca el PR ni el audit).
+    if (config.enabled !== true) {
+        return {
+            decision: 'aprobado',
+            motivo: 'architect Fase 2 deshabilitado (kill switch: architect.enabled !== true) — verificación de adherencia omitida',
+            gate_mode: 'disabled',
+            skipped: true,
+            expected: [],
+            actual: [],
+            structured_comment: null,
+            already_rejected: false,
+            head_oid: null,
+        };
+    }
+
+    // R10 — Grandfathering: issues anteriores a go_live_date no se verifican.
+    const goLiveDate = config.go_live_date || null;
+    const createdAt = typeof params.issue_created_at === 'string' ? params.issue_created_at : null;
+    if (goLiveDate && createdAt && createdAt < goLiveDate) {
+        return {
+            decision: 'aprobado',
+            motivo: `grandfathered (issue.createdAt ${createdAt} < architect.go_live_date ${goLiveDate}) — verificación de adherencia omitida`,
+            gate_mode: gateMode,
+            skipped: true,
+            expected: [],
+            actual: [],
+            structured_comment: null,
+            already_rejected: false,
+            head_oid: null,
+        };
+    }
+
+    // Gate activo: delegamos al chequeo determinístico crudo.
+    const result = verifyPrAdherence({ issue: params.issue, pr_number: params.pr_number }, opts);
+
+    // R3 — dry-run nunca bloquea efectivamente. Persistimos `original_decision`
+    // para que el go/no-go del piloto pueda medir falsos positivos.
+    if (gateMode !== 'enforce' && result.decision === 'rechazado') {
+        return Object.assign({}, result, {
+            decision: 'aprobado',
+            original_decision: 'rechazado',
+            motivo: `dry-run (no bloquea promoción): ${result.motivo}`,
+            gate_mode: 'dry-run',
+            skipped: false,
+        });
+    }
+
+    return Object.assign({}, result, { gate_mode: gateMode, skipped: false });
+}
+
+// -----------------------------------------------------------------------------
 // Helpers internos de resultado
 // -----------------------------------------------------------------------------
 
@@ -717,6 +830,7 @@ module.exports = {
 
     // Verificación
     verifyPrAdherence,
+    evaluateGate,
 
     // Format / idempotencia / anti-stale
     formatRejectionComment,
