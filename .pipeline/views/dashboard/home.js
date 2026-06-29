@@ -4955,7 +4955,7 @@ function _mzProviderRow(bucket, key, name, color) {
         <div class="mz-prow" title="Consumo de ${escapeHtmlAttr(name)} en esta ventana (se hidrata con el dato real de cuota por proveedor).">
           <span class="mz-pname"><span class="mz-pdot" style="background:${color}"></span>${escapeHtmlText(name)}</span>
           <span class="mz-pbar"><i id="mz-quota-${bucket}-${key}-bar" style="width:0%;background:${color}"></i></span>
-          <span class="mz-ppct mz-ppct-pending" id="mz-quota-${bucket}-${key}-pct" title="Cargando consumo del proveedor…">—</span>
+          <span class="mz-ppct mz-ppct-pending" id="mz-quota-${bucket}-${key}-pct" title="Pendiente — se hidrata con el dato real de cuota del proveedor.">—</span>
         </div>`;
 }
 
