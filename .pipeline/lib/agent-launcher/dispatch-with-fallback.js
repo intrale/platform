@@ -82,7 +82,12 @@ const path = require('node:path');
 // penalice el retry del issue (CA-3 / SEC-3).
 const { classifySpawnFailure } = require('./spawn-failure-classifier');
 
-const { resolveProviderForSkill, getProviderHandler } = require('./resolve-provider');
+// #4274 — `resolvePermissionMode` se suma al destructuring existente para
+// resolver el modo canónico del provider de FALLBACK en su return (codex →
+// 'full-auto', free providers → 'bypassPermissions'). Sin esto el fallback
+// perdía el `mode` y el launcher caía a un default fail-open peligroso.
+// `resolve-provider` ya se importa acá sin ciclo de require — solo sumamos un símbolo.
+const { resolveProviderForSkill, getProviderHandler, resolvePermissionMode } = require('./resolve-provider');
 // MP-05 (#3803) — reutilizamos la validación de credenciales del precheck del
 // Commander para hacer pre-check de credenciales también en los skills antes de
 // elegir un fallback (no solo el Commander la tenía).
@@ -1515,10 +1520,23 @@ function resolveSpawnWithFallback(opts = {}) {
 
         log('lanzamiento', `↪️ ${skill}:#${issue} primary=${primaryProvider} gated, usando fallback="${fbName}" (índice ${i})`);
 
+        // #4274 (CA-2 / causa raíz) — resolver el `permission mode` canónico del
+        // provider de DESTINO. Antes el return omitía `mode`, el launcher lo
+        // rellenaba con `|| 'bypassPermissions'` y, como codex no tiene celda
+        // `bypassPermissions` en la matriz, todo salto a codex caía `mode_unknown`
+        // (FAIL-CLOSED). `models` ya está en scope (L1157, readAgentModelsRaw).
+        const fbMode = resolvePermissionMode(models, fbName);
+
+        // #4274 (CA-8 / SR-5) — auditabilidad de la concesión: el path de fallback
+        // loguea provider + mode resuelto (no solo el rechazo), con vocabulario
+        // coherente con el log de salto de fallback (↪️).
+        log('lanzamiento', `🔓 ${skill}:#${issue} fallback="${fbName}" → mode resuelto="${fbMode || 'null'}"`);
+
         return {
             provider: fbName,
             model: fbModel,
             handler: fbHandler,
+            mode: fbMode, // #4274 — modo canónico por provider (NUEVO)
             source: 'fallback',
             gated: false,
             fallbackUsed: { index: i, provider: fbName },

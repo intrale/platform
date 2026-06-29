@@ -113,8 +113,30 @@ required_permissions: [file_read, file_write_repo, bash, child_spawn, tool_use_g
 
 1. **Schema canónico**: [`docs/skills/skill-metadata.schema.json`](../skills/skill-metadata.schema.json) define el `enum` válido.
 2. **Pre-commit lint**: si un SKILL.md declara una capability fuera del catálogo, el commit falla.
-3. **Boot del pulpo**: lee todos los SKILL.md y valida contra la matriz para el provider configurado de cada skill. Modo `warn` por default; con `PIPELINE_PERMISSION_VALIDATOR_STRICT=1` aborta el boot.
+3. **Boot del pulpo**: lee todos los SKILL.md y valida contra la matriz para **toda la cadena** de cada skill — provider primario **y cada fallback** (validación chain-aware, ver §5.1). Modo `warn` por default; con `PIPELINE_PERMISSION_VALIDATOR_STRICT=1` aborta el boot.
 4. **At-spawn-time**: cada `launchAgent` re-valida (CA-S3) — agent-models.json puede cambiar runtime, los rebotes cross-phase cambian el skill.
+
+### 5.1 Resolución de modo del fallback y validación chain-aware (#4274) {#fallback-mode}
+
+El esquema de fallback multi-proveedor sólo es efectivo si el provider de destino queda habilitado con las capabilities que el skill necesita. Dos garantías lo aseguran:
+
+**a) El path de fallback re-resuelve el `permission mode` del provider destino.** Cuando el router salta a un fallback, `resolveSpawnWithFallback` (`dispatch-with-fallback.js`) calcula el modo canónico del provider de destino con `resolvePermissionMode(models, provider)` y lo incluye en su return (`mode`). El pulpo (`launchResolveImpl`) lo propaga al launcher. Así:
+
+| Provider de fallback | Modo resuelto |
+|----------------------|---------------|
+| `openai-codex`       | `full-auto`   |
+| `gemini-google` / `cerebras` / `nvidia-nim` | `bypassPermissions` |
+| `anthropic`          | `bypassPermissions` |
+
+> **Causa raíz del incidente del 26–28/06/2026:** el return del fallback omitía `mode`; el launcher lo rellenaba con un default `|| 'bypassPermissions'`. Como `openai-codex` no tiene celda `bypassPermissions` en la matriz (su modo canónico es `full-auto`), todo salto a codex caía `mode_unknown` → FAIL-CLOSED, neutralizando el fallback justo cuando Anthropic estaba caído.
+
+**b) Sin default fail-OPEN (SR-1).** El launcher (`agent-launcher.js`) y el boot validator (`pulpo.js`) ya **no** asumen el modo más privilegiado ante un `mode` ausente. Resuelven explícitamente vía `resolvePermissionMode`; si el provider no tiene default (provider desconocido), hacen **fail-fast** con mensaje accionable. Nunca se concede `bypassPermissions` por defecto.
+
+**c) Validación chain-aware al boot (CA-4 / SR-3).** `validateAllSkillsAtBoot` acepta `resolveSkillChain(skill) → [{provider, mode}, …]` e itera el primario **y todos los fallbacks**, resolviendo el modo real de cada uno. Ninguna combinación `(provider de cadena × modo)` sin celda en la matriz puede deslizarse a runtime: si existe, el boot la reporta (y aborta en modo strict). Antes sólo se validaba el primario, por eso la combinación inválida fue invisible hasta explotar en runtime.
+
+**d) Least-privilege intacto (CA-6 / CA-7).** La concesión sigue siendo función de `(provider × mode)`; el fix amplía la cobertura de modos resueltos, **no** el techo de privilegios. La matriz no se aplana: `openai-codex/default` sigue concediendo sólo `file_read + network_out`, mientras `full-auto` concede el set autónomo. Ningún `(provider × mode)` LLM concede `file_write_outside_repo`, `bash_elevated` ni `network_in`.
+
+Tests: [`dispatch-fallback-mode.test.js`](../../.pipeline/lib/__tests__/dispatch-fallback-mode.test.js), [`permission-validator-chain-boot.test.js`](../../.pipeline/lib/__tests__/permission-validator-chain-boot.test.js), [`agent-launcher-mode-resolution.test.js`](../../.pipeline/lib/__tests__/agent-launcher-mode-resolution.test.js).
 
 ### Cómo agregar un provider nuevo {#add-provider}
 

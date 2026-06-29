@@ -485,46 +485,74 @@ function validateSpawn({ skill, provider, mode, requiredCapabilities, now, overr
 
 // -----------------------------------------------------------------------------
 // validateAllSkillsAtBoot — corre validateSpawn para cada skill conocido del
-// pipeline contra su provider configurado en agent-models. Pensado para
+// pipeline contra su(s) provider(s) configurado(s) en agent-models. Pensado para
 // llamarse desde pulpo.js al boot. Devuelve un array de fallos (vacío si OK).
 //
 // `skillsRegistry` es la fuente de verdad de qué skills existen + sus
 // required_permissions. La carga la hace el caller (lib/skills-metadata.js
 // — o equivalente). Acá solo iteramos.
+//
+// #4274 (CA-4 / SR-3) — validación CHAIN-AWARE: antes solo se validaba el
+// provider primario (`resolveSkill(skill) → {provider, mode}`), por lo que una
+// combinación inválida `(provider de fallback × modo)` era invisible al boot y
+// recién explotaba en runtime (incidente 23:20 ART del 28/06). Ahora, si el
+// caller pasa `resolveSkillChain(skill) → [{provider, mode}, …]` (primario +
+// fallbacks), se valida CADA eslabón de la cadena. `resolveSkill` (single) se
+// mantiene por compat: si no se pasa `resolveSkillChain`, se usa el primario.
 // -----------------------------------------------------------------------------
-function validateAllSkillsAtBoot({ skillsRegistry, resolveSkill, now, overridesPath, fsImpl } = {}) {
+function validateAllSkillsAtBoot({ skillsRegistry, resolveSkill, resolveSkillChain, now, overridesPath, fsImpl } = {}) {
     const failures = [];
     if (!skillsRegistry || typeof skillsRegistry !== 'object') {
         return failures;
     }
-    if (typeof resolveSkill !== 'function') {
-        throw new Error('[permission-validator] validateAllSkillsAtBoot requiere `resolveSkill(skill) → {provider, mode}`.');
+    if (typeof resolveSkill !== 'function' && typeof resolveSkillChain !== 'function') {
+        throw new Error('[permission-validator] validateAllSkillsAtBoot requiere `resolveSkill(skill) → {provider, mode}` o `resolveSkillChain(skill) → [{provider, mode}, …]`.');
     }
     for (const [skill, meta] of Object.entries(skillsRegistry)) {
         const requiredCapabilities = (meta && Array.isArray(meta.required_permissions))
             ? meta.required_permissions
             : [];
-        const resolved = resolveSkill(skill);
-        if (!resolved || !resolved.provider || !resolved.mode) {
-            failures.push({ skill, reason: 'resolve_failed', message: `[FAIL-CLOSED] No pude resolver provider/mode para skill '${skill}'.` });
+
+        // Construir la cadena (primario + fallbacks) o caer al primario solo.
+        let chain;
+        if (typeof resolveSkillChain === 'function') {
+            chain = resolveSkillChain(skill);
+        } else {
+            const single = resolveSkill(skill);
+            chain = single ? [single] : null;
+        }
+        if (!Array.isArray(chain) || chain.length === 0) {
+            failures.push({ skill, reason: 'resolve_failed', message: `[FAIL-CLOSED] No pude resolver la cadena provider/mode para skill '${skill}'.` });
             continue;
         }
-        // Skills determinísticos: el gate no aplica (son Node puro auditado
-        // que corre con permisos del usuario). Su SKILL.md puede declarar
-        // capabilities como metadata aspiracional para la versión LLM, no
-        // como contrato de runtime. Coherente con la lógica de agent-launcher.js.
-        if (resolved.provider === 'deterministic') continue;
-        const result = validateSpawn({
-            skill,
-            provider: resolved.provider,
-            mode: resolved.mode,
-            requiredCapabilities,
-            now,
-            overridesPath,
-            fsImpl,
-        });
-        if (!result.ok) {
-            failures.push({ skill, ...result });
+
+        for (const link of chain) {
+            if (!link || !link.provider || !link.mode) {
+                failures.push({
+                    skill,
+                    provider: (link && link.provider) || null,
+                    reason: 'resolve_failed',
+                    message: `[FAIL-CLOSED] Eslabón de cadena sin provider/mode resoluble para skill '${skill}' (provider='${(link && link.provider) || '?'}', mode='${(link && link.mode) || '?'}').`,
+                });
+                continue;
+            }
+            // Skills determinísticos: el gate no aplica (son Node puro auditado
+            // que corre con permisos del usuario). Su SKILL.md puede declarar
+            // capabilities como metadata aspiracional para la versión LLM, no
+            // como contrato de runtime. Coherente con agent-launcher.js.
+            if (link.provider === 'deterministic') continue;
+            const result = validateSpawn({
+                skill,
+                provider: link.provider,
+                mode: link.mode,
+                requiredCapabilities,
+                now,
+                overridesPath,
+                fsImpl,
+            });
+            if (!result.ok) {
+                failures.push({ skill, ...result });
+            }
         }
     }
     return failures;
