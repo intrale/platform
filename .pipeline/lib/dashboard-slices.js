@@ -35,6 +35,13 @@ function _redact(s) {
 let quotaExhaustedState = null;
 try { quotaExhaustedState = require('./quota-exhausted-state'); } catch { /* opcional */ }
 
+// #4202 — Estado de frescura del snapshot real de Anthropic (OCR del panel
+// "Uso" de Claude Desktop). Reusado para derivar la `confidence` por proveedor
+// del desglose de cuotas. Tolerante a la ausencia del módulo (kill switch /
+// feature off): si no está disponible, la confianza degrada a 'missing'.
+let quotaSnapshotIntegration = null;
+try { quotaSnapshotIntegration = require('./quota-snapshot-integration'); } catch { /* opcional */ }
+
 // #2976 — Skills determinísticos: corren en Node puro sin tokens LLM y por
 // eso siguen ejecutándose aún con `quota-exhausted.json` activo. Mantener
 // sincronizado con `DETERMINISTIC_SKILLS` del detector (#2974,
@@ -1844,6 +1851,72 @@ function historialTimelineSlice(state, ctx, opts) {
 //     consumidores del banner del dashboard.
 //   - Campo nuevo `providers: { anthropic, openai-codex, groq, ... }` expone
 //     el shape multi-provider para la UI nueva del kpi panel (CA-UX-2).
+//
+// #4202 — `providers[p]` se NORMALIZA al shape de cliente
+// `{ provider, adapterStatus, session:{pct,confidence}, weekly:{pct,confidence} }`.
+// Exposición mínima (security req#5): por proveedor/bucket SOLO viaja
+// `{pct, confidence}` — NO `cost_usd`, tokens crudos ni ruta del snapshot.
+
+// #4202 — Mapea el estado del banner real-snapshot (getBannerState) a un valor
+// de `confidence` estable que consume el cliente. Defensivo: si el módulo no
+// está disponible o falla, devuelve 'missing' (tratado como "sin dato").
+function _anthropicConfidence() {
+    if (!quotaSnapshotIntegration || typeof quotaSnapshotIntegration.getBannerState !== 'function') {
+        return 'missing';
+    }
+    try {
+        const banner = quotaSnapshotIntegration.getBannerState();
+        const st = banner && banner.state;
+        if (st === 'fresh' || st === 'stale' || st === 'parser-offline' || st === 'missing') {
+            return st;
+        }
+        return 'missing';
+    } catch {
+        return 'missing';
+    }
+}
+
+// #4202 — Normaliza un QuotaResult de adapter al shape mínimo de cliente.
+// Solo expone `{pct, confidence}` por bucket (security req#5). El mapeo de
+// buckets sesión/semanal por proveedor sigue la decisión validada por PO:
+//   - anthropic: session ← session.realPct ?? session.pct; weekly ← realPct ?? pct.
+//   - openai-codex: session = "sin dato" (null); weekly ← realPct ?? pct (budget mensual).
+//   - gemini-google + resto: ambos "sin dato" salvo que el adapter dé un pct real.
+// `confidence`: anthropic deriva del snapshot OCR; el resto es 'fresh' cuando
+// hay dato confiable y 'missing' ("sin dato") cuando no.
+function normalizeProviderQuota(provider, result) {
+    const out = {
+        provider,
+        adapterStatus: (result && result.adapterStatus) || 'unknown',
+        session: { pct: null, confidence: 'missing' },
+        weekly: { pct: null, confidence: 'missing' },
+    };
+    if (!result || typeof result !== 'object') return out;
+
+    const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+
+    if (provider === 'anthropic') {
+        const conf = _anthropicConfidence();
+        const sess = result.session && typeof result.session === 'object' ? result.session : {};
+        const sessPct = num(sess.realPct != null ? sess.realPct : sess.pct);
+        const weekPct = num(result.realPct != null ? result.realPct : result.pct);
+        out.session = { pct: sessPct, confidence: sessPct != null ? conf : 'missing' };
+        out.weekly = { pct: weekPct, confidence: weekPct != null ? conf : 'missing' };
+        return out;
+    }
+
+    // Codex / Gemini / resto: solo el bucket que el adapter pueda poblar.
+    // Codex no tiene ventana de sesión 5h → session siempre "sin dato".
+    const weekPct = num(result.realPct != null ? result.realPct : result.pct);
+    const isOk = result.adapterStatus === 'ok';
+    out.session = { pct: null, confidence: 'missing' };
+    out.weekly = {
+        pct: weekPct,
+        confidence: (isOk && weekPct != null) ? 'fresh' : 'missing',
+    };
+    return out;
+}
+
 function quotaSlice(state, ctx) {
     const PIPELINE = ctx.PIPELINE;
     const ROOT = ctx.ROOT;
@@ -1902,12 +1975,24 @@ function quotaSlice(state, ctx) {
         }
     }
 
-    // Retrocompat: campos legacy de Anthropic en el top-level + nuevo
-    // `providers` con el desglose por adapter.
+    // Retrocompat: campos legacy de Anthropic en el top-level (alimentan
+    // `renderQuotaCard`/`tickQuota` — % agregado real, CA-5). El flat-merge
+    // es un shallow copy: NO mutar `anthropicResult.session` después de esto
+    // o se rompería `out.session` (misma referencia).
     const out = anthropicResult && typeof anthropicResult === 'object'
         ? { ...anthropicResult }
         : { hoursUsed7d: 0, pct: 0, status: 'unknown' };
-    out.providers = providers;
+
+    // #4202 — `providers` se entrega NORMALIZADO al shape mínimo de cliente
+    // (security req#5): por proveedor/bucket solo `{pct, confidence}`. Se
+    // construyen objetos nuevos — no se mutan los resultados de los adapters,
+    // así el flat-merge de Anthropic al top-level (out.session/realPct/pct)
+    // queda intacto (CA-5).
+    const providersClient = {};
+    for (const [p, result] of Object.entries(providers)) {
+        providersClient[p] = normalizeProviderQuota(p, result);
+    }
+    out.providers = providersClient;
     return out;
 }
 
@@ -2744,6 +2829,8 @@ module.exports = {
     _eventType,
     HIST_EVENT_TYPES,
     quotaSlice,
+    // #4202 — normalización por proveedor del desglose de cuotas (test unitario)
+    normalizeProviderQuota,
     quotaExhaustedSlice,
     // #3962 EP8-H9 — slice de la pantalla Costos rediseñada
     costosSlice,
