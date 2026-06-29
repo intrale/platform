@@ -526,6 +526,37 @@ multi_provider:
       marker_ttl_minutes: 90
 
 # =============================================================================
+# Presupuesto de ritmo (pacing budget) por proveedor (#4289)
+# =============================================================================
+# Reparte proporcionalmente la cuota SEMANAL de cada proveedor para no agotar
+# todo el cupo en pocos días. Token bucket semanal: cada hora se acredita la
+# porción proporcional del cupo (quota / 168h) y se descuenta el consumo real.
+#
+#   🟢 verde    — en ritmo: operación normal.
+#   🟡 amarillo — adelantado (con saldo): de-prioriza en el reparto (prefiere
+#                 fallback) SIN apagar. Aviso Telegram.
+#   🔴 rojo     — saldo acumulado agotado: desactiva temporalmente vía
+#                 provider-disabled (source:'pacing', TTL) y deriva al fallback.
+#                 Vuelve solo al recargarse el bucket.
+#
+# Invariantes: FAIL-OPEN (estado corrupto ⇒ no de-prioriza ni apaga), GRANULAR
+# (solo afecta al proveedor excedido), y NO override de la matriz de permisos
+# (si pacing dejaría sin candidato, cede ante la matriz — ver dispatch-with-
+# fallback CA-6). La ventana semanal se ancla al reset de weekly-quota.js
+# (domingo 21:00 ART, configurable por QUOTA_TZ_OFFSET_MIN).
+#
+# Rollout con kill-switch: `enabled: false` por default. Activar tras validar
+# tests + smoke. Overrides por env: PACING_YELLOW_MARGIN_PCT, PACING_TTL_RED_MIN.
+pacing:
+  enabled: false
+  # Cupo semanal por proveedor, en puntos porcentuales (100% = cupo completo).
+  weekly_quota_pct_per_provider: 100
+  # Adelanto (en puntos %) sobre el ritmo lineal que dispara 🟡 amarillo.
+  yellow_margin_pct: 5
+  # Vigencia del disable por 🔴 rojo (respaldo + recuperación automática). Min.
+  ttl_red_min: 60
+
+# =============================================================================
 # Handoff cross-agente (#2993)
 # =============================================================================
 # Cuando un issue pasa por varias fases (analisis → criterios → validacion →

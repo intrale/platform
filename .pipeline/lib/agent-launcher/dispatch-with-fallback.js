@@ -113,6 +113,14 @@ const providerScheduleModule = require('../provider-schedule');
 // (REQ-SEC-3). Inyectable en tests vía opts.softGateModule.
 const providerQuotaGuardModule = require('../provider-quota-guard');
 
+// #4289 — Presupuesto de ritmo (pacing budget) por proveedor. Estado 🔴 (saldo
+// agotado) → candidato no disponible (mismo trato que kill-switch/cuota). Estado
+// 🟡 (adelantado, con saldo) → de-prioriza (prefiere fallback) SIN apagar, igual
+// que el soft-gate preventivo de #4282. FAIL-OPEN: ante error ⇒ 'green' (no
+// de-prioriza ni apaga). Inyectable en tests vía opts.pacingModule.
+let pacingBucketModule = null;
+try { pacingBucketModule = require('../pacing-bucket'); } catch { /* opcional */ }
+
 // -----------------------------------------------------------------------------
 // Constantes
 // -----------------------------------------------------------------------------
@@ -792,6 +800,8 @@ const SKIP_REASON_CODES = Object.freeze({
     INVALID_HANDLER: 'invalid_handler',       // provider no registrado / shape inválido
     SAME_AS_PRIMARY: 'same_as_primary',       // defensa in-depth (fallback == primary)
     PREVENTIVE_SOFT_GATE: 'preventive_soft_gate', // degradación preventiva por cuota (#4282)
+    PACING_BUDGET_YELLOW: 'pacing_budget_yellow', // adelantado en su ritmo semanal → de-prioriza (#4289)
+    PACING_BUDGET_RED: 'pacing_budget_red',       // crédito de ritmo agotado → desactivado (#4289)
 });
 
 // Etiquetas legibles (español) para el log textual. NO se escriben en el JSON
@@ -807,6 +817,8 @@ const SKIP_REASON_LABELS = Object.freeze({
     invalid_handler: 'provider no registrado',
     same_as_primary: 'igual al primario',
     preventive_soft_gate: 'degradación preventiva por cuota',
+    pacing_budget_yellow: 'adelantado en su ritmo semanal',
+    pacing_budget_red: 'crédito de ritmo agotado',
 });
 
 // -----------------------------------------------------------------------------
@@ -921,6 +933,31 @@ function resolveSpawnWithFallback(opts = {}) {
         } catch {
             return false; // fail-open: el soft gate nunca bloquea por bug propio.
         }
+    };
+    // #4289 — pacing budget. `getPacingState` es FAIL-OPEN (devuelve 'green' ante
+    // cualquier error). 🔴 rojo se trata como indisponibilidad (mismo trato que
+    // kill-switch); 🟡 amarillo se trata como soft-gate (prefiere fallback sin
+    // vaciar la chain). Inyectable en tests vía opts.pacingModule.
+    const _pacing = opts.pacingModule || pacingBucketModule;
+    const _pacingStateOf = (p) => {
+        try {
+            return (_pacing && typeof _pacing.getPacingState === 'function')
+                ? _pacing.getPacingState(p, { now: _now, pipelineDir })
+                : 'green';
+        } catch {
+            return 'green'; // fail-open: el pacing nunca bloquea por bug propio.
+        }
+    };
+    // Origen del kill-switch (para distinguir un rojo de pacing de un disable
+    // manual/preventivo en la atribución del skipReason — CA-8 #4289).
+    const _disabledSourceOf = (p) => {
+        try {
+            if (typeof _disabled.getDisabledEntry === 'function') {
+                const e = _disabled.getDisabledEntry(p, { now: _now });
+                return (e && e.source) || null;
+            }
+        } catch { /* fail-open */ }
+        return null;
     };
 
     // #3823 — acumulador de trazabilidad observable. Se llena en paralelo a los
@@ -1102,10 +1139,31 @@ function resolveSpawnWithFallback(opts = {}) {
     const primaryDisabled = _isProviderDisabled(primaryProvider);
     // #3871 — el primario también salta si está fuera de su horario de actividad.
     const primaryInactiveBySchedule = _isProviderInactive(primaryProvider);
-    const primaryGated = primaryQuotaGated || primaryDisabled || primaryInactiveBySchedule;
+    // #4289 — estado de pacing del primario (fail-open 'green'). 🔴 gatea (hard),
+    // 🟡 de-prioriza (soft). El rojo de pacing también queda reflejado en el
+    // kill-switch (provider-disabled, source:'pacing'); la lectura directa del
+    // bucket lo cubre aunque la escritura del disable hubiera fallado.
+    const primaryPacingState = _pacingStateOf(primaryProvider);
+    const primaryPacingRed = primaryPacingState === 'red';
+    const primaryPacingYellow = primaryPacingState === 'yellow';
+    const primaryGated = primaryQuotaGated || primaryDisabled || primaryInactiveBySchedule || primaryPacingRed;
     // #4282 — soft-gate preventivo: SOLO aplica si el primary NO está hard-gated
     // (precedencia explícita: el hard manda sobre el soft — REQ-SEC-3 / CA-7).
-    const primarySoftGated = !primaryGated && _isProviderSoftGated(primaryProvider);
+    // #4289 — el amarillo de pacing se suma al soft-gate (misma semántica: prefiere
+    // fallback sin vaciar la chain).
+    const primarySoftGated = !primaryGated
+        && (_isProviderSoftGated(primaryProvider) || primaryPacingYellow);
+    // #4289 CA-6 — ¿el ÚNICO motivo del gate del primario es el rojo de pacing?
+    // El pacing es una preferencia de ritmo, NO un override de permisos: si tras
+    // aplicar pacing no queda candidato resoluble, se CEDE el pacing y se usa el
+    // primario (nunca se deja a un agente sin ruta). Un kill-switch manual /
+    // preventivo (source ≠ 'pacing') o un gate de cuota/horario NO ceden.
+    const _primaryDisabledSource = primaryDisabled ? _disabledSourceOf(primaryProvider) : null;
+    const primaryGateIsPacingOnly = primaryGated
+        && !primaryQuotaGated
+        && !primaryInactiveBySchedule
+        && (primaryPacingRed || _primaryDisabledSource === 'pacing')
+        && (_primaryDisabledSource === null || _primaryDisabledSource === 'pacing');
 
     if (primaryInactiveBySchedule) {
         // Audit dedicado del salto por horario (distinto del kill-switch).
@@ -1147,16 +1205,27 @@ function resolveSpawnWithFallback(opts = {}) {
     // kill-switch tiene precedencia semántica sobre la cuota: si el provider está
     // apagado, esa es la causa raíz del salto (la cuota es secundaria).
     if (primaryGated) {
-        // Precedencia de atribución: kill-switch > horario > cuota.
+        // Precedencia de atribución: kill-switch > horario > pacing rojo > cuota.
+        // #4289 — si el kill-switch que apaga al primario tiene origen 'pacing',
+        // atribuimos PACING_BUDGET_RED en vez del genérico PROVIDER_DISABLED.
         let reasonCode;
         let reasonDetail;
         if (primaryDisabled) {
-            reasonCode = SKIP_REASON_CODES.PROVIDER_DISABLED;
-            reasonDetail = 'kill-switch operativo activo';
+            if (_disabledSourceOf(primaryProvider) === 'pacing' || primaryPacingRed) {
+                reasonCode = SKIP_REASON_CODES.PACING_BUDGET_RED;
+                reasonDetail = 'crédito de ritmo agotado (rojo)';
+            } else {
+                reasonCode = SKIP_REASON_CODES.PROVIDER_DISABLED;
+                reasonDetail = 'kill-switch operativo activo';
+            }
             nonScheduleAvailabilityGate = true;
         } else if (primaryInactiveBySchedule) {
             reasonCode = SKIP_REASON_CODES.PROVIDER_INACTIVE_BY_SCHEDULE;
             reasonDetail = 'fuera de horario de actividad';
+        } else if (primaryPacingRed) {
+            reasonCode = SKIP_REASON_CODES.PACING_BUDGET_RED;
+            reasonDetail = 'crédito de ritmo agotado (rojo)';
+            nonScheduleAvailabilityGate = true;
         } else {
             reasonCode = SKIP_REASON_CODES.QUOTA_EXHAUSTED;
             reasonDetail = 'flag de cuota activo';
@@ -1184,7 +1253,14 @@ function resolveSpawnWithFallback(opts = {}) {
             },
         });
         log('lanzamiento', `🟡 ${skill}:#${issue || '?'} provider primario "${primaryProvider}" en degradación preventiva — prefiriendo fallback (no vacía la chain).`);
-        pushSkip(primaryProvider, SKIP_REASON_CODES.PREVENTIVE_SOFT_GATE, 'degradación preventiva por cuota');
+        // #4289 — distinguir el origen del soft-gate: si el único motivo fue el
+        // amarillo de pacing (sin degradación preventiva de cuota), atribuir
+        // PACING_BUDGET_YELLOW.
+        if (primaryPacingYellow && !_isProviderSoftGated(primaryProvider)) {
+            pushSkip(primaryProvider, SKIP_REASON_CODES.PACING_BUDGET_YELLOW, 'adelantado en su ritmo semanal');
+        } else {
+            pushSkip(primaryProvider, SKIP_REASON_CODES.PREVENTIVE_SOFT_GATE, 'degradación preventiva por cuota');
+        }
     }
 
     if (!primaryGated && !primarySoftGated) {
@@ -1204,13 +1280,20 @@ function resolveSpawnWithFallback(opts = {}) {
 
     // #4282 — helper para devolver el primary cuando el soft-gate no encontró
     // fallback resoluble: el soft NUNCA pausa ni vacía la chain (REQ-SEC-3).
-    const _returnPrimarySoftFallthrough = (chainSoFar) => {
-        log('lanzamiento', `🟡 ${skill}:#${issue || '?'} degradación preventiva sin fallback resoluble — uso el primary "${primaryProvider}" (chain no se vacía).`);
+    const _returnPrimarySoftFallthrough = (chainSoFar, opts2 = {}) => {
+        if (opts2.pacingCede) {
+            // #4289 CA-6 — pacing cede ante la matriz de permisos: el primario en
+            // rojo de ritmo era el único candidato resoluble, se usa igual.
+            log('lanzamiento', `🔴↩️ ${skill}:#${issue || '?'} pacing rojo sin fallback resoluble — uso el primary "${primaryProvider}" (pacing cede ante permisos, chain no se vacía).`);
+        } else {
+            log('lanzamiento', `🟡 ${skill}:#${issue || '?'} degradación preventiva sin fallback resoluble — uso el primary "${primaryProvider}" (chain no se vacía).`);
+        }
         return {
             ...primary,
             source: primary.source || 'primary',
             gated: false,
             softGatedPrimaryUsed: true,
+            pacingCede: !!opts2.pacingCede,
             fallbackUsed: null,
             primaryProvider,
             chainTried: Array.isArray(chainSoFar) && chainSoFar.length ? chainSoFar : [primaryProvider],
@@ -1242,6 +1325,11 @@ function resolveSpawnWithFallback(opts = {}) {
         // se pausa (el soft NUNCA vacía la chain). Solo aplica si NO hubo hard gate.
         if (primarySoftGated) {
             return _returnPrimarySoftFallthrough([primaryProvider]);
+        }
+        // #4289 CA-6 — pacing rojo sin fallbacks declarados: el pacing cede ante
+        // la matriz (el primario es el único candidato), se usa el primary.
+        if (primaryGateIsPacingOnly) {
+            return _returnPrimarySoftFallthrough([primaryProvider], { pacingCede: true });
         }
         // Sin fallbacks declarados → comportamiento previo (gate clásico).
         auditAppend({
@@ -1431,21 +1519,57 @@ function resolveSpawnWithFallback(opts = {}) {
         // el kill-switch operacional. Lo saltamos igual que un fallback gateado
         // por cuota, con audit dedicado para distinguir la causa.
         if (_isProviderDisabled(fbName)) {
+            // #4289 — distinguir un apagado por pacing (rojo) de un kill-switch
+            // manual/preventivo, mirando el origen del disable.
+            const fbDisabledByPacing = _disabledSourceOf(fbName) === 'pacing' || _pacingStateOf(fbName) === 'red';
             auditAppend({
                 pipelineDir, fsImpl, sanitize, auditLog, now: _now,
                 entry: {
-                    event: 'fallback_provider_disabled',
+                    event: fbDisabledByPacing ? 'fallback_pacing_budget_red' : 'fallback_provider_disabled',
                     skill,
                     issue: issue || null,
                     fallback_index: i,
                     fallback_provider: fbName,
                     primary_provider: primaryProvider,
-                    raw_excerpt: `fallback_${fbName}_disabled_by_killswitch`,
+                    raw_excerpt: fbDisabledByPacing
+                        ? `fallback_${fbName}_pacing_budget_red`
+                        : `fallback_${fbName}_disabled_by_killswitch`,
                 },
             });
-            log('lanzamiento', `🔌 ${skill}:#${issue || '?'} fallback "${fbName}" APAGADO (kill-switch) — salto al siguiente.`);
+            if (fbDisabledByPacing) {
+                log('lanzamiento', `🔴 ${skill}:#${issue || '?'} fallback "${fbName}" sin crédito de ritmo (pacing rojo) — salto al siguiente.`);
+            } else {
+                log('lanzamiento', `🔌 ${skill}:#${issue || '?'} fallback "${fbName}" APAGADO (kill-switch) — salto al siguiente.`);
+            }
             nonScheduleAvailabilityGate = true;
-            pushSkip(fbName, SKIP_REASON_CODES.PROVIDER_DISABLED, `kill-switch operativo activo`);
+            pushSkip(
+                fbName,
+                fbDisabledByPacing ? SKIP_REASON_CODES.PACING_BUDGET_RED : SKIP_REASON_CODES.PROVIDER_DISABLED,
+                fbDisabledByPacing ? `crédito de ritmo agotado (rojo)` : `kill-switch operativo activo`,
+            );
+            continue;
+        }
+
+        // 3.d.pacing (#4289) — un fallback puede estar 🔴 de pacing aunque el
+        // disable no se haya escrito (escritura fallida o evaluación pendiente).
+        // Lectura directa del bucket, fail-open. El 🟡 amarillo NO descarta un
+        // fallback (ya es alternativa): solo de-prioriza al primario.
+        if (_pacingStateOf(fbName) === 'red') {
+            auditAppend({
+                pipelineDir, fsImpl, sanitize, auditLog, now: _now,
+                entry: {
+                    event: 'fallback_pacing_budget_red',
+                    skill,
+                    issue: issue || null,
+                    fallback_index: i,
+                    fallback_provider: fbName,
+                    primary_provider: primaryProvider,
+                    raw_excerpt: `fallback_${fbName}_pacing_budget_red`,
+                },
+            });
+            log('lanzamiento', `🔴 ${skill}:#${issue || '?'} fallback "${fbName}" sin crédito de ritmo (pacing rojo) — salto al siguiente.`);
+            nonScheduleAvailabilityGate = true;
+            pushSkip(fbName, SKIP_REASON_CODES.PACING_BUDGET_RED, `crédito de ritmo agotado (rojo)`);
             continue;
         }
 
@@ -1626,6 +1750,12 @@ function resolveSpawnWithFallback(opts = {}) {
     // todavía tiene cuota — solo preferíamos un fallback que no apareció.
     if (primarySoftGated) {
         return _returnPrimarySoftFallthrough(chainTried);
+    }
+    // #4289 CA-6 — chain agotada y el único motivo del gate del primario era el
+    // rojo de pacing: se cede el pacing y se usa el primary (nunca se deja al
+    // agente sin ruta por un tema de ritmo).
+    if (primaryGateIsPacingOnly) {
+        return _returnPrimarySoftFallthrough(chainTried, { pacingCede: true });
     }
     // #3871 — ¿toda la cadena quedó gateada EXCLUSIVAMENTE por horario? Ese caso
     // tiene semántica propia (`todos_inactivos_por_horario`): el issue vuelve a

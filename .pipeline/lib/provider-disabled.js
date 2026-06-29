@@ -349,6 +349,11 @@ function setProviderDisabled(providerName, opts = {}) {
         const next = active.filter((e) => e.name !== providerName);
         const entry = { name: providerName, disabled_at: disabledAt };
         if (ttlExpiresAt) entry.ttl_expires_at = ttlExpiresAt;
+        // #4289 — persistir `source` en la entry (no solo en audit) para que los
+        // consumidores puedan distinguir el origen del disable (kill-switch manual
+        // #3811 vs preventivo #4282 vs ritmo/pacing #4289). Aditivo y backward-
+        // compat: las entradas sin `source` se leen como `null`.
+        if (typeof opts.source === 'string' && opts.source) entry.source = opts.source;
         next.push(entry);
         persist(next);
         if (opts.auditLogEnabled !== false) {
@@ -415,9 +420,26 @@ function listDisabledProviders(opts = {}) {
                 disabled_at: e.disabled_at || null,
                 ttl_expires_at: e.ttl_expires_at || null,
                 ttl_remaining_ms: Number.isFinite(exp) ? Math.max(0, exp - now) : null,
+                source: e.source || null, // #4289 — origen del disable (null = legacy)
             };
         }),
     };
+}
+
+/**
+ * `getDisabledEntry(providerName, opts?)` → {name, disabled_at, ttl_expires_at,
+ * ttl_remaining_ms, source} | null. Drena vencidos. Devuelve null si el provider
+ * no está apagado (o es inválido). Útil para distinguir el origen del disable
+ * (#4289 CA-8: la recuperación de pacing solo limpia entradas `source:'pacing'`).
+ */
+function getDisabledEntry(providerName, opts = {}) {
+    if (!isValidProvider(providerName)) return null;
+    try {
+        const { disabled } = listDisabledProviders(opts);
+        return disabled.find((e) => e.name === providerName) || null;
+    } catch {
+        return null;
+    }
 }
 
 /**
@@ -447,6 +469,7 @@ module.exports = {
     setProviderDisabled,
     clearProviderDisabled,
     listDisabledProviders,
+    getDisabledEntry,
     clearAll,
     isValidProvider,
 
