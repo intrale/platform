@@ -524,6 +524,14 @@ try { providerHealth = require('./provider-health'); } catch { /* opcional */ }
 let waves = null;
 try { waves = require('./waves'); } catch { /* opcional */ }
 
+// #4248 — Snapshot de ola para enriquecer en vivo el status por-issue del
+// encabezado de ola (D1+D2): el status estático de waves.json queda stale
+// (siempre `planned`) y rompe ENTREGADOS/AVANCE. `buildWaveSnapshot` deriva
+// {isClosed,isBlocked,status,pct} desde el state real del pipeline. Carga
+// defensiva: si el módulo no está, el payload degrada a status estático.
+let waveSnapshot = null;
+try { waveSnapshot = require('./wave-snapshot'); } catch { /* opcional */ }
+
 // #3681 (hijo B del épico #3669) — Endpoint del widget Multi-Provider Coverage.
 // Lectura defensiva: si el módulo (o sus deps, ej. ajv) no cargan, el endpoint
 // devuelve el envelope `coverage_unavailable` con status 503 — degrada a
@@ -554,7 +562,12 @@ function rateLimitAllow(ip, now = Date.now()) {
 // (security review: no propagar campos crudos del filesystem al cliente).
 const WAVES_PRIORITY_WHITELIST = new Set(['critical', 'high', 'medium', 'low']);
 const WAVES_SIZE_WHITELIST = new Set(['s', 'm', 'l', 'xl']);
-const WAVES_STATUS_WHITELIST = new Set(['ready', 'needs-def', 'in-progress', 'blocked', 'completed']);
+// #4248 — `planned`/`pending` se suman al whitelist: son los estados con los
+// que `waves.js` registra los issues recién agregados a una ola. Sin ellos
+// `normalizeWaveIssue` los mapeaba a `unknown` y el header contaba 0/N (D1).
+// En el path normal el status se enriquece en vivo (ver enrichActiveWaveStatus);
+// este whitelist sólo cubre el fallback degradado sin snapshot.
+const WAVES_STATUS_WHITELIST = new Set(['ready', 'needs-def', 'in-progress', 'blocked', 'completed', 'planned', 'pending']);
 const WAVES_TITLE_MAX_CHARS = 200;
 const WAVES_UNKNOWN = 'unknown';
 
@@ -597,7 +610,97 @@ function normalizeWave(raw) {
     const issues = Array.isArray(raw.issues)
         ? raw.issues.map(normalizeWaveIssue).filter(Boolean)
         : [];
-    return { number, name, goal, started_at, issues };
+    // #4248 (D3) — `home.js` lee `wave.openedAt` para calcular VELOCIDAD; el
+    // payload sólo exponía `started_at`, así que `openedAt` era `undefined` y la
+    // velocidad caía al fallback "—" siempre. Mapeamos `started_at`→`openedAt`
+    // (aditivo) y mantenemos `started_at` por backward-compat (vista issues).
+    return { number, name, goal, started_at, openedAt: started_at, issues };
+}
+
+/**
+ * #4248 (D1+D2) — Traduce el `status` que emite `buildWaveSnapshot`
+ * (closed/blocked/paused/pending/approval/dev/definition) a los valores que el
+ * encabezado de ola en `home.js` ya sabe contar: 'completed' (done),
+ * 'in-progress' (active), 'blocked' (blocked), 'ready' (queue). Devolver `null`
+ * deja intacto el status normalizado previo (degradación segura). Sólo retorna
+ * valores que ya viven en WAVES_STATUS_WHITELIST — no introduce vocabulario
+ * nuevo, así que la vista issues (mismo payload) sigue funcionando.
+ *
+ * @param {object|undefined} snapIssue — issue del snapshot (puede faltar)
+ * @returns {('completed'|'in-progress'|'blocked'|'ready'|null)}
+ */
+function deriveLiveStatus(snapIssue) {
+    if (!snapIssue || typeof snapIssue !== 'object') return null;
+    if (snapIssue.isClosed || snapIssue.status === 'closed') return 'completed';
+    if (snapIssue.isBlocked || snapIssue.status === 'blocked' || snapIssue.status === 'paused') {
+        return 'blocked';
+    }
+    switch (snapIssue.status) {
+        case 'dev':
+        case 'approval':
+        case 'definition':
+            return 'in-progress';
+        case 'pending':
+            return 'ready';
+        default:
+            return null;
+    }
+}
+
+/**
+ * #4248 (D1+D2) — Enriquece el status por-issue de la ola activa cruzando con el
+ * estado real del pipeline. Sin esto, los issues quedan con el status estático y
+ * stale de `waves.json` (siempre `planned`) y el header reporta ENTREGADOS 0/N y
+ * AVANCE 0% aunque la ola tenga issues cerrados o en curso.
+ *
+ * Degradación segura: si falta el módulo `wave-snapshot`, no hay `state`/matriz,
+ * o el snapshot falla, devuelve `normActive` sin tocar (fallback a status
+ * estático ya cubierto por el whitelist ampliado).
+ *
+ * @param {object|null} normActive — ola activa ya normalizada (shape público)
+ * @param {object|null} state — pipeline state (issueMatrix, issueTitles, bloqueados)
+ * @returns {object|null} ola activa con `issues[].status` enriquecido
+ */
+function enrichActiveWaveStatus(normActive, state) {
+    if (!normActive || !Array.isArray(normActive.issues) || normActive.issues.length === 0) {
+        return normActive;
+    }
+    if (!waveSnapshot || typeof waveSnapshot.buildWaveSnapshot !== 'function') return normActive;
+    if (!state || typeof state !== 'object' || !state.issueMatrix) return normActive;
+
+    const ids = normActive.issues.map((it) => it.id).filter((n) => Number.isInteger(n));
+    if (ids.length === 0) return normActive;
+
+    // closedIssues desde el cache de títulos (estado GitHub). Cubre issues
+    // cerrados que ya no tienen archivos en el pipeline; el snapshot además
+    // infiere cierre por `desarrollo/entrega` procesada+aprobada.
+    const titles = (state.issueTitles && typeof state.issueTitles === 'object') ? state.issueTitles : {};
+    const closedIssues = Object.keys(titles)
+        .filter((k) => titles[k] && titles[k].state === 'CLOSED')
+        .map(Number)
+        .filter(Number.isInteger);
+
+    let snap;
+    try {
+        snap = waveSnapshot.buildWaveSnapshot({
+            state,
+            wave: { label: normActive.name || 'Ola', issues: ids, source: 'waves.json' },
+            blocked: Array.isArray(state.bloqueados) ? state.bloqueados : [],
+            closedIssues,
+        });
+    } catch {
+        return normActive;
+    }
+    if (!snap || !Array.isArray(snap.issues)) return normActive;
+
+    const byId = new Map(snap.issues.map((i) => [Number(i.id), i]));
+    const issues = normActive.issues.map((it) => {
+        const live = deriveLiveStatus(byId.get(Number(it.id)));
+        // `it` ya está normalizado (whitelist por campo). El spread sólo copia
+        // campos whitelisted + sobrescribe `status` con un literal controlado.
+        return live ? { ...it, status: live } : it;
+    });
+    return { ...normActive, issues };
 }
 
 /**
@@ -613,7 +716,8 @@ function normalizeWave(raw) {
  * planificada) por si algún cliente viejo los lee directamente — el frontend
  * nuevo prefiere iterar `planned[]`.
  */
-function buildWavesPayload() {
+function buildWavesPayload(opts) {
+    const state = (opts && typeof opts === 'object') ? opts.state : null;
     const updated_at = new Date().toISOString();
     if (!waves) {
         return {
@@ -635,7 +739,10 @@ function buildWavesPayload() {
     }
     const rawActive = horizon.find((w) => w && w.status === 'active') || null;
     const rawPlanned = horizon.filter((w) => w && w.status === 'planned');
-    const normActive = normalizeWave(rawActive);
+    // #4248 (D1+D2) — enriquecer el status por-issue de la ola activa contra el
+    // estado real del pipeline. Aditivo y best-effort: si no hay state/snapshot
+    // disponible, `enrichActiveWaveStatus` devuelve la ola normalizada sin tocar.
+    const normActive = enrichActiveWaveStatus(normalizeWave(rawActive), state);
     const normPlanned = rawPlanned.map(normalizeWave).filter(Boolean);
     const normNext = normPlanned.length > 0 ? normPlanned[0] : null;
     const payload = {
@@ -1029,7 +1136,7 @@ const API_ROUTES = {
     // vacío con `message: "Planificación no disponible"` y HTTP 200
     // (CA-7). Reusa sendJson() → Cache-Control: no-store coherente
     // con el resto de /api/dash/*.
-    '/api/dash/waves': () => buildWavesPayload(),
+    '/api/dash/waves': (state) => buildWavesPayload({ state }),
     // #3681 — Widget Multi-Provider Coverage. Lee `.pipeline/multi-provider-coverage.json`
     // (output runtime del harness #3680), valida con ajv contra el schema canónico
     // y sanitiza el payload con whitelist explícita por campo. NUNCA expone
@@ -1554,6 +1661,9 @@ module.exports = {
         buildWavesPayload,
         normalizeWave,
         normalizeWaveIssue,
+        // #4248 — enriquecimiento de status live del encabezado de ola
+        deriveLiveStatus,
+        enrichActiveWaveStatus,
         WAVES_PRIORITY_WHITELIST,
         WAVES_SIZE_WHITELIST,
         WAVES_STATUS_WHITELIST,
