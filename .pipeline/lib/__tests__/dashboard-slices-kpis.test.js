@@ -272,11 +272,17 @@ test('CA-5: quotaSlice expone `providers` con anthropic + stubs not_implemented'
     assert.ok(out.providers.anthropic, 'providers.anthropic existe');
     assert.equal(out.providers.anthropic.adapterStatus, 'ok');
     assert.equal(out.providers.anthropic.provider, 'anthropic');
+    // #4202 — shape normalizado de cliente: session/weekly con {pct, confidence}.
+    assert.ok(out.providers.anthropic.session, 'anthropic.session existe');
+    assert.ok(out.providers.anthropic.weekly, 'anthropic.weekly existe');
     // Stubs no implementados marcan adapterStatus distinto de ok pero NO tiran.
     assert.ok(out.providers['openai-codex']);
     assert.notEqual(out.providers['openai-codex'].adapterStatus, 'ok');
-    assert.equal(out.providers['openai-codex'].pct, null,
-        'stubs NO devuelven pct:0 — sería luz verde silenciosa al banner');
+    // #4202 — el pct vive por bucket; codex sin datos → ambos null (no 0% falso).
+    assert.equal(out.providers['openai-codex'].session.pct, null,
+        'codex sesión "sin dato" — Codex no tiene ventana 5h');
+    assert.equal(out.providers['openai-codex'].weekly.pct, null,
+        'codex sin snapshot → null, NO 0% (luz verde silenciosa)');
     // deterministic NO debe aparecer (filtrado del set declarado).
     assert.equal(out.providers.deterministic, undefined);
     // Compat top-level: campos legacy del banner siguen visibles desde Anthropic.

@@ -1840,6 +1840,14 @@ function fmtNum(n){ if(n==null||isNaN(n)) return '—'; if(n>=1e6) return (n/1e6
 function fmtPct(n){ return n==null?'—':n.toFixed(1)+'%'; }
 function setText(id, value){ const el=document.getElementById(id); if(el && el.textContent!==String(value)) el.textContent=value; }
 function setClass(id, cls, on){ const el=document.getElementById(id); if(el) el.classList.toggle(cls, !!on); }
+// #4202 — Anti-flicker (UX G5): solo escribe el width de la barra si cambió.
+// Clampa a [0,100] para que un pct saturado no desborde la barra.
+function setBarPct(id, pct){
+    const el=document.getElementById(id); if(!el) return;
+    const w=Math.max(0, Math.min(100, Number(pct)||0));
+    const wStr=w.toFixed(1)+'%';
+    if(el.style.width!==wStr) el.style.width=wStr;
+}
 // #3953 (CA-2) — fetchJson ya NO se define acá: lo provee FETCH_CLIENT_JS
 // (inyectado al inicio del <script>). El wrapper compartido dispara el banner
 // "datos desactualizados — reintentando…" ante fallo en vez de tragar el error
@@ -2204,9 +2212,8 @@ function renderQuotaCard(d){
     setText('kpi-quota-week-pct', weekPct.toFixed(1)+'%');
 
     // #4189 — Espeja el % AGREGADO real en el panel de cuotas del home MIZPÁ.
-    // El desglose por proveedor (mz-quota-<bucket>-<prov>-*) requiere el backend
-    // de extracción por proveedor (split / child issue) y queda en "—" hasta
-    // entonces; el agregado de sesión/semana sí es dato real.
+    // #4202 — el desglose por proveedor (mz-quota-bucket-prov-*) lo hidrata
+    // tickProviderQuota; aca solo tocamos el % AGREGADO de sesion/semana.
     setText('mz-quota-session-pct', sessPct.toFixed(1)+'%');
     setText('mz-quota-week-pct', weekPct.toFixed(1)+'%');
 
@@ -2273,6 +2280,90 @@ async function tickQuota(){
     if(!d) return;
     _quotaLastData = d;
     renderQuotaCard(d);
+}
+
+// #4202 — Desglose de cuota por proveedor (Anthropic / Codex / Gemini) en las
+// 2 ventanas (Sesion 5h y Semanal). Hidrata los 6 IDs ya emitidos por
+// _mzProviderRow (mz-quota-bucket-uiKey-bar / -pct) — NO re-render.
+//
+// CRITICO (CA-6): las claves UI no coinciden con las del slice. El mapeo es
+// EXPLICITO (no substring matching).
+const PROVIDER_ID_MAP = { anthropic: 'anthropic', codex: 'openai-codex', gemini: 'gemini-google' };
+
+// Motivo de "sin dato" por (bucket, uiKey) para el tooltip (UX G3): evita que
+// el operador lea la ausencia como un bug.
+const QUOTA_SINDATO_REASON = {
+    'session-codex': 'Codex opera por presupuesto mensual: no hay ventana de 5h.',
+    'session-gemini': 'Free tier de Gemini no expone consumo acumulado por API.',
+    'week-gemini': 'Free tier de Gemini no expone consumo acumulado por API.',
+};
+const QUOTA_SINDATO_DEFAULT = 'Sin dato de consumo disponible para este proveedor en esta ventana.';
+
+// Colores de confianza (UX G2): reusa la paleta del banner de snapshot.
+//   fresh = verde, stale = ambar, missing/parser-offline = dim (= "sin dato").
+function _quotaConfidenceColor(confidence){
+    if(confidence === 'fresh') return 'var(--in-ok,#3fb950)';
+    if(confidence === 'stale') return 'var(--in-warn,#d29922)';
+    return 'var(--text-dim,#8b949e)';
+}
+
+// Hidrata una fila proveedor/bucket. b es el sub-shape {pct, confidence} del
+// slice, o null. uiKey en {anthropic,codex,gemini}; bucket en {session,week}.
+function _hydrateProviderRow(bucket, uiKey, b){
+    const barId = 'mz-quota-'+bucket+'-'+uiKey+'-bar';
+    const pctId = 'mz-quota-'+bucket+'-'+uiKey+'-pct';
+    const pctEl = document.getElementById(pctId);
+    const barEl = document.getElementById(barId);
+    const rowEl = barEl ? barEl.closest('.mz-prow') : null;
+    const hasData = b && b.pct != null && Number.isFinite(Number(b.pct));
+    if(hasData){
+        const pct = Number(b.pct);
+        setBarPct(barId, pct);
+        setText(pctId, pct.toFixed(1)+'%');
+        const color = _quotaConfidenceColor(b.confidence);
+        if(pctEl && pctEl.style.color !== color) pctEl.style.color = color;
+        // La barra mantiene el color del proveedor (no la atenuamos cuando hay
+        // dato); solo el % refleja la confianza (ambar si el snapshot esta stale).
+        if(rowEl){
+            rowEl.classList.remove('mz-prow-nodata');
+            const ariaPct = pct.toFixed(1)+'%';
+            if(rowEl.getAttribute('aria-label') !== ariaPct) rowEl.setAttribute('aria-label', ariaPct);
+        }
+    } else {
+        // "sin dato" explicito (CA-1 + UX G1): texto literal (no 0%, no guion),
+        // barra a 0, tono dim, tooltip con el motivo.
+        setBarPct(barId, 0);
+        setText(pctId, 'sin dato');
+        const dim = 'var(--text-dim,#8b949e)';
+        if(pctEl && pctEl.style.color !== dim) pctEl.style.color = dim;
+        if(rowEl){
+            rowEl.classList.add('mz-prow-nodata');
+            const reason = QUOTA_SINDATO_REASON[bucket+'-'+uiKey] || QUOTA_SINDATO_DEFAULT;
+            if(rowEl.getAttribute('title') !== reason) rowEl.setAttribute('title', reason);
+            if(rowEl.getAttribute('aria-label') !== 'sin dato') rowEl.setAttribute('aria-label', 'sin dato');
+        }
+    }
+}
+
+function renderProviderQuotaRows(d){
+    if(!d || !d.providers) return;
+    // UI usa bucket 'week'; el slice usa 'weekly'. Traduccion explicita.
+    const BUCKET_SLICE = { session: 'session', week: 'weekly' };
+    for(const bucket of ['session','week']){
+        for(const uiKey of ['anthropic','codex','gemini']){
+            const p = d.providers[PROVIDER_ID_MAP[uiKey]];
+            const b = p ? p[BUCKET_SLICE[bucket]] : null;
+            _hydrateProviderRow(bucket, uiKey, b);
+        }
+    }
+}
+
+// Ticker dedicado (CA-5): SOLO hidrata las filas por proveedor; NO toca
+// renderQuotaCard ni tickQuota (el % agregado sigue intacto).
+async function tickProviderQuota(){
+    const d = await fetchJson('/api/dash/quota');
+    if(!d) return;
+    renderProviderQuotaRows(d);
 }
 
 // Cuenta regresiva del ETA actualizada cada segundo sin re-fetch.
@@ -3448,6 +3539,9 @@ const POLLS = [
     { fn: tickHeader, ms: 5000 },
     { fn: tickKpis, ms: 60000 },
     { fn: tickQuota, ms: 60000 },
+    // #4202 — desglose de cuota por proveedor (6 filas del panel MIZPÁ). 60s
+    // alineado con tickQuota; el dato cambia lento (snapshot OCR + métricas).
+    { fn: tickProviderQuota, ms: 60000 },
     // #2976 — banner de cuota agotada. 5s da una latencia aceptable entre
     // que el detector escribe el flag y el banner aparece, sin saturar
     // el dashboard con I/O del JSON cada segundo (cap 10KB ya defendía,
@@ -4647,11 +4741,10 @@ function renderMissionBanner(state) {
 }
 
 // Fila de proveedor para las cuotas desglosadas (CA-6). El % real por proveedor
-// (Anthropic/Codex/Gemini) requiere la extracción del consumo desde el cliente
-// de escritorio (Anthropic) / API (Codex/Gemini) — backend separado (split,
-// child issue). Hasta entonces la fila se muestra en estado neutro "—" con su
-// barra a 0; el % AGREGADO de sesión/semana sí es real (tickQuota). IDs listos
-// para hidratación futura sin re-render.
+// (Anthropic/Codex/Gemini) lo hidrata `tickProviderQuota` (#4202) leyendo
+// `/api/dash/quota` → `providers[p].{session|weekly}` = {pct, confidence}.
+// La fila arranca en estado neutro "—" con su barra a 0; el ticker la actualiza
+// a % real (con color de confianza) o "sin dato" explícito sin re-render.
 function _mzProviderRow(bucket, key, name, color) {
     return `
         <div class="mz-prow" title="Consumo de ${escapeHtmlAttr(name)} en esta ventana (desglose por proveedor — en preparación).">
