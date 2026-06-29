@@ -231,3 +231,7 @@ scripts/planner-plan.json
 # Python bytecode cache (whisper_fw.py / STT local, #3916)
 __pycache__/
 *.pyc
+
+# #4289 — estado runtime del pacing budget por proveedor (NO commitear; se
+# genera/persiste en runtime, igual que provider-disabled.json).
+.pipeline/state/pacing-bucket.json
