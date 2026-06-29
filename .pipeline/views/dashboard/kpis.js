@@ -60,6 +60,9 @@ const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 // carga, el chrome degrada al marco inline propio y el dashboard no muere (R-4).
 let pipelineRedesign = null;
 try { pipelineRedesign = require('./pipeline-redesign'); } catch { /* fallback inline */ }
+// #4296 — Accessor compartido del banner de ola (avance %, velocidad %/h, ETA)
+// desde la fuente determinística viva /api/dash/ola-eta (no conteos done/total).
+const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
 
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 function loadTheme() {
@@ -902,7 +905,7 @@ function renderKpisWaveBanner() {
         +         '<div class="mz-wm-v" id="mission-eta-value">—</div>'
         +         '<div class="mz-wm-s" id="mission-eta-sub">cierre estimado</div></div>'
         +       '<div class="mz-wm"><div class="mz-wm-l">🚀 VELOCIDAD</div>'
-        +         '<div class="mz-wm-v" id="mission-vel-value">— <span class="mz-wm-u">iss/h</span></div>'
+        +         '<div class="mz-wm-v" id="mission-vel-value">— <span class="mz-wm-u">%/h</span></div>'
         +         '<div class="mz-wm-s">media reciente</div></div>'
         +       '<div class="mz-wm"><div class="mz-wm-l">📦 ENTREGADOS</div>'
         +         '<div class="mz-wm-v" id="mission-delivered-value">—<span class="mz-wm-u"> / —</span></div>'
@@ -1166,8 +1169,8 @@ function renderKpisChromeScript() {
       var issues=Array.isArray(wave.issues)?wave.issues:[];
       var done=0,active=0,blocked=0,queue=0;
       for(var i=0;i<issues.length;i++){var s=issues[i]&&issues[i].status;if(s==="completed")done++;else if(s==="in-progress")active++;else if(s==="blocked")blocked++;else queue++;}
-      var total=issues.length||0,pct=total>0?Math.round((done/total)*100):0;
-      setText("mission-avance-pct",pct+"%");
+      var total=issues.length||0;
+      // #4296 — avance % lo hidrata el accessor compartido (/api/dash/ola-eta).
       setText("mission-leg-done",String(done));setText("mission-leg-active",String(active));
       setText("mission-leg-blocked",String(blocked));setText("mission-leg-queue",String(queue));
       var w=function(n){return total>0?((n/total)*100).toFixed(1)+"%":"0%";};
@@ -1202,6 +1205,7 @@ function renderKpisChromeScript() {
   }
   function init(){tickHeader();tickWaves();setInterval(tickHeader,5000);setInterval(tickWaves,30000);}
   if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",init);else init();
+  ${missionOlaEtaClientScript()}
 })();</script>`;
 }
 

@@ -39,6 +39,9 @@ const { escapeHtmlAttr } = require('../../lib/escape-html.js');
 // framework de modal de confirmación con preview (CA-3) que reemplaza confirm().
 const { FETCH_CLIENT_JS } = require('./fetch-client.js');
 const { CONFIRM_MODAL_JS } = require('./confirm-modal.js');
+// #4296 — Accessor compartido del banner de ola (avance %, velocidad %/h, ETA)
+// desde la fuente determinística viva /api/dash/ola-eta (no conteos done/total).
+const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
 
 // #3964 (EP8-H11) — Geometría pura del timeline (min↔px, snap, blockRect,
 // wouldOverlap), unit-testeable sin DOM. Se inyecta como `RestTimelineGeo`
@@ -1354,8 +1357,8 @@ async function tickDescansoMission(){
             else queue++;
         }
         const total = issues.length || 0;
-        const pct = total > 0 ? Math.round((done/total)*100) : 0;
-        setText('mission-avance-pct', pct + '%');
+        // #4296 — avance % lo hidrata el accessor compartido (/api/dash/ola-eta);
+        // acá sólo leyenda/barras/entregados desde los conteos de la ola.
         setText('mission-leg-done', String(done));
         setText('mission-leg-active', String(active));
         setText('mission-leg-blocked', String(blocked));
@@ -1370,23 +1373,16 @@ async function tickDescansoMission(){
         setValueUnit(dv, done, ' / ' + total);
         const dsub = document.getElementById('mission-delivered-sub');
         if(dsub) dsub.textContent = Math.max(0, total-done) + ' restantes';
-        const openedAt = wave.openedAt ? Date.parse(wave.openedAt) : NaN;
-        const vv = document.getElementById('mission-vel-value');
-        if(vv){
-            if(Number.isFinite(openedAt) && done > 0){
-                const hours = (Date.now() - openedAt) / 3600000;
-                setValueUnit(vv, hours > 0.1 ? (done/hours).toFixed(1) + ' ' : '— ', 'iss/h');
-            } else {
-                setValueUnit(vv, '— ', 'iss/h');
-            }
-        }
+        // #4296 — velocidad (%/h) y ETA los hidrata el accessor compartido desde
+        // /api/dash/ola-eta (ritmo determinístico de la ola), no desde openedAt.
     } catch(_) {}
 }
 
 const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickRestMode, ms: 8000 }, { fn: tickDescansoMission, ms: 30000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
-for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
+for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }
+${missionOlaEtaClientScript()}`;
     return { body, css, script };
 }
 

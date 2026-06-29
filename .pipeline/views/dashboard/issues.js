@@ -81,6 +81,9 @@ try { pipelineRedesign = require('./pipeline-redesign'); } catch { /* fallback i
 // confirmación con preview. Mismo patrón que home.js / satellites.js.
 const { FETCH_CLIENT_JS, renderStaleBanner } = require('./fetch-client.js');
 const { CONFIRM_MODAL_JS } = require('./confirm-modal.js');
+// #4296 — Accessor compartido del banner de ola: avance %, velocidad %/h y ETA
+// vienen del cómputo determinístico vivo (/api/dash/ola-eta), NO de conteos.
+const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
 
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 const TOKENS_CSS_PATH = path.join(__dirname, '..', '..', 'assets', 'design-tokens.css');
@@ -1300,8 +1303,8 @@ function renderIssuesClientScript() {
         else queue++;
       }
       var total = issues.length || 0;
-      var pct = total > 0 ? Math.round((done / total) * 100) : 0;
-      setText('mission-avance-pct', pct + '%');
+      // #4296 — el avance % lo hidrata el accessor compartido desde /api/dash/ola-eta
+      // (totalPct determinístico), no desde done/total. Acá sólo leyenda/barras.
       setText('mission-leg-done', String(done));
       setText('mission-leg-active', String(active));
       setText('mission-leg-blocked', String(blocked));
@@ -1486,7 +1489,8 @@ ${renderStaleBanner()}
 </div>
 <script>${FETCH_CLIENT_JS}
 ${CONFIRM_MODAL_JS}
-${renderIssuesClientScript()}</script>
+${renderIssuesClientScript()}
+${missionOlaEtaClientScript()}</script>
 </body>
 </html>`;
 }

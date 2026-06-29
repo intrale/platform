@@ -39,6 +39,9 @@ const path = require('node:path');
 const { escapeHtmlText, escapeHtmlAttr } = require('../../lib/escape-html.js');
 const { renderStatusBadge } = require('./components');
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
+// #4296 — Accessor compartido del banner de ola (avance %, velocidad %/h, ETA)
+// desde la fuente determinística viva /api/dash/ola-eta (no conteos done/total).
+const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
 
 // Fuentes de datos (libs puras — sin req/res). Cada require va con guarda en el
 // colector correspondiente: si una lib falla, la pantalla degrada con "sin
@@ -752,8 +755,8 @@ const PROVIDERS_CLIENT_JS = `
           else queue++;
         }
         var total = issues.length || 0;
-        var pct = total > 0 ? Math.round((done/total)*100) : 0;
-        setText('mission-avance-pct', pct + '%');
+        // #4296 — avance % lo hidrata el accessor compartido (/api/dash/ola-eta);
+        // acá sólo leyenda/barras/entregados desde los conteos de la ola.
         setText('mission-leg-done', String(done));
         setText('mission-leg-active', String(active));
         setText('mission-leg-blocked', String(blocked));
@@ -768,18 +771,8 @@ const PROVIDERS_CLIENT_JS = `
         if(dv) dv.innerHTML = done + '<span class="mz-wm-u"> / ' + total + '</span>';
         var dsub = document.getElementById('mission-delivered-sub');
         if(dsub) dsub.textContent = Math.max(0, total-done) + ' restantes';
-        var openedAt = wave.openedAt ? Date.parse(wave.openedAt) : NaN;
-        var vv = document.getElementById('mission-vel-value');
-        if(vv){
-          if(isFinite(openedAt) && done > 0){
-            var hours = (Date.now() - openedAt) / 3600000;
-            vv.innerHTML = hours > 0.1
-              ? (done/hours).toFixed(1) + ' <span class="mz-wm-u">iss/h</span>'
-              : '— <span class="mz-wm-u">iss/h</span>';
-          } else {
-            vv.innerHTML = '— <span class="mz-wm-u">iss/h</span>';
-          }
-        }
+        // #4296 — velocidad (%/h) y ETA los hidrata el accessor compartido desde
+        // /api/dash/ola-eta (ritmo determinístico de la ola), no desde openedAt.
       } catch(_) {}
     });
   }
@@ -809,6 +802,7 @@ const PROVIDERS_CLIENT_JS = `
     var t = ev.target.closest ? ev.target.closest('[data-action="toggle-kill"]') : null;
     if(t){ ev.preventDefault(); toggleKill(t); }
   });
+  ${missionOlaEtaClientScript()}
 })();
 `;
 
