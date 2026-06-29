@@ -12,7 +12,7 @@ que sabe que el producto es Intrale).
 | Épica | Documento | Estado |
 |-------|-----------|--------|
 | EP-OLA8-A · Inventario de frontera | [`inventario-frontera.md`](./inventario-frontera.md) | ✅ Entregado (#4009) |
-| EP-OLA8-B · Contrato kernel↔adaptador | _pendiente_ | ⏳ Consume la lista priorizada del inventario |
+| EP-OLA8-B · Contrato kernel↔adaptador | [`../pipeline/contrato-kernel-adaptador.md`](../pipeline/contrato-kernel-adaptador.md) | ✅ Entregado (#4010) |
 
 ## Cómo encadenan
 
