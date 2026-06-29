@@ -49,6 +49,14 @@ try { quotaSnapshotIntegration = require('./quota-snapshot-integration'); } catc
 let providerQuotaGuard = null;
 try { providerQuotaGuard = require('./provider-quota-guard'); } catch { /* opcional */ }
 
+// #4289 — Presupuesto de ritmo (pacing budget) por proveedor. El slice expone el
+// estado (verde/amarillo/rojo + saldo del bucket) junto a las barras de cuota.
+// `quotaSlice` evalúa el pacing en vivo en cada poll (reusa el slice ya
+// normalizado, mismo patrón que #4282). Tolerante a la ausencia del módulo
+// (kill-switch / feature off): si no carga, el slice degrada sin romper nada.
+let pacingBucket = null;
+try { pacingBucket = require('./pacing-bucket'); } catch { /* opcional */ }
+
 // #2976 — Skills determinísticos: corren en Node puro sin tokens LLM y por
 // eso siguen ejecutándose aún con `quota-exhausted.json` activo. Mantener
 // sincronizado con `DETERMINISTIC_SKILLS` del detector (#2974,
@@ -2048,6 +2056,30 @@ function quotaSlice(state, ctx) {
                 : providerQuotaGuard.readBanner({ pipelineDir: PIPELINE });
         } catch { /* fail-safe: el banner anticipado nunca tumba el slice */ }
     }
+
+    // #4289 — Evaluación del pacing budget en vivo, reusando el MISMO ciclo de
+    // poll que ya corre el guard de #4282 (sin re-extracción). El consumo real
+    // viene del slice ya normalizado (`providersClient[p].weekly`). El módulo es
+    // idempotente, persiste el bucket y dispara transiciones (disable/clear +
+    // Telegram). Best-effort: NUNCA rompe el slice de cuota. Si `pacing.enabled`
+    // está en false (default), `evaluate` es no-op y `out.pacing` queda vacío.
+    out.pacing = { enabled: false, providers: {} };
+    if (pacingBucket && typeof pacingBucket.evaluate === 'function') {
+        try {
+            const rawConfig = _loadGuardRawConfig(PIPELINE);
+            pacingBucket.evaluate({
+                slice: { providers: providersClient },
+                rawConfig,
+                pipelineDir: PIPELINE,
+            });
+            const pslice = pacingBucket.readPacingSlice({ pipelineDir: PIPELINE });
+            const cfg = pacingBucket.loadPacingConfig(rawConfig);
+            out.pacing = {
+                enabled: !!(cfg && cfg.enabled),
+                providers: (pslice && pslice.providers) || {},
+            };
+        } catch { /* fail-safe: el pacing nunca tumba el slice de cuota */ }
+    }
     return out;
 }
 
@@ -2081,6 +2113,32 @@ function providerQuotaBannerSlice(state, ctx) {
         return providerQuotaGuard.readBanner({ pipelineDir: PIPELINE });
     } catch {
         return { active: false };
+    }
+}
+
+// =============================================================================
+// #4289 — pacingSlice: estado del presupuesto de ritmo por proveedor.
+//
+// Read-only: lee el bucket persistido (`state/pacing-bucket.json`) vía
+// `pacing-bucket.readPacingSlice`. Shape por proveedor: `{state, balance,
+// real_pct, expected_pct}`. FAIL-OPEN: ante ausencia del módulo o error ⇒
+// `{enabled:false, providers:{}}`. La evaluación efectiva (acreditación +
+// transiciones) ocurre en `quotaSlice` (en vivo, mismo poll que #4282).
+// =============================================================================
+function pacingSlice(state, ctx) {
+    const empty = { enabled: false, providers: {} };
+    if (!pacingBucket || typeof pacingBucket.readPacingSlice !== 'function') return empty;
+    try {
+        const PIPELINE = ctx && ctx.PIPELINE;
+        const slice = pacingBucket.readPacingSlice({ pipelineDir: PIPELINE });
+        let enabled = false;
+        try {
+            const cfg = pacingBucket.loadPacingConfig(_loadGuardRawConfig(PIPELINE));
+            enabled = !!(cfg && cfg.enabled);
+        } catch { /* enabled queda false */ }
+        return { enabled, providers: (slice && slice.providers) || {} };
+    } catch {
+        return empty;
     }
 }
 
@@ -2921,6 +2979,8 @@ module.exports = {
     normalizeProviderQuota,
     quotaExhaustedSlice,
     providerQuotaBannerSlice,
+    // #4289 — slice del presupuesto de ritmo (pacing budget) por proveedor
+    pacingSlice,
     // #3962 EP8-H9 — slice de la pantalla Costos rediseñada
     costosSlice,
     reconcilerStaleOrdersSlice,

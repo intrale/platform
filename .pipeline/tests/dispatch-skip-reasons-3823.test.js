@@ -584,6 +584,51 @@ test('#4282 · soft-gate sin fallback resoluble → usa el primary, chain NUNCA 
 });
 
 // =============================================================================
+// #4289 — pacing budget: el amarillo de-prioriza, el rojo salta (skipReasons).
+// =============================================================================
+function makePacingModule(states = {}) {
+    return { getPacingState: (p) => states[p] || 'green' };
+}
+
+test('#4289 · 🟡 amarillo de pacing → de-prioriza primario, skipReason pacing_budget_yellow', () => {
+    const models = baseModels();
+    models.skills['guru'] = { provider: 'anthropic', fallbacks: ['openai-codex'] };
+    const dir = mkTmpPipelineDir(models);
+    try {
+        const r = resolveSpawnWithFallback({
+            skill: 'guru', issue: 4289, pipelineDir: dir,
+            quotaModule: makeQuotaModule([]),
+            pacingModule: makePacingModule({ anthropic: 'yellow' }),
+            primaryResolver, providerHandlerResolver,
+            notify: silentNotify, processEnv: ENV_WITH_KEYS,
+        });
+        assert.equal(r.provider, 'openai-codex');
+        const reasons = r.skipReasons.map((s) => s.reason);
+        assert.ok(reasons.includes('pacing_budget_yellow'));
+        recordReasons(r.skipReasons);
+    } finally { cleanup(dir); }
+});
+
+test('#4289 · 🔴 rojo de pacing → salta al fallback, skipReason pacing_budget_red', () => {
+    const models = baseModels();
+    models.skills['guru'] = { provider: 'anthropic', fallbacks: ['openai-codex'] };
+    const dir = mkTmpPipelineDir(models);
+    try {
+        const r = resolveSpawnWithFallback({
+            skill: 'guru', issue: 4289, pipelineDir: dir,
+            quotaModule: makeQuotaModule([]),
+            pacingModule: makePacingModule({ anthropic: 'red' }),
+            primaryResolver, providerHandlerResolver,
+            notify: silentNotify, processEnv: ENV_WITH_KEYS,
+        });
+        assert.equal(r.provider, 'openai-codex');
+        const reasons = r.skipReasons.map((s) => s.reason);
+        assert.ok(reasons.includes('pacing_budget_red'));
+        recordReasons(r.skipReasons);
+    } finally { cleanup(dir); }
+});
+
+// =============================================================================
 // Meta-cobertura: TODOS los códigos de razón documentados deben haberse
 // ejercitado por la suite (CA: "cada código de razón figura en al menos un
 // test case").
