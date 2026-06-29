@@ -54,6 +54,13 @@ function _healthSeverity(health) {
 // #3726 — Nav bar V3 unificada (tab activa = "kpis").
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 
+// #4243 — Marco común MIZPÁ (cabecera de marca + cabecera de ola) que entregó
+// #4234 (PR #4254) como helpers reutilizables. KPIs los consume en lugar de
+// clonar el markup (CA-5: no duplicar). Require defensivo: si el módulo no
+// carga, el chrome degrada al marco inline propio y el dashboard no muere (R-4).
+let pipelineRedesign = null;
+try { pipelineRedesign = require('./pipeline-redesign'); } catch { /* fallback inline */ }
+
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 function loadTheme() {
     try { return fs.readFileSync(THEME_CSS_PATH, 'utf8'); } catch { return ''; }
@@ -186,6 +193,13 @@ const SPARK_COLORS = {
 const KPIS_CSS = `
 .satellite-frame { max-width: 1600px; margin: 0 auto; padding: 0; }
 .satellite-body { padding: 22px 28px; display: flex; flex-direction: column; gap: 18px; }
+
+/* #4243 — Estados del pill de modo del marco común MIZPÁ (id hdr-mode). El marco
+   común los trae como extraCss en otras pantallas; theme.css no los define, así
+   que KPIs los aporta localmente para no divergir visualmente con el resto. */
+.in-mode-running { color: var(--in-ok); border-color: var(--in-ok); background: var(--in-ok-soft); }
+.in-mode-paused { color: var(--in-bad); border-color: var(--in-bad); background: var(--in-bad-soft); }
+.in-mode-partial { color: var(--in-warn); border-color: var(--in-warn); background: var(--in-warn-soft); }
 
 .kpis-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
 @media (max-width: 1100px) { .kpis-row { grid-template-columns: repeat(3, 1fr); } }
@@ -853,6 +867,62 @@ function renderMizpaBrandBar() {
     </div>`;
 }
 
+// #4243 — Marco común MIZPÁ. Los 3 bloques superiores (① cabecera de marca,
+// ② cabecera de ola, ③ barra de accesos) son IDÉNTICOS al resto de las pantallas
+// (referencia canónica: PIPELINE, #4234). KPIs reutiliza los helpers compartidos
+// en vez de clonar markup (CA-5). `renderMizpaBrandBar` (arriba) queda como red
+// de seguridad (R-4) si el módulo común no carga.
+function _hasSharedFrame() {
+    return !!(pipelineRedesign
+        && typeof pipelineRedesign.renderBrandBarPipeline === 'function'
+        && typeof pipelineRedesign.renderMissionBannerPipeline === 'function');
+}
+
+// ① Cabecera de marca: la común suma el pill de build (id `bld-status`) al markup
+// que ya tenía KPIs; el fallback conserva la marca local sin ese pill.
+function renderKpisBrandBar() {
+    return _hasSharedFrame() ? pipelineRedesign.renderBrandBarPipeline() : renderMizpaBrandBar();
+}
+
+// ② Cabecera de ola común (tag OLA + título + métricas ⏱/🚀/📦 + bloque AVANCE
+// con leyenda de puntitos). Se hidrata client-side desde /api/dash/waves con los
+// mismos IDs `mission-*` que HOME/PIPELINE. Fallback inline mínimo (R-4): mantiene
+// los mismos contenedores/IDs para que la hidratación siga funcionando.
+function renderKpisWaveBanner() {
+    if (_hasSharedFrame()) return pipelineRedesign.renderMissionBannerPipeline();
+    return ''
+        + '<section class="mz-mission" id="mz-mission" aria-label="Misión de la ola activa">'
+        +   '<div class="mz-wavetag"><span class="mz-wavetag-k">OLA</span>'
+        +     '<span class="mz-wavetag-n" id="mission-wave-num">—</span></div>'
+        +   '<div class="mz-mission-text"><div class="mz-mission-ttl">'
+        +     '<span id="mission-wave-name">Sin ola activa</span></div>'
+        +     '<div class="mz-mission-desc" id="mission-wave-desc">Backlog de la ola activa.</div>'
+        +     '<div class="mz-mission-metrics">'
+        +       '<div class="mz-wm"><div class="mz-wm-l">⏳ ETA DE LA OLA</div>'
+        +         '<div class="mz-wm-v" id="mission-eta-value">—</div>'
+        +         '<div class="mz-wm-s" id="mission-eta-sub">cierre estimado</div></div>'
+        +       '<div class="mz-wm"><div class="mz-wm-l">🚀 VELOCIDAD</div>'
+        +         '<div class="mz-wm-v" id="mission-vel-value">— <span class="mz-wm-u">iss/h</span></div>'
+        +         '<div class="mz-wm-s">media reciente</div></div>'
+        +       '<div class="mz-wm"><div class="mz-wm-l">📦 ENTREGADOS</div>'
+        +         '<div class="mz-wm-v" id="mission-delivered-value">—<span class="mz-wm-u"> / —</span></div>'
+        +         '<div class="mz-wm-s" id="mission-delivered-sub">restantes</div></div>'
+        +     '</div></div>'
+        +   '<div class="mz-mission-prog">'
+        +     '<div class="mz-prog-head"><span>AVANCE</span><span class="mz-prog-pct" id="mission-avance-pct">0%</span></div>'
+        +     '<div class="mz-prog-bar">'
+        +       '<i id="mission-bar-done" style="width:0%;background:var(--in-ok,#3fb950)"></i>'
+        +       '<i id="mission-bar-active" style="width:0%;background:var(--in-info,#58a6ff)"></i>'
+        +       '<i id="mission-bar-blocked" style="width:0%;background:var(--in-bad,#f85149)"></i>'
+        +       '<i id="mission-bar-queue" style="width:0%;background:rgba(255,255,255,.10)"></i></div>'
+        +     '<div class="mz-prog-legend">'
+        +       '<span><i class="mz-dot" style="background:var(--in-ok,#3fb950)"></i> <b id="mission-leg-done">0</b> hechos</span>'
+        +       '<span><i class="mz-dot" style="background:var(--in-info,#58a6ff)"></i> <b id="mission-leg-active">0</b> activos</span>'
+        +       '<span><i class="mz-dot" style="background:var(--in-bad,#f85149)"></i> <b id="mission-leg-blocked">0</b> bloq.</span>'
+        +       '<span><i class="mz-dot" style="background:rgba(255,255,255,.25)"></i> <b id="mission-leg-queue">0</b> cola</span></div></div>'
+        + '</section>';
+}
+
 // CA-1 (#4198) — miga de pan: KPIs vive dentro de «⋯ Más» (tab secundario). La
 // nav ya deja el popover abierto + KPIs marcado vía renderNavTabsSsr('kpis');
 // la miga refuerza la ubicación `⋯ Más › 📊 KPIs`.
@@ -1073,6 +1143,68 @@ function renderMissionBannerHTML(opts) {
         + `</section>`;
 }
 
+// #4243 — Hidratación del marco común MIZPÁ. El banner de ola (② AVANCE) y la
+// cabecera (reloj + estado del pipeline + pill de build) se hidratan client-side
+// con los MISMOS IDs `mission-*` / `hdr-*` / `bld-status` que el resto de las
+// pantallas, consumiendo /api/dash/waves y /api/dash/header. No se duplica
+// markup: sólo se reusa el contrato de IDs del marco compartido. Defensivo: si
+// un fetch falla, el banner queda en su estado SSR sin romper la página.
+function renderKpisChromeScript() {
+    return `<script>(function(){
+  "use strict";
+  function fetchJson(url){return fetch(url,{headers:{accept:"application/json"}}).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;});}
+  function setText(id,v){var el=document.getElementById(id);if(el&&el.textContent!==String(v))el.textContent=String(v);}
+  function setWidth(id,p){var el=document.getElementById(id);if(el)el.style.width=p;}
+  function mirrorMission(d){
+    try{
+      var wave=d&&d.active_wave;
+      if(!wave){setText("mission-wave-num","—");setText("mission-wave-name","Sin ola activa");return;}
+      if(isFinite(wave.number))setText("mission-wave-num",String(wave.number));
+      setText("mission-wave-name",wave.name?("Ola "+wave.number+" · "+wave.name):("Ola "+wave.number));
+      var desc=wave.goal||wave.description;if(desc)setText("mission-wave-desc",desc);
+      var tag=document.getElementById("mission-wave-tag");if(tag)tag.style.display=wave.isLast?"":"none";
+      var issues=Array.isArray(wave.issues)?wave.issues:[];
+      var done=0,active=0,blocked=0,queue=0;
+      for(var i=0;i<issues.length;i++){var s=issues[i]&&issues[i].status;if(s==="completed")done++;else if(s==="in-progress")active++;else if(s==="blocked")blocked++;else queue++;}
+      var total=issues.length||0,pct=total>0?Math.round((done/total)*100):0;
+      setText("mission-avance-pct",pct+"%");
+      setText("mission-leg-done",String(done));setText("mission-leg-active",String(active));
+      setText("mission-leg-blocked",String(blocked));setText("mission-leg-queue",String(queue));
+      var w=function(n){return total>0?((n/total)*100).toFixed(1)+"%":"0%";};
+      setWidth("mission-bar-done",w(done));setWidth("mission-bar-active",w(active));
+      setWidth("mission-bar-blocked",w(blocked));setWidth("mission-bar-queue",w(queue));
+      var dv=document.getElementById("mission-delivered-value");
+      if(dv)dv.innerHTML=done+'<span class="mz-wm-u"> / '+total+'</span>';
+      var dsub=document.getElementById("mission-delivered-sub");
+      if(dsub)dsub.textContent=Math.max(0,total-done)+" restantes";
+    }catch(e){}
+  }
+  async function tickWaves(){var d=await fetchJson("/api/dash/waves");if(d)mirrorMission(d);}
+  async function tickHeader(){
+    setText("hdr-clock",new Date().toLocaleTimeString("es-AR"));
+    var d=await fetchJson("/api/dash/header");if(!d)return;
+    var mp=document.getElementById("hdr-mode");
+    if(mp){
+      mp.classList.remove("in-mode-running","in-mode-paused","in-mode-partial");
+      if(d.mode==="paused"){mp.classList.add("in-mode-paused");mp.textContent="⏸ Pausado";}
+      else if(d.mode==="partial_pause"){var n=Array.isArray(d.allowedIssues)?d.allowedIssues.length:0;mp.classList.add("in-mode-partial");mp.textContent="⏸ Parcial · "+n+" issues";}
+      else{mp.classList.add("in-mode-running");mp.textContent="🟢 Running";}
+    }
+    var bld=document.getElementById("bld-status");
+    if(bld&&d.build){
+      var META={passing:{cls:"in-pill-ok",t:"🟢 Build OK"},failing:{cls:"in-pill-bad",t:"🔴 Build roto"},running:{cls:"in-pill-warn",t:"🟡 Build corriendo"},unknown:{cls:"in-pill-info",t:"○ Build ?"}};
+      var m=META[d.build.status]||META.unknown;
+      bld.classList.remove("in-pill-ok","in-pill-bad","in-pill-warn","in-pill-info");
+      bld.classList.add(m.cls);
+      var detail=[d.build.branch,d.build.commit].filter(Boolean).join(" · ");
+      bld.textContent=m.t+(detail?" · "+detail:"");
+    }
+  }
+  function init(){tickHeader();tickWaves();setInterval(tickHeader,5000);setInterval(tickWaves,30000);}
+  if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",init);else init();
+})();</script>`;
+}
+
 // =============================================================================
 // Render principal de la ventana `?view=kpis`.
 // =============================================================================
@@ -1121,11 +1253,13 @@ function renderKpis(opts) {
 <div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">${spriteInline}</div>
 <div class="satellite-frame">
   <header class="in-header">
-    ${renderMizpaBrandBar()}
+    ${renderKpisBrandBar()}
     <div class="in-header-meta">
+      <span class="in-pill in-pill-info" id="hdr-mode" title="Estado del pipeline (running / pausado / parcial).">…</span>
       <span class="in-clock" id="hdr-clock">${escapeHtmlText(new Date().toLocaleTimeString('es-AR'))}</span>
     </div>
   </header>
+  ${renderKpisWaveBanner()}
   ${navHtml}
   ${renderKpisBreadcrumb()}
   ${body}
@@ -1134,6 +1268,7 @@ function renderKpis(opts) {
     <span>Intrale V3 · #4198 · MIZPÁ</span>
   </footer>
 </div>
+${renderKpisChromeScript()}
 </body>
 </html>`;
 }
@@ -1455,6 +1590,10 @@ module.exports = {
     renderDoraAndCommanderHTML,
     // #4198 (Ola 7.1) — shell MIZPÁ + banner de misión que diagnostica.
     renderMizpaBrandBar,
+    // #4243 — marco común MIZPÁ reutilizable (delegan a pipeline-redesign).
+    renderKpisBrandBar,
+    renderKpisWaveBanner,
+    renderKpisChromeScript,
     renderKpisBreadcrumb,
     renderMissionBannerHTML,
     _computeHealthDiagnosis,
