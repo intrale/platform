@@ -62,6 +62,28 @@ const { escapeHtmlText, escapeHtmlAttr } = require('../../lib/escape-html.js');
 // el último dato. Reemplaza la copia local con .catch(()=>null).
 const { FETCH_CLIENT_JS } = require('./fetch-client.js');
 
+// #4241 — «Cabecera de ola» del marco común MIZPÁ (② del marco de #4234). Se
+// reutiliza el helper canónico compartido `renderMissionBannerPipeline()`
+// (pipeline-redesign.js, el mismo que consumen HOME #4235, COSTOS #4239, EQUIPO,
+// BLOQUEADOS e ISSUES #4266), de modo que MATRIZ muestre EXACTAMENTE el mismo
+// banner de ola que el resto de las pantallas: mismos contenedores `mz-*` y
+// mismos IDs hidratables (`mission-wave-*`, `mission-eta/-vel/-delivered-*`,
+// `mz-prog-bar` + leyenda de puntitos hechos·activos·bloq·cola). Al delegar en
+// una única fuente de markup, las pantallas no pueden divergir (CA: «no se
+// duplica markup»). require defensivo: si el módulo común no carga (checkout
+// viejo / test aislado), el marco degrada SIN banner — nunca rompe el render ni
+// devuelve 500. El contenido propio de MATRIZ (banner diagnóstico `mtx-mission`
+// + heatmap) queda intacto debajo del marco.
+let _renderMissionBannerPipeline = null;
+try { _renderMissionBannerPipeline = require('./pipeline-redesign').renderMissionBannerPipeline; }
+catch { /* opcional: sin banner de ola común */ }
+function renderOlaBannerComun() {
+    if (typeof _renderMissionBannerPipeline === 'function') {
+        try { return _renderMissionBannerPipeline(); } catch { /* degrada sin banner */ }
+    }
+    return '';
+}
+
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 function loadTheme() {
     try { return fs.readFileSync(THEME_CSS_PATH, 'utf8'); } catch { return ''; }
@@ -806,7 +828,70 @@ async function tickMatriz(){
     html += '</tbody></table>';
     if(c.innerHTML !== html) c.innerHTML = html;
 }
-const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickMatriz, ms: 30000 }];
+// #4241 — Hidratación del banner de ola común (② del marco MIZPÁ). Espeja
+// /api/dash/waves a los IDs mission-* del banner compartido. Mismo cálculo que
+// el tickMission compartido de las hermanas (satellites.js). Defensivo: si el
+// banner no está montado (el deep-link a /matriz sí lo monta; el morphing del
+// router lo deja en el shell del host), los getElementById son no-op y no rompen
+// la pantalla. No interpola HTML de datos externos (textContent/innerHTML de
+// literales controlados) — XSS-safe.
+async function tickMission(){
+    const d = await fetchJson('/api/dash/waves');
+    if(!d) return;
+    try {
+        const wave = d.active_wave;
+        if(!wave){
+            setText('mission-wave-num', '—');
+            setText('mission-wave-name', 'Sin ola activa');
+            setText('mission-wave-desc', 'Esperando la planificación de la ola activa.');
+            return;
+        }
+        if(Number.isFinite(wave.number)) setText('mission-wave-num', String(wave.number));
+        setText('mission-wave-name', wave.name ? ('Ola ' + wave.number + ' · ' + wave.name) : ('Ola ' + wave.number));
+        setText('mission-wave-desc', wave.goal || wave.description || ('Issues de la ola ' + wave.number + ' en curso.'));
+        const tag = document.getElementById('mission-wave-tag');
+        if(tag) tag.style.display = wave.isLast ? '' : 'none';
+        const issues = Array.isArray(wave.issues) ? wave.issues : [];
+        let done=0, active=0, blocked=0, queue=0;
+        for(const it of issues){
+            const s = it && it.status;
+            if(s === 'completed') done++;
+            else if(s === 'in-progress') active++;
+            else if(s === 'blocked') blocked++;
+            else queue++;
+        }
+        const total = issues.length || 0;
+        const pct = total > 0 ? Math.round((done/total)*100) : 0;
+        setText('mission-avance-pct', pct + '%');
+        setText('mission-leg-done', String(done));
+        setText('mission-leg-active', String(active));
+        setText('mission-leg-blocked', String(blocked));
+        setText('mission-leg-queue', String(queue));
+        const w = (n) => total>0 ? ((n/total)*100).toFixed(1)+'%' : '0%';
+        const setW = (id,n) => { const el=document.getElementById(id); if(el) el.style.width = w(n); };
+        setW('mission-bar-done', done);
+        setW('mission-bar-active', active);
+        setW('mission-bar-blocked', blocked);
+        setW('mission-bar-queue', queue);
+        const dv = document.getElementById('mission-delivered-value');
+        if(dv) dv.innerHTML = done + '<span class="mz-wm-u"> / ' + total + '</span>';
+        const dsub = document.getElementById('mission-delivered-sub');
+        if(dsub) dsub.textContent = Math.max(0, total-done) + ' restantes';
+        const openedAt = wave.openedAt ? Date.parse(wave.openedAt) : NaN;
+        const vv = document.getElementById('mission-vel-value');
+        if(vv){
+            if(Number.isFinite(openedAt) && done > 0){
+                const hours = (Date.now() - openedAt) / 3600000;
+                vv.innerHTML = hours > 0.1
+                    ? (done/hours).toFixed(1) + ' <span class="mz-wm-u">iss/h</span>'
+                    : '— <span class="mz-wm-u">iss/h</span>';
+            } else {
+                vv.innerHTML = '— <span class="mz-wm-u">iss/h</span>';
+            }
+        }
+    } catch(_) {}
+}
+const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickMission, ms: 30000 }, { fn: tickMatriz, ms: 30000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
@@ -833,6 +918,12 @@ function renderMatriz() {
     const spriteInline = loadIconSprite();
     const navHtml = renderNavTabsSsr(slug);
     const brandHtml = renderMatrizBrandBar();
+    // #4241 — ② Cabecera de ola común del marco MIZPÁ, entre el header (①) y la
+    // nav (③), respetando el orden del marco (idéntico al pageShell de las
+    // hermanas). El banner se sirve neutro en SSR; lo hidrata tickMission desde
+    // /api/dash/waves. Si el módulo común no cargó, `olaBanner` es '' (degrada
+    // sin banner, no rompe el layout).
+    const olaBanner = renderOlaBannerComun();
     // Miga de pan: Matriz vive dentro de «⋯ Más» (tab secundario). La nav ya
     // deja el popover abierto + Matriz marcada vía renderNavTabsSsr('matriz');
     // la miga refuerza la ubicación (CA-1).
@@ -853,6 +944,10 @@ function renderMatriz() {
 <style>
 .satellite-frame { max-width: 1600px; margin: 0 auto; padding: 0; }
 .satellite-body { padding: 22px 28px; display: flex; flex-direction: column; gap: 18px; }
+/* #4241 — El banner de ola común (② del marco) vive fuera del .satellite-body
+   (entre header y nav), igual que en el pageShell de las hermanas; se alinea con
+   el padding horizontal del cuerpo. */
+.satellite-frame > .mz-mission { margin: 18px 28px 0; }
 .in-mode-running { color: var(--in-ok); border-color: var(--in-ok); background: var(--in-ok-soft); }
 .in-mode-paused { color: var(--in-bad); border-color: var(--in-bad); background: var(--in-bad-soft); }
 .in-mode-partial { color: var(--in-warn); border-color: var(--in-warn); background: var(--in-warn-soft); }
@@ -871,6 +966,7 @@ ${MATRIZ_CSS}
       <span class="in-clock" id="hdr-clock">…</span>
     </div>
   </header>
+  ${olaBanner}
   ${navHtml}
   ${breadcrumb}
   <main class="satellite-body">${renderMatrizInner()}</main>
