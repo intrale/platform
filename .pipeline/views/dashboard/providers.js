@@ -91,6 +91,7 @@ const REASON_LABEL = Object.freeze({
     forbidden: 'FORBIDDEN (403)',
     invalid_credentials: 'credencial inválida',
     quota_exhausted: 'cuota agotada',
+    quota_exhausted_real: 'sin cuota usable (medida)',
     no_key_configured: 'sin key configurada',
     unknown_provider: 'provider desconocido',
     cli_unavailable: 'CLI no disponible',
@@ -252,6 +253,10 @@ function buildProvidersModel() {
             freeTierNotes: k.free_tier_notes || h.free_tier_notes || null,
             healthState: state,
             healthReason: h.reason_code || null,
+            // #4283 — discriminante de cuota real (#4202). Independiente del
+            // estado de login: distingue "logueado" de "logueado + con cuota"
+            // (CA-5). Shape seguro { adapterStatus, status, pct } — sin secretos.
+            quota: (h.quota && typeof h.quota === 'object') ? h.quota : null,
             lastChecked: h.last_checked_at || null,
             loadPct,
             dispatches24h: disp,
@@ -323,6 +328,39 @@ function renderQuotaBar(p) {
         + `<span class="prov-quota-lbl">${p.loadPct}% carga 24h</span></div>`;
 }
 
+// #4283 — Chip de cuota real (CA-5). Dimensión INDEPENDIENTE del login: el
+// color/texto del chip refleja la cuota medida (#4202), no el OAuth. No
+// reutiliza `renderQuotaBar` (esa mide carga de despachos 24h, otra métrica).
+// Accesibilidad: el texto del chip es el portador primario de significado; el
+// color refuerza (no color-only). Umbral ≥90% lo decide el adapter (status
+// 'critical'), una sola fuente de verdad — no se hardcodea acá.
+function renderQuotaChip(p) {
+    const q = p.quota;
+    if (!q || typeof q !== 'object') return '';
+    const adapter = q.adapterStatus;
+    const status = q.status;
+    const pct = (typeof q.pct === 'number' && isFinite(q.pct)) ? q.pct : null;
+
+    let cls; let label; let tip;
+    if (adapter === 'ok' && status === 'critical') {
+        cls = 'prov-quota-chip is-bad';
+        label = 'SIN CUOTA';
+        tip = `Cuota real: ${pct == null ? '≥90' : pct}% usado · umbral rojo ≥90% · medición offline #4202`;
+    } else if (adapter === 'ok') {
+        cls = 'prov-quota-chip is-ok';
+        label = 'CON CUOTA';
+        tip = `Cuota real: ${pct == null ? '<90' : pct}% usado · umbral rojo ≥90% · medición offline #4202`;
+    } else if (adapter === 'unknown' || adapter === 'error') {
+        cls = 'prov-quota-chip is-dim';
+        label = 'CUOTA S/D';
+        tip = 'No se pudo medir la cuota (adapter unknown/error) — salud sigue por login';
+    } else {
+        // 'no_quota' / 'not_implemented' → el provider no maneja cuota medible.
+        return '';
+    }
+    return `<span class="${cls}" title="${escapeHtmlAttr(tip)}">${escapeHtmlText(label)}</span>`;
+}
+
 function renderKeyCell(p) {
     // Anthropic / OAuth-MAX: sin API key rotable por UI.
     if (!p.editable || (p.keyStatus === 'absent' && p.authMode === 'oauth')) {
@@ -380,7 +418,10 @@ function renderProviderRow(p) {
   </div>
   <div class="prov-col prov-col-key">${renderKeyCell(p)}</div>
   <div class="prov-col prov-col-health">
-    ${renderStatusBadge({ severity: sev, label: healthLabel, title: 'Salud en vivo: ' + healthLabel + ' (' + reasonTxt + ')' })}
+    <div class="prov-health-badges">
+      ${renderStatusBadge({ severity: sev, label: healthLabel, title: 'Salud en vivo: ' + healthLabel + ' (' + reasonTxt + ')' })}
+      ${renderQuotaChip(p)}
+    </div>
     <span class="prov-health-reason" title="${escapeHtmlAttr('Causa reportada por el health-cron')}">${escapeHtmlText(reasonTxt)}</span>
     ${renderQuotaBar(p)}
   </div>
@@ -620,7 +661,14 @@ const PANEL_CSS = `
 .prov-key-oauth, .prov-key-absent { color: var(--in-fg-dim); font-family: inherit; font-weight: 600; }
 .prov-fp { font-size: 10.5px; color: var(--in-fg-dim); }
 .prov-col-health { display: flex; flex-direction: column; gap: 6px; }
+.prov-health-badges { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .prov-health-reason { font-size: 11px; color: var(--in-fg-dim); }
+/* #4283 — chip de cuota real. Reutiliza las parejas MIZPÁ ya validadas (WCAG
+   AA en tema oscuro). No introduce colores nuevos. */
+.prov-quota-chip { font-size: 10.5px; font-weight: 700; letter-spacing: .04em; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--in-border); white-space: nowrap; }
+.prov-quota-chip.is-ok { color: var(--in-ok); background: var(--in-ok-soft); border-color: var(--in-ok); }
+.prov-quota-chip.is-bad { color: var(--in-bad); background: var(--in-bad-soft); border-color: var(--in-bad); }
+.prov-quota-chip.is-dim { color: var(--in-fg-dim); background: transparent; }
 .prov-quota { display: flex; align-items: center; gap: 8px; }
 .prov-quota-track { flex: 1; height: 7px; border-radius: 4px; background: var(--in-bg-2); border: 1px solid var(--in-border); overflow: hidden; min-width: 70px; }
 .prov-quota-fill { height: 100%; border-radius: 4px; transition: width .3s; }

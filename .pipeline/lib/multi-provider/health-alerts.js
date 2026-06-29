@@ -48,6 +48,7 @@ const ALLOWED_REASON_CODES = Object.freeze(new Set([
     'invalid_credentials',
     'forbidden',
     'quota_exhausted',
+    'quota_exhausted_real',   // #4283 — cuota REAL agotada (≥90%, #4202), distinto del flag reactivo binario
     'rate_limited',
     'unknown',
     'timeout',

@@ -36,9 +36,26 @@ try { quotaModule = require('./quota-exhausted'); } catch { /* opcional */ }
 let agentModelsLib = null;
 try { agentModelsLib = require('./agent-models'); } catch { /* opcional */ }
 
+// #4283 — tercer insumo de salud: cuota REAL disponible (#4202). Cómputo
+// 100% offline (activity-log + .pipeline/metrics), sin HTTP ni credenciales.
+let quotaAdaptersLib = null;
+try { quotaAdaptersLib = require('./quota-adapters'); } catch { /* opcional */ }
+
 // Cache TTL: piso 5 min (CA-5 del PO). Hardcoded para que config no pueda
 // bajar y amplificar tráfico contra providers.
 const CACHE_TTL_MS = 5 * 60 * 1000;
+
+// #4283 — reason_code que viaja al router (DURABLE_RED_REASONS) y al dashboard
+// cuando la cuota REAL está agotada aunque el login/OAuth sea válido. Debe estar
+// también en `health-alerts.ALLOWED_REASON_CODES` (si no, se colapsa a 'unknown')
+// y en `dispatch.DURABLE_RED_REASONS` (si no, el gate de fallback lo ignora).
+const QUOTA_GATE_REASON = 'quota_exhausted_real';
+
+// Normalización provider-id → id canónico de `quota-adapters` (allowlist). El
+// health-cron nombra a Codex como 'openai', pero el adapter de cuota usa
+// 'openai-codex'. Los providers fuera de la allowlist de quota-adapters
+// (p.ej. nvidia-nim) caen a adapterStatus 'error' → fail-open (no degradan).
+const QUOTA_PROVIDER_ALIAS = Object.freeze({ openai: 'openai-codex' });
 const CACHE_FILE_SUBDIR = path.join('cache', 'provider-health.json');
 
 // -----------------------------------------------------------------------------
@@ -159,6 +176,89 @@ function pingableId(provider) {
 }
 
 // -----------------------------------------------------------------------------
+// #4283 — Señal de cuota real (helper compartido endpoint + cron)
+// -----------------------------------------------------------------------------
+
+/**
+ * Resuelve el repo root para ubicar el activity-log (offline). Mismo criterio
+ * que `getDispatchByProvider`.
+ */
+function repoRootDir(opts = {}) {
+    return opts.repoRoot
+        || process.env.CLAUDE_PROJECT_DIR
+        || process.env.PIPELINE_REPO_ROOT
+        || path.resolve(__dirname, '..', '..');
+}
+
+/**
+ * Tercer insumo de salud (#4283): combina el estado de cuota REAL disponible
+ * (#4202) con el login/OAuth. Helper ÚNICO consumido por `getProviderHealth`
+ * (endpoint/slice + dashboard) y por `health-cron.js` (snapshot que lee el
+ * router), para que dashboard y router NO diverjan (decisión #4 del PO).
+ *
+ * Regla de combinación (NO fail-closed — ver Riesgos del issue):
+ *   - adapterStatus 'ok' + status 'critical' (uso ≥90%) → `gated:true`,
+ *     reason_code 'quota_exhausted_real'.
+ *   - adapterStatus 'unknown' | 'error' | 'no_quota' | 'not_implemented' →
+ *     `gated:false` (fail-open): NO degradamos, se mantiene el estado
+ *     login-based. Coherente con la política fail-open del router (MP-09).
+ *
+ * El umbral 'critical' (≥90%) lo decide el adapter desde `quota-thresholds.js`
+ * (`DEFAULT_PCT_RED`). NO se hardcodea un 90 nuevo acá: una sola fuente de
+ * verdad de umbrales (decisión #1 del PO).
+ *
+ * SEGURIDAD (req#1-3): devuelve SOLO `{ adapterStatus, status, pct, gated,
+ * reason_code }`. Nunca API keys, tokens, headers ni el payload crudo del
+ * proveedor. `quotaUsage` es offline (sin requests HTTP, no toca credenciales).
+ *
+ * @param {string} provider — id de provider (acepta alias 'openai').
+ * @param {object} [opts]
+ * @param {function} [opts.quotaUsageImpl] — inyectable para tests.
+ * @param {number} [opts.now] — timestamp determinístico (tests).
+ * @returns {{ adapterStatus:string, status:string, pct:(number|null), gated:boolean, reason_code:(string|null) }}
+ */
+function assessProviderQuota(provider, opts = {}) {
+    const safe = { adapterStatus: 'unknown', status: 'unknown', pct: null, gated: false, reason_code: null };
+    const quotaUsageFn = opts.quotaUsageImpl
+        || (quotaAdaptersLib && typeof quotaAdaptersLib.quotaUsage === 'function' ? quotaAdaptersLib.quotaUsage : null);
+    if (!quotaUsageFn) return safe;
+
+    const canonical = QUOTA_PROVIDER_ALIAS[provider] || provider;
+    const metricsDir = path.join(pipelineDir(opts), 'metrics');
+    const activityLogPath = path.join(repoRootDir(opts), '.claude', 'activity-log.jsonl');
+
+    let q;
+    try {
+        q = quotaUsageFn(canonical, {
+            metricsDir,
+            activityLogPath,
+            configLimitHours: canonical === 'anthropic'
+                ? (Number(process.env.ANTHROPIC_MAX_WEEKLY_HOURS) || undefined)
+                : undefined,
+            now: Number.isFinite(opts.now) ? opts.now : undefined,
+        });
+    } catch {
+        return safe; // fail-open ante excepción inesperada del adapter.
+    }
+    if (!q || typeof q !== 'object') return safe;
+
+    const adapterStatus = typeof q.adapterStatus === 'string' ? q.adapterStatus : 'unknown';
+    const status = typeof q.status === 'string' ? q.status : 'unknown';
+    const pct = Number.isFinite(q.pct) ? q.pct : null;
+
+    // Gatear SOLO con señal fresca y durable: adapter OK + cuota crítica (≥90%).
+    const gated = adapterStatus === 'ok' && status === 'critical';
+
+    return {
+        adapterStatus,
+        status,
+        pct,
+        gated,
+        reason_code: gated ? QUOTA_GATE_REASON : null,
+    };
+}
+
+// -----------------------------------------------------------------------------
 // Slice principal
 // -----------------------------------------------------------------------------
 
@@ -192,6 +292,18 @@ async function getProviderHealth(opts = {}) {
 
     for (const meta of providersMeta) {
         const provider = meta.id;
+
+        // #4283 — tercer insumo: cuota real (#4202). Offline, sin HTTP. Se
+        // computa para TODOS los providers (incluido el primario/not_applicable)
+        // porque el dashboard la muestra para todos (CA-5). Sólo degrada el
+        // status cuando `gated` (adapter OK + cuota crítica).
+        const quotaSignal = assessProviderQuota(provider, { ...opts, now });
+        const quotaField = {
+            adapterStatus: quotaSignal.adapterStatus,
+            status: quotaSignal.status,
+            pct: quotaSignal.pct,
+        };
+
         const cached = cache.providers[provider] || {};
         const cachedTs = Number(cached.last_ping_ts_ms || 0);
         const cacheAgeMs = Number.isFinite(cachedTs) && cachedTs > 0 ? now - cachedTs : Infinity;
@@ -209,6 +321,11 @@ async function getProviderHealth(opts = {}) {
         // "NO APLICA" sin semáforo amarillo confuso. Nunca tocan live-ping ni
         // cache, evitando "no_key_configured" espurio.
         if (meta.display_in_health === 'not_applicable') {
+            // #4283 — el primario (Anthropic Max / OAuth managed) MUESTRA su
+            // cuota como cualquier otro (CA-5), pero NO se degrada su badge por
+            // cuota: el router nunca lo gatea (decisión #3 del PO) y un falso
+            // CAÍDO del primario sería peor que el problema. Adjuntamos `quota`
+            // informativa sin tocar `status`.
             results.push({
                 id: provider,
                 status: 'not_applicable',
@@ -219,6 +336,7 @@ async function getProviderHealth(opts = {}) {
                 last_quota_flag_ts: null,
                 resets_at: null,
                 cache_age_s: 0,
+                quota: quotaField,
             });
             continue;
         }
@@ -271,6 +389,17 @@ async function getProviderHealth(opts = {}) {
             };
         }
 
+        // #4283 — degradación por cuota real: login OK (o cualquier estado no
+        // ya-gated) pero cuota agotada → 'gated' con reason 'quota_exhausted_real'
+        // (CA-1). Fail-open ante adapter degradado: si `gated` es false (incluye
+        // adapterStatus unknown/error), NO se toca el status login-based (CA-2).
+        // No se persiste esta degradación en el cache de login (la señal de
+        // cuota se recomputa offline en cada llamada).
+        if (quotaSignal.gated && status !== 'gated') {
+            status = 'gated';
+            reason = QUOTA_GATE_REASON;
+        }
+
         const cachedEntry = cache.providers[provider] || {};
         results.push({
             id: provider,
@@ -284,6 +413,7 @@ async function getProviderHealth(opts = {}) {
             cache_age_s: cacheFresh
                 ? Math.floor(cacheAgeMs / 1000)
                 : 0,
+            quota: quotaField,
         });
     }
 
@@ -354,6 +484,7 @@ function getDispatchByProvider(opts = {}) {
 module.exports = {
     getProviderHealth,
     getDispatchByProvider,
+    assessProviderQuota,
     listConfiguredProviders,
     listProvidersWithMetadata,
     pingableId,
@@ -362,4 +493,5 @@ module.exports = {
     cacheFile,
     CACHE_TTL_MS,
     CACHE_FILE_SUBDIR,
+    QUOTA_GATE_REASON,
 };

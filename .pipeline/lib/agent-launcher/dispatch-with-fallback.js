@@ -574,6 +574,7 @@ const DURABLE_RED_REASONS = Object.freeze(new Set([
     'cli_unavailable',         // binario CLI ausente del PATH
     'cli_binary_undeclared',   // provider CLI sin binario declarado
     'quota_exhausted',         // sin cuota — el flag de cuota ya lo cubre, doble defensa
+    'quota_exhausted_real',    // #4283 — cuota REAL agotada (≥90%, #4202): logueado pero sin cuota usable
 ]));
 
 // El health-cron nombra a OpenAI/Codex como 'openai', pero la config de skills
