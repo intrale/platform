@@ -91,19 +91,52 @@ Estructura fija (no prosa libre). Tomada de §7 de la doc canónica:
 
 El pulpo te lanza después de que `review`, `po` y `ux` ya cerraron sus turnos en `aprobacion` (no esperás comments — el código ya está commiteado, hay diff real).
 
-### Cómo lo hacés (delegación a `architect-verify`)
+### Kill switch / grandfathering / dry-run ANTES de verificar (CRÍTICO — #4246)
 
-La verificación de Fase 2 NO la hacés vos a mano — delegás en el módulo determinístico [`.pipeline/lib/architect-verify.js`](../lib/architect-verify.js) (entregado en #3643). Invocás:
+**No llames `verifyPrAdherence` directo.** Esa función es el chequeo crudo y
+SIEMPRE intenta leer el PR + la receta firmada; si la feature architect está
+apagada o el issue es legacy, igual rechazaría — y como en `aprobacion` todavía
+**no existe PR** (lo crea `entrega`, fase posterior) ni receta (la produce
+Fase 1, que con kill switch OFF nunca corrió), terminás rebotando issues sanos
+(causa raíz de #4246, #4235, #3954).
+
+Invocás SIEMPRE el entry point gateado `evaluateGate`, que respeta el mismo
+kill switch que Fase 1 (`architect-signoff-gate.js`):
 
 ```js
 const verify = require('.pipeline/lib/architect-verify');
-const result = verify.verifyPrAdherence({
+const cfg = /* sección `architect` de .pipeline/config.yaml */;
+const result = verify.evaluateGate({
     issue: <N>,
-    pr_number: <PR>,
+    pr_number: <PR>,            // puede faltar si todavía no hay PR
+    config: cfg,               // { enabled, gate_mode, go_live_date }
+    issue_created_at: <ISO8601>, // createdAt del issue (para grandfathering)
 });
+// Si cfg.enabled !== true → result.decision === 'aprobado', result.skipped === true,
+//   result.gate_mode === 'disabled'. NO verificás adherencia, NO rebotás.
+// Si issue_created_at < cfg.go_live_date → 'aprobado' + skipped (grandfathered).
+// Si gate_mode !== 'enforce' (dry-run) → NUNCA bloquea; expone original_decision.
+// Si gate_mode === 'enforce' y enabled === true → delega a verifyPrAdherence.
+```
+
+Con el rollout actual (`architect.enabled: false`, `gate_mode: dry-run`) el gate
+**siempre aprueba salteando** la verificación. Solo cuando el operador active el
+piloto (`enabled: true` + `enforce`) Fase 2 verifica adherencia real.
+
+### Cómo lo hacés (delegación a `architect-verify`)
+
+Cuando el gate está activo (`enforce`), la verificación NO la hacés vos a mano —
+`evaluateGate` delega en `verifyPrAdherence` del módulo determinístico
+[`.pipeline/lib/architect-verify.js`](../lib/architect-verify.js) (entregado en
+#3643). El veredicto crudo tiene esta forma:
+
+```js
 // result = {
 //   decision: 'aprobado' | 'rechazado',
 //   motivo: string,
+//   gate_mode: 'disabled' | 'dry-run' | 'enforce',
+//   skipped: boolean,                    // true si kill switch / grandfathering
+//   original_decision?: 'rechazado',      // presente en dry-run que hubiera bloqueado
 //   expected: Array<{path, range}>,
 //   actual: Array<{path, in_recipe}>,
 //   structured_comment: string | null,  // null si already_rejected o aprobado
@@ -120,7 +153,7 @@ El módulo aplica internamente:
 4. **Idempotencia** — si ya hay un comment `architect-rejection commit=<headOid>` en el PR, `structured_comment` viene en `null` para que no postees duplicado.
 5. **Comment estructurado** — 4 secciones literales (marker + Archivos esperados + Archivos tocados + Decisión requerida) generadas por `formatRejectionComment`.
 
-Tu rol queda en: invocar `verifyPrAdherence`, postear `structured_comment` si viene no-nulo, registrar la decisión en `architect-tokens.jsonl` con `phase: 'aprobacion'`.
+Tu rol queda en: invocar `evaluateGate`, postear `structured_comment` si viene no-nulo (solo posible cuando el gate está activo en `enforce`), registrar la decisión en `architect-tokens.jsonl` con `phase: 'aprobacion'`. Si `result.skipped === true` (kill switch o grandfathering), aprobás sin postear ni rebotar.
 
 ### Qué hacés
 
