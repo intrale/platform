@@ -701,12 +701,80 @@ function evaluateSnapshotAndGate(snapshot, opts = {}) {
         log('warn', `quota-snapshot-integration: calibration skipped — ${e.message ? 'io_error' : 'unknown'}`);
     }
 
+    // #4282 — evaluación anticipatoria multi-provider. Best-effort: nunca debe
+    // romper el wire del snapshot. Reusa el ciclo periódico de este módulo como
+    // ticker host (no crea cron nuevo). El guard tiene dedupe propio, así que
+    // re-invocarlo en cada tick es idempotente.
+    try {
+        evaluateProviderQuotaGuard({ now, log, sendTelegram });
+    } catch (e) {
+        log('warn', `quota-snapshot-integration: provider-quota-guard skip — ${e && e.message ? 'error' : 'unknown'}`);
+    }
+
     let action = 'none';
     if (didGate && didCalibrate) action = 'gated_and_calibrated';
     else if (didGate) action = 'gated';
     else if (didCalibrate) action = 'calibrated';
 
     return { ok: true, action, reason: 'success', alerts };
+}
+
+// -----------------------------------------------------------------------------
+// #4282 — Hook del guard anticipatorio multi-provider
+// -----------------------------------------------------------------------------
+
+/**
+ * Obtiene el slice multi-provider (quotaSlice) sin re-extraer cuota (CA-11).
+ * Lazy-require para evitar el ciclo de require con dashboard-slices (que a su
+ * vez requiere este módulo para `getBannerState`).
+ */
+function _defaultGuardSlice() {
+    const slices = require('./dashboard-slices');
+    const PIPELINE = pipelineDir();
+    const ROOT = path.resolve(PIPELINE, '..');
+    return slices.quotaSlice({}, { PIPELINE, ROOT });
+}
+
+/**
+ * Lee config.yaml (js-yaml safe-by-default). Ante cualquier error → `{}` para
+ * que el guard caiga a defaults conservadores (REQ-SEC-2).
+ */
+function _defaultGuardConfig() {
+    try {
+        const yaml = require('js-yaml');
+        const cfgPath = path.join(pipelineDir(), 'config.yaml');
+        return yaml.load(fs.readFileSync(cfgPath, 'utf8')) || {};
+    } catch {
+        return {};
+    }
+}
+
+/**
+ * Invoca el guard de cuota por proveedor (#4282). Best-effort y fail-safe:
+ * obtiene el slice + config, delega en `provider-quota-guard.evaluate`. Devuelve
+ * el resultado del guard o `{error}` sin lanzar.
+ *
+ * Inyectables (tests): opts.guard, opts.slice, opts.rawConfig, opts.sendTelegram.
+ */
+function evaluateProviderQuotaGuard(opts = {}) {
+    if (!isEnabled()) return { skipped: 'kill_switch' };
+    try {
+        const guard = opts.guard || require('./provider-quota-guard');
+        const slice = opts.slice || _defaultGuardSlice();
+        const rawConfig = opts.rawConfig || _defaultGuardConfig();
+        return guard.evaluate({
+            slice,
+            rawConfig,
+            now: Number.isFinite(opts.now) ? opts.now : Date.now(),
+            log: typeof opts.log === 'function'
+                ? (msg) => opts.log('info', msg)
+                : () => {},
+            sendTelegram: opts.sendTelegram,
+            pipelineDir: opts.pipelineDir,
+        });
+    } catch (e) {
+        return { error: e && e.message ? e.message : 'unknown' };
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -803,6 +871,7 @@ function pctText(n) {
 module.exports = {
     // API pública
     evaluateSnapshotAndGate,
+    evaluateProviderQuotaGuard,   // #4282
     getBannerState,
     buildStatusSnapshotBlock,
 

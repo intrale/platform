@@ -1974,6 +1974,135 @@ Reglas UX (CA-UX-SWAP-1): UNA línea, sin emojis, sin tono celebratorio. La dife
 
 ---
 
+## 13. Alerta y switch preventivo por cuota de proveedor (#4282)
+
+Capa de **resiliencia anticipatoria**: avisa y —opcionalmente— degrada el
+proveedor primario **antes** de quedarse sin cuota, en vez de descubrirlo al
+reventar (incidente del fin de semana 27-28/06, Anthropic semanal al límite).
+
+Ortogonal al desacople kernel↔producto (Ola 8). Vive 100% en `.pipeline/`
+(Node puro, sin dependencias nuevas).
+
+### 13.1 Componentes
+
+| Pieza | Archivo | Rol |
+|---|---|---|
+| Guard (núcleo) | [`.pipeline/lib/provider-quota-guard.js`](../../.pipeline/lib/provider-quota-guard.js) | Lee el slice por proveedor, clasifica contra umbrales de `config.yaml`, emite alerta anticipada (Telegram FS-queue + banner) con dedupe y —si el switch está ON— escribe el marker de degradación preventiva. |
+| Config | [`.pipeline/config.yaml`](../../.pipeline/config.yaml) → `multi_provider.quota_alert` | Umbrales `<provider>.{warn,crit}` + `preventive_switch.enabled` (default **false**). |
+| Ticker host | [`.pipeline/lib/quota-snapshot-integration.js`](../../.pipeline/lib/quota-snapshot-integration.js) → `evaluateProviderQuotaGuard()` | Engancha la evaluación periódica en el ciclo del snapshot (no crea cron nuevo). |
+| Trigger en vivo | [`.pipeline/lib/dashboard-slices.js`](../../.pipeline/lib/dashboard-slices.js) → `quotaSlice` | El poll del dashboard (`/api/dash/quota`) corre el guard de forma idempotente reusando el slice ya normalizado (sin re-extracción). Expone `out.preventiveAlert`. |
+| Banner read-only | `dashboard-slices.js` → `providerQuotaBannerSlice` | Lee el banner vigente del estado del guard. Shape mínimo. |
+| Consumo del switch | [`.pipeline/lib/agent-launcher/dispatch-with-fallback.js`](../../.pipeline/lib/agent-launcher/dispatch-with-fallback.js) → `resolveSpawnWithFallback` | Si hay marker vigente, trata al primary como **soft-gated**: prefiere el primer fallback resoluble. |
+
+**Fuente de dato (reuso, NO re-extracción):** el guard consume el shape público
+por proveedor de `quotaSlice`:
+`providers[p] = { provider, adapterStatus, session:{pct,confidence}, weekly:{pct,confidence} }`.
+No toca snapshots crudos, tokens ni material de auth.
+
+### 13.2 Configuración (`config.yaml`)
+
+```yaml
+multi_provider:
+  quota_alert:
+    defaults:            # usados si un proveedor no declara los suyos
+      warn: 80
+      crit: 95
+    anthropic:           # umbrales por proveedor (% del límite)
+      warn: 80
+      crit: 95
+    openai-codex:
+      warn: 80
+      crit: 95
+    gemini-google:
+      warn: 80
+      crit: 95
+    preventive_switch:
+      enabled: false           # palanca del switch preventivo (default OFF)
+      marker_ttl_minutes: 90   # vigencia del marker de degradación (respaldo)
+```
+
+**Validación fail-safe (REQ-SEC-2):** cada par debe cumplir
+`0 < warn < crit <= 100` numérico. Ante un valor inválido se cae a `defaults`
+y se loggea, **sin romper el ticker**. `preventive_switch.enabled` solo activa
+el switch con `true` literal.
+
+### 13.3 Umbrales y niveles
+
+- `pct >= crit` → **crit** (🔴): alerta + (si switch ON) degradación preventiva.
+- `warn <= pct < crit` → **warn** (🟡): solo alerta.
+- `pct < warn` → **ok**: limpia banner + marker + resetea el dedupe.
+
+### 13.4 Gate de integridad — `confidence === 'fresh'` (REQ-SEC-4)
+
+**Invariante duro:** ninguna acción (alerta ni switch) sobre dato
+`stale`/`missing`/`parser-offline`. Un dato viejo o ausente no dispara nada.
+No se resetea el estado por `stale` (evita un falso "recuperado" y el
+re-alerteo posterior cuando el dato vuelve fresco en el mismo nivel).
+
+### 13.5 Anti-flapping / histéresis (CA-8)
+
+Dedupe por **high-water-mark**: una sola alerta por **subida** de nivel
+(ok→warn, warn→crit, ok→crit). Bajar dentro de la banda (crit→warn sin tocar
+`ok`) **no** re-alerta ni oscila el marker. El reset (y un nuevo ciclo de
+alertas) ocurre recién al volver a `ok`. El marker preventivo se sostiene
+mientras siga `crit` y se limpia al recuperar `ok`, con TTL de respaldo
+anti-zombie.
+
+### 13.6 Precedencia preventivo (soft) ↔ reactivo (hard) — REQ-SEC-3 / CA-7
+
+| Mecanismo | Tipo | Efecto |
+|---|---|---|
+| `quota-exhausted.json` / `provider-exhaustion-pause` | **hard gate** | **pausa** el spawn (o salta a fallback y, si no hay, devuelve a `pendiente/`). |
+| marker de degradación preventiva (#4282) | **soft gate** | **degrada**: prefiere fallback, pero **NUNCA pausa ni vacía la chain**. |
+
+Reglas:
+- El soft **solo** aplica si el primary **no** está hard-gated (el hard manda).
+- El soft **nunca** fuerza el hard ni lo convierte en pausa.
+- Si el soft degrada pero **no hay fallback resoluble**, se usa el **primary**
+  igual (`softGatedPrimaryUsed: true`). La chain nunca queda vacía (anti-DoS
+  interno).
+
+### 13.7 Matriz de cobertura por proveedor
+
+| Proveedor | Sesión | Semanal | Switch preventivo |
+|---|---|---|---|
+| `anthropic` | sí (si hay snapshot fresco) | **sí** | **sí** — el caso del incidente 27-28/06. |
+| `openai-codex` | no (sin ventana de sesión 5h) | si hay dato fresco (presupuesto mensual) | si cruza `crit` con dato fresco. |
+| `gemini-google` / free-tier | buckets `missing` → no se alertan | idem | no aplica salvo dato fresco. |
+
+Los buckets `missing` **no generan ruido**: el gate de `fresh` los descarta.
+
+### 13.8 Seguridad
+
+- **REQ-SEC-1:** la alerta/banner contienen **solo** `{provider, pct, window,
+  confidence, level}` — sin API keys, tokens, JWT ni paths de credenciales.
+  Defensa en profundidad: `containsSecret()` redacta el mensaje si detectara
+  un patrón de secreto.
+- **REQ-SEC-5:** cada degradación preventiva loggea `provider/pct/umbral/
+  confidence` para trazabilidad.
+
+### 13.9 Kill-switch / operación
+
+- **Apagar el switch:** `preventive_switch.enabled: false` (default). Solo
+  alerta, nunca degrada.
+- **Apagar todo el guard:** `QUOTA_SNAPSHOT_ENABLED=false` (comparte kill-switch
+  con el ciclo de snapshot; el ticker host no invoca el guard).
+- **Limpiar una degradación atascada:** `rm .pipeline/.provider-preventive-degrade.json`
+  (igual se auto-expira por `marker_ttl_minutes`).
+- **Estado del guard:** `.pipeline/.provider-quota-guard-state.json` (dedupe +
+  banner vigente).
+
+### 13.10 Tests
+
+[`.pipeline/lib/__tests__/provider-quota-guard.test.js`](../../.pipeline/lib/__tests__/provider-quota-guard.test.js)
+(`node --test`): umbral cruzado fresh → alerta; stale/missing → no actúa;
+switch off → solo alerta; switch on → marca degradación consumida por
+`resolveSpawnWithFallback` (chain nunca vacía); precedencia hard↔soft;
+anti-flapping; config inválida → fallback seguro; alerta sin secretos.
+Cobertura del módulo nuevo: ~98% líneas / ~82% ramas / 100% funciones.
+
+---
+
 ## Apéndice — links rápidos
 
 - **Código:** [`.pipeline/agent-models.json`](../../.pipeline/agent-models.json), [`.pipeline/agent-models.schema.json`](../../.pipeline/agent-models.schema.json), [`.pipeline/lib/agent-models-validate.js`](../../.pipeline/lib/agent-models-validate.js), [`.pipeline/validate-agent-models.js`](../../.pipeline/validate-agent-models.js), [`.pipeline/lib/multi-provider/`](../../.pipeline/lib/multi-provider/), [`.pipeline/lib/quota-adapters/`](../../.pipeline/lib/quota-adapters/), [`.pipeline/lib/agent-launcher/`](../../.pipeline/lib/agent-launcher/).
