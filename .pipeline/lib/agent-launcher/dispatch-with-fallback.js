@@ -105,6 +105,14 @@ const providerDisabledModule = require('../provider-disabled');
 // Inyectable en tests vía opts.scheduleModule.
 const providerScheduleModule = require('../provider-schedule');
 
+// #4282 — Degradación preventiva por cuota (soft-gate). Si el guard marcó un
+// provider para degradación preventiva y el marker está vigente, el primary se
+// trata como "soft-gated": preferimos el primer fallback resoluble. A diferencia
+// del hard gate (cuota agotada / kill-switch / horario), el soft NUNCA vacía la
+// chain ni pausa: si no hay fallback resoluble, se usa el primary igual
+// (REQ-SEC-3). Inyectable en tests vía opts.softGateModule.
+const providerQuotaGuardModule = require('../provider-quota-guard');
+
 // -----------------------------------------------------------------------------
 // Constantes
 // -----------------------------------------------------------------------------
@@ -782,6 +790,7 @@ const SKIP_REASON_CODES = Object.freeze({
     DUPLICATE_IN_CHAIN: 'duplicate_in_chain', // cycle detection (#3198 S-5)
     INVALID_HANDLER: 'invalid_handler',       // provider no registrado / shape inválido
     SAME_AS_PRIMARY: 'same_as_primary',       // defensa in-depth (fallback == primary)
+    PREVENTIVE_SOFT_GATE: 'preventive_soft_gate', // degradación preventiva por cuota (#4282)
 });
 
 // Etiquetas legibles (español) para el log textual. NO se escriben en el JSON
@@ -796,6 +805,7 @@ const SKIP_REASON_LABELS = Object.freeze({
     duplicate_in_chain: 'duplicado en la cadena',
     invalid_handler: 'provider no registrado',
     same_as_primary: 'igual al primario',
+    preventive_soft_gate: 'degradación preventiva por cuota',
 });
 
 // -----------------------------------------------------------------------------
@@ -898,6 +908,17 @@ function resolveSpawnWithFallback(opts = {}) {
                 && _schedule.isProviderActiveNow(p, _now) === false;
         } catch {
             return false; // fail-open: el scheduler nunca bloquea por bug propio.
+        }
+    };
+    // #4282 — soft-gate preventivo. Marker vigente ⇒ preferir fallback, pero
+    // NUNCA vaciar la chain (si no hay fallback resoluble, se usa el primary).
+    const _softGate = opts.softGateModule || providerQuotaGuardModule;
+    const _isProviderSoftGated = (p) => {
+        try {
+            return typeof _softGate.isPreventivelyDegraded === 'function'
+                && _softGate.isPreventivelyDegraded(p, { now: _now, pipelineDir, fsImpl }) === true;
+        } catch {
+            return false; // fail-open: el soft gate nunca bloquea por bug propio.
         }
     };
 
@@ -1081,6 +1102,9 @@ function resolveSpawnWithFallback(opts = {}) {
     // #3871 — el primario también salta si está fuera de su horario de actividad.
     const primaryInactiveBySchedule = _isProviderInactive(primaryProvider);
     const primaryGated = primaryQuotaGated || primaryDisabled || primaryInactiveBySchedule;
+    // #4282 — soft-gate preventivo: SOLO aplica si el primary NO está hard-gated
+    // (precedencia explícita: el hard manda sobre el soft — REQ-SEC-3 / CA-7).
+    const primarySoftGated = !primaryGated && _isProviderSoftGated(primaryProvider);
 
     if (primaryInactiveBySchedule) {
         // Audit dedicado del salto por horario (distinto del kill-switch).
@@ -1141,7 +1165,28 @@ function resolveSpawnWithFallback(opts = {}) {
         pushSkip(primaryProvider, reasonCode, reasonDetail);
     }
 
-    if (!primaryGated) {
+    // #4282 — soft-gate preventivo (solo si NO hubo hard gate). Registra la
+    // razón y audita la degradación (REQ-SEC-5). NO marca
+    // `nonScheduleAvailabilityGate` (no es indisponibilidad real: el primary
+    // sigue siendo usable si no hay fallback).
+    if (primarySoftGated) {
+        auditAppend({
+            pipelineDir, fsImpl, sanitize: (s) => String(s || ''),
+            auditLog, now: _now,
+            entry: {
+                event: 'preventive_soft_gate',
+                skill,
+                issue: issue || null,
+                primary_provider: primaryProvider,
+                primary_model: primary.model || null,
+                raw_excerpt: `primary=${primaryProvider} soft_degraded -> prefiere fallback (sin vaciar chain)`,
+            },
+        });
+        log('lanzamiento', `🟡 ${skill}:#${issue || '?'} provider primario "${primaryProvider}" en degradación preventiva — prefiriendo fallback (no vacía la chain).`);
+        pushSkip(primaryProvider, SKIP_REASON_CODES.PREVENTIVE_SOFT_GATE, 'degradación preventiva por cuota');
+    }
+
+    if (!primaryGated && !primarySoftGated) {
         // Happy path: primary disponible.
         return {
             ...primary,
@@ -1155,6 +1200,24 @@ function resolveSpawnWithFallback(opts = {}) {
             skipReasons,
         };
     }
+
+    // #4282 — helper para devolver el primary cuando el soft-gate no encontró
+    // fallback resoluble: el soft NUNCA pausa ni vacía la chain (REQ-SEC-3).
+    const _returnPrimarySoftFallthrough = (chainSoFar) => {
+        log('lanzamiento', `🟡 ${skill}:#${issue || '?'} degradación preventiva sin fallback resoluble — uso el primary "${primaryProvider}" (chain no se vacía).`);
+        return {
+            ...primary,
+            source: primary.source || 'primary',
+            gated: false,
+            softGatedPrimaryUsed: true,
+            fallbackUsed: null,
+            primaryProvider,
+            chainTried: Array.isArray(chainSoFar) && chainSoFar.length ? chainSoFar : [primaryProvider],
+            crossProvider: false,
+            depthExceeded: false,
+            skipReasons,
+        };
+    };
 
     // -------------------------------------------------------------------------
     // 2. Primary gateado → consultar fallbacks[] del skill.
@@ -1174,6 +1237,11 @@ function resolveSpawnWithFallback(opts = {}) {
     const sanitize = quotaModule.sanitizeRawExcerpt || ((s) => String(s || ''));
 
     if (fallbacks.length === 0) {
+        // #4282 — soft-gate sin fallbacks declarados: el primary es usable, no
+        // se pausa (el soft NUNCA vacía la chain). Solo aplica si NO hubo hard gate.
+        if (primarySoftGated) {
+            return _returnPrimarySoftFallthrough([primaryProvider]);
+        }
         // Sin fallbacks declarados → comportamiento previo (gate clásico).
         auditAppend({
             pipelineDir, fsImpl, sanitize, auditLog, now: _now,
@@ -1551,6 +1619,13 @@ function resolveSpawnWithFallback(opts = {}) {
     // -------------------------------------------------------------------------
     // 4. Chain agotada sin candidato libre.
     // -------------------------------------------------------------------------
+    // #4282 — soft-gate sin fallback resoluble: el primary sigue usable, no se
+    // pausa (REQ-SEC-3, CA-6). Solo aplica si el único motivo del salto fue el
+    // soft preventivo (sin hard gate). El primary en degradación preventiva
+    // todavía tiene cuota — solo preferíamos un fallback que no apareció.
+    if (primarySoftGated) {
+        return _returnPrimarySoftFallthrough(chainTried);
+    }
     // #3871 — ¿toda la cadena quedó gateada EXCLUSIVAMENTE por horario? Ese caso
     // tiene semántica propia (`todos_inactivos_por_horario`): el issue vuelve a
     // `pendiente/` esperando que algún provider entre en horario, y se emite una

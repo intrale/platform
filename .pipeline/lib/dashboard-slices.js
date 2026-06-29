@@ -42,6 +42,13 @@ try { quotaExhaustedState = require('./quota-exhausted-state'); } catch { /* opc
 let quotaSnapshotIntegration = null;
 try { quotaSnapshotIntegration = require('./quota-snapshot-integration'); } catch { /* opcional */ }
 
+// #4282 — Guard de cuota por proveedor (alerta + switch preventivo). El slice
+// expone el banner anticipado (read-only) y `quotaSlice` lo evalúa en vivo
+// (idempotente, con dedupe propio) en cada poll del dashboard. Tolerante a la
+// ausencia del módulo.
+let providerQuotaGuard = null;
+try { providerQuotaGuard = require('./provider-quota-guard'); } catch { /* opcional */ }
+
 // #2976 — Skills determinísticos: corren en Node puro sin tokens LLM y por
 // eso siguen ejecutándose aún con `quota-exhausted.json` activo. Mantener
 // sincronizado con `DETERMINISTIC_SKILLS` del detector (#2974,
@@ -1993,7 +2000,59 @@ function quotaSlice(state, ctx) {
         providersClient[p] = normalizeProviderQuota(p, result);
     }
     out.providers = providersClient;
+
+    // #4282 — Evaluación anticipatoria en vivo. quotaSlice es el path que el
+    // dashboard poll-ea periódicamente (/api/dash/quota): aprovechamos ESE ciclo
+    // para correr el guard, reusando el slice ya normalizado (CA-11, sin
+    // re-extracción). Idempotente: el guard dedup-ea (una alerta por cruce) y
+    // solo escribe estado si algo cambió. Best-effort: NUNCA rompe el slice.
+    out.preventiveAlert = { active: false };
+    if (providerQuotaGuard && typeof providerQuotaGuard.evaluate === 'function') {
+        try {
+            const rawConfig = _loadGuardRawConfig(PIPELINE);
+            const res = providerQuotaGuard.evaluate({
+                slice: { providers: providersClient },
+                rawConfig,
+                pipelineDir: PIPELINE,
+            });
+            out.preventiveAlert = (res && res.banner) ? { active: true, ...res.banner }
+                : providerQuotaGuard.readBanner({ pipelineDir: PIPELINE });
+        } catch { /* fail-safe: el banner anticipado nunca tumba el slice */ }
+    }
     return out;
+}
+
+// #4282 — Lee config.yaml para el guard (js-yaml safe-by-default). Ante error
+// → `{}` (el guard cae a defaults conservadores, REQ-SEC-2).
+function _loadGuardRawConfig(pipelineDir) {
+    try {
+        const yaml = require('js-yaml');
+        const cfgPath = path.join(pipelineDir, 'config.yaml');
+        return yaml.load(fs.readFileSync(cfgPath, 'utf8')) || {};
+    } catch {
+        return {};
+    }
+}
+
+// =============================================================================
+// #4282 — providerQuotaBannerSlice: banner anticipado de cuota por proveedor.
+//
+// Read-only: expone el flag de banner que el guard mantiene en su estado
+// (`.provider-quota-guard-state.json`). Shape mínimo (REQ-SEC-1): solo
+// `{active, provider, pct, window, confidence, level}` — sin material de auth.
+// La evaluación efectiva (alerta + marker) ocurre en `quotaSlice` (in vivo) y
+// en `quota-snapshot-integration`. Aquí solo se LEE el estado vigente.
+// =============================================================================
+function providerQuotaBannerSlice(state, ctx) {
+    if (!providerQuotaGuard || typeof providerQuotaGuard.readBanner !== 'function') {
+        return { active: false };
+    }
+    try {
+        const PIPELINE = ctx && ctx.PIPELINE;
+        return providerQuotaGuard.readBanner({ pipelineDir: PIPELINE });
+    } catch {
+        return { active: false };
+    }
 }
 
 // =============================================================================
@@ -2832,6 +2891,7 @@ module.exports = {
     // #4202 — normalización por proveedor del desglose de cuotas (test unitario)
     normalizeProviderQuota,
     quotaExhaustedSlice,
+    providerQuotaBannerSlice,
     // #3962 EP8-H9 — slice de la pantalla Costos rediseñada
     costosSlice,
     reconcilerStaleOrdersSlice,
