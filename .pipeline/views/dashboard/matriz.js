@@ -61,6 +61,9 @@ const { escapeHtmlText, escapeHtmlAttr } = require('../../lib/escape-html.js');
 // silencio, dispara el banner "datos desactualizados — reintentando" y conserva
 // el último dato. Reemplaza la copia local con .catch(()=>null).
 const { FETCH_CLIENT_JS } = require('./fetch-client.js');
+// #4296 — Accessor compartido del banner de ola (avance %, velocidad %/h, ETA)
+// desde la fuente determinística viva /api/dash/ola-eta (no conteos done/total).
+const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
 
 // #4241 — «Cabecera de ola» del marco común MIZPÁ (② del marco de #4234). Se
 // reutiliza el helper canónico compartido `renderMissionBannerPipeline()`
@@ -861,8 +864,8 @@ async function tickMission(){
             else queue++;
         }
         const total = issues.length || 0;
-        const pct = total > 0 ? Math.round((done/total)*100) : 0;
-        setText('mission-avance-pct', pct + '%');
+        // #4296 — avance % lo hidrata el accessor compartido (/api/dash/ola-eta);
+        // acá sólo leyenda/barras/entregados desde los conteos de la ola.
         setText('mission-leg-done', String(done));
         setText('mission-leg-active', String(active));
         setText('mission-leg-blocked', String(blocked));
@@ -877,24 +880,15 @@ async function tickMission(){
         if(dv) dv.innerHTML = done + '<span class="mz-wm-u"> / ' + total + '</span>';
         const dsub = document.getElementById('mission-delivered-sub');
         if(dsub) dsub.textContent = Math.max(0, total-done) + ' restantes';
-        const openedAt = wave.openedAt ? Date.parse(wave.openedAt) : NaN;
-        const vv = document.getElementById('mission-vel-value');
-        if(vv){
-            if(Number.isFinite(openedAt) && done > 0){
-                const hours = (Date.now() - openedAt) / 3600000;
-                vv.innerHTML = hours > 0.1
-                    ? (done/hours).toFixed(1) + ' <span class="mz-wm-u">iss/h</span>'
-                    : '— <span class="mz-wm-u">iss/h</span>';
-            } else {
-                vv.innerHTML = '— <span class="mz-wm-u">iss/h</span>';
-            }
-        }
+        // #4296 — velocidad (%/h) y ETA los hidrata el accessor compartido desde
+        // /api/dash/ola-eta (ritmo determinístico de la ola), no desde openedAt.
     } catch(_) {}
 }
 const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickMission, ms: 30000 }, { fn: tickMatriz, ms: 30000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
-for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
+for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }
+${missionOlaEtaClientScript()}`;
 
 /**
  * Fragmento embebible de la ventana Matriz (sin <!DOCTYPE>/shell). Lo consume

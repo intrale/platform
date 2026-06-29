@@ -20,6 +20,10 @@ const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 // confirmación con preview (CA-3). Reemplazan la copia local con .catch(()=>null)
 // y los confirm() nativos. nhCsrfHeaders() (de FETCH_CLIENT_JS) cubre R2.
 const { FETCH_CLIENT_JS } = require('./fetch-client.js');
+// #4296 — Accessor compartido del banner de ola (avance %, velocidad %/h, ETA)
+// desde la fuente determinística viva /api/dash/ola-eta (no conteos done/total).
+// Se inyecta una sola vez en el shell satélite → cubre TODAS las subventanas.
+const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
 const { CONFIRM_MODAL_JS } = require('./confirm-modal.js');
 
 // #4190 (Ola 7.1) — Rediseño integral de la pantalla PIPELINE (lenguaje MIZPÁ:
@@ -292,7 +296,7 @@ ${extraCss}
     <span>Intrale V3</span>
   </footer>
 </div>
-<script>${FETCH_CLIENT_JS}\n${CONFIRM_MODAL_JS}\n${commonHelpers()}\n${scripts}</script>
+<script>${FETCH_CLIENT_JS}\n${CONFIRM_MODAL_JS}\n${commonHelpers()}\n${scripts}\n${missionOlaEtaClientScript()}</script>
 </body>
 </html>`;
 }
@@ -782,8 +786,8 @@ async function tickEquipoMission(){
             else queue++;
         }
         const total = issues.length || 0;
-        const pct = total > 0 ? Math.round((done/total)*100) : 0;
-        setText('mission-avance-pct', pct + '%');
+        // #4296 — avance % lo hidrata el accessor compartido (/api/dash/ola-eta);
+        // acá sólo leyenda/barras/entregados desde los conteos de la ola.
         setText('mission-leg-done', String(done));
         setText('mission-leg-active', String(active));
         setText('mission-leg-blocked', String(blocked));
@@ -798,18 +802,8 @@ async function tickEquipoMission(){
         if(dv) dv.innerHTML = done + '<span class="mz-wm-u"> / ' + total + '</span>';
         const dsub = document.getElementById('mission-delivered-sub');
         if(dsub) dsub.textContent = Math.max(0, total-done) + ' restantes';
-        const openedAt = wave.openedAt ? Date.parse(wave.openedAt) : NaN;
-        const vv = document.getElementById('mission-vel-value');
-        if(vv){
-            if(Number.isFinite(openedAt) && done > 0){
-                const hours = (Date.now() - openedAt) / 3600000;
-                vv.innerHTML = hours > 0.1
-                    ? (done/hours).toFixed(1) + ' <span class="mz-wm-u">iss/h</span>'
-                    : '— <span class="mz-wm-u">iss/h</span>';
-            } else {
-                vv.innerHTML = '— <span class="mz-wm-u">iss/h</span>';
-            }
-        }
+        // #4296 — velocidad (%/h) y ETA los hidrata el accessor compartido desde
+        // /api/dash/ola-eta (ritmo determinístico de la ola), no desde openedAt.
     } catch(_) {}
 }
 
@@ -1668,8 +1662,8 @@ async function hmTickMission(){
       else queue++;
     }
     const total = issues.length || 0;
-    const pct = total > 0 ? Math.round((done/total)*100) : 0;
-    setText('mission-avance-pct', pct + '%');
+    // #4296 — avance % lo hidrata el accessor compartido (/api/dash/ola-eta);
+    // acá sólo leyenda/barras/entregados desde los conteos de la ola.
     setText('mission-leg-done', String(done));
     setText('mission-leg-active', String(active));
     setText('mission-leg-blocked', String(blocked));
@@ -1684,18 +1678,8 @@ async function hmTickMission(){
     if(dv) dv.innerHTML = done + '<span class="mz-wm-u"> / ' + total + '</span>';
     const dsub = document.getElementById('mission-delivered-sub');
     if(dsub) dsub.textContent = Math.max(0, total-done) + ' restantes';
-    const openedAt = wave.openedAt ? Date.parse(wave.openedAt) : NaN;
-    const vv = document.getElementById('mission-vel-value');
-    if(vv){
-      if(Number.isFinite(openedAt) && done > 0){
-        const hours = (Date.now() - openedAt) / 3600000;
-        vv.innerHTML = hours > 0.1
-          ? (done/hours).toFixed(1) + ' <span class="mz-wm-u">iss/h</span>'
-          : '— <span class="mz-wm-u">iss/h</span>';
-      } else {
-        vv.innerHTML = '— <span class="mz-wm-u">iss/h</span>';
-      }
-    }
+    // #4296 — velocidad (%/h) y ETA los hidrata el accessor compartido desde
+    // /api/dash/ola-eta (ritmo determinístico de la ola), no desde openedAt.
   } catch(_) {}
 }
 

@@ -32,6 +32,10 @@
 //     hidratación client-side usa el escapeHtml de commonHelpers().
 // =============================================================================
 
+// #4296 — Accessor compartido del banner de ola (avance %, velocidad %/h, ETA)
+// desde la fuente determinística viva /api/dash/ola-eta (no conteos done/total).
+const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
+
 let escapeHtmlText;
 let escapeHtmlAttr;
 try {
@@ -145,7 +149,7 @@ function renderMissionBannerPipeline() {
           </div>
           <div class="mz-wm" title="Velocidad de entrega: issues cerrados por hora (media reciente).">
             <div class="mz-wm-l">🚀 VELOCIDAD</div>
-            <div class="mz-wm-v" id="mission-vel-value">— <span class="mz-wm-u">iss/h</span></div>
+            <div class="mz-wm-v" id="mission-vel-value">— <span class="mz-wm-u">%/h</span></div>
             <div class="mz-wm-s">media reciente</div>
           </div>
           <div class="mz-wm" title="Issues entregados sobre el total de la ola.">
@@ -799,8 +803,8 @@ function plMirrorMission(d){
             else queue++;
         }
         const total = issues.length || 0;
-        const pct = total > 0 ? Math.round((done/total)*100) : 0;
-        setText('mission-avance-pct', pct + '%');
+        // #4296 — avance % lo hidrata el accessor compartido (/api/dash/ola-eta);
+        // acá sólo leyenda/barras/entregados desde los conteos de la ola.
         setText('mission-leg-done', String(done));
         setText('mission-leg-active', String(active));
         setText('mission-leg-blocked', String(blocked));
@@ -815,18 +819,8 @@ function plMirrorMission(d){
         if(dv) dv.innerHTML = done + '<span class="mz-wm-u"> / ' + total + '</span>';
         const dsub = document.getElementById('mission-delivered-sub');
         if(dsub) dsub.textContent = Math.max(0, total-done) + ' restantes';
-        // Velocidad + ETA best-effort desde openedAt.
-        const openedAt = wave.openedAt ? Date.parse(wave.openedAt) : NaN;
-        const vv = document.getElementById('mission-vel-value');
-        const rem = Math.max(0, total - done);
-        if(Number.isFinite(openedAt) && done > 0){
-            const hours = (Date.now() - openedAt) / 3600000;
-            if(hours > 0.1){
-                const rate = done / hours;
-                if(vv) vv.innerHTML = rate.toFixed(1) + ' <span class="mz-wm-u">iss/h</span>';
-                setText('mission-eta-value', rem > 0 && rate > 0 ? plFmtMin((rem/rate)*60) : '—');
-            }
-        }
+        // #4296 — velocidad (%/h) y ETA los hidrata el accessor compartido desde
+        // /api/dash/ola-eta (ritmo determinístico de la ola), no desde openedAt.
     } catch(e){}
 }
 async function tickWaves(){
@@ -841,6 +835,7 @@ plWireToggle();
 window.refreshAllowlistToggleVisibility = plRefreshToggleVisibility;
 plRunAll();
 for(const p of PL_POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }
+${missionOlaEtaClientScript()}
 `;
 }
 
