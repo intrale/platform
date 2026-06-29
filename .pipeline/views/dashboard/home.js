@@ -1717,37 +1717,75 @@ function homeStyles() {
    (evita quedar atrapado por un estado colapsado persistido en sessionStorage). */
 .mz-board .wave-row.is-collapsed .wave-row-issues { display: flex; }
 .mz-board .wave-row-issues { gap: 3px; }
-/* Fila: grilla rígida sin overflow (indicador | num | título | pill estado). */
+/* #4250 — Campos enriquecidos: ocultos por default (otras vistas del wave-panel
+   no los muestran). Sólo se revelan dentro de .mz-board (HOME). */
+.wave-issue-prog, .wave-issue-tag, .wave-issue-acts { display: none; }
+
+/* Fila del mockup HOME: ícono de estado | #num | título | barra | pill | acciones. */
 .mz-board .wave-issue {
-    grid-template-columns: 18px 60px minmax(0,1fr) auto;
-    align-items: center; gap: 12px;
-    padding: 11px 12px; border-radius: 11px;
+    grid-template-columns: 16px 52px minmax(0,1fr) 56px minmax(64px,auto) auto;
+    align-items: center; gap: 10px;
+    padding: 10px 12px; border-radius: 11px;
     background: rgba(255,255,255,.018); border: 1px solid transparent;
     border-left: 2px solid var(--in-border,rgba(255,255,255,.12));
 }
 .mz-board .wave-issue:nth-child(even) { background: rgba(255,255,255,.035); }
-/* Indicador de estado (punto coloreado) como primer ítem de la grilla. */
+/* Indicador de estado como glifo monocromo (hereda color) — primer ítem de la grilla. */
 .mz-board .wave-issue::before {
-    content: ""; width: 9px; height: 9px; border-radius: 50%;
-    background: var(--in-fg-dim,#5B6376); justify-self: center;
+    content: "○"; font-size: 12px; font-weight: 900; line-height: 1;
+    justify-self: center; color: var(--in-fg-dim,#5B6376);
 }
-/* Tinte por estado: borde izquierdo + color del indicador (hecho/curso/lista/cola). */
+/* Tinte por estado: borde izquierdo + glifo + color (hecho/curso/lista/cola/bloq). */
 .mz-board .wave-issue[data-status="completed"] { border-left-color: var(--in-ok,#3FB950); }
-.mz-board .wave-issue[data-status="completed"]::before { background: #6ee7b7; }
+.mz-board .wave-issue[data-status="completed"]::before { content: "✓"; color: #6ee7b7; }
 .mz-board .wave-issue[data-status="in-progress"] { border-left-color: var(--brand-cyan,#34D9E0); background: rgba(52,217,224,.06); }
-.mz-board .wave-issue[data-status="in-progress"]::before { background: #7eeef3; }
+.mz-board .wave-issue[data-status="in-progress"]::before { content: "▸"; color: #7eeef3; }
 .mz-board .wave-issue[data-status="ready"] { border-left-color: var(--in-info,#58A6FF); }
-.mz-board .wave-issue[data-status="ready"]::before { background: #9cc6fb; }
+.mz-board .wave-issue[data-status="ready"]::before { content: "○"; color: #9cc6fb; }
+.mz-board .wave-issue[data-status="queued"] { border-left-color: var(--in-fg-dim,#5B6376); }
+.mz-board .wave-issue[data-status="queued"]::before { content: "·"; color: #8b949e; }
 .mz-board .wave-issue[data-status="blocked"] { border-left-color: var(--in-bad,#F85149); }
-.mz-board .wave-issue[data-status="blocked"]::before { background: #fca5a5; }
+.mz-board .wave-issue[data-status="blocked"]::before { content: "✕"; color: #fca5a5; }
 /* #num: link azul punteado, protagonista (como .inum del mockup). */
 .mz-board .wave-issue-id { font-size: 12.5px; font-weight: 800; }
 .mz-board .wave-issue-id a { color: #9cc6fb; border-bottom: 1px dotted rgba(96,165,250,.45); }
-.mz-board .wave-issue-title { font-size: 12.5px; font-weight: 600; }
-/* Declutter: prioridad y tamaño no están en el mockup. */
-.mz-board .wave-pill { display: none; }
-/* Pill de estado a la derecha (columna "agente/estado" del mockup). */
-.mz-board .wave-badge { justify-self: end; }
+.mz-board .wave-issue-title { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Declutter: prioridad/tamaño y el badge de texto legacy no van en el mockup HOME
+   (los reemplaza la pill enriquecida wave-issue-tag). */
+.mz-board .wave-pill, .mz-board .wave-badge { display: none; }
+/* Barra de progreso por issue. */
+.mz-board .wave-issue-prog { display: block; height: 5px; border-radius: 4px;
+    background: rgba(255,255,255,.08); overflow: hidden; }
+.mz-board .wave-issue-prog i { display: block; height: 100%; width: 0; border-radius: 4px;
+    background: #9cc6fb; transition: width .4s ease; }
+.mz-board .wave-issue-prog[data-status="completed"] i { background: #6ee7b7; }
+.mz-board .wave-issue-prog[data-status="ready"] i { background: #9cc6fb; }
+.mz-board .wave-issue-prog[data-status="blocked"] i { background: #fca5a5; }
+/* En curso: barra "viva" (no hay % real) — latido suave. */
+.mz-board .wave-issue-prog[data-status="in-progress"] i {
+    background: linear-gradient(90deg, var(--brand-cyan,#34D9E0), #7eeef3);
+    animation: mzb-prog-pulse 1.5s ease-in-out infinite;
+}
+@keyframes mzb-prog-pulse { 0%,100% { opacity: .45; } 50% { opacity: 1; } }
+/* Pill derecha: estado/agente·fase (mergeado · backend-dev · DEV · en cola). */
+.mz-board .wave-issue-tag { display: inline-flex; align-items: center; justify-self: end;
+    white-space: nowrap; font-size: 9.5px; font-weight: 800; letter-spacing: .4px;
+    text-transform: uppercase; padding: 3px 9px; border-radius: 20px;
+    background: rgba(255,255,255,.06); color: var(--in-fg-dim,#8A93A6); }
+.mz-board .wave-issue-tag[data-status="completed"] { background: rgba(52,211,153,.14); color: #6ee7b7; }
+.mz-board .wave-issue-tag[data-status="in-progress"] { background: rgba(52,217,224,.14); color: #7eeef3; }
+.mz-board .wave-issue-tag[data-status="ready"] { background: rgba(96,165,250,.14); color: #9cc6fb; }
+.mz-board .wave-issue-tag[data-status="blocked"] { background: rgba(248,81,73,.14); color: #fca5a5; }
+/* Acciones: link al issue + log del agente (íconos como el mockup). */
+.mz-board .wave-issue-acts { display: inline-flex; align-items: center; gap: 4px; justify-self: end; }
+.mz-board .wave-act { display: inline-flex; align-items: center; justify-content: center;
+    width: 24px; height: 24px; border-radius: 7px; font-size: 11px; text-decoration: none; opacity: .7;
+    background: rgba(255,255,255,.04); border: 1px solid var(--in-border,rgba(255,255,255,.08)); }
+.mz-board .wave-act:hover { opacity: 1; background: rgba(255,255,255,.09); }
+/* Timestamp "actualizado": antes se posicionaba absoluto sobre la leyenda del
+   header (solape). Pasa a flujo normal, alineado a la derecha bajo la lista. */
+.mz-board .mz-board-updated { position: static; display: block; text-align: right;
+    margin-top: 8px; font-size: 10px; }
 
 /* --- Ahora · en ejecución alineado al mockup v6 (#4227 CA-4) ------------- */
 /* Las tarjetas de agentes activos ya eran tipo card; el mockup pide: fase como
@@ -1785,6 +1823,19 @@ function homeStyles() {
     font-size: 9px; font-weight: 800; letter-spacing: .5px;
     color: var(--in-fg-dim,#5B6376); font-family: var(--in-font, inherit);
 }
+/* #4250 — Fila de acciones de la tarjeta (mockup): "Ver issue" + "Logs del
+   agente". Full-width al pie de la card. */
+.mz-now .active-card-acts { grid-column: 1 / -1; display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.mz-now .active-card-act {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 10.5px; font-weight: 700; text-decoration: none;
+    color: var(--in-fg-dim,#8A93A6);
+    padding: 5px 11px; border-radius: 8px;
+    background: rgba(255,255,255,.04);
+    border: 1px solid var(--in-border,rgba(255,255,255,.10));
+    transition: background .15s, color .15s;
+}
+.mz-now .active-card-act:hover { background: rgba(255,255,255,.09); color: var(--in-fg,#e6edf3); }
 
 /* --- Sink de telemetría oculto (#4227 CA-2) --- */
 /* Conserva en el SSR los nodos hidratables y controles heredados que el mockup
@@ -2751,6 +2802,10 @@ async function tickActive(){
                 <button class="active-card-kill" title="Cancelar este agente">✕</button>
                 <div class="active-card-title"></div>
                 <div class="active-card-progress"><div class="in-bar"><span></span></div><span class="active-card-prov" aria-hidden="true"></span></div>
+                <div class="active-card-acts">
+                    <a class="active-card-act" data-act="issue" target="_blank" rel="noopener" title="Abrir issue en GitHub">🔗 Ver issue</a>
+                    <a class="active-card-act" data-act="log" target="_blank" rel="noopener" title="Ver log del agente">📄 Logs del agente</a>
+                </div>
             \`;
             const killBtn = card.querySelector('.active-card-kill');
             if(killBtn) killBtn.addEventListener('click', () => killAgent(a.issue, a.skill, a.pipeline, a.fase, a.durationMs));
@@ -2796,6 +2851,25 @@ async function tickActive(){
                 } else {
                     provEl.textContent = '';
                     provEl.style.display = 'none';
+                }
+            }
+            // #4250 — Botones "Ver issue" / "Logs del agente" del mockup. Hrefs
+            // controlados (issue numérico + logFile escapado). El log se oculta
+            // si el agente no tiene log disponible.
+            const issueAct = card.querySelector('.active-card-act[data-act="issue"]');
+            if(issueAct){
+                const href = GITHUB_ISSUE_BASE + a.issue;
+                if(issueAct.getAttribute('href') !== href) issueAct.setAttribute('href', href);
+            }
+            const logAct = card.querySelector('.active-card-act[data-act="log"]');
+            if(logAct){
+                if(a.hasLog && a.logFile){
+                    const lhref = '/logs/view/' + encodeURIComponent(a.logFile) + '?live=1';
+                    if(logAct.getAttribute('href') !== lhref) logAct.setAttribute('href', lhref);
+                    logAct.style.display = '';
+                } else {
+                    logAct.removeAttribute('href');
+                    logAct.style.display = 'none';
                 }
             }
         }
@@ -3122,7 +3196,25 @@ function waveStatusLabel(s){
         case 'in-progress': return 'En curso';
         case 'blocked':     return 'Bloqueada';
         case 'completed':   return 'Hecho';
+        case 'queued':      return 'En cola';
         default:            return 'Desconocido';
+    }
+}
+
+// #4250 — Etiqueta de la pill derecha del board HOME (mockup): combina estado y
+// agente·fase en un texto corto. "✓ mergeado" para hecho, "agente · FASE" para
+// los que tienen agente asignado, y estados llanos para el resto. Sólo texto.
+function waveBoardTag(issue){
+    const agent = (issue.agent || '').trim();
+    const phase = (issue.phase || '').trim();
+    const who = agent ? (phase ? agent + ' · ' + phase.toUpperCase() : agent) : '';
+    switch(issue.status){
+        case 'completed': return issue.merged ? '✓ mergeado' : 'hecho';
+        case 'in-progress': return who || 'ejecutando';
+        case 'ready':       return who || 'listo';
+        case 'blocked':     return 'bloqueado';
+        case 'queued':      return 'en cola';
+        default:            return waveStatusLabel(issue.status);
     }
 }
 function waveSizeLabel(s){
@@ -3183,7 +3275,12 @@ function morphWaveRow(row, wave){
                 '<span class="wave-issue-title" id="'+issueId+'-title"></span>'+
                 '<span class="wave-pill" data-kind="priority" id="'+issueId+'-priority"></span>'+
                 '<span class="wave-pill" data-kind="size" id="'+issueId+'-size"></span>'+
-                '<span class="wave-badge" id="'+issueId+'-status"></span>';
+                '<span class="wave-badge" id="'+issueId+'-status"></span>'+
+                // #4250 — Campos enriquecidos del board HOME (mockup). Ocultos por
+                // CSS fuera de .mz-board → no alteran el wave-panel de otras vistas.
+                '<span class="wave-issue-prog" id="'+issueId+'-prog" aria-hidden="true"><i></i></span>'+
+                '<span class="wave-issue-tag" id="'+issueId+'-tag"></span>'+
+                '<span class="wave-issue-acts" id="'+issueId+'-acts"></span>';
             list.appendChild(node);
         }
         // #4227 (CA-3) — mantener data-status de la fila sincronizado (morphing).
@@ -3225,6 +3322,43 @@ function morphWaveRow(row, wave){
             if (statusEl.dataset.status !== issue.status) statusEl.dataset.status = issue.status;
             const txt = waveStatusLabel(issue.status);
             if (statusEl.textContent !== txt) statusEl.textContent = txt;
+        }
+        // #4250 — Enriquecimiento del board HOME (mockup): barra de progreso,
+        // pill de estado/agente·fase y accesos a issue/log. Estos nodos están
+        // ocultos fuera de .mz-board; sólo se ven en la HOME. Tolerante a datos
+        // ausentes (endpoint sin enriquecer → degradan a vacío sin romper).
+        const progEl = document.getElementById(issueId+'-prog');
+        if (progEl) {
+            const bar = progEl.querySelector('i');
+            const pct = Number.isFinite(issue.progress) ? Math.max(0, Math.min(100, issue.progress)) : 0;
+            // En curso: barra indeterminada (no hay % real) → la pinta el CSS.
+            const indeterminate = issue.status === 'in-progress';
+            if (progEl.dataset.status !== issue.status) progEl.dataset.status = issue.status;
+            if (bar) bar.style.width = indeterminate ? '100%' : (pct + '%');
+        }
+        // Pill derecha: "mergeado" (hecho) · "agente · FASE" (en curso/listo) ·
+        // "en cola" · "bloqueado". textContent → sin XSS.
+        const tagEl = document.getElementById(issueId+'-tag');
+        if (tagEl) {
+            if (tagEl.dataset.status !== issue.status) tagEl.dataset.status = issue.status;
+            const tagTxt = waveBoardTag(issue);
+            if (tagEl.textContent !== tagTxt) tagEl.textContent = tagTxt;
+        }
+        // Acciones: link al issue (siempre) + log del agente (si hay). Hrefs
+        // controlados; el #id ya escapa. Sólo re-render si cambió el hasLog.
+        const actsEl = document.getElementById(issueId+'-acts');
+        if (actsEl) {
+            const wantLog = issue.hasLog && issue.logFile ? '1' : '0';
+            if (actsEl.dataset.log !== wantLog) {
+                actsEl.dataset.log = wantLog;
+                const issueHref = escapeHtml(GITHUB_ISSUE_BASE + issue.id);
+                let html = '<a class="wave-act" href="'+issueHref+'" target="_blank" rel="noopener" title="Abrir issue en GitHub" aria-label="Abrir issue #'+issue.id+' en GitHub">🔗</a>';
+                if (wantLog === '1') {
+                    const logHref = '/logs/view/' + encodeURIComponent(issue.logFile);
+                    html += '<a class="wave-act" href="'+escapeHtml(logHref)+'" target="_blank" rel="noopener" title="Ver log del agente" aria-label="Ver log del agente del issue #'+issue.id+'">📄</a>';
+                }
+                actsEl.innerHTML = html;
+            }
         }
     }
     // Remover issues que ya no están — preserva los que siguen.
