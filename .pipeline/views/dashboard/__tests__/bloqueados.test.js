@@ -275,6 +275,53 @@ test('renderBloqueados emite documento SSR completo con shell V3', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #4238 — Marco común de ventanas MIZPÁ en BLOQUEADOS (cabecera de ola común,
+// reutilizando el helper compartido renderMissionBanner de la HOME, sin
+// duplicar markup). El marco va en el orden ① marca → ② ola → ③ nav → ④ propio.
+// ---------------------------------------------------------------------------
+
+test('#4238 el documento standalone trae la cabecera de ola común (② del marco)', () => {
+    const doc = renderBloqueados({ bloqueados: [] }, opts);
+    // Cabecera de ola común (helper compartido de la HOME): tag OLA, métricas y
+    // bloque AVANCE con leyenda de puntitos.
+    assert.match(doc, /<section class="mz-mission"/);
+    assert.match(doc, /id="mission-wave-num"/);
+    assert.match(doc, /id="mission-vel-value"/);     // 🚀 velocidad
+    assert.match(doc, /id="mission-delivered-value"/); // 📦 entregados
+    assert.match(doc, /id="mission-avance-pct"/);    // bloque AVANCE
+    assert.match(doc, /id="mission-leg-blocked"/);   // leyenda de puntitos (bloq.)
+});
+
+test('#4238 el marco respeta el orden ① marca → ② ola → ③ nav → ④ contenido', () => {
+    const doc = renderBloqueados({
+        bloqueados: [{ issue: 4101, age_hours: 30, skill: 'po', phase: 'validacion', reason: 'go/no-go', recent_events: [] }],
+    }, opts);
+    const closeHeader = doc.indexOf('</header>');
+    const mission = doc.indexOf('<section class="mz-mission"');
+    const nav = doc.indexOf('<nav', closeHeader);   // primer <nav real tras el header
+    const content = doc.indexOf('id="view-content"');
+    assert.ok(closeHeader > -1 && mission > -1 && nav > -1 && content > -1, 'todos los bloques presentes');
+    assert.ok(closeHeader < mission, '② ola va después del header ①');
+    assert.ok(mission < nav, '③ nav va después de ② ola');
+    assert.ok(nav < content, '④ contenido va después de la nav ③');
+});
+
+test('#4238 la cabecera de ola común se hidrata desde /api/dash/waves (tick presente)', () => {
+    const doc = renderBloqueados({ bloqueados: [] }, opts);
+    assert.match(doc, /tickBloqueadosMission/);
+    assert.match(doc, /\/api\/dash\/waves/);
+});
+
+test('#4238 NO se duplica la cabecera de ola en el fragmento embebido (home monolito)', () => {
+    // El fragmento embebido en la HOME no debe repetir la cabecera de ola: la
+    // HOME ya la renderiza en su cuerpo. Solo el documento standalone la trae.
+    const frag = renderBloqueadosSsr({
+        bloqueados: [{ issue: 4101, age_hours: 5, recent_events: [] }],
+    }, opts);
+    assert.ok(!frag.includes('<section class="mz-mission"'), 'el fragmento no incluye la cabecera de ola común');
+});
+
+// ---------------------------------------------------------------------------
 // CA-2 — prettyReason (motivo pretty-print, nunca JSON crudo)
 // ---------------------------------------------------------------------------
 
