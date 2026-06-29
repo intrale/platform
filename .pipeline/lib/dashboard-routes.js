@@ -360,6 +360,17 @@ function deriveIssuesMission(state) {
         }
         const eta = s.olaETA || null;
         const vel = (eta && eta.velocityETA) || null;
+        // #4296 (CA-5) — el avance % degrada a la fuente viva compartida
+        // (olaETA.totalPct top-level, #4287) cuando NO hay ritmo medido
+        // (velocityETA null / etaSource 'fallback'). Antes quedaba null → banner
+        // SSR vacío/congelado en modo fallback. Coherente con la HOME, que hidrata
+        // `mission-avance-pct` desde `totalPct` por el mismo path determinístico.
+        // velocidad/ETA siguen null en fallback (sin proyección por velocidad): la
+        // vista los muestra como "—", igual que la HOME.
+        const liveTotalPct = (eta && Number.isFinite(eta.totalPct)) ? eta.totalPct : null;
+        const etaSource = (eta && (eta.etaSource === 'velocity' || eta.etaSource === 'fallback'))
+            ? eta.etaSource
+            : (vel ? 'velocity' : 'fallback');
         return {
             label: wave.name || wave.label || (wave.number ? ('Ola ' + wave.number) : 'Ola actual'),
             number: Number.isInteger(wave.number) ? wave.number : null,
@@ -367,7 +378,8 @@ function deriveIssuesMission(state) {
             entregados,
             etaRemainingMs: (vel && Number.isFinite(vel.remainingMs)) ? vel.remainingMs : null,
             velocityPctPerMin: (vel && Number.isFinite(vel.velocityPctPerMin)) ? vel.velocityPctPerMin : null,
-            totalPct: (vel && Number.isFinite(vel.totalPct)) ? vel.totalPct : null,
+            totalPct: (vel && Number.isFinite(vel.totalPct)) ? vel.totalPct : liveTotalPct,
+            etaSource,
         };
     } catch { return null; }
 }

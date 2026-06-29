@@ -32,6 +32,12 @@
 
 // Mensaje genérico del banner (R3). Centralizado para que tests y vistas
 // referencien el mismo literal.
+// #4296 — Hidratación compartida del banner de misión de la ola (avance %,
+// velocidad, ETA) desde /api/dash/ola-eta. Se inyecta dentro de FETCH_CLIENT_JS
+// para que TODAS las ventanas que montan el banner consuman el dato vivo (raíz
+// común, CA-4), no una copia congelada derivada de conteos de issues.
+const { MISSION_OLA_ETA_CLIENT_JS } = require('./mission-banner-eta.js');
+
 const STALE_MESSAGE = 'Datos desactualizados — reintentando…';
 
 // renderStaleBanner() — markup SSR del banner discreto, oculto por default.
@@ -130,7 +136,10 @@ async function fetchJson(url, opts){
   }
 }
 // === /fetch-client ===========================================================
-`;
+` +
+// #4296 — Banner de ola en vivo, compartido por todas las ventanas. Append por
+// concatenación (no dentro del template literal) para no escapar su contenido.
+'\n' + MISSION_OLA_ETA_CLIENT_JS + '\n';
 
 module.exports = {
     STALE_MESSAGE,

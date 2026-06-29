@@ -88,6 +88,60 @@ test('deriveIssuesMission no cuenta entregados si falta metadata del issue', () 
     assert.strictEqual(m.entregados, 1, 'el issue sin metadata no cuenta como entregado');
 });
 
+// #4296 (CA-5) — en modo fallback (sin ritmo medido) el avance % debe degradar
+// a la fuente viva compartida (olaETA.totalPct top-level), NO quedar null como
+// antes. Velocidad/ETA siguen null (no hay proyección por velocidad). Así la
+// subventana muestra el MISMO % que la HOME en lugar de un banner congelado.
+test('deriveIssuesMission usa olaETA.totalPct vivo en modo fallback (velocityETA null)', () => {
+    const state = {
+        activeWave: { number: 12, name: 'Ola 12', issues: [{ number: 1 }, { number: 2 }] },
+        issueTitles: {},
+        olaETA: { etaSource: 'fallback', totalPct: 42, velocityETA: null },
+    };
+    const m = deriveIssuesMission(state);
+    assert.strictEqual(m.totalPct, 42, 'avance vivo aunque no haya velocidad medida');
+    assert.strictEqual(m.velocityPctPerMin, null, 'sin ritmo → velocidad null');
+    assert.strictEqual(m.etaRemainingMs, null, 'sin ritmo → ETA por velocidad null');
+    assert.strictEqual(m.etaSource, 'fallback', 'expone el modo para que la vista muestre "—"');
+});
+
+// #4296 — un cambio de estado de la ola (totalPct sube) se refleja: no hay
+// snapshot congelado, la derivación lee el olaETA vivo en cada llamada.
+test('deriveIssuesMission refleja el totalPct vivo (no snapshot congelado)', () => {
+    const base = { activeWave: { number: 13, issues: [{ number: 1 }] }, issueTitles: {} };
+    const m1 = deriveIssuesMission({ ...base, olaETA: { etaSource: 'fallback', totalPct: 10, velocityETA: null } });
+    const m2 = deriveIssuesMission({ ...base, olaETA: { etaSource: 'fallback', totalPct: 75, velocityETA: null } });
+    assert.strictEqual(m1.totalPct, 10);
+    assert.strictEqual(m2.totalPct, 75, 'el segundo render toma el nuevo avance, no el viejo');
+});
+
+// #4296 — en modo velocity el totalPct embebido en velocityETA tiene prioridad
+// (es el snapshot exacto sobre el que se midió el ritmo) y etaSource pasa.
+test('deriveIssuesMission prioriza velocityETA.totalPct y expone etaSource velocity', () => {
+    const state = {
+        activeWave: { number: 14, issues: [{ number: 1 }] },
+        issueTitles: {},
+        olaETA: { etaSource: 'velocity', totalPct: 50, velocityETA: { remainingMs: 600000, velocityPctPerMin: 0.5, totalPct: 55 } },
+    };
+    const m = deriveIssuesMission(state);
+    assert.strictEqual(m.totalPct, 55, 'usa el totalPct del velocityETA cuando hay ritmo');
+    assert.strictEqual(m.velocityPctPerMin, 0.5);
+    assert.strictEqual(m.etaRemainingMs, 600000);
+    assert.strictEqual(m.etaSource, 'velocity');
+});
+
+// #4296 — totalPct 0 es un avance real (0%), no "sin dato": debe pasar como 0
+// en modo fallback (Number.isFinite(0) === true, no se confunde con null).
+test('deriveIssuesMission preserva totalPct 0 en modo fallback (avance real)', () => {
+    const state = {
+        activeWave: { number: 15, issues: [{ number: 1 }] },
+        issueTitles: {},
+        olaETA: { etaSource: 'fallback', totalPct: 0, velocityETA: null },
+    };
+    const m = deriveIssuesMission(state);
+    assert.strictEqual(m.totalPct, 0, '0% es avance real, no se degrada a null');
+});
+
 test('deriveIssuesMission ignora velocidad con campos no finitos', () => {
     const state = {
         activeWave: { number: 11, issues: [] },

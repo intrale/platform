@@ -1166,8 +1166,8 @@ function renderKpisChromeScript() {
       var issues=Array.isArray(wave.issues)?wave.issues:[];
       var done=0,active=0,blocked=0,queue=0;
       for(var i=0;i<issues.length;i++){var s=issues[i]&&issues[i].status;if(s==="completed")done++;else if(s==="in-progress")active++;else if(s==="blocked")blocked++;else queue++;}
-      var total=issues.length||0,pct=total>0?Math.round((done/total)*100):0;
-      setText("mission-avance-pct",pct+"%");
+      var total=issues.length||0;
+      // #4296 — avance % lo hidrata el helper compartido (FETCH_CLIENT_JS) vía /api/dash/ola-eta.
       setText("mission-leg-done",String(done));setText("mission-leg-active",String(active));
       setText("mission-leg-blocked",String(blocked));setText("mission-leg-queue",String(queue));
       var w=function(n){return total>0?((n/total)*100).toFixed(1)+"%":"0%";};

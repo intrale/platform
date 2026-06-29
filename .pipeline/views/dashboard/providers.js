@@ -752,8 +752,8 @@ const PROVIDERS_CLIENT_JS = `
           else queue++;
         }
         var total = issues.length || 0;
-        var pct = total > 0 ? Math.round((done/total)*100) : 0;
-        setText('mission-avance-pct', pct + '%');
+        // #4296 — el avance % ya NO se deriva de conteos acá: lo hidrata el helper
+        // compartido (FETCH_CLIENT_JS) desde /api/dash/ola-eta, igual que la HOME.
         setText('mission-leg-done', String(done));
         setText('mission-leg-active', String(active));
         setText('mission-leg-blocked', String(blocked));
