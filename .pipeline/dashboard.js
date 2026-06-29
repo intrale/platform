@@ -741,6 +741,11 @@ function _scheduleOlaETARefresh(state) {
       // mismo ETA que el Commander (CA-8). Best-effort: si algo falla, queda el
       // presupuesto teórico (fallback) sin romper el refresh.
       let velocityETA = null;
+      // #4287 (CA-1) — el `totalPct` del snapshot determinístico se eleva al
+      // cache (no solo embebido en velocityETA) para que la HOME hidrate el
+      // avance % desde la MISMA fuente que el handler de estado de ola, incluso
+      // cuando todavía no hay ritmo medido (etaSource === 'fallback').
+      let waveTotalPct = null;
       try {
         if (waveProgressLib && wavesLib && waveResolverLib && waveSnapshotLib && waveStateLib) {
           const activeWave = wavesLib.getActiveWave();
@@ -750,6 +755,7 @@ function _scheduleOlaETARefresh(state) {
             const wState = waveStateLib.getCachedWaveState({});
             const wSnap = waveSnapshotLib.buildWaveSnapshot({ state: wState, wave });
             if (wSnap && Number.isFinite(wSnap.totalPct)) {
+              waveTotalPct = wSnap.totalPct;
               const nowTs = Date.now();
               waveProgressLib.appendSnapshot({ waveKey, avancePct: wSnap.totalPct, now: nowTs });
               const vel = await etaWaveLib.calculateWaveVelocityETA(waveKey, wSnap.totalPct, nowTs);
@@ -758,9 +764,9 @@ function _scheduleOlaETARefresh(state) {
           }
         }
       } catch { /* fallback: sin velocityETA */ }
-      return { olaResult, historical, velocityETA };
+      return { olaResult, historical, velocityETA, waveTotalPct };
     })
-    .then(({ olaResult, historical, velocityETA }) => {
+    .then(({ olaResult, historical, velocityETA, waveTotalPct }) => {
       _olaETACache = {
         issues: olaIssues,
         totalP50: olaResult.totalP50,
@@ -773,6 +779,8 @@ function _scheduleOlaETARefresh(state) {
         // #4039 — ETA por velocidad (null si no hay ritmo medido todavía).
         velocityETA: velocityETA || null,
         etaSource: velocityETA ? 'velocity' : 'fallback',
+        // #4287 (CA-1) — avance % determinístico (null si no hubo snapshot).
+        totalPct: Number.isFinite(waveTotalPct) ? waveTotalPct : null,
         refreshedAt: Date.now(),
       };
       _olaETACacheAt = Date.now();

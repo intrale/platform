@@ -2384,6 +2384,10 @@ function _hydrateProviderRow(bucket, uiKey, b){
     const barEl = document.getElementById(barId);
     const rowEl = barEl ? barEl.closest('.mz-prow') : null;
     const hasData = b && b.pct != null && Number.isFinite(Number(b.pct));
+    // #4287 (CA-3) — la fila ya no está "pendiente de #4202": la hidratación
+    // ocurrió. Quitamos la clase placeholder en ambas ramas para que el estilo
+    // refleje el estado real (dato medido o "sin dato"), no el de carga.
+    if(pctEl) pctEl.classList.remove('mz-ppct-pending');
     if(hasData){
         const pct = Number(b.pct);
         setBarPct(barId, pct);
@@ -2394,6 +2398,15 @@ function _hydrateProviderRow(bucket, uiKey, b){
         // dato); solo el % refleja la confianza (ambar si el snapshot esta stale).
         if(rowEl){
             rowEl.classList.remove('mz-prow-nodata');
+            // #4287 (CA-3) — tooltip con el consumo real medido (reemplaza el
+            // "en preparación · #4202" del SSR). Solo % + confianza legible; NO
+            // se vuelca el objeto health (security req#2). Strings estáticos +
+            // número formateado → sin interpolación cruda de datos externos.
+            const confLabel = b.confidence === 'stale' ? 'dato con retraso (snapshot stale)'
+                : b.confidence === 'fresh' ? 'dato reciente'
+                : 'dato medido';
+            const tip = 'Consumo medido: ' + pct.toFixed(1) + '% · ' + confLabel + '.';
+            if(rowEl.getAttribute('title') !== tip) rowEl.setAttribute('title', tip);
             const ariaPct = pct.toFixed(1)+'%';
             if(rowEl.getAttribute('aria-label') !== ariaPct) rowEl.setAttribute('aria-label', ariaPct);
         }
@@ -3548,8 +3561,10 @@ function _mzMirrorMission(d){
             else queue++; // ready / needs-def / desconocido
         }
         const total = issues.length || 0;
-        const pct = total > 0 ? Math.round((done/total)*100) : 0;
-        setText('mission-avance-pct', pct + '%');
+        // #4287 (CA-1) — el avance % (id 'mission-avance-pct') ya NO se deriva
+        // del conteo de issues acá: lo hidrata tickOlaETA desde el 'totalPct'
+        // determinístico (misma fuente que el handler de estado de ola). Acá
+        // solo se mantienen los contadores por estado, barras y entregados.
         setText('mission-leg-done', String(done));
         setText('mission-leg-active', String(active));
         setText('mission-leg-blocked', String(blocked));
@@ -3567,23 +3582,9 @@ function _mzMirrorMission(d){
         const dv = document.getElementById('mission-delivered-value');
         if(dv) dv.innerHTML = done + '<span class="mz-wm-u"> / ' + total + '</span>';
 
-        // Velocidad best-effort: issues cerrados / horas desde la apertura de la
-        // ola (si el payload trae openedAt). Sin dato fiable → "—".
-        const openedAt = wave.openedAt ? Date.parse(wave.openedAt) : NaN;
-        const vv = document.getElementById('mission-vel-value');
-        if(vv){
-            if(Number.isFinite(openedAt) && done > 0){
-                const hours = (Date.now() - openedAt) / 3600000;
-                if(hours > 0.1){
-                    const rate = done / hours;
-                    vv.innerHTML = rate.toFixed(1) + ' <span class="mz-wm-u">iss/h</span>';
-                } else {
-                    vv.innerHTML = '— <span class="mz-wm-u">iss/h</span>';
-                }
-            } else {
-                vv.innerHTML = '— <span class="mz-wm-u">iss/h</span>';
-            }
-        }
+        // #4287 (CA-1) — la velocidad (id 'mission-vel-value') ya NO se estima
+        // acá por issues/hora desde openedAt: la hidrata tickOlaETA con el ritmo
+        // determinístico (velocityETA, %/h), o "—" cuando no hay ritmo medido.
     } catch(_) {}
 }
 
@@ -3649,12 +3650,46 @@ async function tickOlaETA(){
     setText('ola-eta-p75', fmtMin(d.totalP75));
     setText('ola-eta-p90', fmtMin(d.totalP90));
 
-    // #4189 — Espeja el ETA en el banner de misión (mediana p50 como ETA
-    // "esperado" de la ola). El sub indica si la fuente es velocidad o teórica.
-    setText('mission-eta-value', fmtMin(d.totalP50));
+    // #4189 / #4287 (CA-1) — Espeja avance %, velocidad y ETA de la ola en el
+    // banner de misión desde la MISMA fuente determinística que el handler de
+    // estado de ola (totalPct + velocityETA), no desde conteos de issues. Se
+    // hidrata por id (anti-flicker), recomputando en cada tick (poll 30s).
+    const vel = (d.velocityETA && typeof d.velocityETA === 'object') ? d.velocityETA : null;
+    const hasVelocity = d.etaSource === 'velocity' && vel
+        && Number.isFinite(vel.velocityPctPerMin) && vel.velocityPctPerMin > 0;
+
+    // Avance %: totalPct determinístico (null hasta que hay snapshot → "—").
+    if(Number.isFinite(d.totalPct)){
+        setText('mission-avance-pct', Math.round(d.totalPct) + '%');
+    } else {
+        setText('mission-avance-pct', '—');
+    }
+
+    // Velocidad: ritmo de avance de la ola en %/h (velocityPctPerMin × 60).
+    // Sin ritmo medido (etaSource 'fallback' / velocityETA null) → "—" explícito
+    // (mismo criterio que fmtMin), nunca "null"/0 (G-UX-1).
+    const vv = document.getElementById('mission-vel-value');
+    if(vv){
+        if(hasVelocity){
+            const pctPerHour = vel.velocityPctPerMin * 60;
+            vv.innerHTML = pctPerHour.toFixed(1) + ' <span class="mz-wm-u">%/h</span>';
+        } else {
+            vv.innerHTML = '— <span class="mz-wm-u">%/h</span>';
+        }
+    }
+
+    // ETA: cuando hay ritmo medido, usar el restante proyectado por velocidad
+    // (coherente con el sub "proyección por velocidad"); si no, la mediana p50
+    // teórica. Evita mostrar "proyección por velocidad" sobre un valor de
+    // percentiles (incoherencia de UX).
+    if(hasVelocity && Number.isFinite(vel.remainingMs)){
+        setText('mission-eta-value', fmtMin(vel.remainingMs / 60000));
+    } else {
+        setText('mission-eta-value', fmtMin(d.totalP50));
+    }
     const etaSub = document.getElementById('mission-eta-sub');
     if(etaSub){
-        etaSub.textContent = (d.etaSource === 'velocity') ? 'proyección por velocidad' : 'estimación por percentiles';
+        etaSub.textContent = hasVelocity ? 'proyección por velocidad' : 'estimación por percentiles';
     }
 
     // Breakdown por size (CA-21 — labels en espanol). El endpoint manda
@@ -3888,13 +3923,10 @@ function _missionMirrorKpis(){
         if(ql && kq){ kq.textContent = String(ql.children ? ql.children.length : 0); }
 
         // #4189 — Chips del panel "Estado del sistema" del home MIZPÁ. Reusan
-        // datos ya hidratados (active-count, kpi-bounce-value) y el semáforo,
-        // sin fetch extra.
-        var agentsChip = document.getElementById('mz-chip-agents-value');
-        if(agentsChip && ac){
-            var m = (ac.textContent || '').match(/\d+/);
-            agentsChip.textContent = m ? m[0] : '0';
-        }
+        // datos ya hidratados (kpi-bounce-value) y el semáforo, sin fetch extra.
+        // #4287 (CA-2) — el chip "agentes vivos" se eliminó (conteo stale por
+        // heartbeats del registry; redundante con "Ahora · En Ejecución"). No
+        // queda writer apuntando al id 'mz-chip-agents-value' (nodo inexistente).
         var reboteChip = document.getElementById('mz-chip-rebote-value');
         var bounce = document.getElementById('kpi-bounce-value');
         if(reboteChip && bounce){
@@ -4865,9 +4897,9 @@ function renderMissionBanner(state) {
             <div class="mz-wm-v" id="mission-eta-value">—</div>
             <div class="mz-wm-s" id="mission-eta-sub">cierre estimado</div>
           </div>
-          <div class="mz-wm" title="Velocidad de entrega: issues cerrados por hora (media reciente).">
+          <div class="mz-wm" title="Velocidad de avance de la ola: puntos de progreso por hora (proyección por velocidad media reciente).">
             <div class="mz-wm-l">🚀 VELOCIDAD</div>
-            <div class="mz-wm-v" id="mission-vel-value">— <span class="mz-wm-u">iss/h</span></div>
+            <div class="mz-wm-v" id="mission-vel-value">— <span class="mz-wm-u">%/h</span></div>
             <div class="mz-wm-s">media reciente</div>
           </div>
           <div class="mz-wm" title="Issues entregados sobre el total de la ola.">
@@ -4878,7 +4910,7 @@ function renderMissionBanner(state) {
         </div>
       </div>
       <div class="mz-mission-prog" title="Avance total de la ola, desglosado por estado de sus issues.">
-        <div class="mz-prog-head"><span>AVANCE</span><span class="mz-prog-pct" id="mission-avance-pct">0%</span></div>
+        <div class="mz-prog-head"><span>AVANCE</span><span class="mz-prog-pct" id="mission-avance-pct">—</span></div>
         <div class="mz-prog-bar">
           <i id="mission-bar-done" style="width:0%;background:var(--in-ok,#3fb950)"></i>
           <i id="mission-bar-active" style="width:0%;background:var(--in-info,#58a6ff)"></i>
@@ -4911,10 +4943,10 @@ function renderMissionBanner(state) {
 // primer tick de tickProviderQuota reemplaza el texto con el dato real.
 function _mzProviderRow(bucket, key, name, color) {
     return `
-        <div class="mz-prow" title="Consumo de ${escapeHtmlAttr(name)} en esta ventana (desglose por proveedor — en preparación, se hidrata con #4202).">
+        <div class="mz-prow" title="Consumo de ${escapeHtmlAttr(name)} en esta ventana (se hidrata con el dato real de cuota por proveedor).">
           <span class="mz-pname"><span class="mz-pdot" style="background:${color}"></span>${escapeHtmlText(name)}</span>
           <span class="mz-pbar"><i id="mz-quota-${bucket}-${key}-bar" style="width:0%;background:${color}"></i></span>
-          <span class="mz-ppct mz-ppct-pending" id="mz-quota-${bucket}-${key}-pct" title="Pendiente — se hidrata cuando el backend de extracción por proveedor (#4202) entregue.">—</span>
+          <span class="mz-ppct mz-ppct-pending" id="mz-quota-${bucket}-${key}-pct" title="Cargando consumo del proveedor…">—</span>
         </div>`;
 }
 
@@ -4964,8 +4996,6 @@ function renderSystemQuotaPanel(state) {
                 title="Alerta de consumo anómalo de tokens. Se integra junto al estado del sistema.">⚠ <span>Anomalía consumo</span></span>
           <span class="mz-chip mz-chip-ok"
                 title="Porcentaje de issues de la ola que rebotaron al menos una vez.">↩ Rebote ola <b id="mz-chip-rebote-value">—</b></span>
-          <span class="mz-chip mz-chip-ok"
-                title="Agentes actualmente en ejecución.">● <b id="mz-chip-agents-value">0</b> agentes vivos</span>
         </div>
       </div>
 
