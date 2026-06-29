@@ -483,6 +483,49 @@ quota_detector:
   reminder_interval_minutes: 120
 
 # =============================================================================
+# Alerta y switch preventivo por cuota de proveedor (#4282)
+# =============================================================================
+# Anticipa la caída de un proveedor: avisa (Telegram + banner del dashboard) y
+# —si el switch preventivo está activo— degrada el primary a fallback ANTES de
+# quedarse sin cuota, en vez de descubrirlo al reventar (incidente 27-28/06).
+#
+# Fuente de dato: `dashboard-slices.quotaSlice` (consumo, NO re-extracción).
+# El guard (`lib/provider-quota-guard.js`) SOLO actúa con `confidence === fresh`
+# (REQ-SEC-4). Cobertura real por proveedor:
+#   - anthropic: session + weekly (el switch preventivo aplica a weekly — caso
+#     del incidente).
+#   - openai-codex: sin ventana de sesión (session siempre "sin dato"); weekly
+#     según presupuesto mensual cuando hay dato fresco.
+#   - gemini-google y free-tier: buckets "missing" → no se alertan (sin ruido).
+#
+# Validación fail-safe (REQ-SEC-2): cada par debe cumplir `0 < warn < crit <= 100`
+# numérico; ante valor inválido se cae a `defaults` y se loggea, sin romper el
+# ticker. `preventive_switch.enabled` solo activa el switch con `true` literal.
+multi_provider:
+  quota_alert:
+    # Umbrales por defecto si un proveedor no declara los suyos.
+    defaults:
+      warn: 80    # % que dispara aviso temprano
+      crit: 95    # % que dispara aviso crítico (+ degradación si el switch está ON)
+    # Umbrales por proveedor (anticipan el incidente de Anthropic semanal).
+    anthropic:
+      warn: 80
+      crit: 95
+    openai-codex:
+      warn: 80
+      crit: 95
+    gemini-google:
+      warn: 80
+      crit: 95
+    # Switch preventivo: degrada primary→fallback de forma controlada al cruzar
+    # `crit` con dato fresco. DEFAULT OFF (solo alerta). El soft-gate NUNCA fuerza
+    # el hard gate ni vacía la chain de fallbacks (REQ-SEC-3, ver dispatch-with-fallback).
+    preventive_switch:
+      enabled: false
+      # Vigencia del marker de degradación (respaldo anti-zombie). Default 90 min.
+      marker_ttl_minutes: 90
+
+# =============================================================================
 # Handoff cross-agente (#2993)
 # =============================================================================
 # Cuando un issue pasa por varias fases (analisis → criterios → validacion →
