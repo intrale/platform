@@ -223,6 +223,10 @@ try { commanderPresence = require('./lib/commander-presence'); } catch { /* opci
 // resolución no-gated en lugar de devolver el archivo a pendiente/. Mantiene
 // hash-chain SHA-256 en logs/cross-provider-dispatch-*.jsonl + notify Telegram.
 const { resolveSpawnWithFallback, formatProviderResolutionLog } = require('./lib/agent-launcher/dispatch-with-fallback');
+// #4274 — resolución de modo canónico por provider, usada como defense-in-depth
+// en launchResolveImpl y en bootResolveSkill para no defaultear al modo más
+// privilegiado cuando el `mode` no viene resuelto (SR-1, fail-fast).
+const { resolvePermissionMode: _resolvePermissionMode } = require('./lib/agent-launcher/resolve-provider');
 // #3259 — provider-exhaustion-pause: cuando primary + todos los fallbacks
 // de un skill quedan gated, este módulo aplica label, encola Telegram,
 // persiste marker (dedupe 2h) y auditea con hash-chain. El brazo de retry
@@ -407,7 +411,7 @@ loadAgentModelsRuntime();
 try {
     const permissionValidatorBoot = require('./lib/permission-validator');
     const skillsMetadataBoot = require('./lib/skills-metadata');
-    const { resolveProviderForSkill, resolvePermissionMode } = require('./lib/agent-launcher/resolve-provider');
+    const { resolveProviderForSkill, resolvePermissionMode, readAgentModels } = require('./lib/agent-launcher/resolve-provider');
     const skillsRootBoot = path.join(__dirname, '..', '.claude', 'skills');
     const { registry: bootSkillsRegistry, failures: bootSkillsFailures } = skillsMetadataBoot.loadAllSkillsMetadata({
         skillsRoot: skillsRootBoot,
@@ -418,14 +422,39 @@ try {
                 `[${new Date().toISOString()}] [pulpo] WARN skill '${f.skill}' falló parseo de metadata: ${f.error}\n`); } catch {}
         }
     }
+    // #4274 — snapshot de agent-models.json para resolver modos de la cadena.
+    const bootAgentModels = readAgentModels(__dirname, fsForAgentModels);
+    // #4274 (CA-3 / SR-1) — sin default fail-open: el modo del primario se
+    // resuelve explícitamente (resolveProviderForSkill ya lo trae); si falta,
+    // se resuelve por provider, nunca se asume 'bypassPermissions'.
     const bootResolveSkill = (skill) => {
         const r = resolveProviderForSkill(skill, { pipelineDir: __dirname, fsImpl: fsForAgentModels });
         if (!r) return null;
-        return { provider: r.provider, mode: r.mode || 'bypassPermissions' };
+        return { provider: r.provider, mode: r.mode || resolvePermissionMode(bootAgentModels, r.provider) };
+    };
+    // #4274 (CA-4 / SR-3) — cadena completa (primario + fallbacks[]) para la
+    // validación chain-aware al boot. Cada fallback resuelve su modo canónico
+    // por provider; así ninguna combinación (provider de cadena × modo) sin
+    // celda en la matriz puede deslizarse a runtime.
+    const bootResolveSkillChain = (skill) => {
+        const primary = bootResolveSkill(skill);
+        if (!primary) return null;
+        const chain = [primary];
+        const skillCfg = (bootAgentModels && bootAgentModels.skills && bootAgentModels.skills[skill]) || null;
+        const fallbacks = (skillCfg && Array.isArray(skillCfg.fallbacks)) ? skillCfg.fallbacks : [];
+        for (const fb of fallbacks) {
+            // Cada entry de fallbacks[] puede ser un string (nombre de provider)
+            // o un objeto { provider }. Normalizamos a nombre de provider.
+            const fbProvider = (typeof fb === 'string') ? fb : (fb && fb.provider);
+            if (!fbProvider) continue;
+            chain.push({ provider: fbProvider, mode: resolvePermissionMode(bootAgentModels, fbProvider) });
+        }
+        return chain;
     };
     const bootFailures = permissionValidatorBoot.validateAllSkillsAtBoot({
         skillsRegistry: bootSkillsRegistry,
         resolveSkill: bootResolveSkill,
+        resolveSkillChain: bootResolveSkillChain,
     });
     if (bootFailures.length > 0) {
         const strict = process.env.PIPELINE_PERMISSION_VALIDATOR_STRICT === '1';
@@ -469,6 +498,16 @@ function resolveSkillModel(skill) {
 function getSkillProviderDef(providerName) {
   if (!AGENT_MODELS || !providerName) return null;
   return (AGENT_MODELS.providers && AGENT_MODELS.providers[providerName]) || null;
+}
+
+// #4274 — resuelve el modo canónico de un provider de fallback contra
+// AGENT_MODELS (o el default por provider de resolvePermissionMode). Usado como
+// defense-in-depth en launchResolveImpl: si el dispatcher no propagó `mode`, lo
+// resolvemos explícitamente acá en lugar de delegar al default fail-open del
+// launcher (SR-1). Devuelve null para providers desconocidos → el launcher
+// hará fail-fast accionable en vez de asumir el modo más privilegiado.
+function resolvePermissionModeForFallback(providerName) {
+  return _resolvePermissionMode(AGENT_MODELS, providerName);
 }
 
 // Rate limiting para GitHub API (máx 1 call cada 2 segundos)
@@ -6990,6 +7029,12 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         provider: dispatchResolution.provider,
         model: dispatchResolution.model,
         handler: dispatchResolution.handler,
+        // #4274 (CA-2) — propagar el `mode` resuelto por el dispatcher (ahora
+        // poblado en el return del fallback). Defense-in-depth: si por algún
+        // camino quedara undefined, lo resolvemos explícitamente por provider en
+        // vez de dejar que el launcher defaultee al modo más privilegiado (SR-1).
+        mode: dispatchResolution.mode
+          || resolvePermissionModeForFallback(dispatchResolution.provider),
         source: 'dispatch-fallback',
       })
     : undefined;

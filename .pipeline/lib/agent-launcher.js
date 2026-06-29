@@ -43,7 +43,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
-const { resolveProviderForSkill } = require('./agent-launcher/resolve-provider');
+const { resolveProviderForSkill, resolvePermissionMode, readAgentModels } = require('./agent-launcher/resolve-provider');
 const permissionValidator = require('./permission-validator');
 const skillsMetadata = require('./skills-metadata');
 const PROVIDERS = {
@@ -159,12 +159,33 @@ function launchAgent({
             }
             log('agent-launcher', `⚠️ ${skill}: required_permissions no cargable — ${permCheck.error}. Avanzo en modo legacy.`);
         } else {
+            // #4274 (CA-3 / SR-1) — eliminado el default fail-OPEN
+            // `mode: resolution.mode || 'bypassPermissions'`. Un `mode` ausente
+            // se resuelve EXPLÍCITAMENTE por provider; si aun así no se puede
+            // resolver (provider desconocido), se hace fail-fast accionable.
+            // NUNCA se asume el modo más privilegiado ante ausencia de dato.
+            const resolvedMode = resolution.mode
+                || resolvePermissionMode(readAgentModels(PIPELINE, _fs), resolution.provider);
+            if (!resolvedMode) {
+                throw new Error(
+                    `[FAIL-CLOSED] mode no resoluble para provider '${resolution.provider}' (skill '${skill}'). ` +
+                    `Declarar providers.${resolution.provider}.permissions_mode en agent-models.json ` +
+                    `o agregar un default por provider en resolvePermissionMode (resolve-provider.js).`
+                );
+            }
             const validation = permissionValidator.validateSpawn({
                 skill,
                 provider: resolution.provider,
-                mode: resolution.mode || 'bypassPermissions',
+                mode: resolvedMode,
                 requiredCapabilities: permCheck.required_permissions,
             });
+            // #4274 (CA-8 / SR-5) — auditabilidad de la concesión: cuando el
+            // spawn se autoriza, logueamos provider + mode + capabilities
+            // concedidas (no solo el rechazo).
+            if (validation.ok && validation.granted) {
+                const grantedList = Array.from(validation.granted).sort().join(', ');
+                log('agent-launcher', `🔓 ${skill}: spawn autorizado en ${resolution.provider}/${resolvedMode} — capabilities: ${grantedList}.`);
+            }
             if (!validation.ok) {
                 // CA-9 fail-CLOSED: throw para que pulpo lo trate como infra failure
                 // y rebote el archivo al pendiente con motivo claro. El mensaje viaja
