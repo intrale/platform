@@ -424,7 +424,14 @@ test('#4248: el enriquecimiento NO propaga campos extra (sigue el whitelist por 
         },
     );
     const issue = payload.active_wave.issues[0];
-    assert.deepEqual(Object.keys(issue).sort(), ['id', 'priority', 'size', 'status', 'title']);
+    // #4250 — la ola activa ahora se enriquece al shape rico del board HOME
+    // (agent/phase/hasLog/logFile/progress/merged) además de la base. El whitelist
+    // por campo se mantiene: enrichWaveIssue reconstruye el objeto campo por campo,
+    // así que campos crudos como `notes` siguen sin propagarse.
+    assert.deepEqual(
+        Object.keys(issue).sort(),
+        ['agent', 'hasLog', 'id', 'logFile', 'merged', 'phase', 'priority', 'progress', 'size', 'status', 'title'],
+    );
     assert.equal('notes' in issue, false, 'no debe propagar `notes` tras enriquecer');
 });
 

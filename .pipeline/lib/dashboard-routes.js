@@ -670,6 +670,117 @@ function computeLiveWaveStatus(state) {
     return byId.size > 0 ? byId : null;
 }
 
+// #4250 — Enriquecimiento del board "Issues de la ola" (mockup HOME MIZPÁ).
+// waves.json sólo persiste {number, status} por issue (sin título resuelto ni
+// estado real de pipeline). El mockup pide, por issue: título, estado real
+// (hecho/ejecutando/listo/en cola/bloqueado), agente·fase y acceso al log.
+// Esos datos YA viven en el proceso del dashboard (title-cache + issueMatrix);
+// acá los cruzamos por id SIN salir a la red (regla de waves.js) y SIN propagar
+// campos crudos: cada campo derivado se sanitiza/whitelistea.
+const WAVES_AGENT_SAFE_REGEX = /[^a-z0-9-]/g;     // skill/fase: slug en minúsculas
+const WAVES_LOGFILE_SAFE_REGEX = /[^a-z0-9._-]/gi; // filename de log: sin separadores de path
+const WAVES_RICH_STATUS = new Set(['completed', 'in-progress', 'ready', 'queued', 'blocked']);
+
+function _safeAgentSlug(s) {
+    if (typeof s !== 'string') return null;
+    const clean = s.toLowerCase().replace(WAVES_AGENT_SAFE_REGEX, '').slice(0, 40);
+    return clean || null;
+}
+function _safeLogFile(s) {
+    if (typeof s !== 'string') return null;
+    const clean = s.replace(WAVES_LOGFILE_SAFE_REGEX, '').slice(0, 120);
+    return clean || null;
+}
+
+/**
+ * Deriva el estado rico + metadatos de UI de un issue de la ola cruzando contra
+ * el estado vivo del dashboard. Devuelve SIEMPRE el shape extendido; si no hay
+ * `state` o no hay match, degrada a {status:'queued', progress:0} sin romper.
+ *
+ * @param {{id:number,title:string,priority:string,size:string,status:string}} base
+ * @param {*} state — state plano del dashboard (issueTitles + issueMatrix)
+ * @returns shape extendido con agent/phase/hasLog/logFile/progress/merged
+ */
+function enrichWaveIssue(base, state) {
+    const titles = (state && state.issueTitles) || {};
+    const matrix = (state && state.issueMatrix) || {};
+    const key = String(base.id);
+    const meta = titles[key] || {};
+    const m = matrix[key] || null;
+
+    // Título real desde el cache si waves.json no lo trae (caso normal).
+    let title = base.title;
+    if (!title && typeof meta.title === 'string') {
+        title = meta.title.slice(0, WAVES_TITLE_MAX_CHARS);
+    }
+
+    const isClosed = String(meta.state || '').toUpperCase() === 'CLOSED';
+    const labels = Array.isArray(meta.labels) ? meta.labels : [];
+    const isBlocked = labels.some((l) => String(l).toLowerCase().includes('blocked'));
+
+    let status = 'queued';
+    let agent = null;
+    let phase = null;
+    let hasLog = false;
+    let logFile = null;
+    let progress = 0;
+    let merged = false;
+
+    if (isClosed) {
+        // Cerrado en GitHub → hecho/mergeado (barra llena).
+        status = 'completed';
+        progress = 100;
+        merged = true;
+    } else if (m) {
+        // Tiene work-file en alguna fase del pipeline → derivamos fase + agente.
+        const faseActual = typeof m.faseActual === 'string' ? m.faseActual : null;
+        const entries = (faseActual && m.fases && m.fases[faseActual]) || [];
+        const entry = entries[0] || null;
+        if (faseActual) phase = _safeAgentSlug(faseActual.split('/')[1] || faseActual);
+        if (entry) {
+            agent = _safeAgentSlug(entry.skill);
+            hasLog = !!entry.hasLog;
+            logFile = hasLog ? _safeLogFile(entry.logFile) : null;
+        }
+        if (isBlocked) {
+            status = 'blocked';
+        } else if (m.estadoActual === 'trabajando') {
+            status = 'in-progress'; // ejecutando ahora (barra indeterminada en UI)
+        } else {
+            status = 'ready';       // entre fases / esperando slot
+        }
+    } else if (isBlocked) {
+        status = 'blocked';
+    } else {
+        status = 'queued';          // abierto, sin work-file todavía
+    }
+
+    return {
+        id: base.id,
+        title,
+        priority: base.priority,
+        size: base.size,
+        status: WAVES_RICH_STATUS.has(status) ? status : WAVES_UNKNOWN,
+        agent,
+        phase,
+        hasLog,
+        logFile,
+        progress,
+        merged,
+    };
+}
+
+/**
+ * Aplica enrichWaveIssue a todos los issues de una ola normalizada. No-op
+ * defensivo si `wave` es null o no hay `state` (mantiene el shape base).
+ */
+function enrichWave(wave, state) {
+    if (!wave || !Array.isArray(wave.issues)) return wave;
+    if (!state) return wave;
+    wave.issues = wave.issues.map((iss) => enrichWaveIssue(iss, state));
+    return wave;
+}
+
 /**
  * Construye el payload de /api/dash/waves desde lib/waves.js. Si la librería
  * no cargó o falla la lectura, retorna estructura vacía con `message` —
@@ -705,31 +816,45 @@ function buildWavesPayload(state) {
     }
     const rawActive = horizon.find((w) => w && w.status === 'active') || null;
     const rawPlanned = horizon.filter((w) => w && w.status === 'planned');
-    const normActive = normalizeWave(rawActive);
-    // #4248 (D1+D2) — Enriquecer el status de los issues de la ola activa con el
-    // estado VIVO del pipeline. Sin esto, los issues con `status:"planned"` en
-    // waves.json se sirven como "unknown" (fuera de whitelist) y el header los
-    // cuenta como "cola": ENTREGADOS y AVANCE quedaban en 0 aunque hubiera
-    // issues cerrados. Aditivo y defensivo: si no hay datos vivos, se mantiene
-    // el status crudo normalizado (comportamiento previo).
+    // #4250 — Enriquecimiento del board HOME: cruza cada issue con el estado
+    // vivo del dashboard (title-cache + issueMatrix) para resolver título real,
+    // estado de pipeline, agente·fase y log. Defensivo: sin `state` devuelve el
+    // shape base (back-comp con el widget "Próximas Olas" y con tests viejos).
+    const normActive = enrichWave(normalizeWave(rawActive), state);
+    // #4248 (D1+D2) — Overlay del status VIVO autoritativo (waveSnapshot) sobre la
+    // ola activa. enrichWave (#4250) ya resolvió el shape rico del board; acá sólo
+    // corregimos `status` con la fuente más autoritativa (snapshot ejecutivo) para
+    // que el header (ENTREGADOS / AVANCE) cuente bien — sin esto los issues con
+    // `status:"planned"` en waves.json contaban como "cola". Si el snapshot marca
+    // un issue como 'completed', alineamos progress/merged para que la barra del
+    // board no quede vacía bajo un pill "hecho". Sin datos vivos se mantiene el
+    // status que derivó enrichWaveIssue (comportamiento #4250).
     if (normActive && Array.isArray(normActive.issues) && normActive.issues.length > 0) {
         const liveById = computeLiveWaveStatus(state);
         if (liveById && liveById.size > 0) {
             normActive.issues = normActive.issues.map((it) => {
                 const live = liveById.get(it.id);
-                if (!live) return it;
-                // Copia campo por campo (sin spread) para no propagar campos extra.
+                if (!live || live === it.status) return it;
+                const completed = live === 'completed';
+                // Copia campo por campo (sin spread) para no propagar campos extra;
+                // preserva el shape rico de enrichWaveIssue (#4250).
                 return {
                     id: it.id,
                     title: it.title,
                     priority: it.priority,
                     size: it.size,
                     status: live,
+                    agent: it.agent,
+                    phase: it.phase,
+                    hasLog: it.hasLog,
+                    logFile: it.logFile,
+                    progress: completed ? 100 : it.progress,
+                    merged: completed ? true : it.merged,
                 };
             });
         }
     }
-    const normPlanned = rawPlanned.map(normalizeWave).filter(Boolean);
+    const normPlanned = rawPlanned.map((w) => enrichWave(normalizeWave(w), state)).filter(Boolean);
     const normNext = normPlanned.length > 0 ? normPlanned[0] : null;
     const payload = {
         active_wave: normActive,
@@ -1650,6 +1775,10 @@ module.exports = {
         // #4248 — status vivo de la ola activa en el header.
         computeLiveWaveStatus,
         mapSnapshotStatusToWave,
+        // #4250 — enriquecimiento del board "Issues de la ola".
+        enrichWaveIssue,
+        enrichWave,
+        WAVES_RICH_STATUS,
         WAVES_PRIORITY_WHITELIST,
         WAVES_SIZE_WHITELIST,
         WAVES_STATUS_WHITELIST,
