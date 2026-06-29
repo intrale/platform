@@ -524,6 +524,14 @@ try { providerHealth = require('./provider-health'); } catch { /* opcional */ }
 let waves = null;
 try { waves = require('./waves'); } catch { /* opcional */ }
 
+// #4248 — Snapshot ejecutivo de la ola para enriquecer el status de cada issue
+// de la ola activa con el estado VIVO del pipeline (cerrado/en-curso/bloqueado),
+// en lugar del `status` estático y stale de waves.json (D2). Lectura defensiva:
+// si el módulo no carga, el enriquecimiento se omite y se sirve el status crudo
+// (degrada al comportamiento previo sin tirar 500).
+let waveSnapshot = null;
+try { waveSnapshot = require('./wave-snapshot'); } catch { /* opcional */ }
+
 // #3681 (hijo B del épico #3669) — Endpoint del widget Multi-Provider Coverage.
 // Lectura defensiva: si el módulo (o sus deps, ej. ajv) no cargan, el endpoint
 // devuelve el envelope `coverage_unavailable` con status 503 — degrada a
@@ -584,8 +592,14 @@ function normalizeWaveIssue(raw) {
 }
 
 /**
- * Normaliza una ola al shape público {number, name, goal, started_at, issues}.
- * Igual que normalizeWaveIssue: campo por campo, sin spread.
+ * Normaliza una ola al shape público {number, name, goal, started_at, openedAt,
+ * issues}. Igual que normalizeWaveIssue: campo por campo, sin spread.
+ *
+ * #4248 (D3) — Expone `openedAt` (alias de `started_at`) porque el header de ola
+ * en `home.js` (`_mzMirrorMission`) lee `wave.openedAt` para calcular la
+ * velocidad (issues/hora). Antes el payload sólo traía `started_at`, así que la
+ * velocidad mostraba siempre "—". Se mantiene `started_at` por backward-compat
+ * (la vista issues consume el mismo payload): cambio aditivo, no breaking.
  */
 function normalizeWave(raw) {
     if (!raw || typeof raw !== 'object') return null;
@@ -597,7 +611,63 @@ function normalizeWave(raw) {
     const issues = Array.isArray(raw.issues)
         ? raw.issues.map(normalizeWaveIssue).filter(Boolean)
         : [];
-    return { number, name, goal, started_at, issues };
+    return { number, name, goal, started_at, openedAt: started_at, issues };
+}
+
+// #4248 (D1+D2) — Mapea el status del snapshot ejecutivo (wave-snapshot.js:
+// 'closed'|'blocked'|'paused'|'approval'|'dev'|'definition'|'pending') al
+// vocabulario que consume el header de ola en home.js (`_mzMirrorMission`) y la
+// vista issues, que coincide con `WAVES_STATUS_WHITELIST`:
+//   - closed                         → 'completed'  (ENTREGADOS / done)
+//   - approval | dev | definition    → 'in-progress' (un agente lo está procesando)
+//   - blocked | paused               → 'blocked'    (no avanza, requiere atención)
+//   - pending | resto                → 'ready'      (en cola, sin fase iniciada)
+// El resultado siempre cae dentro de la whitelist → no se propaga texto crudo.
+function mapSnapshotStatusToWave(snapStatus) {
+    switch (snapStatus) {
+        case 'closed': return 'completed';
+        case 'approval':
+        case 'dev':
+        case 'definition': return 'in-progress';
+        case 'blocked':
+        case 'paused': return 'blocked';
+        default: return 'ready';
+    }
+}
+
+/**
+ * #4248 (D1+D2) — Calcula el status VIVO por issue de la ola activa cruzando
+ * `buildWaveSnapshot` (deriva {isClosed, isBlocked, status, pct} desde
+ * `state.issueMatrix` + cerrados) en vez de confiar en el `status` estático de
+ * waves.json (que queda stale en "planned"). Devuelve `Map<id, statusWhitelist>`
+ * o `null` si no hay datos suficientes (sin snapshot, sin matriz, sin ola
+ * activa) — en ese caso el caller degrada al status crudo.
+ *
+ * @param {object} state — getPipelineState() output (issueMatrix, activeWave, bloqueados)
+ * @returns {Map<number,string>|null}
+ */
+function computeLiveWaveStatus(state) {
+    if (!waveSnapshot || typeof waveSnapshot.buildWaveSnapshot !== 'function') return null;
+    if (!state || typeof state !== 'object') return null;
+    if (!state.issueMatrix || typeof state.issueMatrix !== 'object') return null;
+    const activeWave = state.activeWave;
+    if (!activeWave || !Array.isArray(activeWave.issues) || activeWave.issues.length === 0) return null;
+    let snap;
+    try {
+        snap = waveSnapshot.buildWaveSnapshot({
+            state,
+            wave: activeWave,
+            blocked: Array.isArray(state.bloqueados) ? state.bloqueados : [],
+        });
+    } catch {
+        return null;
+    }
+    if (!snap || !Array.isArray(snap.issues)) return null;
+    const byId = new Map();
+    for (const it of snap.issues) {
+        if (it && Number.isInteger(it.id)) byId.set(it.id, mapSnapshotStatusToWave(it.status));
+    }
+    return byId.size > 0 ? byId : null;
 }
 
 /**
@@ -613,7 +683,7 @@ function normalizeWave(raw) {
  * planificada) por si algún cliente viejo los lee directamente — el frontend
  * nuevo prefiere iterar `planned[]`.
  */
-function buildWavesPayload() {
+function buildWavesPayload(state) {
     const updated_at = new Date().toISOString();
     if (!waves) {
         return {
@@ -636,6 +706,29 @@ function buildWavesPayload() {
     const rawActive = horizon.find((w) => w && w.status === 'active') || null;
     const rawPlanned = horizon.filter((w) => w && w.status === 'planned');
     const normActive = normalizeWave(rawActive);
+    // #4248 (D1+D2) — Enriquecer el status de los issues de la ola activa con el
+    // estado VIVO del pipeline. Sin esto, los issues con `status:"planned"` en
+    // waves.json se sirven como "unknown" (fuera de whitelist) y el header los
+    // cuenta como "cola": ENTREGADOS y AVANCE quedaban en 0 aunque hubiera
+    // issues cerrados. Aditivo y defensivo: si no hay datos vivos, se mantiene
+    // el status crudo normalizado (comportamiento previo).
+    if (normActive && Array.isArray(normActive.issues) && normActive.issues.length > 0) {
+        const liveById = computeLiveWaveStatus(state);
+        if (liveById && liveById.size > 0) {
+            normActive.issues = normActive.issues.map((it) => {
+                const live = liveById.get(it.id);
+                if (!live) return it;
+                // Copia campo por campo (sin spread) para no propagar campos extra.
+                return {
+                    id: it.id,
+                    title: it.title,
+                    priority: it.priority,
+                    size: it.size,
+                    status: live,
+                };
+            });
+        }
+    }
     const normPlanned = rawPlanned.map(normalizeWave).filter(Boolean);
     const normNext = normPlanned.length > 0 ? normPlanned[0] : null;
     const payload = {
@@ -1029,7 +1122,7 @@ const API_ROUTES = {
     // vacío con `message: "Planificación no disponible"` y HTTP 200
     // (CA-7). Reusa sendJson() → Cache-Control: no-store coherente
     // con el resto de /api/dash/*.
-    '/api/dash/waves': () => buildWavesPayload(),
+    '/api/dash/waves': (state) => buildWavesPayload(state),
     // #3681 — Widget Multi-Provider Coverage. Lee `.pipeline/multi-provider-coverage.json`
     // (output runtime del harness #3680), valida con ajv contra el schema canónico
     // y sanitiza el payload con whitelist explícita por campo. NUNCA expone
@@ -1554,6 +1647,9 @@ module.exports = {
         buildWavesPayload,
         normalizeWave,
         normalizeWaveIssue,
+        // #4248 — status vivo de la ola activa en el header.
+        computeLiveWaveStatus,
+        mapSnapshotStatusToWave,
         WAVES_PRIORITY_WHITELIST,
         WAVES_SIZE_WHITELIST,
         WAVES_STATUS_WHITELIST,

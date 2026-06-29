@@ -302,6 +302,162 @@ test('normalizeWave filtra issues inválidos y se queda con los válidos', () =>
     assert.equal(out.issues[1].id, 101);
 });
 
+// =============================================================================
+// #4248 — Header de ola: status VIVO + openedAt.
+//
+// D1: el whitelist de status excluía 'planned' → issues de la ola activa se
+//     servían como "unknown" → el header los contaba como cola (ENTREGADOS 0).
+// D2: el status venía estático de waves.json (stale) en vez del estado real del
+//     pipeline.
+// D3: el payload no exponía `openedAt` → la velocidad (iss/h) mostraba siempre "—".
+// =============================================================================
+
+test('#4248 (D3): normalizeWave expone openedAt === started_at y conserva started_at', () => {
+    const { _internal } = fresh();
+    const out = _internal.normalizeWave({
+        number: 7,
+        name: 'Ola 7',
+        goal: 'X',
+        started_at: '2026-05-24T10:00:00Z',
+        issues: [],
+    });
+    assert.equal(out.started_at, '2026-05-24T10:00:00Z', 'started_at se mantiene (backward-compat)');
+    assert.equal(out.openedAt, '2026-05-24T10:00:00Z', 'openedAt alias de started_at');
+});
+
+test('#4248 (D3): openedAt es null cuando no hay started_at', () => {
+    const { _internal } = fresh();
+    const out = _internal.normalizeWave({ number: 7, name: 'X', goal: '', issues: [] });
+    assert.equal(out.started_at, null);
+    assert.equal(out.openedAt, null);
+});
+
+test('#4248: mapSnapshotStatusToWave traduce al vocabulario del header', () => {
+    const { _internal } = fresh();
+    const m = _internal.mapSnapshotStatusToWave;
+    assert.equal(m('closed'), 'completed');
+    assert.equal(m('dev'), 'in-progress');
+    assert.equal(m('approval'), 'in-progress');
+    assert.equal(m('definition'), 'in-progress');
+    assert.equal(m('blocked'), 'blocked');
+    assert.equal(m('paused'), 'blocked');
+    assert.equal(m('pending'), 'ready');
+    assert.equal(m('cualquier-cosa'), 'ready');
+});
+
+// State realista para el snapshot: la ola activa nº2 tiene 3 issues que en
+// waves.json figuran como "planned" pero en el pipeline están cerrado / en dev /
+// pendiente. El enriquecimiento live debe reflejar el estado real.
+function fakeStateConStatusVivo() {
+    return {
+        activeWave: { label: 'Ola 2', source: 'waves', issues: [4248, 100, 200] },
+        bloqueados: [],
+        issueMatrix: {
+            // Cerrado: tiene desarrollo/entrega procesada+aprobada.
+            4248: {
+                title: 'Header de ola',
+                labels: [],
+                faseActual: 'desarrollo/entrega',
+                estadoActual: 'procesado',
+                fases: {
+                    'desarrollo/entrega': [{ estado: 'procesado', resultado: 'aprobado' }],
+                },
+            },
+            // En curso: agente trabajando en dev.
+            100: {
+                title: 'En dev',
+                labels: [],
+                faseActual: 'desarrollo/dev',
+                estadoActual: 'trabajando',
+                fases: {
+                    'desarrollo/dev': [{ estado: 'trabajando', skill: 'pipeline-dev' }],
+                },
+            },
+            // 200 no está en la matriz → pendiente (cola).
+        },
+    };
+}
+
+test('#4248 (D1+D2): enriquece status de la ola activa con el estado vivo del pipeline', () => {
+    const fakeActive = {
+        number: 2,
+        name: 'Ola 2',
+        goal: 'Rediseño dashboard',
+        started_at: '2026-05-24T10:00:00Z',
+        status: 'active',
+        issues: [
+            { number: 4248, title: 'Header', priority: 'medium', size: 's', status: 'planned' },
+            { number: 100, title: 'En dev', priority: 'high', size: 'm', status: 'planned' },
+            { number: 200, title: 'Pendiente', priority: 'low', size: 's', status: 'planned' },
+        ],
+    };
+    delete require.cache[require.resolve('../dashboard-routes')];
+    const payload = withFakeWaves(
+        { getHorizon: () => [fakeActive] },
+        () => {
+            delete require.cache[require.resolve('../dashboard-routes')];
+            return require('../dashboard-routes')._internal.buildWavesPayload(fakeStateConStatusVivo());
+        },
+    );
+    const byId = new Map(payload.active_wave.issues.map((i) => [i.id, i.status]));
+    assert.equal(byId.get(4248), 'completed', 'issue cerrado → completed (no queda en planned/unknown)');
+    assert.equal(byId.get(100), 'in-progress', 'issue en dev → in-progress');
+    assert.equal(byId.get(200), 'ready', 'issue sin actividad → ready (cola)');
+    // openedAt presente para que el header calcule velocidad.
+    assert.equal(payload.active_wave.openedAt, '2026-05-24T10:00:00Z');
+    // El conteo del header (done) deja de ser 0 cuando hay avance real.
+    const done = payload.active_wave.issues.filter((i) => i.status === 'completed').length;
+    assert.equal(done, 1, 'ENTREGADOS refleja el cierre real, no 0/3');
+});
+
+test('#4248: el enriquecimiento NO propaga campos extra (sigue el whitelist por campo)', () => {
+    const fakeActive = {
+        number: 2, name: 'Ola 2', goal: '', started_at: '2026-05-24T10:00:00Z', status: 'active',
+        issues: [{ number: 4248, title: 'H', priority: 'medium', size: 's', status: 'planned', notes: 'secreto' }],
+    };
+    delete require.cache[require.resolve('../dashboard-routes')];
+    const payload = withFakeWaves(
+        { getHorizon: () => [fakeActive] },
+        () => {
+            delete require.cache[require.resolve('../dashboard-routes')];
+            return require('../dashboard-routes')._internal.buildWavesPayload(fakeStateConStatusVivo());
+        },
+    );
+    const issue = payload.active_wave.issues[0];
+    assert.deepEqual(Object.keys(issue).sort(), ['id', 'priority', 'size', 'status', 'title']);
+    assert.equal('notes' in issue, false, 'no debe propagar `notes` tras enriquecer');
+});
+
+test('#4248: sin state (o sin snapshot) degrada al status crudo normalizado', () => {
+    const fakeActive = {
+        number: 2, name: 'Ola 2', goal: '', started_at: '2026-05-24T10:00:00Z', status: 'active',
+        issues: [{ number: 4248, title: 'H', priority: 'medium', size: 's', status: 'in-progress' }],
+    };
+    delete require.cache[require.resolve('../dashboard-routes')];
+    const payload = withFakeWaves(
+        { getHorizon: () => [fakeActive] },
+        () => {
+            delete require.cache[require.resolve('../dashboard-routes')];
+            // Sin state → computeLiveWaveStatus devuelve null → status crudo.
+            return require('../dashboard-routes')._internal.buildWavesPayload();
+        },
+    );
+    assert.equal(payload.active_wave.issues[0].status, 'in-progress', 'mantiene status normalizado previo');
+    assert.equal(payload.active_wave.openedAt, '2026-05-24T10:00:00Z', 'openedAt presente igual');
+});
+
+test('#4248: computeLiveWaveStatus devuelve null si no hay issueMatrix o ola activa', () => {
+    const { _internal } = fresh();
+    assert.equal(_internal.computeLiveWaveStatus(undefined), null);
+    assert.equal(_internal.computeLiveWaveStatus({}), null);
+    assert.equal(_internal.computeLiveWaveStatus({ issueMatrix: {} }), null, 'sin activeWave → null');
+    assert.equal(
+        _internal.computeLiveWaveStatus({ issueMatrix: { 1: {} }, activeWave: { issues: [] } }),
+        null,
+        'ola activa vacía → null',
+    );
+});
+
 test('buildWavesPayload sin lib/waves cargada devuelve payload vacío sin throw', () => {
     // Simula que require('./waves') falló al cargar el módulo dashboard-routes
     // monkey-patcheando Module._load para tirar al resolver '../waves'. Esto
