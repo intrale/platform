@@ -1227,6 +1227,14 @@ const API_ROUTES = {
             concurrencyUsed: data.concurrencyUsed,
             bySize: data.bySize,
             rebounceRate: data.rebounceRate,
+            // #4287 (CA-1) — fuente determinística de avance/velocidad de la ola
+            // para que la HOME hidrate `mission-avance-pct`/`mission-vel-value`
+            // desde el MISMO cómputo que el handler de estado de ola (no desde
+            // conteos de issues client-side). `velocityETA` es null hasta que hay
+            // ritmo medido; `etaSource` distingue 'velocity' de 'fallback'.
+            velocityETA: data.velocityETA || null,
+            etaSource: data.etaSource || 'fallback',
+            totalPct: Number.isFinite(data.totalPct) ? data.totalPct : null,
             refreshedAt: data.refreshedAt,
         };
     },
@@ -1798,5 +1806,8 @@ module.exports = {
         renderCostosView,
         // #4192 — banner de misión de la ventana Issues (rediseño MIZPÁ).
         deriveIssuesMission,
+        // #4287 — map de rutas API expuesto para tests del passthrough de
+        // /api/dash/ola-eta (velocityETA/etaSource/totalPct).
+        API_ROUTES,
     },
 };
