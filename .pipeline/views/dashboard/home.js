@@ -1816,6 +1816,15 @@ function homeStyles() {
 .mz-now .active-card-prov[data-prov="anthropic"]::before { background: #FB923C; }
 .mz-now .active-card-prov[data-prov="codex"]::before { background: #34D399; }
 .mz-now .active-card-prov[data-prov="gemini"]::before { background: #60A5FA; }
+/* #4284 (CA-UX-1) — colores por provider-key CANÓNICA (el data-prov sale del id
+   canónico de PROVIDER_LABELS: openai-codex, gemini-google, etc.). Sin estas
+   reglas, el dot del provider EFECTIVO (ej. fallback a Codex) quedaría incoloro
+   justo cuando más importa distinguirlo. */
+.mz-now .active-card-prov[data-prov="openai-codex"]::before { background: #34D399; }
+.mz-now .active-card-prov[data-prov="gemini-google"]::before { background: #60A5FA; }
+.mz-now .active-card-prov[data-prov="cerebras"]::before { background: #F472B6; }
+.mz-now .active-card-prov[data-prov="nvidia-nim"]::before { background: #A3E635; }
+.mz-now .active-card-prov[data-prov="deterministic"]::before { background: #94A3B8; }
 /* Eyebrow "CORRE" sobre el tiempo (mockup .ameta). */
 .mz-now .active-card-time { position: relative; }
 .mz-now .active-card-time::before {
