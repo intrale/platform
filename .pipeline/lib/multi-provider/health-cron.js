@@ -42,6 +42,31 @@ const healthAlerts = require('./health-alerts');
 const auditLog = require('../audit-log');
 const redact = require('../redact');
 
+// #4283 — señal de cuota real (#4202) vía el helper compartido de
+// provider-health, para que el snapshot del cron (que lee el router) y el
+// endpoint/dashboard NO diverjan (decisión #4 del PO). Carga defensiva.
+let providerHealth = null;
+try { providerHealth = require('../provider-health'); } catch { /* opcional */ }
+
+// default_provider (primario). Lectura defensiva: el primario NUNCA se gatea
+// por cuota en el snapshot (decisión #3 del PO) — el router ya no gatea al
+// primario, y un falso CAÍDO del primario en el dashboard sería peor.
+function readDefaultProvider() {
+    try {
+        const am = require('./agent-models-rw');
+        const cfg = am.readConfig();
+        if (cfg && typeof cfg.default_provider === 'string' && cfg.default_provider) {
+            return cfg.default_provider;
+        }
+    } catch { /* best-effort */ }
+    return 'anthropic';
+}
+
+// Alias provider-key (cron) → default_provider key. El cron usa 'openai' para
+// Codex; el default_provider de agent-models usa 'openai-codex'. Comparamos
+// normalizando para no flipear a rojo al primario si fuera Codex.
+const DEFAULT_PROVIDER_ALIAS = Object.freeze({ openai: 'openai-codex' });
+
 // Resolver paths según el contexto. En tests/CLI se pueden inyectar.
 function defaultStateDir() {
     return process.env.PIPELINE_STATE_DIR
@@ -263,11 +288,20 @@ function listManagedAndPingable() {
 // Snapshot build + alerts
 // -----------------------------------------------------------------------------
 
-async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl = fs, httpImpl, pingImpl, cliProbe } = {}) {
+async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl = fs, httpImpl, pingImpl, cliProbe, quotaAssessImpl, defaultProvider, now } = {}) {
     const prevByProvider = {};
     if (prevSnapshot && Array.isArray(prevSnapshot.providers)) {
         for (const p of prevSnapshot.providers) prevByProvider[p.provider] = p;
     }
+
+    // #4283 — helper de cuota real (inyectable para tests) + primario a excluir
+    // del gateo por cuota (decisión #3 del PO).
+    const assessQuota = quotaAssessImpl
+        || (providerHealth && typeof providerHealth.assessProviderQuota === 'function'
+            ? providerHealth.assessProviderQuota
+            : null);
+    const primary = defaultProvider || readDefaultProvider();
+    const nowMs = Number.isFinite(now) ? now : Date.now();
 
     const results = [];
     for (const spec of providers) {
@@ -299,15 +333,40 @@ async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl =
             };
         }
 
-        const state = pingResult.skipped ? 'red' : classifyState(pingResult, prev);
+        let state = pingResult.skipped ? 'red' : classifyState(pingResult, prev);
+        let reasonCode = healthAlerts.sanitizeReasonCode(pingResult.reason);
         const rate24 = updateRateLimitCounter(pingResult, prev);
+
+        // #4283 — tercer insumo: cuota REAL (#4202). Si el adapter mide cuota
+        // crítica (≥90%) con señal fresca y durable, el provider está logueado
+        // pero SIN cuota usable → red + reason 'quota_exhausted_real' para que
+        // el router lo descarte de la cascada de fallback (CA-1/CA-3). El
+        // primario NUNCA se flipea por esta razón (decisión #3): el router no lo
+        // gatea y se mostraría como falso CAÍDO. Fail-open ante adapter
+        // degradado: `gated` es false → no se toca el estado login-based (CA-2).
+        let quota = null;
+        if (assessQuota) {
+            try {
+                const qa = assessQuota(spec.provider, { now: nowMs });
+                quota = { adapterStatus: qa.adapterStatus, status: qa.status, pct: qa.pct };
+                const normalized = DEFAULT_PROVIDER_ALIAS[spec.provider] || spec.provider;
+                const isPrimary = normalized === primary || spec.provider === primary;
+                if (qa.gated && !isPrimary) {
+                    state = 'red';
+                    reasonCode = healthAlerts.sanitizeReasonCode(qa.reason_code);
+                }
+            } catch { /* fail-open: mantenemos el estado login-based */ }
+        }
 
         results.push({
             provider: spec.provider,
             label: spec.label,
             state,
             // NUNCA persistir/exponer fingerprint, masked, raw key, body excerpt.
-            reason_code: healthAlerts.sanitizeReasonCode(pingResult.reason),
+            reason_code: reasonCode,
+            // #4283 — discriminante de cuota para el dashboard (CA-5). Solo
+            // { adapterStatus, status, pct } — sin keys/tokens/payload (req#1).
+            quota,
             status_code: typeof pingResult.statusCode === 'number' ? pingResult.statusCode : null,
             latency_ms: typeof pingResult.latency_ms === 'number' ? pingResult.latency_ms : null,
             rate_limit_hit_24h: rate24,
