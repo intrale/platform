@@ -1628,8 +1628,70 @@ if(hmLoadMore){
   hmLoadMore.addEventListener('click', function(){ var c = hmLoadMore.getAttribute('data-next'); if(c!=null) hmApply(c, true); });
 }
 
+// #4244 — Hidratación del banner de ola común (② del marco MIZPÁ). El SSR llega
+// neutro (igual que en la HOME / EQUIPO); este tick espeja /api/dash/waves a los
+// IDs mission-* del helper compartido renderMissionBanner. Defensivo: cualquier
+// dato ausente degrada a neutro sin romper el resto de la pantalla.
+async function hmTickMission(){
+  const d = await fetchJson('/api/dash/waves');
+  if(!d) return;
+  try {
+    const wave = d.active_wave;
+    if(!wave){
+      setText('mission-wave-num', '—');
+      setText('mission-wave-name', 'Sin ola activa');
+      setText('mission-wave-desc', 'Esperando la planificación de la ola activa.');
+      return;
+    }
+    if(Number.isFinite(wave.number)) setText('mission-wave-num', String(wave.number));
+    setText('mission-wave-name', wave.name ? ('Ola ' + wave.number + ' · ' + wave.name) : ('Ola ' + wave.number));
+    setText('mission-wave-desc', wave.goal || wave.description || ('Issues de la ola ' + wave.number + ' en curso.'));
+    const tag = document.getElementById('mission-wave-tag');
+    if(tag) tag.style.display = wave.isLast ? '' : 'none';
+    const issues = Array.isArray(wave.issues) ? wave.issues : [];
+    let done=0, active=0, blocked=0, queue=0;
+    for(const it of issues){
+      const s = it && it.status;
+      if(s === 'completed') done++;
+      else if(s === 'in-progress') active++;
+      else if(s === 'blocked') blocked++;
+      else queue++;
+    }
+    const total = issues.length || 0;
+    const pct = total > 0 ? Math.round((done/total)*100) : 0;
+    setText('mission-avance-pct', pct + '%');
+    setText('mission-leg-done', String(done));
+    setText('mission-leg-active', String(active));
+    setText('mission-leg-blocked', String(blocked));
+    setText('mission-leg-queue', String(queue));
+    const w = (n) => total>0 ? ((n/total)*100).toFixed(1)+'%' : '0%';
+    const setW = (id,n) => { const el=document.getElementById(id); if(el) el.style.width = w(n); };
+    setW('mission-bar-done', done);
+    setW('mission-bar-active', active);
+    setW('mission-bar-blocked', blocked);
+    setW('mission-bar-queue', queue);
+    const dv = document.getElementById('mission-delivered-value');
+    if(dv) dv.innerHTML = done + '<span class="mz-wm-u"> / ' + total + '</span>';
+    const dsub = document.getElementById('mission-delivered-sub');
+    if(dsub) dsub.textContent = Math.max(0, total-done) + ' restantes';
+    const openedAt = wave.openedAt ? Date.parse(wave.openedAt) : NaN;
+    const vv = document.getElementById('mission-vel-value');
+    if(vv){
+      if(Number.isFinite(openedAt) && done > 0){
+        const hours = (Date.now() - openedAt) / 3600000;
+        vv.innerHTML = hours > 0.1
+          ? (done/hours).toFixed(1) + ' <span class="mz-wm-u">iss/h</span>'
+          : '— <span class="mz-wm-u">iss/h</span>';
+      } else {
+        vv.innerHTML = '— <span class="mz-wm-u">iss/h</span>';
+      }
+    }
+  } catch(_) {}
+}
+
 const POLLS = [
   { fn: tickHeader, ms: 5000 },
+  { fn: hmTickMission, ms: 30000 },
   { fn: hmRefreshBanner, ms: 15000 },
   { fn: function(){ return hmApply(0, false); }, ms: 45000 }
 ];
@@ -1637,8 +1699,22 @@ async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
 
+    // #4244 — Marco común MIZPÁ en HISTORIAL (de #4234): ① cabecera de marca
+    // (renderHistorialBrandBar, mismo markup/clases `.mz-*` del theme.css que el
+    // resto), ② banner de ola común (renderMissionBanner compartido de la HOME,
+    // vía `missionHtml`, SSR neutro + hidratado por hmTickMission desde
+    // /api/dash/waves), ③ barra de accesos (renderNavTabsSsr('historial'), ya
+    // inyectada por pageShell). El contenido propio de HISTORIAL (`.hm`, su banner
+    // de pulso reciente y el feed) queda debajo del marco (CA-4). Reusa los
+    // helpers/CSS compartidos del marco (CA-5: el CSS `mz-*` ya vive en theme.css,
+    // no se duplica markup). Si la HOME no cargó, `missionHtml` queda vacío y el
+    // resto del marco sigue intacto (defensa en profundidad — el pipeline no puede morir).
+    const missionHtml = (homeView && typeof homeView.renderMissionBanner === 'function')
+        ? homeView.renderMissionBanner()
+        : '';
     return pageShell('Historial', 'Bitácora del pipeline · MIZPÁ', body, script, css, 'historial', {
         brandHtml: renderHistorialBrandBar(),
+        missionHtml,
         breadcrumbHtml: breadcrumb,
     });
 }
