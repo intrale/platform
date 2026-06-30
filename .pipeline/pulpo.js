@@ -9488,18 +9488,21 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
     });
 
     // #4309 — Ejecución del fallback in-flight (revive #3578).
-    //   - `inflightExecEnabled`: gate de config (default OFF, rollout gradual).
-    //     Con OFF el comportamiento es idéntico a #3577 (solo shadow signals).
+    //   - `inflightExecEnabled`: gate de config. Default ON: un fix no puede
+    //     shippear apagado y degradar al bug viejo (detecta pero no ejecuta).
+    //     El flag queda SOLO como kill-switch explícito de opt-out: para
+    //     desactivar hay que setear `inflight_fallback.execution_enabled: false`.
     //   - `inflightFallbackAttempted`: cap a nivel wiring — máximo UNA ejecución
     //     de fallback in-flight por turno (complementa el cap=1 del core).
     //   - `inflightFallbackClaimed`: cuando el executor toma el turno, el
     //     orquestador del intento Anthropic NO resuelve el Promise externo (el
     //     secundario lo resuelve). Evita la carrera primario-muerto vs secundario.
-    let inflightExecEnabled = false;
+    let inflightExecEnabled = true;
     try {
       const cfgRoot = loadConfig() || {};
-      inflightExecEnabled = !!(cfgRoot.inflight_fallback && cfgRoot.inflight_fallback.execution_enabled);
-    } catch { /* default false: preserva comportamiento shadow-only */ }
+      // Solo OFF si está explícitamente en false; ausente/indefinido => ON.
+      inflightExecEnabled = !(cfgRoot.inflight_fallback && cfgRoot.inflight_fallback.execution_enabled === false);
+    } catch { /* default true: el fix viene prendido salvo opt-out explícito */ }
     let inflightFallbackAttempted = false;
     let inflightFallbackClaimed = false;
 
