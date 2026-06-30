@@ -20,6 +20,8 @@ const {
   findPidByPort,
   pidAlive,
   invalidateCache,
+  waitForPortFree,
+  commandLineForPid,
   SCRIPT_MAP,
 } = require('./pid-discovery');
 const { clearAllMarkers } = require('./lib/ready-marker');
@@ -268,6 +270,46 @@ function killAll() {
   }
 }
 
+// --- LIBERACIÓN DETERMINÍSTICA DEL PUERTO DEL DASHBOARD (#4308) ---
+//
+// Entre killAll() y launchAll() verificamos de forma ACOTADA que el puerto del
+// dashboard (3200 por default) quedó libre antes de relanzar. Sin esto, si el
+// socket TCP no se liberó aún o un proceso respawneó entre scan y kill, el
+// dashboard nuevo choca con EADDRINUSE, el smoke test falla 2× y se dispara un
+// rollback espurio a `pipeline-stable`.
+//
+// onHolder (SEC-2 / CA-2): antes de re-matar valida ownership por commandLine
+// (solo procesos del pipeline: `dashboard.js` o `.pipeline`), LOGUEA PID +
+// commandLine ANTES de matar (auditoría), y mata SOLO por PID numérico vía
+// taskkill (SEC-1 / CA-6: nada de `$(...)`, `fkill <puerto>` ni interpolar
+// salida de netstat). Un proceso ajeno que casualmente tome el puerto NO se
+// mata. Si el backoff se agota, degradamos al comportamiento actual (avanzar +
+// retry EADDRINUSE del dashboard) — nunca peor que hoy (CA-3).
+function freeDashboardPortOrAdvance() {
+  const dashPort = parseInt(process.env.DASHBOARD_PORT || '3200', 10);
+  const onHolder = (pid) => {
+    if (pid === process.pid) return;
+    const cmd = commandLineForPid(pid);
+    const owned = !!cmd && (cmd.includes('dashboard.js') || cmd.includes('.pipeline'));
+    log(`  [puerto ${dashPort}] holder PID ${pid} cmd=${cmd || '<desconocido>'}`); // auditoría ANTES de matar
+    if (!owned) {
+      log(`  [puerto ${dashPort}] PID ${pid} no es del pipeline — no se mata`);
+      return;
+    }
+    try {
+      execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, stdio: 'ignore' });
+      log(`  [puerto ${dashPort}] Re-killed PID ${pid}`);
+    } catch {}
+  };
+  const free = waitForPortFree(dashPort, { attempts: 6, delayMs: 500, onHolder });
+  if (free) {
+    log(`  [puerto ${dashPort}] libre antes de launchAll()`);
+  } else {
+    log(`  [puerto ${dashPort}] sigue tomado tras backoff — se avanza igual (retry EADDRINUSE del dashboard como red secundaria)`);
+  }
+  return free;
+}
+
 // --- LAUNCH ---
 
 function launchAll() {
@@ -479,6 +521,7 @@ switch (action) {
     } else {
       try { fs.unlinkSync(path.join(PIPELINE, '.paused')); } catch {}
     }
+    freeDashboardPortOrAdvance(); // #4308 — puerto 3200 libre antes de relanzar
     launchAll();
     const ok = status();
     log(ok ? '=== Pipeline operativo ===' : '=== Revisar componentes ===');
@@ -497,6 +540,7 @@ switch (action) {
       if (!smoke.ok && !flagNoRollback) {
         log('Primer smoke test FAIL — reintento tras limpieza de stragglers');
         killAll();
+        freeDashboardPortOrAdvance(); // #4308 — puerto 3200 libre antes de relanzar
         launchAll();
         sleep(5000);
         smoke = runSmokeTest();
