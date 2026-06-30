@@ -178,6 +178,47 @@ function invalidateCache() {
   _scanCacheAt = 0;
 }
 
+// Sleep síncrono y bloqueante reusando spawnSync (mismo patrón que restart.js).
+// Evita meter timers async en una función que se llama desde un flujo
+// secuencial de restart. Acotado por el `timeout` del spawn.
+function _sleepBlocking(ms) {
+  if (!ms || ms <= 0) return;
+  try {
+    spawnSync(process.execPath, ['-e', `setTimeout(()=>{},${ms})`], { timeout: ms + 2000 });
+  } catch {}
+}
+
+// commandLineForPid(pid) → string | null
+// Busca el PID dentro del scan de procesos node (que ya devuelve
+// {pid, commandLine}) y retorna su commandLine. NO ejecuta comandos nuevos de
+// shell (CA-6 / SEC-1): solo lee el resultado del scan ya cacheado.
+function commandLineForPid(pid) {
+  const p = scanNodeProcesses().find(x => x.pid === pid);
+  return p ? p.commandLine : null;
+}
+
+// waitForPortFree(port, { attempts, delayMs, onHolder }) → boolean
+// Espera de forma ACOTADA a que `port` quede libre (sin proceso LISTENING).
+// En cada vuelta: invalida cache, consulta findPidByPort(port); si está libre
+// retorna true; si hay holder invoca onHolder(pid) — para que el caller valide
+// ownership y re-mate — y duerme delayMs. Al agotar `attempts` revalida una vez
+// más y retorna si el puerto quedó libre. Sin while(true) ni kill indiscriminado
+// (SEC-4 / CA-3): el peor caso es degradar al comportamiento actual, nunca peor.
+function waitForPortFree(port, { attempts = 6, delayMs = 500, onHolder } = {}) {
+  // Resolvemos findPidByPort vía module.exports para que los unit tests puedan
+  // sustituirlo (mock de findPidByPort, CA-7) sin tocar netstat real.
+  const findPid = (module.exports && module.exports.findPidByPort) || findPidByPort;
+  for (let i = 0; i < attempts; i++) {
+    invalidateCache();
+    const holder = findPid(port);
+    if (!holder) return true;                                // puerto libre
+    if (typeof onHolder === 'function') onHolder(holder);    // caller valida ownership + re-mata
+    _sleepBlocking(delayMs);
+  }
+  invalidateCache();
+  return findPid(port) == null;
+}
+
 module.exports = {
   SCRIPT_MAP,
   scanNodeProcesses,
@@ -188,4 +229,6 @@ module.exports = {
   findPidByPort,
   pidAlive,
   invalidateCache,
+  waitForPortFree,
+  commandLineForPid,
 };
