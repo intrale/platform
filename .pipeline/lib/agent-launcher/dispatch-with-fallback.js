@@ -1235,6 +1235,25 @@ function resolveSpawnWithFallback(opts = {}) {
         pushSkip(primaryProvider, reasonCode, reasonDetail);
     }
 
+    // #4313 — motivo ESTÁTICO del descarte del primario para la traza del turno
+    // del Commander (CA-2). Es un literal/enum (REQ SEC-1): NUNCA interpola
+    // config, credenciales ni contenido del flag-file. Precedencia coherente con
+    // la atribución de skipReason de arriba (kill-switch > horario > pacing >
+    // cuota). El caso que motiva el issue —primario apagado por kill-switch al
+    // momento de despachar— se atribuye `primary_disabled_preflight`.
+    let primaryDisqualifyReason = null;
+    if (primaryDisabled) {
+        primaryDisqualifyReason = (_disabledSourceOf(primaryProvider) === 'pacing' || primaryPacingRed)
+            ? 'primary_pacing_red'
+            : 'primary_disabled_preflight';
+    } else if (primaryInactiveBySchedule) {
+        primaryDisqualifyReason = 'primary_inactive_by_schedule';
+    } else if (primaryPacingRed) {
+        primaryDisqualifyReason = 'primary_pacing_red';
+    } else if (primaryQuotaGated) {
+        primaryDisqualifyReason = 'primary_quota_exhausted';
+    }
+
     // #4282 — soft-gate preventivo (solo si NO hubo hard gate). Registra la
     // razón y audita la degradación (REQ-SEC-5). NO marca
     // `nonScheduleAvailabilityGate` (no es indisponibilidad real: el primary
@@ -1737,6 +1756,8 @@ function resolveSpawnWithFallback(opts = {}) {
             chainTried,
             crossProvider: true,
             depthExceeded: false,
+            // #4313 (CA-2) — motivo estático del salto (literal/enum, SEC-1).
+            disqualifyReason: primaryDisqualifyReason,
             skipReasons,
         };
     }

@@ -9540,8 +9540,75 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         log: (l, m) => log(l || 'commander', m),
       });
     } catch (e) {
-      log('commander', `⚠️ resolveCommanderProvider falló: ${e.message} — degradando a Anthropic por compatibilidad.`);
-      resolution = { provider: 'anthropic', model: null, gated: false, crossProvider: false, primaryProvider: 'anthropic', chainTried: ['anthropic'], fallbackUsed: null, handler: null, source: 'fallback-resolver-error' };
+      // #4313 (CA-7) — instrumentar el catch ANTES de degradar: el degradado
+      // ciego a Anthropic enmascaraba la causa raíz (perdía el stack) y, peor,
+      // spawneaba el PRIMARIO aunque viniera gateado de entrada → Commander mudo.
+      // Logueamos el stack completo (no solo el message) para diagnóstico.
+      log('commander', `⚠️ resolveCommanderProvider falló: ${e.message}`);
+      if (typeof e.stack === 'string') {
+        log('commander', `   stack: ${e.stack.replace(/\s+/g, ' ').slice(0, 1200)}`);
+      }
+      try {
+        commanderMP.auditCommanderRequest({
+          pipelineDir: PIPELINE,
+          event: 'resolver_error',
+          providerIntended: 'anthropic',
+          providerEffective: null,
+          chatId: getTelegramChatId(),
+          prompt: prompt,
+          errorCode: 'resolver_exception',
+          requestId: turnRequestId, // #3577 CA-S6
+        });
+      } catch { /* best-effort */ }
+
+      // #4313 — Si el primario está deshabilitado al momento del despacho, NUNCA
+      // lo spawneamos (ese es exactamente el bug que motiva el issue: error
+      // instantáneo, provider=anthropic, cross_provider=false). Intentamos
+      // resolver el primer fallback resoluble excluyendo Anthropic; si tampoco
+      // hay, respondemos canned. El degradado a Anthropic SOLO se mantiene cuando
+      // el primario NO está gateado (preserva el fail-open: un bug del resolver
+      // no debe dejar mudo al Commander cuando Anthropic está sano).
+      let primaryDisabledOnError = false;
+      try {
+        primaryDisabledOnError = require('./lib/provider-disabled').isProviderDisabled('anthropic');
+      } catch { primaryDisabledOnError = false; }
+
+      if (primaryDisabledOnError) {
+        let alt = null;
+        try {
+          alt = commanderMP.resolveCommanderProviderExcluding('anthropic', {
+            pipelineDir: PIPELINE,
+            log: (l, m) => log(l || 'commander', m),
+            issue: 'commander-chat',
+          });
+        } catch (e2) {
+          log('commander', `⚠️ resolución alternativa (excluyendo anthropic) también falló: ${e2.message}`);
+        }
+        if (alt && !alt.gated && alt.provider && alt.provider !== 'anthropic') {
+          log('commander', `↪️ Primario deshabilitado + error del resolver — uso fallback "${alt.provider}" (preflight).`);
+          resolution = { ...alt, crossProvider: true, disqualifyReason: 'primary_disabled_preflight' };
+        } else {
+          // Ningún proveedor resoluble: NUNCA spawnear el primario gateado.
+          log('commander', '🚫 Primario deshabilitado y sin fallback resoluble tras error del resolver — respondo canned.');
+          try {
+            commanderMP.auditCommanderRequest({
+              pipelineDir: PIPELINE,
+              event: 'gated_all',
+              providerIntended: 'anthropic',
+              providerEffective: null,
+              chainTried: ['anthropic'],
+              chatId: getTelegramChatId(),
+              prompt: prompt,
+              errorCode: 'no_resolvable_provider',
+              requestId: turnRequestId, // #3577 CA-S6
+            });
+          } catch { /* best-effort */ }
+          return resolve(commanderMP.cannedAllProvidersFailedResponse({ chainTried: ['anthropic'] }));
+        }
+      } else {
+        log('commander', '   degradando a Anthropic por compatibilidad (primario habilitado).');
+        resolution = { provider: 'anthropic', model: null, gated: false, crossProvider: false, primaryProvider: 'anthropic', chainTried: ['anthropic'], fallbackUsed: null, handler: null, source: 'fallback-resolver-error' };
+      }
     }
 
     // #3951 EP7-H4 — exponer la resolución efectiva al caller vía `_trace` para
@@ -9555,6 +9622,10 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         crossProvider: resolution.crossProvider === true,
         fallbackUsed: resolution.fallbackUsed != null ? String(resolution.fallbackUsed) : null,
         primaryProvider: resolution.primaryProvider || 'anthropic',
+        // #4313 (CA-2) — motivo del salto de provider en la traza del turno.
+        // SEC-3: solo string no sensible (el resolver lo emite como literal/enum
+        // estático, nunca interpolando config/credenciales/flag-file).
+        reason: resolution.disqualifyReason != null ? String(resolution.disqualifyReason) : null,
       };
     }
 
