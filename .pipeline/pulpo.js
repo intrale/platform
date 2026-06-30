@@ -89,6 +89,10 @@ const inflightShadow = require('./lib/commander/inflight-shadow-detectors');
 // #3577 — generateRequestId para correlación cross-event (CA-S6): el mismo
 // requestId se propaga a TODOS los `auditCommanderRequest` del turn.
 const inflightFallback = require('./lib/commander/inflight-fallback');
+// #4309 — Ejecutor del fallback in-flight (revive #3578, skill-agnóstico):
+// tras la DECISIÓN del fallback (decideInflightFallback) dispara la EJECUCIÓN
+// reusando la maquinaria pre-spawn. Gated por `inflight_fallback.execution_enabled`.
+const inflightExecutor = require('./lib/inflight-executor');
 // #3343 — Sherlock verifier adversarial. Corre IN-PROCESS entre
 // `ejecutarClaude` y `sendTelegram` del flujo texto-libre. Refuta el análisis
 // con un provider distinto al del Commander. Bypass total si
@@ -9483,6 +9487,22 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       now: startTimeForAudit,
     });
 
+    // #4309 — Ejecución del fallback in-flight (revive #3578).
+    //   - `inflightExecEnabled`: gate de config (default OFF, rollout gradual).
+    //     Con OFF el comportamiento es idéntico a #3577 (solo shadow signals).
+    //   - `inflightFallbackAttempted`: cap a nivel wiring — máximo UNA ejecución
+    //     de fallback in-flight por turno (complementa el cap=1 del core).
+    //   - `inflightFallbackClaimed`: cuando el executor toma el turno, el
+    //     orquestador del intento Anthropic NO resuelve el Promise externo (el
+    //     secundario lo resuelve). Evita la carrera primario-muerto vs secundario.
+    let inflightExecEnabled = false;
+    try {
+      const cfgRoot = loadConfig() || {};
+      inflightExecEnabled = !!(cfgRoot.inflight_fallback && cfgRoot.inflight_fallback.execution_enabled);
+    } catch { /* default false: preserva comportamiento shadow-only */ }
+    let inflightFallbackAttempted = false;
+    let inflightFallbackClaimed = false;
+
     // #3258 — SR-4: sanitizar el input del usuario ANTES de cualquier dispatch.
     // Si detecta patrones de prompt-injection, recorta al primer match y
     // dejamos constancia en el audit log (best-effort). El prompt efectivo que
@@ -9674,7 +9694,18 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
     // handler real vía `safeBuildSpawn`. Los providers no-Anthropic son stubs
     // hasta #3198 — `buildSpawn` tira `_notImplemented`. En ese caso, audit
     // log + respondemos canned al usuario sin matar el flow.
-    if (resolution.provider !== 'anthropic') {
+    // #4309 — Los closures de ejecución no-Anthropic (buildEnvFor /
+    // buildFallbackArgs / advanceOrGiveUp / runNonAnthropic) se definen SIEMPRE,
+    // no solo en el camino pre-spawn no-Anthropic. Razón: el ejecutor del
+    // fallback IN-FLIGHT del camino Anthropic (cuando el primario se cuelga a
+    // mitad del stream) los reusa para correr el secundario con la MISMA
+    // maquinaria de spawn (paridad pre-spawn, revive #3578). Son closures
+    // inertes hasta invocarse → cero efecto para el happy-path Anthropic.
+    //
+    // El bloque corre incondicionalmente; expone `runNonAnthropic` al scope del
+    // Promise vía `runNonAnthropicShared` (el bloque crea su propio scope léxico).
+    let runNonAnthropicShared = null;
+    {
       // ---------------------------------------------------------------------
       // Reintento de cadena ante respuesta vacía / spawn fallido (incidente
       // Cerebras empty_output 2026-06-05). Antes, si el provider efectivo
@@ -9903,8 +9934,16 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         });
       };
 
+      // #4309 — exponemos el runner al scope del Promise para que el ejecutor
+      // del fallback in-flight (camino Anthropic) lo reuse al caer el primario.
+      runNonAnthropicShared = runNonAnthropic;
+
       // Primer intento: reusamos el env ya construido para el provider inicial.
-      return runNonAnthropic(resolution, cleanEnv);
+      // Solo para el camino pre-spawn (provider efectivo ya distinto de Anthropic);
+      // en el camino Anthropic el bloque solo define los closures y sigue de largo.
+      if (resolution.provider !== 'anthropic') {
+        return runNonAnthropic(resolution, cleanEnv);
+      }
     }
 
     // =========================================================================
@@ -10035,6 +10074,86 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       }
     }
 
+    // #4309 — EJECUCIÓN del fallback in-flight (revive #3578). Se invoca DESPUÉS
+    // de `_emitShadowSignal(errorClass)` (que conserva la telemetría de DECISIÓN
+    // `inflight_signal_observed`). Mientras `inflight_fallback.execution_enabled`
+    // esté OFF (default), es no-op → comportamiento idéntico al modo shadow puro.
+    //
+    // Cuando está ON y el primario Anthropic se cae in-flight:
+    //   1. mata el primario (killProc — taskkill /T confirma terminación),
+    //   2. delega al ejecutor skill-agnóstico (decide + lock + spawn secundario),
+    //   3. el secundario corre por la MISMA maquinaria pre-spawn (runNonAnthropic),
+    //   4. emite `inflight_fallback_completed` (EJECUCIÓN ≠ señal — CA-4).
+    // El cap a nivel wiring (`inflightFallbackAttempted`) garantiza UNA sola
+    // ejecución por turno (complementa el cap=1 del core anti-amplificación).
+    function _maybeExecuteInflightFallback(errorClass) {
+      if (!inflightExecEnabled) return false;
+      // El ejecutor in-flight cubre el camino Anthropic (el no-Anthropic ya
+      // cascadea solo vía advanceOrGiveUp). Si el primario no es Anthropic, no-op.
+      if (resolution.provider !== 'anthropic') return false;
+      if (inflightFallbackAttempted) return false;
+      if (typeof runNonAnthropicShared !== 'function') return false;
+      inflightFallbackAttempted = true;
+
+      log('commander', `🛠️ inflight-exec: detector "${errorClass}" disparó EJECUCIÓN de fallback (request_id=${turnRequestId.slice(0, 20)}…)`);
+
+      // Paso 2 (CA-B1): matar el primario y confirmar terminación efectiva ANTES
+      // de spawnear el secundario (evita race de writes/late-response).
+      try { killProc(); } catch (e) { log('commander', `⚠️ inflight-exec: killProc falló (best-effort): ${e && e.message}`); }
+
+      const chatId = getTelegramChatId();
+      const res = inflightExecutor.runInflightFallback({
+        skill: commanderMP.COMMANDER_SKILL,
+        primaryProvider: 'anthropic',
+        primaryErrorClass: errorClass,
+        primaryDurationMs: Date.now() - startTime,
+        primaryPartialOutput: lastText,
+        attemptIndex: 0,
+        pipelineDir: PIPELINE,
+        lockNamespace: chatId,
+        requestId: turnRequestId,
+        log: (l, m) => log(l || 'commander', m),
+        onNotice: (notice) => { try { sendTelegramPlain(notice); } catch {} },
+        onCanned: (canned, reason) => {
+          // Sin secundario disponible (cap/budget/all_gated): el usuario NO queda
+          // mudo — recibe el canned. Reclamamos el turno para que el orquestador
+          // del intento Anthropic no resuelva con su texto de fallo.
+          inflightFallbackClaimed = true;
+          log('commander', `🚫 inflight-exec: sin ejecución (${reason}) — respondiendo canned.`);
+          try { if (canned) sendTelegramPlain(canned); } catch {}
+          resolve(canned || '');
+        },
+        runSecondary: (decision) => {
+          // Reclamamos el turno: el secundario lo resuelve (no el primario muerto).
+          inflightFallbackClaimed = true;
+          log('commander', `↪️ inflight-exec: spawn secundario "${decision.secondaryProvider}" (reuso maquinaria pre-spawn).`);
+          runNonAnthropicShared({
+            provider: decision.secondaryProvider,
+            handler: decision.secondaryHandler,
+            model: decision.secondaryModel,
+          }, null);
+        },
+      });
+
+      // CA-4: distinguir DECISIÓN de EJECUCIÓN. `inflight_fallback_completed`
+      // marca que el secundario fue efectivamente spawneado (no que la tarea de
+      // código tuvo éxito — eso es la salud del adapter, fuera de alcance).
+      if (res && res.executed) {
+        try {
+          inflightFallback.noteInflightCompleted({
+            pipelineDir: PIPELINE,
+            skill: commanderMP.COMMANDER_SKILL,
+            primaryProvider: 'anthropic',
+            secondaryProvider: res.secondaryProvider,
+            success: true,
+            chatId,
+            requestId: turnRequestId,
+          });
+        } catch (e) { log('commander', `⚠️ inflight-exec: noteInflightCompleted falló (best-effort): ${e && e.message}`); }
+      }
+      return !!(res && (res.executed || inflightFallbackClaimed));
+    }
+
     function finish(code, reason) {
       if (resolved) return;
       resolved = true;
@@ -10059,6 +10178,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       })) {
         eofPrematureFired = true;
         _emitShadowSignal('eof_premature');
+        _maybeExecuteInflightFallback('eof_premature'); // #4309
       }
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       // #3587 CA-1 — finalizar subprocess metadata en el trace antes de resolver.
@@ -10155,6 +10275,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           if (inflightShadow.detectTransient5xx(evt, { cliGlitchDetector })) {
             transient5xxFired = true;
             _emitShadowSignal('transient_5xx');
+            _maybeExecuteInflightFallback('transient_5xx'); // #4309
           }
         }
 
@@ -10435,6 +10556,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       })) {
         firstByteFired = true;
         _emitShadowSignal('timeout_first_byte');
+        _maybeExecuteInflightFallback('timeout_first_byte'); // #4309
       }
     }, inflightShadow.FIRST_BYTE_THRESHOLD_MS);
 
@@ -10452,6 +10574,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       })) {
         streamGapFired = true;
         _emitShadowSignal('timeout_no_new_bytes_30s');
+        _maybeExecuteInflightFallback('timeout_no_new_bytes_30s'); // #4309
       }
     }, 5000);
 
@@ -10507,6 +10630,13 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       const MAX_ATTEMPTS = glitchRetry.MAX_SAME_CONTEXT_RETRIES + 2;
       while (attempt <= MAX_ATTEMPTS) {
         const outcome = await attemptAnthropicSpawn({ attempt, forceStandardContext });
+        // #4309 — Si el ejecutor del fallback in-flight reclamó el turno (el
+        // primario Anthropic se cayó mid-stream y el secundario está corriendo o
+        // ya respondió canned), NO resolvemos acá: el secundario es el dueño de
+        // la resolución. Sin este guard, el texto de fallo del primario muerto
+        // ganaría la carrera y el usuario quedaría con un mensaje de error pese a
+        // que el fallback está respondiendo.
+        if (inflightFallbackClaimed) return;
         if (!outcome || outcome.kind !== 'glitch') {
           // Éxito (o resultado no-glitch): el usuario recibe su respuesta normal
           // sin ninguna mención del glitch ni del retry (CA-3 / UX G-2).
