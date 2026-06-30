@@ -547,6 +547,11 @@ function noteInflightCompleted(opts = {}) {
         chatId,
         requestId,
         cacheMissDueToProviderChange,
+        // #4309 — skill del agente que ejecutó el fallback. Default COMMANDER_SKILL
+        // por backward-compat: el camino del Commander no lo pasa y sigue
+        // registrando `telegram-commander`. Los agentes de pipeline pasan su
+        // propio skill para que el audit refleje quién cayó al secundario (CA-3).
+        skill,
         // inyectables
         auditLog,
         fsImpl,
@@ -557,7 +562,7 @@ function noteInflightCompleted(opts = {}) {
         pipelineDir, auditLog, fsImpl, now,
         entry: {
             event: 'inflight_fallback_completed',
-            skill: COMMANDER_SKILL,
+            skill: skill || COMMANDER_SKILL,
             primary_provider: primaryProvider || null,
             secondary_provider: secondaryProvider || null,
             success: !!success,
@@ -587,6 +592,8 @@ function noteLateResponseDiscarded(opts = {}) {
         partialOutput,
         chatId,
         requestId,
+        // #4309 — ver noteInflightCompleted: default COMMANDER_SKILL.
+        skill,
         auditLog,
         fsImpl,
         now,
@@ -596,7 +603,7 @@ function noteLateResponseDiscarded(opts = {}) {
         pipelineDir, auditLog, fsImpl, now,
         entry: {
             event: 'late_response_discarded',
-            skill: COMMANDER_SKILL,
+            skill: skill || COMMANDER_SKILL,
             primary_provider: primaryProvider || null,
             request_id: requestId || null,
             chat_id_hash: hashFor(chatId || 'unknown'),

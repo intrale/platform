@@ -521,6 +521,65 @@ test('CA-7: lectura de agent-models.json fallida (JSON inválido) cae a defaults
     assert.equal(env.GH_TOKEN, 'ghp_XXXXX');
 });
 
+// =============================================================================
+// #4309 — Aislamiento de credenciales en el camino IN-FLIGHT (BLOQUEANTE,
+// requisito de seguridad #1). El ejecutor del fallback in-flight re-spawnea con
+// el partial-override `{ provider: 'openai-codex' }` (la MISMA maquinaria que el
+// pre-spawn). El env del child secundario DEBE contener OPENAI_API_KEY y NUNCA
+// ANTHROPIC_API_KEY — un panic dump del CLI de Codex no debe poder exponer la
+// key de Anthropic del primario muerto (invariante S-2).
+// =============================================================================
+test('#4309: re-spawn in-flight (partial override openai-codex) → OPENAI sí, ANTHROPIC NO', () => {
+    const fakeFs = {
+        existsSync: () => true,
+        readFileSync: () => JSON.stringify({
+            providers: {
+                anthropic: { launcher: 'claude', credentials_env: 'ANTHROPIC_API_KEY' },
+                'openai-codex': { launcher: 'codex', credentials_env: 'OPENAI_API_KEY' },
+            },
+            skills: {
+                'telegram-commander': { provider: 'anthropic' },
+            },
+        }),
+    };
+    const env = buildChildEnv({
+        // El skill primario es telegram-commander (provider=anthropic en disk),
+        // pero el fallback in-flight fuerza el provider del secundario.
+        skill: 'telegram-commander',
+        pipelineDir: '/fake/.pipeline',
+        fsImpl: fakeFs,
+        processEnv: fullOperatorEnv(), // incluye AMBAS keys
+        skillConfigOverride: { provider: 'openai-codex' }, // partial override (#3198)
+    });
+    // S-2: el secundario recibe SOLO la key del fallback.
+    assert.equal(env.OPENAI_API_KEY, 'sk-openai-XXXXX');
+    assert.equal(env.ANTHROPIC_API_KEY, undefined, 'ANTHROPIC_API_KEY NO debe viajar al child de Codex');
+});
+
+test('#4309: re-spawn in-flight para agente de pipeline genérico también aísla credenciales', () => {
+    const fakeFs = {
+        existsSync: () => true,
+        readFileSync: () => JSON.stringify({
+            providers: {
+                anthropic: { launcher: 'claude', credentials_env: 'ANTHROPIC_API_KEY' },
+                'openai-codex': { launcher: 'codex', credentials_env: 'OPENAI_API_KEY' },
+            },
+            skills: {
+                'android-dev': { provider: 'anthropic' },
+            },
+        }),
+    };
+    const env = buildChildEnv({
+        skill: 'android-dev', // CA-3: cualquier agente, no solo el Commander
+        pipelineDir: '/fake/.pipeline',
+        fsImpl: fakeFs,
+        processEnv: fullOperatorEnv(),
+        skillConfigOverride: { provider: 'openai-codex' },
+    });
+    assert.equal(env.OPENAI_API_KEY, 'sk-openai-XXXXX');
+    assert.equal(env.ANTHROPIC_API_KEY, undefined);
+});
+
 test('CA-7: agent-models.json válido OVERRIDE los defaults hardcoded', () => {
     const fakeFs = {
         existsSync: () => true,

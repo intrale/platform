@@ -699,6 +699,33 @@ pipeline:
   audit_retention_days: 90
 
 # =============================================================================
+# #4309 — Ejecución del fallback in-flight (revive #3578)
+#
+# Cuando un agente arranca su turno con Anthropic y Anthropic se cuelga DURANTE
+# el stream (caída in-flight, no pre-spawn), los detectores shadow de #3577
+# (first-byte / stream-gap / eof-premature / transient-5xx) emiten la señal de
+# DECISIÓN (`inflight_signal_observed`). Lo que faltaba cablear era la
+# EJECUCIÓN: tras decidir el secundario (openai-codex), spawnearlo y correr el
+# turno con él reusando la maquinaria pre-spawn.
+#
+# Cuando `execution_enabled: true`, el pulpo, al disparar un detector in-flight:
+#   1. mata el primario (taskkill /T confirma terminación),
+#   2. decide el secundario vía `decideInflightFallback` (cap=1 + budget 90s),
+#   3. lo spawnea con la MISMA ruta que el pre-spawn (buildChildEnv partial-
+#      override → aislamiento de credenciales S-2 → runNonAnthropic),
+#   4. emite `inflight_fallback_completed` (EJECUCIÓN ≠ señal de decisión).
+#
+# Cuando `false` (DEFAULT, rollout gradual): comportamiento idéntico a #3577 —
+# los detectores SOLO emiten la señal shadow, sin matar el primario ni spawnear
+# el secundario. Preserva regresión cero hasta validar el wire-up en caliente.
+#
+# Aplica a CUALQUIER agente del pipeline (el ejecutor es skill-agnóstico), no
+# solo al Telegram Commander. El cap=1 + budget acotan la amplificación de
+# spawns ante una caída sostenida de Anthropic (modo de falla conocido).
+inflight_fallback:
+  execution_enabled: false
+
+# =============================================================================
 # #3343 — Sherlock verifier adversarial (split de #3331)
 #
 # Sherlock corre como capa interna del Commander de Telegram: antes de mandar
