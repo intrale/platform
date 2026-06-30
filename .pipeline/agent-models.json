@@ -63,6 +63,7 @@
       "credentials_env": [
         "OPENAI_API_KEY"
       ],
+      "auth_mode": "oauth",
       "permissions_mode": "full-auto"
     },
     "gemini-google": {
@@ -88,6 +89,7 @@
       "credentials_env": [
         "GEMINI_API_KEY"
       ],
+      "auth_mode": "oauth",
       "permissions_mode": "bypassPermissions",
       "alternative_models": [
         "gemini-2.5-flash"

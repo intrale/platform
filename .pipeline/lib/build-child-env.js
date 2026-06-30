@@ -304,9 +304,17 @@ function buildChildEnv(opts = {}) {
     // Provider del skill (default: anthropic).
     const providerName = skillCfg.provider || 'anthropic';
     const providerEntry = providersCfg[providerName] || {};
-    const providerKeyVar = (providerEntry.credentials_env !== undefined)
-        ? providerEntry.credentials_env
-        : PROVIDER_DEFAULT_CREDENTIAL_ENV[providerName];
+    // #4306 — providers OAuth/CLI login (auth_mode: 'oauth') autentican fuera
+    // del env (~/.codex, cuenta Google, OAuth Max). NO exigimos ni inyectamos
+    // su key: ni desde `credentials_env` ni desde el fallback
+    // PROVIDER_DEFAULT_CREDENTIAL_ENV (REQ-SEC-3, env-isolation). Default-safe:
+    // provider sin auth_mode → camino api_key (exige key, fail-fast más abajo).
+    const isOauthProvider = providerEntry.auth_mode === 'oauth';
+    const providerKeyVar = isOauthProvider
+        ? null
+        : ((providerEntry.credentials_env !== undefined)
+            ? providerEntry.credentials_env
+            : PROVIDER_DEFAULT_CREDENTIAL_ENV[providerName]);
 
     // 1. SYSTEM_ALLOWLIST.
     const out = Object.create(null);

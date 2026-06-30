@@ -59,6 +59,17 @@ const ALLOWED_LAUNCHERS = Object.freeze([
   'node',
 ]);
 
+// #4306 — launchers cuyo auth es login interactivo del CLI (OAuth). Un provider
+// con `auth_mode: "oauth"` SOLO es coherente si su launcher está acá; cualquier
+// otro (HTTP API key pelada: cerebras/nvidia-nim, o local: node/ollama) marcado
+// `oauth` debe FALLAR al cargar (fail-closed, CA-3 / REQ-SEC-1) — sino correría
+// sin credencial alguna.
+const OAUTH_CAPABLE_LAUNCHERS = Object.freeze([
+  'claude',         // Claude Max (OAuth)
+  'codex',          // ChatGPT Plus (codex login)
+  'gemini-google',  // cuenta Google (gemini login)
+]);
+
 // Launchers que requieren shell:true en spawn (caso heredado del .cmd shim de
 // Windows en detectClaudeLauncher pulpo.js:127). Default es shell:false.
 // Si un launcher no está acá, debe correr con shell:false + windowsHide:true.
@@ -487,6 +498,22 @@ function validateCrossReferences(config) {
       if (providerDef && Array.isArray(providerDef.spawn_args_template)) {
         errors.push(...validateSpawnArgsTemplate(providerDef.spawn_args_template, key));
       }
+      // #4306 CA-3 / REQ-SEC-1 — coherencia auth_mode: un provider con
+      // `auth_mode: "oauth"` DEBE tener un launcher de login CLI
+      // (OAUTH_CAPABLE_LAUNCHERS). Marcarlo oauth con un launcher HTTP
+      // (cerebras/nvidia-nim) o local (node/ollama) es fail-open: saltearía la
+      // validación de credenciales y correría sin auth. Error de carga, no
+      // warning. `credentials_env` pasa a ser opcional cuando auth_mode=oauth
+      // (no se valida acá; el bypass de presencia ya lo contempla).
+      if (providerDef && providerDef.auth_mode === 'oauth'
+          && typeof providerDef.launcher === 'string'
+          && !OAUTH_CAPABLE_LAUNCHERS.includes(providerDef.launcher)) {
+        errors.push({
+          path: `#/providers/${key}/auth_mode`,
+          message: `provider "${key}" declara auth_mode "oauth" pero su launcher "${providerDef.launcher}" no es de login CLI (válidos: [${OAUTH_CAPABLE_LAUNCHERS.join(', ')}]) — un provider HTTP/local marcado oauth correría sin credencial`,
+          fix: `usar auth_mode "api_key" (default) para launchers HTTP/local, o asignar un launcher de login CLI si efectivamente autentica por OAuth`,
+        });
+      }
       // #3220 — model default del provider debe pertenecer a la allowlist
       // de su launcher (cuando la allowlist existe y no está vacía).
       // Launchers sin allowlist (node, ollama) aceptan cualquier `model`
@@ -712,19 +739,21 @@ function validateCrossReferences(config) {
  * inyectada al boot. Esto evita rebote falso para el operador que tenga
  * agent-models.json con providers preparados pero no en uso.
  *
- * Bypass para `launcher: "claude"` (#3154): el CLI `claude` (Claude Max)
- * autentica vía OAuth — el token persiste en `~/.claude/.credentials.json`
- * con `subscriptionType: "max"` y nunca pasa por env var. Cualquier
- * `credentials_env` declarado para un provider con launcher=claude se
- * ignora a propósito en este chequeo. Para el resto de launchers (`codex`,
- * `gemini`, `ollama`, `node`) la presencia de la env var sigue siendo
- * obligatoria al boot.
+ * Bypass para `auth_mode: "oauth"` (#4306, generaliza #3154): los providers
+ * que autentican vía login del CLI (`claude` OAuth Max, `codex` ChatGPT Plus,
+ * `gemini-google` cuenta Google) no usan API key por env — su token vive en
+ * stores locales (`~/.claude/.credentials.json`, `~/.codex`, cuenta Google).
+ * Cualquier `credentials_env` declarado para un provider OAuth se ignora a
+ * propósito en este chequeo (es informativo). Para el resto de launchers
+ * (`cerebras`, `nvidia-nim`, `ollama`, `node`) la presencia de la env var
+ * sigue siendo obligatoria al boot.
  *
- * NOTA estructural: el bypass acopla launcher='claude' con auth-mode OAuth.
- * Si en el futuro aparece un launcher='claude' que NO use OAuth (ej. un
- * SDK que consuma ANTHROPIC_API_KEY directo desde Node) el special case se
- * invierte. Tracking del refactor a `auth_mode: "oauth" | "env"` declarativo
- * en provider schema: issue #3205 (no bloqueante).
+ * Compat: seguimos bypaseando `launcher === 'claude'` aunque no declare
+ * `auth_mode`, porque históricamente Anthropic se autenticó por OAuth Max sin
+ * el flag. El nuevo camino declarativo (`auth_mode`) lo cubre y además habilita
+ * codex/gemini. La coherencia `oauth ⇒ launcher CLI` se valida como error de
+ * carga en validateCrossReferences (fail-closed, #4306 CA-3) para evitar
+ * fail-open si un provider HTTP se etiqueta `oauth` por error.
  *
  * Devuelve array de errores con shape estándar (path, message, fix).
  *
@@ -751,9 +780,10 @@ function validateCredentialsEnvPresence(config, processEnv) {
     const providerDef = config.providers[providerName];
     if (!providerDef) continue; // ya lo agarra validateCrossReferences
     if (!Array.isArray(providerDef.credentials_env)) continue;
-    // Bypass #3154: launcher=claude autentica vía OAuth del CLI, no por env.
-    // Ver JSDoc arriba para el razonamiento y refactor pendiente (#3205).
-    if (providerDef.launcher === 'claude') continue;
+    // Bypass #4306 (generaliza #3154): providers OAuth/CLI login autentican
+    // fuera del env. Ver JSDoc arriba. La coherencia oauth⇒launcher CLI se
+    // valida como error de carga en validateCrossReferences.
+    if (providerDef.auth_mode === 'oauth' || providerDef.launcher === 'claude') continue;
     for (const envVar of providerDef.credentials_env) {
       if (typeof envVar !== 'string' || !envVar) continue;
       // Presencia en processEnv. Una string vacía NO cuenta como "seteada"
