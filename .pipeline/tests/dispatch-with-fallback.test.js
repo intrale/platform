@@ -1050,6 +1050,136 @@ test('#3811 · sin disabledModule inyectado, el flow legacy no cambia (default m
 });
 
 // =============================================================================
+// #4313 — Fallback PRE-TURNO: primario deshabilitado al despachar.
+//
+// El resolver ya cascadea por kill-switch (#3811). Estos tests cierran el gap
+// que pide el issue:
+//   - CA-2: el salto por deshabilitación preflight expone el motivo ESTÁTICO
+//     `primary_disabled_preflight` en `disqualifyReason` (literal/enum, SEC-1).
+//   - El test con FLAG-FILE REAL en disco (módulo NO inyectado) ejerce el path
+//     de PRODUCCIÓN, cerrando la brecha test↔prod que sospechaba guru.
+//   - CA-4: primario habilitado → sin salto, sin motivo.
+//   - CA-3: todos deshabilitados → all-gated (no spawnea, no cuelga).
+// =============================================================================
+
+test('#4313 · primario apagado preflight → disqualifyReason = primary_disabled_preflight (CA-2)', () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+
+    const r = resolveSpawnWithFallback({
+        skill: 'guru',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: [] }),
+        disabledModule: fakeDisabledModule(['anthropic']),
+        primaryResolver: fakeResolver,
+        auditLog: audit,
+        notify: fakeNotify(),
+    });
+
+    assert.equal(r.crossProvider, true);
+    assert.equal(r.provider, 'openai-codex');
+    // El motivo es un literal/enum estático (SEC-1): exactamente este string.
+    assert.equal(r.disqualifyReason, 'primary_disabled_preflight');
+});
+
+test('#4313 · primario apagado preflight con FLAG-FILE REAL en disco (módulo no inyectado) → crossProvider + motivo', () => {
+    const os = require('node:os');
+    const fsReal = require('node:fs');
+    const tmp = fsReal.mkdtempSync(path.join(os.tmpdir(), 'disp4313-'));
+    const prevOverride = process.env.PIPELINE_DIR_OVERRIDE;
+    try {
+        // agent-models.json REAL en disco: telegram-commander → openai-codex (oauth,
+        // sin key requerida) como primer fallback.
+        fsReal.writeFileSync(
+            path.join(tmp, 'agent-models.json'),
+            JSON.stringify(agentModelsWithOauthFallback()),
+            'utf8',
+        );
+        // Flag-file REAL: anthropic apagado por kill-switch (permanente, sin TTL).
+        fsReal.writeFileSync(
+            path.join(tmp, 'provider-disabled.json'),
+            JSON.stringify({ disabled: [{ name: 'anthropic', disabled_at: new Date(0).toISOString() }] }),
+            'utf8',
+        );
+        // El módulo provider-disabled REAL lee desde PIPELINE_DIR_OVERRIDE.
+        process.env.PIPELINE_DIR_OVERRIDE = tmp;
+
+        const audit = fakeAuditLog();
+        const r = resolveSpawnWithFallback({
+            skill: 'telegram-commander',
+            issue: 'commander-chat',
+            pipelineDir: tmp,
+            fsImpl: fsReal,
+            quotaModule: fakeQuotaModule({ gatedProviders: [] }),
+            // SIN disabledModule inyectado → usa el módulo REAL (path producción).
+            primaryResolver: fakeResolver,
+            providerHandlerResolver: fakeProviderHandlerResolver(['anthropic', 'openai-codex']),
+            auditLog: audit,
+            notify: fakeNotify(),
+        });
+
+        assert.equal(r.crossProvider, true, 'salta cross-provider con flag real');
+        assert.equal(r.provider, 'openai-codex');
+        assert.equal(r.disqualifyReason, 'primary_disabled_preflight');
+        assert.ok(audit.entries.some(e => e.entry.event === 'provider_disabled'),
+            'audit provider_disabled emitido con módulo real');
+    } finally {
+        if (prevOverride === undefined) delete process.env.PIPELINE_DIR_OVERRIDE;
+        else process.env.PIPELINE_DIR_OVERRIDE = prevOverride;
+        try { fsReal.rmSync(tmp, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+});
+
+test('#4313 · primario HABILITADO → sin salto y sin disqualifyReason (CA-4, sin regresión)', () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+
+    const r = resolveSpawnWithFallback({
+        skill: 'guru',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: [] }),
+        disabledModule: fakeDisabledModule([]), // nada apagado
+        primaryResolver: fakeResolver,
+        auditLog: fakeAuditLog(),
+        notify: fakeNotify(),
+    });
+
+    assert.equal(r.crossProvider, false);
+    assert.equal(r.provider, 'anthropic');
+    // Happy path no setea el campo (undefined) → la traza lo normaliza a null.
+    assert.notEqual(r.disqualifyReason, 'primary_disabled_preflight');
+});
+
+test('#4313 · primario + único fallback deshabilitados → all-gated, no spawnea (CA-3)', () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+
+    const r = resolveSpawnWithFallback({
+        skill: 'guru', // anthropic → [openai-codex]
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: [] }),
+        disabledModule: fakeDisabledModule(['anthropic', 'openai-codex']),
+        primaryResolver: fakeResolver,
+        providerHandlerResolver: fakeProviderHandlerResolver(),
+        auditLog: audit,
+        notify: fakeNotify(),
+    });
+
+    assert.equal(r.gated, true, 'chain agotada → gated (canned, no cuelga)');
+    assert.equal(r.source, 'all-gated');
+    assert.ok(audit.entries.some(e => e.entry.event === 'chain_exhausted'
+        || e.entry.event === 'gated_no_fallbacks'));
+});
+
+// =============================================================================
 // #4306 — Fallback OAuth resuelve sin key en el env (CA-1 / CA-5)
 // =============================================================================
 function agentModelsWithOauthFallback() {
