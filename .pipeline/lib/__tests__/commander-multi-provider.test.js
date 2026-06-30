@@ -870,3 +870,50 @@ test('#3484 CA-AUDIT-1 — auditCommanderRequest deja los 5 campos en null cuand
         cleanup(dir);
     }
 });
+
+// =============================================================================
+// #4306 CA-6 — cannedAllGatedResponse diferencia causa (cuota vs credenciales)
+// =============================================================================
+test('#4306 CA-6 — sin argumento preserva el texto histórico "sin cuota disponible"', () => {
+    const canned = cmp.cannedAllGatedResponse();
+    assert.match(canned, /sin cuota disponible/);
+});
+
+test('#4306 CA-6 — causa cuota (skipReasons quota_exhausted) → "sin cuota disponible"', () => {
+    const canned = cmp.cannedAllGatedResponse({
+        reason: 'all_gated',
+        skipReasons: [{ provider: 'anthropic', reason: 'quota_exhausted', details: null }],
+    });
+    assert.match(canned, /sin cuota disponible/);
+});
+
+test('#4306 CA-6 — causa credenciales (sin quota) → mensaje "sin credenciales", no menciona cuota como causa', () => {
+    const canned = cmp.cannedAllGatedResponse({
+        reason: 'all_gated',
+        skipReasons: [
+            { provider: 'openai-codex', reason: 'permission_matrix', details: 'no_key_configured' },
+            { provider: 'cerebras', reason: 'permission_matrix', details: 'env_missing_or_placeholder:CEREBRAS_API_KEY' },
+        ],
+    });
+    assert.match(canned, /sin credenciales|no está disponible|disponible/i);
+    assert.match(canned, /no por falta de cuota/);
+});
+
+test('#4306 CA-6 — causa horario (todos_inactivos_por_horario) → mensaje de ventana de actividad', () => {
+    const canned = cmp.cannedAllGatedResponse({
+        reason: 'todos_inactivos_por_horario',
+        allInactiveBySchedule: true,
+        skipReasons: [{ provider: 'anthropic', reason: 'provider_inactive_by_schedule', details: null }],
+    });
+    assert.match(canned, /fuera de su ventana de actividad/);
+});
+
+test('#4306 CA-6 — REQ-SEC-4: el mensaje nunca incluye valores de credenciales', () => {
+    const canned = cmp.cannedAllGatedResponse({
+        reason: 'all_gated',
+        skipReasons: [{ provider: 'cerebras', reason: 'permission_matrix', details: 'env_missing_or_placeholder:CEREBRAS_API_KEY' }],
+    });
+    // No debe leakear nombres de var ni valores: el detail del skip no se interpola.
+    assert.ok(!/CEREBRAS_API_KEY/.test(canned));
+    assert.ok(!/csk-/.test(canned));
+});

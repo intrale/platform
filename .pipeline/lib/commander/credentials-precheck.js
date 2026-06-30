@@ -114,9 +114,11 @@ function resolveRankingForSkill(models, skill) {
  *   - El provider debe tener `credentials_env: [...]` declarado.
  *   - Cada var del array debe estar en processEnv con valor no-vacío y
  *     no-placeholder.
- *   - Excepción: provider con `launcher: 'claude'` autentica vía OAuth del
- *     CLI, no por env. Skipeamos su validación de env (igual que
- *     agent-models-validate.js).
+ *   - Excepción: provider con `auth_mode: 'oauth'` (o `launcher: 'claude'`,
+ *     que es OAuth Max) autentica vía login del CLI (`claude`, `codex`,
+ *     `gemini-google`), no por env var. Skipeamos su validación de env —
+ *     la key declarada en `credentials_env` es informativa, no se usa
+ *     (igual que agent-models-validate.js). #4306.
  *
  * Devuelve `{ ok: bool, reason: string }`. `reason` viene poblado sólo si
  * `ok: false`.
@@ -126,8 +128,11 @@ function validateProviderCredentials(providerName, providerDef, processEnv) {
         return { ok: false, reason: 'provider_definition_missing' };
     }
 
-    // Launcher claude: OAuth flow, no validamos env.
-    if (providerDef.launcher === 'claude') {
+    // OAuth/CLI login (claude/codex/gemini): el auth vive fuera del env
+    // (~/.codex, cuenta Google, OAuth Max en ~/.claude). No validamos env.
+    // #4306 — generalizado desde el hardcode `launcher === 'claude'` para que
+    // codex/gemini (auth_mode: 'oauth') dejen de exigir una key que no usan.
+    if (providerDef.auth_mode === 'oauth' || providerDef.launcher === 'claude') {
         return { ok: true };
     }
 
