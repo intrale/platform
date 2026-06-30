@@ -715,15 +715,17 @@ pipeline:
 #      override → aislamiento de credenciales S-2 → runNonAnthropic),
 #   4. emite `inflight_fallback_completed` (EJECUCIÓN ≠ señal de decisión).
 #
-# Cuando `false` (DEFAULT, rollout gradual): comportamiento idéntico a #3577 —
-# los detectores SOLO emiten la señal shadow, sin matar el primario ni spawnear
-# el secundario. Preserva regresión cero hasta validar el wire-up en caliente.
+# DEFAULT: ON. El ejecutor in-flight viene prendido — un fix no puede shippear
+# apagado y degradar al comportamiento viejo (detecta pero no ejecuta). Este
+# flag queda SOLO como kill-switch explícito: para volver al modo shadow-only
+# (#3577, sin matar el primario ni spawnear el secundario) hay que setearlo
+# explícitamente en `false`. Ausente/indefinido => ON.
 #
 # Aplica a CUALQUIER agente del pipeline (el ejecutor es skill-agnóstico), no
 # solo al Telegram Commander. El cap=1 + budget acotan la amplificación de
 # spawns ante una caída sostenida de Anthropic (modo de falla conocido).
 inflight_fallback:
-  execution_enabled: false
+  execution_enabled: true
 
 # =============================================================================
 # #3343 — Sherlock verifier adversarial (split de #3331)
