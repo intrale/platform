@@ -1029,8 +1029,43 @@ function cannedFallbackUnavailableResponse({ provider }) {
 // -----------------------------------------------------------------------------
 // cannedAllGatedResponse — Mensaje al usuario cuando TODOS los providers de
 // la chain están gateados (Anthropic + fallbacks declarados todos quemados).
+//
+// #4306 CA-6 — el mensaje histórico decía siempre "sin cuota disponible", lo
+// cual era engañoso cuando la cadena se agotó por credenciales/inactividad y
+// NO por cuota. Aceptamos opcionalmente la `resolution` del dispatcher
+// (`{ reason, skipReasons }`) para redactar la causa real. Sin argumento,
+// preserva el texto histórico (backward-compat).
+//
+// REQ-SEC-4: nunca logueamos valores de credenciales — solo causa/estado.
 // -----------------------------------------------------------------------------
-function cannedAllGatedResponse() {
+function cannedAllGatedResponse(resolution = null) {
+    const skipReasons = (resolution && Array.isArray(resolution.skipReasons))
+        ? resolution.skipReasons
+        : [];
+    const reason = resolution && typeof resolution.reason === 'string'
+        ? resolution.reason
+        : null;
+
+    const hasQuota = skipReasons.some((s) => s && s.reason === 'quota_exhausted');
+    const allBySchedule = reason === 'todos_inactivos_por_horario'
+        || (resolution && resolution.allInactiveBySchedule === true);
+
+    // Causa NO-cuota: credenciales, inactividad por horario, health, etc.
+    if (!hasQuota && (skipReasons.length > 0 || allBySchedule)) {
+        if (allBySchedule) {
+            return (
+                `🕒 Todos los providers LLM del commander están fuera de su ventana de actividad ahora mismo. ` +
+                `Los comandos determinísticos (/status, /listado, /lanzar) siguen funcionando. ` +
+                `Te aviso cuando alguno entre en horario.`
+            );
+        }
+        return (
+            `🚫 Ningún provider LLM del commander está disponible (sin credenciales o desactivados), no por falta de cuota. ` +
+            `Los comandos determinísticos (/status, /listado, /lanzar) siguen funcionando. ` +
+            `Te aviso cuando se recupere alguno.`
+        );
+    }
+
     return (
         `🚫 Todos los providers LLM del commander están sin cuota disponible. ` +
         `Los comandos determinísticos (/status, /listado, /lanzar) siguen funcionando. ` +

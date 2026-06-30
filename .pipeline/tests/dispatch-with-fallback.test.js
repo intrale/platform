@@ -1048,3 +1048,81 @@ test('#3811 · sin disabledModule inyectado, el flow legacy no cambia (default m
     assert.equal(r.provider, 'anthropic', 'happy path intacto');
     assert.ok(!audit.entries.some(e => e.entry.event === 'provider_disabled'));
 });
+
+// =============================================================================
+// #4306 — Fallback OAuth resuelve sin key en el env (CA-1 / CA-5)
+// =============================================================================
+function agentModelsWithOauthFallback() {
+    return {
+        defaults: { model: 'claude-opus-4-7' },
+        default_provider: 'anthropic',
+        providers: {
+            anthropic: { launcher: 'claude', model: 'claude-opus-4-7', auth_mode: 'oauth', credentials_env: ['ANTHROPIC_API_KEY'] },
+            'openai-codex': { launcher: 'codex', model: 'gpt-codex', auth_mode: 'oauth', credentials_env: ['OPENAI_API_KEY'] },
+            cerebras: { launcher: 'cerebras', model: 'gpt-oss-120b', credentials_env: ['CEREBRAS_API_KEY'] },
+        },
+        skills: {
+            'telegram-commander': {
+                provider: 'anthropic',
+                fallbacks: ['openai-codex'],
+            },
+            'codex-then-cerebras': {
+                provider: 'anthropic',
+                fallbacks: ['openai-codex', 'cerebras'],
+            },
+        },
+    };
+}
+
+test('#4306 · anthropic gateado + OPENAI_API_KEY ausente → resuelve openai-codex (no all_gated)', () => {
+    const models = agentModelsWithOauthFallback();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+
+    const r = resolveSpawnWithFallback({
+        skill: 'telegram-commander',
+        issue: 'commander-chat',
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        processEnv: { /* sin OPENAI_API_KEY ni ANTHROPIC_API_KEY */ },
+        quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic'] }),
+        primaryResolver: fakeResolver,
+        providerHandlerResolver: fakeProviderHandlerResolver(['anthropic', 'openai-codex', 'cerebras']),
+        auditLog: audit,
+        notify: fakeNotify(),
+    });
+
+    assert.equal(r.gated, false);
+    assert.equal(r.provider, 'openai-codex');
+    assert.equal(r.crossProvider, true);
+    // No debe haber emitido fallback_no_credentials para codex.
+    assert.ok(!audit.entries.some(e => e.entry.event === 'fallback_no_credentials'
+        && e.entry.fallback_provider === 'openai-codex'),
+        'codex OAuth no debe descartarse por credenciales');
+});
+
+test('#4306 (regresión) · cerebras (HTTP) sin key SIGUE descartándose por credenciales', () => {
+    const models = agentModelsWithOauthFallback();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+
+    // anthropic + openai-codex gateados por cuota → debe llegar a cerebras,
+    // que sin CEREBRAS_API_KEY se descarta → chain agotada.
+    const r = resolveSpawnWithFallback({
+        skill: 'codex-then-cerebras',
+        issue: 'commander-chat',
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        processEnv: { /* sin ninguna key */ },
+        quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic', 'openai-codex'] }),
+        primaryResolver: fakeResolver,
+        providerHandlerResolver: fakeProviderHandlerResolver(['anthropic', 'openai-codex', 'cerebras']),
+        auditLog: audit,
+        notify: fakeNotify(),
+    });
+
+    assert.equal(r.gated, true);
+    const credSkip = audit.entries.find(e => e.entry.event === 'fallback_no_credentials'
+        && e.entry.fallback_provider === 'cerebras');
+    assert.ok(credSkip, 'cerebras sin key debe emitir fallback_no_credentials');
+});

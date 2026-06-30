@@ -338,6 +338,70 @@ test('CA-5: skill determinístico SIN API key NO throwa (no necesita LLM)', () =
 });
 
 // =============================================================================
+// #4306 — Providers OAuth/CLI login (auth_mode: 'oauth') no exigen ni inyectan key
+// =============================================================================
+test('#4306: skill con provider openai-codex (auth_mode oauth) SIN OPENAI_API_KEY → no throw + env sin la key', () => {
+    const envSinKey = fullOperatorEnv();
+    delete envSinKey.OPENAI_API_KEY;
+    const env = buildChildEnv({
+        skill: 'qa',
+        processEnv: envSinKey,
+        skillConfigOverride: {
+            skill: { provider: 'openai-codex' },
+            providers: { 'openai-codex': { launcher: 'codex', auth_mode: 'oauth', credentials_env: ['OPENAI_API_KEY'] } },
+        },
+    });
+    // REQ-SEC-3 — no se inyecta la key OAuth al child.
+    assert.equal(env.OPENAI_API_KEY, undefined);
+    assert.equal(env.ANTHROPIC_API_KEY, undefined);
+});
+
+test('#4306: provider OAuth con la key PRESENTE tampoco la inyecta (env-isolation)', () => {
+    const env = buildChildEnv({
+        skill: 'qa',
+        processEnv: fullOperatorEnv(), // incluye OPENAI_API_KEY
+        skillConfigOverride: {
+            skill: { provider: 'gemini-google' },
+            providers: { 'gemini-google': { launcher: 'gemini-google', auth_mode: 'oauth', credentials_env: ['GEMINI_API_KEY'] } },
+        },
+    });
+    assert.equal(env.OPENAI_API_KEY, undefined);
+    assert.equal(env.GEMINI_API_KEY, undefined);
+});
+
+test('#4306: el fallback PROVIDER_DEFAULT_CREDENTIAL_ENV NO aplica a provider OAuth sin credentials_env', () => {
+    const envSinKey = fullOperatorEnv();
+    delete envSinKey.OPENAI_API_KEY;
+    // openai-codex está en PROVIDER_DEFAULT_CREDENTIAL_ENV → OPENAI_API_KEY,
+    // pero con auth_mode oauth ese fallback no debe disparar throw ni inyección.
+    const env = buildChildEnv({
+        skill: 'qa',
+        processEnv: envSinKey,
+        skillConfigOverride: {
+            skill: { provider: 'openai-codex' },
+            providers: { 'openai-codex': { launcher: 'codex', auth_mode: 'oauth' } },
+        },
+    });
+    assert.equal(env.OPENAI_API_KEY, undefined);
+});
+
+test('#4306 (regresión): cerebras (HTTP, sin auth_mode) SIN su key SIGUE lanzando', () => {
+    const envSinKey = fullOperatorEnv();
+    delete envSinKey.CEREBRAS_API_KEY;
+    assert.throws(
+        () => buildChildEnv({
+            skill: 'qa',
+            processEnv: envSinKey,
+            skillConfigOverride: {
+                skill: { provider: 'cerebras' },
+                providers: { cerebras: { launcher: 'cerebras', credentials_env: 'CEREBRAS_API_KEY' } },
+            },
+        }),
+        /CEREBRAS_API_KEY no está en el env del pulpo/,
+    );
+});
+
+// =============================================================================
 // CA-7 — Tests adicionales de regresión
 // =============================================================================
 test('CA-7: TODAS las PIPELINE_* del processEnv llegan al child', () => {

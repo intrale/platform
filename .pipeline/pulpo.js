@@ -9551,7 +9551,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           requestId: turnRequestId, // #3577 CA-S6
         });
       } catch { /* best-effort */ }
-      return resolve(commanderMP.cannedAllGatedResponse());
+      return resolve(commanderMP.cannedAllGatedResponse(resolution));
     }
 
     // CA-5 + SR-6 — Si el dispatcher resolvió a un fallback distinto del
