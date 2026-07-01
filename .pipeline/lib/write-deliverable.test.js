@@ -204,6 +204,82 @@ test('writeDeliverable respeta filename plano explícito', () => {
 });
 
 // -----------------------------------------------------------------------------
+// #4255 — filename phase-scoped + actualización del índice
+// -----------------------------------------------------------------------------
+
+const deliverableIndex = require('./deliverable-index');
+
+test('writeDeliverable con fase escribe <skill>-<fase>-<issue>.ext y actualiza el índice', () => {
+    const root = tmpRoot();
+    const res = writeDeliverable('po', '4255', {
+        md: '# criterios',
+        fase: 'criterios',
+        timestamp: '2026-07-01T10:00:00.000Z',
+        pipelineRoot: root,
+    });
+    assert.ok(
+        res.path.replace(/\\/g, '/').endsWith('.pipeline/assets/docs/4255/po-criterios-4255.md'),
+        res.path,
+    );
+    assert.equal(res.indexed, true);
+    assert.equal(res.fase, 'criterios');
+
+    // El índice tiene la entry con el path relativo.
+    const read = deliverableIndex.readDeliverableIndex('4255', { pipelineRoot: root });
+    assert.equal(read.entries.length, 1);
+    assert.equal(read.entries[0].agente, 'po');
+    assert.equal(read.entries[0].fase, 'criterios');
+    assert.ok(read.entries[0].path.endsWith('po-criterios-4255.md'), read.entries[0].path);
+    assert.ok(!path.isAbsolute(read.entries[0].path), 'el índice guarda path relativo');
+});
+
+test('writeDeliverable multi-fase del mismo agente NO colisiona en disco ni en el índice', () => {
+    const root = tmpRoot();
+    const ts = '2026-07-01T10:00:00.000Z';
+    const r1 = writeDeliverable('po', '4256', { md: 'crit', fase: 'criterios', timestamp: ts, pipelineRoot: root });
+    const r2 = writeDeliverable('po', '4256', { md: 'aprob', fase: 'aprobacion', timestamp: ts, pipelineRoot: root });
+    assert.notEqual(r1.path, r2.path, 'los archivos deben ser distintos por fase');
+    assert.ok(fs.existsSync(r1.path) && fs.existsSync(r2.path));
+
+    const read = deliverableIndex.readDeliverableIndex('4256', { pipelineRoot: root });
+    assert.equal(read.entries.length, 2);
+});
+
+test('writeDeliverable sin fase mantiene comportamiento legacy y NO indexa', () => {
+    const root = tmpRoot();
+    const res = writeDeliverable('tester', '777', { md: 'cobertura', pipelineRoot: root });
+    assert.ok(res.path.replace(/\\/g, '/').endsWith('.pipeline/assets/docs/777/tester-777.md'), res.path);
+    assert.equal(res.indexed, false);
+    const file = deliverableIndex.indexPathFor('777', { pipelineRoot: root });
+    assert.ok(!fs.existsSync(file), 'sin fase no debe crear índice');
+});
+
+test('writeDeliverable con fase fuera del enum rechaza antes de tocar el FS (SEC-2)', () => {
+    const root = tmpRoot();
+    assert.throws(
+        () => writeDeliverable('po', '778', { md: 'x', fase: '../evil', pipelineRoot: root }),
+        /fase fuera del enum/,
+    );
+    const dir = resolveDeliverableDir('po', '778', { ext: '.md', pipelineRoot: root });
+    assert.ok(!fs.existsSync(path.join(dir, 'po-../evil-778.md')), 'no debe haber escrito nada');
+});
+
+test('writeDeliverable con fase + filename explícito respeta el filename y aún indexa', () => {
+    const root = tmpRoot();
+    const res = writeDeliverable('guru', '779', {
+        md: 'dossier',
+        fase: 'analisis',
+        filename: 'dossier-tecnico.md',
+        timestamp: '2026-07-01T10:00:00.000Z',
+        pipelineRoot: root,
+    });
+    assert.ok(res.path.replace(/\\/g, '/').endsWith('/dossier-tecnico.md'), res.path);
+    assert.equal(res.indexed, true);
+    const read = deliverableIndex.readDeliverableIndex('779', { pipelineRoot: root });
+    assert.ok(read.entries[0].path.endsWith('dossier-tecnico.md'));
+});
+
+// -----------------------------------------------------------------------------
 // CA-9 — cap de tamaño
 // -----------------------------------------------------------------------------
 

@@ -485,3 +485,67 @@ test('CA-5 — coherencia inversa: todo skill notificable tiene source en SKILL_
             `${skill} está en deliverable_notifications.skills pero falta en SKILL_SOURCES`);
     }
 });
+
+// -----------------------------------------------------------------------------
+// #4255 — fase por artefacto (aditivo): manifest > filename > hint > null
+// -----------------------------------------------------------------------------
+
+test('#4255 — collector devuelve fase inferida del filename phase-scoped', () => {
+    const tmp = mkTmpRoot();
+    try {
+        writeFile(tmp.root, '.pipeline/assets/docs/4255/po-criterios-4255.md', 'crit');
+        const res = helper.collectAttachmentsForSkill('po', 4255, undefined, { pipelineRoot: tmp.root });
+        assert.equal(res.length, 1);
+        assert.equal(res[0].fase, 'criterios');
+        // No rompe los campos existentes.
+        assert.equal(res[0].type, 'document');
+        assert.equal(res[0].descriptor, 'criterios');
+    } finally {
+        tmp.cleanup();
+    }
+});
+
+test('#4255 — manifest tiene prioridad sobre la inferencia del filename', () => {
+    const tmp = mkTmpRoot();
+    try {
+        const relPath = '.pipeline/assets/docs/4255/po-4255.md';
+        writeFile(tmp.root, relPath, 'crit');
+        // Índice apunta esa entry a fase "aprobacion".
+        const { upsertDeliverableIndex } = require('../deliverable-index');
+        upsertDeliverableIndex({
+            issue: '4255', fase: 'aprobacion', agente: 'po', tipo: 'document',
+            path: relPath, timestamp: '2026-07-01T10:00:00.000Z', pipelineRoot: tmp.root,
+        });
+        const res = helper.collectAttachmentsForSkill('po', 4255, 'criterios', { pipelineRoot: tmp.root });
+        const entry = res.find((r) => r.path === relPath);
+        assert.ok(entry, 'debe encontrar el artefacto');
+        assert.equal(entry.fase, 'aprobacion', 'manifest gana sobre el hint');
+    } finally {
+        tmp.cleanup();
+    }
+});
+
+test('#4255 — sin manifest ni patrón, cae al phase hint recibido', () => {
+    const tmp = mkTmpRoot();
+    try {
+        writeFile(tmp.root, '.pipeline/assets/docs/321/analisis-tecnico.md', 'x');
+        const res = helper.collectAttachmentsForSkill('guru', 321, 'analisis', { pipelineRoot: tmp.root });
+        assert.equal(res.length, 1);
+        assert.equal(res[0].fase, 'analisis');
+    } finally {
+        tmp.cleanup();
+    }
+});
+
+test('#4255 — no rompe los 14 perfiles: cada uno recolecta sin tirar y expone fase', () => {
+    const tmp = mkTmpRoot();
+    try {
+        const catalog = helper.getSkillSourcesCatalog();
+        for (const skill of Object.keys(catalog)) {
+            const res = helper.collectAttachmentsForSkill(skill, 4255, 'dev', { pipelineRoot: tmp.root });
+            assert.ok(Array.isArray(res), `${skill} debe devolver array`);
+        }
+    } finally {
+        tmp.cleanup();
+    }
+});

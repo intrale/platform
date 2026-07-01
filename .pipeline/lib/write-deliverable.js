@@ -28,6 +28,7 @@ const fs = require('fs');
 const path = require('path');
 const { getSkillSourcesCatalog } = require('./skill-deliverable-attachments');
 const { redactSecretValue, redactSensitive } = require('./redact');
+const { upsertDeliverableIndex, validatePhase } = require('./deliverable-index');
 
 // Cap defensivo de tamaño por artefacto (CA-9). 5 MiB cubre PDFs/MD/SVG ricos
 // sin permitir que un productor sature el FS (fuente de verdad del pipeline).
@@ -142,13 +143,33 @@ function redactContent(content) {
  *     Si se da, se valida que no contenga separadores ni `..`.
  * @param {number} [payload.maxBytes] - cap de tamaño (default 5 MiB).
  * @param {string} [payload.pipelineRoot] - root del repo (default process.cwd()).
- * @returns {{path: string, bytes: number}}
+ * @param {string} [payload.fase] - fase del pipeline en que se produce el
+ *     artefacto (#4255). Si se da: (1) valida contra el enum cerrado (SEC-2),
+ *     (2) el filename por defecto pasa a ser `<skill>-<fase>-<issue>.<ext>` para
+ *     que dos fases del mismo agente NO colisionen, (3) se actualiza el índice
+ *     `.pipeline/deliverables/<issue>.json` en la misma llamada (choke point,
+ *     SEC-3). Sin `fase`, mantiene el comportamiento legacy (`<skill>-<issue>`).
+ * @param {boolean} [payload.sensible=false] - flag de sensibilidad del artefacto
+ *     (SEC-1). Se persiste en el índice para que el canal de consumo decida
+ *     visibilidad. Sólo aplica si se pasa `fase`.
+ * @param {string} [payload.timestamp] - ISO inyectable para el índice
+ *     (determinismo en tests). Sólo aplica si se pasa `fase`.
+ * @returns {{path: string, bytes: number, indexed: boolean, fase?: string}}
  */
 function writeDeliverable(skill, issue, payload = {}) {
-    const { md, svg, redact = true, filename, maxBytes = DEFAULT_MAX_BYTES, pipelineRoot } = payload;
+    const {
+        md, svg, redact = true, filename, maxBytes = DEFAULT_MAX_BYTES, pipelineRoot,
+        fase, sensible = false, timestamp,
+    } = payload;
 
     if (md == null && svg == null) {
         throw new Error('writeDeliverable requiere `md` o `svg`');
+    }
+
+    // SEC-2: si viene `fase`, validarla contra el enum cerrado ANTES de tocar el
+    // FS. `fase` NUNCA es un segmento de path libre — sólo entra al índice.
+    if (fase != null) {
+        validatePhase(fase, { pipelineRoot });
     }
 
     const isSvg = svg != null;
@@ -166,14 +187,18 @@ function writeDeliverable(skill, issue, payload = {}) {
         throw new Error(`artefacto excede maxBytes (${bytes} > ${maxBytes})`);
     }
 
-    // Nombre de archivo: por defecto `<skill>-<issue>.<ext>`. Si el caller pasa
-    // uno explícito, validar que sea un basename plano (sin traversal).
+    // Nombre de archivo. Si el caller pasa uno explícito, validar basename plano.
+    // Sin filename: default phase-scoped `<skill>-<fase>-<issue>.<ext>` cuando
+    // hay `fase` (evita la colisión multi-fase — dos fases del mismo agente ya
+    // no se pisan), o legacy `<skill>-<issue>.<ext>` cuando no hay fase.
     let name;
     if (filename) {
         if (/[\\/]/.test(filename) || filename.includes('..')) {
             throw new Error(`filename inválido (path traversal): ${filename}`);
         }
         name = filename;
+    } else if (fase != null) {
+        name = `${skill}-${fase}-${issue}${ext}`;
     } else {
         name = `${skill}-${issue}${ext}`;
     }
@@ -182,7 +207,31 @@ function writeDeliverable(skill, issue, payload = {}) {
     const file = path.join(dir, name);
     fs.writeFileSync(file, content, 'utf8'); // snapshot: overwrite, no append.
 
-    return { path: file, bytes };
+    // Choke point del índice (SEC-3): la ÚNICA escritura del store actualiza el
+    // manifest en la misma llamada. Ningún SKILL.md debe escribir el índice a
+    // mano. Sólo se indexa cuando hay `fase` (dimensión requerida por el índice).
+    let indexed = false;
+    if (fase != null) {
+        const root =
+            typeof pipelineRoot === 'string' && pipelineRoot.length > 0
+                ? pipelineRoot
+                : process.cwd();
+        const relPath = path.relative(root, file).replace(/\\/g, '/');
+        upsertDeliverableIndex({
+            issue,
+            fase,
+            agente: skill,
+            tipo: isSvg ? 'image' : 'document',
+            path: relPath,
+            bytes,
+            sensible,
+            timestamp,
+            pipelineRoot,
+        });
+        indexed = true;
+    }
+
+    return { path: file, bytes, indexed, ...(fase != null ? { fase } : {}) };
 }
 
 module.exports = {
