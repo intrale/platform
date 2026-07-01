@@ -28,12 +28,17 @@
 #
 # EXIT CODES
 #   0  ok — PNG guardado en stdout (path absoluto).
-#   2  desktop enfocado por operador → skip silencioso.
+#   2  desktop enfocado por operador → skip silencioso.       (DIAG causa=foco)
 #   3  lockfile owned by alive PID → otra captura en curso, skip.
-#   4  CLAUDE_DESKTOP_PATH no seteado o no existe.
-#   5  timeout esperando UI Automation del panel.
+#   4  CLAUDE_DESKTOP_PATH no seteado o no existe.             (DIAG causa=path)
+#   5  timeout esperando UI Automation del panel.             (DIAG causa=render)
 #   6  error de sistema (proceso no arranca, no se puede crear directorio,
 #       etc.). El parser/scheduler trata 4-6 como fallo del bucket.
+#
+# DIAGNÓSTICO (CA-3): los fallos loguean una línea `DIAG exit=<n> causa=<foco|
+#   path|render> razon=<detalle>` que distingue la condición exacta que falló.
+#   SEC-2: nunca se vuelca `account_handle` (real ni esperado) ni contenido OCR;
+#   sólo paths de filesystem y estados de render, que no son PII.
 # =============================================================================
 
 [CmdletBinding()]
@@ -248,15 +253,23 @@ function Close-ClaudeDesktopGracefully($Proc, $TimeoutSeconds) {
 # -----------------------------------------------------------------------------
 
 # CA-1: si el operador está usando Claude Desktop, no tocamos nada.
+# DIAG (CA-3): categoría "foco" — el operador está usando el desktop; skip.
 if (Test-ClaudeDesktopFocused) {
-    Write-Log "Claude Desktop enfocado por el operador, skip."
+    Write-Log "DIAG exit=2 causa=foco razon=operador_usando_desktop (skip idempotente, sin captura)"
     exit 2
 }
 
 # CA-9: validar binario PINNED.
+# DIAG (CA-3): categoría "path" — se distingue "no seteado" de "seteado pero
+# inexistente". El path del binario NO es PII (ruta de filesystem, no identidad
+# de cuenta ni contenido OCR — SEC-2).
 $BinaryPath = $env:CLAUDE_DESKTOP_PATH
-if (-not $BinaryPath -or -not (Test-Path -LiteralPath $BinaryPath)) {
-    Write-Log "CLAUDE_DESKTOP_PATH no seteado o no existe: '$BinaryPath'"
+if (-not $BinaryPath -or $BinaryPath.Trim() -eq '') {
+    Write-Log "DIAG exit=4 causa=path razon=CLAUDE_DESKTOP_PATH_no_seteado (binario pinned no configurado en el entorno)"
+    exit 4
+}
+if (-not (Test-Path -LiteralPath $BinaryPath)) {
+    Write-Log "DIAG exit=4 causa=path razon=binario_pinned_inexistente path='$BinaryPath'"
     exit 4
 }
 
@@ -293,7 +306,11 @@ try {
         $Proc.Refresh()
     }
     if ($Proc.MainWindowHandle -eq [System.IntPtr]::Zero) {
-        Write-Log "Timeout esperando MainWindowHandle"
+        # DIAG (CA-3): categoría "render" — la ventana de Claude Desktop no
+        # renderizó offscreen dentro del timeout (sesión desconectada o login
+        # pendiente). Se loguea el timeout y si el proceso fue lanzado por
+        # nosotros, SIN volcar identidad de cuenta ni OCR (SEC-2).
+        Write-Log "DIAG exit=5 causa=render razon=MainWindowHandle_no_aparece timeout=${NavTimeout}s launched=$Launched (ventana no renderizo offscreen; probable sesion desconectada o login pendiente)"
         $ExitCode = 5
         throw "MainWindowHandle no aparece"
     }
