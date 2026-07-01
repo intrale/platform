@@ -33,6 +33,10 @@ const SHERLOCK_FILE = path.join(TMP_DIR, 'sherlock-presence.json');
 const COMMANDER_FILE = path.join(TMP_DIR, 'commander-presence.json');
 sherlock.presencePath = () => SHERLOCK_FILE;
 commander.presencePath = () => COMMANDER_FILE;
+// #4335 — aislar LOG_DIR a un tmp SIN logs de corrida, para que `hasLog` siga
+// resolviendo `false` de forma determinística (el enganche real de log se cubre
+// en dashboard-slices-run-log-4335.test.js).
+slices._setLogDir(TMP_DIR);
 
 function clearFiles() {
     try { fs.rmSync(SHERLOCK_FILE, { force: true }); } catch { /* noop */ }

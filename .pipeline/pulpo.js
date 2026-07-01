@@ -128,6 +128,7 @@ const commanderDocCreate = require('./lib/commander/doc-create');
 const transcriptEcho = require('./lib/commander/transcript-echo');
 const sttConfidence = require('./lib/commander/stt-confidence');
 const commanderRequestLog = require('./lib/commander/request-log'); // #3949 EP7-H2
+const sherlockRequestLog = require('./lib/sherlock/request-log'); // #4335 — log por corrida de Sherlock
 const commanderRequestClassify = require('./lib/commander/request-classify'); // #3951 EP7-H4
 // #3935 (EP4-H2) — Resumen incremental de la conversación: compacta turnos
 // viejos a un bloque "resumen no autoritativo" + últimos K verbatim, acotando el
@@ -12408,6 +12409,17 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
         // así que generamos un id opaco propio; no persiste PII (CA-6).
         const sherlockRunId = require('crypto').randomBytes(6).toString('hex');
         try { if (sherlockPresence) sherlockPresence.writePresence({ petitionId: sherlockRunId, fase: 'verificando' }); } catch { /* no bloqueante */ }
+        // #4335 — Log por corrida del Sherlock bajo `.pipeline/logs/`, servido por
+        // el endpoint genérico ya redactado (`/logs/view|stream/<file>`). Se abre
+        // acá (una vez por turno, cubre ambas pasadas de `verify()`) reutilizando
+        // el `commanderReqId` del turno con sufijo `-sherlock` para correlacionar
+        // el log del Sherlock con el del Commander. Best-effort: si abrir el
+        // writer falla, `sherlockRequestLog` queda `null` y el flujo sigue igual.
+        let sherlockReqLog = null;
+        try {
+          const sReqId = sherlockRequestLog.buildRequestId(commanderReqId, 'sherlock');
+          sherlockReqLog = sherlockRequestLog.openRequestLog(LOG_DIR, sReqId);
+        } catch { sherlockReqLog = null; }
         try {
         // Snapshot mínimo del estado del sistema. No incluimos paths sensibles
         // — sólo contadores que el Commander pudo haber observado para que
@@ -12482,6 +12494,7 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
           configLoader: loadConfig,
           log,
           cwd: ROOT,
+          requestLog: sherlockReqLog, // #4335 — sink de log por corrida (opcional)
         });
         sherlockInvoked = verdict.verdict !== 'skipped';
 
@@ -12525,6 +12538,7 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
                 configLoader: loadConfig,
                 log,
                 cwd: ROOT,
+                requestLog: sherlockReqLog, // #4335 — misma corrida, 2da pasada
               });
               if (verdict2.verdict === 'rechazado' && verdict2.inconsistencies.length >= 1) {
                 // CA-F-5 — disclaimer "rechazado persistente".
@@ -12579,6 +12593,9 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
           // agregamos `catch` que altere el rechazo: se deja propagar al
           // `.catch` de abajo y al `Promise.race`.
           try { if (sherlockPresence) sherlockPresence.clearPresence(); } catch { /* idempotente */ }
+          // #4335 — cerrar el writer del log de la corrida (flush + close del
+          // stream sanitizado). Best-effort: no altera el rechazo del bloque.
+          try { if (sherlockReqLog) await sherlockReqLog.close(); } catch { /* best-effort */ }
         }
       })();
 
