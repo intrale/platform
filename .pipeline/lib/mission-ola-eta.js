@@ -36,10 +36,18 @@
  *   - `etaRemainingMin`: restante proyectado por velocidad cuando hay ritmo
  *     medido; si no, la mediana teórica `totalP50`; `null` si nada disponible.
  *
+ * #4325 — CA-4: cuando no hay ritmo medido (`etaSource === 'fallback'` o serie de
+ * velocidad ausente), en vez del guion mudo `—` se expone un estado explícito
+ * `velocityState === 'sin datos suficientes'` que el cliente traduce a leyenda.
+ * La cadena se inlinea DENTRO de la función a propósito: `deriveMissionOlaEta`
+ * se serializa vía `.toString()` en `missionOlaEtaClientScript`, así que NO puede
+ * referenciar constantes de módulo (romperían el eval del cliente por
+ * ReferenceError). Ver `MISSION_INSUFFICIENT_DATA` para el mismo literal en tests.
+ *
  * @param {object|null} d — payload de `/api/dash/ola-eta`.
  * @returns {{avancePct:number|null, velocityPctPerHour:number|null,
  *            etaRemainingMin:number|null, etaFromVelocity:boolean,
- *            hasVelocity:boolean}}
+ *            hasVelocity:boolean, velocityState:string}}
  */
 function deriveMissionOlaEta(d) {
     const data = (d && typeof d === 'object') ? d : {};
@@ -52,7 +60,8 @@ function deriveMissionOlaEta(d) {
     const etaRemainingMin = etaFromVelocity
         ? vel.remainingMs / 60000
         : (Number.isFinite(data.totalP50) ? data.totalP50 : null);
-    return { avancePct, velocityPctPerHour, etaRemainingMin, etaFromVelocity, hasVelocity };
+    const velocityState = hasVelocity ? 'measured' : 'sin datos suficientes';
+    return { avancePct, velocityPctPerHour, etaRemainingMin, etaFromVelocity, hasVelocity, velocityState };
 }
 
 /**
@@ -90,7 +99,16 @@ function missionOlaEtaClientScript() {
       var pctEl = document.getElementById('mission-avance-pct');
       if(pctEl){ var t = (m.avancePct !== null ? m.avancePct + '%' : '—'); if(pctEl.textContent !== t) pctEl.textContent = t; }
       var vv = document.getElementById('mission-vel-value');
-      if(vv) setMzValueUnit(vv, (m.velocityPctPerHour !== null ? m.velocityPctPerHour.toFixed(1) : '—'), '%/h');
+      if(vv){
+        // #4325 (CA-4) — ritmo medido → "N.N %/h"; sin datos → leyenda explícita
+        // (velocityState), NUNCA un "—" mudo ni un 0 silencioso.
+        if(m.velocityPctPerHour !== null){
+          setMzValueUnit(vv, m.velocityPctPerHour.toFixed(1), '%/h');
+        } else {
+          while(vv.firstChild) vv.removeChild(vv.firstChild);
+          vv.appendChild(document.createTextNode(m.velocityState));
+        }
+      }
       var ev = document.getElementById('mission-eta-value');
       if(ev){
         var x = Number(m.etaRemainingMin), txt;
@@ -113,4 +131,10 @@ function missionOlaEtaClientScript() {
 `;
 }
 
-module.exports = { deriveMissionOlaEta, missionOlaEtaClientScript };
+// #4325 — leyenda del estado explícito "sin datos suficientes" (CA-4). El mismo
+// literal se inlinea dentro de `deriveMissionOlaEta` (no puede referenciar esta
+// constante por la serialización `.toString()` al cliente); se exporta para que
+// los tests y otros consumidores usen la misma cadena sin hardcodearla.
+const MISSION_INSUFFICIENT_DATA = 'sin datos suficientes';
+
+module.exports = { deriveMissionOlaEta, missionOlaEtaClientScript, MISSION_INSUFFICIENT_DATA };

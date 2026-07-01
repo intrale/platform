@@ -625,3 +625,34 @@ test('#4075: bloqueo sin blockDependencies queda sin dependencies (fallback)', (
     assert.ok(blk);
     assert.equal(blk.dependencies, undefined);
 });
+
+// -----------------------------------------------------------------------------
+// #4325 — Regresión: sin `closedIssues`, el avance colapsaba (~2%) aunque la ola
+// tuviera issues CLOSED en GitHub. Con el set poblado, `closedCount`/`totalPct`
+// reflejan los cerrados reales. Réplica del escenario de la ola activa (5 de 6).
+// -----------------------------------------------------------------------------
+
+test('#4325: 5 de 6 issues cerrados → closedCount=5 y totalPct >= 80 (no ~2%)', () => {
+    // Ninguno tiene entrada en issueMatrix (cerrados por merge, sin actividad en
+    // pipeline): el único dato de cierre viene del set `closedIssues`.
+    const state = makeState({ issues: {} });
+    const wave = { label: 'N', issues: [4308, 4309, 4313, 4318, 4320, 4324], source: 'test' };
+    const snap = buildWaveSnapshot({
+        state,
+        wave,
+        closedIssues: new Set([4308, 4309, 4313, 4318, 4320]), // 5 de 6
+        now: NOW,
+    });
+    assert.equal(snap.closedCount, 5);
+    assert.equal(snap.activeCount, 1);
+    // (5*100 + 0) / 6 = 83 → muy por encima del 2% del bug.
+    assert.ok(snap.totalPct >= 80, `totalPct=${snap.totalPct} debería ser >= 80`);
+});
+
+test('#4325: sin closedIssues el avance NO cuenta cerrados (reproduce el bug)', () => {
+    const state = makeState({ issues: {} });
+    const wave = { label: 'N', issues: [4308, 4309, 4313, 4318, 4320, 4324], source: 'test' };
+    const snap = buildWaveSnapshot({ state, wave, now: NOW }); // sin closedIssues
+    assert.equal(snap.closedCount, 0);
+    assert.equal(snap.totalPct, 0); // el colapso que motivó el fix
+});
