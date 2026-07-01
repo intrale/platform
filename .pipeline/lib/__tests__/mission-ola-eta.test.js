@@ -13,7 +13,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { deriveMissionOlaEta, missionOlaEtaClientScript } = require('../mission-ola-eta');
+const { deriveMissionOlaEta, missionOlaEtaClientScript, MISSION_INSUFFICIENT_DATA } = require('../mission-ola-eta');
 
 test('payload nulo/indefinido degrada a estructura neutra sin romper', () => {
     for (const input of [null, undefined, 42, 'x']) {
@@ -24,6 +24,7 @@ test('payload nulo/indefinido degrada a estructura neutra sin romper', () => {
             etaRemainingMin: null,
             etaFromVelocity: false,
             hasVelocity: false,
+            velocityState: 'sin datos suficientes', // #4325 CA-4: estado explícito, no mudo
         });
     }
 });
@@ -107,4 +108,38 @@ test('el emisor de script cliente reusa la función pura y es self-wiring/idempo
     // Unidad alineada con la HOME (%/h, no iss/h).
     assert.ok(src.includes('%/h'));
     assert.ok(!src.includes('iss/h'));
+});
+
+// -----------------------------------------------------------------------------
+// #4325 (CA-4) — estado explícito "sin datos suficientes" cuando no hay ritmo
+// medido, en vez del guion mudo o un 0 silencioso.
+// -----------------------------------------------------------------------------
+
+test('etaSource fallback → velocityState expone "sin datos suficientes" (no "—" ni 0)', () => {
+    const m = deriveMissionOlaEta({ etaSource: 'fallback', totalPct: 66 });
+    assert.equal(m.hasVelocity, false);
+    assert.equal(m.velocityPctPerHour, null);            // sigue null (no se inventa un valor)
+    assert.equal(m.velocityState, 'sin datos suficientes');
+    assert.equal(m.velocityState, MISSION_INSUFFICIENT_DATA); // misma cadena exportada
+    assert.notEqual(m.velocityState, '—');
+    assert.notEqual(m.velocityState, 0);
+});
+
+test('etaSource velocity con ritmo medido → velocityState "measured"', () => {
+    const m = deriveMissionOlaEta({
+        etaSource: 'velocity',
+        totalPct: 40,
+        velocityETA: { source: 'velocity', velocityPctPerMin: 0.5, remainingMs: 600000 },
+    });
+    assert.equal(m.hasVelocity, true);
+    assert.equal(m.velocityState, 'measured');
+});
+
+test('el script cliente renderiza la leyenda explícita (velocityState) en vez del guion', () => {
+    const src = missionOlaEtaClientScript();
+    // El cliente traduce el estado a la leyenda cuando no hay ritmo medido.
+    assert.ok(src.includes('velocityState'));
+    // La cadena viaja dentro de la función serializada (self-contained, sin ref a
+    // constante de módulo que rompería el eval del cliente).
+    assert.ok(src.includes('sin datos suficientes'));
 });
