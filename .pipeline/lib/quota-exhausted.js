@@ -224,18 +224,32 @@ function ensureDir(dir) {
  * rename es atómico y este path raramente dispara, pero el costo del retry
  * acotado es despreciable.
  *
- * Cap explícito (anti-DoS): máximo 3 intentos y ≤50ms totales. Si el
+ * Cap explícito (anti-DoS): máximo 8 intentos y ≤500ms totales. Si el
  * destino está realmente bloqueado, propagamos al caller en vez de spinear
  * el proceso indefinidamente.
+ *
+ * #4325 — Endurecimiento del retry bajo contención alta
+ * -----------------------------------------------------
+ * Con N procesos concurrentes renombrando al mismo destino (test #3575 CA-5:
+ * 10 forks) y la máquina saturada por la suite completa (7082 tests), el
+ * presupuesto original (3 intentos / 50ms) era demasiado ajustado y EPERM se
+ * escapaba del retry, rebotando el pipeline por un flake de FS de Windows.
+ * Se amplía el presupuesto (8 intentos / 500ms) y se agrega **jitter** al
+ * backoff para dispersar el "thundering herd" de renames simultáneos hacia
+ * el mismo target — sin jitter, todos los procesos reintentan en fase y la
+ * colisión se repite. El costo extra sólo se paga en el path de contención
+ * real (setFlag sólo corre al agotarse cuota), no en el caso feliz.
  */
-const RENAME_RETRY_MAX_ATTEMPTS = 3;
-const RENAME_RETRY_MAX_TOTAL_MS = 50;
+const RENAME_RETRY_MAX_ATTEMPTS = 8;
+const RENAME_RETRY_MAX_TOTAL_MS = 500;
 const RENAME_RETRY_INITIAL_MS = 5;
-const RENAME_RETRYABLE_ERRORS = new Set(['EBUSY', 'EPERM', 'EEXIST']);
+const RENAME_RETRY_MAX_BACKOFF_MS = 60;
+const RENAME_RETRYABLE_ERRORS = new Set(['EBUSY', 'EPERM', 'EEXIST', 'EACCES']);
 
 function sleepSyncMs(ms) {
     // Busy-wait acotado a milisegundos (es lo único síncrono que da Node sin
-    // deps nuevas). El cap del caller mantiene esto bajo 50ms totales.
+    // deps nuevas). El cap del caller mantiene esto bajo el presupuesto total.
+    if (ms <= 0) return;
     const end = Date.now() + ms;
     // eslint-disable-next-line no-empty
     while (Date.now() < end) {}
@@ -243,7 +257,7 @@ function sleepSyncMs(ms) {
 
 function renameWithRetry(tmp, filepath) {
     let lastErr = null;
-    let delayMs = RENAME_RETRY_INITIAL_MS;
+    let baseDelayMs = RENAME_RETRY_INITIAL_MS;
     const totalDeadline = Date.now() + RENAME_RETRY_MAX_TOTAL_MS;
     for (let attempt = 1; attempt <= RENAME_RETRY_MAX_ATTEMPTS; attempt++) {
         try {
@@ -254,11 +268,16 @@ function renameWithRetry(tmp, filepath) {
             const code = err && err.code;
             const retriable = RENAME_RETRYABLE_ERRORS.has(code);
             const lastAttempt = attempt === RENAME_RETRY_MAX_ATTEMPTS;
-            const overBudget = Date.now() + delayMs > totalDeadline;
+            // Jitter: backoff base + [0, base) aleatorio para desincronizar
+            // reintentos concurrentes hacia el mismo destino.
+            const jitter = Math.floor(Math.random() * baseDelayMs);
+            const wantMs = baseDelayMs + jitter;
+            const remainingBudget = totalDeadline - Date.now();
+            const overBudget = remainingBudget <= 0;
             if (!retriable || lastAttempt || overBudget) throw err;
+            const delayMs = Math.min(wantMs, remainingBudget);
             sleepSyncMs(delayMs);
-            delayMs = Math.min(delayMs * 2, totalDeadline - Date.now());
-            if (delayMs <= 0) throw lastErr;
+            baseDelayMs = Math.min(baseDelayMs * 2, RENAME_RETRY_MAX_BACKOFF_MS);
         }
     }
     // Defensivo (no debería alcanzarse): el loop sale por return o throw.
