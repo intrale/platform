@@ -1583,6 +1583,21 @@ function* _genPipelineState() {
     state.prInfo[id] = { mergedAt: info.mergedAt, url: info.url, state: info.state };
   }
 
+  // #4327 (CA-4) — Bloque de cuota por proveedor servido por /api/state. Se
+  // compone de fuentes YA sanitizadas (getBannerState + quotaSlice) vía el helper
+  // dedicado `lib/quota-state-block`. Corre en el worker de background (el driver
+  // getPipelineStateAsync cede el loop entre chunks); /api/state sirve el snapshot
+  // prearmado en O(1), así que el costo NO cae en el hot path del request. Se pide
+  // `skipSideEffects` para no re-disparar el guard/pacing (su cadencia sigue atada
+  // al poll de /api/dash/quota). Fail-closed: si el helper no cargó o falla, el
+  // bloque queda en estado 'missing' con providers vacío (nunca dato viejo/0 como
+  // fresco). El helper NO expone account_handle (allowlist de sanitizeSnapshotForOutput).
+  state.quota = { snapshotAt: Date.now(), state: 'missing', ageMs: null, lastSnapshot: null, providers: {} };
+  try {
+    const { buildQuotaStateBlock } = require('./lib/quota-state-block');
+    state.quota = buildQuotaStateBlock({ PIPELINE, ROOT });
+  } catch { /* mantiene el default fail-closed */ }
+
   return state;
 }
 
