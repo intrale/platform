@@ -14,10 +14,26 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const os = require('node:os');
+const path = require('node:path');
 
 const roster = require('../lib/equipo-roster.js');
 const sat = require('../views/dashboard/satellites.js');
 const slices = require('../lib/dashboard-slices.js');
+
+// #4255 (rebote) — `activeAgents` mergea, como cards sintéticas, la presencia
+// del Commander y del Sherlock leída de `commander-presence.json` /
+// `sherlock-presence.json` REALES del pipeline. Si esta batería corre contra un
+// pipeline vivo (o cualquier entorno donde esos archivos existan y estén dentro
+// del TTL), `activeAgents(state)` sin aislar devuelve 1 + N cards → el
+// `assert.equal(length, 1)` se rompe de forma no determinística ("2 !== 1").
+// Inyectamos rutas inexistentes por `opts` para que la presencia NO se lea del
+// FS real (mismo patrón que los otros .test.js del slice), volviendo el test
+// determinístico e independiente de la actividad del Commander/Sherlock.
+const NO_PRESENCE = {
+    commanderPresencePath: path.join(os.tmpdir(), 'equipo-roster-no-commander-presence-inexistente.json'),
+    sherlockPresencePath: path.join(os.tmpdir(), 'equipo-roster-no-sherlock-presence-inexistente.json'),
+};
 
 const SAMPLE_LOAD = {
     po: { running: 0, max: 2 }, ux: { running: 0, max: 2 }, planner: { running: 0, max: 1 },
@@ -154,7 +170,7 @@ test('activeAgents agrega provider, branch y bounces a cada agente vivo', () => 
             },
         },
     };
-    const agents = slices.activeAgents(state);
+    const agents = slices.activeAgents(state, NO_PRESENCE);
     assert.equal(agents.length, 1);
     const a = agents[0];
     assert.equal(a.bounces, 2);

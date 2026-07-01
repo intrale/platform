@@ -413,6 +413,56 @@ function sourceIsIssueScoped(source) {
 }
 
 /**
+ * Infiere la `fase` a partir del basename cuando sigue la convención
+ * phase-scoped `<skill>-<fase>-<issue>.<ext>` (#4255). `skill` puede contener
+ * guiones (ej. `backend-dev`), así que se pela por prefijo/sufijo en vez de
+ * split ciego. Devuelve `null` si el nombre no matchea el patrón.
+ *
+ * @param {string} basename
+ * @param {string} skill
+ * @param {string} issueStr
+ * @returns {string|null}
+ */
+function inferFaseFromName(basename, skill, issueStr) {
+    const ext = path.extname(basename);
+    const stem = basename.slice(0, basename.length - ext.length);
+    const prefix = `${skill}-`;
+    const suffix = `-${issueStr}`;
+    if (!stem.startsWith(prefix) || !stem.endsWith(suffix)) return null;
+    const middle = stem.slice(prefix.length, stem.length - suffix.length);
+    // Las fases del enum son palabras simples (analisis, criterios, dev…), sin
+    // guiones. Si el "medio" trae un guión no es una fase válida del patrón.
+    if (!middle || middle.includes('-')) return null;
+    return middle;
+}
+
+/**
+ * Construye un mapa `relPath → fase` a partir del índice de entregables
+ * (`.pipeline/deliverables/<issue>.json`). Best-effort: si no existe o el
+ * módulo no está, devuelve un mapa vacío (nunca tira). Lazy-require para
+ * evitar ciclo con `write-deliverable`/`deliverable-index`.
+ *
+ * @param {string|number} issueNumber
+ * @param {string} pipelineRoot
+ * @returns {Map<string,string>}
+ */
+function buildManifestFaseMap(issueNumber, pipelineRoot) {
+    const map = new Map();
+    try {
+        const { readDeliverableIndex } = require('./deliverable-index');
+        const idx = readDeliverableIndex(issueNumber, { pipelineRoot });
+        for (const e of (idx.entries || [])) {
+            if (e && typeof e.path === 'string' && typeof e.fase === 'string') {
+                map.set(e.path.replace(/\\/g, '/'), e.fase);
+            }
+        }
+    } catch {
+        // sin índice → mapa vacío, caemos a inferencia por filename.
+    }
+    return map;
+}
+
+/**
  * Ordena los resultados de `ux` aplicando `uxOrderRank`. Para otros skills,
  * orden alfabético estable.
  *
@@ -444,17 +494,18 @@ function sortAttachments(entries, skill) {
  *
  * @param {string} skill - 'ux' | 'po' | 'guru' | 'planner' | 'cua' | ...
  * @param {string|number} issueNumber
- * @param {string} _phase - reservado para uso futuro (filtrado por fase).
- *     No se usa hoy: las convenciones de filename de cada skill ya separan
- *     por fase implícitamente (ej. el mockup vive en criterios; el video QA
- *     en verificacion). Mantener la firma libera evolución sin romper el
- *     contrato del caller.
+ * @param {string} [phase] - fase del pipeline en que se está cerrando. Se usa
+ *     como fallback para etiquetar `fase` en cada artefacto cuando el manifest
+ *     no lo tiene y el filename no sigue la convención phase-scoped (#4255).
+ *     No filtra la búsqueda (las convenciones de filename ya separan por fase).
  * @param {object} [opts]
  * @param {string} [opts.pipelineRoot] - root del repo (default process.cwd()).
- * @returns {Array<{type:string, path:string, descriptor:string}>}
- *     Array vacío si no se encontraron archivos. NUNCA tira excepción.
+ * @returns {Array<{type:string, path:string, descriptor:string, fase:string|null}>}
+ *     Array vacío si no se encontraron archivos. NUNCA tira excepción. El campo
+ *     `fase` (#4255) es aditivo: manifest → inferencia por filename → `phase`
+ *     recibido → `null`.
  */
-function collectAttachmentsForSkill(skill, issueNumber, _phase, opts) {
+function collectAttachmentsForSkill(skill, issueNumber, phase, opts) {
     if (!skill || typeof skill !== 'string') return [];
     const issueAsNumber = parseInt(issueNumber, 10);
     if (!Number.isFinite(issueAsNumber) || issueAsNumber <= 0) return [];
@@ -467,6 +518,8 @@ function collectAttachmentsForSkill(skill, issueNumber, _phase, opts) {
         : process.cwd();
 
     const issueStr = String(issueAsNumber);
+    const phaseHint = (typeof phase === 'string' && phase.length > 0) ? phase : null;
+    const manifestFase = buildManifestFaseMap(issueStr, pipelineRoot);
     const collected = [];
     const seenAbs = new Set();
 
@@ -490,11 +543,17 @@ function collectAttachmentsForSkill(skill, issueNumber, _phase, opts) {
             if (!type) continue;
 
             const relPath = path.relative(pipelineRoot, absPath).replace(/\\/g, '/');
+            // Fase por artefacto (#4255): manifest > inferencia filename > hint.
+            const fase = manifestFase.get(relPath)
+                || inferFaseFromName(name, skill, issueStr)
+                || phaseHint
+                || null;
             collected.push({
                 _basename: name,
                 type,
                 path: relPath,
                 descriptor: descriptorForFile(name, source),
+                fase,
             });
             seenAbs.add(absPath);
 
@@ -509,6 +568,7 @@ function collectAttachmentsForSkill(skill, issueNumber, _phase, opts) {
         type: e.type,
         path: e.path,
         descriptor: e.descriptor,
+        fase: e.fase,
     }));
 }
 
@@ -533,6 +593,8 @@ module.exports = {
         uxOrderRank,
         descriptorForFile,
         resolveType,
+        inferFaseFromName,
+        buildManifestFaseMap,
         HELPER_MAX_PER_INVOCATION,
     },
 };
