@@ -523,3 +523,133 @@ test('resolveBlockDependencies: descarta entradas con parent inválido', () => {
         assert.equal(Object.keys(map).length, 1);
     } finally { resetCache(); rmrf(dir); }
 });
+
+// =============================================================================
+// #4330 — resolveLiveSplitChildren: hijos de split VIVOS en la allowlist cuyo
+// parent ∈ ola activa. Filtra por allowed_issues + expires_at vigente para no
+// listar hijos des-autorizados/stale.
+// =============================================================================
+
+const { resolveLiveSplitChildren } = require('../wave-resolver');
+
+const FUTURE = '2999-01-01T00:00:00.000Z';
+const PAST = '2000-01-01T00:00:00.000Z';
+
+test('resolveLiveSplitChildren: lista hijos vigentes cuyo parent ∈ ola', () => {
+    const dir = mkTmpPipeline();
+    try {
+        fs.writeFileSync(path.join(dir, '.partial-pause.json'), JSON.stringify({
+            allowed_issues: [4324, 4326, 4327],
+            authorization_ttls: {
+                4326: { parent: 4324, expires_at: FUTURE },
+                4327: { parent: 4324, expires_at: FUTURE },
+            },
+        }));
+        const out = resolveLiveSplitChildren({ pipelineRoot: dir, parentIds: [4324] });
+        assert.deepEqual(out, [4326, 4327]);
+    } finally { rmrf(dir); }
+});
+
+test('resolveLiveSplitChildren: descarta hijo con TTL vencido (CA-4)', () => {
+    const dir = mkTmpPipeline();
+    try {
+        fs.writeFileSync(path.join(dir, '.partial-pause.json'), JSON.stringify({
+            allowed_issues: [4324, 4326, 4327],
+            authorization_ttls: {
+                4326: { parent: 4324, expires_at: PAST },   // vencido
+                4327: { parent: 4324, expires_at: FUTURE },
+            },
+        }));
+        const out = resolveLiveSplitChildren({ pipelineRoot: dir, parentIds: [4324] });
+        assert.deepEqual(out, [4327]);
+    } finally { rmrf(dir); }
+});
+
+test('resolveLiveSplitChildren: descarta hijo fuera de allowed_issues', () => {
+    const dir = mkTmpPipeline();
+    try {
+        fs.writeFileSync(path.join(dir, '.partial-pause.json'), JSON.stringify({
+            allowed_issues: [4324, 4327],               // 4326 NO está autorizado
+            authorization_ttls: {
+                4326: { parent: 4324, expires_at: FUTURE },
+                4327: { parent: 4324, expires_at: FUTURE },
+            },
+        }));
+        const out = resolveLiveSplitChildren({ pipelineRoot: dir, parentIds: [4324] });
+        assert.deepEqual(out, [4327]);
+    } finally { rmrf(dir); }
+});
+
+test('resolveLiveSplitChildren: descarta hijo cuyo parent NO está en la ola', () => {
+    const dir = mkTmpPipeline();
+    try {
+        fs.writeFileSync(path.join(dir, '.partial-pause.json'), JSON.stringify({
+            allowed_issues: [4326],
+            authorization_ttls: {
+                4326: { parent: 9999, expires_at: FUTURE }, // parent fuera de la ola
+            },
+        }));
+        const out = resolveLiveSplitChildren({ pipelineRoot: dir, parentIds: [4324] });
+        assert.deepEqual(out, []);
+    } finally { rmrf(dir); }
+});
+
+test('resolveLiveSplitChildren: expires_at ausente o inválido → descartado', () => {
+    const dir = mkTmpPipeline();
+    try {
+        fs.writeFileSync(path.join(dir, '.partial-pause.json'), JSON.stringify({
+            allowed_issues: [4324, 4326, 4327],
+            authorization_ttls: {
+                4326: { parent: 4324 },                       // sin expires_at
+                4327: { parent: 4324, expires_at: 'nope' },   // no parseable
+            },
+        }));
+        const out = resolveLiveSplitChildren({ pipelineRoot: dir, parentIds: [4324] });
+        assert.deepEqual(out, []);
+    } finally { rmrf(dir); }
+});
+
+test('resolveLiveSplitChildren: honra el `now` inyectado para el corte de TTL', () => {
+    const dir = mkTmpPipeline();
+    try {
+        fs.writeFileSync(path.join(dir, '.partial-pause.json'), JSON.stringify({
+            allowed_issues: [4324, 4326],
+            authorization_ttls: {
+                4326: { parent: 4324, expires_at: '2026-07-03T00:00:00.000Z' },
+            },
+        }));
+        const beforeExpiry = Date.parse('2026-07-01T00:00:00.000Z');
+        const afterExpiry = Date.parse('2026-07-04T00:00:00.000Z');
+        assert.deepEqual(resolveLiveSplitChildren({ pipelineRoot: dir, parentIds: [4324], now: beforeExpiry }), [4326]);
+        assert.deepEqual(resolveLiveSplitChildren({ pipelineRoot: dir, parentIds: [4324], now: afterExpiry }), []);
+    } finally { rmrf(dir); }
+});
+
+test('resolveLiveSplitChildren: degrada a [] sin pipelineRoot / sin parents / sin archivo', () => {
+    assert.deepEqual(resolveLiveSplitChildren({}), []);
+    assert.deepEqual(resolveLiveSplitChildren({ pipelineRoot: '/x', parentIds: [] }), []);
+    const dir = mkTmpPipeline();
+    try {
+        // Sin .partial-pause.json → []
+        assert.deepEqual(resolveLiveSplitChildren({ pipelineRoot: dir, parentIds: [4324] }), []);
+        // JSON inválido → []
+        fs.writeFileSync(path.join(dir, '.partial-pause.json'), '{no-json,');
+        assert.deepEqual(resolveLiveSplitChildren({ pipelineRoot: dir, parentIds: [4324] }), []);
+        // Sin authorization_ttls → []
+        fs.writeFileSync(path.join(dir, '.partial-pause.json'), JSON.stringify({ allowed_issues: [4324] }));
+        assert.deepEqual(resolveLiveSplitChildren({ pipelineRoot: dir, parentIds: [4324] }), []);
+    } finally { rmrf(dir); }
+});
+
+test('resolveLiveSplitChildren: parentIds inválidos se descartan (normalización)', () => {
+    const dir = mkTmpPipeline();
+    try {
+        fs.writeFileSync(path.join(dir, '.partial-pause.json'), JSON.stringify({
+            allowed_issues: [4324, 4326],
+            authorization_ttls: { 4326: { parent: 4324, expires_at: FUTURE } },
+        }));
+        // '#4324' string con prefijo → normaliza a 4324; 'x' se descarta.
+        const out = resolveLiveSplitChildren({ pipelineRoot: dir, parentIds: ['#4324', 'x', null] });
+        assert.deepEqual(out, [4326]);
+    } finally { rmrf(dir); }
+});
