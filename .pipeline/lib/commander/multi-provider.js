@@ -1142,7 +1142,9 @@ module.exports = {
     isLateResponseDuplicate: inflight.isLateResponseDuplicate,
     releaseInflightLock: inflight.releaseInflightLock,
     generateRequestId: inflight.generateRequestId,
-    INFLIGHT_BUDGET_MS: inflight.DEFAULT_BUDGET_MS,
+    // #4329 — exponer el budget EFECTIVO (env-resuelto + clampeado), no solo el
+    // default literal, para que refleje overrides por COMMANDER_TURN_BUDGET_MS.
+    INFLIGHT_BUDGET_MS: inflight.TURN_BUDGET_MS,
     MAX_INFLIGHT_FALLBACKS: inflight.MAX_INFLIGHT_FALLBACKS,
 
     // #3275 — credentials precheck al boot

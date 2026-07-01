@@ -178,9 +178,10 @@ test('CA-7 — primaryDurationMs >= budget dispara global_budget_exceeded', () =
         const d = inflight.decideInflightFallback({
             primaryProvider: 'anthropic',
             primaryErrorClass: 'timeout_no_new_bytes_30s',
-            primaryDurationMs: 91_000, // excede budget default 90s
+            primaryDurationMs: 601_000, // #4329 — excede budget default 600s
             primaryPartialOutput: '',
             attemptIndex: 0,
+            budgetMs: inflight.TURN_BUDGET_MS,
             pipelineDir: dir,
             chatId: 'chat-bg',
             requestId: 'req-budget-1',
@@ -188,12 +189,33 @@ test('CA-7 — primaryDurationMs >= budget dispara global_budget_exceeded', () =
         assert.equal(d.shouldRetry, false);
         assert.equal(d.reason, 'global_budget_exceeded');
         assert.equal(d.budgetRemainingMs, 0);
-        assert.match(d.cannedResponse, /90s|⏱️/);
+        assert.match(d.cannedResponse, /⏱️/);
+        // #4329 CA-3 — el mensaje ya no debe mencionar "90s".
+        assert.doesNotMatch(d.cannedResponse, /90s/);
         const audit = readAuditLines(dir);
         const ev = audit.find(e => e.event === 'inflight_fallback_global_timeout');
         assert.ok(ev, 'falta evento global_timeout');
-        assert.equal(ev.primary_duration_ms, 91_000);
-        assert.equal(ev.budget_ms, 90_000);
+        assert.equal(ev.primary_duration_ms, 601_000);
+        assert.equal(ev.budget_ms, 600_000);
+    } finally { cleanup(dir); }
+});
+
+test('#4329 no-regresión — dur corta con budget 600s NO dispara timeout', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        const d = inflight.decideInflightFallback({
+            primaryProvider: 'anthropic',
+            primaryErrorClass: 'http_5xx',
+            primaryDurationMs: 3_000, // pocos segundos — muy por debajo del budget
+            primaryPartialOutput: '',
+            attemptIndex: 0,
+            budgetMs: inflight.TURN_BUDGET_MS,
+            pipelineDir: dir,
+            chatId: 'chat-fast',
+            requestId: 'req-fast',
+        });
+        assert.notEqual(d.reason, 'global_budget_exceeded');
+        assert.equal(d.shouldRetry, true, 'un pedido rápido con error debe intentar fallback, no cortar por tiempo');
     } finally { cleanup(dir); }
 });
 
@@ -688,6 +710,87 @@ test('re-exports desde commander/multi-provider apuntan al módulo dedicado', ()
     assert.equal(typeof mp.precheckCommanderProviderRanking, 'function');
     assert.equal(typeof mp.makePrecheckHandle, 'function');
     assert.equal(typeof mp.formatInflightFallbackNotice, 'function');
-    assert.equal(mp.INFLIGHT_BUDGET_MS, 90 * 1000);
+    assert.equal(mp.INFLIGHT_BUDGET_MS, 600 * 1000); // #4329 — budget efectivo (default 600s)
     assert.equal(mp.MAX_INFLIGHT_FALLBACKS, 1);
+});
+
+// -----------------------------------------------------------------------------
+// #4329 — Budget del turno del Commander: resolver env + clamp + copy sincronizado
+// -----------------------------------------------------------------------------
+
+test('#4329 CA-1 — resolveTurnBudgetMs sin env → 600000 (default 600s)', () => {
+    assert.equal(inflight.resolveTurnBudgetMs({}), 600_000);
+    assert.equal(inflight.DEFAULT_BUDGET_MS, 600_000);
+    assert.equal(inflight.TURN_BUDGET_MS, 600_000);
+});
+
+test('#4329 CA-2 — resolveTurnBudgetMs con env válido → valor configurado', () => {
+    assert.equal(inflight.resolveTurnBudgetMs({ COMMANDER_TURN_BUDGET_MS: '300000' }), 300_000);
+    assert.equal(inflight.resolveTurnBudgetMs({ COMMANDER_TURN_BUDGET_MS: '120000' }), 120_000);
+});
+
+test('#4329 CA-5 (SR-1) — resolveTurnBudgetMs fail-closed ante env inválido', () => {
+    for (const bad of ['', 'abc', '0', '-5', 'NaN', '  ', undefined]) {
+        assert.equal(
+            inflight.resolveTurnBudgetMs({ COMMANDER_TURN_BUDGET_MS: bad }),
+            600_000,
+            `env inválido ${JSON.stringify(bad)} debe caer al default 600s`,
+        );
+    }
+    // Sin la clave definida.
+    assert.equal(inflight.resolveTurnBudgetMs({ OTRA: 'x' }), 600_000);
+});
+
+test('#4329 CA-6 (SR-2) — resolveTurnBudgetMs clampea al techo MAX_BUDGET_MS', () => {
+    assert.equal(inflight.MAX_BUDGET_MS, 30 * 60 * 1000);
+    assert.equal(inflight.resolveTurnBudgetMs({ COMMANDER_TURN_BUDGET_MS: '999999999' }), 1_800_000);
+    // Exactamente en el techo → se mantiene.
+    assert.equal(inflight.resolveTurnBudgetMs({ COMMANDER_TURN_BUDGET_MS: String(1_800_000) }), 1_800_000);
+    // Justo por encima → clamp.
+    assert.equal(inflight.resolveTurnBudgetMs({ COMMANDER_TURN_BUDGET_MS: String(1_800_001) }), 1_800_000);
+});
+
+test('#4329 CA-7 (SR-3) — LATE_RESPONSE_TTL_MS estrictamente mayor al peor budget', () => {
+    assert.ok(inflight.LATE_RESPONSE_TTL_MS > inflight.MAX_BUDGET_MS, 'TTL debe superar MAX_BUDGET_MS');
+    assert.ok(inflight.LATE_RESPONSE_TTL_MS > inflight.TURN_BUDGET_MS, 'TTL debe superar TURN_BUDGET_MS');
+    assert.equal(inflight.LATE_RESPONSE_TTL_MS, 2 * inflight.MAX_BUDGET_MS);
+});
+
+test('#4329 CA-3 — cannedInflightBudgetTimeoutResponse no dice "90s" y refleja minutos', () => {
+    const def = inflight.cannedInflightBudgetTimeoutResponse();
+    assert.doesNotMatch(def, /90s/);
+    assert.match(def, /10 min/); // 600000ms → 10 min
+    // Budget custom en minutos.
+    assert.match(inflight.cannedInflightBudgetTimeoutResponse(300_000), /5 min/);
+    // Budget < 60s → expresado en segundos (guideline UX, evita "0 min").
+    const chico = inflight.cannedInflightBudgetTimeoutResponse(30_000);
+    assert.match(chico, /30s/);
+    assert.doesNotMatch(chico, /0 min/);
+    // Argumento inválido → cae al default 600s (10 min).
+    assert.match(inflight.cannedInflightBudgetTimeoutResponse('nope'), /10 min/);
+});
+
+test('#4329 SR-4 — pulpo.js deriva HARD_NON_ANTH_MS del budget, no del literal 90*1000', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const pulpoSrc = fs.readFileSync(
+        path.join(__dirname, '..', '..', 'pulpo.js'), 'utf8',
+    );
+    // HARD_NON_ANTH_MS ya no puede asignarse el literal 90 * 1000.
+    assert.doesNotMatch(
+        pulpoSrc,
+        /HARD_NON_ANTH_MS\s*=\s*90\s*\*\s*1000/,
+        'HARD_NON_ANTH_MS no debe seguir hardcodeado en 90 * 1000',
+    );
+    assert.match(
+        pulpoSrc,
+        /HARD_NON_ANTH_MS\s*=\s*inflightFallback\.TURN_BUDGET_MS/,
+        'HARD_NON_ANTH_MS debe derivar de inflightFallback.TURN_BUDGET_MS',
+    );
+    // COMMANDER_SUMMARY_TIMEOUT_MS (timeout distinto) NO se toca.
+    assert.match(
+        pulpoSrc,
+        /COMMANDER_SUMMARY_TIMEOUT_MS\s*=\s*90\s*\*\s*1000/,
+        'COMMANDER_SUMMARY_TIMEOUT_MS debe seguir en 90 * 1000',
+    );
 });

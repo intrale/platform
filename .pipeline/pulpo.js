@@ -10001,10 +10001,13 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
             let stdout = '';
             let stderr = '';
             const startNon = Date.now();
-            const HARD_NON_ANTH_MS = 90 * 1000; // SR-5 — budget 90s para providers no-stream-json
+            // #4329 / SR-4 — el kill duro deriva del MISMO budget configurado
+            // (env-resuelto + clampeado) que el ciclo lógico, para que los
+            // turnos de providers no-Anthropic no se sigan matando a los 90s.
+            const HARD_NON_ANTH_MS = inflightFallback.TURN_BUDGET_MS;
             const timer = setTimeout(() => {
               try { proc.kill('SIGTERM'); } catch {}
-              log('commander', `Provider ${res.provider} timeout 90s — abortando`);
+              log('commander', `Provider ${res.provider} timeout ${Math.round(HARD_NON_ANTH_MS / 1000)}s — abortando`);
             }, HARD_NON_ANTH_MS);
             proc.stdout && proc.stdout.on('data', (d) => { stdout += d.toString(); });
             proc.stderr && proc.stderr.on('data', (d) => { stderr += d.toString(); });
@@ -10247,6 +10250,9 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         primaryDurationMs: Date.now() - startTime,
         primaryPartialOutput: lastText,
         attemptIndex: 0,
+        // #4329 / SR-4 — mismo budget efectivo (env-resuelto + clampeado) que el
+        // kill duro; el fallback a DEFAULT_BUDGET_MS en el core queda como red.
+        budgetMs: inflightFallback.TURN_BUDGET_MS,
         pipelineDir: PIPELINE,
         lockNamespace: chatId,
         requestId: turnRequestId,
