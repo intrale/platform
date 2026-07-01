@@ -30,9 +30,19 @@ const slices = require('../dashboard-slices');
 // del slice cuando `node --test` corre todo en un mismo proceso (isolation off).
 const TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-active-presence-'));
 const PRES_FILE = path.join(TMP_DIR, 'commander-presence.json');
+// #4255 (rebote rev-1) — También aislamos la presencia del Sherlock a un archivo
+// dentro de TMP_DIR que jamás creamos. Sin esto, `sherlockPresPath` cae al
+// `sherlock-presence.json` real de `.pipeline/logs` y, si el Sherlock está vivo
+// en el entorno del pipeline, inyecta una card sintética que rompe los asserts
+// deterministas (p.ej. `out.length === 1`). Espeja el aislamiento del Commander.
+const SHERLOCK_PRES_FILE = path.join(TMP_DIR, 'sherlock-presence.json');
 // TMP_DIR no contiene ningún `commander-*.log` → `hasLog` resuelve false de forma
 // determinística (aislado del `.pipeline/logs` real).
-const AGENTS_OPTS = { commanderPresencePath: PRES_FILE, logDir: TMP_DIR };
+const AGENTS_OPTS = {
+    commanderPresencePath: PRES_FILE,
+    sherlockPresencePath: SHERLOCK_PRES_FILE,
+    logDir: TMP_DIR,
+};
 
 function clearPresFile() {
     try { fs.rmSync(PRES_FILE, { force: true }); } catch { /* noop */ }
