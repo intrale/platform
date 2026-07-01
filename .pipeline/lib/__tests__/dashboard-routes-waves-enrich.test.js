@@ -205,3 +205,154 @@ test('buildWavesPayload() sin state mantiene el shape base (back-compat)', () =>
         assert.deepEqual(Object.keys(iss).sort(), ['id', 'priority', 'size', 'status', 'title']);
     });
 });
+
+// =============================================================================
+// #4330 — Unión de hijos de split de la allowlist a la ola activa.
+// buildWavesPayload(state, pipelineDir) debe sumar a active_wave.issues los
+// hijos de split presentes y vigentes en `.partial-pause.json` cuyo parent ∈
+// ola, resolviendo su título/estado por el mismo camino que el resto del board.
+// =============================================================================
+
+const fs = require('node:fs');
+const os = require('node:os');
+const nodePath = require('node:path');
+
+function mkTmpPipeline(partialPause) {
+    const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'dash-waves-4330-'));
+    if (partialPause) {
+        fs.writeFileSync(nodePath.join(dir, '.partial-pause.json'), JSON.stringify(partialPause));
+    }
+    return dir;
+}
+function rmrf(dir) {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* noop */ }
+}
+
+const FUTURE = '2999-01-01T00:00:00.000Z';
+const PAST = '2000-01-01T00:00:00.000Z';
+
+// Ola activa con un solo padre (4324); el resto de los hijos vienen de la allowlist.
+function fakeWavesWith(issues) {
+    return {
+        getHorizon: () => ([
+            { status: 'active', number: 8, name: 'Ola 8', goal: 'g', started_at: null, issues },
+        ]),
+    };
+}
+
+// State donde el hijo 4326 está ejecutándose (work-file trabajando → in-progress).
+function stateWithChildRunning() {
+    return {
+        issueTitles: {
+            '4324': { title: 'Padre split', state: 'OPEN', labels: [] },
+            '4326': { title: 'Hijo en ejecución', state: 'OPEN', labels: [] },
+        },
+        issueMatrix: {
+            '4326': {
+                faseActual: 'desarrollo/dev',
+                estadoActual: 'trabajando',
+                fases: { 'desarrollo/dev': [{ skill: 'pipeline-dev', hasLog: true, logFile: '4326-pipeline-dev.log' }] },
+            },
+        },
+    };
+}
+
+test('#4330: buildWavesPayload une hijos de split vivos de la allowlist a la ola activa (CA-1/CA-2)', () => {
+    const dir = mkTmpPipeline({
+        allowed_issues: [4324, 4326, 4327],
+        authorization_ttls: {
+            4326: { parent: 4324, expires_at: FUTURE },
+            4327: { parent: 4324, expires_at: FUTURE },
+        },
+    });
+    try {
+        withFakeWaves(fakeWavesWith([{ number: 4324, status: 'in_progress' }]), () => {
+            const { _internal } = fresh();
+            const payload = _internal.buildWavesPayload(stateWithChildRunning(), dir);
+            const ids = payload.active_wave.issues.map((i) => i.id).sort((a, b) => a - b);
+            assert.deepEqual(ids, [4324, 4326, 4327], 'los hijos vivos se agregan al listado');
+            const byId = Object.fromEntries(payload.active_wave.issues.map((i) => [i.id, i]));
+            // CA-2: estado de ejecución real derivado de issueMatrix.
+            assert.equal(byId[4326].status, 'in-progress');
+            assert.equal(byId[4326].agent, 'pipeline-dev');
+            assert.equal(byId[4326].title, 'Hijo en ejecución');
+            // El hijo sin work-file queda en cola (no hardcodeado).
+            assert.equal(byId[4327].status, 'queued');
+        });
+    } finally { rmrf(dir); }
+});
+
+test('#4330: buildWavesPayload no duplica un hijo ya presente en el set original (CA-3)', () => {
+    const dir = mkTmpPipeline({
+        allowed_issues: [4324, 4326],
+        authorization_ttls: { 4326: { parent: 4324, expires_at: FUTURE } },
+    });
+    try {
+        // 4326 ya está en active_wave.issues Y en la allowlist.
+        withFakeWaves(fakeWavesWith([
+            { number: 4324, status: 'in_progress' },
+            { number: 4326, status: 'in_progress' },
+        ]), () => {
+            const { _internal } = fresh();
+            const payload = _internal.buildWavesPayload(stateWithChildRunning(), dir);
+            const ids = payload.active_wave.issues.map((i) => i.id);
+            const count4326 = ids.filter((n) => n === 4326).length;
+            assert.equal(count4326, 1, 'aparece una sola vez, sin duplicar');
+        });
+    } finally { rmrf(dir); }
+});
+
+test('#4330: buildWavesPayload no lista hijos con TTL vencido ni fuera de allowed_issues (CA-4)', () => {
+    const dir = mkTmpPipeline({
+        allowed_issues: [4324, 4327],           // 4326 fuera de allowlist
+        authorization_ttls: {
+            4326: { parent: 4324, expires_at: FUTURE }, // vigente pero NO autorizado
+            4327: { parent: 4324, expires_at: PAST },   // autorizado pero vencido
+        },
+    });
+    try {
+        withFakeWaves(fakeWavesWith([{ number: 4324, status: 'in_progress' }]), () => {
+            const { _internal } = fresh();
+            const payload = _internal.buildWavesPayload(stateWithChildRunning(), dir);
+            const ids = payload.active_wave.issues.map((i) => i.id);
+            assert.deepEqual(ids, [4324], 'ningún hijo stale se lista');
+        });
+    } finally { rmrf(dir); }
+});
+
+test('#4330: buildWavesPayload no agrega hijos cuyo parent no está en la ola', () => {
+    const dir = mkTmpPipeline({
+        allowed_issues: [4326],
+        authorization_ttls: { 4326: { parent: 9999, expires_at: FUTURE } },
+    });
+    try {
+        withFakeWaves(fakeWavesWith([{ number: 4324, status: 'in_progress' }]), () => {
+            const { _internal } = fresh();
+            const payload = _internal.buildWavesPayload(stateWithChildRunning(), dir);
+            const ids = payload.active_wave.issues.map((i) => i.id);
+            assert.deepEqual(ids, [4324]);
+        });
+    } finally { rmrf(dir); }
+});
+
+test('#4330: buildWavesPayload sin .partial-pause.json es no-op (CA-5 degradado)', () => {
+    const dir = mkTmpPipeline(null); // sin allowlist
+    try {
+        withFakeWaves(fakeWavesWith([{ number: 4324, status: 'in_progress' }]), () => {
+            const { _internal } = fresh();
+            const payload = _internal.buildWavesPayload(stateWithChildRunning(), dir);
+            const ids = payload.active_wave.issues.map((i) => i.id);
+            assert.deepEqual(ids, [4324], 'sin allowlist, el board sirve sólo el set original');
+        });
+    } finally { rmrf(dir); }
+});
+
+test('#4330: mergeSplitChildren es no-op sin issues o sin resolver', () => {
+    const { _internal } = fresh();
+    // rawActive nulo o sin issues → devuelto tal cual.
+    assert.equal(_internal.mergeSplitChildren(null, '/x'), null);
+    const noIssues = { number: 8, issues: null };
+    assert.equal(_internal.mergeSplitChildren(noIssues, '/x'), noIssues);
+    const emptyIssues = { number: 8, issues: [] };
+    assert.equal(_internal.mergeSplitChildren(emptyIssues, '/x'), emptyIssues);
+});

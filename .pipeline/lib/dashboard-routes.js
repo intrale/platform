@@ -524,6 +524,15 @@ try { providerHealth = require('./provider-health'); } catch { /* opcional */ }
 let waves = null;
 try { waves = require('./waves'); } catch { /* opcional */ }
 
+// #4330 — Resolver de hijos de split vivos en la allowlist. El board "Issues de
+// la ola" se arma desde `waves.json → active_wave.issues`, pero los hijos que un
+// split del pipeline agrega a la allowlist (`.partial-pause.json`) nunca llegan
+// a `waves.json` → quedan invisibles aunque el Pulpo los ejecute. Reutilizamos
+// `resolveLiveSplitChildren` para unirlos. Lectura defensiva: si el módulo no
+// carga, la unión se omite y el board sirve sólo el set original (degradado).
+let waveResolver = null;
+try { waveResolver = require('./wave-resolver'); } catch { /* opcional */ }
+
 // #4248 — Snapshot ejecutivo de la ola para enriquecer el status de cada issue
 // de la ola activa con el estado VIVO del pipeline (cerrado/en-curso/bloqueado),
 // en lugar del `status` estático y stale de waves.json (D2). Lectura defensiva:
@@ -801,7 +810,67 @@ function enrichWave(wave, state) {
  * planificada) por si algún cliente viejo los lee directamente — el frontend
  * nuevo prefiere iterar `planned[]`.
  */
-function buildWavesPayload(state) {
+// #4330 — Resuelve el `pipelineDir` efectivo para leer la allowlist. Espeja el
+// cálculo de `waves.js`/`wave-resolver.js` (`PIPELINE_DIR_OVERRIDE` o
+// `__dirname/..`) para que, si `buildWavesPayload` se invoca sin `pipelineDir`
+// explícito (tests viejos, callers legacy), la unión de hijos de split apunte
+// al mismo `.partial-pause.json` que el resto del pipeline.
+function _effectivePipelineDir(pipelineDir) {
+    if (typeof pipelineDir === 'string' && pipelineDir) return pipelineDir;
+    if (process.env.PIPELINE_DIR_OVERRIDE) return process.env.PIPELINE_DIR_OVERRIDE;
+    return path.resolve(__dirname, '..');
+}
+
+// #4330 — Une a `rawActive.issues` los hijos de split presentes y VIGENTES en la
+// allowlist cuyo `parent` pertenece a la ola activa. Opera sobre el shape crudo
+// (números pelados vía `{ number }`) para que `normalizeWave` + `enrichWave` +
+// el overlay `computeLiveWaveStatus` resuelvan título y estado real igual que
+// con cualquier otro issue del board (CA-1/CA-2). Dedup por id contra el set
+// original (CA-3). Filtra TTL vencido / fuera de `allowed_issues` vía
+// `resolveLiveSplitChildren` (CA-4). No-op defensivo: sin `wave-resolver`, sin
+// issues, o sin hijos vivos, devuelve `rawActive` intacto.
+function mergeSplitChildren(rawActive, pipelineDir) {
+    if (!rawActive || !Array.isArray(rawActive.issues)) return rawActive;
+    if (!waveResolver || typeof waveResolver.resolveLiveSplitChildren !== 'function') return rawActive;
+    // Ids de los issues de la ola (padres candidatos + dedup). Acepta el shape
+    // rico ({number}|{id}) y el número pelado.
+    const existing = new Set();
+    for (const it of rawActive.issues) {
+        let n;
+        if (it && typeof it === 'object') n = Number(it.number != null ? it.number : it.id);
+        else n = Number(it);
+        if (Number.isInteger(n) && n > 0) existing.add(n);
+    }
+    if (existing.size === 0) return rawActive;
+    let children = [];
+    try {
+        children = waveResolver.resolveLiveSplitChildren({
+            pipelineRoot: _effectivePipelineDir(pipelineDir),
+            parentIds: existing,
+        }) || [];
+    } catch {
+        return rawActive;
+    }
+    const extra = [];
+    for (const child of children) {
+        if (existing.has(child)) continue; // ya estaba en el set original (CA-3)
+        existing.add(child);
+        extra.push({ number: child }); // shape crudo → normalizeWaveIssue lo resuelve
+    }
+    if (extra.length === 0) return rawActive;
+    // Copia campo por campo (sin spread) para no propagar campos crudos de
+    // waves.json — coherente con normalizeWave/normalizeWaveIssue.
+    return {
+        number: rawActive.number,
+        name: rawActive.name,
+        goal: rawActive.goal,
+        started_at: rawActive.started_at,
+        status: rawActive.status,
+        issues: rawActive.issues.concat(extra),
+    };
+}
+
+function buildWavesPayload(state, pipelineDir) {
     const updated_at = new Date().toISOString();
     if (!waves) {
         return {
@@ -821,7 +890,12 @@ function buildWavesPayload(state) {
     } catch {
         horizon = [];
     }
-    const rawActive = horizon.find((w) => w && w.status === 'active') || null;
+    const rawActiveBase = horizon.find((w) => w && w.status === 'active') || null;
+    // #4330 — Une los hijos de split vivos de la allowlist a la ola activa ANTES
+    // de normalizar/enriquecer, para que resuelvan título y estado igual que
+    // cualquier otro issue del board. No-op si no hay hijos vivos o falta el
+    // resolver (degradado defensivo, no rompe el resto del payload).
+    const rawActive = mergeSplitChildren(rawActiveBase, pipelineDir);
     const rawPlanned = horizon.filter((w) => w && w.status === 'planned');
     // #4250 — Enriquecimiento del board HOME: cruza cada issue con el estado
     // vivo del dashboard (title-cache + issueMatrix) para resolver título real,
@@ -1262,7 +1336,7 @@ const API_ROUTES = {
     // vacío con `message: "Planificación no disponible"` y HTTP 200
     // (CA-7). Reusa sendJson() → Cache-Control: no-store coherente
     // con el resto de /api/dash/*.
-    '/api/dash/waves': (state) => buildWavesPayload(state),
+    '/api/dash/waves': (state, ctx) => buildWavesPayload(state, ctx && ctx.PIPELINE),
     // #3681 — Widget Multi-Provider Coverage. Lee `.pipeline/multi-provider-coverage.json`
     // (output runtime del harness #3680), valida con ajv contra el schema canónico
     // y sanitiza el payload con whitelist explícita por campo. NUNCA expone
@@ -1785,6 +1859,9 @@ module.exports = {
     // Exportados para tests (#3487, #3723).
     _internal: {
         buildWavesPayload,
+        // #4330 — unión de hijos de split de la allowlist a la ola activa.
+        mergeSplitChildren,
+        _effectivePipelineDir,
         normalizeWave,
         normalizeWaveIssue,
         // #4248 — status vivo de la ola activa en el header.

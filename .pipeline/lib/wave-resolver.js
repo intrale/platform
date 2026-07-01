@@ -262,6 +262,70 @@ function resolveBlockDependencies(opts) {
 }
 
 /**
+ * Resuelve los hijos de un split del pipeline que están VIVOS en la allowlist
+ * y cuyo `parent` pertenece al set de padres pedido (#4330).
+ *
+ * `resolveBlockDependencies` mapea parent→children desde `authorization_ttls`
+ * pero NO filtra por vigencia: un hijo con TTL vencido (o que salió de
+ * `allowed_issues`) seguiría figurando en `authorization_ttls` y se listaría
+ * stale. Acá cruzamos cada child contra el estado VIGENTE del
+ * `.partial-pause.json` — presencia en `allowed_issues` **y** `expires_at > now`
+ * — para devolver sólo los hijos que el Pulpo realmente tiene autorizados.
+ *
+ * Determinístico y sin cache: lee el archivo en cada llamada (el board se
+ * refresca cada 30s y la autoría heredada tiene TTL de 48h — un valor cacheado
+ * listaría hijos ya des-autorizados).
+ *
+ * @param {object} opts
+ * @param {string} opts.pipelineRoot - Path absoluto al directorio `.pipeline`.
+ * @param {Iterable<number>} opts.parentIds - ids de los padres de la ola activa.
+ * @param {number} [opts.now] - epoch ms de referencia (default `Date.now()`).
+ * @returns {number[]} ids de hijos vivos, únicos y ordenados asc.
+ */
+function resolveLiveSplitChildren(opts) {
+    const pipelineRoot = opts && opts.pipelineRoot;
+    if (!pipelineRoot) return [];
+    const parents = new Set();
+    if (opts && opts.parentIds) {
+        for (const p of opts.parentIds) {
+            const n = normalizeIssueNumber(p);
+            if (n !== null) parents.add(n);
+        }
+    }
+    if (parents.size === 0) return [];
+    const now = typeof opts.now === 'number' ? opts.now : Date.now();
+    const file = path.join(pipelineRoot, '.partial-pause.json');
+    let parsed;
+    try {
+        parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {
+        return [];
+    }
+    if (!parsed || typeof parsed !== 'object') return [];
+    const allowed = new Set(
+        (Array.isArray(parsed.allowed_issues) ? parsed.allowed_issues : [])
+            .map(normalizeIssueNumber)
+            .filter((n) => n !== null)
+    );
+    const ttls = parsed.authorization_ttls && typeof parsed.authorization_ttls === 'object'
+        ? parsed.authorization_ttls
+        : {};
+    const out = new Set();
+    for (const [childKey, info] of Object.entries(ttls)) {
+        const child = normalizeIssueNumber(childKey);
+        if (child === null) continue;
+        const parent = info && typeof info === 'object' ? normalizeIssueNumber(info.parent) : null;
+        if (parent === null || !parents.has(parent)) continue;
+        // Sólo hijos VIGENTES: presentes en la allowlist y con TTL sin vencer.
+        if (!allowed.has(child)) continue;
+        const expiresAt = info && typeof info.expires_at === 'string' ? Date.parse(info.expires_at) : NaN;
+        if (!Number.isFinite(expiresAt) || expiresAt <= now) continue;
+        out.add(child);
+    }
+    return [...out].sort((a, b) => a - b);
+}
+
+/**
  * Resuelve la ola activa con la cascada de fuentes.
  *
  * @param {object} opts
@@ -391,6 +455,7 @@ module.exports = {
     resolveActiveWave,
     resolveWaveForIssue,
     resolveBlockDependencies,
+    resolveLiveSplitChildren,
     // Exports internos para tests
     _internal: {
         readFromWavesJson,
