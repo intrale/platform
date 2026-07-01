@@ -1216,7 +1216,38 @@ function emitCanonicalValidationAudit({ pipelineDir, session, canonicalResults, 
 //   }
 // El caller decide si reelabora, agrega disclaimer y manda a Telegram.
 // -----------------------------------------------------------------------------
+// #4335 — Wrapper de instrumentación. `verify()` delega en `_verifyImpl` y, si
+// el caller inyectó un `requestLog` con método `.stage()` (el writer sanitizado
+// de `lib/sherlock/request-log.js`), emite al sink las etapas clave derivadas
+// del RESULTADO: provider resuelto + veredicto final + cantidad de
+// inconsistencias. Back-compat total: sin `requestLog`, el comportamiento es
+// idéntico al histórico (el bloque de emisión es un no-op). SEC-3: SÓLO se
+// emiten strings/números/booleans del resultado, nunca el objeto de config de
+// providers ni `process.env`. El try/catch garantiza que un fallo del sink
+// jamás altere el veredicto devuelto.
 async function verify(opts = {}) {
+    const result = await _verifyImpl(opts);
+    try {
+        const sink = opts && opts.requestLog;
+        if (sink && typeof sink.stage === 'function') {
+            sink.stage('provider', {
+                sherlock_provider: result.sherlockProvider || '',
+                transport: result.transport || '',
+                same_provider: result.sameProvider === true,
+                commander_provider: result.commanderProvider || '',
+            });
+            sink.stage('verdict', {
+                veredicto: result.verdict || '',
+                inconsistencias: Array.isArray(result.inconsistencies) ? result.inconsistencies.length : 0,
+                duration_ms: result.durationMs || 0,
+                error_code: result.errorCode || '',
+            });
+        }
+    } catch { /* best-effort: el sink NUNCA altera el veredicto */ }
+    return result;
+}
+
+async function _verifyImpl(opts = {}) {
     const startedAt = Date.now();
     const {
         analysis,

@@ -221,7 +221,11 @@ function teamAgentRow(a) {
         ? `<span class="eq-ag-bar eq-ag-bar-indeterminate"><span></span></span><span class="eq-ag-pct">—</span>`
         : `<span class="eq-ag-bar"><span style="width:${prog.pct}%"></span></span><span class="eq-ag-pct">${prog.pct}%</span>`;
     const durHtml = `<span class="eq-ag-dur" title="Tiempo invertido">⏱ ${escapeHtmlText(fmtDur(durationMs))}</span>`;
-    const logHref = (!observational && a.hasLog) ? safeLogHref(a.logFile, true) : null;
+    // #4335 — el link al log también aplica a las presencias observacionales
+    // (Commander/Sherlock): el slice ya resuelve `a.logFile` server-side por
+    // mtime+TTL y `safeLogHref(..., true)` agrega `?live=1`. Antes se excluía
+    // `observational`, con lo que el link nunca se renderizaba (rebote review).
+    const logHref = a.hasLog ? safeLogHref(a.logFile, true) : null;
     const logHtml = logHref
         ? `<a class="eq-ag-log" href="${escapeHtmlAttr(logHref)}" target="_blank" rel="noopener noreferrer" title="Ver log en vivo" onclick="event.stopPropagation()">\u{1F4C4} log</a>`
         : '';

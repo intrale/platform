@@ -171,6 +171,52 @@ function safeReadJson(filepath, fallback) {
     catch { return fallback; }
 }
 
+// #4335 — Directorio de logs servido por los endpoints genéricos del dashboard
+// (`/logs/view|stream/<file>`). __dirname = `.pipeline/lib` → `.pipeline/logs`.
+// `_logDirOverride` permite aislar el directorio en tests (mismo patrón que el
+// override de `presencePath`); en producción es `null` y se usa el real.
+const LOG_DIR = path.join(__dirname, '..', 'logs');
+let _logDirOverride = null;
+function currentLogDir() { return _logDirOverride || LOG_DIR; }
+
+// #4335 — Resuelve, SERVER-SIDE, el `.log` de corrida más reciente para un
+// prefijo dado (`commander` / `sherlock`) dentro del TTL de presencia. Devuelve
+// el BASENAME del archivo (para que el front lo pase al endpoint genérico ya
+// redactado) o `null` si no hay ninguno vigente.
+//
+// Por qué resolución por `mtime` + TTL (y no un puntero en el presence.json):
+//   - Los archivos de presencia (`commander-presence.json` / `sherlock-presence.json`)
+//     NO guardan el nombre del log a propósito: el filename incluye el chat_id
+//     (PII) y meterlo en el presence rompería SEC-1. Resolvemos acá, en el
+//     server, cruzando el patrón de nombre con el mtime.
+//   - El TTL evita "logs fantasma": si el más reciente quedó fuera del TTL (no
+//     hay corrida activa), devolvemos `null` y la card no linkea nada (cubre el
+//     CA "sin ejecución activa no hay log fantasma").
+//
+// El filtro exige que el nombre matchee EXACTAMENTE `<prefix>-<algo>.log` para
+// no colar sidecars (`commander-<id>.meta.json` termina en `.json`, no matchea).
+function resolveRecentRunLog(prefix, ttlMs, nowMs) {
+    try {
+        const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+        const dir = currentLogDir();
+        const re = new RegExp(`^${prefix}-[a-zA-Z0-9-]+\\.log$`);
+        let best = null; // { name, mtimeMs }
+        for (const name of fs.readdirSync(dir)) {
+            if (!re.test(name)) continue;
+            let mtimeMs;
+            try { mtimeMs = fs.statSync(path.join(dir, name)).mtimeMs; }
+            catch { continue; }
+            if (!best || mtimeMs > best.mtimeMs) best = { name, mtimeMs };
+        }
+        if (!best) return null;
+        const age = now - best.mtimeMs;
+        if (age < 0 || age >= ttlMs) return null; // fuera del TTL → sin link (no fantasma)
+        return best.name;
+    } catch {
+        return null; // LOG_DIR ausente o ilegible → degradar sin romper
+    }
+}
+
 function activeAgents(state) {
     const out = [];
     // #3955 — Cooldowns leídos una sola vez por request (CA-4/SEC-6).
@@ -262,6 +308,9 @@ function activeAgents(state) {
             typeof pres.startedAt === 'number') {
             const ageMs = Date.now() - pres.startedAt;
             if (ageMs >= 0 && ageMs < SHERLOCK_PRESENCE_TTL_MS) {
+                // #4335 — enganchar el `sherlock-*.log` de la corrida más reciente
+                // dentro del TTL (server-side, por mtime; sin PII en el presence).
+                const logFile = resolveRecentRunLog('sherlock', SHERLOCK_PRESENCE_TTL_MS);
                 out.unshift({
                     issue: null,
                     title: 'Sherlock',
@@ -273,7 +322,8 @@ function activeAgents(state) {
                     ageMin: Math.floor(ageMs / 60000),
                     observational: true,         // CA-2 / CA-5
                     cancelable: false,           // CA-2 / CA-5
-                    hasLog: false,               // sin link a log crudo
+                    hasLog: !!logFile,           // #4335 — link a log crudo si hay corrida vigente
+                    logFile: logFile || undefined,
                     etaMs: null,                 // presencia sin ETA (barra indeterminada)
                 });
             }
@@ -288,6 +338,12 @@ function activeAgents(state) {
             typeof pres.startedAt === 'number') {
             const ageMs = Date.now() - pres.startedAt;
             if (ageMs >= 0 && ageMs < COMMANDER_PRESENCE_TTL_MS) {
+                // #4335 — enganchar el `commander-*.log` de la corrida más reciente
+                // dentro del TTL. El filename incluye chat_id (PII), pero ese
+                // basename YA se expone hoy en la card "Logs recientes"
+                // (`renderCommanderRequestLogs`), así que no hay leak nuevo; y la
+                // vista pasa por el endpoint genérico que redacta secrets.
+                const logFile = resolveRecentRunLog('commander', COMMANDER_PRESENCE_TTL_MS);
                 out.unshift({
                     issue: null,
                     title: 'Commander',
@@ -299,7 +355,8 @@ function activeAgents(state) {
                     ageMin: Math.floor(ageMs / 60000),
                     observational: true,         // CA-3 / CA-4
                     cancelable: false,           // CA-3 / CA-4
-                    hasLog: false,               // SEC-3: sin link a log crudo en esta iteración
+                    hasLog: !!logFile,           // #4335 — link a log crudo si hay corrida vigente
+                    logFile: logFile || undefined,
                     etaMs: null,                 // presencia sin ETA (barra indeterminada en UI)
                 });
             }
@@ -3010,6 +3067,10 @@ function costosSlice(state, ctx) {
 
 module.exports = {
     activeAgents,
+    // #4335 — resolución de log de corrida por mtime+TTL + override de dir (tests)
+    resolveRecentRunLog,
+    _setLogDir: (dir) => { _logDirOverride = dir || null; },
+    _resetLogDir: () => { _logDirOverride = null; },
     recentlyFinished,
     nextInQueue,
     headerSlice,

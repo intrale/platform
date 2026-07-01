@@ -99,6 +99,56 @@ test('renderTeamAccordion incluye link a log sólo para agentes con log (CA-1)',
 });
 
 // ---------------------------------------------------------------------------
+// #4335 — El link al log DEBE renderizarse también para las presencias
+// observacionales (Commander/Sherlock). Regresión del rebote review: antes
+// equipo.js:224 excluía `observational`, con lo que el slice seteaba
+// hasLog/logFile pero el HTML nunca exponía el <a>. Estos tests assertan el
+// HTML renderizado (no sólo el slice), que es lo que faltaba.
+// ---------------------------------------------------------------------------
+
+test('renderTeamAccordion renderiza el link al log para presencia observacional con hasLog (#4335)', () => {
+    const html = equipo.renderTeamAccordion(sampleState({
+        agentPersona: {
+            commander: { icon: '🎖', name: 'Commander', color: '#f778ba' },
+            sherlock: { icon: '🕵️', name: 'Sherlock', color: '#e3b341' },
+        },
+        teamAgents: [
+            {
+                issue: null, skill: 'commander', pipeline: null, fase: 'pensando',
+                title: 'Commander', durationMs: 5000, etaMs: null,
+                observational: true, cancelable: false,
+                hasLog: true, logFile: 'commander-12345.log',
+            },
+            {
+                issue: null, skill: 'sherlock', pipeline: null, fase: 'verificando',
+                title: 'Sherlock', durationMs: 3000, etaMs: null,
+                observational: true, cancelable: false,
+                hasLog: true, logFile: 'sherlock-67890.log',
+            },
+        ],
+    }));
+    // El HTML renderizado contiene el <a> hacia el visor de logs con ?live=1.
+    assert.match(html, /<a class="eq-ag-log" href="\/logs\/view\/commander-12345\.log\?live=1"/);
+    assert.match(html, /<a class="eq-ag-log" href="\/logs\/view\/sherlock-67890\.log\?live=1"/);
+    // Sigue siendo observacional → protegido, sin botón de kill.
+    assert.match(html, /protegido/);
+    assert.ok(!html.includes('eq-ag-kill'), 'presencia observacional no debe tener kill');
+});
+
+test('renderTeamAccordion NO linkea log si la presencia observacional no tiene log vigente (#4335)', () => {
+    const html = equipo.renderTeamAccordion(sampleState({
+        agentPersona: { commander: { icon: '🎖', name: 'Commander', color: '#f778ba' } },
+        teamAgents: [{
+            issue: null, skill: 'commander', pipeline: null, fase: 'pensando',
+            title: 'Commander', durationMs: 5000, etaMs: null,
+            observational: true, cancelable: false, hasLog: false,
+        }],
+    }));
+    // Sin corrida vigente (hasLog=false) no hay log fantasma.
+    assert.ok(!/eq-ag-log/.test(html), 'sin log vigente no debe renderizar link');
+});
+
+// ---------------------------------------------------------------------------
 // CA-3 — Commander visible, sin kill, server-side guard
 // ---------------------------------------------------------------------------
 
@@ -213,6 +263,22 @@ test('handler /api/kill-agent verifica CSRF antes de tocar el FS (SEC-2)', () =>
     assert.ok(csrfIdx > 0, 'debe llamar requireCSRF');
     assert.ok(fsIdx === -1 || csrfIdx < fsIdx, 'CSRF antes de cualquier renameSync');
     assert.match(dashboardSrc, /\/api\/kill-agent\/csrf-token/);
+});
+
+// ---------------------------------------------------------------------------
+// #4335 — Path fallback (activeStripHTML): las cards observacionales de la tira
+// "Ejecutando ahora" en dashboard.js también deben cablear el link al log vía
+// el helper presenceLogLink (resolver server-side mtime+TTL, ?live=1).
+// ---------------------------------------------------------------------------
+
+test('dashboard.js cablea presenceLogLink en las cards observacionales de Commander y Sherlock (#4335)', () => {
+    // El helper existe y reusa el resolver del slice (no duplica la lógica).
+    assert.match(dashboardSrc, /function presenceLogLink\(prefix, ttlMs\)/);
+    assert.match(dashboardSrc, /_architectSlices\.resolveRecentRunLog\(prefix, ttlMs\)/);
+    assert.match(dashboardSrc, /\/logs\/view\/'\s*\+\s*encodeURIComponent\(String\(logFile\)\)\s*\+\s*'\?live=1'/);
+    // Ambas cards lo invocan con su prefijo/TTL.
+    assert.match(dashboardSrc, /presenceLogLink\('commander', COMMANDER_PRESENCE_TTL_MS\)/);
+    assert.match(dashboardSrc, /presenceLogLink\('sherlock', SHERLOCK_PRESENCE_TTL_MS\)/);
 });
 
 // ---------------------------------------------------------------------------

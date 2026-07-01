@@ -2022,6 +2022,26 @@ function escapeHtml(s) {
   return __escapeHtmlAttrShared(s);
 }
 
+// #4335 — TTL de presencia (espejo de dashboard-slices.js) para resolver el log
+// de la corrida vigente en las cards observacionales de la tira "Ejecutando ahora".
+const COMMANDER_PRESENCE_TTL_MS = 5 * 60 * 1000;
+const SHERLOCK_PRESENCE_TTL_MS = 5 * 60 * 1000;
+
+// #4335 — Devuelve el <a> hacia el log crudo (endpoint genérico `/logs/view`
+// que ya redacta secrets) de la corrida más reciente de un prefijo
+// (`commander`/`sherlock`) dentro del TTL, o '' si no hay corrida vigente
+// (sin log fantasma). Reusa el resolver server-side del slice (mtime+TTL) para
+// no duplicar la lógica; el basename se pasa encodeURIComponent + `?live=1`.
+function presenceLogLink(prefix, ttlMs) {
+  try {
+    if (!_architectSlices || typeof _architectSlices.resolveRecentRunLog !== 'function') return '';
+    const logFile = _architectSlices.resolveRecentRunLog(prefix, ttlMs);
+    if (!logFile) return '';
+    const href = '/logs/view/' + encodeURIComponent(String(logFile)) + '?live=1';
+    return '<a class="eq-work-log" href="' + escapeHtml(href) + '" target="_blank" rel="noopener noreferrer" title="Ver log en vivo" onclick="event.stopPropagation()">📄 log</a>';
+  } catch { return ''; }
+}
+
 // #3638 CA-F-12 / CA-SEC-9 — Widget de estado del ghost-artifact-cleaner.
 // Renderiza los últimos eventos del audit JSONL escapando TODO valor por
 // escapeHtml() para prevenir XSS desde filenames maliciosos. Estados:
@@ -3710,6 +3730,10 @@ function generateHTML(state) {
       const _p = AGENT_PERSONA.commander || { icon: '🎖', name: 'Commander', color: 'var(--in-info)' };
       const _faseIcons = { transcribiendo: '🎙', pensando: '🧠', verificando: '🔍', enviando: '📤' };
       const _faseLabel = ((_faseIcons[_pres.fase] || '') + ' ' + _pres.fase).trim();
+      // #4335 — link al log crudo de la corrida vigente (mtime+TTL, server-side).
+      // Mismo resolver que usa el slice del acordeón; si no hay corrida dentro del
+      // TTL devuelve null y la card no linkea (sin log fantasma).
+      const _logHtml = presenceLogLink('commander', COMMANDER_PRESENCE_TTL_MS);
       commanderPresenceCard =
         '<div class="eq-card eq-card-observational" title="' + escapeHtml('Presencia observacional — no ocupa slot ni se puede cancelar') + '">' +
           '<span class="eq-card-avatar" style="background:' + escapeHtml(_p.color) + '">' + escapeHtml(_p.icon) + '</span>' +
@@ -3719,6 +3743,7 @@ function generateHTML(state) {
               '<span class="eq-work-item eq-work-item-observe">' +
                 '<span class="eq-work-fase">' + escapeHtml(_faseLabel) + '</span>' +
                 '<span class="eq-work-dur">' + escapeHtml(fmtDuration(_pres.durationMs)) + '</span>' +
+                _logHtml +
               '</span>' +
             '</div>' +
           '</div>' +
@@ -3741,6 +3766,8 @@ function generateHTML(state) {
       const _sp = AGENT_PERSONA.sherlock || { icon: '🕵️', name: 'Sherlock', color: 'var(--in-info)' };
       const _faseIcons = { verificando: '🔍' };
       const _faseLabel = ((_faseIcons[_spres.fase] || '') + ' ' + _spres.fase).trim();
+      // #4335 — link al log crudo de la corrida vigente (mtime+TTL, server-side).
+      const _logHtml = presenceLogLink('sherlock', SHERLOCK_PRESENCE_TTL_MS);
       sherlockPresenceCard =
         '<div class="eq-card eq-card-observational" title="' + escapeHtml('Presencia observacional — no ocupa slot ni se puede cancelar') + '">' +
           '<span class="eq-card-avatar" style="background:' + escapeHtml(_sp.color) + '">' + escapeHtml(_sp.icon) + '</span>' +
@@ -3750,6 +3777,7 @@ function generateHTML(state) {
               '<span class="eq-work-item eq-work-item-observe">' +
                 '<span class="eq-work-fase">' + escapeHtml(_faseLabel) + '</span>' +
                 '<span class="eq-work-dur">' + escapeHtml(fmtDuration(_spres.durationMs)) + '</span>' +
+                _logHtml +
               '</span>' +
             '</div>' +
           '</div>' +
