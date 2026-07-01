@@ -2248,6 +2248,7 @@ function generateHTML(state) {
     perf:          { icon: '⚡', name: 'Perf',         tagline: 'Brendan Gregg · Colt McAnlis · Wharton',   color: '#d29922' },
     build:         { icon: '🏗️', name: 'Builder',     tagline: 'Build pipeline',                           color: '#8b949e' },
     commander:     { icon: '🤖', name: 'Commander',   tagline: 'Pipeline orchestrator',                    color: '#8b949e' },
+    sherlock:      { icon: '🕵️', name: 'Sherlock',    tagline: 'Verificación adversarial del Commander',   color: '#e3b341' },
   };
   const skillIcon = (skill) => (AGENT_PERSONA[skill] || {}).icon || '⚙';
   const skillColor = (skill) => (AGENT_PERSONA[skill] || {}).color || 'var(--dim)';
@@ -3726,11 +3727,42 @@ function generateHTML(state) {
     }
   } catch { /* presencia opcional — la tira se renderiza sin la card */ }
 
+  // #4332 — Card observacional del Sherlock (validación del Commander), mismo
+  // tratamiento visual que el Commander (CA-2/UX-2): reusa `eq-card-observational`,
+  // la persona `AGENT_PERSONA.sherlock` (icono 🕵️, ámbar — UX-1), el patrón
+  // `_faseLabel` y la pill `👁 observa`, sin botón de cancelar. Presencia leída del
+  // canal separado (`sherlock-presence.json`) con TTL; lectura defensiva. Todos los
+  // campos escapados (SEC/CA-6); el archivo no contiene PII.
+  let sherlockPresenceCard = '';
+  try {
+    const _spresence = require('./lib/sherlock-presence');
+    const _spres = _spresence.readPresence();
+    if (_spres) {
+      const _sp = AGENT_PERSONA.sherlock || { icon: '🕵️', name: 'Sherlock', color: 'var(--in-info)' };
+      const _faseIcons = { verificando: '🔍' };
+      const _faseLabel = ((_faseIcons[_spres.fase] || '') + ' ' + _spres.fase).trim();
+      sherlockPresenceCard =
+        '<div class="eq-card eq-card-observational" title="' + escapeHtml('Presencia observacional — no ocupa slot ni se puede cancelar') + '">' +
+          '<span class="eq-card-avatar" style="background:' + escapeHtml(_sp.color) + '">' + escapeHtml(_sp.icon) + '</span>' +
+          '<div class="eq-card-body">' +
+            '<div class="eq-card-name"><span class="eq-card-ring"></span>' + escapeHtml(_sp.name) + '</div>' +
+            '<div class="eq-card-work">' +
+              '<span class="eq-work-item eq-work-item-observe">' +
+                '<span class="eq-work-fase">' + escapeHtml(_faseLabel) + '</span>' +
+                '<span class="eq-work-dur">' + escapeHtml(fmtDuration(_spres.durationMs)) + '</span>' +
+              '</span>' +
+            '</div>' +
+          '</div>' +
+          '<span class="eq-card-observe-pill" aria-label="presencia observacional, no cancelable">👁 observa</span>' +
+        '</div>';
+    }
+  } catch { /* presencia opcional — la tira se renderiza sin la card */ }
+
   // Option B: Active Cards XL — cada agente activo es una card horizontal con work items (issue + fase + progreso)
   let agentTeamCards = '';
   let activeStripHTML = '';
-  if (sortedAgents.length > 0 || commanderPresenceCard) {
-    const cards = commanderPresenceCard + sortedAgents.map(({ skill, issues }) => {
+  if (sortedAgents.length > 0 || commanderPresenceCard || sherlockPresenceCard) {
+    const cards = commanderPresenceCard + sherlockPresenceCard + sortedAgents.map(({ skill, issues }) => {
       const p = AGENT_PERSONA[skill] || { icon: '\u2699', name: skill, color: 'var(--dim)' };
       const count = issues.length;
       const badge = count > 1 ? `<span class="eq-card-badge">${count}</span>` : '';

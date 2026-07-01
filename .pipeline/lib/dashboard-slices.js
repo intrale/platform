@@ -87,10 +87,21 @@ const { isMarkerArtifact } = require('./marker-artifact');
 let commanderPresence = null;
 try { commanderPresence = require('./commander-presence'); } catch { /* opcional */ }
 
+// #4332 — Presencia observacional del Sherlock (validación del Commander). Mismo
+// patrón que el Commander: canal separado en la raíz de runtime del pipeline
+// (`sherlock-presence.json`), fuera de `trabajando/` → no lo cuentan los slots de
+// concurrencia (CA-5). Import defensivo: si no carga, el merge es no-op.
+let sherlockPresence = null;
+try { sherlockPresence = require('./sherlock-presence'); } catch { /* opcional */ }
+
 // TTL para considerar la presencia stale (CA-8 / SEC-4). Alineado con el default
 // del helper; si el Commander crashea a mitad de petición, la card no queda
 // colgada más de ~5 min.
 const COMMANDER_PRESENCE_TTL_MS = 5 * 60 * 1000;
+
+// #4332 — TTL análogo para la presencia del Sherlock (CA-4). Si el Sherlock queda
+// colgado o lo matan sin `clearPresence`, la card se descarta tras ~5 min.
+const SHERLOCK_PRESENCE_TTL_MS = 5 * 60 * 1000;
 
 // #3955 EP8-H2 (CA-4 / SEC-6) — Cooldowns por fast-fail. Fuente única y
 // server-authoritative: `<pipeline>/cooldowns.json`, escrita por pulpo.js
@@ -235,6 +246,40 @@ function activeAgents(state) {
     // (SEC-2). NO afecta `totalRunning` como slot real: es presencia, los
     // contadores de concurrencia del pulpo viven en otro lado y no lo cuentan
     // (CA-2). El archivo NO contiene PII (CA-6, garantizado por el writer).
+    // #4332 — Mergear la presencia del Sherlock como agente SINTÉTICO
+    // observacional, leído del canal separado (`sherlock-presence.json`). Se hace
+    // ANTES del `unshift` del Commander a propósito: el Sherlock se prepende
+    // primero (queda en índice 0) y luego el Commander lo desplaza a índice 1, así
+    // el Commander queda primero y el Sherlock inmediatamente al lado (UX-3). Misma
+    // validación defensiva que el Commander (TTL + enum de fase + shape), sin PII
+    // (CA-6). NO ocupa slot de concurrencia: el archivo vive fuera de `trabajando/`
+    // (CA-5, por construcción).
+    if (sherlockPresence) {
+        const pres = safeReadJson(sherlockPresence.presencePath(), null);
+        if (pres && typeof pres === 'object' &&
+            sherlockPresence.isValidPhase(pres.fase) &&
+            typeof pres.petitionId === 'string' && pres.petitionId &&
+            typeof pres.startedAt === 'number') {
+            const ageMs = Date.now() - pres.startedAt;
+            if (ageMs >= 0 && ageMs < SHERLOCK_PRESENCE_TTL_MS) {
+                out.unshift({
+                    issue: null,
+                    title: 'Sherlock',
+                    skill: 'sherlock',
+                    pipeline: null,
+                    fase: pres.fase,
+                    petitionId: pres.petitionId, // id opaco (SEC-1)
+                    durationMs: ageMs,
+                    ageMin: Math.floor(ageMs / 60000),
+                    observational: true,         // CA-2 / CA-5
+                    cancelable: false,           // CA-2 / CA-5
+                    hasLog: false,               // sin link a log crudo
+                    etaMs: null,                 // presencia sin ETA (barra indeterminada)
+                });
+            }
+        }
+    }
+
     if (commanderPresence) {
         const pres = safeReadJson(commanderPresence.presencePath(), null);
         if (pres && typeof pres === 'object' &&
