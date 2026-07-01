@@ -195,10 +195,10 @@ function currentLogDir() { return _logDirOverride || LOG_DIR; }
 //
 // El filtro exige que el nombre matchee EXACTAMENTE `<prefix>-<algo>.log` para
 // no colar sidecars (`commander-<id>.meta.json` termina en `.json`, no matchea).
-function resolveRecentRunLog(prefix, ttlMs, nowMs) {
+function resolveRecentRunLog(prefix, ttlMs, nowMs, dirOverride) {
     try {
         const now = Number.isFinite(nowMs) ? nowMs : Date.now();
-        const dir = currentLogDir();
+        const dir = dirOverride || currentLogDir();
         const re = new RegExp(`^${prefix}-[a-zA-Z0-9-]+\\.log$`);
         let best = null; // { name, mtimeMs }
         for (const name of fs.readdirSync(dir)) {
@@ -217,7 +217,14 @@ function resolveRecentRunLog(prefix, ttlMs, nowMs) {
     }
 }
 
-function activeAgents(state) {
+// `opts` (additivo, #4335) permite inyectar el reloj y el dir de logs en tests
+// sin pisar el estado del módulo: `opts.now` reemplaza a `Date.now()` en TODOS
+// los chequeos de TTL (presencia + resolución de log) y `opts.logDir` reemplaza
+// a `currentLogDir()`. Ambos con default al comportamiento real → los callers de
+// producción (`activeAgents(state)`) no cambian.
+function activeAgents(state, opts = {}) {
+    const nowMs = Number.isFinite(opts && opts.now) ? opts.now : Date.now();
+    const logDir = (opts && opts.logDir) || currentLogDir();
     const out = [];
     // #3955 — Cooldowns leídos una sola vez por request (CA-4/SEC-6).
     const cooldowns = safeReadJson(COOLDOWNS_FILE, null);
@@ -229,7 +236,7 @@ function activeAgents(state) {
     // aplicado al leer → markers stale descartados, CA-4). Mapa por clave
     // canónica `<pipeline>/<fase>/<skill>:<issue>`.
     const effectiveMarkers = runningProviders ? runningProviders.readRunningProviders() : {};
-    const now = Date.now();
+    const now = nowMs;
     for (const [issueId, data] of Object.entries(state.issueMatrix || {})) {
         if (data.estadoActual !== 'trabajando') continue;
         const entries = data.fases[data.faseActual] || [];
@@ -306,11 +313,11 @@ function activeAgents(state) {
             sherlockPresence.isValidPhase(pres.fase) &&
             typeof pres.petitionId === 'string' && pres.petitionId &&
             typeof pres.startedAt === 'number') {
-            const ageMs = Date.now() - pres.startedAt;
+            const ageMs = nowMs - pres.startedAt;
             if (ageMs >= 0 && ageMs < SHERLOCK_PRESENCE_TTL_MS) {
                 // #4335 — enganchar el `sherlock-*.log` de la corrida más reciente
                 // dentro del TTL (server-side, por mtime; sin PII en el presence).
-                const logFile = resolveRecentRunLog('sherlock', SHERLOCK_PRESENCE_TTL_MS);
+                const logFile = resolveRecentRunLog('sherlock', SHERLOCK_PRESENCE_TTL_MS, nowMs, logDir);
                 out.unshift({
                     issue: null,
                     title: 'Sherlock',
@@ -336,14 +343,14 @@ function activeAgents(state) {
             commanderPresence.isValidPhase(pres.fase) &&
             typeof pres.petitionId === 'string' && pres.petitionId &&
             typeof pres.startedAt === 'number') {
-            const ageMs = Date.now() - pres.startedAt;
+            const ageMs = nowMs - pres.startedAt;
             if (ageMs >= 0 && ageMs < COMMANDER_PRESENCE_TTL_MS) {
                 // #4335 — enganchar el `commander-*.log` de la corrida más reciente
                 // dentro del TTL. El filename incluye chat_id (PII), pero ese
                 // basename YA se expone hoy en la card "Logs recientes"
                 // (`renderCommanderRequestLogs`), así que no hay leak nuevo; y la
                 // vista pasa por el endpoint genérico que redacta secrets.
-                const logFile = resolveRecentRunLog('commander', COMMANDER_PRESENCE_TTL_MS);
+                const logFile = resolveRecentRunLog('commander', COMMANDER_PRESENCE_TTL_MS, nowMs, logDir);
                 out.unshift({
                     issue: null,
                     title: 'Commander',
