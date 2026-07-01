@@ -703,18 +703,44 @@ function _scheduleOlaETARefresh(state) {
   // - Determinístico ante labels duplicados: primer match del array.
   // - Tolera labels malformados sin abortar el render: try/catch + fallback a `num`.
   // - No persiste el size derivado: queda en memoria de `olaIssues[]`.
+  // #4320 (RC1) — La fuente de `olaIssues` es la OLA ACTIVA vigente, no el
+  // escaneo de `state.issueMatrix` (que tomaba todo issue con `estadoActual !==
+  // 'procesado'` → capturaba ~58 archivos huérfanos residuales en
+  // pendiente/trabajando/listo, sin relación con la ola). La fuente canónica es
+  // `waveResolverLib.resolveActiveWave({ pipelineRoot: PIPELINE })` (mismo patrón
+  // ya usado en dashboard.js para `state.activeWave`), que resuelve
+  // `[4308,4309,4313,4318,4320]` (Ola 8.1) desde `waves.json`.
+  //
+  // Si `waveResolverLib` no está cargado o el resolver devuelve `issues: []`
+  // (degradado honesto — ej. `waves.json` ausente), `olaIssues` queda vacío
+  // (CA-3: estado sin-dato explícito, NO re-caemos al escaneo de issueMatrix
+  // que reintroduciría el bug de la lista fosilizada).
   const olaIssues = [];
   const seen = new Set();
-  for (const [issueStr, info] of Object.entries(state.issueMatrix || {})) {
-    if (!info || !info.estadoActual) continue;
-    if (info.estadoActual === 'procesado') continue;
-    const num = Number(issueStr);
+  let activeIssues = [];
+  try {
+    if (waveResolverLib) {
+      const aw = waveResolverLib.resolveActiveWave({ pipelineRoot: PIPELINE });
+      if (aw && Array.isArray(aw.issues)) activeIssues = aw.issues;
+      if (!activeIssues.length) {
+        try { log(`olaETA: ola activa sin issues (source=${aw && aw.source}) → métricas en estado sin-dato`); } catch {}
+      }
+    }
+  } catch { activeIssues = []; }
+  for (const raw of activeIssues) {
+    const num = Number(raw);
     if (!Number.isInteger(num) || num <= 0) continue;
     if (seen.has(num)) continue;
     seen.add(num);
+    // Conservar el enriquecimiento de `size:` label (#3529, SEC-1..SEC-4):
+    // cruzar el número de la ola contra `state.issueMatrix[num].labels` y, si hay
+    // un label anclado al prefijo `size:` (case-insensitive, primer match),
+    // pushear `{ number, size }` — la forma que consume `calculateOlaETA`. Si no,
+    // pushear `num` plano. El contrato con la librería NO cambia.
+    const info = (state.issueMatrix || {})[String(num)];
     let sizeLabel = null;
     try {
-      const labels = Array.isArray(info.labels) ? info.labels : null;
+      const labels = info && Array.isArray(info.labels) ? info.labels : null;
       if (labels) {
         for (const l of labels) {
           if (typeof l !== 'string') continue;
@@ -751,8 +777,14 @@ function _scheduleOlaETARefresh(state) {
           const activeWave = wavesLib.getActiveWave();
           const waveKey = activeWave && activeWave.number;
           if (Number.isInteger(waveKey) && waveKey > 0) {
-            const wave = waveResolverLib.resolveActiveWave({});
-            const wState = waveStateLib.getCachedWaveState({});
+            // #4320 (RC2) — pasar `pipelineRoot` a ambos libs. Sin él,
+            // `resolveActiveWave` hace early-return con `issues: []`
+            // (wave-resolver.js:279) → snapshot con `totalPct: 0` →
+            // `velocityETA: null` → `etaSource: 'fallback'`; y
+            // `getCachedWaveState` corre `buildWaveState` sobre contexto
+            // incompleto (wave-state.js:268). `PIPELINE` está en scope de módulo.
+            const wave = waveResolverLib.resolveActiveWave({ pipelineRoot: PIPELINE });
+            const wState = waveStateLib.getCachedWaveState({ pipelineRoot: PIPELINE });
             const wSnap = waveSnapshotLib.buildWaveSnapshot({ state: wState, wave });
             if (wSnap && Number.isFinite(wSnap.totalPct)) {
               waveTotalPct = wSnap.totalPct;
