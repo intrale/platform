@@ -226,6 +226,11 @@ const commanderDet = require('./lib/commander-deterministic');
 // defensivo: si falla, las transiciones de fase son no-op y el flujo sigue.
 let commanderPresence = null;
 try { commanderPresence = require('./lib/commander-presence'); } catch { /* opcional */ }
+// #4332 — Presencia observacional del Sherlock (validación del Commander) en el
+// dashboard. Canal separado (`sherlock-presence.json`), single-writer = el bloque
+// Sherlock de este brazo. Import defensivo: si falla, el flujo sigue sin la card.
+let sherlockPresence = null;
+try { sherlockPresence = require('./lib/sherlock-presence'); } catch { /* opcional */ }
 // #3198 — consumer runtime de skill.fallbacks[]. Cuando el provider primario
 // queda gateado por cuota, el dispatcher itera el array y devuelve la primera
 // resolución no-gated en lugar de devolver el archivo a pendiente/. Mantiene
@@ -12389,6 +12394,15 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
         // #3948 (CA-5) — transición a `verificando` al invocar Sherlock (sólo
         // camino LLM; el determinístico nunca llega acá).
         try { if (commanderPresence) commanderPresence.updatePhase('verificando'); } catch { /* no bloqueante */ }
+        // #4332 — Presencia observacional PROPIA del Sherlock: publicamos la card
+        // "en ejecución" al entrar (best-effort, no bloqueante) y la limpiamos en
+        // el `finally` que envuelve TODO el cuerpo del bloque detached, cubriendo
+        // éxito, error y retorno tras el presupuesto `SHERLOCK_WAIT_BUDGET_MS`
+        // (CA-1/CA-3). El `petitionId` del Commander es `const` fuera de scope acá,
+        // así que generamos un id opaco propio; no persiste PII (CA-6).
+        const sherlockRunId = require('crypto').randomBytes(6).toString('hex');
+        try { if (sherlockPresence) sherlockPresence.writePresence({ petitionId: sherlockRunId, fase: 'verificando' }); } catch { /* no bloqueante */ }
+        try {
         // Snapshot mínimo del estado del sistema. No incluimos paths sensibles
         // — sólo contadores que el Commander pudo haber observado para que
         // Sherlock cruce el claim "hay N issues pendientes" vs realidad.
@@ -12553,6 +12567,13 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
             turn_id: turnId,
           });
         } catch { /* best-effort */ }
+        } finally {
+          // #4332 (CA-3) — clear best-effort al terminar el bloque detached,
+          // pase lo que pase (éxito, error, o retorno tras el presupuesto). No
+          // agregamos `catch` que altere el rechazo: se deja propagar al
+          // `.catch` de abajo y al `Promise.race`.
+          try { if (sherlockPresence) sherlockPresence.clearPresence(); } catch { /* idempotente */ }
+        }
       })();
 
       // #4139 — defensa anti-unhandled-rejection: si el presupuesto gana el race,
