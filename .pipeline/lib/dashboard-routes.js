@@ -630,7 +630,8 @@ function normalizeWave(raw) {
 //   - closed                         → 'completed'  (ENTREGADOS / done)
 //   - approval | dev | definition    → 'in-progress' (un agente lo está procesando)
 //   - blocked | paused               → 'blocked'    (no avanza, requiere atención)
-//   - pending | resto                → 'ready'      (en cola, sin fase iniciada)
+//   - pending                        → 'queued'     (en cola, sin fase iniciada)
+//   - resto                          → 'ready'      (fail-safe: valores desconocidos)
 // El resultado siempre cae dentro de la whitelist → no se propaga texto crudo.
 function mapSnapshotStatusToWave(snapStatus) {
     switch (snapStatus) {
@@ -640,7 +641,8 @@ function mapSnapshotStatusToWave(snapStatus) {
         case 'definition': return 'in-progress';
         case 'blocked':
         case 'paused': return 'blocked';
-        default: return 'ready';
+        case 'pending': return 'queued';   // #4331 — sin fase iniciada = En cola, no Lista
+        default: return 'ready';           // fail-safe: valores desconocidos
     }
 }
 

@@ -341,8 +341,8 @@ test('#4248: mapSnapshotStatusToWave traduce al vocabulario del header', () => {
     assert.equal(m('definition'), 'in-progress');
     assert.equal(m('blocked'), 'blocked');
     assert.equal(m('paused'), 'blocked');
-    assert.equal(m('pending'), 'ready');
-    assert.equal(m('cualquier-cosa'), 'ready');
+    assert.equal(m('pending'), 'queued'); // #4331 — sin fase iniciada = En cola, no Lista
+    assert.equal(m('cualquier-cosa'), 'ready'); // default fail-safe se mantiene
 });
 
 // State realista para el snapshot: la ola activa nº2 tiene 3 issues que en
@@ -402,7 +402,7 @@ test('#4248 (D1+D2): enriquece status de la ola activa con el estado vivo del pi
     const byId = new Map(payload.active_wave.issues.map((i) => [i.id, i.status]));
     assert.equal(byId.get(4248), 'completed', 'issue cerrado → completed (no queda en planned/unknown)');
     assert.equal(byId.get(100), 'in-progress', 'issue en dev → in-progress');
-    assert.equal(byId.get(200), 'ready', 'issue sin actividad → ready (cola)');
+    assert.equal(byId.get(200), 'queued', '#4331 — issue sin actividad → queued (En cola), no ready/Lista');
     // openedAt presente para que el header calcule velocidad.
     assert.equal(payload.active_wave.openedAt, '2026-05-24T10:00:00Z');
     // El conteo del header (done) deja de ser 0 cuando hay avance real.

@@ -356,3 +356,46 @@ test('#4330: mergeSplitChildren es no-op sin issues o sin resolver', () => {
     const emptyIssues = { number: 8, issues: [] };
     assert.equal(_internal.mergeSplitChildren(emptyIssues, '/x'), emptyIssues);
 });
+
+// #4331 — Regresión: un issue abierto SIN work-file recién ingresado a la ola
+// activa NO debe salir como 'ready' (que la UI pinta "Lista"/"listo"). El
+// overlay del snapshot vivo (`computeLiveWaveStatus` → `mapSnapshotStatusToWave`)
+// corre DESPUÉS de `enrichWaveIssue` y antes del fix pisaba el `queued` que ya
+// derivaba enrichWaveIssue: `classifyStatus` devuelve 'pending' sin fase, y ese
+// 'pending' caía en el `default → 'ready'`. Con el fix, 'pending' → 'queued', y
+// el overlay respeta el estado en cola. Este test fuerza que el overlay corra
+// (state.activeWave presente) para cubrir esa capa, no sólo enrichWaveIssue.
+test('#4331: overlay del snapshot no pisa queued con ready para issue sin work-file', () => {
+    const fakeWaves = {
+        getHorizon: () => ([
+            {
+                status: 'active',
+                number: 8,
+                name: 'Ola 8',
+                goal: 'En ejecución',
+                started_at: '2026-06-30T00:00:00.000Z',
+                // 501: recién ingresado, abierto, sin work-file (no está en issueMatrix).
+                issues: [{ number: 501, status: 'pending' }],
+            },
+        ]),
+    };
+    const state = {
+        // activeWave presente → computeLiveWaveStatus corre el overlay del snapshot.
+        activeWave: { label: 'Ola 8', source: 'waves', issues: [501] },
+        bloqueados: [],
+        issueTitles: {
+            '501': { title: 'Issue recién ingresado a la ola', state: 'OPEN', labels: [] },
+        },
+        // issueMatrix presente pero SIN 501 → snapshot lo clasifica 'pending'.
+        issueMatrix: {},
+    };
+    withFakeWaves(fakeWaves, () => {
+        const { _internal } = fresh();
+        const payload = _internal.buildWavesPayload(state);
+        const iss = payload.active_wave.issues.find((i) => i.id === 501);
+        assert.ok(iss, 'el issue 501 debe estar en el payload');
+        assert.equal(iss.status, 'queued', 'sin fase iniciada = En cola, nunca ready/Lista');
+        assert.equal(iss.progress, 0);
+        assert.equal(iss.merged, false);
+    });
+});
