@@ -1964,6 +1964,13 @@ function normalizeProviderQuota(provider, result) {
 function quotaSlice(state, ctx) {
     const PIPELINE = ctx.PIPELINE;
     const ROOT = ctx.ROOT;
+    // #4327 — Cuando el compositor de `/api/state` reusa quotaSlice para poblar
+    // el bloque de cuota por proveedor (worker de background), pide SOLO el shape
+    // normalizado sin re-disparar los efectos secundarios (guard anticipatorio
+    // #4282 + pacing #4289). Esos evalúan/persisten estado y disparan alertas:
+    // su cadencia debe seguir atada al poll real de `/api/dash/quota`, no al tick
+    // del snapshot de estado. Default false → comportamiento intacto.
+    const skipSideEffects = !!(ctx && ctx.skipSideEffects);
     const metricsDir = path.join(PIPELINE, 'metrics');
     const activityLog = path.join(ROOT, '.claude', 'activity-log.jsonl');
     const configLimitHours = Number(process.env.ANTHROPIC_MAX_WEEKLY_HOURS) || undefined;
@@ -1971,7 +1978,11 @@ function quotaSlice(state, ctx) {
     // Resolver providers declarados en agent-models.json. Si el archivo no
     // está disponible (caso edge), cae al set mínimo conocido. NO usar `eval`
     // ni `require` dinámico con paths construidos — siempre el path fijo.
-    let declaredProviders = ['anthropic', 'openai-codex', 'gemini-google', 'groq', 'cerebras', 'nvidia-nim'];
+    // #4327 (CA-3) — Fallback alineado EXACTAMENTE con los `providers` reales de
+    // agent-models.json (sin `deterministic`, que no consume cuota, y sin `groq`,
+    // descontinuado en #3353). Blinda contra un provider fantasma si la lectura de
+    // config falla. El path config-driven (abajo) es el primario.
+    let declaredProviders = ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim'];
     try {
         const modelsPath = path.join(PIPELINE, 'agent-models.json');
         const models = safeReadJson(modelsPath, null);
@@ -2044,7 +2055,7 @@ function quotaSlice(state, ctx) {
     // re-extracción). Idempotente: el guard dedup-ea (una alerta por cruce) y
     // solo escribe estado si algo cambió. Best-effort: NUNCA rompe el slice.
     out.preventiveAlert = { active: false };
-    if (providerQuotaGuard && typeof providerQuotaGuard.evaluate === 'function') {
+    if (!skipSideEffects && providerQuotaGuard && typeof providerQuotaGuard.evaluate === 'function') {
         try {
             const rawConfig = _loadGuardRawConfig(PIPELINE);
             const res = providerQuotaGuard.evaluate({
@@ -2064,7 +2075,7 @@ function quotaSlice(state, ctx) {
     // Telegram). Best-effort: NUNCA rompe el slice de cuota. Si `pacing.enabled`
     // está en false (default), `evaluate` es no-op y `out.pacing` queda vacío.
     out.pacing = { enabled: false, providers: {} };
-    if (pacingBucket && typeof pacingBucket.evaluate === 'function') {
+    if (!skipSideEffects && pacingBucket && typeof pacingBucket.evaluate === 'function') {
         try {
             const rawConfig = _loadGuardRawConfig(PIPELINE);
             pacingBucket.evaluate({
