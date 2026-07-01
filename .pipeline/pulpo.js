@@ -93,6 +93,10 @@ const inflightFallback = require('./lib/commander/inflight-fallback');
 // tras la DECISIÓN del fallback (decideInflightFallback) dispara la EJECUCIÓN
 // reusando la maquinaria pre-spawn. Gated por `inflight_fallback.execution_enabled`.
 const inflightExecutor = require('./lib/inflight-executor');
+// #4318 — Guard síncrono del intento de spawn no-Anthropic: si el setup/spawn
+// lanza SÍNCRONAMENTE (Windows: launcher ENOENT/cmd inválido, sin proc.on('error')),
+// degrada vía advanceOrGiveUp en vez de propagar y rechazar el Promise del turno.
+const spawnAttemptGuard = require('./lib/commander/spawn-attempt-guard');
 // #3343 — Sherlock verifier adversarial. Corre IN-PROCESS entre
 // `ejecutarClaude` y `sendTelegram` del flujo texto-libre. Refuta el análisis
 // con un provider distinto al del Commander. Bypass total si
@@ -9886,6 +9890,20 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       const runNonAnthropic = (res, preEnv) => {
         triedNonAnthropic.add(res.provider);
 
+        // #4318 (CA-3 / SR-D) — Reflejar el provider EFECTIVO del reemplazo en el
+        // trace ANTES de spawnear, para que la atribución del turno sea correcta
+        // (provider = reemplazo, cross_provider = true) TANTO en el camino de ÉXITO
+        // COMO en el de FALLO del ejecutor. Antes esto solo se seteaba en el camino
+        // de éxito (proc.on('close') con texto), así que un fallo/throw del reemplazo
+        // dejaba la atribución en el default Anthropic (bug del issue). Fuente
+        // autoritativa = resolver/`res` (anti log-forging: NUNCA del texto de salida
+        // del subproceso). Idempotente si el resolver ya lo había marcado (#4313).
+        if (_trace && _trace.resolution) {
+          _trace.resolution.provider = res.provider;
+          _trace.resolution.crossProvider = true;
+          _trace.resolution.fallbackUsed = String(res.provider);
+        }
+
         let attemptEnv;
         try {
           attemptEnv = preEnv || buildEnvFor(res.provider);
@@ -9894,117 +9912,148 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           return advanceOrGiveUp(res.provider, 'env_isolation_error');
         }
 
-        // Data-residency por provider: los retries no pasaron por el check
-        // del provider inicial, así que re-chequeamos para cada candidato.
-        const drCheck2 = commanderMP.enforceDataResidency({
-          pipelineDir: PIPELINE,
+        // #4318 (CA-1 / CA-4) — El cuerpo SÍNCRONO del intento (data-residency +
+        // safeBuildSpawn + spawn + wiring de eventos) va bajo un guard. En Windows,
+        // un launcher mal cableado (ENOENT / cmd inválido) hace que `spawn()` (o el
+        // resto del setup) LANCE de forma SÍNCRONA sin emitir `proc.on('error')`.
+        // Sin este guard, el throw escapaba del executor del Promise de
+        // `ejecutarClaude` → lo RECHAZABA en ~ms (sin invocar Codex de verdad) →
+        // se saltaba el override de atribución del turno y el resultado quedaba como
+        // `error / provider:anthropic / cross_provider:false` (firma del bug). Ahora
+        // convergemos al MISMO degradado que `proc.on('error')`: advanceOrGiveUp
+        // (re-resuelve la cadena o resuelve canned — NUNCA reject). El forense del
+        // throw queda en el audit log (`spawn_error` / errorCode `spawn_throw`).
+        return spawnAttemptGuard.runGuardedSpawnAttempt({
           provider: res.provider,
-          paths: [],
-          chatId: getTelegramChatId(),
-          prompt: prompt,
-          log: (l, m) => log(l || 'commander', m),
-        });
-        if (!drCheck2.ok) {
-          log('commander', `🚫 data-residency bloqueó "${res.provider}" (${drCheck2.reason}) — intento siguiente provider.`);
-          return advanceOrGiveUp(res.provider, 'data_residency_blocked');
-        }
-
-        const safe = commanderMP.safeBuildSpawn({
-          handler: res.handler,
-          args: buildFallbackArgs(res.provider),
-          cwd: ROOT,
-          env: attemptEnv,
-        });
-        if (!safe.ok) {
-          try {
-            commanderMP.auditCommanderRequest({
-              pipelineDir: PIPELINE,
-              event: 'fallback_unavailable',
-              providerIntended: resolution.primaryProvider || 'anthropic',
-              providerEffective: res.provider,
-              chainTried: Array.from(triedNonAnthropic),
-              chatId: getTelegramChatId(),
-              prompt: prompt,
-              latencyMs: Date.now() - startTimeForAudit,
-              errorCode: 'not_implemented',
-              injectionHits: sanRes.hits,
-              requestId: turnRequestId, // #3577 CA-S6
-            });
-          } catch { /* best-effort */ }
-          log('commander', `⚠️ Fallback provider "${res.provider}" no implementado (${safe.reason}) — intento siguiente.`);
-          return advanceOrGiveUp(res.provider, 'not_implemented');
-        }
-
-        // Si #3198 está deployed y el handler real funciona, llegamos acá. Los
-        // providers no-Anthropic emiten JSONL (un evento por línea), no texto
-        // plano; `extractFallbackReply` saca SÓLO el/los `agent_message`
-        // finales para que a Telegram llegue un único mensaje conversacional.
-        const proc = spawn(safe.spawnDef.cmd, safe.spawnDef.args, safe.spawnDef.spawnOpts);
-        proc.stdin && proc.stdin.end && proc.stdin.end();
-        let stdout = '';
-        let stderr = '';
-        const startNon = Date.now();
-        const HARD_NON_ANTH_MS = 90 * 1000; // SR-5 — budget 90s para providers no-stream-json
-        const timer = setTimeout(() => {
-          try { proc.kill('SIGTERM'); } catch {}
-          log('commander', `Provider ${res.provider} timeout 90s — abortando`);
-        }, HARD_NON_ANTH_MS);
-        proc.stdout && proc.stdout.on('data', (d) => { stdout += d.toString(); });
-        proc.stderr && proc.stderr.on('data', (d) => { stderr += d.toString(); });
-        proc.on('close', () => {
-          clearTimeout(timer);
-          const elapsed = Date.now() - startNon;
-          const extracted = commanderMP.extractFallbackReply(stdout);
-          log('commander', `Provider ${res.provider} terminó (${elapsed}ms, stdout=${stdout.length}c, reply=${extracted.text.length}c, parsed=${extracted.parsed}, stderr=${stderr.length}c)`);
-          if (extracted.text) {
+          reason: 'spawn_throw',
+          onSyncThrow: (provider, reason, err) => {
             try {
               commanderMP.auditCommanderRequest({
                 pipelineDir: PIPELINE,
-                event: 'fallback_used',
+                event: 'spawn_error',
                 providerIntended: resolution.primaryProvider || 'anthropic',
-                providerEffective: res.provider,
+                providerEffective: provider,
                 chainTried: Array.from(triedNonAnthropic),
                 chatId: getTelegramChatId(),
-                prompt: prompt,
-                latencyMs: elapsed,
-                errorCode: null,
+                prompt: prompt, // hasheado por auditCommanderRequest (SR-A: nunca literal)
+                latencyMs: Date.now() - startTimeForAudit,
+                errorCode: reason, // 'spawn_throw' — enum-string estático, no input
                 requestId: turnRequestId, // #3577 CA-S6
               });
             } catch { /* best-effort */ }
-            // #3951 EP7-H4 — un fallback no-Anthropic ganó: reflejar el provider
-            // EFECTIVO en el trace para que el cierre del turno clasifique como
-            // `fallback` con el provider correcto (anti log-forging: el provider
-            // sale del resolver, NUNCA del texto de la respuesta).
-            if (_trace && _trace.resolution) {
-              _trace.resolution.provider = res.provider;
-              _trace.resolution.crossProvider = true;
-              _trace.resolution.fallbackUsed = String(res.provider);
-            }
-            return resolve(extracted.text);
-          }
-          // Respuesta vacía → audit + intentar el siguiente provider de la
-          // cadena en vez de cortar seco.
-          try {
-            commanderMP.auditCommanderRequest({
+            // SR-A: sólo `err.message` (no stderr crudo — el proceso ni arrancó).
+            log('commander', `❌ Throw síncrono al preparar/spawnear "${provider}": ${err && err.message} — degradando (${reason}).`);
+            return advanceOrGiveUp(provider, reason);
+          },
+          attempt: () => {
+            // Data-residency por provider: los retries no pasaron por el check
+            // del provider inicial, así que re-chequeamos para cada candidato.
+            const drCheck2 = commanderMP.enforceDataResidency({
               pipelineDir: PIPELINE,
-              event: 'fallback_used',
-              providerIntended: resolution.primaryProvider || 'anthropic',
-              providerEffective: res.provider,
-              chainTried: Array.from(triedNonAnthropic),
+              provider: res.provider,
+              paths: [],
               chatId: getTelegramChatId(),
               prompt: prompt,
-              latencyMs: elapsed,
-              errorCode: 'empty_output',
-              requestId: turnRequestId, // #3577 CA-S6
+              log: (l, m) => log(l || 'commander', m),
             });
-          } catch { /* best-effort */ }
-          log('commander', `Provider ${res.provider} devolvió vacío (empty_output) — intento siguiente provider.`);
-          return advanceOrGiveUp(res.provider, 'empty_output');
-        });
-        proc.on('error', (e) => {
-          clearTimeout(timer);
-          log('commander', `Error spawning ${res.provider}: ${e.message} — intento siguiente provider.`);
-          return advanceOrGiveUp(res.provider, 'spawn_error');
+            if (!drCheck2.ok) {
+              log('commander', `🚫 data-residency bloqueó "${res.provider}" (${drCheck2.reason}) — intento siguiente provider.`);
+              return advanceOrGiveUp(res.provider, 'data_residency_blocked');
+            }
+
+            const safe = commanderMP.safeBuildSpawn({
+              handler: res.handler,
+              args: buildFallbackArgs(res.provider),
+              cwd: ROOT,
+              env: attemptEnv,
+            });
+            if (!safe.ok) {
+              try {
+                commanderMP.auditCommanderRequest({
+                  pipelineDir: PIPELINE,
+                  event: 'fallback_unavailable',
+                  providerIntended: resolution.primaryProvider || 'anthropic',
+                  providerEffective: res.provider,
+                  chainTried: Array.from(triedNonAnthropic),
+                  chatId: getTelegramChatId(),
+                  prompt: prompt,
+                  latencyMs: Date.now() - startTimeForAudit,
+                  errorCode: 'not_implemented',
+                  injectionHits: sanRes.hits,
+                  requestId: turnRequestId, // #3577 CA-S6
+                });
+              } catch { /* best-effort */ }
+              log('commander', `⚠️ Fallback provider "${res.provider}" no implementado (${safe.reason}) — intento siguiente.`);
+              return advanceOrGiveUp(res.provider, 'not_implemented');
+            }
+
+            // Si #3198 está deployed y el handler real funciona, llegamos acá. Los
+            // providers no-Anthropic emiten JSONL (un evento por línea), no texto
+            // plano; `extractFallbackReply` saca SÓLO el/los `agent_message`
+            // finales para que a Telegram llegue un único mensaje conversacional.
+            const proc = spawn(safe.spawnDef.cmd, safe.spawnDef.args, safe.spawnDef.spawnOpts);
+            proc.stdin && proc.stdin.end && proc.stdin.end();
+            let stdout = '';
+            let stderr = '';
+            const startNon = Date.now();
+            const HARD_NON_ANTH_MS = 90 * 1000; // SR-5 — budget 90s para providers no-stream-json
+            const timer = setTimeout(() => {
+              try { proc.kill('SIGTERM'); } catch {}
+              log('commander', `Provider ${res.provider} timeout 90s — abortando`);
+            }, HARD_NON_ANTH_MS);
+            proc.stdout && proc.stdout.on('data', (d) => { stdout += d.toString(); });
+            proc.stderr && proc.stderr.on('data', (d) => { stderr += d.toString(); });
+            proc.on('close', () => {
+              clearTimeout(timer);
+              const elapsed = Date.now() - startNon;
+              const extracted = commanderMP.extractFallbackReply(stdout);
+              log('commander', `Provider ${res.provider} terminó (${elapsed}ms, stdout=${stdout.length}c, reply=${extracted.text.length}c, parsed=${extracted.parsed}, stderr=${stderr.length}c)`);
+              if (extracted.text) {
+                try {
+                  commanderMP.auditCommanderRequest({
+                    pipelineDir: PIPELINE,
+                    event: 'fallback_used',
+                    providerIntended: resolution.primaryProvider || 'anthropic',
+                    providerEffective: res.provider,
+                    chainTried: Array.from(triedNonAnthropic),
+                    chatId: getTelegramChatId(),
+                    prompt: prompt,
+                    latencyMs: elapsed,
+                    errorCode: null,
+                    requestId: turnRequestId, // #3577 CA-S6
+                  });
+                } catch { /* best-effort */ }
+                // #3951 EP7-H4 / #4318 — el trace ya refleja el provider efectivo
+                // (seteado al inicio de runNonAnthropic, cubre éxito y fallo). Aquí
+                // sólo resolvemos con el texto del reemplazo (anti log-forging: el
+                // provider sale del resolver, NUNCA del texto de la respuesta).
+                return resolve(extracted.text);
+              }
+              // Respuesta vacía → audit + intentar el siguiente provider de la
+              // cadena en vez de cortar seco.
+              try {
+                commanderMP.auditCommanderRequest({
+                  pipelineDir: PIPELINE,
+                  event: 'fallback_used',
+                  providerIntended: resolution.primaryProvider || 'anthropic',
+                  providerEffective: res.provider,
+                  chainTried: Array.from(triedNonAnthropic),
+                  chatId: getTelegramChatId(),
+                  prompt: prompt,
+                  latencyMs: elapsed,
+                  errorCode: 'empty_output',
+                  requestId: turnRequestId, // #3577 CA-S6
+                });
+              } catch { /* best-effort */ }
+              log('commander', `Provider ${res.provider} devolvió vacío (empty_output) — intento siguiente provider.`);
+              return advanceOrGiveUp(res.provider, 'empty_output');
+            });
+            proc.on('error', (e) => {
+              clearTimeout(timer);
+              log('commander', `Error spawning ${res.provider}: ${e.message} — intento siguiente provider.`);
+              return advanceOrGiveUp(res.provider, 'spawn_error');
+            });
+          },
         });
       };
 
@@ -10015,8 +10064,18 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       // Primer intento: reusamos el env ya construido para el provider inicial.
       // Solo para el camino pre-spawn (provider efectivo ya distinto de Anthropic);
       // en el camino Anthropic el bloque solo define los closures y sigue de largo.
+      // #4318 — Defensa en profundidad: aunque `runNonAnthropic` ya envuelve su
+      // cuerpo síncrono en el guard, blindamos también el punto de invocación para
+      // que NINGUNA excepción síncrona (incluida una del wiring del propio guard)
+      // escape del executor del Promise y lo rechace. Convergemos al mismo
+      // degradado (advanceOrGiveUp → resolve canned, nunca reject).
       if (resolution.provider !== 'anthropic') {
-        return runNonAnthropic(resolution, cleanEnv);
+        try {
+          return runNonAnthropic(resolution, cleanEnv);
+        } catch (e) {
+          log('commander', `❌ runNonAnthropic lanzó fuera del guard (provider=${resolution.provider}): ${e && e.message} — degradando (spawn_throw).`);
+          return advanceOrGiveUp(resolution.provider, 'spawn_throw');
+        }
       }
     }
 
