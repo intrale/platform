@@ -12,9 +12,8 @@
 //   - UX-3: cuando coexisten Commander y Sherlock, el Commander queda primero y
 //     el Sherlock inmediatamente al lado (adyacentes al frente de la banda).
 //
-// Ambas presencias se aíslan a tmp files monkeypatcheando `presencePath` de los
-// módulos `commander-presence` / `sherlock-presence` (las MISMAS instancias
-// cacheadas que captura el slice).
+// Ambas presencias se aíslan a tmp files inyectando `opts.commanderPresencePath`
+// y `opts.sherlockPresencePath` a `activeAgents` (sin mutar estado global).
 // =============================================================================
 'use strict';
 
@@ -24,19 +23,21 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const sherlock = require('../sherlock-presence');
-const commander = require('../commander-presence');
 const slices = require('../dashboard-slices');
 
 const TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-active-sherlock-'));
 const SHERLOCK_FILE = path.join(TMP_DIR, 'sherlock-presence.json');
 const COMMANDER_FILE = path.join(TMP_DIR, 'commander-presence.json');
-sherlock.presencePath = () => SHERLOCK_FILE;
-commander.presencePath = () => COMMANDER_FILE;
-// #4335 — aislar LOG_DIR a un tmp SIN logs de corrida, para que `hasLog` siga
-// resolviendo `false` de forma determinística (el enganche real de log se cubre
-// en dashboard-slices-run-log-4335.test.js).
-slices._setLogDir(TMP_DIR);
+// #4255 (rebote) — Inyección por `opts` en vez de monkeypatch del singleton
+// `presencePath` / `_setLogDir` global: elimina la contaminación cross-file
+// cuando `node --test` corre todos los .test.js en un mismo proceso. TMP_DIR no
+// contiene logs de corrida → `hasLog` resuelve false de forma determinística (el
+// enganche real de log se cubre en dashboard-slices-run-log-4335.test.js).
+const AGENTS_OPTS = {
+    commanderPresencePath: COMMANDER_FILE,
+    sherlockPresencePath: SHERLOCK_FILE,
+    logDir: TMP_DIR,
+};
 
 function clearFiles() {
     try { fs.rmSync(SHERLOCK_FILE, { force: true }); } catch { /* noop */ }
@@ -65,7 +66,7 @@ test('CA-1/CA-2/CA-5: presencia fresca del Sherlock se mergea como agente sinté
     clearFiles();
     fs.writeFileSync(SHERLOCK_FILE, JSON.stringify({ petitionId: 'sher1', fase: 'verificando', startedAt: Date.now() - 2000 }));
 
-    const out = slices.activeAgents(stateWithRealAgent());
+    const out = slices.activeAgents(stateWithRealAgent(), AGENTS_OPTS);
     const card = out.find(a => a.skill === 'sherlock');
     assert.ok(card, 'debe existir la card del Sherlock');
     assert.equal(card.observational, true);
@@ -83,7 +84,7 @@ test('CA-5: el agente real sigue presente y el merge no inventa entries de fase'
     fs.writeFileSync(SHERLOCK_FILE, JSON.stringify({ petitionId: 'sher2', fase: 'verificando', startedAt: Date.now() }));
 
     const state = stateWithRealAgent();
-    const out = slices.activeAgents(state);
+    const out = slices.activeAgents(state, AGENTS_OPTS);
 
     const real = out.find(a => a.issue === '1732');
     assert.ok(real);
@@ -103,7 +104,7 @@ test('UX-3: Commander primero y Sherlock adyacente cuando coexisten', () => {
     fs.writeFileSync(COMMANDER_FILE, JSON.stringify({ petitionId: 'cmd1', fase: 'verificando', startedAt: Date.now() }));
     fs.writeFileSync(SHERLOCK_FILE, JSON.stringify({ petitionId: 'sher3', fase: 'verificando', startedAt: Date.now() }));
 
-    const out = slices.activeAgents(stateWithRealAgent());
+    const out = slices.activeAgents(stateWithRealAgent(), AGENTS_OPTS);
     assert.equal(out[0].skill, 'commander', 'Commander va primero');
     assert.equal(out[1].skill, 'sherlock', 'Sherlock inmediatamente al lado');
 });
@@ -111,7 +112,7 @@ test('UX-3: Commander primero y Sherlock adyacente cuando coexisten', () => {
 test('CA-4: presencia del Sherlock stale (sobre TTL ~5min) se ignora', () => {
     clearFiles();
     fs.writeFileSync(SHERLOCK_FILE, JSON.stringify({ petitionId: 'old', fase: 'verificando', startedAt: Date.now() - (6 * 60 * 1000) }));
-    const out = slices.activeAgents(stateWithRealAgent());
+    const out = slices.activeAgents(stateWithRealAgent(), AGENTS_OPTS);
     assert.equal(out.some(a => a.skill === 'sherlock'), false);
 });
 
@@ -119,18 +120,18 @@ test('SEC-4: archivo corrupto o fase inválida no rompe el slice', () => {
     clearFiles();
     fs.writeFileSync(SHERLOCK_FILE, '{ corrupto sin cerrar');
     let out;
-    assert.doesNotThrow(() => { out = slices.activeAgents(stateWithRealAgent()); });
+    assert.doesNotThrow(() => { out = slices.activeAgents(stateWithRealAgent(), AGENTS_OPTS); });
     assert.ok(out.find(a => a.issue === '1732'));
     assert.equal(out.some(a => a.skill === 'sherlock'), false);
 
     clearFiles();
     fs.writeFileSync(SHERLOCK_FILE, JSON.stringify({ petitionId: 'x', fase: '<script>', startedAt: Date.now() }));
-    const out2 = slices.activeAgents(stateWithRealAgent());
+    const out2 = slices.activeAgents(stateWithRealAgent(), AGENTS_OPTS);
     assert.equal(out2.some(a => a.skill === 'sherlock'), false);
 });
 
 test('sin archivo de presencia del Sherlock, no aparece card sherlock', () => {
     clearFiles();
-    const out = slices.activeAgents(stateWithRealAgent());
+    const out = slices.activeAgents(stateWithRealAgent(), AGENTS_OPTS);
     assert.equal(out.some(a => a.skill === 'sherlock'), false);
 });

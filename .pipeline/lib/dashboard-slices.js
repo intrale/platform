@@ -222,9 +222,22 @@ function resolveRecentRunLog(prefix, ttlMs, nowMs, dirOverride) {
 // los chequeos de TTL (presencia + resolución de log) y `opts.logDir` reemplaza
 // a `currentLogDir()`. Ambos con default al comportamiento real → los callers de
 // producción (`activeAgents(state)`) no cambian.
+//
+// #4255 (rebote) — `opts.commanderPresencePath` / `opts.sherlockPresencePath`
+// permiten inyectar la ruta del archivo de presencia SIN monkeypatchear el
+// singleton compartido `presencePath()` de los módulos. Esto elimina la
+// contaminación cross-file entre los .test.js de este slice cuando `node --test`
+// corre todos los archivos en un mismo proceso (isolation off): antes, la
+// asignación top-level `commanderPresence.presencePath = …` del último archivo
+// cargado pisaba a los demás y provocaba fallos dependientes del orden de carga.
+// Default al `presencePath()` real → los callers de producción no cambian.
 function activeAgents(state, opts = {}) {
     const nowMs = Number.isFinite(opts && opts.now) ? opts.now : Date.now();
     const logDir = (opts && opts.logDir) || currentLogDir();
+    const commanderPresPath = (opts && opts.commanderPresencePath) ||
+        (commanderPresence ? commanderPresence.presencePath() : null);
+    const sherlockPresPath = (opts && opts.sherlockPresencePath) ||
+        (sherlockPresence ? sherlockPresence.presencePath() : null);
     const out = [];
     // #3955 — Cooldowns leídos una sola vez por request (CA-4/SEC-6).
     const cooldowns = safeReadJson(COOLDOWNS_FILE, null);
@@ -307,8 +320,8 @@ function activeAgents(state, opts = {}) {
     // validación defensiva que el Commander (TTL + enum de fase + shape), sin PII
     // (CA-6). NO ocupa slot de concurrencia: el archivo vive fuera de `trabajando/`
     // (CA-5, por construcción).
-    if (sherlockPresence) {
-        const pres = safeReadJson(sherlockPresence.presencePath(), null);
+    if (sherlockPresence && sherlockPresPath) {
+        const pres = safeReadJson(sherlockPresPath, null);
         if (pres && typeof pres === 'object' &&
             sherlockPresence.isValidPhase(pres.fase) &&
             typeof pres.petitionId === 'string' && pres.petitionId &&
@@ -337,8 +350,8 @@ function activeAgents(state, opts = {}) {
         }
     }
 
-    if (commanderPresence) {
-        const pres = safeReadJson(commanderPresence.presencePath(), null);
+    if (commanderPresence && commanderPresPath) {
+        const pres = safeReadJson(commanderPresPath, null);
         if (pres && typeof pres === 'object' &&
             commanderPresence.isValidPhase(pres.fase) &&
             typeof pres.petitionId === 'string' && pres.petitionId &&

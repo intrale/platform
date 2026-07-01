@@ -11,9 +11,9 @@
 //     sintético "Sherlock" con hasLog:true.
 //   - Sin ejecución (sin presencia) ⇒ no aparecen cards observacionales.
 //
-// La presencia se aísla monkeypatcheando `presencePath` de ambos módulos (misma
-// instancia cacheada que captura el slice), y el dir de logs se inyecta vía el
-// nuevo `opts.logDir` de `activeAgents`.
+// La presencia y el dir de logs se inyectan por `opts` de `activeAgents`
+// (`commanderPresencePath` / `sherlockPresencePath` / `logDir`), sin mutar el
+// estado global de los módulos de presencia.
 // =============================================================================
 'use strict';
 
@@ -23,8 +23,6 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const commanderPresence = require('../commander-presence');
-const sherlockPresence = require('../sherlock-presence');
 const slices = require('../dashboard-slices');
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-cmd-sher-log-'));
@@ -33,8 +31,12 @@ const SHER_PRES = path.join(TMP, 'sherlock-presence.json');
 const LOG_DIR = path.join(TMP, 'logs');
 fs.mkdirSync(LOG_DIR, { recursive: true });
 
-commanderPresence.presencePath = () => CMD_PRES;
-sherlockPresence.presencePath = () => SHER_PRES;
+// #4255 (rebote) — Presencias y logDir inyectados por `opts` de `activeAgents`,
+// NO por monkeypatch del singleton `presencePath`. El patch top-level anterior
+// contaminaba a los otros .test.js del slice (el último archivo cargado por
+// `node --test` en un mismo proceso pisaba la ruta), provocando fallos
+// dependientes del orden de carga.
+const presOpts = { commanderPresencePath: CMD_PRES, sherlockPresencePath: SHER_PRES };
 
 function clearAll() {
     for (const f of [CMD_PRES, SHER_PRES]) { try { fs.rmSync(f, { force: true }); } catch {} }
@@ -58,7 +60,7 @@ test('Commander: presencia fresca + log reciente ⇒ hasLog:true + logFile', () 
     fs.writeFileSync(CMD_PRES, JSON.stringify({ petitionId: 'op1', fase: 'pensando', startedAt: now - 3000 }));
     writeLog('commander-42-1699999999999.log', now - 2000); // dentro del TTL
 
-    const out = slices.activeAgents(emptyState(), { logDir: LOG_DIR, now });
+    const out = slices.activeAgents(emptyState(), { ...presOpts, logDir: LOG_DIR, now });
     const cmd = out.find(a => a.skill === 'commander');
     assert.ok(cmd, 'debe existir la card del Commander');
     assert.equal(cmd.observational, true);
@@ -72,7 +74,7 @@ test('Commander: log fuera del TTL ⇒ hasLog:false (sin fantasma)', () => {
     fs.writeFileSync(CMD_PRES, JSON.stringify({ petitionId: 'op2', fase: 'pensando', startedAt: now - 3000 }));
     writeLog('commander-old.log', now - (6 * 60 * 1000)); // 6 min → fuera del TTL de 5
 
-    const out = slices.activeAgents(emptyState(), { logDir: LOG_DIR, now });
+    const out = slices.activeAgents(emptyState(), { ...presOpts, logDir: LOG_DIR, now });
     const cmd = out.find(a => a.skill === 'commander');
     assert.ok(cmd, 'la card aparece por la presencia fresca');
     assert.equal(cmd.hasLog, false, 'log stale ⇒ hasLog false');
@@ -85,7 +87,7 @@ test('Sherlock: presencia fresca + log reciente ⇒ card sintética con hasLog',
     fs.writeFileSync(SHER_PRES, JSON.stringify({ petitionId: 'sop1', fase: 'verificando', startedAt: now - 1000 }));
     writeLog('sherlock-42-1699999999999-sherlock.log', now - 500);
 
-    const out = slices.activeAgents(emptyState(), { logDir: LOG_DIR, now });
+    const out = slices.activeAgents(emptyState(), { ...presOpts, logDir: LOG_DIR, now });
     const sher = out.find(a => a.skill === 'sherlock');
     assert.ok(sher, 'debe existir la card del Sherlock');
     assert.equal(sher.title, 'Sherlock');
@@ -103,7 +105,7 @@ test('Sin presencia ⇒ no hay cards observacionales', () => {
     writeLog('commander-zombie.log', now - 1000);
     writeLog('sherlock-zombie-sherlock.log', now - 1000);
 
-    const out = slices.activeAgents(emptyState(), { logDir: LOG_DIR, now });
+    const out = slices.activeAgents(emptyState(), { ...presOpts, logDir: LOG_DIR, now });
     assert.equal(out.find(a => a.skill === 'commander'), undefined);
     assert.equal(out.find(a => a.skill === 'sherlock'), undefined);
 });

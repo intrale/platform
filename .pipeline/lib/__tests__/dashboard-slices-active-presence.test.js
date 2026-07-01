@@ -11,8 +11,8 @@
 //     → los contadores de concurrencia del pulpo (que sólo escanean
 //     `trabajando/`) jamás ven la presencia.
 //
-// La presencia se aísla a un tmp file monkeypatcheando `presencePath` del módulo
-// `commander-presence` (la MISMA instancia cacheada que captura el slice).
+// La presencia se aísla a un tmp file inyectando `opts.commanderPresencePath` a
+// `activeAgents` (sin mutar estado global del módulo).
 // =============================================================================
 'use strict';
 
@@ -22,15 +22,17 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const presence = require('../commander-presence');
 const slices = require('../dashboard-slices');
 
-// Redirigir la ruta de presencia a un tmp file controlado por el test. El slice
-// llama `commanderPresence.presencePath()` (sin args) en runtime, así que con
-// sobreescribir el método sobre la instancia cacheada alcanza.
+// #4255 (rebote) — Inyectamos la ruta de presencia y el dir de logs vía `opts`
+// de `activeAgents` en vez de monkeypatchear el singleton `presencePath()`. Así
+// el test no muta estado global compartido y no contamina a los otros .test.js
+// del slice cuando `node --test` corre todo en un mismo proceso (isolation off).
 const TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-active-presence-'));
 const PRES_FILE = path.join(TMP_DIR, 'commander-presence.json');
-presence.presencePath = () => PRES_FILE;
+// TMP_DIR no contiene ningún `commander-*.log` → `hasLog` resuelve false de forma
+// determinística (aislado del `.pipeline/logs` real).
+const AGENTS_OPTS = { commanderPresencePath: PRES_FILE, logDir: TMP_DIR };
 
 function clearPresFile() {
     try { fs.rmSync(PRES_FILE, { force: true }); } catch { /* noop */ }
@@ -59,7 +61,7 @@ test('CA-1/CA-3/CA-4: presencia fresca se mergea como agente sintético observac
     clearPresFile();
     fs.writeFileSync(PRES_FILE, JSON.stringify({ petitionId: 'opaque1', fase: 'pensando', startedAt: Date.now() - 3000 }));
 
-    const out = slices.activeAgents(stateWithRealAgent());
+    const out = slices.activeAgents(stateWithRealAgent(), AGENTS_OPTS);
     const commander = out.find(a => a.skill === 'commander');
     assert.ok(commander, 'debe existir la card del Commander');
     assert.equal(commander.observational, true);
@@ -77,7 +79,7 @@ test('CA-2: el agente real sigue presente y el merge no inventa entries de fase'
     fs.writeFileSync(PRES_FILE, JSON.stringify({ petitionId: 'opaque2', fase: 'verificando', startedAt: Date.now() }));
 
     const state = stateWithRealAgent();
-    const out = slices.activeAgents(state);
+    const out = slices.activeAgents(state, AGENTS_OPTS);
 
     // El agente real persiste.
     const real = out.find(a => a.issue === '1732');
@@ -98,7 +100,7 @@ test('CA-2: el agente real sigue presente y el merge no inventa entries de fase'
 test('CA-8: presencia stale (sobre TTL ~5min) se ignora', () => {
     clearPresFile();
     fs.writeFileSync(PRES_FILE, JSON.stringify({ petitionId: 'old', fase: 'pensando', startedAt: Date.now() - (6 * 60 * 1000) }));
-    const out = slices.activeAgents(stateWithRealAgent());
+    const out = slices.activeAgents(stateWithRealAgent(), AGENTS_OPTS);
     assert.equal(out.some(a => a.skill === 'commander'), false);
 });
 
@@ -106,7 +108,7 @@ test('SEC-4: archivo de presencia corrupto no rompe el slice', () => {
     clearPresFile();
     fs.writeFileSync(PRES_FILE, '{ corrupto sin cerrar');
     let out;
-    assert.doesNotThrow(() => { out = slices.activeAgents(stateWithRealAgent()); });
+    assert.doesNotThrow(() => { out = slices.activeAgents(stateWithRealAgent(), AGENTS_OPTS); });
     // El agente real sigue, sin card de commander.
     assert.ok(out.find(a => a.issue === '1732'));
     assert.equal(out.some(a => a.skill === 'commander'), false);
@@ -115,13 +117,13 @@ test('SEC-4: archivo de presencia corrupto no rompe el slice', () => {
 test('SEC-2: fase fuera del enum en el archivo se ignora (defensa en profundidad)', () => {
     clearPresFile();
     fs.writeFileSync(PRES_FILE, JSON.stringify({ petitionId: 'x', fase: '<script>', startedAt: Date.now() }));
-    const out = slices.activeAgents(stateWithRealAgent());
+    const out = slices.activeAgents(stateWithRealAgent(), AGENTS_OPTS);
     assert.equal(out.some(a => a.skill === 'commander'), false);
 });
 
 test('sin archivo de presencia, activeAgents devuelve sólo agentes reales', () => {
     clearPresFile();
-    const out = slices.activeAgents(stateWithRealAgent());
+    const out = slices.activeAgents(stateWithRealAgent(), AGENTS_OPTS);
     assert.equal(out.length, 1);
     assert.equal(out[0].issue, '1732');
 });
