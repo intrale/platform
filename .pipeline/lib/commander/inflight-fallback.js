@@ -92,8 +92,25 @@ const crypto = require('node:crypto');
 const path = require('node:path');
 
 const COMMANDER_SKILL = 'telegram-commander';
-const DEFAULT_BUDGET_MS = 90 * 1000;
+// #4329 — budget global del turno del Commander. Subido de 90s → 600s (10 min)
+// para no cortar investigación en vivo. Configurable por env
+// `COMMANDER_TURN_BUDGET_MS`, fail-closed (SR-1) + clamp superior (SR-2).
+const DEFAULT_BUDGET_MS = 600 * 1000;        // 600s / 10 min (era 90s)
+const MAX_BUDGET_MS = 30 * 60 * 1000;        // techo duro: 30 min (SR-2, no eliminar el breaker)
 const MAX_INFLIGHT_FALLBACKS = 1;   // 1 fallback in-flight + el intento primario = 2 totales
+
+// resolveTurnBudgetMs — resuelve el budget del turno desde el env, una sola vez
+// a nivel módulo. SR-1 fail-closed: no numérico / NaN / <=0 / vacío → default
+// 600s (nunca desactiva el corte). SR-2 clamp: por encima del techo → clamp al
+// techo, no al valor crudo (un env mal configurado no reintroduce el cuelgue).
+function resolveTurnBudgetMs(env = process.env) {
+    const v = Number(env && env.COMMANDER_TURN_BUDGET_MS);
+    const base = (Number.isFinite(v) && v > 0) ? v : DEFAULT_BUDGET_MS;
+    return Math.min(base, MAX_BUDGET_MS);
+}
+// Budget efectivo del turno (env-resuelto + clampeado). Lo derivan tanto el
+// ciclo lógico como el kill duro de `pulpo.js` (SR-4: un único valor).
+const TURN_BUDGET_MS = resolveTurnBudgetMs();
 
 // -----------------------------------------------------------------------------
 // hashFor — SHA-256 truncado a 12 hex. Mismo helper que el módulo padre.
@@ -182,12 +199,19 @@ function cannedInflightExhaustedResponse({ requestId }) {
 
 // -----------------------------------------------------------------------------
 // cannedInflightBudgetTimeoutResponse — Mensaje cuando el budget global SR-5
-// (90s) se agotó antes de poder completar el ciclo. Distinto de exhausted
-// porque puede haber sido un primario lento, no necesariamente fallido.
+// se agotó antes de poder completar el ciclo. Distinto de exhausted porque
+// puede haber sido un primario lento, no necesariamente fallido.
+// #4329 (CA-3): el umbral se deriva del budget efectivo, sin literal "90s".
+// Para budgets < 60s (posible vía env) se expresa en segundos, para no mostrar
+// "más de 0 min" (guideline UX).
 // -----------------------------------------------------------------------------
-function cannedInflightBudgetTimeoutResponse() {
+function cannedInflightBudgetTimeoutResponse(budgetMs = TURN_BUDGET_MS) {
+    const ms = (Number.isFinite(budgetMs) && budgetMs > 0) ? budgetMs : DEFAULT_BUDGET_MS;
+    const umbral = ms >= 60000
+        ? `${Math.round(ms / 60000)} min`
+        : `${Math.round(ms / 1000)}s`;
     return (
-        '⏱️ Tu pedido tardó más de 90s en completarse y corté para no dejarte esperando. ' +
+        `⏱️ Tu pedido tardó más de ${umbral} en completarse y corté para no dejarte esperando. ` +
         'Reformulá con algo más puntual o probá de nuevo en un momento.'
     );
 }
@@ -202,15 +226,17 @@ function cannedInflightBudgetTimeoutResponse() {
 //   ya está cerrado para ese par → el caller descarta la respuesta tardía
 //   con audit `late_response_discarded`.
 //
-// TTL: 10 minutos (configurable). Suficiente para descartar late-responses
-// realistas; supera el budget global de 90s con margen para llamadas async
-// que demoran cleanup.
+// TTL (#4329 / SR-3): estrictamente mayor que el peor caso de budget
+// (2 × MAX_BUDGET_MS = 60 min). Con el budget nuevo de 600s, un TTL == budget
+// dejaría una ventana donde un primario tardío en el borde se trata como turno
+// nuevo y su parcial podría llegar al usuario (viola la garantía de no entregar
+// parciales). El margen amplio evita esa ventana para cualquier budget efectivo.
 //
 // **In-process only**: el lock vive en memoria del pulpo. Si pulpo se
 // reinicia, el lock se pierde — pero también lo hace el contexto del
 // primario tardío (su socket muere con el padre). No hay race cross-process.
 // -----------------------------------------------------------------------------
-const LATE_RESPONSE_TTL_MS = 10 * 60 * 1000;
+const LATE_RESPONSE_TTL_MS = 2 * MAX_BUDGET_MS;   // estrictamente > cualquier budget efectivo
 const _inflightLocks = new Map();
 
 function _lockKey(chatId, requestId) {
@@ -373,7 +399,7 @@ function decideInflightFallback(opts = {}) {
             noticeText: null,
             budgetRemainingMs: 0,
             partialOutputHash: partialHash,
-            cannedResponse: cannedInflightBudgetTimeoutResponse(),
+            cannedResponse: cannedInflightBudgetTimeoutResponse(_budget),
         };
     }
 
@@ -628,6 +654,9 @@ module.exports = {
     // Constantes
     COMMANDER_SKILL,
     DEFAULT_BUDGET_MS,
+    MAX_BUDGET_MS,
+    TURN_BUDGET_MS,
+    resolveTurnBudgetMs,
     MAX_INFLIGHT_FALLBACKS,
     LATE_RESPONSE_TTL_MS,
 
