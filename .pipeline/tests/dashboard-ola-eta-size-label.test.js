@@ -4,13 +4,20 @@
 // como `{ number, size }` para que la librería honre la precedencia
 // label > roadmap > fallback `M`.
 //
+// #4320 (RC1) — La fuente de `olaIssues` YA NO es el escaneo de
+// `state.issueMatrix` (que capturaba archivos huérfanos de la lista fosilizada),
+// sino la OLA ACTIVA vía `waveResolverLib.resolveActiveWave({ pipelineRoot })`.
+// El enriquecimiento de `size:` label se mantiene: por cada número de la ola se
+// cruza contra `state.issueMatrix[num].labels`.
+//
 // Pattern de testing (consistente con dashboard-pipeline-allowlist.test.js):
 // 1. Leemos el source de dashboard.js como string y verificamos que el contrato
-//    esperado quede congelado (regex anclado, fallback, try/catch, push del
-//    objeto en lugar de num plano).
-// 2. Replicamos la lógica de extracción y validamos los 3 escenarios CA-9 +
-//    integramos con `calculateOlaETA` real para verificar que el `sizeCanonical`
-//    resultante es el del label y NO el del roadmap/fallback.
+//    esperado quede congelado (fuente = ola activa con pipelineRoot, regex
+//    anclado del size label, fallback, try/catch, push del objeto vs num plano).
+// 2. Replicamos la lógica de extracción (ola activa + cruce con issueMatrix) y
+//    validamos los escenarios de size label + integramos con `calculateOlaETA`
+//    real para verificar que el `sizeCanonical` resultante es el del label y NO
+//    el del roadmap/fallback.
 
 'use strict';
 
@@ -31,6 +38,25 @@ test('dashboard.js declara extracción defensiva de size label en _scheduleOlaET
         DASHBOARD_SRC,
         /#3529[^\n]*Precedencia D3/,
         'el bloque de extracción debe estar marcado con #3529 y referenciar D3',
+    );
+});
+
+test('dashboard.js deriva olaIssues de la ola activa con pipelineRoot (#4320 RC1)', () => {
+    const slice = DASHBOARD_SRC.split('_scheduleOlaETARefresh')[1] || '';
+    // La fuente de la ola debe ser resolveActiveWave con pipelineRoot, NO el
+    // escaneo de issueMatrix por estadoActual (lista fosilizada).
+    assert.match(
+        slice,
+        /resolveActiveWave\(\s*\{\s*pipelineRoot:\s*PIPELINE\s*\}\s*\)/,
+        'olaIssues debe derivar de resolveActiveWave({ pipelineRoot: PIPELINE })',
+    );
+    // El loop de construcción NO debe volver a iterar issueMatrix por estadoActual
+    // (eso reintroduciría la lista fosilizada). El cruce con issueMatrix solo se
+    // usa para el size label, indexado por número, no como fuente de la ola.
+    assert.doesNotMatch(
+        slice.split('_olaETARefreshInflight')[0] || slice,
+        /estadoActual\s*===\s*['"]procesado['"]/,
+        'olaIssues no debe filtrar por estadoActual !== procesado (lista fosilizada)',
     );
 });
 
@@ -73,22 +99,24 @@ test('dashboard.js pushea {number, size} cuando hay label, num plano en fallback
 
 // ─────────────────────── Comportamiento de la extracción ───────────────────────
 
-// Replicamos la lógica idéntica al source para validar comportamiento de los
-// 3 escenarios CA-9. Si el source cambia de forma incompatible, los tests de
-// arriba (regex) ya fallarían — éstos validan que la semántica es la esperada.
-function extractOlaIssues(issueMatrix) {
+// Replicamos la lógica idéntica al source (#4320 RC1) para validar
+// comportamiento. La fuente de la ola es `activeIssues` (lo que devuelve
+// `resolveActiveWave(...).issues`); por cada número se cruza contra
+// `issueMatrix[num].labels` para el enriquecimiento de `size:` label. Si el
+// source cambia de forma incompatible, los tests de arriba (regex) ya fallarían
+// — éstos validan que la semántica es la esperada.
+function extractOlaIssues(activeIssues, issueMatrix) {
     const olaIssues = [];
     const seen = new Set();
-    for (const [issueStr, info] of Object.entries(issueMatrix || {})) {
-        if (!info || !info.estadoActual) continue;
-        if (info.estadoActual === 'procesado') continue;
-        const num = Number(issueStr);
+    for (const raw of activeIssues || []) {
+        const num = Number(raw);
         if (!Number.isInteger(num) || num <= 0) continue;
         if (seen.has(num)) continue;
         seen.add(num);
+        const info = (issueMatrix || {})[String(num)];
         let sizeLabel = null;
         try {
-            const labels = Array.isArray(info.labels) ? info.labels : null;
+            const labels = info && Array.isArray(info.labels) ? info.labels : null;
             if (labels) {
                 for (const l of labels) {
                     if (typeof l !== 'string') continue;
@@ -104,29 +132,60 @@ function extractOlaIssues(issueMatrix) {
     return olaIssues;
 }
 
-test('CA-1: issue con label size:simple se pushea como { number, size:"size:simple" }', () => {
+test('RC1: la fuente es la ola activa, no el escaneo de issueMatrix', () => {
+    // issueMatrix tiene issues huérfanos (741, 1094) que NO están en la ola activa.
+    // Solo los de la ola activa deben salir.
+    const activeIssues = [4308, 4320];
+    const matrix = {
+        '741': { estadoActual: 'trabajando', labels: ['size:grande'] },   // huérfano → ignorado
+        '1094': { estadoActual: 'pendiente', labels: ['size:medium'] },   // huérfano → ignorado
+        '4308': { estadoActual: 'trabajando', labels: ['size:simple'] },
+        '4320': { estadoActual: 'trabajando', labels: ['size:simple'] },
+    };
+    const result = extractOlaIssues(activeIssues, matrix);
+    assert.equal(result.length, 2);
+    assert.deepEqual(result, [
+        { number: 4308, size: 'size:simple' },
+        { number: 4320, size: 'size:simple' },
+    ]);
+});
+
+test('RC1/CA-3: ola activa vacía → olaIssues vacío (estado sin-dato honesto)', () => {
+    const result = extractOlaIssues([], { '741': { estadoActual: 'trabajando', labels: [] } });
+    assert.equal(result.length, 0, 'sin ola activa NO se cae al escaneo de issueMatrix');
+});
+
+test('CA-1: issue de la ola con label size:simple se pushea como { number, size:"size:simple" }', () => {
     const matrix = {
         '101': { estadoActual: 'trabajando', labels: ['priority:low', 'size:simple', 'area:pipeline'] },
     };
-    const result = extractOlaIssues(matrix);
+    const result = extractOlaIssues([101], matrix);
     assert.equal(result.length, 1);
     assert.deepEqual(result[0], { number: 101, size: 'size:simple' });
 });
 
-test('CA-2: issue sin label size:* se pushea como num plano', () => {
+test('CA-2: issue de la ola sin label size:* se pushea como num plano', () => {
     const matrix = {
         '202': { estadoActual: 'pendiente', labels: ['priority:low', 'area:pipeline'] },
     };
-    const result = extractOlaIssues(matrix);
+    const result = extractOlaIssues([202], matrix);
     assert.equal(result.length, 1);
     assert.strictEqual(result[0], 202);
+});
+
+test('CA-2: issue de la ola sin entrada en issueMatrix se pushea como num plano', () => {
+    // Un issue de la ola que aún no tiene archivos (recién admitido) no aparece
+    // en issueMatrix → no hay label → num plano (la librería resuelve vía roadmap).
+    const result = extractOlaIssues([4313], {});
+    assert.equal(result.length, 1);
+    assert.strictEqual(result[0], 4313);
 });
 
 test('CA-3: match anclado descarta falsos positivos como "app:client-sized"', () => {
     const matrix = {
         '303': { estadoActual: 'trabajando', labels: ['app:client-sized', 'priority:low'] },
     };
-    const result = extractOlaIssues(matrix);
+    const result = extractOlaIssues([303], matrix);
     assert.equal(result.length, 1);
     assert.strictEqual(result[0], 303, 'app:client-sized NO debe matchear; debe caer a num plano');
 });
@@ -135,7 +194,7 @@ test('CA-3: match case-insensitive (Size:Simple matchea)', () => {
     const matrix = {
         '304': { estadoActual: 'trabajando', labels: ['Size:Simple'] },
     };
-    const result = extractOlaIssues(matrix);
+    const result = extractOlaIssues([304], matrix);
     assert.equal(result.length, 1);
     assert.deepEqual(result[0], { number: 304, size: 'Size:Simple' });
 });
@@ -144,7 +203,7 @@ test('CA-4: con múltiples labels size:*, toma el primero del array (determinís
     const matrix = {
         '404': { estadoActual: 'trabajando', labels: ['size:simple', 'size:medium', 'priority:low'] },
     };
-    const result = extractOlaIssues(matrix);
+    const result = extractOlaIssues([404], matrix);
     assert.equal(result.length, 1);
     assert.deepEqual(result[0], { number: 404, size: 'size:simple' }, 'primer match gana');
 });
@@ -155,19 +214,16 @@ test('CA-5: labels malformado/no-array no rompe extracción (fallback a num plan
         '502': { estadoActual: 'trabajando', labels: 'not-an-array' },
         '503': { estadoActual: 'trabajando', labels: [null, 42, 'size:grande'] }, // entries no-string ignoradas
     };
-    const result = extractOlaIssues(matrix);
+    const result = extractOlaIssues([501, 502, 503], matrix);
     assert.equal(result.length, 3);
     assert.strictEqual(result[0], 501);
     assert.strictEqual(result[1], 502);
     assert.deepEqual(result[2], { number: 503, size: 'size:grande' });
 });
 
-test('issues en estado procesado se excluyen de la ola actual', () => {
-    const matrix = {
-        '601': { estadoActual: 'procesado', labels: ['size:simple'] },
-        '602': { estadoActual: 'trabajando', labels: ['size:medium'] },
-    };
-    const result = extractOlaIssues(matrix);
+test('números duplicados en la ola se deduplican (defensa waves.json editable a mano)', () => {
+    const matrix = { '602': { estadoActual: 'trabajando', labels: ['size:medium'] } };
+    const result = extractOlaIssues([602, 602], matrix);
     assert.equal(result.length, 1);
     assert.deepEqual(result[0], { number: 602, size: 'size:medium' });
 });
@@ -195,7 +251,7 @@ test('integración: { number, size:"size:simple" } produce sizeCanonical "S" (NO
             '701': { estadoActual: 'trabajando', labels: ['size:simple'] },
             '702': { estadoActual: 'pendiente', labels: ['priority:low'] }, // sin size → fallback M
         };
-        const olaIssues = extractOlaIssues(matrix);
+        const olaIssues = extractOlaIssues([701, 702], matrix);
         const r = await etaWave.calculateOlaETA(olaIssues, 3);
 
         assert.equal(r.byIssue[701].sizeCanonical, 'S',
@@ -228,7 +284,7 @@ test('integración: label gana sobre roadmap (precedencia D3)', async () => {
         const matrix = {
             '801': { estadoActual: 'trabajando', labels: ['size:simple'] },
         };
-        const olaIssues = extractOlaIssues(matrix);
+        const olaIssues = extractOlaIssues([801], matrix);
         const r = await etaWave.calculateOlaETA(olaIssues, 3);
 
         assert.equal(r.byIssue[801].sizeCanonical, 'S',
