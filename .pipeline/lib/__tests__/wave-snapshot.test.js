@@ -625,3 +625,58 @@ test('#4075: bloqueo sin blockDependencies queda sin dependencies (fallback)', (
     assert.ok(blk);
     assert.equal(blk.dependencies, undefined);
 });
+
+// -----------------------------------------------------------------------------
+// #4325 — Regresión: el call-site del dashboard debe pasar `closedIssues`
+// derivado con `computeClosedSet` desde `state.issueTitles` (cache cruda de
+// GitHub). Sin ese set, `closedCount` queda 0 y `totalPct` se clava ~2% aunque
+// los issues de la ola ya estén CLOSED. Este test reproduce el escenario real:
+// 5 de 6 issues CLOSED (por `issueTitles[id].state === 'CLOSED'`, no por labels
+// ni por archivos de entrega en la matriz).
+// -----------------------------------------------------------------------------
+
+const { computeClosedSet } = require('../commander-deterministic');
+
+test('#4325: computeClosedSet(issueTitles) alimenta buildWaveSnapshot → closedCount=5, totalPct>=80', () => {
+    const waveIssues = [4308, 4309, 4313, 4318, 4320, 4324];
+    // 5 CLOSED en la cache cruda de GitHub, #4324 OPEN. Sin archivos de entrega
+    // en la matriz (issueMatrix vacío) → el único camino de conteo es closedSet.
+    const issueTitles = {};
+    for (const id of [4308, 4309, 4313, 4318, 4320]) {
+        issueTitles[String(id)] = { state: 'CLOSED', title: `Issue ${id}` };
+    }
+    issueTitles['4324'] = { state: 'OPEN', title: 'Issue 4324' };
+    const state = {
+        issueMatrix: {},
+        issueTitles,
+        etaAverages: {},
+        allFases: LIFECYCLE_FULL,
+    };
+    const wave = { label: 'Ola activa', issues: waveIssues, source: 'test' };
+
+    const closedIssues = computeClosedSet({ wave, state });
+    assert.equal(closedIssues.size, 5, 'computeClosedSet deriva 5 CLOSED desde issueTitles');
+
+    const snap = buildWaveSnapshot({ state, wave, closedIssues, now: NOW });
+    assert.equal(snap.closedCount, 5);
+    assert.equal(snap.totalIssues, 6);
+    // 5*100 / 6 = 83.3 → 83. Debe estar muy por encima del 2% clavado del bug.
+    assert.ok(snap.totalPct >= 80, `totalPct esperado >=80, obtenido ${snap.totalPct}`);
+});
+
+test('#4325: sin closedIssues (bug original) el mismo state da closedCount=0 y totalPct bajo', () => {
+    // Demostración del bug: idéntico state pero SIN pasar closedIssues → conteo
+    // roto. Es exactamente lo que hacían los call-sites antes del fix.
+    const waveIssues = [4308, 4309, 4313, 4318, 4320, 4324];
+    const issueTitles = {};
+    for (const id of [4308, 4309, 4313, 4318, 4320]) {
+        issueTitles[String(id)] = { state: 'CLOSED', title: `Issue ${id}` };
+    }
+    issueTitles['4324'] = { state: 'OPEN', title: 'Issue 4324' };
+    const state = { issueMatrix: {}, issueTitles, etaAverages: {}, allFases: LIFECYCLE_FULL };
+    const wave = { label: 'Ola activa', issues: waveIssues, source: 'test' };
+
+    const snap = buildWaveSnapshot({ state, wave, now: NOW });
+    assert.equal(snap.closedCount, 0, 'sin closedIssues no cuenta cerrados (reproduce el bug)');
+    assert.ok(snap.totalPct < 20, `sin fix el totalPct queda bajo, obtenido ${snap.totalPct}`);
+});

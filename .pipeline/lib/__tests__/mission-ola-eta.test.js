@@ -24,6 +24,9 @@ test('payload nulo/indefinido degrada a estructura neutra sin romper', () => {
             etaRemainingMin: null,
             etaFromVelocity: false,
             hasVelocity: false,
+            // #4325 (CA-4) — estado explícito, no valor mudo.
+            noVelocityData: true,
+            velocityState: 'sin datos suficientes',
         });
     }
 });
@@ -40,6 +43,36 @@ test('modo velocity: expone avance %, velocidad %/h y ETA por velocidad', () => 
     assert.equal(m.velocityPctPerHour, 15);        // 0.25 × 60
     assert.equal(m.etaFromVelocity, true);
     assert.equal(m.etaRemainingMin, 120);          // 7200000ms / 60000
+    // #4325 (CA-4) — con ritmo medido NO hay estado degradado.
+    assert.equal(m.noVelocityData, false);
+    assert.equal(m.velocityState, 'ok');
+});
+
+test('#4325 (CA-4) fallback expone estado explícito "sin datos suficientes", no valor mudo', () => {
+    const m = deriveMissionOlaEta({
+        etaSource: 'fallback',
+        totalPct: 83,
+        velocityETA: null,
+    });
+    // El estado degradado se expone como flag + leyenda, nunca como "—" ni 0.
+    assert.equal(m.noVelocityData, true);
+    assert.equal(m.velocityState, 'sin datos suficientes');
+    assert.notEqual(m.velocityState, '—');
+    assert.notEqual(m.velocityPctPerHour, 0);
+    assert.equal(m.velocityPctPerHour, null);
+    // #4325 (CA-1) — el avance sigue siendo un valor real vivo, no degradado.
+    assert.equal(m.avancePct, 83);
+});
+
+test('#4325 (G-UX-1) el script cliente pinta "sin datos" + tooltip en vez del guion mudo', () => {
+    const src = missionOlaEtaClientScript();
+    // El estado degradado usa la leyenda explícita, no "—".
+    assert.ok(src.includes('sin datos'));
+    assert.ok(src.includes('Sin datos suficientes'));
+    // Tooltip accesible (title) para el detalle largo.
+    assert.ok(src.includes('setAttribute'));
+    // El % de avance NUNCA cae a "sin datos" (G-UX-2): sigue usando "—".
+    assert.ok(src.includes("'—'"));
 });
 
 test('modo fallback: avance % vivo desde totalPct aunque velocityETA sea null', () => {

@@ -30,16 +30,22 @@
  * Reglas:
  *   - `avancePct`: `totalPct` determinístico redondeado; `null` si todavía no
  *     hubo snapshot (la vista muestra "—"). Presente incluso en modo `fallback`.
+ *     NUNCA cae al estado "sin datos" — es siempre valor real una vez que hay
+ *     snapshot (G-UX-2).
  *   - `velocityPctPerHour`: ritmo medido (`velocityPctPerMin × 60`) sólo cuando
- *     `etaSource === 'velocity'` y hay un ritmo > 0; `null` en `fallback` (la
- *     vista muestra "— %/h", nunca 0/"null" — G-UX-1).
+ *     `etaSource === 'velocity'` y hay un ritmo > 0; `null` en `fallback`.
  *   - `etaRemainingMin`: restante proyectado por velocidad cuando hay ritmo
  *     medido; si no, la mediana teórica `totalP50`; `null` si nada disponible.
+ *   - `noVelocityData` / `velocityState`: #4325 (CA-4 / G-UX-1). Cuando no hay
+ *     serie de velocidad (`etaSource === 'fallback'` o ritmo no medido), se
+ *     expone un estado explícito ("sin datos suficientes") para que el cliente
+ *     lo pinte como "sin datos" + tooltip, en vez del guion mudo o un 0 que
+ *     mentiría un ritmo medido = 0.
  *
  * @param {object|null} d — payload de `/api/dash/ola-eta`.
  * @returns {{avancePct:number|null, velocityPctPerHour:number|null,
  *            etaRemainingMin:number|null, etaFromVelocity:boolean,
- *            hasVelocity:boolean}}
+ *            hasVelocity:boolean, noVelocityData:boolean, velocityState:string}}
  */
 function deriveMissionOlaEta(d) {
     const data = (d && typeof d === 'object') ? d : {};
@@ -52,7 +58,15 @@ function deriveMissionOlaEta(d) {
     const etaRemainingMin = etaFromVelocity
         ? vel.remainingMs / 60000
         : (Number.isFinite(data.totalP50) ? data.totalP50 : null);
-    return { avancePct, velocityPctPerHour, etaRemainingMin, etaFromVelocity, hasVelocity };
+    // #4325 (CA-4 / G-UX-1) — estado explícito "sin datos suficientes" cuando no
+    // hay serie de velocidad. Literal inline (esta función se serializa al
+    // cliente vía toString(): NO puede referenciar constantes de módulo).
+    const noVelocityData = !hasVelocity;
+    const velocityState = hasVelocity ? 'ok' : 'sin datos suficientes';
+    return {
+        avancePct, velocityPctPerHour, etaRemainingMin, etaFromVelocity, hasVelocity,
+        noVelocityData, velocityState,
+    };
 }
 
 /**
@@ -77,6 +91,9 @@ function missionOlaEtaClientScript() {
   // Actualiza el valor del banner SIN innerHTML (XSS-safe): nodo de texto + el
   // <span class="mz-wm-u"> de unidad construido por DOM, no por string HTML.
   function setMzValueUnit(el, valueText, unitText){
+    el.classList.remove('mz-wm-nodata');
+    el.style.opacity = '';
+    el.removeAttribute('title');
     while(el.firstChild) el.removeChild(el.firstChild);
     el.appendChild(document.createTextNode(valueText + ' '));
     var u = document.createElement('span');
@@ -84,20 +101,39 @@ function missionOlaEtaClientScript() {
     u.textContent = unitText;
     el.appendChild(u);
   }
+  // #4325 (CA-4 / G-UX-1..3) — estado degradado honesto: "sin datos" en muted,
+  // SIN unidad (no "sin datos %/h"), con tooltip explícito. No es error (sin
+  // rojo): es un estado transitorio esperado hasta acumular >=2 snapshots.
+  function setMzNoData(el, tooltip){
+    el.classList.add('mz-wm-nodata');
+    el.style.opacity = '0.6';
+    if(tooltip) el.setAttribute('title', tooltip); else el.removeAttribute('title');
+    while(el.firstChild) el.removeChild(el.firstChild);
+    el.appendChild(document.createTextNode('sin datos'));
+  }
   window.__applyMissionOlaEta = function(d){
     try{
       var m = deriveMissionOlaEta(d);
+      // % de avance: SIEMPRE valor real una vez que hay snapshot; "—" sólo antes
+      // del primer snapshot. Nunca "sin datos" (G-UX-2).
       var pctEl = document.getElementById('mission-avance-pct');
       if(pctEl){ var t = (m.avancePct !== null ? m.avancePct + '%' : '—'); if(pctEl.textContent !== t) pctEl.textContent = t; }
       var vv = document.getElementById('mission-vel-value');
-      if(vv) setMzValueUnit(vv, (m.velocityPctPerHour !== null ? m.velocityPctPerHour.toFixed(1) : '—'), '%/h');
+      if(vv){
+        if(m.velocityPctPerHour !== null) setMzValueUnit(vv, m.velocityPctPerHour.toFixed(1), '%/h');
+        else setMzNoData(vv, 'Sin datos suficientes para calcular velocidad — se necesitan >=2 snapshots de la ola');
+      }
       var ev = document.getElementById('mission-eta-value');
       if(ev){
         var x = Number(m.etaRemainingMin), txt;
-        if(!Number.isFinite(x) || x <= 0) txt = '—';
-        else if(x < 60) txt = Math.round(x) + 'm';
-        else { var h = Math.floor(x/60), r = Math.round(x%60); txt = r>0 ? h+'h '+r+'m' : h+'h'; }
-        if(ev.textContent !== txt) ev.textContent = txt;
+        if(!Number.isFinite(x) || x <= 0){
+          setMzNoData(ev, 'Sin datos suficientes para estimar ETA — se necesitan >=2 snapshots de la ola');
+        } else {
+          if(x < 60) txt = Math.round(x) + 'm';
+          else { var h = Math.floor(x/60), r = Math.round(x%60); txt = r>0 ? h+'h '+r+'m' : h+'h'; }
+          ev.classList.remove('mz-wm-nodata'); ev.style.opacity = ''; ev.removeAttribute('title');
+          if(ev.textContent !== txt) ev.textContent = txt;
+        }
       }
     }catch(e){}
   };

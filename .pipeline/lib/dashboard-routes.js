@@ -654,10 +654,19 @@ function computeLiveWaveStatus(state) {
     if (!activeWave || !Array.isArray(activeWave.issues) || activeWave.issues.length === 0) return null;
     let snap;
     try {
+        // #4325 — pasar `closedIssues` para que el pintado de lanes sea
+        // coherente con el % de avance. Sin él, `buildWaveSnapshot` cuenta como
+        // pendientes issues ya cerrados en GitHub (sin archivos de entrega en la
+        // matriz) → lanes desalineados vs el avance. `computeClosedSet` deriva
+        // los cerrados de la cache cruda (`state.issueTitles`). Require lazy
+        // dentro de la función (patrón anti-circular, ver L445).
+        const { computeClosedSet } = require('./commander-deterministic');
+        const closedIssues = computeClosedSet({ wave: activeWave, state });
         snap = waveSnapshot.buildWaveSnapshot({
             state,
             wave: activeWave,
             blocked: Array.isArray(state.bloqueados) ? state.bloqueados : [],
+            closedIssues,
         });
     } catch {
         return null;

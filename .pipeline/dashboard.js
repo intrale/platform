@@ -785,7 +785,16 @@ function _scheduleOlaETARefresh(state) {
             // incompleto (wave-state.js:268). `PIPELINE` está en scope de módulo.
             const wave = waveResolverLib.resolveActiveWave({ pipelineRoot: PIPELINE });
             const wState = waveStateLib.getCachedWaveState({ pipelineRoot: PIPELINE });
-            const wSnap = waveSnapshotLib.buildWaveSnapshot({ state: wState, wave });
+            // #4325 — pasar `closedIssues` a `buildWaveSnapshot`. Sin él,
+            // `closedCount` queda en 0 (los issues de la ola ya están CLOSED en
+            // GitHub y no tienen archivos de entrega en la matriz) → `totalPct`
+            // clavado en ~2% aunque 5/6 estén cerrados. `computeClosedSet`
+            // deriva los cerrados de la cache cruda (`state.issueTitles`), sin
+            // query `gh` nueva. Require lazy dentro de la función para preservar
+            // el patrón anti-circular (ver L3860/L10535).
+            const { computeClosedSet } = require('./lib/commander-deterministic');
+            const closedIssues = computeClosedSet({ wave, state: wState });
+            const wSnap = waveSnapshotLib.buildWaveSnapshot({ state: wState, wave, closedIssues });
             if (wSnap && Number.isFinite(wSnap.totalPct)) {
               waveTotalPct = wSnap.totalPct;
               const nowTs = Date.now();
