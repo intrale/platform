@@ -128,6 +128,7 @@ const commanderDocCreate = require('./lib/commander/doc-create');
 const transcriptEcho = require('./lib/commander/transcript-echo');
 const sttConfidence = require('./lib/commander/stt-confidence');
 const commanderRequestLog = require('./lib/commander/request-log'); // #3949 EP7-H2
+const sherlockRequestLog = require('./lib/sherlock/request-log'); // #4335 — log por corrida de Sherlock
 const commanderRequestClassify = require('./lib/commander/request-classify'); // #3951 EP7-H4
 // #3935 (EP4-H2) — Resumen incremental de la conversación: compacta turnos
 // viejos a un bloque "resumen no autoritativo" + últimos K verbatim, acotando el
@@ -226,6 +227,12 @@ const commanderDet = require('./lib/commander-deterministic');
 // defensivo: si falla, las transiciones de fase son no-op y el flujo sigue.
 let commanderPresence = null;
 try { commanderPresence = require('./lib/commander-presence'); } catch { /* opcional */ }
+// #4335 — Presencia observacional del Sherlock (verificador del Commander) en el
+// dashboard. Mismo patrón/canal separado (`sherlock-presence.json`), single-writer
+// = este brazo. Import defensivo: si falla, la presencia es no-op y la
+// verificación sigue idéntica.
+let sherlockPresence = null;
+try { sherlockPresence = require('./lib/sherlock-presence'); } catch { /* opcional */ }
 // #3198 — consumer runtime de skill.fallbacks[]. Cuando el provider primario
 // queda gateado por cuota, el dispatcher itera el array y devuelve la primera
 // resolución no-gated en lugar de devolver el archivo a pendiente/. Mantiene
@@ -12450,19 +12457,37 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
           log('commander', `SEC-A: Sherlock capeó issues ${allIssueRefs.length}->${SHERLOCK_MAX_ISSUES} (descartados: ${allIssueRefs.slice(SHERLOCK_MAX_ISSUES).join(',')})`);
         }
 
-        const verdict = await sherlockVerifier.verify({
-          analysis: respuesta || '',
-          originalRequest: mensajeConsolidado,
-          systemState: systemStateSnapshot,
-          lastHourLogs: '', // por ahora vacío — extracción de logs queda para iteración futura
-          conversationContext: sherlockConvoContext, // #3922 EP2-H2
-          commanderProvider,
-          issueNumbers: sherlockIssueNumbers,
-          pipelineDir: PIPELINE,
-          configLoader: loadConfig,
-          log,
-          cwd: ROOT,
-        });
+        // #4335 — Log por corrida de Sherlock (`sherlock-<reqId>.log`) para que el
+        // dashboard exponga sus logs como el resto de los agentes. El id correla
+        // con el turno del Commander (`commanderReqId`); el `.log` pasa por el
+        // writer sanitizado (SEC-1). Presencia observacional con petitionId opaco
+        // (SEC-1, sin PII). Best-effort: apertura/presencia jamás tiran el turno;
+        // el cierre/limpieza van en `finally`.
+        const sherlockLog1 = sherlockRequestLog.openRequestLog(
+          LOG_DIR, sherlockRequestLog.buildRequestId(commanderReqId, 'sherlock'));
+        const sherlockPetitionId1 = require('crypto').randomBytes(6).toString('hex');
+        try { if (sherlockPresence) sherlockPresence.writePresence({ petitionId: sherlockPetitionId1, fase: 'verificando' }); }
+        catch (e) { log('commander', `[sherlock-presencia] writePresence falló (no bloqueante): ${e.message}`); }
+        let verdict;
+        try {
+          verdict = await sherlockVerifier.verify({
+            analysis: respuesta || '',
+            originalRequest: mensajeConsolidado,
+            systemState: systemStateSnapshot,
+            lastHourLogs: '', // por ahora vacío — extracción de logs queda para iteración futura
+            conversationContext: sherlockConvoContext, // #3922 EP2-H2
+            commanderProvider,
+            issueNumbers: sherlockIssueNumbers,
+            pipelineDir: PIPELINE,
+            configLoader: loadConfig,
+            log,
+            cwd: ROOT,
+            requestLog: sherlockLog1, // #4335
+          });
+        } finally {
+          try { await sherlockLog1.close(); } catch { /* best-effort */ }
+          try { if (sherlockPresence) sherlockPresence.clearPresence(); } catch { /* idempotente */ }
+        }
         sherlockInvoked = verdict.verdict !== 'skipped';
 
         // #3951 EP7-H4 — capturar el verdict de la 1ra verificación para la
@@ -12493,19 +12518,32 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
             if (typeof reelaborada === 'string' && reelaborada.trim()) {
               respuesta = reelaborada;
               // 2da pasada de verificación con el mismo commanderProvider.
-              const verdict2 = await sherlockVerifier.verify({
-                analysis: respuesta || '',
-                originalRequest: mensajeConsolidado,
-                systemState: systemStateSnapshot,
-                lastHourLogs: '',
-                conversationContext: sherlockConvoContext, // #3922 EP2-H2
-                commanderProvider,
-                issueNumbers: sherlockIssueNumbers,
-                pipelineDir: PIPELINE,
-                configLoader: loadConfig,
-                log,
-                cwd: ROOT,
-              });
+              // #4335 — 2da pasada: log propio (`-sherlock-2`) + presencia fresca.
+              const sherlockLog2 = sherlockRequestLog.openRequestLog(
+                LOG_DIR, sherlockRequestLog.buildRequestId(commanderReqId, 'sherlock-2'));
+              const sherlockPetitionId2 = require('crypto').randomBytes(6).toString('hex');
+              try { if (sherlockPresence) sherlockPresence.writePresence({ petitionId: sherlockPetitionId2, fase: 'verificando' }); }
+              catch (e) { log('commander', `[sherlock-presencia] writePresence (2da pasada) falló (no bloqueante): ${e.message}`); }
+              let verdict2;
+              try {
+                verdict2 = await sherlockVerifier.verify({
+                  analysis: respuesta || '',
+                  originalRequest: mensajeConsolidado,
+                  systemState: systemStateSnapshot,
+                  lastHourLogs: '',
+                  conversationContext: sherlockConvoContext, // #3922 EP2-H2
+                  commanderProvider,
+                  issueNumbers: sherlockIssueNumbers,
+                  pipelineDir: PIPELINE,
+                  configLoader: loadConfig,
+                  log,
+                  cwd: ROOT,
+                  requestLog: sherlockLog2, // #4335
+                });
+              } finally {
+                try { await sherlockLog2.close(); } catch { /* best-effort */ }
+                try { if (sherlockPresence) sherlockPresence.clearPresence(); } catch { /* idempotente */ }
+              }
               if (verdict2.verdict === 'rechazado' && verdict2.inconsistencies.length >= 1) {
                 // CA-F-5 — disclaimer "rechazado persistente".
                 sherlockDisclaimerType = sherlockVerifier.DISCLAIMER_TYPES.PERSISTENT_INCONSISTENCY;

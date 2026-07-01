@@ -221,7 +221,13 @@ function teamAgentRow(a) {
         ? `<span class="eq-ag-bar eq-ag-bar-indeterminate"><span></span></span><span class="eq-ag-pct">—</span>`
         : `<span class="eq-ag-bar"><span style="width:${prog.pct}%"></span></span><span class="eq-ag-pct">${prog.pct}%</span>`;
     const durHtml = `<span class="eq-ag-dur" title="Tiempo invertido">⏱ ${escapeHtmlText(fmtDur(durationMs))}</span>`;
-    const logHref = (!observational && a.hasLog) ? safeLogHref(a.logFile, true) : null;
+    // #4335 — Los agentes observacionales (Commander / Sherlock) ahora exponen su
+    // log de corrida cuando el slice resolvió un `<prefix>-<reqId>.log` reciente
+    // dentro del TTL. Ese `.log` ya pasa por el writer sanitizado (SEC-1) y se
+    // sirve por el endpoint genérico redactado, así que dejar de ocultarlo no
+    // filtra secretos. Sin log fresco ⇒ `a.hasLog` es false ⇒ sin link (idéntico
+    // a "sin ejecución activa no hay log fantasma").
+    const logHref = a.hasLog ? safeLogHref(a.logFile, true) : null;
     const logHtml = logHref
         ? `<a class="eq-ag-log" href="${escapeHtmlAttr(logHref)}" target="_blank" rel="noopener noreferrer" title="Ver log en vivo" onclick="event.stopPropagation()">\u{1F4C4} log</a>`
         : '';

@@ -87,10 +87,49 @@ const { isMarkerArtifact } = require('./marker-artifact');
 let commanderPresence = null;
 try { commanderPresence = require('./commander-presence'); } catch { /* opcional */ }
 
+// #4335 — Presencia observacional del Sherlock (verificador del Commander).
+// Mismo canal separado de runtime que el Commander (`sherlock-presence.json` en
+// la raíz de `.pipeline/`). Importación defensiva: si el módulo no carga, el
+// merge se degrada a no-op y `activeAgents` sigue funcionando igual.
+let sherlockPresence = null;
+try { sherlockPresence = require('./sherlock-presence'); } catch { /* opcional */ }
+
 // TTL para considerar la presencia stale (CA-8 / SEC-4). Alineado con el default
 // del helper; si el Commander crashea a mitad de petición, la card no queda
 // colgada más de ~5 min.
 const COMMANDER_PRESENCE_TTL_MS = 5 * 60 * 1000;
+
+// #4335 — Directorio canónico de logs servido por el dashboard (`/logs/*`). Es
+// el mismo `LOG_DIR` donde el Commander escribe `commander-<reqId>.log` y donde
+// Sherlock escribe `sherlock-<reqId>.log`. Se usa para resolver server-side el
+// log más reciente de cada uno (por mtime, dentro del TTL de presencia) sin
+// meter PII en los archivos de presencia.
+const DASH_LOG_DIR = path.join(__dirname, '..', 'logs');
+
+// #4335 — Resuelve el basename del `.log` más reciente que matchea `<prefix>-*.log`
+// dentro de `logDir`, SIEMPRE que su mtime caiga dentro de `ttlMs` respecto de
+// `now`. Devuelve `null` si no hay ninguno fresco (cubre el CA "sin ejecución
+// activa no hay log fantasma": un log de un turno viejo queda fuera del TTL y no
+// se linkea). Excluye los sidecars `.meta.json` (solo `.log` crudo, que ya pasa
+// por el endpoint redactado). Best-effort: cualquier error de FS ⇒ `null`.
+function resolveRecentLogFile(logDir, prefix, ttlMs, now) {
+    try {
+        const entries = fs.readdirSync(logDir);
+        let best = null; // { name, mtimeMs }
+        for (const name of entries) {
+            if (!name.startsWith(`${prefix}-`) || !name.endsWith('.log')) continue;
+            let st;
+            try { st = fs.statSync(path.join(logDir, name)); } catch { continue; }
+            if (!st.isFile()) continue;
+            if (best === null || st.mtimeMs > best.mtimeMs) best = { name, mtimeMs: st.mtimeMs };
+        }
+        if (best === null) return null;
+        if (now - best.mtimeMs >= ttlMs) return null; // fuera del TTL → fantasma
+        return best.name;
+    } catch {
+        return null;
+    }
+}
 
 // #3955 EP8-H2 (CA-4 / SEC-6) — Cooldowns por fast-fail. Fuente única y
 // server-authoritative: `<pipeline>/cooldowns.json`, escrita por pulpo.js
@@ -160,8 +199,12 @@ function safeReadJson(filepath, fallback) {
     catch { return fallback; }
 }
 
-function activeAgents(state) {
+function activeAgents(state, opts = {}) {
     const out = [];
+    // #4335 — logDir/now inyectables para test determinístico; en producción
+    // caen al dir de logs canónico y al reloj real.
+    const logDir = opts.logDir || DASH_LOG_DIR;
+    const nowTs = typeof opts.now === 'number' ? opts.now : Date.now();
     // #3955 — Cooldowns leídos una sola vez por request (CA-4/SEC-6).
     const cooldowns = safeReadJson(COOLDOWNS_FILE, null);
     // #4195 — Catálogo de proveedores + mapa de ramas, leídos una sola vez por
@@ -241,8 +284,15 @@ function activeAgents(state) {
             commanderPresence.isValidPhase(pres.fase) &&
             typeof pres.petitionId === 'string' && pres.petitionId &&
             typeof pres.startedAt === 'number') {
-            const ageMs = Date.now() - pres.startedAt;
+            const ageMs = nowTs - pres.startedAt;
             if (ageMs >= 0 && ageMs < COMMANDER_PRESENCE_TTL_MS) {
+                // #4335 — Enganchar el `commander-<reqId>.log` de ESTE turno a la
+                // card. Resolución server-side por mtime + TTL (NO se mete el
+                // reqId/chat_id en `commander-presence.json`, así no rompe SEC-1).
+                // El filename ya se expone hoy en "Logs recientes"; el `.log` se
+                // sirve por el endpoint genérico redactado ⇒ sin leak nuevo. Si no
+                // hay ninguno fresco ⇒ hasLog:false (sin log fantasma).
+                const logFile = resolveRecentLogFile(logDir, 'commander', COMMANDER_PRESENCE_TTL_MS, nowTs);
                 out.unshift({
                     issue: null,
                     title: 'Commander',
@@ -254,8 +304,43 @@ function activeAgents(state) {
                     ageMin: Math.floor(ageMs / 60000),
                     observational: true,         // CA-3 / CA-4
                     cancelable: false,           // CA-3 / CA-4
-                    hasLog: false,               // SEC-3: sin link a log crudo en esta iteración
+                    hasLog: !!logFile,           // #4335 — log crudo redactado si hay turno activo
+                    logFile: logFile || undefined,
                     etaMs: null,                 // presencia sin ETA (barra indeterminada en UI)
+                });
+            }
+        }
+    }
+
+    // #4335 — Mergear la presencia del Sherlock como agente SINTÉTICO
+    // observacional, espejo exacto del bloque Commander. Sherlock corre
+    // in-process para validar cada turno del Commander; su presencia vive en el
+    // canal separado `sherlock-presence.json` (sin PII, TTL). Cuando está fresca,
+    // se linkea su `sherlock-<reqId>.log` (resuelto por mtime + TTL). Va también
+    // al frente para quedar junto al Commander en "Ejecutando ahora".
+    if (sherlockPresence) {
+        const spres = safeReadJson(sherlockPresence.presencePath(), null);
+        if (spres && typeof spres === 'object' &&
+            sherlockPresence.isValidPhase(spres.fase) &&
+            typeof spres.petitionId === 'string' && spres.petitionId &&
+            typeof spres.startedAt === 'number') {
+            const ageMs = nowTs - spres.startedAt;
+            if (ageMs >= 0 && ageMs < COMMANDER_PRESENCE_TTL_MS) {
+                const logFile = resolveRecentLogFile(logDir, 'sherlock', COMMANDER_PRESENCE_TTL_MS, nowTs);
+                out.unshift({
+                    issue: null,
+                    title: 'Sherlock',
+                    skill: 'sherlock',
+                    pipeline: null,
+                    fase: spres.fase,
+                    petitionId: spres.petitionId, // id opaco (SEC-1)
+                    durationMs: ageMs,
+                    ageMin: Math.floor(ageMs / 60000),
+                    observational: true,
+                    cancelable: false,
+                    hasLog: !!logFile,
+                    logFile: logFile || undefined,
+                    etaMs: null,
                 });
             }
         }

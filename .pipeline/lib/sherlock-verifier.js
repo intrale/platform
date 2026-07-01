@@ -1265,12 +1265,27 @@ async function verify(opts = {}) {
         quotaModule,
         dispatchModule,
         residencyModule,
+
+        // #4335 — Sink opcional del log por corrida (`sherlock-<reqId>.log`). Si
+        // el caller (pulpo) lo pasa, `verify()` emite las etapas clave (provider
+        // resuelto, veredicto, inconsistencias) al `.log` sanitizado para que el
+        // dashboard las exponga como cualquier otro agente. Back-compat total: si
+        // no llega, el comportamiento es idéntico al actual (no-op).
+        requestLog,
     } = opts;
 
     const commanderProvider = commanderProviderArg || excludedProvider || null;
     const commanderModel = commanderModelArg || null;
 
     const _log = typeof log === 'function' ? log : () => {};
+    // #4335 — Emisor de etapas al request-log de Sherlock. No-op si no hay sink.
+    // SEC-3: el caller SOLO debe pasar strings/números en `meta` (nunca config de
+    // providers ni process.env); acá además es best-effort (un fallo del writer
+    // NUNCA aborta la verificación — "el pipeline no muere").
+    const _stage = (name, meta) => {
+        if (!requestLog || typeof requestLog.stage !== 'function') return;
+        try { requestLog.stage(name, meta); } catch { /* best-effort */ }
+    };
     const _now = Number.isFinite(now) ? now : Date.now();
     const _completion = completionClient || require('./multi-provider/completion-client');
     const _spawnAnthropic = typeof spawnAnthropic === 'function' ? spawnAnthropic : spawnAnthropicComplete;
@@ -1720,6 +1735,14 @@ async function verify(opts = {}) {
 
         lastResolved = resolved;
 
+        // #4335 — Etapa "provider-resuelto" al request-log (SEC-3: solo strings).
+        _stage('provider-resuelto', {
+            provider: resolved.provider,
+            model: resolved.model || '',
+            transport: resolved.transport || '',
+            intento: attemptCount + 1,
+        });
+
         // CA-AUDIT-1 (#3484) — `sameProvider`/`sameModel` se calculan por intento
         // y se persisten al JSONL como forensics (los lee el monitor de drift).
         // #3921: con cross-provider por defecto, `sameProvider=true` solo puede
@@ -1927,6 +1950,16 @@ async function verify(opts = {}) {
         // #3961 EP8-H8 (CA-5a) — + provider ganador para el desglose by_provider.
         emitCanonicalAuditOnce(sameProvider, resolved.provider);
 
+        // #4335 — Etapa "veredicto" al request-log (SEC-3: solo strings/números;
+        // NUNCA el claim/contradiction crudos — solo el conteo, como el audit).
+        _stage('veredicto', {
+            verdict: parsed.data.verdict,
+            provider: resolved.provider,
+            sameProvider,
+            inconsistencias: parsed.data.inconsistencies.length,
+            durationMs: totalMs,
+        });
+
         return {
             verdict: parsed.data.verdict,
             reason: parsed.data.reason,
@@ -1967,6 +2000,14 @@ async function verify(opts = {}) {
     // CHAIN AGOTADA — ningún provider de la chain pudo verificar.
     // -------------------------------------------------------------------------
     const totalMs = Date.now() - startedAt;
+
+    // #4335 — Etapa "veredicto" (aborted) al request-log. Solo strings/números.
+    _stage('veredicto', {
+        verdict: 'aborted',
+        errorCode: lastResolved ? 'chain_exhausted' : 'no_provider',
+        attemptCount,
+        durationMs: totalMs,
+    });
 
     if (!lastResolved) {
         // No se pudo resolver NINGÚN provider (todos gated / sin handler).
