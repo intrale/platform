@@ -37,9 +37,35 @@ const path = require('path');
 const crypto = require('crypto');
 const { withLockSync } = require('./file-lock');
 const { notifyTelegram } = require('./notify-telegram');
+const { redactSecretValue } = require('./redact');
 
 const SCHEMA_VERSION = '1.0';
 const CACHE_TTL_MS = 2000;
+
+// ─── #4370 — Integridad, tipos estrictos y retención del estado ──────────────
+// Campo top-level donde se persiste el hash de integridad canónico del estado
+// (CA-4/SEC-3). Se omite del propio cómputo para evitar recursión.
+const INTEGRITY_FIELD = 'integrity_hash';
+
+// CA-6/SEC-5 — retención de backups en archived/. Conservamos los N más
+// recientes por familia; el resto se rota (borra) con log. Configurable por env
+// para tests.
+const ARCHIVED_BACKUPS_KEEP = (() => {
+    const v = Number(process.env.WAVES_ARCHIVED_KEEP);
+    return Number.isInteger(v) && v > 0 ? v : 20;
+})();
+
+// CA-6/SEC-5 — límites anti-OOM al validar un estado potencialmente hostil
+// (restore/boot de un waves.json que un atacante podría inflar).
+const MAX_WAVES_PER_BUCKET = 500;         // planned_waves / archived_waves
+const MAX_ISSUES_PER_WAVE = 2000;
+const MAX_FREE_STRING_LEN = 20000;        // name/goal/note/source/updated_by/status/notes
+const MAX_STATE_BYTES = 5 * 1024 * 1024;  // 5MB — waves.json real ≈ 3KB
+
+// CA-3/SEC-2 — nombres de backup aceptados en restore desde un marker. El
+// snapshot transaccional (`snapshotForTransaction`) genera exactamente estas dos
+// familias; cualquier otro nombre se rechaza fail-closed.
+const BACKUP_NAME_WHITELIST = /^(waves-rollback|partial-pause-rollback)\.[0-9A-Za-z._\-]+\.json$/;
 
 // #3520 — TTL para considerar un marker `wave-promote.in-progress.json`
 // como stale (rollback automático). Configurable vía env para tests.
@@ -994,8 +1020,12 @@ function saveStateLocked(state, metadata = {}) {
     if (!state.meta) state.meta = {};
     state.meta.updated_at = nowIso();
     if (metadata.updated_by) state.meta.updated_by = metadata.updated_by;
-    if (metadata.source) state.meta.source = metadata.source;
-    if (metadata.note) state.meta.note = metadata.note;
+    // CA-6/SEC-5 — redacción defensiva de secretos en campos libres provenientes
+    // de Telegram (note/source). `redactSecretValue` sólo toca tokens que
+    // parecen secretos (regex por proveedor + alta entropía) — texto normal
+    // ("add issue #123 → wave 5") queda intacto.
+    if (metadata.source) state.meta.source = redactSecretValue(String(metadata.source));
+    if (metadata.note) state.meta.note = redactSecretValue(String(metadata.note));
     if (!state.meta.created_at) state.meta.created_at = state.meta.updated_at;
 
     // CA-5: validar shape ANTES de persistir. Un state inválido se rechaza
@@ -1041,6 +1071,12 @@ function saveStateLocked(state, metadata = {}) {
         logWarn(`Error preparando backup: ${err.message}`);
     }
 
+    // CA-4/SEC-3 — sellar el estado con el hash de integridad canónico (omitiendo
+    // el propio campo). Se computa DESPUÉS de la validación y del backup, sobre el
+    // shape final que se persiste. Migración (CA-9): un waves.json legacy sin hash
+    // queda sellado en este primer save.
+    state[INTEGRITY_FIELD] = computeIntegrityHash(state);
+
     // Write atómico vía helper compartido (CA-1: tmp + fsync + rename + retry).
     try {
         atomicWriteFile(wavesFile(), JSON.stringify(state, null, 2));
@@ -1052,6 +1088,14 @@ function saveStateLocked(state, metadata = {}) {
     // Invalidar cache post-save.
     invalidateCache();
     logInfo(`waves.json persistido (updated_by=${state.meta.updated_by}, source=${state.meta.source}).`);
+
+    // CA-6/SEC-5 — rotar backups fuera de transacción (best-effort). No corre si
+    // hay un promote in-progress (rotateArchivedBackups lo detecta y se abstiene).
+    try {
+        rotateArchivedBackups();
+    } catch (err) {
+        logWarn(`[rotación] falló (no bloqueante): ${err.message}`);
+    }
 }
 
 /**
@@ -1064,14 +1108,76 @@ function saveStateLocked(state, metadata = {}) {
  *   - Devuelve errores detallados accionables.
  *   - Es la base de la verificación pre-write y post-load strict.
  */
+function isValidFreeString(v) {
+    return typeof v === 'string' && v.length <= MAX_FREE_STRING_LEN;
+}
+
+/**
+ * CA-5/SEC-4 — valida un objeto ola: tipos de campos libres (string) e
+ * `issue.number` como entero positivo. Los campos libres fluyen a sinks
+ * (dashboard=XSS, Telegram=markdown injection) e `issue.number` dispara trabajo
+ * automático del pipeline — deben tener tipo estricto.
+ */
+function validateWaveObject(w, ctx, errors) {
+    if (!w || typeof w !== 'object') {
+        errors.push(`${ctx} debe ser objeto`);
+        return;
+    }
+    // null se tolera como "ausente" (la producción setea `goal: prev.goal || null`).
+    for (const f of ['name', 'goal', 'note', 'updated_by', 'source']) {
+        if (w[f] !== undefined && w[f] !== null && !isValidFreeString(w[f])) {
+            errors.push(`${ctx}.${f} debe ser string ≤${MAX_FREE_STRING_LEN} chars`);
+        }
+    }
+    if (w.issues !== undefined && w.issues !== null) {
+        if (!Array.isArray(w.issues)) {
+            errors.push(`${ctx}.issues debe ser array`);
+        } else {
+            if (w.issues.length > MAX_ISSUES_PER_WAVE) {
+                errors.push(`${ctx}.issues excede el límite (${w.issues.length} > ${MAX_ISSUES_PER_WAVE})`);
+            }
+            w.issues.forEach((iss, k) => {
+                if (!iss || typeof iss !== 'object') {
+                    errors.push(`${ctx}.issues[${k}] debe ser objeto`);
+                    return;
+                }
+                if (!Number.isInteger(iss.number) || iss.number <= 0) {
+                    errors.push(`${ctx}.issues[${k}].number debe ser entero positivo (recibido: ${JSON.stringify(iss.number)})`);
+                }
+                for (const f of ['status', 'notes']) {
+                    if (iss[f] !== undefined && iss[f] !== null && !isValidFreeString(iss[f])) {
+                        errors.push(`${ctx}.issues[${k}].${f} debe ser string ≤${MAX_FREE_STRING_LEN} chars`);
+                    }
+                }
+            });
+        }
+    }
+}
+
 function validateStateStrict(raw, opts = {}) {
     const errors = [];
     if (!raw || typeof raw !== 'object') {
         errors.push('state debe ser objeto');
         return errors;
     }
+    // CA-6/SEC-5 — cota de tamaño total anti-OOM (defensa ante un waves.json
+    // hostil enorme en el load de arranque/restore). Se corta temprano para no
+    // recorrer algo gigante.
+    try {
+        const bytes = Buffer.byteLength(JSON.stringify(raw), 'utf8');
+        if (bytes > MAX_STATE_BYTES) {
+            errors.push(`state excede el límite de tamaño (${bytes} > ${MAX_STATE_BYTES} bytes)`);
+            return errors;
+        }
+    } catch { /* ciclos u otros no-JSON: se detectan por los checks de tipo abajo */ }
+
     if (raw.version !== SCHEMA_VERSION) {
         errors.push(`version esperada ${SCHEMA_VERSION}, recibida ${JSON.stringify(raw.version)}`);
+    }
+    // CA-4 — integrity_hash, si está presente, debe ser SHA-256 hex de 64 chars.
+    if (raw[INTEGRITY_FIELD] !== undefined
+        && (typeof raw[INTEGRITY_FIELD] !== 'string' || !/^[0-9a-f]{64}$/.test(raw[INTEGRITY_FIELD]))) {
+        errors.push('integrity_hash debe ser SHA-256 hex de 64 chars');
     }
     if (!raw.meta || typeof raw.meta !== 'object') {
         errors.push('meta ausente o no-objeto');
@@ -1080,18 +1186,34 @@ function validateStateStrict(raw, opts = {}) {
         if (typeof raw.meta.updated_at !== 'string' || !Number.isFinite(Date.parse(raw.meta.updated_at))) {
             errors.push(`meta.updated_at no es ISO string parseable (recibido: ${JSON.stringify(raw.meta.updated_at)})`);
         }
+        // CA-5/SEC-4 — campos libres de meta deben ser string (null se tolera).
+        for (const f of ['updated_by', 'source', 'note']) {
+            if (raw.meta[f] !== undefined && raw.meta[f] !== null && !isValidFreeString(raw.meta[f])) {
+                errors.push(`meta.${f} debe ser string ≤${MAX_FREE_STRING_LEN} chars`);
+            }
+        }
     }
     if (raw.active_wave !== null && raw.active_wave !== undefined && typeof raw.active_wave !== 'object') {
         errors.push(`active_wave debe ser objeto o null, recibido: ${typeof raw.active_wave}`);
     }
-    if (raw.active_wave && typeof raw.active_wave === 'object' && raw.active_wave.issues !== undefined && !Array.isArray(raw.active_wave.issues)) {
-        errors.push('active_wave.issues debe ser array');
+    if (raw.active_wave && typeof raw.active_wave === 'object') {
+        validateWaveObject(raw.active_wave, 'active_wave', errors);
     }
     if (raw.planned_waves !== undefined && !Array.isArray(raw.planned_waves)) {
         errors.push('planned_waves debe ser array');
+    } else if (Array.isArray(raw.planned_waves)) {
+        if (raw.planned_waves.length > MAX_WAVES_PER_BUCKET) {
+            errors.push(`planned_waves excede el límite (${raw.planned_waves.length} > ${MAX_WAVES_PER_BUCKET})`);
+        }
+        raw.planned_waves.forEach((w, k) => validateWaveObject(w, `planned_waves[${k}]`, errors));
     }
     if (raw.archived_waves !== undefined && !Array.isArray(raw.archived_waves)) {
         errors.push('archived_waves debe ser array');
+    } else if (Array.isArray(raw.archived_waves)) {
+        if (raw.archived_waves.length > MAX_WAVES_PER_BUCKET) {
+            errors.push(`archived_waves excede el límite (${raw.archived_waves.length} > ${MAX_WAVES_PER_BUCKET})`);
+        }
+        raw.archived_waves.forEach((w, k) => validateWaveObject(w, `archived_waves[${k}]`, errors));
     }
     if (raw.dependencies !== undefined && !Array.isArray(raw.dependencies)) {
         errors.push('dependencies debe ser array');
@@ -1173,6 +1295,25 @@ function loadStateStrict() {
         e.errors = errors;
         throw e;
     }
+    // CA-4/SEC-3 — verificar hash de integridad. `missing` = estado legacy
+    // pre-#4370 (se sella en el próximo save, CA-9): se tolera. `mismatch` =
+    // corrupción silenciosa o tampering schema-válido → fail-closed human-block.
+    const integrity = verifyIntegrityHash(parsed);
+    if (integrity.status === 'mismatch') {
+        try {
+            notifyTelegram({
+                level: 'error',
+                component: 'waves-integrity',
+                message: 'integrity_hash mismatch en waves.json',
+                detail: `esperado ${integrity.expected}, recomputado ${integrity.actual}`,
+                action: 'Pipeline en modo human-block. El estado fue alterado fuera del flujo normal (corrupción o tampering). Restaurá desde archived/ o revisá manualmente.',
+                diag: `jq . ${file}`,
+            });
+        } catch {}
+        const e = new Error(`waves.json: integrity_hash mismatch (esperado ${integrity.expected}, actual ${integrity.actual})`);
+        e.code = 'EWAVES_INTEGRITY';
+        throw e;
+    }
     return parsed;
 }
 
@@ -1227,6 +1368,173 @@ function sha256File(filePath) {
     } catch {
         return null;
     }
+}
+
+// ─── #4370 — Hash de integridad canónico (CA-4/SEC-3) ────────────────────────
+
+/**
+ * Serialización canónica determinística: claves de objeto ordenadas
+ * recursivamente. Garantiza que el hash de integridad sea estable aunque el
+ * orden de claves del JSON persistido cambie (ej. read-modify-write que reordena).
+ * No maneja ciclos (el estado nunca los tiene) ni valores no-JSON.
+ */
+function canonicalStringify(value) {
+    if (value === null || typeof value !== 'object') {
+        return JSON.stringify(value);
+    }
+    if (Array.isArray(value)) {
+        return '[' + value.map(canonicalStringify).join(',') + ']';
+    }
+    const keys = Object.keys(value).sort();
+    return '{' + keys.map((k) => JSON.stringify(k) + ':' + canonicalStringify(value[k])).join(',') + '}';
+}
+
+/**
+ * Computa el hash de integridad SHA-256 del estado, OMITIENDO el propio campo
+ * `integrity_hash` para evitar recursión (CA-4). Devuelve hex de 64 chars.
+ */
+function computeIntegrityHash(state) {
+    const clone = {};
+    for (const k of Object.keys(state)) {
+        if (k === INTEGRITY_FIELD) continue;
+        clone[k] = state[k];
+    }
+    return sha256Buffer(Buffer.from(canonicalStringify(clone), 'utf8'));
+}
+
+/**
+ * Verifica el hash de integridad persistido contra el estado cargado.
+ * Nunca tira. Devuelve:
+ *   - { status: 'missing' }              → estado legacy sin hash (CA-9: tolerar).
+ *   - { status: 'ok' }                   → hash coincide.
+ *   - { status: 'mismatch', expected, actual } → corrupción/tampering.
+ */
+function verifyIntegrityHash(state) {
+    const stored = state && typeof state === 'object' ? state[INTEGRITY_FIELD] : undefined;
+    if (stored === undefined || stored === null) {
+        return { status: 'missing' };
+    }
+    const actual = computeIntegrityHash(state);
+    return actual === stored
+        ? { status: 'ok' }
+        : { status: 'mismatch', expected: stored, actual };
+}
+
+/**
+ * CA-4 — carga defensiva del estado activo y verifica el hash de integridad SIN
+ * tirar excepción. Pensado para el boot del pulpo: devuelve un status
+ * estructurado para log/alerta sin poner el pipeline fuera de servicio.
+ *
+ * @returns {{ status: 'absent'|'unreadable'|'schema_invalid'|'missing'|'ok'|'mismatch',
+ *             error?: string, errors?: string[], expected?: string, actual?: string }}
+ */
+function checkStateIntegrity() {
+    const file = wavesFile();
+    if (!fs.existsSync(file)) return { status: 'absent' };
+    let parsed;
+    try {
+        parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch (e) {
+        return { status: 'unreadable', error: e.message };
+    }
+    const schemaErrors = validateStateStrict(parsed, { source: 'boot' });
+    if (schemaErrors.length > 0) return { status: 'schema_invalid', errors: schemaErrors };
+    return verifyIntegrityHash(parsed);
+}
+
+/**
+ * CA-7/SEC-6 — expone el lock de waves.json para que el boot del pulpo envuelva
+ * la recuperación bajo el MISMO lock que las escrituras (TOCTOU). Reentrante:
+ * el `saveState` interno de un restore comparte este lock.
+ */
+function withWavesLock(fn) {
+    return withLockSync(wavesFile(), fn, {
+        component: 'waves-lock',
+        timeoutMs: LOCK_TIMEOUT_MS,
+        maxRetries: LOCK_MAX_RETRIES,
+        notify: notifyTelegram,
+    });
+}
+
+/**
+ * CA-3/SEC-2 — un backup referenciado por un marker debe resolver DENTRO de
+ * `archived/` y matchear la whitelist de nombre. Defensa ante un marker hostil
+ * cuyo `*_bak_path` apunte fuera (el SHA no protege si el atacante controla el
+ * marker completo). Devuelve el path real resuelto o tira.
+ */
+function assertBackupPathSafe(bakPath) {
+    const base = path.resolve(archivedDir());
+    let real;
+    try {
+        real = fs.realpathSync(bakPath);
+    } catch (err) {
+        throw new Error(`backup path no resoluble: ${bakPath} (${err.message})`);
+    }
+    if (real !== base && !real.startsWith(base + path.sep)) {
+        throw new Error(`backup path fuera de archived/: ${real} ∉ ${base}`);
+    }
+    if (!BACKUP_NAME_WHITELIST.test(path.basename(real))) {
+        throw new Error(`backup name no matchea whitelist: ${path.basename(real)}`);
+    }
+    return real;
+}
+
+/**
+ * CA-6/SEC-5 — conserva los `keep` backups más recientes por familia en
+ * `archived/` y borra el resto, logueando cada descarte. NO toca backups
+ * referenciados por un marker de promote en vuelo (evita romper un restore en
+ * curso). Best-effort: nunca tira; si el marker no parsea, es conservador y no
+ * rota nada.
+ *
+ * @param {number} [keep=ARCHIVED_BACKUPS_KEEP]
+ * @returns {{ rotated: string[], kept: number, skipped?: string }}
+ */
+function rotateArchivedBackups(keep = ARCHIVED_BACKUPS_KEEP) {
+    const dir = archivedDir();
+    let entries;
+    try {
+        entries = fs.readdirSync(dir);
+    } catch {
+        return { rotated: [], kept: keep };
+    }
+
+    // Backups referenciados por un marker in-progress: intocables.
+    const inFlight = new Set();
+    try {
+        if (fs.existsSync(promoteMarkerFile())) {
+            const m = JSON.parse(fs.readFileSync(promoteMarkerFile(), 'utf8'));
+            if (m && m.waves_bak_path) inFlight.add(path.basename(m.waves_bak_path));
+            if (m && m.partial_bak_path) inFlight.add(path.basename(m.partial_bak_path));
+        }
+    } catch {
+        // Marker presente pero ilegible → no rotamos (podría referenciar un bak vivo).
+        return { rotated: [], kept: keep, skipped: 'marker-unparseable' };
+    }
+
+    const families = [
+        /^waves\.[^\\/]+\.json$/,               // backups de saveStateLocked
+        /^waves-rollback\.[^\\/]+\.json$/,       // snapshot transaccional
+        /^partial-pause-rollback\.[^\\/]+\.json$/,
+    ];
+    const rotated = [];
+    for (const fam of families) {
+        const matched = entries.filter((f) => fam.test(f) && !inFlight.has(f));
+        const withMtime = matched.map((f) => {
+            let mtime = 0;
+            try { mtime = fs.statSync(path.join(dir, f)).mtimeMs; } catch {}
+            return { f, mtime };
+        }).sort((a, b) => b.mtime - a.mtime); // más nuevo primero
+        for (const { f, mtime } of withMtime.slice(keep)) {
+            try {
+                fs.unlinkSync(path.join(dir, f));
+                rotated.push(f);
+                logInfo(`[rotación] descartado backup ${f} (mtime ${new Date(mtime).toISOString()}) — excede retención KEEP=${keep}.`);
+            } catch (err) {
+                logWarn(`[rotación] no pude borrar ${f}: ${err.message}`);
+            }
+        }
+    }
+    return { rotated, kept: keep };
 }
 
 function nowMs() { return Date.now(); }
@@ -1327,37 +1635,69 @@ function snapshotForTransaction(ts) {
 function restoreFromSnapshots(marker) {
     const out = { ok: false, wavesRestored: false, partialRestored: false };
 
-    // Validar SHAs antes de restaurar — fail-closed.
+    // Validar SHAs + contención de path + shape antes de restaurar — fail-closed.
     if (marker.waves_bak_path) {
-        if (!fs.existsSync(marker.waves_bak_path)) {
-            out.reason = `waves backup ausente: ${marker.waves_bak_path}`;
+        // CA-3/SEC-2 — el SHA no protege si el atacante controla el marker
+        // completo (puede fijar path externo + su hash). Resolver realpath y
+        // exigir contención en archived/ + whitelist de nombre ANTES de leer.
+        let safePath;
+        try {
+            safePath = assertBackupPathSafe(marker.waves_bak_path);
+        } catch (e) {
+            out.reason = `waves backup rechazado por contención de path (CA-3): ${e.message}`;
             return out;
         }
-        const currentSha = sha256File(marker.waves_bak_path);
+        if (!fs.existsSync(safePath)) {
+            out.reason = `waves backup ausente: ${safePath}`;
+            return out;
+        }
+        const currentSha = sha256File(safePath);
         if (currentSha !== marker.waves_bak_sha) {
             out.reason = `SHA mismatch en waves backup (esperado ${marker.waves_bak_sha}, leído ${currentSha})`;
             return out;
         }
-        // Parse defensivo — si el .bak no parsea, no escribimos basura.
-        try { JSON.parse(fs.readFileSync(marker.waves_bak_path, 'utf8')); } catch (e) {
+        // CA-2/SEC-1 — parsear una vez y correr validateStateStrict ANTES de
+        // promover. Un .bak parseable pero con shape inválido/hostil NO se
+        // promueve nunca (fail-closed): dejamos el estado activo intacto.
+        let parsedWaves;
+        try {
+            parsedWaves = JSON.parse(fs.readFileSync(safePath, 'utf8'));
+        } catch (e) {
             out.reason = `JSON corrupto en waves backup: ${e.message}`;
             return out;
         }
-    }
-    if (marker.partial_bak_path) {
-        if (!fs.existsSync(marker.partial_bak_path)) {
-            out.reason = `partial backup ausente: ${marker.partial_bak_path}`;
+        const shapeErrors = validateStateStrict(parsedWaves, { source: 'restore' });
+        if (shapeErrors.length > 0) {
+            out.reason = `waves backup con shape inválido — no se promueve (CA-2): ${shapeErrors.join('; ')}`;
             return out;
         }
-        const currentSha = sha256File(marker.partial_bak_path);
+        // Usar el path resuelto y contenido para el copy posterior.
+        marker.waves_bak_path = safePath;
+    }
+    if (marker.partial_bak_path) {
+        // CA-3/SEC-2 — misma contención para el backup de la allowlist. NO se
+        // corre validateStateStrict acá (schema distinto: allowlist, no waves).
+        let safePath;
+        try {
+            safePath = assertBackupPathSafe(marker.partial_bak_path);
+        } catch (e) {
+            out.reason = `partial backup rechazado por contención de path (CA-3): ${e.message}`;
+            return out;
+        }
+        if (!fs.existsSync(safePath)) {
+            out.reason = `partial backup ausente: ${safePath}`;
+            return out;
+        }
+        const currentSha = sha256File(safePath);
         if (currentSha !== marker.partial_bak_sha) {
             out.reason = `SHA mismatch en partial backup (esperado ${marker.partial_bak_sha}, leído ${currentSha})`;
             return out;
         }
-        try { JSON.parse(fs.readFileSync(marker.partial_bak_path, 'utf8')); } catch (e) {
+        try { JSON.parse(fs.readFileSync(safePath, 'utf8')); } catch (e) {
             out.reason = `JSON corrupto en partial backup: ${e.message}`;
             return out;
         }
+        marker.partial_bak_path = safePath;
     }
 
     // Restaurar waves.json
@@ -1814,6 +2154,12 @@ module.exports = {
     // CA-5: variantes strict que tiran si el shape rompe.
     loadStateStrict,
     validateStateStrict,
+    // #4370 — integridad, retención y lock del boot.
+    checkStateIntegrity,
+    verifyIntegrityHash,
+    computeIntegrityHash,
+    rotateArchivedBackups,
+    withWavesLock,
     // CA-1: helper de write atómico reusable por partial-pause.js.
     atomicWriteFile,
     // #3738 — bounds de creación de olas planificadas.
@@ -1845,6 +2191,12 @@ module.exports = {
         updateMarkerFsync,
         listPromoteFailedMarkers,
         assertArchivedDirSafe,
+        // #4370 — helpers de integridad/restore expuestos a tests.
+        assertBackupPathSafe,
+        canonicalStringify,
+        computeIntegrityHash,
+        verifyIntegrityHash,
+        rotateArchivedBackups,
         // #3616 — reset del dedupe in-memory de la alerta "allowlist vacío".
         _resetEmptyAllowlistDedupeForTests,
     },

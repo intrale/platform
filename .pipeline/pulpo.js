@@ -14381,7 +14381,13 @@ async function mainLoop() {
   // pasó. La transacción próxima la frena el gate del Commander si quedó .failed.
   try {
     const waves = require('./lib/waves');
-    const promoteRecovery = waves.recoverIncompletePromote();
+    // #4370 CA-7/SEC-6 (TOCTOU): la recuperación de boot adquiere el MISMO lock
+    // que las escrituras para no colisionar con un write en vuelo. El manejo de
+    // lock stale (rename-based dentro de recoverIncompletePromote) NO habilita
+    // bypass de la validación de shape (CA-2) — esa corre siempre en restore.
+    const promoteRecovery = typeof waves.withWavesLock === 'function'
+      ? waves.withWavesLock(() => waves.recoverIncompletePromote())
+      : waves.recoverIncompletePromote();
     if (promoteRecovery && promoteRecovery.action === 'recovered') {
       const m = promoteRecovery.originalMarker || {};
       const startedAt = m.started_at || 'desconocido';
@@ -14430,6 +14436,42 @@ async function mainLoop() {
     // action='noop' → caso normal, sin log.
   } catch (e) {
     log('pulpo', `WARN [wave-recovery] boot hook falló: ${e.message}`);
+  }
+
+  // #4370 CA-4/SEC-3 — verificación de integridad del estado al arrancar.
+  // Distingue corrupción silenciosa / tampering schema-válido de un estado sano.
+  // Best-effort: NO pone el pipeline fuera de servicio (regla "el pipeline no
+  // puede morir"); alerta + log para que el operador decida.
+  try {
+    const waves = require('./lib/waves');
+    if (typeof waves.checkStateIntegrity === 'function') {
+      const integ = waves.checkStateIntegrity();
+      if (integ.status === 'mismatch') {
+        log('pulpo', `WARN [wave-integrity] MISMATCH en waves.json (esperado ${integ.expected}, recomputado ${integ.actual}). Estado alterado fuera del flujo normal.`);
+        try {
+          sendTelegram(
+            `🔐 *Integridad de waves.json comprometida al boot*\n\n` +
+            `El hash de integridad NO coincide: el estado fue alterado fuera del flujo normal ` +
+            `\\(corrupción silenciosa o tampering schema\\-válido\\)\\.\n\n` +
+            `*Acción manual requerida:* revisá \`.pipeline/waves.json\` y, si corresponde, restaurá desde \`.pipeline/archived/\`\\.\n` +
+            `_El pipeline sigue operando con el estado actual hasta tu revisión\\._`
+          );
+        } catch (e2) {
+          log('pulpo', `WARN [wave-integrity] no pude enviar alerta de mismatch: ${e2.message}`);
+        }
+      } else if (integ.status === 'schema_invalid') {
+        log('pulpo', `WARN [wave-integrity] waves.json con shape inválido al boot: ${(integ.errors || []).join('; ')}`);
+      } else if (integ.status === 'unreadable') {
+        log('pulpo', `WARN [wave-integrity] waves.json ilegible al boot: ${integ.error}`);
+      } else if (integ.status === 'missing') {
+        log('pulpo', `[wave-integrity] waves.json legacy sin hash — se sellará en el próximo save (CA-9).`);
+      } else if (integ.status === 'ok') {
+        log('pulpo', `[wave-integrity] OK — hash de integridad verificado.`);
+      }
+      // status='absent' → sin waves.json todavía, caso normal en boot fresco.
+    }
+  } catch (e) {
+    log('pulpo', `WARN [wave-integrity] check falló (no bloqueante): ${e.message}`);
   }
 
   // #3616 — Boot hook: seed inicial de waves.json desde .partial-pause.json.
