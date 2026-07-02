@@ -298,6 +298,13 @@ function loadWaves() {
  *
  * @returns {Array<Object>} array de olas con number, name, status, etc.
  */
+// #4372 — Token de versión actual del estado (ETag para las lecturas de la API
+// de olas). Lectura pura, no muta ni escribe. Si el estado no existe todavía,
+// devuelve el token del estado vacío auto-generado.
+function getVersion() {
+    return versionToken(loadWaves());
+}
+
 function listWaves() {
     const state = loadWaves();
     const out = [];
@@ -386,6 +393,10 @@ function addIssueToWaveLocked(waveNumber, issue, n, meta) {
     // commit en disco sin depender de que el caller se acordara de hacerlo.
     invalidateCache();
     const state = loadWaves();
+    // #4372 — concurrencia optimista opcional (If-Match). Sólo se enforcea si el
+    // caller pasa `meta.expectedVersion`; los callers históricos no lo pasan y
+    // el comportamiento queda idéntico.
+    assertVersionMatch(state, meta.expectedVersion);
 
     // Verificar conflicto en otras olas.
     const allWaves = [state.active_wave, ...state.planned_waves].filter(Boolean);
@@ -393,7 +404,7 @@ function addIssueToWaveLocked(waveNumber, issue, n, meta) {
         if (w.number === waveNumber) continue;
         const has = Array.isArray(w.issues) && w.issues.some((i) => normalizeIssue(i.number) === n);
         if (has) {
-            throw new Error(`addIssueToWave: issue #${n} ya está en ola ${w.number} (${w.name || ''})`);
+            throw mkWavesError(`addIssueToWave: issue #${n} ya está en ola ${w.number} (${w.name || ''})`, 'EWAVES_DUPLICATE_ISSUE');
         }
     }
 
@@ -405,14 +416,14 @@ function addIssueToWaveLocked(waveNumber, issue, n, meta) {
         target = state.planned_waves.find((x) => x.number === waveNumber);
     }
     if (!target) {
-        throw new Error(`addIssueToWave: ola ${waveNumber} no existe`);
+        throw mkWavesError(`addIssueToWave: ola ${waveNumber} no existe`, 'EWAVES_NOT_FOUND');
     }
 
     if (!Array.isArray(target.issues)) target.issues = [];
-    // No duplicar dentro de la misma ola.
+    // No duplicar dentro de la misma ola (idempotente).
     if (target.issues.some((i) => normalizeIssue(i.number) === n)) {
         logInfo(`Issue #${n} ya estaba en ola ${waveNumber} — no-op.`);
-        return;
+        return { waveNumber, issue: n, added: false, version: versionToken(state) };
     }
 
     const issueEntry = { number: n };
@@ -426,6 +437,7 @@ function addIssueToWaveLocked(waveNumber, issue, n, meta) {
         source: meta.source || 'manual',
         note: meta.note || `add issue #${n} → wave ${waveNumber}`,
     });
+    return { waveNumber, issue: n, added: true, version: versionToken(state) };
 }
 
 /**
@@ -452,7 +464,8 @@ function addIssueToWaveLocked(waveNumber, issue, n, meta) {
 function removeIssueFromWave(waveNumber, issueNumber, meta = {}) {
     const n = normalizeIssue(issueNumber);
     if (!n) {
-        throw new Error(`removeIssueFromWave: issue.number inválido (${issueNumber})`);
+        // #4372 — code para que la capa HTTP mapee a 400 (mensaje intacto).
+        throw mkWavesError(`removeIssueFromWave: issue.number inválido (${issueNumber})`, 'EWAVES_SHAPE');
     }
     return withLockSync(wavesFile(), () => removeIssueFromWaveLocked(waveNumber, n, meta), {
         component: 'waves-lock',
@@ -466,21 +479,24 @@ function removeIssueFromWaveLocked(waveNumber, n, meta) {
     // CA-7: invalidar cache ANTES de leer para ver el último commit en disco.
     invalidateCache();
     const state = loadWaves();
+    // #4372 — concurrencia optimista opcional (If-Match). Los callers históricos
+    // (#4383 Commander/CLI) no pasan expectedVersion → comportamiento idéntico.
+    assertVersionMatch(state, meta.expectedVersion);
 
     // Política A04 (REQ-SEC-3): rechazar si el target es la ola ACTIVA.
     if (state.active_wave && state.active_wave.number === waveNumber) {
-        throw new Error(`removeIssueFromWave: no se permite desasociar sobre la ola activa (${waveNumber}). Solo olas planificadas.`);
+        throw mkWavesError(`removeIssueFromWave: no se permite desasociar sobre la ola activa (${waveNumber}). Solo olas planificadas.`, 'EWAVES_ACTIVE_LOCKED');
     }
 
     const target = (state.planned_waves || []).find((w) => w.number === waveNumber);
     if (!target) {
-        throw new Error(`removeIssueFromWave: ola planificada ${waveNumber} no existe`);
+        throw mkWavesError(`removeIssueFromWave: ola planificada ${waveNumber} no existe`, 'EWAVES_NOT_FOUND');
     }
 
     // No-op idempotente (CA-2): el issue no está en la ola → sin saveState.
     if (!Array.isArray(target.issues) || !target.issues.some((i) => normalizeIssue(i.number) === n)) {
         logInfo(`Issue #${n} no está en ola ${waveNumber} — no-op idempotente.`);
-        return;
+        return { waveNumber, issue: n, removed: false, version: versionToken(state) };
     }
 
     target.issues = target.issues.filter((i) => normalizeIssue(i.number) !== n);
@@ -490,6 +506,7 @@ function removeIssueFromWaveLocked(waveNumber, n, meta) {
         source: meta.source || 'manual',
         note: meta.note || `remove issue #${n} ← wave ${waveNumber}`,
     });
+    return { waveNumber, issue: n, removed: true, version: versionToken(state) };
 }
 
 /**
@@ -654,6 +671,32 @@ function mkWavesError(message, code) {
     return e;
 }
 
+// #4372 — Token de versión para concurrencia optimista (ETag / If-Match). Es el
+// `meta.updated_at` del estado, que `saveStateLocked` regenera en cada write.
+// NUNCA proviene del cliente: el servidor lo expone en lecturas y el cliente lo
+// devuelve tal cual en `If-Match` para detectar lost-updates.
+function versionToken(state) {
+    return (state && state.meta && state.meta.updated_at) || null;
+}
+
+// Enforce de concurrencia optimista. Si `expectedVersion` es null/undefined, la
+// verificación se saltea (If-Match opcional a nivel dominio — los callers
+// históricos no lo pasan). Si viene y no coincide con el token actual, lanza
+// EWAVES_VERSION_CONFLICT con `err.currentVersion` para que la capa HTTP arme el
+// 409 con la versión vigente (UX-3) SIN escribir.
+function assertVersionMatch(state, expectedVersion) {
+    if (expectedVersion == null) return;
+    const current = versionToken(state);
+    if (String(expectedVersion) !== String(current)) {
+        const e = mkWavesError(
+            `Conflicto de versión: el estado cambió (If-Match ${expectedVersion} ≠ actual ${current})`,
+            'EWAVES_VERSION_CONFLICT',
+        );
+        e.currentVersion = current;
+        throw e;
+    }
+}
+
 /**
  * Lee el techo de concurrencia admisible desde `config.yaml`
  * (`waves.max_concurrency`). Defensa en profundidad: este valor SIEMPRE viene
@@ -765,6 +808,9 @@ function createPlannedWaveLocked({ name, nums, conc, win, goal }, meta) {
     // mutaciones concurrentes de otra ruta sobre waves.json).
     invalidateCache();
     const state = loadWaves();
+    // #4372 — concurrencia optimista opcional (If-Match). Los callers históricos
+    // (wizard, commander) no pasan expectedVersion → comportamiento idéntico.
+    assertVersionMatch(state, meta.expectedVersion);
 
     // Nombre único en planned/active/archived (NFC, case-insensitive).
     const nameKey = name.normalize('NFC').toLowerCase();
@@ -810,8 +856,135 @@ function createPlannedWaveLocked({ name, nums, conc, win, goal }, meta) {
         note: meta.note || `create planned wave ${nextNumber} (${name})`,
     });
 
-    return { waveNumber: nextNumber, wave: deepClone(wave) };
+    return { waveNumber: nextNumber, wave: deepClone(wave), version: versionToken(state) };
 }
+
+// =============================================================================
+// #4372 — Ola 8.3: extensión del dominio para la API de gestión de olas.
+//
+// `editWave` y `removeIssueFromWave` espejan `createPlannedWave`/`addIssueToWave`
+// sobre la MISMA maquinaria transaccional (`withLockSync` + `saveState` +
+// `atomicWriteFile`). No introducen persistencia nueva ni tocan
+// `promoteWaveAtomic`. Ambas soportan concurrencia optimista vía
+// `meta.expectedVersion` (If-Match).
+// =============================================================================
+
+/**
+ * Edita metadata de una ola PLANIFICADA existente (name/goal/window_minutes/
+ * concurrency_max). Sólo opera sobre `planned_waves`: la activa y las archivadas
+ * no se editan por contrato. Valida los mismos bounds que `createPlannedWave`.
+ *
+ * @example
+ *   editWave(3, { name: 'Ola N+3 (rev)', window_minutes: 120 },
+ *     { updated_by: 'operador-local', source: 'api:waves', expectedVersion });
+ *
+ * @param {number} waveNumber
+ * @param {Object} patch — subset de { name, goal, window_minutes, concurrency_max }
+ * @param {Object} [meta] — { updated_by?, source?, note?, expectedVersion? }
+ * @returns {{ waveNumber:number, wave:Object, version:string }}
+ * @throws Error con code EWAVES_SHAPE | EWAVES_BOUNDS | EWAVES_DUPLICATE_NAME |
+ *         EWAVES_NOT_FOUND | EWAVES_VERSION_CONFLICT
+ */
+function editWave(waveNumber, patch, meta = {}) {
+    const wn = normalizeIssue(waveNumber);
+    if (!wn) {
+        throw mkWavesError(`editWave: waveNumber inválido (${waveNumber})`, 'EWAVES_SHAPE');
+    }
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+        throw mkWavesError('editWave: patch debe ser objeto { name?, goal?, window_minutes?, concurrency_max? }', 'EWAVES_SHAPE');
+    }
+
+    // Validar cada campo presente ANTES de tomar el lock (fail-early, sin I/O).
+    const changes = {};
+    if (patch.name !== undefined) {
+        const name = String(patch.name == null ? '' : patch.name).normalize('NFC').trim();
+        if (name.length === 0 || name.length > WAVE_NAME_MAX_LEN) {
+            throw mkWavesError(`editWave: name inválido (1..${WAVE_NAME_MAX_LEN} chars NFC)`, 'EWAVES_SHAPE');
+        }
+        if (name.indexOf('\x00') >= 0) {
+            throw mkWavesError('editWave: name contiene byte NUL', 'EWAVES_SHAPE');
+        }
+        changes.name = name;
+    }
+    if (patch.goal !== undefined) {
+        changes.goal = (typeof patch.goal === 'string' && patch.goal.trim().length > 0)
+            ? patch.goal.normalize('NFC').trim()
+            : null;
+    }
+    if (patch.window_minutes !== undefined) {
+        const win = patch.window_minutes;
+        if (!Number.isInteger(win) || win < WAVE_WINDOW_MIN_MINUTES || win > WAVE_WINDOW_MAX_MINUTES) {
+            throw mkWavesError(`editWave: window_minutes fuera de rango [${WAVE_WINDOW_MIN_MINUTES}, ${WAVE_WINDOW_MAX_MINUTES}]`, 'EWAVES_BOUNDS');
+        }
+        changes.window_minutes = win;
+    }
+    if (patch.concurrency_max !== undefined) {
+        const maxConcurrency = readWaveMaxConcurrency();
+        const conc = patch.concurrency_max;
+        if (!Number.isInteger(conc) || conc < 1 || conc > maxConcurrency) {
+            throw mkWavesError(`editWave: concurrency_max fuera de rango [1, ${maxConcurrency}]`, 'EWAVES_BOUNDS');
+        }
+        changes.concurrency_max = conc;
+    }
+    if (Object.keys(changes).length === 0) {
+        throw mkWavesError('editWave: patch sin campos editables (name/goal/window_minutes/concurrency_max)', 'EWAVES_SHAPE');
+    }
+
+    return withLockSync(
+        wavesFile(),
+        () => editWaveLocked(wn, changes, meta),
+        {
+            component: 'waves-lock',
+            timeoutMs: LOCK_TIMEOUT_MS,
+            maxRetries: LOCK_MAX_RETRIES,
+            notify: notifyTelegram,
+        },
+    );
+}
+
+function editWaveLocked(waveNumber, changes, meta) {
+    // Mismo patrón que createPlannedWaveLocked: invalidar cache ANTES de leer.
+    invalidateCache();
+    const state = loadWaves();
+    assertVersionMatch(state, meta.expectedVersion);
+
+    const target = state.planned_waves.find((x) => x.number === waveNumber);
+    if (!target) {
+        throw mkWavesError(`editWave: ola planificada ${waveNumber} no existe`, 'EWAVES_NOT_FOUND');
+    }
+
+    // Si cambia el nombre, mantener unicidad (NFC, case-insensitive) excluyendo
+    // la propia ola.
+    if (changes.name !== undefined) {
+        const nameKey = changes.name.normalize('NFC').toLowerCase();
+        const named = [state.active_wave, ...state.planned_waves, ...state.archived_waves].filter(Boolean);
+        for (const w of named) {
+            if (w.number === waveNumber) continue;
+            if (w.name && String(w.name).normalize('NFC').toLowerCase() === nameKey) {
+                throw mkWavesError(`editWave: ya existe una ola con nombre "${changes.name}" (ola ${w.number})`, 'EWAVES_DUPLICATE_NAME');
+            }
+        }
+        target.name = changes.name;
+    }
+    if (changes.goal !== undefined) target.goal = changes.goal;
+    if (changes.window_minutes !== undefined) target.window_minutes = changes.window_minutes;
+    if (changes.concurrency_max !== undefined) target.concurrency_max = changes.concurrency_max;
+
+    logInfo(`Ola planificada ${waveNumber} editada (${Object.keys(changes).join(', ')}).`);
+    saveState(state, {
+        updated_by: meta.updated_by || 'System',
+        source: meta.source || 'manual',
+        note: meta.note || `edit wave ${waveNumber} (${Object.keys(changes).join(', ')})`,
+    });
+
+    // `saveStateLocked` muta `state.meta.updated_at` in-place → ya es la versión nueva.
+    return { waveNumber, wave: deepClone(target), version: versionToken(state) };
+}
+
+// #4372 — `removeIssueFromWave` es aportado por #4383 (ya en main, arriba en este
+// archivo, con la política A04 de rechazo sobre la ola activa). Este issue lo
+// reusa tal cual + las extensiones no-breaking (codes, If-Match, valor de
+// retorno) aplicadas allí. NO se redefine acá para evitar duplicación.
 
 // #3616 — Dedupe del aviso "allowlist vacío" por boot del proceso. El módulo
 // se carga una sola vez por pulpo, así que un flag in-memory alcanza para
@@ -2141,6 +2314,11 @@ module.exports = {
     reorderPlannedWaves,
     promoteWaveToActive,
     createPlannedWave,
+    // #4372 — Ola 8.3: extensión del dominio para la API de gestión de olas.
+    // (removeIssueFromWave ya está exportado arriba — aporte de #4383.)
+    editWave,
+    versionToken,
+    getVersion,
     getAllowlist,
     getBlockingIssues,
     getHorizon,
