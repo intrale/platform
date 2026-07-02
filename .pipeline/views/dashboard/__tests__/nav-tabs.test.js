@@ -36,11 +36,12 @@ const SPRITE_PATH = path.resolve(__dirname, '..', '..', '..', 'assets', 'icons',
 // NAV_TABS — inventario y forma de cada entrada
 // ---------------------------------------------------------------------------
 
-test('NAV_TABS tiene exactamente 13 entradas en el orden esperado (CA-1)', () => {
+test('NAV_TABS tiene exactamente 14 entradas en el orden esperado (CA-1)', () => {
     // #3965 (EP8-H12): se sumó la tab "mp-health" al final del catálogo.
-    assert.equal(NAV_TABS.length, 13, 'NAV_TABS debe tener 13 tabs');
+    // #4378: se sumó la tab "roadmap" después de "matriz".
+    assert.equal(NAV_TABS.length, 14, 'NAV_TABS debe tener 14 tabs');
     const expectedOrder = [
-        'home', 'equipo', 'pipeline', 'bloqueados', 'issues', 'matriz',
+        'home', 'equipo', 'pipeline', 'bloqueados', 'issues', 'matriz', 'roadmap',
         'ops', 'kpis', 'historial', 'costos', 'descanso', 'providers', 'mp-health',
     ];
     assert.deepEqual(NAV_TABS.map(t => t.slug), expectedOrder);
@@ -77,10 +78,10 @@ test('renderNavTabsSsr emite <nav class="v3-nav"> con role=navigation y aria-lab
     assert.match(html, /<\/nav>$/);
 });
 
-test('renderNavTabsSsr emite exactamente 13 anchors class="v3-tab" (CA-3)', () => {
+test('renderNavTabsSsr emite exactamente 14 anchors class="v3-tab" (CA-3)', () => {
     const html = renderNavTabsSsr('equipo');
     const matches = html.match(/<a class="v3-tab(?: v3-tab-active)?"/g) || [];
-    assert.equal(matches.length, 13, `Esperaba 13 anchors v3-tab, obtuve ${matches.length}`);
+    assert.equal(matches.length, 14, `Esperaba 14 anchors v3-tab, obtuve ${matches.length}`);
 });
 
 test('renderNavTabsSsr marca SOLO la tab activa con aria-current="page" (CA-3)', () => {
@@ -100,8 +101,8 @@ test('renderNavTabsSsr sin activeSlug no marca ninguna tab', () => {
 test('cada anchor tiene aria-label no vacio (CA-4)', () => {
     const html = renderNavTabsSsr('home');
     const ariaMatches = html.match(/aria-label="[^"]+"/g) || [];
-    // 13 anchors + 1 del <nav> = 14 aria-labels
-    assert.ok(ariaMatches.length >= 14, `Esperaba >=14 aria-labels, obtuve ${ariaMatches.length}`);
+    // 14 anchors + 1 del <nav> = 15 aria-labels
+    assert.ok(ariaMatches.length >= 15, `Esperaba >=15 aria-labels, obtuve ${ariaMatches.length}`);
     // ninguno puede estar vacio
     for (const m of ariaMatches) {
         assert.doesNotMatch(m, /aria-label=""/);
@@ -111,7 +112,7 @@ test('cada anchor tiene aria-label no vacio (CA-4)', () => {
 test('cada <svg> del icono lleva aria-hidden="true" y focusable="false" (CA-4)', () => {
     const html = renderNavTabsSsr('home');
     const svgMatches = html.match(/<svg [^>]*>/g) || [];
-    assert.equal(svgMatches.length, 13, 'Debe haber 13 <svg> de tab');
+    assert.equal(svgMatches.length, 14, 'Debe haber 14 <svg> de tab');
     for (const svg of svgMatches) {
         assert.match(svg, /aria-hidden="true"/, `svg sin aria-hidden: ${svg}`);
         assert.match(svg, /focusable="false"/, `svg sin focusable=false: ${svg}`);
@@ -207,12 +208,13 @@ test('#4189: exactamente 5 tabs llevan primary y definen la barra', () => {
         'orden de la barra: Inicio · Pipeline · Issues · Bloqueados · Costos');
 });
 
-test('#4189: el popover <details> agrupa las 8 secciones secundarias con contador', () => {
+test('#4189: el popover <details> agrupa las secciones secundarias con contador', () => {
     const html = renderNavTabsSsr('home');
     assert.match(html, /<details class="v3-more"/, 'emite el contenedor del popover');
     assert.match(html, /<summary class="v3-more-btn"/, 'tiene botón summary nativo (sin JS)');
     const secondaryCount = NAV_TABS.filter(t => !t.primary).length;
-    assert.equal(secondaryCount, 8, 'hay 8 tabs secundarias');
+    // #4378: roadmap suma una secundaria más → 9.
+    assert.equal(secondaryCount, 9, 'hay 9 tabs secundarias');
     assert.match(html, new RegExp('<span class="v3-more-count" aria-hidden="true">' + secondaryCount + '</span>'),
         'el contador refleja la cantidad de secciones escondidas');
     // El popover sigue conteniendo anchors v3-tab reales (no se pierde ninguna ruta).

@@ -313,7 +313,9 @@ const LISTADO_FILTERS = new Set([
 // el cooldown/allowlist/rate-limit del resto de subcomandos mutantes.
 // #4377 — H8.3 Parte B suma `remove` (desasociar issue de ola planificada) y
 // `reorder` (permutar orden de olas planificadas). Ambos destructivos.
-const WAVE_SUBCOMMANDS = new Set(['status', 'next', 'add', 'promote', 'create', 'remove', 'reorder']);
+// #4378 — `archive <num>` suma un subcomando destructivo (mueve una ola a
+// `archived_waves[]` vía waves.archiveWave).
+const WAVE_SUBCOMMANDS = new Set(['status', 'next', 'add', 'promote', 'create', 'remove', 'reorder', 'archive']);
 
 /**
  * Parsea `args` de `/wave` y devuelve `{ subcommand, audio, waveNumber, issueNumber }`
@@ -352,6 +354,16 @@ function parseWaveArgs(rawArgs) {
     if (head === 'next' || head === 'promote') {
         if (tokens.length !== 1) return null;
         return { subcommand: head };
+    }
+    if (head === 'archive') {
+        // Schema estricto: exactamente 2 tokens (`archive`, num) — sin extras.
+        // `num` entero positivo decimal puro (mismo patrón que `add`).
+        if (tokens.length !== 2) return null;
+        const numToken = tokens[1];
+        if (!/^\d+$/.test(numToken)) return null;
+        const waveNumber = parseInt(numToken, 10);
+        if (!Number.isInteger(waveNumber) || waveNumber < 1) return null;
+        return { subcommand: 'archive', waveNumber };
     }
     if (head === 'add') {
         // Schema estricto: exactamente 3 tokens (`add`, num, #issue) — sin extras.
@@ -616,9 +628,9 @@ const ARG_SCHEMAS = {
             // mismatch, tokens extra → security CA-5).
             return parseWaveArgs(args) !== null;
         },
-        usage: 'wave [status [--audio] | next | add <num> #issue | promote | create --nombre <n> --concurrency <c> --window <m> --issues <#a #b> [--objetivo <o>]]',
-        allowedValues: ['status', 'status --audio', 'next', 'add <num> #issue', 'promote', 'create --nombre ... --concurrency ... --window ... --issues ...'],
-        hint: 'Subcomandos: `status` (con `--audio` opcional), `next`, `add <num> #issue`, `promote`, `create` (crear ola planificada: `--nombre`, `--concurrency`, `--window`, `--issues #a #b`, y `--objetivo` opcional). Sin subcomando equivale a `status`.',
+        usage: 'wave [status [--audio] | next | add <num> #issue | promote | create --nombre <n> --concurrency <c> --window <m> --issues <#a #b> [--objetivo <o>] | archive <num>]',
+        allowedValues: ['status', 'status --audio', 'next', 'add <num> #issue', 'promote', 'create --nombre ... --concurrency ... --window ... --issues ...', 'archive <num>'],
+        hint: 'Subcomandos: `status` (con `--audio` opcional), `next`, `add <num> #issue`, `promote`, `create` (crear ola planificada: `--nombre`, `--concurrency`, `--window`, `--issues #a #b`, y `--objetivo` opcional), `archive <num>`. Sin subcomando equivale a `status`.',
     },
     listado: {
         allow(args) {
@@ -1233,18 +1245,20 @@ function buildDefaultHandlers(ctx) {
 
     // #3493 — Cooldown destructivo específico para subcomandos de `/wave`.
     // El cooldown global del dispatcher es per-comando (`wave`), no per-subcomando.
-    // Como `/wave status` y `/wave next` son read-only y `/wave add` y
-    // `/wave promote` son destructivos, NO podemos meter `wave` en el set global
-    // (gatearía las lecturas). Spawneamos uno aislado con claves virtuales
-    // (`wave-add`, `wave-promote`) y ventana de 30s — más corta que el default
+    // Como `/wave status` y `/wave next` son read-only y `/wave add`,
+    // `/wave promote` y `/wave archive` son destructivos, NO podemos meter `wave`
+    // en el set global (gatearía las lecturas). Spawneamos uno aislado con claves
+    // virtuales (`wave-add`, `wave-promote`, `wave-create`, `wave-remove`,
+    // `wave-reorder`, `wave-archive`) y ventana de 30s — más corta que el default
     // 60s porque las mutaciones son granulares y la idempotencia de
-    // `waves.addIssueToWave` (no-op si ya está) ya cubre el doble-tap accidental.
-    // CA-9 — destructiveCooldown MUST en add/promote (refuerzo security pt.3).
+    // `waves.addIssueToWave`/`archiveWave` (no-op si ya está) ya cubre el
+    // doble-tap accidental.
+    // CA-9 — destructiveCooldown MUST en add/promote/archive (refuerzo security).
     // #4377 REQ-SEC-5 — `wave-remove` y `wave-reorder` también mutan estado
     // irreversible → cooldown destructivo obligatorio.
     const waveSubCooldown = createDestructiveCooldown({
         cooldownMs: 30 * 1000,
-        destructiveCommands: ['wave-add', 'wave-promote', 'wave-create', 'wave-remove', 'wave-reorder'],
+        destructiveCommands: ['wave-add', 'wave-promote', 'wave-create', 'wave-remove', 'wave-reorder', 'wave-archive'],
         now: ctx.now,
     });
 
@@ -1573,7 +1587,7 @@ function buildDefaultHandlers(ctx) {
                 return {
                     reply: fillTemplate('wave-error', {
                         'error-kind': 'subcomando-invalido',
-                        message: 'Subcomando inválido. Usá: `status` · `next` · `add <num> #issue` · `promote`.',
+                        message: 'Subcomando inválido. Usá: `status` · `next` · `add <num> #issue` · `promote` · `archive <num>`.',
                     }),
                     parseMode: 'MarkdownV2', // #4130 — el template wave-error es MarkdownV2
                 };
@@ -1639,6 +1653,15 @@ function buildDefaultHandlers(ctx) {
                         concurrencyMax: parsed.concurrencyMax,
                         windowMinutes: parsed.windowMinutes,
                         issues: parsed.issues,
+                        cooldown: waveSubCooldown,
+                        chatId: message && message.chat_id !== undefined ? String(message.chat_id) : null,
+                        from: message && message.from ? String(message.from) : 'Leo',
+                    });
+                    break;
+                case 'archive':
+                    res = await handleWaveArchive({
+                        pipelineRoot: PIPELINE,
+                        waveNumber: parsed.waveNumber,
                         cooldown: waveSubCooldown,
                         chatId: message && message.chat_id !== undefined ? String(message.chat_id) : null,
                         from: message && message.from ? String(message.from) : 'Leo',
@@ -2974,6 +2997,106 @@ async function handleWaveReorder({ pipelineRoot, order, cooldown, chatId, from }
         reply: fillTemplate('wave-reorder-ok', {
             'prev-order': current.join(', '),
             'new-order': order.join(', '),
+        }),
+    };
+}
+
+/**
+ * `/wave archive <num>` — Archiva una ola (activa o planificada) a
+ * `archived_waves[]` conservando sus issues (CA-5), vía `waves.archiveWave`.
+ *
+ * #4378 — Operación destructiva. Aplica:
+ *   - destructiveCooldown (`wave-archive`, MUST anti doble-tap).
+ *   - Gate fail-closed: si hay `wave-archive.failed.*.json` activo, bloquea.
+ *   - La transacción (lock + snapshot + marker + recovery boot-time) vive en
+ *     waves.js; este handler sólo traduce el resultado/errores a Telegram.
+ *   - NO toca `.partial-pause.json` (CA-6 diferido a #4350).
+ *
+ * Política A04: `waves.archiveWave` rechaza la activa con issues no cerrados sin
+ * force; desde Telegram NO exponemos `force` (operación de mayor riesgo) —
+ * el operador que quiera forzar usa el CLI `planner-waves-cli archivar <N> --force`.
+ */
+async function handleWaveArchive({ waveNumber, cooldown, chatId, from }) {
+    if (cooldown && chatId) {
+        const cd = cooldown.check(chatId, 'wave-archive');
+        if (!cd.allowed) {
+            return {
+                reply: fillTemplate('wave-error', {
+                    'error-kind': 'cooldown_blocked',
+                    message: `Esperá ${humanizeRetryAfter(cd.retryAfterMs)} antes de repetir \`/wave archive\` (anti doble-tap).`,
+                }),
+            };
+        }
+    }
+
+    const waves = require('./waves');
+
+    // Gate fail-closed: si un recovery anterior de archive no pudo restaurar,
+    // NO permitimos nuevos archivados hasta intervención manual.
+    const blocked = waves.isWaveArchiveBlocked();
+    if (blocked.blocked) {
+        const markerNames = blocked.markers.map((p) => require('path').basename(p)).join(', ');
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'archive_blocked',
+                message: `\`/wave archive\` bloqueado por fail-closed marker(s): \`${markerNames}\`. Inspeccioná \`.pipeline/archived/\` y borrá el \`.failed\` para destrabar.`,
+            }),
+        };
+    }
+
+    let result;
+    try {
+        result = waves.archiveWave(waveNumber, {
+            updated_by: from || 'Leo',
+            source: 'telegram-commander/wave-archive',
+            note: `archive wave ${waveNumber} (desde Telegram)`,
+        });
+    } catch (e) {
+        const code = e && e.code ? e.code : '';
+        // A04 in-flight → mensaje accionable que apunta al CLI --force.
+        if (code === 'ACTIVE_IN_FLIGHT') {
+            return {
+                reply: fillTemplate('wave-error', {
+                    'error-kind': 'active_in_flight',
+                    message: `La ola ${waveNumber} está activa con issues no cerrados. Si querés archivarla igual, usá el CLI \`planner-waves-cli archivar ${waveNumber} --force\`.`,
+                }),
+            };
+        }
+        if (code === 'NOT_FOUND') {
+            return {
+                reply: fillTemplate('wave-error', {
+                    'error-kind': 'wave_not_found',
+                    message: `La ola ${waveNumber} no existe en la activa ni en las planificadas.`,
+                }),
+            };
+        }
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'fs_error',
+                message: `Algo falló archivando la ola: ${String(e && e.message ? e.message : e)}`,
+            }),
+        };
+    }
+
+    if (cooldown && chatId) cooldown.recordSuccess(chatId, 'wave-archive');
+
+    if (!result.archived && result.reason === 'already-archived') {
+        return {
+            reply: fillTemplate('wave-archive-ok', {
+                'wave-number': waveNumber,
+                'already-archived': true,
+                'source': 'archivada',
+                'issues-preserved': 0,
+            }),
+        };
+    }
+
+    return {
+        reply: fillTemplate('wave-archive-ok', {
+            'wave-number': result.waveNumber,
+            'already-archived': false,
+            'source': result.source,
+            'issues-preserved': result.issuesPreserved,
         }),
     };
 }

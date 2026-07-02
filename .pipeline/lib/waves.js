@@ -83,6 +83,24 @@ function listPromoteFailedMarkers() {
     }
 }
 
+// #4378 — markers de la transacción /wave archive (espejo de los de promote).
+// A diferencia de promote, archive SOLO muta waves.json (NO .partial-pause.json:
+// la sincronización de la allowlist es CA-6, diferida a #4350). Por eso el
+// snapshot/recovery de archive toca únicamente waves.json.
+function archiveMarkerFile() { return path.join(pipelineDir(), 'wave-archive.in-progress.json'); }
+function archiveRecoveringMarkerFile(pid) {
+    return path.join(pipelineDir(), `wave-archive.recovering.${pid}.json`);
+}
+function listArchiveFailedMarkers() {
+    try {
+        return fs.readdirSync(pipelineDir())
+            .filter((f) => /^wave-archive\.failed\..+\.json$/.test(f))
+            .map((f) => path.join(pipelineDir(), f));
+    } catch {
+        return [];
+    }
+}
+
 // CA-7: validar que archived/ resuelva dentro de .pipeline/ — defensa en
 // profundidad ante symlink traversal.
 function assertArchivedDirSafe() {
@@ -1963,6 +1981,356 @@ function isWavePromoteBlocked() {
     return { blocked: markers.length > 0, markers };
 }
 
+// ─── #4378 — Archivado explícito de una ola (CA-5) ──────────────────────────
+//
+// `archiveWave` mueve una ola (activa o planificada) a `archived_waves[]`
+// conservando TODOS sus issues (CA-5), como operación EXPLÍCITA e independiente
+// de la promoción (que también archiva la activa saliente, L448). Clona el
+// template transaccional de `promoteWaveAtomic` pero acotado a waves.json:
+//   - `withLockSync(wavesFile())` serializa la op (re-entrante con saveState).
+//   - Gate fail-closed (`wave-archive.failed.*`) + gate doble-transacción
+//     (`wave-archive.in-progress.json` con `wx`).
+//   - Snapshot de waves.json + marker fsync ANTES de mutar → recovery boot-time
+//     (`recoverIncompleteArchive`) restaura si crashea mid-transaction.
+//   - Idempotencia (CA-9): re-archivar una ola ya archivada = no-op seguro.
+//   - Política A04 (anti-TOCTOU): rechazar archivar la ACTIVA con issues no
+//     cerrados salvo `metadata.force`; el chequeo vive DENTRO del mismo lock.
+//   - Path safety (CA-7): `waveNumber` se valida entero>=1 ANTES de todo y la
+//     ola se busca por número en el estado — jamás se interpola en un path.
+//
+// NOTA: archive NO toca `.partial-pause.json` (CA-6 diferido a #4350). El marker
+// deja los campos `partial_*` sin definir para que `restoreFromSnapshots` NUNCA
+// revierta la allowlist durante un recovery de archive.
+//
+// @param {number} waveNumber
+// @param {Object} [metadata] — { force?, updated_by?, source?, note? }
+// @returns {{ archived: boolean, reason?: string, waveNumber: number,
+//   source?: 'active'|'planned', name?: string, issuesPreserved?: number,
+//   issues_completed?: number, issues_failed?: number }}
+function archiveWave(waveNumber, metadata = {}) {
+    // Path safety (CA-7): validar ANTES de tocar nada. Nunca interpolar en paths.
+    if (!Number.isInteger(waveNumber) || waveNumber < 1) {
+        throw mkWavesError(`archiveWave: waveNumber inválido: ${JSON.stringify(waveNumber)}`, 'BAD_INPUT');
+    }
+
+    return withLockSync(wavesFile(), () => {
+        // Gate fail-closed: si una recovery anterior no pudo restaurar, NO
+        // permitimos nuevos archivados hasta intervención manual.
+        const failedMarkers = listArchiveFailedMarkers();
+        if (failedMarkers.length > 0) {
+            const names = failedMarkers.map((p) => path.basename(p)).join(', ');
+            throw mkWavesError(
+                `wave-archive bloqueado por fail-closed marker(s): ${names}. ` +
+                `Inspeccioná y borrá manualmente para destrabar.`,
+                'ARCHIVE_BLOCKED'
+            );
+        }
+        // Gate de doble-transacción: marker in-progress vivo → otra archive en
+        // curso o crash. El recovery boot-time es el único habilitado a tocarlo.
+        if (fs.existsSync(archiveMarkerFile())) {
+            throw mkWavesError(
+                `wave-archive ya tiene una transacción en curso (${archiveMarkerFile()}). ` +
+                `Esperá al boot recovery o borrá el marker si sabés que es stale.`,
+                'ARCHIVE_IN_PROGRESS'
+            );
+        }
+
+        invalidateCache();
+        const state = loadWaves();
+
+        // Idempotencia (CA-9): ya archivada → no-op seguro (no duplica, cubre la
+        // colisión con archive-on-promote previo).
+        if (state.archived_waves.some((w) => Number(w.number) === waveNumber)) {
+            return { archived: false, reason: 'already-archived', waveNumber };
+        }
+
+        // Localizar la ola en activa o planificadas (búsqueda por número).
+        let sourceKind = null;
+        let wave = null;
+        if (state.active_wave && Number(state.active_wave.number) === waveNumber) {
+            sourceKind = 'active';
+            wave = state.active_wave;
+        } else {
+            const idx = state.planned_waves.findIndex((w) => Number(w.number) === waveNumber);
+            if (idx >= 0) { sourceKind = 'planned'; wave = state.planned_waves[idx]; }
+        }
+        if (!wave) {
+            throw mkWavesError(
+                `archiveWave: ola ${waveNumber} no existe en activa ni planificadas`,
+                'NOT_FOUND'
+            );
+        }
+
+        // Política A04 (anti-TOCTOU: chequeo DENTRO del lock): rechazar archivar
+        // la ACTIVA con issues no cerrados salvo `metadata.force`. "No cerrado" =
+        // status !== 'completed' (el módulo NO consulta GitHub — usa el status
+        // que el pipeline persiste en el issue de la ola).
+        if (sourceKind === 'active' && !metadata.force) {
+            const issues = Array.isArray(wave.issues) ? wave.issues : [];
+            const open = issues.filter((i) => i && i.status !== 'completed');
+            if (open.length > 0) {
+                const nums = open.map((i) => i && i.number).filter((n) => Number.isInteger(n));
+                throw mkWavesError(
+                    `archiveWave: la ola activa ${waveNumber} tiene ${open.length} issue(s) ` +
+                    `no cerrado(s)${nums.length ? ` (${nums.join(', ')})` : ''}. ` +
+                    `Pasá force para archivarla de todos modos.`,
+                    'ACTIVE_IN_FLIGHT'
+                );
+            }
+        }
+
+        // Snapshot de waves.json (solo) + marker fsync ANTES de mutar.
+        try { assertArchivedDirSafe(); } catch (err) {
+            logWarn(`archiveWave: assertArchivedDirSafe falló: ${err.message}.`);
+            throw mkWavesError(`archived/ inseguro: ${err.message}`, 'ARCHIVED_DIR_UNSAFE');
+        }
+        ensureDir(archivedDir());
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        let wavesBakPath = null;
+        let wavesBakSha = null;
+        let wavesExisted = false;
+        if (fs.existsSync(wavesFile())) {
+            const bak = path.join(archivedDir(), `waves-archive-rollback.${ts}.json`);
+            fs.copyFileSync(wavesFile(), bak);
+            wavesBakPath = bak;
+            wavesBakSha = sha256File(bak);
+            wavesExisted = true;
+        }
+        // Marker: SOLO campos de waves. `partial_*` quedan sin definir a
+        // propósito → restoreFromSnapshots NO toca .partial-pause.json (CA-6).
+        const markerPayload = {
+            started_at: new Date().toISOString(),
+            pid: process.pid,
+            phase: 'snapshot',
+            op: 'archive',
+            wave_number: waveNumber,
+            source_kind: sourceKind,
+            waves_bak_path: wavesBakPath,
+            waves_bak_sha: wavesBakSha,
+            waves_existed: wavesExisted,
+            partial_bak_path: null,
+        };
+        try {
+            writeMarkerFsync(archiveMarkerFile(), markerPayload);
+        } catch (err) {
+            throw mkWavesError(`No pude crear marker transaccional de archive: ${err.message}`, 'MARKER_FAIL');
+        }
+
+        // Construir la entrada archivada: conservar issues (CA-5) + métricas de
+        // cierre (mismo shape SUPERSET que archive-on-promote L448 — no diverge).
+        const issues = Array.isArray(wave.issues) ? wave.issues : [];
+        const completed = issues.filter((i) => i && i.status === 'completed').length;
+        const failed = issues.filter((i) => i && (i.status === 'failed' || i.status === 'blocked')).length;
+        let durationDays = null;
+        if (typeof wave.started_at === 'string') {
+            const startedMs = Date.parse(wave.started_at);
+            if (Number.isFinite(startedMs)) {
+                durationDays = Math.max(0, Math.round((Date.now() - startedMs) / 86400000));
+            }
+        }
+        const archivedEntry = {
+            number: wave.number,
+            name: wave.name || `Ola ${wave.number}`,
+            goal: wave.goal || null,
+            issues,                       // CA-5: conservar TODOS los issues.
+            closed_at: nowIso(),
+            archived_from: sourceKind,
+            issues_completed: completed,
+            issues_failed: failed,
+            actual_duration_days: durationDays,
+        };
+
+        try {
+            updateMarkerFsync(archiveMarkerFile(), { ...markerPayload, phase: 'writing' });
+
+            // Transacción única: sacar de origen + push a archived[] antes del
+            // único saveState (evita ola "fantasma" — CA-9).
+            if (sourceKind === 'active') {
+                state.active_wave = null;
+            } else {
+                const idx = state.planned_waves.findIndex((w) => Number(w.number) === waveNumber);
+                if (idx >= 0) state.planned_waves.splice(idx, 1);
+            }
+            state.archived_waves.push(archivedEntry);
+
+            saveState(state, {
+                updated_by: metadata.updated_by || 'System',
+                source: metadata.source || 'wave-archive',
+                note: metadata.note || `archive wave ${waveNumber} (${sourceKind})`,
+            });
+            invalidateCache();
+        } catch (err) {
+            // Rollback inmediato desde el snapshot (solo waves.json).
+            logWarn(`archiveWave falló mid-transaction: ${err.message}. Restaurando snapshot.`);
+            const restore = restoreFromSnapshots(markerPayload);
+            if (!restore.ok) {
+                const failedPath = path.join(pipelineDir(), `wave-archive.failed.${ts}.json`);
+                try {
+                    fs.writeFileSync(failedPath, JSON.stringify({
+                        failed_at: new Date().toISOString(),
+                        reason: `inline-rollback-failed: ${restore.reason}`,
+                        original_error: err.message,
+                        marker: markerPayload,
+                    }, null, 2));
+                } catch { /* best-effort */ }
+                throw mkWavesError(
+                    `Rollback inline de archive FALLÓ tras error "${err.message}". ` +
+                    `Razón rollback: ${restore.reason}. .failed escrito en ${failedPath}.`,
+                    'ARCHIVE_ROLLBACK_FAIL'
+                );
+            }
+            try { fs.unlinkSync(archiveMarkerFile()); } catch {}
+            throw err;
+        }
+
+        // Commit final: marker phase=done → unlink. El archived/waves.<ts>.json
+        // que genera saveState() provee el backup permanente para forensics.
+        try { updateMarkerFsync(archiveMarkerFile(), { ...markerPayload, phase: 'done' }); } catch {}
+        try { fs.unlinkSync(archiveMarkerFile()); } catch {}
+        if (wavesBakPath && fs.existsSync(wavesBakPath)) {
+            try { fs.unlinkSync(wavesBakPath); } catch {}
+        }
+
+        logInfo(`Ola ${waveNumber} archivada (source=${sourceKind}, issues=${issues.length}, completed=${completed}, failed=${failed}).`);
+        return {
+            archived: true,
+            waveNumber,
+            source: sourceKind,
+            name: archivedEntry.name,
+            issuesPreserved: issues.length,
+            issues_completed: completed,
+            issues_failed: failed,
+        };
+    }, {
+        component: 'waves-lock',
+        timeoutMs: LOCK_TIMEOUT_MS,
+        maxRetries: LOCK_MAX_RETRIES,
+        notify: notifyTelegram,
+    });
+}
+
+/**
+ * Boot hook espejo de `recoverIncompletePromote` para la transacción de archive
+ * (#4378). Restaura waves.json desde el snapshot si `archiveWave` crasheó
+ * mid-transaction. SOLO toca waves.json (el marker de archive no referencia
+ * .partial-pause.json). Idempotente.
+ *
+ * @returns {{ action: 'noop'|'in_progress'|'recovered'|'failed'|'lock_lost',
+ *   reason?: string, markerPath?: string, wavesRestored?: boolean,
+ *   recoveredPaths?: { waves: string|null }, failedMarkerPath?: string,
+ *   originalMarker?: Object }}
+ */
+function recoverIncompleteArchive() {
+    const markerPath = archiveMarkerFile();
+    if (!fs.existsSync(markerPath)) {
+        return { action: 'noop' };
+    }
+
+    let mtimeMs = 0;
+    try { mtimeMs = fs.statSync(markerPath).mtimeMs; } catch { /* defensivo */ }
+    const ageMs = nowMs() - mtimeMs;
+    if (ageMs < ttlMs()) {
+        return {
+            action: 'in_progress',
+            reason: `marker fresco (age=${Math.round(ageMs)}ms < TTL=${ttlMs()}ms)`,
+            markerPath,
+        };
+    }
+
+    // Lock atómico vía rename: el primero gana.
+    const recoveringPath = archiveRecoveringMarkerFile(process.pid);
+    try {
+        fs.renameSync(markerPath, recoveringPath);
+    } catch (err) {
+        if (err && err.code === 'ENOENT') {
+            return { action: 'lock_lost', reason: 'rename ENOENT — otro proceso ya capturó el marker' };
+        }
+        logWarn(`recoverIncompleteArchive: lock falló: ${err.message}`);
+        return { action: 'lock_lost', reason: err.message };
+    }
+
+    let marker;
+    try {
+        marker = JSON.parse(fs.readFileSync(recoveringPath, 'utf8'));
+    } catch (err) {
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        const failedPath = path.join(pipelineDir(), `wave-archive.failed.${ts}.json`);
+        try {
+            fs.writeFileSync(failedPath, JSON.stringify({
+                failed_at: new Date().toISOString(),
+                reason: `marker corrupto: ${err.message}`,
+                marker_path: recoveringPath,
+            }, null, 2));
+        } catch {}
+        logWarn(`recoverIncompleteArchive: marker corrupto, escribí ${failedPath}`);
+        return { action: 'failed', reason: `marker corrupto: ${err.message}`, failedMarkerPath: failedPath };
+    }
+
+    const restore = restoreFromSnapshots(marker);
+    if (!restore.ok) {
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        const failedPath = path.join(pipelineDir(), `wave-archive.failed.${ts}.json`);
+        try {
+            fs.writeFileSync(failedPath, JSON.stringify({
+                failed_at: new Date().toISOString(),
+                reason: restore.reason,
+                marker,
+            }, null, 2));
+        } catch {}
+        logWarn(
+            `recoverIncompleteArchive: fail-closed. ${restore.reason}. ` +
+            `Marker conservado en ${recoveringPath}. Failed marker: ${failedPath}.`
+        );
+        return {
+            action: 'failed',
+            reason: restore.reason,
+            failedMarkerPath: failedPath,
+            originalMarker: marker,
+            markerPath: recoveringPath,
+        };
+    }
+
+    // Rollback OK — preservar evidence renombrando el .bak a .recovered.<ts>.
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const recoveredPaths = { waves: null };
+    if (marker.waves_bak_path && fs.existsSync(marker.waves_bak_path)) {
+        const dest = path.join(archivedDir(), `waves-archive.recovered.${ts}.json`);
+        try {
+            fs.renameSync(marker.waves_bak_path, dest);
+            recoveredPaths.waves = dest;
+        } catch (err) {
+            logWarn(`No pude renombrar ${marker.waves_bak_path} → ${dest}: ${err.message}`);
+        }
+    }
+
+    try { fs.unlinkSync(recoveringPath); } catch {}
+    invalidateCache();
+
+    logWarn(
+        `[recovery] /wave archive crashed at ${marker.started_at} (wave ${marker.wave_number}), ` +
+        `restaurado desde snapshot. waves=${restore.wavesRestored}.`
+    );
+
+    return {
+        action: 'recovered',
+        markerPath,
+        wavesRestored: restore.wavesRestored,
+        recoveredPaths,
+        originalMarker: marker,
+    };
+}
+
+/**
+ * Indica si /wave archive está bloqueado por fail-closed (#4378). El Commander
+ * consulta esto antes de invocar archiveWave para emitir el mensaje de bloqueo.
+ *
+ * @returns {{ blocked: boolean, markers: string[] }}
+ */
+function isWaveArchiveBlocked() {
+    const markers = listArchiveFailedMarkers();
+    return { blocked: markers.length > 0, markers };
+}
+
 module.exports = {
     // API pública
     loadWaves,
@@ -1989,6 +2357,10 @@ module.exports = {
     promoteWaveAtomic,
     recoverIncompletePromote,
     isWavePromoteBlocked,
+    // #4378 — archivado explícito transaccional (CA-5)
+    archiveWave,
+    recoverIncompleteArchive,
+    isWaveArchiveBlocked,
     // CA-5: variantes strict que tiran si el shape rompe.
     loadStateStrict,
     validateStateStrict,
@@ -2011,6 +2383,7 @@ module.exports = {
         ARCHIVED_DIR: archivedDir(),
         PARTIAL_FILE: partialFile(),
         PROMOTE_MARKER_FILE: promoteMarkerFile(),
+        ARCHIVE_MARKER_FILE: archiveMarkerFile(),
     }),
     _internal: {
         normalizeIssue,
@@ -2023,6 +2396,9 @@ module.exports = {
         updateMarkerFsync,
         listPromoteFailedMarkers,
         assertArchivedDirSafe,
+        // #4378 — archive helpers visibles a tests.
+        archiveMarkerFile,
+        listArchiveFailedMarkers,
         // #3616 — reset del dedupe in-memory de la alerta "allowlist vacío".
         _resetEmptyAllowlistDedupeForTests,
     },
