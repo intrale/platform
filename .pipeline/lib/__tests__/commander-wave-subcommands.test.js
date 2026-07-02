@@ -709,6 +709,7 @@ test('describeAvailableWaves: formato `N (activa), M, K`', () => {
     assert.equal(describeAvailableWaves(null, [{ number: 1 }]), '1');
 });
 
+
 // -----------------------------------------------------------------------------
 // #4376 (split #4351) — `/wave create` (creación de olas planificadas)
 // -----------------------------------------------------------------------------
@@ -965,4 +966,202 @@ test('dispatcher: /wave create con chat_id no autorizado -> unauthorized, sin IO
         const st = JSON.parse(fs.readFileSync(path.join(dir, 'waves.json'), 'utf8'));
         assert.equal(st.planned_waves.length, 2);
     } finally { teardown(dir); }
+});
+
+// =============================================================================
+// #4377 — Subcomandos `remove` / `reorder` (Parte B, Ola 8.3)
+// =============================================================================
+
+// ─── parseWaveArgs — remove ───────────────────────────────────────────────
+
+test('#4377 parseWaveArgs: `remove 2 #3460` happy path', () => {
+    const cd = require('../commander-deterministic');
+    assert.deepEqual(cd.parseWaveArgs('remove 2 #3460'), {
+        subcommand: 'remove', waveNumber: 2, issueNumber: 3460,
+    });
+});
+
+test('#4377 parseWaveArgs: `remove` reusa el gate estricto de enteros (CA-8)', () => {
+    const cd = require('../commander-deterministic');
+    assert.equal(cd.parseWaveArgs('remove 2.5 #3460'), null); // float
+    assert.equal(cd.parseWaveArgs('remove -1 #3460'), null);  // negativo
+    assert.equal(cd.parseWaveArgs('remove 0 #3460'), null);   // cero
+    assert.equal(cd.parseWaveArgs('remove 0x2 #3460'), null); // hex
+    assert.equal(cd.parseWaveArgs('remove 2 3460'), null);    // sin `#`
+    assert.equal(cd.parseWaveArgs('remove 2 #3460a'), null);  // sufijo
+    assert.equal(cd.parseWaveArgs('remove dos #3460'), null); // texto
+    assert.equal(cd.parseWaveArgs('remove 2 #3460 extra'), null); // token extra
+    assert.equal(cd.parseWaveArgs('remove 2'), null);         // falta issue
+});
+
+// ─── parseWaveArgs — reorder ──────────────────────────────────────────────
+
+test('#4377 parseWaveArgs: `reorder 3 2` y `reorder 4 2 3` happy path', () => {
+    const cd = require('../commander-deterministic');
+    assert.deepEqual(cd.parseWaveArgs('reorder 3 2'), { subcommand: 'reorder', order: [3, 2] });
+    assert.deepEqual(cd.parseWaveArgs('reorder 4 2 3'), { subcommand: 'reorder', order: [4, 2, 3] });
+});
+
+test('#4377 parseWaveArgs: `reorder` rechaza floats/negativos/texto/duplicados/<2 (CA-8)', () => {
+    const cd = require('../commander-deterministic');
+    assert.equal(cd.parseWaveArgs('reorder 2'), null);        // menos de 2
+    assert.equal(cd.parseWaveArgs('reorder'), null);          // vacío
+    assert.equal(cd.parseWaveArgs('reorder 2 2'), null);      // duplicado
+    assert.equal(cd.parseWaveArgs('reorder 2 3.5'), null);    // float
+    assert.equal(cd.parseWaveArgs('reorder 2 -3'), null);     // negativo
+    assert.equal(cd.parseWaveArgs('reorder 2 tres'), null);   // texto
+    assert.equal(cd.parseWaveArgs('reorder 0 2'), null);      // cero
+    assert.equal(cd.parseWaveArgs('reorder 2 0x3'), null);    // hex
+});
+
+// ─── destructiveCommands / cooldown ───────────────────────────────────────
+
+test('#4377 wave-remove y wave-reorder aplican cooldown destructivo (REQ-SEC-5)', () => {
+    const { createDestructiveCooldown } = require('../commander/destructive-cooldown');
+    let now = 1000000;
+    const cd = createDestructiveCooldown({
+        cooldownMs: 30 * 1000,
+        destructiveCommands: ['wave-add', 'wave-promote', 'wave-remove', 'wave-reorder'],
+        now: () => now,
+    });
+    for (const cmd of ['wave-remove', 'wave-reorder']) {
+        assert.equal(cd.check('leo', cmd).allowed, true, `${cmd} primer uso permitido`);
+        cd.recordSuccess('leo', cmd);
+        assert.equal(cd.check('leo', cmd).allowed, false, `${cmd} bloqueado dentro de ventana`);
+        now += 31 * 1000;
+        assert.equal(cd.check('leo', cmd).allowed, true, `${cmd} permitido tras ventana`);
+        now -= 31 * 1000;
+    }
+});
+
+// ─── handleWaveRemove ─────────────────────────────────────────────────────
+
+test('#4377 handleWaveRemove: happy path desasocia de ola planificada', async () => {
+    const dir = setupTmp();
+    try {
+        writeWavesFixture(dir, sampleWavesState()); // ola 10 tiene 3600
+        const cd = require('../commander-deterministic');
+        const { reply } = await cd._waveInternal.handleWaveRemove({
+            pipelineRoot: dir, waveNumber: 10, issueNumber: 3600,
+            cooldown: null, chatId: 'leo', from: 'Leo',
+        });
+        assert.ok(/3600/.test(reply));
+        assert.ok(/10/.test(reply));
+        const fresh = JSON.parse(fs.readFileSync(path.join(dir, 'waves.json'), 'utf8'));
+        const wave10 = fresh.planned_waves.find((w) => w.number === 10);
+        assert.deepEqual(wave10.issues.map((i) => i.number), []);
+    } finally { teardown(dir); }
+});
+
+test('#4377 handleWaveRemove: rechazo sobre ola ACTIVA con mensaje accionable (A04)', async () => {
+    const dir = setupTmp();
+    try {
+        writeWavesFixture(dir, sampleWavesState()); // ola 9 activa tiene 3500
+        const before = fs.readFileSync(path.join(dir, 'waves.json'), 'utf8');
+        const cd = require('../commander-deterministic');
+        const { reply } = await cd._waveInternal.handleWaveRemove({
+            pipelineRoot: dir, waveNumber: 9, issueNumber: 3500,
+            cooldown: null, chatId: 'leo', from: 'Leo',
+        });
+        assert.ok(/activa/i.test(reply), 'menciona que la ola está activa');
+        assert.ok(/planificada/i.test(reply), 'sugiere qué sí se puede');
+        // No debe haber tocado el estado.
+        assert.equal(fs.readFileSync(path.join(dir, 'waves.json'), 'utf8'), before);
+    } finally { teardown(dir); }
+});
+
+test('#4377 handleWaveRemove: no-op explícito si el issue no pertenecía', async () => {
+    const dir = setupTmp();
+    try {
+        writeWavesFixture(dir, sampleWavesState());
+        const cd = require('../commander-deterministic');
+        const { reply } = await cd._waveInternal.handleWaveRemove({
+            pipelineRoot: dir, waveNumber: 10, issueNumber: 9999,
+            cooldown: null, chatId: 'leo', from: 'Leo',
+        });
+        assert.ok(/no pertenecía/i.test(reply));
+        assert.ok(/9999/.test(reply));
+    } finally { teardown(dir); }
+});
+
+test('#4377 handleWaveRemove: ola inexistente → wave_not_found', async () => {
+    const dir = setupTmp();
+    try {
+        writeWavesFixture(dir, sampleWavesState());
+        const cd = require('../commander-deterministic');
+        const { reply } = await cd._waveInternal.handleWaveRemove({
+            pipelineRoot: dir, waveNumber: 77, issueNumber: 3600,
+            cooldown: null, chatId: 'leo', from: 'Leo',
+        });
+        assert.ok(/no encontré la ola planificada/i.test(reply));
+        assert.ok(/77/.test(reply));
+    } finally { teardown(dir); }
+});
+
+// ─── handleWaveReorder ────────────────────────────────────────────────────
+
+test('#4377 handleWaveReorder: happy path permuta olas planificadas + muestra prev→nuevo', async () => {
+    const dir = setupTmp();
+    try {
+        writeWavesFixture(dir, sampleWavesState()); // planned: 10, 11
+        const cd = require('../commander-deterministic');
+        const { reply } = await cd._waveInternal.handleWaveReorder({
+            pipelineRoot: dir, order: [11, 10],
+            cooldown: null, chatId: 'leo', from: 'Leo',
+        });
+        assert.ok(/10/.test(reply) && /11/.test(reply));
+        const fresh = JSON.parse(fs.readFileSync(path.join(dir, 'waves.json'), 'utf8'));
+        assert.deepEqual(fresh.planned_waves.map((w) => w.number), [11, 10]);
+    } finally { teardown(dir); }
+});
+
+test('#4377 handleWaveReorder: no-permutación → error específico (falta/no existe)', async () => {
+    const dir = setupTmp();
+    try {
+        writeWavesFixture(dir, sampleWavesState()); // planned: 10, 11
+        const before = fs.readFileSync(path.join(dir, 'waves.json'), 'utf8');
+        const cd = require('../commander-deterministic');
+        const { reply } = await cd._waveInternal.handleWaveReorder({
+            pipelineRoot: dir, order: [10, 99],
+            cooldown: null, chatId: 'leo', from: 'Leo',
+        });
+        assert.ok(/permutación/i.test(reply));
+        assert.ok(/falta/i.test(reply) && /11/.test(reply), 'indica el number faltante');
+        assert.ok(/no existe/i.test(reply) && /99/.test(reply), 'indica el number inexistente');
+        assert.equal(fs.readFileSync(path.join(dir, 'waves.json'), 'utf8'), before, 'no persiste');
+    } finally { teardown(dir); }
+});
+
+test('#4377 handleWaveReorder: menos de 2 olas planificadas → not_enough_waves', async () => {
+    const dir = setupTmp();
+    try {
+        const state = sampleWavesState();
+        state.planned_waves = [{ number: 10, name: 'Ola única', issues: [] }];
+        writeWavesFixture(dir, state);
+        const cd = require('../commander-deterministic');
+        const { reply } = await cd._waveInternal.handleWaveReorder({
+            pipelineRoot: dir, order: [10, 11],
+            cooldown: null, chatId: 'leo', from: 'Leo',
+        });
+        assert.ok(/al menos 2 olas/i.test(reply));
+    } finally { teardown(dir); }
+});
+
+// ─── Templates nuevos cargan sin error ────────────────────────────────────
+
+test('#4377 templates wave-remove-ok / wave-remove-noop / wave-reorder-ok renderizan', () => {
+    const { fillTemplate, clearCache } = require('../commander/fill-template');
+    clearCache();
+    const removeOk = fillTemplate('wave-remove-ok', {
+        'issue-number': 3460, 'wave-number': 2, 'wave-name': 'Ola A', 'new-size': 1,
+    });
+    assert.ok(removeOk.includes('3460') && removeOk.includes('2'));
+    const noop = fillTemplate('wave-remove-noop', {
+        'issue-number': 9999, 'wave-number': 2, 'wave-name': 'Ola A',
+    });
+    assert.ok(noop.includes('9999'));
+    const reorderOk = fillTemplate('wave-reorder-ok', {
+        'prev-order': '2, 3, 4', 'new-order': '4, 2, 3',
+    });
+    assert.ok(reorderOk.includes('4, 2, 3'));
 });

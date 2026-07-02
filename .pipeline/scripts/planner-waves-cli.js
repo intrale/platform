@@ -269,6 +269,62 @@ function cmdComponerOla(rawN, opts) {
     }
 }
 
+/**
+ * `desasociar <ola> <issue>` — Quita un issue de una ola PLANIFICADA (#4377).
+ * Delega en `waves.removeIssueFromWave`, que impone la Política A04 (rechazo
+ * sobre la ola activa) y el no-op idempotente. Toda la integridad (lock +
+ * atomic + backup + audit) la garantiza la lib.
+ */
+function cmdDesasociar(rawWave, rawIssue) {
+    if (!/^\d+$/.test(String(rawWave)) || !/^\d+$/.test(String(rawIssue))) {
+        die(1, 'Uso: desasociar <ola> <issue> — ambos enteros positivos');
+    }
+    const waveNumber = parseInt(rawWave, 10);
+    const issueNumber = parseInt(rawIssue, 10);
+    if (waveNumber < 1 || issueNumber < 1) {
+        die(1, 'desasociar: ola e issue deben ser enteros ≥ 1');
+    }
+    try {
+        waves.removeIssueFromWave(waveNumber, issueNumber, {
+            updated_by: 'Planner', source: 'planner-waves-cli/desasociar',
+        });
+    } catch (err) {
+        die(2, err.message);
+    }
+    process.stdout.write(`✅ Issue #${issueNumber} desasociado de la ola planificada ${waveNumber} (o no-op si no pertenecía).\n`);
+}
+
+/**
+ * `reordenar <n1> <n2> [...]` — Permuta el orden de las olas PLANIFICADAS
+ * (#4377). Delega en `waves.reorderPlannedWaves`, que valida permutación exacta
+ * (mismo multiset, sin duplicados/faltantes/inexistentes) ANTES de persistir.
+ */
+function cmdReordenar(rawOrder) {
+    if (!Array.isArray(rawOrder) || rawOrder.length < 2) {
+        die(1, 'Uso: reordenar <n1> <n2> [...] — al menos 2 números de ola');
+    }
+    const order = [];
+    for (const t of rawOrder) {
+        if (!/^\d+$/.test(String(t))) {
+            die(1, `reordenar: "${t}" no es un entero positivo`);
+        }
+        const num = parseInt(t, 10);
+        if (num < 1) die(1, `reordenar: "${t}" debe ser ≥ 1`);
+        order.push(num);
+    }
+    if (new Set(order).size !== order.length) {
+        die(1, `reordenar: hay números de ola duplicados en [${order.join(', ')}]`);
+    }
+    try {
+        waves.reorderPlannedWaves(order, {
+            updated_by: 'Planner', source: 'planner-waves-cli/reordenar',
+        });
+    } catch (err) {
+        die(2, err.message);
+    }
+    process.stdout.write(`✅ Olas planificadas reordenadas a [${order.join(', ')}].\n`);
+}
+
 // #4376 (split #4351) — crear-ola: crea una ola planificada sin editar el JSON
 // a mano. Reusa `createPlannedWave` (único punto de mutación, CA-3) y la MISMA
 // validación de input que el subcomando Commander `/wave create`
@@ -369,7 +425,7 @@ function renderRoadmap(wavesList) {
 function main(argv) {
     const [, , cmd, ...rest] = argv;
     if (!cmd) {
-        die(4, 'Uso: olas | roadmap | horizonte <N> | componer-ola <N> [--force] [--json] | crear-ola --nombre <n> --concurrency <c> --window <m> --issues <#a #b> [--objetivo <o>]');
+        die(4, 'Uso: olas | roadmap | horizonte <N> | componer-ola <N> [--force] [--json] | crear-ola --nombre <n> --concurrency <c> --window <m> --issues <#a #b> [--objetivo <o>] | desasociar <ola> <issue> | reordenar <n1> <n2> [...]');
     }
 
     const opts = {
@@ -391,8 +447,14 @@ function main(argv) {
             return cmdCrearOla(rest);
         case 'roadmap':
             return cmdRoadmap();
+        case 'desasociar':
+            if (positional.length < 2) die(4, 'Uso: desasociar <ola> <issue>');
+            return cmdDesasociar(positional[0], positional[1]);
+        case 'reordenar':
+            if (positional.length < 2) die(4, 'Uso: reordenar <n1> <n2> [...]');
+            return cmdReordenar(positional);
         default:
-            die(4, `Comando desconocido: ${cmd}. Válidos: olas, roadmap, horizonte, componer-ola, crear-ola`);
+            die(4, `Comando desconocido: ${cmd}. Válidos: olas, roadmap, horizonte, componer-ola, crear-ola, desasociar, reordenar`);
     }
 }
 

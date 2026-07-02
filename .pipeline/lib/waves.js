@@ -403,7 +403,135 @@ function addIssueToWaveLocked(waveNumber, issue, n, meta) {
 }
 
 /**
+ * Desasocia un issue de una ola PLANIFICADA. Sigue el patrón canónico
+ * `fn()`+`fnLocked()` de `addIssueToWave`: el read-modify-write completo corre
+ * bajo `withLockSync` (reentrante — el `saveState` interno comparte el lock).
+ *
+ * Política A04 (#4377 CA-2 / REQ-SEC-3): se RECHAZA desasociar sobre la ola
+ * ACTIVA. Tocar la activa dispararía un re-sync de la allowlist (dep #4350,
+ * fuera de scope). El enforcement vive acá, en el código — el chip
+ * `ic-shield-lock` de UX es solo señalización cosmética, no defensa.
+ *
+ * Idempotencia (CA-2): si el issue no pertenece a la ola, es no-op sin escritura
+ * espuria (no `saveState`).
+ *
+ * @example
+ *   removeIssueFromWave(2, 3460, { updated_by: 'Commander', note: 'mal asignado' });
+ *
+ * @param {number} waveNumber — number de la ola planificada destino.
+ * @param {number|string} issueNumber — issue a remover (tolera "#123" / " 123 ").
+ * @param {Object} [meta] — { updated_by?: string, source?: string, note?: string }
+ * @throws si `issueNumber` es inválido, la ola es la activa, o la ola no existe.
+ */
+function removeIssueFromWave(waveNumber, issueNumber, meta = {}) {
+    const n = normalizeIssue(issueNumber);
+    if (!n) {
+        throw new Error(`removeIssueFromWave: issue.number inválido (${issueNumber})`);
+    }
+    return withLockSync(wavesFile(), () => removeIssueFromWaveLocked(waveNumber, n, meta), {
+        component: 'waves-lock',
+        timeoutMs: LOCK_TIMEOUT_MS,
+        maxRetries: LOCK_MAX_RETRIES,
+        notify: notifyTelegram,
+    });
+}
+
+function removeIssueFromWaveLocked(waveNumber, n, meta) {
+    // CA-7: invalidar cache ANTES de leer para ver el último commit en disco.
+    invalidateCache();
+    const state = loadWaves();
+
+    // Política A04 (REQ-SEC-3): rechazar si el target es la ola ACTIVA.
+    if (state.active_wave && state.active_wave.number === waveNumber) {
+        throw new Error(`removeIssueFromWave: no se permite desasociar sobre la ola activa (${waveNumber}). Solo olas planificadas.`);
+    }
+
+    const target = (state.planned_waves || []).find((w) => w.number === waveNumber);
+    if (!target) {
+        throw new Error(`removeIssueFromWave: ola planificada ${waveNumber} no existe`);
+    }
+
+    // No-op idempotente (CA-2): el issue no está en la ola → sin saveState.
+    if (!Array.isArray(target.issues) || !target.issues.some((i) => normalizeIssue(i.number) === n)) {
+        logInfo(`Issue #${n} no está en ola ${waveNumber} — no-op idempotente.`);
+        return;
+    }
+
+    target.issues = target.issues.filter((i) => normalizeIssue(i.number) !== n);
+    logInfo(`Issue #${n} removido de ola ${waveNumber}.`);
+    saveState(state, {
+        updated_by: meta.updated_by || 'System',
+        source: meta.source || 'manual',
+        note: meta.note || `remove issue #${n} ← wave ${waveNumber}`,
+    });
+}
+
+/**
+ * Reordena las olas PLANIFICADAS según `newOrder` (lista de `number`). Sólo
+ * permuta el orden del array `planned_waves`; el `number` (identidad) de cada
+ * ola queda intacto — cambia el orden de PROCESAMIENTO, no la identidad.
+ *
+ * Validación estricta ANTES de mutar (CA-3 + REQ-SEC-1/2): `newOrder` debe ser
+ * un array de enteros ≥1 (cierra prototype pollution — un array de primitivos
+ * no lleva `__proto__`/`constructor` como claves) y una PERMUTACIÓN EXACTA del
+ * multiset de `number` actuales: mismo largo, sin duplicados, sin faltantes,
+ * sin `number` inexistentes. Cualquier input que no sea permutación se rechaza
+ * sin persistir (nada de escritura parcial).
+ *
+ * @example
+ *   reorderPlannedWaves([3, 2], { updated_by: 'Planner', note: 'priorizar N+9' });
+ *
+ * @param {number[]} newOrder — permutación exacta de los `number` planificados.
+ * @param {Object} [meta] — { updated_by?: string, source?: string, note?: string }
+ * @throws si `newOrder` no es array de enteros ≥1 o no es permutación exacta.
+ */
+function reorderPlannedWaves(newOrder, meta = {}) {
+    return withLockSync(wavesFile(), () => reorderPlannedWavesLocked(newOrder, meta), {
+        component: 'waves-lock',
+        timeoutMs: LOCK_TIMEOUT_MS,
+        maxRetries: LOCK_MAX_RETRIES,
+        notify: notifyTelegram,
+    });
+}
+
+function reorderPlannedWavesLocked(newOrder, meta) {
+    // CA-7: leer el último commit en disco.
+    invalidateCache();
+    const state = loadWaves();
+
+    // Tipo estricto (REQ-SEC-2): array de enteros ≥1. Rechaza no-array, floats,
+    // negativos, NaN y strings. Un array de enteros no puede vehicular
+    // prototype pollution (las claves peligrosas viajan en objetos, no acá).
+    if (!Array.isArray(newOrder) || !newOrder.every((x) => Number.isInteger(x) && x >= 1)) {
+        throw new Error('reorderPlannedWaves: newOrder debe ser un array de enteros ≥ 1');
+    }
+
+    const current = (state.planned_waves || []).map((w) => w.number);
+
+    // Permutación exacta: mismo multiset, sin duplicados, sin faltantes,
+    // sin `number` inexistentes. Comparamos ordenados + sin duplicados.
+    const sortedA = [...current].sort((a, b) => a - b);
+    const sortedB = [...newOrder].sort((a, b) => a - b);
+    const isPerm = sortedA.length === sortedB.length
+        && sortedA.every((v, i) => v === sortedB[i])
+        && new Set(newOrder).size === newOrder.length;
+    if (!isPerm) {
+        throw new Error(`reorderPlannedWaves: newOrder no es permutación exacta de ${JSON.stringify(current)} (recibido ${JSON.stringify(newOrder)})`);
+    }
+
+    // Permutar SOLO el orden del array; `number` (identidad) intacto.
+    state.planned_waves = newOrder.map((num) => state.planned_waves.find((w) => w.number === num));
+    logInfo(`Olas planificadas reordenadas: ${JSON.stringify(current)} → ${JSON.stringify(newOrder)}.`);
+    saveState(state, {
+        updated_by: meta.updated_by || 'System',
+        source: meta.source || 'manual',
+        note: meta.note || `reorder planned waves ${JSON.stringify(current)} → ${JSON.stringify(newOrder)}`,
+    });
+}
+
+/**
  * Promueve una ola planificada a activa. La ola activa anterior (si existe)
+ * pasa a archived_waves con métricas de cierre.
  * pasa a archived_waves con métricas de cierre.
  *
  * @example
@@ -1669,6 +1797,8 @@ module.exports = {
     getActiveWave,
     getPlannedWave,
     addIssueToWave,
+    removeIssueFromWave,
+    reorderPlannedWaves,
     promoteWaveToActive,
     createPlannedWave,
     getAllowlist,
