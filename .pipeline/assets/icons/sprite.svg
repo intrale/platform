@@ -1333,6 +1333,20 @@
           stroke-linecap="round" stroke-linejoin="round" opacity="0.55"/>
   </symbol>
 
+  <!-- ic-tab-roadmap: ruta de hitos ascendente (linea + 4 nodos) — el roadmap
+       de olas visto como horizonte de ejecucion. Semantica distinta de ic-wave
+       (ondas) y de ic-tab-pipeline (nodos en serie horizontal): aqui la lectura
+       es "camino con hitos hacia adelante/arriba". Usada en la tab "Roadmap"
+       (#4373). Se tinta con currentColor (activa: var(--brand-cyan)). -->
+  <symbol id="ic-tab-roadmap" viewBox="0 0 24 24">
+    <path d="M4 18 L9 13 L14 15 L20 7" fill="none" stroke="currentColor"
+          stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="4"  cy="18" r="1.7" fill="currentColor"/>
+    <circle cx="9"  cy="13" r="1.7" fill="currentColor"/>
+    <circle cx="14" cy="15" r="1.7" fill="currentColor"/>
+    <circle cx="20" cy="7"  r="1.7" fill="currentColor"/>
+  </symbol>
+
   <!-- ic-tab-kpis: bar chart con 3 barras de altura creciente sobre baseline.
        Lectura inmediata: metricas / KPIs en aumento. -->
   <symbol id="ic-tab-kpis" viewBox="0 0 24 24">
