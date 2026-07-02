@@ -357,6 +357,14 @@ function renderQuotaChip(p) {
         cls = 'prov-quota-chip is-dim';
         label = 'CUOTA S/D';
         tip = 'No se pudo medir la cuota (adapter unknown/error) — salud sigue por login';
+    } else if (adapter === 'no_usage_data') {
+        // #4365 — el provider tiene cuota pero no hay consumo medido este mes.
+        // Chip atenuado PERO visible (no vacío): la desambiguación del enum sólo
+        // aporta valor si el operador la ve. Misma clase "degradado" que S/D
+        // (UX / CA-6), nunca verde (no implica cuota disponible).
+        cls = 'prov-quota-chip is-dim';
+        label = 'CUOTA S/D';
+        tip = 'Sin consumo registrado este mes — la salud del provider sigue por login; NO implica cuota agotada (#4365)';
     } else {
         // 'no_quota' / 'not_implemented' → el provider no maneja cuota medible.
         return '';
