@@ -1583,6 +1583,17 @@ function* _genPipelineState() {
       if (w && Array.isArray(w.issues)) state.activeWave = w;
     } catch { /* degrada a ola vacía */ }
   }
+  // #4369 — número de la ola activa (para el panel de priorización wave-scoped).
+  // resolveActiveWave() ordena los issues numéricamente y no expone el número de
+  // ola, así que lo tomamos de la source-of-truth canónica (waves.js). El panel
+  // solo se renderiza si hay ola activa; el orden de ejecución lo pide por AJAX.
+  state.activeWaveNumber = null;
+  if (wavesLib && typeof wavesLib.getActiveWave === 'function') {
+    try {
+      const aw = wavesLib.getActiveWave();
+      if (aw && aw.number != null) state.activeWaveNumber = Number(aw.number);
+    } catch { /* sin ola activa → panel oculto */ }
+  }
 
   // #3956 — PR info de los issues finalizados (etapa "Finalizados"). Lectura
   // sync desde el cache; el refresh fire-and-forget se programa con la lista de
@@ -3408,6 +3419,21 @@ function generateHTML(state) {
         <button class="it-csv-btn" data-view-tabla hidden onclick="exportIssuesCsv()" title="Descargar CSV del listado filtrado">${ic('archive-box')} CSV</button>
       </div>
       <div class="section-body">
+      ${/* #4369 — Panel de priorización wave-scoped. Solo se renderiza si hay ola
+           activa. Lista únicamente los issues de la ola (CA-1) y permite
+           reordenarlos con drag-drop + botones ↑/↓ (CA-2); el orden se persiste
+           en issue-manual-order.json vía POST con CSRF (CA-3/CA-7). El contenido
+           de la lista lo pide el cliente por AJAX en wavePrioLoad(). */''}
+      ${state.activeWaveNumber != null ? `
+      <div class="wave-prio-panel" id="wave-prio-panel" data-wave="${state.activeWaveNumber}">
+        <div class="wave-prio-head">
+          <h3 class="wave-prio-title">🌊 Priorización de la Ola ${state.activeWaveNumber}</h3>
+          <span class="wave-prio-hint">Reordená los issues de esta ola; el orden se refleja en la ejecución del Pulpo.</span>
+          <button class="wave-prio-refresh" type="button" onclick="wavePrioLoad()" title="Recargar orden de la ola" aria-label="Recargar orden de la ola">↻</button>
+        </div>
+        <ol class="wave-prio-list" id="wave-prio-list" aria-live="polite" aria-label="Issues de la ola ${state.activeWaveNumber} en orden de ejecución"><li class="wave-prio-empty">Cargando…</li></ol>
+        <div class="wave-prio-status" id="wave-prio-status" role="status" aria-live="polite"></div>
+      </div>` : ''}
       ${/* #3956 CA-4 — la línea hace scroll horizontal cuando hay más etapas que
            ancho visible; el indicador "+N fases" lo calcula el cliente
            (updateLaneOverflow) midiendo scrollWidth vs clientWidth. */''}
@@ -5736,6 +5762,51 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
   border:1px solid var(--bd,#2a3560);font-variant-numeric:tabular-nums;
   margin-right:4px;line-height:1.4;
 }
+/* #4369 — Panel de priorización wave-scoped (reúso del sistema visual del
+   dashboard: tokens de color, tarjetas, botones de prioridad). */
+.wave-prio-panel{
+  background:var(--sf);border:1px solid var(--bd);border-left:3px solid var(--ac);
+  border-radius:8px;padding:12px 14px;margin:0 0 16px;
+}
+.wave-prio-head{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px}
+.wave-prio-title{margin:0;font-size:0.95em;color:var(--tx);font-weight:700}
+.wave-prio-hint{font-size:0.76em;color:var(--dim);flex:1 1 auto;min-width:180px}
+.wave-prio-refresh{
+  background:transparent;color:var(--dim);border:1px solid var(--bd);
+  border-radius:4px;cursor:pointer;font-size:0.9em;padding:2px 8px;line-height:1.4;
+}
+.wave-prio-refresh:hover{color:var(--ac);border-color:var(--ac);background:rgba(88,166,255,0.08)}
+.wave-prio-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.wave-prio-item{
+  display:flex;align-items:center;gap:8px;background:var(--sf2);
+  border:1px solid var(--bd);border-left:3px solid var(--bd);border-radius:6px;
+  padding:6px 10px;font-size:0.82em;color:var(--tx);cursor:grab;
+  transition:border-color 0.15s,box-shadow 0.15s,opacity 0.15s;
+}
+.wave-prio-item:hover{border-left-color:var(--ac)}
+.wave-prio-item:active{cursor:grabbing}
+.wave-prio-item.wp-dragging{opacity:0.4;outline:1px dashed var(--ac)}
+.wave-prio-item.wp-drop-above{box-shadow:0 -3px 0 0 var(--ac)}
+.wave-prio-item.wp-drop-below{box-shadow:0 3px 0 0 var(--ac)}
+.wave-prio-pos{
+  display:inline-block;background:var(--sf);color:var(--dim);font-size:0.85em;
+  font-weight:700;padding:1px 7px;border-radius:8px;border:1px solid var(--bd);
+  font-variant-numeric:tabular-nums;min-width:22px;text-align:center;
+}
+.wave-prio-num{font-weight:600;color:var(--ac)}
+.wave-prio-spacer{flex:1 1 auto}
+.wave-prio-btn{
+  background:transparent;color:var(--dim);border:1px solid var(--bd);
+  border-radius:3px;cursor:pointer;font-size:0.85em;padding:1px 6px;line-height:1.4;min-width:22px;
+}
+.wave-prio-btn:hover:not(:disabled){background:rgba(255,255,255,0.06)}
+.wave-prio-btn:disabled{opacity:0.35;cursor:not-allowed}
+.wave-prio-up:hover:not(:disabled){border-color:var(--gn);color:var(--gn)}
+.wave-prio-down:hover:not(:disabled){border-color:var(--rd);color:var(--rd)}
+.wave-prio-empty{list-style:none;color:var(--dim);font-size:0.82em;padding:6px 2px}
+.wave-prio-status{margin-top:8px;font-size:0.78em;min-height:1em}
+.wave-prio-status.wp-ok{color:var(--gn)}
+.wave-prio-status.wp-err{color:var(--rd)}
 /* Secciones colapsables (Issue Tracker, Equipo, Historial) */
 .section-title-clickable{cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:6px}
 .section-title-clickable:hover{opacity:0.9}
@@ -8482,6 +8553,153 @@ async function _persistDragOrder() {
     setTimeout(() => location.reload(), 600);
   }
 }
+
+// ── #4369 — Panel de priorización wave-scoped ──────────────────────────────
+// Lista SOLO los issues de la ola activa (CA-1) y permite reordenarlos entre sí
+// con drag-drop + botones ↑/↓ (CA-2). Persiste vía POST /api/waves/:num/reorder
+// con CSRF (CA-3/CA-7). Ante error revierte al último orden confirmado por el
+// server (CA-4/CA-10 → recarga desde el endpoint, no queda inconsistente).
+let _wpOrder = [];          // orden confirmado (array de strings)
+let _wpStatuses = {};       // number → status (para el badge)
+let _wpDragEl = null;
+
+function _wpSetStatus(msg, kind) {
+  const el = document.getElementById('wave-prio-status');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.className = 'wave-prio-status' + (kind ? ' wp-' + kind : '');
+}
+function _wpWaveNum() {
+  const panel = document.getElementById('wave-prio-panel');
+  return panel ? panel.dataset.wave : null;
+}
+async function wavePrioLoad() {
+  const wave = _wpWaveNum();
+  const list = document.getElementById('wave-prio-list');
+  if (!wave || !list) return;
+  try {
+    const r = await fetch('/api/waves/' + wave + '/order', { cache: 'no-store' });
+    const j = await r.json();
+    if (!j.ok) { _wpSetStatus('No se pudo cargar la ola: ' + (j.msg || 'error'), 'err'); return; }
+    _wpOrder = (j.issues || []).map(i => String(i.number));
+    _wpStatuses = {};
+    (j.issues || []).forEach(i => { _wpStatuses[String(i.number)] = i.status || ''; });
+    _wpRender();
+    _wpSetStatus('', null);
+  } catch (e) {
+    _wpSetStatus('Error de red al cargar la ola: ' + e.message, 'err');
+  }
+}
+function _wpRender() {
+  const list = document.getElementById('wave-prio-list');
+  if (!list) return;
+  if (_wpOrder.length === 0) {
+    list.innerHTML = '<li class="wave-prio-empty">La ola no tiene issues.</li>';
+    return;
+  }
+  list.innerHTML = _wpOrder.map((num, i) => {
+    const st = _wpStatuses[num] ? ' · ' + _wpStatuses[num] : '';
+    const upDis = i === 0 ? ' disabled' : '';
+    const downDis = i === _wpOrder.length - 1 ? ' disabled' : '';
+    return '<li class="wave-prio-item" draggable="true" data-issue="' + num + '"'
+      + ' ondragstart="wpDragStart(event)" ondragover="wpDragOver(event)"'
+      + ' ondragleave="wpDragLeave(event)" ondrop="wpDrop(event)" ondragend="wpDragEnd(event)">'
+      + '<span class="wave-prio-pos">' + (i + 1) + '</span>'
+      + '<span class="wave-prio-num">#' + num + '</span>'
+      + '<span class="wave-prio-meta" style="color:var(--dim);font-size:0.9em">' + st + '</span>'
+      + '<span class="wave-prio-spacer"></span>'
+      + '<button class="wave-prio-btn wave-prio-up" type="button" title="Subir una posición"'
+      + ' aria-label="Subir #' + num + ' una posición" onclick="wavePrioMove(\'' + num + '\',-1)"' + upDis + '>▲</button>'
+      + '<button class="wave-prio-btn wave-prio-down" type="button" title="Bajar una posición"'
+      + ' aria-label="Bajar #' + num + ' una posición" onclick="wavePrioMove(\'' + num + '\',1)"' + downDis + '>▼</button>'
+      + '</li>';
+  }).join('');
+}
+function wavePrioMove(num, delta) {
+  const i = _wpOrder.indexOf(String(num));
+  if (i === -1) return;
+  const j = i + delta;
+  if (j < 0 || j >= _wpOrder.length) return;
+  const next = _wpOrder.slice();
+  [next[i], next[j]] = [next[j], next[i]];
+  _wpPersist(next);
+}
+// Drag-drop nativo dentro de la lista wave-scoped.
+function wpDragStart(e) {
+  _wpDragEl = e.currentTarget;
+  e.currentTarget.classList.add('wp-dragging');
+  try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', e.currentTarget.dataset.issue); } catch (err) {}
+}
+function wpDragOver(e) {
+  if (!_wpDragEl) return;
+  const item = e.currentTarget;
+  if (item === _wpDragEl) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  const rect = item.getBoundingClientRect();
+  const above = (e.clientY - rect.top) < rect.height / 2;
+  item.classList.toggle('wp-drop-above', above);
+  item.classList.toggle('wp-drop-below', !above);
+}
+function wpDragLeave(e) { e.currentTarget.classList.remove('wp-drop-above', 'wp-drop-below'); }
+function wpDrop(e) {
+  if (!_wpDragEl) return;
+  const item = e.currentTarget;
+  item.classList.remove('wp-drop-above', 'wp-drop-below');
+  if (item === _wpDragEl) return;
+  e.preventDefault();
+  const rect = item.getBoundingClientRect();
+  const above = (e.clientY - rect.top) < rect.height / 2;
+  const from = _wpDragEl.dataset.issue;
+  const to = item.dataset.issue;
+  const next = _wpOrder.filter(n => n !== from);
+  let idx = next.indexOf(to);
+  if (!above) idx += 1;
+  next.splice(idx, 0, from);
+  _wpPersist(next);
+}
+function wpDragEnd() {
+  if (_wpDragEl) _wpDragEl.classList.remove('wp-dragging');
+  document.querySelectorAll('.wp-drop-above, .wp-drop-below').forEach(c => c.classList.remove('wp-drop-above', 'wp-drop-below'));
+  _wpDragEl = null;
+}
+async function _wpPersist(newOrder) {
+  const wave = _wpWaveNum();
+  if (!wave) return;
+  // Optimista: pintar el nuevo orden ya; si el server rechaza, recargamos.
+  const prev = _wpOrder.slice();
+  _wpOrder = newOrder.slice();
+  _wpRender();
+  _wpSetStatus('Guardando…', null);
+  const doPost = async () => fetch('/api/waves/' + wave + '/reorder', {
+    method: 'POST',
+    headers: Object.assign({ 'Content-Type': 'application/json' }, await killCsrfHeadersLegacy()),
+    body: JSON.stringify({ order: newOrder })
+  });
+  try {
+    let r = await doPost();
+    if (r && r.status === 403) { await killCsrfHeadersLegacy(true); r = await doPost(); }
+    const j = await r.json().catch(() => ({ ok: false, msg: 'respuesta no-JSON' }));
+    if (r.ok && j.ok) {
+      _wpSetStatus('✓ Orden de la ola actualizado (' + newOrder.length + ' issues)', 'ok');
+    } else {
+      // Revert + recarga desde el server (fuente de verdad) — CA-10.
+      _wpOrder = prev;
+      _wpRender();
+      const hint = r.status === 400 ? 'la ola cambió, recargá el panel' : (j.msg || 'error');
+      _wpSetStatus('No se pudo reordenar: ' + hint, 'err');
+      wavePrioLoad();
+    }
+  } catch (e) {
+    _wpOrder = prev;
+    _wpRender();
+    _wpSetStatus('Error de red al reordenar: ' + e.message, 'err');
+  }
+}
+// Carga inicial del panel (si existe) al terminar de parsear el DOM.
+document.addEventListener('DOMContentLoaded', function () {
+  if (document.getElementById('wave-prio-panel')) wavePrioLoad();
+});
 
 // Toggle genérico de secciones colapsables (Issue Tracker, Equipo, Historial).
 // Estado persistido en localStorage por sección.
@@ -12086,6 +12304,110 @@ const server = http.createServer((req, res) => {
       log(`order: reorder via drag-drop (${order.length} issues, head=${order.slice(0,3).join(',')})`);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, msg: `Orden actualizado (${order.length} issues)`, count: order.length }));
+    });
+    return;
+  }
+
+  // #4369 — Priorización wave-scoped. Lee SOLO los issues de la ola activa en su
+  // orden de ejecución actual (proyecta issue-manual-order.json sobre la
+  // membresía de la ola). GUARDRAIL #4096 (CA-9): NO invoca getPipelineState();
+  // lee de wavesLib.getActiveWave() + issueOrder.load().
+  const waveOrderMatch = req.url && req.url.match(/^\/api\/waves\/(\d+)\/order$/);
+  if (waveOrderMatch && req.method === 'GET') {
+    const waveNum = String(waveOrderMatch[1]);
+    if (!wavesLib) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'waves lib no disponible' }));
+      return;
+    }
+    const active = wavesLib.getActiveWave();
+    if (!active || String(active.number) !== waveNum) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: `ola ${waveNum} no está activa` }));
+      return;
+    }
+    const membership = (active.issues || []).map(i => String(i.number));
+    let issueOrder;
+    try { issueOrder = require('./lib/issue-order'); }
+    catch (e) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'issue-order lib no disponible: ' + e.message }));
+      return;
+    }
+    // Proyectar el orden global sobre la membresía: primero los que tienen entrada
+    // manual (en su orden), luego los que no la tienen (en orden de la ola).
+    const state = issueOrder.load();
+    const inManual = state.order.filter(n => membership.includes(n));
+    const notInManual = membership.filter(n => !inManual.includes(n));
+    const ordered = inManual.concat(notInManual);
+    const byNumber = new Map((active.issues || []).map(i => [String(i.number), i]));
+    const issues = ordered.map(n => ({
+      number: Number(n),
+      status: (byNumber.get(n) && byNumber.get(n).status) || null,
+    }));
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, wave: Number(waveNum), issues }));
+    return;
+  }
+
+  // #4369 — POST reorder wave-scoped. Muta la fuente de verdad del orden de
+  // ejecución del Pulpo (issue-manual-order.json) → requiere CSRF (SEC-2/CA-7) y
+  // validación server-side estricta (SEC-1/CA-5) ANTES de escribir.
+  const waveReorderMatch = req.url && req.url.match(/^\/api\/waves\/(\d+)\/reorder$/);
+  if (waveReorderMatch && req.method === 'POST') {
+    const waveNum = String(waveReorderMatch[1]);
+    // SEC-2 — CSRF fail-closed ANTES de leer body o tocar el FS.
+    if (!killAgentCsrf) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'CSRF no disponible — reorder deshabilitado' }));
+      return;
+    }
+    if (!killAgentCsrf.requireCSRF(req, res)) return; // ya respondió 403
+    if (!wavesLib) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'waves lib no disponible' }));
+      return;
+    }
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 256 * 1024) req.destroy(); });
+    req.on('end', () => {
+      let payload;
+      try { payload = body ? JSON.parse(body) : {}; }
+      catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'JSON inválido: ' + e.message }));
+        return;
+      }
+      // Membresía real de la ola activa (fuente de verdad de pertenencia).
+      const active = wavesLib.getActiveWave();
+      if (!active || String(active.number) !== waveNum) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: `ola ${waveNum} no está activa` }));
+        return;
+      }
+      const membership = (active.issues || []).map(i => String(i.number));
+      let issueOrder;
+      try { issueOrder = require('./lib/issue-order'); }
+      catch (e) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'issue-order lib no disponible: ' + e.message }));
+        return;
+      }
+      // SEC-1/CA-5 — validación estricta: numéricos, sin duplicados, todos ∈ ola,
+      // y conjunto == membresía completa (no se agregan ni pierden issues).
+      const check = issueOrder.validateWaveReorder(membership, payload.order);
+      if (!check.ok) {
+        // NO escribe el state file.
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: `payload de orden inválido (${check.reason}): debe ser una permutación exacta de la membresía de la ola (numéricos, sin duplicados, sin faltantes)` }));
+        return;
+      }
+      const order = payload.order.map(String);
+      const state = issueOrder.load();
+      issueOrder.reorderWithinSubset(state, membership, order);
+      log(`order: wave-reorder ola ${waveNum} (${order.length} issues, head=${order.slice(0,3).join(',')})`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, msg: `Orden de la ola ${waveNum} actualizado (${order.length} issues)`, wave: Number(waveNum), count: order.length }));
     });
     return;
   }
