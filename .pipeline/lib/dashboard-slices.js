@@ -1504,6 +1504,27 @@ function pipelineSlice(state, ctx) {
     // actual. Configurable vía env para que el operador pueda calibrar
     // sin redeploy. Default 30 min según el issue.
     const STALE_THRESHOLD_MIN = Number(process.env.PIPELINE_STALE_MIN_THRESHOLD) || 30;
+    // #4362 — Señales para derivar el estado de avance de issues sin marcador de
+    // fase activo (entre fases). Se computan UNA vez fuera del loop: el set de
+    // fases terminales del flujo y el set de issues con actividad reciente
+    // (lectura única del activity-log). Los tests pueden inyectar
+    // `ctx.recentActivityIssues` (Set) o `ctx.REPO_ROOT` con un log temporal.
+    const progressLib = require('./progress-state');
+    const _now = (ctx && Number.isFinite(ctx.now)) ? ctx.now : Date.now();
+    const terminalFaseKeys = progressLib.terminalFaseKeySet(state.allFases);
+    let recentActivityIssues;
+    if (ctx && ctx.recentActivityIssues instanceof Set) {
+        recentActivityIssues = ctx.recentActivityIssues;
+    } else {
+        const repoRoot = (ctx && ctx.REPO_ROOT)
+            || process.env.PIPELINE_REPO_ROOT
+            || process.env.CLAUDE_PROJECT_DIR
+            || path.resolve(__dirname, '..', '..');
+        recentActivityIssues = progressLib.readRecentActivityIssues(repoRoot, {
+            now: _now,
+            windowMin: STALE_THRESHOLD_MIN,
+        });
+    }
     for (const [issueId, data] of Object.entries(state.issueMatrix || {})) {
         // #2894 — Lista de agentes en la fase activa con su estado UI.
         const { agents, expectedSkills } = buildAgentsForActiveFase(issueId, data, state);
@@ -1541,6 +1562,12 @@ function pipelineSlice(state, ctx) {
             labels: data.labels,
             faseActual: data.faseActual,
             estadoActual: data.estadoActual,
+            // #4362 — estado de avance derivado (aditivo). 'activo' cuando hay
+            // marcador de fase; si no, 'entre-fases' | 'terminado' | 'sin-arrancar'.
+            progressState: progressLib.deriveProgressState(data, {
+                terminalFaseKeys,
+                recentActivity: recentActivityIssues.has(String(issueId)),
+            }),
             bounces: data.bounces,
             staleMin: data.staleMin,
             logFile: issueLogFile,

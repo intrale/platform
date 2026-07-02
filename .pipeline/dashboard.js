@@ -1229,6 +1229,9 @@ function* _genPipelineState() {
     data.pipelines = [...data.pipelines];
     data.title = titleCache[id]?.title || '';
     data.labels = titleCache[id]?.labels || [];
+    // #4362 — estado GitHub (OPEN | CLOSED) del cache: lo usa la derivación de
+    // `progressState` para clasificar un issue closed como "terminado".
+    data.state = titleCache[id]?.state || null;
     // Calcular rebotes: contar runs rechazados por fase
     let bounces = 0;
     for (const entries of Object.values(data.fases)) {
@@ -1580,9 +1583,26 @@ function* _genPipelineState() {
   // sync desde el cache; el refresh fire-and-forget se programa con la lista de
   // issues completos (sin fase activa). Construimos un snapshot plano para que
   // el render no toque el Map directamente.
+  // #4362 — "Terminado" real = closed en GitHub o procesado en la fase terminal
+  // del flujo. Antes se metía TODO issue sin `estadoActual` en doneIssueIds, con
+  // lo que un issue "entre fases" (procesado intermedio + latido reciente) se
+  // confundía con terminado. Derivamos el estado de avance con las MISMAS
+  // señales que la grilla (progress-state.js) y sólo tratamos como done los que
+  // realmente terminaron (CA-5). Lectura única del activity-log por tick.
+  const progressLib = require('./lib/progress-state');
+  const _terminalFaseKeys = progressLib.terminalFaseKeySet(state.allFases);
+  const _recentActivityIssues = progressLib.readRecentActivityIssues(ROOT, {
+    windowMin: Number(process.env.PIPELINE_STALE_MIN_THRESHOLD) || 30,
+  });
   const doneIssueIds = [];
   for (const [id, data] of Object.entries(state.issueMatrix)) {
-    if (data && !data.estadoActual) doneIssueIds.push(Number(id));
+    if (!data) continue;
+    const progressState = progressLib.deriveProgressState(data, {
+      terminalFaseKeys: _terminalFaseKeys,
+      recentActivity: _recentActivityIssues.has(String(id)),
+    });
+    data.progressState = progressState;   // exponer para consumidores del state
+    if (progressState === 'terminado') doneIssueIds.push(Number(id));
   }
   _schedulePrInfoRefresh(doneIssueIds);
   state.prInfo = {};
