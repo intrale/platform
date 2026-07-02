@@ -2515,12 +2515,45 @@ async function handleWavePromote({ pipelineRoot, cooldown, chatId, from }) {
     const newWave = planned[0];
     const newWaveNumber = newWave.number;
 
+    // #4350 — Sincronización fuente-única: computar el set EXPANDIDO
+    // (hijos/deps recursivos) + FILTRADO de cerrados FUERA de waves.js (regla
+    // inquebrantable "sin red / sin GitHub API" del módulo de olas). El walk
+    // puro vive en allowlist-recursive-promote; el predicado isClosed se deriva
+    // del cache de títulos (`.issue-title-cache.json` vía wave-state), no de
+    // GitHub en el hot path. Si algo falla, degradamos al comportamiento
+    // histórico (getAllowlist) dejando `expandedIssues` sin definir.
+    let expandedIssues;
+    try {
+        const allowlistPromote = require('./allowlist-recursive-promote');
+        const stateMod = require('./wave-state');
+        const waveState = stateMod.getCachedWaveState({ pipelineRoot });
+        const titleCache = (waveState && waveState.issueTitles) || {};
+        const isClosed = (n) => {
+            const entry = titleCache[String(n)];
+            // SEC-4 fail-safe: sin entrada o estado ausente → INDETERMINADO
+            // (undefined) → el walk lo conserva, nunca lo excluye a ciegas.
+            if (!entry || entry.state === undefined || entry.state === null) return undefined;
+            return String(entry.state).toUpperCase() === 'CLOSED';
+        };
+        const seed = (Array.isArray(newWave.issues) ? newWave.issues : [])
+            .map((i) => (i && typeof i === 'object')
+                ? { n: i.number, status: i.status }
+                : { n: i, status: undefined })
+            .filter((x) => x.status !== 'completed')
+            .map((x) => x.n);
+        const getDeps = (n) => { try { return waves.getBlockingIssues(n); } catch { return []; } };
+        expandedIssues = allowlistPromote.expandRecursiveOpenIssues({ seedIssues: seed, isClosed, getDeps });
+    } catch (e) {
+        expandedIssues = undefined; // degradar a getAllowlist() dentro de waves.js
+    }
+
     let result;
     try {
         result = waves.promoteWaveAtomic(newWaveNumber, {
             updated_by: from || 'Leo',
             source: 'telegram-commander/wave-promote',
             note: `promote wave ${newWaveNumber} → active (desde Telegram, atomic)`,
+            ...(Array.isArray(expandedIssues) ? { expandedIssues } : {}),
         });
     } catch (e) {
         return {

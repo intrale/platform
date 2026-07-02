@@ -34,6 +34,64 @@ const { notifyTelegram } = require('./notify-telegram');
 const TTL_MS = 48 * 60 * 60 * 1000; // 48 horas, decisión PO #3625.
 
 /**
+ * Expande recursivamente un set semilla de issues incluyendo sus
+ * dependencias/bloqueos/hijos, excluyendo cerrados. Función PURA (#4350):
+ *
+ *   - NO usa red / GitHub / TTL. El descubrimiento del grafo se inyecta vía
+ *     `getDeps` (típicamente `waves.getBlockingIssues`, que lee el grafo
+ *     `dependencies[]` de waves.json — filesystem propio).
+ *   - Desacoplada del trigger de split del planner: la pertenencia a una ola
+ *     NO expira, así que NO hereda el `TTL_MS` de la auto-promoción de split.
+ *   - Fail-safe (SEC-4): un issue se excluye SOLO si `isClosed(n) === true`
+ *     (cerrado confirmado). Estado abierto (`false`) o indeterminado
+ *     (`undefined`/sin predicado) → se conserva. Nunca vacía por falso cierre.
+ *   - Los issues cerrados no expanden sus dependencias (su subgrafo se asume
+ *     resuelto); evita revivir cadenas cerradas.
+ *   - Sanitiza a enteros positivos (SEC-3) y corta ciclos con un set `seen`.
+ *
+ * @param {object} params
+ * @param {Array<number|string>} params.seedIssues — issues raíz (ej. ola activa).
+ * @param {(n:number)=>boolean|undefined} [params.isClosed] — predicado de cierre.
+ * @param {(n:number)=>Array<number|string>} [params.getDeps] — descubridor de
+ *   dependencias/bloqueos de un issue. Default: sin expansión (solo semilla).
+ * @returns {number[]} set expandido de issues ABIERTOS (o indeterminados),
+ *   ordenado ascendente y deduplicado.
+ */
+function expandRecursiveOpenIssues({ seedIssues, isClosed, getDeps } = {}) {
+    const isClosedFn = typeof isClosed === 'function' ? isClosed : null;
+    const depsFn = typeof getDeps === 'function' ? getDeps : () => [];
+    const toValid = (x) => {
+        const n = Number(String(x).trim().replace(/^#/, ''));
+        return Number.isInteger(n) && n > 0 ? n : null; // SEC-3
+    };
+
+    const seen = new Set();
+    const open = new Set();
+    const queue = [];
+    for (const s of (Array.isArray(seedIssues) ? seedIssues : [])) {
+        const n = toValid(s);
+        if (n !== null && !seen.has(n)) { seen.add(n); queue.push(n); }
+    }
+
+    while (queue.length > 0) {
+        const n = queue.shift();
+        // Fail-safe: solo excluir con cierre CONFIRMADO. Indeterminado se conserva.
+        const closed = isClosedFn ? isClosedFn(n) === true : false;
+        if (!closed) open.add(n);
+        // Un cerrado no aporta sus dependencias al set habilitado.
+        if (closed) continue;
+        let deps = [];
+        try { deps = depsFn(n) || []; } catch { deps = []; }
+        for (const d of (Array.isArray(deps) ? deps : [])) {
+            const dn = toValid(d);
+            if (dn !== null && !seen.has(dn)) { seen.add(dn); queue.push(dn); }
+        }
+    }
+
+    return [...open].sort((a, b) => a - b);
+}
+
+/**
  * Auto-promueve hijos de un split a la allowlist si el padre está incluido.
  *
  * @param {object} params
@@ -224,5 +282,6 @@ function expireRecursiveAuthorizations({ nowMs } = {}) {
 module.exports = {
     autoPromoteSplitChildren,
     expireRecursiveAuthorizations,
+    expandRecursiveOpenIssues,
     TTL_MS,
 };

@@ -1303,7 +1303,11 @@ function restoreFromSnapshots(marker) {
  *     /wave promote queda bloqueado hasta intervención manual).
  *
  * @param {number} waveNumber
- * @param {Object} [metadata] — { updated_by?, source?, note? }
+ * @param {Object} [metadata] — { updated_by?, source?, note?, expandedIssues? }
+ *   `expandedIssues` (#4350, opcional): set ya expandido (hijos/deps recursivos)
+ *   y filtrado de cerrados que el caller computó FUERA de waves.js (el walk y
+ *   el predicado isClosed viven en el pulpo/commander, nunca acá). Si viene, es
+ *   autoritativo para la allowlist; si no, se usa getAllowlist().
  * @returns {{
  *   oldWaveNumber: number|null,
  *   newWaveNumber: number,
@@ -1399,7 +1403,20 @@ function promoteWaveAtomic(waveNumber, metadata = {}) {
         // Paso 2: aplicar allowlist nueva.
         // #3625 — Pasar authorizedBy: 'wave-promote' para que el gate de
         // partial-pause acepte los removals que provoca la rotación de olas.
-        newAllowlist = getAllowlist();
+        //
+        // #4350 — Si el caller (pulpo/commander) ya computó el set EXPANDIDO
+        // (hijos/deps recursivos) y FILTRADO de cerrados, lo pasa por
+        // `metadata.expandedIssues` y es AUTORITATIVO. waves.js NO hace el walk
+        // ni consulta GitHub (regla inquebrantable "sin red / sin GitHub API,
+        // solo filesystem propio"): confía en el set ya resuelto. Si no viene,
+        // cae al comportamiento histórico (getAllowlist = issues abiertos de la
+        // ola sin filtrar cierre en GitHub ni deps recursivos).
+        if (Array.isArray(metadata.expandedIssues)) {
+            const expanded = metadata.expandedIssues.map(normalizeIssue).filter(Boolean);
+            newAllowlist = [...new Set(expanded)].sort((a, b) => a - b);
+        } else {
+            newAllowlist = getAllowlist();
+        }
         const partialPause = require('./partial-pause');
         // #4030 — Recuperar metadata real de la ola recién promovida para que
         // sobreviva al seeder tras un /restart. Reutilizamos la misma fuente que
