@@ -1151,6 +1151,31 @@ waves:
   max_horizon: 12
 
 # =============================================================================
+# Transición automática de ola (#4368, Ola 8.3)
+# =============================================================================
+# El brazo `brazoTransicionOla` (pulpo.js) detecta si TODOS los issues de la ola
+# activa están cerrados en GitHub y, según `mode`:
+#   - notify (DEFAULT): NO promueve; avisa al operador ("/wave ready-to-close N")
+#     y deja evidencia en logs/waves.jsonl. Respeta el diseño aprobado
+#     `docs/pipeline/modelo-planificacion-multi-ola.md` §3 ("nunca se abre una ola
+#     por automatismo") y la regla "preferir bloqueado-humano a rebote automático".
+#   - auto: promueve la siguiente ola planificada vía promoteWaveAtomic
+#     (transacción atómica + backup a archived/ + rollback). Opt-in EXPLÍCITO de
+#     Leo; habilitar sólo tras validar `mode: notify` en producción y con #4350
+#     (sync allowlist↔waves) sólido.
+#
+# Kill-switch (CA-6): `enabled: false` o `kill_switch: true` ⇒ el brazo no hace
+# NADA (ni notify ni auto). Default conservador. Todo fail-closed: ante cualquier
+# ambigüedad de `gh` (exit≠0, timeout, issue ausente) NO promueve.
+#
+# Corte en caliente: `kill_switch: true` desactiva sin reiniciar el pulpo.
+wave_auto_transition:
+  enabled: false        # kill switch maestro: false ⇒ el brazo no hace nada
+  kill_switch: false    # override de emergencia adicional
+  mode: notify          # "notify" (default) | "auto" (opt-in explícito de Leo)
+  gh_timeout_ms: 30000  # timeout por consulta `gh issue view`
+
+# =============================================================================
 # Telegram — config PÚBLICA del bot (#3957, EP8-H4 / CA-3)
 # =============================================================================
 # bot_username es el handle público del bot (sin @). Se usa para construir el

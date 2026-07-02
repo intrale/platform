@@ -164,6 +164,9 @@ const workfileName = require('./lib/workfile-name');
 const brazoBarridoCore = require('./lib/brazo-barrido-core');
 const brazoLanzamientoCore = require('./lib/brazo-lanzamiento-core');
 const brazoDesbloqueoCore = require('./lib/brazo-desbloqueo-core');
+// #4368 — transición automática de ola (detector fail-closed + orquestador
+// notify/auto). Gated por config.wave_auto_transition (default OFF + notify).
+const waveAutoTransition = require('./lib/wave-auto-transition');
 // #2374 — Destino del rebote (faseRechazo para código, misma fase para infra)
 const { resolveReboteDestino } = require('./lib/rebote-destino');
 // #2893 — Detección de dependencias del allowlist en pausa parcial
@@ -13793,6 +13796,33 @@ async function brazoDesbloqueo(config) {
   }
 }
 
+// #4368 — brazo de transición automática de ola. Wrapper delgado con guard de
+// re-entrada (mismo patrón que `_unblockRunning`) que delega en
+// `waveAutoTransition.autoTransitionIfComplete`. Fire-and-forget desde el tick;
+// nunca bloquea el loop. La lógica es no-op salvo que config lo habilite
+// (default OFF), así que en producción normal cuesta un `return` inmediato.
+let _transicionOlaRunning = false;
+async function brazoTransicionOla(config) {
+  if (_transicionOlaRunning) return;
+  // Corto-circuito barato: si el brazo está deshabilitado, ni siquiera
+  // consultamos GitHub. autoTransitionIfComplete lo re-chequea igual (fuente
+  // de verdad), pero evitamos tomar el guard innecesariamente.
+  const cfg = (config && config.wave_auto_transition) || {};
+  if (cfg.enabled !== true || cfg.kill_switch === true) return;
+
+  _transicionOlaRunning = true;
+  try {
+    const res = await waveAutoTransition.autoTransitionIfComplete(config, {
+      ghCall: (args, timeoutMs) => ghDesbloqueoCall(args, timeoutMs),
+    });
+    if (res && res.action && res.action !== 'noop' && res.action !== 'disabled') {
+      log('desbloqueo', `[transicion-ola] ${res.action} — from=${res.from_wave ?? '?'} to=${res.to_wave ?? '?'}`);
+    }
+  } finally {
+    _transicionOlaRunning = false;
+  }
+}
+
 async function brazoDesbloqueoImpl(config) {
   // #2506: respetar pausa parcial — los bloqueados fuera del allowlist no se van
   // a ejecutar aunque se desbloqueen ahora, así que no tiene sentido gastar el
@@ -14926,6 +14956,10 @@ async function mainLoop() {
         // fantasma que tiraban GraphQL errors. Ahora corre async sin frenar
         // barrido ni lanzamiento; el guard interno previene re-entrada.
         brazoDesbloqueo(config).catch(e => log('desbloqueo', `error en brazo async: ${e.message}`));
+        // #4368 — transición automática de ola (fire-and-forget, mismo estilo
+        // async no bloqueante). No-op salvo que config.wave_auto_transition lo
+        // habilite (default OFF + mode notify).
+        brazoTransicionOla(config).catch(e => log('desbloqueo', `error en brazo transicion-ola: ${e.message}`));
         brazoBarrido(config);     // Cuarto: promover entre fases
         brazoArchivado(config);   // #4136 — mudar procesado/ de issues en reposo a historico/
         sweepClaimsHuerfanos(config); // #3939 — restaurar claims huérfanos antes de lanzar
