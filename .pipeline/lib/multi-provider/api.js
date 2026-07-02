@@ -427,7 +427,13 @@ async function handleHealthGet(req, res) {
                 red_count: 0,
                 ts: null,
                 cron: {
-                    tick_interval_ms: healthCron ? healthCron.TICK_INTERVAL_MS : null,
+                    // #4402 CA-3/CA-6 — cadencia real (config.yaml → default 5 min),
+                    // no la constante-fallback, para que el dashboard sea honesto.
+                    tick_interval_ms: healthCron
+                        ? (typeof healthCron.readTickIntervalMs === 'function'
+                            ? healthCron.readTickIntervalMs()
+                            : healthCron.TICK_INTERVAL_MS)
+                        : null,
                     jitter_range_ms: healthCron ? healthCron.JITTER_RANGE_MS : null,
                 },
                 note: 'El healthcheck aún no corrió. Esperando primer tick del cron.',

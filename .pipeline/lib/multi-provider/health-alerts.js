@@ -170,11 +170,17 @@ function decide({ provider, state, reasonCode, now = Date.now(), dedupFile = HOM
         };
     }
 
+    // #4402 CA-4 — conteo de emisiones consecutivas para esta combo
+    // `provider+state` (el que `record()` va a persistir tras este envío). Se
+    // usa para el sufijo "xN" del texto de alerta (ej. "Anthropic: auth-error x3").
+    const consecutiveCount = (prev && prev.consecutive_count ? prev.consecutive_count : 0) + 1;
+
     // Construir payload metadata-only (SR-4): nada de keys/fingerprints/body.
     const payload = {
         provider: p,
         state: s,
         reason_code: code,
+        consecutive_count: consecutiveCount,
         observed_at: new Date(now).toISOString(),
     };
 

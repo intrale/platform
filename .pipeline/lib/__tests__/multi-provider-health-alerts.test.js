@@ -185,3 +185,56 @@ test('recordMultiDown + decideMultiDown aplica dedupe 10 min', () => {
     assert.equal(r.shouldEmit, false);
     assert.equal(r.reasonNoEmit, 'dedup_window');
 });
+
+// ─── #4402 CA-4 — conteo consecutivo en el payload + alerta 3-fallos ─────────
+
+test('decide: el payload incluye consecutive_count (arranca en 1)', () => {
+    const f = tmpFile();
+    const r = alerts.decide({
+        provider: 'anthropic',
+        state: 'red',
+        reasonCode: 'invalid_credentials',
+        dedupFile: f,
+    });
+    assert.equal(r.shouldEmit, true);
+    assert.equal(r.payload.consecutive_count, 1, 'primera emisión → x1');
+});
+
+test('decide: consecutive_count escala 1→2→3 en fallos rojos sostenidos (Anthropic auth-error x3)', () => {
+    const f = tmpFile();
+    let now = Date.now();
+
+    // Fallo 1 → x1, se registra el envío.
+    let r = alerts.decide({ provider: 'anthropic', state: 'red', reasonCode: 'invalid_credentials', dedupFile: f, now });
+    assert.equal(r.shouldEmit, true);
+    assert.equal(r.payload.consecutive_count, 1);
+    alerts.record({ provider: 'anthropic', state: 'red', sent: true, dedupFile: f, now });
+
+    // Fallo 2 → tras superar el back-off (30 min) → x2.
+    now += 31 * 60 * 1000;
+    r = alerts.decide({ provider: 'anthropic', state: 'red', reasonCode: 'invalid_credentials', dedupFile: f, now });
+    assert.equal(r.shouldEmit, true);
+    assert.equal(r.payload.consecutive_count, 2);
+    alerts.record({ provider: 'anthropic', state: 'red', sent: true, dedupFile: f, now });
+
+    // Fallo 3 → tras superar el back-off (60 min) → x3.
+    now += 61 * 60 * 1000;
+    r = alerts.decide({ provider: 'anthropic', state: 'red', reasonCode: 'invalid_credentials', dedupFile: f, now });
+    assert.equal(r.shouldEmit, true);
+    assert.equal(r.payload.consecutive_count, 3, 'tercer fallo consecutivo → x3');
+});
+
+test('decide: consecutive_count nunca vuelca el body crudo del 401 (RS-5.3)', () => {
+    const f = tmpFile();
+    const r = alerts.decide({
+        // reason provider-specific que intenta filtrar → se mapea a unknown.
+        provider: 'anthropic',
+        state: 'red',
+        reasonCode: '401 Unauthorized: {"error":"invalid x-api-key"}',
+        dedupFile: f,
+    });
+    assert.equal(r.shouldEmit, true);
+    assert.equal(r.payload.reason_code, 'unknown', 'reason libre → enum cerrado (unknown)');
+    const serialized = JSON.stringify(r.payload);
+    assert.ok(!/x-api-key|401 Unauthorized/i.test(serialized), 'no filtra el body crudo del 401');
+});

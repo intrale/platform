@@ -32,6 +32,8 @@ const { URL } = require('node:url');
 
 const secretsRw = require('./secrets-rw');
 const httpClassifier = require('../http-error-classifier');
+// #4402 — fuente única de la lógica CLI-OAuth (compartida con health-cron.js).
+const { probeCliProvider } = require('./cli-oauth-probe');
 
 // -----------------------------------------------------------------------------
 // classifyForLivePing — adapta el output del clasificador al shape histórico
@@ -204,9 +206,23 @@ function isAllowedProvider(provider) {
     return Object.prototype.hasOwnProperty.call(PROVIDER_PING_ENDPOINTS, provider);
 }
 
-async function ping({ provider, secretsPath, fsImpl, httpImpl, nowMs, minIntervalMs } = {}) {
+async function ping({ provider, secretsPath, fsImpl, httpImpl, nowMs, minIntervalMs, cliProbe } = {}) {
     if (!isAllowedProvider(provider)) {
         return { ok: false, reason: 'unknown_provider', provider };
+    }
+    // #4402 CA-1 — Providers CLI-OAuth (anthropic MAX / codex): el pipeline los
+    // usa por la CLI con OAuth, NO por API key. Validamos la sesión OAuth vía la
+    // presencia del binario (camino LOCAL: scan de PATH, sin HTTP, sin cuota) en
+    // vez de exigir una API key. Esto cierra el false-negative histórico
+    // (`no_key_configured` en verde real). Va ANTES del gate `getRawKey` y del
+    // throttle facturable de #3965 (que sólo protege llamadas HTTP con costo).
+    //
+    // RS-5.1/5.2 — este camino NUNCA lee ni devuelve la key/token: usa la misma
+    // fuente única (`probeCliProvider`) que health-cron, garantizando el mismo
+    // `reason_code` (`cli_oauth_ok` / `cli_unavailable`) en ping manual y tick.
+    const managedSpec = secretsRw.MANAGED_KEYS.find(k => k.provider === provider);
+    if (managedSpec && managedSpec.auth_mode === 'oauth') {
+        return { ...probeCliProvider({ provider, cli_binary: managedSpec.cli_binary }, { fsImpl, cliProbe }), provider };
     }
     const key = secretsRw.getRawKey({ provider, secretsPath, fsImpl });
     if (!key) {
