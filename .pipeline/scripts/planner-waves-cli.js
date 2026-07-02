@@ -8,6 +8,11 @@
 //   node .pipeline/scripts/planner-waves-cli.js componer-ola <N> [--force]
 //   node .pipeline/scripts/planner-waves-cli.js componer-ola <N> --json
 //     (formato solo-JSON para consumo programático downstream)
+//   node .pipeline/scripts/planner-waves-cli.js roadmap
+//     (#4376 — vista unificada: activa / planificadas / archivadas con issues)
+//   node .pipeline/scripts/planner-waves-cli.js crear-ola --nombre <n>
+//     --concurrency <c> --window <m> --issues <#a #b> [--objetivo <o>]
+//     (#4376 — crea una ola planificada sin editar waves.json a mano)
 //
 // Diseño:
 //   - I/O del filesystem (waves.json) → lib/waves.js (entregado por #3489 H1).
@@ -264,12 +269,107 @@ function cmdComponerOla(rawN, opts) {
     }
 }
 
+// #4376 (split #4351) — crear-ola: crea una ola planificada sin editar el JSON
+// a mano. Reusa `createPlannedWave` (único punto de mutación, CA-3) y la MISMA
+// validación de input que el subcomando Commander `/wave create`
+// (`lib/wave-create-input`, CA-4). Flags: --nombre --objetivo --concurrency
+// --window --issues. Numeración auto-asignada (Opción A, cerrada por PO).
+function cmdCrearOla(rawArgs) {
+    const wci = require('../lib/wave-create-input');
+    // argv es un array (no shell string) → reconstruimos la cadena de flags para
+    // el parser de flags nombrados con valores que pueden contener espacios. No
+    // se concatena input a paths ni comandos (A03 command/path injection).
+    const raw = Array.isArray(rawArgs) ? rawArgs.join(' ') : String(rawArgs || '');
+    const flags = wci.parseNamedFlags(raw);
+    const res = wci.validateCreateInput(flags);
+    if (!res.ok) {
+        die(1, `input inválido (${res.field}): ${res.error}`);
+    }
+
+    let created;
+    try {
+        created = waves.createPlannedWave(res.spec, {
+            updated_by: process.env.USER || process.env.USERNAME || 'operator-local',
+            source: 'planner-waves-cli/crear-ola',
+            note: `create planned wave "${res.spec.name}" con ${res.spec.issues.length} issue(s)`,
+        });
+    } catch (err) {
+        // Errores semánticos del core (duplicado nombre/issue, bounds) → mensaje
+        // accionable + exit 1 (input inválido). Sin escritura parcial (atómico).
+        die(1, `no se pudo crear la ola: ${err.message}`);
+        return;
+    }
+
+    process.stdout.write(renderCrearOlaOk(created));
+    process.stdout.write('\n');
+}
+
+function renderCrearOlaOk(created) {
+    const w = created.wave;
+    const lines = [
+        `✅ Ola ${created.waveNumber} creada — ${w.name}`,
+    ];
+    if (w.goal) lines.push(`   🎯 Objetivo: ${w.goal}`);
+    lines.push(`   ⏱ Ventana: ${w.window_minutes} min · ⚙️ Concurrency: ${w.concurrency_max}`);
+    lines.push(`   📦 Issues (${w.issues.length}): ${w.issues.map((i) => '#' + i.number).join(', ')}`);
+    lines.push('   (número auto-asignado · active_wave intacta · waves.json versionado atómicamente)');
+    return lines.join('\n');
+}
+
+// #4376 — roadmap: vista unificada del roadmap completo reusando `listWaves()`.
+// Muestra las tres categorías (activa / planificadas en orden asc / archivadas
+// más recientes primero), cada una con sus issues (CA-2). Categoría vacía →
+// placeholder claro (UX-1). Consistente con `/wave status` en Commander (UX-4).
+function cmdRoadmap() {
+    const wavesList = waves.listWaves();
+    process.stdout.write(renderRoadmap(wavesList));
+    process.stdout.write('\n');
+}
+
+function renderRoadmap(wavesList) {
+    const list = Array.isArray(wavesList) ? wavesList : [];
+    const active = list.filter((w) => w.status === 'active');
+    const planned = list
+        .filter((w) => w.status === 'planned')
+        .sort((a, b) => Number(a.number) - Number(b.number));
+    const archived = list
+        .filter((w) => w.status === 'archived' || w.status === 'closed')
+        .sort((a, b) => Number(b.number) - Number(a.number));
+
+    const fmtIssues = (w) => {
+        if (!Array.isArray(w.issues) || w.issues.length === 0) return '(sin issues)';
+        return w.issues
+            .map((i) => (i && typeof i === 'object' ? '#' + i.number : '#' + i))
+            .join(', ');
+    };
+    const fmtWave = (w) => {
+        const head = `  • Ola ${w.number} — ${w.name || '(sin nombre)'}`;
+        const goal = w.goal ? `\n    Objetivo: ${w.goal}` : '';
+        return `${head}${goal}\n    Issues: ${fmtIssues(w)}`;
+    };
+
+    const out = ['## Roadmap de olas', ''];
+
+    out.push('🟢 Activa');
+    out.push(active.length ? active.map(fmtWave).join('\n') : '  — sin ola activa —');
+    out.push('');
+
+    out.push('🟡 Planificadas (orden ascendente)');
+    out.push(planned.length ? planned.map(fmtWave).join('\n') : '  — sin olas planificadas —');
+    out.push('');
+
+    out.push('✅ Archivadas (más recientes primero)');
+    out.push(archived.length ? archived.map(fmtWave).join('\n') : '  — sin olas archivadas —');
+
+    return out.join('\n');
+}
+
 // ─── Entry point ──────────────────────────────────────────────────────────
 
 function main(argv) {
     const [, , cmd, ...rest] = argv;
     if (!cmd) {
-        die(4, 'Uso: olas | horizonte <N> | componer-ola <N> [--force] [--json]');
+        die(4, 'Uso: olas | roadmap | horizonte <N> | componer-ola <N> [--force] [--json] | crear-ola --nombre <n> --concurrency <c> --window <m> --issues <#a #b> [--objetivo <o>]');
     }
 
     const opts = {
@@ -287,8 +387,12 @@ function main(argv) {
         case 'componer-ola':
             if (positional.length < 1) die(4, 'Uso: componer-ola <N> [--force] [--json]');
             return cmdComponerOla(positional[0], opts);
+        case 'crear-ola':
+            return cmdCrearOla(rest);
+        case 'roadmap':
+            return cmdRoadmap();
         default:
-            die(4, `Comando desconocido: ${cmd}. Válidos: olas, horizonte, componer-ola`);
+            die(4, `Comando desconocido: ${cmd}. Válidos: olas, roadmap, horizonte, componer-ola, crear-ola`);
     }
 }
 
@@ -300,4 +404,14 @@ if (require.main === module) {
     }
 }
 
-module.exports = { main, loadCapacityConfig, ghIssueList, fetchOpenIssueNumbers };
+module.exports = {
+    main,
+    loadCapacityConfig,
+    ghIssueList,
+    fetchOpenIssueNumbers,
+    // #4376 — exports para tests de la vista roadmap y creación de olas.
+    renderRoadmap,
+    renderCrearOlaOk,
+    cmdCrearOla,
+    cmdRoadmap,
+};

@@ -181,3 +181,68 @@ test('createPlannedWave asigna números de ola incrementales', () => {
         teardownTmp(dir);
     }
 });
+
+// -----------------------------------------------------------------------------
+// #4376 (split #4351) — idempotencia de creación + vista roadmap (CA-2/CA-6)
+// -----------------------------------------------------------------------------
+
+test('createPlannedWave: idempotencia - reintento mismo nombre no duplica ni corrompe (CA-6)', () => {
+    const { dir, waves } = setupTmp();
+    try {
+        waves.createPlannedWave({ name: 'Idem', issues: [1, 2], concurrency_max: 2, window_minutes: 30 }, {});
+        assert.ok(expectThrowCode(
+            () => waves.createPlannedWave({ name: 'Idem', issues: [3, 4], concurrency_max: 2, window_minutes: 30 }, {}),
+            'EWAVES_DUPLICATE_NAME',
+        ));
+        const st = readWaves(dir);
+        assert.equal(st.planned_waves.filter((w) => w.name === 'Idem').length, 1);
+        // Integridad: el estado sigue siendo válido tras el rechazo.
+        assert.doesNotThrow(() => waves.validateStateStrict(st));
+    } finally {
+        teardownTmp(dir);
+    }
+});
+
+test('renderRoadmap: muestra activa / planificadas (asc) / archivadas con issues (CA-2)', () => {
+    const cli = require('../../scripts/planner-waves-cli');
+    const wavesList = [
+        { number: 5, status: 'active', name: 'Activa', goal: 'objetivo activo', issues: [{ number: 500 }, { number: 501 }] },
+        { number: 7, status: 'planned', name: 'Plan B', issues: [{ number: 700 }] },
+        { number: 6, status: 'planned', name: 'Plan A', issues: [{ number: 600 }] },
+        { number: 3, status: 'archived', name: 'Vieja', issues: [{ number: 300 }] },
+        { number: 4, status: 'archived', name: 'Menos vieja', issues: [{ number: 400 }] },
+    ];
+    const out = cli.renderRoadmap(wavesList);
+    // Tres categorías presentes.
+    assert.ok(/Activa/.test(out));
+    assert.ok(/Planificadas/.test(out));
+    assert.ok(/Archivadas/.test(out));
+    // Issues renderizados.
+    assert.ok(/#500, #501/.test(out));
+    assert.ok(/#700/.test(out) && /#600/.test(out));
+    // Planificadas en orden ascendente (Plan A / ola 6 antes que Plan B / ola 7).
+    assert.ok(out.indexOf('Ola 6') < out.indexOf('Ola 7'));
+    // Archivadas más recientes primero (ola 4 antes que ola 3).
+    assert.ok(out.indexOf('Ola 4') < out.indexOf('Ola 3'));
+});
+
+test('renderRoadmap: categoria vacia muestra placeholder claro (UX-1)', () => {
+    const cli = require('../../scripts/planner-waves-cli');
+    const out = cli.renderRoadmap([]);
+    assert.ok(/sin ola activa/i.test(out));
+    assert.ok(/sin olas planificadas/i.test(out));
+    assert.ok(/sin olas archivadas/i.test(out));
+});
+
+test('renderRoadmap: refleja el estado real tras createPlannedWave (listWaves) (CA-2)', () => {
+    const { dir, waves } = setupTmp();
+    try {
+        waves.createPlannedWave({ name: 'Roadmap Test', issues: [9001, 9002], concurrency_max: 2, window_minutes: 60 }, {});
+        const cli = require('../../scripts/planner-waves-cli');
+        const out = cli.renderRoadmap(waves.listWaves());
+        assert.ok(/Roadmap Test/.test(out));
+        assert.ok(/#9001, #9002/.test(out));
+    } finally {
+        teardownTmp(dir);
+    }
+});
