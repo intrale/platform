@@ -524,6 +524,13 @@ try { providerHealth = require('./provider-health'); } catch { /* opcional */ }
 let waves = null;
 try { waves = require('./waves'); } catch { /* opcional */ }
 
+// #4372 — Superficie HTTP `/api/waves/*` (API de gestión de olas, Ola 8.3).
+// Módulo autocontenido: reads + mutaciones con su propio cinturón de gates,
+// If-Match/ETag, idempotencia, rate-limit y auditoría. Si no carga, la superficie
+// simplemente no se ofrece (el resto del dashboard sigue intacto).
+let wavesApi = null;
+try { wavesApi = require('./waves-api'); } catch { /* opcional */ }
+
 // #4330 — Resolver de hijos de split vivos en la allowlist. El board "Issues de
 // la ola" se arma desde `waves.json → active_wave.issues`, pero los hijos que un
 // split del pipeline agrega a la allowlist (`.partial-pause.json`) nunca llegan
@@ -1663,6 +1670,12 @@ function handle(req, res, ctx) {
     // #3962 EP8-H9 CA-4 — endpoint mutante del presupuesto mensual. Mismo lugar
     // que ack/snooze: ANTES del gate GET-only, con su propio cinturón de gates.
     if (handleBudgetMutation(req, res)) return true;
+
+    // #4372 — API de gestión de olas `/api/waves/*` + `/api/roadmap/status`.
+    // Se evalúa ANTES del gate GET-only: incluye mutaciones (POST/PATCH/DELETE/PUT)
+    // con su propio cinturón de gates (loopback + same-origin + credencial +
+    // If-Match + rate-limit). Las lecturas GET también las maneja este módulo.
+    if (wavesApi && wavesApi.handleWavesApi(req, res, ctx)) return true;
 
     if (req.method !== 'GET') return false;
 
