@@ -41,6 +41,13 @@ try { agentModelsLib = require('./agent-models'); } catch { /* opcional */ }
 let quotaAdaptersLib = null;
 try { quotaAdaptersLib = require('./quota-adapters'); } catch { /* opcional */ }
 
+// #4365 — re-probe activo de Codex para des-atascar el estado `no_usage_data`/
+// `no_quota`. REUSAMOS `probeCodexHealth` (spawn `codex --version`): OFFLINE,
+// cero tokens, cero costo (security req#2). NUNCA dispara generación real ni
+// HTTP. El re-probe es rate-limited (persistido en cache) para no martillar.
+let codexLauncherLib = null;
+try { codexLauncherLib = require('./agent-launcher/providers/openai-codex'); } catch { /* opcional */ }
+
 // Cache TTL: piso 5 min (CA-5 del PO). Hardcoded para que config no pueda
 // bajar y amplificar tráfico contra providers.
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -57,6 +64,26 @@ const QUOTA_GATE_REASON = 'quota_exhausted_real';
 // (p.ej. nvidia-nim) caen a adapterStatus 'error' → fail-open (no degradan).
 const QUOTA_PROVIDER_ALIAS = Object.freeze({ openai: 'openai-codex' });
 const CACHE_FILE_SUBDIR = path.join('cache', 'provider-health.json');
+
+// #4365 — reason_code no-durable que marca que un provider degradado por
+// AUSENCIA DE DATO (`no_usage_data`/`no_quota`) fue re-verificado vivo por el
+// probe offline. NO gatea (fail-open): sólo documenta la reincorporación.
+const QUOTA_REPROBE_HEALTHY_REASON = 'quota_reprobe_healthy';
+
+// Estados degradados por "sin dato de consumo" que habilitan el re-probe. NO
+// incluye 'critical' real (ese jamás se re-incorpora — security req#5 / #4283).
+const REPROBE_ELIGIBLE_STATUSES = Object.freeze(['no_usage_data', 'no_quota']);
+
+// Intervalo mínimo entre re-probes (rate-limit anti-martilleo). Configurable por
+// env con piso defensivo de 60s para que config no pueda spamear spawns.
+const REPROBE_MIN_INTERVAL_MS = (() => {
+    const raw = Number(process.env.CODEX_REPROBE_MIN_INTERVAL_MS);
+    if (Number.isFinite(raw) && raw >= 60 * 1000) return raw;
+    return 5 * 60 * 1000; // 5 min por defecto (mismo orden que el cache TTL).
+})();
+
+const REPROBE_STATE_SUBDIR = path.join('cache', 'codex-reprobe.json');
+const REPROBE_AUDIT_SUBDIR = path.join('logs', 'provider-reprobe.jsonl');
 
 // -----------------------------------------------------------------------------
 // Path helpers
@@ -199,9 +226,11 @@ function repoRootDir(opts = {}) {
  * Regla de combinación (NO fail-closed — ver Riesgos del issue):
  *   - adapterStatus 'ok' + status 'critical' (uso ≥90%) → `gated:true`,
  *     reason_code 'quota_exhausted_real'.
- *   - adapterStatus 'unknown' | 'error' | 'no_quota' | 'not_implemented' →
- *     `gated:false` (fail-open): NO degradamos, se mantiene el estado
- *     login-based. Coherente con la política fail-open del router (MP-09).
+ *   - adapterStatus 'unknown' | 'error' | 'no_quota' | 'no_usage_data' |
+ *     'not_implemented' → `gated:false` (fail-open): NO degradamos, se mantiene
+ *     el estado login-based. Coherente con la política fail-open del router
+ *     (MP-09). #4365 — `no_usage_data` ("sin consumo medido") se trata igual que
+ *     `no_quota`: fail-open + re-probe no-durable (ver `maybeReprobeCodex`).
  *
  * El umbral 'critical' (≥90%) lo decide el adapter desde `quota-thresholds.js`
  * (`DEFAULT_PCT_RED`). NO se hardcodea un 90 nuevo acá: una sola fuente de
@@ -217,6 +246,117 @@ function repoRootDir(opts = {}) {
  * @param {number} [opts.now] — timestamp determinístico (tests).
  * @returns {{ adapterStatus:string, status:string, pct:(number|null), gated:boolean, reason_code:(string|null) }}
  */
+// -----------------------------------------------------------------------------
+// #4365 — Re-probe activo de Codex (offline, rate-limited)
+// -----------------------------------------------------------------------------
+
+function reprobeStateFile(opts = {}) {
+    return path.join(pipelineDir(opts), REPROBE_STATE_SUBDIR);
+}
+
+/**
+ * Lectura defensiva del estado persistido del re-probe. Nunca lanza.
+ * @returns {{ ts:number, healthy:boolean }|null}
+ */
+function readReprobeState(opts = {}) {
+    try {
+        const raw = fs.readFileSync(reprobeStateFile(opts), 'utf8');
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return null;
+        const ts = Number(parsed.ts);
+        if (!Number.isFinite(ts)) return null;
+        return { ts, healthy: parsed.healthy === true };
+    } catch { return null; }
+}
+
+function writeReprobeState(state, opts = {}) {
+    const file = reprobeStateFile(opts);
+    ensureDir(path.dirname(file));
+    const tmp = `${file}.${process.pid}.${state.ts}.tmp`;
+    try {
+        fs.writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 });
+        fs.renameSync(tmp, file);
+    } catch { try { fs.unlinkSync(tmp); } catch {} }
+}
+
+/**
+ * Deja traza de auditoría de la transición de salud del re-probe (OWASP A09 /
+ * security req: "el re-probe debe dejar traza de por qué un provider volvió a
+ * estar disponible"). Best-effort, nunca lanza, sin secrets.
+ */
+function auditReprobe(entry, opts = {}) {
+    try {
+        const file = path.join(pipelineDir(opts), REPROBE_AUDIT_SUBDIR);
+        ensureDir(path.dirname(file));
+        fs.appendFileSync(file, JSON.stringify(entry) + '\n');
+    } catch { /* best-effort */ }
+}
+
+/**
+ * Re-probe no-durable y rate-limited de Codex. REUSA `probeCodexHealth`
+ * (spawn `codex --version`): OFFLINE, cero tokens, cero costo, cero HTTP.
+ * Sólo aplica a providers degradados por AUSENCIA DE DATO — NUNCA a un
+ * `critical` real (ese jamás se reincorpora, security req#5).
+ *
+ * @param {object} opts
+ *   @property {function} [probeCodexImpl]      override del probe (tests).
+ *   @property {function} [reprobeStateReadImpl] override lectura de estado (tests).
+ *   @property {function} [reprobeStateWriteImpl] override escritura de estado (tests).
+ *   @property {function} [auditImpl]           override de auditoría (tests).
+ *   @property {number}   [reprobeMinIntervalMs] override del rate-limit (tests).
+ * @param {number} now — epoch ms.
+ * @returns {{ healthy:boolean, ts:number, cached:boolean }|null} null si el
+ *   probe no está disponible (módulo ausente en tests/edge).
+ */
+function maybeReprobeCodex(opts = {}, now = Date.now()) {
+    const probeFn = opts.probeCodexImpl
+        || (codexLauncherLib && typeof codexLauncherLib.probeCodexHealth === 'function'
+            ? codexLauncherLib.probeCodexHealth
+            : null);
+    if (typeof probeFn !== 'function') return null;
+
+    const minInterval = Number.isFinite(opts.reprobeMinIntervalMs)
+        ? opts.reprobeMinIntervalMs
+        : REPROBE_MIN_INTERVAL_MS;
+
+    const readState = opts.reprobeStateReadImpl || (() => readReprobeState(opts));
+    const prev = readState();
+
+    // Rate-limit: si el último probe es reciente, reusamos su resultado sin
+    // spawnear de nuevo (anti-martilleo — security req#2).
+    if (prev && Number.isFinite(prev.ts) && (now - prev.ts) < minInterval) {
+        return { healthy: !!prev.healthy, ts: prev.ts, cached: true };
+    }
+
+    let probe;
+    try {
+        probe = probeFn({ now: Number.isFinite(opts.now) ? opts.now : undefined });
+    } catch {
+        // Fallo del probe: devolvemos el estado previo si existe (fail-open).
+        return prev ? { healthy: !!prev.healthy, ts: prev.ts, cached: true } : null;
+    }
+    const healthy = !!(probe && probe.ok);
+    const state = { ts: now, healthy };
+
+    const writeState = opts.reprobeStateWriteImpl || ((s) => writeReprobeState(s, opts));
+    writeState(state);
+
+    // Traza sólo en transición (evita ruido en el log de auditoría).
+    if (!prev || prev.healthy !== healthy) {
+        const audit = opts.auditImpl || ((e) => auditReprobe(e, opts));
+        audit({
+            ts: new Date(now).toISOString(),
+            provider: 'openai-codex',
+            event: 'quota_reprobe',
+            from: prev ? (prev.healthy ? 'healthy' : 'unhealthy') : 'unknown',
+            to: healthy ? 'healthy' : 'unhealthy',
+            source: 'probeCodexHealth(--version)',
+        });
+    }
+
+    return { healthy, ts: now, cached: false };
+}
+
 function assessProviderQuota(provider, opts = {}) {
     const safe = { adapterStatus: 'unknown', status: 'unknown', pct: null, gated: false, reason_code: null };
     const quotaUsageFn = opts.quotaUsageImpl
@@ -249,13 +389,39 @@ function assessProviderQuota(provider, opts = {}) {
     // Gatear SOLO con señal fresca y durable: adapter OK + cuota crítica (≥90%).
     const gated = adapterStatus === 'ok' && status === 'critical';
 
-    return {
+    const out = {
         adapterStatus,
         status,
         pct,
         gated,
         reason_code: gated ? QUOTA_GATE_REASON : null,
     };
+
+    // #4365 — Re-probe no-durable cuando el provider está degradado por AUSENCIA
+    // DE DATO (`no_usage_data`/`no_quota`). El flujo ya es fail-open (gated=false
+    // → el router NO lo descarta), pero un provider realmente vivo debe seguir
+    // disponible sin intervención manual y dejar traza de por qué. Reusamos el
+    // probe offline `probeCodexHealth` (spawn --version), rate-limited. SOLO
+    // aplica a Codex y NUNCA sobreescribe un `critical` real (security req#5).
+    if (canonical === 'openai-codex' && !gated
+        && REPROBE_ELIGIBLE_STATUSES.includes(adapterStatus)
+        && opts.reprobe !== false) {
+        const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+        const rp = maybeReprobeCodex(opts, now);
+        if (rp) {
+            // Exponemos el resultado del re-probe SIN tocar `reason_code` (que es
+            // exclusivo del gateo): el provider ya está disponible por fail-open.
+            // La reincorporación queda documentada en `reprobe` + audit log.
+            out.reprobe = {
+                healthy: rp.healthy,
+                ts: rp.ts,
+                cached: rp.cached,
+                reason: rp.healthy ? QUOTA_REPROBE_HEALTHY_REASON : 'quota_reprobe_unhealthy',
+            };
+        }
+    }
+
+    return out;
 }
 
 // -----------------------------------------------------------------------------
@@ -494,4 +660,11 @@ module.exports = {
     CACHE_TTL_MS,
     CACHE_FILE_SUBDIR,
     QUOTA_GATE_REASON,
+    // #4365 — re-probe activo (offline, rate-limited).
+    maybeReprobeCodex,
+    readReprobeState,
+    writeReprobeState,
+    QUOTA_REPROBE_HEALTHY_REASON,
+    REPROBE_ELIGIBLE_STATUSES,
+    REPROBE_MIN_INTERVAL_MS,
 };
