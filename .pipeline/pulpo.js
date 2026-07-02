@@ -10182,15 +10182,30 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
     let skillTimedOutInfo = null; // { skillName, durationMs }
 
     // =============================================================================
-    // #3577 — Detectores in-stream SHADOW (parte 1/2 del split de #3472).
+    // #3577 — Detectores in-stream (parte 1/2 del split de #3472).
     //
-    // Observan first-byte/stream-gap/eof-premature/transient-5xx y emiten al
-    // audit log SIN matar el primario ni spawnear secundario. Wire-up real va
-    // en #3578. Ver `lib/commander/inflight-shadow-detectors.js` y el CA del PO.
+    // ESTE bloque (líneas 10184-10220) es SOLO telemetría de DECISIÓN:
+    // `_emitShadowSignal` observa first-byte/stream-gap/eof-premature/transient-5xx
+    // y escribe la señal `inflight_signal_observed` al audit log (SR-S2, hash del
+    // parcial, nunca contenido). NO mata el primario ni spawnea el secundario.
+    //
+    // La EJECUCIÓN real del fallback in-flight vive a partir de la línea 10222
+    // (`_maybeExecuteInflightFallback`, #4309 — revive #3578): se invoca DESPUÉS
+    // de `_emitShadowSignal` en cada detector y, con `inflight_fallback.execution_enabled`
+    // ON (default, config.yaml:728), mata el primario Anthropic y spawnea el
+    // secundario vía `inflightExecutor.runInflightFallback`. Ver
+    // `lib/inflight-executor.js`, `lib/commander/inflight-fallback.js` y el CA del PO.
+    //
+    // Histórico: #3578 ("wire-up live") se cerró sin entregar el ejecutor; #4309
+    // (+ #4311/#4312/#4313/#4317/#4322) lo retomó. El docstring viejo prohibía
+    // invocar decideInflightFallback/acquireInflightLock (SHADOW puro) — esa
+    // prohibición YA NO aplica: el split shadow/exec está completo. #3886 reconcilió
+    // este comentario con el runtime.
     //
     // CA-A5: HARD_TIMEOUT 10min intocado.
     // CA-A6: SKILL_WATCHDOG_MS intocado; pendingSkillCalls NUNCA se muta acá.
-    // CA-S7: PROHIBIDO invocar decideInflightFallback/acquireInflightLock/etc.
+    // (No confundir con la ocurrencia `CA-S7` del debounce en ~pulpo.js:11592,
+    //  que es de otro subsistema y queda intacta.)
     // =============================================================================
     let lastLineAt = 0;            // CA-A2: timestamp del último line recibido del rl
     let firstByteFired = false;    // CA-A1: flag — solo emitir UNA vez por turn
