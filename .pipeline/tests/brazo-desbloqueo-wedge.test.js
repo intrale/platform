@@ -20,6 +20,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
 const { execSync } = require('child_process');
 
 process.env.PULPO_NO_AUTOSTART = '1';
@@ -71,6 +73,82 @@ function resetState() {
   _setUnblockState({ running: false, startedAt: 0, activePid: null, reentryLastWarn: 0 });
   _setLastUnblockTime(0);
 }
+
+// =============================================================================
+// #4361 — End-to-end: `depends_on: [N]` en body → resuelto → liberado a
+// pendiente/ cuando la dep cierra. Encadena las 3 piezas reales del flujo del
+// brazo: dep-resolver (detección de sintaxis), brazo-desbloqueo-core (decisión
+// pura) y rebote-classifier (efecto FS), con estados de issue mockeados.
+// =============================================================================
+
+test('#4361 e2e: issue con `depends_on: [N]` en body se libera a pendiente/ al cerrar la dep', () => {
+  const { resolveDependencies } = require('../lib/dep-resolver');
+  const { selectMarkersToRelease } = require('../lib/brazo-desbloqueo-core');
+
+  // Aislar PIPELINE en tmp (mismo patrón que brazo-desbloqueo-core.test.js).
+  const prevProjectDir = process.env.CLAUDE_PROJECT_DIR;
+  const prevRepoRoot = process.env.PIPELINE_REPO_ROOT;
+  const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-desbloqueo-e2e-4361-'));
+  fs.mkdirSync(path.join(TMP, '.claude'), { recursive: true });
+  process.env.CLAUDE_PROJECT_DIR = TMP;
+  process.env.PIPELINE_REPO_ROOT = TMP;
+  delete require.cache[require.resolve('../lib/traceability')];
+  delete require.cache[require.resolve('../lib/rebote-classifier')];
+  const reboteClassifier = require('../lib/rebote-classifier');
+
+  try {
+    // 1) DETECCIÓN — el body del dependiente declara `depends_on: [4255]`.
+    //    (sintaxis nueva B4, la que hoy usaría un issue como #4300).
+    const body = [
+      '## Contexto',
+      '',
+      'Hijo del épico #4255.',
+      '',
+      'depends_on: [4255]',
+    ].join('\n');
+    const resolved = resolveDependencies({ body, comments: [], selfIssue: 4300 });
+    assert.equal(resolved.source, 'body', 'B4 debe resolver desde el body');
+    assert.deepEqual(resolved.deps, [4255]);
+
+    // 2) FS — el work-file del dependiente vive en bloqueado-dependencias/.
+    const pipeline = 'desarrollo';
+    const phase = 'dev';
+    const issue = 4300;
+    const blockedDir = path.join(TMP, '.pipeline', pipeline, phase, reboteClassifier.DEPS_BLOCK_SUBDIR);
+    const pendienteDir = path.join(TMP, '.pipeline', pipeline, phase, 'pendiente');
+    fs.mkdirSync(blockedDir, { recursive: true });
+    const wf = path.join(blockedDir, `${issue}.pipeline-dev`);
+    fs.writeFileSync(wf, 'issue: 4300\nfase: dev\npipeline: desarrollo\n', 'utf8');
+
+    // 3a) DECISIÓN — con #4255 aún OPEN, permanece bloqueado.
+    const stillBlocked = selectMarkersToRelease({
+      markers: [{ issue, deps: resolved.deps }],
+      issueStates: { 4255: 'OPEN' },
+    });
+    assert.equal(stillBlocked.toRelease.length, 0, 'con dep abierta no libera');
+    assert.ok(fs.existsSync(wf), 'work-file sigue en bloqueado-dependencias/');
+
+    // 3b) DECISIÓN — al cerrar #4255, se libera.
+    const { toRelease } = selectMarkersToRelease({
+      markers: [{ issue, deps: resolved.deps }],
+      issueStates: { 4255: 'CLOSED' },
+    });
+    assert.deepEqual(toRelease.map((m) => m.issue), [issue]);
+
+    // 4) EFECTO FS — reingreso a pendiente/.
+    const res = reboteClassifier.releaseDependencyBlockToPendiente({ issue });
+    assert.ok(res && res.moved >= 1, 'debe mover al menos un archivo');
+    assert.ok(fs.existsSync(path.join(pendienteDir, `${issue}.pipeline-dev`)), 're-promovido a pendiente/');
+    assert.ok(!fs.existsSync(wf), 'ya no está en bloqueado-dependencias/');
+  } finally {
+    delete require.cache[require.resolve('../lib/rebote-classifier')];
+    delete require.cache[require.resolve('../lib/traceability')];
+    if (prevProjectDir === undefined) delete process.env.CLAUDE_PROJECT_DIR;
+    else process.env.CLAUDE_PROJECT_DIR = prevProjectDir;
+    if (prevRepoRoot === undefined) delete process.env.PIPELINE_REPO_ROOT;
+    else process.env.PIPELINE_REPO_ROOT = prevRepoRoot;
+  }
+});
 
 // =============================================================================
 // CA-3 (security): sanitización de args sensibles

@@ -34,6 +34,7 @@ const {
     parseCanonicalBlock,
     parseGenericSection,
     parseDependsLines,
+    parseDependsOnField,
     isValidIssueNum,
     MAX_DEPS,
     MAX_ISSUE_NUM,
@@ -136,6 +137,105 @@ test('CA-3/B3: NO detecta verbo en medio de párrafo (no anclado)', () => {
     const body = 'Este PR Depends on #1234 según el changelog.';
     const out = parseDependsLines(body, null);
     assert.deepEqual(out, []);
+});
+
+// -----------------------------------------------------------------------------
+// Grupo A2 — B4: campo manifest `depends_on:` (issue #4361)
+// -----------------------------------------------------------------------------
+
+test('B4: depends_on con array de un elemento `[N]`', () => {
+    assert.deepEqual(parseDependsOnField('depends_on: [4255]', null), [4255]);
+});
+
+test('B4: depends_on con array de varios elementos `[N, M]`', () => {
+    assert.deepEqual(parseDependsOnField('depends_on: [4255, 4256]', null), [4255, 4256]);
+});
+
+test('B4: depends_on sin brackets `N`', () => {
+    assert.deepEqual(parseDependsOnField('depends_on: 4255', null), [4255]);
+});
+
+test('B4: depends_on con `#` `[#N]`', () => {
+    assert.deepEqual(parseDependsOnField('depends_on: [#4255]', null), [4255]);
+});
+
+test('B4: depends_on case-insensitive y con espacios alrededor del `:`', () => {
+    assert.deepEqual(parseDependsOnField('DEPENDS_ON : [4255]', null), [4255]);
+    assert.deepEqual(parseDependsOnField('  depends_on:[4255,4256]', null), [4255, 4256]);
+});
+
+test('B4: fail-closed — `depends_on: []` → []', () => {
+    assert.deepEqual(parseDependsOnField('depends_on: []', null), []);
+});
+
+test('B4: fail-closed — `depends_on:` vacío → []', () => {
+    assert.deepEqual(parseDependsOnField('depends_on:', null), []);
+});
+
+test('B4: fail-closed — negación `does not depend_on: [N]` → []', () => {
+    const body = [
+        'does not depend_on: [4255]',
+        'this issue no longer depends_on: [4256]',
+    ].join('\n');
+    assert.deepEqual(parseDependsOnField(body, null), []);
+});
+
+test('B4: fail-closed — segmento narrativo tras el campo → []', () => {
+    assert.deepEqual(parseDependsOnField('depends_on: el issue #4255 cuando cierre', null), []);
+});
+
+test('B4: dentro de code fence → ignorado', () => {
+    const body = [
+        '```yaml',
+        'depends_on: [4255]',
+        '```',
+    ].join('\n');
+    assert.deepEqual(parseDependsOnField(body, null), []);
+});
+
+test('B4: bounds — `[0]`, `[-1]`, `[9999999]` filtrados', () => {
+    assert.deepEqual(parseDependsOnField('depends_on: [0]', null), []);
+    // `-1` contiene guion → segmento inválido → línea descartada.
+    assert.deepEqual(parseDependsOnField('depends_on: [-1]', null), []);
+    assert.deepEqual(parseDependsOnField('depends_on: [9999999]', null), []);
+});
+
+test('B4: dedup dentro de la misma declaración y self-exclusion', () => {
+    assert.deepEqual(parseDependsOnField('depends_on: [4255, 4255, 4256]', null), [4255, 4256]);
+    assert.deepEqual(parseDependsOnField('depends_on: [4255, 4300]', 4300), [4255]);
+});
+
+test('B4: NO detecta `xdepends_on:` (no anclado a la palabra)', () => {
+    assert.deepEqual(parseDependsOnField('xdepends_on: [4255]', null), []);
+});
+
+test('B4: integrado en parseBodyDependencies con otras secciones del body', () => {
+    const body = [
+        '## Contexto',
+        '',
+        'Issue con campo manifest.',
+        '',
+        'depends_on: [4255, 4256]',
+    ].join('\n');
+    assert.deepEqual(parseBodyDependencies(body, null), [4255, 4256]);
+});
+
+test('B4: resolveDependencies con solo B4 en body → source=body', () => {
+    const out = resolveDependencies({
+        body: 'depends_on: [4255]',
+        comments: [],
+        selfIssue: 4300,
+    });
+    assert.equal(out.source, 'body');
+    assert.deepEqual(out.deps, [4255]);
+});
+
+test('B4: unión con B3 en el mismo body (Depends on #N + depends_on: [M])', () => {
+    const body = [
+        'Depends on #4255',
+        'depends_on: [4256]',
+    ].join('\n');
+    assert.deepEqual(parseBodyDependencies(body, null), [4255, 4256]);
 });
 
 // -----------------------------------------------------------------------------
