@@ -24,13 +24,31 @@
 //      del Pulpo entre en modo human-block (no procesar nada hasta que un
 //      humano lo destrabe explícitamente).
 //
-// NO AUTO-REPARAR. Auto-reparación bajo asunción de que waves.json es la
-// verdad puede amplificar un compromiso si fue ese archivo el manipulado.
-// La decisión cuál archivo refleja la realidad la toma el humano.
+// Política de auto-reparación (SEC-6, carve-out #4350)
+// ----------------------------------------------------
+// Regla general: NO auto-reparar bajo asunción ciega de que waves.json es la
+// verdad — hacerlo puede amplificar un compromiso si fue ese archivo el
+// manipulado (OWASP A08). Por eso la clasificación es ASIMÉTRICA:
+//
+//   - `resoluble_reductivo`: la divergencia SOLO implica QUITAR de la allowlist
+//     issues cerrados/ajenos a la ola activa (no otorga permisos nuevos a
+//     partir de waves.json). El pulpo puede realinear a la ola activa dejando
+//     traza (ver pulpo.realignAllowlistToActiveWave). SEC-1: la realineación
+//     nunca agrega un issue ABIERTO ajeno; solo reduce.
+//   - `ambiguo`: hay al menos un issue ABIERTO en la allowlist que NO está en
+//     la ola activa (una autorización deliberada que realinear revocaría en
+//     silencio), o el estado de cierre es indeterminado. En ese caso el
+//     detector mantiene el comportamiento histórico: flag + human-block, NO
+//     tocar. La decisión la toma el humano.
+//
+// Este módulo NO auto-repara: solo CLASIFICA y expone `classification`. La
+// realineación reductiva vive en el pulpo (con predicado isClosed inyectado),
+// nunca acá (regla "sin red / sin GitHub" del detector).
 //
 // API
 // ---
-//   detectDesync(opts?) → { desync: bool, waves_allowlist, partial_allowlist,
+//   detectDesync(opts?) → { desync: bool, reason, classification,
+//                           waves_allowlist, partial_allowlist,
 //                           added, removed, flag_path?, alerted? }
 //
 //   isDesyncFlagSet()  → bool  (consulta del flag de bloqueo)
@@ -125,14 +143,60 @@ function diffAllowlists(a, b) {
 }
 
 /**
+ * Clasifica ASIMÉTRICAMENTE una divergencia entre la ola activa (waves.json) y
+ * la allowlist (.partial-pause.json). Carve-out SEC-1..SEC-6 del issue #4350.
+ *
+ * Convención de `diff`: `added` = issues presentes en la ALLOWLIST que NO están
+ * en la ola activa (extras de la allowlist); `removed` = issues de la ola que
+ * faltan en la allowlist. La clave de la clasificación son los `added`:
+ *
+ *   - `resoluble_reductivo`: NO hay `added`, o todos los `added` están
+ *     CONFIRMADOS cerrados. Realinear a la ola solo quita basura (cerrados/
+ *     ajenos-cerrados) y agrega issues de una ola ya promovida atómicamente →
+ *     el pulpo puede auto-reparar dejando traza.
+ *   - `ambiguo`: hay al menos un `added` ABIERTO o de estado INDETERMINADO
+ *     (sin predicado isClosed, o isClosed devuelve undefined). Realinear
+ *     revocaría en silencio una autorización deliberada, o se apoyaría en
+ *     estado no confiable → NO tocar, flag + human-block.
+ *
+ * Fail-safe (SEC-4): estado indeterminado nunca se trata como "cerrado" → cae
+ * en `ambiguo`, jamás habilita una remoción a ciegas.
+ *
+ * @param {{ added: number[], removed: number[] }} diff
+ * @param {(n:number)=>boolean|undefined} [isClosed] — predicado inyectado.
+ *   `true` = cerrado confirmado; `false` = abierto; `undefined` = indeterminado.
+ * @returns {'resoluble_reductivo'|'ambiguo'}
+ */
+function classifyDesync(diff, isClosed) {
+    const added = Array.isArray(diff && diff.added) ? diff.added : [];
+    if (added.length === 0) {
+        // La allowlist es subconjunto de la ola; realinear solo agrega issues
+        // de una ola ya promovida (no revoca nada abierto y ajeno).
+        return 'resoluble_reductivo';
+    }
+    if (typeof isClosed !== 'function') {
+        // Sin forma de confirmar que los extras están cerrados → conservador.
+        return 'ambiguo';
+    }
+    // Reductivo SOLO si CADA extra de la allowlist está confirmado cerrado.
+    // Cualquier abierto (false) o indeterminado (undefined) → ambiguo.
+    const allExtrasClosed = added.every((n) => isClosed(n) === true);
+    return allExtrasClosed ? 'resoluble_reductivo' : 'ambiguo';
+}
+
+/**
  * Detecta desync entre waves.json y .partial-pause.json.
  *
  * @param {object} [opts]
  * @param {boolean} [opts.skipFlag=false] — si true, NO crea el flag al detectar.
  * @param {boolean} [opts.skipAlert=false] — si true, NO envía Telegram.
+ * @param {(n:number)=>boolean|undefined} [opts.isClosed] — predicado inyectado
+ *   para clasificar (ver classifyDesync). Sin él, cualquier divergencia con
+ *   extras en la allowlist queda `ambiguo` (fail-safe). NUNCA llama a GitHub.
  * @returns {{
  *   desync: boolean,
  *   reason: string|null,
+ *   classification: 'resoluble_reductivo'|'ambiguo'|null,
  *   waves_allowlist: number[]|null,
  *   partial_allowlist: number[]|null,
  *   added: number[],
@@ -152,25 +216,30 @@ function detectDesync(opts = {}) {
     //   3. Solo existe waves.json (partial-pause se eliminó tras transición) →
     //      el pulpo usa getAllowlist() que ya cubre este caso.
     if (wavesAllow === null && partialAllow === null) {
-        return { desync: false, reason: null, waves_allowlist: null, partial_allowlist: null, added: [], removed: [] };
+        return { desync: false, reason: null, classification: null, waves_allowlist: null, partial_allowlist: null, added: [], removed: [] };
     }
     if (wavesAllow === null) {
         // Sin waves canónica, no podemos comparar. No es desync.
-        return { desync: false, reason: 'no_waves_yet', waves_allowlist: null, partial_allowlist: partialAllow, added: [], removed: [] };
+        return { desync: false, reason: 'no_waves_yet', classification: null, waves_allowlist: null, partial_allowlist: partialAllow, added: [], removed: [] };
     }
     if (partialAllow === null) {
         // Sin partial-pause, no hay desync (es el estado esperado post-cleanup).
-        return { desync: false, reason: 'no_partial_pause', waves_allowlist: wavesAllow, partial_allowlist: null, added: [], removed: [] };
+        return { desync: false, reason: 'no_partial_pause', classification: null, waves_allowlist: wavesAllow, partial_allowlist: null, added: [], removed: [] };
     }
 
     const { added, removed } = diffAllowlists(wavesAllow.sort((a, b) => a - b), partialAllow.sort((a, b) => a - b));
     if (added.length === 0 && removed.length === 0) {
-        return { desync: false, reason: null, waves_allowlist: wavesAllow, partial_allowlist: partialAllow, added: [], removed: [] };
+        return { desync: false, reason: null, classification: null, waves_allowlist: wavesAllow, partial_allowlist: partialAllow, added: [], removed: [] };
     }
+
+    // Clasificación asimétrica (#4350): decide si el pulpo puede realinear
+    // reductivamente (resoluble_reductivo) o debe bloquear (ambiguo).
+    const classification = classifyDesync({ added, removed }, opts.isClosed);
 
     const result = {
         desync: true,
         reason: 'allowlist_mismatch',
+        classification,
         waves_allowlist: wavesAllow,
         partial_allowlist: partialAllow,
         added,
@@ -184,6 +253,7 @@ function detectDesync(opts = {}) {
             fs.writeFileSync(flagPath, JSON.stringify({
                 detected_at: new Date().toISOString(),
                 pid: process.pid,
+                classification,
                 waves_allowlist: wavesAllow,
                 partial_allowlist: partialAllow,
                 added,
@@ -202,12 +272,15 @@ function detectDesync(opts = {}) {
                 component: 'waves-desync',
                 message: 'waves.json y .partial-pause.json desincronizados',
                 context: {
+                    classification,
                     waves_allowlist: wavesAllow,
                     partial_allowlist: partialAllow,
-                    added_in_waves: added,
-                    removed_from_partial: removed,
+                    extras_in_allowlist: added,
+                    missing_from_allowlist: removed,
                 },
-                action: 'Pipeline en modo human-block. NO se autoreparó (política de seguridad #7). Decidí vos cuál archivo refleja la verdad y arreglalo a mano.',
+                action: classification === 'resoluble_reductivo'
+                    ? 'Divergencia REDUCTIVA (la allowlist tiene issues cerrados/ajenos respecto de la ola activa). El Pulpo realinea automáticamente a la ola activa dejando traza (carve-out #4350). No requiere acción manual salvo auditar la traza.'
+                    : 'Divergencia AMBIGUA (hay issues abiertos en la allowlist fuera de la ola, o estado indeterminado). Pipeline en human-block. NO se autoreparó (SEC-1). Decidí vos cuál archivo refleja la verdad y arreglalo a mano.',
                 diag: 'diff <(jq \'.active_wave.issues\' .pipeline/waves.json) <(jq \'.allowed_issues\' .pipeline/.partial-pause.json)',
             });
             result.alerted = true;
@@ -233,6 +306,7 @@ function clearDesyncFlag() {
 
 module.exports = {
     detectDesync,
+    classifyDesync,
     isDesyncFlagSet,
     clearDesyncFlag,
     DESYNC_FLAG_BASENAME,
@@ -240,6 +314,7 @@ module.exports = {
         readWavesAllowlist,
         readPartialAllowlist,
         diffAllowlists,
+        classifyDesync,
         normalizeIssue,
         desyncFlagPath,
     },

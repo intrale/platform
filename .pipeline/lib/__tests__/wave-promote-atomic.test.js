@@ -410,6 +410,46 @@ test('promoteWaveAtomic happy path: ambos archivos actualizados + sin marker res
     }
 });
 
+test('#4350 — promoteWaveAtomic honra metadata.expandedIssues (set autoritativo + gate wave-promote)', () => {
+    const { dir, waves } = setupTmp();
+    try {
+        seedWaves(dir, sampleWaves());
+        seedPartial(dir, [3451]);
+
+        // El caller (pulpo/commander) pasa el set ya expandido (deps recursivos)
+        // + filtrado de cerrados. Ej: la ola declara 3520/3521 pero el caller
+        // sumó la dep abierta 3600 y excluyó una cerrada.
+        const result = waves.promoteWaveAtomic(8, {
+            updated_by: 'test',
+            source: 'test-suite',
+            expandedIssues: [3521, 3520, 3600, 3600], // desordenado + duplicado
+        });
+
+        // La allowlist escrita es EXACTAMENTE el set expandido (normalizado).
+        assert.deepEqual(result.newAllowlist, [3520, 3521, 3600]);
+        const updatedPartial = readPartial(dir);
+        assert.deepEqual(updatedPartial.allowed_issues.sort((a, b) => a - b), [3520, 3521, 3600]);
+        // El gate aceptó el removal de 3451 (authorizedBy wave-promote interno).
+        assert.deepEqual(result.removed.sort((a, b) => a - b), [3451]);
+        assert.equal(fs.existsSync(waves._paths().PROMOTE_MARKER_FILE), false);
+    } finally {
+        teardownTmp(dir);
+    }
+});
+
+test('#4350 — sin expandedIssues cae al comportamiento histórico (getAllowlist)', () => {
+    const { dir, waves } = setupTmp();
+    try {
+        seedWaves(dir, sampleWaves());
+        seedPartial(dir, [3451]);
+        const result = waves.promoteWaveAtomic(8, { updated_by: 'test', source: 'test-suite' });
+        // Sin expandedIssues → allowlist = issues de la ola (getAllowlist).
+        assert.deepEqual(result.newAllowlist.sort((a, b) => a - b), [3520, 3521]);
+    } finally {
+        teardownTmp(dir);
+    }
+});
+
 test('promoteWaveAtomic falla si ya existe marker in-progress', () => {
     const { dir, waves } = setupTmp();
     try {

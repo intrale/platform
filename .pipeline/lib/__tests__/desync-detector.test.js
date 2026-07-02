@@ -204,3 +204,91 @@ test('detectDesync: waves.json corrupto → no es desync (reason no_waves_yet)',
         assert.equal(res.reason, 'no_waves_yet');
     } finally { teardownTmp(dir); }
 });
+
+// =============================================================================
+// #4350 — Clasificación asimétrica (resoluble_reductivo vs ambiguo).
+// =============================================================================
+
+test('classifyDesync: sin extras en la allowlist → resoluble_reductivo', () => {
+    const { dir, mod } = setupTmp();
+    try {
+        // added=[] (la allowlist es subconjunto de la ola; solo faltan issues).
+        const c = mod._internal.classifyDesync({ added: [], removed: [4255, 4300] });
+        assert.equal(c, 'resoluble_reductivo');
+    } finally { teardownTmp(dir); }
+});
+
+test('classifyDesync: extras TODOS cerrados → resoluble_reductivo', () => {
+    const { dir, mod } = setupTmp();
+    try {
+        const isClosed = (n) => n === 4030; // 4030 cerrado
+        const c = mod._internal.classifyDesync({ added: [4030], removed: [4255, 4300] }, isClosed);
+        assert.equal(c, 'resoluble_reductivo');
+    } finally { teardownTmp(dir); }
+});
+
+test('classifyDesync: algún extra ABIERTO → ambiguo', () => {
+    const { dir, mod } = setupTmp();
+    try {
+        const isClosed = (n) => false; // 9999 abierto
+        const c = mod._internal.classifyDesync({ added: [9999], removed: [4255] }, isClosed);
+        assert.equal(c, 'ambiguo');
+    } finally { teardownTmp(dir); }
+});
+
+test('classifyDesync: sin predicado isClosed y hay extras → ambiguo (conservador)', () => {
+    const { dir, mod } = setupTmp();
+    try {
+        const c = mod._internal.classifyDesync({ added: [4030], removed: [4255] });
+        assert.equal(c, 'ambiguo');
+    } finally { teardownTmp(dir); }
+});
+
+test('classifyDesync: extra INDETERMINADO (isClosed→undefined) → ambiguo (SEC-4)', () => {
+    const { dir, mod } = setupTmp();
+    try {
+        const isClosed = (n) => undefined; // GitHub indeterminado
+        const c = mod._internal.classifyDesync({ added: [4030], removed: [4255] }, isClosed);
+        assert.equal(c, 'ambiguo');
+    } finally { teardownTmp(dir); }
+});
+
+test('detectDesync: allowlist con solo issue cerrado → classification resoluble_reductivo', () => {
+    const { dir, mod } = setupTmp();
+    try {
+        // Escenario 2026-07-01: ola con #4255/#4300, allowlist con #4030 cerrado.
+        writeWaves(dir, [{ number: 4255 }, { number: 4300 }]);
+        writePartial(dir, [4030]);
+        const isClosed = (n) => n === 4030;
+        const res = mod.detectDesync({ skipAlert: true, isClosed });
+        assert.equal(res.desync, true);
+        assert.equal(res.classification, 'resoluble_reductivo');
+        assert.deepEqual(res.added, [4030]);          // extra en allowlist
+        assert.deepEqual(res.removed.sort((a, b) => a - b), [4255, 4300]); // faltantes
+    } finally { teardownTmp(dir); }
+});
+
+test('detectDesync: allowlist con issue ABIERTO fuera de la ola → classification ambiguo', () => {
+    const { dir, mod } = setupTmp();
+    try {
+        writeWaves(dir, [{ number: 4255 }, { number: 4300 }]);
+        writePartial(dir, [9999]); // abierto y ajeno
+        const isClosed = (n) => false;
+        const res = mod.detectDesync({ skipAlert: true, isClosed });
+        assert.equal(res.desync, true);
+        assert.equal(res.classification, 'ambiguo');
+        assert.deepEqual(res.added, [9999]);
+    } finally { teardownTmp(dir); }
+});
+
+test('detectDesync: flag persiste classification', () => {
+    const { dir, mod } = setupTmp();
+    try {
+        writeWaves(dir, [{ number: 4255 }]);
+        writePartial(dir, [4030]);
+        const res = mod.detectDesync({ skipAlert: true, isClosed: (n) => n === 4030 });
+        assert.ok(res.flag_path);
+        const flag = JSON.parse(fs.readFileSync(res.flag_path, 'utf8'));
+        assert.equal(flag.classification, 'resoluble_reductivo');
+    } finally { teardownTmp(dir); }
+});

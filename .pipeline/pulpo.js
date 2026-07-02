@@ -13246,6 +13246,11 @@ let paused = false;
 // que un humano audite y borre el flag.
 let desyncBlocked = false;
 let desyncBlockedNotifiedTick = 0;
+// #4350 — Chequeo periódico de divergencia (no solo al boot). Cada
+// DESYNC_EVAL_EVERY_TICKS iteraciones del loop reclasificamos y realineamos si
+// corresponde. A poll_interval 30s, 10 ticks ≈ 5min.
+let desyncEvalTick = 0;
+const DESYNC_EVAL_EVERY_TICKS = 10;
 
 // Archivo de control para pausar/reanudar desde fuera
 const PAUSE_FILE = path.join(PIPELINE, '.paused');
@@ -13256,6 +13261,132 @@ function checkPauseFile() {
 
 function checkDesyncFlag() {
   desyncBlocked = desyncDetector.isDesyncFlagSet();
+}
+
+// =============================================================================
+// #4350 — Realineación reductiva de la allowlist a la ola activa + evaluación
+// de divergencia (boot + periódica).
+//
+// Carve-out SEC-1..SEC-6: la realineación SOLO se invoca para divergencias
+// clasificadas `resoluble_reductivo` (la allowlist tiene issues cerrados/ajenos
+// respecto de la ola). Nunca otorga permisos nuevos ajenos: reduce basura y
+// repuebla con los issues ABIERTOS de una ola ya promovida atómicamente. El
+// walk recursivo (hijos/deps) y el filtro de cerrados corren ACÁ, con el
+// predicado isClosed inyectado (title-cache, sin GitHub en el hot path).
+// waves.js jamás ve la red. La mutación pasa SIEMPRE por el gate auditado de
+// partial-pause (authorizedBy:'wave-promote').
+// =============================================================================
+function realignAllowlistToActiveWave(desync, opts = {}) {
+  const isClosed = typeof opts.isClosed === 'function' ? opts.isClosed : null;
+  const waves = require('./lib/waves');
+  const recursivePromote = require('./lib/allowlist-recursive-promote');
+
+  const active = waves.getActiveWave();
+  if (!active || !Array.isArray(active.issues)) {
+    return { ok: false, reason: 'no_active_wave' };
+  }
+
+  // 1. Semilla = issues abiertos (no completados) de la ola activa, enteros
+  //    positivos (SEC-3).
+  const seed = active.issues
+    .filter((i) => i && i.status !== 'completed')
+    .map((i) => Number(i.number))
+    .filter((n) => Number.isInteger(n) && n > 0);
+
+  // 2. Expandir hijos/deps recursivos (walk puro, sin TTL) usando el grafo
+  //    dependencies[] de waves.json (filesystem propio). Excluye cerrados con
+  //    fail-safe: indeterminado NO se remueve (SEC-4).
+  const getDeps = (n) => { try { return waves.getBlockingIssues(n); } catch { return []; } };
+  const expanded = recursivePromote.expandRecursiveOpenIssues({ seedIssues: seed, isClosed, getDeps });
+
+  // Fail-safe: NUNCA vaciar la allowlist por un realineo automático (podría
+  // congelar el pipeline). Set vacío → no tocar, dejar traza para el humano.
+  if (expanded.length === 0) {
+    return { ok: false, reason: 'empty_expansion' };
+  }
+
+  // 3. Mutación SOLO por el gate auditado (SEC-2). El authorizedBy 'wave-promote'
+  //    habilita los removals de los cerrados/ajenos.
+  const res = partialPause.setPartialPause(expanded, {
+    source: 'wave-promote:realign',
+    authorizedBy: 'wave-promote',
+    justification: `Realineación reductiva a ola ${active.number} (#4350). ` +
+      `extras_removidos=${JSON.stringify(desync && desync.added || [])} ` +
+      `faltantes_repuestos=${JSON.stringify(desync && desync.removed || [])}`,
+  });
+  if (res && res.rejected) {
+    return { ok: false, reason: 'gate_rejected', msg: res.msg };
+  }
+  return { ok: true, allowlist: expanded };
+}
+
+/**
+ * Evalúa la divergencia waves↔allowlist y actúa según la clasificación:
+ *   - `resoluble_reductivo` → realinea reductivamente + limpia flag + traza.
+ *   - `ambiguo`             → flag + human-block (histórico), con dedupe.
+ *   - sin desync            → no-op.
+ * Best-effort: nunca lanza (envuelto por el caller). Usado al boot y periódico.
+ */
+function evaluateDesyncAndMaybeRealign(context) {
+  let isClosed = null;
+  try { isClosed = makeIsClosedFromTitleCache(); } catch { isClosed = null; }
+
+  // Probe SIN efectos: clasificamos antes de decidir crear flag/alerta.
+  let probe;
+  try {
+    probe = desyncDetector.detectDesync({ skipFlag: true, skipAlert: true, isClosed: isClosed || undefined });
+  } catch (e) {
+    log('pulpo', `WARN desync-detector probe falló (${context}): ${e.message}`);
+    return;
+  }
+
+  if (!probe.desync) {
+    if (context === 'boot') log('pulpo', `desync-detector OK (${probe.reason || 'in_sync'})`);
+    return;
+  }
+
+  if (probe.classification === 'resoluble_reductivo') {
+    try {
+      const r = realignAllowlistToActiveWave(probe, { isClosed });
+      if (r && r.ok) {
+        desyncDetector.clearDesyncFlag();
+        checkDesyncFlag();
+        log('pulpo', `desync-detector: realineación REDUCTIVA a ola activa OK — ` +
+          `allowlist=${JSON.stringify(r.allowlist)} extras_removidos=${JSON.stringify(probe.added)} ` +
+          `faltantes_repuestos=${JSON.stringify(probe.removed)}`);
+        try {
+          sendTelegramPlain(
+            `♻️ Allowlist realineada automáticamente a la ola activa (#4350).\n` +
+            `Removidos (cerrados/ajenos): ${(probe.added || []).map(n => `#${n}`).join(', ') || '—'}\n` +
+            `Repuestos de la ola: ${(probe.removed || []).map(n => `#${n}`).join(', ') || '—'}\n` +
+            `Nueva allowlist: ${r.allowlist.map(n => `#${n}`).join(', ')}`
+          );
+        } catch { /* best-effort */ }
+        return;
+      }
+      // Realineo no aplicado (gate/empty) → escalar a human-block real.
+      log('pulpo', `WARN desync-detector: realineación reductiva no aplicada (${r && r.reason}). Escalando a human-block.`);
+      try { desyncDetector.detectDesync({ isClosed: isClosed || undefined }); } catch {}
+      checkDesyncFlag();
+    } catch (e) {
+      log('pulpo', `WARN desync-detector: realineación falló: ${e.message}. Escalando a human-block.`);
+      try { desyncDetector.detectDesync({ isClosed: isClosed || undefined }); } catch {}
+      checkDesyncFlag();
+    }
+    return;
+  }
+
+  // Ambiguo → flag + human-block. Dedupe: solo alertar la primera vez (o al boot).
+  if (!desyncDetector.isDesyncFlagSet()) {
+    try { desyncDetector.detectDesync({ isClosed: isClosed || undefined }); } catch (e) {
+      log('pulpo', `WARN desync-detector flag falló: ${e.message}`);
+    }
+    checkDesyncFlag();
+    log('pulpo', `WARN desync-detector: divergencia AMBIGUA — human-block. ` +
+      `extras_en_allowlist=${JSON.stringify(probe.added)} faltantes_de_allowlist=${JSON.stringify(probe.removed)}`);
+  } else {
+    checkDesyncFlag();
+  }
 }
 
 // =============================================================================
@@ -14331,17 +14462,14 @@ async function mainLoop() {
     log('pulpo', `WARN [init-waves] boot hook falló: ${e.message}`);
   }
 
-  // #3518 CA-6 — Chequeo de desync al boot: compara waves.json contra
-  // .partial-pause.json. Si hay mismatch, crea flag + alerta Telegram. El
-  // human-block existente lo levanta y pausa los skills hasta intervención.
-  // Si crashea por cualquier razón, NO mata al pulpo (best-effort).
+  // #3518 CA-6 / #4350 — Chequeo de desync al boot: compara waves.json contra
+  // .partial-pause.json. Con el carve-out #4350, la evaluación clasifica la
+  // divergencia: si es REDUCTIVA (allowlist con cerrados/ajenos) el pulpo
+  // realinea automáticamente a la ola activa dejando traza; si es AMBIGUA
+  // (issue abierto fuera de la ola, o estado indeterminado) crea flag + alerta
+  // y entra en human-block. Si crashea, NO mata al pulpo (best-effort).
   try {
-    const desync = desyncDetector.detectDesync();
-    if (desync.desync) {
-      log('pulpo', `WARN desync-detector: ${desync.reason} added=${JSON.stringify(desync.added)} removed=${JSON.stringify(desync.removed)} flag=${desync.flag_path || 'no'}`);
-    } else {
-      log('pulpo', `desync-detector OK (${desync.reason || 'in_sync'})`);
-    }
+    evaluateDesyncAndMaybeRealign('boot');
   } catch (e) {
     log('pulpo', `WARN desync-detector falló: ${e.message}`);
   }
@@ -14716,6 +14844,16 @@ async function mainLoop() {
 
       checkPauseFile();
       checkDesyncFlag();
+
+      // #4350 — Detección de divergencia PERIÓDICA (no solo al boot). Cada
+      // DESYNC_EVAL_EVERY_TICKS ticks reclasifica: reductiva → realinea;
+      // ambigua → mantiene/instala human-block. Dedupe interno evita spamear
+      // Telegram. Best-effort: nunca rompe el loop.
+      desyncEvalTick = (desyncEvalTick + 1) % DESYNC_EVAL_EVERY_TICKS;
+      if (desyncEvalTick === 0) {
+        try { evaluateDesyncAndMaybeRealign('periodic'); }
+        catch (e) { log('pulpo', `WARN desync periódico: ${e.message}`); }
+      }
 
       const config = loadConfig(); // Reload cada ciclo para hot-reload
 
