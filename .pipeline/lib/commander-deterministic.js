@@ -308,7 +308,10 @@ const LISTADO_FILTERS = new Set([
 // #3262 — `/wave` admite el flag opcional `--audio` para activar TTS opt-in (CA-9 / PO-CA-9).
 // #3493 — H5 expande la sintaxis a subcomandos: `/wave [status [--audio] | next | add <num> #issue | promote]`.
 // La forma antigua `/wave` y `/wave --audio` se preservan (backward compat → status).
-const WAVE_SUBCOMMANDS = new Set(['status', 'next', 'add', 'promote']);
+// #4376 (split #4351) — `create` suma la creación de olas planificadas desde
+// Telegram (`/wave create --nombre ... --issues #1,#2 ...`). Op mutante: reusa
+// el cooldown/allowlist/rate-limit del resto de subcomandos mutantes.
+const WAVE_SUBCOMMANDS = new Set(['status', 'next', 'add', 'promote', 'create']);
 
 /**
  * Parsea `args` de `/wave` y devuelve `{ subcommand, audio, waveNumber, issueNumber }`
@@ -360,6 +363,28 @@ function parseWaveArgs(rawArgs) {
         const issueNumber = parseInt(issueToken.slice(1), 10);
         if (!Number.isInteger(issueNumber) || issueNumber < 1) return null;
         return { subcommand: 'add', waveNumber, issueNumber };
+    }
+    if (head === 'create') {
+        // #4376 — parseo por flags nombrados (texto libre con espacios). Toda la
+        // validación (bounds decimal-puro, length, control-strip, injection) vive
+        // en `wave-create-input.validateCreateInput`, la MISMA que usa el CLI
+        // `crear-ola` (CA-4 BLOQUEANTE: no delegar solo al core, fallar temprano).
+        // Cualquier violación → null → dispatcher responde `wave-error` claro.
+        const wci = require('./wave-create-input');
+        // Reconstruimos la sub-cadena posterior a `create` para preservar espacios
+        // en nombre/objetivo (el split por \s+ del tope los rompería).
+        const afterCreate = String(rawArgs || '').replace(/^\s*create\b/i, '').trim();
+        const flags = wci.parseNamedFlags(afterCreate);
+        const res = wci.validateCreateInput(flags);
+        if (!res.ok) return null;
+        return {
+            subcommand: 'create',
+            name: res.spec.name,
+            goal: res.spec.goal,
+            concurrencyMax: res.spec.concurrency_max,
+            windowMinutes: res.spec.window_minutes,
+            issues: res.spec.issues,
+        };
     }
     return null;
 }
@@ -558,9 +583,9 @@ const ARG_SCHEMAS = {
             // mismatch, tokens extra → security CA-5).
             return parseWaveArgs(args) !== null;
         },
-        usage: 'wave [status [--audio] | next | add <num> #issue | promote]',
-        allowedValues: ['status', 'status --audio', 'next', 'add <num> #issue', 'promote'],
-        hint: 'Subcomandos: `status` (con `--audio` opcional), `next`, `add <num> #issue`, `promote`. Sin subcomando equivale a `status`.',
+        usage: 'wave [status [--audio] | next | add <num> #issue | promote | create --nombre <n> --concurrency <c> --window <m> --issues <#a #b> [--objetivo <o>]]',
+        allowedValues: ['status', 'status --audio', 'next', 'add <num> #issue', 'promote', 'create --nombre ... --concurrency ... --window ... --issues ...'],
+        hint: 'Subcomandos: `status` (con `--audio` opcional), `next`, `add <num> #issue`, `promote`, `create` (crear ola planificada: `--nombre`, `--concurrency`, `--window`, `--issues #a #b`, y `--objetivo` opcional). Sin subcomando equivale a `status`.',
     },
     listado: {
         allow(args) {
@@ -1184,7 +1209,7 @@ function buildDefaultHandlers(ctx) {
     // CA-9 — destructiveCooldown MUST en add/promote (refuerzo security pt.3).
     const waveSubCooldown = createDestructiveCooldown({
         cooldownMs: 30 * 1000,
-        destructiveCommands: ['wave-add', 'wave-promote'],
+        destructiveCommands: ['wave-add', 'wave-promote', 'wave-create'],
         now: ctx.now,
     });
 
@@ -1547,6 +1572,19 @@ function buildDefaultHandlers(ctx) {
                 case 'promote':
                     res = await handleWavePromote({
                         pipelineRoot: PIPELINE,
+                        cooldown: waveSubCooldown,
+                        chatId: message && message.chat_id !== undefined ? String(message.chat_id) : null,
+                        from: message && message.from ? String(message.from) : 'Leo',
+                    });
+                    break;
+                case 'create':
+                    res = await handleWaveCreate({
+                        pipelineRoot: PIPELINE,
+                        name: parsed.name,
+                        goal: parsed.goal,
+                        concurrencyMax: parsed.concurrencyMax,
+                        windowMinutes: parsed.windowMinutes,
+                        issues: parsed.issues,
                         cooldown: waveSubCooldown,
                         chatId: message && message.chat_id !== undefined ? String(message.chat_id) : null,
                         from: message && message.from ? String(message.from) : 'Leo',
@@ -2453,6 +2491,130 @@ async function handleWaveAdd({ pipelineRoot, waveNumber, issueNumber, cooldown, 
 }
 
 /**
+ * `/wave create` — Crea una ola planificada nueva (#4376, split de #4351).
+ *
+ * Espeja `handleWaveAdd`:
+ *   - CA-5: cooldown destructivo (`waveSubCooldown`, key `wave-create`) anti
+ *     doble-tap. Gate chat_id/rate-limit ya cableados en el dispatcher.
+ *   - CA-3: único punto de mutación = `waves.createPlannedWave` (file-lock +
+ *     atomicWriteFile + validateStateStrict pre-write + audit encadenado). Cero
+ *     escrituras directas a `waves.json` desde acá.
+ *   - CA-4: el input ya llega validado por `parseWaveArgs`/`wave-create-input`.
+ *     Acá solo mapeamos errores SEMÁNTICOS del core (duplicado nombre/issue) a
+ *     mensajes accionables (UX-2). El escape MarkdownV2 lo hace `fillTemplate`.
+ *   - CA-5 audit: `chatId`/`from` viajan a `meta` para el audit encadenado.
+ *
+ * @param {Object} p
+ * @param {string} p.name
+ * @param {string|null} p.goal
+ * @param {number} p.concurrencyMax
+ * @param {number} p.windowMinutes
+ * @param {number[]} p.issues
+ * @param {Object} [p.cooldown]
+ * @param {string|null} [p.chatId]
+ * @param {string} [p.from]
+ */
+async function handleWaveCreate({ name, goal, concurrencyMax, windowMinutes, issues, cooldown, chatId, from }) {
+    // CA-5 — Cooldown previo (anti doble-tap de creación).
+    if (cooldown && chatId) {
+        const cd = cooldown.check(chatId, 'wave-create');
+        if (!cd.allowed) {
+            return {
+                reply: fillTemplate('wave-error', {
+                    'error-kind': 'cooldown_blocked',
+                    message: `Esperá ${humanizeRetryAfter(cd.retryAfterMs)} antes de repetir \`/wave create\` (anti doble-tap).`,
+                }),
+            };
+        }
+    }
+
+    // Defensa en profundidad: el dispatcher solo llega acá con input validado por
+    // parseWaveArgs, pero re-chequeamos el shape mínimo para no romper si alguien
+    // invoca el handler directo (tests / callers alternativos).
+    if (typeof name !== 'string' || name.trim().length === 0 || !Array.isArray(issues) || issues.length === 0) {
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'invalid_input',
+                message: 'Faltan datos para crear la ola. Usá `/wave create --nombre <n> --concurrency <c> --window <m> --issues #a #b`.',
+            }),
+        };
+    }
+
+    const waves = require('./waves');
+
+    // CA-3 — Único punto de mutación. `createPlannedWave` es atómico
+    // (file-lock + atomicWriteFile + validateStateStrict pre-write + audit).
+    let result;
+    try {
+        result = waves.createPlannedWave(
+            {
+                name,
+                goal: goal || undefined,
+                concurrency_max: concurrencyMax,
+                window_minutes: windowMinutes,
+                issues,
+            },
+            {
+                updated_by: from || 'Leo',
+                source: 'telegram-commander/wave-create',
+                note: `create planned wave "${name}" con ${issues.length} issue(s)` + (chatId ? ` (chat ${chatId})` : ''),
+            },
+        );
+    } catch (e) {
+        const code = e && e.code;
+        const msg = String(e && e.message ? e.message : e);
+        // Errores SEMÁNTICOS del core → mensaje accionable (UX-2).
+        if (code === 'EWAVES_DUPLICATE_NAME') {
+            return {
+                reply: fillTemplate('wave-error', {
+                    'error-kind': 'duplicate_name',
+                    message: `Ya existe una ola con ese nombre. Elegí otro. (${msg})`,
+                }),
+            };
+        }
+        if (code === 'EWAVES_DUPLICATE_ISSUE') {
+            return {
+                reply: fillTemplate('wave-error', {
+                    'error-kind': 'duplicate_issue',
+                    message: `Uno de los issues ya está asignado a otra ola. Sacalo de allá primero. (${msg})`,
+                }),
+            };
+        }
+        if (code === 'EWAVES_BOUNDS' || code === 'EWAVES_SHAPE') {
+            return {
+                reply: fillTemplate('wave-error', {
+                    'error-kind': 'invalid_input',
+                    message: `El input no cumple los límites: ${msg}`,
+                }),
+            };
+        }
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'fs_error',
+                message: `Algo falló creando la ola: ${msg}`,
+            }),
+        };
+    }
+
+    // CA-5 — Marcar éxito en el cooldown DESPUÉS del write.
+    if (cooldown && chatId) cooldown.recordSuccess(chatId, 'wave-create');
+
+    // Confirmación legible (UX-3): número asignado, nombre, objetivo, ventana,
+    // concurrency, #issues. El texto de usuario se escapa vía `{{var}}`.
+    return {
+        reply: fillTemplate('wave-create-ok', {
+            'wave-number': result.waveNumber,
+            'wave-name': result.wave.name,
+            'has-goal': !!result.wave.goal,
+            goal: result.wave.goal || '',
+            'window-minutes': result.wave.window_minutes,
+            'concurrency-max': result.wave.concurrency_max,
+            'issue-count': result.wave.issues.length,
+        }),
+    };
+}
+
+/**
  * `/wave promote` — Promueve `planned_waves[0]` a `active_wave`.
  *
  * #3520 — Ejecuta la transacción atómica multi-archivo vía
@@ -2778,6 +2940,7 @@ module.exports = {
         handleWaveNext,
         handleWaveAdd,
         handleWavePromote,
+        handleWaveCreate,
         getKnownIssues,
         invalidateKnownIssuesCache,
         describeAvailableWaves,
