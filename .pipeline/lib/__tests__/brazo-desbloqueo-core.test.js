@@ -93,6 +93,36 @@ test('selectMarkersToRelease ignora markers sin issue', () => {
 });
 
 // -----------------------------------------------------------------------------
+// #4361 · Escenarios Gherkin literales (re-promoción automática al cerrar dep)
+// -----------------------------------------------------------------------------
+test('#4361 Gherkin-1: dependencia única cierra → dependiente se libera', () => {
+  // Dado que el issue #4300 declara depends_on [4255]
+  // Y el issue #4255 está abierto → luego cierra
+  // Cuando el issue #4255 se cierra
+  // Entonces el issue #4300 se re-promueve a la cola de trabajo automáticamente
+  const markers = [{ issue: 4300, deps: [4255] }];
+  const issueStates = { 4255: 'CLOSED' };
+  const { toRelease, blocked } = selectMarkersToRelease({ markers, issueStates });
+
+  assert.deepEqual(toRelease.map((m) => m.issue), [4300]);
+  assert.equal(blocked.length, 0);
+});
+
+test('#4361 Gherkin-2: aún quedan dependencias abiertas → permanece bloqueado', () => {
+  // Dado que un issue declara depends_on [4255, 4256]
+  // Y el issue #4256 sigue abierto
+  // Cuando el issue #4255 se cierra
+  // Entonces el issue dependiente permanece bloqueado
+  const markers = [{ issue: 4300, deps: [4255, 4256] }];
+  const issueStates = { 4255: 'CLOSED', 4256: 'OPEN' };
+  const { toRelease, blocked } = selectMarkersToRelease({ markers, issueStates });
+
+  assert.equal(toRelease.length, 0);
+  assert.deepEqual(blocked.map((m) => m.issue), [4300]);
+  assert.deepEqual(blocked[0].openDeps, ['4256']);
+});
+
+// -----------------------------------------------------------------------------
 // CA-4 · Caracterización: reingreso real a pendiente/ (rebote-classifier FS)
 // -----------------------------------------------------------------------------
 test('CA-4: releaseDependencyBlockToPendiente reingresa work-files a pendiente/', () => {

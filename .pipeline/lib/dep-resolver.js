@@ -20,6 +20,10 @@
 //      bullets puros `- #N`/`#N`, sin texto narrativo adicional)
 //   3. Body con verbos GitHub-nativos `Depends on #N` / `Blocked by #N`
 //      (anclados a inicio de línea, una dep por línea)
+//   4. Body con campo manifest `depends_on: [N]` / `depends_on: [N, M]` /
+//      `depends_on: N` (con o sin `#`, con o sin brackets, underscore) — #4361.
+//      Anclado a inicio de línea, una declaración por línea, fail-closed ante
+//      `depends_on: []` o segmento con caracteres no numéricos.
 //
 // Si se detectan en varias fuentes, la salida es la UNIÓN de las deps
 // (no exclusiva). El campo `source` registra `'comment' | 'body' | 'both'`.
@@ -97,6 +101,32 @@ const GENERIC_HEADING_REGEX = /^(#{1,4})\s+Dependencias\s*$/;
 // body (ReDoS-safe). Trailing comments (`Depends on #N — explicación`) NO
 // se aceptan: exigimos la línea exactamente con el verbo + número.
 const DEPENDS_LINE_REGEX = /^(?:depends on|blocked by)\s+#(\d+)\s*$/i;
+
+// B4 — Campo manifest `depends_on:` (#4361). Reconoce, anclado a inicio de
+// línea y case-insensitive, la sintaxis con la que se declaran dependencias en
+// el body del issue:
+//
+//   depends_on: [4255]
+//   depends_on: [4255, 4256]
+//   depends_on: 4255
+//   depends_on: [#4255]
+//
+// El regex captura TODO el segmento tras `depends_on:` de forma greedy (sin
+// solapar quantifiers → O(n), anti-ReDoS). El segmento se valida aparte contra
+// `DEPENDS_ON_SEGMENT_REGEX`: si contiene cualquier carácter que no sea
+// bracket, `#`, dígito, coma o espacio (p.ej. letras narrativas, guion de
+// `[-1]`), la línea entera se descarta (fail-closed). Los números se extraen
+// con `#?(\d+)` y se filtran con `isValidIssueNum`.
+//
+// Negaciones (`does not depend_on: ...`) NO matchean: el anclaje `^\s*` exige
+// que la línea arranque con `depends_on`, no con `does`.
+const DEPENDS_ON_FIELD_REGEX = /^\s*depends_on\s*:\s*(.*)$/i;
+
+// Segmento permitido: opcional `[`, luego sólo `#`, dígitos, comas y espacios,
+// opcional `]`. Sin solapamiento de quantifiers (`]` no pertenece a la clase),
+// anclado `^...$` → lineal. Rechaza `[-1]`, texto narrativo y brackets mal
+// formados.
+const DEPENDS_ON_SEGMENT_REGEX = /^\[?[#\d,\s]*\]?$/;
 
 // Bullets puros: `- #N` o `#N` (con opcional `*`/`+` como bullet marker).
 // Aceptamos espacios alrededor pero NO texto adicional en la línea — eso
@@ -262,6 +292,53 @@ function parseDependsLines(body, selfIssue) {
 }
 
 /**
+ * B4 — Detecta deps con el campo manifest `depends_on: [N]` / `depends_on: N`
+ * (#4361). Una declaración por línea, anclada a inicio de línea,
+ * case-insensitive. Reutiliza `isValidIssueNum`, dedup y self-exclusion del
+ * módulo — NO reimplementa validación numérica.
+ *
+ * Fail-closed:
+ *  - `depends_on: []` o `depends_on:` (vacío) → sin deps (`[]`).
+ *  - Segmento con caracteres no permitidos (letras, `-`, etc.) → línea
+ *    descartada. Esto rechaza `[-1]` (guion), narrativa (`depends_on: el issue
+ *    #4255`) y brackets mal formados.
+ *  - Números fuera de rango (`#0`, `#9999999`) → filtrados por `isValidIssueNum`.
+ *
+ * Excluye líneas dentro de code fences (state machine `nonFencedLines`).
+ *
+ * @param {string} body
+ * @param {number|string|null} selfIssue
+ * @returns {number[]} — issue numbers válidos.
+ */
+function parseDependsOnField(body, selfIssue) {
+    if (typeof body !== 'string' || body.length === 0) return [];
+    const selfNum = selfIssue == null ? null : Number(selfIssue);
+    const seen = new Set();
+    const out = [];
+
+    for (const { text } of nonFencedLines(toLines(body))) {
+        const m = DEPENDS_ON_FIELD_REGEX.exec(text);
+        if (!m) continue;
+        const segment = m[1].trim();
+        // Segmento vacío (`depends_on:`) → sin deps (fail-closed).
+        if (segment.length === 0) continue;
+        // Segmento con caracteres no permitidos → línea inválida, ignorar.
+        if (!DEPENDS_ON_SEGMENT_REGEX.test(segment)) continue;
+        // Extraer números del segmento validado. `matchAll` con literal `g`
+        // evita el footgun de `lastIndex` compartido de un regex de módulo.
+        for (const tok of segment.matchAll(/#?(\d+)/g)) {
+            const n = parseInt(tok[1], 10);
+            if (!isValidIssueNum(n)) continue;
+            if (selfNum !== null && n === selfNum) continue;
+            if (seen.has(n)) continue;
+            seen.add(n);
+            out.push(n);
+        }
+    }
+    return out;
+}
+
+/**
  * Une múltiples arrays de issue numbers preservando orden de aparición,
  * deduplica y aplica cap. Resultado ordenado ASCENDENTE para output
  * determinístico (consistente con `parseDependenciesFromComment`).
@@ -285,7 +362,7 @@ function mergeAndCap(arrays, cap) {
 }
 
 /**
- * Detecta deps en el body usando los 3 patrones B1/B2/B3 con unión interna.
+ * Detecta deps en el body usando los 4 patrones B1/B2/B3/B4 con unión interna.
  * Cap aplicado al final del merge.
  *
  * @param {string} body
@@ -297,7 +374,8 @@ function parseBodyDependencies(body, selfIssue) {
     const b1 = parseCanonicalBlock(body, selfIssue);
     const b2 = parseGenericSection(body, selfIssue);
     const b3 = parseDependsLines(body, selfIssue);
-    return mergeAndCap([b1, b2, b3], MAX_DEPS);
+    const b4 = parseDependsOnField(body, selfIssue);
+    return mergeAndCap([b1, b2, b3, b4], MAX_DEPS);
 }
 
 /**
@@ -398,6 +476,7 @@ module.exports = {
     parseCanonicalBlock,
     parseGenericSection,
     parseDependsLines,
+    parseDependsOnField,
     isValidIssueNum,
     MAX_DEPS,
     MAX_ISSUE_NUM,
