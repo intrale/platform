@@ -315,7 +315,8 @@ const LISTADO_FILTERS = new Set([
 // `reorder` (permutar orden de olas planificadas). Ambos destructivos.
 // #4378 — `archive <num>` suma un subcomando destructivo (mueve una ola a
 // `archived_waves[]` vía waves.archiveWave).
-const WAVE_SUBCOMMANDS = new Set(['status', 'next', 'add', 'promote', 'create', 'remove', 'reorder', 'archive']);
+// #4371 — `history [<ola>|#<issue>]` suma consulta del audit trail de olas/issues.
+const WAVE_SUBCOMMANDS = new Set(['status', 'next', 'add', 'promote', 'create', 'remove', 'reorder', 'archive', 'history']);
 
 /**
  * Parsea `args` de `/wave` y devuelve `{ subcommand, audio, waveNumber, issueNumber }`
@@ -392,6 +393,24 @@ function parseWaveArgs(rawArgs) {
         const issueNumber = parseInt(issueToken.slice(1), 10);
         if (!Number.isInteger(issueNumber) || issueNumber < 1) return null;
         return { subcommand: 'remove', waveNumber, issueNumber };
+    }
+    if (head === 'history') {
+        // #4371 CA-10 — `/wave history` (todo) | `history <num>` (por ola) |
+        // `history #<issue>` (por issue). Un solo filtro opcional.
+        if (tokens.length === 1) return { subcommand: 'history' };
+        if (tokens.length !== 2) return null;
+        const arg = tokens[1];
+        if (/^\d+$/.test(arg)) {
+            const waveNumber = parseInt(arg, 10);
+            if (!Number.isInteger(waveNumber) || waveNumber < 1) return null;
+            return { subcommand: 'history', waveNumber };
+        }
+        if (/^#\d+$/.test(arg)) {
+            const issueNumber = parseInt(arg.slice(1), 10);
+            if (!Number.isInteger(issueNumber) || issueNumber < 1) return null;
+            return { subcommand: 'history', issueNumber };
+        }
+        return null;
     }
     if (head === 'reorder') {
         // #4377 CA-8 — lista de `number`: ≥2 enteros positivos decimales puros,
@@ -628,9 +647,9 @@ const ARG_SCHEMAS = {
             // mismatch, tokens extra → security CA-5).
             return parseWaveArgs(args) !== null;
         },
-        usage: 'wave [status [--audio] | next | add <num> #issue | promote | create --nombre <n> --concurrency <c> --window <m> --issues <#a #b> [--objetivo <o>] | archive <num>]',
-        allowedValues: ['status', 'status --audio', 'next', 'add <num> #issue', 'promote', 'create --nombre ... --concurrency ... --window ... --issues ...', 'archive <num>'],
-        hint: 'Subcomandos: `status` (con `--audio` opcional), `next`, `add <num> #issue`, `promote`, `create` (crear ola planificada: `--nombre`, `--concurrency`, `--window`, `--issues #a #b`, y `--objetivo` opcional), `archive <num>`. Sin subcomando equivale a `status`.',
+        usage: 'wave [status [--audio] | next | add <num> #issue | remove <num> #issue | reorder <n1> <n2> ... | promote | create --nombre <n> --concurrency <c> --window <m> --issues <#a #b> [--objetivo <o>] | archive <num> | history [<ola>|#<issue>]]',
+        allowedValues: ['status', 'status --audio', 'next', 'add <num> #issue', 'remove <num> #issue', 'reorder <n1> <n2> ...', 'promote', 'create --nombre ... --concurrency ... --window ... --issues ...', 'archive <num>', 'history [<ola>|#<issue>]'],
+        hint: 'Subcomandos: `status` (con `--audio` opcional), `next`, `add <num> #issue`, `remove <num> #issue`, `reorder <n1> <n2> ...`, `promote`, `create` (crear ola planificada: `--nombre`, `--concurrency`, `--window`, `--issues #a #b`, y `--objetivo` opcional), `archive <num>`, `history [<ola>|#<issue>]`. Sin subcomando equivale a `status`.',
     },
     listado: {
         allow(args) {
@@ -1665,6 +1684,13 @@ function buildDefaultHandlers(ctx) {
                         cooldown: waveSubCooldown,
                         chatId: message && message.chat_id !== undefined ? String(message.chat_id) : null,
                         from: message && message.from ? String(message.from) : 'Leo',
+                    });
+                    break;
+                case 'history':
+                    // #4371 CA-10 — consulta read-only del audit trail de olas/issues.
+                    res = handleWaveHistory({
+                        waveNumber: parsed.waveNumber,
+                        issueNumber: parsed.issueNumber,
                     });
                     break;
                 default:
@@ -3102,6 +3128,107 @@ async function handleWaveArchive({ waveNumber, cooldown, chatId, from }) {
 }
 
 /**
+ * `/wave history [<ola>|#<issue>]` — Consulta read-only del audit trail de
+ * olas/issues (#4371 CA-10). Orden cronológico, actor, evento, previo→posterior
+ * y timestamp legible (`es-AR`). Reusa `wave-audit.history`/`verifyChain`
+ * (readAll/verifyChain de audit-log.js). No muta nada → sin cooldown.
+ *
+ * @param {object} args
+ * @param {number} [args.waveNumber] — filtra por ola.
+ * @param {number} [args.issueNumber] — filtra por issue.
+ * @returns {{ reply: string }}
+ */
+function handleWaveHistory({ waveNumber, issueNumber } = {}) {
+    const HISTORY_MAX = 15;
+    let entries = [];
+    let chain = { ok: true, entriesChecked: 0 };
+    try {
+        const waveAudit = require('./wave-audit');
+        entries = waveAudit.history({ wave: waveNumber, issue: issueNumber, limit: HISTORY_MAX });
+        chain = waveAudit.verifyChain();
+    } catch (e) {
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'fs_error',
+                message: `No pude leer el audit trail de olas: ${escapeMarkdownV2(String(e && e.message ? e.message : e))}`,
+            }),
+        };
+    }
+
+    // Encabezado según filtro.
+    let scope = 'todas las olas e issues';
+    if (Number.isInteger(waveNumber)) scope = `ola ${waveNumber}`;
+    else if (Number.isInteger(issueNumber)) scope = `issue #${issueNumber}`;
+
+    if (!entries.length) {
+        return {
+            reply: `📜 *Historial de olas & issues* \\(${escapeMarkdownV2(scope)}\\)\n\n`
+                + `_Sin movimientos registrados todavía\\._`,
+        };
+    }
+
+    const EVENT_LABEL = {
+        issue_added: '➕ issue agregado',
+        issue_removed: '➖ issue quitado',
+        priority_changed: '↕️ prioridad',
+        wave_promoted: '⬆️ ola promovida',
+        wave_archived: '📦 ola archivada',
+    };
+
+    const fmtEstado = (v) => {
+        if (v == null) return '—';
+        if (typeof v === 'string' || typeof v === 'number') return String(v);
+        if (v && Array.isArray(v.issues)) {
+            const list = v.issues.filter((n) => Number.isInteger(n));
+            if (!list.length) return 'sin issues';
+            if (list.length <= 4) return list.map((n) => '#' + n).join(', ');
+            return `${list.length} issues`;
+        }
+        return '—';
+    };
+
+    const lines = entries.map((e) => {
+        let when = '—';
+        try {
+            const d = e.timestamp ? new Date(e.timestamp) : null;
+            if (d && !isNaN(d.getTime())) {
+                when = d.toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            }
+        } catch (_) { /* '—' */ }
+        const label = EVENT_LABEL[e.event] || (e.event || '—');
+        const actor = e.actor || 'desconocido';
+        // Objeto.
+        let objeto = '';
+        if (Number.isInteger(e.issue) && Number.isInteger(e.wave)) objeto = `#${e.issue} → ola ${e.wave}`;
+        else if (Number.isInteger(e.issue)) objeto = `#${e.issue}`;
+        else if (Number.isInteger(e.wave)) objeto = `ola ${e.wave}`;
+        // Previo → posterior.
+        let prev; let post;
+        if (e.event === 'priority_changed') {
+            prev = e.prioridad_previa || '—'; post = e.prioridad_nueva || '—';
+        } else {
+            prev = fmtEstado(e.estado_previo); post = fmtEstado(e.estado_posterior);
+        }
+        let line = `\`${escapeMarkdownV2(when)}\` · ${escapeMarkdownV2(label)} · _${escapeMarkdownV2(actor)}_`;
+        if (objeto) line += `\n   ${escapeMarkdownV2(objeto)} · ${escapeMarkdownV2(prev)} → ${escapeMarkdownV2(post)}`;
+        else line += `\n   ${escapeMarkdownV2(prev)} → ${escapeMarkdownV2(post)}`;
+        if (e.note) line += `\n   _${escapeMarkdownV2(String(e.note).slice(0, 80))}_`;
+        return line;
+    });
+
+    let header = `📜 *Historial de olas & issues* \\(${escapeMarkdownV2(scope)}\\)\n`;
+    header += `_Mostrando ${entries.length} movimiento${entries.length === 1 ? '' : 's'} más reciente${entries.length === 1 ? '' : 's'}\\._\n`;
+    // Estado de la cadena (integridad, CA-5).
+    if (chain.ok) {
+        header += `🔗 hash\\-chain verificado \\(${chain.entriesChecked} entradas\\)\n`;
+    } else {
+        header += `⚠️ *hash\\-chain ROTO* en la entrada ${chain.brokenAt != null ? chain.brokenAt : '?'} — posible manipulación\n`;
+    }
+
+    return { reply: header + '\n' + lines.join('\n\n') };
+}
+
+/**
  * Helper de UX: humaniza las olas disponibles para el mensaje de error
  * `wave_not_found`. Devuelve algo como "1 (activa) o 2, 3".
  */
@@ -3300,6 +3427,7 @@ module.exports = {
         handleWaveCreate,
         handleWaveRemove,
         handleWaveReorder,
+        handleWaveHistory,
         getKnownIssues,
         invalidateKnownIssuesCache,
         describeAvailableWaves,

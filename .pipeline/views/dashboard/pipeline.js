@@ -105,6 +105,12 @@ function renderPipelineHTML(params) {
     const renderRows = typeof p.renderPartialPauseAuditRows === 'function'
         ? p.renderPartialPauseAuditRows
         : () => '<tr><td colspan="6" class="ppa-empty">Renderer no disponible — recargá el dashboard tras restart del pulpo.</td></tr>';
+    // #4371 CA-8/CA-10 — widget hermano "Audit trail · Olas & Issues".
+    const waveAudit = normalizeWaveAudit(p.waveIssueAuditData);
+    const renderWaveRows = typeof p.renderWaveAuditRows === 'function'
+        ? p.renderWaveAuditRows
+        : () => '<tr><td colspan="6" class="wia-empty">Renderer no disponible — recargá el dashboard tras restart del pulpo.</td></tr>';
+    const waveAuditNeedsAttention = Boolean(waveAudit.chain_broken) || Boolean(waveAudit.has_unauthorized);
 
     // partial-pause activo: respeta el boolean inyectado y, como fallback,
     // deriva del mode (acepta variantes hyphen/underscore por robustez).
@@ -129,6 +135,8 @@ function renderPipelineHTML(params) {
   ${renderAllowlistSection({ ic, allowedIssues, allowlistCandidatesList, partialActive })}
 
   ${renderAuditTrail({ ic, audit, renderRows, auditNeedsAttention })}
+
+  ${renderWaveAuditTrail({ ic, audit: waveAudit, renderRows: renderWaveRows, auditNeedsAttention: waveAuditNeedsAttention })}
 
   ${renderInfraHealth(state)}
 `;
@@ -398,4 +406,104 @@ function renderAuditTrail({ ic, audit, renderRows, auditNeedsAttention }) {
   </details>`;
 }
 
-module.exports = { renderPipelineHTML, normalizeAudit, TOOLTIPS };
+// --- Normalización defensiva del contrato de waveIssueAuditSlice (#4371) ------
+// Contrato: chain_broken, chain_broken_at, chain_entries_checked, entries[],
+// has_unauthorized, stats.{total,con_autoria,sin_autoria,cambios_prioridad}.
+function normalizeWaveAudit(raw) {
+    const a = raw || {};
+    const stats = a.stats || {};
+    return {
+        chain_broken: Boolean(a.chain_broken),
+        chain_broken_at: a.chain_broken_at,
+        chain_entries_checked: Number(a.chain_entries_checked || 0),
+        entries: Array.isArray(a.entries) ? a.entries : [],
+        has_unauthorized: Boolean(a.has_unauthorized),
+        stats: {
+            total: Number(stats.total || 0),
+            con_autoria: Number(stats.con_autoria || 0),
+            sin_autoria: Number(stats.sin_autoria || 0),
+            cambios_prioridad: Number(stats.cambios_prioridad || 0),
+        },
+    };
+}
+
+// --- 5. Audit trail · Olas & Issues (#4371 CA-8/CA-10) -----------------------
+// Widget hermano del de allowlist (#3625). Estados A/B/C/D + 4 KPIs 24h + banner
+// condicional de hash-chain roto + tabla server-side (wave-audit-renderer).
+// Abre por defecto si hay hash-chain roto o mutación sin autoría (mismo criterio
+// UX que el widget de allowlist). Spec: narrativa-wave-issue-audit-trail.md.
+function renderWaveAuditTrail({ ic, audit, renderRows, auditNeedsAttention }) {
+    const chainBrokenAt = escapeHtmlText(String(audit.chain_broken_at == null ? '?' : audit.chain_broken_at));
+    const unauthCount = (audit.entries || []).filter((e) => e && e.visual === 'unauthorized').length;
+
+    return `<details ${auditNeedsAttention ? 'open ' : ''}id="panel-wave-issue-audit" class="section ppa-section" data-test-id="panel-wave-issue-audit">
+    <summary>
+      ${ic('transition-history', 'audit log olas')}
+      <span>Audit trail &middot; Olas &amp; Issues</span>
+      <span class="dim" style="font-weight:normal;font-size:0.85em">— últimas 24h · hash-chain auditable</span>
+    </summary>
+    <div class="ppa-section-body">
+      <div id="wia-banner-chain" class="ppa-banner ppa-banner-critical" role="alert" aria-live="assertive" style="display:${audit.chain_broken ? 'flex' : 'none'};">
+        <span aria-hidden="true">⛓</span>
+        <span>
+          <strong>Hash-chain del audit log roto en entry #<span id="wia-broken-at">${chainBrokenAt}</span>.</strong>
+          Escrituras nuevas bloqueadas hasta intervención humana. Ver <code>docs/pipeline/audit-recovery.md</code> para procedimiento de recovery.
+        </span>
+      </div>
+      <div id="wia-banner-unauth" class="ppa-banner ppa-banner-warning" role="alert" aria-live="polite" style="display:${audit.has_unauthorized ? 'flex' : 'none'};">
+        <span aria-hidden="true">⚠</span>
+        <span>
+          <strong><span id="wia-unauth-count">${unauthCount}</span> movimiento(s) sin autoría detectado(s)</strong> — revisá el bypass antes del próximo restart del pipeline.
+        </span>
+      </div>
+
+      <div class="ppa-kpis" style="grid-template-columns:repeat(4,minmax(140px,1fr))" data-test-id="wia-kpis">
+        <div class="ppa-kpi">
+          <div class="ppa-kpi-label">Movimientos 24h</div>
+          <div class="ppa-kpi-value" id="wia-kpi-total" aria-label="Movimientos últimas 24h">${audit.stats.total}</div>
+          <div class="ppa-kpi-sub">total append-only</div>
+        </div>
+        <div class="ppa-kpi ppa-kpi-auth">
+          <div class="ppa-kpi-label">${ic('architect-approved', 'con autoria')}<span>Con autoría</span></div>
+          <div class="ppa-kpi-value ppa-value-success" id="wia-kpi-auth" aria-label="Movimientos con autoría">${audit.stats.con_autoria}</div>
+          <div class="ppa-kpi-sub">actor autenticado</div>
+        </div>
+        <div class="ppa-kpi ppa-kpi-unknown">
+          <div class="ppa-kpi-label">${ic('health-warn', 'sin autoria')}<span>Sin autoría</span></div>
+          <div class="ppa-kpi-value ${audit.stats.sin_autoria > 0 ? 'ppa-value-warning' : 'ppa-value-dim'}" id="wia-kpi-unauth" aria-label="Movimientos sin autoría registrada">${audit.stats.sin_autoria}</div>
+          <div class="ppa-kpi-sub">actor=null</div>
+        </div>
+        <div class="ppa-kpi ppa-kpi-chain">
+          <div class="ppa-kpi-label">${ic('estado-partial-pause', 'hash chain')}<span>Hash-chain</span></div>
+          <div class="ppa-kpi-value ${audit.chain_broken ? 'ppa-value-danger' : 'ppa-value-success'}" id="wia-kpi-chain" aria-label="Estado del hash-chain del audit log">${audit.chain_broken ? '✗ ROTO' : '✓ ' + audit.chain_entries_checked}</div>
+          <div class="ppa-kpi-sub" id="wia-kpi-chain-sub">${audit.chain_broken ? 'entry #' + chainBrokenAt : 'entries verificadas'}</div>
+        </div>
+      </div>
+
+      <div class="ppa-table-wrap">
+        <table class="ppa-table" data-test-id="wia-table">
+          <thead><tr>
+            <th scope="col">Cuándo</th>
+            <th scope="col">Actor</th>
+            <th scope="col">Evento</th>
+            <th scope="col">Objeto</th>
+            <th scope="col">Previo → Posterior</th>
+            <th scope="col">Nota</th>
+          </tr></thead>
+          <tbody id="wia-tbody" aria-live="polite">
+            ${renderRows(audit.entries)}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="ppa-footer">
+        <span id="wia-updated-at">Server-side render · refresh polling 30s</span> ·
+        Endpoint: <a href="/api/dash/wave-issue-audit" title="${escapeHtmlAttr(TOOLTIPS.auditLink)}">/api/dash/wave-issue-audit</a> ·
+        Spec: <code>narrativa-wave-issue-audit-trail.md</code> · CA-8/CA-10 de
+        <a href="https://github.com/intrale/platform/issues/4371" target="_blank" rel="noopener noreferrer">#4371</a>
+      </div>
+    </div>
+  </details>`;
+}
+
+module.exports = { renderPipelineHTML, normalizeAudit, normalizeWaveAudit, TOOLTIPS };

@@ -220,6 +220,19 @@ function renderPartialPauseAuditRows(entries) {
   return '<tr><td colspan="6" class="ppa-empty">Renderer no disponible — recargá el dashboard tras restart del pulpo.</td></tr>';
 }
 
+// #4371 CA-8/CA-10 — Renderer del widget "Audit trail · Olas & Issues".
+// Simétrico a renderPartialPauseAuditRows: el slice vive en lib/dashboard-slices.js
+// (waveIssueAuditSlice), las rows en lib/wave-audit-renderer.js. Si el módulo no
+// carga, fallback a empty-state para no romper el render del dashboard.
+let _waveAuditRenderer = null;
+try { _waveAuditRenderer = require('./lib/wave-audit-renderer'); } catch {}
+function renderWaveAuditRows(entries) {
+  if (_waveAuditRenderer && typeof _waveAuditRenderer.renderRows === 'function') {
+    return _waveAuditRenderer.renderRows(entries);
+  }
+  return '<tr><td colspan="6" class="wia-empty">Renderer no disponible — recargá el dashboard tras restart del pulpo.</td></tr>';
+}
+
 // --- Componentes gestionables (start/stop) ---
 const COMPONENTS = [
   { name: 'pulpo', script: 'pulpo.js', pid: 'pulpo.pid' },
@@ -2273,6 +2286,25 @@ function generateHTML(state) {
     const slices = require('./lib/dashboard-slices');
     const slice = slices.partialPauseAuditSlice({}, { limit: 3 });
     if (slice && !slice.error) partialPauseAuditData = slice;
+  } catch {}
+
+  // #4371 CA-8/CA-10 — Audit trail de movimientos sobre olas e issues (widget en
+  // panel Pipeline, debajo de "Audit trail · Allowlist"). Estados visuales
+  // A/B/C/D + KPIs 24h + banner condicional de hash-chain roto. Polling cada 30s
+  // vía /api/dash/wave-issue-audit. Spec en
+  // .pipeline/assets/mockups/narrativa-wave-issue-audit-trail.md
+  let waveIssueAuditData = {
+    entries: [],
+    stats: { total: 0, con_autoria: 0, sin_autoria: 0, cambios_prioridad: 0, since: null },
+    chain_broken: false,
+    chain_broken_at: null,
+    chain_entries_checked: 0,
+    has_unauthorized: false,
+  };
+  try {
+    const slices = require('./lib/dashboard-slices');
+    const slice = slices.waveIssueAuditSlice({}, { limit: 3 });
+    if (slice && !slice.error) waveIssueAuditData = slice;
   } catch {}
 
   // V3 detection: workers determinísticos en .pipeline/workers/*.js
@@ -6198,6 +6230,30 @@ body.standalone .section-collapsed .section-body{display:block !important}
 .ppa-empty{padding:20px;text-align:center;color:var(--text-dim,var(--dim));font-size:12px;font-style:italic}
 @media (prefers-reduced-motion: reduce){.ppa-banner,.ppa-table tbody tr{transition:none}}
 
+/* #4371 CA-8/CA-10 — Audit trail · Olas & Issues. Reusa el layout de .ppa-* del
+   widget hermano (allowlist), con clases wia-* propias para las filas. */
+.wia-row-A{background:transparent}
+.wia-row-B{background:transparent}
+.wia-row-C{background:var(--danger-bg,rgba(248,81,73,0.08));border-left:4px solid var(--danger,#f85149)}
+.wia-row-D{background:var(--warning-bg,rgba(210,153,34,0.08));border-left:4px solid var(--warning,#d29922)}
+.wia-when{font-family:'SF Mono',Consolas,monospace;font-size:11px;color:var(--text-secondary,var(--dim));white-space:nowrap}
+.wia-actor-pill{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;white-space:nowrap}
+.wia-actor-pill svg{width:12px;height:12px}
+.wia-pill-human{background:var(--purple-bg,rgba(188,140,255,0.15));color:var(--purple,#bc8cff)}
+.wia-pill-machine{background:var(--info-bg,rgba(88,166,255,0.15));color:var(--info,#58a6ff)}
+.wia-pill-unknown{background:var(--warning-bg,rgba(210,153,34,0.15));color:var(--warning,#d29922)}
+.wia-event{display:inline-flex;align-items:center;gap:6px;font-weight:600}
+.wia-event svg{width:12px;height:12px}
+.wia-obj{font-family:'SF Mono',Consolas,monospace;font-size:11px;color:var(--text-secondary,var(--tx))}
+.wia-trans{font-family:'SF Mono',Consolas,monospace;font-size:11px;line-height:1.4}
+.wia-prev{color:var(--text-dim,var(--dim2))}
+.wia-post{color:var(--success,#3fb950);font-weight:600}
+.wia-note{max-width:220px;font-size:11px;color:var(--text-secondary,var(--dim));white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:inline-block;vertical-align:bottom}
+.wia-dim{color:var(--text-dim,var(--dim2))}
+.wia-microcopy{font-size:10px;color:var(--text-dim,var(--dim2));margin-top:2px;line-height:1.3}
+.wia-microcopy-alert{color:var(--danger,#f85149);font-weight:600}
+.wia-empty{padding:20px;text-align:center;color:var(--text-dim,var(--dim));font-size:12px;font-style:italic}
+
 </style></head>
 <body>
   ${loadIconSprite()}
@@ -6330,6 +6386,7 @@ body.standalone .section-collapsed .section-body{display:block !important}
     partialPauseState,
     allowlistCandidatesList,
     partialPauseAuditData,
+    waveIssueAuditData,
     state,
     stale,
     blocked: (typeof blocked !== 'undefined') && blocked,
@@ -6346,6 +6403,7 @@ body.standalone .section-collapsed .section-body{display:block !important}
     ic,
     renderInfraHealth,
     renderPartialPauseAuditRows,
+    renderWaveAuditRows,
   }) : '<!-- pipeline view unavailable -->'}
 
   <!-- #2800 — Board Kanban centerpiece: protagonista visual del dashboard V3.
@@ -7638,6 +7696,138 @@ if (typeof window !== 'undefined') {
   window.addEventListener('DOMContentLoaded', function() {
     refreshAuditTrail();
     setInterval(refreshAuditTrail, 30 * 1000);
+  });
+}
+
+// #4371 CA-8/CA-10 — Refresh client-side del widget "Audit trail · Olas & Issues".
+// Polling cada 30s + skip si tab oculto. Renderer client-side equivalente al
+// server-side lib/wave-audit-renderer.js (mismas clases wia-*, mismos estados).
+var _WIA_EVENT_META = {
+  issue_added: { icon: 'issue-added', label: 'Issue agregado' },
+  issue_removed: { icon: 'remove-circle', label: 'Issue quitado' },
+  priority_changed: { icon: 'priority-change', label: 'Prioridad' },
+  wave_promoted: { icon: 'promote', label: 'Ola promovida' },
+  wave_archived: { icon: 'archive-box', label: 'Ola archivada' },
+};
+function _wiaFormatEstado(v) {
+  if (v == null) return '—';
+  if (typeof v === 'string' || typeof v === 'number') return _ppaClientEsc(String(v));
+  if (v && typeof v === 'object' && Array.isArray(v.issues)) {
+    var list = v.issues.filter(function(n){ return Number.isInteger(n); });
+    if (list.length === 0) return _ppaClientEsc('sin issues');
+    if (list.length <= 6) return _ppaClientEsc(list.map(function(n){ return '#' + n; }).join(', '));
+    return _ppaClientEsc(list.length + ' issues');
+  }
+  try { return _ppaClientEsc(JSON.stringify(v).slice(0, 80)); } catch (_) { return '—'; }
+}
+function _wiaRenderObjeto(e) {
+  var hasIssue = Number.isInteger(e && e.issue);
+  var hasWave = Number.isInteger(e && e.wave);
+  if (hasIssue && hasWave) return '<span class="wia-obj">#' + Number(e.issue) + ' → ola ' + Number(e.wave) + '</span>';
+  if (hasIssue) return '<span class="wia-obj">#' + Number(e.issue) + '</span>';
+  if (hasWave) return '<span class="wia-obj">ola ' + Number(e.wave) + '</span>';
+  return '<span class="wia-dim">—</span>';
+}
+function _wiaRenderRow(e) {
+  var visual = e && e.visual ? String(e.visual) : 'human';
+  var event = e && e.event ? String(e.event) : '';
+  var meta = _WIA_EVENT_META[event] || { icon: 'transition-history', label: event || '—' };
+  var stateCls = visual === 'unauthorized' ? 'wia-row-C'
+    : visual === 'priority' ? 'wia-row-D'
+    : visual === 'subsystem' ? 'wia-row-B' : 'wia-row-A';
+  var whenLocal = '—', whenIso = '';
+  try {
+    var d = e && e.timestamp ? new Date(e.timestamp) : null;
+    if (d && !isNaN(d.getTime())) {
+      whenIso = d.toISOString();
+      whenLocal = d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+  } catch (_) {}
+  var actor = e && e.actor ? String(e.actor) : 'desconocido';
+  var actorPillCls, actorIcon, actorAria;
+  if (visual === 'unauthorized') { actorPillCls = 'wia-pill-unknown'; actorIcon = 'health-warn'; actorAria = 'sin autoría'; }
+  else if (visual === 'subsystem') { actorPillCls = 'wia-pill-machine'; actorIcon = 'estado-partial-pause'; actorAria = 'subsistema'; }
+  else { actorPillCls = 'wia-pill-human'; actorIcon = 'architect-approved'; actorAria = 'humano'; }
+  var actorText = visual === 'unauthorized' ? 'null · sin autoría' : actor;
+  var actorChip = '<span class="wia-actor-pill ' + actorPillCls + '">' + _ppaIcUse(actorIcon, actorAria) + '<span>' + _ppaClientEsc(actorText) + '</span></span>';
+  var eventHtml = '<span class="wia-event">' + _ppaIcUse(meta.icon, meta.label) + '<span>' + _ppaClientEsc(meta.label) + '</span></span>';
+  var prevHtml, postHtml;
+  if (event === 'priority_changed') {
+    prevHtml = e && e.prioridad_previa ? _ppaClientEsc(String(e.prioridad_previa)) : '—';
+    postHtml = e && e.prioridad_nueva ? _ppaClientEsc(String(e.prioridad_nueva)) : '—';
+  } else {
+    prevHtml = _wiaFormatEstado(e && e.estado_previo);
+    postHtml = _wiaFormatEstado(e && e.estado_posterior);
+  }
+  var transHtml = '<span class="wia-trans"><span class="wia-prev">' + prevHtml + '</span> → <span class="wia-post">' + postHtml + '</span></span>';
+  var note = String((e && e.note) || '');
+  var noteHtml;
+  if (note) {
+    var short = note.length > 50 ? note.slice(0, 50) + '…' : note;
+    noteHtml = '<span class="wia-note" title="' + _ppaClientEsc(note) + '">' + _ppaClientEsc(short) + '</span>';
+  } else { noteHtml = '<span class="wia-dim">—</span>'; }
+  var microcopy = '';
+  if (visual === 'unauthorized') microcopy = '<div class="wia-microcopy wia-microcopy-alert">Bypass detectado — revisar urgente</div>';
+  return ''
+    + '<tr class="' + stateCls + '" data-visual="' + _ppaClientEsc(visual) + '" data-event="' + _ppaClientEsc(event) + '">'
+    + '<td><span class="wia-when" title="' + _ppaClientEsc(whenIso) + '">' + _ppaClientEsc(whenLocal) + '</span></td>'
+    + '<td>' + actorChip + '</td>'
+    + '<td>' + eventHtml + '</td>'
+    + '<td>' + _wiaRenderObjeto(e) + '</td>'
+    + '<td>' + transHtml + '</td>'
+    + '<td>' + noteHtml + microcopy + '</td>'
+    + '</tr>';
+}
+function renderWaveAuditTrail(data) {
+  if (!data || typeof data !== 'object') return;
+  var stats = data.stats || {};
+  var tEl = document.getElementById('wia-kpi-total'); if (tEl) tEl.textContent = String(Number(stats.total || 0));
+  var aEl = document.getElementById('wia-kpi-auth'); if (aEl) aEl.textContent = String(Number(stats.con_autoria || 0));
+  var uEl = document.getElementById('wia-kpi-unauth');
+  var sinAutoria = Number(stats.sin_autoria || 0);
+  if (uEl) { uEl.textContent = String(sinAutoria); uEl.className = 'ppa-kpi-value ' + (sinAutoria > 0 ? 'ppa-value-warning' : 'ppa-value-dim'); }
+  var cEl = document.getElementById('wia-kpi-chain');
+  if (cEl) {
+    cEl.textContent = data.chain_broken ? '✗ ROTO' : '✓ ' + Number(data.chain_entries_checked || 0);
+    cEl.className = 'ppa-kpi-value ' + (data.chain_broken ? 'ppa-value-danger' : 'ppa-value-success');
+  }
+  var cSub = document.getElementById('wia-kpi-chain-sub');
+  if (cSub) cSub.textContent = data.chain_broken ? ('entry #' + String(data.chain_broken_at || '?')) : 'entries verificadas';
+  var bChain = document.getElementById('wia-banner-chain');
+  if (bChain) bChain.style.display = data.chain_broken ? 'flex' : 'none';
+  var bAt = document.getElementById('wia-broken-at');
+  if (bAt && data.chain_broken) bAt.textContent = String(data.chain_broken_at || '?');
+  var entries = Array.isArray(data.entries) ? data.entries : [];
+  var unauthCount = entries.filter(function(e){ return e && e.visual === 'unauthorized'; }).length;
+  var bUnauth = document.getElementById('wia-banner-unauth');
+  if (bUnauth) bUnauth.style.display = data.has_unauthorized ? 'flex' : 'none';
+  var uc = document.getElementById('wia-unauth-count'); if (uc) uc.textContent = String(unauthCount);
+  var tbody = document.getElementById('wia-tbody');
+  if (tbody) {
+    if (!entries.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="wia-empty">Sin movimientos registrados todavía — el audit trail se hidrata cuando se agrega/quita un issue de una ola, cambia una prioridad o se promueve/archiva una ola.</td></tr>';
+    } else {
+      tbody.innerHTML = entries.map(_wiaRenderRow).join('');
+    }
+  }
+  var upd = document.getElementById('wia-updated-at');
+  if (upd) { try { upd.textContent = 'Última actualización: ' + new Date().toLocaleTimeString('es-AR'); } catch (_) {} }
+}
+async function refreshWaveAuditTrail() {
+  if (typeof document === 'undefined' || document.hidden) return;
+  try {
+    const r = await fetch('/api/dash/wave-issue-audit', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    renderWaveAuditTrail(data);
+  } catch (_) {
+    // Best-effort: el polling reintenta en 30s.
+  }
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('DOMContentLoaded', function() {
+    refreshWaveAuditTrail();
+    setInterval(refreshWaveAuditTrail, 30 * 1000);
   });
 }
 

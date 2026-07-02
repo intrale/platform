@@ -196,3 +196,91 @@ test('normalizeAudit degrada un slice incompleto sin romper', () => {
     assert.deepEqual(a.stats, { total: 0, authorized: 0, rejected: 0, unknown: 0 });
     assert.deepEqual(a.entries, []);
 });
+
+// =============================================================================
+// #4371 CA-8/CA-10 — Widget hermano "Audit trail · Olas & Issues". El review de
+// #4371 rebotó porque el slice+renderer quedaron como código muerto (nunca
+// montados). Estos tests fijan el cableado del widget en la ventana Pipeline
+// para prevenir la regresión: el panel debe renderizar, exponer el endpoint de
+// polling y abrir por sí solo ante hash-chain roto / mutación sin autoría.
+// =============================================================================
+const realWaveRenderRows = require('../../../lib/wave-audit-renderer').renderRows;
+
+function buildWaveParams(overrides) {
+    return buildParams(Object.assign({
+        waveIssueAuditData: {
+            chain_broken: false,
+            chain_broken_at: null,
+            chain_entries_checked: 3,
+            entries: [],
+            has_unauthorized: false,
+            stats: { total: 0, con_autoria: 0, sin_autoria: 0, cambios_prioridad: 0 },
+        },
+        renderWaveAuditRows: realWaveRenderRows,
+    }, overrides || {}));
+}
+
+// El panel del widget de olas SIEMPRE se monta (no es código muerto).
+test('renderPipelineHTML monta el panel de audit trail de olas e issues', () => {
+    const html = pipeline.renderPipelineHTML(buildWaveParams());
+    assert.ok(html.includes('panel-wave-issue-audit'), 'panel wave audit presente');
+    assert.ok(html.includes('Audit trail &middot; Olas &amp; Issues'), 'título del widget');
+    assert.ok(html.includes('/api/dash/wave-issue-audit'), 'endpoint de polling enlazado');
+    assert.ok(html.includes('id="wia-tbody"'), 'tbody con id para el polling');
+});
+
+// El renderer real produce filas cuando hay entries (invoca renderRows).
+test('renderPipelineHTML renderiza filas del wave audit con el renderer real', () => {
+    const html = pipeline.renderPipelineHTML(buildWaveParams({
+        waveIssueAuditData: {
+            chain_broken: false, chain_broken_at: null, chain_entries_checked: 2,
+            entries: [{
+                timestamp: '2026-07-02T10:00:00.000Z', event: 'issue_added', wave: 8, issue: 4371,
+                actor: 'commander:leo', estado_previo: { issues: [1] }, estado_posterior: { issues: [1, 4371] },
+                note: 'agregado a la ola', visual: 'human',
+            }],
+            has_unauthorized: false,
+            stats: { total: 1, con_autoria: 1, sin_autoria: 0, cambios_prioridad: 0 },
+        },
+    }));
+    assert.ok(html.includes('Issue agregado'), 'evento renderizado');
+    assert.ok(html.includes('#4371 → ola 8'), 'objeto renderizado');
+    assert.ok(!html.includes('Sin movimientos registrados'), 'no muestra empty-state con entries');
+});
+
+// Abre por defecto + banner crítico cuando el hash-chain está roto.
+test('renderPipelineHTML abre el panel de olas y muestra banner si chain roto', () => {
+    const html = pipeline.renderPipelineHTML(buildWaveParams({
+        waveIssueAuditData: {
+            chain_broken: true, chain_broken_at: 5, chain_entries_checked: 5,
+            entries: [], has_unauthorized: false,
+            stats: { total: 0, con_autoria: 0, sin_autoria: 0, cambios_prioridad: 0 },
+        },
+    }));
+    assert.match(html, /<details open id="panel-wave-issue-audit"/);
+    assert.match(html, /id="wia-banner-chain"[^>]*display:flex/);
+});
+
+// Abre por defecto ante mutación sin autoría (has_unauthorized).
+test('renderPipelineHTML abre el panel de olas ante mutación sin autoría', () => {
+    const html = pipeline.renderPipelineHTML(buildWaveParams({
+        waveIssueAuditData: {
+            chain_broken: false, chain_broken_at: null, chain_entries_checked: 1,
+            entries: [{ timestamp: '2026-07-02T10:00:00.000Z', event: 'issue_added', issue: 9, actor: 'desconocido', note: '', visual: 'unauthorized' }],
+            has_unauthorized: true,
+            stats: { total: 1, con_autoria: 0, sin_autoria: 1, cambios_prioridad: 0 },
+        },
+    }));
+    assert.match(html, /<details open id="panel-wave-issue-audit"/);
+    assert.match(html, /id="wia-banner-unauth"[^>]*display:flex/);
+});
+
+// normalizeWaveAudit degrada un slice incompleto a defaults seguros.
+test('normalizeWaveAudit degrada un slice incompleto sin romper', () => {
+    const a = pipeline.normalizeWaveAudit(undefined);
+    assert.equal(a.chain_broken, false);
+    assert.equal(a.chain_entries_checked, 0);
+    assert.equal(a.has_unauthorized, false);
+    assert.deepEqual(a.stats, { total: 0, con_autoria: 0, sin_autoria: 0, cambios_prioridad: 0 });
+    assert.deepEqual(a.entries, []);
+});

@@ -1339,6 +1339,13 @@ const API_ROUTES = {
     // de 24h y estado del hash-chain. Refresh natural 30s desde el cliente.
     '/api/dash/partial-pause-audit': (state, ctx) => slices.partialPauseAuditSlice(state, ctx),
     '/api/partial-pause-audit': (state, ctx) => slices.partialPauseAuditSlice(state, ctx),
+    // #4371 CA-8/CA-10 — widget de audit trail de movimientos sobre olas e
+    // issues (agregar/quitar issue, cambio de prioridad, promoción/archivado).
+    // Devuelve las últimas N entries del audit log, stats de 24h y estado del
+    // hash-chain. Refresh natural 30s desde el cliente. Mismo gate loopback /
+    // Sec-Fetch-Site / no-store que el resto de `/api/dash/*`.
+    '/api/dash/wave-issue-audit': (state, ctx) => slices.waveIssueAuditSlice(state, ctx),
+    '/api/wave-issue-audit': (state, ctx) => slices.waveIssueAuditSlice(state, ctx),
     // #3954 EP8-H1 CA-5 — Bandeja de alertas del Home mission-control. Lectura
     // del audit trail (ack/snooze): últimas N entries, stats 24h, estado del
     // hash-chain y supresiones vigentes. Refresh natural 30s desde el cliente.

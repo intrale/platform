@@ -135,6 +135,10 @@ scripts/planner-plan.json
 # Pipeline V2 — estado efímero (no commitear)
 .pipeline/logs/
 .pipeline/*.pid
+# Ready-markers de servicios: estado runtime (pid/port/timestamps reescritos en
+# cada arranque). NO commitear — el proceso vivo los reescribe durante rebase/merge
+# y provoca conflictos en delivery (#4371).
+.pipeline/ready/*.ready
 .pipeline/.paused
 .pipeline/.partial-pause.json
 .pipeline/rest-mode.json

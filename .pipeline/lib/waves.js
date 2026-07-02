@@ -213,6 +213,21 @@ function logInfo(msg) {
     console.log(`[waves] ${msg}`);
 }
 
+// #4371 (Ola 8.3) — Emisor best-effort del audit trail de olas/issues. La
+// emisión es ADITIVA: la mutación de la ola ya fue persistida (autoritativa)
+// cuando se llama esto. Si el audit falla (chain rota, disco, etc.) se loguea
+// pero NO se propaga la excepción (CA-12: no romper mutaciones existentes ni el
+// shape de waves.json). `require` lazy adentro para evitar cualquier ciclo de
+// require al cargar waves.js.
+function emitWaveAudit(evt) {
+    try {
+        // eslint-disable-next-line global-require
+        require('./wave-audit').recordWaveEvent(evt);
+    } catch (e) {
+        logWarn(`audit ${evt && evt.event} falló (no bloqueante): ${e.message}`);
+    }
+}
+
 function emptyState() {
     return {
         version: SCHEMA_VERSION,
@@ -446,6 +461,9 @@ function addIssueToWaveLocked(waveNumber, issue, n, meta) {
         return { waveNumber, issue: n, added: false, version: versionToken(state) };
     }
 
+    // #4371 — snapshot del estado de la ola ANTES de mutar (para el audit).
+    const issuesBefore = target.issues.map((i) => normalizeIssue(i.number)).filter(Boolean);
+
     const issueEntry = { number: n };
     if (typeof issue.status === 'string') issueEntry.status = issue.status;
     if (typeof issue.notes === 'string') issueEntry.notes = issue.notes;
@@ -456,6 +474,18 @@ function addIssueToWaveLocked(waveNumber, issue, n, meta) {
         updated_by: meta.updated_by || 'System',
         source: meta.source || 'manual',
         note: meta.note || `add issue #${n} → wave ${waveNumber}`,
+    });
+    // #4371 CA-1 — audit trail aditivo y best-effort: la mutación de la ola es
+    // autoritativa; si el audit falla, se loguea pero NO se rompe la operación
+    // (CA-12). Require lazy para evitar ciclo de require con wave-audit.
+    emitWaveAudit({
+        event: 'issue_added',
+        wave: waveNumber,
+        issue: n,
+        actor: meta.updated_by || 'System',
+        estado_previo: { issues: issuesBefore },
+        estado_posterior: { issues: [...issuesBefore, n] },
+        note: meta.note,
     });
     return { waveNumber, issue: n, added: true, version: versionToken(state) };
 }
@@ -519,12 +549,24 @@ function removeIssueFromWaveLocked(waveNumber, n, meta) {
         return { waveNumber, issue: n, removed: false, version: versionToken(state) };
     }
 
+    // #4371 — snapshot ANTES de filtrar (para el audit).
+    const issuesBefore = target.issues.map((i) => normalizeIssue(i.number)).filter(Boolean);
     target.issues = target.issues.filter((i) => normalizeIssue(i.number) !== n);
     logInfo(`Issue #${n} removido de ola ${waveNumber}.`);
     saveState(state, {
         updated_by: meta.updated_by || 'System',
         source: meta.source || 'manual',
         note: meta.note || `remove issue #${n} ← wave ${waveNumber}`,
+    });
+    // #4371 CA-2 — audit aditivo best-effort (ver emitWaveAudit).
+    emitWaveAudit({
+        event: 'issue_removed',
+        wave: waveNumber,
+        issue: n,
+        actor: meta.updated_by || 'System',
+        estado_previo: { issues: issuesBefore },
+        estado_posterior: { issues: issuesBefore.filter((x) => x !== n) },
+        note: meta.note,
     });
     return { waveNumber, issue: n, removed: true, version: versionToken(state) };
 }
@@ -623,6 +665,10 @@ function promoteWaveToActiveLocked(waveNumber, metadata) {
         throw new Error(`promoteWaveToActive: ola planificada ${waveNumber} no existe`);
     }
 
+    // #4371 — número de la ola que se archiva (si hay activa previa), capturado
+    // antes de mutar para el audit trail.
+    const archivedWaveNumber = state.active_wave ? state.active_wave.number : null;
+
     // Archivar la activa previa (si la hay) con métricas.
     if (state.active_wave) {
         const prev = state.active_wave;
@@ -659,6 +705,41 @@ function promoteWaveToActiveLocked(waveNumber, metadata) {
         updated_by: metadata.updated_by || 'System',
         source: metadata.source || 'manual',
         note: metadata.note || `promote wave ${waveNumber} → active`,
+    });
+
+    // #4371 CA-4 — audit de promoción/archivado, aditivo y best-effort.
+    //
+    // `_deferWaveAudit`: cuando el caller es `promoteWaveAtomic` (transacción
+    // multi-archivo), NO emitimos acá. La emisión se difiere al final de la
+    // transacción, DESPUÉS del commit exitoso — así un rollback (p.ej. si la
+    // escritura de la allowlist falla) no deja un `wave_promoted`/`wave_archived`
+    // huérfano de un evento que "no pasó" (riesgo señalado por el arquitecto).
+    if (!metadata._deferWaveAudit) {
+        emitPromoteAudit(waveNumber, archivedWaveNumber, metadata.updated_by, metadata.note);
+    }
+}
+
+// #4371 — Emite los eventos wave_archived (si hubo activa previa) + wave_promoted
+// con estado previo/posterior. Factorizado para reusarlo desde el path atómico
+// (post-commit) y el directo (in-place).
+function emitPromoteAudit(waveNumber, archivedWaveNumber, actor, note) {
+    if (archivedWaveNumber != null) {
+        emitWaveAudit({
+            event: 'wave_archived',
+            wave: archivedWaveNumber,
+            actor: actor || 'System',
+            estado_previo: 'active',
+            estado_posterior: 'archived',
+            note,
+        });
+    }
+    emitWaveAudit({
+        event: 'wave_promoted',
+        wave: waveNumber,
+        actor: actor || 'System',
+        estado_previo: 'planned',
+        estado_posterior: 'active',
+        note,
     });
 }
 
@@ -2054,10 +2135,14 @@ function promoteWaveAtomic(waveNumber, metadata = {}) {
         updateMarkerFsync(promoteMarkerFile(), { ...markerPayload, phase: 'writing' });
 
         // Paso 1: promover en waves.json.
+        // #4371 — `_deferWaveAudit`: no emitir el audit dentro de la transacción;
+        // se emite recién tras el commit final (más abajo) para no dejar un
+        // evento huérfano si esta transacción hace rollback.
         promoteWaveToActive(waveNumber, {
             updated_by: metadata.updated_by || 'System',
             source: metadata.source || 'wave-promote-atomic',
             note: metadata.note || `promote wave ${waveNumber} → active (atomic)`,
+            _deferWaveAudit: true,
         });
         invalidateCache();
 
@@ -2140,6 +2225,11 @@ function promoteWaveAtomic(waveNumber, metadata = {}) {
     if (snap.partialBakPath && fs.existsSync(snap.partialBakPath)) {
         try { fs.unlinkSync(snap.partialBakPath); } catch {}
     }
+
+    // #4371 CA-4 — commit exitoso: recién ahora emitimos el audit de la
+    // promoción/archivado. Si la transacción hubiera hecho rollback, este punto
+    // no se alcanza y no queda ningún evento huérfano.
+    emitPromoteAudit(waveNumber, oldWaveNumber, metadata.updated_by, metadata.note);
 
     // Diff added/removed para el mensaje UX (CA-D1).
     const prevSet = new Set(prevAllowlist);
