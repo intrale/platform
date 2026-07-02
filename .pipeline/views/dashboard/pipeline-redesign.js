@@ -387,6 +387,9 @@ const PIPELINE_REDESIGN_CSS = `
 .plc-badge.b-review { color: var(--in-info,#58a6ff); border-color: rgba(88,166,255,.4); }
 .plc-badge.b-done { color: var(--in-ok,#3fb950); border-color: rgba(63,185,80,.4); }
 .plc-badge.b-def { color: var(--in-fg-dim); }
+/* #4362 — "En curso / entre fases": teal punteado, distinto del gris de def. */
+.plc-badge.b-between { color: var(--in-accent,#2ee6c1); border-color: rgba(46,230,193,.4); border-style: dashed; }
+.plc-between { border-color: rgba(46,230,193,.35); }
 .plc-spacer { flex: 1; }
 .plc-elapsed { font-size: 10px; color: var(--in-fg-dim,#8A93A6); font-variant-numeric: tabular-nums; }
 .plc-title { font-size: 12.5px; line-height: 1.4; color: var(--in-fg,#e6edf3); margin: 7px 0 0; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
@@ -600,7 +603,11 @@ function plBadgeFor(macroKey){
 }
 function plRenderCard(i, macroKey){
     const ghHref = 'https://github.com/intrale/platform/issues/' + encodeURIComponent(i.issue);
-    const badge = '<span class="plc-badge b-' + macroKey + '" title="Etapa macro del issue">' + escapeHtml(plBadgeFor(macroKey)) + '</span>';
+    // #4362 — issue que avanza entre fases: badge "En curso" (teal punteado),
+    // distinto del gris de "Definición / sin arrancar".
+    const badge = i.between
+        ? '<span class="plc-badge b-between" title="Avanza — entre fases">⟳ En curso</span>'
+        : '<span class="plc-badge b-' + macroKey + '" title="Etapa macro del issue">' + escapeHtml(plBadgeFor(macroKey)) + '</span>';
     const elapsed = (i.staleMin != null && i.staleMin > 0) ? '<span class="plc-elapsed" title="Minutos sin avance en la fase">' + i.staleMin + 'm</span>' : '';
     // Flags (todas las señales, sin resumir).
     let flags = '';
@@ -624,7 +631,8 @@ function plRenderCard(i, macroKey){
     const eta = (macroKey === 'done') ? 'entregado' : (pct + '%');
     // #4234 — la ficha conoce su fase macro para colorearse y pintar los 7 agentes.
     i.macro = macroKey;
-    return '<div class="plc ph-' + macroKey + runningCls + '" data-issue="' + escapeHtml(i.issue) + '">'
+    const betweenCls = i.between ? ' plc-between' : '';
+    return '<div class="plc ph-' + macroKey + runningCls + betweenCls + '" data-issue="' + escapeHtml(i.issue) + '">'
         + '<div class="plc-head">'
         +   '<a class="plc-num" href="' + ghHref + '" target="_blank" rel="noopener" title="Abrir issue #' + escapeHtml(i.issue) + ' en GitHub">#' + escapeHtml(i.issue) + ' ↗</a>'
         +   badge + '<span class="plc-spacer"></span>' + elapsed
@@ -654,13 +662,14 @@ function plItemFromMatrix(issue, data, macro){
         rebote: data.rebote, rebote_tipo: data.rebote_tipo, motivo_rechazo: data.motivo_rechazo,
         rechazado_en_fase: data.rechazado_en_fase, rechazado_skill_previo: data.rechazado_skill_previo,
         agents: data.agents || [], macro: macro,
+        progressState: data.progressState || null,   // #4362
     };
 }
 function plItemTerminal(issue, title, macro, estado){
     return {
         issue: String(issue), title: title || ('Issue #' + issue), estado: estado || '',
         staleMin: 0, labels: [], paused: false, rebote: false,
-        agents: [], macro: macro,
+        agents: [], macro: macro, progressState: null,
     };
 }
 
@@ -699,6 +708,13 @@ async function tickPipelineRedesign(){
             if(m){
                 const macro = plMacroOf(m.faseActual);
                 if(macro){ buckets[macro].push(plItemFromMatrix(id, m, macro)); }
+                else if(m.progressState === 'entre-fases'){
+                    // #4362 — avanza entre fases: NO es "sin arrancar". Se ubica
+                    // en la columna Definición pero con badge/tono "En curso".
+                    const it = plItemFromMatrix(id, m, 'def');
+                    it.between = true;
+                    buckets.def.push(it);
+                }
                 else { buckets.def.push(plItemTerminal(id, m.title, 'def', m.estadoActual)); }
                 continue;
             }
@@ -716,7 +732,16 @@ async function tickPipelineRedesign(){
         // cuando waves.json no expone una ola activa.
         for(const [issue, data] of Object.entries(matrix)){
             const macro = plMacroOf(data.faseActual);
-            if(!macro) continue;
+            if(!macro){
+                // #4362 — sin fase activa pero avanza entre fases: hacerlo visible
+                // (antes se descartaba, quedaba en blanco) en Definición como "En curso".
+                if(data.progressState === 'entre-fases' && (!plOnlyWave || plAllowlistOk(issue))){
+                    const it = plItemFromMatrix(issue, data, 'def');
+                    it.between = true;
+                    buckets.def.push(it);
+                }
+                continue;
+            }
             if(plOnlyWave && !plAllowlistOk(issue)) continue;
             buckets[macro].push(plItemFromMatrix(issue, data, macro));
         }

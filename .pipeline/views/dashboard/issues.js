@@ -103,6 +103,10 @@ const STATE_META = {
     trabajando:    { label: 'Trabajando',      cls: 'st-working' },
     listo:         { label: 'Listo',           cls: 'st-ready' },
     pendiente:     { label: 'Pendiente',       cls: 'st-pending' },
+    // #4362 — issue que avanza entre fases (sin marcador activo pero con
+    // procesado intermedio + latido reciente). Distinto de 'pendiente'
+    // (sin arrancar). Token visual cerrado por UX (teal --in-accent).
+    'entre-fases': { label: 'En curso',        cls: 'st-progress' },
     bloqueado:     { label: 'Bloqueado',       cls: 'st-blocked' },
     rebote:        { label: 'Rebote',          cls: 'st-bounce' },
     'needs-human': { label: 'Necesita humano', cls: 'st-human' },
@@ -117,6 +121,9 @@ function deriveState(issue) {
     if (labels.includes('blocked:dependencies')) return 'bloqueado';
     const estado = issue && issue.estadoActual;
     if (estado === 'trabajando' || estado === 'listo' || estado === 'pendiente') return estado;
+    // #4362 — sin marcador de fase activo: si avanza entre fases, no es
+    // "sin arrancar" (pendiente) sino "en curso".
+    if (issue && issue.progressState === 'entre-fases') return 'entre-fases';
     return 'pendiente';
 }
 
@@ -198,6 +205,7 @@ function normalizeIssue(id, data, priorityIndex) {
         labels: Array.isArray(d.labels) ? d.labels : [],
         faseActual: d.faseActual || null,
         estadoActual: d.estadoActual || null,
+        progressState: d.progressState || null,   // #4362 — avance entre fases
         bounces: Number(d.bounces) || 0,
         rebote: !!d.rebote,
         motivo_rechazo: d.motivo_rechazo || null,
@@ -720,6 +728,13 @@ const ISSUES_CSS = `
 .st-blocked { color: var(--warning, var(--in-warn)); background: var(--warning-bg, var(--in-warn-soft)); border-color: var(--warning, var(--in-warn)); }
 .st-bounce  { color: var(--danger, var(--in-bad)); background: var(--danger-bg, var(--in-bad-soft)); border-color: var(--danger, var(--in-bad)); }
 .st-human   { color: var(--purple, var(--in-accent)); background: var(--purple-bg, var(--in-accent-soft)); border-color: var(--purple, var(--in-accent)); }
+/* #4362 — "En curso / entre fases": teal --in-accent con borde punteado (se
+   diferencia del azul sólido de 'trabajando', que sí tiene marcador de fase). */
+.st-progress { color: var(--in-accent, #2ee6c1); background: var(--in-accent-soft, rgba(46,230,193,0.15)); border-color: var(--in-accent, #2ee6c1); border-style: dashed; }
+.iss-group-dot.st-progress { background: var(--in-accent, #2ee6c1); }
+.st-progress .iss-group-dot { animation: inBetweenPulse 1.8s ease-in-out infinite; }
+@keyframes inBetweenPulse { 0%,100%{opacity:1} 50%{opacity:.45} }
+@media (prefers-reduced-motion: reduce) { .st-progress .iss-group-dot { animation: none; } }
 
 /* CA-7 — título completo con wrap, nunca truncado. */
 .iss-title {
@@ -867,8 +882,8 @@ function renderIssuesClientScript() {
 'use strict';
 (function () {
   var ISS_GH = 'https://github.com/intrale/platform/issues/';
-  var STATE_LABEL = { trabajando:'Trabajando', listo:'Listo', pendiente:'Pendiente', bloqueado:'Bloqueado', rebote:'Rebote', 'needs-human':'Necesita humano' };
-  var STATE_CLS = { trabajando:'st-working', listo:'st-ready', pendiente:'st-pending', bloqueado:'st-blocked', rebote:'st-bounce', 'needs-human':'st-human' };
+  var STATE_LABEL = { trabajando:'Trabajando', listo:'Listo', pendiente:'Pendiente', 'entre-fases':'En curso', bloqueado:'Bloqueado', rebote:'Rebote', 'needs-human':'Necesita humano' };
+  var STATE_CLS = { trabajando:'st-working', listo:'st-ready', pendiente:'st-pending', 'entre-fases':'st-progress', bloqueado:'st-blocked', rebote:'st-bounce', 'needs-human':'st-human' };
   var FASE_ORDER = ['sizing','analisis','criterios','validacion','dev','build','verificacion','linteo','aprobacion','entrega'];
   var FASE_ICON = {}; FASE_ORDER.forEach(function (f) { FASE_ICON[f] = 'ic-fase-' + f; });
   var GROUP_ORDER = ['trabajando','listo','bloqueado','backlog'];
@@ -905,6 +920,7 @@ function renderIssuesClientScript() {
     if (labels.indexOf('blocked:dependencies') >= 0) return 'bloqueado';
     var e = d && d.estadoActual;
     if (e === 'trabajando' || e === 'listo' || e === 'pendiente') return e;
+    if (d && d.progressState === 'entre-fases') return 'entre-fases';   // #4362
     return 'pendiente';
   }
   function deriveGroup(d) {
