@@ -173,10 +173,6 @@
         {
           "provider": "openai-codex",
           "model_override": "gpt-5.5"
-        },
-        {
-          "provider": "nvidia-nim",
-          "model_override": "deepseek-ai/deepseek-v4-pro"
         }
       ]
     },
@@ -187,10 +183,6 @@
         {
           "provider": "openai-codex",
           "model_override": "gpt-5.5"
-        },
-        {
-          "provider": "nvidia-nim",
-          "model_override": "deepseek-ai/deepseek-v4-pro"
         }
       ]
     },

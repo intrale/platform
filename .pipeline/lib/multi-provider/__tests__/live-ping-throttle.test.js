@@ -114,17 +114,19 @@ test('el cooldown aísla por proveedor (no cruza providers)', async () => {
     livePing._resetPingThrottle();
     const { httpImpl, state } = makeHttpMock();
     const secretsPath = writeSecrets('cerebras', 'csk-test-realkey-1234567890');
-    // Mismo archivo de secrets con dos providers (paths canónicos que matchean
-    // sus ids: cerebras→providers.cerebras, openai→providers.openai).
+    // Mismo archivo de secrets con dos providers api_key (paths canónicos que
+    // matchean sus ids). #4402 — `openai` pasó a OAuth (short-circuit CLI, sin
+    // HTTP), así que para probar el aislamiento del cooldown HTTP usamos dos
+    // providers api_key puros: cerebras + gemini-google.
     fs.writeFileSync(secretsPath, JSON.stringify({
         providers: {
             cerebras: { api_key: 'csk-test-realkey-1234567890' },
-            openai: { api_key: 'sk-test-realkey-1234567890' },
+            google: { api_key: 'AIza-test-realkey-1234567890' },
         },
     }));
 
     const a = await livePing.ping({ provider: 'cerebras', secretsPath, httpImpl, nowMs: 1_000, minIntervalMs: 10_000 });
-    const b = await livePing.ping({ provider: 'openai', secretsPath, httpImpl, nowMs: 1_000, minIntervalMs: 10_000 });
+    const b = await livePing.ping({ provider: 'gemini-google', secretsPath, httpImpl, nowMs: 1_000, minIntervalMs: 10_000 });
 
     assert.equal(a.ok, true);
     assert.equal(b.ok, true, 'otro provider no queda afectado por el cooldown del primero');

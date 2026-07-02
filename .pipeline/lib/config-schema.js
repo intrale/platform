@@ -161,6 +161,19 @@ const SCHEMA = {
                     type: 'array',
                     items: { type: 'string', enum: PROVIDER_ENUM },
                 },
+                // --- #4402 CA-3 — cadencia configurable del cron de health.
+                //     LENIENT (additionalProperties:true): un typo en la CLAVE
+                //     se ignora → default 5 min (health-cron.readTickIntervalMs).
+                //     El tipo se valida para cazar un valor no-numérico grosero;
+                //     el rango real (clamp [1,240] min, piso ≥60s) lo aplica el
+                //     cron, no el schema.
+                health: {
+                    type: 'object',
+                    additionalProperties: true,
+                    properties: {
+                        interval_minutes: { type: 'number', minimum: 0 },
+                    },
+                },
             },
         },
     },

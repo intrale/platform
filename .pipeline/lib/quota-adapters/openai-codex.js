@@ -16,9 +16,12 @@
 //     runtime del dashboard — security CA-#6). El check de la receta (grep de
 //     clientes HTTP sobre los adapters) debe seguir en cero matches.
 //
-//   * Sin datos de Codex (snapshot ausente, sin entradas del proveedor en el
-//     mes corriente) → `not_implemented`/`no_quota` con `pct: null`, NUNCA
-//     `pct: 0` ("luz verde silenciosa" — security CA-#3 + UX G1).
+//   * Sin datos de Codex → `pct: null`, NUNCA `pct: 0` ("luz verde silenciosa"
+//     — security CA-#3 + UX G1). Discriminamos dos causas (#4365):
+//       - snapshot ausente por completo → `not_implemented`.
+//       - snapshot presente pero sin entradas del provider este mes →
+//         `no_usage_data` ("tiene cuota, falta el consumo medido"), NO
+//         `no_quota` (que es "sin concepto de cuota", e.g. Ollama).
 //
 // Hard cap del budget (security CA-#2/req#3):
 //
@@ -138,9 +141,13 @@ function openaiCodexAdapter(sessionData) {
 
     if (matched === 0) {
         // No hay consumo de Codex registrado en el mes → "sin dato" (NO 0%).
-        // Distinguimos de "0% real": no sabemos si Codex no se usó o si el
-        // snapshot no capturó sus sesiones (security CA-#3).
-        return emptyResult('openai-codex', ADAPTER_STATUS.NO_QUOTA,
+        // #4365 — usamos NO_USAGE_DATA (no NO_QUOTA): Codex SÍ tiene concepto de
+        // cuota (budget mensual), lo que falta es el consumo medido. NO_QUOTA
+        // queda reservado para providers sin cuota (Ollama). Distinguir "sin
+        // consumo" de "sin cuota" evita que un estado transitorio (snapshot que
+        // aún no capturó las sesiones) se lea como "provider sin cuota" y
+        // desaparezca del panel. pct sigue null (security CA-#3).
+        return emptyResult('openai-codex', ADAPTER_STATUS.NO_USAGE_DATA,
             'Cuota OpenAI/Codex: sin consumo registrado este mes');
     }
 

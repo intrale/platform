@@ -7488,6 +7488,32 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         } catch (e) {
           log('lanzamiento', `traceability emitSessionEnd falló para ${skill}:#${issue}: ${e.message}`);
         }
+
+        // #4403 (D4 · CA-D · H2 · RS-3) — telemetría de costo por provider.
+        // Bloque INDEPENDIENTE del try de emitSessionEnd (no acoplar fallos):
+        // registra una línea append-only en `.pipeline/state/provider-cost.jsonl`
+        // con la whitelist estricta de 7 campos. `skill`, `issue`, `elapsedSec`
+        // y `code` están en scope acá; el provider se resuelve con
+        // `resolveSkillProvider(skill)` (mismo helper que usa el bloque de
+        // cuota) porque el `skillProvider` local vive dentro del try previo.
+        // `tk` se reparsea acá para no depender del try de emitSessionEnd.
+        // Never-throws (CA-5): best-effort, jamás rompe el lifecycle.
+        try {
+          const providerCost = require('./lib/metrics/provider-cost');
+          let provPc = 'unknown';
+          try { provPc = resolveSkillProvider(skill) || 'unknown'; } catch { /* defensa */ }
+          const logPathPc = path.join(LOG_DIR, `${issue}-${skill}.log`);
+          const tkPc = parseTokensFromLog(logPathPc);
+          providerCost.recordProviderCost({
+            provider: provPc,
+            skill,
+            issue,
+            tokens_in: tkPc.input,                 // total canónico del adapter
+            tokens_out: tkPc.output,
+            latency_ms: Math.round(elapsedSec * 1000),
+            status: code === 0 ? 'ok' : 'error',
+          });
+        } catch { /* best-effort, no rompe el lifecycle */ }
       }, 500);
     }
 

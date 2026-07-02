@@ -78,15 +78,19 @@ test('openai-codex sin snapshot devuelve pct null (NO 0%)', () => {
     assert.equal(r.session.pct, null);
 });
 
-test('openai-codex sin entradas de Codex en el mes devuelve pct null (no_quota)', () => {
+test('openai-codex sin entradas de Codex en el mes devuelve pct null (no_usage_data)', () => {
+    // #4365 — desambiguación del enum: "sin consumo medido" es `no_usage_data`,
+    // NO `no_quota` (que queda reservado a providers sin concepto de cuota).
     const adapter = freshAdapter();
     const dir = tmpMetricsDir([
         { day: '2026-06-10', provider: 'anthropic', cost_usd: 100, sessions: 3 },
         { day: '2026-05-10', provider: 'openai-codex', cost_usd: 100, sessions: 3 },
     ]);
     const r = adapter({ metricsDir: dir, now: NOW });
-    assert.equal(r.adapterStatus, 'no_quota');
+    assert.equal(r.adapterStatus, 'no_usage_data');
+    assert.notEqual(r.adapterStatus, 'no_quota', 'Codex NUNCA es no_quota: tiene cuota (budget mensual)');
     assert.equal(r.pct, null, 'sin consumo del mes → null, nunca 0% falso');
+    assert.equal(r.status, 'unknown', 'no_usage_data → status unknown, NUNCA verde/no_quota');
 });
 
 test('openai-codex sin metricsDir devuelve sin dato (not_implemented, pct null)', () => {

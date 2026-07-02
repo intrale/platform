@@ -2,7 +2,9 @@
 // health-cron.js — Cron de healthchecks por provider (#3260 CA-1 / CA-2).
 //
 // Responsabilidades:
-//   - Cada ~15min (con jitter aleatorio ±60s, SR-3), pingear el endpoint
+//   - Cada ~N min (configurable vía `config.yaml` → `multi_provider.health.
+//     interval_minutes`, default 5 min; con jitter aleatorio ±60s, SR-3 /
+//     #4402 CA-3), pingear el endpoint
 //     `/v1/models` (o equivalente) de cada provider gestionado de
 //     `secrets-rw.js` que esté presente y tenga endpoint en `live-ping.js`.
 //   - Persistir snapshot en `audit/multi-provider-health.jsonl` con hash-chain
@@ -41,6 +43,9 @@ const livePing = require('./live-ping');
 const healthAlerts = require('./health-alerts');
 const auditLog = require('../audit-log');
 const redact = require('../redact');
+// #4402 — fuente única de la lógica CLI-OAuth (extraída de acá a un módulo
+// compartido para que `live-ping.js` la reutilice sin ciclo de require).
+const cliOauthProbe = require('./cli-oauth-probe');
 
 // #4283 — señal de cuota real (#4202) vía el helper compartido de
 // provider-health, para que el snapshot del cron (que lee el router) y el
@@ -79,7 +84,15 @@ function defaultAuditDir() {
 }
 
 // Constantes — el cron mismo expone para tests y para la doc operativa CA-5.
-const TICK_INTERVAL_MS = 15 * 60 * 1000;            // 15min base
+//
+// #4402 CA-3 — La cadencia dejó de ser hardcode. `TICK_INTERVAL_MS` es sólo el
+// DEFAULT de fallback (5 min); la fuente real es `config.yaml`
+// (`multi_provider.health.interval_minutes`) vía `readTickIntervalMs()`.
+const DEFAULT_INTERVAL_MINUTES = 5;                 // #4402 default (antes 15min hardcode)
+const MIN_INTERVAL_MINUTES = 1;                     // clamp piso (=60s, RS-5.5 anti-DoS free tier)
+const MAX_INTERVAL_MINUTES = 240;                   // clamp techo (mismo estilo que config.yaml)
+const HARD_FLOOR_MS = 60 * 1000;                    // RS-5.5 — piso duro absoluto ≥60s
+const TICK_INTERVAL_MS = DEFAULT_INTERVAL_MINUTES * 60 * 1000;  // 5min default-fallback
 const JITTER_RANGE_MS = 60 * 1000;                  // ±60s alrededor del slot
 const WEEKLY_CHECK_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 const LOCK_STALE_MS = 5 * 60 * 1000;                // si el lock tiene >5min, lo robamos
@@ -90,6 +103,39 @@ const AUDIT_FILENAME = 'multi-provider-health.jsonl';
 
 function jitterMs(rangeMs = JITTER_RANGE_MS, rng = Math.random) {
     return Math.floor((rng() * 2 - 1) * rangeMs);
+}
+
+// -----------------------------------------------------------------------------
+// #4402 CA-3 — Cadencia configurable vía config.yaml
+//
+// Lee `multi_provider.health.interval_minutes` de `.pipeline/config.yaml`
+// (default 5 min). Lectura defensiva con `try/catch` + `js-yaml` (patrón
+// `pulpo.loadConfig`): CUALQUIER error → default. Clamp `[1, 240]` min con piso
+// duro ≥60s (RS-5.5, anti-DoS: Gemini RPM 15, Cerebras RPM 30).
+// -----------------------------------------------------------------------------
+
+function defaultConfigPath() {
+    return process.env.PIPELINE_CONFIG_PATH
+        || path.resolve(__dirname, '..', '..', 'config.yaml');
+}
+
+function readTickIntervalMs({ fsImpl = fs, configPath = defaultConfigPath() } = {}) {
+    let minutes = DEFAULT_INTERVAL_MINUTES;
+    try {
+        const yaml = require('js-yaml');
+        const raw = fsImpl.readFileSync(configPath, 'utf8');
+        const cfg = yaml.load(raw) || {};
+        const v = cfg
+            && cfg.multi_provider
+            && cfg.multi_provider.health
+            && cfg.multi_provider.health.interval_minutes;
+        if (typeof v === 'number' && Number.isFinite(v)) minutes = v;
+    } catch { /* config ilegible/typo → default 5 min (sin romper el arranque) */ }
+    if (!Number.isFinite(minutes)) minutes = DEFAULT_INTERVAL_MINUTES;
+    // Clamp [1, 240] min. El piso de 1 min ya garantiza ≥60s; HARD_FLOOR_MS es
+    // un segundo cinturón explícito (RS-5.5).
+    minutes = Math.min(Math.max(minutes, MIN_INTERVAL_MINUTES), MAX_INTERVAL_MINUTES);
+    return Math.max(minutes * 60 * 1000, HARD_FLOOR_MS);
 }
 
 // -----------------------------------------------------------------------------
@@ -105,50 +151,11 @@ function jitterMs(rangeMs = JITTER_RANGE_MS, rng = Math.random) {
 // tests vía `opts.cliProbe`.
 // -----------------------------------------------------------------------------
 
-/**
- * Resuelve si un binario es invocable buscándolo en el PATH. Windows-aware
- * (respeta PATHEXT). No spawnea nada — sólo `fs.existsSync` sobre los candidatos.
- *
- * @returns {boolean}
- */
-function isBinaryOnPath(binary, { env = process.env, fsImpl = fs } = {}) {
-    if (!binary || typeof binary !== 'string') return false;
-    const pathVar = env.PATH || env.Path || '';
-    const dirs = pathVar.split(path.delimiter).filter(Boolean);
-    const isWin = process.platform === 'win32';
-    const exts = isWin
-        ? (env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').map(e => e.toLowerCase())
-        : [''];
-    for (const dir of dirs) {
-        // Binario tal cual (sirve para *nix y para .exe ya con extensión en Win).
-        const direct = path.join(dir, binary);
-        try { if (fsImpl.existsSync(direct)) return true; } catch { /* ignore */ }
-        if (isWin) {
-            for (const ext of exts) {
-                try { if (fsImpl.existsSync(direct + ext)) return true; } catch { /* ignore */ }
-            }
-        }
-    }
-    return false;
-}
-
-/**
- * Probe de salud para un provider CLI-OAuth. Devuelve un objeto con la misma
- * forma que `live-ping.ping` (`{ ok, reason, ... }`) para que `classifyState`
- * lo trate igual.
- */
-function probeCliProvider(spec, { env = process.env, fsImpl = fs, cliProbe } = {}) {
-    const binary = spec.cli_binary || null;
-    if (!binary) {
-        return { ok: false, reason: 'cli_binary_undeclared', provider: spec.provider, cli_oauth: true };
-    }
-    const available = typeof cliProbe === 'function'
-        ? !!cliProbe(binary)
-        : isBinaryOnPath(binary, { env, fsImpl });
-    return available
-        ? { ok: true, reason: 'cli_oauth_ok', provider: spec.provider, cli_oauth: true }
-        : { ok: false, reason: 'cli_unavailable', provider: spec.provider, cli_oauth: true };
-}
+// #4402 — `isBinaryOnPath` y `probeCliProvider` se movieron a `cli-oauth-probe.js`
+// (fuente única compartida con `live-ping.js`). Se re-exportan más abajo en
+// `module.exports` para no romper tests/consumers que referencian
+// `healthCron.probeCliProvider` / `healthCron.isBinaryOnPath`.
+const { isBinaryOnPath, probeCliProvider } = cliOauthProbe;
 
 function readJson(file, fsImpl = fs) {
     if (!fsImpl.existsSync(file)) return null;
@@ -213,16 +220,20 @@ function releaseLock({ lockFile, fsImpl = fs } = {}) {
  * Determina si toca correr según `last_tick_at` + intervalo + jitter.
  *
  * - Si nunca corrió → debido (true).
- * - Si `elapsed >= TICK_INTERVAL_MS + jitter`, debido.
+ * - Si `elapsed >= intervalMs + jitter`, debido.
  * - El jitter se aplica restando del intervalo (los procesos elegibles más
  *   "temprano" tienden a ganar el lock antes que los "tardíos", suavizando
  *   el thundering herd).
+ *
+ * #4402 CA-3 — `intervalMs` es configurable vía `config.yaml`; si no se inyecta,
+ * se resuelve con `readTickIntervalMs()` (default 5 min, clamp piso ≥60s).
  */
-function isTickDue({ stateFile, now = Date.now(), fsImpl = fs, jitter = jitterMs() } = {}) {
+function isTickDue({ stateFile, now = Date.now(), fsImpl = fs, jitter = jitterMs(), intervalMs } = {}) {
     const st = readJson(stateFile, fsImpl);
     if (!st || typeof st.last_tick_at !== 'number') return true;
+    const interval = Number.isFinite(intervalMs) ? intervalMs : readTickIntervalMs({ fsImpl });
     const elapsed = now - st.last_tick_at;
-    return elapsed >= (TICK_INTERVAL_MS + jitter);
+    return elapsed >= (interval + jitter);
 }
 
 function isWeeklyDue({ stateFile, now = Date.now(), fsImpl = fs } = {}) {
@@ -482,7 +493,13 @@ function formatAlertText(payload) {
     }
     const stateEmoji = payload.state === 'red' ? '🔴' : payload.state === 'yellow' ? '🟡' : '🟢';
     const reason = payload.reason_code || 'unknown';
-    return `🩺 *Multi-Provider Health* — ${stateEmoji} \`${payload.provider}\` → \`${payload.state.toUpperCase()}\` (\`${reason}\`).\nObservado: ${payload.observed_at}`;
+    // #4402 CA-4 — nombrar provider + status del enum cerrado + conteo de
+    // fallos consecutivos (ej. "Anthropic: auth-error x3"). El `reason` ya viene
+    // sanitizado (enum cerrado, RS-5.3): PROHIBIDO renderizar body crudo de 401/403.
+    const count = (typeof payload.consecutive_count === 'number' && payload.consecutive_count > 0)
+        ? ` x${payload.consecutive_count}`
+        : '';
+    return `🩺 *Multi-Provider Health* — ${stateEmoji} \`${payload.provider}\` → \`${payload.state.toUpperCase()}\` (\`${reason}\`${count}).\nObservado: ${payload.observed_at}`;
 }
 
 function defaultTelegramSender(payload, { pipelineDir, fsImpl = fs } = {}) {
@@ -610,7 +627,11 @@ async function tickIfDue(opts = {}) {
     const stateFile = path.join(stateDir, STATE_FILENAME);
     const lockFile = path.join(stateDir, LOCK_FILENAME);
 
-    if (!isTickDue({ stateFile, now, fsImpl, jitter: opts.jitter !== undefined ? opts.jitter : jitterMs() })) {
+    // #4402 CA-3 — resolver la cadencia (config.yaml → default 5 min). La
+    // resolución vive acá; `pulpo.js` sigue llamando `tickIfDue({})` sin cambios.
+    const intervalMs = Number.isFinite(opts.intervalMs) ? opts.intervalMs : readTickIntervalMs({ fsImpl });
+
+    if (!isTickDue({ stateFile, now, fsImpl, jitter: opts.jitter !== undefined ? opts.jitter : jitterMs(), intervalMs })) {
         return { skipped: true, reason: 'not_due' };
     }
     if (!tryAcquireLock({ lockFile, now, fsImpl })) {
@@ -626,6 +647,12 @@ async function tickIfDue(opts = {}) {
 
 module.exports = {
     TICK_INTERVAL_MS,
+    DEFAULT_INTERVAL_MINUTES,
+    MIN_INTERVAL_MINUTES,
+    MAX_INTERVAL_MINUTES,
+    HARD_FLOOR_MS,
+    readTickIntervalMs,
+    defaultConfigPath,
     JITTER_RANGE_MS,
     WEEKLY_CHECK_INTERVAL_MS,
     LOCK_STALE_MS,

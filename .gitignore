@@ -239,3 +239,8 @@ __pycache__/
 # #4289 — estado runtime del pacing budget por proveedor (NO commitear; se
 # genera/persiste en runtime, igual que provider-disabled.json).
 .pipeline/state/pacing-bucket.json
+
+# #4403 — telemetría append-only de costo por provider (D4). Se genera en
+# runtime por cada ejecución de agente; NO versionar (evitar telemetría en el
+# repo por accidente). El dir `.pipeline/state/` no está ignorado globalmente.
+.pipeline/state/provider-cost.jsonl
