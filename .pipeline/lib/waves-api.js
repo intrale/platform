@@ -250,6 +250,9 @@ function mapDomainError(res, e) {
             return sendError(res, 409, 'duplicate_issue', 'El issue ya está asociado a otra ola.', 'issue');
         case 'EWAVES_NOT_FOUND':
             return sendError(res, 404, 'not_found', 'La ola indicada no existe.', 'wave');
+        case 'EWAVES_ACTIVE_LOCKED':
+            // Política A04 (#4383): no se desasocian issues de la ola activa.
+            return sendError(res, 409, 'active_wave_locked', 'No se pueden desasociar issues de la ola activa; solo de olas planificadas.', 'wave');
         case 'EWAVES_VERSION_CONFLICT': {
             const payload = {
                 code: 'version_conflict',

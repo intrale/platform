@@ -438,7 +438,8 @@ function addIssueToWaveLocked(waveNumber, issue, n, meta) {
 function removeIssueFromWave(waveNumber, issueNumber, meta = {}) {
     const n = normalizeIssue(issueNumber);
     if (!n) {
-        throw new Error(`removeIssueFromWave: issue.number inválido (${issueNumber})`);
+        // #4372 — code para que la capa HTTP mapee a 400 (mensaje intacto).
+        throw mkWavesError(`removeIssueFromWave: issue.number inválido (${issueNumber})`, 'EWAVES_SHAPE');
     }
     return withLockSync(wavesFile(), () => removeIssueFromWaveLocked(waveNumber, n, meta), {
         component: 'waves-lock',
@@ -452,21 +453,24 @@ function removeIssueFromWaveLocked(waveNumber, n, meta) {
     // CA-7: invalidar cache ANTES de leer para ver el último commit en disco.
     invalidateCache();
     const state = loadWaves();
+    // #4372 — concurrencia optimista opcional (If-Match). Los callers históricos
+    // (#4383 Commander/CLI) no pasan expectedVersion → comportamiento idéntico.
+    assertVersionMatch(state, meta.expectedVersion);
 
     // Política A04 (REQ-SEC-3): rechazar si el target es la ola ACTIVA.
     if (state.active_wave && state.active_wave.number === waveNumber) {
-        throw new Error(`removeIssueFromWave: no se permite desasociar sobre la ola activa (${waveNumber}). Solo olas planificadas.`);
+        throw mkWavesError(`removeIssueFromWave: no se permite desasociar sobre la ola activa (${waveNumber}). Solo olas planificadas.`, 'EWAVES_ACTIVE_LOCKED');
     }
 
     const target = (state.planned_waves || []).find((w) => w.number === waveNumber);
     if (!target) {
-        throw new Error(`removeIssueFromWave: ola planificada ${waveNumber} no existe`);
+        throw mkWavesError(`removeIssueFromWave: ola planificada ${waveNumber} no existe`, 'EWAVES_NOT_FOUND');
     }
 
     // No-op idempotente (CA-2): el issue no está en la ola → sin saveState.
     if (!Array.isArray(target.issues) || !target.issues.some((i) => normalizeIssue(i.number) === n)) {
         logInfo(`Issue #${n} no está en ola ${waveNumber} — no-op idempotente.`);
-        return;
+        return { waveNumber, issue: n, removed: false, version: versionToken(state) };
     }
 
     target.issues = target.issues.filter((i) => normalizeIssue(i.number) !== n);
@@ -476,6 +480,7 @@ function removeIssueFromWaveLocked(waveNumber, n, meta) {
         source: meta.source || 'manual',
         note: meta.note || `remove issue #${n} ← wave ${waveNumber}`,
     });
+    return { waveNumber, issue: n, removed: true, version: versionToken(state) };
 }
 
 /**
@@ -950,76 +955,10 @@ function editWaveLocked(waveNumber, changes, meta) {
     return { waveNumber, wave: deepClone(target), version: versionToken(state) };
 }
 
-/**
- * Quita un issue de una ola (activa o planificada). Espejo de `addIssueToWave`.
- * IDEMPOTENTE: si el issue no está en la ola es no-op y retorna `removed:false`
- * (no lanza — CA-3). Si la ola no existe, sí lanza EWAVES_NOT_FOUND.
- *
- * @example
- *   removeIssueFromWave(2, 9000,
- *     { updated_by: 'operador-local', source: 'api:waves', expectedVersion });
- *
- * @param {number} waveNumber
- * @param {number|string|{number}} issue
- * @param {Object} [meta] — { updated_by?, source?, note?, expectedVersion? }
- * @returns {{ waveNumber:number, issue:number, removed:boolean, version:string }}
- * @throws Error con code EWAVES_SHAPE | EWAVES_NOT_FOUND | EWAVES_VERSION_CONFLICT
- */
-function removeIssueFromWave(waveNumber, issue, meta = {}) {
-    const wn = normalizeIssue(waveNumber);
-    if (!wn) {
-        throw mkWavesError(`removeIssueFromWave: waveNumber inválido (${waveNumber})`, 'EWAVES_SHAPE');
-    }
-    const candidate = (issue && typeof issue === 'object') ? issue.number : issue;
-    const n = normalizeIssue(candidate);
-    if (!n) {
-        throw mkWavesError(`removeIssueFromWave: issue inválido (${JSON.stringify(issue)})`, 'EWAVES_SHAPE');
-    }
-    return withLockSync(
-        wavesFile(),
-        () => removeIssueFromWaveLocked(wn, n, meta),
-        {
-            component: 'waves-lock',
-            timeoutMs: LOCK_TIMEOUT_MS,
-            maxRetries: LOCK_MAX_RETRIES,
-            notify: notifyTelegram,
-        },
-    );
-}
-
-function removeIssueFromWaveLocked(waveNumber, n, meta) {
-    invalidateCache();
-    const state = loadWaves();
-    assertVersionMatch(state, meta.expectedVersion);
-
-    let target = null;
-    if (state.active_wave && state.active_wave.number === waveNumber) {
-        target = state.active_wave;
-    } else {
-        target = state.planned_waves.find((x) => x.number === waveNumber);
-    }
-    if (!target) {
-        throw mkWavesError(`removeIssueFromWave: ola ${waveNumber} no existe`, 'EWAVES_NOT_FOUND');
-    }
-
-    if (!Array.isArray(target.issues)) target.issues = [];
-    const idx = target.issues.findIndex((i) => normalizeIssue(i.number) === n);
-    if (idx < 0) {
-        // Idempotente: quitar un issue ausente es no-op consistente (CA-3). No
-        // se escribe, así que la versión no cambia.
-        logInfo(`Issue #${n} no estaba en ola ${waveNumber} — no-op (idempotente).`);
-        return { waveNumber, issue: n, removed: false, version: versionToken(state) };
-    }
-    target.issues.splice(idx, 1);
-
-    logInfo(`Issue #${n} quitado de ola ${waveNumber}.`);
-    saveState(state, {
-        updated_by: meta.updated_by || 'System',
-        source: meta.source || 'manual',
-        note: meta.note || `remove issue #${n} ← wave ${waveNumber}`,
-    });
-    return { waveNumber, issue: n, removed: true, version: versionToken(state) };
-}
+// #4372 — `removeIssueFromWave` es aportado por #4383 (ya en main, arriba en este
+// archivo, con la política A04 de rechazo sobre la ola activa). Este issue lo
+// reusa tal cual + las extensiones no-breaking (codes, If-Match, valor de
+// retorno) aplicadas allí. NO se redefine acá para evitar duplicación.
 
 // #3616 — Dedupe del aviso "allowlist vacío" por boot del proceso. El módulo
 // se carga una sola vez por pulpo, así que un flag in-memory alcanza para
@@ -2036,8 +1975,8 @@ module.exports = {
     promoteWaveToActive,
     createPlannedWave,
     // #4372 — Ola 8.3: extensión del dominio para la API de gestión de olas.
+    // (removeIssueFromWave ya está exportado arriba — aporte de #4383.)
     editWave,
-    removeIssueFromWave,
     versionToken,
     getVersion,
     getAllowlist,
