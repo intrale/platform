@@ -1722,6 +1722,143 @@ function bloqueadosSlice(state) {
     return { bloqueados: enriched };
 }
 
+// =============================================================================
+// #4373 (Ola 8.3) — Slice consolidado de la vista Roadmap de olas.
+//
+// Reúne en un solo payload whitelisteado y OFFLINE (sin `gh` en runtime): ola
+// activa + planificadas (con hijos/prioridad/estado, vía buildWavesPayload),
+// olas archivadas (vía lib/waves.js), avance de la ola activa, bloqueos
+// (state.bloqueados) y ETA de ejecución (state.olaETA). Consolida piezas que hoy
+// ya viven dispersas — NO recomputa ni lee FS pesado ni llama a `gh`.
+//
+// Seguridad (CA-S3): NO vuelca objetos crudos de waves.json / state. Cada campo
+// se copia/whitelistea explícitamente (números coaccionados, strings recortados,
+// prioridad contra allowlist). Degrada a payload vacío sin throw (CA-7).
+// =============================================================================
+const ROADMAP_PRIORITY_WHITELIST = new Set(['critical', 'high', 'medium', 'low']);
+const ROADMAP_REASON_MAX = 280;
+const ROADMAP_NAME_MAX = 200;
+
+function _roadmapSafeInt(raw) {
+    const n = Number(raw);
+    return (Number.isInteger(n) && n > 0) ? n : null;
+}
+
+// Normaliza un issue de una ola archivada al shape mínimo whitelisteado.
+function _roadmapNormalizeArchivedIssue(raw) {
+    if (!raw || typeof raw !== 'object') {
+        const n = _roadmapSafeInt(raw);
+        return n === null ? null : { id: n, title: '', status: '', priority: '' };
+    }
+    const id = _roadmapSafeInt(raw.number != null ? raw.number : raw.id);
+    if (id === null) return null;
+    const title = typeof raw.title === 'string' ? raw.title.slice(0, ROADMAP_NAME_MAX) : '';
+    const status = typeof raw.status === 'string' ? raw.status.slice(0, 40) : '';
+    const p = typeof raw.priority === 'string' ? raw.priority.toLowerCase() : '';
+    const priority = ROADMAP_PRIORITY_WHITELIST.has(p) ? p : '';
+    return { id, title, status, priority };
+}
+
+// Normaliza una ola archivada: campo por campo (sin spread), CA-S3.
+function _roadmapNormalizeArchivedWave(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const number = Number(raw.number);
+    if (!Number.isInteger(number)) return null;
+    const name = typeof raw.name === 'string' ? raw.name.slice(0, ROADMAP_NAME_MAX) : '';
+    const goal = typeof raw.goal === 'string' ? raw.goal.slice(0, ROADMAP_NAME_MAX) : '';
+    const closedAt = typeof raw.closed_at === 'string' ? raw.closed_at.slice(0, 40) : null;
+    const completed = Number.isFinite(Number(raw.issues_completed)) ? Number(raw.issues_completed) : null;
+    const failed = Number.isFinite(Number(raw.issues_failed)) ? Number(raw.issues_failed) : null;
+    const durationDays = Number.isFinite(Number(raw.actual_duration_days)) ? Number(raw.actual_duration_days) : null;
+    const issues = Array.isArray(raw.issues)
+        ? raw.issues.map(_roadmapNormalizeArchivedIssue).filter(Boolean)
+        : [];
+    return { number, name, goal, closedAt, issuesCompleted: completed, issuesFailed: failed, durationDays, issues };
+}
+
+// Avance de una ola (CA-6): cerrados/total + %. `closed` = status 'completed' o
+// merged (enrichWaveIssue marca ambos para issues cerrados en GitHub).
+function _roadmapAvance(wave) {
+    const issues = (wave && Array.isArray(wave.issues)) ? wave.issues : [];
+    const total = issues.length;
+    const closed = issues.filter((i) => i && (i.status === 'completed' || i.merged === true)).length;
+    const pct = total > 0 ? Math.round((closed / total) * 100) : 0;
+    return { closed, total, pct };
+}
+
+function roadmapSlice(state, ctx) {
+    const s = state || {};
+    let activeWave = null;
+    let plannedWaves = [];
+    // CA-1/CA-2/CA-4/CA-5 — Reutiliza el builder ya probado (normalizeWave aplica
+    // whitelist por campo; enrichWave resuelve título/prioridad/estado desde el
+    // title-cache local, CA-10). Require perezoso: dashboard-routes requiere a
+    // este módulo en carga, así que sólo se resuelve en request-time (ya cacheado,
+    // sin ciclo de require en module-load).
+    try {
+        const routes = require('./dashboard-routes');
+        const build = routes && routes._internal && routes._internal.buildWavesPayload;
+        if (typeof build === 'function') {
+            const payload = build(s, ctx && ctx.PIPELINE) || {};
+            activeWave = payload.active_wave || null;
+            plannedWaves = Array.isArray(payload.planned) ? payload.planned : [];
+        }
+    } catch { /* degradado: sin activa/planificadas */ }
+
+    // CA-3 — Archivadas: buildWavesPayload sólo trae el horizonte (activa +
+    // planned). Las cerradas se leen aparte de lib/waves.js y se whitelistean acá.
+    let archivedWaves = [];
+    try {
+        const wavesLib = require('./waves');
+        const full = wavesLib.loadWaves() || {};
+        archivedWaves = (Array.isArray(full.archived_waves) ? full.archived_waves : [])
+            .map(_roadmapNormalizeArchivedWave)
+            .filter(Boolean);
+    } catch { /* degradado: sin archivadas */ }
+
+    // CA-7 — Bloqueos: whitelist {issue, blocker, reason}. reason recortado.
+    const blocked = (Array.isArray(s.bloqueados) ? s.bloqueados : [])
+        .map((b) => {
+            const issue = _roadmapSafeInt(b && b.issue);
+            if (issue === null) return null;
+            const blocker = _roadmapSafeInt(b && b.blocker);
+            const rawReason = (b && (b.reason || b.question)) || '';
+            const reason = typeof rawReason === 'string' ? rawReason.slice(0, ROADMAP_REASON_MAX) : '';
+            return { issue, blocker, reason };
+        })
+        .filter(Boolean);
+
+    // CA-8 — ETA: p50/p75/p90 de state.olaETA. lowSample=true cuando no hay
+    // muestra real (samples=0 en todos los issues) → la vista muestra el aviso
+    // honesto "estimación con poca muestra" en vez de un número engañoso.
+    let eta = { ready: false, lowSample: true, p50: null, p75: null, p90: null, totalPct: null };
+    const od = s.olaETA;
+    if (od && typeof od === 'object') {
+        const byIssue = (od.byIssue && typeof od.byIssue === 'object') ? od.byIssue : {};
+        const anySamples = Object.keys(byIssue).some((k) => Number(byIssue[k] && byIssue[k].samples) > 0);
+        eta = {
+            ready: true,
+            lowSample: !anySamples,
+            p50: Number.isFinite(od.totalP50) ? od.totalP50 : null,
+            p75: Number.isFinite(od.totalP75) ? od.totalP75 : null,
+            p90: Number.isFinite(od.totalP90) ? od.totalP90 : null,
+            totalPct: Number.isFinite(od.totalPct) ? od.totalPct : null,
+        };
+    }
+
+    const avance = _roadmapAvance(activeWave);
+
+    return {
+        activeWave,
+        plannedWaves,
+        archivedWaves,
+        blocked,
+        eta,
+        avance,
+        updatedAt: new Date().toISOString(),
+    };
+}
+
 function opsSlice(state) {
     return {
         procesos: state.procesos || {},
@@ -3128,6 +3265,8 @@ module.exports = {
     cooldownFor,
     pipelineSlice,
     bloqueadosSlice,
+    // #4373 (Ola 8.3) — slice consolidado de la vista Roadmap de olas.
+    roadmapSlice,
     opsSlice,
     historialSlice,
     // #3963 — Historial timeline agrupado por día (CA-1..CA-5)

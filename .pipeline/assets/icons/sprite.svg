@@ -1333,6 +1333,20 @@
           stroke-linecap="round" stroke-linejoin="round" opacity="0.55"/>
   </symbol>
 
+  <!-- ic-tab-roadmap: ruta de hitos ascendente (linea + 4 nodos) — el roadmap
+       de olas visto como horizonte de ejecucion. Semantica distinta de ic-wave
+       (ondas) y de ic-tab-pipeline (nodos en serie horizontal): aqui la lectura
+       es "camino con hitos hacia adelante/arriba". Usada en la tab "Roadmap"
+       (#4373). Se tinta con currentColor (activa: var(--brand-cyan)). -->
+  <symbol id="ic-tab-roadmap" viewBox="0 0 24 24">
+    <path d="M4 18 L9 13 L14 15 L20 7" fill="none" stroke="currentColor"
+          stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="4"  cy="18" r="1.7" fill="currentColor"/>
+    <circle cx="9"  cy="13" r="1.7" fill="currentColor"/>
+    <circle cx="14" cy="15" r="1.7" fill="currentColor"/>
+    <circle cx="20" cy="7"  r="1.7" fill="currentColor"/>
+  </symbol>
+
   <!-- ic-tab-kpis: bar chart con 3 barras de altura creciente sobre baseline.
        Lectura inmediata: metricas / KPIs en aumento. -->
   <symbol id="ic-tab-kpis" viewBox="0 0 24 24">
@@ -1490,24 +1504,6 @@
           stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
     <path d="M12 8.5 V12.3 L14.8 14" fill="none" stroke="currentColor"
           stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
-  </symbol>
-
-  <!-- ic-wave-add: dos ondas (misma metafora que ic-wave) + badge "+" en la
-       esquina inferior derecha — accion "crear ola nueva" del roadmap (#4351,
-       Ola 8.3). El "+" reutiliza el trazo outline coherente con el resto del
-       sprite; el badge se dibuja sobre un pequeno recorte para que el "+"
-       respire sin tocar la onda inferior. -->
-  <symbol id="ic-wave-add" viewBox="0 0 24 24">
-    <path d="M3 8 C 5.5 5.5, 8 5.5, 10.5 8 S 15 10, 17 8.5"
-          fill="none" stroke="currentColor" stroke-width="1.75"
-          stroke-linecap="round" stroke-linejoin="round"/>
-    <path d="M3 13.5 C 5.5 11, 8 11, 10.5 13.5 S 15 15.5, 17 14"
-          fill="none" stroke="currentColor" stroke-width="1.75"
-          stroke-linecap="round" stroke-linejoin="round" opacity="0.6"/>
-    <circle cx="18" cy="18" r="4.6" fill="none" stroke="currentColor"
-            stroke-width="1.6"/>
-    <path d="M18 15.7 V20.3 M15.7 18 H20.3" stroke="currentColor"
-          stroke-width="1.6" stroke-linecap="round"/>
   </symbol>
 
 </svg>

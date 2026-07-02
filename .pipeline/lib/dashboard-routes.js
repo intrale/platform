@@ -209,12 +209,28 @@ catch (e) {
     try { console.warn('[dashboard-routes] wave-roadmap view unavailable: ' + (e && e.message)); } catch { /* logger no debe romper el require */ }
 }
 
+// #4373 (Ola 8.3) — Enriquecemos el render con el payload consolidado del
+// `roadmapSlice` (avance/ETA/bloqueos/prioridad) desde el state vivo del pipeline
+// (mismo patrón que renderBloqueadosView). Si el state o el slice fallan, se pasa
+// `opts` sin `roadmap` → la vista degrada al render read-only de #4378 (loadWaves).
 function renderRoadmapView(ctx, opts) {
     if (!waveRoadmapView || typeof waveRoadmapView.renderRoadmap !== 'function') {
         return _roadmapInertFallback('módulo views/dashboard/wave-roadmap no disponible (require falló)');
     }
     try {
-        return waveRoadmapView.renderRoadmap(opts);
+        // Sólo enriquecemos con el slice cuando hay state VIVO (ctx.getState). Si
+        // el caller inyecta `opts.wavesState` (tests) o no hay getState, pasamos
+        // `opts` tal cual → la vista degrada a leer waves.json (comportamiento
+        // #4378) sin que el slice pise la inyección.
+        let roadmap = null;
+        if (ctx && typeof ctx.getState === 'function' && !(opts && opts.wavesState)) {
+            try { roadmap = slices.roadmapSlice(ctx.getState() || {}, ctx); }
+            catch { roadmap = null; }
+        }
+        const mergedOpts = roadmap
+            ? Object.assign({}, opts || {}, { roadmap })
+            : (opts || undefined);
+        return waveRoadmapView.renderRoadmap(mergedOpts);
     } catch (e) {
         return _roadmapInertFallback((e && e.message) || 'error de render');
     }
@@ -1387,6 +1403,13 @@ const API_ROUTES = {
     // (CA-7). Reusa sendJson() → Cache-Control: no-store coherente
     // con el resto de /api/dash/*.
     '/api/dash/waves': (state, ctx) => buildWavesPayload(state, ctx && ctx.PIPELINE),
+    // #4373 (Ola 8.3) — Vista operativa consolidada del roadmap de olas.
+    // Consolida activa + planificadas + archivadas + hijos/prioridad + avance +
+    // bloqueos + ETA en un payload whitelisteado (CA-S3, vía roadmapSlice). Lectura
+    // OFFLINE (title-cache + waves.json + state.olaETA/bloqueados), sin `gh` en
+    // runtime (CA-10). Hereda el dispatch GET de API_ROUTES + headers no-store de
+    // sendJson (CA-S2). Degrada a payload con activa/archivadas vacías sin throw.
+    '/api/dash/roadmap': (state, ctx) => slices.roadmapSlice(state || {}, ctx),
     // #3681 — Widget Multi-Provider Coverage. Lee `.pipeline/multi-provider-coverage.json`
     // (output runtime del harness #3680), valida con ajv contra el schema canónico
     // y sanitiza el payload con whitelist explícita por campo. NUNCA expone
