@@ -60,10 +60,19 @@ test('CA-1 · la cola lee de `pendientesList` con slice hasta 10', () => {
         /COLA_MAX\s*=\s*10/,
         'falta el limite COLA_MAX = 10'
     );
+    // #4360 — la cola ya no slicea `pendientesList` crudo: se nutre de la lista
+    // de pendientes filtrada por la ola activa (`colaSource`), y ese origen
+    // deriva de `pendientesList`. Verificamos que COLA_MAX se aplica sobre esa
+    // fuente y que el filtro por ola quedó cableado.
     assert.match(
         DASHBOARD_SRC,
-        /pendientesList\.slice\(\s*0\s*,\s*COLA_MAX\s*\)/,
-        'la cola debe nutrirse de pendientesList.slice(0, COLA_MAX)'
+        /colaSource\.slice\(\s*0\s*,\s*COLA_MAX\s*\)/,
+        'la cola debe sliceear colaSource (pendientes de la ola activa) hasta COLA_MAX'
+    );
+    assert.match(
+        DASHBOARD_SRC,
+        /filterPendientesByWave\(\s*pendientesList\s*,/,
+        'la cola debe filtrar pendientesList por la ola activa via filterPendientesByWave (#4360)'
     );
 });
 

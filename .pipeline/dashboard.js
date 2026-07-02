@@ -97,6 +97,11 @@ try { restModeWindow = require('./lib/rest-mode-window'); } catch { /* opcional 
 const { isMarkerArtifact } = require('./lib/marker-artifact');
 // #4099 — predicado puro de frescura del title-cache (reactiva TITLE_CACHE_TTL).
 const { needsRefetch: titleCacheNeedsRefetch } = require('./lib/title-cache-freshness');
+// #4360 — helper puro que filtra la cola por la ola activa. Se requiere a nivel de
+// módulo (no dentro del IIFE del render) porque el test dashboard-header-cola-xss
+// extrae el cuerpo del IIFE y lo corre en un sandbox `vm` sin `require`. El IIFE
+// referencia `filterPendientesByWave` con guarda `typeof` para degradar allí.
+const { filterPendientesByWave } = require('./lib/cola-wave-filter');
 
 // EP8-H7 (#3960) — sanitizer central para redactar secrets del SSE de logs
 // (REQ-SEC-H7-1, crítico) ANTES de emitir al browser. Best-effort: si falta,
@@ -6345,8 +6350,24 @@ body.standalone .section-collapsed .section-body{display:block !important}
     // server-side. SIN endpoints HTTP nuevos (CA-4). Titulos escapados con
     // esc() (CA-5 + tests dashboard-header-cola-xss).
     const COLA_MAX = 10;
-    const items = pendientesList.slice(0, COLA_MAX);
-    const ocultos = Math.max(0, pendientesList.length - COLA_MAX);
+    // #4360 — filtrar la cola por la ola activa (mismo origen de verdad que
+    // "No ingresados": state.activeWave.issues, normalizado por wave-resolver).
+    // Fail-safe Opción A (cerrada por PO): si la ola resuelve a issues:[] → cola
+    // vacía, nunca "mostrar todos". Helper puro testeable en lib/cola-wave-filter.js.
+    //
+    // Guarda `typeof`: en el render real de producción `state` y
+    // `filterPendientesByWave` viven en el closure y filtran. El test
+    // dashboard-header-cola-xss extrae ESTE IIFE y lo corre en un sandbox `vm`
+    // aislado (solo `pendientesList` + `esc`, sin `state` ni `require`); allí las
+    // guardas degradan a `pendientesList` sin filtrar, preservando la cobertura de
+    // escape XSS y de slice del bloque de render base (#3356).
+    const colaSource =
+      (typeof filterPendientesByWave === 'function'
+        && typeof state !== 'undefined' && state && state.activeWave)
+        ? filterPendientesByWave(pendientesList, state.activeWave.issues || [])
+        : pendientesList;
+    const items = colaSource.slice(0, COLA_MAX);
+    const ocultos = Math.max(0, colaSource.length - COLA_MAX);
     const phaseInfo = (faseKey) => {
       if (!faseKey) return { lane: 'desarrollo', name: '—' };
       const idx = faseKey.indexOf('/');
@@ -6393,7 +6414,7 @@ body.standalone .section-collapsed .section-body{display:block !important}
         </li>`;
       }
     }
-    const total = pendientesList.length;
+    const total = colaSource.length; // #4360 — contadores sobre lista filtrada por ola (CA-3)
     const noteParts = [];
     if (total > 0) {
       noteParts.push(`mostrando ${items.length} de ${total}`);
