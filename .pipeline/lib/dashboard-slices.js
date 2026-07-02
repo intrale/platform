@@ -3347,6 +3347,12 @@ function costosSlice(state, ctx) {
         } catch { /* sin anomalía */ }
     }
 
+    // #4403 (D4 · CA-4) — desglose de costo por provider leído del JSONL
+    // append-only `.pipeline/state/provider-cost.jsonl`. Independiente del
+    // snapshot de métricas: es la fuente granular por ejecución. Degrada a
+    // empty-state si el archivo no existe o está vacío (UX-G3, nunca ceros).
+    const providerCostLog = providerCostSlice(state, { PIPELINE, ROOT });
+
     return {
         generated_at: snap.generated_at || null,
         dailyByProvider,
@@ -3358,7 +3364,26 @@ function costosSlice(state, ctx) {
         // #4194 — datos multi-proveedor para la pantalla COSTOS rediseñada.
         byProvider,
         claudeQuota,
+        // #4403 — telemetría granular de costo por provider (D4).
+        providerCostLog,
     };
+}
+
+// #4403 (D4 · CA-4 · UX-G3) — slice de telemetría de costo por provider.
+// Lee `.pipeline/state/provider-cost.jsonl` (una línea por ejecución, whitelist
+// de 7 campos) vía el módulo `lib/metrics/provider-cost` y agrega por provider.
+// Retorna siempre un objeto estable; degrada a empty-state (`hasData:false`) si
+// el archivo falta o está vacío. Never-throws.
+function providerCostSlice(state, ctx) {
+    const PIPELINE = (ctx && ctx.PIPELINE) || path.join(process.cwd(), '.pipeline');
+    const empty = { hasData: false, byProvider: {}, totalSessions: 0 };
+    try {
+        const providerCost = require('./metrics/provider-cost');
+        const file = path.join(PIPELINE, 'state', 'provider-cost.jsonl');
+        return providerCost.readProviderCostBreakdown({ file });
+    } catch {
+        return empty;
+    }
 }
 
 module.exports = {
@@ -3398,6 +3423,8 @@ module.exports = {
     pacingSlice,
     // #3962 EP8-H9 — slice de la pantalla Costos rediseñada
     costosSlice,
+    // #4403 (D4) — desglose de costo por provider (lee provider-cost.jsonl)
+    providerCostSlice,
     reconcilerStaleOrdersSlice,
     // #2993 — widget de handoff
     handoffMetricsSlice,

@@ -837,6 +837,83 @@ function panelHeader(icon, title, sub, tip) {
 }
 
 // --- Composición de la pantalla rediseñada (entry point para el view) -------
+// #4403 (D4 · CA-4 · UX-G1/G2/G3/G4) — desglose de costo por provider leído de
+// la telemetría granular `.pipeline/state/provider-cost.jsonl` (slice
+// `providerCostLog`). Labels legibles largos + chip free/pago + empty-state
+// explícito (nunca ceros). El fallback de label es el id crudo (UX-G1), jamás
+// "undefined".
+const PROVIDER_DISPLAY = {
+    anthropic: 'Anthropic',
+    'openai-codex': 'OpenAI / Codex',
+    'gemini-google': 'Gemini (Google AI Studio)',
+    cerebras: 'Cerebras',
+    'nvidia-nim': 'NVIDIA NIM',
+    deterministic: 'Determinístico',
+};
+// Clasificación canónica free/pago (feedback_free-providers-rule.md · UX-G2).
+// tier: 'pay' | 'free' | 'det'. Determina el chip y el orden de filas (UX-G4:
+// pagos → free → determinístico).
+const PROVIDER_TIER = {
+    anthropic: 'pay',
+    'openai-codex': 'pay',
+    'gemini-google': 'free',
+    cerebras: 'free',
+    'nvidia-nim': 'free',
+    deterministic: 'det',
+};
+const TIER_ORDER = { pay: 0, free: 1, det: 2, unknown: 3 };
+const TIER_CHIP = {
+    pay: { cls: 'cz-ptier-pay', label: 'Pago' },
+    free: { cls: 'cz-ptier-free', label: 'Free' },
+    det: { cls: 'cz-ptier-det', label: 'Sin costo' },
+    unknown: { cls: 'cz-ptier-pay', label: '—' },
+};
+
+function renderProviderCostBreakdown(slice) {
+    const log = (slice && slice.providerCostLog) || null;
+    // UX-G3: empty-state explícito, nunca una grilla de ceros.
+    if (!log || !log.hasData || !log.byProvider || !Object.keys(log.byProvider).length) {
+        return `<div class="cz-empty">Sin registros de costo por proveedor todavía</div>`;
+    }
+    const rows = Object.keys(log.byProvider).map((prov) => {
+        const b = log.byProvider[prov] || {};
+        const tier = PROVIDER_TIER[prov] || 'unknown';
+        return {
+            prov,
+            // UX-G1: label largo con fallback al id crudo — nunca "undefined".
+            label: PROVIDER_DISPLAY[prov] || String(prov),
+            tier,
+            tokensIn: Number(b.tokens_in) || 0,
+            tokensOut: Number(b.tokens_out) || 0,
+            tokensTotal: (Number(b.tokens_in) || 0) + (Number(b.tokens_out) || 0),
+            sessions: Number(b.sessions) || 0,
+            errors: Number(b.errors) || 0,
+        };
+    });
+    // UX-G4: orden estable — pagos primero, luego free, determinístico al final;
+    // dentro del mismo tier, por tokens desc para relevancia de costo.
+    rows.sort((a, b) => {
+        const ta = TIER_ORDER[a.tier] != null ? TIER_ORDER[a.tier] : 3;
+        const tb = TIER_ORDER[b.tier] != null ? TIER_ORDER[b.tier] : 3;
+        if (ta !== tb) return ta - tb;
+        return b.tokensTotal - a.tokensTotal;
+    });
+    const fmt = (n) => Number(n || 0).toLocaleString('es-AR');
+    const body = rows.map((r) => {
+        const chip = TIER_CHIP[r.tier] || TIER_CHIP.unknown;
+        const errTag = r.errors > 0
+            ? `<span class="cz-sses" style="color:var(--cz-rd)">${escapeHtmlText(String(r.errors))} err</span>`
+            : `<span class="cz-sses">${escapeHtmlText(String(r.sessions))} ejec.</span>`;
+        return `<div class="cz-srow" style="grid-template-columns:1fr auto auto auto">
+      <span class="cz-sn" title="${escapeHtmlAttr(r.prov)}">${escapeHtmlText(r.label)}</span>
+      <span class="cz-ptier ${chip.cls}">${escapeHtmlText(chip.label)}</span>
+      <span class="cz-scost" title="in ${escapeHtmlAttr(fmt(r.tokensIn))} · out ${escapeHtmlAttr(fmt(r.tokensOut))}">${escapeHtmlText(fmt(r.tokensTotal))} tok</span>
+      ${errTag}
+    </div>`;
+    }).join('');
+    return `<div class="cz-skilltable">${body}</div>`;
+}
+
 // Devuelve el bloque HTML completo del rediseño MIZPÁ. Se inyecta como CONTENIDO
 // del shell satélite (la top bar + nav 5+«⋯ Más» las pone el shell compartido).
 function renderCostosRedesign(slice) {
@@ -853,6 +930,10 @@ function renderCostosRedesign(slice) {
       ${panelHeader('📈', 'Proyecciones', 'a ritmo actual', '')}
       ${renderProjectionsCards(slice)}
     </div>
+  </div>
+  <div class="cz-panel">
+    ${panelHeader('🧮', 'Costo por proveedor', 'telemetría granular por ejecución — tokens y sesiones desglosados por proveedor real', 'Lee la telemetría append-only por ejecución (provider-cost.jsonl). Provider como dimensión primaria: Anthropic y OpenAI/Codex son pagos; Gemini, Cerebras y NVIDIA NIM corren en free tier; el determinístico no consume cuota LLM. Si todavía no hay registros, muestra un estado vacío explícito en vez de ceros.')}
+    ${renderProviderCostBreakdown(slice)}
   </div>
   <div class="cz-panel">
     ${panelHeader('🧩', 'Detalle por skill', 'skill, proveedor que lo corrió, costo y sesiones — sin paths, prompts ni tokens', 'Cuánto consumió cada rol de agente y en qué proveedor corrió. Los $0.00 corren en free tier (Groq/Gemini/Cerebras) o son deterministas.')}
