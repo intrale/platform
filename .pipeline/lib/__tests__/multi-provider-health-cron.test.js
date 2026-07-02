@@ -84,20 +84,76 @@ test('isTickDue: true si nunca corrió', () => {
     assert.equal(healthCron.isTickDue({ stateFile, jitter: 0 }), true);
 });
 
-test('isTickDue: false si corrió hace menos del intervalo', () => {
+test('isTickDue: false si corrió hace menos del intervalo (intervalMs inyectado)', () => {
     const dir = tmpDir();
     const stateFile = path.join(dir, 'state.json');
     const now = Date.now();
-    fs.writeFileSync(stateFile, JSON.stringify({ last_tick_at: now - 5 * 60 * 1000 }));
-    assert.equal(healthCron.isTickDue({ stateFile, now, jitter: 0 }), false);
+    fs.writeFileSync(stateFile, JSON.stringify({ last_tick_at: now - 3 * 60 * 1000 }));
+    // #4402 — intervalMs inyectado para no depender de la config real.
+    assert.equal(healthCron.isTickDue({ stateFile, now, jitter: 0, intervalMs: 5 * 60 * 1000 }), false);
 });
 
-test('isTickDue: true si pasó el intervalo + jitter', () => {
+test('isTickDue: true si pasó el intervalo + jitter (intervalMs inyectado)', () => {
     const dir = tmpDir();
     const stateFile = path.join(dir, 'state.json');
     const now = Date.now();
     fs.writeFileSync(stateFile, JSON.stringify({ last_tick_at: now - 20 * 60 * 1000 }));
-    assert.equal(healthCron.isTickDue({ stateFile, now, jitter: 0 }), true);
+    assert.equal(healthCron.isTickDue({ stateFile, now, jitter: 0, intervalMs: 5 * 60 * 1000 }), true);
+});
+
+// ─── #4402 CA-3 — cadencia configurable (readTickIntervalMs) ─────────────────
+test('readTickIntervalMs: toma el valor de config.yaml', () => {
+    const dir = tmpDir();
+    const cfg = path.join(dir, 'config.yaml');
+    fs.writeFileSync(cfg, 'multi_provider:\n  health:\n    interval_minutes: 10\n');
+    assert.equal(healthCron.readTickIntervalMs({ configPath: cfg }), 10 * 60 * 1000);
+});
+
+test('readTickIntervalMs: default 5 min si falta el campo o config ilegible', () => {
+    const dir = tmpDir();
+    const cfg = path.join(dir, 'config.yaml');
+    fs.writeFileSync(cfg, 'multi_provider:\n  order: [claude]\n'); // sin health.interval_minutes
+    assert.equal(healthCron.readTickIntervalMs({ configPath: cfg }), 5 * 60 * 1000);
+    // Path inexistente → default sin romper.
+    assert.equal(healthCron.readTickIntervalMs({ configPath: path.join(dir, 'nope.yaml') }), 5 * 60 * 1000);
+});
+
+test('readTickIntervalMs: clamp piso — 0.5 min → 60s (RS-5.5)', () => {
+    const dir = tmpDir();
+    const cfg = path.join(dir, 'config.yaml');
+    fs.writeFileSync(cfg, 'multi_provider:\n  health:\n    interval_minutes: 0.5\n');
+    assert.equal(healthCron.readTickIntervalMs({ configPath: cfg }), 60 * 1000);
+});
+
+test('readTickIntervalMs: clamp techo — 999 min → 240 min', () => {
+    const dir = tmpDir();
+    const cfg = path.join(dir, 'config.yaml');
+    fs.writeFileSync(cfg, 'multi_provider:\n  health:\n    interval_minutes: 999\n');
+    assert.equal(healthCron.readTickIntervalMs({ configPath: cfg }), 240 * 60 * 1000);
+});
+
+test('readTickIntervalMs: typo de valor (string) → default 5 min', () => {
+    const dir = tmpDir();
+    const cfg = path.join(dir, 'config.yaml');
+    fs.writeFileSync(cfg, 'multi_provider:\n  health:\n    interval_minutes: "cada rato"\n');
+    assert.equal(healthCron.readTickIntervalMs({ configPath: cfg }), 5 * 60 * 1000);
+});
+
+test('tickIfDue: respeta intervalMs inyectado (no due si no pasó)', async () => {
+    const dir = tmpDir();
+    const stateDir = path.join(dir, 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const now = Date.now();
+    fs.writeFileSync(
+        path.join(stateDir, healthCron.STATE_FILENAME),
+        JSON.stringify({ last_tick_at: now - 2 * 60 * 1000 }),
+    );
+    const result = await healthCron.tickIfDue({
+        stateDir, now, jitter: 0, intervalMs: 5 * 60 * 1000,
+        secretsPath: makeSecretsFile(dir, {}),
+    });
+    assert.equal(result.skipped, true);
+    assert.equal(result.reason, 'not_due');
 });
 
 test('isWeeklyDue: true si nunca corrió', () => {
@@ -363,6 +419,31 @@ test('formatAlertText: payload válido genera texto markdown', () => {
     assert.ok(t.includes('cerebras'));
     assert.ok(t.includes('RED'));
     assert.ok(t.includes('invalid_credentials'));
+});
+
+test('formatAlertText: #4402 CA-4 — incluye el conteo consecutivo (xN) y nombra provider+status', () => {
+    const t = healthCron.formatAlertText({
+        provider: 'anthropic',
+        state: 'red',
+        reason_code: 'invalid_credentials',
+        consecutive_count: 3,
+        observed_at: '2026-07-02T00:00:00Z',
+    });
+    assert.ok(t.includes('anthropic'), 'nombra el provider');
+    assert.ok(t.includes('invalid_credentials'), 'nombra el status del enum');
+    assert.ok(t.includes('x3'), 'incluye el conteo consecutivo');
+    // RS-5.3 — nunca el body crudo de un 401.
+    assert.ok(!/401|www-authenticate|request-id/i.test(t), 'no filtra body/headers del 401');
+});
+
+test('formatAlertText: sin consecutive_count no agrega xN', () => {
+    const t = healthCron.formatAlertText({
+        provider: 'cerebras',
+        state: 'red',
+        reason_code: 'timeout',
+        observed_at: '2026-07-02T00:00:00Z',
+    });
+    assert.ok(!/ x\d/.test(t), 'no debe agregar sufijo xN si no hay conteo');
 });
 
 test('formatAlertText: multi_down lista los providers', () => {

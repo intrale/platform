@@ -63,65 +63,47 @@ test('ping devuelve unknown_provider para providers no allowlisted', async () =>
     assert.equal(r.reason, 'unknown_provider');
 });
 
-test('ping devuelve no_key_configured cuando falta la key', async () => {
+test('ping devuelve no_key_configured cuando falta la key (provider api_key)', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
     writeKeys(f, {});
-    const r = await livePing.ping({ provider: 'openai', secretsPath: f });
+    // #4402 — `openai` pasó a auth_mode:'oauth' (short-circuit CLI). Usamos un
+    // provider api_key puro (`cerebras`) para ejercer el gate `no_key_configured`.
+    const r = await livePing.ping({ provider: 'cerebras', secretsPath: f });
     assert.equal(r.ok, false);
     assert.equal(r.reason, 'no_key_configured');
 });
 
-test('ping OpenAI con status 200 devuelve authenticated', async () => {
-    const dir = tmpDir();
-    const f = path.join(dir, 'config.json');
-    writeKeys(f, { openai_api_key: 'sk-test-1234567890abcdef0000' });
-    const r = await livePing.ping({ provider: 'openai', secretsPath: f, httpImpl: fakeHttp({ status: 200 }) });
+// #4402 — Los providers OAuth (anthropic MAX / codex) ya NO se pinean por API
+// key: se validan por CLI. La clasificación HTTP legacy de anthropic/openai se
+// verifica ahora directamente sobre el clasificador (`_classifyForLivePing`),
+// que sigue siendo la fuente de esos reason_codes.
+test('_classifyForLivePing OpenAI 200 → authenticated', () => {
+    const r = livePing._classifyForLivePing('openai', 200, '');
     assert.equal(r.ok, true);
     assert.equal(r.reason, 'authenticated');
-    assert.equal(r.provider, 'openai');
 });
 
-test('ping OpenAI con status 401 devuelve invalid_credentials', async () => {
-    const dir = tmpDir();
-    const f = path.join(dir, 'config.json');
-    writeKeys(f, { openai_api_key: 'sk-test-1234567890abcdef0000' });
-    const r = await livePing.ping({ provider: 'openai', secretsPath: f, httpImpl: fakeHttp({ status: 401 }) });
+test('_classifyForLivePing OpenAI 401 → invalid_credentials', () => {
+    const r = livePing._classifyForLivePing('openai', 401, '');
     assert.equal(r.ok, false);
     assert.equal(r.reason, 'invalid_credentials');
 });
 
-test('ping OpenAI con status 429 devuelve quota_exhausted', async () => {
-    const dir = tmpDir();
-    const f = path.join(dir, 'config.json');
-    writeKeys(f, { openai_api_key: 'sk-test-1234567890abcdef0000' });
-    const r = await livePing.ping({ provider: 'openai', secretsPath: f, httpImpl: fakeHttp({ status: 429 }) });
+test('_classifyForLivePing OpenAI 429 → quota_exhausted (override legacy)', () => {
+    const r = livePing._classifyForLivePing('openai', 429, '');
     assert.equal(r.ok, false);
     assert.equal(r.reason, 'quota_exhausted');
 });
 
-test('ping Anthropic con status 429 + cuerpo usage_limit devuelve quota_exhausted', async () => {
-    const dir = tmpDir();
-    const f = path.join(dir, 'config.json');
-    writeKeys(f, { anthropic_api_key: 'sk-ant-1234567890abcdef0000' });
-    const r = await livePing.ping({
-        provider: 'anthropic',
-        secretsPath: f,
-        httpImpl: fakeHttp({ status: 429, body: '{"error":{"type":"usage_limit_error"}}' }),
-    });
+test('_classifyForLivePing Anthropic 429 + usage_limit → quota_exhausted', () => {
+    const r = livePing._classifyForLivePing('anthropic', 429, '{"error":{"type":"usage_limit_error"}}');
     assert.equal(r.ok, false);
     assert.equal(r.reason, 'quota_exhausted');
 });
 
-test('ping Anthropic con status 429 + cuerpo plain devuelve rate_limited', async () => {
-    const dir = tmpDir();
-    const f = path.join(dir, 'config.json');
-    writeKeys(f, { anthropic_api_key: 'sk-ant-1234567890abcdef0000' });
-    const r = await livePing.ping({
-        provider: 'anthropic',
-        secretsPath: f,
-        httpImpl: fakeHttp({ status: 429, body: '{"error":{"type":"rate_limit_exceeded"}}' }),
-    });
+test('_classifyForLivePing Anthropic 429 + cuerpo plain → rate_limited', () => {
+    const r = livePing._classifyForLivePing('anthropic', 429, '{"error":{"type":"rate_limit_exceeded"}}');
     assert.equal(r.ok, false);
     assert.equal(r.reason, 'rate_limited');
 });
@@ -129,11 +111,56 @@ test('ping Anthropic con status 429 + cuerpo plain devuelve rate_limited', async
 test('ping no expone la API key cruda en la respuesta', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
-    const secretKey = 'sk-test-VERY-SECRET-DO-NOT-LEAK-12345';
-    writeKeys(f, { openai_api_key: secretKey });
-    const r = await livePing.ping({ provider: 'openai', secretsPath: f, httpImpl: fakeHttp({ status: 401 }) });
+    const secretKey = 'csk-test-VERY-SECRET-DO-NOT-LEAK-12345';
+    writeKeys(f, { cerebras_api_key: secretKey });
+    const r = await livePing.ping({ provider: 'cerebras', secretsPath: f, httpImpl: fakeHttp({ status: 401 }) });
     const serialized = JSON.stringify(r);
     assert.equal(serialized.includes('VERY-SECRET'), false, 'la respuesta no debe filtrar la key');
+});
+
+// ─── #4402 CA-1 — false-negative de Anthropic OAuth cerrado en live-ping ──────
+
+test('ping Anthropic OAuth con CLI presente → ok + cli_oauth_ok (NO no_key_configured)', async () => {
+    const dir = tmpDir();
+    const f = path.join(dir, 'config.json');
+    writeKeys(f, {}); // sin API key: el pipeline usa OAuth Max, no la key
+    const r = await livePing.ping({ provider: 'anthropic', secretsPath: f, cliProbe: () => true });
+    assert.equal(r.ok, true, 'con OAuth Max activo el ping es verde');
+    assert.equal(r.reason, 'cli_oauth_ok');
+    assert.notEqual(r.reason, 'no_key_configured', 'fin del false-negative');
+    assert.equal(r.provider, 'anthropic');
+});
+
+test('ping Anthropic OAuth con CLI ausente → cli_unavailable', async () => {
+    const dir = tmpDir();
+    const f = path.join(dir, 'config.json');
+    writeKeys(f, {});
+    const r = await livePing.ping({ provider: 'anthropic', secretsPath: f, cliProbe: () => false });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'cli_unavailable');
+});
+
+test('ping OpenAI/Codex OAuth con CLI presente → cli_oauth_ok', async () => {
+    const dir = tmpDir();
+    const f = path.join(dir, 'config.json');
+    writeKeys(f, {});
+    const r = await livePing.ping({ provider: 'openai', secretsPath: f, cliProbe: () => true });
+    assert.equal(r.ok, true);
+    assert.equal(r.reason, 'cli_oauth_ok');
+});
+
+test('RS-5.1/5.2 — el resultado OAuth NO contiene material de token/credencial', async () => {
+    const dir = tmpDir();
+    const f = path.join(dir, 'config.json');
+    // Aunque hubiera una key configurada, el camino OAuth NO la lee ni la devuelve.
+    writeKeys(f, { anthropic_api_key: 'sk-ant-SECRET-eyJ-bearer-DO-NOT-LEAK-000' });
+    const r = await livePing.ping({ provider: 'anthropic', secretsPath: f, cliProbe: () => true });
+    const serialized = JSON.stringify(r);
+    // No debe filtrar la key/JWT/bearer real (los strings de status `cli_oauth`
+    // son enum, no secretos).
+    assert.ok(!serialized.includes('sk-ant-SECRET'), 'no debe filtrar la API key');
+    assert.ok(!serialized.includes('eyJ'), 'no debe filtrar un JWT');
+    assert.ok(!/bearer\s/i.test(serialized), 'no debe filtrar un header bearer');
 });
 
 // ─── Free providers (#3260) ─────────────────────────────────────────────────

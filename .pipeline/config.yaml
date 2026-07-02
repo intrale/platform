@@ -502,6 +502,13 @@ quota_detector:
 # numérico; ante valor inválido se cae a `defaults` y se loggea, sin romper el
 # ticker. `preventive_switch.enabled` solo activa el switch con `true` literal.
 multi_provider:
+  # Cron de health por provider (#4402 CA-3).
+  health:
+    # Cadencia del cron de health. Default 5 min.
+    # Clamp [1,240] min con piso duro ≥60s (RS-5.5) anti-DoS free tier
+    # (Gemini RPM 15, Cerebras RPM 30). Jitter ±60s se conserva en código.
+    # Un typo/valor inválido cae al default 5 min sin romper el arranque.
+    interval_minutes: 5
   quota_alert:
     # Umbrales por defecto si un proveedor no declara los suyos.
     defaults:

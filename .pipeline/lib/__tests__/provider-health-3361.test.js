@@ -24,6 +24,7 @@ const os = require('node:os');
 
 const providerHealth = require('../provider-health');
 const livePing = require('../multi-provider/live-ping');
+const secretsRw = require('../multi-provider/secrets-rw');
 
 function tmpDir() { return fs.mkdtempSync(path.join(os.tmpdir(), 'mp-3361-')); }
 
@@ -122,12 +123,20 @@ test('CA-16: live-ping devuelve no_key_configured (NO invalid_credentials) cuand
     const dir = tmpDir();
     const secretsFile = writeKeys(dir, {}); // vacío: NINGUNA key
 
-    // Para cada provider con allowlist en live-ping, sin key debe devolver
-    // 'no_key_configured' — nunca 'invalid_credentials'.
-    const providers = Object.keys(livePing.PROVIDER_PING_ENDPOINTS);
-    assert.ok(providers.length >= 2, 'al menos 2 providers en la allowlist');
+    // Para cada provider API-KEY con allowlist en live-ping, sin key debe
+    // devolver 'no_key_configured' — nunca 'invalid_credentials'.
+    // #4402 — Los providers OAuth (anthropic MAX / codex) NO siguen el gate de
+    // key: se validan por CLI y devuelven cli_oauth_ok/cli_unavailable. Se
+    // excluyen de esta aserción (su camino se cubre en live-ping.test.js).
+    const oauthProviders = new Set(
+        secretsRw.MANAGED_KEYS.filter(k => k.auth_mode === 'oauth').map(k => k.provider),
+    );
+    const providers = Object.keys(livePing.PROVIDER_PING_ENDPOINTS)
+        .filter(p => !oauthProviders.has(p));
+    assert.ok(providers.length >= 2, 'al menos 2 providers api_key en la allowlist');
 
     for (const provider of providers) {
+        // cliProbe no aplica a providers api_key; el gate de key se ejerce igual.
         const r = await livePing.ping({ provider, secretsPath: secretsFile });
         assert.equal(r.ok, false, provider + ' sin key debe ser ok=false');
         assert.equal(r.reason, 'no_key_configured',
