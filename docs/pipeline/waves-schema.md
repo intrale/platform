@@ -122,7 +122,8 @@ Lectura del diagrama:
   ],
   "dependencies": [                            // grafo de bloqueos
     { "blocker": 3559, "blocked": 3700, "reason": "API contract" }
-  ]
+  ],
+  "integrity_hash": "3f1a…64hex"               // #4370 — SHA-256 canónico (ver abajo)
 }
 ```
 
@@ -149,12 +150,84 @@ Lectura del diagrama:
 | `archived_waves[].issues_failed` | int | Cuántos fallaron o quedaron bloqueados. |
 | `archived_waves[].actual_duration_days` | int | Días reales. |
 | `dependencies[]` | array | Grafo bloqueador → bloqueado. |
+| `integrity_hash` | string (hex 64) | #4370 — SHA-256 canónico del estado (omite el propio campo). Sellado en cada save; verificado al boot/load. Opcional en legacy (se sella en el primer save). |
 
 ### Validación
 
 `lib/waves.validateStateStrict(state)` aplica antes de cada write. Si devuelve
 errores, el write se rechaza con `EWAVES_SCHEMA` + alerta Telegram. **Cero
 escritura de basura**.
+
+Desde **#4370** la validación estricta cubre además (defensa ante estados
+hostiles que disparan trabajo automático del pipeline):
+
+- **`issue.number` como entero positivo** en `active_wave`, `planned_waves[]` y
+  `archived_waves[]` (no strings arbitrarios — el número construye trabajo real).
+- **Tipos string** de los campos libres (`name`, `goal`, `note`, `updated_by`,
+  `source`, `status`, `notes`). `null` se tolera como "ausente". Estos campos
+  fluyen a sinks (dashboard = XSS almacenado, Telegram = markdown injection); el
+  tipo estricto en el schema + el escape en el punto de render (`esc()` en el
+  dashboard, `escapeMarkdownV2`/`fill-template` en Telegram) son las dos capas.
+- **Límites anti-OOM**: `MAX_WAVES_PER_BUCKET=500`, `MAX_ISSUES_PER_WAVE=2000`,
+  `MAX_FREE_STRING_LEN=20000`, `MAX_STATE_BYTES=5MB`. Un `waves.json` inflado por
+  un atacante se rechaza antes de recorrerse en el load de arranque.
+
+La variante permisiva `loadWaves()` se mantiene intacta para los consumers
+legacy (dashboard, commander-deterministic, planner-waves, wave-resolver,
+eta-wave, canonical-facts, wizards): la strictness sólo aplica en los caminos de
+**escritura / restore / boot**.
+
+### Hash de integridad — `integrity_hash` (#4370)
+
+`waves.json` persiste un campo top-level `integrity_hash`: el **SHA-256 del
+estado canónico** (claves ordenadas recursivamente) **omitiendo el propio campo**
+para evitar recursión. Se computa y sella en cada `saveStateLocked` dentro del
+write atómico existente.
+
+```jsonc
+{
+  "version": "1.0",
+  "meta": { /* ... */ },
+  "active_wave": { /* ... */ },
+  "planned_waves": [],
+  "archived_waves": [],
+  "dependencies": [],
+  "integrity_hash": "3f1a…64hex"   // SHA-256 canónico, sellado en cada save
+}
+```
+
+- **Verificación al boot** (`waves.checkStateIntegrity()`, llamado por `pulpo.js`):
+  distingue *corrupción silenciosa* / *tampering schema-válido* de un estado
+  sano. `ok` → log; `mismatch` → log WARN + alerta Telegram (human-block blando:
+  el pipeline sigue con el estado actual hasta revisión humana, no se autodestruye);
+  `missing` → estado legacy (ver migración); `schema_invalid`/`unreadable` → log.
+- **Verificación en `loadStateStrict()`**: `mismatch` tira `EWAVES_INTEGRITY` +
+  alerta (fail-closed para los caminos que exigen estado íntegro).
+- **Migración tolerante (CA-9)**: un `waves.json` **legacy sin `integrity_hash`**
+  se carga OK (`missing`, no falla) y queda **sellado en el primer save**. No se
+  bumpea `SCHEMA_VERSION` porque el shape sólo agrega un campo opcional
+  retrocompatible.
+
+### Retención / rotación de backups en `archived/` (#4370)
+
+`saveStateLocked` deja un backup timestamped `waves.<ts>.json` antes de
+sobreescribir, y `snapshotForTransaction` deja `waves-rollback.<ts>.json` /
+`partial-pause-rollback.<ts>.json` por transacción de `/wave promote`. Sin cota,
+`archived/` crecía sin fin (baseline previo: 29 backups) → DoS por disco, parse
+lento en restart y exposición indefinida de secretos.
+
+`waves.rotateArchivedBackups(keep = WAVES_ARCHIVED_KEEP || 20)`:
+
+- Conserva los **N más recientes por familia** (por `mtime`) y **borra el resto,
+  logueando cada descarte** (`[rotación] descartado backup … — excede retención`).
+- **No toca** backups referenciados por un `wave-promote.in-progress.json` vivo
+  (evita romper un restore en curso). Si el marker está presente pero ilegible,
+  es conservador y **no rota nada**.
+- Corre best-effort al final de cada save (nunca bloquea el write).
+- **Redacción defensiva**: `meta.note` / `meta.source` pasan por
+  `redact.redactSecretValue` antes de persistir — un secreto pegado desde
+  Telegram no queda en texto plano en `waves.json` ni en sus backups. Texto
+  normal ("add issue #123 → wave 5") queda intacto.
 
 ---
 
