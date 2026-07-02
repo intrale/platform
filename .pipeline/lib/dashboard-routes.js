@@ -198,6 +198,35 @@ function _bloqueadosInertFallback(reason) {
         '<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3).</p></main></body></html>';
 }
 
+// #4378 — Vista Roadmap de olas (`?view=roadmap`). Require defensivo: si el
+// módulo (o sus deps, ej. lib/escape-html.js) no carga, `renderRoadmapView`
+// degrada a un panel inerte visible (CA-A3) en vez de tirar 500. READ-ONLY:
+// el render lee waves.json directamente (loadWaves); las acciones mutantes van
+// por la ruta POST `/dashboard/wave/archive`.
+let waveRoadmapView = null;
+try { waveRoadmapView = require('../views/dashboard/wave-roadmap'); }
+catch (e) {
+    try { console.warn('[dashboard-routes] wave-roadmap view unavailable: ' + (e && e.message)); } catch { /* logger no debe romper el require */ }
+}
+
+function renderRoadmapView(ctx, opts) {
+    if (!waveRoadmapView || typeof waveRoadmapView.renderRoadmap !== 'function') {
+        return _roadmapInertFallback('módulo views/dashboard/wave-roadmap no disponible (require falló)');
+    }
+    try {
+        return waveRoadmapView.renderRoadmap(opts);
+    } catch (e) {
+        return _roadmapInertFallback((e && e.message) || 'error de render');
+    }
+}
+
+function _roadmapInertFallback(reason) {
+    const safe = String(reason || 'módulo no disponible').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Intrale · Roadmap</title></head>' +
+        '<body><main style="padding:32px"><h1>Ventana Roadmap no disponible</h1><p>' + safe + '</p>' +
+        '<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3).</p></main></body></html>';
+}
+
 // #3733 — Vista KPIs extraída (split de #3715). Require defensivo: si el
 // módulo (o sus deps, ej. lib/escape-html.js) no carga, la entry `kpis` del
 // router degrada a un panel inerte visible (CA-A3) en vez de tirar 500.
@@ -988,6 +1017,10 @@ const HTML_ROUTES = {
     '/modo-descanso': () => (descansoView && descansoView.renderDescanso)
         ? descansoView.renderDescanso()
         : sat.renderModoDescanso(),
+    // #4378 — /roadmap resuelve al módulo views/dashboard/wave-roadmap.js (mismo
+    // thunk que `?view=roadmap`). READ-ONLY: lee waves.json. Degrada a fallback
+    // inerte (CA-A3) si el módulo no cargó.
+    '/roadmap': (ctx) => renderRoadmapView(ctx),
 };
 
 // #3723 — Router cliente `?view=<slug>` + endpoint `/dashboard/partial`.
@@ -1089,6 +1122,14 @@ const VIEW_SLUGS = Object.freeze({
         // #3962 EP8-H9 — render con el bloque rediseñado SSR (mismo thunk que
         // el path legacy `/costos`). Recibe ctx desde handle() para armar el slice.
         render: (opts, ctx) => renderCostosView(ctx, opts),
+    },
+    // #4378 — Ventana Roadmap de olas (slug `roadmap`). READ-ONLY: el render lee
+    // waves.json (loadWaves); la acción "Archivar" va por POST
+    // `/dashboard/wave/archive` con su propio cinturón de gates. Degrada a panel
+    // inerte visible (CA-A3) si el módulo no cargó.
+    roadmap: {
+        title: 'Roadmap',
+        render: (opts, ctx) => renderRoadmapView(ctx, opts),
     },
     // #3727..#3737 sumarán acá:
     // 'multi-provider':          { title: 'Multi-provider',          render: () => mp.renderMultiProvider() },
@@ -1637,6 +1678,118 @@ function handleBudgetMutation(req, res) {
     return true;
 }
 
+// #4378 — Endpoint mutante para archivar una ola. Replica LITERALMENTE el
+// cinturón de gates de `handleBudgetMutation`, en el MISMO orden:
+//   método≠POST → 405
+//   no-loopback → 403 (REQ-SEC-1/7, independiente del bind)
+//   cross-site  → 403 (anti-CSRF, REQ-SEC-1)
+//   Content-Type≠json → 415
+//   body sobre cap → 413 (REQ-SEC-8)
+//   waveNumber inválido (no-int / ≤0 / float / string) → 400 SIN reflejar input
+// El actor se graba server-side FIJO (`operador-local`), NUNCA del body.
+// La ruta SOLO llama `waves.archiveWave(num, ...)` — cero fs.writeFileSync sobre
+// waves.json (CA-7). NO expone `force` (operación de mayor riesgo — vía CLI).
+function handleWaveArchiveMutation(req, res) {
+    const pathnameOnly = (req.url || '').split('?')[0];
+    if (pathnameOnly !== '/dashboard/wave/archive') return false;
+
+    // Gate 1 — método.
+    if (req.method !== 'POST') {
+        _logPartialRejected(req, 'wave_archive_method_not_allowed');
+        sendMutationJson(res, { error: 'method_not_allowed' }, 405);
+        return true;
+    }
+    // Gate 2 — loopback (REQ-SEC-1/7, independiente del bind).
+    if (!isLoopbackReq(req)) {
+        _logPartialRejected(req, 'wave_archive_non_loopback');
+        sendMutationJson(res, { error: 'forbidden' }, 403);
+        return true;
+    }
+    // Gate 3 — same-origin (anti-CSRF, REQ-SEC-1).
+    if (!isSameOriginFetch(req)) {
+        _logPartialRejected(req, 'wave_archive_cross_origin');
+        sendMutationJson(res, { error: 'forbidden' }, 403);
+        return true;
+    }
+    // Gate 4 — Content-Type debe ser JSON.
+    const ct = (req.headers && req.headers['content-type']) || '';
+    if (!/^application\/json\b/i.test(ct)) {
+        _logPartialRejected(req, 'wave_archive_bad_content_type');
+        sendMutationJson(res, { error: 'unsupported_media_type' }, 415);
+        return true;
+    }
+
+    // Módulo de olas disponible.
+    let waves;
+    try { waves = require('./waves'); } catch { waves = null; }
+    if (!waves || typeof waves.archiveWave !== 'function') {
+        sendMutationJson(res, { error: 'module_unavailable' }, 503);
+        return true;
+    }
+
+    // Gate 5 — body con cap (REQ-SEC-8) + parseo + validación estricta.
+    readBodyCapped(req, ALERT_BODY_MAX_BYTES, (err, raw) => {
+        if (err) {
+            const tooLarge = err.message === 'body_too_large';
+            _logPartialRejected(req, tooLarge ? 'wave_archive_body_too_large' : 'wave_archive_body_read_error');
+            sendMutationJson(res, { error: tooLarge ? 'payload_too_large' : 'bad_request' }, tooLarge ? 413 : 400);
+            return;
+        }
+        let parsed = null;
+        try { parsed = raw ? JSON.parse(raw) : {}; } catch { parsed = null; }
+        if (!parsed || typeof parsed !== 'object') {
+            sendMutationJson(res, { error: 'bad_request' }, 400);
+            return;
+        }
+        // Validación server-side ESTRICTA del número de ola (path safety CA-7):
+        // entero positivo. Rechaza float / string / ≤0 / NaN SIN reflejar input.
+        const value = parsed.waveNumber != null ? parsed.waveNumber : parsed.wave_number;
+        if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+            sendMutationJson(res, { error: 'bad_request', applied: false }, 400);
+            return;
+        }
+        // Gate fail-closed (marker .failed de archive activo).
+        try {
+            if (typeof waves.isWaveArchiveBlocked === 'function' && waves.isWaveArchiveBlocked().blocked) {
+                sendMutationJson(res, { error: 'archive_blocked', applied: false }, 409);
+                return;
+            }
+        } catch { /* si el check falla, seguimos: archiveWave revalida el gate */ }
+
+        try {
+            const result = waves.archiveWave(value, {
+                updated_by: 'operador-local',   // actor FIJO, nunca del body (REQ-SEC-3)
+                source: 'dashboard/wave-archive',
+                note: `archive wave ${value} (dashboard)`,
+            });
+            sendMutationJson(res, {
+                ok: true,
+                applied: !!result.archived,
+                alreadyArchived: result.reason === 'already-archived',
+                actor: 'operador-local',
+            }, 200);
+        } catch (e) {
+            const code = e && e.code ? e.code : '';
+            if (code === 'ACTIVE_IN_FLIGHT') {
+                // 409 Conflict — la activa tiene issues no cerrados (sin force).
+                sendMutationJson(res, { error: 'active_in_flight', applied: false }, 409);
+                return;
+            }
+            if (code === 'NOT_FOUND') {
+                sendMutationJson(res, { error: 'not_found', applied: false }, 404);
+                return;
+            }
+            if (code === 'ARCHIVE_BLOCKED') {
+                sendMutationJson(res, { error: 'archive_blocked', applied: false }, 409);
+                return;
+            }
+            try { console.error(JSON.stringify({ event: 'wave_archive_mutation_error', code, msg: e && e.message, ts: new Date().toISOString() })); } catch {}
+            sendMutationJson(res, { error: 'internal_error' }, 500);
+        }
+    });
+    return true;
+}
+
 function sendJson(res, payload, status = 200) {
     const body = JSON.stringify(payload);
     res.writeHead(status, {
@@ -1670,6 +1823,9 @@ function handle(req, res, ctx) {
     // #3962 EP8-H9 CA-4 — endpoint mutante del presupuesto mensual. Mismo lugar
     // que ack/snooze: ANTES del gate GET-only, con su propio cinturón de gates.
     if (handleBudgetMutation(req, res)) return true;
+    // #4378 — endpoint mutante para archivar una ola. Mismo lugar que los
+    // anteriores: ANTES del gate GET-only, con su propio cinturón de gates.
+    if (handleWaveArchiveMutation(req, res)) return true;
 
     // #4372 — API de gestión de olas `/api/waves/*` + `/api/roadmap/status`.
     // Se evalúa ANTES del gate GET-only: incluye mutaciones (POST/PATCH/DELETE/PUT)
@@ -1903,6 +2059,9 @@ module.exports = {
         handleBudgetMutation,
         BUDGET_MAX,
         renderCostosView,
+        // #4378 — endpoint mutante para archivar una ola + vista roadmap.
+        handleWaveArchiveMutation,
+        renderRoadmapView,
         // #4192 — banner de misión de la ventana Issues (rediseño MIZPÁ).
         deriveIssuesMission,
         // #4287 — map de rutas API expuesto para tests del passthrough de

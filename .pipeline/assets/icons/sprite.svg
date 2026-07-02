@@ -1492,4 +1492,22 @@
           stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
   </symbol>
 
+  <!-- ic-wave-add: dos ondas (misma metafora que ic-wave) + badge "+" en la
+       esquina inferior derecha — accion "crear ola nueva" del roadmap (#4351,
+       Ola 8.3). El "+" reutiliza el trazo outline coherente con el resto del
+       sprite; el badge se dibuja sobre un pequeno recorte para que el "+"
+       respire sin tocar la onda inferior. -->
+  <symbol id="ic-wave-add" viewBox="0 0 24 24">
+    <path d="M3 8 C 5.5 5.5, 8 5.5, 10.5 8 S 15 10, 17 8.5"
+          fill="none" stroke="currentColor" stroke-width="1.75"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M3 13.5 C 5.5 11, 8 11, 10.5 13.5 S 15 15.5, 17 14"
+          fill="none" stroke="currentColor" stroke-width="1.75"
+          stroke-linecap="round" stroke-linejoin="round" opacity="0.6"/>
+    <circle cx="18" cy="18" r="4.6" fill="none" stroke="currentColor"
+            stroke-width="1.6"/>
+    <path d="M18 15.7 V20.3 M15.7 18 H20.3" stroke="currentColor"
+          stroke-width="1.6" stroke-linecap="round"/>
+  </symbol>
+
 </svg>

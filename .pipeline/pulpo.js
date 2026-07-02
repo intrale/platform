@@ -14458,6 +14458,50 @@ async function mainLoop() {
       log('pulpo', `[wave-recovery] otro proceso capturó el marker primero: ${promoteRecovery.reason}`);
     }
     // action='noop' → caso normal, sin log.
+
+    // #4378 — Boot hook: recovery automático si /wave archive crasheó
+    // mid-transaction. Espejo del de promote pero acotado a waves.json (archive
+    // NO toca .partial-pause.json — CA-6 diferido a #4350). Best-effort: si algo
+    // inesperado falla, NO matamos el pulpo; la próxima archive la frena el gate
+    // fail-closed del Commander si quedó un .failed.
+    const archiveRecovery = waves.recoverIncompleteArchive();
+    if (archiveRecovery && archiveRecovery.action === 'recovered') {
+      const m = archiveRecovery.originalMarker || {};
+      const startedAt = m.started_at || 'desconocido';
+      const num = m.wave_number != null ? `#${m.wave_number}` : 'desconocida';
+      log('pulpo', `WARN [wave-recovery] /wave archive crashed at ${startedAt}, restaurado desde snapshot (ola ${num}).`);
+      try {
+        sendTelegram(
+          `⚠️ *Recovery automático detectado al boot del pulpo*\n\n` +
+          `\`/wave archive\` ejecutado el _${startedAt}_ NO completó (crash mid\\-transaction).\n` +
+          `\`waves.json\` restaurado a pre\\-archive desde snapshot en \`archived/\` \\(ola ${num}\\)\\.\n\n` +
+          `_La allowlist \\(.partial\\-pause.json\\) no se toca en archive\\._`
+        );
+      } catch (e) {
+        log('pulpo', `WARN [wave-recovery] no pude enviar push proactivo (archive): ${e.message}`);
+      }
+    } else if (archiveRecovery && archiveRecovery.action === 'failed') {
+      const reason = archiveRecovery.reason || 'razón desconocida';
+      const failedPath = archiveRecovery.failedMarkerPath || '(desconocido)';
+      log('pulpo', `WARN [wave-recovery] FAIL-CLOSED (archive): ${reason}. Marker .failed escrito en ${failedPath}.`);
+      try {
+        sendTelegram(
+          `🚫 *Recovery automática FALLÓ tras crash de /wave archive*\n\n` +
+          `Razón: \`${reason.replace(/[\`*_\[\]()]/g, '')}\`\n\n` +
+          `*Acción manual requerida:*\n` +
+          `1. Inspeccionar \`.pipeline/archived/waves-archive-rollback-*.json\`.\n` +
+          `2. Decidir si restaurar manualmente o aceptar el estado actual.\n` +
+          `3. Borrar \`.pipeline/wave-archive.failed.*.json\` cuando esté resuelto.\n\n` +
+          `_Hasta entonces, \`/wave archive\` queda inhabilitado._`
+        );
+      } catch (e) {
+        log('pulpo', `WARN [wave-recovery] no pude enviar alerta fail-closed (archive): ${e.message}`);
+      }
+    } else if (archiveRecovery && archiveRecovery.action === 'in_progress') {
+      log('pulpo', `[wave-recovery] marker de archive fresco — no actúo: ${archiveRecovery.reason}`);
+    } else if (archiveRecovery && archiveRecovery.action === 'lock_lost') {
+      log('pulpo', `[wave-recovery] otro proceso capturó el marker de archive primero: ${archiveRecovery.reason}`);
+    }
   } catch (e) {
     log('pulpo', `WARN [wave-recovery] boot hook falló: ${e.message}`);
   }

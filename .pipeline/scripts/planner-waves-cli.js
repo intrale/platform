@@ -420,12 +420,51 @@ function renderRoadmap(wavesList) {
     return out.join('\n');
 }
 
+// #4378 — `archivar <N> [--force]` — Archiva una ola (activa o planificada) a
+// `archived_waves[]` conservando sus issues (CA-5), vía `waves.archiveWave`. La
+// transacción (lock + snapshot + marker + recovery) vive en waves.js; el CLI
+// sólo valida el número y traduce el resultado a texto.
+function cmdArchivar(rawN, opts) {
+    // Path safety (CA-7): entero positivo decimal puro. No interpolar en paths.
+    if (!/^\d+$/.test(String(rawN))) {
+        die(1, `Número de ola inválido: "${rawN}". Debe ser entero positivo.`);
+    }
+    const N = parseInt(rawN, 10);
+    if (!Number.isInteger(N) || N < 1) {
+        die(1, `Número de ola inválido: "${rawN}". Debe ser entero positivo.`);
+    }
+
+    let result;
+    try {
+        result = waves.archiveWave(N, {
+            force: !!opts.force,
+            updated_by: 'planner-waves-cli',
+            source: 'cli/archivar',
+            note: `archive wave ${N} (cli${opts.force ? ', force' : ''})`,
+        });
+    } catch (err) {
+        // A04 in-flight es el error accionable más común → código 2 (estado),
+        // el resto → 1 (input/inesperado).
+        const code = err && err.code === 'ACTIVE_IN_FLIGHT' ? 2 : 1;
+        die(code, `No pude archivar la ola ${N}: ${err.message}`);
+    }
+
+    if (!result.archived && result.reason === 'already-archived') {
+        process.stdout.write(`ℹ️ La ola ${N} ya estaba archivada. No se hizo nada (idempotente).\n`);
+        return;
+    }
+    process.stdout.write(
+        `✅ Ola ${N} archivada (origen: ${result.source}). ` +
+        `${result.issuesPreserved} issue(s) conservados en archived_waves[].\n`
+    );
+}
+
 // ─── Entry point ──────────────────────────────────────────────────────────
 
 function main(argv) {
     const [, , cmd, ...rest] = argv;
     if (!cmd) {
-        die(4, 'Uso: olas | roadmap | horizonte <N> | componer-ola <N> [--force] [--json] | crear-ola --nombre <n> --concurrency <c> --window <m> --issues <#a #b> [--objetivo <o>] | desasociar <ola> <issue> | reordenar <n1> <n2> [...]');
+        die(4, 'Uso: olas | roadmap | horizonte <N> | componer-ola <N> [--force] [--json] | crear-ola --nombre <n> --concurrency <c> --window <m> --issues <#a #b> [--objetivo <o>] | desasociar <ola> <issue> | reordenar <n1> <n2> [...] | archivar <N> [--force]');
     }
 
     const opts = {
@@ -453,8 +492,11 @@ function main(argv) {
         case 'reordenar':
             if (positional.length < 2) die(4, 'Uso: reordenar <n1> <n2> [...]');
             return cmdReordenar(positional);
+        case 'archivar':
+            if (positional.length < 1) die(4, 'Uso: archivar <N> [--force]');
+            return cmdArchivar(positional[0], opts);
         default:
-            die(4, `Comando desconocido: ${cmd}. Válidos: olas, roadmap, horizonte, componer-ola, crear-ola, desasociar, reordenar`);
+            die(4, `Comando desconocido: ${cmd}. Válidos: olas, roadmap, horizonte, componer-ola, crear-ola, desasociar, reordenar, archivar`);
     }
 }
 

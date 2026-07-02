@@ -54,6 +54,8 @@ const NAV_TABS = [
     { slug: 'bloqueados', label: 'Bloqueados', iconId: 'ic-estado-needs-human', href: '/bloqueados',     ariaLabel: 'Ir a Bloqueados - esperando humano',                       primary: 4 },
     { slug: 'issues',     label: 'Issues',     iconId: 'ic-issues-count',       href: '/issues',         ariaLabel: 'Ir a Issues - backlog',                                    primary: 3 },
     { slug: 'matriz',     label: 'Matriz',     iconId: 'ic-tab-matriz',         href: '/matriz',         ariaLabel: 'Ir a Matriz - skill por fase',                             desc: 'Heatmap issues × fases' },
+    // #4378 — Roadmap de olas (activa / planificadas / archivadas + archivar).
+    { slug: 'roadmap',    label: 'Roadmap',    iconId: 'ic-wave',               href: '/roadmap',        ariaLabel: 'Ir a Roadmap - olas activa, planificadas y archivadas',    desc: 'Roadmap de olas · archivar' },
     { slug: 'ops',        label: 'Ops',        iconId: 'ic-tab-ops',            href: '/ops',            ariaLabel: 'Ir a Ops - procesos e infra',                              desc: 'Topología y salud de servicios' },
     { slug: 'kpis',       label: 'KPIs',       iconId: 'ic-tab-kpis',           href: '/kpis',           ariaLabel: 'Ir a KPIs - metricas detalladas',                          desc: 'Métricas de entrega' },
     { slug: 'historial',  label: 'Historial',  iconId: 'ic-tab-historial',      href: '/historial',      ariaLabel: 'Ir a Historial - eventos del pipeline',                    desc: 'Timeline de actividad' },
