@@ -58,7 +58,7 @@
 //
 // Errores tipados (alineados con `live-ping.js` para consistencia del ecosistema):
 //   - `{ok: false, error: {type, reason?, statusCode?, detail?}, provider, model, durationMs}`
-//   - `type`: 'timeout' | 'http_error' | 'auth_error' | 'invalid_response' | 'unknown_provider' | 'no_key_configured' | 'invalid_model'
+//   - `type`: 'timeout' | 'http_error' | 'auth_error' | 'invalid_response' | 'unknown_provider' | 'no_key_configured' | 'invalid_model' | 'data_residency_blocked'
 //   - `reason` (cuando aplica): 'invalid_credentials' | 'quota_exhausted' | 'rate_limited' | 'forbidden' | 'schema_drift' | 'body_too_large' | 'network_error'
 //
 // IMPORTANTE — Rate limiting:
@@ -259,6 +259,9 @@ function isAllowedModel(provider, model, configuredByProvider) {
 //   - prompt:      string del prompt (se envía como user message).
 //   - messages:    opcional, array de {role, content}; si no se pasa, se
 //                  construye desde `prompt`.
+//   - paths:       opcional (#4404), array de rutas del repo cuyo contenido
+//                  viaja en el payload. Pasan por el gate data-residency
+//                  (RS-1) antes de despachar; default `[]` (no bloquea).
 //   - maxTokens:   opcional, default 1024.
 //   - temperature: opcional, default 0.
 //   - timeoutMs:   opcional, default DEFAULT_TIMEOUT_MS.
@@ -293,8 +296,19 @@ async function complete({
     timeoutMs = DEFAULT_TIMEOUT_MS,
     secretsPath,
     pipelineDir,
+    // #4404 D6/RS-1 — contrato aditivo: `paths` son las rutas del repo cuyo
+    // contenido viaja en el payload. Default `[]` (no rompe callers previos:
+    // con paths vacío el gate corre pero no bloquea nada). Cuando el caller
+    // conozca las rutas del contexto, las pasa acá para que el gate
+    // data-residency las evalúe ANTES de despachar a este provider
+    // `non_anthropic`.
+    paths = [],
     fsImpl,
     httpImpl,
+    // #4404 — inyectable SOLO para tests (misma convención que fsImpl/httpImpl).
+    // Los callers de producción NO lo pasan → se usa el módulo real hardcoded,
+    // por eso el gate es inbypasseable en runtime real (RS-1 = segunda capa).
+    drfImpl,
 } = {}) {
     const startedAt = Date.now();
     const baseResult = { provider, model };
@@ -354,6 +368,83 @@ async function complete({
         return {
             ok: false,
             error: { type: 'no_key_configured', detail: `no hay API key configurada para '${provider}'` },
+            ...baseResult,
+            durationMs: Date.now() - startedAt,
+        };
+    }
+
+    // =========================================================================
+    // #4404 D6/RS-1 (CRÍTICO) — Gate data-residency INBYPASSEABLE.
+    //
+    // Todo dispatch por este wire es a un provider `non_anthropic` (los OAuth
+    // anthropic/codex van por spawn, NO por completion-client). El gate vive
+    // DENTRO de `complete()` — no en cada caller — para que sea una segunda
+    // capa independiente de la config de fallbacks: aunque un fallback esté mal
+    // declarado o se sume un provider nuevo, el filtro se interpone igual.
+    //
+    // Patrón fail-closed calcado de `commander/multi-provider.js:enforceDataResidency`
+    // (SR-1 de #3084) y `data-residency-filter.js` (#3670):
+    //   - `loadExclusionsOrThrow()` es FAIL-CLOSED: sin sidecar válido lanza →
+    //     acá lo traducimos a `data_residency_blocked` SIN despachar.
+    //   - `filterPathsForProvider()` categoriza al provider (`non_anthropic`) y
+    //     bloquea las rutas sensibles del sidecar. Si hay bloqueos → NO se envía
+    //     nada al provider + se audit-loggea con `{path, motivo, pattern}` (sin
+    //     volcar contenido sensible).
+    // =========================================================================
+    const _drf = drfImpl || require('../data-residency-filter');
+    let exclusions;
+    let defaultPolicy;
+    try {
+        const loaded = _drf.loadExclusionsOrThrow();
+        exclusions = loaded.exclusions;
+        defaultPolicy = loaded.default_policy;
+    } catch (e) {
+        // FAIL-CLOSED real: sin sidecar evaluable NO se despacha a non_anthropic.
+        return {
+            ok: false,
+            error: {
+                type: 'data_residency_blocked',
+                detail: `sidecar data-residency no evaluable: ${e && e.message ? e.message : String(e)}`,
+            },
+            ...baseResult,
+            durationMs: Date.now() - startedAt,
+        };
+    }
+
+    let filt;
+    try {
+        filt = _drf.filterPathsForProvider({
+            paths: Array.isArray(paths) ? paths : [],
+            provider,
+            exclusions,
+            defaultPolicy,
+        });
+    } catch (e) {
+        // filterPathsForProvider sólo lanza con argumentos inválidos. Fail-closed.
+        return {
+            ok: false,
+            error: {
+                type: 'data_residency_blocked',
+                detail: `filtro data-residency falló: ${e && e.message ? e.message : String(e)}`,
+            },
+            ...baseResult,
+            durationMs: Date.now() - startedAt,
+        };
+    }
+
+    if (filt.blocked.length > 0) {
+        // Audit sin contenido: appendAudit hashea el path y sólo persiste
+        // {path_hash, motivo, pattern}. Best-effort: un fallo de IO no debe
+        // convertir un bloqueo (seguro) en un dispatch (inseguro).
+        try {
+            _drf.appendAudit({ skill: provider, provider, blocked: filt.blocked });
+        } catch (_) { /* best-effort — el bloqueo se mantiene igual */ }
+        return {
+            ok: false,
+            error: {
+                type: 'data_residency_blocked',
+                detail: `${filt.blocked.length} path(s) bloqueados para ${provider}`,
+            },
             ...baseResult,
             durationMs: Date.now() - startedAt,
         };
