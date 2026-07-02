@@ -29,8 +29,55 @@ const ORDER_FILE = path.join(PIPELINE_DIR, 'issue-manual-order.json');
 
 const CURRENT_VERSION = 1;
 
+// Reintentos de rename para Windows (EPERM/EBUSY cuando otro proceso —el Pulpo
+// vía syncWith()— tiene el archivo abierto). Alineado con waves.js:49-50.
+const RENAME_MAX_RETRIES = 3;
+const RENAME_RETRY_BACKOFF_MS = 50;
+
 function emptyState() {
     return { version: CURRENT_VERSION, order: [] };
+}
+
+/**
+ * Write atómico con fsync y reintentos en Windows (SEC-3 / CA-8, #4369).
+ * Copia el patrón de waves.js::atomicWriteFile() para que el dashboard (reorder)
+ * y el Pulpo (syncWith) no dejen `issue-manual-order.json` parcial/corrupto ante
+ * escritura concurrente (TOCTOU). Escribe a tmp, fsync, y renombra atómicamente.
+ */
+function atomicWriteFile(targetPath, data) {
+    const tmp = targetPath + '.tmp';
+    let wroteTmp = false;
+    try {
+        fs.writeFileSync(tmp, data);
+        wroteTmp = true;
+        const fd = fs.openSync(tmp, 'r+');
+        try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+
+        let attempt = 0;
+        let lastErr = null;
+        while (attempt < RENAME_MAX_RETRIES) {
+            try {
+                fs.renameSync(tmp, targetPath);
+                wroteTmp = false;
+                return;
+            } catch (err) {
+                lastErr = err;
+                const code = err && err.code;
+                if (code === 'EPERM' || code === 'EBUSY' || code === 'EACCES') {
+                    attempt++;
+                    const deadline = Date.now() + RENAME_RETRY_BACKOFF_MS;
+                    while (Date.now() < deadline) { /* spin defensivo */ }
+                    continue;
+                }
+                throw err;
+            }
+        }
+        throw lastErr || new Error('rename agotó reintentos sin error específico');
+    } finally {
+        if (wroteTmp) {
+            try { fs.unlinkSync(tmp); } catch {}
+        }
+    }
 }
 
 function load(orderFile = ORDER_FILE) {
@@ -51,7 +98,10 @@ function save(state, orderFile = ORDER_FILE) {
             version: CURRENT_VERSION,
             order: Array.isArray(state.order) ? state.order.map(String) : [],
         };
-        fs.writeFileSync(orderFile, JSON.stringify(safe, null, 2), 'utf8');
+        // SEC-3/CA-8 (#4369): escritura atómica tmp+rename en vez de writeFileSync
+        // plano, para no corromper el archivo ante escritura concurrente
+        // dashboard↔Pulpo.
+        atomicWriteFile(orderFile, JSON.stringify(safe, null, 2));
         return true;
     } catch { return false; }
 }
@@ -150,6 +200,54 @@ function setOrder(state, newOrder, orderFile = ORDER_FILE) {
     return { ok: true };
 }
 
+// Reordena SOLO los issues del `subset` (típicamente los miembros de una ola)
+// preservando la posición relativa del resto del `order[]` global (#4369, CA-4).
+//
+// A diferencia de setOrder() —que mueve el newOrder al frente y manda el resto al
+// tail, alterando el orden relativo entre miembros y no-miembros— este helper
+// reemplaza IN-PLACE únicamente las posiciones que hoy ocupan los miembros del
+// subset, respetando el orden dado por `newOrder`. Los no-miembros no se mueven.
+//
+// Ejemplo:
+//   order   = ["10", "20", "30", "40"]   (20 y 40 son de la ola)
+//   subset  = ["20", "40"]
+//   newOrder= ["40", "20"]
+//   result  = ["10", "40", "30", "20"]   (10 y 30 quedan donde estaban)
+//
+// Miembros del subset presentes en newOrder pero aún no en order[] se agregan al
+// final en su orden relativo (caso borde: issue de la ola sin entrada manual).
+function reorderWithinSubset(state, subset, newOrder, orderFile = ORDER_FILE) {
+    const sub = new Set((Array.isArray(subset) ? subset : []).map(String));
+    const queue = (Array.isArray(newOrder) ? newOrder : [])
+        .map(String)
+        .filter(n => sub.has(n));
+    let qi = 0;
+    state.order = state.order.map(n => (sub.has(String(n)) ? queue[qi++] : n));
+    // Miembros de la ola aún no presentes en order[] → append en su orden.
+    for (; qi < queue.length; qi++) {
+        if (!state.order.includes(queue[qi])) state.order.push(queue[qi]);
+    }
+    save(state, orderFile);
+    return { ok: true };
+}
+
+// Valida que `order` sea una permutación EXACTA de la membresía de la ola
+// (#4369, SEC-1/CA-5): todos numéricos, sin duplicados, todos ∈ membership, y el
+// conjunto completo (no se agregan ni se pierden issues). Función pura (no toca
+// el FS) para ser testeable y reusable por el handler del dashboard.
+// Devuelve { ok: true } o { ok: false, reason }.
+function validateWaveReorder(membership, order) {
+    const mem = (Array.isArray(membership) ? membership : []).map(String);
+    const memSet = new Set(mem);
+    if (!Array.isArray(order)) return { ok: false, reason: 'order-not-array' };
+    const ord = order.map(String);
+    if (!ord.every(x => /^[0-9]+$/.test(x))) return { ok: false, reason: 'non-numeric' };
+    if (new Set(ord).size !== ord.length) return { ok: false, reason: 'duplicates' };
+    if (!ord.every(x => memSet.has(x))) return { ok: false, reason: 'not-in-wave' };
+    if (ord.length !== mem.length) return { ok: false, reason: 'incomplete-set' };
+    return { ok: true };
+}
+
 // Inserta un issue nuevo al tope (position 0). Si ya existe, no-op.
 function insertNew(state, issue, orderFile = ORDER_FILE) {
     const num = String(issue);
@@ -189,6 +287,7 @@ module.exports = {
     CURRENT_VERSION,
     load,
     save,
+    atomicWriteFile,
     orderOf,
     moveUp,
     moveDown,
@@ -196,6 +295,8 @@ module.exports = {
     moveBefore,
     moveAfter,
     setOrder,
+    reorderWithinSubset,
+    validateWaveReorder,
     insertNew,
     removeIssue,
     syncWith,

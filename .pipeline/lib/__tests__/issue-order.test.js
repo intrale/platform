@@ -292,3 +292,77 @@ test('flujo completo: insert nuevo → moveDown → setOrder via drag', () => {
     // Persistido
     assert.deepEqual(lib.load(f).order, ['100', '101', '102']);
 });
+
+// ── #4369 — reorderWithinSubset (CA-4) ─────────────────────────────────────
+
+test('reorderWithinSubset reordena solo miembros del subset preservando no-miembros (CA-4)', () => {
+    const f = tmpFile();
+    // 20 y 40 son de la ola; 10, 30, 50 no lo son.
+    const s = { version: 1, order: ['10', '20', '30', '40', '50'] };
+    lib.reorderWithinSubset(s, ['20', '40'], ['40', '20'], f);
+    // Los no-miembros (10, 30, 50) mantienen su posición absoluta; solo se
+    // permutan los slots que ocupaban 20 y 40.
+    assert.deepEqual(s.order, ['10', '40', '30', '20', '50']);
+    assert.deepEqual(lib.load(f).order, ['10', '40', '30', '20', '50']);
+});
+
+test('reorderWithinSubset preserva el orden relativo de los no-miembros (CA-4)', () => {
+    const f = tmpFile();
+    const s = { version: 1, order: ['a', 'b', 'c', 'd', 'e', 'f'] };
+    // Ola = {b, d, f}. Reordenamos a f, b, d.
+    lib.reorderWithinSubset(s, ['b', 'd', 'f'], ['f', 'b', 'd'], f);
+    // No-miembros a, c, e conservan su secuencia relativa (a < c < e).
+    const nonMembers = s.order.filter(n => ['a', 'c', 'e'].includes(n));
+    assert.deepEqual(nonMembers, ['a', 'c', 'e']);
+    // Los slots de los miembros ahora contienen f, b, d en ese orden.
+    assert.deepEqual(s.order, ['a', 'f', 'c', 'b', 'e', 'd']);
+});
+
+test('reorderWithinSubset ignora ids fuera del subset presentes en newOrder', () => {
+    const f = tmpFile();
+    const s = { version: 1, order: ['10', '20', '30'] };
+    // newOrder trae '30' que NO es del subset {10,20} → se ignora.
+    lib.reorderWithinSubset(s, ['10', '20'], ['20', '30', '10'], f);
+    assert.deepEqual(s.order, ['20', '10', '30']);
+});
+
+test('reorderWithinSubset agrega miembros ausentes del order[] al final', () => {
+    const f = tmpFile();
+    const s = { version: 1, order: ['10', '20'] };
+    // 99 es de la ola pero no tiene entrada en order[] todavía.
+    lib.reorderWithinSubset(s, ['10', '20', '99'], ['99', '20', '10'], f);
+    // Slots existentes toman 99 y 20 (primeros dos del queue); 10 va al final
+    // porque quedó fuera de los slots ocupados y aún no estaba presente.
+    assert.deepEqual(s.order, ['99', '20', '10']);
+});
+
+// ── #4369 — save() atómico (SEC-3 / CA-8) ──────────────────────────────────
+
+test('save() escribe atómicamente y no deja archivo .tmp residual', () => {
+    const f = tmpFile();
+    lib.save({ version: 1, order: ['1', '2', '3'] }, f);
+    assert.equal(fs.existsSync(f), true);
+    assert.equal(fs.existsSync(f + '.tmp'), false); // rename limpió el tmp
+    assert.deepEqual(lib.load(f).order, ['1', '2', '3']);
+});
+
+test('save() deja el archivo previo intacto si el rename falla (integridad)', () => {
+    const f = tmpFile();
+    // Estado inicial consistente en disco.
+    lib.save({ version: 1, order: ['1', '2'] }, f);
+    // Forzar fallo de renameSync durante el próximo save.
+    const realRename = fs.renameSync;
+    fs.renameSync = () => { const e = new Error('boom'); e.code = 'ENOSPC'; throw e; };
+    let threw = false;
+    try {
+        // save() atrapa la excepción y devuelve false (no propaga).
+        const ok = lib.save({ version: 1, order: ['9', '9', '9'] }, f);
+        assert.equal(ok, false);
+    } catch { threw = true; }
+    finally { fs.renameSync = realRename; }
+    assert.equal(threw, false);
+    // El archivo original quedó íntegro (no parcial ni corrupto).
+    assert.deepEqual(lib.load(f).order, ['1', '2']);
+    // Y no quedó tmp residual.
+    assert.equal(fs.existsSync(f + '.tmp'), false);
+});
