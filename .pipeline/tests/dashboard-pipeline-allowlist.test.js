@@ -237,9 +237,9 @@ test('theme.css declara .v3-nav con layout flex elástico MIZPÁ (CA-1 #4195: na
     );
 });
 
-test('nav-tabs.js sigue exportando 13 tabs (regression vs el conteo asumido por el grid V3)', () => {
+test('nav-tabs.js sigue exportando 14 tabs (regression vs el conteo asumido por el grid V3)', () => {
     const { NAV_TABS } = require(path.join(__dirname, '..', 'views', 'dashboard', 'nav-tabs.js'));
-    assert.equal(NAV_TABS.length, 13, 'NAV_TABS debe tener 13 elementos (12 de #3726 + Salud MP de #3965)');
+    assert.equal(NAV_TABS.length, 14, 'NAV_TABS debe tener 14 elementos (12 de #3726 + Salud MP de #3965 + Roadmap de olas de #4378)');
     assert.doesNotMatch(
         HOME_SRC,
         /const\s+AREAS\s*=\s*\[/,
