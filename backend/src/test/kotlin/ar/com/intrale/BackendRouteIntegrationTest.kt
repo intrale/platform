@@ -436,22 +436,27 @@ class BackendRouteIntegrationTest {
     }
 
     @Test
-    fun `OPTIONS retorna 200 con headers CORS completos`() = testApplication {
+    fun `OPTIONS retorna 200 con headers CORS endurecidos`() = testApplication {
+        // CA-S6 (#4300): CORS endurecido — nunca `*`; sólo se refleja un Origin de la allowlist.
         application {
             di {
                 import(fullModule("negocio") {
                     bind<Function>(tag = "fn") with singleton { CapturingFunction() }
                 })
             }
-            configureDynamicRouting()
+            configureDynamicRouting(corsAllowedOrigins = setOf("https://app.intrale.com"))
         }
 
-        val response = client.options("/")
+        val allowed = client.options("/") { header(HttpHeaders.Origin, "https://app.intrale.com") }
+        assertEquals(HttpStatusCode.OK, allowed.status)
+        assertEquals("https://app.intrale.com", allowed.headers["Access-Control-Allow-Origin"])
+        assertTrue(allowed.headers["Access-Control-Allow-Methods"]?.contains("POST") == true)
+        assertTrue(allowed.headers["Access-Control-Allow-Headers"]?.contains("Authorization") == true)
 
-        assertEquals(HttpStatusCode.OK, response.status)
-        assertEquals("*", response.headers["Access-Control-Allow-Origin"])
-        assertTrue(response.headers["Access-Control-Allow-Methods"]?.contains("POST") == true)
-        assertTrue(response.headers["Access-Control-Allow-Headers"]?.contains("Authorization") == true)
+        val rejected = client.options("/") { header(HttpHeaders.Origin, "https://evil.example.com") }
+        assertEquals(HttpStatusCode.OK, rejected.status)
+        assertTrue(rejected.headers["Access-Control-Allow-Origin"] != "*", "nunca wildcard")
+        assertEquals(null, rejected.headers["Access-Control-Allow-Origin"], "Origin no permitido no recibe ACAO")
     }
 
     @Test

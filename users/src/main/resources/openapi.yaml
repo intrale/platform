@@ -1,15 +1,2101 @@
-openapi: 3.0.0
+# Especificación OpenAPI SERVIDA por el backend (/openapi.yaml) — issue #4300.
+# NO editar a mano: regenerar con `node users/openapi/gen-openapi.js`.
+# Fuente de verdad de la enumeración: users/src/main/kotlin/ar/com/intrale/Modules.kt.
+# Cobertura verificada por users:OpenApiCoverageTest.
+openapi: 3.0.3
 info:
-  title: Users API
+  title: Intrale API
   version: '1.0'
+  description: >-
+    Contrato uniforme de los endpoints del backend Ktor de Intrale. Todas las funciones se
+    invocan sobre la ruta dinámica `/{business}/{function...}` y devuelven el patrón
+    `Response(statusCode, responseHeaders)`. El verbo HTTP real lo resuelve el backend por el
+    header `X-Http-Method`. Ver docs/engineering/api-contract-standard.md.
+servers:
+  - url: http://localhost:8080
+    description: Entorno local / no productivo (destino por defecto de "Try It Out")
+tags:
+  - name: Autenticación
+  - name: Perfiles
+  - name: Negocios
+  - name: Productos
+  - name: Clientes
+  - name: Reparto
+  - name: Zonas
+  - name: Automatización
 paths:
   /health:
     get:
-      summary: Health check
+      tags: [Salud]
+      summary: Health check del servicio
       responses:
         '200':
-          description: OK
+          description: Servicio operativo
           content:
             application/json:
-              schema:
-                type: object
+              schema: { $ref: '#/components/schemas/HealthResponse' }
+  /{business}/signup:
+    post:
+      tags: [Autenticación]
+      operationId: post_signup
+      summary: 'Registrar un nuevo usuario'
+      description: >-
+        Endpoint `signup`. Endpoint público (no requiere autenticación).
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/signupPlatformAdmin:
+    post:
+      tags: [Autenticación]
+      operationId: post_signupPlatformAdmin
+      summary: 'Registrar un administrador de plataforma'
+      description: >-
+        Endpoint `signupPlatformAdmin`. Endpoint público (no requiere autenticación).
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/signupDelivery:
+    post:
+      tags: [Autenticación]
+      operationId: post_signupDelivery
+      summary: 'Registrar un usuario repartidor'
+      description: >-
+        Endpoint `signupDelivery`. Endpoint público (no requiere autenticación).
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/signin:
+    post:
+      tags: [Autenticación]
+      operationId: post_signin
+      summary: 'Iniciar sesión y obtener token'
+      description: >-
+        Endpoint `signin`. Endpoint público (no requiere autenticación).
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/validate:
+    post:
+      tags: [Autenticación]
+      operationId: post_validate
+      summary: 'Validar sesión / token del usuario'
+      description: >-
+        Endpoint `validate`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/recovery:
+    post:
+      tags: [Autenticación]
+      operationId: post_recovery
+      summary: 'Iniciar recuperación de contraseña'
+      description: >-
+        Endpoint `recovery`. Endpoint público (no requiere autenticación).
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/confirm:
+    post:
+      tags: [Autenticación]
+      operationId: post_confirm
+      summary: 'Confirmar recuperación de contraseña'
+      description: >-
+        Endpoint `confirm`. Endpoint público (no requiere autenticación).
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/confirmSignUp:
+    post:
+      tags: [Autenticación]
+      operationId: post_confirmSignUp
+      summary: 'Confirmar registro de usuario'
+      description: >-
+        Endpoint `confirmSignUp`. Endpoint público (no requiere autenticación).
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/changePassword:
+    post:
+      tags: [Autenticación]
+      operationId: post_changePassword
+      summary: 'Cambiar la contraseña del usuario'
+      description: >-
+        Endpoint `changePassword`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/2fasetup:
+    post:
+      tags: [Autenticación]
+      operationId: post_2fasetup
+      summary: 'Configurar segundo factor (2FA)'
+      description: >-
+        Endpoint `2fasetup`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/2faverify:
+    post:
+      tags: [Autenticación]
+      operationId: post_2faverify
+      summary: 'Verificar segundo factor (2FA)'
+      description: >-
+        Endpoint `2faverify`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/profiles:
+    post:
+      tags: [Perfiles]
+      operationId: post_profiles
+      summary: 'Consultar perfiles del usuario'
+      description: >-
+        Endpoint `profiles`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/assignProfile:
+    post:
+      tags: [Perfiles]
+      operationId: post_assignProfile
+      summary: 'Asignar un perfil a un usuario'
+      description: >-
+        Endpoint `assignProfile`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/registerSaler:
+    post:
+      tags: [Perfiles]
+      operationId: post_registerSaler
+      summary: 'Registrar un vendedor'
+      description: >-
+        Endpoint `registerSaler`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/registerBusiness:
+    post:
+      tags: [Negocios]
+      operationId: post_registerBusiness
+      summary: 'Registrar un nuevo negocio'
+      description: >-
+        Endpoint `registerBusiness`. Endpoint público (no requiere autenticación).
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/reviewBusiness:
+    post:
+      tags: [Negocios]
+      operationId: post_reviewBusiness
+      summary: 'Revisar el registro de un negocio'
+      description: >-
+        Endpoint `reviewBusiness`. Endpoint público (no requiere autenticación).
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/requestJoinBusiness:
+    post:
+      tags: [Negocios]
+      operationId: post_requestJoinBusiness
+      summary: 'Solicitar unirse a un negocio'
+      description: >-
+        Endpoint `requestJoinBusiness`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/reviewJoinBusiness:
+    post:
+      tags: [Negocios]
+      operationId: post_reviewJoinBusiness
+      summary: 'Revisar una solicitud de unión a un negocio'
+      description: >-
+        Endpoint `reviewJoinBusiness`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/searchBusinesses:
+    get:
+      tags: [Negocios]
+      operationId: get_searchBusinesses
+      summary: 'Buscar negocios disponibles'
+      description: >-
+        Endpoint `searchBusinesses`. Endpoint público (no requiere autenticación).
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/business/config:
+    post:
+      tags: [Negocios]
+      operationId: post_business_config
+      summary: 'Gestionar la configuración del negocio'
+      description: >-
+        Endpoint `business/config`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/business/schedules:
+    post:
+      tags: [Negocios]
+      operationId: post_business_schedules
+      summary: 'Gestionar los horarios del negocio'
+      description: >-
+        Endpoint `business/schedules`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/business/delivery-zone:
+    post:
+      tags: [Negocios]
+      operationId: post_business_delivery_zone
+      summary: 'Gestionar la zona de reparto del negocio'
+      description: >-
+        Endpoint `business/delivery-zone`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/business/fonts:
+    post:
+      tags: [Negocios]
+      operationId: post_business_fonts
+      summary: 'Gestionar las tipografías del negocio'
+      description: >-
+        Endpoint `business/fonts`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/business/orders:
+    post:
+      tags: [Negocios]
+      operationId: post_business_orders
+      summary: 'Consultar los pedidos del negocio'
+      description: >-
+        Endpoint `business/orders`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/business/categories:
+    post:
+      tags: [Negocios]
+      operationId: post_business_categories
+      summary: 'Gestionar las categorías del negocio'
+      description: >-
+        Endpoint `business/categories`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/business/payment-methods:
+    post:
+      tags: [Negocios]
+      operationId: post_business_payment_methods
+      summary: 'Gestionar los medios de pago del negocio'
+      description: >-
+        Endpoint `business/payment-methods`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/business/anomalies:
+    post:
+      tags: [Negocios]
+      operationId: post_business_anomalies
+      summary: 'Consultar anomalías de pedidos del negocio'
+      description: >-
+        Endpoint `business/anomalies`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/business/products:
+    post:
+      tags: [Productos]
+      operationId: post_business_products
+      summary: 'Gestionar los productos del negocio'
+      description: >-
+        Endpoint `business/products`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/business/products/analyze-photo:
+    post:
+      tags: [Productos]
+      operationId: post_business_products_analyze_photo
+      summary: 'Analizar la foto de un producto'
+      description: >-
+        Endpoint `business/products/analyze-photo`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/products:
+    get:
+      tags: [Productos]
+      operationId: get_products
+      summary: 'Listar productos disponibles'
+      description: >-
+        Endpoint `products`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/products/suggestions:
+    get:
+      tags: [Productos]
+      operationId: get_products_suggestions
+      summary: 'Obtener sugerencias de productos'
+      description: >-
+        Endpoint `products/suggestions`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/products/search-history:
+    post:
+      tags: [Productos]
+      operationId: post_products_search_history
+      summary: 'Gestionar el historial de búsqueda de productos'
+      description: >-
+        Endpoint `products/search-history`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/client/products/availability:
+    post:
+      tags: [Productos]
+      operationId: post_client_products_availability
+      summary: 'Consultar disponibilidad de productos'
+      description: >-
+        Endpoint `client/products/availability`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/client/profile:
+    post:
+      tags: [Clientes]
+      operationId: post_client_profile
+      summary: 'Gestionar el perfil del cliente'
+      description: >-
+        Endpoint `client/profile`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/client/addresses:
+    post:
+      tags: [Clientes]
+      operationId: post_client_addresses
+      summary: 'Gestionar las direcciones del cliente'
+      description: >-
+        Endpoint `client/addresses`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/client/orders:
+    post:
+      tags: [Clientes]
+      operationId: post_client_orders
+      summary: 'Consultar los pedidos del cliente'
+      description: >-
+        Endpoint `client/orders`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/client/order-detail:
+    post:
+      tags: [Clientes]
+      operationId: post_client_order_detail
+      summary: 'Consultar el detalle de un pedido del cliente'
+      description: >-
+        Endpoint `client/order-detail`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/client/payment-methods:
+    post:
+      tags: [Clientes]
+      operationId: post_client_payment_methods
+      summary: 'Gestionar los medios de pago del cliente'
+      description: >-
+        Endpoint `client/payment-methods`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/delivery/profile:
+    post:
+      tags: [Reparto]
+      operationId: post_delivery_profile
+      summary: 'Gestionar el perfil del repartidor'
+      description: >-
+        Endpoint `delivery/profile`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/delivery/orders:
+    post:
+      tags: [Reparto]
+      operationId: post_delivery_orders
+      summary: 'Consultar los pedidos del repartidor'
+      description: >-
+        Endpoint `delivery/orders`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/configAutoAcceptDeliveries:
+    post:
+      tags: [Reparto]
+      operationId: post_configAutoAcceptDeliveries
+      summary: 'Configurar la auto-aceptación de entregas'
+      description: >-
+        Endpoint `configAutoAcceptDeliveries`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/zones:
+    get:
+      tags: [Zonas]
+      operationId: get_zones
+      summary: 'Listar zonas de reparto'
+      description: >-
+        Endpoint `zones`. Endpoint público (no requiere autenticación).
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/zones/check:
+    get:
+      tags: [Zonas]
+      operationId: get_zones_check
+      summary: 'Verificar cobertura de una zona'
+      description: >-
+        Endpoint `zones/check`. Endpoint público (no requiere autenticación).
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/auto-response:
+    post:
+      tags: [Automatización]
+      operationId: post_auto_response
+      summary: 'Generar respuesta automática'
+      description: >-
+        Endpoint `auto-response`. Endpoint público (no requiere autenticación).
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/business/auto-response-config:
+    post:
+      tags: [Automatización]
+      operationId: post_business_auto_response_config
+      summary: 'Configurar respuestas automáticas del negocio'
+      description: >-
+        Endpoint `business/auto-response-config`. Requiere JWT válido (bearerAuth, validado por SecuredFunction/Cognito).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          description: Identificador del negocio (multitenant).
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          description: Verbo lógico resuelto por el backend sobre la ruta catch-all.
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: 'Cuerpo JSON del request (recibido como textBody por la función).' }
+            example: {}
+      responses:
+        '200':
+          description: Operación exitosa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request inválido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o inválido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '500':
+          description: Error interno (ExceptionResponse)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Token JWT de Cognito enviado en el header `Authorization`. La UI lo mantiene sólo en
+        memoria del navegador; nunca se persiste ni se registra en logs.
+  schemas:
+    Response:
+      type: object
+      description: Patrón base de respuesta del backend.
+      properties:
+        statusCode: { type: integer, example: 200 }
+        responseHeaders: { type: object, additionalProperties: { type: string } }
+    ExceptionResponse:
+      type: object
+      description: Respuesta de error uniforme.
+      properties:
+        statusCode: { type: integer, example: 400 }
+        message: { type: string, example: 'Descripción del error' }
+    HealthResponse:
+      type: object
+      properties:
+        status: { type: string, example: UP }
