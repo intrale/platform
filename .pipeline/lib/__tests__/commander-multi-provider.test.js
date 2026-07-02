@@ -917,3 +917,49 @@ test('#4306 CA-6 — REQ-SEC-4: el mensaje nunca incluye valores de credenciales
     assert.ok(!/CEREBRAS_API_KEY/.test(canned));
     assert.ok(!/csk-/.test(canned));
 });
+
+// =============================================================================
+// #4353 CA-4 — extractFallbackReply clasifica el vacío como fallo RECUPERABLE.
+//
+// Un provider que responde HTTP 200 con cuerpo malformado (caso Cerebras: sin
+// `content`/`response`/`choices`) NO debe tomarse como respuesta válida vacía
+// ni cortar la cadena: `text===''` hace que el caller (pulpo runNonAnthropic)
+// avance al siguiente eslabón (advanceOrGiveUp 'empty_output'). El campo
+// `reason` agrega observabilidad sin cambiar la decisión de walk.
+// =============================================================================
+test('#4353 CA-4 — body JSON sin content (Cerebras) → recuperable malformed_body, text vacío', () => {
+    // Shape típico de Cerebras roto: objeto JSON válido, pero sin ningún campo
+    // conversacional conocido (content/response/text/choices).
+    const brokenBody = JSON.stringify({ id: 'chatcmpl-x', object: 'chat.completion', model: 'gpt-oss-120b', usage: { total_tokens: 0 } });
+    const r = cmp.extractFallbackReply(brokenBody);
+    assert.equal(r.text, '', 'no debe extraer texto de un body sin campo conversacional');
+    assert.equal(r.parsed, false);
+    assert.equal(r.reason, 'malformed_body', 'debe clasificarse recuperable para avanzar la cadena');
+});
+
+test('#4353 CA-4 — stdout totalmente vacío → recuperable empty_output', () => {
+    const r = cmp.extractFallbackReply('   \n  ');
+    assert.equal(r.text, '');
+    assert.equal(r.parsed, false);
+    assert.equal(r.reason, 'empty_output');
+});
+
+test('#4353 CA-4 — body con content real → parsed true, reason null (no corta cadena por error)', () => {
+    // Shape OpenAI-compat con content real: NO es recuperable, es la respuesta.
+    const okBody = JSON.stringify({ choices: [{ message: { content: 'Hola, todo en orden.' } }] });
+    const r = cmp.extractFallbackReply(okBody);
+    assert.equal(r.text, 'Hola, todo en orden.');
+    assert.equal(r.parsed, true);
+    assert.equal(r.reason, null);
+});
+
+test('#4353 CA-4 — JSONL de Codex con agent_message → texto extraído, reason null', () => {
+    const jsonl = [
+        JSON.stringify({ type: 'item.started', item: { type: 'agent_message' } }),
+        JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Respuesta del reemplazo.' } }),
+    ].join('\n');
+    const r = cmp.extractFallbackReply(jsonl);
+    assert.equal(r.text, 'Respuesta del reemplazo.');
+    assert.equal(r.parsed, true);
+    assert.equal(r.reason, null);
+});

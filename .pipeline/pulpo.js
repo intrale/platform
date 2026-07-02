@@ -10061,6 +10061,24 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
                     requestId: turnRequestId, // #3577 CA-S6
                   });
                 } catch { /* best-effort */ }
+                // #4353 CA-3 — REVALIDACIÓN CONTRA GENERACIÓN REAL. Un provider
+                // no-Anthropic que devuelve texto conversacional REAL prueba que
+                // su cuota volvió antes del `resets_at` calculado → drenamos su
+                // flag de cuota pegajoso (drenado proactivo, espejo del path
+                // Anthropic en L10618-10628). `clearFlag` es scope-per-provider
+                // (#3077 CA-8): sólo limpia el flag SI es de este provider —
+                // nunca toca el de otro. Distinción no_quota vs credenciales
+                // (security A04/A07): un fallo de credenciales NUNCA setea el
+                // flag de cuota (auth_error ≠ quota_exhausted en el detector), así
+                // que este drenado revalida SOLO `no_quota`; `invalid_credentials`
+                // no reingresa por esta vía.
+                try {
+                  quotaExhausted.clearFlag({
+                    event: 'success_spawn_fallback',
+                    reason: 'commander_fallback_success',
+                    provider: res.provider,
+                  });
+                } catch { /* best-effort: el drenado nunca rompe el turno */ }
                 // #3951 EP7-H4 / #4318 — el trace ya refleja el provider efectivo
                 // (seteado al inicio de runNonAnthropic, cubre éxito y fallo). Aquí
                 // sólo resolvemos con el texto del reemplazo (anti log-forging: el
