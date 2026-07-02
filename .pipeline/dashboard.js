@@ -6325,8 +6325,17 @@ body.standalone .section-collapsed .section-body{display:block !important}
     // server-side. SIN endpoints HTTP nuevos (CA-4). Titulos escapados con
     // esc() (CA-5 + tests dashboard-header-cola-xss).
     const COLA_MAX = 10;
-    const items = pendientesList.slice(0, COLA_MAX);
-    const ocultos = Math.max(0, pendientesList.length - COLA_MAX);
+    // #4360 — filtrar la cola por la ola activa (mismo origen de verdad que
+    // "No ingresados": state.activeWave.issues, normalizado por wave-resolver).
+    // Fail-safe Opción A (cerrada por PO): si la ola no resuelve → cola vacía,
+    // nunca "mostrar todos". Helper puro testeable en lib/cola-wave-filter.js.
+    const { filterPendientesByWave } = require('./lib/cola-wave-filter');
+    const pendientesEnOla = filterPendientesByWave(
+      pendientesList,
+      (state.activeWave && state.activeWave.issues) || []
+    );
+    const items = pendientesEnOla.slice(0, COLA_MAX);
+    const ocultos = Math.max(0, pendientesEnOla.length - COLA_MAX);
     const phaseInfo = (faseKey) => {
       if (!faseKey) return { lane: 'desarrollo', name: '—' };
       const idx = faseKey.indexOf('/');
@@ -6373,7 +6382,7 @@ body.standalone .section-collapsed .section-body{display:block !important}
         </li>`;
       }
     }
-    const total = pendientesList.length;
+    const total = pendientesEnOla.length; // #4360 — contadores sobre lista filtrada por ola (CA-3)
     const noteParts = [];
     if (total > 0) {
       noteParts.push(`mostrando ${items.length} de ${total}`);
