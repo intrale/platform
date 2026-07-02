@@ -311,7 +311,9 @@ const LISTADO_FILTERS = new Set([
 // #4376 (split #4351) — `create` suma la creación de olas planificadas desde
 // Telegram (`/wave create --nombre ... --issues #1,#2 ...`). Op mutante: reusa
 // el cooldown/allowlist/rate-limit del resto de subcomandos mutantes.
-const WAVE_SUBCOMMANDS = new Set(['status', 'next', 'add', 'promote', 'create']);
+// #4377 — H8.3 Parte B suma `remove` (desasociar issue de ola planificada) y
+// `reorder` (permutar orden de olas planificadas). Ambos destructivos.
+const WAVE_SUBCOMMANDS = new Set(['status', 'next', 'add', 'promote', 'create', 'remove', 'reorder']);
 
 /**
  * Parsea `args` de `/wave` y devuelve `{ subcommand, audio, waveNumber, issueNumber }`
@@ -322,6 +324,8 @@ const WAVE_SUBCOMMANDS = new Set(['status', 'next', 'add', 'promote', 'create'])
  *   - `status [--audio]`         → status con audio opt-in.
  *   - `next`                     → próxima ola, sin args extra.
  *   - `add <num> #issue`         → `num` entero positivo, `#issue` matchea `^#\d+$`.
+ *   - `remove <num> #issue`      → mismo gate estricto que `add` (#4377 CA-8).
+ *   - `reorder <n1> <n2> [...]`  → ≥2 enteros positivos, sin duplicados (#4377 CA-8).
  *   - `promote`                  → promote, sin args extra.
  *   - Cualquier otra combinación devuelve `null` (handler genera error claro).
  */
@@ -363,6 +367,35 @@ function parseWaveArgs(rawArgs) {
         const issueNumber = parseInt(issueToken.slice(1), 10);
         if (!Number.isInteger(issueNumber) || issueNumber < 1) return null;
         return { subcommand: 'add', waveNumber, issueNumber };
+    }
+    if (head === 'remove') {
+        // #4377 CA-8 — MISMO gate estricto que `add`: exactamente 3 tokens.
+        if (tokens.length !== 3) return null;
+        const numToken = tokens[1];
+        const issueToken = tokens[2];
+        if (!/^\d+$/.test(numToken)) return null;
+        const waveNumber = parseInt(numToken, 10);
+        if (!Number.isInteger(waveNumber) || waveNumber < 1) return null;
+        if (!/^#\d+$/.test(issueToken)) return null;
+        const issueNumber = parseInt(issueToken.slice(1), 10);
+        if (!Number.isInteger(issueNumber) || issueNumber < 1) return null;
+        return { subcommand: 'remove', waveNumber, issueNumber };
+    }
+    if (head === 'reorder') {
+        // #4377 CA-8 — lista de `number`: ≥2 enteros positivos decimales puros,
+        // sin duplicados. La validación de permutación exacta contra el estado
+        // real vive en `waves.reorderPlannedWaves` (server-side).
+        const numTokens = tokens.slice(1);
+        if (numTokens.length < 2) return null;
+        const order = [];
+        for (const t of numTokens) {
+            if (!/^\d+$/.test(t)) return null;
+            const num = parseInt(t, 10);
+            if (!Number.isInteger(num) || num < 1) return null;
+            order.push(num);
+        }
+        if (new Set(order).size !== order.length) return null; // sin duplicados
+        return { subcommand: 'reorder', order };
     }
     if (head === 'create') {
         // #4376 — parseo por flags nombrados (texto libre con espacios). Toda la
@@ -1207,9 +1240,11 @@ function buildDefaultHandlers(ctx) {
     // 60s porque las mutaciones son granulares y la idempotencia de
     // `waves.addIssueToWave` (no-op si ya está) ya cubre el doble-tap accidental.
     // CA-9 — destructiveCooldown MUST en add/promote (refuerzo security pt.3).
+    // #4377 REQ-SEC-5 — `wave-remove` y `wave-reorder` también mutan estado
+    // irreversible → cooldown destructivo obligatorio.
     const waveSubCooldown = createDestructiveCooldown({
         cooldownMs: 30 * 1000,
-        destructiveCommands: ['wave-add', 'wave-promote', 'wave-create'],
+        destructiveCommands: ['wave-add', 'wave-promote', 'wave-create', 'wave-remove', 'wave-reorder'],
         now: ctx.now,
     });
 
@@ -1572,6 +1607,25 @@ function buildDefaultHandlers(ctx) {
                 case 'promote':
                     res = await handleWavePromote({
                         pipelineRoot: PIPELINE,
+                        cooldown: waveSubCooldown,
+                        chatId: message && message.chat_id !== undefined ? String(message.chat_id) : null,
+                        from: message && message.from ? String(message.from) : 'Leo',
+                    });
+                    break;
+                case 'remove':
+                    res = await handleWaveRemove({
+                        pipelineRoot: PIPELINE,
+                        waveNumber: parsed.waveNumber,
+                        issueNumber: parsed.issueNumber,
+                        cooldown: waveSubCooldown,
+                        chatId: message && message.chat_id !== undefined ? String(message.chat_id) : null,
+                        from: message && message.from ? String(message.from) : 'Leo',
+                    });
+                    break;
+                case 'reorder':
+                    res = await handleWaveReorder({
+                        pipelineRoot: PIPELINE,
+                        order: parsed.order,
                         cooldown: waveSubCooldown,
                         chatId: message && message.chat_id !== undefined ? String(message.chat_id) : null,
                         from: message && message.from ? String(message.from) : 'Leo',
@@ -2745,6 +2799,186 @@ async function handleWavePromote({ pipelineRoot, cooldown, chatId, from }) {
 }
 
 /**
+ * `/wave remove <num> #issue` — Desasocia un issue de una ola PLANIFICADA.
+ * #4377 CA-2. Aplica:
+ *   - destructiveCooldown (REQ-SEC-5, MUST).
+ *   - Política A04 (REQ-SEC-3): rechazo si la ola es la ACTIVA. El enforcement
+ *     real vive en `waves.removeIssueFromWave`; acá lo detectamos temprano para
+ *     dar un mensaje accionable (UX guideline 1) sin depender del throw.
+ *   - No-op idempotente con confirmación explícita si el issue no pertenecía
+ *     (UX guideline 2).
+ *   - Read-fresh (`invalidateCache`) + atomic write (vía `waves.removeIssueFromWave`).
+ */
+async function handleWaveRemove({ pipelineRoot, waveNumber, issueNumber, cooldown, chatId, from }) {
+    // REQ-SEC-5 — Cooldown previo. Defensa contra doble-tap accidental.
+    if (cooldown && chatId) {
+        const cd = cooldown.check(chatId, 'wave-remove');
+        if (!cd.allowed) {
+            return {
+                reply: fillTemplate('wave-error', {
+                    'error-kind': 'cooldown_blocked',
+                    message: `Esperá ${humanizeRetryAfter(cd.retryAfterMs)} antes de repetir \`/wave remove\` (anti doble-tap).`,
+                }),
+            };
+        }
+    }
+
+    const waves = require('./waves');
+    waves.invalidateCache();
+    const state = waves.loadWaves();
+    const active = state.active_wave || null;
+    const planned = Array.isArray(state.planned_waves) ? state.planned_waves : [];
+
+    // Política A04 (REQ-SEC-3): mensaje accionable si apuntan a la ola activa.
+    if (active && active.number === waveNumber) {
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'active_wave_locked',
+                message: `La ola \`${waveNumber}\` está *activa*: desasociar ahí re-sincronizaría la allowlist, así que está bloqueado. Sólo se puede desasociar de olas *planificadas* — mirá \`/wave next\` para ver cuáles.`,
+            }),
+        };
+    }
+
+    const target = planned.find((w) => w.number === waveNumber);
+    if (!target) {
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'wave_not_found',
+                message: `No encontré la ola planificada \`${waveNumber}\`. Olas disponibles: ${describeAvailableWaves(active, planned)}.`,
+            }),
+        };
+    }
+
+    // ¿El issue pertenecía a la ola? Define no-op vs removido (UX guideline 2).
+    const wasPresent = Array.isArray(target.issues)
+        && target.issues.some((i) => Number(String(i.number).replace(/^#/, '')) === issueNumber);
+
+    try {
+        waves.removeIssueFromWave(waveNumber, issueNumber, {
+            updated_by: from || 'Leo',
+            source: 'telegram-commander/wave-remove',
+            note: `remove issue #${issueNumber} ← wave ${waveNumber}`,
+        });
+    } catch (e) {
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'fs_error',
+                message: `Algo falló escribiendo el estado: ${String(e && e.message ? e.message : e)}`,
+            }),
+        };
+    }
+
+    if (cooldown && chatId) cooldown.recordSuccess(chatId, 'wave-remove');
+
+    if (!wasPresent) {
+        return {
+            reply: fillTemplate('wave-remove-noop', {
+                'issue-number': issueNumber,
+                'wave-number': waveNumber,
+                'wave-name': target.name || `Ola ${waveNumber}`,
+            }),
+        };
+    }
+
+    // Releer para reportar el tamaño actualizado de la ola.
+    waves.invalidateCache();
+    const refreshed = waves.loadWaves();
+    const refreshedTarget = (refreshed.planned_waves || []).find((w) => w.number === waveNumber);
+    const newSize = refreshedTarget && Array.isArray(refreshedTarget.issues)
+        ? refreshedTarget.issues.length
+        : 0;
+
+    return {
+        reply: fillTemplate('wave-remove-ok', {
+            'issue-number': issueNumber,
+            'wave-number': waveNumber,
+            'wave-name': target.name || `Ola ${waveNumber}`,
+            'new-size': newSize,
+        }),
+    };
+}
+
+/**
+ * `/wave reorder <n1> <n2> [...]` — Reordena las olas PLANIFICADAS.
+ * #4377 CA-3. Aplica:
+ *   - destructiveCooldown (REQ-SEC-5, MUST).
+ *   - Validación de permutación exacta: la impone `waves.reorderPlannedWaves`
+ *     server-side; acá pre-computamos faltantes/sobrantes para dar un mensaje
+ *     específico (UX guideline 4) antes de tocar el estado.
+ *   - Read-fresh + atomic write (vía `waves.reorderPlannedWaves`).
+ *   - Mensaje de éxito con orden previo → nuevo (UX guideline 3).
+ */
+async function handleWaveReorder({ pipelineRoot, order, cooldown, chatId, from }) {
+    if (cooldown && chatId) {
+        const cd = cooldown.check(chatId, 'wave-reorder');
+        if (!cd.allowed) {
+            return {
+                reply: fillTemplate('wave-error', {
+                    'error-kind': 'cooldown_blocked',
+                    message: `Esperá ${humanizeRetryAfter(cd.retryAfterMs)} antes de repetir \`/wave reorder\` (anti doble-tap).`,
+                }),
+            };
+        }
+    }
+
+    const waves = require('./waves');
+    waves.invalidateCache();
+    const state = waves.loadWaves();
+    const planned = Array.isArray(state.planned_waves) ? state.planned_waves : [];
+    const current = planned.map((w) => w.number);
+
+    if (current.length < 2) {
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'not_enough_waves',
+                message: `Necesitás al menos 2 olas planificadas para reordenar. Ahora hay ${current.length}.`,
+            }),
+        };
+    }
+
+    // UX guideline 4 — mensaje específico: qué number falta o cuál no existe.
+    const currentSet = new Set(current);
+    const orderSet = new Set(order);
+    const missing = current.filter((n) => !orderSet.has(n));
+    const unknown = order.filter((n) => !currentSet.has(n));
+    if (missing.length > 0 || unknown.length > 0) {
+        const parts = [];
+        if (missing.length > 0) parts.push(`falta(n): ${missing.join(', ')}`);
+        if (unknown.length > 0) parts.push(`no existe(n): ${unknown.join(', ')}`);
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'not_a_permutation',
+                message: `El nuevo orden tiene que ser una permutación exacta de las olas planificadas [${current.join(', ')}]. Problema: ${parts.join(' · ')}.`,
+            }),
+        };
+    }
+
+    try {
+        waves.reorderPlannedWaves(order, {
+            updated_by: from || 'Leo',
+            source: 'telegram-commander/wave-reorder',
+            note: `reorder planned waves [${current.join(', ')}] → [${order.join(', ')}]`,
+        });
+    } catch (e) {
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'fs_error',
+                message: `Algo falló reordenando las olas: ${String(e && e.message ? e.message : e)}`,
+            }),
+        };
+    }
+
+    if (cooldown && chatId) cooldown.recordSuccess(chatId, 'wave-reorder');
+
+    return {
+        reply: fillTemplate('wave-reorder-ok', {
+            'prev-order': current.join(', '),
+            'new-order': order.join(', '),
+        }),
+    };
+}
+
+/**
  * Helper de UX: humaniza las olas disponibles para el mensaje de error
  * `wave_not_found`. Devuelve algo como "1 (activa) o 2, 3".
  */
@@ -2941,6 +3175,8 @@ module.exports = {
         handleWaveAdd,
         handleWavePromote,
         handleWaveCreate,
+        handleWaveRemove,
+        handleWaveReorder,
         getKnownIssues,
         invalidateKnownIssuesCache,
         describeAvailableWaves,
