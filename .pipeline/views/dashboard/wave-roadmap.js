@@ -7,6 +7,15 @@
 // sobre la ola activa/planificada. La sincronización de allowlist al promover
 // (CA-6) está diferida a #4350: esta vista NO ofrece promover.
 //
+// #4373 (Ola 8.3) — Vista operativa CONSOLIDADA. Sobre la base de #4378, cuando
+// el caller pasa `opts.roadmap` (payload de `roadmapSlice` en dashboard-slices),
+// la vista enriquece la ola activa con: prioridad por issue (CA-5, badge
+// icono+texto), avance cerrados/total · % (CA-6), ETA p50/p75/p90 con aviso
+// honesto de "poca muestra" (CA-8) y panel de bloqueos con motivo (CA-7). Sin
+// `opts.roadmap` degrada al render read-only de #4378 (loadWaves). El endpoint
+// `/api/dash/roadmap` sirve el mismo slice para polling offline (CA-9/CA-10).
+// Íconos extra del sprite: ic-ttl-countdown (ETA), ic-pause-lock (bloqueo).
+//
 // Assets UX consumidos (mockup 39-wave-roadmap-management.svg + narrativa):
 //   - Sistema de tokens `design-tokens.css` (cero hex hardcoded): superficies
 //     `--surface-*`, acento de olas `--purple`/`--purple-dim`, archivadas sobre
@@ -78,56 +87,159 @@ function readWavesState(opts) {
     }
 }
 
-// Normaliza el array de issues de una ola a `{ number, status, title }`,
+// #4373 (CA-5) — Prioridad whitelisteada para badge (icono + texto, nunca solo
+// color — WCAG 1.4.1). El slice/normalizeWaveIssue ya la trae en minúsculas.
+const WR_PRIORITY_WHITELIST = new Set(['critical', 'high', 'medium', 'low']);
+function safePriority(raw) {
+    const p = typeof raw === 'string' ? raw.toLowerCase() : '';
+    return WR_PRIORITY_WHITELIST.has(p) ? p : '';
+}
+
+// Normaliza el array de issues de una ola a `{ number, status, title, priority }`,
 // descartando entradas sin número válido. `title` puede venir presente en
 // entradas enriquecidas (cache de títulos) — se conserva para escaparlo al
-// render (superficie XSS de vida larga, CA-8).
+// render (superficie XSS de vida larga, CA-8). #4373: `priority` para el badge.
 function normalizeIssues(rawIssues) {
     const out = [];
     (Array.isArray(rawIssues) ? rawIssues : []).forEach((it) => {
-        let num, status, title;
+        let num, status, title, priority;
         if (it && typeof it === 'object') {
             num = safeIssueNumber(it.number != null ? it.number : it.id);
             status = it.status != null ? String(it.status) : '';
             title = it.title != null ? String(it.title) : '';
+            priority = safePriority(it.priority);
         } else {
             num = safeIssueNumber(it);
-            status = ''; title = '';
+            status = ''; title = ''; priority = '';
         }
-        if (num !== null) out.push({ number: num, status, title });
+        if (num !== null) out.push({ number: num, status, title, priority });
     });
     return out;
 }
 
+// #4373 (CA-5) — Badge de prioridad con etiqueta textual (no color-only). La
+// prioridad ya viene whitelisteada; el texto se escapa por defensa en profundidad.
+function renderPriorityBadge(priority) {
+    const p = safePriority(priority);
+    if (!p) return '';
+    return `<span class="wr-chip-prio wr-prio-${p}" data-priority="${p}" title="${escapeHtmlAttr('Prioridad ' + p)}">${escapeHtmlText(p)}</span>`;
+}
+
 // Chip de un issue. `title` (si existe) se escapa en atributo y texto. El estado
-// se muestra como texto + clase (nunca color-only) — WCAG 1.4.1.
-function renderIssueChip(issue) {
+// se muestra como texto + clase (nunca color-only) — WCAG 1.4.1. #4373 (CA-5/CA-7):
+// badge de prioridad + marca de bloqueo (candado) si el issue está en `blockedSet`.
+function renderIssueChip(issue, blockedSet) {
     const num = issue.number; // ya coaccionado
     const titleTxt = issue.title || '';
     const statusTxt = issue.status || '';
+    const isBlocked = blockedSet && typeof blockedSet.has === 'function' && blockedSet.has(num);
     const titleAttr = titleTxt
         ? escapeHtmlAttr(`#${num} — ${titleTxt}`)
         : escapeHtmlAttr(`Issue #${num}`);
     const label = titleTxt
         ? `#${num} · ${escapeHtmlText(titleTxt)}`
         : `#${num}`;
+    const prioHtml = renderPriorityBadge(issue.priority);
     const statusHtml = statusTxt
         ? `<span class="wr-chip-status" data-status="${escapeHtmlAttr(statusTxt)}">${escapeHtmlText(statusTxt)}</span>`
         : '';
-    return `<a class="wr-chip" href="https://github.com/intrale/platform/issues/${num}" target="_blank" rel="noopener noreferrer" title="${titleAttr}">`
-        + `<span class="wr-chip-num">${label}</span>${statusHtml}</a>`;
+    const blockedHtml = isBlocked
+        ? `<span class="wr-chip-blocked" title="${escapeHtmlAttr('Issue #' + num + ' bloqueado')}" aria-label="bloqueado">🔒 bloqueado</span>`
+        : '';
+    const blockedCls = isBlocked ? ' wr-chip-is-blocked' : '';
+    return `<a class="wr-chip${blockedCls}" href="https://github.com/intrale/platform/issues/${num}" target="_blank" rel="noopener noreferrer" title="${titleAttr}">`
+        + `<span class="wr-chip-num">${label}</span>${prioHtml}${statusHtml}${blockedHtml}</a>`;
 }
 
-function renderIssueList(issues) {
+function renderIssueList(issues, blockedSet) {
     if (!issues.length) {
         return '<div class="wr-empty-issues">Sin issues asociados.</div>';
     }
-    return '<div class="wr-chips">' + issues.map(renderIssueChip).join('') + '</div>';
+    return '<div class="wr-chips">' + issues.map((i) => renderIssueChip(i, blockedSet)).join('') + '</div>';
+}
+
+// #4373 (CA-6) — Barra de avance segmentada + lectura numérica "cerrados/total · %".
+// `avance` = { closed, total, pct } del slice. Todo numérico (sin dato externo).
+function renderAvanceBar(avance) {
+    const a = avance || {};
+    const total = Number.isFinite(Number(a.total)) ? Number(a.total) : 0;
+    const closed = Number.isFinite(Number(a.closed)) ? Number(a.closed) : 0;
+    const pct = Number.isFinite(Number(a.pct)) ? Number(a.pct) : 0;
+    if (total <= 0) return '';
+    const pctClamp = Math.max(0, Math.min(100, pct));
+    return `<div class="wr-avance" role="group" aria-label="${escapeHtmlAttr('Avance: ' + closed + ' de ' + total + ' cerrados, ' + pctClamp + ' por ciento')}">`
+        + `<div class="wr-avance-track"><div class="wr-avance-fill" style="width:${pctClamp}%"></div></div>`
+        + `<span class="wr-avance-label">${closed} / ${total} cerrados · ${pctClamp}%</span>`
+        + '</div>';
+}
+
+// Formatea minutos a "Nm" / "Nh Mm" (CA-8: el formato vive en la vista).
+function fmtEtaMinutes(min) {
+    const m = Number(min);
+    if (!Number.isFinite(m) || m <= 0) return '—';
+    const rounded = Math.round(m);
+    if (rounded < 60) return rounded + 'm';
+    const h = Math.floor(rounded / 60);
+    const rem = rounded % 60;
+    return rem > 0 ? `${h}h ${rem}m` : `${h}h`;
+}
+
+// #4373 (CA-8) — Panel de ETA de ejecución honesto. Muestra p50/p75/p90 SOLO si
+// hay muestra real; cuando `lowSample` (samples=0) o no está lista, muestra el
+// aviso "estimación con poca muestra" en vez de un número engañoso.
+function renderEtaPanel(eta) {
+    const e = eta || {};
+    if (!e.ready || e.lowSample) {
+        return '<div class="wr-eta wr-eta-lowsample" role="note">'
+            + '<svg class="wr-eta-ic" aria-hidden="true"><use href="#ic-ttl-countdown"></use></svg>'
+            + '<span class="wr-eta-title">ETA de ejecución</span>'
+            + '<span class="wr-eta-lowsample-msg">estimación con poca muestra</span>'
+            + '</div>';
+    }
+    const cell = (label, val, cls) =>
+        `<div class="wr-eta-cell ${cls}"><span class="wr-eta-k">${escapeHtmlText(label)}</span>`
+        + `<span class="wr-eta-v">${escapeHtmlText(fmtEtaMinutes(val))}</span></div>`;
+    return '<div class="wr-eta" role="group" aria-label="ETA de ejecución de la ola activa">'
+        + '<svg class="wr-eta-ic" aria-hidden="true"><use href="#ic-ttl-countdown"></use></svg>'
+        + '<span class="wr-eta-title">ETA de ejecución</span>'
+        + '<div class="wr-eta-cells">'
+        + cell('p50', e.p50, 'wr-eta-p50')
+        + cell('p75', e.p75, 'wr-eta-p75')
+        + cell('p90', e.p90, 'wr-eta-p90')
+        + '</div></div>';
+}
+
+// #4373 (CA-7) — Panel de bloqueos activos con motivo/blocker textual. Formato
+// "#issue → espera a #blocker (motivo)". Todo dato externo escapado por contexto.
+function renderBlockedPanel(blocked) {
+    const list = Array.isArray(blocked) ? blocked.filter((b) => safeIssueNumber(b && b.issue) !== null) : [];
+    if (!list.length) return '';
+    const rows = list.map((b) => {
+        const issue = safeIssueNumber(b.issue);
+        const blocker = safeIssueNumber(b.blocker);
+        const reasonTxt = (b.reason != null) ? String(b.reason) : '';
+        const blockerHtml = blocker !== null
+            ? ` → espera a <a href="https://github.com/intrale/platform/issues/${blocker}" target="_blank" rel="noopener noreferrer">#${blocker}</a>`
+            : '';
+        const reasonHtml = reasonTxt ? ` <span class="wr-blocked-reason">(${escapeHtmlText(reasonTxt)})</span>` : '';
+        return `<li class="wr-blocked-row"><svg class="wr-blocked-ic" aria-hidden="true"><use href="#ic-pause-lock"></use></svg>`
+            + `<a class="wr-blocked-issue" href="https://github.com/intrale/platform/issues/${issue}" target="_blank" rel="noopener noreferrer">#${issue}</a>`
+            + `${blockerHtml}${reasonHtml}</li>`;
+    }).join('');
+    return '<div class="wr-blocked" role="group" aria-label="Bloqueos activos">'
+        + `<div class="wr-blocked-head"><svg class="wr-blocked-headic" aria-hidden="true"><use href="#ic-pause-lock"></use></svg>`
+        + `<span class="wr-blocked-title">Bloqueos activos</span>`
+        + `<span class="wr-blocked-count">${escapeHtmlText(String(list.length))}</span></div>`
+        + `<ul class="wr-blocked-list">${rows}</ul>`
+        + '</div>';
 }
 
 // Card de la ola ACTIVA (acento --purple, barra lateral de identidad). Incluye
 // la acción "Archivar" (destructiva, POST bajo gate). Todo dato escapado.
-function renderActiveCard(active) {
+// #4373 — `extra` opcional = { avance, eta, blockedSet }: renderiza barra de
+// avance (CA-6), panel de ETA (CA-8) y marca de bloqueo por issue (CA-7). Sin
+// `extra` degrada al comportamiento previo (#4378) sin romper.
+function renderActiveCard(active, extra) {
     if (!active) {
         return '<div class="wr-empty-state" role="status">'
             + '<svg class="wr-empty-ic" aria-hidden="true"><use href="#ic-wave"></use></svg>'
@@ -135,6 +247,7 @@ function renderActiveCard(active) {
             + '<div class="wr-empty-sub">No hay ninguna ola en curso. Promové una planificada para arrancar.</div>'
             + '</div>';
     }
+    const e = extra || {};
     const num = safeWaveNumber(active.number);
     const nameTxt = active.name != null && active.name !== '' ? String(active.name) : (num !== null ? `Ola ${num}` : 'Ola');
     const goalTxt = active.goal != null ? String(active.goal) : '';
@@ -143,6 +256,9 @@ function renderActiveCard(active) {
         ? `<button type="button" class="wr-btn wr-btn-archive" onclick="roadmapArchive(${num}, 'activa')" title="${escapeHtmlAttr('Archivar la ola ' + num + ' (activa) a archived_waves')}" aria-label="${escapeHtmlAttr('Archivar la ola activa ' + num)}">`
             + '<svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-archive-box"></use></svg> Archivar</button>'
         : '';
+    const avanceHtml = renderAvanceBar(e.avance);
+    const etaHtml = renderEtaPanel(e.eta);
+    const blockedHtml = renderBlockedPanel(e.blocked);
     return `<article class="wr-card wr-card-active" data-wave="${num !== null ? num : ''}">
       <span class="wr-rail" aria-hidden="true"></span>
       <header class="wr-card-head">
@@ -154,7 +270,10 @@ function renderActiveCard(active) {
         <div class="wr-card-actions">${archiveBtn}</div>
       </header>
       ${goalTxt ? `<div class="wr-card-goal">${escapeHtmlText(goalTxt)}</div>` : ''}
-      ${renderIssueList(issues)}
+      ${avanceHtml}
+      ${etaHtml}
+      ${renderIssueList(issues, e.blockedSet)}
+      ${blockedHtml}
     </article>`;
 }
 
@@ -184,24 +303,36 @@ function renderPlannedCard(wave, position) {
 }
 
 // Card de una ola ARCHIVADA (acento --text-dim, sobria). Muestra los issues
-// conservados (CA-5) + métricas de cierre si están presentes.
+// conservados (CA-5) + fecha de cierre (CA-3) + métricas de cierre si están
+// presentes. Acepta tanto el shape crudo de waves.json (`issues_completed`,
+// `closed_at`) como el whitelisteado del slice #4373 (`issuesCompleted`,
+// `closedAt`).
 function renderArchivedCard(wave) {
     const num = safeWaveNumber(wave.number);
     const nameTxt = wave.name != null && wave.name !== '' ? String(wave.name) : (num !== null ? `Ola ${num}` : 'Ola');
     const issues = normalizeIssues(wave.issues);
-    const completed = Number.isFinite(Number(wave.issues_completed)) ? Number(wave.issues_completed) : null;
-    const failed = Number.isFinite(Number(wave.issues_failed)) ? Number(wave.issues_failed) : null;
+    const completedRaw = wave.issuesCompleted != null ? wave.issuesCompleted : wave.issues_completed;
+    const failedRaw = wave.issuesFailed != null ? wave.issuesFailed : wave.issues_failed;
+    const completed = Number.isFinite(Number(completedRaw)) ? Number(completedRaw) : null;
+    const failed = Number.isFinite(Number(failedRaw)) ? Number(failedRaw) : null;
+    const closedAtRaw = wave.closedAt != null ? wave.closedAt : wave.closed_at;
+    const closedAt = (typeof closedAtRaw === 'string' && closedAtRaw) ? closedAtRaw : '';
     const metrics = [];
     if (completed !== null) metrics.push(`${completed} completados`);
     if (failed !== null) metrics.push(`${failed} fallidos`);
     const metricsHtml = metrics.length
         ? `<span class="wr-arch-metrics">${escapeHtmlText(metrics.join(' · '))}</span>`
         : '';
+    // CA-3 — fecha de cierre. `closed_at` es ISO server-generated; se escapa igual.
+    const closedHtml = closedAt
+        ? `<span class="wr-arch-closed" title="${escapeHtmlAttr('Cerrada: ' + closedAt)}">cerrada ${escapeHtmlText(closedAt)}</span>`
+        : '';
     return `<article class="wr-card wr-card-archived" data-wave="${num !== null ? num : ''}">
       <header class="wr-card-head">
         <div class="wr-card-id">
           <span class="wr-card-title">${escapeHtmlText(nameTxt)}</span>
           ${num !== null ? `<span class="wr-card-num">Ola ${num}</span>` : ''}
+          ${closedHtml}
           ${metricsHtml}
         </div>
       </header>
@@ -254,6 +385,44 @@ function roadmapStyle() {
 .wr-archived-collapsed .wr-archived-body{display:none}
 .wr-integrity{display:flex;align-items:center;gap:9px;font-size:11.5px;color:var(--text-dim,#8B949E);padding:10px 14px;border-radius:10px;border:1px solid var(--border-subtle,rgba(255,255,255,.08));background:var(--surface-0,#0d1117)}
 .wr-integrity-ic{width:15px;height:15px;color:var(--teal,#34D9E0);flex-shrink:0}
+/* #4373 — Badge de prioridad (CA-5): icono+texto, nunca color-only (WCAG 1.4.1). */
+.wr-chip-prio{font-size:9px;font-weight:800;letter-spacing:.3px;text-transform:uppercase;border-radius:5px;padding:1px 5px;border:1px solid transparent}
+.wr-prio-critical,.wr-prio-high{color:#FFD2DC;background:var(--danger-dim,#8B1A14);border-color:var(--danger,#F85149)}
+.wr-prio-medium{color:#FFE5A8;background:var(--warning-dim,#9E6A03);border-color:var(--warning,#D29922)}
+.wr-prio-low{color:#7EE787;background:var(--success-dim,#196C2E);border-color:var(--success,#3FB950)}
+/* #4373 — Marca de bloqueo por chip (CA-7). */
+.wr-chip-blocked{font-size:9px;font-weight:800;letter-spacing:.3px;color:#F5B0AC;border-left:1px solid var(--border,rgba(255,255,255,.12));padding-left:5px}
+.wr-chip-is-blocked{border-color:var(--danger,#F85149);background:var(--danger-bg,#160B0B)}
+/* #4373 — Barra de avance (CA-6). */
+.wr-avance{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.wr-avance-track{flex:1;min-width:120px;height:8px;border-radius:999px;background:var(--surface-3,#1c2230);overflow:hidden}
+.wr-avance-fill{height:100%;border-radius:999px;background:var(--success,#3FB950)}
+.wr-avance-label{font-size:11.5px;font-weight:700;color:var(--text-secondary,#8A93A6);font-variant-numeric:tabular-nums;white-space:nowrap}
+/* #4373 — Panel de ETA (CA-8). */
+.wr-eta{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:8px 11px;border-radius:10px;border:1px solid var(--border-subtle,rgba(255,255,255,.08));background:var(--surface-0,#0d1117)}
+.wr-eta-ic{width:14px;height:14px;color:var(--teal,#34D9E0);flex-shrink:0}
+.wr-eta-title{font-size:10px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;color:var(--text-secondary,#8A93A6)}
+.wr-eta-cells{display:flex;gap:8px;flex-wrap:wrap}
+.wr-eta-cell{display:flex;flex-direction:column;align-items:flex-start;gap:1px}
+.wr-eta-k{font-size:9px;font-weight:800;letter-spacing:.3px;text-transform:uppercase;color:var(--text-dim,#8B949E)}
+.wr-eta-v{font-size:12.5px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--text-primary,#e6edf3)}
+.wr-eta-p50 .wr-eta-v{color:var(--success,#3FB950)}
+.wr-eta-p75 .wr-eta-v{color:var(--warning,#D29922)}
+.wr-eta-p90 .wr-eta-v{color:var(--quota-degraded,#F0883E)}
+.wr-eta-lowsample{border-color:var(--warning-dim,#9E6A03)}
+.wr-eta-lowsample-msg{font-size:11.5px;font-style:italic;color:var(--warning,#D29922)}
+/* #4373 — Panel de bloqueos activos (CA-7). */
+.wr-blocked{border:1px solid var(--danger-dim,#8B1A14);border-radius:10px;padding:9px 12px;background:var(--danger-bg,#160B0B)}
+.wr-blocked-head{display:flex;align-items:center;gap:7px;margin-bottom:6px}
+.wr-blocked-headic,.wr-blocked-ic{width:13px;height:13px;color:var(--danger,#F85149);flex-shrink:0}
+.wr-blocked-title{font-size:10.5px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;color:#F5B0AC}
+.wr-blocked-count{font-size:10.5px;font-weight:800;color:#F5B0AC;background:var(--danger-dim,#8B1A14);border-radius:999px;padding:0 7px;font-variant-numeric:tabular-nums}
+.wr-blocked-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+.wr-blocked-row{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--text-secondary,#8A93A6)}
+.wr-blocked-row a{color:var(--info,#58a6ff);text-decoration:none}
+.wr-blocked-row a:hover{text-decoration:underline}
+.wr-blocked-reason{color:var(--text-dim,#8B949E);font-style:italic}
+.wr-arch-closed{font-size:10.5px;color:var(--text-dim,#8B949E);font-variant-numeric:tabular-nums}
 @media (prefers-reduced-motion:reduce){.wr-archived-toggle .wr-expand-ic{transition:none}}
 </style>`;
 }
@@ -262,16 +431,43 @@ function roadmapStyle() {
  * Fragmento SSR de la ventana Roadmap. Devuelve `<main id="view-content"
  * data-slug="roadmap">` con las tres secciones renderizadas server-side.
  *
- * @param {object} [opts] — { wavesState } inyectable para tests; si falta se
+ * #4373 (Ola 8.3) — Vista operativa consolidada. Si `opts.roadmap` (payload del
+ * `roadmapSlice`) está presente, la vista enriquece la ola activa con avance
+ * (CA-6), ETA (CA-8) y bloqueos (CA-7), y muestra prioridad por issue (CA-5).
+ * Backward-compat (#4378): sin `opts.roadmap` degrada a leer `waves.json`
+ * directo (loadWaves) sin avance/ETA/bloqueos.
+ *
+ * @param {object} [opts] — { roadmap? } payload enriquecido del slice; o
+ *                          { wavesState? } inyectable para tests; si faltan se
  *                          lee de lib/waves.js (loadWaves).
  */
 function renderRoadmapSsr(opts) {
-    const state = readWavesState(opts);
-    const active = state && state.active_wave ? state.active_wave : null;
-    const planned = Array.isArray(state && state.planned_waves) ? state.planned_waves : [];
-    const archived = Array.isArray(state && state.archived_waves) ? state.archived_waves : [];
+    const rm = opts && opts.roadmap && typeof opts.roadmap === 'object' ? opts.roadmap : null;
 
-    const activeHtml = renderActiveCard(active);
+    let active, planned, archived, blocked, eta, avance;
+    if (rm) {
+        active = rm.activeWave || null;
+        planned = Array.isArray(rm.plannedWaves) ? rm.plannedWaves : [];
+        archived = Array.isArray(rm.archivedWaves) ? rm.archivedWaves : [];
+        blocked = Array.isArray(rm.blocked) ? rm.blocked : [];
+        eta = rm.eta || null;
+        avance = rm.avance || null;
+    } else {
+        const state = readWavesState(opts);
+        active = state && state.active_wave ? state.active_wave : null;
+        planned = Array.isArray(state && state.planned_waves) ? state.planned_waves : [];
+        archived = Array.isArray(state && state.archived_waves) ? state.archived_waves : [];
+        blocked = [];
+        eta = null;
+        avance = null;
+    }
+
+    // CA-7 — issues bloqueados marcados en los chips de la ola activa.
+    const blockedSet = new Set((blocked || [])
+        .map((b) => safeIssueNumber(b && b.issue))
+        .filter((n) => n !== null));
+
+    const activeHtml = renderActiveCard(active, { avance, eta, blocked, blockedSet });
 
     const plannedHtml = planned.length
         ? planned.map((w, i) => renderPlannedCard(w, i + 1)).join('')
@@ -422,8 +618,8 @@ function renderRoadmap(opts) {
   ${navHtml}
   <main class="satellite-body">${fragment}</main>
   <footer class="in-footer">
-    <span>Refresh manual · acción Archivar bajo gate loopback+same-origin</span>
-    <span>Intrale V3 · #4378</span>
+    <span>Datos offline (waves.json) · sin gh en runtime · acción Archivar bajo gate loopback+same-origin</span>
+    <span>Intrale V3 · #4378 · #4373</span>
   </footer>
 </div>
 <script>${FETCH_CLIENT_JS}\n${CONFIRM_MODAL_JS}\n${COMMON_HELPERS}\n${renderRoadmapClientScript()}</script>
@@ -444,4 +640,11 @@ module.exports = {
     safeWaveNumber,
     safeIssueNumber,
     loadTheme,
+    // #4373 (Ola 8.3) — helpers de la vista operativa consolidada.
+    renderPriorityBadge,
+    renderAvanceBar,
+    renderEtaPanel,
+    renderBlockedPanel,
+    fmtEtaMinutes,
+    safePriority,
 };
