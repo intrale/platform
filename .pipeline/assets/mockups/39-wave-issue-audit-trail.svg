@@ -1,0 +1,374 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 39 — Widget "Audit trail · Olas & Issues" (#4371)
+  =============================================================================
+  Widget que registra y muestra las mutaciones sobre olas e issues asociados
+  (quien agrego/quito issues, quien cambio prioridad, promocion/archivado de
+  ola) con trazabilidad hash-chain (lib/audit-log.appendChained). Vive en la
+  solapa Pipeline del dashboard V3, debajo del "Wave panel" (mockup 20) y en
+  paralelo al "Audit trail · Allowlist mutations" (mockup 22, precedente directo).
+
+  Cinco tipos de evento que el dev DEBE renderizar (CA-1..CA-4 de #4371):
+
+    E1) issue_added      — se agrego un issue a una ola (via commander autenticado)
+    E2) issue_removed    — se quito un issue de una ola (nueva mutacion removeIssueFromWave)
+    E3) priority_changed — cambio priority:high|medium|low de un issue de la ola
+    E4) wave_promoted    — se promovio una ola a activa
+    E5) wave_archived    — se archivo una ola
+
+  Cada fila muestra: cuando, actor (autenticado, no self-report), evento,
+  objeto (ola/issue), estado_previo -> estado_posterior, y una nota/justificacion.
+
+  Estados visuales (mismo lenguaje que mockup 22):
+    A) Verde  (success)  : mutacion legitima con autoria humana (commander:leo)
+    B) Azul   (info)     : mutacion legitima por subsistema (planner-split, pulpo)
+    C) Rojo   (danger)   : mutacion sin autoria / hash-chain roto  (alerta critica)
+    D) Ambar  (warning)  : cambio de prioridad que baja severidad o backfill
+
+  Convenciones:
+    - Paleta: design-tokens.css (var success/danger/warning/info/purple/surface/text)
+    - Iconos: sprite.svg via <use href="#ic-*"/>. Aqui se inlinen como <symbol id="m-*"/>
+      para preview standalone sin sprite cargado.
+    - Tipografia: system stack; monospace en IDs (#4361), timestamps y hashes.
+    - WCAG AA: pares texto/fondo verificados >= 4.5:1 contra surface-0/1.
+    - Anti-info-solo-por-color: cada evento tiene icono + texto, no solo color.
+
+  Tamano: 1440x940 (section card en la solapa Pipeline).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 940"
+     font-family="-apple-system, 'Segoe UI Variable', 'Segoe UI', Roboto, sans-serif">
+  <defs>
+    <!-- ===== Iconos inline (preview standalone) — mapa a sprite en la narrativa ===== -->
+    <symbol id="m-wave" viewBox="0 0 24 24">
+      <path d="M2 9 C4 6 6 6 8 9 C10 12 12 12 14 9 C16 6 18 6 20 9 C21 10.5 22 10.5 22 10.5"
+            fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M2 15 C4 12 6 12 8 15 C10 18 12 18 14 15 C16 12 18 12 20 15 C21 16.5 22 16.5 22 16.5"
+            fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-issue-added" viewBox="0 0 24 24">
+      <!-- circulo issue + signo mas — semantica: issue sumado a la ola -->
+      <circle cx="10" cy="12" r="6.4" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M10 9 V15 M7 12 H13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M17 6 V12 M14 9 H20" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-issue-removed" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M8 12 H16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-priority-change" viewBox="0 0 24 24">
+      <!-- doble flecha up/down — semantica: cambio de prioridad -->
+      <path d="M8 4 V16 M5 7 L8 4 L11 7" fill="none" stroke="currentColor"
+            stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M16 20 V8 M13 17 L16 20 L19 17" fill="none" stroke="currentColor"
+            stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-promote" viewBox="0 0 24 24">
+      <path d="M12 4 L12 20 M6 10 L12 4 L18 10" fill="none" stroke="currentColor"
+            stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-archive" viewBox="0 0 24 24">
+      <rect x="4" y="5" width="16" height="4" rx="1" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M5.5 9 V18 A1 1 0 0 0 6.5 19 H17.5 A1 1 0 0 0 18.5 18 V9"
+            fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M10 13 H14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-shield-check" viewBox="0 0 24 24">
+      <path d="M12 3 L20 6 V12 C20 16.5 16.5 19.5 12 21 C7.5 19.5 4 16.5 4 12 V6 Z"
+            fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M8 12 L11 15 L16 9" fill="none" stroke="currentColor"
+            stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-shield-lock" viewBox="0 0 24 24">
+      <path d="M12 3 L20 6 V12 C20 16.5 16.5 19.5 12 21 C7.5 19.5 4 16.5 4 12 V6 Z"
+            fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <rect x="9.5" y="11.5" width="5" height="5" rx="0.6" fill="currentColor" opacity="0.16"/>
+      <rect x="9.5" y="11.5" width="5" height="5" rx="0.6" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      <path d="M10.5 11.5 V10 C10.5 9.2 11.1 8.5 12 8.5 C12.9 8.5 13.5 9.2 13.5 10 V11.5"
+            fill="none" stroke="currentColor" stroke-width="1.2"/>
+    </symbol>
+    <symbol id="m-warning" viewBox="0 0 24 24">
+      <path d="M12 4 L21 19 H3 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M12 10 V14" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+      <circle cx="12" cy="16.6" r="1" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-chain" viewBox="0 0 24 24">
+      <path d="M9 12 A3 3 0 0 1 12 9 H14 A3 3 0 0 1 14 15 H13"
+            fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M15 12 A3 3 0 0 1 12 15 H10 A3 3 0 0 1 10 9 H11"
+            fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-history" viewBox="0 0 24 24">
+      <path d="M4 12 A8 8 0 1 0 7 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M4 5 V9 H8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M12 8 V12 L15 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-arrow" viewBox="0 0 24 24">
+      <path d="M4 12 H19 M14 7 L19 12 L14 17" fill="none" stroke="currentColor"
+            stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+  </defs>
+
+  <!-- ===== Fondo ===== -->
+  <rect x="0" y="0" width="1440" height="940" fill="#0D1117"/>
+
+  <!-- ===== Breadcrumb ===== -->
+  <text x="40" y="40" fill="#8B949E" font-size="13">Pipeline · Olas · Audit trail</text>
+
+  <!-- ===== Header ===== -->
+  <g transform="translate(40,58)">
+    <svg x="0" y="0" width="26" height="26" viewBox="0 0 24 24" color="#58A6FF"><use href="#m-wave"/></svg>
+    <text x="36" y="12" fill="#E6EDF3" font-size="24" font-weight="700">Audit trail · Olas &amp; Issues</text>
+    <text x="36" y="36" fill="#B1BAC4" font-size="14">Toda mutacion sobre olas e issues asociados queda registrada append-only con hash-chain.</text>
+  </g>
+
+  <!-- ===== KPI cards (5) ===== -->
+  <g transform="translate(40,120)">
+    <!-- card 1 -->
+    <g transform="translate(0,0)">
+      <rect width="256" height="88" rx="10" fill="#161B22" stroke="#30363D"/>
+      <text x="16" y="26" fill="#8B949E" font-size="12" font-weight="600" letter-spacing="0.4">MUTACIONES · 24h</text>
+      <text x="16" y="66" fill="#E6EDF3" font-size="34" font-weight="700" font-family="monospace">18</text>
+    </g>
+    <!-- card 2 -->
+    <g transform="translate(272,0)">
+      <rect width="256" height="88" rx="10" fill="#161B22" stroke="#30363D"/>
+      <text x="16" y="26" fill="#8B949E" font-size="12" font-weight="600" letter-spacing="0.4">CON AUTORIA</text>
+      <text x="16" y="66" fill="#3FB950" font-size="34" font-weight="700" font-family="monospace">17</text>
+    </g>
+    <!-- card 3 -->
+    <g transform="translate(544,0)">
+      <rect width="256" height="88" rx="10" fill="#161B22" stroke="#30363D"/>
+      <text x="16" y="26" fill="#8B949E" font-size="12" font-weight="600" letter-spacing="0.4">CAMBIOS PRIORIDAD</text>
+      <text x="16" y="66" fill="#E6EDF3" font-size="34" font-weight="700" font-family="monospace">4</text>
+    </g>
+    <!-- card 4 (gate visual: rojo si >0) -->
+    <g transform="translate(816,0)">
+      <rect width="256" height="88" rx="10" fill="#161B22" stroke="#F85149"/>
+      <text x="16" y="26" fill="#8B949E" font-size="12" font-weight="600" letter-spacing="0.4">SIN AUTORIA</text>
+      <text x="16" y="66" fill="#F85149" font-size="34" font-weight="700" font-family="monospace">1</text>
+      <svg x="212" y="16" width="22" height="22" viewBox="0 0 24 24" color="#F85149"><use href="#m-warning"/></svg>
+    </g>
+    <!-- card 5 hash-chain -->
+    <g transform="translate(1088,0)">
+      <rect width="272" height="88" rx="10" fill="#161B22" stroke="#3FB950"/>
+      <text x="16" y="26" fill="#8B949E" font-size="12" font-weight="600" letter-spacing="0.4">HASH-CHAIN</text>
+      <svg x="16" y="40" width="22" height="22" viewBox="0 0 24 24" color="#3FB950"><use href="#m-chain"/></svg>
+      <text x="46" y="58" fill="#3FB950" font-size="18" font-weight="700">verificado</text>
+      <text x="160" y="58" fill="#8B949E" font-size="12" font-family="monospace">(412 entries)</text>
+    </g>
+  </g>
+
+  <!-- ===== Banner condicional "sin autoria" ===== -->
+  <g transform="translate(40,228)">
+    <rect width="1320" height="52" rx="8" fill="rgba(248, 81, 73, 0.14)" stroke="#F85149"/>
+    <svg x="16" y="14" width="24" height="24" viewBox="0 0 24 24" color="#F85149"><use href="#m-warning"/></svg>
+    <text x="52" y="24" fill="#F85149" font-size="14" font-weight="700">1 mutacion sin autoria detectada — posible bypass del gate. Alerta enviada al Commander.</text>
+    <text x="52" y="42" fill="#B1BAC4" font-size="12">Entry #401 · issue_removed #4188 de ola-8.3 · actor=null a las 03:11:07Z. Pendiente de revision del operador.</text>
+    <g transform="translate(1180,12)">
+      <rect width="120" height="28" rx="6" fill="none" stroke="#F85149"/>
+      <text x="60" y="19" fill="#F85149" font-size="12" font-weight="600" text-anchor="middle">Marcar revisada</text>
+    </g>
+  </g>
+
+  <!-- ===== Tabla: encabezado ===== -->
+  <g transform="translate(40,300)">
+    <text x="0" y="14" fill="#E6EDF3" font-size="15" font-weight="700">Ultimas mutaciones · mostrando 5 de 412</text>
+    <g transform="translate(1150,-4)">
+      <rect width="170" height="30" rx="6" fill="#161B22" stroke="#30363D"/>
+      <svg x="12" y="6" width="18" height="18" viewBox="0 0 24 24" color="#58A6FF"><use href="#m-history"/></svg>
+      <text x="38" y="20" fill="#58A6FF" font-size="12" font-weight="600">/wave history</text>
+    </g>
+  </g>
+
+  <!-- ===== Tabla: columnas ===== -->
+  <g transform="translate(40,332)" font-size="12">
+    <rect width="1320" height="34" fill="#1C2128"/>
+    <text x="16"   y="22" fill="#8B949E" font-weight="600">CUANDO</text>
+    <text x="120"  y="22" fill="#8B949E" font-weight="600">ACTOR</text>
+    <text x="300"  y="22" fill="#8B949E" font-weight="600">EVENTO</text>
+    <text x="470"  y="22" fill="#8B949E" font-weight="600">OBJETO</text>
+    <text x="640"  y="22" fill="#8B949E" font-weight="600">PREVIO → POSTERIOR</text>
+    <text x="1000" y="22" fill="#8B949E" font-weight="600">NOTA</text>
+  </g>
+
+  <!-- ===== Filas ===== -->
+  <!-- Fila E4 wave_promoted (Estado A humano) -->
+  <g transform="translate(40,366)" font-size="13">
+    <rect width="1320" height="66" fill="#161B22" stroke="#21262D"/>
+    <text x="16"  y="30" fill="#E6EDF3" font-family="monospace">03:44:12</text>
+    <text x="16"  y="48" fill="#8B949E" font-size="11" font-family="monospace">02 jul</text>
+    <g transform="translate(120,18)">
+      <rect width="150" height="26" rx="13" fill="rgba(63, 185, 80, 0.14)" stroke="#3FB950"/>
+      <svg x="8" y="4" width="18" height="18" viewBox="0 0 24 24" color="#3FB950"><use href="#m-shield-check"/></svg>
+      <text x="32" y="17" fill="#3FB950" font-size="12">commander:leo</text>
+    </g>
+    <g transform="translate(300,20)">
+      <svg x="0" y="0" width="20" height="20" viewBox="0 0 24 24" color="#3FB950"><use href="#m-promote"/></svg>
+      <text x="28" y="15" fill="#E6EDF3" font-size="13" font-weight="600">wave_promoted</text>
+    </g>
+    <text x="470" y="40" fill="#E6EDF3" font-family="monospace">ola-8.3</text>
+    <g transform="translate(640,26)" font-family="monospace" font-size="12">
+      <text x="0" y="14" fill="#8B949E">planificada</text>
+      <svg x="88" y="0" width="18" height="18" viewBox="0 0 24 24" color="#8B949E"><use href="#m-arrow"/></svg>
+      <text x="112" y="14" fill="#3FB950">activa</text>
+    </g>
+    <text x="1000" y="40" fill="#B1BAC4" font-size="12">Arranque Ola 8.3 tras cierre 8.2</text>
+  </g>
+
+  <!-- Fila E1 issue_added (Estado A humano) -->
+  <g transform="translate(40,432)" font-size="13">
+    <rect width="1320" height="66" fill="#161B22" stroke="#21262D"/>
+    <text x="16"  y="30" fill="#E6EDF3" font-family="monospace">03:41:55</text>
+    <text x="16"  y="48" fill="#8B949E" font-size="11" font-family="monospace">02 jul</text>
+    <g transform="translate(120,18)">
+      <rect width="150" height="26" rx="13" fill="rgba(63, 185, 80, 0.14)" stroke="#3FB950"/>
+      <svg x="8" y="4" width="18" height="18" viewBox="0 0 24 24" color="#3FB950"><use href="#m-shield-check"/></svg>
+      <text x="32" y="17" fill="#3FB950" font-size="12">commander:leo</text>
+    </g>
+    <g transform="translate(300,20)">
+      <svg x="0" y="0" width="20" height="20" viewBox="0 0 24 24" color="#58A6FF"><use href="#m-issue-added"/></svg>
+      <text x="28" y="15" fill="#E6EDF3" font-size="13" font-weight="600">issue_added</text>
+    </g>
+    <text x="470" y="40" fill="#E6EDF3" font-family="monospace">#4371 → ola-8.3</text>
+    <g transform="translate(640,26)" font-family="monospace" font-size="12">
+      <text x="0" y="14" fill="#8B949E">[9 issues]</text>
+      <svg x="78" y="0" width="18" height="18" viewBox="0 0 24 24" color="#8B949E"><use href="#m-arrow"/></svg>
+      <text x="102" y="14" fill="#3FB950">[10 issues]</text>
+    </g>
+    <text x="1000" y="40" fill="#B1BAC4" font-size="12">Suma audit trail de olas a la ola</text>
+  </g>
+
+  <!-- Fila E3 priority_changed (Estado D ambar, baja severidad) -->
+  <g transform="translate(40,498)" font-size="13">
+    <rect width="1320" height="66" fill="rgba(210, 153, 34, 0.10)" stroke="#21262D"/>
+    <rect width="4" height="66" fill="#D29922"/>
+    <text x="16"  y="30" fill="#E6EDF3" font-family="monospace">02:58:03</text>
+    <text x="16"  y="48" fill="#8B949E" font-size="11" font-family="monospace">02 jul</text>
+    <g transform="translate(120,18)">
+      <rect width="150" height="26" rx="13" fill="rgba(63, 185, 80, 0.14)" stroke="#3FB950"/>
+      <svg x="8" y="4" width="18" height="18" viewBox="0 0 24 24" color="#3FB950"><use href="#m-shield-check"/></svg>
+      <text x="32" y="17" fill="#3FB950" font-size="12">commander:leo</text>
+    </g>
+    <g transform="translate(300,20)">
+      <svg x="0" y="0" width="20" height="20" viewBox="0 0 24 24" color="#D29922"><use href="#m-priority-change"/></svg>
+      <text x="28" y="15" fill="#E6EDF3" font-size="13" font-weight="600">priority_changed</text>
+    </g>
+    <text x="470" y="40" fill="#E6EDF3" font-family="monospace">#4290</text>
+    <g transform="translate(640,26)" font-family="monospace" font-size="12">
+      <text x="0" y="14" fill="#F85149">priority:high</text>
+      <svg x="96" y="0" width="18" height="18" viewBox="0 0 24 24" color="#8B949E"><use href="#m-arrow"/></svg>
+      <text x="120" y="14" fill="#D29922">priority:medium</text>
+    </g>
+    <text x="1000" y="40" fill="#B1BAC4" font-size="12">Repriorizado por planner al re-ordenar 8.3</text>
+  </g>
+
+  <!-- Fila E2 issue_removed (Estado B subsistema) -->
+  <g transform="translate(40,564)" font-size="13">
+    <rect width="1320" height="66" fill="#161B22" stroke="#21262D"/>
+    <text x="16"  y="30" fill="#E6EDF3" font-family="monospace">02:40:19</text>
+    <text x="16"  y="48" fill="#8B949E" font-size="11" font-family="monospace">02 jul</text>
+    <g transform="translate(120,18)">
+      <rect width="160" height="26" rx="13" fill="rgba(88, 166, 255, 0.14)" stroke="#58A6FF"/>
+      <svg x="8" y="4" width="18" height="18" viewBox="0 0 24 24" color="#58A6FF"><use href="#m-shield-lock"/></svg>
+      <text x="32" y="17" fill="#58A6FF" font-size="12">planner-split:auto</text>
+    </g>
+    <g transform="translate(300,20)">
+      <svg x="0" y="0" width="20" height="20" viewBox="0 0 24 24" color="#8B949E"><use href="#m-issue-removed"/></svg>
+      <text x="28" y="15" fill="#E6EDF3" font-size="13" font-weight="600">issue_removed</text>
+    </g>
+    <text x="470" y="40" fill="#E6EDF3" font-family="monospace">#4255 ← ola-8.3</text>
+    <g transform="translate(640,26)" font-family="monospace" font-size="12">
+      <text x="0" y="14" fill="#8B949E">[10 issues]</text>
+      <svg x="84" y="0" width="18" height="18" viewBox="0 0 24 24" color="#8B949E"><use href="#m-arrow"/></svg>
+      <text x="108" y="14" fill="#E6EDF3">[9 issues]</text>
+    </g>
+    <text x="1000" y="40" fill="#B1BAC4" font-size="12">Epico split en hijos, se remueve el padre</text>
+  </g>
+
+  <!-- Fila C — issue_removed sin autoria (Estado C rojo, alerta) -->
+  <g transform="translate(40,630)" font-size="13">
+    <rect width="1320" height="72" fill="rgba(248, 81, 73, 0.12)" stroke="#21262D"/>
+    <rect width="4" height="72" fill="#F85149"/>
+    <text x="16"  y="30" fill="#E6EDF3" font-family="monospace">03:11:07</text>
+    <text x="16"  y="48" fill="#8B949E" font-size="11" font-family="monospace">02 jul</text>
+    <g transform="translate(120,16)">
+      <rect width="130" height="26" rx="13" fill="rgba(248, 81, 73, 0.14)" stroke="#F85149"/>
+      <svg x="8" y="4" width="18" height="18" viewBox="0 0 24 24" color="#F85149"><use href="#m-warning"/></svg>
+      <text x="32" y="17" fill="#F85149" font-size="12">null · sin autoria</text>
+    </g>
+    <g transform="translate(300,18)">
+      <svg x="0" y="0" width="20" height="20" viewBox="0 0 24 24" color="#F85149"><use href="#m-issue-removed"/></svg>
+      <text x="28" y="15" fill="#E6EDF3" font-size="13" font-weight="600">issue_removed</text>
+    </g>
+    <text x="470" y="38" fill="#E6EDF3" font-family="monospace">#4188 ← ola-8.3</text>
+    <g transform="translate(640,24)" font-family="monospace" font-size="12">
+      <text x="0" y="14" fill="#8B949E">[9 issues]</text>
+      <svg x="78" y="0" width="18" height="18" viewBox="0 0 24 24" color="#8B949E"><use href="#m-arrow"/></svg>
+      <text x="102" y="14" fill="#E6EDF3">[8 issues]</text>
+    </g>
+    <text x="1000" y="32" fill="#F85149" font-size="12" font-weight="700">Bypass detectado — revisar urgente</text>
+    <text x="1000" y="50" fill="#B1BAC4" font-size="11">Edicion directa de waves.json sin pasar por mutacion auditada</text>
+  </g>
+
+  <!-- ===== Leyenda ===== -->
+  <g transform="translate(40,724)" font-size="12">
+    <text x="0" y="14" fill="#8B949E" font-weight="600">LEYENDA</text>
+    <g transform="translate(76,0)">
+      <svg x="0" y="0" width="18" height="18" viewBox="0 0 24 24" color="#3FB950"><use href="#m-shield-check"/></svg>
+      <text x="24" y="14" fill="#B1BAC4">Autoria humana</text>
+    </g>
+    <g transform="translate(230,0)">
+      <svg x="0" y="0" width="18" height="18" viewBox="0 0 24 24" color="#58A6FF"><use href="#m-shield-lock"/></svg>
+      <text x="24" y="14" fill="#B1BAC4">Subsistema</text>
+    </g>
+    <g transform="translate(360,0)">
+      <svg x="0" y="0" width="18" height="18" viewBox="0 0 24 24" color="#F85149"><use href="#m-warning"/></svg>
+      <text x="24" y="14" fill="#B1BAC4">Sin autoria (alerta)</text>
+    </g>
+    <g transform="translate(540,0)">
+      <svg x="0" y="0" width="18" height="18" viewBox="0 0 24 24" color="#D29922"><use href="#m-priority-change"/></svg>
+      <text x="24" y="14" fill="#B1BAC4">Cambio de prioridad</text>
+    </g>
+    <g transform="translate(720,0)">
+      <svg x="0" y="0" width="18" height="18" viewBox="0 0 24 24" color="#3FB950"><use href="#m-promote"/></svg>
+      <text x="24" y="14" fill="#B1BAC4">Promocion / archivado</text>
+    </g>
+  </g>
+
+  <!-- ===== Nota de eventos capturados ===== -->
+  <g transform="translate(40,770)">
+    <rect width="1320" height="112" rx="10" fill="#161B22" stroke="#30363D"/>
+    <text x="20" y="28" fill="#E6EDF3" font-size="13" font-weight="700">Eventos auditados (CA-1..CA-4)</text>
+    <g font-size="12">
+      <g transform="translate(20,44)">
+        <svg x="0" y="0" width="16" height="16" viewBox="0 0 24 24" color="#58A6FF"><use href="#m-issue-added"/></svg>
+        <text x="24" y="12" fill="#B1BAC4">issue_added — waves.addIssueToWave</text>
+      </g>
+      <g transform="translate(20,68)">
+        <svg x="0" y="0" width="16" height="16" viewBox="0 0 24 24" color="#8B949E"><use href="#m-issue-removed"/></svg>
+        <text x="24" y="12" fill="#B1BAC4">issue_removed — NUEVA mutacion removeIssueFromWave</text>
+      </g>
+      <g transform="translate(20,92)">
+        <svg x="0" y="0" width="16" height="16" viewBox="0 0 24 24" color="#D29922"><use href="#m-priority-change"/></svg>
+        <text x="24" y="12" fill="#B1BAC4">priority_changed — hook multi-modulo (doc-create, planner-waves, human-block)</text>
+      </g>
+      <g transform="translate(680,44)">
+        <svg x="0" y="0" width="16" height="16" viewBox="0 0 24 24" color="#3FB950"><use href="#m-promote"/></svg>
+        <text x="24" y="12" fill="#B1BAC4">wave_promoted — promoteWaveToActive / promoteWaveAtomic</text>
+      </g>
+      <g transform="translate(680,68)">
+        <svg x="0" y="0" width="16" height="16" viewBox="0 0 24 24" color="#8B949E"><use href="#m-archive"/></svg>
+        <text x="24" y="12" fill="#B1BAC4">wave_archived — archivado de ola</text>
+      </g>
+      <g transform="translate(680,92)">
+        <svg x="0" y="0" width="16" height="16" viewBox="0 0 24 24" color="#58A6FF"><use href="#m-shield-lock"/></svg>
+        <text x="24" y="12" fill="#B1BAC4">Integridad: appendChained + verifyChain (audit-log.js) — no crear 3er chain</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ===== Pie tecnico ===== -->
+  <text x="40" y="908" fill="#6E7681" font-size="11">
+    Datos consumidos por dashboard-slices.js · waveIssueAuditSlice — renderer server-side estilo audit-trail-renderer.js (XSS-safe, textContent/escapeHtml).
+  </text>
+</svg>
