@@ -2885,6 +2885,118 @@ function partialPauseAuditSlice(state, ctx) {
 }
 
 // -----------------------------------------------------------------------------
+// #4371 (Ola 8.3) CA-8/CA-10 — Slice del widget "Audit trail · Olas & Issues".
+// Modelado 1:1 sobre `partialPauseAuditSlice`: tail de eventos de olas/issues
+// (add/remove/priority/promote/archive) con actor, evento, estados previo/
+// posterior y timestamp, más stats de 24h y verificación de la cadena.
+//
+// El slice NO renderiza HTML: expone datos ya normalizados. El render server-side
+// (XSS-safe) lo hace `wave-audit-renderer.js`. La clasificación `visual`
+// (A humano / B subsistema / C sin autoría / D prioridad) se calcula acá.
+//
+// @param {object} [ctx] - { limit } (default 5, como el widget).
+// @returns {{ entries, stats, chain_broken, ... }}
+// -----------------------------------------------------------------------------
+
+// Actores reconocidos como subsistema (autoría de máquina legítima). Se comparan
+// por prefijo/igualdad; cualquier otro actor no vacío se considera humano, y el
+// vacío/'desconocido' dispara el estado C (sin autoría).
+const WAVE_AUDIT_SUBSYSTEM_ACTORS = Object.freeze([
+    'System',
+    'wave-promote',
+    'wave-rollback',
+    'pulpo:cleanup',
+    'planner-split:auto',
+    'restart:rollback',
+]);
+
+function classifyWaveAuditVisual(entry) {
+    const event = entry && entry.event;
+    const actor = entry && entry.actor;
+    // Sin autoría / actor nulo o placeholder → estado C (alerta crítica).
+    if (!actor || actor === 'desconocido' || actor === 'null') return 'unauthorized';
+    // Cambio de prioridad → estado D (atención suave), sin importar el origen.
+    if (event === 'priority_changed') return 'priority';
+    // Subsistema conocido (por igualdad o prefijo `foo:`) → estado B.
+    const isSubsystem = WAVE_AUDIT_SUBSYSTEM_ACTORS.some(
+        (s) => actor === s || (typeof actor === 'string' && actor.startsWith(s + ':')) || (typeof actor === 'string' && actor.startsWith(s.split(':')[0] + ':'))
+    );
+    if (isSubsystem) return 'subsystem';
+    // Resto → humano (estado A).
+    return 'human';
+}
+
+function waveIssueAuditSlice(state, ctx) {
+    const _ctx = ctx || {};
+    const limit = Number.isFinite(_ctx.limit) && _ctx.limit > 0 ? _ctx.limit : 5;
+    let raw = [];
+    let chainStatus = { ok: true, entriesChecked: 0 };
+    let waveAudit;
+    try {
+        waveAudit = require('./wave-audit');
+        raw = waveAudit.readAllEvents();
+        chainStatus = waveAudit.verifyChain();
+    } catch (err) {
+        return {
+            entries: [],
+            stats: { total: 0, con_autoria: 0, sin_autoria: 0, cambios_prioridad: 0, since: null },
+            chain_broken: false,
+            chain_error: err && err.message,
+            error: 'wave_audit_unavailable',
+        };
+    }
+    if (!Array.isArray(raw)) raw = [];
+
+    // Stats 24h.
+    const windowMs = 24 * 60 * 60 * 1000;
+    const cutoff = Date.now() - windowMs;
+    let total = 0; let conAutoria = 0; let sinAutoria = 0; let cambiosPrioridad = 0;
+    for (const e of raw) {
+        const t = Date.parse(e && e.timestamp || '');
+        if (!Number.isFinite(t) || t < cutoff) continue;
+        total++;
+        const visual = classifyWaveAuditVisual(e);
+        if (visual === 'unauthorized') sinAutoria++; else conAutoria++;
+        if (e && e.event === 'priority_changed') cambiosPrioridad++;
+    }
+
+    // Últimas `limit` entries, mapeadas + clasificadas.
+    const N = Math.max(0, Math.min(limit, raw.length));
+    const tail = raw.slice(raw.length - N);
+    const entries = tail.map((e) => ({
+        timestamp: e && e.timestamp || null,
+        event: e && e.event || null,
+        wave: Number.isInteger(e && e.wave) ? e.wave : null,
+        issue: Number.isInteger(e && e.issue) ? e.issue : null,
+        actor: e && e.actor || 'desconocido',
+        estado_previo: e ? e.estado_previo : null,
+        estado_posterior: e ? e.estado_posterior : null,
+        prioridad_previa: e ? (e.prioridad_previa || null) : null,
+        prioridad_nueva: e ? (e.prioridad_nueva || null) : null,
+        note: e && e.note || '',
+        visual: classifyWaveAuditVisual(e),
+    }));
+
+    const hasUnauthorized = entries.some((e) => e.visual === 'unauthorized');
+
+    return {
+        entries,
+        stats: {
+            total,
+            con_autoria: conAutoria,
+            sin_autoria: sinAutoria,
+            cambios_prioridad: cambiosPrioridad,
+            since: new Date(cutoff).toISOString(),
+        },
+        chain_broken: !chainStatus.ok,
+        chain_broken_at: chainStatus.brokenAt != null ? chainStatus.brokenAt : null,
+        chain_broken_reason: chainStatus.reason || null,
+        chain_entries_checked: chainStatus.entriesChecked || 0,
+        has_unauthorized: hasUnauthorized,
+    };
+}
+
+// -----------------------------------------------------------------------------
 // #3961 EP8-H8 (CA-6) — Deriva las alertas de umbral de los KPIs. NO escribe en
 // `alert-tray-audit.js` (que es audit trail append-only de acciones del operador):
 // estas alertas surfacean como datos read-only a través de `alertTraySlice()`.
@@ -3293,6 +3405,9 @@ module.exports = {
     deliverablesBySkillSlice,
     // #3625 — widget de audit trail de allowlist
     partialPauseAuditSlice,
+    // #4371 — widget de audit trail de olas & issues
+    waveIssueAuditSlice,
+    _classifyWaveAuditVisual: classifyWaveAuditVisual,
     // #3954 EP8-H1 — bandeja de alertas del Home mission-control
     alertTraySlice,
     // #3897 CA-4 — métrica de precisión de Sherlock (solo agregados, SEC-6)

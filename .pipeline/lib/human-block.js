@@ -623,7 +623,19 @@ function executeQuickAction({ issue, action, deps = {} } = {}) {
         case 'priorizar': {
             // Sube prioridad Y desbloquea (PO #4068: "sube prioridad y sigue").
             const reactivated = reactivate({ unlocker: 'human-block-action:priorizar' });
-            enqueue('label', { issue: i, label: 'priority:high' });
+            // #4371 CA-3 — la mutación del label priority:* pasa por el punto
+            // único `setPriorityLabel`, que además emite el audit `priority_changed`.
+            // El actor es el subsistema que ejecutó la acción autorizada (el humano
+            // ya se autenticó vía token HMAC upstream); `deps.actor` permite
+            // sobreescribirlo si el caller lo propaga.
+            const setPriorityLabel = (deps.setPriorityLabel || require('./priority-label').setPriorityLabel);
+            setPriorityLabel({
+                issue: i,
+                priority: 'priority:high',
+                enqueue,
+                actor: deps.actor || 'human-block:priorizar',
+                note: 'Prioridad elevada desde la alerta de Telegram',
+            });
             enqueue('remove-label', { issue: i, label: NEEDS_HUMAN_LABEL });
             enqueue('comment', { issue: i, body: `## ⬆️ Prioridad elevada\n\nUn humano subió la prioridad de #${i} a \`priority:high\` desde la alerta de Telegram${reactivated.length ? ' y lo desbloqueó' : ''}.` });
             return { ok: true, action, issue: i, reactivated: reactivated.length, msg: `Prioridad de #${i} elevada a priority:high.` };
