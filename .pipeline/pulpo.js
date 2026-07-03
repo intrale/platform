@@ -9589,6 +9589,9 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         // default) clasifica tool-vs-chat desde el prompt para decidir qué
         // providers son elegibles. Con el flag OFF este insumo es inocuo.
         requestText: prompt,
+        // #4413 (Parte 3/3) — stickiness por conversación. El resolver hashea
+        // el chatId con `hashFor` internamente (nunca se materializa crudo).
+        chatId: getTelegramChatId(),
       });
     } catch (e) {
       // #4313 (CA-7) — instrumentar el catch ANTES de degradar: el degradado
@@ -10515,6 +10518,11 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           injectionHits: sanRes.hits,
           supportsToolUse: true,
           requestId: turnRequestId, // #3577 CA-S6
+          // #4413 CA-9 — decisión de ruteo del balanceo (aditivo; null cuando el
+          // dispatch salió de la cadena estricta, no del balancer ponderado).
+          weight: resolution.weight,
+          quotaPct: resolution.quotaPct,
+          selectionReason: resolution.selectionReason,
         });
       } catch { /* best-effort */ }
       // #3950 — resolvemos el INTENTO (no el Promise externo). El orquestador
