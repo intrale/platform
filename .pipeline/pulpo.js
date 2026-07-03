@@ -9585,6 +9585,10 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       resolution = commanderMP.resolveCommanderProvider({
         pipelineDir: PIPELINE,
         log: (l, m) => log(l || 'commander', m),
+        // #4412 (Parte 2/3) — el balanceo ponderado (feature flag OFF por
+        // default) clasifica tool-vs-chat desde el prompt para decidir qué
+        // providers son elegibles. Con el flag OFF este insumo es inocuo.
+        requestText: prompt,
       });
     } catch (e) {
       // #4313 (CA-7) — instrumentar el catch ANTES de degradar: el degradado
@@ -9675,6 +9679,24 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         reason: resolution.disqualifyReason != null ? String(resolution.disqualifyReason) : null,
       };
     }
+
+    // #4412 (Parte 2/3) — log de la decisión de dispatch (provider/model/source/
+    // decisión). SR-5/SEC-5: SOLO metadata de ruteo — nunca credenciales ni
+    // contenido del chat; la identidad del chat, si hiciera falta, se hashea
+    // (patrón hashFor). `source==='balanced'` indica que el selector ponderado
+    // eligió el provider (feature flag ON); cualquier otro valor es la cadena
+    // estricta de siempre (regresión cero con el flag OFF).
+    try {
+      const _decision = resolution.gated
+        ? 'gated'
+        : (resolution.source === 'balanced'
+          ? (resolution.crossProvider ? 'balanced_fallback' : 'balanced_primary')
+          : (resolution.crossProvider ? 'strict_fallback' : 'strict_primary'));
+      log('commander',
+        `🎛️ dispatch: provider=${resolution.provider || 'n/a'} ` +
+        `model=${resolution.model || 'n/a'} source=${resolution.source || 'n/a'} ` +
+        `decision=${_decision}`);
+    } catch { /* best-effort: el log nunca rompe el dispatch */ }
 
     if (resolution.gated) {
       // Toda la chain está sin cuota. Canned response al usuario.
