@@ -92,3 +92,71 @@ test('#4099: inputs vacíos/ausentes no rompen (no throw)', () => {
     assert.equal(computeClosedSet({ wave: {}, state: {} }).size, 0);
     assert.equal(computeClosedSet({ wave: { issues: [] }, state: { issueTitles: {} } }).size, 0);
 });
+
+// =============================================================================
+// #4399 — CA-2/CA-3: la LISTA del pipeline y el PANEL de métricas producen el
+// MISMO conteo de cerrados desde `computeClosedSet`. Reproduce el bug real de la
+// Ola 8.3 ("11 de 14" en la lista vs "2 de 14" en el panel) y verifica que, tras
+// converger ambas zonas sobre la misma fuente, el número es idéntico.
+// =============================================================================
+
+const slices = require('../dashboard-slices');
+
+// Fixture: ola de 14 issues, 11 CLOSED en la cache de títulos (el escenario real).
+function buildOla83State() {
+    const issues = [4380, 4381, 4382, 4383, 4384, 4385, 4386, 4387, 4388, 4389, 4390, 4391, 4392, 4393];
+    const closedIds = issues.slice(0, 11); // 11 cerrados
+    const issueTitles = {};
+    for (const id of issues) {
+        issueTitles[String(id)] = {
+            state: closedIds.includes(id) ? 'CLOSED' : 'OPEN',
+            labels: [],
+        };
+    }
+    return { issues, closedIds, issueTitles };
+}
+
+test('#4399 CA-2: lista y panel de métricas cuentan el mismo # de cerrados (11 de 14)', () => {
+    const { issues, issueTitles } = buildOla83State();
+    // `state.activeWave.issues` = number[] (output del resolver), igual que en el
+    // dashboard real. `state.issueTitles` = cache cruda de títulos.
+    const state = {
+        activeWave: { label: 'Ola 8.3', issues, source: 'waves.json', resolved: true },
+        issueTitles,
+        issueMatrix: {},
+    };
+
+    // Camino LISTA (idéntico a dashboard-routes.computeLiveWaveStatus:730).
+    const listaSet = computeClosedSet({ wave: state.activeWave, state });
+    const listaClosed = listaSet.size;
+
+    // Camino PANEL de métricas (dashboard-slices._roadmapAvance tras #4399).
+    const avance = slices._roadmapAvance(state.activeWave, state);
+
+    assert.equal(listaClosed, 11, 'la lista cuenta 11 cerrados');
+    assert.equal(avance.closed, 11, 'el panel cuenta 11 cerrados (mismo set)');
+    assert.equal(avance.closed, listaClosed, 'CA-2: lista y panel deben coincidir');
+    assert.equal(avance.total, 14, 'total = # issues de la ola');
+    assert.equal(avance.pct, 79, 'CA-3: % de avance coherente (round(11/14*100))');
+});
+
+test('#4399 CA-3: el panel NO usa la foto .status/.merged desincronizada', () => {
+    // La foto enriquecida marca sólo 2 como completados/merged (el bug "2 de 14"),
+    // pero la cache de títulos tiene 11 CLOSED. El panel debe reportar 11, no 2.
+    const { issues, issueTitles } = buildOla83State();
+    const state = {
+        // issues como number[] (nunca la foto {status/merged}) — el panel deriva
+        // los cerrados de issueTitles, no de flags por issue.
+        activeWave: { label: 'Ola 8.3', issues, source: 'waves.json', resolved: true },
+        issueTitles,
+        issueMatrix: {},
+    };
+    const avance = slices._roadmapAvance(state.activeWave, state);
+    assert.equal(avance.closed, 11, 'deriva de computeClosedSet, no de 2 flags stale');
+    assert.notEqual(avance.closed, 2);
+});
+
+test('#4399: _roadmapAvance degrada grácil sin activeWave (0 de 0, sin throw)', () => {
+    assert.deepEqual(slices._roadmapAvance(undefined, {}), { closed: 0, total: 0, pct: 0 });
+    assert.deepEqual(slices._roadmapAvance({ issues: [] }, { issueTitles: {} }), { closed: 0, total: 0, pct: 0 });
+});

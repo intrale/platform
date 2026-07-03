@@ -1,10 +1,15 @@
 // =============================================================================
 // wave-resolver.test.js — Tests del resolver de ola activa.
 //
-// Cubre la cascada de fuentes post-#3502:
+// Cubre la cascada de fuentes post-#4399 (modo legacy eliminado):
 //   1. waves.json (vía `lib/waves.js`, source-of-truth canónica)
-//   2. .partial-pause.json (legacy, mientras waves.json no esté poblado)
-//   3. filesystem scan (último recurso, CA-15 fallback grácil)
+//   2. filesystem scan (último recurso, CA-15 fallback grácil)
+//
+// #4399 — la fuente intermedia `.partial-pause.json → allowed_issues`
+// (`readPartialPauseFile`) fue ELIMINADA: producía conteos incoherentes
+// cuando `waves.json` no tenía `active_wave`. Ahora `waves.json` sin
+// `active_wave` cae DIRECTO a `fs-fallback`; `.partial-pause.json` deja de
+// ser fuente de resolución de ola (sigue usándose para deps/split).
 //
 // Adicionalmente cubre el normalizador defensivo (CA-4) que tolera AMBOS
 // shapes de issues que aparecen en el wild:
@@ -176,29 +181,32 @@ test('normalizeIssueNumber: cubre los shapes esperados y rechaza inválidos', ()
 });
 
 // -----------------------------------------------------------------------------
-// CA-2 — Fallback a partial-pause cuando waves.json está vacío
+// CA-2 (#4399) — `.partial-pause.json` ya NO es fuente de resolución de ola.
+// Con `waves.json` sin `active_wave`, la cascada cae DIRECTO a `fs-fallback`,
+// ignorando `allowed_issues`. Sin `null` ni crash.
 // -----------------------------------------------------------------------------
 
-test('resolveActiveWave: cae a partial-pause cuando waves.json tiene active_wave=null (CA-2)', () => {
+test('#4399: waves.json active_wave=null IGNORA partial-pause y cae a fs-fallback', () => {
     const dir = mkTmpPipeline();
     try {
         writeWavesJson(dir, null);
+        // partial-pause con datos que ANTES eran adoptados como ola: ahora se ignoran.
         fs.writeFileSync(path.join(dir, '.partial-pause.json'), JSON.stringify({
             allowed_issues: [3253, 3257, '3262', '#3260'],
             created_at: '2026-05-16T20:00:00Z',
             source: 'telegram',
         }));
         const r = resolveActiveWave({ pipelineRoot: dir });
-        assert.equal(r.source, 'partial-pause.json');
-        assert.equal(r.label, 'Ola actual');
-        // Normaliza strings/leading # y deduplica.
-        assert.deepEqual(r.issues, [3253, 3257, 3260, 3262]);
-        assert.equal(r.resolved, true);
-        assert.equal(r.openedAt, '2026-05-16T20:00:00Z');
+        // Sin archivos de pipeline activos → fs-fallback vacío (degradación grácil).
+        assert.equal(r.source, 'fs-fallback');
+        assert.deepEqual(r.issues, []);
+        assert.equal(r.resolved, false);
+        // Nunca `partial-pause.json` (fuente 2 eliminada).
+        assert.notEqual(r.source, 'partial-pause.json');
     } finally { resetCache(); rmrf(dir); }
 });
 
-test('resolveActiveWave: cae a partial-pause cuando waves.json no existe', () => {
+test('#4399: waves.json ausente + partial-pause presente → fs-fallback (no partial-pause)', () => {
     const dir = mkTmpPipeline();
     try {
         // Sin waves.json en disco.
@@ -206,13 +214,16 @@ test('resolveActiveWave: cae a partial-pause cuando waves.json no existe', () =>
             allowed_issues: [4001, 4002],
             created_at: '2026-05-26T00:00:00Z',
         }));
+        // Archivos de pipeline activos SON la fuente real ahora (fs-fallback).
+        fs.writeFileSync(path.join(dir, 'desarrollo/dev/trabajando/7001.pipeline-dev'), '');
         const r = resolveActiveWave({ pipelineRoot: dir });
-        assert.equal(r.source, 'partial-pause.json');
-        assert.deepEqual(r.issues, [4001, 4002]);
+        assert.equal(r.source, 'fs-fallback');
+        // Deriva de los archivos del pipeline, NO de allowed_issues.
+        assert.deepEqual(r.issues, [7001]);
     } finally { resetCache(); rmrf(dir); }
 });
 
-test('resolveActiveWave: cae a partial-pause cuando waves.json tiene issues:[]', () => {
+test('#4399: waves.json issues:[] IGNORA partial-pause y cae a fs-fallback', () => {
     const dir = mkTmpPipeline();
     try {
         writeWavesJson(dir, {
@@ -225,13 +236,19 @@ test('resolveActiveWave: cae a partial-pause cuando waves.json tiene issues:[]',
             created_at: 'x',
         }));
         const r = resolveActiveWave({ pipelineRoot: dir });
-        assert.equal(r.source, 'partial-pause.json');
-        assert.deepEqual(r.issues, [5001]);
+        assert.equal(r.source, 'fs-fallback');
+        assert.deepEqual(r.issues, []);
+        assert.equal(r.resolved, false);
     } finally { resetCache(); rmrf(dir); }
 });
 
+test('#4399: readPartialPauseFile fue eliminada del módulo', () => {
+    // La fuente 2 legacy ya no existe como export interno.
+    assert.equal(typeof _internal.readPartialPauseFile, 'undefined');
+});
+
 // -----------------------------------------------------------------------------
-// CA-3 — Fallback FS cuando no hay waves.json activa ni partial-pause
+// CA-3 — Fallback FS cuando no hay waves.json activa
 // -----------------------------------------------------------------------------
 
 test('resolveActiveWave: fallback FS cuando no hay ningún marker (CA-3)', () => {
@@ -263,17 +280,19 @@ test('resolveActiveWave: degrada a issues:[] cuando no hay nada', () => {
 // Robustez frente a entrada corrupta
 // -----------------------------------------------------------------------------
 
-test('resolveActiveWave: ignora waves.json mal formado y sigue cascada', () => {
+test('resolveActiveWave: ignora waves.json mal formado y cae a fs-fallback (#4399)', () => {
     const dir = mkTmpPipeline();
     try {
         fs.writeFileSync(path.join(dir, 'waves.json'), '{not-json,');
+        // partial-pause presente pero ya no se adopta como ola.
         fs.writeFileSync(path.join(dir, '.partial-pause.json'), JSON.stringify({
             allowed_issues: [9999],
             created_at: 'x',
         }));
+        fs.writeFileSync(path.join(dir, 'desarrollo/dev/pendiente/8888.guru'), '');
         const r = resolveActiveWave({ pipelineRoot: dir });
-        assert.equal(r.source, 'partial-pause.json');
-        assert.deepEqual(r.issues, [9999]);
+        assert.equal(r.source, 'fs-fallback');
+        assert.deepEqual(r.issues, [8888]);
     } finally { resetCache(); rmrf(dir); }
 });
 
