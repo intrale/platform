@@ -2104,6 +2104,39 @@ function presenceLogLink(prefix, ttlMs) {
   } catch { return ''; }
 }
 
+// #4443 — Resolver del texto de la petición vigente (CA-3/CA-4/CA-5) para las
+// cards observacionales de Commander/Sherlock. Módulo puro `lib/presentation-petition`
+// (testeable con `node --test`); acá sólo lo bindeamos al history del pipeline +
+// `redactLogText` (SR-2). Server-side, sin tocar el canal de presencia (SEC-1/SR-3
+// intacto). Devuelve `{full, clipped}` o `null` (→ fallback idle en el render).
+let _presentationPetition;
+try { _presentationPetition = require('./lib/presentation-petition'); }
+catch { _presentationPetition = null; }
+
+function resolvePresentationPetition(startedAt, ttlMs) {
+  if (!_presentationPetition || typeof _presentationPetition.resolvePetitionText !== 'function') return null;
+  try {
+    return _presentationPetition.resolvePetitionText(
+      path.join(PIPELINE, 'commander-history.jsonl'),
+      startedAt,
+      ttlMs,
+      { redact: redactLogText },
+    );
+  } catch { return null; }
+}
+
+// #4443 — Render de la fila de petición dentro de `.eq-card-work` (UX-1: fila
+// propia, no inline con el chip fase·dur·log). Escapa el texto de usuario en el
+// cuerpo Y en el atributo `title` (SR-1/CA-6). Si no hay petición vigente →
+// estado idle explícito "Sin petición activa" (CA-5), sin ocultar la fila (UX-4:
+// altura estable entre estados).
+function presencePetitionRow(pet) {
+  if (pet && typeof pet.clipped === 'string' && pet.clipped) {
+    return '<div class="eq-work-petition" title="' + escapeHtml(pet.full) + '">' + escapeHtml(pet.clipped) + '</div>';
+  }
+  return '<div class="eq-work-petition eq-work-petition-idle">Sin petición activa</div>';
+}
+
 // #3638 CA-F-12 / CA-SEC-9 — Widget de estado del ghost-artifact-cleaner.
 // Renderiza los últimos eventos del audit JSONL escapando TODO valor por
 // escapeHtml() para prevenir XSS desde filenames maliciosos. Estados:
@@ -3830,6 +3863,9 @@ function generateHTML(state) {
       // Mismo resolver que usa el slice del acordeón; si no hay corrida dentro del
       // TTL devuelve null y la card no linkea (sin log fantasma).
       const _logHtml = presenceLogLink('commander', COMMANDER_PRESENCE_TTL_MS);
+      // #4443 — CA-3/CA-4/CA-5: petición vigente resuelta server-side desde el
+      // history, correlacionada por la ventana viva de la presencia (startedAt+TTL).
+      const _petHtml = presencePetitionRow(resolvePresentationPetition(_pres.startedAt, COMMANDER_PRESENCE_TTL_MS));
       commanderPresenceCard =
         '<div class="eq-card eq-card-observational" title="' + escapeHtml('Presencia observacional — no ocupa slot ni se puede cancelar') + '">' +
           '<span class="eq-card-avatar" style="background:' + escapeHtml(_p.color) + '">' + escapeHtml(_p.icon) + '</span>' +
@@ -3841,6 +3877,7 @@ function generateHTML(state) {
                 '<span class="eq-work-dur">' + escapeHtml(fmtDuration(_pres.durationMs)) + '</span>' +
                 _logHtml +
               '</span>' +
+              _petHtml +
             '</div>' +
           '</div>' +
           '<span class="eq-card-observe-pill" aria-label="presencia observacional, no cancelable">👁 observa</span>' +
@@ -3864,6 +3901,9 @@ function generateHTML(state) {
       const _faseLabel = ((_faseIcons[_spres.fase] || '') + ' ' + _spres.fase).trim();
       // #4335 — link al log crudo de la corrida vigente (mtime+TTL, server-side).
       const _logHtml = presenceLogLink('sherlock', SHERLOCK_PRESENCE_TTL_MS);
+      // #4443 — CA-3/UX-5: la "petición" de Sherlock es la MISMA petición de
+      // usuario que está verificando; mismo resolver + TTL, sin rótulo distinto.
+      const _petHtml = presencePetitionRow(resolvePresentationPetition(_spres.startedAt, SHERLOCK_PRESENCE_TTL_MS));
       sherlockPresenceCard =
         '<div class="eq-card eq-card-observational" title="' + escapeHtml('Presencia observacional — no ocupa slot ni se puede cancelar') + '">' +
           '<span class="eq-card-avatar" style="background:' + escapeHtml(_sp.color) + '">' + escapeHtml(_sp.icon) + '</span>' +
@@ -3875,6 +3915,7 @@ function generateHTML(state) {
                 '<span class="eq-work-dur">' + escapeHtml(fmtDuration(_spres.durationMs)) + '</span>' +
                 _logHtml +
               '</span>' +
+              _petHtml +
             '</div>' +
           '</div>' +
           '<span class="eq-card-observe-pill" aria-label="presencia observacional, no cancelable">👁 observa</span>' +
@@ -6021,6 +6062,15 @@ body.standalone .section-collapsed .section-body{display:block !important}
 .eq-card-observational .eq-card-ring{background:var(--in-info,#58a6ff);box-shadow:0 0 0 0 rgba(88,166,255,0.6)}
 .eq-work-item-observe{background:var(--in-info-soft,rgba(88,166,255,0.12))}
 .eq-card-observe-pill{display:inline-flex;align-items:center;gap:4px;font-size:0.72em;color:var(--in-info,#58a6ff);border:1px solid var(--in-info,#58a6ff);border-radius:6px;padding:2px 8px;cursor:default}
+/* #4443 — linea de peticion del usuario (CA-3/CA-4/CA-5, spec UX-1..UX-5).
+   Fila propia dentro de .eq-card-work (flex-wrap): flex-basis:100% fuerza el
+   salto; min-width:0 es obligatorio para que el ellipsis funcione en flex.
+   Truncado 1 linea + contenido completo por title nativo (CA-4). Prefijo 💬
+   decorativo via ::before (fuera del arbol accesible, no interfiere con el
+   escapeHtml del contenido de usuario). */
+.eq-work-petition{flex-basis:100%;width:100%;min-width:0;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--dim);font-size:1em;margin-top:2px}
+.eq-work-petition::before{content:"💬 ";opacity:0.7}
+.eq-work-petition-idle{color:var(--text-dim,#8b949e);font-style:italic}
 
 /* Agent History */
 #agent-history .matrix-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--bd)}
