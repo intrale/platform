@@ -1,68 +1,98 @@
 {
-  "ts": "2026-05-26T23:16:40.958Z",
+  "ts": "2026-07-03T00:25:21.046Z",
   "providers": [
     {
       "provider": "anthropic",
       "label": "Anthropic",
-      "state": "red",
-      "reason_code": "no_key_configured",
+      "state": "green",
+      "reason_code": "cli_oauth_ok",
+      "quota": {
+        "adapterStatus": "ok",
+        "status": "ok",
+        "pct": 6.1
+      },
       "status_code": null,
       "latency_ms": null,
       "rate_limit_hit_24h": 0,
-      "last_checked_at": "2026-05-26T23:16:40.959Z",
+      "last_checked_at": "2026-07-03T00:25:21.121Z",
       "key_status": "absent",
-      "free_tier_notes": null
+      "free_tier_notes": null,
+      "auth_mode": "oauth"
     },
     {
       "provider": "openai",
       "label": "OpenAI / Codex",
-      "state": "red",
-      "reason_code": "forbidden",
-      "status_code": 403,
-      "latency_ms": 1149,
+      "state": "green",
+      "reason_code": "cli_oauth_ok",
+      "quota": {
+        "adapterStatus": "not_implemented",
+        "status": "unknown",
+        "pct": null
+      },
+      "status_code": null,
+      "latency_ms": null,
       "rate_limit_hit_24h": 0,
-      "last_checked_at": "2026-05-26T23:16:42.108Z",
+      "last_checked_at": "2026-07-03T00:25:21.133Z",
       "key_status": "present",
-      "free_tier_notes": null
+      "free_tier_notes": null,
+      "auth_mode": "oauth"
     },
     {
       "provider": "gemini-google",
       "label": "Gemini (Google AI Studio)",
       "state": "green",
       "reason_code": "authenticated",
+      "quota": {
+        "adapterStatus": "not_implemented",
+        "status": "unknown",
+        "pct": null
+      },
       "status_code": 200,
-      "latency_ms": 1062,
+      "latency_ms": 1049,
       "rate_limit_hit_24h": 0,
-      "last_checked_at": "2026-05-26T23:16:43.171Z",
+      "last_checked_at": "2026-07-03T00:25:22.184Z",
       "key_status": "present",
-      "free_tier_notes": "RPM 15 / RPD 1500 / TPM 1M (free) — ver docs/pipeline/multi-provider.md §8."
+      "free_tier_notes": "RPM 15 / RPD 1500 / TPM 1M (free) — ver docs/pipeline/multi-provider.md §8.",
+      "auth_mode": "api_key"
     },
     {
       "provider": "cerebras",
       "label": "Cerebras",
       "state": "green",
       "reason_code": "authenticated",
+      "quota": {
+        "adapterStatus": "not_implemented",
+        "status": "unknown",
+        "pct": null
+      },
       "status_code": 200,
-      "latency_ms": 256,
+      "latency_ms": 295,
       "rate_limit_hit_24h": 0,
-      "last_checked_at": "2026-05-26T23:16:43.427Z",
+      "last_checked_at": "2026-07-03T00:25:22.480Z",
       "key_status": "present",
-      "free_tier_notes": "RPM 30 / TPM 60K (free) — ver docs/pipeline/multi-provider.md §8."
+      "free_tier_notes": "RPM 30 / TPM 60K (free) — ver docs/pipeline/multi-provider.md §8.",
+      "auth_mode": "api_key"
     },
     {
       "provider": "nvidia-nim",
       "label": "NVIDIA NIM",
       "state": "green",
       "reason_code": "authenticated",
+      "quota": {
+        "adapterStatus": "error",
+        "status": "unknown",
+        "pct": null
+      },
       "status_code": 200,
-      "latency_ms": 641,
+      "latency_ms": 475,
       "rate_limit_hit_24h": 0,
-      "last_checked_at": "2026-05-26T23:16:44.069Z",
+      "last_checked_at": "2026-07-03T00:25:22.956Z",
       "key_status": "present",
-      "free_tier_notes": "Free tier sin RPM/RPD/MOQ públicos — ver docs/pipeline/multi-provider.md §8."
+      "free_tier_notes": "Free tier sin RPM/RPD/MOQ públicos — ver docs/pipeline/multi-provider.md §8.",
+      "auth_mode": "api_key"
     }
   ],
-  "green_count": 3,
+  "green_count": 5,
   "yellow_count": 0,
-  "red_count": 2
+  "red_count": 0
 }
