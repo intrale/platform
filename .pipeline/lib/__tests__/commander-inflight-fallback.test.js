@@ -258,9 +258,11 @@ test('CA-1 — 5xx in-flight resuelve a openai-codex con noticeText UX-G1', () =
         assert.equal(d.shouldRetry, true);
         assert.equal(d.secondaryProvider, 'openai-codex');
         assert.equal(d.reason, 'ok');
-        // UX-G1 / G2: copy en voseo argentino, no "Retrying with..."
-        assert.match(d.noticeText, /⚠️/);
-        assert.match(d.noticeText, /reintentando con openai-codex/i);
+        // #4440 CA-2: copy orientado al operador (demora + reintento automático),
+        // sin nombres de provider ni jerga interna en el texto visible.
+        assert.match(d.noticeText, /⏳/);
+        assert.match(d.noticeText, /reintent/i);
+        assert.ok(!/anthropic|openai|codex/i.test(d.noticeText), `fuga de provider: ${d.noticeText}`);
         // CA-3: hash del partial output expuesto, no contenido
         assert.ok(d.partialOutputHash);
         assert.equal(d.partialOutputHash.length, 12);
@@ -275,7 +277,7 @@ test('CA-1 — 5xx in-flight resuelve a openai-codex con noticeText UX-G1', () =
     } finally { cleanup(dir); }
 });
 
-test('CA-1 — timeout_no_new_bytes_30s genera noticeText con motivo "silencio"', () => {
+test('#4440 — timeout_no_new_bytes_30s genera noticeText genérico sin exponer timer', () => {
     const dir = mkTmpPipelineDir();
     try {
         const d = decideWithFakeMP({
@@ -289,11 +291,12 @@ test('CA-1 — timeout_no_new_bytes_30s genera noticeText con motivo "silencio"'
             requestId: 'req-to-1',
         }, makeFakeMultiProvider([]));
         assert.equal(d.shouldRetry, true);
-        assert.match(d.noticeText, /silencio/i);
+        assert.match(d.noticeText, /⏳/);
+        assert.ok(!/silencio|30s|\d+\s*seg/i.test(d.noticeText), `fuga de timer: ${d.noticeText}`);
     } finally { cleanup(dir); }
 });
 
-test('CA-1 — eof_premature genera noticeText con motivo "cortó antes de tiempo"', () => {
+test('#4440 — eof_premature genera noticeText genérico sin jerga de errorClass', () => {
     const dir = mkTmpPipelineDir();
     try {
         const d = decideWithFakeMP({
@@ -307,7 +310,8 @@ test('CA-1 — eof_premature genera noticeText con motivo "cortó antes de tiemp
             requestId: 'req-eof-1',
         }, makeFakeMultiProvider([]));
         assert.equal(d.shouldRetry, true);
-        assert.match(d.noticeText, /cortó la respuesta/i);
+        assert.match(d.noticeText, /⏳/);
+        assert.ok(!/eof|cortó la respuesta|mid-flight/i.test(d.noticeText), `fuga de errorClass: ${d.noticeText}`);
     } finally { cleanup(dir); }
 });
 
@@ -332,7 +336,7 @@ test('CA-5 / G3 — fallback a cerebras genera segunda línea ℹ️ tool_use de
         }, makeFakeMultiProvider(['anthropic'])); // anthropic gated → codex excluded → cerebras
 
         assert.equal(d.secondaryProvider, 'cerebras');
-        assert.match(d.noticeText, /⚠️/);
+        assert.match(d.noticeText, /⏳/);
         assert.match(d.noticeText, /ℹ️.*Modo conversacional/i);
         assert.equal(d.supportsToolUse, false);
     } finally { cleanup(dir); }
@@ -661,28 +665,43 @@ test('formatPrecheckReport reporta ranking activo en formato legible', () => {
 // formatInflightFallbackNotice — verificación exhaustiva de motivos
 // -----------------------------------------------------------------------------
 
-test('formatInflightFallbackNotice mapea cada errorClass al copy correcto', () => {
-    const cases = [
-        { ec: 'transient_5xx',           rx: /error del servidor/i },
-        { ec: '5xx',                     rx: /error del servidor/i },
-        { ec: 'timeout_no_new_bytes_30s',rx: /silencio/i },
-        { ec: 'timeout',                 rx: /silencio/i },
-        { ec: 'eof_premature',           rx: /cortó la respuesta/i },
-        { ec: 'rate_limit',              rx: /rate-limit/i },
+test('#4440 CA-2 — formatInflightFallbackNotice NO expone jerga interna para ningún errorClass', () => {
+    // Aunque la firma sigue recibiendo primaryProvider/secondaryProvider/errorClass
+    // (backward-compat con los callers), NINGUNO debe filtrarse al texto visible.
+    const errorClasses = [
+        'transient_5xx', '5xx', 'timeout_no_new_bytes_30s', 'timeout',
+        'eof_premature', 'rate_limit', 'unknown', undefined,
     ];
-    for (const c of cases) {
+    for (const ec of errorClasses) {
         const t = inflight.formatInflightFallbackNotice({
             primaryProvider: 'anthropic',
             secondaryProvider: 'openai-codex',
-            errorClass: c.ec,
+            errorClass: ec,
             supportsToolUse: true,
         });
-        assert.match(t, c.rx, `errorClass=${c.ec} → texto=${t}`);
-        assert.match(t, /⚠️/);
-        assert.match(t, /reintentando con openai-codex/i);
-        // No debe haber jerga técnica de stack/request_id
+        // Estado A (demora + reintento automático en curso)
+        assert.match(t, /⏳/, `errorClass=${ec} → texto=${t}`);
+        assert.match(t, /reintent/i, `errorClass=${ec} → debe comunicar reintento automático`);
+        // CA-2 — sin nombres de provider, timers, errorClass ni conteo de reintentos
+        assert.ok(!/anthropic|openai|codex|cerebras|gemini|groq/i.test(t), `fuga de provider: ${t}`);
+        assert.ok(!/30s|30 segundos|\d+\s*seg/i.test(t), `fuga de timer: ${t}`);
+        assert.ok(!/errorClass|transient_5xx|eof_premature|rate-limit|rate_limit|mid-flight|sin clasificar/i.test(t), `fuga de errorClass: ${t}`);
+        assert.ok(!/reintentando con|reintento \d/i.test(t), `fuga de conteo/target de reintento: ${t}`);
+        // Sin jerga técnica de stack/request_id
         assert.ok(!/stack|trace|request_id|prompt_hash/i.test(t));
     }
+});
+
+test('#4440 — formatInflightFallbackNotice varía por requestId (semilla determinística)', () => {
+    const mk = (rid) => inflight.formatInflightFallbackNotice({
+        primaryProvider: 'anthropic', secondaryProvider: 'openai-codex',
+        errorClass: 'timeout', supportsToolUse: true, requestId: rid,
+    });
+    // Mismo requestId → mismo mensaje (estable dentro del turno)
+    assert.equal(mk('req-abc'), mk('req-abc'));
+    // Al menos dos requestId distintos producen textos distintos entre un set variado
+    const set = new Set(['a', 'b', 'c', 'd', 'e', 'f'].map(mk));
+    assert.ok(set.size >= 2, 'debería rotar entre variantes');
 });
 
 test('formatInflightFallbackNotice agrega segunda línea ℹ️ cuando supportsToolUse=false', () => {
@@ -692,9 +711,46 @@ test('formatInflightFallbackNotice agrega segunda línea ℹ️ cuando supportsT
         errorClass: 'transient_5xx',
         supportsToolUse: false,
     });
-    assert.match(t, /⚠️/);
+    assert.match(t, /⏳/);
     assert.match(t, /ℹ️/);
     assert.match(t, /Modo conversacional/i);
+});
+
+// -----------------------------------------------------------------------------
+// #4440 — cannedAllProvidersFailedResponse: honestidad de estado + sin jerga
+// -----------------------------------------------------------------------------
+
+test('#4440 CA-1 — cannedAllProvidersFailedResponse rama NO verificada no afirma falla total', () => {
+    const mp = require('../commander/multi-provider');
+    // Default (sin flag) y explícito false: ambos NO deben afirmar "TODOS".
+    for (const args of [{}, { verifiedAllFailed: false }, { chainTried: ['anthropic', 'openai-codex'] }]) {
+        const t = mp.cannedAllProvidersFailedResponse(args);
+        assert.ok(!/TODOS/i.test(t), `no debe afirmar falla total: ${t}`);
+        assert.match(t, /⚠️/);
+        // CA-3 — expectativa/acción clara: comandos determinísticos
+        assert.match(t, /\/status|\/listado|\/lanzar/);
+    }
+});
+
+test('#4440 CA-1 — cannedAllProvidersFailedResponse rama verificada puede afirmar imposibilidad total', () => {
+    const mp = require('../commander/multi-provider');
+    const t = mp.cannedAllProvidersFailedResponse({ verifiedAllFailed: true, chainTried: ['anthropic', 'openai-codex'] });
+    assert.match(t, /⚠️/);
+    assert.match(t, /no.*(tengo|puedo).*IA|IA/i, `debe comunicar imposibilidad de IA: ${t}`);
+    assert.match(t, /\/status|\/listado|\/lanzar/);
+});
+
+test('#4440 CA-2 — cannedAllProvidersFailedResponse nunca interpola chainTried ni nombres de provider', () => {
+    const mp = require('../commander/multi-provider');
+    for (const verifiedAllFailed of [true, false]) {
+        const t = mp.cannedAllProvidersFailedResponse({
+            verifiedAllFailed,
+            chainTried: ['anthropic', 'openai-codex', 'cerebras'],
+        });
+        assert.ok(!/Intenté con/i.test(t), `fuga de chainTried: ${t}`);
+        assert.ok(!/anthropic|openai|codex|cerebras|gemini|groq/i.test(t), `fuga de provider: ${t}`);
+        assert.ok(!/30s|\d+\s*seg|reintento \d|fallback/i.test(t), `fuga de jerga: ${t}`);
+    }
 });
 
 // -----------------------------------------------------------------------------

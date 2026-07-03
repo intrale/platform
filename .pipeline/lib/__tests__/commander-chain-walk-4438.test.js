@@ -250,27 +250,37 @@ test('#4438 CA-3 — auditCommanderRequest sin chainEvaluated deja chain_evaluat
 });
 
 // -----------------------------------------------------------------------------
-// CA-3 — la alerta al operador (cannedAllProvidersFailedResponse) enumera los
-// providers evaluados y su motivo, REDACTADO (nada de secretos en el chat).
+// CA-3 (#4438) — el requisito durable es que NINGÚN secreto llegue al chat.
+// #4440 SUPERSEDE la parte de UX de este CA: el mensaje al operador ya NO
+// enumera providers/modelos/motivos (CA-2 de #4440: "ningún mensaje visible
+// expone nombres de providers, modelos de fallback, timers ni conteo de
+// reintentos"). El detalle por eslabón sigue viajando redactado al audit
+// server-side (cubierto por los tests de auditCommanderRequest de arriba).
+// Estos tests, por tanto, verifican la NO-fuga de jerga en el copy visible.
 // -----------------------------------------------------------------------------
-test('#4438 CA-3 — cannedAllProvidersFailedResponse: detalle por provider redactado', () => {
+test('#4438/#4440 — cannedAllProvidersFailedResponse nunca filtra secretos ni nombres de provider al chat', () => {
     const msg = cmp.cannedAllProvidersFailedResponse({
         chainTried: ['openai-codex'],
+        verifiedAllFailed: true,
         chainEvaluated: [
             { provider: 'openai-codex', reason: 'spawn_throw', details: 'token sk-ant-api03-SECRET0123456789abcdef0123456789 filtrado' },
             { provider: 'gemini-google', reason: 'quota_exhausted', details: 'sin cuota' },
         ],
     });
     assert.ok(!/sk-ant-api03-SECRET/.test(msg), 'el mensaje al operador NO debe contener la API key');
-    assert.match(msg, /openai-codex/, 'enumera el provider intentado');
-    assert.match(msg, /gemini-google/, 'enumera el resto de la cadena evaluada');
-    assert.match(msg, /quota_exhausted/, 'muestra el motivo por eslabón');
+    // #4440 CA-2 — el copy visible ya NO enumera providers/modelos/motivos.
+    assert.ok(!/openai-codex/.test(msg), 'no expone el provider intentado');
+    assert.ok(!/gemini-google/.test(msg), 'no expone el resto de la cadena');
+    assert.ok(!/quota_exhausted|spawn_throw/.test(msg), 'no expone motivos técnicos por eslabón');
     // Los comandos determinísticos siguen anunciados (accionabilidad UX).
     assert.match(msg, /\/status/);
 });
 
-test('#4438 CA-3 — cannedAllProvidersFailedResponse sin chainEvaluated preserva texto base', () => {
+test('#4438/#4440 — cannedAllProvidersFailedResponse sin chainEvaluated no interpola jerga de reintento', () => {
     const msg = cmp.cannedAllProvidersFailedResponse({ chainTried: ['openai-codex'] });
-    assert.match(msg, /Intenté con: openai-codex/);
-    assert.ok(!/Detalle de la cadena/.test(msg), 'sin data, no agrega bloque de detalle');
+    // #4440 CA-2 — el texto "Intenté con: <provider>" fue eliminado del copy.
+    assert.ok(!/Intenté con/.test(msg), 'no menciona la cadena intentada');
+    assert.ok(!/openai-codex/.test(msg), 'no menciona nombres de provider');
+    assert.ok(!/Detalle de la cadena/.test(msg), 'no agrega bloque de detalle');
+    assert.match(msg, /\/status/, 'mantiene la acción determinística para el operador');
 });
