@@ -64,6 +64,12 @@ const PANEL_CSS = `
 .mph-state.yellow { background: var(--in-warn-soft, rgba(245,191,103,.14)); color: var(--in-warn, #f5bf67); }
 .mph-state.red { background: var(--in-bad-soft, rgba(248,113,113,.14)); color: var(--in-bad, #f87171); }
 .mph-state.nodata { background: var(--in-bg-3); color: var(--in-fg-dim); }
+/* #4364 — badge de salud/cuota (dimensión distinta a la actividad de despacho).
+   Reutiliza los tokens semánticos --in-ok/--in-warn/--in-bad (sin hardcodeo). */
+.mph-badges { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.mph-state.health-ok { background: var(--in-ok-soft, rgba(52,211,153,.14)); color: var(--in-ok, #34d399); }
+.mph-state.health-gated { background: var(--in-warn-soft, rgba(245,191,103,.14)); color: var(--in-warn, #f5bf67); }
+.mph-state.health-broken { background: var(--in-bad-soft, rgba(248,113,113,.14)); color: var(--in-bad, #f87171); }
 .mph-metrics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 14px; margin: 10px 0; }
 .mph-metric { display: flex; flex-direction: column; gap: 2px; }
 .mph-metric-label { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--in-fg-dim); }
@@ -175,11 +181,69 @@ function iconSvg(name, size) {
     return '<svg class="' + cls + '" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-' + name + '"></use></svg>';
 }
 
+// -----------------------------------------------------------------------------
+// #4364 — Badge de salud/cuota por provider (lógica PURA, sin I/O ni DOM).
+//
+// Fuente de verdad única: estas funciones se EXPORTAN para `node --test` y, al
+// mismo tiempo, se inyectan literalmente en CLIENT_JS vía `.toString()`. Así el
+// browser ejecuta EXACTAMENTE el mismo código que testeamos (sin drift).
+//
+// Mapeo cerrado (acordado seguridad + guru + PO):
+//   ok  → sano (health-ok) · gated → agotado (health-gated) ·
+//   unknown/otros → inutilizable (health-broken) · not_applicable → null
+//   (no se pinta badge de salud) · sin match tras normalizar → 'sin dato'.
+// -----------------------------------------------------------------------------
+
+// Normalización de id: las cards usan 'openai' pero el endpoint devuelve el id
+// canónico 'openai-codex' (inverso de QUOTA_PROVIDER_ALIAS). Sin match → el
+// caller cae al fallback 'sin dato' visible (CA-4, no ocultar el fallo).
+function normalizeHealthId(pid) {
+    return pid === 'openai' ? 'openai-codex' : pid;
+}
+
+function healthById(pid, providers) {
+    const list = Array.isArray(providers) ? providers : [];
+    const canon = normalizeHealthId(pid);
+    return list.find((h) => h && h.id === canon) || null;
+}
+
+function healthBadge(pid, providers) {
+    const h = healthById(pid, providers);
+    if (!h) return { cls: 'nodata', label: 'sin dato', icon: 'ic-provider-unknown' };
+    switch (h.status) {
+        case 'ok':
+            return { cls: 'health-ok', label: 'sano', icon: 'ic-health-ok' };
+        case 'gated':
+            return { cls: 'health-gated', label: 'agotado', icon: 'ic-quota-exhausted', resets_at: h.resets_at || null };
+        case 'not_applicable':
+            return null; // provider fuera de allowlist de cuota → no se pinta badge de salud (CA-3).
+        default:
+            return { cls: 'health-broken', label: 'inutilizable', icon: 'ic-health-dead' }; // unknown + cualquier otro.
+    }
+}
+
 // El cliente JS corre en el browser. Todo dato del audit se escapa con
 // escapeHtml() antes de tocar el DOM (defensa XSS A03 / CA-5).
 const CLIENT_JS = `
 const PROVIDER_ORDER = ${JSON.stringify(PROVIDER_ORDER)};
-let mphState = { csrfToken: null, screen: null, sherlock: null, timeline: null, config: null, pinging: {} };
+let mphState = { csrfToken: null, screen: null, sherlock: null, timeline: null, config: null, health: null, pinging: {} };
+
+// #4364 — funciones puras compartidas con el server (single source of truth).
+${normalizeHealthId.toString()}
+${healthById.toString()}
+${healthBadge.toString()}
+// Wrapper de render: construye el <span> del badge de salud (o '' si null).
+function healthBadgeHtml(pid){
+  const b = healthBadge(pid, (mphState.health && mphState.health.providers) || []);
+  if(!b) return ''; // not_applicable → no se pinta badge de salud (CA-3).
+  let title = 'Salud / cuota';
+  if(b.cls==='health-gated' && b.resets_at){
+    try{ const t=new Date(b.resets_at).toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'}); if(t) title += ' · se restablece '+t; }catch(e){}
+  }
+  return '<span class="mph-state '+b.cls+'" title="'+escapeHtml(title)+'">'+
+    '<svg class="mph-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#'+escapeHtml(b.icon)+'"></use></svg>'+
+    escapeHtml(b.label)+'</span>';
+}
 
 function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function setMsg(t){ const el=document.getElementById('mph-msg'); if(el) el.textContent=t; }
@@ -267,7 +331,10 @@ function renderCards(){
       '<div class="mph-card" style="--row-accent:var('+token+')">'+
         '<div class="mph-card-head">'+
           '<div class="mph-card-name">'+providerIconSvg(pid)+'<span>'+escapeHtml(pid)+'</span></div>'+
-          '<span class="mph-state '+st.cls+'"><svg class="mph-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-'+st.icon+'"></use></svg>'+escapeHtml(st.label)+'</span>'+
+          '<div class="mph-badges">'+
+            '<span class="mph-state '+st.cls+'" title="Actividad de despacho"><svg class="mph-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="/assets/icons/sprite.svg#ic-'+st.icon+'"></use></svg>'+escapeHtml(st.label)+'</span>'+
+            healthBadgeHtml(pid)+
+          '</div>'+
         '</div>'+
         '<div class="mph-metrics">'+
           '<div class="mph-metric"><span class="mph-metric-label">Despachos 24h</span><span class="mph-metric-val">'+escapeHtml(String(c.dispatches_24h||0))+'</span></div>'+
@@ -431,16 +498,20 @@ async function loadScreen(){
 async function loadAll(){
   setMsg('Cargando…');
   await fetchCsrf();
-  const [screen, sherlock, timeline, cfg] = await Promise.all([
+  const [screen, sherlock, timeline, cfg, health] = await Promise.all([
     fetchJson('/api/multi-provider/health-screen'),
     fetchJson('/api/multi-provider/sherlock-pct'),
     fetchJson('/api/multi-provider/health-timeline'),
     fetchJson('/api/multi-provider/config'),
+    // #4364 — estado de salud/cuota sanitizado (cache TTL ≥5min server-side; el
+    // poll de 30s sirve cache, NO martilla APIs). Sin endpoint nuevo.
+    fetchJson('/api/pulpo/provider-health'),
   ]);
   if(screen&&screen.ok) mphState.screen=screen;
   if(sherlock&&sherlock.ok) mphState.sherlock=sherlock;
   if(timeline&&timeline.ok) mphState.timeline=timeline;
   if(cfg&&cfg.config) mphState.config=cfg.config;
+  if(health&&Array.isArray(health.providers)) mphState.health=health;
   renderCards(); renderSherlock(); renderMatrix(); renderTimeline();
   const ts=(mphState.screen&&mphState.screen.ts)?new Date(mphState.screen.ts).toLocaleTimeString('es-AR'):'—';
   setMsg('Actualizado '+ts);
@@ -503,4 +574,8 @@ module.exports = {
     PANEL_CSS,
     CLIENT_JS,
     PROVIDER_ORDER,
+    // #4364 — lógica pura de mapeo/normalización del badge de salud (testeable).
+    normalizeHealthId,
+    healthById,
+    healthBadge,
 };
