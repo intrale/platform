@@ -32,7 +32,7 @@ const { CONFIRM_MODAL_JS } = require('./confirm-modal.js');
 // renderNavTabsSsr (markup SSR) y loadIconSprite (cache compartido del SVG).
 // home.js consume todo desde aca para no duplicar el catalogo de tabs ni
 // abrir un segundo cache del sprite (mantiene paridad con satellites.js).
-const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
+const { renderNavTabsSsr, loadIconSprite, navMoreAutoCloseClientScript } = require('./nav-tabs');
 
 // #3954 EP8-H1 — Semáforo global explicable (pulpo + infra + cuota + anomalía).
 // Función pura compartida con dashboard.js (sin dependencia circular).
@@ -2003,8 +2003,20 @@ async function tickHeader(){
         if(!badge) continue;
         badge.textContent = count;
         badge.classList.remove('area-pill-badge-warn','area-pill-badge-bad','area-pill-badge-zero');
-        if(count === 0) badge.classList.add('area-pill-badge-zero');
-        else if(area === 'bloqueados' && count > 0) badge.classList.add('area-pill-badge-bad');
+        // #4454 — placeholder '·' (ola degradada) o 0 real → estilo atenuado.
+        // El placeholder expone aria/title "sin datos de la ola" para lectores
+        // de pantalla (guideline UX); el 0 real no lo lleva.
+        const isPlaceholder = (typeof count !== 'number' && count !== '0' && isNaN(Number(count)));
+        if(isPlaceholder){
+            badge.classList.add('area-pill-badge-zero');
+            badge.setAttribute('title','sin datos de la ola');
+            badge.setAttribute('aria-label','sin datos de la ola');
+        } else {
+            badge.removeAttribute('title');
+            badge.removeAttribute('aria-label');
+            if(Number(count) === 0) badge.classList.add('area-pill-badge-zero');
+            else if(area === 'bloqueados' && Number(count) > 0) badge.classList.add('area-pill-badge-bad');
+        }
     }
     // Priority Windows: pills clickeables solo visibles si están active.
     const pw = d.priorityWindows || {};
@@ -5265,7 +5277,8 @@ window.__VIEW_BOOT__ = ${JSON.stringify({
 </script>
 <script>${FETCH_CLIENT_JS}
 ${CONFIRM_MODAL_JS}
-${script}</script>
+${script}
+${navMoreAutoCloseClientScript()}</script>
 </body>
 </html>`;
 }

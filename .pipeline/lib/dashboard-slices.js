@@ -527,8 +527,42 @@ function headerSlice(state, ctx) {
             for (const e of entries) if (e.estado === 'trabajando') equipoActive++;
         }
     }
-    const pipelineActive = Object.keys(state.issueMatrix || {}).length;
-    const bloqueadosCount = (state.bloqueados || []).length;
+    // #4454 (defecto 1) — Los badges Pipeline/Issues/Matriz deben reflejar la
+    // OLA ACTIVA, no el pipeline global. Antes: Object.keys(state.issueMatrix)
+    // contaba TODO el pipeline (p.ej. 72) en vez de los issues de la ola (p.ej.
+    // 18/20). Fuente de verdad = `state.activeWave.issues` (poblado por
+    // wave-resolver.resolveActiveWave() en dashboard.js — mismo origen que la
+    // vista de ola). Shape confirmado: number[] (enteros planos ordenados).
+    const waveIssues = (state.activeWave && Array.isArray(state.activeWave.issues))
+        ? state.activeWave.issues
+        : [];
+    // Fallback anti-0-engañoso: si el resolver degradó y la ola viene vacía,
+    // mostramos placeholder '·' en vez de 0 para no reintroducir el defecto
+    // invertido (el badge SSR ya arranca en '·' con clase area-pill-badge-zero).
+    const pipelineActive = waveIssues.length > 0 ? waveIssues.length : '·';
+
+    // #4454 (defecto 1, bloqueados) — El contador de bloqueados sólo miraba
+    // `state.bloqueados` (bloqueados-humano, hoy vacío → 0). Debe UNIR los
+    // bloqueados-humano con los bloqueados-por-dependencias (markers en
+    // `bloqueado-dependencias/`, misma fuente filesystem que consume el
+    // brazoDesbloqueo y la vista /bloqueados). Dedup por número de issue. NO se
+    // acota a la ola activa a propósito: un issue puede estar bloqueado fuera de
+    // la ola y el operador necesita verlo (evita reintroducir el 0 engañoso).
+    const humanBlocked = (state.bloqueados || [])
+        .map(b => b && (b.issue ?? b.number))
+        .filter(n => Number.isFinite(Number(n)))
+        .map(Number);
+    let depBlocked = [];
+    try {
+        const rebote = require('./rebote-classifier');
+        if (typeof rebote.listDependencyBlockedMarkers === 'function') {
+            depBlocked = rebote.listDependencyBlockedMarkers()
+                .map(m => m && m.issue)
+                .filter(n => Number.isFinite(Number(n)))
+                .map(Number);
+        }
+    } catch { /* sin lib → sólo bloqueados-humano; nunca revienta el header */ }
+    const bloqueadosCount = new Set([...humanBlocked, ...depBlocked]).size;
     const historialCount = (state.actividad || []).length;
 
     // Priority windows (QA/Build) — bloquean dev/build cuando la cola QA
