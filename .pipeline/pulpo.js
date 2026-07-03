@@ -81,6 +81,10 @@ const commanderMP = require('./lib/commander/multi-provider');
 // pregunta de estado en vivo inventan una explicación plausible pero falsa
 // (incidente Cerebras/Whisper 2026-06-05). No-op para providers agénticos.
 const commanderApiContext = require('./lib/commander/api-context-pack');
+// #3837 — Retrieval acotado (RAG) para providers API-pelados: compone material
+// REAL del repo (logs + CLAUDE.md) sobre el context-pack estático. Síncrono a
+// propósito para no romper el guard sync del fallback (#4318). No-op agénticos.
+const commanderApiRag = require('./lib/commander/api-rag');
 // #3577 — Detectores in-stream del Commander en modo SHADOW (parte 1/2 del
 // split de #3472). Observan first-byte/stream-gap/eof-premature/transient-5xx
 // y los emiten al audit log SIN matar el primario ni spawnear secundario.
@@ -9866,8 +9870,31 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
             // Para providers API-pelados (cerebras, nvidia-nim) aumentamos el
             // system prompt con contexto del proyecto + guardrail anti-alucinación.
             // No-op para providers agénticos: devuelve la persona tal cual.
-            const systemForProvider = commanderApiContext.augmentSystemPromptForProvider(
+            let systemForProvider = commanderApiContext.augmentSystemPromptForProvider(
               fallbackParts.systemPrompt, provider, { root: ROOT });
+            // #3837 — COMPONER retrieval acotado (RAG) encima del context-pack
+            // estático: material REAL del repo (logs + CLAUDE.md) relacionado con
+            // la pregunta, para que el provider API-pelado funde su respuesta en
+            // hechos y no invente (incidente Cerebras/Whisper). Síncrono a
+            // propósito (no rompe el guard sync #4318). No-op para agénticos y
+            // best-effort: cualquier fallo cae al context-pack estático (SEC-6).
+            if (commanderApiContext.isApiPeladaProvider(provider)) {
+              try {
+                const ragBlock = commanderApiRag.augmentPromptWithRag({
+                  prompt: fallbackParts.userMessage,
+                  provider,
+                  root: ROOT,
+                  pipelineDir: PIPELINE,
+                });
+                if (ragBlock) {
+                  systemForProvider = `${systemForProvider}\n\n${ragBlock}`;
+                  log('commander', `🔎 provider API-pelado "${provider}": inyecto ${ragBlock.length} chars de material RAG (grounding real).`);
+                }
+              } catch (ragErr) {
+                // Fail-closed: degradar al context-pack estático (SEC-6).
+                log('commander', `⚠️ RAG para "${provider}" falló (best-effort, degrado a context-pack estático): ${ragErr.message}`);
+              }
+            }
             fs.writeFileSync(sysFile, systemForProvider, 'utf8');
           } catch { sysFile = null; }
           return sysFile
