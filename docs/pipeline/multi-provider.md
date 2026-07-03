@@ -20,6 +20,8 @@
 10. [Parser robusto de errores in-flight del Commander (#3434)](#10-parser-robusto-de-errores-in-flight-del-commander-3434) — receta para agregar provider, threat model, anti-patterns.
 11. [Fallback in-flight del Commander (#3275)](#11-fallback-in-flight-del-commander-3275) — gate UX, dedupe, tests.
 12. [Sherlock verifier — timeout y providers (#3484)](#12-sherlock-verifier--timeout-y-providers-3484) — opción B spawn-CLI, timeout cap, soft-timeout, audit enriquecido. §12.8 cubre swap intra-provider para preservar adversariality (#3501).
+13. [Alerta y switch preventivo por cuota de proveedor (#4282)](#13-alerta-y-switch-preventivo-por-cuota-de-proveedor-4282) — resiliencia anticipatoria: avisa y degrada el primary antes de reventar la cuota.
+14. [Documentación operativa multi-provider (post-ola N+1)](#14-documentación-operativa-multi-provider-post-ola-n1) — smoke test reproducible, telemetría, health en vivo, failover con evidencia y comparación pre/post ola N+1 (#4405).
 
 > **Convención:** todos los paths `.pipeline/...` son relativos a la raíz del repo (`C:\Workspaces\Intrale\platform\`). Todos los comandos asumen Node.js 21 disponible en PATH.
 
@@ -2104,6 +2106,276 @@ Cobertura del módulo nuevo: ~98% líneas / ~82% ramas / 100% funciones.
 
 ---
 
+## 14. Documentación operativa multi-provider (post-ola N+1)
+
+Sección **de cierre del épico multi-provider** (#3791, split D7 · #4405). Consolida,
+en un solo lugar, cómo un operador **reproduce** las cuatro capas operativas que
+entregaron los hijos #4401–#4404 y las **verifica sin adivinar**: smoke test,
+telemetría de costo, health en vivo y failover. Todos los comandos de acá se
+ejecutaron contra la implementación real en `main` y su salida está pegada desde
+la ejecución (no inventada).
+
+> **Higiene de secretos (obligatoria):** ningún comando de esta sección lleva
+> keys literales. Las credenciales se hidratan con el cargador único
+> [`.pipeline/lib/credentials.js`](../../.pipeline/lib/credentials.js) (fuente
+> `~/.claude/secrets/credentials.json`) y se referencian por placeholder
+> (`$ANTHROPIC_API_KEY`, `$GROQ_API_KEY`, `$GEMINI_API_KEY`, `$CEREBRAS_API_KEY`, …).
+> **Regla del proyecto:** las API keys se cargan por terminal de Windows, **nunca
+> por Telegram**, y viven solo en `credentials.json`. Toda evidencia (logs,
+> screenshots) va **redactada** — sin JWT, `Authorization`, ni keys visibles.
+
+### 14.1 Smoke test reproducible
+
+El harness CLI que ejerce la matriz `skill × provider` es
+[`.pipeline/tools/multi-provider-smoke-test.js`](../../.pipeline/tools/multi-provider-smoke-test.js)
+(Node puro, sin deps). Building blocks DI en
+[`.pipeline/lib/multi-provider/smoke-test.js`](../../.pipeline/lib/multi-provider/smoke-test.js).
+
+**Invocación (produce: matriz de cobertura + audit hash-chain + sign-off Telegram):**
+
+```bash
+# Ayuda / flags disponibles
+node .pipeline/tools/multi-provider-smoke-test.js --help
+
+# Matriz completa (todos los skills LLM × todos los providers LLM)
+node .pipeline/tools/multi-provider-smoke-test.js
+
+# Acotar a una celda concreta (útil para diagnosticar un provider)
+node .pipeline/tools/multi-provider-smoke-test.js --skill=guru --provider=cerebras
+
+# Ensayo sin invocar providers (coverage con PASS stub) — no gasta cuota
+node .pipeline/tools/multi-provider-smoke-test.js --dry-run --no-telegram --no-create-issues
+```
+
+**Requisito operativo (fail-closed):** el smoke **solo corre dentro de una ventana
+de coordinación** — pausa total (`.pausa` → `.pipeline/.paused`) **o** pausa
+parcial (`.pipeline/.partial-pause.json`) con `allowed_skills` incluyendo
+`multi-provider-smoke-test`. Fuera de ventana aborta con `exit 2` **antes de tocar
+ningún provider** (evita interferir con el pipeline productivo). Output real:
+
+```text
+[smoke-test] FATAL [smoke-test] El pipeline está 'running' sin ventana habilitada
+para 'multi-provider-smoke-test'. Activar '.pausa' (halt total) O extender
+'.partial-pause.json' con allowed_skills: ['multi-provider-smoke-test'].
+# exit code = 2
+```
+
+**Salida esperada dentro de ventana** (ejemplo real, `--dry-run` acotado a
+`guru × cerebras`; con credenciales presentes vía `credentials.js`):
+
+```text
+[smoke-test] Pipeline detenido (.pausa) — ventana segura.
+[smoke-test] Matriz construida: 95 combinaciones (skills LLM × providers LLM).
+[smoke-test] Tras filtros CLI: 1 combinaciones.
+[smoke-test] Credenciales cerebras: OK (credenciales presentes)
+[smoke-test] Skipped (--dry-run)
+[smoke-test] coverage.json escrito (1 entries, summary={"pass":1,"warn":0,"fail":0,...})
+{ "ok": true, "run_id": "run-...", "summary": { "pass": 1, ... },
+  "coverage_path": ".../.pipeline/multi-provider-coverage.json", "fail_issues": [] }
+# exit code = 0
+```
+
+**Degradado esperado:** si a un provider free le falta cuota/credencial, su celda
+cae a `WARN`/`SKIPPED` (no rompe la corrida); los `FAIL` reales generan issue
+automático (salvo `--no-create-issues`) con metadata segura (sin raw output del
+provider). Artefactos que deja: `.pipeline/multi-provider-coverage.json` (matriz
+canónica) y `.pipeline/audit/multi-provider-smoke-test-<fecha>.jsonl` (audit
+hash-chain).
+
+### 14.2 Telemetría y diagnóstico
+
+El writer de telemetría de costo por provider es
+[`.pipeline/lib/metrics/provider-cost.js`](../../.pipeline/lib/metrics/provider-cost.js)
+(#4403 · D4). El pulpo escribe **una línea JSON por ejecución de agente** al cerrar
+su lifecycle ([`.pipeline/pulpo.js`](../../.pipeline/pulpo.js), bloque on-exit
+independiente y *never-throws*).
+
+**Ruta (fuente de verdad):** `.pipeline/state/provider-cost.jsonl`.
+
+> Es un **artefacto de runtime, no versionado**: no existe hasta que el pipeline
+> (o el smoke) corre al menos un agente. Su ausencia con `ls` **no es un bug** —
+> es el estado inicial en un checkout limpio.
+
+**Esquema — whitelist estricta de 7 campos** (asignación literal, sin spread; los
+numéricos coercionados con `Number()`; `status` sanitizado para redactar secretos
+y stripear CR/LF anti log-injection):
+
+| Campo | Tipo | Significado |
+|---|---|---|
+| `provider` | string | provider resuelto (`anthropic`, `openai-codex`, `cerebras`, …) |
+| `skill` | string | skill del agente (`backend-dev`, `guru`, …) |
+| `issue` | number\|null | número de issue procesado |
+| `tokens_in` | number | tokens de entrada (total canónico del adapter) |
+| `tokens_out` | number | tokens de salida |
+| `latency_ms` | number | latencia de la ejecución en ms |
+| `status` | string | `ok` \| `error…` (sanitizado — nunca ecoa la key en un 401) |
+
+**Ejemplo de línea real** (generada por el writer de producción; JSON válido —
+verificado con `JSON.parse`):
+
+```json
+{"provider":"anthropic","skill":"backend-dev","issue":4405,"tokens_in":18234,"tokens_out":2871,"latency_ms":41230,"status":"ok"}
+```
+
+**Nota de seguridad:** el archivo contiene **solo métricas** (provider, skill,
+tokens, latencia, estado). **No** guarda credenciales ni raw output del provider.
+Si alguna vez apareciera material sensible en `status`, es un bug del sanitizador
+— reportar como hallazgo aparte.
+
+**Lectura / agregación por provider.** El entorno del pipeline es **Node puro (no
+hay `jq` instalado)**; el reader canónico es el mismo módulo que consume el
+dashboard, `readProviderCostBreakdown`:
+
+```bash
+# Agregación oficial (la misma que alimenta la pantalla Costos del dashboard)
+node -e "const {readProviderCostBreakdown}=require('./.pipeline/lib/metrics/provider-cost'); \
+  console.log(JSON.stringify(readProviderCostBreakdown({file:'.pipeline/state/provider-cost.jsonl'}),null,2));"
+```
+
+Salida real sobre las dos líneas de ejemplo:
+
+```json
+{
+  "hasData": true,
+  "byProvider": {
+    "anthropic":    { "tokens_in": 18234, "tokens_out": 2871, "sessions": 1, "errors": 0 },
+    "openai-codex": { "tokens_in": 9120,  "tokens_out": 1440, "sessions": 1, "errors": 1 }
+  },
+  "totalSessions": 2
+}
+```
+
+Alternativa sin el módulo (one-liner Node, sin deps), útil para inspección ad-hoc:
+
+```bash
+node -e 'const fs=require("fs"); \
+  const rows=fs.readFileSync(".pipeline/state/provider-cost.jsonl","utf8").split("\n").filter(Boolean).map(JSON.parse); \
+  const by={}; for(const r of rows){const b=by[r.provider]??={sessions:0,tokens_in:0,tokens_out:0,errors:0}; \
+  b.sessions++; b.tokens_in+=r.tokens_in; b.tokens_out+=r.tokens_out; if(String(r.status).startsWith("error"))b.errors++;} \
+  console.log(JSON.stringify(by,null,2));'
+```
+
+Degrada a `{ hasData:false, byProvider:{}, totalSessions:0 }` si el archivo falta
+o está vacío (never-throws).
+
+### 14.3 Health check en tiempo real
+
+El health honesto por provider (#4402 · D3) lo produce el cron
+[`.pipeline/lib/multi-provider/health-cron.js`](../../.pipeline/lib/multi-provider/health-cron.js),
+con render en
+[`.pipeline/lib/multi-provider/health-screen.js`](../../.pipeline/lib/multi-provider/health-screen.js)
+y alertas en
+[`.pipeline/lib/multi-provider/health-alerts.js`](../../.pipeline/lib/multi-provider/health-alerts.js).
+
+| Pieza | Cómo se consulta | Qué muestra |
+|---|---|---|
+| Cron (idempotente) | `tickIfDue()` llamado c/minuto por el pulpo/dashboard | pingea `/v1/models` (**no** consume cuota) cada ~5 min |
+| CLI (fuerza corrida) | `node .pipeline/lib/multi-provider/health-cron.js` | corre `runOnce` (no respeta el lock) |
+| Estado (dashboard lee) | `.pipeline/state/multi-provider-health.json` | snapshot `{ ts, providers[], green/yellow/red_count }` |
+| Pantalla en vivo | `http://localhost:3200/multi-provider-health` | vista HTML por provider (estado, reason, latencia, key_status) |
+| API de cuota | `http://localhost:3200/api/dash/quota` | slice normalizado `quotaSlice` (pct sesión/semanal por provider) |
+
+**Cadencia:** default **5 min** con jitter aleatorio ±60s (anti-thundering-herd),
+configurable en [`.pipeline/config.yaml`](../../.pipeline/config.yaml) →
+`multi_provider.health.interval_minutes` (piso duro ≥60s). El primary **nunca** se
+gatea por cuota en el snapshot (decisión del PO: un falso "caído" del primary sería
+peor que el dato).
+
+**Estado real** (extracto de `.pipeline/state/multi-provider-health.json`, redactado —
+no lleva material de auth):
+
+```json
+{
+  "ts": "2026-07-03T00:25:21.046Z",
+  "green_count": 3, "yellow_count": 0, "red_count": 0,
+  "providers": [
+    { "provider": "anthropic", "state": "green", "reason_code": "cli_oauth_ok",
+      "auth_mode": "oauth", "key_status": "absent", "quota": { "adapterStatus": "ok", "pct": 6.1 } }
+  ]
+}
+```
+
+> **Health honesto (#4402):** para providers con auth por login de CLI (Anthropic
+> Max, Codex, Gemini) el estado sale de un probe OAuth real (`cli-oauth-probe.js`),
+> no de la mera presencia de una key. Por eso `anthropic` figura `key_status:
+> absent` pero `state: green` (`reason_code: cli_oauth_ok`).
+
+### 14.4 Failover reproducible
+
+La cadena de fallback vive en
+[`.pipeline/lib/agent-launcher/dispatch-with-fallback.js`](../../.pipeline/lib/agent-launcher/dispatch-with-fallback.js)
+(`resolveSpawnWithFallback`), con el parser de errores in-flight en
+[`.pipeline/lib/agent-launcher/provider-error-parser.js`](../../.pipeline/lib/agent-launcher/provider-error-parser.js)
+(#4404 · D5+D6). El gate de exclusión geográfica es
+[`.pipeline/lib/data-residency-filter.js`](../../.pipeline/lib/data-residency-filter.js).
+
+Cuando el primary no está disponible, el resolver descarta eslabones en orden y
+elige el primer fallback resoluble. Razones de descarte posibles
+(`SKIP_REASON_LABELS`):
+
+| `reason` | Significado |
+|---|---|
+| `quota_exhausted` | sin cuota |
+| `health_gate` | health rojo reciente |
+| `provider_disabled` | kill-switch operativo |
+| `provider_inactive_by_schedule` | fuera de horario |
+| `preventive_soft_gate` | degradación preventiva por cuota (#4282) |
+| `pacing_budget_red` / `pacing_budget_yellow` | crédito de ritmo semanal agotado/adelantado |
+| `permission_matrix` | credenciales/permisos incompatibles |
+| `same_as_primary` / `duplicate_in_chain` / `invalid_handler` | saneo de la cadena |
+
+**Evidencia reproducible (redactada).** El formateador de producción
+`formatProviderResolutionLog` emite el bloque de log que queda en
+`log('lanzamiento', …)` y en la env `PROVIDER_RESOLUTION_LOG` del child. **No
+incluye keys ni tokens por diseño.** Caso *primary sin cuota → cae a fallback*:
+
+```text
+🔄 backend-dev:#4405 — Resolución de provider:
+  → anthropic (DESCARTADO: quota_exhausted (sin cuota) — weekly 100% (reset lun 00:00 UTC))
+  ✓ openai-codex (ELEGIDO — fallback[0], model=gpt-5-codex)
+  Chain evaluada: anthropic → openai-codex (2 eslabones evaluados)
+```
+
+Caso *cadena completa agotada → el issue vuelve a `pendiente/` para retry* (nunca
+se pierde trabajo):
+
+```text
+🚫 guru:#4405 — Cadena completa exhausted:
+  → anthropic (DESCARTADO: quota_exhausted (sin cuota) — weekly 100%)
+  → openai-codex (DESCARTADO: health_gate (health rojo reciente) — 429 hace 3min)
+  → cerebras (DESCARTADO: provider_inactive_by_schedule (fuera de horario) — 22:00-08:00)
+  RESULTADO: all-gated, devuelvo a pendiente/ para retry
+  Chain evaluada: anthropic → openai-codex → cerebras (3 eslabones evaluados)
+```
+
+> Ambos bloques se generaron con el `formatProviderResolutionLog` real. Para
+> capturar tu propia evidencia sin esperar un 429 en vivo, se puede alimentar el
+> formateador con un objeto `resolution` (ver la firma en el módulo) — la salida
+> es idéntica a la de runtime y **ya viene redactada**.
+
+### 14.5 Estado actual post-ola N+1 vs pre
+
+Qué mejoró con la ola N+1 (hijos #4401–#4404, sobre los adapters reales de PRs
+#3792–#3796) respecto del estado previo. `_notImplemented` describe **solo** el
+comportamiento histórico (columna *pre*); **no** hay stubs vigentes en dispatch.
+
+| Feature | Pre (ola N) | Post (ola N+1) | Evidencia |
+|---|---|---|---|
+| Adapters de dispatch (Codex, Gemini) | stubs que tiraban `_notImplemented` | adapters reales que hacen spawn del CLI | `.pipeline/lib/agent-launcher/providers/*.js` (comentarios "previo que tiraba `_notImplemented`") |
+| Smoke test | sin harness CLI reproducible | `multi-provider-smoke-test.js` fail-closed + coverage + audit | §14.1 (output real) |
+| Telemetría de costo | inexistente (`provider-cost.jsonl` no se escribía) | writer de 7 campos on-exit + slice de dashboard | §14.2 (línea real + agregación) |
+| Health por provider | presencia de key = "ok" (engañoso) | probe OAuth real + snapshot `state/` + pantalla en vivo | §14.3 (`multi-provider-health.json`, `reason_code: cli_oauth_ok`) |
+| Failover | opaco (sin traza de por qué cayó) | `skipReasons` observables + log redactado + retry a `pendiente/` | §14.4 (bloques de `formatProviderResolutionLog`) |
+| Diagnóstico de operador | leer código fuente | esta sección §14 (comandos copy-paste reproducibles) | #4405 |
+
+**Qué falta / pendientes conocidos:** los adapters de cuota de algunos free
+providers todavía reportan `adapterStatus: not_implemented` en el slice de cuota
+(distinto del adapter de *dispatch*, que sí es real) — el health cae a la señal
+OAuth/creds en esos casos. El seguimiento vive en los issues abiertos del épico
+multi-provider; esta doc se actualiza cuando esos adapters de cuota cierren.
+
+---
+
 ## Apéndice — links rápidos
 
 - **Código:** [`.pipeline/agent-models.json`](../../.pipeline/agent-models.json), [`.pipeline/agent-models.schema.json`](../../.pipeline/agent-models.schema.json), [`.pipeline/lib/agent-models-validate.js`](../../.pipeline/lib/agent-models-validate.js), [`.pipeline/validate-agent-models.js`](../../.pipeline/validate-agent-models.js), [`.pipeline/lib/multi-provider/`](../../.pipeline/lib/multi-provider/), [`.pipeline/lib/quota-adapters/`](../../.pipeline/lib/quota-adapters/), [`.pipeline/lib/agent-launcher/`](../../.pipeline/lib/agent-launcher/).
@@ -2113,3 +2385,4 @@ Cobertura del módulo nuevo: ~98% líneas / ~82% ramas / 100% funciones.
 - **Issue de esta doc:** [#3176](https://github.com/intrale/platform/issues/3176).
 - **Issues de mejora futura:** [#3197](https://github.com/intrale/platform/issues/3197) (auto-gen tablas).
 - **Issues cerrados relevantes:** [#3198](https://github.com/intrale/platform/issues/3198) (consumer runtime de fallbacks, mergeado 2026-05-15 — ver §2.3).
+- **Épico multi-provider end-to-end (#3791):** [#4401](https://github.com/intrale/platform/issues/4401) (smoke CLI + candado free-only), [#4402](https://github.com/intrale/platform/issues/4402) (health honesto OAuth), [#4403](https://github.com/intrale/platform/issues/4403) (telemetría `provider-cost.jsonl`), [#4404](https://github.com/intrale/platform/issues/4404) (failover + data-residency), [#4405](https://github.com/intrale/platform/issues/4405) (esta doc operativa — §14).
