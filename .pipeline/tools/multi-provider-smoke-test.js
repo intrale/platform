@@ -40,16 +40,35 @@ const auditLog = require('../lib/audit-log');
 const credentials = require('../lib/credentials');
 const partialPause = require('../lib/partial-pause');
 const dataResidency = require('../lib/data-residency-filter');
+const redact = require('../lib/redact');
 
 // -----------------------------------------------------------------------------
 // CLI args (parser mínimo — sin yargs/commander para evitar deps).
 // -----------------------------------------------------------------------------
 function parseArgs(argv) {
-    const out = { skill: null, provider: null, dryRun: false, noTelegram: false, noCreateIssues: false };
+    const out = {
+        skill: null, provider: null, dryRun: false,
+        noTelegram: false, noCreateIssues: false,
+        // #3785 — formato de salida stdout. `json` (default) = back-compat;
+        // `markdown` = tabla por-agente (skill | default | fallbackN | overall).
+        format: 'json',
+        // Alias explícito del sign-off Telegram (ya activo por default salvo
+        // --no-telegram). No cambia el comportamiento; documenta intención.
+        telegram: false,
+    };
     for (const raw of argv) {
         if (raw.startsWith('--skill=')) out.skill = raw.slice('--skill='.length);
         else if (raw.startsWith('--provider=')) out.provider = raw.slice('--provider='.length);
+        else if (raw.startsWith('--format=')) {
+            const v = raw.slice('--format='.length).toLowerCase();
+            if (v !== 'json' && v !== 'markdown') {
+                process.stderr.write(`[smoke-test] FATAL --format desconocido: '${v}' (usar json|markdown).\n`);
+                process.exit(2);
+            }
+            out.format = v;
+        }
         else if (raw === '--dry-run') out.dryRun = true;
+        else if (raw === '--telegram') out.telegram = true;
         else if (raw === '--no-telegram') out.noTelegram = true;
         else if (raw === '--no-create-issues') out.noCreateIssues = true;
         else if (raw === '-h' || raw === '--help') {
@@ -57,7 +76,9 @@ function parseArgs(argv) {
 Opciones:
   --skill=<name>        Filtrar a un único skill.
   --provider=<name>     Filtrar a un único provider LLM.
+  --format=<fmt>        Salida stdout: json (default) | markdown (tabla por-agente).
   --dry-run             No invocar providers; generar coverage con PASS stub.
+  --telegram            Encolar sign-off Telegram (alias explícito; ya es default).
   --no-telegram         No encolar sign-off Telegram.
   --no-create-issues    No crear issues automáticos por FAIL.
   -h, --help            Esta ayuda.
@@ -66,6 +87,15 @@ Opciones:
         }
     }
     return out;
+}
+
+// #3785 — cuando el archivo se `require()`ea (tests), exportamos parseArgs y
+// cortamos ANTES del boot (que exige ventana de pausa, gh, ajv, etc.). Node
+// envuelve cada módulo en una función → `return` a nivel de módulo es legal y
+// evita ejecutar el harness. Como CLI (`require.main === module`) sigue normal.
+if (require.main !== module) {
+    module.exports = { parseArgs };
+    return;
 }
 
 const cliArgs = parseArgs(process.argv.slice(2));
@@ -232,28 +262,6 @@ for (const cell of filteredMatrix) {
         continue;
     }
 
-    // Caps inquebrantables (CA-A14).
-    try {
-        smoke.enforceCap(capState, 'spawns_per_run');
-        smoke.enforceCap(capState, 'per_combination', comboKey);
-    } catch (capErr) {
-        try {
-            auditLog.appendChained({
-                file: auditFile,
-                entry: {
-                    event: 'cap_exceeded',
-                    run_id: runId,
-                    cap: capErr.cap,
-                    limit: capErr.limit,
-                    combo: capErr.combo || null,
-                    ts: new Date().toISOString(),
-                },
-            });
-        } catch {}
-        process.stderr.write(`[smoke-test] FATAL ${capErr.message}\n`);
-        process.exit(3);
-    }
-
     // CA-A5: filtrar paths del payload por provider (non-Anthropic).
     let pathsFilterResult = { allowed: synthetic.paths.slice(), blocked: [] };
     if (cell.provider !== 'anthropic' && exclusionsBundle) {
@@ -311,8 +319,6 @@ for (const cell of filteredMatrix) {
             evidence_hash: `sha256:${stubHash}`,
             reason: 'dry-run (provider no invocado)',
         };
-        capState.spawns_total++;
-        capState.per_combo[comboKey] = (capState.per_combo[comboKey] || 0) + 1;
         try {
             auditLog.appendChained({
                 file: auditFile,
@@ -338,6 +344,29 @@ for (const cell of filteredMatrix) {
         // Por ahora marcamos SKIPPED con razón explícita para no romper la matriz.
         // Cuando #3198 entregue los wrappers reales, este bloque se reemplaza
         // por dispatch real via resolveSpawnWithFallback con FORCE_PROVIDER_OVERRIDE.
+        // Caps inquebrantables (CA-A14) para invocaciones reales. En --dry-run
+        // no hay spawn ni consumo de quota, por eso no cuenta contra el cap.
+        try {
+            smoke.enforceCap(capState, 'spawns_per_run');
+            smoke.enforceCap(capState, 'per_combination', comboKey);
+        } catch (capErr) {
+            try {
+                auditLog.appendChained({
+                    file: auditFile,
+                    entry: {
+                        event: 'cap_exceeded',
+                        run_id: runId,
+                        cap: capErr.cap,
+                        limit: capErr.limit,
+                        combo: capErr.combo || null,
+                        ts: new Date().toISOString(),
+                    },
+                });
+            } catch {}
+            process.stderr.write(`[smoke-test] FATAL ${capErr.message}\n`);
+            process.exit(3);
+        }
+
         capState.spawns_total++;
         capState.per_combo[comboKey] = (capState.per_combo[comboKey] || 0) + 1;
         entry = {
@@ -467,7 +496,31 @@ if (!cliArgs.noTelegram) {
     const dropfile = path.join(queueDir, `${Date.now()}-smoke-test-signoff.json`);
     const tts_text = `Smoke test multi-provider terminó: ${summary.pass} PASS, ${summary.warn} WARN, ${summary.fail} FAIL, ${summary.skipped} SKIPPED, ${summary.na} N/A. ` +
         (failIssues.length ? `${failIssues.length} issue${failIssues.length > 1 ? 's' : ''} auto-creado${failIssues.length > 1 ? 's' : ''} por los FAIL.` : 'Sin FAILs detectados.');
+
+    // #3785 — texto legible del reporte para el canal Telegram (svc-telegram
+    // procesa dropfiles con campo `text`). Jerarquía F-pattern: veredicto →
+    // FAILs accionables → tabla monospace por-agente. Reusa la queue existente.
+    // Defensa en profundidad (CA-7 / REQ-SEC-2,3): el texto —que por
+    // construcción sólo contiene skill/provider/status— pasa igual por
+    // redactSecretValue antes de encolar. El "link a artifact" es la ruta LOCAL
+    // del filesystem (CA-8), nunca una URL firmada.
+    let reportText = '';
+    try {
+        const report = smoke.renderTelegramReport(coverage, agentModels, {
+            generatedAt: new Date().toISOString(),
+            artifactPath: COVERAGE_JSON_PATH.replace(PIPELINE_DIR, '.pipeline'),
+        });
+        reportText = redact.redactSecretValue(report.text);
+    } catch (e) {
+        log(`WARN render de reporte Telegram falló: ${e.message}`);
+        reportText = redact.redactSecretValue(tts_text);
+    }
+
     const payload = {
+        // Campo consumido por svc-telegram (servicio-telegram.js) para enviar.
+        text: reportText,
+        parse_mode: 'Markdown',
+        // Metadata estructurada (auditoría / consumidores futuros).
         type: 'multi_provider_smoke_test_signoff',
         run_id: runId,
         summary,
@@ -489,12 +542,19 @@ if (!cliArgs.noTelegram) {
 }
 
 // Resumen final a stdout para CLI consumers (CI, scripts).
-process.stdout.write(JSON.stringify({
-    ok: true,
-    run_id: runId,
-    summary,
-    coverage_path: COVERAGE_JSON_PATH,
-    audit_file: auditFile,
-    fail_issues: failIssues,
-}, null, 2) + '\n');
+// #3785 — con --format=markdown emitimos la tabla por-agente en vez del JSON.
+// El coverage.json canónico se persiste SIEMPRE (arriba), sin cambios; markdown
+// es puramente una vista de stdout. Default json = back-compat total.
+if (cliArgs.format === 'markdown') {
+    process.stdout.write(smoke.renderPerAgentMarkdown(coverage, agentModels) + '\n');
+} else {
+    process.stdout.write(JSON.stringify({
+        ok: true,
+        run_id: runId,
+        summary,
+        coverage_path: COVERAGE_JSON_PATH,
+        audit_file: auditFile,
+        fail_issues: failIssues,
+    }, null, 2) + '\n');
+}
 process.exit(0);
