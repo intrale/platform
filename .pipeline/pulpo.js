@@ -90,6 +90,10 @@ const commanderApiRag = require('./lib/commander/api-rag');
 // y los emiten al audit log SIN matar el primario ni spawnear secundario.
 // Wire-up real va en #3578.
 const inflightShadow = require('./lib/commander/inflight-shadow-detectors');
+// #3571 — detección in-stream temprana (first-byte 15s / stream-gap 30s) para la
+// rama non-Anthropic de runNonAnthropic. Sólo ciclo de timers + guard `settled`
+// (NO spawn, NO drCheck2 — quedan inline en pulpo, SEC-1 intacto).
+const nonAnthStall = require('./lib/commander/nonanthropic-stall-detect');
 // #3577 — generateRequestId para correlación cross-event (CA-S6): el mismo
 // requestId se propaga a TODOS los `auditCommanderRequest` del turn.
 const inflightFallback = require('./lib/commander/inflight-fallback');
@@ -10088,10 +10092,39 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
               try { proc.kill('SIGTERM'); } catch {}
               log('commander', `Provider ${res.provider} timeout ${Math.round(HARD_NON_ANTH_MS / 1000)}s — abortando`);
             }, HARD_NON_ANTH_MS);
-            proc.stdout && proc.stdout.on('data', (d) => { stdout += d.toString(); });
+            // #3571 — timestamp del último chunk de stdout (0 = ningún chunk aún,
+            // semántica first-byte). El detector temprano lo lee vía closure.
+            let lastChunkAt = 0;
+            proc.stdout && proc.stdout.on('data', (d) => { stdout += d.toString(); lastChunkAt = Date.now(); });
             proc.stderr && proc.stderr.on('data', (d) => { stderr += d.toString(); });
+            // #3571 — detección in-stream temprana (first-byte 15s / stream-gap 30s)
+            // para cascadear al detectar stall en ~15s/30s en vez de esperar el kill
+            // duro (HARD_NON_ANTH_MS=TURN_BUDGET_MS=600s). Reusa `inflightShadow`; el
+            // helper sólo maneja timers + guard `settled` (spawn/drCheck2 quedan inline,
+            // SEC-1 intacto). El provider del siguiente intento sale de advanceOrGiveUp
+            // (resolver), NUNCA del stdout (SEC-2). Los logs referencian sólo
+            // res.provider + thresholds, jamás stdout/stderr crudo (SEC-3).
+            const stall = nonAnthStall.createStallDetectors({
+              startTime: startNon,
+              getLastChunkAt: () => lastChunkAt,
+              killProc: () => { try { proc.kill('SIGTERM'); } catch {} },
+              onFirstByte: () => {
+                clearTimeout(timer);
+                log('commander', `Provider ${res.provider} sin first-byte en ${Math.round(inflightShadow.FIRST_BYTE_THRESHOLD_MS / 1000)}s — cascada temprana.`);
+                return advanceOrGiveUp(res.provider, 'timeout_first_byte');
+              },
+              onStreamGap: () => {
+                clearTimeout(timer);
+                log('commander', `Provider ${res.provider} stream-gap >${Math.round(inflightShadow.STREAM_GAP_THRESHOLD_MS / 1000)}s — cascada temprana.`);
+                return advanceOrGiveUp(res.provider, 'timeout_no_new_bytes_30s');
+              },
+            });
             proc.on('close', () => {
               clearTimeout(timer);
+              // #3571 — si un detector temprano ya cascadeó (settled), este `close`
+              // (disparado por el SIGTERM del kill temprano) NO debe re-invocar
+              // advanceOrGiveUp (CA-3). markSettled() limpia también ambos timers (SEC-4).
+              if (stall.markSettled()) return;
               const elapsed = Date.now() - startNon;
               const extracted = commanderMP.extractFallbackReply(stdout);
               log('commander', `Provider ${res.provider} terminó (${elapsed}ms, stdout=${stdout.length}c, reply=${extracted.text.length}c, parsed=${extracted.parsed}, stderr=${stderr.length}c)`);
@@ -10155,6 +10188,8 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
             });
             proc.on('error', (e) => {
               clearTimeout(timer);
+              // #3571 — mismo guard de idempotencia + cleanup de timers que en `close`.
+              if (stall.markSettled()) return;
               log('commander', `Error spawning ${res.provider}: ${e.message} — intento siguiente provider.`);
               return advanceOrGiveUp(res.provider, 'spawn_error');
             });
