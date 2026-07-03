@@ -106,6 +106,18 @@ function syncWithMain() {
     execSync('git fetch origin main', { cwd: ROOT, timeout: 30000, windowsHide: true });
     execSync('git reset --hard FETCH_HEAD', { cwd: ROOT, timeout: 15000, windowsHide: true, encoding: 'utf8' });
     log('Sincronizado con origin/main');
+    // #4460 — Registrar el HEAD tras el reset como SHA canónico de "qué corre
+    // vivo". Es la referencia que la detección de drift compara contra
+    // origin/main para saber si hay entregables del modelo operativo sin
+    // aplicar. Best-effort: si falla, el marker queda como estaba (el slice lo
+    // trata como estado desconocido, nunca como "sin pendientes").
+    try {
+      const head = execSync('git rev-parse HEAD', { cwd: ROOT, timeout: 10000, windowsHide: true, encoding: 'utf8' }).trim();
+      const res = require('./lib/runtime-boot').writeBootMarker(head, { pipelineDir: PIPELINE });
+      if (res && res.ok) log(`Boot marker actualizado: ${head.slice(0, 8)}`);
+    } catch (e2) {
+      log(`Warning: no se pudo escribir runtime-boot.json: ${(e2 && e2.message || '').slice(0, 80)}`);
+    }
   } catch (e) {
     log(`Warning: no se pudo sincronizar con main: ${e.message.slice(0, 100)}`);
   }

@@ -1303,6 +1303,14 @@ const API_ROUTES = {
         return payload;
     },
     '/api/diagnostico/reconciler-stale-orders': (state, ctx) => slices.reconcilerStaleOrdersSlice(state, ctx),
+    // #4460 — banner "Reiniciar modelo operativo". Devuelve {items:[], unknown}.
+    // `items` = issues entregados a `main` que tocaron el modelo operativo
+    // (.pipeline/**, .claude/hooks/**) pero aún no corren en el runtime vivo
+    // (bootSHA↔origin/main). `items:[]` + `unknown:false` = sin drift → el botón
+    // NO se renderiza (CA-2). `unknown:true` = marker ausente/corrupto → la UI
+    // muestra refresh, nunca "sin pendientes" (CA-8). Refresh natural 30s desde
+    // el cliente; cache TTL 45s server-side en operativo-drift.
+    '/api/dash/restart-pendiente': (state, ctx) => slices.restartPendienteSlice(state, ctx),
     // EP8-H7 (#3960) CA-1 — historial de transiciones vivo↔muerto por servicio
     // con agregación por motivo en ventana 7d. `?service=<svc>` filtra; sin
     // param devuelve todos. El `lastError` ya viene redactado del store

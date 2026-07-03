@@ -35,6 +35,14 @@ function _redact(s) {
 let quotaExhaustedState = null;
 try { quotaExhaustedState = require('./quota-exhausted-state'); } catch { /* opcional */ }
 
+// #4460 — Trust anchor del SHA vivo + detección de drift del modelo operativo.
+// Requires defensivos: si no cargan (checkout viejo), el slice degrada a
+// `{ items: [], unknown: true }` (estado desconocido) sin romper el dashboard.
+let runtimeBoot = null;
+try { runtimeBoot = require('./runtime-boot'); } catch { /* opcional */ }
+let operativoDrift = null;
+try { operativoDrift = require('./operativo-drift'); } catch { /* opcional */ }
+
 // #4202 — Estado de frescura del snapshot real de Anthropic (OCR del panel
 // "Uso" de Claude Desktop). Reusado para derivar la `confidence` por proveedor
 // del desglose de cuotas. Tolerante a la ausencia del módulo (kill switch /
@@ -3460,6 +3468,73 @@ function providerCostSlice(state, ctx) {
     }
 }
 
+// #4460 — Slice del banner "Reiniciar modelo operativo". Cruza el trust anchor
+// del SHA vivo (runtime-boot.json) con la detección de drift (operativo-drift)
+// para exponer los issues entregados a `main` que tocaron el modelo operativo
+// pero aún no corren en el runtime vivo.
+//
+// Contrato de saneo (REQ-SEC-4460-6): el payload expone SÓLO issue# (número),
+// una etiqueta corta de componente y un motivo corto. NUNCA paths absolutos,
+// SHAs completos ni contenido de diff. Se re-sanea acá aunque operativo-drift
+// ya devuelva shape limpio (defensa en profundidad).
+//
+// Estados:
+//   - { items: [...], unknown: false } → hay drift; el botón se renderiza.
+//   - { items: [],    unknown: false } → sin drift; el botón NO se renderiza (CA-2).
+//   - { items: [],    unknown: true }  → marker ausente/corrupto o git falló;
+//     la UI muestra "refrescar", NUNCA afirma "sin pendientes" (CA-8).
+const RESTART_COMPONENTE_MAX = 40;
+const RESTART_MOTIVO_MAX = 120;
+
+function _sanitizeRestartItem(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    // issue: entero positivo o null.
+    let issue = null;
+    if (Number.isInteger(raw.issue) && raw.issue > 0) issue = raw.issue;
+    // componente: slug corto de etiqueta (sin paths ni separadores).
+    let componente = typeof raw.componente === 'string' ? raw.componente : '';
+    componente = componente.replace(/[^a-z0-9 +()-]/gi, '').slice(0, RESTART_COMPONENTE_MAX);
+    // motivo: texto corto sin caracteres de control.
+    let motivo = typeof raw.motivo === 'string' ? raw.motivo : '';
+    // eslint-disable-next-line no-control-regex
+    motivo = motivo.replace(/[ -]/g, ' ').slice(0, RESTART_MOTIVO_MAX);
+    return { issue, componente: componente || 'pipeline', motivo };
+}
+
+function restartPendienteSlice(state, ctx) {
+    // Sin libs (checkout viejo / require falló) → estado desconocido honesto.
+    if (!runtimeBoot || !operativoDrift) {
+        return { items: [], unknown: true };
+    }
+    const pipelineDir = (ctx && ctx.PIPELINE) || path.join(__dirname, '..');
+    const repoRoot = (ctx && ctx.ROOT) || path.resolve(pipelineDir, '..');
+
+    let marker;
+    try { marker = runtimeBoot.readBootMarker({ pipelineDir }); }
+    catch { marker = null; }
+    // Marker ausente/corrupto → desconocido (CA-8), nunca "sin pendientes".
+    if (!marker || !marker.sha) {
+        return { items: [], unknown: true };
+    }
+
+    let detected;
+    try {
+        detected = operativoDrift.detectPendingRestart({ bootSha: marker.sha, pipelineDir, repoRoot });
+    } catch {
+        return { items: [], unknown: true };
+    }
+    if (!detected || typeof detected !== 'object') {
+        return { items: [], unknown: true };
+    }
+    if (detected.unknown) {
+        return { items: [], unknown: true };
+    }
+    const items = (Array.isArray(detected.items) ? detected.items : [])
+        .map(_sanitizeRestartItem)
+        .filter(Boolean);
+    return { items, unknown: false };
+}
+
 module.exports = {
     activeAgents,
     // #4335 — resolución de log de corrida por mtime+TTL + override de dir (tests)
@@ -3503,6 +3578,9 @@ module.exports = {
     // #4403 (D4) — desglose de costo por provider (lee provider-cost.jsonl)
     providerCostSlice,
     reconcilerStaleOrdersSlice,
+    // #4460 — banner "Reiniciar modelo operativo" (drift bootSHA↔origin/main)
+    restartPendienteSlice,
+    _sanitizeRestartItem,
     // #2993 — widget de handoff
     handoffMetricsSlice,
     // #3932 EP3-H6 — KPI entregables por skill
