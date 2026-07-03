@@ -472,8 +472,65 @@ function roadmapStyle() {
 .wr-chip-remove{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;min-width:22px;padding:0;cursor:pointer;background:transparent;border:none;border-radius:999px;color:var(--text-dim,#8B949E)}
 .wr-chip-remove:hover{color:var(--danger,#F85149);background:var(--danger-bg,#160B0B)}
 .wr-chip-remove-ic{width:15px;height:15px}
+/* #4437 — Editor de allowlist ("lista de bailes"). */
+.al-list{display:flex;flex-direction:column;gap:6px}
+.al-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.al-parent{font-size:10.5px;font-weight:700;color:var(--text-dim,#8B949E);font-variant-numeric:tabular-nums}
+.al-add{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-top:10px;margin-top:2px;border-top:1px solid var(--border-subtle,rgba(255,255,255,.08))}
+.al-input{font:inherit;font-size:13px;color:var(--text-primary,#e6edf3);background:var(--surface-0,#0d1117);border:1px solid var(--border,rgba(255,255,255,.12));border-radius:8px;padding:7px 10px;max-width:180px}
+.al-input:focus{outline:none;border-color:var(--purple,#BC8CFF)}
+.al-preview{display:flex;flex-direction:column;gap:5px;padding:10px 13px;border-radius:10px;border:1px solid var(--purple-dim,#8957E5);background:var(--purple-bg,rgba(188,140,255,.12))}
+.al-preview-head{display:flex;align-items:center;gap:7px;font-size:11px;font-weight:800;letter-spacing:.3px;text-transform:uppercase;color:var(--purple,#BC8CFF)}
+.al-preview-body{font-size:12.5px;color:var(--text-secondary,#8A93A6);font-variant-numeric:tabular-nums}
+.al-trunc{font-size:11.5px;font-weight:700;color:var(--warning,#D29922)}
+.al-warn{display:flex;flex-direction:column;gap:5px;padding:10px 13px;border-radius:10px;border:1px solid var(--danger,#F85149);background:var(--danger-bg,#160B0B)}
+.al-warn-head{display:flex;align-items:center;gap:7px;font-size:11px;font-weight:800;letter-spacing:.3px;text-transform:uppercase;color:#F5B0AC}
+.al-warn-row{font-size:12.5px;color:var(--text-secondary,#8A93A6);font-variant-numeric:tabular-nums}
 @media (prefers-reduced-motion:reduce){.wr-archived-toggle .wr-expand-ic{transition:none}}
 </style>`;
+}
+
+// #4437 — Panel editor de la allowlist ("lista de bailes") de la ola. La data se
+// carga client-side vía GET /api/roadmap/allowlist (no bloquea el SSR con `gh`).
+// El panel entrega: lista editable (CA-1), preview de arrastre recursivo (CA-2/
+// CA-3), y avisos de inconsistencia bloqueantes antes de guardar (CA-4/CA-5).
+// Todo el CSS usa tokens de design-tokens.css; íconos del sprite (sin nuevos).
+function renderAllowlistPanel() {
+    return '<section class="wr-section al-section" aria-label="Allowlist de la ola">'
+        + '<div class="wr-section-head">'
+        + '<svg class="wr-section-ic" aria-hidden="true"><use href="#ic-shield-lock"></use></svg>'
+        + '<span class="wr-section-title">Allowlist de la ola</span>'
+        + '<span class="wr-section-count" id="al-count">…</span>'
+        + '<span class="wr-head-spacer"></span>'
+        + '<button type="button" class="wr-btn" onclick="allowlistReload()" title="Refrescar la allowlist">'
+        + '<svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-expand"></use></svg> Refrescar</button>'
+        + '</div>'
+        // Lista editable (poblada por el cliente).
+        + '<div class="al-list" id="al-list" role="list" aria-live="polite">'
+        + '<div class="wr-empty-issues">Cargando allowlist…</div>'
+        + '</div>'
+        // Fila para agregar issue(s) + preview dry-run.
+        + '<div class="al-add">'
+        + '<label class="wr-compose-label" for="al-add-input">Agregar issue(s)</label>'
+        + '<input type="text" class="al-input" id="al-add-input" inputmode="numeric" placeholder="#1234 #1235" aria-label="Números de issue a agregar a la allowlist">'
+        + '<button type="button" class="wr-btn" onclick="allowlistPreview()" title="Ver qué se arrastra recursivamente antes de guardar">'
+        + '<svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-expand"></use></svg> Vista previa</button>'
+        + '<button type="button" class="wr-btn wr-btn-primary" id="al-add-btn" onclick="allowlistAdd()" title="Agregar los issues (arrastra hijos/dependencias)">'
+        + '<svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-wave-add"></use></svg> <span id="al-add-label">Agregar</span></button>'
+        + '<span class="wr-compose-status" id="al-add-status" role="status" aria-live="polite"></span>'
+        + '</div>'
+        // Banner de preview (dry-run): arrastre recursivo + truncado honesto.
+        + '<div class="al-preview" id="al-preview" hidden role="note"></div>'
+        // Panel de inconsistencias (bloqueante) para remociones.
+        + '<div class="al-warn" id="al-warn" hidden role="alert"></div>'
+        // Footer: separación de artefactos + traza de audit (CA-6/CA-7).
+        + '<div class="wr-integrity" role="note">'
+        + '<svg class="wr-integrity-ic" aria-hidden="true"><use href="#ic-shield-lock"></use></svg>'
+        + '<span>Editar la allowlist toca sólo <code>.partial-pause.json</code> (nunca <code>waves.json</code>). '
+        + 'Cada cambio pasa por el gate con audit trail (<code>authorizedBy=dashboard:roadmap:allowlist</code>). '
+        + 'Todo arrastre e inconsistencia se muestran <strong>antes</strong> de guardar.</span>'
+        + '</div>'
+        + '</section>';
 }
 
 /**
@@ -534,6 +591,8 @@ function renderRoadmapSsr(opts) {
         + '<span class="wr-section-title">Ola activa</span></div>'
         + activeHtml
         + '</section>'
+        // #4437 — Sección ALLOWLIST (editor "lista de bailes" de la ola).
+        + renderAllowlistPanel()
         // Sección PLANIFICADAS.
         + '<section class="wr-section" aria-label="Olas planificadas">'
         + '<div class="wr-section-head"><svg class="wr-section-ic" aria-hidden="true"><use href="#ic-wave"></use></svg>'
@@ -738,12 +797,161 @@ async function roadmapDisassociate(waveNum, issueNum){
     _roadmapSetStatus(statusId, 'Error de red: ' + e.message, 'err');
   }
 }
+// #4437 — Editor de allowlist ("lista de bailes"). Lee/edita vía los endpoints
+// /api/roadmap/allowlist*, todos bajo el mismo cinturón de gates que las olas.
+// Regla rectora UX: el operador nunca descubre un efecto después de guardar —
+// todo arrastre e inconsistencia se muestra ANTES de persistir.
+function alEsc(s){ var d=document.createElement('div'); d.textContent=(s==null?'':String(s)); return d.innerHTML; }
+function alSetStatus(msg, kind){
+  var el=document.getElementById('al-add-status');
+  if(!el) return;
+  el.textContent=msg||'';
+  el.className='wr-compose-status'+(kind?' wr-st-'+kind:'');
+}
+function alParseIssues(raw){
+  var out=[]; var seen={};
+  (String(raw||'').match(/\\d+/g)||[]).forEach(function(t){
+    var n=parseInt(t,10);
+    if(Number.isInteger(n)&&n>0&&!seen[n]){ seen[n]=1; out.push(n); }
+  });
+  return out;
+}
+function alRenderList(rows){
+  var host=document.getElementById('al-list');
+  var cnt=document.getElementById('al-count');
+  if(cnt) cnt.textContent=String(rows.length);
+  if(!host) return;
+  if(!rows.length){ host.innerHTML='<div class="wr-empty-issues">La allowlist está vacía (la ola corre sin restricción de issues).</div>'; return; }
+  host.innerHTML=rows.map(function(r){
+    var num=parseInt(r.number,10);
+    var title=r.title?(' · '+alEsc(r.title)):'';
+    var st=r.status?('<span class="wr-chip-status">'+alEsc(r.status)+'</span>'):'';
+    var parent=(r.parent!=null)?('<span class="al-parent" title="Issue padre">↳ #'+parseInt(r.parent,10)+'</span>'):'';
+    return '<div class="al-row" role="listitem">'
+      +'<a class="wr-chip" href="https://github.com/intrale/platform/issues/'+num+'" target="_blank" rel="noopener noreferrer">'
+      +'<span class="wr-chip-num">#'+num+title+'</span>'+st+'</a>'+parent
+      +'<button type="button" class="wr-chip-remove" onclick="allowlistRemove('+num+')" title="Quitar #'+num+' de la allowlist" aria-label="Quitar el issue '+num+' de la allowlist">'
+      +'<svg class="wr-chip-remove-ic" aria-hidden="true"><use href="#ic-remove-circle"></use></svg></button>'
+      +'</div>';
+  }).join('');
+}
+function alTruncadoMsg(reason){
+  var m={max_depth:'profundidad máxima',max_nodes:'demasiados nodos',cycle:'ciclo de dependencias'};
+  return 'Grafo truncado ('+(m[reason]||reason||'límite')+'): puede faltar arrastre.';
+}
+async function allowlistReload(){
+  var host=document.getElementById('al-list');
+  try {
+    var r=await fetch('/api/roadmap/allowlist', { headers: nhCsrfHeaders() });
+    var j=await r.json().catch(function(){ return {}; });
+    if(r.ok && Array.isArray(j.allowlist)){ alRenderList(j.allowlist); return; }
+    if(host) host.innerHTML='<div class="wr-empty-issues">No se pudo leer la allowlist (HTTP '+r.status+').</div>';
+  } catch(e){
+    if(host) host.innerHTML='<div class="wr-empty-issues">Error de red leyendo la allowlist: '+alEsc(e.message)+'</div>';
+  }
+}
+async function allowlistPreview(){
+  var input=document.getElementById('al-add-input');
+  var ids=alParseIssues(input?input.value:'');
+  var banner=document.getElementById('al-preview');
+  var addLabel=document.getElementById('al-add-label');
+  if(!ids.length){ alSetStatus('Indicá al menos un issue numérico.', 'err'); return; }
+  alSetStatus('Calculando arrastre…', null);
+  try {
+    var r=await roadmapWavePost('/api/roadmap/allowlist/preview', { issues: ids });
+    var j=await r.json().catch(function(){ return {}; });
+    if(!r.ok || !j.ok){ alSetStatus('No se pudo previsualizar: '+((j&&j.message)?j.message:('HTTP '+r.status)), 'err'); return; }
+    alSetStatus('', null);
+    var drag=Array.isArray(j.aArrastrar)?j.aArrastrar:[];
+    var parts=[];
+    parts.push('<div class="al-preview-head"><svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-wave-add"></use></svg> Vista previa (dry-run) — <code>.partial-pause.json</code> intacto</div>');
+    if(drag.length){
+      parts.push('<div class="al-preview-body">Arrastra recursivamente '+drag.length+' issue(s): '+drag.map(function(n){ return '#'+parseInt(n,10); }).join(', ')+'</div>');
+    } else {
+      parts.push('<div class="al-preview-body">No se arrastra ningún issue adicional.</div>');
+    }
+    if(j.truncado){ parts.push('<div class="al-trunc">⚠ '+alEsc(alTruncadoMsg(j.reason))+'</div>'); }
+    if(banner){ banner.innerHTML=parts.join(''); banner.hidden=false; }
+    if(addLabel) addLabel.textContent='Agregar (arrastra '+drag.length+')';
+  } catch(e){ alSetStatus('Error de red: '+e.message, 'err'); }
+}
+async function allowlistAdd(){
+  var input=document.getElementById('al-add-input');
+  var ids=alParseIssues(input?input.value:'');
+  if(!ids.length){ alSetStatus('Indicá al menos un issue numérico.', 'err'); return; }
+  alSetStatus('Agregando…', null);
+  try {
+    var r=await roadmapWavePost('/api/roadmap/allowlist/add', { issues: ids });
+    var j=await r.json().catch(function(){ return {}; });
+    if(r.ok && j.ok){
+      alSetStatus('Agregado ✓'+(Array.isArray(j.aArrastrar)&&j.aArrastrar.length?(' (+'+j.aArrastrar.length+' arrastrados)'):''), 'ok');
+      if(input) input.value='';
+      var banner=document.getElementById('al-preview'); if(banner){ banner.hidden=true; }
+      var addLabel=document.getElementById('al-add-label'); if(addLabel) addLabel.textContent='Agregar';
+      alRenderList((j.allowlist||[]).map(function(n){ return { number:n }; }));
+      allowlistReload();
+      return;
+    }
+    alSetStatus('No se pudo agregar: '+((j&&j.message)?j.message:('HTTP '+r.status)), 'err');
+  } catch(e){ alSetStatus('Error de red: '+e.message, 'err'); }
+}
+function alRenderWarn(j, ids){
+  var warn=document.getElementById('al-warn');
+  if(!warn) return;
+  var parts=['<div class="al-warn-head"><svg class="wr-blocked-ic" aria-hidden="true"><use href="#ic-pause-lock"></use></svg> Quitar '+ids.map(function(n){ return '#'+n; }).join(', ')+' deja inconsistencias</div>'];
+  var inc=j.inconsistencias||{};
+  Object.keys(inc).forEach(function(k){
+    parts.push('<div class="al-warn-row">#'+parseInt(k,10)+' quedaría sin su dependencia: '+inc[k].map(function(n){ return '#'+parseInt(n,10); }).join(', ')+'</div>');
+  });
+  if(j.desync && Array.isArray(j.desync.missingFromAllowlist) && j.desync.missingFromAllowlist.length){
+    parts.push('<div class="al-warn-row">La ola activa todavía incluye: '+j.desync.missingFromAllowlist.map(function(n){ return '#'+parseInt(n,10); }).join(', ')+' (quedaría fuera de la lista de bailes).</div>');
+  }
+  if(j.truncado){ parts.push('<div class="al-trunc">⚠ '+alEsc(alTruncadoMsg(j.reason))+'</div>'); }
+  warn.innerHTML=parts.join('');
+  warn.hidden=false;
+}
+async function allowlistRemove(issueNum){
+  issueNum=parseInt(issueNum,10);
+  if(!Number.isInteger(issueNum) || issueNum<1) return;
+  var warn=document.getElementById('al-warn');
+  if(warn){ warn.hidden=true; }
+  try {
+    // 1er intento sin confirmar: el server avisa inconsistencias antes de persistir.
+    var r=await roadmapWavePost('/api/roadmap/allowlist/remove', { issues: [issueNum] });
+    var j=await r.json().catch(function(){ return {}; });
+    if(r.ok && j.blocked){
+      alRenderWarn(j, [issueNum]);
+      var ok=await inConfirm({
+        title: 'Quitar con inconsistencias',
+        message: 'Quitar #'+issueNum+' deja dependencias huérfanas o desincroniza la ola. El aviso está sobre la lista. ¿Confirmás igual?',
+        confirmLabel: 'Quitar igual',
+        danger: true,
+        preview: [{ label: 'Issue', value: '#'+issueNum }]
+      });
+      if(!ok) return;
+      r=await roadmapWavePost('/api/roadmap/allowlist/remove', { issues: [issueNum], confirm: true });
+      j=await r.json().catch(function(){ return {}; });
+    }
+    if(r.ok && j.ok){
+      if(warn){ warn.hidden=true; }
+      alRenderList((j.allowlist||[]).map(function(n){ return { number:n }; }));
+      allowlistReload();
+      return;
+    }
+    if(!j.blocked) alSetStatus('No se pudo quitar #'+issueNum+': '+((j&&j.message)?j.message:('HTTP '+r.status)), 'err');
+  } catch(e){ alSetStatus('Error de red: '+e.message, 'err'); }
+}
 window.roadmapToggleArchived = roadmapToggleArchived;
 window.roadmapArchive = roadmapArchive;
 window.roadmapNewWaveToggle = roadmapNewWaveToggle;
 window.roadmapCreateWave = roadmapCreateWave;
 window.roadmapAssociate = roadmapAssociate;
 window.roadmapDisassociate = roadmapDisassociate;
+window.allowlistReload = allowlistReload;
+window.allowlistPreview = allowlistPreview;
+window.allowlistAdd = allowlistAdd;
+window.allowlistRemove = allowlistRemove;
+allowlistReload();
 `;
 }
 

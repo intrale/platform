@@ -62,6 +62,7 @@ const AUTHORIZED_BY_STATIC = Object.freeze([
     'resume:operator',       // /resume manual (Telegram o CLI)
     'pulpo:cleanup',         // limpieza programada del Pulpo (TTL expirado, etc.)
     'planner-split:auto',    // CA-3: auto-promoción de hijos cuando split de planner
+    'dashboard:roadmap:allowlist', // #4437: editor de allowlist en la ventana Roadmap
 ]);
 
 // `recursive-deps:from-<N>` donde N es el número del issue padre (>0).
@@ -75,6 +76,7 @@ const RECURSIVE_DEPS_RE = /^recursive-deps:from-(\d+)$/;
 const KNOWN_SOURCES = Object.freeze([
     'dashboard:wizard:allowlist',   // wizard de triaje de allowlist (#3742)
     'dashboard:wizard:pausa',       // wizard de pausar / despausar (#3741)
+    'dashboard:roadmap:allowlist',  // #4437: editor de allowlist en la ventana Roadmap
 ]);
 
 const AUTHORIZED_BY_ENUM = Object.freeze([
