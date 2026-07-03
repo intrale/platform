@@ -15648,6 +15648,15 @@ require('./singleton')('pulpo');
 // Signal ready — singleton adquirido, mainLoop arranca
 try { require('./lib/ready-marker').signalReady('pulpo'); } catch {}
 
+// #4460 — Asegurar que el trust anchor `runtime-boot.json` refleje el HEAD real
+// al bootear el Pulpo. Mitiga el "restart manual sin restart.js" (guru): si el
+// marker quedó stale, lo reescribimos con el HEAD que este proceso corre.
+// Best-effort: nunca bloquea el arranque del Pulpo.
+try {
+  const rb = require('./lib/runtime-boot').ensureBootMarker({ pipelineDir: PIPELINE, repoRoot: ROOT });
+  if (rb && rb.wrote) log('pulpo', `Boot marker actualizado al arrancar: ${String(rb.sha || '').slice(0, 8)}`);
+} catch { /* noop */ }
+
 mainLoop().then(() => {
   log('pulpo', 'Pulpo finalizado');
   process.exit(0);
