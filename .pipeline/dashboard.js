@@ -12615,6 +12615,183 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ── #4433 — Gestión de olas desde la ventana Roadmap ─────────────────────
+  // Tres mutaciones que cablean el motor de dominio (lib/waves.js) a la UI del
+  // Roadmap, clonando el patrón CSRF fail-closed del handler de reorder de
+  // arriba: `killAgentCsrf.requireCSRF` ANTES de leer body o tocar el FS
+  // (REQ-SEC-1/CA-7). Reusan `validateCreateInput` (lib/wave-create-input) y el
+  // dominio para no reparsear validaciones a mano (REQ-SEC-2). Precedencia
+  // intencional sobre la superficie agnóstica de lib/waves-api.js para estas
+  // rutas de mutación: acá se inyectan defaults server-side de concurrency/
+  // window (decisión PO camino b) que la superficie agnóstica no aplica. Las
+  // lecturas GET /api/waves siguen resueltas por waves-api.js (fall-through).
+
+  // POST /api/waves — crear una ola planificada (CA-1/CA-2).
+  if (req.url === '/api/waves' && req.method === 'POST') {
+    // REQ-SEC-1/CA-7 — CSRF fail-closed ANTES de leer body o tocar el FS.
+    if (!killAgentCsrf) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'CSRF no disponible — creación de olas deshabilitada' }));
+      return;
+    }
+    if (!killAgentCsrf.requireCSRF(req, res)) return; // ya respondió 403
+    if (!wavesLib) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'waves lib no disponible' }));
+      return;
+    }
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 256 * 1024) req.destroy(); });
+    req.on('end', () => {
+      let payload;
+      try { payload = body ? JSON.parse(body) : {}; }
+      catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'JSON inválido: ' + e.message }));
+        return;
+      }
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'El cuerpo debe ser un objeto JSON' }));
+        return;
+      }
+      // REQ-SEC-5 (decisión PO camino b): concurrency/window NO se piden en el
+      // form; se completan del techo de dominio server-side, NUNCA del input.
+      // Sólo se inyectan si el cliente no los mandó (defaults, no override).
+      if (payload.concurrency === undefined || payload.concurrency === null || payload.concurrency === '') {
+        payload.concurrency = String(wavesLib.readWaveMaxConcurrency());
+      }
+      if (payload.window === undefined || payload.window === null || payload.window === '') {
+        payload.window = String(wavesLib.WAVE_WINDOW_MAX_MINUTES);
+      }
+      let wci;
+      try { wci = require('./lib/wave-create-input'); }
+      catch (e) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'validador de olas no disponible: ' + e.message }));
+        return;
+      }
+      // REQ-SEC-2 — validación canónica; no re-armar el spec a mano.
+      const v = wci.validateCreateInput(payload);
+      if (!v.ok) {
+        // NO escribe el state file (CA-2).
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, field: v.field, msg: v.error }));
+        return;
+      }
+      try {
+        const created = wavesLib.createPlannedWave(v.spec, {
+          updated_by: 'Dashboard-Roadmap',
+          source: 'dashboard/roadmap:create',
+        });
+        log(`waves: ola ${created.waveNumber} creada (${v.spec.issues.length} issue(s)) desde Roadmap`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, msg: `Ola ${created.waveNumber} creada`, number: created.waveNumber, wave: created.wave }));
+      } catch (e) {
+        // Errores de dominio traen `code` (EWAVES_SHAPE/BOUNDS/DUPLICATE_*) →
+        // 4xx accionable, sin escritura parcial (createPlannedWave es atómico).
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, code: e.code, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // POST /api/waves/:num/issues — asociar un issue a una ola planificada (CA-3).
+  const waveAssocMatch = req.url && req.url.match(/^\/api\/waves\/(\d+)\/issues$/);
+  if (waveAssocMatch && req.method === 'POST') {
+    const waveNum = Number(waveAssocMatch[1]);
+    if (!killAgentCsrf) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'CSRF no disponible — asociación deshabilitada' }));
+      return;
+    }
+    if (!killAgentCsrf.requireCSRF(req, res)) return;
+    if (!wavesLib) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'waves lib no disponible' }));
+      return;
+    }
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 256 * 1024) req.destroy(); });
+    req.on('end', () => {
+      let payload;
+      try { payload = body ? JSON.parse(body) : {}; }
+      catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'JSON inválido: ' + e.message }));
+        return;
+      }
+      // CA-6/REQ-SEC-4 — componer sólo sobre olas planificadas. La membresía de
+      // la ola activa dispara re-sync de allowlist (dep #4350/#4435, fuera de
+      // scope): se rechaza en el server, no sólo se oculta en la UI.
+      const active = wavesLib.getActiveWave();
+      if (active && Number(active.number) === waveNum) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, code: 'EWAVES_ACTIVE_LOCKED', msg: `No se pueden asociar issues a la ola activa ${waveNum}; sólo a olas planificadas.` }));
+        return;
+      }
+      // REQ-SEC-2 — el número de issue lo normaliza `addIssueToWave`
+      // (EWAVES_SHAPE si inválido); no se parsea a mano.
+      const rawIssue = (payload && payload.issue != null) ? payload.issue : (payload && payload.number);
+      try {
+        const r = wavesLib.addIssueToWave(waveNum, { number: rawIssue, status: 'pending' }, {
+          updated_by: 'Dashboard-Roadmap',
+          source: 'dashboard/roadmap:associate',
+        });
+        log(`waves: issue #${r.issue} ${r.added ? 'asociado a' : 'ya estaba en'} la ola ${waveNum} (Roadmap)`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, msg: r.added ? `Issue #${r.issue} asociado a la ola ${waveNum}` : `Issue #${r.issue} ya estaba en la ola ${waveNum}`, wave: waveNum, issue: r.issue, added: r.added }));
+      } catch (e) {
+        // Issue inválido / ola inexistente / duplicado en otra ola → 4xx claro
+        // sin modificar la ola (CA-4). `e.code` puede ser undefined (input shape).
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, code: e.code, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // POST /api/waves/:num/issues/:issue/remove — desasociar (CA-5/CA-6). El id de
+  // issue viaja en el path (no en el body). removeIssueFromWave ya rechaza operar
+  // sobre la ola activa (EWAVES_ACTIVE_LOCKED, REQ-SEC-4).
+  const waveDisassocMatch = req.url && req.url.match(/^\/api\/waves\/(\d+)\/issues\/(\d+)\/remove$/);
+  if (waveDisassocMatch && req.method === 'POST') {
+    const waveNum = Number(waveDisassocMatch[1]);
+    const issueNum = Number(waveDisassocMatch[2]);
+    if (!killAgentCsrf) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'CSRF no disponible — desasociación deshabilitada' }));
+      return;
+    }
+    if (!killAgentCsrf.requireCSRF(req, res)) return;
+    if (!wavesLib) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'waves lib no disponible' }));
+      return;
+    }
+    // Drenar (y capear) cualquier body para no dejar el socket colgado.
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 256 * 1024) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const r = wavesLib.removeIssueFromWave(waveNum, issueNum, {
+          updated_by: 'Dashboard-Roadmap',
+          source: 'dashboard/roadmap:disassociate',
+        });
+        log(`waves: issue #${issueNum} desasociado de la ola ${waveNum} (Roadmap)`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, msg: `Issue #${issueNum} desasociado de la ola ${waveNum}`, wave: waveNum, issue: issueNum, removed: r.removed }));
+      } catch (e) {
+        // EWAVES_ACTIVE_LOCKED (activa) / EWAVES_NOT_FOUND → 4xx accionable (CA-6),
+        // sin forzar la operación.
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, code: e.code, msg: e.message }));
+      }
+    });
+    return;
+  }
+
   // API JSON
   // GUARDRAIL (#4096): este handler NO debe invocar getPipelineState() ni hacer
   // I/O sincrónico sobre el histórico. Sirve SIEMPRE desde `_stateSnapshot`,
