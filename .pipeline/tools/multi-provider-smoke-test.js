@@ -262,28 +262,6 @@ for (const cell of filteredMatrix) {
         continue;
     }
 
-    // Caps inquebrantables (CA-A14).
-    try {
-        smoke.enforceCap(capState, 'spawns_per_run');
-        smoke.enforceCap(capState, 'per_combination', comboKey);
-    } catch (capErr) {
-        try {
-            auditLog.appendChained({
-                file: auditFile,
-                entry: {
-                    event: 'cap_exceeded',
-                    run_id: runId,
-                    cap: capErr.cap,
-                    limit: capErr.limit,
-                    combo: capErr.combo || null,
-                    ts: new Date().toISOString(),
-                },
-            });
-        } catch {}
-        process.stderr.write(`[smoke-test] FATAL ${capErr.message}\n`);
-        process.exit(3);
-    }
-
     // CA-A5: filtrar paths del payload por provider (non-Anthropic).
     let pathsFilterResult = { allowed: synthetic.paths.slice(), blocked: [] };
     if (cell.provider !== 'anthropic' && exclusionsBundle) {
@@ -341,8 +319,6 @@ for (const cell of filteredMatrix) {
             evidence_hash: `sha256:${stubHash}`,
             reason: 'dry-run (provider no invocado)',
         };
-        capState.spawns_total++;
-        capState.per_combo[comboKey] = (capState.per_combo[comboKey] || 0) + 1;
         try {
             auditLog.appendChained({
                 file: auditFile,
@@ -368,6 +344,29 @@ for (const cell of filteredMatrix) {
         // Por ahora marcamos SKIPPED con razón explícita para no romper la matriz.
         // Cuando #3198 entregue los wrappers reales, este bloque se reemplaza
         // por dispatch real via resolveSpawnWithFallback con FORCE_PROVIDER_OVERRIDE.
+        // Caps inquebrantables (CA-A14) para invocaciones reales. En --dry-run
+        // no hay spawn ni consumo de quota, por eso no cuenta contra el cap.
+        try {
+            smoke.enforceCap(capState, 'spawns_per_run');
+            smoke.enforceCap(capState, 'per_combination', comboKey);
+        } catch (capErr) {
+            try {
+                auditLog.appendChained({
+                    file: auditFile,
+                    entry: {
+                        event: 'cap_exceeded',
+                        run_id: runId,
+                        cap: capErr.cap,
+                        limit: capErr.limit,
+                        combo: capErr.combo || null,
+                        ts: new Date().toISOString(),
+                    },
+                });
+            } catch {}
+            process.stderr.write(`[smoke-test] FATAL ${capErr.message}\n`);
+            process.exit(3);
+        }
+
         capState.spawns_total++;
         capState.per_combo[comboKey] = (capState.per_combo[comboKey] || 0) + 1;
         entry = {
