@@ -963,3 +963,227 @@ test('#4353 CA-4 — JSONL de Codex con agent_message → texto extraído, reaso
     assert.equal(r.parsed, true);
     assert.equal(r.reason, null);
 });
+
+// =============================================================================
+// #4412 (Parte 2/3 de #4363) — Integración del balanceo ponderado de providers.
+//
+// Cubre:
+//   CA-1/CA-7 — feature flag OFF preserva el comportamiento actual y el shape.
+//   CA-2/CA-8 — el balancer devuelve null → cadena estricta (regresión cero).
+//   Integración positiva (flag ON) — el balancer elige un provider y el shape
+//                de retorno espeja al de resolveSpawnWithFallback.
+//   CA-4/SEC-1 — el bloque `balancing` NO expande ALLOWED_LAUNCHERS.
+//   CA-6/SEC-3 — state file corrupto/inyectado degrada a contadores en 0 con
+//                allowlist anti prototype-pollution, sin crashear.
+// =============================================================================
+
+// Helper: tmp pipelineDir con telegram-commander + bloque `balancing` opcional.
+function mkTmpBalancingDir(balancing) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cmp-bal-'));
+    const models = {
+        default_provider: 'anthropic',
+        defaults: { model: 'claude-opus-4-7' },
+        providers: {
+            anthropic: {
+                launcher: 'claude', model: 'claude-opus-4-7', spawn_args_template: ['-p'],
+                output_parser: 'anthropic-stream-json', quota_error_types: ['usage_limit_error'],
+                resets_at_cap_max_days: 7, supports_tool_use: true,
+                credentials_env: ['ANTHROPIC_API_KEY'], permissions_mode: 'bypassPermissions',
+            },
+            'openai-codex': {
+                launcher: 'codex', model: 'gpt-5-codex', spawn_args_template: ['exec'],
+                output_parser: 'openai-sse', quota_error_types: ['insufficient_quota'],
+                resets_at_cap_max_days: 31, supports_tool_use: true,
+                credentials_env: ['OPENAI_API_KEY'], permissions_mode: 'bypassPermissions',
+            },
+        },
+        skills: {
+            'telegram-commander': {
+                provider: 'anthropic',
+                model_override: 'claude-opus-4-7',
+                fallbacks: [{ provider: 'openai-codex', model_override: 'gpt-5-codex' }],
+            },
+        },
+    };
+    if (balancing !== undefined) {
+        models.skills['telegram-commander'].balancing = balancing;
+    }
+    fs.writeFileSync(path.join(dir, 'agent-models.json'), JSON.stringify(models, null, 2));
+    fs.mkdirSync(path.join(dir, 'logs'), { recursive: true });
+    return dir;
+}
+
+// Balancer fake: devuelve el pick fijo (o null) sin tocar disco/credenciales.
+function fakeBalancer(pick) {
+    return { selectProvider: () => pick };
+}
+
+test('#4412 CA-1/CA-7 — feature flag OFF preserva el comportamiento actual (primary anthropic)', () => {
+    const dir = mkTmpBalancingDir({ enabled: false, quality_bias: 0.7, min_primary_quota_pct: 30 });
+    try {
+        const r = cmp.resolveCommanderProvider({
+            pipelineDir: dir, log: () => {}, quotaModule: makeFakeQuotaModule([]),
+            requestText: 'hola, ¿cómo va todo?',
+            // aunque inyectemos un balancer, con flag OFF NO debe consultarse.
+            balancerModule: fakeBalancer({ provider: 'openai-codex', weight: 1, quotaPct: 100, reason: 'x' }),
+        });
+        assert.equal(r.provider, 'anthropic');
+        assert.equal(r.crossProvider, false);
+        assert.notEqual(r.source, 'balanced'); // el balancer NO se consultó
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('#4412 CA-1 — shape de retorno OFF vs ON (balancer elige el primario) tiene EXACTAMENTE las mismas claves', () => {
+    const dirOff = mkTmpBalancingDir({ enabled: false });
+    const dirOn = mkTmpBalancingDir({ enabled: true, quality_bias: 0.7, min_primary_quota_pct: 30 });
+    try {
+        const off = cmp.resolveCommanderProvider({
+            pipelineDir: dirOff, log: () => {}, quotaModule: makeFakeQuotaModule([]), requestText: 'hola',
+        });
+        const on = cmp.resolveCommanderProvider({
+            pipelineDir: dirOn, log: () => {}, quotaModule: makeFakeQuotaModule([]), requestText: 'hola',
+            balancerModule: fakeBalancer({ provider: 'anthropic', weight: 1, quotaPct: 100, reason: 'quality_bias' }),
+        });
+        assert.equal(on.source, 'balanced', 'con flag ON el balancer resolvió el primario');
+        assert.equal(off.source, 'agent-models', 'con flag OFF va por la cadena estricta');
+        const offKeys = Object.keys(off).sort();
+        const onKeys = Object.keys(on).sort();
+        assert.deepEqual(onKeys, offKeys, `claves OFF=${offKeys} ON=${onKeys}`);
+    } finally {
+        cleanup(dirOff);
+        cleanup(dirOn);
+    }
+});
+
+test('#4412 CA-2/CA-8 — el balancer devuelve null (0 sanos) → cae a la cadena estricta', () => {
+    const dir = mkTmpBalancingDir({ enabled: true, quality_bias: 0.7, min_primary_quota_pct: 30 });
+    try {
+        const r = cmp.resolveCommanderProvider({
+            pipelineDir: dir, log: () => {}, quotaModule: makeFakeQuotaModule([]), requestText: 'hola',
+            balancerModule: fakeBalancer(null), // 0 providers sanos
+        });
+        // Cadena estricta: primario anthropic libre → source 'agent-models', no 'balanced'.
+        assert.equal(r.provider, 'anthropic');
+        assert.notEqual(r.source, 'balanced');
+        assert.equal(r.gated, false);
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('#4412 integración positiva — flag ON, el balancer elige un fallback → resolución balanceada', () => {
+    const dir = mkTmpBalancingDir({ enabled: true, quality_bias: 0.7, min_primary_quota_pct: 30 });
+    try {
+        const r = cmp.resolveCommanderProvider({
+            pipelineDir: dir, log: () => {}, quotaModule: makeFakeQuotaModule([]), requestText: '/lanzar 4412',
+            balancerModule: fakeBalancer({ provider: 'openai-codex', weight: 0.5, quotaPct: 80, reason: 'quota_rebalance' }),
+        });
+        assert.equal(r.provider, 'openai-codex');
+        assert.equal(r.source, 'balanced');
+        assert.equal(r.crossProvider, true);
+        assert.equal(r.primaryProvider, 'anthropic');
+        assert.deepEqual(r.fallbackUsed, { index: 0, provider: 'openai-codex' });
+        assert.equal(r.model, 'gpt-5-codex');
+        assert.ok(r.handler && typeof r.handler === 'object', 'resuelve el handler real del provider');
+        assert.deepEqual(r.chainTried, ['anthropic', 'openai-codex']);
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('#4412 CA-7 — clasificador tool-vs-chat no disponible → degradación segura a orden estricto', () => {
+    const dir = mkTmpBalancingDir({ enabled: true });
+    try {
+        // requestClassifyModule sin isToolUseRequest simula el helper ausente.
+        const r = cmp.resolveCommanderProvider({
+            pipelineDir: dir, log: () => {}, quotaModule: makeFakeQuotaModule([]), requestText: 'hola',
+            requestClassifyModule: {}, // sin isToolUseRequest
+            balancerModule: fakeBalancer({ provider: 'openai-codex', weight: 1, quotaPct: 100, reason: 'x' }),
+        });
+        assert.notEqual(r.source, 'balanced'); // no se balanceó
+        assert.equal(r.provider, 'anthropic');
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('#4412 CA-4/SEC-1 — el bloque `balancing` NO expande ALLOWED_LAUNCHERS', () => {
+    const validate = require('../agent-models-validate');
+    assert.ok(Object.isFrozen(validate.ALLOWED_LAUNCHERS), 'ALLOWED_LAUNCHERS congelado (fuente única)');
+    const before = [...validate.ALLOWED_LAUNCHERS].sort();
+    // El agent-models.json real (con balancing declarado) valida sin agregar launchers.
+    const res = validate.validate();
+    assert.equal(res.ok, true, `validate() del config real debe pasar: ${JSON.stringify(res.errors || [])}`);
+    const after = [...validate.ALLOWED_LAUNCHERS].sort();
+    assert.deepEqual(after, before, 'balancing no muta el allowlist de launchers');
+});
+
+test('#4412 CA-6/SEC-3 — state file corrupto degrada a contadores en 0 sin crashear', () => {
+    const dir = mkTmpBalancingDir({ enabled: true });
+    try {
+        const file = cmp._balancerStatePath(dir);
+        fs.writeFileSync(file, '{ esto no es json válido __proto__');
+        const st = cmp._loadBalancerState(dir, fs, new Set(['anthropic', 'openai-codex']));
+        assert.deepEqual(st.counters, {});
+        assert.equal(({}).polluted, undefined, 'sin prototype pollution');
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('#4412 CA-6/SEC-3 — state file con claves espurias (__proto__/provider desconocido) se ignoran por allowlist', () => {
+    const dir = mkTmpBalancingDir({ enabled: true });
+    try {
+        const file = cmp._balancerStatePath(dir);
+        fs.writeFileSync(file, JSON.stringify({
+            counters: { '__proto__': { polluted: 1 }, 'anthropic': 5, 'evil-provider': 99, 'openai-codex': 2 },
+        }));
+        const st = cmp._loadBalancerState(dir, fs, new Set(['anthropic', 'openai-codex']));
+        assert.deepEqual(st.counters, { anthropic: 5, 'openai-codex': 2 });
+        assert.equal(({}).polluted, undefined, 'sin prototype pollution');
+        assert.equal(st.counters['evil-provider'], undefined, 'provider fuera del allowlist ignorado');
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('#4412 SEC-3 — makeBalancerStore round-trip filtra por allowlist en lectura y escritura', () => {
+    const dir = mkTmpBalancingDir({ enabled: true });
+    try {
+        const store = cmp._makeBalancerStore(dir, fs, new Set(['anthropic', 'openai-codex']));
+        store.writeState({ current: { anthropic: 3, 'openai-codex': 1, 'evil-provider': 7, '__proto__': 9 } });
+        const back = store.readState();
+        assert.deepEqual(back.current, { anthropic: 3, 'openai-codex': 1 });
+        assert.equal(({}).polluted, undefined);
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('#4412 CA-5/SEC-2 — el validator rechaza clave arbitraria y valor fuera de rango en `balancing`', () => {
+    const validate = require('../agent-models-validate');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cmp-bal-neg-'));
+    try {
+        const base = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'agent-models.json'), 'utf8'));
+        // Inyectar clave arbitraria + quality_bias fuera de [0,1].
+        base.skills['telegram-commander'].balancing = { enabled: false, quality_bias: 5, bogus: true };
+        const jsonPath = path.join(dir, 'agent-models.json');
+        fs.writeFileSync(jsonPath, JSON.stringify(base, null, 2));
+        const res = validate.validate(jsonPath);
+        assert.equal(res.ok, false, 'debe fallar por schema cerrado + rango');
+        const balErrors = (res.errors || []).filter((e) => String(e.path || '').includes('balancing'));
+        assert.ok(balErrors.length >= 2, `errores deben apuntar al bloque balancing: ${JSON.stringify(res.errors)}`);
+        assert.ok(
+            balErrors.some((e) => /additional properties/i.test(e.message)),
+            'rechaza clave arbitraria (additionalProperties:false)',
+        );
+        assert.ok(
+            balErrors.some((e) => /<= 1/.test(e.message)),
+            'rechaza quality_bias fuera de [0,1]',
+        );
+    } finally {
+        cleanup(dir);
+    }
+});

@@ -188,11 +188,90 @@ function classifyCommanderResult(args) {
   };
 }
 
+// =============================================================================
+// #4412 (Parte 2/3 de #4363) — isToolUseRequest.
+//
+// El clasificador de ARRIBA mapea *resultados* de un turno; el balanceo de
+// providers (Parte 2) necesita clasificar el *request* ANTES del dispatch para
+// saber si requiere tool-use (ejecutar comandos del pipeline: lanzar agentes,
+// editar archivos, correr builds). Un request tool-use NO puede ir a un provider
+// sin `supports_tool_use` (Cerebras/Gemini) — el balancer los excluye con este
+// flag (fail-closed en elegibilidad, provider-balancer.js CA-5).
+//
+// Heurística PURA y conservadora (no toca disco, no LLM):
+//   - Comandos slash del Commander (/lanzar, /build, /delivery, /reset, etc.)
+//     → tool-use (ejecutan acciones deterministas del pipeline).
+//   - Verbos de acción imperativos en ES ("lanzá", "buildeá", "mergeá",
+//     "corré", "reiniciá", "creá el issue", "editá") → tool-use.
+//   - Preguntas / conversación ("qué", "cómo", "por qué", "contame",
+//     "explicame", "estado") → NO tool-use (chat puro, cualquier provider sano
+//     sirve).
+//
+// Ante ambigüedad devuelve `false` (chat): es la degradación segura desde la
+// perspectiva del BALANCEO — un request de chat mal clasificado como chat sigue
+// respondiéndose bien por cualquier provider. La seguridad real de "no mandar
+// tool-use a un provider incapaz" la garantiza igual el fail-closed del
+// provider-balancer (que sólo pondera providers con `supports_tool_use:true`
+// cuando `requiresToolUse===true`); este helper sólo decide ese flag de entrada.
+//
+// El caller (lib/commander/multi-provider.js) degrada a fallback estricto si
+// ESTE módulo/símbolo no está disponible en runtime (CA-7 del #4412).
+// =============================================================================
+
+// Comandos slash deterministas del Commander que ejecutan acciones del pipeline.
+const TOOL_SLASH_COMMANDS = Object.freeze([
+  'lanzar', 'lanza', 'build', 'buildear', 'delivery', 'deliver', 'merge',
+  'reset', 'restart', 'reiniciar', 'pausar', 'pause', 'resume', 'reanudar',
+  'crear', 'crea', 'issue', 'pr', 'deploy', 'rollback', 'kill', 'matar',
+  'ghostbusters', 'ops', 'qa', 'tester', 'commit', 'push',
+]);
+
+// Verbos de acción imperativos (ES/EN) que implican ejecución de herramientas.
+const TOOL_ACTION_PATTERNS = Object.freeze([
+  /\b(?:lanz[áa]|lanza|arranc[áa]|corr[ée]|ejecut[áa]|build(?:e[áa])?|compil[áa]|merge[áa]?|meterle\s+merge|deploy[áa]?|reinici[áa]|reset[eá]a?|pausa|reanud[áa]|cre[áa]\s+(?:el|la|un|una)|edit[áa]|modific[áa]|borr[áa]|elimin[áa]|commite[áa]?|pushe[áa]?|cerr[áa]\s+(?:el|la)\s+issue|abr[íi]\s+(?:el|un)\s+pr)\b/i,
+]);
+
+/**
+ * Determina si un request del Commander requiere capacidad de tool-use.
+ *
+ * @param {string|object} request  El prompt del usuario (string) o un
+ *   descriptor `{ text, isCommand }`. `isCommand:true` fuerza tool-use (el
+ *   caller ya sabe que es un comando ejecutable).
+ * @returns {boolean} true si el request necesita un provider con tool-use.
+ */
+function isToolUseRequest(request) {
+  if (request && typeof request === 'object' && !Array.isArray(request)) {
+    if (request.isCommand === true || request.requiresToolUse === true) return true;
+    request = typeof request.text === 'string' ? request.text : '';
+  }
+  if (typeof request !== 'string' || request.length === 0) return false;
+
+  const text = request.trim();
+
+  // 1. Comando slash explícito: /lanzar, /build, etc.
+  const slash = text.match(/^\/([a-záéíóúñ]+)/i);
+  if (slash) {
+    const cmd = slash[1].toLowerCase();
+    if (TOOL_SLASH_COMMANDS.includes(cmd)) return true;
+  }
+
+  // 2. Verbo de acción imperativo en el cuerpo del texto.
+  for (const re of TOOL_ACTION_PATTERNS) {
+    re.lastIndex = 0;
+    if (re.test(text)) return true;
+  }
+
+  // 3. Ambiguo / conversacional → NO tool-use (degradación segura del balanceo).
+  return false;
+}
+
 module.exports = {
   classifyCommanderResult,
   validateProvider,
   resolveDeclaredProviders,
+  isToolUseRequest,
   RESULTADOS,
   VERIFIED_VERDICTS,
   PROVIDER_DESCONOCIDO,
+  TOOL_SLASH_COMMANDS,
 };
