@@ -140,8 +140,8 @@ test('la tabla NUNCA contiene error_detail crudo ni patrones de secret', () => {
             skill: 'guru', provider: 'anthropic', status: 'FAIL',
             error_class: 'auth',
             // Campos que el renderer NO debe leer/emitir:
-            error_detail: 'Authorization: Bearer sk-ant-api03-SUPERSECRETVALUE123456789',
-            raw_response: 'bot token 7891234567:AAExampleBotTokenLongEnoughToMatch12345',
+            error_detail: 'Authorization: Bearer sk-ant-api03-SUPERSECRETVALUE123456789', // nosemgrep — token falso de fixture, verifica que el renderer NO filtra secretos
+            raw_response: 'bot token 7891234567:AAExampleBotTokenLongEnoughToMatch12345', // nosemgrep: generic.secrets.security.detected-telegram-bot-api-key.detected-telegram-bot-api-key — token falso de fixture, verifica que el renderer NO filtra secretos
         },
     ]);
     const md = smoke.renderPerAgentMarkdown(coverage, models);
