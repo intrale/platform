@@ -128,7 +128,10 @@ function renderPriorityBadge(priority) {
 // Chip de un issue. `title` (si existe) se escapa en atributo y texto. El estado
 // se muestra como texto + clase (nunca color-only) — WCAG 1.4.1. #4373 (CA-5/CA-7):
 // badge de prioridad + marca de bloqueo (candado) si el issue está en `blockedSet`.
-function renderIssueChip(issue, blockedSet) {
+// #4433 (CA-5/CA-6): en olas PLANIFICADAS (`removableWave` != null) el chip suma
+// un botón "quitar" (ic-remove-circle) que desasocia el issue. Nunca en activa/
+// archivadas (removableWave omitido).
+function renderIssueChip(issue, blockedSet, removableWave) {
     const num = issue.number; // ya coaccionado
     const titleTxt = issue.title || '';
     const statusTxt = issue.status || '';
@@ -147,15 +150,25 @@ function renderIssueChip(issue, blockedSet) {
         ? `<span class="wr-chip-blocked" title="${escapeHtmlAttr('Issue #' + num + ' bloqueado')}" aria-label="bloqueado">🔒 bloqueado</span>`
         : '';
     const blockedCls = isBlocked ? ' wr-chip-is-blocked' : '';
-    return `<a class="wr-chip${blockedCls}" href="https://github.com/intrale/platform/issues/${num}" target="_blank" rel="noopener noreferrer" title="${titleAttr}">`
+    const chipHtml = `<a class="wr-chip${blockedCls}" href="https://github.com/intrale/platform/issues/${num}" target="_blank" rel="noopener noreferrer" title="${titleAttr}">`
         + `<span class="wr-chip-num">${label}</span>${prioHtml}${statusHtml}${blockedHtml}</a>`;
+    // CA-5 — botón de desasociar (sólo olas planificadas). El número de ola/issue
+    // son enteros ya coaccionados (safeWaveNumber/safeIssueNumber) → seguros para
+    // el onclick inline.
+    const wnum = safeWaveNumber(removableWave);
+    if (wnum === null) return chipHtml;
+    const removeBtn = `<button type="button" class="wr-chip-remove" onclick="roadmapDisassociate(${wnum}, ${num})"`
+        + ` title="${escapeHtmlAttr('Desasociar el issue #' + num + ' de la ola ' + wnum)}"`
+        + ` aria-label="${escapeHtmlAttr('Desasociar el issue #' + num + ' de la ola ' + wnum)}">`
+        + '<svg class="wr-chip-remove-ic" aria-hidden="true"><use href="#ic-remove-circle"></use></svg></button>';
+    return `<span class="wr-chip-wrap">${chipHtml}${removeBtn}</span>`;
 }
 
-function renderIssueList(issues, blockedSet) {
+function renderIssueList(issues, blockedSet, removableWave) {
     if (!issues.length) {
         return '<div class="wr-empty-issues">Sin issues asociados.</div>';
     }
-    return '<div class="wr-chips">' + issues.map((i) => renderIssueChip(i, blockedSet)).join('') + '</div>';
+    return '<div class="wr-chips">' + issues.map((i) => renderIssueChip(i, blockedSet, removableWave)).join('') + '</div>';
 }
 
 // #4373 (CA-6) — Barra de avance segmentada + lectura numérica "cerrados/total · %".
@@ -288,6 +301,19 @@ function renderPlannedCard(wave, position) {
         ? `<button type="button" class="wr-btn wr-btn-archive" onclick="roadmapArchive(${num}, 'planificada')" title="${escapeHtmlAttr('Archivar la ola planificada ' + num)}" aria-label="${escapeHtmlAttr('Archivar la ola planificada ' + num)}">`
             + '<svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-archive-box"></use></svg> Archivar</button>'
         : '';
+    // #4433 (CA-3) — Componer/asociar: input + botón que asocia un issue a ESTA
+    // ola planificada. Sólo se renderiza si la ola tiene número válido. El id de
+    // issue lo valida el server (addIssueToWave → EWAVES_SHAPE) — acá sólo se
+    // recolecta el texto crudo.
+    const composeHtml = num !== null
+        ? `<div class="wr-compose">
+        <label class="wr-compose-label" for="wr-assoc-${num}">Asociar issue</label>
+        <input type="text" class="wr-compose-input" id="wr-assoc-${num}" inputmode="numeric" placeholder="#1234" aria-label="${escapeHtmlAttr('Número de issue a asociar a la ola ' + num)}">
+        <button type="button" class="wr-btn wr-btn-compose" onclick="roadmapAssociate(${num})" title="${escapeHtmlAttr('Asociar el issue indicado a la ola ' + num)}">
+          <svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-wave-add"></use></svg> Asociar</button>
+        <span class="wr-compose-status" id="wr-compose-status-${num}" role="status" aria-live="polite"></span>
+      </div>`
+        : '';
     return `<article class="wr-card wr-card-planned" data-wave="${num !== null ? num : ''}">
       <header class="wr-card-head">
         <div class="wr-card-id">
@@ -298,7 +324,8 @@ function renderPlannedCard(wave, position) {
         <div class="wr-card-actions">${archiveBtn}</div>
       </header>
       ${goalTxt ? `<div class="wr-card-goal">${escapeHtmlText(goalTxt)}</div>` : ''}
-      ${renderIssueList(issues)}
+      ${renderIssueList(issues, null, num)}
+      ${composeHtml}
     </article>`;
 }
 
@@ -423,6 +450,28 @@ function roadmapStyle() {
 .wr-blocked-row a:hover{text-decoration:underline}
 .wr-blocked-reason{color:var(--text-dim,#8B949E);font-style:italic}
 .wr-arch-closed{font-size:10.5px;color:var(--text-dim,#8B949E);font-variant-numeric:tabular-nums}
+/* #4433 — Alta de ola + componer/asociar/desasociar (sólo planificadas). */
+.wr-head-spacer{flex:1}
+.wr-btn-newwave:hover,.wr-btn-compose:hover{color:var(--text-primary,#e6edf3);border-color:var(--purple,#BC8CFF)}
+.wr-btn-primary{color:var(--text-primary,#e6edf3);border-color:var(--purple-dim,#8957E5);background:var(--purple-bg,rgba(188,140,255,.12))}
+.wr-btn-primary:hover{border-color:var(--purple,#BC8CFF)}
+.wr-newwave{display:flex;flex-direction:column;gap:10px;padding:14px 16px;border:1px solid var(--purple-dim,#8957E5);border-radius:12px;background:var(--surface-1,#11151E)}
+.wr-nw-row{display:flex;flex-direction:column;gap:4px}
+.wr-nw-label{font-size:11px;font-weight:800;letter-spacing:.3px;text-transform:uppercase;color:var(--text-secondary,#8A93A6)}
+.wr-nw-req{color:var(--danger,#F85149)}
+.wr-nw-input,.wr-compose-input{font:inherit;font-size:13px;color:var(--text-primary,#e6edf3);background:var(--surface-0,#0d1117);border:1px solid var(--border,rgba(255,255,255,.12));border-radius:8px;padding:7px 10px}
+.wr-nw-input:focus,.wr-compose-input:focus{outline:none;border-color:var(--purple,#BC8CFF)}
+.wr-nw-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.wr-nw-status,.wr-compose-status{font-size:11.5px;font-weight:700}
+.wr-st-ok{color:var(--success,#3FB950)}
+.wr-st-err{color:var(--danger,#F85149)}
+.wr-compose{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-top:10px;margin-top:2px;border-top:1px solid var(--border-subtle,rgba(255,255,255,.08))}
+.wr-compose-label{font-size:11px;font-weight:800;letter-spacing:.3px;text-transform:uppercase;color:var(--text-secondary,#8A93A6)}
+.wr-compose-input{max-width:140px}
+.wr-chip-wrap{display:inline-flex;align-items:center;gap:2px}
+.wr-chip-remove{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;min-width:22px;padding:0;cursor:pointer;background:transparent;border:none;border-radius:999px;color:var(--text-dim,#8B949E)}
+.wr-chip-remove:hover{color:var(--danger,#F85149);background:var(--danger-bg,#160B0B)}
+.wr-chip-remove-ic{width:15px;height:15px}
 @media (prefers-reduced-motion:reduce){.wr-archived-toggle .wr-expand-ic{transition:none}}
 </style>`;
 }
@@ -489,7 +538,28 @@ function renderRoadmapSsr(opts) {
         + '<section class="wr-section" aria-label="Olas planificadas">'
         + '<div class="wr-section-head"><svg class="wr-section-ic" aria-hidden="true"><use href="#ic-wave"></use></svg>'
         + '<span class="wr-section-title">Planificadas</span>'
-        + `<span class="wr-section-count">${escapeHtmlText(String(planned.length))}</span></div>`
+        + `<span class="wr-section-count">${escapeHtmlText(String(planned.length))}</span>`
+        // #4433 (CA-1) — "Nueva ola": abre el formulario mínimo de alta.
+        + '<span class="wr-head-spacer"></span>'
+        + '<button type="button" class="wr-btn wr-btn-newwave" id="wr-newwave-toggle" onclick="roadmapNewWaveToggle()" aria-expanded="false" aria-controls="wr-newwave-form">'
+        + '<svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-wave-add"></use></svg> Nueva ola</button>'
+        + '</div>'
+        // #4433 (CA-1/CA-2) — Formulario de alta (oculto por defecto). Pide nombre
+        // (obligatorio), objetivo (opcional) e issue(s) inicial(es) (obligatorio).
+        // concurrency/window NO se piden: el server aplica defaults (camino b PO).
+        + '<form class="wr-newwave" id="wr-newwave-form" hidden onsubmit="return roadmapCreateWave(event)">'
+        + '<div class="wr-nw-row"><label class="wr-nw-label" for="wr-nw-name">Nombre <span class="wr-nw-req" aria-hidden="true">*</span></label>'
+        + '<input type="text" class="wr-nw-input" id="wr-nw-name" maxlength="80" required placeholder="Ola N+X" aria-label="Nombre de la ola (obligatorio)"></div>'
+        + '<div class="wr-nw-row"><label class="wr-nw-label" for="wr-nw-goal">Objetivo</label>'
+        + '<input type="text" class="wr-nw-input" id="wr-nw-goal" maxlength="280" placeholder="Opcional" aria-label="Objetivo de la ola (opcional)"></div>'
+        + '<div class="wr-nw-row"><label class="wr-nw-label" for="wr-nw-issues">Issues iniciales <span class="wr-nw-req" aria-hidden="true">*</span></label>'
+        + '<input type="text" class="wr-nw-input" id="wr-nw-issues" required placeholder="#1234 #1235" aria-label="Números de issue iniciales, obligatorio al menos uno"></div>'
+        + '<div class="wr-nw-actions">'
+        + '<button type="submit" class="wr-btn wr-btn-primary"><svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-wave-add"></use></svg> Crear ola</button>'
+        + '<button type="button" class="wr-btn" onclick="roadmapNewWaveToggle(false)">Cancelar</button>'
+        + '<span class="wr-nw-status" id="wr-nw-status" role="status" aria-live="polite"></span>'
+        + '</div>'
+        + '</form>'
         + plannedHtml
         + '</section>'
         // Sección ARCHIVADAS — colapsada por defecto (guideline UX).
@@ -554,8 +624,126 @@ async function roadmapArchive(waveNum, kind){
     btns.forEach(function(b){ b.disabled = false; });
   }
 }
+
+// #4433 — POST con CSRF double-submit (killCsrfHeaders del fetch-client) y un
+// reintento ante 403 (token rotado por restart), igual que killAgentPost. Cada
+// endpoint de olas exige requireCSRF server-side (CA-7).
+async function roadmapWavePost(url, payload){
+  var doPost = async function(){
+    var headers = Object.assign({ 'Content-Type': 'application/json' }, await killCsrfHeaders());
+    var opts = { method: 'POST', headers: headers };
+    if(payload !== undefined) opts.body = JSON.stringify(payload);
+    return fetch(url, opts);
+  };
+  var r = await doPost();
+  if(r && r.status === 403){ await killCsrfHeaders(true); r = await doPost(); }
+  return r;
+}
+function roadmapNewWaveToggle(force){
+  var form = document.getElementById('wr-newwave-form');
+  var btn = document.getElementById('wr-newwave-toggle');
+  if(!form) return;
+  var open = (force === true) ? true : (force === false ? false : form.hidden);
+  form.hidden = !open;
+  if(btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if(open){ var n = document.getElementById('wr-nw-name'); if(n) n.focus(); }
+}
+function _roadmapSetStatus(id, msg, kind){
+  var el = document.getElementById(id);
+  if(!el) return;
+  el.textContent = msg || '';
+  el.className = (el.id === 'wr-nw-status' ? 'wr-nw-status' : 'wr-compose-status') + (kind ? ' wr-st-' + kind : '');
+}
+async function roadmapCreateWave(ev){
+  if(ev && ev.preventDefault) ev.preventDefault();
+  var nameEl = document.getElementById('wr-nw-name');
+  var goalEl = document.getElementById('wr-nw-goal');
+  var issuesEl = document.getElementById('wr-nw-issues');
+  var name = nameEl ? nameEl.value.trim() : '';
+  var goal = goalEl ? goalEl.value.trim() : '';
+  var issues = issuesEl ? issuesEl.value.trim() : '';
+  // Validación mínima cliente (el server revalida, CA-2). Sin bloquear: sólo
+  // feedback temprano; la fuente de verdad es la respuesta del endpoint.
+  if(!name){ _roadmapSetStatus('wr-nw-status', 'Indicá un nombre para la ola.', 'err'); if(nameEl) nameEl.focus(); return false; }
+  if(!issues){ _roadmapSetStatus('wr-nw-status', 'Indicá al menos un issue inicial.', 'err'); if(issuesEl) issuesEl.focus(); return false; }
+  _roadmapSetStatus('wr-nw-status', 'Creando…', null);
+  try {
+    var body = { name: name, issues: issues };
+    if(goal) body.goal = goal;
+    var r = await roadmapWavePost('/api/waves', body);
+    var j = await r.json().catch(function(){ return {}; });
+    if(r.ok && j.ok){
+      _roadmapSetStatus('wr-nw-status', (j.msg || 'Ola creada') + ' ✓', 'ok');
+      setTimeout(function(){ location.reload(); }, 500);
+      return false;
+    }
+    var hint = (j && j.msg) ? j.msg : ('HTTP ' + r.status);
+    if(j && j.field) hint = j.field + ': ' + hint;
+    _roadmapSetStatus('wr-nw-status', 'No se pudo crear: ' + hint, 'err');
+  } catch(e){
+    _roadmapSetStatus('wr-nw-status', 'Error de red: ' + e.message, 'err');
+  }
+  return false;
+}
+async function roadmapAssociate(waveNum){
+  waveNum = parseInt(waveNum, 10);
+  if(!Number.isInteger(waveNum) || waveNum < 1) return;
+  var statusId = 'wr-compose-status-' + waveNum;
+  var input = document.getElementById('wr-assoc-' + waveNum);
+  var raw = input ? input.value.trim() : '';
+  var issueNum = parseInt(String(raw).replace(/^#/, ''), 10);
+  if(!Number.isInteger(issueNum) || issueNum < 1){
+    _roadmapSetStatus(statusId, 'Indicá un número de issue válido.', 'err');
+    if(input) input.focus();
+    return;
+  }
+  _roadmapSetStatus(statusId, 'Asociando…', null);
+  try {
+    var r = await roadmapWavePost('/api/waves/' + waveNum + '/issues', { issue: issueNum });
+    var j = await r.json().catch(function(){ return {}; });
+    if(r.ok && j.ok){
+      _roadmapSetStatus(statusId, (j.msg || 'Issue asociado') + ' ✓', 'ok');
+      setTimeout(function(){ location.reload(); }, 500);
+      return;
+    }
+    _roadmapSetStatus(statusId, 'No se pudo asociar: ' + ((j && j.msg) ? j.msg : ('HTTP ' + r.status)), 'err');
+  } catch(e){
+    _roadmapSetStatus(statusId, 'Error de red: ' + e.message, 'err');
+  }
+}
+async function roadmapDisassociate(waveNum, issueNum){
+  waveNum = parseInt(waveNum, 10);
+  issueNum = parseInt(issueNum, 10);
+  if(!Number.isInteger(waveNum) || waveNum < 1 || !Number.isInteger(issueNum) || issueNum < 1) return;
+  var ok = await inConfirm({
+    title: 'Desasociar issue',
+    message: 'El issue #' + issueNum + ' se quitará de la ola ' + waveNum + ' (planificada).',
+    confirmLabel: 'Desasociar',
+    danger: true,
+    preview: [{ label: 'Issue', value: '#' + issueNum }, { label: 'Ola', value: '#' + waveNum }]
+  });
+  if(!ok) return;
+  var statusId = 'wr-compose-status-' + waveNum;
+  _roadmapSetStatus(statusId, 'Desasociando…', null);
+  try {
+    var r = await roadmapWavePost('/api/waves/' + waveNum + '/issues/' + issueNum + '/remove');
+    var j = await r.json().catch(function(){ return {}; });
+    if(r.ok && j.ok){
+      _roadmapSetStatus(statusId, (j.msg || 'Issue desasociado') + ' ✓', 'ok');
+      setTimeout(function(){ location.reload(); }, 500);
+      return;
+    }
+    _roadmapSetStatus(statusId, 'No se pudo desasociar: ' + ((j && j.msg) ? j.msg : ('HTTP ' + r.status)), 'err');
+  } catch(e){
+    _roadmapSetStatus(statusId, 'Error de red: ' + e.message, 'err');
+  }
+}
 window.roadmapToggleArchived = roadmapToggleArchived;
 window.roadmapArchive = roadmapArchive;
+window.roadmapNewWaveToggle = roadmapNewWaveToggle;
+window.roadmapCreateWave = roadmapCreateWave;
+window.roadmapAssociate = roadmapAssociate;
+window.roadmapDisassociate = roadmapDisassociate;
 `;
 }
 
