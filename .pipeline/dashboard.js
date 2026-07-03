@@ -790,6 +790,11 @@ function _scheduleOlaETARefresh(state) {
       // avance % desde la MISMA fuente que el handler de estado de ola, incluso
       // cuando todavía no hay ritmo medido (etaSource === 'fallback').
       let waveTotalPct = null;
+      // #4399 — conteo de cerrados/total del MISMO `computeClosedSet` que la
+      // lista, elevado al cache para que el panel de métricas exponga el mismo
+      // "N de M" (CA-2). null si no se pudo derivar.
+      let waveClosedCount = null;
+      let waveTotalIssues = null;
       try {
         if (waveProgressLib && wavesLib && waveResolverLib && waveSnapshotLib && waveStateLib) {
           const activeWave = wavesLib.getActiveWave();
@@ -810,6 +815,9 @@ function _scheduleOlaETARefresh(state) {
             // de la función para preservar el patrón anti-circular (idem L3860/L10535).
             const { computeClosedSet } = require('./lib/commander-deterministic');
             const closedIssues = computeClosedSet({ wave, state: wState });
+            // #4399 — el conteo de cerrados/total sale del MISMO set que la lista.
+            waveClosedCount = closedIssues.size;
+            waveTotalIssues = Array.isArray(wave && wave.issues) ? wave.issues.length : 0;
             const wSnap = waveSnapshotLib.buildWaveSnapshot({ state: wState, wave, closedIssues });
             if (wSnap && Number.isFinite(wSnap.totalPct)) {
               waveTotalPct = wSnap.totalPct;
@@ -821,9 +829,9 @@ function _scheduleOlaETARefresh(state) {
           }
         }
       } catch { /* fallback: sin velocityETA */ }
-      return { olaResult, historical, velocityETA, waveTotalPct };
+      return { olaResult, historical, velocityETA, waveTotalPct, waveClosedCount, waveTotalIssues };
     })
-    .then(({ olaResult, historical, velocityETA, waveTotalPct }) => {
+    .then(({ olaResult, historical, velocityETA, waveTotalPct, waveClosedCount, waveTotalIssues }) => {
       _olaETACache = {
         issues: olaIssues,
         totalP50: olaResult.totalP50,
@@ -838,6 +846,11 @@ function _scheduleOlaETARefresh(state) {
         etaSource: velocityETA ? 'velocity' : 'fallback',
         // #4287 (CA-1) — avance % determinístico (null si no hubo snapshot).
         totalPct: Number.isFinite(waveTotalPct) ? waveTotalPct : null,
+        // #4399 — conteo cerrados/total del MISMO `computeClosedSet` que la lista
+        // del pipeline, para que el panel de métricas muestre idéntico "N de M"
+        // (CA-2). null cuando no se pudo derivar la ola canónica.
+        closedCount: Number.isInteger(waveClosedCount) ? waveClosedCount : null,
+        totalIssues: Number.isInteger(waveTotalIssues) ? waveTotalIssues : null,
         refreshedAt: Date.now(),
       };
       _olaETACacheAt = Date.now();

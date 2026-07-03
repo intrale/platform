@@ -64,6 +64,11 @@ function fakeState() {
     return {
         bloqueados: [{ issue: 4360, blocker: 4350, reason: 'espera schema', token: 'LEAK-BLOCK' }],
         olaETA: { totalP50: 45, totalP75: 90, totalP90: 150, totalPct: 33, byIssue: { 4373: { samples: 3 } } },
+        // #4399 — el avance del panel deriva de `state.activeWave` (ola canónica,
+        // issues: number[]) + `state.issueTitles` (misma fuente que la lista del
+        // pipeline vía computeClosedSet), NO de la foto enriquecida .status/.merged.
+        activeWave: { label: 'Ola 8', issues: [4373], source: 'waves.json', resolved: true },
+        issueTitles: { '4373': { state: 'OPEN', labels: [] } },
     };
 }
 
@@ -109,8 +114,25 @@ test('CA-6: roadmapSlice calcula avance de la ola activa (cerrados/total/%)', ()
     withStubbedWaves(fakeWavesOk(), () => {
         const slices = require('../dashboard-slices');
         const out = slices.roadmapSlice(fakeState(), {});
-        // 1 issue in-progress → 0 cerrados de 1.
+        // #4399 — 4373 OPEN en issueTitles → 0 cerrados de 1 (deriva de computeClosedSet).
         assert.deepEqual(out.avance, { closed: 0, total: 1, pct: 0 });
+    });
+});
+
+test('#4399 CA-2: roadmapSlice cuenta cerrados desde computeClosedSet (mismo que la lista)', () => {
+    withStubbedWaves(fakeWavesOk(), () => {
+        const slices = require('../dashboard-slices');
+        const { computeClosedSet } = require('../commander-deterministic');
+        const state = fakeState();
+        // El issue 4373 pasa a CLOSED en la cache de títulos → 1 de 1 cerrado.
+        state.issueTitles = { '4373': { state: 'CLOSED', labels: [] } };
+        const out = slices.roadmapSlice(state, {});
+        // La lista deriva del MISMO set.
+        const listaClosed = computeClosedSet({ wave: state.activeWave, state }).size;
+        assert.equal(out.avance.closed, 1);
+        assert.equal(out.avance.closed, listaClosed, 'panel == lista');
+        assert.equal(out.avance.total, 1);
+        assert.equal(out.avance.pct, 100);
     });
 });
 

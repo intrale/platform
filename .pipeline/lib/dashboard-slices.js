@@ -1776,12 +1776,32 @@ function _roadmapNormalizeArchivedWave(raw) {
     return { number, name, goal, closedAt, issuesCompleted: completed, issuesFailed: failed, durationDays, issues };
 }
 
-// Avance de una ola (CA-6): cerrados/total + %. `closed` = status 'completed' o
-// merged (enrichWaveIssue marca ambos para issues cerrados en GitHub).
-function _roadmapAvance(wave) {
+// Avance de una ola (CA-6 / #4399): cerrados/total + %.
+//
+// #4399 — FUENTE ÚNICA de cerrados. Antes contaba `i.status==='completed' ||
+// i.merged` sobre la foto enriquecida del title-cache (`enrichWaveIssue`), una
+// fuente "de prestado" que quedaba desincronizada y mostraba "2 de 14" mientras
+// la lista del pipeline (`computeLiveWaveStatus` → `computeClosedSet`) mostraba
+// "11 de 14". Ahora el panel de métricas deriva los cerrados del MISMO set que
+// la lista: `computeClosedSet({ wave, state })` sobre `state.issueTitles`
+// (cache cruda, sin query `gh` viva → sin vector de inyección, A03). `total` y
+// `closed` salen de la MISMA `wave` canónica para garantizar closed ≤ total.
+//
+// @param {object} wave  - ola canónica con `issues: number[]` (resolver output).
+// @param {object} state - state del dashboard con `issueTitles`/`issueMatrix`.
+function _roadmapAvance(wave, state) {
     const issues = (wave && Array.isArray(wave.issues)) ? wave.issues : [];
     const total = issues.length;
-    const closed = issues.filter((i) => i && (i.status === 'completed' || i.merged === true)).length;
+    let closed = 0;
+    try {
+        // Require lazy DENTRO de la función (patrón anti-circular, idem otras
+        // slices que requieren commander-deterministic en request-time).
+        const { computeClosedSet } = require('./commander-deterministic');
+        closed = computeClosedSet({ wave, state }).size;
+    } catch {
+        // Degradación grácil: sin el set no inventamos cerrados (0), nunca > total.
+        closed = 0;
+    }
     const pct = total > 0 ? Math.round((closed / total) * 100) : 0;
     return { closed, total, pct };
 }
@@ -1846,7 +1866,12 @@ function roadmapSlice(state, ctx) {
         };
     }
 
-    const avance = _roadmapAvance(activeWave);
+    // #4399 — el avance deriva de `s.activeWave` (ola canónica del resolver, con
+    // `issues: number[]`) + `s` (title-cache), la MISMA fuente que la lista del
+    // pipeline (`computeLiveWaveStatus` en dashboard-routes). NO de `activeWave`
+    // (la foto enriquecida de `buildWavesPayload`), que era la fuente "de
+    // prestado" desincronizada. Así lista y panel muestran el mismo "N de M".
+    const avance = _roadmapAvance(s.activeWave, s);
 
     return {
         activeWave,
@@ -3404,6 +3429,9 @@ module.exports = {
     bloqueadosSlice,
     // #4373 (Ola 8.3) — slice consolidado de la vista Roadmap de olas.
     roadmapSlice,
+    // #4399 — helper de avance (cerrados/total/%) exportado para test unitario:
+    // asserta que deriva del MISMO `computeClosedSet` que la lista del pipeline.
+    _roadmapAvance,
     opsSlice,
     historialSlice,
     // #3963 — Historial timeline agrupado por día (CA-1..CA-5)
