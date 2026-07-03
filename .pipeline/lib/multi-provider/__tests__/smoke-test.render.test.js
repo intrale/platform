@@ -4,8 +4,8 @@
 // Cubre CA-1..CA-3, CA-8, CA-10, CA-12:
 //   - renderPerAgentMarkdown produce una fila por skill de agent-models.json.
 //   - overall = PASS si ≥1 provider PASS; SKIPPED si todos SKIPPED/N-A;
-//     FAIL en otro caso (y WARN-only → WARN, refinamiento safe de CA-3).
-//   - overall precedencia PASS > FAIL > WARN > SKIPPED.
+//     FAIL en otro caso (WARN-only colapsa a FAIL, CA-3 literal).
+//   - overall precedencia PASS > FAIL (WARN-only cuenta como FAIL) > SKIPPED.
 //   - la columna overall muestra ícono + palabra (WCAG 1.4.1) + leyenda.
 //   - el output NUNCA contiene error_detail crudo ni patrones de secret.
 //   - renderTelegramReport lidera con veredicto accionable + FAILs primero.
@@ -103,14 +103,17 @@ test('overall es SKIPPED cuando todos los combos son SKIPPED/N-A', () => {
 });
 
 // -----------------------------------------------------------------------------
-// CA-3 — FAIL en otro caso; precedencia PASS > FAIL > WARN > SKIPPED.
+// CA-3 — FAIL en todo caso que no sea PASS ni todos SKIPPED/N-A.
+// WARN-only (sin PASS) colapsa a FAIL: un skill que sólo degradó no está sano.
 // -----------------------------------------------------------------------------
-test('overall es FAIL con un FAIL y sin PASS; WARN-only surface como WARN', () => {
+test('overall es FAIL en todo caso que no sea PASS ni todos SKIPPED/N-A', () => {
     assert.equal(smoke.overallForStatuses(['FAIL', 'SKIPPED', 'N/A']), 'FAIL');
-    assert.equal(smoke.overallForStatuses(['WARN', 'N/A']), 'WARN');
+    assert.equal(smoke.overallForStatuses(['WARN', 'N/A']), 'FAIL');
+    assert.equal(smoke.overallForStatuses(['WARN']), 'FAIL');
     assert.equal(smoke.overallForStatuses(['PASS', 'FAIL', 'WARN']), 'PASS');
     assert.equal(smoke.overallForStatuses(['FAIL', 'WARN']), 'FAIL');
     assert.equal(smoke.overallForStatuses(['N/A', 'N/A']), 'SKIPPED');
+    assert.equal(smoke.overallForStatuses(['SKIPPED', 'N/A']), 'SKIPPED');
 });
 
 // -----------------------------------------------------------------------------

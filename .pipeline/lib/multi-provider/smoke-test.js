@@ -531,23 +531,22 @@ function providerChainForSkill(skillCfg) {
 // -----------------------------------------------------------------------------
 // overallForStatuses(statuses) — CA-3.
 //
-// Colapsa la cadena de statuses de un skill a un veredicto único:
+// Colapsa la cadena de statuses de un skill a un veredicto único, respetando
+// literalmente el criterio aprobado:
 //   - PASS    si al menos un provider de la cadena está PASS.
-//   - FAIL    si hay algún FAIL y ningún PASS.
-//   - WARN    si hay algún WARN y ningún PASS/FAIL (degradado pero respondió).
-//   - SKIPPED si todos son SKIPPED / N/A.
+//   - SKIPPED si todos son SKIPPED / N/A (nada se ejecutó).
+//   - FAIL    en cualquier otro caso (incluye WARN-only: un skill que sólo
+//             respondió degradado NO es un skill sano).
 //
-// Los tres casos nombrados por CA-3 (PASS con ≥1 PASS, SKIPPED con todos
-// SKIPPED/N-A, FAIL en otro caso) se cumplen idénticos; WARN-only se surface
-// como WARN en vez de diluirlo en FAIL, para no reportar como caído un skill
-// cuyos providers respondieron con degradación.
+// CA-3 exige FAIL para todo caso que no sea PASS ni "todos SKIPPED/N/A". No hay
+// carve-out para WARN: un WARN sin PASS colapsa a FAIL para no reportar como
+// operativo un skill cuyos providers sólo degradaron.
 // -----------------------------------------------------------------------------
 function overallForStatuses(statuses) {
     const list = Array.isArray(statuses) ? statuses : [];
     if (list.includes('PASS')) return 'PASS';
-    if (list.includes('FAIL')) return 'FAIL';
-    if (list.includes('WARN')) return 'WARN';
-    return 'SKIPPED';
+    if (list.every(s => s === 'SKIPPED' || s === 'N/A')) return 'SKIPPED';
+    return 'FAIL';
 }
 
 // -----------------------------------------------------------------------------
