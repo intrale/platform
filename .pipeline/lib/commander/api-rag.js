@@ -34,7 +34,10 @@
 // CONTROLES DE SEGURIDAD (SEC-1..SEC-6 del issue #3837)
 // ------------------------------------------------------
 //   SEC-1  Doble barrera: (a) `filterPathsForProvider` a nivel PATH (fail-closed)
-//          + (b) `redactSecretValue` a nivel CONTENIDO de cada snippet.
+//          + (b) `redactRagContent` a nivel CONTENIDO de cada snippet
+//          (redactSensitive + redactSecretValue + escaneo por token: cubre
+//          bot Telegram, query token=/x-amz-*, userinfo, emails/PII y AWS
+//          secret keys opacas, no sólo los 5 formatos de redactSecretValue).
 //   SEC-2  Anti path-traversal: raíces restringidas a la allowlist `RAG_ROOTS`,
 //          resueltas con `path.resolve` + verificación de prefijo canónico; se
 //          descartan symlinks que escapen la raíz. El keyword controla QUÉ se
@@ -420,8 +423,12 @@ function augmentPromptWithRag(opts = {}) {
         if (content == null) continue;
         const rawSnippet = extractSnippet(content, keywords);
         if (!rawSnippet) continue;
-        // SEC-1 barrera B — redactar secrets embebidos en el CONTENIDO.
-        const safeSnippet = _redact.redactSecretValue(rawSnippet);
+        // SEC-1 barrera B — redactar secrets/PII embebidos en el CONTENIDO.
+        // `redactRagContent` compone redactSensitive + redactSecretValue +
+        // escaneo por token para cubrir las clases que aparecen en logs del
+        // pipeline (bot Telegram, query token=/x-amz-*, userinfo, emails, AWS
+        // secret key opaca) — no sólo los 5 formatos de redactSecretValue.
+        const safeSnippet = _redact.redactRagContent(rawSnippet);
         const labeled = `[archivo: ${cand.rel}]\n${safeSnippet}`;
         // Respetar el presupuesto de chars (truncar el último si hace falta).
         if (labeled.length > budget) {

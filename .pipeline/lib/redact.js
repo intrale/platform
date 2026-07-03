@@ -334,6 +334,53 @@ function redactSecretValue(str) {
     return out;
 }
 
+// =============================================================================
+// #3837 (SEC-1 barrera B) — Redacción de CONTENIDO para el material RAG que se
+// envía a providers non_anthropic (Cerebras/NVIDIA). Un log con
+// token/credencial NUNCA debe llegar a un tercero.
+//
+// `redactSecretValue` sola (lo que aplicaba api-rag) sólo cubre 5 formatos de
+// key + entropía sobre el string COMPLETO. En líneas de log reales (con
+// espacios) deja pasar: token de bot Telegram, query token=/apikey=, userinfo
+// user:pass@host, emails/PII y secretos opacos embebidos. Esta función compone
+// las tres pasadas para cerrar esas clases:
+//   1. `redactSensitive` → emails, userinfo, query keys sensibles
+//      (token/apikey/signature/x-amz-*), path /bot<TOKEN>/ de Telegram.
+//   2. `redactSecretValue` → patrones por proveedor (anthropic/openai/groq,
+//      AWS access-key-id AKIA…, JWT) sobre toda la línea.
+//   3. Escaneo por token → secretos OPACOS de alta entropía embebidos en una
+//      línea con espacios (ej. AWS secret access key de 40 chars), que la
+//      heurística whole-string de `redactSecretValue` no alcanza.
+// =============================================================================
+
+// Longitud mínima del token para el escaneo de entropía por-token. AWS secret
+// access key = 40 chars; git SHA-40 es hex (entropía < 4.5) y queda intacto.
+const RAG_TOKEN_MIN_LEN = 40;
+
+/**
+ * Redacta secretos/PII embebidos en un fragmento de texto libre (línea de log,
+ * snippet de código) antes de exponerlo a un provider non_anthropic.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function redactRagContent(text) {
+    if (typeof text !== 'string' || text.length === 0) return text;
+    // Pasadas 1 + 2: URL/email/userinfo/query + patrones de key por proveedor.
+    let out = redactSecretValue(redactSensitive(text));
+    // Pasada 3: token opaco de alta entropía embebido en línea con espacios.
+    out = out.replace(/\S+/g, (tok) => {
+        if (tok.includes(REDACTION_MARKER) || tok.includes(HIGH_ENTROPY_MARKER)) {
+            return tok; // ya redactado por las pasadas previas
+        }
+        if (tok.length >= RAG_TOKEN_MIN_LEN && shannonEntropy(tok) >= HIGH_ENTROPY_THRESHOLD) {
+            return HIGH_ENTROPY_MARKER;
+        }
+        return tok;
+    });
+    return out;
+}
+
 /**
  * Walk recursivo para AUDIT LOG (#3724). Combina:
  *   - Redacción por clave sensible (igual que `redactValue`).
@@ -394,6 +441,8 @@ module.exports = {
     // #3724 — escaneo por valor para audit log de wizards.
     redactObject,
     redactSecretValue,
+    // #3837 — barrera B de contenido RAG (Cerebras/NVIDIA).
+    redactRagContent,
     shannonEntropy,
     SECRET_VALUE_PATTERNS,
     HIGH_ENTROPY_MARKER,

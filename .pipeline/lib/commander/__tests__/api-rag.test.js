@@ -162,6 +162,74 @@ test('SEC-1: un secreto en el log NO llega al bloque (redactado)', () => {
 });
 
 // -----------------------------------------------------------------------------
+// SEC-1 (rebote #3837) — barrera B cubre TODAS las clases de secreto/PII que
+// aparecen en logs del pipeline, no sólo AKIA. `redactSecretValue` sola dejaba
+// pasar bot Telegram, query token=/x-amz-*, userinfo user:pass@host, emails y
+// AWS secret keys opacas. La barrera compuesta (`redactRagContent`) las cierra.
+// -----------------------------------------------------------------------------
+test('SEC-1: ningún secreto/PII embebido en el log llega al bloque', () => {
+    const secrets = {
+        telegram: 'bot7891234560:AAH9xQ-fakeTokenDEF_ghijkLMNop',
+        queryToken: 'abcdefSECRET1234567890',
+        userinfoPass: 's3cr3tPassword',
+        email: 'leito.larreta@gmail.com',
+        awsAkia: 'AKIAIOSFODNN7EXAMPLE',
+        awsSig: 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789',
+        awsSecret: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY', // 40 chars opacos
+        jwt: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.SflKxwRJSMeKKF2QT4fwpMe',
+    };
+    const root = makeTempRepo({
+        'logs/dispatch.log': [
+            `dispatch de Whisper POST https://api.telegram.org/${secrets.telegram}/sendMessage`,
+            `callback dispatch https://x.io/cb?token=${secrets.queryToken}&next=/home`,
+            `dispatch conecta a https://admin:${secrets.userinfoPass}@internal.host/db`,
+            `dispatch aprobado por ${secrets.email} (operador)`,
+            `dispatch firma con aws_access_key_id=${secrets.awsAkia}`,
+            `dispatch presigned https://s3.aws.com/b/k?X-Amz-Signature=${secrets.awsSig}&x=1`,
+            `dispatch aws_secret_access_key = ${secrets.awsSecret} listo`,
+            `dispatch auth Bearer ${secrets.jwt} ok`,
+        ].join('\n'),
+    });
+    try {
+        const out = rag.augmentPromptWithRag({
+            prompt: 'contame del dispatch de Whisper',
+            provider: 'cerebras',
+            root,
+            residencyImpl: fakeResidencyOk(),
+            cache: new Map(),
+        });
+        assert.ok(out, 'devuelve bloque');
+        for (const [clase, valor] of Object.entries(secrets)) {
+            assert.ok(!out.includes(valor), `secreto "${clase}" NO debe aparecer en el bloque`);
+        }
+        assert.ok(out.includes('[REDACTED]'), 'aparece el marcador de redacción');
+        assert.ok(out.includes('dispatch'), 'el material real no-sensible sigue presente');
+    } finally {
+        cleanup(root);
+    }
+});
+
+test('SEC-1: la barrera B preserva contenido legítimo (no sobre-redacta)', () => {
+    const root = makeTempRepo({
+        'logs/ok.log': 'dispatch de Whisper OK en 1200ms; commit 3b09ae4c0797c5a412628aac3469d36232ed8c8',
+    });
+    try {
+        const out = rag.augmentPromptWithRag({
+            prompt: 'dispatch Whisper commit',
+            provider: 'cerebras',
+            root,
+            residencyImpl: fakeResidencyOk(),
+            cache: new Map(),
+        });
+        assert.ok(out.includes('1200ms'), 'preserva métricas');
+        assert.ok(out.includes('3b09ae4c0797c5a412628aac3469d36232ed8c8'), 'preserva git SHA (baja entropía)');
+        assert.ok(!out.includes('[REDACTED]'), 'no redacta contenido legítimo');
+    } finally {
+        cleanup(root);
+    }
+});
+
+// -----------------------------------------------------------------------------
 // SEC-1a — data-residency: path excluido nunca aparece
 // -----------------------------------------------------------------------------
 test('SEC-1a: un archivo .env/secrets bloqueado por data-residency nunca se lee', () => {

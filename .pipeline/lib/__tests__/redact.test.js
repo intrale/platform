@@ -16,6 +16,7 @@ const {
     redactError,
     isSensitiveHeader,
     REDACTION_MARKER,
+    redactRagContent,
 } = require('../redact');
 
 test('CA-6 · headers: Authorization, Cookie, Set-Cookie, X-Api-Key, X-Amz-*, Proxy-Authorization', () => {
@@ -196,4 +197,44 @@ test('redactHeaders · no muta el input original', () => {
     const out = redactHeaders(input);
     assert.equal(input.authorization, 'Bearer xyz');
     assert.equal(out.authorization, REDACTION_MARKER);
+});
+
+// =============================================================================
+// #3837 (SEC-1 barrera B) — redactRagContent: barrera de contenido RAG
+// =============================================================================
+test('#3837 · redactRagContent redacta todas las clases de secreto/PII de logs', () => {
+    const casos = [
+        // [descripción, línea con secreto, substring que NO debe sobrevivir]
+        ['bot Telegram', 'POST https://api.telegram.org/bot7891234560:AAH9xQ-fakeTokenDEF_ghijkLMNop/x', 'AAH9xQ-fakeTokenDEF_ghijkLMNop'],
+        ['query token=', 'cb https://x.io/c?token=abcdefSECRET1234567890&n=1', 'abcdefSECRET1234567890'],
+        ['userinfo user:pass@', 'conn https://admin:s3cr3tPassword@internal.host/db', 's3cr3tPassword'],
+        ['email PII', 'operador leito.larreta@gmail.com deploy', 'leito.larreta@gmail.com'],
+        ['AWS access-key-id', 'aws_access_key_id=AKIAIOSFODNN7EXAMPLE cfg', 'AKIAIOSFODNN7EXAMPLE'],
+        ['AWS X-Amz-Signature', 'GET https://s3.aws.com/b?X-Amz-Signature=abcdef0123456789abcdef0123456789abcdef01&z=1', 'abcdef0123456789abcdef0123456789abcdef01'],
+        ['AWS secret opaca 40', 'aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY ok', 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'],
+        ['JWT', 'auth Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.SflKxwRJSMeKKF2QT4fw done', 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.SflKxwRJSMeKKF2QT4fw'],
+    ];
+    for (const [desc, linea, leak] of casos) {
+        const out = redactRagContent(linea);
+        assert.ok(!out.includes(leak), `${desc}: no debe filtrar "${leak}" → ${out}`);
+    }
+});
+
+test('#3837 · redactRagContent NO sobre-redacta contenido legítimo', () => {
+    const legit = [
+        'editando .pipeline/lib/commander/api-rag.js linea 424 del modulo RAG',
+        'commit 3b09ae4c0797c5a412628aac3469d36232ed8c8 mergeado a main',
+        'El dispatch de Whisper termino OK en 1200ms sin timeout ni error',
+        'ver https://github.com/intrale/platform/blob/main/docs/pipeline/multi-provider.md',
+    ];
+    for (const s of legit) {
+        assert.equal(redactRagContent(s), s, `no debe tocar contenido legítimo: ${s}`);
+    }
+});
+
+test('#3837 · redactRagContent tolera input no-string', () => {
+    assert.equal(redactRagContent(''), '');
+    assert.equal(redactRagContent(null), null);
+    assert.equal(redactRagContent(undefined), undefined);
+    assert.equal(redactRagContent(42), 42);
 });

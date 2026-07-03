@@ -92,6 +92,12 @@ const SENSITIVE_QUERY_KEYS = Object.freeze([
     'secret',
     'sig',
     'signature',
+    // #3837 — params sensibles de URLs presigned de AWS S3 (aparecen en logs de
+    // upload a Drive/S3). `normalizeKey` colapsa guiones → 'xamzsignature', etc.,
+    // por eso NO los cubre el genérico 'signature'/'token'.
+    'x-amz-signature',
+    'x-amz-credential',
+    'x-amz-security-token',
 ]);
 
 // --- User agent fijo (SEC-11 no bloqueante pero recomendado) -----------------
