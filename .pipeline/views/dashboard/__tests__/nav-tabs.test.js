@@ -201,11 +201,11 @@ test('renderNavTabsSsr sin badgeForSlug no emite area-pill-badge', () => {
 // #4189 — Nav curada: 5 esenciales en la barra + popover "⋯ Más" con el resto
 // ---------------------------------------------------------------------------
 
-test('#4189: exactamente 5 tabs llevan primary y definen la barra', () => {
+test('#4454: exactamente 4 tabs llevan primary y definen la barra', () => {
     const primaries = NAV_TABS.filter(t => t.primary).sort((a, b) => a.primary - b.primary);
-    assert.equal(primaries.length, 5, 'deben ser 5 tabs esenciales');
-    assert.deepEqual(primaries.map(t => t.slug), ['home', 'pipeline', 'issues', 'bloqueados', 'costos'],
-        'orden de la barra: Inicio · Pipeline · Issues · Bloqueados · Costos');
+    assert.equal(primaries.length, 4, 'deben ser 4 tabs esenciales');
+    assert.deepEqual(primaries.map(t => t.slug), ['home', 'pipeline', 'roadmap', 'providers'],
+        'orden de la barra: Inicio · Pipeline · Roadmap · Providers');
 });
 
 test('#4189: el popover <details> agrupa las secciones secundarias con contador', () => {
@@ -213,8 +213,9 @@ test('#4189: el popover <details> agrupa las secciones secundarias con contador'
     assert.match(html, /<details class="v3-more"/, 'emite el contenedor del popover');
     assert.match(html, /<summary class="v3-more-btn"/, 'tiene botón summary nativo (sin JS)');
     const secondaryCount = NAV_TABS.filter(t => !t.primary).length;
-    // #4378: roadmap suma una secundaria más → 9.
-    assert.equal(secondaryCount, 9, 'hay 9 tabs secundarias');
+    // #4454: roadmap y providers pasan a primarias; issues, bloqueados y costos
+    // pasan a secundarias → neto +1 secundaria respecto de #4378 (9 → 10).
+    assert.equal(secondaryCount, 10, 'hay 10 tabs secundarias');
     assert.match(html, new RegExp('<span class="v3-more-count" aria-hidden="true">' + secondaryCount + '</span>'),
         'el contador refleja la cantidad de secciones escondidas');
     // El popover sigue conteniendo anchors v3-tab reales (no se pierde ninguna ruta).

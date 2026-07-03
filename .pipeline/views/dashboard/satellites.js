@@ -14,7 +14,7 @@ const path = require('path');
 // #3726 — Nav bar V3 unificada. renderNavTabsSsr inyecta el <nav class="v3-nav">
 // con los 12 tabs en TODOS los satelites y loadIconSprite() lee el cache
 // compartido del sprite.svg para que <use href="#ic-tab-*"> resuelva inline.
-const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
+const { renderNavTabsSsr, loadIconSprite, navMoreAutoCloseClientScript } = require('./nav-tabs');
 
 // #3953 (EP8-H0) — Wrapper único de fetchJson (CA-2) y framework de modal de
 // confirmación con preview (CA-3). Reemplazan la copia local con .catch(()=>null)
@@ -296,7 +296,7 @@ ${extraCss}
     <span>Intrale V3</span>
   </footer>
 </div>
-<script>${FETCH_CLIENT_JS}\n${CONFIRM_MODAL_JS}\n${commonHelpers()}\n${scripts}\n${missionOlaEtaClientScript()}</script>
+<script>${FETCH_CLIENT_JS}\n${CONFIRM_MODAL_JS}\n${commonHelpers()}\n${scripts}\n${missionOlaEtaClientScript()}\n${navMoreAutoCloseClientScript()}</script>
 </body>
 </html>`;
 }

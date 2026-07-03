@@ -40,10 +40,13 @@ const path = require('path');
 // los href a "/dashboard?view=<slug>" y agregar comentario "// #3723 integrado".
 // Verificado al momento del commit: #3723 sigue OPEN -> mantener URLs satelite
 // literales (estan en ALLOWED_PATHS de screenshot-capture.js).
-// #4189 — Nav curada MIZPÁ: 5 tabs esenciales SIEMPRE visibles + el resto
-// colapsado en un popover "⋯ Más". El campo `primary` (1..5) define el orden
-// fijo de la barra (Inicio · Pipeline · Issues · Bloqueados · Costos). Las tabs
-// sin `primary` viven en el popover, cada una con su `desc` (mini-descripcion).
+// #4189 — Nav curada MIZPÁ: tabs esenciales SIEMPRE visibles + el resto
+// colapsado en un popover "⋯ Más". El campo `primary` (1..N) define el orden
+// fijo de la barra. Las tabs sin `primary` viven en el popover, cada una con su
+// `desc` (mini-descripcion).
+// #4454 — Orden fijo de la barra actualizado a: Inicio · Pipeline · Roadmap ·
+// Providers (4 primarias). Issues, Bloqueados y Costos pasan al popover "⋯ Más"
+// (siguen alcanzables, ninguna ruta se pierde).
 // El catalogo, hrefs, iconId y ariaLabel se preservan intactos: todas las tabs
 // siguen siendo <a class="v3-tab"> alcanzables (no se elimina ninguna ruta ni
 // se rompe screenshot-capture / badges / hidratacion de counts).
@@ -51,20 +54,20 @@ const NAV_TABS = [
     { slug: 'home',       label: 'Inicio',     iconId: 'ic-tab-home',           href: '/',               ariaLabel: 'Ir a Inicio',                                              primary: 1 },
     { slug: 'equipo',     label: 'Equipo',     iconId: 'ic-agents-count',       href: '/equipo',         ariaLabel: 'Ir a Equipo - agentes y carga',                            desc: 'Roles y agentes del pipeline' },
     { slug: 'pipeline',   label: 'Pipeline',   iconId: 'ic-tab-pipeline',       href: '/pipeline',       ariaLabel: 'Ir a Pipeline - issues por fase',                          primary: 2 },
-    { slug: 'bloqueados', label: 'Bloqueados', iconId: 'ic-estado-needs-human', href: '/bloqueados',     ariaLabel: 'Ir a Bloqueados - esperando humano',                       primary: 4 },
-    { slug: 'issues',     label: 'Issues',     iconId: 'ic-issues-count',       href: '/issues',         ariaLabel: 'Ir a Issues - backlog',                                    primary: 3 },
+    { slug: 'bloqueados', label: 'Bloqueados', iconId: 'ic-estado-needs-human', href: '/bloqueados',     ariaLabel: 'Ir a Bloqueados - esperando humano',                       desc: 'Issues frenados esperando humano o dependencias' },
+    { slug: 'issues',     label: 'Issues',     iconId: 'ic-issues-count',       href: '/issues',         ariaLabel: 'Ir a Issues - backlog',                                    desc: 'Backlog de issues del pipeline' },
     { slug: 'matriz',     label: 'Matriz',     iconId: 'ic-tab-matriz',         href: '/matriz',         ariaLabel: 'Ir a Matriz - skill por fase',                             desc: 'Heatmap issues × fases' },
     // #4378 — Roadmap de olas (activa / planificadas / archivadas + archivar).
     // #4373 — Vista operativa consolidada (avance · bloqueos · ETA). Ícono dedicado
     // `ic-tab-roadmap` (ruta de hitos ascendente) producido por UX, distinto de
     // `ic-wave` (ondas) para diferenciar la tab del roadmap.
-    { slug: 'roadmap',    label: 'Roadmap',    iconId: 'ic-tab-roadmap',        href: '/roadmap',        ariaLabel: 'Ir a Roadmap - olas activa, planificadas, archivadas, avance, bloqueos y ETA', desc: 'Roadmap de olas · avance · bloqueos · ETA · archivar' },
+    { slug: 'roadmap',    label: 'Roadmap',    iconId: 'ic-tab-roadmap',        href: '/roadmap',        ariaLabel: 'Ir a Roadmap - olas activa, planificadas, archivadas, avance, bloqueos y ETA', desc: 'Roadmap de olas · avance · bloqueos · ETA · archivar', primary: 3 },
     { slug: 'ops',        label: 'Ops',        iconId: 'ic-tab-ops',            href: '/ops',            ariaLabel: 'Ir a Ops - procesos e infra',                              desc: 'Topología y salud de servicios' },
     { slug: 'kpis',       label: 'KPIs',       iconId: 'ic-tab-kpis',           href: '/kpis',           ariaLabel: 'Ir a KPIs - metricas detalladas',                          desc: 'Métricas de entrega' },
     { slug: 'historial',  label: 'Historial',  iconId: 'ic-tab-historial',      href: '/historial',      ariaLabel: 'Ir a Historial - eventos del pipeline',                    desc: 'Timeline de actividad' },
-    { slug: 'costos',     label: 'Costos',     iconId: 'ic-tab-costos',         href: '/costos',         ariaLabel: 'Ir a Costos - tokens y consumo',                           primary: 5 },
+    { slug: 'costos',     label: 'Costos',     iconId: 'ic-tab-costos',         href: '/costos',         ariaLabel: 'Ir a Costos - tokens y consumo',                           desc: 'Tokens y consumo por sesión y agente' },
     { slug: 'descanso',   label: 'Descanso',   iconId: 'ic-rest-mode',          href: '/modo-descanso',  ariaLabel: 'Ir a Descanso - ventana horaria',                          desc: 'Ventana y modo reposo' },
-    { slug: 'providers',  label: 'Providers',  iconId: 'ic-multi-provider',     href: '/providers',      ariaLabel: 'Ir a Providers - proveedores y fallbacks',                 desc: 'Proveedores · salud · cadena de fallback' },
+    { slug: 'providers',  label: 'Providers',  iconId: 'ic-multi-provider',     href: '/providers',      ariaLabel: 'Ir a Providers - proveedores y fallbacks',                 desc: 'Proveedores · salud · cadena de fallback', primary: 4 },
     // EP8-H12 (#3965) — pantalla de salud multi-provider (metricas, matriz, Sherlock).
     { slug: 'mp-health',  label: 'Salud MP',   iconId: 'ic-health-ok',          href: '/multi-provider-health', ariaLabel: 'Ir a Salud Multi-Provider - metricas, matriz y Sherlock', desc: 'Salud multi-provider' },
 ];
@@ -124,7 +127,7 @@ function renderNavTabsSsr(activeSlug, opts) {
         );
     });
 
-    // Barra: las 5 esenciales en su orden fijo (primary 1..5). Popover: el resto
+    // Barra: las primarias en su orden fijo (primary 1..N). Popover: el resto
     // en el orden del catalogo.
     const primaries = NAV_TABS.filter((t) => t.primary)
         .sort((a, b) => a.primary - b.primary)
@@ -185,9 +188,50 @@ function _resetSpriteCacheForTests() {
     _spriteCache = null;
 }
 
+// #4454 (defecto 3) — Auto-cierre del popover "⋯ Más".
+//
+// El popover usa <details>/<summary> nativo (degradacion sin JS), pero <details>
+// nativo NO se cierra ni al clickear afuera ni al elegir una opcion — de ahi el
+// bug del "segundo click". Este script enriquece el comportamiento:
+//   - cierra al click fuera del <details>.
+//   - cierra al click sobre un <a class="v3-tab"> del menu (navegacion).
+//   - cierra con Escape y devuelve el foco al <summary> (a11y — guideline UX).
+//
+// Idempotente: guard `window.__v3MoreAutoClose` para no registrar el listener
+// dos veces en re-render (requisito de security — evita leaks de listeners).
+// Delegacion en `document` con `closest()` para acotar el target.
+//
+// Se retorna como STRING para inyectarse dentro del <script> principal de home.js
+// y satellites.js (ambas vistas comparten renderNavTabsSsr). Sin datos externos
+// interpolados — es un literal estatico, sin superficie XSS.
+function navMoreAutoCloseClientScript() {
+    return `
+if (!window.__v3MoreAutoClose) {
+    window.__v3MoreAutoClose = true;
+    document.addEventListener('click', function (ev) {
+        document.querySelectorAll('details.v3-more[open]').forEach(function (d) {
+            if (!d.contains(ev.target) || ev.target.closest('a.v3-tab')) {
+                d.removeAttribute('open');
+            }
+        });
+    });
+    document.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Escape') {
+            document.querySelectorAll('details.v3-more[open]').forEach(function (d) {
+                d.removeAttribute('open');
+                var summary = d.querySelector('summary.v3-more-btn');
+                if (summary && typeof summary.focus === 'function') summary.focus();
+            });
+        }
+    });
+}
+`;
+}
+
 module.exports = {
     NAV_TABS,
     renderNavTabsSsr,
     loadIconSprite,
+    navMoreAutoCloseClientScript,
     _resetSpriteCacheForTests,
 };
