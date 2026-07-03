@@ -333,6 +333,13 @@ function renderPlannedCard(wave, position) {
     const nameTxt = wave.name != null && wave.name !== '' ? String(wave.name) : (num !== null ? `Ola ${num}` : 'Ola');
     const goalTxt = wave.goal != null ? String(wave.goal) : '';
     const issues = normalizeIssues(wave.issues);
+    // #4435 GUX-1/GUX-4 — "Promover a activa": acción PRIMARIA/positiva, sólo en
+    // olas planificadas (esta función es exclusiva de planned → CA-9). Ícono
+    // #ic-promote + label textual + title/aria descriptivos vía escapeHtmlAttr.
+    const promoteBtn = num !== null
+        ? `<button type="button" class="wr-btn wr-btn-promote" onclick="roadmapPromote(${num})" title="${escapeHtmlAttr('Promover la ola ' + num + ' (planificada) a activa y sincronizar la lista de bailes')}" aria-label="${escapeHtmlAttr('Promover la ola ' + num + ' (planificada) a activa y sincronizar la lista de bailes')}">`
+            + '<svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-promote"></use></svg> Promover a activa</button>'
+        : '';
     const archiveBtn = num !== null
         ? `<button type="button" class="wr-btn wr-btn-archive" onclick="roadmapArchive(${num}, 'planificada')" title="${escapeHtmlAttr('Archivar la ola planificada ' + num)}" aria-label="${escapeHtmlAttr('Archivar la ola planificada ' + num)}">`
             + '<svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-archive-box"></use></svg> Archivar</button>'
@@ -357,7 +364,7 @@ function renderPlannedCard(wave, position) {
           <span class="wr-card-title">${escapeHtmlText(nameTxt)}</span>
           ${num !== null ? `<span class="wr-card-num">Ola ${num}</span>` : ''}
         </div>
-        <div class="wr-card-actions">${archiveBtn}</div>
+        <div class="wr-card-actions">${promoteBtn}${archiveBtn}</div>
       </header>
       ${goalTxt ? `<div class="wr-card-goal">${escapeHtmlText(goalTxt)}</div>` : ''}
       ${renderIssueList(issues, null, num)}
@@ -436,6 +443,9 @@ function roadmapStyle() {
 .wr-btn{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;cursor:pointer;padding:6px 11px;border-radius:8px;border:1px solid var(--border,rgba(255,255,255,.12));background:transparent;color:var(--text-secondary,#8A93A6);white-space:nowrap}
 .wr-btn-ic{width:14px;height:14px}
 .wr-btn-archive:hover{color:var(--text-primary,#e6edf3);border-color:var(--purple,#BC8CFF)}
+/* #4435 GUX-1 — Promover es la acción PRIMARIA/positiva: acento --success en hover
+   (constructivo, no destructivo). El label textual porta el significado (WCAG 1.4.1). */
+.wr-btn-promote:hover{color:var(--success,#3FB950);border-color:var(--success,#3FB950)}
 .wr-btn:disabled{opacity:.5;cursor:not-allowed}
 .wr-btn[hidden]{display:none}
 /* #4436 — controles de ciclo de vida de la ola activa (hover reusando tokens). */
@@ -790,6 +800,76 @@ async function roadmapDisassociate(waveNum, issueNum){
     _roadmapSetStatus(statusId, 'Error de red: ' + e.message, 'err');
   }
 }
+// #4435 — Promover una ola planificada a activa. Flujo preview then confirm
+// contra la ruta mutante (gate loopback+same-origin). Fase 1: POST sin confirmar
+// para leer el total real de issues que entran a la lista de bailes (no muta).
+// Fase 2: tras confirmar en el modal (no destructivo), POST con confirmed:true.
+// Sin reflejar input crudo; errores con copy accionable en espanol (GUX-5).
+async function roadmapPromote(waveNum){
+  waveNum = parseInt(waveNum, 10);
+  if(!Number.isInteger(waveNum) || waveNum < 1) return;
+  var btns = document.querySelectorAll('.wr-card[data-wave="' + waveNum + '"] .wr-btn');
+  function reenable(){ btns.forEach(function(b){ b.disabled = false; }); }
+  function promoteErr(j, status){
+    if(j && j.error === 'active_wave_exists'){
+      return 'Ya hay una ola activa. Archivala o esperá a que cierre antes de promover la ola ' + waveNum + '.';
+    }
+    if(j && j.error === 'PROMOTE_CAP_EXCEEDED'){
+      return 'La ola ' + waveNum + ' arrastra demasiados issues (' + (j.total != null ? j.total : '?') + ', supera el tope de seguridad). Revisá el alcance antes de promover.';
+    }
+    if(j && j.error === 'promote_blocked'){
+      return 'Promover está bloqueado por una recovery fallida anterior. Revisá .pipeline/waves.json y los markers .failed.';
+    }
+    if(j && j.error === 'promote_in_progress'){
+      return 'Hay otra promoción en curso. Esperá a que termine antes de reintentar.';
+    }
+    if(j && j.error === 'not_found'){
+      return 'La ola ' + waveNum + ' ya no existe entre las planificadas. Refrescá la vista.';
+    }
+    return 'No pude promover la ola ' + waveNum + ' (' + (j && j.error ? j.error : ('HTTP ' + status)) + ').';
+  }
+  btns.forEach(function(b){ b.disabled = true; });
+  try {
+    // Fase 1 — preview (sin confirmed): total real de issues a agregar.
+    var pr = await fetch('/dashboard/wave/promote', {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, nhCsrfHeaders()),
+      body: JSON.stringify({ waveNumber: waveNum })
+    });
+    var pj = await pr.json().catch(function(){ return {}; });
+    if(!pr.ok || !pj.preview){
+      alert(promoteErr(pj, pr.status));
+      reenable();
+      return;
+    }
+    var total = pj.total != null ? pj.total : (Array.isArray(pj.toAdd) ? pj.toAdd.length : 0);
+    // Fase 2 — confirmación NO destructiva con preview del impacto (GUX-3).
+    var ok = await inConfirm({
+      title: 'Promover ola a activa',
+      message: 'La ola ' + waveNum + ' pasará a activa y su lista de bailes se sincronizará con los issues de la ola (más hijos y dependencias abiertos).',
+      confirmLabel: 'Promover',
+      danger: false,
+      preview: [
+        { label: 'Ola', value: '#' + waveNum },
+        { label: 'Issues a la lista de bailes', value: String(total) }
+      ]
+    });
+    if(!ok){ reenable(); return; }
+    // Fase 3 — commit.
+    var r = await fetch('/dashboard/wave/promote', {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, nhCsrfHeaders()),
+      body: JSON.stringify({ waveNumber: waveNum, confirmed: true })
+    });
+    var j = await r.json().catch(function(){ return {}; });
+    if(r.ok && j.ok){ location.reload(); return; }
+    alert(promoteErr(j, r.status));
+    reenable();
+  } catch(e){
+    alert('Error promoviendo la ola ' + waveNum + ': ' + e.message);
+    reenable();
+  }
+}
 // #4436 — Controles de ciclo de vida de la ola activa. Cablean a los endpoints
 // mutantes (mismo gate loopback+same-origin que /dashboard/wave/archive) usando
 // nhCsrfHeaders() + confirmación previa. Las destructivas (Pausar, Relanzar)
@@ -900,6 +980,7 @@ window.roadmapNewWaveToggle = roadmapNewWaveToggle;
 window.roadmapCreateWave = roadmapCreateWave;
 window.roadmapAssociate = roadmapAssociate;
 window.roadmapDisassociate = roadmapDisassociate;
+window.roadmapPromote = roadmapPromote;
 window.roadmapPause = roadmapPause;
 window.roadmapResume = roadmapResume;
 window.roadmapDispatch = roadmapDispatch;
