@@ -11,15 +11,18 @@
 //      con TTL cache 2s. Es la única fuente canónica desde #3489 / H1.
 //      → source: 'waves.json'.
 //
-//   2. `.pipeline/.partial-pause.json` → fuente legacy de hecho mientras
-//      `waves.json` no esté poblado. Migration path heredado del diseño
-//      original; se mantiene para compatibilidad operativa.
-//      Schema: { allowed_issues: [...], created_at, source }
-//      → source: 'partial-pause.json'.
-//
-//   3. Fallback: todos los issues con archivos activos en el pipeline.
+//   2. Fallback: todos los issues con archivos activos en el pipeline.
 //      Etiqueta "Ola actual (sin label)" — degradación grácil (CA-15).
 //      → source: 'fs-fallback'.
+//
+// Modo legacy eliminado (#4399): la fuente intermedia que derivaba la ola
+// desde `.partial-pause.json → allowed_issues` (`readPartialPauseFile`)
+// producía números incoherentes cuando `waves.json` no tenía `active_wave`.
+// La cascada quedó `waves.json → fs-fallback`: `waves.json` sin `active_wave`
+// deja de ser un caso válido y cae directo a la degradación grácil.
+// (`resolveBlockDependencies`/`resolveLiveSplitChildren` SÍ siguen leyendo
+// `.partial-pause.json` para deps/split — uso legítimo distinto de la
+// resolución de ola.)
 //
 // Reglas inquebrantables:
 // - Sin red. Sin GitHub API. Solo filesystem propio del pipeline.
@@ -141,40 +144,6 @@ function readFromWavesJson(pipelineRoot) {
         issues: [...new Set(issues)].sort((a, b) => a - b),
         openedAt,
         source: 'waves.json',
-    };
-}
-
-/**
- * Lee `.partial-pause.json` y deriva la "ola actual" desde los issues permitidos.
- *
- * @param {string} pipelineRoot
- * @returns {{label: string, issues: number[], openedAt: string|null, source: string}|null}
- */
-function readPartialPauseFile(pipelineRoot) {
-    const file = path.join(pipelineRoot, '.partial-pause.json');
-    let raw;
-    try {
-        raw = fs.readFileSync(file, 'utf8');
-    } catch {
-        return null;
-    }
-    let parsed;
-    try {
-        parsed = JSON.parse(raw);
-    } catch {
-        return null;
-    }
-    if (!parsed || typeof parsed !== 'object') return null;
-    const issuesRaw = Array.isArray(parsed.allowed_issues) ? parsed.allowed_issues : [];
-    const issues = issuesRaw
-        .map(normalizeIssueNumber)
-        .filter(Boolean);
-    if (issues.length === 0) return null;
-    return {
-        label: 'Ola actual',
-        issues: [...new Set(issues)].sort((a, b) => a - b),
-        openedAt: typeof parsed.created_at === 'string' ? parsed.created_at : null,
-        source: 'partial-pause.json',
     };
 }
 
@@ -334,7 +303,7 @@ function resolveLiveSplitChildren(opts) {
  *   label: string,
  *   issues: number[],
  *   openedAt: string|null,
- *   source: 'waves.json'|'partial-pause.json'|'fs-fallback',
+ *   source: 'waves.json'|'fs-fallback',
  *   resolved: boolean,
  * }}
  */
@@ -344,12 +313,13 @@ function resolveActiveWave(opts) {
         return { label: 'Ola actual (sin label)', issues: [], openedAt: null, source: 'fs-fallback', resolved: false };
     }
 
+    // 1) Fuente canónica: waves.json → getActiveWave (#4399: única fuente).
     const fromWaves = readFromWavesJson(pipelineRoot);
     if (fromWaves) return { ...fromWaves, resolved: true };
 
-    const fromPartial = readPartialPauseFile(pipelineRoot);
-    if (fromPartial) return { ...fromPartial, resolved: true };
-
+    // 2) Degradación grácil: issues con archivos activos en el pipeline.
+    //    (#4399: eliminada la fuente intermedia `.partial-pause.json`; si
+    //    `waves.json` no tiene `active_wave`, se cae directo acá.)
     const fromFs = collectActiveIssuesFromFs(pipelineRoot);
     return { ...fromFs, resolved: fromFs.issues.length > 0 };
 }
@@ -459,7 +429,6 @@ module.exports = {
     // Exports internos para tests
     _internal: {
         readFromWavesJson,
-        readPartialPauseFile,
         collectActiveIssuesFromFs,
         normalizeIssueNumber,
         effectiveWavesPipelineDir,
