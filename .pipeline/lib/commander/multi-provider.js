@@ -1572,20 +1572,48 @@ function cannedAllGatedResponse(resolution = null) {
 // LLM con el que generar la respuesta, al menos le avisamos a Leo que no se le
 // puede contestar y por qué — para que NUNCA quede mudo sin saber qué pasó.
 //
-// `chainTried` (opcional) lista los providers que se intentaron, para dar
-// contexto sin jerga técnica de stack traces.
+// #4440 — CA-1/CA-2: el copy visible ya NO afirma "fallaron TODOS los providers"
+// salvo verificación server-side (`verifiedAllFailed === true`) y NO expone
+// nombres de providers, modelos, timers ni la lista de intentos.
+//
+// `chainTried` se sigue aceptando por backward-compat de firma (los 3 callers en
+// pulpo.js lo pasan) pero NO se interpola al operador — su detalle solo viaja a
+// los logs/audit server-side, nunca al canal.
+//
+// Estados (CA-4):
+//  - `verifiedAllFailed === false` (default): imposibilidad NO verificada
+//    (p.ej. caso pre-spawn donde nunca se intentó la cadena completa). Copy
+//    honesto SIN afirmar falla total.
+//  - `verifiedAllFailed === true`: se intentó spawnear y efectivamente se agotó
+//    toda la cadena. Recién acá el copy puede afirmar que no hay IA disponible
+//    (siempre sin nombrar providers/modelos/timers).
+//
+// Variación anti-robot (feedback_telegram-messages-natural.md): rota entre
+// variantes con `requestId` como semilla determinística. `requestId` es opcional.
 // -----------------------------------------------------------------------------
-function cannedAllProvidersFailedResponse({ chainTried } = {}) {
-    const chain = Array.isArray(chainTried) && chainTried.length
-        ? ` Intenté con: ${chainTried.join(', ')}.`
-        : '';
-    return (
-        `⚠️ No te puedo responder en este momento: fallaron TODOS los providers y ` +
-        `todos los modelos de fallback.${chain} No hay ningún modelo LLM disponible ` +
-        `para generar una respuesta ahora mismo. ` +
-        `Los comandos determinísticos (/status, /listado, /lanzar) siguen funcionando — ` +
-        `probá de nuevo en un rato.`
-    );
+const _ALL_FAILED_UNVERIFIED_VARIANTS = Object.freeze([
+    '⚠️ Tuve un problema para responderte en este momento. ' +
+        'Los comandos determinísticos (/status, /listado, /lanzar) siguen funcionando — probá de nuevo en un momento.',
+    '⚠️ No pude generar la respuesta ahora mismo. ' +
+        'Mientras tanto, los comandos determinísticos (/status, /listado, /lanzar) siguen andando — reintentá en un rato.',
+]);
+const _ALL_FAILED_VERIFIED_VARIANTS = Object.freeze([
+    '⚠️ Ahora mismo no tengo forma de responderte con IA. ' +
+        'Los comandos determinísticos (/status, /listado, /lanzar) siguen funcionando — probá de nuevo más tarde.',
+    '⚠️ Por el momento no puedo responderte con IA. ' +
+        'Igual podés seguir con los comandos determinísticos (/status, /listado, /lanzar); volvé a intentar en un rato.',
+]);
+function cannedAllProvidersFailedResponse({ chainTried, verifiedAllFailed = false, requestId } = {}) {
+    // chainTried se acepta por backward-compat de firma pero NO se interpola al
+    // operador (CA-2). El detalle técnico ya viaja a los logs server-side.
+    void chainTried;
+    const variants = verifiedAllFailed
+        ? _ALL_FAILED_VERIFIED_VARIANTS
+        : _ALL_FAILED_UNVERIFIED_VARIANTS;
+    const idx = requestId
+        ? parseInt(hashFor(requestId).slice(0, 4), 16) % variants.length
+        : 0;
+    return variants[idx];
 }
 
 // -----------------------------------------------------------------------------

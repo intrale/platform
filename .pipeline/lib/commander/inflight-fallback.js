@@ -143,33 +143,34 @@ function _appendAudit({ pipelineDir, entry, auditLog, fsImpl, now }) {
 }
 
 // -----------------------------------------------------------------------------
-// formatInflightFallbackNotice — copy UX-G1 alineado con
-// `commander/multi-provider.js#formatFallbackNotice` (mismo formato, pero el
-// motivo viene del errorClass del intento in-flight en vez del flag de cuota
-// pre-spawn). UX-G2 / G7: solo ⚠️ y ℹ️, sin stack ni request_id.
+// formatInflightFallbackNotice — #4440: copy orientado al operador para el
+// estado "demora + reintento automático en curso" (Estado A del PO/UX).
 //
-// errorClass → copy en español natural (voseo argentino, feedback_telegram-messages-natural.md).
+// UX (CA-2): el texto visible NO expone nombres de providers, `errorClass`,
+// timers (`30s`) ni conteo de reintentos. Todo ese detalle sigue yendo solo a
+// logs server-side (`_log(...)`, línea ~541). La firma se mantiene intacta:
+// `primaryProvider`/`secondaryProvider`/`errorClass` se siguen recibiendo por
+// backward-compat de los callers, pero NO se interpolan al operador.
+//
+// Variación anti-robot (feedback_telegram-messages-natural.md): rota entre 3
+// variantes usando `requestId` como semilla determinística (mismo turno → mismo
+// mensaje; turnos distintos → variación). `requestId` es opcional; sin él se usa
+// una variante estable.
 // -----------------------------------------------------------------------------
-function formatInflightFallbackNotice({ primaryProvider, secondaryProvider, errorClass, supportsToolUse }) {
+const _INFLIGHT_NOTICE_VARIANTS = Object.freeze([
+    '⏳ Estoy con una demora para responderte — reintento solo en un momento, no hace falta que hagas nada.',
+    '⏳ Se me demoró la respuesta, ya lo estoy reintentando por mi cuenta. Dame un momento.',
+    '⏳ Esto está tardando un poco más de lo normal — reintento automático en curso, aguantame un toque.',
+]);
+function formatInflightFallbackNotice({ primaryProvider, secondaryProvider, errorClass, supportsToolUse, requestId } = {}) {
+    // primaryProvider/secondaryProvider/errorClass se aceptan por backward-compat
+    // de firma pero NO se interpolan al operador (CA-2): jerga interna solo a logs.
     const lines = [];
-    const motive = (() => {
-        switch (errorClass) {
-            case 'transient_5xx':
-            case '5xx':
-                return `${primaryProvider} tuvo un error del servidor en medio de la respuesta`;
-            case 'timeout_no_new_bytes_30s':
-            case 'timeout':
-                return `${primaryProvider} se quedó en silencio (sin nueva respuesta hace 30s)`;
-            case 'eof_premature':
-                return `${primaryProvider} cortó la respuesta antes de tiempo`;
-            case 'rate_limit':
-                return `${primaryProvider} pegó contra el rate-limit a mitad del turno`;
-            default:
-                return `${primaryProvider} falló mid-flight (${errorClass || 'sin clasificar'})`;
-        }
-    })();
 
-    lines.push(`⚠️ ${motive} — reintentando con ${secondaryProvider}.`);
+    const idx = requestId
+        ? parseInt(hashFor(requestId).slice(0, 4), 16) % _INFLIGHT_NOTICE_VARIANTS.length
+        : 0;
+    lines.push(_INFLIGHT_NOTICE_VARIANTS[idx]);
 
     if (supportsToolUse === false) {
         lines.push(
@@ -530,12 +531,13 @@ function decideInflightFallback(opts = {}) {
         }
     } catch { /* default true */ }
 
-    // 7. Armar copy UX-G1 (verbose, voseo argentino).
+    // 7. Armar copy orientado al operador (#4440: sin jerga interna).
     const noticeText = formatInflightFallbackNotice({
         primaryProvider: primaryProvider || '?',
         secondaryProvider: resolution.provider,
         errorClass: primaryErrorClass || 'unknown',
         supportsToolUse,
+        requestId, // #4440 — semilla de variación anti-robot (no se interpola al texto)
     });
 
     _log('commander', `↪️ inflight: ${primaryProvider} (${primaryErrorClass}) → ${resolution.provider} (request_id=${requestId || '?'})`);

@@ -9657,7 +9657,9 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
               requestId: turnRequestId, // #3577 CA-S6
             });
           } catch { /* best-effort */ }
-          return resolve(commanderMP.cannedAllProvidersFailedResponse({ chainTried: ['anthropic'] }));
+          // #4440 CA-1 — caso pre-spawn: nunca se intentó la cadena completa,
+          // por lo que NO se afirma falla total (verifiedAllFailed: false).
+          return resolve(commanderMP.cannedAllProvidersFailedResponse({ chainTried: ['anthropic'], verifiedAllFailed: false, requestId: turnRequestId }));
         }
       } else {
         log('commander', '   degradando a Anthropic por compatibilidad (primario habilitado).');
@@ -9973,8 +9975,12 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         // (que es el caso pre-spawn gateado), avisamos explícitamente que no
         // hay con qué responder — para que el usuario NUNCA quede mudo sin
         // saber qué pasó.
+        // #4440 CA-1 — se spawneó y efectivamente falló toda la cadena:
+        // imposibilidad verificada (verifiedAllFailed: true).
         return resolve(commanderMP.cannedAllProvidersFailedResponse({
           chainTried: Array.from(triedNonAnthropic),
+          verifiedAllFailed: true,
+          requestId: turnRequestId,
         }));
       };
 
@@ -12974,7 +12980,9 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
         const errMsg = (e && e.message) || '';
         const totalProviderFailure = /ENAMETOOLONG|spawn|env-isolation|env_isolation|provider|quota|rate.?limit|usage_limit|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|all.?gated/i.test(errMsg);
         if (totalProviderFailure) {
-          try { sendTelegram(commanderMP.cannedAllProvidersFailedResponse({})); } catch { /* best-effort */ }
+          // #4440 CA-1 — path best-effort sin verificación de falla total real:
+          // se mantiene el default verifiedAllFailed: false (no afirma "TODOS").
+          try { sendTelegram(commanderMP.cannedAllProvidersFailedResponse({ verifiedAllFailed: false })); } catch { /* best-effort */ }
         } else {
           sendTelegram('⚠️ Error procesando tu mensaje. Intentá de nuevo.');
         }
