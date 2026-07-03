@@ -9936,24 +9936,39 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       // Re-resuelve la cadena excluyendo todos los providers ya intentados y
       // reintenta con el siguiente; si no queda ninguno, responde limpio.
       const advanceOrGiveUp = (failedProvider, reason) => {
-        let next = null;
-        try {
-          next = commanderMP.resolveCommanderProviderExcluding(Array.from(triedNonAnthropic), {
+        // #4438 CA-1/CA-2 — decisión de escalado delegada al helper PURO
+        // `planChainAdvance` (testeable sin arrancar el pulpo). El fix de fondo:
+        // el set de exclusión de la re-resolución incluye AHORA el primario
+        // gateado del turno (anthropic), no sólo los non-anthropic ya
+        // spawneados. Sin esto, el TOCTOU del flag global de cuota de anthropic
+        // hacía que el resolver devolviera anthropic y el guard lo descartara →
+        // fallo total sin recorrer gemini/cerebras/nvidia. Nos basamos en el
+        // estado del TURNO (`resolution.primaryProvider`), NO en re-leer el flag
+        // mutable compartido (evita el TOCTOU).
+        const plan = commanderMP.planChainAdvance({
+          failedProvider,
+          triedNonAnthropic,
+          primaryProvider: resolution.primaryProvider || 'anthropic',
+          resolveExcluding: (exclude) => commanderMP.resolveCommanderProviderExcluding(exclude, {
             skill: commanderMP.COMMANDER_SKILL,
             pipelineDir: PIPELINE,
             log: (l, m) => log(l || 'commander', m),
             issue: 'commander-chat',
-          });
-        } catch (e) {
-          log('commander', `⚠️ re-resolución de cadena tras "${failedProvider}" falló: ${e.message}`);
+          }),
+        });
+        if (plan.resolveError) {
+          log('commander', `⚠️ re-resolución de cadena tras "${failedProvider}" falló: ${plan.resolveError.message}`);
         }
-        if (next && !next.gated && next.provider
-            && next.provider !== 'anthropic'
-            && !triedNonAnthropic.has(next.provider)) {
-          log('commander', `↪️ fallback "${failedProvider}" ${reason} — reintento con "${next.provider}"`);
-          return runNonAnthropic(next, null);
+        if (plan.action === 'retry') {
+          log('commander', `↪️ fallback "${failedProvider}" ${reason} — reintento con "${plan.next.provider}"`);
+          return runNonAnthropic(plan.next, null);
         }
-        log('commander', `🚫 Cadena de respaldo agotada tras "${failedProvider}" (${reason}); sin más providers disponibles.`);
+        // Cadena agotada. `chainEvaluated` (skipReasons[] de #3823) lleva TODOS
+        // los eslabones evaluados + su motivo; se redacta aguas abajo (audit y
+        // canned) antes de persistir/enviar (requisito de security CA-3).
+        const chainEvaluated = plan.chainEvaluated || [];
+        log('commander', `🚫 Cadena de respaldo agotada tras "${failedProvider}" (${reason}); ` +
+          `eslabones evaluados: ${chainEvaluated.length}; sin más providers disponibles.`);
         try {
           commanderMP.auditCommanderRequest({
             pipelineDir: PIPELINE,
@@ -9961,6 +9976,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
             providerIntended: resolution.primaryProvider || 'anthropic',
             providerEffective: failedProvider,
             chainTried: Array.from(triedNonAnthropic),
+            chainEvaluated, // #4438 CA-3 — redactado dentro de auditCommanderRequest
             chatId: getTelegramChatId(),
             prompt: prompt,
             latencyMs: Date.now() - startTimeForAudit,
@@ -9972,9 +9988,10 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         // providers y modelos de fallback. En vez del canned de "sin cuota"
         // (que es el caso pre-spawn gateado), avisamos explícitamente que no
         // hay con qué responder — para que el usuario NUNCA quede mudo sin
-        // saber qué pasó.
+        // saber qué pasó. El detalle por provider viaja redactado (CA-3).
         return resolve(commanderMP.cannedAllProvidersFailedResponse({
           chainTried: Array.from(triedNonAnthropic),
+          chainEvaluated,
         }));
       };
 
