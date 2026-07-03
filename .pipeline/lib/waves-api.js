@@ -37,6 +37,13 @@ let csrf = null;
 try { csrf = require('./kill-agent-csrf'); } catch { /* opcional */ }
 let issueOrder = null;
 try { issueOrder = require('./issue-order'); } catch { /* opcional */ }
+// #4437 — editor de allowlist en la ventana Roadmap. Reutiliza el gate + audit
+// de partial-pause y la resolución recursiva de deps ya probada. Todos opcionales
+// (degradan a 503 si el checkout no los tiene).
+let partialPause = null;
+try { partialPause = require('./partial-pause'); } catch { /* opcional */ }
+let ppDeps = null;
+try { ppDeps = require('./partial-pause-deps'); } catch { /* opcional */ }
 
 // -----------------------------------------------------------------------------
 // Constantes de política (server-side, jamás del request).
@@ -55,9 +62,20 @@ const AUDIT_SOURCE = 'api:waves';
 const _rateHits = new Map();       // ip → number[] (timestamps dentro de la ventana)
 const _idempotency = new Map();    // key → { status, body, expiresAt }
 
+// #4437 — seam de inyección para tests del editor de allowlist. Permite mockear
+// el runner de `gh` (spawnSync) y aislar el cache de deps en un tmp dir sin
+// tocar red ni el filesystem del repo. En producción queda null → default.
+let _depsOptsOverride = null;
+function _setDepsOptsForTests(o) { _depsOptsOverride = o || null; }
+function depsOpts() { return _depsOptsOverride || {}; }
+
+const ALLOWLIST_SOURCE = 'dashboard:roadmap:allowlist';       // #4437 (KNOWN_SOURCES)
+const ALLOWLIST_AUTHORIZED_BY = 'dashboard:roadmap:allowlist'; // #4437 (AUTHORIZED_BY enum)
+
 function _resetForTests() {
     _rateHits.clear();
     _idempotency.clear();
+    _depsOptsOverride = null;
     if (csrf && typeof csrf._resetForTests === 'function') csrf._resetForTests();
 }
 
@@ -302,10 +320,29 @@ function matchRoute(method, pathnameOnly) {
     const segs = pathnameOnly.split('/').filter(Boolean); // ['api', ...]
     if (segs[0] !== 'api') return null;
 
-    // /api/roadmap/status
+    // /api/roadmap/status  |  /api/roadmap/allowlist[/preview|/add|/remove]  (#4437)
     if (segs[1] === 'roadmap') {
         if (segs.length === 3 && segs[2] === 'status') {
             return { surface: true, kind: 'read', action: 'roadmap-status' };
+        }
+        // #4437 — editor de allowlist de la ola desde la ventana Roadmap.
+        if (segs[2] === 'allowlist') {
+            // GET /api/roadmap/allowlist → lectura enriquecida (loopback, sin auth).
+            if (segs.length === 3) {
+                if (method === 'GET') return { surface: true, kind: 'read', action: 'allowlist-read' };
+                return { surface: true, kind: 'unknown', action: 'allowlist-read' };
+            }
+            // POST /api/roadmap/allowlist/{preview|add|remove} → mutación (cinturón completo).
+            // `preview` es dry-run (NO persiste) pero pasa por los mismos 3 gates
+            // (loopback/same-origin/auth) para no filtrar el grafo de deps (A01).
+            if (segs.length === 4) {
+                const op = segs[3];
+                if (op === 'preview' || op === 'add' || op === 'remove') {
+                    if (method === 'POST') return { surface: true, kind: 'mutation', action: `allowlist-${op}`, method: 'POST' };
+                    return { surface: true, kind: 'unknown', action: `allowlist-${op}` };
+                }
+            }
+            return null;
         }
         return null;
     }
@@ -363,9 +400,262 @@ function matchRoute(method, pathnameOnly) {
 }
 
 // -----------------------------------------------------------------------------
+// #4437 — Editor de allowlist de la ola (ventana Roadmap).
+//
+// Toda la lógica pesada se reutiliza de módulos ya mergeados:
+//   - lectura/persistencia de la allowlist: lib/partial-pause (gate + audit).
+//   - arrastre recursivo de deps abiertas: lib/partial-pause-deps (caps depth/
+//     nodes/ciclo ya internos).
+//   - warning padre-sin-hijos / desync waves↔partial: lib/desync-detector.
+//
+// Invariantes (CA-3/CA-6/A04):
+//   - NUNCA se escribe `.partial-pause.json` con fs directo: SIEMPRE vía
+//     partialPause.setPartialPause() con authorizedBy ∈ enum cerrado.
+//   - NUNCA se escribe `waves.json` desde acá (separación intencional #3518/#4439).
+//   - El preview es dry-run puro: no persiste ni dispara efectos colaterales.
+// -----------------------------------------------------------------------------
+const ALLOWLIST_ACTIONS = new Set(['allowlist-preview', 'allowlist-add', 'allowlist-remove']);
+
+// Allowlist vigente exacta (raw) del marker, sin el mapeo a `running` de
+// getPipelineMode(). Coacciona a enteros positivos (defensa en profundidad).
+function currentAllowlist() {
+    if (!partialPause) return [];
+    try {
+        return (partialPause.readPreviousAllowlist() || [])
+            .map(Number)
+            .filter((n) => Number.isInteger(n) && n > 0);
+    } catch { return []; }
+}
+
+// A03 — parseo/validación de los issues del body EN EL BORDE HTTP, antes de
+// tocar `resolveOpenDeps`/`setPartialPause`. Rechaza NaN/negativos/no enteros.
+// Devuelve { ids } o { error: {status, code, message, field} }.
+function parseIssueIds(parsed) {
+    let raw;
+    if (Array.isArray(parsed.issues)) raw = parsed.issues;
+    else if (parsed.issue != null) raw = [parsed.issue];
+    else raw = [];
+    const ids = [];
+    for (const item of raw) {
+        // Rechazo estricto: sólo enteros positivos. `Number('12abc')` → NaN;
+        // floats y strings con basura también caen. No confiar en coerción downstream.
+        const n = Number(item);
+        if (!Number.isInteger(n) || n <= 0 || String(item).trim() !== String(n)) {
+            return { error: { status: 400, code: 'bad-id', message: 'Cada issue debe ser un entero positivo.', field: 'issues' } };
+        }
+        ids.push(n);
+    }
+    if (ids.length === 0) {
+        return { error: { status: 400, code: 'invalid_input', message: 'Se requiere al menos un issue en "issues".', field: 'issues' } };
+    }
+    return { ids: [...new Set(ids)] };
+}
+
+// Resolución recursiva del arrastre para un set candidato. Reutiliza
+// resolveOpenDeps (que ya recurre con caps depth/nodes/ciclo). A diferencia de
+// findMissingDeps, conserva `reason` para exponer "truncado" honesto (CA-2/A05).
+// Devuelve { missing:{[issue]:deps[]}, truncado, reason }.
+function computeDrag(candidate) {
+    const allowed = new Set(candidate.map(Number));
+    const missing = {};
+    let truncado = false;
+    let reason = null;
+    for (const issue of allowed) {
+        const r = ppDeps.resolveOpenDeps(issue, depsOpts());
+        if (r.truncated) { truncado = true; if (!reason) reason = r.reason; }
+        const miss = (r.openDeps || []).filter((d) => !allowed.has(Number(d)));
+        if (miss.length) missing[String(issue)] = miss;
+    }
+    return { missing, truncado, reason };
+}
+
+// Enriquecimiento por issue SOLO desde el cache de deps (NO dispara `gh` en
+// runtime → no bloquea el event loop del dashboard; "pipeline no puede morir").
+// Whitelist estricta de campos (A05/CA-1): number, title, status, parent. Nunca
+// paths ni timestamps. `parent` se deriva de las refs de procedencia (Split de /
+// Tracked by), que son exactamente `deps \ forwardDeps`.
+function enrichFromCache(n, cache) {
+    const base = { number: n, title: null, status: null, parent: null };
+    const e = cache && cache.issues ? cache.issues[String(n)] : null;
+    if (e && typeof e === 'object') {
+        base.title = (typeof e.title === 'string' && e.title) ? e.title : null;
+        base.status = (typeof e.state === 'string' && e.state) ? e.state : null;
+        const fwd = new Set((e.forwardDeps || []).map(Number));
+        const prov = (e.deps || []).map(Number).filter((d) => !fwd.has(d));
+        base.parent = prov.length ? prov[0] : null;
+    }
+    return base;
+}
+
+function handleAllowlistRead(res) {
+    if (!partialPause) {
+        return sendError(res, 503, 'module_unavailable', 'La edición de allowlist no está disponible.');
+    }
+    try {
+        const list = currentAllowlist();
+        const cache = ppDeps ? ppDeps.readCache(depsOpts().cacheFile) : { issues: {} };
+        const allowlist = list.map((n) => enrichFromCache(n, cache));
+        return send(res, 200, { allowlist, count: allowlist.length });
+    } catch (e) {
+        try { console.error(JSON.stringify({ event: 'allowlist_read_error', msg: e && e.message, ts: new Date().toISOString() })); } catch { /* noop */ }
+        return sendError(res, 500, 'internal_error', 'Error interno leyendo la allowlist.');
+    }
+}
+
+// Dispatch de las mutaciones de allowlist (ya pasado el cinturón de gates).
+// Devuelve el shape { status, body } | { errorStatus, code, message, field }
+// que consume finishMutation.
+function dispatchAllowlistMutation(route, parsed) {
+    if (!partialPause || !ppDeps) {
+        return { errorStatus: 503, code: 'module_unavailable', message: 'La edición de allowlist no está disponible.' };
+    }
+    const parsedIds = parseIssueIds(parsed);
+    if (parsedIds.error) {
+        const e = parsedIds.error;
+        return { errorStatus: e.status, code: e.code, message: e.message, field: e.field };
+    }
+    const ids = parsedIds.ids;
+
+    if (route.action === 'allowlist-preview') return allowlistPreview(ids);
+    if (route.action === 'allowlist-add') return allowlistAdd(ids);
+    if (route.action === 'allowlist-remove') return allowlistRemove(ids, parsed);
+    return { errorStatus: 404, code: 'not_found', message: 'Operación de allowlist desconocida.' };
+}
+
+// PREVIEW — dry-run. NO persiste, NO efectos colaterales. Muestra qué issues se
+// arrastran recursivamente al sumar `ids` y qué inconsistencias quedarían (A05).
+function allowlistPreview(ids) {
+    const current = currentAllowlist();
+    const candidate = [...new Set([...current, ...ids])].sort((a, b) => a - b);
+    const { missing, truncado, reason } = computeDrag(candidate);
+    const conDeps = ppDeps.allowlistWithDeps(candidate, missing);
+    const aArrastrar = conDeps.filter((n) => !candidate.includes(n));
+    return { status: 200, body: {
+        ok: true,
+        persisted: false,
+        candidate,
+        aArrastrar,
+        inconsistencias: missing,
+        truncado,
+        reason: reason || null,
+    } };
+}
+
+// ADD — expande recursivamente ANTES de persistir y escribe SÓLO vía el gate.
+function allowlistAdd(ids) {
+    const current = currentAllowlist();
+    const candidate = [...new Set([...current, ...ids])].sort((a, b) => a - b);
+    const { missing, truncado, reason } = computeDrag(candidate);
+    const union = ppDeps.allowlistWithDeps(candidate, missing);
+    const aArrastrar = union.filter((n) => !candidate.includes(n));
+
+    const r = partialPause.setPartialPause(union, {
+        source: ALLOWLIST_SOURCE,
+        authorizedBy: ALLOWLIST_AUTHORIZED_BY,
+        justification: `Editor Roadmap: agregar ${ids.map((n) => `#${n}`).join(', ')} (arrastre recursivo)`,
+    });
+    if (r.rejected) {
+        return { errorStatus: 409, code: 'gate_rejected', message: r.msg || 'La mutación fue rechazada por el gate de allowlist.' };
+    }
+    return { status: 200, body: {
+        ok: true,
+        persisted: true,
+        allowlist: r.allowedIssues || union,
+        added: ids,
+        aArrastrar,
+        truncado,
+        reason: reason || null,
+    } };
+}
+
+// REMOVE — avisa (bloqueante) inconsistencias/desync ANTES de persistir. Sólo
+// persiste con `confirm: true` explícito del operador (CA-4/CA-5).
+function allowlistRemove(ids, parsed) {
+    const current = currentAllowlist();
+    const toRemove = new Set(ids);
+    const remaining = current.filter((n) => !toRemove.has(n));
+
+    // Inconsistencia interna de la allowlist tras la remoción (padre que queda
+    // sin su hijo / dependencia faltante) — findMissingDeps sobre el remanente.
+    const { missing, truncado, reason } = computeDrag(remaining);
+
+    // Desync waves↔partial que introduciría la remoción (issue que sigue en la
+    // ola activa pero saldría de la allowlist). Se PROYECTA sobre `remaining`
+    // comparando contra la ola activa (waves.json, lectura pura). NO se usa
+    // desync-detector.detectDesync() acá: ese lee el estado en disco (pre-
+    // remoción, no el proyectado) y además crea el flag de bloqueo + alerta
+    // Telegram — efectos colaterales inadmisibles en un chequeo previo (CA-6).
+    const desync = projectedDesync(remaining);
+
+    const hasInconsistencias = Object.keys(missing).length > 0;
+    const hasDesync = !!desync;
+    const bloqueado = hasInconsistencias || hasDesync;
+
+    if (bloqueado && parsed.confirm !== true) {
+        // 200 con ok:false: la operación NO falló, se frenó a la espera de
+        // confirmación explícita. El cliente muestra el warning y re-postea con confirm.
+        return { status: 200, body: {
+            ok: false,
+            blocked: true,
+            persisted: false,
+            requested: ids,
+            inconsistencias: missing,
+            desync,
+            truncado,
+            reason: reason || null,
+            message: 'La remoción deja dependencias huérfanas o desincroniza la ola. Confirmá para persistir.',
+        } };
+    }
+
+    const r = partialPause.setPartialPause(remaining, {
+        source: ALLOWLIST_SOURCE,
+        authorizedBy: ALLOWLIST_AUTHORIZED_BY,
+        justification: `Editor Roadmap: quitar ${ids.map((n) => `#${n}`).join(', ')}${bloqueado ? ' (confirmado con inconsistencias)' : ''}`,
+    });
+    if (r.rejected) {
+        return { errorStatus: 409, code: 'gate_rejected', message: r.msg || 'La mutación fue rechazada por el gate de allowlist.' };
+    }
+    return { status: 200, body: {
+        ok: true,
+        persisted: true,
+        allowlist: r.allowedIssues || remaining,
+        removed: ids,
+        inconsistencias: missing,
+        desync,
+        truncado,
+        reason: reason || null,
+    } };
+}
+
+// Proyección PURA del desync waves↔partial que dejaría un `remaining` dado, SIN
+// efectos colaterales. Compara el remanente proyectado contra la allowlist de la
+// ola activa (waves.json, lectura pura vía activeAllowlist()). Devuelve null si
+// no hay desync, o un resumen display-ready (whitelist de campos, A05).
+//   - missingFromAllowlist: issues que la ola activa todavía tiene pero que la
+//     remoción dejaría FUERA de la allowlist (padre/hijo huérfano de la ola).
+//   - extraInAllowlist: issues en la allowlist que la ola activa no contiene.
+function projectedDesync(remaining) {
+    if (!waves) return null;
+    let waveAllow;
+    try { waveAllow = activeAllowlist(); } catch { return null; }
+    if (!Array.isArray(waveAllow) || waveAllow.length === 0) return null;
+    const rem = new Set(remaining.map(Number));
+    const wave = new Set(waveAllow.map(Number));
+    const missingFromAllowlist = waveAllow.map(Number).filter((n) => !rem.has(n));
+    const extraInAllowlist = remaining.map(Number).filter((n) => !wave.has(n));
+    if (missingFromAllowlist.length === 0 && extraInAllowlist.length === 0) return null;
+    return { missingFromAllowlist, extraInAllowlist };
+}
+
+// -----------------------------------------------------------------------------
 // Handlers de lectura.
 // -----------------------------------------------------------------------------
 function handleRead(res, route) {
+    // #4437 — la lectura de allowlist no depende de `waves` (opera sobre
+    // .partial-pause.json) → su propio guard de módulo.
+    if (route.action === 'allowlist-read') {
+        return handleAllowlistRead(res);
+    }
     if (!waves) {
         return sendError(res, 503, 'module_unavailable', 'La gestión de olas no está disponible.');
     }
@@ -402,6 +692,11 @@ function handleRead(res, route) {
 // Dispatch de mutación al dominio (ya validado el cinturón de gates + body).
 // -----------------------------------------------------------------------------
 function dispatchMutation(res, route, parsed, ifMatch) {
+    // #4437 — las mutaciones de allowlist operan sobre .partial-pause.json (no
+    // sobre waves.json) y no usan el modelo de versión If-Match de olas.
+    if (ALLOWLIST_ACTIONS.has(route.action)) {
+        return dispatchAllowlistMutation(route, parsed);
+    }
     const meta = { updated_by: FIXED_ACTOR, source: AUDIT_SOURCE, expectedVersion: ifMatch };
     try {
         if (route.action === 'create') {
@@ -531,7 +826,10 @@ function handleMutation(req, res, route) {
     // idempotencia se cubre con el nombre único + Idempotency-Key. Ausente en una
     // mutación que lo requiere → 428 Precondition Required.
     let ifMatchClean; // undefined → el dominio saltea la verificación de versión.
-    if (route.action !== 'create') {
+    // #4437 — las mutaciones de allowlist NO exigen If-Match: no hay recurso de
+    // olas versionado (operan sobre .partial-pause.json). Igual que create, se
+    // saltean el gate de precondición pero conservan el resto del cinturón.
+    if (route.action !== 'create' && !ALLOWLIST_ACTIONS.has(route.action)) {
         const ifMatch = header(req, 'if-match');
         if (!ifMatch) {
             return sendError(res, 428, 'precondition_required', 'Falta el header If-Match con la versión actual del estado.');
@@ -644,5 +942,14 @@ module.exports = {
         WAVES_RATE_WINDOW_MS,
         FIXED_ACTOR,
         _resetForTests,
+        // #4437 — editor de allowlist (ventana Roadmap).
+        parseIssueIds,
+        computeDrag,
+        currentAllowlist,
+        projectedDesync,
+        enrichFromCache,
+        ALLOWLIST_SOURCE,
+        ALLOWLIST_AUTHORIZED_BY,
+        _setDepsOptsForTests,
     },
 };
