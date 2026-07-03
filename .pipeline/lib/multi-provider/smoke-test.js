@@ -489,6 +489,217 @@ function summarizeMatrix(entries) {
     return summary;
 }
 
+// -----------------------------------------------------------------------------
+// Iconografía de estado (CA-10 / guideline UX #1 y #5).
+//
+// Vocabulario único compartido con el dashboard de coverage
+// (.pipeline/views/dashboard/multi-provider-coverage.js). El operador ve el
+// mismo lenguaje visual en dashboard + reporte markdown + Telegram.
+// -----------------------------------------------------------------------------
+const STATUS_ICON = {
+    PASS: '✅',
+    WARN: '⚠️',
+    FAIL: '❌',
+    SKIPPED: '⏭️',
+    'N/A': '—',
+};
+
+function statusIcon(status) {
+    return STATUS_ICON[status] || '?';
+}
+
+// Leyenda al pie de la tabla — WCAG 1.4.1: el ícono nunca reemplaza la palabra.
+const STATUS_LEGEND = 'Leyenda: ✅ PASS · ⚠️ WARN · ❌ FAIL · ⏭️ SKIPPED · — N/A';
+
+// -----------------------------------------------------------------------------
+// providerChainForSkill(skillCfg) — devuelve la cadena ordenada de providers
+// de un skill: [primary, ...fallbacks]. Acepta fallbacks como string o
+// { provider }. No inventa providers: respeta el orden de agent-models.json.
+// -----------------------------------------------------------------------------
+function providerChainForSkill(skillCfg) {
+    const cfg = skillCfg || {};
+    const primary = cfg.provider || 'anthropic';
+    const chain = [primary];
+    const fallbacks = Array.isArray(cfg.fallbacks) ? cfg.fallbacks : [];
+    for (const fb of fallbacks) {
+        if (typeof fb === 'string') chain.push(fb);
+        else if (fb && typeof fb === 'object' && typeof fb.provider === 'string') chain.push(fb.provider);
+    }
+    return chain;
+}
+
+// -----------------------------------------------------------------------------
+// overallForStatuses(statuses) — CA-3.
+//
+// Colapsa la cadena de statuses de un skill a un veredicto único:
+//   - PASS    si al menos un provider de la cadena está PASS.
+//   - FAIL    si hay algún FAIL y ningún PASS.
+//   - WARN    si hay algún WARN y ningún PASS/FAIL (degradado pero respondió).
+//   - SKIPPED si todos son SKIPPED / N/A.
+//
+// Los tres casos nombrados por CA-3 (PASS con ≥1 PASS, SKIPPED con todos
+// SKIPPED/N-A, FAIL en otro caso) se cumplen idénticos; WARN-only se surface
+// como WARN en vez de diluirlo en FAIL, para no reportar como caído un skill
+// cuyos providers respondieron con degradación.
+// -----------------------------------------------------------------------------
+function overallForStatuses(statuses) {
+    const list = Array.isArray(statuses) ? statuses : [];
+    if (list.includes('PASS')) return 'PASS';
+    if (list.includes('FAIL')) return 'FAIL';
+    if (list.includes('WARN')) return 'WARN';
+    return 'SKIPPED';
+}
+
+// -----------------------------------------------------------------------------
+// computeOverallBySkill(coverage, models) — building block compartido por el
+// renderer markdown y el reporte Telegram. Pura, sin I/O.
+//
+// Devuelve un array (una entrada por skill de agent-models.json, en orden de
+// declaración) con:
+//   { skill, chain, statuses, overall, deterministic }
+//
+// - `chain`: providers en orden (default primero).
+// - `statuses`: status de cada provider de la cadena, leído de coverage.matrix.
+//   Si el par (skill, provider) no está en la matriz → 'N/A'.
+// - `deterministic`: true si el skill es determinístico (no LLM). Estos no
+//   aparecen en coverage.matrix; se muestran igual (CA-2 pide una fila por
+//   cada skill) pero no cuentan para el denominador de "skills OK".
+// -----------------------------------------------------------------------------
+function computeOverallBySkill(coverage, models) {
+    if (!models || typeof models !== 'object' || !models.skills || typeof models.skills !== 'object') {
+        throw new Error('[smoke-test] computeOverallBySkill: agent-models.json sin sección "skills".');
+    }
+    const matrix = (coverage && Array.isArray(coverage.matrix)) ? coverage.matrix : [];
+
+    // Índice (skill -> provider -> status) desde la matriz canónica.
+    const bySkill = new Map();
+    for (const cell of matrix) {
+        if (!cell || typeof cell.skill !== 'string' || typeof cell.provider !== 'string') continue;
+        if (!bySkill.has(cell.skill)) bySkill.set(cell.skill, {});
+        bySkill.get(cell.skill)[cell.provider] = cell.status || 'N/A';
+    }
+
+    const rows = [];
+    for (const skill of Object.keys(models.skills)) {
+        const cfg = models.skills[skill] || {};
+        const chain = providerChainForSkill(cfg);
+        const deterministic = (cfg.provider || 'anthropic') === 'deterministic';
+        const cellStatuses = bySkill.get(skill) || {};
+        const statuses = chain.map(p => cellStatuses[p] || 'N/A');
+        rows.push({ skill, chain, statuses, overall: overallForStatuses(statuses), deterministic });
+    }
+    return rows;
+}
+
+// -----------------------------------------------------------------------------
+// renderPerAgentMarkdown(coverage, models) — CA-1, CA-2, CA-3, CA-10.
+//
+// Función PURA (sin I/O, sin Date.now()/Math.random()). Consume
+// coverage.matrix + models.skills y produce una tabla markdown alineada
+// (monospace-friendly para Telegram) con una fila por skill:
+//
+//   skill | default | fallback1 | ... | fallbackN | overall
+//
+// El número de columnas de fallback es dinámico = máximo de fallbacks entre
+// todos los skills, para nunca ocultar un provider de la cadena (el Gherkin
+// pide "cada fila muestra default, fallbacks y overall"). Las celdas muestran
+// ícono + palabra (WCAG 1.4.1). Al pie, la leyenda.
+//
+// NO reconstruye la matriz: sólo lee status desde el coverage ya generado por
+// el CLI. Nunca toca error_detail crudo ni cuerpos de respuesta — sólo status,
+// que es un enum controlado (PASS/WARN/FAIL/SKIPPED/N/A). Por construcción el
+// output no puede contener secrets.
+// -----------------------------------------------------------------------------
+function renderPerAgentMarkdown(coverage, models) {
+    const rows = computeOverallBySkill(coverage, models);
+
+    const maxFallbacks = rows.reduce((m, r) => Math.max(m, Math.max(0, r.chain.length - 1)), 0);
+    const header = ['skill', 'default'];
+    for (let i = 1; i <= maxFallbacks; i++) header.push(`fallback${i}`);
+    header.push('overall');
+
+    const cell = (status) => status ? `${statusIcon(status)} ${status}` : '—';
+
+    const tableRows = rows.map(r => {
+        const cols = [r.skill];
+        // default + fallbacks alineados a la posición de la cadena.
+        for (let i = 0; i < 1 + maxFallbacks; i++) {
+            cols.push(i < r.statuses.length ? cell(r.statuses[i]) : '—');
+        }
+        cols.push(cell(r.overall));
+        return cols;
+    });
+
+    // Anchos por columna (longitud de string; alineación aproximada en presencia
+    // de emojis, limitación conocida de monospace en Telegram).
+    const widths = header.map((h, i) => {
+        let w = h.length;
+        for (const tr of tableRows) w = Math.max(w, String(tr[i] || '').length);
+        return w;
+    });
+    const pad = (s, i) => String(s || '').padEnd(widths[i], ' ');
+
+    const lines = [];
+    lines.push('| ' + header.map((h, i) => pad(h, i)).join(' | ') + ' |');
+    lines.push('| ' + widths.map(w => '-'.repeat(w)).join(' | ') + ' |');
+    for (const tr of tableRows) {
+        lines.push('| ' + tr.map((c, i) => pad(c, i)).join(' | ') + ' |');
+    }
+    lines.push('');
+    lines.push(STATUS_LEGEND);
+    return lines.join('\n');
+}
+
+// -----------------------------------------------------------------------------
+// renderTelegramReport(coverage, models, opts) — CA-11 + guidelines UX #2/#3.
+//
+// Función PURA. Compone el texto del mensaje Telegram con jerarquía F-pattern:
+//   (a) titular con veredicto accionable: "N/M skills OK · X FAIL · Y SKIPPED".
+//   (b) FAILs primero y agrupados (skill × provider: error_class).
+//   (c) tabla por-agente en bloque monospace (```), para preservar alineación
+//       en móvil (Telegram no renderiza tablas markdown).
+//   (d) timestamp + ruta local al artifact JSON al final.
+//
+// opts:
+//   - generatedAt: string ISO (inyectado; la función no llama Date.now()).
+//   - artifactPath: ruta LOCAL al coverage.json (nunca URL firmada — CA-8).
+//
+// El denominador de "skills OK" excluye skills determinísticos (no LLM), que
+// no pueden PASS por diseño (alineado con el ejemplo UX "14/19").
+// -----------------------------------------------------------------------------
+function renderTelegramReport(coverage, models, opts) {
+    const options = opts || {};
+    const rows = computeOverallBySkill(coverage, models);
+    const llmRows = rows.filter(r => !r.deterministic);
+
+    const counts = { PASS: 0, WARN: 0, FAIL: 0, SKIPPED: 0 };
+    for (const r of llmRows) counts[r.overall] = (counts[r.overall] || 0) + 1;
+    const totalLlm = llmRows.length;
+
+    // FAILs accionables: celdas FAIL de la matriz (skill × provider: error_class).
+    const matrix = (coverage && Array.isArray(coverage.matrix)) ? coverage.matrix : [];
+    const failCells = matrix
+        .filter(c => c && c.status === 'FAIL')
+        .map(c => `❌ ${c.skill} × ${c.provider}: ${c.error_class || 'unknown'}`);
+
+    const lines = [];
+    lines.push('🔎 *Smoke test multi-provider*');
+    lines.push(`${counts.PASS}/${totalLlm} skills OK · ${counts.FAIL} FAIL · ${counts.WARN} WARN · ${counts.SKIPPED} SKIPPED`);
+    if (failCells.length > 0) {
+        lines.push('');
+        lines.push('*FAILs:*');
+        for (const f of failCells.slice(0, 15)) lines.push(f);
+        if (failCells.length > 15) lines.push(`… y ${failCells.length - 15} más (ver artifact)`);
+    }
+    lines.push('');
+    lines.push('```');
+    lines.push(renderPerAgentMarkdown(coverage, models));
+    lines.push('```');
+    if (options.generatedAt) lines.push(`🕒 ${options.generatedAt}`);
+    if (options.artifactPath) lines.push(`📄 ${options.artifactPath}`);
+    return { text: lines.join('\n'), counts, totalLlm, failCount: failCells.length };
+}
+
 module.exports = {
     // Constantes públicas
     HARNESS_SKILL_NAME,
@@ -512,4 +723,14 @@ module.exports = {
     auditLogFilePath,
     sha256Hex,
     makeRunId,
+
+    // Render por-agente (#3785)
+    STATUS_ICON,
+    STATUS_LEGEND,
+    statusIcon,
+    providerChainForSkill,
+    overallForStatuses,
+    computeOverallBySkill,
+    renderPerAgentMarkdown,
+    renderTelegramReport,
 };
