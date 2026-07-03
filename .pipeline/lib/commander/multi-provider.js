@@ -61,6 +61,20 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
+// #4413 (A02) — redacción en origen de todo campo de texto libre nuevo de la
+// ruta de balanceo antes de que llegue al audit log. `selection_reason` es un
+// enum acotado por el balancer, pero lo pasamos igual por `redactSecretValue`
+// (defensa en profundidad: si alguna vez arrastra texto libre, no viajan
+// secretos). Carga perezosa para no penalizar el require en callers que no
+// tocan la ruta de balanceo.
+let _redact = null;
+function redactModule() {
+    if (_redact === null) {
+        try { _redact = require('../redact'); } catch { _redact = false; }
+    }
+    return _redact || null;
+}
+
 const COMMANDER_SKILL = 'telegram-commander';
 
 // -----------------------------------------------------------------------------
@@ -165,6 +179,10 @@ function resolveCommanderProvider(opts = {}) {
         agentModelsReader,
         requestClassifyModule,
         balancerStore,
+        // #4413 — stickiness por conversación (opcional; sólo relevante con el
+        // balanceo ON). `chatId` se hashea dentro del balancer con `hashFor`.
+        chatId,
+        stickinessModule,
     } = opts;
 
     const _dispatch = dispatchModule || require('../agent-launcher/dispatch-with-fallback');
@@ -190,13 +208,18 @@ function resolveCommanderProvider(opts = {}) {
             agentModelsReader,
             requestClassifyModule,
             balancerStore,
+            chatId,
+            stickinessModule,
         });
         if (balanced) return balanced;
     } catch (e) {
         _log('commander', `⚠️ #4412 balanceo degradó a orden estricto: ${(e && e.message) || e}`);
     }
 
-    return _dispatch.resolveSpawnWithFallback({
+    // #4413 CA-9 — la cadena estricta no produce metadata de balanceo; la
+    // normalizamos a null para que el shape sea idéntico al balanceado (CA-1) y
+    // el audit persista siempre las 3 claves aditivas (null en el camino OFF).
+    const strict = _dispatch.resolveSpawnWithFallback({
         skill: COMMANDER_SKILL,
         issue: issue || 'commander-chat',
         pipelineDir,
@@ -205,6 +228,19 @@ function resolveCommanderProvider(opts = {}) {
         onLog: _log,
         now,
     });
+    return _normalizeBalancerMeta(strict);
+}
+
+// #4413 — asegura que una resolución exponga las 3 claves de metadata de
+// balanceo (weight/quotaPct/selectionReason). Si ya vienen (camino balanceado),
+// no las pisa; si no (camino estricto), las agrega en null. Aditivo: preserva
+// el resto del shape. Devuelve el mismo objeto (o uno vacío si `res` es falsy).
+function _normalizeBalancerMeta(res) {
+    if (!res || typeof res !== 'object') return res;
+    if (!('weight' in res)) res.weight = null;
+    if (!('quotaPct' in res)) res.quotaPct = null;
+    if (!('selectionReason' in res)) res.selectionReason = null;
+    return res;
 }
 
 // -----------------------------------------------------------------------------
@@ -320,6 +356,11 @@ function _resolveViaBalancer(ctx = {}) {
         agentModelsReader,
         requestClassifyModule,
         balancerStore,
+        // #4413 (Parte 3/3) — stickiness por conversación. `chatId` se hashea
+        // acá con `hashFor` (nunca se materializa crudo); `stickinessModule` es
+        // inyectable en tests.
+        chatId,
+        stickinessModule,
     } = ctx;
     const _fs = fsImpl || fs;
     const _log = typeof log === 'function' ? log : () => {};
@@ -388,30 +429,95 @@ function _resolveViaBalancer(ctx = {}) {
     const allowSet = new Set(chain);
     const store = balancerStore || makeBalancerStore(pipelineDir, _fs, allowSet);
 
-    // 7. Selección ponderada.
+    // 7. Deps compartidas por el balancer (candidatos + pesos + SWRR).
     const _balancer = balancerModule || require('./provider-balancer');
-    const picked = _balancer.selectProvider({
-        chain,
-        requiresToolUse: needsToolUse,
-        pipelineDir,
-        deps: {
-            modelsMeta,
-            store,
-            now: typeof now === 'function' ? now : undefined,
-            // shouldGateSpawn del quotaModule efectivo (test inyecta el fake).
-            shouldGateSpawn: quotaModule && typeof quotaModule.shouldGateSpawn === 'function'
-                ? (skill, q) => quotaModule.shouldGateSpawn(skill, q)
+    const deps = {
+        modelsMeta,
+        store,
+        now: typeof now === 'function' ? now : undefined,
+        // shouldGateSpawn del quotaModule efectivo (test inyecta el fake).
+        shouldGateSpawn: quotaModule && typeof quotaModule.shouldGateSpawn === 'function'
+            ? (skill, q) => quotaModule.shouldGateSpawn(skill, q)
+            : undefined,
+        config: {
+            quality_bias: Number.isFinite(balCfg.quality_bias) ? balCfg.quality_bias : undefined,
+            min_primary_quota_pct: Number.isFinite(balCfg.min_primary_quota_pct)
+                ? balCfg.min_primary_quota_pct
                 : undefined,
-            config: {
-                quality_bias: Number.isFinite(balCfg.quality_bias) ? balCfg.quality_bias : undefined,
-                min_primary_quota_pct: Number.isFinite(balCfg.min_primary_quota_pct)
-                    ? balCfg.min_primary_quota_pct
-                    : undefined,
-            },
         },
-    });
+    };
 
-    // 8. 0 sanos → null → cadena estricta (CA-8).
+    // 8. Stickiness por conversación (D3, #4413). El balanceo es POR
+    //    CONVERSACIÓN, no por request: consultamos el provider pegado al
+    //    `chat_id_hash` ANTES de reelegir. Sólo lo reusamos si sigue en el
+    //    conjunto de candidatos SANOS del balancer (no gateado, con credencial,
+    //    tool-use compatible) — si se gateó o expiró la ventana, se fuerza
+    //    reelección (nunca pinnea a un provider caído). El hash blinda la PII:
+    //    `hashFor(chatId)` nunca materializa el `chat_id` crudo.
+    const _stick = stickinessModule || require('./provider-stickiness');
+    const chatIdHash = hashFor(chatId || 'unknown');
+    const nowMs = typeof now === 'function'
+        ? now()
+        : (Number.isFinite(now) ? now : Date.now());
+    const windowMs = Number.isFinite(balCfg.stickiness_window_ms) && balCfg.stickiness_window_ms > 0
+        ? balCfg.stickiness_window_ms
+        : undefined; // undefined → default del módulo (30 min)
+
+    let picked = null;
+
+    let sticky = null;
+    try {
+        sticky = _stick.getStickyProvider({ chatIdHash, now: nowMs, windowMs });
+    } catch { sticky = null; }
+
+    if (sticky) {
+        let candidates = [];
+        try {
+            candidates = _balancer._buildCandidateSet({
+                chain, requiresToolUse: needsToolUse, pipelineDir, deps,
+            });
+        } catch { candidates = []; }
+        const cand = Array.isArray(candidates)
+            ? candidates.find((c) => c && c.provider === sticky)
+            : null;
+        if (cand) {
+            // Recuperar el peso del sticky para la auditoría (mismo cálculo que
+            // usaría el SWRR). No avanzamos el contador SWRR: reusar el sticky
+            // es justamente saltear la rotación por-request.
+            let weightVal = null;
+            try {
+                const weighted = _balancer._computeWeights(candidates, deps.config || {});
+                const w = Array.isArray(weighted)
+                    ? weighted.find((x) => x && x.provider === sticky)
+                    : null;
+                if (w && Number.isFinite(w.weight)) weightVal = w.weight;
+            } catch { weightVal = null; }
+            picked = {
+                provider: sticky,
+                weight: weightVal,
+                quotaPct: cand.quotaPct == null ? null : cand.quotaPct,
+                reason: 'stickiness',
+            };
+            _log('commander', `📌 #4413 stickiness: conversación pegada a "${sticky}" (ventana activa).`);
+        } else {
+            _log('commander', `📌 #4413 stickiness: "${sticky}" ya no está sano — reelección forzada (D3).`);
+        }
+    }
+
+    if (!picked) {
+        // Reelección ponderada: conversación nueva, ventana expirada o sticky
+        // gateado. El provider elegido queda pegado para los próximos turnos.
+        picked = _balancer.selectProvider({
+            chain, requiresToolUse: needsToolUse, pipelineDir, deps,
+        });
+        if (picked && picked.provider) {
+            try {
+                _stick.setStickyProvider({ chatIdHash, provider: picked.provider, now: nowMs });
+            } catch { /* best-effort: la stickiness nunca rompe el dispatch */ }
+        }
+    }
+
+    // 9. 0 sanos → null → cadena estricta (CA-8).
     if (!picked || !picked.provider) return null;
 
     return _buildBalancedResolution({
@@ -453,6 +559,15 @@ function _buildBalancedResolution(args = {}) {
     const defaultModel = (models.defaults && models.defaults.model) || null;
     const isPrimary = provider === primaryProvider;
 
+    // #4413 CA-9 — metadata ADITIVA de la decisión de ruteo para la auditoría.
+    // El caller (pulpo) la pasa a `auditCommanderRequest`. En el camino estricto
+    // (OFF) estas claves no existen → el audit las persiste como null.
+    const balMeta = {
+        weight: Number.isFinite(picked.weight) ? picked.weight : null,
+        quotaPct: Number.isFinite(picked.quotaPct) ? picked.quotaPct : null,
+        selectionReason: picked.reason ? String(picked.reason) : null,
+    };
+
     if (isPrimary) {
         // Espejo EXACTO del shape estricto-primario (…resolveProviderForSkill +
         // metadatos de dispatch). Mismas claves que el retorno OFF (CA-1).
@@ -471,6 +586,7 @@ function _buildBalancedResolution(args = {}) {
             crossProvider: false,
             depthExceeded: false,
             skipReasons: [],
+            ...balMeta,
         };
     }
 
@@ -496,6 +612,7 @@ function _buildBalancedResolution(args = {}) {
         depthExceeded: false,
         disqualifyReason: 'balancer_selected',
         skipReasons: [],
+        ...balMeta,
     };
 }
 
@@ -701,6 +818,20 @@ function auditFile(pipelineDir, now) {
     return path.join(pipelineDir || '.', 'logs', `commander-dispatch-${yyyy}-${mm}-${dd}.jsonl`);
 }
 
+// #4413 A02 — redacta `selection_reason` en origen antes de persistirlo al
+// audit. Devuelve null cuando no hay valor (mantiene el patrón "null si no
+// aplica" del resto de campos enriched). Si `redact.js` no está disponible en
+// runtime, degrada a String() truncado (nunca deja pasar el objeto crudo).
+function _redactSelectionReason(selectionReason) {
+    if (selectionReason == null || selectionReason === '') return null;
+    const raw = String(selectionReason);
+    const r = redactModule();
+    if (r && typeof r.redactSecretValue === 'function') {
+        try { return r.redactSecretValue(raw); } catch { /* fall-through */ }
+    }
+    return raw;
+}
+
 function auditCommanderRequest(opts = {}) {
     const {
         pipelineDir,
@@ -737,6 +868,15 @@ function auditCommanderRequest(opts = {}) {
         // para el resto de eventos quedan en null y no afectan el shape canónico.
         sourcesChecked,
         findingsCount,
+        // #4413 CA-9 (A09) — campos ADITIVOS de la decisión de ruteo balanceado.
+        // Solo los provee el caller cuando el dispatch salió del balancer
+        // ponderado (#4411/#4412); para el resto de eventos quedan en null y no
+        // afectan el shape canónico ni el hash-chain (mismo patrón enriched
+        // #3484/#3501/#3846). `selectionReason` es texto acotado (enum del
+        // balancer) pero se redacta en origen (A02).
+        weight,
+        quotaPct,
+        selectionReason,
         // inyectables tests
         fsImpl,
         auditLog,
@@ -780,6 +920,12 @@ function auditCommanderRequest(opts = {}) {
         // #3846 — evidencia independiente. Null para eventos que no la usan.
         sources_checked: Array.isArray(sourcesChecked) ? sourcesChecked : null,
         findings_count: Number.isFinite(findingsCount) ? findingsCount : null,
+        // #4413 CA-9 — decisión de ruteo del balanceo ponderado. Estrictamente
+        // aditivos al FINAL del entry: null cuando el dispatch no salió del
+        // balancer (preserva shape canónico y hash-chain — req A09/A08).
+        weight: Number.isFinite(weight) ? weight : null,
+        quota_pct: Number.isFinite(quotaPct) ? quotaPct : null,
+        selection_reason: _redactSelectionReason(selectionReason),
     };
 
     try {
@@ -1502,6 +1648,11 @@ module.exports = {
     _saveBalancerState: saveBalancerState,
     _makeBalancerStore: makeBalancerStore,
     BALANCER_STATE_FILE,
+
+    // #4413 (Parte 3/3) — stickiness por conversación (re-export del módulo
+    // dedicado) + redacción de selection_reason.
+    stickiness: require('./provider-stickiness'),
+    _redactSelectionReason,
 
     // exports internos para tests
     _hashFor: hashFor,

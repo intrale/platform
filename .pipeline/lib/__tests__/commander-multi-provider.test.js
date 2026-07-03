@@ -1187,3 +1187,247 @@ test('#4412 CA-5/SEC-2 — el validator rechaza clave arbitraria y valor fuera d
         cleanup(dir);
     }
 });
+
+// =============================================================================
+// #4413 (Parte 3/3 de #4363) — Auditoría aditiva + stickiness por conversación.
+// =============================================================================
+
+const auditLog = require('../audit-log');
+const stickiness = require('../commander/provider-stickiness');
+
+// Balancer fake "completo": implementa selectProvider + los internos que
+// consulta la ruta de stickiness (_buildCandidateSet / _computeWeights). Permite
+// controlar qué providers están SANOS (eligible) y qué reelige el SWRR (pick).
+function fakeBalancerFull({ eligible = [], pick = null, weight = 0.5 } = {}) {
+    return {
+        selectProvider: () => pick,
+        _buildCandidateSet: () => eligible.map((p) => ({ provider: p, quotaPct: 100 })),
+        _computeWeights: (cands) => cands.map((c) => ({
+            provider: c.provider, weight, quotaPct: c.quotaPct,
+        })),
+    };
+}
+
+// -----------------------------------------------------------------------------
+// CA-9 / A09 — auditCommanderRequest persiste weight/quota_pct/selection_reason
+// -----------------------------------------------------------------------------
+
+test('#4413 CA-9 — auditCommanderRequest persiste weight/quota_pct/selection_reason sin romper campos canónicos', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        const ok = cmp.auditCommanderRequest({
+            pipelineDir: dir,
+            event: 'dispatch',
+            providerIntended: 'anthropic',
+            providerEffective: 'openai-codex',
+            chainTried: ['anthropic', 'openai-codex'],
+            chatId: 'chat-xyz',
+            prompt: 'hola',
+            weight: 0.42,
+            quotaPct: 73,
+            selectionReason: 'quota_rebalance',
+        });
+        assert.equal(ok, true);
+        const files = fs.readdirSync(path.join(dir, 'logs')).filter((f) => f.startsWith('commander-dispatch-'));
+        const content = fs.readFileSync(path.join(dir, 'logs', files[0]), 'utf8').trim();
+        const entry = JSON.parse(content.split('\n').pop());
+        // Campos nuevos (aditivos).
+        assert.equal(entry.weight, 0.42);
+        assert.equal(entry.quota_pct, 73);
+        assert.equal(entry.selection_reason, 'quota_rebalance');
+        // Campos canónicos intactos (A09 — prohibido reordenar/renombrar).
+        assert.equal(entry.event, 'dispatch');
+        assert.equal(entry.provider_intended, 'anthropic');
+        assert.equal(entry.provider_effective, 'openai-codex');
+        assert.deepEqual(entry.chain_tried, ['anthropic', 'openai-codex']);
+        assert.equal(entry.chat_id_hash.length, 12);
+        assert.equal(entry.prompt_hash.length, 12);
+        assert.ok('created_at' in entry);
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('#4413 CA-9 — back-compat: sin los 3 campos nuevos, quedan en null (eventos sin balanceo)', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        cmp.auditCommanderRequest({
+            pipelineDir: dir, event: 'dispatch', providerIntended: 'anthropic',
+            providerEffective: 'anthropic', chatId: 'c', prompt: 'x',
+        });
+        const files = fs.readdirSync(path.join(dir, 'logs')).filter((f) => f.startsWith('commander-dispatch-'));
+        const entry = JSON.parse(fs.readFileSync(path.join(dir, 'logs', files[0]), 'utf8').trim().split('\n').pop());
+        assert.equal(entry.weight, null);
+        assert.equal(entry.quota_pct, null);
+        assert.equal(entry.selection_reason, null);
+    } finally {
+        cleanup(dir);
+    }
+});
+
+// -----------------------------------------------------------------------------
+// CA-2 / A08 — verifyChain sigue verde tras persistir los campos nuevos
+// -----------------------------------------------------------------------------
+
+test('#4413 CA-2/A08 — audit-log.verifyChain sigue verde tras persistir weight/quota_pct/selection_reason', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        for (let i = 0; i < 4; i++) {
+            cmp.auditCommanderRequest({
+                pipelineDir: dir, event: 'dispatch', providerIntended: 'anthropic',
+                providerEffective: i % 2 ? 'openai-codex' : 'anthropic',
+                chainTried: ['anthropic', 'openai-codex'], chatId: `c-${i}`, prompt: `p-${i}`,
+                weight: 0.1 * i, quotaPct: 10 * i, selectionReason: 'quality_bias',
+            });
+        }
+        const file = cmp._auditFile(dir, Date.now());
+        const res = auditLog.verifyChain(file);
+        assert.equal(res.ok, true, `hash-chain debe verificar verde: ${JSON.stringify(res)}`);
+        assert.equal(res.entriesChecked, 4);
+    } finally {
+        cleanup(dir);
+    }
+});
+
+// -----------------------------------------------------------------------------
+// A02 — redact aplicado en el log de la ruta de balanceo (selection_reason)
+// -----------------------------------------------------------------------------
+
+test('#4413 A02 — selection_reason se redacta en origen: un secreto embebido NO viaja al audit', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        // selection_reason con una AWS access-key-id embebida (nunca debería pasar,
+        // pero probamos la defensa en profundidad de redacción en origen).
+        cmp.auditCommanderRequest({
+            pipelineDir: dir, event: 'dispatch', providerEffective: 'anthropic',
+            chatId: 'c', prompt: 'x',
+            selectionReason: 'AKIAIOSFODNN7EXAMPLE',
+        });
+        const files = fs.readdirSync(path.join(dir, 'logs')).filter((f) => f.startsWith('commander-dispatch-'));
+        const content = fs.readFileSync(path.join(dir, 'logs', files[0]), 'utf8');
+        assert.doesNotMatch(content, /AKIAIOSFODNN7EXAMPLE/, 'la key NO debe quedar en el log');
+        const entry = JSON.parse(content.trim().split('\n').pop());
+        assert.match(entry.selection_reason, /\[REDACTED\]/);
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('#4413 A02 — _redactSelectionReason preserva un reason legítimo (enum del balancer)', () => {
+    assert.equal(cmp._redactSelectionReason('quota_rebalance'), 'quota_rebalance');
+    assert.equal(cmp._redactSelectionReason(''), null);
+    assert.equal(cmp._redactSelectionReason(null), null);
+});
+
+// -----------------------------------------------------------------------------
+// CA-4 / CA-6 — stickiness (unidad del módulo)
+// -----------------------------------------------------------------------------
+
+test('#4413 CA-4 — stickiness mantiene el provider para el mismo chat_id_hash dentro de la ventana', () => {
+    const store = new Map();
+    const hash = cmp._hashFor('chat-1');
+    const t0 = 1_000_000;
+    assert.equal(stickiness.getStickyProvider({ chatIdHash: hash, now: t0, store }), null);
+    assert.equal(stickiness.setStickyProvider({ chatIdHash: hash, provider: 'openai-codex', now: t0, store }), true);
+    // Turno siguiente dentro de la ventana (30 min default): mismo provider.
+    assert.equal(
+        stickiness.getStickyProvider({ chatIdHash: hash, now: t0 + 5 * 60 * 1000, store }),
+        'openai-codex',
+    );
+});
+
+test('#4413 CA-4 — stickiness expira al superar la ventana temporal → null (reelección)', () => {
+    const store = new Map();
+    const hash = cmp._hashFor('chat-2');
+    const t0 = 1_000_000;
+    stickiness.setStickyProvider({ chatIdHash: hash, provider: 'anthropic', now: t0, store, windowMs: 1000 });
+    // Dentro de la ventana explícita de 1s.
+    assert.equal(stickiness.getStickyProvider({ chatIdHash: hash, now: t0 + 500, windowMs: 1000, store }), 'anthropic');
+    // Fuera de la ventana → null + purga.
+    assert.equal(stickiness.getStickyProvider({ chatIdHash: hash, now: t0 + 1500, windowMs: 1000, store }), null);
+    assert.equal(store.has(hash), false, 'la entry expirada se purga (lazy expiry)');
+});
+
+test('#4413 CA-6 — stickiness indexa por chat_id_hash y NUNCA materializa chat_id crudo', () => {
+    const store = new Map();
+    const rawChatId = '987654321'; // chat_id crudo de Telegram
+    const hash = cmp._hashFor(rawChatId);
+    stickiness.setStickyProvider({ chatIdHash: hash, provider: 'anthropic', now: 1000, store });
+    // El store guarda SOLO el hash, no el chat_id crudo.
+    assert.equal(store.has(hash), true);
+    assert.equal(store.has(rawChatId), false, 'el chat_id crudo NO debe ser una clave del store');
+    // El módulo rechaza un chatIdHash que no sea hex-only (defensa de formato).
+    assert.equal(stickiness.setStickyProvider({ chatIdHash: 'not-a-hash!', provider: 'x', now: 1, store }), false);
+});
+
+// -----------------------------------------------------------------------------
+// CA-6 / CA-5 — stickiness integrada en la ruta de balanceo
+// -----------------------------------------------------------------------------
+
+test('#4413 CA-6 — la ruta de balanceo REUSA el provider pegado en el turno siguiente (stickiness > reelección)', () => {
+    const dir = mkTmpBalancingDir({ enabled: true, quality_bias: 0.7, min_primary_quota_pct: 30 });
+    stickiness._resetState(); // aislar el store in-memory compartido
+    try {
+        const chatId = 'chat-sticky-1';
+        // Turno 1: sin sticky → reelige openai-codex (pick del fake) y lo pega.
+        const r1 = cmp.resolveCommanderProvider({
+            pipelineDir: dir, log: () => {}, quotaModule: makeFakeQuotaModule([]),
+            requestText: '/lanzar', requiresToolUse: false, chatId,
+            balancerModule: fakeBalancerFull({ eligible: ['anthropic', 'openai-codex'], pick: { provider: 'openai-codex', weight: 0.5, quotaPct: 80, reason: 'quota_rebalance' } }),
+        });
+        assert.equal(r1.provider, 'openai-codex');
+        assert.equal(r1.selectionReason, 'quota_rebalance');
+        // Turno 2: el SWRR ahora "elegiría" anthropic, pero el sticky openai-codex
+        // sigue SANO dentro de la ventana → se reusa (no reelige).
+        const r2 = cmp.resolveCommanderProvider({
+            pipelineDir: dir, log: () => {}, quotaModule: makeFakeQuotaModule([]),
+            requestText: '/lanzar', requiresToolUse: false, chatId,
+            balancerModule: fakeBalancerFull({ eligible: ['anthropic', 'openai-codex'], pick: { provider: 'anthropic', weight: 1, quotaPct: 100, reason: 'quality_bias' } }),
+        });
+        assert.equal(r2.provider, 'openai-codex', 'debe mantener el provider pegado (CA-6)');
+        assert.equal(r2.selectionReason, 'stickiness');
+    } finally {
+        stickiness._resetState();
+        cleanup(dir);
+    }
+});
+
+test('#4413 CA-5/D3 — la ruta de balanceo FUERZA reelección cuando el provider pegado ya no está sano (gateado)', () => {
+    const dir = mkTmpBalancingDir({ enabled: true, quality_bias: 0.7, min_primary_quota_pct: 30 });
+    stickiness._resetState();
+    try {
+        const chatId = 'chat-sticky-2';
+        // Turno 1: pega openai-codex.
+        cmp.resolveCommanderProvider({
+            pipelineDir: dir, log: () => {}, quotaModule: makeFakeQuotaModule([]),
+            requestText: '/lanzar', requiresToolUse: false, chatId,
+            balancerModule: fakeBalancerFull({ eligible: ['anthropic', 'openai-codex'], pick: { provider: 'openai-codex', weight: 0.5, quotaPct: 80, reason: 'quota_rebalance' } }),
+        });
+        // Turno 2: openai-codex YA NO está en el candidato sano (gateado) →
+        // reelección forzada → anthropic. No queda pinned al provider caído.
+        const r2 = cmp.resolveCommanderProvider({
+            pipelineDir: dir, log: () => {}, quotaModule: makeFakeQuotaModule([]),
+            requestText: '/lanzar', requiresToolUse: false, chatId,
+            balancerModule: fakeBalancerFull({ eligible: ['anthropic'], pick: { provider: 'anthropic', weight: 1, quotaPct: 100, reason: 'quality_bias' } }),
+        });
+        assert.equal(r2.provider, 'anthropic', 'reelección forzada al gatearse el sticky (D3)');
+        assert.equal(r2.selectionReason, 'quality_bias');
+    } finally {
+        stickiness._resetState();
+        cleanup(dir);
+    }
+});
+
+test('#4413 CA-1 — shape estricto (OFF) también expone weight/quotaPct/selectionReason en null (paridad + audit)', () => {
+    const dir = mkTmpBalancingDir({ enabled: false });
+    try {
+        const r = cmp.resolveCommanderProvider({
+            pipelineDir: dir, log: () => {}, quotaModule: makeFakeQuotaModule([]), requestText: 'hola',
+        });
+        assert.equal(r.weight, null);
+        assert.equal(r.quotaPct, null);
+        assert.equal(r.selectionReason, null);
+    } finally {
+        cleanup(dir);
+    }
+});
