@@ -60,6 +60,8 @@ const fileLock = require('./lib/file-lock');
 const partialPause = require('./lib/partial-pause');
 // #3518 CA-6 — Detector de desync waves.json ↔ .partial-pause.json
 const desyncDetector = require('./lib/desync-detector');
+// #4439 CA-3 — Predicado de "origen legítimo y reciente" anclado en audit #3625
+const legitAddTrace = require('./lib/legit-add-trace');
 
 const quotaExhausted = require('./lib/quota-exhausted'); // #2974
 // #3508 — feature flag + ciclo de vida del workaround Anthropic CLI 1M (#3506).
@@ -13491,6 +13493,54 @@ function realignAllowlistToActiveWave(desync, opts = {}) {
   return { ok: true, allowlist: expanded };
 }
 
+// =============================================================================
+// #4439 CA-3 — Resync ADITIVO hacia la ola activa (dirección INVERSA a
+// realignAllowlistToActiveWave).
+//
+// realignAllowlistToActiveWave es REDUCTIVO: converge allowlist ← ola. Este
+// helper converge en la dirección opuesta, ola ← allowlist, y SOLO para el
+// subconjunto de issues cuya suma tiene traza legítima y reciente del propio
+// Commander (`legit-add-trace.isLegitimateRecentAdd`). Es la resolución del
+// caso "ambiguo legítimo": un `/wave add` que quedó a medio camino (allowlist
+// escrita, ola no) por una muerte de proceso o un realign fuera de fase.
+//
+// Seguridad (SEC-4439-5): SOLO aditivo hacia la ola, SOLO para el subconjunto
+// trazable, NUNCA remueve issues abiertos ajenos. La mutación pasa por el gate
+// atómico de waves (`addIssueToWave`, tmp+rename bajo lock + wave-audit). Si el
+// issue ya está en OTRA ola (conflicto real), `addIssueToWave` lanza → se
+// captura y se deja fuera del resync (queda ambiguo → human-block).
+//
+// @param {number[]} issues — subconjunto legítimo a agregar a la ola activa.
+// @returns {{ ok: boolean, added: number[], skipped: number[], reason?: string }}
+// =============================================================================
+function resyncActiveWaveFromLegitAllowlist(issues) {
+  const waves = require('./lib/waves');
+  const active = waves.getActiveWave();
+  if (!active || !Number.isInteger(active.number)) {
+    return { ok: false, added: [], skipped: Array.isArray(issues) ? issues : [], reason: 'no_active_wave' };
+  }
+  const added = [];
+  const skipped = [];
+  for (const n of (Array.isArray(issues) ? issues : [])) {
+    try {
+      const r = waves.addIssueToWave(active.number, { number: n }, {
+        updated_by: 'wave-promote',
+        source: 'wave-promote:resync-additive',
+        note: `resync aditivo #${n} -> ola ${active.number} (#4439 CA-3, traza legítima en audit)`,
+      });
+      // added:false === ya estaba en la ola (idempotente) — igual cuenta como
+      // "en sync" para este issue.
+      if (r && (r.added === true || r.added === false)) added.push(n);
+      else skipped.push(n);
+    } catch (e) {
+      // Conflicto (issue en otra ola) u otro error → no resyncar, dejar ambiguo.
+      log('pulpo', `WARN desync-detector: resync aditivo de #${n} omitido: ${e.message}`);
+      skipped.push(n);
+    }
+  }
+  return { ok: added.length > 0, added, skipped };
+}
+
 /**
  * Evalúa la divergencia waves↔allowlist y actúa según la clasificación:
  *   - `resoluble_reductivo` → realinea reductivamente + limpia flag + traza.
@@ -13512,6 +13562,16 @@ function evaluateDesyncAndMaybeRealign(context) {
   }
 
   if (!probe.desync) {
+    // #4439 CA-2 — Auto-limpieza del flag stale. Si los archivos volvieron a
+    // coincidir (desync:false) pero el flag quedó puesto de una divergencia
+    // previa, lo borramos: de lo contrario sigue frenando la ola aunque ya
+    // no haya inconsistencia (el bug del 2026-07-03). Idempotente y sin riesgo
+    // A08: sólo refleja que los archivos coinciden, no otorga autorización nueva.
+    if (desyncDetector.isDesyncFlagSet()) {
+      desyncDetector.clearDesyncFlag();
+      checkDesyncFlag();
+      log('pulpo', 'desync-detector: flag stale limpiado (archivos ya en sync)');
+    }
     if (context === 'boot') log('pulpo', `desync-detector OK (${probe.reason || 'in_sync'})`);
     return;
   }
@@ -13547,14 +13607,76 @@ function evaluateDesyncAndMaybeRealign(context) {
     return;
   }
 
-  // Ambiguo → flag + human-block. Dedupe: solo alertar la primera vez (o al boot).
+  // #4439 CA-3 — Auto-resync ADITIVO del ambiguo LEGÍTIMO, ANTES del human-block.
+  // Un extra de la allowlist con traza legítima y reciente del propio Commander
+  // (audit encadenado #3625: authorized_by ∈ {wave-promote, commander:leo},
+  // diff.added incluye N, dentro de TTL) NO es una manipulación externa: es un
+  // `/wave add` que quedó a medio camino. Lo resincronizamos aditivamente a la
+  // ola (ola ← allowlist) en vez de frenar la ola entera.
+  //
+  // SEC-4439-2/4: binding POR ISSUE. Sólo los `added` con traza se resyncan; los
+  // que NO la tienen (inyección externa, traza forjada/expirada, authorized_by
+  // inválido) siguen el camino ambiguo → human-block. Un `added` mixto resync
+  // sólo el trazable y mantiene el block por el resto.
+  let ttlMs;
+  try { ttlMs = loadConfig().desync?.legit_add_ttl_ms; } catch { ttlMs = undefined; }
+  let legit = [];
+  try {
+    legit = legitAddTrace.isLegitimateRecentAdd(probe.added, {
+      now: Date.now(),
+      ttlMs: ttlMs,
+      isClosed: isClosed || undefined,
+    });
+  } catch (e) {
+    log('pulpo', `WARN desync-detector: predicado legit-add falló: ${e.message}. Trato todo como ambiguo.`);
+    legit = [];
+  }
+
+  if (legit.length > 0) {
+    try {
+      const r = resyncActiveWaveFromLegitAllowlist(legit);
+      if (r && r.added.length > 0) {
+        log('pulpo', `desync-detector: resync ADITIVO legítimo a ola activa OK — ` +
+          `agregados=${JSON.stringify(r.added)} (traza en audit #3625)`);
+        try {
+          sendTelegramPlain(
+            `♻️ Resync automático a la ola activa (#4439).\n` +
+            `Sumados con traza legítima: ${r.added.map(n => `#${n}`).join(', ')}\n` +
+            `Divergencia ambigua de origen Commander resuelta sin frenar la ola.`
+          );
+        } catch { /* best-effort */ }
+      }
+    } catch (e) {
+      log('pulpo', `WARN desync-detector: resync aditivo legítimo falló: ${e.message}`);
+    }
+  }
+
+  // Re-probe: si tras el resync ya no hay divergencia, limpiamos el flag y
+  // seguimos (la ola NO queda bloqueada). Sólo el remanente sin traza legítima
+  // mantiene el human-block (SEC-4439-4, preserva #3518/#4350).
+  let after;
+  try {
+    after = desyncDetector.detectDesync({ skipFlag: true, skipAlert: true, isClosed: isClosed || undefined });
+  } catch { after = probe; }
+
+  if (!after.desync) {
+    if (desyncDetector.isDesyncFlagSet()) {
+      desyncDetector.clearDesyncFlag();
+      checkDesyncFlag();
+    }
+    log('pulpo', `desync-detector: divergencia ambigua resuelta por resync legítimo — pipeline NO bloqueado.`);
+    return;
+  }
+
+  // Remanente ambiguo (added sin traza legítima) → flag + human-block.
+  // Dedupe: solo alertar la primera vez (o al boot).
   if (!desyncDetector.isDesyncFlagSet()) {
     try { desyncDetector.detectDesync({ isClosed: isClosed || undefined }); } catch (e) {
       log('pulpo', `WARN desync-detector flag falló: ${e.message}`);
     }
     checkDesyncFlag();
     log('pulpo', `WARN desync-detector: divergencia AMBIGUA — human-block. ` +
-      `extras_en_allowlist=${JSON.stringify(probe.added)} faltantes_de_allowlist=${JSON.stringify(probe.removed)}`);
+      `extras_en_allowlist=${JSON.stringify(after.added)} faltantes_de_allowlist=${JSON.stringify(after.removed)}`);
   } else {
     checkDesyncFlag();
   }
@@ -15396,6 +15518,13 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     commanderOutboundStatus,
     reconcileTelegramReceipts,
     resolveChatIdForCorrelation,
+    // #4439 — evaluación de desync + auto-clean flag stale (CA-2) + auto-resync
+    // aditivo legítimo (CA-3), expuestos para tests de integración.
+    evaluateDesyncAndMaybeRealign,
+    resyncActiveWaveFromLegitAllowlist,
+    realignAllowlistToActiveWave,
+    checkDesyncFlag,
+    _getDesyncBlocked: () => desyncBlocked,
   };
   return; // No arrancar singleton ni mainLoop
 }

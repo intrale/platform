@@ -2580,6 +2580,47 @@ async function handleWaveAdd({ pipelineRoot, waveNumber, issueNumber, cooldown, 
         ? refreshedTarget.issues.length
         : 1;
 
+    // #4439 CA-1 — Suma COHERENTE en el mismo acto. Si el destino es la ola
+    // ACTIVA y hay una pausa parcial vigente (allowlist activa), agregamos el
+    // issue a la allowlist junto con la suma a la ola, para que waves.json y
+    // .partial-pause.json nunca queden desincronizados por el propio flujo
+    // (el bug del 2026-07-03: allowlist actualizada, ola no → ambiguo espurio).
+    //
+    // Sólo tocamos la allowlist cuando YA existe una pausa parcial: en modo
+    // running no hay marker y crearlo restringiría el pipeline a un solo issue.
+    // Sólo aplica a la ola ACTIVA: el desync-detector compara contra
+    // active_wave.issues; sumar a una ola PLANIFICADA no debe entrar al allowlist
+    // (sería, justamente, un extra ambiguo autogenerado).
+    //
+    // La mutación pasa por el gate auditado (authorizedBy:'wave-promote'):
+    //   - escritura tmp+rename atómica bajo lock;
+    //   - deja audit-entry encadenada → traza para el auto-resync legítimo (CA-3);
+    //   - orden audit-before-write preservado por el propio gate (SEC-4439-6).
+    // Es best-effort respecto del comando: la suma a la ola ya persistió; si la
+    // sync de allowlist falla, la divergencia resultante es REDUCTIVA (issue en
+    // la ola, falta en la allowlist) y el realign del Pulpo la reconcilia sola.
+    try {
+        const isActiveTarget = refreshed.active_wave
+            && refreshed.active_wave.number === waveNumber;
+        if (isActiveTarget) {
+            const partialPause = require('./partial-pause');
+            const mode = partialPause.getPipelineMode();
+            if (mode.mode === 'partial_pause') {
+                const current = Array.isArray(mode.allowedIssues) ? mode.allowedIssues : [];
+                if (!current.includes(issueNumber)) {
+                    partialPause.setPartialPause([...current, issueNumber], {
+                        source: 'wave-promote:wave-add',
+                        authorizedBy: 'wave-promote',
+                        justification: `Suma coherente /wave add #${issueNumber} -> ola ${waveNumber} (#4439)`,
+                    });
+                }
+            }
+        }
+    } catch {
+        // Best-effort: no rompemos el comando por la sync de allowlist.
+        // El desync reductivo resultante se auto-repara vía realign del Pulpo.
+    }
+
     // CA-9 — Marcar éxito en el cooldown DESPUÉS del write.
     if (cooldown && chatId) cooldown.recordSuccess(chatId, 'wave-add');
 
