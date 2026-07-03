@@ -15,6 +15,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 // Stub del módulo waves + reload de routes/slices para que el require perezoso de
 // roadmapSlice y el `waves` capturado por dashboard-routes tomen el fake.
@@ -211,6 +214,43 @@ test('paridad: /roadmap (HTML) y ?view=roadmap (VIEW_SLUGS) resuelven al mismo r
         assert.ok(direct.includes('Ola 8'), 'render directo enriquecido');
         assert.ok(viaSlug.includes('Ola 8'), 'render por slug enriquecido');
     });
+});
+
+// #4436 CA-4 — el slice expone el `mode` del pipeline para que la tarjeta de la
+// ola activa sepa qué botón de ciclo de vida pintar. El modo se lee de
+// partial-pause.getPipelineMode(), que respeta PIPELINE_DIR_OVERRIDE (markers en
+// un temp dir aislado → test determinístico, sin depender del estado real).
+test('#4436 CA-4: roadmapSlice incluye mode="running" sin markers de pausa', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'roadmap-mode-run-'));
+    const prev = process.env.PIPELINE_DIR_OVERRIDE;
+    process.env.PIPELINE_DIR_OVERRIDE = tmp;
+    try {
+        withStubbedWaves(fakeWavesOk(), () => {
+            const slices = require('../dashboard-slices');
+            const out = slices.roadmapSlice(fakeState(), {});
+            assert.equal(out.mode, 'running');
+        });
+    } finally {
+        if (prev !== undefined) process.env.PIPELINE_DIR_OVERRIDE = prev; else delete process.env.PIPELINE_DIR_OVERRIDE;
+        try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
+    }
+});
+
+test('#4436 CA-4: roadmapSlice refleja mode="paused" cuando existe el marker .paused', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'roadmap-mode-paused-'));
+    fs.writeFileSync(path.join(tmp, '.paused'), new Date().toISOString());
+    const prev = process.env.PIPELINE_DIR_OVERRIDE;
+    process.env.PIPELINE_DIR_OVERRIDE = tmp;
+    try {
+        withStubbedWaves(fakeWavesOk(), () => {
+            const slices = require('../dashboard-slices');
+            const out = slices.roadmapSlice(fakeState(), {});
+            assert.equal(out.mode, 'paused');
+        });
+    } finally {
+        if (prev !== undefined) process.env.PIPELINE_DIR_OVERRIDE = prev; else delete process.env.PIPELINE_DIR_OVERRIDE;
+        try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
+    }
 });
 
 test('degradación: roadmapSlice no lanza si waves falla (getHorizon/loadWaves tiran)', () => {

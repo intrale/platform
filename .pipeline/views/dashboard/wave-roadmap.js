@@ -265,10 +265,45 @@ function renderActiveCard(active, extra) {
     const nameTxt = active.name != null && active.name !== '' ? String(active.name) : (num !== null ? `Ola ${num}` : 'Ola');
     const goalTxt = active.goal != null ? String(active.goal) : '';
     const issues = normalizeIssues(active.issues);
+    // #4436 CA-4 — modo del pipeline (running | paused | partial_pause) para
+    // decidir qué botón de ciclo de vida pintar y el pill de estado en vivo.
+    // Fallback defensivo a 'running' (mismo default del slice).
+    const mode = (e.mode === 'paused' || e.mode === 'partial_pause') ? e.mode : 'running';
     const archiveBtn = num !== null
         ? `<button type="button" class="wr-btn wr-btn-archive" onclick="roadmapArchive(${num}, 'activa')" title="${escapeHtmlAttr('Archivar la ola ' + num + ' (activa) a archived_waves')}" aria-label="${escapeHtmlAttr('Archivar la ola activa ' + num)}">`
             + '<svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-archive-box"></use></svg> Archivar</button>'
         : '';
+    // #4436 CA-1/CA-2 — Pausar visible con running/partial_pause; Reanudar con
+    // paused. El slot se mantiene igual (mismo contenedor .wr-card-actions) para
+    // no causar salto de layout (guideline UX). El id de ola no viaja: los
+    // primitivos operan sobre el estado global (pausar/reanudar) o la ola activa
+    // (relanzar) — el server nunca confía en un número del body.
+    const pauseBtn = (mode === 'running' || mode === 'partial_pause')
+        ? '<button type="button" class="wr-btn wr-btn-pause" onclick="roadmapPause()"'
+            + ` title="${escapeHtmlAttr('Pausar la ola activa (halt total del pipeline)')}"`
+            + ` aria-label="${escapeHtmlAttr('Pausar la ola activa' + (num !== null ? ' ' + num : ''))}">`
+            + '<svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-pause-lock"></use></svg> Pausar</button>'
+        : '';
+    const resumeBtn = (mode === 'paused')
+        ? '<button type="button" class="wr-btn wr-btn-resume" onclick="roadmapResume()"'
+            + ` title="${escapeHtmlAttr('Reanudar la ola: el pipeline vuelve a despachar')}"`
+            + ` aria-label="${escapeHtmlAttr('Reanudar la ola' + (num !== null ? ' ' + num : ''))}">`
+            + '<svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-play"></use></svg> Reanudar</button>'
+        : '';
+    // CA-3 — Relanzar despacho: visible siempre que haya ola activa.
+    const dispatchBtn = '<button type="button" class="wr-btn wr-btn-dispatch" onclick="roadmapDispatch()"'
+        + ` title="${escapeHtmlAttr('Relanzar el despacho de la ola activa (re-materializa la lista de habilitados)')}"`
+        + ` aria-label="${escapeHtmlAttr('Relanzar el despacho de la ola activa' + (num !== null ? ' ' + num : ''))}">`
+        + '<svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-restart"></use></svg> Relanzar despacho</button>';
+    // Pill de estado en vivo (CA-4). Reusa las clases in-mode-* del header
+    // (color + glyph + texto, nunca color-only, WCAG 1.4.1). El id permite que el
+    // polling cliente lo refresque sin recargar.
+    const modeMeta = mode === 'paused'
+        ? { cls: 'in-mode-paused', txt: '⏸ Pausada' }
+        : (mode === 'partial_pause'
+            ? { cls: 'in-mode-partial', txt: '⏸ Parcial' }
+            : { cls: 'in-mode-running', txt: '🟢 Corriendo' });
+    const statePill = `<span class="wr-state-pill ${modeMeta.cls}" id="wr-active-state" role="status" aria-live="polite" data-mode="${mode}">${escapeHtmlText(modeMeta.txt)}</span>`;
     const avanceHtml = renderAvanceBar(e.avance);
     const etaHtml = renderEtaPanel(e.eta);
     const blockedHtml = renderBlockedPanel(e.blocked);
@@ -279,8 +314,9 @@ function renderActiveCard(active, extra) {
           <svg class="wr-card-ic" aria-hidden="true"><use href="#ic-wave"></use></svg>
           <span class="wr-card-title">${escapeHtmlText(nameTxt)}</span>
           ${num !== null ? `<span class="wr-card-num">Ola ${num}</span>` : ''}
+          ${statePill}
         </div>
-        <div class="wr-card-actions">${archiveBtn}</div>
+        <div class="wr-card-actions">${pauseBtn}${resumeBtn}${dispatchBtn}${archiveBtn}</div>
       </header>
       ${goalTxt ? `<div class="wr-card-goal">${escapeHtmlText(goalTxt)}</div>` : ''}
       ${avanceHtml}
@@ -401,6 +437,17 @@ function roadmapStyle() {
 .wr-btn-ic{width:14px;height:14px}
 .wr-btn-archive:hover{color:var(--text-primary,#e6edf3);border-color:var(--purple,#BC8CFF)}
 .wr-btn:disabled{opacity:.5;cursor:not-allowed}
+.wr-btn[hidden]{display:none}
+/* #4436 — controles de ciclo de vida de la ola activa (hover reusando tokens). */
+.wr-btn-pause:hover{color:var(--text-primary,#e6edf3);border-color:var(--danger,#F85149)}
+.wr-btn-resume:hover{color:var(--text-primary,#e6edf3);border-color:var(--in-ok,#3FB950)}
+.wr-btn-dispatch:hover{color:var(--text-primary,#e6edf3);border-color:var(--teal,#34D9E0)}
+/* #4436 — pill de estado en vivo dentro de la card activa (CA-4). Reusa el
+   lenguaje in-mode-* del header (color+glyph+texto, nunca color-only). */
+.wr-state-pill{font-size:10.5px;font-weight:800;letter-spacing:.2px;padding:1px 8px;border-radius:999px;border:1px solid transparent;white-space:nowrap}
+.in-mode-running{color:var(--in-ok,#3FB950);border-color:var(--in-ok,#3FB950);background:var(--in-ok-soft,rgba(63,185,80,.12))}
+.in-mode-paused{color:var(--in-bad,#F85149);border-color:var(--in-bad,#F85149);background:var(--in-bad-soft,rgba(248,81,73,.12))}
+.in-mode-partial{color:var(--in-warn,#D29922);border-color:var(--in-warn,#D29922);background:var(--in-warn-soft,rgba(210,153,34,.12))}
 .wr-empty-state{display:flex;flex-direction:column;align-items:center;gap:6px;padding:28px;text-align:center;border:1px dashed var(--border,rgba(255,255,255,.12));border-radius:12px;background:var(--surface-0,#0d1117)}
 .wr-empty-ic{width:26px;height:26px;color:var(--text-dim,#8B949E)}
 .wr-empty-title{font-size:14px;font-weight:800;color:var(--text-primary,#e6edf3)}
@@ -493,7 +540,7 @@ function roadmapStyle() {
 function renderRoadmapSsr(opts) {
     const rm = opts && opts.roadmap && typeof opts.roadmap === 'object' ? opts.roadmap : null;
 
-    let active, planned, archived, blocked, eta, avance;
+    let active, planned, archived, blocked, eta, avance, mode;
     if (rm) {
         active = rm.activeWave || null;
         planned = Array.isArray(rm.plannedWaves) ? rm.plannedWaves : [];
@@ -501,6 +548,8 @@ function renderRoadmapSsr(opts) {
         blocked = Array.isArray(rm.blocked) ? rm.blocked : [];
         eta = rm.eta || null;
         avance = rm.avance || null;
+        // #4436 CA-4 — modo del pipeline para los controles de ciclo de vida.
+        mode = typeof rm.mode === 'string' ? rm.mode : 'running';
     } else {
         const state = readWavesState(opts);
         active = state && state.active_wave ? state.active_wave : null;
@@ -509,6 +558,9 @@ function renderRoadmapSsr(opts) {
         blocked = [];
         eta = null;
         avance = null;
+        // Degradado (#4378, sin slice): asumimos 'running' — la vista sigue siendo
+        // funcional y el pill/botón se corrige al primer polling del cliente.
+        mode = 'running';
     }
 
     // CA-7 — issues bloqueados marcados en los chips de la ola activa.
@@ -516,7 +568,7 @@ function renderRoadmapSsr(opts) {
         .map((b) => safeIssueNumber(b && b.issue))
         .filter((n) => n !== null));
 
-    const activeHtml = renderActiveCard(active, { avance, eta, blocked, blockedSet });
+    const activeHtml = renderActiveCard(active, { avance, eta, blocked, blockedSet, mode });
 
     const plannedHtml = planned.length
         ? planned.map((w, i) => renderPlannedCard(w, i + 1)).join('')
@@ -738,12 +790,121 @@ async function roadmapDisassociate(waveNum, issueNum){
     _roadmapSetStatus(statusId, 'Error de red: ' + e.message, 'err');
   }
 }
+// #4436 — Controles de ciclo de vida de la ola activa. Cablean a los endpoints
+// mutantes (mismo gate loopback+same-origin que /dashboard/wave/archive) usando
+// nhCsrfHeaders() + confirmación previa. Las destructivas (Pausar, Relanzar)
+// piden inConfirm({danger:true}); Reanudar es confirmación simple (CA-5). En
+// éxito recargan para re-render server-side del pill y los botones según el modo.
+async function _roadmapLifecyclePost(url, okReload){
+  var r = await fetch(url, {
+    method: 'POST',
+    headers: Object.assign({ 'Content-Type': 'application/json' }, nhCsrfHeaders()),
+    body: '{}'
+  });
+  var j = await r.json().catch(function(){ return {}; });
+  return { r: r, j: j };
+}
+async function roadmapPause(){
+  var ok = await inConfirm({
+    title: 'Pausar la ola activa',
+    message: '¿Pausar la ola activa? Se detiene todo el despacho del pipeline (halt total). Podés reanudar cuando quieras.',
+    confirmLabel: 'Pausar',
+    danger: true
+  });
+  if(!ok) return;
+  var btns = document.querySelectorAll('.wr-card-active .wr-btn');
+  btns.forEach(function(b){ b.disabled = true; });
+  try {
+    var res = await _roadmapLifecyclePost('/dashboard/wave/pause');
+    if(res.r.ok && res.j.ok){ location.reload(); return; }
+    alert('No pude pausar la ola (' + ((res.j && res.j.error) ? res.j.error : ('HTTP ' + res.r.status)) + ').');
+    btns.forEach(function(b){ b.disabled = false; });
+  } catch(e){
+    alert('Error pausando la ola: ' + e.message);
+    btns.forEach(function(b){ b.disabled = false; });
+  }
+}
+async function roadmapResume(){
+  var ok = await inConfirm({
+    title: 'Reanudar la ola',
+    message: '¿Reanudar la ola? El pipeline vuelve a despachar.',
+    confirmLabel: 'Reanudar',
+    danger: false
+  });
+  if(!ok) return;
+  var btns = document.querySelectorAll('.wr-card-active .wr-btn');
+  btns.forEach(function(b){ b.disabled = true; });
+  try {
+    var res = await _roadmapLifecyclePost('/dashboard/wave/resume');
+    if(res.r.ok && res.j.ok){ location.reload(); return; }
+    if(res.j && res.j.error === 'gate_rejected'){
+      alert('Reanudar fue rechazado por el gate de allowlist. Revisá el audit de partial-pause.');
+    } else {
+      alert('No pude reanudar la ola (' + ((res.j && res.j.error) ? res.j.error : ('HTTP ' + res.r.status)) + ').');
+    }
+    btns.forEach(function(b){ b.disabled = false; });
+  } catch(e){
+    alert('Error reanudando la ola: ' + e.message);
+    btns.forEach(function(b){ b.disabled = false; });
+  }
+}
+async function roadmapDispatch(){
+  var ok = await inConfirm({
+    title: 'Relanzar despacho',
+    message: '¿Relanzar el despacho de la ola activa? Se re-materializa la lista de habilitados y se re-kickea el despacho.',
+    confirmLabel: 'Relanzar',
+    danger: true
+  });
+  if(!ok) return;
+  var btns = document.querySelectorAll('.wr-card-active .wr-btn');
+  btns.forEach(function(b){ b.disabled = true; });
+  try {
+    var res = await _roadmapLifecyclePost('/dashboard/wave/dispatch');
+    if(res.r.ok && res.j.ok){ location.reload(); return; }
+    if(res.j && res.j.error === 'no_active_wave'){
+      alert('No hay ola activa para relanzar.');
+    } else {
+      alert('No pude relanzar el despacho (' + ((res.j && res.j.error) ? res.j.error : ('HTTP ' + res.r.status)) + ').');
+    }
+    btns.forEach(function(b){ b.disabled = false; });
+  } catch(e){
+    alert('Error relanzando el despacho: ' + e.message);
+    btns.forEach(function(b){ b.disabled = false; });
+  }
+}
+// CA-4 — refresco en vivo del pill de estado + visibilidad de botones de la
+// tarjeta activa, sin recargar. Reusa /api/dash/header (ya expone el modo), el
+// mismo origen que tickHeader. Cambia el pill y muestra/oculta Pausar-Reanudar
+// cuando el modo cambia por fuera (ej. una pausa disparada desde la consola).
+async function roadmapTickState(){
+  var pill = document.getElementById('wr-active-state');
+  if(!pill) return;
+  var d = await fetchJson('/api/dash/header');
+  if(!d || typeof d.mode !== 'string') return;
+  var mode = (d.mode === 'paused' || d.mode === 'partial_pause') ? d.mode : 'running';
+  if(pill.getAttribute('data-mode') === mode) return;
+  pill.setAttribute('data-mode', mode);
+  pill.classList.remove('in-mode-running','in-mode-paused','in-mode-partial');
+  if(mode === 'paused'){ pill.classList.add('in-mode-paused'); pill.textContent = '⏸ Pausada'; }
+  else if(mode === 'partial_pause'){ pill.classList.add('in-mode-partial'); pill.textContent = '⏸ Parcial'; }
+  else { pill.classList.add('in-mode-running'); pill.textContent = '🟢 Corriendo'; }
+  var pauseBtn = document.querySelector('.wr-card-active .wr-btn-pause');
+  var resumeBtn = document.querySelector('.wr-card-active .wr-btn-resume');
+  var showResume = (mode === 'paused');
+  if(pauseBtn) pauseBtn.hidden = showResume;
+  if(resumeBtn) resumeBtn.hidden = !showResume;
+}
 window.roadmapToggleArchived = roadmapToggleArchived;
 window.roadmapArchive = roadmapArchive;
 window.roadmapNewWaveToggle = roadmapNewWaveToggle;
 window.roadmapCreateWave = roadmapCreateWave;
 window.roadmapAssociate = roadmapAssociate;
 window.roadmapDisassociate = roadmapDisassociate;
+window.roadmapPause = roadmapPause;
+window.roadmapResume = roadmapResume;
+window.roadmapDispatch = roadmapDispatch;
+roadmapTickState();
+setInterval(function(){ roadmapTickState().catch(function(){}); }, 5000);
 `;
 }
 

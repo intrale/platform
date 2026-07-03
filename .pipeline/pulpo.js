@@ -13457,47 +13457,16 @@ function checkDesyncFlag() {
 // partial-pause (authorizedBy:'wave-promote').
 // =============================================================================
 function realignAllowlistToActiveWave(desync, opts = {}) {
-  const isClosed = typeof opts.isClosed === 'function' ? opts.isClosed : null;
-  const waves = require('./lib/waves');
-  const recursivePromote = require('./lib/allowlist-recursive-promote');
-
-  const active = waves.getActiveWave();
-  if (!active || !Array.isArray(active.issues)) {
-    return { ok: false, reason: 'no_active_wave' };
-  }
-
-  // 1. Semilla = issues abiertos (no completados) de la ola activa, enteros
-  //    positivos (SEC-3).
-  const seed = active.issues
-    .filter((i) => i && i.status !== 'completed')
-    .map((i) => Number(i.number))
-    .filter((n) => Number.isInteger(n) && n > 0);
-
-  // 2. Expandir hijos/deps recursivos (walk puro, sin TTL) usando el grafo
-  //    dependencies[] de waves.json (filesystem propio). Excluye cerrados con
-  //    fail-safe: indeterminado NO se remueve (SEC-4).
-  const getDeps = (n) => { try { return waves.getBlockingIssues(n); } catch { return []; } };
-  const expanded = recursivePromote.expandRecursiveOpenIssues({ seedIssues: seed, isClosed, getDeps });
-
-  // Fail-safe: NUNCA vaciar la allowlist por un realineo automático (podría
-  // congelar el pipeline). Set vacío → no tocar, dejar traza para el humano.
-  if (expanded.length === 0) {
-    return { ok: false, reason: 'empty_expansion' };
-  }
-
-  // 3. Mutación SOLO por el gate auditado (SEC-2). El authorizedBy 'wave-promote'
-  //    habilita los removals de los cerrados/ajenos.
-  const res = partialPause.setPartialPause(expanded, {
-    source: 'wave-promote:realign',
+  // #4436 — el algoritmo de realineación se extrajo a `lib/wave-dispatch.js`
+  // para reusarlo desde el dashboard (relanzar despacho de la ola activa) sin
+  // duplicar lógica. El Pulpo delega manteniendo su `authorizedBy:'wave-promote'`
+  // y el `isClosed` inyectado (title-cache, sin GitHub en el hot path).
+  return require('./lib/wave-dispatch').realignActiveWaveDispatch({
+    isClosed: typeof opts.isClosed === 'function' ? opts.isClosed : null,
+    desync,
     authorizedBy: 'wave-promote',
-    justification: `Realineación reductiva a ola ${active.number} (#4350). ` +
-      `extras_removidos=${JSON.stringify(desync && desync.added || [])} ` +
-      `faltantes_repuestos=${JSON.stringify(desync && desync.removed || [])}`,
+    source: 'wave-promote:realign',
   });
-  if (res && res.rejected) {
-    return { ok: false, reason: 'gate_rejected', msg: res.msg };
-  }
-  return { ok: true, allowlist: expanded };
 }
 
 // =============================================================================
