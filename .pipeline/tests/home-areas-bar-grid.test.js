@@ -42,7 +42,7 @@ function extractNavBlock(html) {
 }
 
 // #4189/#4195 — La nav dejó de ser un grid de N columnas (un slot por tab) y
-// pasó a ser CURADA: 5 tabs primarios + popover «⋯ Más». Layout flex elástico
+// pasó a ser CURADA: tabs primarios + popover «⋯ Más». Layout flex elástico
 // con wrap; el grid de columnas fijas ya no modela la barra (y rompía el anclaje
 // del popover). Estos tests validan el nuevo contrato MIZPÁ sin perder CA-5
 // (touch target ≥44px) ni la completitud del catálogo.
@@ -59,7 +59,7 @@ test('v3-nav usa layout flex elástico MIZPÁ (CA-1 #4195: nav curada + popover,
     );
 });
 
-test('la nav renderiza TODAS las tabs del catálogo (5 en la barra + resto en «⋯ Más»)', () => {
+test('la nav renderiza TODAS las tabs del catálogo (4 en la barra + resto en «⋯ Más»)', () => {
     const html = renderForTest();
     const tabs = (html.match(/class="v3-tab(?:\s+v3-tab-active)?"/g) || []).length;
     assert.ok(tabs > 0, 'No se renderizaron .v3-tab en el home');
@@ -72,8 +72,10 @@ test('la nav renderiza TODAS las tabs del catálogo (5 en la barra + resto en «
     );
     // El popover «⋯ Más» debe existir y agrupar las tabs secundarias.
     assert.match(html, /class="v3-more/, 'falta el botón/popover «⋯ Más»');
+    // #4454 — la barra curada fijó el orden Inicio·Pipeline·Roadmap·Providers
+    // (4 primarias); Issues/Bloqueados/Costos pasaron al popover «⋯ Más».
     const primaries = NAV_TABS.filter((t) => t.primary).length;
-    assert.equal(primaries, 5, 'la nav curada MIZPÁ tiene exactamente 5 tabs primarios');
+    assert.equal(primaries, 4, 'la nav curada MIZPÁ tiene exactamente 4 tabs primarios');
 });
 
 test('cada .v3-tab conserva su badge (cuando aplica), icon y label (CA-4 sin regresión visual)', () => {
