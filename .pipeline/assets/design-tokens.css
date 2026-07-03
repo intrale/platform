@@ -244,6 +244,20 @@
   --pulpo-resumed-bg:          var(--success-bg);
   --pulpo-resumed-glow:        var(--shadow-glow-ok);
 
+  /* Restart-pendiente — #4460. Hay cambios del modelo operativo entregados a
+   * `main` que el runtime vivo aun NO corre (drift bootSHA..origin/main). Es un
+   * llamado a la accion NEUTRO, no un error: reutiliza la familia --info (azul
+   * accionable) para no inflar la paleta ni gritar como --danger/--warning.
+   * SIEMPRE acompanado de icono (ic-restart-operativo) + texto (dual-encoding
+   * WCAG); el color por si solo nunca comunica el estado.
+   * Contraste sobre surface-0: --info (#58A6FF) = 6.6:1 AA Normal.
+   * Estado "desconocido" (marker ausente/corrupto, CA-8) NO usa este token:
+   *   usa --warning + ic-health-warn para no fingir "todo al dia". */
+  --restart-pending:           var(--info);
+  --restart-pending-dim:       var(--info-dim);
+  --restart-pending-bg:        var(--info-bg);
+  --restart-pending-fg:        #CFE3FF;   /* texto sobre restart-pending-bg, ~12:1 AAA */
+
   /* ---------------------------------------------------------------------------
    * 3.f CHAT OPERADOR-AGENTE (#3605 — log viewer chat panel)
    * Tokens dedicados al sistema de chat acoplado al log viewer. Reusan la

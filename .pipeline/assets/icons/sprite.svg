@@ -1544,4 +1544,31 @@
           stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
   </symbol>
 
+  <!-- =========================================================================
+       #4460 (Ola 8.x) — Reiniciar modelo operativo (drift entregado sin aplicar)
+       -----------------------------------------------------------------------
+       ic-restart-operativo: flecha circular de reinicio (comparte la metafora
+       de ic-restart) PERO con un cubo/paquete en el nucleo = "el modelo
+       operativo (pipeline) que se re-aplica". Distinta a proposito de:
+         - ic-restart      → anillo vacio, "restart por nodo" en Ops (#3960).
+         - ic-fase-build   → cubo isometrico, "build" del producto.
+       Aca el anillo ENVUELVE al cubo: reiniciar para aplicar lo entregado.
+       Se tinta con var(--info) (accionable neutro), nunca danger: es una
+       accion controlada, no un error. Color + icono + texto (nunca solo
+       color) — dual-encoding WCAG. -->
+  <symbol id="ic-restart-operativo" viewBox="0 0 24 24">
+    <!-- Anillo de reinicio (flecha circular abierta arriba-derecha) -->
+    <path d="M18.6 8.2 A7 7 0 1 0 19 12" fill="none" stroke="currentColor"
+          stroke-width="1.75" stroke-linecap="round"/>
+    <!-- Punta de flecha del reinicio (apunta al anillo entrante) -->
+    <path d="M19.2 4.4 L19.2 8.6 L15 8.2" fill="none" stroke="currentColor"
+          stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- Nucleo: cubo/paquete = modelo operativo re-aplicado -->
+    <path d="M12 8.7 L15 10.35 L12 12 L9 10.35 Z" fill="none" stroke="currentColor"
+          stroke-width="1.35" stroke-linejoin="round"/>
+    <path d="M9 10.35 V13.65 L12 15.3 L15 13.65 V10.35" fill="none" stroke="currentColor"
+          stroke-width="1.35" stroke-linejoin="round"/>
+    <path d="M12 12 V15.3" stroke="currentColor" stroke-width="1.15"/>
+  </symbol>
+
 </svg>

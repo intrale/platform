@@ -1,0 +1,204 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 41 — "Reiniciar modelo operativo" (#4460, Ola 8.x)
+  =============================================================================
+  Senal + accion condicional en el encabezado de la ola: cuando hay cambios del
+  modelo operativo (`.pipeline/**`, `.claude/hooks/**`, dashboard/scripts Node)
+  entregados a `main` que el runtime vivo aun NO corre (drift bootSHA..origin/main),
+  el operador ve un BANNER contextual con los motivos y un boton de reinicio
+  selectivo (dashboard + pulpo via ops-restart-handler, nunca restart.js killAll).
+
+  DECISION DE UBICACION (pedida por /po y el Arquitecto): BANNER CONTEXTUAL sobre
+  el area de issues de la ola, NO un icono suelto en el encabezado. Justificacion
+  en la narrativa (discoverability + comunicar "por que" sin depender de hover).
+
+  Mapa de Criterios de Aceptacion (PO) que cubre este mockup:
+    CA-1 Visibilidad condicional (positivo): >=1 issue operativo sin aplicar   -> Panel A (banner)
+    CA-2 Visibilidad condicional (negativo): sin drift -> banner NO se emite   -> Panel D (ausente)
+    CA-3 Discriminacion operativo vs producto (deny-by-default)                -> nota + fila "producto ignorado"
+    CA-4 Motivos declarados (issue# + componente + motivo corto, sin paths/SHA)-> lista del banner + modal
+    CA-5 Confirmacion previa mostrando el detalle                              -> Panel B (modal)
+    CA-6 Reinicio seguro selectivo (dashboard+pulpo), nunca killAll            -> texto del modal
+    CA-7 Desaparicion de la senal tras restart (siguiente poll)               -> nota Panel D
+    CA-8 Estado desconocido (marker ausente/corrupto): NO afirmar "al dia"     -> Panel C (desconocido)
+    CA-9 Seguridad (7 REQ-SEC): CSRF/escape/no-filtrado                        -> nota seguridad footer
+
+  Convenciones (identicas al resto del sistema visual V3):
+    - Paleta: design-tokens.css. Estado usa el token restart-pending (alias de
+      info, azul accionable neutro), nunca danger (no es un error, es accion
+      controlada). Estado "desconocido" usa warning + ic-health-warn (no finge "al dia").
+    - Iconografia: sprite.svg via <use href="#ic-*"/>. Aca inline como <symbol id="m-*"/>
+      para preview standalone. Icono nuevo: ic-restart-operativo (anillo + cubo nucleo).
+    - Anti-info-solo-por-color: cada estado lleva icono + texto, no solo color (WCAG).
+    - Boton icon+label (NUNCA icon-only): los motivos son esenciales, no van
+      escondidos tras hover/title (accesibilidad + touch).
+    - WCAG AA: pares texto/fondo verificados >= 4.5:1 (tabla en la narrativa).
+
+  Datos del mockup: ilustrativos (issues #4433, #4300 operativos; #4462 producto
+  ignorado). Los numeros/motivos reales salen del slice /api/dash/restart-pendiente.
+
+  Tamano: 1200x940.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="940" viewBox="0 0 1200 940"
+     font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, Roboto, sans-serif">
+
+  <defs>
+    <!-- Iconos inline (espejo de sprite.svg) para preview standalone -->
+    <symbol id="m-restart-operativo" viewBox="0 0 24 24">
+      <path d="M18.6 8.2 A7 7 0 1 0 19 12" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <path d="M19.2 4.4 L19.2 8.6 L15 8.2" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M12 8.7 L15 10.35 L12 12 L9 10.35 Z" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"/>
+      <path d="M9 10.35 V13.65 L12 15.3 L15 13.65 V10.35" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"/>
+      <path d="M12 12 V15.3" stroke="currentColor" stroke-width="1.15"/>
+    </symbol>
+    <symbol id="m-warn" viewBox="0 0 24 24">
+      <path d="M12 3 L22 20 H2 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <path d="M12 9.5 V14" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <circle cx="12" cy="17" r="0.9" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-issue" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.7"/>
+      <circle cx="12" cy="12" r="2.4" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-refresh" viewBox="0 0 24 24">
+      <path d="M4 12 A8 8 0 1 1 6.5 17.8" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <path d="M4 7 V12 H9" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-close" viewBox="0 0 24 24">
+      <path d="M6 6 L18 18 M18 6 L6 18" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-check" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.75"/>
+      <path d="M8 12.5 L11 15.5 L16 9.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+  </defs>
+
+  <!-- Fondo -->
+  <rect width="1200" height="940" fill="#0D1117"/>
+
+  <!-- Titulo del mockup -->
+  <text x="40" y="46" fill="#E6EDF3" font-size="22" font-weight="700">#4460 — Reiniciar modelo operativo · estados del banner</text>
+  <text x="40" y="70" fill="#8B949E" font-size="13">Banner contextual sobre el area de issues de la ola. Icono ic-restart-operativo · token --restart-pending (alias --info).</text>
+
+  <!-- ================================================================= -->
+  <!-- PANEL A — Banner VISIBLE (CA-1 / CA-4)                             -->
+  <!-- ================================================================= -->
+  <text x="40" y="112" fill="#58A6FF" font-size="13" font-weight="600">A · Hay cambios entregados sin aplicar (banner visible)</text>
+
+  <!-- Encabezado de la ola (contexto) -->
+  <rect x="40" y="126" width="1120" height="44" rx="8" fill="#161B22" stroke="#30363D"/>
+  <text x="58" y="153" fill="#E6EDF3" font-size="15" font-weight="600">Ola 8.x · Modelo operativo</text>
+  <rect x="270" y="137" width="110" height="22" rx="11" fill="rgba(63,185,80,0.14)"/>
+  <text x="285" y="152" fill="#3FB950" font-size="11" font-weight="600">ACTIVA · 71%</text>
+
+  <!-- Banner: fondo info-bg, borde izquierdo info, icono + texto + lista + boton -->
+  <rect x="40" y="178" width="1120" height="118" rx="10" fill="rgba(88,166,255,0.14)" stroke="#1F6FEB"/>
+  <rect x="40" y="178" width="4" height="118" rx="2" fill="#58A6FF"/>
+  <svg x="60" y="196" width="26" height="26" viewBox="0 0 24 24" color="#58A6FF" role="img" aria-label="reiniciar modelo operativo">
+    <use href="#m-restart-operativo"/>
+  </svg>
+  <text x="98" y="207" fill="#CFE3FF" font-size="15" font-weight="700">2 cambios del modelo operativo entregados y sin aplicar</text>
+  <text x="98" y="228" fill="#B1BAC4" font-size="12.5">El runtime vivo corre una version anterior. Reinicia dashboard + pulpo para aplicarlos.</text>
+
+  <!-- Lista de motivos (issue# + componente + motivo corto) -->
+  <g font-size="12">
+    <svg x="98" y="244" width="15" height="15" viewBox="0 0 24 24" color="#8B949E"><use href="#m-issue"/></svg>
+    <text x="120" y="256" fill="#E6EDF3" font-family="'SF Mono',Consolas,monospace" font-weight="600">#4433</text>
+    <rect x="168" y="245" width="118" height="17" rx="8.5" fill="rgba(88,166,255,0.14)"/>
+    <text x="178" y="257" fill="#58A6FF" font-size="10.5" font-weight="600">.pipeline/lib</text>
+    <text x="298" y="256" fill="#B1BAC4">reconciler de estado del pulpo</text>
+
+    <svg x="98" y="268" width="15" height="15" viewBox="0 0 24 24" color="#8B949E"><use href="#m-issue"/></svg>
+    <text x="120" y="280" fill="#E6EDF3" font-family="'SF Mono',Consolas,monospace" font-weight="600">#4300</text>
+    <rect x="168" y="269" width="118" height="17" rx="8.5" fill="rgba(88,166,255,0.14)"/>
+    <text x="178" y="281" fill="#58A6FF" font-size="10.5" font-weight="600">.claude/hooks</text>
+    <text x="298" y="280" fill="#B1BAC4">hook de concurrencia de agentes</text>
+  </g>
+
+  <!-- Boton de accion (icon + label, focable) -->
+  <rect x="946" y="216" width="196" height="44" rx="8" fill="#1F6FEB" stroke="#58A6FF"/>
+  <svg x="962" y="226" width="24" height="24" viewBox="0 0 24 24" color="#E6EDF3"><use href="#m-restart-operativo"/></svg>
+  <text x="994" y="243" fill="#FFFFFF" font-size="13.5" font-weight="600">Reiniciar modelo</text>
+  <text x="994" y="253" fill="#CFE3FF" font-size="9.5">selectivo · sin matar agentes</text>
+
+  <!-- Nota CA-3 discriminacion -->
+  <text x="40" y="322" fill="#6E7681" font-size="11">CA-3 · Un commit que solo toca producto (p.ej. #4462 → app/**) NO dispara el banner. Path desconocido = producto (deny-by-default).</text>
+
+  <!-- ================================================================= -->
+  <!-- PANEL B — Modal de CONFIRMACION (CA-5 / CA-6)                      -->
+  <!-- ================================================================= -->
+  <text x="40" y="372" fill="#58A6FF" font-size="13" font-weight="600">B · Confirmacion previa (click en el boton)</text>
+
+  <!-- Backdrop -->
+  <rect x="40" y="386" width="560" height="300" rx="10" fill="#0A0E15" opacity="0.85"/>
+  <!-- Modal -->
+  <rect x="96" y="410" width="448" height="252" rx="12" fill="#252B33" stroke="#484F58"/>
+  <svg x="116" y="428" width="24" height="24" viewBox="0 0 24 24" color="#58A6FF"><use href="#m-restart-operativo"/></svg>
+  <text x="148" y="445" fill="#E6EDF3" font-size="15" font-weight="700">Reiniciar el modelo operativo</text>
+  <svg x="508" y="428" width="20" height="20" viewBox="0 0 24 24" color="#8B949E"><use href="#m-close"/></svg>
+
+  <text x="116" y="474" fill="#B1BAC4" font-size="12.5">Se reiniciaran de forma selectiva:</text>
+  <g font-size="12">
+    <svg x="116" y="484" width="15" height="15" viewBox="0 0 24 24" color="#3FB950"><use href="#m-check"/></svg>
+    <text x="138" y="496" fill="#E6EDF3">dashboard</text>
+    <svg x="230" y="484" width="15" height="15" viewBox="0 0 24 24" color="#3FB950"><use href="#m-check"/></svg>
+    <text x="252" y="496" fill="#E6EDF3">pulpo</text>
+  </g>
+  <text x="116" y="522" fill="#8B949E" font-size="11.5">No se tocan agentes vivos ni trabajo in-flight (ops-restart-handler, no restart.js).</text>
+
+  <!-- Detalle de que se aplica -->
+  <rect x="116" y="534" width="408" height="58" rx="8" fill="#161B22" stroke="#30363D"/>
+  <text x="128" y="553" fill="#B1BAC4" font-size="11.5">Se aplican los cambios de:</text>
+  <text x="128" y="572" fill="#E6EDF3" font-size="11.5" font-family="'SF Mono',Consolas,monospace">#4433 · .pipeline/lib   #4300 · .claude/hooks</text>
+  <text x="128" y="586" fill="#6E7681" font-size="10">La senal desaparece sola cuando el runtime corra la version entregada (CA-7).</text>
+
+  <!-- Botones -->
+  <rect x="330" y="612" width="92" height="34" rx="7" fill="none" stroke="#484F58"/>
+  <text x="376" y="634" fill="#B1BAC4" font-size="12.5" text-anchor="middle">Cancelar</text>
+  <rect x="432" y="612" width="92" height="34" rx="7" fill="#1F6FEB" stroke="#58A6FF"/>
+  <text x="478" y="634" fill="#FFFFFF" font-size="12.5" font-weight="600" text-anchor="middle">Reiniciar</text>
+
+  <!-- ================================================================= -->
+  <!-- PANEL C — Estado DESCONOCIDO (CA-8)                                -->
+  <!-- ================================================================= -->
+  <text x="632" y="372" fill="#D29922" font-size="13" font-weight="600">C · Estado desconocido (marker ausente/corrupto)</text>
+
+  <rect x="632" y="386" width="528" height="120" rx="10" fill="rgba(210,153,34,0.14)" stroke="#9E6A03"/>
+  <rect x="632" y="386" width="4" height="120" rx="2" fill="#D29922"/>
+  <svg x="652" y="404" width="26" height="26" viewBox="0 0 24 24" color="#D29922" role="img" aria-label="estado del runtime desconocido">
+    <use href="#m-warn"/>
+  </svg>
+  <text x="690" y="415" fill="#F0C674" font-size="14.5" font-weight="700">No se puede determinar si el runtime esta al dia</text>
+  <text x="690" y="437" fill="#B1BAC4" font-size="12">runtime-boot.json ausente o ilegible. NO se afirma "sin pendientes"</text>
+  <text x="690" y="454" fill="#B1BAC4" font-size="12">ni se ofrece reinicio a ciegas. Refresca el estado.</text>
+  <rect x="690" y="466" width="150" height="32" rx="7" fill="none" stroke="#9E6A03"/>
+  <svg x="702" y="474" width="16" height="16" viewBox="0 0 24 24" color="#D29922"><use href="#m-refresh"/></svg>
+  <text x="726" y="486" fill="#F0C674" font-size="12" font-weight="600">Refrescar estado</text>
+
+  <!-- ================================================================= -->
+  <!-- PANEL D — Banner AUSENTE (CA-2 / CA-7)                             -->
+  <!-- ================================================================= -->
+  <text x="632" y="536" fill="#3FB950" font-size="13" font-weight="600">D · Sin cambios pendientes (banner NO se renderiza)</text>
+
+  <rect x="632" y="550" width="528" height="112" rx="10" fill="#161B22" stroke="#30363D" stroke-dasharray="5 4"/>
+  <text x="656" y="596" fill="#6E7681" font-size="13">El area del banner queda vacia — el elemento NO se emite al DOM</text>
+  <text x="656" y="616" fill="#6E7681" font-size="13">(no "disabled", no oculto por CSS). Reaparece solo si vuelve a haber drift.</text>
+  <svg x="1096" y="566" width="22" height="22" viewBox="0 0 24 24" color="#3FB950"><use href="#m-check"/></svg>
+  <text x="656" y="640" fill="#8B949E" font-size="11">Tras un reinicio exitoso, el bootSHA avanza y el rango operativo queda vacio (CA-7): el banner desaparece en el siguiente poll.</text>
+
+  <!-- ================================================================= -->
+  <!-- Footer accesibilidad + seguridad                                  -->
+  <!-- ================================================================= -->
+  <line x1="40" y1="712" x2="1160" y2="712" stroke="#21262D"/>
+  <text x="40" y="738" fill="#8B949E" font-size="12" font-weight="600">Accesibilidad</text>
+  <text x="40" y="758" fill="#6E7681" font-size="11">· Boton icon+label (nunca icon-only): los motivos son esenciales, no van escondidos tras hover/title.</text>
+  <text x="40" y="775" fill="#6E7681" font-size="11">· role="img" + aria-label de ESTADO en cada icono; banner con role="region" aria-label="Cambios del modelo operativo sin aplicar".</text>
+  <text x="40" y="792" fill="#6E7681" font-size="11">· Modal: focus trap, foco inicial en "Cancelar" (accion segura), Escape cierra y devuelve foco al boton disparador.</text>
+  <text x="40" y="809" fill="#6E7681" font-size="11">· Dual-encoding: cada estado = color + icono + texto. Contraste AA verificado (info 6.6:1, warning 7.0:1, texto >= 9:1).</text>
+  <text x="40" y="826" fill="#6E7681" font-size="11">· prefers-reduced-motion: sin pulso/animacion en el banner. prefers-contrast: bordes reforzados (heredado de tokens).</text>
+
+  <text x="40" y="862" fill="#8B949E" font-size="12" font-weight="600">Seguridad (CA-9 · 7 REQ-SEC)</text>
+  <text x="40" y="882" fill="#6E7681" font-size="11">· Motivos escapados con escapeHtml client-side + saneados server-side: solo issue# + label de componente + motivo corto.</text>
+  <text x="40" y="899" fill="#6E7681" font-size="11">· Sin paths absolutos ni SHAs completos en el slice (REQ-SEC-4460-6). Restart tras gate CSRF HMAC + loopback + Origin/Referer (REQ-SEC-4460-1).</text>
+  <text x="40" y="916" fill="#6E7681" font-size="11">· Reinicio SELECTIVO (dashboard+pulpo via ops-restart-handler), nunca restart.js killAll. Todo disparo al audit JSONL (REQ-SEC-4460-4/7).</text>
+</svg>

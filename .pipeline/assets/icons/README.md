@@ -79,6 +79,17 @@ cada icono se referencia via `<svg><use href="#ic-*" /></svg>`:
 | `ic-snooze`           | Campana + Z             | Boton/menu de snooze de alerta (1h/4h/24h)                    |
 | `ic-deterministic`    | Engranaje               | Marca skills que corren durante modo descanso (sin LLM)       |
 
+### Operaciones del pipeline (Ops / restart)
+
+| ID                     | Nombre                       | Uso                                                                    |
+|------------------------|------------------------------|------------------------------------------------------------------------|
+| `ic-restart`           | Flecha circular (anillo)     | "Restart por nodo" en la topologia Ops (#3960) — relanzar un proceso   |
+| `ic-restart-operativo` | Flecha circular + cubo nucleo| Banner "Reiniciar modelo operativo" (#4460) — aplicar cambios entregados y sin correr en el runtime vivo. Se tinta con `var(--restart-pending)` (alias de `--info`). |
+
+> `ic-restart` (anillo vacio) y `ic-restart-operativo` (anillo envolviendo un
+> cubo) son deliberadamente distintos: el primero relanza **un** servicio; el
+> segundo comunica "re-aplicar el modelo operativo entregado". No intercambiar.
+
 ## Convenciones de diseno
 
 - **ViewBox**: 24x24 uniforme.
