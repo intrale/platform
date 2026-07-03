@@ -15341,6 +15341,29 @@ if (process.env.PULPO_SKIP_AGENT_MODELS_VALIDATE !== '1') {
       // actual donde todos los skills usan launcher=claude.
       checkEnv: true,
     });
+
+    // #4407 (D1) — Validación de cadenas multi-provider. Después de que el
+    // config pasó validateOrExit (schema + cross-refs base), recorrer las
+    // skills.* resolviendo primary + fallbacks y abortar si alguna cadena
+    // está rota (fallback→provider inexistente, primario ausente). Reusa
+    // validateCrossReferences/resolveSkillChain vía el módulo dedicado; el
+    // config se recarga con parseJsonOrJsonc (JSONC-aware) porque
+    // validateOrExit no expone el config parseado — es un readFileSync extra
+    // read-only al boot. CA-6: los mensajes sólo mencionan skill/provider/
+    // path/fix, nunca valores de credentials_env.
+    const { validateChains } = require('./lib/multi-provider/validate-chains');
+    const chainsConfig = agentModelsValidate.parseJsonOrJsonc(
+      fs.readFileSync(agentModelsValidate.CANONICAL_JSON_PATH, 'utf8'),
+      agentModelsValidate.CANONICAL_JSON_PATH,
+    );
+    const chainsResult = validateChains(chainsConfig);
+    if (!chainsResult.ok) {
+      for (const e of chainsResult.errors) {
+        process.stderr.write(`[validate-chains] ${e.path}: ${e.message} — fix: ${e.fix}\n`);
+      }
+      process.exit(2); // fail-fast, coherente con validateOrExit
+    }
+    process.stderr.write(`[validate-chains] Cadenas validadas: ${chainsResult.skillCount} skills — ${new Date().toISOString()}\n`);
   } catch (err) {
     // Si el módulo de validación mismo crasha (no debería: ajv/loadSchema están
     // todos try/catch internos), abortar con exit 1 (excepción no controlada)
