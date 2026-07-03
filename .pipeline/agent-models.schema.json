@@ -164,6 +164,30 @@
         "interactive_supported": {
           "type": "boolean",
           "description": "Issue #3605: opt-in para habilitar chat operador↔agente vía stdin pipe. Si true, agent-launcher abre stdio[0]='pipe' (en vez de 'ignore' default), pulpo registra el child en lib/agent-ipc y el endpoint /api/agent-chat acepta mensajes para este skill. Default false preserva el invariante I3 del agent-launcher (regresión cero CA-4). Solo válido para providers que soportan input incremental por stdin (anthropic CLI sí; gemini-google HTTP no). El endpoint responde 412 Precondition Failed si el cliente intenta usar este flag con un provider que no lo soporta. NO documentar en agent-models.json sin coordinar con docs/pipeline/multi-provider.md."
+        },
+        "balancing": {
+          "type": "object",
+          "description": "Issue #4412 (Parte 2/3 de #4363): balanceo ponderado de providers del Commander detrás de feature flag. SOLO pondera providers ya declarados en 'fallbacks[]' (+ el primario) — NUNCA expande la superficie de lanzamiento (req A01 / SEC-1, defensas #3080/#3081/#3085; ALLOWED_LAUNCHERS sigue siendo la fuente única en lib/agent-models-validate.js). Schema cerrado (additionalProperties:false) para que config malformada/inyectada no introduzca claves arbitrarias ni valores fuera de rango que desvíen el ruteo (SEC-2). Con 'enabled:false' (default) el dispatch es idéntico al orden estricto actual (regresión cero, CA-7).",
+          "additionalProperties": false,
+          "required": ["enabled"],
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Feature flag maestro. Default false (regresión cero): el Commander cae a la cadena estricta de resolveSpawnWithFallback. Con true, el selector ponderado (lib/commander/provider-balancer.js) reparte los requests entre los providers sanos de 'fallbacks[]'."
+            },
+            "quality_bias": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Sesgo hacia el orden de calidad canónico (Claude > Codex > Gemini > Cerebras). A mayor valor, más concentra el primario. Acotado [0,1]."
+            },
+            "min_primary_quota_pct": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100,
+              "description": "Umbral de cuota disponible por debajo del cual el peso del provider se degrada y el reparto se corre hacia los siguientes en orden de calidad. Entero [0,100]."
+            }
+          }
         }
       }
     },

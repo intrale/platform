@@ -156,10 +156,45 @@ function resolveCommanderProvider(opts = {}) {
         fsImpl,
         now,
         issue,
+        // #4412 (Parte 2/3) — insumos del balanceo ponderado (todos opcionales;
+        // con el feature flag OFF por default este camino es un no-op).
+        requestText,
+        requiresToolUse,
+        balancerModule,
+        resolveProviderModule,
+        agentModelsReader,
+        requestClassifyModule,
+        balancerStore,
     } = opts;
 
     const _dispatch = dispatchModule || require('../agent-launcher/dispatch-with-fallback');
     const _quota = quotaModule || require('../quota-exhausted');
+    const _log = typeof log === 'function' ? log : () => {};
+
+    // #4412 — branch del balancer ANTES de la cadena estricta. Con
+    // `balancing.enabled=false` (default) o 0 providers sanos devuelve null y
+    // caemos al `resolveSpawnWithFallback` de siempre (CA-7 regresión cero /
+    // CA-8 fallback estricto). Cualquier error del balancer degrada al camino
+    // estricto: el balanceo NUNCA puede dejar mudo al Commander.
+    try {
+        const balanced = _resolveViaBalancer({
+            pipelineDir,
+            fsImpl,
+            now,
+            log: _log,
+            quotaModule: _quota,
+            requestText,
+            requiresToolUse,
+            balancerModule,
+            resolveProviderModule,
+            agentModelsReader,
+            requestClassifyModule,
+            balancerStore,
+        });
+        if (balanced) return balanced;
+    } catch (e) {
+        _log('commander', `⚠️ #4412 balanceo degradó a orden estricto: ${(e && e.message) || e}`);
+    }
 
     return _dispatch.resolveSpawnWithFallback({
         skill: COMMANDER_SKILL,
@@ -167,9 +202,301 @@ function resolveCommanderProvider(opts = {}) {
         pipelineDir,
         fsImpl,
         quotaModule: _quota,
-        onLog: typeof log === 'function' ? log : () => {},
+        onLog: _log,
         now,
     });
+}
+
+// -----------------------------------------------------------------------------
+// #4412 (Parte 2/3 de #4363) — Integración del selector ponderado de providers.
+//
+// `_resolveViaBalancer` consulta `lib/commander/provider-balancer.js` (Parte 1,
+// #4411) SOLO cuando el skill `telegram-commander` tiene `balancing.enabled=true`
+// en `agent-models.json`. Construye la `chain` a partir de `provider` (primario)
+// + `fallbacks[]` (NO expande launchers — req A01 / SEC-1), llama al selector y,
+// si devuelve un provider sano, arma el MISMO shape de retorno que
+// `resolveSpawnWithFallback` (CA-1). Devuelve `null` cuando el flag está OFF, el
+// balancer no elige nadie (0 sanos, CA-8), o el helper de clasificación tool/chat
+// no está disponible (degradación segura, CA-7).
+// -----------------------------------------------------------------------------
+const BALANCER_STATE_FILE = 'commander-balancer-state.json';
+
+function balancerStatePath(pipelineDir) {
+    return path.join(pipelineDir || '.', BALANCER_STATE_FILE);
+}
+
+// Claves peligrosas que JAMÁS deben terminar como contadores (anti
+// prototype-pollution, SEC-3). El allowlist por `chain` ya las excluye, pero
+// las dejamos explícitas como defensa en profundidad.
+const DANGEROUS_KEYS = Object.freeze(['__proto__', 'constructor', 'prototype']);
+
+/**
+ * Lee `commander-balancer-state.json` (best-effort). Devuelve
+ * `{ counters: {} }` ante ausencia, JSON inválido o shape inesperado (default
+ * seguro, contadores en 0 — mismo patrón que `loadDedupState`). Los contadores
+ * se filtran por `allowSet`: SOLO providers presentes en la chain sobreviven;
+ * cualquier clave espuria del archivo (incl. `__proto__`) se ignora.
+ */
+function loadBalancerState(pipelineDir, fsImpl, allowSet) {
+    const _fs = fsImpl || fs;
+    const allow = allowSet instanceof Set
+        ? allowSet
+        : new Set(Array.isArray(allowSet) ? allowSet : []);
+    const safe = { counters: {} };
+    const file = balancerStatePath(pipelineDir);
+    let parsed;
+    try {
+        if (!_fs.existsSync(file)) return safe;
+        parsed = JSON.parse(_fs.readFileSync(file, 'utf8'));
+    } catch {
+        return safe; // default seguro, nunca crashear el dispatch (SEC-3 / CA-6)
+    }
+    const rawCounters = parsed && typeof parsed === 'object'
+        && parsed.counters && typeof parsed.counters === 'object'
+        ? parsed.counters
+        : {};
+    for (const k of Object.keys(rawCounters)) {
+        if (DANGEROUS_KEYS.includes(k)) continue;
+        if (!allow.has(k)) continue; // allowlist contra fallbacks[] (SEC-3)
+        const v = Number(rawCounters[k]);
+        if (Number.isFinite(v)) safe.counters[k] = v;
+    }
+    return safe;
+}
+
+function saveBalancerState(counters, pipelineDir, fsImpl) {
+    const _fs = fsImpl || fs;
+    const file = balancerStatePath(pipelineDir);
+    try {
+        _fs.writeFileSync(file, JSON.stringify({ counters: counters || {} }, null, 2), 'utf8');
+        return true;
+    } catch {
+        return false; // best-effort: la persistencia fallida no rompe la selección
+    }
+}
+
+/**
+ * Construye el `store` SWRR que consume `provider-balancer.js` (`readState()` /
+ * `writeState(state)` con shape `{ current: {...} }`). Adapta el archivo persistido
+ * (`{ counters }`) al contrato del balancer y re-aplica el allowlist en ambas
+ * direcciones (lectura y escritura) para blindar contra prototype-pollution.
+ */
+function makeBalancerStore(pipelineDir, fsImpl, allowSet) {
+    const allow = allowSet instanceof Set
+        ? allowSet
+        : new Set(Array.isArray(allowSet) ? allowSet : []);
+    return {
+        readState() {
+            const st = loadBalancerState(pipelineDir, fsImpl, allow);
+            return { current: st.counters };
+        },
+        writeState(state) {
+            const cur = (state && state.current && typeof state.current === 'object')
+                ? state.current
+                : {};
+            const out = {};
+            for (const k of Object.keys(cur)) {
+                if (DANGEROUS_KEYS.includes(k)) continue;
+                if (!allow.has(k)) continue;
+                const v = Number(cur[k]);
+                if (Number.isFinite(v)) out[k] = v;
+            }
+            saveBalancerState(out, pipelineDir, fsImpl);
+        },
+    };
+}
+
+function _resolveViaBalancer(ctx = {}) {
+    const {
+        pipelineDir,
+        fsImpl,
+        now,
+        log,
+        quotaModule,
+        requestText,
+        requiresToolUse,
+        balancerModule,
+        resolveProviderModule,
+        agentModelsReader,
+        requestClassifyModule,
+        balancerStore,
+    } = ctx;
+    const _fs = fsImpl || fs;
+    const _log = typeof log === 'function' ? log : () => {};
+
+    // 1. Config del skill telegram-commander desde agent-models.json.
+    const _rp = resolveProviderModule || require('../agent-launcher/resolve-provider');
+    const models = typeof agentModelsReader === 'function'
+        ? agentModelsReader(pipelineDir, _fs)
+        : _rp.readAgentModels(pipelineDir, _fs);
+    if (!models || models.__readError) return null;
+    const skillCfg = (models.skills && models.skills[COMMANDER_SKILL]) || null;
+    if (!skillCfg) return null;
+
+    // 2. Feature flag. OFF por default → regresión cero (CA-7).
+    const balCfg = skillCfg.balancing;
+    if (!balCfg || balCfg.enabled !== true) return null;
+
+    // 3. Clasificación tool-vs-chat. Si el helper no está disponible en runtime,
+    //    degradación segura a orden estricto (CA-7).
+    let needsToolUse;
+    if (typeof requiresToolUse === 'boolean') {
+        needsToolUse = requiresToolUse;
+    } else {
+        let rc;
+        try {
+            rc = requestClassifyModule || require('./request-classify');
+        } catch {
+            rc = null;
+        }
+        if (!rc || typeof rc.isToolUseRequest !== 'function') {
+            _log('commander', '↩️ #4412 clasificador tool-vs-chat no disponible — orden estricto.');
+            return null;
+        }
+        try {
+            needsToolUse = rc.isToolUseRequest(requestText) === true;
+        } catch {
+            return null;
+        }
+    }
+
+    // 4. Chain = primario + fallbacks[] (SOLO nombres ya declarados; NO expande
+    //    la superficie de lanzamiento — req A01 / SEC-1).
+    const primaryProvider = skillCfg.provider || 'anthropic';
+    const fallbackEntries = Array.isArray(skillCfg.fallbacks) ? skillCfg.fallbacks : [];
+    const chain = [primaryProvider];
+    for (const fb of fallbackEntries) {
+        const name = typeof fb === 'string'
+            ? fb
+            : (fb && typeof fb === 'object' && typeof fb.provider === 'string' ? fb.provider : null);
+        if (name && !chain.includes(name)) chain.push(name);
+    }
+    if (chain.length < 2) return null; // sin alternativas reales → orden estricto
+
+    // 5. modelsMeta para el gate de tool-use (fail-closed en el balancer).
+    const modelsMeta = {};
+    if (models.providers && typeof models.providers === 'object') {
+        for (const p of chain) {
+            const def = models.providers[p];
+            if (def && typeof def === 'object') {
+                modelsMeta[p] = { supports_tool_use: def.supports_tool_use === true };
+            }
+        }
+    }
+
+    // 6. Store SWRR best-effort con allowlist anti prototype-pollution.
+    const allowSet = new Set(chain);
+    const store = balancerStore || makeBalancerStore(pipelineDir, _fs, allowSet);
+
+    // 7. Selección ponderada.
+    const _balancer = balancerModule || require('./provider-balancer');
+    const picked = _balancer.selectProvider({
+        chain,
+        requiresToolUse: needsToolUse,
+        pipelineDir,
+        deps: {
+            modelsMeta,
+            store,
+            now: typeof now === 'function' ? now : undefined,
+            // shouldGateSpawn del quotaModule efectivo (test inyecta el fake).
+            shouldGateSpawn: quotaModule && typeof quotaModule.shouldGateSpawn === 'function'
+                ? (skill, q) => quotaModule.shouldGateSpawn(skill, q)
+                : undefined,
+            config: {
+                quality_bias: Number.isFinite(balCfg.quality_bias) ? balCfg.quality_bias : undefined,
+                min_primary_quota_pct: Number.isFinite(balCfg.min_primary_quota_pct)
+                    ? balCfg.min_primary_quota_pct
+                    : undefined,
+            },
+        },
+    });
+
+    // 8. 0 sanos → null → cadena estricta (CA-8).
+    if (!picked || !picked.provider) return null;
+
+    return _buildBalancedResolution({
+        picked,
+        models,
+        skillCfg,
+        chain,
+        primaryProvider,
+        fallbackEntries,
+        resolveProviderModule: _rp,
+        log: _log,
+    });
+}
+
+/**
+ * Arma el shape canónico de `resolveSpawnWithFallback` para el provider que
+ * eligió el balancer. Devuelve `null` si el provider elegido no tiene handler
+ * registrado (defense in depth: cae a orden estricto). Las claves del objeto
+ * espejan EXACTAMENTE las de la resolución estricta (primario o fallback) para
+ * que el shape de retorno no cambie (CA-1).
+ */
+function _buildBalancedResolution(args = {}) {
+    const {
+        picked, models, skillCfg, chain, primaryProvider, fallbackEntries,
+        resolveProviderModule, log,
+    } = args;
+    const _rp = resolveProviderModule || require('../agent-launcher/resolve-provider');
+    const _log = typeof log === 'function' ? log : () => {};
+    const provider = picked.provider;
+
+    let handler;
+    try {
+        handler = _rp.getProviderHandler(provider); // valida contra tabla hardcoded
+    } catch {
+        _log('commander', `↩️ #4412 provider "${provider}" sin handler — orden estricto.`);
+        return null;
+    }
+    const mode = _rp.resolvePermissionMode(models, provider);
+    const defaultModel = (models.defaults && models.defaults.model) || null;
+    const isPrimary = provider === primaryProvider;
+
+    if (isPrimary) {
+        // Espejo EXACTO del shape estricto-primario (…resolveProviderForSkill +
+        // metadatos de dispatch). Mismas claves que el retorno OFF (CA-1).
+        const model = skillCfg.model_override || skillCfg.model || defaultModel;
+        return {
+            provider,
+            model,
+            mode,
+            handler,
+            source: 'balanced',
+            interactive_supported: skillCfg.interactive_supported === true,
+            gated: false,
+            fallbackUsed: null,
+            primaryProvider,
+            chainTried: [primaryProvider],
+            crossProvider: false,
+            depthExceeded: false,
+            skipReasons: [],
+        };
+    }
+
+    // Provider de fallback elegido por peso: espejo del shape estricto-fallback.
+    const entry = fallbackEntries.find((fb) =>
+        (typeof fb === 'object' && fb ? fb.provider : fb) === provider);
+    const override = entry && typeof entry === 'object' ? entry.model_override : null;
+    const provDef = (models.providers && models.providers[provider]) || null;
+    const model = override || (provDef && provDef.model) || defaultModel;
+    const idx = chain.indexOf(provider) - 1; // índice en fallbacks[]
+
+    return {
+        provider,
+        model,
+        handler,
+        mode,
+        source: 'balanced',
+        gated: false,
+        fallbackUsed: { index: idx, provider },
+        primaryProvider,
+        chainTried: chain.slice(0, chain.indexOf(provider) + 1),
+        crossProvider: true,
+        depthExceeded: false,
+        disqualifyReason: 'balancer_selected',
+        skipReasons: [],
+    };
 }
 
 // -----------------------------------------------------------------------------
@@ -1166,6 +1493,15 @@ module.exports = {
     precheckCommanderProviderRanking: credPrecheck.precheckCommanderProviderRanking,
     makePrecheckHandle: credPrecheck.makePrecheckHandle,
     formatPrecheckReport: credPrecheck.formatPrecheckReport,
+
+    // #4412 (Parte 2/3) — integración del balanceo de providers.
+    _resolveViaBalancer,
+    _buildBalancedResolution,
+    _balancerStatePath: balancerStatePath,
+    _loadBalancerState: loadBalancerState,
+    _saveBalancerState: saveBalancerState,
+    _makeBalancerStore: makeBalancerStore,
+    BALANCER_STATE_FILE,
 
     // exports internos para tests
     _hashFor: hashFor,

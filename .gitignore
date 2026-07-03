@@ -149,6 +149,9 @@ scripts/planner-plan.json
 .pipeline/commander-history.jsonl
 .pipeline/commander-summary.json
 .pipeline/commander-summary.json.tmp
+# #4412 — estado runtime del SWRR del balanceo de providers del Commander
+# (best-effort, se regenera; contadores por provider, sin secrets). NO versionar.
+.pipeline/commander-balancer-state.json
 .pipeline/wave-progress.jsonl
 .pipeline/commander-presence.json
 .pipeline/.commander-presence.json.*.tmp

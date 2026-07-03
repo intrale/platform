@@ -460,7 +460,12 @@
           "provider": "nvidia-nim",
           "model_override": "deepseek-ai/deepseek-v4-pro"
         }
-      ]
+      ],
+      "balancing": {
+        "enabled": false,
+        "quality_bias": 0.7,
+        "min_primary_quota_pct": 30
+      }
     },
     "telegram-sherlock": {
       "provider": "anthropic",
