@@ -832,6 +832,115 @@ function _redactSelectionReason(selectionReason) {
     return raw;
 }
 
+// -----------------------------------------------------------------------------
+// #4438 CA-3 — redactSkipReasons.
+//
+// Normaliza y REDACTA la lista de eslabones evaluados (`skipReasons[]` de
+// `resolveSpawnWithFallback`, #3823) antes de que su `details` viaje al audit
+// log o al chat de Telegram/dashboard. `details` puede arrastrar el error/stack
+// real de un provider LLM (API keys, headers `Authorization`, URLs con tokens),
+// así que TODO texto libre pasa por `redactRagContent` (requisito de security).
+//
+// Estructura de cada entrada: `{ provider, reason, details }`.
+//   - `provider`/`reason` son enums acotados → se preservan tal cual (String).
+//   - `details` es texto libre → SIEMPRE redactado. Si `redact.js` no está
+//     disponible en runtime, fail-closed: se descarta el detalle (null) en vez
+//     de dejar pasar el crudo.
+// -----------------------------------------------------------------------------
+function redactSkipReasons(skipReasons) {
+    if (!Array.isArray(skipReasons) || skipReasons.length === 0) return [];
+    const r = redactModule();
+    const redactText = (s) => {
+        if (s == null) return null;
+        const raw = String(s);
+        if (r && typeof r.redactRagContent === 'function') {
+            try { return r.redactRagContent(raw); } catch { /* fail-closed */ }
+        }
+        // Sin módulo de redacción disponible: no arriesgamos exponer secretos.
+        return null;
+    };
+    return skipReasons
+        .filter((s) => s && typeof s === 'object')
+        .map((s) => ({
+            provider: s.provider ? String(s.provider) : null,
+            reason: s.reason ? String(s.reason) : null,
+            details: redactText(s.details),
+        }));
+}
+
+// -----------------------------------------------------------------------------
+// #4438 CA-1/CA-2 — planChainAdvance.
+//
+// Decisión PURA y testeable del retry post-spawn del Commander (el cuerpo de
+// `advanceOrGiveUp` en `pulpo.js`). Separa la LÓGICA de decisión de los efectos
+// (spawnear el siguiente / auditar / responder canned) para poder cubrir sus 4
+// ramas con `node --test` sin arrancar el pulpo entero.
+//
+// Causa raíz que corrige (confirmada por guru): el retry re-resolvía la cadena
+// excluyendo SÓLO los providers no-anthropic ya spawneados. Por el TOCTOU del
+// flag global de cuota de anthropic (otro agente lo limpia entre el pick y el
+// retry), el resolver devolvía `anthropic` como primario libre y el guard lo
+// descartaba → fallo total sin recorrer gemini/cerebras/nvidia.
+//
+// Fix: el set de exclusión es la UNIÓN de `triedNonAnthropic` + el/los
+// primario(s) gateado(s) del TURNO (`primaryProvider`, típicamente anthropic).
+// Basarse en el estado del turno —no en re-leer el flag mutable compartido—
+// evita el TOCTOU. Con anthropic excluido, el resolver recorre siempre el resto
+// de la cadena free.
+//
+// Contrato:
+//   opts = {
+//     failedProvider,        // string — provider que acaba de fallar
+//     triedNonAnthropic,     // Set|Array<string> — providers no-anthropic ya spawneados
+//     primaryProvider,       // string — primario del turno (gateado), default 'anthropic'
+//     resolveExcluding,      // fn(excludeArray) => resolution — inyectable (tests)
+//   }
+// Devuelve:
+//   { action: 'retry', next, exclude }                       // escalar al siguiente
+//   { action: 'giveup', next, exclude, chainEvaluated, resolveError }  // cadena agotada
+// -----------------------------------------------------------------------------
+function planChainAdvance(opts = {}) {
+    const {
+        failedProvider,
+        triedNonAnthropic,
+        primaryProvider,
+        resolveExcluding,
+    } = opts;
+
+    const tried = new Set(
+        triedNonAnthropic instanceof Set
+            ? triedNonAnthropic
+            : (Array.isArray(triedNonAnthropic) ? triedNonAnthropic : [])
+    );
+    // Excluir SIEMPRE el/los primario(s) gateado(s) del turno, no sólo los
+    // non-anthropic ya intentados. Unión (no reemplazo): no se pierde ningún
+    // provider ya fallido.
+    const gatedPrimaries = [primaryProvider || 'anthropic'];
+    const exclude = Array.from(new Set([...tried, ...gatedPrimaries]));
+
+    let next = null;
+    let resolveError = null;
+    try {
+        next = typeof resolveExcluding === 'function' ? resolveExcluding(exclude) : null;
+    } catch (e) {
+        resolveError = e;
+    }
+
+    // Rama de escalado: hay un provider sano, distinto de anthropic (ya excluido
+    // arriba, el guard queda como defensa en profundidad coherente) y no
+    // reintentado todavía.
+    if (next && !next.gated && next.provider
+        && next.provider !== 'anthropic'
+        && !tried.has(next.provider)) {
+        return { action: 'retry', next, exclude, chainEvaluated: [], resolveError: null };
+    }
+
+    // Cadena agotada: propagamos los eslabones evaluados (`skipReasons[]`) para
+    // la telemetría CA-3. Se redactan aguas abajo (audit / canned).
+    const chainEvaluated = (next && Array.isArray(next.skipReasons)) ? next.skipReasons : [];
+    return { action: 'giveup', next, exclude, chainEvaluated, resolveError };
+}
+
 function auditCommanderRequest(opts = {}) {
     const {
         pipelineDir,
@@ -839,6 +948,11 @@ function auditCommanderRequest(opts = {}) {
         providerIntended,
         providerEffective,
         chainTried,
+        // #4438 CA-3 — TODOS los eslabones evaluados de la cadena (no sólo los
+        // spawneados) con su motivo de descarte (`skipReasons[]`). Se REDACTA en
+        // origen antes de persistir (details puede traer error/stack de provider
+        // con secretos). Null cuando no se provee (shape canónico preservado).
+        chainEvaluated,
         chatId,
         prompt,
         tokens,
@@ -926,6 +1040,11 @@ function auditCommanderRequest(opts = {}) {
         weight: Number.isFinite(weight) ? weight : null,
         quota_pct: Number.isFinite(quotaPct) ? quotaPct : null,
         selection_reason: _redactSelectionReason(selectionReason),
+        // #4438 CA-3 — cadena COMPLETA evaluada + motivo (redactado). Null para
+        // eventos que no la proveen (preserva shape canónico y hash-chain).
+        chain_evaluated: Array.isArray(chainEvaluated) && chainEvaluated.length
+            ? redactSkipReasons(chainEvaluated)
+            : null,
     };
 
     try {
@@ -1681,6 +1800,10 @@ module.exports = {
     // dedicado) + redacción de selection_reason.
     stickiness: require('./provider-stickiness'),
     _redactSelectionReason,
+
+    // #4438 — retry post-spawn del Commander: decisión pura + redacción CA-3.
+    planChainAdvance,
+    redactSkipReasons,
 
     // exports internos para tests
     _hashFor: hashFor,
