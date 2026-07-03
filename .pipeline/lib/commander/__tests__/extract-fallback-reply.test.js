@@ -55,10 +55,15 @@ test('texto plano (provider no-stream-json) se devuelve tal cual', () => {
 });
 
 test('stdout vacío o nulo → vacío sin romper', () => {
-    assert.deepEqual(extractFallbackReply(''), { text: '', parsed: false });
-    assert.deepEqual(extractFallbackReply('   '), { text: '', parsed: false });
-    assert.deepEqual(extractFallbackReply(null), { text: '', parsed: false });
-    assert.deepEqual(extractFallbackReply(undefined), { text: '', parsed: false });
+    // #4353 CA-4 — `reason` es un campo ADITIVO del shape de retorno: stdout
+    // totalmente vacío se clasifica como fallo RECUPERABLE 'empty_output' para
+    // que el walk de cadena avance al siguiente eslabón. Los callers históricos
+    // sólo leen `.text`/`.parsed` (back-compat intacta); el shape completo
+    // incluye ahora `reason`.
+    assert.deepEqual(extractFallbackReply(''), { text: '', parsed: false, reason: 'empty_output' });
+    assert.deepEqual(extractFallbackReply('   '), { text: '', parsed: false, reason: 'empty_output' });
+    assert.deepEqual(extractFallbackReply(null), { text: '', parsed: false, reason: 'empty_output' });
+    assert.deepEqual(extractFallbackReply(undefined), { text: '', parsed: false, reason: 'empty_output' });
 });
 
 test('ignora líneas JSON malformadas sin tirar', () => {

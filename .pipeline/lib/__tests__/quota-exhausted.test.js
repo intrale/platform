@@ -1151,3 +1151,52 @@ test('#3220 · KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER coincide con agent-models.jso
         }
     }
 });
+
+// =============================================================================
+// #4353 CA-3 — Revalidación del flag `no_quota` contra generación real.
+//
+// El pulpo drena el flag de cuota del provider no-Anthropic que devuelve texto
+// REAL (drenado proactivo, `clearFlag({ provider })`). Estos tests fijan las
+// dos garantías de las que depende ese drenado:
+//   1. `clearFlag({ provider: X })` limpia el flag SI es de X → el provider
+//      re-ingresa a la cadena (deja de estar gated) tras responder.
+//   2. `clearFlag({ provider: X })` NO limpia el flag de otro provider Y
+//      (scope per-provider, #3077 CA-8): un `no_quota` de Y no se drena por un
+//      éxito de X, y un `invalid_credentials`/`forbidden` (que nunca setea el
+//      flag de cuota) tampoco reingresa por esta vía.
+// =============================================================================
+test('#4353 CA-3 · éxito real de un provider drena SU flag no_quota (revalidación)', () => {
+    const tmpDir = newTmpDir();
+    const q = freshModule(tmpDir);
+    try {
+        const resetsAt = Date.now() + 3600 * 1000; // 1h en el futuro (no expira solo)
+        q.setFlag({ errorType: 'insufficient_quota', provider: 'openai-codex', resetsAt, maxDays: 31 });
+        // Antes del drenado: el provider está gated.
+        assert.equal(q.shouldGateSpawn('telegram-commander', { provider: 'openai-codex' }), true);
+        // El pulpo drena tras recibir generación real del provider.
+        const drained = q.clearFlag({ event: 'success_spawn_fallback', reason: 'commander_fallback_success', provider: 'openai-codex' });
+        assert.equal(drained, true, 'debe drenar el flag del provider que respondió');
+        // Después: el provider volvió a la cadena (ya no gated) sin esperar resets_at.
+        assert.equal(q.shouldGateSpawn('telegram-commander', { provider: 'openai-codex' }), false);
+    } finally {
+        delete process.env.PIPELINE_DIR_OVERRIDE;
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+});
+
+test('#4353 CA-3 · el drenado es scoped: un éxito de X NO revalida el flag de Y', () => {
+    const tmpDir = newTmpDir();
+    const q = freshModule(tmpDir);
+    try {
+        const resetsAt = Date.now() + 3600 * 1000;
+        // Flag activo de gemini-google (otro provider).
+        q.setFlag({ errorType: 'quota_exhausted', provider: 'gemini-google', resetsAt });
+        // Un éxito de nvidia-nim NO debe drenar el flag de gemini.
+        const drained = q.clearFlag({ event: 'success_spawn_fallback', reason: 'commander_fallback_success', provider: 'nvidia-nim' });
+        assert.equal(drained, false, 'no debe drenar el flag de otro provider');
+        assert.equal(q.shouldGateSpawn('telegram-commander', { provider: 'gemini-google' }), true, 'gemini sigue gated');
+    } finally {
+        delete process.env.PIPELINE_DIR_OVERRIDE;
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+});

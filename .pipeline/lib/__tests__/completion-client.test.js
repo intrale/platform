@@ -772,3 +772,45 @@ test('MP-12 · error NO-2xx (5xx) NO consume retry — cascada inmediata', async
     assert.equal(r.error.type, 'http_error');
     assert.equal(http._calls(), 1, 'un 5xx no debe reintentar (solo schema_drift 2xx reintenta)');
 });
+
+// =============================================================================
+// #4353 CA-5 (security A02) — el `detail` de un error de body pasa por el
+// snippet REDACTADO del clasificador, no un `bodyText.slice` crudo. Un body de
+// provider puede eco-ar contenido del request del usuario (p.ej. un email);
+// verificamos que llega redactado y acotado a DETAIL_MAX_BYTES.
+// =============================================================================
+test('#4353 CA-5 — 5xx con email en el body → error.detail redactado (no eco crudo)', async () => {
+    const dir = tmpDir();
+    const f = path.join(dir, 'config.json');
+    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    const r = await completion.complete({
+        provider: 'cerebras',
+        model: 'llama-3.3-70b',
+        prompt: 'ping',
+        secretsPath: f,
+        // El upstream eco-a el mensaje del usuario, que traía un email (PII).
+        httpImpl: fakeHttp({ status: 503, body: 'upstream error procesando pedido de leito@gmail.com, reintentá' }),
+    });
+    assert.equal(r.error.type, 'http_error');
+    assert.equal(r.error.reason, 'unknown');
+    assert.ok(typeof r.error.detail === 'string' && r.error.detail.length > 0, 'debe traer detail');
+    // El email NO debe aparecer en claro: la ruta redactada lo enmascara.
+    assert.ok(!/leito@gmail\.com/.test(r.error.detail), 'el email del usuario no debe filtrarse crudo');
+    assert.match(r.error.detail, /le\*\*\*@gm\*\*\*/, 'debe verse el patrón redactado del clasificador');
+});
+
+test('#4353 CA-5 — detail acotado a DETAIL_MAX_BYTES (512) aunque el body sea enorme', async () => {
+    const dir = tmpDir();
+    const f = path.join(dir, 'config.json');
+    writeKeys(f, { cerebras_api_key: 'csk_test_1234567890abcdef0000' });
+    const hugeBody = 'x'.repeat(5000); // > 512 pero < MAX_BODY_BYTES (16KB, no truncated)
+    const r = await completion.complete({
+        provider: 'cerebras',
+        model: 'llama-3.3-70b',
+        prompt: 'ping',
+        secretsPath: f,
+        httpImpl: fakeHttp({ status: 503, body: hugeBody }),
+    });
+    assert.equal(r.error.type, 'http_error');
+    assert.ok(r.error.detail.length <= 512, `detail debe estar acotado a 512, fue ${r.error.detail.length}`);
+});

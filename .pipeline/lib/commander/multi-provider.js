@@ -918,10 +918,22 @@ function safeBuildSpawn({ handler, args, cwd, env }) {
 //     el caller responde canned en lugar de dumpear el stream crudo.
 //   - parsed=false + text!=''  → no era JSON (provider de texto plano):
 //     devolvemos el texto tal cual (best-effort, back-compat).
+//
+// #4353 CA-4 — campo `reason` (ADITIVO, back-compat: los callers históricos
+// sólo leen `.text`/`.parsed`). Clasifica el vacío como fallo RECUPERABLE para
+// que el walk de cadena avance al siguiente eslabón en vez de tomarlo como una
+// respuesta válida vacía o cortar seco:
+//   - 'empty_output'  → stdout totalmente vacío (provider no emitió nada).
+//   - 'malformed_body'→ hubo JSON estructurado pero sin mensaje conversacional
+//                       (caso Cerebras HTTP 200 sin `content`/`response`/`choices`).
+//   - null            → hay texto útil (`text` no vacío).
+// El caller (pulpo.js#runNonAnthropic) YA avanza al siguiente provider ante
+// `text===''` (advanceOrGiveUp 'empty_output'); `reason` sólo agrega
+// observabilidad/telemetría sin cambiar la decisión de walk.
 // -----------------------------------------------------------------------------
 function extractFallbackReply(stdout) {
     const raw = typeof stdout === 'string' ? stdout : '';
-    if (!raw.trim()) return { text: '', parsed: false };
+    if (!raw.trim()) return { text: '', parsed: false, reason: 'empty_output' };
 
     // --- Path A: JSONL streaming (Codex) — agent_message por línea ---
     const messages = [];
@@ -940,7 +952,7 @@ function extractFallbackReply(stdout) {
     }
 
     if (messages.length > 0) {
-        return { text: messages.join('\n\n').trim(), parsed: true };
+        return { text: messages.join('\n\n').trim(), parsed: true, reason: null };
     }
 
     // --- Path B: objeto JSON único (Gemini y similares HTTP) ---
@@ -951,18 +963,21 @@ function extractFallbackReply(stdout) {
     if (single) {
         const reply = _extractReplyFromObject(single);
         if (reply && reply.trim()) {
-            return { text: reply.trim(), parsed: true };
+            return { text: reply.trim(), parsed: true, reason: null };
         }
         // Objeto JSON conocido pero sin texto conversacional (ej: payload de
-        // error) → vacío: el caller cae al canned / siguiente provider en vez
-        // de dumpear el JSON crudo.
-        return { text: '', parsed: false };
+        // error, o el caso Cerebras HTTP 200 sin `content`) → vacío: el caller
+        // avanza al siguiente provider en vez de dumpear el JSON crudo. #4353
+        // CA-4: es un fallo RECUPERABLE (`malformed_body`), no una respuesta
+        // válida vacía.
+        return { text: '', parsed: false, reason: 'malformed_body' };
     }
 
-    // JSONL sin agent_message → vacío: el caller cae al canned y NO dumpea el
-    // stream crudo. Texto plano → lo devolvemos tal cual (comportamiento previo).
-    if (sawJson) return { text: '', parsed: false };
-    return { text: raw.trim(), parsed: false };
+    // JSONL sin agent_message → vacío: el caller avanza al siguiente eslabón y
+    // NO dumpea el stream crudo (#4353 CA-4: recuperable). Texto plano → lo
+    // devolvemos tal cual (comportamiento previo, back-compat).
+    if (sawJson) return { text: '', parsed: false, reason: 'malformed_body' };
+    return { text: raw.trim(), parsed: false, reason: null };
 }
 
 // -----------------------------------------------------------------------------

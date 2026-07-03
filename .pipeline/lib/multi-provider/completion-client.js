@@ -522,11 +522,16 @@ async function complete({
         }
         const errorObj = { type, reason, statusCode };
         // 5xx / 4xx unknown históricamente incluían detail con snippet del body.
-        // Mantenemos ese comportamiento delegando al snippet redactado del
-        // clasificador cuando aplique.
+        // #4353 CA-5 (security A02) — usamos el snippet YA REDACTADO del
+        // clasificador (`classification.detail`, capeado a DETAIL_MAX_BYTES y
+        // pasado por `redactSensitive` en `buildDetail`), NO un `bodyText.slice`
+        // crudo. Un body de provider puede eco-ar el request del usuario o
+        // headers/keys; el slice crudo los filtraba a logs/estado/Telegram. El
+        // comentario histórico ya prometía "snippet redactado del clasificador"
+        // — el código quedó desalineado y esto lo realinea.
         if ((classification.category === 'unknown' || classification.category === 'transient')
-            && bodyText) {
-            errorObj.detail = bodyText.slice(0, 512);
+            && classification.detail) {
+            errorObj.detail = classification.detail;
         }
         return {
             ok: false,
