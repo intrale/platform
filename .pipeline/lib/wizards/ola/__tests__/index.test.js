@@ -61,10 +61,26 @@ function makeSession() {
     return { steps: new Map() };
 }
 
+// Exec por defecto para admisión: LANZA → `fetchAdmissibleMap` devuelve null →
+// fail-open. Así los tests de occupancy/bounds legacy no dependen de `gh` real ni
+// de la admisión (mismo comportamiento previo a #3873). Los tests de admisión
+// inyectan su propio `opts.exec`.
+function throwingExec() { throw new Error('gh no disponible (test)'); }
+
+// Helper: arma un `_exec` que devuelve el listado JSON dado (shape gh issue list).
+function execReturning(issues) {
+    return () => JSON.stringify(issues);
+}
+
 function withFlow(opts, fn) {
     const waves = makeFakeWaves(opts);
     const audit = makeFakeAudit();
-    ola._setForTests({ waves, audit, auditDir: opts.auditDir || '/tmp/__ola_test__' });
+    ola._setForTests({
+        waves,
+        audit,
+        auditDir: opts.auditDir || '/tmp/__ola_test__',
+        exec: opts.exec || throwingExec,
+    });
     try {
         return fn(waves, audit);
     } finally {
@@ -198,4 +214,117 @@ test('flowDef expone maxStep 2 y registra el flow ola', () => {
     // intento devuelve false (ya registrado) sin romper.
     const second = ola.register();
     assert.equal(typeof second, 'boolean');
+});
+
+// --- Admisión GitHub (CA-11 / #3873) -----------------------------------------
+
+test('checkEligibility marca nonAdmissible cuando un issue no aparece en el listado open', () => {
+    // 3801 admisible; 9999 no está en --state open (inexistente/closed).
+    const exec = execReturning([{ number: 3801, state: 'OPEN', labels: [{ name: 'Ready' }] }]);
+    withFlow({ exec }, () => {
+        const r = ola.checkEligibility([3801, 9999], null);
+        assert.deepEqual(r.nonAdmissible, [9999]);
+        assert.equal(r.ghUnavailable, false);
+        assert.equal(r.ok, false);
+    });
+});
+
+test('checkEligibility marca nonAdmissible cuando el issue existe pero no tiene label admisible', () => {
+    const exec = execReturning([
+        { number: 3801, state: 'OPEN', labels: [{ name: 'Ready' }] },
+        { number: 3802, state: 'OPEN', labels: [{ name: 'bug' }, { name: 'area:dashboard' }] },
+    ]);
+    withFlow({ exec }, () => {
+        const r = ola.checkEligibility([3801, 3802], null);
+        assert.deepEqual(r.nonAdmissible, [3802]);
+        assert.equal(r.ok, false);
+    });
+});
+
+test('checkEligibility acepta issue open con label Ready o needs-definition', () => {
+    const exec = execReturning([
+        { number: 3801, state: 'OPEN', labels: [{ name: 'Ready' }] },
+        { number: 3802, state: 'OPEN', labels: [{ name: 'needs-definition' }] },
+    ]);
+    withFlow({ exec }, () => {
+        const r = ola.checkEligibility([3801, 3802], null);
+        assert.deepEqual(r.nonAdmissible, []);
+        assert.equal(r.ghUnavailable, false);
+        assert.equal(r.ok, true);
+    });
+});
+
+test('checkEligibility hace fail-open con ghUnavailable cuando _exec lanza', () => {
+    // withFlow default = throwingExec → fetchAdmissibleMap null → fail-open.
+    withFlow({}, () => {
+        const r = ola.checkEligibility([3801, 9999], null);
+        assert.equal(r.ghUnavailable, true);
+        assert.deepEqual(r.nonAdmissible, []);
+        assert.equal(r.ok, true); // no bloquea por admisión con gh caído
+    });
+});
+
+test('checkEligibility reporta conflicts (ocupado) y nonAdmissible en la misma selección', () => {
+    // 3801 ya ocupado en otra ola; 9999 no-admisible (no listado). Ambos reportados.
+    const exec = execReturning([{ number: 3801, state: 'OPEN', labels: [{ name: 'Ready' }] }]);
+    withFlow({ planned: [{ number: 5, name: 'Vieja', issues: [{ number: 3801 }] }], exec }, () => {
+        const r = ola.checkEligibility([3801, 9999], null);
+        assert.deepEqual(r.conflicts, [3801]);
+        assert.deepEqual(r.nonAdmissible, [9999]);
+        assert.equal(r.ok, false);
+    });
+});
+
+test('fetchAdmissibleMap devuelve cache vieja si gh cae y ya había fetch previo', () => {
+    // Sembramos cache con TTL vencido (fetchedAt=1, muy en el pasado) → el próximo
+    // fetch intenta _exec; como lanza, cae al fail-safe y devuelve la cache vieja.
+    const stale = new Map([[3801, [{ name: 'Ready' }]]]);
+    ola._seedAdmissionCacheForTests(stale, 1);
+    const boomExec = () => { throw new Error('gh down'); };
+    const result = ola.fetchAdmissibleMap({ _exec: boomExec });
+    assert.ok(result instanceof Map);
+    assert.equal(result.has(3801), true);
+    ola._resetAdmissionCache();
+});
+
+test('fetchAdmissibleMap devuelve null si gh cae y no hay cache previa (fail-open)', () => {
+    ola._resetAdmissionCache();
+    const boomExec = () => { throw new Error('gh down'); };
+    assert.equal(ola.fetchAdmissibleMap({ _exec: boomExec }), null);
+    ola._resetAdmissionCache();
+});
+
+test('fetchAdmissibleMap respeta el TTL de 30s (segunda llamada no re-invoca _exec)', () => {
+    ola._resetAdmissionCache();
+    let calls = 0;
+    const countingExec = () => {
+        calls += 1;
+        return JSON.stringify([{ number: 3801, state: 'OPEN', labels: [{ name: 'Ready' }] }]);
+    };
+    ola.fetchAdmissibleMap({ _exec: countingExec });
+    ola.fetchAdmissibleMap({ _exec: countingExec });
+    assert.equal(calls, 1); // segunda llamada sirve del cache
+    ola._resetAdmissionCache();
+});
+
+test('validateStep case 0 devuelve false si algún issue seleccionado es no-admisible (gh disponible)', () => {
+    const exec = execReturning([{ number: 3801, state: 'OPEN', labels: [{ name: 'Ready' }] }]);
+    withFlow({ exec }, () => {
+        // 3801 admisible, 9999 no listado → no-admisible → false.
+        assert.equal(ola.validateStep(0, { issues: [3801, 9999] }), false);
+        // ambos admisibles → true.
+        const exec2 = execReturning([
+            { number: 3801, state: 'OPEN', labels: [{ name: 'Ready' }] },
+            { number: 3802, state: 'OPEN', labels: [{ name: 'needs-definition' }] },
+        ]);
+        ola._setForTests({ exec: exec2 });
+        ola._resetAdmissionCache();
+        assert.equal(ola.validateStep(0, { issues: [3801, 3802] }), true);
+    });
+});
+
+test('validateStep case 0 devuelve true bajo gh caído aunque no pueda verificar admisión (fail-open)', () => {
+    withFlow({}, () => { // throwingExec por defecto
+        assert.equal(ola.validateStep(0, { issues: [3801, 3802] }), true);
+    });
 });
