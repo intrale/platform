@@ -35,8 +35,10 @@
  *   - `velocityPctPerHour`: ritmo medido (`velocityPctPerMin × 60`) sólo cuando
  *     `etaSource === 'velocity'` y hay un ritmo > 0; `null` en `fallback` (la
  *     vista muestra "— %/h", nunca 0/"null" — G-UX-1).
- *   - `etaRemainingMin`: restante proyectado por velocidad cuando hay ritmo
- *     medido; si no, la mediana teórica `totalP50`; `null` si nada disponible.
+ *   - `etaRemainingMin`: restante = `max(proyección por velocidad, presupuesto
+ *     teórico restante totalP50)` (#4449 — la velocidad optimista no puede pisar
+ *     el piso teórico del trabajo restante); sólo velocidad si no hay `totalP50`,
+ *     sólo `totalP50` si no hay ritmo medido; `null` si nada disponible.
  *
  * #4325 — CA-4: cuando no hay ritmo medido (`etaSource === 'fallback'` o serie de
  * velocidad ausente), en vez del guion mudo `—` se expone un estado explícito
@@ -59,9 +61,21 @@ function deriveMissionOlaEta(d) {
     const avancePct = Number.isFinite(data.totalPct) ? Math.round(data.totalPct) : null;
     const velocityPctPerHour = hasVelocity ? vel.velocityPctPerMin * 60 : null;
     const etaFromVelocity = hasVelocity && Number.isFinite(vel.remainingMs);
-    const etaRemainingMin = etaFromVelocity
-        ? vel.remainingMs / 60000
-        : (Number.isFinite(data.totalP50) ? data.totalP50 : null);
+    // #4449 — La velocidad optimista proyecta uniformemente sobre el % restante e
+    // ignora que ese % está concentrado en issues por definir (lifecycle completo).
+    // Fix: piso teórico. `totalP50` ya representa el trabajo RESTANTE porque
+    // dashboard.js::_scheduleOlaETARefresh excluye los issues cerrados del cálculo
+    // (CA-3). El ETA nunca puede caer por debajo de ese presupuesto (CA-1/CA-2).
+    // Todo literal inline: la función se serializa vía `.toString()` al cliente, no
+    // puede referenciar constantes de módulo (ReferenceError en el eval — ver L42-45).
+    const velMin = etaFromVelocity ? vel.remainingMs / 60000 : null;
+    const budgetMin = Number.isFinite(data.totalP50) ? data.totalP50 : null;
+    let etaRemainingMin;
+    if (velMin != null && budgetMin != null) etaRemainingMin = Math.max(velMin, budgetMin);
+    else if (velMin != null)                 etaRemainingMin = velMin;
+    else                                     etaRemainingMin = budgetMin; // puede ser null
+    // Blindaje (CA-5): nunca NaN/Infinity/negativo hacia el render.
+    if (!Number.isFinite(etaRemainingMin) || etaRemainingMin < 0) etaRemainingMin = null;
     const velocityState = hasVelocity ? 'measured' : 'sin datos suficientes';
     // #4450 — throughput de entrega de la ola (issues/día). Es la "velocidad"
     // que pinta la celda 🚀 VELOCIDAD (Opción A / G-UX-1), distinta de
