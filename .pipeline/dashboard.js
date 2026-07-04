@@ -476,6 +476,19 @@ function restartComponent(name) {
 // Map en memoria por target que rechaza ráfagas < 5s (DoS auto-infligido).
 const _opsRestartHandler = require('./lib/ops-restart-handler');
 const _opsRestartRateLimiter = _opsRestartHandler.makeRateLimiter(5000);
+// #4460 — Gate de defensa-en-profundidad (loopback + Origin/Referer +
+// Content-Type) para el restart del modelo operativo. Require defensivo: si no
+// carga, el endpoint dedicado responde 503 (nunca ejecuta restart sin gate).
+let _opsRestartGate = null;
+try { _opsRestartGate = require('./lib/ops-restart-gate'); } catch { /* opcional */ }
+// #4460 (fix rebote rev-1) — sync del modelo operativo a origin/main SIN killAll.
+// El restart del pulpo por sí solo NO aplica entregas: respawnea el MISMO código
+// on-disk. Este módulo avanza el tree a origin/main y reescribe el boot marker
+// ANTES del respawn, para que el pulpo relanzado lea el código nuevo y la señal
+// de drift desaparezca (CA-4/CA-7). Require defensivo: si no carga, el endpoint
+// hace restart sin sync (degradado) pero lo reporta en el mensaje.
+let _operativoSync = null;
+try { _operativoSync = require('./lib/operativo-sync'); } catch { /* opcional */ }
 
 // QA Environment
 const QA_ENV_SCRIPT = path.join(PIPELINE, 'qa-environment.js');
@@ -3479,6 +3492,29 @@ function generateHTML(state) {
         <ol class="wave-prio-list" id="wave-prio-list" aria-live="polite" aria-label="Issues de la ola ${state.activeWaveNumber} en orden de ejecución"><li class="wave-prio-empty">Cargando…</li></ol>
         <div class="wave-prio-status" id="wave-prio-status" role="status" aria-live="polite"></div>
       </div>` : ''}
+      ${/* #4460 — Banner condicional "Reiniciar modelo operativo". SSR oculto por
+           default (display:none): el cliente (refreshRestartOperativo) lo muestra
+           SÓLO cuando /api/dash/restart-pendiente devuelve items ≥ 1 (CA-1). Sin
+           drift → permanece oculto (CA-2). Estado desconocido → variante warning
+           con "Refrescar" en vez de reinicio (CA-8). El botón dispara el endpoint
+           endurecido /api/ops/restart-operativo (gate + CSRF, REQ-SEC-4460-1). */''}
+      <div class="restart-op-banner" id="restart-op-banner" role="region" aria-label="Reinicio del modelo operativo pendiente" style="display:none;align-items:flex-start;gap:12px;padding:12px 16px;margin:12px 0;border:1px solid #3b82f6;border-radius:8px;background:rgba(59,130,246,0.10)">
+        <span aria-hidden="true" style="font-size:20px;line-height:1.2">🔄</span>
+        <div style="flex:1;min-width:0">
+          <strong style="display:block;color:#93c5fd">Cambios del modelo operativo pendientes de aplicar</strong>
+          <span id="rob-count" style="font-size:12px;color:#cbd5e1"></span>
+          <ul id="rob-list" aria-live="polite" style="margin:6px 0 0;padding-left:18px;font-size:13px;color:#e2e8f0"></ul>
+        </div>
+        <button id="rob-btn" type="button" onclick="restartOperativoConfirm()" style="flex:none;align-self:center;padding:8px 14px;border:none;border-radius:6px;background:#3b82f6;color:#fff;font-weight:600;cursor:pointer">🔄 Reiniciar modelo</button>
+      </div>
+      <div class="restart-op-unknown" id="restart-op-unknown" role="region" aria-label="Estado del modelo operativo desconocido" style="display:none;align-items:center;gap:12px;padding:12px 16px;margin:12px 0;border:1px solid #f59e0b;border-radius:8px;background:rgba(245,158,11,0.10)">
+        <span aria-hidden="true" style="font-size:20px">⚠️</span>
+        <div style="flex:1">
+          <strong style="display:block;color:#fcd34d">Estado del modelo operativo indeterminado</strong>
+          <span style="font-size:12px;color:#cbd5e1">No se pudo verificar qué versión corre el runtime (marker ausente o git no disponible).</span>
+        </div>
+        <button id="rob-refresh" type="button" onclick="refreshRestartOperativo()" style="flex:none;padding:8px 14px;border:1px solid #f59e0b;border-radius:6px;background:transparent;color:#fcd34d;font-weight:600;cursor:pointer">↻ Refrescar estado</button>
+      </div>
       ${/* #3956 CA-4 — la línea hace scroll horizontal cuando hay más etapas que
            ancho visible; el indicador "+N fases" lo calcula el cliente
            (updateLaneOverflow) midiendo scrollWidth vs clientWidth. */''}
@@ -7844,6 +7880,113 @@ if (typeof window !== 'undefined') {
   });
 }
 
+// #4460 — Banner "Reiniciar modelo operativo". Poll /api/dash/restart-pendiente
+// (patrón anti-flicker: fetch no-store + mostrar/ocultar por id). El botón sólo
+// aparece con items >= 1 (CA-1); sin drift queda oculto (CA-2); estado
+// desconocido muestra la variante warning (CA-8). El disparo pasa por el
+// endpoint endurecido (gate + CSRF).
+var _robItems = [];
+function _robEscape(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function renderRestartOperativo(data) {
+  var banner = document.getElementById('restart-op-banner');
+  var unknown = document.getElementById('restart-op-unknown');
+  if (!banner || !unknown) return;
+  var items = (data && Array.isArray(data.items)) ? data.items : [];
+  var isUnknown = !!(data && data.unknown);
+  _robItems = items;
+  // Estado desconocido: warning, sin ofrecer reinicio a ciegas (CA-8).
+  if (isUnknown) {
+    banner.style.display = 'none';
+    unknown.style.display = 'flex';
+    return;
+  }
+  unknown.style.display = 'none';
+  // Sin drift: no renderizar el botón (CA-2).
+  if (!items.length) {
+    banner.style.display = 'none';
+    return;
+  }
+  // Con drift: mostrar banner + lista de motivos (issue# + componente + motivo).
+  var count = document.getElementById('rob-count');
+  if (count) {
+    count.textContent = items.length === 1
+      ? '1 entrega tocó el modelo operativo y todavía no corre en el runtime vivo.'
+      : (items.length + ' entregas tocaron el modelo operativo y todavía no corren en el runtime vivo.');
+  }
+  var list = document.getElementById('rob-list');
+  if (list) {
+    list.innerHTML = items.map(function(it) {
+      var issue = (it && Number.isInteger(it.issue)) ? ('#' + it.issue) : '(sin issue)';
+      var comp = _robEscape(it && it.componente);
+      var motivo = _robEscape(it && it.motivo);
+      return '<li><strong>' + _robEscape(issue) + '</strong> · ' + comp
+        + (motivo ? ' — ' + motivo : '') + '</li>';
+    }).join('');
+  }
+  banner.style.display = 'flex';
+}
+async function refreshRestartOperativo() {
+  if (typeof document === 'undefined' || document.hidden) return;
+  try {
+    var r = await fetch('/api/dash/restart-pendiente', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    var data = await r.json();
+    renderRestartOperativo(data);
+  } catch (_) {
+    // Best-effort: el polling reintenta en 30s.
+  }
+}
+async function _robGetCsrf() {
+  var r = await fetch('/api/kill-agent/csrf-token', { cache: 'no-store' });
+  if (!r.ok) throw new Error('no se pudo obtener token CSRF');
+  var j = await r.json();
+  return j.csrf_token;
+}
+async function restartOperativoConfirm() {
+  // CA-5 — confirmación previa mostrando el detalle de qué se va a aplicar.
+  var detalle = _robItems.map(function(it) {
+    var issue = (it && Number.isInteger(it.issue)) ? ('#' + it.issue) : '(sin issue)';
+    return '  • ' + issue + ' — ' + (it && it.componente || 'pipeline');
+  }).join('\n');
+  var msg = 'Reiniciar el modelo operativo (Pulpo) para aplicar estos cambios entregados?\n\n'
+    + detalle + '\n\nEl reinicio es selectivo (no mata agentes vivos). ¿Continuar?';
+  if (!window.confirm(msg)) return; // Cancelar no reinicia nada (CA-5).
+  var btn = document.getElementById('rob-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Reiniciando…'; }
+  try {
+    var token = await _robGetCsrf();
+    var r = await fetch('/api/ops/restart-operativo', {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+      body: JSON.stringify({ actor: 'dashboard-operador' }),
+    });
+    var j = await r.json().catch(function() { return {}; });
+    if (r.ok && j.ok) {
+      if (btn) btn.textContent = '✓ Reinicio disparado';
+      // La señal desaparece sola cuando el runtime rearranca con el HEAD nuevo
+      // (CA-7): el próximo poll verá el rango operativo vacío. Refrescamos en 5s.
+      setTimeout(refreshRestartOperativo, 5000);
+    } else {
+      if (btn) { btn.disabled = false; btn.textContent = '🔄 Reiniciar modelo'; }
+      window.alert('No se pudo reiniciar: ' + (j.msg || ('HTTP ' + r.status)));
+    }
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 Reiniciar modelo'; }
+    window.alert('Error al reiniciar el modelo operativo: ' + (e && e.message || e));
+  }
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('DOMContentLoaded', function() {
+    refreshRestartOperativo();
+    setInterval(refreshRestartOperativo, 30 * 1000);
+  });
+}
+
 // QA component action (individual or all)
 async function qaComponentAction(component, action) {
   const btn = event && event.target ? event.target : null;
@@ -11174,6 +11317,92 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // #4460 — API: restart del MODELO OPERATIVO (banner condicional del header de
+  // ola). Endpoint DEDICADO y ENDURECIDO (REQ-SEC-4460-1): a diferencia de
+  // `/api/action` restart, éste exige el gate completo antes de disparar:
+  //   1. loopback + Origin/Referer + Content-Type (ops-restart-gate)
+  //   2. CSRF HMAC double-submit (kill-agent-csrf.requireCSRF)
+  // Sólo entonces delega a runRestart con target='pulpo' (restart selectivo por
+  // servicio, REQ-SEC-4460-4: NUNCA restart.js killAll que mata claude.exe y
+  // agentes vivos). Reusa rate-limit + audit del handler existente.
+  if (req.url === '/api/ops/restart-operativo' && req.method === 'POST') {
+    // 1. Gate loopback/Origin/Content-Type (fail-closed si el lib no cargó).
+    if (!_opsRestartGate) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, msg: 'gate de seguridad no disponible' }));
+    }
+    const gate = _opsRestartGate.checkGate(req);
+    if (!gate.ok) {
+      res.writeHead(gate.status, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, code: gate.code, msg: gate.msg }));
+    }
+    // 2. CSRF HMAC (fail-closed si el lib no cargó).
+    if (!killAgentCsrf) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, msg: 'CSRF no disponible' }));
+    }
+    if (!killAgentCsrf.requireCSRF(req, res)) return; // ya respondió 403
+    // 3. Cuerpo + ejecución selectiva.
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const parsed = body ? JSON.parse(body) : {};
+        // #4460 (fix rebote rev-1) — PASO CLAVE: avanzar el working tree a
+        // origin/main ANTES de respawnear el Pulpo. Sin esto el restart es un
+        // no-op respecto de aplicar entregas: `restartComponent` sólo hace
+        // taskkill+spawn del MISMO código on-disk. `syncOperativoTree` hace el
+        // fetch+reset (sin killAll, REQ-SEC-4460-4) y reescribe el boot marker,
+        // de modo que el Pulpo relanzado lee el código entregado y la señal de
+        // drift desaparece (CA-4/CA-7). Si el sync falla, se reporta y NO se
+        // reescribe el marker (el banner persiste, honesto con el operador).
+        let syncMsg = '';
+        if (_operativoSync) {
+          const sync = _operativoSync.syncOperativoTree({ repoRoot: ROOT, pipelineDir: PIPELINE });
+          syncMsg = sync.ok
+            ? `sync✓ ${sync.msg}`
+            : `sync✗ ${sync.msg} (restart de todos modos, cambios NO aplicados hasta próximo sync)`;
+          log(`Action: restart-operativo sync → ${sync.ok ? '✓' : '✗'} ${sync.msg}`);
+        } else {
+          syncMsg = 'sync no disponible (operativo-sync.js no cargó)';
+          log('Action: restart-operativo sync → módulo operativo-sync no disponible');
+        }
+        // Restart selectivo del Pulpo (el dashboard no puede matarse a sí mismo;
+        // no existe componente 'dashboard' en COMPONENTS). Tras el sync previo,
+        // el Pulpo relanzado relee el código nuevo del modelo operativo.
+        const decision = _opsRestartHandler.runRestart(
+          {
+            target: 'pulpo',
+            source: 'restart-operativo-4460',
+            sourceIp: (req.socket && req.socket.remoteAddress) || '',
+            actor: parsed.actor || '',
+          },
+          {
+            allowlist: COMPONENTS.map(c => c.name),
+            restartFn: restartComponent,
+            rateLimiter: _opsRestartRateLimiter,
+            audit: opsRestartAudit
+              ? (rec) => opsRestartAudit.appendOpsRestartAudit(rec, { pipelineDir: PIPELINE })
+              : null,
+          }
+        );
+        log(`Action: restart-operativo pulpo → ${decision.body.ok ? '✓' : '✗'} (${decision.status}) ${decision.body.msg}`);
+        // Combinar el resultado del sync con el del restart para que el operador
+        // sepa si los cambios se aplicaron (sync✓) o sólo se respawneó (sync✗).
+        const combined = Object.assign({}, decision.body, {
+          msg: `${syncMsg} | ${decision.body.msg}`,
+          applied: !!(decision.body.ok && /^sync✓/.test(syncMsg)),
+        });
+        res.writeHead(decision.status, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(combined));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
   // API: pause/resume pipeline
   if (req.url === '/api/pause' && req.method === 'POST') {
     let body = '';
@@ -13022,6 +13251,17 @@ function startListen() {
       _stateRefreshTimer = setInterval(refreshStateSnapshot, STATE_REFRESH_MS);
       if (_stateRefreshTimer.unref) _stateRefreshTimer.unref();
     }
+    // #4460 — Asegurar que el trust anchor `runtime-boot.json` refleje el HEAD
+    // real al bootear. Mitiga el "restart manual sin restart.js": si el marker
+    // quedó stale, lo reescribimos con el HEAD que este proceso está corriendo.
+    // Best-effort: si git no está disponible, el slice trata el marker como
+    // estado desconocido, nunca como "sin pendientes". Se corre DESPUÉS de
+    // arrancar el worker de snapshot: el marker es best-effort y no debe
+    // demorar el primer refresh ni el listen/ready.
+    try {
+      const rb = require('./lib/runtime-boot').ensureBootMarker({ pipelineDir: PIPELINE, repoRoot: ROOT });
+      if (rb && rb.wrote) log(`Boot marker actualizado al arrancar: ${String(rb.sha || '').slice(0, 8)}`);
+    } catch { /* noop: no bloquear el boot del dashboard */ }
     // #4131-followup — Monitor de lag del event loop. Tras toda la cadena de
     // fixes async (#4128/#4126/#4132) el dashboard seguía colgándose de forma
     // intermitente y parchábamos a ciegas porque NO sabíamos qué operación
