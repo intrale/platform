@@ -134,6 +134,11 @@ try { laneLineLib = require('./lib/pipeline-lane-line'); } catch { /* opcional *
 let prInfoFetcherLib = null;
 try { prInfoFetcherLib = require('./lib/pr-info-fetcher'); } catch { /* opcional */ }
 
+// #4444 — módulo compartido de logs de agente por intento (listado, retención,
+// tope de bytes). Se reusa el mismo naming/glob que persiste el pulpo.
+let agentLogHistory = null;
+try { agentLogHistory = require('./lib/agent-log-history'); } catch { /* opcional */ }
+
 const PORT = parseInt(process.env.DASHBOARD_PORT) || 3200;
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
@@ -590,6 +595,33 @@ function tryCommentPromoted(issueNum, addedDeps) {
 function loadConfig() {
   try { return yaml.load(fs.readFileSync(path.join(PIPELINE, 'config.yaml'), 'utf8')); }
   catch { return { pipelines: {}, concurrencia: {} }; }
+}
+
+// #4444 / REQ-SEC-1 — Allowlist de skills conocidos, derivada de
+// `pipelines[*].skills_por_fase` de config.yaml. Se usa para validar el
+// parámetro `agente` de /logs/history antes de tocar el filesystem: un agente
+// arbitrario no debe poder mapear a rutas fuera del patrón esperado. Cacheado
+// con TTL corto: el catálogo cambia sólo al editar config.yaml.
+let _knownSkillsCache = null;
+let _knownSkillsCacheAt = 0;
+function getKnownSkills() {
+  const now = Date.now();
+  if (_knownSkillsCache && (now - _knownSkillsCacheAt) < 30000) return _knownSkillsCache;
+  const set = new Set();
+  try {
+    const pipelines = (loadConfig() || {}).pipelines || {};
+    for (const pk of Object.keys(pipelines)) {
+      const spf = pipelines[pk] && pipelines[pk].skills_por_fase;
+      if (!spf) continue;
+      for (const fk of Object.keys(spf)) {
+        const arr = spf[fk];
+        if (Array.isArray(arr)) for (const s of arr) set.add(String(s));
+      }
+    }
+  } catch { /* set queda vacío → todo agente se rechaza (fail-closed) */ }
+  _knownSkillsCache = set;
+  _knownSkillsCacheAt = now;
+  return set;
 }
 
 // #3955 EP8-H2 (SEC-4) — Redacta secrets (AWS keys, JWT, gh/Anthropic/OpenAI
@@ -5760,6 +5792,19 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .dp-links{display:flex;gap:8px;margin-left:20px;margin-top:3px}
 .dp-log{color:var(--ac);text-decoration:none;font-size:0.85em;padding:1px 0}
 .dp-log:hover{text-decoration:underline}
+/* #4444 — botón "ver log" (histórico) y selector de intentos/rebotes */
+button.dp-log{background:none;border:none;cursor:pointer;font-family:inherit;line-height:1.2}
+button.dp-log:focus-visible{outline:1px solid var(--ac);outline-offset:2px}
+.dp-hist{margin-left:20px}
+.dp-hist[data-open="1"]{margin-top:4px}
+.dp-hist-loading,.dp-hist-empty{font-size:0.8em;color:var(--dim);padding:2px 0}
+.dp-hist-item{display:flex;align-items:center;gap:6px;font-size:0.82em;color:var(--ac);text-decoration:none;padding:2px 0}
+.dp-hist-item:hover{text-decoration:underline}
+.dp-hist-mark{font-weight:700;width:1em;text-align:center;flex-shrink:0}
+.dp-hist-final{color:var(--gr,#3fb950)}
+.dp-hist-rebote{color:var(--rd)}
+.dp-hist-label{flex-shrink:0}
+.dp-hist-meta{color:var(--dim);font-size:0.92em;margin-left:auto}
 .it-lane{background:var(--sf2);border:1px solid var(--bd);border-radius:8px;padding:10px 10px 8px 10px;display:flex;flex-direction:column;min-width:0}
 .it-lane-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--bd);gap:8px;flex-wrap:wrap}
 .it-lane-name{font-size:0.78em;font-weight:700;text-transform:uppercase;letter-spacing:0.7px;display:flex;align-items:center;gap:6px;color:var(--lane-color);min-width:0}
@@ -8260,10 +8305,22 @@ function showDotPopup(event, dotEl) {
       var dur = durTxt ? '<span class="dp-dur">'+__popEsc(durTxt)+'</span>' : '';
       var logHref = __popSafeHref(s.log);
       var pdfHref = __popSafeHref(s.pdf);
-      var log = logHref ? '<a href="'+__popEsc(logHref)+'" target="_blank" rel="noopener noreferrer" class="dp-log" onclick="event.stopPropagation()">📄 ver log</a>' : '';
+      // #4444 — "ver log" de un agente COMPLETADO abre el histórico de ejecuciones
+      // (instancias + rebotes). Si hay 1 solo intento abre el visor directo; si
+      // hay N, expande un selector inline. Reusa el mismo visor /logs/view/<file>.
+      // Los agentes EN EJECUCIÓN conservan el link live directo (streaming, #4443).
+      var isLiveSkill = s.estado === 'trabajando';
+      var log = '';
+      if (logHref && isLiveSkill) {
+        log = '<a href="'+__popEsc(logHref)+'" target="_blank" rel="noopener noreferrer" class="dp-log" onclick="event.stopPropagation()">📄 ver log</a>';
+      } else if (logHref) {
+        log = '<button type="button" class="dp-log dp-hist-btn" data-issue="'+__popEsc(data.issue)+'" data-skill="'+__popEsc(s.skill)+'"'
+          + ' onclick="event.stopPropagation();showLogHistory(this)"'
+          + ' aria-label="Ver logs de '+__popEsc(s.skill)+' (#'+__popEsc(data.issue)+')">📄 ver log</button>';
+      }
       var pdf = pdfHref ? '<a href="'+__popEsc(pdfHref)+'" target="_blank" rel="noopener noreferrer" class="dp-log" onclick="event.stopPropagation()">📑 PDF rechazo</a>' : '';
       var motivo = s.motivo ? '<div class="dp-motivo">' + __popEsc(s.motivo) + '</div>' : '';
-      return '<div class="dp-row dp-'+cls+'"><div class="dp-row-top"><span class="dp-state">'+icon+'</span><span class="dp-skill">'+__popEsc(s.skill)+'</span>'+retry+dur+'</div>'+motivo+'<div class="dp-links">'+log+pdf+'</div></div>';
+      return '<div class="dp-row dp-'+cls+'"><div class="dp-row-top"><span class="dp-state">'+icon+'</span><span class="dp-skill">'+__popEsc(s.skill)+'</span>'+retry+dur+'</div>'+motivo+'<div class="dp-links">'+log+pdf+'</div><div class="dp-hist" data-open="0"></div></div>';
     }).join('');
   }
   const rect = dotEl.getBoundingClientRect();
@@ -8283,6 +8340,79 @@ function showDotPopup(event, dotEl) {
 function closeDotPopup() {
   const p = document.getElementById('dot-popup');
   if (p) p.style.display = 'none';
+}
+// #4444 — Histórico de logs de un agente completado (incluye rebotes). Al click
+// en "ver log" del popup, fetchea /logs/history/<issue>/<skill>:
+//   - 1 intento  → abre el visor /logs/view/<file> directo (sin fricción).
+//   - N intentos → expande un selector inline con "Intento 1", "Intento 2
+//                  (rebote)", … cada uno abriendo su log por separado.
+//   - 0 / error  → mensaje claro y no técnico (retención), sin romper la UI.
+// El contenido de log ya se sirve redactado y escapado por el server (REQ-SEC-2/3);
+// acá sólo escapamos labels/metadata con __popEsc (defensa en profundidad).
+function __histFmtBytes(n) {
+  n = Number(n) || 0;
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / (1024 * 1024)).toFixed(1) + ' MB';
+}
+function __histFmtWhen(ms) {
+  ms = Number(ms) || 0;
+  if (!ms) return '';
+  try {
+    var d = new Date(ms);
+    var pad = function(x){ return (x < 10 ? '0' : '') + x; };
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+      + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  } catch (_) { return ''; }
+}
+function showLogHistory(btn) {
+  var issue = btn.getAttribute('data-issue');
+  var skill = btn.getAttribute('data-skill');
+  var row = btn.closest ? btn.closest('.dp-row') : null;
+  var box = row ? row.querySelector('.dp-hist') : null;
+  if (!box) return;
+  // Toggle: si ya está abierto, colapsar.
+  if (box.getAttribute('data-open') === '1') {
+    box.innerHTML = '';
+    box.setAttribute('data-open', '0');
+    return;
+  }
+  box.setAttribute('data-open', '1');
+  box.innerHTML = '<span class="dp-hist-loading">cargando…</span>';
+  fetch('/logs/history/' + encodeURIComponent(issue) + '/' + encodeURIComponent(skill))
+    .then(function (r) { if (!r.ok) throw new Error(String(r.status)); return r.json(); })
+    .then(function (items) {
+      if (!Array.isArray(items) || items.length === 0) {
+        box.innerHTML = '<div class="dp-hist-empty">El log de este intento ya no está disponible (retención).</div>';
+        return;
+      }
+      if (items.length === 1) {
+        // 1 intento → abrir el visor directo, sin selector intermedio.
+        var href = '/logs/view/' + encodeURIComponent(items[0].file);
+        window.open(href, '_blank', 'noopener,noreferrer');
+        box.innerHTML = '';
+        box.setAttribute('data-open', '0');
+        return;
+      }
+      var lastIntento = items[items.length - 1].intento;
+      box.innerHTML = items.map(function (it) {
+        var esFinal = it.intento === lastIntento;
+        var label = 'Intento ' + it.intento + (it.intento > 1 ? ' (rebote)' : '');
+        var mark = esFinal ? '✓' : '✗';
+        var markCls = esFinal ? 'dp-hist-final' : 'dp-hist-rebote';
+        var meta = __histFmtBytes(it.bytes);
+        var when = __histFmtWhen(it.mtime);
+        if (when) meta += ' · ' + when;
+        var href = '/logs/view/' + encodeURIComponent(it.file);
+        return '<a class="dp-hist-item" href="' + __popEsc(href) + '" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">'
+          + '<span class="dp-hist-mark ' + markCls + '">' + mark + '</span> '
+          + '<span class="dp-hist-label">' + __popEsc(label) + '</span> '
+          + '<span class="dp-hist-meta">' + __popEsc(meta) + '</span></a>';
+      }).join('');
+    })
+    .catch(function () {
+      box.innerHTML = '<div class="dp-hist-empty">El log de este intento ya no está disponible (retención).</div>';
+    });
 }
 // #3956 CA-2 — Popover del agente a nivel card: issue, skill, fase, estado,
 // edad, motivo del último rebote + botones Ver log / Pausar. Todo el texto pasa
@@ -11184,6 +11314,42 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // #4444 — Histórico de ejecuciones (instancias + rebotes) de un agente para un
+  // issue. Lista los intentos persistidos derivando de un glob dentro de LOG_DIR
+  // (REQ-SEC-1: NO de input del cliente; el cliente solo aporta issue+agente, que
+  // se validan con tipo y allowlist antes del lookup). Cada item ya trae el
+  // nombre de archivo validado que consume `/logs/view/<file>` para el detalle.
+  // SEC (REQ-SEC-5): se cuelga del server loopback existente, sin listener nuevo.
+  if (req.url.startsWith('/logs/history/')) {
+    const rest = req.url.slice('/logs/history/'.length).split('?')[0];
+    const segs = rest.split('/').filter(Boolean);
+    const issueRaw = segs[0] || '';
+    const agenteRaw = decodeURIComponent(segs[1] || '');
+    res.setHeader('Cache-Control', 'no-store');
+    // REQ-SEC-1: issue numérico estricto.
+    if (!/^\d+$/.test(issueRaw)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'issue inválido' }));
+      return;
+    }
+    // REQ-SEC-1: agente contra allowlist de skills conocidos (skills_por_fase).
+    const agente = String(agenteRaw).replace(/[^a-zA-Z0-9\-]/g, '');
+    if (!agente || !getKnownSkills().has(agente)) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'agente desconocido' }));
+      return;
+    }
+    let items = [];
+    try {
+      items = agentLogHistory ? agentLogHistory.listExecutions(LOG_DIR, issueRaw, agente) : [];
+    } catch { items = []; }
+    // Cada item: { intento, file, bytes, mtime }. El `file` ya está validado
+    // (derivado del glob), listo para pasarse a /logs/view/<file>.
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(items));
+    return;
+  }
+
   // Log viewer en ventana dedicada
   if (req.url.startsWith('/logs/view/')) {
     const parts = req.url.slice(11).split('?');
@@ -11208,7 +11374,25 @@ const server = http.createServer((req, res) => {
       res.writeHead(200, headers);
       // SEC-4 — PDFs se sirven binarios tal cual; los logs de texto pasan por
       // el redactor de secrets antes de salir al browser.
-      res.end(isPdf ? fs.readFileSync(logPath) : redactLogText(fs.readFileSync(logPath, 'utf8')));
+      // #4444 / REQ-SEC-4 — tope de bytes por request para logs de texto: hay
+      // logs multi-MB (>4MB) en disco; leerlos enteros con readFileSync es un
+      // vector de DoS por memoria. Servimos la cola capeada (config
+      // logs_history.max_bytes_per_log) con un marcador si se truncó.
+      if (isPdf) {
+        res.end(fs.readFileSync(logPath));
+      } else {
+        let raw;
+        try {
+          const cap = (agentLogHistory && agentLogHistory.resolveRetentionConfig(
+            (loadConfig() || {}).logs_history)).max_bytes_per_log;
+          raw = agentLogHistory
+            ? agentLogHistory.readLogCapped(logPath, cap).text
+            : fs.readFileSync(logPath, 'utf8');
+        } catch {
+          raw = fs.readFileSync(logPath, 'utf8');
+        }
+        res.end(redactLogText(raw));
+      }
     } else {
       res.writeHead(404); res.end('Log no encontrado: ' + filename);
     }
