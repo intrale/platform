@@ -33,6 +33,11 @@ const { CONFIRM_MODAL_JS } = require('./confirm-modal.js');
 // home.js consume todo desde aca para no duplicar el catalogo de tabs ni
 // abrir un segundo cache del sprite (mantiene paridad con satellites.js).
 const { renderNavTabsSsr, loadIconSprite, navMoreAutoCloseClientScript } = require('./nav-tabs');
+// #4463 — Header compartido: pills de CPU/RAM y uptime del Pulpo + hora. Espejo
+// de nav-tabs.js. renderHeaderMetaSsr emite el <div class="in-header-meta"> con
+// los IDs invariantes (hdr-resources/hdr-pulpo/hdr-clock) y headerPillsClientScript
+// centraliza la hidratación (mismos umbrales in-pill-ok/warn/bad en home y satélites).
+const { renderHeaderMetaSsr, headerPillsClientScript } = require('./header-meta');
 // #4450 — writer ÚNICO del banner de ola (avance %, velocidad throughput
 // issues/día, ETA). La HOME lo inyecta igual que las otras 9 ventanas para no
 // reintroducir la divergencia de #4296 (antes la HOME hidrataba el banner con un
@@ -1995,12 +2000,10 @@ async function tickHeader(){
         }
     }
     bindModeToggle();
-    const pulpoPill = document.getElementById('hdr-pulpo');
-    if(pulpoPill){
-        pulpoPill.classList.remove('in-pill-ok','in-pill-bad');
-        pulpoPill.classList.add(d.pulpoAlive ? 'in-pill-ok' : 'in-pill-bad');
-        pulpoPill.textContent = (d.pulpoAlive ? '🟢' : '🔴') + ' Pulpo · '+fmtDur(d.pulpoUptimeMs);
-    }
+    // #4463 — Pills de Pulpo (uptime) y recursos (CPU/RAM) hidratadas por el
+    // helper compartido header-meta.js → misma lógica de umbrales que satélites,
+    // sin drift. Sólo .textContent/.classList/.title (SEC-1, sin innerHTML).
+    if(typeof window.__hydrateHeaderPills === 'function') window.__hydrateHeaderPills(d);
     // Badges de la botonera de áreas (counts vienen en el header slice).
     const counts = d.counts || {};
     for(const [area, count] of Object.entries(counts)){
@@ -2116,22 +2119,10 @@ async function tickHeader(){
             restPill.title = titleBase.length > 200 ? titleBase.slice(0, 197) + '…' : titleBase;
         }
     }
-    // Recursos: CPU/RAM con coloreo según umbrales.
+    // #4463 — La pill de recursos (#hdr-resources) se hidrata arriba vía
+    // window.__hydrateHeaderPills(d) (helper compartido). La System card sigue
+    // consumiendo el MISMO slice de resources (un solo endpoint, R-G3).
     const res = d.resources;
-    const resPill = document.getElementById('hdr-resources');
-    if(resPill && res){
-        const cpu = res.cpuPercent != null ? res.cpuPercent : '?';
-        const mem = res.memPercent != null ? res.memPercent : '?';
-        resPill.textContent = '🖥 CPU '+cpu+'% · RAM '+mem+'%';
-        resPill.classList.remove('in-pill-ok','in-pill-warn','in-pill-bad');
-        const worst = Math.max(Number(cpu)||0, Number(mem)||0);
-        const maxCpu = res.maxCpu || 70;
-        const maxMem = res.maxMem || 70;
-        if((Number(cpu)||0) > maxCpu || (Number(mem)||0) > maxMem) resPill.classList.add('in-pill-bad');
-        else if(worst > 50) resPill.classList.add('in-pill-warn');
-        else resPill.classList.add('in-pill-ok');
-        resPill.title = 'CPU '+cpu+'% (cap '+maxCpu+'%) · RAM '+mem+'% ('+(res.memUsedGB||'?')+'GB / '+(res.memTotalGB||'?')+'GB · cap '+maxMem+'%) · '+(res.cpuCores||'?')+' cores';
-    }
     // #3725 — System card: hidrata CPU/RAM desde el MISMO slice de resources
     // (un solo endpoint /api/dash/header, dos consumidores — R-G3). Disco y
     // uptime quedan en su valor SSR hasta que el slice los exponga.
@@ -3561,10 +3552,26 @@ async function tickWaves(){
 // Deriva número/nombre/descripción, contadores por estado (hecho/activo/
 // bloqueado/cola), avance %, entregados N/M y velocidad best-effort. Defensivo:
 // cualquier dato ausente degrada a neutro sin romper el render.
+// #4448 — Cache del último wave bueno (name+goal CRUDOS, sin sanitizar-como-HTML).
+// Preserva el encabezado ante un fetch transitorio fallido en vez de borrarlo.
+let lastGoodWave = null;
 function _mzMirrorMission(d){
     try {
-        const wave = d && d.active_wave;
+        // #4448 — payload null = fetch transitorio falló (fetchClient devuelve
+        // null ante 5xx/red/timeout). NO tocar el header: se preserva el último
+        // valor bueno ya renderizado en el DOM en lugar de degradar a placeholder.
+        if (d == null) return;
+        let wave = d.active_wave;
+        if (wave) {
+            lastGoodWave = wave; // string CRUDO; el render escapa vía setText→textContent
+        } else if (lastGoodWave && d.active_wave === undefined) {
+            // defensivo: payload válido pero sin la clave active_wave (schema
+            // parcial en carrera de reescritura de waves.json) → no degradar,
+            // reusar el último bueno. Distinto de active_wave:null autoritativo.
+            wave = lastGoodWave;
+        }
         if(!wave){
+            // ausencia AUTORITATIVA: server confirma active_wave:null explícito.
             setText('mission-wave-num', '—');
             setText('mission-wave-name', 'Sin ola activa');
             setText('mission-wave-desc', 'Esperando la planificación de la ola activa.');
@@ -4417,12 +4424,11 @@ function renderBrandBar(state) {
 // y mantener vivos los tickers (tickHeader, R-G1) sin mostrarlas. Tooltips en
 // `title=`/`aria-label=` con escapeHtmlAttr (CA-3725.2/10).
 function renderControlBar(state) {
-    return `
-    <div class="in-header-meta">
-      <span class="in-pill" id="hdr-resources" title="CPU y RAM del sistema" aria-label="Recursos CPU y RAM">…</span>
-      <span class="in-pill" id="hdr-pulpo" aria-label="Estado del pulpo">…</span>
-      <span class="in-clock" id="hdr-clock" aria-label="Hora local">…</span>
-    </div>`;
+    // #4463 — Delegado al módulo compartido header-meta.js. home NO muestra la
+    // pill de estado del pipeline en el header visible (vive en el sink oculto,
+    // #4227) → withMode:false. Los IDs (hdr-resources/hdr-pulpo/hdr-clock),
+    // title y aria-label se preservan literalmente (contrato R-G1).
+    return renderHeaderMetaSsr({ withMode: false });
 }
 
 // #4227 (CA-1) — Controles operativos heredados (estado del pipeline + ventanas
@@ -5289,6 +5295,7 @@ window.__VIEW_BOOT__ = ${JSON.stringify({
 <script>${FETCH_CLIENT_JS}
 ${CONFIRM_MODAL_JS}
 ${script}
+${headerPillsClientScript()}
 ${missionOlaEtaClientScript()}
 ${navMoreAutoCloseClientScript()}</script>
 </body>

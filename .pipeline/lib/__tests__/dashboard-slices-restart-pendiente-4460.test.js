@@ -18,6 +18,39 @@ function tmpPipelineDir() {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'slice-restart-'));
 }
 
+// Repo git PRIVADO y desechable para el test de "sin drift real" (CA-2).
+// #4448 (rebote rev-2): el intento previo usaba el repo real del proyecto con
+// bootSha=origin/main + skipFetch. Seguía siendo flaky porque `origin/main` es
+// un ref COMPARTIDO: `node --test` corre los archivos en procesos concurrentes
+// y el pipeline vivo (dashboard/pulpo) fetchea `origin/main` cada ~45s. Un fetch
+// externo AVANZA el ref entre el `rev-parse` (bootSha) y el `git log` interno →
+// el rango bootSha..origin/main deja de estar vacío y aparece drift espurio
+// (p.ej. #4479 "tocó dashboard"). skipFetch sólo silencia el fetch PROPIO del
+// test, no los concurrentes. Con un repo privado en tmp, nadie más toca su
+// `origin/main` → el rango es provablemente vacío, hermético de verdad.
+function tmpGitRepo() {
+    const cp = require('node:child_process');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'slice-repo-'));
+    const g = (args) => cp.execFileSync('git', args, {
+        cwd: root, encoding: 'utf8', windowsHide: true, timeout: 15000,
+    });
+    g(['init', '-q']);
+    g(['config', 'user.email', 'test@intrale.local']);
+    g(['config', 'user.name', 'Test']);
+    g(['config', 'commit.gpgsign', 'false']);
+    g(['config', 'core.autocrlf', 'false']); // evita el warning CRLF en Windows
+    fs.writeFileSync(path.join(root, 'app-file.txt'), 'solo producto\n');
+    g(['add', '-A']);
+    g(['commit', '-q', '-m', 'commit inicial (solo producto)']);
+    // Branch determinístico (algunos git default a `master`).
+    g(['branch', '-M', 'main']);
+    const head = g(['rev-parse', 'HEAD']).trim();
+    // Simulamos el remote-tracking ref SIN red: origin/main == HEAD. Al no haber
+    // remoto real, ningún proceso lo mueve → hermético.
+    g(['update-ref', 'refs/remotes/origin/main', head]);
+    return { root, head };
+}
+
 test('_sanitizeRestartItem: no propaga paths ni SHAs, recorta longitudes', () => {
     const out = slices._sanitizeRestartItem({
         issue: 4460,
@@ -66,25 +99,24 @@ test('restartPendienteSlice: marker con sha hex inalcanzable → unknown:true (n
     assert.deepStrictEqual(res.items, []);
 });
 
-test('restartPendienteSlice: sin drift real (bootSHA=HEAD del repo) → items:[] + unknown:false (CA-2)', () => {
+test('restartPendienteSlice: sin drift real (bootSHA=origin/main en repo privado) → items:[] + unknown:false (CA-2)', () => {
     drift._clearCache();
     const dir = tmpPipelineDir();
-    // Usamos el repo real del proyecto como repoRoot. bootSHA = HEAD actual →
-    // el rango HEAD..origin/main normalmente está vacío o sólo con commits que
-    // no tocan operativo desde este HEAD. Para determinismo forzamos bootSHA a
-    // origin/main mismo si existe; si no, aceptamos unknown (git no disponible).
-    const repoRoot = path.resolve(__dirname, '..', '..', '..');
-    let head;
+    // Repo git PRIVADO en tmp con origin/main == HEAD. Ningún otro proceso lo
+    // toca → el rango bootSha..origin/main es provablemente vacío, sin depender
+    // del `origin/main` compartido del repo real (que el pipeline vivo fetchea
+    // en paralelo y volvía el test flaky con drift espurio, #4448 rebote rev-1).
+    let repo;
     try {
-        head = require('node:child_process')
-            .execFileSync('git', ['rev-parse', 'origin/main'], { cwd: repoRoot, encoding: 'utf8' })
-            .trim();
+        repo = tmpGitRepo();
     } catch {
         // git no disponible en este entorno → el test de rango vacío no aplica.
         return;
     }
-    runtimeBoot.writeBootMarker(head, { pipelineDir: dir });
-    const res = slices.restartPendienteSlice({}, { PIPELINE: dir, ROOT: repoRoot });
+    runtimeBoot.writeBootMarker(repo.head, { pipelineDir: dir });
+    // skipFetch:true — el repo privado no tiene remoto real; evitamos un fetch
+    // inútil (fallaría best-effort igual, pero mejor no gastarlo).
+    const res = slices.restartPendienteSlice({}, { PIPELINE: dir, ROOT: repo.root, skipFetch: true });
     // bootSHA == origin/main → rango vacío → sin drift, botón NO se renderiza.
     assert.strictEqual(res.unknown, false);
     assert.deepStrictEqual(res.items, []);

@@ -15,6 +15,10 @@ const path = require('path');
 // con los 12 tabs en TODOS los satelites y loadIconSprite() lee el cache
 // compartido del sprite.svg para que <use href="#ic-tab-*"> resuelva inline.
 const { renderNavTabsSsr, loadIconSprite, navMoreAutoCloseClientScript } = require('./nav-tabs');
+// #4463 — Header compartido con home.js. Emite las tres pills invariantes
+// (#hdr-resources, #hdr-pulpo, #hdr-clock) + #hdr-mode en los satélites, que
+// antes NO mostraban CPU/RAM ni uptime del Pulpo (causa raíz del problema 2).
+const { renderHeaderMetaSsr, headerPillsClientScript } = require('./header-meta');
 
 // #3953 (EP8-H0) — Wrapper único de fetchJson (CA-2) y framework de modal de
 // confirmación con preview (CA-3). Reemplazan la copia local con .catch(()=>null)
@@ -110,6 +114,10 @@ async function tickHeader(){
         else if(d.mode==='partial_pause'){ modePill.classList.add('in-mode-partial'); modePill.textContent='⏸ Parcial · '+pipelineModeState.allowedIssues.length+' issues'; }
         else { modePill.classList.add('in-mode-running'); modePill.textContent='🟢 Running'; }
     }
+    // #4463 — Pills de recursos (CPU/RAM) y uptime del Pulpo: ahora presentes en
+    // los satélites y hidratadas con la MISMA lógica que home (helper compartido
+    // header-meta.js). Sólo .textContent/.classList/.title (SEC-1, sin innerHTML).
+    if(typeof window.__hydrateHeaderPills === 'function') window.__hydrateHeaderPills(d);
     // #3045 — Si el filtro de allowlist está montado en la Pipeline view,
     // refrescar su visibilidad cuando cambia el modo (running ⇄ partial_pause).
     if(typeof refreshAllowlistToggleVisibility === 'function'){
@@ -282,10 +290,7 @@ ${extraCss}
 <div class="satellite-frame">
   <header class="in-header">
     ${brandHtml}
-    <div class="in-header-meta">
-      <span class="in-pill" id="hdr-mode">…</span>
-      <span class="in-clock" id="hdr-clock">…</span>
-    </div>
+    ${renderHeaderMetaSsr({ withMode: true })}
   </header>
   ${missionHtml}
   ${navHtml}
@@ -296,7 +301,7 @@ ${extraCss}
     <span>Intrale V3</span>
   </footer>
 </div>
-<script>${FETCH_CLIENT_JS}\n${CONFIRM_MODAL_JS}\n${commonHelpers()}\n${scripts}\n${missionOlaEtaClientScript()}\n${navMoreAutoCloseClientScript()}</script>
+<script>${FETCH_CLIENT_JS}\n${CONFIRM_MODAL_JS}\n${commonHelpers()}\n${scripts}\n${headerPillsClientScript()}\n${missionOlaEtaClientScript()}\n${navMoreAutoCloseClientScript()}</script>
 </body>
 </html>`;
 }

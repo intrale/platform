@@ -39,6 +39,9 @@ const path = require('node:path');
 const { escapeHtmlText, escapeHtmlAttr } = require('../../lib/escape-html.js');
 const { renderStatusBadge } = require('./components');
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
+// #4463 — Header compartido: pills de CPU/RAM y uptime del Pulpo + hora, mismo
+// componente que home/satélites. Providers antes sólo mostraba el reloj.
+const { renderHeaderMetaSsr, headerPillsClientScript, headerPillsPollClientScript } = require('./header-meta');
 // #4296 — Accessor compartido del banner de ola (avance %, velocidad %/h, ETA)
 // desde la fuente determinística viva /api/dash/ola-eta (no conteos done/total).
 const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
@@ -847,9 +850,7 @@ function renderProviders() {
 <div class="satellite-frame">
   <header class="in-header">
     ${brandHtml}
-    <div class="in-header-meta">
-      <span class="in-clock" id="hdr-clock">${escapeHtmlText(new Date().toLocaleTimeString('es-AR'))}</span>
-    </div>
+    ${renderHeaderMetaSsr({ withMode: false })}
   </header>
   ${missionHtml}
   ${navHtml}
@@ -860,7 +861,9 @@ function renderProviders() {
     <span>Intrale · MIZPÁ · #4201</span>
   </footer>
 </div>
-<script>${PROVIDERS_CLIENT_JS}</script>
+<script>${PROVIDERS_CLIENT_JS}
+${headerPillsClientScript()}
+${headerPillsPollClientScript()}</script>
 </body>
 </html>`;
 }

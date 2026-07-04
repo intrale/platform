@@ -1154,10 +1154,17 @@ function renderKpisChromeScript() {
   "use strict";
   function fetchJson(url){return fetch(url,{headers:{accept:"application/json"}}).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;});}
   function setText(id,v){var el=document.getElementById(id);if(el&&el.textContent!==String(v))el.textContent=String(v);}
+  // #4448 — último wave bueno (crudo, sin sanitizar-como-HTML). Preserva el
+  // encabezado ante un fetch transitorio null (5xx/red/timeout) en vez de borrarlo.
+  var lastGoodWave=null;
   function mirrorMission(d){
     try{
-      var wave=d&&d.active_wave;
-      if(!wave){setText("mission-wave-num","—");setText("mission-wave-name","Sin ola activa");return;}
+      // #4448 — payload null = fetch transitorio falló; no tocar el header.
+      if(d==null)return;
+      var wave=d.active_wave;
+      if(wave){lastGoodWave=wave;}
+      else if(lastGoodWave&&d.active_wave===undefined){wave=lastGoodWave;}
+      if(!wave){setText("mission-wave-num","—");setText("mission-wave-name","Sin ola activa");setText("mission-wave-desc","Esperando la planificación de la ola activa.");return;}
       if(isFinite(wave.number))setText("mission-wave-num",String(wave.number));
       setText("mission-wave-name",wave.name?("Ola "+wave.number+" · "+wave.name):("Ola "+wave.number));
       var desc=wave.goal||wave.description;if(desc)setText("mission-wave-desc",desc);
