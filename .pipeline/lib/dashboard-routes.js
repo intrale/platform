@@ -412,6 +412,9 @@ function deriveIssuesMission(state) {
             entregados,
             etaRemainingMs: (vel && Number.isFinite(vel.remainingMs)) ? vel.remainingMs : null,
             velocityPctPerMin: (vel && Number.isFinite(vel.velocityPctPerMin)) ? vel.velocityPctPerMin : null,
+            // #4450 — throughput de entrega (issues/día) leído del olaETA cache.
+            throughputPerDay: (eta && Number.isFinite(eta.throughputPerDay)) ? eta.throughputPerDay : null,
+            throughputState: (eta && eta.throughputState === 'measured') ? 'measured' : 'insufficient',
             totalPct: (vel && Number.isFinite(vel.totalPct)) ? vel.totalPct : null,
         };
     } catch { return null; }
@@ -1397,6 +1400,10 @@ const API_ROUTES = {
             velocityETA: data.velocityETA || null,
             etaSource: data.etaSource || 'fallback',
             totalPct: Number.isFinite(data.totalPct) ? data.totalPct : null,
+            // #4450 (R-2) — throughput de entrega de la ola (issues/día) + estado.
+            // Sólo agregados numéricos/estado; sin metadata interna de issues.
+            throughputPerDay: Number.isFinite(data.throughputPerDay) ? data.throughputPerDay : null,
+            throughputState: data.throughputState === 'measured' ? 'measured' : 'insufficient',
             refreshedAt: data.refreshedAt,
         };
     },

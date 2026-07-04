@@ -254,3 +254,63 @@ test('Exporta DEFAULT_BY_SIZE con S/M/L y valores razonables', () => {
     assert.ok(etaWave.DEFAULT_BY_SIZE.S.avgTime < etaWave.DEFAULT_BY_SIZE.M.avgTime);
     assert.ok(etaWave.DEFAULT_BY_SIZE.M.avgTime < etaWave.DEFAULT_BY_SIZE.L.avgTime);
 });
+
+// -----------------------------------------------------------------------------
+// #4450 — calculateWaveThroughput: throughput de entrega (issues/día). Pura y
+// determinística (inyectar `now`). No lee snapshots/FS. Estados measured/
+// insufficient + robustez ante división por cero / waveStartTs faltante o futuro.
+// -----------------------------------------------------------------------------
+
+const DAY_MS = 86400000;
+
+test('calculateWaveThroughput: caso measured (issues/día correcto)', () => {
+    const now = 1_000_000_000_000;
+    // 6 issues en 3 días → 2.0 issues/día.
+    const r = etaWave.calculateWaveThroughput({ closedCount: 6, waveStartTs: now - 3 * DAY_MS, now });
+    assert.equal(r.state, 'measured');
+    assert.ok(Math.abs(r.throughputPerDay - 2) < 1e-9);
+});
+
+test('calculateWaveThroughput: closedCount=0 con ventana válida → 0.0 legítimo (measured)', () => {
+    const now = 1_000_000_000_000;
+    const r = etaWave.calculateWaveThroughput({ closedCount: 0, waveStartTs: now - 2 * DAY_MS, now });
+    assert.equal(r.state, 'measured');   // cero real medido, NO "sin dato"
+    assert.equal(r.throughputPerDay, 0);
+});
+
+test('calculateWaveThroughput: waveStartTs faltante o no finito → insufficient', () => {
+    const now = 1_000_000_000_000;
+    for (const bad of [undefined, null, NaN, Infinity, 'x']) {
+        const r = etaWave.calculateWaveThroughput({ closedCount: 3, waveStartTs: bad, now });
+        assert.equal(r.state, 'insufficient');
+        assert.equal(r.throughputPerDay, null);
+    }
+});
+
+test('calculateWaveThroughput: waveStartTs futuro / igual a now (división por cero) → insufficient, sin excepción', () => {
+    const now = 1_000_000_000_000;
+    // Futuro: (now - startTs) < 0.
+    const future = etaWave.calculateWaveThroughput({ closedCount: 5, waveStartTs: now + DAY_MS, now });
+    assert.equal(future.state, 'insufficient');
+    assert.equal(future.throughputPerDay, null);
+    // Ventana cero: (now - startTs) === 0 → no divide por cero, insufficient.
+    const zero = etaWave.calculateWaveThroughput({ closedCount: 5, waveStartTs: now, now });
+    assert.equal(zero.state, 'insufficient');
+    assert.equal(zero.throughputPerDay, null);
+});
+
+test('calculateWaveThroughput: closedCount inválido (no entero / negativo) → insufficient', () => {
+    const now = 1_000_000_000_000;
+    for (const bad of [-1, 2.5, NaN, undefined, '3']) {
+        const r = etaWave.calculateWaveThroughput({ closedCount: bad, waveStartTs: now - DAY_MS, now });
+        assert.equal(r.state, 'insufficient');
+        assert.equal(r.throughputPerDay, null);
+    }
+});
+
+test('calculateWaveThroughput: args ausentes no lanzan (robustez R-3)', () => {
+    assert.doesNotThrow(() => etaWave.calculateWaveThroughput());
+    assert.doesNotThrow(() => etaWave.calculateWaveThroughput({}));
+    const r = etaWave.calculateWaveThroughput({});
+    assert.equal(r.state, 'insufficient');
+});

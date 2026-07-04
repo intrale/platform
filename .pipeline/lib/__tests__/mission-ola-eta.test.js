@@ -25,6 +25,8 @@ test('payload nulo/indefinido degrada a estructura neutra sin romper', () => {
             etaFromVelocity: false,
             hasVelocity: false,
             velocityState: 'sin datos suficientes', // #4325 CA-4: estado explícito, no mudo
+            throughputPerDay: null,                 // #4450 — throughput sin dato
+            throughputState: 'insufficient',        // #4450 — estado explícito
         });
     }
 });
@@ -105,8 +107,9 @@ test('el emisor de script cliente reusa la función pura y es self-wiring/idempo
     // Guard de idempotencia + poll periódico.
     assert.ok(src.includes('__missionOlaEtaWired'));
     assert.ok(src.includes('setInterval'));
-    // Unidad alineada con la HOME (%/h, no iss/h).
-    assert.ok(src.includes('%/h'));
+    // #4450 — la celda de velocidad ahora expresa throughput en issues/día, no %/h.
+    assert.ok(src.includes('issues/día'));
+    assert.ok(!src.includes('%/h'));
     assert.ok(!src.includes('iss/h'));
 });
 
@@ -142,4 +145,83 @@ test('el script cliente renderiza la leyenda explícita (velocityState) en vez d
     // La cadena viaja dentro de la función serializada (self-contained, sin ref a
     // constante de módulo que rompería el eval del cliente).
     assert.ok(src.includes('sin datos suficientes'));
+});
+
+// -----------------------------------------------------------------------------
+// #4450 — throughput de entrega (issues/día) en la celda 🚀 VELOCIDAD.
+// deriveMissionOlaEta expone throughputPerDay/throughputState; el client script
+// pinta "issues/día" (measured, incluye 0.0) o la leyenda "sin datos suficientes"
+// (insufficient). Render XSS-safe (sin innerHTML sobre mission-vel-value).
+// -----------------------------------------------------------------------------
+
+test('deriveMissionOlaEta expone throughput measured (issues/día) desde el payload', () => {
+    const m = deriveMissionOlaEta({
+        etaSource: 'fallback',
+        totalPct: 25,
+        throughputPerDay: 1.4,
+        throughputState: 'measured',
+    });
+    assert.equal(m.throughputPerDay, 1.4);
+    assert.equal(m.throughputState, 'measured');
+});
+
+test('deriveMissionOlaEta: throughput 0.0 con estado measured es cero legítimo', () => {
+    const m = deriveMissionOlaEta({ throughputPerDay: 0, throughputState: 'measured' });
+    assert.equal(m.throughputPerDay, 0);
+    assert.equal(m.throughputState, 'measured');
+});
+
+test('deriveMissionOlaEta: throughput sin dato / no finito → insufficient (nunca measured con null)', () => {
+    // Todos estos casos deben resolver a insufficient (sin valor confiable).
+    for (const payload of [
+        {},                                                    // sin campos
+        { throughputState: 'measured' },                       // estado sin valor finito
+        { throughputPerDay: NaN, throughputState: 'measured' },// valor no finito
+        { throughputPerDay: 2, throughputState: 'insufficient' }, // estado gana: insufficient
+        { throughputPerDay: '3', throughputState: 'measured' },// tipo inválido
+    ]) {
+        const m = deriveMissionOlaEta(payload);
+        assert.equal(m.throughputState, 'insufficient');
+    }
+    // El valor no finito se normaliza a null.
+    assert.equal(deriveMissionOlaEta({ throughputPerDay: NaN }).throughputPerDay, null);
+    assert.equal(deriveMissionOlaEta({ throughputPerDay: '3' }).throughputPerDay, null);
+});
+
+test('el script cliente pinta issues/día (throughput) y la leyenda "sin datos suficientes"', () => {
+    const src = missionOlaEtaClientScript();
+    assert.ok(src.includes("'issues/día'"));            // unidad de throughput
+    assert.ok(src.includes('throughputState'));         // gate por estado
+    assert.ok(src.includes('throughputPerDay'));        // valor pintado
+    assert.ok(src.includes('sin datos suficientes'));   // leyenda insufficient
+});
+
+test('el script cliente NO usa innerHTML para pintar mission-vel-value (R-1 / G-UX-6)', () => {
+    const src = missionOlaEtaClientScript();
+    // Fuente única XSS-safe: nodo de texto + span de unidad por DOM, nunca una
+    // asignación `.innerHTML = ...` (la palabra puede aparecer en comentarios).
+    assert.ok(!/\.innerHTML\s*=/.test(src), 'no debe asignar innerHTML');
+    assert.ok(src.includes('createTextNode'));
+    assert.ok(src.includes('setMzValueUnit'));
+});
+
+// -----------------------------------------------------------------------------
+// #4450 (AC-5) — verificación estática de fuente única: el ÚNICO writer JS del id
+// `mission-vel-value` es el client script de este módulo. Ninguna vista debe
+// escribir ese id por su cuenta (evita reintroducir la divergencia de #4296).
+// -----------------------------------------------------------------------------
+
+const fs = require('node:fs');
+const path = require('node:path');
+
+test('ninguna vista escribe mission-vel-value por JS (fuente única = mission-ola-eta.js)', () => {
+    const viewsDir = path.join(__dirname, '..', '..', 'views', 'dashboard');
+    const files = fs.readdirSync(viewsDir).filter((f) => f.endsWith('.js'));
+    // Un writer JS toma el nodo por id y lo muta. El markup estático (SSR) que
+    // sólo declara `id="mission-vel-value"` y los comentarios NO cuentan.
+    const jsWriterRe = /getElementById\(['"]mission-vel-value['"]\)/;
+    for (const f of files) {
+        const src = fs.readFileSync(path.join(viewsDir, f), 'utf8');
+        assert.ok(!jsWriterRe.test(src), `la vista ${f} no debe escribir mission-vel-value por JS`);
+    }
 });
