@@ -1375,6 +1375,13 @@ const API_ROUTES = {
     // Sec-Fetch-Site / no-store que el resto de `/api/dash/*`.
     '/api/dash/wave-issue-audit': (state, ctx) => slices.waveIssueAuditSlice(state, ctx),
     '/api/wave-issue-audit': (state, ctx) => slices.waveIssueAuditSlice(state, ctx),
+    // #4375 — indicador de estado de sincronización allowlist↔ola (semáforo
+    // read-only). Consume desync-detector.detectDesync({skipFlag,skipAlert}):
+    // observa sin mutar estado ni alertar (CA-5) y sin llamadas de red a
+    // GitHub (CA-7). Hereda el gate loopback / Sec-Fetch-Site / no-store del
+    // resto de `/api/dash/*`. Alias humano para curl/debug.
+    '/api/dash/desync-status': (state, ctx) => slices.desyncStatusSlice(state, ctx),
+    '/api/desync-status': (state, ctx) => slices.desyncStatusSlice(state, ctx),
     // #3954 EP8-H1 CA-5 — Bandeja de alertas del Home mission-control. Lectura
     // del audit trail (ack/snooze): últimas N entries, stats 24h, estado del
     // hash-chain y supresiones vigentes. Refresh natural 30s desde el cliente.
