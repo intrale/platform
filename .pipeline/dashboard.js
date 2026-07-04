@@ -2455,6 +2455,16 @@ function generateHTML(state) {
     if (slice && !slice.error) waveIssueAuditData = slice;
   } catch {}
 
+  // #4375 — Semáforo de sincronización allowlist↔ola (read-only). SSR inicial +
+  // refresh cliente cada 30s vía /api/dash/desync-status. Ante error del slice
+  // dejamos el estado degradado 'desconocido' (gris), nunca falso verde.
+  let desyncStatusData = { estado: 'desconocido', added: [], removed: [], count: 0, bloqueado: false };
+  try {
+    const slices = require('./lib/dashboard-slices');
+    const slice = slices.desyncStatusSlice({}, {});
+    if (slice && typeof slice === 'object') desyncStatusData = slice;
+  } catch {}
+
   // V3 detection: workers determinísticos en .pipeline/workers/*.js
   let v3Workers = [];
   try {
@@ -4309,6 +4319,30 @@ ${loadDesignTokens()}
    total. Se mantiene .pipe-status-partial por back-compat de otros call-sites. */
 .pipe-status-allowlist{animation:none;letter-spacing:0.8px}
 .pipe-status-partial{background:var(--warning-bg,rgba(210,153,34,0.14));color:var(--warning,var(--yl));border-color:rgba(210,153,34,0.45)}
+
+/* #4375 — Semáforo de sync allowlist↔ola. 4 estados: nunca sólo color (icono +
+   texto, WCAG AA). Tokens semánticos --success/--warning/--danger/--text-dim con
+   fallback. Pulso sutil SÓLO en 🔴 y respetando prefers-reduced-motion. */
+.dss-wrap{display:flex;align-items:center;gap:8px;margin:8px 0 4px;flex-wrap:wrap}
+.dss-caption{font-size:var(--fs-xs,0.75rem);color:var(--text-dim,var(--dim));font-weight:var(--fw-semibold,600);letter-spacing:0.8px;text-transform:uppercase}
+.dss-pill{display:inline-flex;align-items:center;gap:8px;font-size:var(--fs-xs,0.78rem);font-weight:var(--fw-semibold,600);padding:5px 12px;border-radius:var(--radius-full,9999px);border:1px solid transparent}
+.dss-pill .pl-ic{width:14px;height:14px;flex:0 0 auto}
+.dss-label{font-weight:var(--fw-bold,700);letter-spacing:0.4px}
+.dss-detail{color:var(--text-secondary,var(--tx));opacity:0.85;font-size:var(--fs-xs,0.72rem)}
+.dss-chips{display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap}
+.dss-chip{font-size:var(--fs-xs,0.68rem);font-weight:var(--fw-bold,700);padding:1px 6px;border-radius:var(--radius-full,9999px);font-variant-numeric:tabular-nums}
+.dss-chip-add{background:var(--warning-bg,rgba(210,153,34,0.16));color:var(--warning,var(--yl))}
+.dss-chip-rem{background:var(--danger-bg,rgba(248,81,73,0.14));color:var(--danger,var(--rd,#F85149))}
+.dss-ok{background:var(--success-bg,rgba(63,185,80,0.14));color:var(--success,var(--gn));border-color:rgba(63,185,80,0.4)}
+.dss-ok .pl-ic{color:var(--success,var(--gn))}
+.dss-warn{background:var(--warning-bg,rgba(210,153,34,0.14));color:var(--warning,var(--yl));border-color:rgba(210,153,34,0.45)}
+.dss-warn .pl-ic{color:var(--warning,var(--yl))}
+.dss-danger{background:var(--danger-bg,rgba(248,81,73,0.14));color:var(--danger,var(--rd,#F85149));border-color:rgba(248,81,73,0.45);animation:dssPulse 2.2s ease-in-out infinite}
+.dss-danger .pl-ic{color:var(--danger,var(--rd,#F85149))}
+.dss-unknown{background:var(--deterministic-bg,rgba(110,118,129,0.15));color:var(--text-dim,var(--dim));border-color:rgba(139,148,158,0.35)}
+.dss-unknown .pl-ic{color:var(--text-dim,var(--dim))}
+@keyframes dssPulse{0%,100%{box-shadow:0 0 0 rgba(248,81,73,0)}50%{box-shadow:0 0 10px rgba(248,81,73,0.45)}}
+@media (prefers-reduced-motion: reduce){.dss-danger{animation:none}}
 
 /* (#2892 PR-C) — Pill compacta de alerta de consumo anómalo en el header.
  * Usa los tokens --alert-anomaly-* del design system (fuente: assets/design-tokens.css).
@@ -6588,6 +6622,7 @@ body.standalone .section-collapsed .section-body{display:block !important}
     allowlistCandidatesList,
     partialPauseAuditData,
     waveIssueAuditData,
+    desyncStatusData,
     state,
     stale,
     blocked: (typeof blocked !== 'undefined') && blocked,
@@ -7897,6 +7932,70 @@ if (typeof window !== 'undefined') {
   window.addEventListener('DOMContentLoaded', function() {
     refreshAuditTrail();
     setInterval(refreshAuditTrail, 30 * 1000);
+  });
+}
+
+// #4375 — Refresh client-side del semáforo de sync allowlist↔ola.
+// Polling 30s (alineado con el resto de /api/dash/*, CA-6) + skip si tab oculto.
+// Repinta en silencio; ante error de fetch mantiene el último estado (no rompe
+// el layout). Render client-side equivalente al SSR renderDesyncPill del view
+// pipeline.js (mismas clases dss-*, mismos estados, CA-8: enteros escapados).
+var _DSS_META = {
+  sincronizado:          { icon: 'allowlist-check',   label: 'Sincronizado',          cls: 'dss-ok',      aria: 'sincronizado' },
+  realineado_reductivo:  { icon: 'estado-retrying',   label: 'Realineado',            cls: 'dss-warn',    aria: 'realineado, divergencia autoresoluble' },
+  divergencia_bloqueada: { icon: 'warn',              label: 'Divergencia bloqueada', cls: 'dss-danger',  aria: 'divergencia bloqueada, requiere intervención' },
+  desconocido:           { icon: 'stage-not-entered', label: 'Sin datos',             cls: 'dss-unknown', aria: 'sin datos de sincronización' },
+};
+function _dssDetailText(estado, count) {
+  switch (estado) {
+    case 'sincronizado': return count > 0 ? (count + ' issues alineados') : 'allowlist alineada con la ola';
+    case 'realineado_reductivo': return 'divergencia autoresoluble por el Pulpo · no bloquea';
+    case 'divergencia_bloqueada': return 'requiere intervención · ambiguo o flag de desync activo';
+    default: return 'waves/partial-pause ausente o degradado';
+  }
+}
+function _dssChips(added, removed) {
+  var parts = [];
+  (Array.isArray(added) ? added : []).filter(Number.isInteger).slice(0, 6)
+    .forEach(function(n) { parts.push('<span class="dss-chip dss-chip-add">+#' + _ppaClientEsc(String(n)) + '</span>'); });
+  (Array.isArray(removed) ? removed : []).filter(Number.isInteger).slice(0, 6)
+    .forEach(function(n) { parts.push('<span class="dss-chip dss-chip-rem">−#' + _ppaClientEsc(String(n)) + '</span>'); });
+  if (parts.length === 0) return '';
+  return '<span class="dss-chips">' + parts.join('') + '</span>';
+}
+function renderDesyncStatus(data) {
+  var pill = document.getElementById('dss-pill');
+  if (!pill) return;
+  var d = data && typeof data === 'object' ? data : {};
+  var estado = Object.prototype.hasOwnProperty.call(_DSS_META, d.estado) ? d.estado : 'desconocido';
+  var meta = _DSS_META[estado];
+  var count = Number.isInteger(d.count) ? d.count : 0;
+  var detail = _dssDetailText(estado, count);
+  pill.className = 'dss-pill ' + meta.cls;
+  var ariaFull = 'Estado de sincronización allowlist↔ola: ' + meta.aria + '. ' + detail;
+  pill.setAttribute('aria-label', ariaFull);
+  pill.setAttribute('title', detail);
+  pill.innerHTML = ''
+    + '<span class="dss-ic">' + _ppaIcUse(meta.icon, meta.aria) + '</span>'
+    + '<span class="dss-label">' + _ppaClientEsc(meta.label) + '</span>'
+    + '<span class="dss-detail">' + _ppaClientEsc(detail) + '</span>'
+    + _dssChips(d.added, d.removed);
+}
+async function refreshDesyncStatus() {
+  if (typeof document === 'undefined' || document.hidden) return;
+  try {
+    const r = await fetch('/api/dash/desync-status', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    renderDesyncStatus(data);
+  } catch (_) {
+    // Best-effort: mantener el último estado pintado; reintenta en 30s.
+  }
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('DOMContentLoaded', function() {
+    refreshDesyncStatus();
+    setInterval(refreshDesyncStatus, 30 * 1000);
   });
 }
 

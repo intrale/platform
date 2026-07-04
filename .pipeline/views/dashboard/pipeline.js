@@ -130,6 +130,8 @@ function renderPipelineHTML(params) {
        ============================================================ -->
   ${renderControlBar({ ic, state, stale, blocked, isPaused, partialActive, trabajando, pwThreshold, now, allowedIssues })}
 
+  ${renderDesyncPill({ ic, desync: normalizeDesyncStatus(p.desyncStatusData) })}
+
   ${renderDepsBanner({ ic })}
 
   ${renderAllowlistSection({ ic, allowedIssues, allowlistCandidatesList, partialActive })}
@@ -247,6 +249,75 @@ function renderDepsBanner({ ic }) {
     <span id="partial-pause-deps-msg" style="margin-left:10px;color:var(--text,#c9d1d9);"></span>
     <button onclick="includeMissingDeps()" style="margin-left:12px;padding:4px 10px;background:#f0a500;color:#1c2128;border:0;border-radius:4px;cursor:pointer;font-weight:600;" title="${escapeHtmlAttr(TOOLTIPS.includeDeps)}">Agregar dependencias al allowlist</button>
     <button onclick="dismissDepsBanner()" style="margin-left:6px;padding:4px 10px;background:transparent;color:#c9d1d9;border:1px solid rgba(255,255,255,0.2);border-radius:4px;cursor:pointer;" title="${escapeHtmlAttr(TOOLTIPS.dismissDeps)}">Ocultar</button>
+  </div>`;
+}
+
+// --- 2.5 Semáforo de sync allowlist↔ola (#4375) ------------------------------
+// Indicador READ-ONLY de 4 estados que expone el estado de sincronización entre
+// `.partial-pause.json` (allowed_issues) y `waves.json` (active_wave.issues).
+// Consume el slice `desyncStatusSlice` (via /api/dash/desync-status). Contrato
+// UX: nunca sólo color — cada estado se distingue por icono + texto (WCAG AA),
+// `role="status"` + aria-label con el estado completo. Prohibido el falso
+// verde: `desconocido` es ⚪ gris, no 🟢. Sin colores hardcodeados (tokens).
+// CA-8: issue numbers sólo enteros (`Number.isInteger`) escapados.
+const DSS_META = {
+    sincronizado:          { icon: 'allowlist-check',   label: 'Sincronizado',          cls: 'dss-ok',      aria: 'sincronizado' },
+    realineado_reductivo:  { icon: 'estado-retrying',   label: 'Realineado',            cls: 'dss-warn',    aria: 'realineado, divergencia autoresoluble' },
+    divergencia_bloqueada: { icon: 'warn',              label: 'Divergencia bloqueada', cls: 'dss-danger',  aria: 'divergencia bloqueada, requiere intervención' },
+    desconocido:           { icon: 'stage-not-entered', label: 'Sin datos',             cls: 'dss-unknown', aria: 'sin datos de sincronización' },
+};
+
+// Normalización defensiva del contrato del slice: ante campo ausente/corrupto
+// degradamos a `desconocido` (riesgo del render de `undefined`).
+function normalizeDesyncStatus(raw) {
+    const d = raw && typeof raw === 'object' ? raw : {};
+    const estado = Object.prototype.hasOwnProperty.call(DSS_META, d.estado) ? d.estado : 'desconocido';
+    return {
+        estado,
+        added: (Array.isArray(d.added) ? d.added : []).filter(Number.isInteger),
+        removed: (Array.isArray(d.removed) ? d.removed : []).filter(Number.isInteger),
+        count: Number.isInteger(d.count) ? d.count : 0,
+        bloqueado: Boolean(d.bloqueado),
+    };
+}
+
+// Texto de detalle por estado (sin JSON crudo ni paths — CA-8).
+function desyncDetailText(d) {
+    switch (d.estado) {
+        case 'sincronizado':
+            return d.count > 0 ? `${d.count} issues alineados` : 'allowlist alineada con la ola';
+        case 'realineado_reductivo':
+            return 'divergencia autoresoluble por el Pulpo · no bloquea';
+        case 'divergencia_bloqueada':
+            return 'requiere intervención · ambiguo o flag de desync activo';
+        default:
+            return 'waves/partial-pause ausente o degradado';
+    }
+}
+
+// Chips de issues added/removed — sólo enteros escapados, tope de 6 (CA-8).
+function desyncIssueChips(d) {
+    const parts = [];
+    d.added.slice(0, 6).forEach((n) => parts.push('<span class="dss-chip dss-chip-add">+#' + escapeHtmlText(String(n)) + '</span>'));
+    d.removed.slice(0, 6).forEach((n) => parts.push('<span class="dss-chip dss-chip-rem">−#' + escapeHtmlText(String(n)) + '</span>'));
+    if (parts.length === 0) return '';
+    return '<span class="dss-chips">' + parts.join('') + '</span>';
+}
+
+function renderDesyncPill({ ic, desync }) {
+    const d = normalizeDesyncStatus(desync);
+    const meta = DSS_META[d.estado] || DSS_META.desconocido;
+    const detail = desyncDetailText(d);
+    const ariaFull = 'Estado de sincronización allowlist↔ola: ' + meta.aria + '. ' + detail;
+    return `
+  <div class="dss-wrap" data-test-id="desync-status">
+    <span class="dss-caption">Sync allowlist↔ola</span>
+    <span id="dss-pill" class="dss-pill ${meta.cls}" role="status" aria-label="${escapeHtmlAttr(ariaFull)}" title="${escapeHtmlAttr(detail)}">
+      <span class="dss-ic">${ic(meta.icon, meta.aria)}</span>
+      <span class="dss-label">${escapeHtmlText(meta.label)}</span>
+      <span class="dss-detail">${escapeHtmlText(detail)}</span>
+      ${desyncIssueChips(d)}
+    </span>
   </div>`;
 }
 
@@ -506,4 +577,14 @@ function renderWaveAuditTrail({ ic, audit, renderRows, auditNeedsAttention }) {
   </details>`;
 }
 
-module.exports = { renderPipelineHTML, normalizeAudit, normalizeWaveAudit, TOOLTIPS };
+module.exports = {
+    renderPipelineHTML,
+    normalizeAudit,
+    normalizeWaveAudit,
+    TOOLTIPS,
+    // #4375 — helpers del semáforo de sync (exportados para test unitario)
+    renderDesyncPill,
+    normalizeDesyncStatus,
+    desyncDetailText,
+    DSS_META,
+};
