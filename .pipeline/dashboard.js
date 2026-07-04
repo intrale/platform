@@ -13209,15 +13209,6 @@ function startListen() {
     log(`Dashboard en http://${HOST}:${PORT}`);
     log(`API: /api/state | Logs: /logs/{file} | SSE: /events | V3 kiosk: /v3 | Multi-Provider: /multi-provider`);
     try { require('./lib/ready-marker').signalReady('dashboard', { port: PORT, host: HOST }); } catch {}
-    // #4460 — Asegurar que el trust anchor `runtime-boot.json` refleje el HEAD
-    // real al bootear. Mitiga el "restart manual sin restart.js": si el marker
-    // quedó stale, lo reescribimos con el HEAD que este proceso está corriendo.
-    // Best-effort: si git no está disponible, el slice trata el marker como
-    // estado desconocido, nunca como "sin pendientes".
-    try {
-      const rb = require('./lib/runtime-boot').ensureBootMarker({ pipelineDir: PIPELINE, repoRoot: ROOT });
-      if (rb && rb.wrote) log(`Boot marker actualizado al arrancar: ${String(rb.sha || '').slice(0, 8)}`);
-    } catch { /* noop: no bloquear el boot del dashboard */ }
     // #4096 — Arranque del worker de snapshot DESPUÉS de signalReady: el primer
     // refresh es async (setImmediate) para no demorar el listen/ready, y el
     // setInterval mantiene la vista fresca fuera del hot path. `.unref()` evita
@@ -13227,6 +13218,17 @@ function startListen() {
       _stateRefreshTimer = setInterval(refreshStateSnapshot, STATE_REFRESH_MS);
       if (_stateRefreshTimer.unref) _stateRefreshTimer.unref();
     }
+    // #4460 — Asegurar que el trust anchor `runtime-boot.json` refleje el HEAD
+    // real al bootear. Mitiga el "restart manual sin restart.js": si el marker
+    // quedó stale, lo reescribimos con el HEAD que este proceso está corriendo.
+    // Best-effort: si git no está disponible, el slice trata el marker como
+    // estado desconocido, nunca como "sin pendientes". Se corre DESPUÉS de
+    // arrancar el worker de snapshot: el marker es best-effort y no debe
+    // demorar el primer refresh ni el listen/ready.
+    try {
+      const rb = require('./lib/runtime-boot').ensureBootMarker({ pipelineDir: PIPELINE, repoRoot: ROOT });
+      if (rb && rb.wrote) log(`Boot marker actualizado al arrancar: ${String(rb.sha || '').slice(0, 8)}`);
+    } catch { /* noop: no bloquear el boot del dashboard */ }
     // #4131-followup — Monitor de lag del event loop. Tras toda la cadena de
     // fixes async (#4128/#4126/#4132) el dashboard seguía colgándose de forma
     // intermitente y parchábamos a ciegas porque NO sabíamos qué operación
