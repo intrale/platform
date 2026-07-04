@@ -3637,12 +3637,15 @@ function _mzMirrorMission(d){
         setW('mission-bar-active', active);
         setW('mission-bar-blocked', blocked);
         setW('mission-bar-queue', queue);
-        setText('mission-delivered-value', String(done));
+        // #4451 — ENTREGADOS lee el entero autoritativo del server (mismo origen
+        // que el avance del roadmap, computeClosedSet). Fallback al conteo
+        // client-side "done" por back-compat con payloads sin el campo.
+        const delivered = Number.isInteger(wave.delivered) ? wave.delivered : done;
         const dsub = document.getElementById('mission-delivered-sub');
-        if(dsub) dsub.textContent = Math.max(0, total-done) + ' restantes';
+        if(dsub) dsub.textContent = Math.max(0, total-delivered) + ' restantes';
         // El "/ N" del entregados vive en el <span> hijo; lo actualizamos directo.
         const dv = document.getElementById('mission-delivered-value');
-        if(dv) dv.innerHTML = done + '<span class="mz-wm-u"> / ' + total + '</span>';
+        if(dv) dv.innerHTML = delivered + '<span class="mz-wm-u"> / ' + total + '</span>';
 
         // #4287 (CA-1) — la velocidad (id 'mission-vel-value') ya NO se estima
         // acá por issues/hora desde openedAt: la hidrata tickOlaETA con el ritmo
