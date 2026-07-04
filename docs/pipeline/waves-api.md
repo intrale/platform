@@ -156,6 +156,73 @@ Estado agregado del roadmap:
 { "version": "...", "horizon": [ /* waves */ ], "allowlist": [4372, 4381] }
 ```
 
+#### `GET /api/roadmap/allowlist` (#4437)
+Allowlist ("lista de bailes") vigente de la ola, enriquecida por issue. Rol
+lectura (loopback). Metadata desde el cache de deps (no dispara `gh` en runtime).
+Whitelist estricta de campos (A05): **sólo** `number`, `title`, `status`, `parent`
+— nunca paths ni timestamps internos.
+
+```json
+// 200 OK
+{ "count": 2, "allowlist": [
+  { "number": 4433, "title": "…", "status": "open", "parent": 4300 },
+  { "number": 4437, "title": null, "status": "unknown", "parent": null }
+] }
+```
+
+### Editor de allowlist (rol operador — #4437)
+
+Operan **sólo** sobre `.partial-pause.json` (nunca `waves.json`). Persisten
+**exclusivamente** vía `partial-pause.setPartialPause()` con
+`authorizedBy: "dashboard:roadmap:allowlist"` + `justification` (gate + audit
+trail, regla `feedback_allowlist-no-tocar`). Pasan por los tres gates
+(loopback → same-origin → credencial de operador). **No** usan `If-Match`
+(no hay recurso de olas versionado). `add`/`remove` respetan `Idempotency-Key`.
+
+#### `POST /api/roadmap/allowlist/preview`
+Dry-run: calcula el arrastre recursivo sin persistir (`.partial-pause.json`
+intacto). Mismo cinturón de gates que las mutaciones (para no filtrar el grafo
+de deps a orígenes externos, A01).
+
+```json
+// Request  ·  { "issues": [100] }
+// 200 OK
+{ "ok": true, "persisted": false, "candidate": [100],
+  "aArrastrar": [101, 102, 103], "inconsistencias": { "102": [103] },
+  "truncado": false, "reason": null }
+```
+
+#### `POST /api/roadmap/allowlist/add`
+Agrega issue(s) expandiendo recursivamente sus hijos/dependencias/bloqueos
+abiertos antes de persistir.
+
+```json
+// Request  ·  { "issues": [100] }
+// 200 OK
+{ "ok": true, "persisted": true, "allowlist": [100, 101, 102, 103],
+  "added": [100], "aArrastrar": [101, 102, 103], "truncado": false, "reason": null }
+```
+
+#### `POST /api/roadmap/allowlist/remove`
+Quita issue(s). Si la remoción deja dependencias huérfanas (padre sin su hijo)
+o desincroniza la ola activa, responde `blocked: true` **sin persistir**; el
+cliente muestra el aviso y re-postea con `confirm: true` para forzar.
+
+```json
+// Request  ·  { "issues": [103] }
+// 200 OK (bloqueado — no persistió)
+{ "ok": false, "blocked": true, "persisted": false, "requested": [103],
+  "inconsistencias": { "102": [103] }, "desync": null,
+  "truncado": false, "reason": null, "message": "…" }
+// Request  ·  { "issues": [103], "confirm": true }
+// 200 OK (persistido)
+{ "ok": true, "persisted": true, "allowlist": [100, 101, 102], "removed": [103] }
+```
+
+Validación A03 (borde HTTP): cada issue se coerce a `Number()` y se exige entero
+positivo; NaN/negativos/no-numéricos → `400 { code: "bad-id" }` **sin** invocar
+`resolveOpenDeps`.
+
 ### Mutaciones (rol operador)
 
 #### `POST /api/waves`
