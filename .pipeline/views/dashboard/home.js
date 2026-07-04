@@ -33,6 +33,11 @@ const { CONFIRM_MODAL_JS } = require('./confirm-modal.js');
 // home.js consume todo desde aca para no duplicar el catalogo de tabs ni
 // abrir un segundo cache del sprite (mantiene paridad con satellites.js).
 const { renderNavTabsSsr, loadIconSprite, navMoreAutoCloseClientScript } = require('./nav-tabs');
+// #4450 — writer ÚNICO del banner de ola (avance %, velocidad throughput
+// issues/día, ETA). La HOME lo inyecta igual que las otras 9 ventanas para no
+// reintroducir la divergencia de #4296 (antes la HOME hidrataba el banner con un
+// writer inline propio en `tickOlaETA`).
+const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
 
 // #3954 EP8-H1 — Semáforo global explicable (pulpo + infra + cuota + anomalía).
 // Función pura compartida con dashboard.js (sin dependencia circular).
@@ -3579,6 +3584,7 @@ function _mzMirrorMission(d){
             setText('mission-wave-num', '—');
             setText('mission-wave-name', 'Sin ola activa');
             setText('mission-wave-desc', 'Esperando la planificación de la ola activa.');
+            setText('mission-started-value', '—');
             return;
         }
         if(Number.isFinite(wave.number)) setText('mission-wave-num', String(wave.number));
@@ -3587,6 +3593,34 @@ function _mzMirrorMission(d){
         setText('mission-wave-desc', desc);
         const tag = document.getElementById('mission-wave-tag');
         if(tag) tag.style.display = wave.isLast ? '' : 'none';
+
+        // #4447 — Fecha de comienzo de la ola (mission-started-value). Formatea
+        // el ISO started_at/openedAt (ya expuesto por normalizeWave) a es-AR +
+        // TZ Buenos Aires (dd/MM/yyyy HH:mm). Degrada a "—" en olas legacy sin
+        // fecha o valor inválido. Defensivo: nunca corta el tick.
+        try {
+            const startEl = document.getElementById('mission-started-value');
+            if(startEl){
+                const iso = wave.started_at || wave.openedAt || null;
+                let txt = '—', legacy = true;
+                if(iso){
+                    const dt = new Date(iso);
+                    if(!isNaN(dt.getTime())){
+                        txt = new Intl.DateTimeFormat('es-AR', {
+                            day:'2-digit', month:'2-digit', year:'numeric',
+                            hour:'2-digit', minute:'2-digit', hour12:false,
+                            timeZone:'America/Argentina/Buenos_Aires',
+                        }).format(dt);
+                        legacy = false;
+                    }
+                }
+                startEl.innerHTML = legacy ? '—' : (txt + ' <span class="mz-wm-u">hs</span>');
+                const wm = document.getElementById('mission-started-wm');
+                if(wm) wm.title = legacy
+                    ? 'Ola sin fecha de inicio registrada (ola previa al campo).'
+                    : 'Fecha y hora en que se activó la ola.';
+            }
+        } catch(_) {}
 
         const issues = Array.isArray(wave.issues) ? wave.issues : [];
         let done=0, active=0, blocked=0, queue=0;
@@ -3689,41 +3723,20 @@ async function tickOlaETA(){
 
     // #4189 / #4287 (CA-1) — Espeja avance %, velocidad y ETA de la ola en el
     // banner de misión desde la MISMA fuente determinística que el handler de
-    // estado de ola (totalPct + velocityETA), no desde conteos de issues. Se
-    // hidrata por id (anti-flicker), recomputando en cada tick (poll 30s).
+    // estado de ola (totalPct + velocityETA), no desde conteos de issues.
     const vel = (d.velocityETA && typeof d.velocityETA === 'object') ? d.velocityETA : null;
     const hasVelocity = d.etaSource === 'velocity' && vel
         && Number.isFinite(vel.velocityPctPerMin) && vel.velocityPctPerMin > 0;
 
-    // Avance %: totalPct determinístico (null hasta que hay snapshot → "—").
-    if(Number.isFinite(d.totalPct)){
-        setText('mission-avance-pct', Math.round(d.totalPct) + '%');
-    } else {
-        setText('mission-avance-pct', '—');
-    }
-
-    // Velocidad: ritmo de avance de la ola en %/h (velocityPctPerMin × 60).
-    // Sin ritmo medido (etaSource 'fallback' / velocityETA null) → "—" explícito
-    // (mismo criterio que fmtMin), nunca "null"/0 (G-UX-1).
-    const vv = document.getElementById('mission-vel-value');
-    if(vv){
-        if(hasVelocity){
-            const pctPerHour = vel.velocityPctPerMin * 60;
-            vv.innerHTML = pctPerHour.toFixed(1) + ' <span class="mz-wm-u">%/h</span>';
-        } else {
-            vv.innerHTML = '— <span class="mz-wm-u">%/h</span>';
-        }
-    }
-
-    // ETA: cuando hay ritmo medido, usar el restante proyectado por velocidad
-    // (coherente con el sub "proyección por velocidad"); si no, la mediana p50
-    // teórica. Evita mostrar "proyección por velocidad" sobre un valor de
-    // percentiles (incoherencia de UX).
-    if(hasVelocity && Number.isFinite(vel.remainingMs)){
-        setText('mission-eta-value', fmtMin(vel.remainingMs / 60000));
-    } else {
-        setText('mission-eta-value', fmtMin(d.totalP50));
-    }
+    // #4450 — Fuente UNICA del banner: los ids mission-avance-pct,
+    // mission-vel-value y mission-eta-value los hidrata AHORA el client script
+    // compartido missionOlaEtaClientScript (mission-ola-eta.js), inyectado
+    // tambien en la HOME (igual que en las otras 9 ventanas). Se quito el writer
+    // inline de esta funcion — en particular el que pintaba mission-vel-value con
+    // innerHTML y unidad porcentaje/hora — para dejar un unico writer (evita la
+    // divergencia que arreglo #4296 y el vector XSS que senalo security R-1).
+    // Esta funcion solo mantiene el sub-label mission-eta-sub, que el client
+    // script no toca.
     const etaSub = document.getElementById('mission-eta-sub');
     if(etaSub){
         etaSub.textContent = hasVelocity ? 'proyección por velocidad' : 'estimación por percentiles';
@@ -4929,15 +4942,20 @@ function renderMissionBanner(state) {
         </div>
         <div class="mz-mission-desc" id="mission-wave-desc">Esperando la planificación de la ola activa.</div>
         <div class="mz-mission-metrics">
+          <div class="mz-wm" id="mission-started-wm" title="Fecha y hora en que se activó la ola.">
+            <div class="mz-wm-l">🗓️ COMIENZO</div>
+            <div class="mz-wm-v" id="mission-started-value">—</div>
+            <div class="mz-wm-s">inicio de la ola</div>
+          </div>
           <div class="mz-wm" title="Tiempo estimado para cerrar la ola (proyección por velocidad / percentiles de duración).">
             <div class="mz-wm-l">⏳ ETA DE LA OLA</div>
             <div class="mz-wm-v" id="mission-eta-value">—</div>
             <div class="mz-wm-s" id="mission-eta-sub">cierre estimado</div>
           </div>
-          <div class="mz-wm" title="Velocidad de avance de la ola: puntos de progreso por hora (proyección por velocidad media reciente).">
+          <div class="mz-wm" title="Velocidad de la ola: throughput de issues entregados por unidad de tiempo (issues/día).">
             <div class="mz-wm-l">🚀 VELOCIDAD</div>
-            <div class="mz-wm-v" id="mission-vel-value">— <span class="mz-wm-u">%/h</span></div>
-            <div class="mz-wm-s">media reciente</div>
+            <div class="mz-wm-v" id="mission-vel-value">— <span class="mz-wm-u">issues/día</span></div>
+            <div class="mz-wm-s">throughput de entrega</div>
           </div>
           <div class="mz-wm" title="Issues entregados sobre el total de la ola.">
             <div class="mz-wm-l">📦 ENTREGADOS</div>
@@ -5294,6 +5312,7 @@ window.__VIEW_BOOT__ = ${JSON.stringify({
 <script>${FETCH_CLIENT_JS}
 ${CONFIRM_MODAL_JS}
 ${script}
+${missionOlaEtaClientScript()}
 ${navMoreAutoCloseClientScript()}</script>
 </body>
 </html>`;

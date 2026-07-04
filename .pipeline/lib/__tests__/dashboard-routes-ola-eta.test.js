@@ -84,3 +84,53 @@ test('etaSource ausente cae a "fallback" por defecto', () => {
     // totalPct 0 es un avance real (0%), no "sin dato": debe pasar como 0.
     assert.equal(out.totalPct, 0);
 });
+
+// -----------------------------------------------------------------------------
+// #4450 — el payload expone throughput de entrega (issues/día) + estado.
+// -----------------------------------------------------------------------------
+
+test('expone throughputPerDay/throughputState measured cuando el cache los trae', () => {
+    const out = olaETARoute({
+        olaETA: { issues: [1], etaSource: 'fallback', throughputPerDay: 1.4, throughputState: 'measured' },
+    });
+    assert.equal(out.throughputPerDay, 1.4);
+    assert.equal(out.throughputState, 'measured');
+});
+
+test('throughput 0.0 con measured pasa como cero legítimo (no null)', () => {
+    const out = olaETARoute({
+        olaETA: { issues: [1], etaSource: 'fallback', throughputPerDay: 0, throughputState: 'measured' },
+    });
+    assert.equal(out.throughputPerDay, 0);
+    assert.equal(out.throughputState, 'measured');
+});
+
+test('throughput ausente / no finito → null + insufficient (no se filtra basura)', () => {
+    const undef = olaETARoute({ olaETA: { issues: [], etaSource: 'fallback' } });
+    assert.equal(undef.throughputPerDay, null);
+    assert.equal(undef.throughputState, 'insufficient');
+
+    const nan = olaETARoute({ olaETA: { issues: [], etaSource: 'fallback', throughputPerDay: NaN, throughputState: 'measured' } });
+    assert.equal(nan.throughputPerDay, null);
+});
+
+test('R-2: el payload sólo expone agregados de la ola, sin metadata interna', () => {
+    // Aunque el cache traiga campos internos, el route NO los debe reflejar.
+    const out = olaETARoute({
+        olaETA: {
+            issues: [1, 2],
+            etaSource: 'fallback',
+            throughputPerDay: 2, throughputState: 'measured',
+            // ruido que NO debe salir al cliente:
+            _internalPath: '/c/secret/path', issueTitles: { '1': 'x' }, rawState: { foo: 1 },
+        },
+    });
+    const allowed = new Set([
+        'ready', 'issues', 'totalP50', 'totalP75', 'totalP90', 'byIssue',
+        'concurrencyUsed', 'bySize', 'rebounceRate', 'velocityETA', 'etaSource',
+        'totalPct', 'throughputPerDay', 'throughputState', 'refreshedAt',
+    ]);
+    for (const k of Object.keys(out)) {
+        assert.ok(allowed.has(k), `campo inesperado en el payload: ${k}`);
+    }
+});

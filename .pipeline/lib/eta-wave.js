@@ -761,6 +761,38 @@ async function calculateWaveVelocityETA(waveKey, avancePctActual, now) {
     };
 }
 
+/**
+ * #4450 — Throughput de entrega de la ola: issues cerrados por unidad de tiempo
+ * transcurrido, expresado en `issues/día`. Es la "velocidad" en el sentido del
+ * issue (throughput de entregas), distinta de `velocityPctPerMin` (pendiente de
+ * %/ms que alimenta el ETA de #4449, que NO se toca).
+ *
+ * Pura y determinística (inyectar `now` para tests). NO lee snapshots ni el FS:
+ * el caller (dashboard.js) le pasa `closedCount` (del mismo `computeClosedSet`
+ * que la lista) y `waveStartTs` (fecha de inicio de ola / primer snapshot).
+ *
+ * Robustez (R-3 security / G-UX-3): si el conteo es inválido, la fecha de inicio
+ * falta/es futura, o la ventana es no-positiva (división por cero) → devuelve
+ * `{ throughputPerDay: null, state: 'insufficient' }` SIN lanzar excepción (no
+ * rompe el render del resto del encabezado). El estado distingue:
+ *   - `'insufficient'`: sin dato confiable → la vista muestra "sin datos suficientes".
+ *   - `'measured'`: ventana válida; `closedCount === 0` es un cero legítimo
+ *     (`0.0 issues/día`), no un "sin dato".
+ *
+ * @param {{closedCount:number, waveStartTs:number, now?:number}} args
+ * @returns {{throughputPerDay:number|null, state:'measured'|'insufficient'}}
+ */
+function calculateWaveThroughput({ closedCount, waveStartTs, now } = {}) {
+    const ts = (typeof now === 'number' && Number.isFinite(now)) ? now : Date.now();
+    // R-3: guardas de finitud + ventana positiva antes de dividir.
+    if (!Number.isInteger(closedCount) || closedCount < 0
+        || !Number.isFinite(waveStartTs) || (ts - waveStartTs) <= 0) {
+        return { throughputPerDay: null, state: 'insufficient' };
+    }
+    const days = (ts - waveStartTs) / 86400000;   // ms → días
+    return { throughputPerDay: closedCount / days, state: 'measured' };
+}
+
 // ─── Exports ──────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -768,6 +800,7 @@ module.exports = {
     calculateIssueETA,
     calculateOlaETA,
     calculateWaveVelocityETA,   // #4039 — ETA por velocidad media del conjunto
+    calculateWaveThroughput,    // #4450 — throughput de entrega (issues/día)
     analyzeHistoricalMetrics,
     mapSizeToCanonical,
     // Helpers expuestos como API estable

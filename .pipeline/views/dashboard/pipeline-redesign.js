@@ -142,15 +142,20 @@ function renderMissionBannerPipeline() {
         </div>
         <div class="mz-mission-desc" id="mission-wave-desc">Cada issue de la ola recorre el flujo de fases de izquierda a derecha. Acá ves dónde está parado cada uno.</div>
         <div class="mz-mission-metrics">
+          <div class="mz-wm" id="mission-started-wm" title="Fecha y hora en que se activó la ola.">
+            <div class="mz-wm-l">🗓️ COMIENZO</div>
+            <div class="mz-wm-v" id="mission-started-value">—</div>
+            <div class="mz-wm-s">inicio de la ola</div>
+          </div>
           <div class="mz-wm" title="Tiempo estimado para cerrar la ola (proyección por velocidad de entrega).">
             <div class="mz-wm-l">⏳ ETA DE LA OLA</div>
             <div class="mz-wm-v" id="mission-eta-value">—</div>
             <div class="mz-wm-s" id="mission-eta-sub">cierre estimado</div>
           </div>
-          <div class="mz-wm" title="Velocidad de entrega: issues cerrados por hora (media reciente).">
+          <div class="mz-wm" title="Velocidad de la ola: throughput de issues entregados por unidad de tiempo (issues/día).">
             <div class="mz-wm-l">🚀 VELOCIDAD</div>
-            <div class="mz-wm-v" id="mission-vel-value">— <span class="mz-wm-u">%/h</span></div>
-            <div class="mz-wm-s">media reciente</div>
+            <div class="mz-wm-v" id="mission-vel-value">— <span class="mz-wm-u">issues/día</span></div>
+            <div class="mz-wm-s">throughput de entrega</div>
           </div>
           <div class="mz-wm" title="Issues entregados sobre el total de la ola.">
             <div class="mz-wm-l">📦 ENTREGADOS</div>
