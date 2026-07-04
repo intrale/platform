@@ -289,6 +289,8 @@ const worktreeNotifDedup = require('./lib/worktree-notif-dedup');
 const buildChildEnvLib = require('./lib/build-child-env');
 // #2334 / CA6: log stream sanitizer para stdout/stderr del agente.
 const { createLogFileWriter } = require('./lib/sanitize-log-stream');
+// #4444: persistencia de logs de agente por intento (rebotes) + retención.
+const agentLogHistory = require('./lib/agent-log-history');
 // #2334 / CA6: patch global de console.* para que nada pase al log de pulpo
 // (archivo `logs/pulpo.log` que hereda stdout/stderr vía fd).
 require('./lib/sanitize-console').install();
@@ -6946,9 +6948,44 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // pulpo (no viene del agente), así que lo escribimos directo antes de
   // abrir el stream sanitizado; igualmente pasa por `sanitizePipelineText`
   // por consistencia.
-  const agentLogPath = path.join(LOG_DIR, `${issue}-${skill}.log`);
-  fs.writeFileSync(agentLogPath, sanitizePipelineText(`--- ${skill}:#${issue} fase:${fase} pipeline:${pipeline} ${new Date().toISOString()} ---\n`));
+  //
+  // #4444 — Persistencia por intento: además del alias `${issue}-${skill}.log`
+  // (que se mantiene como intento vigente para no romper las ~15 referencias de
+  // dashboard.js ni el streaming live de #4443), escribimos un archivo separado
+  // por intento `${issue}-${skill}.attempt-N.log`. Así un rebote NO sobrescribe
+  // el log del intento anterior y se puede auditar cada ejecución por separado.
+  // El nº de intento se deriva de los contadores de rebote del YAML del ciclo.
+  let launchAttempt = 1;
+  try {
+    launchAttempt = agentLogHistory.deriveAttemptNumber(readYamlSafe(trabajandoPath) || {});
+  } catch { launchAttempt = 1; }
+  const agentLogHeader = sanitizePipelineText(
+    `--- ${skill}:#${issue} fase:${fase} pipeline:${pipeline} intento:${launchAttempt} ${new Date().toISOString()} ---\n`
+  );
+  const agentLogPath = path.join(LOG_DIR, agentLogHistory.aliasLogName(issue, skill));
+  fs.writeFileSync(agentLogPath, agentLogHeader);
   const agentLogWriter = createLogFileWriter(agentLogPath);
+  // Archivo persistente por intento (hereda la redacción de secrets del writer
+  // sanitizado — REQ-SEC-2, defensa en profundidad al persistir).
+  const attemptLogPath = path.join(LOG_DIR, agentLogHistory.attemptLogName(issue, skill, launchAttempt));
+  let attemptLogWriter = null;
+  try {
+    fs.writeFileSync(attemptLogPath, agentLogHeader);
+    attemptLogWriter = createLogFileWriter(attemptLogPath);
+  } catch (e) {
+    // Un fallo persistiendo el histórico NUNCA debe tumbar el lanzamiento del
+    // agente: el alias vigente sigue funcionando (regresión cero).
+    attemptLogWriter = null;
+    log('lanzamiento', `⚠️ #${issue}: no se pudo abrir log de intento ${launchAttempt} para ${skill}: ${e.message.slice(0, 100)}`);
+  }
+  // Retención acotada: podar intentos viejos que excedan la política (best-effort).
+  try {
+    const cfg = (loadConfig() || {}).logs_history;
+    const removed = agentLogHistory.pruneAttempts(LOG_DIR, issue, skill, cfg);
+    if (removed.length) {
+      log('lanzamiento', `🧹 #${issue}/${skill}: retención de logs — ${removed.length} intento(s) viejo(s) podado(s)`);
+    }
+  } catch { /* la retención nunca bloquea el lanzamiento */ }
 
   // --- RECORDING AUTOMÁTICO: iniciar screenrecord en background para QA android ---
   // El pipeline graba, no el agente. Así garantizamos que siempre hay video.
@@ -7221,6 +7258,12 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   try {
     if (child.stdout) child.stdout.pipe(agentLogWriter.writable, { end: false });
     if (child.stderr) child.stderr.pipe(agentLogWriter.writable, { end: false });
+    // #4444 — mismo stdio también al archivo persistente por intento. Piping de
+    // un readable a múltiples writables entrega los chunks a todos.
+    if (attemptLogWriter) {
+      if (child.stdout) child.stdout.pipe(attemptLogWriter.writable, { end: false });
+      if (child.stderr) child.stderr.pipe(attemptLogWriter.writable, { end: false });
+    }
   } catch (e) {
     log('lanzamiento', `⚠️ No se pudo pipear stdio del agente ${skill}:#${issue}: ${e.message}`);
   }
@@ -7301,6 +7344,8 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     // #2334: cerrar el writer sanitizado del log (flush + close).
     // Lo hacemos async pero no bloqueamos el resto del handler.
     try { agentLogWriter.close().catch(() => {}); } catch {}
+    // #4444 — cerrar también el writer del log persistente por intento.
+    try { if (attemptLogWriter) attemptLogWriter.close().catch(() => {}); } catch {}
     // Cancelar watchdog de timeout (ya terminó, por el motivo que sea)
     clearTimeout(watchdog);
 

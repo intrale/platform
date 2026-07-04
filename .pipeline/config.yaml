@@ -644,6 +644,36 @@ historico:
   max_per_tick: 200
   retention_days: 90
 
+# #4444 — Retención del histórico de logs de ejecución de agentes (por intento).
+#
+# El Pulpo persiste el log de cada ejecución de agente en un archivo por intento
+# (`logs/${issue}-${skill}.attempt-N.log`) además del alias del intento vigente
+# (`logs/${issue}-${skill}.log`, compat con dashboard). Así los rebotes ya no se
+# sobrescriben y el dashboard puede exponer el log de CADA intento por separado
+# (endpoint `/logs/history/<issue>/<agente>` + selector en el popup del stepper).
+#
+# `.pipeline/logs/` ya pesa varios GB; retener N intentos por (issue, skill) sin
+# tope acelera el crecimiento y amplía la ventana de exposición de secrets
+# (REQ-SEC-4). Esta política acota ambas dimensiones:
+#
+#   - enabled:                habilita la persistencia por intento + la poda.
+#                             Si false, NO se poda (rollout reversible).
+#   - max_attempts_per_agent: máx. de intentos retenidos por (issue, skill).
+#                             Al superarlo se podan los más viejos (nunca el
+#                             vigente). Default 20.
+#   - max_bytes_per_log:      tope de bytes servidos por request en el endpoint
+#                             de log completo (anti-DoS por fs.readFileSync de
+#                             logs multi-MB). Se sirve la cola con un marcador si
+#                             se trunca. Default 5 MB.
+#   - retention_days:         TTL por intento; los intentos más viejos que esta
+#                             ventana se podan (nunca el vigente). 0 = sin TTL.
+#                             Default 30.
+logs_history:
+  enabled: true
+  max_attempts_per_agent: 20
+  max_bytes_per_log: 5242880
+  retention_days: 30
+
 # #3416 — Rebobinado del pipeline tras rechazo del operador.
 #
 # El operador dispara `/rechazar <issue> <alias>` desde Telegram. El Commander
