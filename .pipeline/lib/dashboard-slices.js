@@ -3519,7 +3519,17 @@ function restartPendienteSlice(state, ctx) {
 
     let detected;
     try {
-        detected = operativoDrift.detectPendingRestart({ bootSha: marker.sha, pipelineDir, repoRoot });
+        // #4448 (rebote rev-1) — seam `skipFetch` para tests herméticos. En
+        // producción `ctx.skipFetch` es undefined → detectPendingRestart hace su
+        // `git fetch origin main` normal (freshness de CA-1). En unit tests que
+        // fijan bootSha=origin/main, saltear el fetch evita el race: sin él,
+        // origin/main podía avanzar bajo el bootSha capturado (una entrega de
+        // pipeline recién mergeada aparecía como drift espurio) y volvía el test
+        // flaky. No cambia el comportamiento del runtime vivo.
+        detected = operativoDrift.detectPendingRestart({
+            bootSha: marker.sha, pipelineDir, repoRoot,
+            skipFetch: !!(ctx && ctx.skipFetch),
+        });
     } catch {
         return { items: [], unknown: true };
     }
