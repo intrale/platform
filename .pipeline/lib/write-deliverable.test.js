@@ -280,6 +280,38 @@ test('writeDeliverable con fase + filename explícito respeta el filename y aún
 });
 
 // -----------------------------------------------------------------------------
+// #4466 (SEC-REQ-1 / CA-SEC-1) — el fallback determinístico enruta `notas` por
+// writeDeliverable (redact=true por default) y el .md sale redactado.
+// -----------------------------------------------------------------------------
+
+test('SEC-REQ-1 · fallback .md desde notas con AWS key / JWT / bot token sale redactado e indexado', () => {
+    const root = tmpRoot();
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.abc123defSIGNATURE';
+    const botToken = '123456789:AAHdqTcvbEXAMPLEbotTOKEN_do-not-leak-xyz';
+    const notas = [
+        '## Resultado del fallback',
+        'AWS=AKIAIOSFODNN7EXAMPLE',
+        `Authorization: Bearer ${jwt}`,
+        `curl https://api.telegram.org/bot${botToken}/sendMessage`,
+    ].join('\n');
+    // Simula exactamente el camino del fallback de pulpo.js: writeDeliverable(skill, issue, { fase, md }).
+    const { path: file } = writeDeliverable('pipeline-dev', '4466', {
+        md: notas,
+        fase: 'dev',
+        pipelineRoot: root,
+    });
+    const written = fs.readFileSync(file, 'utf8');
+    assert.ok(!written.includes('AKIAIOSFODNN7EXAMPLE'), `AWS key filtrada: ${written}`);
+    assert.ok(!written.includes(jwt), `JWT filtrado: ${written}`);
+    assert.ok(!written.includes(botToken), `bot token filtrado: ${written}`);
+    // Y quedó indexado en el store #4255 (la entrega efectiva depende del índice).
+    const read = deliverableIndex.readDeliverableIndex('4466', { pipelineRoot: root });
+    assert.equal(read.entries.length, 1);
+    assert.equal(read.entries[0].agente, 'pipeline-dev');
+    assert.equal(read.entries[0].fase, 'dev');
+});
+
+// -----------------------------------------------------------------------------
 // CA-9 — cap de tamaño
 // -----------------------------------------------------------------------------
 

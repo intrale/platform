@@ -855,3 +855,98 @@ test('CA-UX-EXT-6 · html NO está en DEFAULT_ATTACHMENTS_PER_SKILL (V1)', () =>
         assert.ok(!cfg.formats.includes('.html'), 'ningún skill V1 acepta .html');
     }
 });
+
+// -----------------------------------------------------------------------------
+// #4466 (CA-4) · distinción de audit: artifact_delivery vs closing_notice
+// -----------------------------------------------------------------------------
+
+test('CA-4 · notify marca kind:closing_notice cuando NO hay adjunto', () => {
+    const { root, cleanup } = mkTmpRoot();
+    try {
+        const calls = [];
+        const result = dn.notify({
+            issue: 4466, skill: 'guru', fase: 'analisis', pipeline: 'definicion',
+            yaml: { notas: 'sólo aviso de cierre, sin artefacto físico' },
+            config: defaultCfg(),
+            pipelineRoot: root,
+            telegramQueueDir: path.join(root, '.pipeline/servicios/telegram/pendiente'),
+            deps: { writeQueueFile: (p, payload) => calls.push({ p, payload }) },
+        });
+        assert.equal(result.ok, true);
+        assert.equal(result.audit.kind, 'closing_notice');
+    } finally { cleanup(); }
+});
+
+test('CA-4 · notify marca kind:artifact_delivery cuando hay adjunto aceptado', () => {
+    const { root, cleanup } = mkTmpRoot();
+    try {
+        const pdf = path.join(root, '.pipeline/assets/docs/4466.pdf');
+        writeFixture(pdf, PDF_SIGNATURE);
+        const calls = [];
+        const result = dn.notify({
+            issue: 4466, skill: 'guru', fase: 'analisis', pipeline: 'definicion',
+            yaml: {
+                notas: 'análisis técnico con entregable',
+                attachments: [{ type: 'document', path: '.pipeline/assets/docs/4466.pdf' }],
+            },
+            config: defaultCfg(),
+            pipelineRoot: root,
+            telegramQueueDir: path.join(root, '.pipeline/servicios/telegram/pendiente'),
+            deps: { writeQueueFile: (p, payload) => calls.push({ p, payload }) },
+        });
+        assert.equal(result.ok, true);
+        assert.equal(result.audit.kind, 'artifact_delivery');
+        // El JSONL persiste el kind.
+        const auditPath = path.join(root, '.pipeline/audit/deliverable-notifications.jsonl');
+        const lines = fs.readFileSync(auditPath, 'utf8').trim().split('\n');
+        const last = JSON.parse(lines[lines.length - 1]);
+        assert.equal(last.kind, 'artifact_delivery');
+    } finally { cleanup(); }
+});
+
+test('CA-4 · adjunto RECHAZADO (no aceptado) mantiene kind:closing_notice', () => {
+    const { root, cleanup } = mkTmpRoot();
+    try {
+        // guru sólo acepta document; un image será rechazado → no hubo entrega real.
+        const png = path.join(root, '.pipeline/assets/mockups/4466.png');
+        writeFixture(png, PNG_SIGNATURE);
+        const calls = [];
+        const result = dn.notify({
+            issue: 4466, skill: 'guru', fase: 'analisis', pipeline: 'definicion',
+            yaml: {
+                notas: 'intento con adjunto no permitido para el perfil',
+                attachments: [{ type: 'image', path: '.pipeline/assets/mockups/4466.png' }],
+            },
+            config: defaultCfg(),
+            pipelineRoot: root,
+            telegramQueueDir: path.join(root, '.pipeline/servicios/telegram/pendiente'),
+            deps: { writeQueueFile: (p, payload) => calls.push({ p, payload }) },
+        });
+        assert.equal(result.ok, true);
+        assert.equal(result.audit.kind, 'closing_notice',
+            'un adjunto rechazado no cuenta como artifact_delivery');
+    } finally { cleanup(); }
+});
+
+test('CA-4 · el nuevo kind NO es tratado como audio por el dedup (sigue contando)', () => {
+    const { root, cleanup } = mkTmpRoot();
+    try {
+        const calls = [];
+        const args = {
+            issue: 4466, skill: 'guru', fase: 'analisis', pipeline: 'definicion',
+            yaml: { notas: 'contenido idéntico para probar dedup' },
+            config: defaultCfg(),
+            pipelineRoot: root,
+            telegramQueueDir: path.join(root, '.pipeline/servicios/telegram/pendiente'),
+            deps: { writeQueueFile: (p, payload) => calls.push({ p, payload }) },
+        };
+        const r1 = dn.notify(args);
+        const r2 = dn.notify(args);
+        assert.equal(r1.audit.kind, 'closing_notice');
+        // El record principal (kind:closing_notice) SÍ debe contar para dedup:
+        // la segunda invocación con el mismo content se saltea.
+        assert.equal(r2.ok, false);
+        assert.equal(r2.reason, 'dedup');
+        assert.equal(calls.length, 1);
+    } finally { cleanup(); }
+});

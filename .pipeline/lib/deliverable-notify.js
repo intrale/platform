@@ -1809,8 +1809,18 @@ function notify(args) {
         const audioEnabled = cfg.audio_enabled === true && cfg.kill_switch_audio !== true;
 
         // Audit OK del texto.
+        // #4466 (C) — CA-4: distinguir explícitamente "entrega de artefacto" de
+        // "aviso de cierre". `built.attachments` (= attachmentRecords) incluye
+        // aceptados Y rechazados, por eso miramos SÓLO los aceptados: si ningún
+        // adjunto llegó realmente, es un closing_notice aunque hubiera un intento.
+        // Este `kind` NO es 'audio' → los filtros de dedup de audio (L~1298/L~2448)
+        // no lo tocan y el record principal sigue contando para dedup.
+        const deliveredArtifact =
+            Array.isArray(built.attachments) &&
+            built.attachments.some((a) => a && a.accepted === true);
         const finalAudit = {
             ...built.auditRecord,
+            kind: deliveredArtifact ? 'artifact_delivery' : 'closing_notice',
             telegram_enqueue_ok: true,
             dropfile: firstDropfileName,
         };
