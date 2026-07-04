@@ -3,8 +3,10 @@
 // =============================================================================
 // mission-ola-eta.js — #4296
 //
-// Fuente ÚNICA del avance %, velocidad (%/h) y ETA del banner de ola compartido
-// (ids `mission-avance-pct` / `mission-vel-value` / `mission-eta-value`).
+// Fuente ÚNICA del avance %, velocidad (throughput issues/día) y ETA del banner
+// de ola compartido (ids `mission-avance-pct` / `mission-vel-value` /
+// `mission-eta-value`). #4450 — la celda de velocidad pasó de %/h de avance a
+// throughput de entrega (issues/día), fiel al texto del issue (Opción A).
 //
 // Contexto del bug: la HOME (post #4287) ya hidrata esos tres valores desde el
 // cómputo determinístico de la ola — `/api/dash/ola-eta` → `totalPct` +
@@ -61,7 +63,18 @@ function deriveMissionOlaEta(d) {
         ? vel.remainingMs / 60000
         : (Number.isFinite(data.totalP50) ? data.totalP50 : null);
     const velocityState = hasVelocity ? 'measured' : 'sin datos suficientes';
-    return { avancePct, velocityPctPerHour, etaRemainingMin, etaFromVelocity, hasVelocity, velocityState };
+    // #4450 — throughput de entrega de la ola (issues/día). Es la "velocidad"
+    // que pinta la celda 🚀 VELOCIDAD (Opción A / G-UX-1), distinta de
+    // `velocityPctPerHour` (porcentaje de avance por hora, insumo del ETA).
+    // Estado explícito:
+    // 'measured' (incluye 0.0 legítimo) o 'insufficient' (leyenda "sin datos
+    // suficientes"). El literal se inlinea en el client script (no acá) porque
+    // esta función se serializa vía `.toString()` y no puede referenciar
+    // constantes de módulo.
+    const throughputPerDay = Number.isFinite(data.throughputPerDay) ? data.throughputPerDay : null;
+    const throughputState = (data.throughputState === 'measured' && throughputPerDay !== null)
+        ? 'measured' : 'insufficient';
+    return { avancePct, velocityPctPerHour, etaRemainingMin, etaFromVelocity, hasVelocity, velocityState, throughputPerDay, throughputState };
 }
 
 /**
@@ -100,13 +113,15 @@ function missionOlaEtaClientScript() {
       if(pctEl){ var t = (m.avancePct !== null ? m.avancePct + '%' : '—'); if(pctEl.textContent !== t) pctEl.textContent = t; }
       var vv = document.getElementById('mission-vel-value');
       if(vv){
-        // #4325 (CA-4) — ritmo medido → "N.N %/h"; sin datos → leyenda explícita
-        // (velocityState), NUNCA un "—" mudo ni un 0 silencioso.
-        if(m.velocityPctPerHour !== null){
-          setMzValueUnit(vv, m.velocityPctPerHour.toFixed(1), '%/h');
+        // #4450 (G-UX-1) — la celda 🚀 VELOCIDAD expresa THROUGHPUT de entrega
+        // en issues por dia (no porcentaje/hora). Medido -> "N.N issues/día"
+        // (0.0 legitimo); sin datos suficientes -> leyenda explicita, NUNCA un
+        // "—" mudo ni un 0 enganoso (G-UX-3). Render XSS-safe (createTextNode, R-1).
+        if(m.throughputState === 'measured' && m.throughputPerDay !== null){
+          setMzValueUnit(vv, m.throughputPerDay.toFixed(1), 'issues/día');
         } else {
           while(vv.firstChild) vv.removeChild(vv.firstChild);
-          vv.appendChild(document.createTextNode(m.velocityState));
+          vv.appendChild(document.createTextNode('sin datos suficientes'));
         }
       }
       var ev = document.getElementById('mission-eta-value');

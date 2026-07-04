@@ -147,10 +147,10 @@ function renderMissionBannerPipeline() {
             <div class="mz-wm-v" id="mission-eta-value">—</div>
             <div class="mz-wm-s" id="mission-eta-sub">cierre estimado</div>
           </div>
-          <div class="mz-wm" title="Velocidad de entrega: issues cerrados por hora (media reciente).">
+          <div class="mz-wm" title="Velocidad de la ola: throughput de issues entregados por unidad de tiempo (issues/día).">
             <div class="mz-wm-l">🚀 VELOCIDAD</div>
-            <div class="mz-wm-v" id="mission-vel-value">— <span class="mz-wm-u">%/h</span></div>
-            <div class="mz-wm-s">media reciente</div>
+            <div class="mz-wm-v" id="mission-vel-value">— <span class="mz-wm-u">issues/día</span></div>
+            <div class="mz-wm-s">throughput de entrega</div>
           </div>
           <div class="mz-wm" title="Issues entregados sobre el total de la ola.">
             <div class="mz-wm-l">📦 ENTREGADOS</div>

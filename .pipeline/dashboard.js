@@ -840,6 +840,13 @@ function _scheduleOlaETARefresh(state) {
       // "N de M" (CA-2). null si no se pudo derivar.
       let waveClosedCount = null;
       let waveTotalIssues = null;
+      // #4450 — throughput de entrega (issues/día) de la ola. Reusa el mismo
+      // `closedCount` que el panel de métricas y la fecha de inicio de ola
+      // (`wave.openedAt`, aportada por #4447; fallback al primer snapshot de la
+      // serie de avance). `insufficient` por defecto: la vista muestra la
+      // leyenda explícita hasta que haya ventana medible (G-UX-3).
+      let waveThroughputPerDay = null;
+      let waveThroughputState = 'insufficient';
       try {
         if (waveProgressLib && wavesLib && waveResolverLib && waveSnapshotLib && waveStateLib) {
           const activeWave = wavesLib.getActiveWave();
@@ -863,6 +870,24 @@ function _scheduleOlaETARefresh(state) {
             // #4399 — el conteo de cerrados/total sale del MISMO set que la lista.
             waveClosedCount = closedIssues.size;
             waveTotalIssues = Array.isArray(wave && wave.issues) ? wave.issues.length : 0;
+            // #4450 — fecha de inicio de ola para el tiempo transcurrido del
+            // throughput. Primario: `wave.openedAt` (= `active_wave.started_at`,
+            // #4447). Fallback: primer snapshot de la serie de avance de la ola
+            // (ventana derivada) si `openedAt` falta o no parsea.
+            let waveStartTs = (wave && typeof wave.openedAt === 'string') ? Date.parse(wave.openedAt) : NaN;
+            if (!Number.isFinite(waveStartTs)) {
+              try {
+                const snaps = waveProgressLib.readSnapshots({ pipelineRoot: PIPELINE, waveKey });
+                if (Array.isArray(snaps) && snaps.length) waveStartTs = snaps[0].ts;
+              } catch { /* sin fallback → estado insufficient */ }
+            }
+            const tp = etaWaveLib.calculateWaveThroughput({
+              closedCount: waveClosedCount,
+              waveStartTs,
+              now: Date.now(),
+            });
+            waveThroughputPerDay = tp.throughputPerDay;
+            waveThroughputState = tp.state;
             const wSnap = waveSnapshotLib.buildWaveSnapshot({ state: wState, wave, closedIssues });
             if (wSnap && Number.isFinite(wSnap.totalPct)) {
               waveTotalPct = wSnap.totalPct;
@@ -874,9 +899,9 @@ function _scheduleOlaETARefresh(state) {
           }
         }
       } catch { /* fallback: sin velocityETA */ }
-      return { olaResult, historical, velocityETA, waveTotalPct, waveClosedCount, waveTotalIssues };
+      return { olaResult, historical, velocityETA, waveTotalPct, waveClosedCount, waveTotalIssues, waveThroughputPerDay, waveThroughputState };
     })
-    .then(({ olaResult, historical, velocityETA, waveTotalPct, waveClosedCount, waveTotalIssues }) => {
+    .then(({ olaResult, historical, velocityETA, waveTotalPct, waveClosedCount, waveTotalIssues, waveThroughputPerDay, waveThroughputState }) => {
       _olaETACache = {
         issues: olaIssues,
         totalP50: olaResult.totalP50,
@@ -896,6 +921,9 @@ function _scheduleOlaETARefresh(state) {
         // (CA-2). null cuando no se pudo derivar la ola canónica.
         closedCount: Number.isInteger(waveClosedCount) ? waveClosedCount : null,
         totalIssues: Number.isInteger(waveTotalIssues) ? waveTotalIssues : null,
+        // #4450 — throughput de entrega (issues/día) + estado measured/insufficient.
+        throughputPerDay: Number.isFinite(waveThroughputPerDay) ? waveThroughputPerDay : null,
+        throughputState: waveThroughputState === 'measured' ? 'measured' : 'insufficient',
         refreshedAt: Date.now(),
       };
       _olaETACacheAt = Date.now();
