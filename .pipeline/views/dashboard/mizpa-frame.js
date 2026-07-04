@@ -41,6 +41,28 @@ try {
 
 const WAVES_PATH = path.join(__dirname, '../../waves.json');
 
+// ───────────────────────── Formato de fecha de inicio de ola (#4447) ─────────
+// Defensa en profundidad (requisito de security): parsea el ISO crudo a `Date`,
+// valida `isNaN` y formatea con `Intl.DateTimeFormat` es-AR + TZ Buenos Aires
+// (dd/MM/yyyy HH:mm). Cae a `—` cuando `startedAt` es null (olas legacy previas
+// al campo `started_at`) o cuando el string es inválido. Nunca lanza.
+const WAVE_START_FALLBACK = '—';
+
+function formatWaveStart(iso) {
+    if (!iso) return WAVE_START_FALLBACK;
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return WAVE_START_FALLBACK;
+    try {
+        return new Intl.DateTimeFormat('es-AR', {
+            day: '2-digit', month: '2-digit', year: 'numeric',
+            hour: '2-digit', minute: '2-digit', hour12: false,
+            timeZone: 'America/Argentina/Buenos_Aires',
+        }).format(d);
+    } catch (_) {
+        return WAVE_START_FALLBACK;
+    }
+}
+
 // ───────────────────────── Colector de la ola activa ─────────────────────────
 
 /**
@@ -49,7 +71,7 @@ const WAVES_PATH = path.join(__dirname, '../../waves.json');
  * asumir un schema rígido (waves.json se puebla vía /planner).
  * @param {string} [wavesPath]  override del path (tests).
  * @returns {{active:boolean, number?:string, name?:string, desc?:string, tag?:string,
- *            eta?:string, velocity?:string, delivered?:number, total?:number,
+ *            startedAt?:string|null, eta?:string, velocity?:string, delivered?:number, total?:number,
  *            done?:number, activeCount?:number, blocked?:number, queue?:number, pct?:number}}
  */
 function collectWave(wavesPath) {
@@ -69,6 +91,7 @@ function collectWave(wavesPath) {
             name: w.name || w.title || 'Ola activa',
             desc: w.description || w.desc || '',
             tag: w.tag || null,
+            startedAt: w.started_at || null,
             eta: w.eta || null,
             velocity: w.velocity != null ? String(w.velocity) : null,
             delivered: done,
@@ -158,6 +181,21 @@ function renderMissionBanner(wave) {
         </div>
         <div class="mz-mission-desc">${escapeHtmlText(wave.desc || 'Ola en ejecución.')}</div>
         <div class="mz-mission-metrics">
+          ${(() => {
+              const startFmt = formatWaveStart(wave.startedAt);
+              const isFallback = startFmt === WAVE_START_FALLBACK;
+              const startTitle = isFallback
+                  ? 'Ola sin fecha de inicio registrada (ola previa al campo).'
+                  : 'Fecha y hora en que se activó la ola.';
+              const startVal = isFallback
+                  ? escapeHtmlText(WAVE_START_FALLBACK)
+                  : `${escapeHtmlText(startFmt)} <span class="mz-wm-u">hs</span>`;
+              return `<div class="mz-wm" title="${escapeHtmlText(startTitle)}">
+            <div class="mz-wm-l">🗓️ COMIENZO</div>
+            <div class="mz-wm-v">${startVal}</div>
+            <div class="mz-wm-s">inicio de la ola</div>
+          </div>`;
+          })()}
           <div class="mz-wm" title="Tiempo estimado para cerrar la ola.">
             <div class="mz-wm-l">⏳ ETA DE LA OLA</div>
             <div class="mz-wm-v">${escapeHtmlText(wave.eta || '—')}</div>
@@ -238,6 +276,7 @@ const MIZPA_FRAME_CSS = `
 
 module.exports = {
     collectWave,
+    formatWaveStart,
     renderBrandBar,
     renderMissionBanner,
     MIZPA_FRAME_CSS,

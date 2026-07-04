@@ -28,6 +28,7 @@ const path = require('node:path');
 
 const {
     collectWave,
+    formatWaveStart,
     renderBrandBar,
     renderMissionBanner,
     MIZPA_FRAME_CSS,
@@ -41,6 +42,7 @@ const SAMPLE_WAVE = Object.freeze({
     name: 'Ola 7 · auditoría',
     desc: 'Independizar el modelo operativo del producto.',
     tag: 'ÚLTIMA DEL PLAN',
+    startedAt: '2026-07-03T13:31:53.182Z',
     eta: '2h 30m',
     velocity: '1.4',
     delivered: 5,
@@ -74,7 +76,7 @@ test('collectWave degrada a {active:false} con JSON inválido (no lanza)', () =>
 test('collectWave mapea una ola activa y deriva queue/pct', () => {
     const tmp = path.join(os.tmpdir(), 'waves-ok-' + process.pid + '.json');
     fs.writeFileSync(tmp, JSON.stringify({
-        active_wave: { number: 7, name: 'Ola 7', total: 10, done: 4, active: 2, blocked: 1 },
+        active_wave: { number: 7, name: 'Ola 7', total: 10, done: 4, active: 2, blocked: 1, started_at: '2026-07-03T13:31:53.182Z' },
     }));
     try {
         const w = collectWave(tmp);
@@ -84,9 +86,41 @@ test('collectWave mapea una ola activa y deriva queue/pct', () => {
         assert.equal(w.done, 4);
         assert.equal(w.queue, 3); // 10 - 4 - 2 - 1
         assert.equal(w.pct, 40); // 4/10
+        assert.equal(w.startedAt, '2026-07-03T13:31:53.182Z'); // #4447 mapea started_at
     } finally {
         fs.rmSync(tmp, { force: true });
     }
+});
+
+// #4447 — collectWave degrada startedAt a null cuando la ola no trae started_at
+// (olas legacy sembradas antes del campo).
+test('collectWave mapea startedAt a null en olas legacy sin started_at', () => {
+    const tmp = path.join(os.tmpdir(), 'waves-legacy-' + process.pid + '.json');
+    fs.writeFileSync(tmp, JSON.stringify({
+        active_wave: { number: 3, name: 'Ola legacy', total: 5, done: 1 },
+    }));
+    try {
+        assert.equal(collectWave(tmp).startedAt, null);
+    } finally {
+        fs.rmSync(tmp, { force: true });
+    }
+});
+
+// ── formatWaveStart (#4447) ──────────────────────────────────────────────────
+
+test('formatWaveStart formatea un ISO válido a es-AR + TZ Buenos Aires', () => {
+    // 2026-07-03T13:31:53Z → Buenos Aires (UTC-3) = 10:31.
+    const out = formatWaveStart('2026-07-03T13:31:53.182Z');
+    assert.match(out, /03\/07\/2026/);
+    assert.match(out, /10:31/);
+});
+
+test('formatWaveStart cae a "—" con null, undefined o fecha inválida', () => {
+    assert.equal(formatWaveStart(null), '—');
+    assert.equal(formatWaveStart(undefined), '—');
+    assert.equal(formatWaveStart(''), '—');
+    assert.equal(formatWaveStart('no-es-fecha'), '—');
+    assert.equal(formatWaveStart('<script>alert(1)</script>'), '—');
 });
 
 // ── renderBrandBar ───────────────────────────────────────────────────────────
@@ -122,6 +156,42 @@ test('renderMissionBanner (ola activa) usa el markup canónico mz-* con AVANCE',
     assert.ok(html.includes('activos'));
     assert.ok(html.includes('bloq.'));
     assert.ok(html.includes('cola'));
+});
+
+// #4447 — CA-2/CA-3/CA-4: la métrica 🗓️ COMIENZO aparece con la fecha
+// formateada cuando startedAt está presente.
+test('renderMissionBanner incluye la métrica 🗓️ COMIENZO con la fecha formateada (#4447)', () => {
+    const html = renderMissionBanner(SAMPLE_WAVE);
+    assert.match(html, /🗓️ COMIENZO/);
+    assert.match(html, /inicio de la ola/);
+    assert.match(html, /Fecha y hora en que se activó la ola\./);
+    assert.match(html, /03\/07\/2026/);
+    assert.match(html, /10:31/);
+    assert.match(html, /class="mz-wm-u">hs</);
+    // Orden: COMIENZO antes de ETA (lectura pasado→futuro, UX).
+    assert.ok(html.indexOf('COMIENZO') < html.indexOf('ETA DE LA OLA'));
+});
+
+// #4447 — CA-5: olas legacy (startedAt null) o fecha inválida → "—".
+test('renderMissionBanner rinde "—" en COMIENZO cuando startedAt es null (ola legacy)', () => {
+    const html = renderMissionBanner({ ...SAMPLE_WAVE, startedAt: null });
+    assert.match(html, /🗓️ COMIENZO/);
+    assert.match(html, /Ola sin fecha de inicio registrada/);
+    // El valor cae a "—", sin sufijo "hs".
+    assert.match(html, /<div class="mz-wm-v">—<\/div>/);
+});
+
+test('renderMissionBanner rinde "—" en COMIENZO cuando startedAt es inválido (#4447)', () => {
+    const html = renderMissionBanner({ ...SAMPLE_WAVE, startedAt: 'no-es-fecha' });
+    assert.match(html, /<div class="mz-wm-v">—<\/div>/);
+});
+
+// #4447 — CA-6 (security): un startedAt con <script> nunca aparece crudo.
+test('renderMissionBanner no inyecta markup crudo desde startedAt (#4447, CA-6)', () => {
+    const html = renderMissionBanner({ ...SAMPLE_WAVE, startedAt: '<script>alert(1)</script>' });
+    assert.ok(!html.includes('<script>alert(1)</script>'));
+    // Degrada a "—" (fecha inválida) → tampoco expone el string.
+    assert.match(html, /<div class="mz-wm-v">—<\/div>/);
 });
 
 test('renderMissionBanner NO emite las clases legacy lv-mission (no duplica markup, CA-5)', () => {
