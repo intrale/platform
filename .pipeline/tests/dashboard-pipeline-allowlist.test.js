@@ -196,7 +196,7 @@ test('plOnlyWave es booleano de módulo con default ON desde sessionStorage (REQ
 test('theme.css declara .v3-nav con layout flex elástico MIZPÁ (CA-1 #4195: nav curada + popover)', () => {
     // Historia: #3045 (9→10) auto-fit; #3239 (10→11); #3358 → repeat(N, minmax);
     // #3726 nav unificada (grid de 12-13 columnas).
-    // #4189/#4195 — La nav MIZPÁ es CURADA: 5 tabs primarios SIEMPRE visibles +
+    // #4189/#4195/#4454 — La nav MIZPÁ es CURADA: 4 tabs primarios SIEMPRE visibles +
     // un botón «⋯ Más» (popover <details>) con el resto. Un grid de N columnas
     // ya NO modela esto (el popover usa margin-left:auto para anclarse a la
     // derecha, imposible en grid). theme.css pasa a FLEX con `flex-wrap` y tabs
