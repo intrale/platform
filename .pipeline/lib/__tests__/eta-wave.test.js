@@ -198,6 +198,36 @@ test('calculateOlaETA acepta lista no-array y devuelve estructura vacía', async
     assert.equal(r.totalP50, 0);
 });
 
+// ─── #4449 (CA-3) — exclusión de cerrados del presupuesto teórico ────────────
+// dashboard.js::_scheduleOlaETARefresh filtra los issues CERRADOS de `olaIssues`
+// ANTES de invocar calculateOlaETA, para que `totalP50` refleje el trabajo
+// RESTANTE y no el histórico total. Este test verifica el mecanismo del que
+// depende ese filtro: cada issue aporta su costo al total, así que excluir uno
+// (el cerrado) reduce el presupuesto teórico.
+
+test('#4449 CA-3: excluir un issue cerrado reduce el totalP50 del restante', async () => {
+    _internal._invalidateAnalysisCache();
+    const todos = [
+        { number: 9001, size: 'M' },
+        { number: 9002, size: 'M' },
+        { number: 9003, size: 'M' },   // este se considera CERRADO
+    ];
+    // `restante` = lo que el dashboard pasa tras filtrar closedIssues={9003}.
+    const restante = todos.filter((i) => i.number !== 9003);
+
+    const rTotal = await etaWave.calculateOlaETA(todos, 1);
+    const rRestante = await etaWave.calculateOlaETA(restante, 1);
+
+    // El presupuesto del restante NO puede sobre-estimar contando el cerrado.
+    assert.ok(
+        rRestante.totalP50 <= rTotal.totalP50,
+        `restante (${rRestante.totalP50}) debe ser <= total (${rTotal.totalP50})`
+    );
+    // El issue cerrado no figura en el byIssue del restante.
+    assert.ok(!rRestante.byIssue[9003], 'el issue cerrado no debe aportar al restante');
+    assert.ok(rRestante.byIssue[9001] && rRestante.byIssue[9002], 'los abiertos sí aportan');
+});
+
 // ─── analyzeHistoricalMetrics ──────────────────────────────────────────────
 
 test('analyzeHistoricalMetrics devuelve estructura completa con bySize/rebounceRate/avgPhaseTime', async () => {

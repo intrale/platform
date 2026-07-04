@@ -394,7 +394,10 @@ Usá el helper compartido, que centraliza validación de `issue` (CA-5), redacci
 ```js
 const path = require("path");
 const { writeDeliverable } = require(path.resolve(".pipeline/lib/write-deliverable"));
-writeDeliverable("android-dev", issue, { md /* o svg para mockups/diagramas */ });
+// #4466 — pasar `fase` puebla el índice .pipeline/deliverables/<issue>.json (store #4255)
+// y da filename phase-scoped. Tomamos la fase real del pipeline desde el env inyectado.
+const fase = process.env.PIPELINE_FASE || "dev";
+writeDeliverable("android-dev", issue, { fase, md /* o svg para mockups/diagramas */ });
 ```
 
 El enforcement es **warn-only**: no generar el archivo no bloquea el pipeline, pero cuenta para la cobertura ≥80% de la ola (CA-4).

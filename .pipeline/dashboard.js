@@ -781,20 +781,43 @@ function _scheduleOlaETARefresh(state) {
   const olaIssues = [];
   const seen = new Set();
   let activeIssues = [];
+  // #4449 (CA-3) — Resolver la ola activa, el wave-state y el set de CERRADOS una
+  // sola vez, ANTES de armar `olaIssues`, para: (a) excluir los issues cerrados del
+  // presupuesto teórico (`totalP50` = trabajo RESTANTE real, no histórico total →
+  // corrige el sesgo optimista sin introducir uno pesimista), y (b) reusar las
+  // mismas refs en el bloque de velocidad de abajo, sin duplicar la llamada costosa
+  // a `resolveActiveWave` / `getCachedWaveState`.
+  let resolvedWave = null;
+  let resolvedWaveState = null;
+  let closedIssues = new Set();
+  let closedComputed = false;
   try {
     if (waveResolverLib) {
-      const aw = waveResolverLib.resolveActiveWave({ pipelineRoot: PIPELINE });
-      if (aw && Array.isArray(aw.issues)) activeIssues = aw.issues;
+      resolvedWave = waveResolverLib.resolveActiveWave({ pipelineRoot: PIPELINE });
+      if (resolvedWave && Array.isArray(resolvedWave.issues)) activeIssues = resolvedWave.issues;
       if (!activeIssues.length) {
-        try { log(`olaETA: ola activa sin issues (source=${aw && aw.source}) → métricas en estado sin-dato`); } catch {}
+        try { log(`olaETA: ola activa sin issues (source=${resolvedWave && resolvedWave.source}) → métricas en estado sin-dato`); } catch {}
       }
     }
-  } catch { activeIssues = []; }
+  } catch { activeIssues = []; resolvedWave = null; }
+  try {
+    if (waveStateLib) resolvedWaveState = waveStateLib.getCachedWaveState({ pipelineRoot: PIPELINE });
+    if (resolvedWave && resolvedWaveState) {
+      // Require lazy DENTRO de la función (patrón anti-circular, idem L829).
+      const { computeClosedSet } = require('./lib/commander-deterministic');
+      closedIssues = computeClosedSet({ wave: resolvedWave, state: resolvedWaveState });
+      closedComputed = true;
+    }
+  } catch { closedIssues = new Set(); closedComputed = false; }
   for (const raw of activeIssues) {
     const num = Number(raw);
     if (!Number.isInteger(num) || num <= 0) continue;
     if (seen.has(num)) continue;
     seen.add(num);
+    // #4449 (CA-3) — saltear los issues CERRADOS: ya no son trabajo restante, así
+    // que NO deben aportar a `totalP50` (si sumaran, el ETA sesgaría pesimista
+    // contando trabajo ya hecho).
+    if (closedIssues.has(num)) continue;
     // Conservar el enriquecimiento de `size:` label (#3529, SEC-1..SEC-4):
     // cruzar el número de la ola contra `state.issueMatrix[num].labels` y, si hay
     // un label anclado al prefijo `size:` (case-insensitive, primer match),
@@ -858,17 +881,21 @@ function _scheduleOlaETARefresh(state) {
             // `velocityETA: null` → `etaSource: 'fallback'`; y
             // `getCachedWaveState` corre `buildWaveState` sobre contexto
             // incompleto (wave-state.js:268). `PIPELINE` está en scope de módulo.
-            const wave = waveResolverLib.resolveActiveWave({ pipelineRoot: PIPELINE });
-            const wState = waveStateLib.getCachedWaveState({ pipelineRoot: PIPELINE });
+            // #4449 — Reusar `resolvedWave`/`resolvedWaveState`/`closedIssues` ya
+            // resueltos en el scope sync (evita duplicar las llamadas costosas). El
+            // `||` preserva la robustez si la resolución sync falló (fallback local).
+            const wave = resolvedWave || waveResolverLib.resolveActiveWave({ pipelineRoot: PIPELINE });
+            const wState = resolvedWaveState || waveStateLib.getCachedWaveState({ pipelineRoot: PIPELINE });
             // #4325 — sin `closedIssues`, `buildWaveSnapshot` deja `closedCount`
             // en 0 y `totalPct` colapsa a ~2% aunque la ola tenga issues CLOSED
             // en GitHub. `computeClosedSet` deriva los cerrados de la cache cruda
             // (`state.issueTitles`) igual que `handleWaveStatus`. Require lazy DENTRO
-            // de la función para preservar el patrón anti-circular (idem L3860/L10535).
-            const { computeClosedSet } = require('./lib/commander-deterministic');
-            const closedIssues = computeClosedSet({ wave, state: wState });
+            // de la función para preservar el patrón anti-circular (idem arriba).
+            const closed = closedComputed
+              ? closedIssues
+              : require('./lib/commander-deterministic').computeClosedSet({ wave, state: wState });
             // #4399 — el conteo de cerrados/total sale del MISMO set que la lista.
-            waveClosedCount = closedIssues.size;
+            waveClosedCount = closed.size;
             waveTotalIssues = Array.isArray(wave && wave.issues) ? wave.issues.length : 0;
             // #4450 — fecha de inicio de ola para el tiempo transcurrido del
             // throughput. Primario: `wave.openedAt` (= `active_wave.started_at`,
@@ -888,7 +915,9 @@ function _scheduleOlaETARefresh(state) {
             });
             waveThroughputPerDay = tp.throughputPerDay;
             waveThroughputState = tp.state;
-            const wSnap = waveSnapshotLib.buildWaveSnapshot({ state: wState, wave, closedIssues });
+            // #4449 — el snapshot usa el MISMO set de cerrados (`closed`) que
+            // alimenta `waveClosedCount`, para que `totalPct` excluya cerrados.
+            const wSnap = waveSnapshotLib.buildWaveSnapshot({ state: wState, wave, closedIssues: closed });
             if (wSnap && Number.isFinite(wSnap.totalPct)) {
               waveTotalPct = wSnap.totalPct;
               const nowTs = Date.now();

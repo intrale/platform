@@ -3633,12 +3633,15 @@ function _mzMirrorMission(d){
         setText('mission-leg-queue', String(queue));
         // #4452 — la barra de avance (#mission-bar-progress) la hidrata
         // __applyMissionOlaEta desde avancePct; NO se rellena por distribución.
-        setText('mission-delivered-value', String(done));
+        // #4451 — ENTREGADOS lee el entero autoritativo del server (mismo origen
+        // que el avance del roadmap, computeClosedSet). Fallback al conteo
+        // client-side "done" por back-compat con payloads sin el campo.
+        const delivered = Number.isInteger(wave.delivered) ? wave.delivered : done;
         const dsub = document.getElementById('mission-delivered-sub');
-        if(dsub) dsub.textContent = Math.max(0, total-done) + ' restantes';
+        if(dsub) dsub.textContent = Math.max(0, total-delivered) + ' restantes';
         // El "/ N" del entregados vive en el <span> hijo; lo actualizamos directo.
         const dv = document.getElementById('mission-delivered-value');
-        if(dv) dv.innerHTML = done + '<span class="mz-wm-u"> / ' + total + '</span>';
+        if(dv) dv.innerHTML = delivered + '<span class="mz-wm-u"> / ' + total + '</span>';
 
         // #4287 (CA-1) — la velocidad (id 'mission-vel-value') ya NO se estima
         // acá por issues/hora desde openedAt: la hidrata tickOlaETA con el ritmo
@@ -3722,6 +3725,8 @@ async function tickOlaETA(){
     // inline de esta funcion — en particular el que pintaba mission-vel-value con
     // innerHTML y unidad porcentaje/hora — para dejar un unico writer (evita la
     // divergencia que arreglo #4296 y el vector XSS que senalo security R-1).
+    // El piso teorico de la ETA (#4449 — Math.max(velMin, budgetMin)) vive ahora
+    // en deriveMissionOlaEta (mission-ola-eta.js), que el client script invoca.
     // Esta funcion solo mantiene el sub-label mission-eta-sub, que el client
     // script no toca.
     const etaSub = document.getElementById('mission-eta-sub');

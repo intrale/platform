@@ -963,6 +963,10 @@ deliverable_notifications:
     android-dev:  { types: [document],              formats: [.md, .pdf] }
     web-dev:      { types: [document],              formats: [.md, .pdf] }
     pipeline-dev: { types: [document],              formats: [.md, .pdf] }
+    # #4466 — `delivery` estaba en la whitelist `skills` pero sin perfil de
+    # adjuntos: el fallback determinístico no podía entregar su artefacto (resumen
+    # de entrega PR/commit). Perfil documental como el resto (CA-3, 14 skills).
+    delivery:     { types: [document],              formats: [.md, .pdf] }
 
   # CA-SEC-EXT-1: root allowlisteado por tipo. Cualquier path fuera del root
   # configurado se rechaza con `outside_root` SIN tocar disco.
