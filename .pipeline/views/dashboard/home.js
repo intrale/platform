@@ -3552,10 +3552,26 @@ async function tickWaves(){
 // Deriva número/nombre/descripción, contadores por estado (hecho/activo/
 // bloqueado/cola), avance %, entregados N/M y velocidad best-effort. Defensivo:
 // cualquier dato ausente degrada a neutro sin romper el render.
+// #4448 — Cache del último wave bueno (name+goal CRUDOS, sin sanitizar-como-HTML).
+// Preserva el encabezado ante un fetch transitorio fallido en vez de borrarlo.
+let lastGoodWave = null;
 function _mzMirrorMission(d){
     try {
-        const wave = d && d.active_wave;
+        // #4448 — payload null = fetch transitorio falló (fetchClient devuelve
+        // null ante 5xx/red/timeout). NO tocar el header: se preserva el último
+        // valor bueno ya renderizado en el DOM en lugar de degradar a placeholder.
+        if (d == null) return;
+        let wave = d.active_wave;
+        if (wave) {
+            lastGoodWave = wave; // string CRUDO; el render escapa vía setText→textContent
+        } else if (lastGoodWave && d.active_wave === undefined) {
+            // defensivo: payload válido pero sin la clave active_wave (schema
+            // parcial en carrera de reescritura de waves.json) → no degradar,
+            // reusar el último bueno. Distinto de active_wave:null autoritativo.
+            wave = lastGoodWave;
+        }
         if(!wave){
+            // ausencia AUTORITATIVA: server confirma active_wave:null explícito.
             setText('mission-wave-num', '—');
             setText('mission-wave-name', 'Sin ola activa');
             setText('mission-wave-desc', 'Esperando la planificación de la ola activa.');

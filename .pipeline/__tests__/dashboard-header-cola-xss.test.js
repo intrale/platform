@@ -30,6 +30,15 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const DASHBOARD_PATH = path.join(REPO_ROOT, '.pipeline', 'dashboard.js');
 const DASHBOARD_SRC = fs.readFileSync(DASHBOARD_PATH, 'utf8');
 
+// #4448 — el encabezado de misión espeja la ola activa vía `_mzMirrorMission`
+// (home.js) y `mirrorMission` (kpis.js). Ambas viven dentro de template strings
+// del script client-side, así que las extraemos del source y las corremos en un
+// `vm` con un DOM falso para verificar el comportamiento de preservación.
+const HOME_PATH = path.join(REPO_ROOT, '.pipeline', 'views', 'dashboard', 'home.js');
+const HOME_SRC = fs.readFileSync(HOME_PATH, 'utf8');
+const KPIS_MOD = require(path.join(REPO_ROOT, '.pipeline', 'views', 'dashboard', 'kpis.js'));
+const KPIS_CHROME_SRC = KPIS_MOD.renderKpisChromeScript();
+
 // #3728 — la ventana Pipeline (incluido el bloque pipeline-ctrl-bar con los
 // toggles de Priority Windows) fue extraída de `dashboard.js` a su propio módulo
 // SSR `.pipeline/views/dashboard/pipeline.js`. dashboard.js sigue rindiendo esos
@@ -335,4 +344,205 @@ test('CA-1 · cola con 3 items rellena con 7 placeholders para altura estable', 
     const matches = html.match(/is-placeholder/g) || [];
     assert.equal(matches.length, 7,
         `esperaba 7 placeholders cuando la cola tiene 3 items, obtuve ${matches.length}`);
+});
+
+// =============================================================================
+// #4448 — El nombre/descripción de la ola activa NO deben perderse ante estados
+// transitorios (fetch fallido → payload `null`). Distinción clave:
+//   - `d === null` / `active_wave === undefined`  → transitorio → PRESERVAR.
+//   - `active_wave === null` (payload válido)      → autoritativo → placeholder.
+// Se ejercita el comportamiento real de `_mzMirrorMission` (home.js) y
+// `mirrorMission` (kpis.js), extraídas del source y corridas en un DOM falso.
+// =============================================================================
+
+// Extrae una función completa (`function nombre(...){...}`) del source, con
+// balanceo de llaves robusto: ignora strings ('', "", ``) y comentarios (// y /* */)
+// para no contar llaves espurias que aparezcan dentro de ellos.
+function extractFunction(src, signature) {
+    const start = src.indexOf(signature);
+    if (start === -1) return null;
+    let i = src.indexOf('{', start);
+    if (i === -1) return null;
+    let depth = 0;
+    for (; i < src.length; i++) {
+        const ch = src[i], nx = src[i + 1];
+        if (ch === '/' && nx === '/') {           // comentario de línea
+            const nl = src.indexOf('\n', i);
+            if (nl === -1) return src.slice(start);
+            i = nl; continue;
+        }
+        if (ch === '/' && nx === '*') {           // comentario de bloque
+            const end = src.indexOf('*/', i + 2);
+            i = end === -1 ? src.length : end + 1; continue;
+        }
+        if (ch === '"' || ch === "'" || ch === '`') { // string literal
+            const q = ch; i++;
+            while (i < src.length) {
+                if (src[i] === '\\') { i += 2; continue; }
+                if (src[i] === q) break;
+                i++;
+            }
+            continue;
+        }
+        if (ch === '{') depth++;
+        else if (ch === '}') { depth--; if (depth === 0) return src.slice(start, i + 1); }
+    }
+    return null;
+}
+
+// DOM falso: elementos auto-vivificados con textContent/innerHTML/style.
+// `_htmlSet` registra si alguna vez se asignó innerHTML (guardia XSS: los campos
+// de la ola deben renderizarse SOLO vía textContent, nunca innerHTML).
+function makeFakeDoc() {
+    const els = {};
+    function makeEl(id) {
+        let _t = '', _h = '', htmlSet = false;
+        return {
+            id, style: {},
+            get textContent() { return _t; },
+            set textContent(v) { _t = String(v); },
+            get innerHTML() { return _h; },
+            set innerHTML(v) { _h = String(v); htmlSet = true; },
+            get _htmlSet() { return htmlSet; },
+        };
+    }
+    return {
+        getElementById(id) { if (!els[id]) els[id] = makeEl(id); return els[id]; },
+        _els: els,
+    };
+}
+
+// Carga `_mzMirrorMission` (+ su `setText` y el cache `lastGoodWave`) de home.js
+// en un contexto vm fresco. Devuelve { doc, mirror } — estado aislado por llamada.
+function loadHomeMirror() {
+    const setTextSrc = extractFunction(HOME_SRC, 'function setText(id, value)');
+    const mirrorSrc = extractFunction(HOME_SRC, 'function _mzMirrorMission(d)');
+    assert.ok(setTextSrc, 'no se pudo extraer setText de home.js');
+    assert.ok(mirrorSrc, 'no se pudo extraer _mzMirrorMission de home.js');
+    const doc = makeFakeDoc();
+    const ctx = { document: doc };
+    vm.createContext(ctx);
+    vm.runInContext(
+        `let lastGoodWave=null;\n${setTextSrc}\n${mirrorSrc}\nglobalThis.__mirror=_mzMirrorMission;`,
+        ctx, { timeout: 1000 }
+    );
+    return { doc, mirror: ctx.__mirror };
+}
+
+// Ídem para `mirrorMission` de kpis.js (extraída del script emitido por
+// renderKpisChromeScript(), que ya resolvió sus interpolaciones).
+function loadKpisMirror() {
+    const setTextSrc = extractFunction(KPIS_CHROME_SRC, 'function setText(id,v)');
+    const setWidthSrc = extractFunction(KPIS_CHROME_SRC, 'function setWidth(id,p)');
+    const mirrorSrc = extractFunction(KPIS_CHROME_SRC, 'function mirrorMission(d)');
+    assert.ok(setTextSrc, 'no se pudo extraer setText de kpis.js');
+    assert.ok(setWidthSrc, 'no se pudo extraer setWidth de kpis.js');
+    assert.ok(mirrorSrc, 'no se pudo extraer mirrorMission de kpis.js');
+    const doc = makeFakeDoc();
+    const ctx = { document: doc };
+    vm.createContext(ctx);
+    vm.runInContext(
+        `var lastGoodWave=null;\n${setTextSrc}\n${setWidthSrc}\n${mirrorSrc}\nglobalThis.__mirror=mirrorMission;`,
+        ctx, { timeout: 1000 }
+    );
+    return { doc, mirror: ctx.__mirror };
+}
+
+const GOOD_WAVE = { active_wave: { number: 2, name: 'seed', goal: 'Objetivo de la ola seed 2' } };
+
+// ---- home.js `_mzMirrorMission` -------------------------------------------
+
+test('#4448 home · con ola activa hidrata nombre y descripción', () => {
+    const { doc, mirror } = loadHomeMirror();
+    mirror(GOOD_WAVE);
+    assert.equal(doc.getElementById('mission-wave-num').textContent, '2');
+    assert.equal(doc.getElementById('mission-wave-name').textContent, 'Ola 2 · seed');
+    assert.equal(doc.getElementById('mission-wave-desc').textContent, 'Objetivo de la ola seed 2');
+});
+
+test('#4448 home · fetch fallido (d===null) NO borra el encabezado (preserva último bueno)', () => {
+    const { doc, mirror } = loadHomeMirror();
+    mirror(GOOD_WAVE);                 // hidrata
+    mirror(null);                      // poll transitorio falla
+    assert.equal(doc.getElementById('mission-wave-name').textContent, 'Ola 2 · seed',
+        'el nombre de la ola se borró ante un fetch fallido (regresión #4448)');
+    assert.equal(doc.getElementById('mission-wave-desc').textContent, 'Objetivo de la ola seed 2',
+        'la descripción de la ola se borró ante un fetch fallido (regresión #4448)');
+});
+
+test('#4448 home · payload sin la clave active_wave (schema parcial) preserva último bueno', () => {
+    const { doc, mirror } = loadHomeMirror();
+    mirror(GOOD_WAVE);
+    mirror({ updated_at: '2026-07-03T00:00:00Z' }); // active_wave === undefined
+    assert.equal(doc.getElementById('mission-wave-name').textContent, 'Ola 2 · seed');
+    assert.equal(doc.getElementById('mission-wave-desc').textContent, 'Objetivo de la ola seed 2');
+});
+
+test('#4448 home · active_wave:null autoritativo SÍ muestra placeholder', () => {
+    const { doc, mirror } = loadHomeMirror();
+    mirror({ active_wave: null });
+    assert.equal(doc.getElementById('mission-wave-num').textContent, '—');
+    assert.equal(doc.getElementById('mission-wave-name').textContent, 'Sin ola activa');
+    assert.equal(doc.getElementById('mission-wave-desc').textContent,
+        'Esperando la planificación de la ola activa.');
+});
+
+test('#4448 home · active_wave:null autoritativo tras una ola buena NO preserva (muestra placeholder)', () => {
+    const { doc, mirror } = loadHomeMirror();
+    mirror(GOOD_WAVE);
+    mirror({ active_wave: null });     // todas las olas cerradas — estado real
+    assert.equal(doc.getElementById('mission-wave-name').textContent, 'Sin ola activa',
+        'el placeholder autoritativo no debe enmascararse con el cache #4448');
+});
+
+test('#4448 home · XSS desde caché: name malicioso se conserva como texto (textContent, nunca innerHTML)', () => {
+    const { doc, mirror } = loadHomeMirror();
+    const evil = '<img src=x onerror=alert(1)>';
+    mirror({ active_wave: { number: 3, name: evil, goal: evil } });
+    mirror(null); // fetch falla → se preserva el valor cacheado
+    const nameEl = doc.getElementById('mission-wave-name');
+    const descEl = doc.getElementById('mission-wave-desc');
+    // El string crudo se guarda como TEXTO (textContent), que el navegador escapa.
+    assert.equal(nameEl.textContent, 'Ola 3 · ' + evil);
+    assert.equal(descEl.textContent, evil);
+    // Guardia dura: estos campos NUNCA deben pasar por innerHTML.
+    assert.equal(nameEl._htmlSet, false, 'mission-wave-name se renderizó vía innerHTML (riesgo XSS)');
+    assert.equal(descEl._htmlSet, false, 'mission-wave-desc se renderizó vía innerHTML (riesgo XSS)');
+});
+
+// ---- kpis.js `mirrorMission` ----------------------------------------------
+
+test('#4448 kpis · con ola activa hidrata nombre y descripción', () => {
+    const { doc, mirror } = loadKpisMirror();
+    mirror(GOOD_WAVE);
+    assert.equal(doc.getElementById('mission-wave-num').textContent, '2');
+    assert.equal(doc.getElementById('mission-wave-name').textContent, 'Ola 2 · seed');
+    assert.equal(doc.getElementById('mission-wave-desc').textContent, 'Objetivo de la ola seed 2');
+});
+
+test('#4448 kpis · fetch fallido (d===null) NO borra el encabezado', () => {
+    const { doc, mirror } = loadKpisMirror();
+    mirror(GOOD_WAVE);
+    mirror(null);
+    assert.equal(doc.getElementById('mission-wave-name').textContent, 'Ola 2 · seed');
+    assert.equal(doc.getElementById('mission-wave-desc').textContent, 'Objetivo de la ola seed 2');
+});
+
+test('#4448 kpis · active_wave:null autoritativo muestra placeholder', () => {
+    const { doc, mirror } = loadKpisMirror();
+    mirror({ active_wave: null });
+    assert.equal(doc.getElementById('mission-wave-num').textContent, '—');
+    assert.equal(doc.getElementById('mission-wave-name').textContent, 'Sin ola activa');
+    assert.equal(doc.getElementById('mission-wave-desc').textContent,
+        'Esperando la planificación de la ola activa.');
+});
+
+test('#4448 kpis · XSS desde caché: name malicioso se conserva como texto, nunca innerHTML', () => {
+    const { doc, mirror } = loadKpisMirror();
+    const evil = '<img src=x onerror=alert(1)>';
+    mirror({ active_wave: { number: 3, name: evil, goal: evil } });
+    mirror(null);
+    const nameEl = doc.getElementById('mission-wave-name');
+    assert.equal(nameEl.textContent, 'Ola 3 · ' + evil);
+    assert.equal(nameEl._htmlSet, false, 'mission-wave-name se renderizó vía innerHTML (riesgo XSS)');
 });
