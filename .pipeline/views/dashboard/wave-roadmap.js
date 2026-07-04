@@ -39,6 +39,9 @@ const fs = require('fs');
 const path = require('path');
 
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
+// #4463 — Header compartido: pills de CPU/RAM y uptime del Pulpo + hora. Roadmap
+// antes sólo mostraba estado del pipeline + reloj (sin CPU/RAM ni uptime).
+const { renderHeaderMetaSsr, headerPillsClientScript } = require('./header-meta');
 const { FETCH_CLIENT_JS } = require('./fetch-client.js');
 const { CONFIRM_MODAL_JS } = require('./confirm-modal.js');
 
@@ -1210,6 +1213,8 @@ async function tickHeader(){
     else if(d.mode==='partial_pause'){ modePill.classList.add('in-mode-partial'); modePill.textContent='⏸ Parcial'; }
     else { modePill.classList.add('in-mode-running'); modePill.textContent='🟢 Running'; }
   }
+  // #4463 — Pills de CPU/RAM y uptime del Pulpo (helper compartido header-meta.js).
+  if(typeof window.__hydrateHeaderPills === 'function') window.__hydrateHeaderPills(d);
 }
 tickHeader();
 setInterval(function(){ tickHeader().catch(function(){}); }, 5000);
@@ -1248,10 +1253,7 @@ function renderRoadmap(opts) {
 <div class="satellite-frame">
   <header class="in-header">
     <div class="in-header-title"><h1>Roadmap de olas</h1></div>
-    <div class="in-header-meta">
-      <span class="in-pill" id="hdr-mode">…</span>
-      <span class="in-clock" id="hdr-clock">…</span>
-    </div>
+    ${renderHeaderMetaSsr({ withMode: true })}
   </header>
   ${navHtml}
   <main class="satellite-body">${fragment}</main>
@@ -1260,7 +1262,7 @@ function renderRoadmap(opts) {
     <span>Intrale V3 · #4378 · #4373</span>
   </footer>
 </div>
-<script>${FETCH_CLIENT_JS}\n${CONFIRM_MODAL_JS}\n${COMMON_HELPERS}\n${renderRoadmapClientScript()}</script>
+<script>${FETCH_CLIENT_JS}\n${CONFIRM_MODAL_JS}\n${headerPillsClientScript()}\n${COMMON_HELPERS}\n${renderRoadmapClientScript()}</script>
 </body>
 </html>`;
 }
