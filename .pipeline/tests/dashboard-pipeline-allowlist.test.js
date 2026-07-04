@@ -230,9 +230,12 @@ test('theme.css declara .v3-nav con layout flex elástico MIZPÁ (CA-1 #4195: na
         '.v3-more debe anclarse a la derecha (margin-left:auto) — botón «⋯ Más»',
     );
     // No debe quedar el grid viejo de columnas fijas en .v3-nav.
+    // La regex se ancla al bloque de la regla ([^}] no cruza el `}` de cierre)
+    // para no dar falso positivo con grid-template-columns de OTRAS reglas
+    // declaradas más abajo en theme.css (p.ej. .mz-mission-metrics de #4492).
     assert.doesNotMatch(
         THEME_SRC,
-        /\.v3-nav\s*\{[\s\S]*?grid-template-columns:\s*repeat\(/,
+        /\.v3-nav\s*\{[^}]*?grid-template-columns:\s*repeat\(/,
         'no debe quedar grid-template-columns:repeat(...) en .v3-nav (regresión pre-MIZPÁ)',
     );
 });
