@@ -2967,6 +2967,94 @@ function partialPauseAuditSlice(state, ctx) {
 }
 
 // -----------------------------------------------------------------------------
+// #4375 — Slice del indicador de estado de sincronización allowlist↔ola.
+// Superficie READ-ONLY (CA-5): consume `desync-detector.detectDesync()` con
+// `skipFlag:true, skipAlert:true` → observa sin mutar estado ni disparar
+// Telegram. NO pasa `isClosed` (CA-7): sin llamadas de red a GitHub; el peor
+// caso es marcar ámbar/rojo de más (fail-safe), nunca un falso verde.
+//
+// Mapeo estado→color (fuente: classifyDesync en desync-detector.js:170 +
+// contrato PO CA-1..CA-4):
+//   🟢 sincronizado          → desync===false && reason===null
+//   🟡 realineado_reductivo  → desync===true && classification==='resoluble_reductivo'
+//   🔴 divergencia_bloqueada → (desync===true && classification==='ambiguo') || isDesyncFlagSet()
+//   ⚪ desconocido           → reason 'no_waves_yet'/'no_partial_pause', o try/catch capturó error
+//
+// Riesgo del FALSO VERDE (receta): detectDesync devuelve `desync:false` con
+// `reason` seteado en los casos degradados. Por eso el slice chequea `reason`
+// ANTES de concluir `sincronizado`. Todo envuelto en try/catch (CA-4): ante
+// cualquier error → `{ estado:'desconocido', error }` sin propagar.
+// -----------------------------------------------------------------------------
+
+// Detector real (opcional; si el módulo no carga, el slice degrada a
+// 'desconocido'). Override inyectable para tests (CA-10) sin tocar el estado
+// global del pipeline — mismo patrón que `_setLogDir`.
+let desyncDetector = null;
+try { desyncDetector = require('./desync-detector'); } catch { /* opcional */ }
+let _desyncDetectorOverride = null;
+
+function desyncStatusSlice(state, ctx) {
+    const detector = _desyncDetectorOverride || desyncDetector;
+    // Base defensiva del contrato JSON (CA-6): siempre devolvemos el shape
+    // completo aunque falte el detector o algo falle.
+    const base = {
+        estado: 'desconocido',
+        classification: null,
+        desync: null,
+        reason: null,
+        added: [],
+        removed: [],
+        bloqueado: false,
+        count: 0,
+    };
+    if (!detector || typeof detector.detectDesync !== 'function') {
+        return { ...base, error: 'desync_detector_unavailable' };
+    }
+    try {
+        const probe = detector.detectDesync({ skipFlag: true, skipAlert: true }) || {};
+        const bloqueado = typeof detector.isDesyncFlagSet === 'function'
+            ? detector.isDesyncFlagSet() === true
+            : false;
+        // CA-8: issue numbers sólo enteros validados antes de exponerlos.
+        const added = (Array.isArray(probe.added) ? probe.added : []).filter(Number.isInteger);
+        const removed = (Array.isArray(probe.removed) ? probe.removed : []).filter(Number.isInteger);
+        const reason = probe.reason != null ? probe.reason : null;
+        const classification = probe.classification != null ? probe.classification : null;
+        const count = (Array.isArray(probe.waves_allowlist) ? probe.waves_allowlist : []).length;
+
+        // Mapeo estado→color. El orden importa: flag y casos degradados se
+        // evalúan ANTES de concluir 'sincronizado' (evita el falso verde).
+        let estado;
+        if (bloqueado) {
+            estado = 'divergencia_bloqueada';
+        } else if (reason === 'no_waves_yet' || reason === 'no_partial_pause') {
+            estado = 'desconocido';
+        } else if (probe.desync === false && reason === null) {
+            estado = 'sincronizado';
+        } else if (probe.desync === true && classification === 'resoluble_reductivo') {
+            estado = 'realineado_reductivo';
+        } else if (probe.desync === true && classification === 'ambiguo') {
+            estado = 'divergencia_bloqueada';
+        } else {
+            estado = 'desconocido';
+        }
+
+        return {
+            estado,
+            classification,
+            desync: typeof probe.desync === 'boolean' ? probe.desync : null,
+            reason,
+            added,
+            removed,
+            bloqueado,
+            count,
+        };
+    } catch (err) {
+        return { ...base, error: String((err && err.message) || err) };
+    }
+}
+
+// -----------------------------------------------------------------------------
 // #4371 (Ola 8.3) CA-8/CA-10 — Slice del widget "Audit trail · Olas & Issues".
 // Modelado 1:1 sobre `partialPauseAuditSlice`: tail de eventos de olas/issues
 // (add/remove/priority/promote/archive) con actor, evento, estados previo/
@@ -3597,6 +3685,10 @@ module.exports = {
     deliverablesBySkillSlice,
     // #3625 — widget de audit trail de allowlist
     partialPauseAuditSlice,
+    // #4375 — indicador de estado de sync allowlist↔ola (semáforo read-only)
+    desyncStatusSlice,
+    _setDesyncDetector: (d) => { _desyncDetectorOverride = d || null; },
+    _resetDesyncDetector: () => { _desyncDetectorOverride = null; },
     // #4371 — widget de audit trail de olas & issues
     waveIssueAuditSlice,
     _classifyWaveAuditVisual: classifyWaveAuditVisual,
