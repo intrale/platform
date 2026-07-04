@@ -350,8 +350,13 @@ test('los logs servidos enmascaran JWT/AWS keys en todos los paths del handler (
     // SSE: stream inicial + append redactados con _sanitizeLog
     assert.match(dashboardSrc, /initialLines\s*=\s*lines\.slice\(-1000\)\.map\(l\s*=>\s*_sanitizeLog\(l\)\)/);
     assert.match(dashboardSrc, /\.map\(l\s*=>\s*_sanitizeLog\(l\)\)/);
-    // Descarga raw del archivo de log redactada con redactLogText
-    assert.match(dashboardSrc, /redactLogText\(fs\.readFileSync\(logPath, 'utf8'\)\)/);
+    // Descarga raw del archivo de log redactada con redactLogText. #4444: la
+    // lectura pasa por `readLogCapped` (tope de bytes anti-DoS, REQ-SEC-4),
+    // pero el contenido servido SIEMPRE se redacta antes de salir al browser.
+    // La invariante SEC-4 sigue siendo "nada sale crudo": lo garantiza el
+    // wrapper `res.end(redactLogText(raw))` sobre el resultado de la lectura.
+    assert.match(dashboardSrc, /res\.end\(redactLogText\(raw\)\)/);
+    assert.match(dashboardSrc, /readLogCapped\(logPath, cap\)/);
 
     // Verificación funcional del redactor central reusado (handoff.sanitize).
     const { sanitize } = require('../lib/handoff.js');
