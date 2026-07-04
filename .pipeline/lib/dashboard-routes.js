@@ -992,6 +992,24 @@ function buildWavesPayload(state, pipelineDir) {
             });
         }
     }
+    // #4451 — ENTREGADOS autoritativo: mismo origen que el panel de avance del
+    // roadmap (_roadmapAvance → computeClosedSet, fix #4399). El cliente NO
+    // recomputa contando status==='completed' sobre la foto enriquecida.
+    // computeClosedSet espera `wave.issues: number[]`; el payload los tiene como
+    // objetos enriquecidos → mapear a ids. Derivar `total` y `delivered` de la
+    // MISMA lista garantiza el invariante 0 ≤ delivered ≤ total (#3487: coerción
+    // explícita a entero, sin propagar campos crudos de waves.json).
+    if (normActive && Array.isArray(normActive.issues)) {
+        let delivered = 0;
+        try {
+            const { computeClosedSet } = require('./commander-deterministic');
+            const ids = normActive.issues.map((it) => it && it.id).filter(Number.isInteger);
+            delivered = computeClosedSet({ wave: { issues: ids }, state }).size;
+        } catch (_) {
+            delivered = 0; // degradación grácil: sin set no inventamos cerrados
+        }
+        normActive.delivered = Number.isInteger(delivered) ? delivered : 0;
+    }
     const normPlanned = rawPlanned.map((w) => enrichWave(normalizeWave(w), state)).filter(Boolean);
     const normNext = normPlanned.length > 0 ? normPlanned[0] : null;
     const payload = {
