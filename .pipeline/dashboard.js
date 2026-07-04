@@ -481,6 +481,14 @@ const _opsRestartRateLimiter = _opsRestartHandler.makeRateLimiter(5000);
 // carga, el endpoint dedicado responde 503 (nunca ejecuta restart sin gate).
 let _opsRestartGate = null;
 try { _opsRestartGate = require('./lib/ops-restart-gate'); } catch { /* opcional */ }
+// #4460 (fix rebote rev-1) — sync del modelo operativo a origin/main SIN killAll.
+// El restart del pulpo por sí solo NO aplica entregas: respawnea el MISMO código
+// on-disk. Este módulo avanza el tree a origin/main y reescribe el boot marker
+// ANTES del respawn, para que el pulpo relanzado lea el código nuevo y la señal
+// de drift desaparezca (CA-4/CA-7). Require defensivo: si no carga, el endpoint
+// hace restart sin sync (degradado) pero lo reporta en el mensaje.
+let _operativoSync = null;
+try { _operativoSync = require('./lib/operativo-sync'); } catch { /* opcional */ }
 
 // QA Environment
 const QA_ENV_SCRIPT = path.join(PIPELINE, 'qa-environment.js');
@@ -11340,9 +11348,28 @@ const server = http.createServer((req, res) => {
     req.on('end', () => {
       try {
         const parsed = body ? JSON.parse(body) : {};
+        // #4460 (fix rebote rev-1) — PASO CLAVE: avanzar el working tree a
+        // origin/main ANTES de respawnear el Pulpo. Sin esto el restart es un
+        // no-op respecto de aplicar entregas: `restartComponent` sólo hace
+        // taskkill+spawn del MISMO código on-disk. `syncOperativoTree` hace el
+        // fetch+reset (sin killAll, REQ-SEC-4460-4) y reescribe el boot marker,
+        // de modo que el Pulpo relanzado lee el código entregado y la señal de
+        // drift desaparece (CA-4/CA-7). Si el sync falla, se reporta y NO se
+        // reescribe el marker (el banner persiste, honesto con el operador).
+        let syncMsg = '';
+        if (_operativoSync) {
+          const sync = _operativoSync.syncOperativoTree({ repoRoot: ROOT, pipelineDir: PIPELINE });
+          syncMsg = sync.ok
+            ? `sync✓ ${sync.msg}`
+            : `sync✗ ${sync.msg} (restart de todos modos, cambios NO aplicados hasta próximo sync)`;
+          log(`Action: restart-operativo sync → ${sync.ok ? '✓' : '✗'} ${sync.msg}`);
+        } else {
+          syncMsg = 'sync no disponible (operativo-sync.js no cargó)';
+          log('Action: restart-operativo sync → módulo operativo-sync no disponible');
+        }
         // Restart selectivo del Pulpo (el dashboard no puede matarse a sí mismo;
-        // no existe componente 'dashboard' en COMPONENTS). El Pulpo relanzado
-        // relee el código nuevo del modelo operativo tras el sync a main.
+        // no existe componente 'dashboard' en COMPONENTS). Tras el sync previo,
+        // el Pulpo relanzado relee el código nuevo del modelo operativo.
         const decision = _opsRestartHandler.runRestart(
           {
             target: 'pulpo',
@@ -11360,8 +11387,14 @@ const server = http.createServer((req, res) => {
           }
         );
         log(`Action: restart-operativo pulpo → ${decision.body.ok ? '✓' : '✗'} (${decision.status}) ${decision.body.msg}`);
+        // Combinar el resultado del sync con el del restart para que el operador
+        // sepa si los cambios se aplicaron (sync✓) o sólo se respawneó (sync✗).
+        const combined = Object.assign({}, decision.body, {
+          msg: `${syncMsg} | ${decision.body.msg}`,
+          applied: !!(decision.body.ok && /^sync✓/.test(syncMsg)),
+        });
         res.writeHead(decision.status, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify(decision.body));
+        return res.end(JSON.stringify(combined));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, msg: e.message }));

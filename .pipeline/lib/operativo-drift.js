@@ -98,6 +98,25 @@ function parseIssueRef(subject) {
 }
 
 /**
+ * Refresca `refs/remotes/origin/main` best-effort (#4460 fix rebote rev-1).
+ * Sin esto, `git log bootSha..origin/main` compararía contra un `origin/main`
+ * potencialmente stale (el runtime vivo no fetchea solo) → falso negativo de
+ * CA-1 para entregas recién mergeadas. NUNCA lanza: si no hay red/remoto, se
+ * usa el `origin/main` que ya haya en local. `execFile('git', [args])`, sin
+ * shell (REQ-SEC-4460-2). Timeout corto para no colgar el request.
+ * @param {string} repoRoot
+ */
+function _fetchOriginMain(repoRoot) {
+    try {
+        execFileSync('git', ['fetch', 'origin', 'main', '--quiet'], {
+            cwd: repoRoot, encoding: 'utf8', timeout: 15000, windowsHide: true,
+        });
+    } catch {
+        // best-effort: sin remoto/red se sigue con el origin/main local.
+    }
+}
+
+/**
  * Corre `git log <bootSha>..origin/main --name-only` y parsea commits→archivos.
  * Formato: `%H\x1f%s` por commit, seguido de los archivos (--name-only), líneas
  * en blanco separan commits. Usa \x1f (unit separator) como delim intra-línea.
@@ -164,6 +183,13 @@ function detectPendingRestart(params) {
     }
 
     const repoRoot = _resolveRepoRoot(p);
+    // SECUNDARIO (#4460 fix rebote rev-1): el runtime vivo NO hace fetch
+    // periódico, así que `origin/main` en el repo local puede estar stale y una
+    // entrega recién mergeada sería invisible al detector → falso negativo de
+    // CA-1. Refrescamos `origin/main` best-effort ANTES del rango. Está gateado
+    // por el cache TTL (sólo corre en cache-miss, ≤1 fetch / TTL), así que no
+    // satura. Inyectable/desactivable por test con `p.skipFetch`.
+    if (!p.skipFetch) _fetchOriginMain(repoRoot);
     const commits = _gitLogRange(bootSha, repoRoot);
     if (commits === null) {
         // git falló (rango inválido, sha no alcanzable) → desconocido, no mentir.
@@ -234,5 +260,6 @@ module.exports = {
     SHA_RE,
     CACHE_TTL_MS,
     _gitLogRange,
+    _fetchOriginMain,
     _clearCache,
 };

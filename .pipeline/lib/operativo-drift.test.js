@@ -122,7 +122,7 @@ function buildRepo() {
 test('detectPendingRestart: detecta commits operativos, ignora producto', () => {
     drift._clearCache();
     const { dir, shaA } = buildRepo();
-    const res = drift.detectPendingRestart({ bootSha: shaA, repoRoot: dir });
+    const res = drift.detectPendingRestart({ bootSha: shaA, repoRoot: dir, skipFetch: true });
     assert.strictEqual(res.unknown, false);
     const issues = res.items.map((i) => i.issue).sort((a, b) => a - b);
     // #4460 (.pipeline) y #1234 (.claude/hooks) → sí; #999 (app) → no.
@@ -132,7 +132,7 @@ test('detectPendingRestart: detecta commits operativos, ignora producto', () => 
 test('detectPendingRestart: los items no contienen paths absolutos ni SHAs completos (REQ-SEC-4460-6)', () => {
     drift._clearCache();
     const { dir, shaA } = buildRepo();
-    const res = drift.detectPendingRestart({ bootSha: shaA, repoRoot: dir });
+    const res = drift.detectPendingRestart({ bootSha: shaA, repoRoot: dir, skipFetch: true });
     for (const item of res.items) {
         const blob = JSON.stringify(item);
         assert.ok(!blob.includes('/'), `sin paths: ${blob}`);
@@ -146,7 +146,7 @@ test('detectPendingRestart: los items no contienen paths absolutos ni SHAs compl
 test('detectPendingRestart: componente para .pipeline → "pipeline"/"dashboard", hooks → "hooks"', () => {
     drift._clearCache();
     const { dir, shaA } = buildRepo();
-    const res = drift.detectPendingRestart({ bootSha: shaA, repoRoot: dir });
+    const res = drift.detectPendingRestart({ bootSha: shaA, repoRoot: dir, skipFetch: true });
     const byIssue = Object.fromEntries(res.items.map((i) => [i.issue, i.componente]));
     assert.strictEqual(byIssue[1234], 'hooks');
     assert.strictEqual(byIssue[4460], 'pipeline');
@@ -156,7 +156,7 @@ test('detectPendingRestart: bootSha = HEAD (rango vacío) → items:[]', () => {
     drift._clearCache();
     const { dir } = buildRepo();
     const head = git(['rev-parse', 'refs/remotes/origin/main'], dir);
-    const res = drift.detectPendingRestart({ bootSha: head, repoRoot: dir });
+    const res = drift.detectPendingRestart({ bootSha: head, repoRoot: dir, skipFetch: true });
     assert.strictEqual(res.unknown, false);
     assert.deepStrictEqual(res.items, []);
 });
@@ -165,9 +165,27 @@ test('detectPendingRestart: bootSha hex válido pero inalcanzable por git → un
     drift._clearCache();
     const { dir } = buildRepo();
     // SHA hex bien formado pero que no existe en el repo.
-    const res = drift.detectPendingRestart({ bootSha: 'abcdef1234567890abcdef1234567890abcdef12', repoRoot: dir });
+    const res = drift.detectPendingRestart({ bootSha: 'abcdef1234567890abcdef1234567890abcdef12', repoRoot: dir, skipFetch: true });
     assert.strictEqual(res.unknown, true);
     assert.deepStrictEqual(res.items, []);
+});
+
+// ---------------------------------------------------------------------------
+// _fetchOriginMain — refresh best-effort de origin/main (fix rebote rev-1)
+// ---------------------------------------------------------------------------
+test('_fetchOriginMain: sin remoto/red NUNCA lanza (best-effort)', () => {
+    const { dir } = buildRepo();
+    // Repo sin remoto 'origin' configurado → el fetch falla, pero se traga el
+    // error y no propaga (el detector sigue con el origin/main local).
+    assert.doesNotThrow(() => drift._fetchOriginMain(dir));
+});
+
+test('detectPendingRestart con skipFetch:true opera sobre origin/main local sin requerir remoto', () => {
+    drift._clearCache();
+    const { dir, shaA } = buildRepo();
+    const res = drift.detectPendingRestart({ bootSha: shaA, repoRoot: dir, skipFetch: true });
+    assert.strictEqual(res.unknown, false);
+    assert.ok(res.items.length >= 1);
 });
 
 // ---------------------------------------------------------------------------
