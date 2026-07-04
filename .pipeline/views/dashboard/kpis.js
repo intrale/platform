@@ -914,10 +914,7 @@ function renderKpisWaveBanner() {
         +   '<div class="mz-mission-prog">'
         +     '<div class="mz-prog-head"><span>AVANCE</span><span class="mz-prog-pct" id="mission-avance-pct">0%</span></div>'
         +     '<div class="mz-prog-bar">'
-        +       '<i id="mission-bar-done" style="width:0%;background:var(--in-ok,#3fb950)"></i>'
-        +       '<i id="mission-bar-active" style="width:0%;background:var(--in-info,#58a6ff)"></i>'
-        +       '<i id="mission-bar-blocked" style="width:0%;background:var(--in-bad,#f85149)"></i>'
-        +       '<i id="mission-bar-queue" style="width:0%;background:rgba(255,255,255,.10)"></i></div>'
+        +       '<i id="mission-bar-progress" style="width:0%;background:var(--in-ok,#3fb950)"></i></div>'
         +     '<div class="mz-prog-legend">'
         +       '<span><i class="mz-dot" style="background:var(--in-ok,#3fb950)"></i> <b id="mission-leg-done">0</b> hechos</span>'
         +       '<span><i class="mz-dot" style="background:var(--in-info,#58a6ff)"></i> <b id="mission-leg-active">0</b> activos</span>'
@@ -1157,7 +1154,6 @@ function renderKpisChromeScript() {
   "use strict";
   function fetchJson(url){return fetch(url,{headers:{accept:"application/json"}}).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;});}
   function setText(id,v){var el=document.getElementById(id);if(el&&el.textContent!==String(v))el.textContent=String(v);}
-  function setWidth(id,p){var el=document.getElementById(id);if(el)el.style.width=p;}
   // #4448 — último wave bueno (crudo, sin sanitizar-como-HTML). Preserva el
   // encabezado ante un fetch transitorio null (5xx/red/timeout) en vez de borrarlo.
   var lastGoodWave=null;
@@ -1180,9 +1176,8 @@ function renderKpisChromeScript() {
       // #4296 — avance % lo hidrata el accessor compartido (/api/dash/ola-eta).
       setText("mission-leg-done",String(done));setText("mission-leg-active",String(active));
       setText("mission-leg-blocked",String(blocked));setText("mission-leg-queue",String(queue));
-      var w=function(n){return total>0?((n/total)*100).toFixed(1)+"%":"0%";};
-      setWidth("mission-bar-done",w(done));setWidth("mission-bar-active",w(active));
-      setWidth("mission-bar-blocked",w(blocked));setWidth("mission-bar-queue",w(queue));
+      // #4452 — la barra de avance (#mission-bar-progress) la hidrata
+      // __applyMissionOlaEta desde avancePct; NO se rellena por distribución.
       var dv=document.getElementById("mission-delivered-value");
       if(dv)dv.innerHTML=done+'<span class="mz-wm-u"> / '+total+'</span>';
       var dsub=document.getElementById("mission-delivered-sub");

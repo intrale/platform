@@ -166,7 +166,6 @@ function renderMissionBanner(wave) {
     </section>`;
     }
     const restantes = Math.max(0, wave.total - wave.delivered);
-    const seg = (n, total) => (total > 0 ? Math.round((n / total) * 100) : 0);
     return `
     <section class="mz-mission" aria-label="Misión de la ola activa"
              title="Ola activa del plan: avance, ritmo de entrega y cierre estimado.">
@@ -216,10 +215,7 @@ function renderMissionBanner(wave) {
       <div class="mz-mission-prog" title="Avance total de la ola, desglosado por estado de sus issues.">
         <div class="mz-prog-head"><span>AVANCE</span><span class="mz-prog-pct">${escapeHtmlText(String(wave.pct))}%</span></div>
         <div class="mz-prog-bar">
-          <i style="width:${seg(wave.done, wave.total)}%;background:var(--in-ok,#3fb950)"></i>
-          <i style="width:${seg(wave.activeCount, wave.total)}%;background:var(--in-info,#58a6ff)"></i>
-          <i style="width:${seg(wave.blocked, wave.total)}%;background:var(--in-bad,#f85149)"></i>
-          <i style="width:${seg(wave.queue, wave.total)}%;background:rgba(255,255,255,.10)"></i>
+          <i style="width:${Math.max(0, Math.min(100, Number(wave.pct) || 0))}%;background:var(--in-ok,#3fb950)"></i>
         </div>
         <div class="mz-prog-legend">
           <span><i class="mz-dot" style="background:var(--in-ok,#3fb950)"></i> <b>${escapeHtmlText(String(wave.done))}</b> hechos</span>

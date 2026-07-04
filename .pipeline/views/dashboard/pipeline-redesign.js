@@ -167,10 +167,7 @@ function renderMissionBannerPipeline() {
       <div class="mz-mission-prog" title="Avance total de la ola, desglosado por estado de sus issues.">
         <div class="mz-prog-head"><span>AVANCE</span><span class="mz-prog-pct" id="mission-avance-pct">0%</span></div>
         <div class="mz-prog-bar">
-          <i id="mission-bar-done" style="width:0%;background:var(--in-ok,#3fb950)"></i>
-          <i id="mission-bar-active" style="width:0%;background:var(--in-info,#58a6ff)"></i>
-          <i id="mission-bar-blocked" style="width:0%;background:var(--in-bad,#f85149)"></i>
-          <i id="mission-bar-queue" style="width:0%;background:rgba(255,255,255,.10)"></i>
+          <i id="mission-bar-progress" style="width:0%;background:var(--in-ok,#3fb950)"></i>
         </div>
         <div class="mz-prog-legend">
           <span><i class="mz-dot" style="background:var(--in-ok,#3fb950)"></i> <b id="mission-leg-done">0</b> hechos</span>
@@ -839,12 +836,8 @@ function plMirrorMission(d){
         setText('mission-leg-active', String(active));
         setText('mission-leg-blocked', String(blocked));
         setText('mission-leg-queue', String(queue));
-        const w = (n) => total>0 ? ((n/total)*100).toFixed(1)+'%' : '0%';
-        const setW = (id,n) => { const el=document.getElementById(id); if(el) el.style.width = w(n); };
-        setW('mission-bar-done', done);
-        setW('mission-bar-active', active);
-        setW('mission-bar-blocked', blocked);
-        setW('mission-bar-queue', queue);
+        // #4452 — la barra de avance (#mission-bar-progress) la hidrata
+        // __applyMissionOlaEta desde avancePct; NO se rellena por distribución.
         const dv = document.getElementById('mission-delivered-value');
         if(dv) dv.innerHTML = done + '<span class="mz-wm-u"> / ' + total + '</span>';
         const dsub = document.getElementById('mission-delivered-sub');

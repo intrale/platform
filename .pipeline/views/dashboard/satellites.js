@@ -797,12 +797,8 @@ async function tickEquipoMission(){
         setText('mission-leg-active', String(active));
         setText('mission-leg-blocked', String(blocked));
         setText('mission-leg-queue', String(queue));
-        const w = (n) => total>0 ? ((n/total)*100).toFixed(1)+'%' : '0%';
-        const setW = (id,n) => { const el=document.getElementById(id); if(el) el.style.width = w(n); };
-        setW('mission-bar-done', done);
-        setW('mission-bar-active', active);
-        setW('mission-bar-blocked', blocked);
-        setW('mission-bar-queue', queue);
+        // #4452 — la barra de avance (#mission-bar-progress) la hidrata
+        // __applyMissionOlaEta desde avancePct; NO se rellena por distribución.
         // #4451 — ENTREGADOS lee el entero autoritativo del server (mismo origen
         // que el avance del roadmap, computeClosedSet). Fallback al conteo
         // client-side "done" por back-compat con payloads sin el campo.
@@ -1677,12 +1673,8 @@ async function hmTickMission(){
     setText('mission-leg-active', String(active));
     setText('mission-leg-blocked', String(blocked));
     setText('mission-leg-queue', String(queue));
-    const w = (n) => total>0 ? ((n/total)*100).toFixed(1)+'%' : '0%';
-    const setW = (id,n) => { const el=document.getElementById(id); if(el) el.style.width = w(n); };
-    setW('mission-bar-done', done);
-    setW('mission-bar-active', active);
-    setW('mission-bar-blocked', blocked);
-    setW('mission-bar-queue', queue);
+    // #4452 — la barra de avance (#mission-bar-progress) la hidrata
+    // __applyMissionOlaEta desde avancePct; NO se rellena por distribución.
     const dv = document.getElementById('mission-delivered-value');
     if(dv) dv.innerHTML = done + '<span class="mz-wm-u"> / ' + total + '</span>';
     const dsub = document.getElementById('mission-delivered-sub');

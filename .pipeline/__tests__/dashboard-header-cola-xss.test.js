@@ -433,16 +433,17 @@ function loadHomeMirror() {
 // renderKpisChromeScript(), que ya resolvió sus interpolaciones).
 function loadKpisMirror() {
     const setTextSrc = extractFunction(KPIS_CHROME_SRC, 'function setText(id,v)');
-    const setWidthSrc = extractFunction(KPIS_CHROME_SRC, 'function setWidth(id,p)');
+    // #4452 — `mirrorMission` ya no rellena la barra por distribución, por lo que
+    // el helper `setWidth` fue eliminado de kpis.js (la barra la hidrata
+    // __applyMissionOlaEta desde avancePct). No lo extraemos ni inyectamos.
     const mirrorSrc = extractFunction(KPIS_CHROME_SRC, 'function mirrorMission(d)');
     assert.ok(setTextSrc, 'no se pudo extraer setText de kpis.js');
-    assert.ok(setWidthSrc, 'no se pudo extraer setWidth de kpis.js');
     assert.ok(mirrorSrc, 'no se pudo extraer mirrorMission de kpis.js');
     const doc = makeFakeDoc();
     const ctx = { document: doc };
     vm.createContext(ctx);
     vm.runInContext(
-        `var lastGoodWave=null;\n${setTextSrc}\n${setWidthSrc}\n${mirrorSrc}\nglobalThis.__mirror=mirrorMission;`,
+        `var lastGoodWave=null;\n${setTextSrc}\n${mirrorSrc}\nglobalThis.__mirror=mirrorMission;`,
         ctx, { timeout: 1000 }
     );
     return { doc, mirror: ctx.__mirror };
