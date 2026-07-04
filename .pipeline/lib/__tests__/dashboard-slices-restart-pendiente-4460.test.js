@@ -84,7 +84,13 @@ test('restartPendienteSlice: sin drift real (bootSHA=HEAD del repo) → items:[]
         return;
     }
     runtimeBoot.writeBootMarker(head, { pipelineDir: dir });
-    const res = slices.restartPendienteSlice({}, { PIPELINE: dir, ROOT: repoRoot });
+    // skipFetch:true (#4448 rebote rev-1) — hermético. Sin esto detectPendingRestart
+    // hace `git fetch origin main` internamente y podía AVANZAR origin/main bajo el
+    // bootSHA que acabamos de capturar: si una entrega de pipeline (p.ej. #4477)
+    // aterrizaba en el remoto entre el `rev-parse` y ese fetch, el rango
+    // bootSHA..origin/main dejaba de estar vacío y el test fallaba con drift
+    // espurio. Con skipFetch, origin/main no se mueve → rango provablemente vacío.
+    const res = slices.restartPendienteSlice({}, { PIPELINE: dir, ROOT: repoRoot, skipFetch: true });
     // bootSHA == origin/main → rango vacío → sin drift, botón NO se renderiza.
     assert.strictEqual(res.unknown, false);
     assert.deepStrictEqual(res.items, []);
