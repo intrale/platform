@@ -40,12 +40,21 @@
 'use strict';
 
 const path = require('node:path');
+const { execSync } = require('node:child_process');
+
+// SEC-6: fuente única de "qué es admisible". Reusar `isAdmitted`/`ADMISSION_LABELS`
+// de admission-gate — PROHIBIDO re-declarar la lista `['needs-definition','Ready']`
+// acá (duplicar la lista desincroniza del Pulpo si cambia `intake:` en config.yaml).
+const { isAdmitted } = require('../../admission-gate');
 
 // Dependencias inyectables (defaults = módulos reales). Los tests las sustituyen
 // con `_setForTests` para no tocar el `waves.json` ni los logs reales.
 let wavesApi = require('../../waves');
 let auditApi = require('../../audit-log');
 let auditDir = path.join(__dirname, '..', '..', '..', 'logs'); // .pipeline/logs
+// Runner por default para el fetch de admisión. Inyectable vía `_setForTests`
+// para que `validateStep` (que no recibe `opts`) nunca spawnee `gh` real en tests.
+let defaultExec = execSync;
 
 // --- Constantes --------------------------------------------------------------
 const FLOW = 'ola';
@@ -151,21 +160,116 @@ function snapshotEqual(a, b) {
     return norm(a) === norm(b);
 }
 
+// --- Admisión GitHub (CA-11 de #3738: existencia + OPEN + label admisible) ----
+//
+// SEC-1: UNA sola invocación batch `gh issue list` (nunca `gh issue view $n` en
+// loop). La existencia, el estado OPEN y el label se resuelven en memoria contra
+// un `Map<number → labels[]>`. Como los issues llegan ya normalizados a enteros>0
+// (`normalizeIssues`) y el comando NO interpola números, el vector de
+// command/argument injection (A03) desaparece por diseño.
+//
+// SEC-2: fail-safe calcado de `duplicate-detector.fetchOpenIssues` — timeout 10s,
+// `stdio` cerrado, cache módulo-scope con TTL 30s, runner `_exec` inyectable.
+//
+// SEC-4/SEC-5 (best-effort no-autoritativo): este chequeo es un snapshot. Un
+// `nonAdmissible` NO distingue "no existe" de "cerrado" de "truncado por
+// `--limit`" — todos caen fuera del listado `--state open`. El intake downstream
+// sigue defensivo (TOCTOU: labels/estado pueden cambiar entre validar y aplicar).
+const ADMISSION_CACHE_TTL_MS = 30 * 1000;
+const ADMISSION_FETCH_LIMIT = 500; // SEC-5: margen amplio sobre el universo real de issues abiertos.
+let admissionCache = { fetchedAt: 0, map: null };
+
+/**
+ * Trae el universo de issues abiertos como `Map<number → labels[]>` (con cache
+ * 30s). Fail-open (SEC-3): si `gh` cae/timeout y hay cache previa, devuelve la
+ * cache vieja (mejor que nada); si no hay nada, devuelve `null` — señal de "no
+ * verificable", distinta de un `Map` vacío ("verificado: no existe ninguno").
+ *
+ * @param {object} [opts]
+ * @param {number} [opts.limit=ADMISSION_FETCH_LIMIT]
+ * @param {string} [opts.ghPath='gh']
+ * @param {function} [opts._exec=execSync] — runner inyectable (tests).
+ * @returns {Map<number, Array>|null}
+ */
+function fetchAdmissibleMap({ limit = ADMISSION_FETCH_LIMIT, ghPath = 'gh', _exec = defaultExec } = {}) {
+    const now = Date.now();
+    if (admissionCache.map && (now - admissionCache.fetchedAt) < ADMISSION_CACHE_TTL_MS) {
+        return admissionCache.map;
+    }
+    try {
+        const out = _exec(
+            `${ghPath} issue list --state open --limit ${limit} --json number,state,labels`,
+            { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000 },
+        );
+        const parsed = JSON.parse(out);
+        if (Array.isArray(parsed)) {
+            const map = new Map(parsed.map((it) => [Number(it.number), it.labels || []]));
+            admissionCache = { fetchedAt: now, map };
+            return map;
+        }
+    } catch {
+        // SEC-3: gh caído/timeout → cache vieja > nada.
+        if (admissionCache.map) return admissionCache.map;
+    }
+    return null; // no verificable → fail-open aguas arriba.
+}
+
 /**
  * Chequea elegibilidad server-side de un set de issues + nombre contra el
  * estado fresco en disco. Autoritativo: no confía en nada del cliente.
  *
+ * Además (opt-in, `opts.checkAdmission !== false`) re-valida cada issue contra
+ * GitHub (CA-11 de #3738): debe existir, estar OPEN y tener label admisible
+ * (`Ready`/`needs-definition`, vía `admission-gate.isAdmitted`). Fail-open
+ * (SEC-3): si `gh` no es verificable, `nonAdmissible` queda `[]` + `ghUnavailable`
+ * y la admisión NO bloquea la creación de la ola (occupancy/nombre siguen).
+ *
  * @param {number[]} selectedIssues
  * @param {string|null} name
- * @returns {{ ok: boolean, conflicts: number[], nameTaken: boolean }}
+ * @param {object} [opts] — inyección de `_exec`/`limit`/`ghPath` (tests) y
+ *   `checkAdmission:false` para saltar la verificación GitHub. Back-compat:
+ *   `validateStep` sigue llamando con 2 args (admisión activa por default).
+ * @returns {{ ok: boolean, conflicts: number[], nameTaken: boolean,
+ *             nonAdmissible: number[], ghUnavailable: boolean }}
  */
-function checkEligibility(selectedIssues, name) {
+function checkEligibility(selectedIssues, name, opts = {}) {
     const snap = stateSnapshot();
     const occ = new Set(snap.occupied);
-    const conflicts = (selectedIssues || []).filter((n) => occ.has(n)).sort((a, b) => a - b);
+    const selected = selectedIssues || [];
+    const conflicts = selected.filter((n) => occ.has(n)).sort((a, b) => a - b);
     const nameTaken = name ? snap.names.includes(String(name).normalize('NFC').toLowerCase()) : false;
-    return { ok: conflicts.length === 0 && !nameTaken, conflicts, nameTaken };
+
+    let nonAdmissible = [];
+    let ghUnavailable = false;
+    if (opts.checkAdmission !== false && selected.length > 0) {
+        const map = fetchAdmissibleMap(opts);
+        if (map === null) {
+            // SEC-3: gh no verificable → fail-open (no bloquea por admisión).
+            ghUnavailable = true;
+        } else {
+            nonAdmissible = selected
+                .filter((n) => !map.has(n) || !isAdmitted(map.get(n)))
+                .sort((a, b) => a - b);
+        }
+    }
+
+    return {
+        ok: conflicts.length === 0 && !nameTaken && nonAdmissible.length === 0,
+        conflicts,
+        nameTaken,
+        nonAdmissible,
+        ghUnavailable,
+    };
 }
+
+/** Reset del cache de admisión (tests). */
+function _resetAdmissionCache() { admissionCache = { fetchedAt: 0, map: null }; }
+
+/**
+ * Expira el TTL del cache preservando el `Map` (tests). Permite ejercitar el
+ * fallback "gh cae + cache vieja" sin depender de `Date.now()` (no manipulable).
+ */
+function _expireAdmissionCache() { admissionCache.fetchedAt = 0; }
 
 // --- Audit (R5: audit-then-apply, NDJSON encadenado) -------------------------
 
@@ -361,12 +465,17 @@ function _setForTests(overrides = {}) {
     if (overrides.waves) wavesApi = overrides.waves;
     if (overrides.audit) auditApi = overrides.audit;
     if (overrides.auditDir) auditDir = overrides.auditDir;
+    // Runner de admisión: default a un stub que reporta gh "no verificable"
+    // (null) para que los tests que no configuran gh no spawneen el binario real.
+    if ('exec' in overrides) defaultExec = overrides.exec;
 }
 
 function _resetForTests() {
     wavesApi = require('../../waves');
     auditApi = require('../../audit-log');
     auditDir = path.join(__dirname, '..', '..', '..', 'logs');
+    defaultExec = execSync;
+    _resetAdmissionCache();
 }
 
 module.exports = {
@@ -384,9 +493,13 @@ module.exports = {
     stateSnapshot,
     snapshotEqual,
     checkEligibility,
+    fetchAdmissibleMap,
     normalizeIssues,
     isPositiveIntList,
     isPositiveInt,
+    ADMISSION_CACHE_TTL_MS,
     _setForTests,
     _resetForTests,
+    _resetAdmissionCache,
+    _expireAdmissionCache,
 };
