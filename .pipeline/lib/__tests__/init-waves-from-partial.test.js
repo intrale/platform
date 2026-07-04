@@ -557,6 +557,89 @@ test('#4030: parseWaveMetaFromNote tolera comillas simples/dobles/tipográficas 
     assert.equal(parseWaveMetaFromNote(null), null);
 });
 
+// ─── #4446 — identidad por contador monotónico persistido ───────────────────
+
+test('#4446 CA-4: re-seed usa meta.next_wave_number persistido y NO reasigna desde waveMeta.number externo', () => {
+    const dir = setupTmp();
+    try {
+        // waves.json reseteado (sin ola activa) pero con contador persistido en 3
+        // y una ola archivada #1. El .partial-pause trae un número externo stale.
+        writeWaves(dir, JSON.stringify({
+            version: '1.0',
+            meta: {
+                created_at: '2026-07-01T00:00:00Z',
+                updated_at: '2026-07-01T00:00:00Z',
+                updated_by: 'System',
+                source: 'manual',
+                next_wave_number: 3,
+            },
+            active_wave: null,
+            planned_waves: [],
+            archived_waves: [{ number: 1, name: 'Ola 1' }],
+            dependencies: [],
+        }, null, 2));
+        writePartial(dir, JSON.stringify({
+            allowed_issues: [4446],
+            source: 'telegram:commander',
+            wave_number: 99,               // número externo NO confiable.
+            wave_name: 'Nombre del plan maestro',
+        }));
+
+        const r = init.initWavesFromPartial({ skipAlert: true });
+        assert.equal(r.action, 'seeded');
+        // Identidad desde el contador (3), NUNCA desde waveMeta.number (99).
+        assert.equal(r.waveNumber, 3);
+
+        const state = readWaves(dir);
+        assert.equal(state.active_wave.number, 3);
+        // El contador se incrementó y quedó persistido (monotónico).
+        assert.equal(state.meta.next_wave_number, 4);
+    } finally { teardownTmp(dir); }
+});
+
+test('#4446 CA-4: re-seed con ola activa existente conserva su number (no-op, sin tocar contador)', () => {
+    const dir = setupTmp();
+    try {
+        writeWaves(dir, JSON.stringify({
+            version: '1.0',
+            meta: { created_at: '2026-07-01T00:00:00Z', updated_at: '2026-07-01T00:00:00Z', next_wave_number: 3 },
+            active_wave: { number: 2, name: 'Ola 2', issues: [{ number: 5, status: 'in_progress' }] },
+            planned_waves: [],
+            archived_waves: [{ number: 1 }],
+            dependencies: [],
+        }, null, 2));
+        writePartial(dir, JSON.stringify({ allowed_issues: [7], wave_number: 88, wave_name: 'x' }));
+
+        const r = init.initWavesFromPartial({ skipAlert: true });
+        assert.equal(r.action, 'noop_already_seeded');
+        assert.equal(r.waveNumber, 2);
+        // La activa conserva su número y el contador no se tocó.
+        const state = readWaves(dir);
+        assert.equal(state.active_wave.number, 2);
+        assert.equal(state.meta.next_wave_number, 3);
+    } finally { teardownTmp(dir); }
+});
+
+test('#4446: seed legacy sin contador → backfill max(existentes)+1 e incrementa el persistido', () => {
+    const dir = setupTmp();
+    try {
+        // Sin meta.next_wave_number; archived max=3 → seed debe ser #4.
+        writeWaves(dir, JSON.stringify({
+            version: '1.0',
+            active_wave: null,
+            planned_waves: [],
+            archived_waves: [{ number: 1 }, { number: 2 }, { number: 3 }],
+        }));
+        writePartial(dir, JSON.stringify({ allowed_issues: [10] }));
+
+        const r = init.initWavesFromPartial({ skipAlert: true });
+        assert.equal(r.waveNumber, 4);
+        const state = readWaves(dir);
+        assert.equal(state.active_wave.number, 4);
+        assert.equal(state.meta.next_wave_number, 5);
+    } finally { teardownTmp(dir); }
+});
+
 // ─── Smoke: el script CLI no crashea ───────────────────────────────────────
 
 test('#3616: el script existe como CLI ejecutable', () => {

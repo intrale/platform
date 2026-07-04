@@ -238,7 +238,7 @@ function readPartialStrict() {
  */
 function readWavesState() {
     if (!fs.existsSync(wavesFile())) {
-        return { ok: true, hasActiveWave: false, maxArchivedNumber: 0, raw: null };
+        return { ok: true, hasActiveWave: false, maxArchivedNumber: 0, nextWaveNumber: 1, raw: null };
     }
     let raw;
     try {
@@ -291,7 +291,20 @@ function readWavesState() {
             maxArchivedNumber = w.number;
         }
     }
-    return { ok: true, hasActiveWave, maxArchivedNumber, raw: parsed };
+    // #4446 — contador monotónico persistido. Es la fuente de identidad del seed:
+    // si existe en `meta.next_wave_number` (entero ≥ 1) lo usamos tal cual; si no,
+    // backfill `max(existentes) + 1` (incluye active_wave si lo hubiera). NUNCA se
+    // deriva la identidad del `waveMeta.number` externo del .partial-pause.json.
+    let maxKnown = maxArchivedNumber;
+    if (parsed.active_wave && Number.isInteger(parsed.active_wave.number) && parsed.active_wave.number > maxKnown) {
+        maxKnown = parsed.active_wave.number;
+    }
+    const persistedCounter = parsed.meta && Number.isInteger(parsed.meta.next_wave_number)
+        && parsed.meta.next_wave_number >= 1
+        ? parsed.meta.next_wave_number
+        : null;
+    const nextWaveNumber = persistedCounter !== null ? persistedCounter : (maxKnown + 1);
+    return { ok: true, hasActiveWave, maxArchivedNumber, nextWaveNumber, raw: parsed };
 }
 
 /**
@@ -408,26 +421,36 @@ function initWavesFromPartial(opts = {}) {
     }
 
     // 5. Construir el seed: ola activa con los issues del allowlist.
-    //    Numeración por defecto: max(archived/planned.number) + 1, default 1.
-    //    #4030 — Si el partial-pause trae metadata real de la ola (campos
-    //    estructurados o, como fallback, el `note`), usamos nombre/número reales
-    //    del plan maestro en vez de `Ola seed #N`.
-    //    Guard de colisión OBLIGATORIO (riesgo guru #1 + security #4): sólo
-    //    confiamos en el número externo si es estrictamente mayor que cualquier
-    //    archived/planned. Si choca, lo ignoramos y caemos al cálculo seguro
-    //    `maxArchivedNumber + 1` con nombre genérico (no se confía en el número
-    //    provisto desde una fuente semi-confiable).
-    let waveNumber = wavesState.maxArchivedNumber + 1;
+    //    #4446 — La IDENTIDAD (número) de la ola sembrada sale del contador
+    //    monotónico persistido (`meta.next_wave_number`), NO de `maxArchivedNumber
+    //    + 1` ni del `waveMeta.number` externo del .partial-pause.json (fuente
+    //    semi-confiable). Así un re-seed post-restart conserva el número sin
+    //    reasignarlo desde metadata externa. El contador se incrementa y se
+    //    persiste en el newState.meta más abajo.
+    //    Guard de colisión defensivo (riesgo guru #1 + security #4): el contador
+    //    monotónico es por diseño > cualquier archived/planned; si por un state
+    //    corrupto quedara ≤ max conocido, lo elevamos a `maxArchivedNumber + 1`.
+    let waveNumber = wavesState.nextWaveNumber;
+    if (!Number.isInteger(waveNumber) || waveNumber <= wavesState.maxArchivedNumber) {
+        const safe = wavesState.maxArchivedNumber + 1;
+        logWarn(`Contador de ola inválido/colisiona (#${waveNumber} ≤ max=${wavesState.maxArchivedNumber}) ` +
+            `— elevo a #${safe}.`);
+        waveNumber = safe;
+    }
+    //    #4030 — El partial-pause SÍ aporta nombre/goal reales del plan maestro
+    //    (mejor UX que `Ola seed #N`). Mantenemos el guard de confianza original
+    //    para el NOMBRE/GOAL (sólo si `waveMeta.number` supera lo archivado/
+    //    planificado); pero el NÚMERO ya lo fijó el contador, nunca `waveMeta`.
     let name = `Ola seed #${waveNumber}`;
     let goal = 'Seed inicial generado desde .partial-pause.json (issue #3616).';
     if (partial.waveMeta && partial.waveMeta.number > wavesState.maxArchivedNumber) {
-        waveNumber = partial.waveMeta.number;
         name = partial.waveMeta.name;
         goal = partial.waveMeta.goal || goal;
-        logInfo(`Metadata de ola recuperada del plan maestro: ola #${waveNumber} "${name}".`);
+        logInfo(`Metadata de ola recuperada del plan maestro: ola #${waveNumber} "${name}" ` +
+            `(número asignado por contador monotónico, no por metadata externa).`);
     } else if (partial.waveMeta) {
-        logWarn(`Número de ola provisto (#${partial.waveMeta.number}) colisiona con ` +
-            `archived/planned (max=${wavesState.maxArchivedNumber}) — uso fallback #${waveNumber}.`);
+        logWarn(`Número externo (#${partial.waveMeta.number}) colisiona con archived/planned ` +
+            `(max=${wavesState.maxArchivedNumber}) — nombre genérico, número por contador #${waveNumber}.`);
     }
     const seededWave = {
         number: waveNumber,
@@ -477,7 +500,10 @@ function initWavesFromPartial(opts = {}) {
             updated_at: nowIso(),
             updated_by: 'init-waves-from-partial',
             source: 'auto-seed',
-            note: (partial.waveMeta && waveNumber === partial.waveMeta.number)
+            // #4446 — incrementar y persistir el contador monotónico. El próximo
+            // correlativo nunca reutiliza el número recién sembrado.
+            next_wave_number: waveNumber + 1,
+            note: (partial.waveMeta && partial.waveMeta.number > wavesState.maxArchivedNumber)
                 ? `Seed desde .partial-pause.json (#3616/#4030): ola #${waveNumber} "${name}" ` +
                     `con ${partial.allowedIssues.length} issue(s).`
                 : `Seed inicial desde .partial-pause.json (#3616). ` +
