@@ -125,6 +125,16 @@ function missionOlaEtaClientScript() {
       var m = deriveMissionOlaEta(d);
       var pctEl = document.getElementById('mission-avance-pct');
       if(pctEl){ var t = (m.avancePct !== null ? m.avancePct + '%' : '—'); if(pctEl.textContent !== t) pctEl.textContent = t; }
+      // #4452 — la barra representa EXCLUSIVAMENTE el % de avance de la ola
+      // (fuente única avancePct), desacoplada de la distribución por estado.
+      // Clamp [0,100] (SEC req #3); null -> 0%. Solo style.width numerico,
+      // NUNCA innerHTML (SEC req #1,#2).
+      var bar = document.getElementById('mission-bar-progress');
+      if(bar){
+        var pct = (m.avancePct === null) ? 0 : Math.max(0, Math.min(100, m.avancePct));
+        var wStr = pct + '%';
+        if(bar.style.width !== wStr) bar.style.width = wStr;
+      }
       var vv = document.getElementById('mission-vel-value');
       if(vv){
         // #4450 (G-UX-1) — la celda 🚀 VELOCIDAD expresa THROUGHPUT de entrega

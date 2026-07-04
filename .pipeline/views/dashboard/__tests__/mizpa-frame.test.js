@@ -142,6 +142,13 @@ test('renderMissionBanner (ola activa) usa el markup canónico mz-* con AVANCE',
     assert.match(html, /class="mz-wavetag"/);
     assert.match(html, /class="mz-mission-prog"/);
     assert.match(html, /class="mz-prog-bar"/);
+    // #4452 — la barra es un solo tramo cuyo ancho = wave.pct (31%), desacoplada
+    // de la distribución por estado (ya no hay 4 <i> con seg(done/active/...)).
+    assert.match(
+        html,
+        /<div class="mz-prog-bar">\s*<i style="width:31%;background:var\(--in-ok,#3fb950\)"><\/i>\s*<\/div>/,
+        'la barra debe ser un tramo único con ancho = wave.pct',
+    );
     assert.match(html, /class="mz-dot"/);
     assert.match(html, /AVANCE/);
     assert.match(html, /ETA DE LA OLA/);
