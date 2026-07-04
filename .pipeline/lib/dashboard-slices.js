@@ -1873,6 +1873,20 @@ function roadmapSlice(state, ctx) {
     // prestado" desincronizada. Así lista y panel muestran el mismo "N de M".
     const avance = _roadmapAvance(s.activeWave, s);
 
+    // #4436 CA-4 — modo del pipeline (running | paused | partial_pause) para que
+    // la tarjeta de la ola activa sepa qué botón de ciclo de vida pintar
+    // server-side (Pausar con running/partial, Reanudar con paused) y muestre el
+    // pill de estado. Mismo require perezoso ya usado para `ppState` (líneas
+    // ~448): lectura barata del filesystem, con fallback defensivo a 'running'
+    // para no romper el render si el módulo o el marker no están disponibles.
+    let mode = 'running';
+    try {
+        if (partialPause && typeof partialPause.getPipelineMode === 'function') {
+            const pm = partialPause.getPipelineMode();
+            if (pm && typeof pm.mode === 'string') mode = pm.mode;
+        }
+    } catch { /* degradado: se asume 'running' */ }
+
     return {
         activeWave,
         plannedWaves,
@@ -1880,6 +1894,7 @@ function roadmapSlice(state, ctx) {
         blocked,
         eta,
         avance,
+        mode,
         updatedAt: new Date().toISOString(),
     };
 }

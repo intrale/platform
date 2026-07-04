@@ -1820,6 +1820,209 @@ function handleWaveArchiveMutation(req, res) {
     return true;
 }
 
+// =============================================================================
+// #4436 — Endpoints mutantes de ciclo de vida de la ola activa desde la ventana
+// Roadmap: pausar / reanudar / relanzar despacho. Cablean a los MISMOS
+// primitivos que hoy usa la consola (sin lógica nueva de pausa, CA-6): cada uno
+// pasa el idéntico "cinturón de gates" de `handleWaveArchiveMutation`
+// (método POST → 405 · loopback → 403 · same-origin → 403 · Content-Type JSON →
+// 415 · body cap+parse → 413/400), y la mutación pasa SIEMPRE por
+// `lib/partial-pause.js` / `lib/wave-dispatch.js` (single-writer de los markers,
+// REQ-SEC-3/A08) con un `authorizedBy` FIJO server-side (REQ-SEC-6, nunca del
+// body). NINGUNA de estas rutas escribe `.paused` / `.partial-pause.json` directo.
+// =============================================================================
+
+// Corre el cinturón de gates común a las 3 rutas de ciclo de vida. Devuelve
+// `true` si YA respondió (rechazo) — el caller debe cortar. `false` si pasó
+// todos los gates (sin cuerpo aún: el body se lee en el caller con readBodyCapped
+// porque cada primitivo interpreta el payload distinto).
+function _waveLifecycleGates(req, res, rejectTag) {
+    // Gate 1 — método.
+    if (req.method !== 'POST') {
+        _logPartialRejected(req, `${rejectTag}_method_not_allowed`);
+        sendMutationJson(res, { error: 'method_not_allowed' }, 405);
+        return true;
+    }
+    // Gate 2 — loopback (REQ-SEC-2/7, independiente del bind).
+    if (!isLoopbackReq(req)) {
+        _logPartialRejected(req, `${rejectTag}_non_loopback`);
+        sendMutationJson(res, { error: 'forbidden' }, 403);
+        return true;
+    }
+    // Gate 3 — same-origin (anti-CSRF, REQ-SEC-1).
+    if (!isSameOriginFetch(req)) {
+        _logPartialRejected(req, `${rejectTag}_cross_origin`);
+        sendMutationJson(res, { error: 'forbidden' }, 403);
+        return true;
+    }
+    // Gate 4 — Content-Type debe ser JSON.
+    const ct = (req.headers && req.headers['content-type']) || '';
+    if (!/^application\/json\b/i.test(ct)) {
+        _logPartialRejected(req, `${rejectTag}_bad_content_type`);
+        sendMutationJson(res, { error: 'unsupported_media_type' }, 415);
+        return true;
+    }
+    return false;
+}
+
+// Gate 5 (body cap + parse JSON defensivo) compartido. Invoca `onParsed(parsed)`
+// con el objeto parseado (o `{}` si el body venía vacío). Ante cap → 413, ante
+// JSON malformado → 400 (REQ-SEC-4). Estas rutas no exigen ningún campo del body
+// (pausar/reanudar/relanzar operan sobre el estado global / la ola activa), pero
+// igual aplican el cap y el parse estricto para no diferir del contrato de gates.
+function _waveLifecycleBody(req, res, rejectTag, onParsed) {
+    readBodyCapped(req, ALERT_BODY_MAX_BYTES, (err, raw) => {
+        if (err) {
+            const tooLarge = err.message === 'body_too_large';
+            _logPartialRejected(req, tooLarge ? `${rejectTag}_body_too_large` : `${rejectTag}_body_read_error`);
+            sendMutationJson(res, { error: tooLarge ? 'payload_too_large' : 'bad_request' }, tooLarge ? 413 : 400);
+            return;
+        }
+        let parsed = null;
+        try { parsed = raw ? JSON.parse(raw) : {}; } catch { parsed = null; }
+        if (!parsed || typeof parsed !== 'object') {
+            sendMutationJson(res, { error: 'bad_request' }, 400);
+            return;
+        }
+        onParsed(parsed);
+    });
+}
+
+// POST /dashboard/wave/pause — halt total del pipeline (equivalente exacto de
+// `/pausar` de consola). Mapea a `setFullPause` (CA-1). Marker `.paused` bajo
+// lock + audit con `authorizedBy: 'pause:dashboard'`.
+function handleWavePauseMutation(req, res) {
+    const pathnameOnly = (req.url || '').split('?')[0];
+    if (pathnameOnly !== '/dashboard/wave/pause') return false;
+    if (_waveLifecycleGates(req, res, 'wave_pause')) return true;
+
+    let pp;
+    try { pp = require('./partial-pause'); } catch { pp = null; }
+    if (!pp || typeof pp.setFullPause !== 'function') {
+        sendMutationJson(res, { error: 'module_unavailable' }, 503);
+        return true;
+    }
+
+    _waveLifecycleBody(req, res, 'wave_pause', () => {
+        try {
+            const result = pp.setFullPause({
+                source: 'dashboard/wave-pause',
+                authorizedBy: 'pause:dashboard',       // actor FIJO (REQ-SEC-6), nunca del body
+                justification: 'Pausar la ola activa desde el dashboard (halt total)',
+            });
+            sendMutationJson(res, {
+                ok: true,
+                applied: !!(result && result.ok),
+                alreadyPaused: !!(result && result.existedBefore),
+                authorizedBy: 'pause:dashboard',
+            }, 200);
+        } catch (e) {
+            try { console.error(JSON.stringify({ event: 'wave_pause_mutation_error', msg: e && e.message, ts: new Date().toISOString() })); } catch {}
+            sendMutationJson(res, { error: 'internal_error' }, 500);
+        }
+    });
+    return true;
+}
+
+// POST /dashboard/wave/resume — reanudar (equivalente exacto de `/reanudar` de
+// consola). Mapea a `resumeAll` (CA-2): levanta el halt total y limpia la pausa
+// parcial. Si el gate de allowlist rechaza el removal → 409.
+function handleWaveResumeMutation(req, res) {
+    const pathnameOnly = (req.url || '').split('?')[0];
+    if (pathnameOnly !== '/dashboard/wave/resume') return false;
+    if (_waveLifecycleGates(req, res, 'wave_resume')) return true;
+
+    let pp;
+    try { pp = require('./partial-pause'); } catch { pp = null; }
+    if (!pp || typeof pp.resumeAll !== 'function') {
+        sendMutationJson(res, { error: 'module_unavailable' }, 503);
+        return true;
+    }
+
+    _waveLifecycleBody(req, res, 'wave_resume', () => {
+        try {
+            const result = pp.resumeAll({
+                source: 'dashboard/wave-resume',
+                authorizedBy: 'resume:dashboard',      // actor FIJO (REQ-SEC-6)
+                justification: 'Reanudar la ola desde el dashboard',
+            });
+            if (result && result.rejected) {
+                sendMutationJson(res, { error: 'gate_rejected', applied: false }, 409);
+                return;
+            }
+            sendMutationJson(res, {
+                ok: true,
+                applied: !!(result && (result.removedFull || result.removedPartial)),
+                removedFull: !!(result && result.removedFull),
+                removedPartial: !!(result && result.removedPartial),
+                authorizedBy: 'resume:dashboard',
+            }, 200);
+        } catch (e) {
+            try { console.error(JSON.stringify({ event: 'wave_resume_mutation_error', msg: e && e.message, ts: new Date().toISOString() })); } catch {}
+            sendMutationJson(res, { error: 'internal_error' }, 500);
+        }
+    });
+    return true;
+}
+
+// POST /dashboard/wave/dispatch — relanzar el despacho de la ola YA ACTIVA
+// (decisión PO: re-kick, NO promover una nueva ola). Mapea a
+// `wave-dispatch.realignActiveWaveDispatch` (CA-3): re-materializa la allowlist a
+// los issues abiertos de la ola activa vía el gate auditado de partial-pause con
+// `authorizedBy: 'dispatch:dashboard'`. Sin ola activa → 409.
+function handleWaveDispatchMutation(req, res) {
+    const pathnameOnly = (req.url || '').split('?')[0];
+    if (pathnameOnly !== '/dashboard/wave/dispatch') return false;
+    if (_waveLifecycleGates(req, res, 'wave_dispatch')) return true;
+
+    let dispatch;
+    try { dispatch = require('./wave-dispatch'); } catch { dispatch = null; }
+    if (!dispatch || typeof dispatch.realignActiveWaveDispatch !== 'function') {
+        sendMutationJson(res, { error: 'module_unavailable' }, 503);
+        return true;
+    }
+
+    _waveLifecycleBody(req, res, 'wave_dispatch', () => {
+        try {
+            const result = dispatch.realignActiveWaveDispatch({
+                source: 'dashboard/wave-dispatch',
+                authorizedBy: 'dispatch:dashboard',    // actor FIJO (REQ-SEC-6)
+                justification: 'Relanzar el despacho de la ola activa desde el dashboard',
+            });
+            if (result && result.ok) {
+                sendMutationJson(res, {
+                    ok: true,
+                    applied: true,
+                    activeWave: result.activeWave != null ? result.activeWave : null,
+                    count: Array.isArray(result.allowlist) ? result.allowlist.length : 0,
+                    authorizedBy: 'dispatch:dashboard',
+                }, 200);
+                return;
+            }
+            const reason = (result && result.reason) || 'unknown';
+            if (reason === 'no_active_wave') {
+                sendMutationJson(res, { error: 'no_active_wave', applied: false }, 409);
+                return;
+            }
+            if (reason === 'gate_rejected') {
+                sendMutationJson(res, { error: 'gate_rejected', applied: false }, 409);
+                return;
+            }
+            if (reason === 'empty_expansion') {
+                // Fail-safe: no había issues abiertos para re-materializar. No es un
+                // error del operador — la ola no tiene trabajo pendiente.
+                sendMutationJson(res, { ok: true, applied: false, reason: 'empty_expansion' }, 200);
+                return;
+            }
+            sendMutationJson(res, { error: 'internal_error', reason }, 500);
+        } catch (e) {
+            try { console.error(JSON.stringify({ event: 'wave_dispatch_mutation_error', msg: e && e.message, ts: new Date().toISOString() })); } catch {}
+            sendMutationJson(res, { error: 'internal_error' }, 500);
+        }
+    });
+    return true;
+}
+
 function sendJson(res, payload, status = 200) {
     const body = JSON.stringify(payload);
     res.writeHead(status, {
@@ -1856,6 +2059,11 @@ function handle(req, res, ctx) {
     // #4378 — endpoint mutante para archivar una ola. Mismo lugar que los
     // anteriores: ANTES del gate GET-only, con su propio cinturón de gates.
     if (handleWaveArchiveMutation(req, res)) return true;
+    // #4436 — endpoints mutantes de ciclo de vida de la ola activa (pausar /
+    // reanudar / relanzar despacho). Mismo lugar y mismo cinturón de gates.
+    if (handleWavePauseMutation(req, res)) return true;
+    if (handleWaveResumeMutation(req, res)) return true;
+    if (handleWaveDispatchMutation(req, res)) return true;
 
     // #4372 — API de gestión de olas `/api/waves/*` + `/api/roadmap/status`.
     // Se evalúa ANTES del gate GET-only: incluye mutaciones (POST/PATCH/DELETE/PUT)
@@ -2091,6 +2299,10 @@ module.exports = {
         renderCostosView,
         // #4378 — endpoint mutante para archivar una ola + vista roadmap.
         handleWaveArchiveMutation,
+        // #4436 — endpoints mutantes de ciclo de vida de la ola activa.
+        handleWavePauseMutation,
+        handleWaveResumeMutation,
+        handleWaveDispatchMutation,
         renderRoadmapView,
         // #4192 — banner de misión de la ventana Issues (rediseño MIZPÁ).
         deriveIssuesMission,

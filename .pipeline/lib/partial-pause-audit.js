@@ -62,6 +62,14 @@ const AUTHORIZED_BY_STATIC = Object.freeze([
     'resume:operator',       // /resume manual (Telegram o CLI)
     'pulpo:cleanup',         // limpieza programada del Pulpo (TTL expirado, etc.)
     'planner-split:auto',    // CA-3: auto-promoción de hijos cuando split de planner
+    // #4436 — controles de ciclo de vida de la ola desde la ventana Roadmap del
+    // dashboard. Distinguibles del origen consola (CA-SEC-6): trazan que la
+    // mutación se disparó por HTTP loopback y no por Telegram/CLI. Habilitan los
+    // removals del gate igual que sus equivalentes de consola (resume:operator /
+    // wave-promote), porque cablean a los MISMOS primitivos (sin lógica nueva).
+    'pause:dashboard',       // /dashboard/wave/pause → setFullPause (halt total)
+    'resume:dashboard',      // /dashboard/wave/resume → resumeAll
+    'dispatch:dashboard',    // /dashboard/wave/dispatch → realign de la ola activa
 ]);
 
 // `recursive-deps:from-<N>` donde N es el número del issue padre (>0).
