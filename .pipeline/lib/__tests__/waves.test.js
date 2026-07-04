@@ -483,6 +483,30 @@ test('CA-9: invalidateCache hace que la próxima load relea disco', () => {
     } finally { teardownTmp(dir); }
 });
 
+// ─── #4446 — contador monotónico de identidad de olas ────────────────────────
+
+test('#4446: createPlannedWave asigna number desde meta.next_wave_number y lo incrementa; dos creaciones nunca reutilizan aunque se archiven olas intermedias', () => {
+    const dir = setupTmp();
+    try {
+        const a = waves.createPlannedWave({ name: 'A', issues: [1], concurrency_max: 1, window_minutes: 10 }, {});
+        assert.equal(a.waveNumber, 1);
+
+        // Archivar la ola intermedia manualmente (simula prune) preservando el
+        // contador. Si el número se derivara de max(number), la próxima ola
+        // volvería a 1 → reutilización prohibida por #4446.
+        const st1 = waves.loadWaves();
+        assert.equal(st1.meta.next_wave_number, 2);
+        st1.archived_waves = [{ number: 1, name: 'A', issues: [{ number: 1 }] }];
+        st1.planned_waves = [];
+        fs.writeFileSync(path.join(dir, 'waves.json'), JSON.stringify(st1, null, 2));
+        waves.invalidateCache();
+
+        const b = waves.createPlannedWave({ name: 'B', issues: [2], concurrency_max: 1, window_minutes: 10 }, {});
+        assert.equal(b.waveNumber, 2, 'nunca reutiliza el número de una ola archivada');
+        assert.equal(waves.loadWaves().meta.next_wave_number, 3);
+    } finally { teardownTmp(dir); }
+});
+
 // ─── Smoke ───────────────────────────────────────────────────────────────────
 
 test('smoke: API pública expone los 11 métodos esperados', () => {

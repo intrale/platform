@@ -237,6 +237,10 @@ function emptyState() {
             updated_by: 'System',
             source: 'manual',
             note: 'Estado vacío auto-generado (waves.json ausente o corrupto).',
+            // #4446 — contador monotónico de identidad de olas. Se asigna a
+            // `wave.number` en la creación y se incrementa; NUNCA se deriva de
+            // max(number existentes) ni se reutiliza.
+            next_wave_number: 1,
         },
         active_wave: null,
         planned_waves: [],
@@ -247,6 +251,27 @@ function emptyState() {
 
 function deepClone(obj) {
     return JSON.parse(JSON.stringify(obj));
+}
+
+// #4446 — Backfill del contador monotónico `meta.next_wave_number`.
+// Si un waves.json legacy no tiene el campo (o viene inválido), lo inicializa
+// como `max(number de active/planned/archived, 0) + 1`. Así la ola activa actual
+// conserva su número y el próximo correlativo arranca sin colisión. Muta `state`
+// in-place y devuelve el valor final del contador. Idempotente: no baja un
+// contador ya válido.
+function backfillNextWaveNumber(state) {
+    if (!state.meta || typeof state.meta !== 'object') state.meta = {};
+    const current = state.meta.next_wave_number;
+    if (Number.isInteger(current) && current >= 1) {
+        return current;
+    }
+    const known = [state.active_wave, ...(state.planned_waves || []), ...(state.archived_waves || [])]
+        .filter(Boolean)
+        .map((w) => Number(w.number))
+        .filter(Number.isFinite);
+    const backfilled = (known.length ? Math.max(...known) : 0) + 1;
+    state.meta.next_wave_number = backfilled;
+    return backfilled;
 }
 
 function ensureDir(dir) {
@@ -321,6 +346,10 @@ function loadWaves() {
             dependencies: Array.isArray(raw.dependencies) ? raw.dependencies : [],
         };
     }
+    // #4446 — asegurar el contador monotónico: backfill de migración para
+    // waves.json legacy sin `meta.next_wave_number`. La ola activa conserva su
+    // número; el próximo correlativo arranca en max(existentes)+1.
+    backfillNextWaveNumber(state);
     setCached(root, state);
     return deepClone(state);
 }
@@ -934,11 +963,15 @@ function createPlannedWaveLocked({ name, nums, conc, win, goal }, meta) {
         }
     }
 
-    // Siguiente número de ola: max(todos) + 1.
-    const allNumbers = named
-        .map((w) => Number(w.number))
-        .filter((x) => Number.isFinite(x));
-    const nextNumber = (allNumbers.length ? Math.max(...allNumbers) : 0) + 1;
+    // #4446 — Siguiente número de ola desde el contador monotónico persistido.
+    // NUNCA derivar de max(number existentes): un número podado/archivado no se
+    // reutiliza. `backfillNextWaveNumber` inicializa el contador de forma
+    // defensiva si el state viene de un waves.json legacy sin el campo. El
+    // incremento corre dentro del `withLockSync(wavesFile())` ya existente
+    // (misma ruta transaccional que envuelve a createPlannedWave) → sin locking
+    // nuevo, sin TOCTOU.
+    const nextNumber = backfillNextWaveNumber(state);
+    state.meta.next_wave_number = nextNumber + 1; // monotónico, nunca reutiliza
 
     const wave = {
         number: nextNumber,
@@ -1465,6 +1498,12 @@ function validateStateStrict(raw, opts = {}) {
             if (raw.meta[f] !== undefined && raw.meta[f] !== null && !isValidFreeString(raw.meta[f])) {
                 errors.push(`meta.${f} debe ser string ≤${MAX_FREE_STRING_LEN} chars`);
             }
+        }
+        // #4446 — el contador monotónico, si está presente, debe ser entero ≥ 1.
+        // (undefined se tolera: waves.json legacy se migra vía backfill al cargar.)
+        if (raw.meta.next_wave_number !== undefined
+            && (!Number.isInteger(raw.meta.next_wave_number) || raw.meta.next_wave_number < 1)) {
+            errors.push('meta.next_wave_number debe ser entero ≥ 1');
         }
     }
     if (raw.active_wave !== null && raw.active_wave !== undefined && typeof raw.active_wave !== 'object') {
