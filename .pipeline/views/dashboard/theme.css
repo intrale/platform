@@ -96,9 +96,13 @@ a:hover { color: var(--in-accent); }
 .in-header-subtitle { font-size: 12px; color: var(--in-fg-dim); margin-top: 2px; }
 .in-header-meta {
   display: flex; align-items: center; gap: 16px;
-  font-size: 13px;
 }
-.in-pill {
+/* Base compartida del contenedor pill (#4493): las cuatro pills del header
+   (recursos, pulpo, reloj, mode) comparten forma/tipografia/spacing para evitar
+   drift futuro. Solo tokens --in-* existentes, sin valores magicos. El
+   font-size: 13px de .in-header-meta se removio para que el tamano lo manden
+   las pills (12px) y no reintroducir drift por herencia sobre el reloj. */
+.in-pill, .in-clock {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 5px 11px;
   border-radius: 999px;
@@ -112,10 +116,12 @@ a:hover { color: var(--in-accent); }
 .in-pill-bad { background: var(--in-bad-soft); border-color: var(--in-bad); color: var(--in-bad); }
 .in-pill-info { background: var(--in-info-soft); border-color: var(--in-info); color: var(--in-info); }
 
+/* El reloj conserva SOLO la diferencia intencional (#4493): digitos
+   monoespaciados para que la pill no titile al avanzar la hora. Hereda el resto
+   del contenedor de la regla base .in-pill, .in-clock y el color --in-fg como
+   las otras pills (sin --in-fg-dim, que dentro de una pill leeria como disabled). */
 .in-clock {
   font-family: var(--in-mono);
-  font-size: 13px;
-  color: var(--in-fg-dim);
 }
 
 /* ──────────────── Footer ──────────────── */

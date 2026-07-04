@@ -57,7 +57,7 @@ function renderHeaderMetaSsr(opts) {
     <div class="in-header-meta">
       ${modePill}<span class="in-pill" id="hdr-resources" title="CPU y RAM del sistema" aria-label="Recursos CPU y RAM">…</span>
       <span class="in-pill" id="hdr-pulpo" aria-label="Estado del pulpo">…</span>
-      <span class="in-clock" id="hdr-clock" aria-label="Hora local">…</span>
+      <span class="in-pill in-clock" id="hdr-clock" aria-label="Hora local">…</span>
     </div>`;
 }
 
