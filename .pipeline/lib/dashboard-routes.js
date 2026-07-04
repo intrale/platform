@@ -1828,6 +1828,222 @@ function handleWaveArchiveMutation(req, res) {
     return true;
 }
 
+// #4435 — Cap defensivo de issues que una promoción puede sumar a la allowlist
+// (REQ-SEC-4/CA-4). Espejo del `promoteCapIssues` de dashboard.js:11525 — misma
+// semántica anti-DoS que el promote de candidatos.
+const WAVE_PROMOTE_CAP_ISSUES = 50;
+
+// #4435 — Set de issues cerrados CONFIRMADOS según waves.json (filesystem propio,
+// in-process). Un issue se considera cerrado si su `status` en cualquier ola es
+// `completed`. Alimenta el predicado `isClosed` de `expandRecursiveOpenIssues`
+// SIN consultar GitHub ni shell (REQ-SEC-3). Fail-safe (SEC-4): lo que no
+// aparezca acá queda indeterminado → se conserva en la allowlist.
+function _buildWaveClosedSet(waves) {
+    const closed = new Set();
+    try {
+        const state = waves.loadWaves();
+        const buckets = [];
+        if (state && state.active_wave) buckets.push(state.active_wave);
+        if (state && Array.isArray(state.planned_waves)) buckets.push(...state.planned_waves);
+        if (state && Array.isArray(state.archived_waves)) buckets.push(...state.archived_waves);
+        for (const w of buckets) {
+            if (!w || !Array.isArray(w.issues)) continue;
+            for (const it of w.issues) {
+                if (it && Number.isInteger(it.number) && it.status === 'completed') {
+                    closed.add(it.number);
+                }
+            }
+        }
+    } catch { /* fail-safe: sin datos legibles → nada cerrado, todo se conserva */ }
+    return closed;
+}
+
+// #4435 — Endpoint mutante para PROMOVER una ola planificada → activa,
+// sincronizando la allowlist (`.partial-pause.json`) con los issues de la ola +
+// hijos/dependencias recursivas ABIERTOS (motor #4350). Replica LITERALMENTE el
+// cinturón de gates de `handleWaveArchiveMutation`, en el MISMO orden:
+//   método≠POST → 405 · no-loopback → 403 · cross-site → 403 (anti-CSRF,
+//   REQ-SEC-1) · Content-Type≠json → 415 · body sobre cap → 413 · waveNumber
+//   inválido → 400 (SIN reflejar input — REQ-SEC-2/CA-6).
+//
+// Sobre esa base agrega el flujo preview→confirm + cap (plantilla
+// `/api/allowlist-candidates/:issue/promote`), gobernado por `body.confirmed`:
+//   - Invariante "una sola ola activa" (REQ-SEC-5/CA-3): chequeo server-side
+//     ANTES de escribir; la carrera doble-submit la corta el marker
+//     transaccional de `promoteWaveAtomic` (lanza si hay otra promoción en curso).
+//   - Expansión 100% in-process (REQ-SEC-3/CA-2): `expandRecursiveOpenIssues`
+//     camina el grafo `dependencies[]` de waves.json (`getBlockingIssues`) — sin
+//     red, sin shell, sin interpolar `waveNumber` en un path. El set expandido
+//     se pasa como AUTORITATIVO a `promoteWaveAtomic` (`metadata.expandedIssues`);
+//     waves.js NO re-consulta GitHub.
+//   - Cap defensivo (REQ-SEC-4/CA-4): si el set supera `WAVE_PROMOTE_CAP_ISSUES`
+//     → `PROMOTE_CAP_EXCEEDED` (409) sin escribir.
+//   - Preview (sin `confirmed:true`): devuelve el total sin mutar.
+// El actor se graba server-side FIJO (`operador-local`), NUNCA del body
+// (REQ-SEC-6). El audit `wave_promoted` lo emite `promoteWaveAtomic`
+// (`emitPromoteAudit`) → CA-8.
+function handleWavePromoteMutation(req, res) {
+    const pathnameOnly = (req.url || '').split('?')[0];
+    if (pathnameOnly !== '/dashboard/wave/promote') return false;
+
+    // Gate 1 — método.
+    if (req.method !== 'POST') {
+        _logPartialRejected(req, 'wave_promote_method_not_allowed');
+        sendMutationJson(res, { error: 'method_not_allowed' }, 405);
+        return true;
+    }
+    // Gate 2 — loopback (REQ-SEC-1/7, independiente del bind).
+    if (!isLoopbackReq(req)) {
+        _logPartialRejected(req, 'wave_promote_non_loopback');
+        sendMutationJson(res, { error: 'forbidden' }, 403);
+        return true;
+    }
+    // Gate 3 — same-origin (anti-CSRF, REQ-SEC-1).
+    if (!isSameOriginFetch(req)) {
+        _logPartialRejected(req, 'wave_promote_cross_origin');
+        sendMutationJson(res, { error: 'forbidden' }, 403);
+        return true;
+    }
+    // Gate 4 — Content-Type debe ser JSON.
+    const ct = (req.headers && req.headers['content-type']) || '';
+    if (!/^application\/json\b/i.test(ct)) {
+        _logPartialRejected(req, 'wave_promote_bad_content_type');
+        sendMutationJson(res, { error: 'unsupported_media_type' }, 415);
+        return true;
+    }
+
+    // Módulos de dominio disponibles (motor #4350 in-process).
+    let waves, recursivePromote;
+    try { waves = require('./waves'); } catch { waves = null; }
+    try { recursivePromote = require('./allowlist-recursive-promote'); } catch { recursivePromote = null; }
+    if (!waves
+        || typeof waves.promoteWaveAtomic !== 'function'
+        || typeof waves.getActiveWave !== 'function'
+        || typeof waves.getPlannedWave !== 'function'
+        || typeof waves.getBlockingIssues !== 'function'
+        || !recursivePromote
+        || typeof recursivePromote.expandRecursiveOpenIssues !== 'function') {
+        sendMutationJson(res, { error: 'module_unavailable' }, 503);
+        return true;
+    }
+
+    // Gate 5 — body con cap (REQ-SEC-8) + parseo + validación estricta.
+    readBodyCapped(req, ALERT_BODY_MAX_BYTES, (err, raw) => {
+        if (err) {
+            const tooLarge = err.message === 'body_too_large';
+            _logPartialRejected(req, tooLarge ? 'wave_promote_body_too_large' : 'wave_promote_body_read_error');
+            sendMutationJson(res, { error: tooLarge ? 'payload_too_large' : 'bad_request' }, tooLarge ? 413 : 400);
+            return;
+        }
+        let parsed = null;
+        try { parsed = raw ? JSON.parse(raw) : {}; } catch { parsed = null; }
+        if (!parsed || typeof parsed !== 'object') {
+            sendMutationJson(res, { error: 'bad_request' }, 400);
+            return;
+        }
+        // Validación server-side ESTRICTA del número de ola (path safety CA-6):
+        // entero positivo. Rechaza float / string / ≤0 / NaN SIN reflejar input.
+        const value = parsed.waveNumber != null ? parsed.waveNumber : parsed.wave_number;
+        if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+            sendMutationJson(res, { error: 'bad_request', applied: false }, 400);
+            return;
+        }
+        const confirmed = parsed.confirmed === true;
+
+        try {
+            // Gate fail-closed (marker .failed de promote activo).
+            if (typeof waves.isWavePromoteBlocked === 'function' && waves.isWavePromoteBlocked().blocked) {
+                sendMutationJson(res, { error: 'promote_blocked', applied: false }, 409);
+                return;
+            }
+            // Invariante "una sola ola activa" (REQ-SEC-5/CA-3) — server-side,
+            // ANTES de escribir. La carrera doble-submit la corta el marker de
+            // promoteWaveAtomic (ver catch abajo).
+            const active = waves.getActiveWave();
+            if (active) {
+                sendMutationJson(res, { error: 'active_wave_exists', applied: false }, 409);
+                return;
+            }
+            // La ola planificada debe existir.
+            const planned = waves.getPlannedWave(value);
+            if (!planned) {
+                sendMutationJson(res, { error: 'not_found', applied: false }, 404);
+                return;
+            }
+
+            // Expansión recursiva IN-PROCESS (REQ-SEC-3/CA-2): seeds = issues de
+            // la ola; getDeps camina el grafo `dependencies[]` de waves.json;
+            // isClosed filtra SOLO cierres confirmados por filesystem (fail-safe:
+            // indeterminado se conserva). Sin red, sin GitHub, sin shell.
+            const seedIssues = Array.isArray(planned.issues)
+                ? planned.issues.map((i) => i && i.number).filter((n) => Number.isInteger(n) && n > 0)
+                : [];
+            const closedSet = _buildWaveClosedSet(waves);
+            const expandedIssues = recursivePromote.expandRecursiveOpenIssues({
+                seedIssues,
+                isClosed: (n) => closedSet.has(n),
+                getDeps: (n) => waves.getBlockingIssues(n),
+            });
+
+            // Cap defensivo (REQ-SEC-4/CA-4). Como el chequeo de invariante ya
+            // garantizó que NO hay ola activa, la allowlist final ES el set
+            // expandido → el cap aplica sobre su tamaño total.
+            if (expandedIssues.length > WAVE_PROMOTE_CAP_ISSUES) {
+                sendMutationJson(res, {
+                    error: 'PROMOTE_CAP_EXCEEDED',
+                    applied: false,
+                    total: expandedIssues.length,
+                    cap: WAVE_PROMOTE_CAP_ISSUES,
+                }, 409);
+                return;
+            }
+
+            // Preview (sin confirmed:true) — NO escribe (REQ-SEC-4/CA-4).
+            if (!confirmed) {
+                sendMutationJson(res, {
+                    ok: true,
+                    preview: true,
+                    waveNumber: value,
+                    toAdd: expandedIssues,
+                    finalAllowlist: expandedIssues,
+                    total: expandedIssues.length,
+                }, 200);
+                return;
+            }
+
+            // Confirmado — promoción atómica con el set expandido AUTORITATIVO.
+            // Actor FIJO server-side (REQ-SEC-6); waves.js emite `wave_promoted`.
+            const result = waves.promoteWaveAtomic(value, {
+                expandedIssues,
+                updated_by: 'operador-local',
+                source: 'dashboard/wave-promote',
+                note: `promote wave ${value} → active (dashboard)`,
+            });
+            sendMutationJson(res, {
+                ok: true,
+                applied: true,
+                preview: false,
+                actor: 'operador-local',
+                waveNumber: value,
+                total: (result && Array.isArray(result.newAllowlist))
+                    ? result.newAllowlist.length
+                    : expandedIssues.length,
+            }, 200);
+        } catch (e) {
+            const msg = (e && e.message) ? e.message : '';
+            // Doble-submit / carrera: el marker transaccional de promoteWaveAtomic
+            // lanza si hay otra promoción en curso (REQ-SEC-5). 409, no 500.
+            if (/transacci[oó]n en curso/i.test(msg) || /crear marker/i.test(msg)) {
+                sendMutationJson(res, { error: 'promote_in_progress', applied: false }, 409);
+                return;
+            }
+            try { console.error(JSON.stringify({ event: 'wave_promote_mutation_error', msg, ts: new Date().toISOString() })); } catch {}
+            sendMutationJson(res, { error: 'internal_error' }, 500);
+        }
+    });
+    return true;
+}
+
 // =============================================================================
 // #4436 — Endpoints mutantes de ciclo de vida de la ola activa desde la ventana
 // Roadmap: pausar / reanudar / relanzar despacho. Cablean a los MISMOS
@@ -2067,6 +2283,10 @@ function handle(req, res, ctx) {
     // #4378 — endpoint mutante para archivar una ola. Mismo lugar que los
     // anteriores: ANTES del gate GET-only, con su propio cinturón de gates.
     if (handleWaveArchiveMutation(req, res)) return true;
+    // #4435 — endpoint mutante para promover una ola planificada → activa
+    // (sync de allowlist). Hermano de archive: ANTES del gate GET-only, con su
+    // propio cinturón de gates + flujo preview→confirm + cap.
+    if (handleWavePromoteMutation(req, res)) return true;
     // #4436 — endpoints mutantes de ciclo de vida de la ola activa (pausar /
     // reanudar / relanzar despacho). Mismo lugar y mismo cinturón de gates.
     if (handleWavePauseMutation(req, res)) return true;
@@ -2307,6 +2527,9 @@ module.exports = {
         renderCostosView,
         // #4378 — endpoint mutante para archivar una ola + vista roadmap.
         handleWaveArchiveMutation,
+        // #4435 — endpoint mutante para promover una ola planificada → activa.
+        handleWavePromoteMutation,
+        WAVE_PROMOTE_CAP_ISSUES,
         // #4436 — endpoints mutantes de ciclo de vida de la ola activa.
         handleWavePauseMutation,
         handleWaveResumeMutation,
