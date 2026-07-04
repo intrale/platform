@@ -142,6 +142,11 @@ function renderMissionBannerPipeline() {
         </div>
         <div class="mz-mission-desc" id="mission-wave-desc">Cada issue de la ola recorre el flujo de fases de izquierda a derecha. Acá ves dónde está parado cada uno.</div>
         <div class="mz-mission-metrics">
+          <div class="mz-wm" id="mission-started-wm" title="Fecha y hora en que se activó la ola.">
+            <div class="mz-wm-l">🗓️ COMIENZO</div>
+            <div class="mz-wm-v" id="mission-started-value">—</div>
+            <div class="mz-wm-s">inicio de la ola</div>
+          </div>
           <div class="mz-wm" title="Tiempo estimado para cerrar la ola (proyección por velocidad de entrega).">
             <div class="mz-wm-l">⏳ ETA DE LA OLA</div>
             <div class="mz-wm-v" id="mission-eta-value">—</div>

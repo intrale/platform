@@ -312,6 +312,21 @@ test('CA-3: promoteWaveToActive archiva la anterior con métricas y promueve', (
     } finally { teardownTmp(dir); }
 });
 
+// #4447 CA-1 (regresión): tras promover una ola, active_wave.started_at queda
+// persistido como ISO 8601 válido. Blinda el campo que consume el encabezado de
+// ola del dashboard (🗓️ COMIENZO).
+test('#4447 CA-1: promoteWaveToActive persiste started_at como ISO válido', () => {
+    const dir = setupTmp();
+    try {
+        writeFixture(dir, sampleState());
+        waves.promoteWaveToActive(2, { updated_by: 'System', note: 'promote 4447' });
+        const fresh = JSON.parse(fs.readFileSync(path.join(dir, 'waves.json'), 'utf8'));
+        assert.equal(fresh.active_wave.number, 2);
+        assert.equal(typeof fresh.active_wave.started_at, 'string');
+        assert.ok(Number.isFinite(Date.parse(fresh.active_wave.started_at)), 'started_at debe ser ISO parseable');
+    } finally { teardownTmp(dir); }
+});
+
 test('CA-3: promoteWaveToActive throw si planificada no existe', () => {
     const dir = setupTmp();
     try {

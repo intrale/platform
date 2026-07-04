@@ -3563,6 +3563,7 @@ function _mzMirrorMission(d){
             setText('mission-wave-num', '—');
             setText('mission-wave-name', 'Sin ola activa');
             setText('mission-wave-desc', 'Esperando la planificación de la ola activa.');
+            setText('mission-started-value', '—');
             return;
         }
         if(Number.isFinite(wave.number)) setText('mission-wave-num', String(wave.number));
@@ -3571,6 +3572,34 @@ function _mzMirrorMission(d){
         setText('mission-wave-desc', desc);
         const tag = document.getElementById('mission-wave-tag');
         if(tag) tag.style.display = wave.isLast ? '' : 'none';
+
+        // #4447 — Fecha de comienzo de la ola (mission-started-value). Formatea
+        // el ISO started_at/openedAt (ya expuesto por normalizeWave) a es-AR +
+        // TZ Buenos Aires (dd/MM/yyyy HH:mm). Degrada a "—" en olas legacy sin
+        // fecha o valor inválido. Defensivo: nunca corta el tick.
+        try {
+            const startEl = document.getElementById('mission-started-value');
+            if(startEl){
+                const iso = wave.started_at || wave.openedAt || null;
+                let txt = '—', legacy = true;
+                if(iso){
+                    const dt = new Date(iso);
+                    if(!isNaN(dt.getTime())){
+                        txt = new Intl.DateTimeFormat('es-AR', {
+                            day:'2-digit', month:'2-digit', year:'numeric',
+                            hour:'2-digit', minute:'2-digit', hour12:false,
+                            timeZone:'America/Argentina/Buenos_Aires',
+                        }).format(dt);
+                        legacy = false;
+                    }
+                }
+                startEl.innerHTML = legacy ? '—' : (txt + ' <span class="mz-wm-u">hs</span>');
+                const wm = document.getElementById('mission-started-wm');
+                if(wm) wm.title = legacy
+                    ? 'Ola sin fecha de inicio registrada (ola previa al campo).'
+                    : 'Fecha y hora en que se activó la ola.';
+            }
+        } catch(_) {}
 
         const issues = Array.isArray(wave.issues) ? wave.issues : [];
         let done=0, active=0, blocked=0, queue=0;
@@ -4913,6 +4942,11 @@ function renderMissionBanner(state) {
         </div>
         <div class="mz-mission-desc" id="mission-wave-desc">Esperando la planificación de la ola activa.</div>
         <div class="mz-mission-metrics">
+          <div class="mz-wm" id="mission-started-wm" title="Fecha y hora en que se activó la ola.">
+            <div class="mz-wm-l">🗓️ COMIENZO</div>
+            <div class="mz-wm-v" id="mission-started-value">—</div>
+            <div class="mz-wm-s">inicio de la ola</div>
+          </div>
           <div class="mz-wm" title="Tiempo estimado para cerrar la ola (proyección por velocidad / percentiles de duración).">
             <div class="mz-wm-l">⏳ ETA DE LA OLA</div>
             <div class="mz-wm-v" id="mission-eta-value">—</div>
