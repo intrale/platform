@@ -36,7 +36,7 @@ test('CA-2: HISTORIAL muestra la cabecera de ola común (tag OLA + métricas + b
     assert.match(html, /class="mz-mission/, 'falta el banner de ola común');
     assert.match(html, /id="mission-wave-num"/, 'falta el tag de número de ola');
     assert.match(html, /id="mission-avance-pct"/, 'falta el bloque AVANCE');
-    assert.match(html, /id="mission-bar-done"/, 'falta la barra de progreso apilada');
+    assert.match(html, /id="mission-bar-progress"/, 'falta la barra de progreso (tramo único de avance)');
 });
 
 test('CA-3: HISTORIAL muestra la barra de accesos a subventanas común (nav v3)', () => {

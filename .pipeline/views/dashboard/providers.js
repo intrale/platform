@@ -769,12 +769,8 @@ const PROVIDERS_CLIENT_JS = `
         setText('mission-leg-active', String(active));
         setText('mission-leg-blocked', String(blocked));
         setText('mission-leg-queue', String(queue));
-        var w = function(n){ return total>0 ? ((n/total)*100).toFixed(1)+'%' : '0%'; };
-        var setW = function(id,n){ var el=document.getElementById(id); if(el) el.style.width = w(n); };
-        setW('mission-bar-done', done);
-        setW('mission-bar-active', active);
-        setW('mission-bar-blocked', blocked);
-        setW('mission-bar-queue', queue);
+        // #4452 — la barra de avance (#mission-bar-progress) la hidrata
+        // __applyMissionOlaEta desde avancePct; NO se rellena por distribución.
         var dv = document.getElementById('mission-delivered-value');
         if(dv) dv.innerHTML = done + '<span class="mz-wm-u"> / ' + total + '</span>';
         var dsub = document.getElementById('mission-delivered-sub');

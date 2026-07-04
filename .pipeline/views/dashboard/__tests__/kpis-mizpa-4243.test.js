@@ -124,7 +124,7 @@ test('R-4: el fallback inline del banner conserva los IDs mission-*', () => {
     // renderKpisWaveBanner ya delega al común; el fallback se ejercita por su
     // contrato de IDs: deben existir igual para que la hidratación no se rompa.
     const banner = view.renderKpisWaveBanner();
-    for (const id of ['mission-wave-num', 'mission-avance-pct', 'mission-leg-done', 'mission-bar-done']) {
+    for (const id of ['mission-wave-num', 'mission-avance-pct', 'mission-leg-done', 'mission-bar-progress']) {
         assert.match(banner, new RegExp('id="' + id + '"'), 'ID ' + id + ' presente');
     }
 });

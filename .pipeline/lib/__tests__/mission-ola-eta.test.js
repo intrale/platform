@@ -206,6 +206,60 @@ test('el script cliente NO usa innerHTML para pintar mission-vel-value (R-1 / G-
 });
 
 // -----------------------------------------------------------------------------
+// #4452 — la barra del encabezado representa EXCLUSIVAMENTE el % de avance de la
+// ola (fuente única `avancePct`), desacoplada de la distribución por estado. El
+// client script fija `#mission-bar-progress`.style.width desde avancePct
+// clampeado [0,100] (null → 0%). Se evalúa el script en un DOM falso y se
+// verifica el ancho resultante (CA-1/CA-4).
+// -----------------------------------------------------------------------------
+
+test('__applyMissionOlaEta fija el ancho de #mission-bar-progress desde avancePct clampeado [0,100]', () => {
+    const src = missionOlaEtaClientScript();
+    const bar = { style: { width: '0%' } };
+    const pctEl = { textContent: '' };
+    const elements = { 'mission-bar-progress': bar, 'mission-avance-pct': pctEl };
+    const fakeDoc = {
+        getElementById: (id) => (Object.prototype.hasOwnProperty.call(elements, id) ? elements[id] : null),
+        createTextNode: (t) => ({ nodeValue: String(t) }),
+        createElement: () => ({ className: '', textContent: '', appendChild() {} }),
+    };
+    const fakeWin = {};
+    const noop = () => 0;
+    // Ejecuta el IIFE del client script inyectando window/document/setInterval
+    // controlados (setInterval no-op para no dejar timers vivos en el runner).
+    const runner = new Function('window', 'document', 'setInterval', src);
+    runner(fakeWin, fakeDoc, noop);
+    assert.equal(typeof fakeWin.__applyMissionOlaEta, 'function');
+
+    // 42 → "42%"
+    fakeWin.__applyMissionOlaEta({ etaSource: 'fallback', totalPct: 42 });
+    assert.equal(bar.style.width, '42%');
+
+    // 150 → "100%" (clamp superior)
+    fakeWin.__applyMissionOlaEta({ etaSource: 'fallback', totalPct: 150 });
+    assert.equal(bar.style.width, '100%');
+
+    // avancePct null (totalPct ausente) → "0%"
+    fakeWin.__applyMissionOlaEta({ etaSource: 'fallback' });
+    assert.equal(bar.style.width, '0%');
+
+    // valor negativo → clamp inferior "0%"
+    fakeWin.__applyMissionOlaEta({ etaSource: 'fallback', totalPct: -10 });
+    assert.equal(bar.style.width, '0%');
+});
+
+test('el client script fija la barra por style.width numérico, nunca innerHTML (SEC #1,#2)', () => {
+    const src = missionOlaEtaClientScript();
+    assert.ok(src.includes('mission-bar-progress'));
+    assert.ok(src.includes('bar.style.width'));
+    // ningún id segmentado por distribución sobrevive en el emisor del banner.
+    assert.ok(!src.includes('mission-bar-done'));
+    assert.ok(!src.includes('mission-bar-active'));
+    assert.ok(!src.includes('mission-bar-blocked'));
+    assert.ok(!src.includes('mission-bar-queue'));
+});
+
+// -----------------------------------------------------------------------------
 // #4450 (AC-5) — verificación estática de fuente única: el ÚNICO writer JS del id
 // `mission-vel-value` es el client script de este módulo. Ninguna vista debe
 // escribir ese id por su cuenta (evita reintroducir la divergencia de #4296).
