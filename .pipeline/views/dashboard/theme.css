@@ -377,8 +377,10 @@ a:hover { color: var(--in-accent); }
 .mz-mission-badge { font-size: 11px; color: var(--brand-cyan,#34D9E0); background: rgba(52,217,224,.12);
     border: 1px solid rgba(52,217,224,.3); padding: 3px 9px; border-radius: 20px; font-weight: 700; letter-spacing: .3px; }
 .mz-mission-desc { font-size: 13px; color: var(--in-fg-dim,#8A93A6); margin-top: 5px; max-width: 560px; line-height: 1.45; }
-.mz-mission-metrics { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
-.mz-wm { flex: 1; min-width: 150px; background: rgba(255,255,255,.035); border: 1px solid var(--in-border,rgba(255,255,255,.07));
+.mz-mission-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 12px; }
+@media (max-width: 1100px) { .mz-mission-metrics { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 520px)  { .mz-mission-metrics { grid-template-columns: 1fr; } }
+.mz-wm { min-width: 0; background: rgba(255,255,255,.035); border: 1px solid var(--in-border,rgba(255,255,255,.07));
     border-radius: 11px; padding: 9px 12px; }
 .mz-wm-l { font-size: 9.5px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#5B6376); }
 .mz-wm-v { font-size: 17px; font-weight: 800; margin-top: 3px; line-height: 1; font-variant-numeric: tabular-nums; }
