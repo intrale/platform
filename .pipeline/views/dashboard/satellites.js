@@ -803,10 +803,14 @@ async function tickEquipoMission(){
         setW('mission-bar-active', active);
         setW('mission-bar-blocked', blocked);
         setW('mission-bar-queue', queue);
+        // #4451 — ENTREGADOS lee el entero autoritativo del server (mismo origen
+        // que el avance del roadmap, computeClosedSet). Fallback al conteo
+        // client-side "done" por back-compat con payloads sin el campo.
+        const delivered = Number.isInteger(wave.delivered) ? wave.delivered : done;
         const dv = document.getElementById('mission-delivered-value');
-        if(dv) dv.innerHTML = done + '<span class="mz-wm-u"> / ' + total + '</span>';
+        if(dv) dv.innerHTML = delivered + '<span class="mz-wm-u"> / ' + total + '</span>';
         const dsub = document.getElementById('mission-delivered-sub');
-        if(dsub) dsub.textContent = Math.max(0, total-done) + ' restantes';
+        if(dsub) dsub.textContent = Math.max(0, total-delivered) + ' restantes';
         // #4296 — velocidad (%/h) y ETA los hidrata el accessor compartido desde
         // /api/dash/ola-eta (ritmo determinístico de la ola), no desde openedAt.
     } catch(_) {}
