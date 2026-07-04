@@ -207,6 +207,10 @@ const telegramReceipt = require('./lib/telegram-receipt');
 // fase OK. Default OFF (rollout gradual via config.yaml → deliverable_notifications.enabled).
 const deliverableNotify = require('./lib/deliverable-notify');
 const skillDeliverableAttachments = require('./lib/skill-deliverable-attachments');
+// #4466 (B) — fallback determinístico de entrega de artefacto: enruta SIEMPRE por
+// writeDeliverable (redacta secrets por default — SEC-REQ-1/CA-SEC-1). NUNCA se
+// construye el path a mano ni se adjuntan notas crudas.
+const { writeDeliverable } = require('./lib/write-deliverable');
 // #3481 — Evaluación de completitud de fases paralelas que considera
 // artefactos varados en `procesado/` (con whitelist estricta + anti-race
 // contra pendiente/trabajando). Resuelve el deadlock cuando un skill cerró
@@ -4720,6 +4724,47 @@ function brazoBarrido(config) {
               } catch (e) {
                 // Nunca bloquear notify por un fallo del helper.
                 log('barrido', `📎 #${issue} helper attachments error (${notifySkill}): ${e.message}`);
+              }
+
+              // #4466 (B) — Fallback determinístico. Cubre CA-3 (los 14 skills
+              // disparan entrega efectiva) incluyendo architect/delivery, que no
+              // llaman writeDeliverable desde su SKILL.md, y cualquier skill que
+              // aprobó sin dejar artefacto físico. Si tras el barrido NO hay
+              // adjuntos y el resultado trae notas/motivo SUSTANTIVO, se
+              // materializa un .md mínimo vía writeDeliverable (redacta secrets
+              // por default — SEC-REQ-1/CA-SEC-1) y se vuelve a barrer disco. La
+              // nota trivial (aviso corto de cierre) NO genera adjunto → se
+              // mantiene sólo el closing_notice (CA-5, anti-ruido).
+              try {
+                const sinAdjuntos = !Array.isArray(r.attachments) || r.attachments.length === 0;
+                const notasRaw =
+                  (typeof r.notas === 'string' && r.notas.trim().length > 0) ? r.notas
+                  : (typeof r.motivo === 'string' && r.motivo.trim().length > 0) ? r.motivo
+                  : '';
+                // Umbral anti-ruido: sólo notas sustantivas (no un "aprobado" seco)
+                // se convierten en artefacto entregable.
+                const esSustantiva = notasRaw.trim().length >= 80;
+                if (sinAdjuntos && esSustantiva) {
+                  try {
+                    // Enruta por writeDeliverable → hereda redactContent (SEC-REQ-1)
+                    // y valida `fase` contra el enum cerrado. NUNCA writeFileSync directo.
+                    writeDeliverable(notifySkill, issue, { fase, md: notasRaw, pipelineRoot: ROOT });
+                    // Re-barrer: el .md recién escrito debe aparecer como adjunto
+                    // pasando por la misma validación (path/magic-bytes/allowlist).
+                    const rescanned = skillDeliverableAttachments.collectAttachmentsForSkill(
+                      notifySkill, issue, fase, { pipelineRoot: ROOT },
+                    );
+                    if (Array.isArray(rescanned) && rescanned.length > 0) {
+                      r.attachments = rescanned;
+                      log('barrido', `📎 #${issue} fallback .md generado (${notifySkill}/${fase}): ${rescanned.length} adjunto`);
+                    }
+                  } catch (e) {
+                    // El fallback NUNCA bloquea la notificación (CA-6).
+                    log('barrido', `📎 #${issue} fallback .md error (${notifySkill}/${fase}): ${e.message}`);
+                  }
+                }
+              } catch (e) {
+                log('barrido', `📎 #${issue} fallback excepción (${notifySkill}): ${e.message}`);
               }
 
               const result = deliverableNotify.notify({

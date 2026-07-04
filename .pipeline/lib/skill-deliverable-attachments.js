@@ -251,6 +251,20 @@ const SKILL_SOURCES = Object.freeze({
             descriptorHint: 'dev',
         },
     ],
+    // #4466 (B) — perfil `delivery`. Sin él, el fallback determinístico de
+    // pulpo.js (writeDeliverable('delivery', ...)) tiraba `skill sin perfil` y
+    // delivery quedaba sólo con closing_notice, incumpliendo CA-3 (los 14 skills
+    // de la whitelist entregan artefacto). Su entregable es el resumen de entrega
+    // (PR/commit) materializado desde `notas`. Issue-scoped, `.md`/`.pdf`.
+    delivery: [
+        {
+            dirTemplate: '.pipeline/assets/docs/{issue}',
+            nameMustInclude: [],
+            formats: ['.md', '.pdf'],
+            type: 'document',
+            descriptorHint: 'entrega',
+        },
+    ],
 });
 
 // Mapeo extensión → tipo de adjunto. Usado cuando la `source.type` es null
