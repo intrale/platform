@@ -332,6 +332,54 @@ test('CA-6/SEC-5: save redacta secretos en meta.note (API keys) preservando text
     }
 });
 
+// ─── #4446 — contador monotónico y su integridad ─────────────────────────────
+
+test('#4446: waves.json legacy sin meta.next_wave_number migra con backfill y su integrity_hash recomputado valida', () => {
+    const { dir, waves } = setupTmp();
+    try {
+        // Legacy: activa #7 + planificada #8, sin `meta.next_wave_number` ni hash.
+        fs.writeFileSync(path.join(dir, 'waves.json'), JSON.stringify(validState(), null, 2));
+
+        // loadWaves aplica el backfill: max(7,8)+1 = 9.
+        const loaded = waves.loadWaves();
+        assert.equal(loaded.meta.next_wave_number, 9);
+        assert.equal(loaded.active_wave.number, 7, 'la activa conserva su número');
+
+        // Persistir el estado migrado sella el integrity_hash sobre el shape final
+        // (que YA incluye meta.next_wave_number, cubierto por el hash canónico).
+        waves._internal.saveState(loaded, { source: 'manual', note: 'migración #4446' });
+        const persisted = JSON.parse(fs.readFileSync(path.join(dir, 'waves.json'), 'utf8'));
+        assert.equal(persisted.meta.next_wave_number, 9);
+        assert.match(persisted.integrity_hash, /^[0-9a-f]{64}$/);
+        assert.equal(waves.verifyIntegrityHash(persisted).status, 'ok');
+        assert.equal(waves.checkStateIntegrity().status, 'ok');
+    } finally {
+        teardownTmp(dir);
+    }
+});
+
+test('#4446: validateStateStrict rechaza meta.next_wave_number no-entero o < 1, tolera undefined', () => {
+    const { dir, waves } = setupTmp();
+    try {
+        // undefined tolerado (legacy migra por backfill).
+        const legacy = validState();
+        delete legacy.meta.next_wave_number;
+        assert.deepEqual(waves.validateStateStrict(legacy), []);
+
+        // 0 y string son rechazados.
+        const bad0 = validState({ meta: { ...validState().meta, next_wave_number: 0 } });
+        assert.ok(waves.validateStateStrict(bad0).some((e) => /next_wave_number debe ser entero ≥ 1/.test(e)));
+        const badStr = validState({ meta: { ...validState().meta, next_wave_number: '3' } });
+        assert.ok(waves.validateStateStrict(badStr).some((e) => /next_wave_number debe ser entero ≥ 1/.test(e)));
+
+        // Entero ≥ 1 aceptado.
+        const good = validState({ meta: { ...validState().meta, next_wave_number: 9 } });
+        assert.deepEqual(waves.validateStateStrict(good), []);
+    } finally {
+        teardownTmp(dir);
+    }
+});
+
 // ─── CA-8 — backward-compat: loadWaves permisivo sigue verde ─────────────────
 
 test('CA-8: loadWaves (permisivo) tolera waves.json con integrity_hash sin romper consumers', () => {

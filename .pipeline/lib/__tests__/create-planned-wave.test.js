@@ -183,6 +183,82 @@ test('createPlannedWave asigna números de ola incrementales', () => {
 });
 
 // -----------------------------------------------------------------------------
+// #4446 — contador monotónico de identidad de olas (CA-1/CA-3)
+// -----------------------------------------------------------------------------
+
+test('#4446 CA-1: createPlannedWave toma el number de meta.next_wave_number y lo incrementa', () => {
+    const { dir, waves } = setupTmp();
+    try {
+        const a = waves.createPlannedWave({ name: 'A', issues: [1], concurrency_max: 1, window_minutes: 10 }, {});
+        assert.equal(a.waveNumber, 1);
+        // El contador quedó persistido en 2 (nunca reutiliza el 1).
+        let st = readWaves(dir);
+        assert.equal(st.meta.next_wave_number, 2);
+
+        const b = waves.createPlannedWave({ name: 'B', issues: [2], concurrency_max: 1, window_minutes: 10 }, {});
+        assert.equal(b.waveNumber, 2);
+        st = readWaves(dir);
+        assert.equal(st.meta.next_wave_number, 3);
+    } finally {
+        teardownTmp(dir);
+    }
+});
+
+test('#4446 CA-3: el contador es monotónico — podar/archivar olas NO baja next_wave_number ni reutiliza número', () => {
+    const { dir, waves } = setupTmp();
+    try {
+        // Emitimos olas 1 y 2.
+        waves.createPlannedWave({ name: 'A', issues: [1], concurrency_max: 1, window_minutes: 10 }, {});
+        waves.createPlannedWave({ name: 'B', issues: [2], concurrency_max: 1, window_minutes: 10 }, {});
+
+        // Simular poda: eliminamos TODAS las planned del disco pero preservamos el
+        // contador (como haría un archivado/prune real). Si createPlannedWave
+        // derivara de max(number), el próximo número volvería a 1 → reutilización.
+        const st = readWaves(dir);
+        assert.equal(st.meta.next_wave_number, 3);
+        st.planned_waves = [];
+        st.archived_waves = [];
+        st.active_wave = null;
+        fs.writeFileSync(path.join(dir, 'waves.json'), JSON.stringify(st, null, 2));
+        waves.invalidateCache();
+
+        const c = waves.createPlannedWave({ name: 'C', issues: [3], concurrency_max: 1, window_minutes: 10 }, {});
+        // Debe ser 3 (contador), NUNCA 1 (max()+1 sobre un state podado).
+        assert.equal(c.waveNumber, 3);
+        assert.equal(readWaves(dir).meta.next_wave_number, 4);
+    } finally {
+        teardownTmp(dir);
+    }
+});
+
+test('#4446: waves.json legacy sin meta.next_wave_number → backfill max(existentes)+1 y no reasigna la activa', () => {
+    const { dir, waves } = setupTmp();
+    try {
+        // Legacy sin contador; ola activa #2 debe conservarse.
+        fs.writeFileSync(path.join(dir, 'waves.json'), JSON.stringify({
+            version: '1.0',
+            meta: { created_at: '2026-07-01T00:00:00.000Z', updated_at: '2026-07-01T00:00:00.000Z', updated_by: 'System', source: 'manual', note: 'legacy' },
+            active_wave: { number: 2, name: 'Ola 2', goal: null, issues: [{ number: 99, status: 'in_progress' }] },
+            planned_waves: [],
+            archived_waves: [{ number: 1, name: 'Ola 1', issues: [] }],
+            dependencies: [],
+        }, null, 2));
+        waves.invalidateCache();
+
+        // loadWaves aplica el backfill: next = max(2,1)+1 = 3.
+        const loaded = waves.loadWaves();
+        assert.equal(loaded.meta.next_wave_number, 3);
+        assert.equal(loaded.active_wave.number, 2, 'la ola activa conserva su número');
+
+        // La próxima creación arranca en 3 (sin colisionar con la activa #2).
+        const c = waves.createPlannedWave({ name: 'Nueva', issues: [7], concurrency_max: 1, window_minutes: 10 }, {});
+        assert.equal(c.waveNumber, 3);
+    } finally {
+        teardownTmp(dir);
+    }
+});
+
+// -----------------------------------------------------------------------------
 // #4376 (split #4351) — idempotencia de creación + vista roadmap (CA-2/CA-6)
 // -----------------------------------------------------------------------------
 
