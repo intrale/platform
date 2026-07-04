@@ -93,6 +93,61 @@ test('etaSource velocity pero sin remainingMs finito → ETA cae a p50', () => {
     assert.equal(m.etaRemainingMin, 75);
 });
 
+// -----------------------------------------------------------------------------
+// #4449 — piso teórico: la velocidad optimista no puede pisar el presupuesto
+// teórico del trabajo RESTANTE (totalP50 ya excluye cerrados desde dashboard.js).
+// -----------------------------------------------------------------------------
+
+test('#4449 CA-1/CA-2: ola con issues sin definir + velocidad reciente alta → ETA = piso teórico', () => {
+    // velocityETA proyecta ~4 min (remainingMs chico) pero totalP50 (restante) es
+    // grande porque quedan issues por definir con lifecycle completo. El piso gana.
+    const m = deriveMissionOlaEta({
+        etaSource: 'velocity',
+        totalPct: 30,
+        totalP50: 480,                                   // 8h de trabajo restante
+        velocityETA: { source: 'velocity', velocityPctPerMin: 5, remainingMs: 240000 }, // ~4 min
+    });
+    assert.equal(m.hasVelocity, true);
+    assert.equal(m.etaFromVelocity, true);
+    assert.equal(m.etaRemainingMin, 480);                // max(4, 480) = 480 (piso teórico)
+});
+
+test('#4449 CA-2: velocidad realista mayor al piso → gana la velocidad', () => {
+    const m = deriveMissionOlaEta({
+        etaSource: 'velocity',
+        totalPct: 80,
+        totalP50: 30,                                    // presupuesto restante chico
+        velocityETA: { source: 'velocity', velocityPctPerMin: 0.1, remainingMs: 6000000 }, // 100 min
+    });
+    assert.equal(m.etaRemainingMin, 100);                // max(100, 30) = 100 (velocidad)
+});
+
+test('#4449 CA-2: hay velocidad pero falta totalP50 → ETA = velocidad (sin piso)', () => {
+    const m = deriveMissionOlaEta({
+        etaSource: 'velocity',
+        totalPct: 50,
+        velocityETA: { source: 'velocity', velocityPctPerMin: 0.5, remainingMs: 1800000 }, // 30 min
+    });
+    assert.equal(m.etaRemainingMin, 30);                 // sin budget → velocidad sola
+});
+
+test('#4449 CA-5: remainingMs Infinity/NaN/negativo sin totalP50 → etaRemainingMin null', () => {
+    for (const bad of [Infinity, NaN, -1]) {
+        const m = deriveMissionOlaEta({
+            etaSource: 'velocity',
+            totalPct: 10,
+            velocityETA: { source: 'velocity', velocityPctPerMin: 0.5, remainingMs: bad },
+        });
+        // remainingMs no finito → etaFromVelocity false → sin budget → null.
+        assert.equal(m.etaRemainingMin, null, `remainingMs=${bad} debe caer a null`);
+    }
+});
+
+test('#4449 CA-5: totalP50 negativo/NaN → etaRemainingMin null (blindaje del render)', () => {
+    assert.equal(deriveMissionOlaEta({ etaSource: 'fallback', totalPct: 10, totalP50: -5 }).etaRemainingMin, null);
+    assert.equal(deriveMissionOlaEta({ etaSource: 'fallback', totalPct: 10, totalP50: NaN }).etaRemainingMin, null);
+});
+
 test('el emisor de script cliente reusa la función pura y es self-wiring/idempotente', () => {
     const src = missionOlaEtaClientScript();
     assert.equal(typeof src, 'string');

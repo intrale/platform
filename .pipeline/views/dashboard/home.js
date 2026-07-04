@@ -3729,6 +3729,8 @@ async function tickOlaETA(){
     // inline de esta funcion — en particular el que pintaba mission-vel-value con
     // innerHTML y unidad porcentaje/hora — para dejar un unico writer (evita la
     // divergencia que arreglo #4296 y el vector XSS que senalo security R-1).
+    // El piso teorico de la ETA (#4449 — Math.max(velMin, budgetMin)) vive ahora
+    // en deriveMissionOlaEta (mission-ola-eta.js), que el client script invoca.
     // Esta funcion solo mantiene el sub-label mission-eta-sub, que el client
     // script no toca.
     const etaSub = document.getElementById('mission-eta-sub');
