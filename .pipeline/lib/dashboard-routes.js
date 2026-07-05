@@ -1429,6 +1429,15 @@ const API_ROUTES = {
             // Sólo agregados numéricos/estado; sin metadata interna de issues.
             throughputPerDay: Number.isFinite(data.throughputPerDay) ? data.throughputPerDay : null,
             throughputState: data.throughputState === 'measured' ? 'measured' : 'insufficient',
+            // #4500 — serie temporal de avance para el sparkline de ritmo del
+            // Timeline. Whitelist numérico estricto: SÓLO `{ts, avancePct}` finitos,
+            // nunca metadata interna de issues (A03/A08). Degrada a `[]` si el cache
+            // no la trae (pipeline previo a #4500 o primer refresh sin snapshots).
+            series: Array.isArray(data.series)
+                ? data.series
+                    .filter((s) => s && Number.isFinite(s.ts) && Number.isFinite(s.avancePct))
+                    .map((s) => ({ ts: s.ts, avancePct: s.avancePct }))
+                : [],
             refreshedAt: data.refreshedAt,
         };
     },

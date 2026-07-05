@@ -334,3 +334,169 @@ test('ninguna vista escribe mission-vel-value por JS (fuente única = mission-ol
         assert.ok(!jsWriterRe.test(src), `la vista ${f} no debe escribir mission-vel-value por JS`);
     }
 });
+
+// -----------------------------------------------------------------------------
+// #4500 — Timeline: marcador "ahora", anotación de velocidad y sparkline de ritmo.
+// El client script posiciona el marcador (#mission-tl-now) y la anotación de
+// velocidad (#mission-vel-annot) por avancePct clampeado, y dibuja el sparkline
+// de ritmo (delta) client-side por DOM/SVG. Se evalúa el script en un DOM falso.
+// -----------------------------------------------------------------------------
+
+function fakeNode() {
+    return {
+        _attrs: {}, _children: [], className: '', textContent: '', style: {},
+        get firstChild() { return this._children.length ? this._children[0] : null; },
+        appendChild(c) { this._children.push(c); return c; },
+        removeChild(c) { const i = this._children.indexOf(c); if (i >= 0) this._children.splice(i, 1); return c; },
+        setAttribute(k, v) { this._attrs[k] = String(v); },
+        getAttribute(k) { return Object.prototype.hasOwnProperty.call(this._attrs, k) ? this._attrs[k] : null; },
+    };
+}
+
+function bootClientScript(elements) {
+    const src = missionOlaEtaClientScript();
+    const fakeDoc = {
+        getElementById: (id) => (Object.prototype.hasOwnProperty.call(elements, id) ? elements[id] : null),
+        createTextNode: (t) => ({ nodeValue: String(t) }),
+        createElement: () => fakeNode(),
+        createElementNS: () => fakeNode(),
+    };
+    const fakeWin = {};
+    const runner = new Function('window', 'document', 'setInterval', src);
+    runner(fakeWin, fakeDoc, () => 0);
+    return fakeWin;
+}
+
+test('#4500 — el marcador "ahora" se posiciona por avancePct clampeado [0,100] con aria-label textual', () => {
+    const nowMark = fakeNode();
+    const velAnnot = fakeNode();
+    const elements = {
+        'mission-bar-progress': { style: { width: '0%' } },
+        'mission-avance-pct': fakeNode(),
+        'mission-tl-now': nowMark,
+        'mission-vel-annot': velAnnot,
+        'mission-spark-plot': fakeNode(),
+        'mission-spark-note': fakeNode(),
+        'mission-spark': fakeNode(),
+    };
+    const win = bootClientScript(elements);
+
+    win.__applyMissionOlaEta({ etaSource: 'fallback', totalPct: 64 });
+    assert.equal(nowMark.style.left, '64%');
+    assert.equal(velAnnot.style.left, '64%', 'la anotación de velocidad ancla al marcador');
+    assert.equal(nowMark.getAttribute('aria-label'), 'Avance de la ola: 64%');
+    assert.equal(nowMark.getAttribute('title'), 'Avance de la ola: 64%');
+
+    win.__applyMissionOlaEta({ etaSource: 'fallback', totalPct: 150 });
+    assert.equal(nowMark.style.left, '100%', 'clamp superior');
+
+    // null (totalPct ausente) → cerca del inicio (0%) + label "sin dato aún"
+    win.__applyMissionOlaEta({ etaSource: 'fallback' });
+    assert.equal(nowMark.style.left, '0%');
+    assert.equal(nowMark.getAttribute('aria-label'), 'Avance de la ola: sin dato aún');
+});
+
+test('#4500 — sparkline: <2 puntos degrada a placeholder "datos insuficientes" sin romper', () => {
+    const plot = fakeNode();
+    const note = fakeNode();
+    const spark = fakeNode();
+    const elements = {
+        'mission-bar-progress': { style: { width: '0%' } },
+        'mission-avance-pct': fakeNode(),
+        'mission-tl-now': fakeNode(),
+        'mission-spark-plot': plot,
+        'mission-spark-note': note,
+        'mission-spark': spark,
+    };
+    const win = bootClientScript(elements);
+
+    // Sin serie → placeholder (línea punteada + nota).
+    win.__applyMissionOlaEta({ etaSource: 'fallback', totalPct: 5 });
+    assert.equal(note.textContent, 'datos insuficientes');
+    assert.equal(plot._children.length, 1, 'dibuja el rail placeholder');
+    assert.equal(spark.getAttribute('aria-label'), 'Ritmo de entrega: datos insuficientes');
+
+    // Un solo punto (0 deltas) → sigue placeholder.
+    win.__applyMissionOlaEta({ etaSource: 'fallback', totalPct: 5, series: [{ ts: 1, avancePct: 5 }] });
+    assert.equal(note.textContent, 'datos insuficientes');
+});
+
+test('#4500 — sparkline: con serie suficiente dibuja polyline y calcula tendencia', () => {
+    const plot = fakeNode();
+    const note = fakeNode();
+    const spark = fakeNode();
+    const elements = {
+        'mission-bar-progress': { style: { width: '0%' } },
+        'mission-avance-pct': fakeNode(),
+        'mission-tl-now': fakeNode(),
+        'mission-spark-plot': plot,
+        'mission-spark-note': note,
+        'mission-spark': spark,
+    };
+    const win = bootClientScript(elements);
+
+    // Deltas crecientes (2,3,10,20) → acelerando.
+    const series = [
+        { ts: 1, avancePct: 0 },
+        { ts: 2, avancePct: 2 },
+        { ts: 3, avancePct: 5 },
+        { ts: 4, avancePct: 15 },
+        { ts: 5, avancePct: 35 },
+    ];
+    win.__applyMissionOlaEta({ etaSource: 'fallback', totalPct: 35, series });
+    assert.equal(plot._children.length, 1, 'un <svg> con la polyline');
+    const svg = plot._children[0];
+    assert.equal(svg._children.length, 1);
+    const poly = svg._children[0];
+    assert.ok(poly.getAttribute('points'), 'la polyline tiene puntos');
+    assert.equal(note.textContent, 'acelerando');
+    assert.equal(spark.getAttribute('aria-label'), 'Ritmo de entrega: acelerando');
+});
+
+// -----------------------------------------------------------------------------
+// #4500 — Guardias estáticas: el markup del banner conserva los IDs hidratables
+// y suma los nodos nuevos del Timeline (marcador, anotaciones, sparkline). Se
+// verifica sobre el SSR canónico (pipeline-redesign.js) y el fallback (home.js),
+// que deben declarar los mismos IDs para no divergir (#4499).
+// -----------------------------------------------------------------------------
+
+test('#4500 — el banner (SSR y fallback) conserva los IDs hidratables y suma los del Timeline', () => {
+    const viewsDir = path.join(__dirname, '..', '..', 'views', 'dashboard');
+    const requiredIds = [
+        // hidratables preexistentes (no se pueden perder)
+        'mission-started-value', 'mission-eta-value', 'mission-vel-value',
+        'mission-delivered-value', 'mission-avance-pct', 'mission-bar-progress',
+        'mission-leg-done', 'mission-leg-active', 'mission-leg-blocked', 'mission-leg-queue',
+        // nuevos del Timeline
+        'mission-timeline', 'mission-tl-now', 'mission-vel-annot',
+        'mission-spark', 'mission-spark-plot', 'mission-spark-note',
+    ];
+    for (const f of ['pipeline-redesign.js', 'home.js']) {
+        const src = fs.readFileSync(path.join(viewsDir, f), 'utf8');
+        for (const id of requiredIds) {
+            assert.ok(src.includes(`id="${id}"`), `${f} debe declarar id="${id}"`);
+        }
+        // las 4 stat-cards viejas ya no se renderizan como tiles independientes.
+        assert.ok(!src.includes('class="mz-mission-metrics"'), `${f} no debe conservar .mz-mission-metrics`);
+    }
+});
+
+test('#4500 — guardia CSS: toda copia que estiliza .mz-mission también estiliza el Timeline', () => {
+    // El bloque COMPLETO del CSS del banner (no un override de media-query suelto)
+    // está duplicado en theme.css + 4 vistas (lección #4499/#4492). Se ancla por
+    // `.mz-prog-bar {`, presente sólo en las copias completas; cada una DEBE
+    // declarar también `.mz-timeline {` y `.mz-spark {` o el Timeline se ve roto
+    // en esa ventana. Las vistas satélite con sólo un override toman el CSS del
+    // theme global, ya cubierto.
+    const viewsDir = path.join(__dirname, '..', '..', 'views', 'dashboard');
+    const files = fs.readdirSync(viewsDir).filter((f) => f.endsWith('.js') || f.endsWith('.css'));
+    let copies = 0;
+    for (const f of files) {
+        const src = fs.readFileSync(path.join(viewsDir, f), 'utf8');
+        if (!src.includes('.mz-prog-bar {')) continue; // no tiene el bloque completo → no aplica
+        copies++;
+        assert.ok(src.includes('.mz-timeline {'), `${f} tiene el bloque del banner pero le falta .mz-timeline`);
+        assert.ok(src.includes('.mz-spark {'), `${f} tiene el bloque del banner pero le falta .mz-spark`);
+    }
+    assert.ok(copies >= 5, `se esperaban ≥5 copias completas del CSS del banner, se hallaron ${copies}`);
+});

@@ -886,6 +886,11 @@ function _scheduleOlaETARefresh(state) {
       // leyenda explícita hasta que haya ventana medible (G-UX-3).
       let waveThroughputPerDay = null;
       let waveThroughputState = 'insufficient';
+      // #4500 — serie temporal de avance de la ola para el sparkline de ritmo del
+      // banner (Timeline). Se lee de `wave-progress.readSnapshots` y se recorta a
+      // los últimos N puntos, con whitelist numérico `{ts, avancePct}` (SEC: sólo
+      // agregados numéricos, sin metadata interna de issues). null → placeholder.
+      let waveSeries = null;
       try {
         if (waveProgressLib && wavesLib && waveResolverLib && waveSnapshotLib && waveStateLib) {
           const activeWave = wavesLib.getActiveWave();
@@ -941,12 +946,26 @@ function _scheduleOlaETARefresh(state) {
               const vel = await etaWaveLib.calculateWaveVelocityETA(waveKey, wSnap.totalPct, nowTs);
               if (vel && vel.source === 'velocity') velocityETA = { ...vel, totalPct: wSnap.totalPct };
             }
+            // #4500 — serie temporal de avance para el sparkline de ritmo. Se lee
+            // DESPUÉS de `appendSnapshot` para incluir el punto recién escrito.
+            // Whitelist numérico estricto y recorte a los últimos 60 puntos: sólo
+            // `{ts, avancePct}` — nunca metadata interna (SEC A03/A08). Placeholder
+            // (serie con <2 puntos) queda a cargo del render del cliente.
+            try {
+              const allSnaps = waveProgressLib.readSnapshots({ pipelineRoot: PIPELINE, waveKey });
+              if (Array.isArray(allSnaps) && allSnaps.length) {
+                waveSeries = allSnaps
+                  .filter((s) => s && Number.isFinite(s.ts) && Number.isFinite(s.avancePct))
+                  .slice(-60)
+                  .map((s) => ({ ts: s.ts, avancePct: s.avancePct }));
+              }
+            } catch { /* sin serie → sparkline en placeholder */ }
           }
         }
       } catch { /* fallback: sin velocityETA */ }
-      return { olaResult, historical, velocityETA, waveTotalPct, waveClosedCount, waveTotalIssues, waveThroughputPerDay, waveThroughputState };
+      return { olaResult, historical, velocityETA, waveTotalPct, waveClosedCount, waveTotalIssues, waveThroughputPerDay, waveThroughputState, waveSeries };
     })
-    .then(({ olaResult, historical, velocityETA, waveTotalPct, waveClosedCount, waveTotalIssues, waveThroughputPerDay, waveThroughputState }) => {
+    .then(({ olaResult, historical, velocityETA, waveTotalPct, waveClosedCount, waveTotalIssues, waveThroughputPerDay, waveThroughputState, waveSeries }) => {
       _olaETACache = {
         issues: olaIssues,
         totalP50: olaResult.totalP50,
@@ -969,6 +988,9 @@ function _scheduleOlaETARefresh(state) {
         // #4450 — throughput de entrega (issues/día) + estado measured/insufficient.
         throughputPerDay: Number.isFinite(waveThroughputPerDay) ? waveThroughputPerDay : null,
         throughputState: waveThroughputState === 'measured' ? 'measured' : 'insufficient',
+        // #4500 — serie temporal de avance (últimos 60 puntos) para el sparkline
+        // de ritmo del Timeline. `[]` cuando no hay serie (placeholder cliente).
+        series: Array.isArray(waveSeries) ? waveSeries : [],
         refreshedAt: Date.now(),
       };
       _olaETACacheAt = Date.now();

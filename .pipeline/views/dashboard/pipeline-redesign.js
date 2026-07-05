@@ -141,42 +141,72 @@ function renderMissionBannerPipeline() {
                 title="Marca contextual de la ola (p. ej. última del plan).">ÚLTIMA DEL PLAN</span>
         </div>
         <div class="mz-mission-desc" id="mission-wave-desc">Cada issue de la ola recorre el flujo de fases de izquierda a derecha. Acá ves dónde está parado cada uno.</div>
-        <div class="mz-mission-metrics">
-          <div class="mz-wm" id="mission-started-wm" title="Fecha y hora en que se activó la ola.">
-            <div class="mz-wm-l">🗓️ COMIENZO</div>
-            <div class="mz-wm-v" id="mission-started-value">—</div>
-            <div class="mz-wm-s">inicio de la ola</div>
-          </div>
-          <div class="mz-wm" title="Tiempo estimado para cerrar la ola (proyección por velocidad de entrega).">
-            <div class="mz-wm-l">⏳ ETA DE LA OLA</div>
-            <div class="mz-wm-v" id="mission-eta-value">—</div>
-            <div class="mz-wm-s" id="mission-eta-sub">cierre estimado</div>
-          </div>
-          <div class="mz-wm" title="Velocidad de la ola: throughput de issues entregados por unidad de tiempo (issues/día).">
-            <div class="mz-wm-l">🚀 VELOCIDAD</div>
-            <div class="mz-wm-v" id="mission-vel-value">— <span class="mz-wm-u">issues/día</span></div>
-            <div class="mz-wm-s">throughput de entrega</div>
-          </div>
-          <div class="mz-wm" title="Issues entregados sobre el total de la ola.">
-            <div class="mz-wm-l">📦 ENTREGADOS</div>
-            <div class="mz-wm-v" id="mission-delivered-value">—<span class="mz-wm-u"> / —</span></div>
-            <div class="mz-wm-s" id="mission-delivered-sub">restantes</div>
-          </div>
-        </div>
-      </div>
-      <div class="mz-mission-prog" title="Avance total de la ola, desglosado por estado de sus issues.">
-        <div class="mz-prog-head"><span>AVANCE</span><span class="mz-prog-pct" id="mission-avance-pct">0%</span></div>
-        <div class="mz-prog-bar">
-          <i id="mission-bar-progress" style="width:0%;background:var(--in-ok,#3fb950)"></i>
-        </div>
-        <div class="mz-prog-legend">
-          <span><i class="mz-dot" style="background:var(--in-ok,#3fb950)"></i> <b id="mission-leg-done">0</b> hechos</span>
-          <span><i class="mz-dot" style="background:var(--in-info,#58a6ff)"></i> <b id="mission-leg-active">0</b> activos</span>
-          <span><i class="mz-dot" style="background:var(--in-bad,#f85149)"></i> <b id="mission-leg-blocked">0</b> bloq.</span>
-          <span><i class="mz-dot" style="background:rgba(255,255,255,.25)"></i> <b id="mission-leg-queue">0</b> cola</span>
-        </div>
+        ${renderMissionTimeline()}
       </div>
     </section>`;
+}
+
+// --- Timeline único de la ola (#4500) ---------------------------------------
+// Reemplaza las 4 stat-cards (.mz-wm) + la barra de avance separada (.mz-mission-prog)
+// por UN solo elemento narrativo: comienzo (izq.) → marcador "ahora" (por %) →
+// ETA (der.), con el fill de progreso SOBRE la misma línea y velocidad/entregados
+// como anotaciones. Debajo, un sparkline de ritmo (delta de avance). Conserva
+// TODOS los IDs hidratables (mission-started-value, mission-eta-value,
+// mission-vel-value, mission-delivered-value, mission-avance-pct,
+// mission-bar-progress, mission-leg-*) para no romper la hidratación por tick.
+// Fuente ÚNICA del markup: home.js (fallback inline) replica byte a byte este
+// bloque; si divergen, HOME sin el módulo común pinta un banner distinto (#4499).
+function renderMissionTimeline() {
+    return `
+        <div class="mz-timeline" id="mission-timeline" title="Línea de tiempo de la ola: comienzo, avance actual y cierre estimado.">
+          <div class="mz-tl-head">
+            <div class="mz-tl-cap mz-tl-cap-start" id="mission-started-wm" title="Fecha y hora en que se activó la ola.">
+              <span class="mz-tl-cap-l">🗓️ COMIENZO</span>
+              <span class="mz-tl-cap-v" id="mission-started-value">—</span>
+            </div>
+            <div class="mz-tl-cap mz-tl-cap-mid" title="Avance total de la ola.">
+              <span class="mz-tl-cap-l">AVANCE</span>
+              <span class="mz-prog-pct" id="mission-avance-pct">0%</span>
+            </div>
+            <div class="mz-tl-cap mz-tl-cap-eta" title="Tiempo estimado para cerrar la ola (proyección por velocidad de entrega).">
+              <span class="mz-tl-cap-l">⏳ ETA DE LA OLA</span>
+              <span class="mz-tl-cap-v" id="mission-eta-value">—</span>
+              <span class="mz-tl-cap-s" id="mission-eta-sub">cierre estimado</span>
+            </div>
+          </div>
+          <div class="mz-tl-track">
+            <div class="mz-tl-annots">
+              <div class="mz-tl-annot mz-tl-annot-vel" id="mission-vel-annot" style="left:0%"
+                   title="Velocidad de la ola: throughput de issues entregados por unidad de tiempo (issues/día).">
+                <span class="mz-tl-annot-ic" aria-hidden="true">🚀</span>
+                <span class="mz-tl-annot-v" id="mission-vel-value">— <span class="mz-wm-u">issues/día</span></span>
+              </div>
+              <div class="mz-tl-annot mz-tl-annot-del"
+                   title="Issues entregados sobre el total de la ola.">
+                <span class="mz-tl-annot-ic" aria-hidden="true">📦</span>
+                <span class="mz-tl-annot-v" id="mission-delivered-value">—<span class="mz-wm-u"> / —</span></span>
+                <span class="mz-tl-annot-s" id="mission-delivered-sub">restantes</span>
+              </div>
+            </div>
+            <div class="mz-tl-rail">
+              <i class="mz-tl-fill" id="mission-bar-progress" style="width:0%"></i>
+              <span class="mz-tl-now" id="mission-tl-now" style="left:0%"
+                    title="Avance de la ola: sin dato aún" aria-label="Avance de la ola: sin dato aún"></span>
+            </div>
+          </div>
+          <div class="mz-spark" id="mission-spark" aria-label="Ritmo de entrega: datos insuficientes"
+               title="Ritmo de entrega de la ola: variación del avance entre mediciones (acelerando / desacelerando).">
+            <span class="mz-spark-cap">📈 RITMO</span>
+            <span class="mz-spark-plot" id="mission-spark-plot"></span>
+            <span class="mz-spark-note" id="mission-spark-note">datos insuficientes</span>
+          </div>
+          <div class="mz-prog-legend mz-tl-legend">
+            <span><i class="mz-dot" style="background:var(--in-ok,#3fb950)"></i> <b id="mission-leg-done">0</b> hechos</span>
+            <span><i class="mz-dot" style="background:var(--in-info,#58a6ff)"></i> <b id="mission-leg-active">0</b> activos</span>
+            <span><i class="mz-dot" style="background:var(--in-bad,#f85149)"></i> <b id="mission-leg-blocked">0</b> bloq.</span>
+            <span><i class="mz-dot" style="background:rgba(255,255,255,.25)"></i> <b id="mission-leg-queue">0</b> cola</span>
+          </div>
+        </div>`;
 }
 
 // --- Bloque 1: Flujo de fases (SSR del esqueleto) ----------------------------
@@ -329,6 +359,40 @@ const PIPELINE_REDESIGN_CSS = `
 .mz-prog-legend span { display: flex; align-items: center; gap: 5px; }
 .mz-prog-legend b { font-variant-numeric: tabular-nums; }
 .mz-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
+/* #4500 — Timeline único de la ola (reemplaza .mz-mission-metrics + .mz-mission-prog).
+   Narrativa comienzo→ahora→cierre en UNA línea, con el fill de progreso SOBRE el
+   mismo rail, velocidad/entregados como anotaciones y un sparkline de ritmo debajo.
+   Sólo tokens de theme.css (cero hex nuevos): fill --in-accent→--in-ok, marcador
+   y sparkline --brand-cyan, velocidad --in-ok, entregados --in-info, dim --in-fg-dim. */
+.mz-timeline { margin-top: 14px; }
+.mz-tl-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+.mz-tl-cap { display: flex; flex-direction: column; min-width: 0; }
+.mz-tl-cap-mid { align-items: center; }
+.mz-tl-cap-eta { align-items: flex-end; text-align: right; }
+.mz-tl-cap-l { font-size: 9.5px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#8b949e); }
+.mz-tl-cap-v { font-size: 15px; font-weight: 800; margin-top: 2px; line-height: 1; font-variant-numeric: tabular-nums; }
+.mz-tl-cap-s { font-size: 10px; color: var(--in-fg-dim,#8b949e); margin-top: 2px; }
+.mz-tl-cap .mz-wm-u { font-size: 11px; color: var(--in-fg-dim,#8b949e); font-weight: 600; }
+.mz-tl-cap-mid .mz-prog-pct { font-size: 22px; }
+.mz-tl-track { position: relative; margin-top: 34px; height: 8px; }
+.mz-tl-annots { position: absolute; left: 0; right: 0; bottom: 14px; height: 0; }
+.mz-tl-annot { position: absolute; bottom: 0; display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.mz-tl-annot .mz-wm-u { font-size: 10px; color: var(--in-fg-dim,#8b949e); font-weight: 600; }
+.mz-tl-annot-vel { transform: translateX(-50%); color: var(--in-ok,#3fb950); transition: left .4s ease; }
+.mz-tl-annot-del { right: 0; color: var(--in-info,#58a6ff); }
+.mz-tl-annot-s { color: var(--in-fg-dim,#8b949e); font-weight: 600; font-size: 10px; }
+.mz-tl-rail { position: relative; height: 8px; border-radius: 6px; background: rgba(255,255,255,.07); }
+.mz-tl-fill { position: absolute; left: 0; top: 0; height: 100%; width: 0; border-radius: 6px;
+    background: linear-gradient(90deg, var(--in-accent,#2ee6c1), var(--in-ok,#3fb950)); transition: width .4s ease; }
+.mz-tl-now { position: absolute; top: 50%; left: 0; width: 14px; height: 14px; border-radius: 50%;
+    background: var(--brand-cyan,#34D9E0); border: 2px solid var(--in-bg-2,#161b22);
+    box-shadow: 0 0 0 3px rgba(52,217,224,.25); transform: translate(-50%,-50%); transition: left .4s ease; z-index: 2; }
+.mz-spark { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
+.mz-spark-cap { font-size: 9.5px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#8b949e); flex: none; }
+.mz-spark-plot { display: block; flex: 1; height: 24px; min-width: 60px; }
+.mz-spark-plot .mz-spark-svg { width: 100%; height: 100%; display: block; }
+.mz-spark-note { font-size: 10.5px; font-weight: 700; color: var(--brand-cyan,#34D9E0); flex: none; font-variant-numeric: tabular-nums; }
+.mz-tl-legend { margin-top: 14px; }
 
 /* Bloques. */
 .pl-block { background: linear-gradient(180deg, var(--in-bg-2,#11151E), var(--in-bg-3,#141925));

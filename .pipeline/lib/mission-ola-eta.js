@@ -120,6 +120,72 @@ function missionOlaEtaClientScript() {
     u.textContent = unitText;
     el.appendChild(u);
   }
+  // #4500 — Sparkline de RITMO de entrega del Timeline. Grafica el DELTA entre
+  // snapshots (derivada del avance), no el avance crudo monótono, para reflejar
+  // aceleración/desaceleración (matiz UX/guru). Render 100% por DOM/SVG con
+  // series NUMÉRICAS (createElementNS) — nunca innerHTML (XSS-safe, series ya
+  // whitelisted en el route). Degrada con gracia: <2 deltas -> línea punteada
+  // placeholder + nota "datos insuficientes" (Gherkin escenario 2), sin romper
+  // el layout. Devuelve el texto de tendencia para el aria-label del contenedor.
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+  function renderMissionSpark(series){
+    var plot = document.getElementById('mission-spark-plot');
+    var note = document.getElementById('mission-spark-note');
+    var spark = document.getElementById('mission-spark');
+    if(!plot) return;
+    while(plot.firstChild) plot.removeChild(plot.firstChild);
+    var pts = Array.isArray(series)
+      ? series.filter(function(s){ return s && Number.isFinite(s.ts) && Number.isFinite(s.avancePct); })
+      : [];
+    var deltas = [];
+    for(var i=1;i<pts.length;i++){ deltas.push(Math.max(0, pts[i].avancePct - pts[i-1].avancePct)); }
+    var W = 100, H = 24, pad = 2;
+    if(deltas.length < 2){
+      // Placeholder: rail punteado + nota explícita. Nunca rompe el layout.
+      var svgP = document.createElementNS(SVG_NS, 'svg');
+      svgP.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+      svgP.setAttribute('class', 'mz-spark-svg');
+      svgP.setAttribute('preserveAspectRatio', 'none');
+      var ln = document.createElementNS(SVG_NS, 'line');
+      ln.setAttribute('x1', '0'); ln.setAttribute('y1', String(H/2));
+      ln.setAttribute('x2', String(W)); ln.setAttribute('y2', String(H/2));
+      ln.setAttribute('stroke', 'var(--in-fg-dim,#8b949e)');
+      ln.setAttribute('stroke-width', '1'); ln.setAttribute('stroke-dasharray', '3 3');
+      svgP.appendChild(ln); plot.appendChild(svgP);
+      if(note){ note.textContent = 'datos insuficientes'; }
+      if(spark) spark.setAttribute('aria-label', 'Ritmo de entrega: datos insuficientes');
+      return;
+    }
+    var max = 0;
+    for(var j=0;j<deltas.length;j++){ if(deltas[j] > max) max = deltas[j]; }
+    var n = deltas.length, stepX = (n > 1) ? (W/(n-1)) : 0, coords = [];
+    for(var k=0;k<n;k++){
+      var x = (n > 1) ? (k*stepX) : (W/2);
+      var norm = (max > 0) ? (deltas[k]/max) : 0;
+      var y = (H - pad) - norm*(H - 2*pad);
+      coords.push(x.toFixed(1) + ',' + y.toFixed(1));
+    }
+    var svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.setAttribute('class', 'mz-spark-svg');
+    svg.setAttribute('preserveAspectRatio', 'none');
+    var poly = document.createElementNS(SVG_NS, 'polyline');
+    poly.setAttribute('points', coords.join(' '));
+    poly.setAttribute('fill', 'none');
+    poly.setAttribute('stroke', 'var(--brand-cyan,#34D9E0)');
+    poly.setAttribute('stroke-width', '1.5');
+    poly.setAttribute('stroke-linejoin', 'round');
+    poly.setAttribute('stroke-linecap', 'round');
+    svg.appendChild(poly); plot.appendChild(svg);
+    // Tendencia: promedio de la 2da mitad vs la 1ra (±15% de banda muerta).
+    var mid = Math.floor(n/2), a = 0, b = 0, ca = 0, cb = 0;
+    for(var p=0;p<n;p++){ if(p < mid){ a += deltas[p]; ca++; } else { b += deltas[p]; cb++; } }
+    var avgA = ca ? a/ca : 0, avgB = cb ? b/cb : 0, trend = 'estable';
+    if(avgB > avgA*1.15) trend = 'acelerando';
+    else if(avgB < avgA*0.85) trend = 'desacelerando';
+    if(note){ note.textContent = trend; }
+    if(spark) spark.setAttribute('aria-label', 'Ritmo de entrega: ' + trend);
+  }
   window.__applyMissionOlaEta = function(d){
     try{
       var m = deriveMissionOlaEta(d);
@@ -130,11 +196,29 @@ function missionOlaEtaClientScript() {
       // Clamp [0,100] (SEC req #3); null -> 0%. Solo style.width numerico,
       // NUNCA innerHTML (SEC req #1,#2).
       var bar = document.getElementById('mission-bar-progress');
+      var posPct = (m.avancePct === null) ? 0 : Math.max(0, Math.min(100, m.avancePct));
       if(bar){
-        var pct = (m.avancePct === null) ? 0 : Math.max(0, Math.min(100, m.avancePct));
-        var wStr = pct + '%';
+        var wStr = posPct + '%';
         if(bar.style.width !== wStr) bar.style.width = wStr;
       }
+      // #4500 — el marcador "ahora" del Timeline vive SOBRE la misma línea que el
+      // fill (#mission-bar-progress). Se posiciona por avancePct (clamp [0,100]);
+      // null -> cerca del inicio (0%). aria-label/title con el % TEXTUAL para no
+      // depender sólo de la posición visual (accesibilidad UX). Sólo style.left
+      // numérico + setAttribute con texto derivado — nunca innerHTML (XSS-safe).
+      var nowMark = document.getElementById('mission-tl-now');
+      if(nowMark){
+        var lStr = posPct + '%';
+        if(nowMark.style.left !== lStr) nowMark.style.left = lStr;
+        var lbl = 'Avance de la ola: ' + (m.avancePct === null ? 'sin dato aún' : m.avancePct + '%');
+        if(nowMark.getAttribute('aria-label') !== lbl){
+          nowMark.setAttribute('aria-label', lbl);
+          nowMark.setAttribute('title', lbl);
+        }
+      }
+      // La anotación de velocidad ancla al marcador "ahora" (UX: velocidad↔marcador).
+      var velAnnot = document.getElementById('mission-vel-annot');
+      if(velAnnot){ var vlStr = posPct + '%'; if(velAnnot.style.left !== vlStr) velAnnot.style.left = vlStr; }
       var vv = document.getElementById('mission-vel-value');
       if(vv){
         // #4450 (G-UX-1) — la celda 🚀 VELOCIDAD expresa THROUGHPUT de entrega
@@ -156,6 +240,9 @@ function missionOlaEtaClientScript() {
         else { var h = Math.floor(x/60), r = Math.round(x%60); txt = r>0 ? h+'h '+r+'m' : h+'h'; }
         if(ev.textContent !== txt) ev.textContent = txt;
       }
+      // #4500 — sparkline de ritmo. La serie viaja en el payload crudo d.series
+      // (whitelist numerico del route), no en el objeto derivado m.
+      try{ renderMissionSpark(d && d.series); }catch(_){}
     }catch(e){}
   };
   window.__tickMissionOlaEta = function(){
