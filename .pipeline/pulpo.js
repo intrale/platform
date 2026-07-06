@@ -221,6 +221,10 @@ const { writeDeliverable, writeDeliverableException } = require('./lib/write-del
 // #4504 (CA-1) — lectura del índice de entregables para garantizar que `guru`
 // SIEMPRE deje document o excepción indexada al cerrar `analisis` (Definición).
 const { readDeliverableIndex, upsertDeliverableIndex } = require('./lib/deliverable-index');
+// #4512 — Builder puro del reporte de QA E2E. El Pulpo lo materializa SIEMPRE al
+// cerrar `qa/verificacion` (passed/failed) o como excepción explícita ("no
+// aplica"), y lo persiste vía writeDeliverable (nunca a mano).
+const qaReport = require('./lib/qa-deliverable-report');
 // #4505 — extractor reutilizable de la sección `## Detalles Técnicos` del body
 // (la receta del arquitecto). Es el MISMO extractor que usa el signoff-gate, por
 // lo que opera sólo sobre el body y jamás arrastra el marker/token del signoff
@@ -4968,6 +4972,70 @@ function brazoBarrido(config) {
                 log('barrido', `📎 #${issue} helper attachments error (${notifySkill}): ${e.message}`);
               }
 
+              // #4512 — CA-1/CA-4. Para el skill `qa`, materializar SIEMPRE un
+              // reporte QA estructurado (passed/failed) o de excepción explícita
+              // ("no aplica"), aunque ya exista el video como adjunto — CA-1 exige
+              // el reporte estructurado por `writeDeliverable` incondicionalmente.
+              // La decisión "no aplica" se gobierna por labels AUTORITATIVOS de
+              // GitHub (`qa:skipped`) o el modo autoritativo del preflight
+              // (`api`/`structural`), NUNCA por campos del YAML del agente (CA-5).
+              // El reporte va con `sensible: true` (redacción heredada de
+              // writeDeliverable) e indexa como `qa::verificacion` en el store.
+              if (notifySkill === 'qa') {
+                try {
+                  let labels = [];
+                  try { labels = getIssueLabels(issue) || []; } catch (_) { labels = []; }
+                  const authoritativeQaMode = qaModeByIssue.get(String(issue)) || null;
+                  const resolution = qaEvidenceGate.resolveQaMode({
+                    authoritative: authoritativeQaMode,
+                    yamlMode: r && r.modo,
+                  });
+                  const skipLabel = qaEvidenceGate.hasQaSkippedLabel(labels);
+                  const noAplica = skipLabel || qaEvidenceGate.shouldSkipVisualEvidence(resolution.mode);
+
+                  let md;
+                  if (noAplica) {
+                    const motivo = skipLabel
+                      ? 'Label autoritativo `qa:skipped` en GitHub: cambio sin impacto visual de producto.'
+                      : `Modo de QA autoritativo \`${resolution.mode}\`: testing sin UI, no produce evidencia audiovisual.`;
+                    md = qaReport.buildQaExceptionReport({
+                      issue,
+                      motivo,
+                      modo: skipLabel ? 'qa:skipped' : resolution.mode,
+                    });
+                  } else {
+                    md = qaReport.buildQaReport({
+                      issue,
+                      veredicto: r.veredicto || (r.resultado === 'aprobado' ? 'passed' : 'failed'),
+                      criterios: r.criterios || [],
+                      entorno: r.entorno || { modo: resolution.mode || 'android' },
+                      defectos: r.defectos || 'ninguno',
+                      evidencia: r.evidencia,
+                      screenshot: r.screenshot,
+                    });
+                  }
+
+                  // Punto de escritura único (SEC-REQ-1): valida fase, redacta
+                  // secrets, aplica maxBytes e indexa `qa::verificacion`.
+                  writeDeliverable('qa', issue, {
+                    fase: 'verificacion', md, sensible: true, pipelineRoot: ROOT,
+                  });
+
+                  // Re-barrer: el reporte recién escrito debe aparecer como
+                  // adjunto `document` pasando por la misma validación.
+                  const rescanned = skillDeliverableAttachments.collectAttachmentsForSkill(
+                    notifySkill, issue, fase, { pipelineRoot: ROOT },
+                  );
+                  if (Array.isArray(rescanned) && rescanned.length > 0) {
+                    r.attachments = rescanned;
+                    log('barrido', `📎 #${issue} reporte QA ${noAplica ? 'excepción' : 'estructurado'} materializado (${rescanned.length} adjunto)`);
+                  }
+                } catch (e) {
+                  // El reporte QA NUNCA bloquea la notificación (zero-blocking).
+                  log('barrido', `📎 #${issue} reporte QA error: ${e.message}`);
+                }
+              }
+
               // #4466 (B) — Fallback determinístico. Cubre CA-3 (los 14 skills
               // disparan entrega efectiva) incluyendo architect/delivery, que no
               // llaman writeDeliverable desde su SKILL.md, y cualquier skill que
@@ -4977,6 +5045,8 @@ function brazoBarrido(config) {
               // por default — SEC-REQ-1/CA-SEC-1) y se vuelve a barrer disco. La
               // nota trivial (aviso corto de cierre) NO genera adjunto → se
               // mantiene sólo el closing_notice (CA-5, anti-ruido).
+              // #4512 — Para `qa` el reporte estructurado ya se materializó arriba
+              // (evita doble .md que se pisen); el fallback genérico se saltea.
               try {
                 const sinAdjuntos = !Array.isArray(r.attachments) || r.attachments.length === 0;
                 const notasRaw =
@@ -4986,7 +5056,7 @@ function brazoBarrido(config) {
                 // Umbral anti-ruido: sólo notas sustantivas (no un "aprobado" seco)
                 // se convierten en artefacto entregable.
                 const esSustantiva = notasRaw.trim().length >= 80;
-                if (sinAdjuntos && esSustantiva) {
+                if (notifySkill !== 'qa' && sinAdjuntos && esSustantiva) {
                   try {
                     // #4514 — defensa en profundidad: el reporte de `security` es
                     // un mapa de vulnerabilidades → SIEMPRE `sensible:true`, aun si
