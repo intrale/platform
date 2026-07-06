@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<style>
+:root{
+  --in-bg:#0d1117; --in-bg-2:#161b22; --in-bg-3:#1f2937;
+  --in-fg:#e6edf3; --in-fg-dim:#8b949e; --in-fg-soft:#6e7681;
+  --in-border:#30363d;
+  --in-ok:#3fb950; --in-warn:#d29922; --in-bad:#f85149; --in-info:#58a6ff;
+  --in-info-soft:rgba(88,166,255,.16);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--in-bg);font-family:'Segoe UI',system-ui,-apple-system,sans-serif;color:var(--in-fg);
+  padding:22px;-webkit-font-smoothing:antialiased}
+.wrap{width:1036px}
+.cell{background:var(--in-bg-2);border:1px solid var(--in-border);border-radius:13px;padding:13px 16px;display:flex;flex-direction:column}
+.head{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px}
+.head-l{display:flex;align-items:center;gap:7px;font-size:10.5px;font-weight:800;letter-spacing:.7px;color:var(--in-fg-dim)}
+.head-note{font-size:9px;color:var(--in-fg-soft);font-weight:600}
+
+.grid{display:grid;grid-template-columns:1.25fr 1fr 1fr;column-gap:18px}
+.gh{font-size:8.5px;font-weight:800;letter-spacing:.5px;color:var(--in-fg-soft);text-transform:uppercase;padding-bottom:5px}
+.row{display:contents}
+.row > *{border-top:1px solid var(--in-border);padding:7px 0;min-height:34px;display:flex;align-items:center}
+
+/* proveedor */
+.prov{gap:8px}
+.pdot{width:8px;height:8px;border-radius:50%;flex:none}
+.pn{font-size:12.5px;font-weight:800}
+.psrc{font-size:8.5px;color:var(--in-fg-soft);font-weight:700;margin-left:2px}
+
+/* celda de ventana compacta, una línea */
+.wc{gap:8px;font-size:11.5px}
+.wtag{font-size:8px;font-weight:800;letter-spacing:.3px;color:var(--in-fg-soft);text-transform:uppercase;min-width:30px}
+.mini{width:60px;height:5px;border-radius:3px;background:rgba(255,255,255,.09);overflow:hidden;flex:none}
+.mini i{display:block;height:100%;border-radius:3px}
+.pct{font-weight:800;font-variant-numeric:tabular-nums;min-width:40px}
+.rst{font-size:9.5px;color:var(--in-fg-dim);font-weight:700;font-variant-numeric:tabular-nums;margin-left:auto;white-space:nowrap}
+.ok .pct{color:var(--in-ok)}   .ok .mini i{background:var(--in-ok)}
+.warn .pct{color:var(--in-warn)}.warn .mini i{background:var(--in-warn)}
+.bad .pct{color:var(--in-bad)} .bad .mini i{background:var(--in-bad)}
+.evt{font-size:9.5px;font-weight:700;color:var(--in-info);background:var(--in-info-soft);border-radius:5px;padding:2px 7px}
+</style></head>
+<body><div class="wrap">
+  <div class="cell">
+    <div class="head">
+      <div class="head-l">🔌 CUOTA DISPONIBLE POR PROVEEDOR</div>
+      <div class="head-note">% leído del proveedor · reset propio por bucket</div>
+    </div>
+    <div class="grid">
+      <div class="gh">Proveedor</div>
+      <div class="gh">Ventana corta</div>
+      <div class="gh">Ventana larga</div>
+
+      <div class="row">
+        <div class="prov"><span class="pdot" style="background:#d4a017"></span><span class="pn">Anthropic</span><span class="psrc">· CLI</span></div>
+        <div class="wc warn"><span class="wtag">5h</span><span class="mini"><i style="width:39.9%"></i></span><span class="pct">39.9%</span><span class="rst">↻2h14m</span></div>
+        <div class="wc bad"><span class="wtag">Sem</span><span class="mini"><i style="width:100%"></i></span><span class="pct">0%</span><span class="rst">↻3d6h</span></div>
+      </div>
+
+      <div class="row">
+        <div class="prov"><span class="pdot" style="background:#3fb950"></span><span class="pn">Codex</span><span class="psrc">· CLI</span></div>
+        <div class="wc"><span class="wtag">Roll</span><span class="evt">✓ sin límite</span></div>
+        <div class="wc"><span class="wtag">Sem</span><span class="evt">✓ sin límite</span></div>
+      </div>
+
+      <div class="row">
+        <div class="prov"><span class="pdot" style="background:#58a6ff"></span><span class="pn">Gemini</span><span class="psrc">· API</span></div>
+        <div class="wc ok"><span class="wtag">Min</span><span class="mini"><i style="width:82%"></i></span><span class="pct">82%</span><span class="rst">↻41s</span></div>
+        <div class="wc warn"><span class="wtag">Día</span><span class="mini"><i style="width:45%"></i></span><span class="pct">45%</span><span class="rst">↻6h12m</span></div>
+      </div>
+
+      <div class="row">
+        <div class="prov"><span class="pdot" style="background:#2ee6c1"></span><span class="pn">Cerebras</span><span class="psrc">· headers</span></div>
+        <div class="wc ok"><span class="wtag">Min</span><span class="mini"><i style="width:68%"></i></span><span class="pct">68%</span><span class="rst">↻18s</span></div>
+        <div class="wc warn"><span class="wtag">Día</span><span class="mini"><i style="width:40%"></i></span><span class="pct">40%</span><span class="rst">↻9h03m</span></div>
+      </div>
+
+      <div class="row">
+        <div class="prov"><span class="pdot" style="background:#bc8cff"></span><span class="pn">NVIDIA NIM</span><span class="psrc">· headers</span></div>
+        <div class="wc ok"><span class="wtag">Min</span><span class="mini"><i style="width:95%"></i></span><span class="pct">95%</span><span class="rst">↻52s</span></div>
+        <div class="wc ok"><span class="wtag">Día</span><span class="mini"><i style="width:90%"></i></span><span class="pct">90%</span><span class="rst">↻5h40m</span></div>
+      </div>
+    </div>
+  </div>
+</div></body></html>
