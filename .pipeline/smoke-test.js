@@ -31,6 +31,7 @@ const path = require('path');
 const http = require('http');
 const { spawnSync } = require('child_process');
 const { componentState, waitForMarkers } = require('./lib/ready-marker');
+const { isMarkerArtifact } = require('./lib/marker-artifact');
 
 const PIPELINE_DIR = __dirname;
 const LOG_FILE = path.join(PIPELINE_DIR, 'logs', 'smoke-test.log');
@@ -151,6 +152,51 @@ async function checkDashboardHttpWithRetry(port, urlPath, { attempts = 5, perAtt
   return last;
 }
 
+// #4520 — Espera de markers con ventana DIFERENCIADA para el dashboard.
+//
+// El dashboard es el proceso más pesado y, bajo la contención del arranque
+// (pulpo + 7 servicios peleando CPU al mismo tiempo), su boot se estira más
+// allá de los 60s planos que a los componentes livianos les alcanzan de sobra
+// (ready en ~5-7s). #4130 hizo resiliente al pico de arranque SÓLO la sonda
+// HTTP (/api/health, gate B / exit 2) pero dejó este gate de markers (gate A /
+// exit 1) con 60s parejos → un dashboard sano-pero-lento gatillaba un rollback
+// espurio a pipeline-stable. Darle una ventana mayor NO relaja la detección: un
+// dashboard realmente caído sigue sin escribir marker tras dashTimeoutMs y el
+// gate lo detecta igual; sólo absorbe la contención, igual que el retry con
+// backoff de #4130 absorbe la del HTTP.
+//
+// `waitFn`/`now` son inyectables para test (por defecto: IO real de markers).
+async function waitForComponentMarkers(components, {
+  lightTimeoutMs = 60000,
+  dashTimeoutMs = 120000,
+  waitFn = waitForMarkers,
+  now = Date.now,
+} = {}) {
+  const start = now();
+  const hasDashboard = components.includes('dashboard');
+  const lightComponents = components.filter(n => n !== 'dashboard');
+
+  // 1a) Componentes livianos — timeout estándar.
+  const resLight = lightComponents.length
+    ? await waitFn(lightComponents, lightTimeoutMs, 1000)
+    : { ok: true, results: {} };
+
+  // 1b) Dashboard — ventana extendida. Ya venía booteando durante 1a, así que
+  // descontamos lo transcurrido para acotar el peor caso (dashboard caído) y no
+  // encadenar dos timeouts en serie.
+  let resDash = { ok: true, results: {} };
+  if (hasDashboard) {
+    const dashRemaining = Math.max(5000, dashTimeoutMs - (now() - start));
+    resDash = await waitFn(['dashboard'], dashRemaining, 1000);
+  }
+
+  return {
+    ok: resLight.ok && resDash.ok,
+    results: { ...resLight.results, ...resDash.results },
+    waitedMs: now() - start,
+  };
+}
+
 async function main() {
   const args = parseArgs(process.argv);
   const components = args.components || DEFAULT_COMPONENTS;
@@ -158,9 +204,14 @@ async function main() {
   log('=== SMOKE TEST ===');
   log(`Esperando marker ready de: ${components.join(', ')} (timeout ${args.timeoutMs / 1000}s)`);
 
-  // 1) Componentes listos — polling sobre los markers.
+  // 1) Componentes listos — polling sobre los markers, con ventana propia y más
+  // holgada para el dashboard (ver waitForComponentMarkers / #4520).
   const start = Date.now();
-  const res = await waitForMarkers(components, args.timeoutMs, 1000);
+  const dashTimeoutMs = parseInt(process.env.DASHBOARD_MARKER_TIMEOUT_MS || '120000', 10);
+  const res = await waitForComponentMarkers(components, {
+    lightTimeoutMs: args.timeoutMs,
+    dashTimeoutMs,
+  });
   const waitedSec = Math.round((Date.now() - start) / 1000);
 
   // Log del estado final componente por componente.
@@ -227,7 +278,8 @@ async function main() {
   const orphanDir = path.join(PIPELINE_DIR, 'servicios', 'commander', 'trabajando');
   try {
     if (fs.existsSync(orphanDir)) {
-      const orphans = fs.readdirSync(orphanDir).filter(f => f.endsWith('.json')).length;
+      // Excluir marker artifacts: no son mensajes operacionales huérfanos.
+      const orphans = fs.readdirSync(orphanDir).filter(f => f.endsWith('.json') && !isMarkerArtifact(f)).length;
       if (orphans > 0) {
         log(`  WARN ${orphans} mensaje(s) en commander/trabajando/ (esperado 0 post-restart)`);
       }
@@ -255,4 +307,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { checkDashboardHttp, checkDashboardHttpWithRetry };
+module.exports = { checkDashboardHttp, checkDashboardHttpWithRetry, waitForComponentMarkers };

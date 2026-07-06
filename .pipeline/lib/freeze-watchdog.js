@@ -45,6 +45,7 @@ const INFLIGHT_BITS = {
   prInfo: 4,
   olaETA: 8,
   titleRefresh: 16,
+  logServe: 32,
 };
 
 const DEFAULT_BUMP_MS = 200;        // cada cuánto late el main
@@ -105,6 +106,18 @@ function startFreezeWatchdog(opts = {}) {
   });
   worker.on('error', (e) => { try { onLog(`freeze-watchdog worker error: ${e && e.message ? e.message : e}`); } catch {} });
 
+  // Publicación SINCRÓNICA del bitmask al SAB (#4521). El latido corre cada
+  // `bumpMs` (200ms), pero una operación sync que se clava ARRANCA y CONGELA el
+  // loop dentro del mismo tick: ningún latido intermedio llega a capturar su
+  // flag, y el worker termina leyendo el mask del latido ANTERIOR (→ el freeze
+  // se reporta como "ninguno-inflight" aunque el flag esté en true en el main).
+  // publishInflight() escribe el mask al SAB en el acto, sin esperar al próximo
+  // latido, de modo que un handler que setea su flag y llama acá justo antes de
+  // la operación pesada queda NOMBRADO aunque congele el loop a continuación.
+  function publishInflight() {
+    try { Atomics.store(view, IDX_INFLIGHT, inflightMask()); } catch {}
+  }
+
   let stopped = false;
   function stop() {
     if (stopped) return;
@@ -113,7 +126,7 @@ function startFreezeWatchdog(opts = {}) {
     try { worker.terminate(); } catch {}
   }
 
-  return { stop };
+  return { stop, publishInflight };
 }
 
 module.exports = { startFreezeWatchdog, INFLIGHT_BITS, IDX_HEARTBEAT, IDX_INFLIGHT, SAB_INTS };
