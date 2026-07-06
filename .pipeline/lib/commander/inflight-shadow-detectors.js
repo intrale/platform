@@ -60,6 +60,11 @@ const ALLOWED_FIELDS = Object.freeze([
 
 const ERROR_CLASSES = Object.freeze([
     'timeout_first_byte',
+    // #4530 — el sufijo `_30s` es HISTÓRICO. El umbral por defecto ahora es
+    // 180s (ver STREAM_GAP_THRESHOLD_MS). El label se mantiene estable para no
+    // romper el análisis de logs/dashboards existentes que filtran por este
+    // string; el valor real del gap viaja en `primary_duration_ms`. No renombrar
+    // sin migración del histórico de `commander-dispatch-*.jsonl`.
     'timeout_no_new_bytes_30s',
     'eof_premature',
     'transient_5xx',
@@ -195,14 +200,53 @@ function detectTransient5xx(evt, options = {}) {
 //
 // Dispara solo si:
 //   - Ya se recibió el primer line (`lastLineAt > 0`).
-//   - Pasaron >= 30000ms desde el último line.
+//   - Pasaron >= thresholdMs desde el último line (default 180s — #4530).
 //   - NO hay Skill in-flight (R-1 / SR-S5 — pausar si `pendingSkillCallsSize > 0`).
+//   - NO hay NINGÚN tool_use in-flight (#4530 CA-2 — pausar si `pendingToolUseSize > 0`).
 //   - No se disparó antes en este turn (`alreadyFired === false`).
+//
+// #4530 — El umbral pasó de 30s a 180s. El 30s original confundía turnos
+// legítimos con tool-use largo (ej. Bash/gradlew de 120-300s) con un cuelgue:
+// entre el `tool_use` y su `tool_result` no llega ningún line nuevo, así que el
+// gap de 30s disparaba fallback innecesario y sacaba a Anthropic teniendo cuota.
+// Dos defensas complementarias:
+//   1. Umbral base 180s (cubre la mayoría de la evidencia: 118s-186s).
+//   2. Guard `pendingToolUseSize` (cubre también los 237s/300s): si hay CUALQUIER
+//      herramienta ejecutándose, el silencio de texto es esperado → no disparar.
 // -----------------------------------------------------------------------------
-const STREAM_GAP_THRESHOLD_MS = 30 * 1000;
+const STREAM_GAP_THRESHOLD_MS = 180 * 1000; // #4530 — antes 30s
+const STREAM_GAP_MIN_MS = 180 * 1000;       // #4530 — piso fail-closed (no aflojar por debajo)
+const STREAM_GAP_MAX_MS = 600 * 1000;       // #4530 — techo sano (= HARD_TIMEOUT 10min)
+
+// #4530 — Umbral del early-cascade NON-Anthropic (#3571). Se mantiene en 30s a
+// propósito: es otra feature (cascada temprana de providers de fallback frente
+// al kill duro de 600s) con su propia semántica y test. El bump a 180s aplica
+// SOLO al shadow detector del turno Anthropic del commander; el path
+// non-Anthropic conserva su agresividad histórica. `nonanthropic-stall-detect.js`
+// usa esta constante como default en vez de STREAM_GAP_THRESHOLD_MS.
+const NONANTH_STREAM_GAP_THRESHOLD_MS = 30 * 1000;
+
+// -----------------------------------------------------------------------------
+// #4530 CA-3 — resolveStreamGapThresholdMs
+//
+// Resuelve el umbral efectivo desde el env `COMMANDER_STREAM_GAP_MS`, con
+// semántica fail-closed y clamp:
+//   - Valor ausente/no numérico → default 180s (fail-closed: nunca más agresivo).
+//   - Valor < 180s → clampeado a 180s (no se permite reintroducir el gap agresivo).
+//   - Valor > 600s → clampeado a 600s (techo = HARD_TIMEOUT, evita gap inútil).
+// El env se lee inyectado (`rawEnv`) para que sea testeable sin tocar process.env.
+// -----------------------------------------------------------------------------
+function resolveStreamGapThresholdMs(rawEnv) {
+    const n = Number(rawEnv);
+    if (!Number.isFinite(n)) return STREAM_GAP_THRESHOLD_MS;
+    return Math.min(STREAM_GAP_MAX_MS, Math.max(STREAM_GAP_MIN_MS, n));
+}
 
 function shouldFireStreamGap(opts = {}) {
-    const { lastLineAt, now, pendingSkillCallsSize, alreadyFired, thresholdMs } = opts;
+    const {
+        lastLineAt, now, pendingSkillCallsSize, pendingToolUseSize,
+        alreadyFired, thresholdMs,
+    } = opts;
     if (alreadyFired) return false;
     if (!Number.isFinite(lastLineAt) || lastLineAt <= 0) return false;
     const _now = Number.isFinite(now) ? now : Date.now();
@@ -211,6 +255,11 @@ function shouldFireStreamGap(opts = {}) {
     // R-1 / SR-S5: pausar si hay Skill in-flight (el SKILL_WATCHDOG_MS=60s
     // cubre el caso con semántica propia).
     if (Number.isFinite(pendingSkillCallsSize) && pendingSkillCallsSize > 0) return false;
+    // #4530 CA-2: pausar si hay CUALQUIER tool_use in-flight. Entre el `tool_use`
+    // y su `tool_result` no llegan lines; una herramienta larga (Bash/gradlew)
+    // es actividad legítima, no un cuelgue. Generaliza el guard de Skills a
+    // cualquier herramienta pendiente.
+    if (Number.isFinite(pendingToolUseSize) && pendingToolUseSize > 0) return false;
     return true;
 }
 
@@ -269,6 +318,9 @@ module.exports = {
     TRANSIENT_5XX_ERROR_TYPES,
     FIRST_BYTE_THRESHOLD_MS,
     STREAM_GAP_THRESHOLD_MS,
+    STREAM_GAP_MIN_MS,
+    STREAM_GAP_MAX_MS,
+    NONANTH_STREAM_GAP_THRESHOLD_MS, // #4530 — early-cascade non-Anthropic (#3571)
 
     // Core
     buildInflightSignalEntry,
@@ -279,6 +331,7 @@ module.exports = {
     shouldFireFirstByte,
     shouldFireStreamGap,
     shouldFireEofPremature,
+    resolveStreamGapThresholdMs, // #4530 CA-3
 
     // Helpers
     auditFile,
