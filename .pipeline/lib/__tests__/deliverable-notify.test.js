@@ -694,3 +694,36 @@ test('appendAudit crea el directorio si no existe y persiste JSONL', () => {
 test('appendAudit retorna false si record es null', () => {
     assert.equal(dn.appendAudit('/tmp/whatever.jsonl', null), false);
 });
+
+// -----------------------------------------------------------------------------
+// #4502 · CA-2 no-regresión — "disponibilizar sin allowlist" NO desactiva
+// redacción de secrets ni el ruteo por sensibilidad (SEC-REQ-2). El PO ya es
+// notifiable (DEFAULT_NOTIFY_SKILLS) y forzar su envío mantiene redactSensitive.
+// Cero cambio de código de notify: sólo confirmamos el invariante.
+// -----------------------------------------------------------------------------
+
+test('CA-2 (#4502) · po es notifiable y su envío mantiene redacción de secrets', () => {
+    const { root, cleanup } = mkTmpRoot();
+    try {
+        // Precondición: po está en el filtro default (CA-2 ya cumplido en runtime).
+        assert.ok(dn.DEFAULT_NOTIFY_SKILLS.includes('po'), 'po debe ser notifiable por default');
+
+        const calls = [];
+        const queueDir = path.join(root, '.pipeline', 'servicios', 'telegram', 'pendiente');
+        const result = dn.notify({
+            issue: 4502, skill: 'po', fase: 'criterios', pipeline: 'definicion',
+            yaml: { notas: `Ficha de definición.\nContexto de deploy: AKIAIOSFODNN7EXAMPLE\nresto del análisis.` },
+            config: defaultCfg(),
+            pipelineRoot: root,
+            telegramQueueDir: queueDir,
+            deps: { writeQueueFile: (p, payload) => calls.push({ p, payload }) },
+        });
+        assert.equal(result.ok, true);
+        assert.equal(calls.length, 1);
+        // El secreto embebido en las notas NO viaja en claro al payload de Telegram.
+        assert.ok(
+            !calls[0].payload.text.includes('AKIAIOSFODNN7EXAMPLE'),
+            `forzar el envío del po no debe deshabilitar la redacción: ${calls[0].payload.text}`,
+        );
+    } finally { cleanup(); }
+});

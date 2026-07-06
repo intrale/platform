@@ -188,7 +188,7 @@ function indexPathFor(issue, opts) {
  */
 function redactMeta(entry) {
     const out = { ...entry };
-    for (const field of ['path', 'caption', 'descriptor', 'filename']) {
+    for (const field of ['path', 'caption', 'descriptor', 'filename', 'motivo']) {
         if (typeof out[field] === 'string' && out[field].length > 0) {
             out[field] = redactSensitive(redactSecretValue(out[field]));
         }
@@ -265,7 +265,17 @@ function upsertDeliverableIndex(entry = {}) {
     if (typeof entry.tipo !== 'string' || entry.tipo.length === 0) {
         throw new Error(`tipo inválido: ${entry.tipo}`);
     }
-    if (typeof entry.path !== 'string' || entry.path.length === 0) {
+    // Validación condicional por tipo (#4502). La entry `tipo:'exception'`
+    // registra "el entregable no aplica + motivo" y por diseño NO tiene binario
+    // asociado → NO exige `path`; en su lugar exige un `motivo` legible. El
+    // resto de los tipos (document/image/video/animation) apuntan a un artefacto
+    // físico y siguen requiriendo `path` (contrato original intacto).
+    const isException = entry.tipo === 'exception';
+    if (isException) {
+        if (typeof entry.motivo !== 'string' || entry.motivo.trim().length === 0) {
+            throw new Error(`motivo requerido para tipo:'exception': ${entry.motivo}`);
+        }
+    } else if (typeof entry.path !== 'string' || entry.path.length === 0) {
         throw new Error(`path inválido: ${entry.path}`);
     }
 
@@ -279,10 +289,11 @@ function upsertDeliverableIndex(entry = {}) {
         fase,
         agente,
         tipo: entry.tipo,
-        path: entry.path,
+        path: isException ? null : entry.path,
         bytes: Number.isFinite(entry.bytes) ? Number(entry.bytes) : null,
         sensible: Boolean(entry.sensible),
         timestamp,
+        ...(isException ? { motivo: String(entry.motivo) } : {}),
     });
 
     const idx = readDeliverableIndex(issueId, opts);
@@ -303,6 +314,41 @@ function upsertDeliverableIndex(entry = {}) {
     fs.renameSync(tmp, file);
 
     return record;
+}
+
+/**
+ * Registra una entry de EXCEPCIÓN autoritativa "el entregable no aplica + motivo"
+ * (#4502 / CA-3). Reusa el choke point atómico de `upsertDeliverableIndex` con la
+ * misma clave `agente::fase` (idempotente: un segundo registro de la misma fase
+ * pisa al anterior). El `motivo` pasa por `redactMeta` antes de persistir. NO
+ * exige `path` — la excepción es la válvula de escape de la obligatoriedad y no
+ * apunta a ningún binario.
+ *
+ * Autoridad (SEC-REQ-1 / OWASP A01/A08): esta entry SÓLO la escribe el pulpo tras
+ * validar el input del agente. El agente NUNCA escribe el índice a mano ni se
+ * auto-otorga la excepción vía su YAML editable.
+ *
+ * @param {object} entry
+ * @param {string|number} entry.issue      - `^\d+$` (CA-5).
+ * @param {string} entry.fase              - enum cerrado (SEC-2).
+ * @param {string} entry.agente            - clave de SKILL_SOURCES (SEC-2).
+ * @param {string} entry.motivo            - motivo legible (se redacta).
+ * @param {string} [entry.timestamp]       - ISO inyectable (determinismo tests).
+ * @param {string} [entry.pipelineRoot]    - root del store (default padre de lib/).
+ * @returns {object} la entry persistida (redactada).
+ */
+function upsertException(entry = {}) {
+    return upsertDeliverableIndex({
+        issue: entry.issue,
+        fase: entry.fase,
+        agente: entry.agente,
+        tipo: 'exception',
+        motivo: entry.motivo,
+        sensible: false,
+        timestamp: entry.timestamp,
+        pipelineRoot: entry.pipelineRoot,
+        phaseEnum: entry.phaseEnum,
+    });
 }
 
 // -----------------------------------------------------------------------------
@@ -336,6 +382,7 @@ function queryByAgent(issue, agente, opts = {}) {
 
 module.exports = {
     upsertDeliverableIndex,
+    upsertException,
     readDeliverableIndex,
     queryByPhase,
     queryByAgent,

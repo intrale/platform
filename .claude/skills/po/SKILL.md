@@ -945,4 +945,32 @@ const fase = process.env.PIPELINE_FASE || "criterios";
 writeDeliverable("po", issue, { fase, md /* o svg para mockups/diagramas */ });
 ```
 
-El enforcement es **warn-only**: no generar el archivo no bloquea el pipeline, pero cuenta para la cobertura ≥80% de la ola (CA-4).
+### Obligatoriedad (#4502)
+
+La generación del entregable es **obligatoria**, ya NO warn-only. Al cerrar la
+fase **Definición** (`criterios`), el pulpo verifica —de forma **autoritativa**—
+que dejaste la Ficha de definición en el store `issue → criterios → po`. Si no
+está y no registraste excepción, el pulpo **retiene** la fase (no promueve a
+`sizing`), comenta el issue de forma accionable y te re-encola para que la
+produzcas (circuit breaker: máx 3 intentos → label `needs-human`).
+
+> El pulpo también corre un **backstop**: si dejaste notas sustantivas en tu
+> YAML pero no llamaste `writeDeliverable`, materializa la ficha por vos. Aun
+> así, la vía correcta es llamar `writeDeliverable` explícitamente.
+
+### Excepción explícita (cuando no aplica)
+
+Si por la naturaleza del issue el entregable **no aplica**, NO lo omitas en
+silencio: declaralo como **input** en tu YAML de resultado. El pulpo valida el
+motivo y escribe la entry autoritativa `tipo:'exception'` en el store — vos
+**no** escribís el índice a mano (SEC-REQ-1):
+
+```yaml
+resultado: aprobado
+entregable_no_aplica: true
+motivo_no_aplica: "Explicación en criollo de por qué no aplica (mínimo 15 chars, legible)."
+```
+
+`entregable_no_aplica` + `motivo_no_aplica` son **input**, NO un flag de bypass:
+la decisión de aceptar la excepción y cerrar la fase la toma el pulpo. Un motivo
+vacío o demasiado corto NO habilita la excepción.

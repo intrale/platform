@@ -14,6 +14,7 @@ const path = require('path');
 const idx = require('./deliverable-index');
 const {
     upsertDeliverableIndex,
+    upsertException,
     readDeliverableIndex,
     queryByPhase,
     queryByAgent,
@@ -193,6 +194,67 @@ test('queryByPhase y queryByAgent filtran correctamente', () => {
     const poEntries = queryByAgent('60', 'po', { pipelineRoot: root });
     assert.equal(poEntries.length, 2);
     assert.deepEqual(poEntries.map((e) => e.fase).sort(), ['aprobacion', 'criterios']);
+});
+
+// -----------------------------------------------------------------------------
+// upsertException — entry tipo:'exception' sin path, con motivo (#4502)
+// -----------------------------------------------------------------------------
+
+test('upsertException escribe entry tipo:exception sin path, con motivo', () => {
+    const root = tmpRoot();
+    const rec = upsertException({
+        issue: '4502', fase: 'criterios', agente: 'po',
+        motivo: 'El issue no tiene criterios de negocio para documentar.',
+        timestamp: TS, pipelineRoot: root,
+    });
+    assert.equal(rec.tipo, 'exception');
+    assert.equal(rec.path, null, 'la excepción no lleva path');
+    assert.equal(rec.sensible, false);
+    assert.ok(rec.motivo.includes('criterios de negocio'));
+
+    const entries = queryByPhase('4502', 'criterios', { pipelineRoot: root });
+    const ex = entries.find((e) => e.tipo === 'exception');
+    assert.ok(ex, 'queryByPhase debe devolver la excepción');
+    assert.equal(ex.agente, 'po');
+});
+
+test('upsertException exige motivo legible (rechaza vacío)', () => {
+    const root = tmpRoot();
+    assert.throws(
+        () => upsertException({ issue: '4502', fase: 'criterios', agente: 'po', motivo: '', pipelineRoot: root }),
+        /motivo requerido/,
+    );
+    assert.throws(
+        () => upsertException({ issue: '4502', fase: 'criterios', agente: 'po', motivo: '   ', pipelineRoot: root }),
+        /motivo requerido/,
+    );
+});
+
+test('upsertException redacta secrets embebidos en el motivo (CA-6)', () => {
+    const root = tmpRoot();
+    const rec = upsertException({
+        issue: '4502', fase: 'criterios', agente: 'po',
+        motivo: 'no aplica; contexto AKIAIOSFODNN7EXAMPLE del deploy',
+        timestamp: TS, pipelineRoot: root,
+    });
+    assert.ok(!rec.motivo.includes('AKIAIOSFODNN7EXAMPLE'), `no debe filtrar AWS key: ${rec.motivo}`);
+});
+
+test('upsertException es idempotente por clave agente::fase (último gana)', () => {
+    const root = tmpRoot();
+    upsertException({ issue: '77', fase: 'criterios', agente: 'po', motivo: 'primer motivo del registro', timestamp: TS, pipelineRoot: root });
+    upsertException({ issue: '77', fase: 'criterios', agente: 'po', motivo: 'segundo motivo que reemplaza', timestamp: TS, pipelineRoot: root });
+    const entries = queryByPhase('77', 'criterios', { pipelineRoot: root });
+    assert.equal(entries.length, 1, 'la misma clave agente::fase no duplica');
+    assert.ok(entries[0].motivo.includes('segundo motivo'));
+});
+
+test('una excepción y un entregable real del mismo agente en fases distintas conviven', () => {
+    const root = tmpRoot();
+    upsertException({ issue: '88', fase: 'criterios', agente: 'po', motivo: 'no aplica en definicion', timestamp: TS, pipelineRoot: root });
+    upsertDeliverableIndex({ issue: '88', fase: 'aprobacion', agente: 'po', tipo: 'document', path: 'po-aprobacion-88.md', timestamp: TS, pipelineRoot: root });
+    const read = readDeliverableIndex('88', { pipelineRoot: root });
+    assert.equal(read.entries.length, 2);
 });
 
 // -----------------------------------------------------------------------------

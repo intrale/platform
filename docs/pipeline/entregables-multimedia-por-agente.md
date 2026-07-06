@@ -364,12 +364,59 @@ const { path, bytes } = writeDeliverable('guru', issue, { md /* o svg */ });
 - Escribe `<skill>-<issue>.<md|svg>` (o un `filename` plano explícito).
 - Devuelve `{ path, bytes }`.
 
-### Enforcement warn-only (CA-4)
+### Enforcement: de warn-only a obligatorio (#4502)
 
-La cobertura ≥80% de la primera ola se **mide** reutilizando la telemetría que
-ya emite `deliverable-notify.js`; **no hay gate bloqueante en `pulpo.js`**. Un
-agente que no genere el archivo no traba el pipeline, pero cuenta en contra de
-la cobertura de la ola.
+> **Actualización #4502 (PO/Definición).** El enforcement warn-only original
+> queda **superado por fase/agente** a medida que cada relación `fase → agente`
+> del épico #4255 se materializa. La primera relación endurecida es
+> `Definición → PO → Ficha de definición`.
+
+Histórico (warn-only, aún vigente para las relaciones no endurecidas): la
+cobertura ≥80% de la primera ola se **mide** reutilizando la telemetría que ya
+emite `deliverable-notify.js`. Un agente que no genere el archivo no traba el
+pipeline, pero cuenta en contra de la cobertura de la ola.
+
+#### Gate obligatorio del PO al cerrar Definición (#4502)
+
+Al promover `definicion/criterios → sizing`, el pulpo corre un **gate
+determinístico** (`.pipeline/lib/deliverable-gate.js`) que verifica que el `po`
+haya dejado su Ficha en el store `issue → criterios → po`, o bien una excepción
+explícita.
+
+- **Punto de gate:** rama "todos aprobaron → promover" de `pulpo.js`, scopeado a
+  `pipelineName === 'definicion' && fase === 'criterios'`, **antes** de crear los
+  archivos de `sizing`. Espeja `visual-gate` y `architect-signoff-gate`.
+- **Autoridad (SEC-REQ-1 / OWASP A01/A08):** el gate y el registro de la
+  excepción son **autoritativos en el pulpo**, no en el YAML editable del agente.
+- **Kill switch + modos:** `config.yaml → deliverable_gate.{enabled,kill_switch,
+  gate_mode}`. Default `enabled:false` / `gate_mode:dry-run`. `dry-run` evalúa y
+  loguea pero NUNCA bloquea (fail-abierto); `enforce` retiene y re-encola al PO.
+- **Backstop anti-deadlock (#4466 / SEC-REQ-3):** antes de decidir, si el PO no
+  dejó entregable pero sus notas son sustantivas, el pulpo las materializa vía
+  `writeDeliverable`. La retención efectiva es un último recurso.
+- **Circuit breaker:** máx 3 intentos de re-encolado del PO → label `needs-human`
+  (escalado, no bucle infinito).
+
+#### Forma de la excepción "no aplica" (CA-3)
+
+El PO emite en su YAML de resultado, como **input** (no como flag de bypass):
+
+```yaml
+entregable_no_aplica: true
+motivo_no_aplica: "Motivo legible en criollo (mínimo 15 chars)."
+```
+
+El pulpo valida el motivo y escribe la entry `tipo:'exception'` en el store vía
+`upsertException` (choke point del índice, motivo redactado). El agente **nunca**
+escribe el índice a mano. Un motivo vacío/corto NO habilita la excepción → el
+gate retiene igual (evita el silencio: excepción explícita, no omisión).
+
+#### CA-2 — Disponibilización por Telegram sin allowlist (SEC-REQ-2)
+
+"Sin allowlist que lo bloquee" significa **sólo** bypass del filtro de
+notificación (`DEFAULT_NOTIFY_SKILLS` / `deliverable_notifications.skills`),
+**nunca** bypass de `redactContent` ni del flag `sensible`. La redacción de
+secrets y el ruteo por sensibilidad siguen aplicándose al forzar el envío.
 
 ### Requisitos de seguridad del cierre de fase (CA-5..CA-9, OWASP-aligned)
 

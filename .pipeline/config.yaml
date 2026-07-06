@@ -1184,6 +1184,37 @@ architect:
   go_live_date: '2026-05-29T00:00:00Z'
   bot_login: architect-bot
 
+# =============================================================================
+# #4502 — Gate de entregable obligatorio del PO al cerrar Definición
+# =============================================================================
+# Al promover `definicion/criterios → sizing`, el pulpo verifica que el agente
+# `po` haya dejado su Ficha de definición en el store `issue → criterios → po`
+# (#4255), o bien una excepción explícita ("no aplica + motivo"). El gate es
+# AUTORITATIVO en el pulpo (SEC-REQ-1), NO en el YAML editable del agente: la
+# entry `tipo:'exception'` la escribe el pulpo tras validar el input del PO
+# (`entregable_no_aplica` + `motivo_no_aplica`).
+#
+# Backstop anti-deadlock (#4466): antes de decidir, si el PO no dejó entregable
+# pero sus notas son sustantivas, el pulpo las materializa vía writeDeliverable.
+# Así la retención efectiva es un último recurso, no la norma.
+#
+# Defaults fail-safe (rollout gradual, sin deadlock durante CA-4):
+#   - `enabled: false` → gate ni se invoca (cortocircuito, kill switch).
+#   - `gate_mode: dry-run` → cuando se active, evalúa y loguea pero NUNCA bloquea.
+#   - `kill_switch: true` → override de emergencia (apagado total en caliente).
+#
+# Para activar el piloto:
+#   1. `enabled: true` con `gate_mode: dry-run` (observar barridos sin bloquear).
+#   2. Una vez validado, `gate_mode: enforce` (retiene y re-encola al PO; circuit
+#      breaker de 3 intentos → label needs-human).
+#
+# Ver: .pipeline/lib/deliverable-gate.js,
+#      docs/pipeline/entregables-multimedia-por-agente.md §5.bis
+deliverable_gate:
+  enabled: false
+  kill_switch: false
+  gate_mode: dry-run
+
 # #3488 (Spike #3378 H2) — Planificación multi-ola del skill /planner.
 #
 # Capacidad por ola: cuántos issues máximos entran cuando el operador ejecuta
