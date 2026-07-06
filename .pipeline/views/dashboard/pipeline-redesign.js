@@ -179,11 +179,13 @@ function renderMissionTimeline() {
               <div class="mz-tl-annot mz-tl-annot-vel" id="mission-vel-annot" style="left:0%"
                    title="Velocidad de la ola: throughput de issues entregados por unidad de tiempo (issues/día).">
                 <span class="mz-tl-annot-ic" aria-hidden="true">🚀</span>
+                <span class="mz-tl-annot-l">VELOCIDAD</span>
                 <span class="mz-tl-annot-v" id="mission-vel-value">— <span class="mz-wm-u">issues/día</span></span>
               </div>
               <div class="mz-tl-annot mz-tl-annot-del"
                    title="Issues entregados sobre el total de la ola.">
                 <span class="mz-tl-annot-ic" aria-hidden="true">📦</span>
+                <span class="mz-tl-annot-l">ENTREGADOS</span>
                 <span class="mz-tl-annot-v" id="mission-delivered-value">—<span class="mz-wm-u"> / —</span></span>
                 <span class="mz-tl-annot-s" id="mission-delivered-sub">restantes</span>
               </div>
@@ -381,6 +383,7 @@ const PIPELINE_REDESIGN_CSS = `
 .mz-tl-annot-vel { transform: translateX(-50%); color: var(--in-ok,#3fb950); transition: left .4s ease; }
 .mz-tl-annot-del { right: 0; color: var(--in-info,#58a6ff); }
 .mz-tl-annot-s { color: var(--in-fg-dim,#8b949e); font-weight: 600; font-size: 10px; }
+.mz-tl-annot-l { color: var(--in-fg-dim,#8b949e); font-weight: 600; font-size: 10px; letter-spacing: .04em; }
 .mz-tl-rail { position: relative; height: 8px; border-radius: 6px; background: rgba(255,255,255,.07); }
 .mz-tl-fill { position: absolute; left: 0; top: 0; height: 100%; width: 0; border-radius: 6px;
     background: linear-gradient(90deg, var(--in-accent,#2ee6c1), var(--in-ok,#3fb950)); transition: width .4s ease; }
