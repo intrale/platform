@@ -212,7 +212,10 @@ const skillDeliverableAttachments = require('./lib/skill-deliverable-attachments
 // #4466 (B) — fallback determinístico de entrega de artefacto: enruta SIEMPRE por
 // writeDeliverable (redacta secrets por default — SEC-REQ-1/CA-SEC-1). NUNCA se
 // construye el path a mano ni se adjuntan notas crudas.
-const { writeDeliverable } = require('./lib/write-deliverable');
+const { writeDeliverable, writeDeliverableException } = require('./lib/write-deliverable');
+// #4504 (CA-1) — lectura del índice de entregables para garantizar que `guru`
+// SIEMPRE deje document o excepción indexada al cerrar `analisis` (Definición).
+const { readDeliverableIndex } = require('./lib/deliverable-index');
 // #3481 — Evaluación de completitud de fases paralelas que considera
 // artefactos varados en `procesado/` (con whitelist estricta + anti-race
 // contra pendiente/trabajando). Resuelve el deadlock cuando un skill cerró
@@ -4767,6 +4770,64 @@ function brazoBarrido(config) {
                 }
               } catch (e) {
                 log('barrido', `📎 #${issue} fallback excepción (${notifySkill}): ${e.message}`);
+              }
+
+              // #4504 (CA-1) — Garantía real para `guru` en `analisis` (Definición):
+              // el dossier de investigación es OBLIGATORIO. El fallback genérico de
+              // arriba sólo materializa con notas ≥80 chars y deja todo en warning;
+              // para `guru` esa condición desaparece. Si tras el barrido NO hay
+              // entregable indexado para guru/analisis, se materializa el dossier vía
+              // writeDeliverable (sin umbral de 80 chars) o, si de verdad no hay
+              // contenido, se registra una EXCEPCIÓN explícita (CA-3, motivo redactado)
+              // — nunca un cierre silencioso. El notify sigue siendo best-effort
+              // (no se aborta el ciclo), pero para guru queda siempre document|exception.
+              try {
+                if (notifySkill === 'guru' && fase === 'analisis') {
+                  let yaIndexado = false;
+                  try {
+                    const gIdx = readDeliverableIndex(issue, { pipelineRoot: path.join(ROOT, '.pipeline') });
+                    yaIndexado = Array.isArray(gIdx.entries)
+                      && gIdx.entries.some((e) => e && e.agente === 'guru' && e.fase === 'analisis');
+                  } catch { /* índice ilegible → tratamos como no indexado */ }
+
+                  if (!yaIndexado) {
+                    const notasGuru =
+                      (typeof r.notas === 'string' && r.notas.trim().length > 0) ? r.notas
+                      : (typeof r.motivo === 'string' && r.motivo.trim().length > 0) ? r.motivo
+                      : '';
+                    try {
+                      if (notasGuru.trim().length > 0) {
+                        // Materializa el dossier sin umbral (CA-1). Enruta por
+                        // writeDeliverable → redacta secrets + indexa en el canónico.
+                        writeDeliverable('guru', issue, { fase, md: notasGuru, pipelineRoot: ROOT });
+                        log('barrido', `📎 #${issue} guru/analisis dossier garantizado vía writeDeliverable (CA-1)`);
+                      } else {
+                        // Sin ninguna nota → excepción explícita, nunca silencio (CA-3).
+                        writeDeliverableException('guru', issue, {
+                          fase,
+                          motivo: 'guru cerró la fase de análisis sin notas ni dossier adjunto; '
+                            + 'entregable no materializable automáticamente por falta de contenido.',
+                          pipelineRoot: ROOT,
+                        });
+                        log('barrido', `📎 #${issue} guru/analisis SIN contenido → excepción registrada (CA-3)`);
+                      }
+                      // Re-barrer: el .md recién escrito debe entrar como adjunto
+                      // pasando por la misma validación (path/magic-bytes/allowlist).
+                      const rescanGuru = skillDeliverableAttachments.collectAttachmentsForSkill(
+                        'guru', issue, fase, { pipelineRoot: ROOT },
+                      );
+                      if (Array.isArray(rescanGuru) && rescanGuru.length > 0) {
+                        r.attachments = rescanGuru;
+                      }
+                    } catch (e) {
+                      // Última red: si ni la excepción se pudo escribir, alertar sin
+                      // abortar el ciclo (garantía best-effort para el notify).
+                      log('barrido', `⚠️ #${issue} guru/analisis NO se pudo garantizar entregable: ${e.message}`);
+                    }
+                  }
+                }
+              } catch (e) {
+                log('barrido', `📎 #${issue} guru garantía excepción: ${e.message}`);
               }
 
               const result = deliverableNotify.notify({

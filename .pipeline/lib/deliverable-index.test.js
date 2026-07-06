@@ -178,6 +178,68 @@ test('redacta secrets embebidos en metadata (path)', () => {
 });
 
 // -----------------------------------------------------------------------------
+// #4504 CA-3 — tipo:'exception' (registro de "no aplica" con motivo, sin binario)
+// -----------------------------------------------------------------------------
+
+test('exception: upsert con tipo:exception sin path NO lanza y persiste motivo', () => {
+    const root = tmpRoot();
+    const rec = upsertDeliverableIndex({
+        issue: '70', fase: 'analisis', agente: 'guru', tipo: 'exception',
+        motivo: 'issue puramente mecánico; no amerita dossier', timestamp: TS, pipelineRoot: root,
+    });
+    assert.equal(rec.tipo, 'exception');
+    assert.equal(rec.motivo, 'issue puramente mecánico; no amerita dossier');
+    assert.ok(!('path' in rec), 'la excepción no debe llevar path');
+
+    const read = readDeliverableIndex('70', { pipelineRoot: root });
+    assert.equal(read.entries.length, 1);
+    assert.equal(read.entries[0].tipo, 'exception');
+    assert.ok(read.entries[0].motivo.length > 0);
+});
+
+test('exception: upsert con tipo:exception sin motivo lanza', () => {
+    const root = tmpRoot();
+    assert.throws(
+        () => upsertDeliverableIndex({
+            issue: '71', fase: 'analisis', agente: 'guru', tipo: 'exception',
+            timestamp: TS, pipelineRoot: root,
+        }),
+        /motivo requerido para tipo=exception/,
+    );
+    assert.throws(
+        () => upsertDeliverableIndex({
+            issue: '71', fase: 'analisis', agente: 'guru', tipo: 'exception',
+            motivo: '   ', timestamp: TS, pipelineRoot: root,
+        }),
+        /motivo requerido para tipo=exception/,
+    );
+});
+
+test('exception: motivo entra a redactMeta (secrets redactados)', () => {
+    const root = tmpRoot();
+    const rec = upsertDeliverableIndex({
+        issue: '72', fase: 'analisis', agente: 'guru', tipo: 'exception',
+        motivo: 'contexto con AWS=AKIAIOSFODNN7EXAMPLE dentro', timestamp: TS, pipelineRoot: root,
+    });
+    assert.ok(!rec.motivo.includes('AKIAIOSFODNN7EXAMPLE'), `motivo no debe filtrar la key: ${rec.motivo}`);
+});
+
+test('exception y document del mismo agente+fase: último write gana (clave agente::fase)', () => {
+    const root = tmpRoot();
+    upsertDeliverableIndex({
+        issue: '73', fase: 'analisis', agente: 'guru', tipo: 'document',
+        path: 'guru-analisis-73.md', timestamp: TS, pipelineRoot: root,
+    });
+    upsertDeliverableIndex({
+        issue: '73', fase: 'analisis', agente: 'guru', tipo: 'exception',
+        motivo: 'reemplazo por excepción', timestamp: TS, pipelineRoot: root,
+    });
+    const read = readDeliverableIndex('73', { pipelineRoot: root });
+    assert.equal(read.entries.length, 1, 'misma clave agente::fase no duplica');
+    assert.equal(read.entries[0].tipo, 'exception');
+});
+
+// -----------------------------------------------------------------------------
 // consultas
 // -----------------------------------------------------------------------------
 

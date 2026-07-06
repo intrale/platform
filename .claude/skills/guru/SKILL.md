@@ -197,4 +197,24 @@ const fase = process.env.PIPELINE_FASE || "analisis";
 writeDeliverable("guru", issue, { fase, md /* o svg para mockups/diagramas */ });
 ```
 
-El enforcement es **warn-only**: no generar el archivo no bloquea el pipeline, pero cuenta para la cobertura ≥80% de la ola (CA-4).
+### Prohibición de secrets (SEC-3 / CA-5)
+
+El dossier **se auto-publica a Telegram** al cerrar la fase. Por eso:
+
+- Documentá *tipos y requisitos* de credenciales de servicios externos (ej. "requiere una API key de tipo Bearer con scope `read:foo`"), **NUNCA valores reales** de tokens, keys, passwords ni secrets.
+- `writeDeliverable` redacta AWS keys / JWT / API keys por default (CA-6), pero es la última red — no dependas de la redacción para tapar un secret que no debería estar ahí.
+
+### El entregable de `guru` en Definición es OBLIGATORIO (#4504, CA-1)
+
+Ya **no** es warn-only: al cerrar `analisis` (Definición), guru siempre deja **document o excepción indexada**. Si de verdad el issue no amerita dossier (naturaleza que no aplica), registrá la excepción explícita en vez de cerrar sin nada — nunca un silencio:
+
+```js
+const { writeDeliverableException } = require(path.resolve(".pipeline/lib/write-deliverable"));
+// El `motivo` se redacta antes de persistir (SEC-1); igual, no pegues paths ni secrets.
+writeDeliverableException("guru", issue, {
+  fase,
+  motivo: "Issue puramente operativo/mecánico: no requiere investigación técnica ni comparativa de variantes.",
+});
+```
+
+Como red de seguridad, el Pulpo garantiza el entregable de guru/analisis aunque el SKILL no lo produzca (materializa el dossier desde las notas o registra la excepción). Pero el productor primario es este skill: dejá el dossier o la excepción vos mismo.
