@@ -273,15 +273,30 @@ test('CA-A1 · first-byte NO se re-dispara (alreadyFired)', () => {
 // CA-A2 / R-1 — shouldFireStreamGap
 // =============================================================================
 
-test('CA-A2 · stream-gap dispara con 30s+ sin nuevos lines', () => {
+test('CA-A2 · stream-gap dispara con 180s+ sin nuevos lines (default #4530)', () => {
     assert.equal(
         detectors.shouldFireStreamGap({
             lastLineAt: 1_700_000_000_000,
-            now: 1_700_000_030_001,
+            now: 1_700_000_180_001, // 180.001s de silencio, sin tool-use in-flight
             pendingSkillCallsSize: 0,
+            pendingToolUseSize: 0,
             alreadyFired: false,
         }),
         true
+    );
+});
+
+test('CA-A2 · stream-gap NO dispara con 30s (umbral subió a 180s — #4530)', () => {
+    assert.equal(
+        detectors.shouldFireStreamGap({
+            lastLineAt: 1_700_000_000_000,
+            now: 1_700_000_030_001, // 30s: antes disparaba, ahora NO
+            pendingSkillCallsSize: 0,
+            pendingToolUseSize: 0,
+            alreadyFired: false,
+        }),
+        false,
+        '#4530: 30s de silencio ya no es señal de cuelgue'
     );
 });
 
@@ -289,12 +304,105 @@ test('CA-A2.b / R-1 / SR-S5 · stream-gap NO dispara si hay Skill in-flight', ()
     assert.equal(
         detectors.shouldFireStreamGap({
             lastLineAt: 1_700_000_000_000,
-            now: 1_700_000_060_000, // 60s gap, debería disparar
+            now: 1_700_000_200_000, // 200s gap, superaría el umbral
             pendingSkillCallsSize: 1, // pero hay Skill in-flight
+            pendingToolUseSize: 0,
             alreadyFired: false,
         }),
         false,
         'R-1: el SKILL_WATCHDOG_MS cubre Skills, stream-gap no debe duplicar señal'
+    );
+});
+
+// =============================================================================
+// #4530 — CA-2: pausar ante cualquier tool_use in-flight
+// =============================================================================
+
+test('#4530 CA-2 · gap 60-150s por tool-use NO dispara (silencio por herramienta larga)', () => {
+    // Turno legítimo: una herramienta (Bash/gradlew) corriendo 120s.
+    // Aunque el gap supere umbrales bajos, el tool_use pendiente lo pausa.
+    for (const gapMs of [60_000, 90_000, 120_000, 150_000]) {
+        assert.equal(
+            detectors.shouldFireStreamGap({
+                lastLineAt: 1_700_000_000_000,
+                now: 1_700_000_000_000 + gapMs,
+                pendingSkillCallsSize: 0,
+                pendingToolUseSize: 1, // herramienta ejecutándose
+                alreadyFired: false,
+            }),
+            false,
+            `gap de ${gapMs}ms con tool-use in-flight NO debe disparar fallback`
+        );
+    }
+});
+
+test('#4530 CA-2 · gap largo (300s) con tool-use in-flight NO dispara', () => {
+    // Cubre los casos de la evidencia 237s/300s que el solo umbral 180s no cubría.
+    assert.equal(
+        detectors.shouldFireStreamGap({
+            lastLineAt: 1_700_000_000_000,
+            now: 1_700_000_300_000, // 300s
+            pendingSkillCallsSize: 0,
+            pendingToolUseSize: 2,
+            alreadyFired: false,
+        }),
+        false
+    );
+});
+
+test('#4530 CA-2 · sin tool-use pendiente y gap > umbral SÍ dispara', () => {
+    // Silencio real sin ninguna herramienta corriendo → cuelgue legítimo.
+    assert.equal(
+        detectors.shouldFireStreamGap({
+            lastLineAt: 1_700_000_000_000,
+            now: 1_700_000_181_000,
+            pendingSkillCallsSize: 0,
+            pendingToolUseSize: 0,
+            alreadyFired: false,
+        }),
+        true
+    );
+});
+
+// =============================================================================
+// #4530 — CA-3: threshold configurable por env con clamp fail-closed
+// =============================================================================
+
+test('#4530 CA-3 · default 180s cuando el env está ausente o no es numérico', () => {
+    assert.equal(detectors.resolveStreamGapThresholdMs(undefined), 180 * 1000);
+    assert.equal(detectors.resolveStreamGapThresholdMs(''), 180 * 1000);
+    assert.equal(detectors.resolveStreamGapThresholdMs('abc'), 180 * 1000);
+    assert.equal(detectors.resolveStreamGapThresholdMs(null), 180 * 1000);
+});
+
+test('#4530 CA-3 · valor por debajo del piso se clampea a 180s (fail-closed)', () => {
+    assert.equal(detectors.resolveStreamGapThresholdMs('30000'), 180 * 1000);
+    assert.equal(detectors.resolveStreamGapThresholdMs(0), 180 * 1000);
+    assert.equal(detectors.resolveStreamGapThresholdMs(-5000), 180 * 1000);
+});
+
+test('#4530 CA-3 · valor por encima del techo se clampea a 600s', () => {
+    assert.equal(detectors.resolveStreamGapThresholdMs('9000000'), 600 * 1000);
+    assert.equal(detectors.resolveStreamGapThresholdMs(600001), 600 * 1000);
+});
+
+test('#4530 CA-3 · valor dentro del rango se respeta', () => {
+    assert.equal(detectors.resolveStreamGapThresholdMs('240000'), 240 * 1000);
+    assert.equal(detectors.resolveStreamGapThresholdMs(300000), 300 * 1000);
+});
+
+test('#4530 CA-3 · thresholdMs inyectado manda sobre el default', () => {
+    // Con umbral 300s, un gap de 200s (sin tool-use) NO dispara.
+    assert.equal(
+        detectors.shouldFireStreamGap({
+            lastLineAt: 1_700_000_000_000,
+            now: 1_700_000_200_000,
+            pendingSkillCallsSize: 0,
+            pendingToolUseSize: 0,
+            thresholdMs: 300 * 1000,
+            alreadyFired: false,
+        }),
+        false
     );
 });
 

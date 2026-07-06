@@ -88,7 +88,7 @@ test('runNonAnthropic cascadea si el stream stallea >30s tras un chunk parcial',
     stall.createStallDetectors({
         startTime,
         getLastChunkAt: () => chunkAt,
-        now: () => chunkAt + inflightShadow.STREAM_GAP_THRESHOLD_MS, // 30s tras el chunk
+        now: () => chunkAt + inflightShadow.NONANTH_STREAM_GAP_THRESHOLD_MS, // 30s tras el chunk
         killProc: () => calls.push(['kill']),
         onFirstByte: () => calls.push(['firstByte']),
         onStreamGap: () => calls.push(['streamGap']),
@@ -137,7 +137,10 @@ test('runNonAnthropic no cascadea dos veces cuando close llega tras el kill temp
 // -----------------------------------------------------------------------------
 test('los thresholds provienen de inflightShadow (15s/30s), no se inventan valores', () => {
     assert.equal(inflightShadow.FIRST_BYTE_THRESHOLD_MS, 15 * 1000);
-    assert.equal(inflightShadow.STREAM_GAP_THRESHOLD_MS, 30 * 1000);
+    // #4530 — el early-cascade non-Anthropic conserva 30s vía la constante
+    // dedicada NONANTH_STREAM_GAP_THRESHOLD_MS. STREAM_GAP_THRESHOLD_MS (turno
+    // Anthropic) subió a 180s y ya no aplica a esta rama.
+    assert.equal(inflightShadow.NONANTH_STREAM_GAP_THRESHOLD_MS, 30 * 1000);
 
     const ft = makeFakeTimers();
     stall.createStallDetectors({
@@ -181,7 +184,7 @@ test('los timers de deteccion temprana se limpian por stream-gap', () => {
     stall.createStallDetectors({
         startTime,
         getLastChunkAt: () => chunkAt,
-        now: () => chunkAt + inflightShadow.STREAM_GAP_THRESHOLD_MS,
+        now: () => chunkAt + inflightShadow.NONANTH_STREAM_GAP_THRESHOLD_MS,
         killProc: () => {},
         onFirstByte: () => {},
         onStreamGap: () => {},

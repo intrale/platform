@@ -10304,7 +10304,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
               },
               onStreamGap: () => {
                 clearTimeout(timer);
-                log('commander', `Provider ${res.provider} stream-gap >${Math.round(inflightShadow.STREAM_GAP_THRESHOLD_MS / 1000)}s — cascada temprana.`);
+                log('commander', `Provider ${res.provider} stream-gap >${Math.round(inflightShadow.NONANTH_STREAM_GAP_THRESHOLD_MS / 1000)}s — cascada temprana.`);
                 return advanceOrGiveUp(res.provider, 'timeout_no_new_bytes_30s');
               },
             });
@@ -10497,6 +10497,20 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
     const pendingSkillCalls = new Map(); // tool_use_id → { startedAt, skillName }
     let skillTimedOut = false; // flag que finish() expone al caller
     let skillTimedOutInfo = null; // { skillName, durationMs }
+
+    // #4530 CA-2 — tracker GENERAL de tool_use in-flight (cualquier herramienta,
+    // no solo Skills). Se agrega el `tool_use_id` cuando el assistant emite un
+    // `tool_use` y se elimina cuando llega el `tool_result` correspondiente.
+    // Sirve para pausar el stream-gap detector mientras una herramienta larga
+    // (Bash/gradlew de 120-300s) está corriendo: en ese tramo no llegan lines
+    // nuevos, pero es actividad legítima, no un cuelgue. NO tiene watchdog propio
+    // (el HARD_TIMEOUT de 10min sigue siendo el límite duro para tools no-Skill).
+    const pendingToolUses = new Set(); // tool_use_id
+    // #4530 CA-3 — umbral efectivo del stream-gap, resuelto una vez por turn
+    // desde el env con fail-closed 180s + clamp [180s, 600s].
+    const streamGapThresholdMs = inflightShadow.resolveStreamGapThresholdMs(
+        process.env.COMMANDER_STREAM_GAP_MS,
+    );
 
     // =============================================================================
     // #3577 — Detectores in-stream (parte 1/2 del split de #3472).
@@ -10770,6 +10784,9 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
             if (b.type === 'text' && b.text) lastText = b.text;
             if (b.type === 'tool_use') {
               toolCount++;
+              // #4530 CA-2 — registrar CUALQUIER tool_use in-flight para pausar
+              // el stream-gap detector mientras la herramienta corre.
+              if (typeof b.id === 'string' && b.id) pendingToolUses.add(b.id);
               lastToolDesc = b.input?.description || b.input?.command?.slice(0, 50) || b.name || '';
               log('commander', `  [tool ${toolCount}] ${b.name}: ${lastToolDesc.slice(0, 80)}`);
               // #3587 CA-1 — registrar el tool_use en el trace. Guardamos
@@ -10809,6 +10826,8 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           const blocks = Array.isArray(evt.message.content) ? evt.message.content : [evt.message.content];
           for (const b of blocks) {
             if (b.type === 'tool_result' && b.tool_use_id) {
+              // #4530 CA-2 — la herramienta terminó: sacarla del tracker general.
+              pendingToolUses.delete(b.tool_use_id);
               // #3587 CA-1 — registrar TODOS los tool_result en el trace
               // (no solo los de Skill). El sanitizer del audit log se encarga
               // del redact + truncate. `content` puede ser string o array de
@@ -11045,9 +11064,11 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       }
     }, inflightShadow.FIRST_BYTE_THRESHOLD_MS);
 
-    // #3577 CA-A2 / R-1 / SR-S5 — stream-gap detector (30s sin nuevos lines).
+    // #3577 CA-A2 / R-1 / SR-S5 — stream-gap detector (default 180s sin nuevos
+    // lines — #4530, antes 30s; configurable por COMMANDER_STREAM_GAP_MS).
     // Implementado con setInterval(5000), NO busy-wait. Pausado mientras hay
-    // Skill in-flight (el SKILL_WATCHDOG_MS=60s cubre Skills con semántica propia).
+    // Skill in-flight (el SKILL_WATCHDOG_MS=60s cubre Skills con semántica propia)
+    // o CUALQUIER tool_use in-flight (#4530 CA-2 — tools largas tipo Bash/gradlew).
     // Modo shadow: solo emite al audit.
     const streamGapShadowTimer = setInterval(() => {
       if (resolved) return;
@@ -11055,6 +11076,8 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         lastLineAt,
         now: Date.now(),
         pendingSkillCallsSize: pendingSkillCalls.size,
+        pendingToolUseSize: pendingToolUses.size, // #4530 CA-2
+        thresholdMs: streamGapThresholdMs,        // #4530 CA-3 (env fail-closed 180s)
         alreadyFired: streamGapFired,
       })) {
         streamGapFired = true;
