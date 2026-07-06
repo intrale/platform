@@ -15012,6 +15012,19 @@ async function mainLoop() {
   // matamos el pulpo — preferimos arrancar con allowlist vacía que dejar
   // el pipeline fuera de servicio.
   try {
+    // #4532 — Bootstrap del waves.json de runtime desde el template versionado.
+    // waves.json dejó de estar trackeado en git (causa raíz del wipe de la ola);
+    // en un fresh clone / máquina nueva el archivo no existe todavía. `ensureWavesFile`
+    // lo crea desde `waves.json.template` SOLO si falta — jamás pisa estado real.
+    // Best-effort: si falla, seguimos (loadWaves degrada a estado vacío en memoria).
+    try {
+      const wavesBootstrap = require('./lib/waves').ensureWavesFile();
+      if (wavesBootstrap && wavesBootstrap.created) {
+        log('pulpo', `[init-waves] waves.json creado desde template (${wavesBootstrap.reason}).`);
+      }
+    } catch (e) {
+      log('pulpo', `WARN [init-waves] ensureWavesFile falló: ${e.message}`);
+    }
     const { initWavesFromPartial } = require('./scripts/init-waves-from-partial');
     const initResult = initWavesFromPartial();
     if (initResult.action === 'seeded') {

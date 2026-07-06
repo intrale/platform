@@ -3,10 +3,13 @@
 // =============================================================================
 // mission-ola-eta.js — #4296
 //
-// Fuente ÚNICA del avance %, velocidad (throughput issues/día) y ETA del banner
-// de ola compartido (ids `mission-avance-pct` / `mission-vel-value` /
-// `mission-eta-value`). #4450 — la celda de velocidad pasó de %/h de avance a
-// throughput de entrega (issues/día), fiel al texto del issue (Opción A).
+// Fuente ÚNICA del avance %, velocidad y ETA del banner de ola compartido (ids
+// `mission-avance-pct` / `mission-vel-value` / `mission-eta-value`).
+// #4450 — la celda de velocidad pasó de %/h de avance a throughput issues/día.
+// #4532 — la celda de velocidad ahora expresa el "% de avance por issue por
+// minuto" (`velocityPctPerIssuePerMin`), métrica canónica de la ola que persiste
+// históricamente entre olas (una ola nueva hereda la estimación previa cross-ola)
+// y no se infla al resetearse el comienzo. El ETA se deriva de esa velocidad.
 //
 // Contexto del bug: la HOME (post #4287) ya hidrata esos tres valores desde el
 // cómputo determinístico de la ola — `/api/dash/ola-eta` → `totalPct` +
@@ -56,7 +59,9 @@
 function deriveMissionOlaEta(d) {
     const data = (d && typeof d === 'object') ? d : {};
     const vel = (data.velocityETA && typeof data.velocityETA === 'object') ? data.velocityETA : null;
-    const hasVelocity = data.etaSource === 'velocity' && !!vel
+    // #4532 — habilita el ritmo tanto MEDIDO ('velocity') como el estimado
+    // HISTÓRICO cross-ola ('historical'). Ambos traen `velocityPctPerMin` válido.
+    const hasVelocity = (data.etaSource === 'velocity' || data.etaSource === 'historical') && !!vel
         && Number.isFinite(vel.velocityPctPerMin) && vel.velocityPctPerMin > 0;
     const avancePct = Number.isFinite(data.totalPct) ? Math.round(data.totalPct) : null;
     const velocityPctPerHour = hasVelocity ? vel.velocityPctPerMin * 60 : null;
@@ -77,18 +82,27 @@ function deriveMissionOlaEta(d) {
     // Blindaje (CA-5): nunca NaN/Infinity/negativo hacia el render.
     if (!Number.isFinite(etaRemainingMin) || etaRemainingMin < 0) etaRemainingMin = null;
     const velocityState = hasVelocity ? 'measured' : 'sin datos suficientes';
-    // #4450 — throughput de entrega de la ola (issues/día). Es la "velocidad"
-    // que pinta la celda 🚀 VELOCIDAD (Opción A / G-UX-1), distinta de
-    // `velocityPctPerHour` (porcentaje de avance por hora, insumo del ETA).
-    // Estado explícito:
-    // 'measured' (incluye 0.0 legítimo) o 'insufficient' (leyenda "sin datos
-    // suficientes"). El literal se inlinea en el client script (no acá) porque
-    // esta función se serializa vía `.toString()` y no puede referenciar
-    // constantes de módulo.
+    // #4450/#4532 — throughput de entrega (issues por dia) del payload. Se
+    // conserva en el objeto derivado por compatibilidad (otros consumidores del
+    // route lo leen), pero YA NO es la "velocidad" que pinta la celda (#4532 la
+    // reemplaza por %/issue/min). Estado explícito: 'measured' (incluye 0.0
+    // legítimo) o 'insufficient'.
     const throughputPerDay = Number.isFinite(data.throughputPerDay) ? data.throughputPerDay : null;
     const throughputState = (data.throughputState === 'measured' && throughputPerDay !== null)
         ? 'measured' : 'insufficient';
-    return { avancePct, velocityPctPerHour, etaRemainingMin, etaFromVelocity, hasVelocity, velocityState, throughputPerDay, throughputState };
+    // #4532 — VELOCIDAD canónica de la ola: % de avance por issue por minuto
+    // (pendiente de `avancePct`, ya normalizado por issue). Reemplaza al
+    // throughput de entrega como la métrica que pinta la celda 🚀 VELOCIDAD.
+    //   - 'measured':   ritmo propio de la ola (etaSource 'velocity').
+    //   - 'historical': estimación previa cross-ola (ola nueva sin ritmo propio).
+    //   - 'insufficient': ni ritmo ni histórico → leyenda "sin datos suficientes".
+    // Literales inline: esta función se serializa vía `.toString()` al cliente y
+    // no puede referenciar constantes de módulo (ReferenceError en el eval).
+    const velocityPctPerIssuePerMin = hasVelocity ? vel.velocityPctPerMin : null;
+    const velocitySource = !hasVelocity
+        ? 'insufficient'
+        : (data.etaSource === 'historical' ? 'historical' : 'measured');
+    return { avancePct, velocityPctPerHour, etaRemainingMin, etaFromVelocity, hasVelocity, velocityState, throughputPerDay, throughputState, velocityPctPerIssuePerMin, velocitySource };
 }
 
 /**
@@ -221,12 +235,14 @@ function missionOlaEtaClientScript() {
       if(velAnnot){ var vlStr = posPct + '%'; if(velAnnot.style.left !== vlStr) velAnnot.style.left = vlStr; }
       var vv = document.getElementById('mission-vel-value');
       if(vv){
-        // #4450 (G-UX-1) — la celda 🚀 VELOCIDAD expresa THROUGHPUT de entrega
-        // en issues por dia (no porcentaje/hora). Medido -> "N.N issues/día"
-        // (0.0 legitimo); sin datos suficientes -> leyenda explicita, NUNCA un
-        // "—" mudo ni un 0 enganoso (G-UX-3). Render XSS-safe (createTextNode, R-1).
-        if(m.throughputState === 'measured' && m.throughputPerDay !== null){
-          setMzValueUnit(vv, m.throughputPerDay.toFixed(1), 'issues/día');
+        // #4532 (G-UX-1) — la celda 🚀 VELOCIDAD expresa el % de avance por issue
+        // por minuto (metrica canonica del issue), reemplazando al throughput de
+        // entrega (que se inflaba al resetearse el comienzo de la ola). Medido o
+        // estimado historico -> "N.NN %/issue·min"; sin datos suficientes ->
+        // leyenda explicita, nunca un "—" mudo ni un 0 enganoso. Render XSS-safe
+        // (createTextNode, R-1).
+        if(m.velocityPctPerIssuePerMin !== null && Number.isFinite(m.velocityPctPerIssuePerMin)){
+          setMzValueUnit(vv, m.velocityPctPerIssuePerMin.toFixed(2), '%/issue·min');
         } else {
           while(vv.firstChild) vv.removeChild(vv.firstChild);
           vv.appendChild(document.createTextNode('sin datos suficientes'));

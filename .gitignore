@@ -153,6 +153,16 @@ scripts/planner-plan.json
 # (best-effort, se regenera; contadores por provider, sin secrets). NO versionar.
 .pipeline/commander-balancer-state.json
 .pipeline/wave-progress.jsonl
+# #4532 — Estado de runtime de la ola (identidad + planificacion). SE SACA del
+# control de versiones: estaba trackeado y cada `git checkout agent/<rama>` /
+# `reset --hard main` del pipeline lo pisaba con el template vacio commiteado,
+# borrando la ola activa y forzando un re-seed que reseteaba comienzo/numero/
+# nombre. Se versiona `waves.json.template` en su lugar; el bootstrap
+# (`ensureWavesFile`) lo copia solo si el runtime no existe.
+.pipeline/waves.json
+# #4532 — Serie historica de velocidad cross-ola (%/issue/min). Efimera por
+# maquina, se regenera; una ola nueva hereda la estimacion previa desde aca.
+.pipeline/wave-velocity-history.jsonl
 .pipeline/commander-presence.json
 .pipeline/.commander-presence.json.*.tmp
 .pipeline/node_modules/
