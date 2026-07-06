@@ -128,9 +128,37 @@ test('R-2: el payload sólo expone agregados de la ola, sin metadata interna', (
     const allowed = new Set([
         'ready', 'issues', 'totalP50', 'totalP75', 'totalP90', 'byIssue',
         'concurrencyUsed', 'bySize', 'rebounceRate', 'velocityETA', 'etaSource',
-        'totalPct', 'throughputPerDay', 'throughputState', 'refreshedAt',
+        'totalPct', 'throughputPerDay', 'throughputState', 'series', 'refreshedAt',
     ]);
     for (const k of Object.keys(out)) {
         assert.ok(allowed.has(k), `campo inesperado en el payload: ${k}`);
     }
+});
+
+test('#4500 — serie temporal: whitelist numérico {ts,avancePct}, degrada a [] sin cache', () => {
+    // Sin serie en el cache → array vacío (placeholder cliente), nunca undefined.
+    const sinSerie = olaETARoute({ olaETA: { issues: [], etaSource: 'fallback' } });
+    assert.deepEqual(sinSerie.series, [], 'sin serie → []');
+
+    // Con serie: sólo puntos numéricos finitos, y sólo las claves ts/avancePct.
+    const out = olaETARoute({
+        olaETA: {
+            issues: [1],
+            etaSource: 'fallback',
+            series: [
+                { ts: 1000, avancePct: 10 },
+                { ts: 2000, avancePct: 25, waveKey: 7, _leak: 'x' }, // ruido a descartar
+                { ts: NaN, avancePct: 30 },                          // ts no finito → fuera
+                { ts: 3000, avancePct: 'x' },                        // avance no numérico → fuera
+            ],
+        },
+    });
+    assert.deepEqual(out.series, [
+        { ts: 1000, avancePct: 10 },
+        { ts: 2000, avancePct: 25 },
+    ], 'sólo puntos finitos y sólo ts/avancePct (sin waveKey ni _leak)');
+
+    // Serie no-array en el cache → [] (defensivo).
+    const basura = olaETARoute({ olaETA: { issues: [], etaSource: 'fallback', series: 'nope' } });
+    assert.deepEqual(basura.series, []);
 });
