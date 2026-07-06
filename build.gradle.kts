@@ -75,6 +75,7 @@ tasks.register("verifyNoLegacyStrings") {
         val rootDir = project.rootDir
         val includeExtensions = setOf("kt", "kts", "java")
         val excludedSegments = setOf(
+            ".claude",
             ".git",
             ".gradle",
             "build",

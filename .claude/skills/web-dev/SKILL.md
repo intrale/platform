@@ -283,7 +283,18 @@ Si el argumento NO es un numero, saltar este paso — `/delivery` usara fallback
 Antes de salir (después de escribir tu resultado), generá el artefacto en el root issue-scoped:
 
 - **Path:** `.pipeline/assets/docs/{issue}/`
-- **Formato:** Markdown o PDF (resumen del cambio)
+- **Formato:** Markdown o PDF (nota de implementación web)
+
+El contenido mínimo del `md` es obligatorio. Usá secciones o bullets para que el entregable sea escaneable en auditoría y Telegram:
+
+- Pantallas/componentes Compose tocados.
+- PWA/manifest: cambios realizados o confirmación de que no aplica.
+- Browser APIs usadas o confirmación de que no aplica.
+- Bundling/build: impacto en Webpack/Wasm/PWA build y comandos ejecutados.
+- Desvíos vs. receta del Arquitecto: ninguno, o detalle concreto del desvío.
+- Cómo se probó: comandos, smoke manual o motivo verificable si no hubo ejecución.
+
+Si el issue no toca superficie web, igual persistí el entregable con una excepción explícita: explicá por qué no aplica, en una frase concreta y verificable. No cierres en silencio ni uses un stub genérico tipo `N/A`.
 
 Usá el helper compartido, que centraliza validación de `issue` (CA-5), redacción de secrets (CA-6) y sanitización SVG (CA-8) — **no reimplementes estas reglas**:
 
