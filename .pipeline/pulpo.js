@@ -10199,7 +10199,16 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
             // plano; `extractFallbackReply` saca SÓLO el/los `agent_message`
             // finales para que a Telegram llegue un único mensaje conversacional.
             const proc = spawn(safe.spawnDef.cmd, safe.spawnDef.args, safe.spawnDef.spawnOpts);
-            proc.stdin && proc.stdin.end && proc.stdin.end();
+            // #4529 — el payload (system foldeado + mensaje) viaja por STDIN, no
+            // por argv (evita `spawn ENAMETOOLONG` en Windows con contexto/historial
+            // grande). Escribimos `stdinPayload` y cerramos stdin para que el
+            // provider (codex `-`, gemini `-p ''`, runners `--prompt -`) lo lea.
+            if (proc.stdin) {
+              try {
+                if (safe.spawnDef.stdinPayload != null) proc.stdin.write(safe.spawnDef.stdinPayload);
+              } catch { /* best-effort: el provider errorará accionable si no lee stdin */ }
+              try { proc.stdin.end(); } catch {}
+            }
             let stdout = '';
             let stderr = '';
             const startNon = Date.now();

@@ -76,6 +76,35 @@ function _setLauncherForTesting(launcher) { cachedLauncher = launcher; }
 function _resetLauncherCacheForTesting() { cachedLauncher = null; }
 
 // -----------------------------------------------------------------------------
+// foldCodexPayload — lee el system file y lo foldea con el prompt del usuario.
+//
+// codex exec NO tiene flag de system prompt — `--system` no existe en el CLI
+// (antes lo pasábamos y codex lo descartaba/erroraba, perdiendo la persona del
+// Commander). Para que la persona/identidad tenga efecto, foldeamos el contenido
+// del system file al INICIO del prompt. Este payload va SIEMPRE por stdin (ver
+// #4529): pasarlo por argv reventaba el límite de `CreateProcess` de Windows
+// (~32K) con `spawn ENAMETOOLONG` cuando el system prompt + historial crecía.
+// -----------------------------------------------------------------------------
+function foldCodexPayload(args, env, fsImpl) {
+    const _fs = fsImpl || fs;
+    let userPrompt = null;
+    let systemFile = null;
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '-p') { userPrompt = args[i + 1]; i++; }
+        else if (a === '--system-prompt-file') { systemFile = args[i + 1]; i++; }
+    }
+    let systemText = '';
+    if (systemFile && typeof systemFile === 'string') {
+        try { systemText = _fs.readFileSync(systemFile, 'utf8'); } catch { systemText = ''; }
+    }
+    const promptText = typeof userPrompt === 'string' ? userPrompt : '';
+    return systemText.trim()
+        ? `${systemText.trim()}\n\n---\n\n${promptText}`
+        : promptText;
+}
+
+// -----------------------------------------------------------------------------
 // translateClaudeArgsToCodex — extrae prompt y system file del args estilo
 // Claude CLI y arma el argv de Codex. Args desconocidos se descartan
 // silenciosamente (el shape de stream-json/--verbose/--permission-mode no
@@ -86,24 +115,16 @@ function _resetLauncherCacheForTesting() { cachedLauncher = null; }
 //
 // Contrato de salida (lo que Codex CLI acepta):
 //   ['exec', '--json', '--skip-git-repo-check', '-C', cwd,
-//    '-m', model, '--system', systemFile?, userPrompt]
+//    '--dangerously-bypass-approvals-and-sandbox', '-m', model?, '-']
+//
+// #4529 — El prompt (system foldeado + mensaje) YA NO va como argumento
+// posicional: se pasa `-` para que codex lea las instrucciones por STDIN
+// (`codex exec --help`: "If not provided as an argument (or if `-` is used),
+// instructions are read from stdin"). Esto evita `spawn ENAMETOOLONG` en Windows
+// cuando el payload supera el límite de la línea de comando (~32K). El payload
+// real lo devuelve `buildSpawn` en `stdinPayload`.
 // -----------------------------------------------------------------------------
 function translateClaudeArgsToCodex(args, env, cwd) {
-    let userPrompt = null;
-    let systemFile = null;
-    for (let i = 0; i < args.length; i++) {
-        const a = args[i];
-        if (a === '-p') {
-            userPrompt = args[i + 1];
-            i++;
-        } else if (a === '--system-prompt-file') {
-            systemFile = args[i + 1];
-            i++;
-        }
-        // Otros flags (--output-format, --verbose, --permission-mode,
-        // --append-system-prompt, etc.) no tienen equivalente directo en
-        // codex exec; los descartamos.
-    }
     // Modelo: env CODEX_MODEL si fue explicitado, sino dejamos al CLI elegir
     // su default (varía según modo de auth: con OAuth ChatGPT Plus es `gpt-5`,
     // con API key paga acepta `gpt-5-codex`). El pulpo inyecta CODEX_MODEL via
@@ -120,24 +141,8 @@ function translateClaudeArgsToCodex(args, env, cwd) {
     // el fallback degrada por proveedor, que es justo lo que NO queremos.
     out.push('--dangerously-bypass-approvals-and-sandbox');
     if (model) out.push('-m', model);
-    // codex exec NO tiene flag de system prompt — `--system` no existe en el CLI
-    // (antes lo pasábamos y codex lo descartaba/erroraba, perdiendo la persona
-    // del Commander y dejando su propia identidad de "agente de código" seca y
-    // técnica). Para que la persona/identidad tenga efecto, foldeamos el
-    // contenido del system file al INICIO del prompt, igual que el adapter de
-    // gemini. Así la personalidad del Commander no cambia por usar codex.
-    let systemText = '';
-    if (systemFile && typeof systemFile === 'string') {
-        try { systemText = fs.readFileSync(systemFile, 'utf8'); } catch { systemText = ''; }
-    }
-    const promptText = typeof userPrompt === 'string' ? userPrompt : '';
-    const folded = systemText.trim()
-        ? `${systemText.trim()}\n\n---\n\n${promptText}`
-        : promptText;
-    // Codex toma el prompt como argumento posicional final. Si no vino prompt
-    // (caso patológico), pasamos string vacío para que el CLI tire error
-    // accionable en lugar de quedar colgado leyendo stdin.
-    out.push(folded);
+    // `-` = leer las instrucciones por stdin (ver comentario del header).
+    out.push('-');
     return out;
 }
 
@@ -150,7 +155,10 @@ function translateClaudeArgsToCodex(args, env, cwd) {
 function buildSpawn({ args, cwd, env, interactive_supported }) {
     const launcher = getLauncher();
     const codexArgs = translateClaudeArgsToCodex(args || [], env || {}, cwd || process.cwd());
-    const stdin = interactive_supported === true ? 'pipe' : 'ignore';
+    // #4529 — el prompt (system foldeado + mensaje) viaja por STDIN, nunca por
+    // argv. stdin SIEMPRE 'pipe' para poder escribirlo; el caller (agent-launcher /
+    // pulpo commander / sherlock) escribe `stdinPayload` y cierra stdin.
+    const stdinPayload = foldCodexPayload(args || [], env || {});
     return {
         cmd: launcher.cmd,
         args: [...launcher.prefixArgs, ...codexArgs],
@@ -159,9 +167,13 @@ function buildSpawn({ args, cwd, env, interactive_supported }) {
         // spawn-exit. Revela qué tier muere (native-exe / node-wrapper-js /
         // cmd-shim / path-fallback) — los shell:true son los más sospechosos.
         kind: launcher.kind,
+        // #4529 — payload grande por stdin (paridad con el path primario de
+        // Anthropic, que escribe el system prompt a archivo). El caller DEBE
+        // hacer `child.stdin.write(stdinPayload); child.stdin.end();`.
+        stdinPayload,
         spawnOpts: {
             cwd,
-            stdio: [stdin, 'pipe', 'pipe'],
+            stdio: ['pipe', 'pipe', 'pipe'],
             detached: false,
             shell: launcher.shell,
             windowsHide: true,
@@ -365,6 +377,7 @@ module.exports = {
     // exports internos para tests
     _detectLauncherFresh: detectLauncher,
     _translateClaudeArgsToCodex: translateClaudeArgsToCodex,
+    _foldCodexPayload: foldCodexPayload,
     _extractErrorType,
     _setLauncherForTesting,
     _resetLauncherCacheForTesting,

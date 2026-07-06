@@ -71,14 +71,25 @@ function _resetLauncherCacheForTesting() { cachedLauncher = null; }
 //   ['-p', userPrompt, '--system-prompt-file', systemFile, ...]
 //
 // Contrato de salida (lo que entiende el runner):
-//   ['--model', model?, '--system-file', systemFile?, '--prompt', userPrompt]
+//   ['--model', model?, '--system-file', systemFile?, '--prompt', '-']
+//
+// #4529 — El `--prompt` YA NO lleva el texto inline: se pasa `--prompt -` y el
+// runner lee el prompt del usuario por STDIN. El system prompt sigue por
+// `--system-file` (es un PATH). Evita `spawn ENAMETOOLONG` en Windows con
+// prompts grandes. El texto real lo devuelve `buildSpawn` en `stdinPayload`.
 // -----------------------------------------------------------------------------
+function _extractUserPrompt(args) {
+    for (let i = 0; i < args.length; i++) {
+        if (args[i] === '-p') return typeof args[i + 1] === 'string' ? args[i + 1] : '';
+    }
+    return '';
+}
+
 function translateClaudeArgsToNvidia(args, env) {
-    let userPrompt = null;
     let systemFile = null;
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
-        if (a === '-p') { userPrompt = args[i + 1]; i++; }
+        if (a === '-p') { i++; } // el valor va por stdin (ver header)
         else if (a === '--system-prompt-file') { systemFile = args[i + 1]; i++; }
         // Otros flags no aplican al runner REST; los descartamos.
     }
@@ -87,7 +98,8 @@ function translateClaudeArgsToNvidia(args, env) {
     const out = [];
     if (model) out.push('--model', model);
     if (systemFile && typeof systemFile === 'string') out.push('--system-file', systemFile);
-    out.push('--prompt', typeof userPrompt === 'string' ? userPrompt : '');
+    // `-` = leer el prompt por stdin (ver header).
+    out.push('--prompt', '-');
     return out;
 }
 
@@ -99,13 +111,16 @@ function translateClaudeArgsToNvidia(args, env) {
 function buildSpawn({ args, cwd, env, interactive_supported }) {
     const launcher = getLauncher();
     const nvidiaArgs = translateClaudeArgsToNvidia(args || [], env || {});
-    const stdin = interactive_supported === true ? 'pipe' : 'ignore';
+    // #4529 — prompt del usuario por STDIN, nunca por argv.
+    const stdinPayload = _extractUserPrompt(args || []);
     return {
         cmd: launcher.cmd,
         args: [...launcher.prefixArgs, ...nvidiaArgs],
+        kind: launcher.kind,
+        stdinPayload,
         spawnOpts: {
             cwd,
-            stdio: [stdin, 'pipe', 'pipe'],
+            stdio: ['pipe', 'pipe', 'pipe'],
             detached: false,
             shell: launcher.shell,
             windowsHide: true,

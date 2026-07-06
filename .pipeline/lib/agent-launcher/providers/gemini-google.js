@@ -82,31 +82,27 @@ function _resetLauncherCacheForTesting() { cachedLauncher = null; }
 //   ['-p', userPrompt, '--system-prompt-file', systemFile, ...]
 //
 // Contrato de salida (lo que Gemini CLI acepta):
-//   ['--skip-trust', '-o', 'json', '-m', model?, '-p', composedPrompt]
+//   ['--skip-trust', '-o', 'json', '-m', model?, '-p', '']
 //
-// Gemini NO tiene flag de system prompt (sólo context files GEMINI.md). El
-// contenido del system file se foldea al inicio del prompt para preservar las
-// instrucciones del sistema. Si el archivo no se puede leer, seguimos con el
-// prompt del usuario solo (best-effort, no crasheamos el spawn).
+// #4529 — El prompt (system foldeado + mensaje) YA NO va en el valor de `-p`:
+// se pasa `-p ''` (vacío) y el payload real se pipea por STDIN. Gemini en modo
+// headless "appends the `-p` prompt to input on stdin (if any)", así que con
+// `-p ''` el prompt efectivo es exactamente lo que llega por stdin. Pasar `-p`
+// (aunque vacío) es lo que DISPARA el modo non-interactive/headless (verificado
+// empíricamente: `-p ''` no cuelga esperando TTY, entra headless y lee stdin).
+// Esto evita `spawn ENAMETOOLONG` en Windows cuando el system prompt + historial
+// supera el límite de la línea de comando (~32K). El payload lo devuelve
+// `buildSpawn` en `stdinPayload`.
 // -----------------------------------------------------------------------------
-function translateClaudeArgsToGemini(args, env, fsImpl) {
+function foldGeminiPayload(args, env, fsImpl) {
     const _fs = fsImpl || fs;
     let userPrompt = null;
     let systemFile = null;
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
-        if (a === '-p') {
-            userPrompt = args[i + 1];
-            i++;
-        } else if (a === '--system-prompt-file') {
-            systemFile = args[i + 1];
-            i++;
-        }
-        // Otros flags (--output-format, --verbose, --permission-mode,
-        // --append-system-prompt, etc.) no tienen equivalente directo en
-        // gemini headless; los descartamos.
+        if (a === '-p') { userPrompt = args[i + 1]; i++; }
+        else if (a === '--system-prompt-file') { systemFile = args[i + 1]; i++; }
     }
-
     // Foldear el system file al prompt (Gemini no tiene --system).
     let prompt = typeof userPrompt === 'string' ? userPrompt : '';
     if (systemFile && typeof systemFile === 'string') {
@@ -116,7 +112,10 @@ function translateClaudeArgsToGemini(args, env, fsImpl) {
             prompt = `${systemText.trim()}\n\n${prompt}`;
         }
     }
+    return prompt;
+}
 
+function translateClaudeArgsToGemini(args, env) {
     // Modelo: env GEMINI_MODEL si fue explicitado, sino dejamos al CLI elegir
     // su default (con OAuth gratuito el main es `gemini-3-flash-preview` y el
     // router `gemini-3.1-flash-lite`). El pulpo inyecta GEMINI_MODEL via
@@ -124,7 +123,8 @@ function translateClaudeArgsToGemini(args, env, fsImpl) {
     const model = env && env.GEMINI_MODEL;
     const out = ['--skip-trust', '-o', 'json'];
     if (model) out.push('-m', model);
-    out.push('-p', prompt);
+    // `-p ''` dispara headless; el prompt real llega por stdin (ver header).
+    out.push('-p', '');
     return out;
 }
 
@@ -137,13 +137,18 @@ function translateClaudeArgsToGemini(args, env, fsImpl) {
 function buildSpawn({ args, cwd, env, interactive_supported }) {
     const launcher = getLauncher();
     const geminiArgs = translateClaudeArgsToGemini(args || [], env || {});
-    const stdin = interactive_supported === true ? 'pipe' : 'ignore';
+    // #4529 — payload (system foldeado + mensaje) por STDIN, nunca por argv.
+    // stdin SIEMPRE 'pipe'; el caller escribe `stdinPayload` y cierra stdin.
+    const stdinPayload = foldGeminiPayload(args || [], env || {});
     return {
         cmd: launcher.cmd,
         args: [...launcher.prefixArgs, ...geminiArgs],
+        kind: launcher.kind,
+        // #4529 — payload grande por stdin (paridad con el path primario).
+        stdinPayload,
         spawnOpts: {
             cwd,
-            stdio: [stdin, 'pipe', 'pipe'],
+            stdio: ['pipe', 'pipe', 'pipe'],
             detached: false,
             shell: launcher.shell,
             windowsHide: true,
@@ -297,6 +302,7 @@ module.exports = {
     // exports internos para tests
     _detectLauncherFresh: detectLauncher,
     _translateClaudeArgsToGemini: translateClaudeArgsToGemini,
+    _foldGeminiPayload: foldGeminiPayload,
     _parseGeminiJson,
     _extractErrorTokens,
     _setLauncherForTesting,

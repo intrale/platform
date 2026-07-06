@@ -38,7 +38,17 @@ function fakeFs(existingPaths, files = {}) {
 function fakeSpawn() {
     const calls = [];
     const fake = (cmd, args, opts) => {
-        const handle = { cmd, args, opts, _isFakeChild: true };
+        // #4529 — stub de stdin que captura lo que el launcher pipea al provider
+        // (los providers no-Anthropic reciben el prompt por stdin, no por argv).
+        let stdinData = '';
+        const stdin = {
+            write: (chunk) => { stdinData += String(chunk); return true; },
+            end: () => {},
+        };
+        const handle = {
+            cmd, args, opts, stdin, _isFakeChild: true,
+            get stdinData() { return stdinData; },
+        };
         calls.push(handle);
         return handle;
     };
@@ -273,7 +283,11 @@ test('launchAgent con provider openai-codex spawnea el codex CLI con args traduc
     assert.deepEqual(call.args.slice(0, 3), ['exec', '--json', '--skip-git-repo-check']);
     assert.ok(call.args.includes('-m'));
     assert.ok(call.args.includes('gpt-5-codex'));
-    assert.ok(call.args.includes('probe'));
+    // #4529 — el prompt YA NO va por argv: el posicional es `-` (leer stdin) y el
+    // prompt 'probe' viaja por stdin (evita spawn ENAMETOOLONG en Windows).
+    assert.equal(call.args[call.args.length - 1], '-');
+    assert.ok(!call.args.includes('probe'));
+    assert.ok(call.stdinData.includes('probe'));
     // Paridad de permisos con Claude (`bypassPermissions`): codex debe correr
     // sin sandbox ni aprobaciones para no chocar con "no tengo permisos".
     assert.ok(call.args.includes('--dangerously-bypass-approvals-and-sandbox'));
@@ -283,17 +297,18 @@ test('launchAgent con provider openai-codex spawnea el codex CLI con args traduc
 });
 
 // -----------------------------------------------------------------------------
-// 6a-bis. translateClaudeArgsToCodex: el contenido del system file se foldea
-//         al INICIO del prompt (codex no tiene `--system`), y el bypass de
-//         sandbox/aprobaciones está siempre presente (paridad con Claude).
+// 6a-bis. #4529 — codex NO foldea el system prompt en argv: el posicional es `-`
+//         (leer stdin) y el payload folded (persona + mensaje) lo devuelve
+//         `_foldCodexPayload`. El bypass de sandbox/aprobaciones sigue presente.
 // -----------------------------------------------------------------------------
-test('codex foldea el system prompt al inicio del prompt y bypassa el sandbox', () => {
+test('codex pasa `-` como posicional y foldea persona+mensaje para stdin (#4529)', () => {
     const realFs = require('node:fs');
     const os = require('node:os');
     const sysFile = path.join(os.tmpdir(), `codex-sys-${process.pid}.md`);
     realFs.writeFileSync(sysFile, 'Sos el Commander. Hablá natural.', 'utf8');
     try {
-        const out = PROVIDERS['openai-codex']._translateClaudeArgsToCodex(
+        const codex = PROVIDERS['openai-codex'];
+        const out = codex._translateClaudeArgsToCodex(
             ['-p', 'Hola, cómo estamos?', '--system-prompt-file', sysFile],
             { CODEX_MODEL: 'gpt-5-codex' },
             '/repo/platform',
@@ -302,10 +317,16 @@ test('codex foldea el system prompt al inicio del prompt y bypassa el sandbox', 
         assert.ok(out.includes('--dangerously-bypass-approvals-and-sandbox'));
         // `--system` jamás se pasa como flag.
         assert.ok(!out.includes('--system'));
-        // El prompt posicional final foldea persona + mensaje.
-        const prompt = out[out.length - 1];
-        assert.ok(prompt.startsWith('Sos el Commander. Hablá natural.'));
-        assert.ok(prompt.includes('Hola, cómo estamos?'));
+        // El posicional final es `-` (leer stdin), NO el prompt folded.
+        assert.equal(out[out.length - 1], '-');
+        assert.ok(!out.some((a) => typeof a === 'string' && a.includes('Sos el Commander')));
+        // El payload folded (persona + mensaje) sale por el helper de stdin.
+        const folded = codex._foldCodexPayload(
+            ['-p', 'Hola, cómo estamos?', '--system-prompt-file', sysFile],
+            { CODEX_MODEL: 'gpt-5-codex' },
+        );
+        assert.ok(folded.startsWith('Sos el Commander. Hablá natural.'));
+        assert.ok(folded.includes('Hola, cómo estamos?'));
     } finally {
         try { realFs.unlinkSync(sysFile); } catch {}
     }
@@ -360,8 +381,12 @@ test('launchAgent con provider gemini-google spawnea el gemini CLI con args trad
     assert.deepEqual(call.args.slice(1, 4), ['--skip-trust', '-o', 'json']);
     assert.ok(call.args.includes('-m'));
     assert.ok(call.args.includes('gemini-3-flash-preview'));
+    // #4529 — `-p ''` dispara headless; el prompt real ('probe') va por stdin.
     assert.ok(call.args.includes('-p'));
-    assert.ok(call.args.includes('probe'));
+    const pIdx = call.args.indexOf('-p');
+    assert.equal(call.args[pIdx + 1], '');
+    assert.ok(!call.args.includes('probe'));
+    assert.ok(call.stdinData.includes('probe'));
 });
 
 // -----------------------------------------------------------------------------
@@ -561,7 +586,11 @@ test('launchAgent con provider nvidia-nim spawnea el runner Node con args traduc
     assert.ok(call.args.includes('--system-file'));
     assert.ok(call.args.includes('/tmp/sys.md'));
     assert.ok(call.args.includes('--prompt'));
-    assert.ok(call.args.includes('probe'));
+    // #4529 — `--prompt -` (marcador stdin); el prompt real ('probe') va por stdin.
+    const pIdx = call.args.indexOf('--prompt');
+    assert.equal(call.args[pIdx + 1], '-');
+    assert.ok(!call.args.includes('probe'));
+    assert.ok(call.stdinData.includes('probe'));
     // El flag --output-format (estilo Claude) se descarta en la traducción.
     assert.ok(!call.args.includes('--output-format'));
 });
@@ -671,7 +700,11 @@ test('launchAgent con provider cerebras spawnea el runner Node con args traducid
     assert.ok(call.args.includes('--system-file'));
     assert.ok(call.args.includes('/tmp/sys.md'));
     assert.ok(call.args.includes('--prompt'));
-    assert.ok(call.args.includes('probe'));
+    // #4529 — `--prompt -` (marcador stdin); el prompt real ('probe') va por stdin.
+    const pIdx = call.args.indexOf('--prompt');
+    assert.equal(call.args[pIdx + 1], '-');
+    assert.ok(!call.args.includes('probe'));
+    assert.ok(call.stdinData.includes('probe'));
     // El flag --output-format (estilo Claude) se descarta en la traducción.
     assert.ok(!call.args.includes('--output-format'));
 });

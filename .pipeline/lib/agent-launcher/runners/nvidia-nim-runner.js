@@ -58,6 +58,26 @@ function parseArgv(argv) {
 }
 
 // -----------------------------------------------------------------------------
+// readStdin — lee TODO stdin como string (#4529). El adapter pasa `--prompt -`
+// y pipea el prompt real por stdin para evitar `spawn ENAMETOOLONG` en Windows
+// cuando el prompt es grande. Resuelve '' si stdin viene vacío/cerrado.
+// -----------------------------------------------------------------------------
+function readStdin() {
+    return new Promise((resolve) => {
+        let data = '';
+        try {
+            const stdin = process.stdin;
+            if (!stdin || stdin.readable === false) { resolve(''); return; }
+            stdin.setEncoding('utf8');
+            stdin.on('data', (chunk) => { data += chunk; });
+            stdin.on('end', () => resolve(data));
+            stdin.on('error', () => resolve(data));
+            stdin.resume();
+        } catch { resolve(''); }
+    });
+}
+
+// -----------------------------------------------------------------------------
 // resolveApiKey — env primero (lo hidrata el pulpo); fallback al loader canónico.
 // -----------------------------------------------------------------------------
 function resolveApiKey() {
@@ -160,6 +180,10 @@ function normalizeError(status, json) {
 
 async function main() {
     const parsed = parseArgv(process.argv.slice(2));
+    // #4529 — `--prompt -` (o `--prompt` ausente) ⇒ leer el prompt por stdin.
+    if (parsed.prompt === '-' || parsed.prompt == null) {
+        parsed.prompt = await readStdin();
+    }
     const apiKey = resolveApiKey();
     if (!apiKey) {
         process.stdout.write(JSON.stringify({
@@ -195,4 +219,4 @@ if (require.main === module) {
     main();
 }
 
-module.exports = { parseArgv, buildMessages, normalizeError, resolveApiKey };
+module.exports = { parseArgv, buildMessages, normalizeError, resolveApiKey, readStdin };
