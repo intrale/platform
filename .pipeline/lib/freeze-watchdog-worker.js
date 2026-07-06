@@ -24,6 +24,7 @@ const INFLIGHT_NAMES = [
   [4, 'prInfo'],
   [8, 'olaETA'],
   [16, 'titleRefresh'],
+  [32, 'logServe'],
 ];
 
 const { sab, thresholdMs, bumpMs, logDir } = workerData;

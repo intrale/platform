@@ -707,6 +707,22 @@ let _stateRefreshInflight = false;  // evita solapar cómputos pesados
 let _stateRefreshTimer = null;      // handle del setInterval (para clearInterval)
 let _loopMonitor = null;            // #4131-followup — handle del monitor de lag del event loop
 let _freezeWatchdog = null;         // #4131-followup-2 — handle del watchdog externo de freeze
+let _logServeInflight = false;      // #4521 — servido de logs en vuelo (lectura de disco)
+// #4521 — tope de bytes leídos del disco para el preview inicial del SSE de
+// logs. Cubre de sobra las últimas 1000 líneas de un log típico sin leer el
+// archivo entero (que en logs multi-MB clavaba el event loop varios segundos).
+const SSE_INIT_TAIL_BYTES = Number(process.env.DASHBOARD_SSE_INIT_TAIL_BYTES) || (512 * 1024);
+
+// #4521 — marca el servido de logs como en vuelo y lo PUBLICA sincrónicamente al
+// SAB del freeze-watchdog. La publicación inmediata es clave: el latido del
+// watchdog corre cada 200ms, pero una lectura de disco que se clave arranca y
+// congela el loop dentro del mismo tick, sin latido intermedio; sin publicar en
+// el acto, el freeze se reportaría como "ninguno-inflight". Best-effort: si el
+// watchdog aún no arrancó, sólo togglea el flag (lo tomará el próximo latido).
+function _markLogServe(on) {
+  _logServeInflight = on;
+  try { if (_freezeWatchdog && _freezeWatchdog.publishInflight) _freezeWatchdog.publishInflight(); } catch {}
+}
 // #4126 — cadencia configurable por env para que los tests puedan forzar un
 // worker casi-siempre-activo y verificar que /api/health no se cuelga.
 const STATE_REFRESH_MS = Number(process.env.DASHBOARD_STATE_REFRESH_MS) || 3000;
@@ -11534,20 +11550,28 @@ const server = http.createServer((req, res) => {
       // logs multi-MB (>4MB) en disco; leerlos enteros con readFileSync es un
       // vector de DoS por memoria. Servimos la cola capeada (config
       // logs_history.max_bytes_per_log) con un marcador si se truncó.
-      if (isPdf) {
-        res.end(fs.readFileSync(logPath));
-      } else {
-        let raw;
-        try {
-          const cap = (agentLogHistory && agentLogHistory.resolveRetentionConfig(
-            (loadConfig() || {}).logs_history)).max_bytes_per_log;
-          raw = agentLogHistory
-            ? agentLogHistory.readLogCapped(logPath, cap).text
-            : fs.readFileSync(logPath, 'utf8');
-        } catch {
-          raw = fs.readFileSync(logPath, 'utf8');
+      // #4521 — marcamos el servido como en vuelo: son lecturas de disco
+      // sincrónicas y, si una clava el loop, el freeze queda NOMBRADO (logServe)
+      // en el freeze-watchdog en vez de "operacion sync NO rastreada".
+      _markLogServe(true);
+      try {
+        if (isPdf) {
+          res.end(fs.readFileSync(logPath));
+        } else {
+          let raw;
+          try {
+            const cap = (agentLogHistory && agentLogHistory.resolveRetentionConfig(
+              (loadConfig() || {}).logs_history)).max_bytes_per_log;
+            raw = agentLogHistory
+              ? agentLogHistory.readLogCapped(logPath, cap).text
+              : fs.readFileSync(logPath, 'utf8');
+          } catch {
+            raw = fs.readFileSync(logPath, 'utf8');
+          }
+          res.end(redactLogText(raw));
         }
-        res.end(redactLogText(raw));
+      } finally {
+        _markLogServe(false);
       }
     } else {
       res.writeHead(404); res.end('Log no encontrado: ' + filename);
@@ -11576,8 +11600,24 @@ const server = http.createServer((req, res) => {
     // muestra logs heterogéneos que pueden contener AWS keys / JWT / tokens;
     // `_sanitizeLog` los redacta a `[REDACTED:...]`. Sin esto, los secrets
     // llegarían crudos al browser.
-    const content = fs.readFileSync(logPath, 'utf8');
-    const lines = content.split('\n');
+    // #4521 — leer sólo la COLA acotada, NO el archivo entero. Antes esto hacía
+    // fs.readFileSync(logPath,'utf8') del archivo COMPLETO (logs multi-MB) sólo
+    // para quedarse con las últimas 1000 líneas → clavaba el event loop varios
+    // segundos (freeze-watchdog: "operacion sync NO rastreada"). readLogCapped
+    // trae sólo los últimos SSE_INIT_TAIL_BYTES del disco; de ahí tomamos las
+    // últimas 1000 líneas. El flag logServe deja nombrado cualquier freeze.
+    _markLogServe(true);
+    let initialContent = '';
+    try {
+      initialContent = agentLogHistory
+        ? agentLogHistory.readLogCapped(logPath, SSE_INIT_TAIL_BYTES).text
+        : fs.readFileSync(logPath, 'utf8');
+    } catch {
+      initialContent = '';
+    } finally {
+      _markLogServe(false);
+    }
+    const lines = initialContent.split('\n');
     const initialLines = lines.slice(-1000).map(l => _sanitizeLog(l));
     res.write(`data: ${JSON.stringify({ type: 'init', lines: initialLines })}\n\n`);
 
@@ -13672,6 +13712,7 @@ function startListen() {
             if (_prInfoInflight) inflight.push('prInfo');
             if (_olaETARefreshInflight) inflight.push('olaETA');
             if (_titleRefreshInflight) inflight.push('titleRefresh');
+            if (_logServeInflight) inflight.push('logServe');
             const who = inflight.length ? inflight.join('+') : 'ninguno-inflight';
             log(`⚠️ event-loop STALL: lag pico ${lagMs}ms (mean ${meanMs}ms, p99 ${p99Ms}ms) — inflight: ${who}`);
           },
@@ -13697,6 +13738,7 @@ function startListen() {
             prInfo: _prInfoInflight,
             olaETA: _olaETARefreshInflight,
             titleRefresh: _titleRefreshInflight,
+            logServe: _logServeInflight,
           }),
           onLog: (line) => { try { log(line.replace(/^\[[^\]]+\]\s*/, '')); } catch {} },
         });
