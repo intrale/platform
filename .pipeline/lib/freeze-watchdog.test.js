@@ -79,7 +79,7 @@ test('logDir es obligatorio', () => {
 
 test('INFLIGHT_BITS expone los bits esperados y son potencias de 2 únicas', () => {
   const bits = Object.values(INFLIGHT_BITS);
-  const expected = ['stateSnapshot', 'procStatus', 'prInfo', 'olaETA', 'titleRefresh'];
+  const expected = ['stateSnapshot', 'procStatus', 'prInfo', 'olaETA', 'titleRefresh', 'logServe'];
   assert.deepStrictEqual(Object.keys(INFLIGHT_BITS), expected);
   // Únicos y potencias de 2 (para combinarse como bitmask sin colisión).
   assert.strictEqual(new Set(bits).size, bits.length);
