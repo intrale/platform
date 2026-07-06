@@ -938,6 +938,16 @@ function spawnCodexComplete({
             });
         }
 
+        // #4529 — codex lee el prompt (system foldeado + mensaje) por STDIN
+        // (buildSpawn pasa `-` como posicional y devuelve `stdinPayload`). Sin
+        // esto codex quedaría colgado esperando stdin. Escribimos y cerramos.
+        if (spawnSpec.stdinPayload != null && child.stdin && typeof child.stdin.write === 'function') {
+            try {
+                child.stdin.write(spawnSpec.stdinPayload);
+                child.stdin.end();
+            } catch { /* best-effort: el close/timeout resuelve igual */ }
+        }
+
         let stdoutBuf = Buffer.alloc(0);
         let stderrBuf = Buffer.alloc(0);
         let truncated = false;
