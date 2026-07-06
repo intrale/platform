@@ -75,16 +75,23 @@ a { color: inherit; text-decoration: none; }
 a:hover { color: var(--in-accent); }
 
 /* ──────────────── Header ──────────────── */
+/* #4531 — Una sola fila. La identidad (marca + selector) queda a la izquierda y
+   la bandeja de salud (build · CPU/RAM · pulpo · reloj) se empuja a la derecha
+   con margin-left:auto. `flex-wrap` se elimina para que NO se parta en dos filas
+   (la 2da fila pisaba el banner de la ola). En anchos chicos degrada ocultando
+   el subtítulo/estado del selector (ver media query más abajo), no envolviendo. */
 .in-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 18px 28px;
-  background: linear-gradient(135deg, var(--in-brand-soft), transparent 60%);
+  gap: 16px;
+  padding: 0 24px;
+  background: linear-gradient(135deg, var(--in-brand-soft), transparent 58%), var(--in-bg-2);
   border-bottom: 1px solid var(--in-border);
-  height: 80px;
+  height: 72px;
 }
 .in-header-brand { display: flex; align-items: center; gap: 14px; }
+/* Divisor entre clusters (identidad ⋮ salud del sistema / marca ⋮ selector). */
+.in-divider { width: 1px; height: 38px; background: var(--in-border); flex: none; opacity: .8; }
 .in-header-logo {
   width: 36px; height: 36px; border-radius: 10px;
   background: linear-gradient(135deg, var(--in-brand), var(--in-accent));
@@ -94,34 +101,87 @@ a:hover { color: var(--in-accent); }
 }
 .in-header-title { font-size: 18px; font-weight: 600; letter-spacing: 0.3px; }
 .in-header-subtitle { font-size: 12px; color: var(--in-fg-dim); margin-top: 2px; }
+/* #4531 — La bandeja de salud del sistema es UN contenedor único a la derecha
+   (margin-left:auto) con segmentos de misma altura separados por divisores
+   internos. Reemplaza las 4 pills sueltas que se apilaban en una 2da fila. */
 .in-header-meta {
-  display: flex; align-items: center; gap: 16px;
-}
-/* Base compartida del contenedor pill (#4493): las cuatro pills del header
-   (recursos, pulpo, reloj, mode) comparten forma/tipografia/spacing para evitar
-   drift futuro. Solo tokens --in-* existentes, sin valores magicos. El
-   font-size: 13px de .in-header-meta se removio para que el tamano lo manden
-   las pills (12px) y no reintroducir drift por herencia sobre el reloj. */
-.in-pill, .in-clock {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 5px 11px;
-  border-radius: 999px;
+  margin-left: auto;
+  display: flex; align-items: stretch; flex: none;
+  height: 44px;
   background: var(--in-bg-3);
   border: 1px solid var(--in-border);
-  font-size: 12px;
-  font-weight: 500;
+  border-radius: 12px;
+  overflow: hidden;
 }
-.in-pill-ok { background: var(--in-ok-soft); border-color: var(--in-ok); color: var(--in-ok); }
-.in-pill-warn { background: var(--in-warn-soft); border-color: var(--in-warn); color: var(--in-warn); }
-.in-pill-bad { background: var(--in-bad-soft); border-color: var(--in-bad); color: var(--in-bad); }
-.in-pill-info { background: var(--in-info-soft); border-color: var(--in-info); color: var(--in-info); }
+/* Segmento de la bandeja. Antes cada uno era una .in-pill independiente; ahora
+   comparten forma/tipografía/altura y se separan por un borde a la izquierda.
+   La regla cubre tanto los segmentos nuevos (.in-seg) como los hijos directos
+   .in-pill/.in-clock de vistas todavía no migradas: así una bandeja con sólo
+   reloj (bloqueados/matriz/ops/…) también rinde como segmento limpio, sin
+   regresión visual, sin tocar cada archivo. */
+.in-seg,
+.in-header-meta > .in-pill,
+.in-header-meta > .in-clock {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 0 14px;
+  white-space: nowrap;
+  font-size: 12.5px; font-weight: 600;
+  color: var(--in-fg);
+  background: none; border: none; border-radius: 0;
+}
+.in-seg + .in-seg,
+.in-header-meta > .in-pill + .in-pill,
+.in-header-meta > .in-pill + .in-clock,
+.in-header-meta > .in-clock + .in-pill,
+.in-header-meta > .in-clock + .in-clock { border-left: 1px solid var(--in-border); }
+.in-seg-lbl, .in-mk {
+  color: var(--in-fg-dim); font-weight: 700; font-size: 9.5px;
+  letter-spacing: .6px; text-transform: uppercase;
+}
+/* Dot semántico compartido (build/recursos/pulpo). idle = gris; ok/warn/bad con
+   halo suave del token correspondiente. */
+.in-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.in-dot-idle { background: var(--in-fg-soft, #6e7681); box-shadow: 0 0 0 3px rgba(255,255,255,.05); }
+.in-dot-ok   { background: var(--in-ok);   box-shadow: 0 0 0 3px var(--in-ok-soft); }
+.in-dot-warn { background: var(--in-warn); box-shadow: 0 0 0 3px var(--in-warn-soft); }
+.in-dot-bad  { background: var(--in-bad);  box-shadow: 0 0 0 3px var(--in-bad-soft); }
 
-/* El reloj conserva SOLO la diferencia intencional (#4493): digitos
-   monoespaciados para que la pill no titile al avanzar la hora. Hereda el resto
-   del contenedor de la regla base .in-pill, .in-clock y el color --in-fg como
-   las otras pills (sin --in-fg-dim, que dentro de una pill leeria como disabled). */
-.in-clock {
-  font-family: var(--in-mono);
+/* Build: etiqueta + palabra de estado (sin "?"). */
+.in-seg-build .in-seg-val { font-weight: 800; color: var(--in-fg); }
+.in-seg-build .in-seg-sec { color: var(--in-fg-dim); font-weight: 600; font-size: 11px; }
+
+/* Recursos: CPU y RAM en métricas separadas; la que supera el cap se resalta
+   (.in-mv-hot) y el segmento gana un acento rojo, sin teñir todo el bloque. */
+.in-res-metrics { display: flex; align-items: center; gap: 9px; }
+.in-metric { display: flex; align-items: center; gap: 6px; }
+.in-mv { font-variant-numeric: tabular-nums; font-weight: 800; font-size: 12.5px; }
+.in-mv-hot { color: var(--in-bad); }
+.in-midsep { width: 1px; height: 15px; background: var(--in-border); flex: none; }
+.in-seg-res.in-seg-alert { background: linear-gradient(180deg, var(--in-bad-soft), transparent); }
+
+/* Pulpo: uptime tabular. */
+.in-seg-pulpo .in-seg-up { font-variant-numeric: tabular-nums; color: var(--in-fg); font-weight: 800; }
+
+/* Reloj: ícono + hora (mono) sobre fecha corta, consistente con el resto. */
+.in-seg-clock { gap: 9px; }
+.in-clk-ic { font-size: 13px; filter: grayscale(.1); }
+.in-clk-stack { display: flex; flex-direction: column; line-height: 1.05; }
+.in-clk-time { font-family: var(--in-mono); font-size: 13.5px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--in-fg); }
+.in-clk-date { font-size: 9.5px; color: var(--in-fg-dim); font-weight: 600; line-height: 1.2; }
+
+/* Compat: las clases de presión heredadas siguen existiendo (tests + vistas no
+   migradas). Dentro de la bandeja el color lo lleva el dot/hot, así que estas
+   sólo afectan a pills legacy fuera de .in-header-meta. */
+.in-pill-ok { color: var(--in-ok); }
+.in-pill-warn { color: var(--in-warn); }
+.in-pill-bad { color: var(--in-bad); }
+.in-pill-info { color: var(--in-info); }
+
+/* Header responsive (#4531): en anchos chicos se ocultan los textos secundarios
+   del selector y la marca para que la fila única no desborde ni envuelva. */
+@media (max-width: 960px) {
+  .mz-sub, .mz-proj-state { display: none; }
+  .in-seg { padding: 0 10px; }
 }
 
 /* ──────────────── Footer ──────────────── */
@@ -336,7 +396,9 @@ a:hover { color: var(--in-accent); }
 
 /* #4195 — Barra de marca MIZPÁ (logo + tagline + selector multiproyecto).
    Compartida para satélites migrados; consume design-tokens con fallback. */
-.in-header-brand { display: flex; align-items: center; gap: 13px; flex-wrap: wrap; }
+/* #4531 — La brand bar ya no envuelve (era una de las causas de la 2da fila):
+   es un cluster de ancho fijo a la izquierda de la fila única. */
+.in-header-brand { display: flex; align-items: center; gap: 13px; flex: none; }
 .mz-logo { width: 46px; height: 46px; border-radius: 14px; flex: none;
   background: linear-gradient(135deg, var(--brand-cyan,#34D9E0), #7C5CFF 90%);
   display: flex; align-items: center; justify-content: center; box-shadow: 0 8px 26px rgba(124,92,255,.30); }
@@ -345,8 +407,12 @@ a:hover { color: var(--in-accent); }
 .mz-name { font-size: 21px; font-weight: 800; line-height: 1; letter-spacing: 1px;
   background: linear-gradient(90deg,#bff3f6,#c9bcff); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .mz-sub { font-size: 10px; color: var(--in-fg-dim,#8A93A6); font-weight: 600; letter-spacing: 1.1px; margin-top: 5px; }
-.mz-projsel { display: flex; align-items: center; gap: 11px; background: var(--in-bg-2,#11151E);
-  border: 1px solid var(--in-border,rgba(255,255,255,.12)); border-radius: 13px; padding: 8px 9px 8px 12px; margin-left: 4px; cursor: pointer; }
+/* #4531 — Selector de proyecto como control real: hover/foco visibles y peso
+   visual más liviano (bg-3) para no competir con la marca. */
+.mz-projsel { display: flex; align-items: center; gap: 11px; background: var(--in-bg-3,#1f2937);
+  border: 1px solid var(--in-border,rgba(255,255,255,.12)); border-radius: 13px; padding: 8px 9px 8px 12px; margin-left: 4px; cursor: pointer;
+  transition: border-color .15s ease, background .15s ease; }
+.mz-projsel:hover { border-color: var(--brand-cyan,#34D9E0); }
 .mz-projsel:focus-visible { outline: 2px solid var(--in-focus,#38bdf8); outline-offset: 2px; }
 .mz-proj-avatar { width: 30px; height: 30px; border-radius: 9px; flex: none; color: #06121a; font-weight: 800; font-size: 15px;
   background: linear-gradient(135deg,#34D9E0,#5A8DEE); display: flex; align-items: center; justify-content: center; }

@@ -77,6 +77,23 @@ const { loadIconSprite, renderNavTabsSsr } = require('./nav-tabs');
 let pipelineRedesign = null;
 try { pipelineRedesign = require('./pipeline-redesign'); } catch { /* fallback inline */ }
 
+// #4531 — Bandeja de estado unificada (build · CPU/RAM · pulpo · reloj) y su
+// hidratación compartida. Require defensivo: si falta, se degrada a una bandeja
+// mínima inline (el pipeline no muere).
+let headerMeta = null;
+try { headerMeta = require('./header-meta'); } catch { /* fallback inline */ }
+function _renderTray() {
+    return headerMeta && typeof headerMeta.renderHeaderMetaSsr === 'function'
+        ? headerMeta.renderHeaderMetaSsr({ withMode: true, withBuild: true })
+        : '<div class="in-header-meta in-tray"><span class="in-seg in-pill" id="hdr-mode">…</span>'
+          + '<span class="in-seg in-clock" id="hdr-clock">…</span></div>';
+}
+function _headerPillsScript() {
+    return headerMeta && typeof headerMeta.headerPillsClientScript === 'function'
+        ? headerMeta.headerPillsClientScript()
+        : '';
+}
+
 // #3953 (EP8-H0) — Wrapper de fetchJson (banner stale) + framework de modal de
 // confirmación con preview. Mismo patrón que home.js / satellites.js.
 const { FETCH_CLIENT_JS, renderStaleBanner } = require('./fetch-client.js');
@@ -537,6 +554,7 @@ function _brandBarFallback() {
         +   '<div class="mz-logo" aria-hidden="true" title="MIZPÁ">M</div>'
         +   '<div class="mz-id"><div class="mz-name">MIZPÁ</div>'
         +     '<div class="mz-sub">«Que el Señor vigile» · atalaya de agentes</div></div>'
+        +   '<span class="in-divider" aria-hidden="true"></span>'
         +   '<div class="mz-projsel" role="button" tabindex="0" '
         +     'aria-label="Proyecto activo: Intrale, 1 de 3">'
         +     '<span class="mz-proj-avatar" aria-hidden="true">i</span>'
@@ -558,12 +576,11 @@ function renderMizpaChrome(_mission) {
     // ① Cabecera de marca (marca + selector de proyecto + pill de build) + el
     // meta de la derecha (estado del pipeline + reloj), idéntico al shell común.
     const brand = hasShared ? pipelineRedesign.renderBrandBarPipeline() : _brandBarFallback();
+    // #4531 — Bandeja unificada compartida (build · recursos · pulpo · reloj) en
+    // lugar del meta bespoke (sólo mode+reloj) que tenía esta ventana.
     const header = '<header class="in-header">'
         + brand
-        + '<div class="in-header-meta">'
-        +   '<span class="in-pill" id="hdr-mode">…</span>'
-        +   '<span class="in-clock" id="hdr-clock">…</span>'
-        + '</div>'
+        + _renderTray()
         + '</header>';
 
     // ② Cabecera de ola (tag OLA + título + métricas + bloque AVANCE).
@@ -1336,7 +1353,9 @@ function renderIssuesClientScript() {
   }
 
   async function tickHeader() {
-    setText('hdr-clock', new Date().toLocaleTimeString('es-AR'));
+    // #4531 — reloj nested vía helper compartido; build/recursos/pulpo los pinta
+    // __hydrateHeaderPills (fin del pintado bespoke de build de esta vista).
+    if (typeof window.__updateHeaderClock === 'function') window.__updateHeaderClock();
     var d = await fetchJson('/api/dash/header');
     if (!d) return;
     var modePill = document.getElementById('hdr-mode');
@@ -1348,18 +1367,7 @@ function renderIssuesClientScript() {
         modePill.classList.add('in-mode-partial'); modePill.textContent = '⏸ Parcial · ' + n + ' issues';
       } else { modePill.classList.add('in-mode-running'); modePill.textContent = '🟢 Running'; }
     }
-    var bld = document.getElementById('bld-status');
-    if (bld && d.build) {
-      var META = {
-        passing: { cls: 'in-pill-ok', t: '🟢 Build OK' }, failing: { cls: 'in-pill-bad', t: '🔴 Build roto' },
-        running: { cls: 'in-pill-warn', t: '🟡 Build corriendo' }, unknown: { cls: 'in-pill-info', t: '○ Build ?' }
-      };
-      var m = META[d.build.status] || META.unknown;
-      bld.classList.remove('in-pill-ok', 'in-pill-bad', 'in-pill-warn', 'in-pill-info');
-      bld.classList.add(m.cls);
-      var detail = [d.build.branch, d.build.commit].filter(Boolean).join(' · ');
-      bld.textContent = m.t + (detail ? ' · ' + detail : '');
-    }
+    if (typeof window.__hydrateHeaderPills === 'function') window.__hydrateHeaderPills(d);
   }
 
   async function tickIssues() {
@@ -1498,6 +1506,7 @@ ${renderStaleBanner()}
 </div>
 <script>${FETCH_CLIENT_JS}
 ${CONFIRM_MODAL_JS}
+${_headerPillsScript()}
 ${renderIssuesClientScript()}
 ${missionOlaEtaClientScript()}</script>
 </body>

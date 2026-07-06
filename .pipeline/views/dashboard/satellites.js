@@ -97,9 +97,10 @@ function _saneAllowedIssues(arr){
 }
 
 async function tickHeader(){
+    // #4531 — reloj nested vía helper compartido (independiente del slice).
+    if(typeof window.__updateHeaderClock === 'function') window.__updateHeaderClock();
     const d = await fetchJson('/api/dash/header');
     if(!d) return;
-    setText('hdr-clock', new Date().toLocaleTimeString('es-AR'));
     // #3045 — actualizar el cache compartido ANTES del render del modePill,
     // así el render del próximo tickPipeline (que puede dispararse en paralelo)
     // ya ve el estado fresco.
@@ -290,7 +291,7 @@ ${extraCss}
 <div class="satellite-frame">
   <header class="in-header">
     ${brandHtml}
-    ${renderHeaderMetaSsr({ withMode: true })}
+    ${renderHeaderMetaSsr({ withMode: true, withBuild: true })}
   </header>
   ${missionHtml}
   ${navHtml}

@@ -1580,9 +1580,12 @@ function homeStyles() {
    ========================================================================= */
 .mz-home { display: flex; flex-direction: column; gap: 16px; }
 
-/* --- Top bar: marca MIZPÁ + selector de proyecto --- */
-.in-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-.in-header-brand { display: flex; align-items: center; gap: 13px; flex-wrap: wrap; }
+/* --- Top bar: marca MIZPÁ + selector de proyecto (#4531: una sola fila) --- */
+/* Sin justify-content:space-between ni flex-wrap: la bandeja de salud se empuja
+   a la derecha con margin-left:auto (regla en theme.css) y la fila no se parte. */
+.in-header { display: flex; align-items: center; gap: 16px; }
+.in-header-brand { display: flex; align-items: center; gap: 13px; flex: none; }
+.in-divider { width: 1px; height: 38px; background: var(--in-border,rgba(255,255,255,.12)); flex: none; opacity: .8; }
 .mz-logo { width: 46px; height: 46px; border-radius: 14px; flex: none;
     background: linear-gradient(135deg, var(--brand-cyan,#34D9E0), #7C5CFF 90%);
     display: flex; align-items: center; justify-content: center;
@@ -1592,9 +1595,10 @@ function homeStyles() {
 .mz-name { font-size: 21px; font-weight: 800; line-height: 1; letter-spacing: 1px;
     background: linear-gradient(90deg,#bff3f6,#c9bcff); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .mz-sub { font-size: 10px; color: var(--in-fg-dim,#8A93A6); font-weight: 600; letter-spacing: 1.1px; margin-top: 5px; }
-.mz-projsel { display: flex; align-items: center; gap: 11px; background: var(--in-bg-2,#11151E);
+.mz-projsel { display: flex; align-items: center; gap: 11px; background: var(--in-bg-3,#1f2937);
     border: 1px solid var(--in-border,rgba(255,255,255,.12)); border-radius: 13px; padding: 8px 9px 8px 12px;
-    margin-left: 4px; cursor: pointer; }
+    margin-left: 4px; cursor: pointer; transition: border-color .15s ease, background .15s ease; }
+.mz-projsel:hover { border-color: var(--brand-cyan,#34D9E0); }
 .mz-projsel:focus-visible { outline: 2px solid var(--in-focus,#38bdf8); outline-offset: 2px; }
 .mz-proj-avatar { width: 30px; height: 30px; border-radius: 9px; flex: none; color: #06121a; font-weight: 800; font-size: 15px;
     background: linear-gradient(135deg,#34D9E0,#5A8DEE); display: flex; align-items: center; justify-content: center; }
@@ -2006,10 +2010,11 @@ async function killAgent(issue, skill, pipeline, fase, durationMs){
 }
 
 async function tickHeader(){
+    // #4531 — reloj nested (hora + fecha) vía helper compartido; independiente
+    // del fetch para que la hora avance aunque el slice falle.
+    if(typeof window.__updateHeaderClock === 'function') window.__updateHeaderClock();
     const d = await fetchJson('/api/dash/header');
     if(!d) return;
-    const now = new Date();
-    setText('hdr-clock', now.toLocaleTimeString('es-AR'));
     const modePill = document.getElementById('hdr-mode');
     if(modePill){
         modePill.classList.remove('in-mode-running','in-mode-paused','in-mode-partial');
@@ -4410,26 +4415,19 @@ function collectHomeState(opts) {
     };
 }
 
-// --- Sub-función pura: brand bar V3 (logo + ambiente + build status) --------
+// --- Sub-función pura: brand bar V3 (identidad + selector de proyecto) -------
+// #4531 — El pill de build se movió de la brand bar a la BANDEJA de estado
+// unificada (renderHeaderMetaSsr({ withBuild:true }) en renderControlBar), para
+// que build/recursos/pulpo/reloj compartan el mismo sistema visual y la fila no
+// se parta en dos. La brand bar queda como cluster de identidad: marca + tagline
+// + divisor + selector de proyecto. `state` se conserva en la firma por compat
+// de los tests de sub-funciones puras, aunque ya no se lea el build acá.
 function renderBrandBar(state) {
-    const b = (state && state.build) || { status: 'unknown', branch: '', commit: '' };
-    const STATUS_META = {
-        passing: { cls: 'in-pill-ok', icon: '🟢', label: 'Build OK' },
-        failing: { cls: 'in-pill-bad', icon: '🔴', label: 'Build roto' },
-        running: { cls: 'in-pill-warn', icon: '🟡', label: 'Build corriendo' },
-        unknown: { cls: 'in-pill-info', icon: '○', label: 'Build ?' },
-    };
-    const meta = STATUS_META[b.status] || STATUS_META.unknown;
-    const detail = [b.branch, b.commit].filter(Boolean).join(' · ');
-    const tip = 'Estado del último build (marker local .pipeline/build-status.json, sin gh api). '
-        + meta.label + (detail ? ' · ' + detail : '');
-    const detailHtml = detail ? ' · <span class="in-build-detail">' + escapeHtmlText(detail) + '</span>' : '';
     // #4189 — Marca producto MIZPÁ (atalaya de agentes, Génesis 31:49) + selector
     // de proyecto multiproyecto. MIZPÁ es el motor; el proyecto es intercambiable
     // (hoy Intrale, 1 de 3). El selector es informativo/estático en esta entrega
     // (la conmutación real de proyecto es trabajo futuro); lleva tooltip que lo
-    // explica. El pill de build (id="bld-status") se conserva para el ticker
-    // tickHeader y los contratos de test (R-G1/CA-3725).
+    // explica.
     const logoSvg = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">'
         + '<path d="M12 2.5 5 6v5c0 4.6 3 8 7 9.5 4-1.5 7-4.9 7-9.5V6l-7-3.5Z" stroke="#06121a" stroke-width="1.6" fill="rgba(255,255,255,.16)"/>'
         + '<path d="M9.5 12.5 11.3 14.3 14.8 10.4" stroke="#06121a" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -4440,6 +4438,7 @@ function renderBrandBar(state) {
         <div class="mz-name">MIZPÁ</div>
         <div class="mz-sub">«Que el Señor vigile» · atalaya de agentes</div>
       </div>
+      <span class="in-divider" aria-hidden="true"></span>
       <div class="mz-projsel" id="mz-projsel" role="button" tabindex="0"
            title="Proyecto activo. MIZPÁ es el motor; el proyecto es intercambiable (multiproyecto — selección en evaluación)."
            aria-label="Proyecto activo: Intrale, 1 de 3">
@@ -4451,9 +4450,6 @@ function renderBrandBar(state) {
         <span class="mz-proj-badge">1 / 3</span>
         <span class="mz-proj-caret" aria-hidden="true">▾</span>
       </div>
-      <span class="in-pill in-build-status ${meta.cls}" id="bld-status"
-            title="${escapeHtmlAttr(tip)}"
-            aria-label="${escapeHtmlAttr(meta.label + (detail ? ' ' + detail : ''))}">${meta.icon} ${escapeHtmlText(meta.label)}${detailHtml}</span>
     </div>`;
 }
 
@@ -4470,7 +4466,9 @@ function renderControlBar(state) {
     // pill de estado del pipeline en el header visible (vive en el sink oculto,
     // #4227) → withMode:false. Los IDs (hdr-resources/hdr-pulpo/hdr-clock),
     // title y aria-label se preservan literalmente (contrato R-G1).
-    return renderHeaderMetaSsr({ withMode: false });
+    // #4531 — withBuild:true: el estado del build ahora es el primer segmento de
+    // la bandeja (#bld-status), hidratado por __hydrateHeaderPills desde d.build.
+    return renderHeaderMetaSsr({ withMode: false, withBuild: true });
 }
 
 // #4227 (CA-1) — Controles operativos heredados (estado del pipeline + ventanas

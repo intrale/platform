@@ -107,6 +107,7 @@ function renderBrandBarPipeline() {
         <div class="mz-name">MIZPÁ</div>
         <div class="mz-sub">«Que el Señor vigile» · atalaya de agentes</div>
       </div>
+      <span class="in-divider" aria-hidden="true"></span>
       <div class="mz-projsel" id="mz-projsel" role="button" tabindex="0"
            title="Proyecto activo. MIZPÁ es el motor; el proyecto es intercambiable (multiproyecto — selección en evaluación)."
            aria-label="Proyecto activo: Intrale, 1 de 3">
@@ -118,8 +119,6 @@ function renderBrandBarPipeline() {
         <span class="mz-proj-badge">1 / 3</span>
         <span class="mz-proj-caret" aria-hidden="true">▾</span>
       </div>
-      <span class="in-pill in-pill-info in-build-status" id="bld-status"
-            title="Estado del último build (marker local .pipeline/build-status.json).">○ Build ?</span>
     </div>`;
 }
 
@@ -305,8 +304,10 @@ const PIPELINE_REDESIGN_CSS = `
 /* #4190 — Rediseño PIPELINE MIZPÁ. Scoped a #pl-redesign + clases mz-* propias. */
 .pl-redesign { display: flex; flex-direction: column; gap: 16px; }
 
-/* Marca MIZPÁ (replicado de home.js — no está en theme.css). */
-.in-header-brand { display: flex; align-items: center; gap: 13px; flex-wrap: wrap; }
+/* Marca MIZPÁ (replicado de home.js — no está en theme.css). #4531: sin wrap
+   para que la fila única no se parta; la bandeja va a la derecha (margin-left:auto). */
+.in-header-brand { display: flex; align-items: center; gap: 13px; flex: none; }
+.in-divider { width: 1px; height: 38px; background: var(--in-border,rgba(255,255,255,.12)); flex: none; opacity: .8; }
 .mz-logo { width: 44px; height: 44px; border-radius: 13px; flex: none;
     background: linear-gradient(135deg, var(--brand-cyan,#34D9E0), #7C5CFF 90%);
     display: flex; align-items: center; justify-content: center; box-shadow: 0 8px 24px rgba(124,92,255,.28); }

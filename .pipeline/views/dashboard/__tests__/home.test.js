@@ -68,11 +68,15 @@ test('cada sub-función devuelve string con state {} (sin throw)', () => {
     }
 });
 
-test('renderBrandBar poblado emite el pill de build status', () => {
+// #4531 — El pill de build se movió de la brand bar a la bandeja unificada
+// (renderHeaderMetaSsr({ withBuild:true })). La brand bar queda como cluster de
+// identidad: marca + tagline + divisor + selector de proyecto, SIN build.
+test('renderBrandBar es cluster de identidad (marca + divisor + selector), sin build', () => {
     const out = renderBrandBar({ build: { status: 'passing', branch: 'main', commit: 'abc1234' } });
-    assert.match(out, /id="bld-status"/);
-    assert.match(out, /Build OK/);
-    assert.match(out, /in-pill-ok/);
+    assert.match(out, /MIZP[ÁA]/, 'marca MIZPÁ');
+    assert.match(out, /mz-projsel/, 'selector de proyecto');
+    assert.match(out, /in-divider/, 'divisor identidad ⋮ selector (#4531)');
+    assert.doesNotMatch(out, /id="bld-status"/, 'el build ya no vive en la brand bar');
 });
 
 test('renderInfraHealth poblado emite UP/DOWN + filas por servicio', () => {
@@ -101,44 +105,17 @@ test('renderSystemCard poblado emite las 4 celdas whitelisted', () => {
 });
 
 // ---------------------------------------------------------------------------
-// CA-3725.1 — build status 'unknown' degradado cuando el marker no existe.
+// #4531 — El estado del build ya no se rinde en la brand bar (branch/commit
+// atacante-controlables ya NO se interpolan en el SSR de la marca). Ahora vive
+// en la bandeja (#bld-status), hidratado por __hydrateHeaderPills vía
+// .textContent (sin innerHTML) desde d.build → sin superficie XSS server-side.
+// El coloreo/estado (dot semántico, sin "?") se testea en header-meta.test.js.
 // ---------------------------------------------------------------------------
-test('renderBrandBar sin build status muestra unknown sin romper', () => {
-    const out = renderBrandBar({ build: { status: 'unknown', branch: '', commit: '' } });
-    assert.match(out, /Build \?/);
-    assert.match(out, /in-pill-info/);
-});
-
-test('renderBrandBar nunca invoca gh api (R-G4) — sin la cadena en el markup', () => {
-    const out = renderBrandBar({ build: { status: 'passing', branch: 'main', commit: 'abc' } });
-    assert.ok(!/gh api/.test(out) || /sin gh api/.test(out),
-        'el markup no debe sugerir invocación de gh api salvo en la nota explicativa');
-});
-
-// ---------------------------------------------------------------------------
-// CA-3725.13 — XSS en contexto BODY: el payload se escapa, no se inyecta crudo.
-// renderBrandBar consume branch/commit (atacante-controlables vía Git).
-// ---------------------------------------------------------------------------
-test('XSS body: renderBrandBar escapa <script> en branch', () => {
-    const out = renderBrandBar({ build: { status: 'passing', branch: XSS_BODY, commit: '' } });
-    assert.ok(!out.includes(XSS_BODY), 'el <script> crudo NO debe aparecer en el body');
-    assert.match(out, /&lt;script&gt;/, 'debe aparecer escapado');
-});
-
-test('XSS body: sin doble-escape de entidades existentes', () => {
-    const out = renderBrandBar({ build: { status: 'passing', branch: XSS_DOUBLE, commit: '' } });
-    // El & del payload se escapa una sola vez a &amp; — no debe quedar &amp;amp;.
-    assert.ok(!out.includes('&amp;amp;'), 'no debe haber doble-escape');
-});
-
-// ---------------------------------------------------------------------------
-// CA-3725.13 / CA-3725.10 — XSS en contexto ATRIBUTO: branch en aria-label/title.
-// ---------------------------------------------------------------------------
-test('XSS atributo: renderBrandBar escapa comillas en title/aria-label', () => {
-    const out = renderBrandBar({ build: { status: 'passing', branch: XSS_ATTR, commit: '' } });
-    // El payload rompe-atributo no debe aparecer crudo dentro de un valor.
-    assert.ok(!out.includes('onerror=alert(1)>'), 'el payload no debe romper el atributo');
-    assert.match(out, /&quot;|&gt;/, 'las comillas/ángulos deben quedar escapados');
+test('#4531: renderBrandBar no interpola branch/commit (sin superficie XSS por build)', () => {
+    const out = renderBrandBar({ build: { status: 'passing', branch: XSS_BODY, commit: XSS_ATTR } });
+    assert.ok(!out.includes(XSS_BODY), 'el branch atacante-controlable no debe aparecer');
+    assert.ok(!out.includes('onerror=alert(1)>'), 'el commit no debe romper atributos');
+    assert.doesNotMatch(out, /id="bld-status"/, 'el build no vive en la brand bar');
 });
 
 test('XSS atributo: renderSystemCard escapa tooltips (defensa, tips estáticos)', () => {

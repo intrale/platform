@@ -67,7 +67,10 @@ test('brand bar lleva marca MIZPÁ, tagline y selector multiproyecto', () => {
     assert.match(html, /Que el Señor vigile/);
     assert.match(html, /mz-projsel/);
     assert.match(html, /1 \/ 3/); // multiproyecto
-    assert.match(html, /id="bld-status"/); // ticker de build preservado
+    assert.match(html, /in-divider/); // #4531 divisor identidad ⋮ selector
+    // #4531 — el build se movió a la bandeja unificada (renderHeaderMetaSsr); el
+    // shell satélite (pageShell) lo emite en el tray, ya no en la brand bar.
+    assert.doesNotMatch(html, /id="bld-status"/);
 });
 
 test('mission banner expone los IDs de hidratación de /api/dash/waves', () => {

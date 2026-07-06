@@ -1203,9 +1203,10 @@ allowlistReload();
 const COMMON_HELPERS = `
 function setText(id, value){ var el=document.getElementById(id); if(el && el.textContent!==String(value)) el.textContent=value; }
 async function tickHeader(){
+  // #4531 — reloj nested vía helper compartido (independiente del slice).
+  if(typeof window.__updateHeaderClock === 'function') window.__updateHeaderClock();
   var d = await fetchJson('/api/dash/header');
   if(!d) return;
-  setText('hdr-clock', new Date().toLocaleTimeString('es-AR'));
   var modePill = document.getElementById('hdr-mode');
   if(modePill){
     modePill.classList.remove('in-mode-running','in-mode-paused','in-mode-partial');
@@ -1253,7 +1254,7 @@ function renderRoadmap(opts) {
 <div class="satellite-frame">
   <header class="in-header">
     <div class="in-header-title"><h1>Roadmap de olas</h1></div>
-    ${renderHeaderMetaSsr({ withMode: true })}
+    ${renderHeaderMetaSsr({ withMode: true, withBuild: true })}
   </header>
   ${navHtml}
   <main class="satellite-body">${fragment}</main>

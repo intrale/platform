@@ -60,6 +60,21 @@ const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 // carga, el chrome degrada al marco inline propio y el dashboard no muere (R-4).
 let pipelineRedesign = null;
 try { pipelineRedesign = require('./pipeline-redesign'); } catch { /* fallback inline */ }
+// #4531 — Bandeja de estado unificada + hidratación compartida (build · CPU/RAM ·
+// pulpo · reloj). Require defensivo con degradación a bandeja mínima inline.
+let headerMeta = null;
+try { headerMeta = require('./header-meta'); } catch { /* fallback inline */ }
+function _renderTray() {
+    return headerMeta && typeof headerMeta.renderHeaderMetaSsr === 'function'
+        ? headerMeta.renderHeaderMetaSsr({ withMode: true, withBuild: true })
+        : '<div class="in-header-meta in-tray"><span class="in-seg in-pill" id="hdr-mode">…</span>'
+          + '<span class="in-seg in-clock" id="hdr-clock">…</span></div>';
+}
+function _headerPillsScript() {
+    return headerMeta && typeof headerMeta.headerPillsClientScript === 'function'
+        ? headerMeta.headerPillsClientScript()
+        : '';
+}
 // #4296 — Accessor compartido del banner de ola (avance %, velocidad %/h, ETA)
 // desde la fuente determinística viva /api/dash/ola-eta (no conteos done/total).
 const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
@@ -856,6 +871,7 @@ function renderMizpaBrandBar() {
         <div class="mz-name">MIZPÁ</div>
         <div class="mz-sub">«Que el Señor vigile» · atalaya de agentes</div>
       </div>
+      <span class="in-divider" aria-hidden="true"></span>
       <div class="mz-projsel" role="button" tabindex="0"
            title="Proyecto activo. MIZPÁ es el motor; el proyecto es intercambiable (multiproyecto — selección en evaluación)."
            aria-label="Proyecto activo: Intrale, 1 de 3">
@@ -1186,7 +1202,8 @@ function renderKpisChromeScript() {
   }
   async function tickWaves(){var d=await fetchJson("/api/dash/waves");if(d)mirrorMission(d);}
   async function tickHeader(){
-    setText("hdr-clock",new Date().toLocaleTimeString("es-AR"));
+    // #4531 — reloj nested + build/recursos/pulpo por el helper compartido.
+    if(typeof window.__updateHeaderClock==="function")window.__updateHeaderClock();
     var d=await fetchJson("/api/dash/header");if(!d)return;
     var mp=document.getElementById("hdr-mode");
     if(mp){
@@ -1195,15 +1212,7 @@ function renderKpisChromeScript() {
       else if(d.mode==="partial_pause"){var n=Array.isArray(d.allowedIssues)?d.allowedIssues.length:0;mp.classList.add("in-mode-partial");mp.textContent="⏸ Parcial · "+n+" issues";}
       else{mp.classList.add("in-mode-running");mp.textContent="🟢 Running";}
     }
-    var bld=document.getElementById("bld-status");
-    if(bld&&d.build){
-      var META={passing:{cls:"in-pill-ok",t:"🟢 Build OK"},failing:{cls:"in-pill-bad",t:"🔴 Build roto"},running:{cls:"in-pill-warn",t:"🟡 Build corriendo"},unknown:{cls:"in-pill-info",t:"○ Build ?"}};
-      var m=META[d.build.status]||META.unknown;
-      bld.classList.remove("in-pill-ok","in-pill-bad","in-pill-warn","in-pill-info");
-      bld.classList.add(m.cls);
-      var detail=[d.build.branch,d.build.commit].filter(Boolean).join(" · ");
-      bld.textContent=m.t+(detail?" · "+detail:"");
-    }
+    if(typeof window.__hydrateHeaderPills==="function")window.__hydrateHeaderPills(d);
   }
   function init(){tickHeader();tickWaves();setInterval(tickHeader,5000);setInterval(tickWaves,30000);}
   if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",init);else init();
@@ -1260,10 +1269,7 @@ function renderKpis(opts) {
 <div class="satellite-frame">
   <header class="in-header">
     ${renderKpisBrandBar()}
-    <div class="in-header-meta">
-      <span class="in-pill in-pill-info" id="hdr-mode" title="Estado del pipeline (running / pausado / parcial).">…</span>
-      <span class="in-clock" id="hdr-clock">${escapeHtmlText(new Date().toLocaleTimeString('es-AR'))}</span>
-    </div>
+    ${_renderTray()}
   </header>
   ${renderKpisWaveBanner()}
   ${navHtml}
@@ -1274,6 +1280,7 @@ function renderKpis(opts) {
     <span>Intrale V3 · #4198 · MIZPÁ</span>
   </footer>
 </div>
+<script>${_headerPillsScript()}</script>
 ${renderKpisChromeScript()}
 </body>
 </html>`;

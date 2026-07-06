@@ -41,6 +41,10 @@ const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 // banner de la ola. Se CONSUME desde el módulo compartido en vez de duplicar
 // el markup acá (CA-5). collectWave() también vive ahí (lo usa el banner).
 const { collectWave, renderBrandBar, renderMissionBanner, MIZPA_FRAME_CSS } = require('./mizpa-frame');
+// #4531 — Bandeja de estado unificada + hidratación compartida. Defensivo: si el
+// módulo no carga, se degrada a una bandeja mínima con sólo el reloj.
+let headerMeta = null;
+try { headerMeta = require('./header-meta'); } catch { /* fallback inline */ }
 
 // chat-panel es best-effort: si el módulo o sus deps fallan, la pantalla sigue
 // rindiendo sin el panel de intervención (degradación, no caída).
@@ -527,8 +531,12 @@ function buildClientJs(filename) {
     const fnJs = JSON.stringify(filename);
     return `
 (function(){
-  // Reloj del header.
-  function tickClock(){ var c=document.getElementById('hdr-clock'); if(c) c.textContent=new Date().toLocaleTimeString('es-AR'); }
+  // Reloj del header (#4531: nested hora+fecha vía helper compartido; fallback
+  // al comportamiento previo si el helper no está disponible).
+  function tickClock(){
+    if(typeof window.__updateHeaderClock==='function'){ window.__updateHeaderClock(); return; }
+    var c=document.getElementById('hdr-clock'); if(c) c.textContent=new Date().toLocaleTimeString('es-AR');
+  }
   tickClock(); setInterval(tickClock,1000);
 
   var bodyEl=document.getElementById('lv-log-body');
@@ -772,9 +780,9 @@ ${chatBundle ? chatBundle.sprite : ''}
 <div class="satellite-frame">
   <header class="in-header">
     ${brandHtml}
-    <div class="in-header-meta">
-      <span class="in-clock" id="hdr-clock">${escapeHtmlText(new Date().toLocaleTimeString('es-AR'))}</span>
-    </div>
+    ${headerMeta && typeof headerMeta.renderHeaderMetaSsr === 'function'
+        ? headerMeta.renderHeaderMetaSsr({ withMode: false, withBuild: true })
+        : '<div class="in-header-meta in-tray"><span class="in-seg in-clock" id="hdr-clock">…</span></div>'}
   </header>
   ${navHtml}
   ${breadcrumb}
@@ -791,6 +799,8 @@ ${chatBundle ? chatBundle.sprite : ''}
   </footer>
 </div>
 ${chatBundle ? chatBundle.html : ''}
+<script>${headerMeta && typeof headerMeta.headerPillsClientScript === 'function' ? headerMeta.headerPillsClientScript() : ''}
+${headerMeta && typeof headerMeta.headerPillsPollClientScript === 'function' ? headerMeta.headerPillsPollClientScript() : ''}</script>
 <script>${buildClientJs(filename)}</script>
 ${chatBundle ? `<script>${chatBundle.js}</script>` : ''}
 </body>

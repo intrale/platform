@@ -29,7 +29,31 @@ test('renderHeaderMetaSsr() emite los tres IDs invariantes (recursos, pulpo, rel
     assert.match(html, /id="hdr-resources"/, 'falta la pill de recursos CPU/RAM');
     assert.match(html, /id="hdr-pulpo"/, 'falta la pill de uptime del Pulpo');
     assert.match(html, /id="hdr-clock"/, 'falta el reloj');
-    assert.match(html, /class="in-header-meta"/, 'falta el contenedor in-header-meta');
+    // #4531 — el contenedor conserva la clase in-header-meta (contrato) y suma
+    // in-tray (bandeja unificada de una sola fila).
+    assert.match(html, /class="in-header-meta in-tray"/, 'falta el contenedor in-header-meta/in-tray');
+});
+
+test('#4531: withBuild:true agrega el segmento de build (#bld-status) sin "?"', () => {
+    const html = renderHeaderMetaSsr({ withBuild: true });
+    assert.match(html, /id="bld-status"/, 'falta el segmento de build en la bandeja');
+    // El SSR arranca en idle (dot idle + placeholder), nunca con "Build ?".
+    assert.match(html, /in-dot-idle/, 'el build arranca con dot idle');
+    assert.doesNotMatch(html, /Build \?/, 'no debe existir el literal "Build ?"');
+    // Sin withBuild NO se emite el segmento (home lo pide, otras vistas no).
+    assert.doesNotMatch(renderHeaderMetaSsr(), /id="bld-status"/, 'default withBuild:false');
+});
+
+test('#4531: el reloj expone spans nested para hora + fecha (hidratables)', () => {
+    const html = renderHeaderMetaSsr();
+    assert.match(html, /data-clk-time/, 'falta el span de hora');
+    assert.match(html, /data-clk-date/, 'falta el span de fecha');
+});
+
+test('#4531: recursos expone métricas CPU y RAM por separado (alerta per-métrica)', () => {
+    const html = renderHeaderMetaSsr();
+    assert.match(html, /data-res-cpu/, 'falta la métrica de CPU');
+    assert.match(html, /data-res-mem/, 'falta la métrica de RAM');
 });
 
 test('sin withMode NO emite #hdr-mode (comportamiento de home, #4227)', () => {
@@ -91,6 +115,32 @@ test('la hidratación conserva la señal de presión de recursos (ok/warn/bad)',
     assert.match(script, /maxCpu/, 'umbral de CPU');
     assert.match(script, /maxMem/, 'umbral de RAM');
     assert.match(script, /> 50/, 'umbral warn en 50%');
+});
+
+test('#4531: la hidratación pinta build con dot semántico y sin "?"', () => {
+    const script = headerPillsClientScript();
+    assert.match(script, /bld-status/, 'hidrata el segmento de build');
+    assert.match(script, /in-dot-ok/, 'dot ok para passing');
+    assert.match(script, /in-dot-bad/, 'dot bad para failing');
+    assert.match(script, /in-dot-idle/, 'dot idle para unknown/idle');
+    assert.doesNotMatch(script, /Build \?/, 'sin el literal "Build ?"');
+    // Sólo textContent/classList — sin innerHTML (SEC-1).
+    assert.doesNotMatch(script, /innerHTML/);
+});
+
+test('#4531: la hidratación resalta la métrica específica que supera el cap', () => {
+    const script = headerPillsClientScript();
+    assert.match(script, /in-mv-hot/, 'clase de métrica resaltada');
+    assert.match(script, /data-res-cpu/, 'lee el span de CPU');
+    assert.match(script, /data-res-mem/, 'lee el span de RAM');
+    assert.match(script, /in-seg-alert/, 'acento del segmento en alerta');
+});
+
+test('#4531: expone __updateHeaderClock para el reloj con hora + fecha', () => {
+    const script = headerPillsClientScript();
+    assert.match(script, /window\.__updateHeaderClock/, 'define el updater del reloj');
+    assert.match(script, /data-clk-time/, 'pinta la hora');
+    assert.match(script, /data-clk-date/, 'pinta la fecha');
 });
 
 test('el poller standalone fetchea /api/dash/header y llama al helper, con catch defensivo', () => {

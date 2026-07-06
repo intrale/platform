@@ -126,6 +126,7 @@ function renderBrandBar() {
         <div class="mz-name">MIZPÁ</div>
         <div class="mz-sub">«Que el Señor vigile» · atalaya de agentes</div>
       </div>
+      <span class="in-divider" aria-hidden="true"></span>
       <div class="mz-projsel" role="button" tabindex="0"
            title="Proyecto activo. MIZPÁ es el motor; el proyecto es intercambiable (multiproyecto — selección en evaluación)."
            aria-label="Proyecto activo: Intrale, 1 de 3">
