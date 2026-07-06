@@ -31,6 +31,7 @@ const path = require('path');
 const http = require('http');
 const { spawnSync } = require('child_process');
 const { componentState, waitForMarkers } = require('./lib/ready-marker');
+const { isMarkerArtifact } = require('./lib/marker-artifact');
 
 const PIPELINE_DIR = __dirname;
 const LOG_FILE = path.join(PIPELINE_DIR, 'logs', 'smoke-test.log');
@@ -277,7 +278,8 @@ async function main() {
   const orphanDir = path.join(PIPELINE_DIR, 'servicios', 'commander', 'trabajando');
   try {
     if (fs.existsSync(orphanDir)) {
-      const orphans = fs.readdirSync(orphanDir).filter(f => f.endsWith('.json')).length;
+      // Excluir marker artifacts: no son mensajes operacionales huérfanos.
+      const orphans = fs.readdirSync(orphanDir).filter(f => f.endsWith('.json') && !isMarkerArtifact(f)).length;
       if (orphans > 0) {
         log(`  WARN ${orphans} mensaje(s) en commander/trabajando/ (esperado 0 post-restart)`);
       }
