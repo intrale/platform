@@ -45,6 +45,7 @@ const EVENTS = Object.freeze([
     'priority_changed', // CA-3
     'wave_promoted',    // CA-4
     'wave_archived',    // CA-4
+    'dependency_declared', // #4525: dependencia padre→hijos declarada (split auto-incorporado)
 ]);
 
 // -----------------------------------------------------------------------------

@@ -62,6 +62,8 @@ const partialPause = require('./lib/partial-pause');
 const desyncDetector = require('./lib/desync-detector');
 // #4439 CA-3 — Predicado de "origen legítimo y reciente" anclado en audit #3625
 const legitAddTrace = require('./lib/legit-add-trace');
+// #4525 — Predicado estructural de "hijo verificable de un split del pipeline"
+const splitProvenance = require('./lib/split-provenance');
 
 const quotaExhausted = require('./lib/quota-exhausted'); // #2974
 // #3508 — feature flag + ciclo de vida del workaround Anthropic CLI 1M (#3506).
@@ -13714,6 +13716,99 @@ function evaluateDesyncAndMaybeRealign(context) {
       }
     } catch (e) {
       log('pulpo', `WARN desync-detector: resync aditivo legítimo falló: ${e.message}`);
+    }
+  }
+
+  // #4525 — Auto-resync ADITIVO por PROVENANCE DE SPLIT del propio pipeline,
+  // DESPUÉS del intento legítimo #4439 (traza con TTL) y ANTES del human-block.
+  //
+  // A diferencia de #4439 (traza en audit con TTL de 90 s), este check es
+  // ESTRUCTURAL/DURABLE: un extra de la allowlist con `authorization_ttls[n].parent`
+  // que pertenece a la ola activa Y `authorized_by = recursive-deps:from-<parent>`
+  // (mismo parent) es, sin ambigüedad, un hijo de un split que hizo el propio
+  // pipeline (el padre ya está en la ola). El único camino correcto es sumarlo a
+  // la ola — pedir intervención humana no aporta valor (incidente 2026-07-06,
+  // +5 h frenado). Cubre exactamente el gap donde la traza #4439 caducó.
+  //
+  // RS-1: NO se confía sólo en el campo `parent`; el cross-check con
+  // `authorized_by === recursive-deps:from-<parent>` (en split-provenance.js)
+  // cierra el bypass por `parent` forjado. RS-2: binding POR ISSUE — sólo los
+  // trazables se resyncan; el resto cae al human-block. RS-4: el check es la
+  // relación estructural `parent ∈ ola`, NO el `expires_at` (si el cron purga
+  // los TTLs, la provenance desaparece → fail-safe a bloqueo).
+  //
+  // Re-probamos el estado ANTES de este paso: si el bloque #4439 ya resolvió
+  // todo, `mid.added` estará vacío y no hacemos nada. Sólo actuamos sobre el
+  // remanente aún divergente.
+  let mid;
+  try {
+    mid = desyncDetector.detectDesync({ skipFlag: true, skipAlert: true, isClosed: isClosed || undefined });
+  } catch { mid = probe; }
+
+  if (mid.desync && Array.isArray(mid.added) && mid.added.length > 0) {
+    let authorizationTtls = {};
+    let activeWaveIssues = [];
+    try {
+      const mode = partialPause.getPipelineMode();
+      authorizationTtls = (mode && mode.authorizationTtls && typeof mode.authorizationTtls === 'object')
+        ? mode.authorizationTtls : {};
+    } catch (e) {
+      log('pulpo', `WARN desync-detector: no se pudo leer authorization_ttls: ${e.message}`);
+    }
+    try {
+      const waves = require('./lib/waves');
+      const active = waves.getActiveWave();
+      activeWaveIssues = (active && Array.isArray(active.issues))
+        ? active.issues.map((i) => i && i.number).filter((n) => Number.isInteger(n))
+        : [];
+    } catch (e) {
+      log('pulpo', `WARN desync-detector: no se pudo leer la ola activa: ${e.message}`);
+    }
+
+    let splitChildren = [];
+    try {
+      splitChildren = splitProvenance.filterSplitChildren(mid.added, { authorizationTtls, activeWaveIssues });
+    } catch (e) {
+      log('pulpo', `WARN desync-detector: predicado split-provenance falló: ${e.message}. Trato todo como ambiguo.`);
+      splitChildren = [];
+    }
+
+    if (splitChildren.length > 0) {
+      try {
+        // Reusar el resync aditivo idempotente/atómico de #4439 (ola ← allowlist).
+        const r = resyncActiveWaveFromLegitAllowlist(splitChildren);
+        const incorporated = (r && Array.isArray(r.added)) ? r.added : [];
+        for (const child of incorporated) {
+          const parent = splitProvenance.parentOfSplitChild(child, authorizationTtls);
+          if (!parent) continue; // defensivo: no debería pasar (ya filtrado)
+          try {
+            const waves = require('./lib/waves');
+            waves.addDependency(parent, [child], {
+              updated_by: 'desync-split-4525',
+              source: 'split-auto',
+              note: `auto-incorporación split #${parent} -> #${child} (#4525, authorized_by=recursive-deps:from-${parent})`,
+            });
+          } catch (e) {
+            log('pulpo', `WARN desync-detector: no se pudo declarar dependencia ${parent}->${child}: ${e.message}`);
+          }
+        }
+        if (incorporated.length > 0) {
+          log('pulpo', `desync-detector: auto-incorporación ADITIVA por split del pipeline OK — ` +
+            `hijos=${JSON.stringify(incorporated)} (provenance authorization_ttls.parent ∈ ola, #4525)`);
+          try {
+            const detalle = incorporated
+              .map((c) => `#${c} (padre #${splitProvenance.parentOfSplitChild(c, authorizationTtls)})`)
+              .join(', ');
+            sendTelegramPlain(
+              `♻️ Auto-incorporación a la ola activa (#4525).\n` +
+              `Hijos de split del propio pipeline sumados sin intervención humana: ${detalle}\n` +
+              `Dependencia padre→hijos declarada. Divergencia aditiva resuelta.`
+            );
+          } catch { /* best-effort */ }
+        }
+      } catch (e) {
+        log('pulpo', `WARN desync-detector: auto-incorporación por split falló: ${e.message}`);
+      }
     }
   }
 

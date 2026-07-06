@@ -519,6 +519,96 @@ function addIssueToWaveLocked(waveNumber, issue, n, meta) {
     return { waveNumber, issue: n, added: true, version: versionToken(state) };
 }
 
+// =============================================================================
+// #4525 — Declaración de dependencia padre→hijos en el `dependencies` top-level.
+//
+// Cuando el desync-detector auto-incorpora a la ola activa los hijos de un split
+// del propio pipeline (padre ya en la ola), además de agregarlos a
+// `active_wave.issues` (vía addIssueToWave) declara la relación de dependencia
+// para dejar rastro estructural: `{ parent, blocked_by: [hijos], source }`.
+//
+// Escribe en el `dependencies` TOP-LEVEL de waves.json (NO anidado bajo
+// active_wave — `emptyState().dependencies = []`, `loadWaves` lee
+// `raw.dependencies`). Atómico bajo el lock reentrante de waves (mismo patrón
+// que addIssueToWave). Idempotente: si ya existe la entry {parent, source} sólo
+// agrega los hijos faltantes a `blocked_by` (sin duplicar). Best-effort audit
+// vía wave-audit (`dependency_declared`).
+//
+// @param {number} parent — issue padre (debe existir el number).
+// @param {number[]} blockedBy — hijos que dependen del padre.
+// @param {object} [meta] — { updated_by?, source?, note? }.
+// @returns {{ ok: boolean, parent: number, blocked_by: number[], added: number[] }}
+// =============================================================================
+function addDependency(parent, blockedBy, meta = {}) {
+    const p = normalizeIssue(parent);
+    if (!p) {
+        throw mkWavesError(`addDependency: parent inválido (${parent})`, 'EWAVES_SHAPE');
+    }
+    const children = (Array.isArray(blockedBy) ? blockedBy : [blockedBy])
+        .map(normalizeIssue)
+        .filter(Boolean)
+        .filter((c) => c !== p); // un issue no se bloquea a sí mismo
+    if (children.length === 0) {
+        return { ok: false, parent: p, blocked_by: [], added: [] };
+    }
+    return withLockSync(wavesFile(), () => addDependencyLocked(p, children, meta), {
+        component: 'waves-lock',
+        timeoutMs: LOCK_TIMEOUT_MS,
+        maxRetries: LOCK_MAX_RETRIES,
+        notify: notifyTelegram,
+    });
+}
+
+function addDependencyLocked(parent, children, meta) {
+    invalidateCache();
+    const state = loadWaves();
+    if (!Array.isArray(state.dependencies)) state.dependencies = [];
+
+    const source = typeof meta.source === 'string' && meta.source ? meta.source : 'split-auto';
+    // Buscar una entry existente con el mismo par (parent, source) para ser
+    // idempotentes y no fragmentar el rastro en múltiples entries por padre.
+    let entry = state.dependencies.find(
+        (d) => d && normalizeIssue(d.parent) === parent && d.source === source
+    );
+    const before = entry && Array.isArray(entry.blocked_by)
+        ? entry.blocked_by.map(normalizeIssue).filter(Boolean)
+        : [];
+    const beforeSet = new Set(before);
+    const added = children.filter((c) => !beforeSet.has(c));
+
+    if (added.length === 0) {
+        logInfo(`addDependency: dependencia ${parent}→[${children.join(',')}] ya declarada (source=${source}) — no-op.`);
+        return { ok: false, parent, blocked_by: before, added: [] };
+    }
+
+    const blockedBy = [...before, ...added].sort((a, b) => a - b);
+    if (entry) {
+        entry.blocked_by = blockedBy;
+    } else {
+        entry = { parent, blocked_by: blockedBy, source };
+        state.dependencies.push(entry);
+    }
+
+    logInfo(`addDependency: dependencia ${parent}→[${blockedBy.join(',')}] declarada (source=${source}).`);
+    saveState(state, {
+        updated_by: meta.updated_by || 'System',
+        source: meta.source || 'split-auto',
+        note: meta.note || `declare dependency parent #${parent} -> [${added.join(', ')}]`,
+    });
+    // #4525 CA-4 / RS-3 — audit encadenado append-only, best-effort. `wave-audit`
+    // sólo persiste campos conocidos; el detalle (parent/blocked_by/source) viaja
+    // en estado_posterior (objeto persistido as-is + redactado).
+    emitWaveAudit({
+        event: 'dependency_declared',
+        issue: parent,
+        actor: meta.updated_by || 'System',
+        estado_previo: { blocked_by: before },
+        estado_posterior: { parent, blocked_by: blockedBy, source, added },
+        note: meta.note,
+    });
+    return { ok: true, parent, blocked_by: blockedBy, added };
+}
+
 /**
  * Desasocia un issue de una ola PLANIFICADA. Sigue el patrón canónico
  * `fn()`+`fnLocked()` de `addIssueToWave`: el read-modify-write completo corre
@@ -2810,6 +2900,8 @@ module.exports = {
     getPlannedWave,
     addIssueToWave,
     removeIssueFromWave,
+    // #4525 — declaración de dependencia padre→hijos (split auto-incorporado).
+    addDependency,
     reorderPlannedWaves,
     promoteWaveToActive,
     createPlannedWave,
