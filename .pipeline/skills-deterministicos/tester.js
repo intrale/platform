@@ -36,6 +36,7 @@ const gradleParser = require('./lib/gradle-parser');
 const kover = require('./lib/kover-parser');
 const { ensureGitInEnv } = require('../lib/ensure-git-in-path');
 const { withGradleLock } = require('../lib/gradle-lock');
+const { writeDeliverable } = require('../lib/write-deliverable');
 
 // ── Constantes y paths ──────────────────────────────────────────────
 const REPO_ROOT = process.env.PIPELINE_REPO_ROOT || process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
@@ -1229,7 +1230,12 @@ function updateMarker(trabajandoPath, payload) {
 }
 
 // ── Render del reporte final ─────────────────────────────────────────
-function renderReport({ issue, module, coverage, threshold, gradle, tests, coverageAgg, exitCode, motivo }) {
+// `pipelineOnly` y `exception` (#4511): cuando la cobertura Kover no aplica
+// (issue pipeline-only sin módulos Gradle testeables), el reporte documenta
+// explícitamente el motivo de excepción en vez de silencio (CA-4). El bloque
+// "Baseline y gaps" cubre el CA-1 (delta vs baseline + gaps) aunque hoy no
+// exista baseline estructurado en HEAD.
+function renderReport({ issue, module, coverage, threshold, gradle, tests, coverageAgg, exitCode, motivo, pipelineOnly, exception }) {
     const verdict = exitCode === 0 ? 'APROBADO ✅' : 'RECHAZADO ❌';
     const durMs = gradle ? gradle.wall_ms : 0;
     const mins = Math.floor(durMs / 60000);
@@ -1248,6 +1254,34 @@ function renderReport({ issue, module, coverage, threshold, gradle, tests, cover
         lines.push(kover.renderCoverageSection(coverageAgg, threshold));
         lines.push('');
     }
+
+    // Baseline y gaps (CA-1). No hay baseline estructurado histórico en HEAD:
+    // se registra explícito en vez de omitir la sección.
+    lines.push('### Baseline y gaps');
+    lines.push('- Delta vs baseline: `baseline: no disponible` — sin baseline estructurado de cobertura en HEAD.');
+    if (coverage && coverageAgg && coverageAgg.valid) {
+        const weak = [...coverageAgg.packages]
+            .filter((p) => (p.line.covered + p.line.missed) > 0 && p.line_percent < threshold)
+            .sort((a, b) => a.line_percent - b.line_percent)
+            .slice(0, 3);
+        if (weak.length > 0) {
+            lines.push('- Gaps de cobertura (paquetes bajo umbral):');
+            for (const p of weak) lines.push(`  - \`${p.name}\` — ${p.line_percent}% líneas`);
+        } else {
+            lines.push('- Gaps de cobertura: sin paquetes bajo umbral detectados.');
+        }
+    } else {
+        lines.push('- Gaps de cobertura: no aplica (Kover no ejecutado en esta corrida).');
+    }
+    lines.push('');
+
+    // Excepción explícita (CA-4): entregable generado igual, con motivo acotado.
+    if (exception) {
+        lines.push('### Excepción explícita');
+        lines.push(`- ${exception}`);
+        lines.push('');
+    }
+
     if (motivo) {
         lines.push('### Motivo del rebote');
         lines.push(`- ${motivo}`);
@@ -1489,16 +1523,52 @@ async function main() {
         motivo = `Excepción en tester.js: ${e.message}`;
         logAppend(`[tester] EXCEPTION: ${e.stack || e.message}`);
     } finally {
+        // Motivo final + detección de excepción explícita (CA-4). Se computa
+        // ANTES de renderReport para que el reporte documente el motivo de
+        // excepción cuando la cobertura no aplica (pipeline-only sin tests Node).
+        let finalMotivo = motivo;
+        let exceptionNote = null;
+        if (exitCode === 0 && pipelineOnly && !(tests && tests.valid)) {
+            finalMotivo = 'Pipeline-only sin tests Node ejecutables — qa:skipped equivalente';
+            exceptionNote = 'Cobertura no aplicable: issue pipeline-only sin módulos Gradle con tests. Se documenta como qa:skipped; el entregable se genera igual.';
+        } else if (exitCode === 0 && pipelineOnly) {
+            finalMotivo = `Tests Node verdes (${tests.tests} tests pasaron)`;
+        } else if (exitCode === 0 && !finalMotivo) {
+            finalMotivo = 'Tests verdes';
+        } else if (!finalMotivo) {
+            finalMotivo = 'Tests fallidos';
+        }
+
         // Reporte
         const report = renderReport({
             issue, module: args.module, coverage: args.coverage, threshold: args.threshold,
             gradle: gradleResult, tests: tests || { valid: false },
             coverageAgg: koverData.aggregate, exitCode, motivo,
+            pipelineOnly, exception: exceptionNote,
         });
         logAppend('[tester] --- REPORTE ---');
         logAppend(report);
         const reportPath = path.join(LOG_DIR, `tester-${issue}-report.md`);
         try { fs.writeFileSync(reportPath, report); } catch {}
+
+        // Entregable phase-scoped de cierre de fase (#4511 / épico #4255).
+        // SIEMPRE se escribe (éxito o fallo) porque está en el `finally`, fuera
+        // de cualquier condicional de exitCode. Reusa el `report` ya renderizado
+        // como cuerpo. `writeDeliverable` aplica redacción de secrets por default
+        // (CA-5) y actualiza el índice `.pipeline/deliverables/<issue>.json`.
+        // El fallo del entregable NO debe romper el cierre de fase → try/catch.
+        let deliverablePath = null;
+        try {
+            const dv = writeDeliverable('tester', issue, {
+                fase: 'verificacion',
+                md: report,
+                pipelineRoot: REPO_ROOT,
+            });
+            deliverablePath = dv.path;
+            logAppend(`[tester] entregable escrito: ${dv.path} (indexed=${dv.indexed})`);
+        } catch (e) {
+            logAppend(`[tester] WARN no se pudo escribir entregable: ${e.message}`);
+        }
 
         // Escalación por tipo de fallo
         let escalateTo = null;
@@ -1525,21 +1595,10 @@ async function main() {
             }
         }
 
-        // Para pipeline-only sin tests, generamos un motivo "qa:skipped" explícito
-        let finalMotivo = motivo;
-        if (exitCode === 0 && pipelineOnly && !(tests && tests.valid)) {
-            finalMotivo = 'Pipeline-only sin tests Node ejecutables — qa:skipped equivalente';
-        } else if (exitCode === 0 && pipelineOnly) {
-            finalMotivo = `Tests Node verdes (${tests.tests} tests pasaron)`;
-        } else if (exitCode === 0 && !finalMotivo) {
-            finalMotivo = 'Tests verdes';
-        } else if (!finalMotivo) {
-            finalMotivo = 'Tests fallidos';
-        }
-
         updateMarker(args.trabajando, {
             resultado: exitCode === 0 ? 'aprobado' : 'rechazado',
             motivo: finalMotivo,
+            tester_deliverable_path: deliverablePath,
             tester_module: pipelineOnly ? 'pipeline' : args.module,
             tester_runner: testRunner,
             tester_duration_ms: gradleResult ? gradleResult.wall_ms : 0,
