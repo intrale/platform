@@ -99,6 +99,26 @@ test('CA-7 cross-skill: qa/OpenAI Codex SSE event=error con insufficient_quota c
     assert.equal(r.shouldFallback, true);
 });
 
+test('codex ChatGPT: turn.failed con "usage limit" (canal de control) clasifica quota_exhausted', () => {
+    // Shape real del CLI Codex con cuenta ChatGPT (OAuth): sin error.type
+    // estructurado, sólo message en el frame de control turn.failed.
+    const raw = [
+        '{"type":"turn.started"}',
+        '{"type":"error","message":"You\\u0027ve hit your usage limit. Upgrade to Pro or try again at Jul 6th, 2026 2:19 AM."}',
+        '{"type":"turn.failed","error":{"message":"You\\u0027ve hit your usage limit. Upgrade to Pro or try again at Jul 6th, 2026 2:19 AM."}}',
+    ].join('\n');
+    const r = parseProviderError(raw, { provider: 'openai-codex', transport: 'cli' });
+    assert.equal(r.errorClass, 'quota_exhausted');
+    assert.equal(r.shouldFallback, true);
+});
+
+test('codex ChatGPT: "hit your usage limit" en stderr texto plano clasifica quota_exhausted via regex', () => {
+    const raw = "API error: You've hit your usage limit. Upgrade to Pro.";
+    const r = parseProviderError(raw, { provider: 'openai-codex', transport: 'cli' });
+    assert.equal(r.errorClass, 'quota_exhausted');
+    assert.equal(r.shouldFallback, true);
+});
+
 test('CA-7 cross-skill: commander result event estructural clasifica quota_exhausted (mismo shape que skills)', () => {
     const fx = loadFixture('commander-anthropic-result-event.json');
     const r = parseProviderError(fx.raw, { provider: fx.provider, transport: fx.transport });

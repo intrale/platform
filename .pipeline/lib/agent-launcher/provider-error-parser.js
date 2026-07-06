@@ -195,6 +195,10 @@ const CLI_QUOTA_PATTERNS = Object.freeze([
     // "You've hit your session limit" — Anthropic CLI cuando la sesión OAuth
     // del usuario tocó el techo semanal.
     /\bhit\s+your\s+session\s+limit\b/i,
+    // "You've hit your usage limit" — Codex CLI con cuenta ChatGPT (OAuth)
+    // cuando el cap rolling de uso se agota. Viene por el canal de control del
+    // CLI (turn.failed/error), no por el contenido del modelo.
+    /\bhit\s+your\s+usage\s+limit\b/i,
     // "weekly quota exhausted" o "quota exhausted" — texto genérico.
     /\bweekly\s+quota\s+exhausted\b/i,
     /\bquota\s+exhausted\b/i,

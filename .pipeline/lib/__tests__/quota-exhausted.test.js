@@ -516,7 +516,7 @@ const PROVIDER_DEF_OPENAI = Object.freeze({
     launcher: 'codex',
     model: 'gpt-5-codex',
     output_parser: 'openai-sse',
-    quota_error_types: ['insufficient_quota', 'billing_hard_limit_reached', 'tokens_exhausted'],
+    quota_error_types: ['insufficient_quota', 'billing_hard_limit_reached', 'tokens_exhausted', 'usage_limit_reached'],
     resets_at_cap_max_days: 31,
 });
 
@@ -559,6 +559,79 @@ test('CA-4 #3077 · detectQuotaError(openai-codex) matchea shape alternativo res
     const det = q.detectQuotaError(evt, PROVIDER_DEF_OPENAI);
     assert.equal(det.matched, true);
     assert.equal(det.errorType, 'billing_hard_limit_reached');
+});
+
+// -----------------------------------------------------------------------------
+// Codex CLI con cuenta ChatGPT (OAuth) — usage_limit_reached por canal de control
+//
+// El CLI reporta el cap rolling como texto libre SIN error_type estructurado,
+// en frames de control `turn.failed` / `error`. Estos frames NO son inyectables
+// por el modelo, así que el regex acotado sobre `message` es seguro. Cierra el
+// gap de la cascada Codex→Gemini: sin esta detección el flag nunca se seteaba y
+// el agente moría en codex en vez de cascadear al free tier.
+// -----------------------------------------------------------------------------
+
+test('codex ChatGPT · detectQuotaError matchea turn.failed con "usage limit" (canal de control)', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    const evt = { type: 'turn.failed', error: { message: "You've hit your usage limit. Upgrade to Pro or try again at Jul 6th, 2026 2:19 AM." } };
+    const det = q.detectQuotaError(evt, PROVIDER_DEF_OPENAI);
+    assert.equal(det.matched, true);
+    assert.equal(det.errorType, 'usage_limit_reached');
+});
+
+test('codex ChatGPT · detectQuotaError matchea evento type=error con message top-level', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    const evt = { type: 'error', message: "You've hit your usage limit. Upgrade to Pro." };
+    const det = q.detectQuotaError(evt, PROVIDER_DEF_OPENAI);
+    assert.equal(det.matched, true);
+    assert.equal(det.errorType, 'usage_limit_reached');
+});
+
+test('codex ChatGPT · ANTI-INJECTION: mismo texto en canal de contenido del modelo NO matchea', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    // item.completed/agent_message es el canal de CONTENIDO — el modelo podría
+    // escribir el texto adversarialmente; NO debe activar el flag.
+    const evt = { type: 'item.completed', item: { type: 'agent_message', text: "you've hit your usage limit (texto del modelo)" } };
+    const det = q.detectQuotaError(evt, PROVIDER_DEF_OPENAI);
+    assert.equal(det.matched, false);
+});
+
+test('codex ChatGPT · turn.failed con otro error (no usage-limit) NO matchea', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    const evt = { type: 'turn.failed', error: { message: 'network unreachable: ECONNRESET' } };
+    const det = q.detectQuotaError(evt, PROVIDER_DEF_OPENAI);
+    assert.equal(det.matched, false);
+});
+
+test('codex ChatGPT · usage_limit_reached fuera de la allowlist del provider NO matchea (SR-7)', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    // providerDef legacy sin usage_limit_reached → el gate por allowlist protege.
+    const legacyDef = { ...PROVIDER_DEF_OPENAI, quota_error_types: ['insufficient_quota'] };
+    const evt = { type: 'turn.failed', error: { message: "You've hit your usage limit." } };
+    const det = q.detectQuotaError(evt, legacyDef);
+    assert.equal(det.matched, false);
+});
+
+test('codex ChatGPT · setFlag(usage_limit_reached) sin resets_at usa ventana corta (no fallback semanal)', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    try {
+        const now = 1777000000000;
+        const r = q.setFlag({ provider: 'openai-codex', errorType: 'usage_limit_reached', now });
+        const deltaMs = Date.parse(r.payload.resets_at) - now;
+        assert.equal(deltaMs, q.CODEX_USAGE_LIMIT_RESET_MS, 'reset debe ser la ventana corta rolling (1h), no el fallback semanal');
+        // Verifica la cascada: codex gateado, gemini libre.
+        assert.equal(q.shouldGateSpawn('po', { provider: 'openai-codex', now }), true);
+        assert.equal(q.shouldGateSpawn('po', { provider: 'gemini-google', now }), false);
+    } finally {
+        delete process.env.PIPELINE_DIR_OVERRIDE;
+        fs.rmSync(tmp, { recursive: true, force: true });
+    }
 });
 
 test('CA-4 #3077 · detectQuotaError NO matchea cuando providerDef es null/inválido', () => {

@@ -52,7 +52,8 @@
       "output_parser": "openai-sse",
       "quota_error_types": [
         "insufficient_quota",
-        "billing_hard_limit_reached"
+        "billing_hard_limit_reached",
+        "usage_limit_reached"
       ],
       "resets_at_cap_max_days": 31,
       "supports_tool_use": true,

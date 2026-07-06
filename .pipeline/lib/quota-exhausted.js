@@ -165,10 +165,14 @@ const KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER = Object.freeze({
         'plan_max_reset_required',
     ]),
     'openai-codex': Object.freeze([
-        // Externos (CLI codex / OpenAI)
+        // Externos (CLI codex / OpenAI con API key paga)
         'insufficient_quota',
         'billing_hard_limit_reached',
         'tokens_exhausted',
+        // Codex con cuenta ChatGPT (OAuth): el CLI reporta el cap rolling como
+        // texto libre en el canal de control ("You've hit your usage limit").
+        // error_type sintético emitido por _detectOpenAI (no viene del CLI).
+        'usage_limit_reached',
     ]),
     // #3220 — rename ex-`gemini` → `gemini-google` (sign-off 2026-05-15).
     // Coordinación cross-archivo: ALLOWED_LAUNCHERS, ALLOWED_PROVIDERS y
@@ -670,7 +674,14 @@ function setFlag(opts = {}) {
     const provider = opts.provider || DEFAULT_PROVIDER;
     const model = opts.model || null;
     const now = Number.isFinite(opts.now) ? opts.now : Date.now();
-    const cap = capResetsAt(opts.resetsAt, { maxDays: opts.maxDays, now });
+    // Codex/ChatGPT `usage_limit_reached` es un cap rolling: si el caller no
+    // aportó un `resets_at` (el CLI lo emite como texto libre, sin campo
+    // estructurado), gateamos por una ventana corta en vez del fallback semanal.
+    let effectiveResetsAt = opts.resetsAt;
+    if (effectiveResetsAt == null && errorType === 'usage_limit_reached') {
+        effectiveResetsAt = now + CODEX_USAGE_LIMIT_RESET_MS;
+    }
+    const cap = capResetsAt(effectiveResetsAt, { maxDays: opts.maxDays, now });
     const payload = {
         exhausted: true,
         provider,
@@ -744,6 +755,25 @@ function appendAudit(entry, opts = {}) {
 const _CLI_1M_CONTEXT_GLITCH_PATTERN =
     /\bUsage\s+credits?\s+required\s+for\s+1M\s+context\b/i;
 
+// Codex CLI con cuenta ChatGPT (OAuth, sin API key paga) reporta el límite de
+// uso como TEXTO LIBRE, sin `error.type` estructurado, en eventos del canal de
+// CONTROL del CLI:
+//   {"type":"error","message":"You've hit your usage limit. Upgrade to Pro..."}
+//   {"type":"turn.failed","error":{"message":"You've hit your usage limit..."}}
+// A diferencia del canal de contenido del modelo, estos frames de protocolo NO
+// pueden ser inyectados por el modelo, así que matchear un regex ACOTADO sobre
+// su `message` es seguro (mismo criterio estructural que el glitch 1M de
+// Anthropic). ReDoS-safe: clases restringidas y cuantificadores acotados.
+const _CODEX_USAGE_LIMIT_PATTERN =
+    /\byou'?ve\s+hit\s+your\s+usage\s+limit\b/i;
+
+// El límite de uso de la cuenta ChatGPT es un cap ROLLING (resetea en minutos/
+// horas, no semanal). Cuando el CLI no entrega un `resets_at` estructurado,
+// gateamos codex por esta ventana corta en vez del fallback semanal — así no
+// desperdiciamos el fallback pago durante días. Es auto-corrector: si al drenar
+// la cuota sigue agotada, el próximo intento re-setea el flag (idempotente).
+const CODEX_USAGE_LIMIT_RESET_MS = 60 * 60 * 1000; // 1h
+
 function _detectAnthropic(evt, allowlist) {
     if (!evt || typeof evt !== 'object') return { matched: false };
     if (evt.type !== 'result') return { matched: false };
@@ -810,6 +840,21 @@ function _detectOpenAI(evt, allowlist) {
         const errType = typeof evt.error.type === 'string' ? evt.error.type : null;
         if (errType && allowlist.includes(errType)) {
             return { matched: true, errorType: errType };
+        }
+    }
+
+    // Codex CLI (cuenta ChatGPT): límite de uso reportado como texto libre en el
+    // canal de control (`turn.failed` / `error`), sin `error.type` estructurado.
+    // Solo se activa si el provider declara el error_type sintético
+    // `usage_limit_reached` en su allowlist (SR-7). El regex se aplica ÚNICAMENTE
+    // sobre eventos de control — nunca sobre el canal de contenido del modelo.
+    if ((evt.type === 'turn.failed' || evt.type === 'error')
+        && allowlist.includes('usage_limit_reached')) {
+        const msg = (evt.error && typeof evt.error.message === 'string')
+            ? evt.error.message
+            : (typeof evt.message === 'string' ? evt.message : '');
+        if (msg && _CODEX_USAGE_LIMIT_PATTERN.test(msg)) {
+            return { matched: true, errorType: 'usage_limit_reached' };
         }
     }
 
@@ -960,6 +1005,7 @@ module.exports = {
     PATTERN_MATCHED_MAX_CHARS,
     DETERMINISTIC_SKILLS,
     KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER,
+    CODEX_USAGE_LIMIT_RESET_MS,
 
     // Paths (útiles para tests)
     flagFile,
@@ -971,4 +1017,5 @@ module.exports = {
     _detectAnthropic,
     _detectOpenAI,
     _CLI_1M_CONTEXT_GLITCH_PATTERN,
+    _CODEX_USAGE_LIMIT_PATTERN,
 };
