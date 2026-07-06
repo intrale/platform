@@ -13,6 +13,7 @@ const path = require('path');
 
 const {
     writeDeliverable,
+    recordDeliverableException,
     resolveDeliverableDir,
     sanitizeSvg,
     redactContent,
@@ -21,6 +22,13 @@ const {
 // Root temporal aislado por corrida — no toca el FS real del pipeline.
 function tmpRoot() {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'wd-test-'));
+}
+
+// #4505 — El índice vive bajo `<root>/.pipeline/deliverables/` (semántica NATIVA
+// del índice). `writeDeliverable` recibe el REPO ROOT y traduce internamente a
+// `.pipeline`; para LEER el índice en los tests resolvemos el dir `.pipeline`.
+function idxRoot(root) {
+    return path.join(root, '.pipeline');
 }
 
 // -----------------------------------------------------------------------------
@@ -225,7 +233,7 @@ test('writeDeliverable con fase escribe <skill>-<fase>-<issue>.ext y actualiza e
     assert.equal(res.fase, 'criterios');
 
     // El índice tiene la entry con el path relativo.
-    const read = deliverableIndex.readDeliverableIndex('4255', { pipelineRoot: root });
+    const read = deliverableIndex.readDeliverableIndex('4255', { pipelineRoot: idxRoot(root) });
     assert.equal(read.entries.length, 1);
     assert.equal(read.entries[0].agente, 'po');
     assert.equal(read.entries[0].fase, 'criterios');
@@ -241,7 +249,7 @@ test('writeDeliverable multi-fase del mismo agente NO colisiona en disco ni en e
     assert.notEqual(r1.path, r2.path, 'los archivos deben ser distintos por fase');
     assert.ok(fs.existsSync(r1.path) && fs.existsSync(r2.path));
 
-    const read = deliverableIndex.readDeliverableIndex('4256', { pipelineRoot: root });
+    const read = deliverableIndex.readDeliverableIndex('4256', { pipelineRoot: idxRoot(root) });
     assert.equal(read.entries.length, 2);
 });
 
@@ -250,7 +258,7 @@ test('writeDeliverable sin fase mantiene comportamiento legacy y NO indexa', () 
     const res = writeDeliverable('tester', '777', { md: 'cobertura', pipelineRoot: root });
     assert.ok(res.path.replace(/\\/g, '/').endsWith('.pipeline/assets/docs/777/tester-777.md'), res.path);
     assert.equal(res.indexed, false);
-    const file = deliverableIndex.indexPathFor('777', { pipelineRoot: root });
+    const file = deliverableIndex.indexPathFor('777', { pipelineRoot: idxRoot(root) });
     assert.ok(!fs.existsSync(file), 'sin fase no debe crear índice');
 });
 
@@ -275,7 +283,7 @@ test('writeDeliverable con fase + filename explícito respeta el filename y aún
     });
     assert.ok(res.path.replace(/\\/g, '/').endsWith('/dossier-tecnico.md'), res.path);
     assert.equal(res.indexed, true);
-    const read = deliverableIndex.readDeliverableIndex('779', { pipelineRoot: root });
+    const read = deliverableIndex.readDeliverableIndex('779', { pipelineRoot: idxRoot(root) });
     assert.ok(read.entries[0].path.endsWith('dossier-tecnico.md'));
 });
 
@@ -305,7 +313,7 @@ test('SEC-REQ-1 · fallback .md desde notas con AWS key / JWT / bot token sale r
     assert.ok(!written.includes(jwt), `JWT filtrado: ${written}`);
     assert.ok(!written.includes(botToken), `bot token filtrado: ${written}`);
     // Y quedó indexado en el store #4255 (la entrega efectiva depende del índice).
-    const read = deliverableIndex.readDeliverableIndex('4466', { pipelineRoot: root });
+    const read = deliverableIndex.readDeliverableIndex('4466', { pipelineRoot: idxRoot(root) });
     assert.equal(read.entries.length, 1);
     assert.equal(read.entries[0].agente, 'pipeline-dev');
     assert.equal(read.entries[0].fase, 'dev');
@@ -320,4 +328,74 @@ test('writeDeliverable rechaza artefacto que excede maxBytes', () => {
         () => writeDeliverable('guru', '1', { md: 'x'.repeat(100), maxBytes: 10, pipelineRoot: tmpRoot() }),
         /excede maxBytes/,
     );
+});
+
+// -----------------------------------------------------------------------------
+// #4505 · CA-2 / SEC-REQ-6 — confinamiento del índice a `.pipeline/deliverables/`
+// -----------------------------------------------------------------------------
+
+test('CA-2 · writeDeliverable con pipelineRoot=repoRoot indexa en <repo>/.pipeline/deliverables/ y NUNCA en <repo>/deliverables/', () => {
+    const root = tmpRoot();
+    writeDeliverable('architect', '4505', {
+        md: '# receta\n'.padEnd(120, 'x'),
+        fase: 'criterios',
+        timestamp: '2026-07-06T10:00:00.000Z',
+        pipelineRoot: root,
+    });
+    // El índice DEBE estar bajo `.pipeline/deliverables/`.
+    const confined = path.join(root, '.pipeline', 'deliverables', '4505.json');
+    assert.ok(fs.existsSync(confined), `índice confinado esperado: ${confined}`);
+    // Y NUNCA en el dir espurio `<repo>/deliverables/` (bug de pipelineRoot).
+    const spurious = path.join(root, 'deliverables', '4505.json');
+    assert.ok(!fs.existsSync(spurious), `no debe existir dir espurio: ${spurious}`);
+    assert.ok(!fs.existsSync(path.join(root, 'deliverables')), 'no debe crearse <repo>/deliverables/');
+
+    // Y es legible por readDeliverableIndex con el dir `.pipeline`.
+    const read = deliverableIndex.readDeliverableIndex('4505', { pipelineRoot: idxRoot(root) });
+    assert.equal(read.entries.length, 1);
+    assert.equal(read.entries[0].agente, 'architect');
+    assert.equal(read.entries[0].fase, 'criterios');
+});
+
+// -----------------------------------------------------------------------------
+// #4505 · CA-4 — recordDeliverableException por el choke point (sin binario)
+// -----------------------------------------------------------------------------
+
+test('CA-4 · recordDeliverableException persiste tipo:"exception"+motivo, sin .md, distinguible y confinado', () => {
+    const root = tmpRoot();
+    const rec = recordDeliverableException('architect', '4507', {
+        fase: 'criterios',
+        motivo: 'issue sin seccion Detalles Tecnicos al cerrar criterios',
+        timestamp: '2026-07-06T10:00:00.000Z',
+        pipelineRoot: root,
+    });
+    assert.equal(rec.tipo, 'exception');
+    assert.equal(rec.agente, 'architect');
+    assert.equal(rec.fase, 'criterios');
+    assert.ok(rec.motivo.includes('Detalles Tecnicos'), rec.motivo);
+    assert.equal(rec.path, null, 'la excepción no apunta a un binario');
+
+    // Confinada a `.pipeline/deliverables/` (misma semántica que writeDeliverable).
+    const confined = path.join(root, '.pipeline', 'deliverables', '4507.json');
+    assert.ok(fs.existsSync(confined), confined);
+    assert.ok(!fs.existsSync(path.join(root, 'deliverables')), 'sin dir espurio');
+
+    // Distinguible de un `document`: filtrable por tipo.
+    const read = deliverableIndex.readDeliverableIndex('4507', { pipelineRoot: idxRoot(root) });
+    const exceptions = read.entries.filter((e) => e.tipo === 'exception');
+    const documents = read.entries.filter((e) => e.tipo === 'document');
+    assert.equal(exceptions.length, 1);
+    assert.equal(documents.length, 0);
+});
+
+test('CA-4 · exception y document del mismo agente distinto fase conviven y son distinguibles', () => {
+    const root = tmpRoot();
+    const ts = '2026-07-06T10:00:00.000Z';
+    // architect deja receta en criterios y excepción en aprobacion (hipotético).
+    writeDeliverable('architect', '4508', { md: '# receta\n'.padEnd(120, 'x'), fase: 'criterios', timestamp: ts, pipelineRoot: root });
+    recordDeliverableException('architect', '4508', { fase: 'aprobacion', motivo: 'no aplica en aprobacion', timestamp: ts, pipelineRoot: root });
+    const read = deliverableIndex.readDeliverableIndex('4508', { pipelineRoot: idxRoot(root) });
+    assert.equal(read.entries.length, 2);
+    assert.equal(read.entries.filter((e) => e.tipo === 'document').length, 1);
+    assert.equal(read.entries.filter((e) => e.tipo === 'exception').length, 1);
 });

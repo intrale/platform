@@ -28,7 +28,7 @@ const fs = require('fs');
 const path = require('path');
 const { getSkillSourcesCatalog } = require('./skill-deliverable-attachments');
 const { redactSecretValue, redactSensitive } = require('./redact');
-const { upsertDeliverableIndex, validatePhase } = require('./deliverable-index');
+const { upsertDeliverableIndex, upsertException, validatePhase } = require('./deliverable-index');
 
 // Cap defensivo de tamaño por artefacto (CA-9). 5 MiB cubre PDFs/MD/SVG ricos
 // sin permitir que un productor sature el FS (fuente de verdad del pipeline).
@@ -226,6 +226,11 @@ function writeDeliverable(skill, issue, payload = {}) {
             bytes,
             sensible,
             timestamp,
+            // #4505 (SEC-REQ-6): pasamos el REPO ROOT tal cual. La reconciliación
+            // del bug de path vive en `deliverable-index.resolvePipelineDir`, que
+            // confina el índice a `.pipeline/deliverables/` sin importar si el
+            // caller pasó el repo root o el dir `.pipeline`. Así WRITER y READER
+            // (recolector de attachments) coinciden siempre en el mismo lugar.
             pipelineRoot,
         });
         indexed = true;
@@ -234,8 +239,39 @@ function writeDeliverable(skill, issue, payload = {}) {
     return { path: file, bytes, indexed, ...(fase != null ? { fase } : {}) };
 }
 
+/**
+ * Registra una entry de EXCEPCIÓN "el entregable no aplica + motivo" (#4505 /
+ * CA-4) por el MISMO choke point que `writeDeliverable`. Mantiene la firma
+ * `(skill, issue, opts)` y la MISMA semántica de `pipelineRoot` (repo root) que
+ * `writeDeliverable`. No escribe binario físico: la excepción es la válvula de
+ * escape de la obligatoriedad y sólo deja traza en el índice, distinguible por
+ * `tipo:'exception'`. El confinamiento del índice a `.pipeline/deliverables/` lo
+ * garantiza `deliverable-index.resolvePipelineDir` (SEC-REQ-6).
+ *
+ * @param {string} skill - clave del perfil (ej. 'architect').
+ * @param {string|number} issue - número de issue (`^\d+$`).
+ * @param {object} [opts]
+ * @param {string} opts.fase - fase del pipeline (enum cerrado, SEC-2).
+ * @param {string} opts.motivo - motivo legible en español (se redacta).
+ * @param {string} [opts.timestamp] - ISO inyectable (determinismo en tests).
+ * @param {string} [opts.pipelineRoot] - repo root (default process.cwd()).
+ * @returns {object} la entry de excepción persistida.
+ */
+function recordDeliverableException(skill, issue, opts = {}) {
+    const { fase, motivo, timestamp, pipelineRoot } = opts;
+    return upsertException({
+        issue,
+        fase,
+        agente: skill,
+        motivo,
+        timestamp,
+        pipelineRoot,
+    });
+}
+
 module.exports = {
     writeDeliverable,
+    recordDeliverableException,
     resolveDeliverableDir,
     sanitizeSvg,
     redactContent,

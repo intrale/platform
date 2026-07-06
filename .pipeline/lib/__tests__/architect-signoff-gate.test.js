@@ -899,3 +899,38 @@ test('appendAuditEntry crea directorio padre si no existe', () => {
         assert.equal(recs[0].foo, 'bar');
     } finally { tmp.cleanup(); }
 });
+
+// -----------------------------------------------------------------------------
+// #4505 · extractDetallesTecnicos — extractor reutilizable (SEC-REQ-2)
+// -----------------------------------------------------------------------------
+
+test('#4505 · extractDetallesTecnicos devuelve el contenido de la sección trimmeado', () => {
+    const body = [
+        '## Objetivo', 'bla bla',
+        '## Detalles Técnicos', '', 'Contenido real de la receta.', 'Segunda línea.', '',
+        '## Otra sección', 'no debe entrar',
+    ].join('\n');
+    const out = gate.extractDetallesTecnicos(body);
+    assert.ok(out.includes('Contenido real de la receta.'), out);
+    assert.ok(out.includes('Segunda línea.'), out);
+    assert.ok(!out.includes('no debe entrar'), out);
+    assert.ok(!out.includes('## Otra'), out);
+});
+
+test('#4505 · extractDetallesTecnicos devuelve null si no está el header', () => {
+    assert.equal(gate.extractDetallesTecnicos('## Objetivo\nsin receta'), null);
+    assert.equal(gate.extractDetallesTecnicos(''), null);
+    assert.equal(gate.extractDetallesTecnicos(null), null);
+});
+
+test('#4505 · extractDetallesTecnicos strippea el marker de signoff embebido (SEC-REQ-2)', () => {
+    const body = [
+        '## Detalles Técnicos',
+        'Receta con un marker pegado por error:',
+        '<!-- architect-signoff issue=4505 -->',
+        'y más contenido.',
+    ].join('\n');
+    const out = gate.extractDetallesTecnicos(body);
+    assert.ok(!out.includes('architect-signoff'), `no debe filtrar el marker: ${out}`);
+    assert.ok(out.includes('y más contenido.'), out);
+});

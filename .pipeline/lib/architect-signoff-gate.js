@@ -210,6 +210,34 @@ function computeMarkerHash(commentBody) {
 // -----------------------------------------------------------------------------
 
 /**
+ * Extrae el contenido textual de la sección `## Detalles Técnicos` del body del
+ * issue (la RECETA del arquitecto). Devuelve el contenido entre el header y el
+ * siguiente `## …` o EOF, ya trimmeado, o `null` si el header no está presente.
+ *
+ * SEC-REQ-2 (#4505): opera SÓLO sobre el body del issue, jamás sobre comments,
+ * por lo que nunca arrastra el marker `<!-- architect-signoff issue=N -->` ni
+ * el token del audit (que viven en comments). Como red de seguridad adicional
+ * ante un body que pegara el marker a mano, se stripea cualquier marker de
+ * signoff del contenido devuelto.
+ *
+ * @param {string} body
+ * @returns {string|null} contenido de la sección (trimmeado) o null.
+ */
+function extractDetallesTecnicos(body) {
+    if (typeof body !== 'string' || body.length === 0) return null;
+    const headerMatch = body.match(DETALLES_TECNICOS_HEADER_RE);
+    if (!headerMatch) return null;
+    // Extraer contenido entre el header y el siguiente `## …` o EOF.
+    const headerIdx = body.indexOf(headerMatch[0]);
+    const rest = body.slice(headerIdx + headerMatch[0].length);
+    const nextHeader = rest.match(NEXT_MARKDOWN_HEADER_RE);
+    const section = nextHeader ? rest.slice(0, rest.indexOf(nextHeader[0])) : rest;
+    // Defensa SEC-REQ-2: eliminar cualquier marker de signoff embebido.
+    const clean = section.replace(/<!--\s*architect-signoff\s+issue=\d+\s*-->/g, '');
+    return clean.trim();
+}
+
+/**
  * Verifica que el body del issue contenga `## Detalles Técnicos` con al menos
  * `MIN_DETALLES_TECNICOS_LENGTH` (200) caracteres de contenido tras el header.
  *
@@ -220,16 +248,10 @@ function evalDetallesTecnicos(body) {
     if (typeof body !== 'string' || body.length === 0) {
         return { pass: false, reason: 'body vacío o no es string', length: 0 };
     }
-    const headerMatch = body.match(DETALLES_TECNICOS_HEADER_RE);
-    if (!headerMatch) {
+    const content = extractDetallesTecnicos(body);
+    if (content == null) {
         return { pass: false, reason: 'header "## Detalles Técnicos" ausente', length: 0 };
     }
-    // Extraer contenido entre el header y el siguiente `## …` o EOF.
-    const headerIdx = body.indexOf(headerMatch[0]);
-    const rest = body.slice(headerIdx + headerMatch[0].length);
-    const nextHeader = rest.match(NEXT_MARKDOWN_HEADER_RE);
-    const section = nextHeader ? rest.slice(0, rest.indexOf(nextHeader[0])) : rest;
-    const content = section.trim();
     if (content.length < MIN_DETALLES_TECNICOS_LENGTH) {
         return {
             pass: false,
@@ -687,6 +709,7 @@ module.exports = {
     // Helpers (exportados para tests + uso externo)
     computeMarkerHash,
     validateIssueId,
+    extractDetallesTecnicos,
     evalDetallesTecnicos,
     evalMarker,
     evalAuditEntry,
