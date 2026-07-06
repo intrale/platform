@@ -280,12 +280,29 @@ Si el argumento NO es un numero, saltar este paso — `/delivery` usara fallback
 
 > Doctrina común (#3929 / EP3-H3): cada productor deja el **artefacto físico** de su fase, no sólo un comentario en el issue. Reglas completas de formato, paths y seguridad (CA-5..CA-9): [`docs/pipeline/entregables-multimedia-por-agente.md`](../../../docs/pipeline/entregables-multimedia-por-agente.md) → §5.bis "Doctrina de cierre de fase".
 
-Antes de salir (después de escribir tu resultado), generá el artefacto en el root issue-scoped:
+Antes de salir (después de escribir tu resultado), generá **SIEMPRE** el artefacto en el root issue-scoped. Es **obligatorio**: no puede volver a pasar que `web-dev` cierre la fase Desarrollo sin producir su entregable (#4508).
 
 - **Path:** `.pipeline/assets/docs/{issue}/`
-- **Formato:** Markdown o PDF (resumen del cambio)
+- **Formato:** Markdown o PDF (`.md`/`.pdf` únicamente — no ampliar formatos/canales)
 
-Usá el helper compartido, que centraliza validación de `issue` (CA-5), redacción de secrets (CA-6) y sanitización SVG (CA-8) — **no reimplementes estas reglas**:
+### El entregable es una *nota de implementación web*, no un resumen genérico
+
+El `md` NO es un párrafo suelto ni un stub tipo "hecho". Es una **nota de implementación web** real, escaneable, con un encabezado o bullet por cada campo. Contenido mínimo obligatorio:
+
+- **Pantallas/componentes Compose tocados** — qué `sc/`, `cp/`, ViewModels o rutas `ro/` se agregaron o modificaron.
+- **PWA/manifest** — cambios en `manifest.json`, service worker, íconos PWA, caching (o "no aplica" con motivo).
+- **Browser APIs** — qué APIs del navegador se usaron (fetch, storage, history, clipboard, etc.) y por qué (o "no aplica").
+- **Bundling/build** — impacto en bundle Wasm/Webpack, tamaño, splitting, tareas Gradle web ejecutadas (o "no aplica").
+- **Desvíos vs. receta del Arquitecto** — cualquier apartamiento de la receta técnica del issue y su justificación; si no hubo desvíos, decilo explícito ("ninguno").
+- **Cómo se probó** — comandos concretos, verificación manual/automatizada, evidencia (ej. `./gradlew :app:composeApp:wasmJsBrowserDevelopmentRun`, tests, curl+grep del render).
+
+### Excepción explícita cuando no aplica (nunca silencio)
+
+Si por la naturaleza del issue **no hay superficie web** (ej. issue de infra del pipeline, backend puro), igual generás el entregable, pero el `md` **registra el motivo concreto y verificable** de por qué la nota web no aplica. Ejemplo válido: *"Issue de infra del pipeline (`area:infra`), sin superficie web; no se tocaron componentes Compose, PWA ni browser APIs"*. Un `N/A` pelado o cerrar en silencio **no cumple** el contrato (CA-3 de #4508). La frase de excepción debe ser humana y verificable, no un stub.
+
+### Punto de escritura único
+
+Usá el helper compartido, que centraliza validación de `issue` (CA-5), redacción de secrets (CA-6) y sanitización SVG (CA-8) — **no reimplementes estas reglas ni escribas `.pipeline/deliverables/*.json` a mano** (el índice lo actualiza `writeDeliverable` cuando recibe `fase`):
 
 ```js
 const path = require("path");
@@ -293,7 +310,9 @@ const { writeDeliverable } = require(path.resolve(".pipeline/lib/write-deliverab
 // #4466 — pasar `fase` puebla el índice .pipeline/deliverables/<issue>.json (store #4255)
 // y da filename phase-scoped. Tomamos la fase real del pipeline desde el env inyectado.
 const fase = process.env.PIPELINE_FASE || "dev";
-writeDeliverable("web-dev", issue, { fase, md /* o svg para mockups/diagramas */ });
+writeDeliverable("web-dev", issue, { fase, md /* nota de implementación web; o svg para mockups/diagramas */ });
 ```
 
-El enforcement es **warn-only**: no generar el archivo no bloquea el pipeline, pero cuenta para la cobertura ≥80% de la ola (CA-4).
+### Enforcement y fallback
+
+El enforcement de la llamada es **warn-only**: no invocar el helper no bloquea el pipeline, pero cuenta para la cobertura ≥80% de la ola (CA-4). Como red de seguridad, el Pulpo tiene un **fallback determinístico** (#4466): si `web-dev` cierra fase sin dejar artefacto físico pero deja `notas`/`motivo` sustantivo (≥80 chars) en su YAML de resultado, el Pulpo materializa un `.md` mínimo vía `writeDeliverable`. Por eso, aun cuando olvides la llamada, **escribí siempre `notas` con contenido suficiente** para que el fallback no genere un stub vacío. El entregable se disponibiliza por Telegram al cerrar la fase (whitelist `deliverable_notifications`, sin allowlist que bloquee `web-dev`).
