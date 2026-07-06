@@ -3752,7 +3752,8 @@ async function tickOlaETA(){
     // banner de misión desde la MISMA fuente determinística que el handler de
     // estado de ola (totalPct + velocityETA), no desde conteos de issues.
     const vel = (d.velocityETA && typeof d.velocityETA === 'object') ? d.velocityETA : null;
-    const hasVelocity = d.etaSource === 'velocity' && vel
+    // #4532 — ritmo MEDIDO ('velocity') o estimación HISTÓRICA cross-ola ('historical').
+    const hasVelocity = (d.etaSource === 'velocity' || d.etaSource === 'historical') && vel
         && Number.isFinite(vel.velocityPctPerMin) && vel.velocityPctPerMin > 0;
 
     // #4450 — Fuente UNICA del banner: los ids mission-avance-pct,

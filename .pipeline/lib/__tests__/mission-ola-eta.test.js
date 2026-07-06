@@ -27,6 +27,8 @@ test('payload nulo/indefinido degrada a estructura neutra sin romper', () => {
             velocityState: 'sin datos suficientes', // #4325 CA-4: estado explícito, no mudo
             throughputPerDay: null,                 // #4450 — throughput sin dato
             throughputState: 'insufficient',        // #4450 — estado explícito
+            velocityPctPerIssuePerMin: null,        // #4532 — velocidad %/issue/min sin dato
+            velocitySource: 'insufficient',         // #4532 — estado explícito
         });
     }
 });
@@ -162,9 +164,10 @@ test('el emisor de script cliente reusa la función pura y es self-wiring/idempo
     // Guard de idempotencia + poll periódico.
     assert.ok(src.includes('__missionOlaEtaWired'));
     assert.ok(src.includes('setInterval'));
-    // #4450 — la celda de velocidad ahora expresa throughput en issues/día, no %/h.
-    assert.ok(src.includes('issues/día'));
-    assert.ok(!src.includes('%/h'));
+    // #4532 — la celda de velocidad expresa el % de avance por issue por minuto
+    // (métrica canónica de la ola), reemplazando el throughput issues/día.
+    assert.ok(src.includes('%/issue·min'));
+    assert.ok(!src.includes('issues/día'));
     assert.ok(!src.includes('iss/h'));
 });
 
@@ -243,12 +246,11 @@ test('deriveMissionOlaEta: throughput sin dato / no finito → insufficient (nun
     assert.equal(deriveMissionOlaEta({ throughputPerDay: '3' }).throughputPerDay, null);
 });
 
-test('el script cliente pinta issues/día (throughput) y la leyenda "sin datos suficientes"', () => {
+test('el script cliente pinta %/issue·min (velocidad canónica #4532) y la leyenda "sin datos suficientes"', () => {
     const src = missionOlaEtaClientScript();
-    assert.ok(src.includes("'issues/día'"));            // unidad de throughput
-    assert.ok(src.includes('throughputState'));         // gate por estado
-    assert.ok(src.includes('throughputPerDay'));        // valor pintado
-    assert.ok(src.includes('sin datos suficientes'));   // leyenda insufficient
+    assert.ok(src.includes("'%/issue·min'"));               // #4532 — unidad de velocidad
+    assert.ok(src.includes('velocityPctPerIssuePerMin'));   // #4532 — valor pintado
+    assert.ok(src.includes('sin datos suficientes'));       // leyenda insufficient
 });
 
 test('el script cliente NO usa innerHTML para pintar mission-vel-value (R-1 / G-UX-6)', () => {
