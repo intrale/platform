@@ -289,6 +289,9 @@ const { ensureLaunchWorktree, WorktreeLaunchError } = require('./lib/worktree-la
 const { resolveExistingWorktree } = require('./lib/worktree-resolver');
 const { appendWorktreeAudit } = require('./lib/worktree-audit');
 const worktreeNotifDedup = require('./lib/worktree-notif-dedup');
+// #4532 — Clasificación pura fase→workspace (needsWorktree / useExistingWorktree).
+// Extraída de este archivo para ser testeable y no olvidar fases al editarla.
+const { phaseNeedsWorktree, phaseUsesExistingWorktree } = require('./lib/phase-workspace');
 // #3085 / S7 multi-provider: aislamiento de credenciales por proceso. Filtra
 // `process.env` con allowlist mínima + scope del skill antes de pasarlo al
 // child. Eliminar `OPENAI_API_KEY` del env de un agente Anthropic (y viceversa)
@@ -6893,23 +6896,22 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   }
 
   // Determinar si necesita worktree (solo fases que modifican código)
-  const needsWorktree = (fase === 'dev');
-  // #2526: fases que LEEN código del issue (no generan commits) deben correr
-  // en el worktree del dev, no en ROOT. Si corren en ROOT, leen la rama
-  // arbitraria del repo principal (puede estar checkout en la rama de OTRO
-  // agente) y producen resultados incorrectos. Incidente 2026-04-24: linter
-  // de #2505 corrió en ROOT (checkout en agent/2450), reportó 'no-commits'
-  // aunque el worktree del #2505 tenía 3 commits legítimos.
-  //
-  // #2519 (rev-1, 2026-04-24): además se incluye `entrega`. El fix original
-  // (#2526) explicitó "entrega no toca git local, usa PR de GitHub" pero eso
-  // es FALSO: skills-deterministicos/delivery.js hace git add/commit/rebase/push
-  // en local antes del gh pr create. Si corre en ROOT, usa la rama y árbol del
-  // repo principal (rama ajena + cambios sucios de heartbeats/registry) y
-  // produce: rebase conflicts, commits a la rama equivocada, push a otra
-  // branch. Incidente real: delivery del #2519 corrió en ROOT con branch
-  // agent/2523-... y 66 archivos sucios, falló rebase con "unstaged changes".
-  const useExistingWorktree = (fase === 'build' || fase === 'linteo' || fase === 'aprobacion' || fase === 'entrega');
+  // #2526/#2519/#4532: la clasificación fase→workspace vive en un módulo puro
+  // (lib/phase-workspace.js) para ser testeable y evitar olvidar fases al
+  // editarla inline. Contrato:
+  //   - `dev` crea el worktree del issue (needsWorktree).
+  //   - Las fases post-dev que LEEN o tocan el código del issue reutilizan ese
+  //     worktree (useExistingWorktree): build, verificacion, linteo, aprobacion,
+  //     entrega. Si corrieran en ROOT leerían la rama arbitraria del repo
+  //     principal (checkout de OTRO agente) y darían veredictos incorrectos.
+  // Incidentes: #2526 (linteo de #2505 corrió en ROOT sobre agent/2450 y reportó
+  // 'no-commits'), #2519 (delivery de #2519 rebase-falló en rama ajena),
+  // #4532 (qa estructural de #4532 corrió en ROOT sobre agent/4506 y rechazó
+  // porque el HEAD no tenía el commit fa21d6ec1/904d49aa2, aunque el worktree del
+  // #4532 sí). El worktree del issue vive desde `dev` hasta el cleanup de
+  // `entrega`, así que está disponible en toda fase post-dev.
+  const needsWorktree = phaseNeedsWorktree(fase);
+  const useExistingWorktree = phaseUsesExistingWorktree(fase);
   // #2591 — Inicializamos en `null` para que cualquier rama olvidada que use
   // `worktreePath` sin resolverlo falle ruidosamente en vez de degradar
   // silenciosamente a ROOT (que producía commits cruzados entre agentes).
