@@ -276,6 +276,62 @@ test('#4515 · PO en aprobacion persiste veredicto phase-scoped e indexado como 
     assert.ok(read.entries[0].path.endsWith('po-aprobacion-4515.md'), read.entries[0].path);
 });
 
+test('#4513 · review en aprobacion persiste el reporte phase-scoped e indexado como documento', () => {
+    const root = tmpRoot();
+    const md = [
+        '## Code Review — PR #999',
+        '',
+        '### Veredicto: APROBADO',
+        '',
+        '#### BLOQUEANTES (0)',
+        '#### WARNINGS (1)',
+        '- **test** `app/src/Foo.kt:42` — falta test',
+        '',
+        '### Alcance revisado',
+        '- 3 archivos, +40/-5 líneas',
+    ].join('\n');
+
+    const res = writeDeliverable('review', '4513', {
+        md,
+        fase: 'aprobacion',
+        timestamp: '2026-07-07T10:00:00.000Z',
+        pipelineRoot: root,
+    });
+
+    assert.ok(
+        res.path.replace(/\\/g, '/').endsWith('.pipeline/assets/docs/4513/review-aprobacion-4513.md'),
+        res.path,
+    );
+    assert.equal(res.indexed, true);
+    assert.equal(res.fase, 'aprobacion');
+    assert.equal(fs.readFileSync(res.path, 'utf8'), md);
+
+    const read = deliverableIndex.readDeliverableIndex('4513', { pipelineRoot: pipelineDirOf(root) });
+    assert.equal(read.entries.length, 1);
+    assert.equal(read.entries[0].agente, 'review');
+    assert.equal(read.entries[0].fase, 'aprobacion');
+    assert.equal(read.entries[0].tipo, 'document');
+    assert.ok(read.entries[0].path.endsWith('review-aprobacion-4513.md'), read.entries[0].path);
+});
+
+test('#4513 · review sin revisión aplicable registra excepción explícita (CA-3), no silencio', () => {
+    const root = tmpRoot();
+    const rec = writeDeliverableException('review', '4513', {
+        fase: 'aprobacion',
+        motivo: 'excepción: issue de documentación pura, sin código a revisar.',
+        timestamp: '2026-07-07T11:00:00.000Z',
+        pipelineRoot: root,
+    });
+    assert.equal(rec.agente, 'review');
+    assert.equal(rec.fase, 'aprobacion');
+    assert.equal(rec.tipo, 'exception');
+
+    const read = deliverableIndex.readDeliverableIndex('4513', { pipelineRoot: pipelineDirOf(root) });
+    assert.equal(read.entries.length, 1);
+    assert.equal(read.entries[0].agente, 'review');
+    assert.equal(read.entries[0].tipo, 'exception');
+});
+
 test('writeDeliverable multi-fase del mismo agente NO colisiona en disco ni en el índice', () => {
     const root = tmpRoot();
     const ts = '2026-07-01T10:00:00.000Z';

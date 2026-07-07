@@ -329,6 +329,7 @@ const DOC_PROFILES = [
     { skill: 'security', descriptor: 'seguridad' },
     { skill: 'build', descriptor: 'build' },
     { skill: 'architect', descriptor: 'receta' },
+    { skill: 'review', descriptor: 'review' },
     { skill: 'backend-dev', descriptor: 'dev' },
     { skill: 'android-dev', descriptor: 'dev' },
     { skill: 'web-dev', descriptor: 'dev' },
