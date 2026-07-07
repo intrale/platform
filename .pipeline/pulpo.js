@@ -212,7 +212,10 @@ const skillDeliverableAttachments = require('./lib/skill-deliverable-attachments
 // #4466 (B) — fallback determinístico de entrega de artefacto: enruta SIEMPRE por
 // writeDeliverable (redacta secrets por default — SEC-REQ-1/CA-SEC-1). NUNCA se
 // construye el path a mano ni se adjuntan notas crudas.
-const { writeDeliverable } = require('./lib/write-deliverable');
+const { writeDeliverable, writeDeliverableException } = require('./lib/write-deliverable');
+// #4504 (CA-1) — lectura del índice de entregables para garantizar que `guru`
+// SIEMPRE deje document o excepción indexada al cerrar `analisis` (Definición).
+const { readDeliverableIndex } = require('./lib/deliverable-index');
 // #3481 — Evaluación de completitud de fases paralelas que considera
 // artefactos varados en `procesado/` (con whitelist estricta + anti-race
 // contra pendiente/trabajando). Resuelve el deadlock cuando un skill cerró
@@ -4767,6 +4770,64 @@ function brazoBarrido(config) {
                 }
               } catch (e) {
                 log('barrido', `📎 #${issue} fallback excepción (${notifySkill}): ${e.message}`);
+              }
+
+              // #4504 (CA-1) — Garantía real para `guru` en `analisis` (Definición):
+              // el dossier de investigación es OBLIGATORIO. El fallback genérico de
+              // arriba sólo materializa con notas ≥80 chars y deja todo en warning;
+              // para `guru` esa condición desaparece. Si tras el barrido NO hay
+              // entregable indexado para guru/analisis, se materializa el dossier vía
+              // writeDeliverable (sin umbral de 80 chars) o, si de verdad no hay
+              // contenido, se registra una EXCEPCIÓN explícita (CA-3, motivo redactado)
+              // — nunca un cierre silencioso. El notify sigue siendo best-effort
+              // (no se aborta el ciclo), pero para guru queda siempre document|exception.
+              try {
+                if (notifySkill === 'guru' && fase === 'analisis') {
+                  let yaIndexado = false;
+                  try {
+                    const gIdx = readDeliverableIndex(issue, { pipelineRoot: path.join(ROOT, '.pipeline') });
+                    yaIndexado = Array.isArray(gIdx.entries)
+                      && gIdx.entries.some((e) => e && e.agente === 'guru' && e.fase === 'analisis');
+                  } catch { /* índice ilegible → tratamos como no indexado */ }
+
+                  if (!yaIndexado) {
+                    const notasGuru =
+                      (typeof r.notas === 'string' && r.notas.trim().length > 0) ? r.notas
+                      : (typeof r.motivo === 'string' && r.motivo.trim().length > 0) ? r.motivo
+                      : '';
+                    try {
+                      if (notasGuru.trim().length > 0) {
+                        // Materializa el dossier sin umbral (CA-1). Enruta por
+                        // writeDeliverable → redacta secrets + indexa en el canónico.
+                        writeDeliverable('guru', issue, { fase, md: notasGuru, pipelineRoot: ROOT });
+                        log('barrido', `📎 #${issue} guru/analisis dossier garantizado vía writeDeliverable (CA-1)`);
+                      } else {
+                        // Sin ninguna nota → excepción explícita, nunca silencio (CA-3).
+                        writeDeliverableException('guru', issue, {
+                          fase,
+                          motivo: 'guru cerró la fase de análisis sin notas ni dossier adjunto; '
+                            + 'entregable no materializable automáticamente por falta de contenido.',
+                          pipelineRoot: ROOT,
+                        });
+                        log('barrido', `📎 #${issue} guru/analisis SIN contenido → excepción registrada (CA-3)`);
+                      }
+                      // Re-barrer: el .md recién escrito debe entrar como adjunto
+                      // pasando por la misma validación (path/magic-bytes/allowlist).
+                      const rescanGuru = skillDeliverableAttachments.collectAttachmentsForSkill(
+                        'guru', issue, fase, { pipelineRoot: ROOT },
+                      );
+                      if (Array.isArray(rescanGuru) && rescanGuru.length > 0) {
+                        r.attachments = rescanGuru;
+                      }
+                    } catch (e) {
+                      // Última red: si ni la excepción se pudo escribir, alertar sin
+                      // abortar el ciclo (garantía best-effort para el notify).
+                      log('barrido', `⚠️ #${issue} guru/analisis NO se pudo garantizar entregable: ${e.message}`);
+                    }
+                  }
+                }
+              } catch (e) {
+                log('barrido', `📎 #${issue} guru garantía excepción: ${e.message}`);
               }
 
               const result = deliverableNotify.notify({
@@ -10199,7 +10260,16 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
             // plano; `extractFallbackReply` saca SÓLO el/los `agent_message`
             // finales para que a Telegram llegue un único mensaje conversacional.
             const proc = spawn(safe.spawnDef.cmd, safe.spawnDef.args, safe.spawnDef.spawnOpts);
-            proc.stdin && proc.stdin.end && proc.stdin.end();
+            // #4529 — el payload (system foldeado + mensaje) viaja por STDIN, no
+            // por argv (evita `spawn ENAMETOOLONG` en Windows con contexto/historial
+            // grande). Escribimos `stdinPayload` y cerramos stdin para que el
+            // provider (codex `-`, gemini `-p ''`, runners `--prompt -`) lo lea.
+            if (proc.stdin) {
+              try {
+                if (safe.spawnDef.stdinPayload != null) proc.stdin.write(safe.spawnDef.stdinPayload);
+              } catch { /* best-effort: el provider errorará accionable si no lee stdin */ }
+              try { proc.stdin.end(); } catch {}
+            }
             let stdout = '';
             let stderr = '';
             const startNon = Date.now();
@@ -10234,7 +10304,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
               },
               onStreamGap: () => {
                 clearTimeout(timer);
-                log('commander', `Provider ${res.provider} stream-gap >${Math.round(inflightShadow.STREAM_GAP_THRESHOLD_MS / 1000)}s — cascada temprana.`);
+                log('commander', `Provider ${res.provider} stream-gap >${Math.round(inflightShadow.NONANTH_STREAM_GAP_THRESHOLD_MS / 1000)}s — cascada temprana.`);
                 return advanceOrGiveUp(res.provider, 'timeout_no_new_bytes_30s');
               },
             });
@@ -10427,6 +10497,20 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
     const pendingSkillCalls = new Map(); // tool_use_id → { startedAt, skillName }
     let skillTimedOut = false; // flag que finish() expone al caller
     let skillTimedOutInfo = null; // { skillName, durationMs }
+
+    // #4530 CA-2 — tracker GENERAL de tool_use in-flight (cualquier herramienta,
+    // no solo Skills). Se agrega el `tool_use_id` cuando el assistant emite un
+    // `tool_use` y se elimina cuando llega el `tool_result` correspondiente.
+    // Sirve para pausar el stream-gap detector mientras una herramienta larga
+    // (Bash/gradlew de 120-300s) está corriendo: en ese tramo no llegan lines
+    // nuevos, pero es actividad legítima, no un cuelgue. NO tiene watchdog propio
+    // (el HARD_TIMEOUT de 10min sigue siendo el límite duro para tools no-Skill).
+    const pendingToolUses = new Set(); // tool_use_id
+    // #4530 CA-3 — umbral efectivo del stream-gap, resuelto una vez por turn
+    // desde el env con fail-closed 180s + clamp [180s, 600s].
+    const streamGapThresholdMs = inflightShadow.resolveStreamGapThresholdMs(
+        process.env.COMMANDER_STREAM_GAP_MS,
+    );
 
     // =============================================================================
     // #3577 — Detectores in-stream (parte 1/2 del split de #3472).
@@ -10700,6 +10784,9 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
             if (b.type === 'text' && b.text) lastText = b.text;
             if (b.type === 'tool_use') {
               toolCount++;
+              // #4530 CA-2 — registrar CUALQUIER tool_use in-flight para pausar
+              // el stream-gap detector mientras la herramienta corre.
+              if (typeof b.id === 'string' && b.id) pendingToolUses.add(b.id);
               lastToolDesc = b.input?.description || b.input?.command?.slice(0, 50) || b.name || '';
               log('commander', `  [tool ${toolCount}] ${b.name}: ${lastToolDesc.slice(0, 80)}`);
               // #3587 CA-1 — registrar el tool_use en el trace. Guardamos
@@ -10739,6 +10826,8 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           const blocks = Array.isArray(evt.message.content) ? evt.message.content : [evt.message.content];
           for (const b of blocks) {
             if (b.type === 'tool_result' && b.tool_use_id) {
+              // #4530 CA-2 — la herramienta terminó: sacarla del tracker general.
+              pendingToolUses.delete(b.tool_use_id);
               // #3587 CA-1 — registrar TODOS los tool_result en el trace
               // (no solo los de Skill). El sanitizer del audit log se encarga
               // del redact + truncate. `content` puede ser string o array de
@@ -10975,9 +11064,11 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       }
     }, inflightShadow.FIRST_BYTE_THRESHOLD_MS);
 
-    // #3577 CA-A2 / R-1 / SR-S5 — stream-gap detector (30s sin nuevos lines).
+    // #3577 CA-A2 / R-1 / SR-S5 — stream-gap detector (default 180s sin nuevos
+    // lines — #4530, antes 30s; configurable por COMMANDER_STREAM_GAP_MS).
     // Implementado con setInterval(5000), NO busy-wait. Pausado mientras hay
-    // Skill in-flight (el SKILL_WATCHDOG_MS=60s cubre Skills con semántica propia).
+    // Skill in-flight (el SKILL_WATCHDOG_MS=60s cubre Skills con semántica propia)
+    // o CUALQUIER tool_use in-flight (#4530 CA-2 — tools largas tipo Bash/gradlew).
     // Modo shadow: solo emite al audit.
     const streamGapShadowTimer = setInterval(() => {
       if (resolved) return;
@@ -10985,6 +11076,8 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         lastLineAt,
         now: Date.now(),
         pendingSkillCallsSize: pendingSkillCalls.size,
+        pendingToolUseSize: pendingToolUses.size, // #4530 CA-2
+        thresholdMs: streamGapThresholdMs,        // #4530 CA-3 (env fail-closed 180s)
         alreadyFired: streamGapFired,
       })) {
         streamGapFired = true;

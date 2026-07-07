@@ -505,6 +505,22 @@ test('#4255 — collector devuelve fase inferida del filename phase-scoped', () 
     }
 });
 
+test('#4515 — collector devuelve el veredicto PO de aprobacion como document enviable', () => {
+    const tmp = mkTmpRoot();
+    try {
+        writeFile(tmp.root, '.pipeline/assets/docs/4515/po-aprobacion-4515.md', '# ✅ aceptado\n\n## Alcance evaluado\n- Issue 4515');
+        const res = helper.collectAttachmentsForSkill('po', 4515, 'aprobacion', { pipelineRoot: tmp.root });
+
+        assert.equal(res.length, 1);
+        assert.equal(res[0].type, 'document');
+        assert.equal(res[0].fase, 'aprobacion');
+        assert.equal(res[0].descriptor, 'criterios');
+        assert.ok(res[0].path.endsWith('po-aprobacion-4515.md'), res[0].path);
+    } finally {
+        tmp.cleanup();
+    }
+});
+
 test('#4255 — manifest tiene prioridad sobre la inferencia del filename', () => {
     const tmp = mkTmpRoot();
     try {

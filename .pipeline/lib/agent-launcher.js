@@ -284,6 +284,20 @@ function launchAgent({
     });
     const child = _spawn(spawnDef.cmd, spawnDef.args, spawnDef.spawnOpts);
 
+    // #4529 — payload grande (system foldeado + prompt) por STDIN, no por argv:
+    // los providers no-Anthropic (codex/gemini/cerebras/nvidia) devuelven
+    // `stdinPayload` y esperan leerlo por stdin (evita `spawn ENAMETOOLONG` en
+    // Windows). Sólo escribimos+cerramos cuando hay payload: si es null (Anthropic
+    // interactivo), no tocamos stdin para no romper el chat operador→agente.
+    if (spawnDef.stdinPayload != null && child.stdin) {
+        try {
+            child.stdin.write(spawnDef.stdinPayload);
+            child.stdin.end();
+        } catch (e) {
+            log('agent-launcher', `⚠️ ${skill}:#${issue} no se pudo escribir stdin al provider (${effective.provider}): ${e && e.message}`);
+        }
+    }
+
     // #4052 CA-1 — Instrumentación de la muerte temprana de Codex. SOLO para
     // openai-codex (no toca el path determinístico ni anthropic). Observacional:
     // captura exit/error + firstByte + stderr acotado, clasifica vía onSpawnExit

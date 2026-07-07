@@ -13,6 +13,7 @@ const path = require('path');
 
 const {
     writeDeliverable,
+    writeDeliverableException,
     resolveDeliverableDir,
     sanitizeSvg,
     redactContent,
@@ -21,6 +22,13 @@ const {
 // Root temporal aislado por corrida — no toca el FS real del pipeline.
 function tmpRoot() {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'wd-test-'));
+}
+
+// El adapter `write-deliverable` recibe REPO ROOT y traduce a dir `.pipeline`
+// antes de poblar el índice (CA-4, #4504). Para leer el índice canónico desde
+// los tests hay que apuntar al dir `.pipeline`, no al repo root.
+function pipelineDirOf(root) {
+    return path.join(root, '.pipeline');
 }
 
 // -----------------------------------------------------------------------------
@@ -225,12 +233,47 @@ test('writeDeliverable con fase escribe <skill>-<fase>-<issue>.ext y actualiza e
     assert.equal(res.fase, 'criterios');
 
     // El índice tiene la entry con el path relativo.
-    const read = deliverableIndex.readDeliverableIndex('4255', { pipelineRoot: root });
+    const read = deliverableIndex.readDeliverableIndex('4255', { pipelineRoot: pipelineDirOf(root) });
     assert.equal(read.entries.length, 1);
     assert.equal(read.entries[0].agente, 'po');
     assert.equal(read.entries[0].fase, 'criterios');
     assert.ok(read.entries[0].path.endsWith('po-criterios-4255.md'), read.entries[0].path);
     assert.ok(!path.isAbsolute(read.entries[0].path), 'el índice guarda path relativo');
+});
+
+test('#4515 · PO en aprobacion persiste veredicto phase-scoped e indexado como documento', () => {
+    const root = tmpRoot();
+    const md = [
+        '# ✅ aceptado',
+        '',
+        '## Criterios',
+        '- [x] CA-1 persistencia: evidencia QA revisada.',
+        '',
+        '## Alcance evaluado',
+        '- Issue: 4515',
+    ].join('\n');
+
+    const res = writeDeliverable('po', '4515', {
+        md,
+        fase: 'aprobacion',
+        timestamp: '2026-07-07T10:00:00.000Z',
+        pipelineRoot: root,
+    });
+
+    assert.ok(
+        res.path.replace(/\\/g, '/').endsWith('.pipeline/assets/docs/4515/po-aprobacion-4515.md'),
+        res.path,
+    );
+    assert.equal(res.indexed, true);
+    assert.equal(res.fase, 'aprobacion');
+    assert.equal(fs.readFileSync(res.path, 'utf8'), md);
+
+    const read = deliverableIndex.readDeliverableIndex('4515', { pipelineRoot: pipelineDirOf(root) });
+    assert.equal(read.entries.length, 1);
+    assert.equal(read.entries[0].agente, 'po');
+    assert.equal(read.entries[0].fase, 'aprobacion');
+    assert.equal(read.entries[0].tipo, 'document');
+    assert.ok(read.entries[0].path.endsWith('po-aprobacion-4515.md'), read.entries[0].path);
 });
 
 test('writeDeliverable multi-fase del mismo agente NO colisiona en disco ni en el índice', () => {
@@ -241,7 +284,7 @@ test('writeDeliverable multi-fase del mismo agente NO colisiona en disco ni en e
     assert.notEqual(r1.path, r2.path, 'los archivos deben ser distintos por fase');
     assert.ok(fs.existsSync(r1.path) && fs.existsSync(r2.path));
 
-    const read = deliverableIndex.readDeliverableIndex('4256', { pipelineRoot: root });
+    const read = deliverableIndex.readDeliverableIndex('4256', { pipelineRoot: pipelineDirOf(root) });
     assert.equal(read.entries.length, 2);
 });
 
@@ -250,7 +293,7 @@ test('writeDeliverable sin fase mantiene comportamiento legacy y NO indexa', () 
     const res = writeDeliverable('tester', '777', { md: 'cobertura', pipelineRoot: root });
     assert.ok(res.path.replace(/\\/g, '/').endsWith('.pipeline/assets/docs/777/tester-777.md'), res.path);
     assert.equal(res.indexed, false);
-    const file = deliverableIndex.indexPathFor('777', { pipelineRoot: root });
+    const file = deliverableIndex.indexPathFor('777', { pipelineRoot: pipelineDirOf(root) });
     assert.ok(!fs.existsSync(file), 'sin fase no debe crear índice');
 });
 
@@ -275,7 +318,7 @@ test('writeDeliverable con fase + filename explícito respeta el filename y aún
     });
     assert.ok(res.path.replace(/\\/g, '/').endsWith('/dossier-tecnico.md'), res.path);
     assert.equal(res.indexed, true);
-    const read = deliverableIndex.readDeliverableIndex('779', { pipelineRoot: root });
+    const read = deliverableIndex.readDeliverableIndex('779', { pipelineRoot: pipelineDirOf(root) });
     assert.ok(read.entries[0].path.endsWith('dossier-tecnico.md'));
 });
 
@@ -305,10 +348,80 @@ test('SEC-REQ-1 · fallback .md desde notas con AWS key / JWT / bot token sale r
     assert.ok(!written.includes(jwt), `JWT filtrado: ${written}`);
     assert.ok(!written.includes(botToken), `bot token filtrado: ${written}`);
     // Y quedó indexado en el store #4255 (la entrega efectiva depende del índice).
-    const read = deliverableIndex.readDeliverableIndex('4466', { pipelineRoot: root });
+    const read = deliverableIndex.readDeliverableIndex('4466', { pipelineRoot: pipelineDirOf(root) });
     assert.equal(read.entries.length, 1);
     assert.equal(read.entries[0].agente, 'pipeline-dev');
     assert.equal(read.entries[0].fase, 'dev');
+});
+
+// -----------------------------------------------------------------------------
+// #4504 CA-4 — regresión de `pipelineRoot`: el índice SIEMPRE cae en el canónico
+// `<root>/.pipeline/deliverables/`, nunca en el stray `<root>/deliverables/`,
+// aun cuando el caller pasa `pipelineRoot`=repo-root explícito (fallback Pulpo).
+// -----------------------------------------------------------------------------
+
+test('CA-4 · índice cae en .pipeline/deliverables y NUNCA en <root>/deliverables (regresión pipelineRoot)', () => {
+    const root = tmpRoot();
+    // Simula el fallback del Pulpo: pipelineRoot = repo root explícito.
+    const res = writeDeliverable('guru', '4504', {
+        md: '# dossier',
+        fase: 'analisis',
+        timestamp: '2026-07-06T10:00:00.000Z',
+        pipelineRoot: root,
+    });
+    assert.equal(res.indexed, true);
+
+    // Canónico presente.
+    const canonical = path.join(root, '.pipeline', 'deliverables', '4504.json');
+    assert.ok(fs.existsSync(canonical), `índice canónico ausente: ${canonical}`);
+
+    // Stray ausente: el bug histórico lo dejaba acá.
+    const stray = path.join(root, 'deliverables', '4504.json');
+    assert.ok(!fs.existsSync(stray), `NO debe existir el stray: ${stray}`);
+
+    // Y se lee desde el dir `.pipeline`.
+    const read = deliverableIndex.readDeliverableIndex('4504', { pipelineRoot: pipelineDirOf(root) });
+    assert.equal(read.entries.length, 1);
+    assert.equal(read.entries[0].agente, 'guru');
+    assert.equal(read.entries[0].fase, 'analisis');
+});
+
+// -----------------------------------------------------------------------------
+// #4504 CA-3 — writeDeliverableException persiste tipo:'exception' con motivo
+// redactado, sin binario, y valida sus inputs.
+// -----------------------------------------------------------------------------
+
+test('CA-3 · writeDeliverableException persiste tipo:exception con motivo redactado', () => {
+    const root = tmpRoot();
+    const rec = writeDeliverableException('guru', '4505', {
+        fase: 'analisis',
+        motivo: 'no aplica; contexto con AWS=AKIAIOSFODNN7EXAMPLE embebido',
+        timestamp: '2026-07-06T10:00:00.000Z',
+        pipelineRoot: root,
+    });
+    assert.equal(rec.tipo, 'exception');
+    assert.ok(!('path' in rec) || rec.path == null, 'una excepción no lleva path de binario');
+    // El motivo se redactó (defensa en profundidad: writeDeliverableException + redactMeta).
+    assert.ok(typeof rec.motivo === 'string' && rec.motivo.trim().length > 0);
+    assert.ok(!rec.motivo.includes('AKIAIOSFODNN7EXAMPLE'), `motivo no debe filtrar la key: ${rec.motivo}`);
+
+    // Quedó indexado en el canónico, sin binario en disco.
+    const read = deliverableIndex.readDeliverableIndex('4505', { pipelineRoot: pipelineDirOf(root) });
+    assert.equal(read.entries.length, 1);
+    assert.equal(read.entries[0].tipo, 'exception');
+    assert.ok(read.entries[0].motivo.length > 0);
+});
+
+test('CA-3 · writeDeliverableException rechaza motivo vacío y fase ausente', () => {
+    const root = tmpRoot();
+    assert.throws(
+        () => writeDeliverableException('guru', '4506', { fase: 'analisis', motivo: '   ', pipelineRoot: root }),
+        /motivo` no vacío/,
+    );
+    assert.throws(
+        () => writeDeliverableException('guru', '4506', { motivo: 'algo', pipelineRoot: root }),
+        /requiere `fase`/,
+    );
 });
 
 // -----------------------------------------------------------------------------

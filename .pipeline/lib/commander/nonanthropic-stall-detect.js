@@ -85,9 +85,13 @@ function createStallDetectors(opts = {}) {
     const _fbThreshold = Number.isFinite(firstByteThresholdMs)
         ? firstByteThresholdMs
         : inflightShadow.FIRST_BYTE_THRESHOLD_MS;
+    // #4530 — default 30s (NONANTH_STREAM_GAP_THRESHOLD_MS), NO el 180s del turno
+    // Anthropic. El early-cascade non-Anthropic conserva su agresividad histórica
+    // (#3571): cascadea rápido vs el kill duro de 600s. El bump de #4530 aplica
+    // sólo al shadow detector del commander Anthropic.
     const _sgThreshold = Number.isFinite(streamGapThresholdMs)
         ? streamGapThresholdMs
-        : inflightShadow.STREAM_GAP_THRESHOLD_MS;
+        : inflightShadow.NONANTH_STREAM_GAP_THRESHOLD_MS;
     const _pollMs = Number.isFinite(streamGapPollMs) ? streamGapPollMs : 5000;
 
     const _setTimeout = (timers && timers.setTimeout) || setTimeout;

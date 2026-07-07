@@ -226,7 +226,14 @@ function writeDeliverable(skill, issue, payload = {}) {
             bytes,
             sensible,
             timestamp,
-            pipelineRoot,
+            // `root` es el REPO ROOT (contrato público de write-deliverable:
+            // `resolveDeliverableDir` lo usa como repo root + `dirRel`=.pipeline/...).
+            // Pero `deliverable-index` interpreta su `pipelineRoot` como el dir
+            // `.pipeline` (default `path.resolve(__dirname,'..')`). Pasar el repo
+            // root crudo hace caer el índice en `<repo>/deliverables/<issue>.json`
+            // (stray) en vez del canónico `.pipeline/deliverables/`. Traducir
+            // explícito repo-root → dir `.pipeline` (CA-4, #4504).
+            pipelineRoot: path.join(root, '.pipeline'),
         });
         indexed = true;
     }
@@ -234,8 +241,58 @@ function writeDeliverable(skill, issue, payload = {}) {
     return { path: file, bytes, indexed, ...(fase != null ? { fase } : {}) };
 }
 
+/**
+ * Registra una EXCEPCIÓN explícita de entregable (#4504, CA-3): cuando por la
+ * naturaleza del issue el agente NO produce un artefacto de contenido, se deja
+ * constancia del `motivo` en el índice en vez de un silencio (ausencia). Es el
+ * contrato opuesto al "cierre sin entregable": nunca queda un cierre sin document
+ * NI excepción para los agentes con entregable obligatorio (ej. `guru`).
+ *
+ * No escribe binario ni usa `fs.writeFile` crudo: delega en el choke point del
+ * índice (`upsertDeliverableIndex`) con `tipo:'exception'`, y redacta el `motivo`
+ * con `redactContent` ANTES de persistir (SEC-1, defensa en profundidad — el
+ * índice también redacta `motivo` en `redactMeta`).
+ *
+ * @param {string} skill - clave del perfil (ej. 'guru').
+ * @param {string|number} issue - número de issue (`^\d+$`).
+ * @param {object} [opts]
+ * @param {string} opts.fase - fase del pipeline (enum cerrado, SEC-2).
+ * @param {string} opts.motivo - explicación de por qué no aplica (no vacío).
+ * @param {string} [opts.pipelineRoot] - root del repo (default process.cwd()).
+ * @param {string} [opts.timestamp] - ISO inyectable (determinismo en tests).
+ * @returns {object} la entry de excepción persistida (redactada).
+ */
+function writeDeliverableException(skill, issue, opts = {}) {
+    const { fase, motivo, pipelineRoot, timestamp } = opts;
+    if (fase == null) {
+        throw new Error('writeDeliverableException requiere `fase`');
+    }
+    if (typeof motivo !== 'string' || motivo.trim().length === 0) {
+        throw new Error('writeDeliverableException requiere `motivo` no vacío');
+    }
+    // SEC-2: validar `fase` contra el enum cerrado antes de tocar el índice.
+    validatePhase(fase, { pipelineRoot });
+
+    const root =
+        typeof pipelineRoot === 'string' && pipelineRoot.length > 0
+            ? pipelineRoot
+            : process.cwd();
+    return upsertDeliverableIndex({
+        issue,
+        fase,
+        agente: skill,
+        tipo: 'exception',
+        motivo: redactContent(motivo), // SEC-1: nunca crudo (defensa en profundidad).
+        sensible: false,
+        timestamp,
+        // Mismo choke point traducido repo-root → dir `.pipeline` que writeDeliverable.
+        pipelineRoot: path.join(root, '.pipeline'),
+    });
+}
+
 module.exports = {
     writeDeliverable,
+    writeDeliverableException,
     resolveDeliverableDir,
     sanitizeSvg,
     redactContent,
