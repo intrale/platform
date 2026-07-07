@@ -39,6 +39,11 @@ async function main() {
     const logStream = fs.createWriteStream(logPath, { flags: 'a' });
 
     const child = spawn(spawnCfg.cmd, spawnCfg.args, spawnCfg.spawnOpts);
+    // #4529 — el prompt viaja por stdin (spawnCfg.stdinPayload); codex lee `-`.
+    if (spawnCfg.stdinPayload != null && child.stdin) {
+        child.stdin.write(spawnCfg.stdinPayload);
+        child.stdin.end();
+    }
 
     let stdoutBytes = 0;
     let stderrBytes = 0;
