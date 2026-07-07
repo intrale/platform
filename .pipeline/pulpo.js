@@ -4994,6 +4994,67 @@ function brazoBarrido(config) {
                 log('barrido', `📎 #${issue} guru garantía excepción: ${e.message}`);
               }
 
+              // #4503 (CA-1/CA-3) — Garantía real para `ux` en `criterios`
+              // (Definición): el entregable de UX (screenshot actual + mockup
+              // objetivo + nota, o sólo objetivo + nota para pantalla nueva) es
+              // OBLIGATORIO al cerrar la fase. Mismo patrón que guru/analisis:
+              // si tras el barrido NO hay entregable indexado para ux/criterios,
+              // se materializa vía writeDeliverable desde las notas (sin umbral de
+              // 80 chars) o, si no hay contenido, se registra una EXCEPCIÓN
+              // explícita (motivo redactado) — nunca un cierre silencioso.
+              // Scope estricto a `criterios` de Definición: `ux` también corre en
+              // desarrollo/validacion y aprobacion → ahí NO se gatea (ese entregable
+              // lo cubren sus propios issues). El notify sigue best-effort (CA-6:
+              // nunca aborta el ciclo).
+              try {
+                if (notifySkill === 'ux' && fase === 'criterios') {
+                  let yaIndexadoUx = false;
+                  try {
+                    const uxIdx = readDeliverableIndex(issue, { pipelineRoot: path.join(ROOT, '.pipeline') });
+                    yaIndexadoUx = Array.isArray(uxIdx.entries)
+                      && uxIdx.entries.some((e) => e && e.agente === 'ux' && e.fase === 'criterios');
+                  } catch { /* índice ilegible → tratamos como no indexado */ }
+
+                  if (!yaIndexadoUx) {
+                    const notasUx =
+                      (typeof r.notas === 'string' && r.notas.trim().length > 0) ? r.notas
+                      : (typeof r.motivo === 'string' && r.motivo.trim().length > 0) ? r.motivo
+                      : '';
+                    try {
+                      if (notasUx.trim().length > 0) {
+                        // Materializa el entregable de UX sin umbral (CA-1). Enruta
+                        // por writeDeliverable → redacta secrets + indexa canónico.
+                        writeDeliverable('ux', issue, { fase, md: notasUx, pipelineRoot: ROOT });
+                        log('barrido', `📎 #${issue} ux/criterios entregable garantizado vía writeDeliverable (CA-1)`);
+                      } else {
+                        // Sin ninguna nota → excepción explícita, nunca silencio (CA-3).
+                        writeDeliverableException('ux', issue, {
+                          fase,
+                          motivo: 'ux cerró la fase de criterios (Definición) sin notas ni entregable adjunto; '
+                            + 'pantalla/mockup no materializable automáticamente por falta de contenido.',
+                          pipelineRoot: ROOT,
+                        });
+                        log('barrido', `📎 #${issue} ux/criterios SIN contenido → excepción registrada (CA-3)`);
+                      }
+                      // Re-barrer: el artefacto recién escrito debe entrar como
+                      // adjunto pasando por la misma validación (path/magic-bytes/allowlist).
+                      const rescanUx = skillDeliverableAttachments.collectAttachmentsForSkill(
+                        'ux', issue, fase, { pipelineRoot: ROOT },
+                      );
+                      if (Array.isArray(rescanUx) && rescanUx.length > 0) {
+                        r.attachments = rescanUx;
+                      }
+                    } catch (e) {
+                      // Última red: si ni la excepción se pudo escribir, alertar sin
+                      // abortar el ciclo (garantía best-effort para el notify).
+                      log('barrido', `⚠️ #${issue} ux/criterios NO se pudo garantizar entregable: ${e.message}`);
+                    }
+                  }
+                }
+              } catch (e) {
+                log('barrido', `📎 #${issue} ux garantía excepción: ${e.message}`);
+              }
+
               const result = deliverableNotify.notify({
                 issue,
                 skill: notifySkill,

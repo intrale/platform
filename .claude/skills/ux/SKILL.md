@@ -1183,4 +1183,35 @@ const fase = process.env.PIPELINE_FASE || "criterios";
 writeDeliverable("ux", issue, { fase, md /* o svg para mockups/diagramas */ });
 ```
 
-El enforcement es **warn-only**: no generar el archivo no bloquea el pipeline, pero cuenta para la cobertura ≥80% de la ola (CA-4).
+### Obligatorio en fase `criterios` (Definición): pantalla actual + mockup + nota (#4503)
+
+Si `fase === "criterios"` (tu fase en **Definición**), el entregable **no es opcional**.
+Al cerrar la fase SIEMPRE dejás persistido, vía `writeDeliverable("ux", issue, { fase, ... })`:
+
+- **Screenshot real de la pantalla actual** (si existe) — como `svg`/`png` en el root de mockups.
+- **Mockup objetivo** generado con tus herramientas propias (Claude Design / Figma MCP).
+- **Nota de cambios** visuales/comportamiento (sin límite de bullets). Caso pantalla
+  nueva: sólo objetivo + nota de lo nuevo.
+
+Si por la naturaleza del issue el entregable de UX **no aplica**, igual dejá constancia
+explícita del motivo — nunca un cierre silencioso. Registrá la excepción con:
+
+```js
+const path = require("path");
+const { writeDeliverableException } = require(path.resolve(".pipeline/lib/write-deliverable"));
+writeDeliverableException("ux", issue, {
+  fase: "criterios",
+  motivo: "Motivo concreto por el que el issue no tiene superficie visual en Definición.",
+});
+```
+
+Cerrar `criterios` sin artefacto y sin excepción explícita es incumplimiento del
+contrato de fase. Como red de seguridad, el pulpo garantiza al cerrar la fase que
+quede indexado `document` o `exception` para `ux/criterios` (se materializa desde
+tus notas o registra la excepción), pero el productor autoritativo del contenido
+sos vos — la garantía del pulpo es el piso, no el reemplazo del entregable real.
+
+**Scope:** la obligatoriedad aplica sólo a `criterios` (Definición). `ux` también
+corre en `desarrollo/validacion` y `aprobacion`; ahí el entregable lo cubren sus
+propios issues y el enforcement sigue **warn-only**: no generar el archivo no
+bloquea el pipeline, pero cuenta para la cobertura ≥80% de la ola (CA-4).
