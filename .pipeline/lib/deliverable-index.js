@@ -239,6 +239,39 @@ function entryKey(e) {
     return `${e.agente}::${e.fase}`;
 }
 
+// -----------------------------------------------------------------------------
+// Excepción explícita `no_aplica` (CA-3, #4506)
+// -----------------------------------------------------------------------------
+//
+// Cuando el entregable genuinamente no aplica (cierre `aprobado` sin adjuntos y
+// sin nota sustantiva), en vez de silencio se persiste UNA entry `tipo:
+// "exception"` / `estado: "no_aplica"` con un `motivo` string. La entry:
+//   - NO representa un binario → no requiere `path` (validación relajada SÓLO
+//     para este tipo; todo otro tipo sigue exigiendo `path` no vacío).
+//   - Comparte la clave idempotente `agente::fase` → un entregable real
+//     posterior del mismo agente/fase la PISA.
+//   - Redacta el `motivo` (REQ-SEC-1) y lo capa (REQ-SEC-3) antes de persistir.
+
+// REQ-SEC-3: cap de longitud del `motivo`. Es un string de índice (pocos KiB),
+// NO un artefacto — el cap de 5 MiB de `write-deliverable` no aplica acá.
+const MOTIVO_MAX_CHARS = 2048;
+
+/**
+ * Capa el `motivo` a `MOTIVO_MAX_CHARS` (REQ-SEC-3). Si excede, corta en límite
+ * de palabra (UX G-1: no a mitad de token) y agrega un marcador `…`. El
+ * resultado nunca supera `MOTIVO_MAX_CHARS`.
+ * @param {string} s
+ * @returns {string}
+ */
+function capMotivo(s) {
+    if (typeof s !== 'string') return '';
+    if (s.length <= MOTIVO_MAX_CHARS) return s;
+    const hard = s.slice(0, MOTIVO_MAX_CHARS - 1);
+    const lastSpace = hard.lastIndexOf(' ');
+    const body = lastSpace > MOTIVO_MAX_CHARS * 0.5 ? hard.slice(0, lastSpace) : hard;
+    return `${body}…`;
+}
+
 /**
  * Agrega o reemplaza la entry del `agente` en la `fase` para `issue`. Clave
  * multi-fase (`agente::fase`): un segundo write de la misma fase pisa al
@@ -253,7 +286,8 @@ function entryKey(e) {
  *                                               Requerido salvo `tipo:'exception'`.
  * @param {string} [entry.motivo]              - motivo de la excepción. Requerido
  *                                               (y no vacío) sólo si `tipo:'exception'`
- *                                               (#4504, CA-3). Se redacta en `redactMeta`.
+ *                                               (#4504, CA-3). Se redacta en `redactMeta`
+ *                                               y se capa a MOTIVO_MAX_CHARS (#4506, REQ-SEC-3).
  * @param {number} [entry.bytes]               - tamaño del binario.
  * @param {boolean} [entry.sensible=false]     - flag de sensibilidad (SEC-1).
  * @param {string} [entry.timestamp]           - ISO inyectable (determinismo tests).
@@ -297,15 +331,23 @@ function upsertDeliverableIndex(entry = {}) {
         agente,
         tipo: entry.tipo,
         // Sólo se persiste el campo relevante por tipo: `path` para binarios,
-        // `motivo` para excepciones. Así el shape de cada entry es inequívoco.
+        // `motivo` (+ `estado:"no_aplica"`) para excepciones. Así el shape de cada
+        // entry es inequívoco (#4506, CA-3).
         ...(isException
-            ? { motivo: entry.motivo }
+            ? { motivo: entry.motivo, estado: 'no_aplica' }
             : { path: entry.path }),
         bytes: Number.isFinite(entry.bytes) ? Number(entry.bytes) : null,
         sensible: Boolean(entry.sensible),
         timestamp,
         ...(isException ? { motivo: String(entry.motivo) } : {}),
     });
+    // #4506 (REQ-SEC-3): capar el `motivo` de la excepción. `redactMeta` ya lo
+    // redactó (secrets/PII fuera) — recién ahí se capa a MOTIVO_MAX_CHARS, para
+    // no partir un secret a la mitad (redact-then-cap). Sólo aplica a `exception`;
+    // `path`/`caption` de binarios no se capan.
+    if (isException && typeof record.motivo === 'string') {
+        record.motivo = capMotivo(record.motivo);
+    }
 
     const idx = readDeliverableIndex(issueId, opts);
     const key = entryKey(record);
@@ -408,5 +450,7 @@ module.exports = {
     deliverablesDir,
     // Constantes / helpers de test
     FALLBACK_PHASES,
+    MOTIVO_MAX_CHARS,
+    capMotivo,
     _resetPhaseEnumCache,
 };

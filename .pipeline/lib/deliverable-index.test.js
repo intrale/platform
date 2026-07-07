@@ -22,6 +22,7 @@ const {
     validateAgent,
     validateIssueId,
     FALLBACK_PHASES,
+    MOTIVO_MAX_CHARS,
 } = idx;
 
 // Root temporal aislado por corrida — no toca el FS real del pipeline.
@@ -399,4 +400,92 @@ test('el motivo de la excepción se redacta (secrets no se filtran)', () => {
         timestamp: TS, pipelineRoot: root,
     });
     assert.ok(!rec.motivo.includes('AKIAIOSFODNN7EXAMPLE'), `motivo no debe filtrar la key: ${rec.motivo}`);
+});
+
+// -----------------------------------------------------------------------------
+// CA-3 (#4506) — excepción explícita `no_aplica`
+// -----------------------------------------------------------------------------
+
+test('upsertDeliverableIndex escribe entry no_aplica con motivo redactado y sin path binario', () => {
+    const root = tmpRoot();
+    const rec = upsertDeliverableIndex({
+        issue: '4506', fase: 'dev', agente: 'backend-dev', tipo: 'exception',
+        motivo: 'entregable no aplica: cierre sin nota sustantiva',
+        timestamp: TS, pipelineRoot: root,
+    });
+    assert.equal(rec.tipo, 'exception');
+    assert.equal(rec.estado, 'no_aplica');
+    assert.equal(rec.motivo, 'entregable no aplica: cierre sin nota sustantiva');
+    assert.equal(rec.path, null, 'la excepción no porta binario');
+
+    const read = readDeliverableIndex('4506', { pipelineRoot: root });
+    assert.equal(read.entries.length, 1);
+    assert.equal(read.entries[0].estado, 'no_aplica');
+    assert.equal(read.entries[0].agente, 'backend-dev');
+    assert.equal(read.entries[0].fase, 'dev');
+});
+
+test('el motivo de la excepción se capa a MOTIVO_MAX_CHARS (REQ-SEC-3)', () => {
+    const root = tmpRoot();
+    // Motivo gigante sin espacios cerca del final para forzar el corte duro.
+    const huge = 'x'.repeat(MOTIVO_MAX_CHARS + 5000);
+    const rec = upsertDeliverableIndex({
+        issue: '4507', fase: 'dev', agente: 'backend-dev', tipo: 'exception',
+        motivo: huge, timestamp: TS, pipelineRoot: root,
+    });
+    assert.ok(
+        rec.motivo.length <= MOTIVO_MAX_CHARS,
+        `motivo capado: ${rec.motivo.length} <= ${MOTIVO_MAX_CHARS}`,
+    );
+    assert.ok(rec.motivo.endsWith('…'), 'debe llevar marcador de truncado');
+});
+
+test('un JWT/AWS key en el motivo se redacta antes de persistir (REQ-SEC-1)', () => {
+    const root = tmpRoot();
+    const jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
+    const aws = 'AKIAIOSFODNN7EXAMPLE';
+    const rec = upsertDeliverableIndex({
+        issue: '4508', fase: 'dev', agente: 'backend-dev', tipo: 'exception',
+        motivo: `no aplica, falló auth con token ${jwt} y key ${aws}`,
+        timestamp: TS, pipelineRoot: root,
+    });
+    assert.ok(!rec.motivo.includes(jwt), `no debe filtrar JWT: ${rec.motivo}`);
+    assert.ok(!rec.motivo.includes(aws), `no debe filtrar AWS key: ${rec.motivo}`);
+    // La frase sigue siendo legible tras redactar (UX G-3).
+    assert.ok(rec.motivo.includes('no aplica'), 'la frase debe seguir siendo comprensible');
+
+    const read = readDeliverableIndex('4508', { pipelineRoot: root });
+    assert.ok(!read.entries[0].motivo.includes(jwt), 'el índice persistido no filtra el JWT');
+});
+
+test('tipo distinto de exception sigue exigiendo path no vacío (no-regresión)', () => {
+    const root = tmpRoot();
+    for (const tipo of ['document', 'image', 'video', 'animation']) {
+        assert.throws(
+            () => upsertDeliverableIndex({
+                issue: '4509', fase: 'dev', agente: 'backend-dev', tipo,
+                timestamp: TS, pipelineRoot: root,
+            }),
+            /path inválido/,
+            `tipo=${tipo} debe exigir path`,
+        );
+    }
+});
+
+test('un entregable real posterior pisa la entry no_aplica del mismo agente::fase (idempotencia)', () => {
+    const root = tmpRoot();
+    upsertDeliverableIndex({
+        issue: '4510', fase: 'dev', agente: 'backend-dev', tipo: 'exception',
+        motivo: 'no aplica por ahora', timestamp: TS, pipelineRoot: root,
+    });
+    upsertDeliverableIndex({
+        issue: '4510', fase: 'dev', agente: 'backend-dev', tipo: 'document',
+        path: 'backend-dev-dev-4510.md', bytes: 128, timestamp: TS, pipelineRoot: root,
+    });
+    const read = readDeliverableIndex('4510', { pipelineRoot: root });
+    assert.equal(read.entries.length, 1, 'la misma clave agente::fase no debe duplicar');
+    assert.equal(read.entries[0].tipo, 'document');
+    assert.equal(read.entries[0].path, 'backend-dev-dev-4510.md');
+    assert.ok(!('estado' in read.entries[0]) || read.entries[0].estado !== 'no_aplica',
+        'el entregable real reemplaza al no_aplica');
 });
