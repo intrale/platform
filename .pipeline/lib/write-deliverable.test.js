@@ -268,7 +268,7 @@ test('#4515 · PO en aprobacion persiste veredicto phase-scoped e indexado como 
     assert.equal(res.fase, 'aprobacion');
     assert.equal(fs.readFileSync(res.path, 'utf8'), md);
 
-    const read = deliverableIndex.readDeliverableIndex('4515', { pipelineRoot: root });
+    const read = deliverableIndex.readDeliverableIndex('4515', { pipelineRoot: pipelineDirOf(root) });
     assert.equal(read.entries.length, 1);
     assert.equal(read.entries[0].agente, 'po');
     assert.equal(read.entries[0].fase, 'aprobacion');
