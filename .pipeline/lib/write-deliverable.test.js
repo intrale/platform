@@ -241,6 +241,41 @@ test('writeDeliverable con fase escribe <skill>-<fase>-<issue>.ext y actualiza e
     assert.ok(!path.isAbsolute(read.entries[0].path), 'el índice guarda path relativo');
 });
 
+test('#4515 · PO en aprobacion persiste veredicto phase-scoped e indexado como documento', () => {
+    const root = tmpRoot();
+    const md = [
+        '# ✅ aceptado',
+        '',
+        '## Criterios',
+        '- [x] CA-1 persistencia: evidencia QA revisada.',
+        '',
+        '## Alcance evaluado',
+        '- Issue: 4515',
+    ].join('\n');
+
+    const res = writeDeliverable('po', '4515', {
+        md,
+        fase: 'aprobacion',
+        timestamp: '2026-07-07T10:00:00.000Z',
+        pipelineRoot: root,
+    });
+
+    assert.ok(
+        res.path.replace(/\\/g, '/').endsWith('.pipeline/assets/docs/4515/po-aprobacion-4515.md'),
+        res.path,
+    );
+    assert.equal(res.indexed, true);
+    assert.equal(res.fase, 'aprobacion');
+    assert.equal(fs.readFileSync(res.path, 'utf8'), md);
+
+    const read = deliverableIndex.readDeliverableIndex('4515', { pipelineRoot: pipelineDirOf(root) });
+    assert.equal(read.entries.length, 1);
+    assert.equal(read.entries[0].agente, 'po');
+    assert.equal(read.entries[0].fase, 'aprobacion');
+    assert.equal(read.entries[0].tipo, 'document');
+    assert.ok(read.entries[0].path.endsWith('po-aprobacion-4515.md'), read.entries[0].path);
+});
+
 test('writeDeliverable multi-fase del mismo agente NO colisiona en disco ni en el índice', () => {
     const root = tmpRoot();
     const ts = '2026-07-01T10:00:00.000Z';

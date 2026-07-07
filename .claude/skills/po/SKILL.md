@@ -945,4 +945,33 @@ const fase = process.env.PIPELINE_FASE || "criterios";
 writeDeliverable("po", issue, { fase, md /* o svg para mockups/diagramas */ });
 ```
 
-El enforcement es **warn-only**: no generar el archivo no bloquea el pipeline, pero cuenta para la cobertura ≥80% de la ola (CA-4).
+### Obligatorio en fase `aprobacion`: veredicto de aceptación (#4515)
+
+Si `fase === "aprobacion"`, el entregable **no es opcional**. Después de determinar
+el dictamen en RV5, SIEMPRE persistí el veredicto con:
+
+```js
+const path = require("path");
+const { writeDeliverable } = require(path.resolve(".pipeline/lib/write-deliverable"));
+const fase = process.env.PIPELINE_FASE || "aprobacion";
+
+// OBLIGATORIO en aprobacion: veredicto o excepción explícita, nunca silencio.
+const md = veredictoMarkdown;
+writeDeliverable("po", issue, { fase, md });
+```
+
+El `md` del veredicto debe contener, como mínimo:
+
+- Primera línea escaneable con el dictamen final: `✅ aceptado` o `❌ rechazado`.
+- Cada criterio de aceptación uno por uno, con estado y evidencia de QA asociada.
+- Sección **Brechas** cuando el dictamen sea rechazado, con gaps concretos.
+- Sección **Alcance evaluado** con issue, fase, artefactos QA revisados y límites de la evaluación.
+
+Si por la naturaleza del issue el veredicto-entregable no aplica, igual llamá
+`writeDeliverable("po", issue, { fase: "aprobacion", md })` con un bloque destacado
+que registre el motivo de la excepción. En `aprobacion`, cerrar sin archivo y sin
+motivo explícito es incumplimiento del contrato de fase.
+
+Para fases distintas de `aprobacion`, el enforcement sigue siendo **warn-only**: no
+generar el archivo no bloquea el pipeline, pero cuenta para la cobertura ≥80% de la
+ola (CA-4).
