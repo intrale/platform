@@ -215,9 +215,12 @@ const skillDeliverableAttachments = require('./lib/skill-deliverable-attachments
 // #4505 — `writeDeliverableException` es la API canónica que entregó #4504
 // (validación de fase + redacción del motivo). #4505 la CONSUME (no duplica).
 const { writeDeliverable, writeDeliverableException } = require('./lib/write-deliverable');
+// #4506 (CA-3) — excepción explícita `no_aplica`: cuando un cierre aprobado no
+// deja adjuntos ni nota sustantiva, en vez de silencio se registra UNA entry
+// `tipo:"exception"` en el índice vía el choke point (nunca writeFileSync directo).
 // #4504 (CA-1) — lectura del índice de entregables para garantizar que `guru`
 // SIEMPRE deje document o excepción indexada al cerrar `analisis` (Definición).
-const { readDeliverableIndex } = require('./lib/deliverable-index');
+const { readDeliverableIndex, upsertDeliverableIndex } = require('./lib/deliverable-index');
 // #4505 — extractor reutilizable de la sección `## Detalles Técnicos` del body
 // (la receta del arquitecto). Es el MISMO extractor que usa el signoff-gate, por
 // lo que opera sólo sobre el body y jamás arrastra el marker/token del signoff
@@ -5008,6 +5011,27 @@ function brazoBarrido(config) {
                   } catch (e) {
                     // El fallback NUNCA bloquea la notificación (CA-6).
                     log('barrido', `📎 #${issue} fallback .md error (${notifySkill}/${fase}): ${e.message}`);
+                  }
+                } else if (sinAdjuntos && !esSustantiva) {
+                  // #4506 (CA-3) — Excepción explícita `no_aplica`. Un cierre
+                  // aprobado sin adjuntos y sin nota sustantiva ya NO cae en
+                  // silencio: se registra UNA entry idempotente `tipo:"exception"`
+                  // en el índice `issue::agente::fase` con un `motivo` (redactado y
+                  // capado dentro de upsertDeliverableIndex). Un entregable real
+                  // posterior del mismo agente/fase la pisa. Choke point único —
+                  // nunca writeFileSync directo sobre el índice.
+                  try {
+                    const motivo = notasRaw.trim().length > 0
+                      ? notasRaw.trim()
+                      : 'entregable no aplica: cierre sin nota sustantiva';
+                    upsertDeliverableIndex({
+                      issue, fase, agente: notifySkill,
+                      tipo: 'exception', motivo, pipelineRoot: ROOT,
+                    });
+                    log('barrido', `⚠️ #${issue} excepción no_aplica registrada (${notifySkill}/${fase})`);
+                  } catch (e) {
+                    // La excepción NUNCA bloquea la notificación (CA-6).
+                    log('barrido', `⚠️ #${issue} excepción no_aplica error (${notifySkill}/${fase}): ${e.message}`);
                   }
                 }
               } catch (e) {

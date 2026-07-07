@@ -279,4 +279,11 @@ const fase = process.env.PIPELINE_FASE || "dev";
 writeDeliverable("backend-dev", issue, { fase, md /* o svg para mockups/diagramas */ });
 ```
 
-El enforcement es **warn-only**: no generar el archivo no bloquea el pipeline, pero cuenta para la cobertura ≥80% de la ola (CA-4).
+### Nota de implementación obligatoria (CA-1, #4506)
+
+Al cerrar la fase **Desarrollo**, `backend-dev` **SIEMPRE** debe emitir una **nota de implementación sustantiva** (≥80 caracteres, con la estructura de la §"Entregable esperado" del issue: qué resuelve, qué se tocó a alto nivel —funciones/servicios, rutas, bindings Kodein, modelo de datos—, desvíos vs. la receta del Arquitecto y cómo se probó). Esa nota es la que materializa el `.md` del store #4255.
+
+- **No dejes una nota trivial** (un "aprobado" seco o un aviso corto de cierre). Una nota < 80 chars produce **silencio** en el fallback y no genera entregable.
+- **Si el entregable genuinamente no aplica** para este issue (caso excepcional), declaralo explícito en tu `motivo`/`notas` para que el Pulpo registre la **excepción `no_aplica`** (CA-3) con ese motivo en `.pipeline/deliverables/<issue>.json`. La excepción es **explícita y auditable**, nunca ausencia de rastro.
+
+El Pulpo garantiza el cierre en cualquier caso: nota sustantiva → entry `document`; sin nota sustantiva ni adjuntos → entry `exception`/`no_aplica`. Lo que se busca es que **backend-dev provea la nota sustantiva** para que el rastro sea informativo, no que dependa del fallback. La cobertura del `.md` cuenta para el ≥80% de la ola (CA-4).
