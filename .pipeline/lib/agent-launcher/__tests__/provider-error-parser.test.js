@@ -119,6 +119,94 @@ test('codex ChatGPT: "hit your usage limit" en stderr texto plano clasifica quot
     assert.equal(r.shouldFallback, true);
 });
 
+// -----------------------------------------------------------------------------
+// #4541 — Misatribución de provider + falso positivo sobre contenido normal.
+//
+// Regresión del incidente 2026-07-07: el detector marcaba a Anthropic como
+// quota-exhausted usando errores de límite de Codex/ChatGPT. Dos causas:
+//   Bug 1 (misatribución): el error de Codex se atribuía al primary configurado
+//     (anthropic) en vez del provider efectivo que corrió (openai-codex).
+//   Bug 2 (falso positivo): los regex de texto libre matcheaban contenido
+//     legítimo del agente (`tool_result` que menciona "usage limit").
+//
+// Los `raw_excerpt` de estos tests son los REALES del incidente
+// (`.pipeline/logs/quota-detector-2026-07-07.log`), saneados.
+// -----------------------------------------------------------------------------
+
+// Frame REAL de error del CLI Codex (canal de control) del incidente.
+const INCIDENT_CODEX_ERROR_FRAME =
+    '{"type":"error","message":"You\'ve hit your usage limit. Upgrade to Pro ' +
+    '(https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage ' +
+    'to purchase more credits or try again at Jul 7th, 2026 11:19 AM."}';
+
+// Línea REAL de contenido (`type:user` → `tool_result`) del incidente: NO es un
+// error, es contenido del agente. Aunque acá le agregamos el texto "usage limit"
+// embebido para forzar el peor caso del falso positivo (Bug 2).
+const INCIDENT_TOOL_RESULT_CONTENT =
+    '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_01TQ9E5H6kQaGL9GT7LKwPJE",' +
+    '"type":"tool_result","content":"Analicé el log del detector y encontré este mensaje de Codex: ' +
+    'You\'ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/codex/settings/usage)."}]}}';
+
+test('#4541 CA-3: frame de error REAL de Codex con provider=openai-codex clasifica quota_exhausted', () => {
+    const r = parseProviderError(INCIDENT_CODEX_ERROR_FRAME, {
+        provider: 'openai-codex',
+        transport: 'cli',
+    });
+    assert.equal(r.errorClass, 'quota_exhausted',
+        'el error real de Codex debe clasificar quota (para flaguear codex)');
+    assert.equal(r.shouldFallback, true);
+});
+
+test('#4541 CA-1: el MISMO frame de Codex bajo provider=anthropic NO clasifica quota (no misatribución)', () => {
+    // Bajo la allowlist de Anthropic, un frame de Codex (`type:error`, sin
+    // `error_type` estructural de anthropic) NO debe clasificar quota: es una
+    // línea JSON del stream, así que los regex de texto libre no la tocan y la
+    // detección estructural de anthropic (type:result+is_error) no matchea.
+    // Antes de #4541 el regex `hit your usage limit` la marcaba → flag espurio
+    // de anthropic.
+    const r = parseProviderError(INCIDENT_CODEX_ERROR_FRAME, {
+        provider: 'anthropic',
+        transport: 'cli',
+    });
+    assert.notEqual(r.errorClass, 'quota_exhausted',
+        'un error de Codex NUNCA debe setear el flag de Anthropic');
+});
+
+test('#4541 CA-2: tool_result con "usage limit" en el contenido NO clasifica quota (falso positivo)', () => {
+    // El primer flag del incidente (01:17) era exactamente esto: contenido
+    // legítimo de un `tool_result` que menciona "usage limit". No es un error.
+    const r = parseProviderError(INCIDENT_TOOL_RESULT_CONTENT, {
+        provider: 'anthropic',
+        transport: 'cli',
+    });
+    assert.notEqual(r.errorClass, 'quota_exhausted',
+        'contenido del agente (tool_result) NO debe disparar quota_exhausted');
+});
+
+test('#4541 CA-2: tool_result con texto de Codex tampoco flaguea bajo provider=openai-codex', () => {
+    // Defensa en profundidad: aun si el provider efectivo fuese codex, el texto
+    // dentro de un `tool_result` (contenido, no canal de control) no debe
+    // clasificar quota. Solo el frame de control estructural (type:error /
+    // turn.failed) cuenta como error real del CLI.
+    const r = parseProviderError(INCIDENT_TOOL_RESULT_CONTENT, {
+        provider: 'openai-codex',
+        transport: 'cli',
+    });
+    assert.notEqual(r.errorClass, 'quota_exhausted',
+        'el contenido tool_result no es el payload de error del CLI');
+});
+
+test('#4541 Bug 2: stderr de texto plano legítimo (sin JSON) SIGUE clasificando quota', () => {
+    // No sobre-corregimos: un error de CLI que llega como texto plano degradado
+    // (crash antes del JSON) debe seguir detectándose por regex.
+    const r = parseProviderError('API Error: Usage credits required — sin créditos.', {
+        provider: 'anthropic',
+        transport: 'cli',
+    });
+    assert.equal(r.errorClass, 'quota_exhausted',
+        'el stderr de texto plano real no debe verse afectado por el fix de contenido');
+});
+
 test('CA-7 cross-skill: commander result event estructural clasifica quota_exhausted (mismo shape que skills)', () => {
     const fx = loadFixture('commander-anthropic-result-event.json');
     const r = parseProviderError(fx.raw, { provider: fx.provider, transport: fx.transport });

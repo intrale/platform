@@ -390,41 +390,60 @@ function detectFromCliStderr(input, provider, quotaModule) {
     }
 
     // 3. Heurística regex (CLI stderr de texto libre).
+    //
+    // #4541 (Bug 2 — falso positivo sobre contenido normal): SOLO aplicamos los
+    // regex de texto libre sobre líneas que NO son frames estructurados del
+    // stream (stream-json / SSE). Un frame JSON del stream —incluyendo el
+    // `tool_result` y el contenido del modelo (`type:user`/`assistant`/`item.*`)—
+    // NUNCA debe clasificarse por substring: ya tuvo su chance en los pasos 1
+    // (`_detectAnthropic`) y 2 (`_detectOpenAI`), que matchean sólo el payload de
+    // ERROR estructurado del provider correcto. Durante el incidente 2026-07-07 el
+    // caller (pulpo onSpawnExit) pasaba el stdout stream-json COMPLETO del agente
+    // como `rawOutput`; un `tool_result` cuyo contenido mencionaba "usage limit"
+    // (p.ej. el propio log del detector, o un frame de error de Codex embebido)
+    // matcheaba `CLI_QUOTA_PATTERNS` y disparaba un flag espurio. Acotar el regex
+    // a texto plano (stderr real degradado, sin shape JSON) elimina la clase
+    // entera de falsos positivos sin perder los errores genuinos de CLI que sí
+    // llegan como texto libre (crash del CLI antes del JSON, "Usage credits
+    // required", etc.). Alineado con SR-1 ("PROHIBIDO substring sobre el content
+    // del modelo").
+    const plainTextLines = lines.filter((line) => parseJsonOrSSE(line) == null);
+
     // #3506: el subcaso "Usage credits required for 1M context" se evalúa
     // ANTES del genérico para evitar misclassification a quota_exhausted.
     // #3508 SEC-2: short-circuit del flag para preservar ReDoS budget con OFF.
     if (workaroundEnabled) {
-        for (const line of lines) {
+        for (const line of plainTextLines) {
             if (CLI_1M_CONTEXT_GLITCH_PATTERN.test(line)) {
                 return { errorClass: 'cli_1m_context_glitch', evidence: line };
             }
         }
     }
-    for (const line of lines) {
+    for (const line of plainTextLines) {
         // Cuota
         for (const re of CLI_QUOTA_PATTERNS) {
             if (re.test(line)) return { errorClass: 'quota_exhausted', evidence: line };
         }
     }
-    for (const line of lines) {
+    for (const line of plainTextLines) {
         // Rate limit
         for (const re of CLI_RATE_LIMIT_PATTERNS) {
             if (re.test(line)) return { errorClass: 'rate_limit', evidence: line };
         }
     }
-    for (const line of lines) {
+    for (const line of plainTextLines) {
         // Auth
         for (const re of CLI_AUTH_PATTERNS) {
             if (re.test(line)) return { errorClass: 'auth', evidence: line };
         }
     }
-    for (const line of lines) {
+    for (const line of plainTextLines) {
         // Permanente
         for (const re of CLI_PERMANENT_PATTERNS) {
             if (re.test(line)) return { errorClass: 'permanent_failure', evidence: line };
         }
     }
-    for (const line of lines) {
+    for (const line of plainTextLines) {
         // Transitorio (5xx)
         for (const re of CLI_TRANSIENT_PATTERNS) {
             if (re.test(line)) return { errorClass: 'transient_5xx', evidence: line };
