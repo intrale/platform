@@ -4985,9 +4985,17 @@ function brazoBarrido(config) {
                 const esSustantiva = notasRaw.trim().length >= 80;
                 if (sinAdjuntos && esSustantiva) {
                   try {
+                    // #4514 — defensa en profundidad: el reporte de `security` es
+                    // un mapa de vulnerabilidades → SIEMPRE `sensible:true`, aun si
+                    // el rol no lo persistió y caemos al fallback genérico. Así el
+                    // índice queda consistente y el canal puede gatear (CA-5).
+                    const esSecuritySensible = notifySkill === 'security';
                     // Enruta por writeDeliverable → hereda redactContent (SEC-REQ-1)
                     // y valida `fase` contra el enum cerrado. NUNCA writeFileSync directo.
-                    writeDeliverable(notifySkill, issue, { fase, md: notasRaw, pipelineRoot: ROOT });
+                    writeDeliverable(notifySkill, issue, {
+                      fase, md: notasRaw, pipelineRoot: ROOT,
+                      ...(esSecuritySensible ? { sensible: true } : {}),
+                    });
                     // Re-barrer: el .md recién escrito debe aparecer como adjunto
                     // pasando por la misma validación (path/magic-bytes/allowlist).
                     const rescanned = skillDeliverableAttachments.collectAttachmentsForSkill(
@@ -5123,6 +5131,67 @@ function brazoBarrido(config) {
                 }
               } catch (e) {
                 log('barrido', `📎 #${issue} ux garantía excepción: ${e.message}`);
+              }
+
+              // #4514 (CA-1/CA-2/CA-3) — Garantía real para `security` en
+              // `verificacion` (Revisión): el reporte de auditoría es OBLIGATORIO al
+              // cerrar la fase, con o sin hallazgos. Mismo patrón que guru/ux: si
+              // tras el barrido NO hay entregable indexado para security/verificacion,
+              // se materializa el reporte vía writeDeliverable desde las notas (sin
+              // umbral de 80 chars) con `sensible:true` NO NEGOCIABLE (SEC-1: mapa de
+              // vulns), o si de verdad no hay contenido se registra una EXCEPCIÓN
+              // explícita (motivo redactado) — nunca un cierre silencioso. El notify
+              // sigue best-effort (CA-6: nunca aborta el ciclo).
+              try {
+                if (notifySkill === 'security' && fase === 'verificacion') {
+                  let yaIndexadoSec = false;
+                  try {
+                    const secIdx = readDeliverableIndex(issue, { pipelineRoot: path.join(ROOT, '.pipeline') });
+                    yaIndexadoSec = Array.isArray(secIdx.entries)
+                      && secIdx.entries.some((e) => e && e.agente === 'security' && e.fase === 'verificacion');
+                  } catch { /* índice ilegible → tratamos como no indexado */ }
+
+                  if (!yaIndexadoSec) {
+                    const notasSec =
+                      (typeof r.notas === 'string' && r.notas.trim().length > 0) ? r.notas
+                      : (typeof r.motivo === 'string' && r.motivo.trim().length > 0) ? r.motivo
+                      : '';
+                    try {
+                      if (notasSec.trim().length > 0) {
+                        // Materializa el reporte sin umbral (CA-1/CA-2). Enruta por
+                        // writeDeliverable → redacta secrets + indexa canónico.
+                        // `sensible:true` NO negociable — gatea el canal (CA-5).
+                        writeDeliverable('security', issue, {
+                          fase, md: notasSec, sensible: true, pipelineRoot: ROOT,
+                        });
+                        log('barrido', `📎 #${issue} security/verificacion reporte garantizado vía writeDeliverable (CA-1, sensible)`);
+                      } else {
+                        // Sin ninguna nota → excepción explícita, nunca silencio (CA-3).
+                        writeDeliverableException('security', issue, {
+                          fase,
+                          motivo: 'security cerró la fase de verificación sin notas ni reporte adjunto; '
+                            + 'auditoría no materializable automáticamente por falta de contenido.',
+                          pipelineRoot: ROOT,
+                        });
+                        log('barrido', `📎 #${issue} security/verificacion SIN contenido → excepción registrada (CA-3)`);
+                      }
+                      // Re-barrer: el reporte recién escrito debe entrar como adjunto
+                      // pasando por la misma validación (path/magic-bytes/allowlist).
+                      const rescanSec = skillDeliverableAttachments.collectAttachmentsForSkill(
+                        'security', issue, fase, { pipelineRoot: ROOT },
+                      );
+                      if (Array.isArray(rescanSec) && rescanSec.length > 0) {
+                        r.attachments = rescanSec;
+                      }
+                    } catch (e) {
+                      // Última red: si ni la excepción se pudo escribir, alertar sin
+                      // abortar el ciclo (garantía best-effort para el notify).
+                      log('barrido', `⚠️ #${issue} security/verificacion NO se pudo garantizar entregable: ${e.message}`);
+                    }
+                  }
+                }
+              } catch (e) {
+                log('barrido', `📎 #${issue} security garantía excepción: ${e.message}`);
               }
 
               const result = deliverableNotify.notify({

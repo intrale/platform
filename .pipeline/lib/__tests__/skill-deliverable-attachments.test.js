@@ -565,3 +565,52 @@ test('#4255 — no rompe los 14 perfiles: cada uno recolecta sin tirar y expone 
         tmp.cleanup();
     }
 });
+
+// -----------------------------------------------------------------------------
+// #4514 — propagación del flag `sensible` desde el índice de entregables.
+// El canal (deliverable-notify) lo usa para gatear el encolado a Drive público.
+// -----------------------------------------------------------------------------
+
+test('#4514 — collector propaga sensible:true del índice para security/verificacion', () => {
+    const tmp = mkTmpRoot();
+    try {
+        const relPath = '.pipeline/assets/docs/4514/security-verificacion-4514.md';
+        writeFile(tmp.root, relPath, '## Reporte de auditoría\n\n**Veredicto:** a corregir');
+        const { upsertDeliverableIndex } = require('../deliverable-index');
+        upsertDeliverableIndex({
+            issue: '4514', fase: 'verificacion', agente: 'security', tipo: 'document',
+            path: relPath, sensible: true, timestamp: '2026-07-07T12:00:00.000Z',
+            pipelineRoot: tmp.root,
+        });
+
+        const res = helper.collectAttachmentsForSkill('security', 4514, 'verificacion', { pipelineRoot: tmp.root });
+        const entry = res.find((r) => r.path === relPath);
+        assert.ok(entry, 'debe encontrar el reporte');
+        assert.equal(entry.sensible, true, 'el flag sensible del índice debe propagarse al adjunto');
+    } finally {
+        tmp.cleanup();
+    }
+});
+
+test('#4514 — sin índice, el adjunto expone sensible:false por default', () => {
+    const tmp = mkTmpRoot();
+    try {
+        writeFile(tmp.root, '.pipeline/assets/docs/4514/security-4514.md', '# reporte');
+        const res = helper.collectAttachmentsForSkill('security', 4514, 'verificacion', { pipelineRoot: tmp.root });
+        assert.equal(res.length, 1);
+        assert.equal(res[0].sensible, false, 'default no-sensible cuando el path no está indexado');
+    } finally {
+        tmp.cleanup();
+    }
+});
+
+test('#4514 — buildManifestSensibleMap devuelve mapa vacío sin índice (best-effort)', () => {
+    const tmp = mkTmpRoot();
+    try {
+        const map = helper.__internals.buildManifestSensibleMap('4514', tmp.root);
+        assert.ok(map instanceof Map);
+        assert.equal(map.size, 0);
+    } finally {
+        tmp.cleanup();
+    }
+});

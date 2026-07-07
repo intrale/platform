@@ -434,3 +434,93 @@ test('writeDeliverable rechaza artefacto que excede maxBytes', () => {
         /excede maxBytes/,
     );
 });
+
+// -----------------------------------------------------------------------------
+// #4514 — security en verificacion: reporte SIEMPRE persistido con sensible:true
+// -----------------------------------------------------------------------------
+
+test('#4514 · security con sensible:true produce .md en docs/{issue}/ e indexa entry sensible', () => {
+    const root = tmpRoot();
+    const reporte = [
+        '## Reporte de auditoría de seguridad — issue #4514',
+        '',
+        '**Veredicto:** a corregir',
+        '',
+        '**Alcance auditado:** PR #123 / diff de .pipeline/lib',
+        '',
+        '### Hallazgos',
+        '- [Alta][OWASP A01] `.pipeline/lib/x.js:42` — control de acceso roto',
+        '  - **Vector (criollo):** cualquiera con el link accede al recurso',
+        '  - **Remediación:** agregar chequeo de sesión en `x.js:42`',
+    ].join('\n');
+
+    const res = writeDeliverable('security', '4514', {
+        md: reporte,
+        fase: 'verificacion',
+        sensible: true,
+        timestamp: '2026-07-07T12:00:00.000Z',
+        pipelineRoot: root,
+    });
+
+    assert.ok(
+        res.path.replace(/\\/g, '/').endsWith('.pipeline/assets/docs/4514/security-verificacion-4514.md'),
+        res.path,
+    );
+    assert.equal(res.indexed, true);
+    assert.equal(res.fase, 'verificacion');
+
+    const read = deliverableIndex.readDeliverableIndex('4514', { pipelineRoot: pipelineDirOf(root) });
+    assert.equal(read.entries.length, 1);
+    const entry = read.entries[0];
+    assert.equal(entry.agente, 'security');
+    assert.equal(entry.fase, 'verificacion');
+    assert.equal(entry.tipo, 'document');
+    assert.equal(entry.sensible, true, 'el reporte de auditoría DEBE quedar marcado sensible (SEC-1)');
+    assert.ok(entry.path.endsWith('security-verificacion-4514.md'), entry.path);
+});
+
+test('#4514 · reporte security "sin hallazgos" igual produce .md con secciones mínimas', () => {
+    const root = tmpRoot();
+    const reporte = [
+        '## Reporte de auditoría de seguridad — issue #4514',
+        '',
+        '**Veredicto:** sin hallazgos',
+        '',
+        '**Alcance auditado:** diff completo del PR revisado',
+        '',
+        '### Hallazgos',
+        'Sin hallazgos',
+    ].join('\n');
+
+    const res = writeDeliverable('security', '4514', {
+        md: reporte,
+        fase: 'verificacion',
+        sensible: true,
+        timestamp: '2026-07-07T12:30:00.000Z',
+        pipelineRoot: root,
+    });
+
+    // El .md existe con TODAS las secciones mínimas aunque el veredicto sea limpio.
+    assert.equal(res.indexed, true);
+    const disk = fs.readFileSync(res.path, 'utf8');
+    assert.match(disk, /\*\*Veredicto:\*\* sin hallazgos/);
+    assert.match(disk, /\*\*Alcance auditado:\*\*/);
+    assert.match(disk, /### Hallazgos/);
+    assert.match(disk, /Sin hallazgos/);
+
+    const read = deliverableIndex.readDeliverableIndex('4514', { pipelineRoot: pipelineDirOf(root) });
+    assert.equal(read.entries[0].sensible, true);
+});
+
+test('#4514 · security sin sensible explícito NO marca la entry como sensible (default false)', () => {
+    const root = tmpRoot();
+    const res = writeDeliverable('security', '4517', {
+        md: '## Reporte\n\n**Veredicto:** sin hallazgos',
+        fase: 'verificacion',
+        timestamp: '2026-07-07T13:00:00.000Z',
+        pipelineRoot: root,
+    });
+    assert.equal(res.indexed, true);
+    const read = deliverableIndex.readDeliverableIndex('4517', { pipelineRoot: pipelineDirOf(root) });
+    assert.equal(read.entries[0].sensible, false, 'sin flag explícito, default no-sensible');
+});

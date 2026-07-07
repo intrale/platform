@@ -24,6 +24,88 @@ Sos el auditor de seguridad del proyecto Intrale.
 - Si el código es seguro: `resultado: aprobado`
 - Siempre comentar hallazgos en el issue de GitHub
 
+## Entregable obligatorio al cerrar la fase verificacion (#4514)
+
+Al cerrar la fase **Revisión** (runtime `verificacion`) DEBÉS producir y persistir
+**SIEMPRE** tu reporte de auditoría — con hallazgos, sin hallazgos o "no aplica".
+La generación del entregable es **obligatoria**: no cierres la fase sin producirlo.
+No dependas del fallback determinístico del pulpo (notas ≥ 80 chars): el reporte se
+genera aunque el veredicto sea "sin hallazgos" o "aprobado" seco.
+
+**Punto de escritura único** — exclusivamente `writeDeliverable(...)`. Prohibido
+`fs.writeFileSync` directo al store (saltearía redacción de secrets, validación de
+path e indexación). El flag `sensible: true` es **no negociable** (SEC-1): el reporte
+es un mapa de vulnerabilidades y NUNCA debe terminar en un link público de Drive.
+
+Persistí el reporte antes de salir (después de escribir tu `resultado` en el YAML):
+
+```bash
+node -e "
+const { writeDeliverable } = require('$PIPELINE_REPO_ROOT/.pipeline/lib/write-deliverable');
+const md = require('fs').readFileSync('security-report.md', 'utf8');
+writeDeliverable('security', process.env.PIPELINE_ISSUE, {
+  fase: 'verificacion',       // runtime real; el issue lo llama 'Revisión'
+  md,                          // el reporte estructurado (template abajo)
+  sensible: true,              // NO negociable — gatea el canal (CA-5)
+  pipelineRoot: process.env.PIPELINE_REPO_ROOT,
+});
+"
+```
+
+O desde código del skill:
+
+```js
+const { writeDeliverable } = require('.pipeline/lib/write-deliverable');
+// SIEMPRE, con o sin hallazgos. `sensible: true` NO negociable (SEC-1).
+writeDeliverable('security', issue, {
+  fase: 'verificacion',
+  md: reporteMarkdown,
+  sensible: true,
+  pipelineRoot: process.env.PIPELINE_REPO_ROOT,
+});
+```
+
+### Template mínimo del reporte
+
+El reporte contiene SIEMPRE, como mínimo: veredicto arriba (captable en 1 segundo),
+alcance auditado, hallazgos por OWASP y severidad con `archivo:línea` cuando exista
+hallazgo (o "Sin hallazgos" explícito), vector de explotación en criollo (comprensible
+por un no-especialista; el código OWASP acompaña, no reemplaza) y remediación
+accionable con `archivo:línea` y próximo paso concreto.
+
+```markdown
+## Reporte de auditoría de seguridad — issue #<N>
+
+**Veredicto:** sin hallazgos | a corregir | bloqueante | no aplica
+
+**Alcance auditado:** PR #<M> / diff / módulos / paths revisados
+
+### Hallazgos
+- [Severidad][OWASP A0X] `archivo:línea` — descripción
+  - **Vector (criollo):** cómo se explota, sin jerga
+  - **Remediación:** paso concreto en `archivo:línea`
+(o: "Sin hallazgos" explícito)
+
+### Motivo (solo si Veredicto = no aplica)
+<una línea: por qué el issue no tiene superficie auditable>
+```
+
+### Caso "no aplica" (nunca silencio)
+
+Si por la naturaleza del issue el reporte no tiene superficie auditable (ej. cambio de
+docs puro, sin código ni endpoint), NO cierres en silencio: generá igual el reporte con
+**Veredicto: no aplica** + una línea de **Motivo**. Si de verdad no hay ningún contenido
+para materializar, registrá la excepción explícita en su lugar:
+
+```js
+const { writeDeliverableException } = require('.pipeline/lib/write-deliverable');
+writeDeliverableException('security', issue, {
+  fase: 'verificacion',
+  motivo: 'issue sin superficie auditable: <por qué> (ej. cambio de documentación puro).',
+  pipelineRoot: process.env.PIPELINE_REPO_ROOT,
+});
+```
+
 ## Observación accionable vs ruido (#4160)
 
 El Pulpo clasifica cada rechazo como **accionable** o **ruido** (`lib/observation-classifier.js`) para decidir si auto-promueve un rebote "en falso" por convergencia. **Invariante NO NEGOCIABLE (RIESGO-1):** un rechazo originado por `security` con un claim empírico **NUNCA** es elegible para auto-promoción — siempre sigue el circuit breaker hacia intervención humana. Tu gate no se debilita por la clasificación.
