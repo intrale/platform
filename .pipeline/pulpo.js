@@ -7,7 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execSync, spawn, execFile } = require('child_process');
+const { execSync, execFileSync, spawn, execFile } = require('child_process');
 const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
 
@@ -212,10 +212,17 @@ const skillDeliverableAttachments = require('./lib/skill-deliverable-attachments
 // #4466 (B) — fallback determinístico de entrega de artefacto: enruta SIEMPRE por
 // writeDeliverable (redacta secrets por default — SEC-REQ-1/CA-SEC-1). NUNCA se
 // construye el path a mano ni se adjuntan notas crudas.
+// #4505 — `writeDeliverableException` es la API canónica que entregó #4504
+// (validación de fase + redacción del motivo). #4505 la CONSUME (no duplica).
 const { writeDeliverable, writeDeliverableException } = require('./lib/write-deliverable');
 // #4504 (CA-1) — lectura del índice de entregables para garantizar que `guru`
 // SIEMPRE deje document o excepción indexada al cerrar `analisis` (Definición).
 const { readDeliverableIndex } = require('./lib/deliverable-index');
+// #4505 — extractor reutilizable de la sección `## Detalles Técnicos` del body
+// (la receta del arquitecto). Es el MISMO extractor que usa el signoff-gate, por
+// lo que opera sólo sobre el body y jamás arrastra el marker/token del signoff
+// (SEC-REQ-2). Se importa acá para reusar la lógica del gate, no reimplementarla.
+const { extractDetallesTecnicos } = require('./lib/architect-signoff-gate');
 // #3481 — Evaluación de completitud de fases paralelas que considera
 // artefactos varados en `procesado/` (con whitelist estricta + anti-race
 // contra pendiente/trabajando). Resuelve el deadlock cuando un skill cerró
@@ -4868,6 +4875,69 @@ function brazoBarrido(config) {
               if (r.resultado !== 'aprobado') continue;
               // skill viene del NOMBRE DEL ARCHIVO, no del YAML editable (CA-SEC-2)
               const notifySkill = skillFromFile(r.file.name);
+
+              // #4505 — Enganche determinístico del entregable del ARQUITECTO.
+              // El architect es un caso distinto a guru/po/ux: NO deja `notas`
+              // sustantivas en su YAML (su entregable es la RECETA técnica, la
+              // sección `## Detalles Técnicos` del body), por lo que el fallback
+              // genérico #4466 (que dispara sobre notas/motivo ≥80) NO lo cubre.
+              // Persistimos SIEMPRE la receta por el choke point `writeDeliverable`
+              // (CA-1: "no puede volver a pasar que cierre sin producirlo").
+              //
+              // SEC-REQ-1: persistir ≠ autorizar cierre. La autoridad de promoción
+              // criterios→Ready SIGUE siendo architect-signoff-gate (marker+token,
+              // evaluado arriba). Esto es SÓLO traza: no toca `architectGateBlocked`
+              // ni la decisión de promoción.
+              // CA-1: NO gateado por `architect.enabled` — corre aunque el gate esté OFF.
+              if (notifySkill === 'architect' && fase === 'criterios') {
+                try {
+                  let body = '';
+                  // SEC-FIX (#4505 rebote) — `issue` proviene de `issueFromFile()`,
+                  // que es LENIENTE y no valida /^\d+$/. Un work-file corrupto/
+                  // malicioso (`4505 & echo PWNED.architect`) mantendría skill=
+                  // architect y, con interpolación shell, inyectaría comandos.
+                  // Defensa en profundidad:
+                  //   1) Canonizamos `issue` a numérico y abortamos si no lo es.
+                  //   2) Usamos execFileSync con argv (SIN shell): aunque el arg
+                  //      contuviera metacaracteres, `gh` lo recibe como un único
+                  //      token, nunca como parte de la línea de comando.
+                  const issueId = String(issue).trim();
+                  if (!/^\d+$/.test(issueId)) {
+                    log('barrido', `📎 #${issue} architect deliverable: issue no numérico, se omite (anti-inyección)`);
+                    continue;
+                  }
+                  try {
+                    const raw = execFileSync(
+                      GH_BIN,
+                      ['issue', 'view', issueId, '--json', 'body'],
+                      { cwd: ROOT, encoding: 'utf8', timeout: 8000, windowsHide: true },
+                    );
+                    body = (JSON.parse(raw) || {}).body || '';
+                  } catch (e) {
+                    log('barrido', `📎 #${issue} architect deliverable: error cargando body (${e.message})`);
+                  }
+                  // SEC-REQ-2: `extractDetallesTecnicos` toma sólo la sección del
+                  // body y stripea cualquier marker de signoff → nunca filtra
+                  // marker/token por Telegram.
+                  const recipe = extractDetallesTecnicos(body);
+                  if (recipe && recipe.trim().length >= 80) {
+                    writeDeliverable('architect', issue, { fase, md: recipe, pipelineRoot: ROOT });
+                    log('barrido', `📎 #${issue} architect receta persistida (criterios) — ${recipe.trim().length} chars`);
+                  } else {
+                    // CA-4 — excepción explícita, no silencio. Distinguible de un
+                    // `document` por `tipo:'exception'`. Motivo legible por operador.
+                    writeDeliverableException('architect', issue, {
+                      fase,
+                      motivo: 'issue sin seccion "Detalles Tecnicos" al cerrar criterios',
+                      pipelineRoot: ROOT,
+                    });
+                    log('barrido', `📎 #${issue} architect sin receta → excepción registrada (criterios)`);
+                  }
+                } catch (e) {
+                  // Nunca bloquear el notify/cierre por un fallo del enganche.
+                  log('barrido', `📎 #${issue} architect deliverable error: ${e.message}`);
+                }
+              }
 
               // #3647 — CA-2: barrer disco buscando entregables por skill y
               // fusionarlos en `yaml.attachments` antes de notificar. El helper

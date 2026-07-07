@@ -337,3 +337,66 @@ test('readDeliverableIndex sobre JSON corrupto no tira y degrada a vacío', () =
     const read = readDeliverableIndex('998', { pipelineRoot: root });
     assert.deepEqual(read.entries, []);
 });
+
+// -----------------------------------------------------------------------------
+// #4505 · CA-4 — entry de excepción (tipo:'exception' + motivo, sin path)
+// -----------------------------------------------------------------------------
+
+test('upsertException persiste tipo:"exception" con motivo y sin path', () => {
+    const root = tmpRoot();
+    const rec = upsertException({
+        issue: '4505', fase: 'criterios', agente: 'architect',
+        motivo: 'issue sin seccion Detalles Tecnicos al cerrar criterios',
+        timestamp: TS, pipelineRoot: root,
+    });
+    assert.equal(rec.tipo, 'exception');
+    assert.equal(rec.agente, 'architect');
+    assert.equal(rec.fase, 'criterios');
+    assert.equal(rec.path, null);
+    assert.ok(rec.motivo.includes('Detalles Tecnicos'));
+
+    const read = readDeliverableIndex('4505', { pipelineRoot: root });
+    assert.equal(read.entries.length, 1);
+    assert.equal(read.entries[0].tipo, 'exception');
+});
+
+test('upsertDeliverableIndex con tipo:"exception" sin motivo lanza', () => {
+    const root = tmpRoot();
+    assert.throws(
+        () => upsertDeliverableIndex({ issue: '10', fase: 'criterios', agente: 'architect', tipo: 'exception', timestamp: TS, pipelineRoot: root }),
+        /motivo requerido/,
+    );
+    assert.throws(
+        () => upsertException({ issue: '10', fase: 'criterios', agente: 'architect', motivo: '   ', timestamp: TS, pipelineRoot: root }),
+        /motivo requerido/,
+    );
+});
+
+test('exception es DISTINGUIBLE de un document en el índice (CA-4 / A09)', () => {
+    const root = tmpRoot();
+    upsertException({ issue: '20', fase: 'criterios', agente: 'architect', motivo: 'no aplica en criterios', timestamp: TS, pipelineRoot: root });
+    upsertDeliverableIndex({ issue: '20', fase: 'aprobacion', agente: 'architect', tipo: 'document', path: 'architect-aprobacion-20.md', timestamp: TS, pipelineRoot: root });
+    const read = readDeliverableIndex('20', { pipelineRoot: root });
+    assert.equal(read.entries.length, 2);
+    assert.equal(read.entries.filter((e) => e.tipo === 'exception').length, 1);
+    assert.equal(read.entries.filter((e) => e.tipo === 'document').length, 1);
+});
+
+test('upsertException es idempotente por clave agente::fase (último-write-gana)', () => {
+    const root = tmpRoot();
+    upsertException({ issue: '30', fase: 'criterios', agente: 'architect', motivo: 'primer motivo del registro', timestamp: TS, pipelineRoot: root });
+    upsertException({ issue: '30', fase: 'criterios', agente: 'architect', motivo: 'segundo motivo que reemplaza', timestamp: TS, pipelineRoot: root });
+    const entries = queryByPhase('30', 'criterios', { pipelineRoot: root });
+    assert.equal(entries.length, 1);
+    assert.ok(entries[0].motivo.includes('segundo motivo'));
+});
+
+test('el motivo de la excepción se redacta (secrets no se filtran)', () => {
+    const root = tmpRoot();
+    const rec = upsertException({
+        issue: '40', fase: 'criterios', agente: 'architect',
+        motivo: 'contexto con AKIAIOSFODNN7EXAMPLE embebido',
+        timestamp: TS, pipelineRoot: root,
+    });
+    assert.ok(!rec.motivo.includes('AKIAIOSFODNN7EXAMPLE'), `motivo no debe filtrar la key: ${rec.motivo}`);
+});
