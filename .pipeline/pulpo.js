@@ -7,7 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execSync, spawn, execFile } = require('child_process');
+const { execSync, execFileSync, spawn, execFile } = require('child_process');
 const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
 
@@ -4892,9 +4892,24 @@ function brazoBarrido(config) {
               if (notifySkill === 'architect' && fase === 'criterios') {
                 try {
                   let body = '';
+                  // SEC-FIX (#4505 rebote) — `issue` proviene de `issueFromFile()`,
+                  // que es LENIENTE y no valida /^\d+$/. Un work-file corrupto/
+                  // malicioso (`4505 & echo PWNED.architect`) mantendría skill=
+                  // architect y, con interpolación shell, inyectaría comandos.
+                  // Defensa en profundidad:
+                  //   1) Canonizamos `issue` a numérico y abortamos si no lo es.
+                  //   2) Usamos execFileSync con argv (SIN shell): aunque el arg
+                  //      contuviera metacaracteres, `gh` lo recibe como un único
+                  //      token, nunca como parte de la línea de comando.
+                  const issueId = String(issue).trim();
+                  if (!/^\d+$/.test(issueId)) {
+                    log('barrido', `📎 #${issue} architect deliverable: issue no numérico, se omite (anti-inyección)`);
+                    continue;
+                  }
                   try {
-                    const raw = execSync(
-                      `${GH_BIN} issue view ${issue} --json body`,
+                    const raw = execFileSync(
+                      GH_BIN,
+                      ['issue', 'view', issueId, '--json', 'body'],
                       { cwd: ROOT, encoding: 'utf8', timeout: 8000, windowsHide: true },
                     );
                     body = (JSON.parse(raw) || {}).body || '';
