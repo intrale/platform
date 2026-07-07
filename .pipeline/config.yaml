@@ -922,7 +922,7 @@ deliverable_notifications:
   # (.pipeline/lib/skill-deliverable-attachments.js). Los 3 cambios van juntos.
   # #4019 — `delivery` sumado para notificar el avance de ola al entregar/mergear
   # un issue (la sección de ola solo se calcula para skill=delivery, fase=entrega).
-  skills: [guru, po, ux, planner, qa, tester, security, build, architect, backend-dev, android-dev, web-dev, pipeline-dev, delivery]
+  skills: [guru, po, ux, planner, qa, tester, security, build, architect, review, backend-dev, android-dev, web-dev, pipeline-dev, delivery]
   truncate_chars: 1500
   dedup_window_hours: 24
   audit_file: ".pipeline/audit/deliverable-notifications.jsonl"
@@ -959,6 +959,9 @@ deliverable_notifications:
     security:  { types: [document],                 formats: [.pdf, .md] }
     build:     { types: [document],                 formats: [.pdf, .md] }
     architect: { types: [document],                 formats: [.pdf, .md] }
+    # #4513 — perfil `review`. Sincronizado con la whitelist `skills` y con
+    # SKILL_SOURCES (los 3 cambios van juntos). Reporte de revisión de código.
+    review:       { types: [document],              formats: [.md, .pdf] }
     backend-dev:  { types: [document],              formats: [.md, .pdf] }
     android-dev:  { types: [document],              formats: [.md, .pdf] }
     web-dev:      { types: [document],              formats: [.md, .pdf] }

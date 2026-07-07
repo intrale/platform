@@ -251,6 +251,21 @@ const SKILL_SOURCES = Object.freeze({
             descriptorHint: 'dev',
         },
     ],
+    // #4513 — perfil `review`. Sin él, el fallback determinístico de pulpo.js
+    // (writeDeliverable('review', ...)) tiraba `skill sin perfil en SKILL_SOURCES:
+    // review` y el reporte de revisión de la fase Revisión no se persistía ni se
+    // disponibilizaba. Su entregable es el reporte de revisión (veredicto +
+    // hallazgos por severidad + archivo:línea + fix sugerido + alcance).
+    // Issue-scoped, `.md`/`.pdf`.
+    review: [
+        {
+            dirTemplate: '.pipeline/assets/docs/{issue}',
+            nameMustInclude: [],
+            formats: ['.md', '.pdf'],
+            type: 'document',
+            descriptorHint: 'review',
+        },
+    ],
     // #4466 (B) — perfil `delivery`. Sin él, el fallback determinístico de
     // pulpo.js (writeDeliverable('delivery', ...)) tiraba `skill sin perfil` y
     // delivery quedaba sólo con closing_notice, incumpliendo CA-3 (los 14 skills
