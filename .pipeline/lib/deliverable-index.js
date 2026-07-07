@@ -160,7 +160,8 @@ function validateIssueId(issue) {
 
 function resolvePipelineDir(opts) {
     if (opts && typeof opts.pipelineRoot === 'string' && opts.pipelineRoot.length > 0) {
-        return opts.pipelineRoot;
+        const root = path.resolve(opts.pipelineRoot);
+        return path.basename(root) === '.pipeline' ? root : path.join(root, '.pipeline');
     }
     // __dirname = .pipeline/lib → padre = .pipeline
     return path.resolve(__dirname, '..');

@@ -23,8 +23,10 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 const trace = require('../lib/traceability');
+const { writeDeliverable } = require('../lib/write-deliverable');
 const { parseGradleOutput, renderMarkdownReport } = require('./lib/gradle-parser');
 const { withGradleLock } = require('../lib/gradle-lock');
 
@@ -241,6 +243,139 @@ function copyArtifacts(result) {
     return artifacts;
 }
 
+function relativeRepoPath(absPath, root = REPO_ROOT) {
+    return path.relative(root, absPath).replace(/\\/g, '/');
+}
+
+function fileSha256(file) {
+    const hash = crypto.createHash('sha256');
+    hash.update(fs.readFileSync(file));
+    return hash.digest('hex');
+}
+
+function collectArtifactMetadata(artifactNames, opts = {}) {
+    const qaDir = opts.qaArtifactsDir || QA_ARTIFACTS_DIR;
+    const repoRoot = opts.repoRoot || REPO_ROOT;
+    const names = Array.isArray(artifactNames) ? artifactNames : [];
+    const out = [];
+    for (const name of names) {
+        if (!name || name === 'BUILD_TIMESTAMP') continue;
+        const file = path.join(qaDir, name);
+        try {
+            const stat = fs.statSync(file);
+            if (!stat.isFile()) continue;
+            out.push({
+                name,
+                type: path.extname(name).replace(/^\./, '') || 'file',
+                bytes: stat.size,
+                sha256: fileSha256(file),
+                path: relativeRepoPath(file, repoRoot),
+            });
+        } catch {}
+    }
+    return out;
+}
+
+function appendBuildDeliverableSections(report, meta = {}) {
+    const lines = [report || '## Build: FALLIDO'];
+    const artifacts = Array.isArray(meta.artifacts) ? meta.artifacts : [];
+    const logPath = meta.logPath || null;
+    const status = meta.status || 'desconocido';
+    const timestamp = meta.timestamp || new Date().toISOString();
+
+    lines.push('');
+    lines.push('### Resumen operativo');
+    lines.push(`- Issue: #${meta.issue}`);
+    lines.push('- Fase/agente: build/build');
+    lines.push(`- Estado: ${status}`);
+    lines.push(`- Modulo/target: ${meta.scope || 'n/a'}`);
+    lines.push(`- Timestamp: ${timestamp}`);
+
+    lines.push('');
+    lines.push('### Artefacto producido');
+    if (artifacts.length === 0) {
+        const reason = meta.noArtifactReason || 'No se produjo JAR/APK notificable para este cierre.';
+        lines.push(`- Excepcion explicita: ${reason}`);
+    } else {
+        for (const artifact of artifacts) {
+            lines.push(`- ${artifact.name}`);
+            lines.push(`  - Tipo: ${artifact.type}`);
+            lines.push(`  - Tamano: ${artifact.bytes} bytes`);
+            lines.push(`  - SHA-256: ${artifact.sha256}`);
+            lines.push(`  - Ruta relativa: ${artifact.path}`);
+        }
+    }
+
+    if (meta.failureClassification) {
+        lines.push('');
+        lines.push('### Diagnostico de fallo');
+        lines.push(`- Clasificacion: ${meta.failureClassification}`);
+        if (meta.failureDetail) lines.push(`- Detalle: ${String(meta.failureDetail).slice(0, 500)}`);
+    }
+
+    lines.push('');
+    lines.push('### Referencia al log local');
+    lines.push(`- Log crudo local: ${logPath || 'no disponible'}`);
+    lines.push('- Nota: el log crudo no se adjunta como entregable notificable.');
+
+    return lines.join('\n');
+}
+
+function buildExceptionReport({ issue, scope, motivo, logPath, durationMs = 0, timestamp }) {
+    const report = [
+        '## Build: FALLIDO',
+        '',
+        '### Compilacion',
+        '- Modulo(s): n/a',
+        '- Resultado: FALLO',
+        `- Tiempo: ${Math.floor(durationMs / 1000)}s`,
+        `- Scope: ${scope || 'n/a'}${issue ? ` - issue #${issue}` : ''}`,
+        '- Tareas: 0 ejecutadas - 0 up-to-date - 0 desde cache',
+        '',
+        '### Verificaciones',
+        '- Strings legacy: no ejecutado',
+        '- Recursos Compose: no ejecutado',
+        '- ASCII fallbacks: no ejecutado',
+        '',
+        '### Errores',
+        '- **[pipeline_exception]** (sin task)',
+        `  - Detalle: ${motivo || 'Excepcion no clasificada en build.js'}`,
+        '',
+        '### Veredicto del Builder',
+        'El build fallo antes de completar Gradle. Se persiste este reporte rojo para evitar silencio de fase.',
+    ].join('\n');
+
+    return appendBuildDeliverableSections(report, {
+        issue,
+        scope,
+        status: 'rojo',
+        artifacts: [],
+        noArtifactReason: 'El build fallo antes de producir artefacto.',
+        failureClassification: 'pipeline_exception',
+        failureDetail: motivo,
+        logPath,
+        timestamp,
+    });
+}
+
+function sanitizeBuildReportContent(content) {
+    return String(content || '')
+        .replace(/[A-Za-z]:[\\/][^\s`'")]+/g, '[ruta-local-redactada]')
+        .replace(/\/(?:Users|home|tmp|var|private|mnt|c|Workspaces)\/[^\s`'")]+/g, '[ruta-local-redactada]');
+}
+
+function materializeBuildDeliverable(issue, report, opts = {}) {
+    if (!report || !String(report).trim()) {
+        throw new Error('reporte de build vacio');
+    }
+    return writeDeliverable('build', issue, {
+        fase: 'build',
+        md: sanitizeBuildReportContent(report),
+        pipelineRoot: opts.pipelineRoot || REPO_ROOT,
+        timestamp: opts.timestamp,
+    });
+}
+
 // ── Actualización del marker (YAML trabajando/) ──────────────────────
 function updateMarker(trabajandoPath, payload) {
     if (!trabajandoPath) return;
@@ -306,7 +441,7 @@ async function main() {
 
     let gradleResult;
     let parsed;
-    let report;
+    let report = '';
     let artifacts = [];
     let exitCode = 0;
     let motivo = null;
@@ -347,6 +482,18 @@ async function main() {
         report = renderMarkdownReport(parsed, {
             issue, scope: label, duration_override_ms: gradleResult.wall_ms,
         });
+        report = appendBuildDeliverableSections(report, {
+            issue,
+            scope: label,
+            status: parsed.build_status === 'NO_OP' ? 'no aplica' : (parsed.success ? 'verde' : 'rojo'),
+            artifacts: collectArtifactMetadata(artifacts),
+            noArtifactReason: parsed.build_status === 'NO_OP'
+                ? 'Smart-build no encontro modulos compilables afectados.'
+                : (parsed.success ? 'Build exitoso sin JAR/APK copiado a qa/artifacts.' : 'Build fallido antes de producir artefacto.'),
+            failureClassification: parsed.errors[0] ? parsed.errors[0].classification : null,
+            failureDetail: parsed.errors[0] ? parsed.errors[0].message : null,
+            logPath: relativeRepoPath(agentLog),
+        });
         // Escribir reporte al log + a disco
         logAppend('[build] --- REPORTE ---');
         logAppend(report);
@@ -356,7 +503,21 @@ async function main() {
         exitCode = 2;
         motivo = `Excepción en build.js: ${e.message}`;
         logAppend(`[build] EXCEPTION: ${e.stack || e.message}`);
+        report = buildExceptionReport({
+            issue,
+            scope: label,
+            motivo,
+            logPath: relativeRepoPath(agentLog),
+            durationMs: gradleResult ? gradleResult.wall_ms : 0,
+        });
     } finally {
+        try {
+            const res = materializeBuildDeliverable(issue, report, { pipelineRoot: REPO_ROOT });
+            logAppend(`[build] deliverable escrito: ${relativeRepoPath(res.path)} bytes=${res.bytes}`);
+        } catch (e) {
+            logAppend(`[build] writeDeliverable FAILED: ${e.message}`);
+        }
+
         // Actualizar marker con resultado
         updateMarker(args.trabajando, {
             resultado: exitCode === 0 ? 'aprobado' : 'rechazado',
@@ -428,6 +589,11 @@ module.exports = {
     resolveBashCommand,
     startHeartbeat,
     copyArtifacts,
+    collectArtifactMetadata,
+    appendBuildDeliverableSections,
+    buildExceptionReport,
+    sanitizeBuildReportContent,
+    materializeBuildDeliverable,
     updateMarker,
     // Exportados para tests del lock global de Gradle (#4155): `runGradle` es la
     // variante con lock, `spawnGradle` el spawn crudo sin lock.
