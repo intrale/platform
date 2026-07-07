@@ -4442,6 +4442,167 @@ function brazoBarrido(config) {
           const siguientePendiente = path.join(fasePath(pipelineName, siguienteFase), 'pendiente');
           const siguienteSkills = pipelineConfig.skills_por_fase[siguienteFase] || [];
 
+          // #4502 — Gate de entregable obligatorio del PO al cerrar Definición.
+          // Autoritativo en el pulpo (SEC-REQ-1), NO en el YAML editable del
+          // agente. Scopeado a `definicion/criterios` (la "Definición" de negocio
+          // del PO). Espeja architect-signoff-gate: kill switch + gate_mode
+          // dry-run/enforce, fail-abierto en dry-run.
+          //   - disabled / dry-run: sólo loguea, promueve normal.
+          //   - enforce + retain: NO crea la fase sizing, comenta accionable
+          //     idempotente, re-encola `po` a pendiente/criterios respetando el
+          //     circuit breaker (máx 3 → label needs-human).
+          // Backstop anti-deadlock (#4466): antes de decidir, si el PO no dejó
+          // entregable indexado pero sus notas son sustantivas, se materializa
+          // el .md vía writeDeliverable — minimiza la retención real.
+          // Default OFF (config.yaml → deliverable_gate.enabled:false).
+          if (pipelineName === 'definicion' && fase === 'criterios') {
+            const dgCfg = (config && config.deliverable_gate) || {};
+            if (dgCfg.enabled === true && dgCfg.kill_switch !== true) {
+              try {
+                const deliverableGate = require('./lib/deliverable-gate');
+                const deliverableIndex = require('./lib/deliverable-index');
+                const poResult = resultados.find(r => skillFromFile(r.file.name) === 'po') || null;
+
+                // Backstop (paso 2 de la secuencia): materializar ANTES de decidir.
+                // Sólo si NO hay entregable del PO indexado, el PO no declaró
+                // excepción, y sus notas son sustantivas (≥40 chars). Reusa
+                // writeDeliverable (redacta secrets, valida fase). NUNCA bloquea.
+                try {
+                  const yaEntry = deliverableIndex
+                    .queryByPhase(issue, 'criterios', { pipelineRoot: ROOT })
+                    .some(e => e.agente === 'po' && e.tipo !== 'exception');
+                  const declaraNoAplica = !!(poResult && poResult.entregable_no_aplica === true);
+                  if (!yaEntry && poResult && !declaraNoAplica) {
+                    const notas =
+                      (typeof poResult.notas === 'string' && poResult.notas.trim().length > 0) ? poResult.notas
+                      : (typeof poResult.motivo === 'string' && poResult.motivo.trim().length > 0) ? poResult.motivo
+                      : '';
+                    if (notas.trim().length >= 40) {
+                      writeDeliverable('po', issue, { fase: 'criterios', md: notas, pipelineRoot: ROOT });
+                      log('barrido', `📎 #${issue} deliverable-gate backstop: materializó ficha PO desde notas (${notas.trim().length} chars)`);
+                    }
+                  }
+                } catch (e) {
+                  log('barrido', `📎 #${issue} deliverable-gate backstop error: ${e.message}`);
+                }
+
+                const gateRes = deliverableGate.evaluateDeliverableGate({
+                  issue,
+                  fase: 'criterios',
+                  agente: 'po',
+                  poResult,
+                  config,
+                  pipelineRoot: ROOT,
+                });
+
+                if (gateRes.effective_decision === 'retain') {
+                  // Circuit breaker: contamos los intentos en un flag marker
+                  // (`.`-prefijado → no es work file, excluido del barrido). NO
+                  // sirve leerlo del YAML del PO: el agente sobrescribe su archivo
+                  // de trabajo al re-correr y perdería el contador → loop infinito.
+                  // El flag es estable entre ciclos y se limpia al promover.
+                  const dgIntentoFlag = path.join(
+                    fasePath(pipelineName, fase), 'procesado', `.${issue}.dgate-intento`,
+                  );
+                  let dgIntento = 0;
+                  try {
+                    dgIntento = parseInt(fs.readFileSync(dgIntentoFlag, 'utf8'), 10) || 0;
+                  } catch {}
+                  const DG_MAX_INTENTOS = 3;
+                  const nuevoIntento = dgIntento + 1;
+                  const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+
+                  if (nuevoIntento > DG_MAX_INTENTOS) {
+                    // Escalado a humano — no seguir en bucle (circuit breaker duro).
+                    log('barrido', `⛔ #${issue} deliverable-gate: ${dgIntento} intentos sin entregable del PO (cap ${DG_MAX_INTENTOS}) — escalando a needs-human`);
+                    try {
+                      fs.mkdirSync(ghQueueDir, { recursive: true });
+                      fs.writeFileSync(
+                        path.join(ghQueueDir, `${issue}-dgate-needs-human-${Date.now()}.json`),
+                        JSON.stringify({ action: 'label', issue: parseInt(issue), label: 'needs-human' }),
+                      );
+                      fs.writeFileSync(
+                        path.join(ghQueueDir, `${issue}-dgate-needs-human-comment-${Date.now()}.json`),
+                        JSON.stringify({
+                          action: 'comment',
+                          issue: parseInt(issue),
+                          body: `## Definición escalada a intervención humana\n\nEl pipeline intentó cerrar la fase Definición ${dgIntento} veces y el PO nunca dejó la Ficha de definición en el store (\`issue → criterios → po\`) ni registró una excepción con motivo.\n\nGenerá el entregable (\`writeDeliverable\`) o, si por la naturaleza del issue no aplica, registrá la excepción con \`entregable_no_aplica\` + \`motivo_no_aplica\`. Al destrabar, quitá el label \`needs-human\`.\n\n<!-- deliverable-gate issue=${issue} -->`,
+                        }),
+                      );
+                    } catch (e) {
+                      log('barrido', `Error encolando dgate needs-human #${issue}: ${e.message}`);
+                    }
+                    sendTelegram(`⛔ Issue #${issue} — Definición sin Ficha del PO tras ${dgIntento} intentos. Escalado a needs-human.`);
+                    // Reset del contador: al destrabar (quitar needs-human) el
+                    // issue reentra limpio, no arrastra el conteo previo.
+                    try { fs.unlinkSync(dgIntentoFlag); } catch {}
+                    // Archivar los archivos actuales (no reintentar el loop).
+                    const archDir = path.join(fasePath(pipelineName, fase), 'archivado');
+                    fs.mkdirSync(archDir, { recursive: true });
+                    for (const a of archivos) { try { moveFile(a.path, archDir); } catch {} }
+                    continue;
+                  }
+
+                  // Retención normal: comentar + re-encolar al PO.
+                  log('barrido', `🔴 #${issue} deliverable-gate RETIENE Definición (enforce, intento ${nuevoIntento}/${DG_MAX_INTENTOS}): ${gateRes.reason}`);
+                  try {
+                    fs.mkdirSync(ghQueueDir, { recursive: true });
+                    fs.writeFileSync(
+                      path.join(ghQueueDir, `${issue}-dgate-comment-${Date.now()}.json`),
+                      JSON.stringify({
+                        action: 'comment',
+                        issue: parseInt(issue),
+                        body: `🔴 Fase Definición retenida: el PO no dejó la Ficha de definición en el store (\`issue → criterios → po\`). Generá el entregable con \`writeDeliverable\`, o registrá una excepción con motivo si no aplica (\`entregable_no_aplica\` + \`motivo_no_aplica\`).\n\n<!-- deliverable-gate issue=${issue} -->`,
+                      }),
+                    );
+                  } catch (e) {
+                    log('barrido', `Error encolando dgate comment #${issue}: ${e.message}`);
+                  }
+                  // Persistir el contador en el flag marker (estable entre ciclos).
+                  try {
+                    fs.mkdirSync(path.dirname(dgIntentoFlag), { recursive: true });
+                    fs.writeFileSync(dgIntentoFlag, String(nuevoIntento), 'utf8');
+                  } catch (e) {
+                    log('barrido', `Error persistiendo contador deliverable-gate #${issue}: ${e.message}`);
+                  }
+                  // Re-encolar SÓLO al PO a pendiente/criterios.
+                  try {
+                    const poPendiente = path.join(fasePath(pipelineName, fase), 'pendiente', `${issue}.po`);
+                    writeYaml(poPendiente, {
+                      issue: parseInt(issue),
+                      fase: 'criterios',
+                      pipeline: 'definicion',
+                      deliverable_gate_pending: true,
+                      deliverable_gate_intento: nuevoIntento,
+                    });
+                  } catch (e) {
+                    log('barrido', `Error re-encolando PO #${issue} por deliverable-gate: ${e.message}`);
+                  }
+                  // Mover los archivos actuales a procesado/ (ux/architect quedan
+                  // disponibles para la próxima evaluación de fase paralela).
+                  for (const a of archivos) { try { moveFile(a.path, procesadoDir); } catch {} }
+                  continue;
+                } else {
+                  // Promueve: limpiar el contador de retención si existía (el PO
+                  // finalmente dejó entregable/excepción). Evita arrastre a un
+                  // futuro re-ingreso del issue.
+                  try {
+                    fs.unlinkSync(path.join(fasePath(pipelineName, fase), 'procesado', `.${issue}.dgate-intento`));
+                  } catch {}
+                  log('barrido', `#${issue} deliverable-gate ${gateRes.gate_mode}: ${gateRes.decision} (efectivo=${gateRes.effective_decision}) — ${gateRes.reason}`);
+                }
+              } catch (e) {
+                // Defensa última: un bug del gate NO debe tumbar el pulpo. En
+                // enforce avisamos; en dry-run seguimos silenciosos (fail-abierto).
+                const dgMode = (config && config.deliverable_gate && config.deliverable_gate.gate_mode) || 'dry-run';
+                log('barrido', `#${issue} deliverable-gate ERROR inesperado: ${e.message} (mode=${dgMode})`);
+                if (dgMode === 'enforce') {
+                  sendTelegram(`⚠️ #${issue} deliverable-gate ERROR inesperado (enforce): ${e.message} — promueve por fail-abierto de seguridad`);
+                }
+              }
+            }
+          }
+
           // #3383 — Gate visual pre-promoción build → verificacion.
           // Si el flag PIPELINE_VISUAL_GATE_ENABLED=1 y el issue tiene labels
           // app:* sin sección "Screenshots & Mockups" con 2+ imágenes:
