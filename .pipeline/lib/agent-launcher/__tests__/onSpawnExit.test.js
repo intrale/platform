@@ -239,6 +239,104 @@ test('CA-2 onSpawnExit extrae errorType del evidence cuando es JSON', () => {
         'debe usar el errorType extraído, no el primer default');
 });
 
+// -----------------------------------------------------------------------------
+// #4541 — Misatribución de provider (Codex → Anthropic) + falso positivo sobre
+// contenido. Estos tests usan el módulo REAL de quota (con el `_detectOpenAI`
+// completo y el regex de canal de control de Codex) y espían `setFlag` para
+// verificar el provider EFECTIVO al que se atribuye el flag.
+// -----------------------------------------------------------------------------
+
+// Módulo real con setFlag espiado (preserva _detectAnthropic/_detectOpenAI/
+// KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER/sanitizeRawExcerpt reales vía prototype).
+function realQuotaWithSpy() {
+    const realQuota = require('../../quota-exhausted');
+    const setCalls = [];
+    const spy = Object.create(realQuota);
+    spy.setFlag = (input) => { setCalls.push(input); return { flagPath: '/tmp/x', payload: {}, source: 'input' }; };
+    spy._setCalls = setCalls;
+    return spy;
+}
+
+// Frame REAL de error del CLI Codex (canal de control) del incidente 2026-07-07.
+const INCIDENT_CODEX_ERROR_FRAME =
+    '{"type":"error","message":"You\'ve hit your usage limit. Upgrade to Pro ' +
+    '(https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage ' +
+    'to purchase more credits or try again at Jul 7th, 2026 11:19 AM."}';
+
+const INCIDENT_TOOL_RESULT_CONTENT =
+    '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_01TQ9E5H6kQaGL9GT7LKwPJE",' +
+    '"type":"tool_result","content":"Analicé el log del detector y encontré este mensaje de Codex: ' +
+    'You\'ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/codex/settings/usage)."}]}}';
+
+test('#4541 CA-1/CA-3: error real de Codex con provider efectivo=openai-codex flaguea a openai-codex', () => {
+    const tmp = makeTmpPipeline();
+    const quota = realQuotaWithSpy();
+    const result = dispatcher.onSpawnExit({
+        skill: 'qa',
+        issue: 4541,
+        // El pulpo pasa el provider EFECTIVO que corrió (el fallback codex), no
+        // el primary configurado del skill. Este es el fix de atribución (Bug 1).
+        provider: 'openai-codex',
+        transport: 'cli',
+        rawOutput: INCIDENT_CODEX_ERROR_FRAME,
+        exitCode: 1,
+        timedOut: false,
+        durationMs: 4000,
+        pipelineDir: tmp,
+        quotaModule: quota,
+    });
+    assert.equal(result.errorClass, 'quota_exhausted');
+    assert.equal(result.flagSet, true);
+    assert.equal(quota._setCalls.length, 1, 'debe setear exactamente un flag');
+    assert.equal(quota._setCalls[0].provider, 'openai-codex',
+        'el flag DEBE atribuirse a Codex, nunca a Anthropic');
+    // El errorType persistido debe pertenecer a la allowlist de Codex.
+    const codexTypes = quota.KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER['openai-codex'];
+    assert.ok(codexTypes.includes(quota._setCalls[0].errorType),
+        `errorType "${quota._setCalls[0].errorType}" debe ser de Codex`);
+});
+
+test('#4541 CA-1: mismo error de Codex con provider=anthropic NO setea flag de Anthropic', () => {
+    const tmp = makeTmpPipeline();
+    const quota = realQuotaWithSpy();
+    const result = dispatcher.onSpawnExit({
+        skill: 'qa',
+        issue: 4541,
+        provider: 'anthropic',
+        transport: 'cli',
+        rawOutput: INCIDENT_CODEX_ERROR_FRAME,
+        exitCode: 1,
+        timedOut: false,
+        durationMs: 4000,
+        pipelineDir: tmp,
+        quotaModule: quota,
+    });
+    assert.notEqual(result.errorClass, 'quota_exhausted',
+        'un error de Codex NO debe clasificar quota bajo la allowlist de Anthropic');
+    assert.equal(quota._setCalls.length, 0,
+        'NUNCA setear un flag de Anthropic desde un error de Codex');
+});
+
+test('#4541 CA-2: tool_result con "usage limit" NO setea flag (falso positivo del incidente)', () => {
+    const tmp = makeTmpPipeline();
+    const quota = realQuotaWithSpy();
+    const result = dispatcher.onSpawnExit({
+        skill: 'qa',
+        issue: 4541,
+        provider: 'anthropic',
+        transport: 'cli',
+        rawOutput: INCIDENT_TOOL_RESULT_CONTENT,
+        exitCode: 0,
+        timedOut: false,
+        durationMs: 4000,
+        pipelineDir: tmp,
+        quotaModule: quota,
+    });
+    assert.notEqual(result.errorClass, 'quota_exhausted');
+    assert.equal(quota._setCalls.length, 0,
+        'contenido de tool_result no debe disparar setFlag');
+});
+
 test('CA-2 _selectErrorTypeForFlag cae al primer elemento de la allowlist si no puede extraer', () => {
     const verdict = { errorClass: 'quota_exhausted', evidence: 'texto libre sin shape' };
     const errorType = dispatcher._selectErrorTypeForFlag('gemini-google', verdict, {

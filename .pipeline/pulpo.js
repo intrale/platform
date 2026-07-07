@@ -7731,13 +7731,28 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         let raw = '';
         try { raw = fs.readFileSync(logPath, 'utf8'); } catch {}
 
-        // Resolución provider/model del skill — necesaria en ambos paths.
+        // Resolución provider/model — necesaria en ambos paths.
+        //
+        // #4541 (Bug 1 — misatribución de provider): el detector de cuota DEBE
+        // atribuir el flag al provider que REALMENTE corrió y produjo el error,
+        // no al primary configurado del skill. Durante el incidente 2026-07-07 el
+        // primary (anthropic) estaba (falsamente) gateado y todos los spawns
+        // cayeron al fallback codex; codex pegó contra SU límite real ("You've hit
+        // your usage limit") y ese error se re-atribuía a anthropic porque el exit
+        // handler resolvía `resolveSkillProvider(skill)` (el primary configurado)
+        // en vez del provider efectivo del router. `dispatchResolution.provider`
+        // es la provider-key efectiva (misma fuente que el marker #4284): en
+        // fallback vale el provider del fallback (p.ej. openai-codex), en primary
+        // vale el primary. Si por algún motivo no está resuelto, caemos al
+        // provider configurado del skill (comportamiento previo).
         let skillProvider = null;
         let skillModel = null;
         let providerDef = null;
         try {
-          skillProvider = resolveSkillProvider(skill);
-          skillModel = resolveSkillModel(skill);
+          const effectiveProvider = (dispatchResolution && dispatchResolution.provider) || null;
+          const effectiveModel = (dispatchResolution && dispatchResolution.model) || null;
+          skillProvider = effectiveProvider || resolveSkillProvider(skill);
+          skillModel = effectiveProvider ? (effectiveModel || resolveSkillModel(skill)) : resolveSkillModel(skill);
           providerDef = getSkillProviderDef(skillProvider);
         } catch { /* defensa */ }
 
