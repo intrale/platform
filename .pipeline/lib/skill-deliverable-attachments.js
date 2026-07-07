@@ -477,6 +477,36 @@ function buildManifestFaseMap(issueNumber, pipelineRoot) {
 }
 
 /**
+ * Construye un mapa `relPath → sensible` a partir del índice de entregables
+ * (`.pipeline/deliverables/<issue>.json`). Best-effort: si no existe o el
+ * módulo no está, devuelve un mapa vacío (nunca tira). Lazy-require para
+ * evitar ciclo con `write-deliverable`/`deliverable-index`.
+ *
+ * Espeja `buildManifestFaseMap`. Necesario para que el canal pueda gatear la
+ * distribución de artefactos sensibles (#4514, CA-5). Default `false` si el
+ * path no está en el índice.
+ *
+ * @param {string|number} issueNumber
+ * @param {string} pipelineRoot
+ * @returns {Map<string,boolean>}
+ */
+function buildManifestSensibleMap(issueNumber, pipelineRoot) {
+    const map = new Map();
+    try {
+        const { readDeliverableIndex } = require('./deliverable-index');
+        const idx = readDeliverableIndex(issueNumber, { pipelineRoot });
+        for (const e of (idx.entries || [])) {
+            if (e && typeof e.path === 'string') {
+                map.set(e.path.replace(/\\/g, '/'), e.sensible === true);
+            }
+        }
+    } catch {
+        // sin índice → mapa vacío, default no-sensible.
+    }
+    return map;
+}
+
+/**
  * Ordena los resultados de `ux` aplicando `uxOrderRank`. Para otros skills,
  * orden alfabético estable.
  *
@@ -534,6 +564,7 @@ function collectAttachmentsForSkill(skill, issueNumber, phase, opts) {
     const issueStr = String(issueAsNumber);
     const phaseHint = (typeof phase === 'string' && phase.length > 0) ? phase : null;
     const manifestFase = buildManifestFaseMap(issueStr, pipelineRoot);
+    const manifestSensible = buildManifestSensibleMap(issueStr, pipelineRoot);
     const collected = [];
     const seenAbs = new Set();
 
@@ -562,12 +593,17 @@ function collectAttachmentsForSkill(skill, issueNumber, phase, opts) {
                 || inferFaseFromName(name, skill, issueStr)
                 || phaseHint
                 || null;
+            // Sensibilidad por artefacto (#4514): sólo la fija el índice; si el
+            // path no está indexado, default `false`. El canal la usa para gatear
+            // (CA-5): un artefacto sensible nunca va a Drive público.
+            const sensible = manifestSensible.get(relPath) === true;
             collected.push({
                 _basename: name,
                 type,
                 path: relPath,
                 descriptor: descriptorForFile(name, source),
                 fase,
+                sensible,
             });
             seenAbs.add(absPath);
 
@@ -583,6 +619,7 @@ function collectAttachmentsForSkill(skill, issueNumber, phase, opts) {
         path: e.path,
         descriptor: e.descriptor,
         fase: e.fase,
+        sensible: e.sensible === true,
     }));
 }
 
@@ -609,6 +646,7 @@ module.exports = {
         resolveType,
         inferFaseFromName,
         buildManifestFaseMap,
+        buildManifestSensibleMap,
         HELPER_MAX_PER_INVOCATION,
     },
 };

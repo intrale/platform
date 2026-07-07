@@ -376,6 +376,9 @@ function normalizeAttachmentDeclarations(yaml) {
                 type,
                 path: p,
                 descriptor: typeof entry.descriptor === 'string' ? entry.descriptor : undefined,
+                // #4514 — el flag `sensible` viaja desde el índice de entregables
+                // (propagado por `collectAttachmentsForSkill`). Default `false`.
+                sensible: entry.sensible === true,
             });
         }
     }
@@ -699,6 +702,15 @@ function resolveAttachments(args) {
         if (durationProbeFailed) record.duration_probe_failed = true;
 
         records.push(record);
+    }
+
+    // #4514 (CA-5) — propagar el flag `sensible` de cada declaración a su record.
+    // El loop hace EXACTAMENTE un push por declaración (cada rama termina en
+    // `continue` o cae al push final), así que `records` es 1:1 e índice-alineado
+    // con `declarations`. El canal usa `sensible` para excluir el artefacto del
+    // encolado a Drive público. Default `false` si la declaración no lo trae.
+    for (let i = 0; i < records.length && i < declarations.length; i++) {
+        records[i].sensible = declarations[i] && declarations[i].sensible === true;
     }
 
     return records;
@@ -1058,7 +1070,18 @@ function buildPreview(args) {
     // duración y construimos un job sanitizado que `notify` persistirá (el
     // encolado es un side effect → vive en `notify`, no acá; buildPreview es puro).
     const driveQueued = rejected.filter(
-        (r) => r.type === 'video' && DRIVE_QUEUEABLE_REJECT_REASONS.has(r.reject_reason),
+        (r) => r.type === 'video'
+            && DRIVE_QUEUEABLE_REJECT_REASONS.has(r.reject_reason)
+            // #4514 (CA-5, BLOQUEANTE) — un entregable sensible NUNCA se encola a
+            // Drive público (link "anyone with the link"). Aunque exceda los
+            // límites de Telegram, se omite con footer explícito en vez de subirlo.
+            && r.sensible !== true,
+    );
+    // #4514 (CA-5) — records sensibles que HABRÍAN ido a Drive por tamaño/duración
+    // pero el gate bloqueó. Se listan aparte para un footer específico ("reporte
+    // sensible no apto para Drive público"), no el genérico de "adjunto omitido".
+    const sensibleBlocked = rejected.filter(
+        (r) => r.sensible === true && DRIVE_QUEUEABLE_REJECT_REASONS.has(r.reject_reason),
     );
     const driveJobs = driveQueued.map((r) => {
         const relativeVideoPath = typeof r.relative === 'string' ? r.relative : '';
@@ -1093,7 +1116,9 @@ function buildPreview(args) {
     // CA-2 / UX-1 (#3927) — un video encolado a Drive NO es un "adjunto omitido":
     // no se pierde, llega en breve. Su aviso debe ser forward-looking y separado
     // del footer de adjuntos realmente descartados (formato no soportado, etc.).
-    const trulyOmitted = rejected.filter((r) => !driveQueued.includes(r));
+    const trulyOmitted = rejected.filter(
+        (r) => !driveQueued.includes(r) && !sensibleBlocked.includes(r),
+    );
     let footerNote = '';
     if (driveQueued.length > 0) {
         const n = driveQueued.length;
@@ -1101,6 +1126,13 @@ function buildPreview(args) {
         const verbo = n === 1 ? 'superó' : 'superaron';
         const subiendo = n === 1 ? 'subiendo' : 'subiendo';
         footerNote += `\n\n📹 ${n} video${plural} ${verbo} el límite de Telegram — lo estoy ${subiendo} a Drive, el link llega en breve.`;
+    }
+    if (sensibleBlocked.length > 0) {
+        // CA-5 — no revelamos motivos técnicos; sólo que el reporte sensible no
+        // va a Drive público y llega por adjunto directo / se lee en el issue.
+        const n = sensibleBlocked.length;
+        const plural = n === 1 ? '' : 's';
+        footerNote += `\n\n🔒 ${n} reporte${plural} sensible${plural} no apto${plural} para Drive público — adjunto directo por Telegram o revisá el issue completo.`;
     }
     if (trulyOmitted.length > 0) {
         const n = trulyOmitted.length;
@@ -1242,6 +1274,9 @@ function buildPreview(args) {
         extraDropfiles,
         // CA-1 (#3927) — jobs de Drive a encolar (los escribe `notify`).
         driveJobs,
+        // #4514 (CA-5) — records sensibles bloqueados del encolado a Drive público
+        // (nunca generan job). Expuesto para auditoría/tests del gate.
+        sensibleBlocked,
         // Legacy fields para back-compat con callers actuales:
         attachmentRejected: rejected.length > 0,
         rejectionReason: legacyFirstRejected ? legacyFirstRejected.reject_reason : null,
