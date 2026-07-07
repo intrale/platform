@@ -179,6 +179,17 @@ function safeReadJson(filepath, fallback) {
     catch { return fallback; }
 }
 
+function readBuildStatus(pipelineDir) {
+    const raw = safeReadJson(path.join(pipelineDir, 'build-status.json'), null);
+    if (!raw || typeof raw !== 'object') return { status: 'unknown', branch: '', commit: '' };
+    const allowed = { passing: 1, failing: 1, running: 1, unknown: 1 };
+    return {
+        status: allowed[raw.status] ? raw.status : 'unknown',
+        branch: typeof raw.branch === 'string' ? raw.branch.slice(0, 80) : '',
+        commit: typeof raw.commit === 'string' ? raw.commit.slice(0, 12) : '',
+    };
+}
+
 // #4335 — Directorio de logs servido por los endpoints genéricos del dashboard
 // (`/logs/view|stream/<file>`). __dirname = `.pipeline/lib` → `.pipeline/logs`.
 // `_logDirOverride` permite aislar el directorio en tests (mismo patrón que el
@@ -661,6 +672,7 @@ function headerSlice(state, ctx) {
         },
         priorityWindows,
         resources,
+        build: readBuildStatus(PIPELINE),
         restMode,
         timestamp: Date.now(),
     };

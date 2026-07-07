@@ -68,11 +68,12 @@ test('cada sub-función devuelve string con state {} (sin throw)', () => {
     }
 });
 
-test('renderBrandBar poblado emite el pill de build status', () => {
+test('renderBrandBar poblado emite identidad y selector sin mezclar build', () => {
     const out = renderBrandBar({ build: { status: 'passing', branch: 'main', commit: 'abc1234' } });
-    assert.match(out, /id="bld-status"/);
-    assert.match(out, /Build OK/);
-    assert.match(out, /in-pill-ok/);
+    assert.match(out, /MIZP/);
+    assert.match(out, /id="mz-projsel"/);
+    assert.doesNotMatch(out, /id="bld-status"/);
+    assert.doesNotMatch(out, /Build OK/);
 });
 
 test('renderInfraHealth poblado emite UP/DOWN + filas por servicio', () => {
@@ -103,26 +104,28 @@ test('renderSystemCard poblado emite las 4 celdas whitelisted', () => {
 // ---------------------------------------------------------------------------
 // CA-3725.1 — build status 'unknown' degradado cuando el marker no existe.
 // ---------------------------------------------------------------------------
-test('renderBrandBar sin build status muestra unknown sin romper', () => {
-    const out = renderBrandBar({ build: { status: 'unknown', branch: '', commit: '' } });
-    assert.match(out, /Build \?/);
+test('renderHomeHTML sin build status muestra fallback explícito sin romper', () => {
+    const out = renderHomeHTML({});
+    assert.match(out, /id="bld-status"/);
+    assert.match(out, /Build sin datos/);
     assert.match(out, /in-pill-info/);
+    assert.doesNotMatch(out, /Build \?/);
 });
 
-test('renderBrandBar nunca invoca gh api (R-G4) — sin la cadena en el markup', () => {
-    const out = renderBrandBar({ build: { status: 'passing', branch: 'main', commit: 'abc' } });
+test('renderHomeHTML nunca invoca gh api (R-G4) — sin la cadena en el markup', () => {
+    const out = renderHomeHTML({});
     assert.ok(!/gh api/.test(out) || /sin gh api/.test(out),
         'el markup no debe sugerir invocación de gh api salvo en la nota explicativa');
 });
 
 // ---------------------------------------------------------------------------
-// CA-3725.13 — XSS en contexto BODY: el payload se escapa, no se inyecta crudo.
-// renderBrandBar consume branch/commit (atacante-controlables vía Git).
+// CA-3725.13 — XSS en contexto BODY: el payload de build ya no se interpola en
+// SSR. El detalle branch/commit se hidrata por textContent/title en el cliente.
 // ---------------------------------------------------------------------------
-test('XSS body: renderBrandBar escapa <script> en branch', () => {
+test('XSS body: renderBrandBar no interpola branch en la marca', () => {
     const out = renderBrandBar({ build: { status: 'passing', branch: XSS_BODY, commit: '' } });
     assert.ok(!out.includes(XSS_BODY), 'el <script> crudo NO debe aparecer en el body');
-    assert.match(out, /&lt;script&gt;/, 'debe aparecer escapado');
+    assert.doesNotMatch(out, /&lt;script&gt;/, 'la marca no debe renderizar detalle de build');
 });
 
 test('XSS body: sin doble-escape de entidades existentes', () => {
@@ -132,13 +135,13 @@ test('XSS body: sin doble-escape de entidades existentes', () => {
 });
 
 // ---------------------------------------------------------------------------
-// CA-3725.13 / CA-3725.10 — XSS en contexto ATRIBUTO: branch en aria-label/title.
+// CA-3725.13 / CA-3725.10 — XSS en contexto ATRIBUTO: branch no entra al SSR.
 // ---------------------------------------------------------------------------
-test('XSS atributo: renderBrandBar escapa comillas en title/aria-label', () => {
+test('XSS atributo: renderBrandBar no interpola branch en title/aria-label', () => {
     const out = renderBrandBar({ build: { status: 'passing', branch: XSS_ATTR, commit: '' } });
     // El payload rompe-atributo no debe aparecer crudo dentro de un valor.
     assert.ok(!out.includes('onerror=alert(1)>'), 'el payload no debe romper el atributo');
-    assert.match(out, /&quot;|&gt;/, 'las comillas/ángulos deben quedar escapados');
+    assert.ok(!out.includes('&quot;'), 'la marca no debe renderizar detalle de build en atributos');
 });
 
 test('XSS atributo: renderSystemCard escapa tooltips (defensa, tips estáticos)', () => {

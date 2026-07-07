@@ -1352,7 +1352,7 @@ function renderIssuesClientScript() {
     if (bld && d.build) {
       var META = {
         passing: { cls: 'in-pill-ok', t: '🟢 Build OK' }, failing: { cls: 'in-pill-bad', t: '🔴 Build roto' },
-        running: { cls: 'in-pill-warn', t: '🟡 Build corriendo' }, unknown: { cls: 'in-pill-info', t: '○ Build ?' }
+        running: { cls: 'in-pill-warn', t: '🟡 Build corriendo' }, unknown: { cls: 'in-pill-info', t: '○ Build sin datos' }
       };
       var m = META[d.build.status] || META.unknown;
       bld.classList.remove('in-pill-ok', 'in-pill-bad', 'in-pill-warn', 'in-pill-info');

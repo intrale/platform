@@ -119,7 +119,7 @@ function renderBrandBarPipeline() {
         <span class="mz-proj-caret" aria-hidden="true">▾</span>
       </div>
       <span class="in-pill in-pill-info in-build-status" id="bld-status"
-            title="Estado del último build (marker local .pipeline/build-status.json).">○ Build ?</span>
+            title="Estado del último build (marker local .pipeline/build-status.json).">○ Build sin datos</span>
     </div>`;
 }
 

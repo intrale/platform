@@ -55,9 +55,17 @@ function renderHeaderMetaSsr(opts) {
         : '';
     return `
     <div class="in-header-meta">
-      ${modePill}<span class="in-pill" id="hdr-resources" title="CPU y RAM del sistema" aria-label="Recursos CPU y RAM">…</span>
+      <span class="in-pill in-build-status in-pill-info" id="bld-status"
+            title="Estado del último build (marker local .pipeline/build-status.json, sin gh api)."
+            aria-label="Build sin datos"><span class="in-status-dot" aria-hidden="true">○</span><span id="bld-status-label">Build sin datos</span></span>
+      ${modePill}<span class="in-pill" id="hdr-resources" title="CPU y RAM del sistema" aria-label="Recursos CPU y RAM">
+        <span aria-hidden="true">🖥</span>
+        <span id="hdr-resources-cpu">CPU …</span>
+        <span class="in-header-divider" aria-hidden="true">·</span>
+        <span id="hdr-resources-mem">RAM …</span>
+      </span>
       <span class="in-pill" id="hdr-pulpo" aria-label="Estado del pulpo">…</span>
-      <span class="in-pill in-clock" id="hdr-clock" aria-label="Hora local">…</span>
+      <span class="in-pill in-clock" id="hdr-clock" aria-label="Fecha y hora local">…</span>
     </div>`;
 }
 
@@ -95,6 +103,29 @@ if (!window.__hydrateHeaderPills) {
     };
     window.__hydrateHeaderPills = function (d) {
         if (!d) return;
+        var buildPill = document.getElementById('bld-status');
+        if (buildPill) {
+            var status = d.build && d.build.status ? d.build.status : 'unknown';
+            var buildMeta = {
+                passing: { cls: 'in-pill-ok', dot: '🟢', label: 'Build OK' },
+                failing: { cls: 'in-pill-bad', dot: '🔴', label: 'Build roto' },
+                running: { cls: 'in-pill-warn', dot: '🟡', label: 'Build corriendo' },
+                unknown: { cls: 'in-pill-info', dot: '○', label: 'Build sin datos' }
+            };
+            var bm = buildMeta[status] || buildMeta.unknown;
+            buildPill.classList.remove('in-pill-ok', 'in-pill-warn', 'in-pill-bad', 'in-pill-info');
+            buildPill.classList.add(bm.cls);
+            var dot = buildPill.querySelector('.in-status-dot');
+            var labelEl = document.getElementById('bld-status-label');
+            if (dot) dot.textContent = bm.dot;
+            if (labelEl) labelEl.textContent = bm.label;
+            var detail = [];
+            if (d.build && d.build.branch) detail.push(d.build.branch);
+            if (d.build && d.build.commit) detail.push(d.build.commit);
+            buildPill.title = 'Estado del último build (marker local .pipeline/build-status.json, sin gh api). '
+                + bm.label + (detail.length ? ' · ' + detail.join(' · ') : '');
+            buildPill.setAttribute('aria-label', bm.label + (detail.length ? ' ' + detail.join(' ') : ''));
+        }
         // Pill del Pulpo: estado (verde/rojo) + uptime formateado.
         var pulpoPill = document.getElementById('hdr-pulpo');
         if (pulpoPill) {
@@ -108,17 +139,34 @@ if (!window.__hydrateHeaderPills) {
         if (resPill && res) {
             var cpu = res.cpuPercent != null ? res.cpuPercent : '?';
             var mem = res.memPercent != null ? res.memPercent : '?';
-            resPill.textContent = '🖥 CPU ' + cpu + '% · RAM ' + mem + '%';
+            var cpuEl = document.getElementById('hdr-resources-cpu');
+            var memEl = document.getElementById('hdr-resources-mem');
+            if (cpuEl) cpuEl.textContent = 'CPU ' + cpu + '%';
+            if (memEl) memEl.textContent = 'RAM ' + mem + '%';
             resPill.classList.remove('in-pill-ok', 'in-pill-warn', 'in-pill-bad');
+            if (cpuEl) cpuEl.classList.remove('in-resource-alert');
+            if (memEl) memEl.classList.remove('in-resource-alert');
             var maxCpu = res.maxCpu || 70;
             var maxMem = res.maxMem || 70;
             var worst = Math.max(Number(cpu) || 0, Number(mem) || 0);
-            if ((Number(cpu) || 0) > maxCpu || (Number(mem) || 0) > maxMem) resPill.classList.add('in-pill-bad');
+            var cpuAlert = (Number(cpu) || 0) > maxCpu;
+            var memAlert = (Number(mem) || 0) > maxMem;
+            if (cpuAlert && cpuEl) cpuEl.classList.add('in-resource-alert');
+            if (memAlert && memEl) memEl.classList.add('in-resource-alert');
+            if (cpuAlert || memAlert) resPill.classList.add('in-pill-bad');
             else if (worst > 50) resPill.classList.add('in-pill-warn');
             else resPill.classList.add('in-pill-ok');
             resPill.title = 'CPU ' + cpu + '% (cap ' + maxCpu + '%) · RAM ' + mem + '% ('
                 + (res.memUsedGB || '?') + 'GB / ' + (res.memTotalGB || '?') + 'GB · cap ' + maxMem + '%) · '
                 + (res.cpuCores || '?') + ' cores';
+        }
+        var clockPill = document.getElementById('hdr-clock');
+        if (clockPill) {
+            var now = new Date();
+            var date = now.toLocaleDateString('es-AR', { weekday: 'short', day: '2-digit', month: '2-digit' });
+            var time = now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+            clockPill.textContent = '🕒 ' + date + ' · ' + time;
+            clockPill.title = 'Fecha y hora local: ' + date + ' ' + time;
         }
     };
 }

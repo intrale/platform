@@ -111,6 +111,16 @@ a:hover { color: var(--in-accent); }
   font-size: 12px;
   font-weight: 500;
 }
+.in-header-meta {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.in-header-divider { color: var(--in-fg-dim); }
+.in-status-dot { line-height: 1; }
+.in-resource-alert {
+  color: var(--in-bad);
+  font-weight: 800;
+}
 .in-pill-ok { background: var(--in-ok-soft); border-color: var(--in-ok); color: var(--in-ok); }
 .in-pill-warn { background: var(--in-warn-soft); border-color: var(--in-warn); color: var(--in-warn); }
 .in-pill-bad { background: var(--in-bad-soft); border-color: var(--in-bad); color: var(--in-bad); }

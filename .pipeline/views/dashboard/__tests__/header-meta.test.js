@@ -26,10 +26,18 @@ const { renderHeaderMetaSsr, headerPillsClientScript, headerPillsPollClientScrip
 
 test('renderHeaderMetaSsr() emite los tres IDs invariantes (recursos, pulpo, reloj)', () => {
     const html = renderHeaderMetaSsr();
+    assert.match(html, /id="bld-status"/, 'falta la pill de build');
     assert.match(html, /id="hdr-resources"/, 'falta la pill de recursos CPU/RAM');
     assert.match(html, /id="hdr-pulpo"/, 'falta la pill de uptime del Pulpo');
     assert.match(html, /id="hdr-clock"/, 'falta el reloj');
     assert.match(html, /class="in-header-meta"/, 'falta el contenedor in-header-meta');
+});
+
+test('la bandeja de estado no muestra signo de pregunta en build desconocido', () => {
+    const html = renderHeaderMetaSsr({ withMode: true });
+    const script = headerPillsClientScript();
+    assert.doesNotMatch(html + script, /Build \?/, 'el estado unknown debe mostrarse como Build sin datos');
+    assert.match(html + script, /Build sin datos/, 'fallback explícito para build desconocido');
 });
 
 test('sin withMode NO emite #hdr-mode (comportamiento de home, #4227)', () => {
@@ -52,15 +60,17 @@ test('preserva title y aria-label literales de las pills (contrato de accesibili
     assert.match(html, /title="CPU y RAM del sistema"/, 'title de recursos preservado');
     assert.match(html, /aria-label="Recursos CPU y RAM"/, 'aria-label de recursos preservado');
     assert.match(html, /aria-label="Estado del pulpo"/, 'aria-label del pulpo preservado');
-    assert.match(html, /aria-label="Hora local"/, 'aria-label del reloj preservado');
+    assert.match(html, /aria-label="Fecha y hora local"/, 'aria-label del reloj preservado');
 });
 
 test('orden estable de las pills: [mode] → recursos → pulpo → reloj (guideline UX-3)', () => {
     const html = renderHeaderMetaSsr({ withMode: true });
+    const iBuild = html.indexOf('id="bld-status"');
     const iMode = html.indexOf('id="hdr-mode"');
     const iRes = html.indexOf('id="hdr-resources"');
     const iPulpo = html.indexOf('id="hdr-pulpo"');
     const iClock = html.indexOf('id="hdr-clock"');
+    assert.ok(iBuild >= 0 && iBuild < iMode, 'build antes de mode');
     assert.ok(iMode >= 0 && iMode < iRes, 'mode antes de recursos');
     assert.ok(iRes < iPulpo, 'recursos antes de pulpo');
     assert.ok(iPulpo < iClock, 'pulpo antes del reloj');
@@ -87,6 +97,7 @@ test('la hidratación conserva la señal de presión de recursos (ok/warn/bad)',
     assert.match(script, /in-pill-ok/, 'clase ok');
     assert.match(script, /in-pill-warn/, 'clase warn');
     assert.match(script, /in-pill-bad/, 'clase bad');
+    assert.match(script, /in-resource-alert/, 'resalta la métrica específica que supera el cap');
     // Umbrales históricos preservados (cálculo sin cambios).
     assert.match(script, /maxCpu/, 'umbral de CPU');
     assert.match(script, /maxMem/, 'umbral de RAM');
