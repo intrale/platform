@@ -188,7 +188,7 @@ function indexPathFor(issue, opts) {
  */
 function redactMeta(entry) {
     const out = { ...entry };
-    for (const field of ['path', 'caption', 'descriptor', 'filename']) {
+    for (const field of ['path', 'caption', 'descriptor', 'filename', 'motivo']) {
         if (typeof out[field] === 'string' && out[field].length > 0) {
             out[field] = redactSensitive(redactSecretValue(out[field]));
         }
@@ -247,13 +247,20 @@ function entryKey(e) {
  * @param {string|number} entry.issue          - `^\d+$` (CA-5).
  * @param {string} entry.fase                  - enum cerrado (SEC-2).
  * @param {string} entry.agente                - clave de SKILL_SOURCES (SEC-2).
- * @param {string} entry.tipo                  - document|image|video|animation.
- * @param {string} entry.path                  - path del binario (relativo al repo).
+ * @param {string} entry.tipo                  - document|image|video|animation|exception.
+ * @param {string} [entry.path]                - path del binario (relativo al repo).
+ *                                               Requerido salvo `tipo:'exception'`.
+ * @param {string} [entry.motivo]              - motivo de la excepción. Requerido
+ *                                               (y no vacío) sólo si `tipo:'exception'`
+ *                                               (#4504, CA-3). Se redacta en `redactMeta`.
  * @param {number} [entry.bytes]               - tamaño del binario.
  * @param {boolean} [entry.sensible=false]     - flag de sensibilidad (SEC-1).
  * @param {string} [entry.timestamp]           - ISO inyectable (determinismo tests).
  *                                               Default: `new Date().toISOString()`.
- * @param {string} [entry.pipelineRoot]        - root del repo (default padre de lib/).
+ * @param {string} [entry.pipelineRoot]        - dir `.pipeline` (default `path.resolve(__dirname,'..')`).
+ *                                               OJO: NO es el repo root — es el dir `.pipeline`.
+ *                                               El adapter `write-deliverable.js` traduce
+ *                                               repo-root → `.pipeline` antes de llamar acá (CA-4).
  * @returns {object} la entry persistida (redactada).
  */
 function upsertDeliverableIndex(entry = {}) {
@@ -265,7 +272,15 @@ function upsertDeliverableIndex(entry = {}) {
     if (typeof entry.tipo !== 'string' || entry.tipo.length === 0) {
         throw new Error(`tipo inválido: ${entry.tipo}`);
     }
-    if (typeof entry.path !== 'string' || entry.path.length === 0) {
+    // #4504 (CA-3) — validación condicional por tipo. Una excepción no tiene
+    // binario (no hay `path`), pero EXIGE `motivo` no vacío para no degradar a un
+    // registro vacío/silencioso (viola CA-3). El resto de tipos EXIGE `path`.
+    const isException = entry.tipo === 'exception';
+    if (isException) {
+        if (typeof entry.motivo !== 'string' || entry.motivo.trim().length === 0) {
+            throw new Error(`motivo requerido para tipo=exception: ${entry.motivo}`);
+        }
+    } else if (typeof entry.path !== 'string' || entry.path.length === 0) {
         throw new Error(`path inválido: ${entry.path}`);
     }
 
@@ -279,7 +294,11 @@ function upsertDeliverableIndex(entry = {}) {
         fase,
         agente,
         tipo: entry.tipo,
-        path: entry.path,
+        // Sólo se persiste el campo relevante por tipo: `path` para binarios,
+        // `motivo` para excepciones. Así el shape de cada entry es inequívoco.
+        ...(isException
+            ? { motivo: entry.motivo }
+            : { path: entry.path }),
         bytes: Number.isFinite(entry.bytes) ? Number(entry.bytes) : null,
         sensible: Boolean(entry.sensible),
         timestamp,
