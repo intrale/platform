@@ -253,6 +253,13 @@ __pycache__/
 # genera/persiste en runtime, igual que provider-disabled.json).
 .pipeline/state/pacing-bucket.json
 
+# #4536 — estado runtime del scheduler de ventanas OFF por proveedor (#3871) y
+# del disable manual por proveedor. Fail-open, con updated_at, generado/persistido
+# en ejecución (lib/provider-schedule.js, lib/provider-disabled.js). NO commitear:
+# si entran al índice, restart.js (git reset --hard) pisaría el horario operativo.
+.pipeline/provider-schedule.json
+.pipeline/provider-disabled.json
+
 # #4403 — telemetría append-only de costo por provider (D4). Se genera en
 # runtime por cada ejecución de agente; NO versionar (evitar telemetría en el
 # repo por accidente). El dir `.pipeline/state/` no está ignorado globalmente.
