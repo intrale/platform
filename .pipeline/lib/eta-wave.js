@@ -43,6 +43,9 @@ const readline = require('readline');
 // mapSizeToCanonical, getIssueSize) no cambian — solo dejamos de duplicar
 // el walk del FS y los filtros de duración.
 const etaMarkers = require('./eta-markers');
+// #4532 — Serie histórica de velocidad cross-ola. Alimenta la estimación previa
+// de una ola nueva (sin snapshots propios) y persiste las muestras medidas.
+const velocityHistory = require('./wave-velocity-history');
 
 // ─── Constantes públicas ───────────────────────────────────────────────────
 
@@ -106,6 +109,13 @@ const WAVE_MIN_DELTA_MS = 60 * 1000;
 // Ventana de suavizado (media móvil): se toman los últimos N snapshots de la
 // ola; si hay menos, se usan los que haya (≥ WAVE_MIN_SNAPSHOTS).
 const WAVE_VELOCITY_WINDOW = 5;
+
+// #4532 — Throttle de registro de muestras de velocidad en el histórico cross-ola.
+// La velocidad se mide en cada tick (~30s dashboard + /wave status). Sin throttle
+// el store se llenaría de casi-duplicados. Registramos como mucho una muestra cada
+// 5 min por proceso (in-memory) — suficiente para un promedio histórico estable.
+const VELOCITY_SAMPLE_MIN_INTERVAL_MS = 5 * 60 * 1000;
+let _lastVelocitySampleTs = 0;
 
 // ─── Paths (con override por env para tests) ───────────────────────────────
 
@@ -685,20 +695,24 @@ function _streamWaveProgress(waveKey) {
  * Reset al resembrar (CA-6): al cambiar `waveKey`, la serie anterior no
  * matchea → cae a fallback hasta acumular snapshots propios.
  *
- * Read-only (CA-7): solo lee la serie; no escribe nada.
+ * #4532 — Cuando no hay ritmo medible propio, en vez de `fallback` mudo se deriva
+ * de la VELOCIDAD HISTÓRICA cross-ola (`source:'historical'`, `snapshots:0`), para
+ * que una ola nueva muestre velocidad/ETA desde el primer tick. Sólo cae a
+ * `fallback` cuando tampoco hay histórico.
  *
  * @param {number} waveKey — entero positivo (`waves.getActiveWave().number`).
  * @param {number} avancePctActual — `snapshot.totalPct` (0..100).
  * @param {number} [now=Date.now()] — inyectable para tests determinísticos.
  * @returns {Promise<
- *   {source:'velocity', remainingMs:number, absoluteMs:number, velocityPctPerMin:number, snapshots:number}
+ *   {source:'velocity'|'historical', remainingMs:number, absoluteMs:number, velocityPctPerMin:number, snapshots:number, reason?:string}
  *   | {source:'fallback', reason:string}
  * >}
  */
 async function calculateWaveVelocityETA(waveKey, avancePctActual, now) {
     const ts = (typeof now === 'number' && Number.isFinite(now)) ? now : Date.now();
 
-    // Validación de inputs (CA-11/CA-14).
+    // Validación de inputs (CA-11/CA-14). Inputs rotos → fallback DURO (sin
+    // histórico): no hay `avancePct` confiable para derivar un restante.
     if (!Number.isInteger(waveKey) || waveKey <= 0) {
         return { source: 'fallback', reason: 'invalid-wavekey' };
     }
@@ -706,9 +720,48 @@ async function calculateWaveVelocityETA(waveKey, avancePctActual, now) {
         return { source: 'fallback', reason: 'invalid-avance' };
     }
 
+    // #4532 — Fallback por VELOCIDAD HISTÓRICA cross-ola. Cuando la ola activa no
+    // tiene ritmo medible propio (pocos snapshots, Δt chico, o pendiente ≤ 0 por
+    // rebote / `/wave add`), en vez de devolver "—" derivamos velocidad/ETA de la
+    // estimación previa persistida (issue #4532, puntos 5 y 6). El ETA sale de
+    // `remaining / velocidad` con `remaining = 100 − avancePct` (equivale a
+    // Σ(% restante por issue)/N, porque avancePct ya está normalizado por issue).
+    const historicalFallback = (reason) => {
+        let histPctPerMin;
+        try { histPctPerMin = velocityHistory.getHistoricalVelocity({}); }
+        catch { histPctPerMin = null; }
+        if (!Number.isFinite(histPctPerMin) || histPctPerMin <= 0) {
+            return { source: 'fallback', reason };
+        }
+        const remainingPct = 100 - avancePctActual;
+        if (remainingPct <= 0) {
+            return {
+                source: 'historical',
+                remainingMs: 0,
+                absoluteMs: ts,
+                velocityPctPerMin: histPctPerMin,
+                snapshots: 0,
+                reason,
+            };
+        }
+        const velPerMs = histPctPerMin / 60000;
+        const remainingMs = remainingPct / velPerMs;
+        if (!Number.isFinite(remainingMs) || remainingMs < 0) {
+            return { source: 'fallback', reason };
+        }
+        return {
+            source: 'historical',
+            remainingMs,
+            absoluteMs: ts + remainingMs,
+            velocityPctPerMin: histPctPerMin,
+            snapshots: 0,
+            reason,
+        };
+    };
+
     let snapshots;
     try { snapshots = await _streamWaveProgress(waveKey); }
-    catch { return { source: 'fallback', reason: 'read-error' }; }
+    catch { return historicalFallback('read-error'); }
 
     // Ventana de suavizado: últimos N snapshots de la ola (CA / media móvil).
     if (snapshots.length > WAVE_VELOCITY_WINDOW) {
@@ -716,23 +769,36 @@ async function calculateWaveVelocityETA(waveKey, avancePctActual, now) {
     }
 
     if (snapshots.length < WAVE_MIN_SNAPSHOTS) {
-        return { source: 'fallback', reason: 'insufficient-snapshots' };  // CA-4
+        return historicalFallback('insufficient-snapshots');  // CA-4 → histórico si hay
     }
 
     const first = snapshots[0];
     const last = snapshots[snapshots.length - 1];
     const deltaMs = last.ts - first.ts;
     if (!Number.isFinite(deltaMs) || deltaMs < WAVE_MIN_DELTA_MS) {
-        return { source: 'fallback', reason: 'delta-too-small' };  // CA-4
+        return historicalFallback('delta-too-small');  // CA-4
     }
 
-    // Pendiente global sobre la ventana (%/ms). Media móvil por ventana.
+    // Pendiente global sobre la ventana (%/ms). Media móvil por ventana. Esta es
+    // la VELOCIDAD "% de avance por issue por minuto" (avancePct ya normalizado
+    // por issue), la métrica canónica del issue #4532.
     const velocity = (last.avancePct - first.avancePct) / deltaMs;
 
-    // Clamp (CA-14): velocidad ≤ 0 / no finita → fallback, sin proyectar
-    // restante negativo / Infinity / NaN.
+    // Clamp (CA-14): velocidad ≤ 0 / no finita (rebotes / `/wave add` que bajan
+    // el avancePct) → NO se registra ni se propaga negativo; se cae a la
+    // estimación histórica (robustez #4532: sin velocidades negativas).
     if (!Number.isFinite(velocity) || velocity <= 0) {
-        return { source: 'fallback', reason: 'non-positive-velocity' };
+        return historicalFallback('non-positive-velocity');
+    }
+
+    const velocityPctPerMin = velocity * 60000;
+    // #4532 — Registrar la muestra medida en el histórico cross-ola (throttled).
+    // Best-effort: nunca rompe el cálculo. Sólo muestras positivas (recordSample
+    // ya descarta ≤ 0), y como mucho una cada VELOCITY_SAMPLE_MIN_INTERVAL_MS.
+    if ((ts - _lastVelocitySampleTs) >= VELOCITY_SAMPLE_MIN_INTERVAL_MS) {
+        _lastVelocitySampleTs = ts;
+        try { velocityHistory.recordSample({ waveKey, velocityPctPerMin, now: ts }); }
+        catch { /* telemetría best-effort */ }
     }
 
     const remainingPct = 100 - avancePctActual;
@@ -742,21 +808,21 @@ async function calculateWaveVelocityETA(waveKey, avancePctActual, now) {
             source: 'velocity',
             remainingMs: 0,
             absoluteMs: ts,
-            velocityPctPerMin: velocity * 60000,
+            velocityPctPerMin,
             snapshots: snapshots.length,
         };
     }
 
     const remainingMs = remainingPct / velocity;
     if (!Number.isFinite(remainingMs) || remainingMs < 0) {
-        return { source: 'fallback', reason: 'degenerate-remaining' };
+        return historicalFallback('degenerate-remaining');
     }
 
     return {
         source: 'velocity',
         remainingMs,
         absoluteMs: ts + remainingMs,
-        velocityPctPerMin: velocity * 60000,
+        velocityPctPerMin,
         snapshots: snapshots.length,
     };
 }

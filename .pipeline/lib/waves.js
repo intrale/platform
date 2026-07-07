@@ -92,6 +92,7 @@ function pipelineDir() {
 }
 
 function wavesFile() { return path.join(pipelineDir(), 'waves.json'); }
+function wavesTemplateFile() { return path.join(pipelineDir(), 'waves.json.template'); }
 function archivedDir() { return path.join(pipelineDir(), 'archived'); }
 function partialFile() { return path.join(pipelineDir(), '.partial-pause.json'); }
 
@@ -311,6 +312,46 @@ function readWavesFromDisk(file) {
     } catch (err) {
         logWarn(`JSON corrupto en ${file}: ${err.message}. Cayendo a estado vacío.`);
         return null;
+    }
+}
+
+// #4532 — Bootstrap del archivo de runtime desde el template versionado.
+//
+// Contexto: `waves.json` dejó de estar trackeado en git (era la causa raíz del
+// wipe de la ola — cada `git checkout agent/<rama>` / `reset --hard main` lo
+// pisaba con el template vacío commiteado, forzando un re-seed que reseteaba
+// comienzo/número/nombre). Ahora se versiona `waves.json.template` y este helper
+// lo copia a `waves.json` SOLO si el runtime no existe (fresh clone / máquina
+// nueva). Idempotente: si el runtime ya existe, no toca nada — jamás pisa estado
+// real. Best-effort: nunca tira (el pipeline no puede morir por esto); si el
+// template no es legible, cae a `emptyState()` en disco.
+//
+// @returns {{ created: boolean, reason: string }}
+function ensureWavesFile() {
+    const file = wavesFile();
+    if (fs.existsSync(file)) {
+        return { created: false, reason: 'exists' };
+    }
+    let content = null;
+    let fromTemplate = false;
+    try {
+        const raw = fs.readFileSync(wavesTemplateFile(), 'utf8');
+        const parsed = JSON.parse(raw); // validar que el template parsea
+        if (parsed && typeof parsed === 'object') { content = raw; fromTemplate = true; }
+    } catch {
+        content = null; // template ausente/ilegible → fallback a estado vacío.
+    }
+    if (content === null) {
+        content = JSON.stringify(emptyState(), null, 2);
+    }
+    try {
+        atomicWriteFile(file, content);
+        invalidateCache();
+        logInfo(`ensureWavesFile: waves.json creado desde ${fromTemplate ? 'template' : 'emptyState'}.`);
+        return { created: true, reason: fromTemplate ? 'from-template' : 'from-empty-state' };
+    } catch (err) {
+        logWarn(`ensureWavesFile: no se pudo crear waves.json: ${err.message}`);
+        return { created: false, reason: `error: ${err.message}` };
     }
 }
 
@@ -1424,6 +1465,25 @@ function saveStateLocked(state, metadata = {}) {
     if (metadata.source) state.meta.source = redactSecretValue(String(metadata.source));
     if (metadata.note) state.meta.note = redactSecretValue(String(metadata.note));
     if (!state.meta.created_at) state.meta.created_at = state.meta.updated_at;
+
+    // #4532 — Sombra de IDENTIDAD persistida (número/título/goal/comienzo),
+    // separada del CÁLCULO (avance/velocidad/ETA). Se refresca desde la ola
+    // activa en cada save. Objetivo: si `active_wave` se vacía por cualquier
+    // motivo (wipe, restore parcial), un re-seed puede RECUPERAR la identidad
+    // real desde acá en vez de mintear placeholders (`Ola seed #N` + `nowIso()`),
+    // que es exactamente el bug de este issue. La identidad SÓLO cambia cuando
+    // efectivamente cambia la ola activa (promote / nueva ola), no en un save
+    // rutinario. Si no hay ola activa, se conserva la última identidad conocida
+    // (no se borra) para sobrevivir a un wipe transitorio.
+    if (state.active_wave && typeof state.active_wave === 'object'
+        && Number.isInteger(state.active_wave.number)) {
+        state.meta.active_wave_identity = {
+            number: state.active_wave.number,
+            name: typeof state.active_wave.name === 'string' ? state.active_wave.name : null,
+            goal: typeof state.active_wave.goal === 'string' ? state.active_wave.goal : null,
+            started_at: typeof state.active_wave.started_at === 'string' ? state.active_wave.started_at : null,
+        };
+    }
 
     // CA-5: validar shape ANTES de persistir. Un state inválido se rechaza
     // con excepción + alerta — preferimos perder el write a corromper disco.
@@ -2935,6 +2995,8 @@ module.exports = {
     withWavesLock,
     // CA-1: helper de write atómico reusable por partial-pause.js.
     atomicWriteFile,
+    // #4532 — bootstrap del runtime desde el template versionado.
+    ensureWavesFile,
     // #3738 — bounds de creación de olas planificadas.
     readWaveMaxConcurrency,
     WAVE_WINDOW_MIN_MINUTES,

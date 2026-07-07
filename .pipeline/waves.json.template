@@ -1,0 +1,15 @@
+{
+  "version": "1.0",
+  "meta": {
+    "created_at": "2026-05-24T00:00:00Z",
+    "updated_at": "2026-05-24T00:00:00Z",
+    "updated_by": "System",
+    "source": "template",
+    "next_wave_number": 1,
+    "note": "Template versionado de waves.json (#4532). El bootstrap lo copia a .pipeline/waves.json SOLO si el archivo de runtime no existe. El waves.json de runtime esta gitignored: no se versiona para que ningun `git checkout agent/<rama>` ni `reset --hard main` del pipeline pise el estado real de la ola (identidad/comienzo). No editar este template esperando cambiar el runtime."
+  },
+  "active_wave": null,
+  "planned_waves": [],
+  "archived_waves": [],
+  "dependencies": []
+}

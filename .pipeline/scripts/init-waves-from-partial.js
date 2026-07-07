@@ -238,7 +238,7 @@ function readPartialStrict() {
  */
 function readWavesState() {
     if (!fs.existsSync(wavesFile())) {
-        return { ok: true, hasActiveWave: false, maxArchivedNumber: 0, nextWaveNumber: 1, raw: null };
+        return { ok: true, hasActiveWave: false, maxArchivedNumber: 0, nextWaveNumber: 1, preservedIdentity: null, raw: null };
     }
     let raw;
     try {
@@ -304,7 +304,26 @@ function readWavesState() {
         ? parsed.meta.next_wave_number
         : null;
     const nextWaveNumber = persistedCounter !== null ? persistedCounter : (maxKnown + 1);
-    return { ok: true, hasActiveWave, maxArchivedNumber, nextWaveNumber, raw: parsed };
+    // #4532 — Identidad persistida de la ola (número/título/goal/comienzo),
+    // escrita por `waves.js` en cada save (`meta.active_wave_identity`). Cuando
+    // `active_wave` se vació (wipe/restore parcial), esta sombra permite RECUPERAR
+    // la identidad real en el re-seed en vez de mintear placeholders. Se sanea:
+    // sólo se acepta si trae un `number` entero positivo.
+    let preservedIdentity = null;
+    const rawIdentity = parsed.meta && parsed.meta.active_wave_identity;
+    if (rawIdentity && typeof rawIdentity === 'object'
+        && Number.isInteger(rawIdentity.number) && rawIdentity.number > 0) {
+        const stripCtl = (s) => (typeof s === 'string' ? s.replace(/[\x00-\x1f]/g, '').trim() : null);
+        preservedIdentity = {
+            number: rawIdentity.number,
+            name: stripCtl(rawIdentity.name) || null,
+            goal: stripCtl(rawIdentity.goal) || null,
+            started_at: (typeof rawIdentity.started_at === 'string'
+                && Number.isFinite(Date.parse(rawIdentity.started_at)))
+                ? rawIdentity.started_at : null,
+        };
+    }
+    return { ok: true, hasActiveWave, maxArchivedNumber, nextWaveNumber, preservedIdentity, raw: parsed };
 }
 
 /**
@@ -430,33 +449,66 @@ function initWavesFromPartial(opts = {}) {
     //    Guard de colisión defensivo (riesgo guru #1 + security #4): el contador
     //    monotónico es por diseño > cualquier archived/planned; si por un state
     //    corrupto quedara ≤ max conocido, lo elevamos a `maxArchivedNumber + 1`.
-    let waveNumber = wavesState.nextWaveNumber;
-    if (!Number.isInteger(waveNumber) || waveNumber <= wavesState.maxArchivedNumber) {
-        const safe = wavesState.maxArchivedNumber + 1;
-        logWarn(`Contador de ola inválido/colisiona (#${waveNumber} ≤ max=${wavesState.maxArchivedNumber}) ` +
-            `— elevo a #${safe}.`);
-        waveNumber = safe;
-    }
-    //    #4030 — El partial-pause SÍ aporta nombre/goal reales del plan maestro
-    //    (mejor UX que `Ola seed #N`). Mantenemos el guard de confianza original
-    //    para el NOMBRE/GOAL (sólo si `waveMeta.number` supera lo archivado/
-    //    planificado); pero el NÚMERO ya lo fijó el contador, nunca `waveMeta`.
-    let name = `Ola seed #${waveNumber}`;
-    let goal = 'Seed inicial generado desde .partial-pause.json (issue #3616).';
-    if (partial.waveMeta && partial.waveMeta.number > wavesState.maxArchivedNumber) {
-        name = partial.waveMeta.name;
-        goal = partial.waveMeta.goal || goal;
-        logInfo(`Metadata de ola recuperada del plan maestro: ola #${waveNumber} "${name}" ` +
-            `(número asignado por contador monotónico, no por metadata externa).`);
-    } else if (partial.waveMeta) {
-        logWarn(`Número externo (#${partial.waveMeta.number}) colisiona con archived/planned ` +
-            `(max=${wavesState.maxArchivedNumber}) — nombre genérico, número por contador #${waveNumber}.`);
+    // #4532 — RECUPERACIÓN DE IDENTIDAD. Si existe una identidad persistida
+    // (`meta.active_wave_identity`, escrita por waves.js mientras había ola
+    // activa), este re-seed NO está comenzando una ola nueva: la ola se vació
+    // (wipe/restore parcial) y la estamos reconstruyendo. En ese caso preservamos
+    // número, título, goal y —crítico— el `started_at` ORIGINAL (nunca `nowIso()`,
+    // que es justo el bug de este issue: comienzo/velocidad reseteados). La
+    // identidad SÓLO se mintea de cero cuando no hay identidad previa (primer
+    // arranque real del pipeline).
+    let waveNumber;
+    let name;
+    let goal;
+    let startedAt;
+    let preservingIdentity = false;
+    let counterOverride = null; // si preservamos, no incrementamos el contador
+    if (wavesState.preservedIdentity) {
+        preservingIdentity = true;
+        const pi = wavesState.preservedIdentity;
+        waveNumber = pi.number;
+        name = pi.name || `Ola ${waveNumber}`;
+        goal = pi.goal || 'Ola recuperada tras reinicio — identidad preservada (#4532).';
+        startedAt = pi.started_at || nowIso();
+        // El contador ya reflejaba esta identidad; lo conservamos tal cual (no
+        // "gastamos" un número nuevo por reconstruir la misma ola).
+        counterOverride = (wavesState.raw && wavesState.raw.meta
+            && Number.isInteger(wavesState.raw.meta.next_wave_number))
+            ? wavesState.raw.meta.next_wave_number
+            : (waveNumber + 1);
+        logInfo(`Identidad de ola RECUPERADA de meta.active_wave_identity: #${waveNumber} "${name}" ` +
+            `(comienzo original ${startedAt}) — re-seed NO resetea identidad ni comienzo.`);
+    } else {
+        // Sin identidad previa → minteo genuino de una ola nueva.
+        waveNumber = wavesState.nextWaveNumber;
+        if (!Number.isInteger(waveNumber) || waveNumber <= wavesState.maxArchivedNumber) {
+            const safe = wavesState.maxArchivedNumber + 1;
+            logWarn(`Contador de ola inválido/colisiona (#${waveNumber} ≤ max=${wavesState.maxArchivedNumber}) ` +
+                `— elevo a #${safe}.`);
+            waveNumber = safe;
+        }
+        //    #4030 — El partial-pause SÍ aporta nombre/goal reales del plan maestro
+        //    (mejor UX que `Ola seed #N`). Mantenemos el guard de confianza original
+        //    para el NOMBRE/GOAL (sólo si `waveMeta.number` supera lo archivado/
+        //    planificado); pero el NÚMERO ya lo fijó el contador, nunca `waveMeta`.
+        name = `Ola seed #${waveNumber}`;
+        goal = 'Seed inicial generado desde .partial-pause.json (issue #3616).';
+        if (partial.waveMeta && partial.waveMeta.number > wavesState.maxArchivedNumber) {
+            name = partial.waveMeta.name;
+            goal = partial.waveMeta.goal || goal;
+            logInfo(`Metadata de ola recuperada del plan maestro: ola #${waveNumber} "${name}" ` +
+                `(número asignado por contador monotónico, no por metadata externa).`);
+        } else if (partial.waveMeta) {
+            logWarn(`Número externo (#${partial.waveMeta.number}) colisiona con archived/planned ` +
+                `(max=${wavesState.maxArchivedNumber}) — nombre genérico, número por contador #${waveNumber}.`);
+        }
+        startedAt = nowIso();
     }
     const seededWave = {
         number: waveNumber,
         name,
         goal,
-        started_at: nowIso(),
+        started_at: startedAt,
         issues: partial.allowedIssues.map((n) => ({ number: n, status: 'in_progress' })),
     };
 
@@ -499,15 +551,20 @@ function initWavesFromPartial(opts = {}) {
             created_at: (prev.meta && prev.meta.created_at) || nowIso(),
             updated_at: nowIso(),
             updated_by: 'init-waves-from-partial',
-            source: 'auto-seed',
-            // #4446 — incrementar y persistir el contador monotónico. El próximo
-            // correlativo nunca reutiliza el número recién sembrado.
-            next_wave_number: waveNumber + 1,
-            note: (partial.waveMeta && partial.waveMeta.number > wavesState.maxArchivedNumber)
-                ? `Seed desde .partial-pause.json (#3616/#4030): ola #${waveNumber} "${name}" ` +
-                    `con ${partial.allowedIssues.length} issue(s).`
-                : `Seed inicial desde .partial-pause.json (#3616). ` +
-                    `${partial.allowedIssues.length} issue(s) sembrados en ola #${waveNumber}.`,
+            source: preservingIdentity ? 'auto-seed-recovered' : 'auto-seed',
+            // #4446/#4532 — contador monotónico. Al MINTEAR una ola nueva se
+            // incrementa (nunca reutiliza el número recién sembrado). Al RECUPERAR
+            // una identidad existente (re-seed post-wipe) se conserva el contador
+            // previo: no gastamos un número nuevo por reconstruir la misma ola.
+            next_wave_number: preservingIdentity ? counterOverride : (waveNumber + 1),
+            note: preservingIdentity
+                ? `Re-seed con identidad RECUPERADA (#4532): ola #${waveNumber} "${name}" ` +
+                    `(comienzo original preservado). ${partial.allowedIssues.length} issue(s) re-sembrados.`
+                : (partial.waveMeta && partial.waveMeta.number > wavesState.maxArchivedNumber)
+                    ? `Seed desde .partial-pause.json (#3616/#4030): ola #${waveNumber} "${name}" ` +
+                        `con ${partial.allowedIssues.length} issue(s).`
+                    : `Seed inicial desde .partial-pause.json (#3616). ` +
+                        `${partial.allowedIssues.length} issue(s) sembrados en ola #${waveNumber}.`,
         },
         active_wave: seededWave,
         planned_waves: Array.isArray(prev.planned_waves) ? prev.planned_waves : [],

@@ -944,7 +944,12 @@ function _scheduleOlaETARefresh(state) {
               const nowTs = Date.now();
               waveProgressLib.appendSnapshot({ waveKey, avancePct: wSnap.totalPct, now: nowTs });
               const vel = await etaWaveLib.calculateWaveVelocityETA(waveKey, wSnap.totalPct, nowTs);
-              if (vel && vel.source === 'velocity') velocityETA = { ...vel, totalPct: wSnap.totalPct };
+              // #4532 — aceptar tanto el ritmo MEDIDO ('velocity') como la
+              // estimación HISTÓRICA cross-ola ('historical'), para que una ola
+              // nueva muestre velocidad/ETA desde el primer tick en vez de "—".
+              if (vel && (vel.source === 'velocity' || vel.source === 'historical')) {
+                velocityETA = { ...vel, totalPct: wSnap.totalPct };
+              }
             }
             // #4500 — serie temporal de avance para el sparkline de ritmo. Se lee
             // DESPUÉS de `appendSnapshot` para incluir el punto recién escrito.
@@ -976,8 +981,10 @@ function _scheduleOlaETARefresh(state) {
         bySize: historical.bySize,
         rebounceRate: historical.rebounceRate,
         // #4039 — ETA por velocidad (null si no hay ritmo medido todavía).
+        // #4532 — `etaSource` distingue ritmo MEDIDO ('velocity') de la estimación
+        // HISTÓRICA cross-ola ('historical'); ambos habilitan la celda de velocidad.
         velocityETA: velocityETA || null,
-        etaSource: velocityETA ? 'velocity' : 'fallback',
+        etaSource: velocityETA ? (velocityETA.source === 'historical' ? 'historical' : 'velocity') : 'fallback',
         // #4287 (CA-1) — avance % determinístico (null si no hubo snapshot).
         totalPct: Number.isFinite(waveTotalPct) ? waveTotalPct : null,
         // #4399 — conteo cerrados/total del MISMO `computeClosedSet` que la lista
