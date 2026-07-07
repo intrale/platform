@@ -4412,24 +4412,12 @@ function collectHomeState(opts) {
 
 // --- Sub-función pura: brand bar V3 (logo + ambiente + build status) --------
 function renderBrandBar(state) {
-    const b = (state && state.build) || { status: 'unknown', branch: '', commit: '' };
-    const STATUS_META = {
-        passing: { cls: 'in-pill-ok', icon: '🟢', label: 'Build OK' },
-        failing: { cls: 'in-pill-bad', icon: '🔴', label: 'Build roto' },
-        running: { cls: 'in-pill-warn', icon: '🟡', label: 'Build corriendo' },
-        unknown: { cls: 'in-pill-info', icon: '○', label: 'Build ?' },
-    };
-    const meta = STATUS_META[b.status] || STATUS_META.unknown;
-    const detail = [b.branch, b.commit].filter(Boolean).join(' · ');
-    const tip = 'Estado del último build (marker local .pipeline/build-status.json, sin gh api). '
-        + meta.label + (detail ? ' · ' + detail : '');
-    const detailHtml = detail ? ' · <span class="in-build-detail">' + escapeHtmlText(detail) + '</span>' : '';
     // #4189 — Marca producto MIZPÁ (atalaya de agentes, Génesis 31:49) + selector
     // de proyecto multiproyecto. MIZPÁ es el motor; el proyecto es intercambiable
     // (hoy Intrale, 1 de 3). El selector es informativo/estático en esta entrega
     // (la conmutación real de proyecto es trabajo futuro); lleva tooltip que lo
-    // explica. El pill de build (id="bld-status") se conserva para el ticker
-    // tickHeader y los contratos de test (R-G1/CA-3725).
+    // explica. El estado de build vive en la bandeja derecha común
+    // renderHeaderMetaSsr(), junto a CPU/RAM, Pulpo y reloj.
     const logoSvg = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">'
         + '<path d="M12 2.5 5 6v5c0 4.6 3 8 7 9.5 4-1.5 7-4.9 7-9.5V6l-7-3.5Z" stroke="#06121a" stroke-width="1.6" fill="rgba(255,255,255,.16)"/>'
         + '<path d="M9.5 12.5 11.3 14.3 14.8 10.4" stroke="#06121a" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -4451,9 +4439,6 @@ function renderBrandBar(state) {
         <span class="mz-proj-badge">1 / 3</span>
         <span class="mz-proj-caret" aria-hidden="true">▾</span>
       </div>
-      <span class="in-pill in-build-status ${meta.cls}" id="bld-status"
-            title="${escapeHtmlAttr(tip)}"
-            aria-label="${escapeHtmlAttr(meta.label + (detail ? ' ' + detail : ''))}">${meta.icon} ${escapeHtmlText(meta.label)}${detailHtml}</span>
     </div>`;
 }
 

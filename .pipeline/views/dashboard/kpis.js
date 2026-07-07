@@ -1197,7 +1197,7 @@ function renderKpisChromeScript() {
     }
     var bld=document.getElementById("bld-status");
     if(bld&&d.build){
-      var META={passing:{cls:"in-pill-ok",t:"🟢 Build OK"},failing:{cls:"in-pill-bad",t:"🔴 Build roto"},running:{cls:"in-pill-warn",t:"🟡 Build corriendo"},unknown:{cls:"in-pill-info",t:"○ Build ?"}};
+      var META={passing:{cls:"in-pill-ok",t:"🟢 Build OK"},failing:{cls:"in-pill-bad",t:"🔴 Build roto"},running:{cls:"in-pill-warn",t:"🟡 Build corriendo"},unknown:{cls:"in-pill-info",t:"○ Build sin datos"}};
       var m=META[d.build.status]||META.unknown;
       bld.classList.remove("in-pill-ok","in-pill-bad","in-pill-warn","in-pill-info");
       bld.classList.add(m.cls);

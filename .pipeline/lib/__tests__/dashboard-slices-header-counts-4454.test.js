@@ -15,6 +15,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const slices = require('../dashboard-slices');
@@ -93,4 +95,33 @@ test('#4454: sin bloqueados-humano el badge refleja los dependency-blocked', () 
     const out = slices.headerSlice(baseState({ activeWave: { issues: [1] } }), CTX);
     assert.equal(out.counts.bloqueados, new Set(dep).size,
         'sólo dependency-blocked cuando state.bloqueados está vacío');
+});
+
+test('#4531: headerSlice expone build status real y degrada sin signo de pregunta', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'intrale-header-build-'));
+    try {
+        fs.writeFileSync(path.join(tmp, 'build-status.json'), JSON.stringify({
+            status: 'passing',
+            branch: 'agent/4531-pipeline-dev',
+            commit: 'abcdef1234567890',
+        }));
+        const out = slices.headerSlice(baseState({ activeWave: { issues: [4531] } }), { PIPELINE: tmp });
+        assert.deepEqual(out.build, {
+            status: 'passing',
+            branch: 'agent/4531-pipeline-dev',
+            commit: 'abcdef123456',
+        });
+    } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+    }
+});
+
+test('#4531: headerSlice devuelve build unknown cuando falta el marker', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'intrale-header-build-missing-'));
+    try {
+        const out = slices.headerSlice(baseState({ activeWave: { issues: [4531] } }), { PIPELINE: tmp });
+        assert.deepEqual(out.build, { status: 'unknown', branch: '', commit: '' });
+    } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+    }
 });
