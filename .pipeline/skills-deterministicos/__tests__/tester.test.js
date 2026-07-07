@@ -250,6 +250,85 @@ test('renderReport — verdict RECHAZADO con motivo cuando exitCode!=0', () => {
     assert.ok(report.includes('2 failures'));
 });
 
+// ── #4511 — entregable phase-scoped del tester (épico #4255) ─────────
+
+test('#4511 — renderReport incluye sección "Baseline y gaps" con baseline no disponible (CA-1)', () => {
+    const xml = fs.readFileSync(path.join(__dirname, 'fixtures', 'kover-backend.xml'), 'utf8');
+    const coverageAgg = kover.aggregateKover([kover.parseKoverXml(xml)]);
+    const report = tester.renderReport({
+        issue: 4511, module: 'all', coverage: true, threshold: 80,
+        gradle: { wall_ms: 1000 },
+        tests: { valid: true, tests: 3, failures: 0, errors: 0, skipped: 0, time_seconds: 0.5, failed_tests: [] },
+        coverageAgg, exitCode: 0, motivo: null,
+    });
+    assert.ok(report.includes('### Baseline y gaps'), 'debe incluir la sección de baseline/gaps');
+    assert.ok(report.includes('baseline: no disponible'), 'debe documentar baseline no disponible explícito');
+    assert.ok(/Gaps de cobertura/.test(report), 'debe incluir la línea de gaps de cobertura');
+});
+
+test('#4511 — renderReport documenta la excepción explícita en ruta pipeline-only (CA-4)', () => {
+    const coverageAgg = kover.aggregateKover([]); // valid=false
+    const report = tester.renderReport({
+        issue: 4511, module: 'pipeline', coverage: false, threshold: 80,
+        gradle: { wall_ms: 500 },
+        tests: { valid: false },
+        coverageAgg, exitCode: 0, motivo: null,
+        pipelineOnly: true,
+        exception: 'Cobertura no aplicable: issue pipeline-only sin módulos Gradle con tests.',
+    });
+    assert.ok(report.includes('### Excepción explícita'), 'debe incluir la sección de excepción');
+    assert.ok(report.includes('Cobertura no aplicable'), 'debe documentar el motivo de excepción');
+    assert.ok(report.includes('no aplica'), 'gaps debe indicar que Kover no aplica');
+});
+
+test('#4511 — cierre exitoso escribe entregable phase-scoped e indexa (CA-1/CA-2/CA-6)', () => {
+    // Replica el flujo del `finally` de main(): render del reporte + writeDeliverable
+    // con fase 'verificacion'. Verifica el artefacto físico y el índice issue→fase→agente.
+    const { writeDeliverable } = require('../../lib/write-deliverable');
+    const { readDeliverableIndex } = require('../../lib/deliverable-index');
+    const xml = fs.readFileSync(path.join(__dirname, 'fixtures', 'kover-backend.xml'), 'utf8');
+    const coverageAgg = kover.aggregateKover([kover.parseKoverXml(xml)]);
+    const report = tester.renderReport({
+        issue: 45110, module: 'all', coverage: true, threshold: 80,
+        gradle: { wall_ms: 1000 },
+        tests: { valid: true, tests: 5, failures: 0, errors: 0, skipped: 0, time_seconds: 0.5, failed_tests: [] },
+        coverageAgg, exitCode: 0, motivo: null,
+    });
+    const dv = writeDeliverable('tester', 45110, { fase: 'verificacion', md: report, pipelineRoot: TMP });
+    assert.equal(dv.indexed, true);
+    assert.ok(
+        dv.path.replace(/\\/g, '/').endsWith('.pipeline/assets/docs/45110/tester-verificacion-45110.md'),
+        dv.path,
+    );
+    assert.ok(fs.existsSync(dv.path), 'el archivo físico del entregable debe existir');
+
+    const read = readDeliverableIndex(45110, { pipelineRoot: TMP });
+    const entry = read.entries.find((e) => e.agente === 'tester' && e.fase === 'verificacion');
+    assert.ok(entry, 'el índice debe tener entrada tester::verificacion');
+    assert.equal(entry.tipo, 'document');
+    assert.ok(entry.path.endsWith('tester-verificacion-45110.md'), entry.path);
+});
+
+test('#4511 — pipeline-only sin tests genera entregable igual con excepción documentada (CA-4/CA-6)', () => {
+    const { writeDeliverable } = require('../../lib/write-deliverable');
+    const { readDeliverableIndex } = require('../../lib/deliverable-index');
+    const report = tester.renderReport({
+        issue: 45111, module: 'pipeline', coverage: false, threshold: 80,
+        gradle: { wall_ms: 300 },
+        tests: { valid: false },
+        coverageAgg: kover.aggregateKover([]), exitCode: 0, motivo: null,
+        pipelineOnly: true,
+        exception: 'Cobertura no aplicable: issue pipeline-only sin módulos Gradle con tests.',
+    });
+    const dv = writeDeliverable('tester', 45111, { fase: 'verificacion', md: report, pipelineRoot: TMP });
+    assert.ok(fs.existsSync(dv.path), 'el entregable se genera aunque la cobertura no aplique');
+    const written = fs.readFileSync(dv.path, 'utf8');
+    assert.ok(written.includes('Excepción explícita'), 'el entregable documenta la excepción');
+
+    const read = readDeliverableIndex(45111, { pipelineRoot: TMP });
+    assert.ok(read.entries.some((e) => e.agente === 'tester' && e.fase === 'verificacion'));
+});
+
 // ── findIssueWorktree (rebote #2892, técnica de #2893) ─────────────
 
 test('findIssueWorktree — devuelve null si no hay issue', () => {
