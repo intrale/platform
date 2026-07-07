@@ -180,10 +180,16 @@ feature_priority:
 # Límites de recursos del sistema — presión graduada en vez de binario
 resource_limits:
   # Umbrales graduados (verde → amarillo → naranja → rojo)
-  green_max_percent: 50            # Debajo de esto: capacidad total, sin restricciones
-  yellow_max_percent: 65           # Moderado: concurrencia reducida al 50%, limpieza suave
-  orange_max_percent: 80           # Alto: solo 1 agente total, limpieza agresiva
-  red_max_percent: 90              # Crítico: bloquear todo, kill de emergencia
+  # NOTA (config drift, ver #4542 / #4051): el baseline REAL de RAM de esta
+  # máquina es ~70-77% incluso idle (CPU ~7%). Con los umbrales viejos
+  # (orange 80) ese baseline diurno clavaba el gate en ORANGE → techo de 1
+  # agente → stall del pipeline. El night_window ya relajaba esto de
+  # 22:00-07:00; acá alineamos el DIURNO al mismo baseline vetado para que
+  # 70-77% sea YELLOW (no ORANGE). RED sigue como tope duro anti-swap/OOM.
+  green_max_percent: 55            # Debajo de esto: capacidad total, sin restricciones
+  yellow_max_percent: 78           # RAM 70-77% (baseline real) → YELLOW: concurrencia 50%, limpieza suave
+  orange_max_percent: 88           # Naranja recién sobre 88%: solo 1 agente, limpieza agresiva
+  red_max_percent: 93              # Crítico: bloquear todo, kill de emergencia (tope duro anti-swap/OOM)
 
   qa_env_max_cpu_percent: 60       # QA env (3 servicios pesados) necesita más margen
   qa_env_max_mem_percent: 60       # QA env: DynamoDB + Gradle + emulador consumen mucha RAM
