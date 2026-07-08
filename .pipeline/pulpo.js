@@ -215,6 +215,9 @@ const skillDeliverableAttachments = require('./lib/skill-deliverable-attachments
 // #4505 — `writeDeliverableException` es la API canónica que entregó #4504
 // (validación de fase + redacción del motivo). #4505 la CONSUME (no duplica).
 const { writeDeliverable, writeDeliverableException } = require('./lib/write-deliverable');
+// #4523 — helper puro que sintetiza el `.md` mínimo obligatorio del fallback
+// determinístico de pipeline-dev/dev (contenido no-nulo garantizado, sin FS).
+const { buildMinimalDeliverableMd } = require('./lib/minimal-deliverable');
 // #4506 (CA-3) — excepción explícita `no_aplica`: cuando un cierre aprobado no
 // deja adjuntos ni nota sustantiva, en vez de silencio se registra UNA entry
 // `tipo:"exception"` en el índice vía el choke point (nunca writeFileSync directo).
@@ -5109,6 +5112,51 @@ function brazoBarrido(config) {
                 }
               } catch (e) {
                 log('barrido', `📎 #${issue} fallback excepción (${notifySkill}): ${e.message}`);
+              }
+
+              // #4523 — Fallback OBLIGATORIO para pipeline-dev/dev. El fallback
+              // genérico de arriba sólo materializa con notas ≥80 chars; para
+              // pipeline-dev en dev esa condición desaparece: aprobado sin adjunto
+              // SIEMPRE materializa un .md mínimo (nunca silencio, aun con notas
+              // vacías/triviales). El umbral anti-ruido global (esSustantiva >= 80)
+              // de los otros 13 skills queda intacto.
+              try {
+                if (notifySkill === 'pipeline-dev' && fase === 'dev' && r.resultado === 'aprobado') {
+                  const sinAdjuntosPd = !Array.isArray(r.attachments) || r.attachments.length === 0;
+                  if (sinAdjuntosPd) {
+                    try {
+                      const notasPd =
+                        (typeof r.notas === 'string' && r.notas.trim().length > 0) ? r.notas
+                        : (typeof r.motivo === 'string' && r.motivo.trim().length > 0) ? r.motivo
+                        : '';
+                      const md = buildMinimalDeliverableMd({
+                        issue,
+                        fase: 'desarrollo/dev',   // etiqueta humana en el cuerpo del .md
+                        skill: 'pipeline-dev',
+                        resultado: r.resultado,
+                        notas: notasPd,           // el helper marca "(sin notas)" si viene vacío
+                        // timestamp: dato de cierre; el helper estampa ISO por default.
+                      });
+                      // Enruta por writeDeliverable → redacta secrets (SEC-REQ-1/CA-4)
+                      // y valida `fase` contra el enum cerrado ('dev'). NUNCA
+                      // fs.writeFileSync directo. `fase` es el token del enum, no
+                      // la etiqueta humana. Idempotente (upsert pipeline-dev::dev).
+                      writeDeliverable('pipeline-dev', issue, { fase, md, pipelineRoot: ROOT });
+                      const rescanPd = skillDeliverableAttachments.collectAttachmentsForSkill(
+                        'pipeline-dev', issue, fase, { pipelineRoot: ROOT },
+                      );
+                      if (Array.isArray(rescanPd) && rescanPd.length > 0) {
+                        r.attachments = rescanPd;
+                        log('barrido', `📎 #${issue} pipeline-dev/dev fallback obligatorio .md generado (${rescanPd.length})`);
+                      }
+                    } catch (e) {
+                      // El fallback NUNCA bloquea la notificación.
+                      log('barrido', `📎 #${issue} pipeline-dev/dev fallback error: ${e.message}`);
+                    }
+                  }
+                }
+              } catch (e) {
+                log('barrido', `📎 #${issue} pipeline-dev/dev fallback excepción: ${e.message}`);
               }
 
               // #4504 (CA-1) — Garantía real para `guru` en `analisis` (Definición):
