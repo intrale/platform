@@ -1,26 +1,53 @@
-## Reporte de auditoría de seguridad — issue #4500
+## Reporte de auditoría de seguridad — issue #4531
 
 **Veredicto:** sin hallazgos
 
-**Alcance auditado:** rama `agent/4500-pipeline-dev` HEAD `2c6b49076` (re-work post-reopen #4568). Diff vs `origin/main`: 7 archivos, +119/-17. Cambio puramente de UI/render del dashboard interno del pipeline (`localhost:3200`) — CA-UX-9: el sparkline "RITMO" degrada sin espacio muerto. Archivos: `lib/mission-ola-eta.js`, `views/dashboard/{home,mizpa-frame,pipeline-redesign,providers}.js`, `views/dashboard/theme.css`, `lib/__tests__/mission-ola-eta.test.js`.
+**Alcance auditado:** rama `agent/4531-header-single-row` @ `9643ebf0b` — rediseño del
+header común MIZPÁ del dashboard Node.js del pipeline. 10 archivos de vistas modificados
+(`.pipeline/views/dashboard/*.js` + `theme.css`) + assets de mockup. Superficie OWASP
+relevante: **A03 Injection → XSS DOM-based**, la restricción exacta del comment de security
+de #4463 (SSR literal + hidratación por `.textContent`/`.classList`, sin `innerHTML` sobre el
+slice de datos).
 
 ### Hallazgos
+
 Sin hallazgos.
 
-Verificación empírica (OWASP Top 10):
+Verificación empírica realizada:
 
-| Vector | Resultado | Evidencia |
-|---|---|---|
-| **A03 Injection / XSS** (único punto flagged en fase análisis) | ✅ Sin riesgo | Grep sobre líneas agregadas de `innerHTML`/`outerHTML`/`eval(`/`document.write`/`new Function`/`insertAdjacentHTML`/`dangerouslySet` → **0 coincidencias** (la única línea con "innerHTML" es un comentario). Interpolación `${...}` en SSR de vistas → **0**. La nueva `setSparkEmpty()` reasigna `spark.className` usando **sólo strings de clase constantes** (`'mz-spark-empty'`) derivados del className SSR estático — sin dato externo → no inyectable. El resto del runtime del sparkline usa `createElementNS`/`setAttribute`/`textContent`/`style` numérico. |
-| **A02 Cryptographic Failures / secretos** | ✅ Sin riesgo | Grep de `password\|secret\|api_key\|token\|aws_access\|PRIVATE` sobre líneas agregadas (excl. tokens de diseño) → **0**. |
-| **A06 Vulnerable Components** | ✅ Sin riesgo | Sin cambios en `package.json`/lockfiles/`build.gradle.kts` → sin dependencias nuevas. |
-| **A01 Broken Access Control** | ✅ N/A | Dashboard local, sin cambios de auth (Cognito/JWT). |
-| **A08 Data Integrity** | ✅ Sin riesgo | Sólo CSS + toggle de clase; no toca la serie del sparkline (ya whitelisteada `{ts,avancePct}` en pasadas previas, sin cambios en este HEAD). |
+- **[A03 Injection — XSS DOM] SSR 100% literal** (`header-meta.js:54-68`,
+  `renderHeaderMetaSsr`): las pills `#bld-status`, `#hdr-mode`, `#hdr-resources`,
+  `#hdr-pulpo`, `#hdr-clock` usan placeholders fijos (`…`, `Build sin datos`). Sin
+  interpolación de dato externo / slice / query-param.
+- **[A03 Injection — XSS DOM] Hidratación sin `innerHTML` sobre el slice**
+  (`header-meta.js:104-196`, `__hydrateHeaderPills`): la nueva pill de build (`#bld-status`)
+  y la nueva pill de modo (`#hdr-mode`) se hidratan sólo con `textContent`, `classList`,
+  `.title` (property) y `setAttribute('aria-label')`.
+  - **Vector (criollo):** si un atacante lograra inyectar HTML en el nombre de rama o el
+    hash de commit del build, sólo podría hacerlo ejecutable si ese dato terminara en un
+    sink que renderiza HTML (`innerHTML`). Acá `d.build.branch`/`d.build.commit`
+    (`header-meta.js:123-127`) sólo llegan a `.title` y `aria-label`, que muestran el texto
+    literal sin ejecutarlo. No hay camino a `innerHTML`.
+- **`grep` del diff (líneas agregadas, `*.js`)** de `innerHTML|outerHTML|insertAdjacentHTML|
+  document.write|eval|new Function` → 0 sinks nuevos; sólo comentarios que los prohíben. Los
+  `innerHTML` en `home.js`/`satellites.js` son preexistentes, fuera del diff.
+- **Sanitización de entrada intacta** (`dashboard-slices.js:182-189`, `readBuildStatus`):
+  `status` contra allowlist `{passing,failing,running,unknown}`, `branch.slice(0,80)`,
+  `commit.slice(0,12)` con type-check. `dashboard-slices.js` / `dashboard-routes.js` /
+  `build-status` **no fueron tocados** en esta rama → defensa en profundidad sin cambios
+  respecto de la base aprobada.
+- **[Secrets]** Sin secrets hardcodeados en el diff (sólo strings de UI, IDs de contrato y
+  emojis).
+- **[A06 Componentes vulnerables]** Sin cambios en manifests/locks; sin dependencias nuevas.
+- **[A07 Auth]** No aplica: sin endpoints ni flujos de autenticación tocados.
+- **Tests SEC-1** (`__tests__/header-meta.test.js`): 10/10 pass, incluyendo "el SSR no usa
+  innerHTML ni interpola datos dinámicos" y "la hidratación compartida usa
+  textContent/classList/title, nunca innerHTML".
 
-Verificación adicional ejecutada:
-- `node --check` en los 5 JS tocados → OK.
-- `git diff --check origin/main...HEAD` → exit 0 (sin conflictos/whitespace).
-- `node --test mission-ola-eta.test.js` → **29/29 pass** (incluye guardias XSS-safe className, colapso `<2` deltas, IDs hidratables).
+Se preserva la restricción de seguridad de #4463. Sin hardening pendiente.
 
-### Motivo
-No aplica sección de remediación: el diff no introduce superficie de ataque explotable. El requisito de escaping XSS heredado de la fase análisis se mantiene cumplido (sin interpolación de datos externos; manipulación DOM segura).
+### Remediación
+
+No aplica — sin hallazgos.
+
+_— agente `security`, fase verificación_
