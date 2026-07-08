@@ -639,11 +639,17 @@ const PANEL_CSS = `
 .mz-tl-cap .mz-wm-u { font-size: 11px; color: var(--in-fg-dim,#8b949e); font-weight: 600; }
 .mz-tl-cap-mid .mz-prog-pct { font-size: 22px; }
 .mz-tl-track { position: relative; margin-top: 34px; height: 8px; }
-.mz-tl-annots { position: absolute; left: 0; right: 0; bottom: 14px; height: 0; }
-.mz-tl-annot { position: absolute; bottom: 0; display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* #4532 (re-QA) — VELOCIDAD y ENTREGADOS viven en una fila de flujo normal
+   (flex + space-between), NO en la capa absoluta que seguía al marcador "ahora".
+   Antes, .mz-tl-annot-vel se posicionaba con left:<avance>% + translateX(-50%) y,
+   con avance alto (>=~37%), su borde cruzaba sobre ENTREGADOS (anclada a right:0)
+   → texto encimado/ilegible. Con space-between el solape se elimina por
+   construcción para cualquier avance; el left:% queda reservado al marcador del rail. */
+.mz-tl-annots { position: absolute; left: 0; right: 0; bottom: 14px; display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+.mz-tl-annot { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; min-width: 0; }
 .mz-tl-annot .mz-wm-u { font-size: 10px; color: var(--in-fg-dim,#8b949e); font-weight: 600; }
-.mz-tl-annot-vel { transform: translateX(-50%); color: var(--in-ok,#3fb950); transition: left .4s ease; }
-.mz-tl-annot-del { right: 0; color: var(--in-info,#58a6ff); }
+.mz-tl-annot-vel { color: var(--in-ok,#3fb950); }
+.mz-tl-annot-del { color: var(--in-info,#58a6ff); text-align: right; }
 .mz-tl-annot-s { color: var(--in-fg-dim,#8b949e); font-weight: 600; font-size: 10px; }
 .mz-tl-annot-l { color: var(--in-fg-dim,#8b949e); font-weight: 600; font-size: 10px; letter-spacing: .04em; }
 .mz-tl-rail { position: relative; height: 8px; border-radius: 6px; background: rgba(255,255,255,.07); }

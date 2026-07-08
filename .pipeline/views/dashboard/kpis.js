@@ -905,7 +905,7 @@ function renderKpisWaveBanner() {
         +         '<div class="mz-wm-v" id="mission-eta-value">—</div>'
         +         '<div class="mz-wm-s" id="mission-eta-sub">cierre estimado</div></div>'
         +       '<div class="mz-wm"><div class="mz-wm-l">🚀 VELOCIDAD</div>'
-        +         '<div class="mz-wm-v" id="mission-vel-value">— <span class="mz-wm-u">issues/día</span></div>'
+        +         '<div class="mz-wm-v" id="mission-vel-value">— <span class="mz-wm-u">%/issue·min</span></div>'
         +         '<div class="mz-wm-s">throughput de entrega</div></div>'
         +       '<div class="mz-wm"><div class="mz-wm-l">📦 ENTREGADOS</div>'
         +         '<div class="mz-wm-v" id="mission-delivered-value">—<span class="mz-wm-u"> / —</span></div>'

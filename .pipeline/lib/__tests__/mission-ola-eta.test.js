@@ -502,6 +502,23 @@ test('#4500 — guardia CSS: toda copia que estiliza .mz-mission también estili
         copies++;
         assert.ok(src.includes('.mz-timeline {'), `${f} tiene el bloque del banner pero le falta .mz-timeline`);
         assert.ok(src.includes('.mz-spark {'), `${f} tiene el bloque del banner pero le falta .mz-spark`);
+        // #4532 (re-QA) — cada copia completa DEBE declarar el layout no-solapante
+        // del annot: VELOCIDAD/ENTREGADOS en una fila flex con space-between, NO en
+        // la capa absoluta que seguía al marcador. Y NO debe conservar el viejo
+        // `.mz-tl-annot-vel { transform: translateX(-50%) }`, que deslizaba VELOCIDAD
+        // sobre ENTREGADOS con avance alto (solape ilegible). Si una sola copia
+        // diverge, esa ventana vuelve a mostrar el defecto del re-QA (regresión que
+        // el fix parcial anterior dejó en home.js — la ruta raíz `/`).
+        const annotsRule = src.match(/\.mz-tl-annots\s*\{[^}]*\}/);
+        assert.ok(annotsRule, `${f} tiene el bloque del banner pero le falta la regla .mz-tl-annots`);
+        assert.ok(
+            /justify-content:\s*space-between/.test(annotsRule[0]),
+            `${f}: .mz-tl-annots debe usar justify-content: space-between (layout no-solapante #4532)`,
+        );
+        assert.ok(
+            !/\.mz-tl-annot-vel\s*\{[^}]*translateX\(-50%\)/.test(src),
+            `${f}: .mz-tl-annot-vel no debe anclar con translateX(-50%) (regresión de solape VELOCIDAD↔ENTREGADOS #4532)`,
+        );
     }
     assert.ok(copies >= 5, `se esperaban ≥5 copias completas del CSS del banner, se hallaron ${copies}`);
 });
