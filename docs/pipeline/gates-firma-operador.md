@@ -171,8 +171,9 @@ Con eso, GATE 0 usa el puerto `gates`, la evidencia usa el puerto `e2e` (el dash
 10. **Dashboard: bandeja "Esperando tu firma"** — un solo lugar con los issues en `waiting-operator` y su evidencia.
 11. **Modelo de delegación / bus factor** — aprobador de respaldo, política "operador ausente", pre-requisito para el futuro multi-tenant (§10.5).
 12. **Doc del modelo operativo** — matriz auto-vs-gateado y política de timeout/defaults.
+13. **Métrica de espera de operador + ETA descompuesto** — descompone el lead time (agente / cola / espera-de-operador); dos ETAs (pipeline-bound vs con latencia de firma); la velocidad del pipeline excluye la espera, el ETA de la ola la incluye; agregación por gate; alimenta la escalera de autonomía (#6). Depende del estado `waiting-operator` (#1). Es el instrumento con el que se **gobierna** el bottleneck que introducen los gates.
 
-**Orden sugerido:** #1 → #2 → #3 → #6 → #9/#10 → #4/#5 → #7 → #8 → #11 → #12.
+**Orden sugerido:** #1 → #2 → #3 → #6 → #9/#10 → #4/#5 → #7 → #8 → #13 → #11 → #12.
 
 ---
 
