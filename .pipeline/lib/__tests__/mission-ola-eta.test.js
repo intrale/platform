@@ -385,7 +385,10 @@ test('#4500 — el marcador "ahora" se posiciona por avancePct clampeado [0,100]
 
     win.__applyMissionOlaEta({ etaSource: 'fallback', totalPct: 64 });
     assert.equal(nowMark.style.left, '64%');
-    assert.equal(velAnnot.style.left, '64%', 'la anotación de velocidad ancla al marcador');
+    // #4532 (re-QA) — la anotación de velocidad ya NO ancla al marcador: vive en
+    // una fila flex (space-between) para no solaparse con ENTREGADOS. Su style.left
+    // debe quedar SIN tocar (no seguir al avance) — evita el solape del re-QA visual.
+    assert.equal(velAnnot.style.left, undefined, 'la velocidad no ancla al marcador (fila flex, sin solape)');
     assert.equal(nowMark.getAttribute('aria-label'), 'Avance de la ola: 64%');
     assert.equal(nowMark.getAttribute('title'), 'Avance de la ola: 64%');
 
