@@ -41,11 +41,15 @@ const { ADAPTER_STATUS, emptyResult } = require('./_shape');
 //
 // #3353 (mayo 2026) — Groq fue descontinuado por política de bloqueos
 // arbitrarios. El adapter standalone y la entrada del switch se removieron.
+// #4533 — `nvidia-nim` se suma a la allowlist. API drop-in OpenAI-compatible
+// (headers `x-ratelimit-*`, idéntico a Cerebras). Adapter stub por ahora; la
+// cuota real se hidrata desde headers vía provider-quota.recordSample.
 const ALLOWED_PROVIDERS = Object.freeze([
     'anthropic',
     'openai-codex',
     'gemini-google',
     'cerebras',
+    'nvidia-nim',
     'ollama',
     'deterministic',
 ]);
@@ -63,6 +67,7 @@ function getAdapter(provider) {
         case 'openai-codex':    return require('./openai-codex');
         case 'gemini-google':   return require('./gemini-google');
         case 'cerebras':        return require('./cerebras');
+        case 'nvidia-nim':      return require('./nvidia-nim');
         case 'ollama':          return require('./ollama');
         case 'deterministic':   return require('./deterministic');
         default:                return null; // unreachable — la allowlist ya filtró.

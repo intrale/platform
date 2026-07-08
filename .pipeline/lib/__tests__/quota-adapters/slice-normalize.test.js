@@ -145,6 +145,15 @@ test('CA-5: quotaSlice mantiene el % agregado top-level tras el desglose', () =>
     assert.ok('status' in out.session, 'session top-level conserva shape rico');
     // Y el desglose normalizado coexiste.
     assert.ok(out.providers.anthropic.session, 'desglose normalizado presente');
-    assert.equal(Object.keys(out.providers.anthropic.session).sort().join(','),
-        'confidence,pct', 'desglose es el shape minimal');
+    // #4533 — el desglose se enriquece con available%, reset propio por bucket,
+    // rótulo de ventana y modo de render. Contrato de exposición mínima
+    // (security req#5): SOLO estos campos derivados/labels, NUNCA tokens crudos,
+    // cost_usd, secretos ni rutas de snapshot.
+    const ALLOWED_KEYS = ['available', 'confidence', 'kind', 'mode', 'pct', 'resetAt', 'win'];
+    const gotKeys = Object.keys(out.providers.anthropic.session).sort();
+    assert.deepEqual(gotKeys, ALLOWED_KEYS, 'desglose expone solo el shape enriquecido permitido');
+    for (const forbidden of ['cost_usd', 'tokens_in', 'tokens_out', 'snapshotPath', 'apiKey', 'key']) {
+        assert.ok(!(forbidden in out.providers.anthropic.session),
+            `el desglose NO debe exponer ${forbidden}`);
+    }
 });

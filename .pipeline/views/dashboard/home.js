@@ -1715,35 +1715,62 @@ function homeStyles() {
 .v3-more-menu .v3-tab-label + .v3-tab-desc { margin-left: -6px; }
 .v3-more-menu .v3-tab > .v3-tab-label { display: flex; flex-direction: column; align-items: flex-start; gap: 0; }
 
-/* --- Panel estado + cuotas (3 columnas) --- */
-.mz-sysquota { display: grid; grid-template-columns: 1.05fr 1.1fr 1.1fr; overflow: hidden;
+/* --- Panel estado + cuotas (#4533: status compacto + matriz proveedor×ventana)
+ * Panel de APOYO: compacto, una línea por proveedor, NO compite con "Ahora ·
+ * En Ejecución" ni con "Issues de la Ola". */
+.mz-sysquota { display: grid; grid-template-columns: 0.9fr 2.3fr; overflow: hidden;
     background: linear-gradient(180deg, var(--in-bg-2,#11151E), var(--in-bg-3,#141925));
     border: 1px solid var(--in-border,rgba(255,255,255,.07)); border-radius: 16px; }
-.mz-sq-cell { padding: 18px 20px; border-right: 1px solid var(--in-border,rgba(255,255,255,.07)); }
-.mz-sq-cell:last-child { border-right: 0; }
-.mz-sq-status { background: linear-gradient(135deg, rgba(251,191,36,.10), transparent 72%); }
-.mz-sq-head { font-size: 10.5px; color: var(--in-fg-dim,#8A93A6); font-weight: 800; letter-spacing: 1px; margin-bottom: 11px; }
-.mz-sq-chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 13px; }
-.mz-chip { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700;
-    background: rgba(255,255,255,.04); border: 1px solid var(--in-border,rgba(255,255,255,.12)); border-radius: 9px; padding: 6px 10px; }
-.mz-chip.mz-chip-ok { border-color: rgba(52,211,153,.3); }
-.mz-chip[data-on="0"] { opacity: .45; }
-.mz-chip[data-on="1"] { border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.08); opacity: 1; }
-.mz-chip b { font-variant-numeric: tabular-nums; color: #6ee7b7; }
-.mz-q-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.mz-q-klbl { font-size: 10.5px; color: var(--in-fg-dim,#8A93A6); font-weight: 700; letter-spacing: .6px; }
-.mz-q-kval { font-size: 24px; font-weight: 800; line-height: 1; margin-top: 4px; font-variant-numeric: tabular-nums; }
-.mz-q-ksub { font-size: 10px; color: var(--in-fg-dim,#5B6376); text-align: right; }
-.mz-prov { display: flex; flex-direction: column; gap: 9px; margin-top: 13px; }
-.mz-prow { display: grid; grid-template-columns: 80px 1fr 42px; align-items: center; gap: 9px; }
-.mz-pname { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 700; }
+.mz-sq-side { padding: 13px 16px; border-right: 1px solid var(--in-border,rgba(255,255,255,.07));
+    display: flex; flex-direction: column; gap: 10px; }
+.mz-sq-head { font-size: 10px; color: var(--in-fg-dim,#8A93A6); font-weight: 800; letter-spacing: 1px; }
+/* Estado del sistema: semáforo COMPACTO (dot + label), sin el círculo gigante
+ * ni el chip redundante que repetía el subtítulo (CA #4533). */
+.mz-status-line { display: flex; align-items: center; gap: 8px; }
+.mz-status-dot { width: 11px; height: 11px; border-radius: 50%; flex: none; background: var(--in-fg-dim,#8b949e); }
+.mz-status-lbl { font-size: 15px; font-weight: 800; }
+.mz-status-ok .mz-status-dot { background: var(--in-ok,#3fb950); box-shadow: 0 0 8px rgba(63,185,80,.5); }
+.mz-status-ok .mz-status-lbl { color: var(--in-ok,#3fb950); }
+.mz-status-warn .mz-status-dot { background: var(--in-warn,#d29922); }
+.mz-status-warn .mz-status-lbl { color: var(--in-warn,#d29922); }
+.mz-status-alert .mz-status-dot { background: var(--in-bad,#f85149); }
+.mz-status-alert .mz-status-lbl { color: var(--in-bad,#f85149); }
+.mz-status-stale .mz-status-dot { background: var(--in-fg-dim,#8b949e); }
+.mz-status-stale .mz-status-lbl { color: var(--in-fg-dim,#8b949e); }
+/* Señales accionables (anomalía, rebote, proveedores sanos). */
+.mz-sq-signals { display: flex; flex-direction: column; gap: 6px; margin-top: 2px; }
+.mz-sig { display: flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 700;
+    color: var(--in-fg-dim,#8A93A6); background: rgba(255,255,255,.04);
+    border: 1px solid var(--in-border,rgba(255,255,255,.10)); border-radius: 8px; padding: 5px 9px; }
+.mz-sig b { font-variant-numeric: tabular-nums; color: #6ee7b7; margin-left: auto; }
+.mz-sig[data-on="0"] { opacity: .4; }
+.mz-sig[data-on="1"] { border-color: rgba(248,81,73,.4); background: rgba(248,81,73,.09); color: var(--in-bad,#f85149); opacity: 1; }
+
+/* Matriz proveedor × ventana. */
+.mz-sq-matrix { padding: 13px 16px; min-width: 0; }
+.mz-qm-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; gap: 8px; }
+.mz-qm-h-l { font-size: 10px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#8A93A6); }
+.mz-qm-h-note { font-size: 8.5px; color: var(--in-fg-soft,#6e7681); font-weight: 600; }
+.mz-qm-cols, .mz-qm-row { display: grid; grid-template-columns: 1.25fr 1fr 1fr; column-gap: 16px; align-items: center; }
+.mz-qm-gh { font-size: 8.5px; font-weight: 800; letter-spacing: .4px; color: var(--in-fg-soft,#6e7681); text-transform: uppercase; padding-bottom: 4px; }
+.mz-qm-row > * { border-top: 1px solid var(--in-border,rgba(255,255,255,.07)); min-height: 30px; display: flex; align-items: center; }
+.mz-qm-prov { gap: 7px; }
 .mz-pdot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-.mz-pbar { height: 6px; border-radius: 5px; background: rgba(255,255,255,.07); overflow: hidden; }
-.mz-pbar i { display: block; height: 100%; border-radius: 5px; transition: width .4s ease; }
-.mz-ppct { font-size: 11px; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; color: var(--in-fg-dim,#8A93A6); }
-/* #4249 CA-UX2 — estado "pendiente" (—): atenuado para no confundirlo con
- * consumo 0% ni con un proveedor caído. Se quita al hidratar con #4202. */
-.mz-ppct-pending { opacity: .55; font-weight: 600; }
+.mz-qm-pn { font-size: 12px; font-weight: 800; }
+.mz-qm-src { font-size: 8.5px; color: var(--in-fg-soft,#6e7681); font-weight: 700; }
+.mz-qm-cell { gap: 7px; font-size: 11px; }
+.mz-qm-wtag { font-size: 8px; font-weight: 800; letter-spacing: .3px; color: var(--in-fg-soft,#6e7681); text-transform: uppercase; min-width: 26px; }
+.mz-qm-mini { width: 52px; height: 5px; border-radius: 3px; background: rgba(255,255,255,.09); overflow: hidden; flex: none; }
+.mz-qm-mini i { display: block; height: 100%; border-radius: 3px; background: var(--in-fg-dim,#8b949e); transition: width .4s ease; }
+.mz-qm-pct { font-weight: 800; font-variant-numeric: tabular-nums; min-width: 34px; color: var(--in-fg-dim,#8A93A6); }
+.mz-qm-rst { font-size: 9px; color: var(--in-fg-dim,#8A93A6); font-weight: 700; font-variant-numeric: tabular-nums; margin-left: auto; white-space: nowrap; }
+.mz-qm-cell.ok   .mz-qm-pct { color: var(--in-ok,#3fb950); }   .mz-qm-cell.ok   .mz-qm-mini i { background: var(--in-ok,#3fb950); }
+.mz-qm-cell.warn .mz-qm-pct { color: var(--in-warn,#d29922); } .mz-qm-cell.warn .mz-qm-mini i { background: var(--in-warn,#d29922); }
+.mz-qm-cell.bad  .mz-qm-pct { color: var(--in-bad,#f85149); }  .mz-qm-cell.bad  .mz-qm-mini i { background: var(--in-bad,#f85149); }
+.mz-qm-cell.mz-qm-event .mz-qm-mini, .mz-qm-cell.mz-qm-event .mz-qm-rst { display: none; }
+.mz-qm-cell.mz-qm-event .mz-qm-pct { color: var(--in-info,#58a6ff); background: rgba(88,166,255,.14); border-radius: 5px; padding: 2px 7px; font-size: 9.5px; font-weight: 700; min-width: 0; }
+.mz-qm-cell.mz-qm-nodata .mz-qm-mini, .mz-qm-cell.mz-qm-nodata .mz-qm-rst { display: none; }
+.mz-qm-cell.mz-qm-nodata .mz-qm-pct { color: var(--in-fg-soft,#6e7681); font-weight: 600; font-size: 10px; }
 
 /* --- Grilla 2-col + paneles --- */
 .mz-grid { display: grid; grid-template-columns: 1fr 1.62fr; gap: 16px; align-items: start; }
@@ -1918,7 +1945,7 @@ function homeStyles() {
 /* Responsive: en viewports angostos las grillas colapsan a 1 columna. */
 @media (max-width: 920px) {
     .mz-sysquota { grid-template-columns: 1fr; }
-    .mz-sq-cell { border-right: 0; border-bottom: 1px solid var(--in-border,rgba(255,255,255,.07)); }
+    .mz-sq-side { border-right: 0; border-bottom: 1px solid var(--in-border,rgba(255,255,255,.07)); }
     .mz-grid { grid-template-columns: 1fr; }
     .mz-mission { flex-direction: column; align-items: stretch; }
 }
@@ -1950,6 +1977,13 @@ function renderClientScript() {
     return `
 const SKILL_ICONS = ${JSON.stringify(SKILL_ICONS)};
 const SKILL_COLORS = ${JSON.stringify(SKILL_COLORS)};
+// #4533 — Metadata de proveedores embebida como constantes de cliente. Antes el
+// script del navegador referenciaba MZ_ACTIVE_PROVIDERS / MZ_PROVIDER_META (de
+// ámbito de módulo, NO disponibles en el browser) y la hidratación de las filas
+// por proveedor lanzaba ReferenceError silencioso → las filas quedaban en "—".
+// Ahora se serializan desde la fuente única del server (misma que usa el SSR).
+const MZ_ACTIVE_PROVIDERS = ${JSON.stringify(MZ_ACTIVE_PROVIDERS)};
+const MZ_PROVIDER_META = ${JSON.stringify(MZ_PROVIDER_META)};
 
 function fmtDur(ms){ if(!ms||ms<0) return '—'; const s=Math.round(ms/1000); if(s<60) return s+'s'; const m=Math.floor(s/60), r=s%60; if(m<60) return m+'m '+r+'s'; const h=Math.floor(m/60), rm=m%60; return h+'h '+rm+'m'; }
 // #3035 — Formato dd/MM HH:mm:ss en hora local para timestamp de fin.
@@ -2335,33 +2369,34 @@ function renderQuotaCard(d){
     setText('kpi-quota-session-pct', sessPct.toFixed(1)+'%');
     setText('kpi-quota-week-pct', weekPct.toFixed(1)+'%');
 
-    // #4189 — Espeja el % AGREGADO real en el panel de cuotas del home MIZPÁ.
-    // Aca solo tocamos el % AGREGADO de sesion/semana. El desglose POR PROVEEDOR
-    // (filas mz-quota-<bucket>-<prov>-*) ya NO es stub: lo hidrata en vivo
-    // tickProviderQuota (#4202) desde /api/dash/quota; ver renderProviderQuotaRows.
-    //
     // #4249 CA-A4 — ORIGEN CANONICO DE CADA METRICA DE CUOTA (auditoria):
     //   - % sesion (5h) / semanal AGREGADO  -> endpoint /api/dash/quota
     //     (ticker tickQuota, este archivo) -> lib/quota-adapters/* (Anthropic
     //     real) + lib/weekly-quota.js, calibrado contra muestras de claude.ai.
-    //     Mide el Plan Max de Anthropic; NO es multi-proveedor. Dato real.
-    //   - Salud / disponibilidad por proveedor -> .pipeline/state/
-    //     multi-provider-health.json (campo last_checked_at); expone solo
-    //     key_status/auth_mode/state, NUNCA el secreto (guardrail A02/A01).
-    //   - Desglose de cuota POR PROVEEDOR (filas mz-quota-bucket-prov-*) ->
-    //     ya entregado por #4202 (tickProviderQuota). Las filas sin dato del
-    //     slice (cerebras / nvidia-nim) caen a "sin dato" de forma explicita.
-    setText('mz-quota-session-pct', sessPct.toFixed(1)+'%');
-    setText('mz-quota-week-pct', weekPct.toFixed(1)+'%');
+    //     Alimenta el kpi card oculto (kpi-quota-*), NO el panel visible.
+    //   - #4533 — El panel visible del home MIZPA ya NO muestra un % agregado:
+    //     pasó a la matriz de cuota DISPONIBLE por proveedor × ventana
+    //     (mz-qm-<key>-<slot>-*), hidratada por tickProviderQuota /
+    //     renderProviderQuotaMatrix desde d.providers[key]. Por eso acá ya no
+    //     se escriben los ids mz-quota-session-pct/week-pct (removidos).
 
     // Cuenta regresiva: si tenemos session_resets_at o weekly_resets_at, usar
     // diferencia con now. Si no, usar daysToReset del backend (semanal) o
     // hoursRemaining (sesión, asume rolling 5h sin punto fijo).
     const now = Date.now();
+    // #4533 — FIX bug "resetea · reseteó": cuando el reset ya venció (dato
+    // stale) el código previo concatenaba 'resetea ' + '· reseteó' (texto sin
+    // sentido). _resetEta devuelve un countdown válido, o 'renovando...' si ya
+    // venció, o el fallback si no hay timestamp. Sin prefijo (el kpi card ya lo
+    // rotula en su propio HTML).
+    function _resetEta(ts, fallback){
+        if(!Number.isFinite(ts)) return fallback;
+        const diff = ts - now;
+        return diff > 0 ? fmtETA(diff) : 'renovando…';
+    }
     let sessETA;
     if(d.sessionResetsAt){
-        const ts = new Date(d.sessionResetsAt).getTime();
-        sessETA = ts > now ? fmtETA(ts - now) : '· reseteó';
+        sessETA = _resetEta(new Date(d.sessionResetsAt).getTime(), '·');
     } else if(d.session && d.session.hoursRemaining != null){
         sessETA = '~'+d.session.hoursRemaining.toFixed(1)+'h al cap';
     } else {
@@ -2369,8 +2404,7 @@ function renderQuotaCard(d){
     }
     let weekETA;
     if(d.weeklyResetsAtReported){
-        const ts = new Date(d.weeklyResetsAtReported).getTime();
-        weekETA = ts > now ? fmtETA(ts - now) : '· reseteó';
+        weekETA = _resetEta(new Date(d.weeklyResetsAtReported).getTime(), '·');
     } else if(d.daysToReset != null){
         weekETA = fmtETA(d.daysToReset * 86400000);
     } else {
@@ -2378,9 +2412,6 @@ function renderQuotaCard(d){
     }
     setText('kpi-quota-session-eta', sessETA);
     setText('kpi-quota-week-eta', weekETA);
-    // #4189 — mismo dato de reseteo en el panel del home MIZPÁ.
-    setText('mz-quota-session-eta', 'resetea ' + sessETA);
-    setText('mz-quota-week-eta', 'resetea ' + weekETA);
 
     const sessRow = document.getElementById('kpi-quota-session');
     const weekRow = document.getElementById('kpi-quota-week');
@@ -2419,110 +2450,150 @@ async function tickQuota(){
     renderQuotaCard(d);
 }
 
-// #4202 — Desglose de cuota por proveedor en las 2 ventanas (Sesion 5h y
-// Semanal). Hidrata los IDs emitidos por _mzProviderRow
-// (mz-quota-<bucket>-<key>-bar / -pct) — NO re-render.
+// #4533 — Matriz de cuota DISPONIBLE por proveedor × ventana. Hidrata los IDs
+// emitidos por _mzWinCell (mz-qm-<key>-<slot>-{tag,bar,pct,rst}) — NO re-render.
 //
-// CRITICO (CA-6 + #4249 CA-A3): la key de cada fila ES el id canonico del
-// slice (anthropic / openai-codex / gemini-google / cerebras / nvidia-nim). El
-// lookup en d.providers usa esa misma key directamente — sin tabla de
-// traduccion intermedia (la fuente unica es MZ_PROVIDER_META, ver mas abajo).
+// La key de cada fila ES el id canonico del slice (anthropic / openai-codex /
+// gemini-google / cerebras / nvidia-nim). El lookup en d.providers usa esa misma
+// key directamente; los buckets del slice (session/weekly) mapean a las ventanas
+// corta/larga (short/long).
 
 // Motivo de "sin dato" por (bucket, key canonica) para el tooltip (UX G3): evita
 // que el operador lea la ausencia como un bug.
 const QUOTA_SINDATO_REASON = {
-    'session-openai-codex': 'Codex opera por presupuesto mensual: no hay ventana de 5h.',
-    'session-gemini-google': 'Free tier de Gemini no expone consumo acumulado por API.',
-    'week-gemini-google': 'Free tier de Gemini no expone consumo acumulado por API.',
+    'session-openai-codex': 'Codex opera por eventos (usage-limit): no hay ventana de 5h con %.',
+    'session-gemini-google': 'Free tier de Gemini: el % por minuto se hidrata desde metadatos de la API cuando estén disponibles.',
+    'week-gemini-google': 'Free tier de Gemini: el % diario se hidrata desde metadatos de la API cuando estén disponibles.',
+    'session-cerebras': 'Cerebras: el % por minuto se hidrata desde los headers x-ratelimit-* cuando estén conectados.',
+    'week-cerebras': 'Cerebras: el % diario se hidrata desde los headers x-ratelimit-* cuando estén conectados.',
+    'session-nvidia-nim': 'NVIDIA NIM: el % por minuto se hidrata desde los headers x-ratelimit-* cuando estén conectados.',
+    'week-nvidia-nim': 'NVIDIA NIM: el % diario se hidrata desde los headers x-ratelimit-* cuando estén conectados.',
 };
-const QUOTA_SINDATO_DEFAULT = 'Sin dato de consumo disponible para este proveedor en esta ventana.';
+const QUOTA_SINDATO_DEFAULT = 'Sin dato de cuota disponible para este proveedor en esta ventana.';
 
-// Colores de confianza (UX G2): reusa la paleta del banner de snapshot.
-//   fresh = verde, stale = ambar, missing/parser-offline = dim (= "sin dato").
-function _quotaConfidenceColor(confidence){
-    if(confidence === 'fresh') return 'var(--in-ok,#3fb950)';
-    if(confidence === 'stale') return 'var(--in-warn,#d29922)';
-    return 'var(--text-dim,#8b949e)';
+// Umbral de color por cuota DISPONIBLE (CA #4533): verde=holgado, ámbar=medio,
+// rojo=agotado. 0% disponible (= consumo 100%) => rojo AGOTADA.
+function _mzThresholdClass(avail){
+    if(avail == null) return '';
+    if(avail <= 0) return 'bad';
+    if(avail < 20) return 'bad';
+    if(avail < 50) return 'warn';
+    return 'ok';
 }
 
-// Hidrata una fila proveedor/bucket. b es el sub-shape {pct, confidence} del
-// slice, o null. uiKey en {anthropic,codex,gemini}; bucket en {session,week}.
-function _hydrateProviderRow(bucket, uiKey, b){
-    const barId = 'mz-quota-'+bucket+'-'+uiKey+'-bar';
-    const pctId = 'mz-quota-'+bucket+'-'+uiKey+'-pct';
-    const pctEl = document.getElementById(pctId);
-    const barEl = document.getElementById(barId);
-    const rowEl = barEl ? barEl.closest('.mz-prow') : null;
-    const hasData = b && b.pct != null && Number.isFinite(Number(b.pct));
-    // #4287 (CA-3) — la fila ya no está "pendiente de #4202": la hidratación
-    // ocurrió. Quitamos la clase placeholder en ambas ramas para que el estilo
-    // refleje el estado real (dato medido o "sin dato"), no el de carga.
-    if(pctEl) pctEl.classList.remove('mz-ppct-pending');
-    if(hasData){
-        const pct = Number(b.pct);
-        setBarPct(barId, pct);
-        setText(pctId, pct.toFixed(1)+'%');
-        const color = _quotaConfidenceColor(b.confidence);
-        if(pctEl && pctEl.style.color !== color) pctEl.style.color = color;
-        // La barra mantiene el color del proveedor (no la atenuamos cuando hay
-        // dato); solo el % refleja la confianza (ambar si el snapshot esta stale).
-        if(rowEl){
-            rowEl.classList.remove('mz-prow-nodata');
-            // #4287 (CA-3) — tooltip con el consumo real medido (reemplaza el
-            // "en preparación · #4202" del SSR). Solo % + confianza legible; NO
-            // se vuelca el objeto health (security req#2). Strings estáticos +
-            // número formateado → sin interpolación cruda de datos externos.
-            const confLabel = b.confidence === 'stale' ? 'dato con retraso (snapshot stale)'
-                : b.confidence === 'fresh' ? 'dato reciente'
-                : 'dato medido';
-            const tip = 'Consumo medido: ' + pct.toFixed(1) + '% · ' + confLabel + '.';
-            if(rowEl.getAttribute('title') !== tip) rowEl.setAttribute('title', tip);
-            const ariaPct = pct.toFixed(1)+'%';
-            if(rowEl.getAttribute('aria-label') !== ariaPct) rowEl.setAttribute('aria-label', ariaPct);
-        }
-    } else {
-        // "sin dato" explicito (CA-1 + UX G1): texto literal (no 0%, no guion),
-        // barra a 0, tono dim, tooltip con el motivo.
-        setBarPct(barId, 0);
-        setText(pctId, 'sin dato');
-        const dim = 'var(--text-dim,#8b949e)';
-        if(pctEl && pctEl.style.color !== dim) pctEl.style.color = dim;
-        if(rowEl){
-            rowEl.classList.add('mz-prow-nodata');
-            const reason = QUOTA_SINDATO_REASON[bucket+'-'+uiKey] || QUOTA_SINDATO_DEFAULT;
-            if(rowEl.getAttribute('title') !== reason) rowEl.setAttribute('title', reason);
-            if(rowEl.getAttribute('aria-label') !== 'sin dato') rowEl.setAttribute('aria-label', 'sin dato');
-        }
+// Countdown corto para el reset de un bucket (ms restantes). '' si venció/inválido.
+function _fmtResetShort(ms){
+    if(!Number.isFinite(ms) || ms <= 0) return '';
+    const totalMin = Math.floor(ms / 60000);
+    if(totalMin < 1) return '↻' + Math.max(1, Math.floor(ms / 1000)) + 's';
+    if(totalMin < 60) return '↻' + totalMin + 'm';
+    const h = Math.floor(totalMin / 60), m = totalMin % 60;
+    if(h < 24) return '↻' + h + 'h' + (m > 0 ? m + 'm' : '');
+    const d = Math.floor(h / 24), rh = h % 24;
+    return '↻' + d + 'd' + (rh > 0 ? rh + 'h' : '');
+}
+
+// Hidrata una celda proveedor+ventana. b es el sub-shape del slice
+// {pct, confidence, available, resetAt, win, kind, mode} o null.
+// Devuelve { healthy } para el conteo de "proveedores sanos".
+function _mzHydrateWinCell(key, slot, b){
+    const cid = 'mz-qm-' + key + '-' + slot;
+    const cell = document.getElementById(cid);
+    if(!cell) return { healthy: false };
+    const tagEl = document.getElementById(cid + '-tag');
+    const barEl = document.getElementById(cid + '-bar');
+    const pctEl = document.getElementById(cid + '-pct');
+    const rstEl = document.getElementById(cid + '-rst');
+    cell.classList.remove('ok', 'warn', 'bad', 'mz-qm-event', 'mz-qm-nodata');
+    if(tagEl && b && b.win) tagEl.textContent = b.win;
+    const meta = MZ_PROVIDER_META[key] || { name: key, src: '' };
+    const mode = b && b.mode;
+
+    // Estado por eventos (Codex): sin barra, chip "sin límite" / "tope activo".
+    if(mode === 'event'){
+        cell.classList.add('mz-qm-event');
+        if(barEl) barEl.style.width = '0%';
+        const ok = !b || b.eventOk !== false;
+        if(pctEl) pctEl.textContent = ok ? '✓ sin límite' : 'tope activo';
+        if(rstEl) rstEl.textContent = '';
+        cell.setAttribute('title', ok
+            ? meta.name + ': sin tope de cuota activo (estado por eventos del proveedor · fuente ' + meta.src + ').'
+            : meta.name + ': tope de cuota activo — el proveedor rechazó por límite.');
+        cell.setAttribute('aria-label', meta.name + ' ' + (b && b.win ? b.win : '') + ': ' + (ok ? 'sin límite' : 'tope activo'));
+        return { healthy: ok };
     }
+
+    // Gauge con % disponible real.
+    if(mode === 'gauge' && b && b.available != null && Number.isFinite(Number(b.available))){
+        const avail = Number(b.available);
+        const cls = _mzThresholdClass(avail);
+        if(cls) cell.classList.add(cls);
+        if(barEl) barEl.style.width = Math.max(0, Math.min(100, avail)) + '%';
+        if(pctEl) pctEl.textContent = avail.toFixed(0) + '%';
+        let rst = '';
+        if(b.resetAt){
+            const ts = Date.parse(b.resetAt);
+            if(Number.isFinite(ts)) rst = _fmtResetShort(ts - Date.now());
+        }
+        if(rstEl) rstEl.textContent = rst;
+        const label = avail <= 0 ? 'AGOTADA (0% disponible)' : avail.toFixed(0) + '% disponible';
+        cell.setAttribute('title', meta.name + ' · ' + (b.win || '') + ': ' + label
+            + (rst ? ' · reset ' + rst.replace('↻', '') : '') + ' (fuente: ' + meta.src + ').');
+        cell.setAttribute('aria-label', meta.name + ' ' + (b.win || '') + ': ' + label);
+        return { healthy: avail > 0 };
+    }
+
+    // Sin dato explícito.
+    cell.classList.add('mz-qm-nodata');
+    if(barEl) barEl.style.width = '0%';
+    if(pctEl) pctEl.textContent = 'sin dato';
+    if(rstEl) rstEl.textContent = '';
+    const reason = QUOTA_SINDATO_REASON[(slot === 'short' ? 'session' : 'week') + '-' + key] || QUOTA_SINDATO_DEFAULT;
+    cell.setAttribute('title', reason);
+    cell.setAttribute('aria-label', meta.name + ' ' + (b && b.win ? b.win : '') + ': sin dato');
+    return { healthy: false };
 }
 
-function renderProviderQuotaRows(d){
+function renderProviderQuotaMatrix(d){
     if(!d || !d.providers) return;
-    // UI usa bucket 'week'; el slice usa 'weekly'. Traduccion explicita.
-    const BUCKET_SLICE = { session: 'session', week: 'weekly' };
-    // La key de la fila ES el id canonico del slice (#4249 CA-A2/A3): se itera la
-    // FUENTE UNICA MZ_ACTIVE_PROVIDERS y se busca d.providers[key] sin traduccion.
-    // Proveedores activos sin sub-shape en el slice (p.ej. cerebras / nvidia-nim)
-    // caen a "sin dato" explicito dentro de _hydrateProviderRow.
-    for(const bucket of ['session','week']){
-        for(const key of MZ_ACTIVE_PROVIDERS){
-            const p = d.providers[key];
-            const b = p ? p[BUCKET_SLICE[bucket]] : null;
-            _hydrateProviderRow(bucket, key, b);
+    // Buckets del slice: short ↔ session, long ↔ weekly.
+    const SLOT_BUCKET = { short: 'session', long: 'weekly' };
+    let healthyCount = 0;
+    for(const key of MZ_ACTIVE_PROVIDERS){
+        const p = d.providers[key];
+        let provHealthy = false;
+        for(const slot of ['short', 'long']){
+            const b = p ? p[SLOT_BUCKET[slot]] : null;
+            const r = _mzHydrateWinCell(key, slot, b);
+            if(r.healthy) provHealthy = true;
         }
+        if(provHealthy) healthyCount++;
     }
+    const healthyEl = document.getElementById('mz-sig-healthy');
+    if(healthyEl) healthyEl.textContent = healthyCount + '/' + MZ_ACTIVE_PROVIDERS.length;
 }
 
-// Ticker dedicado (CA-5): SOLO hidrata las filas por proveedor; NO toca
-// renderQuotaCard ni tickQuota (el % agregado sigue intacto).
+// Alias retro-compat: algún ticker antiguo podría llamar renderProviderQuotaRows.
+function renderProviderQuotaRows(d){ return renderProviderQuotaMatrix(d); }
+
+// Último slice de cuota por proveedor, para recomputar countdowns cada segundo
+// sin re-fetch (#4533).
+let _providerQuotaData = null;
+
+// Ticker dedicado (CA-5): SOLO hidrata la matriz por proveedor; NO toca
+// renderQuotaCard ni tickQuota (el % agregado del kpi card sigue intacto).
 async function tickProviderQuota(){
     const d = await fetchJson('/api/dash/quota');
     if(!d) return;
-    renderProviderQuotaRows(d);
+    _providerQuotaData = d;
+    renderProviderQuotaMatrix(d);
 }
 
 // Cuenta regresiva del ETA actualizada cada segundo sin re-fetch.
 setInterval(() => { if(_quotaLastData) renderQuotaCard(_quotaLastData); }, 1000);
+// #4533 — countdowns de reset de la matriz por proveedor, refrescados cada
+// segundo desde el último slice (sin re-fetch).
+setInterval(() => { if(_providerQuotaData) renderProviderQuotaMatrix(_providerQuotaData); }, 1000);
 
 // #2976 — Banner amarillo cuota agotada (modo determinístico).
 //
@@ -5040,84 +5111,111 @@ function renderMissionBanner(state) {
 // *pendiente*, no como consumo 0% ni caído. Se atenúa con la clase
 // `mz-ppct-pending` (opacity reducida en theme.css) y un `title` explícito; el
 // primer tick de tickProviderQuota reemplaza el texto con el dato real.
-function _mzProviderRow(bucket, key, name, color) {
-    return `
-        <div class="mz-prow" title="Consumo de ${escapeHtmlAttr(name)} en esta ventana (se hidrata con el dato real de cuota por proveedor).">
-          <span class="mz-pname"><span class="mz-pdot" style="background:${color}"></span>${escapeHtmlText(name)}</span>
-          <span class="mz-pbar"><i id="mz-quota-${bucket}-${key}-bar" style="width:0%;background:${color}"></i></span>
-          <span class="mz-ppct mz-ppct-pending" id="mz-quota-${bucket}-${key}-pct" title="Pendiente — se hidrata con el dato real de cuota del proveedor.">—</span>
-        </div>`;
-}
-
-// FUENTE ÚNICA de proveedores del desglose de cuota (CA-A2 #4249). La lista NO
-// se hardcodea suelta: se deriva de este mapa, alineado con los `provider`
-// activos de `.pipeline/state/multi-provider-health.json` y la allowlist de
-// adapters `ALLOWED_PROVIDERS` en `lib/quota-adapters/index.js`.
+// FUENTE ÚNICA de proveedores de la matriz de cuota (CA-A2 #4249, #4533). La
+// lista se deriva de este mapa, alineado con los `provider` activos de
+// `.pipeline/state/multi-provider-health.json` y la allowlist de adapters
+// `ALLOWED_PROVIDERS` en `lib/quota-adapters/index.js`.
 //
-// La `key` de cada entrada ES el id canónico de hidratación: las filas usan
-// `mz-quota-${bucket}-${key}-{bar,pct}`, por lo que la `key` DEBE coincidir
-// EXACTO con el id que emita el backend de #4202, o la fila queda en "—"
-// permanente (CA-A3 / CA-UX3). Se usan los ids de `ALLOWED_PROVIDERS`
-// (`openai-codex`, `gemini-google`) como canónicos.
+// La `key` de cada entrada ES el id canónico de hidratación (anthropic /
+// openai-codex / gemini-google / cerebras / nvidia-nim) y DEBE coincidir EXACTO
+// con el id que emite el slice `/api/dash/quota` (d.providers[key]).
 //
-// Colores: un hue perceptualmente distinto por proveedor (CA-UX1) — sin dos
-// puntos en la misma familia. `--in-accent2` (morado) se agrega en theme.css
-// para NVIDIA NIM y evitar el tercer verde.
-//
+// `src`: fuente fidedigna del % (CA #4533) — CLI (OAuth), API o headers
+// x-ratelimit. `color`: un hue perceptualmente distinto por proveedor (CA-UX1).
 // Groq fue descontinuado en #3353 — NO incluir.
 const MZ_PROVIDER_META = Object.freeze({
-    'anthropic':     { name: 'Anthropic',  color: 'var(--in-warn,#d29922)' },
-    'openai-codex':  { name: 'Codex',      color: 'var(--in-ok,#3fb950)' },
-    'gemini-google': { name: 'Gemini',     color: 'var(--in-info,#58a6ff)' },
-    'cerebras':      { name: 'Cerebras',   color: 'var(--in-accent,#2ee6c1)' },
-    'nvidia-nim':    { name: 'NVIDIA NIM', color: 'var(--in-accent2,#bc8cff)' },
+    'anthropic':     { name: 'Anthropic',  color: 'var(--in-warn,#d29922)',   src: 'CLI' },
+    'openai-codex':  { name: 'Codex',      color: 'var(--in-ok,#3fb950)',     src: 'CLI' },
+    'gemini-google': { name: 'Gemini',     color: 'var(--in-info,#58a6ff)',   src: 'API' },
+    'cerebras':      { name: 'Cerebras',   color: 'var(--in-accent,#2ee6c1)', src: 'headers' },
+    'nvidia-nim':    { name: 'NVIDIA NIM', color: 'var(--in-accent2,#bc8cff)', src: 'headers' },
 });
 const MZ_ACTIVE_PROVIDERS = Object.freeze(Object.keys(MZ_PROVIDER_META));
 
-function _mzProviderRows(bucket) {
-    return MZ_ACTIVE_PROVIDERS
-        .map((key) => _mzProviderRow(bucket, key, MZ_PROVIDER_META[key].name, MZ_PROVIDER_META[key].color))
-        .join('');
+// Rótulos de ventana por proveedor para el skeleton SSR (#4533). El backend
+// (lib/provider-quota.js PROVIDER_WINDOWS) es la fuente autoritativa y
+// sobreescribe estos labels al hidratar (cada celda rotula su ventana real);
+// acá sólo evitan un flash vacío antes del primer tick.
+const MZ_PROVIDER_WINDOWS = Object.freeze({
+    'anthropic':     { short: '5h',   long: 'Sem' },
+    'openai-codex':  { short: 'Roll', long: 'Sem' },
+    'gemini-google': { short: 'Min',  long: 'Día' },
+    'cerebras':      { short: 'Min',  long: 'Día' },
+    'nvidia-nim':    { short: 'Min',  long: 'Día' },
+});
+
+// Celda de ventana (skeleton). `slot` in {short,long}. La hidratación
+// (_mzHydrateWinCell) reescribe estado/color/countdown sin re-render.
+function _mzWinCell(key, slot, winLabel) {
+    const cid = 'mz-qm-' + key + '-' + slot;
+    return `
+        <div class="mz-qm-cell" id="${cid}" title="Se hidrata con la cuota disponible real del proveedor en esta ventana.">
+          <span class="mz-qm-wtag" id="${cid}-tag">${escapeHtmlText(winLabel)}</span>
+          <span class="mz-qm-mini"><i id="${cid}-bar" style="width:0%"></i></span>
+          <span class="mz-qm-pct" id="${cid}-pct">…</span>
+          <span class="mz-qm-rst" id="${cid}-rst"></span>
+        </div>`;
 }
 
-// Panel "Estado del sistema + Cuotas" (3 columnas). Col 1: semáforo global
-// (reusa renderSemaforo, vivo) + chips de anomalía / % rebote ola / agentes
-// vivos. Col 2/3: cuota de Sesión y Semanal con % agregado real + desglose por
-// proveedor. Reemplaza la barra inferior de tokens/rebotes/PRs (CA-5).
+function _mzProviderMatrixRow(key) {
+    const m = MZ_PROVIDER_META[key];
+    const w = MZ_PROVIDER_WINDOWS[key] || { short: 'Min', long: 'Día' };
+    return `
+      <div class="mz-qm-row">
+        <div class="mz-qm-prov">
+          <span class="mz-pdot" style="background:${m.color}"></span>
+          <span class="mz-qm-pn">${escapeHtmlText(m.name)}</span>
+          <span class="mz-qm-src">· ${escapeHtmlText(m.src)}</span>
+        </div>
+        ${_mzWinCell(key, 'short', w.short)}
+        ${_mzWinCell(key, 'long', w.long)}
+      </div>`;
+}
+
+function _mzProviderMatrix() {
+    return MZ_ACTIVE_PROVIDERS.map(_mzProviderMatrixRow).join('');
+}
+
+// Panel "Estado del sistema + Cuotas" (#4533). Izquierda: estado del sistema
+// COMPACTO (semáforo dot + label, sin el círculo gigante ni el chip redundante)
+// + señales accionables (anomalía, rebote de la ola, proveedores sanos).
+// Derecha: matriz de cuota DISPONIBLE por proveedor (5) × ventana (corta/larga)
+// con % disponible, color por umbral, y reset propio por bucket. Panel de
+// APOYO: compacto, no compite con "Ahora · En Ejecución" ni "Issues de la Ola".
+// El semáforo completo (con sus IDs `semaforo-*`) vive en el sink de telemetría
+// oculto para que `_missionMirrorKpis` y `tickAlertTray` sigan leyéndolo.
 function renderSystemQuotaPanel(state) {
+    const sem = (state && state.semaforo) || { level: 'ok', label: 'SALUDABLE' };
+    const lvl = (sem.level === 'warn' || sem.level === 'alert' || sem.level === 'stale') ? sem.level : 'ok';
     return `
     <section class="mz-sysquota" aria-label="Estado del sistema y cuotas">
-      <div class="mz-sq-cell mz-sq-status" title="Salud global del sistema y alertas activas (anomalía de consumo, % de rebotes de la ola).">
-        <div class="mz-sq-head">📟 ESTADO DEL SISTEMA</div>
-        ${renderSemaforo(state)}
-        <div class="mz-sq-chips">
-          <span class="mz-chip" id="mz-chip-anomaly" data-on="0"
-                title="Alerta de consumo anómalo de tokens. Se integra junto al estado del sistema.">⚠ <span>Anomalía consumo</span></span>
-          <span class="mz-chip mz-chip-ok"
-                title="Porcentaje de issues de la ola que rebotaron al menos una vez.">↩ Rebote ola <b id="mz-chip-rebote-value">—</b></span>
+      <div class="mz-sq-side" title="Salud global del sistema y señales accionables.">
+        <div class="mz-sq-head">📟 ESTADO</div>
+        <div class="mz-status-line mz-status-${escapeHtmlAttr(lvl)}" role="status"
+             aria-label="Salud global: ${escapeHtmlAttr(sem.label || '')}">
+          <span class="mz-status-dot" aria-hidden="true"></span>
+          <span class="mz-status-lbl">${escapeHtmlText(sem.label || '')}</span>
+        </div>
+        <div class="mz-sq-signals">
+          <span class="mz-sig" id="mz-chip-anomaly" data-on="0"
+                title="Consumo anómalo de tokens detectado por el semáforo.">⚠ <span>Anomalía consumo</span></span>
+          <span class="mz-sig mz-sig-ok"
+                title="Issues de la ola que rebotaron al menos una vez.">↩ Rebote ola <b id="mz-chip-rebote-value">—</b></span>
+          <span class="mz-sig mz-sig-ok"
+                title="Proveedores con cuota disponible (no agotados) sobre el total.">✓ Proveedores <b id="mz-sig-healthy">—</b></span>
         </div>
       </div>
-
-      <div class="mz-sq-cell" title="Cuota de la ventana de sesión (5h). % agregado real; desglose por proveedor en preparación.">
-        <div class="mz-q-head">
-          <div>
-            <div class="mz-q-klbl">⏱ CUOTA SESIÓN · 5H</div>
-            <div class="mz-q-kval" id="mz-quota-session-pct">…</div>
-          </div>
-          <div class="mz-q-ksub" id="mz-quota-session-eta">·</div>
+      <div class="mz-sq-matrix">
+        <div class="mz-qm-head">
+          <span class="mz-qm-h-l">🔌 CUOTA DISPONIBLE POR PROVEEDOR</span>
+          <span class="mz-qm-h-note">% leído del proveedor · reset propio por bucket</span>
         </div>
-        <div class="mz-prov">${_mzProviderRows('session')}</div>
-      </div>
-
-      <div class="mz-sq-cell" title="Cuota semanal. % agregado real; desglose por proveedor en preparación.">
-        <div class="mz-q-head">
-          <div>
-            <div class="mz-q-klbl">📅 CUOTA SEMANAL</div>
-            <div class="mz-q-kval" id="mz-quota-week-pct">…</div>
-          </div>
-          <div class="mz-q-ksub" id="mz-quota-week-eta">·</div>
+        <div class="mz-qm-cols">
+          <span class="mz-qm-gh">Proveedor</span>
+          <span class="mz-qm-gh">Ventana corta</span>
+          <span class="mz-qm-gh">Ventana larga</span>
         </div>
-        <div class="mz-prov">${_mzProviderRows('week')}</div>
+        <div class="mz-qm-body">${_mzProviderMatrix()}</div>
       </div>
     </section>`;
 }
@@ -5188,6 +5286,7 @@ function renderDiagnostics(state) {
     return `
     <div class="mz-telemetry-sink" id="mz-telemetry-sink" hidden aria-hidden="true">
       ${renderHiddenControls()}
+      ${renderSemaforo(state)}
       ${renderInfraHealth(state)}
       ${renderSystemCard(state)}
       ${renderKpiGrid(state)}
@@ -5387,10 +5486,12 @@ module.exports = {
     renderNowColumn,
     renderWaveBoard,
     renderDiagnostics,
-    // #4249 — desglose de cuota por proveedor (Bloque A): fuente única +
-    // helpers puros expuestos para test aislado del render por proveedor.
-    _mzProviderRow,
-    _mzProviderRows,
+    // #4249/#4533 — matriz de cuota por proveedor × ventana (Bloque A): fuente
+    // única + helpers puros expuestos para test aislado del render por proveedor.
+    _mzWinCell,
+    _mzProviderMatrixRow,
+    _mzProviderMatrix,
     MZ_PROVIDER_META,
+    MZ_PROVIDER_WINDOWS,
     MZ_ACTIVE_PROVIDERS,
 };

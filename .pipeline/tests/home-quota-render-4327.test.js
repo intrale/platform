@@ -1,7 +1,7 @@
 // =============================================================================
-// Tests #4327 (CA-5 / UX-G4) — render de cuota en la HOME: un estado
-// `stale`/`missing` NUNCA se renderiza como número fresco, y "sin dato" se
-// escribe como literal, jamás como `0%`.
+// Tests #4327 (CA-5 / UX-G4) + #4533 — render de cuota en la HOME: un estado
+// sin dato NUNCA se renderiza como número fresco ni como `0%`; el % disponible
+// y su color por umbral se derivan del sub-shape del slice.
 //
 // Estrategia: los helpers de render viven dentro del script cliente de
 // `home.js` (string emitido por renderClientScript, no exportado). Se extraen
@@ -9,8 +9,11 @@
 // tests del repo (ver views/dashboard/__tests__ y tests/dashboard-xss-modal).
 //
 // Cubre:
-//   UX-G4 — `_hydrateProviderRow` con bucket sin dato (pct null) escribe el
-//           literal "sin dato" (no "0%", no un número).
+//   UX-G4 — `_mzHydrateWinCell` con bucket sin dato (mode 'nodata' o null)
+//           escribe el literal "sin dato" (no "0%", no un número).
+//   #4533 — con % disponible real escribe "<n>%" y color por umbral
+//           (ok/warn/bad); 0% disponible => bad (AGOTADA).
+//   #4533 — Codex (mode 'event') muestra "✓ sin límite", sin barra ni %.
 //   CA-5  — `pillTextFor(state)` para `stale`/`missing` devuelve la etiqueta de
 //           estado, nunca un porcentaje; `pctTextClient(null)` → "--%" (no "0%").
 //   UX-G5 — `MZ_ACTIVE_PROVIDERS` (fuente única) lista exactamente los 5
@@ -25,6 +28,7 @@ const path = require('node:path');
 
 const home = require('../views/dashboard/home.js');
 const HOME_SRC = fs.readFileSync(path.join(__dirname, '..', 'views', 'dashboard', 'home.js'), 'utf8');
+const { MZ_PROVIDER_META } = home;
 
 // Extrae un rango contiguo del source [desde `startAnchor`, hasta ANTES de
 // `endAnchor`]. Las anclas son literales de declaración, estables al refactor.
@@ -36,35 +40,38 @@ function sliceRange(src, startAnchor, endAnchor) {
     return src.slice(start, end);
 }
 
-// DOM falso mínimo: registra por id los elementos que el render toca.
-function makeFakeDom(ids) {
-    const els = {};
-    for (const id of ids) {
-        els[id] = {
-            id, textContent: '', className: '', _classes: new Set(), style: {}, _attrs: {},
+// Construye una celda falsa mz-qm-<key>-<slot> con sus hijos -tag/-bar/-pct/-rst.
+function makeCell(key, slot) {
+    const cid = 'mz-qm-' + key + '-' + slot;
+    const mkEl = () => {
+        const classes = new Set();
+        const attrs = {};
+        return {
+            textContent: '', style: {}, _classes: classes, _attrs: attrs,
             classList: {
-                add(c) { els[id]._classes.add(c); },
-                remove(c) { els[id]._classes.delete(c); },
-                contains(c) { return els[id]._classes.has(c); },
+                add(c) { classes.add(c); }, remove(c) { classes.delete(c); },
+                contains(c) { return classes.has(c); },
             },
-            getAttribute(k) { return els[id]._attrs[k] != null ? els[id]._attrs[k] : null; },
-            setAttribute(k, v) { els[id]._attrs[k] = String(v); },
-            closest() { return els[id]._row || null; },
+            getAttribute(k) { return attrs[k] != null ? attrs[k] : null; },
+            setAttribute(k, v) { attrs[k] = String(v); },
         };
-    }
-    return els;
+    };
+    const els = {
+        [cid]: mkEl(), [cid + '-tag']: mkEl(), [cid + '-bar']: mkEl(),
+        [cid + '-pct']: mkEl(), [cid + '-rst']: mkEl(),
+    };
+    return { cid, els };
 }
 
-// Construye el entorno de los helpers por-proveedor (rango REASON→renderProviderQuotaRows).
-function loadProviderRowHelpers() {
-    const body = sliceRange(HOME_SRC, 'const QUOTA_SINDATO_REASON = {', 'function renderProviderQuotaRows(');
-    // Fakes de las dependencias globales que usan los helpers.
-    const captured = { texts: {}, bars: {} };
-    const factory = new Function('document', 'setText', 'setBarPct', `
+// Carga _mzHydrateWinCell + helpers de umbral/reset con un DOM falso.
+function loadWinCellHelper(els) {
+    const body = sliceRange(HOME_SRC, 'const QUOTA_SINDATO_REASON = {', 'function renderProviderQuotaMatrix(');
+    const factory = new Function('document', 'MZ_PROVIDER_META', `
         ${body}
-        return { _hydrateProviderRow, _quotaConfidenceColor };
+        return { _mzHydrateWinCell, _mzThresholdClass, _fmtResetShort };
     `);
-    return { factory, captured };
+    const document = { getElementById: (id) => els[id] || null };
+    return factory(document, MZ_PROVIDER_META);
 }
 
 // Construye pillTextFor + fmtAge (rango fmtAge→classifyPctClient).
@@ -78,53 +85,68 @@ function loadPillHelpers() {
 }
 
 // ---------------------------------------------------------------------------
-// UX-G4 — "sin dato" literal, nunca 0%, cuando el bucket no tiene pct.
+// UX-G4 — "sin dato" literal, nunca 0%, cuando el bucket no tiene dato.
 // ---------------------------------------------------------------------------
-test('UX-G4: _hydrateProviderRow con pct null escribe "sin dato" (no 0%, no número)', () => {
-    const { factory } = loadProviderRowHelpers();
-    const ids = ['mz-quota-session-cerebras-bar', 'mz-quota-session-cerebras-pct'];
-    const els = makeFakeDom(ids);
-    const row = { id: 'row', _classes: new Set(), _attrs: {},
-        classList: { add(c) { row._classes.add(c); }, remove(c) { row._classes.delete(c); } },
-        getAttribute(k) { return row._attrs[k] != null ? row._attrs[k] : null; },
-        setAttribute(k, v) { row._attrs[k] = String(v); } };
-    els['mz-quota-session-cerebras-bar']._row = row;
+test('UX-G4: _mzHydrateWinCell con mode nodata escribe "sin dato" (no 0%, no número)', () => {
+    const { cid, els } = makeCell('cerebras', 'short');
+    const { _mzHydrateWinCell } = loadWinCellHelper(els);
 
-    const texts = {};
-    const document = { getElementById: (id) => els[id] || null };
-    const setText = (id, v) => { texts[id] = v; };
-    const setBarPct = () => {};
-    const { _hydrateProviderRow } = factory(document, setText, setBarPct);
+    // Sub-shape "sin dato" del slice.
+    const r = _mzHydrateWinCell('cerebras', 'short', { mode: 'nodata', available: null, win: 'Min' });
+    assert.equal(els[cid + '-pct'].textContent, 'sin dato', 'debe escribir el literal "sin dato"');
+    assert.notEqual(els[cid + '-pct'].textContent, '0%', 'NUNCA "0%"');
+    assert.ok(els[cid]._classes.has('mz-qm-nodata'), 'la celda marca estado sin dato');
+    assert.equal(r.healthy, false, 'sin dato no cuenta como proveedor sano');
 
-    // Bucket sin dato: b = null.
-    _hydrateProviderRow('session', 'cerebras', null);
-    assert.equal(texts['mz-quota-session-cerebras-pct'], 'sin dato', 'debe escribir el literal "sin dato"');
-    assert.notEqual(texts['mz-quota-session-cerebras-pct'], '0%', 'NUNCA "0%"');
-    assert.ok(!/^\d/.test(String(texts['mz-quota-session-cerebras-pct'])), 'no empieza con un dígito');
-    assert.equal(row.getAttribute('aria-label'), 'sin dato', 'aria-label explícito "sin dato"');
-
-    // Bucket con confidence 'missing' pero SIN pct real → también "sin dato".
-    _hydrateProviderRow('session', 'cerebras', { pct: null, confidence: 'missing' });
-    assert.equal(texts['mz-quota-session-cerebras-pct'], 'sin dato', 'pct null aunque venga confidence');
+    // b = null también cae a "sin dato".
+    const c2 = makeCell('cerebras', 'long');
+    const { _mzHydrateWinCell: h2 } = loadWinCellHelper(c2.els);
+    h2('cerebras', 'long', null);
+    assert.equal(c2.els[c2.cid + '-pct'].textContent, 'sin dato', 'b null → sin dato');
 });
 
-test('UX-G4: _hydrateProviderRow con pct real sí escribe el porcentaje', () => {
-    const { factory } = loadProviderRowHelpers();
-    const ids = ['mz-quota-week-openai-codex-bar', 'mz-quota-week-openai-codex-pct'];
-    const els = makeFakeDom(ids);
-    const row = { _classes: new Set(), _attrs: {},
-        classList: { add(c) { row._classes.add(c); }, remove(c) { row._classes.delete(c); } },
-        getAttribute(k) { return row._attrs[k] != null ? row._attrs[k] : null; },
-        setAttribute(k, v) { row._attrs[k] = String(v); } };
-    els['mz-quota-week-openai-codex-bar']._row = row;
-    const texts = {};
-    const { _hydrateProviderRow } = factory(
-        { getElementById: (id) => els[id] || null },
-        (id, v) => { texts[id] = v; },
-        () => {});
+test('#4533: _mzHydrateWinCell con % disponible real escribe el porcentaje + color por umbral', () => {
+    // Holgado → ok (verde).
+    const a = makeCell('anthropic', 'short');
+    loadWinCellHelper(a.els)._mzHydrateWinCell('anthropic', 'short',
+        { mode: 'gauge', available: 82, win: '5h', resetAt: null });
+    assert.equal(a.els[a.cid + '-pct'].textContent, '82%', 'con dato real muestra el % disponible');
+    assert.ok(a.els[a.cid]._classes.has('ok'), '82% disponible → color ok');
 
-    _hydrateProviderRow('week', 'openai-codex', { pct: 25, confidence: 'fresh' });
-    assert.equal(texts['mz-quota-week-openai-codex-pct'], '25.0%', 'con dato real muestra el %');
+    // Medio → warn (ámbar).
+    const b = makeCell('anthropic', 'short');
+    loadWinCellHelper(b.els)._mzHydrateWinCell('anthropic', 'short',
+        { mode: 'gauge', available: 40, win: '5h', resetAt: null });
+    assert.ok(b.els[b.cid]._classes.has('warn'), '40% disponible → color warn');
+
+    // Agotado → bad (rojo), 0% disponible = AGOTADA.
+    const c = makeCell('anthropic', 'long');
+    const res = loadWinCellHelper(c.els)._mzHydrateWinCell('anthropic', 'long',
+        { mode: 'gauge', available: 0, win: 'Sem', resetAt: null });
+    assert.equal(c.els[c.cid + '-pct'].textContent, '0%', '0% disponible');
+    assert.ok(c.els[c.cid]._classes.has('bad'), '0% disponible → color bad (AGOTADA)');
+    assert.match(c.els[c.cid].getAttribute('title'), /AGOTADA/, 'tooltip marca AGOTADA');
+    assert.equal(res.healthy, false, '0% disponible no es proveedor sano');
+});
+
+test('#4533: _mzHydrateWinCell mode event (Codex) muestra "sin límite" sin barra ni %', () => {
+    const { cid, els } = makeCell('openai-codex', 'short');
+    const r = loadWinCellHelper(els)._mzHydrateWinCell('openai-codex', 'short',
+        { mode: 'event', eventOk: true, win: 'Roll' });
+    assert.match(els[cid + '-pct'].textContent, /sin límite/, 'evento sin tope → "sin límite"');
+    assert.ok(els[cid]._classes.has('mz-qm-event'), 'la celda marca estado por evento');
+    assert.equal(r.healthy, true, 'sin límite cuenta como proveedor sano');
+});
+
+test('#4533: _mzThresholdClass respeta los umbrales verde/ámbar/rojo', () => {
+    const { _mzThresholdClass } = loadWinCellHelper({});
+    assert.equal(_mzThresholdClass(80), 'ok');
+    assert.equal(_mzThresholdClass(50), 'ok');
+    assert.equal(_mzThresholdClass(49), 'warn');
+    assert.equal(_mzThresholdClass(20), 'warn');
+    assert.equal(_mzThresholdClass(19), 'bad');
+    assert.equal(_mzThresholdClass(0), 'bad');
+    assert.equal(_mzThresholdClass(null), '');
 });
 
 // ---------------------------------------------------------------------------

@@ -65,6 +65,13 @@ try { providerQuotaGuard = require('./provider-quota-guard'); } catch { /* opcio
 let pacingBucket = null;
 try { pacingBucket = require('./pacing-bucket'); } catch { /* opcional */ }
 
+// #4533 — Agregador de cuota DISPONIBLE por proveedor × ventana. Enriquece el
+// sub-shape normalizado con available%, reset propio por bucket, rótulo de
+// ventana y modo de render (gauge/event/nodata). Tolerante a la ausencia del
+// módulo: si no carga, el slice degrada al shape previo sin romper.
+let providerQuotaAgg = null;
+try { providerQuotaAgg = require('./provider-quota'); } catch { /* opcional */ }
+
 // #2976 — Skills determinísticos: corren en Node puro sin tokens LLM y por
 // eso siguen ejecutándose aún con `quota-exhausted.json` activo. Mantener
 // sincronizado con `DETERMINISTIC_SKILLS` del detector (#2974,
@@ -2416,8 +2423,22 @@ function quotaSlice(state, ctx) {
     // así el flat-merge de Anthropic al top-level (out.session/realPct/pct)
     // queda intacto (CA-5).
     const providersClient = {};
+    // #4533 — cache de muestras reales (headers/eventos) por proveedor+bucket,
+    // leída una vez por poll. Best-effort: si el módulo no está o falla, el
+    // enrich degrada a "sin dato" sin romper el slice.
+    let quotaCache = {};
+    if (providerQuotaAgg && typeof providerQuotaAgg.readCache === 'function') {
+        try { quotaCache = providerQuotaAgg.readCache(PIPELINE) || {}; } catch { quotaCache = {}; }
+    }
+    const nowMs = Date.now();
     for (const [p, result] of Object.entries(providers)) {
-        providersClient[p] = normalizeProviderQuota(p, result);
+        const normalized = normalizeProviderQuota(p, result);
+        // #4533 — agrega available%, reset propio por bucket, ventana y modo.
+        if (providerQuotaAgg && typeof providerQuotaAgg.enrich === 'function') {
+            try { providerQuotaAgg.enrich(p, normalized, result, { cache: quotaCache, now: nowMs }); }
+            catch { /* fail-safe: el enrich nunca tumba el slice de cuota */ }
+        }
+        providersClient[p] = normalized;
     }
     out.providers = providersClient;
 

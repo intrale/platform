@@ -256,17 +256,20 @@ test('#4189: renderHomeHTML emite el layout MIZPÁ (banner + panel + grilla 2-co
         && html.includes('id="mission-eta-value"') && html.includes('id="mission-delivered-value"'),
         'el banner expone número de ola, avance, ETA y entregados (hidratables)');
     assert.ok(html.includes('class="mz-sysquota"'), 'panel estado + cuotas');
-    assert.ok(html.includes('id="mz-quota-session-pct"') && html.includes('id="mz-quota-week-pct"'),
-        'cuotas de sesión y semanal con % agregado');
-    // #4249: el desglose por proveedor usa los ids canónicos de ALLOWED_PROVIDERS
-    // (`openai-codex`, `gemini-google`, etc.) para alinear con el backend de #4202,
-    // no las claves cortas viejas. Se renderizan los 5 proveedores activos.
-    assert.ok(html.includes('id="mz-quota-session-anthropic-bar"')
-        && html.includes('id="mz-quota-session-openai-codex-bar"')
-        && html.includes('id="mz-quota-session-gemini-google-bar"')
-        && html.includes('id="mz-quota-session-cerebras-bar"')
-        && html.includes('id="mz-quota-session-nvidia-nim-bar"'),
-        'desglose por proveedor con ids canónicos Anthropic/Codex/Gemini/Cerebras/NVIDIA NIM (CA-6, #4249)');
+    // #4533 — el panel pasó a matriz de cuota DISPONIBLE por proveedor × ventana
+    // (corta/larga). Ya no hay % agregado (mz-quota-session-pct removido); cada
+    // proveedor tiene dos celdas de ventana (short/long) con ids mz-qm-<key>-<slot>-*.
+    assert.ok(html.includes('id="mz-sig-healthy"'),
+        'estado compacto con señal accionable "proveedores sanos"');
+    // #4249/#4533: la matriz usa los ids canónicos de ALLOWED_PROVIDERS
+    // (openai-codex, gemini-google, etc.). Se renderizan los 5 proveedores activos
+    // en su ventana corta (short) y larga (long).
+    assert.ok(html.includes('id="mz-qm-anthropic-short-bar"') && html.includes('id="mz-qm-anthropic-long-bar"')
+        && html.includes('id="mz-qm-openai-codex-short-bar"')
+        && html.includes('id="mz-qm-gemini-google-short-bar"')
+        && html.includes('id="mz-qm-cerebras-long-bar"')
+        && html.includes('id="mz-qm-nvidia-nim-long-bar"'),
+        'matriz proveedor×ventana con ids canónicos Anthropic/Codex/Gemini/Cerebras/NVIDIA NIM (CA-6, #4533)');
     assert.ok(html.includes('class="mz-grid"'), 'grilla de 2 columnas');
     assert.ok(html.includes('class="mz-panel mz-now"') && html.includes('class="mz-panel mz-board"'),
         'columna Ahora·Ejecución + Tablero de la Ola');
