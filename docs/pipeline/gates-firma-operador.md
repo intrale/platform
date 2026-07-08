@@ -59,6 +59,12 @@ Cada verificador automático clasifica cada criterio de aceptación en **dos bal
 
 **Enforcement estructural (no auto-reporte):** los criterios se etiquetan como *máquina-verificable* vs *solo-humano* **desde la definición** (salida de GATE 1). La máquina de estados le prohíbe al agente emitir `pass` sobre un criterio solo-humano. No se confía en que el LLM se autoevalúe honestamente.
 
+### GATE 3 — Gobernanza de las acciones autónomas del kernel (transversal)
+Los gates 0/1/2 cubren lo que **producen los agentes** sobre un issue. Pero el modelo operativo también **se modifica a sí mismo** sin issue de por medio: re-seeds de ola, realigns de la allowlist, escritura de flags de cuota, auto-resolución de desyncs, reset del working tree, etc. Los tres incidentes del 2026-07-08 (misatribución de cuota, colapso del avance de la ola, pipeline parado en rama equivocada) **fueron exactamente esto: el kernel tocándose a sí mismo, a ciegas, sin gate ni visibilidad.**
+
+- **Qué frena/expone:** toda acción autónoma del kernel que muta estado operativo (no código de producto) debe quedar **registrada y visible**, y las de alto impacto (re-seed que resetea progreso, realign que cambia la cohorte de la ola, borrado/escritura de flags) deben poder configurarse como **notificar-y-proceder** o **esperar-confirmación**.
+- **Intervención humana:** para las acciones de alto impacto, el operador ve *qué va a hacer el kernel y por qué* antes (o un log inmediato después, según criticidad). Es el gate que le da al operador soberanía sobre el propio modelo operativo, no solo sobre los entregables.
+
 ---
 
 ## 4. Índice de confiabilidad + escalera de confianza progresiva
@@ -149,21 +155,24 @@ Con eso, GATE 0 usa el puerto `gates`, la evidencia usa el puerto `e2e` (el dash
 
 ---
 
-## 8. Plan de issues (borrador — NO creados)
+## 8. Plan de issues
 
-**Épico:** `Ajuste del modelo operativo — firma humana obligatoria en Definición y Aceptación`
+**Épico:** `Modelo operativo — gates de firma del operador + gobernanza de acciones autónomas`
 
-0. **Enmienda al contrato kernel↔adaptador (#4010)** — veredicto `requires-operator` en puerto `gates` + estado `waiting-operator` en lifecycle (§5), versionado CA-14. *(Primero: habilita a los demás sin reajuste en Ola 9.)*
-1. **GATE 0 · Veredicto honesto** — modelo de dos baldes; prohíbe "passed" global si hay ⚠️; enforcement estructural; elimina `qa:passed`+`qa:failed` simultáneos. *(Absorbe #4568. El más barato; ataja el 80% del daño solo.)*
-2. **Generador de evidencia (puerto `e2e`)** — screenshot para el adaptador-dashboard; contrato listo para evidencia cara del producto (APK/video), tiered/lazy.
-3. **GATE 1 · Firma de Definición (siempre)** — estado `waiting-operator-def`; colapso verde / solo-humano al frente; opt-out pre-autorizado por el operador.
-4. **GATE 2 · Firma de Aceptación (siempre)** — estado `waiting-operator-acc`; adjunta evidencia; rechazo → dev.
-5. **Índice de confiabilidad + calibración** — veredicto sugerido descompuesto; registro sugerencia↔decisión; recalibración; escalera de autonomía progresiva (§4).
-6. **Aprobación de un toque por Telegram** — botones inline ✅/❌ cableados al estado + audit log.
-7. **Dashboard: bandeja "Esperando tu firma"** — un solo lugar con los issues en `waiting-operator` y su evidencia.
-8. **Doc del modelo operativo** — actualizar `docs/pipeline/` con la matriz auto-vs-gateado y la política de timeout/defaults.
+1. **Enmienda al contrato kernel↔adaptador (#4010)** — veredicto `requires-operator` en puerto `gates` + estado `waiting-operator` en lifecycle (§5), versionado CA-14. *(Primero: habilita a los demás sin reajuste en Ola 9.)*
+2. **GATE 0 · Veredicto honesto** — modelo de dos baldes; prohíbe "passed" global si hay ⚠️; enforcement estructural; elimina `qa:passed`+`qa:failed` simultáneos. *(Absorbe #4568. El más barato; ataja el 80% del daño solo.)*
+3. **Generador de evidencia (puerto `e2e`) + validez/representatividad** — screenshot para el adaptador-dashboard; evidencia del producto (APK/video) tiered/lazy; y control de que la evidencia sea representativa (viewport correcto, no cacheada, no solo happy-path) — ver §10.3.
+4. **GATE 1 · Firma de Definición (siempre) + loop de re-definición** — estado `waiting-operator-def`; colapso verde / solo-humano al frente; opt-out pre-autorizado; ruta explícita "el spec estaba mal" → re-definición (no dev) — ver §10.4.
+5. **GATE 2 · Firma de Aceptación (siempre)** — estado `waiting-operator-acc`; adjunta evidencia; rechazo → dev; economía de rebotes (circuit-breaker de firmas).
+6. **Índice de confiabilidad + calibración + escalera de autonomía** — veredicto sugerido descompuesto; registro sugerencia↔decisión; recalibración; autonomía progresiva ganada (§4).
+7. **GATE 3 · Gobernanza de acciones autónomas del kernel** — registro + visibilidad de re-seeds/realigns/flags/auto-resolves; las de alto impacto: notificar-y-proceder o esperar-confirmación (§3, §10.1).
+8. **Gate de coherencia a nivel ola** — revisión de coherencia cross-issue del entregable de la ola, no solo por-issue (§10.2).
+9. **Aprobación de un toque por Telegram** — botones inline ✅/❌ cableados al estado + audit log.
+10. **Dashboard: bandeja "Esperando tu firma"** — un solo lugar con los issues en `waiting-operator` y su evidencia.
+11. **Modelo de delegación / bus factor** — aprobador de respaldo, política "operador ausente", pre-requisito para el futuro multi-tenant (§10.5).
+12. **Doc del modelo operativo** — matriz auto-vs-gateado y política de timeout/defaults.
 
-**Orden sugerido:** #0 → #1 → #2 → #5 → #6/#7 → #3/#4 → #8.
+**Orden sugerido:** #1 → #2 → #3 → #6 → #9/#10 → #4/#5 → #7 → #8 → #11 → #12.
 
 ---
 
@@ -173,5 +182,26 @@ Esta propuesta se ejecuta en una **ola intermedia**: posterior a la ola actual y
 
 ---
 
+## 10. Pendientes / no analizado (revisión de completitud 2026-07-08)
+
+Huecos de diseño detectados al cerrar la conversación. Cada uno tiene destino (gate o issue del §8).
+
+### 10.1. Las acciones autónomas del kernel no tenían gate → **elevado a GATE 3**
+Los gates 0/1/2 cubren entregables de agentes, pero el kernel se modifica a sí mismo (re-seeds, realigns, flags, auto-resolves) sin visibilidad. **Los tres incidentes del 2026-07-08 fueron esto.** Elevado a **GATE 3** (§3) e issue §8.7. Es el hueco más importante.
+
+### 10.2. Coherencia cross-issue / a nivel ola
+Los gates son por-issue: cada uno puede pasar aceptación individual y el todo quedar incoherente (coherencia dashboard↔consola). Falta un **gate de coherencia a nivel ola** → issue §8.8.
+
+### 10.3. La evidencia también puede mentir
+GATE 0 hace honesto el *veredicto*, pero no la *evidencia*: un screenshot al viewport equivocado, de una página cacheada (nos pasó hoy con el render viejo) o solo del happy-path, produce una firma con confianza falsa. Falta **validez/representatividad de la evidencia** → plegado al issue §8.3.
+
+### 10.4. "La aceptación revela que la definición estaba mal"
+A veces en aceptación se descubre que el *spec* estaba mal, no el build. Hoy el rechazo va a `dev`; falta una ruta explícita a **re-definición**. Y la **economía de los loops de rechazo** (circuit-breaker de firmas, análogo a los 3 rebotes de agentes) → plegado a §8.4/§8.5.
+
+### 10.5. Bus factor del operador
+Todo serializa en un único aprobador humano, sin delegación ni respaldo ni política de "operador ausente". Pared de escala para el futuro multi-tenant de Ola 9 → issue §8.11.
+
+---
+
 ## Escapes de referencia
-- #4531 (reabierto), #4500 (reabierto), #4532 (reabierto), #4568 (gate de QA visual — a absorber por el issue #1).
+- #4531 (reabierto), #4500 (reabierto), #4532 (reabierto), #4568 (gate de QA visual — a absorber por el issue §8.2).
