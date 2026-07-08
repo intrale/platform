@@ -24,11 +24,11 @@ const { redactSensitive } = require('./redact');
 const QUOTA_COPY = {
   // §2 — inicial
   initial:
-    'Cuota Anthropic agotada.\n' +
+    'Cuota {provider} agotada.\n' +
     'Pipeline en modo deterministico. Reset estimado: {hhmm} (en {countdown}).',
   // §2 — variante para resets_at fallback (CA-8 hereditario)
   initialFallback:
-    'Cuota Anthropic agotada.\n' +
+    'Cuota {provider} agotada.\n' +
     'Pipeline en modo deterministico. Reset estimado: proximo reset semanal (en {countdown}).',
   // §3 — recordatorios A/B/C/D
   reminders: [
@@ -41,7 +41,7 @@ const QUOTA_COPY = {
     'Reset al volver la cuota: {hhmm} (en {countdown}).\n' +
     '{n} archivos LLM esperando en cola.',
     // C — corta
-    'Cuota Anthropic: {countdown} para el reset ({hhmm}).\n' +
+    'Cuota {provider}: {countdown} para el reset ({hhmm}).\n' +
     'Determinisicos siguen avanzando.',
     // D — con hint a comandos
     'Pipeline aun en modo deterministico (reset {hhmm}, en {countdown}).\n' +
@@ -49,17 +49,17 @@ const QUOTA_COPY = {
   ],
   // §4 — canned a texto libre (sin interpolación de input usuario, CA-S7)
   cannedFreeText:
-    'Cuota Anthropic agotada hasta las {hhmm}.\n' +
+    'Cuota {provider} agotada hasta las {hhmm}.\n' +
     'Pipeline operando en modo deterministico.\n' +
     'Comandos disponibles: /status /metrics /dashboard /intake /pause /ghostbusters /restart /limpiar.',
   // §5 — restaurada con cola
   restored:
-    'Cuota Anthropic restaurada.\n' +
+    'Cuota {provider} restaurada.\n' +
     'Drenando cola de {n} agentes encolados.\n' +
     'Pipeline volviendo a operacion full.',
   // §5 — restaurada sin cola (N=0)
   restoredEmpty:
-    'Cuota Anthropic restaurada.\n' +
+    'Cuota {provider} restaurada.\n' +
     'No habia agentes encolados — pipeline directo a operacion full.\n' +
     'Pipeline volviendo a operacion full.',
   // §3013 — alerta de umbral 90% por snapshot real (CA-UX-7 / narrativa §4.1).
@@ -83,6 +83,43 @@ const QUOTA_COPY = {
 
 // Etiquetas para logging (mapean rotationIndex → letra)
 const REMINDER_LABELS = ['A', 'B', 'C', 'D'];
+
+// -- Provider legible (#4565 Bug 1) -------------------------------------------
+// Mapa provider-key canónica → label humano para interpolar en los templates.
+// El flag persiste `provider` como clave interna cruda (ej. 'openai-codex');
+// NUNCA mostramos esa clave al operador (guideline UX del issue). Si el provider
+// es desconocido o falta, cae a 'anthropic' (default histórico backward-compat
+// documentado en quota-exhausted.js:DEFAULT_PROVIDER).
+const DEFAULT_PROVIDER_KEY = 'anthropic';
+const PROVIDER_LABELS = {
+  anthropic: 'Anthropic',
+  'openai-codex': 'OpenAI Codex',
+  'gemini-google': 'Gemini',
+  cerebras: 'Cerebras',
+  'nvidia-nim': 'NVIDIA NIM',
+  groq: 'Groq',
+  deterministic: 'Deterministico',
+};
+// Aliases de provider-key → canónica (algún codepath usa el alias corto).
+const PROVIDER_ALIASES = {
+  openai: 'openai-codex',
+  codex: 'openai-codex',
+  gemini: 'gemini-google',
+  claude: 'anthropic',
+};
+
+/** Normaliza una provider-key cruda a su forma canónica. */
+function normalizeProviderKey(raw) {
+  if (typeof raw !== 'string' || raw.trim() === '') return DEFAULT_PROVIDER_KEY;
+  const key = raw.trim().toLowerCase();
+  return PROVIDER_ALIASES[key] || key;
+}
+
+/** Resuelve el label humano de una provider-key (nunca la clave cruda). */
+function providerLabel(raw) {
+  const key = normalizeProviderKey(raw);
+  return PROVIDER_LABELS[key] || PROVIDER_LABELS[DEFAULT_PROVIDER_KEY];
+}
 
 // -- Reglas operativas (configurables) ----------------------------------------
 const DEFAULT_REMINDER_INTERVAL_MIN = 120;            // 2h, override en config.yaml
@@ -133,20 +170,43 @@ function interpolate(template, vars) {
 }
 
 /**
+ * Normaliza `resets_at` a epoch-ms, aceptando dos representaciones (#4565 Bug 2):
+ *   - number epoch-ms (formato de los fixtures de test y del flag legacy).
+ *   - string ISO8601 (formato real que persiste el flag #2974, ej.
+ *     "2026-07-13T00:00:00.000Z"). `Number()` sobre un ISO string devuelve NaN
+ *     → el bug histórico que renderizaba `--:--`. Usamos `Date.parse()` como el
+ *     módulo hermano quota-exhausted-state.js:153.
+ *   - string numérico ("5000000") → epoch-ms (tolerancia defensiva).
+ * Devuelve NaN si no se puede interpretar.
+ */
+function parseResetsAt(value) {
+  if (Number.isFinite(value)) return value;               // epoch-ms number
+  if (typeof value === 'number') return NaN;              // NaN / Infinity
+  if (typeof value !== 'string') return NaN;
+  const s = value.trim();
+  if (s === '') return NaN;
+  if (/^-?\d+$/.test(s)) return Number(s);                // string numérico → epoch-ms
+  const parsed = Date.parse(s);                           // ISO8601 → epoch-ms
+  return Number.isFinite(parsed) ? parsed : NaN;
+}
+
+/**
  * Construye el set de variables para los templates a partir del flag.
  *   - hhmm: `HH:MM` formateado de `resets_at`.
  *   - countdown: delta hasta el reset.
  *   - n: cantidad de agentes encolados.
  *   - isFallback: true si el flag tiene `resets_at_fallback`.
+ *   - provider: label humano del provider agotado (#4565 Bug 1).
  */
 function buildVars(flagData, nowMs, queuedCount) {
-  const resetsAt = Number(flagData && flagData.resets_at);
+  const resetsAt = parseResetsAt(flagData && flagData.resets_at);
   const isFallback = !!(flagData && flagData.resets_at_fallback);
   return {
     hhmm: formatHHMM(resetsAt),
     countdown: formatCountdown(resetsAt, nowMs, { hoursOnly: isFallback }),
     n: Number.isFinite(queuedCount) ? queuedCount : 0,
     isFallback,
+    provider: providerLabel(flagData && flagData.provider),
   };
 }
 
@@ -179,6 +239,19 @@ function buildVars(flagData, nowMs, queuedCount) {
  *        Override del umbral anti-falso-positivo (default 5 min).
  * @param {number} [deps.debounceCannedMs]
  *        Override del debounce de canned response (default 2 min).
+ * @param {() => boolean} [deps.isLlmGated]
+ *        #4565 (rebote rev-1) — AUTORIDAD del gate de texto libre. Predicado que
+ *        resuelve la cadena de fallback EFECTIVA del commander y devuelve `true`
+ *        SOLO cuando NO hay ningún provider sano para procesar (primario + todos
+ *        los fallbacks gateados). Cuando se inyecta, el gate lo usa como veredicto
+ *        único: si Anthropic está agotado pero hay un fallback sano, devuelve
+ *        `false` y NO pre-emptimos con canned — dejamos que `ejecutarClaude` use
+ *        ese provider sano (CA-3). Sin inyectar, se cae al heurístico por provider
+ *        (`getCommanderProvider`), usado por los tests unitarios del notifier.
+ * @param {() => string} [deps.getCommanderProvider]
+ *        Heurístico de RESPALDO (solo si `isLlmGated` no se inyecta): provider-key
+ *        que el commander usa como primario. Default `'anthropic'`. El gate
+ *        bloquea cuando el provider agotado coincide con este.
  */
 function createQuotaNotifier(deps) {
   if (!deps || typeof deps.sendMessage !== 'function') {
@@ -202,6 +275,11 @@ function createQuotaNotifier(deps) {
   const debounceCannedMs = Number.isFinite(deps.debounceCannedMs)
     ? deps.debounceCannedMs
     : DEBOUNCE_CANNED_MS;
+  const getCommanderProvider = typeof deps.getCommanderProvider === 'function'
+    ? deps.getCommanderProvider
+    : () => DEFAULT_PROVIDER_KEY;
+  // #4565 (rebote rev-1) — predicado autoritativo de la cadena de fallback.
+  const isLlmGated = typeof deps.isLlmGated === 'function' ? deps.isLlmGated : null;
 
   const state = {
     flagData: null,
@@ -296,7 +374,9 @@ function createQuotaNotifier(deps) {
     if (blockDuration >= minBlockDurationForRestoredMs) {
       const queued = getQueuedAgentsCount();
       const tpl = queued >= 1 ? QUOTA_COPY.restored : QUOTA_COPY.restoredEmpty;
-      emit(interpolate(tpl, { n: queued }));
+      // #4565: el mensaje de restaurada debe nombrar el provider que se recuperó,
+      // no hardcodear "Anthropic". state.flagData sigue disponible (se limpia abajo).
+      emit(interpolate(tpl, { n: queued, provider: providerLabel(state.flagData && state.flagData.provider) }));
       log(`quota-notifier: restaurada enviada (queued=${queued}, duracion=${(blockDuration / 1000).toFixed(1)}s)`);
     } else {
       log(`quota-notifier: bloqueo duro ${(blockDuration / 1000).toFixed(1)}s (<${minBlockDurationForRestoredMs / 1000}s) — omito mensaje de restaurada`);
@@ -316,8 +396,43 @@ function createQuotaNotifier(deps) {
    *   - gated=true, debounced=true: flag activo pero ya respondió hace <2 min.
    *     Caller debe abortar SIN enviar otra canned (anti spam-self).
    */
+  /**
+   * #4565 CA-3 — ¿el flag activo debe bloquear el LLM del commander?
+   *
+   * Rebote rev-1: la comparación por-provider (exhausted === primario) era
+   * insuficiente. Cuando Anthropic está agotado pero hay un fallback sano en la
+   * cadena, el gate bloqueaba con canned ANTES de que `ejecutarClaude` pudiera
+   * usar ese fallback (viola CA-3). La AUTORIDAD real es la resolución de la
+   * cadena completa: bloqueamos SOLO cuando NO hay ningún provider sano.
+   *
+   *   - Con `isLlmGated` inyectado (producción): veredicto único de la cadena.
+   *     `true` sii primario + todos los fallbacks gateados. Fail-open ante error
+   *     (NO pre-emptir: `ejecutarClaude` re-resuelve y decide).
+   *   - Sin `isLlmGated` (tests aislados del notifier): heurístico por provider.
+   *
+   * Sin flag → no bloquea (no hay nada que gatear).
+   */
+  function shouldGateProvider() {
+    if (!state.flagData) return false;
+    if (isLlmGated) {
+      try {
+        return isLlmGated() === true;
+      } catch (e) {
+        // Fail-open: un bug del resolver NUNCA debe silenciar al commander con
+        // canned si podría haber un provider sano. Preserva CA-3 en el error path.
+        log(`quota-notifier: isLlmGated lanzó (${e && e.message}) — fail-open, no bloqueo`);
+        return false;
+      }
+    }
+    const exhausted = normalizeProviderKey(state.flagData.provider);
+    const commander = normalizeProviderKey(getCommanderProvider());
+    return exhausted === commander;
+  }
+
   function handleCommanderFreeText() {
-    if (!state.flagData) {
+    if (!state.flagData || !shouldGateProvider()) {
+      // Sin flag, o el provider agotado no es el que usa el commander:
+      // el flujo normal de LLM debe continuar (CA-3).
       return { gated: false, debounced: false, text: null };
     }
     const t = now();
@@ -339,6 +454,14 @@ function createQuotaNotifier(deps) {
   function getState() {
     return {
       active: !!state.flagData,
+      // #4565 (rebote rev-1) CA-3 — provider agotado y si la cadena de fallback
+      // del commander está ENTERAMENTE gateada. El gate de pulpo debe consultar
+      // `gatesLlm`, NO `active`: `active` es true aunque haya un provider sano en
+      // la cadena (Codex agotado ⇏ bloquear Claude; Anthropic agotado con fallback
+      // sano ⇏ bloquear). `gatesLlm` es true SOLO cuando no hay provider sano.
+      provider: state.flagData ? normalizeProviderKey(state.flagData.provider) : null,
+      providerLabel: state.flagData ? providerLabel(state.flagData.provider) : null,
+      gatesLlm: shouldGateProvider(),
       flagSetAt: state.flagSetAt,
       rotationIndex: state.rotationIndex,
       hasInterval: state.intervalHandle != null,
@@ -371,8 +494,13 @@ module.exports = {
   DEFAULT_REMINDER_INTERVAL_MIN,
   DEBOUNCE_CANNED_MS,
   MIN_BLOCK_DURATION_FOR_RESTORED_MS,
+  PROVIDER_LABELS,
+  DEFAULT_PROVIDER_KEY,
   formatHHMM,
   formatCountdown,
   interpolate,
   buildVars,
+  parseResetsAt,
+  providerLabel,
+  normalizeProviderKey,
 };

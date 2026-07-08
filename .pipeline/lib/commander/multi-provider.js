@@ -231,6 +231,50 @@ function resolveCommanderProvider(opts = {}) {
     return _normalizeBalancerMeta(strict);
 }
 
+// -----------------------------------------------------------------------------
+// #4565 (rebote rev-1) — ¿la cadena de fallback del commander está ENTERAMENTE
+// gateada? Chequeo READ-ONLY para el gate de cuota del pulpo (pre-ejecutarClaude).
+//
+// El bug del rebote: el gate consultaba solo si el PRIMARIO (Anthropic) estaba
+// agotado y, de estarlo, respondía canned determinístico ANTES de que el
+// dispatcher pudiera resolver un fallback sano (viola CA-3). La autoridad real
+// sobre "¿hay algún provider para procesar texto libre?" es la resolución de la
+// cadena completa: `resolveSpawnWithFallback(...).gated` es true SOLO cuando el
+// primario y TODOS los fallbacks están gateados.
+//
+// Reusamos `resolveSpawnWithFallback` (la MISMA lógica que usa `ejecutarClaude`
+// vía `resolveCommanderProvider`) pero silenciando TODO side-effect: sin escritura
+// de audit (`auditLog` no-op), sin notice a Telegram (`notify` no-op) y sin logs
+// (`onLog` no-op). NO pasamos por el balancer (`_resolveViaBalancer`) para no
+// tocar contadores/stickiness: la determinación de "gated" es idéntica en ambos
+// caminos (si la cadena estricta encuentra un sano, el balanceo también; si la
+// estricta reporta all-gated, el balanceo devuelve null → cae a la estricta).
+//
+// Fail-open: ante cualquier error devuelve `false` (NO bloquear). Nunca queremos
+// que un bug del resolver deje mudo al commander con canned cuando podría haber
+// un provider sano; `ejecutarClaude` re-resuelve y decide con su propio manejo.
+// -----------------------------------------------------------------------------
+function isCommanderChainGated(opts = {}) {
+    const { pipelineDir, fsImpl, quotaModule, now, dispatchModule } = opts;
+    try {
+        const _dispatch = dispatchModule || require('../agent-launcher/dispatch-with-fallback');
+        const res = _dispatch.resolveSpawnWithFallback({
+            skill: COMMANDER_SKILL,
+            issue: 'commander-gate-check',
+            pipelineDir,
+            fsImpl,
+            quotaModule: quotaModule || require('../quota-exhausted'),
+            now,
+            onLog: () => {},                          // sin logs
+            notify: () => {},                         // sin notice a Telegram
+            auditLog: { appendChained: () => {} },    // sin escritura de audit
+        });
+        return !!(res && res.gated);
+    } catch {
+        return false; // fail-open: nunca pre-emptir con canned por un bug propio
+    }
+}
+
 // #4413 — asegura que una resolución exponga las 3 claves de metadata de
 // balanceo (weight/quotaPct/selectionReason). Si ya vienen (camino balanceado),
 // no las pisa; si no (camino estricto), las agrega en null. Aditivo: preserva
@@ -1752,6 +1796,8 @@ module.exports = {
     sanitizeUserPrompt,
     resolveCommanderProvider,
     resolveCommanderProviderExcluding,
+    // #4565 (rebote rev-1) — gate de cuota read-only: ¿toda la cadena gateada?
+    isCommanderChainGated,
     formatFallbackNotice,
     shouldEmitFallbackNotice,
     auditCommanderRequest,
