@@ -12351,12 +12351,21 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     return;
   }
 
-  // --- #2975 — GATE DE CUOTA ANTHROPIC AGOTADA (CA-9/CA-10/CA-11) ---
+  // --- #2975 — GATE DE CUOTA AGOTADA (CA-9/CA-10/CA-11) ---
   // Si el flag está activo, los comandos nativos del switch case YA respondieron
   // arriba (sin pasar por LLM, garantizado por construcción — CA-3 hereditario).
   // Acá interceptamos texto libre ANTES de `ejecutarClaude` y respondemos canned
   // con debounce 2 min, sin interpolar input del usuario (CA-S7).
-  if (textoLibre.length > 0 && quotaNotifier.getState().active) {
+  //
+  // #4565 (rebote rev-1) CA-3 — gate por RESOLUCIÓN DE CADENA: consultamos
+  // `gatesLlm` (no `active`), que ahora refleja `resolveSpawnWithFallback(...).
+  // gated` de la cadena de fallback completa del commander. Solo bloqueamos
+  // cuando NO hay ningún provider sano (primario + todos los fallbacks gateados).
+  // Si el provider agotado es OTRO (ej. Codex) o si Anthropic está agotado pero
+  // hay un fallback sano, `gatesLlm` es false y dejamos que `ejecutarClaude` use
+  // ese provider sano en vez de caer a determinístico. `handleCommanderFreeText`
+  // aplica el mismo criterio internamente (defensa en profundidad).
+  if (textoLibre.length > 0 && quotaNotifier.getState().gatesLlm) {
     const gate = quotaNotifier.handleCommanderFreeText();
     if (gate.gated) {
       log('commander', `Gate de cuota activo — ${gate.debounced ? 'debounced' : 'canned response enviada'}`);
@@ -14394,6 +14403,18 @@ const quotaNotifier = createQuotaNotifier({
     return DEFAULT_REMINDER_INTERVAL_MIN;
   },
   getQueuedAgentsCount: () => countQueuedLlmAgents(),
+  // #4565 (rebote rev-1) CA-3 — el gate debe reflejar la resolución EFECTIVA de
+  // la cadena de fallback del commander, no solo el estado del primario. Si
+  // Anthropic está agotado pero hay un fallback sano, `isLlmGated()` es false y
+  // NO pre-emptimos con canned: dejamos que `ejecutarClaude` (que resuelve la
+  // MISMA cadena vía `resolveCommanderProvider`) use ese provider sano. Solo
+  // bloqueamos cuando TODA la cadena está gateada (mismo veredicto que
+  // `resolveSpawnWithFallback(...).gated`). Read-only: el helper silencia audit,
+  // notice de Telegram y logs para no duplicar los side-effects del dispatch real.
+  isLlmGated: () => commanderMP.isCommanderChainGated({ pipelineDir: PIPELINE }),
+  // Heurístico de respaldo (no se usa mientras `isLlmGated` resuelva): provider
+  // primario del commander para la comparación por-provider en tests aislados.
+  getCommanderProvider: () => 'anthropic',
 });
 
 let lastQuotaFlagPresent = false;
