@@ -264,3 +264,10 @@ __pycache__/
 # runtime por cada ejecución de agente; NO versionar (evitar telemetría en el
 # repo por accidente). El dir `.pipeline/state/` no está ignorado globalmente.
 .pipeline/state/provider-cost.jsonl
+
+# #4512 — reporte de auditoría de seguridad por-issue (raíz del repo). Lo
+# genera el gate /security en cada corrida y lo sobrescribe por issue. Trackear-
+# lo produce conflictos add/add recurrentes en el rebase de /delivery (ver
+# rebotes #4512/#4516/#4565/#4568). Los reportes sensibles se persisten vía
+# writeDeliverable(sensible:true), no en git. NO commitear.
+security-report.md
