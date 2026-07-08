@@ -89,7 +89,7 @@ function renderHeaderMetaSsr(opts) {
 //   SEC-1: sólo .textContent / .classList / .title (property). Sin innerHTML.
 function headerPillsClientScript() {
     return `
-if (!window.__hydrateHeaderPills) {
+if (typeof window !== 'undefined' && !window.__hydrateHeaderPills) {
     // Formateo de uptime autocontenido (idéntico a fmtDur de home/satélites) para
     // que el helper sea portable a vistas que no definen fmtDur (providers, roadmap).
     var __fmtUptime = function (ms) {
@@ -125,6 +125,31 @@ if (!window.__hydrateHeaderPills) {
             buildPill.title = 'Estado del último build (marker local .pipeline/build-status.json, sin gh api). '
                 + bm.label + (detail.length ? ' · ' + detail.join(' · ') : '');
             buildPill.setAttribute('aria-label', bm.label + (detail.length ? ' ' + detail.join(' ') : ''));
+        }
+        // Pill de estado del pipeline (#hdr-mode) — sólo presente con withMode:true
+        // (satélites). Se hidrata acá para que la bandeja unificada quede
+        // completa con una sola llamada (evita tickers de mode duplicados por
+        // vista). SEC-1: sólo .classList / .textContent (property sinks seguros).
+        var modePill = document.getElementById('hdr-mode');
+        if (modePill) {
+            modePill.classList.remove('in-mode-running', 'in-mode-paused', 'in-mode-partial');
+            var modeLabel;
+            if (d.mode === 'paused') {
+                modePill.classList.add('in-mode-paused');
+                modeLabel = '⏸ Pausado';
+            } else if (d.mode === 'partial_pause') {
+                var nAllowed = Array.isArray(d.allowedIssues) ? d.allowedIssues.length : 0;
+                modePill.classList.add('in-mode-partial');
+                modeLabel = '⏸ Parcial · ' + nAllowed + ' issues';
+            } else {
+                modePill.classList.add('in-mode-running');
+                modeLabel = '🟢 Running';
+            }
+            // Sólo reemplazar el texto cuando la pill NO tiene estructura hija que
+            // la vista gestione por su cuenta (ej. home mantiene un menú desplegable
+            // #hdr-mode-menu dentro de la pill oculta). textContent borraría ese
+            // menú; en ese caso dejamos el texto a la lógica propia de la vista.
+            if (!modePill.querySelector('*')) modePill.textContent = modeLabel;
         }
         // Pill del Pulpo: estado (verde/rojo) + uptime formateado.
         var pulpoPill = document.getElementById('hdr-pulpo');
@@ -181,6 +206,7 @@ if (!window.__hydrateHeaderPills) {
 function headerPillsPollClientScript() {
     return `
 (function () {
+    if (typeof window === 'undefined' || typeof fetch === 'undefined') return;
     function __tickHeaderPills() {
         fetch('/api/dash/header', { cache: 'no-store' })
             .then(function (r) { return r.json(); })

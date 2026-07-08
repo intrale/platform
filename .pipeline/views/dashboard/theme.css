@@ -111,10 +111,28 @@ a:hover { color: var(--in-accent); }
   font-size: 12px;
   font-weight: 500;
 }
+/* #4531 — Bandeja de estado en UNA sola fila. `flex-wrap: nowrap` impide que la
+   bandeja (build · recursos · pulpo · reloj [· mode]) genere una 2da fila que
+   desborde el header de 80px y pise el banner de la ola. La identidad
+   (.in-header-brand) es la que cede espacio (min-width:0), la bandeja se mantiene
+   íntegra (flex: none). En anchos chicos degrada con scroll horizontal en vez de
+   romper la fila. */
 .in-header-meta {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: flex-end;
+  flex: none;
+  min-width: 0;
 }
+.in-header { flex-wrap: nowrap; }
+.in-header-brand { min-width: 0; }
+@media (max-width: 900px) {
+  .in-header-meta { overflow-x: auto; scrollbar-width: thin; }
+}
+/* #4531 — Pill de estado del pipeline (#hdr-mode), canónico compartido. Antes
+   vivía inline duplicado en ~8 vistas; se centraliza acá para el marco común. */
+.in-mode-running { color: var(--in-ok); border-color: var(--in-ok); background: var(--in-ok-soft); }
+.in-mode-paused { color: var(--in-bad); border-color: var(--in-bad); background: var(--in-bad-soft); }
+.in-mode-partial { color: var(--in-warn); border-color: var(--in-warn); background: var(--in-warn-soft); }
 .in-header-divider { color: var(--in-fg-dim); }
 .in-status-dot { line-height: 1; }
 .in-resource-alert {

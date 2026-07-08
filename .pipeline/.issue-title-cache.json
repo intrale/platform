@@ -4584,6 +4584,20 @@
     ],
     "fetchedAt": 1782446582241
   },
+  "4531": {
+    "title": "Dashboard: rediseñar el encabezado común MIZPÁ a una sola fila con bandeja de estado unificada",
+    "state": "OPEN",
+    "labels": [
+      "bug",
+      "enhancement",
+      "Ready",
+      "area:dashboard",
+      "qa:passed",
+      "qa:failed",
+      "area:pipeline"
+    ],
+    "fetchedAt": 1783535706026
+  },
   "2519-comment": {
     "title": "",
     "labels": [],

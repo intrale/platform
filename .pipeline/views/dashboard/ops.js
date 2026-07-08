@@ -35,6 +35,8 @@ const { CONFIRM_MODAL_JS } = require('./confirm-modal');
 // #4296 — Accessor compartido del banner de ola (avance %, velocidad %/h, ETA)
 // desde la fuente determinística viva /api/dash/ola-eta (no conteos done/total).
 const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
+// #4531 — Bandeja de estado unificada del header común MIZPÁ.
+const { renderHeaderMetaSsr, headerPillsClientScript, headerPillsPollClientScript } = require('./header-meta');
 
 // #4242 (Ola 7.1) — OPS adopta el marco común MIZPÁ. Se reutiliza el helper
 // compartido `renderMissionBanner` de la HOME (#4189) — el banner de ola común
@@ -965,7 +967,8 @@ async function tickQaPills(){
     if(wrap.innerHTML !== html) wrap.innerHTML = html;
 }
 
-function tickClock(){ const c = document.getElementById('hdr-clock'); if(c) c.textContent = new Date().toLocaleTimeString('es-AR'); }
+// #4531 — El reloj del header lo hidrata la bandeja unificada (__hydrateHeaderPills
+// + poll de /api/dash/header); ya no hay tickClock local que compita con él.
 
 // Delegación de click en la topología (los nodos pueden re-renderizarse).
 document.addEventListener('click', function(ev){
@@ -1030,12 +1033,13 @@ const POLLS = [
     { fn: tickReconcilerSpark, ms: 60000 },
     { fn: tickQaPills, ms: 15000 },
     { fn: tickOpsMission, ms: 30000 },
-    { fn: tickClock, ms: 1000 },
 ];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch(e){} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { Promise.resolve(p.fn()).catch(()=>{}); }, p.ms); }
 ${missionOlaEtaClientScript()}
+${headerPillsClientScript()}
+${headerPillsPollClientScript()}
 `;
 
 // ───────────────────────── Render principal ─────────────────────────
@@ -1094,9 +1098,7 @@ ${OPS_CSS}
 <div class="satellite-frame">
   <header class="in-header">
     ${brandHtml}
-    <div class="in-header-meta">
-      <span class="in-clock" id="hdr-clock">${escapeHtmlText(new Date().toLocaleTimeString('es-AR'))}</span>
-    </div>
+    ${renderHeaderMetaSsr({ withMode: true })}
   </header>
   ${missionHtml}
   ${navHtml}

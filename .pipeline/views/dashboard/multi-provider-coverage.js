@@ -42,6 +42,8 @@ const path = require('node:path');
 // El widget de coverage es una sub-vista del satelite providers, asi que
 // pertenece a la tab "providers" en la barra unificada.
 const { renderNavTabsSsr } = require('./nav-tabs');
+// #4531 — Bandeja de estado unificada del header común MIZPÁ.
+const { renderHeaderMetaSsr, headerPillsClientScript, headerPillsPollClientScript } = require('./header-meta');
 
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 function loadTheme() {
@@ -169,9 +171,7 @@ function bodyHtml() {
         <div class="in-header-subtitle">Matriz skill × provider del smoke test</div>
       </div>
     </div>
-    <div class="in-header-meta">
-      <span class="in-clock" id="mpc-hdr-clock"></span>
-    </div>
+    ${renderHeaderMetaSsr({ withMode: true })}
   </header>
   ${renderNavTabsSsr('providers')}
 
@@ -765,17 +765,13 @@ const CLIENT_JS = `
       });
   }
 
-  function tickClock() {
-    var el = $('mpc-hdr-clock');
-    if (el) el.textContent = new Date().toLocaleTimeString('es-AR');
-  }
+  // #4531 — El reloj del header (id hdr-clock) lo hidrata la bandeja unificada
+  // (poll de /api/dash/header inyectado aparte); ya no hay tickClock local.
 
   // ===== Boot =====
   document.addEventListener('DOMContentLoaded', function() {
     var btn = $('mpc-run-btn');
     if (btn) btn.addEventListener('click', runHarness);
-    tickClock();
-    setInterval(tickClock, 1000);
     refresh().catch(function() {});
     setInterval(function() { refresh().catch(function() {}); }, 30000);
   });
@@ -804,6 +800,7 @@ function renderMultiProviderCoverage() {
 <div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">${sprite}</div>
 ${bodyHtml()}
 <script>${CLIENT_JS}</script>
+<script>${headerPillsClientScript()}\n${headerPillsPollClientScript()}</script>
 </body>
 </html>`;
 }

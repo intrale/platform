@@ -51,6 +51,8 @@ const { CONFIRM_MODAL_JS } = require('./confirm-modal.js');
 // #4296 — Accessor compartido del banner de ola (avance %, velocidad %/h, ETA)
 // desde la fuente determinística viva /api/dash/ola-eta (no conteos done/total).
 const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
+// #4531 — Bandeja de estado unificada del header común MIZPÁ.
+const { renderHeaderMetaSsr, headerPillsClientScript } = require('./header-meta');
 
 // #4238 (Ola 7.x) — BLOQUEADOS adopta el marco común de ventanas MIZPÁ. Se
 // reutiliza el helper compartido `renderMissionBanner` de la HOME (#4189) — la
@@ -849,14 +851,10 @@ function setText(id, value){ var el=document.getElementById(id); if(el && el.tex
 async function tickHeader(){
   var d = await fetchJson('/api/dash/header');
   if(!d) return;
-  setText('hdr-clock', new Date().toLocaleTimeString('es-AR'));
-  var modePill = document.getElementById('hdr-mode');
-  if(modePill){
-    modePill.classList.remove('in-mode-running','in-mode-paused','in-mode-partial');
-    if(d.mode==='paused'){ modePill.classList.add('in-mode-paused'); modePill.textContent='⏸ Pausado'; }
-    else if(d.mode==='partial_pause'){ modePill.classList.add('in-mode-partial'); modePill.textContent='⏸ Parcial'; }
-    else { modePill.classList.add('in-mode-running'); modePill.textContent='🟢 Running'; }
-  }
+  // #4531 — Bandeja unificada: reloj + mode + build + recursos + pulpo se
+  // hidratan con la lógica compartida (header-meta.js). SEC-1: sólo
+  // .textContent/.classList/.title, sin innerHTML.
+  if(typeof window.__hydrateHeaderPills === 'function') window.__hydrateHeaderPills(d);
 }
 // #4238 — Hidratación de la cabecera de ola común (② del marco). El SSR llega
 // neutro (igual que en la HOME); este tick espeja /api/dash/waves a los IDs
@@ -956,10 +954,7 @@ function renderBloqueados(state, opts) {
 <div class="satellite-frame">
   <header class="in-header">
     ${renderMizpaBrandBar()}
-    <div class="in-header-meta">
-      <span class="in-pill" id="hdr-mode">…</span>
-      <span class="in-clock" id="hdr-clock">…</span>
-    </div>
+    ${renderHeaderMetaSsr({ withMode: true })}
   </header>
   ${missionHtml}
   ${navHtml}
@@ -969,7 +964,7 @@ function renderBloqueados(state, opts) {
     <span>Intrale V3 · #3729</span>
   </footer>
 </div>
-<script>${FETCH_CLIENT_JS}\n${CONFIRM_MODAL_JS}\n${COMMON_HELPERS}\n${renderBloqueadosClientScript()}</script>
+<script>${FETCH_CLIENT_JS}\n${CONFIRM_MODAL_JS}\n${headerPillsClientScript()}\n${COMMON_HELPERS}\n${renderBloqueadosClientScript()}</script>
 </body>
 </html>`;
 }
