@@ -491,6 +491,54 @@ node .claude/hooks/delivery-report.js \
 - Ejecutar con `&` en background para no bloquear el flujo del delivery
 - Si el script falla, no debe afectar el resultado del delivery (best-effort)
 
+### 7.2: Constancia de entrega (obligatoria — #4517)
+
+Al cerrar la fase **entrega**, delivery DEBE persistir **SIEMPRE** su constancia de entrega, cierre exitoso o no. Es la fila 13 del épico #4255: *no puede volver a pasar que delivery cierre la fase sin producir el entregable*. Se persiste por el **punto de escritura único** `writeDeliverable`, que redacta secrets por default (`redact=true`) e indexa en `.pipeline/deliverables/<issue>.json`. **Nunca** `redact:false`, **nunca** `writeFileSync` directo, **nunca** ruta directa a Telegram.
+
+Construir la constancia como **metadata estructurada** (SEC-DEL-2) — **jamás** volcar el PR body crudo ni logs de CI crudos, que son el vector más probable de arrastrar tokens/URLs firmadas:
+
+```js
+// Incondicional al cerrar (CA-1). Ejecutar ANTES de terminar el skill.
+const { writeDeliverable } = require('.pipeline/lib/write-deliverable');
+const ROOT = process.env.PIPELINE_REPO_ROOT || 'C:/Workspaces/Intrale/platform';
+
+const md = [
+  `# Constancia de entrega — issue #${issue}`,
+  ``,
+  `## PR`,
+  `- Nº: #${PR_NUM}`,
+  `- Título: ${PR_TITLE}`,
+  `- Link: ${PR_URL}`,           // URL de PR de GitHub (sin query-params) → sobrevive redacción
+  `- Rama base: ${BASE_BRANCH}`,
+  ``,
+  `## Commits mergeados`,
+  COMMIT_SHAS.map((s) => `- ${s}`).join('\n'),
+  ``,
+  `## Gates de merge`,
+  `- QA: ${QA_LABEL}`,           // qa:passed | qa:skipped
+  `- CI: ${CI_STATE}`,
+  `- Review: ${REVIEW_STATE}`,
+  ``,
+  `## Issues cerrados`,
+  `- Closes #${issue}`,
+  ``,
+  `## Artefacto desplegado`,
+  DEPLOY_INFO || '- N/A',
+].join('\n');
+
+writeDeliverable('delivery', issue, { fase: 'entrega', md, pipelineRoot: ROOT });
+```
+
+**Excepción explícita cuando la constancia no aplica (CA-4, no silencio):** si por la naturaleza del issue el entregable no aplica (doc puro con `qa:skipped`, o el merge falló y el issue fue a `backlog-tecnico`), **no omitir** la escritura — persistir igual con el **motivo explícito**. El `motivo` no debe incluir paths absolutos del host, contenido de `.env`/`application.conf` ni stack traces con credenciales (SEC-DEL-4):
+
+```js
+const md = `# Constancia de entrega — issue #${issue}\n\n## Excepción\nConstancia no aplica. Motivo: ${MOTIVO}\n`;
+writeDeliverable('delivery', issue, { fase: 'entrega', md, pipelineRoot: ROOT });
+```
+
+- **Idempotencia (SEC-DEL-5):** `writeDeliverable` es snapshot (overwrite) con filename phase-scoped determinístico (`delivery-entrega-<issue>.md`). Un rebote sobrescribe, nunca concatena crudo + redactado.
+- **Defensa en profundidad:** si por cualquier motivo delivery no llega a ejecutar este paso, `pulpo.js` garantiza la constancia al cerrar la fase (`lib/delivery-constancia.js`, #4517) desde las `notas`/`motivo` del resultado, sin el umbral anti-ruido de 80 chars. Este paso del SKILL produce la constancia **rica y estructurada**; el backstop de pulpo asegura que **nunca** quede un cierre silencioso.
+
 ## Paso 8: Modo `--clean` (limpieza de worktrees)
 
 Si se pasó `--clean` (puede combinarse con `--all` o usarse solo):

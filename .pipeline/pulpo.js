@@ -225,6 +225,9 @@ const { readDeliverableIndex, upsertDeliverableIndex } = require('./lib/delivera
 // cerrar `qa/verificacion` (passed/failed) o como excepción explícita ("no
 // aplica"), y lo persiste vía writeDeliverable (nunca a mano).
 const qaReport = require('./lib/qa-deliverable-report');
+// #4517 — garantía determinística de la CONSTANCIA DE ENTREGA de `delivery` al
+// cerrar `entrega` (lib pura/testeable; misma doctrina que guru/ux).
+const deliveryConstancia = require('./lib/delivery-constancia');
 // #4505 — extractor reutilizable de la sección `## Detalles Técnicos` del body
 // (la receta del arquitecto). Es el MISMO extractor que usa el signoff-gate, por
 // lo que opera sólo sobre el body y jamás arrastra el marker/token del signoff
@@ -5225,6 +5228,47 @@ function brazoBarrido(config) {
                 }
               } catch (e) {
                 log('barrido', `📎 #${issue} ux garantía excepción: ${e.message}`);
+              }
+
+              // #4517 (CA-1/CA-4) — Garantía real de la CONSTANCIA DE ENTREGA de
+              // `delivery` en `entrega`: al cerrar la fase, la constancia (PR,
+              // commits mergeados, gates de merge, issues cerrados, artefacto) es
+              // OBLIGATORIA. Cierra la fila 13 del épico #4255 ("no puede volver a
+              // pasar que delivery cierre la fase sin producir el entregable"). El
+              // fallback genérico de #4466 sólo materializa con notas ≥80 chars;
+              // para `delivery` ese umbral desaparece. Se delega en la lib pura y
+              // testeable `ensureDeliveryConstancia`: si ya hay constancia indexada
+              // (p.ej. la escribió el propio SKILL.md por la Opción A) NO duplica;
+              // si hay notas las materializa sin umbral (CA-1); si no hay contenido
+              // registra una EXCEPCIÓN explícita (CA-4, motivo redactado) — nunca
+              // un cierre silencioso. Best-effort: nunca aborta el ciclo (CA-6).
+              try {
+                if (notifySkill === 'delivery' && fase === 'entrega') {
+                  try {
+                    const dcRes = deliveryConstancia.ensureDeliveryConstancia(issue, {
+                      notas: r.notas, motivo: r.motivo, pipelineRoot: ROOT,
+                    });
+                    if (dcRes.action === 'materialized') {
+                      log('barrido', `📎 #${issue} delivery/entrega constancia garantizada vía writeDeliverable (CA-1)`);
+                    } else if (dcRes.action === 'exception') {
+                      log('barrido', `📎 #${issue} delivery/entrega SIN contenido → excepción registrada (CA-4)`);
+                    }
+                    // Re-barrer: el .md recién escrito debe entrar como adjunto
+                    // pasando por la misma validación (path/magic-bytes/allowlist).
+                    const rescanDel = skillDeliverableAttachments.collectAttachmentsForSkill(
+                      'delivery', issue, fase, { pipelineRoot: ROOT },
+                    );
+                    if (Array.isArray(rescanDel) && rescanDel.length > 0) {
+                      r.attachments = rescanDel;
+                    }
+                  } catch (e) {
+                    // Última red: si ni la excepción se pudo escribir, alertar sin
+                    // abortar el ciclo (garantía best-effort para el notify).
+                    log('barrido', `⚠️ #${issue} delivery/entrega NO se pudo garantizar constancia: ${e.message}`);
+                  }
+                }
+              } catch (e) {
+                log('barrido', `📎 #${issue} delivery garantía excepción: ${e.message}`);
               }
 
               // #4514 (CA-1/CA-2/CA-3) — Garantía real para `security` en
