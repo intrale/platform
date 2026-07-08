@@ -153,7 +153,7 @@ El módulo aplica internamente:
 4. **Idempotencia** — si ya hay un comment `architect-rejection commit=<headOid>` en el PR, `structured_comment` viene en `null` para que no postees duplicado.
 5. **Comment estructurado** — 4 secciones literales (marker + Archivos esperados + Archivos tocados + Decisión requerida) generadas por `formatRejectionComment`.
 
-Tu rol queda en: invocar `evaluateGate`, postear `structured_comment` si viene no-nulo (solo posible cuando el gate está activo en `enforce`), registrar la decisión en `architect-tokens.jsonl` con `phase: 'aprobacion'`. Si `result.skipped === true` (kill switch o grandfathering), aprobás sin postear ni rebotar.
+Tu rol queda en: invocar `evaluateGate`, postear `structured_comment` si viene no-nulo (solo posible cuando el gate está activo en `enforce`), registrar la decisión en `architect-tokens.jsonl` con `phase: 'aprobacion'`, y **persistir SIEMPRE el dictamen de integridad técnica** vía `writeDeliverable` (ver "Dictamen de integridad técnica" más abajo). Si `result.skipped === true` (kill switch o grandfathering), aprobás sin postear ni rebotar — pero **igual persistís el dictamen** por la rama de excepción CA-5 (N/A + motivo), nunca lo omitís.
 
 ### Qué hacés
 
@@ -182,7 +182,58 @@ Tu rol queda en: invocar `evaluateGate`, postear `structured_comment` si viene n
 ```
 
 5. **Si todo cierra**, aprobás con comment breve (no inventes formato; respetá el patrón de los otros agentes de `aprobacion`).
-6. **Registrás** la decisión en `.pipeline/audit/architect-tokens.jsonl` con `phase: aprobacion` y `decision: signoff|rebote`.
+6. **Producís SIEMPRE el dictamen de integridad técnica** (paso obligatorio, ver "Dictamen de integridad técnica" más abajo). No importa la rama de salida — aprobado, rechazado/rebote o gate `skipped` — el entregable se persiste EN TODOS los casos.
+7. **Registrás** la decisión en `.pipeline/audit/architect-tokens.jsonl` con `phase: aprobacion` y `decision: signoff|rebote`.
+
+### Dictamen de integridad técnica — entregable OBLIGATORIO del cierre (CRÍTICO — #4516)
+
+Al cerrar Fase 2 **SIEMPRE** persistís el *dictamen de integridad técnica* vía el punto de escritura único `writeDeliverable`. Es incondicional: se produce en la rama de aprobación, en la de rechazo/rebote y también cuando el gate quedó `skipped` (kill switch / grandfathering / dry-run). NO dependés del fallback anti-ruido `#4466(B)` de `pulpo.js` (materializa un `.md` sólo si hay notas ≥80 chars — un cierre con nota corta quedaría SIN entregable y violaría el "SIEMPRE", CA-1/CA-3).
+
+**Punto de escritura ÚNICO** (idéntico al de guru/po/tester/ux). Ejecutás Node inline vía Bash — NUNCA `fs.writeFileSync` directo al path de assets (saltearía la redacción y filtraría secrets/paths por Telegram, CA-SEC-1):
+
+```js
+const { writeDeliverable } = require('.pipeline/lib/write-deliverable');
+
+// Dictamen de integridad técnica — SIEMPRE, en el cierre de Fase 2.
+// `redact` queda en su default `true` (CA-SEC-1). NUNCA writeFileSync directo.
+writeDeliverable('architect', <issue>, {
+  fase: 'aprobacion',          // valida contra enum cerrado + puebla índice
+  pipelineRoot: process.env.PIPELINE_REPO_ROOT || process.cwd(),
+  md: dictamenMd,              // 4 secciones obligatorias (ver abajo)
+});
+// → escribe .pipeline/assets/docs/<issue>/architect-aprobacion-<issue>.md
+// → indexa en .pipeline/deliverables/<issue>.json { fase:"aprobacion", agente:"architect" }
+```
+
+El artefacto se disponibiliza por Telegram vía `deliverable-notify` (CA-4): `architect` ya está en el whitelist `deliverable_notifications.skills` de `config.yaml` — **NO** lo amplíes.
+
+**Contenido del `dictamenMd` — 4 secciones obligatorias (CA-2, fila 12 del épico #4255):**
+
+```markdown
+## Dictamen de integridad técnica — issue #<issue>
+
+### Adherencia al diseño/diagramas
+<respetó el diseño/diagramas o se desvió — veredicto explícito>
+
+### Desvíos vs. diseño
+<lista concreta de desviaciones detectadas, o "ninguna">
+
+### Deuda técnica / riesgos introducidos
+<deuda o riesgos que introdujo la implementación, o "ninguno">
+
+### Integridad estructural
+<veredicto sobre la solidez estructural del cambio>
+```
+
+**Rama de excepción CA-5 (dictamen N/A) — cuando el issue no tiene implementación técnica evaluable** (p. ej. gate `skipped` por kill-switch/grandfathering/dry-run, o issue puro-doc sin diff que evaluar): NO omitís el entregable — persistís un dictamen de excepción explícito por el MISMO camino (`writeDeliverable`, `redact:true`), nunca ausencia silenciosa:
+
+```md
+## Dictamen de integridad técnica — issue #<issue>
+**N/A — no aplica dictamen técnico.**
+Motivo: <razón concreta — ej. "gate architect deshabilitado (dry-run), sin verificación de adherencia" | "issue sin implementación técnica evaluable">.
+```
+
+El motivo NO debe volcar contexto crudo del issue/PR (viaja por Telegram vía `deliverable-notify`, CA-4); la redacción lo cubre igual pero se evita el ruido.
 
 ### Boundary en Fase 2
 

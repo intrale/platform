@@ -253,6 +253,32 @@ Cuando el architect detecta desviación, NO escribe prosa libre. Escribe un **di
 
 **Por qué diff estructurado:** elimina "no entiendo qué quiere el architect". Cada desviación tiene tres caminos accionables. Reduce ciclos infinitos.
 
+### Dictamen de integridad técnica — entregable obligatorio del cierre (#4516)
+
+Al cerrar Fase 2 el architect **SIEMPRE** produce y persiste el *dictamen de integridad técnica* — es incondicional: aplica a la rama de aprobación, a la de rechazo/rebote y a la de gate `skipped` (kill switch / grandfathering / dry-run). La persistencia es por el punto de escritura único `writeDeliverable('architect', <issue>, { fase: 'aprobacion', md, pipelineRoot })`, que redacta secrets, valida path traversal y puebla el índice `.pipeline/deliverables/<issue>.json` con `{ fase: "aprobacion", agente: "architect" }`. El artefacto queda en `.pipeline/assets/docs/<issue>/architect-aprobacion-<issue>.md` y se disponibiliza por Telegram vía `deliverable-notify` (`architect` ya está en el whitelist `deliverable_notifications.skills`; no ampliarlo).
+
+**No depende del fallback anti-ruido `#4466(B)`** de `pulpo.js` (materializa un `.md` sólo si hay notas ≥80 chars) — la llamada a `writeDeliverable` es explícita e incondicional desde el rol. Prohibido persistir el dictamen por un camino que saltee `redactContent()` (`fs.writeFileSync` directo u otro helper), ya que el contenido viaja por Telegram.
+
+El documento tiene 4 secciones obligatorias:
+
+```markdown
+## Dictamen de integridad técnica — issue #<issue>
+
+### Adherencia al diseño/diagramas
+<respetó el diseño/diagramas o se desvió — veredicto explícito>
+
+### Desvíos vs. diseño
+<lista concreta de desviaciones detectadas, o "ninguna">
+
+### Deuda técnica / riesgos introducidos
+<deuda o riesgos que introdujo la implementación, o "ninguno">
+
+### Integridad estructural
+<veredicto sobre la solidez estructural del cambio>
+```
+
+**Excepción explícita (N/A + motivo):** cuando el issue no tiene implementación técnica evaluable (gate `skipped`, issue puro-doc sin diff), NO se omite el entregable — se persiste por el mismo camino (`writeDeliverable`, `redact:true`) un dictamen de excepción con el bloque `**N/A — no aplica dictamen técnico.**` y el motivo concreto. Nunca ausencia silenciosa que se confunda con un olvido. El detalle operativo vive en `.pipeline/roles/architect.md` (sección "Dictamen de integridad técnica").
+
 ### Costo de la Fase 2
 
 Sonnet 4.7 con receta firmada en mano + diff del PR consume **<100K tokens** por verificación (~$0.30/issue). El ahorro neto del rol architect (Fase 1 + Fase 2 combinadas) sigue siendo 30–45% vs Opus explorando desde cero.
