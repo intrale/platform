@@ -5226,6 +5226,10 @@ function brazoBarrido(config) {
                 yaml: r,
                 title: titleCached,
                 config: notifyCfg,
+                // #4586 — política de audio por tipo de evento. El entregable de
+                // agente es el firehose → texto-only por default (la política lo
+                // resuelve). Sin `audio_policy` en config cae al flag legacy.
+                audioPolicy: (config && config.audio_policy) || null,
                 pipelineRoot: ROOT,
                 telegramQueueDir,
               });

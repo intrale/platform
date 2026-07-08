@@ -920,6 +920,43 @@ telegram_outbound:
 #   3. Si aparecen ruidos no esperados, `kill_switch: true` corta sin reiniciar.
 #   4. Para audio: activar `audio_enabled: true` cuando el texto se valide en
 #      caliente (rollout independiente).
+# =============================================================================
+# #4586 — Política de audio TTS POR TIPO DE EVENTO.
+# =============================================================================
+# Principio: **audio para lo que necesita atención/acción del operador; texto
+# para el firehose informativo.** Reemplaza el flag "global" `audio_enabled`
+# (que adjuntaba audio a TODA notificación de entregable y lo mezclaba con la
+# conversación del operador con el Commander).
+#
+# Motor: `.pipeline/lib/audio-policy.js` (`shouldEmitAudio(policy, evento)`).
+# Lo consulta `deliverable-notify.js` (vía el pulpo, evento `agent_deliverable`
+# y `cua_stage`). Los otros eventos (respuestas del Commander, rejection
+# reports, /status) viven en paths separados y conservan su audio.
+#
+# Flags:
+#   - enabled:       si `false`, apaga TODA la política (sin audio por evento).
+#   - kill_switch:   corte en caliente de TODO el audio (sin reiniciar).
+#   - by_event:      audio por tipo de evento. Si un evento no está declarado
+#                    acá, cae al default del módulo (DEFAULT_BY_EVENT).
+#
+# Eventos:
+#   - commander_reply   → respuestas del Commander al operador (conversación).
+#   - rejection_report  → reportes de rechazo (audio obligatorio por memoria).
+#   - status            → /status y snapshots ejecutivos (audio obligatorio).
+#   - gate_signature    → pedidos de firma de gates (épico #4570, futuro).
+#   - agent_deliverable → notificación de entregable de agente → 🔇 texto-only.
+#   - cua_stage         → stages intermedios de comandos CUA → 🔇 texto-only.
+audio_policy:
+  enabled: true
+  kill_switch: false
+  by_event:
+    commander_reply:   true
+    rejection_report:  true
+    status:            true
+    gate_signature:    true
+    agent_deliverable: false
+    cua_stage:         false
+
 deliverable_notifications:
   enabled: true
   kill_switch: false
@@ -936,11 +973,25 @@ deliverable_notifications:
   # operativo y monitorear audit JSONL para records `kind:'audio'`.
   # EP3-H4 (#3930) paso 2: rollout reanudado — audio del entregable con Edge TTS
   # (stack gratuito EP-1). Corte en caliente sin reiniciar: kill_switch_audio: true.
-  audio_enabled: true
+  # #4586 — el audio del ENTREGABLE DE AGENTE (firehose) se apaga: pasa a ser
+  # texto + documento sin audio, gobernado por la política por tipo de evento
+  # `audio_policy` (más abajo). El flag `audio_enabled` queda en false como
+  # back-compat/defensa (callers/tests sin política caen a este flag); la
+  # política `audio_policy.by_event.agent_deliverable: false` es la fuente de
+  # verdad en producción (el pulpo la pasa a `notify`). Ver docs abajo.
+  audio_enabled: false
   kill_switch_audio: false
   audio_root: ".pipeline/audio/notifications"
   max_tts_chunks: 3
   tts_chunk_timeout_ms: 30000
+
+  # #4586 (Palanca 2a) — topic/hilo separado para el firehose de entregables.
+  # `message_thread_id` (forum topic del grupo) donde se postean las notis de
+  # agentes, aislado de la conversación operador↔Commander (que queda en el
+  # General, sin thread). Default `null` → sin thread = comportamiento de hoy
+  # (rollout gradual: requiere activar "Topics" en el grupo de Telegram y crear
+  # el hilo "🏭 Entregables pipeline"; poner acá el id numérico del topic).
+  telegram_thread_id: null
 
   # =========================================================================
   # #3540 — Adjuntos multimedia (V1: document, image, video, animation).
