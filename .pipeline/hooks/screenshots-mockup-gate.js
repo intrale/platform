@@ -1,11 +1,15 @@
 // =============================================================================
 // screenshots-mockup-gate.js — Hook pre-Ready: exige sección Screenshots & Mockups
 // Issue #3381 · CA-9 / CA-10 / CA-11 / CA-12 / CA-17 / CA-25
+// Issue #4568 · QA visual obligatorio para issues con mockup acordado
 //
 // Qué hace:
 //   - Decide si un issue puede pasar a Ready según su body + labels.
-//   - Aplica solo a issues con `app:client|business|delivery` o `area:pipeline`
-//     que toquen el dashboard.
+//   - Aplica a issues con `app:client|business|delivery`, con `area:pipeline`
+//     que toquen el dashboard, O a CUALQUIER issue que referencie un mockup UI
+//     versionado (imagen bajo `.pipeline/assets/mockups/`), SIN importar el
+//     label de área (issue #4568 · CA-1/CA-2: la exención "tooling interno →
+//     solo QA estructural" NO aplica cuando hay diseño acordado).
 //   - Exige sección `## Screenshots & Mockups` con ≥1 referencia "actual" o
 //     "baseline" (o warning explícito de "sin baseline") y ≥1 referencia
 //     "esperado" o "mockup".
@@ -47,6 +51,28 @@ const PIPELINE_UI_FILE_PATTERNS = Object.freeze([
     'docs/qa/propuesta-dashboard',
 ]);
 
+// -----------------------------------------------------------------------------
+// Detección de mockup UI versionado (issue #4568 · CA-1/CA-2)
+// -----------------------------------------------------------------------------
+//
+// Un rediseño visual con mockup ACORDADO no puede validarse por QA estructural.
+// El escape #4531 pasó porque la exención "tooling interno" se aplicó a nivel de
+// aceptación PO: `area:pipeline`/`area:dashboard` sin `app:*` quedaba exento del
+// gate. La señal de "diseño acordado" es una imagen de mockup VERSIONADA bajo
+// `.pipeline/assets/mockups/` (relativa o vía raw.githubusercontent), sin importar
+// el label de área.
+//
+// Distinción crítica (guru · riesgo #2): NO basta con `test -d mockups/<n>`.
+// Los dirs `mockups/<número>/` son entregables UX de definición de procesos/backend
+// (rol de entregables), NO rediseños de UI del dashboard. Por eso el trigger exige
+// una REFERENCIA A UN ARCHIVO DE IMAGEN (`.png|.svg|.jpg|.jpeg|.webp|.gif`) bajo
+// `mockups/`, no la mera presencia del directorio.
+
+// Cuantificador acotado (≤200 chars sin whitespace) → tiempo lineal, sin ReDoS.
+// Matchea tanto rutas relativas (`.pipeline/assets/mockups/header-mizpa/propuesta.png`)
+// como URLs raw (`.../mockups/header-mizpa/comparacion.png`).
+const VERSIONED_MOCKUP_REGEX = /\bmockups\/[A-Za-z0-9._/-]{1,200}\.(?:png|svg|jpe?g|webp|gif)\b/i;
+
 // Flag de rollout (CA-25). Default OFF.
 const FLAG_ENV_NAME = 'SCREENSHOTS_MOCKUPS_GATE_ENABLED';
 
@@ -82,38 +108,83 @@ function hasAnyLabel(labels, candidates) {
 }
 
 // -----------------------------------------------------------------------------
-// Decisión de scope (CA-9 / CA-11)
+// Detección de mockup versionado en el body (issue #4568)
 // -----------------------------------------------------------------------------
 
 /**
- * ¿El issue está en scope del gate?
+ * ¿El body referencia una IMAGEN de mockup versionada bajo `mockups/`?
  *
- * - app:* → siempre en scope (Caso B Android).
- * - area:pipeline → en scope SOLO si el body menciona archivos del dashboard.
- *   (CA-11: issues de pipeline sin UI quedan exentos.)
- * - Otro → fuera de scope.
+ * Señal de diseño visual acordado (issue #4568 · CA-1/CA-2). Parseo por líneas
+ * con bound por línea (anti-ReDoS, CA-10/17): el cuantificador del regex ya es
+ * acotado, pero además cortamos cada línea a 500 chars antes de testear.
  *
- * @param {{labels: Array, body: string}} item
+ * NO matchea la mera presencia de un dir `mockups/<n>/` (entregable de proceso):
+ * requiere un archivo de imagen concreto.
+ *
+ * @param {string} body
  * @returns {boolean}
  */
-function isInScope(item) {
-    if (!item || typeof item !== 'object') return false;
+function hasVersionedMockup(body) {
+    if (typeof body !== 'string' || body.length === 0) return false;
+    const truncated = body.length > BODY_MAX_BYTES ? body.slice(0, BODY_MAX_BYTES) : body;
+    const lines = truncated.split(/\r?\n/);
+    for (const line of lines) {
+        const bounded = line.length > 500 ? line.slice(0, 500) : line;
+        if (VERSIONED_MOCKUP_REGEX.test(bounded)) return true;
+    }
+    return false;
+}
+
+// -----------------------------------------------------------------------------
+// Decisión de scope (CA-9 / CA-11 · #4568 CA-1)
+// -----------------------------------------------------------------------------
+
+/**
+ * ¿Por qué está en scope el issue? (o null si está fuera)
+ *
+ * - 'app'              → tiene label app:* (Caso B Android).
+ * - 'pipeline-dashboard' → area:pipeline + menciona archivos del dashboard.
+ * - 'versioned-mockup' → referencia una imagen de mockup versionada, sin
+ *                        importar el label de área (#4568 · CA-1).
+ * - null               → fuera de scope.
+ *
+ * El trigger por mockup versionado tiene prioridad porque es el que cierra el
+ * escape #4531: aunque el issue sea `area:dashboard`/`area:pipeline` sin `app:*`,
+ * si hay diseño acordado la aceptación NO puede eximirse de QA visual.
+ *
+ * @param {{labels: Array, body: string}} item
+ * @returns {('app'|'pipeline-dashboard'|'versioned-mockup'|null)}
+ */
+function scopeReason(item) {
+    if (!item || typeof item !== 'object') return null;
     const labels = item.labels;
     const body = typeof item.body === 'string' ? item.body : '';
 
-    if (hasAnyLabel(labels, SCOPE_LABELS_APP)) return true;
+    if (hasVersionedMockup(body)) return 'versioned-mockup';
+
+    if (hasAnyLabel(labels, SCOPE_LABELS_APP)) return 'app';
 
     if (hasAnyLabel(labels, [SCOPE_LABEL_PIPELINE])) {
         // Buscar por archivos de UI dashboard. `body.indexOf` es O(n), seguro
         // contra ReDoS (no es regex). Bound defensivo en BODY_MAX_BYTES.
         const truncated = body.length > BODY_MAX_BYTES ? body.slice(0, BODY_MAX_BYTES) : body;
         for (const pat of PIPELINE_UI_FILE_PATTERNS) {
-            if (truncated.indexOf(pat) !== -1) return true;
+            if (truncated.indexOf(pat) !== -1) return 'pipeline-dashboard';
         }
-        return false;
+        return null;
     }
 
-    return false;
+    return null;
+}
+
+/**
+ * ¿El issue está en scope del gate?
+ *
+ * @param {{labels: Array, body: string}} item
+ * @returns {boolean}
+ */
+function isInScope(item) {
+    return scopeReason(item) !== null;
 }
 
 // -----------------------------------------------------------------------------
@@ -185,12 +256,15 @@ function inspectSection(lines) {
  *   - {gate:'disabled'} si flag OFF (no bloquea, no avisa).
  *   - {gate:'out-of-scope'} si labels no aplican.
  *   - {gate:'opted-out'} si tiene ux:no-visual.
- *   - {gate:'ok'} si tiene sección válida.
- *   - {gate:'block', reason, missing:['actual','expected'|...]} si falta algo.
+ *   - {gate:'ok', scope} si tiene sección válida.
+ *   - {gate:'block', scope, reason, missing:['actual','expected'|...]} si falta algo.
+ *
+ * `scope` indica por qué entró al gate: 'app' | 'pipeline-dashboard' |
+ * 'versioned-mockup' (issue #4568). Útil para telemetría y para el mensaje.
  *
  * @param {{labels: Array, body: string}} item
  * @param {{flag?: string}} [opts] — override env (testing)
- * @returns {{gate: string, reason?: string, missing?: string[]}}
+ * @returns {{gate: string, scope?: string, reason?: string, missing?: string[]}}
  */
 function evaluate(item, opts) {
     const _opts = opts || {};
@@ -207,7 +281,8 @@ function evaluate(item, opts) {
         return { gate: 'opted-out' };
     }
 
-    if (!isInScope(item)) {
+    const scope = scopeReason(item);
+    if (scope === null) {
         return { gate: 'out-of-scope' };
     }
 
@@ -215,6 +290,7 @@ function evaluate(item, opts) {
     if (!lines) {
         return {
             gate: 'block',
+            scope,
             reason: 'missing-section',
             missing: ['## Screenshots & Mockups header'],
         };
@@ -232,10 +308,10 @@ function evaluate(item, opts) {
     }
 
     if (missing.length > 0) {
-        return { gate: 'block', reason: 'incomplete-section', missing };
+        return { gate: 'block', scope, reason: 'incomplete-section', missing };
     }
 
-    return { gate: 'ok' };
+    return { gate: 'ok', scope };
 }
 
 // -----------------------------------------------------------------------------
@@ -247,16 +323,22 @@ const BLOCK_COMMENT_PREFIX = 'Este issue no puede pasar a Ready: falta sección 
 function formatBlockComment(result) {
     if (!result || result.gate !== 'block') return null;
     const missingPretty = (result.missing || []).join(', ');
+    // El motivo de scope cambia el texto: los issues con mockup versionado NO
+    // pueden eximirse por ser "tooling interno" (#4568 · escape #4531).
+    const scopeLine = result.scope === 'versioned-mockup'
+        ? 'El issue referencia un **mockup versionado** (`.pipeline/assets/mockups/…`): hay diseño acordado, así que la exención "tooling interno → solo QA estructural" NO aplica, sin importar el label de área (issue #4568).'
+        : 'El issue está en scope del gate (label `app:*` o `area:pipeline` con archivos del dashboard).';
     return [
         BLOCK_COMMENT_PREFIX + '.',
         '',
         `Faltante: ${missingPretty || result.reason}`,
         '',
-        'El issue está en scope del gate (label `app:*` o `area:pipeline` con archivos del dashboard).',
+        scopeLine,
         '',
         '**Cómo destrabarlo:**',
         '1. Pedile a `/ux` que capture estado actual + genere mockup esperado (workflow: `docs/pipeline/ux-visual-flow.md`).',
-        '2. Si el cambio NO tiene impacto visual, aplicá el label `ux:no-visual` y justificá en un comentario.',
+        '2. La aceptación debe adjuntar un screenshot del render real comparado contra el mockup (usá `screenshot-capture.js` para capturar el dashboard headless).',
+        '3. Si el cambio NO tiene impacto visual, aplicá el label `ux:no-visual` y justificá en un comentario.',
         '',
         'Más detalle: [docs/pipeline/ux-visual-flow.md](https://github.com/intrale/platform/blob/main/docs/pipeline/ux-visual-flow.md).',
     ].join('\n');
@@ -277,11 +359,14 @@ module.exports = {
     ACTUAL_LINE_REGEX,
     MOCKUP_LINE_REGEX,
     SIN_BASELINE_REGEX,
+    VERSIONED_MOCKUP_REGEX,
     BODY_MAX_BYTES,
     BLOCK_COMMENT_PREFIX,
     // helpers
     normalizeLabels,
     hasAnyLabel,
+    hasVersionedMockup,
+    scopeReason,
     isInScope,
     extractSectionLines,
     inspectSection,

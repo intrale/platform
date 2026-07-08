@@ -14,6 +14,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const { spawn } = require('child_process');
+const { getFreePort } = require('./helpers/free-port');
 
 const PIPELINE_SRC = path.resolve(__dirname, '..');
 let tmpDir, child, port, html;
@@ -84,7 +85,7 @@ before(async () => {
         allowed_issues: [700], created_at: '2026-06-15T00:00:00Z',
     }, null, 2));
 
-    port = 3300 + Math.floor((Date.now() % 400));
+    port = await getFreePort();
     child = spawn(process.execPath, [path.join(PIPELINE_SRC, 'dashboard.js')], {
         env: {
             ...process.env,

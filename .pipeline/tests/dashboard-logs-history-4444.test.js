@@ -19,6 +19,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const { spawn } = require('child_process');
+const { getFreePort } = require('./helpers/free-port');
 
 const PIPELINE_SRC = path.join(__dirname, '..');
 const dashboardPath = path.join(PIPELINE_SRC, 'dashboard.js');
@@ -65,7 +66,7 @@ before(async () => {
   // issue legacy 999 skill guru: sólo alias, sin attempt-N.
   fs.writeFileSync(path.join(logsDir, '999-guru.log'), 'log legacy\n');
 
-  port = 3760 + Math.floor((Date.now() % 200));
+  port = await getFreePort();
   child = spawn(process.execPath, [dashboardPath], {
     env: {
       ...process.env,

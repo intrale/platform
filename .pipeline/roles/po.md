@@ -34,6 +34,17 @@ Cualquiera de estas condiciones es suficiente:
   deserialización, firmas de servicios) claramente justificado como tal y con
   `resultado: aprobado` + `modo: structural` en el `.qa`.
 
+> **⚠️ EXCEPCIÓN CRÍTICA — mockup acordado anula la exención (issue #4568, escape #4531).**
+> Si el issue referencia un **mockup UI versionado** (una imagen bajo
+> `.pipeline/assets/mockups/…` — `.png`/`.svg`/`.jpg`/etc. — o un mockup adjunto en el
+> body), la exención "tooling interno → solo QA estructural" **NO aplica, sin importar el
+> label de área** (`area:pipeline`/`area:dashboard`/`area:infra` incluidos). Hay un diseño
+> acordado, así que la aceptación DEBE incluir **QA visual**: un screenshot del render real
+> comparado lado a lado contra el mockup. Un rediseño visual con mockup no se valida por QA
+> estructural (comparar IDs de contrato o "render sin error" NO alcanza).
+> Esto es lo que dejó pasar #4531 (header entregado en 2 filas ≠ mockup de 1 fila).
+> Ver PASO 0.B abajo.
+
 **Cómo actuar en estos casos:**
 1. Leer el `.qa` y verificar que tenga `resultado: aprobado` y `modo: structural` o `modo: api`.
 2. Saltear PASO 0 (evidencia de video) y PASO 1 (ver video completo).
@@ -49,6 +60,29 @@ Cualquiera de estas condiciones es suficiente:
 - Cualquier label `app:client`, `app:business`, `app:delivery`.
 - Cualquier feature/bug con impacto directo en UI o flujo del usuario.
 - Endpoints backend nuevos o modificados que el usuario percibe (`area:backend` sin `qa:skipped`).
+- **Cualquier issue con mockup UI versionado** (imagen bajo `.pipeline/assets/mockups/…` o mockup
+  adjunto en el body), sin importar el `area:*` → requiere QA **visual** (ver PASO 0.B). Nota: no
+  siempre exige video E2E completo; exige como mínimo el screenshot render-vs-mockup.
+
+### PASO 0.B — QA visual obligatorio para issues con mockup (BLOQUEANTE — issue #4568)
+
+Aplica cuando el issue referencia un mockup UI versionado (ver EXCEPCIÓN CRÍTICA arriba).
+La detección automática la hace el gate `screenshots-mockup-gate.js` (dispara por presencia
+de una imagen bajo `mockups/`, no por el label de área). Antes de aprobar:
+
+1. **Localizá el mockup acordado** referenciado en el issue (ej. `.pipeline/assets/mockups/<nombre>/propuesta.png`).
+2. **Obtené el render real** del cambio entregado. Para el dashboard, capturalo headless:
+   ```bash
+   node -e "require('./.pipeline/lib/screenshot-capture').capture({ dashboardPath: '/', outputPath: 'logs/media/render-<issue>.png', allowedRoot: '.pipeline' }).then(r => console.log(r))"
+   ```
+   (respeta la allowlist de paths, el `allowedRoot` anti path-traversal y la URL
+   hardcodeada anti-SSRF del módulo; requiere `puppeteer` instalado en `.pipeline/`).
+3. **Compará lado a lado** el render vs el mockup. No basta con "compila" / "IDs de contrato
+   presentes" / "render sin error": el layout entregado debe **matchear el diseño acordado**
+   (filas, posición, no pisar banners, jerarquía visual).
+4. **Adjuntá la evidencia** (screenshot render + mockup) en el issue/PR antes de aprobar.
+5. Si el render **no coincide** con el mockup → `resultado: rechazado` con el detalle del mismatch
+   (ej. "entregado en 2 filas, mockup = 1 fila"). NO aprobar por QA estructural.
 
 ### PASO 0 — Verificación de evidencia (BLOQUEANTE — sin esto, RECHAZAR)
 

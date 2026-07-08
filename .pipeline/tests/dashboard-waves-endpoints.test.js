@@ -28,6 +28,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const { spawn } = require('child_process');
+const { getFreePort } = require('./helpers/free-port');
 
 const PIPELINE_SRC = path.resolve(__dirname, '..');
 const dashboardPath = path.join(PIPELINE_SRC, 'dashboard.js');
@@ -102,7 +103,7 @@ before(async () => {
     };
     fs.writeFileSync(path.join(tmpDir, 'waves.json'), JSON.stringify(seed, null, 2));
 
-    port = 3500 + Math.floor((Date.now() % 400));
+    port = await getFreePort();
     child = spawn(process.execPath, [dashboardPath], {
         env: {
             ...process.env,
