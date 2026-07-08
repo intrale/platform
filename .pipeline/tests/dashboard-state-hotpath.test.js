@@ -31,6 +31,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const { spawn } = require('child_process');
+const { getFreePort } = require('./helpers/free-port');
 
 const PIPELINE_SRC = path.resolve(__dirname, '..');
 const dashboardPath = path.join(PIPELINE_SRC, 'dashboard.js');
@@ -196,7 +197,7 @@ before(async () => {
   mkdirp(path.join(tmpDir, 'logs'));
   fs.copyFileSync(path.join(PIPELINE_SRC, 'config.yaml'), path.join(tmpDir, 'config.yaml'));
 
-  port = 3400 + Math.floor((Date.now() % 300));
+  port = await getFreePort();
   child = spawn(process.execPath, [dashboardPath], {
     env: {
       ...process.env,
