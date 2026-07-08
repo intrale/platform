@@ -97,6 +97,13 @@ try { restModeWindow = require('./lib/rest-mode-window'); } catch { /* opcional 
 const { isMarkerArtifact } = require('./lib/marker-artifact');
 // #4099 — predicado puro de frescura del title-cache (reactiva TITLE_CACHE_TTL).
 const { needsRefetch: titleCacheNeedsRefetch } = require('./lib/title-cache-freshness');
+// #4566 — clasificación de respuestas/errores de gh: distingue 404 genuino de
+// error transitorio (rate-limit/red/timeout) para NO envenenar el title-cache.
+const {
+    parseGraphqlBody: _ghParseGraphqlBody,
+    applyGraphqlBatch: _ghApplyGraphqlBatch,
+    applyFallbackError: _ghApplyFallbackError,
+} = require('./lib/gh-title-fetch');
 // #4360 — helper puro que filtra la cola por la ola activa. Se requiere a nivel de
 // módulo (no dentro del IIFE del render) porque el test dashboard-header-cola-xss
 // extrae el cuerpo del IIFE y lo corre en un sandbox `vm` sin `require`. El IIFE
@@ -295,36 +302,37 @@ function fetchIssueTitles(issueIds, cache) {
       // Write query to temp file to avoid shell escaping issues on Windows
       fs.writeFileSync(tmpQuery, query);
       const cmd = `${ghPath} api graphql -F query=@${tmpQuery}`;
-      const out = execSync(cmd, { encoding: 'utf8', timeout: 30000, windowsHide: true });
-      const data = JSON.parse(out)?.data?.repository || {};
-      // Negative cache: issues ausentes/null en la respuesta se marcan como notFound
-      // para que no vuelvan a consultarse en cada refresh (evita loop gh api).
-      batch.forEach((id, i) => {
-        const val = data[`i${i}`];
-        if (val?.number) {
-          cache[String(val.number)] = {
-            title: val.title,
-            state: val.state, // #3905 — OPEN | CLOSED
-            labels: (val.labels?.nodes || []).map(l => l.name),
-            fetchedAt: Date.now()
-          };
-        } else {
-          cache[String(id)] = { title: '', labels: [], notFound: true, fetchedAt: Date.now() };
-        }
-      });
-    } catch (e) {
-      // Fallback: fetch one by one
-      for (const id of batch) {
-        try {
-          const cmd2 = `${ghPath} issue view ${id} --repo intrale/platform --json title,labels,state`;
-          const out2 = execSync(cmd2, { encoding: 'utf8', timeout: 10000, windowsHide: true });
-          const iss = JSON.parse(out2);
-          cache[id] = { title: iss.title, state: iss.state, labels: (iss.labels || []).map(l => l.name), fetchedAt: Date.now() };
-        } catch {
-          // Issue no resoluble: cachear como notFound para evitar re-consulta en cada refresh
-          cache[String(id)] = { title: '', labels: [], notFound: true, fetchedAt: Date.now() };
+      // #4566 — gh imprime el body en stdout aun con exit≠0 (errores GraphQL como
+      // RATE_LIMITED / NOT_FOUND). Capturamos stdout del error para clasificar en
+      // vez de asumir que TODO falló y envenenar el cache.
+      let out;
+      try {
+        out = execSync(cmd, { encoding: 'utf8', timeout: 30000, windowsHide: true });
+      } catch (e) {
+        out = (e && e.stdout) ? String(e.stdout) : '';
+      }
+      const body = _ghParseGraphqlBody(out);
+      if (body.ok) {
+        // #4566 — clasifica por issue: bueno / 404 genuino / transitorio (no envenena).
+        _ghApplyGraphqlBatch(cache, batch, body, Date.now());
+      } else {
+        // Body ilegible (fallo real del comando): fallback 1×1.
+        for (const id of batch) {
+          try {
+            const cmd2 = `${ghPath} issue view ${id} --repo intrale/platform --json title,labels,state`;
+            const out2 = execSync(cmd2, { encoding: 'utf8', timeout: 10000, windowsHide: true });
+            const iss = JSON.parse(out2);
+            cache[id] = { title: iss.title, state: iss.state, labels: (iss.labels || []).map(l => l.name), fetchedAt: Date.now() };
+          } catch (e2) {
+            // #4566 — sólo notFound ante evidencia real de 404; error transitorio se reintenta.
+            _ghApplyFallbackError(cache, id, e2, Date.now());
+          }
         }
       }
+    } catch (eOuter) {
+      // #4566 — error inesperado del batch (p.ej. writeFileSync): tratar como
+      // transitorio para NO envenenar (conserva entradas previas buenas).
+      for (const id of batch) _ghApplyFallbackError(cache, id, eOuter, Date.now());
     } finally {
       // Garantiza limpieza del tmp aunque execSync falle (evita acumulación .gh-query-*.graphql)
       try { fs.unlinkSync(tmpQuery); } catch {}
@@ -366,32 +374,32 @@ async function fetchIssueTitlesAsync(issueIds, cache) {
       const query = `{ repository(owner:"intrale",name:"platform") { ${fields} } }`;
       fs.writeFileSync(tmpQuery, query);
       const cmd = `${ghPath} api graphql -F query=@${tmpQuery}`;
-      const out = await _execGhAsync(cmd, 30000);
-      const data = JSON.parse(out)?.data?.repository || {};
-      batch.forEach((id, i) => {
-        const val = data[`i${i}`];
-        if (val?.number) {
-          cache[String(val.number)] = {
-            title: val.title,
-            state: val.state,
-            labels: (val.labels?.nodes || []).map(l => l.name),
-            fetchedAt: Date.now()
-          };
-        } else {
-          cache[String(id)] = { title: '', labels: [], notFound: true, fetchedAt: Date.now() };
-        }
-      });
-    } catch (e) {
-      for (const id of batch) {
-        try {
-          const cmd2 = `${ghPath} issue view ${id} --repo intrale/platform --json title,labels,state`;
-          const out2 = await _execGhAsync(cmd2, 10000);
-          const iss = JSON.parse(out2);
-          cache[id] = { title: iss.title, state: iss.state, labels: (iss.labels || []).map(l => l.name), fetchedAt: Date.now() };
-        } catch {
-          cache[String(id)] = { title: '', labels: [], notFound: true, fetchedAt: Date.now() };
+      // #4566 — mismo criterio que la versión sync: capturar stdout aun con exit≠0
+      // y clasificar (bueno / 404 genuino / transitorio) en vez de envenenar.
+      let out;
+      try {
+        out = await _execGhAsync(cmd, 30000);
+      } catch (e) {
+        out = (e && e.stdout) ? String(e.stdout) : '';
+      }
+      const body = _ghParseGraphqlBody(out);
+      if (body.ok) {
+        _ghApplyGraphqlBatch(cache, batch, body, Date.now());
+      } else {
+        for (const id of batch) {
+          try {
+            const cmd2 = `${ghPath} issue view ${id} --repo intrale/platform --json title,labels,state`;
+            const out2 = await _execGhAsync(cmd2, 10000);
+            const iss = JSON.parse(out2);
+            cache[id] = { title: iss.title, state: iss.state, labels: (iss.labels || []).map(l => l.name), fetchedAt: Date.now() };
+          } catch (e2) {
+            _ghApplyFallbackError(cache, id, e2, Date.now());
+          }
         }
       }
+    } catch (eOuter) {
+      // #4566 — error inesperado del batch: transitorio, no envenenar.
+      for (const id of batch) _ghApplyFallbackError(cache, id, eOuter, Date.now());
     } finally {
       try { fs.unlinkSync(tmpQuery); } catch {}
     }
