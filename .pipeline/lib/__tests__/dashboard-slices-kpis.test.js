@@ -265,8 +265,19 @@ test('CA-5: quotaSlice expone `providers` con anthropic + stubs not_implemented'
             deterministic: {}, // debe filtrarse
         },
     }));
+    // #4598 — el adapter Codex lee `~/.codex/logs_2.sqlite`. Para hacer el test
+    // determinista (no dependa del estado real de la máquina/CI), apuntamos el
+    // log a un path inexistente → el adapter degrada a `no_usage_data`.
+    const prevLogEnv = process.env.CODEX_QUOTA_LOG_PATH;
+    process.env.CODEX_QUOTA_LOG_PATH = path.join(root, 'no-existe-codex.sqlite');
     const slices = freshSlices();
-    const out = slices.quotaSlice({}, { ROOT: root, PIPELINE: pipeline });
+    let out;
+    try {
+        out = slices.quotaSlice({}, { ROOT: root, PIPELINE: pipeline });
+    } finally {
+        if (prevLogEnv === undefined) delete process.env.CODEX_QUOTA_LOG_PATH;
+        else process.env.CODEX_QUOTA_LOG_PATH = prevLogEnv;
+    }
 
     assert.ok(out.providers, 'debe exponer `providers`');
     assert.ok(out.providers.anthropic, 'providers.anthropic existe');
@@ -275,14 +286,14 @@ test('CA-5: quotaSlice expone `providers` con anthropic + stubs not_implemented'
     // #4202 — shape normalizado de cliente: session/weekly con {pct, confidence}.
     assert.ok(out.providers.anthropic.session, 'anthropic.session existe');
     assert.ok(out.providers.anthropic.weekly, 'anthropic.weekly existe');
-    // Stubs no implementados marcan adapterStatus distinto de ok pero NO tiran.
+    // Codex sin log legible → adapterStatus degradado (no 'ok'), NO tira.
     assert.ok(out.providers['openai-codex']);
     assert.notEqual(out.providers['openai-codex'].adapterStatus, 'ok');
-    // #4202 — el pct vive por bucket; codex sin datos → ambos null (no 0% falso).
+    // #4598 — sin dato en ningún bucket → ambos null (nunca 0% falso).
     assert.equal(out.providers['openai-codex'].session.pct, null,
-        'codex sesión "sin dato" — Codex no tiene ventana 5h');
+        'codex sin dato → sesión null (no 0% silencioso)');
     assert.equal(out.providers['openai-codex'].weekly.pct, null,
-        'codex sin snapshot → null, NO 0% (luz verde silenciosa)');
+        'codex sin log → semanal null, NO 0% (luz verde silenciosa)');
     // deterministic NO debe aparecer (filtrado del set declarado).
     assert.equal(out.providers.deterministic, undefined);
     // Compat top-level: campos legacy del banner siguen visibles desde Anthropic.
