@@ -231,6 +231,27 @@ Tenés 45 minutos de timeout, usá el tiempo.
 - [ ] Screenshots del defecto como evidencia
 - [ ] Label `qa:failed` encolado en `.pipeline/servicios/github/pendiente/`
 
+**Campos estructurados del reporte (OBLIGATORIO — #4512):**
+
+Independientemente del veredicto, tu YAML DEBE incluir los campos estructurados
+que alimentan el reporte de QA E2E persistido por el Pulpo (`writeDeliverable` →
+`.pipeline/deliverables/<issue>.json`, adjunto a Telegram). El Pulpo materializa
+el reporte SIEMPRE al cerrar la fase; si no emitís estos campos, el reporte queda
+con secciones degradadas ("no reportado por el agente"):
+
+- [ ] `veredicto`: `passed` | `failed`
+- [ ] `criterios`: lista de `{ id, estado, detalle }` con `estado` ∈ `cumple | falla | no-aplica`
+- [ ] `entorno`: `{ modo, backend, apk }` (`modo` ∈ `android | api | structural`)
+- [ ] `defectos`: lista accionable `{ esperado, paso, donde }`, o `ninguno`
+- [ ] `evidencia`: path/link al video E2E
+- [ ] `screenshot`: path/link al screenshot de la pantalla final
+
+> ⚠️ Estos campos alimentan el REPORTE persistido, NO son labels de bypass del
+> gate. Los labels autoritativos (`qa:skipped`, etc.) siguen viniendo de GitHub
+> — el gate de evidencia NUNCA confía en el YAML del agente para saltearse
+> (CA-5). Poner `modo: api` en el YAML no evita el gate si el preflight
+> determinó `android`.
+
 Si `tts-generate.js` falla (primary + fallback agotados), reintentar una vez. Si sigue fallando, documentar el error
 en el YAML pero **NO omitir el intento** — siempre ejecutar el comando.
 
@@ -239,18 +260,51 @@ en el YAML pero **NO omitir el intento** — siempre ejecutar el comando.
 Si todo OK (video con relato narrado — solo después de completar el checklist):
 ```yaml
 resultado: aprobado
+veredicto: passed
 evidencia: "qa/evidence/<issue>/qa-<issue>.mp4"
 evidencia_frames: "qa/evidence/<issue>/qa-<issue>-frame-*.png"
+screenshot: "qa/evidence/<issue>/qa-<issue>-frame-final.png"
 video_size_kb: <tamano en KB>
 video_duration: "<duracion>"
 tiene_audio: true
+entorno:
+  modo: android            # android | api | structural
+  backend: "https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev"
+  apk: "assembleClientDebug"   # o el flavor probado, si aplica
+criterios:
+  - id: "CA-1"
+    estado: cumple         # cumple | falla | no-aplica
+    detalle: "El login navega al home con el token persistido"
+  - id: "CA-2"
+    estado: cumple
+    detalle: "El listado carga los negocios del backend remoto"
+defectos: ninguno
 ```
 
 Si hay defecto:
 ```yaml
 resultado: rechazado
+veredicto: failed
 motivo: "Descripcion clara del defecto encontrado"
+evidencia: "qa/evidence/<issue>/qa-<issue>.mp4"
+screenshot: "qa/evidence/<issue>/qa-<issue>-defecto.png"
+entorno:
+  modo: android
+  backend: "https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev"
+criterios:
+  - id: "CA-1"
+    estado: falla
+    detalle: "El login queda en la pantalla sin navegar"
+defectos:
+  - esperado: "Tras login, navegar al home"
+    paso: "La app queda en la pantalla de login sin feedback"
+    donde: "qa/evidence/<issue>/qa-<issue>-defecto.png"
 ```
+
+> El Pulpo consume estos campos para armar el reporte de QA E2E estructurado
+> (veredicto en el título, estado por criterio, entorno, defectos accionables y
+> referencias a la evidencia) y lo persiste + notifica automáticamente al cerrar
+> la fase. No tenés que generar el `.md` a mano.
 
 ### Subir evidencia a Drive (OBLIGATORIO antes de aprobar)
 
