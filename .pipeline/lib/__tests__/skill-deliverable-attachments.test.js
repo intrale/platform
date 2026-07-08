@@ -194,13 +194,14 @@ test('CA-1.4 — sourceIsIssueScoped() valida el catálogo completo', () => {
 test('po recolecta documentos en docs/<issue>/ con extensiones permitidas', () => {
     const tmp = mkTmpRoot();
     try {
-        writeFile(tmp.root, '.pipeline/assets/docs/3647/criterios-refinados.md', '# X');
-        writeFile(tmp.root, '.pipeline/assets/docs/3647/diseño-rechazado.exe', 'no');
+        // #4584: los archivos siguen la convención `<skill>-<fase>-<issue>.<ext>`.
+        writeFile(tmp.root, '.pipeline/assets/docs/3647/po-criterios-3647.md', '# X');
+        writeFile(tmp.root, '.pipeline/assets/docs/3647/po-diseño-rechazado.exe', 'no');
 
         const res = helper.collectAttachmentsForSkill('po', 3647, 'criterios', { pipelineRoot: tmp.root });
         assert.equal(res.length, 1);
         assert.equal(res[0].type, 'document');
-        assert.ok(res[0].path.endsWith('criterios-refinados.md'));
+        assert.ok(res[0].path.endsWith('po-criterios-3647.md'));
     } finally {
         tmp.cleanup();
     }
@@ -209,7 +210,7 @@ test('po recolecta documentos en docs/<issue>/ con extensiones permitidas', () =
 test('guru recolecta análisis en docs/<issue>/', () => {
     const tmp = mkTmpRoot();
     try {
-        writeFile(tmp.root, '.pipeline/assets/docs/3647/analisis-tecnico.pdf', '%PDF');
+        writeFile(tmp.root, '.pipeline/assets/docs/3647/guru-analisis-3647.pdf', '%PDF');
         const res = helper.collectAttachmentsForSkill('guru', 3647, 'analisis', { pipelineRoot: tmp.root });
         assert.equal(res.length, 1);
         assert.equal(res[0].type, 'document');
@@ -340,7 +341,8 @@ for (const { skill, descriptor } of DOC_PROFILES) {
     test(`CA-1 — ${skill} recolecta 1 documento en docs/<issue>/`, () => {
         const tmp = mkTmpRoot();
         try {
-            writeFile(tmp.root, `.pipeline/assets/docs/3928/resumen-${skill}.md`, '# resumen');
+            // #4584: filename con prefijo `<skill>-` (convención de write-deliverable).
+            writeFile(tmp.root, `.pipeline/assets/docs/3928/${skill}-resumen.md`, '# resumen');
             const res = helper.collectAttachmentsForSkill(skill, 3928, 'dev', { pipelineRoot: tmp.root });
             assert.equal(res.length, 1, `${skill}: esperaba 1 adjunto`);
             assert.equal(res[0].type, 'document');
@@ -355,7 +357,7 @@ for (const { skill, descriptor } of DOC_PROFILES) {
     test(`CA-1 — ${skill} también acepta .pdf`, () => {
         const tmp = mkTmpRoot();
         try {
-            writeFile(tmp.root, `.pipeline/assets/docs/3928/informe-${skill}.pdf`, '%PDF');
+            writeFile(tmp.root, `.pipeline/assets/docs/3928/${skill}-informe.pdf`, '%PDF');
             const res = helper.collectAttachmentsForSkill(skill, 3928, 'dev', { pipelineRoot: tmp.root });
             assert.equal(res.length, 1);
             assert.equal(res[0].type, 'document');
@@ -406,8 +408,8 @@ test('CA-2 — qa con solo video devuelve solo el video', () => {
 test('CA-6 (SEC-2) — tester con docs de 3928 y 3929 devuelve solo los de 3928', () => {
     const tmp = mkTmpRoot();
     try {
-        writeFile(tmp.root, '.pipeline/assets/docs/3928/cobertura.md', 'A');
-        writeFile(tmp.root, '.pipeline/assets/docs/3929/cobertura.md', 'B');
+        writeFile(tmp.root, '.pipeline/assets/docs/3928/tester-cobertura.md', 'A');
+        writeFile(tmp.root, '.pipeline/assets/docs/3929/tester-cobertura.md', 'B');
         const res = helper.collectAttachmentsForSkill('tester', 3928, 'verificacion', { pipelineRoot: tmp.root });
         assert.equal(res.length, 1);
         assert.ok(res[0].path.includes('3928'), `cross-contamination: ${res[0].path}`);
@@ -545,7 +547,9 @@ test('#4255 — manifest tiene prioridad sobre la inferencia del filename', () =
 test('#4255 — sin manifest ni patrón, cae al phase hint recibido', () => {
     const tmp = mkTmpRoot();
     try {
-        writeFile(tmp.root, '.pipeline/assets/docs/321/analisis-tecnico.md', 'x');
+        // #4584: token `guru-` presente pero SIN el patrón `<skill>-<fase>-<issue>`
+        // (no termina en `-321`), así inferFaseFromName devuelve null y cae al hint.
+        writeFile(tmp.root, '.pipeline/assets/docs/321/guru-dossier.md', 'x');
         const res = helper.collectAttachmentsForSkill('guru', 321, 'analisis', { pipelineRoot: tmp.root });
         assert.equal(res.length, 1);
         assert.equal(res[0].fase, 'analisis');
@@ -611,6 +615,99 @@ test('#4514 — buildManifestSensibleMap devuelve mapa vacío sin índice (best-
         const map = helper.__internals.buildManifestSensibleMap('4514', tmp.root);
         assert.ok(map instanceof Map);
         assert.equal(map.size, 0);
+    } finally {
+        tmp.cleanup();
+    }
+});
+
+// =============================================================================
+// #4584 — Regresión: entregables NO se multiplican. Con varios skills dejando
+// su `.md` en la MISMA carpeta `.pipeline/assets/docs/<issue>/`, cada notify
+// resuelve SÓLO su propio archivo (token `<skill>-`), nunca los ajenos.
+// Reproduce el escape real de #4523 (architect re-envió 4 archivos ajenos).
+// =============================================================================
+
+// Fixture exacto del incidente #4523: 4 entregables de fases previas conviven en
+// la carpeta del issue antes de que corran las fases tardías.
+function seedMultiSkillFolder(root, issue) {
+    writeFile(root, `.pipeline/assets/docs/${issue}/build-build-${issue}.md`, '# build');
+    writeFile(root, `.pipeline/assets/docs/${issue}/guru-validacion-${issue}.md`, '# guru');
+    writeFile(root, `.pipeline/assets/docs/${issue}/security-verificacion-${issue}.md`, '# sec');
+    writeFile(root, `.pipeline/assets/docs/${issue}/tester-verificacion-${issue}.md`, '# tester');
+}
+
+test('#4584 CA-3 — architect con 4 entregables ajenos en la carpeta resuelve 0 (entrega por comentario)', () => {
+    const tmp = mkTmpRoot();
+    try {
+        seedMultiSkillFolder(tmp.root, 4523);
+        // architect entrega su receta como comentario; no hay `architect-*.md`.
+        const res = helper.collectAttachmentsForSkill('architect', 4523, 'aprobacion', { pipelineRoot: tmp.root });
+        assert.deepEqual(res, [], `architect NO debe re-enviar entregables ajenos, vino ${JSON.stringify(res.map(r => r.path))}`);
+    } finally {
+        tmp.cleanup();
+    }
+});
+
+test('#4584 CA-3 — architect con su propio archivo resuelve exactamente 1 (el suyo)', () => {
+    const tmp = mkTmpRoot();
+    try {
+        seedMultiSkillFolder(tmp.root, 4523);
+        // El fallback de pulpo.js escribe `architect-<fase>-<issue>.md`.
+        writeFile(tmp.root, '.pipeline/assets/docs/4523/architect-aprobacion-4523.md', '# receta');
+        const res = helper.collectAttachmentsForSkill('architect', 4523, 'aprobacion', { pipelineRoot: tmp.root });
+        assert.equal(res.length, 1, `architect debe resolver SOLO su archivo, vino ${JSON.stringify(res.map(r => r.path))}`);
+        assert.ok(res[0].path.endsWith('architect-aprobacion-4523.md'));
+    } finally {
+        tmp.cleanup();
+    }
+});
+
+test('#4584 CA-3 — cada skill en una carpeta multi-skill resuelve exactamente su propio archivo', () => {
+    const tmp = mkTmpRoot();
+    try {
+        seedMultiSkillFolder(tmp.root, 4523);
+        const expected = {
+            build: 'build-build-4523.md',
+            guru: 'guru-validacion-4523.md',
+            security: 'security-verificacion-4523.md',
+            tester: 'tester-verificacion-4523.md',
+        };
+        for (const [skill, filename] of Object.entries(expected)) {
+            const res = helper.collectAttachmentsForSkill(skill, 4523, 'verificacion', { pipelineRoot: tmp.root });
+            assert.equal(res.length, 1, `${skill}: esperaba 1 adjunto propio, vino ${res.length} (${JSON.stringify(res.map(r => r.path))})`);
+            assert.ok(res[0].path.endsWith(filename), `${skill}: esperaba ${filename}, vino ${res[0].path}`);
+        }
+    } finally {
+        tmp.cleanup();
+    }
+});
+
+test('#4584 CA-3 — los 4 devs comparten carpeta y NO se pisan entre sí (token completo <skill>-)', () => {
+    const tmp = mkTmpRoot();
+    try {
+        const issue = 4600;
+        writeFile(tmp.root, `.pipeline/assets/docs/${issue}/backend-dev-dev-${issue}.md`, '# be');
+        writeFile(tmp.root, `.pipeline/assets/docs/${issue}/android-dev-dev-${issue}.md`, '# an');
+        writeFile(tmp.root, `.pipeline/assets/docs/${issue}/web-dev-dev-${issue}.md`, '# we');
+        writeFile(tmp.root, `.pipeline/assets/docs/${issue}/pipeline-dev-dev-${issue}.md`, '# pi');
+        for (const skill of ['backend-dev', 'android-dev', 'web-dev', 'pipeline-dev']) {
+            const res = helper.collectAttachmentsForSkill(skill, issue, 'dev', { pipelineRoot: tmp.root });
+            assert.equal(res.length, 1, `${skill}: colisión entre devs, vino ${JSON.stringify(res.map(r => r.path))}`);
+            assert.ok(res[0].path.endsWith(`${skill}-dev-${issue}.md`), `${skill}: vino ${res[0].path}`);
+        }
+    } finally {
+        tmp.cleanup();
+    }
+});
+
+test('#4584 — token corto no cae en falso positivo por substring (po vs qa-reporte)', () => {
+    const tmp = mkTmpRoot();
+    try {
+        // `qa-reporte.pdf` contiene la subcadena "po" (rePOrte); el token `po-`
+        // (con guión de cierre) evita el falso positivo.
+        writeFile(tmp.root, '.pipeline/assets/docs/4601/qa-reporte.pdf', '%PDF');
+        const res = helper.collectAttachmentsForSkill('po', 4601, 'aprobacion', { pipelineRoot: tmp.root });
+        assert.deepEqual(res, [], `po NO debe agarrar el reporte de qa por substring, vino ${JSON.stringify(res.map(r => r.path))}`);
     } finally {
         tmp.cleanup();
     }

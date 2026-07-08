@@ -47,11 +47,22 @@ const path = require('node:path');
 // del path — esto resulta en directorios issue-scoped en disco (ej:
 // `qa/evidence/3647/`).
 //
-// `nameMustInclude` lista substrings que el filename DEBE contener. Si la lista
-// es no vacía, **se exige siempre que aparezca `{issue}`** (CA-1.4) — si el
-// directorio padre ya es issue-scoped (`{issue}` en `dirTemplate`), el check
+// `nameMustInclude` lista substrings que el filename DEBE contener (TODOS). Si
+// el directorio padre ya es issue-scoped (`{issue}` en `dirTemplate`), el check
 // del filename se relaja a "no exigir {issue} en el name". Sino, exigir
 // `{issue}` en filename es obligatorio.
+//
+// #4584 — Filtrado por skill: los perfiles documentales apuntan TODOS a la misma
+// carpeta `.pipeline/assets/docs/{issue}/`, donde conviven los `.md`/`.pdf` de
+// varias fases/skills (`build-build-N.md`, `guru-validacion-N.md`, …). Con
+// `nameMustInclude: []` el helper barría TODOS y cada skill re-enviaba los
+// entregables ajenos bajo su nombre (hasta 4-5 mensajes por uno en Telegram).
+// El fix puebla el token propio de cada skill como prefijo `<skill>-` (la
+// convención de `write-deliverable.js` es `<skill>-<fase>-<issue>.<ext>` o
+// `<skill>-<issue>.<ext>`). Se usa el nombre COMPLETO del skill (`backend-dev-`,
+// no `dev-`) para que los devs no colisionen entre sí, y el guión de cierre
+// evita falsos positivos por substring (ej. token `po` matchearía `qa-rePOrte`).
+// Skills que entregan por comentario (architect) resuelven 0 adjuntos, correcto.
 //
 // `formats` filtra por extensión (lowercased).
 //
@@ -95,16 +106,19 @@ const SKILL_SOURCES = Object.freeze({
     ],
     po: [
         // Documentos del PO — markdown / PDF con criterios refinados.
+        // #4584: `nameMustInclude: ['po-']` — filtra por el token propio del skill
+        // (prefijo `<skill>-` de la convención `<skill>-<fase>-<issue>.<ext>`) para
+        // NO barrer los `.md`/`.pdf` de otros skills en la misma carpeta del issue.
         {
             dirTemplate: '.pipeline/assets/docs/{issue}',
-            nameMustInclude: [],
+            nameMustInclude: ['po-'],
             formats: ['.pdf', '.md'],
             type: 'document',
             descriptorHint: 'criterios',
         },
         {
             dirTemplate: '.pipeline/assets/docs',
-            nameMustInclude: ['{issue}'],
+            nameMustInclude: ['{issue}', 'po-'],
             formats: ['.pdf', '.md'],
             type: 'document',
             descriptorHint: 'criterios',
@@ -113,14 +127,14 @@ const SKILL_SOURCES = Object.freeze({
     guru: [
         {
             dirTemplate: '.pipeline/assets/docs/{issue}',
-            nameMustInclude: [],
+            nameMustInclude: ['guru-'],
             formats: ['.pdf', '.md'],
             type: 'document',
             descriptorHint: 'analisis',
         },
         {
             dirTemplate: '.pipeline/assets/docs',
-            nameMustInclude: ['{issue}'],
+            nameMustInclude: ['{issue}', 'guru-'],
             formats: ['.pdf', '.md'],
             type: 'document',
             descriptorHint: 'analisis',
@@ -129,14 +143,14 @@ const SKILL_SOURCES = Object.freeze({
     planner: [
         {
             dirTemplate: '.pipeline/assets/docs/{issue}',
-            nameMustInclude: [],
+            nameMustInclude: ['planner-'],
             formats: ['.pdf', '.md', '.png', '.svg'],
             type: 'document',
             descriptorHint: 'planner',
         },
         {
             dirTemplate: '.pipeline/assets/docs',
-            nameMustInclude: ['{issue}'],
+            nameMustInclude: ['{issue}', 'planner-'],
             formats: ['.pdf', '.md'],
             type: 'document',
             descriptorHint: 'planner',
@@ -172,7 +186,7 @@ const SKILL_SOURCES = Object.freeze({
         },
         {
             dirTemplate: '.pipeline/assets/docs/{issue}',
-            nameMustInclude: [],
+            nameMustInclude: ['qa-'],
             formats: ['.pdf', '.md'],
             type: 'document',
             descriptorHint: 'qa-reporte',
@@ -181,7 +195,7 @@ const SKILL_SOURCES = Object.freeze({
     tester: [
         {
             dirTemplate: '.pipeline/assets/docs/{issue}',
-            nameMustInclude: [],
+            nameMustInclude: ['tester-'],
             formats: ['.pdf', '.md'],
             type: 'document',
             descriptorHint: 'cobertura',
@@ -190,7 +204,7 @@ const SKILL_SOURCES = Object.freeze({
     security: [
         {
             dirTemplate: '.pipeline/assets/docs/{issue}',
-            nameMustInclude: [],
+            nameMustInclude: ['security-'],
             formats: ['.pdf', '.md'],
             type: 'document',
             descriptorHint: 'seguridad',
@@ -200,25 +214,33 @@ const SKILL_SOURCES = Object.freeze({
     build: [
         {
             dirTemplate: '.pipeline/assets/docs/{issue}',
-            nameMustInclude: [],
+            nameMustInclude: ['build-'],
             formats: ['.pdf', '.md'],
             type: 'document',
             descriptorHint: 'build',
         },
     ],
     architect: [
+        // #4584: el architect entrega su receta como COMENTARIO del issue
+        // (`<!-- architect-signoff -->`), no como archivo. Con `['architect-']`
+        // sólo matchea SU propio `architect-<fase>-<issue>.md` (el que escribe el
+        // fallback de pulpo.js). Si no existe, resuelve 0 adjuntos — que es lo
+        // correcto: antes barría los N entregables ajenos de la carpeta del issue.
         {
             dirTemplate: '.pipeline/assets/docs/{issue}',
-            nameMustInclude: [],
+            nameMustInclude: ['architect-'],
             formats: ['.pdf', '.md'],
             type: 'document',
             descriptorHint: 'receta',
         },
     ],
+    // #4584: los 4 devs comparten `descriptorHint: 'dev'` y la misma carpeta.
+    // El token DEBE ser el nombre completo del skill (`backend-dev-`, `android-dev-`,
+    // …) — NO `dev-` — para que no colisionen entre sí (todos terminan en `-dev`).
     'backend-dev': [
         {
             dirTemplate: '.pipeline/assets/docs/{issue}',
-            nameMustInclude: [],
+            nameMustInclude: ['backend-dev-'],
             formats: ['.md', '.pdf'],
             type: 'document',
             descriptorHint: 'dev',
@@ -227,7 +249,7 @@ const SKILL_SOURCES = Object.freeze({
     'android-dev': [
         {
             dirTemplate: '.pipeline/assets/docs/{issue}',
-            nameMustInclude: [],
+            nameMustInclude: ['android-dev-'],
             formats: ['.md', '.pdf'],
             type: 'document',
             descriptorHint: 'dev',
@@ -236,7 +258,7 @@ const SKILL_SOURCES = Object.freeze({
     'web-dev': [
         {
             dirTemplate: '.pipeline/assets/docs/{issue}',
-            nameMustInclude: [],
+            nameMustInclude: ['web-dev-'],
             formats: ['.md', '.pdf'],
             type: 'document',
             descriptorHint: 'dev',
@@ -245,7 +267,7 @@ const SKILL_SOURCES = Object.freeze({
     'pipeline-dev': [
         {
             dirTemplate: '.pipeline/assets/docs/{issue}',
-            nameMustInclude: [],
+            nameMustInclude: ['pipeline-dev-'],
             formats: ['.md', '.pdf'],
             type: 'document',
             descriptorHint: 'dev',
@@ -260,7 +282,7 @@ const SKILL_SOURCES = Object.freeze({
     review: [
         {
             dirTemplate: '.pipeline/assets/docs/{issue}',
-            nameMustInclude: [],
+            nameMustInclude: ['review-'],
             formats: ['.md', '.pdf'],
             type: 'document',
             descriptorHint: 'review',
@@ -274,7 +296,7 @@ const SKILL_SOURCES = Object.freeze({
     delivery: [
         {
             dirTemplate: '.pipeline/assets/docs/{issue}',
-            nameMustInclude: [],
+            nameMustInclude: ['delivery-'],
             formats: ['.md', '.pdf'],
             type: 'document',
             descriptorHint: 'entrega',
