@@ -19,15 +19,39 @@ Los devs codean contra un mockup concreto y el PO/QA validan en aprobación con 
 
 ## Cuándo aplica el gate
 
-| Condición | En scope |
-|---|---|
-| Issue con label `app:client`, `app:business` o `app:delivery` | ✅ Sí (Caso B Android) |
-| Issue con label `area:pipeline` que toca `dashboard-v2.js`, `.pipeline/dashboard.js` o `.pipeline/public/` | ✅ Sí (Caso A Dashboard) |
-| Issue con label `area:pipeline` sin tocar archivos del dashboard (ej. hooks, scripts sin UI) | ❌ No (exento) |
-| Issue con label `ux:no-visual` aplicado por el dev | ❌ No (opt-out justificado) |
-| Issue sin labels app/pipeline | ❌ No |
+| Condición | En scope | `scope` |
+|---|---|---|
+| Issue con label `app:client`, `app:business` o `app:delivery` | ✅ Sí (Caso B Android) | `app` |
+| Issue con label `area:pipeline` que toca `dashboard-v2.js`, `.pipeline/dashboard.js` o `.pipeline/public/` | ✅ Sí (Caso A Dashboard) | `pipeline-dashboard` |
+| **Issue que referencia un mockup UI versionado** (imagen `.png`/`.svg`/`.jpg`/… bajo `.pipeline/assets/mockups/…`), **sin importar el `area:*`** | ✅ Sí (issue #4568) | `versioned-mockup` |
+| Issue con label `area:pipeline` sin tocar archivos del dashboard **ni** referenciar mockup (ej. hooks, scripts sin UI) | ❌ No (exento) | — |
+| Issue con label `ux:no-visual` aplicado por el dev | ❌ No (opt-out justificado) | — |
+| Issue sin labels app/pipeline ni mockup versionado | ❌ No | — |
 
 El gate **no bloquea** si `SCREENSHOTS_MOCKUPS_GATE_ENABLED` no está en `1` — el rollout es gradual.
+
+### Trigger por mockup versionado (issue #4568 — cierra el escape #4531)
+
+El escape **#4531** (rediseño del encabezado MIZPÁ) se cerró con `qa:passed` pero el header
+entregado **no matcheaba el mockup acordado** (`header-mizpa/propuesta.png`): quedó en 2 filas
+pisando el banner, exactamente el bug que debía eliminar. Causa raíz: la aceptación PO lo
+clasificó como *"tooling interno → aceptación por revisión de código + QA estructural, sin video"*
+porque era `area:dashboard`/`area:pipeline` **sin `app:*`**. Nunca se comparó el render contra el
+mockup adjunto.
+
+Para cerrar el patrón, el gate agrega un tercer trigger de scope **independiente del label de
+área**: si el body del issue referencia una **imagen de mockup versionada** bajo `mockups/`, entra
+en scope y exige la sección `## Screenshots & Mockups` (render-vs-mockup) igual que un issue de app.
+
+- **Señal precisa (evita falsos positivos):** el trigger exige una **referencia a un archivo de
+  imagen** (`.png`/`.svg`/`.jpg`/`.jpeg`/`.webp`/`.gif`) bajo `mockups/`, no la mera presencia de un
+  directorio. Los dirs `mockups/<número>/` son entregables UX de definición de procesos/backend (rol
+  de entregables), **no** rediseños de UI del dashboard → NO disparan el gate.
+- **Anti-ReDoS:** la detección (`hasVersionedMockup()`) parsea por líneas con bound por línea y usa
+  un regex de cuantificador acotado. Un body de 65k chars termina en <100 ms (mismo criterio que #3381).
+- **Implicancia en aceptación PO:** la exención "tooling interno → solo QA estructural" **deja de
+  aplicar** cuando hay diseño acordado. Ver `.pipeline/roles/po.md` → PASO 0.A (EXCEPCIÓN CRÍTICA) y
+  PASO 0.B (QA visual obligatorio). La aceptación debe adjuntar el screenshot render-vs-mockup.
 
 ## Los dos casos
 

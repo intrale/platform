@@ -71,6 +71,95 @@ test('scope CA-11: area:pipeline CON dashboard-v2.js → en scope', () => {
 });
 
 // -----------------------------------------------------------------------------
+// Scope por mockup versionado (issue #4568 · CA-1/CA-2) — cierra escape #4531
+// -----------------------------------------------------------------------------
+
+test('mockup versionado: issue area:dashboard SIN app:* con imagen de mockup → en scope', () => {
+    // Reproduce el escape #4531: label de área interna, sin app:*, pero con
+    // un mockup PNG versionado en el body. Antes quedaba out-of-scope.
+    const body = [
+        '## Comparativa (actual vs propuesta)',
+        '![Propuesta](https://raw.githubusercontent.com/intrale/platform/dc0e7f6/.pipeline/assets/mockups/header-mizpa/propuesta.png)',
+    ].join('\n');
+    const r = gate.evaluate({
+        labels: [{ name: 'area:dashboard' }, { name: 'area:pipeline' }],
+        body,
+    }, { flag: '1' });
+    assert.equal(r.gate, 'block'); // en scope pero sin sección → block
+    assert.equal(r.scope, 'versioned-mockup');
+});
+
+test('mockup versionado: ruta relativa .pipeline/assets/mockups/*.svg → en scope', () => {
+    const body = 'Mockup versionado en `.pipeline/assets/mockups/sysstatus/propuesta-compacta.svg`.';
+    const r = gate.evaluate({ labels: [{ name: 'bug' }], body }, { flag: '1' });
+    assert.equal(r.gate, 'block');
+    assert.equal(r.scope, 'versioned-mockup');
+});
+
+test('mockup versionado: dir de proceso mockups/<n>/ SIN imagen → NO dispara (guru riesgo #2)', () => {
+    // Los dirs mockups/4502/ son entregables UX de proceso/backend, no rediseños
+    // de UI. Referenciar el dir (sin archivo de imagen) NO debe activar el gate.
+    const body = 'Entregables UX en `.pipeline/assets/mockups/4502/` (definición de proceso).';
+    const r = gate.evaluate({ labels: [{ name: 'area:infra' }], body }, { flag: '1' });
+    assert.equal(r.gate, 'out-of-scope');
+});
+
+test('mockup versionado: .md narrativo bajo mockups/ NO dispara (no es imagen)', () => {
+    const body = 'Ver `.pipeline/assets/mockups/narrativa-roadmap-olas.md`.';
+    const r = gate.evaluate({ labels: [{ name: 'area:pipeline' }], body }, { flag: '1' });
+    assert.equal(r.gate, 'out-of-scope');
+});
+
+test('mockup versionado: sección completa con mockup → ok con scope versioned-mockup', () => {
+    const body = [
+        '![propuesta](https://raw.githubusercontent.com/intrale/platform/abc/.pipeline/assets/mockups/header-mizpa/propuesta.png)',
+        '## Screenshots & Mockups',
+        '- estado actual: ![actual](url)',
+        '- estado esperado (mockup): ![mockup](url)',
+    ].join('\n');
+    const r = gate.evaluate({ labels: [{ name: 'area:dashboard' }], body }, { flag: '1' });
+    assert.equal(r.gate, 'ok');
+    assert.equal(r.scope, 'versioned-mockup');
+});
+
+test('mockup versionado: opt-out ux:no-visual sigue teniendo prioridad', () => {
+    const body = '![m](https://x/.pipeline/assets/mockups/foo/bar.png)';
+    const r = gate.evaluate({
+        labels: [{ name: 'area:dashboard' }, { name: 'ux:no-visual' }],
+        body,
+    }, { flag: '1' });
+    assert.equal(r.gate, 'opted-out');
+});
+
+test('hasVersionedMockup: helper aislado', () => {
+    assert.equal(gate.hasVersionedMockup('foo mockups/x/y.png bar'), true);
+    assert.equal(gate.hasVersionedMockup('foo mockups/x/y.PNG bar'), true);
+    assert.equal(gate.hasVersionedMockup('foo mockups/4502/ dir'), false);
+    assert.equal(gate.hasVersionedMockup('foo mockups/x/y.md'), false);
+    assert.equal(gate.hasVersionedMockup('sin mockup'), false);
+    assert.equal(gate.hasVersionedMockup(''), false);
+    assert.equal(gate.hasVersionedMockup(null), false);
+});
+
+test('scopeReason: prioridad versioned-mockup sobre app/pipeline', () => {
+    const r = gate.scopeReason({
+        labels: [{ name: 'app:client' }],
+        body: '![m](mockups/x/y.png)',
+    });
+    assert.equal(r, 'versioned-mockup');
+});
+
+test('mockup versionado formatBlockComment menciona exención NO aplica', () => {
+    const text = gate.formatBlockComment({
+        gate: 'block', scope: 'versioned-mockup',
+        reason: 'missing-section', missing: ['## Screenshots & Mockups header'],
+    });
+    assert.match(text, /mockup versionado/i);
+    assert.match(text, /tooling interno/i);
+    assert.match(text, /render real/i);
+});
+
+// -----------------------------------------------------------------------------
 // Opt-out (CA-12)
 // -----------------------------------------------------------------------------
 
@@ -187,6 +276,16 @@ test('anti-ReDoS: body de 65k chars termina en <100ms', () => {
     assert.ok(elapsed < 100, `evaluate tomó ${elapsed}ms, esperado <100ms`);
     // Resultado funcional: sin header explícito → block missing-section.
     assert.equal(r.gate, 'block');
+});
+
+test('anti-ReDoS: hasVersionedMockup con línea de 20k chars "mockups/aaaa…" no congela', () => {
+    // Intenta forzar backtracking del cuantificador acotado del regex.
+    const line = 'mockups/' + 'a'.repeat(20000) + 'no-ext';
+    const t0 = Date.now();
+    const r = gate.hasVersionedMockup(line);
+    const elapsed = Date.now() - t0;
+    assert.ok(elapsed < 100, `hasVersionedMockup tomó ${elapsed}ms`);
+    assert.equal(r, false); // sin extensión de imagen → no matchea
 });
 
 test('anti-ReDoS: línea individual de 10k chars no congela', () => {
