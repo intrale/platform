@@ -824,6 +824,10 @@ function createCuaEmitter(opts) {
             result = mod.notifyCua({
                 entregable,
                 config: cfg,
+                // #4586 — política de audio por tipo de evento (stage CUA →
+                // texto-only por default). Si el caller no la provee, `notifyCua`
+                // cae al flag legacy `audio_enabled` del bloque `cua`.
+                audioPolicy: o.audioPolicy || null,
                 pipelineRoot: o.pipelineRoot,
                 telegramQueueDir: o.telegramQueueDir,
                 deps: o.deps,

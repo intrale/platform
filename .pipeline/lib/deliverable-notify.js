@@ -58,6 +58,11 @@ const {
 // side-effects que viven en la capa impura (`notify`), no en `buildPreview`.
 const waveResolver = require('./wave-resolver');
 const gitOps = require('../skills-deterministicos/lib/git-ops');
+// #4586 — política de audio TTS por tipo de evento. La notificación de
+// entregable de agente (este módulo) es el FIREHOSE: por default va sin audio,
+// mientras que respuestas del Commander, rejection reports y /status conservan
+// su audio (paths separados). Ver `.pipeline/lib/audio-policy.js`.
+const audioPolicy = require('./audio-policy');
 
 // -----------------------------------------------------------------------------
 // CA-UX-2 — Emojis canónicos fijos por skill. Cualquier skill no listado cae
@@ -235,6 +240,45 @@ function emojiForSkill(skill) {
  */
 function contentHash(text) {
     return crypto.createHash('sha256').update(String(text || ''), 'utf8').digest('hex');
+}
+
+/**
+ * #4586 — Resuelve si un evento debe emitir audio TTS.
+ *
+ * Precedencia:
+ *   1. Si el caller pasó `policy` (bloque `audio_policy` de config), esa es la
+ *      fuente de verdad — se delega a `audioPolicy.shouldEmitAudio`.
+ *   2. Si NO hay política (callers/tests legacy), se cae al flag histórico
+ *      `cfg.audio_enabled` + `cfg.kill_switch_audio` scoped a este bloque de
+ *      config. Esto preserva el comportamiento y los tests previos al #4586.
+ *
+ * @param {object} cfg - bloque de config del canal (deliverable_notifications | cua).
+ * @param {object|null|undefined} policy - bloque `audio_policy` global (opcional).
+ * @param {string} eventType - uno de audioPolicy.EVENT.*
+ * @returns {boolean}
+ */
+function resolveEventAudio(cfg, policy, eventType) {
+    if (policy && typeof policy === 'object') {
+        return audioPolicy.shouldEmitAudio(policy, eventType);
+    }
+    const c = cfg || {};
+    return c.audio_enabled === true && c.kill_switch_audio !== true;
+}
+
+/**
+ * #4586 (Palanca 2a) — Normaliza el `telegram_thread_id` del config a un entero
+ * positivo o `null`. Un `message_thread_id` inválido (0, negativo, NaN, string
+ * no-numérico) se descarta silenciosamente → el mensaje va al General (mismo
+ * comportamiento de hoy). Acepta number o string numérico.
+ *
+ * @param {object} cfg - bloque de config del canal.
+ * @returns {number|null}
+ */
+function resolveThreadId(cfg) {
+    const raw = cfg && cfg.telegram_thread_id;
+    if (raw == null) return null;
+    const n = typeof raw === 'number' ? raw : parseInt(String(raw), 10);
+    return Number.isInteger(n) && n > 0 ? n : null;
 }
 
 /**
@@ -1794,6 +1838,15 @@ function notify(args) {
                 fs.writeFileSync(p, JSON.stringify(payload), 'utf8');
             };
 
+        // #4586 (Palanca 2a) — topic/hilo separado para el firehose de
+        // entregables. Si el config declara `telegram_thread_id` (id numérico de
+        // un forum topic del grupo), se adjunta `message_thread_id` a CADA
+        // dropfile para que el servicio-telegram lo postee en el hilo de
+        // "Entregables pipeline", aislado de la conversación operador↔Commander
+        // (que queda en el General, sin thread). Default: sin thread → mismo
+        // comportamiento de hoy (rollout gradual, requiere forum topics en el
+        // grupo). Se ignora cualquier valor no numérico-positivo.
+        const threadId = resolveThreadId(cfg);
         const allDropfiles = [built.payload, ...(built.extraDropfiles || [])];
         const dropfileNames = [];
         for (let i = 0; i < allDropfiles.length; i++) {
@@ -1804,7 +1857,10 @@ function notify(args) {
             const suffix = allDropfiles.length > 1 ? `-${String(i).padStart(2, '0')}` : '';
             const dropfileName = `${ts}-deliverable-${issue}-${skill}${suffix}.json`;
             const dropfilePath = path.join(telegramQueueDir, dropfileName);
-            writer(dropfilePath, allDropfiles[i]);
+            const dropPayload = threadId != null
+                ? { ...allDropfiles[i], message_thread_id: threadId }
+                : allDropfiles[i];
+            writer(dropfilePath, dropPayload);
             dropfileNames.push(path.basename(dropfilePath));
         }
         const firstDropfileName = dropfileNames[0];
@@ -1841,7 +1897,13 @@ function notify(args) {
         // CA-UX-9 (#3539) — si audio está habilitado y el patch del audit
         // se va a generar async, marcamos el record texto con `audio_pending`
         // para que un consumidor downstream sepa que viene un complemento.
-        const audioEnabled = cfg.audio_enabled === true && cfg.kill_switch_audio !== true;
+        // #4586 — el entregable de agente es el FIREHOSE: `resolveEventAudio`
+        // con evento `AGENT_DELIVERABLE` lo resuelve como texto-only cuando la
+        // política de audio está activa (default de la política). Sin política
+        // (tests legacy) cae al flag histórico `audio_enabled`.
+        const audioEnabled = resolveEventAudio(
+            cfg, args.audioPolicy, audioPolicy.EVENT.AGENT_DELIVERABLE,
+        );
 
         // Audit OK del texto.
         // #4466 (C) — CA-4: distinguir explícitamente "entrega de artefacto" de
@@ -2793,7 +2855,10 @@ function notifyCua(args) {
             };
         writer(dropfilePath, built.payload);
 
-        const audioEnabled = cfg.audio_enabled === true && cfg.kill_switch_audio !== true;
+        // #4586 — stages CUA: evento `CUA_STAGE`, texto-only por default.
+        const audioEnabled = resolveEventAudio(
+            cfg, args.audioPolicy, audioPolicy.EVENT.CUA_STAGE,
+        );
         const finalAudit = {
             ...built.auditRecord,
             telegram_enqueue_ok: true,
@@ -2884,6 +2949,9 @@ module.exports = {
     getCuaSchemaValidator,
     // API pública — adjuntos multimedia (#3540)
     resolveAttachments,
+    // API pública — política de audio + topics (#4586)
+    resolveEventAudio,
+    resolveThreadId,
 
     // Constantes
     SKILL_EMOJIS,
