@@ -41,6 +41,9 @@ const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 // banner de la ola. Se CONSUME desde el módulo compartido en vez de duplicar
 // el markup acá (CA-5). collectWave() también vive ahí (lo usa el banner).
 const { collectWave, renderBrandBar, renderMissionBanner, MIZPA_FRAME_CSS } = require('./mizpa-frame');
+// #4531 — Bandeja de estado unificada del header común MIZPÁ (misma que home /
+// satélites): build · recursos · pulpo · reloj, con hidratación por /api/dash/header.
+const { renderHeaderMetaSsr, headerPillsClientScript, headerPillsPollClientScript } = require('./header-meta');
 
 // chat-panel es best-effort: si el módulo o sus deps fallan, la pantalla sigue
 // rindiendo sin el panel de intervención (degradación, no caída).
@@ -527,10 +530,9 @@ function buildClientJs(filename) {
     const fnJs = JSON.stringify(filename);
     return `
 (function(){
-  // Reloj del header.
-  function tickClock(){ var c=document.getElementById('hdr-clock'); if(c) c.textContent=new Date().toLocaleTimeString('es-AR'); }
-  tickClock(); setInterval(tickClock,1000);
-
+  // #4531 — El header (reloj/build/recursos/pulpo/mode) lo hidrata la bandeja
+  // unificada vía __hydrateHeaderPills + poll de /api/dash/header (inyectados
+  // aparte). Se elimina el tickClock local para no competir con ese reloj.
   var bodyEl=document.getElementById('lv-log-body');
   var statsEl=document.getElementById('lv-stats');
   var emptyEl=document.getElementById('lv-empty');
@@ -772,9 +774,7 @@ ${chatBundle ? chatBundle.sprite : ''}
 <div class="satellite-frame">
   <header class="in-header">
     ${brandHtml}
-    <div class="in-header-meta">
-      <span class="in-clock" id="hdr-clock">${escapeHtmlText(new Date().toLocaleTimeString('es-AR'))}</span>
-    </div>
+    ${renderHeaderMetaSsr({ withMode: true })}
   </header>
   ${navHtml}
   ${breadcrumb}
@@ -792,6 +792,7 @@ ${chatBundle ? chatBundle.sprite : ''}
 </div>
 ${chatBundle ? chatBundle.html : ''}
 <script>${buildClientJs(filename)}</script>
+<script>${headerPillsClientScript()}\n${headerPillsPollClientScript()}</script>
 ${chatBundle ? `<script>${chatBundle.js}</script>` : ''}
 </body>
 </html>`;

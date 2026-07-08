@@ -94,8 +94,9 @@ function phaseProgressPct(macroKey) {
 
 // --- Brand bar MIZPÁ (estático) ----------------------------------------------
 // Reusa el markup/contrato de home.js renderBrandBar (#4189): logo + nombre +
-// tagline + selector multiproyecto. El pill de build (#bld-status) se conserva
-// para el ticker tickHeader del shell satélite.
+// tagline + selector multiproyecto. #4531 — El pill de build (#bld-status) YA NO
+// vive acá: se movió a la bandeja de estado unificada (renderHeaderMetaSsr), para
+// no duplicar el id en el marco común ni pelear con __hydrateHeaderPills.
 function renderBrandBarPipeline() {
     const logoSvg = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">'
         + '<path d="M12 2.5 5 6v5c0 4.6 3 8 7 9.5 4-1.5 7-4.9 7-9.5V6l-7-3.5Z" stroke="#06121a" stroke-width="1.6" fill="rgba(255,255,255,.16)"/>'
@@ -118,8 +119,6 @@ function renderBrandBarPipeline() {
         <span class="mz-proj-badge">1 / 3</span>
         <span class="mz-proj-caret" aria-hidden="true">▾</span>
       </div>
-      <span class="in-pill in-pill-info in-build-status" id="bld-status"
-            title="Estado del último build (marker local .pipeline/build-status.json).">○ Build sin datos</span>
     </div>`;
 }
 

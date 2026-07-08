@@ -30,6 +30,8 @@ const path = require('node:path');
 
 // #3726 — Nav bar V3 unificada (vista satelite "Providers").
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
+// #4531 — Bandeja de estado unificada del header común MIZPÁ.
+const { renderHeaderMetaSsr, headerPillsClientScript, headerPillsPollClientScript } = require('./header-meta');
 
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 function loadTheme() {
@@ -1426,9 +1428,7 @@ ${PANEL_CSS}
         <div class="in-header-subtitle">Proveedores, modelos por agente, permission overrides</div>
       </div>
     </div>
-    <div class="in-header-meta">
-      <span class="in-clock" id="hdr-clock">${new Date().toLocaleTimeString('es-AR')}</span>
-    </div>
+    ${renderHeaderMetaSsr({ withMode: true })}
   </header>
   ${navHtml}
   <main class="satellite-body">${bodyHtml()}</main>
@@ -1438,6 +1438,7 @@ ${PANEL_CSS}
   </footer>
 </div>
 <script>${CLIENT_JS}</script>
+<script>${headerPillsClientScript()}\n${headerPillsPollClientScript()}</script>
 </body>
 </html>`;
 }

@@ -1581,8 +1581,12 @@ function homeStyles() {
 .mz-home { display: flex; flex-direction: column; gap: 16px; }
 
 /* --- Top bar: marca MIZPÁ + selector de proyecto --- */
-.in-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-.in-header-brand { display: flex; align-items: center; gap: 13px; flex-wrap: wrap; }
+/* #4531 — Fila única: la brand cede espacio (min-width:0) y la bandeja se
+   mantiene integra a la derecha (flex:none). Con flex-wrap nowrap el header no
+   arroja las pills a una 2da fila que pisaria el banner de la ola. */
+.in-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: nowrap; }
+.in-header-brand { display: flex; align-items: center; gap: 13px; flex-wrap: nowrap; min-width: 0; }
+.in-header .in-header-meta { flex: none; }
 .mz-logo { width: 46px; height: 46px; border-radius: 14px; flex: none;
     background: linear-gradient(135deg, var(--brand-cyan,#34D9E0), #7C5CFF 90%);
     display: flex; align-items: center; justify-content: center;

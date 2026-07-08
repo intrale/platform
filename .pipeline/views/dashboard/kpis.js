@@ -63,6 +63,8 @@ try { pipelineRedesign = require('./pipeline-redesign'); } catch { /* fallback i
 // #4296 — Accessor compartido del banner de ola (avance %, velocidad %/h, ETA)
 // desde la fuente determinística viva /api/dash/ola-eta (no conteos done/total).
 const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
+// #4531 — Bandeja de estado unificada del header común MIZPÁ.
+const { renderHeaderMetaSsr, headerPillsClientScript } = require('./header-meta');
 
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 function loadTheme() {
@@ -881,8 +883,8 @@ function _hasSharedFrame() {
         && typeof pipelineRedesign.renderMissionBannerPipeline === 'function');
 }
 
-// ① Cabecera de marca: la común suma el pill de build (id `bld-status`) al markup
-// que ya tenía KPIs; el fallback conserva la marca local sin ese pill.
+// ① Cabecera de marca (identidad + selector). #4531 — el pill de build vive en
+// la bandeja de estado unificada (renderHeaderMetaSsr), no en la marca.
 function renderKpisBrandBar() {
     return _hasSharedFrame() ? pipelineRedesign.renderBrandBarPipeline() : renderMizpaBrandBar();
 }
@@ -1186,25 +1188,13 @@ function renderKpisChromeScript() {
   }
   async function tickWaves(){var d=await fetchJson("/api/dash/waves");if(d)mirrorMission(d);}
   async function tickHeader(){
-    setText("hdr-clock",new Date().toLocaleTimeString("es-AR"));
+    // #4531 — Bandeja unificada: reloj + mode + build + recursos + pulpo se
+    // hidratan con la lógica compartida (header-meta.js). SEC-1: sólo
+    // .textContent/.classList/.title, sin innerHTML.
     var d=await fetchJson("/api/dash/header");if(!d)return;
-    var mp=document.getElementById("hdr-mode");
-    if(mp){
-      mp.classList.remove("in-mode-running","in-mode-paused","in-mode-partial");
-      if(d.mode==="paused"){mp.classList.add("in-mode-paused");mp.textContent="⏸ Pausado";}
-      else if(d.mode==="partial_pause"){var n=Array.isArray(d.allowedIssues)?d.allowedIssues.length:0;mp.classList.add("in-mode-partial");mp.textContent="⏸ Parcial · "+n+" issues";}
-      else{mp.classList.add("in-mode-running");mp.textContent="🟢 Running";}
-    }
-    var bld=document.getElementById("bld-status");
-    if(bld&&d.build){
-      var META={passing:{cls:"in-pill-ok",t:"🟢 Build OK"},failing:{cls:"in-pill-bad",t:"🔴 Build roto"},running:{cls:"in-pill-warn",t:"🟡 Build corriendo"},unknown:{cls:"in-pill-info",t:"○ Build sin datos"}};
-      var m=META[d.build.status]||META.unknown;
-      bld.classList.remove("in-pill-ok","in-pill-bad","in-pill-warn","in-pill-info");
-      bld.classList.add(m.cls);
-      var detail=[d.build.branch,d.build.commit].filter(Boolean).join(" · ");
-      bld.textContent=m.t+(detail?" · "+detail:"");
-    }
+    if(typeof window.__hydrateHeaderPills==="function")window.__hydrateHeaderPills(d);
   }
+  ${headerPillsClientScript()}
   function init(){tickHeader();tickWaves();setInterval(tickHeader,5000);setInterval(tickWaves,30000);}
   if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",init);else init();
   ${missionOlaEtaClientScript()}
@@ -1260,10 +1250,7 @@ function renderKpis(opts) {
 <div class="satellite-frame">
   <header class="in-header">
     ${renderKpisBrandBar()}
-    <div class="in-header-meta">
-      <span class="in-pill in-pill-info" id="hdr-mode" title="Estado del pipeline (running / pausado / parcial).">…</span>
-      <span class="in-clock" id="hdr-clock">${escapeHtmlText(new Date().toLocaleTimeString('es-AR'))}</span>
-    </div>
+    ${renderHeaderMetaSsr({ withMode: true })}
   </header>
   ${renderKpisWaveBanner()}
   ${navHtml}

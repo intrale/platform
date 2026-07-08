@@ -31,6 +31,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
+// #4531 — Bandeja de estado unificada del header común MIZPÁ.
+const { renderHeaderMetaSsr, headerPillsClientScript, headerPillsPollClientScript } = require('./header-meta');
 
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 const DESIGN_TOKENS_PATH = path.join(__dirname, '..', '..', 'assets', 'design-tokens.css');
@@ -515,7 +517,8 @@ async function loadAll(){
   renderCards(); renderSherlock(); renderMatrix(); renderTimeline();
   const ts=(mphState.screen&&mphState.screen.ts)?new Date(mphState.screen.ts).toLocaleTimeString('es-AR'):'—';
   setMsg('Actualizado '+ts);
-  const clk=document.getElementById('hdr-clock'); if(clk){ try{ clk.textContent=new Date().toLocaleTimeString('es-AR'); }catch(e){} }
+  // #4531 — El reloj del header lo hidrata la bandeja unificada (poll de
+  // /api/dash/header); ya no se setea acá para no competir con ese reloj.
 }
 
 document.addEventListener('DOMContentLoaded', ()=>{
@@ -552,9 +555,7 @@ ${PANEL_CSS}
         <div class="in-header-subtitle">Salud, latencia, despachos, errores, matriz y vigilancia Sherlock</div>
       </div>
     </div>
-    <div class="in-header-meta">
-      <span class="in-clock" id="hdr-clock">${new Date().toLocaleTimeString('es-AR')}</span>
-    </div>
+    ${renderHeaderMetaSsr({ withMode: true })}
   </header>
   ${navHtml}
   <main class="mph-body">${bodyHtml()}</main>
@@ -564,6 +565,7 @@ ${PANEL_CSS}
   </footer>
 </div>
 <script>${CLIENT_JS}</script>
+<script>${headerPillsClientScript()}\n${headerPillsPollClientScript()}</script>
 </body>
 </html>`;
 }
