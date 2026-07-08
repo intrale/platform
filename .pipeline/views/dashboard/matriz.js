@@ -64,6 +64,8 @@ const { FETCH_CLIENT_JS } = require('./fetch-client.js');
 // #4296 — Accessor compartido del banner de ola (avance %, velocidad %/h, ETA)
 // desde la fuente determinística viva /api/dash/ola-eta (no conteos done/total).
 const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
+// #4531 — Bandeja de estado unificada del header común MIZPÁ.
+const { renderHeaderMetaSsr, headerPillsClientScript } = require('./header-meta');
 
 // #4241 — «Cabecera de ola» del marco común MIZPÁ (② del marco de #4234). Se
 // reutiliza el helper canónico compartido `renderMissionBannerPipeline()`
@@ -196,18 +198,14 @@ function _saneAllowedIssues(arr){
 async function tickHeader(){
     const d = await fetchJson('/api/dash/header');
     if(!d) return;
-    setText('hdr-clock', new Date().toLocaleTimeString('es-AR'));
     pipelineModeState = {
         mode: d.mode || 'running',
         allowedIssues: _saneAllowedIssues(d.allowedIssues),
     };
-    const modePill = document.getElementById('hdr-mode');
-    if(modePill){
-        modePill.classList.remove('in-mode-running','in-mode-paused','in-mode-partial');
-        if(d.mode==='paused'){ modePill.classList.add('in-mode-paused'); modePill.textContent='⏸ Pausado'; }
-        else if(d.mode==='partial_pause'){ modePill.classList.add('in-mode-partial'); modePill.textContent='⏸ Parcial · '+pipelineModeState.allowedIssues.length+' issues'; }
-        else { modePill.classList.add('in-mode-running'); modePill.textContent='🟢 Running'; }
-    }
+    // #4531 — Bandeja unificada: reloj + mode + build + recursos + pulpo se
+    // hidratan con la lógica compartida (header-meta.js). SEC-1: sólo
+    // .textContent/.classList/.title, sin innerHTML.
+    if(typeof window.__hydrateHeaderPills === 'function') window.__hydrateHeaderPills(d);
 }
 document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible' && typeof runAll === 'function') runAll(); });
 `;
@@ -894,7 +892,7 @@ ${missionOlaEtaClientScript()}`;
  */
 function renderMatrizInner() {
     return `${renderMatrizBody()}
-<script>${FETCH_CLIENT_JS}\n${COMMON_HELPERS}\n${MATRIZ_SCRIPT}</script>`;
+<script>${FETCH_CLIENT_JS}\n${headerPillsClientScript()}\n${COMMON_HELPERS}\n${MATRIZ_SCRIPT}</script>`;
 }
 
 /**
@@ -951,10 +949,7 @@ ${MATRIZ_CSS}
 <div class="satellite-frame">
   <header class="in-header">
     ${brandHtml}
-    <div class="in-header-meta">
-      <span class="in-pill" id="hdr-mode">…</span>
-      <span class="in-clock" id="hdr-clock">…</span>
-    </div>
+    ${renderHeaderMetaSsr({ withMode: true })}
   </header>
   ${olaBanner}
   ${navHtml}

@@ -99,24 +99,15 @@ function _saneAllowedIssues(arr){
 async function tickHeader(){
     const d = await fetchJson('/api/dash/header');
     if(!d) return;
-    setText('hdr-clock', new Date().toLocaleTimeString('es-AR'));
-    // #3045 — actualizar el cache compartido ANTES del render del modePill,
-    // así el render del próximo tickPipeline (que puede dispararse en paralelo)
-    // ya ve el estado fresco.
+    // #3045 — actualizar el cache compartido ANTES del render, así el próximo
+    // tickPipeline (que puede dispararse en paralelo) ya ve el estado fresco.
     pipelineModeState = {
         mode: d.mode || 'running',
         allowedIssues: _saneAllowedIssues(d.allowedIssues),
     };
-    const modePill = document.getElementById('hdr-mode');
-    if(modePill){
-        modePill.classList.remove('in-mode-running','in-mode-paused','in-mode-partial');
-        if(d.mode==='paused'){ modePill.classList.add('in-mode-paused'); modePill.textContent='⏸ Pausado'; }
-        else if(d.mode==='partial_pause'){ modePill.classList.add('in-mode-partial'); modePill.textContent='⏸ Parcial · '+pipelineModeState.allowedIssues.length+' issues'; }
-        else { modePill.classList.add('in-mode-running'); modePill.textContent='🟢 Running'; }
-    }
-    // #4463 — Pills de recursos (CPU/RAM) y uptime del Pulpo: ahora presentes en
-    // los satélites y hidratadas con la MISMA lógica que home (helper compartido
-    // header-meta.js). Sólo .textContent/.classList/.title (SEC-1, sin innerHTML).
+    // #4531 / #4463 — Toda la bandeja (reloj + mode + build + recursos + pulpo)
+    // se hidrata con la MISMA lógica compartida (header-meta.js), sin tickers
+    // duplicados por vista. Sólo .textContent/.classList/.title (SEC-1, sin innerHTML).
     if(typeof window.__hydrateHeaderPills === 'function') window.__hydrateHeaderPills(d);
     // #3045 — Si el filtro de allowlist está montado en la Pipeline view,
     // refrescar su visibilidad cuando cambia el modo (running ⇄ partial_pause).

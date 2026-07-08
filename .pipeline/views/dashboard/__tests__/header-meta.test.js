@@ -88,8 +88,10 @@ test('SEC-1: la hidratación compartida usa textContent/classList/title, nunca i
     assert.doesNotMatch(script, /innerHTML/, 'la hidratación no debe usar innerHTML (vector XSS FE-SEC-4)');
     assert.match(script, /\.textContent/, 'usa textContent para valores dinámicos');
     assert.match(script, /window\.__hydrateHeaderPills/, 'expone el helper global de hidratación');
-    // Guard de idempotencia (no redefinir en re-render).
-    assert.match(script, /if \(!window\.__hydrateHeaderPills\)/, 'guard de idempotencia');
+    // Guard de idempotencia (no redefinir en re-render). #4531 — el guard incluye
+    // `typeof window !== 'undefined'` para no lanzar si el script se evalúa en un
+    // sandbox sin window (tests de gesto que evalúan el <script> real).
+    assert.match(script, /typeof window !== 'undefined' && !window\.__hydrateHeaderPills/, 'guard de idempotencia + sandbox-safe');
 });
 
 test('la hidratación conserva la señal de presión de recursos (ok/warn/bad)', () => {

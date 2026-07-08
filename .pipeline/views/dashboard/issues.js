@@ -84,6 +84,8 @@ const { CONFIRM_MODAL_JS } = require('./confirm-modal.js');
 // #4296 — Accessor compartido del banner de ola: avance %, velocidad %/h y ETA
 // vienen del cómputo determinístico vivo (/api/dash/ola-eta), NO de conteos.
 const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
+// #4531 — Bandeja de estado unificada del header común MIZPÁ.
+const { renderHeaderMetaSsr, headerPillsClientScript } = require('./header-meta');
 
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 const TOKENS_CSS_PATH = path.join(__dirname, '..', '..', 'assets', 'design-tokens.css');
@@ -560,10 +562,7 @@ function renderMizpaChrome(_mission) {
     const brand = hasShared ? pipelineRedesign.renderBrandBarPipeline() : _brandBarFallback();
     const header = '<header class="in-header">'
         + brand
-        + '<div class="in-header-meta">'
-        +   '<span class="in-pill" id="hdr-mode">…</span>'
-        +   '<span class="in-clock" id="hdr-clock">…</span>'
-        + '</div>'
+        + renderHeaderMetaSsr({ withMode: true })
         + '</header>';
 
     // ② Cabecera de ola (tag OLA + título + métricas + bloque AVANCE).
@@ -1336,30 +1335,12 @@ function renderIssuesClientScript() {
   }
 
   async function tickHeader() {
-    setText('hdr-clock', new Date().toLocaleTimeString('es-AR'));
+    // #4531 — Toda la bandeja del header (reloj + mode + build + recursos +
+    // pulpo) se hidrata con la lógica compartida (header-meta.js). Sin tickers
+    // duplicados por vista. SEC-1: sólo .textContent/.classList/.title.
     var d = await fetchJson('/api/dash/header');
     if (!d) return;
-    var modePill = document.getElementById('hdr-mode');
-    if (modePill) {
-      modePill.classList.remove('in-mode-running', 'in-mode-paused', 'in-mode-partial');
-      if (d.mode === 'paused') { modePill.classList.add('in-mode-paused'); modePill.textContent = '⏸ Pausado'; }
-      else if (d.mode === 'partial_pause') {
-        var n = Array.isArray(d.allowedIssues) ? d.allowedIssues.length : 0;
-        modePill.classList.add('in-mode-partial'); modePill.textContent = '⏸ Parcial · ' + n + ' issues';
-      } else { modePill.classList.add('in-mode-running'); modePill.textContent = '🟢 Running'; }
-    }
-    var bld = document.getElementById('bld-status');
-    if (bld && d.build) {
-      var META = {
-        passing: { cls: 'in-pill-ok', t: '🟢 Build OK' }, failing: { cls: 'in-pill-bad', t: '🔴 Build roto' },
-        running: { cls: 'in-pill-warn', t: '🟡 Build corriendo' }, unknown: { cls: 'in-pill-info', t: '○ Build sin datos' }
-      };
-      var m = META[d.build.status] || META.unknown;
-      bld.classList.remove('in-pill-ok', 'in-pill-bad', 'in-pill-warn', 'in-pill-info');
-      bld.classList.add(m.cls);
-      var detail = [d.build.branch, d.build.commit].filter(Boolean).join(' · ');
-      bld.textContent = m.t + (detail ? ' · ' + detail : '');
-    }
+    if (typeof window.__hydrateHeaderPills === 'function') window.__hydrateHeaderPills(d);
   }
 
   async function tickIssues() {
@@ -1498,6 +1479,7 @@ ${renderStaleBanner()}
 </div>
 <script>${FETCH_CLIENT_JS}
 ${CONFIRM_MODAL_JS}
+${headerPillsClientScript()}
 ${renderIssuesClientScript()}
 ${missionOlaEtaClientScript()}</script>
 </body>

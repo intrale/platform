@@ -42,6 +42,8 @@ const { CONFIRM_MODAL_JS } = require('./confirm-modal.js');
 // #4296 — Accessor compartido del banner de ola (avance %, velocidad %/h, ETA)
 // desde la fuente determinística viva /api/dash/ola-eta (no conteos done/total).
 const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
+// #4531 — Bandeja de estado unificada del header común MIZPÁ.
+const { renderHeaderMetaSsr, headerPillsClientScript } = require('./header-meta');
 
 // #3964 (EP8-H11) — Geometría pura del timeline (min↔px, snap, blockRect,
 // wouldOverlap), unit-testeable sin DOM. Se inyecta como `RestTimelineGeo`
@@ -105,21 +107,16 @@ function _saneAllowedIssues(arr){
 async function tickHeader(){
     const d = await fetchJson('/api/dash/header');
     if(!d) return;
-    setText('hdr-clock', new Date().toLocaleTimeString('es-AR'));
-    // #3045 — actualizar el cache compartido ANTES del render del modePill,
-    // así el render del próximo tickPipeline (que puede dispararse en paralelo)
-    // ya ve el estado fresco.
+    // #3045 — actualizar el cache compartido ANTES del render, así el próximo
+    // tickPipeline (que puede dispararse en paralelo) ya ve el estado fresco.
     pipelineModeState = {
         mode: d.mode || 'running',
         allowedIssues: _saneAllowedIssues(d.allowedIssues),
     };
-    const modePill = document.getElementById('hdr-mode');
-    if(modePill){
-        modePill.classList.remove('in-mode-running','in-mode-paused','in-mode-partial');
-        if(d.mode==='paused'){ modePill.classList.add('in-mode-paused'); modePill.textContent='⏸ Pausado'; }
-        else if(d.mode==='partial_pause'){ modePill.classList.add('in-mode-partial'); modePill.textContent='⏸ Parcial · '+pipelineModeState.allowedIssues.length+' issues'; }
-        else { modePill.classList.add('in-mode-running'); modePill.textContent='🟢 Running'; }
-    }
+    // #4531 — Bandeja unificada: reloj + mode + build + recursos + pulpo se
+    // hidratan con la lógica compartida (header-meta.js). SEC-1: sólo
+    // .textContent/.classList/.title, sin innerHTML.
+    if(typeof window.__hydrateHeaderPills === 'function') window.__hydrateHeaderPills(d);
     // #3045 — Si el filtro de allowlist está montado en la Pipeline view,
     // refrescar su visibilidad cuando cambia el modo (running ⇄ partial_pause).
     if(typeof refreshAllowlistToggleVisibility === 'function'){
@@ -1392,6 +1389,7 @@ function renderDescansoInner() {
 <script>${FETCH_CLIENT_JS}
 ${CONFIRM_MODAL_JS}
 ${REST_TIMELINE_GEOMETRY_JS}
+${headerPillsClientScript()}
 ${COMMON_HELPERS}
 ${script}</script>`;
 }
@@ -1488,10 +1486,7 @@ ${css}
 <div class="satellite-frame">
   <header class="in-header">
     ${brandHtml}
-    <div class="in-header-meta">
-      <span class="in-pill" id="hdr-mode">…</span>
-      <span class="in-clock" id="hdr-clock">…</span>
-    </div>
+    ${renderHeaderMetaSsr({ withMode: true })}
   </header>
   ${missionHtml}
   ${navHtml}
@@ -1504,6 +1499,7 @@ ${css}
 </div>
 <script>${FETCH_CLIENT_JS}
 ${CONFIRM_MODAL_JS}
+${headerPillsClientScript()}
 ${COMMON_HELPERS}
 ${script}</script>
 </body>
