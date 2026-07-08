@@ -306,6 +306,48 @@ EOF
 )"
 ```
 
+## Paso 8: Entregable de cierre de fase (OBLIGATORIO, #4513)
+
+Al cerrar la fase **Revisión** persistí **SIEMPRE** el reporte de revisión — no
+depende de la longitud de `notas` ni del veredicto. El `md` es el mismo reporte
+completo del **Paso 6** (veredicto aprobado/rechazado + hallazgos por severidad +
+ubicación `archivo:línea` + fix sugerido + alcance revisado).
+
+Usá el helper compartido, único choke point de escritura + índice — hereda
+validación de `issue` (CA-5), redacción de secrets (CA-6), sanitización SVG
+(CA-8) y cap de tamaño (CA-9). **Prohibido** `fs.writeFileSync` directo del
+artefacto o del índice.
+
+```js
+const path = require("path");
+const { writeDeliverable } = require(path.resolve(".pipeline/lib/write-deliverable"));
+// Pasar `fase` puebla el índice .pipeline/deliverables/<issue>.json (store #4255)
+// y da filename phase-scoped `review-aprobacion-<issue>.md` (evita colisión multi-fase).
+const fase = process.env.PIPELINE_FASE || "aprobacion";
+// `issue` = número del issue del PR revisado.
+// `md` = reporte de revisión completo del Paso 6.
+writeDeliverable("review", issue, { fase, md });
+```
+
+### Excepción explícita, nunca silencio (CA-3, #4513)
+
+Si por la naturaleza del issue no aplica revisión de código, registrá la
+excepción explícita en vez de cerrar sin nada — nunca un silencio:
+
+```js
+const { writeDeliverableException } = require(path.resolve(".pipeline/lib/write-deliverable"));
+// El `motivo` se redacta antes de persistir (SEC-1); no pegues paths ni secrets.
+writeDeliverableException("review", issue, {
+  fase,
+  motivo: "excepción: <razón por la que no aplica revisión de código>",
+});
+```
+
+El entregable **se auto-publica a Telegram** al cerrar la fase (`review` está en
+la whitelist `deliverable_notifications.skills`). Como red de seguridad, el Pulpo
+materializa el reporte desde las `notas` si el SKILL no lo produce, pero el
+productor primario es este skill: dejá el reporte o la excepción vos mismo.
+
 ## Reglas
 
 - NUNCA aprobar un PR con bloqueantes
