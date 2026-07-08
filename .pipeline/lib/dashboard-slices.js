@@ -2329,11 +2329,19 @@ function normalizeProviderQuota(provider, result) {
         return out;
     }
 
-    // Codex / Gemini / resto: solo el bucket que el adapter pueda poblar.
-    // Codex no tiene ventana de sesión 5h → session siempre "sin dato".
-    const weekPct = num(result.realPct != null ? result.realPct : result.pct);
+    // Codex / Gemini / resto: cada bucket que el adapter pueda poblar.
+    // #4598 — Codex ahora SÍ tiene ventana de sesión: `primary` (5h) del log
+    // real de `/status` se mapea a `session`, `secondary` (7d) a `weekly`.
+    // Cuando un bucket queda en null (p.ej. Gemini sin sesión, o dato stale),
+    // se reporta "missing" — nunca 0% silencioso.
     const isOk = result.adapterStatus === 'ok';
-    out.session = { pct: null, confidence: 'missing' };
+    const sess = result.session && typeof result.session === 'object' ? result.session : {};
+    const sessPct = num(sess.realPct != null ? sess.realPct : sess.pct);
+    const weekPct = num(result.realPct != null ? result.realPct : result.pct);
+    out.session = {
+        pct: sessPct,
+        confidence: (isOk && sessPct != null) ? 'fresh' : 'missing',
+    };
     out.weekly = {
         pct: weekPct,
         confidence: (isOk && weekPct != null) ? 'fresh' : 'missing',
