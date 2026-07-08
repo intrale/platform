@@ -156,6 +156,21 @@ function loadSecretsOrExit() {
 const AGENT_TAG = 'svc-telegram';
 
 /**
+ * #4586 (Palanca 2a) — Normaliza un `message_thread_id` a entero positivo o
+ * `null`. Un valor ausente/inválido (0, negativo, NaN, no numérico) devuelve
+ * `null` → el mensaje va al General (comportamiento histórico). Defensivo:
+ * nunca tira.
+ *
+ * @param {*} raw
+ * @returns {number|null}
+ */
+function normalizeThreadId(raw) {
+  if (raw == null) return null;
+  const n = typeof raw === 'number' ? raw : parseInt(String(raw), 10);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/**
  * Logging estructurado de denial SSRF/proxy (CA-11 del #2332).
  * El http-client ya logea internamente, pero replicamos al log persistente
  * del servicio para trazabilidad post-mortem (crash-handlers escriben acá).
@@ -519,16 +534,25 @@ async function processBurstGroup(group, consolidatedText) {
   // y cada uno puede traer su `_correlationId`. Al confirmar la entrega del
   // consolidado emitimos un recibo `enviado` por cada uno.
   const correlationIds = [];
+  // #4586 (Palanca 2a) — thread/topic del burst consolidado. Solo se aplica si
+  // TODOS los archivos del grupo comparten el mismo `message_thread_id` (los
+  // entregables comparten el mismo hilo configurado). Si el grupo mezcla hilos
+  // distintos o alguno no tiene hilo, se omite (va al General) — nunca postea un
+  // consolidado en un hilo ajeno.
+  const threadIds = new Set();
   for (const entry of trabajandoPaths) {
     try {
       const d = JSON.parse(fs.readFileSync(entry.path, 'utf8'));
       if (telegramReceipt.isValidCorrelationId(d._correlationId)) correlationIds.push(d._correlationId);
+      threadIds.add(normalizeThreadId(d.message_thread_id));
     } catch { /* ilegible: sin correlationId, sin recibo */ }
   }
+  const burstThreadId = (threadIds.size === 1) ? [...threadIds][0] : null;
 
   // 2) Mandar 1 solo mensaje consolidado.
   try {
     const params = { text: consolidatedText, parse_mode: 'MarkdownV2' };
+    if (burstThreadId != null) params.message_thread_id = burstThreadId;
     const chunks = splitLongMessage(consolidatedText);
     // #4082 — SEC-2 fail-closed: validar ok:true + message_id por chunk.
     const messageIds = [];
@@ -648,6 +672,10 @@ async function processQueue() {
         if (data.caption) extra.caption = data.caption;
         if (data.parse_mode) extra.parse_mode = data.parse_mode;
         if (data.filename) extra.filename = data.filename;
+        // #4586 (Palanca 2a) — hilo/topic separado para el firehose de
+        // entregables. Solo se adjunta si el dropfile lo trae y es entero>0.
+        const mpThreadId = normalizeThreadId(data.message_thread_id);
+        if (mpThreadId != null) extra.message_thread_id = mpThreadId;
         const mpBody = await telegramSendMultipart(
           methodByType[multipartType],
           multipartType,
@@ -670,6 +698,9 @@ async function processQueue() {
         const parseMode = data.parse_mode || 'Markdown';
         const chunks = splitLongMessage(data.text);
         const hasReplyMarkup = data.reply_markup && typeof data.reply_markup === 'object';
+        // #4586 (Palanca 2a) — hilo/topic separado para el firehose de
+        // entregables. Se aplica a todos los chunks del mismo mensaje.
+        const textThreadId = normalizeThreadId(data.message_thread_id);
         // #4082 — SEC-2 fail-closed: validar ok:true + message_id por chunk y
         // acumular los ids (multi-chunk → N ids). Si algún chunk no confirma,
         // `assertDelivered` lanza → cae a handleSendFailure (entrega parcial =
@@ -677,6 +708,7 @@ async function processQueue() {
         const messageIds = [];
         for (let i = 0; i < chunks.length; i++) {
           const params = { text: chunks[i], parse_mode: parseMode };
+          if (textThreadId != null) params.message_thread_id = textThreadId;
           if (hasReplyMarkup && i === chunks.length - 1) {
             params.reply_markup = data.reply_markup;
           }
@@ -749,6 +781,8 @@ module.exports = {
   // tests `node --test` (dispatch vía telegramSend; no arranca el servicio ni
   // toca red en el test, que inyecta un fake de telegramSend).
   editMessageText,
+  // #4586 (Palanca 2a) — normalizador de message_thread_id, expuesto para tests.
+  normalizeThreadId,
 };
 
 // Arranque del servicio: SOLO cuando se ejecuta directamente (`node servicio-telegram.js`),
