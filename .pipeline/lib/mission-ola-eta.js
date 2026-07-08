@@ -230,9 +230,11 @@ function missionOlaEtaClientScript() {
           nowMark.setAttribute('title', lbl);
         }
       }
-      // La anotación de velocidad ancla al marcador "ahora" (UX: velocidad↔marcador).
-      var velAnnot = document.getElementById('mission-vel-annot');
-      if(velAnnot){ var vlStr = posPct + '%'; if(velAnnot.style.left !== vlStr) velAnnot.style.left = vlStr; }
+      // #4532 (re-QA) — VELOCIDAD ya NO ancla al marcador "ahora": vive en una
+      // fila de flujo normal (flex space-between) junto a ENTREGADOS. Anclar su
+      // left al avance la deslizaba sobre ENTREGADOS con avance alto (solape
+      // ilegible del re-QA visual). El left porcentual queda reservado SOLO al
+      // marcador del rail (mission-tl-now, arriba). No se toca style.left aca.
       var vv = document.getElementById('mission-vel-value');
       if(vv){
         // #4532 (G-UX-1) — la celda 🚀 VELOCIDAD expresa el % de avance por issue
