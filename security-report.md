@@ -1,22 +1,26 @@
-## Reporte de auditoría de seguridad — issue #4532
+## Reporte de auditoría de seguridad — issue #4500
 
 **Veredicto:** sin hallazgos
 
-**Alcance auditado:** rama `agent/4532-wave-metrics-layout` (HEAD `7b3ada0ee`) vs `origin/main` — 8 archivos, +83/−31. Fix del rebote de review: propagación del layout no-solapante VELOCIDAD↔ENTREGADOS a TODAS las copias del banner de la ola (`home.js`, `theme.css`, `mizpa-frame.js`, `providers.js`, `pipeline-redesign.js`, `kpis.js`), remoción del anclaje `style.left` en `mission-ola-eta.js`, y unidad legible `%/issue·min`. Código interno de dashboard (`.pipeline/`, localhost) — no producto de usuario.
+**Alcance auditado:** rama `agent/4500-pipeline-dev` HEAD `2c6b49076` (re-work post-reopen #4568). Diff vs `origin/main`: 7 archivos, +119/-17. Cambio puramente de UI/render del dashboard interno del pipeline (`localhost:3200`) — CA-UX-9: el sparkline "RITMO" degrada sin espacio muerto. Archivos: `lib/mission-ola-eta.js`, `views/dashboard/{home,mizpa-frame,pipeline-redesign,providers}.js`, `views/dashboard/theme.css`, `lib/__tests__/mission-ola-eta.test.js`.
 
 ### Hallazgos
-- **Sin hallazgos.**
+Sin hallazgos.
 
-Verificación empírica (output real):
+Verificación empírica (OWASP Top 10):
 
-- **[A02/A05 Secrets]** grep sobre líneas añadidas del diff (`password|secret|token|api_key|aws_|Bearer|eyJ…`) → `NONE`. 0 secretos hardcodeados.
-- **[A03 Inyección]** grep de `eval(|new Function|child_process|exec|spawn|execSync` en líneas añadidas → `NONE`.
-- **[A03 XSS]** grep de `innerHTML|outerHTML|insertAdjacentHTML|document.write|dangerouslySet` en líneas añadidas → `NONE`. El valor de velocidad se renderiza vía `setMzValueUnit()` (`mission-ola-eta.js:129`) que usa `createTextNode`/`textContent` sobre un número `toFixed(2)`; la rama sin datos usa `createTextNode('sin datos suficientes')`. ETA usa `textContent`. Todo XSS-safe; los valores provienen de `/api/dash/ola-eta` con whitelist numérica en el route.
-- **[A01 Path traversal]** el diff no introduce I/O de filesystem ni rutas — es CSS/layout + labels de texto + remoción de `style.left`.
-- **[A06 Dependencias]** `git diff` de `package.json` vacío → cero deps npm nuevas, sin CVEs introducidos.
-- **[A08 Deserialización]** el diff no agrega parsing/deserialización.
+| Vector | Resultado | Evidencia |
+|---|---|---|
+| **A03 Injection / XSS** (único punto flagged en fase análisis) | ✅ Sin riesgo | Grep sobre líneas agregadas de `innerHTML`/`outerHTML`/`eval(`/`document.write`/`new Function`/`insertAdjacentHTML`/`dangerouslySet` → **0 coincidencias** (la única línea con "innerHTML" es un comentario). Interpolación `${...}` en SSR de vistas → **0**. La nueva `setSparkEmpty()` reasigna `spark.className` usando **sólo strings de clase constantes** (`'mz-spark-empty'`) derivados del className SSR estático — sin dato externo → no inyectable. El resto del runtime del sparkline usa `createElementNS`/`setAttribute`/`textContent`/`style` numérico. |
+| **A02 Cryptographic Failures / secretos** | ✅ Sin riesgo | Grep de `password\|secret\|api_key\|token\|aws_access\|PRIVATE` sobre líneas agregadas (excl. tokens de diseño) → **0**. |
+| **A06 Vulnerable Components** | ✅ Sin riesgo | Sin cambios en `package.json`/lockfiles/`build.gradle.kts` → sin dependencias nuevas. |
+| **A01 Broken Access Control** | ✅ N/A | Dashboard local, sin cambios de auth (Cognito/JWT). |
+| **A08 Data Integrity** | ✅ Sin riesgo | Sólo CSS + toggle de clase; no toca la serie del sparkline (ya whitelisteada `{ts,avancePct}` en pasadas previas, sin cambios en este HEAD). |
 
-### Postura
-- El cambio es puramente presentacional (CSS `.mz-tl-annots` pasa de capa absoluta a flex `space-between`, quita `transform: translateX(-50%)`, agrega `min-width:0`) más labels estáticos (`issues/día` → `%/issue·min`) y un ajuste de test que endurece el guard #4500. No modifica lógica de datos, auth ni I/O.
-- No aplican patrones de auth del proyecto (JWT/Cognito/SecuredFunction/Konform): no es código de producto de usuario.
-- Sin recomendaciones de hardening pendientes.
+Verificación adicional ejecutada:
+- `node --check` en los 5 JS tocados → OK.
+- `git diff --check origin/main...HEAD` → exit 0 (sin conflictos/whitespace).
+- `node --test mission-ola-eta.test.js` → **29/29 pass** (incluye guardias XSS-safe className, colapso `<2` deltas, IDs hidratables).
+
+### Motivo
+No aplica sección de remediación: el diff no introduce superficie de ataque explotable. El requisito de escaping XSS heredado de la fase análisis se mantiene cumplido (sin interpolación de datos externos; manipulación DOM segura).

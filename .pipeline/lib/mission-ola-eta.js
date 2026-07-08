@@ -142,6 +142,17 @@ function missionOlaEtaClientScript() {
   // placeholder + nota "datos insuficientes" (Gherkin escenario 2), sin romper
   // el layout. Devuelve el texto de tendencia para el aria-label del contenedor.
   var SVG_NS = 'http://www.w3.org/2000/svg';
+  // #4500 (re-QA #4568) — CA-UX-9: togglea la clase .mz-spark-empty del contenedor
+  // #mission-spark para colapsar (display:none via CSS) la fila de 24px del plot
+  // cuando NO hay ritmo suficiente. Manipula className por string (no classList)
+  // para ser compatible con el DOM real y con el DOM falso de los tests. Sólo
+  // strings de clase constantes — nunca innerHTML (XSS-safe).
+  function setSparkEmpty(spark, on){
+    if(!spark) return;
+    var cls = String(spark.className || '').split(/\s+/).filter(function(c){ return c && c !== 'mz-spark-empty'; });
+    if(on) cls.push('mz-spark-empty');
+    spark.className = cls.join(' ');
+  }
   function renderMissionSpark(series){
     var plot = document.getElementById('mission-spark-plot');
     var note = document.getElementById('mission-spark-note');
@@ -155,21 +166,17 @@ function missionOlaEtaClientScript() {
     for(var i=1;i<pts.length;i++){ deltas.push(Math.max(0, pts[i].avancePct - pts[i-1].avancePct)); }
     var W = 100, H = 24, pad = 2;
     if(deltas.length < 2){
-      // Placeholder: rail punteado + nota explícita. Nunca rompe el layout.
-      var svgP = document.createElementNS(SVG_NS, 'svg');
-      svgP.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
-      svgP.setAttribute('class', 'mz-spark-svg');
-      svgP.setAttribute('preserveAspectRatio', 'none');
-      var ln = document.createElementNS(SVG_NS, 'line');
-      ln.setAttribute('x1', '0'); ln.setAttribute('y1', String(H/2));
-      ln.setAttribute('x2', String(W)); ln.setAttribute('y2', String(H/2));
-      ln.setAttribute('stroke', 'var(--in-fg-dim,#8b949e)');
-      ln.setAttribute('stroke-width', '1'); ln.setAttribute('stroke-dasharray', '3 3');
-      svgP.appendChild(ln); plot.appendChild(svgP);
+      // CA-UX-9: sin ritmo suficiente NO se dibuja el rail punteado (guiones que
+      // ocupaban 24px de alto = espacio muerto del re-QA visual). Se colapsa el
+      // plot con .mz-spark-empty y se deja SÓLO la cápsula "📈 RITMO · datos
+      // insuficientes" en una fila slim. Nunca rompe el layout (Gherkin escenario 2).
+      setSparkEmpty(spark, true);
       if(note){ note.textContent = 'datos insuficientes'; }
       if(spark) spark.setAttribute('aria-label', 'Ritmo de entrega: datos insuficientes');
       return;
     }
+    // Hay ritmo suficiente: el plot recupera su alto normal (se quita el colapso).
+    setSparkEmpty(spark, false);
     var max = 0;
     for(var j=0;j<deltas.length;j++){ if(deltas[j] > max) max = deltas[j]; }
     var n = deltas.length, stepX = (n > 1) ? (W/(n-1)) : 0, coords = [];
