@@ -401,7 +401,7 @@ test('#4500 — el marcador "ahora" se posiciona por avancePct clampeado [0,100]
     assert.equal(nowMark.getAttribute('aria-label'), 'Avance de la ola: sin dato aún');
 });
 
-test('#4500 — sparkline: <2 puntos degrada a placeholder "datos insuficientes" sin romper', () => {
+test('#4500 (CA-UX-9) — sparkline: <2 deltas colapsa el plot (sin espacio muerto) y sólo deja la cápsula', () => {
     const plot = fakeNode();
     const note = fakeNode();
     const spark = fakeNode();
@@ -415,15 +415,22 @@ test('#4500 — sparkline: <2 puntos degrada a placeholder "datos insuficientes"
     };
     const win = bootClientScript(elements);
 
-    // Sin serie → placeholder (línea punteada + nota).
+    // Sin serie → NO se dibujan guiones en 24px (re-QA #4568): el plot queda vacío
+    // y el contenedor toma la clase .mz-spark-empty que el CSS colapsa (display:none).
     win.__applyMissionOlaEta({ etaSource: 'fallback', totalPct: 5 });
     assert.equal(note.textContent, 'datos insuficientes');
-    assert.equal(plot._children.length, 1, 'dibuja el rail placeholder');
+    assert.equal(plot._children.length, 0, 'CA-UX-9: no dibuja rail placeholder (sin espacio muerto)');
+    assert.ok(
+        String(spark.className).split(/\s+/).includes('mz-spark-empty'),
+        'CA-UX-9: el contenedor #mission-spark colapsa con .mz-spark-empty',
+    );
     assert.equal(spark.getAttribute('aria-label'), 'Ritmo de entrega: datos insuficientes');
 
-    // Un solo punto (0 deltas) → sigue placeholder.
+    // Un solo punto (0 deltas) → sigue colapsado.
     win.__applyMissionOlaEta({ etaSource: 'fallback', totalPct: 5, series: [{ ts: 1, avancePct: 5 }] });
     assert.equal(note.textContent, 'datos insuficientes');
+    assert.equal(plot._children.length, 0, 'un solo punto sigue colapsado');
+    assert.ok(String(spark.className).split(/\s+/).includes('mz-spark-empty'));
 });
 
 test('#4500 — sparkline: con serie suficiente dibuja polyline y calcula tendencia', () => {
@@ -456,6 +463,50 @@ test('#4500 — sparkline: con serie suficiente dibuja polyline y calcula tenden
     assert.ok(poly.getAttribute('points'), 'la polyline tiene puntos');
     assert.equal(note.textContent, 'acelerando');
     assert.equal(spark.getAttribute('aria-label'), 'Ritmo de entrega: acelerando');
+    // CA-UX-9: con ritmo suficiente el plot recupera su alto (se quita el colapso).
+    assert.ok(
+        !String(spark.className).split(/\s+/).includes('mz-spark-empty'),
+        'CA-UX-9: con serie suficiente el plot NO está colapsado',
+    );
+});
+
+test('#4500 (CA-UX-9) — sparkline: alterna colapso→dibujo→colapso al cambiar la serie por tick', () => {
+    const plot = fakeNode();
+    const note = fakeNode();
+    const spark = fakeNode();
+    const elements = {
+        'mission-bar-progress': { style: { width: '0%' } },
+        'mission-avance-pct': fakeNode(),
+        'mission-tl-now': fakeNode(),
+        'mission-spark-plot': plot,
+        'mission-spark-note': note,
+        'mission-spark': spark,
+    };
+    const win = bootClientScript(elements);
+    const hasEmpty = () => String(spark.className).split(/\s+/).includes('mz-spark-empty');
+
+    // Tick 1: sin datos → colapsado.
+    win.__applyMissionOlaEta({ etaSource: 'fallback', totalPct: 5 });
+    assert.ok(hasEmpty(), 'arranca colapsado');
+
+    // Tick 2: llegan datos suficientes → se expande (sin residuo de la clase).
+    const series = [
+        { ts: 1, avancePct: 0 }, { ts: 2, avancePct: 4 },
+        { ts: 3, avancePct: 6 }, { ts: 4, avancePct: 20 },
+    ];
+    win.__applyMissionOlaEta({ etaSource: 'fallback', totalPct: 20, series });
+    assert.ok(!hasEmpty(), 'se expande al llegar la serie');
+    assert.equal(plot._children.length, 1, 'dibuja la polyline');
+
+    // Tick 3: la serie se vacía otra vez → vuelve a colapsar (idempotente, sin acumular clase).
+    win.__applyMissionOlaEta({ etaSource: 'fallback', totalPct: 20, series: [] });
+    assert.ok(hasEmpty(), 'vuelve a colapsar');
+    assert.equal(
+        String(spark.className).split(/\s+/).filter((c) => c === 'mz-spark-empty').length,
+        1,
+        'no acumula la clase duplicada',
+    );
+    assert.equal(plot._children.length, 0, 'plot vacío al recolapsar');
 });
 
 // -----------------------------------------------------------------------------
@@ -483,6 +534,13 @@ test('#4500 — el banner (SSR y fallback) conserva los IDs hidratables y suma l
         }
         // las 4 stat-cards viejas ya no se renderizan como tiles independientes.
         assert.ok(!src.includes('class="mz-mission-metrics"'), `${f} no debe conservar .mz-mission-metrics`);
+        // #4500 (re-QA #4568) — CA-UX-9: el SSR arranca colapsado (mz-spark-empty)
+        // para que el primer paint (antes de hidratar) no muestre la fila de 24px
+        // vacía con guiones. El client la quita cuando llega serie suficiente.
+        assert.ok(
+            /class="mz-spark mz-spark-empty"[^>]*id="mission-spark"/.test(src),
+            `${f}: el SSR de #mission-spark debe arrancar con la clase mz-spark-empty (CA-UX-9)`,
+        );
     }
 });
 
@@ -502,6 +560,13 @@ test('#4500 — guardia CSS: toda copia que estiliza .mz-mission también estili
         copies++;
         assert.ok(src.includes('.mz-timeline {'), `${f} tiene el bloque del banner pero le falta .mz-timeline`);
         assert.ok(src.includes('.mz-spark {'), `${f} tiene el bloque del banner pero le falta .mz-spark`);
+        // #4500 (re-QA #4568) — CA-UX-9: cada copia completa DEBE declarar la regla
+        // de colapso del plot vacío; si una copia diverge, esa ventana vuelve a
+        // mostrar los guiones en 24px de espacio muerto (defecto del re-QA visual).
+        assert.ok(
+            /\.mz-spark-empty\s+\.mz-spark-plot\s*\{[^}]*display:\s*none/.test(src),
+            `${f}: falta la regla de colapso .mz-spark-empty .mz-spark-plot { display:none } (CA-UX-9)`,
+        );
         // #4532 (re-QA) — cada copia completa DEBE declarar el layout no-solapante
         // del annot: VELOCIDAD/ENTREGADOS en una fila flex con space-between, NO en
         // la capa absoluta que seguía al marcador. Y NO debe conservar el viejo

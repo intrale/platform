@@ -450,6 +450,12 @@ a:hover { color: var(--in-accent); }
 .mz-spark-cap { font-size: 9.5px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#8b949e); flex: none; }
 .mz-spark-plot { display: block; flex: 1; height: 24px; min-width: 60px; }
 .mz-spark-plot .mz-spark-svg { width: 100%; height: 100%; display: block; }
+/* #4500 (re-QA #4568) — CA-UX-9: con <2 deltas el sparkline NO reserva la fila de
+   24px del plot. La cápsula "📈 RITMO · datos insuficientes" queda en una fila slim
+   y el <svg> se colapsa (display:none) en vez de dibujar guiones en 24px de alto
+   (espacio muerto que originó el re-QA visual del 2026-07-08). El client togglea
+   la clase .mz-spark-empty según haya o no serie de ritmo suficiente. */
+.mz-spark-empty .mz-spark-plot { display: none; }
 .mz-spark-note { font-size: 10.5px; font-weight: 700; color: var(--brand-cyan,#34D9E0); flex: none; font-variant-numeric: tabular-nums; }
 .mz-tl-legend { margin-top: 14px; }
 @media (max-width: 920px) {
