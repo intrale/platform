@@ -713,6 +713,7 @@ let _stateSnapshot = null;          // última vista computada (o null en cold s
 let _stateSnapshotAt = 0;           // timestamp del último refresh exitoso
 let _stateRefreshInflight = false;  // evita solapar cómputos pesados
 let _stateRefreshTimer = null;      // handle del setInterval (para clearInterval)
+let _usageRefreshTimer = null;      // #4597 — handle del poller de `claude -p /usage`
 let _loopMonitor = null;            // #4131-followup — handle del monitor de lag del event loop
 let _freezeWatchdog = null;         // #4131-followup-2 — handle del watchdog externo de freeze
 let _logServeInflight = false;      // #4521 — servido de logs en vuelo (lectura de disco)
@@ -13717,6 +13718,24 @@ function startListen() {
     if (!_stateRefreshTimer) {
       _stateRefreshTimer = setInterval(refreshStateSnapshot, STATE_REFRESH_MS);
       if (_stateRefreshTimer.unref) _stateRefreshTimer.unref();
+    }
+    // #4597 — Poller del uso REAL de Anthropic (`claude -p /usage`). Es la
+    // fuente de verdad de la cuota Anthropic (reemplaza la heurística de
+    // duración + calibración + OCR). Refresca el cache en background con
+    // throttle; el adapter (quota-adapters/anthropic.js) SÓLO LEE ese cache y
+    // nunca spawnea en el hot path. Fire-and-forget, no bloquea el loop.
+    // `.unref()` evita que el timer mantenga vivo el proceso al cerrar.
+    if (!_usageRefreshTimer) {
+      try {
+        const anthropicUsage = require('./lib/anthropic-usage');
+        const usageMetricsDir = path.join(PIPELINE, 'metrics');
+        const kickUsage = () => {
+          try { anthropicUsage.triggerRefreshAsync({ metricsDir: usageMetricsDir }); } catch { /* noop */ }
+        };
+        setImmediate(kickUsage);
+        _usageRefreshTimer = setInterval(kickUsage, anthropicUsage.THROTTLE_MS);
+        if (_usageRefreshTimer.unref) _usageRefreshTimer.unref();
+      } catch { /* noop: no bloquear el boot del dashboard */ }
     }
     // #4460 — Asegurar que el trust anchor `runtime-boot.json` refleje el HEAD
     // real al bootear. Mitiga el "restart manual sin restart.js": si el marker

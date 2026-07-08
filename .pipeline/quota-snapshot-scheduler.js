@@ -61,9 +61,14 @@ function log(msg) {
 }
 
 function isEnabled() {
+  // #4597 — DEPRECADO. El snapshot OCR del panel "Uso" de Claude Desktop ya no
+  // es la fuente de la cuota Anthropic: se reemplazó por la lectura directa de
+  // `claude -p "/usage"` (ver lib/anthropic-usage.js + quota-adapters/anthropic.js).
+  // Por eso el default pasó a DESHABILITADO: el scheduler sólo corre si el
+  // operador lo pide EXPLÍCITAMENTE con QUOTA_SNAPSHOT_ENABLED=true (p.ej. para
+  // depurar el parser OCR). Cualquier otro valor => no-op silencioso.
   const raw = String(process.env.QUOTA_SNAPSHOT_ENABLED || '').toLowerCase();
-  // Default: habilitado salvo que esté explícitamente "false" (CA-18).
-  return raw !== 'false' && raw !== '0' && raw !== 'no';
+  return raw === 'true' || raw === '1' || raw === 'yes';
 }
 
 function getIntervalMs() {

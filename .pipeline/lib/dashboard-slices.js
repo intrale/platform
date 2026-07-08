@@ -2281,33 +2281,17 @@ function historialTimelineSlice(state, ctx, opts) {
 // Exposición mínima (security req#5): por proveedor/bucket SOLO viaja
 // `{pct, confidence}` — NO `cost_usd`, tokens crudos ni ruta del snapshot.
 
-// #4202 — Mapea el estado del banner real-snapshot (getBannerState) a un valor
-// de `confidence` estable que consume el cliente. Defensivo: si el módulo no
-// está disponible o falla, devuelve 'missing' (tratado como "sin dato").
-function _anthropicConfidence() {
-    if (!quotaSnapshotIntegration || typeof quotaSnapshotIntegration.getBannerState !== 'function') {
-        return 'missing';
-    }
-    try {
-        const banner = quotaSnapshotIntegration.getBannerState();
-        const st = banner && banner.state;
-        if (st === 'fresh' || st === 'stale' || st === 'parser-offline' || st === 'missing') {
-            return st;
-        }
-        return 'missing';
-    } catch {
-        return 'missing';
-    }
-}
-
 // #4202 — Normaliza un QuotaResult de adapter al shape mínimo de cliente.
 // Solo expone `{pct, confidence}` por bucket (security req#5). El mapeo de
 // buckets sesión/semanal por proveedor sigue la decisión validada por PO:
-//   - anthropic: session ← session.realPct ?? session.pct; weekly ← realPct ?? pct.
+//   - anthropic: session ← session.pct; weekly ← pct (números REALES de /usage).
 //   - openai-codex: session = "sin dato" (null); weekly ← realPct ?? pct (budget mensual).
 //   - gemini-google + resto: ambos "sin dato" salvo que el adapter dé un pct real.
-// `confidence`: anthropic deriva del snapshot OCR; el resto es 'fresh' cuando
-// hay dato confiable y 'missing' ("sin dato") cuando no.
+// `confidence` (#4597): ya NO deriva del snapshot OCR (deprecado). Para TODOS los
+// providers es 'fresh' cuando el adapter respondió `ok` con un pct válido, y
+// 'missing' ("sin dato") cuando no. El adapter Anthropic degrada a
+// `adapterStatus:'unknown'` cuando el dato de /usage está stale → confidence
+// 'missing' → pacing/presión lo ignoran (no actúan sobre un número viejo).
 function normalizeProviderQuota(provider, result) {
     const out = {
         provider,
@@ -2320,12 +2304,12 @@ function normalizeProviderQuota(provider, result) {
     const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 
     if (provider === 'anthropic') {
-        const conf = _anthropicConfidence();
+        const isOk = result.adapterStatus === 'ok';
         const sess = result.session && typeof result.session === 'object' ? result.session : {};
         const sessPct = num(sess.realPct != null ? sess.realPct : sess.pct);
         const weekPct = num(result.realPct != null ? result.realPct : result.pct);
-        out.session = { pct: sessPct, confidence: sessPct != null ? conf : 'missing' };
-        out.weekly = { pct: weekPct, confidence: weekPct != null ? conf : 'missing' };
+        out.session = { pct: sessPct, confidence: (isOk && sessPct != null) ? 'fresh' : 'missing' };
+        out.weekly = { pct: weekPct, confidence: (isOk && weekPct != null) ? 'fresh' : 'missing' };
         return out;
     }
 

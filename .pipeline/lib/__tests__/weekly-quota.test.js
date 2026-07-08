@@ -47,13 +47,14 @@ test('quotaUsage re-exportado dispatcha al adapter Anthropic correctamente', () 
     const tmp = makeTmpDir();
     const metricsDir = path.join(tmp, 'metrics');
     fs.mkdirSync(metricsDir);
-    const log = path.join(tmp, 'activity-log.jsonl');
-    writeJsonl(log, [
-        { event: 'session:end', ts: new Date().toISOString(), duration_ms: 3600000, model: 'claude' },
-    ]);
+    const now = Date.now();
+    // Cache de /usage fresco (fuente de verdad #4597).
+    fs.writeFileSync(path.join(metricsDir, 'anthropic-usage.json'), JSON.stringify({
+        schema: 1, capturedAtMs: now, sessionPct: 10, weeklyPct: 42,
+    }));
 
     const wq = freshWeekly();
-    const result = wq.quotaUsage('anthropic', { metricsDir, activityLogPath: log });
+    const result = wq.quotaUsage('anthropic', { metricsDir, autoRefresh: false, now });
 
     assert.equal(result.provider, 'anthropic');
     assert.equal(result.adapterStatus, 'ok');
@@ -105,67 +106,44 @@ test('state nuevo (sin archivo) se inicializa con schema_version: 2 explícito',
     assert.deepEqual(fresh.calibrations, []);
 });
 
-test('regresión cero del banner: quotaUsage(anthropic) wrappea computeQuota sin alterar campos legacy', () => {
+test('#4597: quotaUsage(anthropic) mapea el número REAL de /usage (pct=semanal, session.pct=sesión)', () => {
     const tmp = makeTmpDir();
     const metricsDir = path.join(tmp, 'metrics');
     fs.mkdirSync(metricsDir);
-    const log = path.join(tmp, 'activity-log.jsonl');
     const now = Date.now();
-    writeJsonl(log, [
-        { event: 'session:end', ts: new Date(now - 3600000).toISOString(), duration_ms: 7200000, model: 'claude' },
-        { event: 'session:end', ts: new Date(now - 7200000).toISOString(), duration_ms: 5400000, model: 'claude' },
-        // Determinístico debe excluirse igual que en legacy.
-        { event: 'session:end', ts: new Date(now - 10800000).toISOString(), duration_ms: 9000000, model: 'deterministic' },
-    ]);
+    // Cache de /usage escrito por lib/anthropic-usage.js — fresco (age 0).
+    fs.writeFileSync(path.join(metricsDir, 'anthropic-usage.json'), JSON.stringify({
+        schema: 1,
+        source: 'claude -p /usage',
+        capturedAt: new Date(now).toISOString(),
+        capturedAtMs: now,
+        sessionPct: 20,
+        weeklyPct: 64,
+        sessionResetsRaw: 'Jul 8, 10pm (America/Buenos_Aires)',
+        weeklyResetsRaw: 'Jul 12, 9pm (America/Buenos_Aires)',
+        sessionResetsAt: null,
+        weeklyResetsAt: null,
+    }));
 
     const wq = freshWeekly();
-    const legacy = wq.computeQuota(metricsDir, log);
-    const wrapped = wq.quotaUsage('anthropic', { metricsDir, activityLogPath: log });
+    const r = wq.quotaUsage('anthropic', { metricsDir, autoRefresh: false, now });
 
-    // Campos del banner que NO pueden romper (UX G5 + security CA-#7).
-    // `observedMaxAt` se actualiza con `new Date().toISOString()` cada llamada
-    // que detecta nuevo máximo; entre dos invocaciones consecutivas puede
-    // diferir en ms aunque la lógica sea idéntica → lo verificamos por tipo.
-    const bannerFieldsExact = [
-        'hoursUsed7d', 'sessionsCount7d', 'hoursLast24h',
-        'effectiveLimitHours', 'configLimitHours',
-        'pct', 'realPct', 'realPctRaw', 'realPctCapped', 'realStatus',
-        'hoursRemaining', 'burnRatePerDay', 'daysToLimit', 'status',
-        'adjustmentsCount', 'observedMaxHours', 'autoAdjusted',
-        'lastResetAt', // depende del día/hora, no del ms — estable.
-        'calibrationAgeDays', 'calibrationStale',
-        'sessionResetsAt', 'weeklyResetsAtReported',
-        'weeklyResetDriftMin',
-    ];
-    for (const f of bannerFieldsExact) {
-        assert.deepEqual(wrapped[f], legacy[f], `campo "${f}" debe coincidir byte-a-byte`);
-    }
-    // Campos timestamp-dependent: misma forma + tolerancia razonable (< 1s).
-    if (legacy.observedMaxAt) {
-        assert.ok(wrapped.observedMaxAt, 'observedMaxAt debe estar presente igual que en legacy');
-        const dt = Math.abs(new Date(wrapped.observedMaxAt).getTime() - new Date(legacy.observedMaxAt).getTime());
-        assert.ok(dt < 1000, `observedMaxAt debe estar dentro de 1s del legacy (delta=${dt}ms)`);
-    } else {
-        assert.equal(wrapped.observedMaxAt, null);
-    }
-    // nextResetAt/daysToReset se computan con Date.now() puro pero el "día"
-    // del próximo domingo 21:00 no cambia entre llamadas consecutivas.
-    assert.equal(wrapped.nextResetAt, legacy.nextResetAt, 'nextResetAt debe ser estable');
-    // daysToReset: tolerancia 0.001 días (~1.4 min) — puede diferir por el ms entre llamadas.
-    assert.ok(Math.abs(wrapped.daysToReset - legacy.daysToReset) < 0.001,
-        `daysToReset debe coincidir con tolerancia (legacy=${legacy.daysToReset}, wrapped=${wrapped.daysToReset})`);
-    // session.* también debe coincidir
-    assert.deepEqual(wrapped.session, legacy.session);
-    // calibration y calibrations también
-    assert.deepEqual(wrapped.calibration, legacy.calibration);
-    assert.deepEqual(wrapped.calibrations, legacy.calibrations);
-
-    // Y los nuevos campos del envelope multi-provider
-    assert.equal(wrapped.provider, 'anthropic');
-    assert.equal(wrapped.adapterStatus, 'ok');
-    assert.equal(wrapped.errorReason, null);
-    assert.equal(wrapped.schemaVersion, 2);
-    assert.deepEqual(wrapped.breakdown, []);
+    assert.equal(r.provider, 'anthropic');
+    assert.equal(r.adapterStatus, 'ok');
+    assert.equal(r.errorReason, null);
+    assert.equal(r.schemaVersion, 2);
+    // El % semanal ES el real de /usage (64%) — NADA de heurística de duración.
+    assert.equal(r.pct, 64);
+    assert.equal(r.status, 'normal'); // 50 ≤ 64 < 75
+    assert.equal(r.session.pct, 20);
+    assert.equal(r.session.status, 'ok'); // < 50
+    // Ya no hay calibración: realPct null, pct ES el real.
+    assert.equal(r.realPct, null);
+    assert.equal(r.calibration, null);
+    // Sin heurística de duración → campos de horas nulos.
+    assert.equal(r.hoursUsed7d, null);
+    assert.equal(r.effectiveLimitHours, null);
+    assert.deepEqual(r.breakdown, []);
 });
 
 test('quotaUsage(anthropic) sin metricsDir devuelve adapterStatus error con errorReason accionable', () => {
@@ -177,18 +155,17 @@ test('quotaUsage(anthropic) sin metricsDir devuelve adapterStatus error con erro
     assert.match(result.errorReason, /metricsDir/);
 });
 
-test('quotaUsage(anthropic) con activity-log corrupto NO lanza, devuelve estado consistente', () => {
+test('#4597: quotaUsage(anthropic) SIN cache de /usage degrada a unknown (fallback seguro, no lanza, pct null)', () => {
     const tmp = makeTmpDir();
     const metricsDir = path.join(tmp, 'metrics');
     fs.mkdirSync(metricsDir);
-    const log = path.join(tmp, 'activity-log.jsonl');
-    fs.writeFileSync(log, 'this is not json\n{"broken": "yes"}\n{"event": "session:end"}\n');
 
     const wq = freshWeekly();
-    const result = wq.quotaUsage('anthropic', { metricsDir, activityLogPath: log });
-    // computeQuota tolera líneas corruptas (las saltea) → adapter ok.
-    assert.equal(result.adapterStatus, 'ok');
-    assert.equal(result.hoursUsed7d, 0);
+    // Sin cache de /usage y sin spawnear (autoRefresh false): fallback degradado.
+    const result = wq.quotaUsage('anthropic', { metricsDir, autoRefresh: false });
+    assert.equal(result.adapterStatus, 'unknown');
+    assert.equal(result.pct, null); // nunca 0 silencioso
+    assert.match(result.errorReason, /fallback degradado/);
 });
 
 test('computeQuota legacy sigue funcionando sin cambios (no breaking)', () => {
