@@ -1,5 +1,15 @@
 // Weekly Quota — estimación del consumo del Plan Max de Anthropic.
 //
+// ⚠️ DEPRECADO como FUENTE de la cuota Anthropic (#4597).
+//   `computeQuota` (heurística de `duration_ms`) y la calibración manual
+//   (`saveCalibration`/EMA/factor) ya NO alimentan el adapter Anthropic: la
+//   fuente de verdad pasó a ser el uso REAL de `claude -p "/usage"`
+//   (ver lib/anthropic-usage.js + quota-adapters/anthropic.js). Este archivo se
+//   conserva SÓLO por compatibilidad (fallback de último recurso en
+//   dashboard-slices y helpers de reset como getLastWeeklyResetMs que pacing
+//   sigue usando para anclar la ventana semanal). No agregar consumidores
+//   nuevos de `computeQuota`/`saveCalibration`.
+//
 // Anthropic NO expone API pública del uso del plan, así que aproximamos:
 //
 //  1. Sumamos `duration_ms` de eventos `session:end` del activity-log

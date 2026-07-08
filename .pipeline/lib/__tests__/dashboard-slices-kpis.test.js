@@ -249,7 +249,23 @@ test('CA-1: prsLast7d arranca en null cuando gh no responde, NO 0', () => {
 
 test('CA-5: quotaSlice expone `providers` con anthropic + stubs not_implemented', () => {
     const { root, pipeline, metrics } = mkTmpPipeline();
-    // Activity log mínimo con un session:end de Anthropic en la ventana actual.
+    // #4597 — La fuente de verdad de la cuota Anthropic ya NO es la heurística de
+    // `duration_ms` del activity-log, sino el uso REAL de `claude -p /usage`,
+    // cacheado en `metrics/anthropic-usage.json`. Seedeamos un snapshot fresco
+    // (capturedAtMs = ahora) para que el adapter reporte adapterStatus 'ok'.
+    fs.writeFileSync(path.join(metrics, 'anthropic-usage.json'), JSON.stringify({
+        schema: 1,
+        source: 'claude -p /usage',
+        capturedAt: new Date().toISOString(),
+        capturedAtMs: Date.now(),
+        sessionPct: 34,
+        weeklyPct: 66,
+        sessionResetsRaw: null,
+        weeklyResetsRaw: null,
+        sessionResetsAt: null,
+        weeklyResetsAt: null,
+    }));
+    // Activity log mínimo (compat: alimenta métricas legacy no-cuota del banner).
     const log = path.join(root, '.claude', 'activity-log.jsonl');
     fs.writeFileSync(log, JSON.stringify({
         event: 'session:end',
