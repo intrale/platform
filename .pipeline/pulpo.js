@@ -14609,6 +14609,8 @@ function runStuckReconcilerTick() {
   if (Date.now() - _lastStuckReconcilerAt < STUCK_RECONCILER_INTERVAL_MS) return;
   _lastStuckReconcilerAt = Date.now();
   try {
+    const config = loadConfig();
+    if (!config || !config.pipelines) return;
     const STUCK_STATE_FILE = path.join(PIPELINE, '.stuck-reconciler-state.json');
     const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
     const ppMode = partialPause.getPipelineMode();
