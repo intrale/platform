@@ -31,6 +31,7 @@ function makeDeps(fs, over = {}) {
         issueLiveElsewhere: over.issueLiveElsewhere || (() => false),
         hasNeedsHuman: over.hasNeedsHuman || (() => false),
         isAllowed: over.isAllowed || (() => true),
+        isIssueOpen: over.isIssueOpen || (() => true),
         isPaused: over.isPaused || (() => false),
         livenessOk: over.livenessOk || (() => true), // por default trabajando cuenta vivo
         loadRetryState: () => retryState,
@@ -142,6 +143,15 @@ test('E2E idempotente: si el work-item ya existe, no re-escribe', () => {
     assert.equal(deps.calls.requeue.length, 0);
 });
 
+test('E2E issue CERRADO con residuo → none (no escala issues cerrados)', () => {
+    const fs = { desarrollo: { validacion: {
+        archivado: { '4510.po': { yaml: {}, mtimeMs: OLD }, '4510.ux': { yaml: {}, mtimeMs: OLD }, '4510.guru': { yaml: {}, mtimeMs: OLD } },
+    } } };
+    const deps = makeDeps(fs, { isIssueOpen: () => false }); // cerrado
+    const res = runStuckPhaseReconciler(deps, {});
+    assert.equal(res.escalated, 0);
+    assert.equal(res.requeued, 0);
+});
 test('E2E completo: nada varado → sin acciones', () => {
     const fs = { desarrollo: { validacion: {
         listo: { '300.po': { yaml: APROB, mtimeMs: OLD }, '300.ux': { yaml: APROB, mtimeMs: OLD }, '300.guru': { yaml: APROB, mtimeMs: OLD } },

@@ -19,7 +19,7 @@ function stuckIssue(over = {}) {
         requiredSkills: ['po', 'ux', 'guru'],
         deliverables: [deliv('po', 'listo', APROB), deliv('guru', 'listo', APROB)], // ux missing
         liveSkills: new Set(), liveElsewhere: false, hasNeedsHuman: false,
-        retryCounts: {}, isMonoSkill: false, allowed: true,
+        retryCounts: {}, isMonoSkill: false, allowed: true, active: true,
         ...over,
     };
 }
@@ -90,8 +90,23 @@ test('SG-5 pausa: SÍ permite escalate (label, no spawnea)', () => {
     const it = stuckIssue({ deliverables: [deliv('po', 'listo', CANCEL)] });
     assert.equal(only([it], { paused: true }).action, 'escalate');
 });
-test('SG-5 allowlist: issue fuera de allowlist → no re-encola', () => {
-    assert.equal(only([stuckIssue({ allowed: false })]).action, 'none');
+test('allowlist: issue fuera de allowlist (requeue) → none (backlog dormido)', () => {
+    const d = only([stuckIssue({ allowed: false })]);
+    assert.equal(d.action, 'none');
+    assert.match(d.reason, /allowlist/);
+});
+test('allowlist: issue fuera de allowlist que ESCALARÍA → none (no spamea backlog)', () => {
+    const it = stuckIssue({ allowed: false, deliverables: [deliv('po', 'listo', CANCEL)] });
+    assert.equal(only([it]).action, 'none', 'ni siquiera escala si está fuera de la ola');
+});
+test('issue CERRADO (active=false) → none (residuo, no tocar)', () => {
+    const it = stuckIssue({ active: false, deliverables: [deliv('po', 'listo', CANCEL)] });
+    assert.equal(only([it]).action, 'none');
+    assert.match(only([it]).reason, /cerrado/);
+});
+test('issue con active undefined → none (desconocido = no tocar)', () => {
+    const it = stuckIssue({ active: undefined });
+    assert.equal(only([it]).action, 'none', 'sin confirmación de OPEN, no actúa');
 });
 
 // ─── Cap por tick + orden (P2-3) ────────────────────────────────────────────

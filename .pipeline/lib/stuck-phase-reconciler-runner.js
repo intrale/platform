@@ -81,6 +81,9 @@ function buildIssuesContext(deps) {
                 hasNeedsHuman: !!deps.hasNeedsHuman(issue),
                 retryCounts: (deps.retryState && deps.retryState[retryKey]) || {},
                 allowed: deps.isAllowed ? !!deps.isAllowed(issue) : true,
+                // active: solo actuar sobre issues confirmados OPEN (no residuo
+                // de cerrados). Sin dep → asume activo (para tests puros).
+                active: deps.isIssueOpen ? !!deps.isIssueOpen(issue) : true,
                 isMonoSkill: false, // los phases mono-skill no se pasan en parallelPhases
             });
         }

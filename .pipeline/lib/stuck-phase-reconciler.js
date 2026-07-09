@@ -53,6 +53,21 @@ function decideForIssue(it, cfg) {
     if (it.liveElsewhere) {
         return base('none', 'vivo-en-otra-fase');
     }
+    // Guard allowlist: solo la OLA ACTUAL. Los issues fuera de la allowlist son
+    // backlog dormido que el operador excluyó a propósito — el reconciler NO los
+    // toca (ni requeue ni escalate), sino spamea needs-human sobre issues muertos.
+    // (Hallazgo del dry-run contra estado real; endurece PO SG-5.)
+    if (it.allowed === false) {
+        return base('none', 'fuera-de-allowlist (backlog dormido, no tocar)');
+    }
+    // Guard issue-cerrado: las fases se llenan de RESIDUO de issues ya CLOSED/
+    // mergeados (work-items stub). Escalar/re-encolar un issue cerrado es ruido.
+    // Actuar SOLO sobre issues confirmados OPEN. `active !== true` (cerrado,
+    // notFound, o desconocido) → no tocar. (Hallazgo del dry-run: #4510/#4533/#4536
+    // CLOSED con residuo se escalaban.)
+    if (it.active !== true) {
+        return base('none', 'issue-cerrado-o-inactivo (residuo, no tocar)');
+    }
 
     const analysis = analyzeStuckIssue({
         requiredSkills: it.requiredSkills || [],
@@ -78,9 +93,9 @@ function decideForIssue(it, cfg) {
         if (it.hasNeedsHuman) return base('none', 'tope-reintentos + ya-escalado (dedupe)');
         return base('escalate', `tope de reintentos (${cfg.maxRequeueAttempts}) alcanzado para: ${capped.join(',')}`, { consumesTick: true });
     }
-    // Pausa / allowlist: no re-encolar (no spawnear), PO SG-5.
+    // Pausa: no re-encolar (no spawnear), PO SG-5. El escalate SÍ sigue permitido
+    // para issues de la ola (ya filtrados por allowlist arriba).
     if (cfg.paused) return base('none', 'pipeline-en-pausa (no re-encola)');
-    if (it.allowed === false) return base('none', 'issue-fuera-de-allowlist (no re-encola)');
 
     return base('requeue', analysis.reason, { skills, consumesTick: true });
 }
