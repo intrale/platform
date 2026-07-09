@@ -67,6 +67,22 @@ const HEALTH_HARD_BLOCK_TOLERANCE_RATIO = 0.10;
 // captura de lleno el 100% de samples lentos de la regresión: mejor discriminador
 // y más fuerte (los ~2000ms de la regresión ni siquiera llegan al hard-block de
 // 2500ms, así que sin este gate por mediana la señal quedaría floja).
+//
+// rev-3 (rebote #4534): la mediana se evaluaba contra HEALTH_BUDGET_MS=500, pero
+// ese 500ms es el budget IDEAL del endpoint aislado, NO un piso robusto bajo la
+// suite Node COMPLETA (8346 tests). Con esa carga el proceso padre que MIDE queda
+// tan saturado que la MAYORÍA de samples sanos caen en 500-1000ms (rebote #4534
+// rev-2: mediana 634ms, max 986ms, samples=12) sin que el dashboard child esté
+// lento — verificado: el worker resuelve títulos por _scheduleTitleRefresh (exec
+// async fire-and-forget), NO por fetchIssueTitles/execSync (sin usos fuera de su
+// definición). Bajar el budget no arregla nada: el discriminador real es el GAP
+// entre la latencia sana-saturada (~600-1000ms) y la de la regresión (~2000ms+),
+// no el valor absoluto. Se separa el techo de mediana en HEALTH_MEDIAN_MAX_MS,
+// fijado DENTRO de ese gap: por encima del jitter observado del padre (986ms) y
+// muy por debajo del piso de la regresión (~2000ms). Así la mediana sigue siendo
+// el detector load-bearing (la regresión la dispara con >=500ms de margen) sin
+// falsos positivos por saturación del proceso que mide.
+const HEALTH_MEDIAN_MAX_MS = 1500;
 const HAMMER_MS = 3000;
 const MIN_SAMPLES = 12;
 const HAMMER_HARD_CAP_MS = 20000;
@@ -218,19 +234,21 @@ test('/api/health responde < 500ms aunque el worker resuelva títulos contra un 
     `(max=${max}ms, tolerancia ${blockedTolerance}). El fetch de títulos volvió a ser síncrono (execSync(gh)) ` +
     `dentro del worker de snapshot: dispararía ~100% de samples clavados, no un outlier aislado por saturación del padre.`);
 
-  // (b) Invariante de presupuesto por MEDIANA (rebote #4534 rev-2): con gh
+  // (b) Invariante de presupuesto por MEDIANA (rebote #4534 rev-2/rev-3): con gh
   // síncrono TODOS los samples pasarían el budget (o expirarían) → la mediana se
-  // dispara a >=2000ms. En sano, aunque el proceso padre saturado deje una
-  // minoría de outliers (spawn de cmd.exe en Windows o un timeout flaky), la
-  // MAYORÍA de samples sigue siendo rápida y la mediana queda muy por debajo del
-  // presupuesto. Un timeout (`!s.ok`) mide ~2000ms (el timeout HTTP), así que ya
-  // contribuye alto al ordenamiento; no hace falta forzarlo. La mediana no se
-  // mueve por unos pocos outliers pero sí por la regresión sostenida (100%).
+  // dispara a >=2000ms. En sano, aunque el proceso padre saturado por la suite
+  // completa deje a la MAYORÍA de samples en 500-1000ms, la mediana queda por
+  // debajo de HEALTH_MEDIAN_MAX_MS (1500ms), que se fija en el gap entre el jitter
+  // del padre (~1000ms) y el piso de la regresión (~2000ms). Un timeout (`!s.ok`)
+  // mide ~2000ms (el timeout HTTP), así que ya contribuye alto al ordenamiento; no
+  // hace falta forzarlo. La mediana no se mueve por outliers del padre pero sí por
+  // la regresión sostenida (100% de samples >=2000ms).
   const elapsedSorted = samples.map((s) => s.elapsed).sort((a, b) => a - b);
   const median = elapsedSorted[Math.floor(elapsedSorted.length / 2)];
-  assert.ok(median < HEALTH_BUDGET_MS,
-    `REGRESIÓN #4128: la MEDIANA de /api/health fue ${median}ms (presupuesto ${HEALTH_BUDGET_MS}ms, ` +
-    `samples=${samples.length}, max=${max}ms). El fetch de títulos volvió a ser síncrono (execSync(gh)) ` +
-    `dentro del worker: clava el event loop ~2-30s en cada tick y ~100% de samples superan el presupuesto ` +
-    `(mediana >=2000ms). Un outlier aislado por saturación del proceso padre no mueve la mediana.`);
+  assert.ok(median < HEALTH_MEDIAN_MAX_MS,
+    `REGRESIÓN #4128: la MEDIANA de /api/health fue ${median}ms (techo ${HEALTH_MEDIAN_MAX_MS}ms, ` +
+    `budget ideal ${HEALTH_BUDGET_MS}ms, samples=${samples.length}, max=${max}ms). El fetch de títulos ` +
+    `volvió a ser síncrono (execSync(gh)) dentro del worker: clava el event loop ~2-30s en cada tick y ` +
+    `~100% de samples superan ${HEALTH_MEDIAN_MAX_MS}ms (mediana >=2000ms). Un outlier aislado por ` +
+    `saturación del proceso padre no mueve la mediana por debajo de ${HEALTH_MEDIAN_MAX_MS}ms.`);
 });
