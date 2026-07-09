@@ -400,4 +400,26 @@ const fase = process.env.PIPELINE_FASE || "dev";
 writeDeliverable("android-dev", issue, { fase, md /* o svg para mockups/diagramas */ });
 ```
 
-El enforcement es **warn-only**: no generar el archivo no bloquea el pipeline, pero cuenta para la cobertura ≥80% de la ola (CA-4).
+### Obligatorio: nota o excepción explícita (#4507)
+
+El enforcement de esta fila (**`dev` / `android-dev`**) **ya no es warn-only**. Al cerrar la fase Desarrollo con `resultado: aprobado`, DEBÉS producir **una de estas dos cosas** — el silencio ya no es válido:
+
+1. **Nota de implementación** (caso normal), vía `writeDeliverable(...)`. Contenido mínimo de la nota:
+   - Pantallas/componentes Compose tocados.
+   - ViewModels y estado (`[Feature]UIState`).
+   - Navegación (rutas/`ro/`) afectada.
+   - Adapters/extensiones (`asdo/`, `ext/`) creados o modificados.
+   - Desvíos frente a la receta técnica del Arquitecto (si los hubo).
+   - Cómo se probó (tests, build, verificación manual).
+   - Sin screenshots ni diagrama propio.
+
+2. **Excepción explícita**, cuando la nota no aplica por la naturaleza del issue. Declarala en el YAML de resultado:
+
+   ```yaml
+   resultado: aprobado
+   entregable_no_aplica: "Motivo concreto por el que no hay nota de implementación Android (ej: issue de solo-docs sin cambios de código de app)."
+   ```
+
+   El pipeline registra ese motivo como excepción auditable en el store `issue → fase → agente` (`.pipeline/deliverables/<issue>.json`, `tipo: "exception"`) y lo disponibiliza por Telegram. El motivo se **redacta** (secrets) y **trunca** (2048 chars) automáticamente — no pegues tokens ni paths de secrets.
+
+**Cierre silencioso = incidencia.** Si aprobás sin adjunto, sin nota sustantiva y sin `entregable_no_aplica`, el pipeline lo marca como **error accionable** y lo registra como excepción-incidencia (no queda `aprobado` sin rastro). Evitalo: generá la nota o declará el motivo.

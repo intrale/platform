@@ -391,6 +391,12 @@ const { path, bytes } = writeDeliverable('guru', issue, { md /* o svg */ });
 >   `.pipeline/assets/docs/{issue}` y la whitelist de notificación ya incluyen a
 >   `pipeline-dev`; el cierre se disponibiliza sin bloqueo por allowlist ni formato.
 
+> **Actualización #4507 (android-dev/Desarrollo).** La relación
+> `Desarrollo → android-dev → Nota de implementación` **también deja de ser
+> warn-only**: al cerrar `desarrollo/dev` el `android-dev` debe producir la nota
+> de implementación **o** declarar una excepción explícita. El detalle operativo
+> vive en la subsección específica más abajo.
+
 Histórico (warn-only, aún vigente para las relaciones no endurecidas): la
 cobertura ≥80% de la primera ola se **mide** reutilizando la telemetría que ya
 emite `deliverable-notify.js`. Un agente que no genere el archivo no traba el
@@ -437,6 +443,28 @@ gate retiene igual (evita el silencio: excepción explícita, no omisión).
 notificación (`DEFAULT_NOTIFY_SKILLS` / `deliverable_notifications.skills`),
 **nunca** bypass de `redactContent` ni del flag `sensible`. La redacción de
 secrets y el ruteo por sensibilidad siguen aplicándose al forzar el envío.
+
+#### Excepción: `dev` / `android-dev` — obligatorio (#4507)
+
+La fila **Desarrollo → `android-dev`** dejó de ser warn-only. El entregable de
+cierre es **obligatorio**: nota de implementación **o** excepción explícita
+declarada. El barrido de `pulpo.js` (bloque de notificación de entregables)
+evalúa el cierre con el guard puro `lib/android-dev-deliverable-guard.js` y:
+
+- **Nota / adjunto presente** → flujo normal (el fallback determinístico
+  materializa el `.md` desde `notas` si hace falta).
+- **`entregable_no_aplica: "<motivo>"`** en el YAML → se registra una **excepción
+  explícita** en el store vía `upsertDeliverableException(...)`
+  (`tipo: "exception"`, `path: null`, `bytes: 0`), con el motivo **redactado**
+  (SEC-1) y **truncado a 2048 chars** con marcador (SEC-2). Se disponibiliza por
+  Telegram (`deliverable-notify` lo renderiza text-only, sin adjunto).
+- **Cierre silencioso** (aprobado sin adjunto, sin nota sustantiva y sin
+  `entregable_no_aplica`) → **incidencia accionable**: se registra igual como
+  excepción con motivo de error auditable y se loguea. No queda `aprobado` sin
+  rastro.
+
+El enforcement estricto se limita a `android-dev`/`dev`; el resto de los skills
+conserva el fallback general best-effort.
 
 ### Requisitos de seguridad del cierre de fase (CA-5..CA-9, OWASP-aligned)
 

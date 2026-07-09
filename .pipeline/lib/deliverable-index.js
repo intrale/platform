@@ -160,6 +160,15 @@ function validateIssueId(issue) {
 
 function resolvePipelineDir(opts) {
     if (opts && typeof opts.pipelineRoot === 'string' && opts.pipelineRoot.length > 0) {
+        // Normalización tolerante repo-root → `.pipeline` (#4507). El índice vive
+        // SIEMPRE en `<repo>/.pipeline/deliverables/`. Los callers pasan `pipelineRoot`
+        // de dos formas: el dir `.pipeline` canónico (p.ej. write-deliverable.js:236 y
+        // el callsite de excepción en pulpo `upsertDeliverableException({pipelineRoot:PIPELINE})`)
+        // o el REPO ROOT crudo (pulpo → collectAttachmentsForSkill → buildManifest*Map,
+        // que reenvían `ROOT`=repo root). Es idempotente para un dir `.pipeline`
+        // (basename==='.pipeline' → se devuelve tal cual), así que el primer grupo no
+        // se rompe; y traduce el repo root al canónico, así el manifest fase/sensible
+        // no queda vacío (gate sensible #4514 + trazabilidad #4255).
         const root = path.resolve(opts.pipelineRoot);
         return path.basename(root) === '.pipeline' ? root : path.join(root, '.pipeline');
     }
@@ -260,6 +269,7 @@ function entryKey(e) {
 // REQ-SEC-3: cap de longitud del `motivo`. Es un string de índice (pocos KiB),
 // NO un artefacto — el cap de 5 MiB de `write-deliverable` no aplica acá.
 const MOTIVO_MAX_CHARS = 2048;
+const MOTIVO_TRUNCATE_MARKER = '\n[truncado por limite 2048]';
 
 /**
  * Capa el `motivo` a `MOTIVO_MAX_CHARS` (REQ-SEC-3). Si excede, corta en límite
@@ -275,6 +285,15 @@ function capMotivo(s) {
     const lastSpace = hard.lastIndexOf(' ');
     const body = lastSpace > MOTIVO_MAX_CHARS * 0.5 ? hard.slice(0, lastSpace) : hard;
     return `${body}…`;
+}
+
+function redactAndTruncateMotivo(motivo) {
+    const raw = typeof motivo === 'string' ? motivo : (motivo == null ? '' : String(motivo));
+    let out = redactSensitive(redactSecretValue(raw));
+    if (out.length > MOTIVO_MAX_CHARS) {
+        out = out.slice(0, MOTIVO_MAX_CHARS) + MOTIVO_TRUNCATE_MARKER;
+    }
+    return out;
 }
 
 /**
@@ -420,6 +439,21 @@ function upsertException(entry = {}) {
     });
 }
 
+function upsertDeliverableException(entry = {}) {
+    return upsertDeliverableIndex({
+        issue: entry.issue,
+        fase: entry.fase,
+        agente: entry.agente,
+        tipo: 'exception',
+        motivo: redactAndTruncateMotivo(entry.motivo),
+        bytes: 0,
+        sensible: Boolean(entry.sensible),
+        timestamp: entry.timestamp,
+        pipelineRoot: entry.pipelineRoot,
+        phaseEnum: entry.phaseEnum,
+    });
+}
+
 // -----------------------------------------------------------------------------
 // Consultas
 // -----------------------------------------------------------------------------
@@ -451,6 +485,7 @@ function queryByAgent(issue, agente, opts = {}) {
 
 module.exports = {
     upsertDeliverableIndex,
+    upsertDeliverableException,
     upsertException,
     readDeliverableIndex,
     queryByPhase,
@@ -461,12 +496,14 @@ module.exports = {
     validateIssueId,
     getPhaseEnum,
     redactMeta,
+    redactAndTruncateMotivo,
     // Paths (tests / debugging)
     indexPathFor,
     deliverablesDir,
     // Constantes / helpers de test
     FALLBACK_PHASES,
     MOTIVO_MAX_CHARS,
+    MOTIVO_TRUNCATE_MARKER,
     capMotivo,
     _resetPhaseEnumCache,
 };

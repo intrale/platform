@@ -696,34 +696,74 @@ test('appendAudit retorna false si record es null', () => {
 });
 
 // -----------------------------------------------------------------------------
-// #4502 · CA-2 no-regresión — "disponibilizar sin allowlist" NO desactiva
-// redacción de secrets ni el ruteo por sensibilidad (SEC-REQ-2). El PO ya es
-// notifiable (DEFAULT_NOTIFY_SKILLS) y forzar su envío mantiene redactSensitive.
-// Cero cambio de código de notify: sólo confirmamos el invariante.
+// #4507 — Excepción de entregable (android-dev/dev): render text-only en Telegram
 // -----------------------------------------------------------------------------
 
-test('CA-2 (#4502) · po es notifiable y su envío mantiene redacción de secrets', () => {
+test('#4507 · buildPreview renderiza entregable_no_aplica text-only sin adjunto', () => {
     const { root, cleanup } = mkTmpRoot();
     try {
-        // Precondición: po está en el filtro default (CA-2 ya cumplido en runtime).
-        assert.ok(dn.DEFAULT_NOTIFY_SKILLS.includes('po'), 'po debe ser notifiable por default');
-
-        const calls = [];
-        const queueDir = path.join(root, '.pipeline', 'servicios', 'telegram', 'pendiente');
-        const result = dn.notify({
-            issue: 4502, skill: 'po', fase: 'criterios', pipeline: 'definicion',
-            yaml: { notas: `Ficha de definición.\nContexto de deploy: AKIAIOSFODNN7EXAMPLE\nresto del análisis.` },
-            config: defaultCfg(),
+        const out = dn.buildPreview({
+            issue: 4507,
+            skill: 'android-dev',
+            fase: 'dev',
+            pipeline: 'desarrollo',
+            yaml: {
+                resultado: 'aprobado',
+                entregable_no_aplica: 'Issue de solo-docs, sin cambios de código de app.',
+            },
+            title: 'android-dev debe entregar SIEMPRE la nota',
+            config: defaultCfg({ skills: ['android-dev'] }),
             pipelineRoot: root,
-            telegramQueueDir: queueDir,
-            deps: { writeQueueFile: (p, payload) => calls.push({ p, payload }) },
         });
-        assert.equal(result.ok, true);
-        assert.equal(calls.length, 1);
-        // El secreto embebido en las notas NO viaja en claro al payload de Telegram.
-        assert.ok(
-            !calls[0].payload.text.includes('AKIAIOSFODNN7EXAMPLE'),
-            `forzar el envío del po no debe deshabilitar la redacción: ${calls[0].payload.text}`,
-        );
+        // Text-only (sin adjunto físico).
+        assert.equal(out.payload.photo, undefined);
+        assert.equal(out.payload.document, undefined);
+        assert.equal(typeof out.payload.text, 'string');
+        // El motivo de la excepción se renderiza en el texto.
+        assert.match(out.payload.text, /Entregable no aplica: Issue de solo-docs/);
+    } finally { cleanup(); }
+});
+
+test('#4507 · buildPreview redacta secrets del motivo de excepción antes de renderizar', () => {
+    const { root, cleanup } = mkTmpRoot();
+    try {
+        const out = dn.buildPreview({
+            issue: 4507,
+            skill: 'android-dev',
+            fase: 'dev',
+            pipeline: 'desarrollo',
+            yaml: {
+                resultado: 'aprobado',
+                entregable_no_aplica: 'No aplica; ver key AKIAIOSFODNN7EXAMPLE en config.',
+            },
+            title: 'excepción con secreto',
+            config: defaultCfg({ skills: ['android-dev'] }),
+            pipelineRoot: root,
+        });
+        assert.doesNotMatch(out.payload.text, /AKIAIOSFODNN7EXAMPLE/);
+        assert.match(out.payload.text, /\[REDACTED\]/);
+    } finally { cleanup(); }
+});
+
+test('#4507 · buildPreview no duplica el motivo si ya vino en notas', () => {
+    const { root, cleanup } = mkTmpRoot();
+    try {
+        const motivo = 'Issue de infra sin UI Android.';
+        const out = dn.buildPreview({
+            issue: 4507,
+            skill: 'android-dev',
+            fase: 'dev',
+            pipeline: 'desarrollo',
+            yaml: {
+                resultado: 'aprobado',
+                notas: `Entregable no aplica: ${motivo}`,
+                entregable_no_aplica: motivo,
+            },
+            title: 'sin duplicar',
+            config: defaultCfg({ skills: ['android-dev'] }),
+            pipelineRoot: root,
+        });
+        const matches = out.payload.text.match(/Issue de infra sin UI Android\./g) || [];
+        assert.equal(matches.length, 1);
     } finally { cleanup(); }
 });

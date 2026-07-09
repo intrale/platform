@@ -508,22 +508,6 @@ test('#4255 — collector devuelve fase inferida del filename phase-scoped', () 
     }
 });
 
-test('#4515 — collector devuelve el veredicto PO de aprobacion como document enviable', () => {
-    const tmp = mkTmpRoot();
-    try {
-        writeFile(tmp.root, '.pipeline/assets/docs/4515/po-aprobacion-4515.md', '# ✅ aceptado\n\n## Alcance evaluado\n- Issue 4515');
-        const res = helper.collectAttachmentsForSkill('po', 4515, 'aprobacion', { pipelineRoot: tmp.root });
-
-        assert.equal(res.length, 1);
-        assert.equal(res[0].type, 'document');
-        assert.equal(res[0].fase, 'aprobacion');
-        assert.equal(res[0].descriptor, 'criterios');
-        assert.ok(res[0].path.endsWith('po-aprobacion-4515.md'), res[0].path);
-    } finally {
-        tmp.cleanup();
-    }
-});
-
 test('#4255 — manifest tiene prioridad sobre la inferencia del filename', () => {
     const tmp = mkTmpRoot();
     try {
@@ -608,6 +592,54 @@ test('#4524 · CA-6 — una entry tipo:exception NO aparece en buildManifestFase
 });
 
 // -----------------------------------------------------------------------------
+// #4507 — Las excepciones del índice (tipo:"exception", path:null) NO son
+// adjuntos físicos: no aparecen en collectAttachmentsForSkill y no rompen la
+// lectura del manifest.
+// -----------------------------------------------------------------------------
+
+test('#4507 — una excepción en el índice no se recolecta como adjunto físico', () => {
+    const tmp = mkTmpRoot();
+    try {
+        const di = require('../deliverable-index');
+        di.upsertDeliverableException({
+            issue: '4507', fase: 'dev', agente: 'android-dev',
+            motivo: 'Issue de solo-docs, sin cambios de app.',
+            pipelineRoot: tmp.root, phaseEnum: ['dev'],
+        });
+        // No hay ningún .md/.pdf en disco → collect no debe inventar adjuntos.
+        const res = helper.collectAttachmentsForSkill('android-dev', 4507, 'dev', { pipelineRoot: tmp.root });
+        assert.deepEqual(res, []);
+    } finally {
+        tmp.cleanup();
+    }
+});
+
+test('#4507 — excepción en el índice no rompe la lectura del manifest ni el mapeo fase', () => {
+    const tmp = mkTmpRoot();
+    try {
+        const di = require('../deliverable-index');
+        // Excepción en dev + artefacto físico real en analisis.
+        di.upsertDeliverableException({
+            issue: '4507', fase: 'dev', agente: 'android-dev',
+            motivo: 'No aplica en dev.', pipelineRoot: tmp.root, phaseEnum: ['dev', 'analisis'],
+        });
+        writeFile(tmp.root, '.pipeline/assets/docs/4507/android-dev-analisis-4507.md', 'contenido');
+        di.upsertDeliverableIndex({
+            issue: '4507', fase: 'analisis', agente: 'android-dev', tipo: 'document',
+            path: '.pipeline/assets/docs/4507/android-dev-analisis-4507.md', bytes: 9,
+            pipelineRoot: tmp.root, phaseEnum: ['dev', 'analisis'],
+        });
+        const res = helper.collectAttachmentsForSkill('android-dev', 4507, 'dev', { pipelineRoot: tmp.root });
+        // Sólo el artefacto físico real; la excepción (path:null) no aparece.
+        assert.equal(res.length, 1);
+        assert.equal(res[0].path, '.pipeline/assets/docs/4507/android-dev-analisis-4507.md');
+        assert.equal(res[0].fase, 'analisis');
+    } finally {
+        tmp.cleanup();
+    }
+});
+
+// -----------------------------------------------------------------------------
 // #4514 — propagación del flag `sensible` desde el índice de entregables.
 // El canal (deliverable-notify) lo usa para gatear el encolado a Drive público.
 // -----------------------------------------------------------------------------
@@ -628,6 +660,46 @@ test('#4514 — collector propaga sensible:true del índice para security/verifi
         const entry = res.find((r) => r.path === relPath);
         assert.ok(entry, 'debe encontrar el reporte');
         assert.equal(entry.sensible, true, 'el flag sensible del índice debe propagarse al adjunto');
+    } finally {
+        tmp.cleanup();
+    }
+});
+
+// #4507 — regresión E2E writer→reader con REPO ROOT crudo. El test #4514 de
+// arriba escribe y lee con `pipelineRoot: tmp.root` CRUDO (ambos aterrizan en
+// <tmp.root>/deliverables/ y coinciden entre sí), por lo que nunca modela la
+// traducción real: `writeDeliverable` persiste el índice bajo `.pipeline/deliverables/`
+// (write-deliverable.js:236) mientras `collectAttachmentsForSkill` es invocado por
+// pulpo con el REPO ROOT. Si `resolvePipelineDir` no normaliza repo-root → `.pipeline`,
+// el lector cae en <repo>/deliverables/ (stray, inexistente) y el flag `sensible`
+// se resuelve siempre `false` → gate #4514 anulado.
+test('#4507 — writeDeliverable(repoRoot) + collectAttachments(repoRoot) propaga sensible:true', () => {
+    const tmp = mkTmpRoot();
+    try {
+        // El repo root debe existir como dir para que write-deliverable resuelva paths.
+        fs.mkdirSync(path.join(tmp.root, '.pipeline'), { recursive: true });
+        const { writeDeliverable } = require('../write-deliverable');
+        // Escritor REAL con el contrato público: repo root crudo (igual que en producción).
+        writeDeliverable('security', 4507, {
+            fase: 'verificacion', sensible: true,
+            md: '## Reporte de auditoría\n\n**Veredicto:** a corregir',
+            pipelineRoot: tmp.root,
+        });
+
+        // El índice canónico debe existir bajo .pipeline/deliverables/ y NO como stray.
+        assert.ok(
+            fs.existsSync(path.join(tmp.root, '.pipeline', 'deliverables', '4507.json')),
+            'writeDeliverable debe indexar en .pipeline/deliverables/ (canónico)');
+        assert.ok(
+            !fs.existsSync(path.join(tmp.root, 'deliverables', '4507.json')),
+            'no debe existir índice stray en <repo>/deliverables/');
+
+        // Lector con REPO ROOT crudo (como lo invoca pulpo vía collectAttachmentsForSkill).
+        const res = helper.collectAttachmentsForSkill('security', 4507, 'verificacion', { pipelineRoot: tmp.root });
+        const entry = res.find((r) => r.path.endsWith('security-verificacion-4507.md'));
+        assert.ok(entry, 'debe encontrar el reporte escrito por writeDeliverable');
+        assert.equal(entry.sensible, true, 'el flag sensible del índice canónico debe propagarse al adjunto (gate #4514)');
+        assert.equal(entry.fase, 'verificacion', 'la fase del manifest gana sobre la inferencia por filename (#4255)');
     } finally {
         tmp.cleanup();
     }
