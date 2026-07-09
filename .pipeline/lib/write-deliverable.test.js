@@ -458,21 +458,56 @@ test('CA-3 · writeDeliverableException persiste tipo:exception con motivo redac
     assert.equal(rec.tipo, 'exception');
     assert.ok(!('path' in rec) || rec.path == null, 'una excepción no lleva path de binario');
     // El motivo se redactó (defensa en profundidad: writeDeliverableException + redactMeta).
-    assert.ok(typeof rec.motivo === 'string' && rec.motivo.trim().length > 0);
-    assert.ok(!rec.motivo.includes('AKIAIOSFODNN7EXAMPLE'), `motivo no debe filtrar la key: ${rec.motivo}`);
+    assert.ok(typeof rec.motivo_no_aplica === 'string' && rec.motivo_no_aplica.trim().length > 0);
+    assert.ok(!rec.motivo_no_aplica.includes('AKIAIOSFODNN7EXAMPLE'), `motivo no debe filtrar la key: ${rec.motivo_no_aplica}`);
 
     // Quedó indexado en el canónico, sin binario en disco.
     const read = deliverableIndex.readDeliverableIndex('4505', { pipelineRoot: pipelineDirOf(root) });
     assert.equal(read.entries.length, 1);
     assert.equal(read.entries[0].tipo, 'exception');
-    assert.ok(read.entries[0].motivo.length > 0);
+    assert.ok(read.entries[0].motivo_no_aplica.length > 0);
+});
+
+test('CA-1 · writeDeliverableException acepta el naming `motivo_no_aplica` del contrato #4524', () => {
+    const root = tmpRoot();
+    const rec = writeDeliverableException('pipeline-dev', '4524', {
+        fase: 'dev',
+        motivo_no_aplica: 'issue de infra pura sin entregable físico',
+        timestamp: '2026-07-07T10:00:00.000Z',
+        pipelineRoot: root,
+    });
+    assert.equal(rec.tipo, 'exception');
+    assert.equal(rec.agente, 'pipeline-dev');
+    assert.equal(rec.fase, 'dev');
+    assert.equal(rec.motivo_no_aplica, 'issue de infra pura sin entregable físico');
+    assert.ok(!('path' in rec) || rec.path == null, 'la excepción no lleva path');
+});
+
+test('CA-5 · writeDeliverableException redacta secreto opaco embebido (RE-1, no sólo AKIA/JWT)', () => {
+    const root = tmpRoot();
+    const rec = writeDeliverableException('pipeline-dev', '4524', {
+        fase: 'dev',
+        motivo_no_aplica:
+            'No aplica porque el deploy usa la key wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY manual',
+        timestamp: '2026-07-07T10:00:00.000Z',
+        pipelineRoot: root,
+    });
+    assert.ok(
+        !rec.motivo_no_aplica.includes('wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY'),
+        `el secreto opaco embebido debe salir redactado: ${rec.motivo_no_aplica}`,
+    );
+    assert.ok(rec.motivo_no_aplica.includes('No aplica porque el deploy usa la key'));
 });
 
 test('CA-3 · writeDeliverableException rechaza motivo vacío y fase ausente', () => {
     const root = tmpRoot();
     assert.throws(
         () => writeDeliverableException('guru', '4506', { fase: 'analisis', motivo: '   ', pipelineRoot: root }),
-        /motivo` no vacío/,
+        /motivo_no_aplica` no vacío/,
+    );
+    assert.throws(
+        () => writeDeliverableException('guru', '4506', { fase: 'analisis', motivo_no_aplica: '   ', pipelineRoot: root }),
+        /motivo_no_aplica` no vacío/,
     );
     assert.throws(
         () => writeDeliverableException('guru', '4506', { motivo: 'algo', pipelineRoot: root }),

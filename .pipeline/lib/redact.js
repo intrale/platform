@@ -353,9 +353,10 @@ function redactSecretValue(str) {
 //      heurística whole-string de `redactSecretValue` no alcanza.
 // =============================================================================
 
-// Longitud mínima del token para el escaneo de entropía por-token. AWS secret
-// access key = 40 chars; git SHA-40 es hex (entropía < 4.5) y queda intacto.
-const RAG_TOKEN_MIN_LEN = 40;
+// Longitud mínima del token para el escaneo de entropía por-token. El contrato
+// #4524 usa un ejemplo opaco de 38 chars; git SHA-40 es hex (entropía < 4.5) y
+// queda intacto.
+const RAG_TOKEN_MIN_LEN = 38;
 
 /**
  * Redacta secretos/PII embebidos en un fragmento de texto libre (línea de log,

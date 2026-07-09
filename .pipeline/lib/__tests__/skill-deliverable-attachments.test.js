@@ -571,6 +571,42 @@ test('#4255 — no rompe los 14 perfiles: cada uno recolecta sin tirar y expone 
     }
 });
 
+test('#4524 · CA-6 — una entry tipo:exception NO aparece en buildManifestFaseMap pero SÍ es visible en el store', () => {
+    const tmp = mkTmpRoot();
+    try {
+        const { upsertDeliverableIndex, readDeliverableIndex } = require('../deliverable-index');
+        // Excepción sin path (pipeline-dev::dev) + un document real con path.
+        upsertDeliverableIndex({
+            issue: '4524', fase: 'dev', agente: 'pipeline-dev', tipo: 'exception',
+            motivo_no_aplica: 'issue de infra pura sin entregable físico',
+            timestamp: '2026-07-07T10:00:00.000Z', pipelineRoot: tmp.root,
+        });
+        const relPath = '.pipeline/assets/docs/4524/guru-analisis-4524.md';
+        writeFile(tmp.root, relPath, 'analisis');
+        upsertDeliverableIndex({
+            issue: '4524', fase: 'analisis', agente: 'guru', tipo: 'document',
+            path: relPath, timestamp: '2026-07-07T10:00:00.000Z', pipelineRoot: tmp.root,
+        });
+
+        // La excepción NO genera adjunto: buildManifestFaseMap filtra por `path` string.
+        const faseMap = helper.__internals.buildManifestFaseMap('4524', tmp.root);
+        assert.ok(!faseMap.has(''), 'no debe mapear una entry sin path');
+        assert.equal(faseMap.size, 1, 'sólo el document con path entra al manifest');
+        assert.equal(faseMap.get(relPath.replace(/\\/g, '/')), 'analisis');
+
+        // Pero SÍ es visible en el store (readDeliverableIndex).
+        const read = readDeliverableIndex('4524', { pipelineRoot: tmp.root });
+        const exception = read.entries.find((e) => e.tipo === 'exception');
+        assert.ok(exception, 'la excepción debe seguir visible en el store');
+        assert.equal(exception.agente, 'pipeline-dev');
+        assert.equal(exception.fase, 'dev');
+        assert.ok(exception.motivo_no_aplica.length > 0);
+        assert.ok(!('path' in exception), 'la excepción no lleva path');
+    } finally {
+        tmp.cleanup();
+    }
+});
+
 // -----------------------------------------------------------------------------
 // #4514 — propagación del flag `sensible` desde el índice de entregables.
 // El canal (deliverable-notify) lo usa para gatear el encolado a Drive público.

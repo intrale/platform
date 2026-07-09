@@ -27,7 +27,7 @@
 const fs = require('fs');
 const path = require('path');
 const { getSkillSourcesCatalog } = require('./skill-deliverable-attachments');
-const { redactSecretValue, redactSensitive } = require('./redact');
+const { redactSecretValue, redactSensitive, redactRagContent } = require('./redact');
 const { upsertDeliverableIndex, validatePhase } = require('./deliverable-index');
 
 // Cap defensivo de tamaño por artefacto (CA-9). 5 MiB cubre PDFs/MD/SVG ricos
@@ -244,31 +244,37 @@ function writeDeliverable(skill, issue, payload = {}) {
 /**
  * Registra una EXCEPCIÓN explícita de entregable (#4504, CA-3): cuando por la
  * naturaleza del issue el agente NO produce un artefacto de contenido, se deja
- * constancia del `motivo` en el índice en vez de un silencio (ausencia). Es el
- * contrato opuesto al "cierre sin entregable": nunca queda un cierre sin document
- * NI excepción para los agentes con entregable obligatorio (ej. `guru`).
+ * constancia del `motivo_no_aplica` en el índice en vez de un silencio (ausencia).
+ * Es el contrato opuesto al "cierre sin entregable": nunca queda un cierre sin
+ * document NI excepción para los agentes con entregable obligatorio (ej. `guru`).
  *
  * No escribe binario ni usa `fs.writeFile` crudo: delega en el choke point del
- * índice (`upsertDeliverableIndex`) con `tipo:'exception'`, y redacta el `motivo`
- * con `redactContent` ANTES de persistir (SEC-1, defensa en profundidad — el
- * índice también redacta `motivo` en `redactMeta`).
+ * índice (`upsertDeliverableIndex`) con `tipo:'exception'`, y redacta el motivo
+ * con `redactRagContent` ANTES de persistir (SEC-1/RE-1, defensa en profundidad —
+ * per-token, cubre secreto opaco embebido; el índice también redacta
+ * `motivo_no_aplica` en `redactMeta`).
+ *
+ * Acepta `motivo_no_aplica` (naming canónico del contrato #4524) y `motivo`
+ * (alias compat #4504) como el mismo campo.
  *
  * @param {string} skill - clave del perfil (ej. 'guru').
  * @param {string|number} issue - número de issue (`^\d+$`).
  * @param {object} [opts]
  * @param {string} opts.fase - fase del pipeline (enum cerrado, SEC-2).
- * @param {string} opts.motivo - explicación de por qué no aplica (no vacío).
+ * @param {string} [opts.motivo_no_aplica] - explicación de por qué no aplica (no vacío).
+ * @param {string} [opts.motivo] - alias compat de `motivo_no_aplica`.
  * @param {string} [opts.pipelineRoot] - root del repo (default process.cwd()).
  * @param {string} [opts.timestamp] - ISO inyectable (determinismo en tests).
  * @returns {object} la entry de excepción persistida (redactada).
  */
 function writeDeliverableException(skill, issue, opts = {}) {
-    const { fase, motivo, pipelineRoot, timestamp } = opts;
+    const { fase, pipelineRoot, timestamp } = opts;
+    const motivo = opts.motivo_no_aplica ?? opts.motivo; // alias del contrato #4524
     if (fase == null) {
         throw new Error('writeDeliverableException requiere `fase`');
     }
     if (typeof motivo !== 'string' || motivo.trim().length === 0) {
-        throw new Error('writeDeliverableException requiere `motivo` no vacío');
+        throw new Error('writeDeliverableException requiere `motivo_no_aplica` no vacío');
     }
     // SEC-2: validar `fase` contra el enum cerrado antes de tocar el índice.
     validatePhase(fase, { pipelineRoot });
@@ -282,7 +288,8 @@ function writeDeliverableException(skill, issue, opts = {}) {
         fase,
         agente: skill,
         tipo: 'exception',
-        motivo: redactContent(motivo), // SEC-1: nunca crudo (defensa en profundidad).
+        // RE-1: per-token, cubre secreto opaco embebido (defensa en profundidad).
+        motivo_no_aplica: redactRagContent(motivo),
         sensible: false,
         timestamp,
         // Mismo choke point traducido repo-root → dir `.pipeline` que writeDeliverable.
