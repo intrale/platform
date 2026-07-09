@@ -371,6 +371,26 @@ const { path, bytes } = writeDeliverable('guru', issue, { md /* o svg */ });
 > del épico #4255 se materializa. La primera relación endurecida es
 > `Definición → PO → Ficha de definición`.
 
+> **Actualización #4509 (pipeline-dev/Desarrollo).** La relación
+> `Desarrollo → pipeline-dev → Nota de implementación` **también queda endurecida**:
+> ya **no** está cubierta por warn-only. Al cerrar `desarrollo/dev` con
+> `resultado: aprobado`, `pipeline-dev` debe producir **siempre** su documento o
+> registrar una **excepción explícita** con `motivo_no_aplica` redactado. La
+> ausencia silenciosa no satisface el cierre. Garantías de plomería:
+>
+> - **Fallback obligatorio (#4523).** Si `pipeline-dev` aprueba `dev` sin adjunto,
+>   el pulpo materializa SIEMPRE un `.md` mínimo vía `writeDeliverable`, sin el
+>   umbral anti-ruido de 80 chars que aplica al resto de los skills. El bypass del
+>   umbral está scopeado exclusivamente a `pipeline-dev/dev`.
+> - **Excepción explícita (#4524).** `writeDeliverableException('pipeline-dev',
+>   issue, { fase: 'dev', motivo, pipelineRoot })` persiste una entry
+>   `tipo: 'exception'` con `motivo_no_aplica` redactado en el mismo store
+>   `issue → fase → agente`, sin un segundo writer del manifest. La excepción vive
+>   en el índice y **no** se convierte en attachment físico.
+> - **Telegram sin allowlist.** El perfil documental `.md/.pdf` bajo
+>   `.pipeline/assets/docs/{issue}` y la whitelist de notificación ya incluyen a
+>   `pipeline-dev`; el cierre se disponibiliza sin bloqueo por allowlist ni formato.
+
 Histórico (warn-only, aún vigente para las relaciones no endurecidas): la
 cobertura ≥80% de la primera ola se **mide** reutilizando la telemetría que ya
 emite `deliverable-notify.js`. Un agente que no genere el archivo no traba el

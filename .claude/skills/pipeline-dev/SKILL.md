@@ -220,4 +220,28 @@ const fase = process.env.PIPELINE_FASE || "dev";
 writeDeliverable("pipeline-dev", issue, { fase, md /* o svg para mockups/diagramas */ });
 ```
 
-El enforcement es **warn-only**: no generar el archivo no bloquea el pipeline, pero cuenta para la cobertura ≥80% de la ola (CA-4).
+> **Obligatorio en `desarrollo/dev` (#4509).** Para `pipeline-dev` al cerrar la
+> fase `dev`, el warn-only original **quedó superado**: la nota de implementación
+> ya **no es opcional**. Al aprobar sin adjunto, el pulpo materializa SIEMPRE un
+> `.md` mínimo por vos (fallback obligatorio #4523, `pulpo.js`), así que el
+> silencio es imposible. Si por la naturaleza del issue el entregable **no
+> aplica**, registrá una **excepción explícita** con motivo redactado en vez de
+> dejar la carpeta vacía:
+>
+> ```js
+> const { writeDeliverableException } = require(path.resolve(".pipeline/lib/write-deliverable"));
+> const pipelineRoot = process.env.PIPELINE_ROOT || process.cwd();
+> writeDeliverableException("pipeline-dev", issue, {
+>   fase,                          // 'dev' — token del enum, no la etiqueta humana
+>   motivo: "Por qué no corresponde entregable en este issue",
+>   pipelineRoot,
+> });
+> ```
+>
+> Ambos caminos (nota o excepción) terminan en el store `issue → fase → agente`
+> (`.pipeline/deliverables/<issue>.json`) y se disponibilizan por Telegram sin
+> allowlist que los bloquee. La ausencia silenciosa **no** satisface el cierre.
+
+Para el resto de los skills/fases sigue vigente el enforcement **warn-only**: no
+generar el archivo no bloquea el pipeline, pero cuenta para la cobertura ≥80% de
+la ola (CA-4).
