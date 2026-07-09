@@ -13955,9 +13955,9 @@ function dedupDependencyIssue(issue, allIssuesInBatch) {
   if (Date.now() - depIssuesCache.fetchedAt > 600000) {
     try {
       ghThrottle();
-      const raw = execSync(
+      const raw = _ghExecSyncGuarded( // #4612 — breaker-aware
         `"${GH_BIN}" issue list --label "qa:dependency" --state open --json number,title --limit 100`,
-        { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true }
+        { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
       );
       depIssuesCache = { issues: JSON.parse(raw || '[]'), fetchedAt: Date.now() };
     } catch (e) {
@@ -14065,9 +14065,9 @@ function brazoIntake(config) {
       // #2405 CA-4: excluir issues con label `needs-human` — el circuit breaker
       // de infra los saca de la cola de intake hasta que un humano quite el label.
       ghThrottle();
-      const result = execSync(
+      const result = _ghExecSyncGuarded( // #4612 — breaker-aware
         `"${GH_BIN}" issue list --label "${label}" --state open --json number,title,labels --limit 50 --search "-label:needs-human"`,
-        { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true }
+        { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
       );
       let issues = JSON.parse(result || '[]');
 
@@ -14755,8 +14755,47 @@ function _sanitizeGhArgs(args) {
  *     `_unblockActivePid` para que el watchdog del brazo pueda matarlo
  *     si el race promise/timer mismo se cuelga.
  */
+// #4612 — Circuit-breaker de conectividad a GitHub. Durante un outage de red,
+// las llamadas `gh` fallaban en masa y demoraban el loop del Pulpo → heartbeat
+// stale → el watchdog lo mataba como zombi. El breaker corta rápido tras N
+// fallos de conexión consecutivos y reanuda solo cuando la red vuelve.
+const { createGhCircuitBreaker } = require('./lib/gh-circuit-breaker');
+const _ghBreaker = createGhCircuitBreaker({
+  threshold: 3,
+  cooldownMs: 30000,
+  onOpen: (st) => log('gh-breaker', `⚡ ABIERTO — ${st.consecutiveFailures} fallos de conexión a GitHub; cortocircuitando llamadas gh ${Math.round(st.cooldownMs / 1000)}s (degradado, sin bloquear el loop)`),
+  onClose: () => log('gh-breaker', '✓ CERRADO — conectividad a GitHub recuperada, gh normal'),
+});
+
+// #4612 — execSync de `gh` consciente del breaker. Reemplaza a `execSync(gh...)`
+// crudo en el hot-path del intake: si el circuito está abierto, tira rápido SIN
+// spawnear gh (evita bloquear el event loop 30s por llamada durante un outage).
+// El caller ya envuelve en try/catch y degrada — el throw se maneja igual.
+function _ghExecSyncGuarded(command, opts = {}) {
+  if (_ghBreaker.shouldShortCircuit(Date.now())) {
+    const err = new Error('gh-circuit-open: GitHub inalcanzable, execSync cortocircuitado');
+    err.code = 'GH_CIRCUIT_OPEN';
+    throw err;
+  }
+  try {
+    const out = execSync(command, { timeout: 15000, ...opts });
+    _ghBreaker.record({ ok: true }, Date.now());
+    return out;
+  } catch (err) {
+    _ghBreaker.record({ ok: false, error: { code: err.code, message: err.message, stderr: err.stderr && String(err.stderr) } }, Date.now());
+    throw err;
+  }
+}
+
 function _ghCallWithTimeout(bin, args, timeoutMs) {
   return new Promise((resolve, reject) => {
+    // #4612 — cortocircuito: si el breaker está abierto, fallar rápido SIN
+    // spawnear gh (no bloquear el loop del Pulpo durante un outage de red).
+    if (_ghBreaker.shouldShortCircuit(Date.now())) {
+      const err = new Error('gh-circuit-open: GitHub inalcanzable, llamada cortocircuitada');
+      err.code = 'GH_CIRCUIT_OPEN';
+      return reject(err);
+    }
     let settled = false;
     let timer = null;
     let pid = null;
@@ -14771,7 +14810,11 @@ function _ghCallWithTimeout(bin, args, timeoutMs) {
       settled = true;
       if (timer) { clearTimeout(timer); timer = null; }
       if (_unblockActivePid === pid) _unblockActivePid = null;
-      if (err) return reject(err);
+      if (err) {
+        _ghBreaker.record({ ok: false, error: { code: err.code, message: err.message, stderr } }, Date.now());
+        return reject(err);
+      }
+      _ghBreaker.record({ ok: true }, Date.now());
       resolve({ stdout, stderr });
     });
 
@@ -14803,6 +14846,7 @@ function _ghCallWithTimeout(bin, args, timeoutMs) {
       err.pid = pid;
       err.killStatus = killStatus;
       err.args = args.slice();
+      _ghBreaker.record({ ok: false, error: { code: err.code, message: err.message } }, Date.now()); // #4612
       reject(err);
     }, timeoutMs);
     // No queremos que el timer mantenga vivo el proceso del pulpo.
