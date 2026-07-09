@@ -230,10 +230,11 @@ writeDeliverable("pipeline-dev", issue, { fase, md /* o svg para mockups/diagram
 >
 > ```js
 > const { writeDeliverableException } = require(path.resolve(".pipeline/lib/write-deliverable"));
+> const pipelineRoot = process.env.PIPELINE_ROOT || process.cwd();
 > writeDeliverableException("pipeline-dev", issue, {
 >   fase,                          // 'dev' — token del enum, no la etiqueta humana
 >   motivo_no_aplica: "Por qué no corresponde entregable en este issue",
->   pipelineRoot: ROOT,
+>   pipelineRoot,
 > });
 > ```
 >
