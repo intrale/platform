@@ -1246,6 +1246,68 @@ function editWaveLocked(waveNumber, changes, meta) {
     return { waveNumber, wave: deepClone(target), version: versionToken(state) };
 }
 
+/**
+ * #4534 — Baja de una ola PLANIFICADA (ABM completo de la ventana Roadmap).
+ * Sólo opera sobre `planned_waves`: la activa y las archivadas no se borran por
+ * contrato (misma política que editWave). Al borrar la ola, sus issues quedan
+ * LIBERADOS (dejan de pertenecer a ninguna ola) y pueden reasignarse. Corre
+ * sobre la MISMA maquinaria transaccional (`withLockSync` + `saveState` +
+ * `atomicWriteFile`), con concurrencia optimista opcional vía
+ * `meta.expectedVersion` (If-Match).
+ *
+ * @example
+ *   deletePlannedWave(3, { updated_by: 'operador-local', source: 'api:waves', expectedVersion });
+ *
+ * @param {number} waveNumber
+ * @param {Object} [meta] — { updated_by?, source?, note?, expectedVersion? }
+ * @returns {{ waveNumber:number, freed_issues:number[], version:string }}
+ * @throws Error con code EWAVES_SHAPE | EWAVES_NOT_FOUND | EWAVES_VERSION_CONFLICT
+ */
+function deletePlannedWave(waveNumber, meta = {}) {
+    const wn = normalizeIssue(waveNumber);
+    if (!wn) {
+        throw mkWavesError(`deletePlannedWave: waveNumber inválido (${waveNumber})`, 'EWAVES_SHAPE');
+    }
+    return withLockSync(
+        wavesFile(),
+        () => deletePlannedWaveLocked(wn, meta),
+        {
+            component: 'waves-lock',
+            timeoutMs: LOCK_TIMEOUT_MS,
+            maxRetries: LOCK_MAX_RETRIES,
+            notify: notifyTelegram,
+        },
+    );
+}
+
+function deletePlannedWaveLocked(waveNumber, meta) {
+    // Mismo patrón que editWaveLocked: invalidar cache ANTES de leer.
+    invalidateCache();
+    const state = loadWaves();
+    assertVersionMatch(state, meta.expectedVersion);
+
+    const idx = state.planned_waves.findIndex((x) => x.number === waveNumber);
+    if (idx < 0) {
+        throw mkWavesError(`deletePlannedWave: ola planificada ${waveNumber} no existe`, 'EWAVES_NOT_FOUND');
+    }
+
+    const target = state.planned_waves[idx];
+    const freed = (Array.isArray(target.issues) ? target.issues : [])
+        .map((i) => normalizeIssue(i && i.number))
+        .filter((n) => Number.isInteger(n) && n > 0);
+
+    state.planned_waves.splice(idx, 1);
+
+    logInfo(`Ola planificada ${waveNumber} eliminada; ${freed.length} issue(s) liberado(s).`);
+    saveState(state, {
+        updated_by: meta.updated_by || 'System',
+        source: meta.source || 'manual',
+        note: meta.note || `delete planned wave ${waveNumber} (freed ${freed.length} issue(s))`,
+    });
+
+    return { waveNumber, freed_issues: freed, version: versionToken(state) };
+}
+
 // #4372 — `removeIssueFromWave` es aportado por #4383 (ya en main, arriba en este
 // archivo, con la política A04 de rechazo sobre la ola activa). Este issue lo
 // reusa tal cual + las extensiones no-breaking (codes, If-Match, valor de
@@ -2968,6 +3030,8 @@ module.exports = {
     // #4372 — Ola 8.3: extensión del dominio para la API de gestión de olas.
     // (removeIssueFromWave ya está exportado arriba — aporte de #4383.)
     editWave,
+    // #4534 — baja de ola planificada (ABM completo de la ventana Roadmap).
+    deletePlannedWave,
     versionToken,
     getVersion,
     getAllowlist,

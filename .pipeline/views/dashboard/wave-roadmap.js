@@ -272,10 +272,6 @@ function renderActiveCard(active, extra) {
     // decidir qué botón de ciclo de vida pintar y el pill de estado en vivo.
     // Fallback defensivo a 'running' (mismo default del slice).
     const mode = (e.mode === 'paused' || e.mode === 'partial_pause') ? e.mode : 'running';
-    const archiveBtn = num !== null
-        ? `<button type="button" class="wr-btn wr-btn-archive" onclick="roadmapArchive(${num}, 'activa')" title="${escapeHtmlAttr('Archivar la ola ' + num + ' (activa) a archived_waves')}" aria-label="${escapeHtmlAttr('Archivar la ola activa ' + num)}">`
-            + '<svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-archive-box"></use></svg> Archivar</button>'
-        : '';
     // #4436 CA-1/CA-2 — Pausar visible con running/partial_pause; Reanudar con
     // paused. El slot se mantiene igual (mismo contenedor .wr-card-actions) para
     // no causar salto de layout (guideline UX). El id de ola no viaja: los
@@ -307,72 +303,53 @@ function renderActiveCard(active, extra) {
             ? { cls: 'in-mode-partial', txt: '⏸ Parcial' }
             : { cls: 'in-mode-running', txt: '🟢 Corriendo' });
     const statePill = `<span class="wr-state-pill ${modeMeta.cls}" id="wr-active-state" role="status" aria-live="polite" data-mode="${mode}">${escapeHtmlText(modeMeta.txt)}</span>`;
-    const avanceHtml = renderAvanceBar(e.avance);
-    const etaHtml = renderEtaPanel(e.eta);
-    const blockedHtml = renderBlockedPanel(e.blocked);
-    return `<article class="wr-card wr-card-active" data-wave="${num !== null ? num : ''}">
+    // #4534 — Tira compacta de la ola en curso: SÓLO indica que es el destino por
+    // defecto de los issues nuevos + controles de ciclo de vida. El avance/ETA de
+    // la ola vive en el HOME (criterio de aceptación de #4534), no acá.
+    const verIssues = num !== null
+        ? `<button type="button" class="wr-linkb" onclick="rwOpenDetail(${num}, 'active')" title="${escapeHtmlAttr('Ver los issues de la ola en curso ' + num)}" aria-label="${escapeHtmlAttr('Ver los issues de la ola en curso ' + num)}">Ver issues ▸</button>`
+        : '';
+    const goalHint = goalTxt ? `<span class="wr-target-goal" title="${escapeHtmlAttr(goalTxt)}">${escapeHtmlText(goalTxt)}</span>` : '';
+    return `<article class="wr-card wr-card-active wr-target" data-wave="${num !== null ? num : ''}" data-kind="active">
       <span class="wr-rail" aria-hidden="true"></span>
-      <header class="wr-card-head">
-        <div class="wr-card-id">
-          <svg class="wr-card-ic" aria-hidden="true"><use href="#ic-wave"></use></svg>
-          <span class="wr-card-title">${escapeHtmlText(nameTxt)}</span>
-          ${num !== null ? `<span class="wr-card-num">Ola ${num}</span>` : ''}
-          ${statePill}
-        </div>
-        <div class="wr-card-actions">${pauseBtn}${resumeBtn}${dispatchBtn}${archiveBtn}</div>
-      </header>
-      ${goalTxt ? `<div class="wr-card-goal">${escapeHtmlText(goalTxt)}</div>` : ''}
-      ${avanceHtml}
-      ${etaHtml}
-      ${renderIssueList(issues, e.blockedSet)}
-      ${blockedHtml}
+      <div class="wr-target-main">
+        <span class="wr-target-dot" aria-hidden="true"></span>
+        ${statePill}
+        <span class="wr-card-title">${escapeHtmlText(nameTxt)}</span>
+        ${num !== null ? `<span class="wr-card-num">Ola ${num}</span>` : ''}
+        ${goalHint}
+        <span class="wr-target-note">${escapeHtmlText(String(issues.length))} issues · destino por defecto</span>
+        ${verIssues}
+      </div>
+      <div class="wr-card-actions">${pauseBtn}${resumeBtn}${dispatchBtn}</div>
     </article>`;
 }
 
-// Card de una ola PLANIFICADA (acento --purple-dim). El número de posición es
-// orden de procesamiento (NO la identidad de la ola). Incluye "Archivar".
+// #4534 — Fila de una ola PLANIFICADA en la lista ordenada. Arrastrable (handle
+// ⠿) para reordenar el orden de ejecución, con contador de issues y acciones
+// Ver (detalle) · Editar (ABM) · Promover · Eliminar. La `position` es el orden
+// de ejecución (índice+1), NO la identidad de la ola.
 function renderPlannedCard(wave, position) {
     const num = safeWaveNumber(wave.number);
-    const nameTxt = wave.name != null && wave.name !== '' ? String(wave.name) : (num !== null ? `Ola ${num}` : 'Ola');
+    if (num === null) return '';
+    const nameTxt = wave.name != null && wave.name !== '' ? String(wave.name) : `Ola ${num}`;
     const goalTxt = wave.goal != null ? String(wave.goal) : '';
     const issues = normalizeIssues(wave.issues);
-    // #4435 GUX-1/GUX-4 — "Promover a activa": acción PRIMARIA/positiva, sólo en
-    // olas planificadas (esta función es exclusiva de planned → CA-9). Ícono
-    // #ic-promote + label textual + title/aria descriptivos vía escapeHtmlAttr.
-    const promoteBtn = num !== null
-        ? `<button type="button" class="wr-btn wr-btn-promote" onclick="roadmapPromote(${num})" title="${escapeHtmlAttr('Promover la ola ' + num + ' (planificada) a activa y sincronizar la lista de bailes')}" aria-label="${escapeHtmlAttr('Promover la ola ' + num + ' (planificada) a activa y sincronizar la lista de bailes')}">`
-            + '<svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-promote"></use></svg> Promover a activa</button>'
-        : '';
-    const archiveBtn = num !== null
-        ? `<button type="button" class="wr-btn wr-btn-archive" onclick="roadmapArchive(${num}, 'planificada')" title="${escapeHtmlAttr('Archivar la ola planificada ' + num)}" aria-label="${escapeHtmlAttr('Archivar la ola planificada ' + num)}">`
-            + '<svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-archive-box"></use></svg> Archivar</button>'
-        : '';
-    // #4433 (CA-3) — Componer/asociar: input + botón que asocia un issue a ESTA
-    // ola planificada. Sólo se renderiza si la ola tiene número válido. El id de
-    // issue lo valida el server (addIssueToWave → EWAVES_SHAPE) — acá sólo se
-    // recolecta el texto crudo.
-    const composeHtml = num !== null
-        ? `<div class="wr-compose">
-        <label class="wr-compose-label" for="wr-assoc-${num}">Asociar issue</label>
-        <input type="text" class="wr-compose-input" id="wr-assoc-${num}" inputmode="numeric" placeholder="#1234" aria-label="${escapeHtmlAttr('Número de issue a asociar a la ola ' + num)}">
-        <button type="button" class="wr-btn wr-btn-compose" onclick="roadmapAssociate(${num})" title="${escapeHtmlAttr('Asociar el issue indicado a la ola ' + num)}">
-          <svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-wave-add"></use></svg> Asociar</button>
-        <span class="wr-compose-status" id="wr-compose-status-${num}" role="status" aria-live="polite"></span>
-      </div>`
-        : '';
-    return `<article class="wr-card wr-card-planned" data-wave="${num !== null ? num : ''}">
-      <header class="wr-card-head">
-        <div class="wr-card-id">
-          <span class="wr-pos" aria-label="${escapeHtmlAttr('Posición ' + position + ' en orden de procesamiento')}">${escapeHtmlText(String(position))}</span>
-          <span class="wr-card-title">${escapeHtmlText(nameTxt)}</span>
-          ${num !== null ? `<span class="wr-card-num">Ola ${num}</span>` : ''}
-        </div>
-        <div class="wr-card-actions">${promoteBtn}${archiveBtn}</div>
-      </header>
-      ${goalTxt ? `<div class="wr-card-goal">${escapeHtmlText(goalTxt)}</div>` : ''}
-      ${renderIssueList(issues, null, num)}
-      ${composeHtml}
-    </article>`;
+    const acts =
+        `<button type="button" class="wr-iconb wr-iconb-pri" onclick="rwOpenDetail(${num}, 'planned')" title="${escapeHtmlAttr('Ver los issues de la ola ' + num)}" aria-label="${escapeHtmlAttr('Ver los issues de la ola ' + num)}"><svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-expand"></use></svg></button>`
+        + `<button type="button" class="wr-iconb" onclick="rwOpenEdit(${num})" title="${escapeHtmlAttr('Editar la ola ' + num)}" aria-label="${escapeHtmlAttr('Editar la ola ' + num)}"><svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-wave-add"></use></svg></button>`
+        + `<button type="button" class="wr-iconb wr-iconb-ok" onclick="roadmapPromote(${num})" title="${escapeHtmlAttr('Promover la ola ' + num + ' a activa')}" aria-label="${escapeHtmlAttr('Promover la ola ' + num + ' a activa')}"><svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-promote"></use></svg></button>`
+        + `<button type="button" class="wr-iconb wr-iconb-del" onclick="rwDeleteWave(${num})" title="${escapeHtmlAttr('Eliminar la ola ' + num)}" aria-label="${escapeHtmlAttr('Eliminar la ola ' + num)}"><svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-remove-circle"></use></svg></button>`;
+    return `<div class="wr-pw" data-wave="${num}" draggable="true" ondragstart="rwDragStart(event, ${num})" ondragover="rwDragOver(event)" ondrop="rwDrop(event, ${num})">
+      <span class="wr-grip" aria-hidden="true" title="Arrastrá para reordenar">⠿</span>
+      <span class="wr-ord" aria-label="${escapeHtmlAttr('Posición ' + position + ' en el orden de ejecución')}">${escapeHtmlText(String(position))}</span>
+      <div class="wr-pw-meta">
+        <div class="wr-pw-name">${escapeHtmlText(nameTxt)}</div>
+        ${goalTxt ? `<div class="wr-pw-goal">${escapeHtmlText(goalTxt)}</div>` : ''}
+      </div>
+      <span class="wr-cnt">${escapeHtmlText(String(issues.length))} issues</span>
+      <div class="wr-acts">${acts}</div>
+    </div>`;
 }
 
 // Card de una ola ARCHIVADA (acento --text-dim, sobria). Muestra los issues
@@ -546,51 +523,70 @@ function roadmapStyle() {
 .al-warn{display:flex;flex-direction:column;gap:5px;padding:10px 13px;border-radius:10px;border:1px solid var(--danger,#F85149);background:var(--danger-bg,#160B0B)}
 .al-warn-head{display:flex;align-items:center;gap:7px;font-size:11px;font-weight:800;letter-spacing:.3px;text-transform:uppercase;color:#F5B0AC}
 .al-warn-row{font-size:12.5px;color:var(--text-secondary,#8A93A6);font-variant-numeric:tabular-nums}
+/* #4534 — Tira compacta de la ola en curso (destino por defecto, sin avance/ETA). */
+.wr-target{flex-direction:row;align-items:center;gap:11px;flex-wrap:wrap}
+.wr-target-main{display:flex;align-items:center;gap:10px;flex-wrap:wrap;flex:1;min-width:0}
+.wr-target-dot{width:8px;height:8px;border-radius:50%;background:var(--teal,#34D9E0);flex:none}
+.wr-target-note{font-size:11px;font-weight:600;color:var(--text-dim,#8B949E)}
+.wr-target-goal{font-size:11.5px;color:var(--text-secondary,#8A93A6);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:340px}
+.wr-linkb{font-size:11px;font-weight:800;cursor:pointer;color:var(--teal,#34D9E0);background:var(--teal-soft,rgba(52,217,224,.08));border:1px solid var(--teal,#34D9E0);border-radius:7px;padding:3px 10px}
+.wr-linkb:hover{background:var(--teal,#34D9E0);color:#06121a}
+/* #4534 — Filas de olas planificadas (ordenadas, arrastrables). */
+.wr-pw{display:flex;align-items:center;gap:11px;background:var(--surface-1,#11151E);border:1px solid var(--border,rgba(255,255,255,.1));border-radius:10px;padding:9px 12px}
+.wr-pw.wr-drag-over{border-color:var(--purple,#BC8CFF);box-shadow:0 0 0 1px var(--purple,#BC8CFF) inset}
+.wr-pw.wr-dragging{opacity:.5}
+.wr-grip{color:var(--text-dim,#8B949E);font-size:14px;cursor:grab;flex:none}
+.wr-ord{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:7px;font-size:12px;font-weight:800;color:var(--purple,#BC8CFF);background:var(--purple-bg,rgba(188,140,255,.12));border:1px solid var(--purple-dim,#8957E5);flex:none;font-variant-numeric:tabular-nums}
+.wr-pw-meta{flex:1;min-width:0}
+.wr-pw-name{font-size:12.5px;font-weight:800;color:var(--text-primary,#e6edf3)}
+.wr-pw-goal{font-size:10.5px;color:var(--text-dim,#8B949E);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wr-cnt{font-size:10.5px;font-weight:800;color:var(--purple,#BC8CFF);background:var(--purple-bg,rgba(188,140,255,.12));border-radius:999px;padding:2px 9px;flex:none;font-variant-numeric:tabular-nums}
+.wr-acts{display:flex;gap:5px;flex:none}
+.wr-iconb{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;cursor:pointer;border-radius:7px;border:1px solid var(--border,rgba(255,255,255,.12));background:var(--surface-0,#0d1117);color:var(--text-secondary,#8A93A6)}
+.wr-iconb:hover{color:var(--text-primary,#e6edf3);border-color:var(--purple,#BC8CFF)}
+.wr-iconb-pri:hover{border-color:var(--teal,#34D9E0);color:var(--teal,#34D9E0)}
+.wr-iconb-ok:hover{border-color:var(--success,#3FB950);color:var(--success,#3FB950)}
+.wr-iconb-del{color:var(--danger,#F85149)}
+.wr-iconb-del:hover{border-color:var(--danger,#F85149);background:var(--danger-bg,#160B0B)}
+.wr-planned-list{display:flex;flex-direction:column;gap:7px}
+/* #4534 — Overlays de detalle / agregar / ABM. */
+.rw-overlay{gap:14px}
+.rw-dhead{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.wr-backb{font-size:11px;font-weight:700;cursor:pointer;color:var(--text-secondary,#8A93A6);background:var(--surface-1,#11151E);border:1px solid var(--border,rgba(255,255,255,.12));border-radius:7px;padding:5px 10px}
+.wr-backb:hover{color:var(--text-primary,#e6edf3);border-color:var(--purple,#BC8CFF)}
+.rw-board{display:grid;grid-template-columns:repeat(2,1fr);gap:7px}
+@media (max-width:720px){.rw-board{grid-template-columns:1fr}}
+.rw-iss{display:flex;align-items:center;gap:8px;background:var(--surface-1,#11151E);border:1px solid var(--border,rgba(255,255,255,.1));border-radius:8px;padding:7px 10px;font-size:11.5px}
+.rw-iss .rw-st{width:7px;height:7px;border-radius:50%;flex:none;background:var(--text-dim,#8B949E)}
+.rw-iss .rw-st.done{background:var(--success,#3FB950)}
+.rw-iss .rw-st.run{background:var(--teal,#34D9E0)}
+.rw-iss .rw-st.blk{background:var(--danger,#F85149)}
+.rw-iss .rw-num{font-weight:800;font-variant-numeric:tabular-nums}
+.rw-iss .rw-ttl{flex:1;color:var(--text-secondary,#8A93A6);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rw-iss .rw-x{cursor:pointer;color:var(--text-dim,#8B949E);background:none;border:none;font-weight:800;font-size:14px;padding:0 4px}
+.rw-iss .rw-x:hover{color:var(--danger,#F85149)}
+.rw-searchrow{display:flex;gap:9px;flex-wrap:wrap}
+.rw-search{flex:1;min-width:180px;font:inherit;font-size:13px;color:var(--text-primary,#e6edf3);background:var(--surface-0,#0d1117);border:1px solid var(--border,rgba(255,255,255,.12));border-radius:8px;padding:8px 11px}
+.rw-search:focus{outline:none;border-color:var(--teal,#34D9E0)}
+.rw-tgt{display:flex;align-items:center;gap:7px;font-size:11.5px;font-weight:700;color:var(--text-secondary,#8A93A6)}
+.rw-results{display:flex;flex-direction:column;gap:6px}
+.rw-r{display:flex;align-items:center;gap:10px;background:var(--surface-1,#11151E);border:1px solid var(--border,rgba(255,255,255,.1));border-radius:8px;padding:8px 11px;font-size:12px;cursor:pointer}
+.rw-r .rw-cbx{width:15px;height:15px;border-radius:4px;border:1.5px solid var(--text-dim,#8B949E);flex:none;display:flex;align-items:center;justify-content:center;font-size:10px}
+.rw-r.rw-sel{border-color:var(--teal,#34D9E0)}
+.rw-r.rw-sel .rw-cbx{background:var(--teal,#34D9E0);border-color:var(--teal,#34D9E0);color:#06121a;font-weight:900}
+.rw-r .rw-num{font-weight:800}
+.rw-r .rw-ttl{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-secondary,#8A93A6)}
+.rw-r.rw-excl{opacity:.55;cursor:not-allowed;border-style:dashed;background:transparent}
+.rw-why{font-size:9.5px;font-weight:700;border-radius:6px;padding:3px 8px;color:var(--text-dim,#8B949E);border:1px solid var(--border,rgba(255,255,255,.12))}
+.rw-addbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.rw-addbar .rw-sum{font-size:11px;color:var(--text-dim,#8B949E);font-weight:600}
+.wr-poschips{display:flex;gap:6px;flex-wrap:wrap}
+.wr-poschip{font-size:11px;font-weight:700;cursor:pointer;border:1px solid var(--border,rgba(255,255,255,.12));border-radius:7px;padding:5px 11px;color:var(--text-secondary,#8A93A6);background:var(--surface-0,#0d1117)}
+.wr-poschip.on{color:var(--purple,#BC8CFF);border-color:var(--purple-dim,#8957E5);background:var(--purple-bg,rgba(188,140,255,.12))}
+.wr-selchips{display:flex;flex-wrap:wrap;gap:6px}
+.wr-selc{font-size:11px;font-weight:700;background:var(--teal-soft,rgba(52,217,224,.1));border:1px solid var(--teal,#34D9E0);color:var(--teal,#34D9E0);border-radius:7px;padding:4px 9px;cursor:pointer}
 @media (prefers-reduced-motion:reduce){.wr-archived-toggle .wr-expand-ic{transition:none}}
 </style>`;
-}
-
-// #4437 — Panel editor de la allowlist ("lista de bailes") de la ola. La data se
-// carga client-side vía GET /api/roadmap/allowlist (no bloquea el SSR con `gh`).
-// El panel entrega: lista editable (CA-1), preview de arrastre recursivo (CA-2/
-// CA-3), y avisos de inconsistencia bloqueantes antes de guardar (CA-4/CA-5).
-// Todo el CSS usa tokens de design-tokens.css; íconos del sprite (sin nuevos).
-function renderAllowlistPanel() {
-    return '<section class="wr-section al-section" aria-label="Allowlist de la ola">'
-        + '<div class="wr-section-head">'
-        + '<svg class="wr-section-ic" aria-hidden="true"><use href="#ic-shield-lock"></use></svg>'
-        + '<span class="wr-section-title">Allowlist de la ola</span>'
-        + '<span class="wr-section-count" id="al-count">…</span>'
-        + '<span class="wr-head-spacer"></span>'
-        + '<button type="button" class="wr-btn" onclick="allowlistReload()" title="Refrescar la allowlist">'
-        + '<svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-expand"></use></svg> Refrescar</button>'
-        + '</div>'
-        // Lista editable (poblada por el cliente).
-        + '<div class="al-list" id="al-list" role="list" aria-live="polite">'
-        + '<div class="wr-empty-issues">Cargando allowlist…</div>'
-        + '</div>'
-        // Fila para agregar issue(s) + preview dry-run.
-        + '<div class="al-add">'
-        + '<label class="wr-compose-label" for="al-add-input">Agregar issue(s)</label>'
-        + '<input type="text" class="al-input" id="al-add-input" inputmode="numeric" placeholder="#1234 #1235" aria-label="Números de issue a agregar a la allowlist">'
-        + '<button type="button" class="wr-btn" onclick="allowlistPreview()" title="Ver qué se arrastra recursivamente antes de guardar">'
-        + '<svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-expand"></use></svg> Vista previa</button>'
-        + '<button type="button" class="wr-btn wr-btn-primary" id="al-add-btn" onclick="allowlistAdd()" title="Agregar los issues (arrastra hijos/dependencias)">'
-        + '<svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-wave-add"></use></svg> <span id="al-add-label">Agregar</span></button>'
-        + '<span class="wr-compose-status" id="al-add-status" role="status" aria-live="polite"></span>'
-        + '</div>'
-        // Banner de preview (dry-run): arrastre recursivo + truncado honesto.
-        + '<div class="al-preview" id="al-preview" hidden role="note"></div>'
-        // Panel de inconsistencias (bloqueante) para remociones.
-        + '<div class="al-warn" id="al-warn" hidden role="alert"></div>'
-        // Footer: separación de artefactos + traza de audit (CA-6/CA-7).
-        + '<div class="wr-integrity" role="note">'
-        + '<svg class="wr-integrity-ic" aria-hidden="true"><use href="#ic-shield-lock"></use></svg>'
-        + '<span>Editar la allowlist toca sólo <code>.partial-pause.json</code> (nunca <code>waves.json</code>). '
-        + 'Cada cambio pasa por el gate con audit trail (<code>authorizedBy=dashboard:roadmap:allowlist</code>). '
-        + 'Todo arrastre e inconsistencia se muestran <strong>antes</strong> de guardar.</span>'
-        + '</div>'
-        + '</section>';
 }
 
 /**
@@ -610,14 +606,11 @@ function renderAllowlistPanel() {
 function renderRoadmapSsr(opts) {
     const rm = opts && opts.roadmap && typeof opts.roadmap === 'object' ? opts.roadmap : null;
 
-    let active, planned, archived, blocked, eta, avance, mode;
+    let active, planned, archived, mode;
     if (rm) {
         active = rm.activeWave || null;
         planned = Array.isArray(rm.plannedWaves) ? rm.plannedWaves : [];
         archived = Array.isArray(rm.archivedWaves) ? rm.archivedWaves : [];
-        blocked = Array.isArray(rm.blocked) ? rm.blocked : [];
-        eta = rm.eta || null;
-        avance = rm.avance || null;
         // #4436 CA-4 — modo del pipeline para los controles de ciclo de vida.
         mode = typeof rm.mode === 'string' ? rm.mode : 'running';
     } else {
@@ -625,81 +618,105 @@ function renderRoadmapSsr(opts) {
         active = state && state.active_wave ? state.active_wave : null;
         planned = Array.isArray(state && state.planned_waves) ? state.planned_waves : [];
         archived = Array.isArray(state && state.archived_waves) ? state.archived_waves : [];
-        blocked = [];
-        eta = null;
-        avance = null;
-        // Degradado (#4378, sin slice): asumimos 'running' — la vista sigue siendo
-        // funcional y el pill/botón se corrige al primer polling del cliente.
+        // Degradado (sin slice): asumimos 'running' — el pill se corrige al primer
+        // polling del cliente.
         mode = 'running';
     }
 
-    // CA-7 — issues bloqueados marcados en los chips de la ola activa.
-    const blockedSet = new Set((blocked || [])
-        .map((b) => safeIssueNumber(b && b.issue))
-        .filter((n) => n !== null));
-
-    const activeHtml = renderActiveCard(active, { avance, eta, blocked, blockedSet, mode });
+    // #4534 — Vista ① tira compacta de la ola en curso (sin avance/ETA).
+    const activeHtml = renderActiveCard(active, { mode });
 
     const plannedHtml = planned.length
         ? planned.map((w, i) => renderPlannedCard(w, i + 1)).join('')
-        : '<div class="wr-empty-issues">No hay olas planificadas.</div>';
+        : '<div class="wr-empty-issues">No hay olas planificadas. Creá una con «+ Nueva ola».</div>';
 
     const archivedHtml = archived.length
         ? archived.map(renderArchivedCard).join('')
-        : '<div class="wr-empty-issues">No hay olas archivadas.</div>';
+        : '<div class="wr-empty-issues">No hay olas ejecutadas todavía.</div>';
 
     return '<main id="view-content" data-slug="roadmap" class="wr-view">'
         + roadmapStyle()
-        // Sección ACTIVA.
-        + '<section class="wr-section" aria-label="Ola activa">'
+        // =====================================================================
+        // VISTA ① — Gestión de olas (pantalla por defecto).
+        // =====================================================================
+        + '<div id="rw-view-list">'
+        // Ola en curso (destino por defecto).
+        + '<section class="wr-section" aria-label="Ola en curso">'
         + '<div class="wr-section-head"><svg class="wr-section-ic" aria-hidden="true"><use href="#ic-wave"></use></svg>'
-        + '<span class="wr-section-title">Ola activa</span></div>'
+        + '<span class="wr-section-title">Ola en curso</span></div>'
         + activeHtml
         + '</section>'
-        // #4437 — Sección ALLOWLIST (editor "lista de bailes" de la ola).
-        + renderAllowlistPanel()
-        // Sección PLANIFICADAS.
+        // Olas planificadas (ordenadas + arrastrables + ABM).
         + '<section class="wr-section" aria-label="Olas planificadas">'
         + '<div class="wr-section-head"><svg class="wr-section-ic" aria-hidden="true"><use href="#ic-wave"></use></svg>'
-        + '<span class="wr-section-title">Planificadas</span>'
+        + '<span class="wr-section-title">Planificadas · orden de ejecución</span>'
         + `<span class="wr-section-count">${escapeHtmlText(String(planned.length))}</span>`
-        // #4433 (CA-1) — "Nueva ola": abre el formulario mínimo de alta.
         + '<span class="wr-head-spacer"></span>'
-        + '<button type="button" class="wr-btn wr-btn-newwave" id="wr-newwave-toggle" onclick="roadmapNewWaveToggle()" aria-expanded="false" aria-controls="wr-newwave-form">'
-        + '<svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-wave-add"></use></svg> Nueva ola</button>'
+        + '<button type="button" class="wr-btn wr-btn-newwave" onclick="rwOpenCreate()" aria-label="Crear una nueva ola planificada">'
+        + '<svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-wave-add"></use></svg> + Nueva ola</button>'
         + '</div>'
-        // #4433 (CA-1/CA-2) — Formulario de alta (oculto por defecto). Pide nombre
-        // (obligatorio), objetivo (opcional) e issue(s) inicial(es) (obligatorio).
-        // concurrency/window NO se piden: el server aplica defaults (camino b PO).
-        + '<form class="wr-newwave" id="wr-newwave-form" hidden onsubmit="return roadmapCreateWave(event)">'
-        + '<div class="wr-nw-row"><label class="wr-nw-label" for="wr-nw-name">Nombre <span class="wr-nw-req" aria-hidden="true">*</span></label>'
-        + '<input type="text" class="wr-nw-input" id="wr-nw-name" maxlength="80" required placeholder="Ola N+X" aria-label="Nombre de la ola (obligatorio)"></div>'
-        + '<div class="wr-nw-row"><label class="wr-nw-label" for="wr-nw-goal">Objetivo</label>'
-        + '<input type="text" class="wr-nw-input" id="wr-nw-goal" maxlength="280" placeholder="Opcional" aria-label="Objetivo de la ola (opcional)"></div>'
-        + '<div class="wr-nw-row"><label class="wr-nw-label" for="wr-nw-issues">Issues iniciales <span class="wr-nw-req" aria-hidden="true">*</span></label>'
-        + '<input type="text" class="wr-nw-input" id="wr-nw-issues" required placeholder="#1234 #1235" aria-label="Números de issue iniciales, obligatorio al menos uno"></div>'
-        + '<div class="wr-nw-actions">'
-        + '<button type="submit" class="wr-btn wr-btn-primary"><svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-wave-add"></use></svg> Crear ola</button>'
-        + '<button type="button" class="wr-btn" onclick="roadmapNewWaveToggle(false)">Cancelar</button>'
-        + '<span class="wr-nw-status" id="wr-nw-status" role="status" aria-live="polite"></span>'
-        + '</div>'
-        + '</form>'
-        + plannedHtml
+        + `<div class="wr-planned-list" id="rw-planned-list">${plannedHtml}</div>`
         + '</section>'
-        // Sección ARCHIVADAS — colapsada por defecto (guideline UX).
-        + '<section class="wr-section wr-archived-collapsed" id="wr-archived" aria-label="Olas archivadas">'
+        // Ejecutadas (ex Archivadas) — colapsada por defecto.
+        + '<section class="wr-section wr-archived-collapsed" id="wr-archived" aria-label="Olas ejecutadas">'
         + '<div class="wr-section-head">'
         + '<button type="button" class="wr-archived-toggle" onclick="roadmapToggleArchived()" aria-expanded="false" aria-controls="wr-archived">'
         + '<svg class="wr-expand-ic" aria-hidden="true"><use href="#ic-expand"></use></svg>'
-        + '<span class="wr-section-title">Archivadas</span>'
+        + '<span class="wr-section-title">Ejecutadas</span>'
         + `<span class="wr-section-count">${escapeHtmlText(String(archived.length))}</span></button></div>`
         + `<div class="wr-archived-body">${archivedHtml}</div>`
         + '</section>'
-        // Banda de integridad (CA-7) — recordatorio del patrón obligatorio.
+        // Banda de integridad — recordatorio del patrón obligatorio.
         + '<div class="wr-integrity" role="note">'
         + '<svg class="wr-integrity-ic" aria-hidden="true"><use href="#ic-shield-lock"></use></svg>'
-        + '<span>Toda operación mutante es transaccional y auditada: file-lock + escritura atómica + snapshot/recovery + audit. Cero escrituras directas a <code>waves.json</code>.</span>'
+        + '<span>Toda mutación es transaccional y auditada: file-lock + escritura atómica + audit. La ola en curso se edita vía <code>.partial-pause.json</code>; las planificadas vía el dominio de olas. Cero escrituras directas a <code>waves.json</code>.</span>'
         + '</div>'
+        + '</div>'
+        // =====================================================================
+        // VISTA ② — Detalle de ola (issues que la forman). Cuerpo client-side.
+        // =====================================================================
+        + '<section class="wr-section rw-overlay" id="rw-view-detail" hidden aria-label="Detalle de ola"></section>'
+        // =====================================================================
+        // VISTA ③ — Agregar issues (buscar + auto-exclusión). Cuerpo client-side.
+        // =====================================================================
+        + '<section class="wr-section rw-overlay" id="rw-view-add" hidden aria-label="Agregar issues">'
+        + '<div class="rw-dhead"><button type="button" class="wr-backb" onclick="rwCloseOverlays()">← Volver</button>'
+        + '<span class="wr-section-title">Agregar issues</span>'
+        + '<span class="wr-head-spacer"></span>'
+        + '<span class="rw-tgt">Destino: <strong id="rw-add-target-label">—</strong></span></div>'
+        + '<div class="rw-searchrow"><input type="text" class="rw-search" id="rw-add-search" placeholder="🔍 buscar por #, título o label…" aria-label="Buscar issues por número, título o label" oninput="rwSearch(this.value)"></div>'
+        + '<div class="rw-results" id="rw-add-results" aria-live="polite"></div>'
+        + '<div class="rw-addbar"><span class="rw-sum" id="rw-add-sum">0 seleccionados</span>'
+        + '<span class="wr-head-spacer"></span>'
+        + '<button type="button" class="wr-btn wr-btn-primary" onclick="rwAddSelected()">＋ Agregar seleccionados</button></div>'
+        + '</section>'
+        // =====================================================================
+        // VISTA ④ — Crear / Editar ola (ABM). Skeleton SSR; se puebla client-side.
+        // =====================================================================
+        + '<section class="wr-section rw-overlay" id="rw-view-form" hidden aria-label="Crear o editar ola">'
+        + '<div class="rw-dhead"><button type="button" class="wr-backb" onclick="rwCloseOverlays()">← Volver</button>'
+        + '<span class="wr-section-title" id="rw-form-title">Nueva ola</span></div>'
+        + '<div class="wr-nw-row"><label class="wr-nw-label" for="rw-form-name">Nombre <span class="wr-nw-req" aria-hidden="true">*</span></label>'
+        + '<input type="text" class="wr-nw-input" id="rw-form-name" maxlength="80" placeholder="Ola N+X" aria-label="Nombre de la ola (obligatorio)"></div>'
+        + '<div class="wr-nw-row"><label class="wr-nw-label" for="rw-form-goal">Objetivo</label>'
+        + '<input type="text" class="wr-nw-input" id="rw-form-goal" maxlength="280" placeholder="Opcional" aria-label="Objetivo de la ola (opcional)"></div>'
+        + '<div class="wr-nw-row"><label class="wr-nw-label">Posición en el orden</label>'
+        + '<div class="wr-poschips" id="rw-form-pos" role="group" aria-label="Posición en el orden de ejecución">'
+        + '<button type="button" class="wr-poschip" data-pos="1" onclick="rwSetPos(1)">1</button>'
+        + '<button type="button" class="wr-poschip" data-pos="2" onclick="rwSetPos(2)">2</button>'
+        + '<button type="button" class="wr-poschip" data-pos="3" onclick="rwSetPos(3)">3</button>'
+        + '<button type="button" class="wr-poschip on" data-pos="final" onclick="rwSetPos(\'final\')">Final</button>'
+        + '</div></div>'
+        + '<div class="wr-nw-row" id="rw-form-issues-row"><label class="wr-nw-label">Issues de la ola</label>'
+        + '<div class="wr-selchips" id="rw-form-issues"></div>'
+        + '<input type="text" class="rw-search" id="rw-form-search" placeholder="🔍 buscar y agregar…" aria-label="Buscar issues para agregar a la ola" oninput="rwFormSearch(this.value)">'
+        + '<div class="rw-results" id="rw-form-results" aria-live="polite"></div></div>'
+        + '<div class="wr-nw-actions">'
+        + '<button type="button" class="wr-btn wr-btn-primary" onclick="rwSaveForm()"><svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-wave-add"></use></svg> Guardar ola</button>'
+        + '<button type="button" class="wr-btn" onclick="rwCloseOverlays()">Cancelar</button>'
+        + '<span class="wr-nw-status" id="rw-form-status" role="status" aria-live="polite"></span>'
+        + '</div>'
+        + '</section>'
         + '</main>';
 }
 
@@ -714,153 +731,339 @@ function roadmapToggleArchived(){
   var btn = sec.querySelector('.wr-archived-toggle');
   if(btn) btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
 }
-async function roadmapArchive(waveNum, kind){
-  waveNum = parseInt(waveNum, 10);
-  if(!Number.isInteger(waveNum) || waveNum < 1) return;
-  var ok = await inConfirm({
-    title: 'Archivar ola',
-    message: 'La ola ' + waveNum + ' (' + kind + ') pasará a archivadas conservando sus issues. Sale del flujo operativo.',
-    confirmLabel: 'Archivar',
-    danger: true,
-    preview: [{ label: 'Ola', value: '#' + waveNum }, { label: 'Origen', value: kind }]
-  });
-  if(!ok) return;
-  var btns = document.querySelectorAll('.wr-card[data-wave="' + waveNum + '"] .wr-btn');
-  btns.forEach(function(b){ b.disabled = true; });
-  try {
-    var r = await fetch('/dashboard/wave/archive', {
-      method: 'POST',
-      headers: Object.assign({ 'Content-Type': 'application/json' }, nhCsrfHeaders()),
-      body: JSON.stringify({ waveNumber: waveNum })
-    });
-    var j = await r.json().catch(function(){ return {}; });
-    if(r.ok && j.ok){ location.reload(); return; }
-    if(j && j.error === 'active_in_flight'){
-      alert('La ola ' + waveNum + ' está activa con issues no cerrados. Archivá desde el CLI con --force si querés forzar.');
-    } else if(j && j.error === 'archive_blocked'){
-      alert('Archivar está bloqueado por una recovery fallida anterior. Revisá .pipeline/archived/.');
-    } else {
-      alert('No pude archivar la ola ' + waveNum + ' (' + (j && j.error ? j.error : ('HTTP ' + r.status)) + ').');
-    }
-    btns.forEach(function(b){ b.disabled = false; });
-  } catch(e){
-    alert('Error archivando la ola ' + waveNum + ': ' + e.message);
-    btns.forEach(function(b){ b.disabled = false; });
-  }
+// #4534 — Estado + helpers del rediseño (gestión de olas, 4 vistas).
+var RW = { selected: [], addTarget: null, detailWave: null, detailKind: null, formWave: null, formPos: 'final', formIssues: [], dragWave: null };
+function rwEsc(s){ var d=document.createElement('div'); d.textContent=(s==null?'':String(s)); return d.innerHTML; }
+async function rwVersion(){
+  try { var d = await fetchJson('/api/waves'); return (d && d.version) || ''; } catch(e){ return ''; }
 }
-
-// #4433 — POST con CSRF double-submit (killCsrfHeaders del fetch-client) y un
-// reintento ante 403 (token rotado por restart), igual que killAgentPost. Cada
-// endpoint de olas exige requireCSRF server-side (CA-7).
-async function roadmapWavePost(url, payload){
-  var doPost = async function(){
+// Mutación transaccional: CSRF double-submit + If-Match (concurrencia optimista)
+// + un reintento ante 403 (token rotado por restart).
+async function rwMutate(method, url, body, ifMatch){
+  var doIt = async function(){
     var headers = Object.assign({ 'Content-Type': 'application/json' }, await killCsrfHeaders());
-    var opts = { method: 'POST', headers: headers };
-    if(payload !== undefined) opts.body = JSON.stringify(payload);
+    if(ifMatch) headers['If-Match'] = ifMatch;
+    var opts = { method: method, headers: headers };
+    if(body !== undefined && body !== null) opts.body = JSON.stringify(body);
     return fetch(url, opts);
   };
-  var r = await doPost();
-  if(r && r.status === 403){ await killCsrfHeaders(true); r = await doPost(); }
+  var r = await doIt();
+  if(r && r.status === 403){ await killCsrfHeaders(true); r = await doIt(); }
   return r;
 }
-function roadmapNewWaveToggle(force){
-  var form = document.getElementById('wr-newwave-form');
-  var btn = document.getElementById('wr-newwave-toggle');
-  if(!form) return;
-  var open = (force === true) ? true : (force === false ? false : form.hidden);
-  form.hidden = !open;
-  if(btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-  if(open){ var n = document.getElementById('wr-nw-name'); if(n) n.focus(); }
+function rwShowOverlay(id){
+  ['rw-view-list','rw-view-detail','rw-view-add','rw-view-form'].forEach(function(v){
+    var el = document.getElementById(v);
+    if(el) el.hidden = (v !== id);
+  });
+  try { window.scrollTo(0, 0); } catch(e){}
 }
-function _roadmapSetStatus(id, msg, kind){
-  var el = document.getElementById(id);
-  if(!el) return;
-  el.textContent = msg || '';
-  el.className = (el.id === 'wr-nw-status' ? 'wr-nw-status' : 'wr-compose-status') + (kind ? ' wr-st-' + kind : '');
+function rwCloseOverlays(){ rwShowOverlay('rw-view-list'); }
+function rwStatusClass(st){
+  var s = String(st||'').toLowerCase();
+  if(s.indexOf('complet')>=0 || s === 'done' || s === 'closed') return 'done';
+  if(s.indexOf('block')>=0 || s.indexOf('bloq')>=0 || s === 'failed') return 'blk';
+  if(s.indexOf('progress')>=0 || s.indexOf('curso')>=0 || s.indexOf('working')>=0 || s.indexOf('run')>=0) return 'run';
+  return '';
 }
-async function roadmapCreateWave(ev){
-  if(ev && ev.preventDefault) ev.preventDefault();
-  var nameEl = document.getElementById('wr-nw-name');
-  var goalEl = document.getElementById('wr-nw-goal');
-  var issuesEl = document.getElementById('wr-nw-issues');
-  var name = nameEl ? nameEl.value.trim() : '';
-  var goal = goalEl ? goalEl.value.trim() : '';
-  var issues = issuesEl ? issuesEl.value.trim() : '';
-  // Validación mínima cliente (el server revalida, CA-2). Sin bloquear: sólo
-  // feedback temprano; la fuente de verdad es la respuesta del endpoint.
-  if(!name){ _roadmapSetStatus('wr-nw-status', 'Indicá un nombre para la ola.', 'err'); if(nameEl) nameEl.focus(); return false; }
-  if(!issues){ _roadmapSetStatus('wr-nw-status', 'Indicá al menos un issue inicial.', 'err'); if(issuesEl) issuesEl.focus(); return false; }
-  _roadmapSetStatus('wr-nw-status', 'Creando…', null);
-  try {
-    var body = { name: name, issues: issues };
-    if(goal) body.goal = goal;
-    var r = await roadmapWavePost('/api/waves', body);
-    var j = await r.json().catch(function(){ return {}; });
-    if(r.ok && j.ok){
-      _roadmapSetStatus('wr-nw-status', (j.msg || 'Ola creada') + ' ✓', 'ok');
-      setTimeout(function(){ location.reload(); }, 500);
-      return false;
-    }
-    var hint = (j && j.msg) ? j.msg : ('HTTP ' + r.status);
-    if(j && j.field) hint = j.field + ': ' + hint;
-    _roadmapSetStatus('wr-nw-status', 'No se pudo crear: ' + hint, 'err');
-  } catch(e){
-    _roadmapSetStatus('wr-nw-status', 'Error de red: ' + e.message, 'err');
-  }
-  return false;
-}
-async function roadmapAssociate(waveNum){
+// VISTA ② — Detalle de ola: board de issues (# + título + estado + quitar).
+async function rwOpenDetail(waveNum, kind){
   waveNum = parseInt(waveNum, 10);
   if(!Number.isInteger(waveNum) || waveNum < 1) return;
-  var statusId = 'wr-compose-status-' + waveNum;
-  var input = document.getElementById('wr-assoc-' + waveNum);
-  var raw = input ? input.value.trim() : '';
-  var issueNum = parseInt(String(raw).replace(/^#/, ''), 10);
-  if(!Number.isInteger(issueNum) || issueNum < 1){
-    _roadmapSetStatus(statusId, 'Indicá un número de issue válido.', 'err');
-    if(input) input.focus();
-    return;
-  }
-  _roadmapSetStatus(statusId, 'Asociando…', null);
+  RW.detailWave = waveNum; RW.detailKind = kind;
+  var host = document.getElementById('rw-view-detail');
+  if(!host) return;
+  host.innerHTML = '<div class="wr-empty-issues">Cargando issues…</div>';
+  rwShowOverlay('rw-view-detail');
+  var d = await fetchJson('/api/waves/' + waveNum);
+  rwRenderBoard(host, (d && d.wave) ? d.wave : null, kind);
+}
+function rwRenderBoard(host, w, kind){
+  if(!host) return;
+  if(!w){ host.innerHTML = '<div class="rw-dhead"><button type="button" class="wr-backb" onclick="rwCloseOverlays()">← Olas</button></div><div class="wr-empty-issues">No se pudo cargar la ola.</div>'; return; }
+  var readOnly = (kind === 'archived' || w.state === 'done');
+  var issues = Array.isArray(w.issues) ? w.issues : [];
+  var board = issues.length ? issues.map(function(it){
+    var n = parseInt(it.number, 10);
+    var cls = rwStatusClass(it.status);
+    var x = readOnly ? '' : '<button type="button" class="rw-x" onclick="rwRemoveIssue(' + w.number + ',' + n + ')" title="Quitar #' + n + '" aria-label="Quitar el issue ' + n + ' de la ola">×</button>';
+    return '<div class="rw-iss"><span class="rw-st ' + cls + '"></span><span class="rw-num">#' + n + '</span><span class="rw-ttl">' + (it.title?rwEsc(it.title):'') + '</span>' + x + '</div>';
+  }).join('') : '<div class="wr-empty-issues">Esta ola no tiene issues.</div>';
+  var addBtn = readOnly ? '' : '<button type="button" class="wr-btn wr-btn-primary" onclick="rwOpenAdd(' + w.number + ')">＋ Agregar issues a esta ola</button>';
+  var foot = readOnly ? '<span class="wr-target-note">Ola ejecutada · solo lectura</span>' : '<span class="wr-target-note">El × quita el issue y lo libera para otra ola</span>';
+  host.innerHTML = '<div class="rw-dhead"><button type="button" class="wr-backb" onclick="rwCloseOverlays()">← Olas</button>'
+    + '<span class="wr-card-num">Ola ' + w.number + '</span><span class="wr-section-title">' + (w.name?rwEsc(w.name):('Ola '+w.number)) + '</span>'
+    + '<span class="wr-head-spacer"></span><span class="wr-target-note">' + issues.length + ' issues</span></div>'
+    + '<div class="rw-board">' + board + '</div>'
+    + '<div class="wr-nw-actions">' + addBtn + foot + '</div>';
+}
+// VISTA ③ — Agregar issues: buscar (#, título, label) + auto-exclusión.
+function rwOpenAdd(waveNum, kind){
+  waveNum = parseInt(waveNum, 10);
+  if(!Number.isInteger(waveNum) || waveNum < 1) return;
+  kind = kind || RW.detailKind || 'planned';
+  RW.addTarget = { num: waveNum, kind: kind };
+  RW.selected = [];
+  var lbl = document.getElementById('rw-add-target-label');
+  if(lbl) lbl.textContent = (kind === 'active' ? 'Ola en curso' : ('Ola ' + waveNum));
+  var res = document.getElementById('rw-add-results'); if(res) res.innerHTML = '';
+  var s = document.getElementById('rw-add-search'); if(s) s.value = '';
+  rwUpdateSum();
+  rwShowOverlay('rw-view-add');
+  if(s) s.focus();
+}
+async function rwSearch(q){
+  var host = document.getElementById('rw-add-results');
+  if(!host) return;
+  q = String(q||'').trim();
+  if(!q){ host.innerHTML = ''; return; }
+  var d = await fetchJson('/api/waves/issue-search?q=' + encodeURIComponent(q));
+  var results = (d && d.results) || [];
+  if(!results.length){ host.innerHTML = '<div class="wr-empty-issues">Sin coincidencias.</div>'; return; }
+  host.innerHTML = results.map(function(r){
+    var n = parseInt(r.number, 10);
+    if(!r.eligible){
+      return '<div class="rw-r rw-excl"><span class="rw-cbx">⊘</span><span class="rw-num">#' + n + '</span><span class="rw-ttl">' + (r.title?rwEsc(r.title):'') + '</span><span class="rw-why">' + rwEsc(r.reason||'no elegible') + '</span></div>';
+    }
+    var checked = RW.selected.indexOf(n) >= 0;
+    return '<div class="rw-r' + (checked?' rw-sel':'') + '" onclick="rwToggleSelect(' + n + ')"><span class="rw-cbx">' + (checked?'✓':'') + '</span><span class="rw-num">#' + n + '</span><span class="rw-ttl">' + (r.title?rwEsc(r.title):'') + '</span></div>';
+  }).join('');
+}
+function rwToggleSelect(n){
+  n = parseInt(n, 10); if(!Number.isInteger(n)) return;
+  var i = RW.selected.indexOf(n);
+  if(i >= 0) RW.selected.splice(i, 1); else RW.selected.push(n);
+  var s = document.getElementById('rw-add-search');
+  rwSearch(s ? s.value : '');
+  rwUpdateSum();
+}
+function rwUpdateSum(){
+  var el = document.getElementById('rw-add-sum');
+  if(el) el.textContent = RW.selected.length + ' seleccionados';
+}
+async function rwAddSelected(){
+  var t = RW.addTarget || {};
+  var sel = RW.selected.slice();
+  if(!sel.length){ alert('Seleccioná al menos un issue elegible.'); return; }
   try {
-    var r = await roadmapWavePost('/api/waves/' + waveNum + '/issues', { issue: issueNum });
-    var j = await r.json().catch(function(){ return {}; });
-    if(r.ok && j.ok){
-      _roadmapSetStatus(statusId, (j.msg || 'Issue asociado') + ' ✓', 'ok');
-      setTimeout(function(){ location.reload(); }, 500);
+    if(t.kind === 'active'){
+      // La ola en curso se toca vía la allowlist (gate partial-pause + audit).
+      var r = await rwMutate('POST','/api/roadmap/allowlist/add', { issues: sel });
+      var j = await r.json().catch(function(){ return {}; });
+      if(r.ok && j.ok){ location.reload(); return; }
+      alert('No se pudo agregar a la ola en curso: ' + ((j && j.message) ? j.message : ('HTTP ' + r.status)));
       return;
     }
-    _roadmapSetStatus(statusId, 'No se pudo asociar: ' + ((j && j.msg) ? j.msg : ('HTTP ' + r.status)), 'err');
-  } catch(e){
-    _roadmapSetStatus(statusId, 'Error de red: ' + e.message, 'err');
-  }
+    var ver = await rwVersion();
+    for(var i = 0; i < sel.length; i++){
+      var rr = await rwMutate('POST','/api/waves/'+t.num+'/issues', { issue: sel[i] }, ver);
+      var jj = await rr.json().catch(function(){ return {}; });
+      if(!rr.ok){ alert('No se pudo agregar #' + sel[i] + ': ' + ((jj && jj.message) ? jj.message : ('HTTP ' + rr.status))); return; }
+      if(jj && jj.version) ver = jj.version;
+    }
+    location.reload();
+  } catch(e){ alert('Error agregando issues: ' + e.message); }
 }
-async function roadmapDisassociate(waveNum, issueNum){
-  waveNum = parseInt(waveNum, 10);
-  issueNum = parseInt(issueNum, 10);
-  if(!Number.isInteger(waveNum) || waveNum < 1 || !Number.isInteger(issueNum) || issueNum < 1) return;
+// Quitar issue de una ola (destructivo → confirma). Planificada: DELETE del issue.
+// En curso: allowlist/remove (la API bloquea DELETE sobre la ola activa).
+async function rwRemoveIssue(waveNum, issueNum){
+  waveNum = parseInt(waveNum, 10); issueNum = parseInt(issueNum, 10);
+  if(!Number.isInteger(waveNum) || !Number.isInteger(issueNum)) return;
+  var isActive = (RW.detailKind === 'active');
   var ok = await inConfirm({
-    title: 'Desasociar issue',
-    message: 'El issue #' + issueNum + ' se quitará de la ola ' + waveNum + ' (planificada).',
-    confirmLabel: 'Desasociar',
+    title: 'Quitar issue',
+    message: 'El issue #' + issueNum + ' se quitará de la ola ' + waveNum + ' y quedará libre para otra ola.',
+    confirmLabel: 'Quitar',
     danger: true,
     preview: [{ label: 'Issue', value: '#' + issueNum }, { label: 'Ola', value: '#' + waveNum }]
   });
   if(!ok) return;
-  var statusId = 'wr-compose-status-' + waveNum;
-  _roadmapSetStatus(statusId, 'Desasociando…', null);
   try {
-    var r = await roadmapWavePost('/api/waves/' + waveNum + '/issues/' + issueNum + '/remove');
+    var r;
+    if(isActive){
+      r = await rwMutate('POST','/api/roadmap/allowlist/remove', { issues: [issueNum], confirm: true });
+    } else {
+      var ver = await rwVersion();
+      r = await rwMutate('DELETE','/api/waves/'+waveNum+'/issues/'+issueNum, null, ver);
+    }
     var j = await r.json().catch(function(){ return {}; });
-    if(r.ok && j.ok){
-      _roadmapSetStatus(statusId, (j.msg || 'Issue desasociado') + ' ✓', 'ok');
-      setTimeout(function(){ location.reload(); }, 500);
+    if(r.ok && (j.ok || j.removed || j.version)){ location.reload(); return; }
+    alert('No se pudo quitar #' + issueNum + ': ' + ((j && j.message) ? j.message : ('HTTP ' + r.status)));
+  } catch(e){ alert('Error quitando el issue: ' + e.message); }
+}
+// Baja de ola planificada (destructivo → confirma). Libera sus issues.
+async function rwDeleteWave(num){
+  num = parseInt(num, 10);
+  if(!Number.isInteger(num) || num < 1) return;
+  var ok = await inConfirm({
+    title: 'Eliminar ola',
+    message: 'La ola ' + num + ' se eliminará. Sus issues quedan libres para reasignar a otra ola.',
+    confirmLabel: 'Eliminar',
+    danger: true,
+    preview: [{ label: 'Ola', value: '#' + num }]
+  });
+  if(!ok) return;
+  try {
+    var ver = await rwVersion();
+    var r = await rwMutate('DELETE','/api/waves/'+num, null, ver);
+    var j = await r.json().catch(function(){ return {}; });
+    if(r.ok && j.deleted){ location.reload(); return; }
+    alert('No se pudo eliminar la ola ' + num + ': ' + ((j && j.message) ? j.message : ('HTTP ' + r.status)));
+  } catch(e){ alert('Error eliminando la ola: ' + e.message); }
+}
+// VISTA ④ — Crear / Editar ola (ABM).
+function rwFormStatus(msg, kind){
+  var el = document.getElementById('rw-form-status');
+  if(!el) return;
+  el.textContent = msg || '';
+  el.className = 'wr-nw-status' + (kind ? ' wr-st-' + kind : '');
+}
+function rwResetForm(){
+  RW.formWave = null; RW.formPos = 'final'; RW.formIssues = [];
+  var n = document.getElementById('rw-form-name'); if(n) n.value = '';
+  var g = document.getElementById('rw-form-goal'); if(g) g.value = '';
+  var s = document.getElementById('rw-form-search'); if(s) s.value = '';
+  var res = document.getElementById('rw-form-results'); if(res) res.innerHTML = '';
+  rwFormStatus('', null); rwSetPos('final'); rwRenderFormChips();
+}
+function rwOpenCreate(){
+  rwResetForm();
+  var t = document.getElementById('rw-form-title'); if(t) t.textContent = 'Nueva ola';
+  var row = document.getElementById('rw-form-issues-row'); if(row) row.hidden = false;
+  rwShowOverlay('rw-view-form');
+  var n = document.getElementById('rw-form-name'); if(n) n.focus();
+}
+async function rwOpenEdit(waveNum){
+  waveNum = parseInt(waveNum, 10);
+  if(!Number.isInteger(waveNum) || waveNum < 1) return;
+  rwResetForm();
+  RW.formWave = waveNum;
+  var t = document.getElementById('rw-form-title'); if(t) t.textContent = 'Editar ola ' + waveNum;
+  // En edición, los issues se gestionan desde el detalle (no en el ABM).
+  var row = document.getElementById('rw-form-issues-row'); if(row) row.hidden = true;
+  rwShowOverlay('rw-view-form');
+  var d = await fetchJson('/api/waves/' + waveNum);
+  var w = d && d.wave ? d.wave : null;
+  if(w){
+    var n = document.getElementById('rw-form-name'); if(n) n.value = w.name || '';
+    var g = document.getElementById('rw-form-goal'); if(g) g.value = w.goal || '';
+  }
+}
+function rwSetPos(pos){
+  RW.formPos = pos;
+  var host = document.getElementById('rw-form-pos');
+  if(!host) return;
+  Array.prototype.forEach.call(host.querySelectorAll('.wr-poschip'), function(b){
+    b.classList.toggle('on', String(b.getAttribute('data-pos')) === String(pos));
+  });
+}
+async function rwFormSearch(q){
+  var host = document.getElementById('rw-form-results');
+  if(!host) return;
+  q = String(q||'').trim();
+  if(!q){ host.innerHTML = ''; return; }
+  var d = await fetchJson('/api/waves/issue-search?q=' + encodeURIComponent(q));
+  var results = (d && d.results) || [];
+  host.innerHTML = results.length ? results.map(function(r){
+    var n = parseInt(r.number, 10);
+    if(!r.eligible){
+      return '<div class="rw-r rw-excl"><span class="rw-cbx">⊘</span><span class="rw-num">#' + n + '</span><span class="rw-ttl">' + (r.title?rwEsc(r.title):'') + '</span><span class="rw-why">' + rwEsc(r.reason||'no elegible') + '</span></div>';
+    }
+    var picked = RW.formIssues.indexOf(n) >= 0;
+    return '<div class="rw-r' + (picked?' rw-sel':'') + '" onclick="rwFormAddIssue(' + n + ')"><span class="rw-cbx">' + (picked?'✓':'') + '</span><span class="rw-num">#' + n + '</span><span class="rw-ttl">' + (r.title?rwEsc(r.title):'') + '</span></div>';
+  }).join('') : '<div class="wr-empty-issues">Sin coincidencias.</div>';
+}
+function rwFormAddIssue(n){
+  n = parseInt(n, 10); if(!Number.isInteger(n)) return;
+  var i = RW.formIssues.indexOf(n);
+  if(i >= 0) RW.formIssues.splice(i, 1); else RW.formIssues.push(n);
+  rwRenderFormChips();
+  var s = document.getElementById('rw-form-search');
+  rwFormSearch(s ? s.value : '');
+}
+function rwRenderFormChips(){
+  var host = document.getElementById('rw-form-issues');
+  if(!host) return;
+  host.innerHTML = RW.formIssues.map(function(n){
+    return '<button type="button" class="wr-selc" onclick="rwFormAddIssue(' + n + ')" title="Quitar #' + n + '">#' + n + ' ×</button>';
+  }).join('');
+}
+async function rwApplyCreatePosition(newNum){
+  var pos = RW.formPos;
+  if(pos === 'final' || pos == null) return;
+  var target = parseInt(pos, 10);
+  if(!Number.isInteger(target) || target < 1) return;
+  try {
+    var d = await fetchJson('/api/waves');
+    var planned = ((d && d.waves) || []).filter(function(w){ return w.state === 'planned'; }).map(function(w){ return parseInt(w.number, 10); });
+    var without = planned.filter(function(n){ return n !== newNum; });
+    var idx = Math.min(target - 1, without.length);
+    without.splice(idx, 0, newNum);
+    var ver = (d && d.version) || await rwVersion();
+    await rwMutate('PUT','/api/waves/order', { order: without }, ver);
+  } catch(e){ /* orden best-effort; la ola ya quedó creada */ }
+}
+async function rwSaveForm(){
+  var nameEl = document.getElementById('rw-form-name');
+  var goalEl = document.getElementById('rw-form-goal');
+  var name = nameEl ? nameEl.value.trim() : '';
+  var goal = goalEl ? goalEl.value.trim() : '';
+  if(!name){ rwFormStatus('Indicá un nombre para la ola.', 'err'); if(nameEl) nameEl.focus(); return; }
+  rwFormStatus('Guardando…', null);
+  try {
+    if(RW.formWave){
+      var ver = await rwVersion();
+      var patch = { name: name, goal: goal };
+      var er = await rwMutate('PATCH','/api/waves/'+RW.formWave, patch, ver);
+      var ej = await er.json().catch(function(){ return {}; });
+      if(er.ok && ej.wave){ location.reload(); return; }
+      rwFormStatus('No se pudo guardar: ' + ((ej && ej.message) ? ej.message : ('HTTP ' + er.status)), 'err');
       return;
     }
-    _roadmapSetStatus(statusId, 'No se pudo desasociar: ' + ((j && j.msg) ? j.msg : ('HTTP ' + r.status)), 'err');
-  } catch(e){
-    _roadmapSetStatus(statusId, 'Error de red: ' + e.message, 'err');
-  }
+    if(!RW.formIssues.length){ rwFormStatus('Agregá al menos un issue a la ola.', 'err'); return; }
+    var body = { name: name, issues: RW.formIssues.slice() };
+    if(goal) body.goal = goal;
+    var cr = await rwMutate('POST','/api/waves', body);
+    var cj = await cr.json().catch(function(){ return {}; });
+    if(!cr.ok || !cj.wave){ rwFormStatus('No se pudo crear: ' + ((cj && cj.message) ? cj.message : ('HTTP ' + cr.status)), 'err'); return; }
+    await rwApplyCreatePosition(cj.wave.number);
+    location.reload();
+  } catch(e){ rwFormStatus('Error de red: ' + e.message, 'err'); }
+}
+// Reorden por arrastre de las olas planificadas entre sí.
+function rwDragStart(ev, num){
+  RW.dragWave = parseInt(num, 10);
+  if(ev.dataTransfer){ ev.dataTransfer.effectAllowed = 'move'; try { ev.dataTransfer.setData('text/plain', String(num)); } catch(e){} }
+  var row = ev.currentTarget; if(row) row.classList.add('wr-dragging');
+}
+function rwDragOver(ev){
+  ev.preventDefault();
+  if(ev.dataTransfer) ev.dataTransfer.dropEffect = 'move';
+}
+async function rwDrop(ev, targetNum){
+  ev.preventDefault();
+  targetNum = parseInt(targetNum, 10);
+  var src = RW.dragWave;
+  Array.prototype.forEach.call(document.querySelectorAll('.wr-pw.wr-dragging'), function(el){ el.classList.remove('wr-dragging'); });
+  if(!Number.isInteger(src) || !Number.isInteger(targetNum) || src === targetNum) return;
+  var list = document.getElementById('rw-planned-list');
+  if(!list) return;
+  var order = Array.prototype.map.call(list.querySelectorAll('.wr-pw'), function(el){ return parseInt(el.getAttribute('data-wave'), 10); }).filter(function(n){ return Number.isInteger(n); });
+  var from = order.indexOf(src);
+  var to = order.indexOf(targetNum);
+  if(from < 0 || to < 0) return;
+  order.splice(from, 1);
+  order.splice(to, 0, src);
+  await rwCommitOrder(order);
+}
+async function rwCommitOrder(order){
+  try {
+    var ver = await rwVersion();
+    var r = await rwMutate('PUT','/api/waves/order', { order: order }, ver);
+    var j = await r.json().catch(function(){ return {}; });
+    if(r.ok && j.order){ location.reload(); return; }
+    alert('No se pudo reordenar: ' + ((j && j.message) ? j.message : ('HTTP ' + r.status)));
+  } catch(e){ alert('Error reordenando: ' + e.message); }
 }
 // #4435 — Promover una ola planificada a activa. Flujo preview then confirm
 // contra la ruta mutante (gate loopback+same-origin). Fase 1: POST sin confirmar
@@ -1036,167 +1239,33 @@ async function roadmapTickState(){
   if(pauseBtn) pauseBtn.hidden = showResume;
   if(resumeBtn) resumeBtn.hidden = !showResume;
 }
-// #4437 — Editor de allowlist ("lista de bailes"). Lee/edita vía los endpoints
-// /api/roadmap/allowlist*, todos bajo el mismo cinturón de gates que las olas.
-// Regla rectora UX: el operador nunca descubre un efecto después de guardar —
-// todo arrastre e inconsistencia se muestra ANTES de persistir.
-function alEsc(s){ var d=document.createElement('div'); d.textContent=(s==null?'':String(s)); return d.innerHTML; }
-function alSetStatus(msg, kind){
-  var el=document.getElementById('al-add-status');
-  if(!el) return;
-  el.textContent=msg||'';
-  el.className='wr-compose-status'+(kind?' wr-st-'+kind:'');
-}
-function alParseIssues(raw){
-  var out=[]; var seen={};
-  (String(raw||'').match(/\\d+/g)||[]).forEach(function(t){
-    var n=parseInt(t,10);
-    if(Number.isInteger(n)&&n>0&&!seen[n]){ seen[n]=1; out.push(n); }
-  });
-  return out;
-}
-function alRenderList(rows){
-  var host=document.getElementById('al-list');
-  var cnt=document.getElementById('al-count');
-  if(cnt) cnt.textContent=String(rows.length);
-  if(!host) return;
-  if(!rows.length){ host.innerHTML='<div class="wr-empty-issues">La allowlist está vacía (la ola corre sin restricción de issues).</div>'; return; }
-  host.innerHTML=rows.map(function(r){
-    var num=parseInt(r.number,10);
-    var title=r.title?(' · '+alEsc(r.title)):'';
-    var st=r.status?('<span class="wr-chip-status">'+alEsc(r.status)+'</span>'):'';
-    var parent=(r.parent!=null)?('<span class="al-parent" title="Issue padre">↳ #'+parseInt(r.parent,10)+'</span>'):'';
-    return '<div class="al-row" role="listitem">'
-      +'<a class="wr-chip" href="https://github.com/intrale/platform/issues/'+num+'" target="_blank" rel="noopener noreferrer">'
-      +'<span class="wr-chip-num">#'+num+title+'</span>'+st+'</a>'+parent
-      +'<button type="button" class="wr-chip-remove" onclick="allowlistRemove('+num+')" title="Quitar #'+num+' de la allowlist" aria-label="Quitar el issue '+num+' de la allowlist">'
-      +'<svg class="wr-chip-remove-ic" aria-hidden="true"><use href="#ic-remove-circle"></use></svg></button>'
-      +'</div>';
-  }).join('');
-}
-function alTruncadoMsg(reason){
-  var m={max_depth:'profundidad máxima',max_nodes:'demasiados nodos',cycle:'ciclo de dependencias'};
-  return 'Grafo truncado ('+(m[reason]||reason||'límite')+'): puede faltar arrastre.';
-}
-async function allowlistReload(){
-  var host=document.getElementById('al-list');
-  try {
-    var r=await fetch('/api/roadmap/allowlist', { headers: nhCsrfHeaders() });
-    var j=await r.json().catch(function(){ return {}; });
-    if(r.ok && Array.isArray(j.allowlist)){ alRenderList(j.allowlist); return; }
-    if(host) host.innerHTML='<div class="wr-empty-issues">No se pudo leer la allowlist (HTTP '+r.status+').</div>';
-  } catch(e){
-    if(host) host.innerHTML='<div class="wr-empty-issues">Error de red leyendo la allowlist: '+alEsc(e.message)+'</div>';
-  }
-}
-async function allowlistPreview(){
-  var input=document.getElementById('al-add-input');
-  var ids=alParseIssues(input?input.value:'');
-  var banner=document.getElementById('al-preview');
-  var addLabel=document.getElementById('al-add-label');
-  if(!ids.length){ alSetStatus('Indicá al menos un issue numérico.', 'err'); return; }
-  alSetStatus('Calculando arrastre…', null);
-  try {
-    var r=await roadmapWavePost('/api/roadmap/allowlist/preview', { issues: ids });
-    var j=await r.json().catch(function(){ return {}; });
-    if(!r.ok || !j.ok){ alSetStatus('No se pudo previsualizar: '+((j&&j.message)?j.message:('HTTP '+r.status)), 'err'); return; }
-    alSetStatus('', null);
-    var drag=Array.isArray(j.aArrastrar)?j.aArrastrar:[];
-    var parts=[];
-    parts.push('<div class="al-preview-head"><svg class="wr-btn-ic" aria-hidden="true"><use href="#ic-wave-add"></use></svg> Vista previa (dry-run) — <code>.partial-pause.json</code> intacto</div>');
-    if(drag.length){
-      parts.push('<div class="al-preview-body">Arrastra recursivamente '+drag.length+' issue(s): '+drag.map(function(n){ return '#'+parseInt(n,10); }).join(', ')+'</div>');
-    } else {
-      parts.push('<div class="al-preview-body">No se arrastra ningún issue adicional.</div>');
-    }
-    if(j.truncado){ parts.push('<div class="al-trunc">⚠ '+alEsc(alTruncadoMsg(j.reason))+'</div>'); }
-    if(banner){ banner.innerHTML=parts.join(''); banner.hidden=false; }
-    if(addLabel) addLabel.textContent='Agregar (arrastra '+drag.length+')';
-  } catch(e){ alSetStatus('Error de red: '+e.message, 'err'); }
-}
-async function allowlistAdd(){
-  var input=document.getElementById('al-add-input');
-  var ids=alParseIssues(input?input.value:'');
-  if(!ids.length){ alSetStatus('Indicá al menos un issue numérico.', 'err'); return; }
-  alSetStatus('Agregando…', null);
-  try {
-    var r=await roadmapWavePost('/api/roadmap/allowlist/add', { issues: ids });
-    var j=await r.json().catch(function(){ return {}; });
-    if(r.ok && j.ok){
-      alSetStatus('Agregado ✓'+(Array.isArray(j.aArrastrar)&&j.aArrastrar.length?(' (+'+j.aArrastrar.length+' arrastrados)'):''), 'ok');
-      if(input) input.value='';
-      var banner=document.getElementById('al-preview'); if(banner){ banner.hidden=true; }
-      var addLabel=document.getElementById('al-add-label'); if(addLabel) addLabel.textContent='Agregar';
-      alRenderList((j.allowlist||[]).map(function(n){ return { number:n }; }));
-      allowlistReload();
-      return;
-    }
-    alSetStatus('No se pudo agregar: '+((j&&j.message)?j.message:('HTTP '+r.status)), 'err');
-  } catch(e){ alSetStatus('Error de red: '+e.message, 'err'); }
-}
-function alRenderWarn(j, ids){
-  var warn=document.getElementById('al-warn');
-  if(!warn) return;
-  var parts=['<div class="al-warn-head"><svg class="wr-blocked-ic" aria-hidden="true"><use href="#ic-pause-lock"></use></svg> Quitar '+ids.map(function(n){ return '#'+n; }).join(', ')+' deja inconsistencias</div>'];
-  var inc=j.inconsistencias||{};
-  Object.keys(inc).forEach(function(k){
-    parts.push('<div class="al-warn-row">#'+parseInt(k,10)+' quedaría sin su dependencia: '+inc[k].map(function(n){ return '#'+parseInt(n,10); }).join(', ')+'</div>');
-  });
-  if(j.desync && Array.isArray(j.desync.missingFromAllowlist) && j.desync.missingFromAllowlist.length){
-    parts.push('<div class="al-warn-row">La ola activa todavía incluye: '+j.desync.missingFromAllowlist.map(function(n){ return '#'+parseInt(n,10); }).join(', ')+' (quedaría fuera de la lista de bailes).</div>');
-  }
-  if(j.truncado){ parts.push('<div class="al-trunc">⚠ '+alEsc(alTruncadoMsg(j.reason))+'</div>'); }
-  warn.innerHTML=parts.join('');
-  warn.hidden=false;
-}
-async function allowlistRemove(issueNum){
-  issueNum=parseInt(issueNum,10);
-  if(!Number.isInteger(issueNum) || issueNum<1) return;
-  var warn=document.getElementById('al-warn');
-  if(warn){ warn.hidden=true; }
-  try {
-    // 1er intento sin confirmar: el server avisa inconsistencias antes de persistir.
-    var r=await roadmapWavePost('/api/roadmap/allowlist/remove', { issues: [issueNum] });
-    var j=await r.json().catch(function(){ return {}; });
-    if(r.ok && j.blocked){
-      alRenderWarn(j, [issueNum]);
-      var ok=await inConfirm({
-        title: 'Quitar con inconsistencias',
-        message: 'Quitar #'+issueNum+' deja dependencias huérfanas o desincroniza la ola. El aviso está sobre la lista. ¿Confirmás igual?',
-        confirmLabel: 'Quitar igual',
-        danger: true,
-        preview: [{ label: 'Issue', value: '#'+issueNum }]
-      });
-      if(!ok) return;
-      r=await roadmapWavePost('/api/roadmap/allowlist/remove', { issues: [issueNum], confirm: true });
-      j=await r.json().catch(function(){ return {}; });
-    }
-    if(r.ok && j.ok){
-      if(warn){ warn.hidden=true; }
-      alRenderList((j.allowlist||[]).map(function(n){ return { number:n }; }));
-      allowlistReload();
-      return;
-    }
-    if(!j.blocked) alSetStatus('No se pudo quitar #'+issueNum+': '+((j&&j.message)?j.message:('HTTP '+r.status)), 'err');
-  } catch(e){ alSetStatus('Error de red: '+e.message, 'err'); }
-}
+// Registro de handlers en window para los onclick/ondrop del SSR. Los del
+// rediseño (rw*) se registran sin espacios (contrato del test); los de ciclo de
+// vida de la ola en curso (roadmap*) se conservan.
 window.roadmapToggleArchived = roadmapToggleArchived;
-window.roadmapArchive = roadmapArchive;
-window.roadmapNewWaveToggle = roadmapNewWaveToggle;
-window.roadmapCreateWave = roadmapCreateWave;
-window.roadmapAssociate = roadmapAssociate;
-window.roadmapDisassociate = roadmapDisassociate;
 window.roadmapPromote = roadmapPromote;
 window.roadmapPause = roadmapPause;
 window.roadmapResume = roadmapResume;
 window.roadmapDispatch = roadmapDispatch;
-window.allowlistReload = allowlistReload;
-window.allowlistPreview = allowlistPreview;
-window.allowlistAdd = allowlistAdd;
-window.allowlistRemove = allowlistRemove;
+window.rwOpenDetail=rwOpenDetail;
+window.rwOpenAdd=rwOpenAdd;
+window.rwOpenCreate=rwOpenCreate;
+window.rwOpenEdit=rwOpenEdit;
+window.rwDeleteWave=rwDeleteWave;
+window.rwDrop=rwDrop;
+window.rwAddSelected=rwAddSelected;
+window.rwSaveForm=rwSaveForm;
+window.rwCloseOverlays=rwCloseOverlays;
+window.rwRemoveIssue=rwRemoveIssue;
+window.rwSearch=rwSearch;
+window.rwToggleSelect=rwToggleSelect;
+window.rwSetPos=rwSetPos;
+window.rwFormSearch=rwFormSearch;
+window.rwFormAddIssue=rwFormAddIssue;
+window.rwDragStart=rwDragStart;
+window.rwDragOver=rwDragOver;
 roadmapTickState();
 setInterval(function(){ roadmapTickState().catch(function(){}); }, 5000);
-allowlistReload();
 `;
 }
 
@@ -1259,7 +1328,7 @@ function renderRoadmap(opts) {
   <main class="satellite-body">${fragment}</main>
   <footer class="in-footer">
     <span>Datos offline (waves.json) · sin gh en runtime · acción Archivar bajo gate loopback+same-origin</span>
-    <span>Intrale V3 · #4378 · #4373</span>
+    <span>Intrale V3 · #4534 · gestión de olas</span>
   </footer>
 </div>
 <script>${FETCH_CLIENT_JS}\n${CONFIRM_MODAL_JS}\n${headerPillsClientScript()}\n${COMMON_HELPERS}\n${renderRoadmapClientScript()}</script>
