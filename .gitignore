@@ -276,3 +276,7 @@ __pycache__/
 # rebotes #4512/#4516/#4565/#4568). Los reportes sensibles se persisten vía
 # writeDeliverable(sensible:true), no en git. NO commitear.
 security-report.md
+# Tambien la variante con sufijo por issue (ej. security-report-4507.md): mismo
+# artefacto del gate /security, se coló al repo root por no matchear el patron
+# sin sufijo (rebote #4507). Debe seguir la doctrina de entregables, no git.
+security-report-*.md
