@@ -53,10 +53,20 @@ const HEALTH_HARD_BLOCK_MS = 2500;
 // hermano #4126 documentó en rebotes #3932/#4513). Se tolera una minoría dura
 // (10%, mínimo 1) sin perder la señal: el fetch síncrono dispara ~100%.
 const HEALTH_HARD_BLOCK_TOLERANCE_RATIO = 0.10;
-// <=25% de samples pueden pasar el budget. Alineado con SLOW_TOLERANCE_RATIO del
-// test hermano #4126: ambos miden lo mismo y 0.10 probó ser demasiado ajustado
-// bajo la saturación del proceso padre en la suite completa (rebote #4534).
-const HEALTH_P90_MAX_OUTLIERS_PCT = 0.25;
+// Presupuesto medido por MEDIANA, no por conteo de outliers (rebote #4534 rev-2).
+// Historia: el gate de presupuesto se evaluaba como "<=X% de samples pueden
+// pasar HEALTH_BUDGET_MS" y ese X se fue aflojando rebote tras rebote
+// (#3932/#4513/#4524: 10%; #4534 rev-1: 25%) porque bajo la suite Node completa
+// el proceso que MIDE queda saturado e inyecta jitter de scheduling de cientos de
+// ms a una MINORÍA de samples SIN que el dashboard child esté lento. Con pocos
+// samples (12) esa minoría dispara el % (rev-1: 4/12 = 33% con max=625ms, muy
+// lejos de los ~2000ms de la regresión real). Un umbral por % es intrínsecamente
+// frágil ahí. La regresión real (gh SÍNCRONO en el worker) clava el event loop
+// del child ~2-30s en CADA tick → ~100% de samples se van >=2000ms y la MEDIANA
+// se dispara. La mediana es inmune a una minoría de outliers del padre pero
+// captura de lleno el 100% de samples lentos de la regresión: mejor discriminador
+// y más fuerte (los ~2000ms de la regresión ni siquiera llegan al hard-block de
+// 2500ms, así que sin este gate por mediana la señal quedaría floja).
 const HAMMER_MS = 3000;
 const MIN_SAMPLES = 12;
 const HAMMER_HARD_CAP_MS = 20000;
@@ -208,15 +218,19 @@ test('/api/health responde < 500ms aunque el worker resuelva títulos contra un 
     `(max=${max}ms, tolerancia ${blockedTolerance}). El fetch de títulos volvió a ser síncrono (execSync(gh)) ` +
     `dentro del worker de snapshot: dispararía ~100% de samples clavados, no un outlier aislado por saturación del padre.`);
 
-  // (b) Invariante de presupuesto: con gh síncrono TODOS los samples pasarían el
-  // budget (o expirarían); en sano sólo se tolera un outlier aislado (spawn de
-  // cmd.exe en Windows o un timeout flaky por saturación del padre). Se cuenta
-  // cualquier `!s.ok` (timeout) como lento para que una regresión sostenida
-  // (100% de timeouts) reviente este gate aunque su elapsed medido quede al ras.
-  const slow = samples.filter((s) => s.elapsed >= HEALTH_BUDGET_MS || !s.ok);
-  const slowPct = slow.length / samples.length;
-  assert.ok(slowPct <= HEALTH_P90_MAX_OUTLIERS_PCT,
-    `REGRESIÓN #4128: ${slow.length}/${samples.length} samples (${Math.round(slowPct * 100)}%) superaron ` +
-    `${HEALTH_BUDGET_MS}ms (max=${max}ms). Tolerancia ${Math.round(HEALTH_P90_MAX_OUTLIERS_PCT * 100)}%. ` +
-    `Un fetch síncrono dispararía el 100%, no un outlier aislado.`);
+  // (b) Invariante de presupuesto por MEDIANA (rebote #4534 rev-2): con gh
+  // síncrono TODOS los samples pasarían el budget (o expirarían) → la mediana se
+  // dispara a >=2000ms. En sano, aunque el proceso padre saturado deje una
+  // minoría de outliers (spawn de cmd.exe en Windows o un timeout flaky), la
+  // MAYORÍA de samples sigue siendo rápida y la mediana queda muy por debajo del
+  // presupuesto. Un timeout (`!s.ok`) mide ~2000ms (el timeout HTTP), así que ya
+  // contribuye alto al ordenamiento; no hace falta forzarlo. La mediana no se
+  // mueve por unos pocos outliers pero sí por la regresión sostenida (100%).
+  const elapsedSorted = samples.map((s) => s.elapsed).sort((a, b) => a - b);
+  const median = elapsedSorted[Math.floor(elapsedSorted.length / 2)];
+  assert.ok(median < HEALTH_BUDGET_MS,
+    `REGRESIÓN #4128: la MEDIANA de /api/health fue ${median}ms (presupuesto ${HEALTH_BUDGET_MS}ms, ` +
+    `samples=${samples.length}, max=${max}ms). El fetch de títulos volvió a ser síncrono (execSync(gh)) ` +
+    `dentro del worker: clava el event loop ~2-30s en cada tick y ~100% de samples superan el presupuesto ` +
+    `(mediana >=2000ms). Un outlier aislado por saturación del proceso padre no mueve la mediana.`);
 });
