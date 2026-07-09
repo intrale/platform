@@ -225,7 +225,8 @@ const { buildMinimalDeliverableMd } = require('./lib/minimal-deliverable');
 // `tipo:"exception"` en el índice vía el choke point (nunca writeFileSync directo).
 // #4504 (CA-1) — lectura del índice de entregables para garantizar que `guru`
 // SIEMPRE deje document o excepción indexada al cerrar `analisis` (Definición).
-const { readDeliverableIndex, upsertDeliverableIndex } = require('./lib/deliverable-index');
+const { readDeliverableIndex, upsertDeliverableIndex, upsertDeliverableException } = require('./lib/deliverable-index');
+const androidDevDeliverableGuard = require('./lib/android-dev-deliverable-guard');
 // #4512 — Builder puro del reporte de QA E2E. El Pulpo lo materializa SIEMPRE al
 // cerrar `qa/verificacion` (passed/failed) o como excepción explícita ("no
 // aplica"), y lo persiste vía writeDeliverable (nunca a mano).
@@ -4491,7 +4492,7 @@ function brazoBarrido(config) {
                 // writeDeliverable (redacta secrets, valida fase). NUNCA bloquea.
                 try {
                   const yaEntry = deliverableIndex
-                    .queryByPhase(issue, 'criterios', { pipelineRoot: ROOT })
+                    .queryByPhase(issue, 'criterios', { pipelineRoot: PIPELINE })
                     .some(e => e.agente === 'po' && e.tipo !== 'exception');
                   const declaraNoAplica = !!(poResult && poResult.entregable_no_aplica === true);
                   if (!yaEntry && poResult && !declaraNoAplica) {
@@ -4514,7 +4515,7 @@ function brazoBarrido(config) {
                   agente: 'po',
                   poResult,
                   config,
-                  pipelineRoot: ROOT,
+                  pipelineRoot: PIPELINE,
                 });
 
                 if (gateRes.effective_decision === 'retain') {
@@ -5064,7 +5065,42 @@ function brazoBarrido(config) {
                 // Umbral anti-ruido: sólo notas sustantivas (no un "aprobado" seco)
                 // se convierten en artefacto entregable.
                 const esSustantiva = notasRaw.trim().length >= 80;
-                if (notifySkill !== 'qa' && sinAdjuntos && esSustantiva) {
+                let entregableManejado = false;
+                if (notifySkill === 'android-dev' && fase === 'dev') {
+                  try {
+                    const decision = androidDevDeliverableGuard.evaluateDeliverableClosure({
+                      entregableNoAplica: r.entregable_no_aplica,
+                      attachments: r.attachments,
+                      notas: r.notas,
+                      motivo: r.motivo,
+                    });
+                    if (decision.action === 'exception' || decision.action === 'error') {
+                      const rec = upsertDeliverableException({
+                        issue, fase, agente: notifySkill, motivo: decision.motivo, pipelineRoot: PIPELINE,
+                      });
+                      r.notas = decision.action === 'exception'
+                        ? `Entregable no aplica: ${rec.motivo}`
+                        : rec.motivo;
+                      entregableManejado = true;
+                      log('barrido', decision.action === 'exception'
+                        ? `📄 #${issue} excepción entregable registrada (android-dev/dev)`
+                        : `⚠️ #${issue} ACCIONABLE android-dev/dev cerró sin entregable ni excepción — incidencia registrada`);
+                    }
+                  } catch (e) {
+                    log('barrido', `📄 #${issue} enforcement android-dev/dev error: ${e.message}`);
+                  }
+                }
+                // #4507 (CA-3, fix clobber): la selección de rama es un predicado
+                // puro y testeable. `entregableManejado` bloquea AMBAS ramas
+                // genéricas — no sólo la del fallback `.md` — para que la excepción
+                // genérica no pise ("último-write-gana") el motivo que el guard
+                // android-dev/dev ya persistió sobre la misma clave `agente::fase`.
+                const closureBranch = androidDevDeliverableGuard.selectClosureBranch({
+                  sinAdjuntos, esSustantiva, entregableManejado,
+                });
+                // #4512 — `qa` queda excluido del fallback `.md` genérico: su reporte
+                // estructurado ya se materializó arriba (evita doble .md que se pisen).
+                if (closureBranch === 'fallback_md' && notifySkill !== 'qa') {
                   try {
                     // #4514 — defensa en profundidad: el reporte de `security` es
                     // un mapa de vulnerabilidades → SIEMPRE `sensible:true`, aun si
@@ -5090,7 +5126,7 @@ function brazoBarrido(config) {
                     // El fallback NUNCA bloquea la notificación (CA-6).
                     log('barrido', `📎 #${issue} fallback .md error (${notifySkill}/${fase}): ${e.message}`);
                   }
-                } else if (sinAdjuntos && !esSustantiva) {
+                } else if (closureBranch === 'generic_exception') {
                   // #4506 (CA-3) — Excepción explícita `no_aplica`. Un cierre
                   // aprobado sin adjuntos y sin nota sustantiva ya NO cae en
                   // silencio: se registra UNA entry idempotente `tipo:"exception"`
@@ -5104,7 +5140,7 @@ function brazoBarrido(config) {
                       : 'entregable no aplica: cierre sin nota sustantiva';
                     upsertDeliverableIndex({
                       issue, fase, agente: notifySkill,
-                      tipo: 'exception', motivo, pipelineRoot: ROOT,
+                      tipo: 'exception', motivo, pipelineRoot: PIPELINE,
                     });
                     log('barrido', `⚠️ #${issue} excepción no_aplica registrada (${notifySkill}/${fase})`);
                   } catch (e) {

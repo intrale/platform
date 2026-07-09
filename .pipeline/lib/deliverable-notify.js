@@ -45,7 +45,7 @@ const {
     sanitizeDriveFilename,
     filenameHasSecret,
 } = require('./sanitize-payload');
-const { redactSensitive } = require('./redact');
+const { redactSensitive, redactSecretValue } = require('./redact');
 const { narrativeSanitizePreview } = require('./narrative-sanitize');
 const {
     mimeForPath,
@@ -1075,7 +1075,25 @@ function buildPreview(args) {
     const cfg = config || {};
     const truncateChars = Number.isFinite(cfg.truncate_chars) ? cfg.truncate_chars : DEFAULT_TRUNCATE_CHARS;
 
-    const rawNotes = extractRawNotes(yaml);
+    // #4507 — Excepción explícita de entregable. Si el agente declaró
+    // `entregable_no_aplica: "<motivo>"`, el motivo DEBE renderizarse en Telegram
+    // aunque no haya adjunto físico. "Sin allowlist" sólo afecta la elegibilidad
+    // del adjunto, NUNCA saltea la redacción/render del texto. El motivo se
+    // redacta acá (defense-in-depth) porque llega crudo del YAML del agente:
+    // `redactSecretValue` (AWS/JWT/API keys) → `redactSensitive` (emails/URLs).
+    const rawNotesBase = extractRawNotes(yaml);
+    const exceptionMotivo = (yaml && typeof yaml.entregable_no_aplica === 'string')
+        ? yaml.entregable_no_aplica.trim()
+        : '';
+    let rawNotes = rawNotesBase;
+    if (exceptionMotivo) {
+        const redactedMotivo = redactSensitive(redactSecretValue(exceptionMotivo));
+        const line = `⚠️ Entregable no aplica: ${redactedMotivo}`;
+        // Evitar duplicar si el caller (pulpo) ya inyectó el motivo en las notas.
+        if (!rawNotes || rawNotes.indexOf(redactedMotivo) < 0) {
+            rawNotes = rawNotes ? `${line}\n\n${rawNotes}` : line;
+        }
+    }
     const previewTrunc = truncatePreserveLines(rawNotes, truncateChars);
 
     // Envelope: campos de routing tomados del CALLER (nombre archivo + dir),

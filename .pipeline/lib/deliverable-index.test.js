@@ -15,6 +15,7 @@ const idx = require('./deliverable-index');
 const {
     upsertDeliverableIndex,
     upsertException,
+    upsertDeliverableException,
     readDeliverableIndex,
     queryByPhase,
     queryByAgent,
@@ -26,8 +27,14 @@ const {
 } = idx;
 
 // Root temporal aislado por corrida — no toca el FS real del pipeline.
+// `pipelineRoot` del índice = el dir `.pipeline` (contrato de deliverable-index,
+// #4507): `resolvePipelineDir` normaliza tolerante repo-root → `.pipeline`, así
+// que apuntar el root directo al dir `.pipeline` es idempotente y modela el
+// callsite real (pulpo pasa `PIPELINE` = dir `.pipeline`).
 function tmpRoot() {
-    return fs.mkdtempSync(path.join(os.tmpdir(), 'di-test-'));
+    const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'di-test-')), '.pipeline');
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
 }
 
 const TS = '2026-07-01T10:00:00.000Z';
@@ -285,7 +292,7 @@ test('upsertException escribe entry tipo:exception sin path, con motivo', () => 
         timestamp: TS, pipelineRoot: root,
     });
     assert.equal(rec.tipo, 'exception');
-    assert.ok(!('path' in rec), 'la excepción no lleva path');
+    assert.equal(rec.path, null, 'la excepción no porta binario');
     assert.equal(rec.sensible, false);
     assert.ok(rec.motivo_no_aplica.includes('criterios de negocio'));
 
@@ -544,4 +551,61 @@ test('un entregable real posterior pisa la entry no_aplica del mismo agente::fas
     assert.equal(read.entries[0].path, 'backend-dev-dev-4510.md');
     assert.ok(!('estado' in read.entries[0]) || read.entries[0].estado !== 'no_aplica',
         'el entregable real reemplaza al no_aplica');
+});
+
+// -----------------------------------------------------------------------------
+// #4507 · CA-1 — excepciones android-dev/dev en store canónico
+// -----------------------------------------------------------------------------
+
+test('upsertDeliverableException aterriza en .pipeline/deliverables (layout de pulpo)', () => {
+    const repoRoot = tmpRoot();
+    const pipelineDir = path.join(repoRoot, '.pipeline');
+    fs.mkdirSync(pipelineDir, { recursive: true });
+
+    const rec = upsertDeliverableException({
+        issue: '4507', fase: 'dev', agente: 'android-dev',
+        motivo: 'issue puramente mecánico; no amerita nota de implementación',
+        timestamp: TS, pipelineRoot: pipelineDir,
+    });
+    assert.equal(rec.tipo, 'exception');
+    assert.equal(rec.agente, 'android-dev');
+    assert.equal(rec.path, null);
+    assert.equal(rec.estado, 'no_aplica');
+
+    const canonical = path.join(pipelineDir, 'deliverables', '4507.json');
+    assert.ok(fs.existsSync(canonical), `debe existir el índice canónico: ${canonical}`);
+
+    const stray = path.join(repoRoot, 'deliverables', '4507.json');
+    assert.ok(!fs.existsSync(stray), `no debe crear índice stray en la raíz: ${stray}`);
+});
+
+test('upsertDeliverableException fusiona la excepción con entries físicas previas (CA-1)', () => {
+    const repoRoot = tmpRoot();
+    const pipelineDir = path.join(repoRoot, '.pipeline');
+    fs.mkdirSync(pipelineDir, { recursive: true });
+
+    upsertDeliverableIndex({
+        issue: '4507', fase: 'dev', agente: 'pipeline-dev', tipo: 'document',
+        path: '.pipeline/assets/docs/4507/pipeline-dev-dev-4507.md', bytes: 1542,
+        timestamp: TS, pipelineRoot: pipelineDir,
+    });
+    upsertDeliverableException({
+        issue: '4507', fase: 'dev', agente: 'android-dev',
+        motivo: 'no aplica nota de implementación en este cierre',
+        timestamp: TS, pipelineRoot: pipelineDir,
+    });
+
+    const read = readDeliverableIndex('4507', { pipelineRoot: pipelineDir });
+    assert.equal(read.entries.length, 2, 'ambas entries viven en el mismo índice canónico');
+    assert.equal(read.entries.filter((e) => e.tipo === 'document').length, 1);
+    assert.equal(read.entries.filter((e) => e.tipo === 'exception').length, 1);
+});
+
+test('CONTRATO: pasar el repo root crudo caería en un índice stray (regresión #4507)', () => {
+    const repoRoot = tmpRoot();
+    const strayPath = idx.indexPathFor('4507', { pipelineRoot: repoRoot });
+    const canonicalPath = idx.indexPathFor('4507', { pipelineRoot: path.join(repoRoot, '.pipeline') });
+    assert.equal(strayPath, path.join(repoRoot, 'deliverables', '4507.json'));
+    assert.equal(canonicalPath, path.join(repoRoot, '.pipeline', 'deliverables', '4507.json'));
+    assert.notEqual(strayPath, canonicalPath);
 });

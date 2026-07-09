@@ -302,7 +302,7 @@ test('#4511 — cierre exitoso escribe entregable phase-scoped e indexa (CA-1/CA
     );
     assert.ok(fs.existsSync(dv.path), 'el archivo físico del entregable debe existir');
 
-    const read = readDeliverableIndex(45110, { pipelineRoot: TMP });
+    const read = readDeliverableIndex(45110, { pipelineRoot: path.join(TMP, '.pipeline') });
     const entry = read.entries.find((e) => e.agente === 'tester' && e.fase === 'verificacion');
     assert.ok(entry, 'el índice debe tener entrada tester::verificacion');
     assert.equal(entry.tipo, 'document');
@@ -325,7 +325,7 @@ test('#4511 — pipeline-only sin tests genera entregable igual con excepción d
     const written = fs.readFileSync(dv.path, 'utf8');
     assert.ok(written.includes('Excepción explícita'), 'el entregable documenta la excepción');
 
-    const read = readDeliverableIndex(45111, { pipelineRoot: TMP });
+    const read = readDeliverableIndex(45111, { pipelineRoot: path.join(TMP, '.pipeline') });
     assert.ok(read.entries.some((e) => e.agente === 'tester' && e.fase === 'verificacion'));
 });
 
