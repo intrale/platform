@@ -551,6 +551,9 @@ function roadmapStyle() {
 .wr-planned-list{display:flex;flex-direction:column;gap:7px}
 /* #4534 — Overlays de detalle / agregar / ABM. */
 .rw-overlay{gap:14px}
+/* [hidden] debe ganarle al display:flex de .wr-section (misma especificidad -> gana el autor).
+   Mismo patrón que issues.js .iss-menu[hidden]. Sin esto los overlays ②/③/④ se apilan sobre ①. */
+.rw-overlay[hidden]{display:none !important}
 .rw-dhead{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .wr-backb{font-size:11px;font-weight:700;cursor:pointer;color:var(--text-secondary,#8A93A6);background:var(--surface-1,#11151E);border:1px solid var(--border,rgba(255,255,255,.12));border-radius:7px;padding:5px 10px}
 .wr-backb:hover{color:var(--text-primary,#e6edf3);border-color:var(--purple,#BC8CFF)}
