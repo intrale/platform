@@ -135,6 +135,11 @@ scripts/planner-plan.json
 # Pipeline V2 — estado efímero (no commitear)
 .pipeline/logs/
 .pipeline/*.pid
+# Temporales de gh CLI (query bodies de `gh api graphql -F ...`): artefactos
+# runtime que se generan en cada corrida y quedan huérfanos. Un `git add -A`
+# los barre por decenas al índice y provocan conflictos de rebase en delivery
+# (mismo patrón que los .ready de #4371). NO commitear (#4524).
+.pipeline/.gh-summary-*.graphql
 # Ready-markers de servicios: estado runtime (pid/port/timestamps reescritos en
 # cada arranque). NO commitear — el proceso vivo los reescribe durante rebase/merge
 # y provoca conflictos en delivery (#4371).
