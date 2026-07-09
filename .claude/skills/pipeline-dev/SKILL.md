@@ -233,7 +233,7 @@ writeDeliverable("pipeline-dev", issue, { fase, md /* o svg para mockups/diagram
 > const pipelineRoot = process.env.PIPELINE_ROOT || process.cwd();
 > writeDeliverableException("pipeline-dev", issue, {
 >   fase,                          // 'dev' — token del enum, no la etiqueta humana
->   motivo_no_aplica: "Por qué no corresponde entregable en este issue",
+>   motivo: "Por qué no corresponde entregable en este issue",
 >   pipelineRoot,
 > });
 > ```

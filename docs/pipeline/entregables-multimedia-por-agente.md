@@ -383,7 +383,7 @@ const { path, bytes } = writeDeliverable('guru', issue, { md /* o svg */ });
 >   umbral anti-ruido de 80 chars que aplica al resto de los skills. El bypass del
 >   umbral está scopeado exclusivamente a `pipeline-dev/dev`.
 > - **Excepción explícita (#4524).** `writeDeliverableException('pipeline-dev',
->   issue, { fase: 'dev', motivo_no_aplica, pipelineRoot })` persiste una entry
+>   issue, { fase: 'dev', motivo, pipelineRoot })` persiste una entry
 >   `tipo: 'exception'` con `motivo_no_aplica` redactado en el mismo store
 >   `issue → fase → agente`, sin un segundo writer del manifest. La excepción vive
 >   en el índice y **no** se convierte en attachment físico.
