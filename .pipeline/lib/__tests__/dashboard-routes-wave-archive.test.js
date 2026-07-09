@@ -161,10 +161,14 @@ test('CA-8 — la vista roadmap escapa name/goal/título de issue (anti-XSS)', (
             archived_waves: [{ number: 6, name: 'Ola 6', issues: [{ number: 50 }], issues_completed: 3 }],
         },
     }, {});
+    // El nombre/objetivo de la ola se renderizan en el SSR (tira en curso) y van
+    // escapados server-side.
     assert.equal(html.includes('<script>alert(1)</script>'), false, 'no debe haber <script> crudo');
     assert.ok(html.includes('&lt;script&gt;'), 'script escapado');
-    assert.equal(/onerror=alert\(1\)>/.test(html) && !html.includes('&lt;img'), false);
-    assert.ok(html.includes('&lt;img src=x'), 'img escapado');
+    // #4534 — Los títulos de issue ya NO se vuelcan en el SSR de la lista: viven
+    // en la vista de detalle, renderizada client-side y escapada con textContent
+    // (rwEsc). Por eso el SSR nunca debe contener el payload crudo del título.
+    assert.equal(html.includes('onerror=alert(1)'), false, 'título crudo no aparece en el SSR (se escapa en el detalle client-side)');
     assert.ok(html.includes('data-slug="roadmap"'));
 });
 

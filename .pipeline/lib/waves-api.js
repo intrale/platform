@@ -28,6 +28,7 @@
 'use strict';
 
 const path = require('path');
+const fs = require('fs');
 
 let waves = null;
 try { waves = require('./waves'); } catch { /* opcional — degrada a 503 */ }
@@ -55,6 +56,11 @@ const IDEMPOTENCY_TTL_MS = 10 * 60 * 1000;  // reintentos con misma key dentro d
 const IDEMPOTENCY_MAX = 500;                // cap del cache in-memory.
 const FIXED_ACTOR = 'operador-local';       // actor grabado server-side (NUNCA del body).
 const AUDIT_SOURCE = 'api:waves';
+// #4534 — defaults server-side del ABM (decisión PO): el formulario de la ventana
+// Roadmap no pide concurrencia/ventana; se completan acá dentro del rango válido.
+const WAVE_CREATE_DEFAULT_WINDOW_MIN = 60;   // ∈ [5, 1440]
+const WAVE_CREATE_DEFAULT_CONCURRENCY = 2;   // se acota al techo de config.yaml
+const WAVE_MAX_CONCURRENCY_DEFAULT_FALLBACK = 10; // si el dominio no expone el techo
 
 // -----------------------------------------------------------------------------
 // Estado in-memory (rate-limit + idempotencia). Reseteable para tests.
@@ -360,6 +366,22 @@ function matchRoute(method, pathnameOnly) {
         return { surface: true, kind: 'read', action: 'active' };
     }
 
+    // #4534 — /api/waves/issue-search → buscador de issues (#, título, label) con
+    // auto-exclusión. Lectura (loopback, sin auth). Se resuelve ANTES del guard
+    // numérico porque `issue-search` no es un número de ola.
+    if (segs.length === 3 && segs[2] === 'issue-search') {
+        if (method === 'GET') return { surface: true, kind: 'read', action: 'issue-search' };
+        return { surface: true, kind: 'unknown', action: 'issue-search' };
+    }
+
+    // #4534 — /api/waves/order → reorden de las olas planificadas ENTRE SÍ (no
+    // confundir con /api/waves/{n}/order, que reordena issues DENTRO de una ola).
+    // Mutación con cinturón completo + If-Match. También antes del guard numérico.
+    if (segs.length === 3 && segs[2] === 'order') {
+        if (method === 'PUT') return { surface: true, kind: 'mutation', action: 'reorder-waves', method: 'PUT' };
+        return { surface: true, kind: 'unknown', action: 'reorder-waves' };
+    }
+
     // A partir de acá el 3er segmento DEBE ser un número de ola (A03: sólo enteros).
     if (!NUM_RE.test(segs[2])) {
         return { surface: true, kind: 'bad-id', which: 'wave' };
@@ -370,6 +392,8 @@ function matchRoute(method, pathnameOnly) {
     if (segs.length === 3) {
         if (method === 'GET') return { surface: true, kind: 'read', action: 'detail', wave };
         if (method === 'PATCH') return { surface: true, kind: 'mutation', action: 'edit', wave, method: 'PATCH' };
+        // #4534 — DELETE /api/waves/{n} → baja de ola planificada (libera issues).
+        if (method === 'DELETE') return { surface: true, kind: 'mutation', action: 'delete-wave', wave, method: 'DELETE' };
         return { surface: true, kind: 'unknown', action: 'detail-or-edit', wave };
     }
 
@@ -648,9 +672,120 @@ function projectedDesync(remaining) {
 }
 
 // -----------------------------------------------------------------------------
+// #4534 — Buscador de issues con auto-exclusión (ventana Roadmap, vista ③).
+//
+// Lee el title-cache (`.issue-title-cache.json`) — NUNCA dispara `gh` en runtime
+// (no bloquea el event loop del dashboard; "pipeline no puede morir"). Construye
+// un índice issue→ola sobre TODAS las colecciones (activa + planificadas +
+// ejecutadas) para la auto-exclusión por membresía, y usa el `state` del cache
+// para la auto-exclusión por estado (cerrado/no-elegible).
+// -----------------------------------------------------------------------------
+const ISSUE_SEARCH_MAX = 60;
+
+function readTitleCache() {
+    try {
+        const file = path.join(pipelineDir(), '.issue-title-cache.json');
+        const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+        return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+    } catch { return {}; }
+}
+
+// Índice issue→ola sobre activa + planificadas + archivadas. A diferencia de
+// planner-waves.isInAnyWave (que sólo mira activa+planificadas), la exclusión del
+// roadmap cubre también las ejecutadas para no re-agregar un issue ya cerrado en
+// una ola pasada.
+function buildWaveMembershipIndex() {
+    const index = new Map(); // issueNumber → { wave, name, status }
+    let list = [];
+    try { list = waves.listWaves(); } catch { list = []; }
+    for (const w of list) {
+        const issues = Array.isArray(w.issues) ? w.issues : [];
+        for (const it of issues) {
+            const n = Number(it && it.number);
+            if (!Number.isInteger(n) || n <= 0) continue;
+            if (!index.has(n)) {
+                index.set(n, {
+                    wave: Number(w.number),
+                    name: (typeof w.name === 'string') ? w.name : null,
+                    status: w.status,
+                });
+            }
+        }
+    }
+    return index;
+}
+
+// Elegibilidad de un issue para agregarse a una ola. Membresía primero (más
+// específica), luego estado. Mensajes en español, alineados con el mockup:
+// "● ya en Ola X" / "✓ cerrado · no elegible".
+function evalEligibility(num, entry, membership) {
+    const mem = membership.get(num);
+    if (mem) {
+        const label = mem.name ? `Ola ${mem.wave} (${mem.name})` : `Ola ${mem.wave}`;
+        return { eligible: false, reason: `● ya en ${label}` };
+    }
+    const state = (entry && typeof entry.state === 'string') ? entry.state.toUpperCase() : null;
+    if (state === 'CLOSED' || state === 'MERGED') {
+        return { eligible: false, reason: '✓ cerrado · no elegible' };
+    }
+    return { eligible: true, reason: null };
+}
+
+function buildSearchResult(num, cache, membership) {
+    const entry = (cache && cache[String(num)]) || null;
+    const elig = evalEligibility(num, entry, membership);
+    return {
+        number: num,
+        title: (entry && typeof entry.title === 'string') ? entry.title : null,
+        state: (entry && typeof entry.state === 'string') ? entry.state : null,
+        labels: (entry && Array.isArray(entry.labels)) ? entry.labels.slice(0, 12) : [],
+        eligible: elig.eligible,
+        reason: elig.reason,
+    };
+}
+
+function handleIssueSearch(res, req) {
+    let sp;
+    try { sp = new URL(req.url, 'http://x').searchParams; } catch { sp = new URLSearchParams(); }
+    const cache = readTitleCache();
+    const membership = buildWaveMembershipIndex();
+
+    // Modo `ids`: resuelve un set explícito (enriquecer un board conocido).
+    const idsRaw = sp.get('ids');
+    if (idsRaw != null) {
+        const ids = [];
+        for (const part of String(idsRaw).split(',')) {
+            const n = Number(String(part).trim());
+            if (Number.isInteger(n) && n > 0 && !ids.includes(n)) ids.push(n);
+        }
+        return send(res, 200, { results: ids.map((n) => buildSearchResult(n, cache, membership)) });
+    }
+
+    // Modo `q`: buscar por #, título o label (case-insensitive).
+    const q = String(sp.get('q') || '').trim().toLowerCase();
+    if (!q) return send(res, 200, { results: [] });
+
+    const matches = [];
+    for (const key of Object.keys(cache)) {
+        const n = Number(key);
+        if (!Number.isInteger(n) || n <= 0) continue;
+        const entry = cache[key] || {};
+        const title = (typeof entry.title === 'string') ? entry.title.toLowerCase() : '';
+        const labels = Array.isArray(entry.labels) ? entry.labels.map((l) => String(l).toLowerCase()) : [];
+        if (String(n).includes(q) || title.includes(q) || labels.some((l) => l.includes(q))) {
+            matches.push(n);
+        }
+    }
+    matches.sort((a, b) => a - b);
+    const truncated = matches.length > ISSUE_SEARCH_MAX;
+    const results = matches.slice(0, ISSUE_SEARCH_MAX).map((n) => buildSearchResult(n, cache, membership));
+    return send(res, 200, { results, truncated });
+}
+
+// -----------------------------------------------------------------------------
 // Handlers de lectura.
 // -----------------------------------------------------------------------------
-function handleRead(res, route) {
+function handleRead(res, route, req) {
     // #4437 — la lectura de allowlist no depende de `waves` (opera sobre
     // .partial-pause.json) → su propio guard de módulo.
     if (route.action === 'allowlist-read') {
@@ -658,6 +793,11 @@ function handleRead(res, route) {
     }
     if (!waves) {
         return sendError(res, 503, 'module_unavailable', 'La gestión de olas no está disponible.');
+    }
+    // #4534 — buscador de issues con auto-exclusión. Depende del title-cache, no
+    // de la versión de olas; su propio handler que NUNCA tira 500 (fail-open).
+    if (route.action === 'issue-search') {
+        return handleIssueSearch(res, req);
     }
     try {
         const version = waves.getVersion();
@@ -707,6 +847,17 @@ function dispatchMutation(res, route, parsed, ifMatch) {
                 concurrency_max: parsed.concurrency_max,
                 window_minutes: parsed.window_minutes,
             };
+            // #4534 — defaults server-side cuando el ABM no los envía.
+            if (spec.window_minutes === undefined || spec.window_minutes === null) {
+                spec.window_minutes = WAVE_CREATE_DEFAULT_WINDOW_MIN;
+            }
+            if (spec.concurrency_max === undefined || spec.concurrency_max === null) {
+                let ceiling = WAVE_MAX_CONCURRENCY_DEFAULT_FALLBACK;
+                try {
+                    if (typeof waves.readWaveMaxConcurrency === 'function') ceiling = waves.readWaveMaxConcurrency();
+                } catch { /* techo por default */ }
+                spec.concurrency_max = Math.max(1, Math.min(WAVE_CREATE_DEFAULT_CONCURRENCY, ceiling));
+            }
             const r = waves.createPlannedWave(spec, meta);
             const body = { version: r.version || waves.getVersion(), wave: toDisplayWave({ ...r.wave, status: 'planned' }) };
             audit({ action: 'create', wave: r.waveNumber, version: body.version });
@@ -738,10 +889,59 @@ function dispatchMutation(res, route, parsed, ifMatch) {
         if (route.action === 'reorder') {
             return dispatchReorder(route, parsed, ifMatch);
         }
+        // #4534 — baja de ola planificada (libera sus issues).
+        if (route.action === 'delete-wave') {
+            const r = waves.deletePlannedWave(route.wave, meta);
+            const body = { version: r.version, deleted: true, wave: route.wave, freed_issues: r.freed_issues };
+            audit({ action: 'delete', wave: route.wave, freed: r.freed_issues, version: body.version });
+            return { status: 200, body };
+        }
+        // #4534 — reorden de las olas planificadas entre sí.
+        if (route.action === 'reorder-waves') {
+            return dispatchReorderWaves(parsed, ifMatch);
+        }
         return { errorStatus: 404, code: 'not_found', message: 'Recurso no encontrado.' };
     } catch (e) {
         return { domainError: e };
     }
+}
+
+// #4534 — Reorden de las olas planificadas ENTRE SÍ. Reusa el dominio
+// (`waves.reorderPlannedWaves`, que valida permutación exacta bajo lock). Hace su
+// propia verificación de If-Match (concurrencia optimista) porque el dominio de
+// reorden no soporta `expectedVersion`. NO confundir con dispatchReorder, que
+// reordena issues DENTRO de una ola.
+function dispatchReorderWaves(parsed, ifMatch) {
+    const current = waves.getVersion();
+    if (ifMatch !== current) {
+        return { errorStatus: 409, code: 'version_conflict', message: 'El estado cambió desde tu última lectura. Refrescá y reintentá.', version: current };
+    }
+    const requested = Array.isArray(parsed.order) ? parsed.order : null;
+    if (!requested) {
+        return { errorStatus: 400, code: 'invalid_input', message: 'Se requiere el arreglo "order" con los números de ola.', field: 'order' };
+    }
+    // A03: SOLO enteros positivos, sin duplicados.
+    const cleaned = [];
+    for (const raw of requested) {
+        const n = Number(raw);
+        if (!Number.isInteger(n) || n <= 0 || String(raw).trim() !== String(n)) {
+            return { errorStatus: 400, code: 'invalid_input', message: 'El orden contiene un id no numérico.', field: 'order' };
+        }
+        if (cleaned.includes(n)) {
+            return { errorStatus: 400, code: 'invalid_input', message: `La ola ${n} está duplicada en el orden.`, field: 'order' };
+        }
+        cleaned.push(n);
+    }
+    try {
+        waves.reorderPlannedWaves(cleaned, { updated_by: FIXED_ACTOR, source: AUDIT_SOURCE });
+    } catch {
+        // El dominio tira Error plano si `cleaned` no es permutación exacta de las
+        // olas planificadas (faltantes, sobrantes o números inexistentes).
+        return { errorStatus: 400, code: 'invalid_input', message: 'El orden debe ser una permutación exacta de las olas planificadas.', field: 'order' };
+    }
+    const version = waves.getVersion();
+    audit({ action: 'reorder-waves', order: cleaned, version });
+    return { status: 200, body: { version, order: cleaned } };
 }
 
 // Reorden de prioridades dentro de la ola (CA-3/UX-4). Reusa `issue-order.js`
@@ -914,7 +1114,7 @@ function handleWavesApi(req, res, ctx) { // eslint-disable-line no-unused-vars
             sendError(res, 403, 'forbidden', 'Acceso permitido sólo desde localhost.');
             return true;
         }
-        handleRead(res, route);
+        handleRead(res, route, req);
         return true;
     }
     if (route.kind === 'mutation') {
