@@ -83,6 +83,45 @@ test('cliente: quitar issue confirma antes de mutar (destructivo)', () => {
     assert.ok(/danger:\s*true/.test(block), 'confirmación destructiva');
 });
 
+test('SSR: los overlays ②/③/④ arrancan ocultos por defecto (atributo hidden + reset CSS)', () => {
+    // Regresión #4534 (escape en aprobación): `.wr-section{display:flex}` anula el
+    // `[hidden]` de la UA-stylesheet (misma especificidad → gana el autor), por lo que
+    // los overlays se apilaban sobre la vista ①. El fix es el reset `[hidden]` explícito.
+    const html = v.renderRoadmapSsr({ wavesState: state() });
+    // 1) Los tres overlays se emiten con el atributo `hidden`.
+    assert.ok(/id="rw-view-detail"[^>]*\shidden/.test(html), 'rw-view-detail arranca con hidden');
+    assert.ok(/id="rw-view-add"[^>]*\shidden/.test(html), 'rw-view-add arranca con hidden');
+    assert.ok(/id="rw-view-form"[^>]*\shidden/.test(html), 'rw-view-form arranca con hidden');
+    // 2) El reset CSS que hace ganar a `[hidden]` sobre display:flex está presente.
+    assert.ok(
+        html.includes('.rw-overlay[hidden]{display:none !important}'),
+        'existe el reset .rw-overlay[hidden]{display:none !important} (sin él los overlays se apilan sobre ①)',
+    );
+});
+
+test('cliente: rwShowOverlay muestra una sola vista a la vez (navegación de a una)', () => {
+    const cs = v.renderRoadmapClientScript();
+    // Extraemos la función real del script y la ejecutamos contra un DOM falso mínimo.
+    const src = cs.slice(cs.indexOf('function rwShowOverlay'));
+    const body = src.slice(0, src.indexOf('\nfunction ')); // hasta la próxima función
+    const ids = ['rw-view-list', 'rw-view-detail', 'rw-view-add', 'rw-view-form'];
+    const els = {};
+    ids.forEach((id) => { els[id] = { id, hidden: false }; });
+    const fakeDoc = { getElementById: (id) => els[id] || null };
+    const fakeWin = { scrollTo() {} };
+    // eslint-disable-next-line no-new-func
+    const factory = new Function('document', 'window', body + '\nreturn rwShowOverlay;');
+    const rwShowOverlay = factory(fakeDoc, fakeWin);
+
+    rwShowOverlay('rw-view-add');
+    const visibles = ids.filter((id) => els[id].hidden === false);
+    assert.deepEqual(visibles, ['rw-view-add'], 'solo rw-view-add queda visible');
+
+    rwShowOverlay('rw-view-list');
+    const visibles2 = ids.filter((id) => els[id].hidden === false);
+    assert.deepEqual(visibles2, ['rw-view-list'], 'volver a la lista oculta los overlays');
+});
+
 test('cliente: expone los handlers en window para los onclick del SSR', () => {
     const cs = v.renderRoadmapClientScript();
     ['rwOpenDetail', 'rwOpenAdd', 'rwOpenCreate', 'rwOpenEdit', 'rwDeleteWave', 'rwDrop', 'rwAddSelected', 'rwSaveForm']
