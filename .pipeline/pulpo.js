@@ -183,6 +183,8 @@ const waveAutoTransition = require('./lib/wave-auto-transition');
 const { resolveReboteDestino } = require('./lib/rebote-destino');
 // #2893 — Detección de dependencias del allowlist en pausa parcial
 const partialPauseDeps = require('./lib/partial-pause-deps');
+// #4614 — self-healing de fases varadas (reconciler).
+const { runStuckPhaseReconciler } = require('./lib/stuck-phase-reconciler-runner');
 // #2801 — emit session:start/end por cada lanzamiento de agente Claude (LLM)
 // para que el aggregator pueda contabilizar tokens consumidos. Los skills
 // determinísticos (delivery, builder, linter, tester) ya emiten por su cuenta.
@@ -14596,6 +14598,116 @@ function pollQuotaFlag() {
   lastQuotaFlagPresent = present;
 }
 
+// #4614 — Tick del reconciler de fases varadas. Auto-throttled (cada 10 min) +
+// try/catch: jamás tumba el loop del Pulpo. Solo actúa sobre fases PARALELAS
+// (no mono-skill dev/build/entrega). Guardas dentro del reconciler (cross-phase,
+// cap de reintentos persistente, dedupe, pausa/allowlist, liveness).
+let _lastStuckReconcilerAt = 0;
+const STUCK_RECONCILER_INTERVAL_MS = 10 * 60 * 1000;
+const STUCK_STALE_MS = 15 * 60 * 1000;
+function runStuckReconcilerTick() {
+  if (Date.now() - _lastStuckReconcilerAt < STUCK_RECONCILER_INTERVAL_MS) return;
+  _lastStuckReconcilerAt = Date.now();
+  try {
+    const STUCK_STATE_FILE = path.join(PIPELINE, '.stuck-reconciler-state.json');
+    const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+    const ppMode = partialPause.getPipelineMode();
+    // Fases PARALELAS de `desarrollo` (todos los skills deben estar, modelo
+    // `resultado: aprobado`). Mono-skill (dev/build/entrega) quedan afuera. Las
+    // de `definicion` (analisis/criterios) también: sus deliverables son dossiers
+    // que NO usan `resultado: aprobado`, así que el detector los malinterpretaría
+    // (hallazgo del dry-run). v1 acotado a desarrollo.
+    const parallelPhases = [
+      { pipeline: 'desarrollo', fase: 'validacion' },
+      { pipeline: 'desarrollo', fase: 'verificacion' },
+      { pipeline: 'desarrollo', fase: 'aprobacion' },
+    ];
+    const allPhasesOf = (p) => (config.pipelines?.[p]?.fases) || [];
+
+    const deps = {
+      nowMs: Date.now(),
+      parallelPhases,
+      requiredSkillsFor: (p, f) => (config.pipelines?.[p]?.skills_por_fase?.[f]) || [],
+      listPhaseFiles: (p, f, state) => {
+        const dir = path.join(fasePath(p, f), state);
+        return (listWorkFiles(dir) || []).map((wf) => {
+          let mtimeMs = 0;
+          try { mtimeMs = fs.statSync(wf.path).mtimeMs; } catch { /* ausente */ }
+          return { name: wf.name, mtimeMs };
+        });
+      },
+      readYaml: (p, f, state, name) => readYamlSafe(path.join(fasePath(p, f), state, name)),
+      issueLiveElsewhere: (issue, p, currentFase) => {
+        for (const f of allPhasesOf(p)) {
+          if (f === currentFase) continue;
+          for (const st of ['pendiente', 'trabajando']) {
+            try {
+              if (fs.readdirSync(path.join(fasePath(p, f), st)).some((n) => n.startsWith(issue + '.'))) return true;
+            } catch { /* dir ausente */ }
+          }
+        }
+        return false;
+      },
+      hasNeedsHuman: (issue) => {
+        try {
+          if (fs.readdirSync(ghQueueDir).some((n) => n.startsWith(issue + '-needs-human'))) return true;
+        } catch { /* ausente */ }
+        for (const p of Object.keys(config.pipelines || {})) {
+          for (const f of allPhasesOf(p)) {
+            try {
+              if (fs.readdirSync(path.join(fasePath(p, f), 'bloqueado-humano')).some((n) => n.startsWith(issue + '.'))) return true;
+            } catch { /* ausente */ }
+          }
+        }
+        return false;
+      },
+      isAllowed: (issue) => ppMode.mode !== 'partial_pause' || (ppMode.allowed_issues || []).includes(Number(issue)),
+      // Solo actuar sobre issues confirmados OPEN (el title-cache trae el estado
+      // real de GitHub). Cerrado/notFound/desconocido → no tocar (residuo).
+      isIssueOpen: (issue) => {
+        try {
+          const cache = JSON.parse(fs.readFileSync(path.join(PIPELINE, '.issue-title-cache.json'), 'utf8'));
+          const e = cache[String(issue)];
+          return !!(e && e.state === 'OPEN');
+        } catch { return false; }
+      },
+      isPaused: () => { try { return fs.existsSync(PAUSE_FILE); } catch { return false; } },
+      livenessOk: (name, mtimeMs) => (Date.now() - mtimeMs) < STUCK_STALE_MS, // trabajando reciente = vivo
+      loadRetryState: () => { try { return JSON.parse(fs.readFileSync(STUCK_STATE_FILE, 'utf8')); } catch { return {}; } },
+      saveRetryState: (s) => { try { fs.writeFileSync(STUCK_STATE_FILE, JSON.stringify(s, null, 2)); } catch { /* best-effort */ } },
+      requeueWorkItem: (p, f, skill, issue) => {
+        const dir = path.join(fasePath(p, f), 'pendiente');
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, `${issue}.${skill}`), `issue: ${issue}\nfase: ${f}\npipeline: ${p}\n`);
+      },
+      escalate: (issue, reason) => {
+        try {
+          fs.mkdirSync(ghQueueDir, { recursive: true });
+          fs.writeFileSync(
+            path.join(ghQueueDir, `${issue}-needs-human-stuck-${Date.now()}.json`),
+            JSON.stringify({ action: 'label', issue: parseInt(issue, 10), label: 'needs-human' })
+          );
+        } catch (e) { log('reconciler', `error encolando needs-human #${issue}: ${e.message}`); }
+      },
+      workItemExists: (p, f, skill, issue) => {
+        for (const st of ['pendiente', 'trabajando']) {
+          try { if (fs.existsSync(path.join(fasePath(p, f), st, `${issue}.${skill}`))) return true; } catch { /* no-op */ }
+        }
+        return false;
+      },
+      notify: (msg) => { try { sendTelegram(msg); } catch { /* best-effort */ } },
+      audit: (rec) => log('reconciler', typeof rec === 'string' ? rec : JSON.stringify(rec)),
+    };
+
+    const res = runStuckPhaseReconciler(deps, { maxRequeueAttempts: 2, capPerTick: 5, staleThresholdMs: STUCK_STALE_MS });
+    if (res.requeued || res.escalated) {
+      log('reconciler', `🔧 self-healing tick: requeue=${res.requeued} escalate=${res.escalated} skip=${res.skipped}`);
+    }
+  } catch (e) {
+    log('reconciler', `tick error (no tumba el loop): ${e && e.message}`);
+  }
+}
+
 // Rotación del historial del commander (descartar > 24hs)
 let lastHistoryRotation = 0;
 function rotateHistory() {
@@ -16195,6 +16307,11 @@ async function mainLoop() {
       // pausado) para que el notifier dispare cierre cuando se borra el flag,
       // independiente del estado de pausa del pipeline.
       try { pollQuotaFlag(); } catch (e) { log('quota', `pollQuotaFlag error: ${e.message}`); }
+
+      // #4614 — Self-healing de fases varadas. Auto-throttled (cada 10min) +
+      // try/catch interno: jamás tumba el loop. Reconcilia issues que quedaron
+      // colgados por crash/rebote (re-encola faltantes o escala ambiguos).
+      runStuckReconcilerTick();
 
       // #3260 — Healthcheck multi-provider. Corre SIEMPRE (idempotente, con
       // lock + jitter ±60s anti-thundering-herd). El módulo decide internamente
