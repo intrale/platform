@@ -85,7 +85,7 @@ test('promueve registrando excepción autoritativa cuando el YAML trae entregabl
     const ex = entries.find((e) => e.agente === 'po' && e.tipo === 'exception');
     assert.ok(ex, 'debe existir la entry de excepción');
     assert.ok(!('path' in ex), 'la excepción no lleva path');
-    assert.ok(ex.motivo.includes('chore de infra'), `motivo persistido: ${ex.motivo}`);
+    assert.ok(ex.motivo_no_aplica.includes('chore de infra'), `motivo persistido: ${ex.motivo_no_aplica}`);
     assert.equal(ex.timestamp, TS, 'timestamp determinístico desde clock inyectable');
 });
 

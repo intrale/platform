@@ -232,6 +232,19 @@ test('#3837 · redactRagContent NO sobre-redacta contenido legítimo', () => {
     }
 });
 
+test('#4524 · redactRagContent redacta secreto opaco de 38 chars embebido en oración (RE-1)', () => {
+    // El contrato #4524 usa un ejemplo opaco de 38 chars (AWS secret sin slashes).
+    const linea = 'No aplica porque el deploy usa la key wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY manual';
+    const out = redactRagContent(linea);
+    assert.ok(!out.includes('wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY'), `debe redactar el secreto opaco: ${out}`);
+    // No destruye el resto de la oración (redacción per-token, no whole-string).
+    assert.ok(out.includes('No aplica porque el deploy usa la key'));
+    assert.ok(out.includes('manual'));
+    // Un git SHA-40 (hex, entropía < 4.5) NO se toca aunque supere el umbral de longitud.
+    const sha = 'fix en 3b09ae4c0797c5a412628aac3469d36232ed8c8 mergeado';
+    assert.equal(redactRagContent(sha), sha);
+});
+
 test('#3837 · redactRagContent tolera input no-string', () => {
     assert.equal(redactRagContent(''), '');
     assert.equal(redactRagContent(null), null);

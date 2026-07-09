@@ -37,7 +37,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const { getSkillSourcesCatalog } = require('./skill-deliverable-attachments');
-const { redactSecretValue, redactSensitive } = require('./redact');
+const { redactSecretValue, redactSensitive, redactRagContent } = require('./redact');
 
 // -----------------------------------------------------------------------------
 // Enum de fases (SEC-2) — CERRADO, derivado de config.yaml → skills_por_fase.
@@ -189,9 +189,14 @@ function indexPathFor(issue, opts) {
  */
 function redactMeta(entry) {
     const out = { ...entry };
-    for (const field of ['path', 'caption', 'descriptor', 'filename', 'motivo']) {
+    for (const field of ['path', 'caption', 'descriptor', 'filename', 'motivo', 'motivo_no_aplica']) {
         if (typeof out[field] === 'string' && out[field].length > 0) {
-            out[field] = redactSensitive(redactSecretValue(out[field]));
+            // RE-1: los campos de texto libre (`motivo`/`motivo_no_aplica`) usan
+            // redacción per-token (cubre secreto opaco embebido en oración); el
+            // resto mantiene la redacción whole-string existente.
+            out[field] = (field === 'motivo' || field === 'motivo_no_aplica')
+                ? redactRagContent(out[field])
+                : redactSensitive(redactSecretValue(out[field]));
         }
     }
     return out;
@@ -284,10 +289,14 @@ function capMotivo(s) {
  * @param {string} entry.tipo                  - document|image|video|animation|exception.
  * @param {string} [entry.path]                - path del binario (relativo al repo).
  *                                               Requerido salvo `tipo:'exception'`.
- * @param {string} [entry.motivo]              - motivo de la excepción. Requerido
- *                                               (y no vacío) sólo si `tipo:'exception'`
- *                                               (#4504, CA-3). Se redacta en `redactMeta`
- *                                               y se capa a MOTIVO_MAX_CHARS (#4506, REQ-SEC-3).
+ * @param {string} [entry.motivo_no_aplica]    - motivo canónico de la excepción
+ *                                               (#4524, CA-3). Requerido (y no vacío)
+ *                                               sólo si `tipo:'exception'`. Se redacta
+ *                                               per-token en `redactMeta` y se capa a
+ *                                               MOTIVO_MAX_CHARS (#4506, REQ-SEC-3).
+ * @param {string} [entry.motivo]              - alias compat de `motivo_no_aplica`
+ *                                               (#4504/#4506). Se persiste además como
+ *                                               `motivo` + `estado:'no_aplica'` por compat.
  * @param {number} [entry.bytes]               - tamaño del binario.
  * @param {boolean} [entry.sensible=false]     - flag de sensibilidad (SEC-1).
  * @param {string} [entry.timestamp]           - ISO inyectable (determinismo tests).
@@ -309,12 +318,14 @@ function upsertDeliverableIndex(entry = {}) {
     }
     // Validación condicional por tipo. La entry `tipo:'exception'` registra
     // "el entregable no aplica + motivo" y por diseño NO tiene binario asociado.
-    // No exige `path`; en su lugar exige `motivo` no vacío para no degradar a un
-    // registro silencioso. El resto de tipos sigue requiriendo `path`.
+    // No exige `path`; en su lugar exige `motivo_no_aplica` no vacío para no
+    // degradar a un registro silencioso. El resto de tipos sigue requiriendo `path`.
+    // `motivo` sigue aceptado como alias compat (#4504).
     const isException = entry.tipo === 'exception';
+    const motivo = entry.motivo_no_aplica ?? entry.motivo;
     if (isException) {
-        if (typeof entry.motivo !== 'string' || entry.motivo.trim().length === 0) {
-            throw new Error(`motivo requerido para tipo=exception: ${entry.motivo}`);
+        if (typeof motivo !== 'string' || motivo.trim().length === 0) {
+            throw new Error(`motivo_no_aplica requerido para tipo=exception: ${motivo}`);
         }
     } else if (typeof entry.path !== 'string' || entry.path.length === 0) {
         throw new Error(`path inválido: ${entry.path}`);
@@ -330,23 +341,28 @@ function upsertDeliverableIndex(entry = {}) {
         fase,
         agente,
         tipo: entry.tipo,
-        // Sólo se persiste el campo relevante por tipo: `path` para binarios,
-        // `motivo` (+ `estado:"no_aplica"`) para excepciones. Así el shape de cada
-        // entry es inequívoco (#4506, CA-3).
+        // Para excepciones se persiste el campo canónico `motivo_no_aplica`
+        // (#4524) y, por compat con #4504/#4506, también `motivo` + el flag
+        // `estado:"no_aplica"`. Ambos motivos toman el mismo valor (el alias ya
+        // se resolvió arriba en `motivo`). Para binarios se persiste `path`.
         ...(isException
-            ? { motivo: entry.motivo, estado: 'no_aplica' }
+            ? { motivo_no_aplica: String(motivo), motivo: String(motivo), estado: 'no_aplica' }
             : { path: entry.path }),
         bytes: Number.isFinite(entry.bytes) ? Number(entry.bytes) : null,
         sensible: Boolean(entry.sensible),
         timestamp,
-        ...(isException ? { motivo: String(entry.motivo) } : {}),
     });
     // #4506 (REQ-SEC-3): capar el `motivo` de la excepción. `redactMeta` ya lo
     // redactó (secrets/PII fuera) — recién ahí se capa a MOTIVO_MAX_CHARS, para
     // no partir un secret a la mitad (redact-then-cap). Sólo aplica a `exception`;
     // `path`/`caption` de binarios no se capan.
-    if (isException && typeof record.motivo === 'string') {
-        record.motivo = capMotivo(record.motivo);
+    if (isException) {
+        if (typeof record.motivo === 'string') {
+            record.motivo = capMotivo(record.motivo);
+        }
+        if (typeof record.motivo_no_aplica === 'string') {
+            record.motivo_no_aplica = capMotivo(record.motivo_no_aplica);
+        }
     }
 
     const idx = readDeliverableIndex(issueId, opts);

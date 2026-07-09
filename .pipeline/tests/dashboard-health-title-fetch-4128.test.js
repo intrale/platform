@@ -171,9 +171,17 @@ test('/api/health responde < 500ms aunque el worker resuelva títulos contra un 
     `Lentas/fallidas: ${JSON.stringify(samples.filter((s) => !s.ok || s.elapsed >= HEALTH_BUDGET_MS).slice(0, 3))}`,
   );
 
-  const failures = samples.filter((s) => !s.ok);
-  assert.deepStrictEqual(failures, [],
-    `/api/health falló/expiró en ${failures.length}/${samples.length}: ${JSON.stringify(failures.slice(0, 3))}`);
+  // Zero-tolerance SOLO para errores de conexión genuinos (ECONNREFUSED/reset), NO
+  // timeouts. Un timeout es una muestra de LATENCIA (midió ~2000ms, el timeout HTTP),
+  // no una caída de conexión: se evalúa por las invariantes de latencia (a)/(b) de
+  // abajo. Alinea con el test hermano dashboard-health-under-load-4126 (rebote #4513):
+  // bajo la suite Node completa el proceso padre se satura y un timeout aislado
+  // (p.ej. 1/59 a ~2s, rebote #4524) es jitter del padre, no la regresión de gh
+  // síncrono. La regresión real dispara ~100% de timeouts y revienta igual la
+  // invariante de presupuesto (b) de abajo, así que la detección se preserva.
+  const genuineFailures = samples.filter((s) => !s.ok && s.err !== 'timeout');
+  assert.deepStrictEqual(genuineFailures, [],
+    `/api/health falló por error de conexión (no timeout) en ${genuineFailures.length}/${samples.length}: ${JSON.stringify(genuineFailures.slice(0, 3))}`);
 
   const max = Math.max(...samples.map((s) => s.elapsed));
 
@@ -186,8 +194,11 @@ test('/api/health responde < 500ms aunque el worker resuelva títulos contra un 
     `El fetch de títulos volvió a ser síncrono (execSync(gh)) dentro del worker de snapshot.`);
 
   // (b) Invariante de presupuesto: con gh síncrono TODOS los samples pasarían el
-  // budget; en sano sólo se tolera un outlier aislado (spawn de cmd.exe en Windows).
-  const slow = samples.filter((s) => s.elapsed >= HEALTH_BUDGET_MS);
+  // budget (o expirarían); en sano sólo se tolera un outlier aislado (spawn de
+  // cmd.exe en Windows o un timeout flaky por saturación del padre). Se cuenta
+  // cualquier `!s.ok` (timeout) como lento para que una regresión sostenida
+  // (100% de timeouts) reviente este gate aunque su elapsed medido quede al ras.
+  const slow = samples.filter((s) => s.elapsed >= HEALTH_BUDGET_MS || !s.ok);
   const slowPct = slow.length / samples.length;
   assert.ok(slowPct <= HEALTH_P90_MAX_OUTLIERS_PCT,
     `REGRESIÓN #4128: ${slow.length}/${samples.length} samples (${Math.round(slowPct * 100)}%) superaron ` +

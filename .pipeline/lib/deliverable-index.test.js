@@ -190,13 +190,27 @@ test('exception: upsert con tipo:exception sin path NO lanza y persiste motivo',
         motivo: 'issue puramente mecánico; no amerita dossier', timestamp: TS, pipelineRoot: root,
     });
     assert.equal(rec.tipo, 'exception');
-    assert.equal(rec.motivo, 'issue puramente mecánico; no amerita dossier');
+    // Persiste el campo canónico `motivo_no_aplica` aunque el input use el alias `motivo`.
+    assert.equal(rec.motivo_no_aplica, 'issue puramente mecánico; no amerita dossier');
     assert.ok(!('path' in rec), 'la excepción no debe llevar path');
 
     const read = readDeliverableIndex('70', { pipelineRoot: root });
     assert.equal(read.entries.length, 1);
     assert.equal(read.entries[0].tipo, 'exception');
-    assert.ok(read.entries[0].motivo.length > 0);
+    assert.ok(read.entries[0].motivo_no_aplica.length > 0);
+});
+
+test('exception: input con `motivo_no_aplica` (naming del contrato #4524) persiste el campo canónico', () => {
+    const root = tmpRoot();
+    const rec = upsertDeliverableIndex({
+        issue: '70', fase: 'analisis', agente: 'guru', tipo: 'exception',
+        motivo_no_aplica: 'no aplica dossier técnico', timestamp: TS, pipelineRoot: root,
+    });
+    assert.equal(rec.motivo_no_aplica, 'no aplica dossier técnico');
+    // Compat #4504/#4506: además del campo canónico, la entry mantiene `motivo`
+    // (mismo valor) + `estado:'no_aplica'` para no romper consumidores previos.
+    assert.equal(rec.motivo, 'no aplica dossier técnico', 'mantiene alias `motivo` por compat');
+    assert.equal(rec.estado, 'no_aplica');
 });
 
 test('exception: upsert con tipo:exception sin motivo lanza', () => {
@@ -206,14 +220,14 @@ test('exception: upsert con tipo:exception sin motivo lanza', () => {
             issue: '71', fase: 'analisis', agente: 'guru', tipo: 'exception',
             timestamp: TS, pipelineRoot: root,
         }),
-        /motivo requerido para tipo=exception/,
+        /motivo_no_aplica requerido para tipo=exception/,
     );
     assert.throws(
         () => upsertDeliverableIndex({
             issue: '71', fase: 'analisis', agente: 'guru', tipo: 'exception',
             motivo: '   ', timestamp: TS, pipelineRoot: root,
         }),
-        /motivo requerido para tipo=exception/,
+        /motivo_no_aplica requerido para tipo=exception/,
     );
 });
 
@@ -223,7 +237,7 @@ test('exception: motivo entra a redactMeta (secrets redactados)', () => {
         issue: '72', fase: 'analisis', agente: 'guru', tipo: 'exception',
         motivo: 'contexto con AWS=AKIAIOSFODNN7EXAMPLE dentro', timestamp: TS, pipelineRoot: root,
     });
-    assert.ok(!rec.motivo.includes('AKIAIOSFODNN7EXAMPLE'), `motivo no debe filtrar la key: ${rec.motivo}`);
+    assert.ok(!rec.motivo_no_aplica.includes('AKIAIOSFODNN7EXAMPLE'), `motivo no debe filtrar la key: ${rec.motivo_no_aplica}`);
 });
 
 test('exception y document del mismo agente+fase: último write gana (clave agente::fase)', () => {
@@ -273,7 +287,7 @@ test('upsertException escribe entry tipo:exception sin path, con motivo', () => 
     assert.equal(rec.tipo, 'exception');
     assert.ok(!('path' in rec), 'la excepción no lleva path');
     assert.equal(rec.sensible, false);
-    assert.ok(rec.motivo.includes('criterios de negocio'));
+    assert.ok(rec.motivo_no_aplica.includes('criterios de negocio'));
 
     const entries = queryByPhase('4502', 'criterios', { pipelineRoot: root });
     const ex = entries.find((e) => e.tipo === 'exception');
@@ -285,11 +299,11 @@ test('upsertException exige motivo legible (rechaza vacío)', () => {
     const root = tmpRoot();
     assert.throws(
         () => upsertException({ issue: '4502', fase: 'criterios', agente: 'po', motivo: '', pipelineRoot: root }),
-        /motivo requerido/,
+        /motivo_no_aplica requerido/,
     );
     assert.throws(
         () => upsertException({ issue: '4502', fase: 'criterios', agente: 'po', motivo: '   ', pipelineRoot: root }),
-        /motivo requerido/,
+        /motivo_no_aplica requerido/,
     );
 });
 
@@ -300,7 +314,7 @@ test('upsertException redacta secrets embebidos en el motivo (CA-6)', () => {
         motivo: 'no aplica; contexto AKIAIOSFODNN7EXAMPLE del deploy',
         timestamp: TS, pipelineRoot: root,
     });
-    assert.ok(!rec.motivo.includes('AKIAIOSFODNN7EXAMPLE'), `no debe filtrar AWS key: ${rec.motivo}`);
+    assert.ok(!rec.motivo_no_aplica.includes('AKIAIOSFODNN7EXAMPLE'), `no debe filtrar AWS key: ${rec.motivo_no_aplica}`);
 });
 
 test('upsertException es idempotente por clave agente::fase (último gana)', () => {
@@ -309,7 +323,7 @@ test('upsertException es idempotente por clave agente::fase (último gana)', () 
     upsertException({ issue: '77', fase: 'criterios', agente: 'po', motivo: 'segundo motivo que reemplaza', timestamp: TS, pipelineRoot: root });
     const entries = queryByPhase('77', 'criterios', { pipelineRoot: root });
     assert.equal(entries.length, 1, 'la misma clave agente::fase no duplica');
-    assert.ok(entries[0].motivo.includes('segundo motivo'));
+    assert.ok(entries[0].motivo_no_aplica.includes('segundo motivo'));
 });
 
 test('una excepción y un entregable real del mismo agente en fases distintas conviven', () => {
@@ -354,7 +368,7 @@ test('upsertException persiste tipo:"exception" con motivo y sin path', () => {
     assert.equal(rec.agente, 'architect');
     assert.equal(rec.fase, 'criterios');
     assert.equal(rec.path, null);
-    assert.ok(rec.motivo.includes('Detalles Tecnicos'));
+    assert.ok(rec.motivo_no_aplica.includes('Detalles Tecnicos'));
 
     const read = readDeliverableIndex('4505', { pipelineRoot: root });
     assert.equal(read.entries.length, 1);
@@ -365,11 +379,11 @@ test('upsertDeliverableIndex con tipo:"exception" sin motivo lanza', () => {
     const root = tmpRoot();
     assert.throws(
         () => upsertDeliverableIndex({ issue: '10', fase: 'criterios', agente: 'architect', tipo: 'exception', timestamp: TS, pipelineRoot: root }),
-        /motivo requerido/,
+        /motivo_no_aplica requerido/,
     );
     assert.throws(
         () => upsertException({ issue: '10', fase: 'criterios', agente: 'architect', motivo: '   ', timestamp: TS, pipelineRoot: root }),
-        /motivo requerido/,
+        /motivo_no_aplica requerido/,
     );
 });
 
@@ -389,7 +403,7 @@ test('upsertException es idempotente por clave agente::fase (último-write-gana)
     upsertException({ issue: '30', fase: 'criterios', agente: 'architect', motivo: 'segundo motivo que reemplaza', timestamp: TS, pipelineRoot: root });
     const entries = queryByPhase('30', 'criterios', { pipelineRoot: root });
     assert.equal(entries.length, 1);
-    assert.ok(entries[0].motivo.includes('segundo motivo'));
+    assert.ok(entries[0].motivo_no_aplica.includes('segundo motivo'));
 });
 
 test('el motivo de la excepción se redacta (secrets no se filtran)', () => {
@@ -399,7 +413,49 @@ test('el motivo de la excepción se redacta (secrets no se filtran)', () => {
         motivo: 'contexto con AKIAIOSFODNN7EXAMPLE embebido',
         timestamp: TS, pipelineRoot: root,
     });
-    assert.ok(!rec.motivo.includes('AKIAIOSFODNN7EXAMPLE'), `motivo no debe filtrar la key: ${rec.motivo}`);
+    assert.ok(!rec.motivo_no_aplica.includes('AKIAIOSFODNN7EXAMPLE'), `motivo no debe filtrar la key: ${rec.motivo_no_aplica}`);
+});
+
+// -----------------------------------------------------------------------------
+// #4524 · CA-5 — redacción de secreto opaco EMBEBIDO en oración (RE-1/RE-3)
+// -----------------------------------------------------------------------------
+
+test('exception: secreto opaco embebido en oración se redacta (RE-1, no sólo patrón AKIA/JWT)', () => {
+    const root = tmpRoot();
+    const rec = upsertDeliverableIndex({
+        issue: '4524', fase: 'dev', agente: 'pipeline-dev', tipo: 'exception',
+        motivo_no_aplica:
+            'No aplica porque el deploy usa la key wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY manual',
+        timestamp: TS, pipelineRoot: root,
+    });
+    assert.ok(
+        !rec.motivo_no_aplica.includes('wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY'),
+        `el secreto opaco embebido debe salir redactado: ${rec.motivo_no_aplica}`,
+    );
+    // La redacción no destruye la utilidad del motivo (RE-1/UX): resto de la oración intacto.
+    assert.ok(rec.motivo_no_aplica.includes('No aplica porque el deploy usa la key'));
+    assert.ok(rec.motivo_no_aplica.includes('manual'));
+});
+
+test('exception para pipeline-dev::dev: persiste motivo_no_aplica, sin path, e idempotente (CA-1/CA-2/CA-3)', () => {
+    const root = tmpRoot();
+    const first = upsertDeliverableIndex({
+        issue: '4524', fase: 'dev', agente: 'pipeline-dev', tipo: 'exception',
+        motivo_no_aplica: 'issue de infra sin entregable físico', timestamp: TS, pipelineRoot: root,
+    });
+    assert.equal(first.tipo, 'exception');
+    assert.equal(first.motivo_no_aplica, 'issue de infra sin entregable físico');
+    assert.ok(!('path' in first), 'la excepción no lleva path');
+
+    // Segundo upsert misma clave agente::fase → pisa, no duplica (CA-3).
+    upsertDeliverableIndex({
+        issue: '4524', fase: 'dev', agente: 'pipeline-dev', tipo: 'exception',
+        motivo_no_aplica: 'motivo actualizado', timestamp: TS, pipelineRoot: root,
+    });
+    const read = readDeliverableIndex('4524', { pipelineRoot: root });
+    const devEntries = read.entries.filter((e) => e.fase === 'dev' && e.agente === 'pipeline-dev');
+    assert.equal(devEntries.length, 1, 'no debe duplicar la clave pipeline-dev::dev');
+    assert.equal(devEntries[0].motivo_no_aplica, 'motivo actualizado');
 });
 
 // -----------------------------------------------------------------------------

@@ -85,7 +85,7 @@ test('ux/criterios sin contenido → excepción explícita con motivo (CA-3)', (
     const uxEntry = idx.entries.find((e) => e.agente === 'ux' && e.fase === 'criterios');
     assert.ok(uxEntry, 'debe existir entry ux/criterios');
     assert.strictEqual(uxEntry.tipo, 'exception');
-    assert.ok(uxEntry.motivo && uxEntry.motivo.length > 0, 'la excepción persiste motivo, no silencio');
+    assert.ok(uxEntry.motivo_no_aplica && uxEntry.motivo_no_aplica.length > 0, 'la excepción persiste motivo, no silencio');
     assert.ok(uxEntry.path == null, 'la excepción no apunta a binario');
 });
 
