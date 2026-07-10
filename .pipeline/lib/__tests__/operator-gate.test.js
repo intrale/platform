@@ -61,6 +61,7 @@ function makeGate(overrides = {}) {
         operatorAllowlist: overrides.operatorAllowlist || [OPERATOR],
         tenantBinding: overrides.tenantBinding || {},
         now,
+        fsImpl: overrides.fsImpl,
     });
     return { gate, dirs, now, setClock: (v) => { clock = v; }, advance: (ms) => { clock += ms; } };
 }
@@ -188,7 +189,7 @@ test('handleSignature happy path: aprueba, transiciona, audita y consume', () =>
     // audit escrito y chain íntegro
     const chain = auditLog.verifyChain(dirs.auditFile);
     assert.equal(chain.ok, true);
-    assert.equal(chain.entriesChecked, 1);
+    assert.equal(chain.entriesChecked, 2);
 });
 
 test('handleSignature rechaza operador no autorizado sin transicionar ni consumir', () => {
@@ -247,7 +248,29 @@ test('handleSignature audita incluso si el ítem no existe (constancia de firma)
     assert.equal(res.editMessage, false); // no se editó porque no transicionó
     const chain = auditLog.verifyChain(dirs.auditFile);
     assert.equal(chain.ok, true);
-    assert.equal(chain.entriesChecked, 1);
+    assert.equal(chain.entriesChecked, 2);
+});
+
+test('handleSignature falla cerrado si no puede escribir el audit hash-chained', () => {
+    let auditFile;
+    const fsImpl = {
+        ...fs,
+        appendFileSync(file, data, enc) {
+            if (file === auditFile) throw new Error('audit append failed');
+            return fs.appendFileSync(file, data, enc);
+        },
+    };
+    const h = makeGate({ fsImpl });
+    auditFile = h.dirs.auditFile;
+    seedWaitingItem(h.dirs, 4579);
+    const { id } = h.gate.register({ issue: 4579, action: 'approve' });
+
+    const res = h.gate.handleSignature({ operatorId: OPERATOR, callbackData: id });
+    assert.equal(res.ok, false);
+    assert.equal(res.reason, 'audit-failed');
+    assert.equal(fs.existsSync(path.join(h.dirs.waitingDir, '4579.json')), true);
+    assert.equal(fs.existsSync(path.join(h.dirs.approvedDir, '4579.json')), false);
+    assert.equal(fs.existsSync(h.dirs.auditFile), false);
 });
 
 // --- CA-6 / A09: audit inmutable hash-chained --------------------------------

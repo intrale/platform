@@ -250,6 +250,20 @@ function createOperatorGate(opts = {}) {
         return { ok: true, status: gate, gate, issue: i, tenant: tenant || null, from: src, to: dest };
     }
 
+    function rollbackTransition(transition) {
+        if (!transition || !transition.ok || !transition.from || !transition.to) return false;
+        try {
+            if (_fs.existsSync(transition.to) && !_fs.existsSync(transition.from)) {
+                _fs.mkdirSync(path.dirname(transition.from), { recursive: true });
+                _fs.renameSync(transition.to, transition.from);
+                return true;
+            }
+        } catch (_) {
+            return false;
+        }
+        return false;
+    }
+
     // ---- Audit inmutable hash-chained (A09) --------------------------------
     /** Persiste UNA firma en el audit chain, redactando todo campo string. */
     function auditSignature(record) {
@@ -333,6 +347,25 @@ function createOperatorGate(opts = {}) {
         }
 
         // 4. Transicionar el gate (A03/A04, anti path-traversal en issue).
+        try {
+            auditSignature({
+                actor: operatorId,
+                action: res.action,
+                issue: res.issue,
+                tenant: entry.tenant,
+                gate: null,
+                nonce: res.nonce,
+                result: 'accepted-before-transition',
+            });
+        } catch (_) {
+            return {
+                ok: false,
+                toast: 'No se pudo registrar la firma; no se transiciono el gate',
+                editMessage: false,
+                reason: 'audit-failed',
+            };
+        }
+
         const transition = applyTransition({ issue: res.issue, action: res.action, tenant: entry.tenant });
 
         // 5. Audit inmutable hash-chained de la firma (A09) — SIEMPRE, incluso si
@@ -348,8 +381,13 @@ function createOperatorGate(opts = {}) {
                 result: transition.status,
             });
         } catch (_) {
-            // El audit no debe tumbar la respuesta al operador, pero SÍ dejamos
-            // rastro: si el chain está roto, mejor no-op silencioso que crash.
+            rollbackTransition(transition);
+            return {
+                ok: false,
+                toast: 'No se pudo registrar la firma; no se transiciono el gate',
+                editMessage: false,
+                reason: 'audit-failed',
+            };
         }
 
         // 6. Consumir el binding (belt-and-suspenders sobre el nonce single-use).
