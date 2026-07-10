@@ -106,6 +106,25 @@ admission_gate:
   # de continuar. Valor sincronizado con lib/admission-gate.js → BOOTSTRAP_CAP.
   bootstrap_cap: 10
 
+# =============================================================================
+# Puerto `e2e` — generador de evidencia para GATE 2 (#4573 · épico #4570)
+# -----------------------------------------------------------------------------
+# `lib/e2e-evidence-port.js` produce evidencia render-vs-mockup del dashboard
+# (Tier 1, siempre) y evidencia de producto APK/emulador/video (Tier 2, lazy).
+# La representatividad (frescura del mtime, viewport efectivo, hash SHA-256,
+# estado capturado) es VERIFICABLE, no auto-declarada.
+#
+# Feature-flag por env var (patrón visual-gate.js), default OFF:
+#   - PIPELINE_E2E_EVIDENCE_ENABLED=1 -> el puerto produce evidencia.
+#   - Ausente / =0 -> runE2eEvidence devuelve status=skipped (kill-switch).
+#
+# Este bloque es declarativo (visibilidad operacional). El valor efectivo se
+# lee de la env var del proceso, no de este YAML.
+e2e_evidence:
+  # Default off en este PR — activacion posterior cuando GATE 2 (#4574) consuma
+  # la evidencia. Setear PIPELINE_E2E_EVIDENCE_ENABLED=1 en el entorno para on.
+  enabled: false
+
 # Mapeo de labels de GitHub a skill de desarrollo
 dev_skill_mapping:
   "area:pipeline": "pipeline-dev" # Scripts Node.js del pipeline (.pipeline/*.js, roles, hooks)
