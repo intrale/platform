@@ -146,6 +146,63 @@ function buildDashboardUrl(dashboardPath) {
  */
 
 /**
+ * Lee el viewport EFECTIVO desde el browser, no el valor pedido (#4573 CA-2).
+ * El manifest de evidencia deriva la representatividad de este dato — no puede
+ * auto-declararse. Se intenta primero `page.viewport()` (API puppeteer) y, si
+ * no está disponible, `page.evaluate(() => ({width: innerWidth, height: innerHeight}))`.
+ *
+ * Defensivo: si el browser (o el fake de test) no expone ninguna vía, devuelve
+ * `requested` como fallback para no romper consumidores existentes. El valor
+ * retornado es informativo; GATE 2 (#4574) valida el match contra lo esperado.
+ *
+ * @param {object} page — página puppeteer
+ * @param {{width:number,height:number}} requested — viewport pedido (fallback)
+ * @returns {Promise<{width:number,height:number}>}
+ */
+async function readEffectiveViewport(page, requested) {
+    try {
+        if (page && typeof page.viewport === 'function') {
+            const vp = await page.viewport();
+            if (vp && Number.isFinite(vp.width) && Number.isFinite(vp.height)) {
+                return { width: vp.width, height: vp.height };
+            }
+        }
+    } catch { /* best-effort, cae al evaluate */ }
+    try {
+        if (page && typeof page.evaluate === 'function') {
+            const vp = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
+            if (vp && Number.isFinite(vp.width) && Number.isFinite(vp.height)) {
+                return { width: vp.width, height: vp.height };
+            }
+        }
+    } catch { /* best-effort, cae al requested */ }
+    return { width: Number(requested.width), height: Number(requested.height) };
+}
+
+/**
+ * Deshabilita cache y JS de forma defensiva antes de navegar/renderizar.
+ * - `setCacheEnabled(false)`: evidencia no-cacheada verificable (#4573 CA-4).
+ * - `setJavaScriptEnabled(false)` (sólo cuando `disableJs=true`): render de HTML
+ *   no confiable del LLM sin ejecutar JS embebido, evita exfiltración vía
+ *   `<img src=http://>`/`fetch()` (#4573 CA-7 / OWASP A03).
+ *
+ * Guardado por `typeof === 'function'` para no romper fakes de test que no
+ * implementan estos métodos (no-regresión de screenshot-capture.test.js).
+ *
+ * @param {object} page
+ * @param {{disableJs?:boolean}} [flags]
+ */
+async function hardenPage(page, flags) {
+    const _flags = flags || {};
+    if (page && typeof page.setCacheEnabled === 'function') {
+        await page.setCacheEnabled(false);
+    }
+    if (_flags.disableJs && page && typeof page.setJavaScriptEnabled === 'function') {
+        await page.setJavaScriptEnabled(false);
+    }
+}
+
+/**
  * Carga puppeteer perezosamente. Si no está instalado, devolvemos null y el
  * caller produce un fallback CA-2 (no abortar con stack trace).
  *
@@ -208,13 +265,18 @@ async function capture(opts) {
             args: ['--no-sandbox', '--disable-setuid-sandbox'],
         });
         const page = await browser.newPage();
-        await page.setViewport({
+        const requestedViewport = {
             width: Number(viewport.width) || DEFAULT_VIEWPORT.width,
             height: Number(viewport.height) || DEFAULT_VIEWPORT.height,
-        });
+        };
+        await page.setViewport(requestedViewport);
+        // Cache off ANTES de navegar (#4573 CA-4): evidencia no-cacheada.
+        await hardenPage(page, { disableJs: false });
         await page.goto(url, { waitUntil: 'networkidle2', timeout: timeoutMs });
         await page.screenshot({ path: resolvedOutput, fullPage: true });
-        return { ok: true, outputPath: resolvedOutput };
+        // Viewport EFECTIVO leído del browser (#4573 CA-2), aditivo al retorno.
+        const effectiveViewport = await readEffectiveViewport(page, requestedViewport);
+        return { ok: true, outputPath: resolvedOutput, effectiveViewport };
     } catch (e) {
         // Dashboard caído / timeout / red — todos son CA-2: no abortar.
         const msg = String(e && e.message || e);
@@ -282,13 +344,18 @@ async function renderHtmlToPng(opts) {
             args: ['--no-sandbox', '--disable-setuid-sandbox'],
         });
         const page = await browser.newPage();
-        await page.setViewport({
+        const requestedViewport = {
             width: Number(viewport.width) || DEFAULT_VIEWPORT.width,
             height: Number(viewport.height) || DEFAULT_VIEWPORT.height,
-        });
+        };
+        await page.setViewport(requestedViewport);
+        // HTML no confiable del LLM: cache off + JS deshabilitado (#4573 CA-7 / A03).
+        // Se puede desactivar (opt-out) para HTML propio con `_opts.trustHtml === true`.
+        await hardenPage(page, { disableJs: _opts.trustHtml !== true });
         await page.setContent(_opts.html, { waitUntil: 'networkidle2', timeout: timeoutMs });
         await page.screenshot({ path: resolvedOutput, fullPage: true });
-        return { ok: true, outputPath: resolvedOutput };
+        const effectiveViewport = await readEffectiveViewport(page, requestedViewport);
+        return { ok: true, outputPath: resolvedOutput, effectiveViewport };
     } catch (e) {
         const msg = String(e && e.message || e);
         return { ok: false, reason: 'render-failed', detail: msg.slice(0, 200) };
@@ -313,6 +380,9 @@ module.exports = {
     sanitizeFilename,
     resolveSafeOutputPath,
     buildDashboardUrl,
+    // helpers de representatividad / hardening (#4573)
+    readEffectiveViewport,
+    hardenPage,
     // captura
     capture,
     renderHtmlToPng,
