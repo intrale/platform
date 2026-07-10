@@ -652,6 +652,56 @@ handoff:
     - aprobacion
     - entrega
 
+# #4576 — Índice de confiabilidad + calibración + escalera de autonomía.
+#
+# Épico #4570 · Diseño: docs/pipeline/gates-firma-operador.md §4.4 / §12.
+#
+# Gobierna la auto-aprobación de firma del operador (GATE 1 / GATE 2). El
+# default es SEGURO = firma humana: la auto-aprobación es opt-in por bucket
+# calibrado, revocable, con kill-switch global (CA-10). Ante ausencia o
+# corrupción de datos de calibración ⇒ firma humana (fail-closed, §12).
+#
+# Módulos que consumen esta sección:
+#   - lib/confidence-index.js   — descomposición de confianza por criterio.
+#   - lib/autonomy-ladder.js    — buckets, acuerdo, decay, auto-revocación.
+#   - lib/operator-signature-gate.js — gate fail-closed de auto-aprobación.
+#
+# Claves:
+#   - enabled:            flag global de rollout. Default OFF (false). Con
+#                         false, el gate hace cortocircuito ⇒ siempre firma
+#                         humana (CA-10).
+#   - kill_switch:        override inmediato de enabled (apagado total sin
+#                         rebootear el pulpo). true ⇒ toda auto-aprobación off.
+#   - modo:               disabled | dry-run | enforce. En dry-run el gate
+#                         computa la decisión lógica pero NUNCA auto-aprueba de
+#                         verdad (effective = firma_humana) — sirve para medir
+#                         acuerdo antes de activar. Default dry-run.
+#   - umbral_acuerdo_pct: X — % mínimo de acuerdo para calibrar un bucket (CA-6).
+#   - muestras_minimas:   N — muestras mínimas para calibrar (anti-envenenamiento,
+#                         CA-8). Sin N ⇒ un bucket nunca calibra.
+#   - decay_dias:         antigüedad máxima de una muestra para contar (CA-8).
+#                         Muestras más viejas no perpetúan autonomía obsoleta.
+#   - auditoria_pct:      % de auto-aprobaciones marcadas para auditoría humana
+#                         aleatoria (CA-11, crypto.randomBytes, no sembrable).
+#   - go_live_date:       ISO date. Issues previos NO se auto-aprueban (van a
+#                         firma humana, sin autonomía retroactiva). null = off.
+#
+# Rollout sugerido:
+#   1. Mergear con `enabled: false`. Validar tests unitarios + smoke.
+#   2. `enabled: true` + `modo: dry-run`. Observar acuerdo por bucket en
+#      `audit/operator-calibration.jsonl` durante ≥N muestras.
+#   3. Solo cuando un bucket supere X% sobre N muestras, `modo: enforce`.
+#      Ante cualquier caída de acuerdo, el bucket se auto-revoca (CA-9).
+firma_operador:
+  enabled: false
+  kill_switch: false
+  modo: dry-run
+  umbral_acuerdo_pct: 95
+  muestras_minimas: 20
+  decay_dias: 30
+  auditoria_pct: 10
+  go_live_date: null
+
 # #4136 — Frontera activo/histórico.
 #
 # El Pulpo muda al `historico/` (raíz aparte, mismo volumen → rename atómico) los

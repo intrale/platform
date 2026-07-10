@@ -190,3 +190,52 @@ test('ConfigSchemaViolation tiene name estable y guarda errores', () => {
     assert.ok(err instanceof Error);
     assert.strictEqual(err.errors.length, 1);
 });
+
+// --- #4576 · firma_operador -------------------------------------------------
+
+test('#4576 firma_operador válido pasa la validación', () => {
+    const cfg = validConfig();
+    cfg.firma_operador = {
+        enabled: false, kill_switch: false, modo: 'dry-run',
+        umbral_acuerdo_pct: 95, muestras_minimas: 20, decay_dias: 30,
+        auditoria_pct: 10, go_live_date: null,
+    };
+    const { valid, errors } = validateConfig(cfg);
+    assert.strictEqual(valid, true, formatErrors(errors));
+});
+
+test('#4576 firma_operador sin claves requeridas falla', () => {
+    const cfg = validConfig();
+    cfg.firma_operador = { umbral_acuerdo_pct: 95 }; // faltan enabled/kill_switch/modo.
+    const { valid, errors } = validateConfig(cfg);
+    assert.strictEqual(valid, false);
+    const detalles = formatErrors(errors);
+    assert.match(detalles, /enabled/);
+    assert.match(detalles, /modo/);
+});
+
+test('#4576 firma_operador con modo fuera del enum falla', () => {
+    const cfg = validConfig();
+    cfg.firma_operador = { enabled: true, kill_switch: false, modo: 'auto-siempre' };
+    const { valid, errors } = validateConfig(cfg);
+    assert.strictEqual(valid, false);
+    assert.match(formatErrors(errors), /enum/);
+});
+
+test('#4576 firma_operador con umbral fuera de rango falla', () => {
+    const cfg = validConfig();
+    cfg.firma_operador = { enabled: true, kill_switch: false, modo: 'enforce', umbral_acuerdo_pct: 150 };
+    const { valid, errors } = validateConfig(cfg);
+    assert.strictEqual(valid, false);
+    assert.match(formatErrors(errors), /máximo/);
+});
+
+test('#4576 firma_operador go_live_date acepta string o null', () => {
+    const cfg = validConfig();
+    cfg.firma_operador = { enabled: true, kill_switch: false, modo: 'enforce', go_live_date: '2026-07-01T00:00:00Z' };
+    assert.strictEqual(validateConfig(cfg).valid, true);
+    cfg.firma_operador.go_live_date = null;
+    assert.strictEqual(validateConfig(cfg).valid, true);
+    cfg.firma_operador.go_live_date = 123; // número inválido.
+    assert.strictEqual(validateConfig(cfg).valid, false);
+});
