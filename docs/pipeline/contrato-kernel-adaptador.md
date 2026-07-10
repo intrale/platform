@@ -7,7 +7,9 @@
 > **Input directo:** [`docs/desacople-kernel/inventario-frontera.md`](../desacople-kernel/inventario-frontera.md) (EP-OLA8-A, #4009).
 > **Estado:** documento vivo — se revisa al entrar a la Ola 9.
 >
-> **Versión del contrato:** `0.1.0` (semver) <!-- CA-1, CA-14 -->
+> **Versión del contrato:** `0.2.0` (semver) <!-- CA-1, CA-14 -->
+>
+> Historial de cambios: ver [Changelog](#changelog) al final del documento.
 
 ---
 
@@ -221,7 +223,7 @@ del puerto: son ejemplo del adaptador.
 | `e2e` | `workItemRef` + artefacto empaquetado + entorno objetivo | `status` + evidencia (video/doc) | entorno no disponible; fallo de escenario | Opcional (según capability del adaptador) |
 | `package` | artefactos de build + perfil/variante | artefacto empaquetado (referencia, no bytes en banda) | empaquetado fallido | Opcional |
 | `deploy` | artefacto empaquetado + destino | `status` + referencia de despliegue | destino inalcanzable; credencial insuficiente | Opcional |
-| `gates` | `workItemRef` + estado de validación acumulado | veredicto de gate (`pass/fail/skip`) + razón | criterio no evaluable | **Obligatorio** |
+| `gates` | `workItemRef` + estado de validación acumulado | veredicto de gate (`pass/fail/skip/requires-operator`) + razón | criterio **no evaluable automáticamente** → veredicto `requires-operator` (rutea a firma humana, **no** es error) | **Obligatorio** |
 
 **Notas de diseño.**
 
@@ -232,6 +234,12 @@ del puerto: son ejemplo del adaptador.
   kernel sólo invoca puertos declarados; los no implementados se resuelven como `skipped` con razón.
 - Las firmas evitan a propósito cualquier tipo concreto de stack: no hay "task de gradle", "AVD"
   ni "función Lambda" en el puerto — esos son detalles del adaptador.
+- El veredicto **`requires-operator`** cubre el caso "criterio **no evaluable automáticamente**":
+  en vez de fallar, el gate delega la decisión a una **firma humana** (ver estado `waiting-operator`,
+  sección 5). **No es un atajo para saltear un `fail`:** un criterio *evaluable* que da negativo
+  sigue siendo `fail`; sólo el criterio que el adaptador **no puede** evaluar rutea a firma. Este
+  veredicto se define de forma **idéntica** en §3 (puerto `gates`) y §4 (`evaluateGate`) — ambos
+  deben permanecer sincronizados.
 
 ---
 
@@ -250,7 +258,7 @@ capacidad necesarios** (capability-based, ver sección 7), nunca el entorno ente
 | `resolveRouting` | al rutear un ítem | `workItemRef` + tabla de ruteo declarativa → `capabilityId` | **Obligatorio** |
 | `prepareWorkspace` | antes de `build`/`test` | `workItemRef` + ref de workspace acotado → `status` | Opcional |
 | `provideCapability(id)` | al necesitar un puerto opcional | `invocationContext` acotado → `result` del puerto | Opcional (según capabilities declaradas) |
-| `evaluateGate(id)` | en cada gate del flujo | estado de validación → veredicto `pass/fail/skip` + razón | **Obligatorio** |
+| `evaluateGate(id)` | en cada gate del flujo | estado de validación → veredicto `pass/fail/skip/requires-operator` + razón (sincronizado con el puerto `gates` de §3) | **Obligatorio** |
 | `brokerSecret(scope)` | cuando un puerto necesita un secreto | `scope` puntual → secreto de scope acotado (brokereado por el kernel) | Opcional |
 | `decorateArtifact` | al publicar un artefacto/reporte | `artifactRef` → metadata adicional (sin mutar el lifecycle) | Opcional |
 | `describeProject` | al iniciar el contexto de un `projectId` | — → metadata de proyecto (nombre visible, etiquetas de UI) | Opcional |
@@ -275,6 +283,9 @@ El ciclo de vida del estado en filesystem —
 
 ```
 pendiente/ → trabajando/ → listo/ → procesado/
+                              │
+                              └─(gate ⇒ requires-operator)→ waiting-operator/ ──┬─(firma: aprobado)→ procesado/
+                                                                                └─(firma: rechazado)→ pendiente/  (re-definición o dev)
 ```
 
 — es **propiedad exclusiva del kernel**. Es el mismo invariante que rige hoy ("el Pulpo es el
@@ -295,6 +306,43 @@ pendiente/ → trabajando/ → listo/ → procesado/
 Este invariante es lo que permite que el motor sea genérico: el lifecycle no depende de qué hace
 el adaptador, sólo de los `result` que devuelve.
 
+### 5.1. Estado `waiting-operator` (firma humana de gates)
+
+<!-- CA-3, CA-4, CA-5, CA-6, CA-7 de #4571 -->
+
+Cuando un gate devuelve el veredicto **`requires-operator`** (criterio no evaluable
+automáticamente, ver §3 y §4), el kernel no puede resolver la transición por sí solo: el ítem
+requiere una **firma humana**. Para eso el lifecycle incorpora el estado **`waiting-operator`**,
+un estado de **espera de firma del operador** gestionado **exclusivamente por el kernel** (mismo
+invariante "el adaptador pide, el kernel ejecuta"). Su semántica:
+
+- **Entrada.** Un gate devuelve `requires-operator` → el kernel mueve el ítem de `listo/` a
+  `waiting-operator/`. El adaptador **nunca** promueve un ítem a este estado: sólo reporta el
+  veredicto vía el `result` del puerto `gates`; la transición la ejecuta el kernel.
+- **Salida.** El operador **firma** el ítem en `waiting-operator/`:
+  - *aprobado* → el kernel promueve a `procesado/` (equivale a un `pass` autorizado por humano).
+  - *rechazado* → el kernel devuelve el ítem a `pendiente/` para **re-definición o dev** según el
+    gate (equivale a un `fail` autorizado por humano, con motivo).
+  Sólo el **kernel** ejecuta esta transición, y **sólo** tras registrar una firma válida.
+- **Timeout — política fail-closed (SEGURIDAD, A04 Insecure Design).** Si el ítem expira en
+  `waiting-operator/` sin firma, el default es **NO aprobado** (**fail-closed**): el kernel
+  **escala o rechaza**, **nunca** auto-aprueba. Un gate que no se pudo evaluar y expira sin firma
+  humana **falla cerrado**. Queda **prohibido** cualquier default a auto-aprobado en timeout.
+- **Dueño único de la transición (SEGURIDAD, A01 Broken Access Control).** La transición
+  `waiting-operator → aprobado/rechazado` sólo puede ejecutarla el **kernel** tras firma del
+  operador. El invariante **prohíbe** que el adaptador (o un agente de fase) se auto-promueva
+  fuera de `waiting-operator/` salteando la firma: eso sería una escalada de privilegio que
+  saltea el control humano. Refuerza el invariante existente "el adaptador pide; el kernel ejecuta".
+- **No-repudio / audit trail (SEGURIDAD, A09 Logging Failures).** La resolución de un
+  `requires-operator` debe registrar, en **traza append-only** auditable, **quién** firmó,
+  **cuándo** y el **veredicto** (aprobado/rechazado + motivo). Sin esa traza la firma no es
+  verificable a posteriori. La traza se alinea con los gates de firma de
+  [`docs/pipeline/gates-firma-operador.md`](gates-firma-operador.md).
+- **`requires-operator` ≠ `fail`.** Reafirmado desde §3: un criterio **evaluable** que da negativo
+  sigue siendo `fail` y **no** entra a `waiting-operator/`; sólo el criterio *no evaluable* rutea a
+  firma. Esto evita que un adaptador degrade `fail` legítimos a "pedime firma" para forzar
+  aprobaciones (defensa en profundidad).
+
 ---
 
 ## 6. Descubrimiento y carga del adaptador
@@ -309,7 +357,7 @@ El kernel descubre y carga un adaptador a través de un **manifiesto declarativo
 ```jsonc
 // pipeline.config.json (forma conceptual)
 {
-  "contractVersion": "0.1.0",        // semver del contrato que el adaptador implementa
+  "contractVersion": "0.2.0",        // semver del contrato que el adaptador implementa
   "projectId": "acme-store",         // identidad multi-tenant (sección 8)
   "displayName": "ACME Store",       // metadata para UI del operador
   "capabilities": {                   // qué puertos opcionales implementa
@@ -419,14 +467,18 @@ contrato declara este saneo como **obligación de la frontera**, no opcional.
 
 ### CA-14 · Versionado del contrato (OWASP A04, A08)
 
-El contrato declara un campo de **versión semver** (`contractVersion`, hoy `0.1.0`). Ante
+El contrato declara un campo de **versión semver** (`contractVersion`, hoy `0.2.0`). Ante
 **mismatch incompatible** el kernel **rechaza la carga** del adaptador (no asume garantías que ya
 no da). Política de cambios:
 
 - **PATCH** (`0.1.x`): aclaraciones, sin cambio de contrato observable.
-- **MINOR** (`0.x.0`): puertos/hooks **nuevos opcionales**; retrocompatible.
+- **MINOR** (`0.x.0`): puertos/hooks/veredictos/estados **nuevos opcionales**; retrocompatible.
 - **MAJOR** (`x.0.0`): cambio incompatible (puerto/hook obligatorio nuevo o firma cambiada); el
   kernel rechaza adaptadores con MAJOR distinto.
+
+> El bump `0.1.0 → 0.2.0` (veredicto `requires-operator` + estado `waiting-operator`) es un
+> **MINOR**: agrega un veredicto/estado **nuevo, opcional y retrocompatible** — no cambia ninguna
+> firma existente ni vuelve obligatorio un puerto nuevo. Ver [Changelog](#changelog).
 
 ---
 
@@ -532,3 +584,33 @@ grep -nE '^### 2\.' docs/pipeline/contrato-kernel-adaptador.md
 - [ ] Los 6 requisitos de security reflejados (CA-9..CA-14) y propagados a las sub-issues de Ola 9.
 - [ ] Decisión de aislamiento multi-tenant anclada con recomendación (Modelo B).
 - [ ] Campo de versión del contrato y política de mismatch definidos (CA-14).
+
+---
+
+## Changelog
+
+Historial de versiones del contrato (semver, ver política en §7 · CA-14). Entrada más reciente
+arriba.
+
+### 0.2.0 — Enmienda gates de firma humana (issue #4571)
+
+- **Añadido** el veredicto **`requires-operator`** al puerto `gates` (§3) y al hook `evaluateGate`
+  (§4), sincronizados: cubre el caso "criterio no evaluable automáticamente", que rutea a firma
+  humana en vez de a error.
+- **Añadido** el estado de lifecycle **`waiting-operator`** (§5.1): estado de espera de firma del
+  operador, gestionado exclusivamente por el kernel. Documenta entrada (gate `requires-operator`),
+  salida (firma → aprobado/rechazado), **timeout fail-closed** (sin firma → NO aprobado, nunca
+  auto-aprobación), dueño único de la transición (kernel, tras firma) y **no-repudio** (traza
+  append-only con quién/cuándo/veredicto).
+- **Aclarado** que `requires-operator` **≠ `fail`**: un criterio evaluable negativo sigue siendo
+  `fail`; sólo el no evaluable rutea a firma (defensa en profundidad).
+- **Versión** bumpeada `0.1.0 → 0.2.0` (**MINOR**: veredicto/estado nuevo, opcional y
+  retrocompatible). Ejemplo de manifiesto §6.1 (`contractVersion`) actualizado a `0.2.0`.
+- Habilita los gates de firma de Ola 9 sin reajuste posterior del contrato. Sin cambios de código
+  de producto (CA-17).
+
+### 0.1.0 — Contrato inicial (Ola 8 · EP-OLA8-B · issue #4010)
+
+- Versión inaugural del contrato kernel↔adaptador: frontera ítem por ítem (§2), puertos (§3),
+  hooks/capabilities (§4), invariante de lifecycle (§5), descubrimiento y carga (§6), seguridad
+  incorporada (§7 · CA-9..CA-14), multi-tenant (§8) y salida/trazabilidad (§9).
