@@ -4758,6 +4758,53 @@ function brazoBarrido(config) {
                 log('barrido', `#${issue} gate0 audit-log error (${event}): ${e.message}`);
               }
             };
+            const retainGate0FailClosed = (code, detail) => {
+              const waitingOperatorDir = path.join(fasePath(pipelineName, fase), 'waiting-operator');
+              const g0QueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+              const reason = `GATE 0 fail-closed: ${code}${detail ? ` (${detail})` : ''}`;
+              try {
+                fs.mkdirSync(g0QueueDir, { recursive: true });
+                fs.writeFileSync(
+                  path.join(g0QueueDir, `${issue}-gate0-failclosed-label-${Date.now()}.json`),
+                  JSON.stringify({ action: 'label', issue: parseInt(issue), label: 'qa:pending' }),
+                );
+                fs.writeFileSync(
+                  path.join(g0QueueDir, `${issue}-gate0-failclosed-comment-${Date.now()}.json`),
+                  JSON.stringify({
+                    action: 'comment',
+                    issue: parseInt(issue),
+                    body: [
+                      '<!-- gate0-fail-closed -->',
+                      '## GATE 0 retenido en modo fail-closed',
+                      '',
+                      reason,
+                      '',
+                      'El Pulpo no pudo emitir un veredicto firmable; la fase queda en `waiting-operator/` para recuperacion humana.',
+                    ].join('\n'),
+                  }),
+                );
+              } catch (e) {
+                log('barrido', `#${issue} gate0: error encolando fail-closed (${e.message})`);
+              }
+              for (const a of archivos) {
+                try {
+                  const current = readYamlSafe(a.path, 'gate0-fail-closed');
+                  writeYaml(a.path, {
+                    ...current,
+                    gate0_status: 'waiting-operator',
+                    gate0_fail_closed: true,
+                    gate0_fail_closed_reason: reason,
+                    gate0_fail_closed_at: new Date().toISOString(),
+                  });
+                  const dest = moveFile(a.path, waitingOperatorDir);
+                  gate0Audit('transition', { from: 'listo', to: 'waiting-operator', file: path.basename(dest), reason });
+                } catch (e) {
+                  log('barrido', `#${issue} gate0: error reteniendo en waiting-operator (${e.message})`);
+                  gate0Audit('transition-error', { from: 'listo', to: 'waiting-operator', reason: e.message });
+                }
+              }
+              try { sendTelegram(`GATE 0 fail-closed #${issue}: ${code}. Retenido en waiting-operator/.`); } catch {}
+            };
             try {
               // Datos del PREFLIGHT (cuerpo del issue), NUNCA del YAML del agente
               // (SEC-R1). Fetch sync con timeout corto, igual que visual-gate.
@@ -4781,7 +4828,7 @@ function brazoBarrido(config) {
                 // podemos garantizar un `pass` honesto → retenemos y avisamos.
                 log('barrido', `🔒 #${issue} gate0: fetch falló (${e.message}) — fail-closed, retiene promoción`);
                 gate0Audit('fetch-failed', { reason: e.message });
-                for (const a of archivos) { try { moveFile(a.path, procesadoDir); } catch {} }
+                retainGate0FailClosed('fetch-failed', e.message);
                 continue;
               }
 
@@ -4887,7 +4934,7 @@ function brazoBarrido(config) {
               log('barrido', `🛑 #${issue} gate0 ERROR inesperado: ${e.message} — fail-closed, retiene`);
               gate0Audit('error', { message: e.message });
               try { sendTelegram(`🛑 #${issue} GATE 0 error inesperado (fail-closed, retiene): ${e.message}`); } catch {}
-              for (const a of archivos) { try { moveFile(a.path, procesadoDir); } catch {} }
+              retainGate0FailClosed('unexpected-error', e.message);
               continue;
             }
           }

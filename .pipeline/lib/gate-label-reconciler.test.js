@@ -10,6 +10,8 @@ const assert = require('node:assert');
 const {
   GATE_LABELS,
   targetLabelFor,
+  isGateLabel,
+  verdictForGateLabel,
   assertMutualExclusion,
   reconcileGateLabels,
   buildLabelActions,
@@ -24,6 +26,20 @@ test('targetLabelFor mapea pass/fail/requires-operator/desconocido', () => {
   assert.strictEqual(targetLabelFor('fail'), 'qa:failed');
   assert.strictEqual(targetLabelFor('requires-operator'), 'qa:pending');
   assert.strictEqual(targetLabelFor('lo-que-sea'), 'qa:pending'); // fail-closed
+});
+
+test('isGateLabel reconoce solo labels QA bajo dueño único', () => {
+  assert.strictEqual(isGateLabel('qa:passed'), true);
+  assert.strictEqual(isGateLabel('qa:failed'), true);
+  assert.strictEqual(isGateLabel('qa:pending'), true);
+  assert.strictEqual(isGateLabel('needs-human'), false);
+});
+
+test('verdictForGateLabel traduce label objetivo a veredicto y rechaza externos', () => {
+  assert.strictEqual(verdictForGateLabel('qa:passed'), 'pass');
+  assert.strictEqual(verdictForGateLabel('qa:failed'), 'fail');
+  assert.strictEqual(verdictForGateLabel('qa:pending'), 'requires-operator');
+  assert.throws(() => verdictForGateLabel('needs-human'), /fuera de dominio/);
 });
 
 // ----------------------------------------------------------------------------
@@ -126,8 +142,8 @@ test('buildLabelActions emite remove-label antes de label (remove-then-add)', ()
   const rec = reconcileGateLabels({ currentLabels: ['qa:failed'], verdict: 'pass' });
   const actions = buildLabelActions({ issue: '4572', reconciliation: rec });
   assert.strictEqual(actions.length, 2);
-  assert.deepStrictEqual(actions[0], { action: 'remove-label', issue: 4572, label: 'qa:failed' });
-  assert.deepStrictEqual(actions[1], { action: 'label', issue: 4572, label: 'qa:passed' });
+  assert.deepStrictEqual(actions[0], { action: 'remove-label', issue: 4572, label: 'qa:failed', gate_reconciler: true });
+  assert.deepStrictEqual(actions[1], { action: 'label', issue: 4572, label: 'qa:passed', gate_reconciler: true });
 });
 
 test('buildLabelActions sin reconciliation devuelve []', () => {

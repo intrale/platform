@@ -22,6 +22,7 @@
 
 // Los tres labels de gate QA bajo dominio exclusivo de este reconciliador.
 const GATE_LABELS = ['qa:passed', 'qa:failed', 'qa:pending'];
+const GATE_LABEL_SET = new Set(GATE_LABELS);
 
 /**
  * Mapea un veredicto de GATE 0 al label de gate objetivo.
@@ -38,6 +39,18 @@ function targetLabelFor(verdict) {
   if (verdict === 'fail') return 'qa:failed';
   // requires-operator y cualquier veredicto desconocido → pending (fail-closed).
   return 'qa:pending';
+}
+
+function isGateLabel(label) {
+  return GATE_LABEL_SET.has(String(label || ''));
+}
+
+function verdictForGateLabel(label) {
+  const normalized = String(label || '');
+  if (normalized === 'qa:passed') return 'pass';
+  if (normalized === 'qa:failed') return 'fail';
+  if (normalized === 'qa:pending') return 'requires-operator';
+  throw new Error(`[gate-label-reconciler] label fuera de dominio QA gate: ${normalized}`);
 }
 
 /**
@@ -110,10 +123,10 @@ function buildLabelActions({ issue, reconciliation } = {}) {
   const issueNum = parseInt(issue, 10);
   const actions = [];
   for (const label of (rec.toRemove || [])) {
-    actions.push({ action: 'remove-label', issue: issueNum, label });
+    actions.push({ action: 'remove-label', issue: issueNum, label, gate_reconciler: true });
   }
   for (const label of (rec.toAdd || [])) {
-    actions.push({ action: 'label', issue: issueNum, label });
+    actions.push({ action: 'label', issue: issueNum, label, gate_reconciler: true });
   }
   return actions;
 }
@@ -121,6 +134,8 @@ function buildLabelActions({ issue, reconciliation } = {}) {
 module.exports = {
   GATE_LABELS,
   targetLabelFor,
+  isGateLabel,
+  verdictForGateLabel,
   assertMutualExclusion,
   reconcileGateLabels,
   buildLabelActions,
