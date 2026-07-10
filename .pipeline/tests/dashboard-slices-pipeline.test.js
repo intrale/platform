@@ -328,6 +328,70 @@ test('pipelineSlice "no aplica = no mostrar" (skill no presente y no esperado se
     assert.deepEqual(skills, ['tester'], 'solo el skill con marker se muestra');
 });
 
+test('pipelineSlice expone blockedBy desde state.blockedIssues (fuente única #4640)', () => {
+    const state = {
+        config: baseConfig,
+        bloqueados: [],
+        allFases: [],
+        blockedIssues: { blockedBy: { '4640': ['4569'], '2891': ['1234', '5678'] }, blocks: {} },
+        issueMatrix: {
+            '4640': {
+                title: 'bloqueado por deps',
+                labels: ['blocked:dependencies'],
+                faseActual: 'desarrollo/dev',
+                estadoActual: 'pendiente',
+                bounces: 0,
+                staleMin: 0,
+                fases: { 'desarrollo/dev': [] },
+            },
+            '2891': {
+                title: 'bloqueado por dos deps',
+                labels: [],
+                faseActual: 'desarrollo/dev',
+                estadoActual: 'pendiente',
+                bounces: 0,
+                staleMin: 0,
+                fases: { 'desarrollo/dev': [] },
+            },
+            '9999': {
+                title: 'sin bloqueo',
+                labels: [],
+                faseActual: 'desarrollo/dev',
+                estadoActual: 'trabajando',
+                bounces: 0,
+                staleMin: 0,
+                fases: { 'desarrollo/dev': [] },
+            },
+        },
+    };
+    const out = slices.pipelineSlice(state, { PIPELINE: '/tmp' });
+    assert.deepEqual(out.matrix['4640'].blockedBy, ['4569'], 'issue con una dep');
+    assert.deepEqual(out.matrix['2891'].blockedBy, ['1234', '5678'], 'issue con dos deps');
+    assert.equal(out.matrix['9999'].blockedBy, null, 'issue sin entrada → null (no muestra badge)');
+});
+
+test('pipelineSlice degrada blockedBy a null si falta state.blockedIssues (fail-closed #4640)', () => {
+    const state = {
+        config: baseConfig,
+        bloqueados: [],
+        allFases: [],
+        // sin blockedIssues (blocked-issues.json ausente/corrupto)
+        issueMatrix: {
+            '4640': {
+                title: 'sin fuente de bloqueo',
+                labels: ['blocked:dependencies'],
+                faseActual: 'desarrollo/dev',
+                estadoActual: 'pendiente',
+                bounces: 0,
+                staleMin: 0,
+                fases: { 'desarrollo/dev': [] },
+            },
+        },
+    };
+    const out = slices.pipelineSlice(state, { PIPELINE: '/tmp' });
+    assert.equal(out.matrix['4640'].blockedBy, null, 'sin blockedIssues no rompe, degrada a null');
+});
+
 test('pipelineSlice fase sin markers todavía muestra todos los esperados como pendientes', () => {
     // Caso edge: issue recién encolado, sin markers aún en la fase activa.
     // Mostrar todos los configurados como pendientes para que el operador

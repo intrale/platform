@@ -478,6 +478,8 @@ const PIPELINE_REDESIGN_CSS = `
 .plc-flags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
 .plc-flag { font-size: 9px; font-weight: 700; border-radius: 4px; padding: 1px 6px; text-transform: uppercase; letter-spacing: .4px; }
 .plc-flag.f-rebote { color: var(--in-bad,#f85149); border: 1px solid var(--in-bad); background: var(--in-bad-soft); cursor: help; }
+/* #4640 — bloqueado por dependencias: rojo de bloqueo, alineado a f-rebote. */
+.plc-flag.f-blocked { color: var(--in-bad,#f85149); border: 1px solid var(--in-bad); background: var(--in-bad-soft); cursor: help; }
 .plc-flag.f-paused { color: var(--in-warn,#d29922); border: 1px solid var(--in-warn); }
 .plc-flag.f-allow { color: var(--in-ok,#3fb950); border: 1px solid var(--in-ok); background: var(--in-ok-soft); }
 .plc-flag.f-human { color: #c9b6ff; border: 1px solid rgba(167,139,250,.5); }
@@ -698,7 +700,19 @@ function plRenderCard(i, macroKey){
         const where = escapeHtml(i.rechazado_en_fase||'?') + (i.rechazado_skill_previo ? '/' + escapeHtml(i.rechazado_skill_previo) : '');
         flags += '<span class="plc-flag f-rebote" title="Rechazado en ' + where + ': ' + escapeHtml(motivo) + '">↩ rebote' + (i.rebote_tipo ? ' · ' + escapeHtml(i.rebote_tipo) : '') + '</span>';
     }
-    if(i.paused) flags += '<span class="plc-flag f-paused" title="Issue pausado (blocked:dependencies)">⏸ pausado</span>';
+    // #4640 — badge 🛑 "bloqueado por dependencias" desde la fuente única
+    // server-authoritative (data.blockedBy). Lista de qué depende, con el
+    // detalle completo en el title. Defensa en profundidad: todo número pasa
+    // por escapeHtml aunque dep-resolver ya valide numéricamente los issues.
+    if(i.blockedBy && i.blockedBy.length){
+        const depsAll = i.blockedBy.map(function(n){ return '#' + escapeHtml(String(n)); });
+        const depsFull = depsAll.join(', ');
+        // UX: texto visible corto (hasta 2 deps + "+N"); lista completa en el title.
+        const depsShort = depsAll.length > 2 ? (depsAll.slice(0,2).join(', ') + ' +' + (depsAll.length - 2)) : depsFull;
+        flags += '<span class="plc-flag f-blocked" title="Bloqueado — depende de ' + depsFull + '">🛑 depende de ' + depsShort + '</span>';
+    } else if(i.paused){
+        flags += '<span class="plc-flag f-paused" title="Issue pausado (blocked:dependencies)">⏸ pausado</span>';
+    }
     if(plAllowlistOk(i.issue)) flags += '<span class="plc-flag f-allow" title="Habilitado por la pausa parcial activa">✅ ola</span>';
     if((i.labels||[]).includes('needs-human')) flags += '<span class="plc-flag f-human" title="Necesita intervención humana">👤 humano</span>';
     const flagsHtml = flags ? '<div class="plc-flags">' + flags + '</div>' : '';
@@ -740,7 +754,8 @@ function plItemFromMatrix(issue, data, macro){
     return {
         issue: String(issue), title: data.title, estado: data.estadoActual,
         staleMin: data.staleMin, labels: labels,
-        paused: labels.indexOf('blocked:dependencies') >= 0,
+        paused: labels.indexOf('blocked:dependencies') >= 0,   // #4640 compat: fallback visual, NO es la fuente del badge
+        blockedBy: data.blockedBy || null,                     // #4640 fuente única (blocked-issues.json vía server)
         rebote: data.rebote, rebote_tipo: data.rebote_tipo, motivo_rechazo: data.motivo_rechazo,
         rechazado_en_fase: data.rechazado_en_fase, rechazado_skill_previo: data.rechazado_skill_previo,
         agents: data.agents || [], macro: macro,
@@ -750,7 +765,7 @@ function plItemFromMatrix(issue, data, macro){
 function plItemTerminal(issue, title, macro, estado){
     return {
         issue: String(issue), title: title || ('Issue #' + issue), estado: estado || '',
-        staleMin: 0, labels: [], paused: false, rebote: false,
+        staleMin: 0, labels: [], paused: false, blockedBy: null, rebote: false,  // #4640 shape homogéneo
         agents: [], macro: macro, progressState: null,
     };
 }
