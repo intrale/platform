@@ -149,3 +149,66 @@ test('config null/no-objeto no rompe la resolución', () => {
     assert.equal(policy.resolvePolicy('worktree-reset', { config: null }).mode, 'notify-and-proceed');
     assert.doesNotThrow(() => policy.resolvePolicy('reseed-wave', { config: 'basura' }));
 });
+// -----------------------------------------------------------------------------
+// Integracion de caller: la politica se ejerce, no queda como codigo muerto.
+// -----------------------------------------------------------------------------
+
+test('enforceActionPolicy notify-and-proceed dispara notificacion y permite mutar', () => {
+    const sent = [];
+    const r = policy.enforceActionPolicy('quota-flag-set', {
+        config: {},
+        impact: 'alto',
+        reason: 'fixture #4565',
+        notify: (payload) => {
+            sent.push(payload);
+            return { ok: true, mocked: true };
+        },
+    });
+    assert.equal(r.proceed, true);
+    assert.equal(r.mode, 'notify-and-proceed');
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].action, 'quota-flag-set');
+});
+
+test('enforceActionPolicy wait-confirmation NO permite mutar sin confirmacion valida', () => {
+    const rejected = [];
+    const sent = [];
+    const r = policy.enforceActionPolicy('realign-allowlist', {
+        config: {},
+        impact: 'alto',
+        reason: 'fixture #4566',
+        operatorAllowlist: ['12345'],
+        notify: (payload) => {
+            sent.push(payload);
+            return { ok: true, mocked: true };
+        },
+        appendConfirmationRejected: (entry) => {
+            rejected.push(entry);
+            return { ok: true, mocked: true };
+        },
+    });
+    assert.equal(r.proceed, false);
+    assert.equal(r.mode, 'wait-confirmation');
+    assert.equal(r.reason, 'confirmation-required');
+    assert.equal(rejected.length, 1);
+    assert.equal(rejected[0].action, 'realign-allowlist');
+    assert.equal(sent.length, 1);
+});
+
+test('enforceActionPolicy wait-confirmation permite mutar con confirmador allowlisted', () => {
+    const r = policy.enforceActionPolicy('reseed-wave', {
+        config: {},
+        impact: 'alto',
+        reason: 'reseed confirmado',
+        confirmerChatId: '12345',
+        operatorAllowlist: ['12345'],
+        notify: () => ({ ok: true, mocked: true }),
+        appendConfirmationRejected: () => {
+            throw new Error('no debe registrar rechazo');
+        },
+    });
+    assert.equal(r.proceed, true);
+    assert.equal(r.mode, 'wait-confirmation');
+    assert.equal(r.reason, 'confirmed');
+    assert.equal(r.confirmation.authorized, true);
+});

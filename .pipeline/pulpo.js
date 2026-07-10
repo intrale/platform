@@ -14263,14 +14263,22 @@ function realignAllowlistToActiveWave(desync, opts = {}) {
   // #4577 GATE 3 — INVARIANTE log-antes-de-mutar (RS-2): registrar el realign
   // de la allowlist a la ola activa ANTES de delegar la mutación (incidente
   // #4566, cambio de cohorte de la ola). Best-effort: el audit nunca bloquea el
-  // realign. La resolución de política (wait-confirmation electiva) la consume
-  // el caller vía `lib/kernel-action-policy.resolvePolicy('realign-allowlist')`.
+  // realign. La politica wait-confirmation se evalua aca mismo antes de mutar.
   try {
     require('./lib/kernel-actions-audit').safeAppendAction({
       action: 'realign-allowlist', impact: 'alto',
       reason: `realignAllowlistToActiveWave: converger allowlist ← ola activa (desync=${desync && desync.classification ? desync.classification : 'n/a'})`,
       authorizedBy: 'wave-promote',
     });
+    const gate3 = require('./lib/kernel-action-policy').enforceActionPolicy('realign-allowlist', {
+      impact: 'alto',
+      reason: `realignAllowlistToActiveWave: converger allowlist a ola activa (desync=${desync && desync.classification ? desync.classification : 'n/a'})`,
+      confirmerChatId: opts.confirmerChatId,
+      operatorAllowlist: opts.operatorAllowlist,
+    });
+    if (!gate3.proceed) {
+      return { ok: false, reason: 'gate3_confirmation_required', policy: gate3 };
+    }
   } catch {}
   // #4436 — el algoritmo de realineación se extrajo a `lib/wave-dispatch.js`
   // para reusarlo desde el dashboard (relanzar despacho de la ola activa) sin

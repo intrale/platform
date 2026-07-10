@@ -604,6 +604,18 @@ function initWavesFromPartial(opts = {}) {
                 (preservingIdentity ? ' (identidad recuperada #4532)' : ' (minteo nuevo)'),
             authorizedBy: 'kernel:auto',
         });
+        const gate3 = require('../lib/kernel-action-policy').enforceActionPolicy('reseed-wave', {
+            impact: 'alto',
+            reason: `initWavesFromPartial: seed ola #${waveNumber} "${name}" con ${partial.allowedIssues.length} issue(s)` +
+                (preservingIdentity ? ' (identidad recuperada #4532)' : ' (minteo nuevo)'),
+        });
+        if (!gate3.proceed) {
+            return {
+                action: 'aborted_gate3_confirmation_required',
+                reason: 'GATE 3 requiere confirmacion de operador para reseed-wave',
+                policy: gate3,
+            };
+        }
     } catch {}
 
     try {

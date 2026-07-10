@@ -604,6 +604,10 @@ function clearFlag(opts = {}) {
                 reason: `clearFlag event=${opts.event || 'cleared'} provider=${callerProvider || 'any'} reason=${opts.reason || 'manual_or_post_success'}`,
                 authorizedBy: 'quota-detector',
             });
+            require('./kernel-action-policy').enforceActionPolicy('quota-flag-clear', {
+                impact: 'alto',
+                reason: `clearFlag event=${opts.event || 'cleared'} provider=${callerProvider || 'any'} reason=${opts.reason || 'manual_or_post_success'}`,
+            });
         } catch {}
     }
     let existed = false;
@@ -710,6 +714,10 @@ function setFlag(opts = {}) {
             action: 'quota-flag-set', impact: 'alto',
             reason: `setFlag provider=${provider} error_type=${errorType} agent=${opts.agent || 'unknown'}`,
             authorizedBy: 'quota-detector',
+        });
+        require('./kernel-action-policy').enforceActionPolicy('quota-flag-set', {
+            impact: 'alto',
+            reason: `setFlag provider=${provider} error_type=${errorType} agent=${opts.agent || 'unknown'}`,
         });
     } catch {}
     writeJsonAtomic(flagFile(), payload);

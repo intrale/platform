@@ -115,6 +115,10 @@ function syncWithMain() {
         reason: 'syncWithMain: git reset --hard FETCH_HEAD (recovery de restart)',
         authorizedBy: 'restart:rollback',
       });
+      require('./lib/kernel-action-policy').enforceActionPolicy('worktree-reset', {
+        impact: 'alto',
+        reason: 'syncWithMain: git reset --hard FETCH_HEAD (recovery de restart)',
+      });
     } catch {}
     execSync('git reset --hard FETCH_HEAD', { cwd: ROOT, timeout: 15000, windowsHide: true, encoding: 'utf8' });
     log('Sincronizado con origin/main');

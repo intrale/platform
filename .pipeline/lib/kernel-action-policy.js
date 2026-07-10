@@ -33,6 +33,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 
 const POLICY_MODES = Object.freeze(['notify-and-proceed', 'wait-confirmation']);
+const TIMEOUT_FALLBACKS = Object.freeze(['proceed', 'abort']);
 
 // Alias tolerados en config.yaml (una sola clave `quota-flag` cubre set+clear).
 // Las claves de `kernel-actions-audit.KERNEL_ACTIONS` que comparten política.
@@ -238,7 +239,129 @@ function resolveTimeoutFallback(action, opts = {}) {
     return { fallback, timeoutMs, source: fbSource };
 }
 
+function telegramQueueDir() {
+    return path.join(pipelineDir(), 'servicios', 'telegram', 'pendiente');
+}
+
+function safeMarkdownText(value) {
+    return String(value == null ? '' : value)
+        .replace(/[`*_{}\[\]()#+\-.!|>]/g, '\\$&')
+        .slice(0, 500);
+}
+
+function buildOperatorMessage({ action, mode, impact, reason, policySource, decision }) {
+    const level = impact === 'alto' ? 'ALTO' : (impact === 'medio' ? 'MEDIO' : 'BAJO');
+    const verb = mode === 'wait-confirmation'
+        ? 'requiere confirmacion de operador'
+        : 'notifica y procede';
+    return [
+        `GATE 3 kernel - impacto ${level}`,
+        `Accion: ${safeMarkdownText(action)}`,
+        `Politica: ${safeMarkdownText(mode)} (${safeMarkdownText(policySource || 'n/a')})`,
+        `Decision: ${safeMarkdownText(decision || verb)}`,
+        `Motivo: ${safeMarkdownText(reason || 'sin motivo informado')}`,
+        'Audit: .pipeline/audit/kernel-actions.jsonl',
+    ].join('\n');
+}
+
+/**
+ * Encola una notificacion al operador usando la cola existente de
+ * servicio-telegram.js. No toca red y nunca debe bloquear la mutacion.
+ *
+ * @param {object} params
+ * @param {Function} [send] - inyeccion para tests.
+ * @returns {{ ok: boolean, path?: string, error?: string }}
+ */
+function notifyOperator(params = {}, send) {
+    if (typeof send === 'function') {
+        return send(params);
+    }
+    try {
+        const dir = telegramQueueDir();
+        fs.mkdirSync(dir, { recursive: true });
+        const id = `gate3-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+        const file = path.join(dir, `${id}.json`);
+        const payload = {
+            text: buildOperatorMessage(params),
+            parse_mode: 'Markdown',
+            _correlationId: id,
+        };
+        fs.writeFileSync(file, JSON.stringify(payload));
+        return { ok: true, path: file };
+    } catch (e) {
+        return { ok: false, error: (e && e.message) ? String(e.message).slice(0, 200) : 'unknown' };
+    }
+}
+
+function appendRejected(action, chatId, reason, appendRejectedFn) {
+    const fn = appendRejectedFn || require('./kernel-actions-audit').appendConfirmationRejected;
+    try {
+        return fn({ action, rejectedChatId: chatId, reason });
+    } catch (e) {
+        return { ok: false, error: (e && e.message) ? String(e.message).slice(0, 200) : 'unknown' };
+    }
+}
+
+/**
+ * Punto unico de ejecucion de la politica GATE 3 para callers de produccion.
+ * Se invoca DESPUES de kernel-actions-audit.safeAppendAction y ANTES de mutar.
+ *
+ * @param {string} action
+ * @param {object} [opts]
+ * @param {string} [opts.impact]
+ * @param {string} [opts.reason]
+ * @param {string|number} [opts.confirmerChatId]
+ * @param {string|number|Array<string|number>} [opts.operatorAllowlist]
+ * @param {object} [opts.config]
+ * @param {Function} [opts.notify]
+ * @param {Function} [opts.appendConfirmationRejected]
+ * @param {'proceed'|'abort'} [opts.timeoutFallbackOverride]
+ * @returns {{ proceed: boolean, mode: string, reason: string, policy: object, notification?: object, confirmation?: object, fallback?: object, rejection?: object }}
+ */
+function enforceActionPolicy(action, opts = {}) {
+    const policy = resolvePolicy(action, opts);
+    const base = { action, mode: policy.mode, impact: opts.impact, reason: opts.reason, policySource: policy.source };
+
+    if (policy.mode === 'notify-and-proceed') {
+        const notification = notifyOperator({ ...base, decision: 'se procede sin bloquear' }, opts.notify);
+        return { proceed: true, mode: policy.mode, reason: 'notify-and-proceed', policy, notification };
+    }
+
+    const confirmation = validateConfirmer(opts.confirmerChatId, opts.operatorAllowlist);
+    if (confirmation.authorized) {
+        const notification = notifyOperator({ ...base, decision: `confirmado por chat_id ${confirmation.chatId}` }, opts.notify);
+        return { proceed: true, mode: policy.mode, reason: 'confirmed', policy, confirmation, notification };
+    }
+
+    const rejection = appendRejected(
+        action,
+        confirmation.chatId,
+        `wait-confirmation rechazado: ${confirmation.reason || 'sin_confirmacion_valida'}; ${opts.reason || ''}`,
+        opts.appendConfirmationRejected,
+    );
+    const fallback = resolveTimeoutFallback(action, opts);
+    const fallbackValue = TIMEOUT_FALLBACKS.includes(opts.timeoutFallbackOverride)
+        ? opts.timeoutFallbackOverride
+        : fallback.fallback;
+    const notification = notifyOperator({
+        ...base,
+        decision: `sin confirmacion valida (${confirmation.reason || 'n/a'}), fallback=${fallbackValue}`,
+    }, opts.notify);
+    return {
+        proceed: fallbackValue === 'proceed',
+        mode: policy.mode,
+        reason: fallbackValue === 'proceed' ? 'timeout-fallback-proceed' : 'confirmation-required',
+        policy,
+        confirmation,
+        fallback: { ...fallback, fallback: fallbackValue },
+        rejection,
+        notification,
+    };
+}
+
 module.exports = {
+    enforceActionPolicy,
+    notifyOperator,
     resolvePolicy,
     requiresConfirmation,
     validateConfirmer,
@@ -247,6 +370,7 @@ module.exports = {
     policyKey,
     // Constantes
     POLICY_MODES,
+    TIMEOUT_FALLBACKS,
     DEFAULT_POLICY,
     DEFAULT_TIMEOUT_FALLBACK,
     DEFAULT_TIMEOUT_MS,

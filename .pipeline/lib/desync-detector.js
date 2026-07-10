@@ -308,6 +308,10 @@ function clearDesyncFlag() {
                 reason: 'clearDesyncFlag: destrabe de desync (aditivo/humano)',
                 authorizedBy: 'desync-detector',
             });
+            require('./kernel-action-policy').enforceActionPolicy('desync-autoresolve', {
+                impact: 'medio',
+                reason: 'clearDesyncFlag: destrabe de desync (aditivo/humano)',
+            });
         } catch {}
         try { fs.unlinkSync(p); } catch {}
     }
