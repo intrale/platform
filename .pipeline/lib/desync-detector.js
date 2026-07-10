@@ -300,6 +300,19 @@ function isDesyncFlagSet() {
 function clearDesyncFlag() {
     const p = desyncFlagPath();
     if (fs.existsSync(p)) {
+        // #4577 GATE 3 — INVARIANTE log-antes-de-mutar (RS-2): registrar el
+        // auto-resolve de desync ANTES de borrar el flag. Best-effort.
+        try {
+            require('./kernel-actions-audit').safeAppendAction({
+                action: 'desync-autoresolve', impact: 'medio',
+                reason: 'clearDesyncFlag: destrabe de desync (aditivo/humano)',
+                authorizedBy: 'desync-detector',
+            });
+            require('./kernel-action-policy').enforceActionPolicy('desync-autoresolve', {
+                impact: 'medio',
+                reason: 'clearDesyncFlag: destrabe de desync (aditivo/humano)',
+            });
+        } catch {}
         try { fs.unlinkSync(p); } catch {}
     }
 }

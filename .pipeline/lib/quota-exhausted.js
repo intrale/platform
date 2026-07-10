@@ -593,6 +593,23 @@ function clearFlag(opts = {}) {
         }
     }
 
+    // #4577 GATE 3 — INVARIANTE log-antes-de-mutar (RS-2): registrar el clear
+    // del flag ANTES del unlink, y SOLO cuando hay un flag real que borrar (no
+    // floodear el audit con los `success_spawn` que no tocan estado). Incidente
+    // #4565 (misatribución de provider) es exactamente este sitio sin traza.
+    if (fs.existsSync(file)) {
+        try {
+            require('./kernel-actions-audit').safeAppendAction({
+                action: 'quota-flag-clear', impact: 'alto',
+                reason: `clearFlag event=${opts.event || 'cleared'} provider=${callerProvider || 'any'} reason=${opts.reason || 'manual_or_post_success'}`,
+                authorizedBy: 'quota-detector',
+            });
+            require('./kernel-action-policy').enforceActionPolicy('quota-flag-clear', {
+                impact: 'alto',
+                reason: `clearFlag event=${opts.event || 'cleared'} provider=${callerProvider || 'any'} reason=${opts.reason || 'manual_or_post_success'}`,
+            });
+        } catch {}
+    }
     let existed = false;
     try {
         fs.unlinkSync(file);
@@ -690,6 +707,19 @@ function setFlag(opts = {}) {
         detected_at: new Date(now).toISOString(),
         pattern_matched: errorType,
     };
+    // #4577 GATE 3 — INVARIANTE log-antes-de-mutar (RS-2): registrar el set del
+    // flag de cuota ANTES del write atómico (incidente #4565).
+    try {
+        require('./kernel-actions-audit').safeAppendAction({
+            action: 'quota-flag-set', impact: 'alto',
+            reason: `setFlag provider=${provider} error_type=${errorType} agent=${opts.agent || 'unknown'}`,
+            authorizedBy: 'quota-detector',
+        });
+        require('./kernel-action-policy').enforceActionPolicy('quota-flag-set', {
+            impact: 'alto',
+            reason: `setFlag provider=${provider} error_type=${errorType} agent=${opts.agent || 'unknown'}`,
+        });
+    } catch {}
     writeJsonAtomic(flagFile(), payload);
     if (opts.auditLogEnabled !== false) {
         appendAudit({

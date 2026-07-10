@@ -104,6 +104,22 @@ function sleep(ms) {
 function syncWithMain() {
   try {
     execSync('git fetch origin main', { cwd: ROOT, timeout: 30000, windowsHide: true });
+    // #4577 GATE 3 — INVARIANTE log-antes-de-mutar (RS-2/RS-6): registrar el
+    // reset del working tree ANTES del `git reset --hard`. Corre fuera del loop
+    // del Pulpo durante recovery; si el proceso muere entre el log y el reset,
+    // queda el intento registrado y el working tree intacto (recuperable).
+    // Best-effort: el audit NUNCA rompe el rollback transaccional.
+    try {
+      require('./lib/kernel-actions-audit').safeAppendAction({
+        action: 'worktree-reset', impact: 'alto',
+        reason: 'syncWithMain: git reset --hard FETCH_HEAD (recovery de restart)',
+        authorizedBy: 'restart:rollback',
+      });
+      require('./lib/kernel-action-policy').enforceActionPolicy('worktree-reset', {
+        impact: 'alto',
+        reason: 'syncWithMain: git reset --hard FETCH_HEAD (recovery de restart)',
+      });
+    } catch {}
     execSync('git reset --hard FETCH_HEAD', { cwd: ROOT, timeout: 15000, windowsHide: true, encoding: 'utf8' });
     log('Sincronizado con origin/main');
     // #4460 — Registrar el HEAD tras el reset como SHA canónico de "qué corre
