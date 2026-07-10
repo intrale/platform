@@ -34,16 +34,22 @@ function log(msg) {
 }
 
 let BOT_TOKEN, CHAT_ID, SECRETS_SOURCE;
-try {
-  const sec = loadTelegramSecrets({ legacyConfigPath: TELEGRAM_CONFIG, log });
-  BOT_TOKEN = sec.bot_token;
-  CHAT_ID = sec.chat_id;
-  SECRETS_SOURCE = sec.source;
-  log(`Secrets cargados desde: ${SECRETS_SOURCE}`);
-} catch (e) {
-  console.error('FATAL: ' + e.message);
-  health.markError(PIPELINE, { code: e.code || 'NO_SECRETS', description: e.message, source: 'startup' });
-  process.exit(1);
+
+// #4579 — Carga de secrets separada del top-level para que el módulo sea
+// importable en tests (require() sin arrancar el polling ni salir por falta de
+// secrets). En producción se invoca desde el bloque `require.main === module`.
+function loadSecretsOrExit() {
+  try {
+    const sec = loadTelegramSecrets({ legacyConfigPath: TELEGRAM_CONFIG, log });
+    BOT_TOKEN = sec.bot_token;
+    CHAT_ID = sec.chat_id;
+    SECRETS_SOURCE = sec.source;
+    log(`Secrets cargados desde: ${SECRETS_SOURCE}`);
+  } catch (e) {
+    console.error('FATAL: ' + e.message);
+    health.markError(PIPELINE, { code: e.code || 'NO_SECRETS', description: e.message, source: 'startup' });
+    process.exit(1);
+  }
 }
 
 // --- Offset persistence ---
@@ -93,6 +99,14 @@ function telegramRequest(method, params) {
     req.end();
   });
 }
+
+// #4579 — Indirección inyectable del transporte Telegram + del operator-gate,
+// para poder testear el dispatch de callbacks sin red ni secrets reales. En
+// producción apuntan al transporte HTTPS y al singleton del módulo.
+const deps = {
+  telegramRequest,
+  operatorGate: null, // override para tests; null → getDefault() lazy.
+};
 
 async function sendMessage(text) {
   try {
@@ -292,12 +306,168 @@ async function downloadTelegramFile(fileId, ext) {
   }
 }
 
+// =============================================================================
+// #4579 — Canal de firma del operador (callback_query)
+//
+// El operador toca ✅ Aprobar / ❌ Rechazar / ✏️ Ajustar en Telegram y el
+// kernel transiciona el gate `waiting-operator`. Toda la lógica sensible
+// (autorización por `from.id`, verificación del token HMAC single-use,
+// transición del estado, audit inmutable hash-chained) vive en
+// `lib/operator-gate.js` — acá sólo hacemos la I/O de Telegram: responder el
+// `answerCallbackQuery` (cortar spinner) y, tras firma exitosa, editar el
+// mensaje para quitar los botones consumidos (anti doble-tap visual, CA-10).
+//
+// Carga lazy: si el módulo no cargara (caso borde), degradamos respondiendo un
+// toast genérico — nunca dejamos el spinner colgado ni el bot caído.
+// =============================================================================
+
+let _operatorGate = null;
+function getOperatorGate() {
+  if (deps.operatorGate) return deps.operatorGate; // override de tests
+  if (_operatorGate === undefined) return null;
+  if (_operatorGate) return _operatorGate;
+  try {
+    _operatorGate = require('./lib/operator-gate').getDefault();
+    return _operatorGate;
+  } catch (e) {
+    log(`Error cargando operator-gate: ${e.message}`);
+    _operatorGate = undefined; // no reintentar
+    return null;
+  }
+}
+
+async function answerCallbackQuery(callbackQueryId, text) {
+  try {
+    await deps.telegramRequest('answerCallbackQuery', {
+      callback_query_id: callbackQueryId,
+      // Telegram trunca el toast a ~200 chars; nuestros mensajes son cortos.
+      text: (text || '').slice(0, 200),
+    });
+  } catch (e) {
+    log(`Error en answerCallbackQuery: ${e.message}`);
+  }
+}
+
+async function removeInlineKeyboard(message, footer) {
+  const chatId = message?.chat?.id;
+  const messageId = message?.message_id;
+  const originalText = typeof message?.text === 'string' ? message.text : null;
+  const originalCaption = typeof message?.caption === 'string' ? message.caption : null;
+  const signedText = footer
+    ? `${(originalText || originalCaption || '').trim()}\n\n${footer}`.trim().slice(0, 4096)
+    : null;
+
+  // CA-10: tras firma exitosa, quitar los botones y dejar constancia editando el
+  // mensaje original. No publicamos un mensaje nuevo para la constancia.
+  if (signedText && originalText) {
+    try {
+      await deps.telegramRequest('editMessageText', {
+        chat_id: chatId,
+        message_id: messageId,
+        text: signedText,
+        reply_markup: { inline_keyboard: [] },
+      });
+      return;
+    } catch (e) {
+      log(`Error en editMessageText: ${e.message}`);
+    }
+  }
+
+  if (signedText && originalCaption) {
+    try {
+      await deps.telegramRequest('editMessageCaption', {
+        chat_id: chatId,
+        message_id: messageId,
+        caption: signedText.slice(0, 1024),
+        reply_markup: { inline_keyboard: [] },
+      });
+      return;
+    } catch (e) {
+      log(`Error en editMessageCaption: ${e.message}`);
+    }
+  }
+
+  // Fallback para mensajes sin texto/caption o si Telegram rechaza la edición:
+  // al menos deshabilitamos los botones consumidos.
+  try {
+    await deps.telegramRequest('editMessageReplyMarkup', {
+      chat_id: chatId,
+      message_id: messageId,
+      reply_markup: { inline_keyboard: [] },
+    });
+  } catch (e) {
+    log(`Error en editMessageReplyMarkup: ${e.message}`);
+  }
+}
+
+async function handleCallbackQuery(cbq) {
+  if (!cbq || !cbq.id) return;
+
+  const gate = getOperatorGate();
+  if (!gate) {
+    // Degradación: cortar el spinner con un toast genérico.
+    await answerCallbackQuery(cbq.id, 'Canal de firma no disponible temporalmente');
+    return;
+  }
+
+  // A01/A07: la autorización se valida DENTRO de operator-gate contra `from.id`
+  // (no `chat.id`) + binding tenant→operador server-side. Acá sólo pasamos los
+  // datos crudos del callback (tratados como no confiables).
+  let result;
+  try {
+    result = gate.handleSignature({
+      operatorId: cbq.from?.id,
+      callbackData: cbq.data,
+    });
+  } catch (e) {
+    log(`Error procesando firma: ${e.message}`);
+    await answerCallbackQuery(cbq.id, 'No se pudo procesar la firma');
+    return;
+  }
+
+  // CA-9: answerCallbackQuery en TODOS los caminos (éxito y cada rechazo).
+  await answerCallbackQuery(cbq.id, result.toast);
+
+  // CA-10: tras transición exitosa, remover botones y dejar constancia.
+  if (result.ok && result.editMessage && cbq.message) {
+    const actorName = cbq.from?.first_name || cbq.from?.id || 'operador';
+    const hora = new Date().toISOString().replace('T', ' ').slice(0, 16);
+    await removeInlineKeyboard(
+      cbq.message,
+      `🖊️ Firmado por ${actorName} · ${hora} — ${result.toast}`
+    );
+  }
+
+  // SR-4: auditoría operativa en el history del listener (el audit inmutable
+  // hash-chained ya lo hace operator-gate; esto es sólo traza local).
+  try {
+    appendHistory({
+      direction: 'in',
+      handler: 'operator-gate',
+      from: cbq.from?.first_name || 'unknown',
+      from_id: cbq.from?.id,
+      ok: !!result.ok,
+      action: result.action || null,
+      issue: result.issue || null,
+      reason: result.reason || null,
+    });
+  } catch { /* best-effort */ }
+}
+
 // --- Enqueue message for Commander ---
 
 // Deduplicación: trackear últimos message_id procesados
 const processedMessageIds = new Set();
 
 async function enqueueMessage(update) {
+  // #4579 — Canal de firma del operador. Un `callback_query` (toque de botón)
+  // NO trae `update.message`, así que sin esta rama caería silenciosamente.
+  // Se deriva al handler dedicado y se corta el flujo normal.
+  if (update.callback_query) {
+    await handleCallbackQuery(update.callback_query);
+    return;
+  }
+
   const msg = update.message;
   if (!msg) return;
 
@@ -416,7 +586,10 @@ async function pollLoop() {
       const result = await telegramRequest('getUpdates', {
         offset,
         timeout: 30,
-        allowed_updates: ['message']
+        // #4579: habilitar `callback_query` para el canal de firma del operador
+        // (botones ✅/❌/✏️). Amplía superficie → los callbacks de usuarios/chats
+        // no autorizados se descartan en handleCallbackQuery ANTES de procesar.
+        allowed_updates: ['message', 'callback_query']
       });
 
       if (result.ok) {
@@ -458,7 +631,24 @@ async function pollLoop() {
   }
 }
 
-// --- SINGLETON ---
-require('./singleton')('listener');
+// #4579 — Exports para tests herméticos (dispatch de callbacks sin red). El
+// arranque real queda guardado bajo `require.main === module` para no ejecutar
+// polling/singleton/secrets al importar el módulo desde un test.
+module.exports = {
+  enqueueMessage,
+  handleCallbackQuery,
+  answerCallbackQuery,
+  removeInlineKeyboard,
+  getOperatorGate,
+  deps, // { telegramRequest, operatorGate } — inyectables en tests
+};
 
-pollLoop().catch(e => { log(`Fatal: ${e.message}`); process.exit(1); });
+// --- ARRANQUE (sólo cuando se ejecuta como proceso, no al importar) ---
+if (require.main === module) {
+  loadSecretsOrExit();
+
+  // --- SINGLETON ---
+  require('./singleton')('listener');
+
+  pollLoop().catch(e => { log(`Fatal: ${e.message}`); process.exit(1); });
+}

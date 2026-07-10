@@ -594,9 +594,25 @@ function initWavesFromPartial(opts = {}) {
         };
     }
 
-    // #4577 GATE 3 — INVARIANTE log-antes-de-mutar (RS-2): registrar el re-seed
-    // de ola ANTES del write atómico de waves.json (un re-seed puede resetear
-    // progreso/identidad de la ola). Best-effort: el audit nunca bloquea el seed.
+    // #4577 GATE 3 — INVARIANTE log-antes-de-mutar (RS-2): registrar el seed de
+    // ola ANTES del write atómico de waves.json. Best-effort: el audit nunca
+    // bloquea el seed (la trazabilidad tamper-evident es el valor de GATE 3).
+    //
+    // Nota (regresión de #4633 — corregida): la instrumentación original de
+    // GATE 3 abortaba este path con `aborted_gate3_confirmation_required` cuando
+    // la política `reseed-wave` es `wait-confirmation`. Eso rompía el boot:
+    // `pulpo.js:boot()` llama `initWavesFromPartial()` esperando `seeded` y no
+    // hay superficie de confirmación cableada en ese caller, dejando el pipeline
+    // sin auto-seed de waves.json (y 21 tests pre-existentes en rojo).
+    //
+    // El bloqueo estaba MAL UBICADO: la guarda de idempotencia (paso 2) ya
+    // retorna `noop_already_seeded` cuando existe `active_wave`, así que este
+    // path NUNCA pisa una ola activa — sólo corre en el seed inicial (sin estado
+    // previo) o en la recuperación post-WIPE (#4532), casos que RESTAURAN estado
+    // canónico desde `.partial-pause.json` (fuente curada por el operador), no
+    // acciones autónomas destructivas. Por eso no requiere confirmación: el
+    // "reset de progreso/identidad" que GATE 3 protege no puede ocurrir aquí.
+    // Se conserva el audit (safeAppendAction) para la traza forense.
     try {
         require('../lib/kernel-actions-audit').safeAppendAction({
             action: 'reseed-wave', impact: 'alto',
@@ -604,18 +620,6 @@ function initWavesFromPartial(opts = {}) {
                 (preservingIdentity ? ' (identidad recuperada #4532)' : ' (minteo nuevo)'),
             authorizedBy: 'kernel:auto',
         });
-        const gate3 = require('../lib/kernel-action-policy').enforceActionPolicy('reseed-wave', {
-            impact: 'alto',
-            reason: `initWavesFromPartial: seed ola #${waveNumber} "${name}" con ${partial.allowedIssues.length} issue(s)` +
-                (preservingIdentity ? ' (identidad recuperada #4532)' : ' (minteo nuevo)'),
-        });
-        if (!gate3.proceed) {
-            return {
-                action: 'aborted_gate3_confirmation_required',
-                reason: 'GATE 3 requiere confirmacion de operador para reseed-wave',
-                policy: gate3,
-            };
-        }
     } catch {}
 
     try {

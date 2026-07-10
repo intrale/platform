@@ -36,7 +36,15 @@ const SECRET_INFO = 'human-block-action-token/v1';
 
 // Allowlist cerrada de acciones (CA-SEC-3, OWASP A03). `pausar` queda FUERA por
 // decisión de producto (PO #4068): no resuelve el bloqueo, solo lo congela.
-const ACTION_ALLOWLIST = Object.freeze(['unblock', 'mas-contexto', 'devolver-definicion', 'priorizar']);
+//
+// #4579 (gates de firma del operador): se agregan `approve`/`reject`/
+// `adjust-definicion` — las tres acciones del canal de firma de un toque por
+// Telegram. Se EXTIENDE la allowlist existente (no se reinventa la firma): el
+// mismo `sign`/`verify` HMAC + nonce single-use cubre el anti-replay del botón.
+const ACTION_ALLOWLIST = Object.freeze([
+    'unblock', 'mas-contexto', 'devolver-definicion', 'priorizar',
+    'approve', 'reject', 'adjust-definicion',
+]);
 
 // --- base64url helpers (sin padding, URL-safe para query strings) -----------
 function b64urlEncode(buf) {
@@ -148,8 +156,10 @@ function createTokenSigner(opts = {}) {
 
     /**
      * Verifica y CONSUME un token (un solo uso). Devuelve:
-     *   { ok: true, issue, action } | { ok: false, reason: 'invalid'|'expired'|'replayed' }
-     * El nonce se marca usado SOLO en el camino feliz.
+     *   { ok: true, issue, action, nonce } | { ok: false, reason: 'invalid'|'expired'|'replayed' }
+     * El nonce se marca usado SOLO en el camino feliz. Se devuelve el `nonce`
+     * consumido para que el caller (p.ej. el audit log de #4579) registre qué
+     * capability se gastó, sin filtrar el token completo.
      */
     function verify(token) {
         if (typeof token !== 'string' || token.length === 0 || token.length > 4096) {
@@ -185,7 +195,7 @@ function createTokenSigner(opts = {}) {
         const used = readUsedNonces();
         if (used.has(String(nonce))) return { ok: false, reason: 'replayed' };
         markNonceUsed(String(nonce), { issue, action });
-        return { ok: true, issue, action };
+        return { ok: true, issue, action, nonce: String(nonce) };
     }
 
     return { sign, verify, nonceFile, ttlMs };
