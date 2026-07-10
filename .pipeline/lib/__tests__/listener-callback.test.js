@@ -7,7 +7,7 @@
 // y un operator-gate fake (deps.operatorGate). Cubre:
 //   - rama nueva: un callback_query se deriva a handleCallbackQuery
 //   - answerCallbackQuery SIEMPRE invocado (éxito y rechazo) — CA-9
-//   - tras firma exitosa, editMessageReplyMarkup para quitar botones — CA-10
+//   - tras firma exitosa, editMessageText sobre el mensaje original — CA-10
 //   - callback de usuario no autorizado: se responde el toast, NO se edita
 // =============================================================================
 'use strict';
@@ -54,7 +54,11 @@ const CBQ = {
     id: 'cbq-1',
     data: 'abcabcabcabcabca',
     from: { id: 111222333, first_name: 'Leo' },
-    message: { message_id: 42, chat: { id: 111222333 } },
+    message: {
+        message_id: 42,
+        chat: { id: 111222333 },
+        text: 'Gate build · issue #4579 · tenant intrale · fase dev',
+    },
 };
 
 test('enqueueMessage deriva un update.callback_query a handleCallbackQuery', async () => {
@@ -75,7 +79,7 @@ test('enqueueMessage deriva un update.callback_query a handleCallbackQuery', asy
     resetDeps();
 });
 
-test('firma exitosa: answerCallbackQuery + editMessageReplyMarkup (CA-9/CA-10)', async () => {
+test('firma exitosa: answerCallbackQuery + editMessageText del mensaje original (CA-9/CA-10)', async () => {
     const calls = installFakeTransport();
     installFakeGate({ ok: true, transitioned: true, editMessage: true, toast: '✅ Aprobado', action: 'approve', issue: 4579 });
 
@@ -83,7 +87,14 @@ test('firma exitosa: answerCallbackQuery + editMessageReplyMarkup (CA-9/CA-10)',
 
     const methods = calls.map(c => c.method);
     assert.ok(methods.includes('answerCallbackQuery'), 'debe cortar el spinner');
-    assert.ok(methods.includes('editMessageReplyMarkup'), 'debe quitar los botones consumidos');
+    assert.ok(methods.includes('editMessageText'), 'debe editar el mensaje original con la constancia');
+    assert.ok(!methods.includes('sendMessage'), 'no debe publicar la constancia como mensaje nuevo');
+    const edit = calls.find(c => c.method === 'editMessageText');
+    assert.equal(edit.params.chat_id, 111222333);
+    assert.equal(edit.params.message_id, 42);
+    assert.match(edit.params.text, /Gate build · issue #4579/);
+    assert.match(edit.params.text, /Firmado por Leo/);
+    assert.deepEqual(edit.params.reply_markup, { inline_keyboard: [] });
     // el answer lleva el callback_query_id correcto
     const answer = calls.find(c => c.method === 'answerCallbackQuery');
     assert.equal(answer.params.callback_query_id, 'cbq-1');
@@ -98,7 +109,8 @@ test('callback no autorizado: responde toast pero NO edita el mensaje', async ()
 
     const methods = calls.map(c => c.method);
     assert.ok(methods.includes('answerCallbackQuery'), 'CA-9: siempre responde');
-    assert.ok(!methods.includes('editMessageReplyMarkup'), 'no edita si no hubo transición');
+    assert.ok(!methods.includes('editMessageText'), 'no edita si no hubo transición');
+    assert.ok(!methods.includes('editMessageReplyMarkup'), 'no remueve botones si no hubo transición');
     const answer = calls.find(c => c.method === 'answerCallbackQuery');
     assert.match(answer.params.text, /No autorizado/);
     resetDeps();
@@ -120,6 +132,7 @@ test('rechazo (expired) igual corta el spinner sin editar', async () => {
 
     const methods = calls.map(c => c.method);
     assert.ok(methods.includes('answerCallbackQuery'));
+    assert.ok(!methods.includes('editMessageText'));
     assert.ok(!methods.includes('editMessageReplyMarkup'));
     resetDeps();
 });

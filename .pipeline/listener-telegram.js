@@ -348,9 +348,47 @@ async function answerCallbackQuery(callbackQueryId, text) {
   }
 }
 
-async function removeInlineKeyboard(chatId, messageId, footer) {
-  // CA-10: tras firma exitosa, quitar los botones y dejar constancia. Editamos
-  // el texto (append de una línea de firma) y removemos el reply_markup.
+async function removeInlineKeyboard(message, footer) {
+  const chatId = message?.chat?.id;
+  const messageId = message?.message_id;
+  const originalText = typeof message?.text === 'string' ? message.text : null;
+  const originalCaption = typeof message?.caption === 'string' ? message.caption : null;
+  const signedText = footer
+    ? `${(originalText || originalCaption || '').trim()}\n\n${footer}`.trim().slice(0, 4096)
+    : null;
+
+  // CA-10: tras firma exitosa, quitar los botones y dejar constancia editando el
+  // mensaje original. No publicamos un mensaje nuevo para la constancia.
+  if (signedText && originalText) {
+    try {
+      await deps.telegramRequest('editMessageText', {
+        chat_id: chatId,
+        message_id: messageId,
+        text: signedText,
+        reply_markup: { inline_keyboard: [] },
+      });
+      return;
+    } catch (e) {
+      log(`Error en editMessageText: ${e.message}`);
+    }
+  }
+
+  if (signedText && originalCaption) {
+    try {
+      await deps.telegramRequest('editMessageCaption', {
+        chat_id: chatId,
+        message_id: messageId,
+        caption: signedText.slice(0, 1024),
+        reply_markup: { inline_keyboard: [] },
+      });
+      return;
+    } catch (e) {
+      log(`Error en editMessageCaption: ${e.message}`);
+    }
+  }
+
+  // Fallback para mensajes sin texto/caption o si Telegram rechaza la edición:
+  // al menos deshabilitamos los botones consumidos.
   try {
     await deps.telegramRequest('editMessageReplyMarkup', {
       chat_id: chatId,
@@ -359,11 +397,6 @@ async function removeInlineKeyboard(chatId, messageId, footer) {
     });
   } catch (e) {
     log(`Error en editMessageReplyMarkup: ${e.message}`);
-  }
-  if (footer) {
-    try {
-      await deps.telegramRequest('sendMessage', { chat_id: chatId, text: footer });
-    } catch { /* best-effort */ }
   }
 }
 
@@ -400,8 +433,7 @@ async function handleCallbackQuery(cbq) {
     const actorName = cbq.from?.first_name || cbq.from?.id || 'operador';
     const hora = new Date().toISOString().replace('T', ' ').slice(0, 16);
     await removeInlineKeyboard(
-      cbq.message.chat?.id,
-      cbq.message.message_id,
+      cbq.message,
       `🖊️ Firmado por ${actorName} · ${hora} — ${result.toast}`
     );
   }
