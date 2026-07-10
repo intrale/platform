@@ -613,6 +613,8 @@ function initWavesFromPartial(opts = {}) {
     // acciones autónomas destructivas. Por eso no requiere confirmación: el
     // "reset de progreso/identidad" que GATE 3 protege no puede ocurrir aquí.
     // Se conserva el audit (safeAppendAction) para la traza forense.
+    // (#4572 rebote rev-1: idéntico enfoque; main ya removió el enforcement
+    //  bloqueante mal ubicado en este path — este commit queda sin delta funcional.)
     try {
         require('../lib/kernel-actions-audit').safeAppendAction({
             action: 'reseed-wave', impact: 'alto',
