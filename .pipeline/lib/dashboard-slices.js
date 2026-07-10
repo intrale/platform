@@ -1645,6 +1645,12 @@ function pipelineSlice(state, ctx) {
             stale,
             blockerSkill: stale ? blockerSkill : null,
             blockerAgeMin: stale ? blockerAgeMin : 0,
+            // #4640 — dependencias que bloquean al issue (campo aditivo).
+            // Fuente canónica: state.blockedIssues.blockedBy (poblado en
+            // dashboard.js desde blocked-issues.json vía dep-resolver, el
+            // MISMO map que consume el handler `wave`). El frontend pinta el
+            // badge 🛑 exclusivamente desde acá, sin re-derivar de labels.
+            blockedBy: (state.blockedIssues && state.blockedIssues.blockedBy && state.blockedIssues.blockedBy[String(issueId)]) || null,
         };
         for (const [faseKey, entries] of Object.entries(data.fases || {})) {
             for (const e of entries) {
