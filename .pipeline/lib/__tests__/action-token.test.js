@@ -88,11 +88,40 @@ test('sign rechaza action fuera de allowlist e issue inválido', () => {
     assert.throws(() => t.sign({ issue: 'x', action: 'unblock' }), /issue inválido/);
 });
 
-test('ACTION_ALLOWLIST contiene exactamente las 4 acciones (sin pausar)', () => {
+test('ACTION_ALLOWLIST contiene las acciones needs-human + las de firma #4579', () => {
     assert.deepEqual([...ACTION_ALLOWLIST].sort(),
-        ['devolver-definicion', 'mas-contexto', 'priorizar', 'unblock']);
+        ['adjust-definicion', 'approve', 'devolver-definicion', 'mas-contexto',
+         'priorizar', 'reject', 'unblock']);
     assert.equal(isValidIssue(999999), true);
     assert.equal(isValidIssue(1000000), false);
+});
+
+// --- #4579: acciones de firma del operador (approve/reject/adjust-definicion) --
+
+test('sign/verify aceptan las nuevas acciones de firma y devuelven el nonce', () => {
+    for (const action of ['approve', 'reject', 'adjust-definicion']) {
+        const t = createTokenSigner({ secret: SECRET, nonceFile: tmpNonceFile() });
+        const token = t.sign({ issue: 4579, action });
+        const r = t.verify(token);
+        assert.equal(r.ok, true, `debería aceptar ${action}`);
+        assert.equal(r.action, action);
+        assert.equal(r.issue, 4579);
+        // El nonce consumido se devuelve para el audit de #4579 (no el token completo).
+        assert.ok(typeof r.nonce === 'string' && r.nonce.length > 0);
+    }
+});
+
+test('#4579: doble-tap de una firma approve → replayed; token vencido → expired', () => {
+    let clock = 2_000_000;
+    const t = createTokenSigner({ secret: SECRET, nonceFile: tmpNonceFile(), ttlMs: 1000, now: () => clock });
+    // doble-tap
+    const token = t.sign({ issue: 4579, action: 'approve' });
+    assert.equal(t.verify(token).ok, true);
+    assert.equal(t.verify(token).reason, 'replayed');
+    // expirado
+    const token2 = t.sign({ issue: 4579, action: 'reject' });
+    clock += 5000;
+    assert.equal(t.verify(token2).reason, 'expired');
 });
 
 test('sin secreto inyectado, resuelve el secreto desde TELEGRAM_BOT_TOKEN (path producción)', () => {
