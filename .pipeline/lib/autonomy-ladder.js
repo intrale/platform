@@ -163,7 +163,14 @@ function assertHumanSource(entry) {
  *   - `type === 'calibracion_muestra'`,
  *   - `fuente === 'decision_humana'` (CA-7, defensa en profundidad),
  *   - mismo `bucket`,
- *   - dentro de la ventana de decay (CA-8): `created_at >= now - decay_dias`.
+ *   - dentro de la ventana de decay (CA-8): `created_at >= now - decay_dias`,
+ *   - posteriores a la última REVOCACION del bucket (CA-9 revocable): el
+ *     LECTOR honra las entradas `type === 'revocacion'` del mismo chain
+ *     (patrón permission-validator.js). Una revocación explícita del operador
+ *     descarta TODA muestra con `created_at <= ultimaRevocacion`, obligando a
+ *     re-acumular N muestras nuevas post-revoke para volver a calibrar. Sin
+ *     este filtro, `revoke()` sería fail-open (OWASP A01): dejaría la traza
+ *     pero el bucket seguiría auto-aprobando.
  *
  * @param {object} args
  * @param {string} args.chainFile
@@ -171,7 +178,7 @@ function assertHumanSource(entry) {
  * @param {object} args.config — `{ decay_dias }`.
  * @param {number} [args.nowMs]
  * @param {object} [args.auditImpl]
- * @returns {{ bucket: string, muestras: number, acuerdos: number, acuerdo_pct: number, en_ventana: number, descartadas_decay: number }}
+ * @returns {{ bucket: string, muestras: number, acuerdos: number, acuerdo_pct: number, en_ventana: number, descartadas_decay: number, descartadas_revocacion: number, ultima_revocacion: (number|null) }}
  */
 function computeBucketStats({ chainFile, bucket, config = {}, nowMs, auditImpl } = {}) {
     const _audit = auditImpl || audit;
@@ -191,13 +198,34 @@ function computeBucketStats({ chainFile, bucket, config = {}, nowMs, auditImpl }
         all = []; // FS ilegible acá ⇒ 0 muestras (el fail-closed lo hace el gate).
     }
 
+    // CA-9 (revocable): el LECTOR honra las revocaciones del mismo chain. Primero
+    // se busca el created_at de la ÚLTIMA revocación humana del bucket. Toda
+    // muestra en/antes de ese instante queda invalidada (append-only: no se borra
+    // nada, se ignora al recomputar). Es el corte que hace efectiva la revocación.
+    let ultimaRevocacion = null;
+    for (const e of all) {
+        if (!e || e.type !== ENTRY_TYPE.REVOCACION) continue;
+        if (e.fuente !== FUENTE_HUMANA) continue; // solo revocaciones humanas (CA-7).
+        if (String(e.bucket) !== key) continue;
+        if (typeof e.created_at !== 'number') continue;
+        if (ultimaRevocacion === null || e.created_at > ultimaRevocacion) {
+            ultimaRevocacion = e.created_at;
+        }
+    }
+
     let muestras = 0;
     let acuerdos = 0;
     let descartadasDecay = 0;
+    let descartadasRevocacion = 0;
     for (const e of all) {
         if (!e || e.type !== ENTRY_TYPE.MUESTRA) continue;
         if (e.fuente !== FUENTE_HUMANA) continue; // CA-7 defensa en profundidad.
         if (String(e.bucket) !== key) continue;
+        // CA-9: muestra anterior o simultánea a la revocación ⇒ invalidada.
+        if (ultimaRevocacion !== null && typeof e.created_at === 'number' && e.created_at <= ultimaRevocacion) {
+            descartadasRevocacion++;
+            continue;
+        }
         if (decayCutoff !== null && typeof e.created_at === 'number' && e.created_at < decayCutoff) {
             descartadasDecay++;
             continue; // CA-8: fuera de ventana ⇒ no cuenta.
@@ -214,6 +242,8 @@ function computeBucketStats({ chainFile, bucket, config = {}, nowMs, auditImpl }
         acuerdo_pct: acuerdoPct,
         en_ventana: muestras,
         descartadas_decay: descartadasDecay,
+        descartadas_revocacion: descartadasRevocacion,
+        ultima_revocacion: ultimaRevocacion,
     };
 }
 
@@ -283,7 +313,11 @@ function resolveBucket({ chainFile, bucket, config = {}, nowMs, auditImpl } = {}
 /**
  * Registra una revocación explícita del operador en el mismo audit-log tamper-
  * evident (CA-9 revocable + CA-12 trazabilidad). No borra muestras (append-
- * only): deja constancia auditable de la revocación manual.
+ * only): deja constancia auditable de la revocación manual y, gracias a que
+ * `computeBucketStats` honra esta entrada, invalida toda muestra en/antes de
+ * `created_at` — el bucket vuelve a `calibrado: false` hasta re-acumular N
+ * muestras nuevas de acuerdo posteriores a la revocación (surte efecto, no es
+ * sólo una traza).
  *
  * @param {object} args
  * @param {string} args.chainFile

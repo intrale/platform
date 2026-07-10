@@ -200,6 +200,71 @@ test('revoke exige operador humano', () => {
 });
 
 // ----------------------------------------------------------------------------
+// CA-9 · la revocación explícita SURTE EFECTO (no fail-open): el lector honra
+//        la entrada REVOCACION y descarta las muestras previas.
+// ----------------------------------------------------------------------------
+
+test('CA-9 · revoke() explícito des-calibra el bucket (no queda auto-aprobando)', () => {
+    const chain = tmpChain();
+    // Bucket calibrado: 6/6 acuerdo ⇒ calibrado true antes de revocar.
+    for (let i = 0; i < 6; i++) {
+        recordHumanDecision({ chainFile: chain, bucket: BUCKET, issue: i, sugerencia: 'aprobar', decision: 'aprobar', operador: 'leitolarreta', nowMs: T0 + i });
+    }
+    assert.strictEqual(resolveBucket({ chainFile: chain, bucket: BUCKET, config: CFG, nowMs: T0 + 10 }).calibrado, true);
+
+    // El operador revoca (drift / sospecha de envenenamiento).
+    revoke({ chainFile: chain, bucket: BUCKET, operador: 'leitolarreta', motivo: 'sospecha de drift', nowMs: T0 + 20 });
+
+    // Tras revoke: TODAS las muestras previas quedan invalidadas ⇒ NO calibrado.
+    const res = resolveBucket({ chainFile: chain, bucket: BUCKET, config: CFG, nowMs: T0 + 30 });
+    assert.strictEqual(res.calibrado, false, 'revoke() debe des-calibrar el bucket (fail-closed)');
+    assert.match(res.razon, /sub-muestreo/);
+    const stats = computeBucketStats({ chainFile: chain, bucket: BUCKET, config: CFG, nowMs: T0 + 30 });
+    assert.strictEqual(stats.muestras, 0, 'ninguna muestra previa a la revocación cuenta');
+    assert.strictEqual(stats.descartadas_revocacion, 6);
+    assert.strictEqual(stats.ultima_revocacion, T0 + 20);
+});
+
+test('CA-9 · tras revoke() hacen falta N muestras nuevas post-revoke para re-calibrar', () => {
+    const chain = tmpChain();
+    for (let i = 0; i < 3; i++) {
+        recordHumanDecision({ chainFile: chain, bucket: BUCKET, issue: i, sugerencia: 'aprobar', decision: 'aprobar', operador: 'leitolarreta', nowMs: T0 + i });
+    }
+    revoke({ chainFile: chain, bucket: BUCKET, operador: 'leitolarreta', motivo: 'reset', nowMs: T0 + 100 });
+
+    // 2 muestras post-revoke < N=3 ⇒ sigue sin calibrar.
+    recordHumanDecision({ chainFile: chain, bucket: BUCKET, issue: 10, sugerencia: 'aprobar', decision: 'aprobar', operador: 'leitolarreta', nowMs: T0 + 200 });
+    recordHumanDecision({ chainFile: chain, bucket: BUCKET, issue: 11, sugerencia: 'aprobar', decision: 'aprobar', operador: 'leitolarreta', nowMs: T0 + 201 });
+    assert.strictEqual(resolveBucket({ chainFile: chain, bucket: BUCKET, config: CFG, nowMs: T0 + 300 }).calibrado, false);
+
+    // 3ra muestra post-revoke ⇒ re-calibra (solo cuentan las post-revoke).
+    recordHumanDecision({ chainFile: chain, bucket: BUCKET, issue: 12, sugerencia: 'aprobar', decision: 'aprobar', operador: 'leitolarreta', nowMs: T0 + 202 });
+    const res = resolveBucket({ chainFile: chain, bucket: BUCKET, config: CFG, nowMs: T0 + 300 });
+    assert.strictEqual(res.calibrado, true, 'con N muestras nuevas post-revoke vuelve a calibrar');
+    assert.strictEqual(res.muestras, 3);
+});
+
+test('CA-9 · muestra exactamente simultánea a la revocación se descarta (cutoff inclusivo)', () => {
+    const chain = tmpChain();
+    recordHumanDecision({ chainFile: chain, bucket: BUCKET, issue: 1, sugerencia: 'aprobar', decision: 'aprobar', operador: 'leitolarreta', nowMs: T0 });
+    revoke({ chainFile: chain, bucket: BUCKET, operador: 'leitolarreta', nowMs: T0 });
+    const stats = computeBucketStats({ chainFile: chain, bucket: BUCKET, config: CFG, nowMs: T0 + 10 });
+    assert.strictEqual(stats.muestras, 0, 'created_at <= ultimaRevocacion se descarta');
+    assert.strictEqual(stats.descartadas_revocacion, 1);
+});
+
+test('CA-9 · una revocación de OTRO bucket no afecta al bucket target', () => {
+    const chain = tmpChain();
+    for (let i = 0; i < 3; i++) {
+        recordHumanDecision({ chainFile: chain, bucket: BUCKET, issue: i, sugerencia: 'aprobar', decision: 'aprobar', operador: 'leitolarreta', nowMs: T0 + i });
+    }
+    // Revocación en un bucket distinto: no debe tocar el nuestro.
+    revoke({ chainFile: chain, bucket: { fase: 'criterios', tipoIssue: 'app:client' }, operador: 'leitolarreta', nowMs: T0 + 50 });
+    const res = resolveBucket({ chainFile: chain, bucket: BUCKET, config: CFG, nowMs: T0 + 100 });
+    assert.strictEqual(res.calibrado, true, 'la revocación de otro bucket no des-calibra este');
+});
+
+// ----------------------------------------------------------------------------
 // Integridad de la chain tras muchas muestras
 // ----------------------------------------------------------------------------
 
