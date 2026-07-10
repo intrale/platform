@@ -14260,6 +14260,18 @@ function checkDesyncFlag() {
 // partial-pause (authorizedBy:'wave-promote').
 // =============================================================================
 function realignAllowlistToActiveWave(desync, opts = {}) {
+  // #4577 GATE 3 — INVARIANTE log-antes-de-mutar (RS-2): registrar el realign
+  // de la allowlist a la ola activa ANTES de delegar la mutación (incidente
+  // #4566, cambio de cohorte de la ola). Best-effort: el audit nunca bloquea el
+  // realign. La resolución de política (wait-confirmation electiva) la consume
+  // el caller vía `lib/kernel-action-policy.resolvePolicy('realign-allowlist')`.
+  try {
+    require('./lib/kernel-actions-audit').safeAppendAction({
+      action: 'realign-allowlist', impact: 'alto',
+      reason: `realignAllowlistToActiveWave: converger allowlist ← ola activa (desync=${desync && desync.classification ? desync.classification : 'n/a'})`,
+      authorizedBy: 'wave-promote',
+    });
+  } catch {}
   // #4436 — el algoritmo de realineación se extrajo a `lib/wave-dispatch.js`
   // para reusarlo desde el dashboard (relanzar despacho de la ola activa) sin
   // duplicar lógica. El Pulpo delega manteniendo su `authorizedBy:'wave-promote'`

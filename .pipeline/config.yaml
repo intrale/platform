@@ -1294,6 +1294,49 @@ deliverable_gate:
   kill_switch: false
   gate_mode: dry-run
 
+# =============================================================================
+# GATE 3 — Gobernanza de las acciones autónomas del kernel (#4577, épico #4570)
+# =============================================================================
+# El kernel se muta a sí mismo (re-seeds de ola, realigns de allowlist, flags de
+# cuota, auto-resolves de desync, reset del working tree) sobre su ESTADO
+# OPERATIVO (no código de producto). Los 3 incidentes del 2026-07-08 (#4565
+# quota-flag, #4566 realign, 3er reset del working tree) ocurrieron sin traza.
+#
+# GATE 3 instrumenta esos sitios contra el registro canónico
+# `.pipeline/audit/kernel-actions.jsonl` (hash-chain, log-antes-de-mutar) y una
+# capa de política por-acción. Módulos: `lib/kernel-actions-audit.js` (registro)
+# + `lib/kernel-action-policy.js` (política). Ambos con defaults seguros si esta
+# sección no existe — la instrumentación del registro corre SIEMPRE; la política
+# solo gobierna el modo notificar/confirmar.
+#
+# policy: modo por-acción (NO global).
+#   - notify-and-proceed: aplica la acción y notifica al operador (recovery
+#     crítico — no bloquear el destrabe).
+#   - wait-confirmation: espera confirmación del operador antes de aplicar
+#     (electivas — realign/reseed que resetean progreso/cohorte).
+#
+# timeout_ms: ventana de espera en modo wait-confirmation (default 900000 = 15min).
+# timeout_fallback: qué hacer al vencer el timeout sin respuesta del operador
+#   (CA-6 / anti-deadlock). `proceed` aplica igual; `abort` NO aplica (deja el
+#   estado como estaba). Default: abort para electivas, proceed para recovery.
+gates:
+  gate3:
+    policy:
+      realign-allowlist:  wait-confirmation
+      reseed-wave:        wait-confirmation
+      quota-flag:         notify-and-proceed
+      worktree-reset:     notify-and-proceed
+      desync-autoresolve: notify-and-proceed
+    timeout_ms:
+      realign-allowlist:  900000
+      reseed-wave:        900000
+    timeout_fallback:
+      realign-allowlist:  abort
+      reseed-wave:        abort
+      quota-flag:         proceed
+      worktree-reset:     proceed
+      desync-autoresolve: proceed
+
 # #3488 (Spike #3378 H2) — Planificación multi-ola del skill /planner.
 #
 # Capacidad por ola: cuántos issues máximos entran cuando el operador ejecuta

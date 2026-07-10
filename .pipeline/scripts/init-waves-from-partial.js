@@ -594,6 +594,18 @@ function initWavesFromPartial(opts = {}) {
         };
     }
 
+    // #4577 GATE 3 — INVARIANTE log-antes-de-mutar (RS-2): registrar el re-seed
+    // de ola ANTES del write atómico de waves.json (un re-seed puede resetear
+    // progreso/identidad de la ola). Best-effort: el audit nunca bloquea el seed.
+    try {
+        require('../lib/kernel-actions-audit').safeAppendAction({
+            action: 'reseed-wave', impact: 'alto',
+            reason: `initWavesFromPartial: seed ola #${waveNumber} "${name}" con ${partial.allowedIssues.length} issue(s)` +
+                (preservingIdentity ? ' (identidad recuperada #4532)' : ' (minteo nuevo)'),
+            authorizedBy: 'kernel:auto',
+        });
+    } catch {}
+
     try {
         waves.atomicWriteFile(wavesFile(), JSON.stringify(newState, null, 2));
         waves.invalidateCache();
