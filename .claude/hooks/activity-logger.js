@@ -9,6 +9,24 @@ const { execSync } = require("child_process");
 let agentRegistry = null;
 try { agentRegistry = require("./agent-registry"); } catch (e) { /* módulo no disponible */ }
 
+// Liveness compartido (#4622): fuente única de "¿el pid vive y es quién dice?".
+// Se importa el helper de `.pipeline/lib` para NO reimplementar la lógica en el
+// hook. Si por alguna razón no está disponible, caemos a un shim sobre el
+// `isPidAlive` local (hoisted) para que el hook nunca crashee.
+let liveness = null;
+try { liveness = require("../../.pipeline/lib/process-liveness"); } catch (e) { /* fallback abajo */ }
+if (!liveness) {
+    liveness = {
+        isProcessAlive: (pid) => isPidAlive(pid),
+        getProcessStartTime: () => null, // sin token de identidad → lector cae a solo-pid
+        resolveHeartbeatOwner: (recordedPid, currentPid) => {
+            if (recordedPid && isPidAlive(recordedPid)) return recordedPid;
+            if (currentPid && isPidAlive(currentPid)) return currentPid;
+            return null;
+        },
+    };
+}
+
 // Resolver REPO_ROOT al repo principal (no al worktree)
 function resolveMainRepoRoot() {
     const candidate = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
@@ -433,6 +451,24 @@ function checkZombieSessions() {
                         fs.writeFileSync(tmpPath, JSON.stringify(session, null, 2) + "\n", "utf8");
                         fs.renameSync(tmpPath, filePath);
                         zombieCount++;
+                        // #4622 CA-3: al invalidar una sesión fantasma (pid muerto),
+                        // invalidar también su latido para que ningún lector lo vea
+                        // vivo hasta el próximo barrido. Es el combustible del
+                        // "escritor huérfano": sin sesión activa no se reescribe.
+                        try {
+                            const m = String(session.branch || "").match(/^agent\/(\d+)/);
+                            if (m) {
+                                const hb = path.join(REPO_ROOT, ".claude", "hooks", "agent-" + m[1] + ".heartbeat");
+                                if (fs.existsSync(hb)) {
+                                    // Sólo invalidar si el latido apunta a un pid muerto:
+                                    // otra sesión VIVA del mismo issue puede ser su dueña
+                                    // legítima (no le pisamos el latido).
+                                    let hbPidDead = true;
+                                    try { hbPidDead = !isPidAlive(JSON.parse(fs.readFileSync(hb, "utf8")).pid); } catch (e) {}
+                                    if (hbPidDead) fs.renameSync(hb, hb + ".stale");
+                                }
+                            }
+                        } catch (e) { /* best-effort */ }
                     }
                 }
             } catch(e) { /* ignorar errores por archivo */ }
@@ -889,6 +925,16 @@ function updateSession(sessionId, ts, toolName, target, toolInput, usage) {
                         if (Date.now() - stat.mtimeMs < HEARTBEAT_INTERVAL_MS) shouldWriteHb = false;
                     }
                 } catch (e) {}
+                // ─── Guard escritor huérfano (#4622, CA-2) ──────────
+                // NUNCA refrescar el latido con un pid muerto: eso fabrica el
+                // "heartbeat zombi" (latido fresco de un agente ya muerto) que
+                // traba la ola. El dueño real de este latido es el proceso vivo
+                // que corre este hook (process.ppid). Preferimos el pid grabado
+                // en la sesión SOLO si sigue vivo; si murió, caemos al proceso
+                // vivo actual; si no hay ningún pid vivo asociado, NO escribimos
+                // (el latido caduca y el reconciler/coordinator relanza la fase).
+                const ownerPid = liveness.resolveHeartbeatOwner(session.pid, process.ppid);
+                if (!ownerPid) shouldWriteHb = false;
                 if (shouldWriteHb) {
                     try {
                         fs.writeFileSync(hbFile, JSON.stringify({
@@ -896,7 +942,11 @@ function updateSession(sessionId, ts, toolName, target, toolInput, usage) {
                             session: sessionId.substring(0, 8),
                             ts: new Date().toISOString(),
                             branch: session.branch,
-                            pid: session.pid || process.ppid || null
+                            pid: ownerPid,
+                            // Token de identidad anti-reuso de PID (#4622, SEC-1):
+                            // la marca de creación del proceso dueño. El lector la
+                            // re-verifica contra el OS antes de considerar vivo.
+                            pid_started_at: liveness.getProcessStartTime(ownerPid)
                         }), "utf8");
                     } catch (e) { /* no bloquear hook */ }
                 }

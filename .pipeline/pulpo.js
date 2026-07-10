@@ -185,6 +185,9 @@ const { resolveReboteDestino } = require('./lib/rebote-destino');
 const partialPauseDeps = require('./lib/partial-pause-deps');
 // #4614 — self-healing de fases varadas (reconciler).
 const { runStuckPhaseReconciler } = require('./lib/stuck-phase-reconciler-runner');
+// #4622 — liveness real del pid + identidad (anti-heartbeat-zombi). Fuente única
+// compartida con canonical-facts y el hook activity-logger.
+const processLiveness = require('./lib/process-liveness');
 // #2801 — emit session:start/end por cada lanzamiento de agente Claude (LLM)
 // para que el aggregator pueda contabilizar tokens consumidos. Los skills
 // determinísticos (delivery, builder, linter, tester) ya emiten por su cuenta.
@@ -14710,7 +14713,26 @@ function runStuckReconcilerTick() {
         } catch { return false; }
       },
       isPaused: () => { try { return fs.existsSync(PAUSE_FILE); } catch { return false; } },
-      livenessOk: (name, mtimeMs) => (Date.now() - mtimeMs) < STUCK_STALE_MS, // trabajando reciente = vivo
+      // #4622 (CA-4): un `trabajando/` reciente ya NO alcanza como prueba de vida.
+      // Cruzamos el latido `agent-<issue>.heartbeat`: si su pid está muerto (o su
+      // identidad no matchea por reuso de PID), el skill NO cuenta como vivo → el
+      // reconciler lo trata como fase varada y decide requeue/escalate. Si no hay
+      // latido legible, caemos al criterio de mtime (compat: work-item recién
+      // creado que todavía no escribió su primer heartbeat).
+      livenessOk: (name, mtimeMs) => {
+        const recent = (Date.now() - mtimeMs) < STUCK_STALE_MS;
+        if (!recent) return false; // viejo → muerto, sin importar el latido
+        const issue = String(name).split('.')[0];
+        const hbPath = path.join(ROOT, '.claude', 'hooks', `agent-${issue}.heartbeat`);
+        let hb;
+        try { hb = JSON.parse(fs.readFileSync(hbPath, 'utf8')); }
+        catch { return recent; } // sin latido legible → mtime manda (compat)
+        return processLiveness.isAgentAlive(hb && hb.pid, {
+          startedAt: hb && hb.pid_started_at,
+          branch: hb && hb.branch,
+          session: hb && hb.session,
+        });
+      },
       loadRetryState: () => { try { return JSON.parse(fs.readFileSync(STUCK_STATE_FILE, 'utf8')); } catch { return {}; } },
       saveRetryState: (s) => { try { fs.writeFileSync(STUCK_STATE_FILE, JSON.stringify(s, null, 2)); } catch { /* best-effort */ } },
       requeueWorkItem: (p, f, skill, issue) => {

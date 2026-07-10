@@ -508,6 +508,13 @@ const CANONICAL_FACTS = {
             const proc = (impls && typeof impls.processCheck === 'function')
                 ? impls.processCheck
                 : require('./sherlock-independent-verifier')._defaultProcessCheck;
+            // #4622 (SEC-1): además de pid vivo, cruzar IDENTIDAD (marca de
+            // creación del proceso) para no contar como vivo un pid RECICLADO por
+            // Windows. `isAgentAlive` re-verifica `pid_started_at` del latido
+            // contra el OS. `startTimeProbe` es inyectable para tests.
+            const liveness = require('./process-liveness');
+            const startTimeProbe = (impls && typeof impls.startTimeProbe === 'function')
+                ? impls.startTimeProbe : undefined;
             const root = path.resolve(pipelineRoot());
             const hbRoot = heartbeatRoot();
             const cfg = loadPipelineConfig();
@@ -523,11 +530,17 @@ const CANONICAL_FACTS = {
                         if (!m) continue; // nombres no `<issue>.<skill>` se ignoran (SEC)
                         const issue = m[1];
                         try {
+                            // SEC-4: parseo defensivo; latido malformado → cae al
+                            // catch → NO cuenta como vivo (fail-safe hacia muerto).
                             const hb = JSON.parse(_fs.readFileSync(
                                 path.join(hbRoot, `agent-${issue}.heartbeat`), 'utf8'));
-                            const pid = Number(hb && hb.pid);
-                            if (Number.isInteger(pid) && pid > 0 && proc(pid)) live.add(issue);
-                        } catch { /* sin heartbeat / pid muerto → no cuenta */ }
+                            const alive = liveness.isAgentAlive(hb && hb.pid, {
+                                startedAt: hb && hb.pid_started_at,
+                                branch: hb && hb.branch,
+                                session: hb && hb.session,
+                            }, { processCheck: proc, startTimeProbe });
+                            if (alive) live.add(issue);
+                        } catch { /* sin heartbeat / pid muerto / malformado → no cuenta */ }
                     }
                 }
             }
