@@ -31,6 +31,7 @@ require('./lib/java-home-normalizer').normalizeJavaHome({
 });
 const { sanitize } = require('./sanitizer');
 const { sanitizeGithubPayload } = require('./lib/sanitize-payload');
+const gateLabelReconciler = require('./lib/gate-label-reconciler');
 
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 // #2994 — `GH_BIN_OVERRIDE` permite a los tests E2E de la cola apuntar a un
@@ -176,6 +177,18 @@ const defaultGhClient = {
       }
       throw e;
     }
+  },
+
+  getIssueLabels(issueNumber) {
+    const raw = cp.execFileSync(
+      GH_BIN,
+      ['issue', 'view', String(issueNumber), '--json', 'labels', '--repo', DEFAULT_REPO],
+      { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true },
+    );
+    const parsed = JSON.parse(raw || '{}');
+    return Array.isArray(parsed.labels)
+      ? parsed.labels.map((l) => (l && l.name) ? l.name : String(l)).filter(Boolean)
+      : [];
   },
 };
 
@@ -366,6 +379,65 @@ function _resetLabelCacheForTests() {
   labelCacheTs = 0;
 }
 
+function currentLabelsForIssue(issue, ghClient) {
+  if (!ghClient || typeof ghClient.getIssueLabels !== 'function') {
+    throw new Error('ghClient.getIssueLabels requerido para reconciliar labels QA');
+  }
+  const labels = ghClient.getIssueLabels(issue);
+  return Array.isArray(labels) ? labels.map(String) : [];
+}
+
+function applyGateLabelAction(data, ghClient) {
+  if (!data || !gateLabelReconciler.isGateLabel(data.label)) return false;
+
+  if (data.gate_reconciler === true) {
+    if (data.action === 'label') {
+      ensureLabels(data.label, ghClient);
+      ghClient.editIssue(data.issue, { addLabel: data.label });
+      log(`Gate label reconciliado "${data.label}" -> #${data.issue}`);
+      return true;
+    }
+    if (data.action === 'remove-label') {
+      ghClient.editIssue(data.issue, { removeLabel: data.label });
+      log(`Gate label reconciliado "${data.label}" removido de #${data.issue}`);
+      return true;
+    }
+  }
+
+  if (data.action === 'remove-label') {
+    data.discarded = 'legacy-gate-label-remove-blocked';
+    data.discarded_at = new Date().toISOString();
+    log(`Orden legacy bloqueada: #${data.issue} remove-label=${data.label} (labels QA son dominio del reconciliador)`);
+    return true;
+  }
+
+  if (data.action !== 'label') return false;
+
+  const currentLabels = currentLabelsForIssue(data.issue, ghClient);
+  const verdict = gateLabelReconciler.verdictForGateLabel(data.label);
+  const reconciliation = gateLabelReconciler.reconcileGateLabels({ currentLabels, verdict });
+  const actions = gateLabelReconciler.buildLabelActions({ issue: data.issue, reconciliation });
+  data.gate_reconciled = true;
+  data.gate_reconciled_at = new Date().toISOString();
+  data.gate_reconciled_from = currentLabels;
+  data.gate_reconciled_actions = actions;
+
+  for (const action of actions) {
+    if (action.action === 'remove-label') {
+      ghClient.editIssue(action.issue, { removeLabel: action.label });
+      log(`Gate label normalizado "${action.label}" removido de #${action.issue}`);
+    } else if (action.action === 'label') {
+      ensureLabels(action.label, ghClient);
+      ghClient.editIssue(action.issue, { addLabel: action.label });
+      log(`Gate label normalizado "${action.label}" -> #${action.issue}`);
+    }
+  }
+  if (actions.length === 0) {
+    log(`Gate label normalizado no-op: #${data.issue} target=${data.label}`);
+  }
+  return true;
+}
+
 // =============================================================================
 // #2994 — Guardia idempotente contra órdenes stale (TOCTOU mitigation)
 // =============================================================================
@@ -475,6 +547,7 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
             // moverá el JSON a `listo/` con el campo `discarded` ya seteado.
             break;
           }
+          if (applyGateLabelAction(data, ghClient)) break;
           ensureLabels(data.label, ghClient);
           ghClient.editIssue(data.issue, { addLabel: data.label });
           log(`Label "${data.label}" → #${data.issue}`);
@@ -482,6 +555,7 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
         }
 
         case 'remove-label':
+          if (applyGateLabelAction(data, ghClient)) break;
           ghClient.editIssue(data.issue, { removeLabel: data.label });
           log(`Label "${data.label}" removido de #${data.issue}`);
           break;
@@ -621,4 +695,5 @@ module.exports = {
   refreshLabelCache,
   ensureLabels,
   _resetLabelCacheForTests,
+  applyGateLabelAction,
 };

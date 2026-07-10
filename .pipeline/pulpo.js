@@ -49,6 +49,12 @@ const qaEvidenceGate = require('./lib/qa-evidence-gate');
 // #3383 — Gate visual pre-promoción build→verificacion. Default OFF
 // (PIPELINE_VISUAL_GATE_ENABLED=0). Activación gradual cuando #3381 esté en main.
 const visualGate = require('./lib/visual-gate');
+// #4572 — GATE 0: veredicto honesto de gates automáticos (dos baldes). Default
+// OFF (PIPELINE_GATE0_ENABLED=0). Libs puras del kernel: la clasificación y el
+// veredicto NO provienen del YAML del agente (SEC-R1 no self-report).
+const gateVerdict = require('./lib/gate-verdict');
+const gateLabelReconciler = require('./lib/gate-label-reconciler');
+const gateAuditLog = require('./lib/audit-log');
 // #2549 — Detección de bloqueo humano en motivos de rechazo + helpers de marker.
 // Evita relanzar al infinito skills cuyo rechazo es "esperando merge humano".
 const humanBlock = require('./lib/human-block');
@@ -4721,6 +4727,215 @@ function brazoBarrido(config) {
               } else {
                 log('barrido', `#${issue} visual-gate ✓ images=${decision.images} — promueve a verificacion`);
               }
+            }
+          }
+
+          // #4572 — GATE 0: veredicto honesto al completar `verificacion`.
+          // La fase `verificacion` ya aprobó (llegamos a promoción). GATE 0
+          // re-examina de forma DETERMINÍSTICA si el set de criterios incluye
+          // alguno *solo-humano* (visual/UX/"¿es lo que quiso el operador?").
+          // Si lo hay, el agente NO podía emitir un `passed` global honesto:
+          //   - se rutea a `requires-operator` (firma humana, GATE 2, #4571),
+          //   - se sustituye el `qa:passed` self-reportado por `qa:pending`
+          //     vía el dueño único de labels (SEC-R4),
+          //   - se retiene el issue (no promueve) hasta la firma.
+          // Si todos los criterios son máquina-verificables, el `pass` del
+          // agente se ratifica emitiendo `qa:passed` de forma determinística.
+          // Default OFF (PIPELINE_GATE0_ENABLED=0): con el flag apagado este
+          // bloque es INERTE y el pipeline se comporta igual que hoy (CA-8).
+          if (gateVerdict.shouldEvaluateGate0({ pipelineName, fromFase: fase, env: process.env })) {
+            const GATE0_AUDIT_FILE = path.join(PIPELINE, 'audit', 'gate-verdicts.jsonl');
+            const GATE0_MARKER = '<!-- gate0-requires-operator -->';
+            const gate0AuditActor = `pulpo:gate0:${fase}`;
+            // Helper local: registro encadenado, nunca tumba el barrido (SEC-R8).
+            const gate0Audit = (event, payload) => {
+              try {
+                gateAuditLog.appendChained({
+                  file: GATE0_AUDIT_FILE,
+                  entry: { event, issue: parseInt(issue), actor: gate0AuditActor, ...payload },
+                });
+              } catch (e) {
+                log('barrido', `#${issue} gate0 audit-log error (${event}): ${e.message}`);
+              }
+            };
+            const retainGate0FailClosed = (code, detail) => {
+              const waitingOperatorDir = path.join(fasePath(pipelineName, fase), 'waiting-operator');
+              const g0QueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+              const reason = `GATE 0 fail-closed: ${code}${detail ? ` (${detail})` : ''}`;
+              try {
+                fs.mkdirSync(g0QueueDir, { recursive: true });
+                fs.writeFileSync(
+                  path.join(g0QueueDir, `${issue}-gate0-failclosed-label-${Date.now()}.json`),
+                  JSON.stringify({ action: 'label', issue: parseInt(issue), label: 'qa:pending' }),
+                );
+                fs.writeFileSync(
+                  path.join(g0QueueDir, `${issue}-gate0-failclosed-comment-${Date.now()}.json`),
+                  JSON.stringify({
+                    action: 'comment',
+                    issue: parseInt(issue),
+                    body: [
+                      '<!-- gate0-fail-closed -->',
+                      '## GATE 0 retenido en modo fail-closed',
+                      '',
+                      reason,
+                      '',
+                      'El Pulpo no pudo emitir un veredicto firmable; la fase queda en `waiting-operator/` para recuperacion humana.',
+                    ].join('\n'),
+                  }),
+                );
+              } catch (e) {
+                log('barrido', `#${issue} gate0: error encolando fail-closed (${e.message})`);
+              }
+              for (const a of archivos) {
+                try {
+                  const current = readYamlSafe(a.path, 'gate0-fail-closed');
+                  writeYaml(a.path, {
+                    ...current,
+                    gate0_status: 'waiting-operator',
+                    gate0_fail_closed: true,
+                    gate0_fail_closed_reason: reason,
+                    gate0_fail_closed_at: new Date().toISOString(),
+                  });
+                  const dest = moveFile(a.path, waitingOperatorDir);
+                  gate0Audit('transition', { from: 'listo', to: 'waiting-operator', file: path.basename(dest), reason });
+                } catch (e) {
+                  log('barrido', `#${issue} gate0: error reteniendo en waiting-operator (${e.message})`);
+                  gate0Audit('transition-error', { from: 'listo', to: 'waiting-operator', reason: e.message });
+                }
+              }
+              try { sendTelegram(`GATE 0 fail-closed #${issue}: ${code}. Retenido en waiting-operator/.`); } catch {}
+            };
+            try {
+              // Datos del PREFLIGHT (cuerpo del issue), NUNCA del YAML del agente
+              // (SEC-R1). Fetch sync con timeout corto, igual que visual-gate.
+              let g0Body = '';
+              let g0Labels = getIssueInfo(issue).labels || [];
+              let g0Comments = [];
+              try {
+                ghThrottle();
+                const rawG0 = execSync(
+                  `"${GH_BIN}" issue view ${issue} --json body,labels,comments`,
+                  { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true },
+                );
+                const parsedG0 = JSON.parse(rawG0 || '{}');
+                g0Body = typeof parsedG0.body === 'string' ? parsedG0.body : '';
+                if (Array.isArray(parsedG0.labels)) {
+                  g0Labels = parsedG0.labels.map((l) => (l && l.name) ? l.name : l);
+                }
+                g0Comments = Array.isArray(parsedG0.comments) ? parsedG0.comments : [];
+              } catch (e) {
+                // Fail-CLOSED (SEC-R3): si no podemos leer los criterios no
+                // podemos garantizar un `pass` honesto → retenemos y avisamos.
+                log('barrido', `🔒 #${issue} gate0: fetch falló (${e.message}) — fail-closed, retiene promoción`);
+                gate0Audit('fetch-failed', { reason: e.message });
+                retainGate0FailClosed('fetch-failed', e.message);
+                continue;
+              }
+
+              const g0Criteria = gateVerdict.extractCriteria({ body: g0Body });
+              // La fase verificacion ya aprobó → gate automático = pass. El
+              // factor decisivo es la presencia de criterios solo-humano.
+              const g0 = gateVerdict.computeGateVerdict({
+                criteria: g0Criteria,
+                gateResults: { verificacion: 'pass' },
+              });
+              gate0Audit('verdict', {
+                verdict: g0.verdict,
+                humanOnlyCount: g0.humanOnlyCount,
+                criteriaCount: g0Criteria.length,
+                reason: g0.reason,
+              });
+
+              // Dueño único de labels (SEC-R4): reconciliación determinística.
+              const g0Rec = gateLabelReconciler.reconcileGateLabels({
+                currentLabels: g0Labels,
+                verdict: g0.verdict,
+              });
+              const g0Actions = gateLabelReconciler.buildLabelActions({ issue, reconciliation: g0Rec });
+              const g0QueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+              try {
+                fs.mkdirSync(g0QueueDir, { recursive: true });
+                for (const act of g0Actions) {
+                  fs.writeFileSync(
+                    path.join(g0QueueDir, `${issue}-gate0-${act.action}-${act.label.replace(/[^a-z0-9]/gi, '')}-${Date.now()}.json`),
+                    JSON.stringify(act),
+                  );
+                  gate0Audit('label', { action: act.action, label: act.label });
+                }
+              } catch (e) {
+                log('barrido', `#${issue} gate0: error encolando labels (${e.message})`);
+              }
+
+              if (g0.verdict === 'requires-operator') {
+                // Handoff a GATE 2 con conteo+checksum verificable (SEC-R5/CA-4).
+                const g0Handoff = gateVerdict.buildGate2Handoff({ humanOnly: g0.humanOnly });
+                const g0Integrity = gateVerdict.verifyHandoffIntegrity({
+                  handoff: g0Handoff,
+                  expectedCount: g0.humanOnlyCount,
+                });
+                gate0Audit('handoff', {
+                  count: g0Handoff.count,
+                  checksum: g0Handoff.checksum,
+                  integrity_ok: g0Integrity.ok,
+                });
+                if (!g0Integrity.ok) {
+                  // Truncado silencioso detectado → bloqueo explícito (SEC-R5).
+                  log('barrido', `🛑 #${issue} gate0 handoff INCONSISTENTE: ${g0Integrity.reason} — retiene y alerta`);
+                  sendTelegram(`🛑 #${issue} GATE 0: handoff a firma humana inconsistente (${g0Integrity.reason}). Retiene promoción.`);
+                }
+
+                // Comentario idempotente hacia el operador (GATE 2).
+                const alreadyPosted = Array.isArray(g0Comments)
+                  && g0Comments.some((c) => c && typeof c.body === 'string' && c.body.includes(GATE0_MARKER));
+                if (!alreadyPosted) {
+                  try {
+                    const listado = g0Handoff.criteria.map((c, i) => `${i + 1}. ${c.text}`).join('\n');
+                    const body = [
+                      GATE0_MARKER,
+                      '## 🔏 GATE 0 — requiere firma de operador',
+                      '',
+                      `Este issue tiene **${g0Handoff.count} criterio(s) solo-humano** que ningún gate automático puede validar. GATE 0 retiene la promoción hasta la firma del operador (GATE 2, épico #4570).`,
+                      '',
+                      '### Criterios solo-humano pendientes',
+                      listado || '_(sin detalle)_',
+                      '',
+                      `> Veredicto determinístico \`requires-operator\` · checksum \`${g0Handoff.checksum}\` · flag \`PIPELINE_GATE0_ENABLED=1\`.`,
+                    ].join('\n');
+                    fs.writeFileSync(
+                      path.join(g0QueueDir, `${issue}-gate0-comment-${Date.now()}.json`),
+                      JSON.stringify({ action: 'comment', issue: parseInt(issue), body }),
+                    );
+                  } catch (e) {
+                    log('barrido', `#${issue} gate0: error encolando comment (${e.message})`);
+                  }
+                } else {
+                  log('barrido', `#${issue} gate0 requires-operator — marker ya presente, skip comment`);
+                }
+
+                log('barrido', `🔒 #${issue} GATE 0 → requires-operator (humanOnly=${g0.humanOnlyCount}) — mueve a waiting-operator y retiene promoción a ${siguienteFase}`);
+                // Transición real del contrato #4571: listo/ → waiting-operator/.
+                const waitingOperatorDir = path.join(fasePath(pipelineName, fase), 'waiting-operator');
+                for (const a of archivos) {
+                  try {
+                    const dest = moveFile(a.path, waitingOperatorDir);
+                    gate0Audit('transition', { from: 'listo', to: 'waiting-operator', file: path.basename(dest) });
+                  } catch (e) {
+                    log('barrido', `#${issue} gate0: error moviendo a waiting-operator (${e.message})`);
+                    gate0Audit('transition-error', { from: 'listo', to: 'waiting-operator', reason: e.message });
+                  }
+                }
+                continue;
+              }
+
+              log('barrido', `#${issue} GATE 0 ✓ verdict=${g0.verdict} (criterios máquina-verificables=${g0Criteria.length}) — ratifica passed determinístico`);
+            } catch (e) {
+              // Defensa última: un bug de GATE 0 NUNCA debe tumbar el pulpo.
+              // Fail-CLOSED coherente con SEC-R3: retenemos y avisamos.
+              log('barrido', `🛑 #${issue} gate0 ERROR inesperado: ${e.message} — fail-closed, retiene`);
+              gate0Audit('error', { message: e.message });
+              try { sendTelegram(`🛑 #${issue} GATE 0 error inesperado (fail-closed, retiene): ${e.message}`); } catch {}
+              retainGate0FailClosed('unexpected-error', e.message);
+              continue;
             }
           }
 
