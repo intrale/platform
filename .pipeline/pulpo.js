@@ -5047,6 +5047,82 @@ function brazoBarrido(config) {
               continue;
             }
 
+            // #4574 — GATE 1 · Firma de Definición del operador (épico #4570,
+            // docs/pipeline/gates-firma-operador.md §3). Hermano del
+            // architect-signoff-gate: se invoca JUSTO antes de encolar "Ready"
+            // y retiene la admisión a `desarrollo` hasta que el operador FIRMA
+            // la definición (criterios + mockup). Reusa el patrón
+            // `architectGateBlocked`: try/catch que NUNCA tumba al pulpo, kill
+            // switch (operator_signoff.enabled) + gate_mode dry-run/enforce.
+            //
+            // La decisión se valida contra el audit hash-chain de firmas
+            // (`operator-signoff-gate.readSignatureState` → verifyChain), NO
+            // contra la mera presencia de un archivo de estado (security A08).
+            // Default OFF: con `enabled: false` el gate cortocircuita approve.
+            let operatorSignoffBlocked = false;
+            try {
+              const opSignoffCfg = (config && config.operator_signoff) || {};
+              if (opSignoffCfg.enabled === true) {
+                const operatorSignoffGate = require('./lib/operator-signoff-gate');
+                // Firmantes autorizados resueltos SERVER-SIDE desde credentials
+                // (env), nunca desde el issue/agente (security A01). Fail-closed:
+                // sin allowlist, ninguna firma es válida.
+                const { resolveOperatorAllowlist } = require('./lib/operator-gate');
+                const authorizedSigners = [...resolveOperatorAllowlist(process.env)];
+                let opIssueJson = null;
+                try {
+                  const raw = execSync(`${GH_BIN} issue view ${issue} --json number,body,createdAt,labels`,
+                    { cwd: ROOT, encoding: 'utf8', timeout: 8000, windowsHide: true });
+                  opIssueJson = JSON.parse(raw);
+                } catch (e) {
+                  log('barrido', `#${issue} operator-signoff-gate: ERROR cargando issue (${e.message}) — mode=${opSignoffCfg.gate_mode}`);
+                  if (opSignoffCfg.gate_mode === 'enforce') {
+                    operatorSignoffBlocked = true;
+                    sendTelegram(`🛑 #${issue} GATE 1 (firma definición, enforce) bloqueó promoción por error de carga: ${e.message}`);
+                  }
+                }
+                if (opIssueJson) {
+                  const opLabels = Array.isArray(opIssueJson.labels)
+                    ? opIssueJson.labels.map((l) => (l && l.name) ? l.name : l)
+                    : [];
+                  const opGateResult = operatorSignoffGate.evaluate({
+                    issue: { number: opIssueJson.number, createdAt: opIssueJson.createdAt, labels: opLabels },
+                    body: opIssueJson.body,
+                    config: opSignoffCfg,
+                    options: { authorizedSigners },
+                  });
+                  // En `enforce`, un block efectivo retiene la promoción. En
+                  // `dry-run`, decision siempre llega 'approve' (nunca bloquea).
+                  if (opGateResult.decision === 'block') {
+                    operatorSignoffBlocked = true;
+                    const routeTag = opGateResult.route ? ` [${opGateResult.route}]` : '';
+                    log('barrido', `#${issue} GATE 1 firma-definición BLOQUEÓ promoción (mode=${opGateResult.gate_mode})${routeTag}: ${opGateResult.reason}`);
+                    sendTelegram(`🛑 #${issue} GATE 1 (firma de definición) retuvo admisión a desarrollo${routeTag}: ${opGateResult.reason}`);
+                  } else {
+                    log('barrido', `#${issue} GATE 1 firma-definición ${opGateResult.gate_mode}: ${opGateResult.original_decision} (efectivo=${opGateResult.decision}) — ${opGateResult.reason}`);
+                  }
+                }
+              }
+            } catch (e) {
+              // Defensa última: si el gate revienta con un bug, NO debe tumbar al
+              // pulpo. En enforce avisamos y bloqueamos (fail-cerrado); en
+              // dry-run logueamos y seguimos.
+              const opMode = (config && config.operator_signoff && config.operator_signoff.gate_mode) || 'dry-run';
+              log('barrido', `#${issue} GATE 1 firma-definición ERROR inesperado: ${e.message} (mode=${opMode})`);
+              if (opMode === 'enforce') {
+                operatorSignoffBlocked = true;
+                sendTelegram(`🛑 #${issue} GATE 1 firma-definición ERROR inesperado (enforce → bloquea): ${e.message}`);
+              }
+            }
+
+            if (operatorSignoffBlocked) {
+              // Saltamos el enqueueing del label Ready: el issue queda completado
+              // en `definicion` pero SIN promoción a `desarrollo` hasta que el
+              // operador firme (o ajuste/re-defina). Retención fail-closed
+              // coherente con §12 del diseño (nunca auto-admite por timeout).
+              continue;
+            }
+
             const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
             const labelFile = path.join(ghQueueDir, `${issue}-ready-${Date.now()}.json`);
             fs.writeFileSync(labelFile, JSON.stringify({ action: 'label', issue: parseInt(issue), label: 'Ready' }));

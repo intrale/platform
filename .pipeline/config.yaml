@@ -1264,6 +1264,46 @@ architect:
   bot_login: architect-bot
 
 # =============================================================================
+# #4574 — GATE 1 · Firma de Definición del operador (épico #4570)
+# =============================================================================
+# Firma humana obligatoria al cerrar la fase `criterios` del pipeline
+# `definicion`, ANTES de admitir el issue a `desarrollo`. El gate retiene el
+# enqueue del label `Ready` hasta que el operador FIRMA la definición (criterios
+# + mockup) por el canal de firma (#4579). Es hermano del `architect:` gate.
+#
+# Diseño: docs/pipeline/gates-firma-operador.md (§3 GATE 1, §10.4 re-definición,
+# §12 fail-closed, §13 autoridad e integridad).
+# Módulo: .pipeline/lib/operator-signoff-gate.js
+#
+# Defaults fail-safe (rollout gradual, espeja architect:):
+#   - `enabled: false` → gate ni se invoca (cortocircuito, kill switch).
+#   - `gate_mode: dry-run` → cuando se active, evalúa y loguea pero NUNCA bloquea.
+#
+# Para activar el piloto:
+#   1. `enabled: true` con `gate_mode: dry-run` (observar barridos sin bloquear).
+#   2. Una vez validado el estado nuevo `waiting-operator-def`, `gate_mode:
+#      enforce` (retiene la admisión hasta la firma; NUNCA auto-admite por
+#      timeout — §12, fail-closed).
+#
+# `go_live_date`: ISO8601. Issues con `createdAt` anterior se grandfatherean
+# (aprueban sin exigir firma) para no paralizar el backlog legacy durante el
+# rollout.
+#
+# `preauthorized_classes`: opt-out pre-autorizado por el operador (§4). Lista de
+# LABELS: un issue con alguno de estos labels se admite sin firma. Esta lista es
+# READ-ONLY para el pipeline — SÓLO el operador humano la edita; ningún agente la
+# muta (security A01). Default vacía (todos los issues requieren firma).
+#
+# Autoridad del firmante (A01): el `chat_id` del operador NO va acá (es secreto);
+# se resuelve server-side desde credentials.json (`TELEGRAM_LEO_OPERATOR_CHAT_ID`)
+# y se inyecta al gate en runtime.
+operator_signoff:
+  enabled: false
+  gate_mode: dry-run
+  go_live_date: '2026-07-10T00:00:00Z'
+  preauthorized_classes: []
+
+# =============================================================================
 # #4502 — Gate de entregable obligatorio del PO al cerrar Definición
 # =============================================================================
 # Al promover `definicion/criterios → sizing`, el pulpo verifica que el agente
