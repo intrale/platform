@@ -122,6 +122,30 @@ const SCHEMA = {
             },
         },
 
+        // --- firma_operador: auto-aprobación de firma del operador (#4576) ---
+        //     ESTRICTO en claves críticas de seguridad (control de autonomía):
+        //     enabled/kill_switch (booleanos), modo (enum), umbrales numéricos
+        //     acotados. Un typo que tire una de estas la vuelve `required`
+        //     faltante; un valor del tipo/rango equivocado lo caza la validación.
+        //     Default seguro = firma humana; el schema NO permite que un valor
+        //     corrupto habilite auto-aprobación silenciosamente.
+        firma_operador: {
+            type: 'object',
+            additionalProperties: true,
+            required: ['enabled', 'kill_switch', 'modo'],
+            properties: {
+                enabled: { type: 'boolean' },
+                kill_switch: { type: 'boolean' },
+                modo: { type: 'string', enum: ['disabled', 'dry-run', 'enforce'] },
+                umbral_acuerdo_pct: { type: 'number', minimum: 0, maximum: 100 },
+                muestras_minimas: { type: 'integer', minimum: 1 },
+                decay_dias: { type: 'integer', minimum: 1 },
+                auditoria_pct: { type: 'number', minimum: 0, maximum: 100 },
+                // go_live_date: ISO date string o null (grandfathering off).
+                go_live_date: { type: ['string', 'null'] },
+            },
+        },
+
         // --- historico: frontera activo/histórico (#4136) -------------------
         historico: {
             type: 'object',
