@@ -124,8 +124,30 @@ function extractCriteria({ body = '' } = {}) {
   if (src.length === 0) return [];
   const out = [];
   const lines = src.split(/\r?\n/);
+  const HEADING_RE = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
+  const ACCEPTANCE_HEADING_RE = /\b(criterios?\s+de\s+aceptaci\S*n|acceptance\s+criteria)\b/i;
   const CHECKBOX_RE = /^\s*[-*]\s*\[([ xX])\]\s*(.+?)\s*$/;
+  let inAcceptanceSection = false;
+  let acceptanceLevel = 0;
+
   for (const line of lines) {
+    const heading = HEADING_RE.exec(line);
+    if (heading) {
+      const level = heading[1].length;
+      const title = heading[2].trim();
+      if (inAcceptanceSection && level <= acceptanceLevel) {
+        inAcceptanceSection = false;
+        acceptanceLevel = 0;
+      }
+      if (ACCEPTANCE_HEADING_RE.test(title)) {
+        inAcceptanceSection = true;
+        acceptanceLevel = level;
+      }
+      continue;
+    }
+
+    if (!inAcceptanceSection) continue;
+
     const m = CHECKBOX_RE.exec(line);
     if (!m) continue;
     const checked = m[1].toLowerCase() === 'x';

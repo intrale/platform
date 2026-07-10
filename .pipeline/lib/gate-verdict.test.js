@@ -45,6 +45,29 @@ test('shouldEvaluateGate0 sólo corre en desarrollo/verificacion con flag ON', (
   assert.strictEqual(shouldEvaluateGate0(), false);
 });
 
+test('extractCriteria no mezcla checklists operativas fuera de acceptance criteria', () => {
+  const body = [
+    '## Acceptance criteria',
+    '- [ ] CA real verificable con node --test',
+    '',
+    '## Pre-checklist (opcional)',
+    '- [ ] merge origin/main antes de pushear',
+    '- [ ] verificar que el diff no reimplementa visual-gate.js',
+  ].join('\n');
+  const crit = extractCriteria({ body });
+  assert.deepStrictEqual(crit.map((c) => c.text), ['CA real verificable con node --test']);
+});
+
+test('extractCriteria devuelve [] si no hay seccion explicita de aceptacion', () => {
+  const body = [
+    '## Pre-checklist',
+    '- [ ] merge origin/main',
+    '## Tests obligatorios',
+    '- [ ] node --test .pipeline/lib/gate-verdict.test.js',
+  ].join('\n');
+  assert.deepStrictEqual(extractCriteria({ body }), []);
+});
+
 // ----------------------------------------------------------------------------
 // classifyCriterion — clasificación por reglas (CA-2, CA-6, SEC-R2/R3)
 // ----------------------------------------------------------------------------
@@ -94,7 +117,7 @@ test('classifyCriterion trata prompt-injection como dato, no instrucción (SEC-R
 
 test('extractCriteria extrae checkboxes marcados y sin marcar', () => {
   const body = [
-    '## Criterios',
+    '## Criterios de aceptaciÃ³n',
     '- [ ] Ningún gate emite passed con criterios solo-humano',
     '- [x] Cierra #4568',
     '* [X] Otro criterio con asterisco',
@@ -116,7 +139,7 @@ test('extractCriteria devuelve [] sin argumentos', () => {
 });
 
 test('extractCriteria ignora checkbox con texto vacío', () => {
-  const crit = extractCriteria({ body: '- [ ]   \n- [x] real' });
+  const crit = extractCriteria({ body: '## Criterios de aceptaciÃ³n\n- [ ]   \n- [x] real' });
   assert.strictEqual(crit.length, 1);
   assert.strictEqual(crit[0].text, 'real');
 });

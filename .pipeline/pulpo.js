@@ -4865,9 +4865,18 @@ function brazoBarrido(config) {
                   log('barrido', `#${issue} gate0 requires-operator — marker ya presente, skip comment`);
                 }
 
-                log('barrido', `🔒 #${issue} GATE 0 → requires-operator (humanOnly=${g0.humanOnlyCount}) — retiene promoción a ${siguienteFase}`);
-                // Retener: archivar archivos evaluados y NO promover (waiting-operator).
-                for (const a of archivos) { try { moveFile(a.path, procesadoDir); } catch {} }
+                log('barrido', `🔒 #${issue} GATE 0 → requires-operator (humanOnly=${g0.humanOnlyCount}) — mueve a waiting-operator y retiene promoción a ${siguienteFase}`);
+                // Transición real del contrato #4571: listo/ → waiting-operator/.
+                const waitingOperatorDir = path.join(fasePath(pipelineName, fase), 'waiting-operator');
+                for (const a of archivos) {
+                  try {
+                    const dest = moveFile(a.path, waitingOperatorDir);
+                    gate0Audit('transition', { from: 'listo', to: 'waiting-operator', file: path.basename(dest) });
+                  } catch (e) {
+                    log('barrido', `#${issue} gate0: error moviendo a waiting-operator (${e.message})`);
+                    gate0Audit('transition-error', { from: 'listo', to: 'waiting-operator', reason: e.message });
+                  }
+                }
                 continue;
               }
 
