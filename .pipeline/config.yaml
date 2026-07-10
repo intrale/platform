@@ -1354,6 +1354,61 @@ operator_signoff:
   preauthorized_classes: []
 
 # =============================================================================
+# #4575 — GATE 2 · Firma de Aceptación del operador (épico #4570)
+# =============================================================================
+# Firma humana obligatoria al cerrar la fase `aprobacion` del pipeline
+# `desarrollo`, ANTES de promover a `entrega` (merge). Es el gate que habría
+# atajado #4531/#4500/#4532. Hermano de `operator_signoff:` (GATE 1) y del
+# `architect:` gate. Retiene la promoción `aprobacion → entrega` hasta que el
+# operador FIRMA la aceptación por el canal de firma (#4579).
+#
+# A DIFERENCIA de GATE 1 (que ancla la firma al `sha256(body)` de los criterios),
+# GATE 2 ancla la firma al **commit SHA** del HEAD que se va a mergear
+# (anti-TOCTOU firma↔merge, CA-3). Si el HEAD avanza tras firmar ⇒ firma inválida
+# ⇒ re-firma.
+#
+# Diseño: docs/pipeline/gates-firma-operador.md (§4.6 GATE 2, §11 matriz
+# auto-vs-gateado, §12 fail-closed, §13 autoridad e integridad).
+# Módulo: .pipeline/lib/operator-signature.js
+#
+# Defaults fail-safe (rollout gradual, espeja operator_signoff:/architect:):
+#   - `enabled: false` → gate ni se invoca (cortocircuito, kill switch).
+#   - `gate_mode: dry-run` → cuando se active, evalúa y loguea pero NUNCA bloquea.
+#
+# Para activar el piloto:
+#   1. `enabled: true` con `gate_mode: dry-run` (observar barridos sin bloquear).
+#   2. Una vez validado el estado nuevo `esperando-firma/`, `gate_mode: enforce`
+#      (retiene la promoción a `entrega` hasta la firma; NUNCA auto-promueve por
+#      timeout — §12, fail-closed).
+#
+# `go_live_date`: ISO8601. Issues con `createdAt` anterior se grandfatherean
+# (aprueban sin exigir firma) para no paralizar el backlog legacy en el rollout.
+#
+# `preauthorized_classes` (CA-6): opt-out por LABEL. Lista ESTÁTICA/versionada —
+# un issue con alguno de estos labels se promueve sin firma. READ-ONLY para el
+# pipeline: SÓLO el operador humano la edita; ningún agente la muta ni puede
+# auto-clasificarse como exento (A01). Default vacía (todos requieren firma).
+#
+# `nonce_ttl_seconds` (CA-5): validez del nonce de un solo uso. Clampeado a
+# [1, 86400] en el módulo (defensa anti-config-malicioso). Default 3600 (1h).
+#
+# `max_signature_rebotes` (CA-7): rechazos de firma antes de que el
+# circuit-breaker escale a `needs-human` (NUNCA auto-aprueba). Clampeado a
+# [1, 10] en el módulo. Default 3.
+#
+# Autoridad del firmante (A01/CA-4): el `chat_id` del operador NO va acá (es
+# secreto); se resuelve server-side desde `telegram.operator_chat_ids` +
+# credentials.json (`TELEGRAM_LEO_OPERATOR_CHAT_ID`) y se inyecta al gate en
+# runtime (`options.authorizedSigners`). NO se crea allowlist paralela.
+operator_signature:
+  enabled: false
+  gate_mode: dry-run
+  go_live_date: '2026-07-10T00:00:00Z'
+  preauthorized_classes: []
+  nonce_ttl_seconds: 3600
+  max_signature_rebotes: 3
+
+# =============================================================================
 # #4502 — Gate de entregable obligatorio del PO al cerrar Definición
 # =============================================================================
 # Al promover `definicion/criterios → sizing`, el pulpo verifica que el agente

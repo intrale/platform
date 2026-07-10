@@ -55,6 +55,10 @@ const visualGate = require('./lib/visual-gate');
 const gateVerdict = require('./lib/gate-verdict');
 const gateLabelReconciler = require('./lib/gate-label-reconciler');
 const gateAuditLog = require('./lib/audit-log');
+// #4575 — GATE 2 · Firma de Aceptación del operador. Función ÚNICA de
+// verificación (CA-2) invocada antes de promover `aprobacion → entrega`.
+// Kill switch por config (`operator_signature.enabled`), default OFF.
+const operatorSignature = require('./lib/operator-signature');
 // #2549 — Detección de bloqueo humano en motivos de rechazo + helpers de marker.
 // Evita relanzar al infinito skills cuyo rechazo es "esperando merge humano".
 const humanBlock = require('./lib/human-block');
@@ -1524,7 +1528,11 @@ function issueExistsInPipeline(issueNum, pipelineName) {
       // no debe re-intakearse ni relanzarse hasta que /unblock lo desbloquee (issue #2478)
       // bloqueado-dependencias (issue #3229) idem: el brazoDesbloqueo lo libera cuando
       // todas las deps cierren — mientras tanto, no debe re-intakearse ni relanzarse.
-      for (const estado of ['pendiente', 'trabajando', 'listo', 'bloqueado-humano', 'bloqueado-dependencias']) {
+      // #4575 — `esperando-firma` (GATE 2) y `waiting-operator` (GATE 0) son
+      // terminales-blandos: el issue está retenido esperando la firma del
+      // operador, ocupando slot conceptual. Cuentan como activos para no
+      // re-intakearlo ni relanzarlo hasta que el callback de firma lo promueva.
+      for (const estado of ['pendiente', 'trabajando', 'listo', 'bloqueado-humano', 'bloqueado-dependencias', 'esperando-firma', 'waiting-operator']) {
         const dir = path.join(PIPELINE, pName, fase, estado);
         try {
           for (const f of fs.readdirSync(dir)) {
@@ -3175,6 +3183,94 @@ function proactiveCleanup(config) {
 lastCpuSnapshot = cpuSnapshot();
 
 // =============================================================================
+// #4575 — GATE 2 · guard ÚNICO de firma de aceptación antes de `entrega` (CA-2)
+// =============================================================================
+// Invocado en TODOS los puntos de promoción `aprobacion → entrega` del barrido.
+// La lógica de firma vive en `operator-signature.evaluate` (función única); acá
+// sólo resolvemos contexto (firmantes, HEAD, labels) y aplicamos el resultado
+// moviendo los work-files a `esperando-firma/` cuando el gate bloquea.
+//
+// Devuelve `true` si RETIENE la promoción (el caller debe saltarla); `false` si
+// el gate aprueba, está en dry-run, o está desactivado por kill switch (default).
+function gate2RetieneAntesDeEntrega({ issue, pipelineName, fase, siguienteFase, archivos, config }) {
+  // Sólo aplica a la promoción hacia `entrega`.
+  if (siguienteFase !== 'entrega') return false;
+  const sig = (config && config.operator_signature) || {};
+  // Kill switch: default OFF → no-op (comportamiento actual del pipeline).
+  if (sig.enabled !== true) return false;
+
+  try {
+    // CA-4 · firmantes autorizados: reusa la allowlist ÚNICA de operadores
+    // (`cua.operator_chat_ids` + credential dedicada), NO una lista paralela.
+    const cuaCfg = (config && config.cua) || {};
+    const authorizedSigners = resolveCuaOperatorChatIds(cuaCfg.operator_chat_ids);
+
+    // Metadata del issue (labels/createdAt para CA-6 + grandfathering) — best-effort.
+    let issueMeta = { number: parseInt(issue) };
+    try {
+      const raw = execSync(`"${GH_BIN}" issue view ${parseInt(issue)} --json number,createdAt,labels`, {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      const j = JSON.parse(raw);
+      issueMeta = {
+        number: parseInt(issue),
+        createdAt: j.createdAt,
+        labels: (j.labels || []).map(l => l && l.name).filter(Boolean),
+      };
+    } catch { /* best-effort: sin labels ⇒ no exime, conservador */ }
+
+    // CA-3 · HEAD del PR (branch `agent/<issue>-*`) — best-effort. Si no se
+    // resuelve, `evaluate` bloquea por SHA mismatch (fail-closed, re-firma).
+    let headOid = '';
+    try {
+      const raw = execSync(`"${GH_BIN}" pr list --state open --json number,headRefName,headRefOid --limit 200`, {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      const prs = JSON.parse(raw);
+      const prefix = `agent/${parseInt(issue)}-`;
+      const match = prs.find(p => typeof p.headRefName === 'string' && p.headRefName.startsWith(prefix));
+      if (match && match.headRefOid) headOid = String(match.headRefOid);
+    } catch { /* best-effort */ }
+
+    const res = operatorSignature.evaluate({
+      issue: issueMeta,
+      headOid,
+      config: sig,
+      options: { authorizedSigners },
+    });
+
+    // approve (o dry-run que nunca bloquea) → promoción normal.
+    if (res.decision !== 'block') return false;
+
+    // RETIENE (CA-1): mover work-files a `esperando-firma/` (subdir hermano de
+    // `aprobacion`), NO a `procesado/`, y NO ejecutar merge.
+    const esperandoDir = path.join(fasePath(pipelineName, fase), 'esperando-firma');
+    fs.mkdirSync(esperandoDir, { recursive: true });
+    for (const a of archivos) {
+      try {
+        moveFile(a.path, esperandoDir);
+      } catch (e) {
+        log('barrido', `#${issue} gate2: error moviendo a esperando-firma (${e.message})`);
+      }
+    }
+    log('barrido', `🔏 #${issue} GATE 2 retiene ${fase}→${siguienteFase}: ${res.reason} — esperando firma del operador`);
+    try {
+      sendTelegram(`🔏 #${issue} GATE 2: retiene el merge hasta la firma de aceptación del operador.\n${res.reason}`);
+    } catch { /* best-effort */ }
+    return true;
+  } catch (e) {
+    // Un bug del GATE 2 NUNCA debe tumbar el pulpo ni freezar el pipeline. Como
+    // el kill switch es la salvaguarda y `enforce` es opt-in con monitoreo, ante
+    // un error INESPERADO del guard NO retenemos (fail-open con alerta), pero
+    // logueamos para forensics. Los casos de seguridad (sin firma / no autorizado
+    // / SHA stale / audit corrupto) ya resuelven a `block` dentro de `evaluate`.
+    log('barrido', `#${issue} GATE 2 error inesperado (fail-open, no retiene): ${e.message}`);
+    try { sendTelegram(`⚠️ #${issue} GATE 2 error inesperado (no retuvo): ${e.message}`); } catch {}
+    return false;
+  }
+}
+
+// =============================================================================
 // BRAZO 1: BARRIDO — Conecta fases, promueve o rechaza
 // =============================================================================
 
@@ -4014,6 +4110,13 @@ function brazoBarrido(config) {
                 const siguientePendiente = path.join(fasePath(pipelineName, siguienteFase), 'pendiente');
                 fs.mkdirSync(siguientePendiente, { recursive: true });
                 const siguienteSkills = pipelineConfig.skills_por_fase[siguienteFase] || [];
+
+                // #4575 — GATE 2 · misma verificación única (CA-2) también en el
+                // path de auto-promoción por convergencia: la firma de aceptación
+                // no puede saltearse porque el diff no cambió. Kill switch OFF ⇒ no-op.
+                if (gate2RetieneAntesDeEntrega({ issue, pipelineName, fase, siguienteFase, archivos, config })) {
+                  continue;
+                }
 
                 if (siguienteFase === 'dev' || siguienteFase === 'build' || siguienteFase === 'entrega') {
                   const skill = siguienteFase === 'dev'
@@ -4937,6 +5040,14 @@ function brazoBarrido(config) {
               retainGate0FailClosed('unexpected-error', e.message);
               continue;
             }
+          }
+
+          // #4575 — GATE 2 · firma de aceptación antes de `entrega` (CA-1/CA-2).
+          // Si el gate bloquea (sin firma verde ligada al HEAD), retiene los
+          // work-files en `esperando-firma/` y NO promueve. Kill switch OFF por
+          // default ⇒ no-op.
+          if (gate2RetieneAntesDeEntrega({ issue, pipelineName, fase, siguienteFase, archivos, config })) {
+            continue;
           }
 
           if (siguienteFase === 'dev' || siguienteFase === 'build' || siguienteFase === 'entrega') {
