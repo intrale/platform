@@ -96,6 +96,40 @@ test('reason con CRLF/secret queda sanitizado antes de persistir', () => {
     }
 });
 
+test('extra con secreto queda sanitizado antes de persistir', () => {
+    const { dir, cleanup } = mkTmp();
+    try {
+        const audit = loadAudit(dir);
+        const secret = 'AKIAIOSFODNN7EXAMPLE';
+        const r = audit.appendDecision({
+            issue: 4632, gate: 'gate3', clase: 'low-risk-doc',
+            actor: 'kernel:absence-policy', decision: 'auto-proceed',
+            reason: 'ok', timestamp: '2026-07-11T00:00:00.000Z',
+            extra: {
+                operator_note: `linea1\r\nlinea2 ${secret}`,
+                nested: { payload: `token=${secret}` },
+                list: ['visible', secret],
+            },
+        });
+        assert.equal(r.ok, true);
+        assert.equal(r.entry.reason_redacted, true);
+        assert.equal(r.entry.reason_crlf_escaped, true);
+        assert.doesNotMatch(r.entry.operator_note, /\r|\n/);
+        assert.doesNotMatch(r.entry.operator_note, /AKIAIOSFODNN7EXAMPLE/);
+        assert.doesNotMatch(r.entry.nested.payload, /AKIAIOSFODNN7EXAMPLE/);
+        assert.doesNotMatch(r.entry.list[1], /AKIAIOSFODNN7EXAMPLE/);
+
+        const file = audit._paths().OPERATOR_ABSENCE_FILE;
+        const raw = fs.readFileSync(file, 'utf8');
+        assert.doesNotMatch(raw, /AKIAIOSFODNN7EXAMPLE/);
+        assert.equal(raw.split('\n').filter(l => l.trim()).length, 1);
+        assert.equal(audit.verifyChain().ok, true);
+    } finally {
+        delete process.env.PIPELINE_DIR_OVERRIDE;
+        cleanup();
+    }
+});
+
 test('romper la cadena manualmente => verifyChain lo detecta', () => {
     const { dir, cleanup } = mkTmp();
     try {

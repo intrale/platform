@@ -46,6 +46,12 @@ const ACTORS = Object.freeze([
     'commander:leo',         // operador humano
 ]);
 
+const MAX_EXTRA_DEPTH = 4;
+const MAX_EXTRA_ARRAY_ITEMS = 50;
+const MAX_EXTRA_OBJECT_KEYS = 50;
+const EXTRA_KEY_FALLBACK = 'extra_field';
+const DANGEROUS_EXTRA_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 function normalizeDecision(value) {
     return (typeof value === 'string' && DECISIONS.includes(value)) ? value : 'unknown';
 }
@@ -72,6 +78,52 @@ function pipelineDir() {
 
 function operatorAbsenceFile() {
     return path.join(pipelineDir(), 'audit', 'operator-absence.jsonl');
+}
+
+function mergeSanitization(target, current) {
+    if (!current) return target;
+    target.didRedact = target.didRedact || current.didRedact;
+    target.didTruncate = target.didTruncate || current.didTruncate;
+    target.didEscapeCrlf = target.didEscapeCrlf || current.didEscapeCrlf;
+    return target;
+}
+
+function sanitizeExtraKey(key, meta) {
+    const sanitized = sanitizeReason(key);
+    mergeSanitization(meta, sanitized);
+    const normalized = sanitized.sanitized.slice(0, 128).trim();
+    if (!normalized || DANGEROUS_EXTRA_KEYS.has(normalized)) return EXTRA_KEY_FALLBACK;
+    return normalized;
+}
+
+function sanitizeExtraValue(value, meta, depth = 0) {
+    if (value == null || typeof value === 'boolean' || typeof value === 'number') return value;
+    if (typeof value === 'string' || typeof value === 'bigint') {
+        const sanitized = sanitizeReason(value);
+        mergeSanitization(meta, sanitized);
+        return sanitized.sanitized;
+    }
+    if (depth >= MAX_EXTRA_DEPTH) {
+        const sanitized = sanitizeReason('[extra depth limit]');
+        mergeSanitization(meta, sanitized);
+        return sanitized.sanitized;
+    }
+    if (Array.isArray(value)) {
+        return value
+            .slice(0, MAX_EXTRA_ARRAY_ITEMS)
+            .map((item) => sanitizeExtraValue(item, meta, depth + 1));
+    }
+    if (typeof value === 'object') {
+        const out = {};
+        for (const rawKey of Object.keys(value).slice(0, MAX_EXTRA_OBJECT_KEYS)) {
+            const key = sanitizeExtraKey(rawKey, meta);
+            out[key] = sanitizeExtraValue(value[rawKey], meta, depth + 1);
+        }
+        return out;
+    }
+    const sanitized = sanitizeReason(String(value));
+    mergeSanitization(meta, sanitized);
+    return sanitized.sanitized;
 }
 
 // -----------------------------------------------------------------------------
@@ -103,6 +155,7 @@ function appendDecision({ issue, gate, clase, actor, scope, confidenceBase, deci
     const reasonSan = sanitizeReason(reason);
     const scopeSan = sanitizeReason(scope);
     const confBaseSan = sanitizeReason(confidenceBase);
+    const extraSan = { didRedact: false, didTruncate: false, didEscapeCrlf: false };
 
     const entry = {
         timestamp: typeof timestamp === 'string' && timestamp.length > 0
@@ -125,17 +178,24 @@ function appendDecision({ issue, gate, clase, actor, scope, confidenceBase, deci
     if (normalizeDecision(decision) === 'unknown' && decision != null) {
         entry.decision_rejected_value = String(decision).slice(0, 100);
     }
-    if (reasonSan.didRedact || scopeSan.didRedact || confBaseSan.didRedact) entry.reason_redacted = true;
-    if (reasonSan.didTruncate) entry.reason_truncated = true;
-    if (reasonSan.didEscapeCrlf || scopeSan.didEscapeCrlf || confBaseSan.didEscapeCrlf) entry.reason_crlf_escaped = true;
     if (extra && typeof extra === 'object' && !Array.isArray(extra)) {
         for (const k of Object.keys(extra)) {
-            if (!(k in entry)) entry[k] = extra[k];
+            const sanitizedKey = sanitizeExtraKey(k, extraSan);
+            if (!(sanitizedKey in entry)) {
+                entry[sanitizedKey] = sanitizeExtraValue(extra[k], extraSan);
+            }
         }
+    }
+    if (reasonSan.didRedact || scopeSan.didRedact || confBaseSan.didRedact || extraSan.didRedact) {
+        entry.reason_redacted = true;
+    }
+    if (reasonSan.didTruncate || extraSan.didTruncate) entry.reason_truncated = true;
+    if (reasonSan.didEscapeCrlf || scopeSan.didEscapeCrlf || confBaseSan.didEscapeCrlf || extraSan.didEscapeCrlf) {
+        entry.reason_crlf_escaped = true;
     }
 
     const result = auditLog.appendChained({ file: operatorAbsenceFile(), entry });
-    return { ok: true, hash_self: result.hash_self, entry, validation, sanitization: reasonSan };
+    return { ok: true, hash_self: result.hash_self, entry, validation, sanitization: reasonSan, extra_sanitization: extraSan };
 }
 
 /**
