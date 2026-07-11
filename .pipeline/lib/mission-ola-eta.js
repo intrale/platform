@@ -102,7 +102,20 @@ function deriveMissionOlaEta(d) {
     const velocitySource = !hasVelocity
         ? 'insufficient'
         : (data.etaSource === 'historical' ? 'historical' : 'measured');
-    return { avancePct, velocityPctPerHour, etaRemainingMin, etaFromVelocity, hasVelocity, velocityState, throughputPerDay, throughputState, velocityPctPerIssuePerMin, velocitySource };
+    // #4588 — ETA descompuesto: "si firmás ya" (pipeline-bound) vs "con tu latencia
+    // histórica de firma" (operador-bound). El gap = costo visible de los gates. El
+    // payload ya viene proyectado a campos públicos (SÓLO números). Literales inline:
+    // esta función se serializa vía `.toString()` al cliente (no referenciar módulo).
+    const ow = (data.operatorWait && typeof data.operatorWait === 'object' && data.operatorWait.enabled === true)
+        ? data.operatorWait : null;
+    const etaPipelineBoundMin = ow && Number.isFinite(ow.etaPipelineBoundMin) ? ow.etaPipelineBoundMin : null;
+    const etaOperatorBoundMin = ow && Number.isFinite(ow.etaOperatorBoundMin) ? ow.etaOperatorBoundMin : null;
+    const operatorGapMin = ow && Number.isFinite(ow.operatorGapMin) ? ow.operatorGapMin : null;
+    const operatorWaitTotalMin = ow && Number.isFinite(ow.totalWaitMin) ? ow.totalWaitMin : null;
+    const operatorPendingSignatures = (ow && ow.projected && Number.isFinite(ow.projected.pendingSignatures))
+        ? ow.projected.pendingSignatures : 0;
+    const operatorWaitState = ow ? 'measured' : 'sin datos suficientes';
+    return { avancePct, velocityPctPerHour, etaRemainingMin, etaFromVelocity, hasVelocity, velocityState, throughputPerDay, throughputState, velocityPctPerIssuePerMin, velocitySource, etaPipelineBoundMin, etaOperatorBoundMin, operatorGapMin, operatorWaitTotalMin, operatorPendingSignatures, operatorWaitState };
 }
 
 /**

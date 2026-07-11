@@ -1438,6 +1438,14 @@ const API_ROUTES = {
                     .filter((s) => s && Number.isFinite(s.ts) && Number.isFinite(s.avancePct))
                     .map((s) => ({ ts: s.ts, avancePct: s.avancePct }))
                 : [],
+            // #4588 — ETA descompuesto (pipeline-bound vs operador-bound) + métrica
+            // de espera de operador. El cache ya lo trae proyectado a campos
+            // públicos (`_projectOperatorWaitPublic`): SÓLO números finitos y labels
+            // de gate CONGELADOS (GATE 1/2/0), sin paths/tokens/nombres de estado
+            // (CA-10 / A01). Degrada a `{enabled:false}` si el cache no lo trae.
+            operatorWait: (data.operatorWait && typeof data.operatorWait === 'object')
+                ? data.operatorWait
+                : { enabled: false },
             refreshedAt: data.refreshedAt,
         };
     },
