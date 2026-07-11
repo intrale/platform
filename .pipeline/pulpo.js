@@ -941,6 +941,18 @@ function reencolarInfraBloqueados(config) {
         try { data = readYamlSafe(a.path); } catch { continue; }
         if (data && data.rebote_tipo === 'infra') {
           const issue = issueFromFile(a.name);
+          // #4653 — No reciclar indefinidamente bloqueos estructurales de
+          // worktree que ya agotaron el tope de reintentos. Si un archivo con
+          // `worktree_recovery_intentos >= CAP` sigue marcado como infra (no
+          // debería, porque el aborto los escala a needs-human, pero defense-in-
+          // depth ante un YAML dejado a medias), NO lo reencolamos: dejarlo tal
+          // cual evita que el sweep lo devuelva a la cola en loop.
+          const WORKTREE_RECOVERY_CAP = 3;
+          const intentos = parseInt(data.worktree_recovery_intentos, 10) || 0;
+          if (data.worktree_missing && intentos >= WORKTREE_RECOVERY_CAP) {
+            log('precheck', `⛔ #${issue}: bloqueo estructural de worktree (intentos=${intentos}≥${WORKTREE_RECOVERY_CAP}) — NO se reencola (esperando intervención humana)`);
+            continue;
+          }
           const cleaned = { ...data };
           delete cleaned.rebote_tipo;
           delete cleaned.bloqueado_por_infra;
@@ -7974,44 +7986,136 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       const tag = resolution.recovered ? 'recovered' : 'existing';
       log('lanzamiento', `${skill}:#${issue} (fase ${fase}): worktree ${tag} ${worktreePath}`);
     } else {
-      // ── ABORTO LIMPIO — no spawneamos al agente ─────────────────────────
+      // ── ABORTO — no spawneamos al agente ────────────────────────────────
+      //
+      // #4653 — Distinguir "rama irresoluble estructural" de "infra transitoria".
+      // Antes TODO aborto rebotaba como `rebote_tipo:'infra'`, y el sweep
+      // `reencolarInfraBloqueados` lo reciclaba cada pocos minutos. Cuando el
+      // motivo era estructural (la rama del dev no existe / no verifica / el path
+      // ya está ocupado / input inválido) el reintento nunca convergía → loop
+      // infinito que congeló la Ola 2. Ahora:
+      //   - Reasons ESTRUCTURALES → escalan directo a `needs-human`.
+      //   - Reasons transitorias (red, `worktree-add-failed`) → rebote infra,
+      //     pero con un contador `worktree_recovery_intentos` con tope: al
+      //     alcanzarlo también se escala a `needs-human` (no loop eterno).
+      const WORKTREE_RECOVERY_CAP = 3;
+      const reasonStr = String(resolution.reason || 'desconocido');
+      const structural = /^(remote-branch-missing|branch-origin-unverified|worktree-path-exists|invalid-input)/.test(reasonStr);
+
+      const prevData = readYamlSafe(trabajandoPath) || {};
+      const intentos = (parseInt(prevData.worktree_recovery_intentos, 10) || 0) + 1;
+      const escalarNeedsHuman = structural || intentos >= WORKTREE_RECOVERY_CAP;
+
       const motivoMsg = (
         `Worktree del issue no encontrado — pulpo no puede ejecutar fase ${fase} sin worktree dedicado. ` +
-        `Detalle: ${resolution.reason || 'desconocido'}`
+        `Detalle: ${reasonStr} (intento ${intentos}/${WORKTREE_RECOVERY_CAP})`
       );
       log('lanzamiento',
-        `⛔ #${issue}: NO se encontró worktree platform.agent-${issue}-* para fase ${fase} — abortando spawn (evita commit en rama ajena). Motivo: ${resolution.reason || 'desconocido'}`);
+        `⛔ #${issue}: NO se resolvió worktree/rama para fase ${fase} — abortando spawn (evita commit en rama ajena). ` +
+        `Motivo: ${reasonStr} | estructural=${structural} intentos=${intentos} escala_humano=${escalarNeedsHuman}`);
 
       // Audit trail persistente (CA-8).
       try {
         appendWorktreeAudit({
-          event: 'abort',
+          event: escalarNeedsHuman ? 'escalate-needs-human' : 'abort',
           issue,
           fase,
           skill,
-          motivo: resolution.reason || 'no-worktree-found',
+          motivo: reasonStr,
           recovery_attempted: true,
           recovery_succeeded: false,
           branch_origin_verified: resolution.branchOriginVerified,
+          worktree_recovery_intentos: intentos,
+          structural,
         });
       } catch {}
 
-      // Notificación Telegram dedupeada (CA-4). Cambia el copy si la
-      // verificación de procedencia falló (UX CA-5): es señal potencial de
-      // adversario, no de cleanup normal.
+      if (escalarNeedsHuman) {
+        // ── ESCALADA A HUMANO — sin rebote infra reciclable ──────────────
+        // Movemos a `bloqueado-humano/` (mismo subdir que reportHumanBlock/6541)
+        // y aplicamos label needs-human en GitHub. El issue queda pausado hasta
+        // que un humano verifique la rama del dev y re-encole (o cierre).
+        const blockedDir = path.join(fasePath(pipeline, fase), 'bloqueado-humano');
+        try { fs.mkdirSync(blockedDir, { recursive: true }); } catch {}
+
+        const reasonTxt = structural
+          ? `Fase ${fase}: la rama del dev de #${issue} es irresoluble (${reasonStr}). No se arregla reintentando — requiere verificación humana.`
+          : `Fase ${fase}: no se pudo resolver el worktree/rama de #${issue} tras ${intentos} intentos (${reasonStr}). Se alcanzó el tope de reintentos.`;
+        const questionTxt = resolution.branchOriginVerified === false
+          ? `¿Podés inspeccionar el autor de la rama remota origin/agent/${issue}-* de #${issue}? La verificación de procedencia falló (posible rama ajena). Re-encolá o cerrá según corresponda.`
+          : `¿Podés verificar la rama del dev de #${issue} (patrón agent/${issue}-<slug>) y re-encolar el issue al inicio del pipeline, o cerrarlo si ya no aplica?`;
+
+        // Limpiar markers infra (si venían de un rebote previo) para que el
+        // sweep `reencolarInfraBloqueados` NO recicle este archivo.
+        const cleaned = { ...prevData };
+        delete cleaned.rebote_tipo;
+        delete cleaned.bloqueado_por_infra;
+        delete cleaned.infra_motivo;
+        delete cleaned.infra_ultimo_check;
+        delete cleaned.infra_endpoints_fallidos;
+        const updated = {
+          ...cleaned,
+          rebote: true,
+          motivo_rechazo: motivoMsg,
+          rechazado_en_fase: fase,
+          rechazado_por_skill: skill,
+          worktree_missing: true,
+          worktree_recovery_attempted: true,
+          worktree_recovery_succeeded: false,
+          worktree_recovery_intentos: intentos,
+          worktree_branch_origin_verified: resolution.branchOriginVerified,
+          bloqueado_por_humano: true,
+          bloqueo_humano_motivo: reasonStr,
+        };
+        try { writeYaml(trabajandoPath, updated); }
+        catch (e) { log('lanzamiento', `⚠️ #${issue}: no se pudo actualizar YAML antes de escalar: ${e.message.slice(0, 120)}`); }
+
+        const targetFile = path.join(blockedDir, path.basename(trabajandoPath));
+        const reasonFile = targetFile + '.reason.json';
+        const yaTeniaReason = fs.existsSync(reasonFile);
+        try {
+          fs.writeFileSync(reasonFile, JSON.stringify({
+            issue: parseInt(issue, 10),
+            skill,
+            phase: fase,
+            pipeline,
+            reason: reasonTxt,
+            question: questionTxt,
+            blocked_at: new Date().toISOString(),
+          }, null, 2));
+        } catch {}
+        try { moveFile(trabajandoPath, blockedDir); } catch (e) {
+          log('lanzamiento', `⚠️ #${issue}: no se pudo mover a bloqueado-humano tras escalar: ${e.message.slice(0, 120)}`);
+        }
+        // Label needs-human en GitHub (idempotente, best-effort).
+        try { humanBlock.enqueueNeedsHumanLabel(parseInt(issue, 10)); } catch {}
+
+        // Telegram dedupeado — solo la primera vez que se escala este issue+fase.
+        try {
+          if (!yaTeniaReason && worktreeNotifDedup.shouldNotify(issue, fase)) {
+            const summary = humanBlock.buildBlockedSummaryMarkdown({
+              highlight: { issue: parseInt(issue, 10), skill, reason: reasonTxt, question: questionTxt },
+            });
+            let markup;
+            try { markup = humanBlock.buildBlockedActionMarkup(parseInt(issue, 10)); } catch { markup = undefined; }
+            try { sendTelegramWithMarkup(summary, markup || null); } catch { try { sendTelegram(summary); } catch {} }
+            worktreeNotifDedup.markNotified(issue, fase);
+          }
+        } catch {}
+
+        log('lanzamiento', `🚧 #${issue} escalado a needs-human (${reasonStr}, intentos=${intentos}) — movido a ${pipeline}/${fase}/bloqueado-humano/`);
+        return;
+      }
+
+      // ── REBOTE INFRA TRANSITORIO (no estructural, dentro del tope) ──────
+      // Notificación Telegram dedupeada (CA-4).
       try {
         if (worktreeNotifDedup.shouldNotify(issue, fase)) {
-          const unverified = resolution.branchOriginVerified === false;
-          const msg = unverified
-            ? [
-                `🚨 #${issue}: branch remota origin/agent/${issue}-${skill} no verificada.`,
-                'Auto-recovery rechazado. Inspeccionar autor del primer commit antes de re-encolar.',
-              ].join('\n')
-            : [
-                `⛔ Aborté #${issue} en fase ${fase}: no encontré el worktree platform.agent-${issue}-*.`,
-                `Motivo: ${resolution.reason || 'sin detalle'}`,
-                'Cómo resolverlo: re-encolá el issue al inicio del pipeline para que el dev cree el worktree limpio.',
-              ].join('\n');
+          const msg = [
+            `⛔ Aborté #${issue} en fase ${fase}: no resolví el worktree del dev (intento ${intentos}/${WORKTREE_RECOVERY_CAP}).`,
+            `Motivo: ${reasonStr}`,
+            'Reintento automático cuando la infra se recupere.',
+          ].join('\n');
           try { sendTelegram(msg); } catch {}
           worktreeNotifDedup.markNotified(issue, fase);
         }
@@ -8020,9 +8124,8 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       // Rebote a pendiente/ con rebote_tipo:'infra' para que el sweep
       // `reencolarInfraBloqueados` lo procese sin consumir budget del CB.
       try {
-        const data = readYamlSafe(trabajandoPath) || {};
         const updated = {
-          ...data,
+          ...prevData,
           rebote_tipo: 'infra',
           rebote: true,
           motivo_rechazo: motivoMsg,
@@ -8034,6 +8137,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
           worktree_missing: true,
           worktree_recovery_attempted: true,
           worktree_recovery_succeeded: false,
+          worktree_recovery_intentos: intentos,
           worktree_branch_origin_verified: resolution.branchOriginVerified,
         };
         writeYaml(trabajandoPath, updated);
@@ -12341,7 +12445,31 @@ function cmdBloqueados() {
   try { humanBlock = require('./lib/human-block'); }
   catch (e) { return `⚠️ No pude cargar el módulo de bloqueos: ${e.message}`; }
 
-  const list = humanBlock.listBlockedIssues();
+  const fsList = humanBlock.listBlockedIssues();
+
+  // #4653 — El handler subcontaba: solo miraba markers FS de `bloqueado-humano/`
+  // e ignoraba issues con label `blocked:routing-manual` (que el Commander aplica
+  // en GitHub sin dejar marker). Fusionamos ambas fuentes dedupeando por issue,
+  // así el conteo coincide con la tabla de la ola. Best-effort: si `gh` falla,
+  // degradamos a la lista FS sola (no rompemos el comando).
+  let ghList = [];
+  try {
+    const labels = humanBlock.GITHUB_HUMAN_BLOCK_LABELS || ['blocked:routing-manual'];
+    for (const label of labels) {
+      const raw = execFileSync(
+        GH_BIN,
+        ['issue', 'list', '--label', label, '--state', 'open',
+         '--json', 'number,title,labels', '--limit', '200'],
+        { encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'ignore'] },
+      );
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) ghList.push(...parsed);
+    }
+  } catch (e) {
+    log('commander', `cmdBloqueados: consulta de labels GitHub falló (degrado a FS): ${String(e.message).slice(0, 120)}`);
+  }
+
+  const list = humanBlock.mergeGithubBlockedLabels(fsList, ghList);
   if (!list.length) return '✅ No hay issues bloqueados esperando intervención humana.';
 
   const lines = [`🚧 *Issues bloqueados esperando humano* (${list.length})\n`];
