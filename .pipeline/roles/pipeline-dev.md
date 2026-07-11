@@ -74,6 +74,11 @@ El QA E2E del producto (video + emulador) **no aplica** a cambios que solo tocan
 3. **Label `qa:skipped`** con justificación: *"Cambio de pipeline infra, validado por smoke test post-restart. Sin UI ni endpoint de producto afectado."*
 4. El PO aprueba por lectura de código + justificación (PO-gate contextual lo permite para `area:pipeline`/`area:infra` sin `app:*`).
 
+Esta exención **no aplica** si el cambio toca una superficie visible del dashboard
+(`area:dashboard`, `dashboard.js`, `mission-ola-eta.js`, `views/dashboard/`,
+banner/card/copy visible). En esos casos la verificación debe incluir evidencia
+visual con audio narrado y no corresponde pedir `qa:skipped`.
+
 ### Testing
 
 - Framework: `node --test` (built-in, sin dependencias externas).
