@@ -770,6 +770,55 @@ let _olaETARefreshInflight = false;
 const OLA_ETA_CACHE_TTL_MS = 30000;
 const OLA_ETA_CONCURRENCY = 3;   // mismo límite que coordinator.js (3 agentes simultáneos)
 
+// #4588 — Proyección de campos públicos (CA-10) del ETA descompuesto + espera de
+// operador. Filtra a SÓLO números finitos y labels de gate fijos: nunca expone
+// paths, nombres de archivo de estado ni tokens. Robusto ante `olaResult`
+// parcial/nulo (degrada a `enabled:false`).
+function _projectOperatorWaitPublic(olaResult) {
+  const num = (v) => (Number.isFinite(v) ? v : null);
+  if (!olaResult || typeof olaResult !== 'object') return { enabled: false };
+  const ow = olaResult.operatorWait;
+  const proj = olaResult.projectedOperatorWait || {};
+  const byGate = {};
+  if (ow && ow.byGate && typeof ow.byGate === 'object') {
+    for (const [gate, v] of Object.entries(ow.byGate)) {
+      // `gate` es un label CONGELADO (GATE 1/2/0) — seguro para render.
+      byGate[String(gate)] = {
+        waitMin: num(v && v.waitMin),
+        issues: Number.isInteger(v && v.issues) ? v.issues : null,
+        openIssues: Number.isInteger(v && v.openIssues) ? v.openIssues : null,
+      };
+    }
+  }
+  const waitingNow = Array.isArray(ow && ow.waitingNow)
+    ? ow.waitingNow
+        .filter((w) => w && Number.isInteger(w.issue) && Number.isFinite(w.waitMin))
+        .map((w) => ({ issue: w.issue, gateClass: String(w.gateClass), waitMin: num(w.waitMin) }))
+    : [];
+  const lat = (ow && ow.operatorLatency) || {};
+  return {
+    enabled: true,
+    // Dos ETAs (CA-2) — el gap es el costo visible de los gates.
+    etaPipelineBoundMin: num(olaResult.etaPipelineBoundMin),
+    etaOperatorBoundMin: num(olaResult.etaOperatorBoundMin),
+    operatorGapMin: num(olaResult.operatorGapMin),
+    // Métrica agregada de espera de operador (CA-1/CA-4).
+    totalWaitMin: num(ow && ow.totalWaitMin),
+    openWaitMin: num(ow && ow.openWaitMin),
+    byGate,
+    waitingNow,
+    operatorLatency: {
+      p50: num(lat.p50), p75: num(lat.p75), p90: num(lat.p90),
+      samples: Number.isInteger(lat.samples) ? lat.samples : 0,
+    },
+    projected: {
+      projectedWaitMin: num(proj.projectedWaitMin),
+      pendingSignatures: Number.isInteger(proj.pendingSignatures) ? proj.pendingSignatures : 0,
+      overdueSignatures: Number.isInteger(proj.overdueSignatures) ? proj.overdueSignatures : 0,
+    },
+  };
+}
+
 function _scheduleOlaETARefresh(state) {
   if (!etaWaveLib) return;
   const now = Date.now();
@@ -869,7 +918,10 @@ function _scheduleOlaETARefresh(state) {
   // CA-20: invocación con `await` semántico vía Promise (la función es async).
   Promise.resolve()
     .then(async () => {
-      const olaResult = await etaWaveLib.calculateOlaETA(olaIssues, OLA_ETA_CONCURRENCY);
+      // #4588 — ETA descompuesto (pipeline-bound vs operador-bound) + métrica de
+      // espera de operador. `calculateDecomposedOlaETA` es un superconjunto de
+      // `calculateOlaETA` (mantiene totalP50/75/90/byIssue) → drop-in seguro.
+      const olaResult = await etaWaveLib.calculateDecomposedOlaETA(olaIssues, OLA_ETA_CONCURRENCY);
       const historical = await etaWaveLib.analyzeHistoricalMetrics();
       // #4039 — punto natural del writer periódico de la serie de avance de ola.
       // Computa el `totalPct` de la ola activa (misma fuente que el `/wave`:
@@ -1007,6 +1059,10 @@ function _scheduleOlaETARefresh(state) {
         // #4500 — serie temporal de avance (últimos 60 puntos) para el sparkline
         // de ritmo del Timeline. `[]` cuando no hay serie (placeholder cliente).
         series: Array.isArray(waveSeries) ? waveSeries : [],
+        // #4588 — ETA descompuesto (pipeline-bound vs operador-bound) + métrica de
+        // espera de operador. Proyección de campos públicos (CA-10): SÓLO números
+        // y labels de gate fijos (GATE 1/2/0), sin paths/tokens/nombres de estado.
+        operatorWait: _projectOperatorWaitPublic(olaResult),
         refreshedAt: Date.now(),
       };
       _olaETACacheAt = Date.now();

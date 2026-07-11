@@ -129,10 +129,32 @@ test('R-2: el payload sólo expone agregados de la ola, sin metadata interna', (
         'ready', 'issues', 'totalP50', 'totalP75', 'totalP90', 'byIssue',
         'concurrencyUsed', 'bySize', 'rebounceRate', 'velocityETA', 'etaSource',
         'totalPct', 'throughputPerDay', 'throughputState', 'series', 'refreshedAt',
+        'operatorWait',   // #4588 — ETA descompuesto + espera de operador (ya proyectado)
     ]);
     for (const k of Object.keys(out)) {
         assert.ok(allowed.has(k), `campo inesperado en el payload: ${k}`);
     }
+});
+
+test('#4588 — expone operatorWait proyectado del cache y degrada a {enabled:false}', () => {
+    // Con métrica en el cache: se refleja tal cual (ya proyectada a campos públicos).
+    const conMetrica = olaETARoute({
+        olaETA: {
+            issues: [1], etaSource: 'fallback',
+            operatorWait: {
+                enabled: true,
+                etaPipelineBoundMin: 90, etaOperatorBoundMin: 135, operatorGapMin: 45,
+                totalWaitMin: 60, byGate: { 'GATE 2': { waitMin: 60, issues: 1, openIssues: 0 } },
+            },
+        },
+    });
+    assert.equal(conMetrica.operatorWait.enabled, true);
+    assert.equal(conMetrica.operatorWait.etaOperatorBoundMin, 135);
+    assert.equal(conMetrica.operatorWait.operatorGapMin, 45);
+
+    // Sin métrica en el cache → {enabled:false} (nunca undefined).
+    const sinMetrica = olaETARoute({ olaETA: { issues: [], etaSource: 'fallback' } });
+    assert.deepEqual(sinMetrica.operatorWait, { enabled: false });
 });
 
 test('#4500 — serie temporal: whitelist numérico {ts,avancePct}, degrada a [] sin cache', () => {

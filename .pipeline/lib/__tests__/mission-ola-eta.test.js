@@ -29,8 +29,44 @@ test('payload nulo/indefinido degrada a estructura neutra sin romper', () => {
             throughputState: 'insufficient',        // #4450 — estado explícito
             velocityPctPerIssuePerMin: null,        // #4532 — velocidad %/issue/min sin dato
             velocitySource: 'insufficient',         // #4532 — estado explícito
+            etaPipelineBoundMin: null,              // #4588 — ETA descompuesto sin dato
+            etaOperatorBoundMin: null,              // #4588
+            operatorGapMin: null,                   // #4588 — costo de gates sin dato
+            operatorWaitTotalMin: null,             // #4588 — espera de operador agregada
+            operatorPendingSignatures: 0,           // #4588
+            operatorWaitState: 'sin datos suficientes', // #4588 — estado explícito
         });
     }
+});
+
+test('#4588 — expone ETA descompuesto pipeline-bound vs operador-bound', () => {
+    const m = deriveMissionOlaEta({
+        etaSource: 'fallback',
+        totalPct: 40,
+        totalP50: 90,
+        velocityETA: null,
+        operatorWait: {
+            enabled: true,
+            etaPipelineBoundMin: 90,
+            etaOperatorBoundMin: 135,
+            operatorGapMin: 45,
+            totalWaitMin: 60,
+            projected: { pendingSignatures: 2, overdueSignatures: 1 },
+        },
+    });
+    assert.equal(m.etaPipelineBoundMin, 90);
+    assert.equal(m.etaOperatorBoundMin, 135);
+    assert.equal(m.operatorGapMin, 45);            // gap = costo visible de los gates
+    assert.equal(m.operatorWaitTotalMin, 60);
+    assert.equal(m.operatorPendingSignatures, 2);
+    assert.equal(m.operatorWaitState, 'measured');
+});
+
+test('#4588 — operatorWait deshabilitado degrada a estado sin datos', () => {
+    const m = deriveMissionOlaEta({ etaSource: 'fallback', totalPct: 10, totalP50: 50, operatorWait: { enabled: false } });
+    assert.equal(m.etaPipelineBoundMin, null);
+    assert.equal(m.etaOperatorBoundMin, null);
+    assert.equal(m.operatorWaitState, 'sin datos suficientes');
 });
 
 test('modo velocity: expone avance %, velocidad %/h y ETA por velocidad', () => {
