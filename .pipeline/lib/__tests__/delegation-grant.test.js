@@ -291,15 +291,15 @@ test('el audit NUNCA persiste la firma ni el secreto del grant', () => {
     assert.equal(typeof issued.nonce, 'string');
 });
 
-test('el flujo de grant no se rompe si el audit falla (best-effort, fail-safe)', () => {
-    // auditFile apunta a un directorio → appendChained lanza al leer/escribir.
-    // El grant igual se emite/consume; el fallo del audit se reporta a stderr.
+test('emisión, consumo y revocación fallan cerrado si no se puede persistir audit', () => {
+    // auditFile apunta a un directorio: appendChained lanza al leer/escribir.
+    // Los eventos grant-issued/grant-consumed/grant-revoked son fail-closed.
     const dir = tmpDir();
     const errors = [];
     const originalErr = console.error;
     console.error = (msg) => errors.push(String(msg));
     try {
-        const authority = grants.createGrantAuthority({
+        const issueBlocked = grants.createGrantAuthority({
             secrets: SECRETS,
             activeSecretVersion: '1',
             allowlist: ALLOWLIST,
@@ -307,9 +307,22 @@ test('el flujo de grant no se rompe si el audit falla (best-effort, fail-safe)',
             nonceFile: path.join(dir, 'used.jsonl'),
             revocationFile: path.join(dir, 'revoked.jsonl'),
         });
+        const blockedIssue = issueBlocked.issue({ grantor: 'alice', delegate: 'bob', gateClasses: ['realign-allowlist'] });
+        assert.deepEqual(blockedIssue, { ok: false, reason: REJECT_REASONS.AUDIT_FAILED });
+
+        const { authority } = makeAuthority();
         const r = authority.issue({ grantor: 'alice', delegate: 'bob', gateClasses: ['realign-allowlist'] });
         assert.equal(r.ok, true);
-        assert.equal(authority.consume(r.grant).ok, true);
+        fs.unlinkSync(authority.auditFile);
+        fs.mkdirSync(authority.auditFile);
+
+        const blockedConsume = authority.consume(r.grant);
+        assert.deepEqual(blockedConsume, { ok: false, reason: REJECT_REASONS.AUDIT_FAILED });
+        assert.equal(fs.existsSync(authority.nonceFile), false, 'no debe consumir nonce si el audit falla');
+
+        const blockedRevoke = authority.revoke({ nonce: r.grant.payload.nonce, revokedBy: 'alice' });
+        assert.deepEqual(blockedRevoke, { ok: false, reason: REJECT_REASONS.AUDIT_FAILED });
+        assert.equal(fs.existsSync(authority.revocationFile), false, 'no debe revocar si el audit falla');
     } finally {
         console.error = originalErr;
     }

@@ -89,6 +89,7 @@ const REJECT_REASONS = Object.freeze({
     REPLAYED: 'replayed',
     DELEGATE_MISMATCH: 'delegate-mismatch',
     LOCK_FAILED: 'lock-failed',
+    AUDIT_FAILED: 'audit-failed',
 });
 
 // Eventos de audit (enum cerrado).
@@ -225,11 +226,12 @@ function createGrantAuthority(opts = {}) {
                 file: auditFile,
                 entry: { event, ...sanitizeAuditFields(fields) },
             });
+            return { ok: true };
         } catch (e) {
-            // El audit es best-effort defensivo: nunca romper el flujo de grant
-            // por una contención transitoria del lock. Se reporta a stderr para
-            // no silenciar del todo (A09).
+            // El caller decide si el evento es obligatorio. Los eventos que
+            // crean, consumen o revocan capabilities son fail-closed (A09).
             try { console.error(`[delegation-grant] audit '${event}' falló: ${e.message}`); } catch { /* noop */ }
+            return rej(REJECT_REASONS.AUDIT_FAILED);
         }
     }
 
@@ -268,10 +270,11 @@ function createGrantAuthority(opts = {}) {
             secretVersion: activeSecretVersion,
         };
         const signature = signPayload(payload, secrets[activeSecretVersion], activeSecretVersion);
-        audit(AUDIT_EVENTS.ISSUED, {
+        const auditResult = audit(AUDIT_EVENTS.ISSUED, {
             grantor, delegate, gateClasses: payload.gateClasses,
             exp: payload.exp, nonce: payload.nonce, secretVersion: payload.secretVersion,
         });
+        if (!auditResult.ok) return auditResult;
         return { ok: true, grant: { payload, signature } };
     }
 
@@ -376,19 +379,22 @@ function createGrantAuthority(opts = {}) {
             } else if (isConsumed(payload.nonce)) {
                 outcome = rej(REJECT_REASONS.REPLAYED);
             } else {
-                appendNonce(nonceFile, { n: payload.nonce, delegate: payload.delegate, ts: new Date(now()).toISOString() });
-                outcome = { ok: true, payload };
+                const auditResult = audit(AUDIT_EVENTS.CONSUMED, {
+                    grantor: payload.grantor, delegate: payload.delegate,
+                    gateClasses: payload.gateClasses, nonce: payload.nonce, secretVersion: payload.secretVersion,
+                });
+                if (auditResult.ok) {
+                    appendNonce(nonceFile, { n: payload.nonce, delegate: payload.delegate, ts: new Date(now()).toISOString() });
+                    outcome = { ok: true, payload };
+                } else {
+                    outcome = auditResult;
+                }
             }
         } finally {
             auditLog._releaseFileLockSync(lock.lockPath, fs);
         }
 
-        if (outcome.ok) {
-            audit(AUDIT_EVENTS.CONSUMED, {
-                grantor: payload.grantor, delegate: payload.delegate,
-                gateClasses: payload.gateClasses, nonce: payload.nonce, secretVersion: payload.secretVersion,
-            });
-        } else {
+        if (!outcome.ok && outcome.reason !== REJECT_REASONS.AUDIT_FAILED) {
             audit(AUDIT_EVENTS.REJECTED, {
                 phase: 'consume', grantor: payload.grantor, delegate: payload.delegate,
                 nonce: payload.nonce, secretVersion: payload.secretVersion, reason: outcome.reason,
@@ -408,8 +414,9 @@ function createGrantAuthority(opts = {}) {
      */
     function revoke({ nonce, revokedBy, reason } = {}) {
         if (typeof nonce !== 'string' || !nonce) return rej(REJECT_REASONS.MALFORMED);
+        const auditResult = audit(AUDIT_EVENTS.REVOKED, { nonce, revokedBy: revokedBy || null, reason: reason || 'revoked' });
+        if (!auditResult.ok) return auditResult;
         appendNonce(revocationFile, { n: nonce, by: revokedBy || null, ts: new Date(now()).toISOString() });
-        audit(AUDIT_EVENTS.REVOKED, { nonce, revokedBy: revokedBy || null, reason: reason || 'revoked' });
         return { ok: true };
     }
 
