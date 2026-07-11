@@ -702,6 +702,48 @@ firma_operador:
   auditoria_pct: 10
   go_live_date: null
 
+# #4578 — Gate de coherencia a nivel ola (cross-issue).
+#
+# Épico #4570 · hijo #8 (último de la cadena de gates).
+# Diseño: docs/pipeline/gates-firma-operador.md §10.2.
+# Contrato: docs/pipeline/contrato-kernel-adaptador.md — puertos `gates`/`e2e`,
+#           estado `waiting-operator` (§5), veredicto `requires-operator` (§3).
+#
+# Motor del gate agregado que corre al CERRAR una ola: evalúa la coherencia
+# CROSS-ISSUE de los entregables (los gates por-issue pueden pasar individualmente
+# y la ola quedar incoherente) y emite un veredicto estructurado que permite al
+# operador vetar el cierre. Es un SUPERCONJUNTO del GATE 2 por-issue (#4575/#4643).
+#
+# Módulos que consumen esta sección:
+#   - lib/wave-coherence-gate.js — motor del gate (fail-closed, evidencia
+#     redactada, audit append-only, veredicto estructurado con conflicts[]).
+#   - lib/waves.js — estado `waiting-operator` a nivel ola (retención por el kernel).
+#
+# Superficies del veto (fuera de scope de este motor):
+#   - #4579 (Telegram, aprobación un-toque) · #4580 (bandeja del dashboard).
+#
+# Claves:
+#   - enabled:      flag global de rollout. Default OFF (false). Con false, el
+#                   gate es INERTE — el Pulpo se comporta igual que hoy (no corre
+#                   el paso wave-close). Rollout gradual (patrón visual-gate).
+#   - kill_switch:  override inmediato de enabled (apagado total sin rebootear).
+#
+# Comportamiento (SIEMPRE, independiente del flag, cuando SÍ se invoca):
+#   - FAIL-CLOSED (A04): evidencia ausente/corrupta o error → `fail`, cierre
+#     DENEGADO. NUNCA `pass` silencioso. Sin auto-cierre por timeout: si el
+#     operador no responde, la ola permanece `waiting-operator`.
+#   - CONTENIDO = DATO (A08): texto agregado sanitizado con handoff.detectInjection.
+#   - SIN SECRETS (A05): evidencia redactada vía write-deliverable.redactContent.
+#   - AUDIT APPEND-ONLY (A09): cada decisión → JSONL inmutable en audit/.
+#
+# Rollout sugerido:
+#   1. Mergear con `enabled: false`. Validar `node --test` + smoke test.
+#   2. `enabled: true` observando el audit `audit/wave-coherence-gate.jsonl` y el
+#      estado `waiting-operator` en waves.json antes de confiar el veto al flujo.
+wave_coherence_gate:
+  enabled: false
+  kill_switch: false
+
 # #4136 — Frontera activo/histórico.
 #
 # El Pulpo muda al `historico/` (raíz aparte, mismo volumen → rename atómico) los

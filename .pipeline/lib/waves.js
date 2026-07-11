@@ -903,6 +903,123 @@ function emitPromoteAudit(waveNumber, archivedWaveNumber, actor, note) {
     });
 }
 
+// ─── #4578 — Estado `waiting-operator` a nivel ola (gate de coherencia) ──────
+//
+// El gate de coherencia (`lib/wave-coherence-gate.js`) NO muta el lifecycle: el
+// Pulpo (kernel, invariante §5 del contrato #4010) es el ÚNICO que retiene la
+// ola en `waiting-operator` cuando el gate emite `requires-operator`. Estos
+// helpers son el punto de entrada del kernel para setear/limpiar ese estado, con
+// el mismo `withLockSync` que el resto de las mutaciones (serialización con
+// promote/archive/addIssue garantizada). El veto lo emite SOLO el operador
+// humano vía superficies #4579/#4580 — este código NO auto-cierra por timeout.
+
+/**
+ * Retiene la ola activa en `waiting-operator` (no promueve/archiva). Idempotente
+ * a nivel de estado: sobreescribe el `waiting_operator` previo con el nuevo.
+ *
+ * @param {number} waveNumber — debe ser la ola ACTIVA.
+ * @param {object} [info] — { reason?, evidenceRef?, conflictsCount?, updated_by? }.
+ * @returns {object} el objeto `waiting_operator` persistido.
+ * @throws si `waveNumber` no es la ola activa.
+ */
+function setWaveWaitingOperator(waveNumber, info = {}) {
+    return withLockSync(wavesFile(), () => setWaveWaitingOperatorLocked(waveNumber, info), {
+        component: 'waves-lock',
+        timeoutMs: LOCK_TIMEOUT_MS,
+        maxRetries: LOCK_MAX_RETRIES,
+        notify: notifyTelegram,
+    });
+}
+
+function setWaveWaitingOperatorLocked(waveNumber, info) {
+    invalidateCache();
+    const state = loadWaves();
+    if (!state.active_wave || state.active_wave.number !== waveNumber) {
+        throw new Error(`setWaveWaitingOperator: ola ${waveNumber} no es la activa`);
+    }
+    const wo = {
+        since: nowIso(),
+        reason: typeof info.reason === 'string' ? info.reason.slice(0, MAX_FREE_STRING_LEN) : '',
+        evidence_ref: typeof info.evidenceRef === 'string' ? info.evidenceRef : null,
+        conflicts_count: Number.isInteger(info.conflictsCount) ? info.conflictsCount : 0,
+    };
+    state.active_wave.waiting_operator = wo;
+    saveState(state, {
+        updated_by: info.updated_by || 'System',
+        source: 'wave-coherence-gate',
+        note: `wave ${waveNumber} → waiting-operator`,
+    });
+    emitWaveAudit({
+        event: 'wave_waiting_operator',
+        wave: waveNumber,
+        actor: info.updated_by || 'System',
+        estado_previo: 'active',
+        estado_posterior: 'waiting-operator',
+        note: wo.reason,
+    });
+    return deepClone(wo);
+}
+
+/**
+ * Limpia el estado `waiting-operator` de la ola activa (el operador decidió:
+ * cerrar o retomar). No cierra la ola por sí solo — sólo remueve la retención.
+ *
+ * @param {number} waveNumber — debe ser la ola ACTIVA.
+ * @param {object} [info] — { updated_by?, note? }.
+ * @returns {boolean} true si había estado que limpiar.
+ */
+function clearWaveWaitingOperator(waveNumber, info = {}) {
+    return withLockSync(wavesFile(), () => clearWaveWaitingOperatorLocked(waveNumber, info), {
+        component: 'waves-lock',
+        timeoutMs: LOCK_TIMEOUT_MS,
+        maxRetries: LOCK_MAX_RETRIES,
+        notify: notifyTelegram,
+    });
+}
+
+function clearWaveWaitingOperatorLocked(waveNumber, info) {
+    invalidateCache();
+    const state = loadWaves();
+    if (!state.active_wave || state.active_wave.number !== waveNumber) {
+        throw new Error(`clearWaveWaitingOperator: ola ${waveNumber} no es la activa`);
+    }
+    const had = state.active_wave.waiting_operator != null;
+    if (!had) return false;
+    delete state.active_wave.waiting_operator;
+    saveState(state, {
+        updated_by: info.updated_by || 'System',
+        source: 'wave-coherence-gate',
+        note: info.note || `wave ${waveNumber} → waiting-operator limpiado`,
+    });
+    emitWaveAudit({
+        event: 'wave_waiting_operator_cleared',
+        wave: waveNumber,
+        actor: info.updated_by || 'System',
+        estado_previo: 'waiting-operator',
+        estado_posterior: 'active',
+        note: info.note || null,
+    });
+    return true;
+}
+
+/**
+ * Lee el estado `waiting-operator` de la ola activa (sin lock — snapshot).
+ * @returns {object|null} `{ since, reason, evidence_ref, conflicts_count }` o null.
+ */
+function getWaveWaitingOperator() {
+    const active = getActiveWave();
+    return active && active.waiting_operator ? active.waiting_operator : null;
+}
+
+/**
+ * ¿La ola activa está retenida esperando decisión del operador? Predicado que el
+ * Pulpo consulta ANTES de promover/archivar para NO cerrar una ola vetada.
+ * @returns {boolean}
+ */
+function isWaveWaitingOperator() {
+    return getWaveWaitingOperator() != null;
+}
+
 // ─── #3738 — Creación atómica de ola planificada ────────────────────────────
 //
 // `createPlannedWave` es el único punto de entrada para crear una ola
@@ -1646,6 +1763,30 @@ function validateWaveObject(w, ctx, errors) {
     for (const f of ['name', 'goal', 'note', 'updated_by', 'source']) {
         if (w[f] !== undefined && w[f] !== null && !isValidFreeString(w[f])) {
             errors.push(`${ctx}.${f} debe ser string ≤${MAX_FREE_STRING_LEN} chars`);
+        }
+    }
+    // #4578 — estado `waiting-operator` a nivel ola (gate de coherencia). Es
+    // opcional (ausente = ola sin veto pendiente). Cuando está presente, se
+    // endurece la máquina de estados: shape estricto (mitiga el riesgo de un
+    // nuevo modo de stall señalado en el análisis del issue).
+    if (w.waiting_operator !== undefined && w.waiting_operator !== null) {
+        const wo = w.waiting_operator;
+        if (typeof wo !== 'object' || Array.isArray(wo)) {
+            errors.push(`${ctx}.waiting_operator debe ser objeto o null`);
+        } else {
+            if (typeof wo.since !== 'string' || !Number.isFinite(Date.parse(wo.since))) {
+                errors.push(`${ctx}.waiting_operator.since debe ser ISO string`);
+            }
+            if (wo.reason !== undefined && wo.reason !== null && !isValidFreeString(wo.reason)) {
+                errors.push(`${ctx}.waiting_operator.reason debe ser string ≤${MAX_FREE_STRING_LEN} chars`);
+            }
+            if (wo.evidence_ref !== undefined && wo.evidence_ref !== null && !isValidFreeString(wo.evidence_ref)) {
+                errors.push(`${ctx}.waiting_operator.evidence_ref debe ser string o null`);
+            }
+            if (wo.conflicts_count !== undefined
+                && (!Number.isInteger(wo.conflicts_count) || wo.conflicts_count < 0)) {
+                errors.push(`${ctx}.waiting_operator.conflicts_count debe ser entero ≥ 0`);
+            }
         }
     }
     if (w.issues !== undefined && w.issues !== null) {
@@ -3048,6 +3189,11 @@ module.exports = {
     archiveWave,
     recoverIncompleteArchive,
     isWaveArchiveBlocked,
+    // #4578 — estado waiting-operator a nivel ola (gate de coherencia).
+    setWaveWaitingOperator,
+    clearWaveWaitingOperator,
+    getWaveWaitingOperator,
+    isWaveWaitingOperator,
     // CA-5: variantes strict que tiran si el shape rompe.
     loadStateStrict,
     validateStateStrict,
