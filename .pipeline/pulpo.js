@@ -295,6 +295,16 @@ try { sherlockPresence = require('./lib/sherlock-presence'); } catch { /* opcion
 // resolución no-gated en lugar de devolver el archivo a pendiente/. Mantiene
 // hash-chain SHA-256 en logs/cross-provider-dispatch-*.jsonl + notify Telegram.
 const { resolveSpawnWithFallback, formatProviderResolutionLog } = require('./lib/agent-launcher/dispatch-with-fallback');
+// #4648 — clasificación de muerte prematura (provider-death vs agent-death) y
+// health/backoff por provider ante muertes al spawn. Una muerte por provider no
+// disponible (fallback que muere al spawn durante ventana de inactividad del
+// primary) NUNCA debe penalizar al issue con fast-fail + cooldown de 60min: el
+// backoff va al PROVIDER, no al (skill,issue). Require defensivo: si no cargan,
+// el handler cae al comportamiento clásico (penaliza) — fail-closed conservador.
+let providerDeathClassifier = null;
+try { providerDeathClassifier = require('./lib/agent-launcher/provider-death-classifier'); } catch { /* opcional */ }
+let providerSpawnHealth = null;
+try { providerSpawnHealth = require('./lib/agent-launcher/provider-spawn-health'); } catch { /* opcional */ }
 // #4284 — marker de runtime del provider EFECTIVO por agente en curso. Best-effort:
 // el dashboard lo lee para mostrar el provider real (no el configurado por skill).
 // Require defensivo: si el módulo no carga, el spawn no se bloquea.
@@ -8705,6 +8715,64 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         hasVerdict = quickYaml.resultado === 'aprobado' || quickYaml.resultado === 'rechazado';
       } catch {}
 
+      // #4648 — Clasificar la causa ANTES de penalizar. Una muerte prematura
+      // atribuible a INDISPONIBILIDAD del provider (el resolver cayó a un
+      // fallback porque el primary estaba gateado, y ese fallback murió al
+      // spawn) NO es culpa del issue: se trata como INFRA (mover a pendiente/
+      // sin registerFastFail, sin cooldown de 60min al (skill,issue)), análogo
+      // al path `bloqueado_por_infra`. El cooldown por muerte-de-provider se
+      // aplica al PROVIDER (health/backoff), no al issue.
+      let deathKind = 'agent-death';
+      if (!hasVerdict && providerDeathClassifier) {
+        try {
+          const effProvider = (launchResult && launchResult.provider)
+            || (dispatchResolution && dispatchResolution.provider) || null;
+          const effSource = (dispatchResolution && dispatchResolution.source) || null;
+          const verdict = providerDeathClassifier.classifyPrematureDeath({
+            code, elapsedSec, hasVerdict,
+            source: effSource, provider: effProvider,
+          });
+          deathKind = verdict.kind;
+        } catch (clsErr) {
+          // Fail-closed: si la clasificación falla, penalizamos como antes.
+          log('lanzamiento', `⚠️ clasificación de muerte falló para ${skill}:#${issue}: ${clsErr.message} — trato como agent-death`);
+          deathKind = 'agent-death';
+        }
+      }
+
+      // #4648 — Muerte por provider no disponible: NO penalizar al issue.
+      if (!hasVerdict && deathKind === 'provider-death') {
+        const effProvider = (launchResult && launchResult.provider)
+          || (dispatchResolution && dispatchResolution.provider) || 'unknown';
+        // Capa 3: registrar el backoff a nivel PROVIDER. Si acumula muertes al
+        // spawn, el provider se apaga con TTL y el resolver lo saltea en el
+        // próximo tick (fail-closed de Capa 1 emerge por reuse del gate `gated`).
+        let disabled = false;
+        if (providerSpawnHealth) {
+          try {
+            const r = providerSpawnHealth.recordProviderSpawnDeath({
+              pipelineDir: PIPELINE, provider: effProvider, skill, issue,
+            });
+            disabled = !!(r && r.disabled);
+          } catch (hErr) {
+            log('lanzamiento', `⚠️ provider-spawn-health falló para ${effProvider} (${skill}:#${issue}): ${hErr.message}`);
+          }
+        }
+        log('lanzamiento', `🔌 ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s (code=${code}) con provider fallback="${effProvider}" — muerte por provider no disponible: NO penaliza al issue${disabled ? `; provider "${effProvider}" apagado con TTL (backoff a nivel provider)` : ''}. Devuelvo a pendiente/ para reintentar al próximo tick.`);
+        const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
+        try { moveFile(trabajandoPath, pendienteDir); } catch {}
+        activeProcesses.delete(processKey(skill, issue));
+        killGradleDaemonsForCwd((needsWorktree || useExistingWorktree) ? worktreePath : ROOT, `${skill}:#${issue} (provider-death)`);
+        if (contextChannelId) {
+          try {
+            const cm = require(path.join(ROOT, '.claude', 'hooks', 'context-manager'));
+            cm.leaveChannelByType(contextChannelId, 'agent');
+          } catch (e) {}
+        }
+        sendTelegram(`🔌 ${skill}:#${issue} NO penalizado: su provider (fallback "${effProvider}") murió al spawn durante indisponibilidad del primary. Sin cooldown al issue; se reintenta al restaurarse un provider viable.${disabled ? ` Provider "${effProvider}" apagado con TTL.` : ''}`);
+        return;
+      }
+
       if (!hasVerdict) {
         const { failures, delayMin } = registerFastFail(skill, issue);
         log('lanzamiento', `⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s (code=${code}) — fallo #${failures}, cooldown ${delayMin}min`);
@@ -8760,6 +8828,20 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
 
     // Éxito o finalización normal → limpiar cooldown
     if (code === 0) clearCooldown(skill, issue);
+
+    // #4648 — Reset del health de spawn del provider efectivo: si el agente
+    // corrió bien (exit 0) o vivió lo suficiente (≥15s, no es muerte prematura),
+    // el provider demostró estar sano → limpiamos su contador de muertes al
+    // spawn para no apagarlo por muertes viejas no relacionadas. Best-effort.
+    if (providerSpawnHealth && (code === 0 || elapsedSec >= 15)) {
+      try {
+        const effProvider = (launchResult && launchResult.provider)
+          || (dispatchResolution && dispatchResolution.provider) || null;
+        if (effProvider && effProvider !== 'deterministic') {
+          providerSpawnHealth.recordProviderHealthy({ pipelineDir: PIPELINE, provider: effProvider });
+        }
+      } catch { /* best-effort: no rompe el lifecycle */ }
+    }
 
     // Registrar consumo de recursos del agente para perfiles predictivos
     if (elapsedSec > 30) { // Solo si corrió suficiente para tener snapshots
