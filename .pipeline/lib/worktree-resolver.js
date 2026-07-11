@@ -225,6 +225,100 @@ function findIssueWorktree(ROOT, issue, { skill = null, spawnImpl = spawnSync, f
     return best;
 }
 
+// Shape estructural de una branch de dev del pipeline: `agent/<issue>-<slug>`.
+// El slug admite alfanuméricos, `.`, `_`, `/` y `-` (mismos que usa el launcher).
+// Rechaza cualquier metacaracter que pudiera ser interpretado como opción de git
+// (`--upload-pack=...`) o inyección de shell — defense-in-depth aunque los args
+// vayan por array a spawnSync (A03 ref/option injection).
+const DEV_BRANCH_RE = /^agent\/\d+-[A-Za-z0-9._/-]+$/;
+
+/**
+ * Parsea la salida de `git ls-remote --heads origin refs/heads/agent/<n>-*` y
+ * devuelve los nombres de rama (`agent/<issue>-<slug>`, sin el prefijo
+ * `refs/heads/`). Ignora líneas que no matcheen el formato `<sha>\trefs/heads/...`.
+ */
+function parseLsRemoteRefs(out) {
+    const refs = [];
+    for (const raw of String(out || '').split('\n')) {
+        const line = raw.trim();
+        // Formato estable: "<sha>\trefs/heads/<branch>". Tab o espacios. El SHA
+        // es hex de longitud variable (git usa 40; toleramos abreviados).
+        const m = line.match(/^[0-9a-f]+\s+refs\/heads\/(.+)$/i);
+        if (m && m[1]) refs.push(m[1].trim());
+    }
+    return refs;
+}
+
+/**
+ * Descubre la rama REAL del dev del issue (`agent/<issue>-<slug>`) en `origin`,
+ * SIN asumir `agent/<issue>-<skill>` — que para fases como `build`/`linteo` no
+ * existe (la rama la nombra el slug del dev, no el skill de la fase). Issue #4653.
+ *
+ * Orden VINCULANTE (seguridad, no reordenar):
+ *   1. Descubrir por glob `refs/heads/agent/<issue>-*` (ls-remote).
+ *   2. Filtrar shape estructural (`DEV_BRANCH_RE`) — descarta ref/option injection.
+ *   3. Filtrar por PROCEDENCIA (`verifyRemoteBranchOrigin`) ANTES de desambiguar.
+ *      Nunca desambiguar por commits-ahead sobre ramas no verificadas: un atacante
+ *      con push a origin podría ganar con una rama de más commits.
+ *   4. Si queda >1 rama verificada → desambiguar por commits-ahead sobre
+ *      `origin/main` (elige la del dev que efectivamente trabajó) + log auditado.
+ *
+ * @returns {object} Uno de:
+ *   - `{ ok: true, branch, reason, branchOriginVerified: true }`
+ *   - `{ ok: false, reason, branchOriginVerified }` donde `branchOriginVerified`:
+ *       · `null`  → no había NINGUNA rama candidata (`remote-branch-missing`).
+ *       · `false` → había candidatas pero NINGUNA pasó la verificación de
+ *                   procedencia (`branch-origin-unverified`) → posible adversario.
+ */
+function resolveDevBranch(ROOT, issue, { spawnImpl = spawnSync, log } = {}) {
+    // A03 — validación dura del issue antes de tocar el remoto.
+    if (!/^\d+$/.test(String(issue))) {
+        throw new WorktreeResolutionError(
+            `resolveDevBranch: issue no numérico: ${JSON.stringify(issue)}`,
+            'INVALID_ISSUE',
+        );
+    }
+    const prefix = `agent/${issue}-`;
+
+    // (1) Descubrir ramas remotas por glob. Sin red / fallo de git → tratamos
+    // como transitorio (branchOriginVerified null, reason con detalle acotado).
+    let out;
+    try {
+        out = gitSpawn(['ls-remote', '--heads', 'origin', `refs/heads/${prefix}*`], {
+            cwd: ROOT, spawnImpl, timeout: 10000,
+        });
+    } catch (e) {
+        return { ok: false, reason: `ls-remote-failed:${String(e.message).slice(0, 120)}`, branchOriginVerified: null };
+    }
+
+    // (2) Filtro estructural: prefijo correcto + shape segura.
+    const branches = parseLsRemoteRefs(out)
+        .filter((b) => b.startsWith(prefix) && DEV_BRANCH_RE.test(b));
+    if (branches.length === 0) {
+        return { ok: false, reason: `remote-branch-missing:${prefix}*`, branchOriginVerified: null };
+    }
+
+    // (3) Filtrar por procedencia ANTES de desambiguar (orden de seguridad).
+    const verified = branches.filter((b) => verifyRemoteBranchOrigin(ROOT, b, { spawnImpl }).ok);
+    if (verified.length === 0) {
+        return { ok: false, reason: `branch-origin-unverified:${prefix}*`, branchOriginVerified: false };
+    }
+    if (verified.length === 1) {
+        return { ok: true, branch: verified[0], reason: 'single-verified', branchOriginVerified: true };
+    }
+
+    // (4) >1 verificadas → desambiguar por commits-ahead sobre origin/main.
+    // `verifyRemoteBranchOrigin` ya hizo `fetch` de cada rama a
+    // `refs/remotes/origin/<branch>`, así que `origin/<branch>` es resoluble local.
+    const scored = verified
+        .map((b) => ({ b, ahead: countCommitsAhead(ROOT, `origin/${b}`, { spawnImpl }) }))
+        .sort((a, z) => z.ahead - a.ahead);
+    const best = scored[0];
+    // Log auditado: solo nombre de rama + commits-ahead, nunca URLs con token (A08).
+    log?.(`🔀 #${issue}: ${verified.length} ramas verificadas — elijo ${best.b} (commits-ahead=${best.ahead})`);
+    return { ok: true, branch: best.b, reason: `disambiguated-commits-ahead:${best.ahead}`, branchOriginVerified: true };
+}
+
 /**
  * Verifica si una branch remota existe en `origin`. Usa `git ls-remote --heads`
  * con timeout corto — si la red está mal preferimos no auto-recoverear.
@@ -319,8 +413,26 @@ function verifyRemoteBranchOrigin(ROOT, branchName, { spawnImpl = spawnSync } = 
  * preguntar. Backup tag previo para preservar el SHA.
  */
 function attemptAutoRecovery(ROOT, issue, skill, { spawnImpl = spawnSync, fsImpl = fs, log } = {}) {
-    const branchName = `agent/${issue}-${skill}`;
-    const worktreePath = path.join(ROOT, '..', `platform.agent-${issue}-${skill}`);
+    // #4653 — Resolver la rama REAL del dev (`agent/<issue>-<slug>`) en vez de
+    // asumir `agent/<issue>-<skill>`. Para fases como `build`/`linteo` el skill
+    // NO nombra ninguna rama (la rama la nombró el dev con su slug), así que la
+    // fórmula fija generaba `remote-branch-missing` y un loop infra sin fin.
+    // `resolveDevBranch` ya aplica la verificación de procedencia
+    // (`verifyRemoteBranchOrigin`) sobre cada candidata ANTES de elegir — el gate
+    // de seguridad sigue en el camino de toda rama resuelta (no bypass).
+    const rd = resolveDevBranch(ROOT, issue, { spawnImpl, log });
+    if (!rd.ok) {
+        if (rd.branchOriginVerified === false) {
+            log?.(`⛔ auto-recovery rechazado: branch-origin-unverified (${rd.reason})`);
+        }
+        return { ok: false, reason: rd.reason, branchOriginVerified: rd.branchOriginVerified };
+    }
+
+    const branchName = rd.branch;
+    // El worktree del dev se llama `platform.agent-<issue>-<slug>` (deriva de la
+    // rama). Reescribimos el prefijo `agent/` → `platform.agent-`.
+    const worktreeBase = branchName.replace(/^agent\//, 'platform.agent-');
+    const worktreePath = path.join(ROOT, '..', worktreeBase);
 
     // Si el path ya existe (caso raro: la entrada de git desapareció pero el
     // directorio quedó) NO lo tocamos — preferimos abortar y que el operador
@@ -331,22 +443,12 @@ function attemptAutoRecovery(ROOT, issue, skill, { spawnImpl = spawnSync, fsImpl
             return {
                 ok: false,
                 reason: `worktree-path-exists-without-git-entry:${worktreePath}`,
-                branchOriginVerified: null,
+                branchOriginVerified: true,
             };
         }
     } catch {}
 
-    if (!remoteBranchExists(ROOT, branchName, { spawnImpl })) {
-        return { ok: false, reason: `remote-branch-missing:${branchName}`, branchOriginVerified: null };
-    }
-
-    const verif = verifyRemoteBranchOrigin(ROOT, branchName, { spawnImpl });
-    if (!verif.ok) {
-        log?.(`⛔ auto-recovery rechazado: branch-origin-unverified (${verif.reason})`);
-        return { ok: false, reason: `branch-origin-unverified:${verif.reason}`, branchOriginVerified: false };
-    }
-
-    // Prune defensivo + best-effort backup tag de la branch local si existe.
+    // Prune defensivo antes del add.
     try { gitSpawn(['worktree', 'prune'], { cwd: ROOT, spawnImpl, timeout: 10000 }); } catch {}
 
     try {
@@ -358,12 +460,13 @@ function attemptAutoRecovery(ROOT, issue, skill, { spawnImpl = spawnSync, fsImpl
             '-B', branchName,
             `origin/${branchName}`,
         ], { cwd: ROOT, spawnImpl, timeout: 30000 });
-        log?.(`♻️ Worktree recuperado para #${issue}: ${worktreePath} (verif: ${verif.reason})`);
+        log?.(`♻️ Worktree recuperado para #${issue}: ${worktreePath} (branch: ${branchName}, ${rd.reason})`);
         return {
             ok: true,
             worktreePath,
+            branch: branchName,
             branchOriginVerified: true,
-            verificationReason: verif.reason,
+            verificationReason: rd.reason,
         };
     } catch (e) {
         return {
@@ -460,9 +563,12 @@ module.exports = {
     findIssueWorktree,
     countCommitsAhead,
     parseWorktreeList,
+    parseLsRemoteRefs,
+    resolveDevBranch,
     remoteBranchExists,
     verifyRemoteBranchOrigin,
     attemptAutoRecovery,
+    DEV_BRANCH_RE,
     WorktreeResolutionError,
     // Exports auxiliares para tests / herramientas operativas.
     PIPELINE_COMMITTER_ALLOWLIST,

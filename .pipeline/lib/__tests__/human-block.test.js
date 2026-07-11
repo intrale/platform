@@ -662,3 +662,56 @@ test('buildNeedHumanAudioText acota la longitud a 600 chars (CA-NF / G-3)', () =
     const txt = hb.buildNeedHumanAudioText({ reason: largo, question: largo });
     assert.ok(txt.length <= 600, `longitud ${txt.length} <= 600`);
 });
+
+// ---- mergeGithubBlockedLabels (#4653) ---------------------------------------
+
+test('mergeGithubBlockedLabels reconoce blocked:routing-manual y lo fusiona sin duplicar', () => {
+    // El issue #4632 está en la lista FS. GitHub también lo reporta con label
+    // blocked:routing-manual → NO debe duplicarse (se preserva la entrada FS).
+    const fsList = [
+        { issue: 4632, skill: 'build', phase: 'build', pipeline: 'desarrollo', reason: 'fs-context', age_hours: 3 },
+    ];
+    const ghList = [
+        { number: 4632, title: 'ya en FS', labels: [{ name: 'blocked:routing-manual' }] },
+        { number: 4581, title: 'solo en GitHub', labels: [{ name: 'blocked:routing-manual' }] },
+    ];
+    const merged = hb.mergeGithubBlockedLabels(fsList, ghList);
+    // 4632 (FS) + 4581 (GitHub) = 2, sin duplicar 4632.
+    assert.equal(merged.length, 2);
+    const n4632 = merged.filter((b) => b.issue === 4632);
+    assert.equal(n4632.length, 1, '4632 no se duplica');
+    assert.equal(n4632[0].reason, 'fs-context', 'se preserva el contexto FS más rico');
+    const n4581 = merged.find((b) => b.issue === 4581);
+    assert.ok(n4581, '4581 (solo GitHub) se agrega');
+    assert.equal(n4581.phase, 'routing-manual');
+    assert.equal(n4581.source, 'github-label');
+});
+
+test('mergeGithubBlockedLabels con FS vacío devuelve solo los de GitHub', () => {
+    const merged = hb.mergeGithubBlockedLabels([], [
+        { number: 4632, title: 't', labels: ['blocked:routing-manual'] },
+    ]);
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0].issue, 4632);
+    assert.equal(merged[0].reason, 't');
+});
+
+test('mergeGithubBlockedLabels ignora entradas sin número válido', () => {
+    const merged = hb.mergeGithubBlockedLabels([], [
+        { title: 'sin número' },
+        { number: 'abc' },
+        null,
+        { number: 4700, title: 'ok' },
+    ]);
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0].issue, 4700);
+});
+
+test('mergeGithubBlockedLabels es tolerante a args no-array', () => {
+    assert.deepEqual(hb.mergeGithubBlockedLabels(null, null), []);
+    assert.deepEqual(hb.mergeGithubBlockedLabels(undefined, undefined), []);
+});
+
+test('GITHUB_HUMAN_BLOCK_LABELS incluye blocked:routing-manual', () => {
+    assert.ok(hb.GITHUB_HUMAN_BLOCK_LABELS.includes('blocked:routing-manual'));
+});

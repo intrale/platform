@@ -23,6 +23,8 @@ const {
     findIssueWorktree,
     countCommitsAhead,
     parseWorktreeList,
+    parseLsRemoteRefs,
+    resolveDevBranch,
     remoteBranchExists,
     verifyRemoteBranchOrigin,
     attemptAutoRecovery,
@@ -386,6 +388,140 @@ test('verifyRemoteBranchOrigin — rechaza si fetch falla (conservador)', () => 
     assert.match(v.reason, /fetch-failed/);
 });
 
+// ---- parseLsRemoteRefs -------------------------------------------------------
+
+test('parseLsRemoteRefs — extrae nombres de rama sin refs/heads/', () => {
+    const out = [
+        '3ab808cd6e98a1dce2bc846d145f3d11ac91bd1c\trefs/heads/agent/4632-operator-absence-policy',
+        '894ffb3c20031acc8436e603fd1ed12427638b61\trefs/heads/agent/4632-pipeline-dev',
+    ].join('\n');
+    assert.deepEqual(parseLsRemoteRefs(out), [
+        'agent/4632-operator-absence-policy',
+        'agent/4632-pipeline-dev',
+    ]);
+});
+
+test('parseLsRemoteRefs — input vacío o basura devuelve []', () => {
+    assert.deepEqual(parseLsRemoteRefs(''), []);
+    assert.deepEqual(parseLsRemoteRefs(null), []);
+    assert.deepEqual(parseLsRemoteRefs('línea que no matchea\n'), []);
+});
+
+// ---- resolveDevBranch --------------------------------------------------------
+
+test('resolveDevBranch — resuelve la rama real cuando existe agent/<n>-<slug> y no agent/<n>-build (#4632)', () => {
+    // Caso #4632: la fase build busca su worktree pero la rama es el slug del dev,
+    // no `agent/4632-build`. Con una sola rama presente + verificada, la elige.
+    const spawnImpl = makeFakeSpawn([
+        { match: 'git ls-remote --heads origin refs/heads/agent/4632-*', stdout: 'aaa\trefs/heads/agent/4632-operator-absence-policy\n' },
+        { match: 'git fetch', stdout: '' },
+        { match: 'git log --reverse --format=%ae', stdout: 'noreply@anthropic.com\n' },
+    ]);
+    const r = resolveDevBranch('/repo', 4632, { spawnImpl });
+    assert.equal(r.ok, true);
+    assert.equal(r.branch, 'agent/4632-operator-absence-policy');
+    assert.equal(r.reason, 'single-verified');
+    assert.equal(r.branchOriginVerified, true);
+});
+
+test('resolveDevBranch — desambigua entre 2 ramas verificadas por más commits-ahead', () => {
+    // Caso real #4632: dos ramas de dev verificadas (operator-absence-policy +
+    // pipeline-dev). Elige la de más commits sobre origin/main.
+    const spawnImpl = makeFakeSpawn([
+        {
+            match: 'git ls-remote --heads origin refs/heads/agent/4632-*',
+            stdout: [
+                'aaa\trefs/heads/agent/4632-operator-absence-policy',
+                'bbb\trefs/heads/agent/4632-pipeline-dev',
+            ].join('\n') + '\n',
+        },
+        // ambas verifican por autor allowlisted
+        { match: 'git fetch', stdout: '' },
+        { match: 'git log --reverse --format=%ae', stdout: 'noreply@anthropic.com\n' },
+        // desambiguación por commits-ahead
+        { match: 'git rev-list --count origin/main..origin/agent/4632-operator-absence-policy', stdout: '5\n' },
+        { match: 'git rev-list --count origin/main..origin/agent/4632-pipeline-dev', stdout: '2\n' },
+    ]);
+    const r = resolveDevBranch('/repo', 4632, { spawnImpl });
+    assert.equal(r.ok, true);
+    assert.equal(r.branch, 'agent/4632-operator-absence-policy');
+    assert.match(r.reason, /disambiguated-commits-ahead:5/);
+    assert.equal(r.branchOriginVerified, true);
+});
+
+test('resolveDevBranch — elige la verificada aunque otra NO verificada tenga más commits (seguridad)', () => {
+    // La rama del atacante tiene MÁS commits, pero NO pasa la verificación de
+    // procedencia. El orden descubrir→verificar→desambiguar garantiza que nunca
+    // gana. No debe llamarse rev-list sobre la rama del atacante.
+    const spawnImpl = makeFakeSpawn([
+        {
+            match: 'git ls-remote --heads origin refs/heads/agent/4632-*',
+            stdout: [
+                'aaa\trefs/heads/agent/4632-legit-dev',
+                'bbb\trefs/heads/agent/4632-attacker',
+            ].join('\n') + '\n',
+        },
+        { match: 'git fetch --quiet --no-tags origin refs/heads/agent/4632-legit-dev', stdout: '' },
+        { match: 'git log --reverse --format=%ae origin/main..origin/agent/4632-legit-dev', stdout: 'noreply@anthropic.com\n' },
+        { match: 'git fetch --quiet --no-tags origin refs/heads/agent/4632-attacker', stdout: '' },
+        { match: 'git log --reverse --format=%ae origin/main..origin/agent/4632-attacker', stdout: 'attacker@evil.com\n' },
+        { match: 'git log --format=%B origin/main..origin/agent/4632-attacker', stdout: 'muchos commits maliciosos\n' },
+        // Solo la legit se puntúa por commits-ahead.
+        { match: 'git rev-list --count origin/main..origin/agent/4632-legit-dev', stdout: '1\n' },
+    ]);
+    const r = resolveDevBranch('/repo', 4632, { spawnImpl });
+    assert.equal(r.ok, true);
+    assert.equal(r.branch, 'agent/4632-legit-dev');
+    assert.equal(r.branchOriginVerified, true);
+});
+
+test('resolveDevBranch — 0 ramas pasan verificación → rechaza sin materializar (escala sin loop)', () => {
+    const spawnImpl = makeFakeSpawn([
+        { match: 'git ls-remote --heads origin refs/heads/agent/4632-*', stdout: 'bbb\trefs/heads/agent/4632-attacker\n' },
+        { match: 'git fetch', stdout: '' },
+        { match: 'git log --reverse --format=%ae', stdout: 'attacker@evil.com\n' },
+        { match: 'git log --format=%B', stdout: 'payload\n' },
+    ]);
+    const r = resolveDevBranch('/repo', 4632, { spawnImpl });
+    assert.equal(r.ok, false);
+    assert.equal(r.branchOriginVerified, false);
+    assert.match(r.reason, /branch-origin-unverified/);
+});
+
+test('resolveDevBranch — sin ninguna rama remota → remote-branch-missing (null)', () => {
+    const spawnImpl = makeFakeSpawn([
+        { match: 'git ls-remote --heads origin refs/heads/agent/4632-*', stdout: '' },
+    ]);
+    const r = resolveDevBranch('/repo', 4632, { spawnImpl });
+    assert.equal(r.ok, false);
+    assert.equal(r.branchOriginVerified, null);
+    assert.match(r.reason, /remote-branch-missing/);
+});
+
+test('resolveDevBranch — issue no numérico rechazado ANTES de tocar el remoto', () => {
+    let called = false;
+    const spawnImpl = () => { called = true; return { status: 0, stdout: '', stderr: '', error: null }; };
+    assert.throws(
+        () => resolveDevBranch('/repo', '4632;rm -rf /', { spawnImpl }),
+        (e) => e.code === 'INVALID_ISSUE',
+    );
+    assert.equal(called, false, 'No debe ejecutar git ante issue adversarial');
+});
+
+test('resolveDevBranch — descarta refs con metacaracteres (shape DEV_BRANCH_RE)', () => {
+    // Un ref remoto con shape inválida (opción de git / metacaracter) se descarta
+    // en el filtro estructural → como si no hubiera candidatas.
+    const spawnImpl = makeFakeSpawn([
+        {
+            match: 'git ls-remote --heads origin refs/heads/agent/4632-*',
+            stdout: 'ccc\trefs/heads/agent/4632---upload-pack=evil\n',
+        },
+    ]);
+    const r = resolveDevBranch('/repo', 4632, { spawnImpl });
+    assert.equal(r.ok, false);
+    assert.match(r.reason, /remote-branch-missing/);
+});
+
 // ---- attemptAutoRecovery -----------------------------------------------------
 
 test('attemptAutoRecovery — branch verificada → worktree add OK', () => {
@@ -432,14 +568,19 @@ test('attemptAutoRecovery — remote no verificado → abort branchOriginVerifie
 });
 
 test('attemptAutoRecovery — path ya existe sin entry git → NO auto-borra', () => {
+    // #4653 — la rama se resuelve y verifica ANTES del check de path (el path
+    // deriva del slug de la rama), así que ahora hay ls-remote+fetch+log.
     const spawnImpl = makeFakeSpawn([
-        // Importante: NO debe llamar ls-remote ni nada — chequea fs primero.
+        { match: 'git ls-remote', stdout: 'abc\trefs/heads/agent/2505-delivery\n' },
+        { match: 'git fetch', stdout: '' },
+        { match: 'git log --reverse --format=%ae', stdout: 'noreply@anthropic.com\n' },
     ]);
     const fsImpl = fakeFs(true);
     const result = attemptAutoRecovery('/repo', '2505', 'delivery', { spawnImpl, fsImpl });
     assert.equal(result.ok, false);
     assert.match(result.reason, /worktree-path-exists-without-git-entry/);
-    assert.equal(result.branchOriginVerified, null);
+    // Ya verificamos procedencia antes del abort por path existente.
+    assert.equal(result.branchOriginVerified, true);
 });
 
 // ---- resolveExistingWorktree -------------------------------------------------

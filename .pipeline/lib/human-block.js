@@ -251,6 +251,55 @@ function listBlockedIssues() {
     return result.sort((a, b) => b.age_hours - a.age_hours);
 }
 
+// #4653 — Labels de GitHub que implican "esperando intervención humana" pero que
+// NO siempre dejan un marker en `bloqueado-humano/` (p.ej. el Commander aplica
+// `blocked:routing-manual` sobre el issue sin tocar el filesystem del pipeline).
+// El handler `bloqueados` los subcontaba: la lista FS no los veía y respondía
+// "no hay bloqueados" aunque la tabla de la ola sí los contaba.
+const GITHUB_HUMAN_BLOCK_LABELS = ['blocked:routing-manual'];
+
+/**
+ * Fusiona la lista de bloqueos del filesystem (`listBlockedIssues()`) con issues
+ * que tienen labels `blocked:*` de intervención humana en GitHub. Dedup por
+ * número de issue: si el issue YA está en la lista FS (contexto más rico), se
+ * preserva la entrada FS y NO se duplica. Los issues que solo existen como label
+ * de GitHub se agregan con metadata mínima (`skill:'—'`, `phase:'routing-manual'`).
+ *
+ * Función pura y determinística → testeable sin tocar red ni disco.
+ *
+ * @param {Array}  fsList    Salida de `listBlockedIssues()` (o subconjunto).
+ * @param {Array}  ghIssues  Entradas `{ issue|number, title?, labels?, ... }`.
+ * @returns {Array} Lista fusionada, dedupeada por issue.
+ */
+function mergeGithubBlockedLabels(fsList, ghIssues) {
+    const merged = Array.isArray(fsList) ? fsList.slice() : [];
+    const seen = new Set(
+        merged.map((b) => Number(b && b.issue)).filter((n) => Number.isFinite(n)),
+    );
+    for (const gi of (Array.isArray(ghIssues) ? ghIssues : [])) {
+        if (!gi) continue;
+        const num = Number(gi.issue != null ? gi.issue : gi.number);
+        if (!Number.isFinite(num) || seen.has(num)) continue;
+        seen.add(num);
+        const labelNames = Array.isArray(gi.labels)
+            ? gi.labels.map((l) => (typeof l === 'string' ? l : (l && l.name))).filter(Boolean)
+            : [];
+        const blockLabel = labelNames.find((l) => GITHUB_HUMAN_BLOCK_LABELS.includes(l));
+        merged.push({
+            issue: num,
+            skill: gi.skill || '—',
+            phase: gi.phase || (blockLabel ? blockLabel.replace(/^blocked:/, '') : 'routing-manual'),
+            pipeline: gi.pipeline || null,
+            reason: gi.reason || gi.title || (blockLabel ? `Label ${blockLabel} en GitHub` : ''),
+            question: gi.question || '',
+            blocked_at: gi.blocked_at || null,
+            age_hours: Number.isFinite(gi.age_hours) ? gi.age_hours : 0,
+            source: 'github-label',
+        });
+    }
+    return merged;
+}
+
 // #4231 — Colas normales de fase (no bloqueado-humano). Un marker de fase en
 // cualquiera de estas colas representa trabajo del issue en esa etapa. La vista
 // del pipeline las lee como "trabajo activo".
@@ -775,6 +824,8 @@ module.exports = {
     unblockIssue,
     dismissBlockedIssue,
     listBlockedIssues,
+    mergeGithubBlockedLabels,
+    GITHUB_HUMAN_BLOCK_LABELS,
     listPhaseMarkers,
     PHASE_QUEUE_STATES,
     findActiveMarker,
