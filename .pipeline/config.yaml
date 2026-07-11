@@ -1524,6 +1524,37 @@ gates:
       worktree-reset:     proceed
       desync-autoresolve: proceed
 
+  # ===========================================================================
+  # Operador ausente — política de auto-proceder auditado (#4632, split de #4581)
+  # ===========================================================================
+  # Gobierna qué hace el pipeline cuando el operador está AUSENTE frente a un
+  # gate en estado `waiting-operator`. Default DURO: fail-closed (bloquear y
+  # esperar firma humana). El auto-proceder es una excepción acotada que SOLO se
+  # habilita con la escalera de seguridad completa (ver lib/operator-absence-policy.js).
+  #
+  # Invariantes NO configurables desde acá (hard-coded en el módulo):
+  #   - GATE 1 (Definición) y GATE 2 (Aceptación) NUNCA auto-proceden.
+  #   - Sin base de confianza vigente (#4576) → fail-closed puro para toda clase.
+  #
+  # Campos:
+  #   kill_switch: true  → apagado total de auto-proceder (default seguro).
+  #                        Basta con dejarlo en true para volver a fail-closed puro.
+  #   allowlist: []      → clases de bajo riesgo delegables. VACÍA = nada delegable.
+  #                        Config parcial/ausente == fail-closed (nunca fail-open).
+  #   confidence_index_ref → de dónde sale la base de confianza (#4576). Sólo
+  #                        documental: el módulo exige `confidenceIndex.vigente === true`
+  #                        provisto por el caller en runtime.
+  #   non_delegable_gates → documental/redundante: el hard-deny vive en código.
+  #
+  # Ver: docs/pipeline/operador-ausente.md
+  operator_absence:
+    kill_switch: true
+    allowlist: []
+    confidence_index_ref: ".pipeline/lib/confidence-index.js (#4576)"
+    non_delegable_gates:
+      - gate1
+      - gate2
+
 # #3488 (Spike #3378 H2) — Planificación multi-ola del skill /planner.
 #
 # Capacidad por ola: cuántos issues máximos entran cuando el operador ejecuta
