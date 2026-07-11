@@ -663,7 +663,14 @@ function auditQuickAction(entry = {}) {
             dir,
             filenamePrefix: 'human-block-actions',
             redact,
-            extraFields: ['issue', 'action', 'remote_address', 'message_id'],
+            // #4631 — campos de delegación para reconstrucción forense: quién actuó
+            // (delegate), en nombre de quién (grantor), sobre qué grant (grant_nonce)
+            // y si el uso fue delegado. Strings pasan por el redactor; `delegated` es
+            // booleano. NUNCA se reflejan en la respuesta HTTP/Telegram (solo audit).
+            extraFields: [
+                'issue', 'action', 'remote_address', 'message_id',
+                'delegated', 'delegate', 'grantor', 'grant_nonce',
+            ],
         });
         return audit.record({
             from: entry.from || null,
@@ -677,6 +684,11 @@ function auditQuickAction(entry = {}) {
             action: entry.action || null,
             remote_address: entry.remote_address || null,
             message_id: entry.message_id || null,
+            // Delegación (#4631): sólo presentes cuando el uso pasó por el gate delegado.
+            delegated: entry.delegated === true,
+            delegate: entry.delegate || null,
+            grantor: entry.grantor || null,
+            grant_nonce: entry.grant_nonce || null,
         });
     } catch (e) {
         try { process.stderr.write(`[human-block] auditQuickAction falló: ${e.message}\n`); } catch (_) {}

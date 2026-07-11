@@ -57,6 +57,12 @@ const DELEGABLE_GATE_CLASSES = Object.freeze([
     'quota-flag',
     'worktree-reset',
     'desync-autoresolve',
+    // #4631 (split de #4581) — clase delegable de las acciones rápidas del bloqueo
+    // humano (`needs-human`: unblock / mas-contexto / devolver-definicion /
+    // priorizar). Un grant firmado que incluye esta clase habilita a un operador
+    // delegado a ejercer esas acciones por Telegram, previa validación de identidad
+    // server-side en `human-block-action-handler.js`. GATE 1/2 siguen NO delegables.
+    'human-block-action',
 ]);
 
 // Clases PERMANENTEMENTE no delegables. Bloqueadas por constante de código:
