@@ -207,6 +207,9 @@ scripts/planner-plan.json
 # #2895 — caches de issue title/summary (refresca desde gh) — efímero
 .pipeline/.issue-title-cache.json
 .pipeline/.issue-summary-cache.json
+# #4631 — caches runtime de salud/reprobe de providers (mutan en cada corrida) — efímero.
+# Estaban trackeados y colisionaban en cada rebase de delivery. Se regeneran solos.
+.pipeline/cache/
 # #3489 — backups timestamped de waves.json (snapshots de planificación multi-ola).
 # Solo se versiona el HEAD de waves.json; archived/ es efímero por máquina.
 .pipeline/archived/

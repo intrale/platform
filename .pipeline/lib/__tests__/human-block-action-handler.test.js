@@ -12,9 +12,12 @@ const os = require('os');
 const path = require('path');
 const { EventEmitter } = require('events');
 
-const { handle } = require('../human-block-action-handler');
+const { handle, TOKEN_REASON_COPY } = require('../human-block-action-handler');
 const { createTokenSigner } = require('../action-token');
 const realHumanBlock = require('../human-block');
+// #4631 — módulos reales consumidos por el gate de identidad delegada.
+const grants = require('../delegation-grant');
+const { createAllowlist } = require('../operator-allowlist');
 
 function tmpNonceFile() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hbah-'));
@@ -188,4 +191,154 @@ test('happy-path: token válido ejecuta la acción y asienta audit authorized', 
     assert.ok(authd, 'auditó authorized');
     assert.equal(authd.from, 'dashboard-local', 'identidad server-derived');
     assert.equal(authd.remote_address, '127.0.0.1');
+});
+
+// =============================================================================
+// #4631 (split de #4581) — Gate de identidad delegada.
+// El modo delegado se activa SÓLO cuando el servidor inyecta `identityProvider`
+// (flujo de acción humana por Telegram). Fail-closed: sin identidad server-side
+// verificable, sin operador registrado, sin grant válido, con delegate distinto
+// o con scope fuera del grant, la acción NO se ejecuta y responde 401 con copy
+// genérico que no permite enumerar operadores.
+// =============================================================================
+
+const DEFAULT_OPERATORS = [
+    { id: 'leitolarreta', role: 'primary' }, // grantor
+    { id: 'backup-op', role: 'backup' },     // delegate habitual
+    { id: 'backup-2', role: 'backup' },       // otro operador registrado
+];
+
+// Construye deps en modo delegado: allowlist real compartida entre la autoridad
+// de grants y el handler, autoridad hermética con stores en tmp, y un grant
+// firmado emitido por el primary. `identityId` deriva la identidad server-side
+// (null → provider sin identidad). Devuelve también el grant para el payload.
+function makeDelegatedDeps({
+    identityId = 'backup-op', delegate = 'backup-op',
+    gateClasses = ['human-block-action'], operators = DEFAULT_OPERATORS,
+} = {}) {
+    const allowlist = createAllowlist({ operators });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hbah-del-'));
+    const authority = grants.createGrantAuthority({
+        secrets: { '1': 'grant-secret' },
+        activeSecretVersion: '1',
+        allowlist,
+        auditFile: path.join(dir, 'audit.jsonl'),
+        nonceFile: path.join(dir, 'used.jsonl'),
+        revocationFile: path.join(dir, 'revoked.jsonl'),
+    });
+    const issued = authority.issue({ grantor: 'leitolarreta', delegate, gateClasses });
+    assert.equal(issued.ok, true, `grant emitido (${JSON.stringify(issued)})`);
+    const signer = createTokenSigner({ secret: 'test-secret', nonceFile: tmpNonceFile() });
+    const hb = fakeHumanBlock();
+    const identityProvider = identityId === null ? () => null : () => ({ operatorId: identityId });
+    const deps = {
+        actionToken: signer, humanBlock: hb, log: () => {},
+        identityProvider, grantAuthority: authority, operatorAllowlist: allowlist,
+    };
+    return { deps, signer, hb, grant: issued.grant, authority, allowlist };
+}
+
+test('#4631 delegado coincidente + grant válido ejecuta la acción (200) y audita delegación', async () => {
+    const { deps, signer, hb, grant } = makeDelegatedDeps();
+    const token = signer.sign({ issue: 4631, action: 'unblock' });
+    const res = await run(fakeReq({ body: JSON.stringify({ issue: '4631', action: 'unblock', token, delegation: grant }) }), deps);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.ok, true);
+    assert.deepEqual(hb.executed, [{ issue: 4631, action: 'unblock' }]);
+    // La respuesta NO filtra datos de delegación (delegate/grantor/nonce).
+    assert.equal(res.body.delegate, undefined);
+    assert.equal(res.body.grantor, undefined);
+    // El audit sí deja evidencia forense de quién actuó y en nombre de quién.
+    const authd = hb.audited.find(a => a.result_status === 'authorized');
+    assert.ok(authd, 'auditó authorized');
+    assert.equal(authd.delegated, true);
+    assert.equal(authd.from, 'telegram-delegate');
+    assert.equal(authd.delegate, 'backup-op');
+    assert.equal(authd.grantor, 'leitolarreta');
+    assert.ok(authd.grant_nonce, 'registra el nonce del grant');
+});
+
+test('#4631 usuario NO registrado → 401 identity, no ejecuta ni filtra el id', async () => {
+    const { deps, signer, hb, grant } = makeDelegatedDeps({ identityId: 'ghost-999' });
+    const token = signer.sign({ issue: 4631, action: 'unblock' });
+    const res = await run(fakeReq({ body: JSON.stringify({ issue: '4631', action: 'unblock', token, delegation: grant }) }), deps);
+    assert.equal(res.statusCode, 401);
+    assert.equal(res.body.reason, 'identity');
+    assert.equal(hb.executed.length, 0, 'no ejecutó nada');
+    // Copy genérico: no expone el id del ejecutor ni motivo técnico.
+    assert.doesNotMatch(res.body.msg, /ghost|999/);
+    assert.ok(hb.audited.some(a => a.result_status === 'unauthorized' && a.delegated === true));
+});
+
+test('#4631 identidad ausente (provider sin identidad) → 401 identity fail-closed aunque el token sea válido', async () => {
+    const { deps, signer, hb, grant } = makeDelegatedDeps({ identityId: null });
+    const token = signer.sign({ issue: 4631, action: 'unblock' });
+    const res = await run(fakeReq({ body: JSON.stringify({ issue: '4631', action: 'unblock', token, delegation: grant }) }), deps);
+    assert.equal(res.statusCode, 401);
+    assert.equal(res.body.reason, 'identity');
+    assert.equal(hb.executed.length, 0);
+});
+
+test('#4631 ejecutor distinto del delegate del grant → 401 delegate-mismatch', async () => {
+    // grant emitido a backup-op, pero la identidad server-side es backup-2 (ambos registrados).
+    const { deps, signer, hb, grant } = makeDelegatedDeps({ identityId: 'backup-2', delegate: 'backup-op' });
+    const token = signer.sign({ issue: 4631, action: 'unblock' });
+    const res = await run(fakeReq({ body: JSON.stringify({ issue: '4631', action: 'unblock', token, delegation: grant }) }), deps);
+    assert.equal(res.statusCode, 401);
+    assert.equal(res.body.reason, 'delegate-mismatch');
+    assert.equal(hb.executed.length, 0);
+});
+
+test('#4631 scope fuera del grant → 401 delegate-mismatch fail-closed', async () => {
+    // grant válido para una clase delegable distinta (no human-block-action).
+    const { deps, signer, hb, grant } = makeDelegatedDeps({ gateClasses: ['realign-allowlist'] });
+    const token = signer.sign({ issue: 4631, action: 'unblock' });
+    const res = await run(fakeReq({ body: JSON.stringify({ issue: '4631', action: 'unblock', token, delegation: grant }) }), deps);
+    assert.equal(res.statusCode, 401);
+    assert.equal(res.body.reason, 'delegate-mismatch');
+    assert.equal(hb.executed.length, 0);
+});
+
+test('#4631 sin grant en el request → 401 delegate-mismatch (posesión de token no alcanza)', async () => {
+    const { deps, signer, hb } = makeDelegatedDeps();
+    const token = signer.sign({ issue: 4631, action: 'unblock' });
+    const res = await run(fakeReq({ body: JSON.stringify({ issue: '4631', action: 'unblock', token }) }), deps);
+    assert.equal(res.statusCode, 401);
+    assert.equal(res.body.reason, 'delegate-mismatch');
+    assert.equal(hb.executed.length, 0);
+});
+
+test('#4631 grant manipulado (firma inválida) → 401 delegate-mismatch', async () => {
+    const { deps, signer, hb, grant } = makeDelegatedDeps();
+    // Escalar scope manteniendo la firma original rompe la verificación HMAC.
+    const tampered = { payload: { ...grant.payload, gateClasses: ['realign-allowlist', 'human-block-action'] }, signature: grant.signature };
+    const token = signer.sign({ issue: 4631, action: 'unblock' });
+    const res = await run(fakeReq({ body: JSON.stringify({ issue: '4631', action: 'unblock', token, delegation: tampered }) }), deps);
+    assert.equal(res.statusCode, 401);
+    assert.equal(res.body.reason, 'delegate-mismatch');
+    assert.equal(hb.executed.length, 0);
+});
+
+test('#4631 el gate delegado NO saltea los controles previos de token (token inválido → 401 invalid)', async () => {
+    const { deps, hb, grant } = makeDelegatedDeps();
+    const res = await run(fakeReq({ body: JSON.stringify({ issue: '4631', action: 'unblock', token: 'v1.bad.sig', delegation: grant }) }), deps);
+    assert.equal(res.statusCode, 401);
+    assert.equal(res.body.reason, 'invalid');
+    assert.equal(hb.executed.length, 0);
+});
+
+test('#4631 copy de identity y delegate-mismatch es genérico e idéntico (no enumeración de operadores)', () => {
+    assert.equal(TOKEN_REASON_COPY.identity, TOKEN_REASON_COPY['delegate-mismatch']);
+    assert.doesNotMatch(TOKEN_REASON_COPY.identity, /\d/, 'sin IDs numéricos');
+    assert.match(TOKEN_REASON_COPY.identity, /seguridad/i);
+});
+
+test('#4631 modo directo: sin identityProvider, la delegation del payload se ignora (no-regresión)', async () => {
+    const { signer, hb, deps } = makeDeps(); // sin identityProvider → modo directo legacy
+    const token = signer.sign({ issue: 10, action: 'unblock' });
+    const res = await run(fakeReq({ body: JSON.stringify({ issue: '10', action: 'unblock', token, delegation: { payload: {}, signature: 'x' } }) }), deps);
+    assert.equal(res.statusCode, 200);
+    const authd = hb.audited.find(a => a.result_status === 'authorized');
+    assert.equal(authd.from, 'dashboard-local');
+    assert.notEqual(authd.delegated, true, 'no marca delegated en modo directo');
 });
