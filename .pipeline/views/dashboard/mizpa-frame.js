@@ -280,6 +280,8 @@ const MIZPA_FRAME_CSS = `
 .mz-tl-cap-l { font-size: 9.5px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#8b949e); }
 .mz-tl-cap-v { font-size: 15px; font-weight: 800; margin-top: 2px; line-height: 1; font-variant-numeric: tabular-nums; }
 .mz-tl-cap-s { font-size: 10px; color: var(--in-fg-dim,#8b949e); margin-top: 2px; }
+/* #4588 — línea del ETA descompuesto (firma del operador). */
+.mz-tl-cap-decomp { font-size: 10.5px; font-weight: 700; color: var(--brand-cyan,#34D9E0); margin-top: 3px; line-height: 1.35; font-variant-numeric: tabular-nums; max-width: 260px; }
 .mz-tl-cap .mz-wm-u { font-size: 11px; color: var(--in-fg-dim,#8b949e); font-weight: 600; }
 .mz-tl-cap-mid .mz-prog-pct { font-size: 22px; }
 .mz-tl-track { position: relative; margin-top: 34px; height: 8px; }
