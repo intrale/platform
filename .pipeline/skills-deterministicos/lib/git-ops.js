@@ -531,6 +531,54 @@ function rebaseAbort(cwd) {
     return runGit(['rebase', '--abort'], { cwd });
 }
 
+// #4658 — Integración por merge (no rebase). El rebase local reescribe commits
+// y explota con conflictos FICTICIOS aunque el merge real (server-side squash)
+// sea limpio (caso #4632). `mergeInto` trae `base` a la rama con un merge-commit
+// (no reescribe historia), útil sólo si el diff del PR necesita `main` en la rama.
+//
+// R4 (seguridad): git se ejecuta con ARRAY de argumentos (execFile-style vía
+// runGit → spawnSync). `base` NUNCA se interpola en un string de shell — así un
+// nombre de rama derivado del título del issue no puede inyectar comandos.
+function mergeInto(cwd, base = 'origin/main', { noEdit = true, ffOnly = false } = {}) {
+    const args = ['merge'];
+    if (ffOnly) args.push('--ff-only');
+    else args.push('--no-ff');
+    if (noEdit) args.push('--no-edit');
+    args.push(base); // execFile-style: argumento posicional, no string de shell (R4)
+    return runGit(args, { cwd, timeoutMs: 60 * 1000 });
+}
+
+function mergeAbort(cwd) {
+    return runGit(['merge', '--abort'], { cwd });
+}
+
+// #4658 — Predice si `base` mergea limpio contra HEAD SIN mutar el árbol de
+// trabajo, usando `git merge-tree --write-tree` (git >= 2.38). Es la misma
+// operación 3-way que hará el squash server-side, así que un conflicto acá es
+// un conflicto REAL (no el ficticio del rebase). Semántica de exit codes de
+// merge-tree:
+//   - 0  → merge limpio.
+//   - 1  → conflictos reales (stdout lista los archivos en conflicto).
+//   - >1 → merge-tree no soportado / error (git viejo, ref inexistente): NO
+//          afirmamos nada; devolvemos supported=false para que el caller deje
+//          decidir a la señal autoritativa server-side (405/409).
+//
+// R4: `base` va como argv, nunca interpolado en shell.
+function isMergeable(cwd, base = 'origin/main') {
+    const r = runGit(['merge-tree', '--write-tree', 'HEAD', base], { cwd, timeoutMs: 60 * 1000 });
+    if (r.exit_code === 0) {
+        return { mergeable: true, supported: true, conflicts: [], raw: r };
+    }
+    if (r.exit_code === 1) {
+        // Con --write-tree, stdout = <tree-oid>\n seguido de mensajes informativos
+        // de conflicto. No parseamos nombres de forma frágil: exponemos el texto
+        // (truncado) para diagnóstico y marcamos mergeable=false.
+        const info = (r.stdout || '').split(/\r?\n/).slice(1).filter(Boolean).slice(0, 20);
+        return { mergeable: false, supported: true, conflicts: info, raw: r };
+    }
+    return { mergeable: null, supported: false, conflicts: [], raw: r };
+}
+
 function pushBranch(cwd, branch) {
     // --force-with-lease es seguro tras rebase (no pisa cambios ajenos al upstream conocido)
     // #2523 (rev-3): timeout subido de 2min a 5min. La red de Leo tarda ~90-120s
@@ -698,6 +746,9 @@ module.exports = {
     getPriorDeliveryRefs,
     rebaseOnto,
     rebaseAbort,
+    mergeInto,
+    mergeAbort,
+    isMergeable,
     pushBranch,
     pushAndVerify,
     decidePushOutcome,
