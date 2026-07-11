@@ -102,7 +102,20 @@ function deriveMissionOlaEta(d) {
     const velocitySource = !hasVelocity
         ? 'insufficient'
         : (data.etaSource === 'historical' ? 'historical' : 'measured');
-    return { avancePct, velocityPctPerHour, etaRemainingMin, etaFromVelocity, hasVelocity, velocityState, throughputPerDay, throughputState, velocityPctPerIssuePerMin, velocitySource };
+    // #4588 — ETA descompuesto: "si firmás ya" (pipeline-bound) vs "con tu latencia
+    // histórica de firma" (operador-bound). El gap = costo visible de los gates. El
+    // payload ya viene proyectado a campos públicos (SÓLO números). Literales inline:
+    // esta función se serializa vía `.toString()` al cliente (no referenciar módulo).
+    const ow = (data.operatorWait && typeof data.operatorWait === 'object' && data.operatorWait.enabled === true)
+        ? data.operatorWait : null;
+    const etaPipelineBoundMin = ow && Number.isFinite(ow.etaPipelineBoundMin) ? ow.etaPipelineBoundMin : null;
+    const etaOperatorBoundMin = ow && Number.isFinite(ow.etaOperatorBoundMin) ? ow.etaOperatorBoundMin : null;
+    const operatorGapMin = ow && Number.isFinite(ow.operatorGapMin) ? ow.operatorGapMin : null;
+    const operatorWaitTotalMin = ow && Number.isFinite(ow.totalWaitMin) ? ow.totalWaitMin : null;
+    const operatorPendingSignatures = (ow && ow.projected && Number.isFinite(ow.projected.pendingSignatures))
+        ? ow.projected.pendingSignatures : 0;
+    const operatorWaitState = ow ? 'measured' : 'sin datos suficientes';
+    return { avancePct, velocityPctPerHour, etaRemainingMin, etaFromVelocity, hasVelocity, velocityState, throughputPerDay, throughputState, velocityPctPerIssuePerMin, velocitySource, etaPipelineBoundMin, etaOperatorBoundMin, operatorGapMin, operatorWaitTotalMin, operatorPendingSignatures, operatorWaitState };
 }
 
 /**
@@ -133,6 +146,15 @@ function missionOlaEtaClientScript() {
     u.className = 'mz-wm-u';
     u.textContent = unitText;
     el.appendChild(u);
+  }
+  // #4588 — Formatea minutos a etiqueta compacta (Nm / Hh Mm). Reusa la MISMA
+  // convención que el ETA principal (mission-eta-value). null/negativo/NaN -> null.
+  function fmtMissionMin(v){
+    var x = Number(v);
+    if(!Number.isFinite(x) || x < 0) return null;
+    if(x < 60) return Math.round(x) + 'm';
+    var h = Math.floor(x/60), r = Math.round(x%60);
+    return r > 0 ? (h + 'h ' + r + 'm') : (h + 'h');
   }
   // #4500 — Sparkline de RITMO de entrega del Timeline. Grafica el DELTA entre
   // snapshots (derivada del avance), no el avance crudo monótono, para reflejar
@@ -264,6 +286,34 @@ function missionOlaEtaClientScript() {
         else if(x < 60) txt = Math.round(x) + 'm';
         else { var h = Math.floor(x/60), r = Math.round(x%60); txt = r>0 ? h+'h '+r+'m' : h+'h'; }
         if(ev.textContent !== txt) ev.textContent = txt;
+      }
+      // #4588 — ETA DESCOMPUESTO visible: hace tangible el costo de los gates de
+      // firma. Muestra "🖊️ firmás ya <pipeline-bound> → con tu firma
+      // <operador-bound> (+gap)". SÓLO cuando hay métrica de espera de operador
+      // ('measured'); sin datos se OCULTA (no ruido, degrada con gracia — CA-2).
+      // Render XSS-safe: textContent + números derivados, nunca innerHTML.
+      var decompEl = document.getElementById('mission-eta-decomp');
+      if(decompEl){
+        var pb = fmtMissionMin(m.etaPipelineBoundMin);
+        var obd = fmtMissionMin(m.etaOperatorBoundMin);
+        if(m.operatorWaitState === 'measured' && pb !== null && obd !== null){
+          var gapMin = Number(m.operatorGapMin);
+          var gapTxt = fmtMissionMin(m.operatorGapMin);
+          var pend = Number(m.operatorPendingSignatures) || 0;
+          var dtxt;
+          if(Number.isFinite(gapMin) && gapMin > 0){
+            dtxt = '🖊️ firmás ya ' + pb + ' → con tu firma ' + obd + (gapTxt ? ' (+' + gapTxt + ')' : '');
+          } else {
+            dtxt = '🖊️ firmás ya ' + pb + ' · sin espera de firma pendiente';
+          }
+          if(pend > 0){ dtxt += ' · ' + pend + ' pendiente' + (pend > 1 ? 's' : ''); }
+          if(decompEl.textContent !== dtxt) decompEl.textContent = dtxt;
+          if(decompEl.style.display !== '') decompEl.style.display = '';
+          var albl = 'ETA descompuesto: firmando ya ' + pb + ', con tu latencia histórica de firma ' + obd;
+          if(decompEl.getAttribute('aria-label') !== albl) decompEl.setAttribute('aria-label', albl);
+        } else {
+          if(decompEl.style.display !== 'none') decompEl.style.display = 'none';
+        }
       }
       // #4500 — sparkline de ritmo. La serie viaja en el payload crudo d.series
       // (whitelist numerico del route), no en el objeto derivado m.

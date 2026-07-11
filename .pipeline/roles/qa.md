@@ -25,7 +25,7 @@ El Pulpo te pasa la variable `QA_MODE` que determina qué tipo de QA ejecutar:
 if QA_MODE == "api":
     → Ir a sección "QA-API (backend sin emulador)"
 elif QA_MODE == "structural":
-    → Ir a sección "QA Estructural"
+    → Primero aplicar "Preflight de UI visible"; si no aplica, ir a "QA Estructural"
 else (QA_MODE == "android" o vacío):
     → Ir a sección "QA-Android (UI con emulador)"
 ```
@@ -58,6 +58,30 @@ Verificar: 1) Conectividad de red  2) Estado del deploy en Lambda  3) gh workflo
 
 Para verificar emulador (solo QA_MODE=android): `node .pipeline/qa-environment.js status`
 Si el emulador no esta levantado: avisar en el resultado (NO intentar levantarlo vos).
+
+---
+
+## Preflight de UI visible (bloqueante para QA_MODE=structural)
+
+Antes de aceptar `QA_MODE=structural`, verificá labels y diff:
+
+```bash
+gh issue view $QA_ISSUE --json labels
+git diff --name-only origin/main..HEAD
+git diff --unified=0 origin/main..HEAD -- .pipeline/dashboard.js .pipeline/lib/mission-ola-eta.js .pipeline/views/dashboard 2>/dev/null
+```
+
+Si el issue tiene `area:dashboard`, toca `dashboard.js`, `mission-ola-eta.js`,
+`views/dashboard/`, o cambia un banner/card/copy visible del dashboard, **NO podés
+cerrar como structural**, aunque el cambio viva bajo `.pipeline/`. En ese caso
+tenés que producir evidencia visual con audio narrado:
+
+- Render/video del dashboard visible en `.pipeline/logs/media/qa-<issue>.mp4`.
+- Audio TTS integrado que narre qué criterios se verifican.
+- `video_size_kb`, `tiene_audio: true`, `evidencia` y `screenshot` en tu YAML.
+
+Si no podés generar esa evidencia, rechazá con motivo accionable; no apruebes
+como `structural`.
 
 ---
 

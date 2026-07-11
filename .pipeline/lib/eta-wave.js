@@ -46,6 +46,9 @@ const etaMarkers = require('./eta-markers');
 // #4532 — Serie histórica de velocidad cross-ola. Alimenta la estimación previa
 // de una ola nueva (sin snapshots propios) y persiste las muestras medidas.
 const velocityHistory = require('./wave-velocity-history');
+// #4588 — Métrica de espera de operador. Balde `waitOperatorMin` del lead time,
+// derivado de audit logs append-only (no gameable). Read-only, no rompe CA-14.
+const operatorWaitLib = require('./operator-wait');
 
 // ─── Constantes públicas ───────────────────────────────────────────────────
 
@@ -624,6 +627,71 @@ async function calculateOlaETA(issueList, concurrency) {
     };
 }
 
+// ─── calculateDecomposedOlaETA (#4588) ─────────────────────────────────────
+
+/** Normaliza un item de issueList a su número de issue, o null. */
+function _issueNumOf(item) {
+    if (typeof item === 'number') return isValidIssueNumber(item) ? item : null;
+    if (item && typeof item === 'object') {
+        const n = item.number != null ? item.number : item.issue;
+        return isValidIssueNumber(n) ? n : null;
+    }
+    return null;
+}
+
+/**
+ * ETA descompuesto de la ola en dos lecturas (diseño #4588 · gates-firma-operador):
+ *   - **pipeline-bound** ("ETA si firmás ya"): sólo trabajo de agente activo.
+ *     Es exactamente el `totalP50/75/90` de `calculateOlaETA`, que deriva de los
+ *     tiempos de fase de `metrics-history` (agente activo) — NO incluye la espera
+ *     de operador (CA-3: la velocidad de pipeline la excluye).
+ *   - **operador-bound** ("ETA con tu latencia histórica de firma"): pipeline-bound
+ *     + la espera de operador PENDIENTE proyectada. El `gap` entre ambos es el
+ *     costo visible de los gates.
+ *
+ * La métrica agregada de espera de operador (total, por gate, distribución de
+ * latencia) viaja en `operatorWait` para el banner/API (CA-2/CA-4).
+ *
+ * Read-only y defensivo: si la métrica de operador falla (audit corrupto, etc.)
+ * degrada a `operatorWait: null` y ambos ETAs colapsan al pipeline-bound, nunca
+ * rompe el cálculo de ola (robustez / no tumbar el pipeline).
+ *
+ * @param {Array<number|{number:number,size?:string}>} issueList
+ * @param {number} [concurrency]
+ * @param {object} [opts] — { operatorWaitOpts } inyectable para tests.
+ */
+async function calculateDecomposedOlaETA(issueList, concurrency, opts = {}) {
+    const ola = await calculateOlaETA(issueList, concurrency);
+    const issueNums = (Array.isArray(issueList) ? issueList : [])
+        .map(_issueNumOf)
+        .filter((n) => n !== null);
+
+    let operatorWait = null;
+    let projection = { projectedWaitMin: 0, perSignatureMin: null, pendingSignatures: 0, overdueSignatures: 0 };
+    try {
+        operatorWait = operatorWaitLib.calculateOperatorWait(issueNums, opts.operatorWaitOpts || {});
+        projection = operatorWaitLib.projectPendingOperatorWait(operatorWait);
+    } catch (e) {
+        try { console.warn(`[eta-wave] operator-wait no disponible: ${e && e.message}`); } catch {}
+        operatorWait = null;
+    }
+
+    const projectedWaitMin = Number.isFinite(projection.projectedWaitMin) ? projection.projectedWaitMin : 0;
+    const etaPipelineBoundMin = ola.totalP50;
+    const etaOperatorBoundMin = Math.round(ola.totalP50 + projectedWaitMin);
+
+    return {
+        ...ola,
+        // Dos ETAs (CA-2) + métrica agregada (CA-4).
+        pipelineBound: { p50: ola.totalP50, p75: ola.totalP75, p90: ola.totalP90 },
+        etaPipelineBoundMin,
+        etaOperatorBoundMin,
+        operatorGapMin: Math.round(projectedWaitMin),
+        operatorWait,                 // { totalWaitMin, byGate, byIssue, waitingNow, operatorLatency, ... }
+        projectedOperatorWait: projection,
+    };
+}
+
 // ─── Streaming wave-progress.jsonl (#4039, read-only) ──────────────────────
 
 /**
@@ -865,6 +933,7 @@ module.exports = {
     // API pública (CA-1)
     calculateIssueETA,
     calculateOlaETA,
+    calculateDecomposedOlaETA,  // #4588 — ETA pipeline-bound vs operador-bound
     calculateWaveVelocityETA,   // #4039 — ETA por velocidad media del conjunto
     calculateWaveThroughput,    // #4450 — throughput de entrega (issues/día)
     analyzeHistoricalMetrics,

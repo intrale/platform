@@ -241,6 +241,7 @@ const SAFE_IGNORE_2551 = new RegExp(
         '\\.pipeline\\/logs\\/.*',
         '\\.pipeline\\/locks\\/.*',
         '\\.pipeline\\/ready\\/.*',
+        '\\.pipeline\\/cache\\/.*',
         '\\.pipeline\\/audit\\/.*',
         '\\.pipeline\\/audio\\/.*',
         '\\.pipeline\\/archivado\\/.*',
@@ -269,6 +270,15 @@ test('#3922 — SAFE_IGNORE captura .pipeline/ready/*.ready (estado de runtime)'
     assert.equal(SAFE_IGNORE_2551.test('.pipeline/ready/dashboard.ready'), true);
     assert.equal(SAFE_IGNORE_2551.test('.pipeline/ready/pulpo.ready'), true);
     assert.equal(SAFE_IGNORE_2551.test('.pipeline/ready/svc-telegram.ready'), true);
+});
+
+test('#4588 — SAFE_IGNORE captura .pipeline/cache/* (health caches de providers, estado volátil)', () => {
+    // Causa raíz del rebote de #4588: una corrida previa de delivery detectó
+    // .pipeline/cache/codex-reprobe.json como tracked-modified, lo commiteó y el
+    // rebase contra main chocó (mismo archivo, timestamps distintos). Es cache de
+    // runtime regenerable, no contenido de feature.
+    assert.equal(SAFE_IGNORE_2551.test('.pipeline/cache/codex-reprobe.json'), true);
+    assert.equal(SAFE_IGNORE_2551.test('.pipeline/cache/provider-health.json'), true);
 });
 
 test('#2551 CA-3 — SAFE_IGNORE captura qa/evidence/*', () => {

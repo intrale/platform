@@ -29,8 +29,44 @@ test('payload nulo/indefinido degrada a estructura neutra sin romper', () => {
             throughputState: 'insufficient',        // #4450 — estado explícito
             velocityPctPerIssuePerMin: null,        // #4532 — velocidad %/issue/min sin dato
             velocitySource: 'insufficient',         // #4532 — estado explícito
+            etaPipelineBoundMin: null,              // #4588 — ETA descompuesto sin dato
+            etaOperatorBoundMin: null,              // #4588
+            operatorGapMin: null,                   // #4588 — costo de gates sin dato
+            operatorWaitTotalMin: null,             // #4588 — espera de operador agregada
+            operatorPendingSignatures: 0,           // #4588
+            operatorWaitState: 'sin datos suficientes', // #4588 — estado explícito
         });
     }
+});
+
+test('#4588 — expone ETA descompuesto pipeline-bound vs operador-bound', () => {
+    const m = deriveMissionOlaEta({
+        etaSource: 'fallback',
+        totalPct: 40,
+        totalP50: 90,
+        velocityETA: null,
+        operatorWait: {
+            enabled: true,
+            etaPipelineBoundMin: 90,
+            etaOperatorBoundMin: 135,
+            operatorGapMin: 45,
+            totalWaitMin: 60,
+            projected: { pendingSignatures: 2, overdueSignatures: 1 },
+        },
+    });
+    assert.equal(m.etaPipelineBoundMin, 90);
+    assert.equal(m.etaOperatorBoundMin, 135);
+    assert.equal(m.operatorGapMin, 45);            // gap = costo visible de los gates
+    assert.equal(m.operatorWaitTotalMin, 60);
+    assert.equal(m.operatorPendingSignatures, 2);
+    assert.equal(m.operatorWaitState, 'measured');
+});
+
+test('#4588 — operatorWait deshabilitado degrada a estado sin datos', () => {
+    const m = deriveMissionOlaEta({ etaSource: 'fallback', totalPct: 10, totalP50: 50, operatorWait: { enabled: false } });
+    assert.equal(m.etaPipelineBoundMin, null);
+    assert.equal(m.etaOperatorBoundMin, null);
+    assert.equal(m.operatorWaitState, 'sin datos suficientes');
 });
 
 test('modo velocity: expone avance %, velocidad %/h y ETA por velocidad', () => {
@@ -586,4 +622,92 @@ test('#4500 — guardia CSS: toda copia que estiliza .mz-mission también estili
         );
     }
     assert.ok(copies >= 5, `se esperaban ≥5 copias completas del CSS del banner, se hallaron ${copies}`);
+});
+
+// -----------------------------------------------------------------------------
+// #4588 (rebote verificacion) — RENDER PROOF del ETA descompuesto.
+//
+// El rechazo previo confirmó que los campos descompuestos se CALCULABAN y viajaban
+// en el payload, pero NINGÚN nodo del DOM los renderizaba (gap de wiring). Este
+// test corre el client script REAL contra un DOM instrumentado con el nodo
+// `mission-eta-decomp` y prueba que:
+//   (a) con operatorWait 'measured' el nodo recibe texto legible y se hace visible;
+//   (b) sin métrica de operador el nodo queda oculto (display:none), sin ruido;
+//   (c) el texto es XSS-safe (sólo textContent + números/labels congelados).
+// -----------------------------------------------------------------------------
+
+test('#4588 (render-proof) — __applyMissionOlaEta escribe el ETA descompuesto en #mission-eta-decomp', () => {
+    const src = missionOlaEtaClientScript();
+    const decomp = { textContent: '', style: { display: 'none' }, _attrs: {},
+        setAttribute(k, v) { this._attrs[k] = v; }, getAttribute(k) { return this._attrs[k]; } };
+    const eta = { textContent: '' };
+    const elements = { 'mission-eta-decomp': decomp, 'mission-eta-value': eta };
+    const fakeDoc = {
+        getElementById: (id) => (Object.prototype.hasOwnProperty.call(elements, id) ? elements[id] : null),
+        createTextNode: (t) => ({ nodeValue: String(t) }),
+        createElement: () => ({ className: '', textContent: '', appendChild() {} }),
+    };
+    const fakeWin = {};
+    const runner = new Function('window', 'document', 'setInterval', src);
+    runner(fakeWin, fakeDoc, () => 0);
+    assert.equal(typeof fakeWin.__applyMissionOlaEta, 'function');
+
+    // (a) operatorWait measured con gap → nodo visible con ambos ETAs + gap + pendientes.
+    fakeWin.__applyMissionOlaEta({
+        etaSource: 'fallback', totalPct: 40, totalP50: 240,
+        operatorWait: {
+            enabled: true,
+            etaPipelineBoundMin: 240,   // 4h
+            etaOperatorBoundMin: 300,   // 5h
+            operatorGapMin: 60,         // +1h
+            totalWaitMin: 300,
+            projected: { pendingSignatures: 2 },
+        },
+    });
+    assert.notEqual(decomp.textContent, '', 'el nodo del ETA descompuesto DEBE recibir texto (no puede quedar vacío)');
+    assert.equal(decomp.style.display, '', 'el nodo debe hacerse visible (display distinto de none)');
+    assert.match(decomp.textContent, /4h/, 'muestra el ETA pipeline-bound (4h)');
+    assert.match(decomp.textContent, /5h/, 'muestra el ETA operador-bound (5h)');
+    assert.match(decomp.textContent, /\+1h/, 'muestra el gap (+1h) = costo de los gates');
+    assert.match(decomp.textContent, /2 pendientes/, 'muestra firmas pendientes');
+    assert.ok(decomp.getAttribute('aria-label'), 'expone aria-label accesible');
+
+    // (b) sin métrica de operador (enabled:false) → nodo oculto, sin texto ruidoso.
+    fakeWin.__applyMissionOlaEta({ etaSource: 'fallback', totalPct: 40, operatorWait: { enabled: false } });
+    assert.equal(decomp.style.display, 'none', 'sin datos de operador el nodo queda oculto');
+
+    // (c) gap 0 (sin firmas pendientes) pero measured → visible con leyenda "sin espera".
+    fakeWin.__applyMissionOlaEta({
+        etaSource: 'fallback', totalPct: 40, totalP50: 240,
+        operatorWait: {
+            enabled: true, etaPipelineBoundMin: 240, etaOperatorBoundMin: 240,
+            operatorGapMin: 0, totalWaitMin: 0, projected: { pendingSignatures: 0 },
+        },
+    });
+    assert.equal(decomp.style.display, '', 'measured con gap 0 igual se muestra (transparencia)');
+    assert.match(decomp.textContent, /sin espera de firma/, 'gap 0 → leyenda explícita, no un número vacío');
+});
+
+test('#4588 (render-proof) — el client script NO usa innerHTML para el ETA descompuesto', () => {
+    const src = missionOlaEtaClientScript();
+    assert.ok(src.includes('mission-eta-decomp'), 'el client script debe cablear el id mission-eta-decomp');
+    // El bloque del decomp usa textContent; ninguna asignación innerHTML en todo el emisor.
+    assert.ok(!/\.innerHTML\s*=/.test(src), 'no debe asignar innerHTML (XSS-safe)');
+});
+
+test('#4588 (SSR) — las vistas del banner declaran el nodo mission-eta-decomp', () => {
+    const viewsDir = path.join(__dirname, '..', '..', 'views', 'dashboard');
+    const files = fs.readdirSync(viewsDir).filter((f) => f.endsWith('.js'));
+    // Toda vista que monta el banner (declara mission-eta-value) DEBE declarar
+    // también el nodo del ETA descompuesto, sino ese banner nunca lo renderiza.
+    const bannerRe = /id=["']mission-eta-value["']|id=\['"]mission-eta-value\['"]|mission-eta-value/;
+    const decompRe = /mission-eta-decomp/;
+    let banners = 0;
+    for (const f of files) {
+        const s = fs.readFileSync(path.join(viewsDir, f), 'utf8');
+        if (!bannerRe.test(s)) continue;
+        banners++;
+        assert.ok(decompRe.test(s), `la vista ${f} monta el banner pero NO declara mission-eta-decomp (el ETA descompuesto no se vería)`);
+    }
+    assert.ok(banners >= 3, `se esperaban ≥3 vistas con el banner, se hallaron ${banners}`);
 });
