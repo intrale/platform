@@ -41,6 +41,10 @@ const waves = require('./waves');
 const auditLog = require('./audit-log');
 const recursivePromote = require('./allowlist-recursive-promote');
 const { notifyTelegram } = require('./notify-telegram');
+// #4578 — gate de coherencia a nivel ola. Se invoca como paso `wave-close`
+// ANTES de notificar/promover el cierre. INERTE salvo que config lo habilite
+// (`wave_coherence_gate.enabled`, default OFF).
+const waveCoherence = require('./wave-coherence-gate');
 
 const DEFAULT_GH_TIMEOUT_MS = 30000;
 
@@ -245,7 +249,7 @@ async function detectWaveComplete(config, { ghCall } = {}) {
  * @param {Function} deps.ghCall — invocador de `gh` (args array).
  * @returns {Promise<{action:string, [k:string]:any}>}
  */
-async function autoTransitionIfComplete(config, { ghCall } = {}) {
+async function autoTransitionIfComplete(config, { ghCall, collectDeliverables } = {}) {
     const cfg = (config && config.wave_auto_transition) || {};
 
     // CA-6 — kill switch maestro. Default conservador: si `enabled` no es
@@ -284,6 +288,69 @@ async function autoTransitionIfComplete(config, { ghCall } = {}) {
         from_wave: fromWave,
         to_wave: next ? next.number : null,
     });
+
+    // ── #4578 — Paso `wave-close`: gate de coherencia cross-issue ────────────
+    // Corre ANTES de notificar/promover el cierre, en AMBOS modos (notify/auto).
+    // INERTE salvo `wave_coherence_gate.enabled`. Fail-closed: si el veredicto
+    // NO es `pass` (requires-operator/fail), la ola se retiene en
+    // `waiting-operator` y NO se cierra — el veto lo decide el operador humano
+    // vía superficies #4579/#4580. Sin auto-cierre por timeout.
+    const coherenceCfg = (config && config.wave_coherence_gate) || {};
+    if (waveCoherence.isEnabled(coherenceCfg)) {
+        // Si la ola YA está retenida esperando al operador, no re-evaluar: el
+        // cierre queda pendiente de su decisión (idempotente entre ticks).
+        let alreadyWaiting = false;
+        try { alreadyWaiting = waves.isWaveWaitingOperator(); } catch { alreadyWaiting = false; }
+        if (alreadyWaiting) {
+            return { action: 'held_waiting_operator', from_wave: fromWave };
+        }
+        let coherence;
+        try {
+            const collector = typeof collectDeliverables === 'function'
+                ? collectDeliverables
+                : waveCoherence.collectWaveDeliverables;
+            const deliverables = collector(
+                (state.active_wave && state.active_wave.issues) || [],
+            );
+            coherence = waveCoherence.evaluateWaveCoherence({
+                wave: { number: fromWave, name: state.active_wave && state.active_wave.name },
+                deliverables,
+                config: coherenceCfg,
+                options: { actor: 'auto-transition' },
+            });
+        } catch (err) {
+            // Fail-closed: cualquier error del gate retiene el cierre.
+            coherence = { verdict: 'fail', reason: `gate_threw: ${err.message}`, conflicts: [], evidenceRef: null };
+        }
+        if (coherence.verdict !== 'pass') {
+            try {
+                waves.setWaveWaitingOperator(fromWave, {
+                    reason: coherence.reason,
+                    evidenceRef: coherence.evidenceRef,
+                    conflictsCount: (coherence.conflicts || []).length,
+                    updated_by: 'auto-transition',
+                });
+            } catch (err) {
+                safeAudit({ ...baseAudit(), action: 'coherence_hold_persist_failed', error: err.message });
+            }
+            notifyTelegram({
+                level: 'warn',
+                component: 'wave-coherence-gate',
+                message:
+                    `Ola ${fromWave} — esperando tu decisión de cierre (coherencia). ` +
+                    `Veredicto: ${coherence.verdict}. ${coherence.reason}`,
+            });
+            safeAudit({
+                ...baseAudit(),
+                action: 'coherence_hold',
+                verdict: coherence.verdict,
+                conflicts: (coherence.conflicts || []).length,
+                evidence_ref: coherence.evidenceRef,
+            });
+            return { action: 'coherence_hold', from_wave: fromWave, verdict: coherence.verdict };
+        }
+        safeAudit({ ...baseAudit(), action: 'coherence_pass', evidence_ref: coherence.evidenceRef });
+    }
 
     // ── CA-2 — modo notify (default): detecta, NO muta estado, notifica ──────
     if (mode === 'notify') {
