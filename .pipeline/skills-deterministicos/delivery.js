@@ -304,6 +304,13 @@ async function main() {
                     // commitean, el rebase de delivery choca contra la versión de main
                     // y rebota al agente por un conflicto puramente cosmético.
                     '\\.pipeline\\/ready\\/.*',
+                    // #4588: los caches de health de providers (codex-reprobe.json,
+                    // provider-health.json) son estado de runtime volátil que el
+                    // pipeline reescribe constantemente. Si delivery los stagea y
+                    // commitea, el rebase contra main choca contra la versión de
+                    // main (timestamps distintos) y rebota al agente por un conflicto
+                    // puramente cosmético. Mismo patrón que .pipeline/ready/.
+                    '\\.pipeline\\/cache\\/.*',
                     '\\.pipeline\\/audit\\/.*',
                     '\\.pipeline\\/audio\\/.*',
                     '\\.pipeline\\/archivado\\/.*',
