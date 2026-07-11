@@ -1572,6 +1572,16 @@ function* _genPipelineState() {
     state.bloqueadosStats = computeBloqueadosStats({});
   } catch {}
 
+  // #4580 — Bandeja "Esperando tu firma": los tres orígenes de firma del
+  // operador (waiting-operator/ · esperando-firma/ · GATE 3) unificados por
+  // lib/waiting-operator. Read-only: el lector valida el id (^\d+$, REQ-SEC-
+  // 4580-3) y redacta la evidencia (REQ-SEC-4580-5) antes de exponerla.
+  state.esperandoFirma = [];
+  try {
+    const waitingOperator = require('./lib/waiting-operator');
+    state.esperandoFirma = waitingOperator.listWaitingOperator();
+  } catch {}
+
   // #3957 (CA-3) — username PÚBLICO del bot de Telegram para el deep-link de
   // cada fila. Validado contra el charset de Telegram antes de exponerlo; si
   // falta/inválido queda undefined y la vista no renderiza el deep-link.
@@ -3620,7 +3630,14 @@ function generateHTML(state) {
     ? bloqueadosView.renderBloqueadosSsr(state)
     : '';
 
+  // #4580 — panel "Esperando tu firma" junto al de Bloqueados. Degrada a string
+  // vacío si el require de la vista falló (no rompe la página).
+  const esperandoFirmaHTML = (esperandoFirmaView && typeof esperandoFirmaView.renderEsperandoFirmaSsr === 'function')
+    ? esperandoFirmaView.renderEsperandoFirmaSsr(state)
+    : '';
+
   const matrixHTML = `
+    ${esperandoFirmaHTML}
     ${bloqueadosHTML}
     <a id="board-kanban" class="board-kanban-anchor" aria-hidden="true"></a>
     <div class="matrix-section section-collapsible board-kanban-centerpiece" id="issue-tracker" data-section="issue-tracker">
@@ -9564,6 +9581,49 @@ function toggleInfraHealth() {
   } catch (e) {}
 })();
 
+// #4580 — Bandeja "Esperando tu firma". Handlers del panel de firma del operador.
+// REQ-SEC-4580-1: la acción es POST-only + X-CSRF-Token same-origin (GET token →
+// POST decide). El dashboard NO muta estado: reenvía la decisión al backend de
+// firma (#4579) que delega la transición al kernel.
+function toggleEsperandoFirmaPanel() {
+  var p = document.getElementById('esperando-firma-panel');
+  if (!p) return;
+  var collapse = !p.classList.contains('ef-collapsed');
+  p.classList.toggle('ef-collapsed');
+  try { localStorage.setItem('ef-panel-collapsed', collapse ? '1' : '0'); } catch (e) {}
+}
+(function restoreEsperandoFirmaPanel() {
+  try {
+    if (localStorage.getItem('ef-panel-collapsed') === '1') {
+      var p = document.getElementById('esperando-firma-panel');
+      if (p) p.classList.add('ef-collapsed');
+    }
+  } catch (e) {}
+})();
+function efDisableRow(issueNum) {
+  var row = document.getElementById('esperando-firma-row-' + issueNum);
+  if (row) { row.querySelectorAll('button').forEach(function (b) { b.disabled = true; }); }
+}
+async function gateSignatureDecide(issueNum, decision) {
+  var verbo = decision === 'aprobar' ? 'Aprobar' : 'Rechazar';
+  if (!window.confirm(verbo + ' la firma del issue #' + issueNum + '?')) return;
+  efDisableRow(issueNum);
+  try {
+    var t = await fetch('/api/gate-signature/csrf-token', { cache: 'no-store' });
+    var tj = await t.json();
+    var token = tj && tj.csrf_token;
+    if (!token) { alert('No pude obtener el token CSRF; recargá y reintentá.'); location.reload(); return; }
+    var r = await fetch('/api/gate-signature/decide', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+      body: JSON.stringify({ issue: issueNum, decision: decision })
+    });
+    var j = await r.json();
+    if (j && j.ok) { location.reload(); }
+    else { alert('Error firmando #' + issueNum + ': ' + ((j && j.msg) || 'desconocido')); location.reload(); }
+  } catch (e) { alert('Error firmando #' + issueNum + ': ' + e.message); location.reload(); }
+}
+
 // Toggle del panel "Necesitan intervención humana" — colapsable + persistente
 function toggleNeedsHumanPanel(scrollOnExpand) {
   const panel = document.getElementById('bloqueados-humano');
@@ -11333,6 +11393,16 @@ try { historialView = require('./views/dashboard/historial'); } catch (e) { log(
 let bloqueadosView = null;
 try { bloqueadosView = require('./views/dashboard/bloqueados'); } catch (e) { log(`bloqueados view unavailable: ${e.message}`); }
 
+// #4580 — Bandeja "Esperando tu firma" (gates de firma del operador). Require
+// defensivo: si falla, el panel degrada a string vacío sin tirar el dashboard.
+let esperandoFirmaView = null;
+try { esperandoFirmaView = require('./views/dashboard/esperando-firma'); } catch (e) { log(`esperando-firma view unavailable: ${e.message}`); }
+
+// #4580 — Delegación de la firma del operador (POST /api/gate-signature/decide).
+// El dashboard encola el pedido; el kernel ejecuta la transición (CA-2).
+let gateSignatureRequest = null;
+try { gateSignatureRequest = require('./lib/gate-signature-request'); } catch (e) { log(`gate-signature-request unavailable: ${e.message}`); }
+
 // #3727 (split de #3715) — Vista Equipo extraída a su propio módulo SSR.
 // Patrón espejo de las vistas de arriba: si el require falla (typo, dep faltante),
 // generateHTML cae al fallback visible (<span class="empty-label">Equipo no
@@ -11863,6 +11933,71 @@ const server = http.createServer((req, res) => {
         });
         res.writeHead(decision.status, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify(combined));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // #4580 — Emisión del token CSRF para la firma del operador (REQ-SEC-4580-1).
+  // Mismo molde que /api/kill-agent/csrf-token (double-submit cookie compartida).
+  if (req.url === '/api/gate-signature/csrf-token' && req.method === 'GET') {
+    if (!killAgentCsrf) {
+      res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ ok: false, msg: 'CSRF no disponible' }));
+      return;
+    }
+    killAgentCsrf.issueTokenResponse(req, res);
+    return;
+  }
+
+  // #4580 — Acción de firma del operador (Aprobar/Rechazar) desde la bandeja
+  // "Esperando tu firma". Endpoint ENDURECIDO (REQ-SEC-4580-1), calca el patrón
+  // de /api/ops/restart-operativo:
+  //   1. Gate loopback/Origin/Content-Type (ops-restart-gate).
+  //   2. CSRF HMAC double-submit (kill-agent-csrf.requireCSRF).
+  // El dashboard NO muta `.pipeline/**` (CA-2): delega en gate-signature-request
+  // que encola el pedido para que el kernel (pulpo) ejecute la transición de
+  // forma idempotente (invariante "el adaptador pide, el kernel ejecuta").
+  if (req.url === '/api/gate-signature/decide' && req.method === 'POST') {
+    // 1. Gate loopback/Origin/Content-Type (fail-closed si el lib no cargó).
+    if (!_opsRestartGate) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, msg: 'gate de seguridad no disponible' }));
+    }
+    const gate = _opsRestartGate.checkGate(req);
+    if (!gate.ok) {
+      res.writeHead(gate.status, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, code: gate.code, msg: gate.msg }));
+    }
+    // 2. CSRF HMAC (fail-closed si el lib no cargó).
+    if (!killAgentCsrf) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, msg: 'CSRF no disponible' }));
+    }
+    if (!killAgentCsrf.requireCSRF(req, res)) return; // ya respondió 403
+    // 3. Delegación al backend de firma (nunca muta estado desde el dashboard).
+    if (!gateSignatureRequest) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, msg: 'backend de firma no disponible' }));
+    }
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const parsed = body ? JSON.parse(body) : {};
+        const out = gateSignatureRequest.enqueueDecision({
+          issue: parsed.issue,
+          decision: parsed.decision,
+          origen: parsed.origen,
+          actor: parsed.actor,
+          remoteAddress: (req.socket && req.socket.remoteAddress) || '',
+        });
+        log(`Action: gate-signature decide #${parsed.issue} → ${out.decision || parsed.decision} (${out.status}) ${out.msg}`);
+        res.writeHead(out.status || (out.ok ? 202 : 400), { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(out));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, msg: e.message }));
