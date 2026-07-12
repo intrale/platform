@@ -659,3 +659,101 @@ test('#2551 — exporta getDirtyState, parseGitStatusOutput, stashAll, stashPop,
     assert.equal(typeof ops.redactInline, 'function');
     assert.equal(typeof ops.isSensitivePath, 'function');
 });
+
+// ============================================================================
+// #4658 — Helpers de integración por merge (mergeInto/mergeAbort/isMergeable)
+// y reproducción del caso #4632 (merge limpio + rebase conflictivo).
+// ============================================================================
+
+// fs/os/path ya están declarados arriba (línea ~210).
+const { execFileSync } = require('node:child_process');
+
+test('#4658 — exporta mergeInto, mergeAbort, isMergeable', () => {
+    assert.equal(typeof ops.mergeInto, 'function');
+    assert.equal(typeof ops.mergeAbort, 'function');
+    assert.equal(typeof ops.isMergeable, 'function');
+});
+
+// Helper: monta un repo git real y determinístico en un tmpdir. Devuelve el path.
+function setupRepo() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-git4658-'));
+    const g = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' });
+    g('init', '-q');
+    g('config', 'user.email', 'test@intrale.local');
+    g('config', 'user.name', 'test');
+    g('config', 'commit.gpgsign', 'false');
+    return { dir, g };
+}
+
+test('#4658 CA-1 — isMergeable: rama que mergea LIMPIO no reporta conflicto (repro #4632: merge limpio + rebase conflictivo)', () => {
+    const { dir, g } = setupRepo();
+    // base: archivo con 3 líneas.
+    fs.writeFileSync(path.join(dir, 'file.txt'), '1\n2\n3\n');
+    g('add', '.'); g('commit', '-q', '-m', 'base');
+    // main avanza: línea 2 → "2main".
+    g('branch', '-m', 'main');
+    fs.writeFileSync(path.join(dir, 'file.txt'), '1\n2main\n3\n');
+    g('commit', '-qam', 'main cambia linea 2');
+    // rama de agente desde base: commit1 cambia línea 2 a "2branch", commit2 la
+    // deja igual a la de main ("2main"). El MERGE de endpoints es limpio (misma
+    // línea final que main); un REBASE replayearía commit1 y CHOCARÍA.
+    g('checkout', '-q', '-b', 'agent/4632-x', 'HEAD~1');
+    fs.writeFileSync(path.join(dir, 'file.txt'), '1\n2branch\n3\n');
+    g('commit', '-qam', 'branch commit1');
+    fs.writeFileSync(path.join(dir, 'file.txt'), '1\n2main\n3\n');
+    g('commit', '-qam', 'branch commit2 (converge con main)');
+
+    // El pre-check de delivery: merge-tree contra main. Debe ser LIMPIO.
+    const mc = ops.isMergeable(dir, 'main');
+    assert.equal(mc.supported, true, 'merge-tree debe estar soportado (git >= 2.38)');
+    assert.equal(mc.mergeable, true, 'el merge de endpoints es limpio → NO debe escalar/rebotar (repro #4632)');
+
+    // Prueba de contraste: un rebase REAL sobre main sí choca (el defecto viejo).
+    let rebaseConflicto = false;
+    try {
+        g('rebase', 'main');
+    } catch { rebaseConflicto = true; }
+    try { g('rebase', '--abort'); } catch {}
+    assert.equal(rebaseConflicto, true, 'el rebase sí conflictúa — confirmando que el viejo flujo rebotaba en falso');
+
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('#4658 CA-2 — isMergeable: conflicto de merge REAL se reporta como no-mergeable', () => {
+    const { dir, g } = setupRepo();
+    fs.writeFileSync(path.join(dir, 'file.txt'), 'base\n');
+    g('add', '.'); g('commit', '-q', '-m', 'base');
+    g('branch', '-m', 'main');
+    fs.writeFileSync(path.join(dir, 'file.txt'), 'main-version\n');
+    g('commit', '-qam', 'main edita');
+    g('checkout', '-q', '-b', 'agent/x', 'HEAD~1');
+    fs.writeFileSync(path.join(dir, 'file.txt'), 'branch-version\n');
+    g('commit', '-qam', 'branch edita la misma linea');
+
+    const mc = ops.isMergeable(dir, 'main');
+    assert.equal(mc.supported, true);
+    assert.equal(mc.mergeable, false, 'edición divergente de la misma línea → conflicto real');
+    assert.ok(Array.isArray(mc.conflicts));
+
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('#4658 — mergeInto trae main a la rama con merge-commit (--no-ff, no reescribe historia)', () => {
+    const { dir, g } = setupRepo();
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'a\n');
+    g('add', '.'); g('commit', '-q', '-m', 'base');
+    g('branch', '-m', 'main');
+    fs.writeFileSync(path.join(dir, 'b.txt'), 'b\n');
+    g('add', '.'); g('commit', '-q', '-m', 'main agrega b');
+    g('checkout', '-q', '-b', 'agent/x', 'HEAD~1');
+    fs.writeFileSync(path.join(dir, 'c.txt'), 'c\n');
+    g('add', '.'); g('commit', '-q', '-m', 'branch agrega c');
+
+    const res = ops.mergeInto(dir, 'main');
+    assert.equal(res.exit_code, 0, `merge limpio esperado: ${res.stderr}`);
+    // b.txt (de main) ahora está en la rama.
+    assert.ok(fs.existsSync(path.join(dir, 'b.txt')), 'mergeInto debe traer b.txt de main');
+    assert.ok(fs.existsSync(path.join(dir, 'c.txt')), 'c.txt de la rama se conserva');
+
+    fs.rmSync(dir, { recursive: true, force: true });
+});

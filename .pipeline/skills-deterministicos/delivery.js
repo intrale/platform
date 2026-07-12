@@ -6,6 +6,13 @@ const path = require('path');
 const trace = require('../lib/traceability');
 const git = require('./lib/git-ops');
 const codeowners = require('./lib/codeowners');
+// #4658 — Escalado fail-closed ante conflicto de merge REAL. Sólo CONSUMO de la
+// infra de operador ausente de #4632 (nunca la modificamos): política
+// (fail-closed + mensajería), audit tamper-evident y saneo de texto libre.
+const absencePolicy = require('../lib/operator-absence-policy');
+const absenceAudit = require('../lib/operator-absence-audit');
+const operatorGate = require('../lib/operator-gate');
+const { sanitizeReason } = require('../lib/kernel-actions-audit');
 
 // REPO_ROOT: ubicación central donde el pulpo escribe logs/heartbeats/markers.
 // Siempre apunta al checkout principal del monorepo (no al worktree del agente),
@@ -188,6 +195,186 @@ function tmpFile(prefix, content) {
     return file;
 }
 
+// ============================================================================
+// #4658 — Detección de conflicto de merge REAL y escalado fail-closed.
+// ============================================================================
+
+// classifyMergeFailure — decisión PURA sobre el outcome de `gh api .../merge`.
+// Separada de main() para testearse sin invocar gh. La API REST de GitHub
+// devuelve, ante integración no-limpia:
+//   - 405 (Method Not Allowed) → "Pull Request is not mergeable" (conflicto real).
+//   - 409 (Conflict)           → "Head branch was modified" / merge conflict.
+// Ese caso NO es un fallo de infra ni un rebote técnico: es un conflicto de
+// merge genuino que debe ESCALAR al operador (no rebotar a dev en loop). Todo
+// otro exit_code != 0 (red, auth, timeout, 5xx) sigue siendo rebote técnico.
+function classifyMergeFailure(res = {}) {
+    if (!res || res.exit_code === 0) return { conflict: false, httpStatus: null, reason: 'ok' };
+    const text = `${res.stderr || ''}\n${res.stdout || ''}`;
+    const httpMatch = text.match(/\bHTTP\s+(\d{3})\b/i);
+    const httpStatus = httpMatch ? parseInt(httpMatch[1], 10) : null;
+    // 405/409 son las señales autoritativas de "no mergeable" del merge squash.
+    if (httpStatus === 405 || httpStatus === 409) {
+        return { conflict: true, httpStatus, reason: `http_${httpStatus}` };
+    }
+    // Defensa textual: gh puede envolver el status en el cuerpo del error.
+    if (/\bnot\s+mergeable\b/i.test(text)
+        || /\bmerge\s+conflict\b/i.test(text)
+        || /\bhead\s+branch\s+was\s+modified\b/i.test(text)
+        || /\bbase\s+branch\s+was\s+modified\b/i.test(text)) {
+        return { conflict: true, httpStatus, reason: 'not_mergeable_text' };
+    }
+    return { conflict: false, httpStatus, reason: 'generic_error' };
+}
+
+// shouldEscalateLocalMerge — decisión PURA sobre el pre-check `git.isMergeable`.
+// Reproducción #4632: una rama cuyo merge server-side es limpio (merge-tree
+// mergeable=true) NO escala y NO rebota — aunque un rebase la haría chocar.
+// Sólo escala ante un conflicto REAL confirmado (supported && mergeable===false).
+// Si merge-tree no está soportado (mergeable=null), NO afirmamos nada acá:
+// dejamos la detección a la señal autoritativa server-side (Fase 5).
+function shouldEscalateLocalMerge(mergeCheck = {}) {
+    return mergeCheck.supported === true && mergeCheck.mergeable === false;
+}
+
+// buildConflictMotivo — motivo del rechazo pensado para que el pulpo lo trate
+// como BLOQUEO HUMANO (human-block.js → bloqueado-humano/ + needs-human) y NO
+// como rebote técnico a dev. Debe matchear HUMAN_BLOCK_PATTERNS: incluye
+// "requiere intervención humana" + "merge manual" a propósito.
+function buildConflictMotivo({ prNumber, branch, httpStatus } = {}) {
+    const pr = prNumber ? `PR #${prNumber}` : 'el PR';
+    const rama = branch ? ` (rama ${sanitizeReason(branch).sanitized})` : '';
+    const http = httpStatus ? ` [HTTP ${httpStatus}]` : '';
+    return (
+        `Conflicto de merge REAL contra main en ${pr}${rama}${http} — requiere intervención humana. `
+        + `Delivery frenado y escalado al operador: merge manual pendiente (fail-closed, sin auto-merge por silencio). `
+        + `Opciones: resolver (arreglarlo a mano) / abortar (descartar este delivery) / reintentar (reintentar el merge).`
+    );
+}
+
+// buildMergeConflictEscalation — mensaje Telegram para el operador. Sigue las
+// guidelines UX de #4658: (1) qué pasó en términos del operador — conflicto
+// REAL, no el ficticio de rebase; (2) qué hace cada opción; (3) cómo responder;
+// (4) main intacto (tono fail-closed de #4632); (5) contexto saneado del
+// conflicto (R5/R6: sanitizeReason redacta secrets + escapa CRLF).
+function buildMergeConflictEscalation({ issue, prNumber, branch, httpStatus, conflictExcerpt } = {}) {
+    const safe = (v) => sanitizeReason(v == null ? '' : String(v)).sanitized.replace(/[\r\n]+/g, ' ').slice(0, 300);
+    const excerpt = conflictExcerpt ? safe(conflictExcerpt).slice(0, 240) : '';
+    const lines = [
+        '🛑 GATE · Delivery frenado por CONFLICTO DE MERGE REAL — necesito que decidas',
+        `Issue/PR: #${safe(issue)} / ${prNumber ? `PR #${safe(prNumber)}` : '(sin PR)'}  ·  Rama: ${safe(branch)}`,
+        httpStatus ? `Señal server-side: HTTP ${safe(httpStatus)} (GitHub no puede mergear limpio).` : 'GitHub no puede mergear limpio.',
+        '',
+        'Esto NO es el conflicto ficticio de rebase que #4658 eliminó: es un conflicto de merge GENUINO contra `main`.',
+        '`main` quedó INTACTO. Nada se mergeó. Esta espera es intencional (fail-closed), no un fallo silencioso.',
+        '',
+        'Opciones:',
+        '• *resolver* — lo arreglás a mano (resolvés el conflicto y mergeás el PR vos).',
+        '• *abortar* — se descarta este delivery.',
+        '• *reintentar* — se reintenta el merge tal cual.',
+        '',
+        `Cómo responder: comentá en el issue "resolver #${safe(issue)}", "abortar #${safe(issue)}" o "reintentar #${safe(issue)}".`,
+        'El pipeline NO va a reintentar solo ni a auto-mergear por silencio (gate no delegable).',
+    ];
+    if (excerpt) {
+        lines.push('', `Contexto del conflicto: ${excerpt}`);
+    }
+    return lines.join('\n');
+}
+
+// enqueueOperatorTelegram — escribe un drop en la cola CENTRAL de Telegram que
+// lee el pulpo (REPO_ROOT/.pipeline/servicios/telegram/pendiente), NO en el
+// worktree del agente (donde delivery corre pero el pulpo no escanea).
+// Best-effort: NUNCA lanza (regla #1, el pipeline no puede morir).
+function enqueueOperatorTelegram(text) {
+    try {
+        const dir = path.join(REPO_ROOT, '.pipeline', 'servicios', 'telegram', 'pendiente');
+        fs.mkdirSync(dir, { recursive: true });
+        const rnd = Math.random().toString(36).slice(2, 8);
+        const id = `delivery-merge-conflict-${Date.now()}-${process.pid}-${rnd}`;
+        fs.writeFileSync(
+            path.join(dir, `${id}.json`),
+            JSON.stringify({ text, parse_mode: 'Markdown', _correlationId: id }),
+        );
+        return { ok: true, id };
+    } catch (e) {
+        return { ok: false, error: (e && e.message) ? String(e.message).slice(0, 200) : 'unknown' };
+    }
+}
+
+// authorizeOperatorResponse — CA-4/R1. Autoriza la respuesta del operador
+// (resolver/abortar/reintentar) contra la allowlist CERRADA de chat_ids. Un
+// chat_id desconocido NUNCA habilita re-merge (fail-closed). Delega en
+// operator-absence-policy.authorizeOperator (no rueda auth propia por
+// string-match). La allowlist default sale de operator-gate.resolveOperatorAllowlist.
+function authorizeOperatorResponse(chatId, allowlist) {
+    const source = allowlist !== undefined
+        ? allowlist
+        : operatorGate.resolveOperatorAllowlist(process.env);
+    // resolveOperatorAllowlist devuelve un Set; validateConfirmer espera Array.
+    const list = source instanceof Set ? Array.from(source) : source;
+    return absencePolicy.authorizeOperator(chatId, list);
+}
+
+// escalateMergeConflict — orquesta el escalado fail-closed (side-effects):
+//   1) Audit tamper-evident (CA-5/R3): appendDecision decision=fail-closed
+//      (hash-chain SHA-256; verificable con verifyChain). Se apunta al audit
+//      CENTRAL vía PIPELINE_DIR_OVERRIDE para que el operador lo revise en un
+//      único lugar. safe*: NUNCA lanza.
+//   2) Telegram fail-closed reusando buildFailClosedMessage de #4632 (CA-3) +
+//      mensaje con opciones (UX), ambos a la cola CENTRAL.
+// Devuelve { motivo } (human-block) para que el caller lo escriba en el marker.
+function escalateMergeConflict({ issue, prNumber, branch, httpStatus, conflictExcerpt, timestamp, logAppend } = {}) {
+    const log = typeof logAppend === 'function' ? logAppend : () => {};
+    const motivo = buildConflictMotivo({ prNumber, branch, httpStatus });
+
+    // (1) Audit central, tamper-evident. Override best-effort del pipelineDir.
+    const savedOverride = process.env.PIPELINE_DIR_OVERRIDE;
+    try {
+        process.env.PIPELINE_DIR_OVERRIDE = path.join(REPO_ROOT, '.pipeline');
+        const auditRes = absenceAudit.safeAppendDecision({
+            issue,
+            gate: 'delivery-merge',
+            clase: 'merge-a-main',
+            actor: 'kernel:absence-policy',
+            decision: 'fail-closed',
+            reason: motivo,
+            timestamp: timestamp || new Date().toISOString(),
+            extra: {
+                pr: prNumber || null,
+                branch: branch || null,
+                http_status: httpStatus || null,
+                conflict_excerpt: conflictExcerpt ? String(conflictExcerpt).slice(0, 500) : null,
+            },
+        });
+        log(`[delivery] audit fail-closed ${auditRes.ok ? 'OK' : `falló: ${auditRes.error}`}`);
+    } finally {
+        if (savedOverride === undefined) delete process.env.PIPELINE_DIR_OVERRIDE;
+        else process.env.PIPELINE_DIR_OVERRIDE = savedOverride;
+    }
+
+    // (2a) Notificación fail-closed canónica (reusa infra #4632, CA-3). Sólo
+    //      construimos el TEXTO (puro, sin dependencia de path) y lo encolamos
+    //      en la cola central nosotros — así no depende del __dirname del worktree.
+    try {
+        const failClosedText = absencePolicy.buildFailClosedMessage({
+            issue,
+            gate: 'delivery-merge',
+            clase: 'merge-a-main',
+            reason: absencePolicy.REASONS.GATE_NO_DELEGABLE,
+        });
+        enqueueOperatorTelegram(failClosedText);
+    } catch (e) {
+        log(`[delivery] aviso: no se pudo encolar fail-closed: ${(e && e.message || '').slice(0, 120)}`);
+    }
+
+    // (2b) Mensaje con opciones explícitas (UX #4658).
+    const optionsMsg = buildMergeConflictEscalation({ issue, prNumber, branch, httpStatus, conflictExcerpt });
+    const enq = enqueueOperatorTelegram(optionsMsg);
+    log(`[delivery] escalado operador ${enq.ok ? 'encolado' : `falló: ${enq.error}`}`);
+
+    return { motivo };
+}
+
 async function main() {
     const args = parseArgs(process.argv);
     const issue = args.issue;
@@ -353,20 +540,16 @@ async function main() {
         }
         phaseEnd('stage_commit', t);
 
-        // ── Fase 2: rebase contra origin/main ──────────────────────────
-        // #2519 (rev-2): el rebase necesita un árbol limpio. Después del commit
-        // pueden quedar archivos tracked-modified (heartbeats, agent-registry,
-        // activity-logger, metrics-history) que SAFE_IGNORE dejó fuera del
-        // staging — el pipeline sigue corriendo en paralelo y los reescribe.
-        // El --autostash original cubría tracked-modified pero NO untracked.
-        //
-        // #2551: cuando un skill previo (linter/review/po/ux) genera archivos
-        // nuevos (post-#2537 corren con cwd=worktree), aparecen como untracked
-        // y `git rebase --autostash` los deja afuera. Si main toca alguno de
-        // esos paths, rebase aborta con "untracked working tree files would
-        // be overwritten". Solución: stash explícito con --include-untracked
-        // ANTES de rebase, restaurar después en `finally`. Cleanup garantizado
-        // incluso ante crash entre stash y pop (CA-S2).
+        // ── Fase 2: integración contra origin/main (SIN rebase, #4658) ──
+        // #4658: se eliminó el rebase local gratuito. Rebasear reescribía commits
+        // y generaba conflictos FICTICIOS aunque el merge real fuese limpio
+        // (defecto de #4632 → loop de rebote a dev). El merge real es server-side
+        // (squash, Fase 5), que detecta los conflictos GENUINOS por sí mismo. Acá
+        // sólo hacemos fetch + un pre-check de mergeabilidad best-effort
+        // (`git merge-tree`, sin mutar el árbol) para escalar temprano un
+        // conflicto real. Ya no hace falta stash/pop de untracked (#2519/#2551):
+        // el pre-check no toca el working tree y el push de la rama propia del
+        // agente no requiere árbol limpio.
         t = phaseStart();
         const fetchRes = git.fetchOrigin(WORK_DIR);
         if (fetchRes.exit_code !== 0) {
@@ -432,75 +615,44 @@ async function main() {
             logAppend(`[delivery] cleanup stash huérfanos: ${orphans.map((o) => `${o.ref}(pid=${o.pid})`).join(', ')}`);
         }
 
-        // (b) Logging del estado git pre-rebase. Local sin redacción para
-        //     forense; categorías agregadas (sin paths) al log público.
-        //     CA-S1: paths sensibles se redactan en el snapshot que pueden
-        //     ver outputs visibles (motivo, marker, comentario PR, Telegram).
+        // (b) Logging del estado git para forense. Local sin redacción;
+        //     categorías agregadas (sin paths) al log público.
         const dirtyState = git.getDirtyState(WORK_DIR);
         const dirtyCounts = `tracked_modified=${dirtyState.tracked_modified.length} untracked=${dirtyState.untracked.length} ignored=${dirtyState.ignored.length}`;
-        logAppend(`[delivery] dirty state pre-rebase: ${dirtyCounts}`);
-        const rawStatus = git.runGit(['status', '--porcelain=v1'], { cwd: WORK_DIR }).stdout || '';
-        // Log local SIN redacción (CA-4 + CA-S1).
-        logAppend('[delivery] git status --porcelain (raw, local-only):');
-        for (const ln of rawStatus.split(/\r?\n/)) if (ln.trim()) logAppend(`    ${ln}`);
-        // Snapshot redactado: lo que verán outputs externos si el rebase falla.
-        const redactedStatus = git.redactSensitivePaths(rawStatus);
-        const hasSensitive = redactedStatus !== rawStatus;
-        if (hasSensitive) {
-            logAppend(`[delivery] ALERTA: detectados paths sensibles en worktree, se redactarán en outputs visibles`);
-        }
+        logAppend(`[delivery] dirty state pre-integración: ${dirtyCounts}`);
 
-        // (c) Stash explícito con --include-untracked. Etiqueta por PID para
-        //     que próximos runs puedan limpiar huérfanos.
-        const dirtyTotal = dirtyState.tracked_modified.length + dirtyState.untracked.length;
-        let stashed = false;
-        let stashMessage = null;
-        if (dirtyTotal > 0) {
-            const { message, result } = git.stashAll(WORK_DIR, { issue });
-            if (result.exit_code !== 0) {
-                throw new Error(
-                    `git stash falló: ${(result.stderr || result.stdout || '').slice(0, 300)}`,
-                );
-            }
-            stashed = true;
-            stashMessage = message;
-            logAppend(`[delivery] stash creado: ${message}`);
+        // (c) #4658 — SIN rebase local. El rebase reescribía commits y explotaba
+        //     con conflictos FICTICIOS aunque el merge real (squash server-side,
+        //     Fase 5) fuese limpio — exactamente el defecto de #4632. El squash
+        //     server-side ejecuta la misma operación 3-way que un merge y detecta
+        //     por sí mismo los conflictos REALES (405/409), así que el rebase
+        //     local sólo agregaba falsos positivos y un loop de rebote a dev.
+        //
+        //     Pre-check best-effort: `git merge-tree` predice localmente si la
+        //     integración contra origin/main es limpia, SIN mutar el árbol. Si
+        //     detecta un conflicto GENUINO, escalamos ANTES de crear un PR
+        //     condenado (fail-closed, sin rebote). Si merge-tree no está
+        //     soportado (git viejo / ref ausente), no afirmamos nada y dejamos
+        //     que la señal autoritativa server-side (Fase 5) decida.
+        const mergeCheck = git.isMergeable(WORK_DIR, 'origin/main');
+        if (shouldEscalateLocalMerge(mergeCheck)) {
+            const conflictExcerpt = git.redactInline((mergeCheck.conflicts || []).join(' | ').slice(0, 300));
+            logAppend(`[delivery] conflicto de merge REAL detectado (merge-tree) — escalando al operador sin rebote`);
+            const esc = escalateMergeConflict({
+                issue, prNumber: null, branch, httpStatus: null,
+                conflictExcerpt, logAppend,
+            });
+            motivo = esc.motivo;
+            exitCode = 1;
+            phaseEnd('integracion', t);
+            return; // finally: marker con motivo human-block → pulpo NO rebota, escala a needs-human
         }
-
-        // (d) Rebase sin --autostash (ya stasheamos arriba). En cleanup hacemos
-        //     stash pop, sea cual sea el resultado del rebase.
-        try {
-            const rebaseRes = git.rebaseOnto(WORK_DIR, 'origin/main', { autostash: false });
-            if (rebaseRes.exit_code !== 0) {
-                // Conflicto irresoluble — abortar para liberar el árbol antes de pop.
-                git.rebaseAbort(WORK_DIR);
-                // Motivo redactado: rebote visible no debe leakear paths sensibles
-                // (CA-4 + CA-S1). Incluye stderr resumido + snapshot del status.
-                const stderrRedacted = git.redactInline(
-                    (rebaseRes.stderr || rebaseRes.stdout || '').slice(0, 300),
-                );
-                const statusForMotivo = redactedStatus.split(/\r?\n/).filter(Boolean).slice(0, 5).join(' | ');
-                throw new Error(
-                    `Rebase conflict: ${stderrRedacted} [${dirtyCounts}${statusForMotivo ? ` status="${statusForMotivo}"` : ''}]`,
-                );
-            }
-            logAppend(`[delivery] rebase OK`);
-        } finally {
-            // (e) Cleanup garantizado del stash, incluso ante throw.
-            //     CA-S2: el finally se ejecuta SÍ o SÍ.
-            if (stashed) {
-                const popRes = git.stashPop(WORK_DIR);
-                if (popRes.exit_code !== 0) {
-                    // Conflict en pop: contenido transitorio del pipeline,
-                    // preferimos drop a dejarlo bloqueando futuros runs.
-                    const dropRes = git.stashDrop(WORK_DIR);
-                    logAppend(`[delivery] stash pop falló, drop ${dropRes.exit_code === 0 ? 'OK' : 'también falló'}: ${(popRes.stderr || '').slice(0, 200)}`);
-                } else {
-                    logAppend(`[delivery] stash pop OK (${stashMessage})`);
-                }
-            }
+        if (!mergeCheck.supported) {
+            logAppend(`[delivery] merge-tree no disponible (exit=${mergeCheck.raw && mergeCheck.raw.exit_code}) — se delega la detección al squash server-side`);
+        } else {
+            logAppend(`[delivery] pre-check merge-tree: integración limpia contra origin/main`);
         }
-        phaseEnd('rebase', t);
+        phaseEnd('integracion', t);
 
         // ── Fase 3: push ──────────────────────────────────────────────
         // #2523 (rev-3): pushAndVerify trata el caso "spawnSync devuelve error
@@ -627,6 +779,30 @@ async function main() {
                 '-f', `commit_title=${issueTitle} (#${prNumber})`,
             ], { cwd: WORK_DIR, timeoutMs: 3 * 60 * 1000 });
             if (mergeRes.exit_code !== 0) {
+                // #4658 — Discriminar el CONFLICTO DE MERGE REAL (405 not-mergeable
+                // / 409 head-changed) de un fallo genérico de infra (red, auth,
+                // 5xx). El squash server-side es idempotente y NO muta `main` si no
+                // puede mergear limpio (R7): ante conflicto real ESCALAMOS al
+                // operador (fail-closed, sin auto-merge) en vez de throw genérico
+                // → rebote a dev en loop. El 405/409 NO incrementa el circuit
+                // breaker: el motivo human-block hace que el pulpo lo derive a
+                // needs-human sin rev++.
+                const cls = classifyMergeFailure(mergeRes);
+                if (cls.conflict) {
+                    const conflictExcerpt = git.redactInline(
+                        (mergeRes.stderr || mergeRes.stdout || '').slice(0, 300),
+                    );
+                    logAppend(`[delivery] gh api merge → conflicto REAL (${cls.reason}) — escalando al operador sin rebote`);
+                    const esc = escalateMergeConflict({
+                        issue, prNumber, branch, httpStatus: cls.httpStatus,
+                        conflictExcerpt, logAppend,
+                    });
+                    motivo = esc.motivo;
+                    exitCode = 1;
+                    phaseEnd('pr_merge', t);
+                    return; // finally: marker con motivo human-block → NO rebota, escala a needs-human
+                }
+                // Fallo genérico (infra): rebote técnico legítimo como siempre.
                 throw new Error(`gh api merge falló: ${mergeRes.stderr.slice(0, 300) || mergeRes.stdout.slice(0, 300)}`);
             }
             // Response shape: {"sha":"<merge-commit-sha>","merged":true,"message":"..."}
@@ -775,6 +951,14 @@ module.exports = {
     getPRChangedPaths,
     applyNeedsHumanLabel,
     hasQaGate,
+    // #4658 — detección de conflicto real + escalado fail-closed.
+    classifyMergeFailure,
+    shouldEscalateLocalMerge,
+    buildConflictMotivo,
+    buildMergeConflictEscalation,
+    enqueueOperatorTelegram,
+    authorizeOperatorResponse,
+    escalateMergeConflict,
     QA_LABELS_OK,
     REPO_ROOT,
     WORK_DIR,
