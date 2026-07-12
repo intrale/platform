@@ -26,6 +26,10 @@ const {
 } = require('./pid-discovery');
 const { clearAllMarkers } = require('./lib/ready-marker');
 const { annotateAndMoveOrphans } = require('./lib/restart-orphan-annotator');
+// #4664 (Ola 9.1 · cutover de wiring) — el arranque del motor (pulpo/dashboard)
+// se resuelve vía el kernel-resolver: apunta al kernel migrado cuando el consumo
+// está habilitado, y al motor local de `.pipeline/` en coexistencia (default).
+const kernelResolver = require('./lib/kernel-resolver');
 
 // Saneado global de JAVA_HOME — si restart.js heredó una ruta stale (ej. JBR
 // de IntelliJ obsoleto), la corregimos antes de spawnear pulpo/servicios, así
@@ -347,7 +351,20 @@ function launchAll() {
   if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
 
   for (const comp of COMPONENTS) {
-    const scriptPath = path.join(PIPELINE, comp.script);
+    // #4664 — pulpo y dashboard son los entrypoints del motor que migraron a
+    // `core/` del kernel: se resuelven vía kernel-resolver (kernel migrado vs
+    // motor local, según coexistencia). El resto de servicios (listener/svc-*)
+    // son del adaptador y quedan en `.pipeline/`.
+    let scriptPath;
+    if (comp.name === 'pulpo' || comp.name === 'dashboard') {
+      const resolved = kernelResolver.resolveEntry(comp.name);
+      scriptPath = resolved.path;
+      if (resolved.source === 'kernel') {
+        log(`  ${comp.name}: usando kernel migrado @${resolved.version} (${scriptPath})`);
+      }
+    } else {
+      scriptPath = path.join(PIPELINE, comp.script);
+    }
     if (!fs.existsSync(scriptPath)) continue;
 
     const logPath = path.join(logsDir, `${comp.name}.log`);
