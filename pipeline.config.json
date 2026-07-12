@@ -1,0 +1,30 @@
+{
+  "contractVersion": "0.1.0",
+  "projectId": "intrale-platform",
+  "displayName": "Intrale Platform",
+  "kernel": {
+    "package": "@intrale/operating-kernel",
+    "version": "0.1.0",
+    "pinnedRef": "github:Intrale/kernel#704167b82c9a95115cf9d569b55ce135500e1366",
+    "consume": false,
+    "integrity": {
+      "algorithm": "sha256",
+      "note": "Pin inmutable por commit SHA del kernel (Ola 9.1). Migrar a release firmado registry-semver al publicar @intrale/operating-kernel@0.1.0 (kernel-repo-design.md §2.3/§4). consume:false = coexistencia; el motor local de .pipeline/ sigue operativo (freeze en 9.5, paridad E2E en #4665)."
+    }
+  },
+  "capabilities": {
+    "android": true,
+    "backend": true,
+    "web": true,
+    "build": true,
+    "test": true,
+    "e2e": true,
+    "package": true,
+    "deploy": true
+  },
+  "routing": {
+    "source": ".pipeline/config.yaml",
+    "note": "La externalización de la tabla label->skill al manifiesto es la sub-ola 9.4. Durante 9.1 el ruteo vivo permanece en .pipeline/config.yaml sin cambio de comportamiento."
+  },
+  "extensionPoints": ["resolveRouting", "evaluateGate", "prepareWorkspace"]
+}
