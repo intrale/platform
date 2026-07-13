@@ -35,6 +35,8 @@ const { sanitize } = require('./sanitizer');
 const humanBlock = require('./lib/human-block');
 const { isMarkerArtifact } = require('./lib/marker-artifact');
 const admissionGate = require('./lib/admission-gate');
+const { reconcileStateLabels, isReconciliableStateLabel } = require('./lib/label-reconciler-core');
+const { allChildrenDone } = require('./lib/epic-children-oracle');
 // #3381 — Gate de screenshots+mockup (default OFF, activable por env var).
 const screenshotsMockupGate = require('./hooks/screenshots-mockup-gate');
 
@@ -102,6 +104,56 @@ function getIssueState(issueNum) {
     } catch {
         return 'UNKNOWN';
     }
+}
+
+function readJsonFileSafe(file) {
+    try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+}
+
+function normalizeIssueNumber(value) {
+    const n = Number(value);
+    return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+function loadIssueStateCache(opts = {}) {
+    return readJsonFileSafe(opts.titleCacheFile || path.join(PIPELINE, '.issue-title-cache.json')) || {};
+}
+
+function loadSplitChildrenMap(opts = {}) {
+    const parsed = readJsonFileSafe(opts.partialPauseFile || path.join(PIPELINE, '.partial-pause.json'));
+    const ttls = parsed && typeof parsed === 'object' && parsed.authorization_ttls && typeof parsed.authorization_ttls === 'object'
+        ? parsed.authorization_ttls
+        : {};
+    const map = new Map();
+    for (const [childKey, info] of Object.entries(ttls)) {
+        const child = normalizeIssueNumber(childKey);
+        const parent = info && typeof info === 'object' ? normalizeIssueNumber(info.parent) : null;
+        if (!child || !parent) continue;
+        if (!map.has(parent)) map.set(parent, []);
+        map.get(parent).push(child);
+    }
+    for (const [parent, children] of map.entries()) {
+        map.set(parent, [...new Set(children)].sort((a, b) => a - b));
+    }
+    return map;
+}
+
+function resolveEpicStateSources(issue, ctx = {}) {
+    const labels = Array.isArray(issue && issue.labels) ? issue.labels.map(String) : [];
+    const issueNum = normalizeIssueNumber(issue && issue.number);
+    if (!issueNum) return { isEpic: false };
+
+    const childrenMap = ctx.childrenMap || loadSplitChildrenMap(ctx);
+    const children = childrenMap instanceof Map ? (childrenMap.get(issueNum) || []) : [];
+    const isEpic = labels.includes('epic') || children.length > 0;
+    if (!isEpic) return { isEpic: false };
+
+    const issueStates = ctx.issueStates || loadIssueStateCache(ctx);
+    return {
+        isEpic: true,
+        epicChildrenAllDone: allChildrenDone({ children, issueStates }),
+        hasActiveHumanMarker: ctx.blockedByIssue instanceof Map ? ctx.blockedByIssue.has(issueNum) : false,
+    };
 }
 
 // #2994 — `meta` opcional permite que el worker (servicio-github.js) re-valide
@@ -810,6 +862,58 @@ function appendStaleOrderLog(entry) {
     }
 }
 
+function logLabelReconcilerAudit(entry, logFn = appendStaleOrderLog) {
+    if (!entry || typeof entry !== 'object') return;
+    logFn({
+        reason: 'state-label-reconciled',
+        issue: entry.issue,
+        label: entry.label,
+        snapshot_at: null,
+        current_mtime: null,
+        detail: {
+            issue: entry.issue,
+            label: entry.label,
+            action: entry.action,
+            oracle: entry.oracle,
+            reason: entry.reason,
+            timestamp: new Date().toISOString(),
+            actor: 'reconciler',
+        },
+    });
+}
+
+function reconcileStateLabelsStep(ghIssues, opts = {}) {
+    const issues = Array.isArray(ghIssues) ? ghIssues : [];
+    const resolveSources = opts.resolveSources || resolveEpicStateSources;
+    const enqueueRemoveFn = opts.enqueueLabelRemove || enqueueLabelRemove;
+    const logAuditFn = opts.logAudit || logLabelReconcilerAudit;
+    const removedIssues = new Set();
+    let removed = 0;
+
+    for (const issue of issues) {
+        const issueNum = normalizeIssueNumber(issue && issue.number);
+        if (!issueNum) continue;
+        const sources = resolveSources(issue, opts) || {};
+        const rec = reconcileStateLabels({
+            issue: issueNum,
+            currentLabels: issue.labels || [],
+            sources,
+        });
+        for (const label of rec.toRemove || []) {
+            if (!isReconciliableStateLabel(label)) continue;
+            enqueueRemoveFn(issueNum, label);
+            removed++;
+            removedIssues.add(issueNum);
+        }
+        for (const audit of rec.audit || []) {
+            if (!isReconciliableStateLabel(audit.label)) continue;
+            try { logAuditFn(audit); } catch {}
+        }
+    }
+
+    return { removed, removedIssues };
+}
+
 // -----------------------------------------------------------------------------
 // #3175 — Admission gate sweep (huérfanos sin needs-definition/Ready)
 // -----------------------------------------------------------------------------
@@ -1052,8 +1156,6 @@ function reconcileOnce() {
         blockedByIssue.get(m.issue).push(m);
     }
 
-    const created = reconcileLabelToFilesystem(ghIssues, blockedByIssue);
-
     // #3186 — primero, archivar markers ya resueltos por el guardian (re-aprobó)
     // o expirados por TTL. Corre ANTES que reconcileMarkerToLabel para no
     // re-aplicar el label sobre un issue que está funcionalmente destrabado;
@@ -1079,8 +1181,28 @@ function reconcileOnce() {
         ? afterResolved.filter(m => !unblockResult.movedIssues.has(m.issue))
         : afterResolved;
 
-    const enqueued = reconcileMarkerToLabel(remaining, ghIssueSet);
-    const archived = reconcileClosedMarkers(remaining, ghIssueSet);
+    let stateLabelResult = { removed: 0, removedIssues: new Set() };
+    try {
+        stateLabelResult = reconcileStateLabelsStep(ghIssues, {
+            blockedByIssue,
+            childrenMap: loadSplitChildrenMap(),
+            issueStates: loadIssueStateCache(),
+        });
+    } catch (e) {
+        log(`State-label sweep error: ${e.message.slice(0, 120)}`);
+        stateLabelResult = { error: true, removed: 0, removedIssues: new Set() };
+    }
+
+    const effectiveGhIssues = stateLabelResult.removedIssues && stateLabelResult.removedIssues.size > 0
+        ? ghIssues.filter(i => !stateLabelResult.removedIssues.has(i.number))
+        : ghIssues;
+    const effectiveGhIssueSet = stateLabelResult.removedIssues && stateLabelResult.removedIssues.size > 0
+        ? new Set([...ghIssueSet].filter(issue => !stateLabelResult.removedIssues.has(issue)))
+        : ghIssueSet;
+
+    const created = reconcileLabelToFilesystem(effectiveGhIssues, blockedByIssue);
+    const enqueued = reconcileMarkerToLabel(remaining, effectiveGhIssueSet);
+    const archived = reconcileClosedMarkers(remaining, effectiveGhIssueSet);
 
     // #4231 — Barrido de markers de fase huérfanos de issues CLOSED en las colas
     // NORMALES (pendiente/trabajando/listo/procesado). reconcileClosedMarkers de
@@ -1130,8 +1252,10 @@ function reconcileOnce() {
         ? `, +${screenshotsResult.appliedCount} screenshots-gate`
         : '';
     const phaseSummary = archivedPhase ? `, +${archivedPhase} markers de fase archivados (closed)` : '';
-    if (created || enqueued || archived || archivedPhase || detected || resolved || (admissionResult && admissionResult.appliedCount) || (screenshotsResult && screenshotsResult.appliedCount)) {
-        log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} → +${created} placeholders, +${enqueued} labels encolados, +${archived} archivados (closed), +${detected} destrabes humanos, +${resolved} resueltos por guardian/TTL (-${resolvedRemovedLabels} labels removidos)${phaseSummary}${admissionSummary}${screenshotsSummary}`);
+    const stateLabelsRemoved = stateLabelResult && stateLabelResult.removed ? stateLabelResult.removed : 0;
+    const stateLabelSummary = stateLabelsRemoved ? `, -${stateLabelsRemoved} labels stale` : '';
+    if (created || enqueued || archived || archivedPhase || detected || resolved || stateLabelsRemoved || (admissionResult && admissionResult.appliedCount) || (screenshotsResult && screenshotsResult.appliedCount)) {
+        log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} → +${created} placeholders, +${enqueued} labels encolados, +${archived} archivados (closed), +${detected} destrabes humanos, +${resolved} resueltos por guardian/TTL (-${resolvedRemovedLabels} labels removidos)${stateLabelSummary}${phaseSummary}${admissionSummary}${screenshotsSummary}`);
     } else {
         log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} — sincronizado`);
     }
@@ -1204,6 +1328,11 @@ module.exports = {
     enqueueLabelRemove,
     buildMarkerMeta,
     appendStaleOrderLog,
+    logLabelReconcilerAudit,
+    reconcileStateLabelsStep,
+    resolveEpicStateSources,
+    loadSplitChildrenMap,
+    loadIssueStateCache,
     HUMAN_UNBLOCK_GRACE_MS,
     RESOLVED_TTL_MS,
     // #3175 — Admission gate sweep
