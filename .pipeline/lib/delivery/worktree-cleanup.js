@@ -96,6 +96,8 @@ async function cleanupWorktree({
   worktreePath,
   branch,
   mainRepoPath = MAIN_REPO_DEFAULT,
+  projectId,
+  configOverride,
   sessionCwd = process.cwd(),
   logger = console.log,
 }) {
@@ -124,7 +126,7 @@ async function cleanupWorktree({
   // 0.5 Guard anti-suicidio (CA-SEC-5): el path debe caer dentro del prefijo
   //     sibling derivado del helper compartido. Rechaza main repo, ancestros,
   //     traversal y junctions que resuelvan afuera — antes de tocar git/fs.
-  const guard = isForbiddenTarget(worktreePath, { mainRepo: mainRepoPath });
+  const guard = isForbiddenTarget(worktreePath, { mainRepo: mainRepoPath, projectId, configOverride });
   if (guard.forbidden) {
     log(`🛑 Skip cleanup: ${worktreePath} fuera del prefijo permitido (${guard.reason})`);
     return { ok: false, skipped: true, reason: 'forbidden_target', worktreePath, branch, detail: guard.reason };

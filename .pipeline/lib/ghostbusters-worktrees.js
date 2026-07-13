@@ -33,6 +33,17 @@ function normPath(p) {
   return String(p || '').replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
 }
 
+function loadMainRepoConfig(mainRepo, fsImpl = fs) {
+  try {
+    const readFileSync = typeof fsImpl.readFileSync === 'function'
+      ? fsImpl.readFileSync.bind(fsImpl)
+      : fs.readFileSync;
+    return JSON.parse(readFileSync(path.join(mainRepo, 'pipeline.config.json'), 'utf8'));
+  } catch {
+    return undefined;
+  }
+}
+
 // -----------------------------------------------------------------------------
 // RS-1 — Guard anti-suicidio. Devuelve { forbidden, reason }.
 // Se ejecuta ANTES de cualquier borrado (incluido el fallback fs.rmSync).
@@ -65,7 +76,8 @@ function isForbiddenTarget(wtPath, {
   // al parent REAL del main repo. Fallback defensivo al ancla literal `<main>.`
   // (NUNCA más permisivo) si el basename del main repo no coincide con la base.
   const parent = normPath(path.dirname(mainRepo));
-  const siblingPrefix = deriveSiblingPrefix(projectId, configOverride).toLowerCase();      // p.ej. 'platform.'
+  const manifest = configOverride || loadMainRepoConfig(mainRepo, fsImpl);
+  const siblingPrefix = deriveSiblingPrefix(projectId, manifest).toLowerCase();      // p.ej. 'platform.'
   const derived = `${parent}/${siblingPrefix}`;
   const legacy = main + '.';
   const allowedPrefixes = Array.from(new Set([derived, legacy]));
@@ -172,9 +184,11 @@ function removeWorktree(wtPath, {
   mainRepo = MAIN_REPO,
   spawnImpl = spawnSync,
   fsImpl = fs,
+  projectId,
+  configOverride,
   logger = () => {},
 } = {}) {
-  const guard = isForbiddenTarget(wtPath, { mainRepo, fsImpl });
+  const guard = isForbiddenTarget(wtPath, { mainRepo, fsImpl, projectId, configOverride });
   if (guard.forbidden) {
     logger(`🛑 ABORT removeWorktree(${wtPath}): ${guard.reason}`);
     return false;
@@ -195,7 +209,7 @@ function removeWorktree(wtPath, {
     });
     if (fsImpl.existsSync(wtPath)) {
       // Fallback: re-validar guard inmediatamente antes del rmSync recursivo.
-      const reguard = isForbiddenTarget(wtPath, { mainRepo, fsImpl });
+      const reguard = isForbiddenTarget(wtPath, { mainRepo, fsImpl, projectId, configOverride });
       if (reguard.forbidden) {
         logger(`🛑 ABORT rmSync(${wtPath}): ${reguard.reason}`);
         return false;
