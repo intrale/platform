@@ -32,6 +32,9 @@ require('./lib/java-home-normalizer').normalizeJavaHome({
 const { sanitize } = require('./sanitizer');
 const { sanitizeGithubPayload } = require('./lib/sanitize-payload');
 const gateLabelReconciler = require('./lib/gate-label-reconciler');
+// #4693 CA-0 — fuente de verdad única del repo destino. Reemplaza el literal
+// DEFAULT_REPO por el `primary` del bloque `repos` de pipeline.config.json.
+const repoTarget = require('./lib/repo-target');
 
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 // #2994 — `GH_BIN_OVERRIDE` permite a los tests E2E de la cola apuntar a un
@@ -49,7 +52,12 @@ const MAX_RETRIES = 3;
 const LOG_DIR = path.join(PIPELINE, 'logs');
 const STALE_ORDERS_LOG = path.join(LOG_DIR, 'stale-orders.log');
 
-const DEFAULT_REPO = 'intrale/platform';
+// #4693 CA-0 — resuelto vía repo-target (primary del manifiesto). El helper
+// es fail-closed: si el manifiesto falta/está roto, cae a 'intrale/platform'.
+// Se evalúa una vez al cargar el módulo (comportamiento idéntico al literal).
+const DEFAULT_REPO = (() => {
+  try { return repoTarget.getPrimaryRepo(); } catch { return 'intrale/platform'; }
+})();
 
 function log(msg) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);

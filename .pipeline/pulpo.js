@@ -66,6 +66,10 @@ const humanBlock = require('./lib/human-block');
 // sweep de claims huérfanos (épica EP-5 #3937).
 const slotClaim = require('./lib/slot-claim');
 const fileLock = require('./lib/file-lock');
+// #4693 CA-0 — fuente de verdad única del repo destino (intake multi-repo,
+// allowlist fail-closed, repo de origen propagado). Reemplaza los literales
+// `intrale/platform` hardcodeados y el intake atado al remote del cwd.
+const repoTarget = require('./lib/repo-target');
 // #2490 — Pausa parcial con allowlist explícita de issues
 const partialPause = require('./lib/partial-pause');
 // #3518 CA-6 — Detector de desync waves.json ↔ .partial-pause.json
@@ -12514,7 +12518,7 @@ function cmdUnblock(args) {
   try {
     const ghBin = process.env.GH_BIN || 'gh';
     require('child_process').execSync(
-      `"${ghBin}" issue edit ${issue} --remove-label "needs:human" --repo intrale/platform`,
+      `"${ghBin}" issue edit ${issue} --remove-label "needs:human" --repo ${repoTarget.getPrimaryRepo()}`,
       { stdio: 'ignore', timeout: 15000 }
     );
   } catch {}
@@ -12526,7 +12530,7 @@ function cmdUnblock(args) {
     const tmpFile = path.join(PIPELINE, `.unblock-comment-${issue}-${Date.now()}.md`);
     fs.writeFileSync(tmpFile, body);
     require('child_process').execSync(
-      `"${ghBin}" issue comment ${issue} --body-file "${tmpFile}" --repo intrale/platform`,
+      `"${ghBin}" issue comment ${issue} --body-file "${tmpFile}" --repo ${repoTarget.getPrimaryRepo()}`,
       { stdio: 'ignore', timeout: 15000 }
     );
     try { fs.unlinkSync(tmpFile); } catch {}
@@ -14717,12 +14721,38 @@ function brazoIntake(config) {
       // Consultar GitHub por issues con el label
       // #2405 CA-4: excluir issues con label `needs-human` — el circuit breaker
       // de infra los saca de la cola de intake hasta que un humano quite el label.
-      ghThrottle();
-      const result = _ghExecSyncGuarded( // #4612 — breaker-aware
-        `"${GH_BIN}" issue list --label "${label}" --state open --json number,title,labels --limit 50 --search "-label:needs-human"`,
-        { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
-      );
-      let issues = JSON.parse(result || '[]');
+      // #4693 CA-A1/A2/A3 — intake multi-repo. Antes el intake corría SIN
+      // `--repo`, atado al remote del `cwd` (intrale/platform). Ahora itera
+      // `getIntakeRepos()` (⊆ allowlist, fail-closed) consultando cada repo
+      // autorizado con `--repo <r>`, propaga el repo de origen a cada issue
+      // (CA-A2) y filtra fail-closed antes de encolar (CA-A3 / REQ-SEC-1).
+      //
+      // REQ-SEC-2 — `_ghExecSyncGuarded` interpola al shell; `repo` se valida
+      // con `isRepoAllowed()` (que exige REPO_RE: sólo [A-Za-z0-9._-] y un '/',
+      // sin metacaracteres de shell) ANTES de cualquier interpolación. Un repo
+      // no allowlisted / malformado ⇒ skip (cero spawns), nunca allow-all.
+      let issues = [];
+      for (const repo of repoTarget.getIntakeRepos()) {
+        if (!repoTarget.isRepoAllowed(repo)) {
+          // Fail-closed observable (DX operador): dejar traza del repo rechazado.
+          log('intake', `repo omitido — no allowlisted / forma inválida: ${JSON.stringify(repo)}`);
+          continue;
+        }
+        try {
+          ghThrottle();
+          const result = _ghExecSyncGuarded( // #4612 — breaker-aware
+            `"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title,labels --limit 50 --search "-label:needs-human"`,
+            { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
+          );
+          const repoIssues = JSON.parse(result || '[]');
+          // CA-A2 — propagar el repo de origen aguas abajo (leído por getRepoForIssue).
+          for (const it of repoIssues) it.origin_repo = repo;
+          issues = issues.concat(repoIssues);
+        } catch (e) {
+          // Un repo caído no debe tumbar el intake de los demás.
+          log('intake', `Error consultando ${repo} para ${pipelineName}: ${e.message}`);
+        }
+      }
 
       if (issues.length === 0) continue;
 
@@ -14785,7 +14815,10 @@ function brazoIntake(config) {
         // para propagar el contexto al nuevo archivo. Sin esto, el agente
         // que recibe el re-intake arranca a ciegas y vuelve a fallar igual.
         const previousRejection = findLastRejection(pipelineName, issueNum, config);
-        const baseYaml = { issue: parseInt(issueNum), fase: faseEntrada, pipeline: pipelineName };
+        // CA-A2 — el repo de origen (propagado en el intake) viaja en el work-yaml
+        // para que las fases aguas abajo operen sobre el repo correcto. Fail-closed
+        // a primary si el issue no trae repo válido/allowlisted.
+        const baseYaml = { issue: parseInt(issueNum), fase: faseEntrada, pipeline: pipelineName, repo: repoTarget.getRepoForIssue(issue) };
         if (previousRejection) {
           baseYaml.rebote = true;
           baseYaml.rebote_tipo = 're-intake';
@@ -15869,7 +15902,7 @@ async function brazoDesbloqueoImpl(config) {
         // llamada → cero requests adicionales a GitHub API por ciclo (CA-18).
         ghThrottle();
         const { stdout: rawComments } = await ghDesbloqueoCall(
-          ['issue', 'view', String(issue.number), '--json', 'body,comments', '--repo', 'intrale/platform']
+          ['issue', 'view', String(issue.number), '--json', 'body,comments', '--repo', repoTarget.getRepoForIssue(issue)]
         );
         let commentsArray = [];
         let issueBody = '';
@@ -15929,7 +15962,7 @@ async function brazoDesbloqueoImpl(config) {
           try {
             ghThrottle();
             const { stdout: rawFresh } = await ghDesbloqueoCall(
-              ['issue', 'view', String(issue.number), '--json', 'comments', '--repo', 'intrale/platform'],
+              ['issue', 'view', String(issue.number), '--json', 'comments', '--repo', repoTarget.getRepoForIssue(issue)],
               10000
             );
             let freshComments = [];
@@ -15945,7 +15978,7 @@ async function brazoDesbloqueoImpl(config) {
               const promoteComment = buildAutoPromoteComment(resolved.deps);
               ghThrottle();
               await ghDesbloqueoCall(
-                ['issue', 'comment', String(issue.number), '--body', promoteComment, '--repo', 'intrale/platform'],
+                ['issue', 'comment', String(issue.number), '--body', promoteComment, '--repo', repoTarget.getRepoForIssue(issue)],
                 10000
               );
               log('desbloqueo', `#${issue.number}: marker canónico auto-promovido desde body (deps: ${depIssueNumbers.join(',')})`);
@@ -15964,7 +15997,7 @@ async function brazoDesbloqueoImpl(config) {
           ghThrottle();
           try {
             const { stdout: depState } = await ghDesbloqueoCall(
-              ['issue', 'view', String(depNum), '--json', 'state', '--jq', '.state', '--repo', 'intrale/platform'],
+              ['issue', 'view', String(depNum), '--json', 'state', '--jq', '.state', '--repo', repoTarget.getRepoForIssue(issue)],
               10000
             );
             if (depState.trim() !== 'CLOSED') {
@@ -15997,7 +16030,7 @@ async function brazoDesbloqueoImpl(config) {
             ghThrottle();
             try {
               await ghDesbloqueoCall(
-                ['issue', 'close', String(issue.number), '--reason', 'completed', '--comment', closeComment, '--repo', 'intrale/platform'],
+                ['issue', 'close', String(issue.number), '--reason', 'completed', '--comment', closeComment, '--repo', repoTarget.getRepoForIssue(issue)],
                 10000
               );
               sendTelegram(`🟢 Paraguas #${issue.number} cerrado automáticamente — todas las hijas del split (${depIssueNumbers.map(n => '#' + n).join(', ')}) resueltas.`);
@@ -16011,7 +16044,7 @@ async function brazoDesbloqueoImpl(config) {
             // Quitar label blocked:dependencies
             ghThrottle();
             await ghDesbloqueoCall(
-              ['issue', 'edit', String(issue.number), '--remove-label', 'blocked:dependencies', '--repo', 'intrale/platform'],
+              ['issue', 'edit', String(issue.number), '--remove-label', 'blocked:dependencies', '--repo', repoTarget.getRepoForIssue(issue)],
               10000
             );
 
@@ -16042,7 +16075,7 @@ async function brazoDesbloqueoImpl(config) {
             const unblockComment = `## Dependencias resueltas 🟢\n\nLas siguientes dependencias cerraron: ${depIssueNumbers.map(n => '#' + n).join(', ')}.\n\nEl pipeline reentra a este issue automáticamente.`;
             ghThrottle();
             await ghDesbloqueoCall(
-              ['issue', 'comment', String(issue.number), '--body', unblockComment, '--repo', 'intrale/platform'],
+              ['issue', 'comment', String(issue.number), '--body', unblockComment, '--repo', repoTarget.getRepoForIssue(issue)],
               10000
             );
 
@@ -16148,7 +16181,7 @@ async function _selfHealPhantomBlocks({
     try {
       throttleFn();
       const { stdout } = await ghCall(
-        ['issue', 'view', issueStr, '--json', 'labels,state', '--repo', 'intrale/platform'],
+        ['issue', 'view', issueStr, '--json', 'labels,state', '--repo', repoTarget.getPrimaryRepo()],
         10000
       );
       const parsed = JSON.parse(stdout || '{}');
@@ -16170,7 +16203,7 @@ async function _selfHealPhantomBlocks({
     try {
       throttleFn();
       const { stdout } = await ghCall(
-        ['issue', 'view', issueStr, '--json', 'body,comments', '--repo', 'intrale/platform'],
+        ['issue', 'view', issueStr, '--json', 'body,comments', '--repo', repoTarget.getPrimaryRepo()],
         10000
       );
       const parsed = JSON.parse(stdout || '{}');
@@ -16198,7 +16231,7 @@ async function _selfHealPhantomBlocks({
       try {
         throttleFn();
         const { stdout: depState } = await ghCall(
-          ['issue', 'view', depNum, '--json', 'state', '--jq', '.state', '--repo', 'intrale/platform'],
+          ['issue', 'view', depNum, '--json', 'state', '--jq', '.state', '--repo', repoTarget.getPrimaryRepo()],
           10000
         );
         if (String(depState).trim() !== 'CLOSED') { anyOpen = true; break; }

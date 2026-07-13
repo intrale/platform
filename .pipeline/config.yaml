@@ -320,10 +320,15 @@ circuit_breaker:
   convergence_excludes_skills: [security]
 
 # GitHub
-github:
-  owner: "intrale"
-  repo: "platform"
-  project_number: 2               # GitHub Project V2
+# DEPRECADO (#4693 · CA-0): la fuente de verdad del repo destino se consolidó en
+# el bloque `repos` de pipeline.config.json, consumido vía .pipeline/lib/repo-target.js.
+# Este bloque queda como legacy comentado para no reintroducir un segundo lector
+# divergente. `project_number` no tiene consumidores JS (verificado con grep);
+# si algún path futuro lo necesita, migrarlo también al manifiesto.
+# github:
+#   owner: "intrale"
+#   repo: "platform"
+#   project_number: 2               # GitHub Project V2
 
 # Pre-check de conectividad (#2317) — evita lanzar agentes cuando la red está caída
 precheck:
