@@ -38,7 +38,12 @@ function normPath(p) {
 // Se ejecuta ANTES de cualquier borrado (incluido el fallback fs.rmSync).
 // Resuelve realpath para rechazar junctions/symlinks que apunten afuera.
 // -----------------------------------------------------------------------------
-function isForbiddenTarget(wtPath, { mainRepo = MAIN_REPO, fsImpl = fs } = {}) {
+function isForbiddenTarget(wtPath, {
+  mainRepo = MAIN_REPO,
+  fsImpl = fs,
+  projectId,
+  configOverride,
+} = {}) {
   const main = normPath(mainRepo);
   let real;
   try {
@@ -59,12 +64,13 @@ function isForbiddenTarget(wtPath, { mainRepo = MAIN_REPO, fsImpl = fs } = {}) {
   // CA-B2/CA-SEC-5 — el prefijo `<repo>.` se deriva del helper compartido, anclado
   // al parent REAL del main repo. Fallback defensivo al ancla literal `<main>.`
   // (NUNCA más permisivo) si el basename del main repo no coincide con la base.
-  const siblingPrefix = deriveSiblingPrefix().toLowerCase();      // p.ej. 'platform.'
-  const derived = `${normPath(path.dirname(mainRepo))}/${siblingPrefix}`;
+  const parent = normPath(path.dirname(mainRepo));
+  const siblingPrefix = deriveSiblingPrefix(projectId, configOverride).toLowerCase();      // p.ej. 'platform.'
+  const derived = `${parent}/${siblingPrefix}`;
   const legacy = main + '.';
-  const allowedPrefix = (derived === legacy) ? derived : legacy;
-  if (!real.startsWith(allowedPrefix)) {
-    return { forbidden: true, reason: `fuera del prefijo permitido ${allowedPrefix}*` };
+  const allowedPrefixes = Array.from(new Set([derived, legacy]));
+  if (!allowedPrefixes.some((prefix) => real.startsWith(prefix))) {
+    return { forbidden: true, reason: `fuera del prefijo permitido ${allowedPrefixes.map((p) => `${p}*`).join(', ')}` };
   }
   return { forbidden: false };
 }
