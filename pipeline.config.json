@@ -26,5 +26,12 @@
     "source": ".pipeline/config.yaml",
     "note": "La externalización de la tabla label->skill al manifiesto es la sub-ola 9.4. Durante 9.1 el ruteo vivo permanece en .pipeline/config.yaml sin cambio de comportamiento."
   },
+  "repos": {
+    "primary": "intrale/platform",
+    "allowlist": ["intrale/platform", "intrale/kernel"],
+    "intake": ["intrale/platform"],
+    "default_base_ref": "main",
+    "note": "Fuente de verdad única del repo destino (CA-0 · #4693). Consumido SOLO vía .pipeline/lib/repo-target.js; deprecan config.yaml github: y servicio-github.js DEFAULT_REPO. `allowlist` = frontera de confianza (repos que pueden generar spawns). `intake` = repos efectivamente consultados por el Pulpo. GATE REQ-SEC-5: intrale/kernel está allowlisted pero FUERA de `intake` hasta cerrar el naming repo-scoped de #4694 (el key de estado ${issue}.${skill} no es repo-scoped y platform#N colisionaría con kernel#N). No mover kernel a `intake` hasta cerrar #4694."
+  },
   "extensionPoints": ["resolveRouting", "evaluateGate", "prepareWorkspace"]
 }
