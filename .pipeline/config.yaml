@@ -1443,7 +1443,7 @@ operator_signoff:
 # credentials.json (`TELEGRAM_LEO_OPERATOR_CHAT_ID`) y se inyecta al gate en
 # runtime (`options.authorizedSigners`). NO se crea allowlist paralela.
 operator_signature:
-  enabled: false
+  enabled: true
   gate_mode: dry-run
   go_live_date: '2026-07-10T00:00:00Z'
   preauthorized_classes: []
