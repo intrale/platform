@@ -75,3 +75,10 @@ es un gate fail-closed por diseño, fuera del alcance autónomo de #4664.
 - Kernel: rama/tag `import/motor-9.1` (motor con historia preservada).
 - Revertir el wiring = volver `restart.js` a `path.join(PIPELINE, comp.script)` o,
   más simple, mantener `kernel.consume: false` (ya es el default: motor local).
+
+## 5. Paridad E2E (#4665)
+
+La verificación de paridad de comportamiento post-migración vive en
+[`kernel-parity-9.1.md`](kernel-parity-9.1.md). Reproducible con
+`node .pipeline/kernel-bootstrap/parity-e2e-9.1.js` (fail-closed) y
+`node --test .pipeline/tests/kernel-parity-9.1.test.js`.
