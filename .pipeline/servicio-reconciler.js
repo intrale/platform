@@ -37,6 +37,12 @@ const { isMarkerArtifact } = require('./lib/marker-artifact');
 const admissionGate = require('./lib/admission-gate');
 // #3381 — Gate de screenshots+mockup (default OFF, activable por env var).
 const screenshotsMockupGate = require('./hooks/screenshots-mockup-gate');
+const waves = require('./lib/waves');
+const waveResolver = require('./lib/wave-resolver');
+const waveState = require('./lib/wave-state');
+const waveSnapshot = require('./lib/wave-snapshot');
+const { computeClosedSet } = require('./lib/commander-deterministic');
+const { notifyTelegram } = require('./lib/notify-telegram');
 
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
@@ -1028,6 +1034,108 @@ function reconcileScreenshotsMockupGate(opts = {}) {
 }
 
 // -----------------------------------------------------------------------------
+// #4673 -- Aviso proactivo de finalizacion de ola
+// -----------------------------------------------------------------------------
+
+function escapeMarkdownText(value) {
+    return String(value || '')
+        .replace(/\\/g, '\\\\')
+        .replace(/([_*[\]()`])/g, '\\$1')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function waveTitle(wave) {
+    const name = wave && typeof wave.name === 'string' ? wave.name.trim() : '';
+    const goal = wave && typeof wave.goal === 'string' ? wave.goal.trim() : '';
+    return name || goal || 'ola activa';
+}
+
+function buildWaveCompletionMessage(wave, snapshot) {
+    const waveNumber = wave && Number.isInteger(wave.number) ? wave.number : null;
+    const heading = `Ola ${waveNumber || '?'} completada - ${escapeMarkdownText(waveTitle(wave))}`;
+    const goal = escapeMarkdownText(wave && wave.goal ? wave.goal : waveTitle(wave));
+    const issues = Array.isArray(snapshot && snapshot.issues) ? snapshot.issues : [];
+    const closedIssues = issues.filter((issue) => issue && issue.isClosed);
+    const maxListed = 15;
+    const lines = [
+        `🎉 ${heading}`,
+        '',
+        'Todos los issues cerrados y en `main`:',
+    ];
+
+    for (const issue of closedIssues.slice(0, maxListed)) {
+        const id = Number.isInteger(issue.id) ? issue.id : '?';
+        const title = escapeMarkdownText(issue.title || '(sin titulo)');
+        lines.push(`- #${id} - ${title}`);
+    }
+    if (closedIssues.length > maxListed) {
+        lines.push(`- ... ${closedIssues.length - maxListed} issues cerrados mas`);
+    }
+
+    lines.push('');
+    lines.push(`Objetivo: ${goal}`);
+    lines.push(`${snapshot.closedCount}/${snapshot.totalIssues} issues - 100%`);
+    return lines.join('\n');
+}
+
+function reconcileWaveCompletion(opts = {}) {
+    const wavesApi = opts.waves || waves;
+    const resolver = opts.waveResolver || waveResolver;
+    const stateApi = opts.waveState || waveState;
+    const snapshotApi = opts.waveSnapshot || waveSnapshot;
+    const closedSetFn = opts.computeClosedSet || computeClosedSet;
+    const notifyFn = opts.notifyTelegram || notifyTelegram;
+    const pipelineRoot = opts.pipelineRoot || PIPELINE;
+
+    const activeWave = wavesApi.getActiveWave();
+    if (!activeWave || !Number.isInteger(activeWave.number)) {
+        return { skipped: true, reason: 'no_active_wave' };
+    }
+
+    const resolvedWave = resolver.resolveActiveWave({ pipelineRoot });
+    const state = stateApi.getCachedWaveState({ pipelineRoot });
+    const closedIssues = closedSetFn({ wave: resolvedWave, state });
+    const snapshot = snapshotApi.buildWaveSnapshot({ state, wave: resolvedWave, closedIssues });
+    const complete = !!snapshot && snapshot.totalIssues > 0 && snapshot.closedCount === snapshot.totalIssues;
+
+    if (complete && activeWave.completion_notified !== true) {
+        const message = buildWaveCompletionMessage(activeWave, snapshot);
+        const notifyResult = notifyFn({
+            level: 'info',
+            component: 'wave-completion',
+            message,
+            context: {
+                wave: activeWave.number,
+                issues: `${snapshot.closedCount}/${snapshot.totalIssues}`,
+            },
+        });
+        if (notifyResult && notifyResult.ok) {
+            const marked = wavesApi.setWaveCompletionNotified(activeWave.number, {
+                updated_by: 'svc-reconciler',
+            });
+            return { complete: true, notified: true, marked, dropPath: notifyResult.dropPath || null };
+        }
+        return {
+            complete: true,
+            notified: false,
+            notifyFailed: true,
+            reason: notifyResult && notifyResult.reason ? notifyResult.reason : 'notify_failed',
+        };
+    }
+
+    if (!complete && activeWave.completion_notified === true) {
+        const reset = wavesApi.clearWaveCompletionNotified(activeWave.number, {
+            updated_by: 'svc-reconciler',
+            note: `wave ${activeWave.number} completion notification reset: ${snapshot.closedCount}/${snapshot.totalIssues}`,
+        });
+        return { complete: false, reset };
+    }
+
+    return { complete, notified: false, reset: false };
+}
+
+// -----------------------------------------------------------------------------
 // Loop principal
 // -----------------------------------------------------------------------------
 
@@ -1121,6 +1229,14 @@ function reconcileOnce() {
         screenshotsResult = { error: true };
     }
 
+    let waveCompletionResult = null;
+    try {
+        waveCompletionResult = reconcileWaveCompletion();
+    } catch (e) {
+        log(`Wave completion notice error: ${e.message.slice(0, 120)}`);
+        waveCompletionResult = { error: true };
+    }
+
     const elapsed = Date.now() - t0;
     lastRunAt = Date.now();
     const admissionSummary = admissionResult && !admissionResult.skipped && !admissionResult.error
@@ -1129,9 +1245,12 @@ function reconcileOnce() {
     const screenshotsSummary = screenshotsResult && !screenshotsResult.skipped && !screenshotsResult.error && screenshotsResult.appliedCount
         ? `, +${screenshotsResult.appliedCount} screenshots-gate`
         : '';
+    const waveCompletionSummary = waveCompletionResult && !waveCompletionResult.error && (waveCompletionResult.notified || waveCompletionResult.reset || waveCompletionResult.notifyFailed)
+        ? `, wave-completion=${waveCompletionResult.notified ? 'notified' : (waveCompletionResult.reset ? 'reset' : 'retry-pending')}`
+        : '';
     const phaseSummary = archivedPhase ? `, +${archivedPhase} markers de fase archivados (closed)` : '';
-    if (created || enqueued || archived || archivedPhase || detected || resolved || (admissionResult && admissionResult.appliedCount) || (screenshotsResult && screenshotsResult.appliedCount)) {
-        log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} → +${created} placeholders, +${enqueued} labels encolados, +${archived} archivados (closed), +${detected} destrabes humanos, +${resolved} resueltos por guardian/TTL (-${resolvedRemovedLabels} labels removidos)${phaseSummary}${admissionSummary}${screenshotsSummary}`);
+    if (created || enqueued || archived || archivedPhase || detected || resolved || (admissionResult && admissionResult.appliedCount) || (screenshotsResult && screenshotsResult.appliedCount) || waveCompletionSummary) {
+        log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} → +${created} placeholders, +${enqueued} labels encolados, +${archived} archivados (closed), +${detected} destrabes humanos, +${resolved} resueltos por guardian/TTL (-${resolvedRemovedLabels} labels removidos)${phaseSummary}${admissionSummary}${screenshotsSummary}${waveCompletionSummary}`);
     } else {
         log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} — sincronizado`);
     }
@@ -1213,4 +1332,7 @@ module.exports = {
     listGhItemsAll,
     ADMISSION_SWEEP_ENABLED,
     ADMISSION_DRY_RUN,
+    reconcileWaveCompletion,
+    buildWaveCompletionMessage,
+    escapeMarkdownText,
 };

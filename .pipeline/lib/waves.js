@@ -1002,6 +1002,74 @@ function clearWaveWaitingOperatorLocked(waveNumber, info) {
     return true;
 }
 
+// #4673 -- Aviso proactivo de finalizacion de ola. El flag vive en waves.json
+// bajo la ola activa para evitar paths derivados de input y conservar lock unico.
+function setWaveCompletionNotified(waveNumber, info = {}) {
+    return withLockSync(wavesFile(), () => setWaveCompletionNotifiedLocked(waveNumber, info), {
+        component: 'waves-lock',
+        timeoutMs: LOCK_TIMEOUT_MS,
+        maxRetries: LOCK_MAX_RETRIES,
+        notify: notifyTelegram,
+    });
+}
+
+function setWaveCompletionNotifiedLocked(waveNumber, info) {
+    invalidateCache();
+    const state = loadWaves();
+    if (!state.active_wave || state.active_wave.number !== waveNumber) {
+        throw new Error(`setWaveCompletionNotified: ola ${waveNumber} no es la activa`);
+    }
+    if (state.active_wave.completion_notified === true) return false;
+    state.active_wave.completion_notified = true;
+    saveState(state, {
+        updated_by: info.updated_by || 'System',
+        source: 'wave-completion-notice',
+        note: info.note || `wave ${waveNumber} completion notified`,
+    });
+    emitWaveAudit({
+        event: 'wave_completion_notified',
+        wave: waveNumber,
+        actor: info.updated_by || 'System',
+        estado_previo: 'active',
+        estado_posterior: 'active',
+        note: info.note || null,
+    });
+    return true;
+}
+
+function clearWaveCompletionNotified(waveNumber, info = {}) {
+    return withLockSync(wavesFile(), () => clearWaveCompletionNotifiedLocked(waveNumber, info), {
+        component: 'waves-lock',
+        timeoutMs: LOCK_TIMEOUT_MS,
+        maxRetries: LOCK_MAX_RETRIES,
+        notify: notifyTelegram,
+    });
+}
+
+function clearWaveCompletionNotifiedLocked(waveNumber, info) {
+    invalidateCache();
+    const state = loadWaves();
+    if (!state.active_wave || state.active_wave.number !== waveNumber) {
+        throw new Error(`clearWaveCompletionNotified: ola ${waveNumber} no es la activa`);
+    }
+    if (state.active_wave.completion_notified !== true) return false;
+    delete state.active_wave.completion_notified;
+    saveState(state, {
+        updated_by: info.updated_by || 'System',
+        source: 'wave-completion-notice',
+        note: info.note || `wave ${waveNumber} completion notification reset`,
+    });
+    emitWaveAudit({
+        event: 'wave_completion_notification_reset',
+        wave: waveNumber,
+        actor: info.updated_by || 'System',
+        estado_previo: 'active',
+        estado_posterior: 'active',
+        note: info.note || null,
+    });
+    return true;
+}
+
 /**
  * Lee el estado `waiting-operator` de la ola activa (sin lock — snapshot).
  * @returns {object|null} `{ since, reason, evidence_ref, conflicts_count }` o null.
@@ -3192,6 +3260,8 @@ module.exports = {
     // #4578 — estado waiting-operator a nivel ola (gate de coherencia).
     setWaveWaitingOperator,
     clearWaveWaitingOperator,
+    setWaveCompletionNotified,
+    clearWaveCompletionNotified,
     getWaveWaitingOperator,
     isWaveWaitingOperator,
     // CA-5: variantes strict que tiran si el shape rompe.
