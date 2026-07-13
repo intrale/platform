@@ -5,11 +5,19 @@
   "kernel": {
     "package": "@intrale/operating-kernel",
     "version": "0.1.0",
-    "pinnedRef": "github:Intrale/kernel#704167b82c9a95115cf9d569b55ce135500e1366",
+    "registry": "https://npm.pkg.github.com",
     "consume": false,
+    "signature": {
+      "mechanism": "sigstore-cosign-oidc",
+      "tagPattern": "v{version}",
+      "certificateIdentityRegexp": "^https://github\\.com/Intrale/kernel/\\.github/workflows/release\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+$",
+      "certificateOidcIssuer": "https://token.actions.githubusercontent.com",
+      "note": "CA-C2 (#4695): firma del git tag con sigstore/cosign OIDC keyless (NO GPG, NO provenance npm — GitHub Packages no la soporta; decisión de diseño cerrada por el arquitecto). kernel-resolver.assertReleaseSignature mapea version->tag (tagPattern) y verifica la firma del asset detached del GitHub Release ANTES de bumpear (fail-closed). blobPath/signaturePath/certificatePath los provee el flujo de consumo cuando consume:true. Comando manual: cosign verify-blob --certificate-identity-regexp <id> --certificate-oidc-issuer https://token.actions.githubusercontent.com <blob> --signature <sig> --certificate <cert>."
+    },
     "integrity": {
-      "algorithm": "sha256",
-      "note": "Pin inmutable por commit SHA del kernel (Ola 9.1). Migrar a release firmado registry-semver al publicar @intrale/operating-kernel@0.1.0 (kernel-repo-design.md §2.3/§4). consume:false = coexistencia; el motor local de .pipeline/ sigue operativo (freeze en 9.5, paridad E2E en #4665)."
+      "algorithm": "sha512",
+      "sri": null,
+      "note": "CA-C3 (#4695): pin EXACTO (version 'X.Y.Z', nunca ^/~) + npm ci contra package-lock.json con hashes SRI. 'sri' se puebla desde el lockfile cuando @intrale/operating-kernel@0.1.0 esté publicado y firmado (gate humano CA-C1 en intrale/kernel/.github/workflows/release.yml). Migrado desde pinnedRef 'github:Intrale/kernel#704167b82c9a95115cf9d569b55ce135500e1366' (Ola 9.1). consume:false permanece = coexistencia; el motor local de .pipeline/ sigue operativo (freeze en sub-ola 9.5, fuera de #4695). No degradar en silencio: resolver fail-closed si consume:true y firma/paquete no verifican."
     }
   },
   "capabilities": {
