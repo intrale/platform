@@ -55,6 +55,7 @@ const path = require('path');
 const { execSync, spawnSync } = require('child_process');
 const staleBranchesLib = require('./lib/stale-branches');
 const gbWorktrees = require('./lib/ghostbusters-worktrees');
+const { isMarkerArtifact } = require('./lib/marker-artifact');
 // CA-B2/CA-SEC-5 — derivación de prefijo/regex compartida (sin re-duplicar 'platform.').
 const wtPrefix = require('./lib/worktree-prefix');
 const GB_MAIN = gbWorktrees.MAIN_REPO.replace(/\\/g, '/').toLowerCase();
@@ -366,7 +367,8 @@ function pipelineHasActiveWork(issueNum) {
     for (const estado of activeStates) {
       const dir = path.join(PIPELINE, 'desarrollo', fase, estado);
       try {
-        const files = fs.readdirSync(dir);
+        const files = fs.readdirSync(dir)
+          .filter(f => !f.startsWith('.') && !f.endsWith('.gitkeep') && !isMarkerArtifact(f));
         if (files.some(f => f.startsWith(`${issueNum}.`))) return true;
       } catch {}
     }
