@@ -17,10 +17,11 @@ test('el tag baseline pre-ola9-migracion existe (punto de retorno · CA-3)', () 
   assert.strictEqual(parity.baselineExists(), true);
 });
 
-// --- CA-2 · wiring byte-idéntico ----------------------------------------------
-test('los entrypoints del motor son byte-idénticos baseline vs HEAD (CA-2)', () => {
+// --- CA-2 · wiring byte-idéntico (invariante histórica: baseline vs cierre de
+// migración; NO contra HEAD, que evoluciona con features posteriores legítimas) -
+test('los entrypoints del motor son byte-idénticos baseline vs cierre de migración (CA-2)', () => {
   const r = parity.verifyEngineParity();
-  assert.strictEqual(r.ok, true, 'el motor local no debe cambiar por la migración');
+  assert.strictEqual(r.ok, true, 'la migración no debe haber cambiado el motor local');
   for (const f of r.files) {
     assert.ok(f.baselineSha, `blob baseline ausente para ${f.file}`);
     assert.strictEqual(f.postSha, f.baselineSha, `${f.file} cambió de bytes`);

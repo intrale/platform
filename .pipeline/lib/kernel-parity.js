@@ -41,6 +41,23 @@ const PRODUCT_ROOT = path.resolve(PIPELINE_DIR, '..');    // repo del producto
 const BASELINE_TAG = 'pre-ola9-migracion';
 const CONFIG_REL = '.pipeline/config.yaml';
 
+// Frontera de CIERRE de la migración (Ola 9.1, commit de #4671): el último commit
+// de la migración, donde el motor local todavía es byte-idéntico al baseline.
+//
+// La byte-identidad del motor es una invariante HISTÓRICA de la migración
+// ("¿la migración tocó el motor?" → no), NO una promesa de que el motor nunca
+// cambie. Features posteriores legítimas (p.ej. #4676 GATE 2, #4702 intake
+// multi-repo) SÍ modifican `pulpo.js`/`config.yaml` sin ser regresiones de la
+// migración. Por eso el eje de bytes compara dos refs CONGELADOS —baseline vs
+// cierre-de-migración— y no contra `HEAD` móvil (lo que convertía este test en
+// un time-bomb que fallaba en cuanto cualquier PR legítima tocaba el motor).
+//
+// La paridad de comportamiento *hacia adelante* la garantiza el resolver
+// (consume OFF → motor local), que SÍ se evalúa contra HEAD (verifyResolverDefault).
+// El SHA es un ancestro de HEAD y descendiente del baseline: misma alcanzabilidad
+// que BASELINE_TAG (si el entorno tiene los blobs del baseline, tiene los de este).
+const MIGRATION_CLOSE_REF = 'a4eae94fb5c095c340e67e5140eaeb1df00daa22'; // Ola 9.1 · #4671
+
 // Entrypoints del motor que migraron a `core/` del kernel (allowlist del resolver).
 const ENGINE_ENTRYPOINTS = Object.freeze(['pulpo', 'dashboard']);
 // Archivos del motor cuya byte-identidad demuestra que el arranque no cambió.
@@ -169,11 +186,13 @@ function verifyFlowParity(baselineRef = BASELINE_TAG, headRef = 'HEAD') {
 }
 
 // -----------------------------------------------------------------------------
-// CA-2/CA-3 — paridad de wiring: los entrypoints del motor resueltos por el
-// wiring nuevo son byte-idénticos a los del baseline, y el resolver por default
-// (coexistencia) apunta al motor local (mismo path que el arranque pre-migración).
+// CA-2/CA-3 — paridad de wiring: los entrypoints del motor eran byte-idénticos
+// entre el baseline y el cierre de la migración (la migración no tocó el motor).
+// Se comparan dos refs CONGELADOS (invariante histórica); no contra HEAD, que
+// evoluciona legítimamente con features posteriores. La paridad de comportamiento
+// hacia adelante la cubre el resolver (coexistencia → motor local).
 // -----------------------------------------------------------------------------
-function verifyEngineParity(baselineRef = BASELINE_TAG, headRef = 'HEAD') {
+function verifyEngineParity(baselineRef = BASELINE_TAG, headRef = MIGRATION_CLOSE_REF) {
   const files = ENGINE_FILES.map((f) => {
     const base = blobSha(baselineRef, f);
     const head = blobSha(headRef, f);
@@ -294,7 +313,8 @@ function runParity(opts = {}) {
   const headRef = opts.headRef || 'HEAD';
 
   const axes = {
-    engine: verifyEngineParity(baselineRef, headRef),      // CA-2 wiring bytes
+    // Eje de bytes: baseline vs cierre-de-migración (refs congelados), NO headRef.
+    engine: verifyEngineParity(baselineRef),                // CA-2 wiring bytes
     flows: verifyFlowParity(baselineRef, headRef),          // CA-1/CA-2 flujos
     resolver: verifyResolverDefault(),                      // CA-2 default→local
     rollback: verifyRollback(baselineRef),                  // CA-3
@@ -308,6 +328,7 @@ function runParity(opts = {}) {
 
 module.exports = {
   BASELINE_TAG,
+  MIGRATION_CLOSE_REF,
   CONFIG_REL,
   ENGINE_ENTRYPOINTS,
   ENGINE_FILES,
