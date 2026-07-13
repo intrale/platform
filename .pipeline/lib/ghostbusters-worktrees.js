@@ -21,6 +21,8 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { remoteBranchExists } = require('./worktree-resolver');
+// CA-B2/CA-SEC-5 — prefijo de confinamiento sibling derivado del helper compartido.
+const { deriveSiblingPrefix } = require('./worktree-prefix');
 
 const MAIN_REPO = 'C:/Workspaces/Intrale/platform';
 const DEFAULT_AGE_THRESHOLD_DAYS = 30;
@@ -54,8 +56,15 @@ function isForbiddenTarget(wtPath, { mainRepo = MAIN_REPO, fsImpl = fs } = {}) {
   }
   // Confinamiento: solo se permiten worktrees hermanos `<repo>.<sufijo>`.
   // Esto rechaza junctions que resuelven fuera del prefijo permitido.
-  if (!real.startsWith(main + '.')) {
-    return { forbidden: true, reason: `fuera del prefijo permitido ${main}.*` };
+  // CA-B2/CA-SEC-5 — el prefijo `<repo>.` se deriva del helper compartido, anclado
+  // al parent REAL del main repo. Fallback defensivo al ancla literal `<main>.`
+  // (NUNCA más permisivo) si el basename del main repo no coincide con la base.
+  const siblingPrefix = deriveSiblingPrefix().toLowerCase();      // p.ej. 'platform.'
+  const derived = `${normPath(path.dirname(mainRepo))}/${siblingPrefix}`;
+  const legacy = main + '.';
+  const allowedPrefix = (derived === legacy) ? derived : legacy;
+  if (!real.startsWith(allowedPrefix)) {
+    return { forbidden: true, reason: `fuera del prefijo permitido ${allowedPrefix}*` };
   }
   return { forbidden: false };
 }

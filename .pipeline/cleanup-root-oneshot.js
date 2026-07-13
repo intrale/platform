@@ -25,8 +25,12 @@
 
 const fs = require('fs');
 const path = require('path');
+// CA-SEC-5 (#4694) — prefijo sibling derivado del helper compartido. Defensa:
+// este limpiador de raíz NUNCA debe alcanzar un worktree hermano `<repo>.<sufijo>`.
+const { deriveSiblingPrefix } = require('./lib/worktree-prefix');
 
 const REPO_ROOT = 'C:/Workspaces/Intrale/platform';
+const SIBLING_PREFIX = deriveSiblingPrefix().toLowerCase(); // p.ej. 'platform.'
 
 // Allowlist verificada empíricamente (issue #3943, 2026-06-12). Solo items
 // UNTRACKED — los trackeados se borran vía git rm en el PR del issue.
@@ -72,6 +76,11 @@ function main() {
     }
     if (real !== rootReal + '/' + norm(actualName) || !real.startsWith(rootReal + '/')) {
       console.log(`  🛑 ${item} — resuelve fuera del repo (${real}), SKIP por seguridad`);
+      continue;
+    }
+    // CA-SEC-5 — jamás tocar un worktree hermano `<repo>.<sufijo>` (defensa extra).
+    if (path.basename(real).startsWith(SIBLING_PREFIX)) {
+      console.log(`  🛑 ${item} — parece un worktree hermano (${SIBLING_PREFIX}*), SKIP por seguridad`);
       continue;
     }
     const st = fs.statSync(target);

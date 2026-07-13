@@ -28,6 +28,8 @@
 'use strict';
 
 const crypto = require('crypto');
+// CA-B2 — needle del worktree derivado del helper compartido (sin re-duplicar 'platform.').
+const { worktreeNeedle } = require('./worktree-prefix');
 
 // Skills cuyo rechazo nunca habilita auto-promoción por convergencia.
 // Espejo de `circuit_breaker.convergence_excludes_skills` en config.yaml.
@@ -60,7 +62,7 @@ function computeDiffHash(issue, { execSyncImpl, root } = {}) {
   const cwd = root || process.cwd();
   try {
     // Localizar el worktree del issue — mismo needle que getChangedFilesForIssue.
-    const needle = `platform.agent-${issue}-`;
+    const needle = worktreeNeedle(issue);
     let issueWorktree = null;
     const worktrees = _execSync('git worktree list --porcelain', {
       cwd, encoding: 'utf8', timeout: 5000, windowsHide: true,

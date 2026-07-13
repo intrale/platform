@@ -333,6 +333,8 @@ try { providerExhaustionPause = require('./lib/provider-exhaustion-pause'); } ca
 // huérfana en local — el `-b` rebotaba con "branch already exists" y el
 // issue quedaba dando vueltas en cola sin avanzar.
 const { ensureLaunchWorktree, WorktreeLaunchError } = require('./lib/worktree-launcher');
+// CA-B2 (#4694) — needle del worktree derivado del helper compartido (sin re-duplicar 'platform.').
+const { worktreeNeedle: wtNeedle } = require('./lib/worktree-prefix');
 // #2591 — Resolver fast-fail del worktree para fases `useExistingWorktree`.
 // Reemplaza el fallback inline a ROOT que producía commits cruzados entre
 // agentes cuando el worktree del issue desaparecía (cleanup, restart, etc).
@@ -1161,7 +1163,7 @@ function resolveDeterministicScript({ skill, issue, ROOT, PIPELINE, onWorktreeHi
   if (!issue || !ROOT) return rootScript;
   let issueWorktree = null;
   try {
-    const needle = `platform.agent-${issue}-`;
+    const needle = wtNeedle(issue);
     const worktrees = _execSync('git worktree list --porcelain', { cwd: ROOT, encoding: 'utf8', timeout: 5000, windowsHide: true });
     for (const line of String(worktrees).split('\n')) {
       if (line.startsWith('worktree ') && line.includes(needle)) {
@@ -5295,7 +5297,7 @@ function brazoBarrido(config) {
           // Cleanup: eliminar worktree del issue si existe
           try {
             const wtList = execSync('git worktree list --porcelain', { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true });
-            const wtPattern = `platform.agent-${issue}-`;
+            const wtPattern = wtNeedle(issue);
             for (const line of wtList.split('\n')) {
               if (line.startsWith('worktree ') && line.includes(wtPattern)) {
                 const wtPath = line.replace('worktree ', '').trim();
@@ -6055,7 +6057,7 @@ function getChangedFilesForIssue(issue, { execSyncImpl } = {}) {
   const _execSync = execSyncImpl || execSync;
   try {
     // Localizar el worktree del issue (mismo needle que resolveDeterministicScript).
-    const needle = `platform.agent-${issue}-`;
+    const needle = wtNeedle(issue);
     let issueWorktree = null;
     const worktrees = _execSync('git worktree list --porcelain', {
       cwd: ROOT, encoding: 'utf8', timeout: 5000, windowsHide: true,

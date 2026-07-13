@@ -55,6 +55,11 @@ const path = require('path');
 const { execSync, spawnSync } = require('child_process');
 const staleBranchesLib = require('./lib/stale-branches');
 const gbWorktrees = require('./lib/ghostbusters-worktrees');
+// CA-B2/CA-SEC-5 — derivación de prefijo/regex compartida (sin re-duplicar 'platform.').
+const wtPrefix = require('./lib/worktree-prefix');
+const GB_MAIN = gbWorktrees.MAIN_REPO.replace(/\\/g, '/').toLowerCase();
+const GB_SIBLING_PREFIX = `${path.dirname(GB_MAIN)}/${wtPrefix.deriveSiblingPrefix().toLowerCase()}`;
+const GB_AGENT_RE = wtPrefix.agentWorktreeRegex();
 
 // -----------------------------------------------------------------------------
 // Constantes
@@ -382,9 +387,9 @@ function findAbandonedWorktrees(procs, opts = {}) {
   for (const wt of worktrees) {
     const wtPathNorm = wt.path.replace(/\\/g, '/');
     const wtLower = wtPathNorm.toLowerCase();
-    if (wtLower === 'c:/workspaces/intrale/platform') continue;
+    if (wtLower === GB_MAIN) continue;
     if (myCwd.startsWith(wtLower)) continue;
-    if (!wtLower.startsWith('c:/workspaces/intrale/platform.')) continue;
+    if (!wtLower.startsWith(GB_SIBLING_PREFIX)) continue;
     let hasLiveProc = false;
     for (const cwd of cwds) {
       if (cwd.startsWith(wtLower)) { hasLiveProc = true; break; }
@@ -393,7 +398,7 @@ function findAbandonedWorktrees(procs, opts = {}) {
     const branch = wt.branch || '';
     let issueNum = null;
     let reason = null;
-    const agentMatch = wtPathNorm.match(/platform\.agent-(\d+)-/);
+    const agentMatch = wtPathNorm.match(GB_AGENT_RE);
     const sessionMatch = wtPathNorm.match(/platform\.session-/);
     if (agentMatch) {
       issueNum = parseInt(agentMatch[1], 10);

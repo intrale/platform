@@ -12,6 +12,10 @@
 const path = require('path');
 const fs = require('fs');
 const { execSync, spawnSync } = require('child_process');
+// CA-SEC-5 (#4694) — guard anti-suicidio compartido: confina el borrado al
+// prefijo sibling derivado del helper. Un path fuera del prefijo (traversal /
+// junction que escapa) no se borra.
+const { isForbiddenTarget } = require('../ghostbusters-worktrees');
 
 const MAIN_REPO_DEFAULT = 'C:/Workspaces/Intrale/platform';
 
@@ -115,6 +119,15 @@ async function cleanupWorktree({
       worktreePath,
       branch,
     };
+  }
+
+  // 0.5 Guard anti-suicidio (CA-SEC-5): el path debe caer dentro del prefijo
+  //     sibling derivado del helper compartido. Rechaza main repo, ancestros,
+  //     traversal y junctions que resuelvan afuera — antes de tocar git/fs.
+  const guard = isForbiddenTarget(worktreePath, { mainRepo: mainRepoPath });
+  if (guard.forbidden) {
+    log(`🛑 Skip cleanup: ${worktreePath} fuera del prefijo permitido (${guard.reason})`);
+    return { ok: false, skipped: true, reason: 'forbidden_target', worktreePath, branch, detail: guard.reason };
   }
 
   // 1. Volver al repo principal (cambio de cwd via git -C, no process.chdir)
