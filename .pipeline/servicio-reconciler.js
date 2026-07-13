@@ -36,9 +36,15 @@ const humanBlock = require('./lib/human-block');
 const { isMarkerArtifact } = require('./lib/marker-artifact');
 const admissionGate = require('./lib/admission-gate');
 const { reconcileStateLabels, isReconciliableStateLabel } = require('./lib/label-reconciler-core');
-const { allChildrenDone } = require('./lib/epic-children-oracle');
+const { allChildrenDone, isFreshEntry, DEFAULT_FRESHNESS_MS } = require('./lib/epic-children-oracle');
 // #3381 — Gate de screenshots+mockup (default OFF, activable por env var).
 const screenshotsMockupGate = require('./hooks/screenshots-mockup-gate');
+const waves = require('./lib/waves');
+const waveResolver = require('./lib/wave-resolver');
+const waveState = require('./lib/wave-state');
+const waveSnapshot = require('./lib/wave-snapshot');
+const { computeClosedSet } = require('./lib/commander-deterministic');
+const { notifyTelegram } = require('./lib/notify-telegram');
 
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
@@ -138,6 +144,45 @@ function loadSplitChildrenMap(opts = {}) {
     return map;
 }
 
+// #4672 — Pide el estado de un issue live a GitHub y lo devuelve como entrada
+// FRESCA `{ state, fetchedAt }` para el oráculo. Reusa getIssueState (que hace
+// `gh issue view <n> --json state`). Si el fetch no es autoritativo (UNKNOWN por
+// error/timeout de `gh`) devuelve null → el oráculo lo descarta (fail-closed).
+function getIssueStateEntry(issueNum, now) {
+    const state = getIssueState(issueNum);
+    if (!state || state === 'UNKNOWN') return null;
+    return { state, fetchedAt: typeof now === 'number' ? now : Date.now() };
+}
+
+// #4672 — Resuelve el estado de cada hijo con frescura garantizada en la
+// frontera del ciclo. Reusa la entrada del cache SÓLO si es fresca (evita
+// martillar `gh`); si está stale/ausente la re-pide live a GitHub y sella
+// `fetchedAt` con el `now` del ciclo. Ante fallo del fetch live la entrada queda
+// no-verificable → el oráculo falla cerrado y NO abre el gate humano.
+function resolveChildrenStatesFresh(children, opts = {}) {
+    const cache = opts.cache && typeof opts.cache === 'object' ? opts.cache : {};
+    const now = typeof opts.now === 'number' ? opts.now : Date.now();
+    const freshnessMs = Number.isFinite(opts.freshnessMs) && opts.freshnessMs > 0
+        ? opts.freshnessMs : DEFAULT_FRESHNESS_MS;
+    const fetchState = typeof opts.fetchState === 'function' ? opts.fetchState : getIssueStateEntry;
+    const resolved = {};
+    for (const child of Array.isArray(children) ? children : []) {
+        const key = String(child);
+        const cached = cache[key];
+        if (isFreshEntry(cached, now, freshnessMs)) {
+            resolved[key] = cached;
+            continue;
+        }
+        try {
+            const live = fetchState(child, now);
+            if (live && typeof live === 'object') resolved[key] = live;
+        } catch {
+            // Fail-closed: sin entrada fresca el oráculo descarta este hijo.
+        }
+    }
+    return resolved;
+}
+
 function resolveEpicStateSources(issue, ctx = {}) {
     const labels = Array.isArray(issue && issue.labels) ? issue.labels.map(String) : [];
     const issueNum = normalizeIssueNumber(issue && issue.number);
@@ -148,11 +193,31 @@ function resolveEpicStateSources(issue, ctx = {}) {
     const isEpic = labels.includes('epic') || children.length > 0;
     if (!isEpic) return { isEpic: false };
 
-    const issueStates = ctx.issueStates || loadIssueStateCache(ctx);
+    const hasActiveHumanMarker = ctx.blockedByIssue instanceof Map ? ctx.blockedByIssue.has(issueNum) : false;
+
+    // El oráculo sólo abre el gate cuando el issue tiene `needs-human` y no hay
+    // marker activo. Sólo en ese caso vale la pena (y es seguro) resolver estados
+    // de hijos live. Fuera de él evitamos IO y devolvemos epicChildrenAllDone=false
+    // (fail-closed): nunca afirmamos "Done" sin necesidad.
+    const gateRelevant = labels.includes('needs-human') && !hasActiveHumanMarker;
+    if (!gateRelevant) {
+        return { isEpic: true, epicChildrenAllDone: false, hasActiveHumanMarker };
+    }
+
+    const now = typeof ctx.now === 'number' ? ctx.now : Date.now();
+    const freshnessMs = Number.isFinite(ctx.freshnessMs) && ctx.freshnessMs > 0
+        ? ctx.freshnessMs : DEFAULT_FRESHNESS_MS;
+    const issueStates = resolveChildrenStatesFresh(children, {
+        cache: ctx.issueStates || loadIssueStateCache(ctx),
+        now,
+        freshnessMs,
+        fetchState: ctx.fetchIssueState,
+    });
+
     return {
         isEpic: true,
-        epicChildrenAllDone: allChildrenDone({ children, issueStates }),
-        hasActiveHumanMarker: ctx.blockedByIssue instanceof Map ? ctx.blockedByIssue.has(issueNum) : false,
+        epicChildrenAllDone: allChildrenDone({ children, issueStates, now, maxAgeMs: freshnessMs }),
+        hasActiveHumanMarker,
     };
 }
 
@@ -1132,6 +1197,108 @@ function reconcileScreenshotsMockupGate(opts = {}) {
 }
 
 // -----------------------------------------------------------------------------
+// #4673 -- Aviso proactivo de finalizacion de ola
+// -----------------------------------------------------------------------------
+
+function escapeMarkdownText(value) {
+    return String(value || '')
+        .replace(/\\/g, '\\\\')
+        .replace(/([_*[\]()`])/g, '\\$1')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function waveTitle(wave) {
+    const name = wave && typeof wave.name === 'string' ? wave.name.trim() : '';
+    const goal = wave && typeof wave.goal === 'string' ? wave.goal.trim() : '';
+    return name || goal || 'ola activa';
+}
+
+function buildWaveCompletionMessage(wave, snapshot) {
+    const waveNumber = wave && Number.isInteger(wave.number) ? wave.number : null;
+    const heading = `Ola ${waveNumber || '?'} completada - ${escapeMarkdownText(waveTitle(wave))}`;
+    const goal = escapeMarkdownText(wave && wave.goal ? wave.goal : waveTitle(wave));
+    const issues = Array.isArray(snapshot && snapshot.issues) ? snapshot.issues : [];
+    const closedIssues = issues.filter((issue) => issue && issue.isClosed);
+    const maxListed = 15;
+    const lines = [
+        `🎉 ${heading}`,
+        '',
+        'Todos los issues cerrados y en `main`:',
+    ];
+
+    for (const issue of closedIssues.slice(0, maxListed)) {
+        const id = Number.isInteger(issue.id) ? issue.id : '?';
+        const title = escapeMarkdownText(issue.title || '(sin titulo)');
+        lines.push(`- #${id} - ${title}`);
+    }
+    if (closedIssues.length > maxListed) {
+        lines.push(`- ... ${closedIssues.length - maxListed} issues cerrados mas`);
+    }
+
+    lines.push('');
+    lines.push(`Objetivo: ${goal}`);
+    lines.push(`${snapshot.closedCount}/${snapshot.totalIssues} issues - 100%`);
+    return lines.join('\n');
+}
+
+function reconcileWaveCompletion(opts = {}) {
+    const wavesApi = opts.waves || waves;
+    const resolver = opts.waveResolver || waveResolver;
+    const stateApi = opts.waveState || waveState;
+    const snapshotApi = opts.waveSnapshot || waveSnapshot;
+    const closedSetFn = opts.computeClosedSet || computeClosedSet;
+    const notifyFn = opts.notifyTelegram || notifyTelegram;
+    const pipelineRoot = opts.pipelineRoot || PIPELINE;
+
+    const activeWave = wavesApi.getActiveWave();
+    if (!activeWave || !Number.isInteger(activeWave.number)) {
+        return { skipped: true, reason: 'no_active_wave' };
+    }
+
+    const resolvedWave = resolver.resolveActiveWave({ pipelineRoot });
+    const state = stateApi.getCachedWaveState({ pipelineRoot });
+    const closedIssues = closedSetFn({ wave: resolvedWave, state });
+    const snapshot = snapshotApi.buildWaveSnapshot({ state, wave: resolvedWave, closedIssues });
+    const complete = !!snapshot && snapshot.totalIssues > 0 && snapshot.closedCount === snapshot.totalIssues;
+
+    if (complete && activeWave.completion_notified !== true) {
+        const message = buildWaveCompletionMessage(activeWave, snapshot);
+        const notifyResult = notifyFn({
+            level: 'info',
+            component: 'wave-completion',
+            message,
+            context: {
+                wave: activeWave.number,
+                issues: `${snapshot.closedCount}/${snapshot.totalIssues}`,
+            },
+        });
+        if (notifyResult && notifyResult.ok) {
+            const marked = wavesApi.setWaveCompletionNotified(activeWave.number, {
+                updated_by: 'svc-reconciler',
+            });
+            return { complete: true, notified: true, marked, dropPath: notifyResult.dropPath || null };
+        }
+        return {
+            complete: true,
+            notified: false,
+            notifyFailed: true,
+            reason: notifyResult && notifyResult.reason ? notifyResult.reason : 'notify_failed',
+        };
+    }
+
+    if (!complete && activeWave.completion_notified === true) {
+        const reset = wavesApi.clearWaveCompletionNotified(activeWave.number, {
+            updated_by: 'svc-reconciler',
+            note: `wave ${activeWave.number} completion notification reset: ${snapshot.closedCount}/${snapshot.totalIssues}`,
+        });
+        return { complete: false, reset };
+    }
+
+    return { complete, notified: false, reset: false };
+}
+
+// -----------------------------------------------------------------------------
 // Loop principal
 // -----------------------------------------------------------------------------
 
@@ -1243,6 +1410,14 @@ function reconcileOnce() {
         screenshotsResult = { error: true };
     }
 
+    let waveCompletionResult = null;
+    try {
+        waveCompletionResult = reconcileWaveCompletion();
+    } catch (e) {
+        log(`Wave completion notice error: ${e.message.slice(0, 120)}`);
+        waveCompletionResult = { error: true };
+    }
+
     const elapsed = Date.now() - t0;
     lastRunAt = Date.now();
     const admissionSummary = admissionResult && !admissionResult.skipped && !admissionResult.error
@@ -1251,11 +1426,14 @@ function reconcileOnce() {
     const screenshotsSummary = screenshotsResult && !screenshotsResult.skipped && !screenshotsResult.error && screenshotsResult.appliedCount
         ? `, +${screenshotsResult.appliedCount} screenshots-gate`
         : '';
+    const waveCompletionSummary = waveCompletionResult && !waveCompletionResult.error && (waveCompletionResult.notified || waveCompletionResult.reset || waveCompletionResult.notifyFailed)
+        ? `, wave-completion=${waveCompletionResult.notified ? 'notified' : (waveCompletionResult.reset ? 'reset' : 'retry-pending')}`
+        : '';
     const phaseSummary = archivedPhase ? `, +${archivedPhase} markers de fase archivados (closed)` : '';
     const stateLabelsRemoved = stateLabelResult && stateLabelResult.removed ? stateLabelResult.removed : 0;
     const stateLabelSummary = stateLabelsRemoved ? `, -${stateLabelsRemoved} labels stale` : '';
-    if (created || enqueued || archived || archivedPhase || detected || resolved || stateLabelsRemoved || (admissionResult && admissionResult.appliedCount) || (screenshotsResult && screenshotsResult.appliedCount)) {
-        log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} → +${created} placeholders, +${enqueued} labels encolados, +${archived} archivados (closed), +${detected} destrabes humanos, +${resolved} resueltos por guardian/TTL (-${resolvedRemovedLabels} labels removidos)${stateLabelSummary}${phaseSummary}${admissionSummary}${screenshotsSummary}`);
+    if (created || enqueued || archived || archivedPhase || detected || resolved || stateLabelsRemoved || (admissionResult && admissionResult.appliedCount) || (screenshotsResult && screenshotsResult.appliedCount) || waveCompletionSummary) {
+        log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} → +${created} placeholders, +${enqueued} labels encolados, +${archived} archivados (closed), +${detected} destrabes humanos, +${resolved} resueltos por guardian/TTL (-${resolvedRemovedLabels} labels removidos)${stateLabelSummary}${phaseSummary}${admissionSummary}${screenshotsSummary}${waveCompletionSummary}`);
     } else {
         log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} — sincronizado`);
     }
@@ -1331,6 +1509,8 @@ module.exports = {
     logLabelReconcilerAudit,
     reconcileStateLabelsStep,
     resolveEpicStateSources,
+    resolveChildrenStatesFresh,
+    getIssueStateEntry,
     loadSplitChildrenMap,
     loadIssueStateCache,
     HUMAN_UNBLOCK_GRACE_MS,
@@ -1342,4 +1522,7 @@ module.exports = {
     listGhItemsAll,
     ADMISSION_SWEEP_ENABLED,
     ADMISSION_DRY_RUN,
+    reconcileWaveCompletion,
+    buildWaveCompletionMessage,
+    escapeMarkdownText,
 };

@@ -64,12 +64,16 @@ test('reconcileStateLabelsStep no encola qa ni blocked:dependencies', () => {
   assert.deepEqual(listGhQueue(), []);
 });
 
-test('resolveEpicStateSources usa hijos de split y title-cache con fail-closed', () => {
+test('resolveEpicStateSources usa hijos de split y estados frescos del cache', () => {
+  const NOW = 1_776_810_000_000;
   const childrenMap = new Map([[4661, [4662, 4663]]]);
-  const issueStates = { 4662: { state: 'closed' }, 4663: { labels: ['status:done'] } };
+  const issueStates = {
+    4662: { state: 'closed', fetchedAt: NOW },
+    4663: { labels: ['status:done'], fetchedAt: NOW },
+  };
   const sources = reconciler.resolveEpicStateSources(
     { number: 4661, labels: ['needs-human'] },
-    { childrenMap, issueStates, blockedByIssue: new Map() },
+    { childrenMap, issueStates, blockedByIssue: new Map(), now: NOW },
   );
 
   assert.deepEqual(sources, {
@@ -77,4 +81,73 @@ test('resolveEpicStateSources usa hijos de split y title-cache con fail-closed',
     epicChildrenAllDone: true,
     hasActiveHumanMarker: false,
   });
+});
+
+// #4672 — Cache stale: resolveEpicStateSources debe re-pedir estados live y, si
+// el fetcher live confirma CLOSED, recién ahí abrir. Cache viejo NO alcanza.
+test('resolveEpicStateSources refetchea live cuando el cache esta stale', () => {
+  const NOW = 1_776_810_000_000;
+  const STALE = NOW - 3600000 - 1; // fuera de la ventana de 1h
+  const childrenMap = new Map([[4661, [4662, 4663]]]);
+  const issueStates = {
+    4662: { state: 'closed', fetchedAt: STALE },
+    4663: { state: 'closed', fetchedAt: STALE },
+  };
+  const fetched = [];
+  const sources = reconciler.resolveEpicStateSources(
+    { number: 4661, labels: ['needs-human'] },
+    {
+      childrenMap,
+      issueStates,
+      blockedByIssue: new Map(),
+      now: NOW,
+      fetchIssueState: (num, now) => { fetched.push(num); return { state: 'CLOSED', fetchedAt: now }; },
+    },
+  );
+
+  assert.deepEqual(fetched, [4662, 4663]);
+  assert.equal(sources.epicChildrenAllDone, true);
+});
+
+// #4672 (security A01) — FAIL-CLOSED: si el fetch live no es autoritativo (gh
+// devuelve UNKNOWN → fetcher devuelve null) y el cache esta stale, NO se abre el
+// gate humano aunque el cache diga CLOSED.
+test('resolveEpicStateSources FAIL-CLOSED con cache stale y fetch live no autoritativo', () => {
+  const NOW = 1_776_810_000_000;
+  const STALE = NOW - 3600000 - 1;
+  const childrenMap = new Map([[4661, [4662]]]);
+  const issueStates = { 4662: { state: 'closed', fetchedAt: STALE } };
+  const sources = reconciler.resolveEpicStateSources(
+    { number: 4661, labels: ['needs-human'] },
+    {
+      childrenMap,
+      issueStates,
+      blockedByIssue: new Map(),
+      now: NOW,
+      fetchIssueState: () => null, // gh UNKNOWN / error → no autoritativo
+    },
+  );
+
+  assert.equal(sources.epicChildrenAllDone, false);
+});
+
+// #4672 — Sin `needs-human` no hay motivo (ni riesgo) de resolver hijos: el
+// oráculo devuelve false sin tocar `gh` (evita IO y falla cerrado).
+test('resolveEpicStateSources no resuelve hijos cuando el issue no tiene needs-human', () => {
+  const NOW = 1_776_810_000_000;
+  const childrenMap = new Map([[4661, [4662]]]);
+  let called = false;
+  const sources = reconciler.resolveEpicStateSources(
+    { number: 4661, labels: ['epic'] },
+    {
+      childrenMap,
+      issueStates: {},
+      blockedByIssue: new Map(),
+      now: NOW,
+      fetchIssueState: () => { called = true; return { state: 'CLOSED', fetchedAt: NOW }; },
+    },
+  );
+
+  assert.equal(called, false);
+  assert.equal(sources.epicChildrenAllDone, false);
 });
