@@ -6831,21 +6831,29 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
   // En vez de iterar fase por fase (que prioriza fases avanzadas),
   // juntamos todo y ordenamos por: feature priority > fase inversa.
   const candidates = [];
+  // #4709 — inventario de pendientes por fase (una sola pasada de FS). Sirve para
+  // derivar de forma pura/testeable las señales de dispatch-cause dependientes de
+  // la ventana horaria (ver brazoLanzamientoCore.resolveWindowPendingSignals),
+  // sin volver a escanear el FS (countPendientesGlobal) ni depender de
+  // candidates.length (que excluye las fases window-blocked).
+  const pendingInventory = [];
 
   for (const [pipelineName, pipelineConfig] of Object.entries(config.pipelines)) {
     const fases = pipelineConfig.fases;
     for (let faseIdx = 0; faseIdx < fases.length; faseIdx++) {
       const fase = fases[faseIdx];
 
-      // PRIORITY WINDOWS (autoexcluyentes): QA bloquea dev+build, Build bloquea solo dev.
-      // #3938 — delegado a brazo-lanzamiento-core (lógica pura, comportamiento invariante).
-      if (brazoLanzamientoCore.isPhaseBlockedByWindow(fase, { qaPriority, buildPriority })) {
-        _dcMark(dispatchCause.CAUSAS.VENTANA_HORARIA, `Fase ${fase} bloqueada por ventana activa (QA/Build/nocturna)`);
-        continue;
-      }
-
       const pendienteDir = path.join(fasePath(pipelineName, fase), 'pendiente');
       const archivos = listWorkFiles(pendienteDir);
+      pendingInventory.push({ fase, pendingCount: archivos.length });
+
+      // PRIORITY WINDOWS (autoexcluyentes): QA bloquea dev+build, Build bloquea solo dev.
+      // #3938 — delegado a brazo-lanzamiento-core (lógica pura, comportamiento invariante).
+      // Los pendientes de fases window-blocked NO entran a `candidates` (igual que
+      // antes); su ociosidad se explica más abajo vía resolveWindowPendingSignals.
+      if (brazoLanzamientoCore.isPhaseBlockedByWindow(fase, { qaPriority, buildPriority })) {
+        continue;
+      }
 
       for (const archivo of archivos) {
         candidates.push({
@@ -6867,9 +6875,23 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
   }
   candidates.sort(brazoLanzamientoCore.compareCandidates);
 
-  // #4709 — Hubo candidatos pendientes este ciclo: base para decidir si un
-  // no-despacho es "cola ociosa con causa" o (si queda vacío) nada que explicar.
-  _dcState.hayPendientes = candidates.length > 0;
+  // #4709 — Señales de dispatch-cause dependientes de la ventana horaria (puras).
+  //  - `hayPendientes` se deriva del inventario COMPLETO (no de candidates.length),
+  //    porque los pendientes de fases window-blocked se saltan ANTES de entrar a
+  //    `candidates`. Si TODA la cola vive en fases window-blocked, candidates queda
+  //    vacío pero la cola SÍ está ociosa con causa (gap CA-1/CA-2 del rebote).
+  //  - VENTANA_HORARIA se marca SOLO si alguna fase bloqueada tiene pendientes
+  //    reales; una fase vacía bloqueada por ventana no explica ninguna ociosidad
+  //    (evita falso positivo por precedencia si coexiste con otro gate real).
+  const winSignals = brazoLanzamientoCore.resolveWindowPendingSignals(
+    pendingInventory, { qaPriority, buildPriority });
+  _dcState.hayPendientes = winSignals.hayPendientes;
+  if (winSignals.windowBlockedHasPending) {
+    _dcMark(
+      dispatchCause.CAUSAS.VENTANA_HORARIA,
+      `Fase(s) ${winSignals.blockedPhases.join(', ')} bloqueada(s) por ventana activa (QA/Build/nocturna) con pendientes en espera`,
+    );
+  }
 
   // --- Procesar candidatos en orden unificado ---
   let anyLaunched = false;
