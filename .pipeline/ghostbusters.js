@@ -59,8 +59,6 @@ const { isMarkerArtifact } = require('./lib/marker-artifact');
 // CA-B2/CA-SEC-5 — derivación de prefijo/regex compartida (sin re-duplicar 'platform.').
 const wtPrefix = require('./lib/worktree-prefix');
 const GB_MAIN = gbWorktrees.MAIN_REPO.replace(/\\/g, '/').toLowerCase();
-const GB_SIBLING_PREFIX = `${path.dirname(GB_MAIN)}/${wtPrefix.deriveSiblingPrefix().toLowerCase()}`;
-const GB_AGENT_RE = wtPrefix.agentWorktreeRegex();
 
 // -----------------------------------------------------------------------------
 // Constantes
@@ -378,12 +376,25 @@ function pipelineHasActiveWork(issueNum) {
 
 function findAbandonedWorktrees(procs, opts = {}) {
   const ageThresholdDays = opts.ageThresholdDays || gbWorktrees.DEFAULT_AGE_THRESHOLD_DAYS;
-  const worktrees = listWorktrees();
+  const worktrees = opts.worktrees || listWorktrees();
   const abandoned = [];
-  const myCwd = isPathMe();
+  const myCwd = opts.myCwd || isPathMe();
+  let siblingPrefix;
+  let agentWorktreeRe;
+  let liveCwdRe;
+  try {
+    const repoBase = wtPrefix.deriveRepoBase(opts.projectId, opts.configOverride);
+    const escapedRepoBase = repoBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    siblingPrefix = `${path.dirname(GB_MAIN)}/${wtPrefix.deriveSiblingPrefix(opts.projectId, opts.configOverride).toLowerCase()}`;
+    agentWorktreeRe = wtPrefix.agentWorktreeRegex(opts.projectId, opts.configOverride);
+    liveCwdRe = new RegExp(`C:[\\\\/]Workspaces[\\\\/]Intrale[\\\\/](${escapedRepoBase}[^\\\\/\\s"]*)`, 'i');
+  } catch (e) {
+    log(`WARN prefijo de worktree invalido: ${e.message.slice(0, 120)}`);
+    return [];
+  }
   const cwds = new Set();
   for (const p of procs) {
-    const m = p.cmd.match(/C:[\\/]Workspaces[\\/]Intrale[\\/](platform[^\\/\s"]*)/i);
+    const m = p.cmd.match(liveCwdRe);
     if (m) cwds.add(m[0].replace(/\\/g, '/').toLowerCase());
   }
   for (const wt of worktrees) {
@@ -391,7 +402,7 @@ function findAbandonedWorktrees(procs, opts = {}) {
     const wtLower = wtPathNorm.toLowerCase();
     if (wtLower === GB_MAIN) continue;
     if (myCwd.startsWith(wtLower)) continue;
-    if (!wtLower.startsWith(GB_SIBLING_PREFIX)) continue;
+    if (!wtLower.startsWith(siblingPrefix)) continue;
     let hasLiveProc = false;
     for (const cwd of cwds) {
       if (cwd.startsWith(wtLower)) { hasLiveProc = true; break; }
@@ -400,35 +411,41 @@ function findAbandonedWorktrees(procs, opts = {}) {
     const branch = wt.branch || '';
     let issueNum = null;
     let reason = null;
-    const agentMatch = wtPathNorm.match(GB_AGENT_RE);
+    const agentMatch = wtPathNorm.match(agentWorktreeRe);
     const sessionMatch = wtPathNorm.match(/platform\.session-/);
     if (agentMatch) {
       issueNum = parseInt(agentMatch[1], 10);
-      const hasWork = pipelineHasActiveWork(issueNum);
-      const issueOpen = issueIsOpen(issueNum);
+      const hasWork = (opts.pipelineHasActiveWorkImpl || pipelineHasActiveWork)(issueNum);
+      const issueOpen = (opts.issueIsOpenImpl || issueIsOpen)(issueNum);
       if (!hasWork && !issueOpen) {
         reason = `issue #${issueNum} cerrado y sin trabajo activo`;
       } else if (!hasWork && issueOpen) {
-        const pr = prForBranch(branch);
+        const pr = (opts.prForBranchImpl || prForBranch)(branch);
         if (!pr) reason = `issue #${issueNum} abierto pero sin PR ni trabajo en pipeline`;
       }
     } else if (sessionMatch) {
-      const pr = prForBranch(branch);
+      const pr = (opts.prForBranchImpl || prForBranch)(branch);
       if (!pr) reason = `session sin PR abierto`;
     } else {
-      const pr = prForBranch(branch);
+      const pr = (opts.prForBranchImpl || prForBranch)(branch);
       if (!pr) reason = `rama sin PR abierto`;
     }
     if (reason) {
       // #3943 RS-3 — criterio compuesto: seguridad (todas) AND abandono (al
       // menos una: rama inexistente en remoto O antigüedad > umbral). Un solo
       // criterio NO alcanza para habilitar el borrado.
-      const safety = isWorktreeSafeToDelete(wt.path, branch);
+      const safety = (opts.isWorktreeSafeToDeleteImpl || isWorktreeSafeToDelete)(wt.path, branch);
       if (!safety.safe) {
         abandoned.push({ path: wt.path, branch, issue: issueNum, reason, skip: true, skipReason: safety.reason });
         continue;
       }
-      const abandonment = gbWorktrees.checkAbandonment(wt.path, branch, { mainRepo: ROOT, ageThresholdDays });
+      const checkAbandonment = opts.checkAbandonmentImpl || gbWorktrees.checkAbandonment;
+      const abandonment = checkAbandonment(wt.path, branch, {
+        mainRepo: ROOT,
+        ageThresholdDays,
+        projectId: opts.projectId,
+        configOverride: opts.configOverride,
+      });
       if (!abandonment.abandoned) {
         abandoned.push({ path: wt.path, branch, issue: issueNum, reason, skip: true, skipReason: abandonment.reason });
         continue;
