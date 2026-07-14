@@ -48,6 +48,8 @@ const EVENTS = Object.freeze([
     'dependency_declared', // #4525: dependencia padre→hijos declarada (split auto-incorporado)
     'wave_waiting_operator',         // #4578: ola retenida por el gate de coherencia (veto operador)
     'wave_waiting_operator_cleared', // #4578: retención waiting-operator liberada
+    'wave_stalled',                  // #4708: dead-man's switch marcó la ola estancada
+    'wave_stalled_cleared',          // #4708: marca de estancamiento liberada
 ]);
 
 // -----------------------------------------------------------------------------

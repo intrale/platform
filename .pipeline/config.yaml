@@ -454,6 +454,27 @@ watchdog:
   # inválido → default, NUNCA "nunca stale" — SEC-2).
   pulpo_liveness_kill_seconds: 180
 
+# =============================================================================
+# Wave-stall watchdog (#4708) — dead-man's switch de la ola
+# =============================================================================
+# Detecta la condición "trabajo habilitado + 0 despacho durante N minutos + sin
+# causa declarada" y alerta a Telegram + escala la ola a `needs_attention`
+# (label `needs-human`). NO cierra la ola ni mata agentes: sólo observabilidad
+# fail-closed (incidente raíz #4700). La lógica de decisión vive en
+# .pipeline/lib/wave-stall-watchdog.js (función pura testeada con node --test);
+# el brazo del Pulpo recolecta los hechos del filesystem y la invoca.
+#
+# stall_minutes se valida con clamp fail-closed (SEC-3): 0, negativo, no-numérico
+# o absurdamente grande (> 1440 min = 24h) cae al default seguro — NUNCA
+# "nunca stall" ni deshabilita de facto el watchdog.
+wave_watchdog:
+  enabled: false                 # rollout gradual — activar tras smoke test post-restart
+  kill_switch: false             # corte de emergencia: true desactiva el brazo sin tocar `enabled`
+  stall_minutes: 20              # 0 despacho más de esto (con trabajo habilitado y sin causa) = estancada
+  alert_cooldown_minutes: 30     # SEC-4: mín. entre re-alertas del mismo episodio (anti-flood)
+  window_minutes: 60             # ventana de referencia para la serie de avance/despacho
+  tick_ms: 60000                 # cada cuánto corre el brazo (default 1 min)
+
 # Dashboard — opciones del dashboard del pipeline
 dashboard:
   # #2895 — Threshold (% del promedio histórico) a partir del cual un agente
