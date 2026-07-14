@@ -66,6 +66,11 @@ const humanBlock = require('./lib/human-block');
 // sweep de claims huérfanos (épica EP-5 #3937).
 const slotClaim = require('./lib/slot-claim');
 const fileLock = require('./lib/file-lock');
+// #4709 — Causa declarada del no-despacho: prohíbe el estado "cola ociosa sin
+// explicación". Módulo puro (enum cerrado + precedencia) + publicación atómica
+// del artifact `.pipeline/dispatch-cause.json` consumible por dashboard y por
+// el dead-man's switch (#4708).
+const dispatchCause = require('./lib/dispatch-cause');
 // #4693 CA-0 — fuente de verdad única del repo destino (intake multi-repo,
 // allowlist fail-closed, repo de origen propagado). Reemplaza los literales
 // `intrale/platform` hardcodeados y el intake atado al remote del cwd.
@@ -6386,10 +6391,91 @@ function sweepClaimsHuerfanos(config) {
   }
 }
 
+// #4709 — Cuenta pendientes globales en TODAS las fases/pipelines. Se usa para
+// determinar `hayPendientes` en los early-returns que ocurren ANTES de recolectar
+// candidatos (cbInfra / presión) y en las causas de pausa/desync del mainLoop.
+// Barato y best-effort: nunca puede tirar (el pipeline no puede morir por esto).
+function countPendientesGlobal(config) {
+  let n = 0;
+  try {
+    for (const [pipelineName, pipelineConfig] of Object.entries(config.pipelines || {})) {
+      for (const fase of (pipelineConfig.fases || [])) {
+        const dir = path.join(fasePath(pipelineName, fase), 'pendiente');
+        try { n += listWorkFiles(dir).length; } catch { /* dir inexistente */ }
+      }
+    }
+  } catch { /* config degradada */ }
+  return n;
+}
+
+// #4709 — Publica la causa declarada del no-despacho para una razón GLOBAL que
+// ocurre fuera del ciclo de candidatos (pausa humana `.paused`, bloqueo por
+// desync). El mainLoop no llama a `brazoLanzamiento` en esos estados, así que la
+// causa debe emitirse acá para que el dashboard y el dead-man's switch (#4708)
+// no vean "ocioso sin explicación".
+function publicarCausaPausa(config, causa, detalle) {
+  try {
+    const gates = new Map([[causa, detalle]]);
+    dispatchCause.publish({
+      pipelineDir: PIPELINE,
+      snapshot: {
+        anyLaunched: false,
+        hayPendientes: countPendientesGlobal(config) > 0,
+        progressInFlight: false,
+        gatesActivos: new Set(gates.keys()),
+        detalles: Object.fromEntries(gates),
+      },
+      now: Date.now(),
+      alert: (m) => { try { sendTelegram(m); } catch { /* best-effort */ } },
+      log: (m) => log('lanzamiento', m),
+    });
+  } catch (e) {
+    log('lanzamiento', `dispatch-cause (pausa) publish error (fail-open): ${e.message}`);
+  }
+}
+
+// #4709 — Wrapper observacional del despacho. Garantiza publicar la causa del
+// no-despacho EXACTAMENTE UNA VEZ al cerrar el ciclo, sin importar por cuál
+// early-return/`continue`/excepción salga `brazoLanzamientoImpl`. La lógica de
+// despacho no cambia: `_dcMark` sólo REGISTRA la causa antes de cada salida
+// existente y `_dcState` acumula señales (anyLaunched / hayPendientes /
+// progressInFlight). La publicación es fail-open: un bug acá jamás frena el
+// pipeline.
 function brazoLanzamiento(config) {
+  const gates = new Map();
+  const state = { anyLaunched: false, hayPendientes: false, progressInFlight: false };
+  // Primera ocurrencia de cada causa gana el detalle (evita pisar el contexto
+  // del primer gate que la disparó en el ciclo).
+  const mark = (causa, detalle) => { if (!gates.has(causa)) gates.set(causa, detalle); };
+  try {
+    brazoLanzamientoImpl(config, mark, state);
+  } finally {
+    try {
+      dispatchCause.publish({
+        pipelineDir: PIPELINE,
+        snapshot: {
+          anyLaunched: state.anyLaunched,
+          hayPendientes: state.hayPendientes,
+          progressInFlight: state.progressInFlight,
+          gatesActivos: new Set(gates.keys()),
+          detalles: Object.fromEntries(gates),
+        },
+        now: Date.now(),
+        alert: (m) => { try { sendTelegram(m); } catch { /* best-effort */ } },
+        log: (m) => log('lanzamiento', m),
+      });
+    } catch (e) {
+      log('lanzamiento', `dispatch-cause publish error (fail-open): ${e.message}`);
+    }
+  }
+}
+
+function brazoLanzamientoImpl(config, _dcMark, _dcState) {
   // Circuit breaker de infra (#2305): si está abierto, no tomar nuevos issues.
   // Se reabre manualmente con `node .pipeline/resume.js` una vez validada la red.
   if (cbInfra.isOpen()) {
+    _dcMark(dispatchCause.CAUSAS.CB_INFRA, 'Circuit breaker de infra abierto — dispatch suspendido hasta validar red');
+    _dcState.hayPendientes = countPendientesGlobal(config) > 0;
     return;
   }
 
@@ -6402,7 +6488,11 @@ function brazoLanzamiento(config) {
   const buildPriority = buildPriorityActive;
 
   // GATE DE RECURSOS: presión graduada (green/yellow/orange/red)
-  if (isSystemOverloaded(config)) return;
+  if (isSystemOverloaded(config)) {
+    _dcMark(dispatchCause.CAUSAS.PRESION_RECURSOS, 'Sistema sobrecargado (presión de recursos RED) — despacho pausado');
+    _dcState.hayPendientes = countPendientesGlobal(config) > 0;
+    return;
+  }
 
   // Calcular multiplicador de concurrencia según presión actual
   const pressure = getResourcePressure(config);
@@ -6424,7 +6514,10 @@ function brazoLanzamiento(config) {
 
       // PRIORITY WINDOWS (autoexcluyentes): QA bloquea dev+build, Build bloquea solo dev.
       // #3938 — delegado a brazo-lanzamiento-core (lógica pura, comportamiento invariante).
-      if (brazoLanzamientoCore.isPhaseBlockedByWindow(fase, { qaPriority, buildPriority })) continue;
+      if (brazoLanzamientoCore.isPhaseBlockedByWindow(fase, { qaPriority, buildPriority })) {
+        _dcMark(dispatchCause.CAUSAS.VENTANA_HORARIA, `Fase ${fase} bloqueada por ventana activa (QA/Build/nocturna)`);
+        continue;
+      }
 
       const pendienteDir = path.join(fasePath(pipelineName, fase), 'pendiente');
       const archivos = listWorkFiles(pendienteDir);
@@ -6448,6 +6541,10 @@ function brazoLanzamiento(config) {
     c.priority = calcularPrioridad(issueFromFile(c.archivo.name), config);
   }
   candidates.sort(brazoLanzamientoCore.compareCandidates);
+
+  // #4709 — Hubo candidatos pendientes este ciclo: base para decidir si un
+  // no-despacho es "cola ociosa con causa" o (si queda vacío) nada que explicar.
+  _dcState.hayPendientes = candidates.length > 0;
 
   // --- Procesar candidatos en orden unificado ---
   let anyLaunched = false;
@@ -6474,6 +6571,8 @@ function brazoLanzamiento(config) {
       const mode = partialPause.getPipelineMode();
       if (mode.mode === 'partial_pause') {
         log('lanzamiento', `#${issue} skipped by partial_pause (allowed: ${mode.allowedIssues.map(i => `#${i}`).join(', ')})`);
+        // #4709 — pausa parcial es un halt humano (allowlist explícita).
+        _dcMark(dispatchCause.CAUSAS.HALT_HUMANO, 'Pausa parcial activa — sólo issues de la allowlist se despachan');
       }
       continue;
     }
@@ -6496,6 +6595,7 @@ function brazoLanzamiento(config) {
       });
       if (!verdict.allowed) {
         log('lanzamiento', `#${issue} skipped by rest-mode (skill=${skill}, reason=${verdict.reason})`);
+        _dcMark(dispatchCause.CAUSAS.REST_MODE, `Modo descanso activo (skill=${skill})`);
         continue;
       }
     } catch (e) {
@@ -6554,6 +6654,7 @@ function brazoLanzamiento(config) {
         log('lanzamiento', `[WARN] #${issue} no se pudo mover a bloqueado-dependencias/: ${e.message}`);
       }
       log('lanzamiento', `#${issue} omitido — blocked:dependencies`);
+      _dcMark(dispatchCause.CAUSAS.BLOQUEO_DEPENDENCIA, `#${issue} bloqueado por dependencia (label blocked:dependencies)`);
       continue;
       } // fin else (#4023): label vigente en vivo
     }
@@ -6602,6 +6703,8 @@ function brazoLanzamiento(config) {
           log('lanzamiento', `Error enviando resumen Telegram needs-human #${issue}: ${e.message}`);
         }
       }
+      // #4709 — needs-human es un halt humano por issue.
+      _dcMark(dispatchCause.CAUSAS.HALT_HUMANO, `#${issue} bloqueado por label needs-human`);
       continue;
     }
 
@@ -6616,13 +6719,19 @@ function brazoLanzamiento(config) {
 
     // 1. DEDUP: ¿ya hay un agente activo para este ISSUE (cualquier skill) en trabajando/?
     const issueAlreadyWorking = listWorkFiles(trabajandoDir).some(f => issueFromFile(f.name) === issue);
-    if (issueAlreadyWorking) continue;
+    // #4709 — hay un agente vivo para este issue: NO es cola ociosa, hay progreso
+    // en vuelo. Marcamos la señal para que un no-despacho no se declare anomalía.
+    if (issueAlreadyWorking) { _dcState.progressInFlight = true; continue; }
 
     // 2. COOLDOWN: ¿este issue+skill está penalizado por fallos previos?
-    if (isInCooldown(skill, issue)) continue;
+    if (isInCooldown(skill, issue)) {
+      _dcMark(dispatchCause.CAUSAS.COOLDOWN, `#${issue} (${skill}) penalizado por fallos previos (cooldown)`);
+      continue;
+    }
 
     // 3. Ya hay un proceso activo para este skill+issue en memoria?
     if (activeProcesses.has(key) && isProcessAlive(activeProcesses.get(key).pid)) {
+      _dcState.progressInFlight = true;
       continue;
     }
 
@@ -6630,7 +6739,10 @@ function brazoLanzamiento(config) {
     const baseMax = (config.concurrencia || {})[skill] || 1;
     const maxConcurrencia = Math.max(1, Math.floor(baseMax * multiplier));
     const running = countRunningBySkill(skill);
-    if (running >= maxConcurrencia) continue;
+    if (running >= maxConcurrencia) {
+      _dcMark(dispatchCause.CAUSAS.SIN_AGENTES, `Concurrencia de ${skill} llena (${running}/${maxConcurrencia})`);
+      continue;
+    }
 
     // 5a. Límite de builds bajo presión — en YELLOW solo 1 build simultáneo
     // Esto previene que múltiples builds saturen la RAM y lleven al sistema a RED
@@ -6638,6 +6750,7 @@ function brazoLanzamiento(config) {
       const runningBuilds = countRunningBuild(config);
       if (runningBuilds >= 1) {
         log('lanzamiento', `⚠️ ${pressure.level.toUpperCase()} — ${runningBuilds} build(s) en curso, postergando build de #${issue} para no saturar`);
+        _dcMark(dispatchCause.CAUSAS.PRESION_RECURSOS, `Build de #${issue} postergado bajo presión ${pressure.level.toUpperCase()} (1 build máx.)`);
         continue;
       }
     }
@@ -6651,6 +6764,7 @@ function brazoLanzamiento(config) {
         const totalDevs = countRunningDevs();
         if (totalDevs >= maxDevs) {
           log('lanzamiento', `Límite global de devs alcanzado (${totalDevs}/${maxDevs}). Postergando ${archivo.name}`);
+          _dcMark(dispatchCause.CAUSAS.SIN_AGENTES, `Límite global de devs alcanzado (${totalDevs}/${maxDevs})`);
           continue;
         }
       }
@@ -6705,6 +6819,7 @@ function brazoLanzamiento(config) {
       log('lanzamiento', `🛑 Gate predictivo bloqueó ${skill}:#${issue} — ${impact.reason}`);
       gateBlockedCount++;
       gateBlockedCandidates.push(candidate);
+      _dcMark(dispatchCause.CAUSAS.PRESION_RECURSOS, `Gate predictivo bloqueó ${skill}:#${issue} — ${impact.reason}`);
       continue;
     }
 
@@ -6715,6 +6830,7 @@ function brazoLanzamiento(config) {
     //     circuit breaker del issue (criterio #2).
     if (NETWORK_REQUIRED_PHASES.has(fase) && !precheckOk()) {
       marcarBloqueoInfra(archivo.path, issue, skill, fase, lastPrecheckResult);
+      _dcMark(dispatchCause.CAUSAS.CB_INFRA, `#${issue} (${fase}) requiere red y el precheck de conectividad falló`);
       continue;
     }
 
@@ -6783,6 +6899,7 @@ function brazoLanzamiento(config) {
     }
     if (launched) {
       anyLaunched = true;
+      _dcState.anyLaunched = true;
     } else if (!slotErrored) {
       // El slot se llenó dentro de la sección crítica (otro proceso ganó la
       // admisión) — reintentar en el próximo ciclo. CA observabilidad (UX).
@@ -6794,6 +6911,11 @@ function brazoLanzamiento(config) {
   // Si había candidatos elegibles pero TODOS fueron bloqueados por el gate predictivo
   if (eligibleForGateCount > 0 && gateBlockedCount === eligibleForGateCount && !anyLaunched) {
     consecutiveAllBlockedCycles++;
+    // #4709 — todos los candidatos elegibles quedaron bloqueados por el gate
+    // predictivo: condición de deadlock. Se registra como causa (la presión de
+    // recursos, ya marcada por el gate, gana por precedencia; DEADLOCK queda como
+    // señal explícita del estado del breaker).
+    _dcMark(dispatchCause.CAUSAS.DEADLOCK, `Deadlock: ${gateBlockedCount}/${eligibleForGateCount} candidatos bloqueados por el gate predictivo (ciclo ${consecutiveAllBlockedCycles})`);
 
     const forced = handleDeadlock(gateBlockedCandidates, config);
     if (forced) {
@@ -6848,6 +6970,8 @@ function brazoLanzamiento(config) {
         }
         const trabajandoPath = moveFile(archivo.path, trabajandoDir);
         lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config);
+        // #4709 — el breaker forzó un lanzamiento: hubo despacho este ciclo.
+        _dcState.anyLaunched = true;
       } catch (e) {
         log('deadlock', `Error en lanzamiento forzado de ${archivo.name}: ${e.message}`);
       }
@@ -17108,6 +17232,9 @@ async function mainLoop() {
         brazoProviderExhaustionRetry(config);
       } else if (paused) {
         log('pulpo', 'PAUSADO — esperando reanudación (borrar .pipeline/.paused)');
+        // #4709 — `.paused` global = halt humano. Publicar la causa para que el
+        // dashboard y el dead-man's switch (#4708) no vean "ocioso sin explicación".
+        publicarCausaPausa(config, dispatchCause.CAUSAS.HALT_HUMANO, 'Pausa global activa (.pipeline/.paused) — dispatch suspendido hasta reanudación humana');
       } else {
         // #3518 CA-6 — desync detectado. Loop alive pero NO se dispatcha.
         // Solo logueamos cada N ticks (1 cada ~5min) para no inundar.
@@ -17115,6 +17242,10 @@ async function mainLoop() {
         if (desyncBlockedNotifiedTick === 1) {
           log('pulpo', 'BLOQUEADO POR DESYNC — dispatch suspendido. Auditar y borrar .pipeline/.desync-detected.flag para reanudar.');
         }
+        // #4709 — bloqueo por desync requiere auditoría humana (borrar el flag).
+        // Se declara como halt humano con detalle específico; nunca queda "ocioso
+        // sin explicación".
+        publicarCausaPausa(config, dispatchCause.CAUSAS.HALT_HUMANO, 'Bloqueado por desync (allowlist↔ola) — auditar y borrar .pipeline/.desync-detected.flag');
       }
     } catch (e) {
       log('pulpo', `ERROR en ciclo: ${e.message}`);

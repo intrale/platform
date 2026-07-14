@@ -35,6 +35,12 @@ function _redact(s) {
 let quotaExhaustedState = null;
 try { quotaExhaustedState = require('./quota-exhausted-state'); } catch { /* opcional */ }
 
+// #4709 — Causa declarada del no-despacho (cola ociosa). Lectura defensiva del
+// artifact `dispatch-cause.json`; si el módulo no carga, el slice degrada a
+// `{ active: false }` sin romper el dashboard.
+let dispatchCause = null;
+try { dispatchCause = require('./dispatch-cause'); } catch { /* opcional */ }
+
 // #4460 — Trust anchor del SHA vivo + detección de drift del modelo operativo.
 // Requires defensivos: si no cargan (checkout viejo), el slice degrada a
 // `{ items: [], unknown: true }` (estado desconocido) sin romper el dashboard.
@@ -2641,6 +2647,73 @@ function quotaExhaustedSlice(state) {
 }
 
 // =============================================================================
+// #4709 — dispatchCauseSlice: causa declarada del no-despacho de la cola.
+//
+// Lee el artifact `dispatch-cause.json` (publicado por el Pulpo cuando la cola
+// queda ociosa con pendientes) y lo normaliza para el render del dashboard.
+// Prohíbe el estado "ocioso sin explicación": si el artifact declara una
+// anomalía (`anomalia_no_determinable`), el slice la marca como el estado más
+// grave para que el operador la vea destacada (UX-2).
+//
+// NOTA DE SEGURIDAD (SEC-1 / AC-4): este slice devuelve `detalle` y `label` como
+// STRINGS CRUDOS (posiblemente con contenido de títulos/labels de issues). El
+// RENDER en `dashboard.js` DEBE escaparlos con `escapeHtmlText`/`escapeHtmlAttr`
+// (lib/escape-html.js) — nunca inyectar vía innerHTML sin escape.
+//
+// Read-only y fail-safe: cualquier error de lectura/parse degrada a
+// `{ active: false }` (sin causa declarada visible) sin tumbar el dashboard.
+// =============================================================================
+function dispatchCauseSlice(state, ctx) {
+    const inactivo = { active: false };
+    if (!dispatchCause) return inactivo;
+    const PIPELINE = (ctx && ctx.PIPELINE) || path.join(__dirname, '..');
+    let artifact;
+    try {
+        artifact = dispatchCause.readArtifact(PIPELINE);
+    } catch {
+        return inactivo;
+    }
+    if (!artifact || typeof artifact !== 'object' || !artifact.causa) return inactivo;
+
+    // Validación defensiva del enum: si el artifact trae una causa fuera del
+    // catálogo cerrado (corrupción / versión vieja), no lo renderizamos como
+    // causa válida — degradamos a inactivo (fail-safe, no confiar en el disco).
+    const causasValidas = dispatchCause.CAUSAS_VALIDAS;
+    if (causasValidas && !causasValidas.has(artifact.causa)) return inactivo;
+
+    const nowMs = (ctx && Number.isFinite(ctx.nowMs)) ? ctx.nowMs : Date.now();
+    const ts = Number.isFinite(artifact.ts) ? artifact.ts : null;
+    const ageMs = ts != null ? Math.max(0, nowMs - ts) : null;
+
+    return {
+        active: true,
+        causa: artifact.causa,
+        // Label humano legible (UX-1): preferimos el del artifact; si falta,
+        // caemos al catálogo del módulo; último recurso, la causa cruda.
+        label: artifact.label || (dispatchCause.LABELS && dispatchCause.LABELS[artifact.causa]) || artifact.causa,
+        detalle: typeof artifact.detalle === 'string' ? artifact.detalle : '',
+        anomalia: artifact.anomalia === true,
+        ts,
+        ageMs,
+        // Tiempo relativo legible (UX-3): "hace 2 min", "hace 45 s".
+        relTime: ageMs != null ? formatRelativeAge(ageMs) : null,
+    };
+}
+
+// #4709 — Formateo relativo compacto en español (UX-3). Determinístico y sin
+// dependencias: segundos / minutos / horas / días.
+function formatRelativeAge(ms) {
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return `hace ${s} s`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `hace ${m} min`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `hace ${h} h`;
+    const d = Math.floor(h / 24);
+    return `hace ${d} d`;
+}
+
+// =============================================================================
 // #2994 — reconcilerStaleOrdersSlice: contador de órdenes descartadas por stale.
 //
 // El servicio-github.js + servicio-reconciler.js escriben una línea JSONL en
@@ -3699,6 +3772,8 @@ module.exports = {
     // #4202 — normalización por proveedor del desglose de cuotas (test unitario)
     normalizeProviderQuota,
     quotaExhaustedSlice,
+    // #4709 — causa declarada del no-despacho (cola ociosa con pendientes).
+    dispatchCauseSlice,
     providerQuotaBannerSlice,
     // #4289 — slice del presupuesto de ritmo (pacing budget) por proveedor
     pacingSlice,
