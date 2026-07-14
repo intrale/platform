@@ -3994,7 +3994,8 @@ function brazoBarrido(config) {
             } catch {}
           }
 
-          const MAX_REBOTES = 3;
+          // #4707 CA-4 — cap configurable con clamp fail-closed (config.circuit_breaker.rebotes_max).
+          const MAX_REBOTES = resolveRebotesMax(config);
           const MAX_REBOTES_INFRA = connectivityState.MAX_REBOTES_INFRA || 20;
 
           // #2405 CA-4: threshold blando que escala a humano con label `needs-human`
@@ -4106,23 +4107,32 @@ function brazoBarrido(config) {
           // generico aplica igual (defense-in-depth: si la clasificacion infra
           // fuera saboteada, el pipeline no queda en loop infinito).
           if (esReboteDeInfra && reboteInfraCount >= MAX_REBOTES_INFRA) {
+            // #4707 CA-3 — corte infra cap-duro: escalar con rastro (marker +
+            // needs-human + causa + Telegram con ola), nunca "parar mudo".
             log('barrido', `⛔ #${issue} CIRCUIT BREAKER INFRA — ${reboteInfraCount} rebotes infra en ${faseRechazo}, se alcanzo cap duro (${MAX_REBOTES_INFRA}). Escalando.`);
-            sendTelegram(`⛔ Issue #${issue} — ${reboteInfraCount} rebotes por infra (cap ${MAX_REBOTES_INFRA}). Requiere intervención manual.`);
-            for (const a of archivos) {
-              const dest = path.join(fasePath(pipelineName, fase), 'procesado');
-              try { moveFile(a.path, dest); } catch {}
-            }
+            const skillInfra = rechazados[0] ? skillFromFile(rechazados[0].file.name) : 'pipeline';
+            const motivoInfra = rechazados.map(r => `[${skillFromFile(r.file.name)}] ${r.motivo || ''}`).join('\n')
+              || `Cap duro de rebotes infra alcanzado (${reboteInfraCount}/${MAX_REBOTES_INFRA}).`;
+            escalarACircuitBreaker({
+              issue, skill: skillInfra, phase: fase, pipeline: pipelineName,
+              reason: motivoInfra, archivos, faseRechazo, kind: 'infra',
+            });
             continue;
           }
 
           if (reboteCount >= MAX_REBOTES) {
-            log('barrido', `⛔ #${issue} CIRCUIT BREAKER — ${reboteCount} rebotes en ${faseRechazo}, no devolver más. Requiere intervención manual.`);
-            sendTelegram(`⛔ Issue #${issue} atascado — ${reboteCount} rebotes entre ${fase} y ${faseRechazo}. Requiere intervención manual.`);
-            // Mover todo a procesado para sacarlo del loop
-            for (const a of archivos) {
-              const dest = path.join(fasePath(pipelineName, fase), 'procesado');
-              try { moveFile(a.path, dest); } catch {}
-            }
+            // #4707 CA-1/CA-3 — corte genérico: reemplaza el "parar mudo"
+            // (sendTelegram suelto + mover-a-procesado + continue) por la
+            // escalada fail-closed. Deja marker bloqueado-humano + needs-human +
+            // comentario con causa raíz + alerta Telegram con ola.
+            log('barrido', `⛔ #${issue} CIRCUIT BREAKER — ${reboteCount} rebotes en ${faseRechazo}, no devolver más. Escalando a needs-human.`);
+            const skillCorte = rechazados[0] ? skillFromFile(rechazados[0].file.name) : 'pipeline';
+            const motivoCorte = rechazados.map(r => `[${skillFromFile(r.file.name)}] ${r.motivo || ''}`).join('\n')
+              || (prevMotivos.length ? prevMotivos.join('\n') : `Cap de rebotes alcanzado (${reboteCount}/${MAX_REBOTES}) entre ${fase} y ${faseRechazo}.`);
+            escalarACircuitBreaker({
+              issue, skill: skillCorte, phase: fase, pipeline: pipelineName,
+              reason: motivoCorte, archivos, faseRechazo, kind: 'generico',
+            });
             continue;
           }
 
@@ -6243,6 +6253,260 @@ function sortByPriority(archivos, config) {
   });
 }
 
+// ===========================================================================
+// #4707 — Circuit breaker escalante (fail-closed).
+// ---------------------------------------------------------------------------
+// Antes: al agotar el cap de rebotes, los 3 puntos de corte (genérico,
+// infra-cap-duro y APK) hacían `sendTelegram()` suelto + mover-a-procesado +
+// continue → el issue quedaba "parado en silencio" (incidente #4700: 6 rebotes,
+// nadie se enteró, sin marker ni causa raíz).
+//
+// Ahora: todo corte llama a `escalarACircuitBreaker(...)` — un único helper que
+// deja rastro visible (marker `bloqueado-humano/` + label `needs-human` +
+// comentario con la causa raíz redactada) y alerta a Telegram (issue + ola +
+// causa). Fail-closed: aunque falle un sub-paso (reportHumanBlock/label/Telegram),
+// el marker mínimo queda igual — nunca se degrada a "parar mudo".
+// ===========================================================================
+
+/**
+ * #4707 CA-4 / SEC-R1 — Resolver el cap de rebotes de código desde config con
+ * clamp fail-closed. Un valor inválido (0, negativo, NaN, string, Infinity) o
+ * ausente cae al default 3. Cota superior sana de 20 para que un cap enorme de
+ * config no neutralice el circuit breaker (DoS de cuota).
+ *
+ * @param {object} config — objeto de config del pipeline (loadConfig()).
+ * @returns {number} entero en [1, 20].
+ */
+function resolveRebotesMax(config) {
+  const raw = config && config.circuit_breaker && config.circuit_breaker.rebotes_max;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || !Number.isFinite(n) || n < 1) return 3; // fail-closed
+  return Math.min(n, 20); // cota superior sana — un cap enorme no desactiva el breaker
+}
+
+/**
+ * #4707 — Helper único de escalada fail-closed del circuit breaker.
+ *
+ * Factoriza el bloque de escalada humana ya existente en el path de
+ * bloqueo-humano (≈L3766-3890): dedup → archivar work-files → reportHumanBlock
+ * (marker + label needs-human encolado) → comentario de causa raíz encolado →
+ * Telegram con ola + botones de acción rápida → audio best-effort.
+ *
+ * Reglas no negociables (heredadas de security/PO):
+ *   - SEC-5 (dedup): gate `findBlockedMarker(issue)` — un evento = una alerta.
+ *   - SEC-3 (redacción): el motivo pasa por DOS capas ANTES de comentar (repo
+ *     PÚBLICO) y de Telegram — `sanitizePipelineText` (patrón/clave) +
+ *     `redactSecretValue` token-a-token (secretos opacos de alta entropía y
+ *     formatos conocidos: sk-ant, AKIA, JWT). Ambas se aplican sobre `motivoTxt`,
+ *     así que TODO uso downstream (comentario, Telegram, audio, reportHumanBlock)
+ *     parte del texto ya redactado — no se delega la redacción al path humano.
+ *   - CA-3 (fail-closed): si reportHumanBlock/label/Telegram falla, igual queda
+ *     el marker mínimo. Nunca un catch global que degrade a "mover-a-procesado".
+ *
+ * @param {object} opts
+ * @param {number|string} opts.issue
+ * @param {string} opts.skill      — skill que originó el último rechazo.
+ * @param {string} opts.phase      — fase donde queda el marker.
+ * @param {string} opts.pipeline
+ * @param {string} opts.reason     — causa raíz (último motivo de rechazo, crudo).
+ * @param {string} [opts.question] — derivada si no se provee.
+ * @param {Array}  [opts.archivos] — work-files activos a archivar ({path}).
+ * @param {string} [opts.faseRechazo] — fase de la que archivar residuales.
+ * @param {string} [opts.kind]     — 'generico' | 'infra' | 'apk' (para logs/alerta).
+ * @param {object} [deps]          — inyección para tests (humanBlock, sendTg, wave, ...).
+ * @returns {{escalado: boolean, yaBloqueado: boolean, markerOk: boolean}}
+ */
+function escalarACircuitBreaker(opts, deps) {
+  opts = opts || {};
+  deps = deps || {};
+  const hb = deps.humanBlock || humanBlock;
+  const sanitize = deps.sanitize || sanitizePipelineText;
+  const sendTg = deps.sendTelegramWithMarkup || sendTelegramWithMarkup;
+  const logFn = deps.log || log;
+  const pipelineRoot = deps.pipelineRoot || PIPELINE;
+  const resolveWave = deps.resolveWaveForIssue || ((n) => {
+    try { return require('./lib/wave-resolver').resolveWaveForIssue(n, { pipelineRoot }); }
+    catch { return null; }
+  });
+
+  const issueNum = parseInt(opts.issue, 10);
+  const pipeline = opts.pipeline || 'desarrollo';
+  const phase = opts.phase || 'dev';
+  const skillBloq = String(opts.skill || 'pipeline').trim() || 'pipeline';
+  const kind = opts.kind || 'generico';
+  const archivos = Array.isArray(opts.archivos) ? opts.archivos : [];
+  const faseRechazo = opts.faseRechazo || null;
+
+  // SEC-3 — redacción en DOS capas + length-cap. Fallback UX si queda vacío.
+  //   1. `sanitize` (sanitizePipelineText, inyectable) — redacción por PATRÓN/CLAVE
+  //      (AWS keys, JWT, tokens de Telegram, URLs con credenciales, paths).
+  //   2. `redactVal` (redactSecretValue) token-a-token — atrapa secretos OPACOS de
+  //      ALTA ENTROPÍA (>40 chars, entropía Shannon ≥4.5) o de formato conocido
+  //      (sk-ant-*, sk-*, gsk_*, AKIA*, JWT) que un motivo de rechazo pegado a
+  //      mano arrastra SIN clave JSON que los delate — la capa de patrón por clave
+  //      no los ve. SIN esta capa el motivo se embebe CRUDO en el comentario de
+  //      GitHub (repo PÚBLICO) y en Telegram → fuga A02. Mismo patrón que
+  //      `sanitizeCommanderTurnText`: partimos por whitespace (grupo capturado)
+  //      para preservar el espaciado original y sólo redactamos los tokens no-blancos.
+  const redactVal = deps.redactSecretValue || redactSecretValue;
+  const sanitized = String(sanitize(String(opts.reason || '')) || '');
+  let motivoTxt = sanitized
+    .split(/(\s+)/).map((tok) => (tok.trim() ? redactVal(tok) : tok)).join('')
+    .slice(0, 1500).trim();
+  if (!motivoTxt) motivoTxt = `Circuit breaker (${kind}): el issue agotó los rebotes. Causa no disponible — ver logs de build/agente.`;
+  const preguntaTxt = String(opts.question || '').trim()
+    || hb.inferHumanBlockQuestion(motivoTxt, { skill: skillBloq });
+
+  const faseDir = (fp) => path.join(pipelineRoot, pipeline, fp);
+
+  // SEC-5 — dedup: leer el estado ANTES de mover archivos.
+  const yaBloqueado = (() => { try { return hb.findBlockedMarker(issueNum); } catch { return null; } })();
+
+  // Archivar los work-files activos SIEMPRE (aun si ya bloqueado): sacar el token
+  // del flujo, igual que el path humano. Nunca a procesado/ — a archivado/.
+  for (const a of archivos) {
+    const dest = path.join(faseDir(phase), 'archivado');
+    try { fs.mkdirSync(dest, { recursive: true }); moveFile(a.path, dest); } catch {}
+  }
+  if (faseRechazo) {
+    for (const estado of ['pendiente', 'trabajando', 'procesado']) {
+      const dir = path.join(faseDir(faseRechazo), estado);
+      try {
+        for (const f of fs.readdirSync(dir)) {
+          if (f.startsWith(issueNum + '.') && !f.startsWith('.')) {
+            const archDir = path.join(faseDir(faseRechazo), 'archivado');
+            fs.mkdirSync(archDir, { recursive: true });
+            try { moveFile(path.join(dir, f), archDir); } catch {}
+          }
+        }
+      } catch {}
+    }
+  }
+
+  if (yaBloqueado) {
+    logFn('barrido', `🔁 #${issueNum} CB (${kind}): ya en bloqueado-humano (skill=${yaBloqueado.skill}). Cleanup sin re-notificar.`);
+    return { escalado: false, yaBloqueado: true, markerOk: true };
+  }
+
+  // FAIL-CLOSED (CA-3): reportHumanBlock crea marker + .reason.json + encola
+  // label needs-human. Si falla, dejamos un marker mínimo a mano para NO
+  // degradar a "parar mudo".
+  let markerOk = false;
+  try {
+    hb.reportHumanBlock({
+      issue: issueNum, skill: skillBloq, phase, pipeline,
+      reason: motivoTxt, question: preguntaTxt, moveFromActive: false,
+    });
+    markerOk = true;
+  } catch (e) {
+    logFn('barrido', `❌ #${issueNum} CB (${kind}) reportHumanBlock falló: ${e.message} — dejando marker mínimo (fail-closed)`);
+    try {
+      const bdir = path.join(faseDir(phase), 'bloqueado-humano');
+      fs.mkdirSync(bdir, { recursive: true });
+      const mpath = path.join(bdir, `${issueNum}.${skillBloq}`);
+      if (!fs.existsSync(mpath)) fs.writeFileSync(mpath, '');
+      fs.writeFileSync(`${mpath}.reason.json`, JSON.stringify({
+        issue: issueNum, skill: skillBloq, phase, pipeline,
+        reason: motivoTxt, question: preguntaTxt,
+        blocked_at: new Date().toISOString(), fallback: true,
+      }, null, 2));
+      // Encolar label needs-human directo por si reportHumanBlock no llegó a
+      // encolarlo (mantiene FS↔GitHub consistente).
+      try { hb.enqueueGithub('label', { issue: issueNum, label: 'needs-human' }); } catch {}
+      markerOk = true;
+    } catch (e2) {
+      logFn('barrido', `❌ #${issueNum} CB (${kind}) marker mínimo también falló: ${e2.message}`);
+    }
+  }
+
+  // Resolver ola para la alerta (CA-2). Best-effort: null si no se resuelve.
+  let waveInfo = null;
+  try { waveInfo = resolveWave(issueNum); } catch { waveInfo = null; }
+  const waveLabel = waveInfo
+    ? `Ola ${Number.isInteger(waveInfo.number) ? waveInfo.number : '?'}${waveInfo.name ? ` · ${waveInfo.name}` : ''}`
+    : 'sin ola asignada';
+
+  // Comentario de causa raíz encolado en la cola del servicio-github
+  // (fire-and-forget vía filesystem — nunca invoca `gh` en proceso). `motivoTxt`
+  // ya viene redactado en DOS capas (sanitize por patrón/clave + redactSecretValue
+  // por entropía token-a-token), así que es seguro embeberlo en un repo PÚBLICO.
+  try {
+    const ghQueueDir = path.join(pipelineRoot, 'servicios', 'github', 'pendiente');
+    fs.mkdirSync(ghQueueDir, { recursive: true });
+    const body = [
+      `## Pipeline cortó este issue: circuit breaker escalado a intervención humana`,
+      '',
+      `El issue #${issueNum} agotó el cap de rebotes (corte \`${kind}\`) y el pipeline dejó de reintentar. En vez de pararse en silencio, quedó marcado como \`needs-human\` para que un humano lo revise.`,
+      '',
+      `### Contexto`,
+      `- **Ola:** ${waveLabel}`,
+      `- **Skill del último rechazo:** \`${skillBloq}\``,
+      `- **Fase:** \`${pipeline}/${phase}\``,
+      '',
+      `### Causa raíz`,
+      `<details><summary>Motivo del último rebote (redactado)</summary>`,
+      '',
+      '```',
+      motivoTxt,
+      '```',
+      '',
+      `</details>`,
+      '',
+      `Mientras el label \`needs-human\` esté presente, el pipeline NO relanza el skill (cero rebotes, cero tokens). Al quitarlo (o con \`/unblock ${issueNum} <orientación>\` desde Telegram) el issue reentra a la cola y el contador de rebotes se resetea.`,
+    ].join('\n');
+    fs.writeFileSync(
+      path.join(ghQueueDir, `${issueNum}-cb-escalate-comment-${Date.now()}.json`),
+      JSON.stringify({ action: 'comment', issue: issueNum, body }),
+    );
+  } catch (e) {
+    logFn('barrido', `#${issueNum} CB (${kind}): error encolando comentario de causa raíz: ${e.message}`);
+  }
+
+  // Alerta Telegram con ola + causa + botones de acción rápida (#4068). Si el
+  // markup no se puede armar (sin secreto de token), se manda igual el texto.
+  try {
+    const summary = hb.buildBlockedSummaryMarkdown({
+      highlight: { issue: issueNum, skill: skillBloq, reason: motivoTxt, question: preguntaTxt },
+    });
+    const header = [
+      `⛔ *Circuit breaker* — #${issueNum} agotó los rebotes (corte ${kind})`,
+      `🌊 ${waveLabel}`,
+      '',
+    ].join('\n');
+    let markup;
+    try { markup = hb.buildBlockedActionMarkup(issueNum); } catch { markup = undefined; }
+    sendTg(header + summary, markup || null);
+  } catch (e) {
+    logFn('barrido', `#${issueNum} CB (${kind}): error enviando alerta Telegram: ${e.message}`);
+  }
+
+  // Audio TTS best-effort (SEC-4: después del texto, nunca lanza). Se saltea en
+  // tests salvo inyección explícita de deps.sendAudio.
+  const sendAudio = deps.sendAudio || (() => {
+    try {
+      const { textToSpeechWithMeta, sendVoiceTelegram } = require('./multimedia');
+      return hb.sendNeedHumanAudio({
+        reason: motivoTxt, question: preguntaTxt, profile: 'need-human',
+        botToken: getTelegramToken(), chatId: getTelegramChatId(),
+        textToSpeechWithMeta, sendVoiceTelegram,
+      });
+    } catch { return null; }
+  });
+  try {
+    const p = sendAudio();
+    if (p && typeof p.then === 'function') {
+      p.then((r) => {
+        if (r && r.error) logFn('barrido', `Audio CB #${issueNum} best-effort falló (texto OK): ${r.error}`);
+      }).catch(() => {});
+    }
+  } catch (e) {
+    logFn('barrido', `Audio CB #${issueNum} best-effort no se pudo iniciar (texto OK): ${e.message}`);
+  }
+
+  logFn('barrido', `⛔→🚧 #${issueNum} CB (${kind}) escalado a bloqueado-humano (skill=${skillBloq}, fase=${phase}, ola=${waveLabel}).`);
+  return { escalado: true, yaBloqueado: false, markerOk };
+}
+
 /**
  * Rebotar verificación→build cuando preflight detecta APK faltante.
  *
@@ -6304,11 +6568,16 @@ function reboteVerificacionABuild(issue, pipelineName, preflightResult) {
     }
 
     if (reboteCount >= MAX_REBOTES_APK) {
-      log('lanzamiento', `⛔ #${issue} CIRCUIT BREAKER APK — ${reboteCount} rebotes verificacion↔build. Archivando a procesado.`);
-      sendTelegram(`⛔ #${issue} atascado — ${reboteCount} rebotes por APK faltante entre verificacion y build. Requiere intervención manual.`);
-      for (const f of archivosVerificacion) {
-        try { moveFile(f.path, verProcDir); } catch {}
-      }
+      // #4707 CA-3 — corte APK (loop verificacion↔build): escalar con rastro en
+      // vez de archivar a procesado en silencio. Deja marker bloqueado-humano +
+      // needs-human + comentario con causa + alerta Telegram con ola.
+      log('lanzamiento', `⛔ #${issue} CIRCUIT BREAKER APK — ${reboteCount} rebotes verificacion↔build. Escalando a needs-human.`);
+      const motivoApk = `APK faltante persistente: ${preflightResult?.reason || 'preflight QA no encontró APK del build'} `
+        + `(${reboteCount} rebotes verificacion↔build, cap ${MAX_REBOTES_APK}).`;
+      escalarACircuitBreaker({
+        issue, skill: 'build', phase: 'verificacion', pipeline: pipelineName,
+        reason: motivoApk, archivos: archivosVerificacion, kind: 'apk',
+      });
       return false;
     }
 
@@ -17396,6 +17665,9 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     preflightQaChecks,
     getChangedFilesForIssue,
     reboteVerificacionABuild,
+    // #4707 — circuit breaker escalante (fail-closed): cap configurable + helper único.
+    resolveRebotesMax,
+    escalarACircuitBreaker,
     // #2957 — counter de fase build expuesto para tests del filtro por allowlist.
     countPendingBuild,
     // #3059 — wrapper robusto + watchdog del brazo de desbloqueo (testing).
