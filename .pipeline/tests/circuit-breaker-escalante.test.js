@@ -29,6 +29,7 @@ process.env.PULPO_SKIP_AGENT_MODELS_VALIDATE = '1';
 
 const pulpo = require('../pulpo.js');
 const convergence = require('../lib/convergence-detector');
+const redact = require('../lib/redact');
 
 const { resolveRebotesMax, escalarACircuitBreaker } = pulpo;
 
@@ -244,6 +245,48 @@ test('causa vacía tras redacción cae a un fallback UX legible (no string vací
   const rhb = fakeHb._calls.reportHumanBlock[0];
   assert.match(rhb.reason, /Causa no disponible/);
   assert.match(tg.calls[0].text, /Causa no disponible/);
+});
+
+// --- SEC-3 · A02: fuga de secretos de alta entropía al repo PÚBLICO -------
+
+test('el motivo con secretos de alta entropía se redacta ANTES de comentar (repo público) y de Telegram — no fuga A02', () => {
+  const root = makeTmpRoot();
+  const fakeHb = makeFakeHumanBlock();
+  // `sanitize` identidad: emula el caso en que la capa por PATRÓN/CLAVE no ve el
+  // secreto (token opaco pegado a mano, sin clave JSON que lo delate). La defensa
+  // debe venir de la 2da capa `redactSecretValue` token-a-token en el helper.
+  const { deps, tg } = makeDeps(root, fakeHb, { sanitize: (s) => String(s) });
+
+  // Secreto de FORMATO CONOCIDO (anthropic) + token OPACO de alta entropía.
+  const anthKey = 'sk-ant-api03-Xk9mQ2vB7nZ4pL8wR3tY6cF1dH5jN0sA9eK4uM';
+  const opaque = 'Zq7Wp3Xk9mQ2vB7nZ4pL8wR3tY6cF1dH5jN0sA9eK4uM2iO7gPb';
+  // Auto-check del fixture: el token opaco debe calificar para la heurística de
+  // entropía (>40 chars, sin espacios, Shannon ≥ umbral) — si no, el test no probaría nada.
+  assert.ok(opaque.length > 40 && redact.shannonEntropy(opaque) >= redact.HIGH_ENTROPY_THRESHOLD,
+    'el fixture opaco debe superar el umbral de entropía');
+
+  escalarACircuitBreaker({
+    issue: 4707, skill: 'backend-dev', phase: 'dev', pipeline: 'desarrollo',
+    reason: `El deploy falló con AUTH ${anthKey} y token ${opaque} en el header`,
+    archivos: [], kind: 'generico',
+  }, deps);
+
+  // Comentario que se encola hacia el repo PÚBLICO: no debe contener ninguno de los secretos crudos.
+  const ghDir = path.join(root, 'servicios', 'github', 'pendiente');
+  const comment = JSON.parse(fs.readFileSync(
+    path.join(ghDir, fs.readdirSync(ghDir).find(f => f.includes('cb-escalate-comment'))), 'utf8'));
+  assert.ok(!comment.body.includes(anthKey), 'la anthropic key NO debe estar cruda en el comentario público');
+  assert.ok(!comment.body.includes(opaque), 'el token opaco de alta entropía NO debe estar crudo en el comentario público');
+  assert.match(comment.body, /REDACTED/, 'el comentario debe mostrar el marcador de redacción');
+
+  // Telegram: mismo invariante.
+  assert.ok(!tg.calls[0].text.includes(anthKey), 'la anthropic key NO debe fugar a Telegram');
+  assert.ok(!tg.calls[0].text.includes(opaque), 'el token opaco NO debe fugar a Telegram');
+
+  // Y lo que llega a reportHumanBlock (marker + .reason.json en disco) también viene redactado.
+  const rhb = fakeHb._calls.reportHumanBlock[0];
+  assert.ok(!rhb.reason.includes(anthKey) && !rhb.reason.includes(opaque),
+    'reportHumanBlock debe recibir el motivo ya redactado');
 });
 
 // --- Invariante RIESGO-1 (heredado de security) --------------------------

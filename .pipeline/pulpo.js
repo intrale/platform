@@ -6294,9 +6294,12 @@ function resolveRebotesMax(config) {
  *
  * Reglas no negociables (heredadas de security/PO):
  *   - SEC-5 (dedup): gate `findBlockedMarker(issue)` — un evento = una alerta.
- *   - SEC-3 (redacción): el motivo pasa por `sanitizePipelineText` + `redactAll`
- *     (este último dentro de reportHumanBlock y del builder de comentario del
- *     path humano) ANTES de comentar (repo PÚBLICO) y de Telegram.
+ *   - SEC-3 (redacción): el motivo pasa por DOS capas ANTES de comentar (repo
+ *     PÚBLICO) y de Telegram — `sanitizePipelineText` (patrón/clave) +
+ *     `redactSecretValue` token-a-token (secretos opacos de alta entropía y
+ *     formatos conocidos: sk-ant, AKIA, JWT). Ambas se aplican sobre `motivoTxt`,
+ *     así que TODO uso downstream (comentario, Telegram, audio, reportHumanBlock)
+ *     parte del texto ya redactado — no se delega la redacción al path humano.
  *   - CA-3 (fail-closed): si reportHumanBlock/label/Telegram falla, igual queda
  *     el marker mínimo. Nunca un catch global que degrade a "mover-a-procesado".
  *
@@ -6334,8 +6337,22 @@ function escalarACircuitBreaker(opts, deps) {
   const archivos = Array.isArray(opts.archivos) ? opts.archivos : [];
   const faseRechazo = opts.faseRechazo || null;
 
-  // SEC-3 — redacción + length-cap. Fallback UX si tras redactar queda vacío.
-  let motivoTxt = sanitize(String(opts.reason || '')).slice(0, 1500).trim();
+  // SEC-3 — redacción en DOS capas + length-cap. Fallback UX si queda vacío.
+  //   1. `sanitize` (sanitizePipelineText, inyectable) — redacción por PATRÓN/CLAVE
+  //      (AWS keys, JWT, tokens de Telegram, URLs con credenciales, paths).
+  //   2. `redactVal` (redactSecretValue) token-a-token — atrapa secretos OPACOS de
+  //      ALTA ENTROPÍA (>40 chars, entropía Shannon ≥4.5) o de formato conocido
+  //      (sk-ant-*, sk-*, gsk_*, AKIA*, JWT) que un motivo de rechazo pegado a
+  //      mano arrastra SIN clave JSON que los delate — la capa de patrón por clave
+  //      no los ve. SIN esta capa el motivo se embebe CRUDO en el comentario de
+  //      GitHub (repo PÚBLICO) y en Telegram → fuga A02. Mismo patrón que
+  //      `sanitizeCommanderTurnText`: partimos por whitespace (grupo capturado)
+  //      para preservar el espaciado original y sólo redactamos los tokens no-blancos.
+  const redactVal = deps.redactSecretValue || redactSecretValue;
+  const sanitized = String(sanitize(String(opts.reason || '')) || '');
+  let motivoTxt = sanitized
+    .split(/(\s+)/).map((tok) => (tok.trim() ? redactVal(tok) : tok)).join('')
+    .slice(0, 1500).trim();
   if (!motivoTxt) motivoTxt = `Circuit breaker (${kind}): el issue agotó los rebotes. Causa no disponible — ver logs de build/agente.`;
   const preguntaTxt = String(opts.question || '').trim()
     || hb.inferHumanBlockQuestion(motivoTxt, { skill: skillBloq });
@@ -6410,8 +6427,9 @@ function escalarACircuitBreaker(opts, deps) {
     : 'sin ola asignada';
 
   // Comentario de causa raíz encolado en la cola del servicio-github
-  // (fire-and-forget vía filesystem — nunca invoca `gh` en proceso). El texto
-  // ya viene redactado por sanitize; reportHumanBlock aplica redactAll extra.
+  // (fire-and-forget vía filesystem — nunca invoca `gh` en proceso). `motivoTxt`
+  // ya viene redactado en DOS capas (sanitize por patrón/clave + redactSecretValue
+  // por entropía token-a-token), así que es seguro embeberlo en un repo PÚBLICO.
   try {
     const ghQueueDir = path.join(pipelineRoot, 'servicios', 'github', 'pendiente');
     fs.mkdirSync(ghQueueDir, { recursive: true });
