@@ -15,6 +15,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execSync } = require('node:child_process');
+// CA-B2 — needle del worktree derivado del helper compartido (sin re-duplicar 'platform.').
+const { worktreeNeedle } = require('../../worktree-prefix');
 
 // -----------------------------------------------------------------------------
 // Allowlist hardcoded — invariante de seguridad I4 (path-traversal defense).
@@ -41,7 +43,7 @@ function resolveDeterministicScript({ skill, issue, ROOT, PIPELINE, onWorktreeHi
     if (!issue || !ROOT) return rootScript;
     let issueWorktree = null;
     try {
-        const needle = `platform.agent-${issue}-`;
+        const needle = worktreeNeedle(issue);
         const worktrees = _execSync('git worktree list --porcelain', { cwd: ROOT, encoding: 'utf8', timeout: 5000, windowsHide: true });
         for (const line of String(worktrees).split('\n')) {
             if (line.startsWith('worktree ') && line.includes(needle)) {

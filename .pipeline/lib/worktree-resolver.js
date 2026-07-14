@@ -47,6 +47,8 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const { validateInputs, WorktreeLaunchError } = require('./worktree-launcher');
+// CA-B2 — derivación de prefijo compartida (fuente única, sin re-duplicar 'platform.').
+const { worktreeNeedle, worktreeBasename, branchToWorktreeBase } = require('./worktree-prefix');
 
 const DEFAULT_EXEC_OPTS = { encoding: 'utf8', timeout: 15000, windowsHide: true };
 
@@ -187,7 +189,7 @@ function findIssueWorktree(ROOT, issue, { skill = null, spawnImpl = spawnSync, f
         cwd: ROOT, spawnImpl,
     });
     const entries = parseWorktreeList(stdout);
-    const needle = `platform.agent-${issue}-`;
+    const needle = worktreeNeedle(issue);
 
     // Candidatos del issue con path físico existente, preservando el orden de git.
     const candidates = [];
@@ -205,11 +207,15 @@ function findIssueWorktree(ROOT, issue, { skill = null, spawnImpl = spawnSync, f
     if (candidates.length === 0) return null;
     if (candidates.length === 1) return candidates[0];
 
-    // (1) Match exacto por skill.
+    // (1) Match exacto por skill. Si el skill no es válido para derivar basename,
+    //     saltamos el match exacto en vez de romper la resolución.
     if (skill) {
-        const exactBase = `platform.agent-${issue}-${skill}`;
-        const exact = candidates.find((c) => path.basename(c.worktree) === exactBase);
-        if (exact) return exact;
+        let exactBase = null;
+        try { exactBase = worktreeBasename(issue, skill); } catch { exactBase = null; }
+        if (exactBase) {
+            const exact = candidates.find((c) => path.basename(c.worktree) === exactBase);
+            if (exact) return exact;
+        }
     }
 
     // (2) Preferir el worktree con más commits sobre origin/main.
@@ -430,8 +436,8 @@ function attemptAutoRecovery(ROOT, issue, skill, { spawnImpl = spawnSync, fsImpl
 
     const branchName = rd.branch;
     // El worktree del dev se llama `platform.agent-<issue>-<slug>` (deriva de la
-    // rama). Reescribimos el prefijo `agent/` → `platform.agent-`.
-    const worktreeBase = branchName.replace(/^agent\//, 'platform.agent-');
+    // rama). Reescribimos el prefijo `agent/` → `platform.agent-` vía helper.
+    const worktreeBase = branchToWorktreeBase(branchName);
     const worktreePath = path.join(ROOT, '..', worktreeBase);
 
     // Si el path ya existe (caso raro: la entrada de git desapareció pero el

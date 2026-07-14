@@ -37,6 +37,8 @@ const kover = require('./lib/kover-parser');
 const { ensureGitInEnv } = require('../lib/ensure-git-in-path');
 const { withGradleLock } = require('../lib/gradle-lock');
 const { writeDeliverable } = require('../lib/write-deliverable');
+// CA-B2 (#4694) — needle del worktree derivado del helper compartido.
+const { worktreeNeedle } = require('../lib/worktree-prefix');
 
 // ── Constantes y paths ──────────────────────────────────────────────
 const REPO_ROOT = process.env.PIPELINE_REPO_ROOT || process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
@@ -383,7 +385,8 @@ function findIssueWorktree(repoRoot, issue) {
     } catch {
         return null;
     }
-    const needle = `platform.agent-${issue}-`;
+    let needle;
+    try { needle = worktreeNeedle(issue); } catch { return null; }
     for (const line of raw.split('\n')) {
         if (!line.startsWith('worktree ')) continue;
         const wt = line.replace('worktree ', '').trim();

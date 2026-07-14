@@ -21,6 +21,8 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { remoteBranchExists } = require('./worktree-resolver');
+// CA-B2/CA-SEC-5 — prefijo de confinamiento sibling derivado del helper compartido.
+const { deriveSiblingPrefix } = require('./worktree-prefix');
 
 const MAIN_REPO = 'C:/Workspaces/Intrale/platform';
 const DEFAULT_AGE_THRESHOLD_DAYS = 30;
@@ -31,12 +33,28 @@ function normPath(p) {
   return String(p || '').replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
 }
 
+function loadMainRepoConfig(mainRepo, fsImpl = fs) {
+  try {
+    const readFileSync = typeof fsImpl.readFileSync === 'function'
+      ? fsImpl.readFileSync.bind(fsImpl)
+      : fs.readFileSync;
+    return JSON.parse(readFileSync(path.join(mainRepo, 'pipeline.config.json'), 'utf8'));
+  } catch {
+    return undefined;
+  }
+}
+
 // -----------------------------------------------------------------------------
 // RS-1 — Guard anti-suicidio. Devuelve { forbidden, reason }.
 // Se ejecuta ANTES de cualquier borrado (incluido el fallback fs.rmSync).
 // Resuelve realpath para rechazar junctions/symlinks que apunten afuera.
 // -----------------------------------------------------------------------------
-function isForbiddenTarget(wtPath, { mainRepo = MAIN_REPO, fsImpl = fs } = {}) {
+function isForbiddenTarget(wtPath, {
+  mainRepo = MAIN_REPO,
+  fsImpl = fs,
+  projectId,
+  configOverride,
+} = {}) {
   const main = normPath(mainRepo);
   let real;
   try {
@@ -54,8 +72,17 @@ function isForbiddenTarget(wtPath, { mainRepo = MAIN_REPO, fsImpl = fs } = {}) {
   }
   // Confinamiento: solo se permiten worktrees hermanos `<repo>.<sufijo>`.
   // Esto rechaza junctions que resuelven fuera del prefijo permitido.
-  if (!real.startsWith(main + '.')) {
-    return { forbidden: true, reason: `fuera del prefijo permitido ${main}.*` };
+  // CA-B2/CA-SEC-5 — el prefijo `<repo>.` se deriva del helper compartido, anclado
+  // al parent REAL del main repo. Fallback defensivo al ancla literal `<main>.`
+  // (NUNCA más permisivo) si el basename del main repo no coincide con la base.
+  const parent = normPath(path.dirname(mainRepo));
+  const manifest = configOverride || loadMainRepoConfig(mainRepo, fsImpl);
+  const siblingPrefix = deriveSiblingPrefix(projectId, manifest).toLowerCase();      // p.ej. 'platform.'
+  const derived = `${parent}/${siblingPrefix}`;
+  const legacy = main + '.';
+  const allowedPrefixes = Array.from(new Set([derived, legacy]));
+  if (!allowedPrefixes.some((prefix) => real.startsWith(prefix))) {
+    return { forbidden: true, reason: `fuera del prefijo permitido ${allowedPrefixes.map((p) => `${p}*`).join(', ')}` };
   }
   return { forbidden: false };
 }
@@ -157,9 +184,11 @@ function removeWorktree(wtPath, {
   mainRepo = MAIN_REPO,
   spawnImpl = spawnSync,
   fsImpl = fs,
+  projectId,
+  configOverride,
   logger = () => {},
 } = {}) {
-  const guard = isForbiddenTarget(wtPath, { mainRepo, fsImpl });
+  const guard = isForbiddenTarget(wtPath, { mainRepo, fsImpl, projectId, configOverride });
   if (guard.forbidden) {
     logger(`🛑 ABORT removeWorktree(${wtPath}): ${guard.reason}`);
     return false;
@@ -180,7 +209,7 @@ function removeWorktree(wtPath, {
     });
     if (fsImpl.existsSync(wtPath)) {
       // Fallback: re-validar guard inmediatamente antes del rmSync recursivo.
-      const reguard = isForbiddenTarget(wtPath, { mainRepo, fsImpl });
+      const reguard = isForbiddenTarget(wtPath, { mainRepo, fsImpl, projectId, configOverride });
       if (reguard.forbidden) {
         logger(`🛑 ABORT rmSync(${wtPath}): ${reguard.reason}`);
         return false;

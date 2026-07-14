@@ -17,7 +17,7 @@ const gb = require('../ghostbusters-worktrees');
 const MAIN = 'C:/Workspaces/Intrale/platform';
 
 // fake fs que resuelve realpath con un mapa configurable
-function fakeFs({ realpaths = {}, stats = {}, existing = new Set() } = {}) {
+function fakeFs({ realpaths = {}, stats = {}, existing = new Set(), files = {} } = {}) {
   return {
     realpathSync(p) {
       const key = String(p);
@@ -26,6 +26,13 @@ function fakeFs({ realpaths = {}, stats = {}, existing = new Set() } = {}) {
     },
     statSync(p) {
       if (stats[p]) return stats[p];
+      throw new Error(`ENOENT: ${p}`);
+    },
+    readFileSync(p) {
+      const key = String(p);
+      if (files[key] !== undefined) return files[key];
+      const slashKey = key.replace(/\\/g, '/');
+      if (files[slashKey] !== undefined) return files[slashKey];
       throw new Error(`ENOENT: ${p}`);
     },
     existsSync(p) { return existing.has(p); },
@@ -95,6 +102,42 @@ test('guard: un worktree hermano legítimo está permitido', () => {
   assert.equal(r.forbidden, false);
 });
 
+test('guard: permite prefijo projectId aunque no coincida con basename del mainRepo', () => {
+  const wt = 'C:/Workspaces/Intrale/acme-shop.agent-4694-pipeline-dev';
+  const r = gb.isForbiddenTarget(wt, {
+    mainRepo: MAIN,
+    projectId: 'acme-shop',
+    fsImpl: fakeFs(),
+  });
+  assert.equal(r.forbidden, false);
+});
+
+test('guard: si no recibe projectId usa pipeline.config.json del mainRepo', () => {
+  const wt = 'C:/Workspaces/Intrale/acme-shop.agent-4694-pipeline-dev';
+  const fsImpl = fakeFs({
+    files: {
+      [`${MAIN}/pipeline.config.json`]: JSON.stringify({ projectId: 'acme-shop' }),
+      [`${MAIN}\\pipeline.config.json`]: JSON.stringify({ projectId: 'acme-shop' }),
+    },
+  });
+  const r = gb.isForbiddenTarget(wt, {
+    mainRepo: MAIN,
+    fsImpl,
+  });
+  assert.equal(r.forbidden, false);
+});
+
+test('guard: sin projectId rechaza prefijo que no coincide con el manifiesto/default', () => {
+  const wt = 'C:/Workspaces/Intrale/acme-shop.agent-4694-pipeline-dev';
+  const r = gb.isForbiddenTarget(wt, {
+    mainRepo: MAIN,
+    configOverride: { projectId: 'intrale-platform' },
+    fsImpl: fakeFs(),
+  });
+  assert.equal(r.forbidden, true);
+  assert.match(r.reason, /fuera del prefijo/);
+});
+
 test('guard: realpath irresoluble → prohibido (conservador)', () => {
   const fsImpl = fakeFs();
   fsImpl.realpathSync = () => { throw new Error('ENOENT'); };
@@ -110,6 +153,25 @@ test('removeWorktree: aborta sin tocar git ni fs cuando el guard prohíbe', () =
   assert.equal(ok, false);
   assert.equal(spawnImpl.calls.length, 0, 'no debe ejecutarse ningún comando');
   assert.ok(logs.some(l => l.includes('ABORT')));
+});
+
+test('removeWorktree: propaga projectId al guard destructivo y acepta worktree del launcher multi-producto', () => {
+  const wt = 'C:/Workspaces/Intrale/acme-shop.agent-4694-pipeline-dev';
+  const spawnImpl = fakeSpawn();
+  const fsImpl = fakeFs();
+  fsImpl.existsSync = () => false;
+
+  const ok = gb.removeWorktree(wt, {
+    mainRepo: MAIN,
+    projectId: 'acme-shop',
+    spawnImpl,
+    fsImpl,
+  });
+
+  assert.equal(ok, true);
+  const gitCall = spawnImpl.calls.find(c => c.cmd === 'git');
+  assert.ok(gitCall, 'debe ejecutar git worktree remove');
+  assert.deepEqual(gitCall.args, ['worktree', 'remove', wt, '--force']);
 });
 
 // -----------------------------------------------------------------------------
