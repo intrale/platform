@@ -1002,6 +1002,116 @@ function clearWaveWaitingOperatorLocked(waveNumber, info) {
     return true;
 }
 
+// ─── #4708 — Estado `stalled` / `needs_attention` a nivel ola ───────────────
+//
+// Dead-man's switch de la ola (wave-stall-watchdog): cuando la ola activa lleva
+// N minutos con trabajo habilitado, 0 despacho y SIN causa declarada, el brazo
+// del Pulpo marca la ola como estancada. NO cierra la ola ni mata agentes; sólo
+// deja el estado para observabilidad + escalada (`needs-human`). Molde exacto de
+// `setWaveWaitingOperator`/`clearWaveWaitingOperator` (withLockSync + audit).
+
+/**
+ * Marca la ola activa como estancada (`stalled`). Idempotente a nivel de estado:
+ * sobreescribe el `stalled` previo. NO cambia el lifecycle de la ola.
+ *
+ * @param {number} waveNumber — debe ser la ola ACTIVA.
+ * @param {object} [info] — { reason?, since?, updated_by? }.
+ * @returns {object} el objeto `stalled` persistido.
+ * @throws si `waveNumber` no es la ola activa.
+ */
+function setWaveStalled(waveNumber, info = {}) {
+    return withLockSync(wavesFile(), () => setWaveStalledLocked(waveNumber, info), {
+        component: 'waves-lock',
+        timeoutMs: LOCK_TIMEOUT_MS,
+        maxRetries: LOCK_MAX_RETRIES,
+        notify: notifyTelegram,
+    });
+}
+
+function setWaveStalledLocked(waveNumber, info) {
+    invalidateCache();
+    const state = loadWaves();
+    if (!state.active_wave || state.active_wave.number !== waveNumber) {
+        throw new Error(`setWaveStalled: ola ${waveNumber} no es la activa`);
+    }
+    const st = {
+        since: typeof info.since === 'string' && Number.isFinite(Date.parse(info.since))
+            ? info.since : nowIso(),
+        reason: typeof info.reason === 'string' ? info.reason.slice(0, MAX_FREE_STRING_LEN) : 'unexplained-stall',
+    };
+    state.active_wave.stalled = st;
+    saveState(state, {
+        updated_by: info.updated_by || 'System',
+        source: 'wave-stall-watchdog',
+        note: `wave ${waveNumber} → stalled (needs_attention)`,
+    });
+    emitWaveAudit({
+        event: 'wave_stalled',
+        wave: waveNumber,
+        actor: info.updated_by || 'System',
+        estado_previo: 'active',
+        estado_posterior: 'stalled',
+        note: st.reason,
+    });
+    return deepClone(st);
+}
+
+/**
+ * Limpia el estado `stalled` de la ola activa (la ola volvió a despachar o el
+ * operador atendió). No cierra la ola — sólo remueve la marca.
+ *
+ * @param {number} waveNumber — debe ser la ola ACTIVA.
+ * @param {object} [info] — { updated_by?, note? }.
+ * @returns {boolean} true si había estado que limpiar.
+ */
+function clearWaveStalled(waveNumber, info = {}) {
+    return withLockSync(wavesFile(), () => clearWaveStalledLocked(waveNumber, info), {
+        component: 'waves-lock',
+        timeoutMs: LOCK_TIMEOUT_MS,
+        maxRetries: LOCK_MAX_RETRIES,
+        notify: notifyTelegram,
+    });
+}
+
+function clearWaveStalledLocked(waveNumber, info) {
+    invalidateCache();
+    const state = loadWaves();
+    if (!state.active_wave || state.active_wave.number !== waveNumber) {
+        throw new Error(`clearWaveStalled: ola ${waveNumber} no es la activa`);
+    }
+    const had = state.active_wave.stalled != null;
+    if (!had) return false;
+    delete state.active_wave.stalled;
+    saveState(state, {
+        updated_by: info.updated_by || 'System',
+        source: 'wave-stall-watchdog',
+        note: info.note || `wave ${waveNumber} → stalled limpiado`,
+    });
+    emitWaveAudit({
+        event: 'wave_stalled_cleared',
+        wave: waveNumber,
+        actor: info.updated_by || 'System',
+        estado_previo: 'stalled',
+        estado_posterior: 'active',
+        note: info.note || null,
+    });
+    return true;
+}
+
+/**
+ * ¿La ola activa está marcada como estancada? Devuelve el objeto `stalled` o null.
+ * @returns {object|null}
+ */
+function getWaveStalled() {
+    const active = getActiveWave();
+    return active && active.stalled ? active.stalled : null;
+}
+
+/** ¿La ola activa está estancada? Predicado booleano. @returns {boolean} */
+function isWaveStalled() {
+    return getWaveStalled() != null;
+}
+
 // #4673 -- Aviso proactivo de finalizacion de ola. El flag vive en waves.json
 // bajo la ola activa para evitar paths derivados de input y conservar lock unico.
 function setWaveCompletionNotified(waveNumber, info = {}) {
@@ -1854,6 +1964,22 @@ function validateWaveObject(w, ctx, errors) {
             if (wo.conflicts_count !== undefined
                 && (!Number.isInteger(wo.conflicts_count) || wo.conflicts_count < 0)) {
                 errors.push(`${ctx}.waiting_operator.conflicts_count debe ser entero ≥ 0`);
+            }
+        }
+    }
+    // #4708 — estado `stalled` a nivel ola (dead-man's switch). Opcional
+    // (ausente = ola sin estancamiento detectado). Shape estricto igual que
+    // `waiting_operator`: los campos libres fluyen a sinks (dashboard/Telegram).
+    if (w.stalled !== undefined && w.stalled !== null) {
+        const st = w.stalled;
+        if (typeof st !== 'object' || Array.isArray(st)) {
+            errors.push(`${ctx}.stalled debe ser objeto o null`);
+        } else {
+            if (typeof st.since !== 'string' || !Number.isFinite(Date.parse(st.since))) {
+                errors.push(`${ctx}.stalled.since debe ser ISO string`);
+            }
+            if (st.reason !== undefined && st.reason !== null && !isValidFreeString(st.reason)) {
+                errors.push(`${ctx}.stalled.reason debe ser string ≤${MAX_FREE_STRING_LEN} chars`);
             }
         }
     }
@@ -3264,6 +3390,11 @@ module.exports = {
     clearWaveCompletionNotified,
     getWaveWaitingOperator,
     isWaveWaitingOperator,
+    // #4708 — estado stalled/needs_attention a nivel ola (dead-man's switch).
+    setWaveStalled,
+    clearWaveStalled,
+    getWaveStalled,
+    isWaveStalled,
     // CA-5: variantes strict que tiran si el shape rompe.
     loadStateStrict,
     validateStateStrict,
