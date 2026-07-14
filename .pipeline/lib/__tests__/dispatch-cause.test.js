@@ -21,7 +21,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const dc = require('./dispatch-cause');
+const dc = require('../dispatch-cause');
 const { CAUSAS } = dc;
 
 // --- Helpers -----------------------------------------------------------------

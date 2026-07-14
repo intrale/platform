@@ -19,9 +19,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const slices = require('./dashboard-slices');
-const dc = require('./dispatch-cause');
-const { renderDispatchCauseBanner } = require('./dispatch-cause-render');
+const slices = require('../dashboard-slices');
+const dc = require('../dispatch-cause');
+const { renderDispatchCauseBanner } = require('../dispatch-cause-render');
 
 function tmpDir() {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'dc-dash-'));
