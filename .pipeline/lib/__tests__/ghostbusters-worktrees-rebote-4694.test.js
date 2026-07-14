@@ -11,6 +11,9 @@ function fakeFs(realpaths = {}) {
     realpathSync(p) {
       return realpaths[String(p)] || String(p);
     },
+    existsSync() {
+      return false;
+    },
   };
 }
 
@@ -43,4 +46,27 @@ test('rebote #4694: guard bloquea prefijos fuera del derivado y del legacy', () 
   });
   assert.equal(r.forbidden, true);
   assert.match(r.reason, /acme-shop\.\*|platform\.\*/);
+});
+
+test('rebote #4694: cleanup destructivo aborta aunque el path contenga el needle del issue', () => {
+  const worktree = 'C:/tmp/platform.agent-4694-pipeline-dev';
+  const spawnCalls = [];
+  const logs = [];
+
+  const removed = gb.removeWorktree(worktree, {
+    mainRepo: MAIN,
+    configOverride: { projectId: 'intrale-platform' },
+    fsImpl: fakeFs({ [worktree]: worktree }),
+    spawnImpl(cmd, args, opts) {
+      spawnCalls.push({ cmd, args, opts });
+      return { status: 0, stdout: '', stderr: '' };
+    },
+    logger(msg) {
+      logs.push(msg);
+    },
+  });
+
+  assert.equal(removed, false);
+  assert.equal(spawnCalls.length, 0, 'no debe ejecutar git worktree remove fuera del guard compartido');
+  assert.ok(logs.some((msg) => msg.includes('ABORT')));
 });

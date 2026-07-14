@@ -335,6 +335,7 @@ try { providerExhaustionPause = require('./lib/provider-exhaustion-pause'); } ca
 const { ensureLaunchWorktree, WorktreeLaunchError } = require('./lib/worktree-launcher');
 // CA-B2 (#4694) — needle del worktree derivado del helper compartido (sin re-duplicar 'platform.').
 const { worktreeNeedle: wtNeedle } = require('./lib/worktree-prefix');
+const { removeWorktree: removeGuardedWorktree } = require('./lib/ghostbusters-worktrees');
 // #2591 — Resolver fast-fail del worktree para fases `useExistingWorktree`.
 // Reemplaza el fallback inline a ROOT que producía commits cruzados entre
 // agentes cuando el worktree del issue desaparecía (cleanup, restart, etc).
@@ -5301,8 +5302,15 @@ function brazoBarrido(config) {
             for (const line of wtList.split('\n')) {
               if (line.startsWith('worktree ') && line.includes(wtPattern)) {
                 const wtPath = line.replace('worktree ', '').trim();
-                execSync(`git worktree remove "${wtPath}" --force`, { cwd: ROOT, timeout: 30000, windowsHide: true });
-                log('barrido', `Worktree eliminado: ${wtPath}`);
+                const removed = removeGuardedWorktree(wtPath, {
+                  mainRepo: ROOT,
+                  logger: (msg) => log('barrido', msg),
+                });
+                if (removed) {
+                  log('barrido', `Worktree eliminado: ${wtPath}`);
+                } else {
+                  log('barrido', `Worktree no eliminado por guard: ${wtPath}`);
+                }
               }
             }
           } catch (e) {
