@@ -2306,6 +2306,13 @@ function escapeHtml(s) {
   return __escapeHtmlAttrShared(s);
 }
 
+// #4709 — Banner SSR de la causa declarada del no-despacho (cola ociosa). El
+// render vive en `lib/dispatch-cause-render.js` (extraído para ser testeable con
+// `node --test`); escapa `label`/`detalle` con escapeHtmlText/escapeHtmlAttr
+// antes de inyectarlos (requisito de seguridad AC-4/AC-6, stored XSS).
+let renderDispatchCauseBanner = () => '';
+try { ({ renderDispatchCauseBanner } = require('./lib/dispatch-cause-render')); } catch { /* opcional */ }
+
 // #4335 — TTL de presencia (espejo de dashboard-slices.js) para resolver el log
 // de la corrida vigente en las cards observacionales de la tira "Ejecutando ahora".
 const COMMANDER_PRESENCE_TTL_MS = 5 * 60 * 1000;
@@ -2583,6 +2590,16 @@ function generateHTML(state) {
     const slices = require('./lib/dashboard-slices');
     const slice = slices.desyncStatusSlice({}, {});
     if (slice && typeof slice === 'object') desyncStatusData = slice;
+  } catch {}
+
+  // #4709 — Banner SSR de la causa declarada del no-despacho (cola ociosa).
+  // Fail-safe: cualquier error deja el banner vacío (no se muestra), nunca tumba
+  // el render del dashboard.
+  let dispatchCauseBannerHTML = '';
+  try {
+    const slices = require('./lib/dashboard-slices');
+    const dcSlice = slices.dispatchCauseSlice({}, { PIPELINE });
+    dispatchCauseBannerHTML = renderDispatchCauseBanner(dcSlice);
   } catch {}
 
   // V3 detection: workers determinísticos en .pipeline/workers/*.js
@@ -3774,6 +3791,10 @@ function generateHTML(state) {
         </div>
         <button id="rob-refresh" type="button" onclick="refreshRestartOperativo()" style="flex:none;padding:8px 14px;border:1px solid #f59e0b;border-radius:6px;background:transparent;color:#fcd34d;font-weight:600;cursor:pointer">↻ Refrescar estado</button>
       </div>
+      ${/* #4709 — Banner de la causa declarada del no-despacho (cola ociosa con
+           pendientes). SSR: presente sólo cuando el artifact dispatch-cause.json
+           declara una causa. detalle/label ya ESCAPADOS en renderDispatchCauseBanner. */''}
+      ${dispatchCauseBannerHTML}
       ${/* #3956 CA-4 — la línea hace scroll horizontal cuando hay más etapas que
            ancho visible; el indicador "+N fases" lo calcula el cliente
            (updateLaneOverflow) midiendo scrollWidth vs clientWidth. */''}
