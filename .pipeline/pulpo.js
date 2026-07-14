@@ -62,6 +62,8 @@ const operatorSignature = require('./lib/operator-signature');
 // #2549 — Detección de bloqueo humano en motivos de rechazo + helpers de marker.
 // Evita relanzar al infinito skills cuyo rechazo es "esperando merge humano".
 const humanBlock = require('./lib/human-block');
+// #4708 — Alerta operacional genérica del control-plane (wave-stall watchdog).
+const { notifyTelegram: notifyTelegramFn } = require('./lib/notify-telegram');
 // #3939 — Primitivas atómicas anti-TOCTOU: claim-by-rename + reserva de slot +
 // sweep de claims huérfanos (épica EP-5 #3937).
 const slotClaim = require('./lib/slot-claim');
@@ -1395,6 +1397,60 @@ function listWorkFiles(dir) {
       .filter(f => !f.startsWith('.') && !f.endsWith('.gitkeep') && !isMarkerArtifactPulpo(f))
       .map(f => ({ name: f, path: path.join(dir, f) }));
   } catch { return []; }
+}
+
+/**
+ * #4708 — Recolecta la "causa declarada" que explica legítimamente un no-despacho
+ * de la ola, para que el wave-stall watchdog NO falsa-alarme (CA-2).
+ *
+ * Todas las causas se computan EN VIVO por el Pulpo (no se leen de un artefacto
+ * arbitrario del FS que un agente pueda spoofear — SEC-1). Cada chequeo es
+ * defensivo: si tira, se ignora (fail-closed: la ausencia de causa dispara). Al
+ * ser cómputo en vivo, la causa es inherentemente vigente (no requiere TTL).
+ *
+ * Causas reconocidas (interino hasta #4709 unifique el registro):
+ *   - halt humano (.paused / .partial-pause.json)   → kind 'human-halt'
+ *   - ventana de reposo / night-window              → kind 'night-window'
+ *   - cuota agotada                                 → kind 'quota'
+ *   - presión de recursos (ORANGE/RED)              → kind 'resource-pressure'
+ *   - gate de coherencia waiting-operator (#4578)   → kind 'waiting-operator'
+ *
+ * @returns {{declared:true, kind:string, readable:true}|null} null = sin causa.
+ */
+function readDeclaredCauseForWave(cfgRoot, waves) {
+  const declare = (kind) => ({ declared: true, kind, readable: true });
+
+  // 1. Halt humano (pausa total o parcial declarada por el operador).
+  try {
+    const mode = partialPause.getPipelineMode().mode;
+    if (mode && mode !== 'running') return declare('human-halt');
+  } catch { /* fail-closed */ }
+
+  // 2. Ventana de reposo / madrugada — no alertar de noche (CA-2).
+  try {
+    const nw = (cfgRoot.resource_limits || {}).night_window;
+    if (isNightWindow(Date.now(), nw)) return declare('night-window');
+  } catch { /* fail-closed */ }
+
+  // 3. Cuota agotada (primary/fallbacks sin capacidad).
+  try {
+    if (quotaExhausted.isQuotaExhausted()) return declare('quota');
+  } catch { /* fail-closed */ }
+
+  // 4. Presión de recursos: ORANGE/RED suprimen despacho legítimamente.
+  try {
+    const level = getResourcePressure(cfgRoot).level;
+    if (level === PRESSURE_LEVELS.ORANGE || level === PRESSURE_LEVELS.RED) {
+      return declare('resource-pressure');
+    }
+  } catch { /* fail-closed */ }
+
+  // 5. Gate de coherencia (#4578): ola retenida esperando al operador.
+  try {
+    if (waves.isWaveWaitingOperator()) return declare('waiting-operator');
+  } catch { /* fail-closed */ }
+
+  return null;
 }
 
 /** Extraer issue number del nombre de archivo (ej: "1732.po" → "1732").
@@ -16998,6 +17054,134 @@ async function mainLoop() {
     log('anomaly', `Detector iniciado: cada ${anomalyDetector.config.intervalMin}min, threshold +${Math.round(anomalyDetector.config.pctThreshold * 100)}%, warmup ${anomalyDetector.config.warmupDays}d`);
   } catch (e) {
     log('anomaly', `No se pudo iniciar el detector: ${e.message}`);
+  }
+
+  // #4708 — Wave-stall watchdog (dead-man's switch de la ola).
+  // Brazo periódico que detecta "trabajo habilitado + 0 despacho durante N min
+  // + sin causa declarada" y alerta a Telegram + marca la ola `stalled`
+  // (needs_attention). La lógica de decisión vive en lib/wave-stall-watchdog.js
+  // (función pura testeada). Este brazo SÓLO recolecta hechos del filesystem y
+  // la invoca. Es ACCESORIO: si tira, try/catch loguea y NO mata el loop (mismo
+  // criterio que el anomalyDetector). Rollout gradual: `wave_watchdog.enabled`
+  // default false.
+  try {
+    const waveWatchdog = require('./lib/wave-stall-watchdog');
+    const cfgRoot0 = loadConfig() || {};
+    const wwCfg0 = cfgRoot0.wave_watchdog || {};
+    const tickMs = waveWatchdog.parsePositiveInt(wwCfg0.tick_ms, 60000);
+    const stateFile = path.join(PIPELINE, 'state', 'wave-stall-watchdog-state.json');
+
+    const runWaveStallTick = () => {
+      try {
+        const cfgRoot = loadConfig() || {};
+        const cfg = cfgRoot.wave_watchdog || {};
+        // Kill-switch / rollout gradual: leídos en cada tick para permitir
+        // activar/desactivar en caliente sin reiniciar el Pulpo.
+        if (cfg.enabled !== true || cfg.kill_switch === true) return;
+
+        const waves = require('./lib/waves');
+        const waveProgress = require('./lib/wave-progress');
+
+        const active = waves.getActiveWave();
+        if (!active || !Number.isInteger(active.number)) return; // sin ola activa: nada que vigilar
+
+        // 1. Trabajo habilitado: issues no completados y sin bloqueo de dependencia.
+        //    (Un issue con TODOS sus bloqueantes abiertos NO cuenta como habilitado
+        //     → un estancamiento por dependencia queda como enabledCount=0 = skip.)
+        const enabled = (active.issues || []).filter((i) => {
+          if (!i || i.status === 'completed') return false;
+          try { return waves.getBlockingIssues(i.number).length === 0; }
+          catch { return true; }
+        });
+
+        // 2. Despacho: archivos en trabajando/ de TODAS las fases de TODOS los pipelines.
+        let dispatching = 0;
+        for (const [pName, pConfig] of Object.entries(cfgRoot.pipelines || {})) {
+          for (const fase of (pConfig.fases || [])) {
+            dispatching += listWorkFiles(path.join(PIPELINE, pName, fase, 'trabajando')).length;
+          }
+        }
+
+        // 3. Serie de avance (avancePct) de la ola activa.
+        let progressSeries = [];
+        try { progressSeries = waveProgress.readSnapshots({ waveKey: active.number }); }
+        catch { progressSeries = []; }
+
+        // 4. Causa declarada (interino hasta #4709 — markers dispersos, computados
+        //    EN VIVO por el Pulpo, no leídos de un artefacto spoofeable por agentes:
+        //    SEC-1). Cada chequeo es defensivo; si tira, NO se asume causa
+        //    (fail-closed: la ausencia de causa dispara). Al ser cómputo en vivo,
+        //    la causa es inherentemente vigente (no requiere TTL propio).
+        const cause = readDeclaredCauseForWave(cfgRoot, waves);
+
+        const state = waveWatchdog.loadState(stateFile);
+        const decision = waveWatchdog.decide({
+          now: Date.now(),
+          waveKey: active.number,
+          enabledCount: enabled.length,
+          dispatching,
+          progressSeries,
+          cause,
+          state,
+          stallMinutes: cfg.stall_minutes,
+          cooldownMinutes: cfg.alert_cooldown_minutes,
+          windowMinutes: cfg.window_minutes,
+        });
+
+        // Persistir SIEMPRE el nextState (reloj de movimiento, episodio de alerta).
+        try { waveWatchdog.saveStateAtomic(stateFile, decision.nextState); }
+        catch (e) { log('wave-stall', `no pude persistir estado: ${e.message}`); }
+
+        if (decision.action === 'alert' || decision.action === 'escalate') {
+          log('wave-stall', `Ola ${active.number} estancada (${decision.action}): ${decision.reason}, ` +
+            `${enabled.length} habilitado(s), ${Math.round(decision.stalledMs / 60000)}min sin mover ficha`);
+
+          // Alerta Telegram — SÓLO waveKey + motivo (SEC-2/CA-5). El mensaje ya
+          // viene sanitizado desde decide(): sin paths, tokens ni dumps.
+          try {
+            notifyTelegramFn({
+              level: decision.level,
+              component: 'wave-stall-watchdog',
+              message: decision.message,
+              action: 'Revisá por qué la ola no despacha (dashboard needs_attention).',
+              context: { ola: active.number, habilitados: enabled.length },
+            });
+          } catch (e) { log('wave-stall', `notify falló: ${e.message}`); }
+
+          // Estado ola: marcar estancada (needs_attention). Es la escalada a
+          // atención humana a NIVEL OLA — no bloquea los issues habilitados
+          // (aplicar needs-human a issues sanos los sacaría del despacho y
+          // agravaría el propio estancamiento que estamos alertando).
+          try {
+            waves.setWaveStalled(active.number, {
+              reason: decision.reason,
+              since: new Date(Date.now() - decision.stalledMs).toISOString(),
+              updated_by: 'wave-stall-watchdog',
+            });
+          } catch (e) { log('wave-stall', `setWaveStalled falló: ${e.message}`); }
+        } else if (decision.reason === 'dispatching' || decision.reason === 'no-enabled-work') {
+          // La ola volvió a moverse / no hay trabajo pendiente: limpiar la marca
+          // de estancamiento si estaba puesta (auto-clear del episodio).
+          try {
+            if (waves.isWaveStalled()) {
+              waves.clearWaveStalled(active.number, { note: 'ola volvió a despachar' });
+              log('wave-stall', `Ola ${active.number} destrabada: marca stalled limpiada`);
+            }
+          } catch (_e) { /* no bloqueante */ }
+        }
+      } catch (err) {
+        log('wave-stall', `tick excepción (no bloqueante): ${err.message}`);
+      }
+    };
+
+    // setInterval propio (patrón idéntico al anomalyDetector). unref() para no
+    // impedir un shutdown limpio del proceso.
+    const waveStallTimer = setInterval(runWaveStallTick, tickMs);
+    if (typeof waveStallTimer.unref === 'function') waveStallTimer.unref();
+    log('wave-stall', `Watchdog de avance de ola iniciado: cada ${Math.round(tickMs / 1000)}s ` +
+      `(enabled=${wwCfg0.enabled === true}, kill_switch=${wwCfg0.kill_switch === true})`);
+  } catch (e) {
+    log('wave-stall', `No se pudo iniciar el watchdog de avance de ola: ${e.message}`);
   }
 
   // #3080 / S1 multi-provider — Cron de rotación de credenciales.
