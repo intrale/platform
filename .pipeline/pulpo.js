@@ -8042,6 +8042,85 @@ function requestEmulator(action, requester, issue, reason) {
 }
 
 function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config, extraEnv = {}) {
+  // ==========================================================================
+  // #4719 — WIRING DEL CONTRATO DE TAREA: la fase deriva al ejecutor según el
+  // contrato en vez de asumir "el entregable es código".
+  //
+  // Para el ~95 % de las tareas (contrato ausente o `tipo_entregable: codigo`)
+  // esta rama NO aplica: `phaseHandledByContract` devuelve `false` y el flujo
+  // cableado (worktree + rama + agente LLM) sigue idéntico a hoy (retrocompat
+  // total — CA-3 de #4717).
+  //
+  // Sólo cuando el contrato declara un ejecutor NO-código (p. ej.
+  // `provisioner_infra` para "crear una base de datos") el Pulpo resuelve la
+  // fase determinísticamente: sin worktree, sin LLM y sin gate de cuota (un
+  // provisioner de infra no consume tokens). El runner devuelve DATOS
+  // (resultado + evidencia); el Pulpo —único dueño del lifecycle— escribe el
+  // YAML y promueve `trabajando/ → listo/`. El gate existente lo avanza a la
+  // siguiente fase como cualquier `aprobado`.
+  //
+  // Se coloca ANTES del gate de cuota LLM a propósito: los ejecutores no-código
+  // no deben quedar bloqueados por `quota-exhausted`.
+  // ==========================================================================
+  try {
+    const taskContract = require('./lib/task-contract');
+    const workData0 = readYamlSafe(trabajandoPath) || {};
+    const contractDet = taskContract.readTaskContractDetailed({ ROOT, PIPELINE, issue, workData: workData0 });
+    if (contractDet.error) {
+      // Contrato presente pero corrupto: NO asumimos nada a ciegas — logueamos
+      // y seguimos con el flujo de código cableado (fail-safe, regresión cero).
+      log('lanzamiento', `⚠️ #${issue}: contrato de tarea presente pero corrupto (${String(contractDet.error).slice(0, 120)}) — sigo con flujo de código`);
+    }
+    const contract = contractDet.contract;
+    if (taskContract.phaseHandledByContract(fase, contract)) {
+      const executorType = taskContract.resolveExecutorType(contract);
+      log('lanzamiento', `📄 #${issue}: contrato no-código (ejecutor=${executorType}) — fase "${fase}" resuelta por ejecutor determinístico (sin worktree/LLM)`);
+      const listoDir = path.join(fasePath(pipeline, fase), 'listo');
+      // El runner es async (el provisioner hace I/O). No bloqueamos el loop de
+      // dispatch: al resolver, escribimos el resultado y promovemos a listo/
+      // (mismo patrón async que el `child.on('exit')` del spawn LLM).
+      taskContract.runContractPhase({ fase, contract, issue, ROOT, PIPELINE })
+        .then((res) => {
+          const data = {
+            ...(readYamlSafe(trabajandoPath) || {}),
+            ...res,
+            issue: parseInt(issue, 10),
+            fase,
+            pipeline,
+          };
+          writeYaml(trabajandoPath, data);
+          if (fs.existsSync(trabajandoPath)) moveFile(trabajandoPath, listoDir);
+          log('lanzamiento', `📄 #${issue}: fase "${fase}" (contrato ${res.contrato_ejecutor}) → ${res.resultado} → listo/`);
+        })
+        .catch((e) => {
+          // Fallo inesperado del runner: rechazar con motivo y promover a listo/
+          // para que el gate lo procese (rebote); nunca dejar el archivo colgado
+          // en trabajando/ (el orphan-timeout lo devolvería a pendiente y se
+          // reintentaría en loop).
+          try {
+            const data = {
+              ...(readYamlSafe(trabajandoPath) || {}),
+              resultado: 'rechazado',
+              motivo: `runner de contrato de tarea falló en fase "${fase}": ${String(e && e.message ? e.message : e).slice(0, 200)}`,
+              issue: parseInt(issue, 10),
+              fase,
+              pipeline,
+            };
+            writeYaml(trabajandoPath, data);
+            if (fs.existsSync(trabajandoPath)) moveFile(trabajandoPath, listoDir);
+            log('lanzamiento', `⚠️ #${issue}: runner de contrato falló en "${fase}" → rechazado → listo/ (${String(e && e.message ? e.message : e).slice(0, 120)})`);
+          } catch (e2) {
+            log('lanzamiento', `⚠️ #${issue}: no se pudo cerrar la fase de contrato tras error: ${e2.message.slice(0, 120)}`);
+          }
+        });
+      return;
+    }
+  } catch (e) {
+    // Best-effort: cualquier fallo en la DERIVACIÓN (no en el ejecutor) NO rompe
+    // el pipeline; se cae al flujo de código cableado (regresión cero).
+    log('lanzamiento', `⚠️ #${issue}: derivación de contrato de tarea falló (${e.message.slice(0, 120)}) — sigo con flujo de código`);
+  }
+
   // #2974 — GATE DETERMINÍSTICO PRE-SPAWN: si la cuota Anthropic está agotada
   // (flag persistido en `.pipeline/quota-exhausted.json` con `resets_at` futuro),
   // NO spawneamos claude.exe para skills LLM. Skills determinísticos
