@@ -14,6 +14,15 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+// Rebote #4732: el harness (`bootstrap`) hace `execSync('npm ci ...')`, que
+// hereda `process.env.PATH`. Cuando el tester determinístico spawnea
+// `node --test` con un PATH stripped (pulpo como servicio Windows, misma causa
+// que git en #2891), `npm` no está en el PATH y estos tests fallan con
+// `"npm" no se reconoce como un comando interno o externo`. Garantizamos `npm`
+// en el PATH del proceso ANTES de requerir el harness — el fix vive en el
+// worktree (este archivo), así no depende de que el tester de `main` lo tenga.
+require('../lib/ensure-npm-in-path').ensureNpmInProcessPath();
+
 const HARNESS = path.join(__dirname, '..', '..', 'fixtures', 'demo', 'run-cycle.js');
 const {
   runCycle,

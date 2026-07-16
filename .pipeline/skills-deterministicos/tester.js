@@ -833,6 +833,18 @@ async function runNodeTests(repoRoot, env, opts = {}) {
         // o externo`. ensureGitInPath es un wrapper local sobre ensureGitInEnv.
         ensureGitInPath(childEnv);
 
+        // Rebote #4732 — Garantizar que `npm`/`node` sean ejecutables desde el
+        // child spawn. Misma causa raíz que git (#2891): cuando el pulpo corre
+        // como servicio Windows, su PATH heredado puede no incluir el directorio
+        // de Node (`C:\Program Files\nodejs`, que contiene `npm.cmd`). Los tests
+        // del pipeline que hacen `execSync('npm ci ...')` (ej. la demo del kernel
+        // en `fixtures/demo/run-cycle.js`) fallan con `"npm" no se reconoce como
+        // un comando interno o externo`. Como este proceso ES node, su binario
+        // vive junto a `npm`/`npm.cmd`; prependemos ese dir al PATH del child.
+        // Idempotente (solo prepende) y no muta el env externo.
+        const nodeBinDir = path.dirname(process.execPath);
+        childEnv.PATH = `${nodeBinDir}${path.delimiter}${childEnv.PATH || ''}`;
+
         // #3091 rebote rev-1 (réplica del fix #3090 rev-1) — Garantizar que
         // los tests del worktree puedan resolver las dependencias instaladas
         // en el repo principal (`js-yaml`, `ajv`, etc.). Los worktrees creados
