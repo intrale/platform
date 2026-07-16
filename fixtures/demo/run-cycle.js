@@ -276,9 +276,22 @@ function bootstrap(targetDir) {
   // Instalación reproducible y verificada: `npm ci` (NUNCA `npm install`).
   // Comando constante (sin interpolación de input) — en Windows `execSync`
   // resuelve `npm.cmd` vía el shell del sistema sin el DEP0190 de execFile+args.
+  // `npm` (npm.cmd en Windows) vive SIEMPRE junto a `node` (process.execPath),
+  // pero el shell del sistema sólo lo encuentra si ese dir está en el PATH. En
+  // entornos de spawn con PATH mínimo (p.ej. el runner del tester) node existe
+  // pero npm no está en el PATH → `npm ci` falla con "no se reconoce como
+  // comando". Prependeamos el dir de node al PATH para resolver npm de forma
+  // determinística e independiente del PATH del proceso que invoca.
+  const nodeDir = path.dirname(process.execPath);
+  const pathSep = process.platform === 'win32' ? ';' : ':';
+  const env = {
+    ...process.env,
+    PATH: `${nodeDir}${pathSep}${process.env.PATH || ''}`,
+  };
   const out = execSync('npm ci --no-audit --no-fund', {
     cwd: targetDir,
     stdio: 'pipe',
+    env,
   })
     .toString()
     .trim();
