@@ -6022,7 +6022,48 @@ function determinarDevSkill(issue, config) {
     if (mapping[label]) return mapping[label];
   }
 
-  return mapping.default || 'backend-dev';
+  const defaultSkill = mapping.default || 'backend-dev';
+  if (isDeclaredStackDevSkill(defaultSkill, config)) {
+    return defaultSkill;
+  }
+
+  return getGenericDevFallbackSkill(config, mapping);
+}
+
+function getDevSkillPartitions(config) {
+  const raw = config && config.dev_skill_partitions;
+  if (!raw || typeof raw !== 'object') {
+    return {
+      backend: ['backend-dev'],
+      frontend: ['android-dev', 'web-dev'],
+      pipeline: ['pipeline-dev'],
+      generic: ['dev'],
+    };
+  }
+
+  const out = {};
+  for (const [partition, skills] of Object.entries(raw)) {
+    out[partition] = Array.isArray(skills)
+      ? skills.filter(skill => typeof skill === 'string' && skill.trim())
+      : [];
+  }
+  return out;
+}
+
+function isDeclaredStackDevSkill(skill, config) {
+  if (!skill || typeof skill !== 'string') return false;
+  const partitions = getDevSkillPartitions(config);
+  return ['backend', 'frontend', 'pipeline'].some(partition =>
+    Array.isArray(partitions[partition]) && partitions[partition].includes(skill)
+  );
+}
+
+function getGenericDevFallbackSkill(config, mapping) {
+  const explicit = mapping && mapping.generic_fallback;
+  if (typeof explicit === 'string' && explicit.trim()) return explicit;
+  const partitions = getDevSkillPartitions(config);
+  const generic = Array.isArray(partitions.generic) ? partitions.generic : [];
+  return generic.find(skill => typeof skill === 'string' && skill.trim()) || 'dev';
 }
 
 // Cache de títulos/bodies para no golpear GitHub por cada ruteo (TTL corto)
@@ -17893,6 +17934,18 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // #3956 — gate de evidencia QA: expuesto para test de integración del bypass
     // `qa:skipped` (la fuente de labels debe ser GitHub, nunca el YAML del agente).
     validateQaEvidence,
+    determinarDevSkill,
+    getDevSkillPartitions,
+    isDeclaredStackDevSkill,
+    getGenericDevFallbackSkill,
+    _setIssueInfoForTest: (issue, info) => {
+      issueLabelsCache.set(issue, { labels: info.labels || [], state: info.state || 'OPEN', fetchedAt: Date.now() });
+      if (typeof info.text === 'string') issueTextCache.set(issue, { text: info.text.toLowerCase(), fetchedAt: Date.now() });
+    },
+    _clearIssueRoutingCachesForTest: () => {
+      issueLabelsCache.clear();
+      issueTextCache.clear();
+    },
     // #4046 — preflight de APK por flavor real + resolución de changed-files.
     preflightQaChecks,
     getChangedFilesForIssue,

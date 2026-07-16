@@ -36,6 +36,41 @@ const { isMarkerArtifact } = require('./lib/marker-artifact');
 const PIPELINE_DIR = __dirname;
 const LOG_FILE = path.join(PIPELINE_DIR, 'logs', 'smoke-test.log');
 
+// --- Resolución del directorio de RUNTIME del pipeline (#4686) ---
+// El estado vivo del pipeline (last-restart.json, ready markers, colas) vive en
+// el checkout CANÓNICO desde el que corre la infra. En producción el smoke test
+// corre desde ese checkout y PIPELINE_DIR ya es correcto. Cuando corre desde un
+// worktree de agente (self-check de pipeline-dev) el worktree sólo tiene el
+// CÓDIGO: el estado runtime no existe ahí. Resolvemos el .pipeline canónico para
+// chequear el pipeline realmente vivo, sin alterar el path de producción
+// (fast-path sin git cuando el marker local existe).
+function resolveRuntimeDir(scriptDir = PIPELINE_DIR, env = process.env) {
+  // 1) Override explícito (operación manual / tests).
+  if (env.PIPELINE_RUNTIME_DIR) return env.PIPELINE_RUNTIME_DIR;
+  // 2) Producción / checkout canónico: el marker de runtime está presente. Sin git.
+  if (fs.existsSync(path.join(scriptDir, 'last-restart.json'))) return scriptDir;
+  // 3) Worktree de agente: resolver el .pipeline del checkout principal vía git.
+  try {
+    const r = spawnSync('git', ['rev-parse', '--git-common-dir'], {
+      cwd: scriptDir, encoding: 'utf8', timeout: 5000,
+    });
+    if (r.status === 0 && r.stdout) {
+      let commonDir = r.stdout.trim();
+      if (commonDir && !path.isAbsolute(commonDir)) {
+        commonDir = path.resolve(scriptDir, commonDir);
+      }
+      const mainRoot = path.dirname(commonDir);
+      const candidate = path.join(mainRoot, '.pipeline');
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  } catch { /* git ausente o worktree raro → fallback abajo */ }
+  // 4) Fallback: el propio directorio (comportamiento previo).
+  return scriptDir;
+}
+
+const RUNTIME_DIR = resolveRuntimeDir();
+const RUNTIME_READY_DIR = path.join(RUNTIME_DIR, 'ready');
+
 // Componentes que deben escribir marker tras initialize.
 // Debe estar sincronizado con restart.js COMPONENTS y con las llamadas
 // signalReady() inyectadas en cada componente.
@@ -171,14 +206,16 @@ async function waitForComponentMarkers(components, {
   dashTimeoutMs = 120000,
   waitFn = waitForMarkers,
   now = Date.now,
+  readyDir = RUNTIME_READY_DIR,
 } = {}) {
   const start = now();
   const hasDashboard = components.includes('dashboard');
   const lightComponents = components.filter(n => n !== 'dashboard');
 
-  // 1a) Componentes livianos — timeout estándar.
+  // 1a) Componentes livianos — timeout estándar. `readyDir` apunta al runtime
+  // canónico (#4686), relevante cuando el smoke corre desde un worktree.
   const resLight = lightComponents.length
-    ? await waitFn(lightComponents, lightTimeoutMs, 1000)
+    ? await waitFn(lightComponents, lightTimeoutMs, 1000, readyDir)
     : { ok: true, results: {} };
 
   // 1b) Dashboard — ventana extendida. Ya venía booteando durante 1a, así que
@@ -187,7 +224,7 @@ async function waitForComponentMarkers(components, {
   let resDash = { ok: true, results: {} };
   if (hasDashboard) {
     const dashRemaining = Math.max(5000, dashTimeoutMs - (now() - start));
-    resDash = await waitFn(['dashboard'], dashRemaining, 1000);
+    resDash = await waitFn(['dashboard'], dashRemaining, 1000, readyDir);
   }
 
   return {
@@ -262,10 +299,10 @@ async function main() {
     }
   }
 
-  // 3) last-restart.json.
-  const lastRestart = path.join(PIPELINE_DIR, 'last-restart.json');
+  // 3) last-restart.json — resuelto contra el runtime canónico (#4686).
+  const lastRestart = path.join(RUNTIME_DIR, 'last-restart.json');
   if (!fs.existsSync(lastRestart)) {
-    fail('last-restart.json ausente', 3);
+    fail(`last-restart.json ausente (runtime_dir=${RUNTIME_DIR})`, 3);
   }
   const ageSec = Math.round((Date.now() - fs.statSync(lastRestart).mtimeMs) / 1000);
   if (ageSec > 300) {
@@ -274,8 +311,8 @@ async function main() {
     log(`  OK last-restart.json (${ageSec}s)`);
   }
 
-  // 4) Huérfanos en commander/trabajando/ (solo warn).
-  const orphanDir = path.join(PIPELINE_DIR, 'servicios', 'commander', 'trabajando');
+  // 4) Huérfanos en commander/trabajando/ (solo warn) — runtime canónico.
+  const orphanDir = path.join(RUNTIME_DIR, 'servicios', 'commander', 'trabajando');
   try {
     if (fs.existsSync(orphanDir)) {
       // Excluir marker artifacts: no son mensajes operacionales huérfanos.
@@ -307,4 +344,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { checkDashboardHttp, checkDashboardHttpWithRetry, waitForComponentMarkers };
+module.exports = { checkDashboardHttp, checkDashboardHttpWithRetry, waitForComponentMarkers, resolveRuntimeDir };
