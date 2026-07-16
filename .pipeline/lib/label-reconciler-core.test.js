@@ -65,7 +65,8 @@ test('labels de contenido nunca aparecen en toRemove', () => {
   }
 });
 
-test('qa:* y blocked:dependencies son dominio delegado y no se remueven', () => {
+test('qa:* no se remueve; blocked:dependencies en issue ABIERTO sigue siendo dominio delegado', () => {
+  // Issue abierto (sin señal de cierre): blocked:dependencies NO se toca.
   const rec = reconcileStateLabels({
     issue: 1,
     currentLabels: ['needs-human', 'qa:pending', 'qa:failed', 'blocked:dependencies'],
@@ -76,10 +77,47 @@ test('qa:* y blocked:dependencies son dominio delegado y no se remueven', () => 
   assert.equal(rec.toRemove.includes('blocked:dependencies'), false);
 });
 
-test('allowlist hardcodeado solo incluye needs-human', () => {
-  assert.deepEqual(RECONCILABLE_STATE_LABELS, ['needs-human']);
+// #4732 (CA-3) — issue CLOSED: se remueve el label residual blocked:dependencies.
+test('reconcileStateLabels remueve blocked:dependencies cuando el issue esta CLOSED (state)', () => {
+  const rec = reconcileStateLabels({
+    issue: 4685,
+    currentLabels: ['blocked:dependencies', 'area:infra'],
+    sources: { state: 'CLOSED' },
+  });
+  assert.ok(rec.toRemove.includes('blocked:dependencies'), 'debe removerse el label residual');
+  assert.equal(rec.toRemove.includes('area:infra'), false, 'labels de contenido no se tocan');
+  const entry = rec.audit.find((a) => a.label === 'blocked:dependencies');
+  assert.ok(entry, 'debe auditar la remocion');
+  assert.equal(entry.action, 'remove');
+  assert.equal(entry.oracle, 'issue-closed');
+  assert.equal(entry.issue, 4685);
+});
+
+test('reconcileStateLabels remueve blocked:dependencies con sources.isClosed === true', () => {
+  const rec = reconcileStateLabels({
+    issue: 4696,
+    currentLabels: ['blocked:dependencies'],
+    sources: { isClosed: true },
+  });
+  assert.deepEqual(rec.toRemove, ['blocked:dependencies']);
+  assert.equal(rec.audit[0].oracle, 'issue-closed');
+});
+
+test('reconcileStateLabels NO remueve blocked:dependencies sin senal de cierre (fail-closed)', () => {
+  for (const sources of [{}, { state: 'OPEN' }, { isClosed: false }, { state: 'open' }]) {
+    const rec = reconcileStateLabels({
+      issue: 1,
+      currentLabels: ['blocked:dependencies'],
+      sources,
+    });
+    assert.deepEqual(rec.toRemove, [], `no debe remover con sources=${JSON.stringify(sources)}`);
+  }
+});
+
+test('allowlist reconciliable incluye needs-human y blocked:dependencies (#4732)', () => {
+  assert.deepEqual(RECONCILABLE_STATE_LABELS, ['needs-human', 'blocked:dependencies']);
   assert.equal(isReconciliableStateLabel('needs-human'), true);
+  assert.equal(isReconciliableStateLabel('blocked:dependencies'), true);
   assert.equal(isReconciliableStateLabel('qa:pending'), false);
-  assert.equal(isReconciliableStateLabel('blocked:dependencies'), false);
   assert.equal(isReconciliableStateLabel('area:infra'), false);
 });

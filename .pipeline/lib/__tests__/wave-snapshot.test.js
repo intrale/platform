@@ -522,6 +522,51 @@ test('#4099 CA-2: issue CLOSED con label de bloqueo residual (con matriz) → cl
     assert.equal(snap.humanInterventions.find((h) => h.id === 4050), undefined);
 });
 
+// #4732 (CA-2/CA-4) — Reproducción del incidente #4685: issue CLOSED que
+// arrastra `blocked:dependencies` y una fase de "definición" en la matriz (por
+// caché degradado). Debe pintarse CLOSED en la ola, nunca bloqueado ni en fase
+// de definición. Es el regression-guard directo del bug original.
+test('#4732 CA-4: issue CLOSED en fase de definición con label residual se pinta closed (repro #4685)', () => {
+    const state = makeState({
+        issues: {
+            '4685': {
+                title: 'Paraguas cerrado que arrastra blocked:dependencies',
+                labels: ['bug', 'area:infra', 'blocked:dependencies'],
+                // El caché degradado dejó la fase clavada en definición.
+                fases: {
+                    'definicion/criterios': [entry({ skill: 'po', estado: 'pendiente', fase: 'criterios', pipeline: 'definicion', startedAt: NOW - 1000, durationMs: 1000 })],
+                },
+                faseActual: 'definicion/criterios',
+                estadoActual: 'pendiente',
+                bounces: 0,
+                staleMin: 0,
+            },
+        },
+    });
+    const snap = buildWaveSnapshot({
+        state,
+        wave: { label: 'N+1', issues: [4685], source: 'test' },
+        closedIssues: new Set([4685]), // estado real autoritativo desde GitHub
+        now: NOW,
+    });
+    const iss = snap.issues.find((i) => i.id === 4685);
+    assert.equal(iss.status, 'closed', 'CLOSED > blocked/definición');
+    assert.equal(iss.isClosed, true);
+    assert.equal(iss.isBlocked, false, 'nunca bloqueado aunque arrastre el label');
+    assert.notEqual(iss.status, 'definition', 'nunca en fase de definición');
+    assert.equal(iss.pct, 100);
+    assert.equal(snap.blocks.find((b) => b.id === 4685), undefined);
+});
+
+// #4732 — invariante puro sobre classifyStatus: state CLOSED domina la fase de
+// definición aunque el resto del caché esté degradado.
+test('#4732: classifyStatus con isClosed gana a una faseActual de definición', () => {
+    assert.equal(
+        _internal.classifyStatus({ isClosed: true, isBlocked: false, faseActual: 'definicion/criterios' }),
+        'closed',
+    );
+});
+
 test('abbreviateFase: nombres acortados con (idx/total)', () => {
     assert.equal(_internal.abbreviateFase('desarrollo/verificacion', 6, 10), 'verif (7/10)');
     assert.equal(_internal.abbreviateFase('desarrollo/aprobacion', 5, 7), 'aprob (6/7)');

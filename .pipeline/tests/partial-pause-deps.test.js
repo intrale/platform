@@ -127,10 +127,101 @@ test('fetchIssueInfo refresca cuando expira TTL', () => {
 test('fetchIssueInfo guarda error cuando gh falla', () => {
     const cacheFile = tmpCacheFile();
     const ghRunner = (args) => ({ ok: false, stdout: '', stderr: 'rate limit\n', status: 4 });
-    const r = ppDeps.fetchIssueInfo(999, { ghRunner, cacheFile });
+    const origWarn = console.warn;
+    console.warn = () => {};
+    let r;
+    try {
+        r = ppDeps.fetchIssueInfo(999, { ghRunner, cacheFile });
+    } finally {
+        console.warn = origWarn;
+    }
     assert.equal(r.state, 'unknown');
     assert.match(r.error, /rate limit/);
     assert.deepEqual(r.deps, []);
+});
+
+// ----- #4732: resiliencia ante gh ausente (CA-1 / CA-5) -----------------------
+
+// Runner que simula `spawnSync` con binario `gh` ausente (ENOENT): status null,
+// error propagado, spawnFailed true (contrato de defaultGhRunner tras #4732).
+function enoentRunner() {
+    return () => ({ ok: false, stdout: '', stderr: '', status: null, error: { code: 'ENOENT' }, spawnFailed: true });
+}
+
+function silenceWarn(fn) {
+    const orig = console.warn;
+    let count = 0;
+    console.warn = (...a) => { count++; };
+    try {
+        const out = fn();
+        return { out, warnCount: count };
+    } finally {
+        console.warn = orig;
+    }
+}
+
+test('fetchIssueInfo con gh ausente conserva el last-known-good y no persiste unknown (#4732 CA-1)', () => {
+    const cacheFile = tmpCacheFile();
+    const t0 = 1_000_000_000;
+    // Entrada previa válida (closed) y ya stale → fuerza el re-fetch a gh.
+    ppDeps.writeCache({
+        issues: { '4685': { state: 'closed', deps: [], forwardDeps: [], title: 'viejo', fetchedAt: t0 } },
+        updatedAt: t0,
+    }, cacheFile);
+
+    const { out: r, warnCount } = silenceWarn(() =>
+        ppDeps.fetchIssueInfo(4685, { ghRunner: enoentRunner(), cacheFile, now: t0 + 10 * 60_000 }));
+
+    // Conserva el estado válido conocido: NO vuelve unknown ni bloqueado.
+    assert.equal(r.state, 'closed');
+    // El caché en disco sigue con el estado válido (no fue envenenado a unknown).
+    const after = ppDeps.readCache(cacheFile);
+    assert.equal(after.issues['4685'].state, 'closed');
+    // CA-5: la degradación quedó logueada.
+    assert.ok(warnCount >= 1, 'debe loguear la degradación de gh (CA-5)');
+});
+
+test('fetchIssueInfo con gh ausente sin last-known-good devuelve transient y NO persiste unknown (#4732 CA-1)', () => {
+    const cacheFile = tmpCacheFile();
+    const { out: r } = silenceWarn(() =>
+        ppDeps.fetchIssueInfo(4685, { ghRunner: enoentRunner(), cacheFile }));
+
+    assert.equal(r.state, 'unknown');
+    assert.equal(r.transient, true);
+    // Nunca se marca bloqueado por no poder consultar (fail-safe).
+    assert.deepEqual(r.deps, []);
+    // No se persiste la entrada unknown (no envenena la caché).
+    const after = ppDeps.readCache(cacheFile);
+    assert.equal(after.issues['4685'], undefined);
+});
+
+test('resolveOpenDeps con gh ausente jamás deriva bloqueado (fail-safe #4732)', () => {
+    const cacheFile = tmpCacheFile();
+    const { out: res } = silenceWarn(() =>
+        ppDeps.resolveOpenDeps(4685, { ghRunner: enoentRunner(), cacheFile }));
+    assert.deepEqual(res.openDeps, [], 'sin poder consultar no se marca ninguna dep abierta/bloqueada');
+});
+
+test('fetchIssueInfo valida issueNum no numérico sin spawnear (#4732 security §4)', () => {
+    const cacheFile = tmpCacheFile();
+    let called = 0;
+    const ghRunner = () => { called++; return { ok: true, stdout: '{}', status: 0 }; };
+    const r = ppDeps.fetchIssueInfo('--version', { ghRunner, cacheFile });
+    assert.equal(called, 0, 'no debe spawnear gh con un issueNum inválido');
+    assert.equal(r.state, 'unknown');
+});
+
+test('defaultGhRunner propaga spawnFailed/error ENOENT cuando el binario no existe (#4732)', () => {
+    const prev = process.env.GH_PATH;
+    process.env.GH_PATH = path.join(os.tmpdir(), 'no-existe-gh-4732-xyz');
+    try {
+        const r = ppDeps._defaultGhRunner(['issue', 'view', '1']);
+        assert.equal(r.ok, false);
+        assert.equal(r.spawnFailed, true);
+        assert.ok(r.error && /ENOENT/.test(String(r.error.code || r.error.message || '')), 'error ENOENT propagado');
+    } finally {
+        if (prev === undefined) delete process.env.GH_PATH; else process.env.GH_PATH = prev;
+    }
 });
 
 test('fetchIssueInfo descarta auto-referencias (issue se referencia a sí mismo)', () => {
