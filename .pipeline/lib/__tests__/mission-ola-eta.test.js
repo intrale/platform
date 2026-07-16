@@ -97,7 +97,9 @@ test('modo fallback: avance % vivo desde totalPct aunque velocityETA sea null', 
     assert.equal(m.hasVelocity, false);
     assert.equal(m.velocityPctPerHour, null);      // "— %/h" en la vista
     assert.equal(m.etaFromVelocity, false);
-    assert.equal(m.etaRemainingMin, 90);           // cae a la mediana teórica p50
+    // #4734 — FÓRMULA ÚNICA: sin ritmo medible el ETA es null ("estimación
+    // insuficiente"); ya NO cae al piso teórico p50 (fórmula paralela eliminada).
+    assert.equal(m.etaRemainingMin, null);
 });
 
 test('velocity con velocityPctPerMin <= 0 no cuenta como ritmo medido', () => {
@@ -109,7 +111,7 @@ test('velocity con velocityPctPerMin <= 0 no cuenta como ritmo medido', () => {
     });
     assert.equal(m.hasVelocity, false);
     assert.equal(m.velocityPctPerHour, null);
-    assert.equal(m.etaRemainingMin, 200);          // fallback a p50, no remainingMs
+    assert.equal(m.etaRemainingMin, null);         // #4734 — sin ritmo → null, no p50
 });
 
 test('totalPct no finito (NaN/undefined) → avancePct null (no se muestra basura)', () => {
@@ -118,7 +120,7 @@ test('totalPct no finito (NaN/undefined) → avancePct null (no se muestra basur
     assert.equal(deriveMissionOlaEta({ etaSource: 'fallback', totalPct: '50' }).avancePct, null);
 });
 
-test('etaSource velocity pero sin remainingMs finito → ETA cae a p50', () => {
+test('etaSource velocity pero sin remainingMs finito → ETA null (sin ritmo proyectable)', () => {
     const m = deriveMissionOlaEta({
         etaSource: 'velocity',
         totalPct: 30,
@@ -128,39 +130,40 @@ test('etaSource velocity pero sin remainingMs finito → ETA cae a p50', () => {
     assert.equal(m.hasVelocity, true);
     assert.equal(m.velocityPctPerHour, 30);
     assert.equal(m.etaFromVelocity, false);
-    assert.equal(m.etaRemainingMin, 75);
+    assert.equal(m.etaRemainingMin, null);               // #4734 — sin remainingMs → null, no p50
 });
 
 // -----------------------------------------------------------------------------
-// #4449 — piso teórico: la velocidad optimista no puede pisar el presupuesto
-// teórico del trabajo RESTANTE (totalP50 ya excluye cerrados desde dashboard.js).
+// #4734 — FÓRMULA ÚNICA: `ETA = (100 − avance) / velocidad_efectiva` materializada
+// en `vel.remainingMs` (reloj de pared, reposo de proveedor incluido). Reemplaza el
+// piso teórico `max(velocidad, totalP50)` de #4449 — "nada de fórmulas paralelas".
 // -----------------------------------------------------------------------------
 
-test('#4449 CA-1/CA-2: ola con issues sin definir + velocidad reciente alta → ETA = piso teórico', () => {
-    // velocityETA proyecta ~4 min (remainingMs chico) pero totalP50 (restante) es
-    // grande porque quedan issues por definir con lifecycle completo. El piso gana.
+test('#4734: el ETA sale sólo de la velocidad, ya NO del piso teórico totalP50', () => {
+    // Antes (#4449) el totalP50 grande pisaba la velocidad; ahora el ETA es puro
+    // reloj de pared del módulo único (remainingMs ~4 min), sin segunda cuenta.
     const m = deriveMissionOlaEta({
         etaSource: 'velocity',
         totalPct: 30,
-        totalP50: 480,                                   // 8h de trabajo restante
+        totalP50: 480,                                   // ya no participa del ETA
         velocityETA: { source: 'velocity', velocityPctPerMin: 5, remainingMs: 240000 }, // ~4 min
     });
     assert.equal(m.hasVelocity, true);
     assert.equal(m.etaFromVelocity, true);
-    assert.equal(m.etaRemainingMin, 480);                // max(4, 480) = 480 (piso teórico)
+    assert.equal(m.etaRemainingMin, 4);                  // remainingMs (240000ms), sin piso
 });
 
-test('#4449 CA-2: velocidad realista mayor al piso → gana la velocidad', () => {
+test('#4734: velocidad con remainingMs → ETA = remainingMs (independiente de totalP50)', () => {
     const m = deriveMissionOlaEta({
         etaSource: 'velocity',
         totalPct: 80,
-        totalP50: 30,                                    // presupuesto restante chico
+        totalP50: 30,
         velocityETA: { source: 'velocity', velocityPctPerMin: 0.1, remainingMs: 6000000 }, // 100 min
     });
-    assert.equal(m.etaRemainingMin, 100);                // max(100, 30) = 100 (velocidad)
+    assert.equal(m.etaRemainingMin, 100);                // remainingMs / 60000
 });
 
-test('#4449 CA-2: hay velocidad pero falta totalP50 → ETA = velocidad (sin piso)', () => {
+test('#4734: hay velocidad y no hay totalP50 → ETA = velocidad', () => {
     const m = deriveMissionOlaEta({
         etaSource: 'velocity',
         totalPct: 50,
@@ -200,9 +203,11 @@ test('el emisor de script cliente reusa la función pura y es self-wiring/idempo
     // Guard de idempotencia + poll periódico.
     assert.ok(src.includes('__missionOlaEtaWired'));
     assert.ok(src.includes('setInterval'));
-    // #4532 — la celda de velocidad expresa el % de avance por issue por minuto
-    // (métrica canónica de la ola), reemplazando el throughput issues/día.
-    assert.ok(src.includes('%/issue·min'));
+    // #4734 — la celda de velocidad expresa el % de avance por HORA de reloj de
+    // pared (unidad canónica), reemplazando el %/issue·min de #4532.
+    assert.ok(src.includes("'%/h'"));
+    assert.ok(src.includes('velocityPctPerHour'));
+    assert.ok(!src.includes('%/issue·min'));
     assert.ok(!src.includes('issues/día'));
     assert.ok(!src.includes('iss/h'));
 });
@@ -282,10 +287,10 @@ test('deriveMissionOlaEta: throughput sin dato / no finito → insufficient (nun
     assert.equal(deriveMissionOlaEta({ throughputPerDay: '3' }).throughputPerDay, null);
 });
 
-test('el script cliente pinta %/issue·min (velocidad canónica #4532) y la leyenda "sin datos suficientes"', () => {
+test('el script cliente pinta %/h (velocidad canónica #4734) y la leyenda "sin datos suficientes"', () => {
     const src = missionOlaEtaClientScript();
-    assert.ok(src.includes("'%/issue·min'"));               // #4532 — unidad de velocidad
-    assert.ok(src.includes('velocityPctPerIssuePerMin'));   // #4532 — valor pintado
+    assert.ok(src.includes("'%/h'"));                       // #4734 — unidad de velocidad (%/hora)
+    assert.ok(src.includes('velocityPctPerHour'));          // #4734 — valor pintado
     assert.ok(src.includes('sin datos suficientes'));       // leyenda insufficient
 });
 
