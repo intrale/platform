@@ -1,0 +1,362 @@
+'use strict';
+
+// =============================================================================
+// project-descriptor.js — Loader + validador del descriptor de proyecto
+// (Ola Puente P2 · #4687)
+//
+// El descriptor es una SUPERFICIE DE CONFIANZA NUEVA: config no confiable que el
+// kernel lee, valida e interpreta para orquestar N productos (secretos, repos y
+// autoridad de firma distintos) en la misma máquina. Todo acá es fail-closed.
+//
+// Espeja el patrón de `dev-contract.js`: Ajv({allErrors:true}), compile(schema),
+// errores redactados, detección de prompt-injection sobre campos no confiables.
+//
+// Orden de validación fail-closed (CA-B3, abortando al PRIMER fallo):
+//   1. Compat de schemaVersion  → migración / rechazo (project-descriptor-migrations)
+//   2. Integridad / checksum     → sha256 del descriptor vs registrado (supply-chain)
+//   3. JSON Schema (Ajv)         → additionalProperties:false, requeridos, patrones
+//   4. Sanitización de paths     → anti path-traversal ANTES de usar como workspace
+//
+// Resolución `capability → skill` (CA-B1, CRÍTICO): SIEMPRE contra la allowlist
+// fija `KERNEL_SKILLS`. JAMÁS `require()`/import dinámico de un path del descriptor.
+// =============================================================================
+
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const Ajv = require('ajv');
+
+const { detectInjection } = require('./handoff');
+const migrations = require('./project-descriptor-migrations');
+
+const SCHEMA_PATH = path.resolve(__dirname, '..', 'contracts', 'project.schema.json');
+const schema = JSON.parse(fs.readFileSync(SCHEMA_PATH, 'utf8'));
+const ajv = new Ajv({ allErrors: true, verbose: false });
+const validateSchema = ajv.compile(schema);
+
+// -----------------------------------------------------------------------------
+// Allowlist fija de skills del kernel (CA-B1 · requisito de seguridad #1).
+// Sumar un skill acá = otorgarle confianza de ejecución. NUNCA se resuelve un
+// skill cargando código desde un path del descriptor.
+// -----------------------------------------------------------------------------
+const KERNEL_SKILLS = Object.freeze(new Set([
+  'backend-dev',
+  'android-dev',
+  'web-dev',
+  'pipeline-dev',
+  'dev',
+]));
+
+// Interfaces (capabilities) reconocidas por el kernel.
+const KERNEL_INTERFACES = Object.freeze(new Set(['backend', 'frontend', 'pipeline', 'generic']));
+
+// Gates que el kernel entiende. Valor efectivo se resuelve fail-closed (CA-D5).
+const GATE_NAMES = Object.freeze(['gate0', 'gate2', 'visual']);
+const KNOWN_GATE_MODES = Object.freeze(new Set(['enforce', 'dry-run']));
+
+// Campos de texto NO confiables sobre los que corre el detector de prompt-injection.
+function collectInjectionHits(descriptor) {
+  const identity = descriptor && descriptor.identity;
+  const candidates = [
+    ['identity.name', identity && identity.name],
+    ['identity.description', identity && identity.description],
+  ];
+  const board = descriptor && descriptor.board;
+  if (board && Array.isArray(board.admissionLabels)) {
+    board.admissionLabels.forEach((l, i) => candidates.push([`board.admissionLabels[${i}]`, l]));
+  }
+  const hits = [];
+  for (const [label, value] of candidates) {
+    if (typeof value !== 'string' || value === '') continue;
+    const res = detectInjection(value);
+    if (res.hits.length > 0) hits.push({ path: label, hits: res.hits });
+  }
+  return hits;
+}
+
+function redactAjvErrors(ajvErrors) {
+  if (!Array.isArray(ajvErrors)) return [];
+  return ajvErrors.map((error) => {
+    const pathLabel = error.instancePath || '(root)';
+    const params = error.params || {};
+    let detail = error.message || error.keyword;
+    if (error.keyword === 'required') detail = `falta clave requerida: ${params.missingProperty}`;
+    if (error.keyword === 'additionalProperties') detail = `campo no declarado en el esquema: ${params.additionalProperty}`;
+    if (error.keyword === 'enum') detail = 'valor fuera del enum permitido';
+    if (error.keyword === 'pattern') detail = 'valor fuera del patrón esperado (referencia/id inválido)';
+    if (error.keyword === 'minItems') detail = 'la lista no puede estar vacía';
+    return { path: pathLabel, keyword: error.keyword, detail };
+  });
+}
+
+// -----------------------------------------------------------------------------
+// Sanitización anti path-traversal (paso 4). El schema ya restringe projectId y
+// repositories[].id a `^[a-z0-9][a-z0-9-]{1,63}$`, pero re-verificamos como
+// defensa-en-profundidad ANTES de que cualquier caller use estos ids como base
+// de workspace/estado (requisito #2 · A01).
+// -----------------------------------------------------------------------------
+const SAFE_ID_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;
+
+function isSafeId(id) {
+  if (typeof id !== 'string') return false;
+  if (!SAFE_ID_RE.test(id)) return false;
+  if (id.includes('..') || id.includes('/') || id.includes('\\')) return false;
+  return true;
+}
+
+function collectPathTraversalHits(descriptor) {
+  const hits = [];
+  const pid = descriptor && descriptor.identity && descriptor.identity.projectId;
+  if (!isSafeId(pid)) hits.push({ path: 'identity.projectId', detail: 'projectId inseguro para namespacing de estado/worktrees' });
+  const repos = (descriptor && descriptor.repositories) || [];
+  if (Array.isArray(repos)) {
+    repos.forEach((r, i) => {
+      if (!isSafeId(r && r.id)) hits.push({ path: `repositories[${i}].id`, detail: 'repository id inseguro para namespacing' });
+    });
+  }
+  return hits;
+}
+
+// -----------------------------------------------------------------------------
+// Checksum de integridad (paso 2). Cálculo determinístico sobre el descriptor
+// SIN el bloque `integrity` (no se auto-incluye en su propio hash).
+// -----------------------------------------------------------------------------
+function computeChecksum(descriptor) {
+  const clone = { ...descriptor };
+  delete clone.integrity;
+  const canonical = canonicalize(clone);
+  return crypto.createHash('sha256').update(canonical).digest('hex');
+}
+
+// Serialización canónica estable (claves ordenadas) para un hash reproducible.
+function canonicalize(value) {
+  if (Array.isArray(value)) return '[' + value.map(canonicalize).join(',') + ']';
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value).sort();
+    return '{' + keys.map((k) => JSON.stringify(k) + ':' + canonicalize(value[k])).join(',') + '}';
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * Valida un descriptor en orden fail-closed estricto (CA-B3), abortando al
+ * primer fallo. Errores como DATO — nunca lanza.
+ *
+ * @param {object} obj  descriptor parseado.
+ * @param {object} [opts]
+ * @param {string} [opts.expectedChecksum]  si se provee, se exige integridad sha256.
+ * @returns {{ valid:boolean, stage:string|null, errors:Array, descriptor:object|null }}
+ */
+function validateDescriptor(obj, opts = {}) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, stage: 'parse', errors: [{ path: '(root)', detail: 'descriptor no es un objeto' }], descriptor: null };
+  }
+
+  // 1) Compat de schemaVersion (+ migración).
+  const mig = migrations.migrateDescriptor(obj);
+  if (!mig.ok) {
+    return { valid: false, stage: 'version', errors: [{ path: 'schemaVersion', keyword: mig.code, detail: mig.error }], descriptor: null };
+  }
+  const descriptor = mig.descriptor;
+
+  // 2) Integridad / checksum (supply-chain). Sólo si el caller exige un checksum.
+  if (opts.expectedChecksum) {
+    const actual = computeChecksum(descriptor);
+    if (actual !== String(opts.expectedChecksum).toLowerCase()) {
+      return {
+        valid: false,
+        stage: 'integrity',
+        errors: [{ path: 'integrity.checksum', keyword: 'checksum', detail: 'checksum del descriptor no coincide con el registrado' }],
+        descriptor: null,
+      };
+    }
+  }
+
+  // 3) JSON Schema (Ajv).
+  const schemaValid = validateSchema(descriptor);
+  if (!schemaValid) {
+    return { valid: false, stage: 'schema', errors: redactAjvErrors(validateSchema.errors), descriptor: null };
+  }
+
+  // 3b) Prompt-injection sobre campos no confiables (A03/A08).
+  const injectionHits = collectInjectionHits(descriptor);
+  if (injectionHits.length > 0) {
+    return {
+      valid: false,
+      stage: 'schema',
+      errors: injectionHits.map((h) => ({ path: h.path, keyword: 'promptInjection', detail: 'dato no confiable contiene patrón de prompt-injection' })),
+      descriptor: null,
+    };
+  }
+
+  // 4) Sanitización anti path-traversal ANTES de usar ids como base de workspace.
+  const pathHits = collectPathTraversalHits(descriptor);
+  if (pathHits.length > 0) {
+    return {
+      valid: false,
+      stage: 'path',
+      errors: pathHits.map((h) => ({ path: h.path, keyword: 'pathTraversal', detail: h.detail })),
+      descriptor: null,
+    };
+  }
+
+  return { valid: true, stage: null, errors: [], descriptor };
+}
+
+/**
+ * Carga un descriptor desde disco y lo valida (fail-closed). Sanitiza el path de
+ * entrada (no lo toma de datos en banda). Errores como dato.
+ *
+ * @param {string} descriptorPath
+ * @param {object} [opts] pasado a validateDescriptor.
+ * @returns {{ valid:boolean, stage:string|null, errors:Array, descriptor:object|null }}
+ */
+function loadDescriptor(descriptorPath, opts = {}) {
+  if (typeof descriptorPath !== 'string' || descriptorPath.trim() === '') {
+    return { valid: false, stage: 'load', errors: [{ path: '(path)', detail: 'path de descriptor inválido' }], descriptor: null };
+  }
+  let raw;
+  try {
+    raw = fs.readFileSync(descriptorPath, 'utf8');
+  } catch (e) {
+    return { valid: false, stage: 'load', errors: [{ path: '(path)', detail: `no se pudo leer el descriptor: ${e.code || e.message}` }], descriptor: null };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    return { valid: false, stage: 'parse', errors: [{ path: '(root)', detail: 'descriptor no es JSON válido' }], descriptor: null };
+  }
+  // Si el descriptor declara su propio integrity.checksum, exigirlo salvo override.
+  const effectiveOpts = { ...opts };
+  if (!effectiveOpts.expectedChecksum && parsed && parsed.integrity && parsed.integrity.checksum) {
+    effectiveOpts.expectedChecksum = parsed.integrity.checksum;
+  }
+  return validateDescriptor(parsed, effectiveOpts);
+}
+
+/**
+ * Resuelve un skill del descriptor contra la allowlist FIJA del kernel (CA-B1).
+ * Un skill fuera de la allowlist (ej. `"../../evil"`) se RECHAZA — jamás se
+ * carga código desde un path del descriptor.
+ *
+ * @param {string} skill
+ * @returns {string} el mismo skill si es válido.
+ * @throws {Error} si el skill no está en la allowlist.
+ */
+function resolveCapabilitySkill(skill) {
+  if (typeof skill !== 'string' || !KERNEL_SKILLS.has(skill)) {
+    throw new Error(`skill no reconocido en la allowlist del kernel: ${JSON.stringify(skill)}`);
+  }
+  return skill; // jamás cargar código desde un path del descriptor.
+}
+
+// Variante que no lanza (para verificación masiva de un descriptor).
+function assertCapabilitiesAllowlisted(descriptor) {
+  const caps = (descriptor && descriptor.capabilities) || [];
+  const rejected = [];
+  for (const cap of caps) {
+    if (!KERNEL_INTERFACES.has(cap && cap.interface)) rejected.push({ interface: cap && cap.interface, reason: 'interface desconocida' });
+    for (const skill of (cap && cap.skills) || []) {
+      if (!KERNEL_SKILLS.has(skill)) rejected.push({ interface: cap.interface, skill, reason: 'skill fuera de allowlist' });
+    }
+  }
+  return { ok: rejected.length === 0, rejected };
+}
+
+// -----------------------------------------------------------------------------
+// Derivadores para el round-trip Intrale (CA-E2) y consumo del kernel.
+// -----------------------------------------------------------------------------
+
+// label → capability (tabla de ruteo del board).
+function deriveRouting(descriptor) {
+  const map = new Map();
+  const routing = (descriptor && descriptor.board && descriptor.board.routing) || [];
+  for (const r of routing) {
+    if (r && typeof r.label === 'string' && typeof r.capability === 'string') map.set(r.label, r.capability);
+  }
+  return map;
+}
+
+// admission labels (labels que disparan la entrada del intake).
+function deriveAdmissionLabels(descriptor) {
+  const b = descriptor && descriptor.board;
+  return (b && Array.isArray(b.admissionLabels)) ? [...b.admissionLabels] : [];
+}
+
+// concurrencia declarada por skill (thresholds.concurrency).
+function deriveConcurrency(descriptor) {
+  const c = descriptor && descriptor.thresholds && descriptor.thresholds.concurrency;
+  return (c && typeof c === 'object') ? { ...c } : {};
+}
+
+function derivePriorityWindows(descriptor) {
+  const pw = descriptor && descriptor.thresholds && descriptor.thresholds.priorityWindows;
+  return (pw && typeof pw === 'object') ? { ...pw } : {};
+}
+
+// interface → skills (partición del puerto dev).
+function deriveCapabilityPartitions(descriptor) {
+  const out = {};
+  for (const cap of (descriptor && descriptor.capabilities) || []) {
+    if (cap && KERNEL_INTERFACES.has(cap.interface)) out[cap.interface] = [...(cap.skills || [])];
+  }
+  return out;
+}
+
+/**
+ * Resuelve el modo efectivo de un gate fail-closed (CA-D5 · requisito #6). Valor
+ * ausente o DESCONOCIDO ⇒ 'enforce', nunca 'off'. La política global del kernel
+ * puede poner PISO (kernelFloor='enforce' fuerza enforce aunque el producto relaje).
+ *
+ * @param {object} descriptor
+ * @param {string} gateName  gate0 | gate2 | visual
+ * @param {object} [opts]
+ * @param {string} [opts.kernelFloor]  si es 'enforce', el resultado nunca se relaja.
+ * @returns {string} 'enforce' | 'dry-run'
+ */
+function resolveGate(descriptor, gateName, opts = {}) {
+  const gates = descriptor && descriptor.authority && descriptor.authority.gates;
+  const raw = gates && typeof gates === 'object' ? gates[gateName] : undefined;
+  let mode = 'enforce';
+  if (typeof raw === 'string' && KNOWN_GATE_MODES.has(raw)) mode = raw;
+  // Piso del kernel: no se puede relajar por debajo del piso global.
+  if (opts.kernelFloor === 'enforce') mode = 'enforce';
+  return mode;
+}
+
+/**
+ * Evalúa el gate de autoridad de firma (CA-D4 · requisito #5 · GATE 2). `signers`
+ * vacío/ inválido ⇒ BLOQUEA (fail-closed), nunca auto-aprueba.
+ *
+ * @returns {{ blocked:boolean, reason:string, signers:string[] }}
+ */
+function evaluateSignatureGate(descriptor) {
+  const signers = descriptor && descriptor.authority && descriptor.authority.signers;
+  const valid = Array.isArray(signers) && signers.length > 0 && signers.every((s) => typeof s === 'string' && s.length > 0);
+  if (!valid) return { blocked: true, reason: 'authority.signers vacío o inválido — gate bloquea (fail-closed)', signers: [] };
+  return { blocked: false, reason: '', signers: [...signers] };
+}
+
+module.exports = {
+  SCHEMA_PATH,
+  schema,
+  KERNEL_SKILLS,
+  KERNEL_INTERFACES,
+  GATE_NAMES,
+  validateDescriptor,
+  loadDescriptor,
+  resolveCapabilitySkill,
+  assertCapabilitiesAllowlisted,
+  computeChecksum,
+  canonicalize,
+  isSafeId,
+  redactAjvErrors,
+  deriveRouting,
+  deriveAdmissionLabels,
+  deriveConcurrency,
+  derivePriorityWindows,
+  deriveCapabilityPartitions,
+  resolveGate,
+  evaluateSignatureGate,
+};
