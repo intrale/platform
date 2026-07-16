@@ -49,6 +49,15 @@ const velocityHistory = require('./wave-velocity-history');
 // #4588 — Métrica de espera de operador. Balde `waitOperatorMin` del lead time,
 // derivado de audit logs append-only (no gameable). Read-only, no rompe CA-14.
 const operatorWaitLib = require('./operator-wait');
+// #4734 — Ventanas de reposo de proveedores para el ETA por reloj de pared.
+// `providerSchedule.getProviderSchedule('anthropic')` da la ventana OFF; los
+// helpers puros de `rest-mode-window` calculan solapamiento OFF sin reparsear
+// horarios ni manejar timezone/DST a mano. Se cargan de forma perezosa/tolerante:
+// si el módulo no está disponible, el ETA degrada a reloj de pared sin descuento.
+let providerSchedule = null;
+let restModeWindow = null;
+try { providerSchedule = require('./provider-schedule'); } catch { providerSchedule = null; }
+try { restModeWindow = require('./rest-mode-window'); } catch { restModeWindow = null; }
 
 // ─── Constantes públicas ───────────────────────────────────────────────────
 
@@ -111,7 +120,27 @@ const WAVE_MIN_SNAPSHOTS = 2;
 const WAVE_MIN_DELTA_MS = 60 * 1000;
 // Ventana de suavizado (media móvil): se toman los últimos N snapshots de la
 // ola; si hay menos, se usan los que haya (≥ WAVE_MIN_SNAPSHOTS).
+// #4734 — LEGACY: la ventana pasó de contar snapshots a ser TEMPORAL (ver
+// WAVE_VELOCITY_WINDOW_MS). Se conserva la constante como piso mínimo de
+// muestras para el fallback y por compat de tests/exports existentes.
 const WAVE_VELOCITY_WINDOW = 5;
+
+// #4734 — Ventana TEMPORAL de reloj de pared para medir velocidad. En vez de
+// "últimos N snapshots" (que mide tiempo de cómputo del agente y salta si el
+// muestreo es irregular), se toman las muestras caídas dentro de las últimas
+// 2.5 h de reloj de pared. Esto hace la velocidad %/hora comparable entre olas
+// y estable frente a la densidad de muestreo.
+const WAVE_VELOCITY_WINDOW_MS = 2.5 * 3600000; // 2.5 h
+// Factor de suavizado del EWMA sobre los slopes por tramo de la ventana. α alto
+// pondera más el tramo reciente sin descartar el histórico de la ventana; evita
+// el salto de la pendiente punta-a-punta ante un único snapshot nuevo.
+const WAVE_VELOCITY_EWMA_ALPHA = 0.5;
+// Tope de iteraciones al re-expandir el horizonte por ventanas OFF encadenadas
+// (proyección hacia adelante). Corta y cae a fallback si no converge.
+const WAVE_REST_PROJECTION_MAX_ITERS = 8;
+// Máximo de segmentos que barre `_offOverlapMs` sobre un rango; backstop de
+// loop acotado (una ventana de días tiene pocas transiciones).
+const WAVE_OFF_SCAN_MAX_SEGMENTS = 500;
 
 // #4532 — Throttle de registro de muestras de velocidad en el histórico cross-ola.
 // La velocidad se mide en cada tick (~30s dashboard + /wave status). Sin throttle
@@ -733,7 +762,105 @@ function _streamWaveProgress(waveKey) {
     });
 }
 
-// ─── calculateWaveVelocityETA (#4039) ──────────────────────────────────────
+// ─── Ventanas de reposo de proveedor (#4734) ───────────────────────────────
+
+/**
+ * Resuelve la ventana OFF del proveedor cuyo reposo detiene el pipeline
+ * (default: `anthropic`). Devuelve un objeto `{active, schedule, timezone}` apto
+ * para `isWithinWindow`/`nextWindowTransition`, o `null` si no hay ventana
+ * activa / el módulo de schedule no está disponible.
+ *
+ * Inyectable en tests vía `opts.restWindow` (override directo) o
+ * `opts.scheduleEntry` (se pasa a `getProviderSchedule`). Sin override, lee la
+ * config real del pipeline (`.pipeline/provider-schedule.json`).
+ *
+ * @param {{restWindow?:object|null, provider?:string, scheduleEntry?:object}} [opts]
+ * @returns {{active:boolean, schedule:object, timezone:string}|null}
+ */
+function _restWindow(opts = {}) {
+    // Override explícito (tests deterministas). `null` desactiva el descuento.
+    if (Object.prototype.hasOwnProperty.call(opts, 'restWindow')) {
+        const w = opts.restWindow;
+        return (w && w.active) ? w : null;
+    }
+    if (!providerSchedule || typeof providerSchedule.getProviderSchedule !== 'function') return null;
+    const provider = opts.provider || 'anthropic';
+    let resolved;
+    try {
+        resolved = providerSchedule.getProviderSchedule(provider,
+            opts.scheduleEntry !== undefined ? { scheduleEntry: opts.scheduleEntry } : {});
+    } catch { return null; }
+    if (!resolved || !resolved.active) return null;
+    return { active: resolved.active, schedule: resolved.schedule, timezone: resolved.timezone };
+}
+
+/**
+ * Milisegundos de reposo OFF que solapan el rango `[t0, t1)`. Itera las
+ * transiciones de la ventana con `nextWindowTransition` y acumula los tramos en
+ * los que `isWithinWindow` es `true`. Loop acotado (WAVE_OFF_SCAN_MAX_SEGMENTS)
+ * y garantiza avance (paso ≥ 1 min) para no colgarse en un borde exacto.
+ *
+ * Delega 100% el manejo de horarios/timezone/DST en `rest-mode-window`.
+ * Devuelve 0 si la ventana es nula/inactiva, el rango es vacío, o el módulo no
+ * está disponible (degradación limpia: reloj de pared sin descuento).
+ *
+ * @param {object|null} window
+ * @param {number} t0
+ * @param {number} t1
+ * @returns {number} ms OFF dentro de [t0, t1)
+ */
+function _offOverlapMs(window, t0, t1) {
+    if (!window || !window.active) return 0;
+    if (!restModeWindow
+        || typeof restModeWindow.isWithinWindow !== 'function'
+        || typeof restModeWindow.nextWindowTransition !== 'function') return 0;
+    if (!Number.isFinite(t0) || !Number.isFinite(t1) || t1 <= t0) return 0;
+
+    let off = 0;
+    let cursor = t0;
+    let guard = 0;
+    while (cursor < t1 && guard < WAVE_OFF_SCAN_MAX_SEGMENTS) {
+        guard++;
+        let within = false;
+        try { within = restModeWindow.isWithinWindow(window, cursor); } catch { within = false; }
+
+        let stepMs;
+        let trans = null;
+        try { trans = restModeWindow.nextWindowTransition(window, cursor); } catch { trans = null; }
+        if (trans && Number.isFinite(trans.minutesFromNow)) {
+            // Al menos 1 min de avance para no quedar clavado en un borde exacto.
+            stepMs = Math.max(60000, trans.minutesFromNow * 60000);
+        } else {
+            // Sin más transiciones: el estado se mantiene hasta t1.
+            stepMs = t1 - cursor;
+        }
+
+        const segEnd = Math.min(cursor + stepMs, t1);
+        if (within) off += segEnd - cursor;
+        cursor = segEnd;
+    }
+    return off;
+}
+
+/**
+ * EWMA de una serie de slopes (%/ms) en orden cronológico. Pondera el tramo
+ * reciente sin descartar el resto de la ventana → suaviza el ruido de un único
+ * snapshot nuevo (a diferencia de la pendiente global punta-a-punta).
+ *
+ * @param {number[]} slopes — pendientes por tramo, cronológicas.
+ * @param {number} alpha — factor de suavizado (0..1).
+ * @returns {number} velocidad suavizada (%/ms); NaN si no hay slopes válidos.
+ */
+function _ewma(slopes, alpha) {
+    let acc = null;
+    for (const s of slopes) {
+        if (!Number.isFinite(s)) continue;
+        acc = (acc === null) ? s : (alpha * s + (1 - alpha) * acc);
+    }
+    return acc === null ? NaN : acc;
+}
+
+// ─── calculateWaveVelocityETA (#4039 · reloj de pared + reposo #4734) ────────
 
 /**
  * ETA de ola por VELOCIDAD MEDIA del conjunto (#4039).
@@ -776,8 +903,9 @@ function _streamWaveProgress(waveKey) {
  *   | {source:'fallback', reason:string}
  * >}
  */
-async function calculateWaveVelocityETA(waveKey, avancePctActual, now) {
+async function calculateWaveVelocityETA(waveKey, avancePctActual, now, opts = {}) {
     const ts = (typeof now === 'number' && Number.isFinite(now)) ? now : Date.now();
+    if (!opts || typeof opts !== 'object') opts = {};
 
     // Validación de inputs (CA-11/CA-14). Inputs rotos → fallback DURO (sin
     // histórico): no hay `avancePct` confiable para derivar un restante.
@@ -827,30 +955,61 @@ async function calculateWaveVelocityETA(waveKey, avancePctActual, now) {
         };
     };
 
-    let snapshots;
-    try { snapshots = await _streamWaveProgress(waveKey); }
+    let allSnapshots;
+    try { allSnapshots = await _streamWaveProgress(waveKey); }
     catch { return historicalFallback('read-error'); }
 
-    // Ventana de suavizado: últimos N snapshots de la ola (CA / media móvil).
-    if (snapshots.length > WAVE_VELOCITY_WINDOW) {
-        snapshots = snapshots.slice(snapshots.length - WAVE_VELOCITY_WINDOW);
-    }
+    // #4734 — Ventana TEMPORAL de reloj de pared: muestras dentro de las últimas
+    // WAVE_VELOCITY_WINDOW_MS (no "últimos N snapshots"). Ancladas al `ts` real.
+    const windowStart = ts - WAVE_VELOCITY_WINDOW_MS;
+    const snapshots = allSnapshots.filter((s) => s.ts >= windowStart && s.ts <= ts);
 
     if (snapshots.length < WAVE_MIN_SNAPSHOTS) {
-        return historicalFallback('insufficient-snapshots');  // CA-4 → histórico si hay
+        return historicalFallback('insufficient-snapshots');  // CA-4 / #4734 fallback
     }
 
     const first = snapshots[0];
     const last = snapshots[snapshots.length - 1];
-    const deltaMs = last.ts - first.ts;
-    if (!Number.isFinite(deltaMs) || deltaMs < WAVE_MIN_DELTA_MS) {
+    const spanMs = last.ts - first.ts;
+    if (!Number.isFinite(spanMs) || spanMs < WAVE_MIN_DELTA_MS) {
         return historicalFallback('delta-too-small');  // CA-4
     }
 
-    // Pendiente global sobre la ventana (%/ms). Media móvil por ventana. Esta es
-    // la VELOCIDAD "% de avance por issue por minuto" (avancePct ya normalizado
-    // por issue), la métrica canónica del issue #4532.
-    const velocity = (last.avancePct - first.avancePct) / deltaMs;
+    // #4734 — Seam de reposo. En producción delega en `rest-mode-window` sobre la
+    // ventana del proveedor; en tests se inyecta `opts.offOverlapFn` para
+    // determinismo (evita depender del reloj de pared/timezone reales).
+    const restWindow = _restWindow(opts);
+    const offFn = (typeof opts.offOverlapFn === 'function')
+        ? opts.offOverlapFn
+        : (a, b) => _offOverlapMs(restWindow, a, b);
+    const hasRest = (typeof opts.offOverlapFn === 'function') || !!restWindow;
+
+    // #4734 (a) — Descontar el reposo del proveedor DENTRO de la ventana medida:
+    // el pipeline estuvo parado, no lento. Medir sobre el tiempo EFECTIVO (reloj
+    // de pared menos OFF) evita subestimar la velocidad real.
+    const offPastMs = offFn(first.ts, last.ts);
+    const effectiveSpanMs = spanMs - offPastMs;
+    if (!Number.isFinite(effectiveSpanMs) || effectiveSpanMs < WAVE_MIN_DELTA_MS) {
+        return historicalFallback('effective-span-too-small');
+    }
+
+    // #4734 — Velocidad = EWMA de los slopes por tramo, en %/ms de reloj de pared
+    // EFECTIVO. Cada tramo descuenta su propio OFF para no diluir la pendiente;
+    // el EWMA suaviza el ruido de un único snapshot nuevo (vs pendiente global).
+    const slopes = [];
+    for (let i = 1; i < snapshots.length; i++) {
+        const a = snapshots[i - 1];
+        const b = snapshots[i];
+        const segEff = (b.ts - a.ts) - offFn(a.ts, b.ts);
+        if (segEff <= 0) continue;             // tramo íntegramente OFF → sin señal
+        slopes.push((b.avancePct - a.avancePct) / segEff);
+    }
+    let velocity = _ewma(slopes, WAVE_VELOCITY_EWMA_ALPHA);
+    // Robustez: si el EWMA no dejó señal (todos los tramos OFF o un único punto),
+    // cae a la pendiente global sobre el tiempo efectivo de la ventana.
+    if (!Number.isFinite(velocity)) {
+        velocity = (last.avancePct - first.avancePct) / effectiveSpanMs;
+    }
 
     // Clamp (CA-14): velocidad ≤ 0 / no finita (rebotes / `/wave add` que bajan
     // el avancePct) → NO se registra ni se propaga negativo; se cae a la
@@ -859,7 +1018,11 @@ async function calculateWaveVelocityETA(waveKey, avancePctActual, now) {
         return historicalFallback('non-positive-velocity');
     }
 
+    // Unidad canónica del #4734: %/hora de reloj de pared. Se conserva
+    // `velocityPctPerMin` en el retorno para compat de consumers (mission-ola-eta,
+    // dashboard-routes) y del histórico persistido `wave-velocity-history.jsonl`.
     const velocityPctPerMin = velocity * 60000;
+    const velocityPctPerHour = velocity * 3600000;
     // #4532 — Registrar la muestra medida en el histórico cross-ola (throttled).
     // Best-effort: nunca rompe el cálculo. Sólo muestras positivas (recordSample
     // ya descarta ≤ 0), y como mucho una cada VELOCITY_SAMPLE_MIN_INTERVAL_MS.
@@ -877,21 +1040,44 @@ async function calculateWaveVelocityETA(waveKey, avancePctActual, now) {
             remainingMs: 0,
             absoluteMs: ts,
             velocityPctPerMin,
+            velocityPctPerHour,
             snapshots: snapshots.length,
+            restOffFutureMs: 0,
         };
     }
 
-    const remainingMs = remainingPct / velocity;
-    if (!Number.isFinite(remainingMs) || remainingMs < 0) {
+    // Tiempo de cómputo puro (sin reposo): restante / velocidad efectiva.
+    const computeMs = remainingPct / velocity;
+    if (!Number.isFinite(computeMs) || computeMs < 0) {
+        return historicalFallback('degenerate-remaining');
+    }
+
+    // #4734 (b) — Proyección: sumar el reposo FUTURO que caiga dentro del
+    // horizonte de finalización, para no dar un ETA optimista que colapsa cuando
+    // entra un reposo. Iterativo porque `now + eta` puede caer en OTRA ventana
+    // OFF; converge (Δ < 1 min) o corta acotado (cota superior aceptada).
+    let etaMs = computeMs;
+    if (hasRest) {
+        for (let i = 0; i < WAVE_REST_PROJECTION_MAX_ITERS; i++) {
+            const next = computeMs + offFn(ts, ts + etaMs);
+            const done = Math.abs(next - etaMs) < 60000;
+            etaMs = next;
+            if (done) break;
+        }
+    }
+
+    if (!Number.isFinite(etaMs) || etaMs < 0) {
         return historicalFallback('degenerate-remaining');
     }
 
     return {
         source: 'velocity',
-        remainingMs,
-        absoluteMs: ts + remainingMs,
+        remainingMs: etaMs,
+        absoluteMs: ts + etaMs,
         velocityPctPerMin,
+        velocityPctPerHour,
         snapshots: snapshots.length,
+        restOffFutureMs: etaMs - computeMs,
     };
 }
 
@@ -960,6 +1146,9 @@ module.exports = {
         _collectMarkers,
         _streamMetricsHistory,
         _streamWaveProgress,
+        _offOverlapMs,       // #4734 — solapamiento OFF sobre un rango
+        _restWindow,         // #4734 — resolución de ventana de reposo
+        _ewma,               // #4734 — suavizado exponencial de slopes
         pipelineRoot,
         metricsHistoryPath,
         waveProgressPath,
@@ -967,5 +1156,8 @@ module.exports = {
         WAVE_MIN_SNAPSHOTS,
         WAVE_MIN_DELTA_MS,
         WAVE_VELOCITY_WINDOW,
+        WAVE_VELOCITY_WINDOW_MS,       // #4734 — ventana temporal
+        WAVE_VELOCITY_EWMA_ALPHA,      // #4734 — factor EWMA
+        WAVE_REST_PROJECTION_MAX_ITERS,
     },
 };
