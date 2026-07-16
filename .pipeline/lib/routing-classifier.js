@@ -33,6 +33,7 @@ const KNOWN_DEV_SKILLS = new Set([
   'android-dev',
   'web-dev',
   'pipeline-dev',
+  'dev',
   'ios-dev',
   'desktop-dev',
 ]);
