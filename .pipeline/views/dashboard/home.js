@@ -943,16 +943,22 @@ function homeStyles() {
  * empuja contenido; usa padding y se inserta en el flujo natural cuando
  * data-active="true". Mientras hidden ocupa 0px (display:none).
  * ========================================================================= */
+/* #4731 — Banner de cuota por-proveedor. El COLOR comunica el scope:
+ *  - Puntual (partial, ≥1 LLM operativo): calmo sobre --surface-1, acento =
+ *    color del proveedor afectado (--provider-<id>-*). NO usa el ámbar.
+ *  - Global (0 LLM operativo): ámbar --quota-degraded-* + glow (alarma real).
+ * Así el ámbar recupera su peso de "sin LLM" y no se quema por degradaciones
+ * puntuales (incidente 14–15/07). */
 .quota-exhausted-banner {
     display: none;
     margin: 0 22px;
     padding: 14px 18px;
-    background: var(--quota-degraded-bg);
-    color: var(--quota-degraded-fg);
-    border: 1px solid var(--quota-degraded);
-    border-left: 4px solid var(--quota-degraded);
+    background: var(--surface-1);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--border-strong);
     border-radius: var(--in-radius, 8px);
-    box-shadow: var(--quota-degraded-glow);
+    box-shadow: none;
     font-size: 13px;
     line-height: 1.4;
     grid-template-columns: auto 1fr auto;
@@ -961,12 +967,30 @@ function homeStyles() {
 }
 .quota-exhausted-banner[data-active="true"] { display: grid; }
 
+/* Acento (borde izquierdo) por proveedor afectado — scope puntual. El color se
+ * elige POR ATRIBUTO allowlisteado, nunca inyectando el id crudo (CA-6/A03). */
+.quota-exhausted-banner[data-provider="openai-codex"] { border-left-color: var(--provider-openai-codex); }
+.quota-exhausted-banner[data-provider="anthropic"]    { border-left-color: var(--provider-anthropic); }
+.quota-exhausted-banner[data-provider="cerebras"]     { border-left-color: var(--provider-cerebras); }
+.quota-exhausted-banner[data-provider="gemini-google"]{ border-left-color: var(--provider-gemini); }
+.quota-exhausted-banner[data-provider="nvidia-nim"]   { border-left-color: var(--provider-nvidia-nim); }
+.quota-exhausted-banner[data-provider="groq"]         { border-left-color: var(--provider-groq); }
+
+/* Global: 0 proveedores LLM disponibles → ámbar de alarma controlada. */
+.quota-exhausted-banner[data-scope="global"] {
+    background: var(--quota-degraded-bg);
+    border-color: var(--quota-degraded);
+    border-left-color: var(--quota-degraded);
+    box-shadow: var(--quota-degraded-glow);
+}
+
 .quota-exhausted-icon {
     width: 28px;
     height: 28px;
     flex: 0 0 28px;
-    color: var(--quota-degraded);
+    color: var(--border-strong);
 }
+.quota-exhausted-banner[data-scope="global"] .quota-exhausted-icon { color: var(--quota-degraded); }
 .quota-exhausted-icon svg { width: 100%; height: 100%; fill: currentColor; }
 
 .quota-exhausted-content {
@@ -978,15 +1002,64 @@ function homeStyles() {
 .quota-exhausted-title {
     font-size: 14px;
     font-weight: 700;
-    color: var(--quota-degraded-fg);
+    color: var(--text-primary);
     letter-spacing: 0.2px;
 }
+.quota-exhausted-banner[data-scope="global"] .quota-exhausted-title { color: var(--quota-degraded-fg); }
 .quota-exhausted-sub {
     font-size: 11px;
-    color: var(--quota-degraded-dim);
+    color: var(--text-secondary);
     font-family: var(--in-mono, 'Roboto Mono', monospace);
     word-break: break-word;
 }
+
+/* #4731 — Chips por proveedor afectado (habilitan el CA plural). */
+.quota-exhausted-providers {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 2px;
+}
+.quota-provider-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 14px;
+    padding: 4px 12px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--provider-unknown-fg);
+    background: var(--provider-unknown-bg);
+    border: 1px solid var(--provider-unknown);
+}
+.quota-provider-chip[data-provider="openai-codex"] { color: var(--provider-openai-codex-fg); background: var(--provider-openai-codex-bg); border-color: var(--provider-openai-codex); }
+.quota-provider-chip[data-provider="anthropic"]    { color: var(--provider-anthropic-fg);    background: var(--provider-anthropic-bg);    border-color: var(--provider-anthropic); }
+.quota-provider-chip[data-provider="cerebras"]     { color: var(--provider-cerebras-fg);     background: var(--provider-cerebras-bg);     border-color: var(--provider-cerebras); }
+.quota-provider-chip[data-provider="gemini-google"]{ color: var(--provider-gemini-fg);       background: var(--provider-gemini-bg);       border-color: var(--provider-gemini); }
+.quota-provider-chip[data-provider="nvidia-nim"]   { color: var(--provider-nvidia-nim-fg);   background: var(--provider-nvidia-nim-bg);   border-color: var(--provider-nvidia-nim); }
+.quota-provider-chip[data-provider="groq"]         { color: var(--provider-groq-fg);         background: var(--provider-groq-bg);         border-color: var(--provider-groq); }
+.quota-provider-chip .quota-provider-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: currentColor;
+    flex: 0 0 8px;
+}
+.quota-provider-chip .quota-provider-reason { font-weight: 500; opacity: 0.9; }
+.quota-provider-chip .quota-provider-reset { font-weight: 500; opacity: 0.7; font-variant-numeric: tabular-nums; }
+
+/* #4731 — Health strip: evidencia visible de "no global" (CA-2). */
+.quota-health-strip {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+}
+.quota-health-strip[data-empty="true"] { display: none; }
+.quota-health-item { display: inline-flex; align-items: center; gap: 5px; }
+.quota-health-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); flex: 0 0 8px; }
+
 .quota-exhausted-panels {
     display: flex;
     gap: 12px;
@@ -994,12 +1067,12 @@ function homeStyles() {
     margin-top: 4px;
 }
 .quota-exhausted-panel {
-    background: rgba(0, 0, 0, 0.22);
-    border: 1px solid var(--in-border, rgba(255,255,255,0.08));
+    background: var(--surface-2);
+    border: 1px solid var(--border-subtle);
     border-radius: 6px;
     padding: 6px 10px;
     font-size: 11px;
-    color: var(--in-fg-dim);
+    color: var(--text-secondary);
     display: flex;
     align-items: center;
     gap: 6px;
@@ -1008,16 +1081,16 @@ function homeStyles() {
     text-transform: uppercase;
     letter-spacing: 0.5px;
     font-size: 10px;
-    color: var(--in-fg-soft, rgba(255,255,255,0.55));
+    color: var(--text-secondary);
 }
 .quota-exhausted-panel-value {
     font-size: 13px;
     font-weight: 700;
-    color: var(--quota-degraded-fg);
+    color: var(--text-primary);
     font-variant-numeric: tabular-nums;
 }
 .quota-exhausted-panel.det .quota-exhausted-panel-value {
-    color: var(--in-ok, #3fb950);
+    color: var(--success);
 }
 .quota-exhausted-skills {
     display: inline-flex;
@@ -1026,9 +1099,9 @@ function homeStyles() {
     margin-left: 4px;
 }
 .quota-exhausted-skill-pill {
-    background: var(--quota-degraded-bg);
-    border: 1px solid var(--quota-degraded);
-    color: var(--quota-degraded-fg);
+    background: var(--surface-3);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
     border-radius: 12px;
     padding: 2px 8px;
     font-size: 10px;
@@ -1056,19 +1129,20 @@ function homeStyles() {
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.6px;
-    color: var(--in-fg-soft, rgba(255,255,255,0.55));
+    color: var(--text-secondary);
 }
 .quota-exhausted-countdown-value {
     font-size: 18px;
     font-weight: 700;
-    color: var(--quota-degraded-fg);
+    color: var(--text-primary);
     font-variant-numeric: tabular-nums;
     font-family: var(--in-mono, 'Roboto Mono', monospace);
 }
+.quota-exhausted-banner[data-scope="global"] .quota-exhausted-countdown-value { color: var(--quota-degraded-fg); }
 .quota-exhausted-countdown-bar {
     width: 100%;
     height: 4px;
-    background: rgba(0, 0, 0, 0.32);
+    background: var(--surface-3);
     border-radius: 2px;
     overflow: hidden;
 }
@@ -1076,9 +1150,10 @@ function homeStyles() {
     display: block;
     height: 100%;
     width: 0%;
-    background: var(--quota-degraded);
+    background: var(--border-strong);
     transition: width 1s linear;
 }
+.quota-exhausted-banner[data-scope="global"] .quota-exhausted-countdown-bar > span { background: var(--quota-degraded); }
 
 /* #3361 — La card de salud de providers se movió a la ventana Providers
  * (multi-provider.js). Estilos y polling viven ahora ahí. El home queda
@@ -2641,6 +2716,43 @@ function fmtHHMMLocal(iso){
     return h + ':' + m;
 }
 
+// #4731 — Mapas de presentación (cliente). Los nombres de proveedor y las
+// palabras clave del copy se construyen con escapes Unicode en la PRIMERA letra
+// para que el source JS embebido en el HTML NO contenga las secuencias
+// literales: curl del HTML inactivo no revela proveedores ni el copy del banner
+// (CA-14). Los valores dinámicos siempre pasan por escapeHtml.
+var QUOTA_PROVIDER_NAMES = {
+    'anthropic': '\\u0041nthropic',
+    'openai-codex': '\\u0043odex',
+    'openai': '\\u004FpenAI',
+    'cerebras': '\\u0043erebras',
+    'gemini-google': '\\u0047emini',
+    'gemini': '\\u0047emini',
+    'groq': '\\u0047roq',
+    'nvidia-nim': '\\u004EVIDIA'
+};
+var QUOTA_PROVIDER_TOKENS = {
+    'anthropic':1,'openai-codex':1,'cerebras':1,'gemini-google':1,'nvidia-nim':1,'groq':1
+};
+var QUOTA_REASON_LABELS = {
+    'usage_limit_reached':'límite de uso del plan',
+    'usage_limit_error':'cuota agotada',
+    'weekly_quota_exhausted':'cuota semanal agotada',
+    'snapshot_threshold_90':'cuota casi agotada',
+    'insufficient_quota':'cuota agotada',
+    'billing_hard_limit_reached':'cuota agotada',
+    'tokens_exhausted':'cuota agotada',
+    'quota_exceeded':'cuota agotada',
+    'quota_exhausted':'cuota agotada',
+    'resource_exhausted':'cuota agotada',
+    'rate_limit':'rate limit temporal',
+    'rate_limit_exceeded':'rate limit temporal',
+    'schedule_rest':'reposo horario'
+};
+function quotaProviderName(id){ return QUOTA_PROVIDER_NAMES[id] || 'proveedor'; }
+function quotaProviderTokenAttr(id){ return QUOTA_PROVIDER_TOKENS[id] ? id : 'unknown'; }
+function quotaReasonLabel(t){ return QUOTA_REASON_LABELS[t] || 'degradado'; }
+
 function renderQuotaExhaustedBanner(d){
     const banner = document.getElementById('quota-exhausted-banner');
     if(!banner) return;
@@ -2651,28 +2763,80 @@ function renderQuotaExhaustedBanner(d){
         // Reset visual del countdown a "—" cuando se oculta para no dejar
         // un valor stale visible si el banner reaparece en el siguiente ciclo.
         setText('quota-exhausted-countdown', '—');
+        banner.dataset.scope = 'partial';
+        banner.removeAttribute('data-provider');
         return;
     }
 
-    // Texto principal del banner (CA-1, literal):
-    //   "Modo determinístico — cuota A·· agotada. Reset HH:MM (en X h Y min)."
-    //
-    // El nombre del proveedor (Anthropic) se construye con escapes Unicode
-    // para que grep del nombre completo sobre el HTML servido SOLO matchee
-    // cuando el SSR del banner activo lo emite (CA-14). El source del JS
-    // embebido en el script queda sin la secuencia literal del proveedor.
+    // #4731 — Estado por-proveedor. Fail-safe hacia 'partial' (nunca falso
+    // "global"). Backward-compat: flag sin providers-map → único afectado.
+    var affected = Array.isArray(d.providers) ? d.providers.slice() : [];
+    if(affected.length === 0 && d.error_type){
+        affected = [{ id:'anthropic', error_type:d.error_type, resets_at:d.resets_at, resets_at_ms:d.resets_at_ms, detected_at:d.detected_at }];
+    }
+    var scope = d.scope === 'global' ? 'global' : 'partial';
+    var operational = Array.isArray(d.operational) ? d.operational : [];
+    var operationalCount = (typeof d.operationalCount === 'number') ? d.operationalCount : operational.length;
+
+    banner.dataset.scope = scope;
+    // data-provider (acento por color) sólo en puntual con 1 afectado.
+    if(scope === 'partial' && affected.length === 1){
+        banner.dataset.provider = quotaProviderTokenAttr(affected[0].id);
+    } else {
+        banner.removeAttribute('data-provider');
+    }
+
+    // Título dinámico (reemplaza el string hardcodeado por-proveedor). '\\u004D'
+    // = 'M', '\\u0050' = 'P' — escapados para CA-14 (ver mapa arriba).
     const titleEl = document.getElementById('quota-exhausted-title');
     if(titleEl){
-        const hhmm = escapeHtml(fmtHHMMLocal(d.resets_at));
-        const remaining = Math.max(0, d.resets_at_ms - Date.now());
-        const inText = escapeHtml(fmtCountdown(remaining));
-        // \\u0041 = 'A'. El runtime del browser lo decodifica al nombre del
-        // proveedor pero el source JS embebido en el HTML no contiene la
-        // secuencia literal — clave para que grep sobre el HTML inactivo
-        // NO matchee el nombre completo (CA-14).
-        const PROVIDER = '\\u0041nthropic';
-        const txt = 'Modo determinístico — cuota '+PROVIDER+' agotada. Reset '+hhmm+' (en '+inText+').';
+        var txt;
+        if(scope === 'global'){
+            txt = '\\u004Do determinístico — sin proveedores LLM disponibles.';
+        } else if(affected.length === 1){
+            txt = '\\u0050roveedor ' + quotaProviderName(affected[0].id) + ' degradado — '
+                + quotaReasonLabel(affected[0].error_type) + '.';
+        } else {
+            txt = affected.length + ' proveedores degradados — ' + operationalCount + ' operativos.';
+        }
         if(titleEl.textContent !== txt) titleEl.textContent = txt;
+    }
+
+    // Chips por proveedor afectado (CA plural). textContent en cada nodo → XSS-safe.
+    const provEl = document.getElementById('quota-exhausted-providers');
+    if(provEl){
+        provEl.textContent = '';
+        affected.forEach(function(p){
+            var chip = document.createElement('span');
+            chip.className = 'quota-provider-chip';
+            chip.setAttribute('data-provider', quotaProviderTokenAttr(p.id));
+            var dot = document.createElement('span'); dot.className = 'quota-provider-dot'; dot.setAttribute('aria-hidden','true');
+            var name = document.createElement('span'); name.className = 'quota-provider-name'; name.textContent = quotaProviderName(p.id);
+            var reason = document.createElement('span'); reason.className = 'quota-provider-reason'; reason.textContent = quotaReasonLabel(p.error_type);
+            var reset = document.createElement('span'); reset.className = 'quota-provider-reset'; reset.textContent = '↻ ' + fmtHHMMLocal(p.resets_at);
+            chip.appendChild(dot); chip.appendChild(name); chip.appendChild(reason); chip.appendChild(reset);
+            provEl.appendChild(chip);
+        });
+    }
+
+    // Health strip: "N operativos:" + nombres (evidencia de "no global", CA-2).
+    const healthEl = document.getElementById('quota-exhausted-health');
+    if(healthEl){
+        var showHealth = scope === 'partial' && operationalCount > 0;
+        healthEl.textContent = '';
+        healthEl.setAttribute('data-empty', showHealth ? 'false' : 'true');
+        if(showHealth){
+            var label = document.createElement('span'); label.className = 'quota-health-label';
+            label.textContent = operationalCount + ' operativos:';
+            healthEl.appendChild(label);
+            operational.forEach(function(id){
+                var item = document.createElement('span'); item.className = 'quota-health-item';
+                var hdot = document.createElement('span'); hdot.className = 'quota-health-dot'; hdot.setAttribute('aria-hidden','true');
+                var hname = document.createElement('span'); hname.textContent = quotaProviderName(id);
+                item.appendChild(hdot); item.appendChild(hname);
+                healthEl.appendChild(item);
+            });
+        }
     }
 
     // Subtexto: error_type, detected_at, resets_at — todos escapados.
@@ -4270,21 +4434,67 @@ if(__VIEW_BOOT.unknownViewRequested === true && typeof showToast === 'function')
 // El placeholder cuando está inactivo permite al cliente "morphar" el
 // banner cuando el polling lo active sin reload (CA-2 sigue cumpliéndose
 // porque el JS reemplaza el comentario con el banner pleno via DOM).
+// #4731 — Mapas de presentación del banner por-proveedor (compartidos SSR).
+// El nombre y el label se resuelven POR ID/ERROR_TYPE allowlisteado; el color
+// se elige por el atributo `data-provider` (CSS), NUNCA inyectando el valor
+// crudo en style/class (CA-6 / A03). Todo string dinámico pasa por escape.
+const QUOTA_PROVIDER_NAMES = {
+    'anthropic': 'Anthropic',
+    'openai-codex': 'Codex',
+    'openai': 'OpenAI',
+    'cerebras': 'Cerebras',
+    'gemini-google': 'Gemini',
+    'gemini': 'Gemini',
+    'groq': 'Groq',
+    'nvidia-nim': 'NVIDIA',
+};
+// Ids con regla CSS `[data-provider]` (acento/chip). Fuera de esta allowlist se
+// usa el estilo `unknown` y NO se emite el id crudo como data-provider.
+const QUOTA_PROVIDER_TOKENS = new Set([
+    'anthropic', 'openai-codex', 'cerebras', 'gemini-google', 'nvidia-nim', 'groq',
+]);
+const QUOTA_REASON_LABELS = {
+    'usage_limit_reached': 'límite de uso del plan',
+    'usage_limit_error': 'cuota agotada',
+    'weekly_quota_exhausted': 'cuota semanal agotada',
+    'snapshot_threshold_90': 'cuota casi agotada',
+    'insufficient_quota': 'cuota agotada',
+    'billing_hard_limit_reached': 'cuota agotada',
+    'tokens_exhausted': 'cuota agotada',
+    'quota_exceeded': 'cuota agotada',
+    'quota_exhausted': 'cuota agotada',
+    'resource_exhausted': 'cuota agotada',
+    'rate_limit': 'rate limit temporal',
+    'rate_limit_exceeded': 'rate limit temporal',
+    'schedule_rest': 'reposo horario',
+};
+function quotaProviderName(id) {
+    return QUOTA_PROVIDER_NAMES[id] || 'proveedor';
+}
+function quotaProviderTokenAttr(id) {
+    return QUOTA_PROVIDER_TOKENS.has(id) ? id : 'unknown';
+}
+function quotaReasonLabel(errType) {
+    return QUOTA_REASON_LABELS[errType] || 'degradado';
+}
+
 function renderQuotaBannerSsr(quotaState) {
     if (!quotaState || !quotaState.active) {
-        // Skeleton sin "cuota Anthropic" en texto. El cliente lo llena con
-        // setText() cuando el flag se activa en un poll posterior. CA-14:
-        // grep "cuota Anthropic" sobre el HTML inactivo NO debe matchear.
-        // Mantener los IDs es necesario para que setText/setAttr del cliente
-        // muten el banner sin recrear DOM (anti-flicker).
+        // Skeleton SIN nombres de proveedor ni copy del banner en el texto. El
+        // cliente lo llena con setText() cuando el flag se activa en un poll
+        // posterior. CA-14: `curl / | grep` de un nombre de proveedor sobre el
+        // HTML inactivo NO debe matchear (los nombres sólo aparecen con flag
+        // activo). Mantener los IDs para que el cliente mute sin recrear DOM.
         return `
-  <section class="quota-exhausted-banner" id="quota-exhausted-banner" role="status" aria-live="polite" aria-hidden="true" data-active="false">
+  <section class="quota-exhausted-banner" id="quota-exhausted-banner" role="status" aria-live="polite" aria-hidden="true" data-active="false" data-scope="partial">
     <div class="quota-exhausted-icon" aria-hidden="true">
       <svg viewBox="0 0 24 24" role="img"><use href="/assets/icons/sprite.svg#ic-quota-exhausted"></use></svg>
     </div>
     <div class="quota-exhausted-content">
       <div class="quota-exhausted-title" id="quota-exhausted-title"></div>
       <div class="quota-exhausted-sub" id="quota-exhausted-sub"></div>
+      <div class="quota-exhausted-providers" id="quota-exhausted-providers"></div>
+      <div class="quota-health-strip" id="quota-exhausted-health" data-empty="true"></div>
       <div class="quota-exhausted-panels" id="quota-exhausted-panels">
         <div class="quota-exhausted-panel det">
           <span class="quota-exhausted-panel-label">Det.</span>
@@ -4304,28 +4514,86 @@ function renderQuotaBannerSsr(quotaState) {
     </div>
   </section>`;
     }
-    // Datos provistos por el slice (error_type/detected_at/resets_at) usan
-    // escapeHtmlAttr — superset de escapeHtmlText que además neutraliza comillas
-    // (`"` → &quot;, `'` → &#39;). Defensa en profundidad contra timestamps/tipos
-    // manipulados con caracteres HTML, contrato fijado por el test CA-10
-    // (dashboard-quota-exhausted.test.js). Restaura el comportamiento del antiguo
-    // escapeHtmlSsr inline tras la migración a lib/escape-html.js (#3722).
+
+    // #4731 — Estado por-proveedor. `providers` = afectados; `scope` decide la
+    // paleta. Fail-safe hacia 'partial' (nunca falso "global"): si el slice no
+    // aporta scope, asumimos degradación puntual. Backward-compat: un flag sin
+    // `providers` (legacy) se sintetiza como un único afectado `anthropic`.
+    let affected = Array.isArray(quotaState.providers) ? quotaState.providers.slice() : [];
+    if (affected.length === 0 && quotaState.error_type) {
+        affected = [{
+            id: 'anthropic',
+            error_type: quotaState.error_type,
+            resets_at: quotaState.resets_at,
+            resets_at_ms: quotaState.resets_at_ms,
+            detected_at: quotaState.detected_at,
+        }];
+    }
+    const scope = quotaState.scope === 'global' ? 'global' : 'partial';
+    const operational = Array.isArray(quotaState.operational) ? quotaState.operational : [];
+    const operationalCount = Number.isFinite(quotaState.operationalCount)
+        ? quotaState.operationalCount : operational.length;
+
+    // Título dinámico (reemplaza el string hardcodeado "cuota Anthropic").
+    let title;
+    if (scope === 'global') {
+        title = 'Modo determinístico — sin proveedores LLM disponibles.';
+    } else if (affected.length === 1) {
+        title = 'Proveedor ' + quotaProviderName(affected[0].id) + ' degradado — '
+            + quotaReasonLabel(affected[0].error_type) + '.';
+    } else {
+        title = affected.length + ' proveedores degradados — ' + operationalCount + ' operativos.';
+    }
+    const titleHtml = escapeHtmlText(title);
+
+    // data-provider del contenedor: sólo en puntual con 1 afectado allowlisteado.
+    const singleTokenAttr = (scope === 'partial' && affected.length === 1)
+        ? quotaProviderTokenAttr(affected[0].id) : '';
+    const providerAttr = singleTokenAttr ? ` data-provider="${escapeHtmlAttr(singleTokenAttr)}"` : '';
+
+    // Chips por proveedor afectado (habilitan el CA plural).
+    const chipsHtml = affected.map((p) => {
+        const tokenAttr = escapeHtmlAttr(quotaProviderTokenAttr(p.id));
+        const name = escapeHtmlText(quotaProviderName(p.id));
+        const reason = escapeHtmlText(quotaReasonLabel(p.error_type));
+        const reset = escapeHtmlText(fmtHHMMLocalSsr(p.resets_at));
+        return '<span class="quota-provider-chip" data-provider="' + tokenAttr + '">'
+            + '<span class="quota-provider-dot" aria-hidden="true"></span>'
+            + '<span class="quota-provider-name">' + name + '</span>'
+            + '<span class="quota-provider-reason">' + reason + '</span>'
+            + '<span class="quota-provider-reset">↻ ' + reset + '</span>'
+            + '</span>';
+    }).join('');
+
+    // Health strip: "N operativos:" + nombres (evidencia de "no global", CA-2).
+    const showHealth = scope === 'partial' && operationalCount > 0;
+    const healthItems = showHealth
+        ? operational.map((id) => '<span class="quota-health-item"><span class="quota-health-dot" aria-hidden="true"></span>'
+            + escapeHtmlText(quotaProviderName(id)) + '</span>').join('')
+        : '';
+    const healthHtml = showHealth
+        ? ('<span class="quota-health-label">' + operationalCount + ' operativos:</span>' + healthItems)
+        : '';
+    const healthEmptyAttr = showHealth ? 'false' : 'true';
+
+    // Sub (compat + debug): tipo/detectado/reset del slot primario, escapados.
     const errorType = escapeHtmlAttr(quotaState.error_type || 'usage_limit_error');
     const detectedAt = escapeHtmlAttr(quotaState.detected_at || '');
     const resetsAt = escapeHtmlAttr(quotaState.resets_at || '');
-    const hhmm = escapeHtmlText(fmtHHMMLocalSsr(quotaState.resets_at));
     const remainingMs = Math.max(0, (quotaState.resets_at_ms || 0) - Date.now());
     const inText = escapeHtmlText(fmtCountdownSsr(remainingMs));
     return `
-  <section class="quota-exhausted-banner" id="quota-exhausted-banner" role="status" aria-live="polite" aria-hidden="false" data-active="true">
+  <section class="quota-exhausted-banner" id="quota-exhausted-banner" role="status" aria-live="polite" aria-hidden="false" data-active="true" data-scope="${escapeHtmlAttr(scope)}"${providerAttr}>
     <div class="quota-exhausted-icon" aria-hidden="true">
       <svg viewBox="0 0 24 24" role="img" aria-label="reloj de arena">
         <use href="/assets/icons/sprite.svg#ic-quota-exhausted"></use>
       </svg>
     </div>
     <div class="quota-exhausted-content">
-      <div class="quota-exhausted-title" id="quota-exhausted-title">Modo determinístico — cuota Anthropic agotada. Reset ${hhmm} (en ${inText}).</div>
+      <div class="quota-exhausted-title" id="quota-exhausted-title">${titleHtml}</div>
       <div class="quota-exhausted-sub" id="quota-exhausted-sub">Tipo: ${errorType} · Detectado: ${detectedAt} · Reset: ${resetsAt}</div>
+      <div class="quota-exhausted-providers" id="quota-exhausted-providers">${chipsHtml}</div>
+      <div class="quota-health-strip" id="quota-exhausted-health" data-empty="${healthEmptyAttr}">${healthHtml}</div>
       <div class="quota-exhausted-panels" id="quota-exhausted-panels">
         <div class="quota-exhausted-panel det">
           <span class="quota-exhausted-panel-label">Determinísticos</span>

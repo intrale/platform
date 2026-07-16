@@ -538,6 +538,21 @@ quota_detector:
   # Anthropic. OpenAI suele usar cuotas mensuales (31 días) — declarado en
   # agent-models.json:providers.openai-codex.resets_at_cap_max_days.
   resets_at_cap_max_days: 7
+  # #4731 — TTL (cap de `resets_at`) CONFIGURABLE POR PROVEEDOR, en días. Evita
+  # el flag huérfano de larga vida del incidente 14–15/07 (Codex disparó y el
+  # fallback semanal lo dejaba prendido ~30hs). Cada valor se clampa en código a
+  # [MIN_TTL_DAYS=1h, MAX_TTL_DAYS=31d] (security A05): un valor inválido o fuera
+  # de rango cae al default conservador (`resets_at_cap_max_days`) y se acota —
+  # nunca deja flags eternos ni expira sin evidencia. Un proveedor ausente acá
+  # usa `resets_at_cap_max_days`. El cap real por evento sigue acotado por
+  # `capResetsAt`; para Codex `usage_limit_reached` (cap rolling) manda la
+  # ventana corta de 1h de `CODEX_USAGE_LIMIT_RESET_MS` cuando no hay `resets_at`.
+  ttl_by_provider:
+    anthropic: 7          # ciclo semanal Plan Max
+    openai-codex: 1       # cap rolling del plan (usage_limit_reached ~horas); techo 1d
+    cerebras: 1           # free tier — recuperación rápida
+    gemini-google: 1      # free tier — recuperación rápida
+    nvidia-nim: 1         # free tier — recuperación rápida
   # Si `false`, el detector funciona pero no escribe `.pipeline/logs/quota-detector-*.log`.
   # Útil para apagar audit en caso de problema de espacio en disco — no debería
   # ser necesario nunca con la rotación normal.

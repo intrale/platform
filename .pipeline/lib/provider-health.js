@@ -445,11 +445,24 @@ async function getProviderHealth(opts = {}) {
     const cache = readCache(opts);
 
     // Lectura del flag de cuota (single read, compartido entre providers).
+    // #4731 — estado por-proveedor: `flag.providers` lista TODOS los slots
+    // activos. Construimos un lookup por id para marcar `gated` a cada proveedor
+    // agotado (no sólo al primario). Backward-compat: si `providers` no viene,
+    // caemos al slot único (`flag.provider`).
     let activeFlag = null;
+    const exhaustedByProvider = Object.create(null);
     if (quotaModule && typeof quotaModule.readDefensive === 'function') {
         try {
             const flag = quotaModule.readDefensive({ auditLogEnabled: false, now });
-            if (flag && flag.exhausted === true) activeFlag = flag;
+            if (flag && flag.exhausted === true) {
+                activeFlag = flag;
+                const slots = Array.isArray(flag.providers) && flag.providers.length
+                    ? flag.providers
+                    : [flag];
+                for (const s of slots) {
+                    if (s && s.provider) exhaustedByProvider[s.provider] = s;
+                }
+            }
         } catch { /* best-effort */ }
     }
 
@@ -507,11 +520,12 @@ async function getProviderHealth(opts = {}) {
             continue;
         }
 
-        if (activeFlag && activeFlag.provider === provider) {
+        const slot = exhaustedByProvider[provider];
+        if (slot) {
             status = 'gated';
-            reason = activeFlag.pattern_matched || 'quota_exhausted';
-            lastQuotaFlagTs = activeFlag.detected_at || null;
-            resetsAt = activeFlag.resets_at || null;
+            reason = slot.pattern_matched || 'quota_exhausted';
+            lastQuotaFlagTs = slot.detected_at || null;
+            resetsAt = slot.resets_at || null;
         } else if (cacheFresh && cached.status) {
             // Honrar el cache hit aún si el flag no es nuestro.
             status = cached.status;
