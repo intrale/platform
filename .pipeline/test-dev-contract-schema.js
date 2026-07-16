@@ -78,8 +78,13 @@ test('CA-1: falta de handoff es rechazada', () => {
 });
 
 test('CA-5: secretRefs acepta referencias scoped y rechaza valores de secreto', () => {
+  // Fixture: valor tipo "secreto crudo" que NO cumple el patrón `ref: fuente#scope`.
+  // Se ensambla en runtime a propósito para no dejar un literal `sk-...` en el
+  // fuente que dispare el linter de secretos (secret:openai-key). No es una key
+  // real: sólo prueba que el schema rechaza cualquier valor que parezca secreto.
+  const rawSecretLike = 'sk-' + 'abcdef0123456789'.repeat(3);
   const result = validateDevPortPayload(validPayload({
-    input: { secretRefs: ['sk-1234567890abcdef1234567890abcdef1234567890'] },
+    input: { secretRefs: [rawSecretLike] },
   }));
   assert.equal(result.valid, false);
   assert.ok(result.errors.some(e => e.path.includes('/input/secretRefs/0')));
