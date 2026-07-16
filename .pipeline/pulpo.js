@@ -15297,6 +15297,47 @@ function findLastRejection(pipelineName, issueNum, config) {
     return best;
 }
 
+// #4687 (Ola Puente P2) — Descubrimiento side-effect-free del tablero (dry-run).
+//
+// Paso 4 del bootstrap de un producto nuevo (project-bootstrap.js): confirmar el
+// cableado LISTANDO el trabajo que el intake consideraría, SIN ejecutar nada.
+// Requisito de seguridad #10: verdaderamente side-effect-free — NO encola, NO
+// spawnea agentes, NO muta estado ni cuota, NO crea worktrees. Sólo lee (gh issue
+// list, read-only). NUNCA se invoca desde el loop vivo del Pulpo: es una
+// superficie de descubrimiento on-demand.
+//
+// Reusa la fuente-de-verdad única del repo destino (repo-target, #4693) y su
+// allowlist fail-closed. El exec de `gh` es inyectable para tests (sin red).
+function discoverWorkDryRun(config, opts = {}) {
+  const execFn = typeof opts.exec === 'function'
+    ? opts.exec
+    : (cmd) => _ghExecSyncGuarded(cmd, { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true });
+  const reposFn = typeof opts.getIntakeRepos === 'function' ? opts.getIntakeRepos : () => repoTarget.getIntakeRepos();
+  const isAllowed = typeof opts.isRepoAllowed === 'function' ? opts.isRepoAllowed : (r) => repoTarget.isRepoAllowed(r);
+  const intakeConfig = (config && config.intake) || {};
+  const discovered = [];
+  const skippedRepos = [];
+  for (const [pipelineName, pipeIntake] of Object.entries(intakeConfig)) {
+    const label = pipeIntake && pipeIntake.label;
+    if (!label) continue;
+    for (const repo of reposFn()) {
+      // Fail-closed: repo no allowlisted / malformado ⇒ skip (cero consultas).
+      if (!isAllowed(repo)) { skippedRepos.push(repo); continue; }
+      let issues = [];
+      try {
+        const out = execFn(`"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title --limit 50 --search "-label:needs-human"`);
+        issues = JSON.parse(out || '[]');
+      } catch (e) {
+        issues = [];
+      }
+      for (const it of issues) {
+        discovered.push({ pipeline: pipelineName, label, repo, number: it.number, title: it.title });
+      }
+    }
+  }
+  return { sideEffects: false, discovered, skippedRepos };
+}
+
 function brazoIntake(config) {
   const intakeInterval = (config.timeouts?.intake_interval_seconds || 300) * 1000;
   if (Date.now() - lastIntakeTime < intakeInterval) return;
@@ -17870,6 +17911,8 @@ process.on('SIGTERM', () => {
 // Útil para tests unitarios y scripts de evidencia del gate predictivo.
 if (process.env.PULPO_NO_AUTOSTART === '1') {
   module.exports = {
+    // #4687 (Ola Puente P2) — descubrimiento side-effect-free del tablero (dry-run).
+    discoverWorkDryRun,
     // #4136 — brazo de archivado (frontera activo/histórico).
     brazoArchivado,
     makeIsClosedFromTitleCache,
