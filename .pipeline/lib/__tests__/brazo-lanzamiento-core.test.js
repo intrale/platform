@@ -21,7 +21,9 @@ const {
   rankLaunchCandidates,
   isPhaseBlockedByWindow,
   compareCandidates,
+  resolveWindowPendingSignals,
 } = require('../brazo-lanzamiento-core');
+const dispatchCause = require('../dispatch-cause');
 
 // -----------------------------------------------------------------------------
 // isPhaseBlockedByWindow — ventanas autoexcluyentes
@@ -105,6 +107,96 @@ test('rankLaunchCandidates NO muta el array de entrada', () => {
 test('rankLaunchCandidates es defensivo ante input no-array', () => {
   assert.deepEqual(rankLaunchCandidates({ candidates: null }), []);
   assert.deepEqual(rankLaunchCandidates({}), []);
+});
+
+// -----------------------------------------------------------------------------
+// resolveWindowPendingSignals — señales de dispatch-cause por ventana (#4709)
+// Cierra el gap CA-1/CA-2 del rebote: cola 100% en fases window-blocked debe
+// reportar hayPendientes=true + marcar VENTANA_HORARIA (no quedar "ocioso sin
+// explicación").
+// -----------------------------------------------------------------------------
+test('sin pendientes en ninguna fase → hayPendientes=false, sin ventana', () => {
+  const r = resolveWindowPendingSignals(
+    [{ fase: 'dev', pendingCount: 0 }, { fase: 'build', pendingCount: 0 }],
+    { buildPriority: true },
+  );
+  assert.equal(r.hayPendientes, false);
+  assert.equal(r.windowBlockedHasPending, false);
+  assert.deepEqual(r.blockedPhases, []);
+  assert.equal(r.launchablePending, 0);
+});
+
+test('cola 100% en fases window-blocked → hayPendientes=true + VENTANA marcable', () => {
+  // Ventana Build-priority activa bloquea dev+validacion. Todos los pendientes
+  // viven ahí; nada en fases no bloqueadas → candidates.length sería 0.
+  const r = resolveWindowPendingSignals(
+    [
+      { fase: 'dev', pendingCount: 3 },
+      { fase: 'validacion', pendingCount: 1 },
+      { fase: 'build', pendingCount: 0 },
+      { fase: 'verificacion', pendingCount: 0 },
+    ],
+    { buildPriority: true },
+  );
+  assert.equal(r.hayPendientes, true, 'los pendientes window-blocked SÍ cuentan');
+  assert.equal(r.windowBlockedHasPending, true);
+  assert.deepEqual(r.blockedPhases, ['dev', 'validacion']);
+  assert.equal(r.launchablePending, 0, 'no hay pendientes lanzables fuera de la ventana');
+});
+
+test('END-TO-END: cola 100% window-blocked publica causa VENTANA_HORARIA', () => {
+  // Reproduce el escenario exacto del rebote a nivel de las funciones puras que
+  // cablea brazoLanzamiento: derivar señales → armar snapshot → resolveCause.
+  const winSignals = resolveWindowPendingSignals(
+    [{ fase: 'dev', pendingCount: 2 }, { fase: 'validacion', pendingCount: 1 }],
+    { buildPriority: true },
+  );
+  const gatesActivos = new Set();
+  if (winSignals.windowBlockedHasPending) gatesActivos.add(dispatchCause.CAUSAS.VENTANA_HORARIA);
+  const resolved = dispatchCause.resolveCause({
+    anyLaunched: false,
+    hayPendientes: winSignals.hayPendientes,
+    gatesActivos,
+    detalles: {},
+    progressInFlight: false,
+  }, 1_720_000_000_000);
+  assert.ok(resolved, 'debe publicar una causa (no queda ocioso sin explicación)');
+  assert.equal(resolved.causa, dispatchCause.CAUSAS.VENTANA_HORARIA);
+  assert.equal(resolved.anomalia, false);
+});
+
+test('fase window-blocked VACÍA no marca VENTANA (evita falso positivo por precedencia)', () => {
+  // dev bloqueada por ventana pero SIN pendientes; los pendientes reales están en
+  // una fase NO bloqueada (verificacion). No debe reportar windowBlockedHasPending.
+  const r = resolveWindowPendingSignals(
+    [{ fase: 'dev', pendingCount: 0 }, { fase: 'verificacion', pendingCount: 4 }],
+    { buildPriority: true },
+  );
+  assert.equal(r.hayPendientes, true);
+  assert.equal(r.windowBlockedHasPending, false, 'fase bloqueada vacía no explica ociosidad');
+  assert.deepEqual(r.blockedPhases, []);
+  assert.equal(r.launchablePending, 4);
+});
+
+test('pendientes mixtos (bloqueados + lanzables) reportan ambas señales', () => {
+  const r = resolveWindowPendingSignals(
+    [{ fase: 'dev', pendingCount: 2 }, { fase: 'verificacion', pendingCount: 5 }],
+    { buildPriority: true },
+  );
+  assert.equal(r.hayPendientes, true);
+  assert.equal(r.windowBlockedHasPending, true);
+  assert.deepEqual(r.blockedPhases, ['dev']);
+  assert.equal(r.launchablePending, 5);
+});
+
+test('resolveWindowPendingSignals es defensivo ante input inválido', () => {
+  assert.deepEqual(
+    resolveWindowPendingSignals(null, { buildPriority: true }),
+    { hayPendientes: false, windowBlockedHasPending: false, blockedPhases: [], launchablePending: 0 },
+  );
+  // pendingCount no numérico se trata como 0.
+  const r = resolveWindowPendingSignals([{ fase: 'dev', pendingCount: 'x' }], { buildPriority: true });
+  assert.equal(r.hayPendientes, false);
 });
 
 // -----------------------------------------------------------------------------

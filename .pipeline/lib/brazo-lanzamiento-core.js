@@ -80,10 +80,54 @@ function rankLaunchCandidates({ candidates, windows = {} } = {}) {
     .sort(compareCandidates);
 }
 
+/**
+ * #4709 — Deriva las señales de dispatch-cause dependientes de la ventana
+ * horaria a partir del inventario de pendientes por fase (ya leído de FS en la
+ * frontera) y del estado de ventanas activas. Puro y determinístico: no toca FS.
+ *
+ * Cierra el gap CA-1/CA-2 del rebote: los pendientes de fases bloqueadas por
+ * ventana se saltan con `continue` ANTES de entrar a `candidates`, así que
+ * `candidates.length` NO puede usarse como proxy de "hay pendientes" (si toda la
+ * cola vive en fases window-blocked, `candidates` queda vacío pero la cola SÍ
+ * está ociosa con causa). Este helper:
+ *   - `hayPendientes`: true si CUALQUIER fase (bloqueada o no) tiene pendientes.
+ *   - `windowBlockedHasPending`: true SOLO si alguna fase window-blocked tiene
+ *     pendientes reales → habilita marcar VENTANA_HORARIA sin falso positivo
+ *     (una fase vacía bloqueada por ventana no explica ninguna ociosidad).
+ *   - `blockedPhases`: fases window-blocked con pendientes (para el detalle).
+ *   - `launchablePending`: total de pendientes en fases NO bloqueadas.
+ *
+ * @param {Array<{fase:string, pendingCount:number}>} inventory
+ * @param {{qaPriority?:boolean, buildPriority?:boolean}} [windows]
+ * @returns {{hayPendientes:boolean, windowBlockedHasPending:boolean, blockedPhases:string[], launchablePending:number}}
+ */
+function resolveWindowPendingSignals(inventory, windows = {}) {
+  let hayPendientes = false;
+  let launchablePending = 0;
+  const blockedPhases = [];
+  for (const item of (Array.isArray(inventory) ? inventory : [])) {
+    const n = item && Number.isFinite(item.pendingCount) ? item.pendingCount : 0;
+    if (n <= 0) continue;
+    hayPendientes = true;
+    if (isPhaseBlockedByWindow(item.fase, windows)) {
+      if (!blockedPhases.includes(item.fase)) blockedPhases.push(item.fase);
+    } else {
+      launchablePending += n;
+    }
+  }
+  return {
+    hayPendientes,
+    windowBlockedHasPending: blockedPhases.length > 0,
+    blockedPhases,
+    launchablePending,
+  };
+}
+
 module.exports = {
   rankLaunchCandidates,
   isPhaseBlockedByWindow,
   compareCandidates,
+  resolveWindowPendingSignals,
   DEV_PHASES,
   QA_BLOCKED_PHASES,
 };

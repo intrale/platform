@@ -62,10 +62,17 @@ const operatorSignature = require('./lib/operator-signature');
 // #2549 — Detección de bloqueo humano en motivos de rechazo + helpers de marker.
 // Evita relanzar al infinito skills cuyo rechazo es "esperando merge humano".
 const humanBlock = require('./lib/human-block');
+// #4708 — Alerta operacional genérica del control-plane (wave-stall watchdog).
+const { notifyTelegram: notifyTelegramFn } = require('./lib/notify-telegram');
 // #3939 — Primitivas atómicas anti-TOCTOU: claim-by-rename + reserva de slot +
 // sweep de claims huérfanos (épica EP-5 #3937).
 const slotClaim = require('./lib/slot-claim');
 const fileLock = require('./lib/file-lock');
+// #4709 — Causa declarada del no-despacho: prohíbe el estado "cola ociosa sin
+// explicación". Módulo puro (enum cerrado + precedencia) + publicación atómica
+// del artifact `.pipeline/dispatch-cause.json` consumible por dashboard y por
+// el dead-man's switch (#4708).
+const dispatchCause = require('./lib/dispatch-cause');
 // #4693 CA-0 — fuente de verdad única del repo destino (intake multi-repo,
 // allowlist fail-closed, repo de origen propagado). Reemplaza los literales
 // `intrale/platform` hardcodeados y el intake atado al remote del cwd.
@@ -1395,6 +1402,60 @@ function listWorkFiles(dir) {
       .filter(f => !f.startsWith('.') && !f.endsWith('.gitkeep') && !isMarkerArtifactPulpo(f))
       .map(f => ({ name: f, path: path.join(dir, f) }));
   } catch { return []; }
+}
+
+/**
+ * #4708 — Recolecta la "causa declarada" que explica legítimamente un no-despacho
+ * de la ola, para que el wave-stall watchdog NO falsa-alarme (CA-2).
+ *
+ * Todas las causas se computan EN VIVO por el Pulpo (no se leen de un artefacto
+ * arbitrario del FS que un agente pueda spoofear — SEC-1). Cada chequeo es
+ * defensivo: si tira, se ignora (fail-closed: la ausencia de causa dispara). Al
+ * ser cómputo en vivo, la causa es inherentemente vigente (no requiere TTL).
+ *
+ * Causas reconocidas (interino hasta #4709 unifique el registro):
+ *   - halt humano (.paused / .partial-pause.json)   → kind 'human-halt'
+ *   - ventana de reposo / night-window              → kind 'night-window'
+ *   - cuota agotada                                 → kind 'quota'
+ *   - presión de recursos (ORANGE/RED)              → kind 'resource-pressure'
+ *   - gate de coherencia waiting-operator (#4578)   → kind 'waiting-operator'
+ *
+ * @returns {{declared:true, kind:string, readable:true}|null} null = sin causa.
+ */
+function readDeclaredCauseForWave(cfgRoot, waves) {
+  const declare = (kind) => ({ declared: true, kind, readable: true });
+
+  // 1. Halt humano (pausa total o parcial declarada por el operador).
+  try {
+    const mode = partialPause.getPipelineMode().mode;
+    if (mode && mode !== 'running') return declare('human-halt');
+  } catch { /* fail-closed */ }
+
+  // 2. Ventana de reposo / madrugada — no alertar de noche (CA-2).
+  try {
+    const nw = (cfgRoot.resource_limits || {}).night_window;
+    if (isNightWindow(Date.now(), nw)) return declare('night-window');
+  } catch { /* fail-closed */ }
+
+  // 3. Cuota agotada (primary/fallbacks sin capacidad).
+  try {
+    if (quotaExhausted.isQuotaExhausted()) return declare('quota');
+  } catch { /* fail-closed */ }
+
+  // 4. Presión de recursos: ORANGE/RED suprimen despacho legítimamente.
+  try {
+    const level = getResourcePressure(cfgRoot).level;
+    if (level === PRESSURE_LEVELS.ORANGE || level === PRESSURE_LEVELS.RED) {
+      return declare('resource-pressure');
+    }
+  } catch { /* fail-closed */ }
+
+  // 5. Gate de coherencia (#4578): ola retenida esperando al operador.
+  try {
+    if (waves.isWaveWaitingOperator()) return declare('waiting-operator');
+  } catch { /* fail-closed */ }
+
+  return null;
 }
 
 /** Extraer issue number del nombre de archivo (ej: "1732.po" → "1732").
@@ -3938,7 +3999,8 @@ function brazoBarrido(config) {
             } catch {}
           }
 
-          const MAX_REBOTES = 3;
+          // #4707 CA-4 — cap configurable con clamp fail-closed (config.circuit_breaker.rebotes_max).
+          const MAX_REBOTES = resolveRebotesMax(config);
           const MAX_REBOTES_INFRA = connectivityState.MAX_REBOTES_INFRA || 20;
 
           // #2405 CA-4: threshold blando que escala a humano con label `needs-human`
@@ -4050,23 +4112,32 @@ function brazoBarrido(config) {
           // generico aplica igual (defense-in-depth: si la clasificacion infra
           // fuera saboteada, el pipeline no queda en loop infinito).
           if (esReboteDeInfra && reboteInfraCount >= MAX_REBOTES_INFRA) {
+            // #4707 CA-3 — corte infra cap-duro: escalar con rastro (marker +
+            // needs-human + causa + Telegram con ola), nunca "parar mudo".
             log('barrido', `⛔ #${issue} CIRCUIT BREAKER INFRA — ${reboteInfraCount} rebotes infra en ${faseRechazo}, se alcanzo cap duro (${MAX_REBOTES_INFRA}). Escalando.`);
-            sendTelegram(`⛔ Issue #${issue} — ${reboteInfraCount} rebotes por infra (cap ${MAX_REBOTES_INFRA}). Requiere intervención manual.`);
-            for (const a of archivos) {
-              const dest = path.join(fasePath(pipelineName, fase), 'procesado');
-              try { moveFile(a.path, dest); } catch {}
-            }
+            const skillInfra = rechazados[0] ? skillFromFile(rechazados[0].file.name) : 'pipeline';
+            const motivoInfra = rechazados.map(r => `[${skillFromFile(r.file.name)}] ${r.motivo || ''}`).join('\n')
+              || `Cap duro de rebotes infra alcanzado (${reboteInfraCount}/${MAX_REBOTES_INFRA}).`;
+            escalarACircuitBreaker({
+              issue, skill: skillInfra, phase: fase, pipeline: pipelineName,
+              reason: motivoInfra, archivos, faseRechazo, kind: 'infra',
+            });
             continue;
           }
 
           if (reboteCount >= MAX_REBOTES) {
-            log('barrido', `⛔ #${issue} CIRCUIT BREAKER — ${reboteCount} rebotes en ${faseRechazo}, no devolver más. Requiere intervención manual.`);
-            sendTelegram(`⛔ Issue #${issue} atascado — ${reboteCount} rebotes entre ${fase} y ${faseRechazo}. Requiere intervención manual.`);
-            // Mover todo a procesado para sacarlo del loop
-            for (const a of archivos) {
-              const dest = path.join(fasePath(pipelineName, fase), 'procesado');
-              try { moveFile(a.path, dest); } catch {}
-            }
+            // #4707 CA-1/CA-3 — corte genérico: reemplaza el "parar mudo"
+            // (sendTelegram suelto + mover-a-procesado + continue) por la
+            // escalada fail-closed. Deja marker bloqueado-humano + needs-human +
+            // comentario con causa raíz + alerta Telegram con ola.
+            log('barrido', `⛔ #${issue} CIRCUIT BREAKER — ${reboteCount} rebotes en ${faseRechazo}, no devolver más. Escalando a needs-human.`);
+            const skillCorte = rechazados[0] ? skillFromFile(rechazados[0].file.name) : 'pipeline';
+            const motivoCorte = rechazados.map(r => `[${skillFromFile(r.file.name)}] ${r.motivo || ''}`).join('\n')
+              || (prevMotivos.length ? prevMotivos.join('\n') : `Cap de rebotes alcanzado (${reboteCount}/${MAX_REBOTES}) entre ${fase} y ${faseRechazo}.`);
+            escalarACircuitBreaker({
+              issue, skill: skillCorte, phase: fase, pipeline: pipelineName,
+              reason: motivoCorte, archivos, faseRechazo, kind: 'generico',
+            });
             continue;
           }
 
@@ -5951,7 +6022,48 @@ function determinarDevSkill(issue, config) {
     if (mapping[label]) return mapping[label];
   }
 
-  return mapping.default || 'backend-dev';
+  const defaultSkill = mapping.default || 'backend-dev';
+  if (isDeclaredStackDevSkill(defaultSkill, config)) {
+    return defaultSkill;
+  }
+
+  return getGenericDevFallbackSkill(config, mapping);
+}
+
+function getDevSkillPartitions(config) {
+  const raw = config && config.dev_skill_partitions;
+  if (!raw || typeof raw !== 'object') {
+    return {
+      backend: ['backend-dev'],
+      frontend: ['android-dev', 'web-dev'],
+      pipeline: ['pipeline-dev'],
+      generic: ['dev'],
+    };
+  }
+
+  const out = {};
+  for (const [partition, skills] of Object.entries(raw)) {
+    out[partition] = Array.isArray(skills)
+      ? skills.filter(skill => typeof skill === 'string' && skill.trim())
+      : [];
+  }
+  return out;
+}
+
+function isDeclaredStackDevSkill(skill, config) {
+  if (!skill || typeof skill !== 'string') return false;
+  const partitions = getDevSkillPartitions(config);
+  return ['backend', 'frontend', 'pipeline'].some(partition =>
+    Array.isArray(partitions[partition]) && partitions[partition].includes(skill)
+  );
+}
+
+function getGenericDevFallbackSkill(config, mapping) {
+  const explicit = mapping && mapping.generic_fallback;
+  if (typeof explicit === 'string' && explicit.trim()) return explicit;
+  const partitions = getDevSkillPartitions(config);
+  const generic = Array.isArray(partitions.generic) ? partitions.generic : [];
+  return generic.find(skill => typeof skill === 'string' && skill.trim()) || 'dev';
 }
 
 // Cache de títulos/bodies para no golpear GitHub por cada ruteo (TTL corto)
@@ -6187,6 +6299,260 @@ function sortByPriority(archivos, config) {
   });
 }
 
+// ===========================================================================
+// #4707 — Circuit breaker escalante (fail-closed).
+// ---------------------------------------------------------------------------
+// Antes: al agotar el cap de rebotes, los 3 puntos de corte (genérico,
+// infra-cap-duro y APK) hacían `sendTelegram()` suelto + mover-a-procesado +
+// continue → el issue quedaba "parado en silencio" (incidente #4700: 6 rebotes,
+// nadie se enteró, sin marker ni causa raíz).
+//
+// Ahora: todo corte llama a `escalarACircuitBreaker(...)` — un único helper que
+// deja rastro visible (marker `bloqueado-humano/` + label `needs-human` +
+// comentario con la causa raíz redactada) y alerta a Telegram (issue + ola +
+// causa). Fail-closed: aunque falle un sub-paso (reportHumanBlock/label/Telegram),
+// el marker mínimo queda igual — nunca se degrada a "parar mudo".
+// ===========================================================================
+
+/**
+ * #4707 CA-4 / SEC-R1 — Resolver el cap de rebotes de código desde config con
+ * clamp fail-closed. Un valor inválido (0, negativo, NaN, string, Infinity) o
+ * ausente cae al default 3. Cota superior sana de 20 para que un cap enorme de
+ * config no neutralice el circuit breaker (DoS de cuota).
+ *
+ * @param {object} config — objeto de config del pipeline (loadConfig()).
+ * @returns {number} entero en [1, 20].
+ */
+function resolveRebotesMax(config) {
+  const raw = config && config.circuit_breaker && config.circuit_breaker.rebotes_max;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || !Number.isFinite(n) || n < 1) return 3; // fail-closed
+  return Math.min(n, 20); // cota superior sana — un cap enorme no desactiva el breaker
+}
+
+/**
+ * #4707 — Helper único de escalada fail-closed del circuit breaker.
+ *
+ * Factoriza el bloque de escalada humana ya existente en el path de
+ * bloqueo-humano (≈L3766-3890): dedup → archivar work-files → reportHumanBlock
+ * (marker + label needs-human encolado) → comentario de causa raíz encolado →
+ * Telegram con ola + botones de acción rápida → audio best-effort.
+ *
+ * Reglas no negociables (heredadas de security/PO):
+ *   - SEC-5 (dedup): gate `findBlockedMarker(issue)` — un evento = una alerta.
+ *   - SEC-3 (redacción): el motivo pasa por DOS capas ANTES de comentar (repo
+ *     PÚBLICO) y de Telegram — `sanitizePipelineText` (patrón/clave) +
+ *     `redactSecretValue` token-a-token (secretos opacos de alta entropía y
+ *     formatos conocidos: sk-ant, AKIA, JWT). Ambas se aplican sobre `motivoTxt`,
+ *     así que TODO uso downstream (comentario, Telegram, audio, reportHumanBlock)
+ *     parte del texto ya redactado — no se delega la redacción al path humano.
+ *   - CA-3 (fail-closed): si reportHumanBlock/label/Telegram falla, igual queda
+ *     el marker mínimo. Nunca un catch global que degrade a "mover-a-procesado".
+ *
+ * @param {object} opts
+ * @param {number|string} opts.issue
+ * @param {string} opts.skill      — skill que originó el último rechazo.
+ * @param {string} opts.phase      — fase donde queda el marker.
+ * @param {string} opts.pipeline
+ * @param {string} opts.reason     — causa raíz (último motivo de rechazo, crudo).
+ * @param {string} [opts.question] — derivada si no se provee.
+ * @param {Array}  [opts.archivos] — work-files activos a archivar ({path}).
+ * @param {string} [opts.faseRechazo] — fase de la que archivar residuales.
+ * @param {string} [opts.kind]     — 'generico' | 'infra' | 'apk' (para logs/alerta).
+ * @param {object} [deps]          — inyección para tests (humanBlock, sendTg, wave, ...).
+ * @returns {{escalado: boolean, yaBloqueado: boolean, markerOk: boolean}}
+ */
+function escalarACircuitBreaker(opts, deps) {
+  opts = opts || {};
+  deps = deps || {};
+  const hb = deps.humanBlock || humanBlock;
+  const sanitize = deps.sanitize || sanitizePipelineText;
+  const sendTg = deps.sendTelegramWithMarkup || sendTelegramWithMarkup;
+  const logFn = deps.log || log;
+  const pipelineRoot = deps.pipelineRoot || PIPELINE;
+  const resolveWave = deps.resolveWaveForIssue || ((n) => {
+    try { return require('./lib/wave-resolver').resolveWaveForIssue(n, { pipelineRoot }); }
+    catch { return null; }
+  });
+
+  const issueNum = parseInt(opts.issue, 10);
+  const pipeline = opts.pipeline || 'desarrollo';
+  const phase = opts.phase || 'dev';
+  const skillBloq = String(opts.skill || 'pipeline').trim() || 'pipeline';
+  const kind = opts.kind || 'generico';
+  const archivos = Array.isArray(opts.archivos) ? opts.archivos : [];
+  const faseRechazo = opts.faseRechazo || null;
+
+  // SEC-3 — redacción en DOS capas + length-cap. Fallback UX si queda vacío.
+  //   1. `sanitize` (sanitizePipelineText, inyectable) — redacción por PATRÓN/CLAVE
+  //      (AWS keys, JWT, tokens de Telegram, URLs con credenciales, paths).
+  //   2. `redactVal` (redactSecretValue) token-a-token — atrapa secretos OPACOS de
+  //      ALTA ENTROPÍA (>40 chars, entropía Shannon ≥4.5) o de formato conocido
+  //      (sk-ant-*, sk-*, gsk_*, AKIA*, JWT) que un motivo de rechazo pegado a
+  //      mano arrastra SIN clave JSON que los delate — la capa de patrón por clave
+  //      no los ve. SIN esta capa el motivo se embebe CRUDO en el comentario de
+  //      GitHub (repo PÚBLICO) y en Telegram → fuga A02. Mismo patrón que
+  //      `sanitizeCommanderTurnText`: partimos por whitespace (grupo capturado)
+  //      para preservar el espaciado original y sólo redactamos los tokens no-blancos.
+  const redactVal = deps.redactSecretValue || redactSecretValue;
+  const sanitized = String(sanitize(String(opts.reason || '')) || '');
+  let motivoTxt = sanitized
+    .split(/(\s+)/).map((tok) => (tok.trim() ? redactVal(tok) : tok)).join('')
+    .slice(0, 1500).trim();
+  if (!motivoTxt) motivoTxt = `Circuit breaker (${kind}): el issue agotó los rebotes. Causa no disponible — ver logs de build/agente.`;
+  const preguntaTxt = String(opts.question || '').trim()
+    || hb.inferHumanBlockQuestion(motivoTxt, { skill: skillBloq });
+
+  const faseDir = (fp) => path.join(pipelineRoot, pipeline, fp);
+
+  // SEC-5 — dedup: leer el estado ANTES de mover archivos.
+  const yaBloqueado = (() => { try { return hb.findBlockedMarker(issueNum); } catch { return null; } })();
+
+  // Archivar los work-files activos SIEMPRE (aun si ya bloqueado): sacar el token
+  // del flujo, igual que el path humano. Nunca a procesado/ — a archivado/.
+  for (const a of archivos) {
+    const dest = path.join(faseDir(phase), 'archivado');
+    try { fs.mkdirSync(dest, { recursive: true }); moveFile(a.path, dest); } catch {}
+  }
+  if (faseRechazo) {
+    for (const estado of ['pendiente', 'trabajando', 'procesado']) {
+      const dir = path.join(faseDir(faseRechazo), estado);
+      try {
+        for (const f of fs.readdirSync(dir)) {
+          if (f.startsWith(issueNum + '.') && !f.startsWith('.')) {
+            const archDir = path.join(faseDir(faseRechazo), 'archivado');
+            fs.mkdirSync(archDir, { recursive: true });
+            try { moveFile(path.join(dir, f), archDir); } catch {}
+          }
+        }
+      } catch {}
+    }
+  }
+
+  if (yaBloqueado) {
+    logFn('barrido', `🔁 #${issueNum} CB (${kind}): ya en bloqueado-humano (skill=${yaBloqueado.skill}). Cleanup sin re-notificar.`);
+    return { escalado: false, yaBloqueado: true, markerOk: true };
+  }
+
+  // FAIL-CLOSED (CA-3): reportHumanBlock crea marker + .reason.json + encola
+  // label needs-human. Si falla, dejamos un marker mínimo a mano para NO
+  // degradar a "parar mudo".
+  let markerOk = false;
+  try {
+    hb.reportHumanBlock({
+      issue: issueNum, skill: skillBloq, phase, pipeline,
+      reason: motivoTxt, question: preguntaTxt, moveFromActive: false,
+    });
+    markerOk = true;
+  } catch (e) {
+    logFn('barrido', `❌ #${issueNum} CB (${kind}) reportHumanBlock falló: ${e.message} — dejando marker mínimo (fail-closed)`);
+    try {
+      const bdir = path.join(faseDir(phase), 'bloqueado-humano');
+      fs.mkdirSync(bdir, { recursive: true });
+      const mpath = path.join(bdir, `${issueNum}.${skillBloq}`);
+      if (!fs.existsSync(mpath)) fs.writeFileSync(mpath, '');
+      fs.writeFileSync(`${mpath}.reason.json`, JSON.stringify({
+        issue: issueNum, skill: skillBloq, phase, pipeline,
+        reason: motivoTxt, question: preguntaTxt,
+        blocked_at: new Date().toISOString(), fallback: true,
+      }, null, 2));
+      // Encolar label needs-human directo por si reportHumanBlock no llegó a
+      // encolarlo (mantiene FS↔GitHub consistente).
+      try { hb.enqueueGithub('label', { issue: issueNum, label: 'needs-human' }); } catch {}
+      markerOk = true;
+    } catch (e2) {
+      logFn('barrido', `❌ #${issueNum} CB (${kind}) marker mínimo también falló: ${e2.message}`);
+    }
+  }
+
+  // Resolver ola para la alerta (CA-2). Best-effort: null si no se resuelve.
+  let waveInfo = null;
+  try { waveInfo = resolveWave(issueNum); } catch { waveInfo = null; }
+  const waveLabel = waveInfo
+    ? `Ola ${Number.isInteger(waveInfo.number) ? waveInfo.number : '?'}${waveInfo.name ? ` · ${waveInfo.name}` : ''}`
+    : 'sin ola asignada';
+
+  // Comentario de causa raíz encolado en la cola del servicio-github
+  // (fire-and-forget vía filesystem — nunca invoca `gh` en proceso). `motivoTxt`
+  // ya viene redactado en DOS capas (sanitize por patrón/clave + redactSecretValue
+  // por entropía token-a-token), así que es seguro embeberlo en un repo PÚBLICO.
+  try {
+    const ghQueueDir = path.join(pipelineRoot, 'servicios', 'github', 'pendiente');
+    fs.mkdirSync(ghQueueDir, { recursive: true });
+    const body = [
+      `## Pipeline cortó este issue: circuit breaker escalado a intervención humana`,
+      '',
+      `El issue #${issueNum} agotó el cap de rebotes (corte \`${kind}\`) y el pipeline dejó de reintentar. En vez de pararse en silencio, quedó marcado como \`needs-human\` para que un humano lo revise.`,
+      '',
+      `### Contexto`,
+      `- **Ola:** ${waveLabel}`,
+      `- **Skill del último rechazo:** \`${skillBloq}\``,
+      `- **Fase:** \`${pipeline}/${phase}\``,
+      '',
+      `### Causa raíz`,
+      `<details><summary>Motivo del último rebote (redactado)</summary>`,
+      '',
+      '```',
+      motivoTxt,
+      '```',
+      '',
+      `</details>`,
+      '',
+      `Mientras el label \`needs-human\` esté presente, el pipeline NO relanza el skill (cero rebotes, cero tokens). Al quitarlo (o con \`/unblock ${issueNum} <orientación>\` desde Telegram) el issue reentra a la cola y el contador de rebotes se resetea.`,
+    ].join('\n');
+    fs.writeFileSync(
+      path.join(ghQueueDir, `${issueNum}-cb-escalate-comment-${Date.now()}.json`),
+      JSON.stringify({ action: 'comment', issue: issueNum, body }),
+    );
+  } catch (e) {
+    logFn('barrido', `#${issueNum} CB (${kind}): error encolando comentario de causa raíz: ${e.message}`);
+  }
+
+  // Alerta Telegram con ola + causa + botones de acción rápida (#4068). Si el
+  // markup no se puede armar (sin secreto de token), se manda igual el texto.
+  try {
+    const summary = hb.buildBlockedSummaryMarkdown({
+      highlight: { issue: issueNum, skill: skillBloq, reason: motivoTxt, question: preguntaTxt },
+    });
+    const header = [
+      `⛔ *Circuit breaker* — #${issueNum} agotó los rebotes (corte ${kind})`,
+      `🌊 ${waveLabel}`,
+      '',
+    ].join('\n');
+    let markup;
+    try { markup = hb.buildBlockedActionMarkup(issueNum); } catch { markup = undefined; }
+    sendTg(header + summary, markup || null);
+  } catch (e) {
+    logFn('barrido', `#${issueNum} CB (${kind}): error enviando alerta Telegram: ${e.message}`);
+  }
+
+  // Audio TTS best-effort (SEC-4: después del texto, nunca lanza). Se saltea en
+  // tests salvo inyección explícita de deps.sendAudio.
+  const sendAudio = deps.sendAudio || (() => {
+    try {
+      const { textToSpeechWithMeta, sendVoiceTelegram } = require('./multimedia');
+      return hb.sendNeedHumanAudio({
+        reason: motivoTxt, question: preguntaTxt, profile: 'need-human',
+        botToken: getTelegramToken(), chatId: getTelegramChatId(),
+        textToSpeechWithMeta, sendVoiceTelegram,
+      });
+    } catch { return null; }
+  });
+  try {
+    const p = sendAudio();
+    if (p && typeof p.then === 'function') {
+      p.then((r) => {
+        if (r && r.error) logFn('barrido', `Audio CB #${issueNum} best-effort falló (texto OK): ${r.error}`);
+      }).catch(() => {});
+    }
+  } catch (e) {
+    logFn('barrido', `Audio CB #${issueNum} best-effort no se pudo iniciar (texto OK): ${e.message}`);
+  }
+
+  logFn('barrido', `⛔→🚧 #${issueNum} CB (${kind}) escalado a bloqueado-humano (skill=${skillBloq}, fase=${phase}, ola=${waveLabel}).`);
+  return { escalado: true, yaBloqueado: false, markerOk };
+}
+
 /**
  * Rebotar verificación→build cuando preflight detecta APK faltante.
  *
@@ -6248,11 +6614,16 @@ function reboteVerificacionABuild(issue, pipelineName, preflightResult) {
     }
 
     if (reboteCount >= MAX_REBOTES_APK) {
-      log('lanzamiento', `⛔ #${issue} CIRCUIT BREAKER APK — ${reboteCount} rebotes verificacion↔build. Archivando a procesado.`);
-      sendTelegram(`⛔ #${issue} atascado — ${reboteCount} rebotes por APK faltante entre verificacion y build. Requiere intervención manual.`);
-      for (const f of archivosVerificacion) {
-        try { moveFile(f.path, verProcDir); } catch {}
-      }
+      // #4707 CA-3 — corte APK (loop verificacion↔build): escalar con rastro en
+      // vez de archivar a procesado en silencio. Deja marker bloqueado-humano +
+      // needs-human + comentario con causa + alerta Telegram con ola.
+      log('lanzamiento', `⛔ #${issue} CIRCUIT BREAKER APK — ${reboteCount} rebotes verificacion↔build. Escalando a needs-human.`);
+      const motivoApk = `APK faltante persistente: ${preflightResult?.reason || 'preflight QA no encontró APK del build'} `
+        + `(${reboteCount} rebotes verificacion↔build, cap ${MAX_REBOTES_APK}).`;
+      escalarACircuitBreaker({
+        issue, skill: 'build', phase: 'verificacion', pipeline: pipelineName,
+        reason: motivoApk, archivos: archivosVerificacion, kind: 'apk',
+      });
       return false;
     }
 
@@ -6386,10 +6757,91 @@ function sweepClaimsHuerfanos(config) {
   }
 }
 
+// #4709 — Cuenta pendientes globales en TODAS las fases/pipelines. Se usa para
+// determinar `hayPendientes` en los early-returns que ocurren ANTES de recolectar
+// candidatos (cbInfra / presión) y en las causas de pausa/desync del mainLoop.
+// Barato y best-effort: nunca puede tirar (el pipeline no puede morir por esto).
+function countPendientesGlobal(config) {
+  let n = 0;
+  try {
+    for (const [pipelineName, pipelineConfig] of Object.entries(config.pipelines || {})) {
+      for (const fase of (pipelineConfig.fases || [])) {
+        const dir = path.join(fasePath(pipelineName, fase), 'pendiente');
+        try { n += listWorkFiles(dir).length; } catch { /* dir inexistente */ }
+      }
+    }
+  } catch { /* config degradada */ }
+  return n;
+}
+
+// #4709 — Publica la causa declarada del no-despacho para una razón GLOBAL que
+// ocurre fuera del ciclo de candidatos (pausa humana `.paused`, bloqueo por
+// desync). El mainLoop no llama a `brazoLanzamiento` en esos estados, así que la
+// causa debe emitirse acá para que el dashboard y el dead-man's switch (#4708)
+// no vean "ocioso sin explicación".
+function publicarCausaPausa(config, causa, detalle) {
+  try {
+    const gates = new Map([[causa, detalle]]);
+    dispatchCause.publish({
+      pipelineDir: PIPELINE,
+      snapshot: {
+        anyLaunched: false,
+        hayPendientes: countPendientesGlobal(config) > 0,
+        progressInFlight: false,
+        gatesActivos: new Set(gates.keys()),
+        detalles: Object.fromEntries(gates),
+      },
+      now: Date.now(),
+      alert: (m) => { try { sendTelegram(m); } catch { /* best-effort */ } },
+      log: (m) => log('lanzamiento', m),
+    });
+  } catch (e) {
+    log('lanzamiento', `dispatch-cause (pausa) publish error (fail-open): ${e.message}`);
+  }
+}
+
+// #4709 — Wrapper observacional del despacho. Garantiza publicar la causa del
+// no-despacho EXACTAMENTE UNA VEZ al cerrar el ciclo, sin importar por cuál
+// early-return/`continue`/excepción salga `brazoLanzamientoImpl`. La lógica de
+// despacho no cambia: `_dcMark` sólo REGISTRA la causa antes de cada salida
+// existente y `_dcState` acumula señales (anyLaunched / hayPendientes /
+// progressInFlight). La publicación es fail-open: un bug acá jamás frena el
+// pipeline.
 function brazoLanzamiento(config) {
+  const gates = new Map();
+  const state = { anyLaunched: false, hayPendientes: false, progressInFlight: false };
+  // Primera ocurrencia de cada causa gana el detalle (evita pisar el contexto
+  // del primer gate que la disparó en el ciclo).
+  const mark = (causa, detalle) => { if (!gates.has(causa)) gates.set(causa, detalle); };
+  try {
+    brazoLanzamientoImpl(config, mark, state);
+  } finally {
+    try {
+      dispatchCause.publish({
+        pipelineDir: PIPELINE,
+        snapshot: {
+          anyLaunched: state.anyLaunched,
+          hayPendientes: state.hayPendientes,
+          progressInFlight: state.progressInFlight,
+          gatesActivos: new Set(gates.keys()),
+          detalles: Object.fromEntries(gates),
+        },
+        now: Date.now(),
+        alert: (m) => { try { sendTelegram(m); } catch { /* best-effort */ } },
+        log: (m) => log('lanzamiento', m),
+      });
+    } catch (e) {
+      log('lanzamiento', `dispatch-cause publish error (fail-open): ${e.message}`);
+    }
+  }
+}
+
+function brazoLanzamientoImpl(config, _dcMark, _dcState) {
   // Circuit breaker de infra (#2305): si está abierto, no tomar nuevos issues.
   // Se reabre manualmente con `node .pipeline/resume.js` una vez validada la red.
   if (cbInfra.isOpen()) {
+    _dcMark(dispatchCause.CAUSAS.CB_INFRA, 'Circuit breaker de infra abierto — dispatch suspendido hasta validar red');
+    _dcState.hayPendientes = countPendientesGlobal(config) > 0;
     return;
   }
 
@@ -6402,7 +6854,11 @@ function brazoLanzamiento(config) {
   const buildPriority = buildPriorityActive;
 
   // GATE DE RECURSOS: presión graduada (green/yellow/orange/red)
-  if (isSystemOverloaded(config)) return;
+  if (isSystemOverloaded(config)) {
+    _dcMark(dispatchCause.CAUSAS.PRESION_RECURSOS, 'Sistema sobrecargado (presión de recursos RED) — despacho pausado');
+    _dcState.hayPendientes = countPendientesGlobal(config) > 0;
+    return;
+  }
 
   // Calcular multiplicador de concurrencia según presión actual
   const pressure = getResourcePressure(config);
@@ -6416,18 +6872,29 @@ function brazoLanzamiento(config) {
   // En vez de iterar fase por fase (que prioriza fases avanzadas),
   // juntamos todo y ordenamos por: feature priority > fase inversa.
   const candidates = [];
+  // #4709 — inventario de pendientes por fase (una sola pasada de FS). Sirve para
+  // derivar de forma pura/testeable las señales de dispatch-cause dependientes de
+  // la ventana horaria (ver brazoLanzamientoCore.resolveWindowPendingSignals),
+  // sin volver a escanear el FS (countPendientesGlobal) ni depender de
+  // candidates.length (que excluye las fases window-blocked).
+  const pendingInventory = [];
 
   for (const [pipelineName, pipelineConfig] of Object.entries(config.pipelines)) {
     const fases = pipelineConfig.fases;
     for (let faseIdx = 0; faseIdx < fases.length; faseIdx++) {
       const fase = fases[faseIdx];
 
-      // PRIORITY WINDOWS (autoexcluyentes): QA bloquea dev+build, Build bloquea solo dev.
-      // #3938 — delegado a brazo-lanzamiento-core (lógica pura, comportamiento invariante).
-      if (brazoLanzamientoCore.isPhaseBlockedByWindow(fase, { qaPriority, buildPriority })) continue;
-
       const pendienteDir = path.join(fasePath(pipelineName, fase), 'pendiente');
       const archivos = listWorkFiles(pendienteDir);
+      pendingInventory.push({ fase, pendingCount: archivos.length });
+
+      // PRIORITY WINDOWS (autoexcluyentes): QA bloquea dev+build, Build bloquea solo dev.
+      // #3938 — delegado a brazo-lanzamiento-core (lógica pura, comportamiento invariante).
+      // Los pendientes de fases window-blocked NO entran a `candidates` (igual que
+      // antes); su ociosidad se explica más abajo vía resolveWindowPendingSignals.
+      if (brazoLanzamientoCore.isPhaseBlockedByWindow(fase, { qaPriority, buildPriority })) {
+        continue;
+      }
 
       for (const archivo of archivos) {
         candidates.push({
@@ -6448,6 +6915,24 @@ function brazoLanzamiento(config) {
     c.priority = calcularPrioridad(issueFromFile(c.archivo.name), config);
   }
   candidates.sort(brazoLanzamientoCore.compareCandidates);
+
+  // #4709 — Señales de dispatch-cause dependientes de la ventana horaria (puras).
+  //  - `hayPendientes` se deriva del inventario COMPLETO (no de candidates.length),
+  //    porque los pendientes de fases window-blocked se saltan ANTES de entrar a
+  //    `candidates`. Si TODA la cola vive en fases window-blocked, candidates queda
+  //    vacío pero la cola SÍ está ociosa con causa (gap CA-1/CA-2 del rebote).
+  //  - VENTANA_HORARIA se marca SOLO si alguna fase bloqueada tiene pendientes
+  //    reales; una fase vacía bloqueada por ventana no explica ninguna ociosidad
+  //    (evita falso positivo por precedencia si coexiste con otro gate real).
+  const winSignals = brazoLanzamientoCore.resolveWindowPendingSignals(
+    pendingInventory, { qaPriority, buildPriority });
+  _dcState.hayPendientes = winSignals.hayPendientes;
+  if (winSignals.windowBlockedHasPending) {
+    _dcMark(
+      dispatchCause.CAUSAS.VENTANA_HORARIA,
+      `Fase(s) ${winSignals.blockedPhases.join(', ')} bloqueada(s) por ventana activa (QA/Build/nocturna) con pendientes en espera`,
+    );
+  }
 
   // --- Procesar candidatos en orden unificado ---
   let anyLaunched = false;
@@ -6474,6 +6959,8 @@ function brazoLanzamiento(config) {
       const mode = partialPause.getPipelineMode();
       if (mode.mode === 'partial_pause') {
         log('lanzamiento', `#${issue} skipped by partial_pause (allowed: ${mode.allowedIssues.map(i => `#${i}`).join(', ')})`);
+        // #4709 — pausa parcial es un halt humano (allowlist explícita).
+        _dcMark(dispatchCause.CAUSAS.HALT_HUMANO, 'Pausa parcial activa — sólo issues de la allowlist se despachan');
       }
       continue;
     }
@@ -6496,6 +6983,7 @@ function brazoLanzamiento(config) {
       });
       if (!verdict.allowed) {
         log('lanzamiento', `#${issue} skipped by rest-mode (skill=${skill}, reason=${verdict.reason})`);
+        _dcMark(dispatchCause.CAUSAS.REST_MODE, `Modo descanso activo (skill=${skill})`);
         continue;
       }
     } catch (e) {
@@ -6554,6 +7042,7 @@ function brazoLanzamiento(config) {
         log('lanzamiento', `[WARN] #${issue} no se pudo mover a bloqueado-dependencias/: ${e.message}`);
       }
       log('lanzamiento', `#${issue} omitido — blocked:dependencies`);
+      _dcMark(dispatchCause.CAUSAS.BLOQUEO_DEPENDENCIA, `#${issue} bloqueado por dependencia (label blocked:dependencies)`);
       continue;
       } // fin else (#4023): label vigente en vivo
     }
@@ -6602,6 +7091,8 @@ function brazoLanzamiento(config) {
           log('lanzamiento', `Error enviando resumen Telegram needs-human #${issue}: ${e.message}`);
         }
       }
+      // #4709 — needs-human es un halt humano por issue.
+      _dcMark(dispatchCause.CAUSAS.HALT_HUMANO, `#${issue} bloqueado por label needs-human`);
       continue;
     }
 
@@ -6616,13 +7107,19 @@ function brazoLanzamiento(config) {
 
     // 1. DEDUP: ¿ya hay un agente activo para este ISSUE (cualquier skill) en trabajando/?
     const issueAlreadyWorking = listWorkFiles(trabajandoDir).some(f => issueFromFile(f.name) === issue);
-    if (issueAlreadyWorking) continue;
+    // #4709 — hay un agente vivo para este issue: NO es cola ociosa, hay progreso
+    // en vuelo. Marcamos la señal para que un no-despacho no se declare anomalía.
+    if (issueAlreadyWorking) { _dcState.progressInFlight = true; continue; }
 
     // 2. COOLDOWN: ¿este issue+skill está penalizado por fallos previos?
-    if (isInCooldown(skill, issue)) continue;
+    if (isInCooldown(skill, issue)) {
+      _dcMark(dispatchCause.CAUSAS.COOLDOWN, `#${issue} (${skill}) penalizado por fallos previos (cooldown)`);
+      continue;
+    }
 
     // 3. Ya hay un proceso activo para este skill+issue en memoria?
     if (activeProcesses.has(key) && isProcessAlive(activeProcesses.get(key).pid)) {
+      _dcState.progressInFlight = true;
       continue;
     }
 
@@ -6630,7 +7127,10 @@ function brazoLanzamiento(config) {
     const baseMax = (config.concurrencia || {})[skill] || 1;
     const maxConcurrencia = Math.max(1, Math.floor(baseMax * multiplier));
     const running = countRunningBySkill(skill);
-    if (running >= maxConcurrencia) continue;
+    if (running >= maxConcurrencia) {
+      _dcMark(dispatchCause.CAUSAS.SIN_AGENTES, `Concurrencia de ${skill} llena (${running}/${maxConcurrencia})`);
+      continue;
+    }
 
     // 5a. Límite de builds bajo presión — en YELLOW solo 1 build simultáneo
     // Esto previene que múltiples builds saturen la RAM y lleven al sistema a RED
@@ -6638,6 +7138,7 @@ function brazoLanzamiento(config) {
       const runningBuilds = countRunningBuild(config);
       if (runningBuilds >= 1) {
         log('lanzamiento', `⚠️ ${pressure.level.toUpperCase()} — ${runningBuilds} build(s) en curso, postergando build de #${issue} para no saturar`);
+        _dcMark(dispatchCause.CAUSAS.PRESION_RECURSOS, `Build de #${issue} postergado bajo presión ${pressure.level.toUpperCase()} (1 build máx.)`);
         continue;
       }
     }
@@ -6651,6 +7152,7 @@ function brazoLanzamiento(config) {
         const totalDevs = countRunningDevs();
         if (totalDevs >= maxDevs) {
           log('lanzamiento', `Límite global de devs alcanzado (${totalDevs}/${maxDevs}). Postergando ${archivo.name}`);
+          _dcMark(dispatchCause.CAUSAS.SIN_AGENTES, `Límite global de devs alcanzado (${totalDevs}/${maxDevs})`);
           continue;
         }
       }
@@ -6705,6 +7207,7 @@ function brazoLanzamiento(config) {
       log('lanzamiento', `🛑 Gate predictivo bloqueó ${skill}:#${issue} — ${impact.reason}`);
       gateBlockedCount++;
       gateBlockedCandidates.push(candidate);
+      _dcMark(dispatchCause.CAUSAS.PRESION_RECURSOS, `Gate predictivo bloqueó ${skill}:#${issue} — ${impact.reason}`);
       continue;
     }
 
@@ -6715,6 +7218,7 @@ function brazoLanzamiento(config) {
     //     circuit breaker del issue (criterio #2).
     if (NETWORK_REQUIRED_PHASES.has(fase) && !precheckOk()) {
       marcarBloqueoInfra(archivo.path, issue, skill, fase, lastPrecheckResult);
+      _dcMark(dispatchCause.CAUSAS.CB_INFRA, `#${issue} (${fase}) requiere red y el precheck de conectividad falló`);
       continue;
     }
 
@@ -6783,6 +7287,7 @@ function brazoLanzamiento(config) {
     }
     if (launched) {
       anyLaunched = true;
+      _dcState.anyLaunched = true;
     } else if (!slotErrored) {
       // El slot se llenó dentro de la sección crítica (otro proceso ganó la
       // admisión) — reintentar en el próximo ciclo. CA observabilidad (UX).
@@ -6794,6 +7299,11 @@ function brazoLanzamiento(config) {
   // Si había candidatos elegibles pero TODOS fueron bloqueados por el gate predictivo
   if (eligibleForGateCount > 0 && gateBlockedCount === eligibleForGateCount && !anyLaunched) {
     consecutiveAllBlockedCycles++;
+    // #4709 — todos los candidatos elegibles quedaron bloqueados por el gate
+    // predictivo: condición de deadlock. Se registra como causa (la presión de
+    // recursos, ya marcada por el gate, gana por precedencia; DEADLOCK queda como
+    // señal explícita del estado del breaker).
+    _dcMark(dispatchCause.CAUSAS.DEADLOCK, `Deadlock: ${gateBlockedCount}/${eligibleForGateCount} candidatos bloqueados por el gate predictivo (ciclo ${consecutiveAllBlockedCycles})`);
 
     const forced = handleDeadlock(gateBlockedCandidates, config);
     if (forced) {
@@ -6848,6 +7358,8 @@ function brazoLanzamiento(config) {
         }
         const trabajandoPath = moveFile(archivo.path, trabajandoDir);
         lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config);
+        // #4709 — el breaker forzó un lanzamiento: hubo despacho este ciclo.
+        _dcState.anyLaunched = true;
       } catch (e) {
         log('deadlock', `Error en lanzamiento forzado de ${archivo.name}: ${e.message}`);
       }
@@ -7571,6 +8083,85 @@ function requestEmulator(action, requester, issue, reason) {
 }
 
 function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config, extraEnv = {}) {
+  // ==========================================================================
+  // #4719 — WIRING DEL CONTRATO DE TAREA: la fase deriva al ejecutor según el
+  // contrato en vez de asumir "el entregable es código".
+  //
+  // Para el ~95 % de las tareas (contrato ausente o `tipo_entregable: codigo`)
+  // esta rama NO aplica: `phaseHandledByContract` devuelve `false` y el flujo
+  // cableado (worktree + rama + agente LLM) sigue idéntico a hoy (retrocompat
+  // total — CA-3 de #4717).
+  //
+  // Sólo cuando el contrato declara un ejecutor NO-código (p. ej.
+  // `provisioner_infra` para "crear una base de datos") el Pulpo resuelve la
+  // fase determinísticamente: sin worktree, sin LLM y sin gate de cuota (un
+  // provisioner de infra no consume tokens). El runner devuelve DATOS
+  // (resultado + evidencia); el Pulpo —único dueño del lifecycle— escribe el
+  // YAML y promueve `trabajando/ → listo/`. El gate existente lo avanza a la
+  // siguiente fase como cualquier `aprobado`.
+  //
+  // Se coloca ANTES del gate de cuota LLM a propósito: los ejecutores no-código
+  // no deben quedar bloqueados por `quota-exhausted`.
+  // ==========================================================================
+  try {
+    const taskContract = require('./lib/task-contract');
+    const workData0 = readYamlSafe(trabajandoPath) || {};
+    const contractDet = taskContract.readTaskContractDetailed({ ROOT, PIPELINE, issue, workData: workData0 });
+    if (contractDet.error) {
+      // Contrato presente pero corrupto: NO asumimos nada a ciegas — logueamos
+      // y seguimos con el flujo de código cableado (fail-safe, regresión cero).
+      log('lanzamiento', `⚠️ #${issue}: contrato de tarea presente pero corrupto (${String(contractDet.error).slice(0, 120)}) — sigo con flujo de código`);
+    }
+    const contract = contractDet.contract;
+    if (taskContract.phaseHandledByContract(fase, contract)) {
+      const executorType = taskContract.resolveExecutorType(contract);
+      log('lanzamiento', `📄 #${issue}: contrato no-código (ejecutor=${executorType}) — fase "${fase}" resuelta por ejecutor determinístico (sin worktree/LLM)`);
+      const listoDir = path.join(fasePath(pipeline, fase), 'listo');
+      // El runner es async (el provisioner hace I/O). No bloqueamos el loop de
+      // dispatch: al resolver, escribimos el resultado y promovemos a listo/
+      // (mismo patrón async que el `child.on('exit')` del spawn LLM).
+      taskContract.runContractPhase({ fase, contract, issue, ROOT, PIPELINE })
+        .then((res) => {
+          const data = {
+            ...(readYamlSafe(trabajandoPath) || {}),
+            ...res,
+            issue: parseInt(issue, 10),
+            fase,
+            pipeline,
+          };
+          writeYaml(trabajandoPath, data);
+          if (fs.existsSync(trabajandoPath)) moveFile(trabajandoPath, listoDir);
+          log('lanzamiento', `📄 #${issue}: fase "${fase}" (contrato ${res.contrato_ejecutor}) → ${res.resultado} → listo/`);
+        })
+        .catch((e) => {
+          // Fallo inesperado del runner: rechazar con motivo y promover a listo/
+          // para que el gate lo procese (rebote); nunca dejar el archivo colgado
+          // en trabajando/ (el orphan-timeout lo devolvería a pendiente y se
+          // reintentaría en loop).
+          try {
+            const data = {
+              ...(readYamlSafe(trabajandoPath) || {}),
+              resultado: 'rechazado',
+              motivo: `runner de contrato de tarea falló en fase "${fase}": ${String(e && e.message ? e.message : e).slice(0, 200)}`,
+              issue: parseInt(issue, 10),
+              fase,
+              pipeline,
+            };
+            writeYaml(trabajandoPath, data);
+            if (fs.existsSync(trabajandoPath)) moveFile(trabajandoPath, listoDir);
+            log('lanzamiento', `⚠️ #${issue}: runner de contrato falló en "${fase}" → rechazado → listo/ (${String(e && e.message ? e.message : e).slice(0, 120)})`);
+          } catch (e2) {
+            log('lanzamiento', `⚠️ #${issue}: no se pudo cerrar la fase de contrato tras error: ${e2.message.slice(0, 120)}`);
+          }
+        });
+      return;
+    }
+  } catch (e) {
+    // Best-effort: cualquier fallo en la DERIVACIÓN (no en el ejecutor) NO rompe
+    // el pipeline; se cae al flujo de código cableado (regresión cero).
+    log('lanzamiento', `⚠️ #${issue}: derivación de contrato de tarea falló (${e.message.slice(0, 120)}) — sigo con flujo de código`);
+  }
+
   // #2974 — GATE DETERMINÍSTICO PRE-SPAWN: si la cuota Anthropic está agotada
   // (flag persistido en `.pipeline/quota-exhausted.json` con `resets_at` futuro),
   // NO spawneamos claude.exe para skills LLM. Skills determinísticos
@@ -16749,6 +17340,134 @@ async function mainLoop() {
     log('anomaly', `No se pudo iniciar el detector: ${e.message}`);
   }
 
+  // #4708 — Wave-stall watchdog (dead-man's switch de la ola).
+  // Brazo periódico que detecta "trabajo habilitado + 0 despacho durante N min
+  // + sin causa declarada" y alerta a Telegram + marca la ola `stalled`
+  // (needs_attention). La lógica de decisión vive en lib/wave-stall-watchdog.js
+  // (función pura testeada). Este brazo SÓLO recolecta hechos del filesystem y
+  // la invoca. Es ACCESORIO: si tira, try/catch loguea y NO mata el loop (mismo
+  // criterio que el anomalyDetector). Rollout gradual: `wave_watchdog.enabled`
+  // default false.
+  try {
+    const waveWatchdog = require('./lib/wave-stall-watchdog');
+    const cfgRoot0 = loadConfig() || {};
+    const wwCfg0 = cfgRoot0.wave_watchdog || {};
+    const tickMs = waveWatchdog.parsePositiveInt(wwCfg0.tick_ms, 60000);
+    const stateFile = path.join(PIPELINE, 'state', 'wave-stall-watchdog-state.json');
+
+    const runWaveStallTick = () => {
+      try {
+        const cfgRoot = loadConfig() || {};
+        const cfg = cfgRoot.wave_watchdog || {};
+        // Kill-switch / rollout gradual: leídos en cada tick para permitir
+        // activar/desactivar en caliente sin reiniciar el Pulpo.
+        if (cfg.enabled !== true || cfg.kill_switch === true) return;
+
+        const waves = require('./lib/waves');
+        const waveProgress = require('./lib/wave-progress');
+
+        const active = waves.getActiveWave();
+        if (!active || !Number.isInteger(active.number)) return; // sin ola activa: nada que vigilar
+
+        // 1. Trabajo habilitado: issues no completados y sin bloqueo de dependencia.
+        //    (Un issue con TODOS sus bloqueantes abiertos NO cuenta como habilitado
+        //     → un estancamiento por dependencia queda como enabledCount=0 = skip.)
+        const enabled = (active.issues || []).filter((i) => {
+          if (!i || i.status === 'completed') return false;
+          try { return waves.getBlockingIssues(i.number).length === 0; }
+          catch { return true; }
+        });
+
+        // 2. Despacho: archivos en trabajando/ de TODAS las fases de TODOS los pipelines.
+        let dispatching = 0;
+        for (const [pName, pConfig] of Object.entries(cfgRoot.pipelines || {})) {
+          for (const fase of (pConfig.fases || [])) {
+            dispatching += listWorkFiles(path.join(PIPELINE, pName, fase, 'trabajando')).length;
+          }
+        }
+
+        // 3. Serie de avance (avancePct) de la ola activa.
+        let progressSeries = [];
+        try { progressSeries = waveProgress.readSnapshots({ waveKey: active.number }); }
+        catch { progressSeries = []; }
+
+        // 4. Causa declarada (interino hasta #4709 — markers dispersos, computados
+        //    EN VIVO por el Pulpo, no leídos de un artefacto spoofeable por agentes:
+        //    SEC-1). Cada chequeo es defensivo; si tira, NO se asume causa
+        //    (fail-closed: la ausencia de causa dispara). Al ser cómputo en vivo,
+        //    la causa es inherentemente vigente (no requiere TTL propio).
+        const cause = readDeclaredCauseForWave(cfgRoot, waves);
+
+        const state = waveWatchdog.loadState(stateFile);
+        const decision = waveWatchdog.decide({
+          now: Date.now(),
+          waveKey: active.number,
+          enabledCount: enabled.length,
+          dispatching,
+          progressSeries,
+          cause,
+          state,
+          stallMinutes: cfg.stall_minutes,
+          cooldownMinutes: cfg.alert_cooldown_minutes,
+          windowMinutes: cfg.window_minutes,
+        });
+
+        // Persistir SIEMPRE el nextState (reloj de movimiento, episodio de alerta).
+        try { waveWatchdog.saveStateAtomic(stateFile, decision.nextState); }
+        catch (e) { log('wave-stall', `no pude persistir estado: ${e.message}`); }
+
+        if (decision.action === 'alert' || decision.action === 'escalate') {
+          log('wave-stall', `Ola ${active.number} estancada (${decision.action}): ${decision.reason}, ` +
+            `${enabled.length} habilitado(s), ${Math.round(decision.stalledMs / 60000)}min sin mover ficha`);
+
+          // Alerta Telegram — SÓLO waveKey + motivo (SEC-2/CA-5). El mensaje ya
+          // viene sanitizado desde decide(): sin paths, tokens ni dumps.
+          try {
+            notifyTelegramFn({
+              level: decision.level,
+              component: 'wave-stall-watchdog',
+              message: decision.message,
+              action: 'Revisá por qué la ola no despacha (dashboard needs_attention).',
+              context: { ola: active.number, habilitados: enabled.length },
+            });
+          } catch (e) { log('wave-stall', `notify falló: ${e.message}`); }
+
+          // Estado ola: marcar estancada (needs_attention). Es la escalada a
+          // atención humana a NIVEL OLA — no bloquea los issues habilitados
+          // (aplicar needs-human a issues sanos los sacaría del despacho y
+          // agravaría el propio estancamiento que estamos alertando).
+          try {
+            waves.setWaveStalled(active.number, {
+              reason: decision.reason,
+              since: new Date(Date.now() - decision.stalledMs).toISOString(),
+              updated_by: 'wave-stall-watchdog',
+            });
+          } catch (e) { log('wave-stall', `setWaveStalled falló: ${e.message}`); }
+        } else if (decision.reason === 'dispatching' || decision.reason === 'no-enabled-work') {
+          // La ola volvió a moverse / no hay trabajo pendiente: limpiar la marca
+          // de estancamiento si estaba puesta (auto-clear del episodio).
+          try {
+            if (waves.isWaveStalled()) {
+              waves.clearWaveStalled(active.number, { note: 'ola volvió a despachar' });
+              log('wave-stall', `Ola ${active.number} destrabada: marca stalled limpiada`);
+            }
+          } catch (_e) { /* no bloqueante */ }
+        }
+      } catch (err) {
+        log('wave-stall', `tick excepción (no bloqueante): ${err.message}`);
+      }
+    };
+
+    // setInterval propio (patrón idéntico al anomalyDetector). unref() para no
+    // impedir un shutdown limpio del proceso.
+    const waveStallTimer = setInterval(runWaveStallTick, tickMs);
+    if (typeof waveStallTimer.unref === 'function') waveStallTimer.unref();
+    log('wave-stall', `Watchdog de avance de ola iniciado: cada ${Math.round(tickMs / 1000)}s ` +
+      `(enabled=${wwCfg0.enabled === true}, kill_switch=${wwCfg0.kill_switch === true})`);
+  } catch (e) {
+    log('wave-stall', `No se pudo iniciar el watchdog de avance de ola: ${e.message}`);
+  }
+
   // #3080 / S1 multi-provider — Cron de rotación de credenciales.
   // Tick interno cada `credential_rotation.tick_ms` (default 1h). Lee
   // `docs/secrets-inventory.md`, calcula T-14/T-7/T-3/T-1/T-0 contra
@@ -17108,6 +17827,9 @@ async function mainLoop() {
         brazoProviderExhaustionRetry(config);
       } else if (paused) {
         log('pulpo', 'PAUSADO — esperando reanudación (borrar .pipeline/.paused)');
+        // #4709 — `.paused` global = halt humano. Publicar la causa para que el
+        // dashboard y el dead-man's switch (#4708) no vean "ocioso sin explicación".
+        publicarCausaPausa(config, dispatchCause.CAUSAS.HALT_HUMANO, 'Pausa global activa (.pipeline/.paused) — dispatch suspendido hasta reanudación humana');
       } else {
         // #3518 CA-6 — desync detectado. Loop alive pero NO se dispatcha.
         // Solo logueamos cada N ticks (1 cada ~5min) para no inundar.
@@ -17115,6 +17837,10 @@ async function mainLoop() {
         if (desyncBlockedNotifiedTick === 1) {
           log('pulpo', 'BLOQUEADO POR DESYNC — dispatch suspendido. Auditar y borrar .pipeline/.desync-detected.flag para reanudar.');
         }
+        // #4709 — bloqueo por desync requiere auditoría humana (borrar el flag).
+        // Se declara como halt humano con detalle específico; nunca queda "ocioso
+        // sin explicación".
+        publicarCausaPausa(config, dispatchCause.CAUSAS.HALT_HUMANO, 'Bloqueado por desync (allowlist↔ola) — auditar y borrar .pipeline/.desync-detected.flag');
       }
     } catch (e) {
       log('pulpo', `ERROR en ciclo: ${e.message}`);
@@ -17208,10 +17934,25 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // #3956 — gate de evidencia QA: expuesto para test de integración del bypass
     // `qa:skipped` (la fuente de labels debe ser GitHub, nunca el YAML del agente).
     validateQaEvidence,
+    determinarDevSkill,
+    getDevSkillPartitions,
+    isDeclaredStackDevSkill,
+    getGenericDevFallbackSkill,
+    _setIssueInfoForTest: (issue, info) => {
+      issueLabelsCache.set(issue, { labels: info.labels || [], state: info.state || 'OPEN', fetchedAt: Date.now() });
+      if (typeof info.text === 'string') issueTextCache.set(issue, { text: info.text.toLowerCase(), fetchedAt: Date.now() });
+    },
+    _clearIssueRoutingCachesForTest: () => {
+      issueLabelsCache.clear();
+      issueTextCache.clear();
+    },
     // #4046 — preflight de APK por flavor real + resolución de changed-files.
     preflightQaChecks,
     getChangedFilesForIssue,
     reboteVerificacionABuild,
+    // #4707 — circuit breaker escalante (fail-closed): cap configurable + helper único.
+    resolveRebotesMax,
+    escalarACircuitBreaker,
     // #2957 — counter de fase build expuesto para tests del filtro por allowlist.
     countPendingBuild,
     // #3059 — wrapper robusto + watchdog del brazo de desbloqueo (testing).

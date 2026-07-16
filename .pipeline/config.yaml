@@ -15,7 +15,7 @@ pipelines:
     fase_rechazo: dev   # Los rechazos siempre vuelven a dev
     skills_por_fase:
       validacion: [po, ux, guru]
-      dev: [backend-dev, android-dev, web-dev, pipeline-dev]  # Uno solo por historia, según labels
+      dev: [backend-dev, android-dev, web-dev, pipeline-dev, dev]  # Uno solo por historia, según labels
       build: [build]                             # Agente Claude (haiku) — gradlew check
       verificacion: [tester, security, qa]
       linteo: [linter]                           # Determinístico (Node, #2491) — chequeos mecánicos antes del LLM
@@ -37,6 +37,7 @@ concurrencia:
   android-dev: 2
   web-dev: 2
   pipeline-dev: 2        # Scripts Node.js del pipeline (.pipeline/*.js)
+  dev: 1                 # Fallback genérico stack-agnóstico, capacidad mínima
 
   # Verificación
   tester: 2
@@ -135,12 +136,24 @@ dev_skill_mapping:
   "app:business": "android-dev"
   "app:delivery": "android-dev"
   "area:web": "web-dev"
+  generic_fallback: "dev"        # Fallback stack-agnóstico si el producto no declara capability de stack
   default: "backend-dev"         # Si no tiene label de área (priority:critical se rutea por área)
+
+# Particiones declarativas del puerto `dev` (kernel) a skills concretos (adaptador).
+# Intrale conserva comportamiento observable: default -> backend-dev. Si un producto
+# no declara capabilities backend/frontend/pipeline, `generic_fallback` rutea a `dev`.
+dev_skill_partitions:
+  backend: [backend-dev]
+  frontend: [android-dev, web-dev]
+  pipeline: [pipeline-dev]
+  generic: [dev]
 
 # Prioridad de ruteo cuando un issue tiene MÚLTIPLES labels de dominio (ej. area:infra + app:client).
 # Orden de mayor a menor prioridad. El primer label presente en el issue define la ruta.
 # Rationale: si alguien tagueó `area:pipeline` o `area:infra`, esa intención manda — issues del pipeline
 # no deben caer en android-dev sólo porque tienen `app:client` por error (ej. #2328).
+# El dev genérico NO participa de esta prioridad: entra último, sólo cuando no hay
+# capability de stack resuelta para el producto.
 dev_routing_priority:
   - "area:pipeline"
   - "area:dashboard"
@@ -301,6 +314,12 @@ build:
 # (cap duro antisabotaje, default 20) — este es el threshold "escalar a humano".
 circuit_breaker:
   infra_escalate_threshold: 5
+  # #4707 (SEC-R1 / CA-4) — cap de rebotes de código del circuit breaker genérico.
+  # Al alcanzarlo, el issue NO se "para en silencio": escala a needs-human con
+  # causa raíz + alerta Telegram (fail-closed). Debe ser entero ≥ 1; un valor
+  # inválido (0, negativo, no numérico, Infinity) cae al default 3 con clamp —
+  # nunca puede desactivar el breaker (cota superior sana de 20).
+  rebotes_max: 3
   # #3940 — auto-resume del CB de infra. Tras N prechecks OK consecutivos reales
   # (no hits del cache de 30s), el Pulpo cierra el CB solo y notifica por Telegram.
   # El cierre manual (node .pipeline/resume.js) sigue disponible como override.
@@ -453,6 +472,27 @@ watchdog:
   # (SEC-3). Override por env PULPO_LIVENESS_KILL_SECONDS (entero positivo;
   # inválido → default, NUNCA "nunca stale" — SEC-2).
   pulpo_liveness_kill_seconds: 180
+
+# =============================================================================
+# Wave-stall watchdog (#4708) — dead-man's switch de la ola
+# =============================================================================
+# Detecta la condición "trabajo habilitado + 0 despacho durante N minutos + sin
+# causa declarada" y alerta a Telegram + escala la ola a `needs_attention`
+# (label `needs-human`). NO cierra la ola ni mata agentes: sólo observabilidad
+# fail-closed (incidente raíz #4700). La lógica de decisión vive en
+# .pipeline/lib/wave-stall-watchdog.js (función pura testeada con node --test);
+# el brazo del Pulpo recolecta los hechos del filesystem y la invoca.
+#
+# stall_minutes se valida con clamp fail-closed (SEC-3): 0, negativo, no-numérico
+# o absurdamente grande (> 1440 min = 24h) cae al default seguro — NUNCA
+# "nunca stall" ni deshabilita de facto el watchdog.
+wave_watchdog:
+  enabled: false                 # rollout gradual — activar tras smoke test post-restart
+  kill_switch: false             # corte de emergencia: true desactiva el brazo sin tocar `enabled`
+  stall_minutes: 20              # 0 despacho más de esto (con trabajo habilitado y sin causa) = estancada
+  alert_cooldown_minutes: 30     # SEC-4: mín. entre re-alertas del mismo episodio (anti-flood)
+  window_minutes: 60             # ventana de referencia para la serie de avance/despacho
+  tick_ms: 60000                 # cada cuánto corre el brazo (default 1 min)
 
 # Dashboard — opciones del dashboard del pipeline
 dashboard:

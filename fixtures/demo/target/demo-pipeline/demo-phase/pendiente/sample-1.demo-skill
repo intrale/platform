@@ -1,0 +1,4 @@
+issue: 4700
+fase: demo-phase
+pipeline: kernel-fixtures
+skill: demo-skill
