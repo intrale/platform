@@ -400,11 +400,17 @@ function classifyRebote(opts = {}) {
  * Detecta si un motivo describe una dependency_block. Combina hint
  * estructural (rebote_categoria/depende_de) + pattern matching.
  *
- * @returns {{ matched: boolean, dependsOn: number[], assetOnly: boolean }}
+ * `source` distingue POR QUÉ matcheó (SEC-1, #4748): sólo
+ * `'structured_hint'` (el agente declaró `rebote_categoria: dependency_block`)
+ * es señal confiable para auto-re-evaluar un `needs-human`; las ramas
+ * `'text_pattern'` / `'asset_pattern'` son extracción laxa y NO deben
+ * degradar un juicio humano a auto-destrabe.
+ *
+ * @returns {{ matched: boolean, dependsOn: number[], assetOnly: boolean, source: (null|'structured_hint'|'text_pattern'|'asset_pattern') }}
  */
 function detectDependencyBlock(motivo, hintDeps = []) {
     if (typeof motivo !== 'string' || !motivo.trim()) {
-        return { matched: false, dependsOn: [], assetOnly: false };
+        return { matched: false, dependsOn: [], assetOnly: false, source: null };
     }
 
     // 2a. Hint estructural (agente ya clasificó explícitamente)
@@ -420,7 +426,7 @@ function detectDependencyBlock(motivo, hintDeps = []) {
         const sorted = Array.from(deps).sort((a, b) => a - b).slice(0, MAX_DEPS_PER_BLOCK);
         // Si solo hubo hint pero no logramos extraer números, igual lo
         // marcamos como matched: el agente sabe lo que hace.
-        return { matched: true, dependsOn: sorted, assetOnly: sorted.length === 0 };
+        return { matched: true, dependsOn: sorted, assetOnly: sorted.length === 0, source: 'structured_hint' };
     }
 
     // 2b. Patrones de texto (issue numbers)
@@ -439,17 +445,17 @@ function detectDependencyBlock(motivo, hintDeps = []) {
 
     if (found.size > 0) {
         const sorted = Array.from(found).sort((a, b) => a - b).slice(0, MAX_DEPS_PER_BLOCK);
-        return { matched: true, dependsOn: sorted, assetOnly: false };
+        return { matched: true, dependsOn: sorted, assetOnly: false, source: 'text_pattern' };
     }
 
     // 2c. Patrones de assets/recursos (sin issue number explícito)
     for (const pat of DEPENDENCY_ASSET_PATTERNS) {
         if (pat.test(motivo)) {
-            return { matched: true, dependsOn: [], assetOnly: true };
+            return { matched: true, dependsOn: [], assetOnly: true, source: 'asset_pattern' };
         }
     }
 
-    return { matched: false, dependsOn: [], assetOnly: false };
+    return { matched: false, dependsOn: [], assetOnly: false, source: null };
 }
 
 /**

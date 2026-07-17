@@ -20,7 +20,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { selectMarkersToRelease, allDepsClosed } = require('../brazo-desbloqueo-core');
+const { selectMarkersToRelease, selectHumanBlocksToRelease, allDepsClosed } = require('../brazo-desbloqueo-core');
 
 // -----------------------------------------------------------------------------
 // allDepsClosed
@@ -157,4 +157,90 @@ test('CA-4: releaseDependencyBlockToPendiente reingresa work-files a pendiente/'
   // Limpieza de cache para no contaminar otros tests del mismo proceso.
   delete require.cache[require.resolve('../rebote-classifier')];
   delete require.cache[require.resolve('../traceability')];
+});
+
+// =============================================================================
+// #4748 · selectHumanBlocksToRelease — re-evaluación de needs-human de
+// precondición de dependencia. Cubre 100% de las ramas del selector fail-closed.
+// =============================================================================
+
+test('selectHumanBlocksToRelease (a): dependency con todas las deps CLOSED → toRelease', () => {
+  const markers = [{ issue: 4745, precondition: { type: 'dependency', depends_on: [4744] } }];
+  const { toRelease, blocked } = selectHumanBlocksToRelease({ markers, issueStates: { 4744: 'CLOSED' } });
+  assert.equal(toRelease.length, 1);
+  assert.equal(toRelease[0].issue, 4745);
+  assert.equal(blocked.length, 0);
+});
+
+test('selectHumanBlocksToRelease (b): alguna dep OPEN → blocked, no libera (SEC-3)', () => {
+  const markers = [{ issue: 10, precondition: { type: 'dependency', depends_on: [1, 2] } }];
+  const { toRelease, blocked } = selectHumanBlocksToRelease({ markers, issueStates: { 1: 'CLOSED', 2: 'OPEN' } });
+  assert.equal(toRelease.length, 0);
+  assert.equal(blocked.length, 1);
+  assert.deepEqual(blocked[0].openDeps, ['2']);
+});
+
+test('selectHumanBlocksToRelease (b2): dep con estado desconocido → blocked, no libera', () => {
+  const markers = [{ issue: 11, precondition: { type: 'dependency', depends_on: [7] } }];
+  const { toRelease, blocked } = selectHumanBlocksToRelease({ markers, issueStates: {} });
+  assert.equal(toRelease.length, 0);
+  assert.equal(blocked.length, 1);
+  assert.deepEqual(blocked[0].openDeps, ['7']);
+});
+
+test('selectHumanBlocksToRelease (c): human_judgment ignorado aunque deps CLOSED (CA-3/SEC-4)', () => {
+  const markers = [{ issue: 20, precondition: { type: 'human_judgment' }, depends_on: [1] }];
+  const { toRelease, blocked } = selectHumanBlocksToRelease({ markers, issueStates: { 1: 'CLOSED' } });
+  assert.equal(toRelease.length, 0);
+  assert.equal(blocked.length, 0, 'juicio humano no entra ni a toRelease ni a blocked');
+});
+
+test('selectHumanBlocksToRelease (d): marker sin precondition → ignorado (SEC-4)', () => {
+  const { toRelease, blocked } = selectHumanBlocksToRelease({ markers: [{ issue: 30 }], issueStates: { 1: 'CLOSED' } });
+  assert.equal(toRelease.length, 0);
+  assert.equal(blocked.length, 0);
+});
+
+test('selectHumanBlocksToRelease (e): depends_on vacío → ignorado', () => {
+  const markers = [{ issue: 40, precondition: { type: 'dependency', depends_on: [] } }];
+  const { toRelease, blocked } = selectHumanBlocksToRelease({ markers, issueStates: {} });
+  assert.equal(toRelease.length, 0);
+  assert.equal(blocked.length, 0);
+});
+
+test('selectHumanBlocksToRelease: type desconocido → ignorado', () => {
+  const markers = [{ issue: 50, precondition: { type: 'otro', depends_on: [1] } }];
+  const { toRelease, blocked } = selectHumanBlocksToRelease({ markers, issueStates: { 1: 'CLOSED' } });
+  assert.equal(toRelease.length, 0);
+  assert.equal(blocked.length, 0);
+});
+
+test('selectHumanBlocksToRelease: mezcla — libera sólo los que corresponden', () => {
+  const markers = [
+    { issue: 1, precondition: { type: 'dependency', depends_on: [100] } },      // CLOSED → release
+    { issue: 2, precondition: { type: 'dependency', depends_on: [200, 201] } }, // 201 OPEN → blocked
+    { issue: 3, precondition: { type: 'human_judgment' } },                     // ignorado
+    { issue: 4 },                                                               // ignorado
+  ];
+  const { toRelease, blocked } = selectHumanBlocksToRelease({
+    markers, issueStates: { 100: 'CLOSED', 200: 'CLOSED', 201: 'OPEN' },
+  });
+  assert.deepEqual(toRelease.map(m => m.issue), [1]);
+  assert.deepEqual(blocked.map(m => m.issue), [2]);
+});
+
+test('selectHumanBlocksToRelease: args vacíos → estructura vacía (defensivo)', () => {
+  assert.deepEqual(selectHumanBlocksToRelease(), { toRelease: [], blocked: [] });
+  assert.deepEqual(selectHumanBlocksToRelease({}), { toRelease: [], blocked: [] });
+  assert.deepEqual(selectHumanBlocksToRelease({ markers: null, issueStates: null }), { toRelease: [], blocked: [] });
+});
+
+test('#4745: dep OPEN → permanece; dep pasa a CLOSED → se libera (CA-4)', () => {
+  const marker = { issue: 4745, precondition: { type: 'dependency', depends_on: [4744] } };
+  let out = selectHumanBlocksToRelease({ markers: [marker], issueStates: { 4744: 'OPEN' } });
+  assert.equal(out.toRelease.length, 0);
+  assert.equal(out.blocked.length, 1);
+  out = selectHumanBlocksToRelease({ markers: [marker], issueStates: { 4744: 'CLOSED' } });
+  assert.equal(out.toRelease.length, 1);
+  assert.equal(out.toRelease[0].issue, 4745);
 });
