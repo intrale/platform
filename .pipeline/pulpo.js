@@ -6959,8 +6959,11 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
       const mode = partialPause.getPipelineMode();
       if (mode.mode === 'partial_pause') {
         log('lanzamiento', `#${issue} skipped by partial_pause (allowed: ${mode.allowedIssues.map(i => `#${i}`).join(', ')})`);
-        // #4709 — pausa parcial es un halt humano (allowlist explícita).
-        _dcMark(dispatchCause.CAUSAS.HALT_HUMANO, 'Pausa parcial activa — sólo issues de la allowlist se despachan');
+        // #4751 — el modo de ejecución en olas (allowlist) es un estado ESPERADO
+        // inducido por el operador, NO un halt humano anómalo. Se marca con la
+        // causa propia MODO_OLA (silenciosa: banner sí, Telegram no) para eliminar
+        // el ruido recurrente de "Cola ociosa: Detenido por humano — Pausa parcial".
+        _dcMark(dispatchCause.CAUSAS.MODO_OLA, 'Modo de ejecución en olas — sólo se despachan los issues de la ola activa');
       }
       continue;
     }

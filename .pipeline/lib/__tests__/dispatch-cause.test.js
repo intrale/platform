@@ -53,6 +53,7 @@ const TABLA_GATES = [
     [CAUSAS.COOLDOWN, 'En cooldown'],
     [CAUSAS.BLOQUEO_DEPENDENCIA, 'Bloqueado por dependencia'],
     [CAUSAS.DEADLOCK, 'Deadlock detectado'],
+    [CAUSAS.MODO_OLA, 'Modo de ejecución en olas'],
     [CAUSAS.SIN_AGENTES, 'Sin agentes disponibles'],
 ];
 
@@ -67,8 +68,8 @@ for (const [causa, labelEsperado] of TABLA_GATES) {
     });
 }
 
-test('los 9 gates conocidos están cubiertos por la precedencia', () => {
-    assert.strictEqual(dc.PRECEDENCIA.length, 9);
+test('los 10 gates conocidos están cubiertos por la precedencia', () => {
+    assert.strictEqual(dc.PRECEDENCIA.length, 10);
     for (const [causa] of TABLA_GATES) {
         assert.ok(dc.PRECEDENCIA.includes(causa), `PRECEDENCIA debe incluir ${causa}`);
     }
@@ -187,16 +188,16 @@ test('publish alerta en transición de causa y preserva ts mientras la causa per
     const dir = tmpDir();
     const alerts = [];
     const alert = (m) => alerts.push(m);
-    // Tick 1: causa nueva → alerta.
-    dc.publish({ pipelineDir: dir, snapshot: snap({ gatesActivos: new Set([CAUSAS.COOLDOWN]) }), now: NOW, alert });
+    // Tick 1: causa nueva ALERTABLE → alerta.
+    dc.publish({ pipelineDir: dir, snapshot: snap({ gatesActivos: new Set([CAUSAS.PRESION_RECURSOS]) }), now: NOW, alert });
     assert.strictEqual(alerts.length, 1);
     // Tick 2: misma causa → sin nueva alerta, ts preservado, lastSeenTs avanza.
-    dc.publish({ pipelineDir: dir, snapshot: snap({ gatesActivos: new Set([CAUSAS.COOLDOWN]) }), now: NOW + 5000, alert });
+    dc.publish({ pipelineDir: dir, snapshot: snap({ gatesActivos: new Set([CAUSAS.PRESION_RECURSOS]) }), now: NOW + 5000, alert });
     assert.strictEqual(alerts.length, 1, 'no re-alerta una causa no-anómala persistente');
     const disk = JSON.parse(fs.readFileSync(dc.artifactPath(dir), 'utf8'));
     assert.strictEqual(disk.ts, NOW, 'ts de inicio preservado');
     assert.strictEqual(disk.lastSeenTs, NOW + 5000, 'lastSeenTs refleja el último tick');
-    // Tick 3: causa distinta → nueva alerta + ts nuevo.
+    // Tick 3: causa distinta (también alertable) → nueva alerta + ts nuevo.
     dc.publish({ pipelineDir: dir, snapshot: snap({ gatesActivos: new Set([CAUSAS.CB_INFRA]) }), now: NOW + 9000, alert });
     assert.strictEqual(alerts.length, 2);
     const disk2 = JSON.parse(fs.readFileSync(dc.artifactPath(dir), 'utf8'));
@@ -270,4 +271,83 @@ test('el módulo NO altera caracteres HTML del detalle (el escape es del render)
     // El string se guarda literal (el render lo escapará); acá sólo confirmamos
     // que el módulo no lo "sanea a medias" (que sería un falso sentido de seguridad).
     assert.ok(disk.detalle.includes('<img'), 'el módulo persiste el detalle literal; el escape es del render');
+});
+
+// =============================================================================
+// #4751 — Clasificación alertable vs. silenciosa. La notificación de "cola
+// ociosa" (Telegram) sólo debe emitirse por causas que ameriten intervención;
+// el banner (artifact en disco) se publica SIEMPRE.
+// =============================================================================
+
+// Publica una causa y devuelve cuántas alertas Telegram se emitieron + si quedó
+// el artifact (banner) en disco.
+function publishAndProbe(gate, detalle) {
+    const dir = tmpDir();
+    const alerts = [];
+    dc.publish({
+        pipelineDir: dir,
+        snapshot: snap({ gatesActivos: new Set([gate]), detalles: detalle ? { [gate]: detalle } : {} }),
+        now: NOW,
+        alert: (m) => alerts.push(m),
+    });
+    return { alerts, bannerPublicado: fs.existsSync(dc.artifactPath(dir)) };
+}
+
+test('CA-1/CA-4/CA-5: MODO_OLA publica banner pero NO alerta a Telegram (silenciosa)', () => {
+    const { alerts, bannerPublicado } = publishAndProbe(
+        CAUSAS.MODO_OLA, 'Modo de ejecución en olas — sólo se despachan los issues de la ola activa');
+    assert.strictEqual(alerts.length, 0, 'modo ola NO debe alertar (estado esperado)');
+    assert.strictEqual(bannerPublicado, true, 'el banner del dashboard SÍ se publica');
+});
+
+test('MODO_OLA no está en CAUSAS_ALERTABLES; su label no dice "Detenido"/"pausa parcial"', () => {
+    assert.strictEqual(dc.CAUSAS_ALERTABLES.has(CAUSAS.MODO_OLA), false);
+    const label = dc.LABELS[CAUSAS.MODO_OLA];
+    assert.strictEqual(label, 'Modo de ejecución en olas');
+    assert.doesNotMatch(label, /Detenido por humano/i);
+    assert.doesNotMatch(label, /pausa parcial/i);
+});
+
+test('CA-2: PRESION_RECURSOS (saturación) SÍ alerta indicando el motivo real', () => {
+    const { alerts } = publishAndProbe(CAUSAS.PRESION_RECURSOS, 'Sistema sobrecargado (presión de recursos RED)');
+    assert.strictEqual(alerts.length, 1);
+    assert.match(alerts[0], /Presión de recursos/);
+    assert.doesNotMatch(alerts[0], /Detenido por humano/i);
+});
+
+test('CA-3: DEADLOCK y HALT_HUMANO (deadlock humano) SÍ alertan', () => {
+    assert.strictEqual(publishAndProbe(CAUSAS.DEADLOCK).alerts.length, 1);
+    assert.strictEqual(publishAndProbe(CAUSAS.HALT_HUMANO).alerts.length, 1);
+    assert.strictEqual(publishAndProbe(CAUSAS.BLOQUEO_DEPENDENCIA).alerts.length, 1);
+    assert.strictEqual(publishAndProbe(CAUSAS.CB_INFRA).alerts.length, 1);
+});
+
+test('causas transitorias esperadas NO alertan (banner sí): VENTANA/REST/COOLDOWN/SIN_AGENTES', () => {
+    for (const gate of [CAUSAS.VENTANA_HORARIA, CAUSAS.REST_MODE, CAUSAS.COOLDOWN, CAUSAS.SIN_AGENTES]) {
+        const { alerts, bannerPublicado } = publishAndProbe(gate);
+        assert.strictEqual(alerts.length, 0, `${gate} no debe alertar`);
+        assert.strictEqual(bannerPublicado, true, `${gate} debe publicar banner`);
+    }
+});
+
+test('CA-7: coexistencia modo ola + saturación → gana PRESION_RECURSOS y alerta', () => {
+    const dir = tmpDir();
+    const alerts = [];
+    const out = dc.publish({
+        pipelineDir: dir,
+        snapshot: snap({ gatesActivos: new Set([CAUSAS.MODO_OLA, CAUSAS.PRESION_RECURSOS]) }),
+        now: NOW,
+        alert: (m) => alerts.push(m),
+    });
+    assert.strictEqual(out.causa, CAUSAS.PRESION_RECURSOS, 'la saturación gana a MODO_OLA en PRECEDENCIA');
+    assert.strictEqual(alerts.length, 1, 'y por ser alertable, emite la notificación');
+});
+
+test('CA-6: causa ausente/ilegible → anomalía SÍ alerta (fail-closed) aunque no esté en el set', () => {
+    // Cola con pendientes y ningún gate conocido → ANOMALIA. No está en
+    // CAUSAS_ALERTABLES, pero debe alertar igual por ser anomalía (R1).
+    assert.strictEqual(dc.CAUSAS_ALERTABLES.has(CAUSAS.ANOMALIA), false);
+    const { alerts } = publishAndProbe(/* sin gate → anomalía */);
+    assert.strictEqual(alerts.length, 1, 'la anomalía nunca se silencia');
+    assert.match(alerts[0], /ANOMAL/i);
 });
