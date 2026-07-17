@@ -62,6 +62,25 @@ test('slice degrada a inactivo ante artifact corrupto (no-JSON)', () => {
     assert.deepStrictEqual(slices.dispatchCauseSlice({}, { PIPELINE: dir }), { active: false });
 });
 
+test('#4751: slice detecta MODO_OLA y lo muestra con su label (banner no se filtra)', () => {
+    const dir = tmpDir();
+    // MODO_OLA es silenciosa (no alerta a Telegram) pero SÍ se publica el banner.
+    dc.publish({
+        pipelineDir: dir,
+        snapshot: { anyLaunched: false, hayPendientes: true, gatesActivos: new Set([dc.CAUSAS.MODO_OLA]), detalles: { [dc.CAUSAS.MODO_OLA]: 'sólo se despachan los issues de la ola activa' } },
+        now: 2_000_000,
+    });
+    const s = slices.dispatchCauseSlice({}, { PIPELINE: dir, nowMs: 2_000_000 });
+    assert.strictEqual(s.active, true);
+    assert.strictEqual(s.causa, dc.CAUSAS.MODO_OLA);
+    assert.strictEqual(s.label, 'Modo de ejecución en olas');
+    assert.strictEqual(s.anomalia, false);
+    const html = renderDispatchCauseBanner(s);
+    assert.match(html, /Modo de ejecución en olas/);
+    assert.doesNotMatch(html, /Detenido por humano/i);
+    assert.doesNotMatch(html, /pausa parcial/i);
+});
+
 test('slice marca anomalia y su label destacado', () => {
     const dir = tmpDir();
     dc.publish({ pipelineDir: dir, snapshot: { anyLaunched: false, hayPendientes: true, gatesActivos: new Set() }, now: 1 });
