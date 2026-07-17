@@ -49,19 +49,31 @@ const DEP_PATTERNS = [
     /\bblocked\s+by\s+#(\d+)/gi,
 ];
 
+// #4732 — Default robusto al binario absoluto que usa el resto del pipeline
+// (dashboard.js: `C:/Workspaces/gh-cli/bin/gh`). Correr el refresco sin `gh` en
+// el PATH era la causa raíz del caché envenenado: `spawnSync('gh', ...)` fallaba
+// con ENOENT y toda la caché volvía `unknown`. `process.env.GH_PATH` sigue con
+// prioridad; el default absoluto sólo aplica como fallback.
+const GH_BIN_DEFAULT = 'C:/Workspaces/gh-cli/bin/gh';
+
 function defaultGhRunner(args, opts = {}) {
     const env = Object.assign({}, process.env, opts.env || {});
-    const ghPath = process.env.GH_PATH || 'gh';
+    const ghPath = process.env.GH_PATH || GH_BIN_DEFAULT;
     const r = spawnSync(ghPath, args, {
         env,
         encoding: 'utf8',
         timeout: opts.timeoutMs || 30000,
     });
+    // #4732 — `spawnSync` ante binario ausente devuelve `r.error` (ENOENT) con
+    // `r.status === null`. Propagar el error para que el caller distinga
+    // "spawn falló" (degradación de gh) de "gh corrió y devolvió !=0".
     return {
         ok: r.status === 0,
         stdout: r.stdout || '',
         stderr: r.stderr || '',
         status: r.status,
+        error: r.error || null,
+        spawnFailed: !!r.error,
     };
 }
 
@@ -146,6 +158,37 @@ function parseProvenanceRefs(text) {
 }
 
 /**
+ * #4732 — Devuelve la entrada a usar cuando la consulta a `gh` se degradó
+ * (spawn ENOENT / gh !=0 / body ilegible / issueNum inválido).
+ *
+ * Fail-safe (CA-1): NO se persiste `unknown` pisando el caché.
+ *   - Si hay last-known-good con `state` real (`open`/`closed`), se devuelve tal
+ *     cual (el caller no reescribe el caché) → el estado válido se conserva.
+ *   - Si no hay dato previo utilizable, se devuelve un marcador `transient` con
+ *     `state: 'unknown'` que NO se escribe al caché. `resolveOpenDeps` nunca
+ *     marca bloqueado un dep con estado `unknown` (sólo `open` bloquea), así que
+ *     jamás se deriva "bloqueado" por no poder consultar.
+ *
+ * @param {object|undefined} existing - entrada previa del caché para este issue
+ * @param {number} now
+ * @param {string} cause - motivo de la degradación (para trazabilidad/tests)
+ */
+function degradedEntry(existing, now, cause) {
+    if (existing && existing.state && existing.state !== 'unknown') {
+        return existing; // last-known-good; el caller NO reescribe el caché.
+    }
+    return {
+        state: 'unknown',
+        deps: [],
+        forwardDeps: [],
+        title: (existing && existing.title) || '',
+        fetchedAt: now,
+        transient: true,
+        error: cause,
+    };
+}
+
+/**
  * Consulta un issue vía gh y devuelve {state, deps[]}.
  * Usa cache TTL 5 min.
  * @returns {{state: 'open'|'closed'|'unknown', deps: number[], title: string, fetchedAt: number, error?: string}}
@@ -160,36 +203,43 @@ function fetchIssueInfo(issueNum, { ghRunner = defaultGhRunner, repo = 'intrale/
         return existing;
     }
 
+    // #4732 (security §4) — validar el número de issue antes del spawn. Con
+    // `spawnSync` (sin shell) el riesgo de inyección es bajo, pero un `issueNum`
+    // no numérico podría inyectar flags a `gh issue view`. Defensa en profundidad
+    // (mismo guard que `parseDepsFromText`). Sin dato válido: degradar a transient
+    // conservando el last-known-good, nunca derivar bloqueado.
+    const n = Number(issueNum);
+    if (!Number.isInteger(n) || n <= 0) {
+        return degradedEntry(existing, now, `issueNum inválido: ${JSON.stringify(issueNum)}`);
+    }
+
     const args = [
-        'issue', 'view', String(issueNum),
+        'issue', 'view', String(n),
         '--repo', repo,
         '--json', 'number,title,state,body,comments',
     ];
     const r = ghRunner(args);
     if (!r.ok) {
-        const errEntry = {
-            state: 'unknown',
-            deps: [],
-            forwardDeps: [],
-            title: '',
-            fetchedAt: now,
-            error: r.stderr ? r.stderr.split('\n')[0].trim() : `gh exit ${r.status}`,
-        };
-        c.issues[key] = errEntry;
-        c.updatedAt = now;
-        writeCache(c, cacheFile);
-        return errEntry;
+        // #4732 (CA-1 + CA-5) — degradación de `gh` NO envenena el caché. Si el
+        // spawn falla (ENOENT / PATH sin gh) o `gh` devuelve !=0, conservar el
+        // last-known-good en vez de sobreescribir con `unknown`. Fail-safe:
+        // jamás derivar "bloqueado" por no poder consultar.
+        const cause = r.spawnFailed && r.error
+            ? `spawn ${r.error.code || 'error'}`
+            : (r.stderr ? r.stderr.split('\n')[0].trim() : `gh exit ${r.status}`);
+        // CA-5 (A09): loguear exit code + primer renglón de stderr. NUNCA volcar
+        // process.env ni el env expandido del spawn (arrastra GH_TOKEN).
+        try { console.warn(`[deps] gh degradado para #${n}: ${cause}`); } catch { /* logger no debe romper */ }
+        return degradedEntry(existing, now, cause);
     }
 
     let parsed;
     try {
         parsed = JSON.parse(r.stdout);
     } catch {
-        const errEntry = { state: 'unknown', deps: [], forwardDeps: [], title: '', fetchedAt: now, error: 'json-parse' };
-        c.issues[key] = errEntry;
-        c.updatedAt = now;
-        writeCache(c, cacheFile);
-        return errEntry;
+        // #4732 — body ilegible = fallo real del comando, mismo trato conservador.
+        try { console.warn(`[deps] gh degradado para #${n}: json-parse`); } catch { /* noop */ }
+        return degradedEntry(existing, now, 'json-parse');
     }
 
     const body = parsed.body || '';

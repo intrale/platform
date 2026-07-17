@@ -1,5 +1,13 @@
 'use strict';
 
+// #4732 — CA-3 se cumple por el belt-and-suspenders del lado render: la lectura
+// del caché (`wave-snapshot.js`, invariante `isBlocked = !isClosed && (...)`,
+// #4099) ya ignora `blocked:dependencies` cuando el issue está CLOSED, así que
+// un issue cerrado nunca se pinta 🛑 ni en fase "definición" aunque arrastre el
+// label residual. La remoción del label vía este reconciler resultaba código
+// muerto: el único caller (`servicio-reconciler.reconcileStateLabelsStep`) sólo
+// recibe issues `--state open`, y `resolveEpicStateSources` nunca setea señal de
+// cierre. Por eso `blocked:dependencies` NO es reconciliable acá.
 const RECONCILABLE_STATE_LABELS = ['needs-human'];
 const RECONCILABLE_STATE_LABEL_SET = new Set(RECONCILABLE_STATE_LABELS);
 

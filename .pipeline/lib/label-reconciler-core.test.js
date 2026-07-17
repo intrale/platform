@@ -65,7 +65,8 @@ test('labels de contenido nunca aparecen en toRemove', () => {
   }
 });
 
-test('qa:* y blocked:dependencies son dominio delegado y no se remueven', () => {
+test('qa:* no se remueve; blocked:dependencies en issue ABIERTO sigue siendo dominio delegado', () => {
+  // Issue abierto (sin señal de cierre): blocked:dependencies NO se toca.
   const rec = reconcileStateLabels({
     issue: 1,
     currentLabels: ['needs-human', 'qa:pending', 'qa:failed', 'blocked:dependencies'],
@@ -76,10 +77,28 @@ test('qa:* y blocked:dependencies son dominio delegado y no se remueven', () => 
   assert.equal(rec.toRemove.includes('blocked:dependencies'), false);
 });
 
-test('allowlist hardcodeado solo incluye needs-human', () => {
+// #4732 (CA-3) — La limpieza del label residual `blocked:dependencies` vía este
+// reconciler era código muerto: su único caller sólo procesa issues `--state
+// open` y nunca provee señal de cierre. CA-3 se cumple del lado render
+// (`wave-snapshot.js`: CLOSED ignora `blocked:dependencies`). Regression-guard:
+// el reconciler NUNCA remueve `blocked:dependencies`, ni siquiera con señal de
+// cierre explícita, para no reintroducir la ruta muerta.
+test('reconcileStateLabels nunca remueve blocked:dependencies aunque el issue este CLOSED', () => {
+  for (const sources of [{ state: 'CLOSED' }, { isClosed: true }, {}, { state: 'OPEN' }, { isClosed: false }]) {
+    const rec = reconcileStateLabels({
+      issue: 4685,
+      currentLabels: ['blocked:dependencies', 'area:infra'],
+      sources,
+    });
+    assert.deepEqual(rec.toRemove, [], `no debe remover con sources=${JSON.stringify(sources)}`);
+    assert.deepEqual(rec.audit, [], 'no debe auditar remocion de blocked:dependencies');
+  }
+});
+
+test('allowlist reconciliable es solo needs-human (#4732: blocked:dependencies no es reconciliable)', () => {
   assert.deepEqual(RECONCILABLE_STATE_LABELS, ['needs-human']);
   assert.equal(isReconciliableStateLabel('needs-human'), true);
-  assert.equal(isReconciliableStateLabel('qa:pending'), false);
   assert.equal(isReconciliableStateLabel('blocked:dependencies'), false);
+  assert.equal(isReconciliableStateLabel('qa:pending'), false);
   assert.equal(isReconciliableStateLabel('area:infra'), false);
 });

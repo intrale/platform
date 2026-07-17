@@ -25,7 +25,11 @@
 const NOT_FOUND_RE = /NOT_FOUND|Could not resolve to an? (Issue|node)/i;
 // Errores transitorios conocidos (rate-limit / red / timeout / 5xx). Un error
 // que matchea esto NUNCA debe interpretarse como 404 aunque también mencione algo.
-const TRANSIENT_RE = /RATE_LIMITED|rate limit|timeout|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|network|socket hang up|\b50[234]\b|Bad gateway|Service unavailable|Internal Server Error|abuse detection/i;
+// #4732 — `ENOENT` (binario `gh` ausente en el PATH) debe clasificarse como
+// transitorio: un spawn fallido NO es evidencia de que el issue no exista. Sin
+// esto, "gh no está en el PATH" caía por la rama de 404 genuino y envenenaba el
+// caché con `notFound`. Se agregan `ENOENT` y `spawn <cmd> ENOENT`.
+const TRANSIENT_RE = /RATE_LIMITED|rate limit|timeout|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|ENOENT|spawn\s+\S+\s+ENOENT|EAI_AGAIN|network|socket hang up|\b50[234]\b|Bad gateway|Service unavailable|Internal Server Error|abuse detection/i;
 
 /**
  * Construye la entrada de cache "buena" a partir del nodo de issue devuelto por
