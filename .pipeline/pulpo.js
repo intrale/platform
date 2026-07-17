@@ -3838,6 +3838,26 @@ function brazoBarrido(config) {
             ).slice(0, 1500);
             const question = humanBlock.inferHumanBlockQuestion(principal.motivo, { skill: skillBloq });
 
+            // #4748 — Congelar la precondición del freeze SÓLO por hint
+            // estructural (SEC-1): campos YAML `depende_de` del agente, y la rama
+            // `source === 'structured_hint'` de detectDependencyBlock (agente
+            // declaró `rebote_categoria: dependency_block`). NUNCA por extracción
+            // laxa de `#NNNN` del texto libre (ramas text_pattern/asset_pattern).
+            // Si el freeze quedó atado a issues verificables → el brazo de
+            // desbloqueo lo re-evalúa y auto-destraba al cerrar; si no → juicio
+            // humano (fail-closed, no se toca nunca por silencio).
+            const hintDeps = [];
+            for (const m of motivosHumanos) {
+              const det = reboteClassifier.detectDependencyBlock(
+                m.motivo || '',
+                Array.isArray(m.depende_de) ? m.depende_de : [],
+              );
+              if (det && det.matched && det.source === 'structured_hint') {
+                for (const n of (det.dependsOn || [])) hintDeps.push(n);
+              }
+            }
+            const precondition = humanBlock.classifyPrecondition(motivosHumanos, hintDeps);
+
             // Dedup: si ya hay marker activo en bloqueado-humano/ no spamear.
             const yaBloqueado = humanBlock.findBlockedMarker(issue);
 
@@ -3870,6 +3890,7 @@ function brazoBarrido(config) {
                   pipeline: pipelineName,
                   reason: motivoTxt,
                   question,
+                  precondition, // #4748 — congelada al escalar (SEC-2)
                   moveFromActive: false,
                 });
               } catch (e) {
@@ -16638,6 +16659,119 @@ async function brazoTransicionOla(config) {
   }
 }
 
+/**
+ * #4748 — Reaper de `needs-human` con precondición de dependencia resuelta.
+ *
+ * SEGUNDA fuente de markers para el MISMO motor de destrabe: recorre los
+ * markers de `bloqueado-humano/` cuyo `precondition.type` es `dependency`,
+ * verifica el estado REAL de cada dependencia en GitHub y, si TODAS cerraron,
+ * saca el `needs-human` y re-encola el issue — dejando traza. Los `needs-human`
+ * de juicio humano (default, fail-closed) jamás se tocan.
+ *
+ * Fail-closed en todos los bordes (SEC-3): dependencia con estado desconocido,
+ * error de `gh`, timeout o respuesta vacía → NO libera. La decisión final la
+ * toma el motor puro `selectHumanBlocksToRelease` (reutiliza `allDepsClosed`).
+ *
+ * Corre dentro del guard/throttle del brazo (mismo tick, sin abrir una segunda
+ * pasada) reutilizando `ghDesbloqueoCall`.
+ */
+async function reapStaleHumanBlocks({ allowlistSet } = {}) {
+  let markers;
+  try {
+    markers = humanBlock.listBlockedIssues().filter(b =>
+      b.precondition
+      && b.precondition.type === 'dependency'
+      && Array.isArray(b.precondition.depends_on)
+      && b.precondition.depends_on.length > 0
+    );
+  } catch (e) {
+    log('desbloqueo', `[human-block] error listando bloqueados: ${e.message}`);
+    return;
+  }
+
+  // Respetar pausa parcial: sólo re-evaluar los que están en el allowlist.
+  if (allowlistSet) markers = markers.filter(m => allowlistSet.has(String(m.issue)));
+  if (markers.length === 0) return;
+
+  // Recolectar el set de dependencias únicas (minimiza llamadas a gh). SEC-6:
+  // coercionar a entero positivo antes de usar como argumento de `gh`.
+  const depSet = new Set();
+  for (const m of markers) {
+    for (const d of m.precondition.depends_on) {
+      const n = Number(d);
+      if (Number.isFinite(n) && n > 0) depSet.add(n);
+    }
+  }
+
+  // Consultar el estado observado de cada dependencia. Fail-closed: cualquier
+  // dep sin estado conocido queda fuera de `issueStates` → no libera.
+  const issueStates = {};
+  for (const dep of depSet) {
+    ghThrottle();
+    try {
+      const { stdout: depState } = await ghDesbloqueoCall(
+        ['issue', 'view', String(dep), '--json', 'state', '--jq', '.state', '--repo', 'intrale/platform'],
+        10000
+      );
+      const st = String(depState || '').trim();
+      if (st) issueStates[String(dep)] = st; // 'OPEN' | 'CLOSED'
+    } catch (e) {
+      log('desbloqueo', `[human-block] no se pudo leer estado de #${dep}: ${e.message} — fail-closed`);
+    }
+  }
+
+  const { toRelease } = brazoDesbloqueoCore.selectHumanBlocksToRelease({ markers, issueStates });
+
+  for (const m of toRelease) {
+    const deps = m.precondition.depends_on;
+    const depStates = deps.map(n => `#${n}=${issueStates[String(n)] || 'desconocido'}`).join(', ');
+    const guidance = `Auto-destrabe (#4748): precondición resuelta. Dependencia(s) ${deps.map(n => '#' + n).join(', ')} cerrada(s). El pipeline re-encola este issue para continuar su ciclo.`;
+
+    let res;
+    try {
+      res = humanBlock.unblockIssue({
+        issue: m.issue,
+        unlocker: 'brazo-desbloqueo:precondicion',
+        guidance,
+      });
+    } catch (e) {
+      log('desbloqueo', `[human-block] error unblock #${m.issue}: ${e.message}`);
+      continue;
+    }
+    if (!res || !res.ok) {
+      // Idempotente: marker ausente (destrabado por /unblock manual entre el
+      // listado y ahora) → no-op benigno.
+      log('desbloqueo', `[human-block] unblock #${m.issue} no-op: ${res && res.error}`);
+      continue;
+    }
+
+    // Quitar el label needs-human en GitHub + comentario de traza vía la cola.
+    try {
+      const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+      fs.mkdirSync(ghQueueDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(ghQueueDir, `${m.issue}-remove-needs-human-${Date.now()}.json`),
+        JSON.stringify({ action: 'remove-label', issue: Number(m.issue), label: humanBlock.NEEDS_HUMAN_LABEL }),
+      );
+      fs.writeFileSync(
+        path.join(ghQueueDir, `${m.issue}-auto-unblock-comment-${Date.now()}.json`),
+        JSON.stringify({
+          action: 'comment',
+          issue: Number(m.issue),
+          body: `## 🔓 Auto-destrabado por el pipeline\n\nEste issue estaba en \`needs-human\` porque su precondición dependía de ${deps.map(n => '#' + n).join(', ')}. Esa(s) dependencia(s) ya cerró(aron) (${depStates}), así que el motivo del freeze dejó de ser cierto.\n\nEl pipeline lo sacó de \`needs-human\` y lo re-encoló automáticamente para continuar su ciclo — sin intervención humana.\n\n_Destrabado por el brazo de desbloqueo (#4748). El fail-closed sigue vigente para los bloqueos de juicio humano._`,
+        }),
+      );
+    } catch (e) {
+      log('desbloqueo', `[human-block] error encolando acciones GitHub #${m.issue}: ${e.message}`);
+    }
+
+    log('desbloqueo', `🔓 #${m.issue} auto-destrabado de needs-human — precondición resuelta (${depStates}) → re-encolado a ${res.pipeline}/${res.to_phase}`);
+    try {
+      sendTelegram(`🔓 Issue #${m.issue} auto-destrabado — precondición resuelta (deps: ${deps.map(n => '#' + n).join(', ')}). Vuelve a la cola del pipeline.`);
+    } catch {}
+  }
+}
+
 async function brazoDesbloqueoImpl(config) {
   // #2506: respetar pausa parcial — los bloqueados fuera del allowlist no se van
   // a ejecutar aunque se desbloqueen ahora, así que no tiene sentido gastar el
@@ -16647,6 +16781,12 @@ async function brazoDesbloqueoImpl(config) {
   const allowlistSet = pipelineMode.mode === 'partial_pause'
     ? new Set(pipelineMode.allowedIssues.map(String))
     : null;
+
+  // #4748 — Re-evaluar los `needs-human` de precondición ANTES del barrido de
+  // blocked:dependencies, para no depender de su early-return (cuando no hay
+  // ningún blocked:dependencies el barrido retorna, pero los needs-human de
+  // precondición igual deben re-evaluarse cada ciclo).
+  await reapStaleHumanBlocks({ allowlistSet });
 
   try {
     // 1. Buscar issues abiertos con label blocked:dependencies

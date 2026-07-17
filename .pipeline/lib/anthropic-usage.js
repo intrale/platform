@@ -181,7 +181,10 @@ function resolveLauncher() {
 // NUNCA bloquea ni lanza. Guarda contra spawns concurrentes con `_refreshing`.
 // Al cerrar el proceso, parsea stdout y (si hubo dato) reescribe el cache.
 //
-// @param {object} opts { metricsDir, spawnImpl?, launcher?, env? }
+// @param {object} opts { metricsDir, spawnImpl?, launcher?, env?, onDone? }
+//   @property {function} [onDone]  callback opcional invocado 1 vez al terminar
+//                                  el refresh (para esperar el fin de forma
+//                                  determinística en tests). Best-effort.
 // -----------------------------------------------------------------------------
 function triggerRefreshAsync(opts) {
     if (_refreshing) return;
@@ -194,7 +197,17 @@ function triggerRefreshAsync(opts) {
 
     _refreshing = true;
     let done = false;
-    const finish = () => { if (!done) { done = true; _refreshing = false; } };
+    // onDone: callback opcional de completitud (tests). Se invoca exactamente
+    // una vez al terminar el refresh (close/error/timeout/spawn-throw), después
+    // de haber (o no) reescrito el cache. Permite esperar el fin de forma
+    // determinística en vez de un setTimeout fijo. NUNCA lanza hacia afuera.
+    const onDone = (opts && typeof opts.onDone === 'function') ? opts.onDone : null;
+    const finish = () => {
+        if (done) return;
+        done = true;
+        _refreshing = false;
+        if (onDone) { try { onDone(); } catch { /* best-effort */ } }
+    };
 
     let child;
     try {
