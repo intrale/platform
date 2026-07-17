@@ -283,3 +283,9 @@ security-report.md
 # artefacto del gate /security, se coló al repo root por no matchear el patron
 # sin sufijo (rebote #4507). Debe seguir la doctrina de entregables, no git.
 security-report-*.md
+
+# Backups de la migración JSON→DynamoDB (#4745): artefactos runtime que genera
+# `kernel-store-migrate.js` antes de escribir al store durable. Contienen un
+# snapshot del estado de coordinación local; se retienen sólo para rollback y NO
+# deben versionarse (ni filtrarse por un `git add -A`).
+.pipeline/backup/
