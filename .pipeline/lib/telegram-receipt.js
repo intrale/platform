@@ -86,10 +86,62 @@ function isValidMessageIds(ids, { requireNonEmpty }) {
 }
 
 // -----------------------------------------------------------------------------
+// #4750 — Dimensión de CHUNK de audio (part_index / part_total).
+//
+// Cuando una respuesta de voz se fragmenta en M audios, cada chunk lleva un
+// `partIndex` (0..M-1) y `partTotal` (M) atados al mismo `correlationId` padre.
+// Estos valores derivan el NOMBRE del archivo del recibo (`<cid>-p<idx>.json`),
+// por eso deben coercionarse a entero y acotarse antes de usarse — SEC-R2:
+// evita path-traversal en el nombre del recibo e inyección CRLF.
+// -----------------------------------------------------------------------------
+
+// coercePartInt — devuelve un entero >= 0 o null (fail-closed). Rechaza
+// decimales, negativos, strings no-numéricas, NaN, Infinity. Acepta un string
+// de solo dígitos (`"3"`) porque un dropfile es JSON y podría traerlo así, pero
+// NUNCA texto libre (SEC-R2).
+function coercePartInt(v) {
+  if (typeof v === 'number') {
+    return Number.isInteger(v) && v >= 0 ? v : null;
+  }
+  if (typeof v === 'string' && /^\d+$/.test(v)) {
+    const n = Number.parseInt(v, 10);
+    return Number.isSafeInteger(n) && n >= 0 ? n : null;
+  }
+  return null;
+}
+
+// isValidPartDims — coerción + acotado: ambos enteros >= 0, partTotal >= 1 y
+// `0 <= partIndex < partTotal`. Es el invariante que hace seguro derivar el
+// nombre de archivo del recibo por-parte.
+function isValidPartDims(partIndex, partTotal) {
+  const i = coercePartInt(partIndex);
+  const t = coercePartInt(partTotal);
+  if (i == null || t == null) return false;
+  if (t < 1) return false;
+  if (i < 0 || i >= t) return false;
+  return true;
+}
+
+// Variante estricta (sin coerción): exige enteros reales. La usa `isValidReceipt`
+// sobre un recibo YA persistido, que SIEMPRE guarda enteros (buildReceipt
+// coerciona al construir). Un recibo forjado con strings en las dims → inválido.
+function isStrictPartDims(partIndex, partTotal) {
+  if (!Number.isInteger(partIndex) || !Number.isInteger(partTotal)) return false;
+  if (partTotal < 1) return false;
+  if (partIndex < 0 || partIndex >= partTotal) return false;
+  return true;
+}
+
+// ¿el objeto trae dimensión de chunk declarada? (cualquiera de las dos claves).
+function hasPartDims(obj) {
+  return obj != null && (obj.partIndex !== undefined || obj.partTotal !== undefined);
+}
+
+// -----------------------------------------------------------------------------
 // buildReceipt — productor. Valida fail-closed y lanza ante datos inválidos
 // (un productor NUNCA debe poder emitir un recibo `enviado` sin prueba — R1/R2).
 // -----------------------------------------------------------------------------
-function buildReceipt({ correlationId, status, messageIds, at } = {}) {
+function buildReceipt({ correlationId, status, messageIds, at, partIndex, partTotal } = {}) {
   if (!isValidCorrelationId(correlationId)) {
     throw new Error(`telegram-receipt: correlationId inválido: ${JSON.stringify(correlationId)}`);
   }
@@ -104,7 +156,21 @@ function buildReceipt({ correlationId, status, messageIds, at } = {}) {
     );
   }
   const ts = typeof at === 'string' && at.length > 0 ? at : new Date().toISOString();
-  return { correlationId, status, messageIds: ids, at: ts };
+  const receipt = { correlationId, status, messageIds: ids, at: ts };
+  // #4750 — dimensión de chunk opcional. Si viene UNA de las dos claves, exigimos
+  // AMBAS válidas (fail-closed): un recibo `enviado` de un chunk sin acotar sería
+  // un vector de path-traversal en el nombre del recibo (SEC-R2). Se coercionan a
+  // entero y se persisten como enteros (no como el string crudo del dropfile).
+  if (hasPartDims({ partIndex, partTotal })) {
+    if (!isValidPartDims(partIndex, partTotal)) {
+      throw new Error(
+        `telegram-receipt: partIndex/partTotal inválido: ${JSON.stringify({ partIndex, partTotal })}`,
+      );
+    }
+    receipt.partIndex = coercePartInt(partIndex);
+    receipt.partTotal = coercePartInt(partTotal);
+  }
+  return receipt;
 }
 
 // -----------------------------------------------------------------------------
@@ -117,6 +183,12 @@ function isValidReceipt(obj) {
   const requireNonEmpty = obj.status === STATUS_ENVIADO;
   if (!isValidMessageIds(obj.messageIds, { requireNonEmpty })) return false;
   if (typeof obj.at !== 'string' || obj.at.length === 0) return false;
+  // #4750 — si el recibo persistido declara dimensión de chunk, DEBE traer
+  // enteros reales acotados (fail-closed R2/SEC-R2). Strings o decimales en un
+  // recibo persistido → forjado/corrupto → inválido; NUNCA default a `enviado`.
+  if (hasPartDims(obj)) {
+    if (!isStrictPartDims(obj.partIndex, obj.partTotal)) return false;
+  }
   return true;
 }
 
@@ -141,12 +213,19 @@ function parseReceipt(raw) {
   if (!isValidReceipt(obj)) return null;
   // Normalizar: copiar solo los campos canónicos (descartar payload extra
   // que un recibo forjado pudiera arrastrar).
-  return {
+  const out = {
     correlationId: obj.correlationId,
     status: obj.status,
     messageIds: obj.messageIds.slice(),
     at: obj.at,
   };
+  // #4750 — arrastrar la dimensión de chunk cuando está presente y válida
+  // (ya garantizado por `isValidReceipt`).
+  if (hasPartDims(obj)) {
+    out.partIndex = obj.partIndex;
+    out.partTotal = obj.partTotal;
+  }
+  return out;
 }
 
 // -----------------------------------------------------------------------------
@@ -174,11 +253,22 @@ function ensureDir(dir) {
 function writeReceipt(recibosDir, fields) {
   const receipt = buildReceipt(fields);
   ensureDir(recibosDir);
-  const finalPath = path.join(recibosDir, `${receipt.correlationId}.json`);
+  const finalPath = path.join(recibosDir, receiptFileName(receipt));
   const tmpPath = `${finalPath}.tmp-${crypto.randomBytes(3).toString('hex')}`;
   fs.writeFileSync(tmpPath, JSON.stringify(receipt, null, 2));
   fs.renameSync(tmpPath, finalPath);
   return finalPath;
+}
+
+// #4750 — Nombre de archivo del recibo. Con dimensión de chunk usa
+// `<correlationId>-p<partIndex>.json` (partIndex ya coercionado a entero por
+// `buildReceipt`, sin traversal). Sin chunk conserva `<correlationId>.json`
+// (retrocompatible con los recibos de texto de #4082).
+function receiptFileName(receipt) {
+  if (Number.isInteger(receipt.partIndex) && Number.isInteger(receipt.partTotal)) {
+    return `${receipt.correlationId}-p${receipt.partIndex}.json`;
+  }
+  return `${receipt.correlationId}.json`;
 }
 
 function listReceiptFiles(recibosDir) {
@@ -268,6 +358,11 @@ module.exports = {
   receiptsDir,
   archivedReceiptsDir,
   writeReceipt,
+  // #4750 — dimensión de chunk de audio (coerción/validación fail-closed + nombre).
+  coercePartInt,
+  isValidPartDims,
+  hasPartDims,
+  receiptFileName,
   listReceiptFiles,
   readReceiptFile,
   archiveReceipt,
