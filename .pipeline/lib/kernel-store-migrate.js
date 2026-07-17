@@ -472,12 +472,38 @@ function rollbackState(opts = {}) {
     return { ok: false, code: 'manifest_unreadable', error: `manifest ilegible en el backup: ${e.message}` };
   }
 
+  // Allow-list de nombres de archivo válidos: sólo las fuentes conocidas.
+  // Las claves de manifest.files son contenido del backup y NO son de confianza
+  // (quien controla el backup controla la clave y su checksum). El checksum NO
+  // frena un Zip-Slip porque se recalcula sobre el value provisto.
+  const allowedFiles = new Set(SOURCES.map((s) => s.file));
+
   // Verificar checksum de CADA archivo del backup ANTES de restaurar.
   const restored = [];
   for (const file of Object.keys(manifest.files || {})) {
     const meta = manifest.files[file];
     if (!meta.present) continue;
-    const src = path.join(fromDir, file);
+
+    // Anti path-traversal (Zip-Slip): la clave del manifest sólo puede ser un
+    // basename de la allow-list de fuentes. Cualquier separador de ruta, '..' o
+    // path absoluto queda fuera del set → se rechaza fail-closed.
+    if (!allowedFiles.has(file)) {
+      return {
+        ok: false, code: 'unsafe_backup_entry',
+        error: `entrada de manifest no permitida "${file}" — sólo se aceptan las fuentes conocidas (posible path-traversal, rechazado)`,
+      };
+    }
+    // Defensa en profundidad: además de la allow-list, se valida que el path
+    // resuelto de lectura y de escritura quede DENTRO de fromDir/targetDir.
+    const src = assertWithin(fromDir, path.join(fromDir, file));
+    const dst = assertWithin(targetDir, path.join(targetDir, file));
+    if (!src || !dst) {
+      return {
+        ok: false, code: 'unsafe_backup_entry',
+        error: `entrada de manifest "${file}" escapa del directorio permitido (posible path-traversal, rechazado)`,
+      };
+    }
+
     let value;
     try {
       value = JSON.parse(fs.readFileSync(src, 'utf8'));
@@ -491,9 +517,9 @@ function rollbackState(opts = {}) {
         error: `checksum del backup no coincide para ${file} (esperado ${meta.checksum}, actual ${actual}) — NO se restaura estado corrupto`,
       };
     }
-    // Checksum OK → restaurar.
+    // Checksum OK → restaurar (dst validado dentro de targetDir).
     try {
-      fs.writeFileSync(path.join(targetDir, file), JSON.stringify(value, null, 2));
+      fs.writeFileSync(dst, JSON.stringify(value, null, 2));
       restored.push(file);
     } catch (e) {
       return { ok: false, code: 'restore_write_failed', error: `no se pudo restaurar ${file}: ${e.message}` };

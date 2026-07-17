@@ -202,6 +202,43 @@ test('rollback rechaza --from fuera de la raíz de backups (anti path-traversal)
   assert.equal(rb.code, 'from_out_of_root');
 });
 
+test('rollback rechaza entrada de manifest con path-traversal (Zip-Slip) y no escribe fuera de targetDir', () => {
+  const backupRoot = freshTmp('zs-bak');
+  const targetDir = freshTmp('zs-tgt');
+  const backupDir = path.join(backupRoot, 'backup-zs');
+  fs.mkdirSync(backupDir, { recursive: true });
+
+  // Backup atacante: clave de manifest que escapa del contenedor con '..'.
+  // El atacante controla contenido Y checksum, por eso la verificación de
+  // integridad (checksum recalculado sobre el value) NO frena el Zip-Slip.
+  const evilKey = '../evil-escape.json';
+  const payload = { pwned: true };
+  const checksum = sha256Canonical(payload);
+
+  // Se ubica el archivo malicioso donde la LECTURA resolvería, de modo que si
+  // el fix no existiera la restauración procedería y escaparía en la ESCRITURA.
+  const readTarget = path.resolve(backupDir, evilKey);
+  fs.writeFileSync(readTarget, JSON.stringify(payload));
+  const manifest = { files: { [evilKey]: { present: true, checksum } } };
+  fs.writeFileSync(path.join(backupDir, 'manifest.json'), JSON.stringify(manifest));
+
+  // Path donde escaparía la ESCRITURA (fuera de targetDir) si no hubiese fix.
+  const escapedWrite = path.resolve(targetDir, evilKey);
+  const existedBefore = fs.existsSync(escapedWrite);
+
+  const rb = rollbackState({ fromDir: backupDir, targetDir, backupRoot });
+
+  // Limpieza del artefacto de lectura antes de aserciones.
+  try { fs.unlinkSync(readTarget); } catch { /* noop */ }
+
+  assert.equal(rb.ok, false);
+  assert.equal(rb.code, 'unsafe_backup_entry');
+  // Garantía fuerte: NO se escribió nada fuera de targetDir.
+  if (!existedBefore) {
+    assert.equal(fs.existsSync(escapedWrite), false, 'no debe escribir fuera de targetDir');
+  }
+});
+
 test('no pierde historia de waves/labels/firmas', async () => {
   const sourceDir = freshTmp('hist-src');
   const backupRoot = freshTmp('hist-bak');
