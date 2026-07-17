@@ -2,7 +2,7 @@
 // Tests node --test del gate de auto-aprobación (#4576, CA-5/6/7/10/11/12).
 'use strict';
 
-const { test } = require('node:test');
+const { test, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -22,13 +22,29 @@ const {
 const T0 = 1_700_000_000_000;
 
 // Crea un pipelineDir temporal con su carpeta audit/.
-let _seq = 0;
+// Usa mkdtempSync para garantizar un directorio único por corrida: evita que
+// archivos de audit residuales de ejecuciones previas (PID reusado por el SO en
+// suites grandes con node --test) se acumulen y contaminen aserciones de
+// `entries.length` (bug de aislamiento observado en CA-12: 2 !== 1).
+const _tmpDirs = [];
 function tmpPipelineDir() {
-    _seq += 1;
-    const dir = path.join(os.tmpdir(), `opsig-gate-test-${process.pid}-${_seq}`);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opsig-gate-test-'));
     fs.mkdirSync(path.join(dir, 'audit'), { recursive: true });
+    _tmpDirs.push(dir);
     return dir;
 }
+
+// Limpia los directorios temporales al terminar la suite para no acumular
+// basura en os.tmpdir() entre corridas.
+after(() => {
+    for (const dir of _tmpDirs) {
+        try {
+            fs.rmSync(dir, { recursive: true, force: true });
+        } catch {
+            // best-effort: si otro proceso lo tomó, se ignora
+        }
+    }
+});
 function chainPath(dir) {
     return path.join(dir, 'audit', CALIBRATION_CHAIN_FILE);
 }
