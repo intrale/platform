@@ -84,7 +84,47 @@ function realignActiveWaveDispatch(opts = {}) {
     if (res && res.rejected) {
         return { ok: false, reason: 'gate_rejected', msg: res.msg };
     }
-    return { ok: true, allowlist: expanded, activeWave: active.number };
+
+    // 4. #4753 — Poda CONVERGENTE de `waves.json`: realinear SOLO `.partial-pause.json`
+    //    dejaba los issues cerrados residuales en `waves.json`, así que
+    //    `desync-detector.readWavesAllowlist` los seguía listando (filtra
+    //    `status !== 'completed'`, NO el cierre real en GitHub) → el segundo probe
+    //    reaparecía como desync → loop de ~5 min. Marcamos `status:'completed'` a
+    //    los issues de la divergencia (`added ∪ removed`) DEMOSTRABLEMENTE cerrados
+    //    (`isClosed(n) === true`), para que el probe converja a `desync:false`.
+    //
+    //    Frontera de seguridad (SEC-1/SEC-4): SOLO se marca lo confirmado cerrado
+    //    con el predicado `isClosed` inyectado (title-cache, sin GitHub). Sin
+    //    `isClosed`, o para issues abiertos/indeterminados, NO se toca `waves.json`
+    //    (fail-safe: indeterminado nunca se poda). La mutación pasa por el gate
+    //    atómico/auditado `markIssuesCompletedInActiveWave` (tmp+rename bajo lock).
+    let prunedFromWave = [];
+    if (isClosed && desync) {
+        const divergent = [...new Set([
+            ...(Array.isArray(desync.added) ? desync.added : []),
+            ...(Array.isArray(desync.removed) ? desync.removed : []),
+        ])].map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0);
+        const closedResidual = divergent.filter((n) => {
+            try { return isClosed(n) === true; } catch { return false; }
+        });
+        if (closedResidual.length > 0) {
+            try {
+                const mark = waves.markIssuesCompletedInActiveWave(closedResidual, {
+                    updated_by: authorizedBy,
+                    source: `${source}:prune-closed`,
+                    note: `poda convergente #4753: marcar completed cerrados residuales ` +
+                        `${closedResidual.map((n) => `#${n}`).join(',')} en ola ${active.number}`,
+                });
+                prunedFromWave = (mark && Array.isArray(mark.completed)) ? mark.completed : [];
+            } catch (e) {
+                // La poda es aditiva a la convergencia: si falla, la realineación de
+                // la allowlist ya se aplicó. Reportamos pero no rompemos el realign.
+                return { ok: true, allowlist: expanded, activeWave: active.number, prunedFromWave: [], pruneError: e.message };
+            }
+        }
+    }
+
+    return { ok: true, allowlist: expanded, activeWave: active.number, prunedFromWave };
 }
 
 module.exports = { realignActiveWaveDispatch };

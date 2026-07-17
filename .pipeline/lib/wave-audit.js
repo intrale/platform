@@ -50,6 +50,7 @@ const EVENTS = Object.freeze([
     'wave_waiting_operator_cleared', // #4578: retención waiting-operator liberada
     'wave_stalled',                  // #4708: dead-man's switch marcó la ola estancada
     'wave_stalled_cleared',          // #4708: marca de estancamiento liberada
+    'issues_completed',              // #4753: cerrados residuales marcados completed (poda del desync reductivo)
 ]);
 
 // -----------------------------------------------------------------------------

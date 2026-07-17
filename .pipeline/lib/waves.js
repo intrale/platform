@@ -731,6 +731,86 @@ function removeIssueFromWaveLocked(waveNumber, n, meta) {
     return { waveNumber, issue: n, removed: true, version: versionToken(state) };
 }
 
+// =============================================================================
+// #4753 — Marcado convergente de issues CERRADOS como `status:'completed'` en la
+// ola ACTIVA (poda del desync REDUCTIVO por bookkeeping).
+//
+// La ola activa está LOCKEADA para `removeIssueFromWave` (EWAVES_ACTIVE_LOCKED,
+// política A04): no se puede desasociar un issue de la ola activa. El patrón
+// canónico para "sacar de la vista de dispatch" un issue ya cerrado en GitHub es
+// marcarlo `status:'completed'` — el MISMO filtro que ya aplican
+// `desync-detector.readWavesAllowlist` y la semilla de dispatch (`status !==
+// 'completed'`) lo excluye, de modo que un segundo probe de desync converge a
+// `desync:false` SIN remover la entrada (convergencia por marcado, no por
+// remoción). Escritura atómica (tmp+rename vía saveState→atomicWriteFile) bajo
+// `withLockSync` + `emitWaveAudit`, el mismo gate transaccional que
+// addIssueToWave/removeIssueFromWave (SEC-4).
+//
+// FRONTERA DE SEGURIDAD (SEC-1/SEC-2): este mutador NO decide qué está cerrado.
+// El caller (pulpo.autoResolveReductiveDesyncByClosure) ya verificó
+// `isClosed(n) === true` para CADA número ANTES de invocar. Acá sólo marcamos las
+// entradas indicadas que estén en la ola activa y aún no completadas; los números
+// ausentes de la ola quedan en `skipped` (jamás se agrega nada).
+//
+// @param {number[]} numbers — issues a marcar completed (confirmados cerrados).
+// @param {Object} [meta] — { updated_by?, source?, note?, expectedVersion? }
+// @returns {{ waveNumber:number|null, completed:number[], skipped:number[], version:string }}
+// =============================================================================
+function markIssuesCompletedInActiveWave(numbers, meta = {}) {
+    const uniq = [...new Set(
+        (Array.isArray(numbers) ? numbers : []).map(normalizeIssue).filter(Boolean)
+    )];
+    return withLockSync(wavesFile(), () => markIssuesCompletedInActiveWaveLocked(uniq, meta), {
+        component: 'waves-lock',
+        timeoutMs: LOCK_TIMEOUT_MS,
+        maxRetries: LOCK_MAX_RETRIES,
+        notify: notifyTelegram,
+    });
+}
+
+function markIssuesCompletedInActiveWaveLocked(numbers, meta) {
+    // Invalidar cache ANTES de leer para ver el último commit en disco.
+    invalidateCache();
+    const state = loadWaves();
+    assertVersionMatch(state, meta.expectedVersion);
+
+    const active = state.active_wave;
+    if (!active || !Number.isInteger(active.number) || !Array.isArray(active.issues)) {
+        return { waveNumber: null, completed: [], skipped: numbers.slice(), version: versionToken(state) };
+    }
+
+    const completed = [];
+    const skipped = [];
+    for (const n of numbers) {
+        const entry = active.issues.find((i) => normalizeIssue(i && i.number) === n);
+        if (!entry) { skipped.push(n); continue; }                      // no está en la ola activa
+        if (entry.status === 'completed') { skipped.push(n); continue; } // idempotente
+        entry.status = 'completed';
+        completed.push(n);
+    }
+
+    // No-op idempotente: nada cambió → sin saveState ni audit.
+    if (completed.length === 0) {
+        return { waveNumber: active.number, completed: [], skipped, version: versionToken(state) };
+    }
+
+    const issuesBefore = active.issues.map((i) => normalizeIssue(i && i.number)).filter(Boolean);
+    saveState(state, {
+        updated_by: meta.updated_by || 'System',
+        source: meta.source || 'desync-autoresolve',
+        note: meta.note || `mark completed ${completed.map((n) => `#${n}`).join(',')} in active wave ${active.number}`,
+    });
+    emitWaveAudit({
+        event: 'issues_completed',
+        wave: active.number,
+        actor: meta.updated_by || 'System',
+        estado_previo: { issues: issuesBefore, completed_now: [] },
+        estado_posterior: { issues: issuesBefore, completed_now: completed },
+        note: meta.note,
+    });
+    return { waveNumber: active.number, completed, skipped, version: versionToken(state) };
+}
+
 /**
  * Reordena las olas PLANIFICADAS según `newOrder` (lista de `number`). Sólo
  * permuta el orden del array `planned_waves`; el `number` (identidad) de cada
@@ -3357,6 +3437,8 @@ module.exports = {
     getPlannedWave,
     addIssueToWave,
     removeIssueFromWave,
+    // #4753 — marcado convergente de cerrados en la ola activa (poda del desync reductivo).
+    markIssuesCompletedInActiveWave,
     // #4525 — declaración de dependencia padre→hijos (split auto-incorporado).
     addDependency,
     reorderPlannedWaves,

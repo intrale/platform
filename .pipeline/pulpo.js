@@ -15763,6 +15763,105 @@ function realignAllowlistToActiveWave(desync, opts = {}) {
 }
 
 // =============================================================================
+// #4753 — Auto-resolución del desync REDUCTIVO por CIERRE (issues cerrados
+// residuales en waves.json) SIN GATE 3 ni suspensión del dispatch.
+//
+// El caso: issues ya cerrados/done quedaron listados en waves.json pero ya
+// salieron de la allowlist. Es basura de bookkeeping: no falta trabajo, no hay
+// decisión de negocio. Antes esto caía en `realign-allowlist` (GATE 3
+// wait-confirmation) → sin confirmerChatId → abort → human-block + loop de ~5min.
+//
+// FRONTERA DE SEGURIDAD (SEC-1/SEC-2): esta función SOLO se invoca cuando el
+// caller (evaluateDesyncAndMaybeRealign) ya verificó que TODO issue de la
+// divergencia (added ∪ removed) cumple `isClosed(n) === true`. La decisión de
+// ruteo a `desync-autoresolve` (notify-and-proceed) la toma la CLASIFICACIÓN
+// confirmada por cierre, ANTES de la política de acción. Un issue abierto/
+// indeterminado NUNCA llega acá: cae al camino human-block.
+//
+// SEC-3 (log-antes-de-mutar): audita `desync-autoresolve` ANTES de podar.
+// La poda real (marcar cerrados `completed` en waves.json + realinear allowlist)
+// pasa por `wave-dispatch.realignActiveWaveDispatch` (gate atómico de waves).
+// =============================================================================
+function autoResolveReductiveDesyncByClosure(probe, opts = {}) {
+  const isClosed = typeof opts.isClosed === 'function' ? opts.isClosed : null;
+  const divergent = Array.isArray(opts.divergent) ? opts.divergent : [];
+  // Contexto para el copy UX del operador + hash de dedupe (estado por issue).
+  const issuesCtx = divergent.map((n) => ({ number: n, estado: 'cerrado' }));
+
+  // SEC-3 — log-antes-de-mutar: si el proceso muere a mitad de la poda, la traza
+  // ya existe. Best-effort: el audit nunca bloquea la auto-resolución.
+  try {
+    require('./lib/kernel-actions-audit').safeAppendAction({
+      action: 'desync-autoresolve', impact: 'medio',
+      reason: `auto-resolución desync reductivo por cierre: cerrados residuales ${JSON.stringify(divergent)}`,
+      authorizedBy: 'desync-detector',
+    });
+  } catch { /* best-effort */ }
+
+  // Política: `desync-autoresolve` = notify-and-proceed (no GATE 3). Emite el
+  // aviso informativo ♻️ (con dedupe conservador: no re-emite mientras el motivo
+  // no cambie). El ruteo por clasificación ya se decidió ANTES (SEC-2).
+  let policy = { proceed: true };
+  try {
+    policy = require('./lib/kernel-action-policy').enforceActionPolicy('desync-autoresolve', {
+      impact: 'medio',
+      reason: `Saqué ${divergent.length} issue(s) ya cerrados que sobraban en la ola`,
+      classification: 'reductivo-por-cierre',
+      issues: issuesCtx,
+    });
+  } catch { /* best-effort: fail-open hacia disponibilidad para esta acción segura */ }
+  if (policy && policy.proceed === false) {
+    return { ok: false, reason: 'policy_block' };
+  }
+
+  // Poda convergente: marca `completed` los cerrados en waves.json y realinea la
+  // allowlist. NO pasa por el gate `realign-allowlist` (ya autorizado por
+  // `desync-autoresolve`); delega directo en el módulo de dispatch (que también
+  // poda waves.json cuando hay issues abiertos que repoblar).
+  const r = require('./lib/wave-dispatch').realignActiveWaveDispatch({
+    isClosed,
+    desync: probe,
+    authorizedBy: 'wave-promote',
+    source: 'wave-promote:autoresolve-reductive',
+  });
+  if (r && r.ok) return r;
+
+  // Caso borde: la ola quedó SIN issues abiertos (todos cerrados) →
+  // `realignActiveWaveDispatch` corta en `empty_expansion` ANTES de podar (fail-
+  // safe para no vaciar una allowlist viva por un realign). Pero acá la poda ES
+  // la convergencia correcta: marcamos los cerrados `completed` en waves.json y
+  // dejamos la allowlist vacía (una allowlist vacía == running, NO frena — ver
+  // feedback_partial-pause-empty-not-block). Sin esto, el desync reincidiría.
+  if (r && r.reason === 'empty_expansion') {
+    const waves = require('./lib/waves');
+    const closed = divergent.filter((n) => { try { return isClosed(n) === true; } catch { return false; } });
+    let pruned = [];
+    try {
+      const mark = waves.markIssuesCompletedInActiveWave(closed, {
+        updated_by: 'wave-promote',
+        source: 'wave-promote:autoresolve-reductive:prune-closed',
+        note: `poda convergente #4753 (ola sin abiertos): completed ${closed.map((n) => `#${n}`).join(',')}`,
+      });
+      pruned = (mark && Array.isArray(mark.completed)) ? mark.completed : [];
+    } catch (e) {
+      return { ok: false, reason: 'prune_failed', error: e.message };
+    }
+    // Limpiar la allowlist de los extras cerrados: queda vacía (== running).
+    try {
+      partialPause.setPartialPause([], {
+        source: 'wave-promote:autoresolve-reductive',
+        authorizedBy: 'wave-promote',
+        justification: 'ola sin issues abiertos tras poda de cerrados (#4753): allowlist vacía == running',
+      });
+    } catch { /* best-effort: la poda de waves.json ya convergió el probe */ }
+    const active = (() => { try { return waves.getActiveWave(); } catch { return null; } })();
+    return { ok: true, allowlist: [], activeWave: active && active.number, prunedFromWave: pruned };
+  }
+
+  return r;
+}
+
+// =============================================================================
 // #4439 CA-3 — Resync ADITIVO hacia la ola activa (dirección INVERSA a
 // realignAllowlistToActiveWave).
 //
@@ -15817,9 +15916,15 @@ function resyncActiveWaveFromLegitAllowlist(issues) {
  *   - sin desync            → no-op.
  * Best-effort: nunca lanza (envuelto por el caller). Usado al boot y periódico.
  */
-function evaluateDesyncAndMaybeRealign(context) {
+function evaluateDesyncAndMaybeRealign(context, opts = {}) {
+  // #4753 — seam de test: permitir inyectar `isClosed` (predicado de cierre).
+  // Producción (`'boot'`/`'periodic'`) no pasa opts → usa el title-cache local.
   let isClosed = null;
-  try { isClosed = makeIsClosedFromTitleCache(); } catch { isClosed = null; }
+  if (typeof opts.isClosed === 'function') {
+    isClosed = opts.isClosed;
+  } else {
+    try { isClosed = makeIsClosedFromTitleCache(); } catch { isClosed = null; }
+  }
 
   // Probe SIN efectos: clasificamos antes de decidir crear flag/alerta.
   let probe;
@@ -15846,34 +15951,48 @@ function evaluateDesyncAndMaybeRealign(context) {
   }
 
   if (probe.classification === 'resoluble_reductivo') {
-    try {
-      const r = realignAllowlistToActiveWave(probe, { isClosed });
-      if (r && r.ok) {
-        desyncDetector.clearDesyncFlag();
+    // #4753 — Auto-resolución del desync REDUCTIVO por CIERRE. Sólo si TODO issue
+    // de la divergencia (added ∪ removed) está CONFIRMADO cerrado
+    // (`isClosed(n) === true`). Cualquier abierto/indeterminado (`false`/
+    // `undefined`/cache miss/notFound/stale) ⇒ NO auto-resolver: cae al camino
+    // ambiguo/human-block de más abajo (fail-closed, SEC-1/SEC-2 — la frontera se
+    // enforcea ANTES de la política de acción, no por omisión).
+    const divergent = Array.from(new Set([
+      ...(Array.isArray(probe.added) ? probe.added : []),
+      ...(Array.isArray(probe.removed) ? probe.removed : []),
+    ])).filter((n) => Number.isInteger(n) && n > 0);
+    const allClosed = typeof isClosed === 'function'
+      && divergent.length > 0
+      && divergent.every((n) => isClosed(n) === true);
+
+    if (allClosed) {
+      try {
+        const r = autoResolveReductiveDesyncByClosure(probe, { isClosed, divergent });
+        if (r && r.ok) {
+          desyncDetector.clearDesyncFlag();
+          checkDesyncFlag();
+          log('pulpo', `desync-detector: auto-resolución REDUCTIVA por cierre OK (#4753) — ` +
+            `cerrados_podados=${JSON.stringify(r.prunedFromWave || [])} ` +
+            `divergencia=${JSON.stringify(divergent)} allowlist=${JSON.stringify(r.allowlist)}`);
+          return;
+        }
+        // No aplicada (política/empty) → escalar a human-block real.
+        log('pulpo', `WARN desync-detector: auto-resolución reductiva no aplicada (${r && r.reason}). Escalando a human-block.`);
+        try { desyncDetector.detectDesync({ isClosed: isClosed || undefined }); } catch {}
         checkDesyncFlag();
-        log('pulpo', `desync-detector: realineación REDUCTIVA a ola activa OK — ` +
-          `allowlist=${JSON.stringify(r.allowlist)} extras_removidos=${JSON.stringify(probe.added)} ` +
-          `faltantes_repuestos=${JSON.stringify(probe.removed)}`);
-        try {
-          sendTelegramPlain(
-            `♻️ Allowlist realineada automáticamente a la ola activa (#4350).\n` +
-            `Removidos (cerrados/ajenos): ${(probe.added || []).map(n => `#${n}`).join(', ') || '—'}\n` +
-            `Repuestos de la ola: ${(probe.removed || []).map(n => `#${n}`).join(', ') || '—'}\n` +
-            `Nueva allowlist: ${r.allowlist.map(n => `#${n}`).join(', ')}`
-          );
-        } catch { /* best-effort */ }
+        return;
+      } catch (e) {
+        log('pulpo', `WARN desync-detector: auto-resolución reductiva falló: ${e.message}. Escalando a human-block.`);
+        try { desyncDetector.detectDesync({ isClosed: isClosed || undefined }); } catch {}
+        checkDesyncFlag();
         return;
       }
-      // Realineo no aplicado (gate/empty) → escalar a human-block real.
-      log('pulpo', `WARN desync-detector: realineación reductiva no aplicada (${r && r.reason}). Escalando a human-block.`);
-      try { desyncDetector.detectDesync({ isClosed: isClosed || undefined }); } catch {}
-      checkDesyncFlag();
-    } catch (e) {
-      log('pulpo', `WARN desync-detector: realineación falló: ${e.message}. Escalando a human-block.`);
-      try { desyncDetector.detectDesync({ isClosed: isClosed || undefined }); } catch {}
-      checkDesyncFlag();
     }
-    return;
+    // resoluble_reductivo pero NO todo cerrado-confirmado (p. ej. un issue ABIERTO
+    // de la ola falta en la allowlist): NO auto-resolver. Cae al manejo ambiguo/
+    // human-block de más abajo (sin return acá — fail-closed).
+    log('pulpo', `desync-detector: divergencia reductiva NO puramente por cierre ` +
+      `(divergencia=${JSON.stringify(divergent)}). No se auto-resuelve; sigue evaluación conservadora.`);
   }
 
   // #4439 CA-3 — Auto-resync ADITIVO del ambiguo LEGÍTIMO, ANTES del human-block.
@@ -18361,6 +18480,8 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     evaluateDesyncAndMaybeRealign,
     resyncActiveWaveFromLegitAllowlist,
     realignAllowlistToActiveWave,
+    // #4753 — auto-resolución del desync reductivo por cierre (expuesto para tests).
+    autoResolveReductiveDesyncByClosure,
     checkDesyncFlag,
     _getDesyncBlocked: () => desyncBlocked,
   };
