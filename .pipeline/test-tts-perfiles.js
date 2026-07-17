@@ -185,49 +185,40 @@ test('merge: openai/edge de un perfil se mergean con defaults si faltan campos',
   assert.equal(r.edge.character_name, 'Tommy');      // heredado de DEFAULT
 });
 
-// #4732 — Contrato actualizado tras #3992 (EP1-H2: retiro de OpenAI/ElevenLabs
-// de la cadena multimedia → `fallback: null`, sin bloque `openai`, Edge pasa a
-// motor primario) y #4093 (perfil `need-human` → 14 perfiles). El test viejo
-// afirmaba el contrato pre-#3992 (13 perfiles con openai/fallback obligatorios)
-// y quedó stale. El motor activo garantizado hoy es `edge`; `openai`/`fallback`
-// son opcionales (legado en retiro).
-test('tts-config.json real tiene 14 perfiles y todos tienen primary + edge con character_name', () => {
+// Post-#3992 (retiro de OpenAI/ElevenLabs de la cadena multimedia) los perfiles
+// son edge-only: primary='edge', fallback=null y sin objeto `openai`. Post-#4093
+// se agrego el perfil `need-human`, quedando 14 perfiles.
+test('tts-config.json real tiene 14 perfiles edge-only con edge.character_name', () => {
   const real = JSON.parse(fs.readFileSync(path.join(__dirname, 'tts-config.json'), 'utf8'));
   assert.ok(real.profiles);
   const profileNames = Object.keys(real.profiles);
   assert.equal(profileNames.length, 14);
   for (const name of profileNames) {
     const p = real.profiles[name];
-    assert.ok(p.primary, `${name}: falta primary`);
+    assert.equal(p.primary, 'edge', `${name}: primary deberia ser edge (motor unico post-#3992)`);
+    assert.equal(p.fallback, null, `${name}: fallback deberia ser null (OpenAI retirado)`);
     assert.ok(p.edge, `${name}: falta edge`);
     assert.ok(p.edge.character_name, `${name}: edge sin character_name`);
-    // Si el perfil conserva bloque openai (legado), debe seguir bien formado.
-    if (p.openai) {
-      assert.ok(p.openai.character_name, `${name}: openai sin character_name`);
-    }
   }
 });
 
 test('tts-config.json real tiene todos los agentes esperados', () => {
   const real = JSON.parse(fs.readFileSync(path.join(__dirname, 'tts-config.json'), 'utf8'));
-  // #4732 — `need-human` agregado por #4093 (audio TTS en alerta needs-human).
-  const expected = ['default', 'qa', 'guru', 'security', 'po', 'ux', 'planner', 'review', 'tester', 'android-dev', 'backend-dev', 'web-dev', 'pipeline-dev', 'need-human'];
+  const expected = ['default', 'qa', 'guru', 'security', 'po', 'ux', 'planner', 'review', 'tester', 'android-dev', 'backend-dev', 'web-dev', 'pipeline-dev'];
   for (const name of expected) {
     assert.ok(real.profiles[name], `falta perfil '${name}'`);
   }
 });
 
-test('tts-config.json: perfil qa tiene primary edge (motor unico) y voz Nacho', () => {
+test('tts-config.json: perfil qa es edge-only (Nacho) por costo', () => {
   const real = JSON.parse(fs.readFileSync(path.join(__dirname, 'tts-config.json'), 'utf8'));
   assert.equal(real.profiles.qa.primary, 'edge');
-  // #4732 — post-#3992 OpenAI quedó retirado de la cadena: `fallback: null`.
   assert.equal(real.profiles.qa.fallback, null);
   assert.equal(real.profiles.qa.edge.character_name, 'Nacho');
 });
 
-test('tts-config.json: perfil default mantiene voz Tommy en edge (no roto)', () => {
+test('tts-config.json: perfil default mantiene Tommy en edge (no roto)', () => {
   const real = JSON.parse(fs.readFileSync(path.join(__dirname, 'tts-config.json'), 'utf8'));
-  // #4732 — Claudito vivía en el bloque `openai`, retirado por #3992. La voz
-  // por defecto vigente es Tommy sobre el motor edge.
+  assert.equal(real.profiles.default.primary, 'edge');
   assert.equal(real.profiles.default.edge.character_name, 'Tommy');
 });

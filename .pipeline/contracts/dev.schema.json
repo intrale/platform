@@ -1,0 +1,125 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://intrale.local/pipeline/contracts/dev.schema.json",
+  "title": "dev port - kernel generic development interface",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractVersion", "input", "output"],
+  "properties": {
+    "contractVersion": {
+      "type": "string",
+      "pattern": "^1\\.0\\.0$"
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projectId", "workItemRef", "partition"],
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+        },
+        "workItemRef": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["id", "type", "priority"],
+          "properties": {
+            "id": {
+              "oneOf": [
+                { "type": "integer" },
+                { "type": "string", "minLength": 1 }
+              ]
+            },
+            "type": { "type": "string", "minLength": 1 },
+            "priority": { "type": "string", "minLength": 1 },
+            "title": { "type": "string" },
+            "body": { "type": "string" },
+            "comments": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "partition": {
+          "type": "string",
+          "enum": ["backend", "frontend", "generic"]
+        },
+        "secretRefs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^ref: [A-Za-z0-9._/-]+#[A-Za-z0-9._:-]+$"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "artifacts", "diagnostics", "handoff", "gatePolicy"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["ok", "failed", "skipped"]
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["type", "ref"],
+            "properties": {
+              "type": { "type": "string", "minLength": 1 },
+              "ref": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["level", "message"],
+            "properties": {
+              "level": { "type": "string", "enum": ["info", "warn", "error"] },
+              "message": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "handoff": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["section", "sanitized"],
+          "properties": {
+            "section": { "type": "string", "minLength": 1, "maxLength": 10240 },
+            "sanitized": { "type": "boolean", "const": true }
+          }
+        },
+        "gatePolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["requiredGates", "promotionShortcutAllowed"],
+          "properties": {
+            "requiredGates": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["build", "test", "qa-e2e", "human-gate"]
+              },
+              "allOf": [
+                { "contains": { "const": "build" } },
+                { "contains": { "const": "test" } },
+                { "contains": { "const": "qa-e2e" } },
+                { "contains": { "const": "human-gate" } }
+              ],
+              "uniqueItems": true
+            },
+            "promotionShortcutAllowed": { "type": "boolean", "const": false }
+          }
+        }
+      }
+    }
+  }
+}

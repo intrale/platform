@@ -64,22 +64,22 @@ function deriveMissionOlaEta(d) {
     const hasVelocity = (data.etaSource === 'velocity' || data.etaSource === 'historical') && !!vel
         && Number.isFinite(vel.velocityPctPerMin) && vel.velocityPctPerMin > 0;
     const avancePct = Number.isFinite(data.totalPct) ? Math.round(data.totalPct) : null;
-    const velocityPctPerHour = hasVelocity ? vel.velocityPctPerMin * 60 : null;
+    // #4734 — VELOCIDAD en %/hora de RELOJ DE PARED (unidad canónica, Leo 2026-07-16).
+    // El módulo único ya expone `velocityPctPerHour`; si un payload viejo sólo trae
+    // `velocityPctPerMin`, se convierte al leer (×60) sin migrar el histórico.
+    const velocityPctPerHour = !hasVelocity
+        ? null
+        : (Number.isFinite(vel.velocityPctPerHour) ? vel.velocityPctPerHour : vel.velocityPctPerMin * 60);
     const etaFromVelocity = hasVelocity && Number.isFinite(vel.remainingMs);
-    // #4449 — La velocidad optimista proyecta uniformemente sobre el % restante e
-    // ignora que ese % está concentrado en issues por definir (lifecycle completo).
-    // Fix: piso teórico. `totalP50` ya representa el trabajo RESTANTE porque
-    // dashboard.js::_scheduleOlaETARefresh excluye los issues cerrados del cálculo
-    // (CA-3). El ETA nunca puede caer por debajo de ese presupuesto (CA-1/CA-2).
-    // Todo literal inline: la función se serializa vía `.toString()` al cliente, no
-    // puede referenciar constantes de módulo (ReferenceError en el eval — ver L42-45).
-    const velMin = etaFromVelocity ? vel.remainingMs / 60000 : null;
-    const budgetMin = Number.isFinite(data.totalP50) ? data.totalP50 : null;
-    let etaRemainingMin;
-    if (velMin != null && budgetMin != null) etaRemainingMin = Math.max(velMin, budgetMin);
-    else if (velMin != null)                 etaRemainingMin = velMin;
-    else                                     etaRemainingMin = budgetMin; // puede ser null
-    // Blindaje (CA-5): nunca NaN/Infinity/negativo hacia el render.
+    // #4734 — FÓRMULA ÚNICA de ETA: `(100 − avance) / velocidad_efectiva`, que el
+    // módulo único ya materializa en `vel.remainingMs` (reloj de pared, con reposo de
+    // proveedor descontado/proyectado). Reemplaza el `max(velocidad, presupuesto)`
+    // (#4449) — "nada de fórmulas paralelas" (decisión de Leo). Sin ritmo medible →
+    // `null` (la vista muestra "estimación insuficiente"), NUNCA un piso teórico
+    // que reintroduzca una segunda cuenta. `totalP50` sigue en el payload para otros
+    // consumidores, pero YA NO participa del ETA del banner.
+    let etaRemainingMin = etaFromVelocity ? vel.remainingMs / 60000 : null;
+    // Blindaje (CA-6): nunca NaN/Infinity/negativo hacia el render.
     if (!Number.isFinite(etaRemainingMin) || etaRemainingMin < 0) etaRemainingMin = null;
     const velocityState = hasVelocity ? 'measured' : 'sin datos suficientes';
     // #4450/#4532 — throughput de entrega (issues por dia) del payload. Se
@@ -266,17 +266,19 @@ function missionOlaEtaClientScript() {
       // marcador del rail (mission-tl-now, arriba). No se toca style.left aca.
       var vv = document.getElementById('mission-vel-value');
       if(vv){
-        // #4532 (G-UX-1) — la celda 🚀 VELOCIDAD expresa el % de avance por issue
-        // por minuto (metrica canonica del issue), reemplazando al throughput de
-        // entrega (que se inflaba al resetearse el comienzo de la ola). Medido o
-        // estimado historico -> "N.NN %/issue·min"; sin datos suficientes ->
+        // #4734 (G-UX-1) — la celda 🚀 VELOCIDAD expresa el % de avance por HORA de
+        // reloj de pared (unidad canonica, decision de Leo 2026-07-16), reemplazando
+        // el porcentaje-por-issue-por-minuto de #4532. Formato "N.N %/h" (1 decimal, mas legible a escala
+        // %/hora). Medido o estimado historico -> valor; sin datos suficientes ->
         // leyenda explicita, nunca un "—" mudo ni un 0 enganoso. Render XSS-safe
         // (createTextNode, R-1).
-        if(m.velocityPctPerIssuePerMin !== null && Number.isFinite(m.velocityPctPerIssuePerMin)){
-          setMzValueUnit(vv, m.velocityPctPerIssuePerMin.toFixed(2), '%/issue·min');
+        if(m.velocityPctPerHour !== null && Number.isFinite(m.velocityPctPerHour)){
+          setMzValueUnit(vv, m.velocityPctPerHour.toFixed(1), '%/h');
+          vv.setAttribute('aria-label', 'Velocidad de la ola: ' + m.velocityPctPerHour.toFixed(1) + ' por ciento por hora');
         } else {
           while(vv.firstChild) vv.removeChild(vv.firstChild);
           vv.appendChild(document.createTextNode('sin datos suficientes'));
+          vv.setAttribute('aria-label', 'Velocidad de la ola: sin datos suficientes');
         }
       }
       var ev = document.getElementById('mission-eta-value');

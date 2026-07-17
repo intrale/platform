@@ -909,7 +909,7 @@ function renderKpisWaveBanner() {
         +         '<div class="mz-wm-s mz-tl-cap-decomp" id="mission-eta-decomp" style="display:none"'
         +           ' title="ETA descompuesto (#4588): pipeline-bound vs operador-bound. La brecha es el costo visible de los gates de firma."></div></div>'
         +       '<div class="mz-wm"><div class="mz-wm-l">🚀 VELOCIDAD</div>'
-        +         '<div class="mz-wm-v" id="mission-vel-value">— <span class="mz-wm-u">%/issue·min</span></div>'
+        +         '<div class="mz-wm-v" id="mission-vel-value">— <span class="mz-wm-u">%/h</span></div>'
         +         '<div class="mz-wm-s">throughput de entrega</div></div>'
         +       '<div class="mz-wm"><div class="mz-wm-l">📦 ENTREGADOS</div>'
         +         '<div class="mz-wm-v" id="mission-delivered-value">—<span class="mz-wm-u"> / —</span></div>'

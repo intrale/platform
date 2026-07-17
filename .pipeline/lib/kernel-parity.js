@@ -158,10 +158,22 @@ function canonical(v) {
 }
 
 // -----------------------------------------------------------------------------
-// CA-1/CA-2 — paridad de los cuatro flujos clave (baseline vs post) por diff
-// estructural de la config que los gobierna.
+// CA-1/CA-2 — paridad de los cuatro flujos clave por diff estructural de la
+// config que los gobierna.
+//
+// Al igual que el eje de bytes del motor (verificarEngineParity), este eje
+// prueba una invariante HISTÓRICA de la migración: "¿la Ola 9.1 cambió la
+// estructura de los cuatro flujos?" → no. Por eso compara dos refs CONGELADOS
+// —baseline vs cierre-de-migración— y NO contra `HEAD` móvil. Comparar contra
+// HEAD convertía este eje en un time-bomb: cualquier feature posterior legítima
+// que evolucione la config de un flujo (p.ej. #4686, que registra el skill `dev`
+// genérico en `skills_por_fase.dev` + `concurrencia`) lo hacía fallar aunque no
+// sea una regresión de la migración. La paridad de comportamiento *hacia
+// adelante* del ruteo la garantiza el guard dedicado
+// `test-dev-routing-regression.js` (fija `determinarDevSkill` para todo label
+// Intrale), no este verificador histórico.
 // -----------------------------------------------------------------------------
-function verifyFlowParity(baselineRef = BASELINE_TAG, headRef = 'HEAD') {
+function verifyFlowParity(baselineRef = BASELINE_TAG, headRef = MIGRATION_CLOSE_REF) {
   const baseText = showFile(baselineRef, CONFIG_REL);
   const headText = showFile(headRef, CONFIG_REL);
   if (baseText == null || headText == null) {
@@ -313,9 +325,12 @@ function runParity(opts = {}) {
   const headRef = opts.headRef || 'HEAD';
 
   const axes = {
-    // Eje de bytes: baseline vs cierre-de-migración (refs congelados), NO headRef.
+    // Ejes históricos de la migración: baseline vs cierre-de-migración (refs
+    // congelados), NO headRef móvil. Prueban que la migración fue
+    // comportamiento-preservante; features posteriores legítimas evolucionan la
+    // config/motor sin ser regresiones de la migración.
     engine: verifyEngineParity(baselineRef),                // CA-2 wiring bytes
-    flows: verifyFlowParity(baselineRef, headRef),          // CA-1/CA-2 flujos
+    flows: verifyFlowParity(baselineRef),                   // CA-1/CA-2 flujos
     resolver: verifyResolverDefault(),                      // CA-2 default→local
     rollback: verifyRollback(baselineRef),                  // CA-3
     security: verifySecurityGates(headRef),                 // CA-4

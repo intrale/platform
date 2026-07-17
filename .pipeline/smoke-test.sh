@@ -23,10 +23,49 @@ PIPELINE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="${PIPELINE_DIR}/logs/smoke-test.log"
 mkdir -p "$(dirname "$LOG_FILE")"
 
+# --- Resolución del directorio de RUNTIME del pipeline ---
+# El estado vivo del pipeline (last-restart.json, ready markers, colas) vive en
+# el checkout CANÓNICO desde el que corre la infra, no en cada copia del código.
+# En producción el smoke test corre desde ese checkout y PIPELINE_DIR ya es
+# correcto. Cuando corre desde un worktree de agente (self-check de pipeline-dev)
+# el worktree sólo tiene el CÓDIGO: el estado runtime no existe ahí. Resolvemos
+# el .pipeline canónico para chequear el pipeline realmente vivo, sin alterar el
+# path de producción (fast-path sin git cuando el marker local existe).
+resolve_runtime_dir() {
+  # 1) Override explícito (operación manual / tests).
+  if [ -n "${PIPELINE_RUNTIME_DIR:-}" ]; then
+    echo "${PIPELINE_RUNTIME_DIR}"
+    return 0
+  fi
+  # 2) Producción / checkout canónico: el marker de runtime está presente. Sin git.
+  if [ -f "${PIPELINE_DIR}/last-restart.json" ]; then
+    echo "${PIPELINE_DIR}"
+    return 0
+  fi
+  # 3) Worktree de agente: resolver el .pipeline del checkout principal vía git.
+  local common_dir main_root
+  common_dir="$(cd "${PIPELINE_DIR}" && git rev-parse --git-common-dir 2>/dev/null)" || common_dir=""
+  if [ -n "$common_dir" ]; then
+    case "$common_dir" in
+      /*|[A-Za-z]:*) : ;;                          # ya absoluto
+      *) common_dir="${PIPELINE_DIR}/${common_dir}" ;;
+    esac
+    main_root="$(cd "$(dirname "$common_dir")" 2>/dev/null && pwd)" || main_root=""
+    if [ -n "$main_root" ] && [ -d "${main_root}/.pipeline" ]; then
+      echo "${main_root}/.pipeline"
+      return 0
+    fi
+  fi
+  # 4) Fallback: el propio directorio (comportamiento previo).
+  echo "${PIPELINE_DIR}"
+}
+
+RUNTIME_DIR="$(resolve_runtime_dir)"
+
 # Evidencia a stderr desde el vamos, independiente de tee/LOG_FILE.
 # Si el smoke test falla antes del primer log() (tee roto, CWD raro),
 # restart.js captura esto via spawnSync result.stderr.
-echo "[smoke-test] inicio pid=$$ pipeline_dir=${PIPELINE_DIR}" >&2
+echo "[smoke-test] inicio pid=$$ pipeline_dir=${PIPELINE_DIR} runtime_dir=${RUNTIME_DIR}" >&2
 
 log() {
   local msg="$1"
@@ -110,10 +149,12 @@ fi
 # --- 3) Estado del filesystem ---
 log "3) Verificando estado del filesystem..."
 
-# last-restart.json debe existir y ser reciente (< 5 min)
-LAST_RESTART="${PIPELINE_DIR}/last-restart.json"
+# last-restart.json debe existir y ser reciente (< 5 min).
+# Se resuelve contra el runtime CANÓNICO (ver resolve_runtime_dir): desde un
+# worktree de agente el estado vivo no está en la copia local del código.
+LAST_RESTART="${RUNTIME_DIR}/last-restart.json"
 if [ ! -f "$LAST_RESTART" ]; then
-  fail "last-restart.json ausente" 3
+  fail "last-restart.json ausente (runtime_dir=${RUNTIME_DIR})" 3
 fi
 
 # Portable file mtime (GNU stat / BSD stat / fallback)
@@ -130,8 +171,8 @@ else
   log "  OK last-restart.json (${age}s)"
 fi
 
-# Archivos de commander/trabajando huérfanos (>10 min)
-ORPHAN_DIR="${PIPELINE_DIR}/servicios/commander/trabajando"
+# Archivos de commander/trabajando huérfanos (>10 min) — runtime canónico.
+ORPHAN_DIR="${RUNTIME_DIR}/servicios/commander/trabajando"
 if [ -d "$ORPHAN_DIR" ]; then
   orphan_count=$(find "$ORPHAN_DIR" -name "*.json" -type f 2>/dev/null | wc -l | tr -d '[:space:]')
   if [ "${orphan_count:-0}" -gt 0 ]; then

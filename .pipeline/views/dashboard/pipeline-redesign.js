@@ -181,7 +181,7 @@ function renderMissionTimeline() {
                    title="Velocidad de la ola: % de avance por issue por minuto (histórica cross-ola).">
                 <span class="mz-tl-annot-ic" aria-hidden="true">🚀</span>
                 <span class="mz-tl-annot-l">VELOCIDAD</span>
-                <span class="mz-tl-annot-v" id="mission-vel-value">— <span class="mz-wm-u">%/issue·min</span></span>
+                <span class="mz-tl-annot-v" id="mission-vel-value">— <span class="mz-wm-u">%/h</span></span>
               </div>
               <div class="mz-tl-annot mz-tl-annot-del"
                    title="Issues entregados sobre el total de la ola.">
