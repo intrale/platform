@@ -1,0 +1,144 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://intrale.local/pipeline/contracts/kernel-store.schema.json",
+  "title": "kernel durable store item - single-table DynamoDB envelope (Ola Puente P3 #4744)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["PK", "SK", "entityType", "projectId", "schemaVersion", "body"],
+  "properties": {
+    "PK": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{1,63}$"
+    },
+    "SK": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 256,
+      "pattern": "^[a-z0-9-]+#[A-Za-z0-9._:#-]+$"
+    },
+    "entityType": {
+      "type": "string",
+      "enum": ["descriptor", "product", "signature", "audit", "claim", "catalog", "coordination"]
+    },
+    "projectId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{1,63}$"
+    },
+    "schemaVersion": {
+      "type": "string",
+      "pattern": "^1\\.0$"
+    },
+    "body": {
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "entityType": { "const": "product" } } },
+      "then": { "properties": { "body": { "$ref": "#/definitions/productBody" } } }
+    },
+    {
+      "if": { "properties": { "entityType": { "const": "signature" } } },
+      "then": { "properties": { "body": { "$ref": "#/definitions/signatureBody" } } }
+    },
+    {
+      "if": { "properties": { "entityType": { "const": "audit" } } },
+      "then": { "properties": { "body": { "$ref": "#/definitions/auditBody" } } }
+    },
+    {
+      "if": { "properties": { "entityType": { "const": "claim" } } },
+      "then": { "properties": { "body": { "$ref": "#/definitions/claimBody" } } }
+    },
+    {
+      "if": { "properties": { "entityType": { "const": "catalog" } } },
+      "then": { "properties": { "body": { "$ref": "#/definitions/catalogBody" } } }
+    },
+    {
+      "if": { "properties": { "entityType": { "const": "coordination" } } },
+      "then": { "properties": { "body": { "$ref": "#/definitions/coordinationBody" } } }
+    }
+  ],
+  "definitions": {
+    "productBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["productId", "name"],
+      "properties": {
+        "productId": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{1,63}$"
+        },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "status": { "type": "string", "enum": ["onboarding", "active", "archived"] },
+        "descriptorRef": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    },
+    "signatureBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["signer", "target", "checksum"],
+      "properties": {
+        "signer": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$"
+        },
+        "target": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "checksum": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "algorithm": { "type": "string", "enum": ["sha256"] },
+        "signedAt": { "type": "string", "minLength": 1, "maxLength": 64 }
+      }
+    },
+    "auditBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "actor", "at"],
+      "properties": {
+        "action": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "actor": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "at": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "detail": { "type": "string", "maxLength": 2000 }
+      }
+    },
+    "claimBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "claimId", "claimedUntil", "claimedBy"],
+      "properties": {
+        "phase": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "claimId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "claimedUntil": { "type": "integer", "minimum": 0 },
+        "claimedBy": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{1,63}$"
+        }
+      }
+    },
+    "catalogBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["productIds"],
+      "properties": {
+        "productIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,63}$" }
+        }
+      }
+    },
+    "coordinationBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "value", "version"],
+      "properties": {
+        "key": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "value": { "type": "object" },
+        "version": { "type": "integer", "minimum": 1 },
+        "updatedBy": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{1,63}$"
+        },
+        "updatedAt": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}
