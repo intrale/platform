@@ -54,6 +54,16 @@ const MIGRATION_PLAN = Object.freeze([
   { key: 'health', sources: ['infra-health.json'] },
 ]);
 
+// Allow-list de nombres de fuente conocidos (A01/A08). El rollback sólo restaura
+// archivos cuyo `name`/`relPath` pertenece a este conjunto: defensa en profundidad
+// sobre la validación de path-traversal (deny-list de `..`). Un manifest plantado
+// con una entrada sin `..` pero ajena a las fuentes (ej. "evil.json") tampoco se
+// procesa. Las fuentes son basenames planos dentro de `.pipeline/`, por lo que el
+// mismo conjunto sirve para `name` (origen en el backup) y `relPath` (destino).
+const KNOWN_SOURCE_NAMES = Object.freeze(
+  Array.from(new Set(MIGRATION_PLAN.flatMap((e) => e.sources)))
+);
+
 // -----------------------------------------------------------------------------
 // Utilidades de integridad y seguridad
 // -----------------------------------------------------------------------------
@@ -355,6 +365,12 @@ function restoreFromBackup(opts = {}) {
     if (typeof f.relPath !== 'string' || f.relPath.includes('..')) {
       return { ok: false, code: 'rollback_path', error: `relPath inseguro en manifest: ${JSON.stringify(f.relPath)}` };
     }
+    // Allow-list (A01/A08): además de rechazar `..`, exigir que `relPath` sea una
+    // de las fuentes conocidas — un basename plantado sin `..` (ej. "evil.json")
+    // no debe poder crear/sobrescribir archivos arbitrarios dentro del pipeline.
+    if (!KNOWN_SOURCE_NAMES.includes(f.relPath)) {
+      return { ok: false, code: 'rollback_path', error: `relPath fuera del conjunto de fuentes conocidas: ${JSON.stringify(f.relPath)}` };
+    }
     const dest = resolveWithin(pipelineDir, f.relPath);
     if (!dest) {
       return { ok: false, code: 'rollback_path', error: `destino de restore fuera del pipeline: ${f.relPath}` };
@@ -369,6 +385,12 @@ function restoreFromBackup(opts = {}) {
         || f.name.includes('/') || f.name.includes('\\')
         || f.name.includes('..') || path.isAbsolute(f.name)) {
       return { ok: false, code: 'unsafe_backup_entry', error: `name inseguro en manifest: ${JSON.stringify(f.name)}` };
+    }
+    // Allow-list (A01/A08): el origen de lectura debe ser una fuente conocida.
+    // Bloquea la lectura de cualquier otro archivo del dir de backup planteado
+    // por un manifest hostil, incluso si es un basename simple sin `..`.
+    if (!KNOWN_SOURCE_NAMES.includes(f.name)) {
+      return { ok: false, code: 'unsafe_backup_entry', error: `name fuera del conjunto de fuentes conocidas: ${JSON.stringify(f.name)}` };
     }
     const src = resolveWithin(dir, f.name);
     if (!src) {

@@ -301,6 +301,48 @@ test('rollback rechaza relPath con path-traversal (destino fuera del pipeline, A
   assert.equal(fs.existsSync(escapePath), false, 'no debe escribir fuera del pipelineDir');
 });
 
+test('rollback rechaza entradas de manifest ajenas a las fuentes conocidas (allow-list, A01/A08)', async () => {
+  const { dir, backupRoot } = makeFixtures();
+  const store = makeStore();
+  const r = await migrateState({ apply: true, coordinationStore: store, sourcesDir: dir, backupRoot, now: FIXED_NOW });
+  assert.equal(r.ok, true);
+
+  // `name` es un basename simple SIN `..` (pasa la deny-list de path-traversal)
+  // pero ajeno al conjunto de fuentes; `relPath` es una fuente legítima. Sin la
+  // allow-list, el rollback leería `evil.json` del backup y lo escribiría sobre
+  // `waves.json`. El checksum coincide (el atacante controla el backup).
+  const evilContent = JSON.stringify({ injected: true });
+  fs.writeFileSync(path.join(r.backup, 'evil.json'), evilContent);
+  const evilManifest = {
+    schemaVersion: 1,
+    projectId: PROJECT_ID,
+    createdAt: 'now',
+    files: [{ name: 'evil.json', relPath: 'waves.json', checksum: rawChecksum(evilContent), bytes: evilContent.length }],
+  };
+  fs.writeFileSync(path.join(r.backup, 'manifest.json'), JSON.stringify(evilManifest));
+
+  const wavesBefore = fs.readFileSync(path.join(dir, 'waves.json'), 'utf8');
+  const rb = await migrateState({ rollback: true, from: r.backup, backupRoot, sourcesDir: dir });
+  assert.equal(rb.ok, false);
+  assert.equal(rb.code, 'unsafe_backup_entry');
+  assert.equal(fs.readFileSync(path.join(dir, 'waves.json'), 'utf8'), wavesBefore, 'no debe sobrescribir con contenido de una entrada ajena');
+
+  // Y el mismo basename ajeno usado como `relPath` (destino) también se rechaza.
+  const evilDest = {
+    schemaVersion: 1,
+    projectId: PROJECT_ID,
+    createdAt: 'now',
+    files: [{ name: 'waves.json', relPath: 'evil.json', checksum: rawChecksum(fs.readFileSync(path.join(r.backup, 'waves.json'), 'utf8')), bytes: 0 }],
+  };
+  fs.writeFileSync(path.join(r.backup, 'manifest.json'), JSON.stringify(evilDest));
+  const injectedPath = path.join(dir, 'evil.json');
+  try { fs.unlinkSync(injectedPath); } catch (_) { /* no existía */ }
+  const rb2 = await migrateState({ rollback: true, from: r.backup, backupRoot, sourcesDir: dir });
+  assert.equal(rb2.ok, false);
+  assert.equal(rb2.code, 'rollback_path');
+  assert.equal(fs.existsSync(injectedPath), false, 'no debe materializar un archivo ajeno a las fuentes');
+});
+
 test('rollback aborta ante un backup corrupto (A05)', async () => {
   const { dir, backupRoot } = makeFixtures();
   const store = makeStore();
