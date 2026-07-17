@@ -50,6 +50,29 @@ const { Logger } = (() => {
 })();
 
 // -----------------------------------------------------------------------------
+// Error tipado — fallo de escritura condicional (concurrencia optimista)
+// -----------------------------------------------------------------------------
+
+/**
+ * Se lanza cuando un `putItem` con `ConditionExpression` NO cumple la condición
+ * (p.ej. `attribute_not_exists(<pk>)` sobre una clave que ya existe). Es la
+ * primitiva de coordinación segura multi-instancia (locking distribuido /
+ * leader-election / dedup / firmas append-only).
+ *
+ * Es un error **tipado y exportado** a propósito: el consumidor lo distingue por
+ * `instanceof ConditionalCheckFailedError` — nunca parseando strings de stderr
+ * (#4743 REQ-3). Ambos adapters (in-memory y aws-cli) lanzan ESTE mismo tipo
+ * para tener paridad de contrato (REQ-5). El manejo debe ser explícito
+ * (retry/rechazo); prohibido swallow silencioso.
+ */
+class ConditionalCheckFailedError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'ConditionalCheckFailedError';
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Constantes del ejecutor / contrato
 // -----------------------------------------------------------------------------
 
@@ -254,9 +277,17 @@ function createInMemoryDynamoDriver() {
             return { Table: t.description };
         },
 
-        async putItem(spec, item) {
+        async putItem(spec, item, opts = {}) {
             const t = tables.get(spec.tableName);
             if (!t) throw new Error(`tabla inexistente: ${spec.tableName}`);
+            // Concurrencia optimista: si el caller pide una condición, replicamos
+            // la semántica `attribute_not_exists(<pk>)` — la escritura sólo
+            // procede si la clave NO existe todavía. Da paridad con aws-cli para
+            // testear append-only / leader-election sin AWS (#4743 REQ-5).
+            if (opts.conditionExpression && t.items.has(keyOf(spec, item))) {
+                throw new ConditionalCheckFailedError(
+                    `condición fallida en put-item ${spec.tableName}: ${opts.conditionExpression}`);
+            }
             t.items.set(keyOf(spec, item), JSON.parse(JSON.stringify(item)));
             return { ok: true };
         },
@@ -316,7 +347,17 @@ function createAwsCliDynamoDriver({ run } = {}) {
         const code = res && typeof res.code === 'number' ? res.code : 0;
         if (code !== 0) {
             const err = (res && res.stderr) || `aws dynamodb ${args[0]} exit ${code}`;
-            throw new Error(String(err).trim());
+            const raw = String(err).trim();
+            // Mapeo fail-closed (#4743 REQ-4): sólo un match preciso con
+            // word-boundary de `ConditionalCheckFailedException` se degrada al
+            // error tipado. Cualquier otro stderr (AccessDenied, throttling,
+            // ResourceInUse…) se re-lanza como Error genérico preservando el
+            // stderr original — nunca se confunde un fallo real de infra con
+            // una condición fallida.
+            if (/\bConditionalCheckFailedException\b/.test(raw)) {
+                throw new ConditionalCheckFailedError(raw);
+            }
+            throw new Error(raw);
         }
         const out = (res && res.stdout) || '';
         return out.trim() ? JSON.parse(out) : {};
@@ -342,8 +383,27 @@ function createAwsCliDynamoDriver({ run } = {}) {
             return cli(['describe-table', '--table-name', spec.tableName]);
         },
 
-        async putItem(spec, item) {
-            await cli(['put-item', '--table-name', spec.tableName, '--item', JSON.stringify(toAttrValues(item))]);
+        async putItem(spec, item, opts = {}) {
+            const args = ['put-item', '--table-name', spec.tableName,
+                '--item', JSON.stringify(toAttrValues(item))];
+            // Escritura condicional (concurrencia optimista). Cada flag va como
+            // ELEMENTO SEPARADO del array `args` que consume `run(args)` →
+            // `spawn` — cero interpolación en shell string (#4743 REQ-1, A03).
+            // El `conditionExpression` es constante de código con placeholders
+            // (`#pk`, `:v`); los valores se serializan con `toAttrValues`
+            // (formato AttributeValue), nunca como string plano (REQ-2).
+            if (opts.conditionExpression) {
+                args.push('--condition-expression', opts.conditionExpression);
+                if (opts.expressionAttributeValues) {
+                    args.push('--expression-attribute-values',
+                        JSON.stringify(toAttrValues(opts.expressionAttributeValues)));
+                }
+                if (opts.expressionAttributeNames) {
+                    args.push('--expression-attribute-names',
+                        JSON.stringify(opts.expressionAttributeNames));
+                }
+            }
+            await cli(args);
             return { ok: true };
         },
 
@@ -641,6 +701,7 @@ module.exports = {
     buildTableDescription,
     toAttrValues,
     fromAttrValues,
+    ConditionalCheckFailedError,
     // ejecución
     provisionResource,
     buildSmokeItem,

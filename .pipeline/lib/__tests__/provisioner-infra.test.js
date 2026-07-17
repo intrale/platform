@@ -294,3 +294,163 @@ test('runExecutor enruta recurso_provisionado al provisioner y produce evidencia
     assert.equal(res.ejecutor, prov.EXECUTOR_TYPE.PROVISIONER_INFRA);
     assert.equal(res.evidence.type, prov.EVIDENCE_TYPE);
 });
+
+// -----------------------------------------------------------------------------
+// #4743 — Conditional writes (concurrencia optimista) en ambos adapters
+//
+// Cobertura mapeada a los CA del issue:
+//   - CA-1: putItem acepta condition expression en ambos adapters (retrocompat).
+//   - CA-2: append-only real — attribute_not_exists(<pk>) rechaza sobreescritura.
+//   - CA-3: error tipado ConditionalCheckFailedError exportado y propagado (no swallow).
+//   - CA-4: mapeo fail-closed — stderr no-condicional se re-lanza como Error genérico.
+//   - CA-5: seguridad — flags aws-cli viajan como args separados (nunca shell).
+//   - CA-6: paridad in-memory ↔ aws-cli — mismo tipo de error.
+// -----------------------------------------------------------------------------
+
+// Spec mínimo (formato que consumen los drivers: tableName + keys HASH/RANGE).
+function specConHash(overrides = {}) {
+    return {
+        tableName: 'IntraleLocks',
+        keys: [{ name: 'pk', attributeType: 'S', keyType: 'HASH' }],
+        ...overrides,
+    };
+}
+
+const APPEND_ONLY_OPTS = {
+    conditionExpression: 'attribute_not_exists(#pk)',
+    expressionAttributeNames: { '#pk': 'pk' },
+};
+
+test('#4743 · el error condicional está exportado como clase tipada', () => {
+    assert.equal(typeof prov.ConditionalCheckFailedError, 'function');
+    const e = new prov.ConditionalCheckFailedError('x');
+    assert.ok(e instanceof Error);
+    assert.equal(e.name, 'ConditionalCheckFailedError');
+});
+
+// --- in-memory --------------------------------------------------------------
+
+test('#4743 CA-1 · in-memory: putItem con conditionExpression persiste OK cuando la clave no existe', async () => {
+    const driver = prov.createInMemoryDynamoDriver();
+    const spec = specConHash();
+    await driver.createTable(spec);
+    const res = await driver.putItem(spec, { pk: 'lock-1', owner: 'inst-A' }, APPEND_ONLY_OPTS);
+    assert.deepEqual(res, { ok: true });
+    const got = await driver.getItem(spec, { pk: 'lock-1' });
+    assert.equal(got.item.owner, 'inst-A');
+});
+
+test('#4743 CA-2/CA-3 · in-memory: attribute_not_exists rechaza sobreescritura con ConditionalCheckFailedError', async () => {
+    const driver = prov.createInMemoryDynamoDriver();
+    const spec = specConHash();
+    await driver.createTable(spec);
+    await driver.putItem(spec, { pk: 'lock-1', owner: 'inst-A' }, APPEND_ONLY_OPTS);
+
+    // Segundo líder intenta tomar el mismo lock: debe fallar tipado, no swallow.
+    await assert.rejects(
+        () => driver.putItem(spec, { pk: 'lock-1', owner: 'inst-B' }, APPEND_ONLY_OPTS),
+        prov.ConditionalCheckFailedError,
+    );
+    // El ítem previo NO se sobreescribió (append-only real, A09).
+    const got = await driver.getItem(spec, { pk: 'lock-1' });
+    assert.equal(got.item.owner, 'inst-A');
+});
+
+test('#4743 CA-1 (REQ-6) · in-memory: putItem sin opts mantiene el comportamiento previo (sobreescribe)', async () => {
+    const driver = prov.createInMemoryDynamoDriver();
+    const spec = specConHash();
+    await driver.createTable(spec);
+    await driver.putItem(spec, { pk: 'k', v: 1 });
+    await driver.putItem(spec, { pk: 'k', v: 2 }); // sin opts ⇒ upsert como antes
+    const got = await driver.getItem(spec, { pk: 'k' });
+    assert.equal(got.item.v, 2);
+});
+
+// --- aws-cli ----------------------------------------------------------------
+
+test('#4743 CA-1/CA-5 · aws-cli: putItem arma --condition-expression y --expression-attribute-* como args separados', async () => {
+    const calls = [];
+    const run = async (args) => { calls.push(args); return { code: 0, stdout: '{}' }; };
+    const driver = prov.createAwsCliDynamoDriver({ run });
+    const spec = specConHash();
+
+    await driver.putItem(spec, { pk: 'lock-1', owner: 'inst-A' }, {
+        conditionExpression: 'attribute_not_exists(#pk)',
+        expressionAttributeNames: { '#pk': 'pk' },
+        expressionAttributeValues: { ':owner': 'inst-A' },
+    });
+
+    const putCall = calls.find((c) => c[0] === 'put-item');
+    // Cada flag es un ELEMENTO separado del array (nunca concatenado / shell).
+    const ceIdx = putCall.indexOf('--condition-expression');
+    assert.ok(ceIdx > -1);
+    assert.equal(putCall[ceIdx + 1], 'attribute_not_exists(#pk)');
+
+    const namesIdx = putCall.indexOf('--expression-attribute-names');
+    assert.ok(namesIdx > -1);
+    assert.deepEqual(JSON.parse(putCall[namesIdx + 1]), { '#pk': 'pk' });
+
+    const valsIdx = putCall.indexOf('--expression-attribute-values');
+    assert.ok(valsIdx > -1);
+    // Values serializados en formato AttributeValue (toAttrValues), no string plano.
+    assert.deepEqual(JSON.parse(putCall[valsIdx + 1]), { ':owner': { S: 'inst-A' } });
+});
+
+test('#4743 CA-1 · aws-cli: putItem con conditionExpression persiste OK cuando el CLI devuelve exit 0', async () => {
+    const run = async () => ({ code: 0, stdout: '{}' });
+    const driver = prov.createAwsCliDynamoDriver({ run });
+    const res = await driver.putItem(specConHash(), { pk: 'lock-1' }, APPEND_ONLY_OPTS);
+    assert.deepEqual(res, { ok: true });
+});
+
+test('#4743 CA-2/CA-3/CA-6 · aws-cli: ConditionalCheckFailedException se mapea a ConditionalCheckFailedError tipado', async () => {
+    const run = async () => ({
+        code: 255,
+        stderr: 'An error occurred (ConditionalCheckFailedException) when calling the PutItem operation: The conditional request failed',
+    });
+    const driver = prov.createAwsCliDynamoDriver({ run });
+    // Mismo tipo que el in-memory ⇒ paridad de contrato (CA-6). No se swallowea.
+    await assert.rejects(
+        () => driver.putItem(specConHash(), { pk: 'lock-1' }, APPEND_ONLY_OPTS),
+        (err) => {
+            assert.ok(err instanceof prov.ConditionalCheckFailedError);
+            // Preserva el stderr original en el mensaje.
+            assert.match(err.message, /ConditionalCheckFailedException/);
+            return true;
+        },
+    );
+});
+
+test('#4743 CA-4 · aws-cli: stderr que NO es ConditionalCheckFailedException se re-lanza como Error genérico (fail-closed)', async () => {
+    const run = async () => ({
+        code: 255,
+        stderr: 'An error occurred (AccessDeniedException) when calling the PutItem operation: not authorized',
+    });
+    const driver = prov.createAwsCliDynamoDriver({ run });
+    await assert.rejects(
+        () => driver.putItem(specConHash(), { pk: 'lock-1' }, APPEND_ONLY_OPTS),
+        (err) => {
+            // NO degrada un fallo real de permisos a condición fallida.
+            assert.ok(!(err instanceof prov.ConditionalCheckFailedError));
+            assert.ok(err instanceof Error);
+            assert.match(err.message, /AccessDeniedException/);
+            return true;
+        },
+    );
+});
+
+test('#4743 CA-4 · aws-cli: match preciso — un stderr que sólo menciona la palabra de forma laxa no se confunde', async () => {
+    // Sin word-boundary exacto de la excepción ⇒ Error genérico, no tipado.
+    const run = async () => ({
+        code: 255,
+        stderr: 'ThrottlingException: rate exceeded for ConditionalCheckFailedExceptionMetric namespace',
+    });
+    const driver = prov.createAwsCliDynamoDriver({ run });
+    await assert.rejects(
+        () => driver.putItem(specConHash(), { pk: 'lock-1' }, APPEND_ONLY_OPTS),
+        (err) => {
+            assert.ok(!(err instanceof prov.ConditionalCheckFailedError));
+            return true;
+        },
+    );
+});
