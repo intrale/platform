@@ -94,8 +94,51 @@ function selectMarkersToRelease({ markers, issueStates } = {}) {
   return { toRelease, blocked };
 }
 
+/**
+ * #4748 — SEGUNDA fuente de markers para el MISMO motor fail-closed: los
+ * `needs-human` cuyo motivo de freeze se congeló como precondición de
+ * dependencia (`precondition.type === 'dependency'`). Reutiliza `allDepsClosed`
+ * — la misma decisión que gobierna los `blocked:dependencies` — para que exista
+ * una sola máquina de destrabe, no dos divergentes.
+ *
+ * Sólo considera markers con `precondition.type === 'dependency'` y
+ * `precondition.depends_on` no vacío. Cualquier otro (juicio humano, ausente,
+ * tipo desconocido) se IGNORA por completo: no entra ni a `toRelease` ni a
+ * `blocked`, dejando el fail-closed del juicio humano intacto (SEC-4, CA-3).
+ *
+ * @param {object} p
+ * @param {Array<{issue:(string|number), precondition?:{type:string, depends_on?:Array<string|number>}}>} p.markers
+ * @param {Record<string,string>} p.issueStates - estado observado por dep
+ * @returns {{ toRelease: Array<object>, blocked: Array<object> }}
+ */
+function selectHumanBlocksToRelease({ markers, issueStates } = {}) {
+  const list = Array.isArray(markers) ? markers : [];
+  const states = issueStates && typeof issueStates === 'object' ? issueStates : {};
+  const toRelease = [];
+  const blocked = [];
+
+  for (const m of list) {
+    const pc = m && m.precondition;
+    // SÓLO dependencia estructurada. Juicio humano / ausente / tipo raro →
+    // intocable (SEC-4). No lo agregamos ni a toRelease ni a blocked.
+    if (!pc || pc.type !== 'dependency') continue;
+    const deps = Array.isArray(pc.depends_on) ? pc.depends_on : [];
+    if (deps.length === 0) continue; // sin deps declaradas → intocable
+    if (allDepsClosed(deps, states)) {
+      toRelease.push(m);
+    } else {
+      const openDeps = deps.map(depKey).filter((d) => states[d] !== CLOSED);
+      blocked.push({ ...m, openDeps });
+    }
+  }
+
+  return { toRelease, blocked };
+}
+
 module.exports = {
   selectMarkersToRelease,
+  selectHumanBlocksToRelease,
   allDepsClosed,
+  depKey,
   CLOSED,
 };
