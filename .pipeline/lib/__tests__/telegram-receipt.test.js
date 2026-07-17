@@ -235,3 +235,73 @@ test('resolveMessageId: recibosDir inválido → null (no lanza)', () => {
   assert.equal(rec.resolveMessageId('cmd-123456', ''), null);
   assert.equal(rec.resolveMessageId('cmd-123456', null), null);
 });
+
+// =============================================================================
+// #4750 — Dimensión de CHUNK de audio (partIndex / partTotal)
+// =============================================================================
+
+test('coercePartInt: acepta enteros >= 0 y strings de dígitos; rechaza el resto', () => {
+  assert.equal(rec.coercePartInt(0), 0);
+  assert.equal(rec.coercePartInt(3), 3);
+  assert.equal(rec.coercePartInt('2'), 2, 'string de dígitos coerciona');
+  // Rechazos (SEC-R2): negativos, decimales, strings no-numéricas, tipos raros.
+  assert.equal(rec.coercePartInt(-1), null);
+  assert.equal(rec.coercePartInt(1.5), null);
+  assert.equal(rec.coercePartInt('1.5'), null);
+  assert.equal(rec.coercePartInt('-1'), null);
+  assert.equal(rec.coercePartInt('abc'), null);
+  assert.equal(rec.coercePartInt('../x'), null, 'path-traversal en dims rechazado');
+  assert.equal(rec.coercePartInt(NaN), null);
+  assert.equal(rec.coercePartInt(Infinity), null);
+  assert.equal(rec.coercePartInt(null), null);
+  assert.equal(rec.coercePartInt(undefined), null);
+});
+
+test('isValidPartDims: exige 0 <= partIndex < partTotal', () => {
+  assert.equal(rec.isValidPartDims(0, 2), true);
+  assert.equal(rec.isValidPartDims(1, 2), true);
+  assert.equal(rec.isValidPartDims('0', '3'), true, 'coerciona strings de dígitos');
+  assert.equal(rec.isValidPartDims(2, 2), false, 'partIndex == partTotal rechazado');
+  assert.equal(rec.isValidPartDims(3, 2), false, 'partIndex > partTotal rechazado');
+  assert.equal(rec.isValidPartDims(-1, 2), false);
+  assert.equal(rec.isValidPartDims(0, 0), false, 'partTotal 0 rechazado');
+  assert.equal(rec.isValidPartDims(1.5, 3), false);
+});
+
+test('buildReceipt: dimensión de chunk válida se persiste como enteros', () => {
+  const r = rec.buildReceipt({ correlationId: 'voice-1-abcdef', status: 'enviado', messageIds: [5], partIndex: '1', partTotal: '3' });
+  assert.equal(r.partIndex, 1, 'coerciona a entero (no string)');
+  assert.equal(r.partTotal, 3);
+  const parsed = rec.parseReceipt(JSON.stringify(r));
+  assert.equal(parsed.partIndex, 1, 'round-trip preserva partIndex');
+  assert.equal(parsed.partTotal, 3);
+});
+
+test('buildReceipt: dims inválidas lanzan (fail-closed SEC-R2)', () => {
+  const base = { correlationId: 'voice-1-abcdef', status: 'enviado', messageIds: [5] };
+  assert.throws(() => rec.buildReceipt({ ...base, partIndex: 2, partTotal: 2 }), /partIndex\/partTotal/);
+  assert.throws(() => rec.buildReceipt({ ...base, partIndex: -1, partTotal: 2 }), /partIndex\/partTotal/);
+  assert.throws(() => rec.buildReceipt({ ...base, partIndex: 1.5, partTotal: 3 }), /partIndex\/partTotal/);
+  assert.throws(() => rec.buildReceipt({ ...base, partIndex: 'x', partTotal: 3 }), /partIndex\/partTotal/);
+  // sólo una de las dos claves presente → exige ambas → inválido.
+  assert.throws(() => rec.buildReceipt({ ...base, partIndex: 0 }), /partIndex\/partTotal/);
+});
+
+test('isValidReceipt: recibo persistido con dims string → inválido (estricto)', () => {
+  // buildReceipt persiste enteros; un recibo forjado con strings NO es válido.
+  const forged = { correlationId: 'voice-1-abcdef', status: 'enviado', messageIds: [5], at: new Date().toISOString(), partIndex: '1', partTotal: '3' };
+  assert.equal(rec.isValidReceipt(forged), false, 'strings en dims persistidas rechazadas');
+  assert.equal(rec.parseReceipt(JSON.stringify(forged)), null, 'parseReceipt fail-closed');
+  const ok = { ...forged, partIndex: 1, partTotal: 3 };
+  assert.equal(rec.isValidReceipt(ok), true);
+});
+
+test('writeReceipt: nombre de archivo por-parte <cid>-p<idx>.json sin traversal', () => {
+  const dir = sandbox();
+  const p = rec.writeReceipt(dir, { correlationId: 'voice-1-abcdef', status: 'enviado', messageIds: [7], partIndex: 0, partTotal: 2 });
+  assert.equal(path.basename(p), 'voice-1-abcdef-p0.json', 'filename por-parte');
+  assert.ok(fs.existsSync(p));
+  // Sin dims → nombre legacy <cid>.json (retrocompat).
+  const p2 = rec.writeReceipt(dir, { correlationId: 'cmd-1-abcdef', status: 'enviado', messageIds: [7] });
+  assert.equal(path.basename(p2), 'cmd-1-abcdef.json');
+});

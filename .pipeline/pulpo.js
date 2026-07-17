@@ -230,6 +230,12 @@ const handoff = require('./lib/handoff');
 // reconcilia el historial leyendo `recibos/` que escribe `svc-telegram` cuando
 // el API confirma la entrega (`ok:true` + `message_id`) o falla terminal.
 const telegramReceipt = require('./lib/telegram-receipt');
+// #4750 — Contabilidad + reconciliación de chunks de audio (part_index/part_total)
+// atados al correlationId padre. Detecta partes faltantes tras el timeout y las
+// reenvía (tope N reintentos + backoff); avisa al usuario si se agotan. Reutiliza
+// la política de reintentos de salientes de #4082 (módulo puro compartido).
+const voiceParts = require('./lib/voice-parts');
+const { resolveOutboundConfig: resolveTelegramOutboundConfig } = require('./lib/telegram-outbound-config');
 // #3414 — Notificación Telegram de entregables del pipeline (human-in-the-loop
 // opcional). Se invoca desde `brazoBarrido` cuando un skill notificable cierra
 // fase OK. Default OFF (rollout gradual via config.yaml → deliverable_notifications.enabled).
@@ -10242,11 +10248,16 @@ function appendCommanderHistory(historyFile, entry) {
 // entrega; la prueba es el `message_id` del API embebido en el recibo.
 function reconcileTelegramReceipts(opts = {}) {
   const pipelineDir = opts.pipelineDir || PIPELINE;
+  let result = { reconciled: 0, quarantined: 0 };
   try {
     const recibosDir = telegramReceipt.receiptsDir(pipelineDir);
     const archivedDir = telegramReceipt.archivedReceiptsDir(pipelineDir);
     const files = telegramReceipt.listReceiptFiles(recibosDir);
-    if (files.length === 0) return { reconciled: 0, quarantined: 0 };
+    if (files.length === 0) {
+      // No hay recibos nuevos, pero el sweep de chunks de audio DEBE correr igual
+      // (las partes viejas pueden vencer su timeout sin un recibo nuevo).
+      result = { reconciled: 0, quarantined: 0 };
+    } else {
     const historyFile = path.join(pipelineDir, 'commander-history.jsonl');
     // #4082 (fix rebote rev-2) — Snapshot del historial para resolver el `chat_id`
     // del `out` original por correlation_id. Se lee UNA vez por tick: el chat_id que
@@ -10265,6 +10276,28 @@ function reconcileTelegramReceipts(opts = {}) {
           fs.renameSync(f.path, dest);
         } catch { /* best-effort */ }
         quarantined++;
+        continue;
+      }
+      // #4750 — recibo de un CHUNK de audio (trae partIndex/partTotal): NO va al
+      // historial conversacional (spamearía una entry `reconcile` por parte).
+      // Marca la parte confirmada en el estado de contabilidad y archiva el recibo.
+      // El sweep (más abajo) cierra la respuesta cuando todas las partes confirman.
+      if (voiceParts.isVoicePartReceipt(receipt)) {
+        if (receipt.status === telegramReceipt.STATUS_ENVIADO) {
+          try {
+            voiceParts.recordPartConfirmation({
+              pipelineDir,
+              correlationId: receipt.correlationId,
+              partIndex: receipt.partIndex,
+            });
+          } catch (e) {
+            log('telegram', `[reconcile] no se pudo confirmar chunk (${receipt.correlationId} p${receipt.partIndex}): ${e.message}`);
+          }
+        }
+        // Un recibo `fallido` de chunk se archiva sin confirmar: el sweep reintenta
+        // por timeout (fail-closed: sólo `enviado` con message_id confirma).
+        telegramReceipt.archiveReceipt(f.path, archivedDir);
+        reconciled++;
         continue;
       }
       // Entry de reconciliación append-only ligada por correlation_id. La lógica
@@ -10291,11 +10324,32 @@ function reconcileTelegramReceipts(opts = {}) {
     if (reconciled > 0 || quarantined > 0) {
       log('telegram', `[reconcile] recibos: ${reconciled} reconciliados, ${quarantined} en cuarentena (inválidos)`);
     }
-    return { reconciled, quarantined };
+    result = { reconciled, quarantined };
+    }
   } catch (e) {
     log('telegram', `[reconcile] error (best-effort): ${e.message}`);
-    return { reconciled: 0, quarantined: 0 };
   }
+  // #4750 — Sweep de contabilidad de chunks de audio: SIEMPRE (aun sin recibos
+  // nuevos). Detecta partes que no confirmaron dentro del timeout y las reenvía
+  // (tope N reintentos + backoff, misma política que texto — #4082); si se agotan
+  // los reintentos avisa al usuario en el chat del padre (nunca hueco silencioso).
+  try {
+    const outboundCfg = resolveTelegramOutboundConfig(loadConfig());
+    voiceParts.sweepVoiceStates({
+      pipelineDir,
+      now: Date.now(),
+      config: outboundCfg,
+      enqueue: ({ correlationId, partIndex, partTotal, path: audioPath }) =>
+        enqueueTelegramVoice(audioPath, { correlationId, partIndex, partTotal }),
+      // SEC-R5: el aviso va al chat del bot atado a la respuesta padre
+      // (sendTelegramPlain apunta al chatId configurado, no a uno derivado del chunk).
+      notify: (text) => { try { sendTelegramPlain(text); } catch { /* best-effort */ } },
+      logFn: (m) => log('telegram', `[voice-sweep] ${m}`),
+    });
+  } catch (e) {
+    log('telegram', `[voice-sweep] error (best-effort): ${e.message}`);
+  }
+  return result;
 }
 
 // =============================================================================
@@ -10824,6 +10878,10 @@ async function cmdStatus(config) {
       // en /status. El `if (meta && meta.buffer)` no tenía `else`: si fallaba, el
       // audio moría en silencio. Acumulamos y avisamos una sola vez tras el loop.
       let statusTtsDegraded = false;
+      // #4750 — generamos los buffers y los encolamos por la cola con recibo por
+      // chunk (misma Opción A que el chat operador): el sweep detecta/reenvía las
+      // partes que no confirmen y avisa si se agotan los reintentos.
+      const statusVoiceBuffers = [];
       for (let i = 0; i < statusChunks.length; i++) {
         let chunkText = statusChunks.length > 1
           ? `Parte ${i + 1} de ${statusChunks.length}. ${statusChunks[i]}`
@@ -10831,24 +10889,24 @@ async function cmdStatus(config) {
         const ttsOpts = { chunkInfo: { index: i, total: statusChunks.length } };
         const meta = await textToSpeechWithMeta(chunkText, ttsOpts);
         if (!meta || !meta.buffer) { statusTtsDegraded = true; continue; }
-        if (meta && meta.buffer) {
-          const intro = i === 0 ? getTransitionIntro(meta.provider, prevProviderStatus) : null;
-          if (intro) {
-            // Reenviar el primer chunk con el preámbulo de transición
-            const reMeta = await textToSpeechWithMeta(`${intro} ${chunkText}`, ttsOpts);
-            if (reMeta && reMeta.buffer) {
-              await sendVoiceTelegram(reMeta.buffer, botToken, chatId);
-              log('commander', `[status] Audio TTS parte 1/${statusChunks.length} enviado con intro (provider=${reMeta.provider})`);
-              saveTtsState({ lastProvider: reMeta.provider });
-              prevProviderStatus = reMeta.provider;
-              continue;
-            }
+        const intro = statusVoiceBuffers.length === 0 ? getTransitionIntro(meta.provider, prevProviderStatus) : null;
+        let finalBuffer = meta.buffer;
+        let finalProvider = meta.provider;
+        if (intro) {
+          // Reenviar el primer chunk con el preámbulo de transición
+          const reMeta = await textToSpeechWithMeta(`${intro} ${chunkText}`, ttsOpts);
+          if (reMeta && reMeta.buffer) {
+            finalBuffer = reMeta.buffer;
+            finalProvider = reMeta.provider;
           }
-          await sendVoiceTelegram(meta.buffer, botToken, chatId);
-          log('commander', `[status] Audio TTS parte ${i + 1}/${statusChunks.length} enviado (provider=${meta.provider})`);
-          saveTtsState({ lastProvider: meta.provider });
-          prevProviderStatus = meta.provider;
         }
+        statusVoiceBuffers.push({ buffer: finalBuffer });
+        saveTtsState({ lastProvider: finalProvider });
+        prevProviderStatus = finalProvider;
+      }
+      if (statusVoiceBuffers.length > 0) {
+        const { correlationId: statusCid, enqueued } = dispatchVoiceParts(statusVoiceBuffers, chatId, path.join(LOG_DIR, 'media'));
+        if (enqueued > 0) log('commander', `[status] ${enqueued} parte(s) de audio encoladas con recibo por chunk (cid=${statusCid})`);
       }
       // EP1-H4 (#3919, CA-2): aviso consolidado al chat de deliverables si el TTS
       // del /status quedó degradado. Dedup por (chatId, 'tts') + literal plano
@@ -14904,6 +14962,12 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
             // respuesta sale solo por texto. Acumulamos el fallo y avisamos UNA
             // sola vez tras el loop (aviso consolidado), nunca por chunk.
             let ttsDegraded = false;
+            // #4750 — generamos TODOS los buffers y luego los encolamos por la cola
+            // con recibo por chunk (Opción A). Antes cada parte salía fire-and-forget
+            // (`sendVoiceTelegram`), sin confirmación de entrega → una parte perdida
+            // pasaba silenciosa (#4748). Ahora el sweep de reconciliación detecta y
+            // reenvía faltantes, y avisa al usuario si se agotan los reintentos.
+            const voiceBuffers = [];
             for (let i = 0; i < chatChunks.length; i++) {
               const baseChunk = chatChunks.length > 1
                 ? `Parte ${i + 1} de ${chatChunks.length}. ${chatChunks[i]}`
@@ -14913,7 +14977,7 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
               const meta = await textToSpeechWithMeta(baseChunk, ttsOpts);
               if (!meta || !meta.buffer) { ttsDegraded = true; continue; }
 
-              const intro = i === 0 ? getTransitionIntro(meta.provider, prevProvider) : null;
+              const intro = voiceBuffers.length === 0 ? getTransitionIntro(meta.provider, prevProvider) : null;
               let finalBuffer = meta.buffer;
               let finalProvider = meta.provider;
               if (intro) {
@@ -14924,12 +14988,14 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
                 }
               }
 
-              const audioPath = path.join(LOG_DIR, 'media', `tts-${Date.now()}-${i}.ogg`);
-              fs.writeFileSync(audioPath, finalBuffer);
-              enviado = await sendVoiceTelegram(finalBuffer, botToken, chatId);
-              if (enviado) log('telegram', `Audio TTS parte ${i + 1}/${chatChunks.length} enviado (${finalBuffer.length} bytes, provider=${finalProvider}${intro ? ', con intro' : ''})`);
+              voiceBuffers.push({ buffer: finalBuffer });
               saveTtsState({ lastProvider: finalProvider });
               prevProvider = finalProvider;
+            }
+            if (voiceBuffers.length > 0) {
+              const { correlationId: voiceCid, enqueued } = dispatchVoiceParts(voiceBuffers, chatId, path.join(LOG_DIR, 'media'));
+              enviado = enqueued > 0;
+              if (enviado) log('telegram', `[chat] ${enqueued} parte(s) de audio encoladas con recibo por chunk (cid=${voiceCid})`);
             }
             // EP1-H4 (#3919, CA-2): aviso consolidado de degradación TTS. Solo si
             // se esperaba voz (esAudio) y hubo al menos un chunk fallido. Pasa por
@@ -15118,6 +15184,99 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
     log('telegram', `Enviado directo (${msg.length} chars)`);
     return null;
   }
+}
+
+// #4750 — Encola un CHUNK de audio en la cola de `svc-telegram` (rama multipart
+// `voice`) para que herede `assertDelivered` (fail-closed: `ok:true` +
+// `message_id`) + `writeSentReceiptIfAny` con la dimensión de chunk. Cada chunk
+// es un dropfile independiente con `_partIndex` explícito → la contabilidad no
+// depende del orden de consolidación de bursts (mitigación de reordering).
+//
+// El `meta` con `type:'voice'` + `pid=correlationId` + `issue=partIndex` da una
+// clave de agrupamiento ÚNICA por parte en el burst-grouper, para que dos chunks
+// del mismo turno NUNCA se consoliden en un mensaje de texto (perdería el audio).
+//
+// NO borra el `.ogg`: el sweep de reconciliación lo necesita para el reenvío.
+// Devuelve el `correlationId` padre, o `null` si la validación falla.
+function enqueueTelegramVoice(audioPath, opts = {}) {
+  const { correlationId, partIndex, partTotal } = opts;
+  if (!telegramReceipt.isValidCorrelationId(correlationId)) {
+    log('telegram', `enqueueTelegramVoice: correlationId inválido, no se encola`);
+    return null;
+  }
+  if (!telegramReceipt.isValidPartDims(partIndex, partTotal)) {
+    log('telegram', `enqueueTelegramVoice: partIndex/partTotal inválido (${JSON.stringify({ partIndex, partTotal })})`);
+    return null;
+  }
+  if (typeof audioPath !== 'string' || !fs.existsSync(audioPath)) {
+    log('telegram', `enqueueTelegramVoice: audio no existe (${audioPath})`);
+    return null;
+  }
+  const pi = telegramReceipt.coercePartInt(partIndex);
+  const pt = telegramReceipt.coercePartInt(partTotal);
+  const svcDir = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
+  const filename = `${Date.now()}-voice-p${pi}.json`;
+  try {
+    const payload = {
+      voice: audioPath,
+      _correlationId: correlationId,
+      _partIndex: pi,
+      _partTotal: pt,
+      // clave de burst única por parte → nunca se consolida como texto.
+      meta: { type: 'voice', pid: correlationId, issue: pi },
+    };
+    fs.writeFileSync(path.join(svcDir, filename), JSON.stringify(payload));
+    return correlationId;
+  } catch (e) {
+    log('telegram', `enqueueTelegramVoice: error encolando parte ${pi}: ${e.message}`);
+    return null;
+  }
+}
+
+// #4750 — Genera las partes de audio de una respuesta y las encola por la cola
+// con recibo por chunk (Opción A). Recibe los buffers ya sintetizados (para no
+// acoplar TTS acá) como `[{ buffer, spokenLabel? }]` y devuelve el correlationId
+// padre + cuántas partes se encolaron. El estado de contabilidad se persiste
+// para que el sweep de reconciliación detecte/reenvíe faltantes.
+function dispatchVoiceParts(buffers, chatId, mediaDir) {
+  if (!Array.isArray(buffers) || buffers.length === 0) return { correlationId: null, enqueued: 0 };
+  const correlationId = telegramReceipt.generateCorrelationId('voice');
+  const partTotal = buffers.length;
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  try { fs.mkdirSync(mediaDir, { recursive: true }); } catch { /* best-effort */ }
+  const stateParts = [];
+  let enqueued = 0;
+  for (let idx = 0; idx < buffers.length; idx++) {
+    const audioPath = path.join(mediaDir, `tts-${nowMs}-${correlationId}-${idx}.ogg`);
+    try {
+      fs.writeFileSync(audioPath, buffers[idx].buffer);
+    } catch (e) {
+      log('telegram', `[voice] no se pudo persistir parte ${idx + 1}/${partTotal}: ${e.message}`);
+      continue;
+    }
+    const enq = enqueueTelegramVoice(audioPath, { correlationId, partIndex: idx, partTotal });
+    if (enq) {
+      stateParts.push({ partIndex: idx, path: audioPath, enqueuedAt: nowIso });
+      enqueued++;
+      log('telegram', `Audio TTS parte ${idx + 1}/${partTotal} encolada (recibo por chunk, cid=${correlationId})`);
+    }
+  }
+  if (enqueued > 0) {
+    try {
+      voiceParts.initState({
+        pipelineDir: PIPELINE,
+        correlationId,
+        partTotal,
+        chatId,
+        parts: stateParts,
+        now: nowMs,
+      });
+    } catch (e) {
+      log('telegram', `[voice] no se pudo inicializar estado de contabilidad (cid=${correlationId}): ${e.message}`);
+    }
+  }
+  return { correlationId, enqueued };
 }
 
 // #3484 CA-UX-1 — sendChatActionTyping: refresca el indicador "escribiendo..."
