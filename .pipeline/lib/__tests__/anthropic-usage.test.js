@@ -143,9 +143,10 @@ test('triggerRefreshAsync spawnea /usage, parsea y escribe el cache', async () =
         capturedArgs = args;
         return fakeChild('Current session: 30% used\nCurrent week (all models): 70% used\n');
     };
-    u.triggerRefreshAsync({ metricsDir: dir, spawnImpl, launcher: { cmd: 'claude', prefixArgs: [], shell: false } });
-    // Esperar a que el 'close' async escriba el cache.
-    await new Promise((res) => setTimeout(res, 30));
+    // Esperar el fin real del refresh (determinístico) en vez de un timeout fijo.
+    await new Promise((res) => {
+        u.triggerRefreshAsync({ metricsDir: dir, spawnImpl, launcher: { cmd: 'claude', prefixArgs: [], shell: false }, onDone: res });
+    });
     assert.ok(capturedArgs.includes('/usage'), 'debe invocar /usage');
     assert.ok(capturedArgs.includes('-p'), 'debe usar print mode');
     const c = u.readCache(dir);
@@ -156,12 +157,14 @@ test('triggerRefreshAsync spawnea /usage, parsea y escribe el cache', async () =
 test('triggerRefreshAsync no escribe cache si el spawn no produce dato parseable', async () => {
     const u = fresh();
     const dir = tmpMetrics();
-    u.triggerRefreshAsync({
-        metricsDir: dir,
-        spawnImpl: () => fakeChild('sin porcentajes aquí'),
-        launcher: { cmd: 'claude', prefixArgs: [], shell: false },
+    await new Promise((res) => {
+        u.triggerRefreshAsync({
+            metricsDir: dir,
+            spawnImpl: () => fakeChild('sin porcentajes aquí'),
+            launcher: { cmd: 'claude', prefixArgs: [], shell: false },
+            onDone: res,
+        });
     });
-    await new Promise((res) => setTimeout(res, 30));
     assert.equal(u.readCache(dir), null, 'fallback: no escribe basura');
 });
 
