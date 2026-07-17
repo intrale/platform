@@ -350,6 +350,8 @@ function restoreFromBackup(opts = {}) {
   // 1. Verificar la integridad de TODOS los archivos del backup ANTES de restaurar.
   const plans = [];
   for (const f of manifest.files) {
+    // (a) `relPath` = destino de ESCRITURA. Anti path-traversal (A01): rechazar
+    //     cualquier `..` y confirmar que resuelve dentro del pipelineDir.
     if (typeof f.relPath !== 'string' || f.relPath.includes('..')) {
       return { ok: false, code: 'rollback_path', error: `relPath inseguro en manifest: ${JSON.stringify(f.relPath)}` };
     }
@@ -357,9 +359,24 @@ function restoreFromBackup(opts = {}) {
     if (!dest) {
       return { ok: false, code: 'rollback_path', error: `destino de restore fuera del pipeline: ${f.relPath}` };
     }
+    // (b) `name` = origen de LECTURA dentro del dir de backup. Sin esta validación,
+    //     un manifest plantado con name="../.." (Zip-Slip aplicado al manifest,
+    //     A01/A08) leería archivos ARBITRARIOS fuera del backup y copiaría su
+    //     contenido al store. `createBackup` genera `name` como basename simple:
+    //     exigir eso exactamente (sin separadores, sin `..`, no absoluto) y
+    //     confirmar que resuelve DENTRO del dir de backup.
+    if (typeof f.name !== 'string' || f.name === ''
+        || f.name.includes('/') || f.name.includes('\\')
+        || f.name.includes('..') || path.isAbsolute(f.name)) {
+      return { ok: false, code: 'unsafe_backup_entry', error: `name inseguro en manifest: ${JSON.stringify(f.name)}` };
+    }
+    const src = resolveWithin(dir, f.name);
+    if (!src) {
+      return { ok: false, code: 'unsafe_backup_entry', error: `origen de backup fuera del dir de backup: ${JSON.stringify(f.name)}` };
+    }
     let content;
     try {
-      content = fs.readFileSync(path.join(dir, f.name), 'utf8');
+      content = fs.readFileSync(src, 'utf8');
     } catch (e) {
       return { ok: false, code: 'rollback_read', error: `archivo de backup ausente ${f.name}: ${safeErrorMessage(e)}` };
     }

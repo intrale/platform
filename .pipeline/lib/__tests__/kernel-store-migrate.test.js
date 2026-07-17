@@ -28,6 +28,7 @@ const {
   canonicalChecksum,
   redactSecrets,
   rollbackCommand,
+  rawChecksum,
   MIGRATION_PLAN,
 } = require('../kernel-store-migrate');
 
@@ -238,6 +239,66 @@ test('rollback rechaza --from fuera del backupRoot (anti path-traversal)', async
   const rb = await migrateState({ rollback: true, from: evil, backupRoot, sourcesDir: dir });
   assert.equal(rb.ok, false);
   assert.equal(rb.code, 'rollback_path');
+});
+
+test('rollback rechaza entrada de manifest con path-traversal (Zip-Slip, A01/A08)', async () => {
+  // Regresión del rebote #4745: un manifest plantado con `name` fuera del dir de
+  // backup (name="../<secreto>") NO debe leer archivos arbitrarios ni copiar su
+  // contenido al store. Antes del fix, esto devolvía ok:true y exfiltraba datos.
+  const { dir, backupRoot } = makeFixtures();
+  const store = makeStore();
+
+  // 1. Backup real y estado íntegro tras un apply.
+  const r = await migrateState({ apply: true, coordinationStore: store, sourcesDir: dir, backupRoot, now: FIXED_NOW });
+  assert.equal(r.ok, true);
+
+  // 2. Plantar un "secreto" FUERA del dir de backup (hermano, dentro de backupRoot).
+  const secret = 'TOP-SECRET-EXFILTRADO';
+  const secretPath = path.join(backupRoot, 'secret-outside.txt');
+  fs.writeFileSync(secretPath, secret);
+
+  // 3. Reescribir el manifest del backup con una entrada maliciosa: `name` escapa
+  //    del dir de backup vía `../`; el checksum coincide (atacante lo controla).
+  const manifestPath = path.join(r.backup, 'manifest.json');
+  const evilManifest = {
+    schemaVersion: 1,
+    projectId: PROJECT_ID,
+    createdAt: 'now',
+    files: [{ name: '../secret-outside.txt', relPath: 'waves.json', checksum: rawChecksum(secret), bytes: secret.length }],
+  };
+  fs.writeFileSync(manifestPath, JSON.stringify(evilManifest));
+
+  // 4. Rollback DEBE rechazar la entrada insegura y no escribir nada.
+  const wavesBefore = fs.readFileSync(path.join(dir, 'waves.json'), 'utf8');
+  const rb = await migrateState({ rollback: true, from: r.backup, backupRoot, sourcesDir: dir });
+  assert.equal(rb.ok, false);
+  assert.equal(rb.code, 'unsafe_backup_entry');
+  assert.equal(fs.readFileSync(path.join(dir, 'waves.json'), 'utf8'), wavesBefore, 'no debe sobrescribir con contenido exfiltrado');
+  assert.notEqual(fs.readFileSync(path.join(dir, 'waves.json'), 'utf8'), secret);
+});
+
+test('rollback rechaza relPath con path-traversal (destino fuera del pipeline, A01)', async () => {
+  const { dir, backupRoot } = makeFixtures();
+  const store = makeStore();
+  const r = await migrateState({ apply: true, coordinationStore: store, sourcesDir: dir, backupRoot, now: FIXED_NOW });
+  assert.equal(r.ok, true);
+
+  const content = fs.readFileSync(path.join(r.backup, 'waves.json'), 'utf8');
+  const evilManifest = {
+    schemaVersion: 1,
+    projectId: PROJECT_ID,
+    createdAt: 'now',
+    files: [{ name: 'waves.json', relPath: '../../evil-escape.json', checksum: rawChecksum(content), bytes: content.length }],
+  };
+  fs.writeFileSync(path.join(r.backup, 'manifest.json'), JSON.stringify(evilManifest));
+
+  const escapePath = path.resolve(dir, '../../evil-escape.json');
+  try { fs.unlinkSync(escapePath); } catch (_) { /* no existía */ }
+
+  const rb = await migrateState({ rollback: true, from: r.backup, backupRoot, sourcesDir: dir });
+  assert.equal(rb.ok, false);
+  assert.equal(rb.code, 'rollback_path');
+  assert.equal(fs.existsSync(escapePath), false, 'no debe escribir fuera del pipelineDir');
 });
 
 test('rollback aborta ante un backup corrupto (A05)', async () => {
