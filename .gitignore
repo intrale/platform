@@ -135,6 +135,11 @@ scripts/planner-plan.json
 # Pipeline V2 — estado efímero (no commitear)
 .pipeline/logs/
 .pipeline/*.pid
+# Backups de la migración JSON→DynamoDB (#4745): artefactos runtime que genera
+# `kernel-store-migrate.js` antes de escribir al store durable. Contienen un
+# snapshot del estado de coordinación local; se retienen sólo para rollback y NO
+# deben versionarse (ni filtrarse por un `git add -A`).
+.pipeline/backup/
 # Temporales de gh CLI (query bodies de `gh api graphql -F ...`): artefactos
 # runtime que se generan en cada corrida y quedan huérfanos. Un `git add -A`
 # los barre por decenas al índice y provocan conflictos de rebase en delivery
