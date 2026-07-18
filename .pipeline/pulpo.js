@@ -81,6 +81,9 @@ const repoTarget = require('./lib/repo-target');
 // En single-product (default hoy) el router queda en null y el ruteo cae al
 // repo-target global (getRepoForIssue/getPrimaryRepo) sin cambio de comportamiento.
 const kernelSupervisor = require('./lib/kernel-supervisor');
+// #4775 (Ola Puente P5a) — Scheduler global de dos niveles del kernel multi-producto.
+// Módulo puro: consume la señal de presión (getResourcePressure) y reparte slots.
+const kernelScheduler = require('./lib/kernel-scheduler');
 // #2490 — Pausa parcial con allowlist explícita de issues
 const partialPause = require('./lib/partial-pause');
 // #3518 CA-6 — Detector de desync waves.json ↔ .partial-pause.json
@@ -2131,6 +2134,44 @@ function countRunningDevs() {
     }
   }
   return count;
+}
+
+/**
+ * #4775 (Ola Puente P5a) — Reparto del límite global de devs vía kernel-scheduler.
+ *
+ * Eleva la lógica de presión a **repartidor entre productos** sin duplicar el
+ * cálculo de RAM/CPU: la señal `pressure` la calcula `getResourcePressure` (único
+ * dueño) y se inyecta al scheduler. Con un SOLO producto real (`intrale-platform`)
+ * el reparto reproduce EXACTAMENTE el cap actual (`max_concurrent_devs`) → CA-8
+ * (no-regresión). Fail-open al cap crudo ante cualquier error del scheduler
+ * (regla inquebrantable: el pipeline nunca puede morir por esta capa).
+ *
+ * @param {object} config
+ * @param {number|null} rawMaxDevs  cap crudo (`max_concurrent_devs`, ya con override nocturno).
+ * @param {object} pressure  { level } de getResourcePressure.
+ * @returns {number|null} slots de dev asignados al producto real, o null si no hay cap.
+ */
+function computeGlobalDevCap(config, rawMaxDevs, pressure) {
+  if (rawMaxDevs == null) return null;
+  try {
+    const productId = (config && config.kernel && config.kernel.productId) || 'intrale-platform';
+    const result = kernelScheduler.allocateSlots({
+      effectiveGlobalCap: rawMaxDevs,
+      pressure: pressure || { level: PRESSURE_LEVELS.GREEN },
+      products: [{
+        productId,
+        active: true,
+        agentCap: rawMaxDevs,   // un solo producto: su cap == techo global.
+        minFloor: 0,
+        priority: 0,
+        demand: rawMaxDevs,     // siempre puede querer llenar su cap.
+      }],
+    });
+    const alloc = result.allocations[productId];
+    return Number.isFinite(alloc) ? alloc : rawMaxDevs;
+  } catch (e) {
+    return rawMaxDevs; // fail-open: comportamiento actual intacto.
+  }
 }
 
 // --- Resource Monitor: CPU y Memoria del sistema ---
@@ -7224,7 +7265,10 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
     // verificar que no se exceda el máximo total de devs simultáneos
     if (DEV_SKILLS.includes(skill)) {
       // #4051 — Leer el cap efectivo (override nocturno permite piso de devs).
-      const maxDevs = getEffectiveResourceLimits(config).max_concurrent_devs;
+      const rawMaxDevs = getEffectiveResourceLimits(config).max_concurrent_devs;
+      // #4775 — repartir el límite global vía kernel-scheduler (repartidor entre
+      // productos). Con un solo producto real reproduce el cap actual (CA-8).
+      const maxDevs = computeGlobalDevCap(config, rawMaxDevs, pressure);
       if (maxDevs != null) {
         const totalDevs = countRunningDevs();
         if (totalDevs >= maxDevs) {

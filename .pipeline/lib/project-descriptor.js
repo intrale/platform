@@ -104,6 +104,38 @@ function isSafeId(id) {
   return true;
 }
 
+// Root ficticio para el prefix-check de rutas de worktree (nunca se toca el FS).
+const WORKTREE_PREFIX_ROOT = path.resolve(path.sep + '__kernel_worktree_root__');
+
+/**
+ * Valida una ruta RELATIVA de worktree del descriptor (CA-7 · requisito #2 · A01/A03).
+ *
+ * A diferencia de `isSafeId` (ids atómicos), el worktree puede ser un subpath
+ * relativo namespaceado. Rechaza fail-closed cualquier intento de escape:
+ *   - vacío / no-string
+ *   - byte NUL
+ *   - `~` (expansión de home)
+ *   - `..` (traversal)
+ *   - absoluto POSIX (`/…`, `\…`) o Windows (`C:\…`, UNC)
+ *   - que al resolver escape del root permitido (defensa contra escape textual/symlink).
+ *
+ * @param {string} p
+ * @returns {boolean} true si la ruta es segura para usarse como base de worktree.
+ */
+function isSafeWorktreePath(p) {
+  if (typeof p !== 'string' || p.trim() === '') return false;
+  if (p.includes('\0')) return false;
+  if (p.includes('~')) return false;
+  if (p.includes('..')) return false;
+  // Absoluto POSIX (`/`, `\`) o Windows (drive/UNC) → rechazar.
+  if (p.startsWith('/') || p.startsWith('\\')) return false;
+  if (/^[A-Za-z]:[\\/]/.test(p)) return false;
+  // Resolver contra un root ficticio y verificar prefijo (no comparación textual).
+  const resolved = path.resolve(WORKTREE_PREFIX_ROOT, p);
+  if (resolved !== WORKTREE_PREFIX_ROOT && !resolved.startsWith(WORKTREE_PREFIX_ROOT + path.sep)) return false;
+  return true;
+}
+
 function collectPathTraversalHits(descriptor) {
   const hits = [];
   const pid = descriptor && descriptor.identity && descriptor.identity.projectId;
@@ -113,6 +145,38 @@ function collectPathTraversalHits(descriptor) {
     repos.forEach((r, i) => {
       if (!isSafeId(r && r.id)) hits.push({ path: `repositories[${i}].id`, detail: 'repository id inseguro para namespacing' });
     });
+  }
+  // Ruta de worktree del descriptor (campo nuevo de thresholds · Ola Puente P5a #4775).
+  const wtRoot = descriptor && descriptor.thresholds && descriptor.thresholds.worktreeRoot;
+  if (wtRoot !== undefined && !isSafeWorktreePath(wtRoot)) {
+    hits.push({ path: 'thresholds.worktreeRoot', detail: 'ruta de worktree insegura (traversal / absoluta / ~ / NUL)' });
+  }
+  return hits;
+}
+
+/**
+ * Validación cruzada de `thresholds` (CA-7). JSON Schema NO expresa "Σ ≤ 100%" ni
+ * "cap ≤ techo global" ni "piso ≤ cap"; por eso van imperativas acá (el schema es
+ * defensa-en-profundidad). Devuelve las violaciones como DATO — nunca lanza.
+ *
+ * @param {object} descriptor
+ * @returns {Array<{path:string, detail:string}>}
+ */
+function collectThresholdViolations(descriptor) {
+  const hits = [];
+  const t = (descriptor && descriptor.thresholds) || {};
+  // agentCap ≤ techo global (autoridad final de disponibilidad · anti-DoS).
+  if (typeof t.agentCap === 'number' && typeof t.globalAgentCap === 'number' && t.agentCap > t.globalAgentCap) {
+    hits.push({ path: 'thresholds.agentCap', detail: `agentCap (${t.agentCap}) excede el techo global (${t.globalAgentCap})` });
+  }
+  // Piso anti-starvation no puede exceder el cap del producto (config incoherente).
+  if (typeof t.minAgentFloor === 'number' && typeof t.agentCap === 'number' && t.minAgentFloor > t.agentCap) {
+    hits.push({ path: 'thresholds.minAgentFloor', detail: `minAgentFloor (${t.minAgentFloor}) excede agentCap (${t.agentCap})` });
+  }
+  // Σ providerBudget ≤ 100% de la cuota central (anti sobre-asignación de cuota).
+  if (t.providerBudget && typeof t.providerBudget === 'object' && !Array.isArray(t.providerBudget)) {
+    const sum = Object.values(t.providerBudget).reduce((a, v) => a + (typeof v === 'number' ? v : 0), 0);
+    if (sum > 100) hits.push({ path: 'thresholds.providerBudget', detail: `Σ providerBudget (${sum}%) excede el 100% de la cuota central` });
   }
   return hits;
 }
@@ -196,6 +260,18 @@ function validateDescriptor(obj, opts = {}) {
       valid: false,
       stage: 'path',
       errors: pathHits.map((h) => ({ path: h.path, keyword: 'pathTraversal', detail: h.detail })),
+      descriptor: null,
+    };
+  }
+
+  // 5) Validación cruzada de thresholds (Σ providerBudget ≤ 100%, agentCap ≤ techo
+  //    global, piso ≤ cap). No expresable en JSON Schema puro → imperativa fail-closed.
+  const thresholdHits = collectThresholdViolations(descriptor);
+  if (thresholdHits.length > 0) {
+    return {
+      valid: false,
+      stage: 'thresholds',
+      errors: thresholdHits.map((h) => ({ path: h.path, keyword: 'thresholdViolation', detail: h.detail })),
       descriptor: null,
     };
   }
@@ -295,6 +371,40 @@ function derivePriorityWindows(descriptor) {
   return (pw && typeof pw === 'object') ? { ...pw } : {};
 }
 
+/**
+ * Deriva el cap de agentes del producto ACOTADO al techo global (CA-1/CA-7).
+ * Clamp defensivo en runtime aunque el schema/validación cruzada hayan pasado
+ * (anti-DoS por `agentCap` desmedido). Copia defensiva, sin efectos.
+ *
+ * @param {object} descriptor
+ * @returns {{ agentCap:number|null, globalAgentCap:number|null, minAgentFloor:number }}
+ */
+function deriveAgentCap(descriptor) {
+  const t = (descriptor && descriptor.thresholds) || {};
+  const globalAgentCap = typeof t.globalAgentCap === 'number' ? t.globalAgentCap : null;
+  let agentCap = typeof t.agentCap === 'number' ? t.agentCap : null;
+  if (agentCap != null && globalAgentCap != null) agentCap = Math.min(agentCap, globalAgentCap);
+  const minAgentFloor = typeof t.minAgentFloor === 'number' ? Math.max(0, t.minAgentFloor) : 0;
+  return { agentCap, globalAgentCap, minAgentFloor };
+}
+
+/**
+ * Deriva el `providerBudget` por producto (CA-3/CA-7) con validación imperativa
+ * Σ ≤ 100% (JSON Schema no la expresa). Copia defensiva.
+ *
+ * @param {object} descriptor
+ * @returns {Object<string,number>}
+ * @throws {Error} si Σ providerBudget > 100%.
+ */
+function deriveProviderBudget(descriptor) {
+  const t = (descriptor && descriptor.thresholds) || {};
+  const budget = (t.providerBudget && typeof t.providerBudget === 'object' && !Array.isArray(t.providerBudget))
+    ? { ...t.providerBudget } : {};
+  const sum = Object.values(budget).reduce((a, v) => a + (typeof v === 'number' ? v : 0), 0);
+  if (sum > 100) throw new Error(`providerBudget inválido: Σ ${sum}% excede el 100% de la cuota central`);
+  return budget;
+}
+
 // interface → skills (partición del puerto dev).
 function deriveCapabilityPartitions(descriptor) {
   const out = {};
@@ -351,11 +461,16 @@ module.exports = {
   computeChecksum,
   canonicalize,
   isSafeId,
+  isSafeWorktreePath,
+  collectPathTraversalHits,
+  collectThresholdViolations,
   redactAjvErrors,
   deriveRouting,
   deriveAdmissionLabels,
   deriveConcurrency,
   derivePriorityWindows,
+  deriveAgentCap,
+  deriveProviderBudget,
   deriveCapabilityPartitions,
   resolveGate,
   evaluateSignatureGate,

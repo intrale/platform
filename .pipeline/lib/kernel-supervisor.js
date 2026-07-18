@@ -52,6 +52,22 @@ const { segmentProductState } = require('./product-state-segment');
 const ACTIVE_STATUS = 'active';
 
 // -----------------------------------------------------------------------------
+// Circuit-breaker por producto (Ola Puente P5b · #4776 · split de #4690)
+//
+// Defaults INMUTABLES de la máquina de estados del breaker. Son `const` de módulo
+// de SOLO LECTURA (nunca `let`/`var`, nunca `globalThis`): NO son estado mutable
+// compartido entre productos. El estado mutable del breaker (contador de fallos,
+// ventana, apertura, estado open/half-open/closed) vive EXCLUSIVAMENTE en el
+// `instanceContext.circuitBreaker` de cada instancia (A04/A05: cero globals). Un
+// supervisor puede sobreescribir estos umbrales vía `deps` (derivable del
+// descriptor), pero siempre a otra `const` inmutable del closure.
+// -----------------------------------------------------------------------------
+const BREAKER_THRESHOLD = 3;         // fallos dentro de la ventana para abrir (closed → open)
+const BREAKER_WINDOW_MS = 60 * 1000; // ventana deslizante del contador de fallos
+const BREAKER_COOLDOWN_MS = 30 * 1000; // espera en `open` antes de probar (open → half-open)
+const BREAKER_RECOVERY_MS = 30 * 1000; // permanencia en `half-open` sin fallos → closed
+
+// -----------------------------------------------------------------------------
 // Multiplexor de ruteo product-aware (Ola Puente P4 · #4763 · split 2/3 de #4689)
 //
 // Resuelve `projectId`/repo de un evento (issue) a la instancia/pipeline del
@@ -271,6 +287,18 @@ function createKernelSupervisor(deps = {}) {
   const onAlert = typeof deps.onAlert === 'function' ? deps.onAlert : () => {};
   const now = typeof deps.now === 'function' ? deps.now : () => 0;
 
+  // #4776 · Umbrales del circuit-breaker, resueltos UNA vez a `const` inmutables
+  // del closure (nunca `let`/`var` mutable de módulo). Overridables por `deps`
+  // (config derivable del descriptor); si el override es inválido, cae al default.
+  const breakerThreshold = Number.isInteger(deps.breakerThreshold) && deps.breakerThreshold > 0
+    ? deps.breakerThreshold : BREAKER_THRESHOLD;
+  const breakerWindowMs = Number.isFinite(deps.breakerWindowMs) && deps.breakerWindowMs > 0
+    ? deps.breakerWindowMs : BREAKER_WINDOW_MS;
+  const breakerCooldownMs = Number.isFinite(deps.breakerCooldownMs) && deps.breakerCooldownMs > 0
+    ? deps.breakerCooldownMs : BREAKER_COOLDOWN_MS;
+  const breakerRecoveryMs = Number.isFinite(deps.breakerRecoveryMs) && deps.breakerRecoveryMs > 0
+    ? deps.breakerRecoveryMs : BREAKER_RECOVERY_MS;
+
   // Mapa PRIVADO del closure: projectId → instanceContext. Jamás expuesto por
   // referencia; jamás a nivel módulo. Dos supervisores distintos tienen mapas
   // distintos (A05: no hay estado compartido de módulo).
@@ -306,7 +334,17 @@ function createKernelSupervisor(deps = {}) {
       // --- estado EFÍMERO propio de la instancia (A05: nunca global/módulo) ---
       cooldowns: new Map(),             // no archivo global ni let de módulo
       intakeOffsets: new Map(),
-      circuitBreaker: { rebotes: new Map() },
+      // #4776 · circuit-breaker PROPIO de la instancia (A04/A05: cero globals de
+      // módulo, cero `globalThis`). La máquina de estados vive acá y NO es
+      // observable ni mutable desde otra instancia. `rebotes` se conserva tal cual
+      // (clave P4 que el test existente verifica) — se AGREGAN campos hermanos.
+      circuitBreaker: {
+        state: 'closed',              // 'closed' | 'open' | 'half-open'
+        rebotes: new Map(),           // clave existente (issueId → count) — NO romper
+        failureCount: 0,              // fallos acumulados dentro de la ventana vigente
+        windowStart: now(),           // inicio de la ventana deslizante (deps.now, nunca Date.now)
+        openedAt: null,               // ms de la última apertura → base del cooldown
+      },
       // --- config derivada del descriptor (reuso de derivers, opcional) -------
       descriptor: null,                 // #4763 — retenido en hydrate para el multiplexor
       routing: null,
@@ -468,6 +506,99 @@ function createKernelSupervisor(deps = {}) {
     if (error != null) ctx.health.lastError = error && error.message ? error.message : String(error);
     onAlert({ projectId, stage: 'crash', errors: [{ detail: ctx.health.lastError || 'instancia caída' }] });
     return true;
+  }
+
+  // ---- circuit-breaker por producto (#4776 · aislamiento de fallos) ----------
+
+  /**
+   * Helper PRIVADO del closure: aplica las transiciones dependientes del tiempo del
+   * breaker de UNA instancia (`ctx`), usando `now()` (nunca `Date.now()` — rompe el
+   * determinismo de los tests). Muta SÓLO el `ctx.circuitBreaker` recibido; jamás
+   * toca otra instancia (A04: sin efecto cruzado). Transiciones:
+   *   - ventana deslizante vencida → resetea el contador de fallos.
+   *   - `open` + cooldown vencido → `half-open` (habilita un intento de recuperación).
+   *   - `half-open` sostenido sin nuevos fallos por `recoveryMs` → `closed`.
+   * Devuelve el estado vigente tras evaluar.
+   */
+  function evaluateBreaker(ctx) {
+    const cb = ctx.circuitBreaker;
+    const t = now();
+    // Ventana deslizante: si expiró, el contador de fallos arranca de cero.
+    if (t - cb.windowStart >= breakerWindowMs) {
+      cb.windowStart = t;
+      cb.failureCount = 0;
+    }
+    // Cooldown vencido: open → half-open (un solo intento de prueba).
+    if (cb.state === 'open' && cb.openedAt != null && t - cb.openedAt >= breakerCooldownMs) {
+      cb.state = 'half-open';
+    }
+    // Recuperación: permaneció en half-open sin nuevos fallos (un fallo re-abre y
+    // reescribe `openedAt`) durante recoveryMs → vuelve a closed.
+    if (cb.state === 'half-open' && cb.openedAt != null
+        && t - cb.openedAt >= breakerCooldownMs + breakerRecoveryMs) {
+      cb.state = 'closed';
+      cb.openedAt = null;
+      cb.failureCount = 0;
+      cb.windowStart = t;
+    }
+    return cb.state;
+  }
+
+  /**
+   * CA-1/CA-3 · Registra un fallo (rebote/saturación) del breaker de `projectId` y
+   * evalúa la apertura del circuito. AISLADO: sólo toca el ctx propio del producto;
+   * el breaker de A abriéndose NO altera a B (sin DoS cruzado · A04).
+   *
+   * Fail-closed (A01/A03/A08): resuelve el ctx SIEMPRE vía `getInstance` (valida
+   * `isSafeId` out-of-band); un `projectId` inseguro o inexistente ⇒ `null`, sin
+   * derivar ruta ni tocar estado ajeno. El `projectId` es la clave de acceso, nunca
+   * input en banda que derive un path.
+   *
+   * @param {string} projectId  id del producto (del registro, validado por getInstance).
+   * @returns {object|null} copia solo-lectura del estado del breaker, o `null` fail-closed.
+   */
+  function recordBreakerFailure(projectId) {
+    const ctx = getInstance(projectId);
+    if (!ctx) return null;                          // fail-closed: id inseguro/inexistente
+    const cb = ctx.circuitBreaker;
+    // Aplicar primero las transiciones temporales (ventana/cooldown) con el reloj actual.
+    evaluateBreaker(ctx);
+    cb.failureCount += 1;
+    if (cb.state === 'half-open') {
+      // Un fallo durante la prueba re-abre inmediatamente y reinicia el cooldown.
+      cb.state = 'open';
+      cb.openedAt = now();
+      onAlert({ projectId, stage: 'breaker-open', errors: [{ detail: `breaker re-abierto en half-open (${projectId})` }] });
+    } else if (cb.state === 'closed' && cb.failureCount >= breakerThreshold) {
+      // Se superó el umbral dentro de la ventana: abrir el circuito.
+      cb.state = 'open';
+      cb.openedAt = now();
+      onAlert({ projectId, stage: 'breaker-open', errors: [{ detail: `breaker abierto: ${cb.failureCount} fallos en ventana (${projectId})` }] });
+    }
+    return snapshotBreaker(cb);
+  }
+
+  /** Copia superficial de SOLO LECTURA del estado del breaker (nunca la ref viva). */
+  function snapshotBreaker(cb) {
+    return { state: cb.state, failureCount: cb.failureCount, openedAt: cb.openedAt };
+  }
+
+  /**
+   * CA-6 · Vista SOLO-LECTURA del estado del breaker de `projectId` (consumida por
+   * el scheduler global #4775 para no despachar a un producto con breaker abierto).
+   * Evalúa primero las transiciones temporales, luego devuelve una COPIA — nunca la
+   * referencia mutable interna: mutar el retorno no altera el estado del breaker.
+   *
+   * Fail-closed vía `getInstance`: `projectId` inseguro/inexistente ⇒ `null`.
+   *
+   * @param {string} projectId
+   * @returns {{state:string, failureCount:number, openedAt:(number|null)}|null}
+   */
+  function getBreakerState(projectId) {
+    const ctx = getInstance(projectId);
+    if (!ctx) return null;                          // fail-closed
+    evaluateBreaker(ctx);                           // refleja cooldown/ventana al leer
+    return snapshotBreaker(ctx.circuitBreaker);
   }
 
   /**
@@ -678,6 +809,9 @@ function createKernelSupervisor(deps = {}) {
     listInstances,
     superviseInstance,
     markInstanceUnhealthy,
+    // #4776 · circuit-breaker por producto (aislamiento de fallos · CA-1..CA-6)
+    recordBreakerFailure,
+    getBreakerState,
     healthcheck,
     restartInstance,
     stopInstance,

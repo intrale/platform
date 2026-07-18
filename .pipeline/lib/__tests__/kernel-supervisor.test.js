@@ -198,6 +198,176 @@ test('CA-2/A05 · dos supervisores NO comparten estado de módulo (mismo project
 });
 
 // -----------------------------------------------------------------------------
+// #4776 · Circuit-breaker por producto (aislamiento de fallos · CA-1..CA-6)
+//   CA-1/CA-3  A abre su breaker → B sigue closed e intacto (sin efecto cruzado).
+//   CA-2       dos supervisores con el mismo projectId → breakers independientes.
+//   CA-3       máquina de estados closed → open → half-open → closed (deps.now).
+//   CA-4/CA-5  acceso fail-closed por projectId inseguro/inexistente (isSafeId).
+//   CA-6       getBreakerState devuelve copia solo-lectura (no la ref viva).
+//   A09        apertura del breaker propagada por onAlert con projectId de origen.
+// -----------------------------------------------------------------------------
+
+// Reloj controlado: los tests de ventana/cooldown son deterministas sin Date.now().
+function fakeClock(start = 0) {
+  let t = start;
+  return { now: () => t, advance: (ms) => { t += ms; } };
+}
+
+// Supervisor con umbrales chicos e inyectados para ejercitar el breaker rápido.
+function breakerSupervisor(clock, over = {}) {
+  return createKernelSupervisor({
+    catalogStore: fakeCatalogStore([]),
+    storeFactory: recordingStoreFactory([]),
+    hydrate: false,
+    now: clock.now,
+    breakerThreshold: 3,
+    breakerWindowMs: 1000,
+    breakerCooldownMs: 500,
+    breakerRecoveryMs: 500,
+    ...over,
+  });
+}
+
+test('CA-1/CA-3 · A abre su breaker por rebotes y B sigue closed e intacto (aislamiento de fallos)', () => {
+  const clock = fakeClock();
+  const sup = breakerSupervisor(clock);
+  const a = sup.spawnInstance({ productId: 'acme', projectId: 'acme', status: 'active' });
+  const b = sup.spawnInstance({ productId: 'globex', projectId: 'globex', status: 'active' });
+
+  // A acumula fallos hasta superar el umbral (3) → open
+  sup.recordBreakerFailure('acme');
+  sup.recordBreakerFailure('acme');
+  const st = sup.recordBreakerFailure('acme');
+  assert.equal(st.state, 'open', 'A abre su breaker al 3er fallo');
+  assert.equal(st.failureCount, 3);
+  assert.equal(sup.getBreakerState('acme').state, 'open');
+
+  // B no fue tocado: sigue closed, sin fallos, con su rebotes intacto
+  const stB = sup.getBreakerState('globex');
+  assert.equal(stB.state, 'closed', 'B sigue closed pese a que A abrió');
+  assert.equal(stB.failureCount, 0, 'B sin fallos');
+  assert.equal(b.circuitBreaker.rebotes.size, 0, 'rebotes de B intacto');
+
+  // los objetos circuitBreaker de A y B son distintos y no observables entre sí
+  assert.notEqual(a.circuitBreaker, b.circuitBreaker);
+  assert.notEqual(a.circuitBreaker.rebotes, b.circuitBreaker.rebotes);
+});
+
+test('CA-3 · máquina de estados closed → open → half-open → closed con reloj inyectado', () => {
+  const clock = fakeClock();
+  const sup = breakerSupervisor(clock);
+  sup.spawnInstance({ productId: 'acme', projectId: 'acme', status: 'active' });
+
+  // closed → open (supera umbral en ventana)
+  sup.recordBreakerFailure('acme');
+  sup.recordBreakerFailure('acme');
+  sup.recordBreakerFailure('acme');
+  assert.equal(sup.getBreakerState('acme').state, 'open', 'closed → open al superar el umbral');
+
+  // open → half-open tras cooldown (500ms)
+  clock.advance(500);
+  assert.equal(sup.getBreakerState('acme').state, 'half-open', 'open → half-open tras cooldown');
+
+  // half-open → closed tras recovery (otros 500ms) sin nuevos fallos
+  clock.advance(500);
+  assert.equal(sup.getBreakerState('acme').state, 'closed', 'half-open → closed al recuperarse');
+});
+
+test('CA-3 · un fallo en half-open re-abre el breaker inmediatamente y reescribe openedAt', () => {
+  const clock = fakeClock();
+  const sup = breakerSupervisor(clock);
+  sup.spawnInstance({ productId: 'acme', projectId: 'acme', status: 'active' });
+
+  sup.recordBreakerFailure('acme');
+  sup.recordBreakerFailure('acme');
+  sup.recordBreakerFailure('acme');            // open
+  clock.advance(500);                            // → half-open
+  assert.equal(sup.getBreakerState('acme').state, 'half-open');
+
+  const st = sup.recordBreakerFailure('acme');  // fallo en la prueba → open de nuevo
+  assert.equal(st.state, 'open', 'un fallo en half-open re-abre');
+  assert.equal(st.openedAt, clock.now(), 'openedAt reescrito al re-abrir');
+});
+
+test('CA-3 · la ventana deslizante resetea el contador de fallos si expira sin abrir', () => {
+  const clock = fakeClock();
+  const sup = breakerSupervisor(clock);
+  sup.spawnInstance({ productId: 'acme', projectId: 'acme', status: 'active' });
+
+  sup.recordBreakerFailure('acme');
+  sup.recordBreakerFailure('acme');
+  assert.equal(sup.getBreakerState('acme').failureCount, 2, 'dos fallos en la ventana');
+
+  clock.advance(1000);                           // la ventana (1000ms) expira
+  const st = sup.recordBreakerFailure('acme');   // este fallo arranca ventana nueva
+  assert.equal(st.state, 'closed', 'no abre: la ventana se reseteó');
+  assert.equal(st.failureCount, 1, 'contador reiniciado tras expirar la ventana');
+});
+
+test('CA-2 · dos supervisores con el mismo projectId tienen breakers independientes (cero estado de módulo)', () => {
+  const clock = fakeClock();
+  const sup1 = breakerSupervisor(clock);
+  const sup2 = breakerSupervisor(clock);
+  sup1.spawnInstance({ productId: 'acme', projectId: 'acme', status: 'active' });
+  sup2.spawnInstance({ productId: 'acme', projectId: 'acme', status: 'active' });
+
+  sup1.recordBreakerFailure('acme');
+  sup1.recordBreakerFailure('acme');
+  sup1.recordBreakerFailure('acme');
+
+  assert.equal(sup1.getBreakerState('acme').state, 'open', 'sup1 abrió su breaker');
+  assert.equal(sup2.getBreakerState('acme').state, 'closed', 'sup2 intacto: no hay contador de módulo compartido');
+  assert.equal(sup2.getBreakerState('acme').failureCount, 0);
+});
+
+test('CA-4/CA-5 · breaker fail-closed: projectId inseguro/inexistente → null sin derivación', () => {
+  const clock = fakeClock();
+  const sup = breakerSupervisor(clock);
+  sup.spawnInstance({ productId: 'acme', projectId: 'acme', status: 'active' });
+
+  // ids maliciosos rechazados por isSafeId (vía getInstance) antes de tocar estado
+  for (const bad of ['../evil', 'a/b', 'a\\b', '..', '', null, undefined]) {
+    assert.equal(sup.recordBreakerFailure(bad), null, `recordBreakerFailure fail-closed para ${String(bad)}`);
+    assert.equal(sup.getBreakerState(bad), null, `getBreakerState fail-closed para ${String(bad)}`);
+  }
+  // instancia inexistente (id seguro pero sin instancia) → null idempotente
+  assert.equal(sup.recordBreakerFailure('globex'), null, 'inexistente → null idempotente');
+  assert.equal(sup.getBreakerState('globex'), null);
+});
+
+test('CA-6 · getBreakerState devuelve copia: mutar el retorno no altera el estado interno', () => {
+  const clock = fakeClock();
+  const sup = breakerSupervisor(clock);
+  const a = sup.spawnInstance({ productId: 'acme', projectId: 'acme', status: 'active' });
+  sup.recordBreakerFailure('acme');
+
+  const snap = sup.getBreakerState('acme');
+  snap.state = 'open';
+  snap.failureCount = 999;
+  snap.openedAt = 123456;
+
+  assert.equal(a.circuitBreaker.state, 'closed', 'estado interno intacto tras mutar la copia');
+  assert.equal(a.circuitBreaker.failureCount, 1);
+  assert.equal(a.circuitBreaker.openedAt, null);
+  assert.notEqual(snap, sup.getBreakerState('acme'), 'cada lectura es una copia nueva');
+});
+
+test('A09 · la apertura del breaker se propaga por onAlert con el projectId de origen', () => {
+  const clock = fakeClock();
+  const alerts = [];
+  const sup = breakerSupervisor(clock, { onAlert: (a) => alerts.push(a) });
+  sup.spawnInstance({ productId: 'acme', projectId: 'acme', status: 'active' });
+
+  sup.recordBreakerFailure('acme');
+  sup.recordBreakerFailure('acme');
+  sup.recordBreakerFailure('acme');
+
+  const open = alerts.filter((a) => a.stage === 'breaker-open');
+  assert.ok(open.length >= 1, 'la apertura del breaker se alerta (A09)');
+  assert.equal(open[0].projectId, 'acme', 'con projectId de origen, sin fuga de otro tenant');
+});
+
+// -----------------------------------------------------------------------------
 // CA-3 · Aislamiento de fallo / reinicio
 // -----------------------------------------------------------------------------
 
