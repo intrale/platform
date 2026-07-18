@@ -79,8 +79,43 @@ function emptyQuotaState() {
         detected_at: null,
         resets_at: null,
         resets_at_ms: null,
+        // #4731 — lista de proveedores afectados (vacía cuando no hay flag).
+        providers: [],
         queued_skills: [],
     };
+}
+
+// #4731 — Normaliza cualquier shape persistido (legacy single-flag o el nuevo
+// mapa por-proveedor) a una lista de slots `{ id, error_type, detected_at,
+// resets_at, resets_at_ms }`. READ-ONLY: no toca el filesystem (a diferencia
+// de quota-exhausted.js:readDefensive, este módulo NUNCA borra el flag físico
+// — sólo lo hace el detector). Devuelve `[]` si el shape es inválido.
+// Backward-compat #3077 CA-14: legacy sin `provider` → id `anthropic`.
+function normalizeSlots(parsed) {
+    const out = [];
+    const pushSlot = (id, raw) => {
+        if (!raw || typeof raw !== 'object') return;
+        if (typeof raw.resets_at !== 'string') return;
+        if (typeof raw.detected_at !== 'string') return;
+        if (typeof raw.pattern_matched !== 'string') return;
+        const resetsMs = Date.parse(raw.resets_at);
+        const detectedMs = Date.parse(raw.detected_at);
+        if (!Number.isFinite(resetsMs) || !Number.isFinite(detectedMs)) return;
+        out.push({
+            id: (typeof raw.provider === 'string' && raw.provider) || id,
+            error_type: raw.pattern_matched,
+            detected_at: raw.detected_at,
+            resets_at: raw.resets_at,
+            resets_at_ms: resetsMs,
+        });
+    };
+    if (parsed && typeof parsed === 'object' && parsed.providers
+        && typeof parsed.providers === 'object' && !Array.isArray(parsed.providers)) {
+        for (const [id, raw] of Object.entries(parsed.providers)) pushSlot(id, raw);
+    } else if (parsed && typeof parsed === 'object' && parsed.exhausted === true) {
+        pushSlot(parsed.provider || 'anthropic', parsed);
+    }
+    return out;
 }
 
 /**
@@ -143,35 +178,37 @@ function getQuotaState(opts) {
     }
     if (!parsed || typeof parsed !== 'object') return emptyQuotaState();
 
-    // Validación estricta del shape (mismo criterio que #2974
-    // validateFlagShape). Cualquier campo faltante/mal tipado → safe default.
-    if (parsed.exhausted !== true) return emptyQuotaState();
-    if (typeof parsed.resets_at !== 'string') return emptyQuotaState();
-    if (typeof parsed.detected_at !== 'string') return emptyQuotaState();
-    if (typeof parsed.pattern_matched !== 'string') return emptyQuotaState();
+    // #4731 — Normalizamos a slots por-proveedor (legacy o nuevo shape) y nos
+    // quedamos SÓLO con los activos (`resets_at` futuro). `active = OR de slots
+    // con reset futuro`. Un slot vencido se oculta naturalmente sin borrar el
+    // archivo (CA-2: read-only; el borrado físico lo hace el detector).
+    const slots = normalizeSlots(parsed)
+        .filter((s) => s.resets_at_ms > now)
+        .sort((a, b) => a.resets_at_ms - b.resets_at_ms); // reset más próximo primero
+    if (slots.length === 0) return emptyQuotaState();
 
-    const resetsMs = Date.parse(parsed.resets_at);
-    const detectedMs = Date.parse(parsed.detected_at);
-    if (!Number.isFinite(resetsMs)) return emptyQuotaState();
-    if (!Number.isFinite(detectedMs)) return emptyQuotaState();
-
-    // `active` contra `now`. Si ya expiró, banner se oculta naturalmente
-    // (CA-2: desaparece sin reload manual). Devolvemos shape default
-    // pleno — el dashboard nunca debe ver datos "stale activos".
-    if (resetsMs <= now) return emptyQuotaState();
+    // Slot primario = reset más próximo → espejo legacy para el countdown y los
+    // consumidores que aún leen `error_type`/`resets_at` planos.
+    const primary = slots[0];
 
     return {
         active: true,
-        // Mapeo a `error_type` que el banner muestra al operador.
-        // El campo persistido se llama `pattern_matched` en #2974.
-        error_type: parsed.pattern_matched,
-        detected_at: parsed.detected_at,
-        resets_at: parsed.resets_at,
-        resets_at_ms: resetsMs,
-        // El módulo de estado no sabe de la matriz del pipeline; el slice
-        // del dashboard rellena esta lista con los skills LLM esperando
-        // en `pendiente/`. Devolver `[]` como default seguro mantiene el
-        // contrato sin obligar al consumidor a defensarse.
+        // Espejo del slot primario (compat con el banner legacy + countdown).
+        error_type: primary.error_type,
+        detected_at: primary.detected_at,
+        resets_at: primary.resets_at,
+        resets_at_ms: primary.resets_at_ms,
+        // #4731 — lista completa de proveedores afectados (fuente por-proveedor
+        // del banner). Cada uno con su motivo (`error_type`) y reset propio.
+        providers: slots.map((s) => ({
+            id: s.id,
+            error_type: s.error_type,
+            detected_at: s.detected_at,
+            resets_at: s.resets_at,
+            resets_at_ms: s.resets_at_ms,
+        })),
+        // El slice del dashboard rellena esta lista con los skills LLM esperando
+        // en `pendiente/`. Default `[]` seguro.
         queued_skills: [],
     };
 }

@@ -257,3 +257,67 @@ test('No tira con __proto__/constructor en el JSON (parse seguro)', () => {
     assert.equal(s.polluted, undefined);
     assert.equal(({}).polluted, undefined, 'sanity: prototype global limpio');
 });
+
+// -----------------------------------------------------------------------------
+// #4731 — getQuotaState expone providers[] por-slot; active = OR de slots futuros
+// -----------------------------------------------------------------------------
+
+test('#4731: nuevo shape por-proveedor expone providers[] con id + error_type', () => {
+    const file = newTmpStatePath();
+    const future1 = new Date(Date.now() + 3600000).toISOString();
+    const future2 = new Date(Date.now() + 7200000).toISOString();
+    writeJson(file, {
+        providers: {
+            'openai-codex': { exhausted: true, resets_at: future1, detected_at: new Date().toISOString(), pattern_matched: 'usage_limit_reached' },
+            'anthropic': { exhausted: true, resets_at: future2, detected_at: new Date().toISOString(), pattern_matched: 'usage_limit_error' },
+        },
+    });
+    const s = getQuotaState({ statePath: file });
+    assert.equal(s.active, true);
+    assert.equal(s.providers.length, 2);
+    // Ordenados por reset ascendente → codex (+1h) primero.
+    assert.equal(s.providers[0].id, 'openai-codex');
+    assert.equal(s.providers[0].error_type, 'usage_limit_reached');
+    assert.equal(s.providers[1].id, 'anthropic');
+    // Espejo primario = slot de reset más próximo.
+    assert.equal(s.error_type, 'usage_limit_reached');
+    assert.equal(s.resets_at, future1);
+});
+
+test('#4731: active = OR de slots futuros (slot vencido se filtra, activo queda)', () => {
+    const file = newTmpStatePath();
+    const past = new Date(Date.now() - 60000).toISOString();
+    const future = new Date(Date.now() + 3600000).toISOString();
+    writeJson(file, {
+        providers: {
+            'openai-codex': { exhausted: true, resets_at: past, detected_at: new Date().toISOString(), pattern_matched: 'usage_limit_reached' },
+            'anthropic': { exhausted: true, resets_at: future, detected_at: new Date().toISOString(), pattern_matched: 'usage_limit_error' },
+        },
+    });
+    const s = getQuotaState({ statePath: file });
+    assert.equal(s.active, true, 'al menos un slot futuro → activo');
+    assert.deepEqual(s.providers.map(p => p.id), ['anthropic'], 'slot vencido no aparece');
+    // Read-only: el módulo de estado NO borra el archivo (lo hace el detector).
+    assert.ok(fs.existsSync(file));
+});
+
+test('#4731: todos los slots vencidos → active:false', () => {
+    const file = newTmpStatePath();
+    const past = new Date(Date.now() - 60000).toISOString();
+    writeJson(file, {
+        providers: { anthropic: { exhausted: true, resets_at: past, detected_at: past, pattern_matched: 'usage_limit_error' } },
+    });
+    const s = getQuotaState({ statePath: file });
+    assert.equal(s.active, false);
+    assert.deepEqual(s.providers, []);
+});
+
+test('#4731: backward-compat legacy sin provider → slot anthropic en providers[]', () => {
+    const file = newTmpStatePath();
+    writeJson(file, validFlagPayload());
+    const s = getQuotaState({ statePath: file });
+    assert.equal(s.active, true);
+    assert.equal(s.providers.length, 1);
+    assert.equal(s.providers[0].id, 'anthropic');
+    assert.equal(s.providers[0].error_type, 'usage_limit_error');
+});

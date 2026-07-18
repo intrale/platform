@@ -44,15 +44,27 @@
 //   error similar). Si el siguiente spawn también dispara el flag, set/set
 //   son idempotentes. No hay corrupción posible.
 //
-// SCHEMA del archivo `.pipeline/quota-exhausted.json` (post-#3077):
+// SCHEMA del archivo `.pipeline/quota-exhausted.json` (post-#4731):
+//   ESTADO POR-PROVEEDOR (fuente de verdad = mapa `providers`). Los campos
+//   top-level son un ESPEJO del slot primario (reset más próximo) para
+//   backward-compat con lectores legacy (`commander /quota`, provider-health,
+//   tests #3077). Al haber un solo proveedor agotado, espejo == único slot.
 //   {
-//     exhausted: true,
-//     provider: "anthropic",                        // (opcional, default 'anthropic' para backward-compat)
-//     model: "claude-opus-4-7",                     // (opcional, informativo)
-//     resets_at: "2026-05-12T00:00:00.000Z",        // ISO8601, dentro de [now+5min, now+maxDays]
-//     detected_at: "2026-05-05T03:14:22.123Z",      // ISO8601 del momento de detección
-//     pattern_matched: "usage_limit_error"          // valor de error_type del CLI
+//     exhausted: true,                              // espejo: hay ≥1 slot activo
+//     provider: "openai-codex",                     // espejo: slot primario
+//     resets_at, detected_at, pattern_matched,      // espejo del slot primario
+//     providers: {                                  // AUTORITATIVO — por proveedor
+//       "openai-codex": { exhausted:true, resets_at, detected_at, pattern_matched, model? },
+//       "anthropic":    { exhausted:true, resets_at, detected_at, pattern_matched }
+//     }
 //   }
+//   #4731: cada slot expira INDEPENDIENTE por su `resets_at`. `clearFlag({provider})`
+//   drena SÓLO ese slot → el vector de #3077 (un provider limpia el ajeno) queda
+//   cerrado por construcción, sin el guard `clear_skipped_provider_mismatch`.
+//
+//   SCHEMA legacy pre-#4731 (aún leído por backward-compat #3077 CA-14):
+//   { exhausted:true, provider?, model?, resets_at, detected_at, pattern_matched }
+//   → se normaliza a slot `provider || 'anthropic'`.
 //
 // KILL-SWITCH OPERACIONAL: si por bug el flag queda persistente,
 //   `rm .pipeline/quota-exhausted.json` desbloquea el pipeline.
@@ -413,30 +425,151 @@ function capResetsAt(input, opts = {}) {
 }
 
 /**
- * Valida el shape del flag persistido. Devuelve `null` si no es válido.
- * No matchea por substring — solo valida tipos y rangos.
+ * #4731 — Valida el shape de UN slot de proveedor (los campos comunes al flag
+ * legacy y a cada entrada del mapa `providers`). NO muta el input: sólo valida
+ * tipos y que las fechas sean parseables. Devuelve `true`/`false`.
  *
- * #3077 CA-14: campo `provider` es opcional para backward-compat. Si no
- * está presente, se asume `anthropic` (único provider activo antes de #3077).
- * Análogamente, `model` es opcional/informativo.
+ * `exhausted` es opcional dentro de un slot del mapa nuevo (el mapa YA implica
+ * exhausted); si viene, debe ser exactamente `true`. `provider`/`model` son
+ * opcionales pero, si están, deben ser strings válidos.
+ */
+function isValidProviderSlot(slot) {
+    if (!slot || typeof slot !== 'object') return false;
+    if (slot.exhausted !== undefined && slot.exhausted !== true) return false;
+    if (typeof slot.resets_at !== 'string') return false;
+    if (typeof slot.detected_at !== 'string') return false;
+    if (typeof slot.pattern_matched !== 'string') return false;
+    if (!Number.isFinite(Date.parse(slot.resets_at))) return false;
+    if (!Number.isFinite(Date.parse(slot.detected_at))) return false;
+    if (slot.provider !== undefined) {
+        if (typeof slot.provider !== 'string' || slot.provider.length === 0) return false;
+    }
+    if (slot.model !== undefined && typeof slot.model !== 'string') return false;
+    return true;
+}
+
+/**
+ * Valida el shape del flag persistido. Devuelve `null` si no es válido, o el
+ * `parsed` intacto (sin normalizar) si lo es.
+ *
+ * #4731 — Soporta DOS shapes:
+ *   1. Nuevo (por-proveedor): `{ providers: { "<id>": { resets_at, detected_at,
+ *      pattern_matched, ... } } }`. Válido si el mapa tiene ≥1 slot válido.
+ *   2. Legacy (single-flag): `{ exhausted:true, provider?, resets_at,
+ *      detected_at, pattern_matched, model? }`. #3077 CA-14: `provider` opcional
+ *      (default `anthropic`).
+ *
+ * NO normaliza: los callers que necesitan el mapa unificado usan
+ * `readProvidersMap()`. Mantener el retorno "parsed intacto" preserva el
+ * contrato de los tests que hacen `deepEqual(validateFlagShape(x), x)`.
  */
 function validateFlagShape(parsed) {
     if (!parsed || typeof parsed !== 'object') return null;
+    // Shape nuevo por-proveedor.
+    if (parsed.providers !== undefined) {
+        const map = parsed.providers;
+        if (!map || typeof map !== 'object' || Array.isArray(map)) return null;
+        const ids = Object.keys(map);
+        if (ids.length === 0) return null;
+        // Requerimos que TODOS los slots presentes sean válidos: un slot
+        // corrupto es señal de manipulación → safe-default (no fail-open).
+        for (const id of ids) {
+            if (!isValidProviderSlot(map[id])) return null;
+        }
+        return parsed;
+    }
+    // Shape legacy single-flag.
     if (parsed.exhausted !== true) return null;
-    if (typeof parsed.resets_at !== 'string') return null;
-    if (typeof parsed.detected_at !== 'string') return null;
-    if (typeof parsed.pattern_matched !== 'string') return null;
-    if (!Number.isFinite(Date.parse(parsed.resets_at))) return null;
-    if (!Number.isFinite(Date.parse(parsed.detected_at))) return null;
-    // #3077: provider es opcional pero si está, debe ser string no vacío.
-    if (parsed.provider !== undefined) {
-        if (typeof parsed.provider !== 'string' || parsed.provider.length === 0) return null;
-    }
-    // model análogo: opcional, si está debe ser string.
-    if (parsed.model !== undefined) {
-        if (typeof parsed.model !== 'string') return null;
-    }
+    if (!isValidProviderSlot(parsed)) return null;
     return parsed;
+}
+
+/**
+ * #4731 — Normaliza cualquier shape persistido (legacy o nuevo) a un mapa
+ * unificado `{ "<id>": { provider, exhausted:true, resets_at, detected_at,
+ * pattern_matched, model|null, resets_at_ms } }`. Devuelve `null` si el shape
+ * es inválido. NO toca el filesystem ni drena por tiempo (eso lo hace el
+ * caller). Backward-compat #3077 CA-14 / seguridad A04: legacy sin `provider`
+ * → slot `DEFAULT_PROVIDER` (`anthropic`), NUNCA fail-open.
+ */
+function readProvidersMap(parsed) {
+    const valid = validateFlagShape(parsed);
+    if (!valid) return null;
+    const out = {};
+    const toSlot = (id, raw) => ({
+        provider: id,
+        exhausted: true,
+        resets_at: raw.resets_at,
+        detected_at: raw.detected_at,
+        pattern_matched: raw.pattern_matched,
+        model: raw.model || null,
+        resets_at_ms: Date.parse(raw.resets_at),
+    });
+    if (valid.providers) {
+        for (const [id, raw] of Object.entries(valid.providers)) {
+            const pid = (raw && typeof raw.provider === 'string' && raw.provider) || id;
+            out[pid] = toSlot(pid, raw);
+        }
+    } else {
+        const id = valid.provider || DEFAULT_PROVIDER;
+        out[id] = toSlot(id, valid);
+    }
+    return Object.keys(out).length ? out : null;
+}
+
+/**
+ * #4731 — Construye el payload persistido HÍBRIDO desde un mapa de slots. El
+ * mapa `providers` es la FUENTE DE VERDAD; los campos top-level (`exhausted`,
+ * `provider`, `resets_at`, ...) son un ESPEJO del slot primario (el de reset
+ * más próximo) para backward-compat con lectores que aún leen el shape legacy
+ * (`commander /quota`, `provider-health`, tests #3077). Al haber un solo slot,
+ * el espejo coincide con él (los tests legacy siguen verdes).
+ */
+function buildHybridPayload(map) {
+    const ids = Object.keys(map);
+    if (ids.length === 0) return null;
+    let primaryId = ids[0];
+    for (const id of ids) {
+        if (Date.parse(map[id].resets_at) < Date.parse(map[primaryId].resets_at)) {
+            primaryId = id;
+        }
+    }
+    const p = map[primaryId];
+    const providers = {};
+    for (const id of ids) {
+        const s = map[id];
+        providers[id] = {
+            exhausted: true,
+            resets_at: s.resets_at,
+            detected_at: s.detected_at,
+            pattern_matched: s.pattern_matched,
+            ...(s.model ? { model: s.model } : {}),
+        };
+    }
+    return {
+        exhausted: true,
+        provider: primaryId,
+        ...(p.model ? { model: p.model } : {}),
+        resets_at: p.resets_at,
+        detected_at: p.detected_at,
+        pattern_matched: p.pattern_matched,
+        providers,
+    };
+}
+
+/**
+ * #4731 — Lee y normaliza el mapa de slots del archivo persistido. Devuelve
+ * `{}` si el archivo no existe o es inválido (para read-modify-write en
+ * `setFlag`/`clearFlag`). NO drena por tiempo ni audita.
+ */
+function readCurrentMap() {
+    let raw;
+    try {
+        raw = fs.readFileSync(flagFile(), 'utf8');
+    } catch { return {}; }
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch { return {}; }
+    return readProvidersMap(parsed) || {};
 }
 
 // -----------------------------------------------------------------------------
@@ -495,8 +628,8 @@ function readDefensive(opts = {}) {
         return { exhausted: false, reason: 'parse_error' };
     }
 
-    const valid = validateFlagShape(parsed);
-    if (!valid) {
+    const map = readProvidersMap(parsed);
+    if (!map) {
         if (auditEnabled) {
             appendAudit({
                 event: 'schema_invalid',
@@ -508,35 +641,75 @@ function readDefensive(opts = {}) {
         return { exhausted: false, reason: 'schema_invalid' };
     }
 
-    // Backward-compat: provider opcional → default 'anthropic'.
-    const provider = valid.provider || DEFAULT_PROVIDER;
-    const model = valid.model || null;
-
-    const resetsAtMs = Date.parse(valid.resets_at);
-    if (now >= resetsAtMs) {
-        // CA-7 del issue padre: drenado natural post-reset.
-        try { fs.unlinkSync(file); } catch {}
-        if (auditEnabled) {
-            appendAudit({
-                event: 'drained_post_reset',
-                provider,
-                model,
-                error_type: valid.pattern_matched,
-                raw_excerpt: `resets_at=${valid.resets_at}`,
-                flag_set: false,
-            });
+    // #4731 — Drenado POR SLOT: cada proveedor expira independiente por su
+    // `resets_at`. Los slots vencidos se drenan (audit `drained_post_reset`),
+    // los activos se conservan. Si todos vencieron → se borra el archivo.
+    const active = {};
+    const expiredIds = [];
+    for (const [id, slot] of Object.entries(map)) {
+        if (now >= slot.resets_at_ms) {
+            expiredIds.push(id);
+            if (auditEnabled) {
+                appendAudit({
+                    event: 'drained_post_reset',
+                    provider: id,
+                    model: slot.model,
+                    error_type: slot.pattern_matched,
+                    raw_excerpt: `resets_at=${slot.resets_at}`,
+                    flag_set: false,
+                });
+            }
+        } else {
+            active[id] = slot;
         }
-        return { exhausted: false, reason: 'expired', provider, model };
     }
+
+    const activeIds = Object.keys(active);
+    if (activeIds.length === 0) {
+        // Todos los slots vencieron (o el mapa quedó vacío) → drenado total.
+        try { fs.unlinkSync(file); } catch {}
+        const anyExpired = expiredIds.length > 0;
+        return { exhausted: false, reason: anyExpired ? 'expired' : 'absent' };
+    }
+
+    // Drenado PARCIAL: si algún slot venció pero quedan activos, reescribimos
+    // el archivo sólo con los activos (best-effort — no rompe el pipeline si
+    // falla la escritura; el drenado se reintenta en la próxima lectura).
+    if (expiredIds.length > 0) {
+        try { writeJsonAtomic(file, buildHybridPayload(active)); } catch { /* best-effort */ }
+    }
+
+    // Slot primario = reset más próximo (para el espejo legacy + countdown).
+    let primaryId = activeIds[0];
+    for (const id of activeIds) {
+        if (active[id].resets_at_ms < active[primaryId].resets_at_ms) primaryId = id;
+    }
+    const p = active[primaryId];
+
+    // Lista de proveedores afectados, ordenada por reset ascendente (el más
+    // próximo primero) para que el banner muestre el/los provider(s) real(es).
+    const providers = activeIds
+        .map((id) => ({
+            provider: id,
+            model: active[id].model,
+            resets_at: active[id].resets_at,
+            detected_at: active[id].detected_at,
+            pattern_matched: active[id].pattern_matched,
+            resets_at_ms: active[id].resets_at_ms,
+        }))
+        .sort((a, b) => a.resets_at_ms - b.resets_at_ms);
 
     return {
         exhausted: true,
-        provider,
-        model,
-        resets_at: valid.resets_at,
-        detected_at: valid.detected_at,
-        pattern_matched: valid.pattern_matched,
-        resets_at_ms: resetsAtMs,
+        // Espejo del slot primario — backward-compat con callers legacy.
+        provider: primaryId,
+        model: p.model,
+        resets_at: p.resets_at,
+        detected_at: p.detected_at,
+        pattern_matched: p.pattern_matched,
+        resets_at_ms: p.resets_at_ms,
+        // #4731 — lista completa de slots activos (fuente por-proveedor).
+        providers,
     };
 }
 
@@ -565,39 +738,15 @@ function clearFlag(opts = {}) {
     const auditEnabled = opts.auditLogEnabled !== false;
     const callerProvider = opts.provider || null;
 
-    // #3077 CA-8: si pasaron provider, validar scope antes de borrar.
-    if (callerProvider) {
-        // Leer el flag actual sin disparar audit ni drenado por fecha.
-        try {
-            const raw = fs.readFileSync(file, 'utf8');
-            const parsed = JSON.parse(raw);
-            const flagProvider = (parsed && parsed.provider) || DEFAULT_PROVIDER;
-            if (flagProvider !== callerProvider) {
-                if (auditEnabled) {
-                    appendAudit({
-                        event: 'clear_skipped_provider_mismatch',
-                        provider: callerProvider,
-                        model: opts.model || null,
-                        error_type: null,
-                        raw_excerpt: `flag_provider=${flagProvider} caller_provider=${callerProvider}`,
-                        flag_set: true,
-                    });
-                }
-                return false;
-            }
-        } catch (e) {
-            // ENOENT / parse_error → caer al unlink (idempotente).
-            if (e && e.code !== 'ENOENT') {
-                // No-op para otros errores.
-            }
-        }
-    }
-
+    // #4731 — Con estado por-proveedor el guard `clear_skipped_provider_mismatch`
+    // deja de ser necesario: `clearFlag({provider:X})` opera SÓLO sobre el slot
+    // de X. Un proveedor sano nunca puede limpiar el slot de otro (el vector
+    // de #3077 CA-8 / SEC-1 queda cerrado por construcción, no por guard).
+    //
     // #4577 GATE 3 — INVARIANTE log-antes-de-mutar (RS-2): registrar el clear
-    // del flag ANTES del unlink, y SOLO cuando hay un flag real que borrar (no
-    // floodear el audit con los `success_spawn` que no tocan estado). Incidente
-    // #4565 (misatribución de provider) es exactamente este sitio sin traza.
-    if (fs.existsSync(file)) {
+    // ANTES de mutar, y SOLO cuando hay algo real que borrar (no floodear el
+    // audit con `success_spawn` que no tocan estado).
+    const logBeforeMutate = () => {
         try {
             require('./kernel-actions-audit').safeAppendAction({
                 action: 'quota-flag-clear', impact: 'alto',
@@ -609,27 +758,51 @@ function clearFlag(opts = {}) {
                 reason: `clearFlag event=${opts.event || 'cleared'} provider=${callerProvider || 'any'} reason=${opts.reason || 'manual_or_post_success'}`,
             });
         } catch {}
-    }
-    let existed = false;
-    try {
-        fs.unlinkSync(file);
-        existed = true;
-    } catch (e) {
-        if (e && e.code !== 'ENOENT') {
-            // No-op: best-effort
-        }
-    }
-    if (existed && auditEnabled) {
+    };
+    const auditCleared = (provider, model) => {
+        if (!auditEnabled) return;
         appendAudit({
             event: opts.event || 'cleared',
-            provider: callerProvider,
-            model: opts.model || null,
+            provider: provider || null,
+            model: model || null,
             error_type: null,
             raw_excerpt: opts.reason || 'manual_or_post_success',
             flag_set: false,
         });
+    };
+
+    // Caller legacy sin provider: limpia TODO el flag (backward-compat).
+    if (!callerProvider) {
+        if (!fs.existsSync(file)) return false;
+        logBeforeMutate();
+        let existed = false;
+        try { fs.unlinkSync(file); existed = true; }
+        catch (e) { if (e && e.code !== 'ENOENT') { /* best-effort */ } }
+        if (existed) auditCleared(null, opts.model || null);
+        return existed;
     }
-    return existed;
+
+    // Scope por-proveedor: sólo drena el slot de `callerProvider`.
+    const map = readCurrentMap();
+    if (!map[callerProvider]) {
+        // El proveedor no tiene slot activo → no-op silencioso (NO es un
+        // mismatch: los otros slots, si existen, quedan intactos).
+        return false;
+    }
+    const model = map[callerProvider].model || opts.model || null;
+    logBeforeMutate();
+    delete map[callerProvider];
+    try {
+        if (Object.keys(map).length === 0) {
+            fs.unlinkSync(file);
+        } else {
+            writeJsonAtomic(file, buildHybridPayload(map));
+        }
+    } catch (e) {
+        if (e && e.code !== 'ENOENT') { /* best-effort */ }
+    }
+    auditCleared(callerProvider, model);
+    return true;
 }
 
 // -----------------------------------------------------------------------------
@@ -698,14 +871,15 @@ function setFlag(opts = {}) {
     if (effectiveResetsAt == null && errorType === 'usage_limit_reached') {
         effectiveResetsAt = now + CODEX_USAGE_LIMIT_RESET_MS;
     }
-    const cap = capResetsAt(effectiveResetsAt, { maxDays: opts.maxDays, now });
-    const payload = {
+    // #4731 — TTL configurable por proveedor (clampeado). Prioriza opts.maxDays.
+    const maxDays = resolveMaxDays(provider, opts);
+    const cap = capResetsAt(effectiveResetsAt, { maxDays, now });
+    const slot = {
         exhausted: true,
-        provider,
-        ...(model ? { model } : {}),
         resets_at: cap.iso,
         detected_at: new Date(now).toISOString(),
         pattern_matched: errorType,
+        ...(model ? { model } : {}),
     };
     // #4577 GATE 3 — INVARIANTE log-antes-de-mutar (RS-2): registrar el set del
     // flag de cuota ANTES del write atómico (incidente #4565).
@@ -720,6 +894,13 @@ function setFlag(opts = {}) {
             reason: `setFlag provider=${provider} error_type=${errorType} agent=${opts.agent || 'unknown'}`,
         });
     } catch {}
+    // #4731 — Read-modify-write del mapa por-proveedor: NO pisa slots de otros
+    // proveedores agotados (habilita coexistencia CA-3). Bajo concurrencia exacta
+    // aplica last-writer-wins sobre el mapa (documentado, atomicidad garantizada
+    // por el rename de writeJsonAtomic).
+    const map = readCurrentMap();
+    map[provider] = { provider, ...slot, resets_at_ms: cap.ms };
+    const payload = buildHybridPayload(map);
     writeJsonAtomic(flagFile(), payload);
     if (opts.auditLogEnabled !== false) {
         appendAudit({
@@ -803,6 +984,60 @@ const _CODEX_USAGE_LIMIT_PATTERN =
 // desperdiciamos el fallback pago durante días. Es auto-corrector: si al drenar
 // la cuota sigue agotada, el próximo intento re-setea el flag (idempotente).
 const CODEX_USAGE_LIMIT_RESET_MS = 60 * 60 * 1000; // 1h
+
+// #4731 — TTL (cap de `resets_at`) configurable POR PROVEEDOR. Fuente:
+// `config.yaml:quota_detector.ttl_by_provider.<id>` (en días) con default
+// `quota_detector.resets_at_cap_max_days`. Clampeado a rango seguro
+// [MIN_TTL_DAYS, MAX_TTL_DAYS] (security A05): un valor inválido o fuera de
+// rango cae al default conservador y se acota — nunca deja flags eternos ni
+// expira sin evidencia. La lectura es defensiva y cacheada: si el config no
+// carga, se usa DEFAULT_MAX_RESETS_AT_DAYS.
+const MIN_TTL_DAYS = 1 / 24;              // 1h — piso (evita flags que expiran al instante)
+const MAX_TTL_DAYS = 31;                  // 31d — techo (cuota mensual OpenAI)
+
+let _quotaDetectorCfgCache = null;
+function loadQuotaDetectorConfig() {
+    if (_quotaDetectorCfgCache !== null) return _quotaDetectorCfgCache;
+    let cfg = {};
+    try {
+        // Carga perezosa y defensiva de `config.yaml`. Si `js-yaml` o el archivo
+        // no están disponibles (tests aislados), quedamos con defaults.
+        const yaml = require('js-yaml');
+        const cfgPath = path.join(pipelineDir(), 'config.yaml');
+        const full = yaml.load(fs.readFileSync(cfgPath, 'utf8'));
+        if (full && full.quota_detector && typeof full.quota_detector === 'object') {
+            cfg = full.quota_detector;
+        }
+    } catch { /* best-effort: defaults */ }
+    _quotaDetectorCfgCache = cfg;
+    return cfg;
+}
+
+/**
+ * #4731 — Resuelve el cap de días (`maxDays`) para un proveedor. Prioridad:
+ *   1. `opts.maxDays` explícito del caller (contrato #3077 preservado).
+ *   2. `config.quota_detector.ttl_by_provider.<provider>`.
+ *   3. `config.quota_detector.resets_at_cap_max_days` (default legacy).
+ *   4. `DEFAULT_MAX_RESETS_AT_DAYS`.
+ * El resultado se clampa a [MIN_TTL_DAYS, MAX_TTL_DAYS]; un valor inválido cae
+ * al default conservador (`DEFAULT_MAX_RESETS_AT_DAYS`).
+ */
+function resolveMaxDays(provider, opts = {}) {
+    if (Number.isFinite(opts.maxDays) && opts.maxDays > 0) {
+        return Math.min(MAX_TTL_DAYS, Math.max(MIN_TTL_DAYS, opts.maxDays));
+    }
+    const cfg = loadQuotaDetectorConfig();
+    let days = DEFAULT_MAX_RESETS_AT_DAYS;
+    const perProvider = cfg && cfg.ttl_by_provider;
+    if (perProvider && typeof perProvider === 'object'
+        && Number.isFinite(perProvider[provider]) && perProvider[provider] > 0) {
+        days = perProvider[provider];
+    } else if (Number.isFinite(cfg && cfg.resets_at_cap_max_days) && cfg.resets_at_cap_max_days > 0) {
+        days = cfg.resets_at_cap_max_days;
+    }
+    if (!Number.isFinite(days) || days <= 0) days = DEFAULT_MAX_RESETS_AT_DAYS;
+    return Math.min(MAX_TTL_DAYS, Math.max(MIN_TTL_DAYS, days));
+}
 
 function _detectAnthropic(evt, allowlist) {
     if (!evt || typeof evt !== 'object') return { matched: false };
@@ -997,9 +1232,12 @@ function shouldGateSpawn(skill, opts = {}) {
     if (isDeterministicSkill(skill)) return false;
     const flag = readDefensive(opts);
     if (flag.exhausted !== true) return false;
-    // #3077 CA-7: si el caller pasó provider, requerir match exacto.
+    // #3077 CA-7 / #4731: si el caller pasó provider, gatear SOLO si ese
+    // proveedor tiene un slot activo (scope por-proveedor). Con múltiples
+    // proveedores agotados, cada uno gatea sólo sus propios skills.
     if (opts.provider) {
-        return flag.provider === opts.provider;
+        const slots = Array.isArray(flag.providers) ? flag.providers : [];
+        return slots.some((p) => p.provider === opts.provider);
     }
     // Sin provider del caller: comportamiento legacy (cualquier flag bloquea).
     return true;
@@ -1025,6 +1263,11 @@ module.exports = {
     capResetsAt,
     sanitizeRawExcerpt,
     validateFlagShape,
+    // #4731 — estado por-proveedor
+    isValidProviderSlot,
+    readProvidersMap,
+    buildHybridPayload,
+    resolveMaxDays,
 
     // Constantes públicas
     DEFAULT_ERROR_TYPES,
@@ -1036,6 +1279,8 @@ module.exports = {
     DETERMINISTIC_SKILLS,
     KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER,
     CODEX_USAGE_LIMIT_RESET_MS,
+    MIN_TTL_DAYS,
+    MAX_TTL_DAYS,
 
     // Paths (útiles para tests)
     flagFile,

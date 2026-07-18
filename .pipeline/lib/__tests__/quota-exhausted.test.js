@@ -824,17 +824,27 @@ test('CA-8 #3077 · clearFlag sin provider (legacy) sigue limpiando (backward-co
     assert.equal(q.clearFlag({ event: 'success_spawn' }), true);
 });
 
-test('CA-8 #3077 · clearFlag con provider mismatch deja audit log explícito', () => {
+test('#4731 · clearFlag de un provider sin slot activo es no-op silencioso (sin mismatch)', () => {
+    // #4731 — Con estado por-proveedor el guard `clear_skipped_provider_mismatch`
+    // desaparece por diseño: `clearFlag({provider:'openai-codex'})` opera SÓLO
+    // sobre el slot de codex (inexistente) → no-op, sin evento de mismatch, y
+    // el slot de anthropic queda intacto (el vector de #3077 queda cerrado por
+    // construcción, no por guard).
     const tmp = newTmpDir();
     const q = freshModule(tmp);
     const now = Date.parse('2026-05-05T00:00:00Z');
     const resetsAt = new Date(now + 24 * 60 * 60 * 1000).toISOString();
     q.setFlag({ errorType: 'usage_limit_error', provider: 'anthropic', resetsAt, now });
-    q.clearFlag({ provider: 'openai-codex', event: 'success_spawn' });
+    assert.equal(q.clearFlag({ provider: 'openai-codex', event: 'success_spawn' }), false,
+        'clearFlag de un provider sin slot no debe drenar nada');
+    // El slot de anthropic sigue activo: un provider sano NO borra el ajeno.
+    assert.equal(q.isQuotaExhausted({ now }), true);
+    assert.equal(q.shouldGateSpawn('po', { provider: 'anthropic', now }), true);
+    // No debe emitirse el evento legacy de mismatch (ya no existe).
     const audits = readAuditLines(tmp);
-    assert.ok(
-        audits.some(a => a.event === 'clear_skipped_provider_mismatch'),
-        'debe haber entry clear_skipped_provider_mismatch en audit log'
+    assert.equal(
+        audits.some(a => a.event === 'clear_skipped_provider_mismatch'), false,
+        'el guard clear_skipped_provider_mismatch fue eliminado por el modelo por-proveedor'
     );
 });
 
@@ -1272,4 +1282,107 @@ test('#4353 CA-3 · el drenado es scoped: un éxito de X NO revalida el flag de 
         delete process.env.PIPELINE_DIR_OVERRIDE;
         fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+});
+
+// =============================================================================
+// #4731 — Estado por-proveedor (mapa `providers`): coexistencia, drenado por
+// slot independiente, backward-compat legacy y auditoría por proveedor.
+// =============================================================================
+
+test('#4731 · dos proveedores agotados COEXISTEN sin pisarse (CA-3)', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    const now = Date.parse('2026-07-15T00:00:00Z');
+    q.setFlag({ errorType: 'usage_limit_error', provider: 'anthropic', resetsAt: new Date(now + 2 * 3600000).toISOString(), now });
+    q.setFlag({ errorType: 'usage_limit_reached', provider: 'openai-codex', resetsAt: new Date(now + 1 * 3600000).toISOString(), now, maxDays: 31 });
+    const persisted = readFlag(tmp);
+    assert.ok(persisted.providers, 'debe persistir el mapa por-proveedor');
+    assert.deepEqual(Object.keys(persisted.providers).sort(), ['anthropic', 'openai-codex']);
+    // Ambos gatean su propio provider; ninguno gatea al otro fuera de scope.
+    assert.equal(q.shouldGateSpawn('po', { provider: 'anthropic', now }), true);
+    assert.equal(q.shouldGateSpawn('po', { provider: 'openai-codex', now }), true);
+    assert.equal(q.shouldGateSpawn('po', { provider: 'cerebras', now }), false);
+    // El espejo top-level apunta al reset más próximo (codex, +1h).
+    assert.equal(persisted.provider, 'openai-codex');
+});
+
+test('#4731 · un provider sano NO borra el slot activo de otro (clearFlag scoped)', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    const now = Date.parse('2026-07-15T00:00:00Z');
+    q.setFlag({ errorType: 'usage_limit_error', provider: 'anthropic', resetsAt: new Date(now + 3600000).toISOString(), now });
+    q.setFlag({ errorType: 'usage_limit_reached', provider: 'openai-codex', resetsAt: new Date(now + 3600000).toISOString(), now, maxDays: 31 });
+    // Codex se recupera y drena SU slot.
+    assert.equal(q.clearFlag({ provider: 'openai-codex', now }), true);
+    // El slot de anthropic sigue intacto (el vector #3077 queda cerrado).
+    const r = q.readDefensive({ now });
+    assert.equal(r.exhausted, true);
+    assert.deepEqual(r.providers.map(p => p.provider), ['anthropic']);
+    assert.equal(q.shouldGateSpawn('po', { provider: 'anthropic', now }), true);
+    assert.equal(q.shouldGateSpawn('po', { provider: 'openai-codex', now }), false);
+});
+
+test('#4731 · cada slot expira INDEPENDIENTE por su resets_at (drenado por-slot)', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    const now = Date.parse('2026-07-15T00:00:00Z');
+    q.setFlag({ errorType: 'usage_limit_reached', provider: 'openai-codex', resetsAt: new Date(now + 1 * 3600000).toISOString(), now, maxDays: 31 });
+    q.setFlag({ errorType: 'usage_limit_error', provider: 'anthropic', resetsAt: new Date(now + 5 * 3600000).toISOString(), now });
+    // A las +2h: codex ya venció, anthropic sigue.
+    const mid = now + 2 * 3600000;
+    const r = q.readDefensive({ now: mid });
+    assert.equal(r.exhausted, true);
+    assert.deepEqual(r.providers.map(p => p.provider), ['anthropic'], 'sólo anthropic sigue activo');
+    // El archivo se reescribió sin el slot de codex (drenado parcial).
+    const persisted = readFlag(tmp);
+    assert.deepEqual(Object.keys(persisted.providers), ['anthropic']);
+    // A las +6h: todos vencieron → archivo borrado.
+    assert.equal(q.isQuotaExhausted({ now: now + 6 * 3600000 }), false);
+    assert.equal(fs.existsSync(path.join(tmp, 'quota-exhausted.json')), false);
+});
+
+test('#4731 · backward-compat: flag legacy sin providers-map → slot anthropic', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    const now = Date.parse('2026-07-15T00:00:00Z');
+    fs.writeFileSync(path.join(tmp, 'quota-exhausted.json'), JSON.stringify({
+        exhausted: true,
+        resets_at: new Date(now + 3600000).toISOString(),
+        detected_at: new Date(now).toISOString(),
+        pattern_matched: 'usage_limit_error',
+    }));
+    const r = q.readDefensive({ now });
+    assert.equal(r.exhausted, true);
+    assert.equal(r.provider, 'anthropic');
+    assert.deepEqual(r.providers.map(p => p.provider), ['anthropic']);
+});
+
+test('#4731 · TTL configurable por proveedor: maxDays explícito clampea (A05)', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    // maxDays absurdo se acota a MAX_TTL_DAYS; el default cae al conservador.
+    assert.equal(q.resolveMaxDays('anthropic', { maxDays: 9999 }), q.MAX_TTL_DAYS);
+    assert.ok(q.resolveMaxDays('anthropic', { maxDays: 0.0001 }) >= q.MIN_TTL_DAYS);
+    // Sin config accesible (tmp aislado), cae al default legacy 7d.
+    assert.equal(q.resolveMaxDays('zzz-unknown'), q.DEFAULT_MAX_RESETS_AT_DAYS);
+});
+
+test('#4731 · auditoría por proveedor: set/clear/expire emiten evento con provider (A09)', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    const now = Date.parse('2026-07-15T00:00:00Z');
+    q.setFlag({ errorType: 'usage_limit_reached', provider: 'openai-codex', resetsAt: new Date(now + 3600000).toISOString(), now, maxDays: 31, agent: 'po' });
+    q.clearFlag({ provider: 'openai-codex', event: 'success_spawn', now });
+    // set flag de anthropic que vence → drenado con provider.
+    fs.writeFileSync(path.join(tmp, 'quota-exhausted.json'), JSON.stringify({
+        providers: { anthropic: { exhausted: true, resets_at: new Date(now - 1000).toISOString(), detected_at: new Date(now - 3600000).toISOString(), pattern_matched: 'usage_limit_error' } },
+    }));
+    q.readDefensive({ now });
+    const audits = readAuditLines(tmp);
+    const setEvt = audits.find(a => a.event === 'flag_set' && a.provider === 'openai-codex');
+    const clearEvt = audits.find(a => a.event === 'success_spawn' && a.provider === 'openai-codex');
+    const drainEvt = audits.find(a => a.event === 'drained_post_reset' && a.provider === 'anthropic');
+    assert.ok(setEvt, 'flag_set debe registrar el provider');
+    assert.ok(clearEvt, 'clear debe registrar el provider');
+    assert.ok(drainEvt, 'drenado por-slot debe registrar el provider');
 });

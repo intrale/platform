@@ -1,0 +1,295 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 4731 — Rediseño del banner de cuota: estado por-proveedor (#4731)
+  Resolucion: 1440x1240
+  Reemplaza el banner unico "Modo deterministico global" por un banner que
+  refleja el estado REAL por proveedor. Tres estados de scope:
+
+    A · DEGRADACION PUNTUAL  → >=1 proveedor LLM operativo. NO dice "global".
+                               Tono calmo (surface-1 + borde del color del
+                               proveedor afectado). Muestra "N operativos".
+    B · SIN LLM (global)     → 0 proveedores LLM operativos. Es el unico caso
+                               de "modo deterministico real". Tono ambar/alarma
+                               (--quota-degraded-*), reservado para este estado.
+    C · MULTI-PROVEEDOR      → >=2 proveedores agotados a la vez, aun con otros
+                               operativos. Chips plurales, uno por proveedor.
+
+  Decision de diseno (alineada con guru/security/Arquitecto):
+    El color del borde y del chip identifica al proveedor afectado usando los
+    tokens --provider-<id>-* YA existentes en design-tokens.css. El ambar
+    --quota-degraded-* deja de ser "generico de cuota" y pasa a significar
+    exclusivamente "sin LLM disponible" (estado B). Asi el operador distingue
+    de un vistazo "un proveedor flojo" de "todo el pipeline sin LLM".
+
+  Tokens (design-tokens.css, sin tokens nuevos):
+    surface-0 #0D1117 · surface-1 #161B22 · surface-2 #1C2128
+    border #30363D · border-subtle #21262D · text-primary #E6EDF3
+    text-secondary #B1BAC4 · success #3FB950
+    provider-anthropic   #E5946B / fg #F4C9B1
+    provider-openai-codex #10B981 / fg #6EE7B7
+    provider-cerebras    #FFD166 / fg #FFE6A8
+    provider-gemini      #8AB4F8 / fg #CBD9F9
+    provider-groq        #FF6B47 / fg #FFC1AE
+    quota-degraded       #F0A500 / fg #FFE5A8 (SOLO estado B)
+
+  WCAG AA/AAA verificado (sobre surface-0 #0D1117):
+    text-primary   #E6EDF3 = 14.8:1 (AAA)
+    text-secondary #B1BAC4 =  9.7:1 (AAA)
+    success        #3FB950 =  5.4:1 (AA)
+    provider-codex-fg #6EE7B7 sobre codex-bg = 8.7:1 (AAA)
+    provider-anthropic-fg #F4C9B1 sobre anthropic-bg = 11.2:1 (AAA)
+    quota-degraded-fg #FFE5A8 sobre surface-0 = 13.5:1 (AAA)
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1240" viewBox="0 0 1440 1240"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif">
+
+  <defs>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/><stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="amberFill" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#F0A500" stop-opacity="0.20"/>
+      <stop offset="100%" stop-color="#F0A500" stop-opacity="0.05"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Fondo -->
+  <rect width="1440" height="1240" fill="#0D1117"/>
+
+  <!-- =============== HEADER =============== -->
+  <rect x="0" y="0" width="1440" height="64" fill="#161B22"/>
+  <rect x="0" y="63" width="1440" height="1" fill="#30363D"/>
+  <g transform="translate(24, 14)">
+    <rect width="36" height="36" rx="9" fill="#0D274D"/>
+    <path d="M18 7 L5 30 L31 30 Z" fill="none" stroke="url(#brandGrad)" stroke-width="2.5" stroke-linejoin="round"/>
+    <path d="M18 16 L13 26 L23 26 Z" fill="url(#brandGrad)"/>
+  </g>
+  <text x="72" y="32" fill="#E6EDF3" font-size="17" font-weight="700">Intrale Pipeline</text>
+  <text x="72" y="50" fill="#8B949E" font-size="10" font-weight="600" letter-spacing="1.4">DASHBOARD V3 · BANNER DE CUOTA POR PROVEEDOR</text>
+  <!-- El pipeline NO esta caido: RUNNING aun con un proveedor degradado -->
+  <g transform="translate(360, 20)">
+    <rect width="104" height="26" rx="13" fill="#3FB950" fill-opacity="0.15" stroke="#3FB950" stroke-opacity="0.4"/>
+    <circle cx="15" cy="13" r="3.5" fill="#3FB950"/>
+    <text x="27" y="17" fill="#3FB950" font-size="11" font-weight="700" letter-spacing="1.2">RUNNING</text>
+  </g>
+
+  <!-- ============================================================= -->
+  <!-- ESTADO A — DEGRADACION PUNTUAL (>=1 proveedor operativo)       -->
+  <!-- ============================================================= -->
+  <text x="22" y="98" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="1.4">ESTADO A · DEGRADACION PUNTUAL — 1 PROVEEDOR AFECTADO, EL RESTO OPERATIVO</text>
+
+  <!-- Banner A: contenedor calmo (surface-1), borde izq del color del proveedor -->
+  <g transform="translate(22, 110)">
+    <rect width="1396" height="118" rx="10" fill="#161B22" stroke="#30363D"/>
+    <rect width="4" height="118" rx="2" fill="#10B981"/>
+
+    <!-- Badge del proveedor afectado (Codex emerald) — estilo info, no alarma -->
+    <g transform="translate(24, 28)">
+      <rect width="40" height="40" rx="10" fill="#10B981" fill-opacity="0.14" stroke="#10B981" stroke-opacity="0.5"/>
+      <!-- reloj de espera (no bloqueo) -->
+      <g transform="translate(11, 10)" stroke="#6EE7B7" stroke-width="1.8" fill="none" stroke-linecap="round">
+        <circle cx="9" cy="10" r="8"/>
+        <path d="M9 5 L9 10 L13 12"/>
+      </g>
+    </g>
+
+    <!-- Contenido -->
+    <text x="84" y="36" fill="#E6EDF3" font-size="16" font-weight="700">Proveedor Codex degradado — limite de uso del plan</text>
+    <text x="84" y="57" fill="#B1BAC4" font-size="11.5" font-family="'Roboto Mono', ui-monospace, monospace">Tipo: usage_limit_reached · Detectado: 14:03 · Reset estimado: 14:45</text>
+
+    <!-- Chip del proveedor afectado -->
+    <g transform="translate(84, 70)">
+      <rect width="330" height="28" rx="14" fill="#10B981" fill-opacity="0.14" stroke="#10B981" stroke-opacity="0.55"/>
+      <circle cx="16" cy="14" r="4.5" fill="#10B981"/>
+      <text x="30" y="18" fill="#6EE7B7" font-size="12" font-weight="700">Codex</text>
+      <text x="74" y="18" fill="#B1BAC4" font-size="11">limite de uso · reset en 42m</text>
+    </g>
+
+    <!-- Health strip: proveedores operativos (evidencia de "no global") -->
+    <g transform="translate(430, 70)">
+      <text x="0" y="18" fill="#8B949E" font-size="11" font-weight="600">4 operativos:</text>
+      <g transform="translate(92, 0)">
+        <circle cx="6" cy="14" r="4" fill="#3FB950"/><text x="16" y="18" fill="#B1BAC4" font-size="11">Anthropic</text>
+        <circle cx="96" cy="14" r="4" fill="#3FB950"/><text x="106" y="18" fill="#B1BAC4" font-size="11">Cerebras</text>
+        <circle cx="184" cy="14" r="4" fill="#3FB950"/><text x="194" y="18" fill="#B1BAC4" font-size="11">Gemini</text>
+        <circle cx="262" cy="14" r="4" fill="#3FB950"/><text x="272" y="18" fill="#B1BAC4" font-size="11">Groq</text>
+      </g>
+    </g>
+
+    <!-- Countdown a la derecha (color del proveedor afectado) -->
+    <g transform="translate(1240, 26)">
+      <text x="132" y="12" fill="#8B949E" font-size="10" font-weight="700" letter-spacing="0.6" text-anchor="end">RESET CODEX</text>
+      <text x="132" y="42" fill="#6EE7B7" font-size="24" font-weight="700" text-anchor="end" font-family="'Roboto Mono', ui-monospace, monospace">42m</text>
+      <rect x="0" y="56" width="132" height="4" rx="2" fill="#000" fill-opacity="0.32"/>
+      <rect x="0" y="56" width="52" height="4" rx="2" fill="#10B981"/>
+    </g>
+  </g>
+
+  <!-- ============================================================= -->
+  <!-- ESTADO C — MULTIPLES PROVEEDORES AGOTADOS (aun con operativos)  -->
+  <!-- ============================================================= -->
+  <text x="22" y="278" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="1.4">ESTADO C · MULTI-PROVEEDOR — 2 AFECTADOS, 3 OPERATIVOS (CHIPS PLURALES)</text>
+
+  <g transform="translate(22, 290)">
+    <rect width="1396" height="128" rx="10" fill="#161B22" stroke="#30363D"/>
+    <!-- borde izq bicolor: mitad anthropic, mitad codex -->
+    <rect width="4" height="59" rx="2" fill="#E5946B"/>
+    <rect y="59" width="4" height="59" rx="2" fill="#10B981"/>
+
+    <g transform="translate(24, 28)">
+      <rect width="40" height="40" rx="10" fill="#1C2128" stroke="#484F58" stroke-opacity="0.5"/>
+      <g transform="translate(11, 10)" stroke="#B1BAC4" stroke-width="1.8" fill="none" stroke-linecap="round">
+        <circle cx="9" cy="10" r="8"/><path d="M9 5 L9 10 L13 12"/>
+      </g>
+    </g>
+
+    <text x="84" y="36" fill="#E6EDF3" font-size="16" font-weight="700">2 proveedores degradados — el pipeline sigue operativo con 3</text>
+    <text x="84" y="57" fill="#B1BAC4" font-size="11.5" font-family="'Roboto Mono', ui-monospace, monospace">Skills LLM se redirigen a proveedores sanos · 0 skills bloqueados</text>
+
+    <!-- Chip Anthropic -->
+    <g transform="translate(84, 70)">
+      <rect width="322" height="28" rx="14" fill="#E5946B" fill-opacity="0.14" stroke="#E5946B" stroke-opacity="0.55"/>
+      <circle cx="16" cy="14" r="4.5" fill="#E5946B"/>
+      <text x="30" y="18" fill="#F4C9B1" font-size="12" font-weight="700">Anthropic</text>
+      <text x="98" y="18" fill="#B1BAC4" font-size="11">reposo horario · reset 07:00 (6h 12m)</text>
+    </g>
+    <!-- Chip Codex -->
+    <g transform="translate(84, 104)">
+      <rect width="322" height="28" rx="14" fill="#10B981" fill-opacity="0.14" stroke="#10B981" stroke-opacity="0.55"/>
+      <circle cx="16" cy="14" r="4.5" fill="#10B981"/>
+      <text x="30" y="18" fill="#6EE7B7" font-size="12" font-weight="700">Codex</text>
+      <text x="82" y="18" fill="#B1BAC4" font-size="11">limite de uso · reset 14:45 (42m)</text>
+    </g>
+
+    <!-- Health strip -->
+    <g transform="translate(430, 70)">
+      <text x="0" y="18" fill="#8B949E" font-size="11" font-weight="600">3 operativos:</text>
+      <g transform="translate(92, 0)">
+        <circle cx="6" cy="14" r="4" fill="#3FB950"/><text x="16" y="18" fill="#B1BAC4" font-size="11">Cerebras</text>
+        <circle cx="94" cy="14" r="4" fill="#3FB950"/><text x="104" y="18" fill="#B1BAC4" font-size="11">Gemini</text>
+        <circle cx="172" cy="14" r="4" fill="#3FB950"/><text x="182" y="18" fill="#B1BAC4" font-size="11">Groq</text>
+      </g>
+    </g>
+
+    <g transform="translate(1240, 26)">
+      <text x="132" y="12" fill="#8B949E" font-size="10" font-weight="700" letter-spacing="0.6" text-anchor="end">PROXIMO RESET</text>
+      <text x="132" y="42" fill="#6EE7B7" font-size="24" font-weight="700" text-anchor="end" font-family="'Roboto Mono', ui-monospace, monospace">42m</text>
+      <text x="132" y="60" fill="#8B949E" font-size="10" text-anchor="end">Codex · luego Anthropic</text>
+    </g>
+  </g>
+
+  <!-- ============================================================= -->
+  <!-- ESTADO B — SIN LLM (modo deterministico REAL, unico ambar)     -->
+  <!-- ============================================================= -->
+  <text x="22" y="478" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="1.4">ESTADO B · SIN PROVEEDORES LLM — MODO DETERMINISTICO REAL (UNICO CASO AMBAR)</text>
+
+  <g transform="translate(22, 490)">
+    <rect width="1396" height="118" rx="10" fill="url(#amberFill)" stroke="#F0A500" stroke-opacity="0.55"/>
+    <rect width="4" height="118" rx="2" fill="#F0A500"/>
+
+    <!-- Reloj de arena ambar (alarma controlada) -->
+    <g transform="translate(24, 28)">
+      <rect width="40" height="40" rx="10" fill="#F0A500" fill-opacity="0.16" stroke="#F0A500" stroke-opacity="0.5"/>
+      <g transform="translate(13, 9)" stroke="#FFE5A8" stroke-width="1.8" fill="none" stroke-linejoin="round" stroke-linecap="round">
+        <path d="M1 1 L15 1 M1 21 L15 21 M2 1 C2 8 14 8 14 11 C14 14 2 14 2 21 M14 1 C14 8 2 8 2 11 C2 14 14 14 14 21"/>
+      </g>
+    </g>
+
+    <text x="84" y="36" fill="#FFE5A8" font-size="16" font-weight="700">Modo deterministico — sin proveedores LLM disponibles</text>
+    <text x="84" y="57" fill="#B57700" font-size="11.5" font-family="'Roboto Mono', ui-monospace, monospace">Los 5 proveedores agotados · skills LLM en cola · deterministas corriendo</text>
+
+    <!-- Paneles comparativos Det/LLM (se conservan del banner actual) -->
+    <g transform="translate(84, 70)">
+      <rect width="150" height="30" rx="6" fill="#000" fill-opacity="0.22" stroke="#30363D"/>
+      <text x="12" y="14" fill="#8B949E" font-size="9" font-weight="700" letter-spacing="0.5">DETERMINISTICOS</text>
+      <text x="12" y="26" fill="#3FB950" font-size="12" font-weight="700">3 corriendo</text>
+    </g>
+    <g transform="translate(246, 70)">
+      <rect width="150" height="30" rx="6" fill="#000" fill-opacity="0.22" stroke="#30363D"/>
+      <text x="12" y="14" fill="#8B949E" font-size="9" font-weight="700" letter-spacing="0.5">LLM ENCOLADOS</text>
+      <text x="12" y="26" fill="#FFE5A8" font-size="12" font-weight="700">7 esperando</text>
+    </g>
+
+    <g transform="translate(1240, 26)">
+      <text x="132" y="12" fill="#B57700" font-size="10" font-weight="700" letter-spacing="0.6" text-anchor="end">PROXIMO RESET LLM</text>
+      <text x="132" y="42" fill="#FFE5A8" font-size="24" font-weight="700" text-anchor="end" font-family="'Roboto Mono', ui-monospace, monospace">42m</text>
+      <rect x="0" y="56" width="132" height="4" rx="2" fill="#000" fill-opacity="0.32"/>
+      <rect x="0" y="56" width="94" height="4" rx="2" fill="#F0A500"/>
+    </g>
+  </g>
+
+  <!-- ============================================================= -->
+  <!-- ESTADO 0 — SIN FLAG (banner oculto, referencia)                -->
+  <!-- ============================================================= -->
+  <text x="22" y="658" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="1.4">ESTADO 0 · SIN FLAG ACTIVO — BANNER OCULTO (data-active="false", CA-14)</text>
+  <g transform="translate(22, 670)">
+    <rect width="1396" height="44" rx="10" fill="#0D1117" stroke="#21262D" stroke-dasharray="4 4"/>
+    <text x="698" y="27" fill="#484F58" font-size="12" text-anchor="middle" font-style="italic">display:none — el HTML servido NO contiene el nombre de ningun proveedor ni "modo deterministico" (grep vacio)</text>
+  </g>
+
+  <!-- ============================================================= -->
+  <!-- PANEL DE ESPECIFICACION                                        -->
+  <!-- ============================================================= -->
+  <g transform="translate(22, 742)">
+    <rect width="686" height="470" rx="10" fill="#161B22" stroke="#30363D"/>
+    <text x="22" y="34" fill="#E6EDF3" font-size="14" font-weight="700">Especificacion de tokens y estados</text>
+    <rect x="22" y="46" width="642" height="1" fill="#21262D"/>
+
+    <text x="22" y="76" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="1">SCOPE → PALETA</text>
+    <!-- fila partial -->
+    <rect x="22" y="88" width="14" height="14" rx="3" fill="#10B981"/>
+    <text x="46" y="100" fill="#B1BAC4" font-size="12">Puntual: borde/chip = --provider-&lt;id&gt;-* · fondo surface-1 (calmo)</text>
+    <!-- fila global -->
+    <rect x="22" y="112" width="14" height="14" rx="3" fill="#F0A500"/>
+    <text x="46" y="124" fill="#B1BAC4" font-size="12">Global (0 LLM): --quota-degraded-* + glow ambar (unico caso)</text>
+    <!-- fila operativos -->
+    <circle cx="29" cy="149" r="6" fill="#3FB950"/>
+    <text x="46" y="153" fill="#B1BAC4" font-size="12">Operativos: dot --success · nombre --text-secondary</text>
+
+    <text x="22" y="188" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="1">REGLA DE SCOPE (getQuotaState + provider-health)</text>
+    <text x="22" y="210" fill="#B1BAC4" font-size="12" font-family="'Roboto Mono', ui-monospace, monospace">operationalProviders &gt;= 1  →  scope = "partial"</text>
+    <text x="22" y="228" fill="#B1BAC4" font-size="12" font-family="'Roboto Mono', ui-monospace, monospace">operationalProviders == 0  →  scope = "global"</text>
+
+    <text x="22" y="266" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="1">A11Y (WCAG, sobre surface-0)</text>
+    <text x="22" y="288" fill="#B1BAC4" font-size="12">text-primary 14.8:1 · text-secondary 9.7:1 · success 5.4:1</text>
+    <text x="22" y="306" fill="#B1BAC4" font-size="12">codex-fg/bg 8.7:1 · anthropic-fg/bg 11.2:1 · amber-fg 13.5:1</text>
+    <text x="22" y="324" fill="#B1BAC4" font-size="12">role="status" aria-live="polite" · icono aria-hidden</text>
+
+    <text x="22" y="362" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="1">SANITIZACION (CA-6 / A03)</text>
+    <text x="22" y="384" fill="#B1BAC4" font-size="12">provider/error_type/motivo → allowlist + escapeHtmlAttr/textContent</text>
+    <text x="22" y="402" fill="#B1BAC4" font-size="12">sin raw excerpts ni tokens · color por id allowlisteado</text>
+
+    <text x="22" y="440" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="1">CONTRATO CA-14</text>
+    <text x="22" y="462" fill="#B1BAC4" font-size="12">texto del banner presente en HTML SOLO con flag activo (data-active)</text>
+  </g>
+
+  <!-- COPY dinamico -->
+  <g transform="translate(732, 742)">
+    <rect width="686" height="470" rx="10" fill="#161B22" stroke="#30363D"/>
+    <text x="22" y="34" fill="#E6EDF3" font-size="14" font-weight="700">Copy dinamico del titulo (reemplaza el hardcode)</text>
+    <rect x="22" y="46" width="642" height="1" fill="#21262D"/>
+
+    <text x="22" y="76" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="1">PARTIAL · 1 AFECTADO</text>
+    <text x="22" y="98" fill="#6EE7B7" font-size="12" font-family="'Roboto Mono', ui-monospace, monospace">"Proveedor {name} degradado — {motivo}"</text>
+    <text x="22" y="116" fill="#8B949E" font-size="11">sub: "{N} proveedores operativos"</text>
+
+    <text x="22" y="150" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="1">PARTIAL · N AFECTADOS</text>
+    <text x="22" y="172" fill="#F4C9B1" font-size="12" font-family="'Roboto Mono', ui-monospace, monospace">"{K} proveedores degradados — {N} operativos"</text>
+    <text x="22" y="190" fill="#8B949E" font-size="11">un chip por proveedor afectado (color propio)</text>
+
+    <text x="22" y="224" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="1">GLOBAL · 0 LLM</text>
+    <text x="22" y="246" fill="#FFE5A8" font-size="12" font-family="'Roboto Mono', ui-monospace, monospace">"Modo deterministico — sin proveedores LLM"</text>
+    <text x="22" y="264" fill="#8B949E" font-size="11">unico caso que conserva el copy "modo deterministico"</text>
+
+    <text x="22" y="298" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="1">MOTIVOS ALLOWLISTEADOS (error_type → label)</text>
+    <text x="22" y="320" fill="#B1BAC4" font-size="12" font-family="'Roboto Mono', ui-monospace, monospace">usage_limit_reached → "limite de uso del plan"</text>
+    <text x="22" y="338" fill="#B1BAC4" font-size="12" font-family="'Roboto Mono', ui-monospace, monospace">usage_limit_error   → "cuota agotada"</text>
+    <text x="22" y="356" fill="#B1BAC4" font-size="12" font-family="'Roboto Mono', ui-monospace, monospace">rate_limit          → "rate limit temporal"</text>
+    <text x="22" y="374" fill="#B1BAC4" font-size="12" font-family="'Roboto Mono', ui-monospace, monospace">schedule_rest       → "reposo horario"</text>
+    <text x="22" y="392" fill="#B1BAC4" font-size="12" font-family="'Roboto Mono', ui-monospace, monospace">(fuera de allowlist) → "degradado"</text>
+
+    <text x="22" y="430" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="1">IDs A PRESERVAR (anti-flicker)</text>
+    <text x="22" y="452" fill="#B1BAC4" font-size="11.5" font-family="'Roboto Mono', ui-monospace, monospace">#quota-exhausted-banner/-title/-sub/-countdown (+ nuevos por chip)</text>
+  </g>
+
+</svg>

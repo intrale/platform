@@ -35,6 +35,12 @@ function _redact(s) {
 let quotaExhaustedState = null;
 try { quotaExhaustedState = require('./quota-exhausted-state'); } catch { /* opcional */ }
 
+// #4731 — Cruce con salud de proveedores para decidir el SCOPE del banner de
+// cuota (puntual vs global). Sólo usamos `listConfiguredProviders()` (lectura
+// del catálogo, sin pings HTTP). Tolerante a la ausencia del módulo.
+let providerHealthLib = null;
+try { providerHealthLib = require('./provider-health'); } catch { /* opcional */ }
+
 // #4709 — Causa declarada del no-despacho (cola ociosa). Lectura defensiva del
 // artifact `dispatch-cause.json`; si el módulo no carga, el slice degrada a
 // `{ active: false }` sin romper el dashboard.
@@ -2580,9 +2586,37 @@ function pacingSlice(state, ctx) {
 // `state.issueMatrix` ya cacheado por el dashboard. Cero IO extra contra
 // el filesystem además del flag.
 // =============================================================================
+// #4731 — Proveedor que NO cuenta como "operativo LLM" para el cómputo de scope
+// (no es un launcher de IA gateable).
+const NON_LLM_PROVIDER_IDS = new Set(['deterministic']);
+
+// #4731 — Cómputo del SCOPE del banner (puntual vs global) cruzando los
+// proveedores agotados (`affected`) con el catálogo de proveedores LLM
+// configurados (`lib/provider-health.listConfiguredProviders`, sin pings).
+//   operationalProviders = proveedores LLM configurados NO agotados
+//   scope = (hay catálogo && 0 operativos) ? 'global' : 'partial'
+// Fail-safe hacia 'partial': si no podemos enumerar el catálogo (módulo ausente
+// o vacío), NUNCA declaramos 'global' — así evitamos el falso "modo
+// determinístico global" del incidente 14–15/07 (CA-2).
+function computeQuotaScope(affectedIds) {
+    let configured = [];
+    try {
+        if (providerHealthLib && typeof providerHealthLib.listConfiguredProviders === 'function') {
+            const list = providerHealthLib.listConfiguredProviders();
+            if (Array.isArray(list)) configured = list;
+        }
+    } catch { /* degradar a partial */ }
+    const llm = configured.filter((id) => id && !NON_LLM_PROVIDER_IDS.has(id));
+    const affected = new Set(affectedIds);
+    const operational = llm.filter((id) => !affected.has(id));
+    const scope = (llm.length > 0 && operational.length === 0) ? 'global' : 'partial';
+    return { scope, operational, operationalCount: operational.length };
+}
+
 function quotaExhaustedSlice(state) {
+    const emptyResult = { active: false, scope: 'partial', providers: [], operational: [], operationalCount: 0, deterministicRunning: 0, queuedSkills: [] };
     if (!quotaExhaustedState) {
-        return { active: false, deterministicRunning: 0, queuedSkills: [] };
+        return { ...emptyResult };
     }
     let flag;
     try {
@@ -2590,10 +2624,10 @@ function quotaExhaustedSlice(state) {
     } catch {
         // Defensa extra: aún si el módulo tiene un bug, el banner no debe
         // tumbar el dashboard.
-        return { active: false, deterministicRunning: 0, queuedSkills: [] };
+        return { ...emptyResult };
     }
     if (!flag || !flag.active) {
-        return { active: false, deterministicRunning: 0, queuedSkills: [] };
+        return { ...emptyResult };
     }
 
     // Conteo: agentes determinísticos `trabajando` (panel "Determinísticos
@@ -2631,9 +2665,27 @@ function quotaExhaustedSlice(state) {
         .map(([skill, count]) => ({ skill, count }))
         .sort((a, b) => b.count - a.count); // más esperando arriba
 
+    // #4731 — proveedores afectados (por-slot) + scope puntual/global.
+    const affected = Array.isArray(flag.providers) ? flag.providers : [];
+    const affectedIds = affected.map((p) => p.id).filter(Boolean);
+    const { scope, operational, operationalCount } = computeQuotaScope(affectedIds);
+
     return {
         active: true,
-        // Campos del flag, ya normalizados por quota-exhausted-state.js.
+        // #4731 — semántica por-proveedor. `scope` = 'partial' (≥1 LLM operativo)
+        // o 'global' (0 LLM operativo). `providers` = lista de afectados con su
+        // motivo y reset. `operational` = ids de proveedores LLM sanos.
+        scope,
+        providers: affected.map((p) => ({
+            id: p.id,
+            error_type: p.error_type,
+            resets_at: p.resets_at,
+            resets_at_ms: p.resets_at_ms,
+            detected_at: p.detected_at,
+        })),
+        operational,
+        operationalCount,
+        // Espejo del slot primario (compat con el countdown/banner legacy).
         error_type: flag.error_type,
         detected_at: flag.detected_at,
         resets_at: flag.resets_at,
