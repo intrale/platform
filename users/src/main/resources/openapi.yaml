@@ -2073,6 +2073,258 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/kernel/product-status:
+    get:
+      tags: [Kernel]
+      operationId: get_kernel_product_status
+      summary: 'Estado por producto operativo del kernel (read-model minimizado)'
+      description: >-
+        Endpoint `kernel/product-status` (#4779). SecuredFunction (JWT Cognito). Sin `kernelProductId`
+        devuelve la lista de productos autorizados; con `kernelProductId` (query) devuelve su proyeccion.
+        Authz por identidad (SEC-1): consultar un producto no autorizado responde 403.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          schema: { type: string }
+          example: intrale
+        - name: kernelProductId
+          in: query
+          required: false
+          description: Identificador del producto operativo del kernel (NO es el SKU de catalogo).
+          schema: { type: string }
+      responses:
+        '200':
+          description: Proyeccion read-model minimizada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '401':
+          description: Token ausente o invalido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '403':
+          description: Autenticado pero no autorizado para el producto (cross-product, SEC-1)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/kernel/approve:
+    post:
+      tags: [Kernel]
+      operationId: post_kernel_approve
+      summary: 'Aprobar un producto operativo del kernel'
+      description: >-
+        Endpoint `kernel/approve` (#4779). SecuredFunction (JWT Cognito). Authz por identidad (SEC-1),
+        anti-replay atomico por `idempotencyKey` (SEC-3), audit hash-chain log-antes-de-mutar (SEC-7).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kernelProductId, idempotencyKey]
+              properties:
+                kernelProductId: { type: string }
+                idempotencyKey: { type: string, minLength: 8 }
+                reason: { type: string }
+      responses:
+        '200':
+          description: Comando confirmado (o replay de la respuesta original)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request invalido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o invalido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '403':
+          description: Cross-product no autorizado (SEC-1)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/kernel/reject:
+    post:
+      tags: [Kernel]
+      operationId: post_kernel_reject
+      summary: 'Rechazar un producto operativo del kernel'
+      description: >-
+        Endpoint `kernel/reject` (#4779). SecuredFunction (JWT Cognito). Authz por identidad (SEC-1),
+        anti-replay por `idempotencyKey` (SEC-3), audit (SEC-7). `reason` sanitizado (redact + CRLF).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kernelProductId, idempotencyKey]
+              properties:
+                kernelProductId: { type: string }
+                idempotencyKey: { type: string, minLength: 8 }
+                reason: { type: string }
+      responses:
+        '200':
+          description: Comando confirmado (o replay de la respuesta original)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request invalido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o invalido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '403':
+          description: Cross-product no autorizado (SEC-1)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/kernel/sign:
+    post:
+      tags: [Kernel]
+      operationId: post_kernel_sign
+      summary: 'Firmar un producto operativo del kernel (solo desde APPROVED)'
+      description: >-
+        Endpoint `kernel/sign` (#4779). SecuredFunction (JWT Cognito). Authz por identidad (SEC-1),
+        anti-replay por `idempotencyKey` (SEC-3), audit (SEC-7). Solo valido desde estado APPROVED.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kernelProductId, idempotencyKey]
+              properties:
+                kernelProductId: { type: string }
+                idempotencyKey: { type: string, minLength: 8 }
+                reason: { type: string }
+      responses:
+        '200':
+          description: Comando confirmado (o replay de la respuesta original)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request invalido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o invalido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '403':
+          description: Cross-product no autorizado (SEC-1)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '409':
+          description: Estado invalido para firmar (no esta en APPROVED)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+  /{business}/kernel/project-create:
+    post:
+      tags: [Kernel]
+      operationId: post_kernel_project_create
+      summary: 'Alta de un producto operativo del kernel'
+      description: >-
+        Endpoint `kernel/project-create` (#4779). SecuredFunction (JWT Cognito). Crea un
+        `kernelProductId` inexistente/no reclamado y otorga ownership al creador. Anti-replay por
+        `idempotencyKey` (SEC-3), audit log-antes-de-mutar (SEC-7).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: business
+          in: path
+          required: true
+          schema: { type: string }
+          example: intrale
+        - name: X-Http-Method
+          in: header
+          required: false
+          schema: { type: string, enum: [POST, GET, PUT, DELETE] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kernelProductId, label, idempotencyKey]
+              properties:
+                kernelProductId: { type: string }
+                label: { type: string, minLength: 2 }
+                idempotencyKey: { type: string, minLength: 8 }
+      responses:
+        '201':
+          description: Producto creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Response' }
+        '400':
+          description: Request invalido (RequestValidationException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '401':
+          description: Token ausente o invalido (UnauthorizedException)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
+        '409':
+          description: El producto ya existe / esta reclamado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionResponse' }
 components:
   securitySchemes:
     bearerAuth:
