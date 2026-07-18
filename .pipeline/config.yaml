@@ -1694,12 +1694,23 @@ telegram:
 # `default_product`: producto al que resuelve una petición SIN productId.
 commander_products:
   default_product: "Intrale"
-  # products:
-  #   Intrale:
-  #     name: "Intrale"
-  #     operators: []          # vacío ⇒ hereda leo_operator_chat_id (retro-compat)
-  #   Comercios-AR:
-  #     name: "Comercios-AR"
-  #     operators: ["<chat_id_operador>"]
+  # RETRO-COMPAT RUNTIME (SR-6): con `products: {}` VACÍO, el registry SINTETIZA
+  # en runtime el producto default `Intrale` con el operador único histórico
+  # (`telegram.leo_operator_chat_id`/`chat_id` → `defaultOperator` del loader).
+  # Es el camino que `listener-telegram.getProductCommander()` ejecuta hoy en
+  # producción y el que ejercita `product-command-integration.test.js`
+  # (mensaje entrante → authz → confirmación → ejecución real → audit).
+  #
+  # CUIDADO: declarar `Intrale` acá con `operators: []` NO hereda el operador
+  # histórico — con `products` no vacío la síntesis se SALTEA y un set de
+  # operadores vacío deja a TODOS sin autorización (fail-closed). Para declarar
+  # productos explícitos, listá SIEMPRE sus operadores por `chat_id`:
+  #   products:
+  #     Intrale:
+  #       name: "Intrale"
+  #       operators: ["<chat_id_operador>"]   # el operador histórico, explícito
+  #     Comercios-AR:
+  #       name: "Comercios-AR"
+  #       operators: ["<chat_id_operador_B>"]
   products: {}
 

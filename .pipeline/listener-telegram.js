@@ -108,11 +108,15 @@ const deps = {
   operatorGate: null, // override para tests; null → getDefault() lazy.
   // #4780 — commander product-aware; override para tests, null → lazy build.
   productCommander: null,
+  // #4780 — ejecutor de la acción product-aware ya autorizada+confirmada.
+  productExecutor: null,
 };
 
 async function sendMessage(text) {
   try {
-    await telegramRequest('sendMessage', {
+    // Vía `deps.telegramRequest` (no el binding crudo) para inyectabilidad en
+    // tests y consistencia con answerCallbackQuery/sendProductConfirmation.
+    await deps.telegramRequest('sendMessage', {
       chat_id: CHAT_ID,
       text,
       parse_mode: 'Markdown'
@@ -373,6 +377,228 @@ function getProductCommander() {
   }
 }
 
+// =============================================================================
+// #4780 — Pre-handler determinístico de comandos NL destructivos product-aware
+//
+// EL GAP QUE CIERRA (rechazo PO rev-1): los primitivos product-aware existían
+// como biblioteca testeada pero NINGÚN consumidor los invocaba en runtime. El
+// NL destructivo ("pausá X") caía al gate global `chat.id` + commander LLM, sin
+// authz por `from.id`, sin confirmación anti-TOCTOU, sin audit hash-chain.
+//
+// POR QUÉ ACÁ (y no en `servicio-telegram.js`): `servicio-telegram.js` es el
+// sender OUTBOUND (drena `servicios/telegram/pendiente/`). El NL INBOUND llega
+// al listener (long-poll → `enqueueMessage`). El punto de integración
+// equivalente para "NL → intent acotado con confirmación" (receta del
+// arquitecto) es este pre-handler, hermano del pre-handler `/report` (#2904):
+// intercepta ANTES de encolar al commander LLM y de forma DETERMINISTICA
+// (SR-3/SR-4 fail-closed, jamás delegado al LLM).
+//
+// ALCANCE: intercepta sólo control de pipeline product-level (`pause`/`resume`),
+// las acciones con ejecución real hoy. `approve`/`reject`/`sign` son por-issue
+// (canal `operator-gate` con botones, ya seguro) y NO se interceptan acá. Todo
+// el músculo de seguridad (allowlist cerrada, injection, scope-widening, authz,
+// rechazo uniforme, audit) vive en `lib/commander/product-command.js`.
+// =============================================================================
+
+// Comandos que este pre-handler OWNea en runtime (ejecución real disponible).
+const RUNTIME_DESTRUCTIVE = new Set(['pause', 'resume']);
+
+let _productCmdHelpers = null;
+function getProductCmdHelpers() {
+  if (_productCmdHelpers === undefined) return null;
+  if (_productCmdHelpers) return _productCmdHelpers;
+  try {
+    const pc = require('./lib/commander/product-command');
+    const { detectInjection } = require('./lib/handoff');
+    _productCmdHelpers = {
+      classifyCommand: pc.classifyCommand,
+      normalizeText: pc.normalizeText,
+      SCOPE_WIDENING_RE: pc.SCOPE_WIDENING_RE,
+      UNIFORM_REJECT: pc.UNIFORM_REJECT,
+      detectInjection,
+    };
+    return _productCmdHelpers;
+  } catch (e) {
+    log(`Error cargando helpers product-command: ${e.message}`);
+    _productCmdHelpers = undefined; // no reintentar — degradar al commander
+    return null;
+  }
+}
+
+let _productExecutor = null;
+function getProductExecutor() {
+  if (deps.productExecutor) return deps.productExecutor; // override de tests
+  if (_productExecutor === undefined) return null;
+  if (_productExecutor) return _productExecutor;
+  try {
+    const { createProductExecutor } = require('./lib/commander/product-executor');
+    _productExecutor = createProductExecutor({});
+    return _productExecutor;
+  } catch (e) {
+    log(`Error cargando product-executor: ${e.message}`);
+    _productExecutor = undefined; // no reintentar — degradar
+    return null;
+  }
+}
+
+// Envía el prompt de confirmación destructiva con botones inline. El `confirmId`
+// (nonce opaco con el productId bindeado server-side, SR-2) viaja en el
+// `callback_data` — 3+32 = 35 bytes, holgado bajo el límite de 64 de Telegram.
+async function sendProductConfirmation(parsed) {
+  await deps.telegramRequest('sendMessage', {
+    chat_id: CHAT_ID,
+    text: parsed.response,
+    parse_mode: 'Markdown',
+    reply_markup: {
+      inline_keyboard: [[
+        { text: '✅ Confirmar', callback_data: `pc:${parsed.confirmId}` },
+        { text: '✖️ Cancelar', callback_data: `pcx:${parsed.confirmId}` },
+      ]],
+    },
+  });
+}
+
+/**
+ * Intenta OWNear el mensaje como comando NL destructivo product-aware. Devuelve
+ * `true` si tomó el control (no encolar al commander LLM), `false` para caer al
+ * flujo normal. Fail-open a `false` en cualquier error de carga (degradación).
+ */
+async function maybeHandleProductCommand(msg) {
+  const text = (msg && (msg.text || msg.caption)) || '';
+  if (!text) return false;
+
+  const helpers = getProductCmdHelpers();
+  if (!helpers) return false; // degradar → commander LLM
+
+  // Gate barato: sólo OWNeamos comandos de control con ejecución real. Cualquier
+  // otra cosa (conversación, status, ambigüedad) cae al commander LLM.
+  let command;
+  try { command = helpers.classifyCommand(helpers.normalizeText(text)); }
+  catch { return false; }
+  if (!command || !RUNTIME_DESTRUCTIVE.has(command)) return false;
+
+  const commander = getProductCommander();
+  if (!commander) return false; // degradar → commander LLM
+
+  const fromId = msg.from?.id;
+  let parsed;
+  try { parsed = commander.parse({ text, fromId }); }
+  catch (e) { log(`product-command parse error: ${e.message}`); return false; }
+
+  // Camino limpio: comando destructivo autorizado → confirmación explícita
+  // (SR-2, productId bindeado en el nonce).
+  if (parsed && parsed.ok && parsed.needsConfirmation && parsed.confirmId) {
+    try {
+      await sendProductConfirmation(parsed);
+    } catch (e) {
+      log(`Error enviando confirmación product-aware: ${e.message}`);
+      return false; // no pudimos responder → dejar que el commander lo intente
+    }
+    appendHistory({
+      direction: 'in', handler: 'product-command', from: msg.from?.first_name || 'unknown',
+      from_id: fromId, command, product: parsed.productId, phase: 'confirm-requested',
+    });
+    log(`product-command: confirmación pedida (${command} · ${parsed.productId})`);
+    return true;
+  }
+
+  // Rechazo. Distinguimos bloqueo de SEGURIDAD (injection / scope-widening) —
+  // que DEBE cortar el flujo y NO llegar al LLM — de una ambigüedad
+  // conversacional (p.ej. "seguí con el issue 42" matchea 'resume'), que cae al
+  // LLM para no responder un rechazo espurio.
+  let securityBlock = false;
+  try {
+    const norm = helpers.normalizeText(text);
+    const inj = helpers.detectInjection(text);
+    securityBlock = !!(inj && inj.hits && inj.hits.length > 0) || helpers.SCOPE_WIDENING_RE.test(norm);
+  } catch { securityBlock = false; }
+
+  if (securityBlock) {
+    try { await sendMessage((parsed && parsed.response) || helpers.UNIFORM_REJECT); } catch {}
+    appendHistory({
+      direction: 'in', handler: 'product-command', from: msg.from?.first_name || 'unknown',
+      from_id: fromId, command, ok: false, reason: 'security-block',
+    });
+    log(`product-command: bloqueo de seguridad (${command})`);
+    return true;
+  }
+
+  // Ambiguo → flujo normal (commander LLM).
+  return false;
+}
+
+/**
+ * Maneja el callback de confirmación/cancelación product-aware (`pc:`/`pcx:`).
+ * En confirmación: `product-command.confirm` resuelve el producto DESDE el nonce
+ * (SR-2, imposible confused-deputy A→B), re-valida authz (SR-1) y, si OK,
+ * EJECUTA el side-effect real vía `product-executor` y audita.
+ */
+async function handleProductConfirmCallback(cbq) {
+  const data = cbq.data || '';
+  const isCancel = data.startsWith('pcx:');
+  const confirmId = data.slice(isCancel ? 4 : 3);
+
+  if (isCancel) {
+    await answerCallbackQuery(cbq.id, 'Cancelado');
+    if (cbq.message) await removeInlineKeyboard(cbq.message, '✖️ Acción cancelada');
+    return;
+  }
+
+  const commander = getProductCommander();
+  if (!commander) {
+    await answerCallbackQuery(cbq.id, 'Canal product-aware no disponible');
+    return;
+  }
+
+  const fromId = cbq.from?.id;
+  let result;
+  try { result = commander.confirm({ fromId, confirmId }); }
+  catch (e) {
+    log(`Error confirmando acción product-aware: ${e.message}`);
+    await answerCallbackQuery(cbq.id, 'No se pudo confirmar');
+    return;
+  }
+
+  await answerCallbackQuery(cbq.id, result.ok ? 'Confirmado' : 'No válido');
+
+  if (!result.ok) {
+    try { await sendMessage(result.response); } catch {}
+    return;
+  }
+
+  // Autorización + nonce ya validados dentro de confirm(). Ejecutar side-effect.
+  const executor = getProductExecutor();
+  let execOk = false;
+  let outMsg = result.response; // "Pausé *Producto*..." (ya nombra el producto)
+  try {
+    const exec = executor
+      ? executor.execute(result.command, result.productId, result.productName)
+      : { executed: false, reason: 'executor-unavailable' };
+    execOk = !!exec.executed;
+    if (!execOk) {
+      outMsg = `No pude ejecutar la acción sobre *${result.productName}* (${exec.reason || 'no soportada'}).`;
+    }
+  } catch (e) {
+    log(`Error ejecutando acción product-aware: ${e.message}`);
+    outMsg = `Error ejecutando la acción sobre *${result.productName}*.`;
+  }
+
+  try { await sendMessage(outMsg); } catch {}
+  if (cbq.message) {
+    const actorName = cbq.from?.first_name || cbq.from?.id || 'operador';
+    const hora = new Date().toISOString().replace('T', ' ').slice(0, 16);
+    await removeInlineKeyboard(
+      cbq.message,
+      `${execOk ? '✅' : '⚠️'} ${result.command} · ${result.productName} — ${actorName} · ${hora}`
+    );
+  }
+  appendHistory({
+    direction: 'in', handler: 'product-command', from: cbq.from?.first_name || 'unknown',
+    from_id: fromId, command: result.command, product: result.productId, ok: execOk, phase: 'executed',
+  });
+  log(`product-command: ejecutado ${result.command} · ${result.productId} (ok=${execOk})`);
+}
+
 async function answerCallbackQuery(callbackQueryId, text) {
   try {
     await deps.telegramRequest('answerCallbackQuery', {
@@ -439,6 +665,20 @@ async function removeInlineKeyboard(message, footer) {
 
 async function handleCallbackQuery(cbq) {
   if (!cbq || !cbq.id) return;
+
+  // #4780 — confirmación/cancelación de acción product-aware. El `callback_data`
+  // `pc:`/`pcx:` lleva el nonce opaco (productId bindeado server-side). Se rutea
+  // ANTES del operator-gate (namespace disjunto). La autz por `from.id` se valida
+  // DENTRO de product-command.confirm (SR-1) — acá sólo pasamos datos crudos.
+  if (typeof cbq.data === 'string' && (cbq.data.startsWith('pc:') || cbq.data.startsWith('pcx:'))) {
+    try {
+      await handleProductConfirmCallback(cbq);
+    } catch (e) {
+      log(`Error en handleProductConfirmCallback: ${e.message}`);
+      await answerCallbackQuery(cbq.id, 'No se pudo procesar la acción');
+    }
+    return;
+  }
 
   const gate = getOperatorGate();
   if (!gate) {
@@ -533,6 +773,20 @@ async function enqueueMessage(update) {
     }
   } catch (e) {
     log(`Error en pre-handler /report: ${e.message} — cae a flujo normal`);
+  }
+
+  // #4780 — Pre-handler product-aware: intercepta NL destructivo (pausá/reanudá X)
+  // ANTES de encolar al commander LLM, aplicando authz por `from.id` +
+  // confirmación anti-TOCTOU + audit. Si no OWNea el mensaje, sigue el flujo
+  // normal. Fail-open: cualquier error cae al commander LLM (nunca deja sin
+  // respuesta ni bloquea el resto del bot).
+  try {
+    if (await maybeHandleProductCommand(msg)) {
+      log(`product-command procesado inline (message_id=${msg.message_id})`);
+      return;
+    }
+  } catch (e) {
+    log(`Error en pre-handler product-command: ${e.message} — cae a flujo normal`);
   }
 
   const id = `${Date.now()}-${msg.message_id}`;
@@ -678,7 +932,11 @@ module.exports = {
   removeInlineKeyboard,
   getOperatorGate,
   getProductCommander, // #4780 — seam product-aware para el handler NL
-  deps, // { telegramRequest, operatorGate, productCommander } — inyectables en tests
+  // #4780 — wiring runtime del commander product-aware (inbound + confirmación).
+  maybeHandleProductCommand,
+  handleProductConfirmCallback,
+  getProductExecutor,
+  deps, // { telegramRequest, operatorGate, productCommander, productExecutor } — inyectables en tests
 };
 
 // --- ARRANQUE (sólo cuando se ejecuta como proceso, no al importar) ---
