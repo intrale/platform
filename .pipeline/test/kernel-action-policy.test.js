@@ -72,6 +72,65 @@ test('el config.yaml real del repo tiene la política gate3 esperada', () => {
 });
 
 // -----------------------------------------------------------------------------
+// #4767 (parte c) — carril paralelo mecánico-vs-decisión (SR-sec-1)
+// -----------------------------------------------------------------------------
+
+test('block-autoresolve (mecánico) → notify-and-proceed', () => {
+    const opts = { config: {} };
+    assert.equal(policy.resolvePolicy('block-autoresolve', opts).mode, 'notify-and-proceed');
+    assert.equal(policy.resolvePolicy('block-autoresolve', opts).source, 'default');
+    assert.equal(policy.requiresConfirmation('block-autoresolve', opts), false);
+});
+
+test('block-escalate (decisión) → wait-confirmation con fallback abort (SR-sec-1)', () => {
+    const opts = { config: {} };
+    // El path decisión rutea por acción REGISTRADA (no cae al fallback fail-open).
+    const r = policy.resolvePolicy('block-escalate', opts);
+    assert.equal(r.mode, 'wait-confirmation');
+    assert.equal(r.source, 'default');
+    assert.equal(policy.requiresConfirmation('block-escalate', opts), true);
+    // Fallback al vencer el timeout SIN respuesta → abort (NUNCA proceed sobre main).
+    const fb = policy.resolveTimeoutFallback('block-escalate', opts);
+    assert.equal(fb.fallback, 'abort');
+});
+
+test('block-autoresolve fallback al timeout → proceed (mecánico ya resuelto)', () => {
+    const fb = policy.resolveTimeoutFallback('block-autoresolve', { config: {} });
+    assert.equal(fb.fallback, 'proceed');
+});
+
+test('acción NO registrada del path de bloqueo resuelve abort, JAMÁS proceed (SR-sec-1)', () => {
+    // Una acción de bloqueo no mapeada NO debe auto-aprobarse: el fallback de
+    // timeout es abort por default (conservador), nunca proceed.
+    const fb = policy.resolveTimeoutFallback('block-unregistered-xyz', { config: {} });
+    assert.equal(fb.fallback, 'abort');
+    assert.notEqual(fb.fallback, 'proceed');
+});
+
+test('copy de block-autoresolve/block-escalate: ASCII-safe y diferenciados (UX #4767)', () => {
+    const auto = policy.describeAction('block-autoresolve');
+    const esc = policy.describeAction('block-escalate');
+    // ASCII-safe: sin tildes/ñ ni caracteres fuera de ASCII imprimible.
+    const isAscii = (s) => /^[\x20-\x7E]*$/.test(s);
+    for (const c of [auto, esc]) {
+        assert.ok(isAscii(c.gerund), `gerund ASCII-safe: ${c.gerund}`);
+        assert.ok(isAscii(c.what), `what ASCII-safe: ${c.what}`);
+    }
+    // Diferenciados: no comparten copy (tono mecánico vs tono decisión).
+    assert.notEqual(auto.gerund, esc.gerund);
+    assert.notEqual(auto.what, esc.what);
+});
+
+test('mensaje operador: block-autoresolve informa sin CTA; block-escalate pide OK', () => {
+    const infoMsg = policy.buildOperatorMessage({ action: 'block-autoresolve', mode: 'notify-and-proceed' });
+    // Sin CTA: no pide OK ni confirmación.
+    assert.ok(!/Necesito tu OK/.test(infoMsg));
+    assert.ok(/no hace falta que hagas nada|Resolvi esto solo/.test(infoMsg));
+    const askMsg = policy.buildOperatorMessage({ action: 'block-escalate', mode: 'wait-confirmation' });
+    assert.ok(/Necesito tu OK/.test(askMsg));
+});
+
+// -----------------------------------------------------------------------------
 // CA-5 / RS-4 — autenticación del confirmador
 // -----------------------------------------------------------------------------
 

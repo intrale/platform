@@ -55,6 +55,7 @@ const KERNEL_ACTIONS = Object.freeze([
     'quota-flag-clear',    // lib/quota-exhausted.clearFlag (incidente #4565)
     'worktree-reset',      // restart.js syncWithMain → git reset --hard (3er incidente 2026-07-08)
     'desync-autoresolve',  // lib/desync-detector.clearDesyncFlag + legit-add-trace
+    'block-autoresolve',   // #4767 (parte c) carril paralelo: auto-resolución de bloqueo mecánico
 ]);
 
 // Niveles de impacto (se refleja en la notificación al operador — UX #4577).
