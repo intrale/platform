@@ -198,6 +198,32 @@ function _bloqueadosInertFallback(reason) {
         '<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3).</p></main></body></html>';
 }
 
+// #4778 — Vista Onboarding de producto (`?view=onboarding`). Require defensivo:
+// si el módulo no carga, la entry del router degrada a un panel inerte visible
+// (CA-A3) en vez de tirar 500. Vista estática (form + client script); la
+// validación autoritativa del descriptor la hace el backend fail-closed.
+let onboardingWizardView = null;
+try { onboardingWizardView = require('../views/dashboard/onboarding-wizard'); }
+catch (e) {
+    try { console.warn('[dashboard-routes] onboarding-wizard view unavailable: ' + (e && e.message)); } catch { /* logger no debe romper el require */ }
+}
+
+function renderOnboardingView() {
+    if (!onboardingWizardView || typeof onboardingWizardView.renderOnboarding !== 'function') {
+        const safe = 'módulo views/dashboard/onboarding-wizard no disponible (require falló)';
+        return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Intrale · Onboarding</title></head>' +
+            '<body><main style="padding:32px"><h1>Wizard de onboarding no disponible</h1><p>' + safe + '</p>' +
+            '<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3).</p></main></body></html>';
+    }
+    try {
+        return onboardingWizardView.renderOnboarding();
+    } catch (e) {
+        const safe = String((e && e.message) || 'error de render').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+        return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Intrale · Onboarding</title></head>' +
+            '<body><main style="padding:32px"><h1>Wizard de onboarding no disponible</h1><p>' + safe + '</p></main></body></html>';
+    }
+}
+
 // #4378 — Vista Roadmap de olas (`?view=roadmap`). Require defensivo: si el
 // módulo (o sus deps, ej. lib/escape-html.js) no carga, `renderRoadmapView`
 // degrada a un panel inerte visible (CA-A3) en vez de tirar 500. READ-ONLY:
@@ -1191,6 +1217,13 @@ const VIEW_SLUGS = Object.freeze({
     roadmap: {
         title: 'Roadmap',
         render: (opts, ctx) => renderRoadmapView(ctx, opts),
+    },
+    // #4778 — Wizard de onboarding de producto (slug `onboarding`). READ-ONLY:
+    // el render es estático (form + client script); el alta va por POST
+    // /api/product/onboard con CSRF (validación fail-closed en el backend).
+    onboarding: {
+        title: 'Onboarding',
+        render: () => renderOnboardingView(),
     },
     // #3727..#3737 sumarán acá:
     // 'multi-provider':          { title: 'Multi-provider',          render: () => mp.renderMultiProvider() },

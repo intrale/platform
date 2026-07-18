@@ -46,6 +46,16 @@ const DECISIONS = Object.freeze(['aprobar', 'rechazar']);
 // REQ-SEC-4580-3 — allowlist estricta del id de issue.
 const ISSUE_ID_RE = /^\d+$/;
 
+// #4778 · CA-2.2 — patrón seguro del productId para atar la firma al producto
+// (no repudio). Mismo patrón que project-descriptor.isSafeId.
+const PRODUCT_ID_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;
+
+/** productId seguro (o null). Fail-closed: un id inseguro NO se propaga al audit. */
+function safeProductId(raw) {
+    const s = String(raw == null ? '' : raw);
+    return PRODUCT_ID_RE.test(s) ? s : null;
+}
+
 /**
  * ¿`raw` es un id de issue válido (entero positivo)? Acepta number o string.
  * @param {number|string} raw
@@ -66,6 +76,10 @@ function isValidIssueId(raw) {
  * @param {string}        args.decision — 'aprobar' | 'rechazar'.
  * @param {string}        [args.actor]  — identidad del que firma (para el audit).
  * @param {string}        [args.origen] — origen de la bandeja (metadata).
+ * @param {string}        [args.productId] — #4778 · CA-2.2: producto al que se ata
+ *                                  la firma (no repudio). Validado fail-closed; un
+ *                                  id inseguro se descarta (queda null). Ausente ⇒
+ *                                  producto único (retro-compat).
  * @param {string}        [args.remoteAddress] — ip de origen (audit).
  * @param {object}        [deps]        — { queueDir, auditFile, fsImpl, now, auditImpl }
  * @returns {{ok:boolean, status:number, issue?:number, decision?:string, request_path?:string, msg?:string}}
@@ -90,10 +104,13 @@ function enqueueDecision(args = {}, deps = {}) {
 
     const issueNum = Number(issue);
     const ts = now();
+    // #4778 · CA-2.2 — productId seguro (o null) atado a la firma para no repudio.
+    const productId = safeProductId(args.productId);
     const record = {
         type: 'gate_signature_request',
         issue: issueNum,
         decision,
+        productId,
         origen: args.origen ? String(args.origen) : null,
         actor: args.actor ? String(args.actor) : 'dashboard-operator',
         remote_address: args.remoteAddress ? String(args.remoteAddress) : null,
@@ -134,6 +151,7 @@ function enqueueDecision(args = {}, deps = {}) {
         status: 202, // Accepted: el kernel ejecuta la transición asíncronamente.
         issue: issueNum,
         decision,
+        productId,
         request_path: requestPath,
         audit_persisted: auditRes.persisted,
         msg: `firma ${decision} de #${issueNum} encolada; el kernel aplicará la transición`,
@@ -143,6 +161,7 @@ function enqueueDecision(args = {}, deps = {}) {
 module.exports = {
     enqueueDecision,
     isValidIssueId,
+    safeProductId,
     DECISIONS,
     ISSUE_ID_RE,
     DEFAULT_QUEUE_DIR,
