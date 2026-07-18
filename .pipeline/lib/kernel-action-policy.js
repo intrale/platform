@@ -53,6 +53,16 @@ const DEFAULT_POLICY = Object.freeze({
     'quota-flag':         'notify-and-proceed',
     'worktree-reset':     'notify-and-proceed',
     'desync-autoresolve': 'notify-and-proceed',
+    // #4767 (parte c) — Carril paralelo mecánico-vs-decisión del kernel.
+    // `block-autoresolve` = camino MECÁNICO: un bloqueo aguas arriba que el
+    // clasificador (#4765) marcó auto-resoluble se resuelve sin humano y sólo
+    // se notifica (no congela los issues independientes de la ola).
+    'block-autoresolve':  'notify-and-proceed',
+    // `block-escalate` = camino DECISIÓN: registro EXPLÍCITO de la acción que
+    // rutea el fail-closed. CRÍTICO (SR-sec-1): el path `decision` NUNCA debe
+    // caer al fallback fail-open `notify-and-proceed` de `resolvePolicy`
+    // (L145) — debe resolver por acción registrada con `wait-confirmation`.
+    'block-escalate':     'wait-confirmation',
 });
 
 // -----------------------------------------------------------------------------
@@ -72,6 +82,12 @@ const DEFAULT_TIMEOUT_FALLBACK = Object.freeze({
     'quota-flag':         'proceed',
     'worktree-reset':     'proceed',
     'desync-autoresolve': 'proceed',
+    // #4767 (parte c) — mecánico ya resuelto, no bloquea → `proceed`.
+    'block-autoresolve':  'proceed',
+    // Decisión ausente (operador no firma) → `abort`. NUNCA `proceed` para
+    // mutaciones sobre `main`: conservador (RS-5). No auto-aprobar un bloqueo
+    // que requería firma humana.
+    'block-escalate':     'abort',
 });
 
 const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000; // 15min sin respuesta → fallback
@@ -279,6 +295,18 @@ const ACTION_COPY = Object.freeze({
     'worktree-reset': {
         gerund: 'reordenar el espacio de trabajo de un agente',
         what: 'Un espacio de trabajo de agente quedo inconsistente y hay que reordenarlo.',
+    },
+    // #4767 (parte c) — Carril paralelo. Tono informativo/tranquilizador, SIN
+    // CTA: ya esta resuelto, el operador no tiene que hacer nada (UX #4767).
+    'block-autoresolve': {
+        gerund: 'destrabar automaticamente un paso mecanico de la ola',
+        what: 'Un paso mecanico se habia trabado y lo resolvi solo para no frenar los issues independientes.',
+    },
+    // Camino DECISION: tono que pide accion explicita del operador y comunica
+    // que el pipeline quedo fail-closed esperando su firma (opuesto al mecanico).
+    'block-escalate': {
+        gerund: 'esperar tu decision sobre un bloqueo que no puedo resolver solo',
+        what: 'Un bloqueo necesita tu criterio; deje todo fail-closed esperando tu OK y no toco nada sin firma.',
     },
 });
 

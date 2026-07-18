@@ -3673,6 +3673,11 @@ function brazoBarrido(config) {
             // Hints estructurados del YAML del agente (pueden ser undefined)
             rebote_categoria: r.rebote_categoria || null,
             depende_de: Array.isArray(r.depende_de) ? r.depende_de : null,
+            // #4767 — hints para el carril paralelo (block-classifier): paths del
+            // conflicto (allowlist) y origen del rechazo (`security` fuerza
+            // decisión). Opcionales: undefined/null si el agente no los emite.
+            paths: Array.isArray(r.paths) ? r.paths : null,
+            source: (typeof r.source === 'string' && r.source) || null,
           }));
           const esReboteDeInfra = motivosClasificados.length > 0
             && motivosClasificados.every(m => m.clasificacion === 'infra');
@@ -3810,6 +3815,40 @@ function brazoBarrido(config) {
           }
           if (depBlockHandled) continue;
 
+          // #4767 (parte c) — CARRIL PARALELO mecánico-vs-decisión. Interponemos
+          // el clasificador (`block-classifier` de #4765) ANTES de la rama de
+          // bloqueo humano. Un bloqueo MECÁNICO (merge-conflict acotado a
+          // allowlist / desync reductivo) se AUDITA antes de mutar (SR-7) y se
+          // NOTIFICA, y NO congela el dispatch: se lo excluye del freeze humano
+          // para que los issues independientes de la ola sigan (SR-6, escenario
+          // #4731). Un bloqueo de DECISIÓN (o `gate-reject` con
+          // `source:'security'`, SR-sec-5) cae fail-closed INTACTO a la rama
+          // humanBlock de abajo. Acá NO se mueve ningún archivo: el Pulpo sigue
+          // siendo el único dueño del lifecycle de markers (SR-6, sin segundo
+          // dueño). Si el carril falla por cualquier motivo → fail-closed: todo
+          // cae a la rama humanBlock intacta.
+          let mecanicoResueltos = new Set();
+          try {
+            let headOidLane = null;
+            try {
+              headOidLane = execSync('git rev-parse HEAD', {
+                cwd: ROOT, encoding: 'utf8', timeout: 5000, windowsHide: true,
+              }).trim() || null;
+            } catch { /* best-effort: commit forense, null si no resuelve */ }
+            const parallelLane = require('./lib/parallel-lane-classifier');
+            const laneRes = parallelLane.runParallelLane(motivosClasificados, {
+              issue: parseInt(issue, 10),
+              headOid: headOidLane,
+            });
+            mecanicoResueltos = laneRes.resueltos || new Set();
+            if (mecanicoResueltos.size > 0) {
+              log('barrido', `♻️ #${issue} carril paralelo: ${mecanicoResueltos.size} bloqueo(s) mecánico(s) auto-resuelto(s) (auditado, no congela independientes).`);
+            }
+          } catch (e) {
+            mecanicoResueltos = new Set();
+            log('barrido', `[WARN] #${issue} carril paralelo falló (fail-closed a humanBlock): ${e.message}`);
+          }
+
           // #2549 — BLOQUEO HUMANO: si AL MENOS UN motivo indica que el avance
           // depende de una intervención humana (PR esperando merge, CODEOWNERS,
           // etc), marcar el issue como `bloqueado-humano/` y NO incrementar rev.
@@ -3824,6 +3863,10 @@ function brazoBarrido(config) {
           // al flujo normal de rebote `code` → faseRechazo (dev), propagando la
           // lista de lo que falta testear vía `motivo_rechazo`.
           const motivosHumanos = motivosClasificados.filter(m => {
+            // #4767 — un bloqueo MECÁNICO ya auto-resuelto por el carril paralelo
+            // NO escala a humano (no congela). Los de DECISIÓN (no están en el
+            // set) caen fail-closed intactos por el resto del filtro.
+            if (mecanicoResueltos.has(m)) return false;
             if (!humanBlock.isHumanBlockReason(m.motivo)) return false;
             // Missing-tests gana sobre la heurística textual de human_block,
             // salvo que el agente haya declarado `human_block` explícitamente
