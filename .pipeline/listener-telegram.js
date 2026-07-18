@@ -106,6 +106,8 @@ function telegramRequest(method, params) {
 const deps = {
   telegramRequest,
   operatorGate: null, // override para tests; null → getDefault() lazy.
+  // #4780 — commander product-aware; override para tests, null → lazy build.
+  productCommander: null,
 };
 
 async function sendMessage(text) {
@@ -332,6 +334,41 @@ function getOperatorGate() {
   } catch (e) {
     log(`Error cargando operator-gate: ${e.message}`);
     _operatorGate = undefined; // no reintentar
+    return null;
+  }
+}
+
+// =============================================================================
+// #4780 — Commander product-aware (Ola Puente P6). Seam de autorización por
+// producto para acciones destructivas NL. La lógica sensible (allowlist cerrada,
+// authz por `from.id`, confirmación anti-TOCTOU, rechazo uniforme, audit
+// tamper-evident) vive en `lib/commander/product-*.js`. Acá sólo construimos el
+// registry/commander product-aware (lazy, best-effort) con el binding
+// server-side de `config.yaml → commander_products` y el operador único
+// histórico (`CHAT_ID`) como default retro-compatible (SR-6).
+//
+// NO cambia el gate `chat.id` de enqueue (retro-compat exacta): es el punto de
+// integración que el handler NL del Commander consume para resolver producto +
+// autorizar acciones destructivas sin reinventar authz.
+// =============================================================================
+let _productCommander = null;
+function getProductCommander() {
+  if (deps.productCommander) return deps.productCommander; // override de tests
+  if (_productCommander === undefined) return null;
+  if (_productCommander) return _productCommander;
+  try {
+    const { loadProductRegistry } = require('./lib/commander/product-registry-loader');
+    const { createProductCommander } = require('./lib/commander/product-command');
+    const { createProductAudit } = require('./lib/commander/audit-log');
+    const registry = loadProductRegistry({ pipelineDir: PIPELINE, defaultOperator: CHAT_ID });
+    const audit = createProductAudit({
+      file: path.join(PIPELINE, 'audit', 'commander-product-actions.jsonl'),
+    });
+    _productCommander = createProductCommander({ registry, audit });
+    return _productCommander;
+  } catch (e) {
+    log(`Error cargando commander product-aware: ${e.message}`);
+    _productCommander = undefined; // no reintentar — degradar
     return null;
   }
 }
@@ -640,7 +677,8 @@ module.exports = {
   answerCallbackQuery,
   removeInlineKeyboard,
   getOperatorGate,
-  deps, // { telegramRequest, operatorGate } — inyectables en tests
+  getProductCommander, // #4780 — seam product-aware para el handler NL
+  deps, // { telegramRequest, operatorGate, productCommander } — inyectables en tests
 };
 
 // --- ARRANQUE (sólo cuando se ejecuta como proceso, no al importar) ---
