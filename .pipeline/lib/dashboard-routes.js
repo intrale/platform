@@ -621,6 +621,12 @@ try { waveSnapshot = require('./wave-snapshot'); } catch { /* opcional */ }
 let multiProviderCoverage = null;
 try { multiProviderCoverage = require('./multi-provider-coverage'); } catch { /* opcional */ }
 
+// #4764 (Ola Puente P4) — núcleo fail-closed de la vista de estado segmentada por
+// producto (`projectId`). Módulo puro sin deps pesadas. Si no cargó, el endpoint
+// segmentado degrada a fail-closed (403), nunca al agregado global.
+let productStateSegment = null;
+try { productStateSegment = require('./product-state-segment'); } catch { /* opcional */ }
+
 // #3259 — Rate-limit inline (security A05): hasta #3285 entregue el middleware
 // reusable, mantenemos un semáforo simple en memoria por IP. 6 req/min cubre
 // auto-refresh del dashboard (cada 30s = 2 req/min) + headroom para debugging.
@@ -1558,7 +1564,51 @@ const API_ROUTES = {
         });
     },
     '/api/historial': (state, ctx, query) => API_ROUTES['/api/dash/historial'](state, ctx, query),
+    // #4764 (Ola Puente P4 · split 3/3 de #4689) — Estado SEGMENTADO por producto.
+    // CA-4 · A01 (aislamiento cross-tenant / anti-IDOR): devuelve SÓLO el estado
+    // (métricas/tokens/tiempos/estado/`audit#`) del `projectId` autorizado. Es
+    // FAIL-CLOSED: sin `projectId`, o inválido/inexistente/no-autorizado → `_status:
+    // 403`, NUNCA el agregado global de todos los productos (CA-4.3).
+    //
+    // La autorización se deriva OUT-OF-BAND del propio estado (`state.productState`,
+    // el mapa `projectId → estado` que publica el supervisor), no del query crudo
+    // (anti-IDOR CA-4.2). El `projectId` del request se valida contra ese contexto.
+    // Hereda el gate loopback CA-S2 + Sec-Fetch-Site + no-store del dispatch de
+    // API_ROUTES. Alias humano `/api/product-state` para curl/debug.
+    '/api/dash/product-state': (state, ctx, query) => productStateHandler(state, ctx, query),
+    '/api/product-state': (state, ctx, query) => productStateHandler(state, ctx, query),
 };
+
+// #4764 — Handler compartido del estado segmentado. Fuera del literal para poder
+// reutilizarlo entre `/api/dash/product-state` y su alias sin duplicar lógica.
+// Fail-closed en cada rama; el `_status: 403` lo mapea el dispatcher a HTTP 403.
+function productStateHandler(state, ctx, query) {
+    // Módulo no disponible (pipeline previo a #4764) → fail-closed, nunca agregado.
+    if (!productStateSegment) {
+        return { error: 'forbidden', reason: 'module_unavailable', _status: 403 };
+    }
+    // Fuente de estado por producto publicada por el supervisor. Ausente (modo
+    // single-product / aún no cableado) → fail-closed, jamás el agregado global.
+    const stateByProjectId = (state && state.productState && typeof state.productState === 'object')
+        ? state.productState
+        : {};
+    // Autorización out-of-band: si el contexto declara ids autorizados, se usan;
+    // si no, sólo los productos conocidos (una consulta = un producto, nunca todos).
+    const authorizedProjectIds = (ctx && Array.isArray(ctx.authorizedProjectIds))
+        ? ctx.authorizedProjectIds
+        : undefined;
+    const requestedProjectId = (query && typeof query.get === 'function') ? query.get('projectId') : null;
+    const res = productStateSegment.segmentProductState({
+        requestedProjectId,
+        authorizedProjectIds,
+        stateByProjectId,
+    });
+    // Traducir el `status` del núcleo al patrón `_status` opt-in del dispatcher.
+    if (res.status !== 200) {
+        return { ...res.payload, _status: res.status };
+    }
+    return res.payload;
+}
 
 // #3259 / CA-5 — Rutas ASYNC (devuelven Promise). El handler las awaitea.
 // `/api/pulpo/provider-health` corre live-ping detrás del cache TTL 5min, no

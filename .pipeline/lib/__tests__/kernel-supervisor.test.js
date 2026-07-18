@@ -22,6 +22,8 @@ const assert = require('node:assert/strict');
 const { createInMemoryDynamoDriver } = require('../provisioner-infra');
 const { createKernelStore, KernelStoreIsolationError } = require('../kernel-store');
 const { createKernelSupervisor, resolveProjectId } = require('../kernel-supervisor');
+const { isSafeId } = require('../project-descriptor');
+const { isSafeProjectId, segmentProductState } = require('../product-state-segment');
 
 // -----------------------------------------------------------------------------
 // Helpers
@@ -437,4 +439,209 @@ test('resolveProjectId: projectId explícito, fallback a productId, null si falt
   assert.equal(resolveProjectId({ productId: 'b' }), 'b');
   assert.equal(resolveProjectId({}), null);
   assert.equal(resolveProjectId(null), null);
+});
+
+// =============================================================================
+// #4764 (split 3/3 de #4689) — Estado segmentado por producto + aislamiento de
+// secretos. Requisitos de seguridad A01 (cross-tenant/IDOR), A02 (secretos) y
+// A03 (path traversal) del análisis de definición.
+// =============================================================================
+
+function bootedSupervisor(catalog = CATALOG_MIXTO) {
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore(catalog),
+    storeFactory: recordingStoreFactory([]),
+    hydrate: false,
+  });
+  return supervisor;
+}
+
+// -----------------------------------------------------------------------------
+// A01 · Aislamiento cross-tenant en la exposición de estado (CA-4)
+// -----------------------------------------------------------------------------
+
+test('A01 · getSegmentedState devuelve SÓLO los datos del projectId consultado (no filtra B)', async () => {
+  const supervisor = bootedSupervisor();
+  await supervisor.bootProducts();
+
+  supervisor.recordInstanceState('acme', { metrics: { rebotes: 1 }, tokens: { in: 100, out: 50 }, times: { p50: 30 }, phase: 'dev' });
+  supervisor.appendInstanceAudit('acme', { action: 'boot', actor: 'acme' });
+  supervisor.recordInstanceState('globex', { metrics: { rebotes: 9 }, tokens: { in: 999, out: 999 }, phase: 'qa' });
+  supervisor.appendInstanceAudit('globex', { action: 'boot', actor: 'globex' });
+
+  const res = supervisor.getSegmentedState('acme', { authorizedProjectId: 'acme' });
+  assert.equal(res.status, 200);
+  assert.equal(res.payload.projectId, 'acme');
+  assert.deepEqual(res.payload.tokens, { in: 100, out: 50 });
+  assert.deepEqual(res.payload.metrics, { rebotes: 1 });
+  assert.deepEqual(res.payload.audit, [{ action: 'boot', actor: 'acme' }]);
+  // Ningún dato/métrica/token/tiempo/audit de B en la respuesta de A.
+  const serialized = JSON.stringify(res.payload);
+  assert.ok(!serialized.includes('999'), 'no filtra tokens de B');
+  assert.ok(!serialized.includes('globex'), 'no filtra ni el id de B');
+});
+
+test('A01/CA-4.2 · anti-IDOR: consultar B desde contexto autorizado sólo para A → fail-closed', async () => {
+  const supervisor = bootedSupervisor();
+  await supervisor.bootProducts();
+  supervisor.recordInstanceState('globex', { metrics: { secreto: 'de B' } });
+
+  const res = supervisor.getSegmentedState('globex', { authorizedProjectId: 'acme' });
+  assert.equal(res.status, 403, 'B no autorizado desde contexto de A');
+  assert.equal(res.payload.error, 'forbidden');
+  assert.equal(res.payload.metrics, undefined, 'no hay payload de datos');
+});
+
+test('A01/CA-4.3 · sin projectId → 403, NUNCA el agregado global', () => {
+  const res = segmentProductState({
+    stateByProjectId: { acme: { metrics: { a: 1 } }, globex: { metrics: { b: 2 } } },
+  });
+  assert.equal(res.status, 403);
+  assert.equal(res.payload.error, 'forbidden');
+  // Fail-closed: el payload no contiene ninguno de los productos.
+  const s = JSON.stringify(res.payload);
+  assert.ok(!s.includes('acme') && !s.includes('globex'), 'no devuelve el agregado');
+});
+
+test('A01/CA-4.3 · projectId inexistente → 403 (no fallback al agregado)', async () => {
+  const supervisor = bootedSupervisor();
+  await supervisor.bootProducts();
+  const res = supervisor.getSegmentedState('no-existe', { authorizedProjectId: 'no-existe' });
+  assert.equal(res.status, 403);
+});
+
+test('A01/CA-4.4 · audit# namespaceado: la consulta de A nunca devuelve auditoría de B', async () => {
+  const supervisor = bootedSupervisor();
+  await supervisor.bootProducts();
+  supervisor.appendInstanceAudit('acme', { action: 'a-only' });
+  supervisor.appendInstanceAudit('globex', { action: 'b-only' });
+  const res = supervisor.getSegmentedState('acme', { authorizedProjectId: 'acme' });
+  assert.deepEqual(res.payload.audit, [{ action: 'a-only' }]);
+});
+
+test('A01 · segmentProductState hace whitelist de campos (no passthrough del objeto crudo)', () => {
+  const res = segmentProductState({
+    requestedProjectId: 'acme',
+    authorizedProjectIds: ['acme'],
+    stateByProjectId: { acme: { metrics: { ok: 1 }, __internal: 'no-exponer', handle: { pid: 1 } } },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.payload.__internal, undefined, 'campo interno omitido');
+  assert.equal(res.payload.handle, undefined, 'handle interno omitido');
+  assert.deepEqual(res.payload.metrics, { ok: 1 });
+});
+
+// -----------------------------------------------------------------------------
+// A02 · Aislamiento de secretos (CA-6 · CRÍTICO)
+// -----------------------------------------------------------------------------
+
+const CREDS_MULTI = {
+  namespaces: {
+    acme: { githubToken: 'ghp_acme_SECRET', anthropicKey: 'sk-acme-SECRET' },
+    globex: { githubToken: 'ghp_globex_SECRET', anthropicKey: 'sk-globex-SECRET' },
+  },
+};
+
+test('A02 · cada instancia resuelve SÓLO sus refs scoped (resolveScopedRefs, no el namespace de otro)', async () => {
+  const supervisor = bootedSupervisor();
+  await supervisor.bootProducts();
+
+  const rA = supervisor.resolveInstanceSecrets('acme', { scopes: ['githubToken'], data: CREDS_MULTI });
+  assert.equal(rA.ok, true);
+  const a = supervisor.getInstance('acme');
+  assert.deepEqual(a.secrets, { githubToken: 'ghp_acme_SECRET' }, 'A resuelve su propio scope');
+  // El scope no pedido no se materializa; el secreto de B jamás aparece en A.
+  assert.equal(a.secrets.anthropicKey, undefined, 'sólo el scope declarado');
+  assert.ok(!JSON.stringify(a.secrets).includes('globex'), 'ningún secreto de B en A');
+
+  const b = supervisor.getInstance('globex');
+  assert.equal(b.secrets, null, 'B no resolvió nada todavía → sin secretos');
+});
+
+test('A02/CA-6.2 · el supervisor NO carga credenciales en process.env global', async () => {
+  const before = { ...process.env };
+  const supervisor = bootedSupervisor();
+  await supervisor.bootProducts();
+  supervisor.resolveInstanceSecrets('acme', { scopes: ['githubToken', 'anthropicKey'], data: CREDS_MULTI });
+
+  // Ninguna key secreta terminó en process.env (no se llamó loadIntoEnv).
+  const envDump = JSON.stringify(process.env);
+  assert.ok(!envDump.includes('ghp_acme_SECRET'), 'token de A no está en process.env');
+  assert.ok(!envDump.includes('sk-acme-SECRET'), 'key de A no está en process.env');
+  // process.env intacto (mismas claves que antes; el supervisor no lo toca).
+  assert.deepEqual(Object.keys(process.env).sort(), Object.keys(before).sort());
+});
+
+test('A02/CA-6.3 · redacción: meta expone sólo nombres de scope, nunca valores', async () => {
+  const supervisor = bootedSupervisor();
+  await supervisor.bootProducts();
+  const r = supervisor.resolveInstanceSecrets('acme', { scopes: ['githubToken', 'anthropicKey'], data: CREDS_MULTI });
+  assert.equal(r.ok, true);
+  const metaDump = JSON.stringify(r.meta);
+  assert.ok(!metaDump.includes('ghp_acme_SECRET') && !metaDump.includes('sk-acme-SECRET'), 'meta sin valores');
+  assert.deepEqual(r.meta.scopes.sort(), ['anthropicKey', 'githubToken'], 'meta lista sólo nombres');
+  // getInstance().secretsMeta también redactado (para logging seguro).
+  const a = supervisor.getInstance('acme');
+  assert.ok(!JSON.stringify(a.secretsMeta).includes('SECRET'), 'secretsMeta redactado');
+});
+
+test('A02 · fail-closed: scope faltante → no deja secretos parciales en el ctx + alerta', async () => {
+  const alerts = [];
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore(CATALOG_MIXTO),
+    storeFactory: recordingStoreFactory([]),
+    onAlert: (a) => alerts.push(a),
+    hydrate: false,
+  });
+  await supervisor.bootProducts();
+  const r = supervisor.resolveInstanceSecrets('acme', { scopes: ['githubToken', 'noExiste'], data: CREDS_MULTI });
+  assert.equal(r.ok, false, 'missing scope → fail-closed');
+  assert.equal(supervisor.getInstance('acme').secrets, null, 'sin secretos parciales');
+  assert.ok(alerts.some((a) => a.stage === 'secrets'), 'A09: fallo de resolución alertado');
+});
+
+// -----------------------------------------------------------------------------
+// A03 · Path traversal / injection en id de producto y refs de secretos
+// -----------------------------------------------------------------------------
+
+const UNSAFE_IDS = ['../evil', '..', 'a/b', 'a\\b', '/etc/passwd', 'ACME', 'a b', '', 'x'.repeat(80)];
+
+test('A03 · getSegmentedState rechaza projectId con traversal/separadores/patrón inválido', async () => {
+  const supervisor = bootedSupervisor();
+  await supervisor.bootProducts();
+  for (const bad of UNSAFE_IDS) {
+    const res = supervisor.getSegmentedState(bad, { authorizedProjectId: bad });
+    assert.equal(res.status, 403, `id inseguro rechazado: ${JSON.stringify(bad)}`);
+  }
+});
+
+test('A03 · resolveInstanceSecrets lanza fail-closed ante projectId inseguro (antes de derivar ref)', () => {
+  const supervisor = bootedSupervisor();
+  for (const bad of ['../otro', 'a/b', 'x\\y', '..']) {
+    assert.throws(
+      () => supervisor.resolveInstanceSecrets(bad, { scopes: ['x'], data: CREDS_MULTI }),
+      (err) => err instanceof KernelStoreIsolationError,
+      `id inseguro rechazado en secretos: ${bad}`,
+    );
+  }
+});
+
+test('A03 · segmentProductState no indexa el store con un id inseguro (no lee fuera del namespace)', () => {
+  // Aunque el store tuviera una clave con nombre peligroso, el guard fail-closed
+  // corta ANTES de indexar: nunca se resuelve.
+  const stateByProjectId = { '../evil': { metrics: { leak: true } }, acme: { metrics: { ok: 1 } } };
+  const res = segmentProductState({ requestedProjectId: '../evil', stateByProjectId });
+  assert.equal(res.status, 403);
+  assert.equal(res.payload.metrics, undefined);
+});
+
+test('A03 · isSafeProjectId espeja isSafeId de project-descriptor (anti-drift)', () => {
+  const battery = [
+    'acme', 'globex', 'a1', 'x-y-z', 'ab',
+    ...UNSAFE_IDS, 'A', '1', 'a_b', 'a.b', 'a:b', 'con espacio', '..%2f', 'a'.repeat(64), 'a'.repeat(65),
+    null, undefined, 123, {},
+  ];
+  for (const v of battery) {
+    assert.equal(isSafeProjectId(v), isSafeId(v), `desacuerdo con isSafeId para ${JSON.stringify(v)}`);
+  }
 });

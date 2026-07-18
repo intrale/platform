@@ -46,6 +46,8 @@ const {
   deriveCapabilityPartitions,
 } = require('./project-descriptor');
 const repoTarget = require('./repo-target');
+const { resolveScopedRefs, redactScoped } = require('./credentials');
+const { segmentProductState } = require('./product-state-segment');
 
 const ACTIVE_STATUS = 'active';
 
@@ -310,6 +312,21 @@ function createKernelSupervisor(deps = {}) {
       routing: null,
       concurrency: null,
       partitions: null,
+      // --- #4764 · estado observable NAMESPACEADO por instancia (CA-4 · A01) --
+      // Métricas/tokens/tiempos/estado/audit# viven en el ctx propio de la
+      // instancia; NUNCA en un agregado global. La vista segmentada sólo lee
+      // de acá y siempre para UN solo projectId.
+      metrics: null,                    // { ... } agregados numéricos del producto
+      tokens: null,                     // { in, out, ... } consumo del producto
+      times: null,                      // { ... } tiempos del producto
+      phase: null,                      // estado de fase actual del producto
+      audit: [],                        // audit# namespaceado (ring in-process)
+      // --- #4764 · secretos resueltos SCOPED de la instancia (CA-6 · A02) -----
+      // Se resuelven SÓLO los scopes declarados del projectId vía resolveScopedRefs
+      // y se guardan acá (target de inyección por proceso hijo). NUNCA en el
+      // process.env global del supervisor; NUNCA vía loadIntoEnv().
+      secrets: null,                    // { <scope>: <valor> } — no loguear crudo
+      secretsMeta: null,                // redactScoped(resolved) — sólo nombres de scope
       // --- lifecycle ----------------------------------------------------------
       handle: null,
       health: { alive: true, restarts: 0, lastError: null },
@@ -528,6 +545,132 @@ function createKernelSupervisor(deps = {}) {
     });
   }
 
+  // ---- #4764 · CA-6 / A02 · resolución de secretos SCOPED por instancia -------
+
+  /**
+   * Resuelve los secretos de UNA instancia entregando SÓLO los scopes declarados
+   * de su `projectId`. Fail-closed y sin fuga cross-tenant:
+   *   - `isSafeId(projectId)` (A03) ANTES de construir la ref namespaceada.
+   *   - Ref namespaceada por `projectId` (`<path>#<projectId>`); NUNCA el archivo
+   *     completo. Se usa `resolveScopedRefs` (credentials.js), JAMÁS `loadIntoEnv()`.
+   *   - Los secretos resueltos se guardan en el ctx de la instancia (target de
+   *     inyección por proceso hijo), NUNCA en `process.env` del supervisor.
+   *   - Logging/alertas SIEMPRE redactadas (`redactScoped`): sólo nombres de scope.
+   *
+   * @param {string} projectId  id de la instancia (validado fail-closed).
+   * @param {object} [opts]
+   * @param {string[]} [opts.scopes]      scopes declarados; default: los del descriptor
+   *                                       (`descriptor.secrets.scopes`).
+   * @param {string}   [opts.ref]         ref namespeada explícita; default: derivada
+   *                                       del descriptor o `<credentialsPath>#<projectId>`.
+   * @param {object}   [opts.data]        credentials ya parseadas (override para tests).
+   * @param {string}   [opts.credentialsPath] path del archivo (override para tests).
+   * @returns {{ok:boolean, meta:object, error?:string}}  `meta` = redactScoped (sin valores).
+   */
+  function resolveInstanceSecrets(projectId, opts = {}) {
+    if (!isSafeId(projectId)) {                   // A03: nunca construir ref con id sin validar
+      throw new KernelStoreIsolationError(
+        `resolveInstanceSecrets: projectId inseguro "${String(projectId)}" — fail-closed antes de derivar ref`,
+        { requested: projectId == null ? null : String(projectId) },
+      );
+    }
+    const ctx = instances.get(projectId);
+    if (!ctx) return { ok: false, meta: { namespace: projectId, scopes: [] }, error: 'instancia inexistente' };
+
+    const desc = ctx.descriptor && typeof ctx.descriptor === 'object' ? ctx.descriptor : null;
+    const declared = desc && desc.secrets && typeof desc.secrets === 'object' ? desc.secrets : null;
+    const scopes = Array.isArray(opts.scopes) ? opts.scopes
+      : (declared && Array.isArray(declared.scopes) ? declared.scopes : []);
+    // Ref SIEMPRE namespaceada por el projectId de ESTA instancia (no in-band).
+    const basePath = opts.ref
+      ? String(opts.ref).split('#')[0]
+      : (declared && typeof declared.path === 'string' && declared.path
+          ? declared.path
+          : '~/.claude/secrets/credentials.json');
+    const ref = `${basePath}#${projectId}`;
+
+    const resolveOpts = {};
+    if (opts.data) resolveOpts.data = opts.data;
+    if (opts.credentialsPath) resolveOpts.canonicalPath = opts.credentialsPath;
+
+    const resolved = resolveScopedRefs(ref, scopes, resolveOpts);
+    const meta = redactScoped(resolved);          // A02: sólo nombres de scope, nunca valores
+
+    if (!resolved.ok) {
+      // Fail-closed: no dejar secretos parciales/ajenos en el ctx.
+      ctx.secrets = null;
+      ctx.secretsMeta = meta;
+      onAlert({ projectId, stage: 'secrets', errors: [{ detail: `resolución scoped fallida (missing: ${meta.missing.join(',') || '—'})` }] });
+      return { ok: false, meta, error: resolved.error || 'scopes faltantes' };
+    }
+
+    // Secretos SÓLO en el ctx de la instancia (nunca process.env global · CA-6.2).
+    ctx.secrets = resolved.scopes;
+    ctx.secretsMeta = meta;
+    return { ok: true, meta };
+  }
+
+  // ---- #4764 · CA-4 / A01 · estado observable NAMESPACEADO por instancia ------
+
+  /**
+   * Registra estado observable (métricas/tokens/tiempos/fase) de UNA instancia en
+   * su propio ctx (namespaceado por `projectId`). Fail-closed sobre id inseguro.
+   * NUNCA escribe en un agregado global.
+   */
+  function recordInstanceState(projectId, patch) {
+    const ctx = getInstance(projectId);           // getInstance ya valida isSafeId
+    if (!ctx) return false;
+    const p = patch && typeof patch === 'object' ? patch : {};
+    if (p.metrics !== undefined) ctx.metrics = p.metrics;
+    if (p.tokens !== undefined) ctx.tokens = p.tokens;
+    if (p.times !== undefined) ctx.times = p.times;
+    if (p.phase !== undefined) ctx.phase = p.phase;
+    return true;
+  }
+
+  /**
+   * Agrega una entrada de auditoría (`audit#`) al trail namespaceado de UNA
+   * instancia. Aislado por `projectId`: la auditoría de A nunca se mezcla con B.
+   */
+  function appendInstanceAudit(projectId, entry) {
+    const ctx = getInstance(projectId);
+    if (!ctx) return false;
+    if (!Array.isArray(ctx.audit)) ctx.audit = [];
+    ctx.audit.push(entry);
+    return true;
+  }
+
+  /**
+   * CA-4 · Vista de estado SEGMENTADA de UN producto, fail-closed. Delega la
+   * decisión de acceso a `segmentProductState` (mismo núcleo que el endpoint del
+   * dashboard). Nunca devuelve el agregado global ni datos de otro `projectId`.
+   *
+   * @param {string} projectId  producto pedido (input no confiable, validado).
+   * @param {object} [opts]
+   * @param {string} [opts.authorizedProjectId]  id autorizado por el contexto
+   *                  (out-of-band). Si se pasa, sólo ese id resuelve (anti-IDOR);
+   *                  un `projectId` distinto ⇒ fail-closed. Si se omite, se autoriza
+   *                  contra las instancias vivas (una a la vez, nunca el agregado).
+   * @returns {{status:number, payload:object}}
+   */
+  function getSegmentedState(projectId, opts = {}) {
+    const stateByProjectId = {};
+    for (const [pid, ctx] of instances) {
+      stateByProjectId[pid] = {
+        metrics: ctx.metrics,
+        tokens: ctx.tokens,
+        times: ctx.times,
+        phase: ctx.phase,
+        state: ctx.health ? { alive: ctx.health.alive, restarts: ctx.health.restarts } : undefined,
+        audit: ctx.audit,
+      };
+    }
+    const authorizedProjectIds = (opts && typeof opts.authorizedProjectId === 'string')
+      ? [opts.authorizedProjectId]
+      : undefined;
+    return segmentProductState({ requestedProjectId: projectId, authorizedProjectIds, stateByProjectId });
+  }
+
   return {
     bootProducts,
     spawnInstance,
@@ -539,6 +682,11 @@ function createKernelSupervisor(deps = {}) {
     restartInstance,
     stopInstance,
     resolveEvent,
+    // #4764 · secretos scoped por instancia (CA-6 · A02) + estado segmentado (CA-4 · A01)
+    resolveInstanceSecrets,
+    recordInstanceState,
+    appendInstanceAudit,
+    getSegmentedState,
   };
 }
 
