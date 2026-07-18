@@ -1,0 +1,35 @@
+{
+  "version": "1",
+  "_comment": "Config OWNED por el repo base para block-classifier.js (#4765). NUNCA derivar del branch evaluado (SR-2). 'allow' = prefijos/rutas ANCLADAS de archivos no-producto cuyos conflictos de merge pueden auto-resolverse sin humano (CA-17: nada de globs laxos). 'deny' = denylist DURA de seguridad, evaluada ANTES que allow (SR-3/CA-10). Los patrones deny soportan glob por segmentos (** = cero o mas segmentos, * y ? dentro de un segmento). El match es case-fold + canonicalizado. Ante cualquier duda -> decision (SR-8).",
+  "allow": [
+    "docs/",
+    "readme.md",
+    "changelog.md",
+    ".gitignore",
+    ".editorconfig"
+  ],
+  "deny": [
+    ".pipeline/**",
+    ".claude/hooks/**",
+    ".claude/settings*.json",
+    ".pipeline/config/block-classifier-allowlist.json",
+    "**/*.jks",
+    "**/*.keystore",
+    "**/keystore*",
+    "**/local.properties",
+    "**/signing*",
+    "**/.env*",
+    "**/*.pem",
+    "**/*.p12",
+    "**/secrets*",
+    "**/application*.conf",
+    "**/*.tf",
+    ".github/workflows/**",
+    "**/*.gradle.kts",
+    "**/build.gradle*",
+    "**/securedfunction*",
+    "**/*cognito*",
+    "**/*konform*",
+    "**/security/**"
+  ]
+}
