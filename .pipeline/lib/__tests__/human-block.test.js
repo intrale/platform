@@ -715,3 +715,153 @@ test('mergeGithubBlockedLabels es tolerante a args no-array', () => {
 test('GITHUB_HUMAN_BLOCK_LABELS incluye blocked:routing-manual', () => {
     assert.ok(hb.GITHUB_HUMAN_BLOCK_LABELS.includes('blocked:routing-manual'));
 });
+
+// =============================================================================
+// #4748 — precondition: registro estructurado del motivo del freeze
+// =============================================================================
+
+test('reportHumanBlock persiste precondition dependency en .reason.json', () => {
+    resetFs();
+    const result = hb.reportHumanBlock({
+        issue: 4745, skill: 'po', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'necesita intervención humana: depende de #4744 abierto',
+        question: '¿mergeamos #4744?',
+        precondition: { type: 'dependency', depends_on: [4744] },
+    });
+    assert.deepEqual(result.precondition, { type: 'dependency', depends_on: [4744] });
+    const meta = JSON.parse(fs.readFileSync(result.marker_path + '.reason.json', 'utf8'));
+    assert.deepEqual(meta.precondition, { type: 'dependency', depends_on: [4744] });
+});
+
+test('reportHumanBlock sin precondition → default human_judgment (fail-closed SEC-4)', () => {
+    resetFs();
+    const result = hb.reportHumanBlock({
+        issue: 4801, skill: 'review', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'rechazo semántico: el criterio AC#3 no se cumple',
+        question: '¿revisás el enfoque?',
+    });
+    assert.deepEqual(result.precondition, { type: 'human_judgment' });
+    const meta = JSON.parse(fs.readFileSync(result.marker_path + '.reason.json', 'utf8'));
+    assert.deepEqual(meta.precondition, { type: 'human_judgment' });
+});
+
+test('reportHumanBlock: dependency con depends_on vacío degrada a human_judgment', () => {
+    resetFs();
+    const result = hb.reportHumanBlock({
+        issue: 4802, skill: 'po', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'r', question: 'q',
+        precondition: { type: 'dependency', depends_on: [] },
+    });
+    assert.deepEqual(result.precondition, { type: 'human_judgment' });
+});
+
+test('reportHumanBlock: depends_on con basura se coacciona a enteros positivos únicos', () => {
+    resetFs();
+    const result = hb.reportHumanBlock({
+        issue: 4803, skill: 'po', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'r', question: 'q',
+        precondition: { type: 'dependency', depends_on: [4744, '4744', -1, 0, 'x', 4700] },
+    });
+    assert.deepEqual(result.precondition, { type: 'dependency', depends_on: [4700, 4744] });
+});
+
+test('listBlockedIssues expone precondition (dependency y default legacy)', () => {
+    resetFs();
+    hb.reportHumanBlock({
+        issue: 4810, skill: 'po', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'r', question: 'q',
+        precondition: { type: 'dependency', depends_on: [4744, 4700] },
+    });
+    // marker legacy sin precondition en el .reason.json
+    const dir = path.join(TMP_DIR, '.pipeline', 'desarrollo', 'dev', 'bloqueado-humano');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, '4811.review'), '');
+    fs.writeFileSync(path.join(dir, '4811.review.reason.json'), JSON.stringify({
+        issue: 4811, skill: 'review', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'legacy', question: 'q',
+    }));
+    const list = hb.listBlockedIssues();
+    const dep = list.find(i => i.issue === 4810);
+    assert.deepEqual(dep.precondition, { type: 'dependency', depends_on: [4700, 4744] });
+    const legacy = list.find(i => i.issue === 4811);
+    assert.deepEqual(legacy.precondition, { type: 'human_judgment' }, 'legacy sin precondition → human_judgment');
+});
+
+test('normalizePrecondition: formas inválidas colapsan a human_judgment', () => {
+    assert.deepEqual(hb.normalizePrecondition(null), { type: 'human_judgment' });
+    assert.deepEqual(hb.normalizePrecondition({}), { type: 'human_judgment' });
+    assert.deepEqual(hb.normalizePrecondition({ type: 'dependency' }), { type: 'human_judgment' });
+    assert.deepEqual(hb.normalizePrecondition({ type: 'dependency', depends_on: ['x'] }), { type: 'human_judgment' });
+});
+
+// --- classifyPrecondition: SÓLO hint estructural, nunca texto libre (SEC-1) ---
+
+test('classifyPrecondition: campo estructurado depende_de → dependency', () => {
+    const pc = hb.classifyPrecondition([{ motivo: 'necesita intervención humana', depende_de: [4744] }]);
+    assert.deepEqual(pc, { type: 'dependency', depends_on: [4744] });
+});
+
+test('classifyPrecondition: campo precondicion_issues también sirve', () => {
+    const pc = hb.classifyPrecondition([{ motivo: 'x', precondicion_issues: [10, 11] }]);
+    assert.deepEqual(pc, { type: 'dependency', depends_on: [10, 11] });
+});
+
+test('classifyPrecondition: #NNNN en texto libre NO clasifica dependency (SEC-1)', () => {
+    const pc = hb.classifyPrecondition([
+        { motivo: 'bloqueo humano: revisar el diseño relacionado con #4744 y #4700' },
+    ]);
+    assert.deepEqual(pc, { type: 'human_judgment' }, 'texto libre nunca alimenta dependency');
+});
+
+test('classifyPrecondition: extraDeps (hint estructural) se incorpora', () => {
+    const pc = hb.classifyPrecondition([{ motivo: 'x' }], [4744, 4700]);
+    assert.deepEqual(pc, { type: 'dependency', depends_on: [4700, 4744] });
+});
+
+test('classifyPrecondition: sin rechazos ni extraDeps → human_judgment', () => {
+    assert.deepEqual(hb.classifyPrecondition([]), { type: 'human_judgment' });
+    assert.deepEqual(hb.classifyPrecondition(null), { type: 'human_judgment' });
+    assert.deepEqual(hb.classifyPrecondition([{ motivo: 'x' }]), { type: 'human_judgment' });
+});
+
+test('classifyPrecondition: combina deps de varios rechazos + extraDeps y dedup', () => {
+    const pc = hb.classifyPrecondition([
+        { motivo: 'a', depende_de: [4744] },
+        { motivo: 'b', depende_de: [4744, 4700] },
+    ], [4700, 4800]);
+    assert.deepEqual(pc, { type: 'dependency', depends_on: [4700, 4744, 4800] });
+});
+
+test('unblockIssue borra el .reason.json (con precondition) al re-encolar', () => {
+    resetFs();
+    const r = hb.reportHumanBlock({
+        issue: 4820, skill: 'po', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'r', question: 'q',
+        precondition: { type: 'dependency', depends_on: [4744] },
+    });
+    assert.ok(fs.existsSync(r.marker_path + '.reason.json'));
+    const res = hb.unblockIssue({ issue: 4820, unlocker: 'brazo-desbloqueo:precondicion' });
+    assert.equal(res.ok, true);
+    assert.equal(fs.existsSync(r.marker_path + '.reason.json'), false, 'reason.json (y su precondition) se limpia');
+});
+
+test('e2e #4748: precondición resuelta → selector core lo mueve a toRelease; juicio humano intacto', () => {
+    resetFs();
+    hb.reportHumanBlock({
+        issue: 4745, skill: 'po', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'necesita intervención humana: depende de #4744', question: '¿mergeás #4744?',
+        precondition: { type: 'dependency', depends_on: [4744] },
+    });
+    hb.reportHumanBlock({
+        issue: 4746, skill: 'review', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'rechazo semántico del enfoque', question: '¿revisás?',
+    });
+    const core = require('../brazo-desbloqueo-core');
+    const markers = hb.listBlockedIssues();
+    // #4744 abierto → nada se libera.
+    let out = core.selectHumanBlocksToRelease({ markers, issueStates: { 4744: 'OPEN' } });
+    assert.equal(out.toRelease.length, 0);
+    // #4744 cerrado → sólo #4745 (dependency) se libera; #4746 (juicio) intacto.
+    out = core.selectHumanBlocksToRelease({ markers, issueStates: { 4744: 'CLOSED' } });
+    assert.deepEqual(out.toRelease.map(m => m.issue), [4745]);
+});

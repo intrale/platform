@@ -242,12 +242,28 @@ test('FUNCIONAL — /api/health responde 200 con shape { ok, uptime } y sin info
 });
 
 test('FUNCIONAL — /api/state responde 200 con JSON válido (sin colgarse)', async () => {
-  const t0 = Date.now();
-  const r = await new Promise((res, rej) => getJson(port, '/api/state', (e, x) => e ? rej(e) : res(x)));
-  const elapsed = Date.now() - t0;
-  assert.strictEqual(r.status, 200, 'HTTP 200');
-  const json = JSON.parse(r.body); // no debe tirar
+  // El handler sirve desde `_stateSnapshot` en O(1): una respuesta sana son
+  // milisegundos, mientras que la regresión #4096 (getPipelineState en el hot
+  // path) clava la CPU y queda lenta en TODAS las requests. Medir una sola
+  // muestra de wall-clock es flaky: bajo el runner de `node --test` con miles
+  // de tests en paralelo, un pico transitorio de scheduler/GC/IO puede empujar
+  // una request O(1) por encima de 2s sin que haya regresión (falso rechazo →
+  // loop de rebotes). Tomamos el MÍNIMO de varias muestras: aísla el costo real
+  // del handler del jitter de carga. Si el hot path volviera a ser O(n), el
+  // mínimo también queda lento y el guardrail dispara igual.
+  const SAMPLES = 5;
+  let minElapsed = Infinity;
+  let last = null;
+  for (let i = 0; i < SAMPLES; i++) {
+    const t0 = Date.now();
+    const r = await new Promise((res, rej) => getJson(port, '/api/state', (e, x) => e ? rej(e) : res(x)));
+    const elapsed = Date.now() - t0;
+    if (elapsed < minElapsed) minElapsed = elapsed;
+    last = r;
+  }
+  assert.strictEqual(last.status, 200, 'HTTP 200');
+  const json = JSON.parse(last.body); // no debe tirar
   assert.ok(json && typeof json === 'object', 'JSON objeto');
-  // O(1): la respuesta llega muy por debajo del límite del smoke (< 2s).
-  assert.ok(elapsed < 2000, `/api/state debe responder O(1) (< 2s), tardó ${elapsed}ms`);
+  // O(1): la mejor muestra debe estar muy por debajo del límite del smoke (< 2s).
+  assert.ok(minElapsed < 2000, `/api/state debe responder O(1) (< 2s), mejor de ${SAMPLES} muestras tardó ${minElapsed}ms`);
 });

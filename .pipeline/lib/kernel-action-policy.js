@@ -249,19 +249,147 @@ function safeMarkdownText(value) {
         .slice(0, 500);
 }
 
-function buildOperatorMessage({ action, mode, impact, reason, policySource, decision }) {
-    const level = impact === 'alto' ? 'ALTO' : (impact === 'medio' ? 'MEDIO' : 'BAJO');
-    const verb = mode === 'wait-confirmation'
-        ? 'requiere confirmacion de operador'
-        : 'notifica y procede';
-    return [
-        `GATE 3 kernel - impacto ${level}`,
-        `Accion: ${safeMarkdownText(action)}`,
-        `Politica: ${safeMarkdownText(mode)} (${safeMarkdownText(policySource || 'n/a')})`,
-        `Decision: ${safeMarkdownText(decision || verb)}`,
-        `Motivo: ${safeMarkdownText(reason || 'sin motivo informado')}`,
-        'Audit: .pipeline/audit/kernel-actions.jsonl',
-    ].join('\n');
+// -----------------------------------------------------------------------------
+// #4753 — UX de los mensajes de gate del kernel. El operador decide en 5 segundos
+// desde el celular, sin contexto cargado: el mensaje responde QUE pasa, QUE se
+// pide y QUE consecuencia tiene cada camino (aprobar/rechazar/no responder).
+// CERO jerga interna en el texto visible (nada de `realign-allowlist`,
+// `resoluble_reductivo`, `desync`, `notify-and-proceed`, `partial-pause`...).
+//
+// Cada accion del kernel se traduce a lenguaje de operador. Acciones no mapeadas
+// caen a una descripcion generica (NUNCA se muestra la clave cruda).
+// -----------------------------------------------------------------------------
+const ACTION_COPY = Object.freeze({
+    'realign-allowlist': {
+        gerund: 'realinear la ola con la lista de trabajo habilitado',
+        what: 'La lista de la ola y la de issues habilitados no coinciden.',
+    },
+    'reseed-wave': {
+        gerund: 'volver a poblar la ola activa',
+        what: 'La ola activa quedo sin issues habilitados y hay que repoblarla.',
+    },
+    'desync-autoresolve': {
+        gerund: 'limpiar de la ola issues que ya estaban cerrados',
+        what: 'Quedaron issues ya cerrados colgando en la lista de la ola.',
+    },
+    'quota-flag': {
+        gerund: 'actualizar el aviso de cuota del proveedor de IA',
+        what: 'Cambio el estado de la cuota del proveedor de IA.',
+    },
+    'worktree-reset': {
+        gerund: 'reordenar el espacio de trabajo de un agente',
+        what: 'Un espacio de trabajo de agente quedo inconsistente y hay que reordenarlo.',
+    },
+});
+
+function describeAction(action) {
+    return ACTION_COPY[policyKey(action)] || {
+        gerund: 'aplicar un ajuste interno del pipeline',
+        what: 'Detecte algo que necesita converger para seguir despachando.',
+    };
+}
+
+// Renderiza la lista de issues afectados como texto legible (no ids crudos).
+// Maximo 5 visibles + "y N mas". Titulos derivados de GitHub pasan por
+// safeMarkdownText (SEC-7). Devuelve null si no hay issues.
+function renderIssueList(issues) {
+    const arr = (Array.isArray(issues) ? issues : [])
+        .filter((i) => i && Number.isInteger(Number(i.number)));
+    if (arr.length === 0) return null;
+    const shown = arr.slice(0, 5).map((i) => {
+        const num = `#${Number(i.number)}`;
+        const title = i.title ? ` "${safeMarkdownText(String(i.title).slice(0, 60))}"` : '';
+        const estado = i.estado ? ` (${safeMarkdownText(i.estado)})` : '';
+        return `- ${num}${title}${estado}`;
+    });
+    if (arr.length > 5) shown.push(`- y ${arr.length - 5} mas`);
+    return shown.join('\n');
+}
+
+function buildOperatorMessage({ action, mode, reason, decision, issues }) {
+    const copy = describeAction(action);
+    const list = renderIssueList(issues);
+    const motivo = reason ? safeMarkdownText(reason) : null;
+
+    if (mode === 'wait-confirmation') {
+        const lines = [
+            `🔵 Necesito tu OK para ${copy.gerund}`,
+            '',
+            `Que pasa: ${copy.what}`,
+        ];
+        if (motivo) lines.push(`Por que te lo pido: ${motivo}`);
+        if (list) { lines.push('Issues afectados:'); lines.push(list); }
+        lines.push('');
+        lines.push('Si aprobas: aplico el cambio y el dispatch sigue normal.');
+        lines.push('Si rechazas: dejo todo como esta y lo reviso a mano.');
+        lines.push('Si no respondes: no hago nada. Nunca se auto-aprueba.');
+        lines.push('');
+        lines.push('Traza: .pipeline/audit/kernel-actions.jsonl');
+        return lines.join('\n');
+    }
+
+    // notify-and-proceed: aviso informativo y tranquilizador (ya esta resuelto).
+    const lines = [
+        `♻️ Resolvi esto solo, no hace falta que hagas nada`,
+        '',
+        `Que hice: ${copy.gerund}.`,
+        `Detalle: ${copy.what}`,
+    ];
+    if (list) { lines.push('Issues afectados:'); lines.push(list); }
+    lines.push('');
+    lines.push('No frene el dispatch. Te aviso para que quede registro.');
+    lines.push('');
+    lines.push('Traza: .pipeline/audit/kernel-actions.jsonl');
+    return lines.join('\n');
+}
+
+// -----------------------------------------------------------------------------
+// #4753 — Dedupe conservador de notificaciones de gate. Evita el loop de ~5 min
+// que re-emitia el MISMO aviso mientras el motivo no cambiaba.
+//
+// Reglas inquebrantables (SEC-6):
+//   - SOLO aplica a avisos informativos de `notify-and-proceed` que traen
+//     contexto (clasificacion y/o issues). NUNCA silencia una escalada
+//     `wait-confirmation`/human-block: esas siempre se emiten.
+//   - El hash incluye ESTADO por issue (abierto/cerrado) + clasificacion, no solo
+//     ids: la aparicion de un issue abierto nuevo cambia el hash y re-emite.
+// -----------------------------------------------------------------------------
+function gateDedupeStatePath() {
+    return path.join(pipelineDir(), 'state', 'kernel-gate-dedupe.json');
+}
+
+function computeGateHash(params) {
+    const action = policyKey(params.action);
+    const classification = params.classification != null ? String(params.classification) : '';
+    const issues = (Array.isArray(params.issues) ? params.issues : [])
+        .map((i) => ({ n: Number(i && i.number), estado: String((i && i.estado) || '') }))
+        .filter((i) => Number.isInteger(i.n))
+        .sort((a, b) => a.n - b.n);
+    const payload = JSON.stringify({ action, classification, issues });
+    return require('node:crypto').createHash('sha1').update(payload).digest('hex');
+}
+
+function readGateDedupeStore() {
+    try {
+        const parsed = JSON.parse(fs.readFileSync(gateDedupeStatePath(), 'utf8'));
+        return (parsed && typeof parsed === 'object') ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+function isDuplicateGateEmission(action, hash) {
+    const rec = readGateDedupeStore()[policyKey(action)];
+    return !!(rec && rec.hash === hash);
+}
+
+function recordGateEmission(action, hash) {
+    const store = readGateDedupeStore();
+    store[policyKey(action)] = { hash, at: new Date().toISOString() };
+    try {
+        fs.mkdirSync(path.dirname(gateDedupeStatePath()), { recursive: true });
+        fs.writeFileSync(gateDedupeStatePath(), JSON.stringify(store, null, 2));
+    } catch { /* best-effort: el dedupe nunca bloquea la notificacion */ }
 }
 
 /**
@@ -273,6 +401,22 @@ function buildOperatorMessage({ action, mode, impact, reason, policySource, deci
  * @returns {{ ok: boolean, path?: string, error?: string }}
  */
 function notifyOperator(params = {}, send) {
+    // Dedupe conservador (#4753): SOLO avisos informativos de notify-and-proceed
+    // que traen contexto. NUNCA silencia wait-confirmation/human-block.
+    const hasContext = params.classification != null
+        || (Array.isArray(params.issues) && params.issues.length > 0);
+    const dedupeEligible = params.mode === 'notify-and-proceed'
+        && params.dedupe !== false
+        && hasContext;
+    if (dedupeEligible) {
+        const hash = computeGateHash(params);
+        if (isDuplicateGateEmission(params.action, hash)) {
+            return { ok: true, deduped: true, hash };
+        }
+        // Registrar la emision ANTES de enviar: si el motivo no cambia, el
+        // proximo intento se silencia; si cambia (issue abierto nuevo), re-emite.
+        recordGateEmission(params.action, hash);
+    }
     if (typeof send === 'function') {
         return send(params);
     }
@@ -320,7 +464,11 @@ function appendRejected(action, chatId, reason, appendRejectedFn) {
  */
 function enforceActionPolicy(action, opts = {}) {
     const policy = resolvePolicy(action, opts);
-    const base = { action, mode: policy.mode, impact: opts.impact, reason: opts.reason, policySource: policy.source };
+    // #4753 — propagamos `classification` e `issues` para el copy UX y el dedupe.
+    const base = {
+        action, mode: policy.mode, impact: opts.impact, reason: opts.reason,
+        policySource: policy.source, classification: opts.classification, issues: opts.issues,
+    };
 
     if (policy.mode === 'notify-and-proceed') {
         const notification = notifyOperator({ ...base, decision: 'se procede sin bloquear' }, opts.notify);
@@ -362,6 +510,11 @@ function enforceActionPolicy(action, opts = {}) {
 module.exports = {
     enforceActionPolicy,
     notifyOperator,
+    // #4753 — UX del copy + dedupe (expuestos para tests).
+    buildOperatorMessage,
+    describeAction,
+    computeGateHash,
+    gateDedupeStatePath,
     resolvePolicy,
     requiresConfirmation,
     validateConfirmer,

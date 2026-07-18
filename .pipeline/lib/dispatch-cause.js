@@ -51,6 +51,11 @@ const CAUSAS = Object.freeze({
     COOLDOWN: 'cooldown',
     BLOQUEO_DEPENDENCIA: 'bloqueo_dependencia',
     DEADLOCK: 'deadlock',
+    // #4751 — Modo de ejecución en olas (allowlist / ex "pausa parcial"). Es un
+    // estado ESPERADO inducido por el operador: sólo se despachan los issues de
+    // la ola activa. Se publica en el banner pero NO alerta a Telegram (causa
+    // silenciosa). Antes reusaba HALT_HUMANO, lo que generaba ruido recurrente.
+    MODO_OLA: 'modo_ola',
     SIN_AGENTES: 'sin_agentes',
     ANOMALIA: 'anomalia_no_determinable',
 });
@@ -69,6 +74,10 @@ const PRECEDENCIA = Object.freeze([
     CAUSAS.COOLDOWN,
     CAUSAS.BLOQUEO_DEPENDENCIA,
     CAUSAS.DEADLOCK,
+    // #4751 — MODO_OLA estrictamente POR DEBAJO de PRESION_RECURSOS/DEADLOCK (R4):
+    // si coexisten modo ola + saturación, gana la causa alertable y la alerta se
+    // emite. Un orden invertido escondería el problema real.
+    CAUSAS.MODO_OLA,
     CAUSAS.SIN_AGENTES,
 ]);
 
@@ -84,9 +93,26 @@ const LABELS = Object.freeze({
     [CAUSAS.COOLDOWN]: 'En cooldown',
     [CAUSAS.BLOQUEO_DEPENDENCIA]: 'Bloqueado por dependencia',
     [CAUSAS.DEADLOCK]: 'Deadlock detectado',
+    [CAUSAS.MODO_OLA]: 'Modo de ejecución en olas',
     [CAUSAS.SIN_AGENTES]: 'Sin agentes disponibles',
     [CAUSAS.ANOMALIA]: '⚠ Anomalía: causa no determinable',
 });
+
+// #4751 — Clasificación de causas ALERTABLES (envían Telegram). Las demás sólo
+// publican el banner del dashboard (silenciosas). El objetivo es que la
+// notificación de "cola ociosa" signifique SIEMPRE algo que amerita atención del
+// operador (saturación de recursos, deadlock, bloqueo real, infra caída) y no se
+// dispare por estados esperados como el modo de ejecución en olas (allowlist).
+// La ANOMALÍA (fail-closed, R1) se trata aparte y SIEMPRE alerta.
+// Silenciosas (sólo banner): MODO_OLA, VENTANA_HORARIA, REST_MODE, COOLDOWN,
+// SIN_AGENTES.
+const CAUSAS_ALERTABLES = Object.freeze(new Set([
+    CAUSAS.HALT_HUMANO,        // pausa/desync/needs-human real → requiere intervención
+    CAUSAS.CB_INFRA,           // circuit breaker de infra abierto
+    CAUSAS.PRESION_RECURSOS,   // saturación → "hace rato sin ejecución por recursos"
+    CAUSAS.BLOQUEO_DEPENDENCIA,
+    CAUSAS.DEADLOCK,
+]));
 
 // Conjunto de valores válidos del enum (para validación O(1)).
 const CAUSAS_VALIDAS = new Set(Object.values(CAUSAS));
@@ -312,7 +338,12 @@ function publish(opts) {
         return null;
     }
 
-    if (debeAlertar && alertFn) {
+    // #4751 — Sólo alertar a Telegram si la causa es ALERTABLE (o anomalía
+    // fail-closed). El banner/artifact se publica SIEMPRE (writeArtifact arriba);
+    // acá se filtra únicamente el envío al canal externo. Un estado esperado como
+    // MODO_OLA se ve en el dashboard pero no genera ruido de notificación.
+    const esAlertable = resolved.anomalia || CAUSAS_ALERTABLES.has(resolved.causa);
+    if (debeAlertar && esAlertable && alertFn) {
         try {
             const prefijo = resolved.anomalia ? '⚠ ANOMALÍA de despacho' : 'Cola ociosa';
             const detTxt = resolved.detalle ? ` — ${resolved.detalle}` : '';
@@ -329,6 +360,7 @@ module.exports = {
     CAUSAS,
     PRECEDENCIA,
     LABELS,
+    CAUSAS_ALERTABLES,
     CAUSAS_VALIDAS,
     ARTIFACT_FILENAME,
     ANOMALY_REALERT_COOLDOWN_MS,

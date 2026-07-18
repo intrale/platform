@@ -21,6 +21,8 @@ const {
     applyGraphqlBatch,
     classify1x1Error,
     applyFallbackError,
+    markTransient,
+    TRANSIENT_RE,
 } = require('../lib/gh-title-fetch');
 const { needsRefetch } = require('../lib/title-cache-freshness');
 
@@ -180,6 +182,34 @@ test('applyFallbackError: 404 genuino SÍ escribe notFound', () => {
     const cache = {};
     applyFallbackError(cache, '55', { stderr: 'Could not resolve to an Issue with the number of 55' }, NOW);
     assert.equal(cache['55'].notFound, true);
+});
+
+// --- #4732: `gh` ausente en el PATH (ENOENT) es transitorio, no 404 ----------
+
+test('TRANSIENT_RE matchea ENOENT y "spawn gh ENOENT" (#4732)', () => {
+    assert.equal(TRANSIENT_RE.test('spawn gh ENOENT'), true);
+    assert.equal(TRANSIENT_RE.test('Error: spawn C:/Workspaces/gh-cli/bin/gh ENOENT'), true);
+    assert.equal(TRANSIENT_RE.test('ENOENT'), true);
+});
+
+test('classify1x1Error: gh ausente (ENOENT) clasifica como transient, no notfound (#4732)', () => {
+    assert.equal(classify1x1Error({ message: 'spawn gh ENOENT' }), 'transient');
+    assert.equal(classify1x1Error({ code: 'ENOENT', message: 'spawn ENOENT' }), 'transient');
+});
+
+test('applyFallbackError: gh ausente (ENOENT) conserva la entrada previa buena (#4732)', () => {
+    const cache = { '4685': { title: 'X', state: 'CLOSED', labels: [], fetchedAt: NOW - 5000 } };
+    applyFallbackError(cache, '4685', { message: 'spawn gh ENOENT' }, NOW);
+    assert.equal(cache['4685'].state, 'CLOSED');
+    assert.equal(cache['4685'].notFound, undefined);
+    assert.equal(cache['4685'].transientError, undefined);
+});
+
+test('markTransient: ENOENT sin entrada previa marca transientError (reintentar), no notFound (#4732)', () => {
+    const cache = {};
+    markTransient(cache, '4685', NOW);
+    assert.equal(cache['4685'].transientError, true);
+    assert.equal(cache['4685'].notFound, undefined);
 });
 
 // --- needsRefetch (freshness) ------------------------------------------------

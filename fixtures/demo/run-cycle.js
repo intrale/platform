@@ -44,6 +44,21 @@ const OPEN_RANGE_RE = /[\^~*]|>=|<=|>|<|\s-\s|\|\||x|latest/i;
 
 const BUNDLED_TARGET = path.join(__dirname, 'target');
 
+// --- Resolución robusta de npm ----------------------------------------------
+// Devuelve una copia del env con el directorio de `node` (donde vive `npm`/
+// `npm.cmd`) antepuesto al PATH. Evita el fallo "npm no se reconoce como comando"
+// cuando el PATH heredado del spawn (tester / servicio Windows) no lo incluye.
+function withNodeBinOnPath(baseEnv) {
+  const env = { ...baseEnv };
+  const nodeDir = path.dirname(process.execPath);
+  const pathKey = Object.keys(env).find((k) => k.toLowerCase() === 'path') || 'PATH';
+  const current = env[pathKey] || '';
+  if (!current.split(path.delimiter).some((p) => p && path.normalize(p) === path.normalize(nodeDir))) {
+    env[pathKey] = current ? `${nodeDir}${path.delimiter}${current}` : nodeDir;
+  }
+  return env;
+}
+
 // --- Errores ----------------------------------------------------------------
 class AbortError extends Error {
   constructor(message) {
@@ -276,22 +291,17 @@ function bootstrap(targetDir) {
   // Instalación reproducible y verificada: `npm ci` (NUNCA `npm install`).
   // Comando constante (sin interpolación de input) — en Windows `execSync`
   // resuelve `npm.cmd` vía el shell del sistema sin el DEP0190 de execFile+args.
-  // `npm` (npm.cmd en Windows) vive SIEMPRE junto a `node` (process.execPath),
-  // pero el shell del sistema sólo lo encuentra si ese dir está en el PATH. En
-  // entornos de spawn con PATH mínimo (p.ej. el runner del tester) node existe
-  // pero npm no está en el PATH → `npm ci` falla con "no se reconoce como
-  // comando". Prependeamos el dir de node al PATH para resolver npm de forma
-  // determinística e independiente del PATH del proceso que invoca.
-  const nodeDir = path.dirname(process.execPath);
-  const pathSep = process.platform === 'win32' ? ';' : ':';
-  const env = {
-    ...process.env,
-    PATH: `${nodeDir}${pathSep}${process.env.PATH || ''}`,
-  };
+  //
+  // Rebote #4686: cuando estos tests corren bajo el spawn del tester (o el pulpo
+  // como servicio Windows), el PATH heredado puede no incluir el dir de node/npm
+  // (`npm` no se reconoce como comando). Como el harness siempre corre sobre node,
+  // `npm.cmd` (Windows) o `npm` (Unix) vive junto a `process.execPath`: lo
+  // anteponemos al PATH del child para que `npm ci` resuelva sin depender del
+  // PATH del proceso invocante. El test sigue corriendo `npm ci` real.
   const out = execSync('npm ci --no-audit --no-fund', {
     cwd: targetDir,
     stdio: 'pipe',
-    env,
+    env: withNodeBinOnPath(process.env),
   })
     .toString()
     .trim();

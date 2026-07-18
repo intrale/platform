@@ -156,6 +156,66 @@ function guidanceFilePath(targetDir, marker) {
     return path.join(targetDir, marker + '.guidance.txt');
 }
 
+// #4748 — Precondición del freeze. Dos tipos:
+//   - 'human_judgment' (default, fail-closed): requiere juicio humano genuino
+//     (rechazo semántico, decisión de negocio). NUNCA se auto-suelta.
+//   - 'dependency': el freeze depende de que ciertos issues/PRs cierren. Es
+//     objetivamente verificable → el brazo de desbloqueo lo re-evalúa cada
+//     ciclo y lo suelta cuando `depends_on` está todo cerrado.
+const HUMAN_JUDGMENT = { type: 'human_judgment' };
+
+/**
+ * Normaliza/valida un objeto precondition antes de persistirlo o exponerlo.
+ * Cualquier forma inválida colapsa a `human_judgment` (fail-closed, SEC-4).
+ * Para `dependency`, coacciona `depends_on` a enteros positivos únicos; si no
+ * queda ninguno, degrada a `human_judgment` (una precondición de dependencia
+ * sin dependencias no es auto-re-evaluable).
+ */
+function normalizePrecondition(pc) {
+    if (!pc || typeof pc !== 'object') return { ...HUMAN_JUDGMENT };
+    if (pc.type !== 'dependency') return { ...HUMAN_JUDGMENT };
+    const raw = Array.isArray(pc.depends_on) ? pc.depends_on : [];
+    const seen = new Set();
+    const deps = [];
+    for (const v of raw) {
+        const n = Number(v);
+        if (Number.isFinite(n) && n > 0 && !seen.has(n)) {
+            seen.add(n);
+            deps.push(n);
+        }
+    }
+    if (deps.length === 0) return { ...HUMAN_JUDGMENT };
+    return { type: 'dependency', depends_on: deps.sort((a, b) => a - b) };
+}
+
+/**
+ * #4748 — Clasifica la precondición de un freeze a partir de hints
+ * ESTRUCTURALES explícitos, NUNCA por extracción laxa de `#NNNN` del texto
+ * libre del motivo (SEC-1). Fuentes válidas:
+ *   - campo YAML `depende_de` / `precondicion_issues` de cada rechazo.
+ *   - `extraDeps`: issue numbers derivados por el llamador SÓLO de la rama
+ *     `source === 'structured_hint'` de `detectDependencyBlock`.
+ * Ante cualquier duda → juicio humano (fail-closed).
+ *
+ * @param {Array<Object>} rechazados  YAMLs de rechazo (con posibles
+ *   `depende_de` / `precondicion_issues`).
+ * @param {Array<string|number>} [extraDeps]  deps ya validadas por hint estructural.
+ * @returns {{type:'dependency',depends_on:number[]}|{type:'human_judgment'}}
+ */
+function classifyPrecondition(rechazados, extraDeps = []) {
+    const list = Array.isArray(rechazados) ? rechazados : [];
+    const deps = [];
+    for (const r of list) {
+        if (!r || typeof r !== 'object') continue;
+        const raw = r.depende_de != null ? r.depende_de : r.precondicion_issues;
+        const arr = Array.isArray(raw) ? raw : (raw != null ? [raw] : []);
+        for (const v of arr) deps.push(v);
+    }
+    if (Array.isArray(extraDeps)) for (const v of extraDeps) deps.push(v);
+    // normalizePrecondition dedup + ordena + degrada a human_judgment si vacío.
+    return normalizePrecondition({ type: 'dependency', depends_on: deps });
+}
+
 function reportHumanBlock(opts) {
     const issue = Number(opts.issue);
     const skill = String(opts.skill || '').trim();
@@ -192,8 +252,15 @@ function reportHumanBlock(opts) {
         fs.writeFileSync(targetFile, '');
     }
 
+    // #4748 — Congelar la precondición del freeze en el momento del escalado.
+    // El brazo de desbloqueo la lee de acá y JAMÁS re-deriva del body/comments
+    // de GitHub (SEC-2). Default fail-closed: si el llamador no clasificó una
+    // precondición estructurada → juicio humano → nunca auto-re-evaluable (SEC-4).
+    const precondition = normalizePrecondition(opts.precondition);
+
     fs.writeFileSync(reasonFilePath(targetFile), JSON.stringify({
         issue, skill, phase, pipeline, reason, question,
+        precondition,
         blocked_at: new Date().toISOString(),
     }, null, 2));
 
@@ -206,7 +273,7 @@ function reportHumanBlock(opts) {
         enqueueNeedsHumanLabel(issue);
     }
 
-    return { issue, skill, phase, pipeline, marker_path: targetFile };
+    return { issue, skill, phase, pipeline, precondition, marker_path: targetFile };
 }
 
 function listBlockedIssues() {
@@ -228,19 +295,24 @@ function listBlockedIssues() {
                 const skill = f.slice(dot + 1);
                 if (!Number.isFinite(issue)) continue;
                 const file = path.join(dir, f);
-                let reason = '', question = '', blockedAt = null;
+                let reason = '', question = '', blockedAt = null, precondition = null;
                 try {
                     const meta = JSON.parse(fs.readFileSync(reasonFilePath(file), 'utf8'));
                     reason = meta.reason || '';
                     question = meta.question || '';
                     blockedAt = meta.blocked_at || null;
+                    precondition = meta.precondition || null;
                 } catch {}
+                // #4748 — Markers legacy sin `precondition` (backward-compat,
+                // SEC-4) o con forma inválida → default juicio humano → jamás
+                // elegibles para auto-destrabe.
+                precondition = normalizePrecondition(precondition);
                 let mtime;
                 try { mtime = fs.statSync(file).mtimeMs; } catch { mtime = Date.now(); }
                 const ageHours = (Date.now() - mtime) / 3600000;
                 result.push({
                     issue, skill, phase, pipeline,
-                    reason, question,
+                    reason, question, precondition,
                     blocked_at: blockedAt || new Date(mtime).toISOString(),
                     age_hours: Math.round(ageHours * 10) / 10,
                     marker_path: file,
@@ -832,6 +904,8 @@ module.exports = {
     findBlockedMarker,
     isHumanBlockReason,
     inferHumanBlockQuestion,
+    classifyPrecondition,
+    normalizePrecondition,
     buildBlockedSummaryMarkdown,
     buildNeedHumanAudioText,
     sendNeedHumanAudio,

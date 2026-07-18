@@ -151,6 +151,15 @@ test('CA-3: "depende de #N" extrae el número', () => {
     assert.equal(r.matched, true);
     assert.deepEqual(r.dependsOn, [3083]);
     assert.equal(r.assetOnly, false);
+    // #4748 — patrón de texto libre: NO es señal confiable para auto-destrabar
+    // un needs-human (SEC-1).
+    assert.equal(r.source, 'text_pattern');
+});
+
+test('#4748: motivo sin patrón → source null', () => {
+    const r = rc.detectDependencyBlock('NullPointerException en línea 42');
+    assert.equal(r.matched, false);
+    assert.equal(r.source, null);
 });
 
 test('CA-3: "bloqueado por #N" extrae el número', () => {
@@ -201,6 +210,8 @@ test('CA-4: hint estructural detecta dependency_block sin patrones de texto', ()
     );
     assert.equal(r.matched, true);
     assert.deepEqual(r.dependsOn, [2734, 3083]);
+    // #4748 — SÓLO esta rama habilita auto-destrabe de needs-human (SEC-1).
+    assert.equal(r.source, 'structured_hint');
 });
 
 test('CA-4: hint estructural + dependsOn extra del caller', () => {

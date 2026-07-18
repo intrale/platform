@@ -230,6 +230,12 @@ const handoff = require('./lib/handoff');
 // reconcilia el historial leyendo `recibos/` que escribe `svc-telegram` cuando
 // el API confirma la entrega (`ok:true` + `message_id`) o falla terminal.
 const telegramReceipt = require('./lib/telegram-receipt');
+// #4750 — Contabilidad + reconciliación de chunks de audio (part_index/part_total)
+// atados al correlationId padre. Detecta partes faltantes tras el timeout y las
+// reenvía (tope N reintentos + backoff); avisa al usuario si se agotan. Reutiliza
+// la política de reintentos de salientes de #4082 (módulo puro compartido).
+const voiceParts = require('./lib/voice-parts');
+const { resolveOutboundConfig: resolveTelegramOutboundConfig } = require('./lib/telegram-outbound-config');
 // #3414 — Notificación Telegram de entregables del pipeline (human-in-the-loop
 // opcional). Se invoca desde `brazoBarrido` cuando un skill notificable cierra
 // fase OK. Default OFF (rollout gradual via config.yaml → deliverable_notifications.enabled).
@@ -3832,6 +3838,26 @@ function brazoBarrido(config) {
             ).slice(0, 1500);
             const question = humanBlock.inferHumanBlockQuestion(principal.motivo, { skill: skillBloq });
 
+            // #4748 — Congelar la precondición del freeze SÓLO por hint
+            // estructural (SEC-1): campos YAML `depende_de` del agente, y la rama
+            // `source === 'structured_hint'` de detectDependencyBlock (agente
+            // declaró `rebote_categoria: dependency_block`). NUNCA por extracción
+            // laxa de `#NNNN` del texto libre (ramas text_pattern/asset_pattern).
+            // Si el freeze quedó atado a issues verificables → el brazo de
+            // desbloqueo lo re-evalúa y auto-destraba al cerrar; si no → juicio
+            // humano (fail-closed, no se toca nunca por silencio).
+            const hintDeps = [];
+            for (const m of motivosHumanos) {
+              const det = reboteClassifier.detectDependencyBlock(
+                m.motivo || '',
+                Array.isArray(m.depende_de) ? m.depende_de : [],
+              );
+              if (det && det.matched && det.source === 'structured_hint') {
+                for (const n of (det.dependsOn || [])) hintDeps.push(n);
+              }
+            }
+            const precondition = humanBlock.classifyPrecondition(motivosHumanos, hintDeps);
+
             // Dedup: si ya hay marker activo en bloqueado-humano/ no spamear.
             const yaBloqueado = humanBlock.findBlockedMarker(issue);
 
@@ -3864,6 +3890,7 @@ function brazoBarrido(config) {
                   pipeline: pipelineName,
                   reason: motivoTxt,
                   question,
+                  precondition, // #4748 — congelada al escalar (SEC-2)
                   moveFromActive: false,
                 });
               } catch (e) {
@@ -6022,7 +6049,48 @@ function determinarDevSkill(issue, config) {
     if (mapping[label]) return mapping[label];
   }
 
-  return mapping.default || 'backend-dev';
+  const defaultSkill = mapping.default || 'backend-dev';
+  if (isDeclaredStackDevSkill(defaultSkill, config)) {
+    return defaultSkill;
+  }
+
+  return getGenericDevFallbackSkill(config, mapping);
+}
+
+function getDevSkillPartitions(config) {
+  const raw = config && config.dev_skill_partitions;
+  if (!raw || typeof raw !== 'object') {
+    return {
+      backend: ['backend-dev'],
+      frontend: ['android-dev', 'web-dev'],
+      pipeline: ['pipeline-dev'],
+      generic: ['dev'],
+    };
+  }
+
+  const out = {};
+  for (const [partition, skills] of Object.entries(raw)) {
+    out[partition] = Array.isArray(skills)
+      ? skills.filter(skill => typeof skill === 'string' && skill.trim())
+      : [];
+  }
+  return out;
+}
+
+function isDeclaredStackDevSkill(skill, config) {
+  if (!skill || typeof skill !== 'string') return false;
+  const partitions = getDevSkillPartitions(config);
+  return ['backend', 'frontend', 'pipeline'].some(partition =>
+    Array.isArray(partitions[partition]) && partitions[partition].includes(skill)
+  );
+}
+
+function getGenericDevFallbackSkill(config, mapping) {
+  const explicit = mapping && mapping.generic_fallback;
+  if (typeof explicit === 'string' && explicit.trim()) return explicit;
+  const partitions = getDevSkillPartitions(config);
+  const generic = Array.isArray(partitions.generic) ? partitions.generic : [];
+  return generic.find(skill => typeof skill === 'string' && skill.trim()) || 'dev';
 }
 
 // Cache de títulos/bodies para no golpear GitHub por cada ruteo (TTL corto)
@@ -6918,8 +6986,11 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
       const mode = partialPause.getPipelineMode();
       if (mode.mode === 'partial_pause') {
         log('lanzamiento', `#${issue} skipped by partial_pause (allowed: ${mode.allowedIssues.map(i => `#${i}`).join(', ')})`);
-        // #4709 — pausa parcial es un halt humano (allowlist explícita).
-        _dcMark(dispatchCause.CAUSAS.HALT_HUMANO, 'Pausa parcial activa — sólo issues de la allowlist se despachan');
+        // #4751 — el modo de ejecución en olas (allowlist) es un estado ESPERADO
+        // inducido por el operador, NO un halt humano anómalo. Se marca con la
+        // causa propia MODO_OLA (silenciosa: banner sí, Telegram no) para eliminar
+        // el ruido recurrente de "Cola ociosa: Detenido por humano — Pausa parcial".
+        _dcMark(dispatchCause.CAUSAS.MODO_OLA, 'Modo de ejecución en olas — sólo se despachan los issues de la ola activa');
       }
       continue;
     }
@@ -10201,11 +10272,16 @@ function appendCommanderHistory(historyFile, entry) {
 // entrega; la prueba es el `message_id` del API embebido en el recibo.
 function reconcileTelegramReceipts(opts = {}) {
   const pipelineDir = opts.pipelineDir || PIPELINE;
+  let result = { reconciled: 0, quarantined: 0 };
   try {
     const recibosDir = telegramReceipt.receiptsDir(pipelineDir);
     const archivedDir = telegramReceipt.archivedReceiptsDir(pipelineDir);
     const files = telegramReceipt.listReceiptFiles(recibosDir);
-    if (files.length === 0) return { reconciled: 0, quarantined: 0 };
+    if (files.length === 0) {
+      // No hay recibos nuevos, pero el sweep de chunks de audio DEBE correr igual
+      // (las partes viejas pueden vencer su timeout sin un recibo nuevo).
+      result = { reconciled: 0, quarantined: 0 };
+    } else {
     const historyFile = path.join(pipelineDir, 'commander-history.jsonl');
     // #4082 (fix rebote rev-2) — Snapshot del historial para resolver el `chat_id`
     // del `out` original por correlation_id. Se lee UNA vez por tick: el chat_id que
@@ -10224,6 +10300,28 @@ function reconcileTelegramReceipts(opts = {}) {
           fs.renameSync(f.path, dest);
         } catch { /* best-effort */ }
         quarantined++;
+        continue;
+      }
+      // #4750 — recibo de un CHUNK de audio (trae partIndex/partTotal): NO va al
+      // historial conversacional (spamearía una entry `reconcile` por parte).
+      // Marca la parte confirmada en el estado de contabilidad y archiva el recibo.
+      // El sweep (más abajo) cierra la respuesta cuando todas las partes confirman.
+      if (voiceParts.isVoicePartReceipt(receipt)) {
+        if (receipt.status === telegramReceipt.STATUS_ENVIADO) {
+          try {
+            voiceParts.recordPartConfirmation({
+              pipelineDir,
+              correlationId: receipt.correlationId,
+              partIndex: receipt.partIndex,
+            });
+          } catch (e) {
+            log('telegram', `[reconcile] no se pudo confirmar chunk (${receipt.correlationId} p${receipt.partIndex}): ${e.message}`);
+          }
+        }
+        // Un recibo `fallido` de chunk se archiva sin confirmar: el sweep reintenta
+        // por timeout (fail-closed: sólo `enviado` con message_id confirma).
+        telegramReceipt.archiveReceipt(f.path, archivedDir);
+        reconciled++;
         continue;
       }
       // Entry de reconciliación append-only ligada por correlation_id. La lógica
@@ -10250,11 +10348,32 @@ function reconcileTelegramReceipts(opts = {}) {
     if (reconciled > 0 || quarantined > 0) {
       log('telegram', `[reconcile] recibos: ${reconciled} reconciliados, ${quarantined} en cuarentena (inválidos)`);
     }
-    return { reconciled, quarantined };
+    result = { reconciled, quarantined };
+    }
   } catch (e) {
     log('telegram', `[reconcile] error (best-effort): ${e.message}`);
-    return { reconciled: 0, quarantined: 0 };
   }
+  // #4750 — Sweep de contabilidad de chunks de audio: SIEMPRE (aun sin recibos
+  // nuevos). Detecta partes que no confirmaron dentro del timeout y las reenvía
+  // (tope N reintentos + backoff, misma política que texto — #4082); si se agotan
+  // los reintentos avisa al usuario en el chat del padre (nunca hueco silencioso).
+  try {
+    const outboundCfg = resolveTelegramOutboundConfig(loadConfig());
+    voiceParts.sweepVoiceStates({
+      pipelineDir,
+      now: Date.now(),
+      config: outboundCfg,
+      enqueue: ({ correlationId, partIndex, partTotal, path: audioPath }) =>
+        enqueueTelegramVoice(audioPath, { correlationId, partIndex, partTotal }),
+      // SEC-R5: el aviso va al chat del bot atado a la respuesta padre
+      // (sendTelegramPlain apunta al chatId configurado, no a uno derivado del chunk).
+      notify: (text) => { try { sendTelegramPlain(text); } catch { /* best-effort */ } },
+      logFn: (m) => log('telegram', `[voice-sweep] ${m}`),
+    });
+  } catch (e) {
+    log('telegram', `[voice-sweep] error (best-effort): ${e.message}`);
+  }
+  return result;
 }
 
 // =============================================================================
@@ -10783,6 +10902,10 @@ async function cmdStatus(config) {
       // en /status. El `if (meta && meta.buffer)` no tenía `else`: si fallaba, el
       // audio moría en silencio. Acumulamos y avisamos una sola vez tras el loop.
       let statusTtsDegraded = false;
+      // #4750 — generamos los buffers y los encolamos por la cola con recibo por
+      // chunk (misma Opción A que el chat operador): el sweep detecta/reenvía las
+      // partes que no confirmen y avisa si se agotan los reintentos.
+      const statusVoiceBuffers = [];
       for (let i = 0; i < statusChunks.length; i++) {
         let chunkText = statusChunks.length > 1
           ? `Parte ${i + 1} de ${statusChunks.length}. ${statusChunks[i]}`
@@ -10790,24 +10913,24 @@ async function cmdStatus(config) {
         const ttsOpts = { chunkInfo: { index: i, total: statusChunks.length } };
         const meta = await textToSpeechWithMeta(chunkText, ttsOpts);
         if (!meta || !meta.buffer) { statusTtsDegraded = true; continue; }
-        if (meta && meta.buffer) {
-          const intro = i === 0 ? getTransitionIntro(meta.provider, prevProviderStatus) : null;
-          if (intro) {
-            // Reenviar el primer chunk con el preámbulo de transición
-            const reMeta = await textToSpeechWithMeta(`${intro} ${chunkText}`, ttsOpts);
-            if (reMeta && reMeta.buffer) {
-              await sendVoiceTelegram(reMeta.buffer, botToken, chatId);
-              log('commander', `[status] Audio TTS parte 1/${statusChunks.length} enviado con intro (provider=${reMeta.provider})`);
-              saveTtsState({ lastProvider: reMeta.provider });
-              prevProviderStatus = reMeta.provider;
-              continue;
-            }
+        const intro = statusVoiceBuffers.length === 0 ? getTransitionIntro(meta.provider, prevProviderStatus) : null;
+        let finalBuffer = meta.buffer;
+        let finalProvider = meta.provider;
+        if (intro) {
+          // Reenviar el primer chunk con el preámbulo de transición
+          const reMeta = await textToSpeechWithMeta(`${intro} ${chunkText}`, ttsOpts);
+          if (reMeta && reMeta.buffer) {
+            finalBuffer = reMeta.buffer;
+            finalProvider = reMeta.provider;
           }
-          await sendVoiceTelegram(meta.buffer, botToken, chatId);
-          log('commander', `[status] Audio TTS parte ${i + 1}/${statusChunks.length} enviado (provider=${meta.provider})`);
-          saveTtsState({ lastProvider: meta.provider });
-          prevProviderStatus = meta.provider;
         }
+        statusVoiceBuffers.push({ buffer: finalBuffer });
+        saveTtsState({ lastProvider: finalProvider });
+        prevProviderStatus = finalProvider;
+      }
+      if (statusVoiceBuffers.length > 0) {
+        const { correlationId: statusCid, enqueued } = dispatchVoiceParts(statusVoiceBuffers, chatId, path.join(LOG_DIR, 'media'));
+        if (enqueued > 0) log('commander', `[status] ${enqueued} parte(s) de audio encoladas con recibo por chunk (cid=${statusCid})`);
       }
       // EP1-H4 (#3919, CA-2): aviso consolidado al chat de deliverables si el TTS
       // del /status quedó degradado. Dedup por (chatId, 'tts') + literal plano
@@ -14863,6 +14986,12 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
             // respuesta sale solo por texto. Acumulamos el fallo y avisamos UNA
             // sola vez tras el loop (aviso consolidado), nunca por chunk.
             let ttsDegraded = false;
+            // #4750 — generamos TODOS los buffers y luego los encolamos por la cola
+            // con recibo por chunk (Opción A). Antes cada parte salía fire-and-forget
+            // (`sendVoiceTelegram`), sin confirmación de entrega → una parte perdida
+            // pasaba silenciosa (#4748). Ahora el sweep de reconciliación detecta y
+            // reenvía faltantes, y avisa al usuario si se agotan los reintentos.
+            const voiceBuffers = [];
             for (let i = 0; i < chatChunks.length; i++) {
               const baseChunk = chatChunks.length > 1
                 ? `Parte ${i + 1} de ${chatChunks.length}. ${chatChunks[i]}`
@@ -14872,7 +15001,7 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
               const meta = await textToSpeechWithMeta(baseChunk, ttsOpts);
               if (!meta || !meta.buffer) { ttsDegraded = true; continue; }
 
-              const intro = i === 0 ? getTransitionIntro(meta.provider, prevProvider) : null;
+              const intro = voiceBuffers.length === 0 ? getTransitionIntro(meta.provider, prevProvider) : null;
               let finalBuffer = meta.buffer;
               let finalProvider = meta.provider;
               if (intro) {
@@ -14883,12 +15012,14 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
                 }
               }
 
-              const audioPath = path.join(LOG_DIR, 'media', `tts-${Date.now()}-${i}.ogg`);
-              fs.writeFileSync(audioPath, finalBuffer);
-              enviado = await sendVoiceTelegram(finalBuffer, botToken, chatId);
-              if (enviado) log('telegram', `Audio TTS parte ${i + 1}/${chatChunks.length} enviado (${finalBuffer.length} bytes, provider=${finalProvider}${intro ? ', con intro' : ''})`);
+              voiceBuffers.push({ buffer: finalBuffer });
               saveTtsState({ lastProvider: finalProvider });
               prevProvider = finalProvider;
+            }
+            if (voiceBuffers.length > 0) {
+              const { correlationId: voiceCid, enqueued } = dispatchVoiceParts(voiceBuffers, chatId, path.join(LOG_DIR, 'media'));
+              enviado = enqueued > 0;
+              if (enviado) log('telegram', `[chat] ${enqueued} parte(s) de audio encoladas con recibo por chunk (cid=${voiceCid})`);
             }
             // EP1-H4 (#3919, CA-2): aviso consolidado de degradación TTS. Solo si
             // se esperaba voz (esAudio) y hubo al menos un chunk fallido. Pasa por
@@ -15079,6 +15210,99 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
   }
 }
 
+// #4750 — Encola un CHUNK de audio en la cola de `svc-telegram` (rama multipart
+// `voice`) para que herede `assertDelivered` (fail-closed: `ok:true` +
+// `message_id`) + `writeSentReceiptIfAny` con la dimensión de chunk. Cada chunk
+// es un dropfile independiente con `_partIndex` explícito → la contabilidad no
+// depende del orden de consolidación de bursts (mitigación de reordering).
+//
+// El `meta` con `type:'voice'` + `pid=correlationId` + `issue=partIndex` da una
+// clave de agrupamiento ÚNICA por parte en el burst-grouper, para que dos chunks
+// del mismo turno NUNCA se consoliden en un mensaje de texto (perdería el audio).
+//
+// NO borra el `.ogg`: el sweep de reconciliación lo necesita para el reenvío.
+// Devuelve el `correlationId` padre, o `null` si la validación falla.
+function enqueueTelegramVoice(audioPath, opts = {}) {
+  const { correlationId, partIndex, partTotal } = opts;
+  if (!telegramReceipt.isValidCorrelationId(correlationId)) {
+    log('telegram', `enqueueTelegramVoice: correlationId inválido, no se encola`);
+    return null;
+  }
+  if (!telegramReceipt.isValidPartDims(partIndex, partTotal)) {
+    log('telegram', `enqueueTelegramVoice: partIndex/partTotal inválido (${JSON.stringify({ partIndex, partTotal })})`);
+    return null;
+  }
+  if (typeof audioPath !== 'string' || !fs.existsSync(audioPath)) {
+    log('telegram', `enqueueTelegramVoice: audio no existe (${audioPath})`);
+    return null;
+  }
+  const pi = telegramReceipt.coercePartInt(partIndex);
+  const pt = telegramReceipt.coercePartInt(partTotal);
+  const svcDir = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
+  const filename = `${Date.now()}-voice-p${pi}.json`;
+  try {
+    const payload = {
+      voice: audioPath,
+      _correlationId: correlationId,
+      _partIndex: pi,
+      _partTotal: pt,
+      // clave de burst única por parte → nunca se consolida como texto.
+      meta: { type: 'voice', pid: correlationId, issue: pi },
+    };
+    fs.writeFileSync(path.join(svcDir, filename), JSON.stringify(payload));
+    return correlationId;
+  } catch (e) {
+    log('telegram', `enqueueTelegramVoice: error encolando parte ${pi}: ${e.message}`);
+    return null;
+  }
+}
+
+// #4750 — Genera las partes de audio de una respuesta y las encola por la cola
+// con recibo por chunk (Opción A). Recibe los buffers ya sintetizados (para no
+// acoplar TTS acá) como `[{ buffer, spokenLabel? }]` y devuelve el correlationId
+// padre + cuántas partes se encolaron. El estado de contabilidad se persiste
+// para que el sweep de reconciliación detecte/reenvíe faltantes.
+function dispatchVoiceParts(buffers, chatId, mediaDir) {
+  if (!Array.isArray(buffers) || buffers.length === 0) return { correlationId: null, enqueued: 0 };
+  const correlationId = telegramReceipt.generateCorrelationId('voice');
+  const partTotal = buffers.length;
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  try { fs.mkdirSync(mediaDir, { recursive: true }); } catch { /* best-effort */ }
+  const stateParts = [];
+  let enqueued = 0;
+  for (let idx = 0; idx < buffers.length; idx++) {
+    const audioPath = path.join(mediaDir, `tts-${nowMs}-${correlationId}-${idx}.ogg`);
+    try {
+      fs.writeFileSync(audioPath, buffers[idx].buffer);
+    } catch (e) {
+      log('telegram', `[voice] no se pudo persistir parte ${idx + 1}/${partTotal}: ${e.message}`);
+      continue;
+    }
+    const enq = enqueueTelegramVoice(audioPath, { correlationId, partIndex: idx, partTotal });
+    if (enq) {
+      stateParts.push({ partIndex: idx, path: audioPath, enqueuedAt: nowIso });
+      enqueued++;
+      log('telegram', `Audio TTS parte ${idx + 1}/${partTotal} encolada (recibo por chunk, cid=${correlationId})`);
+    }
+  }
+  if (enqueued > 0) {
+    try {
+      voiceParts.initState({
+        pipelineDir: PIPELINE,
+        correlationId,
+        partTotal,
+        chatId,
+        parts: stateParts,
+        now: nowMs,
+      });
+    } catch (e) {
+      log('telegram', `[voice] no se pudo inicializar estado de contabilidad (cid=${correlationId}): ${e.message}`);
+    }
+  }
+  return { correlationId, enqueued };
+}
+
 // #3484 CA-UX-1 — sendChatActionTyping: refresca el indicador "escribiendo..."
 // de Telegram durante operaciones largas (Sherlock + Claude). El indicador
 // nativo dura ~5s, por eso el caller debe llamar esto cada 4s en loop.
@@ -15254,6 +15478,47 @@ function findLastRejection(pipelineName, issueNum, config) {
         } catch { /* dir no existe */ }
     }
     return best;
+}
+
+// #4687 (Ola Puente P2) — Descubrimiento side-effect-free del tablero (dry-run).
+//
+// Paso 4 del bootstrap de un producto nuevo (project-bootstrap.js): confirmar el
+// cableado LISTANDO el trabajo que el intake consideraría, SIN ejecutar nada.
+// Requisito de seguridad #10: verdaderamente side-effect-free — NO encola, NO
+// spawnea agentes, NO muta estado ni cuota, NO crea worktrees. Sólo lee (gh issue
+// list, read-only). NUNCA se invoca desde el loop vivo del Pulpo: es una
+// superficie de descubrimiento on-demand.
+//
+// Reusa la fuente-de-verdad única del repo destino (repo-target, #4693) y su
+// allowlist fail-closed. El exec de `gh` es inyectable para tests (sin red).
+function discoverWorkDryRun(config, opts = {}) {
+  const execFn = typeof opts.exec === 'function'
+    ? opts.exec
+    : (cmd) => _ghExecSyncGuarded(cmd, { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true });
+  const reposFn = typeof opts.getIntakeRepos === 'function' ? opts.getIntakeRepos : () => repoTarget.getIntakeRepos();
+  const isAllowed = typeof opts.isRepoAllowed === 'function' ? opts.isRepoAllowed : (r) => repoTarget.isRepoAllowed(r);
+  const intakeConfig = (config && config.intake) || {};
+  const discovered = [];
+  const skippedRepos = [];
+  for (const [pipelineName, pipeIntake] of Object.entries(intakeConfig)) {
+    const label = pipeIntake && pipeIntake.label;
+    if (!label) continue;
+    for (const repo of reposFn()) {
+      // Fail-closed: repo no allowlisted / malformado ⇒ skip (cero consultas).
+      if (!isAllowed(repo)) { skippedRepos.push(repo); continue; }
+      let issues = [];
+      try {
+        const out = execFn(`"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title --limit 50 --search "-label:needs-human"`);
+        issues = JSON.parse(out || '[]');
+      } catch (e) {
+        issues = [];
+      }
+      for (const it of issues) {
+        discovered.push({ pipeline: pipelineName, label, repo, number: it.number, title: it.title });
+      }
+    }
+  }
+  return { sideEffects: false, discovered, skippedRepos };
 }
 
 function brazoIntake(config) {
@@ -15498,6 +15763,105 @@ function realignAllowlistToActiveWave(desync, opts = {}) {
 }
 
 // =============================================================================
+// #4753 — Auto-resolución del desync REDUCTIVO por CIERRE (issues cerrados
+// residuales en waves.json) SIN GATE 3 ni suspensión del dispatch.
+//
+// El caso: issues ya cerrados/done quedaron listados en waves.json pero ya
+// salieron de la allowlist. Es basura de bookkeeping: no falta trabajo, no hay
+// decisión de negocio. Antes esto caía en `realign-allowlist` (GATE 3
+// wait-confirmation) → sin confirmerChatId → abort → human-block + loop de ~5min.
+//
+// FRONTERA DE SEGURIDAD (SEC-1/SEC-2): esta función SOLO se invoca cuando el
+// caller (evaluateDesyncAndMaybeRealign) ya verificó que TODO issue de la
+// divergencia (added ∪ removed) cumple `isClosed(n) === true`. La decisión de
+// ruteo a `desync-autoresolve` (notify-and-proceed) la toma la CLASIFICACIÓN
+// confirmada por cierre, ANTES de la política de acción. Un issue abierto/
+// indeterminado NUNCA llega acá: cae al camino human-block.
+//
+// SEC-3 (log-antes-de-mutar): audita `desync-autoresolve` ANTES de podar.
+// La poda real (marcar cerrados `completed` en waves.json + realinear allowlist)
+// pasa por `wave-dispatch.realignActiveWaveDispatch` (gate atómico de waves).
+// =============================================================================
+function autoResolveReductiveDesyncByClosure(probe, opts = {}) {
+  const isClosed = typeof opts.isClosed === 'function' ? opts.isClosed : null;
+  const divergent = Array.isArray(opts.divergent) ? opts.divergent : [];
+  // Contexto para el copy UX del operador + hash de dedupe (estado por issue).
+  const issuesCtx = divergent.map((n) => ({ number: n, estado: 'cerrado' }));
+
+  // SEC-3 — log-antes-de-mutar: si el proceso muere a mitad de la poda, la traza
+  // ya existe. Best-effort: el audit nunca bloquea la auto-resolución.
+  try {
+    require('./lib/kernel-actions-audit').safeAppendAction({
+      action: 'desync-autoresolve', impact: 'medio',
+      reason: `auto-resolución desync reductivo por cierre: cerrados residuales ${JSON.stringify(divergent)}`,
+      authorizedBy: 'desync-detector',
+    });
+  } catch { /* best-effort */ }
+
+  // Política: `desync-autoresolve` = notify-and-proceed (no GATE 3). Emite el
+  // aviso informativo ♻️ (con dedupe conservador: no re-emite mientras el motivo
+  // no cambie). El ruteo por clasificación ya se decidió ANTES (SEC-2).
+  let policy = { proceed: true };
+  try {
+    policy = require('./lib/kernel-action-policy').enforceActionPolicy('desync-autoresolve', {
+      impact: 'medio',
+      reason: `Saqué ${divergent.length} issue(s) ya cerrados que sobraban en la ola`,
+      classification: 'reductivo-por-cierre',
+      issues: issuesCtx,
+    });
+  } catch { /* best-effort: fail-open hacia disponibilidad para esta acción segura */ }
+  if (policy && policy.proceed === false) {
+    return { ok: false, reason: 'policy_block' };
+  }
+
+  // Poda convergente: marca `completed` los cerrados en waves.json y realinea la
+  // allowlist. NO pasa por el gate `realign-allowlist` (ya autorizado por
+  // `desync-autoresolve`); delega directo en el módulo de dispatch (que también
+  // poda waves.json cuando hay issues abiertos que repoblar).
+  const r = require('./lib/wave-dispatch').realignActiveWaveDispatch({
+    isClosed,
+    desync: probe,
+    authorizedBy: 'wave-promote',
+    source: 'wave-promote:autoresolve-reductive',
+  });
+  if (r && r.ok) return r;
+
+  // Caso borde: la ola quedó SIN issues abiertos (todos cerrados) →
+  // `realignActiveWaveDispatch` corta en `empty_expansion` ANTES de podar (fail-
+  // safe para no vaciar una allowlist viva por un realign). Pero acá la poda ES
+  // la convergencia correcta: marcamos los cerrados `completed` en waves.json y
+  // dejamos la allowlist vacía (una allowlist vacía == running, NO frena — ver
+  // feedback_partial-pause-empty-not-block). Sin esto, el desync reincidiría.
+  if (r && r.reason === 'empty_expansion') {
+    const waves = require('./lib/waves');
+    const closed = divergent.filter((n) => { try { return isClosed(n) === true; } catch { return false; } });
+    let pruned = [];
+    try {
+      const mark = waves.markIssuesCompletedInActiveWave(closed, {
+        updated_by: 'wave-promote',
+        source: 'wave-promote:autoresolve-reductive:prune-closed',
+        note: `poda convergente #4753 (ola sin abiertos): completed ${closed.map((n) => `#${n}`).join(',')}`,
+      });
+      pruned = (mark && Array.isArray(mark.completed)) ? mark.completed : [];
+    } catch (e) {
+      return { ok: false, reason: 'prune_failed', error: e.message };
+    }
+    // Limpiar la allowlist de los extras cerrados: queda vacía (== running).
+    try {
+      partialPause.setPartialPause([], {
+        source: 'wave-promote:autoresolve-reductive',
+        authorizedBy: 'wave-promote',
+        justification: 'ola sin issues abiertos tras poda de cerrados (#4753): allowlist vacía == running',
+      });
+    } catch { /* best-effort: la poda de waves.json ya convergió el probe */ }
+    const active = (() => { try { return waves.getActiveWave(); } catch { return null; } })();
+    return { ok: true, allowlist: [], activeWave: active && active.number, prunedFromWave: pruned };
+  }
+
+  return r;
+}
+
+// =============================================================================
 // #4439 CA-3 — Resync ADITIVO hacia la ola activa (dirección INVERSA a
 // realignAllowlistToActiveWave).
 //
@@ -15552,9 +15916,15 @@ function resyncActiveWaveFromLegitAllowlist(issues) {
  *   - sin desync            → no-op.
  * Best-effort: nunca lanza (envuelto por el caller). Usado al boot y periódico.
  */
-function evaluateDesyncAndMaybeRealign(context) {
+function evaluateDesyncAndMaybeRealign(context, opts = {}) {
+  // #4753 — seam de test: permitir inyectar `isClosed` (predicado de cierre).
+  // Producción (`'boot'`/`'periodic'`) no pasa opts → usa el title-cache local.
   let isClosed = null;
-  try { isClosed = makeIsClosedFromTitleCache(); } catch { isClosed = null; }
+  if (typeof opts.isClosed === 'function') {
+    isClosed = opts.isClosed;
+  } else {
+    try { isClosed = makeIsClosedFromTitleCache(); } catch { isClosed = null; }
+  }
 
   // Probe SIN efectos: clasificamos antes de decidir crear flag/alerta.
   let probe;
@@ -15581,34 +15951,48 @@ function evaluateDesyncAndMaybeRealign(context) {
   }
 
   if (probe.classification === 'resoluble_reductivo') {
-    try {
-      const r = realignAllowlistToActiveWave(probe, { isClosed });
-      if (r && r.ok) {
-        desyncDetector.clearDesyncFlag();
+    // #4753 — Auto-resolución del desync REDUCTIVO por CIERRE. Sólo si TODO issue
+    // de la divergencia (added ∪ removed) está CONFIRMADO cerrado
+    // (`isClosed(n) === true`). Cualquier abierto/indeterminado (`false`/
+    // `undefined`/cache miss/notFound/stale) ⇒ NO auto-resolver: cae al camino
+    // ambiguo/human-block de más abajo (fail-closed, SEC-1/SEC-2 — la frontera se
+    // enforcea ANTES de la política de acción, no por omisión).
+    const divergent = Array.from(new Set([
+      ...(Array.isArray(probe.added) ? probe.added : []),
+      ...(Array.isArray(probe.removed) ? probe.removed : []),
+    ])).filter((n) => Number.isInteger(n) && n > 0);
+    const allClosed = typeof isClosed === 'function'
+      && divergent.length > 0
+      && divergent.every((n) => isClosed(n) === true);
+
+    if (allClosed) {
+      try {
+        const r = autoResolveReductiveDesyncByClosure(probe, { isClosed, divergent });
+        if (r && r.ok) {
+          desyncDetector.clearDesyncFlag();
+          checkDesyncFlag();
+          log('pulpo', `desync-detector: auto-resolución REDUCTIVA por cierre OK (#4753) — ` +
+            `cerrados_podados=${JSON.stringify(r.prunedFromWave || [])} ` +
+            `divergencia=${JSON.stringify(divergent)} allowlist=${JSON.stringify(r.allowlist)}`);
+          return;
+        }
+        // No aplicada (política/empty) → escalar a human-block real.
+        log('pulpo', `WARN desync-detector: auto-resolución reductiva no aplicada (${r && r.reason}). Escalando a human-block.`);
+        try { desyncDetector.detectDesync({ isClosed: isClosed || undefined }); } catch {}
         checkDesyncFlag();
-        log('pulpo', `desync-detector: realineación REDUCTIVA a ola activa OK — ` +
-          `allowlist=${JSON.stringify(r.allowlist)} extras_removidos=${JSON.stringify(probe.added)} ` +
-          `faltantes_repuestos=${JSON.stringify(probe.removed)}`);
-        try {
-          sendTelegramPlain(
-            `♻️ Allowlist realineada automáticamente a la ola activa (#4350).\n` +
-            `Removidos (cerrados/ajenos): ${(probe.added || []).map(n => `#${n}`).join(', ') || '—'}\n` +
-            `Repuestos de la ola: ${(probe.removed || []).map(n => `#${n}`).join(', ') || '—'}\n` +
-            `Nueva allowlist: ${r.allowlist.map(n => `#${n}`).join(', ')}`
-          );
-        } catch { /* best-effort */ }
+        return;
+      } catch (e) {
+        log('pulpo', `WARN desync-detector: auto-resolución reductiva falló: ${e.message}. Escalando a human-block.`);
+        try { desyncDetector.detectDesync({ isClosed: isClosed || undefined }); } catch {}
+        checkDesyncFlag();
         return;
       }
-      // Realineo no aplicado (gate/empty) → escalar a human-block real.
-      log('pulpo', `WARN desync-detector: realineación reductiva no aplicada (${r && r.reason}). Escalando a human-block.`);
-      try { desyncDetector.detectDesync({ isClosed: isClosed || undefined }); } catch {}
-      checkDesyncFlag();
-    } catch (e) {
-      log('pulpo', `WARN desync-detector: realineación falló: ${e.message}. Escalando a human-block.`);
-      try { desyncDetector.detectDesync({ isClosed: isClosed || undefined }); } catch {}
-      checkDesyncFlag();
     }
-    return;
+    // resoluble_reductivo pero NO todo cerrado-confirmado (p. ej. un issue ABIERTO
+    // de la ola falta en la allowlist): NO auto-resolver. Cae al manejo ambiguo/
+    // human-block de más abajo (sin return acá — fail-closed).
+    log('pulpo', `desync-detector: divergencia reductiva NO puramente por cierre ` +
+      `(divergencia=${JSON.stringify(divergent)}). No se auto-resuelve; sigue evaluación conservadora.`);
   }
 
   // #4439 CA-3 — Auto-resync ADITIVO del ambiguo LEGÍTIMO, ANTES del human-block.
@@ -16397,6 +16781,119 @@ async function brazoTransicionOla(config) {
   }
 }
 
+/**
+ * #4748 — Reaper de `needs-human` con precondición de dependencia resuelta.
+ *
+ * SEGUNDA fuente de markers para el MISMO motor de destrabe: recorre los
+ * markers de `bloqueado-humano/` cuyo `precondition.type` es `dependency`,
+ * verifica el estado REAL de cada dependencia en GitHub y, si TODAS cerraron,
+ * saca el `needs-human` y re-encola el issue — dejando traza. Los `needs-human`
+ * de juicio humano (default, fail-closed) jamás se tocan.
+ *
+ * Fail-closed en todos los bordes (SEC-3): dependencia con estado desconocido,
+ * error de `gh`, timeout o respuesta vacía → NO libera. La decisión final la
+ * toma el motor puro `selectHumanBlocksToRelease` (reutiliza `allDepsClosed`).
+ *
+ * Corre dentro del guard/throttle del brazo (mismo tick, sin abrir una segunda
+ * pasada) reutilizando `ghDesbloqueoCall`.
+ */
+async function reapStaleHumanBlocks({ allowlistSet } = {}) {
+  let markers;
+  try {
+    markers = humanBlock.listBlockedIssues().filter(b =>
+      b.precondition
+      && b.precondition.type === 'dependency'
+      && Array.isArray(b.precondition.depends_on)
+      && b.precondition.depends_on.length > 0
+    );
+  } catch (e) {
+    log('desbloqueo', `[human-block] error listando bloqueados: ${e.message}`);
+    return;
+  }
+
+  // Respetar pausa parcial: sólo re-evaluar los que están en el allowlist.
+  if (allowlistSet) markers = markers.filter(m => allowlistSet.has(String(m.issue)));
+  if (markers.length === 0) return;
+
+  // Recolectar el set de dependencias únicas (minimiza llamadas a gh). SEC-6:
+  // coercionar a entero positivo antes de usar como argumento de `gh`.
+  const depSet = new Set();
+  for (const m of markers) {
+    for (const d of m.precondition.depends_on) {
+      const n = Number(d);
+      if (Number.isFinite(n) && n > 0) depSet.add(n);
+    }
+  }
+
+  // Consultar el estado observado de cada dependencia. Fail-closed: cualquier
+  // dep sin estado conocido queda fuera de `issueStates` → no libera.
+  const issueStates = {};
+  for (const dep of depSet) {
+    ghThrottle();
+    try {
+      const { stdout: depState } = await ghDesbloqueoCall(
+        ['issue', 'view', String(dep), '--json', 'state', '--jq', '.state', '--repo', 'intrale/platform'],
+        10000
+      );
+      const st = String(depState || '').trim();
+      if (st) issueStates[String(dep)] = st; // 'OPEN' | 'CLOSED'
+    } catch (e) {
+      log('desbloqueo', `[human-block] no se pudo leer estado de #${dep}: ${e.message} — fail-closed`);
+    }
+  }
+
+  const { toRelease } = brazoDesbloqueoCore.selectHumanBlocksToRelease({ markers, issueStates });
+
+  for (const m of toRelease) {
+    const deps = m.precondition.depends_on;
+    const depStates = deps.map(n => `#${n}=${issueStates[String(n)] || 'desconocido'}`).join(', ');
+    const guidance = `Auto-destrabe (#4748): precondición resuelta. Dependencia(s) ${deps.map(n => '#' + n).join(', ')} cerrada(s). El pipeline re-encola este issue para continuar su ciclo.`;
+
+    let res;
+    try {
+      res = humanBlock.unblockIssue({
+        issue: m.issue,
+        unlocker: 'brazo-desbloqueo:precondicion',
+        guidance,
+      });
+    } catch (e) {
+      log('desbloqueo', `[human-block] error unblock #${m.issue}: ${e.message}`);
+      continue;
+    }
+    if (!res || !res.ok) {
+      // Idempotente: marker ausente (destrabado por /unblock manual entre el
+      // listado y ahora) → no-op benigno.
+      log('desbloqueo', `[human-block] unblock #${m.issue} no-op: ${res && res.error}`);
+      continue;
+    }
+
+    // Quitar el label needs-human en GitHub + comentario de traza vía la cola.
+    try {
+      const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+      fs.mkdirSync(ghQueueDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(ghQueueDir, `${m.issue}-remove-needs-human-${Date.now()}.json`),
+        JSON.stringify({ action: 'remove-label', issue: Number(m.issue), label: humanBlock.NEEDS_HUMAN_LABEL }),
+      );
+      fs.writeFileSync(
+        path.join(ghQueueDir, `${m.issue}-auto-unblock-comment-${Date.now()}.json`),
+        JSON.stringify({
+          action: 'comment',
+          issue: Number(m.issue),
+          body: `## 🔓 Auto-destrabado por el pipeline\n\nEste issue estaba en \`needs-human\` porque su precondición dependía de ${deps.map(n => '#' + n).join(', ')}. Esa(s) dependencia(s) ya cerró(aron) (${depStates}), así que el motivo del freeze dejó de ser cierto.\n\nEl pipeline lo sacó de \`needs-human\` y lo re-encoló automáticamente para continuar su ciclo — sin intervención humana.\n\n_Destrabado por el brazo de desbloqueo (#4748). El fail-closed sigue vigente para los bloqueos de juicio humano._`,
+        }),
+      );
+    } catch (e) {
+      log('desbloqueo', `[human-block] error encolando acciones GitHub #${m.issue}: ${e.message}`);
+    }
+
+    log('desbloqueo', `🔓 #${m.issue} auto-destrabado de needs-human — precondición resuelta (${depStates}) → re-encolado a ${res.pipeline}/${res.to_phase}`);
+    try {
+      sendTelegram(`🔓 Issue #${m.issue} auto-destrabado — precondición resuelta (deps: ${deps.map(n => '#' + n).join(', ')}). Vuelve a la cola del pipeline.`);
+    } catch {}
+  }
+}
+
 async function brazoDesbloqueoImpl(config) {
   // #2506: respetar pausa parcial — los bloqueados fuera del allowlist no se van
   // a ejecutar aunque se desbloqueen ahora, así que no tiene sentido gastar el
@@ -16406,6 +16903,12 @@ async function brazoDesbloqueoImpl(config) {
   const allowlistSet = pipelineMode.mode === 'partial_pause'
     ? new Set(pipelineMode.allowedIssues.map(String))
     : null;
+
+  // #4748 — Re-evaluar los `needs-human` de precondición ANTES del barrido de
+  // blocked:dependencies, para no depender de su early-return (cuando no hay
+  // ningún blocked:dependencies el barrido retorna, pero los needs-human de
+  // precondición igual deben re-evaluarse cada ciclo).
+  await reapStaleHumanBlocks({ allowlistSet });
 
   try {
     // 1. Buscar issues abiertos con label blocked:dependencies
@@ -17829,6 +18332,8 @@ process.on('SIGTERM', () => {
 // Útil para tests unitarios y scripts de evidencia del gate predictivo.
 if (process.env.PULPO_NO_AUTOSTART === '1') {
   module.exports = {
+    // #4687 (Ola Puente P2) — descubrimiento side-effect-free del tablero (dry-run).
+    discoverWorkDryRun,
     // #4136 — brazo de archivado (frontera activo/histórico).
     brazoArchivado,
     makeIsClosedFromTitleCache,
@@ -17893,6 +18398,18 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // #3956 — gate de evidencia QA: expuesto para test de integración del bypass
     // `qa:skipped` (la fuente de labels debe ser GitHub, nunca el YAML del agente).
     validateQaEvidence,
+    determinarDevSkill,
+    getDevSkillPartitions,
+    isDeclaredStackDevSkill,
+    getGenericDevFallbackSkill,
+    _setIssueInfoForTest: (issue, info) => {
+      issueLabelsCache.set(issue, { labels: info.labels || [], state: info.state || 'OPEN', fetchedAt: Date.now() });
+      if (typeof info.text === 'string') issueTextCache.set(issue, { text: info.text.toLowerCase(), fetchedAt: Date.now() });
+    },
+    _clearIssueRoutingCachesForTest: () => {
+      issueLabelsCache.clear();
+      issueTextCache.clear();
+    },
     // #4046 — preflight de APK por flavor real + resolución de changed-files.
     preflightQaChecks,
     getChangedFilesForIssue,
@@ -17963,6 +18480,8 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     evaluateDesyncAndMaybeRealign,
     resyncActiveWaveFromLegitAllowlist,
     realignAllowlistToActiveWave,
+    // #4753 — auto-resolución del desync reductivo por cierre (expuesto para tests).
+    autoResolveReductiveDesyncByClosure,
     checkDesyncFlag,
     _getDesyncBlocked: () => desyncBlocked,
   };

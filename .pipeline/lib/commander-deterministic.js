@@ -2416,10 +2416,16 @@ async function handleWaveStatus({ pipelineRoot, audio }) {
         if (Number.isInteger(waveKey) && waveKey > 0 && Number.isFinite(snapshot.totalPct)) {
             waveProgress.appendSnapshot({ pipelineRoot, waveKey, avancePct: snapshot.totalPct, now });
             const vel = await etaWave.calculateWaveVelocityETA(waveKey, snapshot.totalPct, now);
-            if (vel && vel.source === 'velocity' && Number.isFinite(vel.absoluteMs)) {
+            // #4734 — CA-1: el handler `/wave` DELEGA en el módulo único y unifica el
+            // mapeo de `etaSource` con el dashboard: acepta tanto el ritmo MEDIDO
+            // ('velocity') como la estimación HISTÓRICA cross-ola ('historical'). Antes
+            // aceptaba SOLO 'velocity' (divergencia real con el dashboard). El
+            // `absoluteMs` ya viene proyectado a reloj de pared (reposo de proveedor).
+            if (vel && (vel.source === 'velocity' || vel.source === 'historical')
+                && Number.isFinite(vel.absoluteMs)) {
                 snapshot.etaAbsoluteMs = vel.absoluteMs;
                 snapshot.etaAvailable = true;
-                etaSource = 'velocity';
+                etaSource = vel.source;
             }
         }
     } catch (_) { /* ante cualquier error, queda el ETA fallback ya calculado */ }

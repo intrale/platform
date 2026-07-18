@@ -77,30 +77,14 @@ const RECIBOS = telegramReceipt.receiptsDir(PIPELINE);
 // back-compat con tests existentes.
 const MAX_SEND_RETRIES = 5;
 
-// #4082 — Config de reintentos de SALIENTES (cola lógica), NO confundir con los
-// reintentos de RED de una sola request del http-client. Defaults seguros +
-// clamping defensivo: config inválida/ausente nunca rompe el servicio.
-const OUTBOUND_DEFAULTS = {
-  max_retries: MAX_SEND_RETRIES,
-  backoff_base_ms: 5000,
-  backoff_max_ms: 300000,
-  stale_ttl_ms: 86400000,
-  sweep_stagger_ms: 3000,
-};
+// #4082 / #4750 — Config de reintentos de SALIENTES (cola lógica), NO confundir
+// con los reintentos de RED de una sola request del http-client. La política
+// (defaults + clamping) vive ahora en un módulo puro compartido para que el
+// sweep de chunks de audio del Commander (#4750) use EXACTAMENTE los mismos
+// valores (SEC-R4: no inventar valores nuevos, alinear con #4082).
+const { OUTBOUND_DEFAULTS, resolveOutboundConfig } = require('./lib/telegram-outbound-config');
 function loadOutboundConfig() {
-  const cfg = (loadPipelineConfig() || {}).telegram_outbound || {};
-  const num = (v, def, min, max) => {
-    const n = Number(v);
-    if (!Number.isFinite(n) || n < min || n > max) return def;
-    return n;
-  };
-  return {
-    max_retries: num(cfg.max_retries, OUTBOUND_DEFAULTS.max_retries, 1, 100),
-    backoff_base_ms: num(cfg.backoff_base_ms, OUTBOUND_DEFAULTS.backoff_base_ms, 100, 600000),
-    backoff_max_ms: num(cfg.backoff_max_ms, OUTBOUND_DEFAULTS.backoff_max_ms, 1000, 3600000),
-    stale_ttl_ms: num(cfg.stale_ttl_ms, OUTBOUND_DEFAULTS.stale_ttl_ms, 60000, 30 * 86400000),
-    sweep_stagger_ms: num(cfg.sweep_stagger_ms, OUTBOUND_DEFAULTS.sweep_stagger_ms, 0, 600000),
-  };
+  return resolveOutboundConfig(loadPipelineConfig());
 }
 
 // #4082 — SEC-2 fail-closed: sin prueba de entrega (`ok:true` + `message_id`) un
@@ -119,12 +103,25 @@ function assertDelivered(body, idx, total) {
 // revertir una entrega ya confirmada.
 function writeSentReceiptIfAny(data, messageIds) {
   if (!data || !telegramReceipt.isValidCorrelationId(data._correlationId)) return;
+  const fields = {
+    correlationId: data._correlationId,
+    status: telegramReceipt.STATUS_ENVIADO,
+    messageIds,
+  };
+  // #4750 — dimensión de CHUNK de audio: si el dropfile trae `_partIndex`/
+  // `_partTotal`, se propagan al recibo (nombre `<cid>-p<idx>.json`). Se
+  // coercionan/acotan fail-closed (SEC-R2): dims corruptas → NO se escribe el
+  // recibo (jamás se deriva un nombre de archivo de un valor sin acotar).
+  if (telegramReceipt.hasPartDims({ partIndex: data._partIndex, partTotal: data._partTotal })) {
+    if (!telegramReceipt.isValidPartDims(data._partIndex, data._partTotal)) {
+      log(`Recibo de chunk con dims inválidas (${data._correlationId}); no se escribe recibo`);
+      return;
+    }
+    fields.partIndex = telegramReceipt.coercePartInt(data._partIndex);
+    fields.partTotal = telegramReceipt.coercePartInt(data._partTotal);
+  }
   try {
-    telegramReceipt.writeReceipt(RECIBOS, {
-      correlationId: data._correlationId,
-      status: telegramReceipt.STATUS_ENVIADO,
-      messageIds,
-    });
+    telegramReceipt.writeReceipt(RECIBOS, fields);
   } catch (e) {
     log(`No se pudo escribir recibo enviado (${data._correlationId}): ${e.message}`);
   }
@@ -236,36 +233,56 @@ async function editMessageText(chatId, messageId, text, extra = {}, _send = tele
  * El filename declarado por el caller NUNCA se inyecta crudo — se sanitiza
  * `[^A-Za-z0-9._-]+ → '-'` para evitar CRLF injection en el header HTTP.
  */
-async function telegramSendMultipart(method, fieldName, filePath, extra = {}) {
+// #4750 — Constructor PURO del body multipart. Extraído de `telegramSendMultipart`
+// para testear la selección de `Content-Type` (voz exige `audio/ogg`) sin red.
+// `contentType` se acota a un charset seguro para el header HTTP (defensa CRLF —
+// SEC-R2): un valor con caracteres fuera del set cae al octet-stream por default.
+function buildMultipartBody({ chatId, fieldName, rawFilename, fileData, extraFields = {}, contentType = 'application/octet-stream' }) {
   const boundary = '----PipelineV2' + Date.now();
+  const filename = String(rawFilename || '').replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 80) || 'file';
+  const safeContentType = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/.test(String(contentType))
+    ? contentType
+    : 'application/octet-stream';
+
+  let prologue = '';
+  // chat_id field
+  prologue += `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n`;
+  // extra fields (caption, parse_mode, etc.)
+  for (const [key, val] of Object.entries(extraFields)) {
+    prologue += `--${boundary}\r\nContent-Disposition: form-data; name="${key}"\r\n\r\n${val}\r\n`;
+  }
+  // file field header — Content-Type parametrizado (audio/ogg para voz).
+  const fileHeader = `--${boundary}\r\nContent-Disposition: form-data; name="${fieldName}"; filename="${filename}"\r\nContent-Type: ${safeContentType}\r\n\r\n`;
+  const fileFooter = `\r\n--${boundary}--\r\n`;
+
+  const body = Buffer.concat([
+    Buffer.from(prologue + fileHeader),
+    fileData,
+    Buffer.from(fileFooter),
+  ]);
+  return { boundary, body };
+}
+
+async function telegramSendMultipart(method, fieldName, filePath, extra = {}, contentType = 'application/octet-stream') {
   // CA-UX-EXT-3 + defensa CRLF: si el caller pasó `filename`, lo usamos
   // sanitizado; si no, basename del path en disco.
   const rawFilename = (typeof extra.filename === 'string' && extra.filename.length > 0)
     ? extra.filename
     : path.basename(filePath);
-  const filename = rawFilename.replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 80) || path.basename(filePath);
   const fileData = fs.readFileSync(filePath);
 
   // `filename` NO debe viajar como form-field aparte: ya está en el Content-Disposition.
   const extraFields = { ...extra };
   delete extraFields.filename;
 
-  let prologue = '';
-  // chat_id field
-  prologue += `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${CHAT_ID}\r\n`;
-  // extra fields (caption, parse_mode, etc.)
-  for (const [key, val] of Object.entries(extraFields)) {
-    prologue += `--${boundary}\r\nContent-Disposition: form-data; name="${key}"\r\n\r\n${val}\r\n`;
-  }
-  // file field header
-  const fileHeader = `--${boundary}\r\nContent-Disposition: form-data; name="${fieldName}"; filename="${filename}"\r\nContent-Type: application/octet-stream\r\n\r\n`;
-  const fileFooter = `\r\n--${boundary}--\r\n`;
-
-  const bodyBuf = Buffer.concat([
-    Buffer.from(prologue + fileHeader),
+  const { boundary, body: bodyBuf } = buildMultipartBody({
+    chatId: CHAT_ID,
+    fieldName,
+    rawFilename,
     fileData,
-    Buffer.from(fileFooter),
-  ]);
+    extraFields,
+    contentType,
+  });
 
   const url = `https://api.telegram.org/bot${BOT_TOKEN}/${method}`;
   try {
@@ -655,10 +672,14 @@ async function processQueue() {
       // Cada rama es estructuralmente idéntica salvo el método Telegram y el
       // nombre del field multipart. CA-UX-EXT-3: pasamos `filename` (si el
       // dropfile lo trae) para que el usuario vea un nombre legible.
+      // #4750 — rama `voice`: el audio TTS se enruta por la cola (Opción A) para
+      // heredar `assertDelivered` (fail-closed) + `writeSentReceiptIfAny` con la
+      // dimensión de chunk. Telegram exige OGG/OPUS para `sendVoice`.
       const multipartType = data.document && fs.existsSync(data.document) ? 'document'
         : data.photo && fs.existsSync(data.photo) ? 'photo'
         : data.video && fs.existsSync(data.video) ? 'video'
         : data.animation && fs.existsSync(data.animation) ? 'animation'
+        : data.voice && fs.existsSync(data.voice) ? 'voice'
         : null;
 
       if (multipartType) {
@@ -667,7 +688,12 @@ async function processQueue() {
           photo:     'sendPhoto',
           video:     'sendVideo',
           animation: 'sendAnimation',
+          voice:     'sendVoice',
         };
+        // #4750 — Content-Type por tipo: `sendVoice` requiere `audio/ogg`
+        // declarado; el resto conserva el default `application/octet-stream`
+        // (retrocompatible con document/photo/video/animation).
+        const contentTypeByType = { voice: 'audio/ogg' };
         const extra = {};
         if (data.caption) extra.caption = data.caption;
         if (data.parse_mode) extra.parse_mode = data.parse_mode;
@@ -681,6 +707,7 @@ async function processQueue() {
           multipartType,
           data[multipartType],
           extra,
+          contentTypeByType[multipartType] || 'application/octet-stream',
         );
         // #4082 — SEC-2 fail-closed: el multipart también valida ok:true antes de
         // dar por entregado (antes aceptaba cualquier respuesta sin excepción).
@@ -777,6 +804,8 @@ module.exports = {
   assertDelivered,
   writeSentReceiptIfAny,
   RECIBOS,
+  // #4750 — constructor puro del body multipart (test de Content-Type audio/ogg).
+  buildMultipartBody,
   // #4139 — wrapper de edición de mensajes (primitiva genérica). Exportado para
   // tests `node --test` (dispatch vía telegramSend; no arranca el servicio ni
   // toca red en el test, que inyecta un fake de telegramSend).

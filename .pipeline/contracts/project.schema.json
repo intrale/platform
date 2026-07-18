@@ -1,0 +1,185 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://intrale.local/pipeline/contracts/project.schema.json",
+  "title": "project descriptor - kernel multi-product manifest (Ola Puente P2 #4687)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "identity", "repositories", "board", "capabilities", "authority"],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "pattern": "^1\\.0$"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["onboarding", "active", "archived"]
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "checksum"],
+      "properties": {
+        "algorithm": { "type": "string", "enum": ["sha256"] },
+        "checksum": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projectId", "name"],
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{1,63}$"
+        },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 2000 }
+      }
+    },
+    "repositories": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "url"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{1,63}$"
+          },
+          "url": { "type": "string", "minLength": 1, "maxLength": 300 },
+          "role": { "type": "string", "enum": ["primary", "secondary"] },
+          "defaultBaseRef": { "type": "string", "minLength": 1, "maxLength": 100 }
+        }
+      }
+    },
+    "board": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "admissionLabels", "routing"],
+      "properties": {
+        "ref": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "admissionLabels": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+        },
+        "routing": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["label", "capability"],
+            "properties": {
+              "label": { "type": "string", "minLength": 1, "maxLength": 100 },
+              "capability": {
+                "type": "string",
+                "enum": ["backend", "frontend", "pipeline", "generic"]
+              }
+            }
+          }
+        }
+      }
+    },
+    "credentials": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ref", "scopes"],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "pattern": "^~?[A-Za-z0-9._/-]+#[A-Za-z0-9._:-]+$"
+          },
+          "scopes": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": ["github", "aws", "gradle-android", "telegram-hooks", "providers"]
+            }
+          }
+        }
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["interface", "skills"],
+        "properties": {
+          "interface": {
+            "type": "string",
+            "enum": ["backend", "frontend", "pipeline", "generic"]
+          },
+          "skills": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1, "maxLength": 64 }
+          }
+        }
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["signers", "gates"],
+      "properties": {
+        "signers": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$"
+          }
+        },
+        "backup": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$"
+        },
+        "gates": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "gate0": { "type": "string", "maxLength": 32 },
+            "gate2": { "type": "string", "maxLength": 32 },
+            "visual": { "type": "string", "maxLength": 32 }
+          }
+        }
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "concurrency": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0, "maximum": 100 }
+        },
+        "priorityWindows": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "activationThreshold": { "type": "integer", "minimum": 1, "maximum": 1000 },
+            "safetyTimeoutHours": { "type": "number", "minimum": 0, "maximum": 720 }
+          }
+        },
+        "providerQuotas": {
+          "type": "object",
+          "additionalProperties": { "type": "number", "minimum": 0, "maximum": 100 }
+        }
+      }
+    }
+  }
+}

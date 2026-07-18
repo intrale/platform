@@ -15,7 +15,7 @@ pipelines:
     fase_rechazo: dev   # Los rechazos siempre vuelven a dev
     skills_por_fase:
       validacion: [po, ux, guru]
-      dev: [backend-dev, android-dev, web-dev, pipeline-dev]  # Uno solo por historia, según labels
+      dev: [backend-dev, android-dev, web-dev, pipeline-dev, dev]  # Uno solo por historia, según labels
       build: [build]                             # Agente Claude (haiku) — gradlew check
       verificacion: [tester, security, qa]
       linteo: [linter]                           # Determinístico (Node, #2491) — chequeos mecánicos antes del LLM
@@ -37,6 +37,7 @@ concurrencia:
   android-dev: 2
   web-dev: 2
   pipeline-dev: 2        # Scripts Node.js del pipeline (.pipeline/*.js)
+  dev: 1                 # Fallback genérico stack-agnóstico, capacidad mínima
 
   # Verificación
   tester: 2
@@ -135,12 +136,24 @@ dev_skill_mapping:
   "app:business": "android-dev"
   "app:delivery": "android-dev"
   "area:web": "web-dev"
+  generic_fallback: "dev"        # Fallback stack-agnóstico si el producto no declara capability de stack
   default: "backend-dev"         # Si no tiene label de área (priority:critical se rutea por área)
+
+# Particiones declarativas del puerto `dev` (kernel) a skills concretos (adaptador).
+# Intrale conserva comportamiento observable: default -> backend-dev. Si un producto
+# no declara capabilities backend/frontend/pipeline, `generic_fallback` rutea a `dev`.
+dev_skill_partitions:
+  backend: [backend-dev]
+  frontend: [android-dev, web-dev]
+  pipeline: [pipeline-dev]
+  generic: [dev]
 
 # Prioridad de ruteo cuando un issue tiene MÚLTIPLES labels de dominio (ej. area:infra + app:client).
 # Orden de mayor a menor prioridad. El primer label presente en el issue define la ruta.
 # Rationale: si alguien tagueó `area:pipeline` o `area:infra`, esa intención manda — issues del pipeline
 # no deben caer en android-dev sólo porque tienen `app:client` por error (ej. #2328).
+# El dev genérico NO participa de esta prioridad: entra último, sólo cuando no hay
+# capability de stack resuelta para el producto.
 dev_routing_priority:
   - "area:pipeline"
   - "area:dashboard"

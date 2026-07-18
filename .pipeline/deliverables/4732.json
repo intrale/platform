@@ -1,0 +1,15 @@
+{
+  "issue": 4732,
+  "entries": [
+    {
+      "issue": 4732,
+      "fase": "verificacion",
+      "agente": "security",
+      "tipo": "document",
+      "path": ".pipeline/assets/docs/4732/security-verificacion-4732.md",
+      "bytes": 2555,
+      "sensible": true,
+      "timestamp": "2026-07-16T14:27:05.315Z"
+    }
+  ]
+}

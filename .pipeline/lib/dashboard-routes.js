@@ -382,6 +382,13 @@ function _kpisInertFallback(reason) {
 let issuesView = null;
 try { issuesView = require('../views/dashboard/issues'); } catch { /* fallback a sat.renderIssues */ }
 
+// #4734 — CA-1: el banner SSR de Issues DELEGA la velocidad/ETA en el módulo único
+// (`deriveMissionOlaEta`), en vez de re-derivar sus propios `velocityPctPerMin`/
+// `remainingMs` (tercera cuenta paralela). Require defensivo: si no carga, el
+// banner degrada a null y la vista muestra chrome neutro (CA-A3).
+let missionOlaEta = null;
+try { missionOlaEta = require('./mission-ola-eta'); } catch { /* banner degradado */ }
+
 // Render de la ventana Issues con el snapshot del pipeline para SSR de cards.
 // Consumido por el path legacy `/issues` (HTML_ROUTES) y por `?view=issues`
 // (VIEW_SLUGS), ambos al MISMO thunk para que no diverjan (CA-A2). El cliente
@@ -405,11 +412,22 @@ function deriveIssuesMission(state) {
         }
         const eta = s.olaETA || null;
         const vel = (eta && eta.velocityETA) || null;
+        // #4734 — CA-1: velocidad/ETA DELEGADAS al módulo único (misma fórmula y
+        // unidad %/hora que el banner de HOME y el handler `/wave`). Sin el módulo,
+        // degrada a null sin re-derivar una fórmula paralela.
+        const derived = (missionOlaEta && typeof missionOlaEta.deriveMissionOlaEta === 'function' && eta)
+            ? missionOlaEta.deriveMissionOlaEta(eta)
+            : null;
         return {
             label: wave.name || wave.label || (wave.number ? ('Ola ' + wave.number) : 'Ola actual'),
             number: Number.isInteger(wave.number) ? wave.number : null,
             total: issuesArr.length,
             entregados,
+            // #4734 — unidad canónica %/hora + ETA de reloj de pared (con reposo de
+            // proveedor), provenientes del módulo único.
+            velocityPctPerHour: derived ? derived.velocityPctPerHour : null,
+            etaRemainingMin: derived ? derived.etaRemainingMin : null,
+            // Compat: campos previos derivados del MISMO `velocityETA` (no re-cálculo).
             etaRemainingMs: (vel && Number.isFinite(vel.remainingMs)) ? vel.remainingMs : null,
             velocityPctPerMin: (vel && Number.isFinite(vel.velocityPctPerMin)) ? vel.velocityPctPerMin : null,
             // #4450 — throughput de entrega (issues/día) leído del olaETA cache.
