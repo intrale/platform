@@ -281,3 +281,106 @@ test('CA-E1/E2: intrale-platform.json existe, valida y reproduce config.yaml sin
   assert.deepEqual(partitions.pipeline.sort(), cfg.dev_skill_partitions.pipeline.sort());
   assert.deepEqual(partitions.generic.sort(), cfg.dev_skill_partitions.generic.sort());
 });
+
+// -----------------------------------------------------------------------------
+// CA-7 (Ola Puente P5a · #4775) — thresholds del scheduler multi-producto:
+// schema estricto + validación cruzada imperativa + path traversal en worktree.
+// -----------------------------------------------------------------------------
+
+function withThresholds(thresholds) {
+  return validDescriptor({ thresholds });
+}
+
+test('CA-7: thresholds válidos con agentCap/providerBudget/worktreeRoot pasan', () => {
+  const res = d.validateDescriptor(withThresholds({
+    globalAgentCap: 5,
+    agentCap: 3,
+    minAgentFloor: 1,
+    providerBudget: { anthropic: 60, codex: 40 },
+    worktreeRoot: 'worktrees/acme',
+    degradedMode: { strategy: 'enqueue' },
+  }));
+  assert.equal(res.valid, true, JSON.stringify(res.errors));
+});
+
+test('CA-7: agentCap > techo global es rechazado (validación cruzada imperativa)', () => {
+  const res = d.validateDescriptor(withThresholds({ globalAgentCap: 2, agentCap: 5 }));
+  assert.equal(res.valid, false);
+  assert.equal(res.stage, 'thresholds');
+  assert.ok(res.errors.some((e) => e.keyword === 'thresholdViolation'));
+});
+
+test('CA-7: Σ providerBudget > 100% es rechazado (validación cruzada imperativa)', () => {
+  const res = d.validateDescriptor(withThresholds({ providerBudget: { anthropic: 70, codex: 60 } }));
+  assert.equal(res.valid, false);
+  assert.equal(res.stage, 'thresholds');
+  assert.ok(res.errors.some((e) => e.detail.includes('providerBudget')));
+});
+
+test('CA-7: minAgentFloor > agentCap es rechazado (config incoherente)', () => {
+  const res = d.validateDescriptor(withThresholds({ agentCap: 2, minAgentFloor: 5 }));
+  assert.equal(res.valid, false);
+  assert.equal(res.stage, 'thresholds');
+});
+
+test('CA-7: agentCap fuera del rango del schema (>100) rechazado por schema', () => {
+  const res = d.validateDescriptor(withThresholds({ agentCap: 500 }));
+  assert.equal(res.valid, false);
+  assert.equal(res.stage, 'schema');
+});
+
+test('CA-7: providerBudget individual > 100 rechazado por schema (maximum)', () => {
+  const res = d.validateDescriptor(withThresholds({ providerBudget: { anthropic: 150 } }));
+  assert.equal(res.valid, false);
+  assert.equal(res.stage, 'schema');
+});
+
+for (const badPath of ['../escape', '/etc/passwd', '~/secret', 'a/../../b', 'C:\\Windows']) {
+  test(`CA-7: worktreeRoot con traversal es rechazado: ${JSON.stringify(badPath)}`, () => {
+    const res = d.validateDescriptor(withThresholds({ worktreeRoot: badPath }));
+    assert.equal(res.valid, false);
+    assert.equal(res.stage, 'path');
+    assert.ok(res.errors.some((e) => e.keyword === 'pathTraversal'));
+  });
+}
+
+test('CA-7: isSafeWorktreePath acepta subpaths relativos y rechaza escapes', () => {
+  assert.equal(d.isSafeWorktreePath('worktrees/acme'), true);
+  assert.equal(d.isSafeWorktreePath('a/b/c'), true);
+  assert.equal(d.isSafeWorktreePath('../etc'), false);
+  assert.equal(d.isSafeWorktreePath('/abs'), false);
+  assert.equal(d.isSafeWorktreePath('~/home'), false);
+  assert.equal(d.isSafeWorktreePath('a\0b'), false);
+  assert.equal(d.isSafeWorktreePath(''), false);
+  assert.equal(d.isSafeWorktreePath('C:\\x'), false);
+});
+
+test('CA-7: degradedMode con campo no declarado rechazado (additionalProperties:false)', () => {
+  const res = d.validateDescriptor(withThresholds({ degradedMode: { strategy: 'enqueue', evil: 1 } }));
+  assert.equal(res.valid, false);
+  assert.equal(res.stage, 'schema');
+  assert.ok(res.errors.some((e) => e.keyword === 'additionalProperties'));
+});
+
+test('CA-7: computeChecksum cubre los campos nuevos de thresholds (integridad)', () => {
+  const base = withThresholds({ agentCap: 2, globalAgentCap: 5 });
+  const tampered = withThresholds({ agentCap: 4, globalAgentCap: 5 });
+  assert.notEqual(d.computeChecksum(base), d.computeChecksum(tampered),
+    'un cambio en agentCap debe alterar el checksum (no manipulable post-firma)');
+});
+
+test('CA-7/CA-1: deriveAgentCap clampa el cap del producto al techo global', () => {
+  const cap = d.deriveAgentCap(withThresholds({ globalAgentCap: 3, agentCap: 3, minAgentFloor: 1 }));
+  assert.equal(cap.agentCap, 3);
+  assert.equal(cap.globalAgentCap, 3);
+  assert.equal(cap.minAgentFloor, 1);
+  // clamp defensivo aunque llegara un agentCap mayor (bypass de validación).
+  const clamped = d.deriveAgentCap({ thresholds: { globalAgentCap: 2, agentCap: 9 } });
+  assert.equal(clamped.agentCap, 2);
+});
+
+test('CA-7/CA-3: deriveProviderBudget devuelve copia y valida Σ ≤ 100% imperativamente', () => {
+  const budget = d.deriveProviderBudget(withThresholds({ providerBudget: { anthropic: 60, codex: 40 } }));
+  assert.deepEqual(budget, { anthropic: 60, codex: 40 });
+  assert.throws(() => d.deriveProviderBudget({ thresholds: { providerBudget: { a: 60, b: 60 } } }), /100%/);
+});

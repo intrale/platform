@@ -178,6 +178,37 @@
         "providerQuotas": {
           "type": "object",
           "additionalProperties": { "type": "number", "minimum": 0, "maximum": 100 }
+        },
+        "globalAgentCap": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "agentCap": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "minAgentFloor": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "providerBudget": {
+          "type": "object",
+          "additionalProperties": { "type": "number", "minimum": 0, "maximum": 100 }
+        },
+        "worktreeRoot": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "degradedMode": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "strategy": { "type": "string", "enum": ["enqueue", "reject"] }
+          }
         }
       }
     }
