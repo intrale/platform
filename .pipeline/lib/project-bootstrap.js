@@ -81,6 +81,12 @@ function assertUrlAllowed(rawUrl) {
     return { allowed: false, reason: 'URL malformada', host: null };
   }
   if (u.protocol !== 'https:') return { allowed: false, reason: `esquema no permitido: ${u.protocol} (sólo https)`, host: u.hostname };
+  // SEC-6 · Credenciales embebidas (user:pass@host) prohibidas: los secretos van
+  // SOLO por referencia (SEC-4), nunca crudos en la URL del descriptor (donde
+  // quedarían persistidos en la cola/logs). Rechazo fail-closed.
+  if (u.username || u.password) {
+    return { allowed: false, reason: 'credenciales embebidas en URL no permitidas (SEC-6): usar secreto por referencia', host: u.hostname.toLowerCase() };
+  }
   const host = u.hostname.toLowerCase();
   if (isIpLiteral(host)) {
     // IP literal — sólo se permite si NO es privada/loopback Y está allowlisted (nunca lo está por default).
