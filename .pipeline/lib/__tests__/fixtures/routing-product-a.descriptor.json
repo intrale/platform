@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "1.0",
+  "status": "active",
+  "identity": {
+    "projectId": "product-a",
+    "name": "Producto A (fixture de ruteo)",
+    "description": "Descriptor sintetico A para tests del multiplexor product-aware (#4763). Datos inertes: sin secrets ni repos productivos."
+  },
+  "repositories": [
+    {
+      "id": "product-a-app",
+      "url": "https://github.com/acme-org/product-a",
+      "role": "primary",
+      "defaultBaseRef": "main"
+    },
+    {
+      "id": "product-a-infra",
+      "url": "acme-org/product-a-infra",
+      "role": "secondary"
+    }
+  ],
+  "board": {
+    "ref": "acme-org/product-a/projects/1",
+    "admissionLabels": ["Ready"],
+    "routing": [
+      { "label": "area:backend", "capability": "backend" },
+      { "label": "area:pipeline", "capability": "pipeline" }
+    ]
+  },
+  "capabilities": [
+    { "interface": "backend", "skills": ["backend-dev"] },
+    { "interface": "pipeline", "skills": ["pipeline-dev"] }
+  ],
+  "authority": {
+    "signers": ["acme-signer"],
+    "gates": { "gate0": "enforce", "gate2": "enforce" }
+  }
+}
