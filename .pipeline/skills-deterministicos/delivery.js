@@ -236,6 +236,39 @@ function shouldEscalateLocalMerge(mergeCheck = {}) {
     return mergeCheck.supported === true && mergeCheck.mergeable === false;
 }
 
+// classifyConflictFiles — sub-clasificador PURO de archivos en conflicto (#4765).
+// Decide si un conjunto de paths en conflicto puede auto-resolverse sin humano
+// (`mecanico`) o debe escalar (`decision`). Orden ESTRICTO (SR-3/CA-10):
+//   1. canonicalizar cada path (SR-10 anti-evasión); no canonicalizable / que
+//      escapa la raíz → `decision` (CA-15).
+//   2. denylist PRIMERO: cualquier path que matchee la denylist de seguridad
+//      (RCE/secrets/CI/IaC + self-reference) → `decision` (CA-10..CA-12),
+//      aunque el diff parezca trivial y aunque también matchee la allowlist.
+//   3. allowlist: si TODOS los paths caen en allow → `mecanico` (CA-2).
+//   4. mixto o fuera de allowlist → `decision` (SR-1/CA-3).
+// Reusa los helpers de canonicalización/matching de block-classifier.js (require
+// perezoso para evitar ciclo de carga). `allowlist` = `{ allow, deny }`.
+function classifyConflictFiles(paths, allowlist) {
+    const bc = require('../lib/block-classifier');
+    const { canonicalizePath, matchDenylist, matchAllowlist } = bc._internal;
+    if (!Array.isArray(paths) || paths.length === 0) {
+        return { category: 'decision', reason: 'sin paths de conflicto' };
+    }
+    const allow = allowlist && Array.isArray(allowlist.allow) ? allowlist.allow : [];
+    const deny = allowlist && Array.isArray(allowlist.deny) ? allowlist.deny : [];
+    const canon = paths.map((p) => canonicalizePath(p));
+    if (canon.some((p) => p === null)) {
+        return { category: 'decision', reason: 'path no canonicalizable o que escapa la raíz' };
+    }
+    if (matchDenylist(canon, deny)) {
+        return { category: 'decision', reason: 'path en denylist de seguridad' };
+    }
+    if (matchAllowlist(canon, allow)) {
+        return { category: 'mecanico', reason: 'todos los paths en allowlist (no-producto)' };
+    }
+    return { category: 'decision', reason: 'conflicto mixto o fuera de allowlist' };
+}
+
 // buildConflictMotivo — motivo del rechazo pensado para que el pulpo lo trate
 // como BLOQUEO HUMANO (human-block.js → bloqueado-humano/ + needs-human) y NO
 // como rebote técnico a dev. Debe matchear HUMAN_BLOCK_PATTERNS: incluye
@@ -954,6 +987,8 @@ module.exports = {
     // #4658 — detección de conflicto real + escalado fail-closed.
     classifyMergeFailure,
     shouldEscalateLocalMerge,
+    // #4765 — sub-clasificador de archivos en conflicto (denylist antes de allowlist).
+    classifyConflictFiles,
     buildConflictMotivo,
     buildMergeConflictEscalation,
     enqueueOperatorTelegram,
