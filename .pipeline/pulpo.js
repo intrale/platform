@@ -77,6 +77,10 @@ const dispatchCause = require('./lib/dispatch-cause');
 // allowlist fail-closed, repo de origen propagado). Reemplaza los literales
 // `intrale/platform` hardcodeados y el intake atado al remote del cwd.
 const repoTarget = require('./lib/repo-target');
+// #4763 (Ola Puente P4, split 2/3) — multiplexor de ruteo product-aware.
+// En single-product (default hoy) el router queda en null y el ruteo cae al
+// repo-target global (getRepoForIssue/getPrimaryRepo) sin cambio de comportamiento.
+const kernelSupervisor = require('./lib/kernel-supervisor');
 // #2490 — Pausa parcial con allowlist explícita de issues
 const partialPause = require('./lib/partial-pause');
 // #3518 CA-6 — Detector de desync waves.json ↔ .partial-pause.json
@@ -15491,6 +15495,43 @@ function findLastRejection(pipelineName, issueNum, config) {
 //
 // Reusa la fuente-de-verdad única del repo destino (repo-target, #4693) y su
 // allowlist fail-closed. El exec de `gh` es inyectable para tests (sin red).
+// #4763 (Ola Puente P4, split 2/3) — router product-aware OPCIONAL. En
+// single-product (estado actual) es null: el ruteo del intake cae al repo-target
+// global vía `getRepoForIssue()` (CA-5 no-regresión). Cuando el supervisor
+// multi-instancia registre descriptores, `setMultiInstanceRouter({ descriptors })`
+// activa el multiplexor fail-closed por instancia (kernelSupervisor.resolveInstanceForEvent).
+let multiInstanceRouter = null; // { descriptors: Map, audit?: fn|{discard} }
+
+function setMultiInstanceRouter(router) {
+  multiInstanceRouter = (router && router.descriptors && typeof router.descriptors.get === 'function')
+    ? router
+    : null;
+}
+
+function getMultiInstanceRouter() {
+  return multiInstanceRouter;
+}
+
+// Resuelve el repo destino de un issue del intake. Fallback fail-closed:
+//   - sin router multi-instancia (single-product) ⇒ `repoTarget.getRepoForIssue`
+//     (comportamiento vigente: repo de origen propagado o primary).
+//   - con router y `issue.projectId` presente ⇒ multiplexor product-aware. Si el
+//     multiplexor descarta (id inseguro / fuera de allowlist / fuera de catálogo)
+//     devuelve `null` y el caller NO encola el issue (no reencamina a primary global).
+function resolveIntakeRepo(issue) {
+  if (multiInstanceRouter && issue && issue.projectId != null) {
+    const resolved = kernelSupervisor.resolveInstanceForEvent(issue, {
+      descriptors: multiInstanceRouter.descriptors,
+      audit: multiInstanceRouter.audit || ((info) => {
+        const pid = info && info.projectId != null ? info.projectId : '?';
+        log('intake', `ruteo descartado — ${info && info.reason ? info.reason : 'motivo desconocido'} (projectId=${pid})`);
+      }),
+    });
+    return resolved ? resolved.repo : null;
+  }
+  return repoTarget.getRepoForIssue(issue);
+}
+
 function discoverWorkDryRun(config, opts = {}) {
   const execFn = typeof opts.exec === 'function'
     ? opts.exec
@@ -15643,7 +15684,17 @@ function brazoIntake(config) {
         // CA-A2 — el repo de origen (propagado en el intake) viaja en el work-yaml
         // para que las fases aguas abajo operen sobre el repo correcto. Fail-closed
         // a primary si el issue no trae repo válido/allowlisted.
-        const baseYaml = { issue: parseInt(issueNum), fase: faseEntrada, pipeline: pipelineName, repo: repoTarget.getRepoForIssue(issue) };
+        // #4763 — `resolveIntakeRepo` parametriza el ruteo por instancia cuando hay
+        // router multi-instancia; en single-product es exactamente `getRepoForIssue`.
+        const intakeRepo = resolveIntakeRepo(issue);
+        if (intakeRepo == null) {
+          // Sólo posible con router multi-instancia: el multiplexor descartó el
+          // evento (id inseguro / fuera de allowlist). Ya fue auditado; no encolar
+          // ni reencaminar al primary global (REQ-SEC-MUX-1 fail-closed).
+          log('intake', `#${issueNum} omitido — multiplexor product-aware descartó el ruteo`);
+          continue;
+        }
+        const baseYaml = { issue: parseInt(issueNum), fase: faseEntrada, pipeline: pipelineName, repo: intakeRepo };
         if (previousRejection) {
           baseYaml.rebote = true;
           baseYaml.rebote_tipo = 're-intake';
@@ -18334,6 +18385,10 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
   module.exports = {
     // #4687 (Ola Puente P2) — descubrimiento side-effect-free del tablero (dry-run).
     discoverWorkDryRun,
+    // #4763 (Ola Puente P4) — ruteo product-aware por instancia (fallback single-product).
+    resolveIntakeRepo,
+    setMultiInstanceRouter,
+    getMultiInstanceRouter,
     // #4136 — brazo de archivado (frontera activo/histórico).
     brazoArchivado,
     makeIsClosedFromTitleCache,

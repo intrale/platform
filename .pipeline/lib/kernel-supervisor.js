@@ -45,8 +45,186 @@ const {
   deriveConcurrency,
   deriveCapabilityPartitions,
 } = require('./project-descriptor');
+const repoTarget = require('./repo-target');
 
 const ACTIVE_STATUS = 'active';
+
+// -----------------------------------------------------------------------------
+// Multiplexor de ruteo product-aware (Ola Puente P4 · #4763 · split 2/3 de #4689)
+//
+// Resuelve `projectId`/repo de un evento (issue) a la instancia/pipeline del
+// producto correcto, fail-closed contra la allowlist derivada del descriptor.
+// NO reimplementa validación: se apoya en `isSafeId` (project-descriptor) e
+// `isRepoAllowed`/`getRepoForIssue`/`getPrimaryRepo` (repo-target). Ver los
+// requisitos de seguridad REQ-SEC-MUX-1..6 del análisis de seguridad del issue.
+// -----------------------------------------------------------------------------
+
+// Forma canónica GitHub `owner/repo` (espeja repo-target.REPO_RE). Se usa para
+// derivar la allowlist repo-target desde `repositories[].url` del descriptor.
+const REPO_SLUG_RE = /^[A-Za-z0-9._-]{1,39}\/[A-Za-z0-9._-]{1,100}$/;
+
+/**
+ * Extrae el slug `owner/repo` de un `repositories[].url` del descriptor. Acepta el
+ * slug directo (`owner/repo`) o una URL GitHub (`https://github.com/owner/repo`,
+ * `git@github.com:owner/repo.git`). Devuelve `null` si no matchea forma canónica.
+ * Adaptador PURO: sólo arma el input de repo-target, no valida confianza.
+ */
+function extractRepoSlug(url) {
+  if (typeof url !== 'string') return null;
+  const s = url.trim();
+  if (!s) return null;
+  if (REPO_SLUG_RE.test(s)) return s.toLowerCase();
+  const m = s.match(/github\.com[/:]+([A-Za-z0-9._-]{1,39}\/[A-Za-z0-9._-]{1,100}?)(?:\.git)?\/?$/i);
+  if (m && REPO_SLUG_RE.test(m[1])) return m[1].toLowerCase();
+  return null;
+}
+
+/**
+ * Deriva un config repo-target (`{ repos: { primary, allowlist, default_base_ref } }`)
+ * desde las `repositories[]` de un descriptor de instancia. Es un ADAPTADOR (no
+ * validación): no reimplementa `isRepoAllowed`/`getRepoForIssue`, sólo construye su
+ * `configOverride` para que la frontera de confianza siga siendo la de repo-target.
+ */
+function deriveRepoConfig(descriptor) {
+  const repos = (descriptor && Array.isArray(descriptor.repositories)) ? descriptor.repositories : [];
+  const allowlist = [];
+  let primary = null;
+  let defaultBaseRef = null;
+  for (const r of repos) {
+    const slug = extractRepoSlug(r && r.url);
+    if (!slug) continue;
+    allowlist.push(slug);
+    if (r && r.role === 'primary' && !primary) {
+      primary = slug;
+      if (typeof r.defaultBaseRef === 'string' && r.defaultBaseRef) defaultBaseRef = r.defaultBaseRef;
+    }
+  }
+  if (!primary && allowlist.length > 0) primary = allowlist[0];
+  const cfg = { repos: { allowlist } };
+  if (primary) cfg.repos.primary = primary;
+  if (defaultBaseRef) cfg.repos.default_base_ref = defaultBaseRef;
+  return cfg;
+}
+
+/**
+ * Normaliza el sink de auditoría a una fn `discard(event, reason, meta)`. Acepta:
+ *   - `{ discard(event, reason, meta) }`  (interfaz de la receta del issue).
+ *   - `function(info)`                     (recibe `{ event, reason, ...meta }`).
+ *   - ausente → no-op.
+ * REQ-SEC-MUX-3 (A09): todo descarte del multiplexor pasa por acá; sin descartes
+ * silenciosos cuando hay sink.
+ */
+function normalizeAudit(audit) {
+  if (audit && typeof audit.discard === 'function') {
+    return (event, reason, meta) => audit.discard(event, reason, meta || {});
+  }
+  if (typeof audit === 'function') {
+    return (event, reason, meta) => audit(Object.assign({ event, reason }, meta || {}));
+  }
+  return () => {};
+}
+
+/**
+ * Etiqueta segura de un id/repo NO confiable para el log de auditoría. Neutraliza
+ * control chars y trunca — NUNCA se usa como path/clave, sólo para trazabilidad
+ * (A09). Que el ofensivo sea inseguro no debe envenenar el propio registro.
+ */
+function safeAuditLabel(value) {
+  if (typeof value !== 'string') {
+    return value === null || value === undefined ? String(value) : `<${typeof value}>`;
+  }
+  const cleaned = Array.from(value, (ch) => (ch.charCodeAt(0) < 0x20 || ch.charCodeAt(0) === 0x7f) ? "?" : ch).join("");
+  return cleaned.length > 80 ? `${cleaned.slice(0, 77)}...` : cleaned;
+}
+
+/** Candidato de repo de origen propagado en el evento (mismo contrato que repo-target). */
+function extractEventRepo(event) {
+  if (!event || typeof event !== 'object') return null;
+  const c = event.origin_repo || event.repo || event.repository || null;
+  return (typeof c === 'string' && c.trim()) ? c.trim() : null;
+}
+
+/**
+ * CA-3 · Multiplexor de ruteo product-aware FAIL-CLOSED. Resuelve el evento a la
+ * instancia/pipeline correcta o lo descarta+audita. Orden fail-closed:
+ *
+ *   1. `isSafeId(projectId)` ANTES de tocar path/clave (A03 · REQ-SEC-MUX-2). El
+ *      regex `^[a-z0-9][a-z0-9-]{1,63}$` + rechazo de `..`/`/`/`\` cubre traversal,
+ *      confusión de namespace y control chars.
+ *   2. `descriptors.get(projectId)` — fuera de catálogo ⇒ descartar (sin instancia
+ *      implícita).
+ *   3. Allowlist derivada del descriptor de la instancia (default-deny). Un repo
+ *      explícito fuera de allowlist se DESCARTA — nunca se reencamina a `primary`
+ *      (REQ-SEC-MUX-1: prohibido el fallback-a-primary cross-tenant del path
+ *      single-product de `getRepoForIssue`).
+ *
+ * @param {object} event  evento entrante. `projectId` in-band se valida fail-closed.
+ *                        `origin_repo`/`repo`/`repository` (opcional) es el repo de
+ *                        origen propagado.
+ * @param {object} opts
+ * @param {Map}    opts.descriptors  catálogo `projectId → instancia`. La instancia
+ *                                   aporta el config repo-target vía `.config` o un
+ *                                   descriptor crudo vía `.descriptor`.
+ * @param {function|object} [opts.audit]  sink de auditoría (fn o `{ discard }`).
+ * @returns {{instance:object, repo:string, projectId:string}|null}  `null` ⇒ descartado.
+ */
+function resolveInstanceForEvent(event, opts = {}) {
+  const audit = normalizeAudit(opts.audit);
+  const descriptors = opts.descriptors;
+
+  if (!event || typeof event !== 'object') {
+    audit(event, 'evento inválido');
+    return null;
+  }
+
+  const projectId = event.projectId;
+
+  // 1) Defensa-en-profundidad ANTES de derivar cualquier path/estado/clave.
+  if (!isSafeId(projectId)) {
+    audit(event, 'projectId inseguro', { projectId: safeAuditLabel(projectId) });
+    return null;
+  }
+
+  // 2) Catálogo → instancia. Fuera de catálogo ⇒ descartar sin crear instancia.
+  const inst = (descriptors && typeof descriptors.get === 'function') ? descriptors.get(projectId) : null;
+  if (!inst) {
+    audit(event, 'projectId fuera de catálogo', { projectId });
+    return null;
+  }
+
+  // Config repo-target de la instancia (adaptador desde su descriptor). Cacheado
+  // en la instancia para no rederivar en cada evento.
+  let cfg = inst.config;
+  if (!cfg && inst.descriptor) {
+    cfg = inst._repoConfig || (inst._repoConfig = deriveRepoConfig(inst.descriptor));
+  }
+  const allowlist = (cfg && cfg.repos && Array.isArray(cfg.repos.allowlist)) ? cfg.repos.allowlist : [];
+  if (allowlist.length === 0) {
+    // Fail-closed: una instancia sin repos allowlisted no rutea nada. Sin este
+    // guard, repo-target caería a su FALLBACK_PRIMARY global (fail-open).
+    audit(event, 'instancia sin repos allowlisted', { projectId });
+    return null;
+  }
+
+  // 3) Allowlist derivada del descriptor (default-deny). REQ-SEC-MUX-1.
+  const candidate = extractEventRepo(event);
+  let repo;
+  if (candidate != null) {
+    if (!repoTarget.isRepoAllowed(candidate, cfg)) {
+      audit(event, 'repo fuera de allowlist', { projectId, repo: safeAuditLabel(candidate) });
+      return null;
+    }
+    // El candidato ya está allowlisted: getRepoForIssue devuelve el mismo repo
+    // normalizado (no cae a primary porque pasa el chequeo de allowlist).
+    repo = repoTarget.getRepoForIssue(event, cfg);
+  } else {
+    // Sin repo en el evento: primary DE LA INSTANCIA ya resuelta (mismo tenant, no
+    // cross-tenant). No hay reencaminamiento entre productos.
+    repo = repoTarget.getPrimaryRepo(cfg);
+  }
+
+  return { instance: inst, repo, projectId };
+}
 
 /**
  * Resuelve el `projectId` del tenant a partir de un registro de producto. Deriva
@@ -128,6 +306,7 @@ function createKernelSupervisor(deps = {}) {
       intakeOffsets: new Map(),
       circuitBreaker: { rebotes: new Map() },
       // --- config derivada del descriptor (reuso de derivers, opcional) -------
+      descriptor: null,                 // #4763 — retenido en hydrate para el multiplexor
       routing: null,
       concurrency: null,
       partitions: null,
@@ -149,6 +328,9 @@ function createKernelSupervisor(deps = {}) {
       const desc = await ctx.store.getDescriptor(ctx.projectId);
       const body = desc && desc.body;
       if (body) {
+        // #4763 — retener el descriptor de la instancia para que el multiplexor de
+        // ruteo (resolveEvent) derive su allowlist repo-target por instancia.
+        ctx.descriptor = body;
         ctx.routing = deriveRouting(body);
         ctx.concurrency = deriveConcurrency(body);
         ctx.partitions = deriveCapabilityPartitions(body);
@@ -329,6 +511,23 @@ function createKernelSupervisor(deps = {}) {
     return true;
   }
 
+  /**
+   * #4763 · Multiplexor de ruteo product-aware ligado a las instancias vivas de
+   * ESTE supervisor. Resuelve `event.projectId`/repo a la instancia correcta
+   * fail-closed, auditando cada descarte por `onAlert` (A09). Sin descriptor
+   * multi-instancia el caller (pulpo) cae al ruteo global de repo-target.
+   */
+  function resolveEvent(event) {
+    return resolveInstanceForEvent(event, {
+      descriptors: instances,
+      audit: (info) => onAlert({
+        projectId: info && info.projectId != null ? info.projectId : null,
+        stage: 'route-discard',
+        errors: [{ detail: info && info.reason ? info.reason : 'evento descartado por el multiplexor' }],
+      }),
+    });
+  }
+
   return {
     bootProducts,
     spawnInstance,
@@ -339,7 +538,15 @@ function createKernelSupervisor(deps = {}) {
     healthcheck,
     restartInstance,
     stopInstance,
+    resolveEvent,
   };
 }
 
-module.exports = { createKernelSupervisor, resolveProjectId };
+module.exports = {
+  createKernelSupervisor,
+  resolveProjectId,
+  // #4763 · Multiplexor de ruteo product-aware (standalone + adaptadores).
+  resolveInstanceForEvent,
+  deriveRepoConfig,
+  extractRepoSlug,
+};
