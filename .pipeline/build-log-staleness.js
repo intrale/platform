@@ -163,6 +163,196 @@ function isBuildLogStale(issue, thresholdMs) {
   return info.exists && info.stale === true;
 }
 
+// =============================================================================
+// Detección genérica de rechazo de gate stale (#4759 parte b).
+//
+// A diferencia de `inspectBuildLog`/`isBuildLogStale` — que miran el `mtime`
+// del build-log contra un umbral temporal — esta variante decide si un rechazo
+// de gate (`build`/`verificacion`/`aprobacion`/…) quedó obsoleto porque el fix
+// ya avanzó el código MÁS ALLÁ del rechazo. La usa `block-classifier` (parte a,
+// #4765) para clasificar el caso `gate-reject` como `mecanico` (re-correr el
+// gate sobre HEAD) vs `decision` (defecto vigente, requiere criterio humano).
+//
+// Riesgos heredados (#4759):
+//   SR-4 — Un rechazo de `source: 'security'` NUNCA es stale (fail-closed):
+//          se limpia sólo con una pasada de seguridad fresca sobre HEAD.
+//   SR-5 — Doble condición obligatoria para declarar stale:
+//            (1) el fix es ESTRICTAMENTE POSTERIOR al rechazo, y
+//            (2) el fix TOCA el/los archivo(s) citados en el motivo.
+//          Si falta cualquiera, o hay ambigüedad/error de git → `stale:false`
+//          (conservador → `decision`).
+//
+// Estos helpers son PUROS respecto del FS (no escriben nada) y NO mutan el
+// input; sólo leen git vía `runGit` (inyectable por `opts.runGit` para tests).
+// Nunca lanzan: ante cualquier error → `{ stale:false }`.
+// =============================================================================
+
+// Lazy-require del helper git compartido (resuelve git-dir/PATH en Windows).
+// Se resuelve en el primer uso para no pagar el costo al cargar el módulo.
+let _gitOps;
+function _defaultRunGit(args, gitOpts) {
+  if (!_gitOps) {
+    // eslint-disable-next-line global-require
+    _gitOps = require('./skills-deterministicos/lib/git-ops');
+  }
+  return _gitOps.runGit(args, gitOpts || {});
+}
+
+/**
+ * Normaliza un path para comparar salidas de `git diff --name-only` (siempre
+ * con `/`) contra `citedFiles` que pueden venir con `\` (Windows) o `./`.
+ */
+function normalizeGitPath(p) {
+  return String(p == null ? '' : p)
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+    .trim();
+}
+
+/**
+ * Evalúa la doble condición SR-5 sobre un rechazo de gate normalizado. Análogo
+ * a `inspectBuildLog`, pero decide staleness por posición del commit + archivos
+ * tocados, no por antigüedad del log. NO tira, NO muta el input, NO toca el FS.
+ *
+ * @param {Object} reject Rechazo normalizado:
+ *   - source {string}        'build'|'verificacion'|'aprobacion'|'security'|…
+ *   - rejectSha {string=}    commit/HEAD vigente al momento del rechazo
+ *   - rejectedAt {string=}   ISO8601 del rechazo (fallback si no hay rejectSha)
+ *   - citedFiles {string[]}  archivos citados en el motivo_rechazo
+ *   - citedLines {Array=}    [{file, from, to}] opcional (refina SR-5)
+ * @param {string} head       SHA vigente de HEAD sobre el que se evalúa el fix
+ * @param {Object} [opts]
+ *   - runGit {Function=}     override de runGit(args, gitOpts) para tests
+ *   - gitOpts {Object=}      opts pasados a runGit (ej. { cwd })
+ * @returns {{
+ *   stale: boolean,
+ *   reasons: string[],
+ *   fixCommit: (string|null),
+ *   rejectRef: (string|null),
+ *   touchesCited: boolean
+ * }}
+ */
+function inspectGateReject(reject, head, opts = {}) {
+  const reasons = [];
+  const result = {
+    stale: false,
+    reasons,
+    fixCommit: typeof head === 'string' && head.trim() ? head.trim() : null,
+    rejectRef: null,
+    touchesCited: false,
+  };
+
+  // Guard: input inválido → conservador.
+  if (!reject || typeof reject !== 'object') {
+    reasons.push('reject nulo/inválido → conservador (decision)');
+    return result;
+  }
+
+  // SR-4: rechazo de seguridad nunca es stale (fail-closed, antes de tocar git).
+  if (reject.source === 'security') {
+    reasons.push('source=security → nunca stale (SR-4), sólo lo limpia una pasada de seguridad fresca');
+    return result;
+  }
+
+  const head0 = result.fixCommit;
+  if (!head0) {
+    reasons.push('head inválido → conservador (decision)');
+    return result;
+  }
+
+  const citedFiles = Array.isArray(reject.citedFiles)
+    ? reject.citedFiles.filter((f) => typeof f === 'string' && f.trim())
+    : [];
+  if (citedFiles.length === 0) {
+    reasons.push('sin citedFiles → no se puede verificar SR-5 (toca-líneas) → conservador (decision)');
+    return result;
+  }
+
+  const rejectSha = typeof reject.rejectSha === 'string' && reject.rejectSha.trim()
+    ? reject.rejectSha.trim()
+    : null;
+  const runGit = typeof opts.runGit === 'function' ? opts.runGit : _defaultRunGit;
+  const gitOpts = opts.gitOpts || {};
+
+  // -------- Condición 1: el fix es ESTRICTAMENTE POSTERIOR al rechazo --------
+  if (rejectSha) {
+    result.rejectRef = rejectSha;
+    if (rejectSha === head0) {
+      reasons.push('rejectSha === head → el fix no es posterior al rechazo (SR-5) → conservador');
+      return result;
+    }
+    let anc;
+    try {
+      // exit 0 ⇒ rejectSha es ancestro de head ⇒ head está por delante del rechazo.
+      anc = runGit(['merge-base', '--is-ancestor', rejectSha, head0], gitOpts);
+    } catch (e) {
+      reasons.push(`error git (merge-base) → conservador: ${e && e.message}`);
+      return result;
+    }
+    if (!anc || anc.exit_code !== 0) {
+      reasons.push('rejectSha no es ancestro de head (fix no posterior o ref inexistente) → conservador (SR-5)');
+      return result;
+    }
+  } else if (typeof reject.rejectedAt === 'string' && reject.rejectedAt.trim()) {
+    // Fallback por fecha: sin rejectSha no podemos diffear archivos con confianza,
+    // así que aunque la posterioridad temporal se cumpla, caemos conservador en la
+    // condición 2 más abajo. Se registra el ref para trazabilidad.
+    result.rejectRef = reject.rejectedAt.trim();
+    reasons.push('sin rejectSha (sólo rejectedAt) → no se puede diffear archivos citados con confianza → conservador (SR-5)');
+    return result;
+  } else {
+    reasons.push('sin rejectSha ni rejectedAt → no se puede probar posterioridad (SR-5) → conservador');
+    return result;
+  }
+
+  // -------- Condición 2: el fix TOCA el/los archivo(s) citado(s) --------
+  let diff;
+  try {
+    diff = runGit(['diff', '--name-only', rejectSha, head0], gitOpts);
+  } catch (e) {
+    reasons.push(`error git (diff) → conservador: ${e && e.message}`);
+    return result;
+  }
+  if (!diff || diff.exit_code !== 0) {
+    reasons.push('git diff falló (ref inexistente u otro error) → conservador (SR-5)');
+    return result;
+  }
+  const changedSet = new Set(
+    String(diff.stdout || '')
+      .split(/\r?\n/)
+      .map((s) => normalizeGitPath(s))
+      .filter(Boolean),
+  );
+  const touched = citedFiles.filter((f) => changedSet.has(normalizeGitPath(f)));
+  if (touched.length === 0) {
+    reasons.push('el fix no toca ninguno de los archivos citados → defecto posiblemente vigente → conservador (SR-5)');
+    return result;
+  }
+  result.touchesCited = true;
+
+  // Ambas condiciones cumplidas → stale mecánico. (citedLines refinaría aún más,
+  // pero la intersección de archivos ya satisface SR-5; queda como mejora futura.)
+  reasons.push(`doble condición SR-5 cumplida: fix posterior + toca [${touched.join(', ')}] → stale (mecánico)`);
+  result.stale = true;
+  return result;
+}
+
+/**
+ * Wrapper booleano de conveniencia (espeja `isBuildLogStale`): true si el
+ * rechazo de gate quedó stale. SR-4 primero: un rechazo de seguridad devuelve
+ * `false` incondicional ANTES de cualquier chequeo git.
+ *
+ * @param {Object} reject  rechazo normalizado (ver `inspectGateReject`)
+ * @param {string} head    SHA vigente de HEAD
+ * @param {Object} [opts]  { runGit?, gitOpts? }
+ * @returns {boolean}
+ */
+function isGateRejectStale(reject, head, opts) {
+  if (!reject || reject.source === 'security') return false; // SR-4 incondicional
+  const info = inspectGateReject(reject, head, opts);
+  return info.stale === true;
+}
+
 /**
  * Cuenta cuántas veces un issue ya fue reseteado por stale-log, leyendo el
  * audit JSONL. Retorna 0 si no existe el archivo.
@@ -301,6 +491,10 @@ module.exports = {
   getMaxResetsPerIssue,
   inspectBuildLog,
   isBuildLogStale,
+  // Variante genérica de gate-reject staleness (#4759 parte b)
+  inspectGateReject,
+  isGateRejectStale,
+  normalizeGitPath,
   getStaleResetCount,
   appendAuditReset,
   buildTelegramStaleMessage,

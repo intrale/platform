@@ -389,6 +389,127 @@ async function test(name, fn) {
     );
   });
 
+  // ===========================================================================
+  // Gate-reject staleness genérico (#4759 parte b) — SR-4 / SR-5.
+  // Se inyecta un fake runGit para no depender del estado real del repo.
+  // ===========================================================================
+
+  // fakeGit(map): responde a merge-base / diff / (default error) según `map`.
+  //   map.ancestor  {boolean}  exit 0 para `merge-base --is-ancestor`
+  //   map.changed   {string[]} salida de `diff --name-only`
+  //   map.throwOn   {string=}  substring del comando en el que lanza excepción
+  //   map.diffExit  {number=}  override exit_code del diff (default 0)
+  function fakeGit(map = {}) {
+    return (args) => {
+      const key = args.join(' ');
+      if (map.throwOn && key.includes(map.throwOn)) {
+        throw new Error('boom git: ' + key);
+      }
+      if (key.startsWith('merge-base --is-ancestor')) {
+        return { exit_code: map.ancestor ? 0 : 1, stdout: '', stderr: '' };
+      }
+      if (key.startsWith('diff --name-only')) {
+        return {
+          exit_code: map.diffExit == null ? 0 : map.diffExit,
+          stdout: (map.changed || []).join('\n'),
+          stderr: '',
+        };
+      }
+      return { exit_code: 1, stdout: '', stderr: '' };
+    };
+  }
+
+  const CITED = '.pipeline/build-log-staleness.js';
+
+  // S14 — stale mecánico: fix posterior + toca archivo citado → true
+  await test('S14: isGateRejectStale true cuando fix es posterior y toca el archivo citado (SR-5 cumplida)', () => {
+    const reject = { source: 'build', rejectSha: 'aaa111', citedFiles: [CITED] };
+    const runGit = fakeGit({ ancestor: true, changed: [CITED, 'otro.js'] });
+    const info = staleness.inspectGateReject(reject, 'bbb222', { runGit });
+    assert.strictEqual(info.stale, true, JSON.stringify(info.reasons));
+    assert.strictEqual(info.touchesCited, true);
+    assert.strictEqual(info.rejectRef, 'aaa111');
+    assert.strictEqual(info.fixCommit, 'bbb222');
+    assert.strictEqual(staleness.isGateRejectStale(reject, 'bbb222', { runGit }), true);
+  });
+
+  // S15 — falso stale: fix posterior pero NO toca el archivo citado → false (decision)
+  await test('S15: falso stale — fix no toca el archivo citado → false (SR-5 → decision)', () => {
+    const reject = { source: 'verificacion', rejectSha: 'aaa111', citedFiles: [CITED] };
+    const runGit = fakeGit({ ancestor: true, changed: ['un/archivo/distinto.js'] });
+    const info = staleness.inspectGateReject(reject, 'bbb222', { runGit });
+    assert.strictEqual(info.stale, false);
+    assert.strictEqual(info.touchesCited, false);
+    assert.strictEqual(staleness.isGateRejectStale(reject, 'bbb222', { runGit }), false);
+  });
+
+  // S16 — falso stale: fix NO es posterior (mismo sha o no-ancestro) → false
+  await test('S16: falso stale — fix no es posterior al rechazo → false (SR-5)', () => {
+    // Mismo sha
+    const same = { source: 'build', rejectSha: 'aaa111', citedFiles: [CITED] };
+    assert.strictEqual(
+      staleness.isGateRejectStale(same, 'aaa111', { runGit: fakeGit({ ancestor: true, changed: [CITED] }) }),
+      false,
+    );
+    // rejectSha no es ancestro de head (anterior/divergente)
+    const notAnc = { source: 'build', rejectSha: 'zzz999', citedFiles: [CITED] };
+    const info = staleness.inspectGateReject(notAnc, 'bbb222', { runGit: fakeGit({ ancestor: false, changed: [CITED] }) });
+    assert.strictEqual(info.stale, false);
+  });
+
+  // S17 — SR-4: security con doble condición cumplida → false incondicional (nunca stale)
+  await test('S17: source=security con fix posterior + toca líneas → false incondicional (SR-4)', () => {
+    const reject = { source: 'security', rejectSha: 'aaa111', citedFiles: [CITED] };
+    // fakeGit diría stale=true, pero SR-4 corta antes de tocar git.
+    const runGit = fakeGit({ ancestor: true, changed: [CITED] });
+    assert.strictEqual(staleness.isGateRejectStale(reject, 'bbb222', { runGit }), false);
+    const info = staleness.inspectGateReject(reject, 'bbb222', { runGit });
+    assert.strictEqual(info.stale, false);
+    assert.ok(info.reasons.some((r) => /SR-4/.test(r)), 'debe registrar SR-4: ' + info.reasons.join(' | '));
+  });
+
+  // S18 — entradas nula/ambigua/sin citedFiles → false (conservador)
+  await test('S18: entrada nula/ambigua/sin citedFiles → false (conservador)', () => {
+    assert.strictEqual(staleness.isGateRejectStale(null, 'bbb222'), false);
+    assert.strictEqual(staleness.isGateRejectStale(undefined, 'bbb222'), false);
+    // sin citedFiles
+    const noFiles = { source: 'build', rejectSha: 'aaa111' };
+    assert.strictEqual(staleness.isGateRejectStale(noFiles, 'bbb222', { runGit: fakeGit({ ancestor: true }) }), false);
+    // sin rejectSha ni rejectedAt
+    const noRef = { source: 'build', citedFiles: [CITED] };
+    const info = staleness.inspectGateReject(noRef, 'bbb222', { runGit: fakeGit({ ancestor: true, changed: [CITED] }) });
+    assert.strictEqual(info.stale, false);
+    // sólo rejectedAt (sin rejectSha) → conservador
+    const onlyDate = { source: 'build', rejectedAt: '2026-01-01T00:00:00Z', citedFiles: [CITED] };
+    assert.strictEqual(staleness.isGateRejectStale(onlyDate, 'bbb222', { runGit: fakeGit({ changed: [CITED] }) }), false);
+    // head inválido
+    assert.strictEqual(staleness.isGateRejectStale({ source: 'build', rejectSha: 'aaa', citedFiles: [CITED] }, ''), false);
+  });
+
+  // S19 — error de git (ref inexistente / excepción) → false, sin lanzar
+  await test('S19: error de git (ref inexistente o excepción) → false, sin excepción', () => {
+    const reject = { source: 'build', rejectSha: 'aaa111', citedFiles: [CITED] };
+    // merge-base lanza excepción → conservador, sin propagar
+    const throwing = fakeGit({ throwOn: 'merge-base' });
+    assert.doesNotThrow(() => staleness.isGateRejectStale(reject, 'bbb222', { runGit: throwing }));
+    assert.strictEqual(staleness.isGateRejectStale(reject, 'bbb222', { runGit: throwing }), false);
+    // diff falla con exit != 0 (ref inexistente) → conservador
+    const diffFails = fakeGit({ ancestor: true, diffExit: 128, changed: [] });
+    const info = staleness.inspectGateReject(reject, 'bbb222', { runGit: diffFails });
+    assert.strictEqual(info.stale, false);
+  });
+
+  // S20 — normalizeGitPath: backslashes/`./` → forma canónica para intersección
+  await test('S20: normalizeGitPath normaliza separadores y ./ (match Windows/UNIX)', () => {
+    assert.strictEqual(staleness.normalizeGitPath('.\\a\\b.js'), 'a/b.js');
+    assert.strictEqual(staleness.normalizeGitPath('./a/b.js'), 'a/b.js');
+    assert.strictEqual(staleness.normalizeGitPath('a/b.js'), 'a/b.js');
+    // citedFile con backslash matchea salida de git (forward slash)
+    const reject = { source: 'build', rejectSha: 'aaa111', citedFiles: ['.pipeline\\build-log-staleness.js'] };
+    const runGit = fakeGit({ ancestor: true, changed: [CITED] });
+    assert.strictEqual(staleness.isGateRejectStale(reject, 'bbb222', { runGit }), true);
+  });
+
   console.log(`\n${pass} pasaron, ${fail} fallaron`);
   process.exit(fail === 0 ? 0 : 1);
 })();
