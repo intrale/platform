@@ -27,9 +27,44 @@ const os = require('os');
 const path = require('path');
 
 const staleness = require('./build-log-staleness');
+// #4766 — git real para los tests de integración de la variante genérica.
+const { runGit } = require('./skills-deterministicos/lib/git-ops');
 
 let pass = 0;
 let fail = 0;
+
+// #4766 — Helpers para armar un repo git temporal con commits reales. Ejercen
+// la lógica de ancestría/diff de `inspectGateReject` de punta a punta (sin
+// mocks de git — la seguridad SR-5/SEC-3 se prueba contra git de verdad).
+function initTempRepo() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gatereject-'));
+  const g = (args) => {
+    const r = runGit(args, { cwd: dir });
+    if (r.exit_code !== 0) {
+      throw new Error(`git ${args.join(' ')} → ${r.stderr || r.error || 'exit ' + r.exit_code}`);
+    }
+    return (r.stdout || '').trim();
+  };
+  g(['init', '-q']);
+  g(['config', 'user.email', 'test@intrale.local']);
+  g(['config', 'user.name', 'TestIntrale']);
+  g(['config', 'commit.gpgsign', 'false']);
+  return { dir, g };
+}
+function writeCommit(ctx, file, content, msg) {
+  const full = path.join(ctx.dir, file);
+  fs.mkdirSync(path.dirname(full), { recursive: true });
+  fs.writeFileSync(full, content);
+  ctx.g(['add', '--', file]);
+  // runGit usa shell:true en Windows → args con espacios se re-parten. Usamos
+  // un mensaje de un solo token para el commit (el contenido del msg no es
+  // relevante para los asserts).
+  ctx.g(['commit', '-q', '-m', String(msg).replace(/\s+/g, '-')]);
+  return ctx.g(['rev-parse', 'HEAD']);
+}
+function rmTemp(ctx) {
+  try { fs.rmSync(ctx.dir, { recursive: true, force: true }); } catch {}
+}
 
 async function test(name, fn) {
   try {
@@ -387,6 +422,216 @@ async function test(name, fn) {
       () => yaml.load('fn: !!js/function "function () { return 42; }"'),
       /unknown tag|cannot resolve/i,
     );
+  });
+
+  // ===========================================================================
+  // #4766 — Variante genérica de staleness para rechazos de gate (split b de #4759)
+  // ===========================================================================
+
+  // GR1 — CA-1: stale real (fix estrictamente posterior + toca archivo citado) → true
+  await test('GR1: isGateRejectStale stale real (posterior + toca citado) → true', () => {
+    const ctx = initTempRepo();
+    try {
+      const rejectSha = writeCommit(ctx, 'src/a.js', 'linea1\nlinea2\nlinea3\n', 'estado del rechazo');
+      const headSha = writeCommit(ctx, 'src/a.js', 'linea1\nFIX\nlinea3\n', 'fix del defecto');
+      const reject = { source: 'build', rejectSha, citedFiles: ['src/a.js'] };
+      const info = staleness.inspectGateReject(reject, headSha, { cwd: ctx.dir });
+      assert.strictEqual(info.stale, true, `esperaba stale=true; reasons=${info.reasons.join(' | ')}`);
+      assert.strictEqual(info.touchesCited, true);
+      assert.ok(Array.isArray(info.reasons) && info.reasons.length > 0, 'CA-9: reasons no vacío');
+      assert.strictEqual(staleness.isGateRejectStale(reject, headSha, { cwd: ctx.dir }), true);
+    } finally { rmTemp(ctx); }
+  });
+
+  // GR2 — CA-2: falso stale por archivo (fix NO toca el archivo citado) → false
+  await test('GR2: falso stale — fix no toca el archivo citado → false (SR-5)', () => {
+    const ctx = initTempRepo();
+    try {
+      const rejectSha = writeCommit(ctx, 'src/a.js', 'contenido a\n', 'estado del rechazo');
+      // El fix toca OTRO archivo, no el citado.
+      const headSha = writeCommit(ctx, 'src/b.js', 'contenido b\n', 'cambio en otro archivo');
+      const reject = { source: 'verificacion', rejectSha, citedFiles: ['src/a.js'] };
+      const info = staleness.inspectGateReject(reject, headSha, { cwd: ctx.dir });
+      assert.strictEqual(info.stale, false, `reasons=${info.reasons.join(' | ')}`);
+      assert.ok(info.reasons.some((r) => /NO toca/.test(r)), 'reason debe explicar que no toca el archivo');
+      assert.strictEqual(staleness.isGateRejectStale(reject, headSha, { cwd: ctx.dir }), false);
+    } finally { rmTemp(ctx); }
+  });
+
+  // GR3 — CA-3: falso stale por orden (mismo sha / no posterior) → false
+  await test('GR3: falso stale — fix no posterior al rechazo → false (SR-5/SEC-3)', () => {
+    const ctx = initTempRepo();
+    try {
+      const c1 = writeCommit(ctx, 'src/a.js', 'v1\n', 'commit 1');
+      const c2 = writeCommit(ctx, 'src/a.js', 'v2\n', 'commit 2');
+
+      // 3a) mismo sha (rejectSha === head) → no posterior
+      const sameInfo = staleness.inspectGateReject(
+        { source: 'build', rejectSha: c2, citedFiles: ['src/a.js'] }, c2, { cwd: ctx.dir },
+      );
+      assert.strictEqual(sameInfo.stale, false, 'mismo sha no es posterior');
+
+      // 3b) rechazo POSTERIOR al "fix" (head es c1, reject es c2) → no ancestro
+      const anteInfo = staleness.inspectGateReject(
+        { source: 'build', rejectSha: c2, citedFiles: ['src/a.js'] }, c1, { cwd: ctx.dir },
+      );
+      assert.strictEqual(anteInfo.stale, false, 'fix anterior al rechazo no es stale');
+      assert.ok(anteInfo.reasons.some((r) => /no posterior/.test(r)));
+    } finally { rmTemp(ctx); }
+  });
+
+  // GR4 — CA-4/SEC-1: seguridad NUNCA stale, aunque cumpla la doble condición
+  await test('GR4: source=security nunca stale (SR-4/SEC-1) aun cumpliendo doble condición', () => {
+    const ctx = initTempRepo();
+    try {
+      const rejectSha = writeCommit(ctx, 'src/vuln.js', 'insecuro\n', 'rechazo de seguridad');
+      const headSha = writeCommit(ctx, 'src/vuln.js', 'parche\n', 'fix seguridad');
+      // Doble condición SR-5 cumplida, pero source=security → false incondicional.
+      assert.strictEqual(
+        staleness.isGateRejectStale({ source: 'security', rejectSha, citedFiles: ['src/vuln.js'] }, headSha, { cwd: ctx.dir }),
+        false, 'security nunca stale',
+      );
+      // Normalización: ' Security ' con espacios/mayúsculas tampoco evade (SEC-1).
+      assert.strictEqual(
+        staleness.isGateRejectStale({ source: '  Security ', rejectSha, citedFiles: ['src/vuln.js'] }, headSha, { cwd: ctx.dir }),
+        false, 'normalización trim/lowercase de source',
+      );
+      // inspect directo también corta por SR-4 (defensa en profundidad).
+      const info = staleness.inspectGateReject({ source: 'SECURITY', rejectSha, citedFiles: ['src/vuln.js'] }, headSha, { cwd: ctx.dir });
+      assert.strictEqual(info.stale, false);
+      assert.ok(info.reasons.some((r) => /SR-4/.test(r)));
+    } finally { rmTemp(ctx); }
+  });
+
+  // GR5 — CA-5: entrada nula / sin citedFiles / ref inexistente → false sin throw
+  await test('GR5: nula/sin citedFiles/ref inexistente → false conservador (sin excepción)', () => {
+    // Null / no-objeto
+    assert.strictEqual(staleness.isGateRejectStale(null, 'a'.repeat(40)), false);
+    assert.strictEqual(staleness.isGateRejectStale(undefined, 'a'.repeat(40)), false);
+    assert.strictEqual(staleness.isGateRejectStale('no-objeto', 'a'.repeat(40)), false);
+
+    const ctx = initTempRepo();
+    try {
+      const rejectSha = writeCommit(ctx, 'src/a.js', 'v1\n', 'c1');
+      const headSha = writeCommit(ctx, 'src/a.js', 'v2\n', 'c2');
+
+      // Sin citedFiles → conservador
+      const noFiles = staleness.inspectGateReject({ source: 'build', rejectSha }, headSha, { cwd: ctx.dir });
+      assert.strictEqual(noFiles.stale, false);
+      assert.ok(noFiles.reasons.some((r) => /citedFiles/.test(r)));
+
+      // Ref inexistente (hex válido pero no está en el repo) → false, sin throw
+      const ghost = '0'.repeat(40);
+      const info = staleness.inspectGateReject({ source: 'build', rejectSha: ghost, citedFiles: ['src/a.js'] }, headSha, { cwd: ctx.dir });
+      assert.strictEqual(info.stale, false);
+      assert.ok(info.reasons.some((r) => /no resuelve/.test(r)));
+    } finally { rmTemp(ctx); }
+  });
+
+  // GR6 — CA-6/SEC-2/SEC-3: injection-safe (refs y paths validados)
+  await test('GR6: injection-safe — normalizeGateSha/normalizeCitedPath rechazan input malicioso', () => {
+    // SHAs: rechazar metacaracteres, flags, refs raras, largo inválido.
+    assert.strictEqual(staleness.normalizeGateSha('abc1234; rm -rf /'), null);
+    assert.strictEqual(staleness.normalizeGateSha('--upload-pack=touch x'), null);
+    assert.strictEqual(staleness.normalizeGateSha('HEAD~1'), null);
+    assert.strictEqual(staleness.normalizeGateSha('a'.repeat(41)), null, '>40 hex inválido');
+    assert.strictEqual(staleness.normalizeGateSha('abc'), null, '<7 hex inválido');
+    assert.strictEqual(staleness.normalizeGateSha('$(whoami)'), null);
+    assert.strictEqual(staleness.normalizeGateSha('  ABC1234  '), 'abc1234', 'trim + lowercase');
+    assert.strictEqual(staleness.normalizeGateSha('a'.repeat(40)), 'a'.repeat(40));
+
+    // Paths: confinamiento al repo.
+    assert.strictEqual(staleness.normalizeCitedPath('../../etc/passwd'), null);
+    assert.strictEqual(staleness.normalizeCitedPath('/etc/passwd'), null);
+    assert.strictEqual(staleness.normalizeCitedPath('C:/Windows/system32'), null);
+    assert.strictEqual(staleness.normalizeCitedPath('a/../../b'), null);
+    assert.strictEqual(staleness.normalizeCitedPath('src/a.js'), 'src/a.js');
+    assert.strictEqual(staleness.normalizeCitedPath('.pipeline\\lib\\x.js'), '.pipeline/lib/x.js', 'backslashes → posix');
+
+    // inspectGateReject filtra citedFiles maliciosos → sin path válido → conservador.
+    const ctx = initTempRepo();
+    try {
+      const rejectSha = writeCommit(ctx, 'src/a.js', 'v1\n', 'c1');
+      const headSha = writeCommit(ctx, 'src/a.js', 'v2\n', 'c2');
+      const info = staleness.inspectGateReject(
+        { source: 'build', rejectSha, citedFiles: ['../../../etc/passwd', '/abs/evil'] },
+        headSha, { cwd: ctx.dir },
+      );
+      assert.strictEqual(info.stale, false, 'paths maliciosos filtrados → sin citedFiles → false');
+      assert.ok(info.reasons.some((r) => /citedFiles/.test(r)));
+    } finally { rmTemp(ctx); }
+  });
+
+  // GR7 — CA-7/SEC-4: granularidad de línea (cambio fuera de líneas citadas no marca stale)
+  await test('GR7: granularidad de línea — cambio fuera de rango citado → false; dentro → true', () => {
+    const ctx = initTempRepo();
+    try {
+      const base = Array.from({ length: 10 }, (_, i) => `linea${i + 1}`).join('\n') + '\n';
+      const rejectSha = writeCommit(ctx, 'src/a.js', base, 'estado del rechazo');
+      // El fix modifica SOLO la línea 2.
+      const fixed = base.replace('linea2', 'linea2-FIX');
+      const headSha = writeCommit(ctx, 'src/a.js', fixed, 'fix en linea 2');
+
+      // Citadas líneas 8-9 (cosmético fuera del rango tocado) → false
+      const outOfRange = staleness.inspectGateReject(
+        { source: 'build', rejectSha, citedFiles: ['src/a.js'], citedLines: [{ file: 'src/a.js', from: 8, to: 9 }] },
+        headSha, { cwd: ctx.dir },
+      );
+      assert.strictEqual(outOfRange.stale, false, `líneas 8-9 no tocadas; reasons=${outOfRange.reasons.join(' | ')}`);
+      assert.ok(outOfRange.reasons.some((r) => /líneas citadas/.test(r)));
+
+      // Citada línea 2 (tocada) → true
+      const inRange = staleness.inspectGateReject(
+        { source: 'build', rejectSha, citedFiles: ['src/a.js'], citedLines: [{ file: 'src/a.js', from: 2 }] },
+        headSha, { cwd: ctx.dir },
+      );
+      assert.strictEqual(inRange.stale, true, `línea 2 tocada; reasons=${inRange.reasons.join(' | ')}`);
+    } finally { rmTemp(ctx); }
+  });
+
+  // GR8 — CA-5: error de git (cwd no es repo) → false sin excepción
+  await test('GR8: git falla (cwd no-repo) → false sin lanzar excepción', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'norepo-'));
+    try {
+      const info = staleness.inspectGateReject(
+        { source: 'build', rejectSha: 'a'.repeat(40), citedFiles: ['src/a.js'] },
+        'b'.repeat(40), { cwd: tmp },
+      );
+      assert.strictEqual(info.stale, false);
+      assert.ok(Array.isArray(info.reasons) && info.reasons.length > 0);
+    } finally {
+      try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
+    }
+  });
+
+  // GR9 — parseDiffNewRanges: cobertura de la rama de parsing (unit puro)
+  await test('GR9: parseDiffNewRanges parsea headers de hunk (incl. count=0)', () => {
+    const diff = [
+      'diff --git a/x b/x',
+      '@@ -1,2 +1,3 @@',
+      '@@ -10 +12,0 @@',   // eliminación pura → toca línea de anclaje 12
+      '@@ -20,5 +25,2 @@',
+      'no-header',
+    ].join('\n');
+    assert.deepStrictEqual(staleness.parseDiffNewRanges(diff), [
+      { from: 1, to: 3 },
+      { from: 12, to: 12 },
+      { from: 25, to: 26 },
+    ]);
+    assert.deepStrictEqual(staleness.parseDiffNewRanges(''), []);
+    assert.deepStrictEqual(staleness.parseDiffNewRanges(null), []);
+  });
+
+  // GR10 — CA-8: no regresión — helpers de build-log intactos y funcionales
+  await test('GR10: no regresión — inspectBuildLog/isBuildLogStale siguen operativos', () => {
+    // Los helpers de build-log NO deben verse afectados por la variante genérica.
+    assert.strictEqual(typeof staleness.inspectBuildLog, 'function');
+    assert.strictEqual(typeof staleness.isBuildLogStale, 'function');
+    assert.strictEqual(staleness.isBuildLogStale('9999999', 1000), false);
+    // getStalenessThresholdMs y su clamp intactos.
+    const d = staleness.getStalenessThresholdMs({ staleness: { build_log_max_age_hours: 24 } });
+    assert.strictEqual(d.hours, 24);
+    assert.strictEqual(d.clamped, false);
   });
 
   console.log(`\n${pass} pasaron, ${fail} fallaron`);

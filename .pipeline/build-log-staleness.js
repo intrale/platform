@@ -30,12 +30,26 @@
 const fs = require('fs');
 const path = require('path');
 
+// #4766 — Operaciones git seguras (argv, resuelve PATH/git-dir en Windows).
+// Se usa SÓLO por los helpers `inspectGateReject`/`isGateRejectStale` (variante
+// genérica de staleness para rechazos de gate). Los helpers de build-log
+// (inspectBuildLog/isBuildLogStale) NO tocan git y quedan intactos.
+const { runGit: defaultRunGit, ensureGitInPath } = require('./skills-deterministicos/lib/git-ops');
+
 // Paths relativos al .pipeline/ — cuando pulpo.js requiere este módulo,
 // __dirname apunta a .pipeline/
 const PIPELINE = __dirname;
 const LOG_DIR = path.join(PIPELINE, 'logs');
 const AUDIT_DIR = path.join(LOG_DIR, 'audit');
 const AUDIT_FILE = path.join(AUDIT_DIR, 'circuit-breaker.jsonl');
+
+// #4766 — Root del repo (padre de `.pipeline/`). cwd por defecto de las
+// operaciones git de la variante genérica.
+const REPO_ROOT = path.dirname(PIPELINE);
+
+// #4766 — SHA/ref de git válido: 7-40 hex. Rechaza refs con `..`, `;`, `$()`,
+// flags (`--upload-pack`), backticks, etc. (SEC-2, argv-injection safe).
+const GATE_SHA_RE = /^[0-9a-f]{7,40}$/;
 
 // Clamp mínimo hardcoded: 5 minutos. Evita que una config maliciosa o
 // errónea (ej. `build_log_max_age_hours: 0`) marque TODO como stale y
@@ -161,6 +175,277 @@ function inspectBuildLog(issue, thresholdMs) {
 function isBuildLogStale(issue, thresholdMs) {
   const info = inspectBuildLog(issue, thresholdMs);
   return info.exists && info.stale === true;
+}
+
+// =============================================================================
+// #4766 — Variante GENÉRICA de staleness para rechazos de gate.
+//
+// Split (b) de #4759. Generaliza la idea de `isBuildLogStale` a un rechazo de
+// gate arbitrario (`build`/`verificacion`/`aprobacion`/…): un rechazo es "stale"
+// (mecánico, re-corre el gate) SÓLO si el fix vigente sobre HEAD resuelve
+// empíricamente el defecto citado. Se agrega AL LADO de los helpers de
+// build-log — NO modifica `inspectBuildLog`/`isBuildLogStale`/
+// `getStalenessThresholdMs` ni la config `build_log_max_age_hours` (CA-8).
+//
+// Requisitos de seguridad (receta del Arquitecto + security en #4766):
+//   SR-4/SEC-1 — `source === 'security'` NUNCA es stale. Fail-closed, evaluado
+//     ANTES de cualquier operación git (en el wrapper `isGateRejectStale`).
+//   SR-5      — doble condición OBLIGATORIA para marcar stale:
+//     (1) el fix es estrictamente posterior al rechazo — por ANCESTRÍA
+//         (`merge-base --is-ancestor`), NUNCA por timestamp de commit (SEC-3,
+//         `GIT_COMMITTER_DATE` es falsificable), y
+//     (2) el fix TOCA el/los archivo(s) — y líneas, si `citedLines` — citados.
+//     Falta cualquiera / ambigüedad / error → `stale:false` (conservador).
+//   SEC-2     — todo ref/path que entra a git se valida (`GATE_SHA_RE`,
+//     confinamiento de paths) y se pasa por argv (`runGit`), nunca por shell.
+//   SEC-4     — granularidad de línea: un cambio cosmético fuera de las líneas
+//     citadas NO marca stale.
+//
+// NOTA DE SCOPE: el mapeo final `stale + source → mecanico/decision` (incluido
+// el corolario SEC-1 "source ausente/desconocido → decision") lo hace el
+// `block-classifier` (entregable 2, `dependency_block` de #4765). Estos helpers
+// sólo responden "¿el rechazo está stale?" de forma pura y auditable.
+// =============================================================================
+
+/**
+ * Valida y normaliza un SHA/ref de git a hex minúscula. Devuelve `null` si no
+ * es un hash 7-40 hex (SEC-2: previene injection vía refs con metacaracteres,
+ * `..`, flags `--upload-pack`, etc.).
+ *
+ * @param {unknown} ref
+ * @returns {string|null}
+ */
+function normalizeGateSha(ref) {
+  if (ref === null || ref === undefined) return null;
+  const s = String(ref).trim().toLowerCase();
+  return GATE_SHA_RE.test(s) ? s : null;
+}
+
+/**
+ * Normaliza un path citado y lo confina al repo. Devuelve el path POSIX
+ * relativo, o `null` si es absoluto (POSIX `/`, Windows `C:/`, UNC `//`),
+ * escapa del repo (`..`) o queda vacío (SEC-2, path-confinement).
+ *
+ * @param {unknown} p
+ * @returns {string|null}
+ */
+function normalizeCitedPath(p) {
+  if (typeof p !== 'string') return null;
+  const raw = p.trim();
+  if (!raw) return null;
+  const unified = raw.replace(/\\/g, '/');
+  // Absolutos: POSIX `/x`, Windows `C:/x`, UNC `//host`
+  if (unified.startsWith('/') || /^[a-z]:\//i.test(unified)) return null;
+  const norm = path.posix.normalize(unified);
+  if (norm === '..' || norm.startsWith('../') || norm.includes('/../')) return null;
+  return norm.startsWith('./') ? norm.slice(2) : norm;
+}
+
+/**
+ * Parsea los headers de hunk de un `git diff --unified=0` y devuelve los rangos
+ * de líneas modificadas del lado NUEVO (post-fix). Header:
+ *   `@@ -a,b +c,d @@`  (b/d opcionales → valen 1; d===0 = pura eliminación,
+ *   que "toca" la línea de anclaje `c`).
+ *
+ * @param {string} diffText
+ * @returns {Array<{ from: number, to: number }>}
+ */
+function parseDiffNewRanges(diffText) {
+  const ranges = [];
+  for (const line of String(diffText || '').split(/\r?\n/)) {
+    const m = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
+    if (!m) continue;
+    const start = parseInt(m[1], 10);
+    const count = m[2] === undefined ? 1 : parseInt(m[2], 10);
+    if (count === 0) {
+      ranges.push({ from: start, to: start });
+    } else {
+      ranges.push({ from: start, to: start + count - 1 });
+    }
+  }
+  return ranges;
+}
+
+function gateRangesOverlap(a, b) {
+  return a.from <= b.to && b.from <= a.to;
+}
+
+/**
+ * Implementación de `inspectGateReject` (separada para envolverla en try/catch).
+ * NO tira: ante cualquier ambigüedad/error → `{ stale:false }`.
+ */
+function _inspectGateRejectImpl(reject, head, opts, reasons) {
+  const runGit = (opts && opts.runGit) || defaultRunGit;
+  const cwd = (opts && opts.cwd) || REPO_ROOT;
+  // SEC-2: argv-injection safe. `shell:false` fuerza CreateProcess directo (sin
+  // cmd.exe que interprete `^{commit}`, metacaracteres o concatene argumentos —
+  // ver DEP0190). `ensureGitInPath` resuelve git.exe cuando el pulpo corre como
+  // servicio sin git en PATH (mismo patrón que git-ops en Windows).
+  const gopts = { cwd, shell: false, env: ensureGitInPath(process.env) };
+  const out = (stale, extra) => Object.assign(
+    { stale, reasons, fixCommit: null, rejectRef: null, touchesCited: false },
+    extra || {},
+  );
+
+  // CA-5: entrada nula/no-objeto → conservador.
+  if (!reject || typeof reject !== 'object') {
+    reasons.push('reject nulo o no-objeto → conservador');
+    return out(false);
+  }
+
+  // SR-4/SEC-1: seguridad nunca stale. Defensa en profundidad (el wrapper ya
+  // corta ANTES de tocar git; lo repetimos por si se llama a inspect directo).
+  const source = String(reject.source || '').trim().toLowerCase();
+  if (source === 'security') {
+    reasons.push('source=security → nunca stale (SR-4/SEC-1)');
+    return out(false);
+  }
+
+  // SEC-2: HEAD debe ser un SHA válido antes de tocar git.
+  const headSha = normalizeGateSha(head);
+  if (!headSha) {
+    reasons.push('head no es un SHA válido → conservador (SEC-2)');
+    return out(false);
+  }
+
+  // SEC-3: la ancestría requiere `rejectSha`. Sin él NO ordenamos por timestamp
+  // (falsificable) → conservador.
+  const rejectSha = normalizeGateSha(reject.rejectSha);
+  if (!rejectSha) {
+    reasons.push('sin rejectSha verificable (no ordenamos por timestamp, SEC-3) → conservador');
+    return out(false);
+  }
+
+  // CA-5/SEC-2: citedFiles obligatorio, no vacío y confinado al repo.
+  const citedRaw = Array.isArray(reject.citedFiles) ? reject.citedFiles : [];
+  const citedFiles = citedRaw.map(normalizeCitedPath).filter(Boolean);
+  if (!citedFiles.length) {
+    reasons.push('sin citedFiles verificables/confinados → conservador (SR-5/SEC-2)');
+    return out(false, { rejectRef: rejectSha });
+  }
+
+  // Resolver ambos refs a commits reales. CA-5: ref inexistente → false sin throw.
+  const rejResolved = runGit(['rev-parse', '--verify', `${rejectSha}^{commit}`], gopts);
+  if (!rejResolved || rejResolved.exit_code !== 0) {
+    reasons.push('rejectSha no resuelve a commit (ref inexistente) → conservador');
+    return out(false, { rejectRef: rejectSha });
+  }
+  const headResolved = runGit(['rev-parse', '--verify', `${headSha}^{commit}`], gopts);
+  if (!headResolved || headResolved.exit_code !== 0) {
+    reasons.push('head no resuelve a commit → conservador');
+    return out(false, { rejectRef: rejectSha });
+  }
+  const rejFull = String(rejResolved.stdout || '').trim().toLowerCase();
+  const headFull = String(headResolved.stdout || '').trim().toLowerCase();
+
+  // SR-5 condición 1: estrictamente posterior (ancestría, no timestamp SEC-3).
+  if (rejFull && headFull && rejFull === headFull) {
+    reasons.push('rejectSha === head (mismo commit) → no posterior (SR-5/CA-3)');
+    return out(false, { rejectRef: rejectSha, fixCommit: headFull });
+  }
+  const isAnc = runGit(['merge-base', '--is-ancestor', rejectSha, headSha], gopts);
+  if (!isAnc || isAnc.exit_code !== 0) {
+    reasons.push('fix no es descendiente del rechazo (merge-base --is-ancestor ≠ 0) → no posterior (SR-5/CA-3)');
+    return out(false, { rejectRef: rejectSha, fixCommit: headFull });
+  }
+  reasons.push('fix estrictamente posterior al rechazo (ancestría OK)');
+
+  // SR-5 condición 2: el fix toca los archivos citados.
+  const diff = runGit(['diff', '--name-only', rejectSha, headSha], gopts);
+  if (!diff || diff.exit_code !== 0) {
+    reasons.push('git diff --name-only falló → conservador');
+    return out(false, { rejectRef: rejectSha, fixCommit: headFull });
+  }
+  const changedFiles = new Set(
+    String(diff.stdout || '')
+      .split(/\r?\n/)
+      .map((l) => l.trim().replace(/\\/g, '/'))
+      .filter(Boolean),
+  );
+  const touchedCited = citedFiles.filter((f) => changedFiles.has(f));
+  if (!touchedCited.length) {
+    reasons.push('el fix NO toca ninguno de los archivos citados → falso stale (SR-5/CA-2)');
+    return out(false, { rejectRef: rejectSha, fixCommit: headFull });
+  }
+  reasons.push(`fix toca archivo(s) citado(s): ${touchedCited.join(', ')}`);
+
+  // SEC-4/CA-7: si el rechazo cita líneas, refinar a granularidad de rango.
+  const citedLines = Array.isArray(reject.citedLines) ? reject.citedLines : null;
+  if (citedLines && citedLines.length) {
+    let anyLineTouched = false;
+    for (const cl of citedLines) {
+      if (!cl || typeof cl !== 'object') continue;
+      const file = normalizeCitedPath(cl.file);
+      if (!file || !touchedCited.includes(file)) continue;
+      const from = Number(cl.from);
+      const to = Number(cl.to === undefined ? cl.from : cl.to);
+      if (!Number.isFinite(from) || !Number.isFinite(to)) continue;
+      const citedRange = { from: Math.min(from, to), to: Math.max(from, to) };
+      const fdiff = runGit(['diff', '--unified=0', rejectSha, headSha, '--', file], gopts);
+      if (!fdiff || fdiff.exit_code !== 0) continue;
+      const ranges = parseDiffNewRanges(fdiff.stdout);
+      if (ranges.some((r) => gateRangesOverlap(r, citedRange))) {
+        anyLineTouched = true;
+        break;
+      }
+    }
+    if (!anyLineTouched) {
+      reasons.push('el fix no toca las líneas citadas (cambio fuera de rango) → falso stale (SEC-4/CA-7)');
+      return out(false, { rejectRef: rejectSha, fixCommit: headFull, touchesCited: false });
+    }
+    reasons.push('el fix toca las líneas citadas (SEC-4 OK)');
+  }
+
+  reasons.push('doble condición SR-5 cumplida → stale (mecánico)');
+  return out(true, { rejectRef: rejectSha, fixCommit: headFull, touchesCited: true });
+}
+
+/**
+ * Variante genérica de `inspectBuildLog` para un rechazo de gate normalizado.
+ * Evalúa la doble condición SR-5 (fix posterior por ancestría + toca archivo/
+ * líneas citadas) y devuelve trazabilidad. NO muta el input ni el FS; sólo lee
+ * git. NUNCA tira: ante error/ambigüedad → `{ stale:false }`.
+ *
+ * @param {{
+ *   source?: string,
+ *   rejectSha?: string,
+ *   rejectedAt?: string,
+ *   citedFiles?: string[],
+ *   citedLines?: Array<{ file: string, from: number, to?: number }>,
+ * }} reject  — rechazo de gate normalizado.
+ * @param {string} head  — SHA vigente de HEAD sobre el que se evalúa el fix.
+ * @param {{ cwd?: string, runGit?: Function }} [opts]
+ * @returns {{
+ *   stale: boolean, reasons: string[], fixCommit: string|null,
+ *   rejectRef: string|null, touchesCited: boolean
+ * }}
+ */
+function inspectGateReject(reject, head, opts = {}) {
+  const reasons = [];
+  try {
+    return _inspectGateRejectImpl(reject, head, opts, reasons);
+  } catch (e) {
+    reasons.push(`error inesperado (${e && e.message}) → conservador`);
+    return { stale: false, reasons, fixCommit: null, rejectRef: null, touchesCited: false };
+  }
+}
+
+/**
+ * Wrapper booleano de conveniencia (espeja `isBuildLogStale`). SR-4/SEC-1
+ * PRIMERO DE TODO: si `source === 'security'` → `false` incondicional, ANTES de
+ * cualquier chequeo git. Para cualquier otro caso, delega en `inspectGateReject`.
+ *
+ * @param {object} reject
+ * @param {string} head
+ * @param {{ cwd?: string, runGit?: Function }} [opts]
+ * @returns {boolean}
+ */
+function isGateRejectStale(reject, head, opts) {
+  // SR-4/SEC-1 incondicional, antes de tocar git.
+  if (!reject || typeof reject !== 'object') return false;
+  if (String(reject.source || '').trim().toLowerCase() === 'security') return false;
+  const info = inspectGateReject(reject, head, opts);
+  return info.stale === true;
 }
 
 /**
@@ -301,6 +586,12 @@ module.exports = {
   getMaxResetsPerIssue,
   inspectBuildLog,
   isBuildLogStale,
+  // #4766 — variante genérica de staleness para rechazos de gate
+  inspectGateReject,
+  isGateRejectStale,
+  normalizeGateSha,
+  normalizeCitedPath,
+  parseDiffNewRanges,
   getStaleResetCount,
   appendAuditReset,
   buildTelegramStaleMessage,
