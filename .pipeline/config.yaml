@@ -1672,3 +1672,45 @@ wave_auto_transition:
 telegram:
   bot_username: "intrale_bot"
 
+# =============================================================================
+# Commander product-aware — binding server-side productId → operadores (#4780)
+# =============================================================================
+# Ola Puente P6 (split de #4691 §4.7). El Telegram Commander pasa de "un chat
+# autorizado global" a "N productos, cada uno con operadores autorizados". La
+# autorización de acciones destructivas keyea en la IDENTIDAD del operador
+# (`msg.from.id`), NO en `chat.id` (en un grupo cualquier miembro comparte
+# chat.id — SR-1/A07). Este mapeo se resuelve SIEMPRE server-side; el `productId`
+# NUNCA se lee "de confianza" del texto del usuario.
+#
+# SEGURIDAD: acá van SOLO identificadores de operador (chat/user id de Telegram),
+# que no son secretos per se pero identifican a quién puede operar cada producto.
+# El `bot_token` sigue viviendo exclusivamente en credentials.json.
+#
+# Retro-compat (SR-6 / CA-5.1): si `products` está vacío, el registry sintetiza
+# el producto default `Intrale` con el operador único histórico
+# (`telegram.leo_operator_chat_id` de credentials.json) → el Commander
+# mono-producto sigue operando idéntico, sin wildcard.
+#
+# `default_product`: producto al que resuelve una petición SIN productId.
+commander_products:
+  default_product: "Intrale"
+  # RETRO-COMPAT RUNTIME (SR-6): con `products: {}` VACÍO, el registry SINTETIZA
+  # en runtime el producto default `Intrale` con el operador único histórico
+  # (`telegram.leo_operator_chat_id`/`chat_id` → `defaultOperator` del loader).
+  # Es el camino que `listener-telegram.getProductCommander()` ejecuta hoy en
+  # producción y el que ejercita `product-command-integration.test.js`
+  # (mensaje entrante → authz → confirmación → ejecución real → audit).
+  #
+  # CUIDADO: declarar `Intrale` acá con `operators: []` NO hereda el operador
+  # histórico — con `products` no vacío la síntesis se SALTEA y un set de
+  # operadores vacío deja a TODOS sin autorización (fail-closed). Para declarar
+  # productos explícitos, listá SIEMPRE sus operadores por `chat_id`:
+  #   products:
+  #     Intrale:
+  #       name: "Intrale"
+  #       operators: ["<chat_id_operador>"]   # el operador histórico, explícito
+  #     Comercios-AR:
+  #       name: "Comercios-AR"
+  #       operators: ["<chat_id_operador_B>"]
+  products: {}
+

@@ -173,4 +173,101 @@ function createAuditLog(opts) {
     return { record, currentPath, listToday };
 }
 
-module.exports = { createAuditLog, sha256Hex, todayStamp };
+// =============================================================================
+// #4780 (Ola Puente P6) — Audit trail product-aware TAMPER-EVIDENT (SR-7 / A09).
+//
+// El `createAuditLog` de arriba es append-only PLANO: registra `from`/`chat_id`
+// pero NO `productId` ni `origen`, y una edición del archivo NO es detectable.
+// Para SEC-7 ("audit trail inmutable: actor + productId + timestamp + origen")
+// necesitamos:
+//   (a) sumar `actor` (`from.id`), `productId`, `origen` a cada entry, y
+//   (b) hash-chain — cada entry encadena el hash de la anterior, de modo que
+//       editar una línea previa ROMPE la verificación.
+//
+// En vez de duplicar el patrón de chain (ya hay UN lugar canónico:
+// `lib/audit-log.js` con `appendChained`/`verifyChain`, hash SHA-256 sobre JSON
+// canónico + `hash_prev` genesis), este recorder DELEGA en ese módulo. Así el
+// commander gana el audit tamper-evident sin reimplementar criptografía ni el
+// file-lock cross-proceso que ese módulo ya resuelve (#3275 CA-8).
+// =============================================================================
+
+const chainedAudit = require('../audit-log');
+
+// Origen fijo de las acciones que entran por el Commander de Telegram. Es un
+// literal congelado (no se deriva del input del usuario — anti log-forging).
+const ORIGEN_TELEGRAM = 'telegram';
+
+/**
+ * Crea un recorder product-aware tamper-evident sobre `file` (un .jsonl
+ * hash-chained). Reusa `appendChained` del módulo canónico.
+ *
+ * @param {object} opts
+ * @param {string} opts.file             path absoluto al .jsonl encadenado.
+ * @param {function} [opts.redact]       redactor de strings (default: identity).
+ * @param {function} [opts.now]          clock inyectable (default Date.now).
+ * @param {object} [opts.fsImpl]         fs inyectable (tests).
+ * @param {string} [opts.origen]         origen de las acciones (default 'telegram').
+ * @returns {{ record: function, verify: function, file: string }}
+ */
+function createProductAudit(opts) {
+    const options = opts || {};
+    const file = options.file;
+    if (!file || typeof file !== 'string') {
+        throw new Error('product-audit: opts.file es obligatorio');
+    }
+    const redact = typeof options.redact === 'function' ? options.redact : (s) => s;
+    const now = typeof options.now === 'function' ? options.now : () => Date.now();
+    const fsImpl = options.fsImpl;
+    const origen = typeof options.origen === 'string' && options.origen.length > 0
+        ? options.origen
+        : ORIGEN_TELEGRAM;
+
+    function redactStr(v) {
+        if (v === null || v === undefined) return null;
+        return redact(String(v));
+    }
+
+    /**
+     * Persiste UNA acción del commander en el chain. Campos obligatorios de
+     * SEC-7: `actor` (from.id), `productId`, `timestamp` (ts, lo pone el chain
+     * vía created_at), `origen` (fijo). `action`/`result` clasifican la acción.
+     *
+     * @param {object} entry
+     * @param {string|number} entry.actor      identidad del operador (from.id).
+     * @param {string} entry.productId          producto sobre el que se actuó.
+     * @param {string} entry.action             comando ejecutado/intentado.
+     * @param {string} entry.result             resultado (ok|rejected|injection|...).
+     * @returns {{hash_self, hash_prev, line}}
+     */
+    function record(entry) {
+        const e = entry || {};
+        const payload = {
+            actor: redactStr(e.actor),
+            productId: redactStr(e.productId),
+            origen,
+            action: redactStr(e.action),
+            result: redactStr(e.result),
+            // `ts` explícito además del `created_at` del chain, para que el
+            // consumidor tenga el timestamp de la acción sin depender del campo
+            // interno del encadenado.
+            ts: new Date(now()).toISOString(),
+        };
+        return chainedAudit.appendChained({ file, entry: payload, fsImpl });
+    }
+
+    /** Verifica la integridad del chain completo. Delega en `verifyChain`. */
+    function verify() {
+        return chainedAudit.verifyChain(file, fsImpl);
+    }
+
+    return { record, verify, file };
+}
+
+module.exports = {
+    createAuditLog,
+    sha256Hex,
+    todayStamp,
+    // #4780 — audit product-aware tamper-evident.
+    createProductAudit,
+    ORIGEN_TELEGRAM,
+};
