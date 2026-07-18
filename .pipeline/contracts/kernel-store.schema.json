@@ -137,7 +137,12 @@
           "type": "string",
           "pattern": "^[a-z0-9][a-z0-9-]{1,63}$"
         },
-        "updatedAt": { "type": "integer", "minimum": 0 }
+        "updatedAt": { "type": "integer", "minimum": 0 },
+        "owner": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{1,63}$"
+        },
+        "expiresAt": { "type": "integer", "minimum": 0 }
       }
     }
   }
