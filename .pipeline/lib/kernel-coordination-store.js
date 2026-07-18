@@ -125,14 +125,36 @@ function createCoordinationStore(deps = {}) {
     }
   }
 
-  function envelope(key, value, version) {
+  // Claves dinámicas de claim/cuota: NO están en la allowlist fija de estado
+  // (waves/blocked/health), pero deben ser ids seguros (no inyectables, A05) y
+  // NO colisionar con las claves reservadas de coordinación.
+  function assertSafeKey(key) {
+    if (!isSafeId(key)) {
+      throw new KernelStoreError(
+        `clave dinámica de coordinación inválida (isSafeId): ${JSON.stringify(key)}`, { key },
+      );
+    }
+    if (knownKeys.has(key)) {
+      throw new KernelStoreError(
+        `clave reservada de coordinación no usable como claim/cuota: ${JSON.stringify(key)}`, { key },
+      );
+    }
+  }
+
+  // `extra` transporta los campos del claim (owner/expiresAt). Sólo se agregan
+  // al body cuando vienen definidos, para no ensuciar el estado de coordinación
+  // clásico (waves/blocked/health) ni forzar cambios en ítems que no son claims.
+  function envelope(key, value, version, extra = {}) {
+    const body = { key, value, version, updatedBy: instanceId, updatedAt: Math.floor(now()) };
+    if (extra.owner !== undefined) body.owner = extra.owner;
+    if (extra.expiresAt !== undefined) body.expiresAt = extra.expiresAt;
     return {
       PK: contextProjectId,
       SK: skFor(key),
       entityType: ENTITY_COORDINATION,
       projectId: contextProjectId,
       schemaVersion: SCHEMA_VERSION,
-      body: { key, value, version, updatedBy: instanceId, updatedAt: Math.floor(now()) },
+      body,
     };
   }
 
@@ -172,23 +194,26 @@ function createCoordinationStore(deps = {}) {
 
   // ---- API -------------------------------------------------------------------
 
-  async function getState(key) {
-    assertKnownKey(key);
-    const raw = await readValidated(key);
+  // Shape de lectura común (incluye owner/expiresAt del claim si están).
+  function shapeState(raw) {
     if (!raw) return null;
-    return { value: raw.body.value, version: raw.body.version, updatedBy: raw.body.updatedBy, updatedAt: raw.body.updatedAt };
+    const out = {
+      value: raw.body.value,
+      version: raw.body.version,
+      updatedBy: raw.body.updatedBy,
+      updatedAt: raw.body.updatedAt,
+    };
+    if (raw.body.owner !== undefined) out.owner = raw.body.owner;
+    if (raw.body.expiresAt !== undefined) out.expiresAt = raw.body.expiresAt;
+    return out;
   }
 
-  /**
-   * Crea el estado por primera vez (create-once). Sólo una instancia gana la
-   * carrera vía `attribute_not_exists(PK)`.
-   * @returns {{ ok:boolean, created?:boolean, exists?:boolean, version?:number }}
-   */
-  async function initState(key, value) {
-    assertKnownKey(key);
+  // ---- Núcleo (sin validación de allowlist; los callers validan la clave) ----
+
+  async function initStateCore(key, value, extra) {
     assertObject(value);
     await ensureTable();
-    const item = envelope(key, value, 1);
+    const item = envelope(key, value, 1, extra);
     assertWritable(item);
     try {
       await driver.putItem(spec, item, {
@@ -202,6 +227,66 @@ function createCoordinationStore(deps = {}) {
     }
   }
 
+  async function compareAndSetCore(key, value, expectedVersion, extra) {
+    assertObject(value);
+    await ensureTable();
+    const cur = await readValidated(key);
+
+    if (!cur) {
+      if (expectedVersion != null && expectedVersion !== 0) {
+        return { ok: false, conflict: true, version: 0 };
+      }
+      const created = await initStateCore(key, value, extra);
+      return created.ok ? { ok: true, version: 1 } : { ok: false, conflict: true, version: 0 };
+    }
+
+    const currentVersion = cur.body.version;
+    if (currentVersion !== expectedVersion) {
+      return { ok: false, conflict: true, version: currentVersion };
+    }
+
+    const nextVersion = currentVersion + 1;
+    const item = envelope(key, value, nextVersion, extra);
+    assertWritable(item);
+
+    // CAS atómico sobre `body.version` (path anidado `#b.#v`). Con
+    // `atomicUpdate` (driver real o in-memory forzado, #4777 R1/SEC-2) la
+    // condición se evalúa en el write y cierra el TOCTOU read→write. Sin
+    // `atomicUpdate` (in-memory single-instance por default) la consistencia se
+    // apoya en la lectura previa monohilo (determinística offline).
+    const opts = atomicUpdate
+      ? {
+        conditionExpression: '#b.#v = :ev',
+        expressionAttributeNames: { '#b': 'body', '#v': 'version' },
+        expressionAttributeValues: { ':ev': expectedVersion },
+      }
+      : {};
+    try {
+      await driver.putItem(spec, item, opts);
+      return { ok: true, version: nextVersion };
+    } catch (e) {
+      if (e instanceof ConditionalCheckFailedError) return { ok: false, conflict: true, version: currentVersion };
+      throw e;
+    }
+  }
+
+  // ---- API pública de estado de coordinación (allowlist waves/blocked/health) -
+
+  async function getState(key) {
+    assertKnownKey(key);
+    return shapeState(await readValidated(key));
+  }
+
+  /**
+   * Crea el estado por primera vez (create-once). Sólo una instancia gana la
+   * carrera vía `attribute_not_exists(PK)`.
+   * @returns {{ ok:boolean, created?:boolean, exists?:boolean, version?:number }}
+   */
+  async function initState(key, value) {
+    assertKnownKey(key);
+    return initStateCore(key, value);
+  }
+
   /**
    * Compare-and-set optimista por versión. Escribe `value` sólo si la versión
    * actual coincide con `expectedVersion`; incrementa la versión.
@@ -213,43 +298,137 @@ function createCoordinationStore(deps = {}) {
    */
   async function compareAndSet(key, value, expectedVersion) {
     assertKnownKey(key);
-    assertObject(value);
+    return compareAndSetCore(key, value, expectedVersion);
+  }
+
+  // ---- CA-1 · Débito de cuota de pagos central y atómico -----------------------
+
+  /**
+   * Debita `deltaTokens` de un contador central único (coordination store) de
+   * forma atómica vía `compareAndSet` con reintento acotado por conflicto de
+   * versión (NUNCA last-write-wins). Ningún débito concurrente se pierde.
+   *
+   * SEC-1: al store SÓLO viaja el contador `{ consumed }` (más versión/metadata
+   * del envelope). NUNCA credenciales, tokens, keys ni `cost_usd` crudo.
+   *
+   * @param {string} key            clave de cuota (isSafeId; ej. `quota-anthropic`).
+   * @param {number} deltaTokens    delta a sumar (>= 0).
+   * @param {object} [opts] { maxRetries=5 }
+   * @returns {{ ok:true, consumed:number, version:number }}
+   */
+  async function debitPaid(key, deltaTokens, opts = {}) {
+    assertSafeKey(key);
+    const delta = Number(deltaTokens);
+    if (!Number.isFinite(delta) || delta < 0) {
+      throw new KernelStoreError('debitPaid requiere deltaTokens finito y >= 0', { deltaTokens });
+    }
+    const maxRetries = Number.isFinite(opts.maxRetries) && opts.maxRetries > 0 ? Math.floor(opts.maxRetries) : 5;
+    await ensureTable();
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      const cur = await readValidated(key);
+      const base = cur ? (Number(cur.body.value && cur.body.value.consumed) || 0) : 0;
+      const expectedVersion = cur ? cur.body.version : 0;
+      const res = await compareAndSetCore(key, { consumed: base + delta }, expectedVersion);
+      if (res.ok) return { ok: true, consumed: base + delta, version: res.version };
+      // conflict → otra instancia debitó primero: reintentar sobre la versión fresca.
+    }
+    throw new KernelStoreError('debitPaid: conflicto de versión sostenido tras reintentos', { key, maxRetries });
+  }
+
+  // ---- CA-2/CA-3/CA-4 · Claim cloud-ready con lease + release con ownership ----
+
+  /**
+   * Reserva atómica de un trabajo por `attribute_not_exists` (create-once). Si
+   * el claim ya existe pero su lease venció, se reclama de forma atómica por
+   * `compareAndSet` sobre la versión (sin doble ejecución en el solapamiento).
+   *
+   * @param {string} key   clave del trabajo (isSafeId).
+   * @param {object} opts  { owner (isSafeId, no adivinable), leaseMs (>0) }
+   * @returns {{ ok:boolean, owner?, expiresAt?, version?, reclaimed?, exists?, conflict? }}
+   */
+  async function claim(key, opts = {}) {
+    assertSafeKey(key);
+    const owner = opts.owner;
+    if (!isSafeId(owner)) {
+      throw new KernelStoreError('claim requiere un owner válido (isSafeId, no adivinable)', {
+        owner: owner == null ? null : String(owner),
+      });
+    }
+    const leaseMs = Number.isFinite(opts.leaseMs) ? Math.floor(opts.leaseMs) : 0;
+    if (!(leaseMs > 0)) {
+      throw new KernelStoreError('claim requiere leaseMs > 0 (evita lock huérfano permanente)', { leaseMs: opts.leaseMs });
+    }
+    await ensureTable();
+    const nowMs = Math.floor(now());
+    const expiresAt = nowMs + leaseMs;
+    const value = { claimed: true };
+    const extra = { owner, expiresAt };
+
+    const cur = await readValidated(key);
+    if (!cur) {
+      const created = await initStateCore(key, value, extra);
+      if (created.ok) return { ok: true, owner, expiresAt, version: 1, reclaimed: false };
+      // Perdimos la carrera de create-once → alguien más lo tiene.
+      const fresh = await readValidated(key);
+      return {
+        ok: false, exists: true,
+        owner: fresh && fresh.body.owner,
+        expiresAt: fresh && fresh.body.expiresAt,
+      };
+    }
+
+    // Claim vigente (owner presente y lease no vencido) → no se toca.
+    const curOwner = cur.body.owner;
+    const curExpires = cur.body.expiresAt;
+    const held = curOwner != null && Number.isFinite(curExpires) && curExpires > nowMs;
+    if (held) {
+      return { ok: false, exists: true, owner: curOwner, expiresAt: curExpires };
+    }
+
+    // Libre o expirado → reclamo atómico por versión (un solo ganador).
+    const res = await compareAndSetCore(key, value, cur.body.version, extra);
+    if (res.ok) return { ok: true, owner, expiresAt, version: res.version, reclaimed: true };
+    return { ok: false, exists: true, conflict: true };
+  }
+
+  /**
+   * Libera un claim validando ownership de forma atómica (delete condicional
+   * sobre el atributo `owner`, NUNCA read-then-delete ciego). Una instancia B
+   * NO puede liberar el claim de A.
+   *
+   * @param {string} key   clave del trabajo (isSafeId).
+   * @param {object} opts  { expectedOwner (isSafeId) }
+   * @returns {{ ok:boolean, released:boolean, reason?, owner? }}
+   */
+  async function release(key, opts = {}) {
+    assertSafeKey(key);
+    const expectedOwner = opts.expectedOwner;
+    if (!isSafeId(expectedOwner)) {
+      throw new KernelStoreError('release requiere expectedOwner válido (isSafeId)', {
+        expectedOwner: expectedOwner == null ? null : String(expectedOwner),
+      });
+    }
     await ensureTable();
     const cur = await readValidated(key);
-
-    if (!cur) {
-      if (expectedVersion != null && expectedVersion !== 0) {
-        return { ok: false, conflict: true, version: 0 };
-      }
-      const created = await initState(key, value);
-      return created.ok ? { ok: true, version: 1 } : { ok: false, conflict: true, version: 0 };
+    if (!cur) return { ok: true, released: false, reason: 'absent' };
+    if (cur.body.owner !== expectedOwner) {
+      return { ok: false, released: false, reason: 'not-owner', owner: cur.body.owner };
     }
 
-    const currentVersion = cur.body.version;
-    if (currentVersion !== expectedVersion) {
-      return { ok: false, conflict: true, version: currentVersion };
-    }
-
-    const nextVersion = currentVersion + 1;
-    const item = envelope(key, value, nextVersion);
-    assertWritable(item);
-
-    // Con el driver real, el CAS es atómico (AWS evalúa `#v = :ev`). Con el
-    // in-memory —que sólo evalúa attribute_not_exists— NO se pasa la condición
-    // (rompería con CCFE al existir la clave); la consistencia se apoya en la
-    // lectura previa (determinística offline, un solo hilo).
-    const opts = atomicUpdate
-      ? {
-        conditionExpression: '#v = :ev',
-        expressionAttributeNames: { '#v': 'version' },
-        expressionAttributeValues: { ':ev': expectedVersion },
-      }
-      : {};
+    // Ownership atómico: la autoridad la da la condición sobre `body.owner` en
+    // el delete (no la lectura previa). Con `atomicUpdate` la evalúa el write;
+    // sin él (in-memory single-instance) el delete es directo tras el chequeo.
+    const delOpts = atomicUpdate ? {
+      conditionExpression: '#b.#o = :owner',
+      expressionAttributeNames: { '#b': 'body', '#o': 'owner' },
+      expressionAttributeValues: { ':owner': expectedOwner },
+    } : {};
     try {
-      await driver.putItem(spec, item, opts);
-      return { ok: true, version: nextVersion };
+      await driver.deleteItem(spec, { PK: contextProjectId, SK: skFor(key) }, delOpts);
+      return { ok: true, released: true };
     } catch (e) {
-      if (e instanceof ConditionalCheckFailedError) return { ok: false, conflict: true, version: currentVersion };
+      if (e instanceof ConditionalCheckFailedError) return { ok: false, released: false, reason: 'conflict' };
       throw e;
     }
   }
@@ -267,6 +446,9 @@ function createCoordinationStore(deps = {}) {
     getState,
     initState,
     compareAndSet,
+    debitPaid,
+    claim,
+    release,
   };
 }
 

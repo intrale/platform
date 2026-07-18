@@ -244,6 +244,76 @@ function validateKey(raw, label, keyType, errors) {
 // Driver in-memory (base de tests y smoke offline)
 // -----------------------------------------------------------------------------
 
+// Marcador para condiciones que el evaluador in-memory NO sabe interpretar
+// (p.ej. `OR`, comparadores `<`/`>`). En ese caso se cae al comportamiento
+// legacy conservador (rechazar sólo si la clave ya existe), que preserva la
+// semántica histórica de `attribute_not_exists(...)` sin sobre-prometer CAS.
+const _UNSUPPORTED_CONDITION = Symbol('unsupported-condition');
+
+// Resuelve una referencia de atributo (posiblemente anidada `#a.#b`) a la lista
+// de segmentos reales, traduciendo cada `#name` por `expressionAttributeNames`.
+function _resolveAttrRef(ref, names) {
+    return String(ref).split('.').map((seg) => {
+        const s = seg.trim();
+        if (s.startsWith('#')) {
+            const mapped = names && Object.prototype.hasOwnProperty.call(names, s) ? names[s] : null;
+            return mapped != null ? mapped : s.slice(1);
+        }
+        return s;
+    });
+}
+
+// Navega `obj` por la lista de segmentos; devuelve undefined si el path no existe.
+function _getByPath(obj, segments) {
+    let cur = obj;
+    for (const seg of segments) {
+        if (cur == null || typeof cur !== 'object') return undefined;
+        cur = cur[seg];
+    }
+    return cur;
+}
+
+/**
+ * Evalúa una ConditionExpression de DynamoDB de forma offline y determinística.
+ * Soporta el subconjunto que usa el kernel para writes atómicos:
+ *   - `attribute_not_exists(<ref>)` / `attribute_exists(<ref>)`
+ *   - igualdad `<ref> = :placeholder` (incluye paths anidados `#b.#v`)
+ *   - conjunción por ` AND `
+ * Devuelve `true`/`false`, o `_UNSUPPORTED_CONDITION` si la expresión usa formas
+ * que este evaluador no interpreta (OR, comparadores relacionales, etc.).
+ *
+ * `existing` es el ítem persistido (o `undefined` si la clave no existe).
+ */
+function _evaluateCondition(opts, existing) {
+    const expr = String(opts.conditionExpression || '').trim();
+    if (!expr) return true;
+    // Formas no soportadas → delegar a la política legacy del caller.
+    if (/\bOR\b/i.test(expr) || /[<>]/.test(expr)) return _UNSUPPORTED_CONDITION;
+
+    const names = opts.expressionAttributeNames || {};
+    const values = opts.expressionAttributeValues || {};
+    const terms = expr.split(/\bAND\b/i).map((t) => t.trim()).filter(Boolean);
+
+    for (const term of terms) {
+        let m;
+        if ((m = /^attribute_not_exists\(\s*(.+?)\s*\)$/i.exec(term))) {
+            const v = existing === undefined ? undefined : _getByPath(existing, _resolveAttrRef(m[1], names));
+            if (v !== undefined) return false;
+        } else if ((m = /^attribute_exists\(\s*(.+?)\s*\)$/i.exec(term))) {
+            const v = existing === undefined ? undefined : _getByPath(existing, _resolveAttrRef(m[1], names));
+            if (v === undefined) return false;
+        } else if ((m = /^(.+?)\s*=\s*(:[A-Za-z0-9_]+)$/.exec(term))) {
+            if (existing === undefined) return false;
+            const actual = _getByPath(existing, _resolveAttrRef(m[1].trim(), names));
+            const expected = values[m[2]];
+            if (!Object.is(actual, expected)) return false;
+        } else {
+            return _UNSUPPORTED_CONDITION;
+        }
+    }
+    return true;
+}
+
 /**
  * Driver de recursos en memoria. Implementa el `ResourceDriver` port de forma
  * determinística y sin red. Cada método devuelve un objeto plano; los métodos
@@ -280,13 +350,24 @@ function createInMemoryDynamoDriver() {
         async putItem(spec, item, opts = {}) {
             const t = tables.get(spec.tableName);
             if (!t) throw new Error(`tabla inexistente: ${spec.tableName}`);
-            // Concurrencia optimista: si el caller pide una condición, replicamos
-            // la semántica `attribute_not_exists(<pk>)` — la escritura sólo
-            // procede si la clave NO existe todavía. Da paridad con aws-cli para
-            // testear append-only / leader-election sin AWS (#4743 REQ-5).
-            if (opts.conditionExpression && t.items.has(keyOf(spec, item))) {
-                throw new ConditionalCheckFailedError(
-                    `condición fallida en put-item ${spec.tableName}: ${opts.conditionExpression}`);
+            // Concurrencia optimista: replicamos la semántica de la
+            // ConditionExpression para dar paridad con aws-cli (#4743 REQ-5).
+            // Además de `attribute_not_exists(<pk>)` (create-once / leader
+            // election), ahora evaluamos igualdad (`#b.#v = :ev`) para que el
+            // CAS atómico por versión/owner sea real offline (#4777 CA-1/CA-3,
+            // R1/SEC-2: sin esto el test de concurrencia daba falso verde).
+            if (opts.conditionExpression) {
+                const k = keyOf(spec, item);
+                const existing = t.items.get(k);
+                const verdict = _evaluateCondition(opts, existing);
+                // Forma no soportada → política legacy conservadora: rechazar
+                // sólo si la clave ya existe (preserva el comportamiento
+                // histórico de `attribute_not_exists(...) OR ...`).
+                const pass = verdict === _UNSUPPORTED_CONDITION ? existing === undefined : verdict;
+                if (!pass) {
+                    throw new ConditionalCheckFailedError(
+                        `condición fallida en put-item ${spec.tableName}: ${opts.conditionExpression}`);
+                }
             }
             t.items.set(keyOf(spec, item), JSON.parse(JSON.stringify(item)));
             return { ok: true };
@@ -299,10 +380,22 @@ function createInMemoryDynamoDriver() {
             return { item: found ? JSON.parse(JSON.stringify(found)) : null };
         },
 
-        async deleteItem(spec, key) {
+        async deleteItem(spec, key, opts = {}) {
             const t = tables.get(spec.tableName);
             if (!t) throw new Error(`tabla inexistente: ${spec.tableName}`);
-            t.items.delete(keyOf(spec, key));
+            const k = keyOf(spec, key);
+            // Delete condicional (ownership atómico del release, #4777 CA-3):
+            // sólo borra si la condición se cumple sobre el ítem persistido.
+            if (opts.conditionExpression) {
+                const existing = t.items.get(k);
+                const verdict = _evaluateCondition(opts, existing);
+                const pass = verdict === _UNSUPPORTED_CONDITION ? existing !== undefined : verdict;
+                if (!pass) {
+                    throw new ConditionalCheckFailedError(
+                        `condición fallida en delete-item ${spec.tableName}: ${opts.conditionExpression}`);
+                }
+            }
+            t.items.delete(k);
             return { ok: true };
         },
     };
@@ -415,8 +508,24 @@ function createAwsCliDynamoDriver({ run } = {}) {
             return { item: res && res.Item ? fromAttrValues(res.Item) : null };
         },
 
-        async deleteItem(spec, key) {
-            await cli(['delete-item', '--table-name', spec.tableName, '--key', JSON.stringify(toAttrValues(key))]);
+        async deleteItem(spec, key, opts = {}) {
+            const args = ['delete-item', '--table-name', spec.tableName,
+                '--key', JSON.stringify(toAttrValues(key))];
+            // Delete condicional (ownership atómico del release, #4777 CA-3).
+            // Mismo contrato que putItem: flags como elementos separados del
+            // array → `spawn`, sin interpolación en shell string (A03).
+            if (opts.conditionExpression) {
+                args.push('--condition-expression', opts.conditionExpression);
+                if (opts.expressionAttributeValues) {
+                    args.push('--expression-attribute-values',
+                        JSON.stringify(toAttrValues(opts.expressionAttributeValues)));
+                }
+                if (opts.expressionAttributeNames) {
+                    args.push('--expression-attribute-names',
+                        JSON.stringify(opts.expressionAttributeNames));
+                }
+            }
+            await cli(args);
             return { ok: true };
         },
     };

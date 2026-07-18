@@ -48,6 +48,30 @@ const DEFAULT_WINDOW = Object.freeze({
     mode:  'gauge',
 });
 
+// Clasificación de proveedores por modelo de contabilidad de cuota (#4777 CA-1):
+//   - PAGOS (Anthropic/Codex): consumo contabilizado en un contador CENTRAL
+//     único (coordination store) vía débito atómico. Ningún consumo concurrente
+//     se pierde. Medición fidedigna (feedback_quota-fidedigna-pagos-vs-free).
+//   - FREE (Gemini/Groq-Cerebras/NVIDIA): medición LOCAL flexible (recordSample,
+//     snapshot de disponible por headers/eventos). No requiere contador central.
+const PAID_PROVIDERS = Object.freeze(['anthropic', 'openai-codex']);
+const FREE_PROVIDERS = Object.freeze(['gemini-google', 'cerebras', 'nvidia-nim']);
+
+function isPaidProvider(provider) {
+    return PAID_PROVIDERS.includes(provider);
+}
+
+function isFreeProvider(provider) {
+    return FREE_PROVIDERS.includes(provider);
+}
+
+// Clave del contador central por proveedor pago. Los nombres de proveedor son
+// una allowlist fija de código (a-z + guion) → clave `isSafeId`-segura para el
+// coordination store, sin datos crudos del caller.
+function _quotaKeyFor(provider) {
+    return `quota-${provider}`;
+}
+
 // TTL de una muestra cacheada (headers/eventos) antes de tratarla como stale.
 // Una muestra más vieja que esto NO se usa como dato fresco: la celda cae a
 // "sin dato" (evita mostrar cuota fantasma de hace horas como si fuera real).
@@ -149,6 +173,40 @@ function recordSample(sample) {
     }
 }
 
+/**
+ * Débito de cuota de un proveedor PAGO al contador central único (coordination
+ * store), de forma atómica (`store.debitPaid` → `compareAndSet` con reintento
+ * por conflicto de versión). Free tiers NO usan esta ruta: siguen en medición
+ * local (`recordSample`).
+ *
+ * SEC-1 (OWASP A02, bloqueante): al store SÓLO viaja el contador de tokens
+ * consumidos. NUNCA credenciales, API keys, tokens de sesión ni `cost_usd`
+ * crudo. La fuente única de secretos sigue en `credentials.js`.
+ *
+ * @param {object} store   coordination store con `debitPaid(key, delta, opts)`.
+ * @param {object} params  { provider, deltaTokens, maxRetries? }
+ * @returns {Promise<{ ok:true, consumed:number, version:number }>}
+ */
+async function debitPaidQuota(store, params) {
+    const p = params || {};
+    const provider = p.provider;
+    if (!isPaidProvider(provider)) {
+        throw new Error(
+            `debitPaidQuota sólo aplica a proveedores pagos (${PAID_PROVIDERS.join('/')}); ` +
+            `los free tiers usan medición local. Recibido: ${String(provider)}`);
+    }
+    if (!store || typeof store.debitPaid !== 'function') {
+        throw new Error('debitPaidQuota requiere un coordination store con debitPaid()');
+    }
+    const deltaTokens = Number(p.deltaTokens);
+    if (!Number.isFinite(deltaTokens) || deltaTokens < 0) {
+        throw new Error('debitPaidQuota requiere deltaTokens finito y >= 0');
+    }
+    // Sólo el contador viaja al store (lo garantiza store.debitPaid: persiste
+    // `{ consumed }`). Acá no adjuntamos keys/tokens/cost.
+    return store.debitPaid(_quotaKeyFor(provider), deltaTokens, { maxRetries: p.maxRetries });
+}
+
 // Devuelve la muestra cacheada fresca para provider+bucket, o null si no hay o
 // está stale (más vieja que CACHE_TTL_MS).
 function _freshCacheSample(cache, provider, bucketKind, now) {
@@ -242,10 +300,16 @@ function enrich(provider, normalized, adapterResult, opts) {
 module.exports = {
     PROVIDER_WINDOWS,
     CACHE_TTL_MS,
+    PAID_PROVIDERS,
+    FREE_PROVIDERS,
     enrich,
     readCache,
     recordSample,
+    isPaidProvider,
+    isFreeProvider,
+    debitPaidQuota,
     // exportados para test
     _availableFromConsumed,
     _resetAtFor,
+    _quotaKeyFor,
 };
