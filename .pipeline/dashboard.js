@@ -1889,6 +1889,41 @@ function* _genPipelineState() {
     state.quota = buildQuotaStateBlock({ PIPELINE, ROOT });
   } catch { /* mantiene el default fail-closed */ }
 
+  // #4778 (Ola Puente P6 · CA-1.4/CA-1.5) — Catálogo de productos + estado
+  // NAMESPACEADO por projectId para el dashboard product-aware (switcher + grid
+  // "estado por producto"). Regla de aislamiento (A01): cada producto sólo ve su
+  // propio namespace; NUNCA se agrega estado cross-product. Para el producto
+  // primario/por defecto (retro-compat · CA-5.1) el estado deriva del snapshot
+  // vivo del pipeline — que ES el contexto de coordinación del producto por
+  // defecto; los productos adicionales que el kernel onboardee se materializan en
+  // este MISMO mapa segmentado, sin mezclar datos entre productos. Fail-open: si
+  // el catálogo no carga, el dashboard sigue operando single-product.
+  state.products = [];
+  state.productState = {};
+  try {
+    const productCatalog = require('./lib/product-catalog');
+    const catalog = productCatalog.listProducts(path.join(PIPELINE, 'descriptors'));
+    // Resumen de pipeline del producto por defecto desde el propio issueMatrix
+    // (NO se agrega estado de otros namespaces). Conteos honestos por estadoActual.
+    let activos = 0, pendientes = 0, bloqueados = 0;
+    for (const data of Object.values(state.issueMatrix)) {
+      if (!data) continue;
+      if (data.estadoActual === 'trabajando') activos++;
+      else if (data.estadoActual === 'pendiente' || data.estadoActual === 'listo') pendientes++;
+      if (typeof data.faseActual === 'string' && /bloqueados/.test(data.faseActual)) bloqueados++;
+    }
+    const primarySummary = { activos, pendientes, bloqueados, procesados: doneIssueIds.length };
+    const isPausedNow = fs.existsSync(path.join(PIPELINE, '.paused'));
+    const now = Date.now();
+    state.products = catalog;
+    for (const p of catalog) {
+      const isPrimaryActive = p.role === 'primary' && p.status === 'active';
+      state.productState[p.projectId] = isPrimaryActive
+        ? { projectId: p.projectId, name: p.name, status: p.status, state: isPausedNow ? 'paused' : 'active', phase: 'operando', metrics: primarySummary, updatedAt: now }
+        : { projectId: p.projectId, name: p.name, status: p.status, state: p.status === 'onboarding' ? 'onboarding' : 'inactive', phase: p.status || 'inactive', metrics: { activos: 0, pendientes: 0, bloqueados: 0, procesados: 0 }, updatedAt: now };
+    }
+  } catch { /* product-aware opcional: single-product sin catálogo */ }
+
   return state;
 }
 

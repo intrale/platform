@@ -85,8 +85,11 @@ function renderProductSwitcherSsr(opts = {}) {
     const activeMeta = products.find(p => p.projectId === active) || products[0];
     const links = products.map(p => {
         const isActive = p.projectId === active;
-        // Navegación GET solo-vista — sin efecto de estado (SEC-7a).
-        const href = `${escapeHtmlAttr(basePath)}?productId=${escapeHtmlAttr(encodeURIComponent(p.projectId))}`;
+        // Navegación GET solo-vista — sin efecto de estado (SEC-7a). Si el basePath
+        // ya trae query string (ej. `?view=estado-productos`), se preserva la vista
+        // uniendo con `&amp;` en vez de abrir un segundo `?` (que rompería el parseo).
+        const sep = basePath.includes('?') ? '&amp;' : '?';
+        const href = `${escapeHtmlAttr(basePath)}${sep}productId=${escapeHtmlAttr(encodeURIComponent(p.projectId))}`;
         return `<a class="mz-projsel-opt${isActive ? ' mz-projsel-opt-active' : ''}" role="menuitemradio" `
             + `aria-checked="${isActive ? 'true' : 'false'}" href="${href}" `
             + `title="${escapeHtmlAttr('Ver el producto ' + p.name + ' (solo vista, no concede permisos)')}">`

@@ -36,12 +36,13 @@ const SPRITE_PATH = path.resolve(__dirname, '..', '..', '..', 'assets', 'icons',
 // NAV_TABS — inventario y forma de cada entrada
 // ---------------------------------------------------------------------------
 
-test('NAV_TABS tiene exactamente 14 entradas en el orden esperado (CA-1)', () => {
+test('NAV_TABS tiene exactamente 15 entradas en el orden esperado (CA-1)', () => {
     // #3965 (EP8-H12): se sumó la tab "mp-health" al final del catálogo.
     // #4378: se sumó la tab "roadmap" después de "matriz".
-    assert.equal(NAV_TABS.length, 14, 'NAV_TABS debe tener 14 tabs');
+    // #4778: se sumó la tab "estado-productos" después de "bloqueados".
+    assert.equal(NAV_TABS.length, 15, 'NAV_TABS debe tener 15 tabs');
     const expectedOrder = [
-        'home', 'equipo', 'pipeline', 'bloqueados', 'issues', 'matriz', 'roadmap',
+        'home', 'equipo', 'pipeline', 'bloqueados', 'estado-productos', 'issues', 'matriz', 'roadmap',
         'ops', 'kpis', 'historial', 'costos', 'descanso', 'providers', 'mp-health',
     ];
     assert.deepEqual(NAV_TABS.map(t => t.slug), expectedOrder);
@@ -78,10 +79,10 @@ test('renderNavTabsSsr emite <nav class="v3-nav"> con role=navigation y aria-lab
     assert.match(html, /<\/nav>$/);
 });
 
-test('renderNavTabsSsr emite exactamente 14 anchors class="v3-tab" (CA-3)', () => {
+test('renderNavTabsSsr emite exactamente 15 anchors class="v3-tab" (CA-3)', () => {
     const html = renderNavTabsSsr('equipo');
     const matches = html.match(/<a class="v3-tab(?: v3-tab-active)?"/g) || [];
-    assert.equal(matches.length, 14, `Esperaba 14 anchors v3-tab, obtuve ${matches.length}`);
+    assert.equal(matches.length, 15, `Esperaba 15 anchors v3-tab, obtuve ${matches.length}`);
 });
 
 test('renderNavTabsSsr marca SOLO la tab activa con aria-current="page" (CA-3)', () => {
@@ -101,8 +102,8 @@ test('renderNavTabsSsr sin activeSlug no marca ninguna tab', () => {
 test('cada anchor tiene aria-label no vacio (CA-4)', () => {
     const html = renderNavTabsSsr('home');
     const ariaMatches = html.match(/aria-label="[^"]+"/g) || [];
-    // 14 anchors + 1 del <nav> = 15 aria-labels
-    assert.ok(ariaMatches.length >= 15, `Esperaba >=15 aria-labels, obtuve ${ariaMatches.length}`);
+    // 15 anchors + 1 del <nav> = 16 aria-labels
+    assert.ok(ariaMatches.length >= 16, `Esperaba >=16 aria-labels, obtuve ${ariaMatches.length}`);
     // ninguno puede estar vacio
     for (const m of ariaMatches) {
         assert.doesNotMatch(m, /aria-label=""/);
@@ -112,7 +113,7 @@ test('cada anchor tiene aria-label no vacio (CA-4)', () => {
 test('cada <svg> del icono lleva aria-hidden="true" y focusable="false" (CA-4)', () => {
     const html = renderNavTabsSsr('home');
     const svgMatches = html.match(/<svg [^>]*>/g) || [];
-    assert.equal(svgMatches.length, 14, 'Debe haber 14 <svg> de tab');
+    assert.equal(svgMatches.length, 15, 'Debe haber 15 <svg> de tab');
     for (const svg of svgMatches) {
         assert.match(svg, /aria-hidden="true"/, `svg sin aria-hidden: ${svg}`);
         assert.match(svg, /focusable="false"/, `svg sin focusable=false: ${svg}`);
@@ -215,7 +216,8 @@ test('#4189: el popover <details> agrupa las secciones secundarias con contador'
     const secondaryCount = NAV_TABS.filter(t => !t.primary).length;
     // #4454: roadmap y providers pasan a primarias; issues, bloqueados y costos
     // pasan a secundarias → neto +1 secundaria respecto de #4378 (9 → 10).
-    assert.equal(secondaryCount, 10, 'hay 10 tabs secundarias');
+    // #4778: se suma "estado-productos" como secundaria (10 → 11).
+    assert.equal(secondaryCount, 11, 'hay 11 tabs secundarias');
     assert.match(html, new RegExp('<span class="v3-more-count" aria-hidden="true">' + secondaryCount + '</span>'),
         'el contador refleja la cantidad de secciones escondidas');
     // El popover sigue conteniendo anchors v3-tab reales (no se pierde ninguna ruta).

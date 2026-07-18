@@ -55,6 +55,9 @@ const NAV_TABS = [
     { slug: 'equipo',     label: 'Equipo',     iconId: 'ic-agents-count',       href: '/equipo',         ariaLabel: 'Ir a Equipo - agentes y carga',                            desc: 'Roles y agentes del pipeline' },
     { slug: 'pipeline',   label: 'Pipeline',   iconId: 'ic-tab-pipeline',       href: '/pipeline',       ariaLabel: 'Ir a Pipeline - issues por fase',                          primary: 2 },
     { slug: 'bloqueados', label: 'Bloqueados', iconId: 'ic-estado-needs-human', href: '/bloqueados',     ariaLabel: 'Ir a Bloqueados - esperando humano',                       desc: 'Issues frenados esperando humano o dependencias' },
+    // #4778 (Ola Puente P6) — Grid "Estado por producto" del dashboard product-aware
+    // (switcher + estado aislado + Arrancar/Pausar + GATE 2 por producto).
+    { slug: 'estado-productos', label: 'Productos', iconId: 'ic-tab-pipeline', href: '/dashboard?view=estado-productos', ariaLabel: 'Ir a Estado por producto - switch, estado aislado y control por producto', desc: 'Estado aislado por producto · switch · arrancar/pausar' },
     { slug: 'issues',     label: 'Issues',     iconId: 'ic-issues-count',       href: '/issues',         ariaLabel: 'Ir a Issues - backlog',                                    desc: 'Backlog de issues del pipeline' },
     { slug: 'matriz',     label: 'Matriz',     iconId: 'ic-tab-matriz',         href: '/matriz',         ariaLabel: 'Ir a Matriz - skill por fase',                             desc: 'Heatmap issues × fases' },
     // #4378 — Roadmap de olas (activa / planificadas / archivadas + archivar).
