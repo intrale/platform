@@ -1,0 +1,297 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 36 — Dashboard product-aware (#4691 · Ola Puente P6)
+  ----------------------------------------------------------------------------
+  Superficie A del issue #4691: el dashboard interno del pipeline pasa de
+  single-product a multi-producto. Este mockup especifica tres piezas UX:
+
+    1. SELECTOR / SWITCH DE PRODUCTO en la barra de navegacion (header-meta).
+       Solo-vista: reprograma estado/pipeline/KPIs/firma al productId elegido.
+       NO concede permisos del producto destino (SEC-1 · A01).
+    2. ESTADO POR PRODUCTO: cada producto muestra su propio waves/blocked/health
+       leido del coordination-store namespaceado por projectId, sin mezclar
+       datos entre productos (CA-1.4).
+    3. GATE 2 (panel de firma) FILTRADO POR PRODUCTO: la bandeja de
+       esperando-firma.js muestra solo pendientes del producto seleccionado;
+       solo firmante declarado del producto firma; fail-closed preservado
+       (CA-2.1 / CA-2.2 / SEC-2).
+
+  Decisiones UX consolidadas (guru, security, po, architect):
+    - El switch vive en el header (header-meta.js / nav-tabs.js), persistente
+      en todas las tabs. Un solo control de contexto global.
+    - Cada producto tiene un COLOR DE ACENTO derivado (chip) para dar
+      awareness inmediato de "en que producto estoy operando" y prevenir
+      acciones cross-product por confusion visual (defensa UX de SEC-1).
+    - Estado retro-compatible: con 1 solo producto (Intrale) el switch se
+      colapsa a un badge estatico, sin cambio de flujo (CA-5.1).
+    - Toda accion mutante (arranque/pausa/firma) muestra el productId objetivo
+      en el modal de confirmacion. Sin confirmacion silenciosa (SEC-7 / CSRF).
+
+  Tokens consumidos (design-tokens.css, sin colores hardcoded en la impl):
+    --surface-0/1/2/3, --border(-subtle/-strong), --text-primary/secondary/dim,
+    --brand-cyan, --brand-blue, --success-bg, --warning-bg, --danger-bg,
+    --purple-bg, --radius(-sm/-md/-lg), --space-*.
+  Iconografia: sprite.svg (ic-tab-home, ic-estado-needs-human, ic-multi-provider).
+  WCAG AA en todo par color/fondo. SVG sin codigo activo (sin scripts ni handlers on-event).
+
+  Render previsto: 1600x1200. Mockup de especificacion (no pixel-perfect).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1200" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif">
+  <defs>
+    <linearGradient id="brandGrad36" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1890FF"/>
+      <stop offset="100%" stop-color="#00D6FF"/>
+    </linearGradient>
+    <filter id="elev36" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <!-- BACKGROUND -->
+  <rect x="0" y="0" width="1600" height="1200" fill="#0D1117"/>
+
+  <!-- HEADER -->
+  <text x="40" y="52" fill="#E6EDF3" font-size="24" font-weight="700">Issue #4691 — Dashboard product-aware (Ola Puente P6)</text>
+  <text x="40" y="80" fill="#8B949E" font-size="14">Superficie A · switch de producto (solo-vista) · estado por producto aislado · GATE 2 filtrado por producto · tokens V3 · WCAG AA</text>
+
+  <!-- ============================================================ PANEL 1: SWITCH DE PRODUCTO -->
+  <g transform="translate(40, 110)">
+    <rect x="0" y="0" width="1520" height="150" rx="14" fill="#161B22" stroke="#30363D"/>
+    <text x="20" y="30" fill="#00D6FF" font-size="14" font-weight="700">1 · SELECTOR DE PRODUCTO EN HEADER (header-meta.js / nav-tabs.js)</text>
+    <text x="20" y="52" fill="#8B949E" font-size="12">Contexto global persistente en todas las tabs. Solo-vista: NO concede permisos del producto destino (SEC-1). Color de acento por producto para awareness.</text>
+
+    <!-- barra header simulada -->
+    <g transform="translate(20, 68)">
+      <rect x="0" y="0" width="1480" height="62" rx="10" fill="#0D1117" stroke="#21262D"/>
+      <!-- logo -->
+      <rect x="16" y="16" width="30" height="30" rx="8" fill="url(#brandGrad36)"/>
+      <text x="58" y="36" fill="#E6EDF3" font-size="15" font-weight="700">Pipeline V3</text>
+
+      <!-- switch de producto (dropdown abierto) -->
+      <g transform="translate(210, 12)">
+        <rect x="0" y="0" width="240" height="38" rx="8" fill="#1C2128" stroke="#00D6FF" stroke-width="1.5"/>
+        <circle cx="20" cy="19" r="6" fill="#00D6FF"/>
+        <text x="36" y="18" fill="#E6EDF3" font-size="13" font-weight="600">Intrale</text>
+        <text x="36" y="32" fill="#8B949E" font-size="10">producto activo · 3 olas · sano</text>
+        <path d="M212 15 l8 8 l8 -8" stroke="#8B949E" stroke-width="2" fill="none"/>
+      </g>
+
+      <!-- dropdown desplegado -->
+      <g transform="translate(210, 54)">
+        <rect x="0" y="0" width="240" height="120" rx="8" fill="#1C2128" stroke="#30363D" filter="url(#elev36)"/>
+        <rect x="6" y="6" width="228" height="34" rx="6" fill="rgba(0,214,255,0.10)"/>
+        <circle cx="24" cy="23" r="5" fill="#00D6FF"/>
+        <text x="38" y="27" fill="#E6EDF3" font-size="12" font-weight="600">Intrale</text>
+        <text x="205" y="27" fill="#00D6FF" font-size="10" text-anchor="end">✓ activo</text>
+
+        <circle cx="24" cy="60" r="5" fill="#BC8CFF"/>
+        <text x="38" y="64" fill="#E6EDF3" font-size="12">Comercios-AR</text>
+        <text x="205" y="64" fill="#8B949E" font-size="10" text-anchor="end">2 pend. firma</text>
+
+        <circle cx="24" cy="93" r="5" fill="#2DD4BF"/>
+        <text x="38" y="97" fill="#E6EDF3" font-size="12">Delivery-Pilot</text>
+        <text x="205" y="97" fill="#F0A500" font-size="10" text-anchor="end">pausado</text>
+      </g>
+
+      <!-- resto de la nav a la derecha -->
+      <g transform="translate(900, 20)" fill="#8B949E" font-size="12">
+        <text x="0" y="14">home</text>
+        <text x="70" y="14">pipeline</text>
+        <text x="160" y="14">bloqueados</text>
+        <text x="270" y="14">firma</text>
+        <text x="330" y="14">kpis</text>
+      </g>
+      <text x="1360" y="38" fill="#6E7681" font-size="11" text-anchor="end">retro-compat: 1 producto → badge estatico</text>
+    </g>
+  </g>
+
+  <!-- ============================================================ PANEL 2: ESTADO POR PRODUCTO (AISLADO) -->
+  <g transform="translate(40, 285)">
+    <rect x="0" y="0" width="1520" height="410" rx="14" fill="#161B22" stroke="#30363D"/>
+    <text x="20" y="30" fill="#00D6FF" font-size="14" font-weight="700">2 · ESTADO POR PRODUCTO — coordination-store namespaceado por projectId (CA-1.4 / SEC-1)</text>
+    <text x="20" y="52" fill="#8B949E" font-size="12">Cada card lee SU propio waves/blocked/health. Sin mezclar datos entre productos. Arranque/pausa delega en kernel-supervisor(projectId) — el adaptador pide, el kernel ejecuta (CA-1.5).</text>
+
+    <!-- Card producto A: Intrale (activo) -->
+    <g transform="translate(20, 72)">
+      <rect x="0" y="0" width="480" height="310" rx="12" fill="#1C2128" stroke="#00D6FF" stroke-width="1.5"/>
+      <rect x="0" y="0" width="6" height="310" rx="3" fill="#00D6FF"/>
+      <text x="24" y="34" fill="#E6EDF3" font-size="15" font-weight="700">Intrale</text>
+      <rect x="24" y="46" width="72" height="22" rx="11" fill="rgba(63,185,80,0.14)"/>
+      <text x="60" y="61" fill="#3FB950" font-size="11" font-weight="600" text-anchor="middle">● active</text>
+      <text x="456" y="34" fill="#8B949E" font-size="11" text-anchor="end">projectId: intrale</text>
+
+      <!-- metricas -->
+      <g transform="translate(24, 90)">
+        <rect x="0" y="0" width="136" height="72" rx="10" fill="#161B22" stroke="#21262D"/>
+        <text x="16" y="30" fill="#E6EDF3" font-size="26" font-weight="700">3</text>
+        <text x="16" y="52" fill="#8B949E" font-size="11">olas activas</text>
+
+        <rect x="148" y="0" width="136" height="72" rx="10" fill="#161B22" stroke="#21262D"/>
+        <text x="164" y="30" fill="#F85149" font-size="26" font-weight="700">1</text>
+        <text x="164" y="52" fill="#8B949E" font-size="11">bloqueados</text>
+
+        <rect x="296" y="0" width="136" height="72" rx="10" fill="#161B22" stroke="#21262D"/>
+        <text x="312" y="30" fill="#3FB950" font-size="26" font-weight="700">98%</text>
+        <text x="312" y="52" fill="#8B949E" font-size="11">health</text>
+      </g>
+
+      <text x="24" y="196" fill="#B1BAC4" font-size="12" font-weight="600">Pipeline</text>
+      <g transform="translate(24, 208)">
+        <rect x="0" y="0" width="432" height="34" rx="8" fill="#161B22" stroke="#21262D"/>
+        <rect x="8" y="7" width="100" height="20" rx="6" fill="rgba(188,140,255,0.14)"/><text x="58" y="21" fill="#BC8CFF" font-size="10" text-anchor="middle">definicion 4</text>
+        <rect x="116" y="7" width="100" height="20" rx="6" fill="rgba(88,166,255,0.14)"/><text x="166" y="21" fill="#58A6FF" font-size="10" text-anchor="middle">desarrollo 6</text>
+        <rect x="224" y="7" width="100" height="20" rx="6" fill="rgba(45,212,191,0.14)"/><text x="274" y="21" fill="#2DD4BF" font-size="10" text-anchor="middle">qa 2</text>
+        <rect x="332" y="7" width="92" height="20" rx="6" fill="rgba(63,185,80,0.14)"/><text x="378" y="21" fill="#3FB950" font-size="10" text-anchor="middle">entrega 1</text>
+      </g>
+
+      <!-- acciones -->
+      <g transform="translate(24, 258)">
+        <rect x="0" y="0" width="130" height="36" rx="8" fill="rgba(232,119,13,0.16)" stroke="#E8770D"/>
+        <text x="65" y="23" fill="#E8770D" font-size="12" font-weight="600" text-anchor="middle">⏸ Pausar</text>
+        <rect x="146" y="0" width="286" height="36" rx="8" fill="#161B22" stroke="#30363D"/>
+        <text x="289" y="23" fill="#8B949E" font-size="11" text-anchor="middle">acciones scopeadas a projectId=intrale (SEC-1)</text>
+      </g>
+    </g>
+
+    <!-- Card producto B: Comercios-AR (con firma pendiente) -->
+    <g transform="translate(520, 72)">
+      <rect x="0" y="0" width="480" height="310" rx="12" fill="#1C2128" stroke="#30363D"/>
+      <rect x="0" y="0" width="6" height="310" rx="3" fill="#BC8CFF"/>
+      <text x="24" y="34" fill="#E6EDF3" font-size="15" font-weight="700">Comercios-AR</text>
+      <rect x="24" y="46" width="72" height="22" rx="11" fill="rgba(63,185,80,0.14)"/>
+      <text x="60" y="61" fill="#3FB950" font-size="11" font-weight="600" text-anchor="middle">● active</text>
+      <text x="456" y="34" fill="#8B949E" font-size="11" text-anchor="end">projectId: comercios-ar</text>
+
+      <g transform="translate(24, 90)">
+        <rect x="0" y="0" width="136" height="72" rx="10" fill="#161B22" stroke="#21262D"/>
+        <text x="16" y="30" fill="#E6EDF3" font-size="26" font-weight="700">1</text>
+        <text x="16" y="52" fill="#8B949E" font-size="11">olas activas</text>
+
+        <rect x="148" y="0" width="136" height="72" rx="10" fill="#161B22" stroke="#21262D"/>
+        <text x="164" y="30" fill="#D29922" font-size="26" font-weight="700">2</text>
+        <text x="164" y="52" fill="#8B949E" font-size="11">pend. firma</text>
+
+        <rect x="296" y="0" width="136" height="72" rx="10" fill="#161B22" stroke="#21262D"/>
+        <text x="312" y="30" fill="#3FB950" font-size="26" font-weight="700">91%</text>
+        <text x="312" y="52" fill="#8B949E" font-size="11">health</text>
+      </g>
+
+      <text x="24" y="196" fill="#B1BAC4" font-size="12" font-weight="600">Pipeline</text>
+      <g transform="translate(24, 208)">
+        <rect x="0" y="0" width="432" height="34" rx="8" fill="#161B22" stroke="#21262D"/>
+        <rect x="8" y="7" width="100" height="20" rx="6" fill="rgba(188,140,255,0.14)"/><text x="58" y="21" fill="#BC8CFF" font-size="10" text-anchor="middle">definicion 1</text>
+        <rect x="116" y="7" width="100" height="20" rx="6" fill="rgba(88,166,255,0.14)"/><text x="166" y="21" fill="#58A6FF" font-size="10" text-anchor="middle">desarrollo 2</text>
+        <rect x="224" y="7" width="100" height="20" rx="6" fill="rgba(45,212,191,0.14)"/><text x="274" y="21" fill="#2DD4BF" font-size="10" text-anchor="middle">qa 0</text>
+        <rect x="332" y="7" width="92" height="20" rx="6" fill="rgba(63,185,80,0.14)"/><text x="378" y="21" fill="#3FB950" font-size="10" text-anchor="middle">entrega 0</text>
+      </g>
+
+      <g transform="translate(24, 258)">
+        <rect x="0" y="0" width="130" height="36" rx="8" fill="rgba(232,119,13,0.16)" stroke="#E8770D"/>
+        <text x="65" y="23" fill="#E8770D" font-size="12" font-weight="600" text-anchor="middle">⏸ Pausar</text>
+        <rect x="146" y="0" width="130" height="36" rx="8" fill="rgba(0,214,255,0.10)" stroke="#00D6FF"/>
+        <text x="211" y="23" fill="#00D6FF" font-size="12" font-weight="600" text-anchor="middle">Ver descriptor</text>
+      </g>
+    </g>
+
+    <!-- Card producto C: Delivery-Pilot (pausado) -->
+    <g transform="translate(1020, 72)">
+      <rect x="0" y="0" width="480" height="310" rx="12" fill="#1C2128" stroke="#30363D"/>
+      <rect x="0" y="0" width="6" height="310" rx="3" fill="#2DD4BF"/>
+      <text x="24" y="34" fill="#E6EDF3" font-size="15" font-weight="700">Delivery-Pilot</text>
+      <rect x="24" y="46" width="82" height="22" rx="11" fill="rgba(232,119,13,0.16)"/>
+      <text x="65" y="61" fill="#E8770D" font-size="11" font-weight="600" text-anchor="middle">⏸ paused</text>
+      <text x="456" y="34" fill="#8B949E" font-size="11" text-anchor="end">projectId: delivery-pilot</text>
+
+      <g transform="translate(24, 90)">
+        <rect x="0" y="0" width="136" height="72" rx="10" fill="#161B22" stroke="#21262D"/>
+        <text x="16" y="30" fill="#6E7681" font-size="26" font-weight="700">0</text>
+        <text x="16" y="52" fill="#8B949E" font-size="11">olas activas</text>
+
+        <rect x="148" y="0" width="136" height="72" rx="10" fill="#161B22" stroke="#21262D"/>
+        <text x="164" y="30" fill="#6E7681" font-size="26" font-weight="700">0</text>
+        <text x="164" y="52" fill="#8B949E" font-size="11">bloqueados</text>
+
+        <rect x="296" y="0" width="136" height="72" rx="10" fill="#161B22" stroke="#21262D"/>
+        <text x="312" y="30" fill="#8B949E" font-size="26" font-weight="700">—</text>
+        <text x="312" y="52" fill="#8B949E" font-size="11">health</text>
+      </g>
+
+      <text x="24" y="196" fill="#B1BAC4" font-size="12" font-weight="600">Pipeline</text>
+      <g transform="translate(24, 208)">
+        <rect x="0" y="0" width="432" height="34" rx="8" fill="#161B22" stroke="#21262D"/>
+        <text x="216" y="22" fill="#6E7681" font-size="11" text-anchor="middle">instancia detenida — sin actividad (supervisor.stopInstance)</text>
+      </g>
+
+      <g transform="translate(24, 258)">
+        <rect x="0" y="0" width="130" height="36" rx="8" fill="rgba(63,185,80,0.14)" stroke="#3FB950"/>
+        <text x="65" y="23" fill="#3FB950" font-size="12" font-weight="600" text-anchor="middle">▶ Arrancar</text>
+        <rect x="146" y="0" width="286" height="36" rx="8" fill="#161B22" stroke="#30363D"/>
+        <text x="289" y="23" fill="#8B949E" font-size="11" text-anchor="middle">confirmar arranque de projectId=delivery-pilot</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ============================================================ PANEL 3: GATE 2 POR PRODUCTO -->
+  <g transform="translate(40, 720)">
+    <rect x="0" y="0" width="1520" height="440" rx="14" fill="#161B22" stroke="#30363D"/>
+    <text x="20" y="30" fill="#00D6FF" font-size="14" font-weight="700">3 · GATE 2 · PANEL DE FIRMA FILTRADO POR PRODUCTO (esperando-firma.js product-aware · CA-2.1 / CA-2.2 / SEC-2)</text>
+    <text x="20" y="52" fill="#8B949E" font-size="12">Bandeja muestra SOLO pendientes del producto seleccionado. Solo firmante declarado del producto firma. Fail-closed, sin auto-aprobacion por timeout. Firma no repudiable con productId atada al commit.</text>
+
+    <!-- contexto de producto -->
+    <g transform="translate(20, 70)">
+      <rect x="0" y="0" width="1480" height="44" rx="10" fill="#0D1117" stroke="#21262D"/>
+      <circle cx="26" cy="22" r="6" fill="#BC8CFF"/>
+      <text x="42" y="27" fill="#E6EDF3" font-size="13" font-weight="600">Firmando en: Comercios-AR</text>
+      <text x="300" y="27" fill="#8B949E" font-size="12">firmantes declarados: leitolarreta (primario) · backup-ar (respaldo)</text>
+      <rect x="1240" y="8" width="228" height="28" rx="8" fill="rgba(248,81,73,0.14)"/>
+      <text x="1354" y="26" fill="#F85149" font-size="11" font-weight="600" text-anchor="middle">operador de Intrale NO puede firmar aqui</text>
+    </g>
+
+    <!-- fila de firma pendiente 1 -->
+    <g transform="translate(20, 128)">
+      <rect x="0" y="0" width="1480" height="86" rx="12" fill="#1C2128" stroke="#30363D"/>
+      <rect x="0" y="0" width="6" height="86" rx="3" fill="#D29922"/>
+      <text x="24" y="30" fill="#E6EDF3" font-size="14" font-weight="700">PR #812 — Onboarding checkout comercios</text>
+      <rect x="360" y="16" width="150" height="22" rx="11" fill="rgba(188,140,255,0.14)"/>
+      <text x="435" y="31" fill="#BC8CFF" font-size="11" text-anchor="middle">productId: comercios-ar</text>
+      <text x="24" y="54" fill="#8B949E" font-size="12">commit a4f9c2 · render vs mockup adjunto · tests verdes · muestra de API adjunta</text>
+      <text x="24" y="74" fill="#6E7681" font-size="11">pendiente hace 42 min · escalara a needs-human si vence sin firma (fail-closed, NUNCA auto-aprueba)</text>
+
+      <!-- botones -->
+      <g transform="translate(1130, 24)">
+        <rect x="0" y="0" width="150" height="38" rx="8" fill="rgba(63,185,80,0.14)" stroke="#3FB950"/>
+        <text x="75" y="24" fill="#3FB950" font-size="13" font-weight="600" text-anchor="middle">✓ Firmar</text>
+        <rect x="164" y="0" width="150" height="38" rx="8" fill="rgba(248,81,73,0.14)" stroke="#F85149"/>
+        <text x="239" y="24" fill="#F85149" font-size="13" font-weight="600" text-anchor="middle">✕ Rechazar</text>
+      </g>
+    </g>
+
+    <!-- fila de firma pendiente 2 -->
+    <g transform="translate(20, 228)">
+      <rect x="0" y="0" width="1480" height="86" rx="12" fill="#1C2128" stroke="#30363D"/>
+      <rect x="0" y="0" width="6" height="86" rx="3" fill="#D29922"/>
+      <text x="24" y="30" fill="#E6EDF3" font-size="14" font-weight="700">PR #815 — Edicion de descriptor (authority)</text>
+      <rect x="410" y="16" width="150" height="22" rx="11" fill="rgba(188,140,255,0.14)"/>
+      <text x="485" y="31" fill="#BC8CFF" font-size="11" text-anchor="middle">productId: comercios-ar</text>
+      <rect x="575" y="16" width="230" height="22" rx="11" fill="rgba(248,81,73,0.14)"/>
+      <text x="690" y="31" fill="#F85149" font-size="11" font-weight="600" text-anchor="middle">⚠ cambia firmantes · separacion de deberes</text>
+      <text x="24" y="56" fill="#8B949E" font-size="12">SEC-2: el operador que se beneficia del cambio NO puede autoaplicarlo. Requiere firma del respaldo. Auditado (actor + productId + ts).</text>
+      <text x="24" y="75" fill="#6E7681" font-size="11">audit-trail inmutable (hash-chain aditivo) · origen: dashboard</text>
+
+      <g transform="translate(1130, 24)">
+        <rect x="0" y="0" width="150" height="38" rx="8" fill="#161B22" stroke="#30363D"/>
+        <text x="75" y="24" fill="#6E7681" font-size="13" text-anchor="middle">Firmar (bloqueado)</text>
+        <rect x="164" y="0" width="150" height="38" rx="8" fill="rgba(248,81,73,0.14)" stroke="#F85149"/>
+        <text x="239" y="24" fill="#F85149" font-size="13" font-weight="600" text-anchor="middle">✕ Rechazar</text>
+      </g>
+    </g>
+
+    <!-- nota invariantes -->
+    <g transform="translate(20, 336)">
+      <rect x="0" y="0" width="1480" height="82" rx="10" fill="rgba(88,166,255,0.14)" stroke="rgba(88,166,255,0.30)"/>
+      <text x="20" y="28" fill="#58A6FF" font-size="12" font-weight="700">Invariantes de gates-firma-operador.md preservados por producto:</text>
+      <text x="20" y="50" fill="#B1BAC4" font-size="12">• Fail-closed ante no-respuesta (bloquea + escala needs-human) · NUNCA auto-aprueba por timeout · solo firmante declarado + respaldo DEL producto pueden firmar.</text>
+      <text x="20" y="70" fill="#B1BAC4" font-size="12">• Registro no repudiable (quien / commit-PR / cuando / productId) atado al commit firmado · protecciones CSRF/SameSite en todas las acciones mutantes (SEC-7).</text>
+    </g>
+  </g>
+</svg>
