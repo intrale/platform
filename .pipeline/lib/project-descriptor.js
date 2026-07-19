@@ -436,16 +436,108 @@ function resolveGate(descriptor, gateName, opts = {}) {
 }
 
 /**
- * Evalúa el gate de autoridad de firma (CA-D4 · requisito #5 · GATE 2). `signers`
- * vacío/ inválido ⇒ BLOQUEA (fail-closed), nunca auto-aprueba.
+ * Resuelve la AUTORIDAD DE FIRMA declarada por el producto en su descriptor
+ * (CA-D4 · requisito #5 · GATE 2 · Ola Puente P7 #4692). `signers` vacío/inválido
+ * ⇒ BLOQUEA (fail-closed), nunca auto-aprueba ni cae a un global implícito.
  *
- * @returns {{ blocked:boolean, reason:string, signers:string[] }}
+ * Renombrada desde `evaluateSignatureGate` (colisión de nombres con el gate
+ * OPERATIVO de auto-aprobación en `operator-signature-gate.js`, que tiene otra
+ * responsabilidad). Esta es la ÚNICA fuente de verdad de "quién puede firmar"
+ * un producto; el gate operativo la consume, no la reimplementa.
+ *
+ * @returns {{ blocked:boolean, reason:string, signers:string[], backup:string|null, projectId:string|null }}
  */
-function evaluateSignatureGate(descriptor) {
-  const signers = descriptor && descriptor.authority && descriptor.authority.signers;
+function resolveSignerAuthority(descriptor) {
+  const authority = descriptor && descriptor.authority;
+  const projectId = (descriptor && descriptor.identity && descriptor.identity.projectId) || null;
+  const signers = authority && authority.signers;
   const valid = Array.isArray(signers) && signers.length > 0 && signers.every((s) => typeof s === 'string' && s.length > 0);
-  if (!valid) return { blocked: true, reason: 'authority.signers vacío o inválido — gate bloquea (fail-closed)', signers: [] };
-  return { blocked: false, reason: '', signers: [...signers] };
+  // `backup` es una identidad humana IGUALMENTE autorizada (no una vía de
+  // auto-aprobación). Debe ser un string no vacío para contarse; cualquier otra
+  // cosa ⇒ sin backup (null), nunca error silencioso.
+  const rawBackup = authority && authority.backup;
+  const backup = (typeof rawBackup === 'string' && rawBackup.length > 0) ? rawBackup : null;
+  if (!valid) {
+    return { blocked: true, reason: 'authority.signers vacío o inválido — gate bloquea (fail-closed)', signers: [], backup, projectId };
+  }
+  return { blocked: false, reason: '', signers: [...signers], backup, projectId };
+}
+
+/**
+ * Autoriza (o niega, fail-closed) que una `identity` firme GATE 2 del producto
+ * descrito por `descriptor` (Ola Puente P7 #4692 · requisito de seguridad #2 ·
+ * A01 cross-tenant authz). Un firmante autorizado en el producto A NO puede
+ * firmar en el producto B: la validación es SIEMPRE contra la autoridad del
+ * `descriptor` recibido (el producto en curso), nunca contra un global.
+ *
+ * Fail-closed: autoridad bloqueada, identidad no-string/vacía, o identidad
+ * fuera de `signers`+`backup` ⇒ `{ authorized:false }`.
+ *
+ * @param {object} descriptor  descriptor del producto en curso.
+ * @param {string} identity    identidad que intenta firmar.
+ * @returns {{ authorized:boolean, role:('signer'|'backup'|null), reason:string, projectId:string|null }}
+ */
+function authorizeSigner(descriptor, identity) {
+  const authority = resolveSignerAuthority(descriptor);
+  const projectId = authority.projectId;
+  if (authority.blocked) {
+    return { authorized: false, role: null, reason: authority.reason, projectId };
+  }
+  if (typeof identity !== 'string' || identity.length === 0) {
+    return { authorized: false, role: null, reason: 'identidad de firma inválida o ausente (fail-closed)', projectId };
+  }
+  if (authority.signers.includes(identity)) {
+    return { authorized: true, role: 'signer', reason: '', projectId };
+  }
+  if (authority.backup && authority.backup === identity) {
+    return { authorized: true, role: 'backup', reason: '', projectId };
+  }
+  return {
+    authorized: false,
+    role: null,
+    reason: `identidad "${identity}" no autorizada para firmar el producto ${projectId || '(desconocido)'} (cross-tenant authz negada)`,
+    projectId,
+  };
+}
+
+// Pin exacto de versión (X.Y.Z). Espeja `EXACT_SEMVER` de kernel-resolver.js:
+// se rechazan rangos/comodines/prereleases (CA-5 · A08 supply-chain).
+const EXACT_SEMVER_RE = /^\d+\.\d+\.\d+$/;
+
+/**
+ * Deriva el PIN de versión de kernel del producto (Ola Puente P7 #4692 · CA-5).
+ *
+ * Decisión de diseño (docs/pipeline/kernel-updates.md): el pin puede declararse
+ * POR PRODUCTO en `descriptor.kernel.version`; si el producto no lo declara, se
+ * cae al pin del manifest GLOBAL (`opts.manifestVersion`, hoy
+ * `pipeline.config.json → kernel.version`) como fallback autoritativo. En ambos
+ * casos el pin DEBE ser exacto: un rango/comodín ⇒ fail-closed (throw), coherente
+ * con `assertReleaseSignature`/`EXACT_SEMVER` de kernel-resolver.js.
+ *
+ * @param {object} descriptor
+ * @param {object} [opts]
+ * @param {string} [opts.manifestVersion]  pin global de fallback (manifest del kernel).
+ * @returns {{ version:string, channel:string, source:('descriptor'|'manifest') }}
+ * @throws {Error} si el pin resuelto no es una versión exacta.
+ */
+function deriveKernelPin(descriptor, opts = {}) {
+  const k = descriptor && descriptor.kernel;
+  const channel = (k && typeof k.channel === 'string') ? k.channel : 'stable';
+  const declared = k && typeof k.version === 'string' ? k.version : null;
+  if (declared) {
+    if (!EXACT_SEMVER_RE.test(declared)) {
+      throw new Error(`kernel.version del descriptor no es un pin exacto ("X.Y.Z"): ${JSON.stringify(declared)} — se rechazan rangos (A08)`);
+    }
+    return { version: declared, channel, source: 'descriptor' };
+  }
+  const fallback = typeof opts.manifestVersion === 'string' ? opts.manifestVersion : null;
+  if (!fallback) {
+    throw new Error('sin pin de kernel: el descriptor no declara kernel.version y no se proveyó manifestVersion (fail-closed)');
+  }
+  if (!EXACT_SEMVER_RE.test(fallback)) {
+    throw new Error(`manifestVersion no es un pin exacto ("X.Y.Z"): ${JSON.stringify(fallback)} — se rechazan rangos (A08)`);
+  }
+  return { version: fallback, channel, source: 'manifest' };
 }
 
 module.exports = {
@@ -473,5 +565,7 @@ module.exports = {
   deriveProviderBudget,
   deriveCapabilityPartitions,
   resolveGate,
-  evaluateSignatureGate,
+  resolveSignerAuthority,
+  authorizeSigner,
+  deriveKernelPin,
 };

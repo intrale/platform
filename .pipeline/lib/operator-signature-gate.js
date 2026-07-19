@@ -40,6 +40,7 @@ const path = require('path');
 const audit = require('./audit-log');
 const { decomposeConfidence, esTotalmenteMaquinaVerificable, contarSoloHumanos } = require('./confidence-index');
 const ladder = require('./autonomy-ladder');
+const { resolveSignerAuthority } = require('./project-descriptor');
 
 // -----------------------------------------------------------------------------
 // Constantes
@@ -137,10 +138,14 @@ function _persistAutoApproval(pipelineDir, record, auditImpl) {
  * @param {Array<string|object>} args.criterios — criterios de aceptación.
  * @param {object} [args.gateResults] — mapa `{ criterioKey: 'pass'|'fail' }`.
  * @param {object} args.config — `config.firma_operador` (ver config.yaml).
+ * @param {object} [args.descriptor] — descriptor del producto en curso (Ola Puente
+ *   P7 #4692). La autoridad de firma (quién puede firmar / backup) se resuelve
+ *   SIEMPRE desde `descriptor.authority` — NUNCA un global implícito ni un
+ *   `leitolarreta` hardcodeado. FAIL-CLOSED: ausente/ inválido ⇒ firma humana.
  * @param {object} [args.options] — `{ pipelineDir, nowMs, rngFloat, auditImpl }`.
- * @returns {object} `{ decision, effective_decision, gate_mode, ... }`.
+ * @returns {object} `{ decision, effective_decision, gate_mode, authorized_signers, ... }`.
  */
-function evaluateSignatureGate({ issue = {}, fase, criterios = [], gateResults = {}, config = {}, options = {} } = {}) {
+function evaluateSignatureGate({ issue = {}, fase, criterios = [], gateResults = {}, config = {}, descriptor, options = {} } = {}) {
     const pipelineDir = resolvePipelineDir(options);
     const auditImpl = options.auditImpl || audit;
     const nowMs = typeof options.nowMs === 'number' ? options.nowMs : Date.now();
@@ -159,6 +164,39 @@ function evaluateSignatureGate({ issue = {}, fase, criterios = [], gateResults =
 
     const gateMode = config.modo === MODE.ENFORCE ? MODE.ENFORCE : MODE.DRY_RUN;
 
+    // CA-1 (P7 #4692) · Autoridad de firma POR PRODUCTO, fail-closed. Se resuelve
+    // desde el descriptor del producto en curso, delegando en la ÚNICA fuente de
+    // verdad (`resolveSignerAuthority` en project-descriptor.js). Sin descriptor,
+    // o con `authority.signers` vacío/inválido, NO se puede saber quién firma ⇒
+    // firma humana (jamás auto-aprobación ni global implícito). Antes de cualquier
+    // lectura de calibración: si no sabemos quién puede firmar, no hay nada que
+    // auto-aprobar.
+    const authority = resolveSignerAuthority(descriptor || {});
+    if (!descriptor || authority.blocked) {
+        return {
+            decision: DECISION.FIRMA_HUMANA,
+            effective_decision: DECISION.FIRMA_HUMANA,
+            gate_mode: gateMode,
+            fail_closed: true,
+            reason: !descriptor
+                ? 'sin descriptor de producto ⇒ firma humana (fail-closed, sin global implícito)'
+                : `autoridad de firma inválida: ${authority.reason}`,
+            project_id: authority.projectId,
+            authorized_signers: [],
+            backup_approver: authority.backup || null,
+            invoked: true,
+        };
+    }
+
+    // Autoridad válida resuelta desde el descriptor. Se adjunta a TODA resolución
+    // (incluidas las de firma humana) para que la superficie humana sepa quién
+    // puede firmar este producto — extiende `project_id` hasta la capa de decisión.
+    const authFields = {
+        project_id: authority.projectId,
+        authorized_signers: authority.signers,
+        backup_approver: authority.backup || null,
+    };
+
     // Grandfathering opcional (como architect gate): issues previos a go_live_date
     // NO se auto-aprueban — al contrario, van a firma humana (fail-closed). Se
     // registra la razón. (No relajamos el default seguro por antigüedad.)
@@ -169,6 +207,7 @@ function evaluateSignatureGate({ issue = {}, fase, criterios = [], gateResults =
             effective_decision: DECISION.FIRMA_HUMANA,
             gate_mode: gateMode,
             reason: 'issue previo a go_live_date ⇒ firma humana (sin auto-aprobación retroactiva)',
+            ...authFields,
             invoked: true,
         };
     }
@@ -189,6 +228,7 @@ function evaluateSignatureGate({ issue = {}, fase, criterios = [], gateResults =
             gate_mode: gateMode,
             fail_closed: true,
             reason: `chain_roto: ${(chainRes && chainRes.reason) || 'verifyChain no ok'}`,
+            ...authFields,
             invoked: true,
         };
     }
@@ -206,6 +246,7 @@ function evaluateSignatureGate({ issue = {}, fase, criterios = [], gateResults =
                 ? `${soloHumanos} criterio(s) solo-humano ⇒ firma humana (GATE 0)`
                 : 'sin criterios máquina-verificables ⇒ firma humana',
             confidence_index: index,
+            ...authFields,
             invoked: true,
         };
     }
@@ -226,6 +267,7 @@ function evaluateSignatureGate({ issue = {}, fase, criterios = [], gateResults =
             reason: `bucket no calibrado: ${bucket.razon}`,
             bucket: bucket.id,
             confidence_index: index,
+            ...authFields,
             invoked: true,
         };
     }
@@ -242,6 +284,9 @@ function evaluateSignatureGate({ issue = {}, fase, criterios = [], gateResults =
     const traza = _persistAutoApproval(pipelineDir, {
         type: 'auto_aprobacion',
         issue: issue.number != null ? String(issue.number) : null,
+        // CA-1/seguridad #2 · projectId en la traza: la auditoría no confunde
+        // productos cuando la autoridad de firma es por producto (cross-tenant).
+        project_id: authority.projectId,
         fase: fase != null ? String(fase) : null,
         bucket: bucket.id,
         version_calibracion: bucket.version,
@@ -266,12 +311,29 @@ function evaluateSignatureGate({ issue = {}, fase, criterios = [], gateResults =
         en_muestra_auditoria: enAuditoria,
         confidence_index: index,
         traza_persistida: traza.persistido,
+        ...authFields,
         invoked: true,
     };
 }
 
+/**
+ * Autoriza (o niega, fail-closed) que una `identity` firme GATE 2 del producto
+ * en curso (Ola Puente P7 #4692 · cross-tenant authz). Delega en la única fuente
+ * de verdad del descriptor (`authorizeSigner` en project-descriptor.js) — un
+ * firmante autorizado en A NO puede firmar en B. Reexportado acá porque el gate
+ * operativo es el punto de entrada natural de la capa de firma.
+ *
+ * @param {object} descriptor  descriptor del producto en curso.
+ * @param {string} identity    identidad que intenta firmar.
+ * @returns {{ authorized:boolean, role:('signer'|'backup'|null), reason:string, projectId:string|null }}
+ */
+function authorizeProductSigner(descriptor, identity) {
+    return require('./project-descriptor').authorizeSigner(descriptor, identity);
+}
+
 module.exports = {
     evaluateSignatureGate,
+    authorizeProductSigner,
     seleccionarAuditoria,
     // Constantes / helpers exportados para tests y callers.
     DECISION,

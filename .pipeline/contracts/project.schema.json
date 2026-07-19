@@ -211,6 +211,20 @@
           }
         }
       }
+    },
+    "kernel": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        },
+        "channel": {
+          "type": "string",
+          "enum": ["stable", "canary"]
+        }
+      }
     }
   }
 }

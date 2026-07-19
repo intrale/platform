@@ -271,9 +271,19 @@ Si el default fuera *"auto-aprueba al vencer el timeout"*, cualquiera podría **
 
 ### Autoridad (quién puede firmar)
 
-- La firma de GATE 1 y GATE 2 sólo la puede emitir la **identidad autorizada del operador** (por default, `leitolarreta`) o un **aprobador de respaldo** explícitamente designado por el operador (modelo de delegación / bus factor, §10.5).
+- La firma de GATE 1 y GATE 2 sólo la puede emitir la **identidad autorizada del operador** o un **aprobador de respaldo** explícitamente designado por el operador (modelo de delegación / bus factor, §10.5).
 - La configuración de GATE 3 define qué identidades pueden autorizar acciones autónomas del kernel de alto impacto.
 - Un actor no autorizado **no puede** firmar: el gate valida la identidad del firmante contra la lista autorizada antes de aceptar el veredicto.
+
+#### Autoridad **por producto** — Ola Puente P7 (#4692)
+
+Con multi-producto, la autoridad de firma **deja de ser global** (`leitolarreta` implícito) y se declara **por producto** en su descriptor:
+
+- **`authority.signers[]`** — identidades autorizadas a firmar GATE 2 de ese producto; **`authority.backup`** — aprobador de respaldo (identidad humana igualmente autorizada, no auto-aprobación; ver `operador-ausente.md`).
+- **Una sola fuente de verdad de "quién firma":** `project-descriptor.resolveSignerAuthority(descriptor)` → `{ signers, backup, projectId }`, fail-closed (`signers` vacío/inválido ⇒ bloquea, sin fallback a global). El gate operativo (`operator-signature-gate.evaluateSignatureGate`) la **consume**, no la reimplementa; sin descriptor ⇒ firma humana fail-closed (jamás un `leitolarreta` hardcodeado).
+- **Cross-tenant authz (A01):** la identidad se valida contra la autoridad **del producto en curso** (`authorizeSigner(descriptor, identity)` → rol `signer`/`backup`). Un firmante autorizado en el producto A **no** puede firmar en B. La traza de firma registra `projectId` para que la auditoría no confunda productos.
+- **El descriptor es plano de control (A01/A08):** `authority.*` decide quién firma ⇒ su integridad se verifica fail-closed al cargar (`computeChecksum`/`canonicalize`); modificar `signers/backup` requiere firma de la autoridad vigente (no auto-modificable por pipeline/rebote/agente).
+- **Coexistencia con QA:** la autoridad por producto **no** sustituye ni relaja `qa:passed`/`qa:skipped` — el gate humano coexiste con ellos.
 
 ### Integridad y no repudio (cómo se registra)
 
