@@ -15331,9 +15331,17 @@ function enqueueTelegramVoice(audioPath, opts = {}) {
   const pt = telegramReceipt.coercePartInt(partTotal);
   const svcDir = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
   const filename = `${Date.now()}-voice-p${pi}.json`;
+  // #4796 — Fix de ORIGEN: normalizar a forward-slashes ANTES de serializar. En
+  // Windows los `\` pueden perderse si la ruta atraviesa una segunda ronda de
+  // parse/serialize (incidente 2026-07-19: `C:\…\tts.ogg` → `C:WorkspacesIntrale…ogg`,
+  // que da `existsSync=false` en el consumidor y se descartaba en silencio). El
+  // forward-slash sobrevive cualquier round-trip JSON (no es carácter de escape) y
+  // Node lo acepta en Windows. Este es el choke-point único: tanto el dispatch
+  // inicial como el reenvío del sweep de reconciliación pasan por acá.
+  const normalizedAudioPath = audioPath.replace(/\\/g, '/');
   try {
     const payload = {
-      voice: audioPath,
+      voice: normalizedAudioPath,
       _correlationId: correlationId,
       _partIndex: pi,
       _partTotal: pt,

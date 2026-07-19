@@ -611,6 +611,84 @@ async function processBurstGroup(group, consolidatedText) {
   log(`Consolidado: ${trabajandoPaths.length} mensajes en burst (key=${group.key.split('|').slice(1).join('|')})`);
 }
 
+// #4796 — Tipos de adjunto que se envían por multipart (ruta a un archivo en
+// disco). El orden fija la precedencia de resolución (document > … > voice),
+// igual que la cadena ternaria histórica.
+const ATTACHMENT_TYPES = ['document', 'photo', 'video', 'animation', 'voice'];
+
+// #4796 — Directorio base allowlisted para adjuntos de tipo `voice` (audio TTS).
+// El productor (`pulpo.dispatchVoiceParts`) genera los `.ogg` en `logs/media/`
+// (`path.join(LOG_DIR, 'media')`, con `LOG_DIR = path.join(PIPELINE, 'logs')`).
+// Cualquier ruta de voz que tras normalizar/canonizar NO caiga bajo este dir se
+// rechaza (fail-closed) para no leer/exfiltrar archivos arbitrarios — un path
+// "reconstruido" jamás debe resolver a `~/.claude/secrets/*` o `application.conf`
+// y terminar subido a Telegram (OWASP A01/A08).
+function mediaBaseDir() {
+  return path.join(PIPELINE, 'logs', 'media');
+}
+
+// #4796 — ¿`target` (canónico) cae bajo `base` (canónico)? Usa path.relative:
+// si el relativo empieza con `..` o es absoluto, target está FUERA de base.
+// `''` (target === base, o sea el propio dir) también se considera fuera (un
+// adjunto nunca es el directorio base).
+function isUnderBase(base, target) {
+  const rel = path.relative(base, target);
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+// #4796 — Devuelve los tipos de adjunto DECLARADOS en el dropfile (key presente),
+// sin importar si la ruta resuelve. Sirve para la guarda fail-closed: un dropfile
+// que declara `voice` pero cuyo archivo no existe NO debe caer al cierre optimista.
+function declaredAttachmentTypes(data) {
+  if (!data || typeof data !== 'object') return [];
+  return ATTACHMENT_TYPES.filter((t) => data[t] != null);
+}
+
+// #4796 — Normaliza la ruta de un adjunto y, SOLO para `voice`, valida
+// canonical-prefix contra el dir base allowlisted antes de tocar el archivo.
+//
+// Normalización: unifica separadores `\` → `/` y colapsa con `path.normalize`.
+// NO reinserta separadores perdidos (imposible sin heurística que podría resolver
+// a un archivo distinto — vector de exfiltración): una ruta cuyos separadores ya
+// se perdieron (`C:WorkspacesIntrale…ogg`) simplemente NO existirá → se devuelve
+// null → la guarda fail-closed la enruta a `handleSendFailure` (nunca silencio).
+//
+// Retorno:
+//   - string  → ruta canónica segura y existente (usar ESTA para enviar).
+//   - null    → la ruta no resuelve a un archivo existente.
+//   - LANZA   → (voice) la ruta resuelve FUERA del allowlist → exfiltración; el
+//               caller la enruta a `handleSendFailure` (fallo explícito).
+function resolveAttachmentPath(type, rawPath) {
+  if (typeof rawPath !== 'string' || rawPath.length === 0) return null;
+  const normalized = path.normalize(rawPath.replace(/\\/g, '/'));
+  if (!fs.existsSync(normalized)) return null;
+  if (type === 'voice') {
+    // Canonizar ambos lados (resuelve symlinks/`..`) y comparar prefijo.
+    const base = fs.realpathSync(mediaBaseDir());
+    const real = fs.realpathSync(normalized);
+    if (!isUnderBase(base, real)) {
+      throw new Error(
+        `Ruta de adjunto voice fuera del dir permitido (rechazada por seguridad); esperada bajo ${base}`,
+      );
+    }
+    return real;
+  }
+  return normalized;
+}
+
+// #4796 — Decisión pura fail-closed: ¿debe LANZARSE el envío porque el dropfile
+// declaró un adjunto pero ninguno resolvió a un archivo real y no hay respaldo
+// (texto / edición)? Cierra el hueco del solo-audio: antes, `multipartType===null`
+// sin `data.text` caía al cierre optimista (`renameSync → listo/` + log "Enviado")
+// sin haber enviado nada. Ahora → throw → `handleSendFailure`.
+function shouldFailClosed(data, multipartType) {
+  if (multipartType) return false;                 // se resolvió y se envía
+  if (!data || typeof data !== 'object') return false;
+  if (data.text) return false;                     // hay texto de respaldo (sendMessage)
+  if (data.method === 'editMessageText' && Number.isFinite(data.message_id)) return false;
+  return declaredAttachmentTypes(data).length > 0; // adjunto declarado sin archivo
+}
+
 async function processQueue() {
   const allFiles = listWorkFiles(PENDIENTE);
   if (allFiles.length === 0) return;
@@ -675,12 +753,17 @@ async function processQueue() {
       // #4750 — rama `voice`: el audio TTS se enruta por la cola (Opción A) para
       // heredar `assertDelivered` (fail-closed) + `writeSentReceiptIfAny` con la
       // dimensión de chunk. Telegram exige OGG/OPUS para `sendVoice`.
-      const multipartType = data.document && fs.existsSync(data.document) ? 'document'
-        : data.photo && fs.existsSync(data.photo) ? 'photo'
-        : data.video && fs.existsSync(data.video) ? 'video'
-        : data.animation && fs.existsSync(data.animation) ? 'animation'
-        : data.voice && fs.existsSync(data.voice) ? 'voice'
-        : null;
+      // #4796 — Normalización de separadores + canonical-prefix allowlist (voice)
+      // ANTES del envío. Resolvemos la ruta REAL (canónica) del primer adjunto
+      // declarado que exista; se envía ESA, no la cruda del dropfile. Una ruta
+      // de voz que resuelve fuera del allowlist LANZA → cae a handleSendFailure.
+      const declaredAttach = declaredAttachmentTypes(data);
+      let multipartType = null;
+      let resolvedAttachPath = null;
+      for (const t of declaredAttach) {
+        const resolved = resolveAttachmentPath(t, data[t]); // lanza si voice fuera de allowlist
+        if (resolved) { multipartType = t; resolvedAttachPath = resolved; break; }
+      }
 
       if (multipartType) {
         const methodByType = {
@@ -705,7 +788,7 @@ async function processQueue() {
         const mpBody = await telegramSendMultipart(
           methodByType[multipartType],
           multipartType,
-          data[multipartType],
+          resolvedAttachPath, // #4796 — ruta canónica resuelta (no la cruda del dropfile)
           extra,
           contentTypeByType[multipartType] || 'application/octet-stream',
         );
@@ -761,6 +844,18 @@ async function processQueue() {
         // El edit devuelve el mismo message_id; escribimos recibo `enviado` para
         // que el reconciliador del Commander cierre el correlationId del edit.
         writeSentReceiptIfAny(data, [editBody.result.message_id]);
+      } else if (shouldFailClosed(data, multipartType)) {
+        // #4796 — Guarda fail-closed: el dropfile DECLARÓ un adjunto (p.ej.
+        // solo-audio `voice`) pero ninguno resolvió a un archivo real y no hay
+        // texto/edición de respaldo. Antes esto caía al cierre optimista de abajo
+        // (`renameSync → listo/` + log "Enviado") sin haber enviado NADA a Telegram
+        // — descarte silencioso (incidente 2026-07-19). Ahora lanzamos para caer en
+        // el `catch` → `handleSendFailure` (reintento acotado → fallido/ → alerta).
+        // Log con ruta esperada + motivo (sin volcar contenido ni secrets — CA-3).
+        const declaredPaths = declaredAttach.map((t) => `${t}=${data[t]}`).join(', ');
+        throw new Error(
+          `Adjunto declarado sin archivo resoluble (${declaredPaths}); no se marca "Enviado"`,
+        );
       }
 
       const listoPath = path.join(LISTO, file.name);
@@ -812,6 +907,14 @@ module.exports = {
   editMessageText,
   // #4586 (Palanca 2a) — normalizador de message_thread_id, expuesto para tests.
   normalizeThreadId,
+  // #4796 — helpers de normalización/allowlist de rutas de adjunto + guarda
+  // fail-closed del solo-audio. Puros (o I/O acotado sobre disco); no arrancan el
+  // servicio ni tocan red. Expuestos para `node --test`.
+  resolveAttachmentPath,
+  declaredAttachmentTypes,
+  shouldFailClosed,
+  isUnderBase,
+  mediaBaseDir,
 };
 
 // Arranque del servicio: SOLO cuando se ejecuta directamente (`node servicio-telegram.js`),
