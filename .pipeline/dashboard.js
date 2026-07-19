@@ -1889,6 +1889,41 @@ function* _genPipelineState() {
     state.quota = buildQuotaStateBlock({ PIPELINE, ROOT });
   } catch { /* mantiene el default fail-closed */ }
 
+  // #4778 (Ola Puente P6 · CA-1.4/CA-1.5) — Catálogo de productos + estado
+  // NAMESPACEADO por projectId para el dashboard product-aware (switcher + grid
+  // "estado por producto"). Regla de aislamiento (A01): cada producto sólo ve su
+  // propio namespace; NUNCA se agrega estado cross-product. Para el producto
+  // primario/por defecto (retro-compat · CA-5.1) el estado deriva del snapshot
+  // vivo del pipeline — que ES el contexto de coordinación del producto por
+  // defecto; los productos adicionales que el kernel onboardee se materializan en
+  // este MISMO mapa segmentado, sin mezclar datos entre productos. Fail-open: si
+  // el catálogo no carga, el dashboard sigue operando single-product.
+  state.products = [];
+  state.productState = {};
+  try {
+    const productCatalog = require('./lib/product-catalog');
+    const catalog = productCatalog.listProducts(path.join(PIPELINE, 'descriptors'));
+    // Resumen de pipeline del producto por defecto desde el propio issueMatrix
+    // (NO se agrega estado de otros namespaces). Conteos honestos por estadoActual.
+    let activos = 0, pendientes = 0, bloqueados = 0;
+    for (const data of Object.values(state.issueMatrix)) {
+      if (!data) continue;
+      if (data.estadoActual === 'trabajando') activos++;
+      else if (data.estadoActual === 'pendiente' || data.estadoActual === 'listo') pendientes++;
+      if (typeof data.faseActual === 'string' && /bloqueados/.test(data.faseActual)) bloqueados++;
+    }
+    const primarySummary = { activos, pendientes, bloqueados, procesados: doneIssueIds.length };
+    const isPausedNow = fs.existsSync(path.join(PIPELINE, '.paused'));
+    const now = Date.now();
+    state.products = catalog;
+    for (const p of catalog) {
+      const isPrimaryActive = p.role === 'primary' && p.status === 'active';
+      state.productState[p.projectId] = isPrimaryActive
+        ? { projectId: p.projectId, name: p.name, status: p.status, state: isPausedNow ? 'paused' : 'active', phase: 'operando', metrics: primarySummary, updatedAt: now }
+        : { projectId: p.projectId, name: p.name, status: p.status, state: p.status === 'onboarding' ? 'onboarding' : 'inactive', phase: p.status || 'inactive', metrics: { activos: 0, pendientes: 0, bloqueados: 0, procesados: 0 }, updatedAt: now };
+    }
+  } catch { /* product-aware opcional: single-product sin catálogo */ }
+
   return state;
 }
 
@@ -11480,6 +11515,12 @@ try { esperandoFirmaView = require('./views/dashboard/esperando-firma'); } catch
 let gateSignatureRequest = null;
 try { gateSignatureRequest = require('./lib/gate-signature-request'); } catch (e) { log(`gate-signature-request unavailable: ${e.message}`); }
 
+// #4778 — Control del kernel multi-producto (onboard/start/pause). El dashboard
+// valida fail-closed (schema + SSRF vía project-bootstrap) y encola el pedido; el
+// kernel registra/arranca/pausa (invariante "el adaptador pide, el kernel ejecuta").
+let productControl = null;
+try { productControl = require('./lib/product-control-request'); } catch (e) { log(`product-control-request unavailable: ${e.message}`); }
+
 // #3727 (split de #3715) — Vista Equipo extraída a su propio módulo SSR.
 // Patrón espejo de las vistas de arriba: si el require falla (typo, dep faltante),
 // generateHTML cae al fallback visible (<span class="empty-label">Equipo no
@@ -12069,10 +12110,117 @@ const server = http.createServer((req, res) => {
           issue: parsed.issue,
           decision: parsed.decision,
           origen: parsed.origen,
+          productId: parsed.productId, // #4778 · CA-2.2 — firma atada al producto (no repudio).
           actor: parsed.actor,
           remoteAddress: (req.socket && req.socket.remoteAddress) || '',
         });
         log(`Action: gate-signature decide #${parsed.issue} → ${out.decision || parsed.decision} (${out.status}) ${out.msg}`);
+        res.writeHead(out.status || (out.ok ? 202 : 400), { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(out));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // ===========================================================================
+  // #4778 — Dashboard product-aware: onboarding (wizard) + control por producto.
+  // Endpoints ENDURECIDOS (mismo molde que /api/gate-signature/decide):
+  //   1. Gate loopback/Origin/Content-Type (_opsRestartGate.checkGate).
+  //   2. CSRF double-submit (killAgentCsrf.requireCSRF).
+  //   3. Delegación en product-control-request (encola; el kernel ejecuta).
+  // El dashboard NUNCA registra/arranca/pausa por su cuenta (CA-1.5 · SEC-1):
+  // encola el pedido y el kernel autoriza contra el contexto de la instancia.
+  // Ningún endpoint mutante por GET (SEC-7a).
+  // ===========================================================================
+
+  // Emisión del token CSRF para las acciones de producto (reusa el double-submit
+  // cookie compartido `ka_csrf`, mismo molde que /api/gate-signature/csrf-token).
+  if (req.url === '/api/product/csrf-token' && req.method === 'GET') {
+    if (!killAgentCsrf) {
+      res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ ok: false, msg: 'CSRF no disponible' }));
+      return;
+    }
+    killAgentCsrf.issueTokenResponse(req, res);
+    return;
+  }
+
+  // Helper local: aplica el gate + CSRF de los endpoints mutantes de producto.
+  // Devuelve true si ya respondió (rechazo) y el caller debe abortar.
+  const _productGuardRejected = () => {
+    if (!_opsRestartGate) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'gate de seguridad no disponible' }));
+      return true;
+    }
+    const gate = _opsRestartGate.checkGate(req);
+    if (!gate.ok) {
+      res.writeHead(gate.status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, code: gate.code, msg: gate.msg }));
+      return true;
+    }
+    if (!killAgentCsrf) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'CSRF no disponible' }));
+      return true;
+    }
+    if (!killAgentCsrf.requireCSRF(req, res)) return true; // ya respondió 403
+    if (!productControl) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'control de producto no disponible' }));
+      return true;
+    }
+    return false;
+  };
+
+  // CA-1.1 · Alta de producto (wizard). Valida fail-closed (schema + prompt-
+  // injection + path-traversal + SSRF + gate de firma) vía project-bootstrap y
+  // encola el registro onboarding (INACTIVO) para el kernel.
+  if (req.url === '/api/product/onboard' && req.method === 'POST') {
+    if (_productGuardRejected()) return;
+    let body = '';
+    req.on('data', chunk => { body += chunk; if (body.length > 64 * 1024) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const parsed = body ? JSON.parse(body) : {};
+        const out = productControl.enqueueOnboard({
+          descriptor: parsed.descriptor,
+          actor: parsed.actor,
+          remoteAddress: (req.socket && req.socket.remoteAddress) || '',
+        });
+        log(`Action: product onboard ${out.projectId || '(rechazado)'} (${out.status}) ${out.msg || out.stage || ''}`);
+        res.writeHead(out.status || (out.ok ? 202 : 400), { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(out));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // CA-1.5 · Arranque/pausa por producto. `projectId` en banda se valida
+  // (isSafeId) y se encola; el kernel autoriza contra el contexto de la instancia
+  // al drenar la cola (SEC-1b: nunca concede acceso desde el id en banda).
+  const _productControlAction = req.url === '/api/product/start' ? 'start'
+    : (req.url === '/api/product/pause' ? 'pause' : null);
+  if (_productControlAction && req.method === 'POST') {
+    if (_productGuardRejected()) return;
+    let body = '';
+    req.on('data', chunk => { body += chunk; if (body.length > 16 * 1024) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const parsed = body ? JSON.parse(body) : {};
+        const out = productControl.enqueueControl({
+          action: _productControlAction,
+          projectId: parsed.productId || parsed.projectId,
+          actor: parsed.actor,
+          remoteAddress: (req.socket && req.socket.remoteAddress) || '',
+        });
+        log(`Action: product ${_productControlAction} ${out.projectId || '(rechazado)'} (${out.status}) ${out.msg || ''}`);
         res.writeHead(out.status || (out.ok ? 202 : 400), { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify(out));
       } catch (e) {

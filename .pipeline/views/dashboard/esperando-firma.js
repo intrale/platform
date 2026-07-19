@@ -39,6 +39,24 @@ try {
 
 const slug = 'esperando-firma';
 
+// #4778 · GATE 2 product-aware. Id de producto seguro (mismo patrón que
+// project-descriptor.isSafeId). Sirve para filtrar la bandeja por producto
+// (CA-2.1) y para atar la firma al productId (CA-2.2 · no repudio).
+const SAFE_PRODUCT_ID_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;
+// CA-5.1 — retro-compat: un ítem sin productId pertenece al producto único.
+const DEFAULT_PRODUCT_ID = 'intrale';
+
+function safeProductId(raw) {
+    const s = String(raw == null ? '' : raw);
+    return SAFE_PRODUCT_ID_RE.test(s) ? s : null;
+}
+
+// Producto efectivo de un ítem de la bandeja: su productId si es seguro, si no el
+// producto único (Intrale). NUNCA cruza productos: un id inseguro NO se propaga.
+function productIdOf(p) {
+    return safeProductId(p && p.productId) || DEFAULT_PRODUCT_ID;
+}
+
 // CA-5 / defensa en profundidad — coerción numérica estricta de `p.issue` antes
 // de interpolar en onclick/aria-label. Devuelve el entero positivo o null.
 function safeIssueNumber(raw) {
@@ -144,18 +162,29 @@ function renderRowSsr(p) {
     const pipelineTxt = (p && p.pipeline != null) ? String(p.pipeline) : '';
     const origenAttr = escapeHtmlAttr(String((p && p.origen) || ''));
 
-    return `<div class="ef-row ef-sev-${sev}" id="esperando-firma-row-${issueNum}" data-issue="${issueNum}" data-origen="${origenAttr}" data-severity="${sev}">
+    // #4778 · productId seguro para atar la firma al producto (CA-2.2). Sólo se
+    // pasa como 3er arg del handler si el ítem trae un productId EXPLÍCITO y seguro
+    // (retro-compat: los ítems del producto único siguen sin 3er arg).
+    const explicitPid = safeProductId(p && p.productId);
+    const pidArg = explicitPid ? `, '${explicitPid}'` : '';
+    const productAttr = explicitPid ? ` data-product="${escapeHtmlAttr(explicitPid)}"` : '';
+    const productChip = explicitPid
+        ? `<span class="ef-product" title="${escapeHtmlAttr('Producto ' + explicitPid)}">▣ ${escapeHtmlText(explicitPid)}</span>`
+        : '';
+
+    return `<div class="ef-row ef-sev-${sev}" id="esperando-firma-row-${issueNum}" data-issue="${issueNum}" data-origen="${origenAttr}" data-severity="${sev}"${productAttr}>
       <span class="ef-rail" aria-hidden="true"></span>
       <div class="ef-row-head">
         <div class="ef-row-info">
           <span class="ef-origen ${om.cls}" title="${escapeHtmlAttr(om.label)}"><span aria-hidden="true">${escapeHtmlText(om.icon)}</span> ${escapeHtmlText(om.label)}</span>
+          ${productChip}
           <a href="https://github.com/intrale/platform/issues/${issueNum}" target="_blank" rel="noopener noreferrer"><b>#${issueNum}</b></a>
           <span class="ef-meta">${escapeHtmlText(skillTxt || '?')} en ${escapeHtmlText(phaseTxt || '?')}${pipelineTxt ? ' · ' + escapeHtmlText(pipelineTxt) : ''}</span>
           <span class="ef-age ef-age-${sev}" title="${escapeHtmlAttr('Esperando hace ' + ageTxt + ' · severidad ' + sev)}" aria-label="${escapeHtmlAttr('Esperando hace ' + ageTxt)}">⏱ hace ${escapeHtmlText(ageTxt)}</span>
         </div>
         <div class="ef-row-actions">
-          <button class="ef-btn ef-btn-approve" onclick="gateSignatureDecide(${issueNum}, 'aprobar')" title="${escapeHtmlAttr('Aprobar firma de #' + issueNum)}" aria-label="${escapeHtmlAttr('Aprobar firma del issue #' + issueNum)}">✓ Aprobar</button>
-          <button class="ef-btn ef-btn-reject" onclick="gateSignatureDecide(${issueNum}, 'rechazar')" title="${escapeHtmlAttr('Rechazar firma de #' + issueNum)}" aria-label="${escapeHtmlAttr('Rechazar firma del issue #' + issueNum)}">✕ Rechazar</button>
+          <button class="ef-btn ef-btn-approve" onclick="gateSignatureDecide(${issueNum}, 'aprobar'${pidArg})" title="${escapeHtmlAttr('Aprobar firma de #' + issueNum)}" aria-label="${escapeHtmlAttr('Aprobar firma del issue #' + issueNum)}">✓ Aprobar</button>
+          <button class="ef-btn ef-btn-reject" onclick="gateSignatureDecide(${issueNum}, 'rechazar'${pidArg})" title="${escapeHtmlAttr('Rechazar firma de #' + issueNum)}" aria-label="${escapeHtmlAttr('Rechazar firma del issue #' + issueNum)}">✕ Rechazar</button>
         </div>
       </div>
       ${renderSuggestion(p && p.sugerencia)}
@@ -196,6 +225,7 @@ function esperandoFirmaStyle() {
 .ef-origen-acc{color:#9ff0e6;background:rgba(45,212,191,.14);border-color:rgba(45,212,191,.36)}
 .ef-origen-gate3{color:#fcd9a0;background:rgba(245,158,11,.14);border-color:rgba(245,158,11,.36)}
 .ef-origen-otro{color:var(--in-fg-dim,#8A93A6);background:rgba(255,255,255,.05);border-color:var(--in-border,rgba(255,255,255,.12))}
+.ef-product{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:800;letter-spacing:.3px;color:#bcd8ff;background:rgba(0,214,255,.12);border:1px solid rgba(0,214,255,.34);border-radius:8px;padding:1px 8px}
 .ef-meta{font-size:12px;color:var(--in-fg-dim,#8A93A6)}
 .ef-age{font-size:11px;font-weight:700;color:var(--in-fg-dim,#8A93A6)}
 .ef-age-warning{color:#fdba74}
@@ -239,10 +269,20 @@ function esperandoFirmaStyle() {
  * empty-state claro (no error, no panel roto — CA-1).
  *
  * @param {object} state — snapshot; lee `state.esperandoFirma` (array).
+ * @param {object} [opts]
+ * @param {string} [opts.productId] — #4778 · CA-2.1: si se pasa un productId seguro,
+ *   la bandeja se filtra a los ítems de ESE producto (un firmante de A no ve ítems
+ *   de B). Un ítem sin productId cuenta como del producto único (Intrale). Sin
+ *   productId (default) ⇒ se muestran todos (retro-compat CA-5.1).
  * @returns {string} HTML del panel (con estilos inline).
  */
-function renderEsperandoFirmaSsr(state) {
-    const list = Array.isArray(state && state.esperandoFirma) ? state.esperandoFirma : [];
+function renderEsperandoFirmaSsr(state, opts = {}) {
+    const all = Array.isArray(state && state.esperandoFirma) ? state.esperandoFirma : [];
+
+    // CA-2.1 — aislamiento por producto. El filtro compara contra el producto
+    // efectivo del ítem (productIdOf), nunca contra el productId en banda sin validar.
+    const filterPid = safeProductId(opts && opts.productId);
+    const list = filterPid ? all.filter(p => productIdOf(p) === filterPid) : all;
 
     const rowsHtml = list.map(renderRowSsr).filter(Boolean).join('');
     const count = list.filter(p => safeIssueNumber(p && p.issue) !== null).length;
@@ -290,19 +330,23 @@ function efDisableRow(issueNum){
 // REQ-SEC-4580-1 — POST-only + CSRF same-origin. Pide el token (GET), luego POST
 // con X-CSRF-Token. El dashboard NO muta estado: reenvía la decisión al backend
 // de firma (#4579) que delega la transición al kernel.
-async function gateSignatureDecide(issueNum, decision){
+async function gateSignatureDecide(issueNum, decision, productId){
   var verbo = decision === 'aprobar' ? 'Aprobar' : 'Rechazar';
-  if(!window.confirm(verbo + ' la firma del issue #' + issueNum + '?')) return;
+  var sufijo = productId ? (' del producto ' + productId) : '';
+  if(!window.confirm(verbo + ' la firma del issue #' + issueNum + sufijo + '?')) return;
   efDisableRow(issueNum);
   try {
     var t = await fetch('/api/gate-signature/csrf-token', { cache: 'no-store' });
     var tj = await t.json();
     var token = tj && tj.csrf_token;
     if(!token){ alert('No pude obtener el token CSRF; recargá y reintentá.'); location.reload(); return; }
+    // #4778 · CA-2.2 — la firma viaja atada al productId (no repudio) cuando existe.
+    var payload = { issue: issueNum, decision: decision };
+    if(productId) payload.productId = productId;
     var r = await fetch('/api/gate-signature/decide', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
-      body: JSON.stringify({ issue: issueNum, decision: decision })
+      body: JSON.stringify(payload)
     });
     var j = await r.json();
     if(j && j.ok){ location.reload(); }
@@ -318,6 +362,9 @@ module.exports = {
     renderEsperandoFirmaClientScript,
     // Helpers exportados para tests.
     safeIssueNumber,
+    safeProductId,
+    productIdOf,
+    DEFAULT_PRODUCT_ID,
     origenMeta,
     fmtAge,
     severityOf,

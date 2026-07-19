@@ -198,6 +198,72 @@ function _bloqueadosInertFallback(reason) {
         '<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3).</p></main></body></html>';
 }
 
+// #4778 — Vista Onboarding de producto (`?view=onboarding`). Require defensivo:
+// si el módulo no carga, la entry del router degrada a un panel inerte visible
+// (CA-A3) en vez de tirar 500. Vista estática (form + client script); la
+// validación autoritativa del descriptor la hace el backend fail-closed.
+let onboardingWizardView = null;
+try { onboardingWizardView = require('../views/dashboard/onboarding-wizard'); }
+catch (e) {
+    try { console.warn('[dashboard-routes] onboarding-wizard view unavailable: ' + (e && e.message)); } catch { /* logger no debe romper el require */ }
+}
+
+function renderOnboardingView() {
+    if (!onboardingWizardView || typeof onboardingWizardView.renderOnboarding !== 'function') {
+        const safe = 'módulo views/dashboard/onboarding-wizard no disponible (require falló)';
+        return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Intrale · Onboarding</title></head>' +
+            '<body><main style="padding:32px"><h1>Wizard de onboarding no disponible</h1><p>' + safe + '</p>' +
+            '<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3).</p></main></body></html>';
+    }
+    try {
+        return onboardingWizardView.renderOnboarding();
+    } catch (e) {
+        const safe = String((e && e.message) || 'error de render').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+        return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Intrale · Onboarding</title></head>' +
+            '<body><main style="padding:32px"><h1>Wizard de onboarding no disponible</h1><p>' + safe + '</p></main></body></html>';
+    }
+}
+
+// #4778 (Ola Puente P6) — Vista "Estado por producto" (`?view=estado-productos`).
+// Grid product-aware (pieza 2 del mockup 36): una card por producto con su estado
+// AISLADO (namespaceado por projectId) + Arrancar/Pausar. Require defensivo: si el
+// módulo no carga, la entry degrada a un panel inerte visible (CA-A3). El render
+// recibe (opts, ctx) para inyectar `state.products` + `state.productState` en vivo.
+let estadoProductosView = null;
+try { estadoProductosView = require('../views/dashboard/estado-productos'); }
+catch (e) {
+    try { console.warn('[dashboard-routes] estado-productos view unavailable: ' + (e && e.message)); } catch { /* logger no debe romper el require */ }
+}
+
+function renderEstadoProductosView(ctx, opts) {
+    if (!estadoProductosView || typeof estadoProductosView.renderEstadoProductos !== 'function') {
+        const safe = 'módulo views/dashboard/estado-productos no disponible (require falló)';
+        return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Intrale · Estado por producto</title></head>' +
+            '<body><main style="padding:32px"><h1>Estado por producto no disponible</h1><p>' + safe + '</p>' +
+            '<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3).</p></main></body></html>';
+    }
+    try {
+        const state = (ctx && typeof ctx.getState === 'function') ? ctx.getState() : {};
+        // CA-1.4: se pasan el catálogo y el mapa namespaceado tal cual; la vista lee
+        // por-producto (nunca agrega cross-product). `productId` activo viene de opts
+        // (extraído y validado del query en el dispatch `/dashboard`).
+        return estadoProductosView.renderEstadoProductos(Object.assign({}, opts || {}, {
+            products: Array.isArray(state.products) ? state.products : [],
+            productState: (state.productState && typeof state.productState === 'object') ? state.productState : {},
+            // Bandeja GATE 2 (pieza 3): ítems esperando firma; la vista los filtra
+            // por el producto activo (CA-2.1) vía el módulo de firma.
+            esperandoFirma: Array.isArray(state.esperandoFirma) ? state.esperandoFirma : [],
+            // El router transporta el producto activo como `productId` (nombre del
+            // query param); la vista lo consume como `activeProductId` (semántico).
+            activeProductId: (opts && opts.productId) || undefined,
+        }));
+    } catch (e) {
+        const safe = String((e && e.message) || 'error de render').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+        return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Intrale · Estado por producto</title></head>' +
+            '<body><main style="padding:32px"><h1>Estado por producto no disponible</h1><p>' + safe + '</p></main></body></html>';
+    }
+}
+
 // #4378 — Vista Roadmap de olas (`?view=roadmap`). Require defensivo: si el
 // módulo (o sus deps, ej. lib/escape-html.js) no carga, `renderRoadmapView`
 // degrada a un panel inerte visible (CA-A3) en vez de tirar 500. READ-ONLY:
@@ -1192,6 +1258,22 @@ const VIEW_SLUGS = Object.freeze({
         title: 'Roadmap',
         render: (opts, ctx) => renderRoadmapView(ctx, opts),
     },
+    // #4778 — Wizard de onboarding de producto (slug `onboarding`). READ-ONLY:
+    // el render es estático (form + client script); el alta va por POST
+    // /api/product/onboard con CSRF (validación fail-closed en el backend).
+    onboarding: {
+        title: 'Onboarding',
+        render: () => renderOnboardingView(),
+    },
+    // #4778 — Grid "Estado por producto" (`?view=estado-productos`). Recibe
+    // (opts, ctx): inyecta `state.products` + `state.productState` en vivo y el
+    // `productId` activo (opts.productId, extraído/validado del query). El switch
+    // cambia el estado mostrado (card activa resaltada + detalle scopeado · CA-1.4);
+    // Arrancar/Pausar delega en el kernel por POST (CA-1.5).
+    'estado-productos': {
+        title: 'Productos',
+        render: (opts, ctx) => renderEstadoProductosView(ctx, opts),
+    },
     // #3727..#3737 sumarán acá:
     // 'multi-provider':          { title: 'Multi-provider',          render: () => mp.renderMultiProvider() },
     // 'multi-provider-coverage': { title: 'Multi-provider Coverage', render: () => mpc.renderMultiProviderCoverage() },
@@ -1209,6 +1291,18 @@ const VIEW_SLUG_REGEX = /^[a-z][a-z0-9-]{0,30}$/;
 // Cap de tamaño del query param antes de regex (evita pasar payloads
 // arbitrarios al motor regex).
 const VIEW_SLUG_MAX_LEN = 64;
+
+// #4778 — Validación fail-closed del `productId` del query (switch product-aware).
+// Espeja project-descriptor.isSafeId / product-state-segment.isSafeProjectId. El
+// productId NUNCA se refleja crudo en el HTML: sólo se propaga a la vista si pasa
+// esta validación; un id inseguro se descarta (opts.productId = undefined).
+const PRODUCT_ID_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;
+function _safeProductIdFromQuery(q) {
+    const raw = q && typeof q.get === 'function' ? q.get('productId') : null;
+    if (typeof raw !== 'string' || raw.length > 64) return undefined;
+    if (!PRODUCT_ID_RE.test(raw) || raw.includes('..') || raw.includes('/') || raw.includes('\\')) return undefined;
+    return raw;
+}
 
 // CA-S2 — loopback gate (defense-in-depth). El bind ya es 127.0.0.1 por
 // default (#3177 + #3191), pero validamos también acá por si en algún
@@ -2475,6 +2569,9 @@ function handle(req, res, ctx) {
         const opts = {
             currentView: slug,
             unknownViewRequested: !valid,
+            // #4778 — producto activo del switcher (validado fail-closed). Las
+            // vistas product-aware lo consumen para scopear el estado mostrado.
+            productId: _safeProductIdFromQuery(q),
         };
         try {
             // #3732 — `ctx` como 2º arg: las vistas con state en vivo (ops)
@@ -2529,7 +2626,9 @@ function handle(req, res, ctx) {
             return true;
         }
         try {
-            sendPartialHtml(res, VIEW_SLUGS[reqSlug].render({ currentView: reqSlug }, ctx));
+            // #4778 — forward del productId activo también en el morphing parcial,
+            // para que el switch mantenga el scope al recargar la vista por fetch.
+            sendPartialHtml(res, VIEW_SLUGS[reqSlug].render({ currentView: reqSlug, productId: _safeProductIdFromQuery(q) }, ctx));
         } catch (e) {
             try { console.error(JSON.stringify({ event: 'partial_render_error', slug: reqSlug, msg: e.message, ts: new Date().toISOString() })); } catch {}
             res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });

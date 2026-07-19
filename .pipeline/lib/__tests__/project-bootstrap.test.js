@@ -53,6 +53,9 @@ for (const badUrl of [
   'http://github.com/acme/store',       // no https
   'https://evil.example.com/x',         // host fuera de allowlist
   'https://[::1]/x',                    // ipv6 loopback
+  'https://user:pass@github.com/acme/store', // SEC-6: credenciales embebidas
+  'https://user@github.com/acme/store',      // SEC-6: username embebido
+  'https://:token@github.com/acme/store',    // SEC-6: password/token embebido
   'not-a-url',
 ]) {
   test(`CA-D3: assertUrlAllowed RECHAZA ${badUrl}`, () => {
@@ -60,6 +63,20 @@ for (const badUrl of [
     assert.equal(r.allowed, false, `${badUrl} debe ser rechazada: ${JSON.stringify(r)}`);
   });
 }
+
+// SEC-6 — credenciales embebidas en URL (user:pass@host) prohibidas: secretos
+// solo por referencia (SEC-4), nunca crudos en la cola/logs.
+test('SEC-6: assertUrlAllowed rechaza user:pass@ aunque el host esté allowlisted', () => {
+  const r = b.assertUrlAllowed('https://user:pass@github.com/acme/store');
+  assert.equal(r.allowed, false);
+  assert.match(r.reason, /credenciales embebidas|SEC-6/i);
+});
+
+test('SEC-6: verifyAccess rechaza repo con token embebido en la URL', () => {
+  const desc = validDescriptor({ repositories: [{ id: 'main', url: 'https://x-access-token:ghp_secret@github.com/acme/store' }] });
+  const res = b.verifyAccess(desc);
+  assert.equal(res.ok, false);
+});
 
 test('CA-D3: verifyAccess rechaza cuando un repo apunta a IP interna', () => {
   const desc = validDescriptor({ repositories: [{ id: 'main', url: 'https://169.254.169.254/x' }] });
