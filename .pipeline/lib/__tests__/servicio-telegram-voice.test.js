@@ -108,3 +108,122 @@ test('buildMultipartBody: Content-Type con CRLF cae al default (defensa inyecci�
   assert.ok(!s.includes('X-Injected'), 'header inyectado no viaja');
   assert.ok(s.includes('Content-Type: application/octet-stream'), 'cae al default seguro');
 });
+
+// -----------------------------------------------------------------------------
+// #4796 — Normalización de ruta de adjunto + guarda fail-closed del solo-audio +
+// canonical-prefix allowlist (seguridad). Incidente 2026-07-19: audios TTS
+// marcados "Enviado" sin llegar por ruta `.ogg` con separadores Windows corruptos.
+// -----------------------------------------------------------------------------
+
+// CA-1 / CA-4 (path feliz) — la normalización resuelve al archivo real y lo deja
+// listo para `sendVoice` (dentro del allowlist).
+test('#4796 resolveAttachmentPath: ruta de voz con separadores redundantes se normaliza y resuelve al .ogg real', () => {
+  const media = svc.mediaBaseDir();
+  fs.mkdirSync(media, { recursive: true });
+  const real = path.join(media, 'tts-happy.ogg');
+  fs.writeFileSync(real, Buffer.from('OggS-fake-audio'));
+
+  // Ruta "sucia" con separadores redundantes (`//` y `/./`) que `path.normalize`
+  // colapsa de forma determinística en cualquier plataforma.
+  const dirty = `${media}//./tts-happy.ogg`;
+  const resolved = svc.resolveAttachmentPath('voice', dirty);
+  assert.ok(resolved, 'una ruta normalizable resuelve a un path no nulo');
+  assert.equal(fs.realpathSync(resolved), fs.realpathSync(real), 'apunta al .ogg real');
+
+  // En Windows, además, el caso exacto del incidente: separadores backslash.
+  if (process.platform === 'win32') {
+    const withBackslashes = real.replace(/\//g, '\\');
+    assert.ok(
+      svc.resolveAttachmentPath('voice', withBackslashes),
+      'ruta con backslashes de Windows también resuelve al archivo real',
+    );
+  }
+});
+
+// CA-2 / CA-3 (fail-closed decisión) — solo-audio con archivo inexistente NO
+// resuelve y dispara la guarda; los caminos con respaldo (texto/edición) o sin
+// adjunto declarado NO se bloquean (sin regresión del cierre optimista legítimo).
+test('#4796 solo-audio inexistente: no resuelve y shouldFailClosed=true; respaldos no se bloquean', () => {
+  const missing = path.join(svc.mediaBaseDir(), 'no-existe-tts.ogg');
+  assert.equal(svc.resolveAttachmentPath('voice', missing), null, 'archivo inexistente → null');
+
+  // Ruta corrupta del incidente (separadores perdidos): no existe → null.
+  assert.equal(
+    svc.resolveAttachmentPath('voice', 'C:WorkspacesIntraleplatformlogsmediatts.ogg'),
+    null,
+    'ruta con separadores perdidos no se "reconstruye" a ciegas → null (fail-closed)',
+  );
+
+  // multipartType null (no resolvió) + sin texto → fail-closed (throw → fallido/).
+  assert.equal(svc.shouldFailClosed({ voice: missing }, null), true);
+  // Con texto de respaldo NO se bloquea (se envía por sendMessage).
+  assert.equal(svc.shouldFailClosed({ voice: missing, text: 'hola' }, null), false);
+  // Edición NO se bloquea.
+  assert.equal(svc.shouldFailClosed({ method: 'editMessageText', message_id: 5 }, null), false);
+  // Dropfile sin adjunto declarado NO se bloquea (cierre optimista legítimo intacto).
+  assert.equal(svc.shouldFailClosed({}, null), false);
+  // Si el adjunto SÍ resolvió (multipartType presente) NO se bloquea.
+  assert.equal(svc.shouldFailClosed({ voice: missing }, 'voice'), false);
+});
+
+// CA-2 / CA-3 (end-to-end del ruteo) — un solo-audio con archivo inexistente,
+// enrutado a `handleSendFailure`, termina en `fallido/` y NUNCA en `listo/`
+// (nunca se marca "Enviado").
+test('#4796 fail-closed enruta a handleSendFailure → fallido/, nunca listo/', () => {
+  const svcDir = path.join(SANDBOX, 'servicios', 'telegram');
+  const pendiente = path.join(svcDir, 'pendiente');
+  const trabajando = path.join(svcDir, 'trabajando');
+  const fallido = path.join(svcDir, 'fallido');
+  const listo = path.join(svcDir, 'listo');
+  for (const d of [pendiente, trabajando, fallido, listo]) fs.mkdirSync(d, { recursive: true });
+
+  const name = 'voice-broken-4796.json';
+  const wp = path.join(trabajando, name);
+  const missing = path.join(svc.mediaBaseDir(), 'nope-4796.ogg');
+  const payload = {
+    voice: missing,
+    _correlationId: rec.generateCorrelationId('voice'),
+    _partIndex: 0,
+    _partTotal: 1,
+  };
+  // La decisión de processQueue: como no resuelve y no hay texto → fail-closed.
+  assert.equal(svc.shouldFailClosed(payload, null), true);
+
+  const err = new Error(`Adjunto declarado sin archivo resoluble (voice=${missing})`);
+  const file = { name, path: path.join(pendiente, name) };
+  fs.writeFileSync(wp, JSON.stringify(payload));
+
+  // Iterar hasta el fallo terminal (el contador de intentos se persiste en el
+  // archivo; cada 'retry' lo devuelve a pendiente/ con backoff).
+  let res;
+  for (let i = 0; i < 20; i++) {
+    res = svc.handleSendFailure(file, wp, err);
+    if (res === 'failed') break;
+    // 'retry' → el archivo quedó en pendiente/; devolverlo a trabajando/ para el
+    // próximo intento (simula el poll de selección tras vencer el backoff).
+    fs.renameSync(file.path, wp);
+  }
+  assert.equal(res, 'failed', 'agota reintentos y termina en fallo terminal');
+  assert.ok(fs.existsSync(path.join(fallido, name)), 'el dropfile queda en fallido/');
+  assert.equal(fs.existsSync(path.join(listo, name)), false, 'NUNCA se movió a listo/ (no "Enviado")');
+});
+
+// CA-4 (seguridad) — una ruta de voz que resuelve FUERA del dir base allowlisted
+// es rechazada (LANZA), nunca se lee ni se envía (anti-exfiltración OWASP A01/A08).
+test('#4796 [seguridad] ruta de voz fuera del dir base allowlisted → rechazada (nunca enviada)', () => {
+  fs.mkdirSync(svc.mediaBaseDir(), { recursive: true });
+  // Archivo "sensible" simulado fuera de logs/media (raíz del sandbox).
+  const outside = path.join(SANDBOX, 'application.conf');
+  fs.writeFileSync(outside, 'BOT_TOKEN=super-secreto-no-exfiltrar');
+
+  assert.throws(
+    () => svc.resolveAttachmentPath('voice', outside),
+    /fuera del dir permitido|seguridad/,
+    'voice fuera del allowlist LANZA (fail-closed) → se enruta a handleSendFailure',
+  );
+
+  // El allowlist estricto aplica SOLO a `voice` (productor con dir base fijo). Los
+  // otros adjuntos (rutas de otros flujos: PDFs de rejection, screenshots) no se
+  // restringen a media/ y conservan el comportamiento previo.
+  assert.doesNotThrow(() => svc.resolveAttachmentPath('document', outside));
+});
