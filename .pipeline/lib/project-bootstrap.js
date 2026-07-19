@@ -159,7 +159,7 @@ function dryRun(descriptor, deps = {}) {
     sideEffects: false,
     admissionLabels: descriptorLib.deriveAdmissionLabels(descriptor),
     resolvedRouting,
-    signers: descriptorLib.evaluateSignatureGate(descriptor).signers,
+    signers: descriptorLib.resolveSignerAuthority(descriptor).signers,
     gates: {
       gate0: descriptorLib.resolveGate(descriptor, 'gate0', { kernelFloor: deps.kernelGateFloor }),
       gate2: descriptorLib.resolveGate(descriptor, 'gate2', { kernelFloor: deps.kernelGateFloor }),
@@ -217,7 +217,7 @@ function runBootstrap(args = {}) {
   const descriptor = validation.descriptor;
 
   // Gate de autoridad de firma (CA-D4): si signers vacío/inválido, bloquea.
-  const sigGate = descriptorLib.evaluateSignatureGate(descriptor);
+  const sigGate = descriptorLib.resolveSignerAuthority(descriptor);
   if (sigGate.blocked) {
     return { ok: false, stage: 'signature-gate', mode, errors: [{ path: 'authority.signers', detail: sigGate.reason }], human: renderHuman({ ok: false, stage: 'signature-gate', errors: [{ detail: sigGate.reason }] }) };
   }

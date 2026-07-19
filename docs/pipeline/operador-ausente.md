@@ -155,6 +155,37 @@ node -e "console.log(require('./.pipeline/lib/operator-absence-audit').verifyCha
    `chat_id` contra la allowlist de operadores (`authorizeOperator` →
    `validateConfirmer`); un `chat_id` no autorizado se rechaza y deja evidencia.
 
+## Aprobador de respaldo por producto (backup) — Ola Puente P7 (#4692)
+
+Con multi-producto, la autoridad de firma (GATE 2) deja de ser global y se declara
+**por producto** en el descriptor (`authority.signers` + `authority.backup`, ver
+`gates-firma-operador.md`). El **aprobador de respaldo** (`authority.backup`) cubre
+el caso de **operador primario ausente**:
+
+- **`backup` es una identidad humana IGUALMENTE autorizada** — no una vía de
+  auto-aprobación. Cuando el firmante primario no responde, el pedido de firma
+  **escala a `authority.backup`** del producto, que **sigue exigiendo firma humana**.
+- El escalado a respaldo **no relaja ningún invariante**: no-respuesta (ni del
+  primario ni del backup) ⇒ el gate **bloquea + `needs-human`**, **nunca** aprueba
+  por timeout/silencio (invariante SEC-1). El escalado sólo amplía *quién* puede
+  firmar, no *si hace falta* firmar.
+- **Cross-tenant:** el backup de un producto A **no** puede firmar un producto B.
+  La autorización se valida SIEMPRE contra la autoridad del producto en curso
+  (`project-descriptor.authorizeSigner(descriptor, identity)` → rol `signer`/`backup`),
+  con `projectId` en la traza para que la auditoría no confunda productos.
+- **Anclaje en código:** `resolveSignerAuthority(descriptor)` expone
+  `{ signers, backup, projectId }`; el gate operativo
+  (`operator-signature-gate.evaluateSignatureGate`) adjunta `authorized_signers` /
+  `backup_approver` / `project_id` a toda resolución (incluidas las de firma humana)
+  para que la superficie humana sepa quién puede firmar.
+
+> **Nota de despliegue (Intrale hoy):** el producto `intrale-platform` declara
+> `backup: leitolarreta` porque hoy hay un **único operador humano autorizado**.
+> El slot de respaldo queda **cableado** (schema + gate + escalado); sumar un
+> segundo aprobador distinto es un cambio de **una línea del descriptor, sin tocar
+> código**. Modificar `authority.signers/backup` es en sí un cambio gateado: requiere
+> la firma de la autoridad vigente (no auto-modificable por pipeline/rebote/agente).
+
 ## Estado actual
 
 Al momento de esta entrega la política corre en **fail-closed puro**:

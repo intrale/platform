@@ -12,6 +12,7 @@ const audit = require('./audit-log');
 const ladder = require('./autonomy-ladder');
 const {
     evaluateSignatureGate,
+    authorizeProductSigner,
     seleccionarAuditoria,
     DECISION,
     MODE,
@@ -73,6 +74,15 @@ const GATE_PASS = { a: 'pass', b: 'pass' };
 const ISSUE = { number: 4576, tipoIssue: 'area:pipeline', createdAt: '2026-07-10T00:00:00Z' };
 const FASE = 'aprobacion';
 
+// Descriptor del producto en curso (Ola Puente P7 #4692): la autoridad de firma
+// se resuelve desde acá. Sin descriptor el gate va a firma humana fail-closed (se
+// prueba aparte); el resto de los CA necesitan una autoridad válida para llegar a
+// la lógica de calibración.
+const DESC = {
+    identity: { projectId: 'intrale-platform' },
+    authority: { signers: ['leitolarreta'], backup: 'leitolarreta' },
+};
+
 // Siembra un bucket calibrado con N decisiones humanas de acuerdo.
 function sembrarBucketCalibrado(dir, n = 3) {
     for (let i = 0; i < n; i++) {
@@ -96,6 +106,7 @@ test('CA-10 · enabled !== true ⇒ firma humana (cortocircuito, sin invocar)', 
     const dir = tmpPipelineDir();
     const res = evaluateSignatureGate({
         issue: ISSUE, fase: FASE, criterios: CRITERIOS_MAQUINA, gateResults: GATE_PASS,
+        descriptor: DESC,
         config: cfg({ enabled: false }), options: { pipelineDir: dir, nowMs: T0 },
     });
     assert.strictEqual(res.effective_decision, DECISION.FIRMA_HUMANA);
@@ -107,6 +118,7 @@ test('CA-10 · kill_switch activo ⇒ firma humana', () => {
     const dir = tmpPipelineDir();
     const res = evaluateSignatureGate({
         issue: ISSUE, fase: FASE, criterios: CRITERIOS_MAQUINA, gateResults: GATE_PASS,
+        descriptor: DESC,
         config: cfg({ kill_switch: true }), options: { pipelineDir: dir, nowMs: T0 },
     });
     assert.strictEqual(res.effective_decision, DECISION.FIRMA_HUMANA);
@@ -117,6 +129,7 @@ test('CA-10 · sin datos de calibración ⇒ firma humana (default seguro)', () 
     const dir = tmpPipelineDir(); // audit/ vacío, sin muestras.
     const res = evaluateSignatureGate({
         issue: ISSUE, fase: FASE, criterios: CRITERIOS_MAQUINA, gateResults: GATE_PASS,
+        descriptor: DESC,
         config: cfg(), options: { pipelineDir: dir, nowMs: T0 },
     });
     assert.strictEqual(res.effective_decision, DECISION.FIRMA_HUMANA);
@@ -143,6 +156,7 @@ test('CA-5 · chain adulterado ⇒ firma humana (fail-closed antes de leer bucke
 
     const res = evaluateSignatureGate({
         issue: ISSUE, fase: FASE, criterios: CRITERIOS_MAQUINA, gateResults: GATE_PASS,
+        descriptor: DESC,
         config: cfg(), options: { pipelineDir: dir, nowMs: T0 },
     });
     assert.strictEqual(res.effective_decision, DECISION.FIRMA_HUMANA);
@@ -161,6 +175,7 @@ test('CA-2 · algún criterio solo-humano ⇒ firma humana aunque el bucket cali
         issue: ISSUE, fase: FASE,
         criterios: [{ key: 'a', text: 'node --test verde' }, { key: 'v', text: 'coincide con el mockup visual' }],
         gateResults: { a: 'pass', v: 'pass' },
+        descriptor: DESC,
         config: cfg(), options: { pipelineDir: dir, nowMs: T0 },
     });
     assert.strictEqual(res.effective_decision, DECISION.FIRMA_HUMANA);
@@ -176,6 +191,7 @@ test('CA-6 · bucket calibrado + criterios máquina + enforce ⇒ auto_aprobado'
     sembrarBucketCalibrado(dir, 3);
     const res = evaluateSignatureGate({
         issue: ISSUE, fase: FASE, criterios: CRITERIOS_MAQUINA, gateResults: GATE_PASS,
+        descriptor: DESC,
         config: cfg(), options: { pipelineDir: dir, nowMs: T0, rngFloat: () => 0.99 },
     });
     assert.strictEqual(res.decision, DECISION.AUTO_APROBADO);
@@ -189,6 +205,7 @@ test('dry-run: lógica auto_aprobado pero effective firma_humana (nunca auto-apr
     sembrarBucketCalibrado(dir, 3);
     const res = evaluateSignatureGate({
         issue: ISSUE, fase: FASE, criterios: CRITERIOS_MAQUINA, gateResults: GATE_PASS,
+        descriptor: DESC,
         config: cfg({ modo: MODE.DRY_RUN }), options: { pipelineDir: dir, nowMs: T0, rngFloat: () => 0.99 },
     });
     assert.strictEqual(res.decision, DECISION.AUTO_APROBADO);
@@ -219,6 +236,7 @@ test('CA-7 · muestras con fuente de agente no calibran ⇒ firma humana', () =>
     assert.strictEqual(audit.verifyChain(chainPath(dir)).ok, true);
     const res = evaluateSignatureGate({
         issue: ISSUE, fase: FASE, criterios: CRITERIOS_MAQUINA, gateResults: GATE_PASS,
+        descriptor: DESC,
         config: cfg(), options: { pipelineDir: dir, nowMs: T0 },
     });
     assert.strictEqual(res.effective_decision, DECISION.FIRMA_HUMANA);
@@ -253,10 +271,12 @@ test('CA-11 · la selección de auditoría no se deriva del issue (mismo issue, 
     // el flag sigue al rng, no al issue ⇒ prueba que el input no lo determina.
     const r1 = evaluateSignatureGate({
         issue: ISSUE, fase: FASE, criterios: CRITERIOS_MAQUINA, gateResults: GATE_PASS,
+        descriptor: DESC,
         config: cfg({ auditoria_pct: 50 }), options: { pipelineDir: dir, nowMs: T0, rngFloat: () => 0.1 },
     });
     const r2 = evaluateSignatureGate({
         issue: ISSUE, fase: FASE, criterios: CRITERIOS_MAQUINA, gateResults: GATE_PASS,
+        descriptor: DESC,
         config: cfg({ auditoria_pct: 50 }), options: { pipelineDir: dir, nowMs: T0, rngFloat: () => 0.9 },
     });
     assert.strictEqual(r1.en_muestra_auditoria, true);
@@ -272,6 +292,7 @@ test('CA-12 · auto_aprobado deja traza con bucket, versión y flag auditoría',
     sembrarBucketCalibrado(dir, 3);
     const res = evaluateSignatureGate({
         issue: ISSUE, fase: FASE, criterios: CRITERIOS_MAQUINA, gateResults: GATE_PASS,
+        descriptor: DESC,
         config: cfg(), options: { pipelineDir: dir, nowMs: T0, rngFloat: () => 0.01 },
     });
     assert.strictEqual(res.decision, DECISION.AUTO_APROBADO);
@@ -298,9 +319,68 @@ test('issue previo a go_live_date ⇒ firma humana (sin auto-aprobación retroac
     const res = evaluateSignatureGate({
         issue: { ...ISSUE, createdAt: '2026-01-01T00:00:00Z' }, fase: FASE,
         criterios: CRITERIOS_MAQUINA, gateResults: GATE_PASS,
+        descriptor: DESC,
         config: cfg({ go_live_date: '2026-07-01T00:00:00Z' }),
         options: { pipelineDir: dir, nowMs: T0 },
     });
     assert.strictEqual(res.effective_decision, DECISION.FIRMA_HUMANA);
     assert.match(res.reason, /go_live_date/);
+});
+
+// ----------------------------------------------------------------------------
+// P7 #4692 · CA-1 — autoridad de firma POR PRODUCTO resuelta desde el descriptor
+// ----------------------------------------------------------------------------
+
+test('CA-1 · sin descriptor ⇒ firma humana fail-closed (sin global implícito)', () => {
+    const dir = tmpPipelineDir();
+    sembrarBucketCalibrado(dir, 3); // bucket que SÍ calibraría — no debe auto-aprobar igual.
+    const res = evaluateSignatureGate({
+        issue: ISSUE, fase: FASE, criterios: CRITERIOS_MAQUINA, gateResults: GATE_PASS,
+        // sin `descriptor`
+        config: cfg(), options: { pipelineDir: dir, nowMs: T0, rngFloat: () => 0.99 },
+    });
+    assert.strictEqual(res.effective_decision, DECISION.FIRMA_HUMANA);
+    assert.strictEqual(res.fail_closed, true);
+    assert.match(res.reason, /sin descriptor/);
+    assert.deepStrictEqual(res.authorized_signers, []);
+});
+
+test('CA-1 · descriptor con signers vacío ⇒ firma humana fail-closed', () => {
+    const dir = tmpPipelineDir();
+    sembrarBucketCalibrado(dir, 3);
+    const res = evaluateSignatureGate({
+        issue: ISSUE, fase: FASE, criterios: CRITERIOS_MAQUINA, gateResults: GATE_PASS,
+        descriptor: { identity: { projectId: 'intrale-platform' }, authority: { signers: [] } },
+        config: cfg(), options: { pipelineDir: dir, nowMs: T0, rngFloat: () => 0.99 },
+    });
+    assert.strictEqual(res.effective_decision, DECISION.FIRMA_HUMANA);
+    assert.strictEqual(res.fail_closed, true);
+    assert.match(res.reason, /autoridad de firma inválida/);
+});
+
+test('CA-1 · auto-aprobación adjunta authorized_signers + project_id + backup y traza con project_id', () => {
+    const dir = tmpPipelineDir();
+    sembrarBucketCalibrado(dir, 3);
+    const res = evaluateSignatureGate({
+        issue: ISSUE, fase: FASE, criterios: CRITERIOS_MAQUINA, gateResults: GATE_PASS,
+        descriptor: DESC,
+        config: cfg(), options: { pipelineDir: dir, nowMs: T0, rngFloat: () => 0.99 },
+    });
+    assert.strictEqual(res.decision, DECISION.AUTO_APROBADO);
+    assert.deepStrictEqual(res.authorized_signers, ['leitolarreta']);
+    assert.strictEqual(res.project_id, 'intrale-platform');
+    assert.strictEqual(res.backup_approver, 'leitolarreta');
+    // La traza append-only registra el projectId (auditoría no confunde productos).
+    const trazaFile = path.join(dir, 'audit', AUTOAPPROVAL_AUDIT_FILE);
+    const entries = audit.readAll(trazaFile);
+    assert.strictEqual(entries[entries.length - 1].project_id, 'intrale-platform');
+});
+
+test('CA-1 · authorizeProductSigner: cross-tenant authz negada (firmante de A no firma B)', () => {
+    const prodA = { identity: { projectId: 'prod-a' }, authority: { signers: ['alice'], backup: 'bob' } };
+    assert.strictEqual(authorizeProductSigner(prodA, 'alice').authorized, true);
+    assert.strictEqual(authorizeProductSigner(prodA, 'bob').role, 'backup');
+    const denied = authorizeProductSigner(prodA, 'mallory');
+    assert.strictEqual(denied.authorized, false);
+    assert.strictEqual(denied.projectId, 'prod-a');
 });

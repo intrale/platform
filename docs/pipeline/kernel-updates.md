@@ -74,6 +74,31 @@ esquemas incompatibles** (riesgo explícito del issue, CA-7):
 - **Pin de versión obligatorio:** cada producto (adaptador) **pinnea** una versión exacta del kernel
   en su manifiesto. **Prohibido `latest` implícito** en producción (seguridad #1).
 
+### 2.1 Dónde vive el pin por producto — decisión de la Ola Puente P7 (#4692)
+
+Con multi-producto, "cada producto pinea su versión" se resuelve así (**decisión explícita, no
+implícita**):
+
+- **El schema del descriptor SOPORTA un pin por producto:** `kernel.version` (semver **exacto**
+  `X.Y.Z`, mismo patrón que `EXACT_SEMVER` de `kernel-resolver.js`) + `kernel.channel`
+  (`stable` | `canary`). Ver `contracts/project.schema.json` → `kernel` (`additionalProperties:false`).
+- **Resolución fail-closed:** `project-descriptor.deriveKernelPin(descriptor, { manifestVersion })`
+  devuelve el pin efectivo:
+  1. si el producto declara `kernel.version` → ése (validado exacto; un rango/comodín ⇒ **throw**);
+  2. si no lo declara → **fallback al pin GLOBAL** del manifest (`pipeline.config.json → kernel.version`);
+  3. sin pin en ninguno de los dos, o pin no-exacto en cualquiera → **fail-closed** (throw). Coherente
+     con `assertReleaseSignature` (A08: un auto-update silencioso por rango es supply-chain).
+- **Decisión para `intrale-platform` en esta ola:** el producto **no** declara `kernel.version` en su
+  descriptor todavía; el pin **sigue viviendo en el manifest global** (`kernel.consume:false` hoy). La
+  *capacidad* de pin por producto queda declarada en el schema y lista para el primer producto que la
+  necesite, **sin** obligar a Intrale a duplicar el número. El enforcement productivo del bump vive en
+  `kernel-resolver.assertReleaseSignature` (pin exacto + integridad fail-closed).
+- **Política de bump escalonado + canario (por producto):** un producto puede promover a `N+1` de forma
+  independiente vía `kernel.channel: canary` sobre un subset reversible antes de fijar `version` en
+  `stable`. Un producto en `N+1` **no** puede alterar el estado/firma de un producto en `N` (aislamiento
+  por `projectId` del coordination store). El rollout sigue el patrón stage0-pinned + fixture + canary
+  de la sección 4.
+
 ---
 
 ## 3. Distribución segura (CA-3 · seguridad #1 A08, #4 A05)

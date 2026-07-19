@@ -48,6 +48,7 @@
   ],
   "authority": {
     "signers": ["leitolarreta"],
+    "backup": "leitolarreta",
     "gates": {
       "gate0": "enforce",
       "gate2": "enforce",

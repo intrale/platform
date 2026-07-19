@@ -314,6 +314,25 @@ productos, coordinadas por la BD.
 write— sin desplegar todavía instancias en nube. El deploy distribuido real es una fase posterior;
 lo importante ahora es **no clavar supuestos de host único** que después haya que reescribir.
 
+#### Cierre de la Ola Puente — P7 (#4692): diseño cloud-ready **cerrado, deploy diferido (§9.5)**
+
+Con P7 el diseño cloud-ready de §4.9 queda **anclado como cerrado**: las cuatro piezas ya tienen
+cimiento en código y no requieren obra nueva de infraestructura en esta ola. **No se despliegan
+instancias en nube** (deploy diferido, §9.5) — el alcance es dejar la *capacidad* lista, sin supuestos
+de host único.
+
+| Pieza de diseño (§4.9) | Estado | Anclaje en código |
+|------------------------|--------|-------------------|
+| **Instancia stateless respecto al estado maestro** | cerrado | `lib/kernel-coordination-store.js` — estado namespaceado por `projectId` en BD gestionada; disco local sólo caché/worktrees efímeros. |
+| **Claim de producto/fase por conditional write (CAS)** | cerrado | `compareAndSet(key, value, expectedVersion)` + `claim()`/`release()` con `ConditionExpression` atómica; `expectedVersion` desactualizado ⇒ rechazo (anti split-brain); `instanceId` validado por `isSafeId`. |
+| **Cuota Anthropic/Codex única y compartida (central, no por host)** | cerrado (contabilización central) | `debitPaid(key, delta)` debita un contador central único con reintento por conflicto de versión (nunca last-write-wins). El techo lógico es **global y compartido**: se contabiliza central, **no** por instancia. `thresholds.providerBudget`/`providerQuotas` reparten ese techo por producto (Σ ≤ 100%), no lo multiplican por host. |
+| **Portabilidad del entorno** | documentado | credenciales por producto vía `credentials.resolveScopedRefs` (brokering namespaceado); toolchain (gh/claude/gradle/JDK) declarado para reproducir una instancia. |
+
+**Invariante de cuota central (a preservar cuando se despliegue multi-host):** aunque haya N
+instancias, el techo de Anthropic/Codex es **uno solo**. La contabilización vive en el contador central
+del coordination store (`debitPaid`), nunca sumando cuotas por host. Una instancia *rogue* no debe poder
+ignorar ese techo — el débito es atómico y compartido.
+
 ---
 
 ## 5. Lo que no estábamos viendo (riesgos y piezas faltantes)

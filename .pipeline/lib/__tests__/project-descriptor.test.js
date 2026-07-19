@@ -9,7 +9,7 @@
 //   - CA-B2 : projectId / repositories[].id con . / .. / unicode rechazados.
 //   - CA-B3 : orden fail-closed (version → checksum → schema → path), aborta al 1er fallo.
 //   - CA-C1 : credentials sólo por ref+scopes; valor literal rechazado por schema.
-//   - CA-D4 : authority.signers vacío ⇒ gate bloquea (schema minItems + evaluateSignatureGate).
+//   - CA-D4 : authority.signers vacío ⇒ gate bloquea (schema minItems + resolveSignerAuthority).
 //   - CA-D5 : gate ausente/desconocido ⇒ enforce (nunca off); piso del kernel.
 //   - CA-E2 : round-trip Intrale sin pérdida vs config.yaml.
 // =============================================================================
@@ -185,13 +185,88 @@ test('CA-D4: authority.signers vacío rechazado por schema (minItems:1)', () => 
   assert.equal(res.stage, 'schema');
 });
 
-test('CA-D4: evaluateSignatureGate bloquea con signers vacío/ausente', () => {
-  assert.equal(d.evaluateSignatureGate({ authority: { signers: [] } }).blocked, true);
-  assert.equal(d.evaluateSignatureGate({ authority: {} }).blocked, true);
-  assert.equal(d.evaluateSignatureGate({}).blocked, true);
-  const ok = d.evaluateSignatureGate({ authority: { signers: ['leitolarreta'] } });
+test('CA-D4: resolveSignerAuthority bloquea con signers vacío/ausente', () => {
+  assert.equal(d.resolveSignerAuthority({ authority: { signers: [] } }).blocked, true);
+  assert.equal(d.resolveSignerAuthority({ authority: {} }).blocked, true);
+  assert.equal(d.resolveSignerAuthority({}).blocked, true);
+  const ok = d.resolveSignerAuthority({ authority: { signers: ['leitolarreta'] } });
   assert.equal(ok.blocked, false);
   assert.deepEqual(ok.signers, ['leitolarreta']);
+});
+
+// -----------------------------------------------------------------------------
+// P7 #4692 — resolveSignerAuthority expone backup + projectId; authorizeSigner
+// hace cross-tenant authz (un firmante de A no firma B).
+// -----------------------------------------------------------------------------
+
+test('P7: resolveSignerAuthority expone backup y projectId del producto', () => {
+  const desc = { identity: { projectId: 'prod-a' }, authority: { signers: ['alice'], backup: 'bob' } };
+  const res = d.resolveSignerAuthority(desc);
+  assert.equal(res.blocked, false);
+  assert.equal(res.backup, 'bob');
+  assert.equal(res.projectId, 'prod-a');
+  // backup ausente/ inválido ⇒ null (no error silencioso).
+  assert.equal(d.resolveSignerAuthority({ authority: { signers: ['alice'] } }).backup, null);
+  assert.equal(d.resolveSignerAuthority({ authority: { signers: ['alice'], backup: '' } }).backup, null);
+});
+
+test('P7: authorizeSigner niega cross-tenant (firmante de A no firma B)', () => {
+  const prodA = { identity: { projectId: 'prod-a' }, authority: { signers: ['alice'], backup: 'bob' } };
+  // alice firma A (rol signer); bob es backup autorizado de A.
+  assert.deepEqual(
+    { authorized: d.authorizeSigner(prodA, 'alice').authorized, role: d.authorizeSigner(prodA, 'alice').role },
+    { authorized: true, role: 'signer' },
+  );
+  assert.equal(d.authorizeSigner(prodA, 'bob').authorized, true);
+  assert.equal(d.authorizeSigner(prodA, 'bob').role, 'backup');
+  // carol NO está autorizada en A ⇒ negada, con projectId en la traza.
+  const denied = d.authorizeSigner(prodA, 'carol');
+  assert.equal(denied.authorized, false);
+  assert.equal(denied.projectId, 'prod-a');
+  // Fail-closed: autoridad bloqueada / identidad inválida ⇒ negada.
+  assert.equal(d.authorizeSigner({ authority: { signers: [] } }, 'alice').authorized, false);
+  assert.equal(d.authorizeSigner(prodA, '').authorized, false);
+  assert.equal(d.authorizeSigner(prodA, null).authorized, false);
+});
+
+// -----------------------------------------------------------------------------
+// P7 #4692 · CA-5 — pin de versión de kernel por producto (deriveKernelPin)
+// -----------------------------------------------------------------------------
+
+test('CA-5: deriveKernelPin toma el pin del descriptor si lo declara (exacto)', () => {
+  const res = d.deriveKernelPin({ kernel: { version: '2.3.1', channel: 'canary' } }, { manifestVersion: '1.0.0' });
+  assert.deepEqual(res, { version: '2.3.1', channel: 'canary', source: 'descriptor' });
+});
+
+test('CA-5: deriveKernelPin cae al manifest global si el descriptor no declara pin', () => {
+  const res = d.deriveKernelPin({}, { manifestVersion: '1.4.2' });
+  assert.deepEqual(res, { version: '1.4.2', channel: 'stable', source: 'manifest' });
+});
+
+test('CA-5: deriveKernelPin bloquea (throw) ante versión no-exacta (rango) — A08', () => {
+  // Rango en el descriptor ⇒ fail-closed.
+  assert.throws(() => d.deriveKernelPin({ kernel: { version: '^1.2.0' } }, { manifestVersion: '1.0.0' }), /pin exacto/);
+  // Rango en el manifest de fallback ⇒ fail-closed.
+  assert.throws(() => d.deriveKernelPin({}, { manifestVersion: '1.x' }), /pin exacto/);
+  // Sin pin en ningún lado ⇒ fail-closed.
+  assert.throws(() => d.deriveKernelPin({}, {}), /sin pin de kernel/);
+});
+
+test('CA-5: schema acepta kernel.version exacto y rechaza rango (additionalProperties:false)', () => {
+  const base = require('../project-bootstrap');
+  void base; // no-op: sólo para asegurar que el módulo carga tras el rename.
+  const mk = (kernel) => ({
+    schemaVersion: '1.0',
+    identity: { projectId: 'p1', name: 'P1' },
+    repositories: [{ id: 'r1', url: 'https://example.com/r1' }],
+    board: { ref: 'https://example.com/b', admissionLabels: ['Ready'], routing: [] },
+    capabilities: [{ interface: 'pipeline', skills: ['pipeline-dev'] }],
+    authority: { signers: ['leitolarreta'], gates: {} },
+    kernel,
+  });
+  assert.equal(d.validateDescriptor(mk({ version: '1.2.3', channel: 'stable' })).valid, true);
+  assert.equal(d.validateDescriptor(mk({ version: '^1.2.3' })).valid, false);
+  assert.equal(d.validateDescriptor(mk({ nope: true })).valid, false);
 });
 
 // -----------------------------------------------------------------------------
