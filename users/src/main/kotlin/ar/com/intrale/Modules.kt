@@ -22,6 +22,16 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient
 import ar.com.intrale.ChangePassword
 import ar.com.intrale.RequestJoinBusiness
 import ar.com.intrale.ConfigAutoAcceptDeliveries
+import ar.com.intrale.kernel.authz.OperatorProductAuthz
+import ar.com.intrale.kernel.audit.KernelActionsAudit
+import ar.com.intrale.kernel.mailbox.KernelCommandMailbox
+import ar.com.intrale.kernel.projection.KernelProjection
+import ar.com.intrale.kernel.store.KernelStore
+import ar.com.intrale.kernel.management.ApproveProductFunction
+import ar.com.intrale.kernel.management.CreateProjectFunction
+import ar.com.intrale.kernel.management.KernelProductStatusFunction
+import ar.com.intrale.kernel.management.RejectProductFunction
+import ar.com.intrale.kernel.management.SignProductFunction
 
 private const val LOCAL_APP_AVAILABLE_BUSINESSES = "AVAILABLE_BUISNESS"
 private const val LOCAL_AWS_REGION = "REGION_VALUE"
@@ -346,6 +356,34 @@ val appModule = DI.Module("appModule") {
 
     bind<Function> (tag="business/auto-response-config") {
         singleton { AutoResponseConfigFunction(instance(), instance(), instance(), instance(), instance()) }
+    }
+
+    // ---- Kernel multi-producto: gestion + proyeccion + buzon (#4779) ----
+    // Stores durables in-memory thread-safe (patron repo del proyecto), mapean a
+    // tablas DynamoDB aditivas: kernel_operator_products / kernel_products /
+    // kernel_command_mailbox / kernel_actions_audit.
+    bind<OperatorProductAuthz> { singleton { OperatorProductAuthz() } }
+    bind<KernelStore> { singleton { KernelStore() } }
+    bind<KernelCommandMailbox> { singleton { KernelCommandMailbox() } }
+    bind<KernelActionsAudit> { singleton { KernelActionsAudit() } }
+    bind<KernelProjection> {
+        singleton { KernelProjection(instance<KernelStore>(), instance<OperatorProductAuthz>()) }
+    }
+
+    bind<Function> (tag="kernel/product-status") {
+        singleton { KernelProductStatusFunction(instance(), instance(), instance(), instance(), instance(), instance(), instance(), instance()) }
+    }
+    bind<Function> (tag="kernel/approve") {
+        singleton { ApproveProductFunction(instance(), instance(), instance(), instance(), instance(), instance(), instance(), instance()) }
+    }
+    bind<Function> (tag="kernel/reject") {
+        singleton { RejectProductFunction(instance(), instance(), instance(), instance(), instance(), instance(), instance(), instance()) }
+    }
+    bind<Function> (tag="kernel/sign") {
+        singleton { SignProductFunction(instance(), instance(), instance(), instance(), instance(), instance(), instance(), instance()) }
+    }
+    bind<Function> (tag="kernel/project-create") {
+        singleton { CreateProjectFunction(instance(), instance(), instance(), instance(), instance(), instance(), instance(), instance()) }
     }
 }
 
