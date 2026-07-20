@@ -1,0 +1,15 @@
+{
+  "issue": 4805,
+  "entries": [
+    {
+      "issue": 4805,
+      "fase": "dev",
+      "agente": "pipeline-dev",
+      "tipo": "document",
+      "path": ".pipeline/assets/docs/4805/pipeline-dev-dev-4805.md",
+      "bytes": 2552,
+      "sensible": false,
+      "timestamp": "2026-07-20T14:28:26.429Z"
+    }
+  ]
+}

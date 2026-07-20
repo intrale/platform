@@ -41,6 +41,8 @@ const auditLog = require('./audit-log');
 const redact = require('./redact');
 const { isSafeId } = require('./project-descriptor');
 const bootstrap = require('./project-bootstrap');
+const repoProbe = require('./repo-probe');
+const productCatalog = require('./product-catalog');
 
 const PIPELINE_DIR = path.join(trace.REPO_ROOT, '.pipeline');
 
@@ -48,6 +50,9 @@ const PIPELINE_DIR = path.join(trace.REPO_ROOT, '.pipeline');
 // acá; NUNCA muta `descriptors/registry.json` ni el estado de instancias.
 const DEFAULT_QUEUE_DIR = path.join(PIPELINE_DIR, 'product-control', 'pendiente');
 const DEFAULT_AUDIT_FILE = path.join(PIPELINE_DIR, 'audit', 'product-control-requests.jsonl');
+// Fuente del catálogo para la unicidad UX (no-autoritativa). Misma que lee
+// `product-catalog.listProducts` y la pestaña Productos (#4801 · CA-1).
+const DEFAULT_DESCRIPTORS_DIR = path.join(PIPELINE_DIR, 'descriptors');
 
 // A03 — allowlist cerrada de acciones de control de ciclo de vida. Congelada.
 const CONTROL_ACTIONS = Object.freeze(['start', 'pause']);
@@ -124,7 +129,13 @@ function enqueueOnboard(args = {}, deps = {}) {
         boot = runBootstrap({
             descriptor,
             mode: 'dry-run',
-            deps: Object.assign({ kernelGateFloor: 'enforce' }, deps.bootstrapDeps || {}),
+            // CA-2 · `probeAccess` cableado (least-privilege) para la prueba de
+            // alcance real de repos allowlisted; overridable por tests vía
+            // `deps.bootstrapDeps.probeAccess`.
+            deps: Object.assign(
+                { kernelGateFloor: 'enforce', probeAccess: repoProbe.probeAccess },
+                deps.bootstrapDeps || {},
+            ),
         });
     } catch (e) {
         return { ok: false, status: 500, msg: `validación de bootstrap falló: ${e.message}` };
@@ -146,6 +157,18 @@ function enqueueOnboard(args = {}, deps = {}) {
     if (!isSafeId(projectId)) {
         return { ok: false, status: 400, msg: 'projectId inseguro para namespacing' };
     }
+
+    // CA-1 · Unicidad UX NO-autoritativa: mejora el mensaje antes de encolar.
+    // Fail-open si el catálogo no lee (ventana TOCTOU conocida — la unicidad
+    // autoritativa la impone el drenador del kernel al registrar el descriptor).
+    try {
+        const descriptorsDir = deps.descriptorsDir || DEFAULT_DESCRIPTORS_DIR;
+        const listProducts = typeof deps.listProducts === 'function' ? deps.listProducts : productCatalog.listProducts;
+        const existing = listProducts(descriptorsDir);
+        if (Array.isArray(existing) && existing.some(p => p && p.projectId === projectId)) {
+            return { ok: false, status: 409, projectId, msg: `ya existe un producto con el identificador "${projectId}"; elegí otro` };
+        }
+    } catch { /* fail-open: la unicidad autoritativa la impone el kernel */ }
 
     const now = typeof deps.now === 'function' ? deps.now : () => Date.now();
     const ts = now();
@@ -225,11 +248,74 @@ function enqueueControl(args = {}, deps = {}) {
     };
 }
 
+/**
+ * Encola la ACTIVACIÓN de un producto (onboarding→active · #4805 · CA-1). A
+ * diferencia de `start`/`pause` (control efímero de instancia), `activate` cambia
+ * el `status` DURABLE del descriptor, por eso es una acción dedicada: el kernel,
+ * al drenar el pedido, invoca `project-descriptor.transitionStatus` (writer
+ * atómico dueño del estado, anti-TOCTOU) para persistir el flip. El dashboard NO
+ * muta el descriptor por su cuenta (invariante "el adaptador pide, el kernel
+ * ejecuta"); acá sólo se valida el id fail-closed, se audita y se encola.
+ *
+ * Seguridad:
+ *   - SEC-1b/A01: `isSafeId(projectId)` fail-closed ANTES de construir el path del
+ *     pedido (anti path-traversal/IDOR). La autorización real la impone el kernel
+ *     contra el contexto de la instancia al drenar — nunca desde el id en banda.
+ *   - SEC-7b/A09: audit hash-chained redactado (`auditAndEnqueue`) con
+ *     `action=activate` — non-repudio de quién/qué/cuándo/productId.
+ *   - SR-A04 (anti-replay): la idempotencia dura la impone la máquina de estados
+ *     del descriptor (`onboarding→active` rechaza `active→active` server-side); el
+ *     endpoint suma el nonce single-use del CSRF/action-token del dashboard.
+ *
+ * @param {object} args
+ * @param {string} [args.projectId]     — id del producto (validado isSafeId). Sin
+ *                                         valor ⇒ producto único (Intrale · CA-5.1).
+ * @param {string} [args.actor]         — identidad del operador (audit).
+ * @param {string} [args.remoteAddress] — ip de origen (audit).
+ * @param {object} [deps]               — { queueDir, auditFile, fsImpl, now, auditImpl }
+ * @returns {{ok:boolean, status:number, action?:string, projectId?:string, request_path?:string, msg?:string}}
+ */
+function enqueueActivate(args = {}, deps = {}) {
+    // CA-5.1 — sin productId ⇒ producto único; con productId ⇒ debe ser seguro.
+    const rawId = (args.projectId == null || args.projectId === '') ? DEFAULT_PRODUCT_ID : args.projectId;
+    if (!isSafeId(rawId)) {
+        // SEC-1b — id inseguro/inexistente ⇒ fail-closed, sin encolar ni enumerar.
+        return { ok: false, status: 400, msg: 'projectId inseguro o inexistente' };
+    }
+    const projectId = rawId;
+
+    const now = typeof deps.now === 'function' ? deps.now : () => Date.now();
+    const ts = now();
+    const record = {
+        type: 'product_control_request',
+        action: 'activate',
+        projectId,
+        actor: args.actor ? String(args.actor) : 'dashboard-operator',
+        remote_address: args.remoteAddress ? String(args.remoteAddress) : null,
+        source: 'dashboard',
+        created_at: ts,
+    };
+
+    const res = auditAndEnqueue(record, `activate-${projectId}-${ts}`, deps);
+    if (!res.ok) return res;
+    return {
+        ok: true,
+        status: 202,
+        action: 'activate',
+        projectId,
+        request_path: res.request_path,
+        audit_persisted: res.audit_persisted,
+        msg: `activación de "${projectId}" encolada; el kernel persistirá la transición onboarding→active (validación de descriptor fail-closed) y lo sumará al supervisor`,
+    };
+}
+
 module.exports = {
     enqueueOnboard,
     enqueueControl,
+    enqueueActivate,
     CONTROL_ACTIONS,
     DEFAULT_PRODUCT_ID,
     DEFAULT_QUEUE_DIR,
     DEFAULT_AUDIT_FILE,
+    DEFAULT_DESCRIPTORS_DIR,
 };

@@ -81,6 +81,7 @@ const repoTarget = require('./lib/repo-target');
 // En single-product (default hoy) el router queda en null y el ruteo cae al
 // repo-target global (getRepoForIssue/getPrimaryRepo) sin cambio de comportamiento.
 const kernelSupervisor = require('./lib/kernel-supervisor');
+const productControlDrainer = require('./lib/product-control-drainer'); // #4801 · CA-3
 // #4775 (Ola Puente P5a) — Scheduler global de dos niveles del kernel multi-producto.
 // Módulo puro: consume la señal de presión (getResourcePressure) y reparte slots.
 const kernelScheduler = require('./lib/kernel-scheduler');
@@ -18351,6 +18352,17 @@ async function mainLoop() {
         const outbox = require(path.join(ROOT, '.claude', 'hooks', 'telegram-outbox'));
         await outbox.drainQueue();
       } catch (e) {}
+
+      // #4801 · CA-3 — Drenar la cola de onboarding de productos. El wizard sólo
+      // encola (`enqueueOnboard`); acá el kernel registra el producto como
+      // `status:onboarding` (INACTIVO) para que aparezca en la pestaña Productos.
+      // Best-effort: fail-open interno, nunca rompe el loop principal.
+      try {
+        const drained = productControlDrainer.drainOnboardQueue();
+        if (drained && drained.registered && drained.registered.length) {
+          log('kernel', `onboarding: ${drained.registered.length} producto(s) registrado(s) → ${drained.registered.join(', ')}`);
+        }
+      } catch (e) { log('kernel', `[onboard-drain] tick error: ${e.message}`); }
 
       // Context bridge tick (sync preguntas pendientes, relay, cleanup)
       try {

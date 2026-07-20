@@ -168,7 +168,9 @@ function onboardingWizardStyle() {
 .ow-result{margin-top:12px;font-size:12px;border-radius:9px;padding:10px 12px;display:none}
 .ow-result-ok{display:block;color:#9be9a8;background:rgba(63,185,80,.1);border:1px solid rgba(63,185,80,.3)}
 .ow-result-err{display:block;color:#fca5a5;background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.3)}
+.ow-result-pending{display:block;color:#cfe4ff;background:rgba(0,214,255,.08);border:1px solid rgba(0,214,255,.28)}
 .ow-result ul{margin:6px 0 0;padding-left:18px}
+.ow-result a{color:var(--brand-cyan,#00D6FF);font-weight:700}
 .ow-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 </style>`;
 }
@@ -243,10 +245,47 @@ function owBuildDescriptor(){
   var backup = owVal('ow-auth-backup'); if(backup) d.authority.backup = backup;
   return d;
 }
+// G-3 — estado intermedio mientras corre el POST (la prueba de accesibilidad del
+// repo puede tardar). Se anuncia por aria-live (ya presente en #ow-result).
+function owRenderPending(msg){
+  var box = document.getElementById('ow-result'); if(!box) return;
+  box.className = 'ow-result ow-result-pending';
+  box.innerHTML = '⏳ ' + owEsc(msg || 'Validando…');
+}
+// G-1/G-2 — copy de éxito no ambiguo: "encolado ≠ activo" + puntero a Productos.
+function owRenderSuccess(projectId, msg){
+  var box = document.getElementById('ow-result'); if(!box) return;
+  box.className = 'ow-result ow-result-ok';
+  var base = msg || ('Alta de "' + (projectId || '') + '" encolada.');
+  var html = '✅ ' + owEsc(base)
+    + '<div style="margin-top:6px">Quedó en <b>Onboarding</b> (🌱), <b>inactivo</b> hasta la aprobación — todavía no opera. '
+    + 'Revisalo en la <a href="?view=estado-productos">pestaña Productos</a>.</div>';
+  box.innerHTML = html;
+}
+// G-4 — mapea el rechazo del backend a copy humano accionable, SIN jerga
+// (fail-closed/dry-run/TOCTOU) ni internals (paths/stack/topología de red).
+function owHumanError(j){
+  var stage = j && j.stage ? String(j.stage) : '';
+  var status = j && j.status;
+  var msg = j && j.msg ? String(j.msg) : '';
+  if(status === 409 || /ya existe/i.test(msg)){
+    return 'Ya existe un producto con ese identificador. Elegí otro.';
+  }
+  if(/^validation:|projectId|identity/i.test(stage) || /projectId|identificador/i.test(msg)){
+    return 'El identificador sólo admite minúsculas, dígitos y guiones (máx. 64). Ej: "mi-producto".';
+  }
+  if(stage === 'access' || /ssrf|allowlist|host|url|alcanz/i.test(msg)){
+    return 'La URL del repositorio no es válida o no es accesible. Usá una URL https de github.com.';
+  }
+  if(stage === 'signature-gate' || /firma|signer/i.test(msg)){
+    return 'Falta un firmante válido para la autoridad del producto. Revisá el paso "Autoridad y firma".';
+  }
+  return 'No se pudo dar de alta el producto. Revisá los datos e intentá de nuevo.';
+}
 function owRenderResult(ok, msg, errors){
   var box = document.getElementById('ow-result'); if(!box) return;
   box.className = 'ow-result ' + (ok ? 'ow-result-ok' : 'ow-result-err');
-  var html = (ok ? '✅ ' : '❌ ') + (msg || '');
+  var html = (ok ? '✅ ' : '❌ ') + owEsc(msg || '');
   if(Array.isArray(errors) && errors.length){
     html += '<ul>' + errors.map(function(e){
       var p = e && e.path ? (e.path + ': ') : '';
@@ -260,6 +299,7 @@ function owEsc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function
 // SEC-7a — POST-only + CSRF same-origin. GET token, luego POST /api/product/onboard.
 async function owSubmit(){
   var sub = document.getElementById('ow-submit'); if(sub) sub.disabled = true;
+  owRenderPending('Validando descriptor y accesibilidad del repo…'); // G-3
   try {
     var t = await fetch('/api/product/csrf-token', { cache: 'no-store' });
     var tj = await t.json();
@@ -271,9 +311,10 @@ async function owSubmit(){
       body: JSON.stringify({ descriptor: owBuildDescriptor() })
     });
     var j = await r.json();
-    if(j && j.ok){ owRenderResult(true, j.msg || ('Producto "' + (j.projectId||'') + '" encolado para onboarding.')); }
-    else { owRenderResult(false, (j && j.msg) || ('Rechazado (' + (j && j.stage || 'validación') + ')'), j && j.errors); }
-  } catch(e){ owRenderResult(false, 'Error enviando el alta: ' + e.message); }
+    // Fail-closed: SÓLO se marca éxito si el backend confirmó el encolado (ok+2xx).
+    if(j && j.ok){ owRenderSuccess(j.projectId, j.msg); }
+    else { owRenderResult(false, owHumanError(j)); } // G-4: copy humano, sin internals
+  } catch(e){ owRenderResult(false, 'No se pudo enviar el alta. Verificá tu conexión y reintentá.'); }
   finally { if(sub) sub.disabled = false; }
 }
 (function owInit(){ try { owShowStep(0); } catch(e){} })();
