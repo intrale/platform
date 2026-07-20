@@ -54,3 +54,28 @@ test('CURRENT_SCHEMA_VERSION es 1.0 y KNOWN_VERSIONS lo incluye', () => {
   assert.equal(m.CURRENT_SCHEMA_VERSION, '1.0');
   assert.ok(m.KNOWN_VERSIONS.includes('1.0'));
 });
+
+// #4807 · CA-6 — `providerOrder` es aditivo/opcional: no bumpea schemaVersion.
+test('CA-6 (#4807): descriptor 1.0 SIN providerOrder sigue válido (compat hacia atrás)', () => {
+  const d = require('../project-descriptor');
+  const desc = {
+    schemaVersion: '1.0',
+    identity: { projectId: 'acme-store', name: 'ACME Store' },
+    repositories: [{ id: 'main', url: 'https://github.com/acme/store', role: 'primary' }],
+    board: {
+      ref: 'https://github.com/orgs/acme/projects/1',
+      admissionLabels: ['Ready'],
+      routing: [{ label: 'area:backend', capability: 'backend' }],
+    },
+    capabilities: [{ interface: 'backend', skills: ['backend-dev'] }],
+    authority: { signers: ['leitolarreta'], gates: { gate2: 'enforce' } },
+  };
+  // Sin bump de versión: sigue migrando por identidad 1.0 → 1.0.
+  assert.equal(m.migrateDescriptor(desc).ok, true);
+  assert.equal(m.CURRENT_SCHEMA_VERSION, '1.0', 'providerOrder NO debe bumpear el schema');
+  // Y el descriptor sin providerOrder valida y deriva el default del kernel.
+  const res = d.validateDescriptor(desc);
+  assert.equal(res.valid, true, JSON.stringify(res.errors));
+  assert.deepEqual(d.deriveProviderOrder(desc),
+    ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim']);
+});

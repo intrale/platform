@@ -14,7 +14,8 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 
 const view = require('..' + path.sep + 'onboarding-wizard.js');
-const { slug, renderOnboardingWizardSsr, renderOnboardingWizardClientScript, STEPS, KERNEL_SKILLS } = view;
+const { slug, renderOnboardingWizardSsr, renderOnboardingWizardClientScript, STEPS, KERNEL_SKILLS,
+    PROVIDER_ORDER_OPTIONS, KERNEL_DEFAULT_PROVIDER_ORDER } = view;
 
 test('exporta el contrato canónico', () => {
     assert.equal(slug, 'onboarding');
@@ -77,4 +78,65 @@ test('el resultado reflejado del backend se escapa (defensa XSS)', () => {
 test('las opciones de skills reflejan la allowlist del kernel', () => {
     const html = renderOnboardingWizardSsr();
     for (const s of KERNEL_SKILLS) assert.ok(html.includes(s), `falta mención del skill ${s}`);
+});
+
+// -----------------------------------------------------------------------------
+// #4807 — Control de orden de providers.
+// -----------------------------------------------------------------------------
+
+test('#4807: la allowlist del control es la canónica del kernel (con nvidia-nim, sin Groq ni deterministic)', () => {
+    const keys = PROVIDER_ORDER_OPTIONS.map((p) => p.key);
+    assert.deepEqual(keys, ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim']);
+    assert.deepEqual(KERNEL_DEFAULT_PROVIDER_ORDER, keys, 'el default persiste el orden de la allowlist');
+    assert.ok(keys.includes('nvidia-nim'), 'debe ofrecer NVIDIA NIM');
+    assert.ok(!keys.includes('groq'), 'NO debe ofrecer Groq (descontinuado #3353)');
+    assert.ok(!keys.includes('deterministic'), 'NO debe ofrecer deterministic (interno de test)');
+});
+
+test('#4807: el mapeo humano↔interno es único y persiste claves internas', () => {
+    const byLabel = Object.fromEntries(PROVIDER_ORDER_OPTIONS.map((p) => [p.label, p.key]));
+    assert.equal(byLabel['Claude'], 'anthropic');
+    assert.equal(byLabel['Codex'], 'openai-codex');
+    assert.equal(byLabel['Gemini'], 'gemini-google');
+    assert.equal(byLabel['Cerebras'], 'cerebras');
+    assert.equal(byLabel['NVIDIA NIM'], 'nvidia-nim');
+    // Claude/Codex pagos; el resto free (informativo).
+    const byKey = Object.fromEntries(PROVIDER_ORDER_OPTIONS.map((p) => [p.key, p.tier]));
+    assert.equal(byKey['anthropic'], 'pago');
+    assert.equal(byKey['openai-codex'], 'pago');
+    assert.equal(byKey['gemini-google'], 'free');
+    assert.equal(byKey['cerebras'], 'free');
+    assert.equal(byKey['nvidia-nim'], 'free');
+});
+
+test('#4807: el control es reorden accesible (no texto libre) con contenedores + aria-labels', () => {
+    const html = renderOnboardingWizardSsr();
+    assert.ok(html.includes('id="ow-prov-active"'), 'falta la lista de activos');
+    assert.ok(html.includes('id="ow-prov-available"'), 'falta la lista de disponibles');
+    // NO hay input de texto libre para providers.
+    assert.ok(!html.includes('id="ow-providers-input"'));
+    // El control está dentro del step Capacidades (data-step="3").
+    const script = renderOnboardingWizardClientScript();
+    assert.ok(/aria-label="Subir/.test(script), 'los botones ↑ deben tener aria-label de posición');
+    assert.ok(/aria-label="Bajar/.test(script));
+    assert.ok(script.includes('function owProvMove('));
+    assert.ok(script.includes('function owProvAdd('), 'patrón activos + disponibles');
+    assert.ok(script.includes('function owProvRemove('));
+});
+
+test('#4807: owBuildDescriptor serializa thresholds.providerOrder con claves internas', () => {
+    const script = renderOnboardingWizardClientScript();
+    assert.ok(script.includes('d.thresholds = { providerOrder: order }'));
+    // La metadata inyectada usa las claves internas canónicas.
+    assert.ok(script.includes('"anthropic"') && script.includes('"nvidia-nim"'));
+    // Sin tocar el control, se persiste el default explícito (OW_PROVIDERS arranca en el default).
+    assert.ok(script.includes('var OW_PROVIDERS = OW_PROVIDER_KEYS.slice();'));
+    assert.ok(script.includes('OW_PROVIDER_KEYS.slice()'), 'fallback al default si la lista queda vacía');
+});
+
+test('#4807: owProvAdd respeta la allowlist y uniqueItems (fail-closed en la UI)', () => {
+    const script = renderOnboardingWizardClientScript();
+    // Sólo agrega claves con metadata (allowlist) y evita duplicados.
+    assert.ok(script.includes('if(!owProvMeta(key)) return;'));
+    assert.ok(script.includes('if(OW_PROVIDERS.indexOf(key) !== -1) return;'));
 });

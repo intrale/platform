@@ -28,6 +28,24 @@ const Ajv = require('ajv');
 
 const { detectInjection } = require('./handoff');
 const migrations = require('./project-descriptor-migrations');
+const { VALID_PROVIDERS } = require('./agent-launcher/resolve-provider');
+
+// -----------------------------------------------------------------------------
+// Allowlist canónica de providers para `thresholds.providerOrder` (#4807).
+// Fuente ÚNICA: `VALID_PROVIDERS` de resolve-provider (la misma tabla hardcoded
+// que autoriza spawns), filtrando `deterministic` (provider interno de test que
+// NUNCA se expone al operador). Prohibido un set paralelo — el drift-guard test
+// afirma que este set == enum(providerOrder) del schema.
+//
+// El ORDEN de esta lista ES el orden default del kernel cuando el descriptor no
+// declara `providerOrder` (coherente con feedback_multi-provider-default-order,
+// con Groq removido #3353): anthropic > openai-codex > gemini-google > cerebras
+// > nvidia-nim.
+// -----------------------------------------------------------------------------
+const KERNEL_PROVIDER_ALLOWLIST = Object.freeze(
+  VALID_PROVIDERS.filter((p) => p !== 'deterministic')
+);
+const KERNEL_DEFAULT_PROVIDER_ORDER = Object.freeze([...KERNEL_PROVIDER_ALLOWLIST]);
 
 const SCHEMA_PATH = path.resolve(__dirname, '..', 'contracts', 'project.schema.json');
 const schema = JSON.parse(fs.readFileSync(SCHEMA_PATH, 'utf8'));
@@ -405,6 +423,38 @@ function deriveProviderBudget(descriptor) {
   return budget;
 }
 
+/**
+ * Deriva el ORDEN de la cadena de providers del producto (#4807 · CA-2/CA-5).
+ * Espeja `deriveProviderBudget`: copia defensiva + validación imperativa contra la
+ * fuente canónica `KERNEL_PROVIDER_ALLOWLIST` (VALID_PROVIDERS \ deterministic).
+ *
+ * Fail-closed (nunca "arranca degradado"): ausente / vacío / no-array / con algún
+ * valor fuera de la allowlist / con duplicados / con `deterministic` ⇒ devuelve el
+ * ORDEN DEFAULT del kernel (copia). El campo es OPCIONAL — un descriptor 1.0 sin
+ * `providerOrder` es válido y usa el default (compat hacia atrás · CA-6). La
+ * validación autoritativa de valores inválidos ya la impone el `enum` del schema
+ * (Ajv, server-side); esta derivación es defense-in-depth.
+ *
+ * @param {object} descriptor
+ * @returns {string[]} orden de providers (claves internas), siempre no vacío.
+ */
+function deriveProviderOrder(descriptor) {
+  const t = (descriptor && descriptor.thresholds) || {};
+  const raw = t.providerOrder;
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return [...KERNEL_DEFAULT_PROVIDER_ORDER];
+  }
+  const seen = new Set();
+  for (const value of raw) {
+    // valor fuera de la allowlist (incluye `deterministic`) o duplicado ⇒ default seguro.
+    if (!KERNEL_PROVIDER_ALLOWLIST.includes(value) || seen.has(value)) {
+      return [...KERNEL_DEFAULT_PROVIDER_ORDER];
+    }
+    seen.add(value);
+  }
+  return [...raw];
+}
+
 // interface → skills (partición del puerto dev).
 function deriveCapabilityPartitions(descriptor) {
   const out = {};
@@ -563,6 +613,9 @@ module.exports = {
   derivePriorityWindows,
   deriveAgentCap,
   deriveProviderBudget,
+  deriveProviderOrder,
+  KERNEL_PROVIDER_ALLOWLIST,
+  KERNEL_DEFAULT_PROVIDER_ORDER,
   deriveCapabilityPartitions,
   resolveGate,
   resolveSignerAuthority,
