@@ -114,12 +114,24 @@ function metricChip(label, value, extraCls) {
 }
 
 // Botones de ciclo de vida según el estado actual. Delegan en el kernel por POST
-// (CA-1.5). Un producto pausado/inactivo ofrece Arrancar; uno activo, Pausar.
+// (CA-1.5 · #4805 CA-1/CA-4). Reglas de habilitación (el disable es SÓLO UX; la
+// validación real es server-side, CA-2/CA-3):
+//   - Activar (#4805): SÓLO en `onboarding` (promueve status onboarding→active).
+//   - Arrancar: producto listo para trabajo sin ola en curso — `paused`,
+//     `inactive` o `unknown` (activo sin estado de runtime todavía, CA-4).
+//   - Pausar: sólo con una ola operando (`active`).
+// Glyph `⏻` (Activar) es visualmente distinto de `▶` (Arrancar) y `⏸` (Pausar)
+// para no confundir "promover estado" con "arrancar trabajo" (guideline UX).
 function lifecycleButtons(projectId, st) {
     const pidAttr = escapeHtmlAttr(projectId);
     const pidText = escapeHtmlText(projectId);
-    const canStart = st === 'paused' || st === 'inactive';
+    const canActivate = st === 'onboarding';
+    const canStart = st === 'paused' || st === 'inactive' || st === 'unknown';
     const canPause = st === 'active';
+    const activate = `<button type="button" class="ep-btn ep-btn-activate" ${canActivate ? '' : 'disabled '}`
+        + `data-action="activate" data-pid="${pidAttr}" `
+        + `aria-label="Activar el producto ${pidText}" title="Activar (promueve onboarding→activo)">`
+        + '<span aria-hidden="true">⏻</span> Activar</button>';
     const start = `<button type="button" class="ep-btn ep-btn-start" ${canStart ? '' : 'disabled '}`
         + `data-action="start" data-pid="${pidAttr}" `
         + `aria-label="Arrancar el producto ${pidText}" title="Arrancar (delega en el kernel)">`
@@ -128,7 +140,7 @@ function lifecycleButtons(projectId, st) {
         + `data-action="pause" data-pid="${pidAttr}" `
         + `aria-label="Pausar el producto ${pidText}" title="Pausar (delega en el kernel)">`
         + '<span aria-hidden="true">⏸</span> Pausar</button>';
-    return `<div class="ep-actions">${start}${pause}</div>`;
+    return `<div class="ep-actions">${activate}${start}${pause}</div>`;
 }
 
 // Card de UN producto. `raw` es EXCLUSIVAMENTE el estado del propio producto
@@ -209,6 +221,7 @@ function estadoProductosStyle() {
 .ep-actions{display:flex;gap:8px;margin-top:2px}
 .ep-btn{flex:1;display:inline-flex;align-items:center;justify-content:center;gap:5px;font-size:12px;font-weight:800;border-radius:9px;padding:8px 10px;border:1px solid transparent;cursor:pointer}
 .ep-btn:focus-visible{outline:2px solid var(--brand-cyan,#00D6FF);outline-offset:2px}
+.ep-btn-activate{color:#fff;background:var(--in-brand,#1f6feb);border-color:var(--in-brand,#1f6feb)}
 .ep-btn-start{color:#001b22;background:var(--brand-cyan,#00D6FF);border-color:var(--brand-cyan,#00D6FF)}
 .ep-btn-pause{color:var(--in-fg,#e6edf3);background:rgba(255,255,255,.05);border-color:var(--in-border,rgba(255,255,255,.16))}
 .ep-btn:disabled{opacity:.4;cursor:not-allowed}
@@ -305,10 +318,15 @@ function renderEstadoProductosClientScript() {
     box.className='ep-result '+(ok?'ep-result-ok':'ep-result-err');
     box.innerHTML=(ok?'✅ ':'❌ ')+epEsc(msg);
   }
+  // #4805 — 'activate' promueve onboarding→activo (flip de estado, no spawnea):
+  // feedback inline SIN modal destructivo (UX). 'start' SÍ confirma (acción costosa
+  // = spawn real de agentes/tokens). 'pause' confirma igual que antes.
+  var EP_VERBS={activate:'activar',start:'arrancar',pause:'pausar'};
+  var EP_NEEDS_CONFIRM={start:true,pause:true};
   async function epControl(action,pid,btn){
     if(!pid){ epResult(false,'Falta el identificador de producto.'); return; }
-    var verb=(action==='start')?'arrancar':'pausar';
-    if(!window.confirm('¿Confirmás '+verb+' el producto "'+pid+'"? La acción la ejecuta el kernel.')) return;
+    var verb=EP_VERBS[action]||action;
+    if(EP_NEEDS_CONFIRM[action]&&!window.confirm('¿Confirmás '+verb+' el producto "'+pid+'"? La acción la ejecuta el kernel.')) return;
     if(btn) btn.disabled=true;
     try {
       var t=await fetch('/api/product/csrf-token',{cache:'no-store'});
@@ -321,7 +339,12 @@ function renderEstadoProductosClientScript() {
         body:JSON.stringify({ productId: pid })
       });
       var j=await r.json();
-      if(j&&j.ok){ epResult(true,(j.msg)||('Pedido de '+verb+' encolado para "'+pid+'".')); }
+      if(j&&j.ok){
+        var okMsg=(j.msg)||((action==='activate')
+          ? ('Producto "'+pid+'" activado. Ya podés arrancar la primera ola.')
+          : ('Pedido de '+verb+' encolado para "'+pid+'".'));
+        epResult(true,okMsg);
+      }
       else { epResult(false,(j&&j.msg)||('Rechazado ('+((j&&j.code)||'error')+')')); }
     } catch(e){ epResult(false,'Error enviando el pedido: '+e.message); }
     finally { if(btn) btn.disabled=false; }

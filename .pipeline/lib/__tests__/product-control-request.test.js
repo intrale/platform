@@ -220,3 +220,53 @@ test('SEC-7b: si el enqueue del pedido falla, el audit igual queda persistido', 
     assert.equal(res.audit_persisted, true);
     assert.equal(deps.auditImpl.entries.length, 1);
 });
+
+// -----------------------------------------------------------------------------
+// #4805 — enqueueActivate: encola la activación durable (onboarding→active).
+//   CA-1  : encola pedido (202) con action=activate + audit hash-chained.
+//   CA-5.1: sin productId ⇒ producto único (Intrale).
+//   SEC-1b/A03: projectId inseguro ⇒ fail-closed (400), sin encolar.
+// -----------------------------------------------------------------------------
+
+test('#4805 CA-1: enqueueActivate encola pedido (202) con action=activate y audita', () => {
+    const deps = fakeDeps();
+    const res = pcr.enqueueActivate({ projectId: 'acme-store', actor: 'leo' }, deps);
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(res.status, 202);
+    assert.equal(res.action, 'activate');
+    assert.equal(res.projectId, 'acme-store');
+    const written = Object.keys(deps.fsImpl.files);
+    assert.equal(written.length, 1);
+    assert.ok(written[0].includes('activate-acme-store-1700000000000'));
+    // SEC-7b — audit hash-chained con action=activate.
+    assert.equal(res.audit_persisted, true);
+    assert.equal(deps.auditImpl.entries.length, 1);
+    assert.equal(deps.auditImpl.entries[0].type, 'product_control_request');
+    assert.equal(deps.auditImpl.entries[0].action, 'activate');
+});
+
+test('#4805 CA-5.1: enqueueActivate sin productId mapea al producto único (Intrale)', () => {
+    const deps = fakeDeps();
+    const res = pcr.enqueueActivate({}, deps);
+    assert.equal(res.ok, true);
+    assert.equal(res.projectId, pcr.DEFAULT_PRODUCT_ID);
+});
+
+test('#4805 SEC-1b/A03: projectId inseguro en activate ⇒ 400 fail-closed, sin encolar', () => {
+    const deps = fakeDeps();
+    for (const bad of ['../evil', 'a/b', 'a\b', '..', 'CON:', 'x'.repeat(80)]) {
+        const res = pcr.enqueueActivate({ projectId: bad }, deps);
+        assert.equal(res.ok, false, `${bad} debería rechazarse`);
+        assert.equal(res.status, 400);
+    }
+    assert.equal(Object.keys(deps.fsImpl.files).length, 0, 'nada encolado');
+});
+
+test('#4805: activate no está en CONTROL_ACTIONS (es acción durable dedicada, no efímera)', () => {
+    // enqueueControl (start/pause) NO acepta activate — la activación va por su propia vía.
+    const deps = fakeDeps();
+    const res = pcr.enqueueControl({ action: 'activate', projectId: 'acme-store' }, deps);
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 400);
+    assert.ok(!pcr.CONTROL_ACTIONS.includes('activate'));
+});

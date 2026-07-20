@@ -815,3 +815,44 @@ test('A03 · isSafeProjectId espeja isSafeId de project-descriptor (anti-drift)'
     assert.equal(isSafeProjectId(v), isSafeId(v), `desacuerdo con isSafeId para ${JSON.stringify(v)}`);
   }
 });
+
+// -----------------------------------------------------------------------------
+// #4805 CA-8 · Entrada automática al supervisor de un producto RECIÉN activado.
+// Simula el flip onboarding→active entre dos reconciliaciones (bootProducts):
+// el producto queda instanciado EXACTAMENTE una vez y la reconciliación es
+// idempotente; onboarding/archived siguen omitidos.
+// -----------------------------------------------------------------------------
+test('#4805 CA-8 · bootProducts instancia el producto recién activado (idempotente)', async () => {
+  // Catálogo mutable: initech arranca en onboarding y luego pasa a active.
+  const catalog = [
+    { productId: 'acme', projectId: 'acme', name: 'ACME', status: 'active' },
+    { productId: 'initech', projectId: 'initech', name: 'Initech', status: 'onboarding' },
+  ];
+  const supervisor = createKernelSupervisor({
+    catalogStore: { listProducts: async () => catalog.map((p) => ({ ...p })) },
+    storeFactory: recordingStoreFactory([]),
+    hydrate: false,
+  });
+
+  // 1ra reconciliación: initech (onboarding) NO se instancia.
+  const first = await supervisor.bootProducts();
+  assert.deepEqual(first.spawned.sort(), ['acme']);
+  assert.equal(supervisor.getInstance('initech'), null, 'onboarding aún no instanciado');
+  const acmeCtx1 = supervisor.getInstance('acme');
+
+  // El kernel persiste la activación (project-descriptor.transitionStatus) ⇒ el
+  // catálogo ahora reporta initech como active.
+  catalog.find((p) => p.projectId === 'initech').status = 'active';
+
+  // 2da reconciliación: initech entra al supervisor; acme NO se re-instancia
+  // (spawnInstance es idempotente: devuelve la MISMA instancia, no duplica).
+  const second = await supervisor.bootProducts();
+  assert.ok(second.spawned.includes('initech'), 'el producto activado entra al supervisor');
+  assert.ok(supervisor.getInstance('initech'), 'initech instanciado exactamente una vez');
+  assert.equal(supervisor.getInstance('acme'), acmeCtx1, 'acme conserva la MISMA instancia (no re-spawnea)');
+  assert.equal(supervisor.listInstances().length, 2, 'exactamente 2 instancias');
+
+  // 3ra reconciliación idempotente: no cambia el conteo.
+  await supervisor.bootProducts();
+  assert.equal(supervisor.listInstances().length, 2, 'idempotente: sin duplicados');
+});
