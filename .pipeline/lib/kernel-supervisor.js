@@ -50,6 +50,7 @@ const { resolveScopedRefs, redactScoped } = require('./credentials');
 const { segmentProductState } = require('./product-state-segment');
 
 const ACTIVE_STATUS = 'active';
+const MAX_CONCURRENT_INSTANCES_DEFAULT = 2;
 
 // -----------------------------------------------------------------------------
 // Circuit-breaker por producto (Ola Puente P5b · #4776 · split de #4690)
@@ -863,9 +864,57 @@ function createKernelSupervisor(deps = {}) {
   };
 }
 
+/**
+ * Boot durable del supervisor multi-producto, gateado por config.
+ *
+ * La cota de instancias siempre se aplica cuando el modo durable esta activo:
+ * si `config.kernel.max_concurrent_instances` no es un entero > 0, cae al
+ * default seguro.
+ */
+async function bootKernelDurable(opts = {}) {
+  const config = opts.config && typeof opts.config === 'object' ? opts.config : {};
+  const kernel = config.kernel && typeof config.kernel === 'object' ? config.kernel : {};
+  const onAlert = typeof opts.onAlert === 'function' ? opts.onAlert : () => {};
+
+  if (kernel.durable !== true) {
+    return { ran: false, reason: 'flag-off' };
+  }
+
+  const createSupervisor = typeof opts.createSupervisor === 'function'
+    ? opts.createSupervisor
+    : createKernelSupervisor;
+
+  try {
+    if (typeof opts.buildCatalogStore !== 'function') {
+      throw new Error('bootKernelDurable requiere buildCatalogStore() para listar el catalogo durable');
+    }
+    const catalogStore = opts.buildCatalogStore();
+    const cap = Number.isInteger(kernel.max_concurrent_instances) && kernel.max_concurrent_instances > 0
+      ? kernel.max_concurrent_instances
+      : MAX_CONCURRENT_INSTANCES_DEFAULT;
+
+    const supervisor = createSupervisor({
+      catalogStore,
+      storeFactory: typeof opts.buildStoreFactory === 'function' ? opts.buildStoreFactory() : undefined,
+      spawn: typeof opts.spawn === 'function' ? opts.spawn : undefined,
+      maxConcurrentInstances: cap,
+      onAlert,
+    });
+
+    const { spawned, skipped } = await supervisor.bootProducts();
+    return { ran: true, cap, spawned, skipped };
+  } catch (e) {
+    const detail = e && e.message ? e.message : String(e);
+    try { onAlert({ projectId: null, stage: 'boot-durable', errors: [{ detail }] }); } catch { /* best-effort */ }
+    return { ran: false, reason: 'error', error: detail };
+  }
+}
+
 module.exports = {
   createKernelSupervisor,
   resolveProjectId,
+  bootKernelDurable,
+  MAX_CONCURRENT_INSTANCES_DEFAULT,
   // #4763 · Multiplexor de ruteo product-aware (standalone + adaptadores).
   resolveInstanceForEvent,
   deriveRepoConfig,

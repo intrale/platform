@@ -21,7 +21,12 @@ const assert = require('node:assert/strict');
 
 const { createInMemoryDynamoDriver } = require('../provisioner-infra');
 const { createKernelStore, KernelStoreIsolationError } = require('../kernel-store');
-const { createKernelSupervisor, resolveProjectId } = require('../kernel-supervisor');
+const {
+  createKernelSupervisor,
+  resolveProjectId,
+  bootKernelDurable,
+  MAX_CONCURRENT_INSTANCES_DEFAULT,
+} = require('../kernel-supervisor');
 const { isSafeId } = require('../project-descriptor');
 const { isSafeProjectId, segmentProductState } = require('../product-state-segment');
 
@@ -963,4 +968,143 @@ test('#4805 CA-8 · bootProducts instancia el producto recién activado (idempot
   // 3ra reconciliación idempotente: no cambia el conteo.
   await supervisor.bootProducts();
   assert.equal(supervisor.listInstances().length, 2, 'idempotente: sin duplicados');
+});
+
+// =============================================================================
+// #4822 (Split 3/3 de #4804) — Cota de instancias + boot durable gateado
+// =============================================================================
+
+// Catálogo de N>cap productos active para ejercitar la cota (CA-SEC-4).
+const CATALOG_N_ACTIVOS = [
+  { productId: 'acme', projectId: 'acme', name: 'ACME', status: 'active' },
+  { productId: 'globex', projectId: 'globex', name: 'Globex', status: 'active' },
+  { productId: 'initech', projectId: 'initech', name: 'Initech', status: 'active' },
+  { productId: 'soylent', projectId: 'soylent', name: 'Soylent', status: 'active' },
+];
+
+// CA-SEC-4 / REQ-SEC-BOOT-5 — la cota es el núcleo de este split: un catálogo con
+// N>cap productos active NO spawnea sin techo; el excedente se saltea y se audita.
+test('#4822 · CA-SEC-4 · bootProducts respeta el cap con catálogo de N>cap activos', async () => {
+  const alerts = [];
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore(CATALOG_N_ACTIVOS),
+    storeFactory: recordingStoreFactory([]),
+    hydrate: false,
+    maxConcurrentInstances: 2,
+    onAlert: (a) => alerts.push(a),
+  });
+
+  const res = await supervisor.bootProducts();
+
+  assert.equal(res.spawned.length, 2, 'exactamente `cap` instancias spawneadas');
+  assert.equal(supervisor.listInstances().length, 2, 'solo 2 instancias vivas');
+  const capSkips = res.skipped.filter((s) => s.reason === 'cap de instancias alcanzado');
+  assert.equal(capSkips.length, 2, 'los N-cap restantes se saltean por cap');
+  const capAlerts = alerts.filter((a) => a.stage === 'cap');
+  assert.equal(capAlerts.length, 2, 'cada excedente emite alerta de cap (CA-SEC-6)');
+  assert.ok(capAlerts.every((a) => a.projectId), 'la alerta de cap lleva el projectId de origen');
+});
+
+// Compat: sin cota configurada, el comportamiento previo se mantiene (todos los
+// activos se instancian). La cota es opt-in a nivel supervisor.
+test('#4822 · sin maxConcurrentInstances el boot instancia todos los activos (compat)', async () => {
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore(CATALOG_N_ACTIVOS),
+    storeFactory: recordingStoreFactory([]),
+    hydrate: false,
+  });
+  const res = await supervisor.bootProducts();
+  assert.equal(res.spawned.length, 4, 'sin cap se instancian los 4 activos');
+  assert.equal(res.skipped.filter((s) => s.reason === 'cap de instancias alcanzado').length, 0, 'sin skips por cap');
+});
+
+// CA-6 / CA-SEC-1 — fail-closed del flag: sin `kernel.durable === true` el boot
+// durable NO corre. buildCatalogStore NUNCA se invoca (no se toca AWS) y el
+// supervisor tampoco se instancia.
+for (const [caso, cfg] of [
+  ['flag ausente', {}],
+  ['kernel ausente', { otra: 1 }],
+  ['durable:false', { kernel: { durable: false } }],
+  ['durable truthy no-booleano', { kernel: { durable: 'true' } }],
+  ['durable:1', { kernel: { durable: 1 } }],
+]) {
+  test(`#4822 · CA-6/CA-SEC-1 · boot durable NO corre con ${caso}`, async () => {
+    let builtStore = false;
+    let builtSupervisor = false;
+    const res = await bootKernelDurable({
+      config: cfg,
+      buildCatalogStore: () => { builtStore = true; return fakeCatalogStore([]); },
+      createSupervisor: () => { builtSupervisor = true; return { bootProducts: async () => ({ spawned: [], skipped: [] }) }; },
+    });
+    assert.equal(res.ran, false, 'no corre el boot durable');
+    assert.equal(res.reason, 'flag-off', 'razón flag-off');
+    assert.equal(builtStore, false, 'buildCatalogStore NO se invoca (cero AWS con flag OFF)');
+    assert.equal(builtSupervisor, false, 'no se instancia el supervisor con flag OFF');
+  });
+}
+
+// CA-1 (integración del wiring) — con el flag ON, bootKernelDurable carga los
+// `active` desde el catálogo durable y los instancia respetando la cota de config.
+test('#4822 · CA-1 · boot durable con flag ON instancia los active del store durable', async () => {
+  const spawnedProducts = [];
+  const res = await bootKernelDurable({
+    config: { kernel: { durable: true, max_concurrent_instances: 3 } },
+    buildCatalogStore: () => fakeCatalogStore(CATALOG_MIXTO),
+    buildStoreFactory: () => recordingStoreFactory([]),
+    spawn: (ctx) => { spawnedProducts.push(ctx.projectId); return { alive: true }; },
+  });
+  assert.equal(res.ran, true, 'corre el boot durable');
+  assert.equal(res.cap, 3, 'usa la cota de config');
+  assert.deepEqual(res.spawned.sort(), ['acme', 'globex'], 'solo los active se instancian');
+  assert.deepEqual(spawnedProducts.sort(), ['acme', 'globex'], 'spawn AISLADO invocado por cada active');
+  assert.ok(res.skipped.some((s) => s.reason === 'inactivo'), 'onboarding/archived salteados');
+});
+
+// CA-SEC-4 end-to-end vía bootKernelDurable: cap de config aplicado sobre N>cap.
+test('#4822 · CA-SEC-4 · boot durable aplica el cap de config sobre N>cap activos', async () => {
+  const res = await bootKernelDurable({
+    config: { kernel: { durable: true, max_concurrent_instances: 1 } },
+    buildCatalogStore: () => fakeCatalogStore(CATALOG_N_ACTIVOS),
+    buildStoreFactory: () => recordingStoreFactory([]),
+    spawn: () => ({ alive: true }),
+  });
+  assert.equal(res.ran, true);
+  assert.equal(res.cap, 1, 'cap=1 de config');
+  assert.equal(res.spawned.length, 1, 'solo 1 instancia bajo cap=1');
+  assert.equal(res.skipped.filter((s) => s.reason === 'cap de instancias alcanzado').length, 3, 'los 3 restantes salteados por cap');
+});
+
+// Con flag ON pero sin cota válida en config, cae al default seguro (nunca sin techo).
+test('#4822 · CA-SEC-4 · sin cota válida en config el boot durable usa el default seguro', async () => {
+  const res = await bootKernelDurable({
+    config: { kernel: { durable: true } },
+    buildCatalogStore: () => fakeCatalogStore(CATALOG_N_ACTIVOS),
+    buildStoreFactory: () => recordingStoreFactory([]),
+    spawn: () => ({ alive: true }),
+  });
+  assert.equal(res.ran, true);
+  assert.equal(res.cap, MAX_CONCURRENT_INSTANCES_DEFAULT, 'cae al default seguro');
+  assert.equal(res.spawned.length, MAX_CONCURRENT_INSTANCES_DEFAULT, 'no spawnea por encima del default');
+});
+
+// Best-effort: un fallo construyendo el store NO lanza; devuelve {ran:false} y audita.
+test('#4822 · boot durable es best-effort: un fallo del store no lanza (no tumba el pulpo)', async () => {
+  const alerts = [];
+  const res = await bootKernelDurable({
+    config: { kernel: { durable: true, max_concurrent_instances: 2 } },
+    buildCatalogStore: () => { throw new Error('driver AWS no disponible'); },
+    onAlert: (a) => alerts.push(a),
+  });
+  assert.equal(res.ran, false, 'no corrió (falló)');
+  assert.equal(res.reason, 'error', 'razón error');
+  assert.match(res.error, /driver AWS no disponible/, 'propaga el detalle del fallo');
+  assert.ok(alerts.some((a) => a.stage === 'boot-durable'), 'audita el fallo por onAlert');
+});
+
+// Falta buildCatalogStore con flag ON ⇒ best-effort error, no throw.
+test('#4822 · boot durable sin buildCatalogStore devuelve error sin lanzar', async () => {
+  const res = await bootKernelDurable({ config: { kernel: { durable: true } } });
+  assert.equal(res.ran, false);
+  assert.equal(res.reason, 'error');
+  assert.match(res.error, /buildCatalogStore/, 'explica el requisito faltante');
 });
