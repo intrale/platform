@@ -47,8 +47,18 @@ class ProductRepository {
         return updated
     }
 
-    fun deleteProduct(business: String, productId: String): Boolean {
-        return products.remove(key(business, productId)) != null
+    /**
+     * Baja logica de un producto: cambia su estado a INACTIVE en lugar de removerlo
+     * fisicamente del map. Preserva la integridad referencial del historial de pedidos
+     * (MUST 3 seguridad). Idempotente: dar de baja un producto ya INACTIVE no falla.
+     *
+     * @return el record actualizado, o null si el producto no existe.
+     */
+    fun discontinueProduct(business: String, productId: String): ProductRecord? {
+        val existing = products[key(business, productId)] ?: return null
+        val discontinued = existing.copy(status = "INACTIVE")
+        products[key(business, productId)] = discontinued
+        return discontinued.copy()
     }
 
     /**

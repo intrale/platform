@@ -10,12 +10,20 @@ enum class ProductStatus {
     Draft,
 
     @SerialName("PUBLISHED")
-    Published;
+    Published,
+
+    @SerialName("PAUSED")
+    Paused,
+
+    @SerialName("INACTIVE")
+    Inactive;
 
     companion object {
         fun fromRaw(value: String?): ProductStatus =
             when (value?.uppercase()) {
                 "PUBLISHED" -> Published
+                "PAUSED" -> Paused
+                "INACTIVE" -> Inactive
                 else -> Draft
             }
     }

@@ -6,8 +6,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import asdo.business.ToDoListProducts
 import asdo.business.ToDoListCategories
+import asdo.business.ToDoUpdateProduct
 import ar.com.intrale.shared.business.CategoryDTO
 import ar.com.intrale.shared.business.ProductDTO
+import ar.com.intrale.shared.business.ProductRequest
 import ar.com.intrale.shared.business.ProductStatus
 import io.konform.validation.Validation
 import org.kodein.di.direct
@@ -46,6 +48,7 @@ data class ProductListUiState(
 class ProductListViewModel(
     private val listProducts: ToDoListProducts = DIManager.di.direct.instance(),
     private val listCategories: ToDoListCategories = DIManager.di.direct.instance(),
+    private val updateProduct: ToDoUpdateProduct = DIManager.di.direct.instance(),
     loggerFactory: LoggerFactory = LoggerFactory.default
 ) : ViewModel() {
 
@@ -106,6 +109,40 @@ class ProductListViewModel(
 
     suspend fun refresh() {
         loadProducts(currentBusinessId)
+    }
+
+    /**
+     * Pausa un producto desde la lista (quick-action, CA-2). Reusa updateProduct con
+     * status=Paused y refresca la lista para reflejar el nuevo estado.
+     */
+    suspend fun pause(item: ProductListItem): Result<ProductDTO> = changeStatus(item, ProductStatus.Paused)
+
+    /**
+     * Reanuda un producto pausado desde la lista. Reusa updateProduct con status=Published.
+     */
+    suspend fun resume(item: ProductListItem): Result<ProductDTO> = changeStatus(item, ProductStatus.Published)
+
+    private suspend fun changeStatus(item: ProductListItem, status: ProductStatus): Result<ProductDTO> {
+        val businessId = currentBusinessId
+            ?: return Result.failure(IllegalStateException("No hay negocio seleccionado"))
+        val request = ProductRequest(
+            name = item.name,
+            shortDescription = item.shortDescription.ifBlank { null },
+            basePrice = item.basePrice,
+            unit = item.unit,
+            categoryId = item.categoryId,
+            status = status,
+            isAvailable = item.isAvailable,
+            stockQuantity = item.stockQuantity,
+            isFeatured = item.isFeatured,
+            promotionPrice = item.promotionPrice
+        )
+        return updateProduct.execute(businessId, item.id, request)
+            .onSuccess { refresh() }
+            .onFailure { error ->
+                logger.error(error) { "No se pudo cambiar el estado del producto ${item.id}" }
+                state = state.copy(errorMessage = error.message ?: "")
+            }
     }
 
     private suspend fun loadCategories(businessId: String) {

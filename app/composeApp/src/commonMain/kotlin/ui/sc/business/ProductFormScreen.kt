@@ -11,12 +11,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.PauseCircle
+import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.material3.DropdownMenuItem
@@ -54,6 +57,7 @@ import ui.cp.inputs.TextField
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
 import ui.session.SessionStore
+import ui.session.UserRole
 import ui.th.spacing
 
 private val UNIT_OPTIONS = listOf("kg", "g", "unidad", "docena", "litro", "ml", "porcion")
@@ -80,6 +84,13 @@ class ProductFormScreen(
         var unitExpanded by remember { mutableStateOf(false) }
 
         val businessId = sessionState.selectedBusinessId
+        // Dar de baja es destructivo: solo BUSINESS_ADMIN (matriz PO / MUST 2). Ocultar para Saler.
+        val canDiscontinue = sessionState.role == UserRole.BusinessAdmin ||
+            sessionState.role == UserRole.PlatformAdmin
+        val pauseLabel = Txt(MessageKey.business_products_pause_action)
+        val resumeLabel = Txt(MessageKey.business_products_resume_action)
+        val pausedFeedback = Txt(MessageKey.business_products_paused_feedback)
+        val resumedFeedback = Txt(MessageKey.business_products_resumed_feedback)
         val productSavedMessage = Txt(MessageKey.product_form_saved)
         val genericErrorMessage = Txt(MessageKey.error_generic)
         val formErrorRequiredMessage = Txt(MessageKey.form_error_required)
@@ -292,23 +303,71 @@ class ProductFormScreen(
                     }
                 )
 
-                // Botón de eliminar con estilo destructivo (error color)
                 if (viewModel.mode == ProductFormMode.Edit) {
-                    Button(
-                        onClick = { showDeleteDialog = true },
-                        enabled = !viewModel.loading,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.error,
-                            contentColor = MaterialTheme.colorScheme.onError
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Delete,
-                            contentDescription = Txt(MessageKey.product_form_delete)
-                        )
-                        Spacer(Modifier.size(ButtonDefaults.IconSpacing))
-                        Text(Txt(MessageKey.product_form_delete))
+                    // Pausar / reanudar como accion de primera clase (CA-2). El boton alterna
+                    // segun el estado actual: Published -> pausar, Paused -> reanudar.
+                    when (viewModel.uiState.status) {
+                        ProductStatus.Published -> OutlinedButton(
+                            onClick = {
+                                callService(
+                                    coroutineScope = coroutineScope,
+                                    snackbarHostState = snackbarHostState,
+                                    setLoading = { viewModel.loading = it },
+                                    serviceCall = { viewModel.pause(businessId) },
+                                    onSuccess = {
+                                        coroutineScope.launch { snackbarHostState.showSnackbar(pausedFeedback) }
+                                    }
+                                )
+                            },
+                            enabled = !viewModel.loading,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(imageVector = Icons.Default.PauseCircle, contentDescription = pauseLabel)
+                            Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+                            Text(pauseLabel)
+                        }
+                        ProductStatus.Paused -> OutlinedButton(
+                            onClick = {
+                                callService(
+                                    coroutineScope = coroutineScope,
+                                    snackbarHostState = snackbarHostState,
+                                    setLoading = { viewModel.loading = it },
+                                    serviceCall = { viewModel.resume(businessId) },
+                                    onSuccess = {
+                                        coroutineScope.launch { snackbarHostState.showSnackbar(resumedFeedback) }
+                                    }
+                                )
+                            },
+                            enabled = !viewModel.loading,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(imageVector = Icons.Default.PlayCircle, contentDescription = resumeLabel)
+                            Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+                            Text(resumeLabel)
+                        }
+                        else -> Unit
+                    }
+
+                    // Boton de baja logica con estilo destructivo moderado (error color).
+                    // Icono Block (no papelera) para comunicar baja reversible, no borrado fisico.
+                    // Solo visible para BUSINESS_ADMIN (matriz PO / MUST 2).
+                    if (canDiscontinue) {
+                        Button(
+                            onClick = { showDeleteDialog = true },
+                            enabled = !viewModel.loading,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Block,
+                                contentDescription = Txt(MessageKey.product_form_delete)
+                            )
+                            Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+                            Text(Txt(MessageKey.product_form_delete))
+                        }
                     }
                 }
             }

@@ -194,10 +194,51 @@ class ProductFormViewModel(
         }
     }
 
-    suspend fun delete(businessId: String): Result<Unit> {
+    /**
+     * Baja logica del producto. El verbo DELETE viaja al backend, que lo mapea a baja
+     * logica (status=INACTIVE) preservando el registro para integridad referencial.
+     */
+    suspend fun discontinue(businessId: String): Result<Unit> {
         val productId = uiState.id
             ?: return Result.failure(IllegalStateException("Producto sin id"))
         return deleteProduct.execute(businessId, productId)
+            .onFailure { error -> errorMessage = error.message }
+    }
+
+    /**
+     * Mantiene el nombre historico `delete` como alias de la baja logica.
+     */
+    suspend fun delete(businessId: String): Result<Unit> = discontinue(businessId)
+
+    /**
+     * Pausa el producto (operacion de primera clase): reusa updateProduct con status=Paused.
+     */
+    suspend fun pause(businessId: String): Result<ProductDTO> = changeStatus(businessId, ProductStatus.Paused)
+
+    /**
+     * Reanuda el producto pausado: reusa updateProduct con status=Published.
+     */
+    suspend fun resume(businessId: String): Result<ProductDTO> = changeStatus(businessId, ProductStatus.Published)
+
+    private suspend fun changeStatus(businessId: String, status: ProductStatus): Result<ProductDTO> {
+        val productId = uiState.id
+            ?: return Result.failure(IllegalStateException("Producto sin id"))
+        val price = uiState.basePrice.replace(",", ".").toDoubleOrNull()
+            ?: return Result.failure(IllegalArgumentException(resolveMessage(MessageKey.product_form_error_invalid_price)))
+        val request = ProductRequest(
+            name = uiState.name.trim(),
+            shortDescription = uiState.shortDescription.ifBlank { null },
+            basePrice = price,
+            unit = uiState.unit.trim(),
+            categoryId = uiState.categoryId.trim(),
+            status = status,
+            isAvailable = uiState.isAvailable,
+            stockQuantity = uiState.stockQuantity.toIntOrNull(),
+            isFeatured = uiState.isFeatured,
+            promotionPrice = uiState.promotionPrice.replace(",", ".").toDoubleOrNull()
+        )
+        return updateProduct.execute(businessId, productId, request)
+            .onSuccess { product -> applyDraft(product.toDraft()) }
             .onFailure { error -> errorMessage = error.message }
     }
 

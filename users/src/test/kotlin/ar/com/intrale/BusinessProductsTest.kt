@@ -187,14 +187,14 @@ class BusinessProductsTest {
     }
 
     @Test
-    fun `DELETE elimina producto existente`() = runBlocking {
+    fun `DELETE da de baja logica (INACTIVE) preservando el registro`() = runBlocking {
         seedBusinessAdmin()
 
         val createResponse = function.securedExecute(
             business = "la-carne",
             function = "business/products",
             headers = mapOf("Authorization" to "token", "X-Http-Method" to "POST"),
-            textBody = productRequestJson(name = "Producto a eliminar")
+            textBody = productRequestJson(name = "Producto a dar de baja", status = "PUBLISHED")
         ) as ProductResponse
         val productId = createResponse.product!!.id
 
@@ -208,13 +208,218 @@ class BusinessProductsTest {
 
         assertEquals(HttpStatusCode.NoContent, deleteResponse.statusCode)
 
+        // Baja logica: el producto sigue presente en el listado completo, con estado INACTIVE.
         val listResponse = function.securedExecute(
             business = "la-carne",
             function = "business/products",
             headers = mapOf("Authorization" to "token", "X-Http-Method" to "GET"),
             textBody = ""
         ) as ProductListResponse
-        assertTrue(listResponse.products.isEmpty())
+        val record = listResponse.products.firstOrNull { it.id == productId }
+        assertNotNull(record)
+        assertEquals("INACTIVE", record.status)
+    }
+
+    @Test
+    fun `DELETE es idempotente sobre producto ya dado de baja`() = runBlocking {
+        seedBusinessAdmin()
+
+        val createResponse = function.securedExecute(
+            business = "la-carne",
+            function = "business/products",
+            headers = mapOf("Authorization" to "token", "X-Http-Method" to "POST"),
+            textBody = productRequestJson(name = "Producto idempotente")
+        ) as ProductResponse
+        val productId = createResponse.product!!.id
+
+        repeat(2) {
+            val deleteResponse = function.securedExecute(
+                business = "la-carne",
+                function = "business/products/$productId",
+                headers = mapOf("Authorization" to "token", "X-Http-Method" to "DELETE",
+                    "X-Function-Path" to "business/products/$productId"),
+                textBody = ""
+            )
+            assertEquals(HttpStatusCode.NoContent, deleteResponse.statusCode)
+        }
+    }
+
+    @Test
+    fun `DELETE de un Saler retorna UnauthorizedException`() = runBlocking {
+        seedSaler()
+
+        // Creamos el producto como Saler (permitido).
+        val createResponse = function.securedExecute(
+            business = "la-carne",
+            function = "business/products",
+            headers = mapOf("Authorization" to "token", "X-Http-Method" to "POST"),
+            textBody = productRequestJson(name = "Producto del saler")
+        ) as ProductResponse
+        val productId = createResponse.product!!.id
+
+        // Dar de baja como Saler debe estar prohibido (MUST 2).
+        val deleteResponse = function.securedExecute(
+            business = "la-carne",
+            function = "business/products/$productId",
+            headers = mapOf("Authorization" to "token", "X-Http-Method" to "DELETE",
+                "X-Function-Path" to "business/products/$productId"),
+            textBody = ""
+        )
+
+        assertTrue(deleteResponse is UnauthorizedException)
+    }
+
+    @Test
+    fun `Saler puede pausar via PUT (PUBLISHED a PAUSED)`() = runBlocking {
+        seedSaler()
+
+        val createResponse = function.securedExecute(
+            business = "la-carne",
+            function = "business/products",
+            headers = mapOf("Authorization" to "token", "X-Http-Method" to "POST"),
+            textBody = productRequestJson(name = "Producto pausable", status = "PUBLISHED")
+        ) as ProductResponse
+        val productId = createResponse.product!!.id
+
+        val updateResponse = function.securedExecute(
+            business = "la-carne",
+            function = "business/products/$productId",
+            headers = mapOf("Authorization" to "token", "X-Http-Method" to "PUT"),
+            textBody = productRequestJson(name = "Producto pausable", status = "PAUSED")
+        )
+
+        assertTrue(updateResponse is ProductResponse)
+        assertEquals("PAUSED", updateResponse.product!!.status)
+    }
+
+    @Test
+    fun `PUT con status arbitrario retorna error de validacion`() = runBlocking {
+        seedBusinessAdmin()
+
+        val createResponse = function.securedExecute(
+            business = "la-carne",
+            function = "business/products",
+            headers = mapOf("Authorization" to "token", "X-Http-Method" to "POST"),
+            textBody = productRequestJson(name = "Producto whitelist")
+        ) as ProductResponse
+        val productId = createResponse.product!!.id
+
+        val updateResponse = function.securedExecute(
+            business = "la-carne",
+            function = "business/products/$productId",
+            headers = mapOf("Authorization" to "token", "X-Http-Method" to "PUT"),
+            textBody = productRequestJson(name = "Producto whitelist", status = "SUPER_ACTIVO")
+        )
+
+        assertTrue(updateResponse is RequestValidationException)
+    }
+
+    @Test
+    fun `PUT con status INACTIVE es rechazado (no se salta la baja)`() = runBlocking {
+        seedBusinessAdmin()
+
+        val createResponse = function.securedExecute(
+            business = "la-carne",
+            function = "business/products",
+            headers = mapOf("Authorization" to "token", "X-Http-Method" to "POST"),
+            textBody = productRequestJson(name = "Producto no baja via PUT", status = "PUBLISHED")
+        ) as ProductResponse
+        val productId = createResponse.product!!.id
+
+        val updateResponse = function.securedExecute(
+            business = "la-carne",
+            function = "business/products/$productId",
+            headers = mapOf("Authorization" to "token", "X-Http-Method" to "PUT"),
+            textBody = productRequestJson(name = "Producto no baja via PUT", status = "INACTIVE")
+        )
+
+        assertTrue(updateResponse is RequestValidationException)
+    }
+
+    @Test
+    fun `PUT con promotionPrice mayor a basePrice retorna error`() = runBlocking {
+        seedBusinessAdmin()
+
+        val createResponse = function.securedExecute(
+            business = "la-carne",
+            function = "business/products",
+            headers = mapOf("Authorization" to "token", "X-Http-Method" to "POST"),
+            textBody = productRequestJson(name = "Producto promo", basePrice = 1000.0)
+        ) as ProductResponse
+        val productId = createResponse.product!!.id
+
+        val body = Gson().toJson(mapOf(
+            "name" to "Producto promo",
+            "basePrice" to 1000.0,
+            "unit" to "kg",
+            "categoryId" to "cat-1",
+            "status" to "PUBLISHED",
+            "promotionPrice" to 1500.0
+        ))
+        val updateResponse = function.securedExecute(
+            business = "la-carne",
+            function = "business/products/$productId",
+            headers = mapOf("Authorization" to "token", "X-Http-Method" to "PUT"),
+            textBody = body
+        )
+
+        assertTrue(updateResponse is RequestValidationException)
+    }
+
+    @Test
+    fun `POST con stock negativo retorna error de validacion`() = runBlocking {
+        seedBusinessAdmin()
+
+        val body = Gson().toJson(mapOf(
+            "name" to "Producto stock",
+            "basePrice" to 1000.0,
+            "unit" to "kg",
+            "categoryId" to "cat-1",
+            "status" to "DRAFT",
+            "stockQuantity" to -5
+        ))
+        val response = function.securedExecute(
+            business = "la-carne",
+            function = "business/products",
+            headers = mapOf("Authorization" to "token", "X-Http-Method" to "POST"),
+            textBody = body
+        )
+
+        assertTrue(response is RequestValidationException)
+    }
+
+    @Test
+    fun `DELETE de producto de otro negocio no lo afecta (aislamiento de tenant)`() = runBlocking {
+        // Admin de la-carne crea un producto en su negocio.
+        seedBusinessAdmin()
+        val createResponse = function.securedExecute(
+            business = "la-carne",
+            function = "business/products",
+            headers = mapOf("Authorization" to "token", "X-Http-Method" to "POST"),
+            textBody = productRequestJson(name = "Producto de la-carne")
+        ) as ProductResponse
+        val productId = createResponse.product!!.id
+
+        // Un intento de baja usando el mismo productId pero bajo otro negocio (partition distinta)
+        // no resuelve el producto: retorna NotFound, sin mutar el registro original.
+        val deleteResponse = function.securedExecute(
+            business = "otro-negocio",
+            function = "business/products/$productId",
+            headers = mapOf("Authorization" to "token", "X-Http-Method" to "DELETE",
+                "X-Function-Path" to "business/products/$productId"),
+            textBody = ""
+        )
+        // Sin perfil en otro-negocio, la autorizacion falla antes: Unauthorized.
+        assertTrue(deleteResponse is UnauthorizedException)
+
+        // El producto original sigue intacto (no INACTIVE) en la-carne.
+        val getResponse = function.securedExecute(
+            business = "la-carne",
+            function = "business/products/$productId",
+            headers = mapOf("Authorization" to "token", "X-Http-Method" to "GET"),
+            textBody = ""
+        ) as ProductResponse
+        assertEquals("DRAFT", getResponse.product!!.status)
     }
 
     @Test

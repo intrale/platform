@@ -21,6 +21,11 @@ private class FakeProductCrud(
     private val deleteResult: Result<Unit> = Result.success(Unit),
     private val listResult: Result<List<ProductDTO>> = Result.success(emptyList())
 ) : ToDoCreateProduct, ToDoUpdateProduct, ToDoDeleteProduct, ToDoListProducts {
+    var lastUpdateRequest: ProductRequest? = null
+        private set
+    var deleteInvoked = false
+        private set
+
     override suspend fun execute(businessId: String, request: ProductRequest): Result<ProductDTO> =
         createResult
 
@@ -28,9 +33,15 @@ private class FakeProductCrud(
         businessId: String,
         productId: String,
         request: ProductRequest
-    ): Result<ProductDTO> = updateResult
+    ): Result<ProductDTO> {
+        lastUpdateRequest = request
+        return updateResult
+    }
 
-    override suspend fun execute(businessId: String, productId: String): Result<Unit> = deleteResult
+    override suspend fun execute(businessId: String, productId: String): Result<Unit> {
+        deleteInvoked = true
+        return deleteResult
+    }
 
     override suspend fun execute(businessId: String): Result<List<ProductDTO>> = listResult
 }
@@ -100,6 +111,63 @@ class ProductFormViewModelTest {
         val result = viewModel.delete("biz-1")
         assertTrue(result.isFailure)
         assertFalse(viewModel.loading)
+    }
+
+    @Test
+    fun `baja logica invoca deleteProduct (baja server-side)`() = runTest {
+        val fake = FakeProductCrud()
+        val viewModel = ProductFormViewModel(fake, fake, fake, fake, ProductFormFakeCategories())
+        viewModel.applyDraft(
+            ProductDraft(
+                id = "p1",
+                name = "Test",
+                basePrice = 5.0,
+                unit = "kg",
+                categoryId = "fruta",
+                status = ProductStatus.Published
+            )
+        )
+        val result = viewModel.discontinue("biz-1")
+        assertTrue(result.isSuccess)
+        assertTrue(fake.deleteInvoked)
+    }
+
+    @Test
+    fun `pausar cambia el estado a Paused via updateProduct`() = runTest {
+        val fake = FakeProductCrud(updateResult = Result.success(sampleProduct(id = "p1")))
+        val viewModel = ProductFormViewModel(fake, fake, fake, fake, ProductFormFakeCategories())
+        viewModel.applyDraft(
+            ProductDraft(
+                id = "p1",
+                name = "Test",
+                basePrice = 5.0,
+                unit = "kg",
+                categoryId = "fruta",
+                status = ProductStatus.Published
+            )
+        )
+        val result = viewModel.pause("biz-1")
+        assertTrue(result.isSuccess)
+        assertEquals(ProductStatus.Paused, fake.lastUpdateRequest?.status)
+    }
+
+    @Test
+    fun `reanudar cambia el estado a Published via updateProduct`() = runTest {
+        val fake = FakeProductCrud(updateResult = Result.success(sampleProduct(id = "p1")))
+        val viewModel = ProductFormViewModel(fake, fake, fake, fake, ProductFormFakeCategories())
+        viewModel.applyDraft(
+            ProductDraft(
+                id = "p1",
+                name = "Test",
+                basePrice = 5.0,
+                unit = "kg",
+                categoryId = "fruta",
+                status = ProductStatus.Paused
+            )
+        )
+        val result = viewModel.resume("biz-1")
+        assertTrue(result.isSuccess)
+        assertEquals(ProductStatus.Published, fake.lastUpdateRequest?.status)
     }
 
     @Test

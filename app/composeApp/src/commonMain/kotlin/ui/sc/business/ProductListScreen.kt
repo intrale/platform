@@ -12,17 +12,24 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.PauseCircle
+import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.ShoppingBag
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -53,7 +60,9 @@ import ui.th.spacing
 const val BUSINESS_PRODUCTS_PATH = "/business/products"
 const val BUSINESS_PRODUCT_FORM_PATH = "/business/products/form"
 
-private val ALLOWED_ROLES = setOf(UserRole.BusinessAdmin, UserRole.PlatformAdmin)
+// Editar/pausar/reanudar habilitado para BusinessAdmin y Saler (matriz PO / MUST 2).
+// PlatformAdmin conserva acceso de gestion.
+private val ALLOWED_ROLES = setOf(UserRole.BusinessAdmin, UserRole.PlatformAdmin, UserRole.Saler)
 
 class ProductListScreen(
     private val editorStore: ProductEditorStore = ProductEditorStore
@@ -98,6 +107,8 @@ class ProductListScreen(
         val errorMessage = Txt(MessageKey.business_products_error)
         val missingBusinessMessage = Txt(MessageKey.product_list_missing_business)
         val accessDeniedMessage = Txt(MessageKey.business_products_access_denied)
+        val pausedFeedback = Txt(MessageKey.business_products_paused_feedback)
+        val resumedFeedback = Txt(MessageKey.business_products_resumed_feedback)
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
             when {
@@ -130,6 +141,20 @@ class ProductListScreen(
                         editorStore.setDraft(viewModel.toDraft(item))
                         navigate(BUSINESS_PRODUCT_FORM_PATH)
                     },
+                    onPause = { item ->
+                        coroutineScope.launch {
+                            viewModel.pause(item).onSuccess {
+                                snackbarHostState.showSnackbar(pausedFeedback)
+                            }
+                        }
+                    },
+                    onResume = { item ->
+                        coroutineScope.launch {
+                            viewModel.resume(item).onSuccess {
+                                snackbarHostState.showSnackbar(resumedFeedback)
+                            }
+                        }
+                    },
                     onSelectCategory = viewModel::selectCategory,
                     paddingValues = padding,
                     addLabel = addLabel,
@@ -150,6 +175,8 @@ private fun ProductListContent(
     onAdd: () -> Unit,
     onRetry: () -> Unit,
     onSelect: (ProductListItem) -> Unit,
+    onPause: (ProductListItem) -> Unit,
+    onResume: (ProductListItem) -> Unit,
     onSelectCategory: (String?) -> Unit,
     paddingValues: PaddingValues,
     addLabel: String,
@@ -235,7 +262,9 @@ private fun ProductListContent(
                 items(state.items, key = { it.id }) { item ->
                     ProductCard(
                         item = item,
-                        onClick = { onSelect(item) }
+                        onClick = { onSelect(item) },
+                        onPause = { onPause(item) },
+                        onResume = { onResume(item) }
                     )
                 }
             }
@@ -245,16 +274,38 @@ private fun ProductListContent(
     }
 }
 
+/**
+ * Par de colores container/onContainer por estado (UX §1). Contraste WCAG AA garantizado
+ * por Material3, funciona en light y dark. El chip de out-of-stock (error) es ortogonal.
+ */
+@Composable
+private fun statusChipColors(status: ProductStatus): Pair<Color, Color> {
+    val scheme = MaterialTheme.colorScheme
+    return when (status) {
+        ProductStatus.Draft -> scheme.surfaceVariant to scheme.onSurfaceVariant
+        ProductStatus.Published -> scheme.primaryContainer to scheme.onPrimaryContainer
+        ProductStatus.Paused -> scheme.tertiaryContainer to scheme.onTertiaryContainer
+        ProductStatus.Inactive -> scheme.surfaceVariant to scheme.outline
+    }
+}
+
 @Composable
 private fun ProductCard(
     item: ProductListItem,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onPause: () -> Unit,
+    onResume: () -> Unit
 ) {
     val statusLabel = when (item.status) {
         ProductStatus.Published -> Txt(MessageKey.business_products_status_published)
         ProductStatus.Draft -> Txt(MessageKey.business_products_status_draft)
+        ProductStatus.Paused -> Txt(MessageKey.business_products_status_paused)
+        ProductStatus.Inactive -> Txt(MessageKey.business_products_status_inactive)
     }
+    val (statusContainer, statusContent) = statusChipColors(item.status)
     val outOfStockLabel = Txt(MessageKey.business_products_out_of_stock)
+    val pauseLabel = Txt(MessageKey.business_products_pause_action)
+    val resumeLabel = Txt(MessageKey.business_products_resume_action)
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -280,7 +331,10 @@ private fun ProductCard(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false)
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     if (!item.isAvailable) {
                         AssistChip(
                             onClick = onClick,
@@ -294,8 +348,35 @@ private fun ProductCard(
                     }
                     AssistChip(
                         onClick = onClick,
-                        label = { Text(statusLabel) }
+                        label = { Text(statusLabel, color = statusContent) },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = statusContainer,
+                            labelColor = statusContent
+                        )
                     )
+                    // Quick-action pausar/reanudar (CA-2). Solo para productos gestionables
+                    // (Published <-> Paused); Draft/Inactive no exponen la accion.
+                    when (item.status) {
+                        ProductStatus.Published -> IconButton(
+                            onClick = onPause,
+                            modifier = Modifier.size(48.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PauseCircle,
+                                contentDescription = pauseLabel
+                            )
+                        }
+                        ProductStatus.Paused -> IconButton(
+                            onClick = onResume,
+                            modifier = Modifier.size(48.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PlayCircle,
+                                contentDescription = resumeLabel
+                            )
+                        }
+                        else -> Unit
+                    }
                 }
             }
             Text(

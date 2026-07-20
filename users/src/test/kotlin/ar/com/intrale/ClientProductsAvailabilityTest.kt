@@ -111,6 +111,40 @@ class ClientProductsAvailabilityTest {
     }
 
     @Test
+    fun `POST retorna DISCONTINUED para producto en estado PAUSED`() = runBlocking {
+        val product = seedProduct(name = "Pausado", status = "PAUSED", stockQuantity = 10)
+
+        val response = function.securedExecute(
+            business = "la-carne",
+            function = "client/products/availability",
+            headers = postHeaders(),
+            textBody = requestBody(product.id)
+        )
+
+        assertTrue(response is ProductAvailabilityResponse)
+        val item = response.availability.items.first()
+        assertFalse(item.available)
+        assertEquals(ar.com.intrale.shared.client.SkipReason.DISCONTINUED, item.reason)
+    }
+
+    @Test
+    fun `POST retorna DISCONTINUED para producto en estado INACTIVE`() = runBlocking {
+        val product = seedProduct(name = "Dado de baja", status = "INACTIVE", stockQuantity = 10)
+
+        val response = function.securedExecute(
+            business = "la-carne",
+            function = "client/products/availability",
+            headers = postHeaders(),
+            textBody = requestBody(product.id)
+        )
+
+        assertTrue(response is ProductAvailabilityResponse)
+        val item = response.availability.items.first()
+        assertFalse(item.available)
+        assertEquals(ar.com.intrale.shared.client.SkipReason.DISCONTINUED, item.reason)
+    }
+
+    @Test
     fun `POST retorna UNAVAILABLE para producto marcado como no disponible`() = runBlocking {
         val product = seedProduct(name = "Morcilla", isAvailable = false)
 
