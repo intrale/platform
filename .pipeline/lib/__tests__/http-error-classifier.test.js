@@ -317,14 +317,28 @@ test('httpStatus es null cuando statusCode inválido', () => {
 
 // ─── 8. Defensa ReDoS del regex de quota ────────────────────────────────────
 
-test('QUOTA_BODY_PATTERN es ReDoS-safe (1MB en <50ms)', () => {
-    // Body adversarial: 1MB de "qqqquuuuoootttaa" intercalado para forzar
-    // backtracking si el regex tuviera nested quantifiers.
+test('QUOTA_BODY_PATTERN es ReDoS-safe (1MB adversarial sin backtracking catastrófico)', () => {
+    // Body adversarial: 1MB de "q" para forzar backtracking si el regex tuviera
+    // nested quantifiers.
     const adversarial = 'q'.repeat(1024 * 1024);
-    const t0 = Date.now();
+    const start = process.hrtime.bigint();
     QUOTA_BODY_PATTERN.test(adversarial);
-    const dt = Date.now() - t0;
-    assert.ok(dt < 50, `regex debe correr <50ms con 1MB adversarial (tardó ${dt}ms)`);
+    const dt = Number(process.hrtime.bigint() - start) / 1e6;
+    // El objetivo es detectar backtracking catastrófico (varios segundos), no
+    // medir performance fina: un ReDoS real sobre 1 MB tarda >5 s. El match
+    // lineal legítimo mide single-digit ms AISLADO, pero el umbral histórico de
+    // 50 ms era intrínsecamente flaky: el tester corre las ~9750 pruebas Node en
+    // UN solo proceso y el proceso que MIDE queda saturado, empujando esta
+    // medición CPU-bound por encima de 50 ms sin que haya ReDoS (rebote #4801:
+    // 56 ms bajo la suite completa). Además Date.now() tiene ~15 ms de
+    // resolución en Windows, insuficiente para un umbral de 50 ms. Se usa
+    // process.hrtime.bigint() y se fija el presupuesto en 2500 ms — mismo
+    // criterio "tolerante a la carga" que dep-resolver.test.js y
+    // dashboard-health-under-load-4126.test.js: sigue siendo 2x más rápido que
+    // cualquier ReDoS catastrófico (>5 s) y deja fuera el jitter del proceso
+    // saturado.
+    const REDOS_BUDGET_MS = 2500;
+    assert.ok(dt < REDOS_BUDGET_MS, `regex tomó ${dt.toFixed(2)} ms (presupuesto ${REDOS_BUDGET_MS} ms) — posible ReDoS`);
 });
 
 // ─── 9. truncateBody helper ─────────────────────────────────────────────────
