@@ -257,33 +257,3 @@ test('CA-8: kernel-scheduler.js NO importa os ni getSystemResourceUsage (presió
   // Debe INYECTAR la presión, nunca llamar a la función que la calcula.
   assert.ok(!/getSystemResourceUsage\s*\(/.test(src), 'no debe llamar getSystemResourceUsage');
 });
-
-// -----------------------------------------------------------------------------
-// #4807 — CA-2/CA-5: el providerOrder persistido fluye al scheduling.
-// -----------------------------------------------------------------------------
-
-const KERNEL_DEFAULT_ORDER = ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim'];
-
-test('#4807: resolveProviderChain aplica el orden elegido y hace fallback al default', () => {
-  assert.deepEqual(s.resolveProviderChain(['cerebras', 'anthropic']), ['cerebras', 'anthropic']);
-  assert.deepEqual(s.resolveProviderChain(undefined), KERNEL_DEFAULT_ORDER);
-  assert.deepEqual(s.resolveProviderChain([]), KERNEL_DEFAULT_ORDER);
-  // fail-closed: valor fuera de la allowlist ⇒ default (nunca fluye un provider inválido).
-  assert.deepEqual(s.resolveProviderChain(['anthropic', 'groq']), KERNEL_DEFAULT_ORDER);
-});
-
-test('#4807: allocateSlots expone providerChains con el orden persistido por producto', () => {
-  const { providerChains } = s.allocateSlots({
-    effectiveGlobalCap: 4,
-    pressure: { level: 'green' },
-    products: [
-      { productId: 'prod-a', active: true, agentCap: 2, minFloor: 0, priority: 0, demand: 2,
-        providerOrder: ['nvidia-nim', 'anthropic'] },
-      { productId: 'prod-b', active: true, agentCap: 2, minFloor: 0, priority: 1, demand: 2 },
-    ],
-  });
-  // El orden elegido == orden aplicado en el scheduling.
-  assert.deepEqual(providerChains['prod-a'], ['nvidia-nim', 'anthropic']);
-  // Sin providerOrder ⇒ default del kernel.
-  assert.deepEqual(providerChains['prod-b'], KERNEL_DEFAULT_ORDER);
-});

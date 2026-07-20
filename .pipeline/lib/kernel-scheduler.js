@@ -23,7 +23,7 @@
 // =============================================================================
 'use strict';
 
-const { isSafeId, deriveProviderOrder } = require('./project-descriptor');
+const { isSafeId } = require('./project-descriptor');
 
 // Causas de encolado (CA-6). Enum CERRADO — nunca texto libre en el evento.
 const ENQUEUE_REASONS = Object.freeze({
@@ -49,20 +49,6 @@ function toNonNegInt(value, fallback = 0) {
 }
 
 /**
- * Resuelve la cadena ORDENADA de providers de un producto (#4807 · CA-2/CA-5).
- * Delega en `deriveProviderOrder` (fuente única, fail-closed): el orden persistido
- * en `providerOrder` fluye al scheduling; ausente/vacío ⇒ orden default del kernel.
- * Se pasa la lista cruda a la derivación canónica — el scheduler NUNCA interpola
- * estos valores en un spawn/CLI (ya validados por enum del schema; defense-in-depth).
- *
- * @param {string[]|undefined} providerOrder  lista persistida (claves internas).
- * @returns {string[]} orden resuelto, siempre no vacío.
- */
-function resolveProviderChain(providerOrder) {
-  return deriveProviderOrder({ thresholds: { providerOrder } });
-}
-
-/**
  * Normaliza un producto de entrada a la forma interna del scheduler, clampeando
  * defensivamente el cap del producto al techo global (anti-DoS · CA-1).
  *
@@ -82,10 +68,7 @@ function normalizeProduct(p, globalCap) {
   // `want` = lo que el producto pediría si el global fuera infinito, acotado por su cap.
   const want = Math.min(demand, cap);
   const priority = Number.isFinite(Number(p && p.priority)) ? Number(p.priority) : 0;
-  // Cadena de providers del producto (#4807): el orden persistido fluye al
-  // scheduling; ausente ⇒ orden default del kernel (fail-closed).
-  const providerChain = resolveProviderChain(p && p.providerOrder);
-  return { productId, active, cap, demand, floor, want, priority, providerChain };
+  return { productId, active, cap, demand, floor, want, priority };
 }
 
 /**
@@ -171,13 +154,7 @@ function allocateSlots(input) {
     .sort(compareForAllocation);
 
   const allocations = {};
-  // Cadena de providers resuelta por producto (#4807): el orden elegido en el
-  // descriptor == orden aplicado en el scheduling del Pulpo del producto.
-  const providerChains = {};
-  for (const p of products) {
-    allocations[p.productId] = 0;
-    providerChains[p.productId] = p.providerChain;
-  }
+  for (const p of products) allocations[p.productId] = 0;
 
   let remaining = globalCap;
 
@@ -219,7 +196,7 @@ function allocateSlots(input) {
     }
   }
 
-  return { allocations, providerChains, events, slotsUsados, slotsGlobal: globalCap };
+  return { allocations, events, slotsUsados, slotsGlobal: globalCap };
 }
 
 /**
@@ -270,7 +247,6 @@ module.exports = {
   ENQUEUE_REASONS,
   DECISION_ENQUEUED,
   allocateSlots,
-  resolveProviderChain,
   buildEnqueueEvent,
   classifyEnqueueReason,
   clampProviderBudgetToGlobal,

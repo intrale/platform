@@ -56,21 +56,6 @@ const KERNEL_INTERFACES = Object.freeze(['backend', 'frontend', 'pipeline', 'gen
 const KERNEL_SKILLS = Object.freeze(['backend-dev', 'android-dev', 'web-dev', 'pipeline-dev', 'dev']);
 const GATE_MODES = Object.freeze(['enforce', 'dry-run']);
 
-// #4807 — Orden de providers. FUENTE ÚNICA del mapeo humano↔interno (evita drift):
-// el descriptor persiste SIEMPRE la clave interna. Deriva de la allowlist canónica
-// `VALID_PROVIDERS` filtrando `deterministic` (no se expone al operador); Groq fue
-// descontinuado (#3353) y NO se ofrece; NVIDIA NIM sí. El ORDEN de esta lista ES el
-// orden default del kernel (feedback_multi-provider-default-order, Groq removido).
-// `tier` (free/pago) es informativo, no editable (feedback_free-providers-rule).
-const PROVIDER_ORDER_OPTIONS = Object.freeze([
-    Object.freeze({ key: 'anthropic', label: 'Claude', tier: 'pago' }),
-    Object.freeze({ key: 'openai-codex', label: 'Codex', tier: 'pago' }),
-    Object.freeze({ key: 'gemini-google', label: 'Gemini', tier: 'free' }),
-    Object.freeze({ key: 'cerebras', label: 'Cerebras', tier: 'free' }),
-    Object.freeze({ key: 'nvidia-nim', label: 'NVIDIA NIM', tier: 'free' }),
-]);
-const KERNEL_DEFAULT_PROVIDER_ORDER = Object.freeze(PROVIDER_ORDER_OPTIONS.map((p) => p.key));
-
 // Los 5 pasos del wizard (dual-encoding: número + rótulo, nunca sólo color).
 const STEPS = Object.freeze([
     { id: 'identity', label: 'Identidad' },
@@ -141,25 +126,7 @@ function stepCapabilities() {
       <div class="ow-note">Los skills se resuelven contra la allowlist fija del kernel — un skill fuera de ella se rechaza.</div>
       ${selectField('Interface', 'ow-cap-interface', KERNEL_INTERFACES)}
       ${field('Skills', 'ow-cap-skills', { placeholder: 'backend-dev', hint: `permitidos: ${KERNEL_SKILLS.join(', ')} (coma).` })}
-      ${providerOrderControl()}
     </fieldset>`;
-}
-
-// #4807 — Control de orden de providers (reorden accesible por teclado, no texto
-// libre → cierra el vector de inyección). Patrón "activos + disponibles" con
-// `uniqueItems`. El cuerpo de las listas lo renderiza el client script desde el
-// estado `OW_PROVIDERS`; el SSR sólo deja el contenedor + copy. La validación
-// autoritativa (enum + uniqueItems) es del backend (Ajv), no de la UI.
-function providerOrderControl() {
-    return `<div class="ow-field ow-providers" role="group" aria-labelledby="ow-providers-label">
-      <span class="ow-label" id="ow-providers-label">Orden de providers</span>
-      <span class="ow-hint">Opcional. Sin cambios se usa el orden default del kernel. Reordená con ↑/↓; quitá y agregá desde «Disponibles». El descriptor persiste las claves internas.</span>
-      <ol class="ow-prov-list" id="ow-prov-active" aria-label="Providers activos, en orden de preferencia"></ol>
-      <div class="ow-prov-avail-wrap">
-        <span class="ow-label ow-prov-avail-label">Disponibles</span>
-        <ul class="ow-prov-list ow-prov-avail" id="ow-prov-available" aria-label="Providers disponibles para agregar"></ul>
-      </div>
-    </div>`;
 }
 
 function stepAuthority() {
@@ -203,23 +170,6 @@ function onboardingWizardStyle() {
 .ow-result-err{display:block;color:#fca5a5;background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.3)}
 .ow-result ul{margin:6px 0 0;padding-left:18px}
 .ow-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-.ow-providers{gap:6px}
-.ow-prov-list{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}
-.ow-prov-avail{flex-direction:row;flex-wrap:wrap}
-.ow-prov-avail-wrap{margin-top:8px}
-.ow-prov-avail-label{margin-bottom:4px}
-.ow-prov-row{display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.03);border:1px solid var(--in-border,rgba(255,255,255,.1));border-radius:8px;padding:6px 9px}
-.ow-prov-pos{font-size:10px;font-weight:800;color:var(--in-fg-soft,#5B6376);min-width:16px;text-align:center}
-.ow-prov-name{font-size:12.5px;font-weight:700;color:var(--in-fg,#e6edf3)}
-.ow-prov-key{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;color:#9ff0e6;background:rgba(45,212,191,.12);border:1px solid rgba(45,212,191,.3);border-radius:6px;padding:1px 6px}
-.ow-prov-tier{font-size:9.5px;font-weight:800;text-transform:uppercase;letter-spacing:.03em;border-radius:999px;padding:1px 7px}
-.ow-prov-tier-pago{color:#fcd9a0;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.32)}
-.ow-prov-tier-free{color:#9be9a8;background:rgba(63,185,80,.12);border:1px solid rgba(63,185,80,.32)}
-.ow-prov-actions{display:flex;gap:4px;margin-left:auto}
-.ow-prov-btn{display:inline-flex;align-items:center;justify-content:center;min-width:32px;min-height:32px;font-size:13px;font-weight:800;color:var(--in-fg,#e6edf3);background:rgba(255,255,255,.05);border:1px solid var(--in-border,rgba(255,255,255,.14));border-radius:7px;cursor:pointer}
-.ow-prov-btn:focus-visible{outline:2px solid var(--brand-cyan,#00D6FF);outline-offset:1px}
-.ow-prov-btn:disabled{opacity:.4;cursor:not-allowed}
-.ow-prov-add{color:#001b22;background:var(--brand-cyan,#00D6FF);border-color:var(--brand-cyan,#00D6FF);padding:0 10px}
 </style>`;
 }
 
@@ -259,61 +209,8 @@ function renderOnboardingWizardClientScript() {
     return `
 var OW_STEP = 0;
 var OW_MAX = 5;
-// #4807 — Metadata de providers (humano↔interno + tier). Fuente única server-side;
-// el estado OW_PROVIDERS arranca en el orden default del kernel.
-var OW_PROVIDER_META = ${JSON.stringify(PROVIDER_ORDER_OPTIONS)};
-var OW_PROVIDER_KEYS = ${JSON.stringify(KERNEL_DEFAULT_PROVIDER_ORDER)};
-var OW_PROVIDERS = OW_PROVIDER_KEYS.slice();
 function owVal(id){ var el = document.getElementById(id); return el ? String(el.value || '').trim() : ''; }
 function owList(id){ return owVal(id).split(',').map(function(s){ return s.trim(); }).filter(Boolean); }
-function owProvMeta(key){ for(var i=0;i<OW_PROVIDER_META.length;i++){ if(OW_PROVIDER_META[i].key===key) return OW_PROVIDER_META[i]; } return null; }
-// Renderiza la lista de activos (con ↑/↓ accesibles + Quitar) y los disponibles (+ Agregar).
-function owRenderProviders(){
-  var active = document.getElementById('ow-prov-active');
-  var avail = document.getElementById('ow-prov-available');
-  if(!active || !avail) return;
-  var total = OW_PROVIDERS.length;
-  active.innerHTML = OW_PROVIDERS.map(function(key, idx){
-    var m = owProvMeta(key); if(!m) return '';
-    var pos = idx + 1;
-    var upDis = idx === 0 ? ' disabled' : '';
-    var downDis = idx === total - 1 ? ' disabled' : '';
-    var tierCls = m.tier === 'pago' ? 'ow-prov-tier-pago' : 'ow-prov-tier-free';
-    return '<li class="ow-prov-row" data-key="' + owEsc(key) + '">'
-      + '<span class="ow-prov-pos" aria-hidden="true">' + pos + '</span>'
-      + '<span class="ow-prov-name">' + owEsc(m.label) + '</span>'
-      + '<span class="ow-prov-key">' + owEsc(key) + '</span>'
-      + '<span class="ow-prov-tier ' + tierCls + '">' + owEsc(m.tier) + '</span>'
-      + '<span class="ow-prov-actions">'
-      + '<button type="button" class="ow-prov-btn" onclick="owProvMove(\\'' + owEsc(key) + '\\',-1)" aria-label="Subir ' + owEsc(m.label) + ', posición ' + pos + ' de ' + total + '"' + upDis + '>↑</button>'
-      + '<button type="button" class="ow-prov-btn" onclick="owProvMove(\\'' + owEsc(key) + '\\',1)" aria-label="Bajar ' + owEsc(m.label) + ', posición ' + pos + ' de ' + total + '"' + downDis + '>↓</button>'
-      + '<button type="button" class="ow-prov-btn" onclick="owProvRemove(\\'' + owEsc(key) + '\\')" aria-label="Quitar ' + owEsc(m.label) + '">✕</button>'
-      + '</span></li>';
-  }).join('');
-  var availKeys = OW_PROVIDER_META.filter(function(m){ return OW_PROVIDERS.indexOf(m.key) === -1; });
-  avail.innerHTML = availKeys.map(function(m){
-    return '<li class="ow-prov-row" data-key="' + owEsc(m.key) + '">'
-      + '<span class="ow-prov-name">' + owEsc(m.label) + '</span>'
-      + '<span class="ow-prov-key">' + owEsc(m.key) + '</span>'
-      + '<button type="button" class="ow-prov-btn ow-prov-add" onclick="owProvAdd(\\'' + owEsc(m.key) + '\\')" aria-label="Agregar ' + owEsc(m.label) + '">+ Agregar</button>'
-      + '</li>';
-  }).join('') || '<li class="ow-hint">Todos los providers están activos.</li>';
-}
-function owProvMove(key, delta){
-  var i = OW_PROVIDERS.indexOf(key); if(i === -1) return;
-  var j = i + delta; if(j < 0 || j >= OW_PROVIDERS.length) return;
-  var tmp = OW_PROVIDERS[i]; OW_PROVIDERS[i] = OW_PROVIDERS[j]; OW_PROVIDERS[j] = tmp;
-  owRenderProviders();
-}
-function owProvRemove(key){
-  var i = OW_PROVIDERS.indexOf(key); if(i === -1) return;
-  OW_PROVIDERS.splice(i, 1); owRenderProviders();
-}
-function owProvAdd(key){
-  if(!owProvMeta(key)) return;                 // sólo claves de la allowlist
-  if(OW_PROVIDERS.indexOf(key) !== -1) return; // uniqueItems
-  OW_PROVIDERS.push(key); owRenderProviders();
-}
 function owShowStep(n){
   OW_STEP = Math.max(0, Math.min(OW_MAX - 1, n));
   document.querySelectorAll('#ow-form fieldset.ow-section').forEach(function(f){
@@ -344,10 +241,6 @@ function owBuildDescriptor(){
   d.capabilities = [{ interface: owVal('ow-cap-interface') || 'backend', skills: owList('ow-cap-skills') }];
   d.authority = { signers: owList('ow-auth-signers'), gates: { gate2: owVal('ow-auth-gate2') || 'enforce' } };
   var backup = owVal('ow-auth-backup'); if(backup) d.authority.backup = backup;
-  // #4807 — Orden de providers (claves internas). Si el operador vació la lista,
-  // persistir el default explícito del kernel (nunca vacío).
-  var order = (OW_PROVIDERS && OW_PROVIDERS.length) ? OW_PROVIDERS.slice() : OW_PROVIDER_KEYS.slice();
-  d.thresholds = { providerOrder: order };
   return d;
 }
 function owRenderResult(ok, msg, errors){
@@ -383,7 +276,7 @@ async function owSubmit(){
   } catch(e){ owRenderResult(false, 'Error enviando el alta: ' + e.message); }
   finally { if(sub) sub.disabled = false; }
 }
-(function owInit(){ try { owShowStep(0); owRenderProviders(); } catch(e){} })();
+(function owInit(){ try { owShowStep(0); } catch(e){} })();
 `;
 }
 
@@ -418,6 +311,4 @@ module.exports = {
     KERNEL_INTERFACES,
     KERNEL_SKILLS,
     GATE_MODES,
-    PROVIDER_ORDER_OPTIONS,
-    KERNEL_DEFAULT_PROVIDER_ORDER,
 };
