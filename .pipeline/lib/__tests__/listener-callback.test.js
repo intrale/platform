@@ -45,9 +45,31 @@ function installFakeGate(result, onCall) {
     };
 }
 
+// #4802 — helpers reales de membresía de namespace del Commander (single source
+// of truth). Importados del módulo real para afirmar disjunción (CA-7) y usar la
+// misma lógica de ruteo en el router fake que en producción.
+const commanderHandler = require('../../../.claude/hooks/commander/callback-handler');
+
+/** Instala un router del Commander fake que usa los helpers REALES de membresía. */
+function installFakeCommanderRouter(onRoute, routeResult = true) {
+    const calls = [];
+    listener.deps.commanderRouter = {
+        isCommanderNamespace: commanderHandler.isCommanderNamespace,
+        isPrivilegedNamespace: commanderHandler.isPrivilegedNamespace,
+        routeCallback: async (data, id, msg, fromId) => {
+            calls.push({ data, id, msg, fromId });
+            if (onRoute) onRoute({ data, id, msg, fromId });
+            return routeResult;
+        },
+    };
+    return calls;
+}
+
 function resetDeps() {
     listener.deps.operatorGate = null;
+    listener.deps.commanderRouter = null;
     listener.deps.telegramRequest = async () => ({ ok: true });
+    delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
 }
 
 const CBQ = {
@@ -134,5 +156,128 @@ test('rechazo (expired) igual corta el spinner sin editar', async () => {
     assert.ok(methods.includes('answerCallbackQuery'));
     assert.ok(!methods.includes('editMessageText'));
     assert.ok(!methods.includes('editMessageReplyMarkup'));
+    resetDeps();
+});
+
+// =============================================================================
+// #4802 — Ruteo por namespace del Commander en handleCallbackQuery.
+// =============================================================================
+
+test('#4802 ruteo: create_all_proposals invoca routeCallback y NO operator-gate', async () => {
+    installFakeTransport();
+    let gateCalled = false;
+    installFakeGate({ ok: false, reason: 'unknown-id', editMessage: false, toast: 'Acción inválida o expirada' },
+        () => { gateCalled = true; });
+    const routed = installFakeCommanderRouter();
+
+    // create_all_proposals NO es privilegiado → no requiere allowlist.
+    await listener.handleCallbackQuery({ ...CBQ, data: 'create_all_proposals' });
+
+    assert.equal(routed.length, 1, 'routeCallback debe invocarse una vez');
+    assert.equal(routed[0].data, 'create_all_proposals');
+    assert.equal(gateCalled, false, 'operator-gate.handleSignature NO debe invocarse');
+    resetDeps();
+});
+
+test('#4802 ruteo: botones no privilegiados (reactivate:, show_detail) van al router', async () => {
+    installFakeTransport();
+    installFakeGate({ ok: false, toast: 'Acción inválida o expirada' });
+    const routed = installFakeCommanderRouter();
+
+    await listener.handleCallbackQuery({ ...CBQ, data: 'reactivate:4802' });
+    await listener.handleCallbackQuery({ ...CBQ, data: 'show_detail' });
+
+    assert.deepEqual(routed.map(r => r.data), ['reactivate:4802', 'show_detail']);
+    resetDeps();
+});
+
+test('#4802 disjunción: COMMANDER_NAMESPACES no solapa pc:/pcx: ni formato de firma (CA-7)', () => {
+    const { isCommanderNamespace, COMMANDER_NAMESPACES, PRIVILEGED_NAMESPACES } = commanderHandler;
+    // product-aware
+    assert.equal(isCommanderNamespace('pc:abc123'), false);
+    assert.equal(isCommanderNamespace('pcx:abc123'), false);
+    // formato de firma de operator-gate (id opaco tipo hex de 16 chars)
+    assert.equal(isCommanderNamespace('abcabcabcabcabca'), false);
+    assert.equal(isCommanderNamespace(''), false);
+    assert.equal(isCommanderNamespace(undefined), false);
+    // PRIVILEGED ⊂ COMMANDER
+    for (const p of PRIVILEGED_NAMESPACES) {
+        assert.ok(COMMANDER_NAMESPACES.includes(p), `privilegiado ${p} debe estar en COMMANDER_NAMESPACES`);
+    }
+    // los propios del Commander sí matchean
+    assert.ok(isCommanderNamespace('create_all_proposals'));
+    assert.ok(isCommanderNamespace('allow:req-1'));
+    assert.ok(isCommanderNamespace('pq_next'));
+    resetDeps();
+});
+
+test('#4802 authz: persist: (privilegiado) de from.id fuera del allowlist se rechaza fail-closed, NO invoca routeCallback (CA-6)', async () => {
+    const calls = installFakeTransport();
+    installFakeGate({ ok: false, toast: 'no debería llegar acá' });
+    const routed = installFakeCommanderRouter();
+    // allowlist = un id distinto al del callback
+    process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = '111222333';
+
+    await listener.handleCallbackQuery({ ...CBQ, data: 'persist:cGF0dGVybg', from: { id: 999, first_name: 'Intruso' } });
+
+    assert.equal(routed.length, 0, 'routeCallback NO debe invocarse para privilegiado no autorizado');
+    const answer = calls.find(c => c.method === 'answerCallbackQuery');
+    assert.ok(answer, 'debe cortar el spinner');
+    assert.match(answer.params.text, /Acción inválida o expirada/);
+    resetDeps();
+});
+
+test('#4802 authz: persist: de from.id AUTORIZADO sí invoca routeCallback', async () => {
+    installFakeTransport();
+    installFakeGate({ ok: false, toast: 'x' });
+    const routed = installFakeCommanderRouter();
+    process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = '111222333';
+
+    await listener.handleCallbackQuery({ ...CBQ, data: 'persist:cGF0dGVybg', from: { id: 111222333, first_name: 'Leo' } });
+
+    assert.equal(routed.length, 1, 'privilegiado autorizado debe rutear');
+    assert.equal(routed[0].fromId, 111222333, 'from.id se pasa a routeCallback');
+    resetDeps();
+});
+
+test('#4802 fail-closed: allowlist vacío rechaza TODO callback privilegiado (CA-6)', async () => {
+    const calls = installFakeTransport();
+    installFakeGate({ ok: false, toast: 'x' });
+    const routed = installFakeCommanderRouter();
+    // sin TELEGRAM_LEO_OPERATOR_CHAT_ID → allowlist vacío
+
+    await listener.handleCallbackQuery({ ...CBQ, data: 'relaunch_skill:builder', from: { id: 111222333 } });
+
+    assert.equal(routed.length, 0, 'allowlist vacío → ningún privilegiado rutea');
+    const answer = calls.find(c => c.method === 'answerCallbackQuery');
+    assert.match(answer.params.text, /Acción inválida o expirada/);
+    resetDeps();
+});
+
+test('#4802 fail-safe: callback desconocido cae a operator-gate (firma) sin romper (CA-4/CA-3)', async () => {
+    installFakeTransport();
+    let gateArgs = null;
+    installFakeGate({ ok: false, reason: 'unknown-id', editMessage: false, toast: 'Acción inválida o expirada' },
+        (args) => { gateArgs = args; });
+    installFakeCommanderRouter();
+
+    // 'abcabcabcabcabca' no es commander ni product → debe ir a operator-gate.
+    await listener.handleCallbackQuery(CBQ);
+
+    assert.ok(gateArgs, 'un callback no-commander sigue yendo a operator-gate (sin regresión de firma)');
+    assert.equal(gateArgs.callbackData, 'abcabcabcabcabca');
+    resetDeps();
+});
+
+test('#4802 router.routeCallback returns false → fail-safe toast', async () => {
+    const calls = installFakeTransport();
+    installFakeGate({ ok: false, toast: 'x' });
+    // routeResult=false simula chat.id mismatch dentro del router
+    installFakeCommanderRouter(null, false);
+
+    await listener.handleCallbackQuery({ ...CBQ, data: 'tts_listen' });
+
+    const answer = calls.find(c => c.method === 'answerCallbackQuery');
+    assert.match(answer.params.text, /Acción inválida o expirada/);
     resetDeps();
 });

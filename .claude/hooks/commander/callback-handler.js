@@ -547,9 +547,66 @@ async function handlePendingCallback(callbackData, callbackQueryId) {
     }
 }
 
+// ─── Namespaces del Commander (single source of truth, #4802) ─────────────────
+//
+// Whitelist ÚNICA de prefijos/exactos que pertenecen al Commander (botones inline
+// de propuestas, permisos, restart, sprint, reactivación, etc.). El listener
+// (`.pipeline/listener-telegram.js`) importa estas constantes para rutear por
+// prefijo SIN hardcodear la lista dos veces (CA-7). Antes de #4802 el listener
+// mandaba TODO callback no-`pc:`/`pcx:` a `operator-gate` (firma), y estos
+// callbacks caían al fail-safe "Acción inválida o expirada" porque `routeCallback`
+// estaba exportado pero nunca se invocaba.
+//
+// PRIVILEGED_NAMESPACES ⊂ COMMANDER_NAMESPACES: subconjunto que exige authz por
+// `from.id` (fail-closed) porque dispara acciones sensibles (persistir permisos,
+// restart, relanzar skill, lanzar sprint). El resto son idempotentes/consultivos.
+const COMMANDER_NAMESPACES = [
+    'create_all_proposals', 'create_proposal:', 'discard_proposal:',
+    'launch_sprint', 'view_sprint_plan',
+    'reactivate:', 'dismiss_expired:', 'reactivate_all',
+    'restart_retry', 'restart_log',
+    'relaunch_skill:',
+    'allow:', 'always:', 'deny:',
+    'persist:', 'dismiss:',
+    'ps_approve:', 'ps_ignore:', 'ps_never:',
+    'pq_',
+    'tts_listen', 'show_detail',
+];
+const PRIVILEGED_NAMESPACES = [
+    'launch_sprint',
+    'restart_retry', 'restart_log',
+    'relaunch_skill:',
+    'allow:', 'always:', 'deny:',
+    'persist:', 'dismiss:',
+    'pq_',
+];
+
+// Membresía por prefijo: los tokens que terminan en `:` o `_` matchean por
+// `startsWith`; el resto exige igualdad exacta (evita que `restart_log` matchee
+// `restart_logXYZ` inesperado, y que `launch_sprint` no matchee un exacto ajeno).
+function _matchesNamespace(data, namespaces) {
+    const d = typeof data === 'string' ? data : '';
+    return namespaces.some(p =>
+        (p.endsWith(':') || p.endsWith('_')) ? d.startsWith(p) : d === p);
+}
+
+function isCommanderNamespace(data) {
+    return _matchesNamespace(data, COMMANDER_NAMESPACES);
+}
+
+function isPrivilegedNamespace(data) {
+    return _matchesNamespace(data, PRIVILEGED_NAMESPACES);
+}
+
 // ─── Router principal de callbacks ───────────────────────────────────────────
 
-async function routeCallback(cbData, callbackQueryId, message) {
+// #4802 — `fromId` (id de Telegram del que tocó el botón) se agrega como 4to
+// parámetro para trazabilidad y defense-in-depth. La authz PRIMARIA (fail-closed
+// para prefijos privilegiados) la aplica el listener ANTES de invocar acá,
+// reusando la misma fuente de allowlist que `operator-gate` (no duplicar fuente).
+// Se mantiene el guard histórico de `chat.id`. Un `cbData` que no pertenezca al
+// Commander devuelve `false` para que el listener caiga al fail-safe.
+async function routeCallback(cbData, callbackQueryId, message, fromId) {
     const chatId = message && message.chat && message.chat.id;
     const messageId = message && message.message_id;
 
@@ -917,4 +974,9 @@ module.exports = {
     handleAutoPlanCallback,
     handlePendingCallback,
     persistPermissionFromActionData,
+    // #4802 — single source of truth de namespaces + helpers de membresía.
+    COMMANDER_NAMESPACES,
+    PRIVILEGED_NAMESPACES,
+    isCommanderNamespace,
+    isPrivilegedNamespace,
 };
