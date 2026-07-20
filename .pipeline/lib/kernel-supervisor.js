@@ -274,6 +274,9 @@ function resolveProjectId(product) {
  * @param {boolean}  [deps.hydrate]            si carga el descriptor y deriva routing/concurrencia/
  *                                             particiones al boot (default: true).
  * @param {function} [deps.onAlert]            callback de alerta fail-closed (A09).
+ * @param {number}   [deps.maxConcurrentInstances] cota de instancias que `bootProducts()`
+ *                                             puede spawnear (CA-SEC-4). Out-of-band de
+ *                                             config; `null`/ausente ⇒ sin cota.
  * @param {function} [deps.now]                fuente de tiempo (ms).
  * @returns {object} API del supervisor.
  */
@@ -307,6 +310,17 @@ function createKernelSupervisor(deps = {}) {
     ? deps.breakerCooldownMs : BREAKER_COOLDOWN_MS;
   const breakerRecoveryMs = Number.isFinite(deps.breakerRecoveryMs) && deps.breakerRecoveryMs > 0
     ? deps.breakerRecoveryMs : BREAKER_RECOVERY_MS;
+
+  // #4822 · CA-SEC-4 (REQ-SEC-BOOT-5, A04/DoS) — cota de instancias concurrentes
+  // que `bootProducts()` puede spawnear al boot durable. Se lee OUT-OF-BAND de
+  // `deps` (el caller la deriva de `config.yaml`, NUNCA de datos del producto —
+  // CA-SEC-1) y se congela a una `const` inmutable del closure. `null` ⇒ sin cota
+  // (comportamiento histórico: los tests y callers que no la pasan no cambian).
+  // Un valor no-entero/no-positivo cae fail-safe a `null` (sin cota) en el
+  // supervisor; el techo conservador por default lo aporta el caller (config).
+  const maxConcurrentInstances = Number.isInteger(deps.maxConcurrentInstances) && deps.maxConcurrentInstances > 0
+    ? deps.maxConcurrentInstances
+    : null;
 
   // Mapa PRIVADO del closure: projectId → instanceContext. Jamás expuesto por
   // referencia; jamás a nivel módulo. Dos supervisores distintos tienen mapas
@@ -435,6 +449,16 @@ function createKernelSupervisor(deps = {}) {
       if (!isSafeId(projectId)) {                 // fail-closed antes de usar en path/spawn
         skipped.push({ projectId: projectId == null ? null : String(projectId), reason: 'projectId inseguro' });
         onAlert({ projectId: null, stage: 'isSafeId', errors: [{ detail: `projectId inseguro descartado: ${String(projectId)}` }] });
+        continue;
+      }
+      // #4822 · CA-SEC-4 — techo de instancias concurrentes. Un catálogo con
+      // N>cap activos NO spawnea sin freno (RAM crítica del host): al alcanzar el
+      // cap, el resto se saltea fail-closed con auditoría por `onAlert` (A09) y
+      // SIN abortar el boot (se sigue clasificando/salteando los restantes).
+      // `projectId` ya pasó `isSafeId`, seguro para loguear (no envenena el audit).
+      if (maxConcurrentInstances != null && spawned.length >= maxConcurrentInstances) {
+        skipped.push({ projectId, reason: 'cap de instancias alcanzado' });
+        onAlert({ projectId, stage: 'cap', errors: [{ detail: `boot durable alcanzó el cap de ${maxConcurrentInstances} instancias` }] });
         continue;
       }
       const ctx = spawnInstance(p);

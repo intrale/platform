@@ -1389,6 +1389,16 @@ kernel:
   tableName: ""      # requerido para el driver real (normalizeConfig lo exige)
   region: ""         # región AWS destino (vacío mientras durable:false)
   durable: false     # default OFF -- todo sigue en FS, cero llamadas AWS
+  # #4822 (split 3/3 de #4804) — Boot durable del supervisor multi-producto.
+  # Cota de instancias concurrentes que `bootProducts()` puede spawnear al boot
+  # (CA-SEC-4 / REQ-SEC-BOOT-5, A04/DoS). Default CONSERVADOR: la RAM del host es
+  # crítica. Se lee out-of-band (CA-SEC-1), nunca de datos del producto. Un
+  # catálogo con N>cap productos activos NO spawnea procesos sin techo.
+  max_concurrent_instances: 2
+  # projectId del CONTROL-PLANE que posee el catálogo global (`listProducts`).
+  # Derivado de config (CA-SEC-1), NUNCA de datos del producto. Debe ser isSafeId
+  # (^[a-z0-9][a-z0-9-]{1,63}$). Sólo se usa con `durable: true`.
+  control_plane_project_id: "control-plane"
 
 # =============================================================================
 # #3613 — Bootstrap del skill `architect` (paraguas #3559, spike #3507)

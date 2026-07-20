@@ -17619,6 +17619,56 @@ async function brazoPartialPauseDeps(config) {
   }
 }
 
+// #4822 — Builder del store de catálogo DURABLE para el boot multi-producto.
+// Sólo se invoca con `kernel.durable: true`. Construye el driver DynamoDB real de
+// producción (#4820) y liga un `createKernelStore` al contexto del CONTROL-PLANE
+// que posee el catálogo global (`listProducts`). El `contextProjectId` se lee
+// OUT-OF-BAND de config (CA-SEC-1) — NUNCA de datos del producto — y se valida
+// fail-closed con `isSafeId` antes de usarse como PK/namespace.
+function buildDurableCatalogStore(kernelCfg) {
+  const { createKernelStore } = require('./lib/kernel-store');
+  const { createAwsCliRunner, createAwsCliDynamoDriver } = require('./lib/provisioner-infra');
+  const { CREDENTIAL_SCOPES } = require('./lib/build-child-env');
+  const { isSafeId } = require('./lib/project-descriptor');
+  const controlPlaneId = (kernelCfg && typeof kernelCfg.control_plane_project_id === 'string'
+    && kernelCfg.control_plane_project_id)
+    ? kernelCfg.control_plane_project_id
+    : 'control-plane';
+  if (!isSafeId(controlPlaneId)) {
+    throw new Error(`control_plane_project_id inseguro para el catálogo durable: ${String(controlPlaneId)}`);
+  }
+  // Env del scope `aws` — SÓLO las vars allowlisted (mismo criterio que
+  // kernel-provision.js), nunca process.env crudo ni este archivo público. La
+  // región de config completa AWS_REGION si el ambiente no la trae. `createAwsCliRunner`
+  // falla fail-closed si faltan credenciales (SEC-A02), antes de tocar AWS.
+  const awsEnv = {};
+  for (const name of (CREDENTIAL_SCOPES && CREDENTIAL_SCOPES.aws) || []) {
+    const val = process.env[name];
+    if (val != null && val !== '') awsEnv[name] = val;
+  }
+  if (kernelCfg.region && !awsEnv.AWS_REGION) awsEnv.AWS_REGION = kernelCfg.region;
+  const { run } = createAwsCliRunner(awsEnv);
+  const driver = createAwsCliDynamoDriver({ run });
+  return createKernelStore({
+    contextProjectId: controlPlaneId,
+    // tableName/region vienen de config.kernel (#4820); credenciales, del scope
+    // `aws` del ambiente, nunca de este archivo público.
+    config: { kernel: { tableName: kernelCfg.tableName, region: kernelCfg.region } },
+    driver,
+  });
+}
+
+// #4822 — Spawn AISLADO por instancia de producto (A04). Recibe el `instanceContext`
+// namespaceado del supervisor (store propio, estado efímero propio) y arranca el
+// pipeline de ese producto. El andamiaje de EJECUCIÓN por instancia se completa en
+// un split posterior; acá se registra el arranque de la instancia de forma
+// idempotente (el supervisor garantiza exactamente una instancia por projectId) y
+// se devuelve un handle liviano ligado a su `projectId`.
+function spawnPipelineForProduct(ctx) {
+  log('pulpo', `[kernel-durable] instancia booteada para producto "${ctx.projectId}"`);
+  return { projectId: ctx.projectId, booted: true };
+}
+
 async function mainLoop() {
   log('pulpo', `Pulpo V2 iniciado — poll cada ${loadConfig().timeouts?.poll_interval_seconds || 30}s`);
   log('pulpo', `Pipeline: ${PIPELINE}`);
@@ -17734,6 +17784,26 @@ async function mainLoop() {
     }
   } catch (e) {
     log('pulpo', `WARN [wave-recovery] boot hook falló: ${e.message}`);
+  }
+
+  // #4822 — Boot durable del supervisor multi-producto (Split 3/3 de #4804).
+  // Gateado por `kernel.durable` (fail-closed: flag ausente/false ⇒ NO corre —
+  // CA-6/CA-SEC-1). Carga los productos `active` del store durable y el supervisor
+  // instancia un pipeline por producto (respetando el cap de instancias — CA-SEC-4).
+  // Best-effort, mismo patrón que el boot-hook de wave-recovery de arriba: un fallo
+  // del boot durable (driver DynamoDB caído, catálogo corrupto) NUNCA tumba el
+  // arranque del pulpo — se loguea WARN y el pipeline sigue operando.
+  try {
+    const kernelDurableBoot = require('./lib/kernel-durable-boot');
+    await kernelDurableBoot.runDurableBoot({
+      config: loadConfig() || {},
+      buildCatalogStore: buildDurableCatalogStore,
+      spawn: spawnPipelineForProduct,
+      log: (m) => log('pulpo', m),
+    });
+    // ran:false en modo FS (flag OFF) — sin ruido en el caso normal (CA-6).
+  } catch (e) {
+    log('pulpo', `WARN [kernel-durable] boot durable falló (no bloquea el arranque): ${e.message}`);
   }
 
   // #4370 CA-4/SEC-3 — verificación de integridad del estado al arrancar.

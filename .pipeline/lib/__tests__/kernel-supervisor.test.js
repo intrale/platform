@@ -527,6 +527,78 @@ test('CA-4 · getInstance/restartInstance fail-closed sobre id inseguro', () => 
 });
 
 // -----------------------------------------------------------------------------
+// CA-SEC-4 · Cota de instancias concurrentes al boot durable (REQ-SEC-BOOT-5)
+// -----------------------------------------------------------------------------
+
+test('CA-SEC-4 · bootProducts respeta el cap con catálogo de N>cap activos', async () => {
+  const alerts = [];
+  // 5 activos, cap = 2 ⇒ exactamente 2 spawns, 3 salteados por cap.
+  const catalog = [
+    { productId: 'p1', projectId: 'p1', name: 'P1', status: 'active' },
+    { productId: 'p2', projectId: 'p2', name: 'P2', status: 'active' },
+    { productId: 'p3', projectId: 'p3', name: 'P3', status: 'active' },
+    { productId: 'p4', projectId: 'p4', name: 'P4', status: 'active' },
+    { productId: 'p5', projectId: 'p5', name: 'P5', status: 'active' },
+  ];
+  const calls = [];
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore(catalog),
+    storeFactory: recordingStoreFactory(calls),
+    maxConcurrentInstances: 2,
+    onAlert: (a) => alerts.push(a),
+    hydrate: false,
+  });
+
+  const res = await supervisor.bootProducts();
+
+  assert.equal(res.spawned.length, 2, 'exactamente `cap` instancias spawneadas');
+  assert.deepEqual(res.spawned, ['p1', 'p2'], 'se spawnean los primeros hasta el cap');
+  assert.equal(supervisor.listInstances().length, 2, 'sólo 2 instancias vivas');
+  assert.equal(calls.length, 2, 'sólo 2 stores construidos (no se instancian los salteados)');
+
+  const capSkips = res.skipped.filter((s) => s.reason === 'cap de instancias alcanzado');
+  assert.deepEqual(capSkips.map((s) => s.projectId), ['p3', 'p4', 'p5'], 'el resto salteado por cap');
+  // A09: cada descarte por cap se audita por onAlert con su projectId de origen.
+  const capAlerts = alerts.filter((a) => a.stage === 'cap');
+  assert.equal(capAlerts.length, 3, 'una alerta por cada producto salteado por cap');
+  assert.deepEqual(capAlerts.map((a) => a.projectId), ['p3', 'p4', 'p5']);
+  // No aborta: los salteados por cap NO quedan instanciados.
+  assert.equal(supervisor.getInstance('p5'), null, 'producto por encima del cap no instanciado');
+});
+
+test('CA-SEC-4 · cap ausente/null ⇒ sin cota (comportamiento histórico intacto)', async () => {
+  const catalog = [
+    { productId: 'p1', projectId: 'p1', name: 'P1', status: 'active' },
+    { productId: 'p2', projectId: 'p2', name: 'P2', status: 'active' },
+    { productId: 'p3', projectId: 'p3', name: 'P3', status: 'active' },
+  ];
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore(catalog),
+    storeFactory: recordingStoreFactory([]),
+    hydrate: false,
+  });
+  const res = await supervisor.bootProducts();
+  assert.deepEqual(res.spawned.sort(), ['p1', 'p2', 'p3'], 'sin cap todos los activos se instancian');
+});
+
+test('CA-SEC-4 · cap no-entero/no-positivo cae fail-safe a sin cota', async () => {
+  const catalog = [
+    { productId: 'p1', projectId: 'p1', name: 'P1', status: 'active' },
+    { productId: 'p2', projectId: 'p2', name: 'P2', status: 'active' },
+  ];
+  for (const bad of [0, -1, 1.5, 'dos', NaN, null]) {
+    const supervisor = createKernelSupervisor({
+      catalogStore: fakeCatalogStore(catalog),
+      storeFactory: recordingStoreFactory([]),
+      maxConcurrentInstances: bad,
+      hydrate: false,
+    });
+    const res = await supervisor.bootProducts();
+    assert.equal(res.spawned.length, 2, `cap inválido (${String(bad)}) ⇒ sin cota`);
+  }
+});
+
+// -----------------------------------------------------------------------------
 // Reuso de derivers + hidratación aislada (fault isolation en boot)
 // -----------------------------------------------------------------------------
 
