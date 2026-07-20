@@ -41,6 +41,8 @@ const auditLog = require('./audit-log');
 const redact = require('./redact');
 const { isSafeId } = require('./project-descriptor');
 const bootstrap = require('./project-bootstrap');
+const repoProbe = require('./repo-probe');
+const productCatalog = require('./product-catalog');
 
 const PIPELINE_DIR = path.join(trace.REPO_ROOT, '.pipeline');
 
@@ -48,6 +50,9 @@ const PIPELINE_DIR = path.join(trace.REPO_ROOT, '.pipeline');
 // acá; NUNCA muta `descriptors/registry.json` ni el estado de instancias.
 const DEFAULT_QUEUE_DIR = path.join(PIPELINE_DIR, 'product-control', 'pendiente');
 const DEFAULT_AUDIT_FILE = path.join(PIPELINE_DIR, 'audit', 'product-control-requests.jsonl');
+// Fuente del catálogo para la unicidad UX (no-autoritativa). Misma que lee
+// `product-catalog.listProducts` y la pestaña Productos (#4801 · CA-1).
+const DEFAULT_DESCRIPTORS_DIR = path.join(PIPELINE_DIR, 'descriptors');
 
 // A03 — allowlist cerrada de acciones de control de ciclo de vida. Congelada.
 const CONTROL_ACTIONS = Object.freeze(['start', 'pause']);
@@ -124,7 +129,13 @@ function enqueueOnboard(args = {}, deps = {}) {
         boot = runBootstrap({
             descriptor,
             mode: 'dry-run',
-            deps: Object.assign({ kernelGateFloor: 'enforce' }, deps.bootstrapDeps || {}),
+            // CA-2 · `probeAccess` cableado (least-privilege) para la prueba de
+            // alcance real de repos allowlisted; overridable por tests vía
+            // `deps.bootstrapDeps.probeAccess`.
+            deps: Object.assign(
+                { kernelGateFloor: 'enforce', probeAccess: repoProbe.probeAccess },
+                deps.bootstrapDeps || {},
+            ),
         });
     } catch (e) {
         return { ok: false, status: 500, msg: `validación de bootstrap falló: ${e.message}` };
@@ -146,6 +157,18 @@ function enqueueOnboard(args = {}, deps = {}) {
     if (!isSafeId(projectId)) {
         return { ok: false, status: 400, msg: 'projectId inseguro para namespacing' };
     }
+
+    // CA-1 · Unicidad UX NO-autoritativa: mejora el mensaje antes de encolar.
+    // Fail-open si el catálogo no lee (ventana TOCTOU conocida — la unicidad
+    // autoritativa la impone el drenador del kernel al registrar el descriptor).
+    try {
+        const descriptorsDir = deps.descriptorsDir || DEFAULT_DESCRIPTORS_DIR;
+        const listProducts = typeof deps.listProducts === 'function' ? deps.listProducts : productCatalog.listProducts;
+        const existing = listProducts(descriptorsDir);
+        if (Array.isArray(existing) && existing.some(p => p && p.projectId === projectId)) {
+            return { ok: false, status: 409, projectId, msg: `ya existe un producto con el identificador "${projectId}"; elegí otro` };
+        }
+    } catch { /* fail-open: la unicidad autoritativa la impone el kernel */ }
 
     const now = typeof deps.now === 'function' ? deps.now : () => Date.now();
     const ts = now();
@@ -232,4 +255,5 @@ module.exports = {
     DEFAULT_PRODUCT_ID,
     DEFAULT_QUEUE_DIR,
     DEFAULT_AUDIT_FILE,
+    DEFAULT_DESCRIPTORS_DIR,
 };

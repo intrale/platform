@@ -12195,8 +12195,11 @@ const server = http.createServer((req, res) => {
         res.writeHead(out.status || (out.ok ? 202 : 400), { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify(out));
       } catch (e) {
+        // CA-4 · info-disclosure: no propagar `e.message` (stack/paths/parser) al
+        // cliente. Mensaje genérico; el detalle real queda sólo en el log server-side.
+        log(`Action: product onboard (error) ${e && e.message ? e.message : e}`);
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, msg: e.message }));
+        res.end(JSON.stringify({ ok: false, msg: 'no se pudo procesar el alta (payload inválido)' }));
       }
     });
     return;
