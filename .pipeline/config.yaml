@@ -923,6 +923,28 @@ pipeline:
   audit_retention_days: 90
 
 # =============================================================================
+# #4821 (Split de #4804) — Cutover a persistencia durable del alta de producto.
+#
+# `kernel.durable` es el FLAG DE CUTOVER ÚNICO (CA-6): gatea a la vez la ESCRITURA
+# del alta (`project-bootstrap` → `store.putProduct`) y la LECTURA del catálogo
+# (`product-catalog` → `store.listProducts`). Con `false` (default) el pipeline
+# usa EXACTAMENTE el camino FS actual (registry.json + descriptors/*.json) — nada
+# cambia. Con `true`, lectura Y escritura van al store durable (DynamoDB) para la
+# misma fuente de verdad; nunca coexisten FS-read + DynamoDB-write.
+#
+# El flag se lee UNA SOLA VEZ por operación al inicio del flujo (no se re-consulta
+# mid-flow) para evitar split-brain FS↔DynamoDB.
+#
+# NO activar `durable: true` hasta que #4820 esté mergeado a `main` (driver de
+# producción + tabla provisionada) y se haya corrido `kernel-store-migrate.js`
+# (dry-run → apply) para migrar el estado FS previo. `tableName`/`region` son
+# placeholders acá; los valores reales los entrega #4820.
+kernel:
+  durable: false        # cutover único — default OFF (FS sin cambios)
+  tableName: null       # placeholder — lo define #4820 (naming por config, nunca hardcode)
+  region: null          # placeholder — lo define #4820
+
+# =============================================================================
 # #4309 — Ejecución del fallback in-flight (revive #3578)
 #
 # Cuando un agente arranca su turno con Anthropic y Anthropic se cuelga DURANTE
