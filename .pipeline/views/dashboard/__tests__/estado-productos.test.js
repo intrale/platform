@@ -208,3 +208,60 @@ test('isSafeProductId espeja la validación del kernel', () => {
         assert.equal(isSafeProductId(bad), false);
     }
 });
+
+// -----------------------------------------------------------------------------
+// #4805 — botón "Activar" (onboarding→activo) + habilitar "Arrancar" tras activar.
+// -----------------------------------------------------------------------------
+
+test('#4805 CA-1: botón Activar presente y HABILITADO sólo en onboarding', () => {
+    const state = { 'acme-store': { state: 'onboarding', metrics: {} } };
+    const html = renderEstadoProductosSsr({
+        products: [{ projectId: 'acme-store', name: 'ACME', status: 'onboarding' }],
+        productState: state,
+    });
+    assert.ok(html.includes('data-action="activate"'), 'botón activar presente');
+    assert.ok(html.includes('⏻'), 'glyph de encendido (dual-encoding, no sólo color)');
+    // El botón Activar NO está disabled en onboarding: aislamos su tag.
+    const seg = html.split('data-action="activate"')[0].split('<button').pop();
+    assert.ok(!/disabled/.test(seg), 'Activar habilitado en onboarding');
+});
+
+test('#4805 CA-2/CA-3: botón Activar DESHABILITADO fuera de onboarding', () => {
+    for (const st of ['active', 'paused', 'inactive', 'unknown']) {
+        const html = renderEstadoProductosSsr({
+            products: [{ projectId: 'acme-store', name: 'ACME', status: st === 'unknown' ? 'active' : st }],
+            productState: { 'acme-store': { state: st === 'unknown' ? undefined : st, metrics: {} } },
+        });
+        const seg = html.split('data-action="activate"')[0].split('<button').pop();
+        assert.ok(/disabled/.test(seg), `Activar deshabilitado en estado ${st}`);
+    }
+});
+
+test('#4805 CA-4: Arrancar habilitado para producto activo sin ola en curso (unknown)', () => {
+    // Producto con status active pero sin estado de runtime todavía ⇒ 'unknown'.
+    const html = renderEstadoProductosSsr({
+        products: [{ projectId: 'acme-store', name: 'ACME', status: 'active' }],
+        productState: {},
+    });
+    const startSeg = html.split('data-action="start"')[0].split('<button').pop();
+    assert.ok(!/disabled/.test(startSeg), 'Arrancar habilitado para activo-sin-ola');
+});
+
+test('#4805 CA-4: "Activar" NO dispara confirm destructivo; "Arrancar" SÍ', () => {
+    const script = view.renderEstadoProductosClientScript();
+    // El client script postea al endpoint dedicado de activación.
+    assert.ok(script.includes('/api/product/'), 'usa POST a /api/product/<action>');
+    // start/pause requieren confirm; activate no.
+    assert.ok(script.includes('EP_NEEDS_CONFIRM'));
+    assert.ok(/start:\s*true/.test(script) && /pause:\s*true/.test(script), 'start/pause confirman');
+    assert.ok(!/activate:\s*true/.test(script), 'activate NO exige confirm destructivo');
+});
+
+test('#4805 SSR: el botón Activar escapa el productId en atributos (anti-XSS)', () => {
+    const html = renderEstadoProductosSsr({
+        products: [{ projectId: 'acme-store', name: '"><img src=x>', status: 'onboarding' }],
+        productState: { 'acme-store': { state: 'onboarding' } },
+    });
+    assert.ok(!html.includes('<img src=x>'), 'el nombre malicioso no se refleja crudo');
+    assert.ok(html.includes('aria-label="Activar el producto acme-store"'));
+});

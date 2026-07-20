@@ -225,9 +225,71 @@ function enqueueControl(args = {}, deps = {}) {
     };
 }
 
+/**
+ * Encola la ACTIVACIÓN de un producto (onboarding→active · #4805 · CA-1). A
+ * diferencia de `start`/`pause` (control efímero de instancia), `activate` cambia
+ * el `status` DURABLE del descriptor, por eso es una acción dedicada: el kernel,
+ * al drenar el pedido, invoca `project-descriptor.transitionStatus` (writer
+ * atómico dueño del estado, anti-TOCTOU) para persistir el flip. El dashboard NO
+ * muta el descriptor por su cuenta (invariante "el adaptador pide, el kernel
+ * ejecuta"); acá sólo se valida el id fail-closed, se audita y se encola.
+ *
+ * Seguridad:
+ *   - SEC-1b/A01: `isSafeId(projectId)` fail-closed ANTES de construir el path del
+ *     pedido (anti path-traversal/IDOR). La autorización real la impone el kernel
+ *     contra el contexto de la instancia al drenar — nunca desde el id en banda.
+ *   - SEC-7b/A09: audit hash-chained redactado (`auditAndEnqueue`) con
+ *     `action=activate` — non-repudio de quién/qué/cuándo/productId.
+ *   - SR-A04 (anti-replay): la idempotencia dura la impone la máquina de estados
+ *     del descriptor (`onboarding→active` rechaza `active→active` server-side); el
+ *     endpoint suma el nonce single-use del CSRF/action-token del dashboard.
+ *
+ * @param {object} args
+ * @param {string} [args.projectId]     — id del producto (validado isSafeId). Sin
+ *                                         valor ⇒ producto único (Intrale · CA-5.1).
+ * @param {string} [args.actor]         — identidad del operador (audit).
+ * @param {string} [args.remoteAddress] — ip de origen (audit).
+ * @param {object} [deps]               — { queueDir, auditFile, fsImpl, now, auditImpl }
+ * @returns {{ok:boolean, status:number, action?:string, projectId?:string, request_path?:string, msg?:string}}
+ */
+function enqueueActivate(args = {}, deps = {}) {
+    // CA-5.1 — sin productId ⇒ producto único; con productId ⇒ debe ser seguro.
+    const rawId = (args.projectId == null || args.projectId === '') ? DEFAULT_PRODUCT_ID : args.projectId;
+    if (!isSafeId(rawId)) {
+        // SEC-1b — id inseguro/inexistente ⇒ fail-closed, sin encolar ni enumerar.
+        return { ok: false, status: 400, msg: 'projectId inseguro o inexistente' };
+    }
+    const projectId = rawId;
+
+    const now = typeof deps.now === 'function' ? deps.now : () => Date.now();
+    const ts = now();
+    const record = {
+        type: 'product_control_request',
+        action: 'activate',
+        projectId,
+        actor: args.actor ? String(args.actor) : 'dashboard-operator',
+        remote_address: args.remoteAddress ? String(args.remoteAddress) : null,
+        source: 'dashboard',
+        created_at: ts,
+    };
+
+    const res = auditAndEnqueue(record, `activate-${projectId}-${ts}`, deps);
+    if (!res.ok) return res;
+    return {
+        ok: true,
+        status: 202,
+        action: 'activate',
+        projectId,
+        request_path: res.request_path,
+        audit_persisted: res.audit_persisted,
+        msg: `activación de "${projectId}" encolada; el kernel persistirá la transición onboarding→active (validación de descriptor fail-closed) y lo sumará al supervisor`,
+    };
+}
+
 module.exports = {
     enqueueOnboard,
     enqueueControl,
+    enqueueActivate,
     CONTROL_ACTIONS,
     DEFAULT_PRODUCT_ID,
     DEFAULT_QUEUE_DIR,
