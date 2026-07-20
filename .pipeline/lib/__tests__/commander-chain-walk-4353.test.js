@@ -24,6 +24,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 
+// Aísla del kill-switch operacional live (`provider-disabled.json` global): sin
+// esto, un provider drenado en runtime por el pulpo volvía flaky la chain
+// (#4801 rebote). Ver isolate-provider-disabled.helper.js.
+require('./isolate-provider-disabled.helper');
 const dispatch = require('../agent-launcher/dispatch-with-fallback');
 
 // pipelineDir temporal: skill telegram-commander con la cadena real del issue.

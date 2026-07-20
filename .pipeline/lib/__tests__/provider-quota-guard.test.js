@@ -24,6 +24,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+// Aísla del kill-switch operacional live (`provider-disabled.json` global): sin
+// esto, un provider drenado en runtime por el pulpo volvía flaky la chain
+// (#4801 rebote). Ver isolate-provider-disabled.helper.js.
+require('./isolate-provider-disabled.helper');
 const guard = require('../provider-quota-guard');
 const {
     resolveSpawnWithFallback,
