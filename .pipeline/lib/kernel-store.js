@@ -466,24 +466,78 @@ function createKernelStore(deps = {}) {
 
   // Índice mutable de productIds (habilita listProducts sin query/scan en el
   // driver). Escritura de baja frecuencia; la mutación aplica sólo al índice, no
-  // a firmas. La serialización de escrituras del índice la garantiza el kernel
-  // coordinator (un solo escritor lógico del catálogo por producto).
+  // a firmas.
+  //
+  // A08 · #4811 CA-6/CA-9: dos altas concurrentes de productos distintos
+  // (`Promise.all([putProduct(A), putProduct(B)])`) hacían read-modify-write SIN
+  // escritura condicional → ventana last-write-wins reproducida en vivo (B pisaba
+  // el índice recién escrito por A y perdía a A). Ahora el índice lleva `version`
+  // y la escritura es un CAS optimista (`#b.#v = :ev`) con reintento acotado —
+  // mismo idiom que `kernel-coordination-store.compareAndSetCore`. No se apoya en
+  // el "único escritor lógico" del comentario original: la atomicidad es real.
+  const CATALOG_CAS_MAX_RETRIES = 16;
+
   async function addToCatalog(productId) {
-    const res = await driver.getItem(spec, keyOf(SK.catalog()));
-    const cur = res && res.item;
-    let ids = [];
-    if (cur) {
-      const v = validateItemOnRead(cur, { entityType: ENTITY.CATALOG });
-      if (!v.valid) {
-        onAlert(v.alert);
-        throw new KernelStoreValidationError(`catálogo corrupto: ${v.stage}`, { stage: v.stage, errors: v.errors });
+    for (let attempt = 0; ; attempt++) {
+      const res = await driver.getItem(spec, keyOf(SK.catalog()));
+      const cur = res && res.item;
+      let ids = [];
+      let expectedVersion = 0;
+      let curHasVersion = false;
+      if (cur) {
+        const v = validateItemOnRead(cur, { entityType: ENTITY.CATALOG });
+        if (!v.valid) {
+          onAlert(v.alert);
+          throw new KernelStoreValidationError(`catálogo corrupto: ${v.stage}`, { stage: v.stage, errors: v.errors });
+        }
+        ids = (v.item.body.productIds || []).slice();
+        if (Number.isInteger(v.item.body.version)) {
+          expectedVersion = v.item.body.version;
+          curHasVersion = true;
+        }
       }
-      ids = (v.item.body.productIds || []).slice();
+      // Idempotente: si el id ya está registrado, no reescribimos el índice.
+      if (ids.includes(productId)) return;
+      ids.push(productId);
+      const nextVersion = expectedVersion + 1;
+      const item = envelope(ENTITY.CATALOG, SK.catalog(), { productIds: ids, version: nextVersion });
+      assertWritable(item);
+      // Selección de la condición de CAS según el estado leído:
+      //   - sin índice previo        → create-once (attribute_not_exists(PK)).
+      //   - índice legacy sin version → upgrade atómico único (existe PK y aún no
+      //                                 tiene body.version).
+      //   - índice versionado        → CAS por versión (#b.#v = :ev).
+      let opts;
+      if (!cur) {
+        opts = appendOnlyOpts();
+      } else if (curHasVersion) {
+        opts = {
+          conditionExpression: '#b.#v = :ev',
+          expressionAttributeNames: { '#b': 'body', '#v': 'version' },
+          expressionAttributeValues: { ':ev': expectedVersion },
+        };
+      } else {
+        opts = {
+          conditionExpression: 'attribute_exists(#pk) AND attribute_not_exists(#b.#v)',
+          expressionAttributeNames: { '#pk': 'PK', '#b': 'body', '#v': 'version' },
+        };
+      }
+      try {
+        await driver.putItem(spec, item, opts);
+        return;
+      } catch (e) {
+        if (e instanceof ConditionalCheckFailedError) {
+          // Otra escritura ganó la carrera: re-leemos el índice actualizado y
+          // reintentamos el merge (sin perder ninguna entrada).
+          if (attempt < CATALOG_CAS_MAX_RETRIES) continue;
+          throw new KernelStoreError(
+            `contención persistente en catalog#index tras ${CATALOG_CAS_MAX_RETRIES} reintentos de CAS`,
+            { sk: item.SK, productId },
+          );
+        }
+        throw e;
+      }
     }
-    if (!ids.includes(productId)) ids.push(productId);
-    const item = envelope(ENTITY.CATALOG, SK.catalog(), { productIds: ids });
-    assertWritable(item);
-    await driver.putItem(spec, item);
   }
 
   async function listProducts() {

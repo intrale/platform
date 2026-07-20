@@ -50,7 +50,16 @@ const validator = require('./lib/agent-models-validate');
 
 // Path fijo al archivo a validar — anti path-traversal (CA-TECH-4).
 const PIPELINE_DIR = __dirname;
-const AGENT_MODELS_JSON = path.join(PIPELINE_DIR, 'agent-models.json');
+// Override EXCLUSIVO PARA TESTS: `AGENT_MODELS_VALIDATE_PATH` permite apuntar el
+// validador a un fixture temporal sin mutar el agent-models.json canónico. Sin
+// esto, los tests swapeaban el archivo canónico compartido y creaban una carrera
+// con otros test files que lo leen en paralelo (node --test corre archivos en
+// procesos concurrentes) — p.ej. deterministic-skills-coherence.test.js veía el
+// fixture (sin el skill `build`) durante la ventana del subproceso y fallaba
+// intermitente. En producción la env var nunca está seteada → path canónico fijo.
+const AGENT_MODELS_JSON = process.env.AGENT_MODELS_VALIDATE_PATH
+  ? path.resolve(process.env.AGENT_MODELS_VALIDATE_PATH)
+  : path.join(PIPELINE_DIR, 'agent-models.json');
 const AGENT_MODELS_SCHEMA = path.join(PIPELINE_DIR, 'agent-models.schema.json');
 
 // Exit codes categorizados por causa raíz (CA-EXIT-0..4).

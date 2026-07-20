@@ -19,6 +19,7 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
@@ -30,37 +31,35 @@ const FIXTURES = path.resolve(__dirname, '__fixtures__', 'validate-agent-models'
 const cli = require('..' + path.sep + 'validate-agent-models.js'.replace(/\\/g, '/'));
 
 // ────────────────────────────────────────────────────────────────────────────
-// Spawn helper: corre el CLI como subproceso con un fixture específico
-// reemplazando temporalmente .pipeline/agent-models.json. Para mantener
-// idempotencia + zero side effects: copiamos el archivo original a un backup
-// y lo restauramos en el finally.
-//
-// IMPORTANTE: las pruebas que mutan el archivo canónico se serializan con
-// `describe()` para evitar carreras con otros tests del repo. Si el repo crece,
-// considerar mover esto a un dir tmp + flag --file (refactor follow-up).
+// Spawn helper: corre el CLI como subproceso apuntándolo a un fixture escrito en
+// un archivo TEMPORAL ÚNICO (env `AGENT_MODELS_VALIDATE_PATH`). Antes swapeaba el
+// agent-models.json canónico y lo restauraba en un finally, pero eso creaba una
+// carrera: `node --test` corre los test files en procesos concurrentes, y otros
+// files leen el canónico en paralelo (p.ej. deterministic-skills-coherence.test.js)
+// — durante los segundos que dura el subproceso veían el fixture (sin el skill
+// `build`) y fallaban intermitente. Con el temp file, el canónico nunca se toca.
 // ────────────────────────────────────────────────────────────────────────────
 
 const REAL_JSON = path.resolve(__dirname, '..', 'agent-models.json');
-const BACKUP_JSON = REAL_JSON + '.test-backup';
+
+// Path del fixture temporal activo — lo inyecta `runCli` como env al CLI hijo.
+let activeFixturePath = null;
 
 function withFixture(fixtureName, fn) {
   const src = path.join(FIXTURES, fixtureName);
   const srcContent = fs.readFileSync(src, 'utf8');
 
-  // Backup del real.
-  const hadOriginal = fs.existsSync(REAL_JSON);
-  if (hadOriginal) fs.copyFileSync(REAL_JSON, BACKUP_JSON);
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-models-fixture-'));
+  const tmpFile = path.join(tmpDir, 'agent-models.json');
+  fs.writeFileSync(tmpFile, srcContent);
 
+  const prev = activeFixturePath;
+  activeFixturePath = tmpFile;
   try {
-    fs.writeFileSync(REAL_JSON, srcContent);
-    return fn();
+    return fn(tmpFile);
   } finally {
-    if (hadOriginal) {
-      fs.copyFileSync(BACKUP_JSON, REAL_JSON);
-      fs.unlinkSync(BACKUP_JSON);
-    } else {
-      try { fs.unlinkSync(REAL_JSON); } catch { /* no-op */ }
-    }
+    activeFixturePath = prev;
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* no-op */ }
   }
 }
 
@@ -68,6 +67,8 @@ function runCli(args, env) {
   // En no-TTY (subproceso), el CLI suprime colores automáticamente. No hace
   // falta forzar NO_COLOR — pero lo seteamos a "1" para test determinístico.
   const childEnv = Object.assign({}, process.env, { NO_COLOR: '1' }, env || {});
+  // Apuntar el CLI al fixture temporal en curso (no al canónico compartido).
+  if (activeFixturePath) childEnv.AGENT_MODELS_VALIDATE_PATH = activeFixturePath;
   const result = spawnSync(process.execPath, [SCRIPT, ...args], {
     env: childEnv,
     encoding: 'utf8',
@@ -204,12 +205,12 @@ describe('validate-agent-models (CLI integration)', () => {
     // env var (auth delegada al OAuth del CLI). Para seguir cubriendo el
     // contrato CA-EXIT-2 ("credencial faltante → exit 2") usamos un fixture
     // con launcher=codex, que SÍ requiere OPENAI_API_KEY en env.
-    withFixture('valid-codex.json', () => {
+    withFixture('valid-codex.json', (fixturePath) => {
       // Borramos la env var del child sin tocar la del padre.
       const env = Object.assign({}, process.env);
       delete env.OPENAI_API_KEY;
       const result = spawnSync(process.execPath, [SCRIPT], {
-        env: Object.assign(env, { NO_COLOR: '1' }),
+        env: Object.assign(env, { NO_COLOR: '1', AGENT_MODELS_VALIDATE_PATH: fixturePath }),
         encoding: 'utf8',
       });
       assert.equal(result.status, cli.EXIT.CREDENTIAL_MISSING, `esperaba exit ${cli.EXIT.CREDENTIAL_MISSING}, fue ${result.status}. stderr=${result.stderr}`);
@@ -223,11 +224,11 @@ describe('validate-agent-models (CLI integration)', () => {
     // por lo que la ausencia de ANTHROPIC_API_KEY NO debe abortar el boot.
     // Este test documenta el bypass a nivel CLI integration (complementa los
     // tests unitarios en lib/__tests__/agent-models-validate.test.js).
-    withFixture('valid.json', () => {
+    withFixture('valid.json', (fixturePath) => {
       const env = Object.assign({}, process.env);
       delete env.ANTHROPIC_API_KEY;
       const result = spawnSync(process.execPath, [SCRIPT], {
-        env: Object.assign(env, { NO_COLOR: '1' }),
+        env: Object.assign(env, { NO_COLOR: '1', AGENT_MODELS_VALIDATE_PATH: fixturePath }),
         encoding: 'utf8',
       });
       assert.equal(result.status, cli.EXIT.OK, `esperaba exit 0 (bypass claude), fue ${result.status}. stderr=${result.stderr}`);
@@ -292,10 +293,11 @@ describe('validate-agent-models (CLI integration)', () => {
   });
 
   test('--no-env saltea check de env vars (no falla por ANTHROPIC_API_KEY ausente)', () => {
-    withFixture('valid.json', () => {
+    withFixture('valid.json', (fixturePath) => {
       const env = Object.assign({}, process.env);
       delete env.ANTHROPIC_API_KEY;
       env.NO_COLOR = '1';
+      env.AGENT_MODELS_VALIDATE_PATH = fixturePath;
       const result = spawnSync(process.execPath, [SCRIPT, '--no-env'], { env, encoding: 'utf8' });
       assert.equal(result.status, 0, `esperaba exit 0 con --no-env, fue ${result.status}. stderr=${result.stderr}`);
     });
@@ -318,11 +320,11 @@ describe('validate-agent-models (CLI integration)', () => {
   });
 
   test('idempotencia: ejecución NO crea ni muta archivos fuera de stdin/stdout', () => {
-    withFixture('valid.json', () => {
-      const before = fs.statSync(REAL_JSON);
+    withFixture('valid.json', (fixturePath) => {
+      const before = fs.statSync(fixturePath);
       const r = runCli([], { ANTHROPIC_API_KEY: 'k' });
       assert.equal(r.code, 0);
-      const after = fs.statSync(REAL_JSON);
+      const after = fs.statSync(fixturePath);
       // Mtime no cambia (no se sobrescribió el archivo).
       assert.equal(before.mtimeMs, after.mtimeMs, 'CA-SEC-5: el validador modificó agent-models.json');
     });
