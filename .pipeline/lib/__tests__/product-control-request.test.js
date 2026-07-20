@@ -47,7 +47,18 @@ function makeFakeAudit() {
 }
 
 function fakeDeps() {
-    return { fsImpl: makeFakeFs(), auditImpl: makeFakeAudit(), now: () => 1700000000000, queueDir: '/tmp/q', auditFile: '/tmp/a.jsonl' };
+    return {
+        fsImpl: makeFakeFs(),
+        auditImpl: makeFakeAudit(),
+        now: () => 1700000000000,
+        queueDir: '/tmp/q',
+        auditFile: '/tmp/a.jsonl',
+        // #4801 — probe de alcance determinístico (no toca red/`gh`): host allowlisted
+        // ⇒ accesible. Los rechazos SSRF ocurren ANTES en el guard de forma.
+        bootstrapDeps: { probeAccess: () => true },
+        // #4801 — catálogo vacío para la unicidad UX (no lee el dir real).
+        listProducts: () => [],
+    };
 }
 
 // Descriptor 1.0 válido mínimo (mismos bloques requeridos que project-descriptor).
@@ -86,6 +97,36 @@ test('CA-1.1: onboarding de descriptor válido encola pedido (202) y audita', ()
     assert.equal(res.audit_persisted, true);
     assert.equal(deps.auditImpl.entries.length, 1);
     assert.equal(deps.auditImpl.entries[0].type, 'product_onboard_request');
+});
+
+// #4801 · CA-1 — unicidad UX no-autoritativa (mejora el mensaje antes de encolar).
+test('CA-1: projectId ya en el catálogo ⇒ 409 sin encolar (unicidad UX)', () => {
+    const deps = fakeDeps();
+    deps.listProducts = () => [{ projectId: 'acme-store', name: 'ACME', status: 'onboarding', role: 'primary' }];
+    const res = pcr.enqueueOnboard({ descriptor: validDescriptor(), actor: 'leo' }, deps);
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 409);
+    assert.match(res.msg || '', /ya existe/i);
+    assert.equal(Object.keys(deps.fsImpl.files).length, 0, 'no debe encolar un duplicado');
+});
+
+test('CA-1: unicidad UX fail-open — si el catálogo lanza, igual continúa', () => {
+    const deps = fakeDeps();
+    deps.listProducts = () => { throw new Error('catálogo ilegible'); };
+    const res = pcr.enqueueOnboard({ descriptor: validDescriptor(), actor: 'leo' }, deps);
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(res.status, 202);
+});
+
+// #4801 · CA-2 — probeAccess cableado: repo inaccesible ⇒ 400 access sin encolar.
+test('CA-2: probeAccess inaccesible ⇒ 400 (access) sin encolar', () => {
+    const deps = fakeDeps();
+    deps.bootstrapDeps = { probeAccess: () => false }; // host allowlisted pero no alcanzable
+    const res = pcr.enqueueOnboard({ descriptor: validDescriptor(), actor: 'leo' }, deps);
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 400);
+    assert.match(res.stage || '', /access/);
+    assert.equal(Object.keys(deps.fsImpl.files).length, 0);
 });
 
 test('CA-1.1: descriptor con campo no declarado es rechazado (400) sin encolar', () => {

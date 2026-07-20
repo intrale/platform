@@ -286,6 +286,15 @@ function createKernelSupervisor(deps = {}) {
   const hydrate = deps.hydrate !== false;
   const onAlert = typeof deps.onAlert === 'function' ? deps.onAlert : () => {};
   const now = typeof deps.now === 'function' ? deps.now : () => 0;
+  // #4801 · CA-3 — drenador de la cola de onboarding. Se ejecuta ANTES de listar
+  // productos para que un alta recién encolada se registre (`status:onboarding`)
+  // y aparezca en el catálogo. Inyectable/deshabilitable por tests: `false`
+  // desactiva; una función la reemplaza; por default se usa el drenador real.
+  const drainOnboardQueue = deps.drainOnboardQueue === false
+    ? null
+    : (typeof deps.drainOnboardQueue === 'function'
+        ? deps.drainOnboardQueue
+        : () => require('./product-control-drainer').drainOnboardQueue());
 
   // #4776 · Umbrales del circuit-breaker, resueltos UNA vez a `const` inmutables
   // del closure (nunca `let`/`var` mutable de módulo). Overridables por `deps`
@@ -407,6 +416,12 @@ function createKernelSupervisor(deps = {}) {
   async function bootProducts() {
     if (!catalogStore || typeof catalogStore.listProducts !== 'function') {
       throw new Error('bootProducts requiere un catalogStore con listProducts()');
+    }
+    // #4801 · CA-3 — drenar la cola de onboarding ANTES de listar. Best-effort:
+    // un fallo del drenaje NO puede tumbar el boot de los productos existentes.
+    if (drainOnboardQueue) {
+      try { await drainOnboardQueue(); }
+      catch (e) { onAlert({ projectId: null, stage: 'drain-onboard', errors: [{ detail: e && e.message ? e.message : String(e) }] }); }
     }
     const products = await catalogStore.listProducts();
     const spawned = [];

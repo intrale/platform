@@ -86,6 +86,42 @@ test('CA-1 · bootProducts instancia exactamente uno por producto active y omite
   assert.deepEqual(calls.find((c) => c.contextProjectId === 'acme').allowedNamespaces, ['acme']);
 });
 
+// #4801 · CA-3 — bootProducts drena la cola de onboarding ANTES de listar.
+test('CA-3 · bootProducts invoca el drenador de onboarding antes de listProducts', async () => {
+  const order = [];
+  const supervisor = createKernelSupervisor({
+    catalogStore: { listProducts: async () => { order.push('list'); return []; } },
+    drainOnboardQueue: () => { order.push('drain'); },
+    hydrate: false,
+  });
+  await supervisor.bootProducts();
+  assert.deepEqual(order, ['drain', 'list'], 'el drenaje corre antes de listar el catálogo');
+});
+
+test('CA-3 · un fallo del drenador NO tumba bootProducts (best-effort)', async () => {
+  const alerts = [];
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore(CATALOG_MIXTO),
+    storeFactory: recordingStoreFactory([]),
+    hydrate: false,
+    drainOnboardQueue: () => { throw new Error('drain boom'); },
+    onAlert: (a) => alerts.push(a),
+  });
+  const res = await supervisor.bootProducts();
+  assert.deepEqual(res.spawned.sort(), ['acme', 'globex'], 'los activos igual se instancian');
+  assert.ok(alerts.some(a => a.stage === 'drain-onboard'), 'se emitió alerta del fallo de drenaje');
+});
+
+test('CA-3 · drainOnboardQueue:false desactiva el drenaje en bootProducts', async () => {
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore([]),
+    hydrate: false,
+    drainOnboardQueue: false,
+  });
+  const res = await supervisor.bootProducts();
+  assert.deepEqual(res.spawned, []);
+});
+
 test('CA-1 · spawnInstance es idempotente: exactamente una instancia por projectId', async () => {
   const supervisor = createKernelSupervisor({
     catalogStore: fakeCatalogStore([]),
