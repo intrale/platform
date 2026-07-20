@@ -67,6 +67,13 @@ const BREAKER_WINDOW_MS = 60 * 1000; // ventana deslizante del contador de fallo
 const BREAKER_COOLDOWN_MS = 30 * 1000; // espera en `open` antes de probar (open → half-open)
 const BREAKER_RECOVERY_MS = 30 * 1000; // permanencia en `half-open` sin fallos → closed
 
+// #4822 · CA-SEC-4 (REQ-SEC-BOOT-5, A04/DoS) — techo de instancias concurrentes
+// que el boot durable puede spawnear. Default conservador: la RAM del host es
+// crítica y un catálogo envenenado con N productos `active` no debe poder
+// spawnear procesos sin cota. El valor efectivo lo pasa el caller (out-of-band,
+// desde config.yaml); esta constante es el piso seguro del boot durable.
+const MAX_CONCURRENT_INSTANCES_DEFAULT = 2;
+
 // -----------------------------------------------------------------------------
 // Multiplexor de ruteo product-aware (Ola Puente P4 · #4763 · split 2/3 de #4689)
 //
@@ -308,6 +315,15 @@ function createKernelSupervisor(deps = {}) {
   const breakerRecoveryMs = Number.isFinite(deps.breakerRecoveryMs) && deps.breakerRecoveryMs > 0
     ? deps.breakerRecoveryMs : BREAKER_RECOVERY_MS;
 
+  // #4822 · CA-SEC-4 — cota de instancias del boot durable, leída OUT-OF-BAND de
+  // `deps` (el caller la resuelve de config.yaml, nunca de datos del producto —
+  // CA-SEC-1). `null` = sin cota (compat: los tests/callers legacy que no la
+  // pasan mantienen el comportamiento previo). El boot durable (`bootKernelDurable`)
+  // SIEMPRE la provee con un default seguro, de modo que en producción hay techo.
+  const maxConcurrentInstances = Number.isInteger(deps.maxConcurrentInstances) && deps.maxConcurrentInstances > 0
+    ? deps.maxConcurrentInstances
+    : null;
+
   // Mapa PRIVADO del closure: projectId → instanceContext. Jamás expuesto por
   // referencia; jamás a nivel módulo. Dos supervisores distintos tienen mapas
   // distintos (A05: no hay estado compartido de módulo).
@@ -435,6 +451,15 @@ function createKernelSupervisor(deps = {}) {
       if (!isSafeId(projectId)) {                 // fail-closed antes de usar en path/spawn
         skipped.push({ projectId: projectId == null ? null : String(projectId), reason: 'projectId inseguro' });
         onAlert({ projectId: null, stage: 'isSafeId', errors: [{ detail: `projectId inseguro descartado: ${String(projectId)}` }] });
+        continue;
+      }
+      // #4822 · CA-SEC-4 (REQ-SEC-BOOT-5) — cota de instancias concurrentes: un
+      // catálogo con N>cap productos `active` NO spawnea procesos sin techo (RAM
+      // crítica del host). No aborta el boot: saltea el excedente y lo audita, de
+      // modo que el catálogo entero se clasifica igual (paridad con los otros skips).
+      if (maxConcurrentInstances != null && spawned.length >= maxConcurrentInstances) {
+        skipped.push({ projectId, reason: 'cap de instancias alcanzado' });
+        onAlert({ projectId, stage: 'cap', errors: [{ detail: `boot durable alcanzó el cap de ${maxConcurrentInstances} instancias` }] });
         continue;
       }
       const ctx = spawnInstance(p);
@@ -839,9 +864,83 @@ function createKernelSupervisor(deps = {}) {
   };
 }
 
+/**
+ * #4822 · Boot durable del supervisor multi-producto — Parte 3/3 de #4804.
+ *
+ * Gatea OUT-OF-BAND por `config.kernel.durable === true` (fail-closed: flag
+ * ausente/false/no-booleano ⇒ NO corre — CA-6/CA-SEC-1). El flag se lee
+ * EXCLUSIVAMENTE de `config` (que el caller obtiene de `config.yaml` vía
+ * `loadConfig()`), NUNCA de datos del propio store/producto.
+ *
+ * BEST-EFFORT: la función NUNCA lanza. Cualquier fallo (construcción del store,
+ * driver AWS ausente, catálogo corrupto) se captura, se audita por `onAlert` y
+ * se devuelve como `{ ran:false, reason:'error' }`. El boot del pulpo — el único
+ * caller de producción — no puede morir por esto (mismo criterio que el boot-hook
+ * de wave-recovery).
+ *
+ * La cota de instancias (CA-SEC-4) SIEMPRE se aplica: si `config.kernel.max_concurrent_instances`
+ * no es un entero > 0, cae a `MAX_CONCURRENT_INSTANCES_DEFAULT`. Así el boot
+ * durable jamás spawnea sin techo, ni siquiera con config incompleta.
+ *
+ * @param {object}   opts
+ * @param {object}    opts.config              config del pipeline (loadConfig()); el flag y la cota se leen de acá.
+ * @param {function}  opts.buildCatalogStore   () => catalogStore durable con `listProducts()`. LAZY: sólo se invoca con el flag ON (con flag OFF no se instancia nada AWS — CA-6).
+ * @param {function} [opts.buildStoreFactory]  () => storeFactory por instancia (liga el driver durable a cada tenant). Opcional (default: in-memory de createKernelStore).
+ * @param {function} [opts.spawn]              spawn(ctx) AISLADO por instancia (A04). Opcional.
+ * @param {function} [opts.onAlert]            callback de alerta fail-closed (A09).
+ * @param {function} [opts.createSupervisor]   factory del supervisor (test override; default: createKernelSupervisor).
+ * @returns {Promise<{ran:boolean, reason?:string, cap?:number, spawned?:string[], skipped?:Array, error?:string}>}
+ */
+async function bootKernelDurable(opts = {}) {
+  const config = opts.config && typeof opts.config === 'object' ? opts.config : {};
+  const kernel = config.kernel && typeof config.kernel === 'object' ? config.kernel : {};
+  const onAlert = typeof opts.onAlert === 'function' ? opts.onAlert : () => {};
+
+  // Fail-closed (CA-SEC-1/CA-6): SÓLO corre con el flag EXACTAMENTE en `true`.
+  // Ausente, `false`, o cualquier truthy no-booleano ⇒ el boot durable NO corre
+  // y el arranque FS actual del pulpo no cambia.
+  if (kernel.durable !== true) {
+    return { ran: false, reason: 'flag-off' };
+  }
+
+  const createSupervisor = typeof opts.createSupervisor === 'function'
+    ? opts.createSupervisor
+    : createKernelSupervisor;
+
+  try {
+    if (typeof opts.buildCatalogStore !== 'function') {
+      throw new Error('bootKernelDurable requiere buildCatalogStore() para listar el catálogo durable');
+    }
+    const catalogStore = opts.buildCatalogStore();
+
+    // Cota out-of-band de config (CA-SEC-4). Sin valor válido ⇒ default seguro.
+    const cap = Number.isInteger(kernel.max_concurrent_instances) && kernel.max_concurrent_instances > 0
+      ? kernel.max_concurrent_instances
+      : MAX_CONCURRENT_INSTANCES_DEFAULT;
+
+    const supervisor = createSupervisor({
+      catalogStore,
+      storeFactory: typeof opts.buildStoreFactory === 'function' ? opts.buildStoreFactory() : undefined,
+      spawn: typeof opts.spawn === 'function' ? opts.spawn : undefined,
+      maxConcurrentInstances: cap,
+      onAlert,
+    });
+
+    const { spawned, skipped } = await supervisor.bootProducts();
+    return { ran: true, cap, spawned, skipped };
+  } catch (e) {
+    const detail = e && e.message ? e.message : String(e);
+    try { onAlert({ projectId: null, stage: 'boot-durable', errors: [{ detail }] }); } catch { /* alerta best-effort */ }
+    return { ran: false, reason: 'error', error: detail };
+  }
+}
+
 module.exports = {
   createKernelSupervisor,
   resolveProjectId,
+  // #4822 · Boot durable del supervisor multi-producto (gateado + best-effort).
+  bootKernelDurable,
+  MAX_CONCURRENT_INSTANCES_DEFAULT,
   // #4763 · Multiplexor de ruteo product-aware (standalone + adaptadores).
   resolveInstanceForEvent,
   deriveRepoConfig,
