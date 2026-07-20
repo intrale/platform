@@ -445,10 +445,18 @@ test('CA-11/CA-20: body de 1 MB con patrones repetidos completa sin ReDoS', () =
     const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
 
     // El objetivo es detectar backtracking catastrófico (varios segundos),
-    // no medir performance fina. 500 ms es generoso para CI Windows con
-    // carga concurrente y sigue siendo 10x más rápido que cualquier ReDoS
-    // real (típicamente >5 s para patrones catastróficos sobre 1 MB).
-    assert.ok(elapsedMs < 500, `parser tomó ${elapsedMs.toFixed(2)} ms — posible ReDoS`);
+    // no medir performance fina: un ReDoS real sobre 1 MB tarda >5 s. El parse
+    // lineal legítimo de 1 MB mide ~300–470 ms AISLADO (empírico, Windows), así
+    // que el umbral histórico de 500 ms no tenía margen y era intrínsecamente
+    // flaky: el tester corre las ~9700 pruebas Node en UN solo proceso y el
+    // proceso que MIDE queda saturado, empujando esta medición CPU-bound por
+    // encima de 500 ms sin que haya ReDoS (rebote #4801: 724 ms bajo la suite
+    // completa). Se fija el umbral en 2500 ms — mismo criterio de "presupuesto
+    // tolerante a la carga" que dashboard-health-under-load-4126.test.js
+    // (STATE_BUDGET_MS=2500): sigue siendo 2x más rápido que cualquier ReDoS
+    // catastrófico (>5 s) y deja fuera el jitter del proceso saturado.
+    const REDOS_BUDGET_MS = 2500;
+    assert.ok(elapsedMs < REDOS_BUDGET_MS, `parser tomó ${elapsedMs.toFixed(2)} ms (presupuesto ${REDOS_BUDGET_MS} ms) — posible ReDoS`);
     // Resultado debe estar cappeado (las deps únicas son pocas pero se repiten).
     assert.ok(out.length <= MAX_DEPS);
     assert.ok(out.length > 0);
