@@ -20,6 +20,10 @@ let _sprintPlanFile = null;
 let _skills = [];
 let _dispatcher = null;
 let _permissionSuggester = null;
+// #4802 — resolver del allowlist de operador (misma fuente que operator-gate:
+// `TELEGRAM_LEO_OPERATOR_CHAT_ID`). Se inyecta desde el listener para NO duplicar
+// la fuente del allowlist y validar `from.id` en callbacks privilegiados (A01).
+let _resolveOperatorAllowlist = null;
 
 function init(config) {
     _tgApi = config.tgApi;
@@ -32,6 +36,66 @@ function init(config) {
     _skills = config.skills || [];
     _dispatcher = config.dispatcher;
     _permissionSuggester = config.permissionSuggester;
+    _resolveOperatorAllowlist = config.resolveOperatorAllowlist || null;
+}
+
+// ─── #4802 — Whitelist única de namespaces del Commander ──────────────────────
+//
+// Single source of truth (CA-7): el listener importa `COMMANDER_NAMESPACES` para
+// rutear por prefijo sin hardcodear la lista dos veces. `PRIVILEGED_NAMESPACES`
+// es el subconjunto que escribe permisos / relanza agentes / reinicia infra y por
+// eso exige authz por `from.id` (CA-6, A01). Los conjuntos son DISJUNTOS de los
+// namespaces de firma (`operator-gate`) y product-aware (`pc:` / `pcx:`).
+const COMMANDER_NAMESPACES = [
+    'create_all_proposals', 'create_proposal:', 'discard_proposal:',
+    'launch_sprint', 'view_sprint_plan',
+    'reactivate:', 'dismiss_expired:', 'reactivate_all',
+    'restart_retry', 'restart_log',
+    'relaunch_skill:',
+    'allow:', 'always:', 'deny:',
+    'persist:', 'dismiss:',
+    'ps_approve:', 'ps_ignore:', 'ps_never:',
+    'pq_',
+    'tts_listen', 'show_detail',
+];
+const PRIVILEGED_NAMESPACES = [
+    'launch_sprint',
+    'restart_retry', 'restart_log',
+    'relaunch_skill:',
+    'allow:', 'always:', 'deny:',
+    'persist:', 'dismiss:',
+    'pq_',
+];
+
+// Un prefijo terminado en `:` o `_` matchea por `startsWith`; el resto es exacto.
+function _matchesNamespace(data, namespaces) {
+    if (typeof data !== 'string' || data.length === 0) return false;
+    return namespaces.some((p) => (p.endsWith(':') || p.endsWith('_'))
+        ? data.startsWith(p)
+        : data === p);
+}
+
+function isCommanderNamespace(data) {
+    return _matchesNamespace(data, COMMANDER_NAMESPACES);
+}
+
+function isPrivilegedNamespace(data) {
+    return _matchesNamespace(data, PRIVILEGED_NAMESPACES);
+}
+
+// Authz por `from.id` para callbacks privilegiados (A01/CA-6). Fail-closed:
+// sin resolver inyectado o con allowlist vacío, se rechaza. Reusa la MISMA
+// fuente que `operator-gate` (no inventa un segundo allowlist).
+function isOperatorAuthorized(fromId) {
+    let allow;
+    try {
+        allow = _resolveOperatorAllowlist ? _resolveOperatorAllowlist() : null;
+    } catch (e) {
+        _log('Error resolviendo allowlist de operador: ' + (e && e.message));
+        allow = null;
+    }
+    if (!allow || typeof allow.has !== 'function' || allow.size === 0) return false;
+    return allow.has(String(fromId));
 }
 
 function setSkills(s) { _skills = s; }
@@ -549,11 +613,28 @@ async function handlePendingCallback(callbackData, callbackQueryId) {
 
 // ─── Router principal de callbacks ───────────────────────────────────────────
 
-async function routeCallback(cbData, callbackQueryId, message) {
+async function routeCallback(cbData, callbackQueryId, message, fromId) {
     const chatId = message && message.chat && message.chat.id;
     const messageId = message && message.message_id;
 
     if (String(chatId) !== String(_tgApi.getChatId())) return false;
+
+    // #4802 / A01 / CA-6 — Defensa en profundidad: incluso si el caller ya validó
+    // authz, `routeCallback` NO ejecuta acciones privilegiadas (escriben permisos,
+    // relanzan agentes, reinician infra) sin `from.id` en el allowlist de operador.
+    // Fail-closed. Devuelve `true` (callback consumido) con toast neutro (UX-4:
+    // mismo tono que el fail-safe, no revela que la acción existe).
+    if (isPrivilegedNamespace(cbData) && !isOperatorAuthorized(fromId)) {
+        _log('Callback privilegiado rechazado por authz from.id=' + fromId + ' data=' + cbData);
+        try {
+            await _tgApi.telegramPost('answerCallbackQuery', {
+                callback_query_id: callbackQueryId,
+                text: 'Acción inválida o expirada',
+                show_alert: false,
+            }, 5000);
+        } catch (e) { /* best-effort */ }
+        return true;
+    }
 
     try {
         // Propuestas
@@ -917,4 +998,10 @@ module.exports = {
     handleAutoPlanCallback,
     handlePendingCallback,
     persistPermissionFromActionData,
+    // #4802 — whitelist única + helpers de membresía/authz (single source of truth).
+    COMMANDER_NAMESPACES,
+    PRIVILEGED_NAMESPACES,
+    isCommanderNamespace,
+    isPrivilegedNamespace,
+    isOperatorAuthorized,
 };
