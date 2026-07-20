@@ -220,3 +220,37 @@ test('SEC-7b: si el enqueue del pedido falla, el audit igual queda persistido', 
     assert.equal(res.audit_persisted, true);
     assert.equal(deps.auditImpl.entries.length, 1);
 });
+
+// -----------------------------------------------------------------------------
+// #4800 — onboarding provenance:create: dry-run valida INTENCION sin crear repo
+// -----------------------------------------------------------------------------
+
+test('#4800: onboard provenance:create valida la intencion (org/nombre/visibilidad) y encola SIN crear repo', () => {
+    const deps = fakeDeps();
+    // Un execFile inyectado que, de invocarse, haria fallar el test: el dry-run del
+    // onboarding NO debe crear repos ni tocar gh (side-effect-free por invariante).
+    deps.bootstrapDeps = { execFile: () => { throw new Error('gh NO debe invocarse en dry-run'); } };
+    const desc = validDescriptor({
+        repositories: [{ id: 'main', role: 'primary', defaultBaseRef: 'main', provenance: 'create', create: { name: 'store', org: 'intrale', visibility: 'private' } }],
+    });
+    const res = pcr.enqueueOnboard({ descriptor: desc, actor: 'leo' }, deps);
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(res.status, 202);
+    // Se encolo el pedido con provenance:create intacto (el repo lo crea el drainer).
+    const written = Object.values(deps.fsImpl.files);
+    assert.equal(written.length, 1);
+    const record = JSON.parse(written[0]);
+    assert.equal(record.descriptor.repositories[0].provenance, 'create');
+    assert.equal(record.descriptor.repositories[0].url, undefined);
+});
+
+test('#4800: onboard provenance:create con org fuera de allowlist es rechazado (400) sin encolar', () => {
+    const deps = fakeDeps();
+    const desc = validDescriptor({
+        repositories: [{ id: 'main', role: 'primary', provenance: 'create', create: { name: 'store', org: 'evil-corp' } }],
+    });
+    const res = pcr.enqueueOnboard({ descriptor: desc }, deps);
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 400);
+    assert.equal(Object.keys(deps.fsImpl.files).length, 0);
+});

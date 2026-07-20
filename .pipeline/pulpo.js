@@ -10065,6 +10065,52 @@ function brazoGhostbusters(config) {
 }
 
 // =============================================================================
+// BRAZO: DRENAJE DE ONBOARDING DE PRODUCTOS (#4800)
+// =============================================================================
+//
+// El wizard del dashboard ENCOLA pedidos de alta en `product-control/pendiente/`
+// (product-control-request.enqueueOnboard). Este brazo kernel-side los drena:
+// crea el repo (provenance:'create', vía gh repo create idempotente), valida acceso
+// real (provenance:'existing', CA-2) y registra el producto en mode:'full'. Accesorio:
+// si falla, el pulpo sigue corriendo. El token va SÓLO por env (heredado).
+// =============================================================================
+let onboardDrainRunning = false;
+
+function brazoOnboardDrain(config) {
+  const cfg = (config && config.product_onboard_drain) || {};
+  if (cfg.enabled === false) {
+    log('onboard-drain', 'Cron deshabilitado por config (product_onboard_drain.enabled: false)');
+    return;
+  }
+  const intervalMin = Math.min(Math.max(parseInt(cfg.intervalMin, 10) || 2, 1), 60);
+  let drainer;
+  try {
+    drainer = require('./lib/product-control-drain');
+  } catch (e) {
+    log('onboard-drain', `No se pudo cargar el drainer: ${e.message}`);
+    return;
+  }
+
+  const tick = () => {
+    if (onboardDrainRunning) return;
+    onboardDrainRunning = true;
+    try {
+      const res = drainer.drainOnboardQueue({});
+      if (res && res.processed > 0) {
+        log('onboard-drain', `Drenados ${res.processed} pedidos (ok=${res.ok}, error=${res.failed})`);
+      }
+    } catch (e) {
+      log('onboard-drain', `Tick excepción: ${e.message}`);
+    } finally {
+      onboardDrainRunning = false;
+    }
+  };
+
+  setInterval(tick, intervalMin * 60 * 1000);
+  log('onboard-drain', `Cron iniciado: cada ${intervalMin}min`);
+}
+
+// =============================================================================
 // BRAZO 4.5: REWIND — Procesa eventos `pipeline.rejection` del Commander (#3416)
 // =============================================================================
 //
@@ -18128,6 +18174,15 @@ async function mainLoop() {
     brazoGhostbusters(loadConfig() || {});
   } catch (e) {
     log('ghostbusters', `No se pudo iniciar el cron: ${e.message}`);
+  }
+
+  // #4800 — Brazo cron que drena la cola de onboarding de productos: crea repos
+  // (provenance:create) y registra el producto en mode:full. Accesorio: si falla,
+  // el pulpo sigue corriendo.
+  try {
+    brazoOnboardDrain(loadConfig() || {});
+  } catch (e) {
+    log('onboard-drain', `No se pudo iniciar el cron: ${e.message}`);
   }
 
   // #3087 — Cron interno autoritativo para alertas de cambios en agent-models.json.

@@ -154,6 +154,75 @@ function collectPathTraversalHits(descriptor) {
   return hits;
 }
 
+// -----------------------------------------------------------------------------
+// Provenance de repositorios (Ola "Cierre de gestión de producto nuevo" · #4800).
+// Un repo puede declararse como `existing` (URL provista y validada — comportamiento
+// histórico) o `create` (el kernel lo crea vía `gh repo create`, sin URL al alta).
+// El JSON Schema modela la forma (if/then), pero la validación cruzada va acá como
+// defensa-en-profundidad fail-closed, reusando `isSafeId`/regex estricta y una
+// allowlist de orgs destino (A01: el token del pipeline no debe poder crear repos
+// en cualquier org con permiso de escritura).
+// -----------------------------------------------------------------------------
+const REPO_NAME_RE = /^[A-Za-z0-9._-]{1,100}$/;
+
+// Allowlist de orgs donde el kernel PUEDE crear repos nuevos (A01 · targeting de org
+// arbitraria). Congelada; sumar una org acá = autorizar creación en ella.
+const REPO_CREATE_ORG_ALLOWLIST = Object.freeze(new Set([
+  'intrale',
+]));
+
+// Provenance efectiva de un repo: ausente ⇒ 'existing' (retro-compat con descriptores
+// legacy que sólo traen `url`).
+function repoProvenance(repo) {
+  const p = repo && repo.provenance;
+  return p === 'create' ? 'create' : 'existing';
+}
+
+/**
+ * Validación cruzada de la provenance de cada repositorio (#4800). Fail-closed:
+ *   - `create` ⇒ exige `create.name` (regex estricta) y `create.org` en la allowlist;
+ *     PROHÍBE `url` (aún no existe). `visibility`, si viene, ∈ {private, public}.
+ *   - `existing` (o ausente) ⇒ exige `url` no vacía.
+ * Devuelve las violaciones como DATO — nunca lanza.
+ *
+ * @param {object} descriptor
+ * @returns {Array<{path:string, detail:string}>}
+ */
+function collectRepositoryProvenanceHits(descriptor) {
+  const hits = [];
+  const repos = (descriptor && descriptor.repositories) || [];
+  if (!Array.isArray(repos)) return hits;
+  repos.forEach((repo, i) => {
+    const base = `repositories[${i}]`;
+    const provenance = repoProvenance(repo);
+    if (provenance === 'create') {
+      const create = repo && repo.create;
+      if (!create || typeof create !== 'object' || Array.isArray(create)) {
+        hits.push({ path: `${base}.create`, detail: 'provenance:create exige un subobjeto create con name/org' });
+        return;
+      }
+      if (typeof create.name !== 'string' || !REPO_NAME_RE.test(create.name)) {
+        hits.push({ path: `${base}.create.name`, detail: 'nombre de repo inválido (esperado ^[A-Za-z0-9._-]{1,100}$)' });
+      }
+      if (typeof create.org !== 'string' || !REPO_CREATE_ORG_ALLOWLIST.has(create.org)) {
+        hits.push({ path: `${base}.create.org`, detail: 'org destino fuera de la allowlist de creación (A01)' });
+      }
+      if (create.visibility !== undefined && create.visibility !== 'private' && create.visibility !== 'public') {
+        hits.push({ path: `${base}.create.visibility`, detail: 'visibilidad inválida (private | public)' });
+      }
+      if (repo && repo.url !== undefined) {
+        hits.push({ path: `${base}.url`, detail: 'provenance:create no debe traer url (el kernel la completa al crear)' });
+      }
+    } else {
+      // existing (o legacy sin provenance): la URL es obligatoria.
+      if (typeof (repo && repo.url) !== 'string' || repo.url.trim() === '') {
+        hits.push({ path: `${base}.url`, detail: 'provenance:existing exige una url no vacía' });
+      }
+    }
+  });
+  return hits;
+}
+
 /**
  * Validación cruzada de `thresholds` (CA-7). JSON Schema NO expresa "Σ ≤ 100%" ni
  * "cap ≤ techo global" ni "piso ≤ cap"; por eso van imperativas acá (el schema es
@@ -260,6 +329,19 @@ function validateDescriptor(obj, opts = {}) {
       valid: false,
       stage: 'path',
       errors: pathHits.map((h) => ({ path: h.path, keyword: 'pathTraversal', detail: h.detail })),
+      descriptor: null,
+    };
+  }
+
+  // 4b) Validación cruzada de provenance de repos (#4800): create exige name/org
+  //     (allowlist) y prohíbe url; existing exige url. Defensa-en-profundidad sobre
+  //     el if/then del schema, fail-closed.
+  const provenanceHits = collectRepositoryProvenanceHits(descriptor);
+  if (provenanceHits.length > 0) {
+    return {
+      valid: false,
+      stage: 'provenance',
+      errors: provenanceHits.map((h) => ({ path: h.path, keyword: 'repositoryProvenance', detail: h.detail })),
       descriptor: null,
     };
   }
@@ -555,6 +637,10 @@ module.exports = {
   isSafeId,
   isSafeWorktreePath,
   collectPathTraversalHits,
+  collectRepositoryProvenanceHits,
+  repoProvenance,
+  REPO_NAME_RE,
+  REPO_CREATE_ORG_ALLOWLIST,
   collectThresholdViolations,
   redactAjvErrors,
   deriveRouting,

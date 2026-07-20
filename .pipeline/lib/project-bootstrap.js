@@ -19,6 +19,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 
 const descriptorLib = require('./project-descriptor');
 
@@ -100,13 +101,58 @@ function assertUrlAllowed(rawUrl) {
 }
 
 // -----------------------------------------------------------------------------
+// Probe de alcance REAL (CA-2 · #4800). Parsea `owner/repo` de una URL YA validada
+// por `assertUrlAllowed` (nunca de datos crudos) e invoca `gh repo view` — jamás un
+// `fetch` crudo de la URL ni sigue redirects (anti-SSRF/A10). Devuelve true si el
+// repo es alcanzable/accesible, false si no. `gh` va por array de args (nunca shell,
+// nunca interpolación) y el token viaja SÓLO por env. Inyectable por `deps.execFile`
+// para los tests. El default de `verifyAccess` sigue siendo NO-probe (side-effect-free);
+// el drainer kernel-side lo cablea explícitamente en modo full.
+// -----------------------------------------------------------------------------
+function parseOwnerRepo(rawUrl) {
+  let u;
+  try { u = new URL(String(rawUrl)); } catch { return null; }
+  const parts = u.pathname.split('/').filter(Boolean);
+  if (parts.length < 2) return null;
+  const owner = parts[0];
+  const repo = parts[1].replace(/\.git$/, '');
+  if (!/^[A-Za-z0-9._-]{1,100}$/.test(owner) || !/^[A-Za-z0-9._-]{1,100}$/.test(repo)) return null;
+  return { owner, repo };
+}
+
+function defaultProbeAccess(target, deps = {}) {
+  // Sólo se prueban repos con URL. El tablero (`kind:'board'`) es un GitHub Project,
+  // no un repo: `gh repo view` no aplica — se considera alcanzable tras el guard de
+  // host anti-SSRF. Los repos `create` tampoco se prueban (aún no existen).
+  if (!target || !target.url) return true;
+  if (target.kind && target.kind !== 'repo') return true;
+  const or = parseOwnerRepo(target.url);
+  if (!or) return false;
+  const runner = typeof deps.execFile === 'function' ? deps.execFile : execFileSync;
+  try {
+    runner('gh', ['repo', 'view', `${or.owner}/${or.repo}`, '--json', 'name'], {
+      env: deps.env || process.env,
+      stdio: 'pipe',
+      timeout: 20000,
+    });
+    return true;
+  } catch {
+    return false; // repo inexistente / sin acceso ⇒ no alcanzable (fail-closed).
+  }
+}
+
+// -----------------------------------------------------------------------------
 // Verificación de acceso (paso 2). Side-effect-free por defecto: sólo valida la
 // forma/host de las URLs. Un `deps.probeAccess` inyectable permite una prueba de
-// alcance real (least-privilege) en producción, sin romper los tests.
+// alcance real (least-privilege) en producción, sin romper los tests. Los repos con
+// `provenance:'create'` NO se prueban (no tienen URL todavía · #4800).
 // -----------------------------------------------------------------------------
 function verifyAccess(descriptor, deps = {}) {
   const targets = [];
-  for (const repo of descriptor.repositories || []) targets.push({ kind: 'repo', id: repo.id, url: repo.url });
+  for (const repo of descriptor.repositories || []) {
+    if (descriptorLib.repoProvenance(repo) === 'create') continue; // sin URL: no se prueba.
+    targets.push({ kind: 'repo', id: repo.id, url: repo.url });
+  }
   if (descriptor.board && descriptor.board.ref) targets.push({ kind: 'board', id: 'board', url: descriptor.board.ref });
 
   const results = [];
@@ -309,6 +355,8 @@ module.exports = {
   assertUrlAllowed,
   isPrivateOrLoopbackHost,
   isIpLiteral,
+  parseOwnerRepo,
+  defaultProbeAccess,
   verifyAccess,
   dryRun,
   runBootstrap,

@@ -188,3 +188,58 @@ test('bootstrap desde path inexistente ⇒ error como dato', () => {
   const res = b.runBootstrap({ descriptorPath: '/no/existe.json', mode: 'dry-run' });
   assert.equal(res.ok, false);
 });
+
+// -----------------------------------------------------------------------------
+// #4800 — probeAccess real (CA-2) + provenance:create no se prueba
+// -----------------------------------------------------------------------------
+
+test('CA-2: verifyAccess con probeAccess real → repo existente accesible ⇒ reachable=true', () => {
+  const desc = validDescriptor();
+  const res = b.verifyAccess(desc, { probeAccess: () => true });
+  assert.equal(res.ok, true);
+  const repo = res.targets.find((t) => t.kind === 'repo');
+  assert.equal(repo.reachable, true);
+});
+
+test('CA-2: verifyAccess con probeAccess real → repo inaccesible ⇒ reachable=false ⇒ rechazo', () => {
+  const desc = validDescriptor();
+  const res = b.verifyAccess(desc, { probeAccess: (t) => t.kind !== 'repo' });
+  assert.equal(res.ok, false);
+  const repo = res.targets.find((t) => t.kind === 'repo');
+  assert.equal(repo.reachable, false);
+});
+
+test('#4800: repo provenance:create NO se prueba (no tiene URL todavía)', () => {
+  const desc = validDescriptor({
+    repositories: [{ id: 'main', role: 'primary', provenance: 'create', create: { name: 'store', org: 'intrale' } }],
+  });
+  let probedRepo = false;
+  const res = b.verifyAccess(desc, { probeAccess: (t) => { if (t.kind === 'repo') probedRepo = true; return true; } });
+  assert.equal(probedRepo, false, 'el repo create nunca debe ser probado');
+  assert.equal(res.targets.some((t) => t.kind === 'repo'), false);
+  assert.equal(res.ok, true);
+});
+
+test('#4800: defaultProbeAccess parsea owner/repo e invoca gh repo view por array de args', () => {
+  const calls = [];
+  const reachable = b.defaultProbeAccess(
+    { kind: 'repo', id: 'main', url: 'https://github.com/intrale/store' },
+    { execFile: (cmd, args) => { calls.push({ cmd, args }); return Buffer.from('{"name":"store"}'); } },
+  );
+  assert.equal(reachable, true);
+  assert.equal(calls[0].cmd, 'gh');
+  assert.deepEqual(calls[0].args, ['repo', 'view', 'intrale/store', '--json', 'name']);
+});
+
+test('#4800: defaultProbeAccess ⇒ false cuando gh repo view falla (repo inexistente/sin acceso)', () => {
+  const reachable = b.defaultProbeAccess(
+    { kind: 'repo', id: 'main', url: 'https://github.com/intrale/nope' },
+    { execFile: () => { throw new Error('gh: Not Found'); } },
+  );
+  assert.equal(reachable, false);
+});
+
+test('#4800: parseOwnerRepo extrae owner/repo y rechaza URLs sin path', () => {
+  assert.deepEqual(b.parseOwnerRepo('https://github.com/intrale/store.git'), { owner: 'intrale', repo: 'store' });
+  assert.equal(b.parseOwnerRepo('https://github.com/'), null);
+});

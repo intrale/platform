@@ -99,10 +99,25 @@ function stepIdentity() {
 }
 
 function stepRepos() {
+    // #4800 — Selector de origen del repo primario: segmented control (no dropdown),
+    // default seguro "Usar existente" (preserva el flujo actual · CA-3). "Crear nuevo"
+    // es opt-in y togglea la UI: existente → input URL; crear → nombre/org/visibilidad.
     return `<fieldset class="ow-section ow-hidden" data-step="1">
       <legend>2 · Repositorios y tablero</legend>
       <div class="ow-note">Solo <code>https://</code> hacia hosts aprobados (GitHub). Las IPs internas/loopback y hosts fuera de la allowlist se rechazan (anti-SSRF).</div>
-      ${field('Repo primario (URL)', 'ow-repo-url', { placeholder: 'https://github.com/acme/store', hint: 'URL https del repositorio primario.' })}
+      <div class="ow-seg" role="tablist" aria-label="Origen del repositorio primario">
+        <button type="button" class="ow-seg-btn ow-seg-active" id="ow-repo-mode-existing" data-mode="existing" role="tab" aria-selected="true" onclick="owRepoMode('existing')">Usar existente</button>
+        <button type="button" class="ow-seg-btn" id="ow-repo-mode-create" data-mode="create" role="tab" aria-selected="false" onclick="owRepoMode('create')">Crear nuevo</button>
+      </div>
+      <div id="ow-repo-existing" data-repo-mode="existing">
+        ${field('Repo primario (URL)', 'ow-repo-url', { placeholder: 'https://github.com/acme/store', hint: 'URL https del repositorio primario existente.' })}
+      </div>
+      <div id="ow-repo-create" class="ow-hidden" data-repo-mode="create">
+        <div class="ow-note">El kernel crea el repo con el token del pipeline: <b>privado por defecto</b>, sólo en orgs autorizadas. La URL se completa sola al alta.</div>
+        ${field('Nombre del repo', 'ow-repo-name', { placeholder: 'store', hint: 'letras, dígitos, punto, guion y guion bajo (máx 100).' })}
+        ${field('Organización', 'ow-repo-org', { placeholder: 'intrale', hint: 'debe estar en la allowlist de creación del kernel.' })}
+        ${selectField('Visibilidad', 'ow-repo-visibility', ['private', 'public'], { hint: 'private por defecto; public sólo si es intencional.' })}
+      </div>
       ${field('Repo ID', 'ow-repo-id', { placeholder: 'main' })}
       ${field('Base ref por defecto', 'ow-repo-baseref', { placeholder: 'main' })}
       ${field('Tablero (URL del Project)', 'ow-board-ref', { placeholder: 'https://github.com/orgs/acme/projects/1' })}
@@ -151,6 +166,10 @@ function onboardingWizardStyle() {
 .ow-section{border:1px solid var(--in-border,rgba(255,255,255,.1));border-radius:12px;padding:14px 16px;margin:0}
 .ow-section legend{font-size:12.5px;font-weight:800;color:var(--in-fg,#e6edf3);padding:0 6px;display:flex;align-items:center;gap:8px}
 .ow-hidden{display:none}
+.ow-seg{display:inline-flex;gap:4px;background:rgba(255,255,255,.04);border:1px solid var(--in-border,rgba(255,255,255,.12));border-radius:999px;padding:3px;margin-bottom:12px}
+.ow-seg-btn{font-size:12px;font-weight:800;color:var(--in-fg-dim,#8A93A6);background:transparent;border:0;border-radius:999px;padding:6px 16px;cursor:pointer}
+.ow-seg-btn:focus-visible{outline:2px solid var(--brand-cyan,#00D6FF);outline-offset:2px}
+.ow-seg-active{color:#001b22;background:var(--brand-cyan,#00D6FF)}
 .ow-field{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
 .ow-label{font-size:11.5px;font-weight:700;color:var(--in-fg-dim,#8A93A6)}
 .ow-input{background:var(--in-bg-2,#1C2128);border:1px solid var(--in-border,rgba(255,255,255,.12));border-radius:8px;padding:8px 11px;font-size:13px;color:var(--in-fg,#e6edf3)}
@@ -224,13 +243,36 @@ function owShowStep(n){
   var sub = document.getElementById('ow-submit'); if(sub) sub.style.display = (OW_STEP === OW_MAX - 1) ? '' : 'none';
 }
 function owStep(delta){ owShowStep(OW_STEP + delta); }
+// #4800 — Modo de origen del repo primario. Default 'existing' (CA-3, no rompe el flujo).
+var OW_REPO_MODE = 'existing';
+function owRepoMode(mode){
+  OW_REPO_MODE = (mode === 'create') ? 'create' : 'existing';
+  var ex = document.getElementById('ow-repo-existing');
+  var cr = document.getElementById('ow-repo-create');
+  if(ex) ex.classList.toggle('ow-hidden', OW_REPO_MODE !== 'existing');
+  if(cr) cr.classList.toggle('ow-hidden', OW_REPO_MODE !== 'create');
+  ['existing','create'].forEach(function(m){
+    var b = document.getElementById('ow-repo-mode-' + m);
+    if(b){ b.classList.toggle('ow-seg-active', m === OW_REPO_MODE); b.setAttribute('aria-selected', m === OW_REPO_MODE ? 'true' : 'false'); }
+  });
+}
 // Construye el descriptor desde el form. SÓLO referencias de credenciales (SEC-4).
 function owBuildDescriptor(){
   var d = { schemaVersion: '1.0' };
   d.identity = { projectId: owVal('ow-projectId'), name: owVal('ow-name') };
   var desc = owVal('ow-description'); if(desc) d.identity.description = desc;
-  var repo = { id: owVal('ow-repo-id') || 'main', url: owVal('ow-repo-url'), role: 'primary' };
+  var repo = { id: owVal('ow-repo-id') || 'main', role: 'primary' };
   var baseref = owVal('ow-repo-baseref'); if(baseref) repo.defaultBaseRef = baseref;
+  if(OW_REPO_MODE === 'create'){
+    // provenance:create → sin url; el kernel la completa al crear el repo (#4800).
+    repo.provenance = 'create';
+    var create = { name: owVal('ow-repo-name'), org: owVal('ow-repo-org') };
+    var vis = owVal('ow-repo-visibility'); if(vis) create.visibility = vis;
+    repo.create = create;
+  } else {
+    repo.provenance = 'existing';
+    repo.url = owVal('ow-repo-url');
+  }
   d.repositories = [repo];
   var routing = owList('ow-board-routing').map(function(pair){
     var kv = pair.split('='); return { label: (kv[0]||'').trim(), capability: (kv[1]||'').trim() };
@@ -276,7 +318,7 @@ async function owSubmit(){
   } catch(e){ owRenderResult(false, 'Error enviando el alta: ' + e.message); }
   finally { if(sub) sub.disabled = false; }
 }
-(function owInit(){ try { owShowStep(0); } catch(e){} })();
+(function owInit(){ try { owShowStep(0); owRepoMode('existing'); } catch(e){} })();
 `;
 }
 

