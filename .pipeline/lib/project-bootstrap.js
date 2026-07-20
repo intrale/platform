@@ -21,6 +21,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const descriptorLib = require('./project-descriptor');
+// El store durable y su error de conflicto se cargan de forma perezosa (require
+// dentro del path durable) para NO pagar el costo de Ajv/schema del kernel en el
+// path FS por defecto (`kernel.durable:false`), que es el hot-path vigente.
 
 // -----------------------------------------------------------------------------
 // SSRF (CA-D3 · requisito de seguridad #4). `repositories[].url` y `board.ref`
@@ -190,7 +193,122 @@ function defaultRegisterProduct(entry, deps = {}) {
   };
   fs.mkdirSync(path.dirname(registryPath), { recursive: true });
   fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2) + '\n');
-  return { registryPath, status: 'onboarding' };
+  return { backend: 'fs', registryPath, status: 'onboarding' };
+}
+
+// -----------------------------------------------------------------------------
+// Write path DURABLE (#4821 · split 2/3 de #4804) — cutover bajo flag.
+//
+// Con `kernel.durable:true` el alta se persiste en el store del kernel (DynamoDB)
+// vía `store.putProduct`, NUNCA con `fs.writeFileSync(registry.json)` (evita el
+// split-brain FS↔DynamoDB para la misma fuente de verdad · CA-6/security#1). El
+// flag se lee UNA sola vez al inicio de la operación (`runBootstrapDurable`), no
+// mid-flow.
+//
+// Reglas de seguridad enforced acá:
+//   - CA-9  · `contextProjectId` deriva de la credencial de la instancia
+//            (`deps.contextProjectId` / store inyectado), JAMÁS del descriptor o
+//            request del wizard (anti tenant-hopping).
+//   - CA-10 · la validación (`validateDescriptor` + `maxItemBytes` + schema) la
+//            impone `store.putProduct` ANTES de escribir; nunca `driver.putItem`
+//            directo (security#6).
+//   - CA-3  · el orden producto→catálogo lo garantiza el propio store; un fallo
+//            del 2º paso deja un producto huérfano INVISIBLE a `listProducts`.
+//   - CA-5 / CA-14 / CA-15 · el error al operador es accionable en español y NO
+//            expone ARN / tableName / SK / partición (ver `mapDurableError`).
+// -----------------------------------------------------------------------------
+
+/**
+ * Lee el flag de cutover `kernel.durable` UNA sola vez. Default `false`
+ * (coexistencia: el FS actual no cambia · CA-6).
+ * @param {object} [config]  objeto de config ya parseado ({ kernel:{ durable } } o plano).
+ * @returns {boolean}
+ */
+function readDurableFlag(config) {
+  const c = config && typeof config === 'object' ? config : {};
+  const kernel = c.kernel && typeof c.kernel === 'object' ? c.kernel : c;
+  return kernel.durable === true;
+}
+
+/**
+ * Mapea un error del store a un mensaje accionable para el operador SIN fugas
+ * técnicas (CA-5 / CA-14 / CA-15). El detalle crudo (que puede incluir SK /
+ * tableName / partición) queda SÓLO en `internal`, para logs internos — nunca se
+ * renderiza al operador.
+ * @returns {{ code:string, operator:string, internal:string }}
+ */
+function mapDurableError(e) {
+  const name = e && e.name ? String(e.name) : '';
+  const internal = e && e.message ? String(e.message) : 'error desconocido';
+  // Conflicto condicional (ConditionalCheckFailedException): fail-closed, el
+  // estado NO quedó a medias (CA-5) — distinto de un fallo de infra genérico.
+  if (name === 'ConditionalCheckFailedError' || name === 'ConditionalCheckFailedException') {
+    return {
+      code: 'conflict',
+      operator: 'No se pudo completar el alta. El estado no quedó a medias; podés reintentar.',
+      internal,
+    };
+  }
+  // Rechazo de validación / aislamiento / tamaño del store: fail-closed, no se
+  // escribió nada. Accionable pero sin exponer internals.
+  if (name === 'KernelStoreValidationError' || name === 'KernelStoreIsolationError' || name === 'KernelStoreSizeError') {
+    return {
+      code: 'validation',
+      operator: 'El alta no pasó las validaciones del store del kernel; revisá el descriptor y reintentá.',
+      internal,
+    };
+  }
+  // Fallo de infraestructura genérico (store no disponible, red, driver).
+  return {
+    code: 'infra',
+    operator: 'El store del kernel no está disponible en este momento; el alta no se completó. Reintentá más tarde.',
+    internal,
+  };
+}
+
+/**
+ * Registro DURABLE del producto (equivalente durable de `defaultRegisterProduct`).
+ * Persiste SIEMPRE vía `store.putProduct` — nunca `driver.putItem` directo.
+ *
+ * @param {{projectId:string,name:string}} entry  identidad del producto (del descriptor validado).
+ * @param {object} deps
+ * @param {object} [deps.store]             store ya instanciado (tests / caller). Si falta se crea con `contextProjectId`.
+ * @param {string} [deps.contextProjectId]  projectId de la instancia — DEBE derivar de la credencial (CA-9), nunca del descriptor.
+ * @param {object} [deps.config]            config del kernel para `createKernelStore`.
+ * @param {function} [deps.onAlert]         callback de alerta fail-closed del store.
+ * @returns {Promise<{backend:'durable',status:'onboarding'}>}
+ */
+async function registerProductDurable(entry, deps = {}) {
+  // CA-9 — el contexto de aislamiento NUNCA se deriva del payload entrante.
+  // Sólo del store inyectado o de `deps.contextProjectId` (scope de credencial).
+  let store = deps.store;
+  if (!store) {
+    const contextProjectId = deps.contextProjectId;
+    if (!contextProjectId) {
+      // Fail-closed: sin contexto de credencial no se puede escribir de forma
+      // aislada. NO se cae a FS acá (eso lo decide el flag, arriba).
+      const err = new Error('contextProjectId ausente: debe derivar de la credencial de la instancia (CA-9), nunca del descriptor del wizard');
+      err.name = 'KernelStoreValidationError';
+      throw err;
+    }
+    // require perezoso — sólo se paga en el path durable.
+    const { createKernelStore } = require('./kernel-store');
+    store = createKernelStore({
+      contextProjectId,
+      config: deps.config,
+      onAlert: typeof deps.onAlert === 'function' ? deps.onAlert : undefined,
+    });
+  }
+  // El body del producto espeja el registro FS (`{ status, name }`) pero como
+  // entrada durable del catálogo. `store.putProduct` valida (schema + injection +
+  // maxItemBytes) ANTES de escribir y ordena producto→catálogo (CA-3/CA-10).
+  await store.putProduct({
+    productId: entry.projectId,
+    name: entry.name,
+    status: 'onboarding',
+  });
+  // No se expone SK / tabla / partición al caller (CA-14/15).
+  return { backend: 'durable', status: 'onboarding' };
 }
 
 /**
@@ -267,6 +385,89 @@ function runBootstrap(args = {}) {
   };
 }
 
+/**
+ * Orquesta el bootstrap con soporte de cutover DURABLE (#4821). Async porque el
+ * write path durable (`store.putProduct`) es async.
+ *
+ * El flag `kernel.durable` se lee UNA sola vez al inicio (CA-6/security#1):
+ *   - `false` (default) ⇒ delega en el `runBootstrap` SÍNCRONO (FS intacto — cero
+ *     regresión de coexistencia). Nunca toca el store.
+ *   - `true`            ⇒ reusa TODAS las validaciones side-effect-free de
+ *     `runBootstrap` en dry-run (schema + SSRF + gate de firma + dry-run) y, si el
+ *     modo es 'full', persiste el alta vía `registerProductDurable`
+ *     (`store.putProduct`). NUNCA combina `fs.readFileSync(registry.json)` +
+ *     `store.putProduct` en el mismo path (anti split-brain).
+ *
+ * Devuelve el MISMO shape error-as-data que `runBootstrap`.
+ *
+ * @param {object} args  igual que `runBootstrap`, más:
+ * @param {object} [args.config]            config del kernel (para leer el flag y crear el store).
+ * @param {string} [args.contextProjectId]  contexto de credencial de la instancia (CA-9).
+ * @param {object} [args.store]             store inyectado (tests).
+ * @param {function} [args.onAlert]         callback de alerta del store.
+ * @returns {Promise<object>}
+ */
+async function runBootstrapDurable(args = {}) {
+  const durable = readDurableFlag(args.config); // leído UNA vez (CA-6/security#1)
+  const mode = args.mode === 'full' ? 'full' : 'dry-run';
+
+  if (!durable) {
+    // Coexistencia (CA-6): comportamiento FS actual, sin tocar el store.
+    return runBootstrap(args);
+  }
+
+  // Modo durable: reusar TODAS las validaciones side-effect-free (dry-run) de
+  // runBootstrap — no se duplica el gate de schema/SSRF/firma.
+  const pre = runBootstrap({ ...args, mode: 'dry-run' });
+  if (!pre.ok) return pre;               // validación/acceso/dry-run falló → surface tal cual
+  if (mode !== 'full') return pre;       // dry-run: nada que registrar (sin efectos)
+
+  // El descriptor ya validó en `pre`; recuperarlo (side-effect-free) para el alta.
+  const validation = args.descriptor
+    ? descriptorLib.validateDescriptor(args.descriptor, { expectedChecksum: args.expectedChecksum })
+    : descriptorLib.loadDescriptor(args.descriptorPath, { expectedChecksum: args.expectedChecksum });
+  const descriptor = validation.descriptor;
+  const entry = { projectId: descriptor.identity.projectId, name: descriptor.identity.name };
+
+  try {
+    // Permite inyectar un registrador durable async (paridad con deps.registerProduct).
+    const register = typeof args.deps === 'object' && typeof args.deps.registerProductDurable === 'function'
+      ? await args.deps.registerProductDurable(entry, args)
+      : await registerProductDurable(entry, {
+          store: args.store,
+          contextProjectId: args.contextProjectId,
+          config: args.config,
+          onAlert: args.onAlert,
+        });
+    return {
+      ok: true,
+      stage: 'registered',
+      mode,
+      status: 'onboarding',
+      backend: 'durable',
+      projectId: entry.projectId,
+      access: pre.access,
+      dryRun: pre.dryRun,
+      register,
+      human: renderHuman({ ok: true, stage: 'registered', projectId: entry.projectId, status: 'onboarding', backend: 'durable', access: pre.access, dryRun: pre.dryRun }),
+    };
+  } catch (e) {
+    // CA-4/CA-5/CA-14/15 — fail-closed, error accionable sin fugas técnicas.
+    const mapped = mapDurableError(e);
+    return {
+      ok: false,
+      stage: 'register:durable',
+      mode,
+      backend: 'durable',
+      projectId: entry.projectId,
+      errorCode: mapped.code,
+      internal: mapped.internal, // sólo para logs internos — renderHuman NO lo imprime
+      errors: [{ path: 'register', detail: mapped.operator }],
+      human: renderHuman({ ok: false, stage: 'register:durable', errors: [{ detail: mapped.operator }] }),
+    };
+  }
+}
+
 // -----------------------------------------------------------------------------
 // Render humano (guideline UX G1/G2/G3). Secretos redactados por diseño: el
 // resultado NUNCA contiene valores de credenciales resueltas.
@@ -297,7 +498,13 @@ function renderHuman(res) {
     lines.push(`   gates: gate0=${res.dryRun.gates.gate0} gate2=${res.dryRun.gates.gate2} visual=${res.dryRun.gates.visual}`);
   }
   if (res.status === 'onboarding') {
-    lines.push(`   producto ${res.projectId} registrado en estado ONBOARDING (inactivo) — pendiente de aprobación humana para activarse`);
+    // UX G2 (#4821): diferenciar el backend que respondió — durable confirma
+    // persistencia en el store del kernel; FS mantiene el copy vigente.
+    if (res.backend === 'durable') {
+      lines.push(`   producto ${res.projectId} persistido de forma durable en el store del kernel — estado ONBOARDING (inactivo), pendiente de aprobación humana para activarse`);
+    } else {
+      lines.push(`   producto ${res.projectId} registrado en estado ONBOARDING (inactivo) — pendiente de aprobación humana para activarse`);
+    }
   } else {
     lines.push(`   (dry-run: no se registró el producto — sin efectos de lado)`);
   }
@@ -312,6 +519,11 @@ module.exports = {
   verifyAccess,
   dryRun,
   runBootstrap,
+  runBootstrapDurable,
+  registerProductDurable,
+  defaultRegisterProduct,
+  readDurableFlag,
+  mapDurableError,
   renderHuman,
   DEFAULT_REGISTRY_PATH,
 };

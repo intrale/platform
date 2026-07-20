@@ -1542,6 +1542,29 @@ deliverable_gate:
   gate_mode: dry-run
 
 # =============================================================================
+# KERNEL STORE — persistencia durable del alta de producto (#4821 · split de #4804)
+# =============================================================================
+# Flag de CUTOVER ÚNICO para el store durable del kernel (DynamoDB). Gobierna
+# lectura Y escritura del alta de producto de forma consistente (CA-6):
+#   - durable: false (default) ⇒ el alta escribe `descriptors/registry.json` y el
+#     catálogo se lee de `descriptors/*.json` (FS = fuente de verdad). Cero cambio
+#     respecto del comportamiento vigente.
+#   - durable: true            ⇒ el alta persiste vía `store.putProduct` y el
+#     catálogo se proyecta desde `store.listProducts()`. NUNCA coexisten FS-read +
+#     DynamoDB-write para la misma fuente de verdad.
+#
+# El flag se lee UNA sola vez por operación (no mid-flow). NO activar `true` hasta
+# que #4820 (driver de producción + `tableName`/región/naming + provisioning IAM)
+# esté mergeado a `main` y se haya corrido `lib/kernel-store-migrate.js` para
+# migrar el estado FS previo. `tableName`/`region` son placeholders vacíos: los
+# entrega #4820. Con ellos vacíos, activar `durable:true` falla fail-closed
+# (createKernelStore exige tableName para el driver real).
+kernel:
+  durable: false
+  tableName: ""   # placeholder — lo entrega #4820 (naming/región del kernel, nunca hardcode)
+  region: ""      # placeholder — lo entrega #4820
+
+# =============================================================================
 # GATE 3 — Gobernanza de las acciones autónomas del kernel (#4577, épico #4570)
 # =============================================================================
 # El kernel se muta a sí mismo (re-seeds de ola, realigns de allowlist, flags de

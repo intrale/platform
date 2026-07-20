@@ -97,9 +97,135 @@ function listProducts(descriptorsDir) {
     return out;
 }
 
+// =============================================================================
+// Rama DURABLE (#4821 · split 2/3 de #4804) — lectura del catálogo desde el store.
+//
+// Con `kernel.durable:true` el catálogo se proyecta desde `store.listProducts()`
+// en vez de barrer `.pipeline/descriptors/*.json`. El store es fail-closed: lanza
+// `KernelStoreValidationError` (o de aislamiento) + `onAlert` ante catálogo
+// corrupto / ítem de otra partición.
+//
+// FALLBACK SELECTIVO (security#2 / CA-4):
+//   - `store no disponible (infra)` (red / driver / tabla ausente) ⇒ PUEDE caer a
+//     FS fallback durante la coexistencia, loggeando el modo degradado.
+//   - error de VALIDACIÓN / alerta de integridad (`KernelStoreValidationError` /
+//     `KernelStoreIsolationError`) ⇒ NO cae a FS: propaga/escala. Un fallback
+//     ciego ante tampering convertiría un ataque en "todo verde con datos viejos".
+//
+// Se detecta el tipo de error por `err.name` (sin `require('./kernel-store')`,
+// para mantener este módulo liviano y dependency-free como el barrido FS).
+// =============================================================================
+
+// Errores del store que representan integridad comprometida (NO permiten fallback).
+const INTEGRITY_ERROR_NAMES = Object.freeze(new Set([
+    'KernelStoreValidationError',
+    'KernelStoreIsolationError',
+]));
+
+function isIntegrityError(err) {
+    return !!(err && err.name && INTEGRITY_ERROR_NAMES.has(String(err.name)));
+}
+
+// Proyección pública de UN producto durable (body de `store.listProducts()`).
+// Whitelist explícita, espeja `projectDescriptor` (no passthrough del ítem crudo).
+function projectStoreProduct(body) {
+    const b = (body && typeof body === 'object') ? body : {};
+    const projectId = b.productId;
+    if (!isSafeProjectId(projectId)) return null;
+    return {
+        projectId,
+        name: (typeof b.name === 'string' && b.name) ? b.name : projectId,
+        status: (typeof b.status === 'string' && b.status) ? b.status : 'active',
+        // El store no persiste `role` (metadato de orden FS); en durable el rol se
+        // deriva del descriptor, no del catálogo. Se marca 'primary' por defecto
+        // para no romper el orden estable del render (un solo producto por partición).
+        role: 'primary',
+    };
+}
+
+function sortCatalog(out) {
+    out.sort((a, b) => {
+        if (a.role !== b.role) return a.role === 'primary' ? -1 : 1;
+        return a.projectId < b.projectId ? -1 : (a.projectId > b.projectId ? 1 : 0);
+    });
+    return out;
+}
+
+/**
+ * Enumera el catálogo desde el store durable del kernel. Fail-closed ante
+ * integridad; fallback selectivo a FS SÓLO ante store no disponible (infra).
+ *
+ * @param {object} deps
+ * @param {object}  deps.store              store del kernel (con `listProducts()` async).
+ * @param {string} [deps.fsFallbackDir]     dir de descriptores para el fallback FS (coexistencia).
+ * @param {function} [deps.onDegraded]      callback ({reason}) cuando cae a FS por infra.
+ * @returns {Promise<Array<{projectId,name,status,role}>>}
+ */
+async function listProductsDurable(deps = {}) {
+    const store = deps.store;
+    if (!store || typeof store.listProducts !== 'function') {
+        throw new Error('listProductsDurable requiere un store con listProducts()');
+    }
+    let raw;
+    try {
+        raw = await store.listProducts();
+    } catch (err) {
+        // Integridad / tampering ⇒ NO fallback (security#2). Propaga.
+        if (isIntegrityError(err)) throw err;
+        // Infra (store no disponible) ⇒ fallback selectivo a FS si hay dir.
+        if (typeof deps.fsFallbackDir === 'string' && deps.fsFallbackDir) {
+            if (typeof deps.onDegraded === 'function') {
+                // Sin exponer internals del store al consumidor (CA-14/15): sólo el motivo.
+                deps.onDegraded({ reason: 'store no disponible — catálogo desde respaldo local (FS)' });
+            }
+            return listProducts(deps.fsFallbackDir);
+        }
+        // Sin dir de fallback configurado: propaga el error de infra.
+        throw err;
+    }
+    const seen = new Set();
+    const out = [];
+    for (const body of Array.isArray(raw) ? raw : []) {
+        const proj = projectStoreProduct(body);
+        if (!proj || seen.has(proj.projectId)) continue;
+        seen.add(proj.projectId);
+        out.push(proj);
+    }
+    return sortCatalog(out);
+}
+
+/**
+ * Resolver de catálogo gobernado por el flag `kernel.durable` (CA-6). Punto de
+ * entrada único para callers que quieran soportar el cutover:
+ *   - `durable:false` (default) ⇒ barrido FS SÍNCRONO actual (envuelto en Promise).
+ *   - `durable:true`            ⇒ proyección durable con fallback selectivo.
+ *
+ * @param {object} opts
+ * @param {boolean} opts.durable            flag leído UNA vez por el caller.
+ * @param {string} [opts.descriptorsDir]    dir de descriptores (FS y fallback).
+ * @param {object} [opts.store]             store del kernel (requerido si durable).
+ * @param {function} [opts.onDegraded]      callback de modo degradado.
+ * @returns {Promise<Array<{projectId,name,status,role}>>}
+ */
+async function listProductsResolved(opts = {}) {
+    if (!opts.durable) {
+        // Coexistencia (CA-6): FS intacto.
+        return listProducts(opts.descriptorsDir);
+    }
+    return listProductsDurable({
+        store: opts.store,
+        fsFallbackDir: opts.descriptorsDir,
+        onDegraded: opts.onDegraded,
+    });
+}
+
 module.exports = {
     listProducts,
+    listProductsDurable,
+    listProductsResolved,
     projectDescriptor,
+    projectStoreProduct,
     isSafeProjectId,
+    isIntegrityError,
     SAFE_ID_RE,
 };
