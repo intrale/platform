@@ -459,3 +459,111 @@ test('CA-7/CA-3: deriveProviderBudget devuelve copia y valida Σ ≤ 100% impera
   assert.deepEqual(budget, { anthropic: 60, codex: 40 });
   assert.throws(() => d.deriveProviderBudget({ thresholds: { providerBudget: { a: 60, b: 60 } } }), /100%/);
 });
+
+// -----------------------------------------------------------------------------
+// #4807 — deriveProviderOrder (CA-2 / CA-5): orden de providers fail-closed.
+// -----------------------------------------------------------------------------
+
+const KERNEL_DEFAULT_ORDER = ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim'];
+
+test('CA-1/CA-6: deriveProviderOrder ausente devuelve el orden default del kernel', () => {
+  assert.deepEqual(d.deriveProviderOrder({}), KERNEL_DEFAULT_ORDER);
+  assert.deepEqual(d.deriveProviderOrder(withThresholds({})), KERNEL_DEFAULT_ORDER);
+  assert.deepEqual(d.deriveProviderOrder({ thresholds: { providerOrder: [] } }), KERNEL_DEFAULT_ORDER);
+});
+
+test('CA-2: deriveProviderOrder preserva un orden válido tal cual (copia defensiva)', () => {
+  const custom = ['cerebras', 'anthropic', 'nvidia-nim'];
+  const out = d.deriveProviderOrder({ thresholds: { providerOrder: custom } });
+  assert.deepEqual(out, custom);
+  out.push('mutado');
+  assert.deepEqual(custom, ['cerebras', 'anthropic', 'nvidia-nim'], 'no debe mutar la entrada');
+});
+
+test('CA-5: deriveProviderOrder rechaza fail-closed un provider fuera de la allowlist', () => {
+  const out = d.deriveProviderOrder({ thresholds: { providerOrder: ['anthropic', 'groq'] } });
+  assert.deepEqual(out, KERNEL_DEFAULT_ORDER);
+  assert.equal(out.includes('groq'), false);
+});
+
+test('CA-5: deriveProviderOrder rechaza fail-closed duplicados', () => {
+  const out = d.deriveProviderOrder({ thresholds: { providerOrder: ['anthropic', 'anthropic'] } });
+  assert.deepEqual(out, KERNEL_DEFAULT_ORDER);
+});
+
+test('CA-5: deriveProviderOrder nunca expone `deterministic`', () => {
+  const out = d.deriveProviderOrder({ thresholds: { providerOrder: ['deterministic', 'anthropic'] } });
+  assert.equal(out.includes('deterministic'), false);
+  assert.equal(d.KERNEL_PROVIDER_ALLOWLIST.includes('deterministic'), false);
+});
+
+// Drift-guard (Riesgo 2): enum(providerOrder) del schema == VALID_PROVIDERS \ deterministic.
+test('#4807 drift-guard: enum de providerOrder == VALID_PROVIDERS sin deterministic', () => {
+  const { VALID_PROVIDERS } = require('../agent-launcher/resolve-provider');
+  const schemaEnum = d.schema.properties.thresholds.properties.providerOrder.items.enum;
+  const canonical = VALID_PROVIDERS.filter((p) => p !== 'deterministic');
+  assert.deepEqual([...schemaEnum].sort(), [...canonical].sort(),
+    'el enum del schema divergió de la fuente canónica VALID_PROVIDERS (drift)');
+  assert.deepEqual([...d.KERNEL_PROVIDER_ALLOWLIST].sort(), [...canonical].sort());
+});
+
+test('#4807: providerOrder válido pasa validateDescriptor; valor fuera del enum lo rechaza', () => {
+  const ok = d.validateDescriptor(withThresholds({ providerOrder: ['anthropic', 'cerebras'] }));
+  assert.equal(ok.valid, true, JSON.stringify(ok.errors));
+  const bad = d.validateDescriptor(withThresholds({ providerOrder: ['anthropic', 'groq'] }));
+  assert.equal(bad.valid, false);
+  assert.equal(bad.stage, 'schema');
+  const dup = d.validateDescriptor(withThresholds({ providerOrder: ['anthropic', 'anthropic'] }));
+  assert.equal(dup.valid, false);
+  assert.equal(dup.stage, 'schema');
+});
+
+// -----------------------------------------------------------------------------
+// #4807 — CA-5: endurecimiento de patrón de defaultBaseRef / admissionLabels.
+// -----------------------------------------------------------------------------
+
+function withRepoBaseRef(ref) {
+  return validDescriptor({
+    repositories: [{ id: 'main', url: 'https://github.com/acme/store', role: 'primary', defaultBaseRef: ref }],
+  });
+}
+
+for (const goodRef of ['main', 'develop', 'feature/x', 'release-1.2.3', 'agent/4807-foo']) {
+  test(`CA-5: defaultBaseRef acepta ref git válido ${JSON.stringify(goodRef)}`, () => {
+    const res = d.validateDescriptor(withRepoBaseRef(goodRef));
+    assert.equal(res.valid, true, JSON.stringify(res.errors));
+  });
+}
+
+for (const badRef of ['..', 'a..b', '-x', '--force', '/leading', 'trailing/', 'a b', 'a;rm -rf', 'a$b', 'a`b']) {
+  test(`CA-5: defaultBaseRef rechaza ref inseguro ${JSON.stringify(badRef)}`, () => {
+    const res = d.validateDescriptor(withRepoBaseRef(badRef));
+    assert.equal(res.valid, false, `${JSON.stringify(badRef)} debería rechazarse`);
+    assert.equal(res.stage, 'schema');
+  });
+}
+
+function withLabels(labels) {
+  return validDescriptor({
+    board: {
+      ref: 'https://github.com/orgs/acme/projects/1',
+      admissionLabels: labels,
+      routing: [{ label: 'area:backend', capability: 'backend' }],
+    },
+  });
+}
+
+for (const goodLabel of ['Ready', 'needs-definition', 'area:backend', 'app:client', 'size_medium']) {
+  test(`CA-5: admissionLabels acepta label válido ${JSON.stringify(goodLabel)}`, () => {
+    const res = d.validateDescriptor(withLabels([goodLabel]));
+    assert.equal(res.valid, true, JSON.stringify(res.errors));
+  });
+}
+
+for (const badLabel of ['-x', '--force', ';rm', '$(x)', '`x`', '\tx']) {
+  test(`CA-5: admissionLabels rechaza label inseguro ${JSON.stringify(badLabel)}`, () => {
+    const res = d.validateDescriptor(withLabels([badLabel]));
+    assert.equal(res.valid, false, `${JSON.stringify(badLabel)} debería rechazarse`);
+    assert.equal(res.stage, 'schema');
+  });
+}

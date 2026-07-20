@@ -18,6 +18,11 @@
 
 // Versión de esquema soportada actualmente por el kernel. Al introducir `1.1`
 // se agrega '1.1' a KNOWN_VERSIONS y un step en MIGRATION_STEPS ('1.0' -> '1.1').
+//
+// #4807 — `thresholds.providerOrder` es un campo ADITIVO y OPCIONAL: NO bumpea
+// `schemaVersion`. Un descriptor `1.0` sin `providerOrder` sigue siendo válido y
+// arranca con el orden default del kernel (fallback en `deriveProviderOrder`).
+// Compatible hacia atrás (CA-6) — no rompe descriptores ya registrados.
 const CURRENT_SCHEMA_VERSION = '1.0';
 
 // Todas las versiones que el kernel sabe migrar hacia CURRENT. El orden importa
