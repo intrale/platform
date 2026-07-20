@@ -106,6 +106,27 @@ test('CA-1.5: producto activo ofrece Pausar; pausado/onboarding ofrece Arrancar'
     assert.ok(intraleCard.length > 0);
 });
 
+test('#4799 CA-1: el header incluye el CTA "Nuevo producto" hacia el wizard (link literal same-origin)', () => {
+    const html = renderEstadoProductosSsr({ products: PRODUCTS, productState: PRODUCT_STATE });
+    // CTA presente como <a href> literal hacia ?view=onboarding (navegación GET solo-vista).
+    assert.ok(html.includes('href="/dashboard?view=onboarding"'), 'CTA apunta al wizard de alta');
+    assert.ok(html.includes('Nuevo producto'), 'texto visible del CTA');
+    // Reutiliza el sistema de diseño (ep-btn) sin heredar flex:1 (ep-btn-new).
+    assert.ok(html.includes('ep-btn ep-btn-start ep-btn-new'), 'jerarquía primaria sin estirarse a todo el ancho');
+    // Accesibilidad: emoji aria-hidden + aria-label descriptivo.
+    assert.ok(html.includes('aria-label="Crear un nuevo producto (abre el wizard de alta)"'), 'aria-label descriptivo');
+    // A08/CSRF: el CTA sólo navega (GET), no dispara la mutación del alta.
+    assert.ok(!html.includes('href="/api/product'), 'el CTA no dispara GET con efecto de estado');
+});
+
+test('#4799 CA-6: el href del CTA es literal y no interpola datos en banda (activeProductId)', () => {
+    const html = renderEstadoProductosSsr({ products: PRODUCTS, productState: PRODUCT_STATE, activeProductId: 'intrale-platform' });
+    // El destino del CTA es siempre el mismo path fijo, sin importar el producto activo.
+    assert.ok(html.includes('href="/dashboard?view=onboarding"'));
+    assert.ok(!html.includes('view=onboarding&'), 'sin query params extra concatenados');
+    assert.ok(!html.includes('onboarding?product'), 'sin productId interpolado en el href');
+});
+
 test('CA-5.1: sin productos legibles ⇒ una card de producto único (retro-compat)', () => {
     const html = renderEstadoProductosSsr({ products: [], productState: {} });
     const cards = html.match(/<article class="ep-card/g) || [];

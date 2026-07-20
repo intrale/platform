@@ -212,6 +212,7 @@ function estadoProductosStyle() {
 .ep-btn-start{color:#001b22;background:var(--brand-cyan,#00D6FF);border-color:var(--brand-cyan,#00D6FF)}
 .ep-btn-pause{color:var(--in-fg,#e6edf3);background:rgba(255,255,255,.05);border-color:var(--in-border,rgba(255,255,255,.16))}
 .ep-btn:disabled{opacity:.4;cursor:not-allowed}
+.ep-btn-new{flex:0 0 auto;text-decoration:none}
 .ep-result{margin-top:12px;font-size:12px;border-radius:9px;padding:10px 12px;display:none}
 .ep-result-ok{display:block;color:#9be9a8;background:rgba(63,185,80,.1);border:1px solid rgba(63,185,80,.3)}
 .ep-result-err{display:block;color:#fca5a5;background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.3)}
@@ -280,6 +281,10 @@ function renderEstadoProductosSsr(opts = {}) {
         + '<div class="ep-header">'
         + '<span class="ep-header-title"><span aria-hidden="true">🗂</span> Estado por producto</span>'
         + `<span class="ep-switch-slot">${switcher}</span>`
+        + '<a href="/dashboard?view=onboarding" class="ep-btn ep-btn-start ep-btn-new" '
+        + 'aria-label="Crear un nuevo producto (abre el wizard de alta)" '
+        + 'title="Nuevo producto">'
+        + '<span aria-hidden="true">➕</span> Nuevo producto</a>'
         + '</div>'
         + '<div class="ep-note">Cada card muestra el estado <b>aislado</b> de su producto (coordination-store namespaceado por <code>projectId</code>) — nunca datos de otro producto. Arrancar/Pausar delega en el kernel.</div>'
         + scoped
