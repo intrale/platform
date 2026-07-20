@@ -115,20 +115,6 @@ const deps = {
   commanderRouter: null,
 };
 
-// #4802 — Resuelve el allowlist de operador reutilizando la MISMA fuente que
-// `operator-gate` (`TELEGRAM_LEO_OPERATOR_CHAT_ID`), sin duplicar la lógica. Se
-// usa como gate authz de los callbacks privilegiados del Commander (CA-6/A01).
-// Fail-closed: ante cualquier error devuelve un Set vacío → rechaza todo.
-function resolveOperatorAllowlist() {
-  if (deps.resolveOperatorAllowlist) return deps.resolveOperatorAllowlist(); // tests
-  try {
-    return require('./lib/operator-gate').resolveOperatorAllowlist();
-  } catch (e) {
-    log(`Error resolviendo allowlist de operador: ${e.message}`);
-    return new Set();
-  }
-}
-
 async function sendMessage(text) {
   try {
     // Vía `deps.telegramRequest` (no el binding crudo) para inyectabilidad en
