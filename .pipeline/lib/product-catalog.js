@@ -90,16 +90,122 @@ function listProducts(descriptorsDir) {
     }
     // Orden estable: primario primero, luego alfabético por projectId (determinista
     // para el render SSR y los tests).
-    out.sort((a, b) => {
-        if (a.role !== b.role) return a.role === 'primary' ? -1 : 1;
-        return a.projectId < b.projectId ? -1 : (a.projectId > b.projectId ? 1 : 0);
-    });
+    out.sort(sortCatalog);
     return out;
+}
+
+// Comparador de orden estable compartido por el barrido FS y la proyección durable.
+function sortCatalog(a, b) {
+    if (a.role !== b.role) return a.role === 'primary' ? -1 : 1;
+    return a.projectId < b.projectId ? -1 : (a.projectId > b.projectId ? 1 : 0);
+}
+
+// -----------------------------------------------------------------------------
+// #4821 — Lectura del catálogo desde el store durable (read path del cutover).
+//
+// Proyección pública de UN body de producto tal como lo devuelve
+// `kernel-store.listProducts()` (`{ productId, name, status, descriptorRef? }`).
+// Whitelist explícita a la MISMA forma que `projectDescriptor` para que el
+// dashboard consuma indistinto de la fuente. Fail-closed en `projectId`.
+// -----------------------------------------------------------------------------
+function projectStoreProduct(body) {
+    const b = (body && typeof body === 'object') ? body : {};
+    const projectId = b.productId;
+    if (!isSafeProjectId(projectId)) return null;
+    return {
+        projectId,
+        name: (typeof b.name === 'string' && b.name) ? b.name : projectId,
+        status: (typeof b.status === 'string' && b.status) ? b.status : 'active',
+        // El body del store no transporta `role` (metadato de repos); el catálogo
+        // durable lista productos del contexto de la instancia como 'secondary'
+        // salvo que el body lo declare explícitamente.
+        role: (b.role === 'primary') ? 'primary' : 'secondary',
+    };
+}
+
+/**
+ * Enumera el catálogo resolviendo la fuente según el flag de cutover `kernel.durable`
+ * (#4821 · CA-6). Async porque el store durable lo es.
+ *
+ *   - `durable:false` (default) → barrido FS de `descriptorsDir` (comportamiento
+ *     ACTUAL, sin cambios · CA-6).
+ *   - `durable:true`  → proyecta desde `store.listProducts()`.
+ *
+ * Fallback SELECTIVO durante la coexistencia (security#2): sólo se cae a FS cuando
+ * el store NO está disponible (fallo de INFRA), loggeando el modo degradado. Ante
+ * `KernelStoreValidationError` (catálogo corrupto/inyectado) NO se cae a FS: se
+ * propaga para que escale (nunca enmascarar tampering con el barrido FS).
+ *
+ * @param {object} opts
+ * @param {string}  opts.descriptorsDir  dir de descriptores (fuente FS / fallback).
+ * @param {boolean} [opts.durable=false] flag de cutover, leído UNA vez por el caller.
+ * @param {object}  [opts.store]         instancia de kernel-store (o pasar createStore).
+ * @param {function}[opts.createStore]   factory lazy del store (evita instanciar en modo FS).
+ * @param {function}[opts.onDegraded]    callback(reason) al caer a FS por infra.
+ * @returns {Promise<Array<{projectId:string,name:string,status:string,role:string}>>}
+ */
+async function listProductsResolved(opts = {}) {
+    const descriptorsDir = opts.descriptorsDir;
+    if (opts.durable !== true) {
+        // Modo FS (default): comportamiento actual intacto.
+        return listProducts(descriptorsDir);
+    }
+
+    // Modo durable — resolver el store (inyectado o vía factory lazy).
+    let store = (opts.store && typeof opts.store.listProducts === 'function') ? opts.store : null;
+    if (!store && typeof opts.createStore === 'function') {
+        try {
+            const s = opts.createStore();
+            if (s && typeof s.listProducts === 'function') store = s;
+        } catch (err) {
+            // Falla al construir el store = infra no disponible → fallback FS.
+            logDegraded(opts, `no se pudo instanciar el store: ${err && err.message ? err.message : err}`);
+            return listProducts(descriptorsDir);
+        }
+    }
+    if (!store) {
+        logDegraded(opts, 'store durable no disponible');
+        return listProducts(descriptorsDir);
+    }
+
+    let raw;
+    try {
+        raw = await store.listProducts();
+    } catch (err) {
+        // security#2: catálogo corrupto/inyectado NO cae a FS — propaga/escala.
+        if (err && err.name === 'KernelStoreValidationError') throw err;
+        // Fallo de infra (store no disponible) → fallback FS loggeado (degradado).
+        logDegraded(opts, err && err.message ? err.message : String(err));
+        return listProducts(descriptorsDir);
+    }
+
+    const seen = new Set();
+    const out = [];
+    for (const body of Array.isArray(raw) ? raw : []) {
+        const proj = projectStoreProduct(body);
+        if (!proj || seen.has(proj.projectId)) continue;
+        seen.add(proj.projectId);
+        out.push(proj);
+    }
+    out.sort(sortCatalog);
+    return out;
+}
+
+function logDegraded(opts, reason) {
+    if (typeof opts.onDegraded === 'function') {
+        try { opts.onDegraded(reason); } catch { /* logging best-effort */ }
+        return;
+    }
+    // Traza mínima (sin credenciales/ARN) del modo degradado FS. Silenciable con
+    // `onDegraded` (los tests inyectan su propio sink para no ensuciar la salida).
+    try { console.warn(`[product-catalog] modo durable degradó a FS: ${reason}`); } catch { /* noop */ }
 }
 
 module.exports = {
     listProducts,
+    listProductsResolved,
     projectDescriptor,
+    projectStoreProduct,
     isSafeProjectId,
     SAFE_ID_RE,
 };
