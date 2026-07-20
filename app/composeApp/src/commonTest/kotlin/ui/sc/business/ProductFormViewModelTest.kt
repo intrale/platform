@@ -114,7 +114,7 @@ class ProductFormViewModelTest {
     }
 
     @Test
-    fun `baja logica invoca deleteProduct (baja server-side)`() = runTest {
+    fun `baja logica invoca deleteProduct baja server-side`() = runTest {
         val fake = FakeProductCrud()
         val viewModel = ProductFormViewModel(fake, fake, fake, fake, ProductFormFakeCategories())
         viewModel.applyDraft(
