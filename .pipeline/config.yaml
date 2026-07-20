@@ -1389,6 +1389,13 @@ kernel:
   tableName: ""      # requerido para el driver real (normalizeConfig lo exige)
   region: ""         # región AWS destino (vacío mientras durable:false)
   durable: false     # default OFF -- todo sigue en FS, cero llamadas AWS
+  # #4822 (split 3/3 de #4804) — Cota de instancias del boot durable del supervisor
+  # multi-producto (CA-SEC-4 / REQ-SEC-BOOT-5, A04/DoS). Sibling de `durable` (que
+  # sigue siendo booleano para no romper el fail-closed de #4820). El boot durable
+  # spawnea COMO MÁXIMO este número de pipelines por producto `active`; un catálogo
+  # con más activos saltea el excedente y lo audita. Default conservador: la RAM
+  # del host es crítica (ver umbrales de presión del Pulpo).
+  max_concurrent_instances: 2
 
 # =============================================================================
 # #3613 — Bootstrap del skill `architect` (paraguas #3559, spike #3507)

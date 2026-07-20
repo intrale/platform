@@ -17736,6 +17736,69 @@ async function mainLoop() {
     log('pulpo', `WARN [wave-recovery] boot hook falló: ${e.message}`);
   }
 
+  // #4822 (Split 3/3 de #4804) — Boot durable del supervisor multi-producto.
+  // Gateado OUT-OF-BAND por `config.kernel.durable === true` (fail-closed:
+  // ausente/false ⇒ NO corre, el arranque FS actual del pulpo no cambia — CA-6/
+  // CA-SEC-1). En modo durable, `bootKernelDurable` carga los productos `active`
+  // desde el store durable (DynamoDB) y spawnea un pipeline AISLADO por producto,
+  // respetando la cota de instancias (CA-SEC-4).
+  //
+  // BEST-EFFORT: un fallo del boot durable (driver AWS ausente, catálogo corrupto,
+  // credenciales faltantes) NUNCA tumba el arranque del pulpo — `bootKernelDurable`
+  // no lanza y este bloque va igual en try/catch (mismo patrón que wave-recovery).
+  try {
+    const cfg = loadConfig();
+    if (cfg && cfg.kernel && cfg.kernel.durable === true) {
+      // Constructor LAZY del store durable: sólo se instancia con el flag ON, de
+      // modo que con `durable:false` NO se construye ningún driver ni se toca AWS.
+      const buildDurableStore = (contextProjectId, allowedNamespaces, onAlert) => {
+        const { createAwsCliRunner, createAwsCliDynamoDriver } = require('./lib/provisioner-infra');
+        const { buildAwsScopedEnv } = require('./lib/kernel-provision');
+        const { createKernelStore } = require('./lib/kernel-store');
+        const env = buildAwsScopedEnv(process.env, cfg.kernel.region);
+        const { run } = createAwsCliRunner(env);
+        const driver = createAwsCliDynamoDriver({ run });
+        return createKernelStore({
+          driver,
+          config: { kernel: cfg.kernel },
+          contextProjectId,
+          allowedNamespaces,
+          onAlert,
+        });
+      };
+
+      const result = await kernelSupervisor.bootKernelDurable({
+        config: cfg,
+        onAlert: (a) => {
+          const pid = a && a.projectId ? String(a.projectId) : '—';
+          const det = a && a.errors && a.errors[0] && a.errors[0].detail ? a.errors[0].detail : '';
+          log('pulpo', `WARN [kernel-durable] rechazo boot (${(a && a.stage) || '?'}/${pid}): ${det}`);
+        },
+        // Catálogo del control-plane: `listProducts()` lee el índice global (no una
+        // partición de tenant), por eso usa un contextProjectId dedicado y seguro.
+        buildCatalogStore: () => buildDurableStore('kernel-control-plane', ['kernel-control-plane']),
+        // Store por instancia: MISMO driver durable ligado a cada tenant con su
+        // propio `projectId` derivado del registro (A01 — nunca en banda).
+        buildStoreFactory: () => (o) => buildDurableStore(o.contextProjectId, o.allowedNamespaces, o.onAlert),
+        // spawn AISLADO por instancia. El runtime concreto del pipeline por producto
+        // se cablea en un split posterior; acá se registra/audita la instancia. El
+        // supervisor la trackea e hidrata de forma aislada aunque el handle sea null.
+        spawn: (ctx) => {
+          log('pulpo', `[kernel-durable] instancia registrada para producto ${ctx && ctx.projectId}`);
+          return null;
+        },
+      });
+
+      if (result.ran) {
+        log('pulpo', `[kernel-durable] boot: ${(result.spawned || []).length} activos instanciados, ${(result.skipped || []).length} salteados (cap ${result.cap}).`);
+      } else if (result.reason === 'error') {
+        log('pulpo', `WARN [kernel-durable] boot durable falló (no bloquea el arranque): ${result.error}`);
+      }
+    }
+  } catch (e) {
+    log('pulpo', `WARN [kernel-durable] boot hook falló: ${e.message}`);
+  }
+
   // #4370 CA-4/SEC-3 — verificación de integridad del estado al arrancar.
   // Distingue corrupción silenciosa / tampering schema-válido de un estado sano.
   // Best-effort: NO pone el pipeline fuera de servicio (regla "el pipeline no
