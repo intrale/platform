@@ -220,3 +220,35 @@ test('SEC-7b: si el enqueue del pedido falla, el audit igual queda persistido', 
     assert.equal(res.audit_persisted, true);
     assert.equal(deps.auditImpl.entries.length, 1);
 });
+
+// -----------------------------------------------------------------------------
+// #4800 — onboarding "Crear nuevo" (provenance:create): el dry-run valida la
+// INTENCIÓN (schema + provenance) SIN crear repo ni side-effects (delegado al drainer).
+// -----------------------------------------------------------------------------
+
+test('#4800: onboard provenance:create valida en dry-run y encola SIN crear repo', () => {
+    const deps = fakeDeps();
+    const res = pcr.enqueueOnboard({
+        descriptor: validDescriptor({
+            repositories: [{ id: 'main', role: 'primary', provenance: 'create', create: { name: 'store', org: 'intrale', visibility: 'private' } }],
+        }),
+        actor: 'leo',
+    }, deps);
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(res.status, 202);
+    // El pedido quedó encolado; la creación NO ocurrió acá (dry-run side-effect-free).
+    assert.equal(Object.keys(deps.fsImpl.files).length, 1);
+    assert.equal(deps.auditImpl.entries[0].type, 'product_onboard_request');
+});
+
+test('#4800: onboard create con url embebida es rechazado (400) sin encolar', () => {
+    const deps = fakeDeps();
+    const res = pcr.enqueueOnboard({
+        descriptor: validDescriptor({
+            repositories: [{ id: 'main', url: 'https://github.com/intrale/store', role: 'primary', provenance: 'create', create: { name: 'store', org: 'intrale' } }],
+        }),
+    }, deps);
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 400);
+    assert.equal(Object.keys(deps.fsImpl.files).length, 0);
+});

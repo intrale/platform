@@ -19,6 +19,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 
 const descriptorLib = require('./project-descriptor');
 
@@ -100,13 +101,67 @@ function assertUrlAllowed(rawUrl) {
 }
 
 // -----------------------------------------------------------------------------
-// Verificación de acceso (paso 2). Side-effect-free por defecto: sólo valida la
-// forma/host de las URLs. Un `deps.probeAccess` inyectable permite una prueba de
-// alcance real (least-privilege) en producción, sin romper los tests.
+// Parseo de `owner/repo` desde una URL GitHub YA validada por `assertUrlAllowed`
+// (#4800 · CA-2 / SEC-6 · A10). Se extrae el slug de la ruta (ambos segmentos
+// contra regex estricta) para invocar `gh repo view <owner/repo>` — NUNCA se hace
+// `fetch` crudo de la URL provista ni se siguen redirects.
+// -----------------------------------------------------------------------------
+function parseOwnerRepo(rawUrl) {
+  let u;
+  try { u = new URL(String(rawUrl)); } catch { return null; }
+  const parts = u.pathname.replace(/^\/+/, '').replace(/\.git$/, '').split('/').filter(Boolean);
+  if (parts.length < 2) return null;
+  const [owner, repo] = parts;
+  if (!/^[A-Za-z0-9._-]{1,39}$/.test(owner)) return null;
+  if (!/^[A-Za-z0-9._-]{1,100}$/.test(repo)) return null;
+  return `${owner}/${repo}`;
+}
+
+/**
+ * Probe de accesibilidad REAL de un repo (#4800 · CA-2). Corre `gh repo view
+ * <owner/repo> --json name` con el slug parseado de la URL ya allowlisted. El token
+ * viaja SÓLO por env (`GH_TOKEN`/`GITHUB_TOKEN` heredados de `process.env`), nunca en
+ * los args (anti command-injection: la invocación es por array). Devuelve:
+ *   - `true`  si el repo existe y es accesible.
+ *   - `false` si `gh` falla (inexistente / sin permiso).
+ *   - `null`  si el target no es un repo probeable (board o slug no parseable) ⇒
+ *             se trata como "no probado" (accesible por forma).
+ *
+ * @param {{kind:string, url:string}} target
+ * @param {object} [deps]  { execFileSync } inyectable para tests.
+ * @returns {boolean|null}
+ */
+function defaultProbeAccess(target, deps = {}) {
+  if (!target || target.kind !== 'repo') return null;
+  const slug = parseOwnerRepo(target.url);
+  if (!slug) return null;
+  const exec = deps.execFileSync || execFileSync;
+  try {
+    exec('gh', ['repo', 'view', slug, '--json', 'name'], {
+      env: process.env,               // token SÓLO por env; jamás en args (A03)
+      stdio: ['ignore', 'ignore', 'ignore'],
+      timeout: 15000,
+    });
+    return true;
+  } catch {
+    return false;                     // inexistente / sin permiso ⇒ no alcanzable (CA-2)
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Verificación de acceso (paso 2). Valida la forma/host de las URLs (allowlist
+// anti-SSRF) y, si se provee `deps.probeAccess`, prueba el alcance real. Los repos
+// con `provenance:'create'` se SALTEAN: aún no existen, no hay URL que verificar
+// (#4800). Un probe que devuelve `null`/`undefined` = "no probado" ⇒ accesible por
+// forma; sólo `false` explícito marca inaccesible (CA-2).
 // -----------------------------------------------------------------------------
 function verifyAccess(descriptor, deps = {}) {
   const targets = [];
-  for (const repo of descriptor.repositories || []) targets.push({ kind: 'repo', id: repo.id, url: repo.url });
+  for (const repo of descriptor.repositories || []) {
+    // #4800 — un repo a crear no tiene URL todavía: no se prueba acceso.
+    if (repo && repo.provenance === 'create') continue;
+    targets.push({ kind: 'repo', id: repo.id, url: repo.url });
+  }
   if (descriptor.board && descriptor.board.ref) targets.push({ kind: 'board', id: 'board', url: descriptor.board.ref });
 
   const results = [];
@@ -115,7 +170,10 @@ function verifyAccess(descriptor, deps = {}) {
     const guard = assertUrlAllowed(t.url);
     let reachable = null;
     if (guard.allowed && typeof deps.probeAccess === 'function') {
-      try { reachable = !!deps.probeAccess(t); } catch { reachable = false; }
+      try {
+        const p = deps.probeAccess(t);
+        reachable = (p === null || p === undefined) ? null : !!p;
+      } catch { reachable = false; }
     }
     const ok = guard.allowed && (reachable === null ? true : reachable);
     if (!ok) allOk = false;
@@ -187,6 +245,10 @@ function defaultRegisterProduct(entry, deps = {}) {
     status: 'onboarding',
     name: entry.name,
     registeredWith: 'project-bootstrap',
+    // #4800 — campos opcionales aditivos: cómo quedó asociado el repo (creado por el
+    // kernel vs existente). Ausentes en el flujo legacy ⇒ retro-compat.
+    ...(entry.repoOrigin ? { repoOrigin: entry.repoOrigin } : {}),
+    ...(entry.repos ? { repos: entry.repos } : {}),
   };
   fs.mkdirSync(path.dirname(registryPath), { recursive: true });
   fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2) + '\n');
@@ -222,8 +284,15 @@ function runBootstrap(args = {}) {
     return { ok: false, stage: 'signature-gate', mode, errors: [{ path: 'authority.signers', detail: sigGate.reason }], human: renderHuman({ ok: false, stage: 'signature-gate', errors: [{ detail: sigGate.reason }] }) };
   }
 
-  // Paso 2 — verificación de acceso (SSRF allowlist).
-  const access = verifyAccess(descriptor, deps);
+  // Paso 2 — verificación de acceso (SSRF allowlist). En modo 'full' (drainer
+  // kernel-side) se cablea un probe de alcance REAL por default (CA-2 · #4800) si el
+  // caller no inyecta uno; en dry-run NO se toca la red (validación de intención,
+  // side-effect-free por invariante).
+  let accessDeps = deps;
+  if (mode === 'full' && typeof deps.probeAccess !== 'function') {
+    accessDeps = Object.assign({}, deps, { probeAccess: (t) => defaultProbeAccess(t, deps) });
+  }
+  const access = verifyAccess(descriptor, accessDeps);
   if (!access.ok) {
     const rejected = access.targets.filter((t) => !t.allowed || t.reachable === false);
     return { ok: false, stage: 'access', mode, access, errors: rejected.map((t) => ({ path: `${t.kind}:${t.id}`, detail: t.reason || 'no alcanzable' })), human: renderHuman({ ok: false, stage: 'access', access }) };
@@ -249,10 +318,16 @@ function runBootstrap(args = {}) {
     };
   }
 
-  // Paso 4 — registrar onboarding (INACTIVO) hasta OK humano.
+  // Paso 4 — registrar onboarding (INACTIVO) hasta OK humano. `args.registerMeta`
+  // (#4800) permite al drainer reflejar cómo quedó asociado el repo (creado vs
+  // existente) sin filtrar secretos.
+  const registerEntry = Object.assign(
+    { projectId: descriptor.identity.projectId, name: descriptor.identity.name },
+    (args.registerMeta && typeof args.registerMeta === 'object') ? args.registerMeta : {},
+  );
   const register = typeof deps.registerProduct === 'function'
-    ? deps.registerProduct({ projectId: descriptor.identity.projectId, name: descriptor.identity.name }, deps)
-    : defaultRegisterProduct({ projectId: descriptor.identity.projectId, name: descriptor.identity.name }, deps);
+    ? deps.registerProduct(registerEntry, deps)
+    : defaultRegisterProduct(registerEntry, deps);
 
   return {
     ok: true,
@@ -309,6 +384,8 @@ module.exports = {
   assertUrlAllowed,
   isPrivateOrLoopbackHost,
   isIpLiteral,
+  parseOwnerRepo,
+  defaultProbeAccess,
   verifyAccess,
   dryRun,
   runBootstrap,

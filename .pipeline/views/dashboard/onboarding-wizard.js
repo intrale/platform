@@ -55,6 +55,10 @@ const slug = 'onboarding';
 const KERNEL_INTERFACES = Object.freeze(['backend', 'frontend', 'pipeline', 'generic']);
 const KERNEL_SKILLS = Object.freeze(['backend-dev', 'android-dev', 'web-dev', 'pipeline-dev', 'dev']);
 const GATE_MODES = Object.freeze(['enforce', 'dry-run']);
+// #4800 — orgs destino permitidas para "Crear nuevo" (se refleja como <select>,
+// nunca texto libre · security A01). La validación autoritativa vive en el drainer
+// kernel-side (`product-control-drain.js`); acá sólo se ofrece la opción.
+const KERNEL_ORG_ALLOWLIST = Object.freeze(['intrale']);
 
 // Los 5 pasos del wizard (dual-encoding: número + rótulo, nunca sólo color).
 const STEPS = Object.freeze([
@@ -99,10 +103,32 @@ function stepIdentity() {
 }
 
 function stepRepos() {
+    const orgOpts = KERNEL_ORG_ALLOWLIST
+        .map(o => `<option value="${escapeHtmlAttr(o)}">${escapeHtmlText(o)}</option>`).join('');
     return `<fieldset class="ow-section ow-hidden" data-step="1">
       <legend>2 · Repositorios y tablero</legend>
       <div class="ow-note">Solo <code>https://</code> hacia hosts aprobados (GitHub). Las IPs internas/loopback y hosts fuera de la allowlist se rechazan (anti-SSRF).</div>
-      ${field('Repo primario (URL)', 'ow-repo-url', { placeholder: 'https://github.com/acme/store', hint: 'URL https del repositorio primario.' })}
+      <div class="ow-seg" role="radiogroup" aria-label="Origen del repositorio primario">
+        <button type="button" class="ow-seg-btn ow-seg-active" id="ow-repo-mode-existing" role="radio" aria-checked="true" onclick="owRepoMode('existing')">Usar existente</button>
+        <button type="button" class="ow-seg-btn" id="ow-repo-mode-create" role="radio" aria-checked="false" onclick="owRepoMode('create')">Crear nuevo</button>
+      </div>
+      <div id="ow-repo-existing">
+        ${field('Repo primario (URL)', 'ow-repo-url', { placeholder: 'https://github.com/acme/store', hint: 'URL https del repositorio primario.' })}
+      </div>
+      <div id="ow-repo-create" class="ow-hidden">
+        <div class="ow-chip"><span aria-hidden="true">🔗</span> URL: se completa automáticamente al crear el repo.</div>
+        ${field('Nombre del repo', 'ow-repo-name', { placeholder: 'store', hint: 'letras, dígitos, punto, guion y guion bajo (máx 100).' })}
+        ${selectField('Organización destino', 'ow-repo-org', KERNEL_ORG_ALLOWLIST, { hint: 'sólo orgs de la allowlist del kernel.' })}
+        <div class="ow-field">
+          <span class="ow-label">Visibilidad</span>
+          <div class="ow-radios" role="radiogroup" aria-label="Visibilidad del repositorio a crear">
+            <label class="ow-radio"><input type="radio" name="ow-repo-visibility" value="private" checked onchange="owVisibilityChange()"> <span aria-hidden="true">🔒</span> Private</label>
+            <label class="ow-radio"><input type="radio" name="ow-repo-visibility" value="public" onchange="owVisibilityChange()"> <span aria-hidden="true">🌐</span> Public</label>
+          </div>
+          <span class="ow-hint">Private por defecto. Public expone el código a cualquiera.</span>
+        </div>
+        <div class="ow-note ow-note-strong ow-hidden" id="ow-repo-public-warn" role="alert">⚠️ Vas a crear un repo <b>PÚBLICO</b> — el código quedará visible para cualquiera.</div>
+      </div>
       ${field('Repo ID', 'ow-repo-id', { placeholder: 'main' })}
       ${field('Base ref por defecto', 'ow-repo-baseref', { placeholder: 'main' })}
       ${field('Tablero (URL del Project)', 'ow-board-ref', { placeholder: 'https://github.com/orgs/acme/projects/1' })}
@@ -158,6 +184,15 @@ function onboardingWizardStyle() {
 .ow-hint{font-size:10.5px;color:var(--in-fg-soft,#5B6376)}
 .ow-note{font-size:11.5px;color:var(--in-fg-dim,#8A93A6);background:rgba(0,214,255,.06);border:1px solid rgba(0,214,255,.2);border-radius:8px;padding:7px 10px;margin-bottom:10px}
 .ow-note-strong{color:#fcd9a0;background:rgba(245,158,11,.08);border-color:rgba(245,158,11,.3)}
+.ow-seg{display:inline-flex;gap:4px;background:rgba(255,255,255,.03);border:1px solid var(--in-border,rgba(255,255,255,.1));border-radius:999px;padding:3px;margin-bottom:12px}
+.ow-seg-btn{font-size:12px;font-weight:700;color:var(--in-fg-dim,#8A93A6);background:transparent;border:0;border-radius:999px;padding:6px 16px;min-height:34px;cursor:pointer}
+.ow-seg-btn:focus-visible{outline:2px solid var(--brand-cyan,#00D6FF);outline-offset:2px}
+.ow-seg-active{color:#001b22;background:var(--brand-cyan,#00D6FF)}
+.ow-chip{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;color:#9ff0e6;background:rgba(45,212,191,.12);border:1px solid rgba(45,212,191,.32);border-radius:999px;padding:4px 11px;margin-bottom:10px}
+.ow-radios{display:flex;gap:14px;flex-wrap:wrap}
+.ow-radio{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:700;color:var(--in-fg,#e6edf3);min-height:34px;cursor:pointer}
+.ow-radio input{accent-color:var(--brand-cyan,#00D6FF)}
+.ow-radio input:focus-visible{outline:2px solid var(--brand-cyan,#00D6FF);outline-offset:2px}
 .ow-sec-badge{font-size:10px;font-weight:800;color:#9ff0e6;background:rgba(45,212,191,.14);border:1px solid rgba(45,212,191,.36);border-radius:999px;padding:1px 8px}
 .ow-actions{display:flex;gap:8px;justify-content:space-between;flex-wrap:wrap;margin-top:6px}
 .ow-btn{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:800;border-radius:9px;padding:9px 18px;border:1px solid transparent;cursor:pointer}
@@ -209,8 +244,27 @@ function renderOnboardingWizardClientScript() {
     return `
 var OW_STEP = 0;
 var OW_MAX = 5;
+var OW_REPO_MODE = 'existing';
 function owVal(id){ var el = document.getElementById(id); return el ? String(el.value || '').trim() : ''; }
 function owList(id){ return owVal(id).split(',').map(function(s){ return s.trim(); }).filter(Boolean); }
+function owRadio(name){ var el = document.querySelector('input[name="' + name + '"]:checked'); return el ? String(el.value || '').trim() : ''; }
+// #4800 — togglea el origen del repo primario (existente vs crear) sin recargar.
+function owRepoMode(mode){
+  OW_REPO_MODE = (mode === 'create') ? 'create' : 'existing';
+  var ex = document.getElementById('ow-repo-existing'); if(ex) ex.classList.toggle('ow-hidden', OW_REPO_MODE !== 'existing');
+  var cr = document.getElementById('ow-repo-create'); if(cr) cr.classList.toggle('ow-hidden', OW_REPO_MODE !== 'create');
+  var be = document.getElementById('ow-repo-mode-existing');
+  var bc = document.getElementById('ow-repo-mode-create');
+  if(be){ be.classList.toggle('ow-seg-active', OW_REPO_MODE === 'existing'); be.setAttribute('aria-checked', OW_REPO_MODE === 'existing' ? 'true' : 'false'); }
+  if(bc){ bc.classList.toggle('ow-seg-active', OW_REPO_MODE === 'create'); bc.setAttribute('aria-checked', OW_REPO_MODE === 'create' ? 'true' : 'false'); }
+  if(OW_REPO_MODE === 'existing') owVisibilityChange(); // oculta el warning al salir de crear
+}
+// Muestra el warning de repo público sólo cuando se elige public en modo crear.
+function owVisibilityChange(){
+  var warn = document.getElementById('ow-repo-public-warn'); if(!warn) return;
+  var isPublic = OW_REPO_MODE === 'create' && owRadio('ow-repo-visibility') === 'public';
+  warn.classList.toggle('ow-hidden', !isPublic);
+}
 function owShowStep(n){
   OW_STEP = Math.max(0, Math.min(OW_MAX - 1, n));
   document.querySelectorAll('#ow-form fieldset.ow-section').forEach(function(f){
@@ -229,8 +283,17 @@ function owBuildDescriptor(){
   var d = { schemaVersion: '1.0' };
   d.identity = { projectId: owVal('ow-projectId'), name: owVal('ow-name') };
   var desc = owVal('ow-description'); if(desc) d.identity.description = desc;
-  var repo = { id: owVal('ow-repo-id') || 'main', url: owVal('ow-repo-url'), role: 'primary' };
+  var repo = { id: owVal('ow-repo-id') || 'main', role: 'primary' };
   var baseref = owVal('ow-repo-baseref'); if(baseref) repo.defaultBaseRef = baseref;
+  if(OW_REPO_MODE === 'create'){
+    // #4800 — "Crear nuevo": el kernel crea el repo y completa la URL; el descriptor
+    // NO lleva url (la prohíbe el contrato en provenance:create).
+    repo.provenance = 'create';
+    repo.create = { name: owVal('ow-repo-name'), org: owVal('ow-repo-org'), visibility: owRadio('ow-repo-visibility') || 'private' };
+  } else {
+    repo.provenance = 'existing';
+    repo.url = owVal('ow-repo-url');
+  }
   d.repositories = [repo];
   var routing = owList('ow-board-routing').map(function(pair){
     var kv = pair.split('='); return { label: (kv[0]||'').trim(), capability: (kv[1]||'').trim() };
@@ -311,4 +374,5 @@ module.exports = {
     KERNEL_INTERFACES,
     KERNEL_SKILLS,
     GATE_MODES,
+    KERNEL_ORG_ALLOWLIST,
 };
