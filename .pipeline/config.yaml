@@ -1373,6 +1373,31 @@ cua:
   tts_chunk_timeout_ms: 30000
 
 # =============================================================================
+# #4820 (split 1/3 de #4804) — Persistencia durable del kernel (DynamoDB)
+# =============================================================================
+# Fundación de persistencia durable a nivel driver/config/tabla, SIN activarla.
+# El flag `durable: false` por default es el fail-safe: todo sigue en FS y NO se
+# instancia el driver real ni se hace una sola llamada AWS. Las partes 2/3 de
+# #4804 cablean el alta/catálogo/boot detrás de este mismo flag.
+#
+# Reglas (CA-2 / A05): tabla, región, ARNs, account-id y credenciales NUNCA se
+# hardcodean en `.pipeline/`. La tabla/región vienen de acá; las credenciales,
+# exclusivamente del scope `aws` del ambiente hijo (build-child-env.js), nunca
+# de este archivo público (mismo criterio que cua.operator_chat_ids).
+#
+# `normalizeConfig` (lib/kernel-store.js) EXIGE `tableName` no vacío para el
+# driver real: con `durable: true` y `tableName: ""` falla fail-closed. Dejar
+# `tableName`/`region` vacíos mientras `durable: false` es correcto y esperado.
+#
+# La tabla + policy IAM (least-privilege, append-only sobre signature#*/audit#*)
+# se aprovisiona con un PASO ADMIN separado (lib/kernel-provision.js +
+# docs/pipeline/kernel-iam-policy.json), NUNCA en el boot normal del pulpo.
+kernel:
+  tableName: ""      # requerido para el driver real (normalizeConfig lo exige)
+  region: ""         # región AWS destino (vacío mientras durable:false)
+  durable: false     # default OFF -- todo sigue en FS, cero llamadas AWS
+
+# =============================================================================
 # #3613 — Bootstrap del skill `architect` (paraguas #3559, spike #3507)
 # =============================================================================
 # El skill `architect` corre en dos fases:
