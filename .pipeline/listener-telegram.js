@@ -110,6 +110,9 @@ const deps = {
   productCommander: null,
   // #4780 — ejecutor de la acción product-aware ya autorizada+confirmada.
   productExecutor: null,
+  // #4802 — router de callbacks inline del Commander; override para tests,
+  // null → getCommanderRouter() lazy (init con adapter Telegram + cola).
+  commanderRouter: null,
 };
 
 async function sendMessage(text) {
@@ -373,6 +376,142 @@ function getProductCommander() {
   } catch (e) {
     log(`Error cargando commander product-aware: ${e.message}`);
     _productCommander = undefined; // no reintentar — degradar
+    return null;
+  }
+}
+
+// =============================================================================
+// #4802 — Ruteo de callbacks inline del Commander desde el listener.
+//
+// EL GAP QUE CIERRA: el listener (poller único) enrutaba TODO `callback_query`
+// no-`pc:`/`pcx:` a `operator-gate` (canal de firma GATE 2). Los botones del
+// Commander (propuestas, permisos allow/deny, restart, sprint, reactivación,
+// relanzar skill, tts_listen, show_detail) usan namespaces DISJUNTOS, así que
+// `operator-gate.resolve()` devolvía null → toast "Acción inválida o expirada".
+// `callback-handler.routeCallback` existía exportado pero NINGÚN consumidor lo
+// invocaba (el poller lo consumía del getUpdates y lo rechazaba como firma).
+//
+// POR QUÉ ACÁ (y no un segundo poller): sólo `listener-telegram.js` hace
+// `getUpdates` (invariante verificada por `test-p03-no-getupdates.js`). El fix
+// reenvía el callback IN-PROCESS al `routeCallback` del Commander.
+//
+// PROCESO SEPARADO: el listener corre como servicio propio (restart.js) sin el
+// dispatcher de pulpo. `callback-handler` exige `init()` con tgApi + dispatcher +
+// cmdContext + skills. Acá construimos un adapter: Telegram I/O real (el listener
+// tiene token+chatId) para las acciones puramente de mensajería (permisos,
+// reactivación, edición de propuestas, restart_log), y un dispatcher/cmdContext
+// que ENCOLA el comando equivalente en la cola del Commander para las acciones
+// que requieren spawn (propuestas→/historia, restart_retry, relaunch_skill). Sin
+// segundo poller, sin tocar pulpo. Lazy + fail-safe: si el init falla, degradamos
+// a un toast — el listener NUNCA se cae (rule #1: el pipeline no puede morir).
+// =============================================================================
+let _commanderRouter = null;
+
+// Reusa la MISMA fuente de allowlist que operator-gate (no inventar segunda
+// fuente): `TELEGRAM_LEO_OPERATOR_CHAT_ID`. Fail-closed si no carga.
+function resolveCommanderAllowlist() {
+  try {
+    const { resolveOperatorAllowlist } = require('./lib/operator-gate');
+    return resolveOperatorAllowlist();
+  } catch (e) {
+    log(`No se pudo resolver allowlist del commander: ${e.message}`);
+    return new Set();
+  }
+}
+
+function _escHtmlCommander(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Encola un comando NL/slash en la cola del Commander (mismo mecanismo que
+// `enqueueMessage`) para que pulpo lo procese con contexto completo.
+function enqueueCommanderCommand(text) {
+  try {
+    fs.mkdirSync(COMMANDER_QUEUE, { recursive: true });
+  } catch { /* best-effort */ }
+  const id = `${Date.now()}-cbcmd`;
+  const content = {
+    message_id: id,
+    from: 'commander-callback',
+    text: String(text || ''),
+    date: Math.floor(Date.now() / 1000),
+  };
+  fs.writeFileSync(path.join(COMMANDER_QUEUE, `${id}.json`), JSON.stringify(content, null, 2));
+  log(`Comando de callback encolado al commander: "${String(text).slice(0, 50)}"`);
+}
+
+// Adapter Telegram para callback-handler. Las acciones de mensajería pura
+// (answerCallbackQuery, editMessageText/ReplyMarkup, sendMessage) funcionan de
+// verdad; las multimedia (voz/foto) degradan a texto (no bloquean el botón).
+function buildCommanderTgApi() {
+  return {
+    getChatId: () => CHAT_ID,
+    escHtml: _escHtmlCommander,
+    telegramPost: (method, params) => deps.telegramRequest(method, params),
+    sendMessage: (html) => deps.telegramRequest('sendMessage', {
+      chat_id: CHAT_ID, text: html, parse_mode: 'HTML',
+    }),
+    sendLongMessage: (html) => deps.telegramRequest('sendMessage', {
+      chat_id: CHAT_ID, text: String(html).slice(0, 4096), parse_mode: 'HTML',
+    }),
+    sendVoiceMessage: async () => {
+      log('tts_listen no soportado desde el listener — degradando sin audio');
+    },
+    sendTelegramPhoto: (img, caption) => deps.telegramRequest('sendMessage', {
+      chat_id: CHAT_ID, text: caption || '📋 Detalle', parse_mode: 'HTML',
+    }),
+  };
+}
+
+// Carga best-effort de la metadata de skills (para relaunch_skill / model /
+// allowedTools). Si falla, `[]` y relaunch degrada a "skill no encontrado".
+function loadCommanderSkills() {
+  try {
+    const skillsMeta = require('./lib/skills-metadata');
+    const skillsRoot = path.join(MAIN_ROOT, '.claude', 'skills');
+    const { registry } = skillsMeta.loadAllSkillsMetadata({ skillsRoot });
+    return Object.keys(registry || {}).map((name) => {
+      const m = registry[name] || {};
+      return { name, model: m.model || null, allowedTools: m['allowed-tools'] || m.allowedTools || null };
+    });
+  } catch (e) {
+    log(`No se pudieron cargar skills para el commander: ${e.message}`);
+    return [];
+  }
+}
+
+function getCommanderRouter() {
+  if (deps.commanderRouter) return deps.commanderRouter; // override de tests
+  if (_commanderRouter === undefined) return null;       // falló antes — no reintentar
+  if (_commanderRouter) return _commanderRouter;
+  try {
+    const mod = require('../.claude/hooks/commander/callback-handler');
+    const hooksDir = path.join(MAIN_ROOT, '.claude', 'hooks');
+    mod.init({
+      tgApi: buildCommanderTgApi(),
+      cmdContext: {
+        // El /historia de una propuesta se encola como comando del Commander.
+        executeClaudeQueued: async (prompt) => { enqueueCommanderCommand(prompt); return { ok: true, queued: true, text: '' }; },
+        sendResult: async () => { /* el comando encolado produce su propia salida */ },
+      },
+      log: (m) => log(`[commander-cb] ${m}`),
+      repoRoot: MAIN_ROOT,
+      hooksDir,
+      proposalsFile: path.join(hooksDir, 'planner-proposals.json'),
+      sprintPlanFile: path.join(MAIN_ROOT, 'scripts', 'sprint-plan.json'),
+      skills: loadCommanderSkills(),
+      dispatcher: {
+        handleRestart: async () => { enqueueCommanderCommand('/restart'); },
+        handleSkill: async (skill, arg) => { enqueueCommanderCommand('/' + skill.name + (arg ? ' ' + arg : '')); },
+      },
+      permissionSuggester: null,
+    });
+    _commanderRouter = mod;
+    return _commanderRouter;
+  } catch (e) {
+    log(`Error cargando commander callback-handler: ${e.message}`);
+    _commanderRouter = undefined; // degradar — no reintentar
     return null;
   }
 }
@@ -680,6 +819,49 @@ async function handleCallbackQuery(cbq) {
     return;
   }
 
+  // #4802 — Ruteo del Commander. Precedencia determinística:
+  //   product-aware (pc:/pcx:, arriba) → COMMANDER → firma (operator-gate) → fail-safe.
+  // Sólo cae a operator-gate lo que NO matchea ni product ni Commander.
+  const cbData = typeof cbq.data === 'string' ? cbq.data : '';
+  const router = getCommanderRouter();
+  if (router && router.isCommanderNamespace(cbData)) {
+    // CA-6: authz por from.id SÓLO para prefijos privilegiados. Fail-closed:
+    // allowlist vacío o from.id fuera del allowlist → rechazo uniforme (misma
+    // fuente que operator-gate). Nunca fail-open.
+    if (router.isPrivilegedNamespace(cbData)) {
+      const allow = resolveCommanderAllowlist();
+      if (allow.size === 0 || !allow.has(String(cbq.from?.id))) {
+        await answerCallbackQuery(cbq.id, 'Acción inválida o expirada');
+        try {
+          appendHistory({
+            direction: 'in', handler: 'commander', from: cbq.from?.first_name || 'unknown',
+            from_id: cbq.from?.id, ok: false, reason: 'unauthorized-privileged',
+          });
+        } catch { /* best-effort */ }
+        return;
+      }
+    }
+    let handled = false;
+    try {
+      handled = await router.routeCallback(cbData, cbq.id, cbq.message, cbq.from?.id);
+    } catch (e) {
+      log(`Error en routeCallback del commander: ${e.message}`);
+      await answerCallbackQuery(cbq.id, 'No se pudo procesar la acción');
+      return;
+    }
+    // Si el router no lo reconoció (p. ej. chat.id no coincide), fail-safe.
+    if (!handled) {
+      await answerCallbackQuery(cbq.id, 'Acción inválida o expirada');
+    }
+    try {
+      appendHistory({
+        direction: 'in', handler: 'commander', from: cbq.from?.first_name || 'unknown',
+        from_id: cbq.from?.id, ok: !!handled, action: cbData.split(':')[0],
+      });
+    } catch { /* best-effort */ }
+    return;
+  }
+
   const gate = getOperatorGate();
   if (!gate) {
     // Degradación: cortar el spinner con un toast genérico.
@@ -936,7 +1118,9 @@ module.exports = {
   maybeHandleProductCommand,
   handleProductConfirmCallback,
   getProductExecutor,
-  deps, // { telegramRequest, operatorGate, productCommander, productExecutor } — inyectables en tests
+  getCommanderRouter, // #4802 — router de callbacks del Commander
+  resolveCommanderAllowlist, // #4802 — allowlist reusada de operator-gate
+  deps, // { telegramRequest, operatorGate, productCommander, productExecutor, commanderRouter } — inyectables en tests
 };
 
 // --- ARRANQUE (sólo cuando se ejecuta como proceso, no al importar) ---
