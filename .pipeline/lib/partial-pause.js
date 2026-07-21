@@ -729,6 +729,54 @@ function resumeAll(opts = {}) {
     return { removedFull, removedPartial };
 }
 
+// -----------------------------------------------------------------------------
+// #4832 — Lectura del ORIGEN de la pausa total (`.paused`), fail-closed.
+//
+// Distingue una pausa AUTO-GENERADA por corrupción de config.yaml
+// (`haltOnConfigCorruption` escribe el marker como JSON
+// `{ source: 'config-corruption-halt', ... }`) de una pausa MANUAL del operador
+// (marker legacy = ISO plano, o cualquier otro contenido).
+//
+// Regla fail-closed (SEC / A08 fail-closed): sólo devuelve
+// `source: 'config-corruption-halt'` cuando el marker parsea como JSON válido
+// **y** `parsed.source === 'config-corruption-halt'`. CUALQUIER otro caso
+// (ISO plano legacy, JSON malformado, `source` distinto, string vacío,
+// archivo ilegible, o inexistente) → `manual`/`unknown`, es decir NUNCA
+// auto-recuperable. Esto garantiza que un auto-recovery ingenuo jamás pise una
+// pausa que el operador puso a propósito (CA-3).
+//
+// @returns {{ source: 'config-corruption-halt'|'manual'|'unknown', raw: string|null }}
+// -----------------------------------------------------------------------------
+function readFullPauseOrigin() {
+    let raw = null;
+    try {
+        if (!fs.existsSync(pauseFile())) {
+            return { source: 'unknown', raw: null };
+        }
+        raw = fs.readFileSync(pauseFile(), 'utf8');
+    } catch {
+        // Ilegible → fail-closed (no auto-recuperable).
+        return { source: 'manual', raw: null };
+    }
+    const trimmed = typeof raw === 'string' ? raw.trim() : '';
+    if (!trimmed) {
+        // Vacío → manual (fail-closed).
+        return { source: 'manual', raw };
+    }
+    let parsed;
+    try {
+        parsed = JSON.parse(trimmed);
+    } catch {
+        // No es JSON (ej. ISO plano legacy) → manual (fail-closed).
+        return { source: 'manual', raw };
+    }
+    if (parsed && typeof parsed === 'object' && parsed.source === 'config-corruption-halt') {
+        return { source: 'config-corruption-halt', raw };
+    }
+    // JSON válido pero con otro source (o sin source) → manual (fail-closed).
+    return { source: 'manual', raw };
+}
+
 /**
  * Activa la pausa TOTAL del pipeline (marker `.paused`). Hermana de
  * `setPartialPause` pero para el halt total — el wizard de pausa (#3741) lo
@@ -814,6 +862,8 @@ module.exports = {
     // #3741 — pausa total gateada (wizard de pausa, scope full).
     setFullPause,
     clearFullPause,
+    // #4832 — lectura fail-closed del origen de la pausa total (auto vs manual).
+    readFullPauseOrigin,
     // #3625 — exportados para callers que quieran leer estado raw y para tests.
     readPreviousAllowlist,
     evaluateAndAudit,
