@@ -1233,7 +1233,18 @@ function haltOnConfigCorruption(reason, redactedDetail) {
   // (sólo en runtime, nunca en carga) ya está inicializado.
   try {
     if (!fs.existsSync(PAUSE_FILE)) {
-      fs.writeFileSync(PAUSE_FILE, new Date().toISOString());
+      // #4832 — Marker estructurado con ORIGEN distinguible. Permite el paso
+      // inverso de auto-recovery (loadConfig branch de éxito) que sólo levanta
+      // la pausa si la generó esta ruta (`source: config-corruption-halt`).
+      // Idempotente: si el marker ya existe (ej. pausa manual preexistente) NO
+      // lo pisamos → la manual gana y nunca se auto-levanta.
+      // SEC-2: `detail` sólo lleva metadata YA redactada (reason + línea/col),
+      // NUNCA el snippet crudo de config.yaml.
+      fs.writeFileSync(PAUSE_FILE, JSON.stringify({
+        source: 'config-corruption-halt',
+        ts: new Date().toISOString(),
+        detail: redactedDetail || reason || 'config-corruption',
+      }));
     }
     paused = true;
   } catch (e) {
@@ -1281,6 +1292,33 @@ function loadConfig() {
     return lastGoodConfig || {};
   }
   lastGoodConfig = raw;
+  // #4832 — Paso INVERSO de haltOnConfigCorruption: si la pausa activa fue
+  // auto-generada por corrupción (source: config-corruption-halt) y el config
+  // volvió a parsear OK, la levantamos solas dentro de este mismo ciclo (~30s).
+  // Fail-closed: readFullPauseOrigin devuelve 'config-corruption-halt' SÓLO si
+  // el marker es JSON válido con ese source; cualquier ambigüedad → 'manual'
+  // → NO se auto-levanta (respeta CA-3 y la pausa deliberada del operador).
+  try {
+    if (fs.existsSync(PAUSE_FILE) &&
+        partialPause.readFullPauseOrigin().source === 'config-corruption-halt') {
+      partialPause.clearFullPause({
+        source: 'config-auto-recovery',
+        justification: 'config.yaml volvió a parsear OK — halt por corrupción levantado',
+      });
+      paused = false;
+      // Log auditable (CA-4): qué disparó el halt / config sano detectado / reanudación.
+      log('pulpo', '[#4832] Auto-recovery: config.yaml sano → pausa config-corruption-halt levantada → dispatch reanudado');
+      // Alerta Telegram redactada (sin volcar contenido del marker, SEC-2/A09).
+      try {
+        sendTelegram(
+          '✅ *Pipeline REANUDADO* — `config.yaml` volvió a parsear OK.\n' +
+          'La pausa automática por corrupción se levantó sola (auto-recovery #4832).'
+        );
+      } catch { /* best-effort */ }
+    }
+  } catch (e) {
+    // Fail-closed: ante cualquier error, la pausa persiste (no reanudamos).
+  }
   return raw;
 }
 
