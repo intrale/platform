@@ -383,11 +383,114 @@ function enqueueCreateWave(args = {}, deps = {}) {
     };
 }
 
+function enqueueEdit(args = {}, deps = {}) {
+    const descriptor = args.descriptor;
+    if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor)) {
+        return { ok: false, status: 400, msg: 'descriptor ausente o invÃ¡lido (se esperaba un objeto)' };
+    }
+
+    const rawId = args.projectId || (descriptor.identity && descriptor.identity.projectId);
+    if (!isSafeId(rawId)) {
+        return { ok: false, status: 400, msg: 'projectId inseguro o inexistente' };
+    }
+    const projectId = rawId;
+    const descId = descriptor.identity && descriptor.identity.projectId;
+    if (!isSafeId(descId) || descId !== projectId) {
+        return { ok: false, status: 400, msg: 'descriptor no coincide con el producto objetivo' };
+    }
+
+    const runBootstrap = typeof deps.runBootstrap === 'function' ? deps.runBootstrap : bootstrap.runBootstrap;
+    let boot;
+    try {
+        boot = runBootstrap({
+            descriptor,
+            mode: 'dry-run',
+            deps: Object.assign(
+                { kernelGateFloor: 'enforce', probeAccess: repoProbe.probeAccess },
+                deps.bootstrapDeps || {},
+            ),
+        });
+    } catch (e) {
+        return { ok: false, status: 500, msg: `validaciÃ³n de bootstrap fallÃ³: ${e.message}` };
+    }
+    if (!boot || !boot.ok) {
+        return {
+            ok: false,
+            status: 400,
+            stage: boot ? boot.stage : 'bootstrap',
+            errors: (boot && boot.errors) || [{ path: '(root)', detail: 'bootstrap rechazÃ³ el descriptor' }],
+            msg: 'descriptor rechazado (fail-closed)',
+        };
+    }
+
+    const now = typeof deps.now === 'function' ? deps.now : () => Date.now();
+    const ts = now();
+    const record = {
+        type: 'product_control_request',
+        action: 'edit',
+        projectId,
+        descriptor,
+        actor: args.actor ? String(args.actor) : 'dashboard-operator',
+        remote_address: args.remoteAddress ? String(args.remoteAddress) : null,
+        source: 'dashboard',
+        created_at: ts,
+    };
+
+    const res = auditAndEnqueue(record, `edit-${projectId}-${ts}`, deps);
+    if (!res.ok) return res;
+    return {
+        ok: true,
+        status: 202,
+        action: 'edit',
+        projectId,
+        request_path: res.request_path,
+        audit_persisted: res.audit_persisted,
+        msg: `ediciÃ³n de "${projectId}" encolada; el kernel persistirÃ¡ el descriptor validado`,
+    };
+}
+
+function enqueueDeactivate(args = {}, deps = {}) {
+    const rawId = (args.projectId == null || args.projectId === '') ? DEFAULT_PRODUCT_ID : args.projectId;
+    if (!isSafeId(rawId)) {
+        return { ok: false, status: 400, msg: 'projectId inseguro o inexistente' };
+    }
+    if (typeof args.nonce !== 'string' || args.nonce.trim() === '') {
+        return { ok: false, status: 400, msg: 'nonce de confirmaciÃ³n requerido' };
+    }
+    const projectId = rawId;
+    const now = typeof deps.now === 'function' ? deps.now : () => Date.now();
+    const ts = now();
+    const record = {
+        type: 'product_control_request',
+        action: 'deactivate',
+        projectId,
+        nonce: args.nonce,
+        actor: args.actor ? String(args.actor) : 'dashboard-operator',
+        remote_address: args.remoteAddress ? String(args.remoteAddress) : null,
+        source: 'dashboard',
+        created_at: ts,
+    };
+
+    const res = auditAndEnqueue(record, `deactivate-${projectId}-${ts}`, deps);
+    if (!res.ok) return res;
+    return {
+        ok: true,
+        status: 202,
+        action: 'deactivate',
+        projectId,
+        request_path: res.request_path,
+        audit_persisted: res.audit_persisted,
+        msg: `baja de "${projectId}" encolada; el kernel persistirÃ¡ status archived (soft-delete)`,
+    };
+}
+
 module.exports = {
     enqueueOnboard,
     enqueueControl,
     enqueueActivate,
     enqueueCreateWave,
+    enqueueEdit,
+    enqueueDeactivate,
     CONTROL_ACTIONS,
     DEFAULT_PRODUCT_ID,
     DEFAULT_QUEUE_DIR,

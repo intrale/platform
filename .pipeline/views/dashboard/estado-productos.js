@@ -83,6 +83,7 @@ const STATE_META = Object.freeze({
     onboarding: { icon: '🌱', label: 'Onboarding', cls: 'ep-state-onboarding' },
     inactive: { icon: '○', label: 'Inactivo', cls: 'ep-state-inactive' },
     unknown: { icon: '—', label: 'Sin datos', cls: 'ep-state-unknown' },
+    archived: { icon: 'A', label: 'Archivado', cls: 'ep-state-archived' },
 });
 function stateMeta(st) {
     return STATE_META[st] || STATE_META.unknown;
@@ -128,6 +129,16 @@ function lifecycleButtons(projectId, st) {
     const canActivate = st === 'onboarding';
     const canStart = st === 'paused' || st === 'inactive' || st === 'unknown';
     const canPause = st === 'active';
+    const canEdit = st === 'active' || st === 'onboarding';
+    const canDeactivate = st === 'active' || st === 'onboarding';
+    const edit = `<button type="button" class="ep-btn ep-btn-edit" ${canEdit ? '' : 'disabled '}`
+        + `data-action="edit" data-pid="${pidAttr}" `
+        + `aria-label="Editar el descriptor del producto ${pidText}" title="Editar descriptor">`
+        + `${waveIco('edit')} Editar</button>`;
+    const deactivate = `<button type="button" class="ep-btn ep-btn-deactivate" ${canDeactivate ? '' : 'disabled '}`
+        + `data-action="deactivate" data-pid="${pidAttr}" `
+        + `aria-label="Desactivar el producto ${pidText}" title="Desactivar (archivar)">`
+        + `${waveIco('archive-box')} Desactivar</button>`;
     const activate = `<button type="button" class="ep-btn ep-btn-activate" ${canActivate ? '' : 'disabled '}`
         + `data-action="activate" data-pid="${pidAttr}" `
         + `aria-label="Activar el producto ${pidText}" title="Activar (promueve onboarding→activo)">`
@@ -140,7 +151,7 @@ function lifecycleButtons(projectId, st) {
         + `data-action="pause" data-pid="${pidAttr}" `
         + `aria-label="Pausar el producto ${pidText}" title="Pausar (delega en el kernel)">`
         + '<span aria-hidden="true">⏸</span> Pausar</button>';
-    return `<div class="ep-actions">${activate}${start}${pause}</div>`;
+    return `<div class="ep-actions">${edit}${deactivate}${activate}${start}${pause}</div>`;
 }
 
 // #4809 · Estado de la PRIMERA ola del producto, derivado EXCLUSIVAMENTE de su
@@ -211,7 +222,7 @@ function productCard(product, raw, activeProductId) {
     // El estado efectivo sale del propio namespace; si no hay entrada, mapeamos el
     // status del descriptor (onboarding/inactive) o 'unknown' (sin datos).
     let st = raw && typeof raw.state === 'string' ? raw.state : null;
-    if (!st) st = (product.status === 'onboarding') ? 'onboarding' : (product.status === 'active' ? 'unknown' : 'inactive');
+    if (!st) st = (product.status === 'onboarding') ? 'onboarding' : (product.status === 'archived' ? 'archived' : (product.status === 'active' ? 'unknown' : 'inactive'));
     const meta = stateMeta(st);
     const phase = raw && typeof raw.phase === 'string' ? raw.phase : '';
     const sum = pipelineSummary(raw);
@@ -261,6 +272,7 @@ function estadoProductosStyle() {
 .ep-scoped{font-size:12px;color:var(--in-fg,#e6edf3);background:rgba(255,255,255,.03);border:1px solid var(--in-border,rgba(255,255,255,.12));border-left:3px solid var(--brand-cyan,#00D6FF);border-radius:8px;padding:8px 12px;margin-bottom:12px}
 .ep-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}
 .ep-card{border:1px solid var(--in-border,rgba(255,255,255,.12));border-top:3px solid var(--ep-accent,#00D6FF);border-radius:12px;padding:14px 16px;background:var(--in-bg-2,#161B22);display:flex;flex-direction:column;gap:10px}
+.ep-card[data-state="archived"]{opacity:.78}
 .ep-card-active{box-shadow:0 0 0 2px var(--ep-accent,#00D6FF);background:rgba(0,214,255,.04)}
 .ep-card-head{display:flex;align-items:center;gap:8px}
 .ep-dot{width:11px;height:11px;border-radius:50%;flex:0 0 auto}
@@ -269,6 +281,7 @@ function estadoProductosStyle() {
 .ep-state-ok{color:#9be9a8;background:rgba(63,185,80,.14);border:1px solid rgba(63,185,80,.32)}
 .ep-state-paused{color:#fcd9a0;background:rgba(210,153,34,.14);border:1px solid rgba(210,153,34,.32)}
 .ep-state-onboarding{color:#9ff0e6;background:rgba(45,212,191,.14);border:1px solid rgba(45,212,191,.32)}
+.ep-state-archived{color:#a9b1c2;background:rgba(138,147,166,.12);border:1px solid rgba(138,147,166,.34)}
 .ep-state-inactive{color:var(--in-fg-dim,#8A93A6);background:rgba(255,255,255,.05);border:1px solid var(--in-border,rgba(255,255,255,.14))}
 .ep-state-unknown{color:var(--in-fg-soft,#5B6376);background:rgba(255,255,255,.03);border:1px solid var(--in-border,rgba(255,255,255,.1))}
 .ep-idrow{font-size:11px;color:var(--in-fg-soft,#5B6376);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
@@ -279,12 +292,14 @@ function estadoProductosStyle() {
 .ep-metric-lbl{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;color:var(--in-fg-soft,#5B6376)}
 .ep-metric-warn .ep-metric-val{color:#fcd9a0}
 .ep-nodata{font-size:11px;color:var(--in-fg-soft,#5B6376);font-style:italic}
-.ep-actions{display:flex;gap:8px;margin-top:2px}
+.ep-actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(108px,1fr));gap:8px;margin-top:2px}
 .ep-btn{flex:1;display:inline-flex;align-items:center;justify-content:center;gap:5px;font-size:12px;font-weight:800;border-radius:9px;padding:8px 10px;border:1px solid transparent;cursor:pointer}
 .ep-btn:focus-visible{outline:2px solid var(--brand-cyan,#00D6FF);outline-offset:2px}
 .ep-btn-activate{color:#fff;background:var(--in-brand,#1f6feb);border-color:var(--in-brand,#1f6feb)}
 .ep-btn-start{color:#001b22;background:var(--brand-cyan,#00D6FF);border-color:var(--brand-cyan,#00D6FF)}
 .ep-btn-pause{color:var(--in-fg,#e6edf3);background:rgba(255,255,255,.05);border-color:var(--in-border,rgba(255,255,255,.16))}
+.ep-btn-edit{color:var(--in-fg,#e6edf3);background:rgba(255,255,255,.05);border-color:var(--in-border,rgba(255,255,255,.16))}
+.ep-btn-deactivate{color:#fca5a5;background:rgba(248,113,113,.08);border-color:rgba(248,113,113,.32)}
 .ep-btn-wave{color:#001b22;background:var(--brand-cyan,#00D6FF);border-color:var(--brand-cyan,#00D6FF)}
 .ep-btn:disabled{opacity:.4;cursor:not-allowed}
 .ep-ico{width:13px;height:13px;flex:0 0 auto;fill:currentColor}
@@ -395,18 +410,28 @@ function renderEstadoProductosClientScript() {
   // = spawn real de agentes/tokens). 'pause' confirma igual que antes.
   // #4809 — 'create-wave' crea/asocia la primera ola: confirma mostrando el
   // productId objetivo (SEC-7, estado C del mockup, sin acción silenciosa).
-  var EP_VERBS={activate:'activar',start:'arrancar',pause:'pausar','create-wave':'crear la primera ola de'};
-  var EP_NEEDS_CONFIRM={start:true,pause:true,'create-wave':true};
+  var EP_VERBS={activate:'activar',start:'arrancar',pause:'pausar','create-wave':'crear la primera ola de','deactivate':'desactivar'};
+  var EP_NEEDS_CONFIRM={start:true,pause:true,'create-wave':true,'deactivate':true};
   // Endpoint por acción (default: la propia acción). 'create-wave' → /api/product/wave.
-  var EP_ENDPOINT={'create-wave':'wave'};
+  var EP_ENDPOINT={'create-wave':'wave',deactivate:'deactivate'};
   // Mensaje de confirmación por acción — SIEMPRE con el productId objetivo (SEC-7).
   var EP_CONFIRM={
     start:function(pid){return '¿Confirmás arrancar el producto "'+pid+'"? La acción la ejecuta el kernel.';},
     pause:function(pid){return '¿Confirmás pausar el producto "'+pid+'"? La acción la ejecuta el kernel.';},
     'create-wave':function(pid){return '¿Confirmás crear/asociar la primera ola del producto "'+pid+'"? La ejecuta el kernel (create-once, no duplica; gate del descriptor server-side).';}
   };
+  EP_CONFIRM.deactivate=function(pid){
+    return 'Dar de baja el producto "'+pid+'"?\\n\\n'
+      + '- Pasa a estado ARCHIVADO (soft-delete auditable, NO se borra el descriptor).\\n'
+      + '- Si tiene una ola en curso: los agentes ya despachados terminan solos, pero no recibira nuevos slots. Otros productos no se ven afectados.\\n'
+      + '- La ejecuta el kernel; la confirmacion esta protegida por un nonce single-use.';
+  };
   async function epControl(action,pid,btn){
     if(!pid){ epResult(false,'Falta el identificador de producto.'); return; }
+    if(action==='edit'){
+      window.location.href='/dashboard?view=onboarding&editProduct='+encodeURIComponent(pid);
+      return;
+    }
     var verb=EP_VERBS[action]||action;
     if(EP_NEEDS_CONFIRM[action]){
       var cmsg=EP_CONFIRM[action]?EP_CONFIRM[action](pid):('¿Confirmás '+verb+' el producto "'+pid+'"? La acción la ejecuta el kernel.');
@@ -419,10 +444,21 @@ function renderEstadoProductosClientScript() {
       var token=tj&&tj.csrf_token;
       if(!token){ epResult(false,'No pude obtener el token CSRF; recargá y reintentá.'); return; }
       var endpoint=EP_ENDPOINT[action]||action;
+      var payload={ productId: pid };
+      if(action==='deactivate'){
+        var nr=await fetch('/api/product/deactivate-nonce',{
+          method:'POST',
+          headers:{'Content-Type':'application/json','X-CSRF-Token':token},
+          body:JSON.stringify({ productId: pid })
+        });
+        var nj=await nr.json();
+        if(!nj||!nj.ok||!nj.nonce){ epResult(false,(nj&&nj.msg)||'No se pudo preparar la confirmacion.'); return; }
+        payload.nonce=nj.nonce;
+      }
       var r=await fetch('/api/product/'+endpoint,{
         method:'POST',
         headers:{'Content-Type':'application/json','X-CSRF-Token':token},
-        body:JSON.stringify({ productId: pid })
+        body:JSON.stringify(payload)
       });
       var j=await r.json();
       if(j&&j.ok){

@@ -11520,6 +11520,20 @@ try { gateSignatureRequest = require('./lib/gate-signature-request'); } catch (e
 // kernel registra/arranca/pausa (invariante "el adaptador pide, el kernel ejecuta").
 let productControl = null;
 try { productControl = require('./lib/product-control-request'); } catch (e) { log(`product-control-request unavailable: ${e.message}`); }
+let productDescriptor = null;
+try { productDescriptor = require('./lib/project-descriptor'); } catch (e) { log(`project-descriptor unavailable: ${e.message}`); }
+const productDeactivateNonces = new Map();
+function issueProductActionNonce(projectId) {
+  const nonce = crypto.randomBytes(18).toString('base64url');
+  productDeactivateNonces.set(nonce, { projectId, expiresAt: Date.now() + 5 * 60 * 1000 });
+  return nonce;
+}
+function consumeProductActionNonce(projectId, nonce) {
+  const key = typeof nonce === 'string' ? nonce : '';
+  const rec = productDeactivateNonces.get(key);
+  productDeactivateNonces.delete(key);
+  return !!(rec && rec.projectId === projectId && rec.expiresAt >= Date.now());
+}
 
 // #3727 (split de #3715) — Vista Equipo extraída a su propio módulo SSR.
 // Patrón espejo de las vistas de arriba: si el require falla (typo, dep faltante),
@@ -12148,6 +12162,50 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (req.url.startsWith('/api/product/descriptor') && req.method === 'GET') {
+    if (!_opsRestartGate) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'gate de seguridad no disponible' }));
+      return;
+    }
+    const gate = _opsRestartGate.checkGate(req);
+    if (!gate.ok) {
+      res.writeHead(gate.status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, code: gate.code, msg: gate.msg }));
+      return;
+    }
+    try {
+      if (!productDescriptor || typeof productDescriptor.isSafeId !== 'function') throw new Error('descriptor unavailable');
+      const u = new URL(req.url, 'http://localhost');
+      const projectId = u.searchParams.get('productId') || u.searchParams.get('projectId') || '';
+      if (!productDescriptor.isSafeId(projectId)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'projectId invalido' }));
+        return;
+      }
+      const descriptorsDir = path.join(PIPELINE, 'descriptors');
+      const descriptorPath = path.join(descriptorsDir, `${projectId}.json`);
+      if (!path.resolve(descriptorPath).startsWith(path.resolve(descriptorsDir) + path.sep)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'projectId invalido' }));
+        return;
+      }
+      const loaded = productDescriptor.loadDescriptor(descriptorPath);
+      if (!loaded || loaded.valid !== true || !loaded.descriptor) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'descriptor no disponible' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ ok: true, projectId, descriptor: loaded.descriptor }));
+    } catch (e) {
+      log(`Action: product descriptor (error) ${e && e.message ? e.message : e}`);
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'no se pudo cargar el descriptor' }));
+    }
+    return;
+  }
+
   // Helper local: aplica el gate + CSRF de los endpoints mutantes de producto.
   // Devuelve true si ya respondió (rechazo) y el caller debe abortar.
   const _productGuardRejected = () => {
@@ -12175,6 +12233,31 @@ const server = http.createServer((req, res) => {
     }
     return false;
   };
+
+  if (req.url === '/api/product/deactivate-nonce' && req.method === 'POST') {
+    if (_productGuardRejected()) return;
+    let body = '';
+    req.on('data', chunk => { body += chunk; if (body.length > 16 * 1024) req.destroy(); });
+    req.on('end', () => {
+      try {
+        if (!productDescriptor || typeof productDescriptor.isSafeId !== 'function') throw new Error('descriptor unavailable');
+        const parsed = body ? JSON.parse(body) : {};
+        const projectId = parsed.productId || parsed.projectId;
+        if (!productDescriptor.isSafeId(projectId)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ ok: false, msg: 'projectId invalido' }));
+        }
+        const nonce = issueProductActionNonce(projectId);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        return res.end(JSON.stringify({ ok: true, projectId, nonce }));
+      } catch (e) {
+        log(`Action: product deactivate-nonce (error) ${e && e.message ? e.message : e}`);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ ok: false, msg: 'no se pudo preparar la confirmacion' }));
+      }
+    });
+    return;
+  }
 
   // CA-1.1 · Alta de producto (wizard). Valida fail-closed (schema + prompt-
   // injection + path-traversal + SSRF + gate de firma) vía project-bootstrap y
@@ -12288,6 +12371,61 @@ const server = http.createServer((req, res) => {
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, msg: 'no se pudo procesar la creación de la ola (payload inválido)' }));
+      }
+    });
+    return;
+  }
+
+  if (req.url === '/api/product/edit' && req.method === 'POST') {
+    if (_productGuardRejected()) return;
+    let body = '';
+    req.on('data', chunk => { body += chunk; if (body.length > 16 * 1024) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const parsed = body ? JSON.parse(body) : {};
+        const out = productControl.enqueueEdit({
+          projectId: parsed.productId || parsed.projectId,
+          descriptor: parsed.descriptor,
+          actor: parsed.actor,
+          remoteAddress: (req.socket && req.socket.remoteAddress) || '',
+        });
+        log(`Action: product edit ${out.projectId || '(rechazado)'} (${out.status}) ${out.msg || out.stage || ''}`);
+        res.writeHead(out.status || (out.ok ? 202 : 400), { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(out));
+      } catch (e) {
+        log(`Action: product edit (error) ${e && e.message ? e.message : e}`);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'no se pudo procesar la edicion (payload invalido)' }));
+      }
+    });
+    return;
+  }
+
+  if (req.url === '/api/product/deactivate' && req.method === 'POST') {
+    if (_productGuardRejected()) return;
+    let body = '';
+    req.on('data', chunk => { body += chunk; if (body.length > 16 * 1024) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const parsed = body ? JSON.parse(body) : {};
+        const projectId = parsed.productId || parsed.projectId;
+        if (!consumeProductActionNonce(projectId, parsed.nonce)) {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ ok: false, msg: 'confirmacion expirada; reintenta la baja' }));
+        }
+        const out = productControl.enqueueDeactivate({
+          projectId,
+          nonce: parsed.nonce,
+          actor: parsed.actor,
+          remoteAddress: (req.socket && req.socket.remoteAddress) || '',
+        });
+        log(`Action: product deactivate ${out.projectId || '(rechazado)'} (${out.status}) ${out.msg || ''}`);
+        res.writeHead(out.status || (out.ok ? 202 : 400), { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(out));
+      } catch (e) {
+        log(`Action: product deactivate (error) ${e && e.message ? e.message : e}`);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'no se pudo procesar la baja (payload invalido)' }));
       }
     });
     return;
