@@ -22,6 +22,16 @@
 // el dashboard sólo encola; SÓLO este drenador (lado kernel) escribe descriptores.
 // `bootProducts` sigue salteando `onboarding` (no lo activa hasta OK humano).
 //
+// #4800 · CREACIÓN AUTOMÁTICA DE REPO
+// -----------------------------------
+// Este drenador es el ÚNICO consumidor de `product-control/pendiente/` cableado al
+// loop del kernel (`kernel-supervisor.bootProducts` → `drainOnboardQueue`). Por eso
+// la creación del repo `provenance:'create'` (CA-1) vive acá, ANTES de
+// `registerOnboarding`: se delega en `product-control-drain.resolveCreateRepos`
+// (crear repo idempotente con `gh` + completar la url LIMPIA en el descriptor). Así
+// el descriptor `onboarding` queda persistido CON su url y sin "producto a medias"
+// (CA-4 / Gherkin #2). Fail-closed: si la creación falla, el pedido NO se registra.
+//
 // SEGURIDAD / INTEGRIDAD
 // ----------------------
 //   - Fail-closed en id inseguro y en duplicado: NO registra, mueve el pedido a
@@ -97,8 +107,8 @@ function moveToProcessed(fileName, queueDir, processedDir, _fs) {
 /**
  * Drena la cola de pedidos de onboarding. Fail-open ante ausencia de la cola.
  *
- * @param {object} [opts]  { queueDir, processedDir, descriptorsDir, auditFile }
- * @param {object} [deps]  { fsImpl, auditImpl, now, log }
+ * @param {object} [opts]  { queueDir, processedDir, descriptorsDir, auditFile, allowedOrgs, githubHost }
+ * @param {object} [deps]  { fsImpl, auditImpl, now, log, execFileSync, resolveCreateRepos }
  * @returns {{registered:string[], rejected:Array<{projectId:?string,reason:string}>, errors:Array<{file:string,reason:string}>}}
  */
 function drainOnboardQueue(opts = {}, deps = {}) {
@@ -109,6 +119,20 @@ function drainOnboardQueue(opts = {}, deps = {}) {
     const _fs = deps.fsImpl || fsDefault;
     const auditImpl = deps.auditImpl || auditLogDefault;
     const now = typeof deps.now === 'function' ? deps.now : () => Date.now();
+
+    // #4800 · Resolver de repos `provenance:'create'`. Inyectable por tests; por
+    // default construye el drenador de creación (`product-control-drain`) con el
+    // ejecutor de `gh` inyectado (o el real), la allowlist de orgs y el host. Un
+    // descriptor sin entradas `create` pasa intacto sin tocar `gh`.
+    const resolveCreateRepos = typeof deps.resolveCreateRepos === 'function'
+        ? deps.resolveCreateRepos
+        : (descriptor) => require('./product-control-drain').createProductControlDrain({
+            execFileSync: deps.execFileSync,
+            allowedOrgs: opts.allowedOrgs,
+            githubHost: opts.githubHost,
+            log: typeof deps.log === 'function' ? deps.log : undefined,
+            now,
+        }).resolveCreateRepos(descriptor);
 
     const summary = { registered: [], rejected: [], errors: [] };
 
@@ -159,6 +183,32 @@ function drainOnboardQueue(opts = {}, deps = {}) {
             continue;
         }
 
+        // #4800 · CA-1 — crear el repo `provenance:'create'` (idempotente) y completar
+        // la url LIMPIA en el descriptor ANTES de registrar. Fail-closed:
+        //   - spec inválida (org/nombre/allowlist) ⇒ terminal (apartar a procesado);
+        //   - fallo real de `gh` (permiso/red) ⇒ recuperable (dejar en pendiente, retry);
+        // en ambos casos NO se registra ⇒ nunca queda "producto a medias" (Gherkin #2).
+        // Un descriptor `existing`/legacy pasa sin tocar `gh`.
+        let repoOrigin = 'existing';
+        try {
+            const rr = resolveCreateRepos(descriptor);
+            if (!rr || rr.ok !== true) {
+                const reason = (rr && rr.reason) || 'repo-create-rejected';
+                summary.rejected.push({ projectId, reason });
+                audit({ type: 'onboard_drain_result', outcome: 'rejected', reason, projectId, file: fileName, at: now() });
+                try { moveToProcessed(fileName, queueDir, processedDir, _fs); }
+                catch (me) { summary.errors.push({ file: fileName, reason: `move-failed: ${me.message}` }); }
+                continue;
+            }
+            repoOrigin = rr.repoOrigin || 'existing';
+        } catch (e) {
+            const reason = e && e.message ? e.message : String(e);
+            // Recuperable: NO se marca procesado ⇒ se reintenta el próximo ciclo.
+            summary.errors.push({ file: fileName, reason: `repo-create-failed: ${reason}` });
+            audit({ type: 'onboard_drain_result', outcome: 'error', reason: `repo-create-failed: ${reason}`, projectId, file: fileName, at: now() });
+            continue;
+        }
+
         // (b)+(c) Unicidad autoritativa + registro atómico onboarding.
         const reg = registerOnboarding(descriptor, projectId, descriptorsDir, _fs);
         if (!reg.ok) {
@@ -186,7 +236,7 @@ function drainOnboardQueue(opts = {}, deps = {}) {
             summary.errors.push({ file: fileName, reason: `registered-but-move-failed: ${me.message}` });
         }
         summary.registered.push(projectId);
-        audit({ type: 'onboard_drain_result', outcome: 'registered', projectId, file: fileName, at: now() });
+        audit({ type: 'onboard_drain_result', outcome: 'registered', projectId, repoOrigin, file: fileName, at: now() });
     }
 
     return summary;

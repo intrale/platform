@@ -138,6 +138,65 @@ function createProductControlDrain(deps = {}) {
   // ---- resolución de la modalidad create de un descriptor --------------------
 
   /**
+   * Resuelve, sobre un descriptor YA validado, todas las entradas
+   * `provenance:'create'` de `repositories`: crea el repo (idempotente, `gh`), completa
+   * la URL LIMPIA y transforma la entrada a `provenance:'existing'` con `url`. MUTA
+   * `descriptor.repositories` in place (el caller decide si clona antes).
+   *
+   * Es la unidad REUTILIZABLE que el drenador cableado al kernel
+   * (`product-control-drainer.drainOnboardQueue`) invoca ANTES de `registerOnboarding`,
+   * de modo que la creación del repo ocurra en el path REAL del kernel (#4800 · CA-1) y
+   * no como código huérfano.
+   *
+   * Semántica de fallo (fail-closed, "nunca producto a medias"):
+   *   - Spec inválida (name/org/allowlist) ⇒ devuelve `{ok:false, terminal:true, ...}`
+   *     (reintentar no ayuda: el operador debe corregir el pedido).
+   *   - Fallo real de `gh` (permiso/red) ⇒ LANZA (recuperable: el caller reintenta).
+   *   - Sin entradas `create` ⇒ `{ok:true, repoOrigin:'existing', createdUrls:[]}` sin
+   *     tocar `gh` (los descriptores `existing`/legacy pasan intactos).
+   *
+   * @param {object} descriptor  descriptor con `repositories`.
+   * @returns {{ok:true, repoOrigin:string, createdUrls:string[]}|{ok:false, terminal:boolean, stage:string, reason:string}}
+   */
+  function resolveCreateRepos(descriptor) {
+    const repos = Array.isArray(descriptor && descriptor.repositories) ? descriptor.repositories : [];
+    let repoOrigin = 'existing';
+    const createdUrls = [];
+
+    for (const repo of repos) {
+      if (!repo || repo.provenance !== 'create') continue;
+      const spec = assertCreateSpec(repo);
+      if (!spec.ok) {
+        // Spec inválida ⇒ terminal (fail-closed, sin invocar gh).
+        return { ok: false, terminal: true, stage: 'create-spec', reason: spec.reason };
+      }
+      // Idempotencia: si ya existe, no re-crear (evita `422` y doble efecto).
+      let created = false;
+      let alreadyExisted = false;
+      if (repoExists(spec.org, spec.name)) {
+        alreadyExisted = true;
+      } else {
+        const res = createRepo(spec.org, spec.name, spec.visibility); // LANZA ante fallo real.
+        created = !!res.created;
+        alreadyExisted = !!res.alreadyExisted;
+      }
+      // URL limpia — NUNCA la remote con `x-access-token:<TOKEN>@` (A05/A07).
+      const cleanUrl = `https://${githubHost}/${spec.org}/${spec.name}`;
+      // La forma `provenance:'create'` prohíbe url por contrato; tras la creación el
+      // repo YA existe, así que la entrada queda como existente+url. El "cómo" (creado)
+      // viaja aparte en `repoOrigin`.
+      delete repo.create;
+      repo.provenance = 'existing';
+      repo.url = cleanUrl;
+      createdUrls.push(cleanUrl);
+      repoOrigin = alreadyExisted ? 'existing-preexisting' : 'created';
+      log(`onboard: repo ${spec.org}/${spec.name} ${created ? 'creado' : 'ya existía'} (${spec.visibility})`);
+    }
+
+    return { ok: true, repoOrigin, createdUrls };
+  }
+
+  /**
    * Valida fail-closed los datos de creación de un repo `provenance:'create'`. No
    * invoca `gh` — sólo aserta que name/org/visibility son seguros antes de tocar red.
    * @returns {{ok:true, org, name, visibility}|{ok:false, reason}}
@@ -189,45 +248,24 @@ function createProductControlDrain(deps = {}) {
     const resolved = JSON.parse(JSON.stringify(valid));
     const repos = Array.isArray(resolved.repositories) ? resolved.repositories : [];
 
-    let repoOrigin = 'existing';
-    let createdUrl = null;
-
-    for (const repo of repos) {
-      if (!repo || repo.provenance !== 'create') continue;
-      const spec = assertCreateSpec(repo);
-      if (!spec.ok) {
-        onAlert({ projectId, stage: 'create-spec', errors: [{ detail: spec.reason }] });
-        return { ok: false, stage: 'create-spec', projectId, reason: spec.reason };
-      }
-      // Idempotencia: si ya existe, no re-crear (evita `422` y doble efecto).
-      let created = false;
-      let alreadyExisted = false;
-      try {
-        if (repoExists(spec.org, spec.name)) {
-          alreadyExisted = true;
-        } else {
-          const res = createRepo(spec.org, spec.name, spec.visibility);
-          created = !!res.created;
-          alreadyExisted = !!res.alreadyExisted;
-        }
-      } catch (err) {
-        // Fallo de creación: NO dejar el producto a medias. Se reporta y se aborta
-        // sin registrar descriptor con URL vacía (CA-4 / Gherkin #2).
-        onAlert({ projectId, stage: 'create-repo', errors: [{ detail: err.message }] });
-        return { ok: false, stage: 'create-repo', projectId, reason: err.message };
-      }
-
-      // URL limpia — NUNCA la remote con `x-access-token:<TOKEN>@` (A05/A07).
-      createdUrl = `https://${githubHost}/${spec.org}/${spec.name}`;
-      // Transformar la entrada a existente+url: tras la creación, el repo YA existe.
-      // La forma `provenance:'create'` prohíbe url por contrato; el registro final es
-      // un descriptor existente válido, y el "cómo" (creado) va al registry (repoOrigin).
-      delete repo.create;
-      repo.provenance = 'existing';
-      repo.url = createdUrl;
-      repoOrigin = alreadyExisted ? 'existing-preexisting' : 'created';
-      log(`onboard ${projectId}: repo ${spec.org}/${spec.name} ${created ? 'creado' : 'ya existía'} (${spec.visibility})`);
+    // Creación de repos `provenance:'create'` (misma lógica que usa el drenador
+    // cableado al kernel — ver `resolveCreateRepos`). Fail-closed: spec inválida ⇒
+    // terminal; fallo real de `gh` ⇒ throw. En ambos casos NO se registra (Gherkin #2).
+    let repoResult;
+    try {
+      repoResult = resolveCreateRepos(resolved);
+    } catch (err) {
+      onAlert({ projectId, stage: 'create-repo', errors: [{ detail: err.message }] });
+      return { ok: false, stage: 'create-repo', projectId, reason: err.message };
     }
+    if (!repoResult.ok) {
+      onAlert({ projectId, stage: repoResult.stage, errors: [{ detail: repoResult.reason }] });
+      return { ok: false, stage: repoResult.stage, projectId, reason: repoResult.reason };
+    }
+    const repoOrigin = repoResult.repoOrigin;
+    const createdUrl = repoResult.createdUrls.length
+      ? repoResult.createdUrls[repoResult.createdUrls.length - 1]
+      : null;
 
     // Registro fail-closed en modo full. Para repos recién creados inyectamos un probe
     // que confirma alcance sin re-consultar red; para repos existentes-de-URL inyectamos
@@ -337,6 +375,7 @@ function createProductControlDrain(deps = {}) {
   return {
     drainOnce,
     processOnboard,
+    resolveCreateRepos,
     assertCreateSpec,
     // helpers expuestos para tests / verificación estática
     repoExists,
