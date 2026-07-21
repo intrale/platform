@@ -438,7 +438,17 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const ROOT = path.resolve(__dirname, '..');
-const PIPELINE = path.resolve(__dirname);
+// #4832 — El directorio base del pipeline honra `PIPELINE_DIR_OVERRIDE` (LA MISMA
+// env var que ya usa `lib/partial-pause.js`), de modo que `CONFIG_PATH`,
+// `PAUSE_FILE`, el `pauseFile()` del helper y la cola de Telegram apunten todos
+// al MISMO directorio. Esto habilita el test de integración hermético del ciclo
+// loadConfig ↔ haltOnConfigCorruption ↔ auto-recovery sobre un tmpdir aislado,
+// sin tocar el `.paused` real ni la cola de Telegram de producción.
+// En producción la env var NUNCA está definida → PIPELINE = __dirname (idéntico
+// al comportamiento previo; cero cambio en caliente).
+const PIPELINE = process.env.PIPELINE_DIR_OVERRIDE
+  ? path.resolve(process.env.PIPELINE_DIR_OVERRIDE)
+  : path.resolve(__dirname);
 const CONFIG_PATH = path.join(PIPELINE, 'config.yaml');
 const LOG_DIR = path.join(PIPELINE, 'logs');
 
@@ -18715,6 +18725,22 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     readYamlSafe,
     WorkFileCorruptionError,
     PAUSE_FILE,
+    // #4832 — seam de integración del ciclo loadConfig ↔ haltOnConfigCorruption ↔
+    // auto-recovery. Se ejercen sobre un tmpdir aislado vía PIPELINE_DIR_OVERRIDE
+    // (que redirige CONFIG_PATH/PAUSE_FILE/cola-Telegram). Los getters/reset
+    // permiten aseverar el flag `paused` y resetear estado entre casos sin tocar
+    // producción. Cubren CA-1 (halt→marker JSON con origen), CA-2 (config sano→
+    // auto-recovery levanta la pausa en un tick) y CA-5 (pausa manual/legacy
+    // persiste, jamás se auto-levanta).
+    loadConfig,
+    haltOnConfigCorruption,
+    CONFIG_PATH,
+    _getPaused: () => paused,
+    _resetConfigCorruptionState: () => {
+      paused = false;
+      lastGoodConfig = null;
+      lastConfigCorruptionAlertMs = 0;
+    },
     // EP5-H1 (#3938) — módulos puros de los brazos + frontera FS, expuestos
     // para tests de integración del cableado (la lógica pura se testea en
     // lib/__tests__/brazo-*-core.test.js y workfile-name.test.js).
