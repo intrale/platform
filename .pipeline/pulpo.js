@@ -1233,7 +1233,16 @@ function haltOnConfigCorruption(reason, redactedDetail) {
   // (sólo en runtime, nunca en carga) ya está inicializado.
   try {
     if (!fs.existsSync(PAUSE_FILE)) {
-      fs.writeFileSync(PAUSE_FILE, new Date().toISOString());
+      // #4832 — Marker JSON con origen distinguible (auto-recuperable). Idempotente:
+      // sólo escribimos en la PRIMERA detección, jamás pisamos un marker preexistente
+      // (una pausa manual del operador gana → enmascaramiento, ver CA-5). El `detail`
+      // lleva SÓLO metadata ya redactada (reason + línea/col vía redactedDetail),
+      // NUNCA snippet crudo de config.yaml (SEC-2/A09: evita fuga de paths a secrets).
+      fs.writeFileSync(PAUSE_FILE, JSON.stringify({
+        source: 'config-corruption-halt',
+        ts: new Date().toISOString(),
+        detail: redactedDetail || '(sin detalle)',
+      }));
     }
     paused = true;
   } catch (e) {
@@ -1254,6 +1263,23 @@ function haltOnConfigCorruption(reason, redactedDetail) {
       );
     } catch { /* best-effort */ }
   }
+}
+
+/**
+ * #4832 — Decisión PURA del auto-recovery del halt por corrupción de config.
+ * Gate fail-closed (A08): sólo se auto-levanta la pausa total si (a) el marker
+ * `.paused` existe Y (b) su origen es EXACTAMENTE 'config-corruption-halt' (la
+ * pausa la generó el propio Pulpo, es auto-recuperable). Cualquier otro origen
+ * ('manual', 'unknown', ISO plano legacy clasificado por readFullPauseOrigin) →
+ * false → la pausa persiste (respeta CA-3 / la pausa deliberada del operador).
+ * Sin fs ni side-effects: testeable en aislamiento.
+ *
+ * @param {boolean} pauseExists - fs.existsSync(PAUSE_FILE)
+ * @param {string} originSource - readFullPauseOrigin().source
+ * @returns {boolean}
+ */
+function shouldAutoRecoverFromCorruptionHalt(pauseExists, originSource) {
+  return pauseExists === true && originSource === 'config-corruption-halt';
 }
 
 function loadConfig() {
@@ -1281,6 +1307,44 @@ function loadConfig() {
     return lastGoodConfig || {};
   }
   lastGoodConfig = raw;
+  // #4832 — Paso INVERSO simétrico de haltOnConfigCorruption: si la pausa activa
+  // fue auto-generada por corrupción (source: config-corruption-halt) y el config
+  // volvió a parsear OK, la levantamos solos dentro de este mismo ciclo (~30s), sin
+  // intervención humana. Fail-closed (A08): readFullPauseOrigin devuelve
+  // 'config-corruption-halt' SÓLO si el marker es JSON válido con ese source;
+  // cualquier ambigüedad (ISO plano legacy, otro source, malformado, vacío) → 'manual'
+  // → NO se auto-levanta (respeta CA-3 y la pausa deliberada del operador). El
+  // try/catch deja la pausa puesta ante cualquier error (nunca fail-open).
+  try {
+    if (shouldAutoRecoverFromCorruptionHalt(
+          fs.existsSync(PAUSE_FILE), partialPause.readFullPauseOrigin().source)) {
+      // Levantamos bajo el MISMO lock que el wizard manual (clearFullPause), no
+      // fs.unlinkSync directo → evita TOCTOU con una pausa manual en vuelo (CA-6).
+      partialPause.clearFullPause({
+        source: 'config-auto-recovery',
+        justification: 'config.yaml volvió a parsear OK — halt por corrupción levantado',
+      });
+      paused = false;
+      // Log auditable (CA-4): qué disparó el halt / config sano detectado / reanudación.
+      // NO volcamos el contenido crudo del marker (SEC-2/A09, anti log-injection).
+      log('pulpo', '[#4832] Auto-recovery: config.yaml sano detectado → pausa config-corruption-halt levantada automáticamente → dispatch reanudado');
+      const now = Date.now();
+      if (now - lastConfigCorruptionAlertMs > CONFIG_CORRUPTION_ALERT_THROTTLE_MS) {
+        lastConfigCorruptionAlertMs = now;
+        try {
+          sendTelegram(
+            '✅ *Pipeline REANUDADO automáticamente* — `config.yaml` volvió a estar sano.\n' +
+            'La pausa la había puesto el propio Pulpo por corrupción de config; al detectar el ' +
+            'archivo válido de nuevo, levantó el halt solo y reanudó el dispatch. No fue una ' +
+            'reanudación manual.'
+          );
+        } catch { /* best-effort */ }
+      }
+    }
+  } catch (e) {
+    // Fail-closed: ante cualquier error, la pausa persiste (nunca fail-open).
+    try { log('pulpo', `[#4832] Auto-recovery abortado por error (pausa persiste): ${e.message}`); } catch {}
+  }
   return raw;
 }
 
@@ -18677,6 +18741,10 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     readYamlSafe,
     WorkFileCorruptionError,
     PAUSE_FILE,
+    // #4832 — decisión PURA del auto-recovery del halt por corrupción de config.
+    // Expuesta para tests del gate fail-closed (recuperable sólo con origen
+    // 'config-corruption-halt'; toda otra clasificación persiste la pausa).
+    shouldAutoRecoverFromCorruptionHalt,
     // EP5-H1 (#3938) — módulos puros de los brazos + frontera FS, expuestos
     // para tests de integración del cableado (la lógica pura se testea en
     // lib/__tests__/brazo-*-core.test.js y workfile-name.test.js).

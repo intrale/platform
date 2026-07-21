@@ -207,6 +207,51 @@ function getPipelineMode() {
     };
 }
 
+// -----------------------------------------------------------------------------
+// #4832 — Origen distinguible del marker de pausa TOTAL (`.paused`).
+//
+// El auto-recovery del Pulpo (haltOnConfigCorruption ↔ loadConfig) necesita
+// saber si una pausa total la generó él mismo por corrupción de config.yaml
+// (auto-recuperable) o si la puso el operador (persistente, jamás auto-levantar).
+//
+// REGLA FAIL-CLOSED (A08, no negociable): esta función devuelve
+// `source: 'config-corruption-halt'` SÓLO si el contenido del marker parsea
+// como JSON válido Y `parsed.source === 'config-corruption-halt'`. CUALQUIER
+// otro caso — ISO plano legacy, JSON malformado, `source` distinto, contenido
+// vacío, archivo ilegible, o inexistente — se clasifica como `manual`/`unknown`
+// y NUNCA es auto-recuperable. Ante la mínima ambigüedad, la pausa persiste.
+// -----------------------------------------------------------------------------
+/**
+ * Lee el origen del marker de pausa total (`.paused`) de forma fail-closed.
+ * @returns {{ source: 'config-corruption-halt'|'manual'|'unknown', raw: string|null }}
+ */
+function readFullPauseOrigin() {
+    const file = pauseFile();
+    // Inexistente → no hay pausa que clasificar. `unknown` (nunca recuperable).
+    if (!fs.existsSync(file)) return { source: 'unknown', raw: null };
+    let raw;
+    try {
+        raw = fs.readFileSync(file, 'utf8');
+    } catch {
+        // Ilegible → fail-closed: se trata como pausa manual persistente.
+        return { source: 'manual', raw: null };
+    }
+    const trimmed = (raw || '').trim();
+    if (trimmed.length === 0) return { source: 'manual', raw };
+    let parsed;
+    try {
+        parsed = JSON.parse(trimmed);
+    } catch {
+        // ISO plano legacy o JSON malformado → manual (fail-closed).
+        return { source: 'manual', raw };
+    }
+    if (parsed && typeof parsed === 'object' && parsed.source === 'config-corruption-halt') {
+        return { source: 'config-corruption-halt', raw };
+    }
+    // JSON válido pero con otro `source` (o sin él) → manual.
+    return { source: 'manual', raw };
+}
+
 /**
  * Determina si un issue puede procesarse según el estado actual.
  * @param {number|string} issue
@@ -814,6 +859,8 @@ module.exports = {
     // #3741 — pausa total gateada (wizard de pausa, scope full).
     setFullPause,
     clearFullPause,
+    // #4832 — origen fail-closed del marker `.paused` (auto-recovery del Pulpo).
+    readFullPauseOrigin,
     // #3625 — exportados para callers que quieran leer estado raw y para tests.
     readPreviousAllowlist,
     evaluateAndAudit,

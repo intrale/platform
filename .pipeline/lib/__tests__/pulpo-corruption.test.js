@@ -26,7 +26,10 @@ const os = require('os');
 const path = require('path');
 
 const pulpo = require('../../pulpo.js');
-const { readYaml, readYamlSafe, WorkFileCorruptionError, PAUSE_FILE } = pulpo;
+const {
+    readYaml, readYamlSafe, WorkFileCorruptionError, PAUSE_FILE,
+    shouldAutoRecoverFromCorruptionHalt,
+} = pulpo;
 
 function tmpFile(name, content) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pulpo-corrupt-'));
@@ -82,4 +85,61 @@ test('granularidad SEC-3: leer un work-file corrupto NO escribe el .paused globa
         pausedAntes,
         'la lectura de un work-file corrupto NO debe crear/borrar el .paused global (SEC-3)',
     );
+});
+
+// =============================================================================
+// #4832 — Gate del auto-recovery del halt por corrupción de config.yaml.
+//
+// El branch de éxito de loadConfig() decide levantar la pausa total SÓLO cuando
+// shouldAutoRecoverFromCorruptionHalt(existe, origen) es true. Se testea el gate
+// PURO (sin tocar el .paused real ni Telegram) + el round-trip con el marker que
+// escribe haltOnConfigCorruption vía readFullPauseOrigin (fail-closed).
+// =============================================================================
+test('#4832 CA-2: pausa presente con origen config-corruption-halt → auto-recovery procede', () => {
+    assert.strictEqual(shouldAutoRecoverFromCorruptionHalt(true, 'config-corruption-halt'), true);
+});
+
+test('#4832 CA-3: pausa manual (origen manual) NO se auto-levanta aunque config esté sano', () => {
+    assert.strictEqual(shouldAutoRecoverFromCorruptionHalt(true, 'manual'), false);
+});
+
+test('#4832 CA-3: origen unknown/ambiguo → NO se auto-levanta (fail-closed)', () => {
+    assert.strictEqual(shouldAutoRecoverFromCorruptionHalt(true, 'unknown'), false);
+    assert.strictEqual(shouldAutoRecoverFromCorruptionHalt(true, ''), false);
+    assert.strictEqual(shouldAutoRecoverFromCorruptionHalt(true, 'config-corruption'), false);
+});
+
+test('#4832: sin marker .paused presente → nunca recupera (aunque el origen diga corrupción)', () => {
+    assert.strictEqual(shouldAutoRecoverFromCorruptionHalt(false, 'config-corruption-halt'), false);
+});
+
+test('#4832 CA-1 round-trip: el shape JSON del marker de corrupción es clasificado recuperable', () => {
+    // Réplica EXACTA del payload que escribe haltOnConfigCorruption (pulpo.js):
+    // { source, ts, detail-redactado }. Se aísla en tmp dir vía PIPELINE_DIR_OVERRIDE
+    // para NO tocar el .paused real; se recarga partial-pause con ese override.
+    const os = require('os');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pulpo-4832-'));
+    const prevOverride = process.env.PIPELINE_DIR_OVERRIDE;
+    process.env.PIPELINE_DIR_OVERRIDE = tmp;
+    delete require.cache[require.resolve('../partial-pause')];
+    const pp = require('../partial-pause');
+    try {
+        const { PAUSE_FILE: TMP_PAUSE } = pp._paths();
+        fs.writeFileSync(TMP_PAUSE, JSON.stringify({
+            source: 'config-corruption-halt',
+            ts: '2026-07-20T23:09:00.000Z',
+            detail: 'YAML inválido (línea 12, col 1)',
+        }));
+        const origin = pp.readFullPauseOrigin();
+        assert.strictEqual(origin.source, 'config-corruption-halt');
+        // El gate del loop combina existencia + origen → recovery procede.
+        assert.strictEqual(
+            shouldAutoRecoverFromCorruptionHalt(fs.existsSync(TMP_PAUSE), origin.source),
+            true,
+        );
+    } finally {
+        if (prevOverride === undefined) delete process.env.PIPELINE_DIR_OVERRIDE;
+        else process.env.PIPELINE_DIR_OVERRIDE = prevOverride;
+        delete require.cache[require.resolve('../partial-pause')];
+    }
 });
