@@ -288,6 +288,28 @@ function createCoordinationStore(deps = {}) {
   }
 
   /**
+   * Crea/asocia la PRIMERA ola del producto (#4809). Envuelve `initStateCore`
+   * sobre la clave reservada `waves` => `attribute_not_exists(PK)` garantiza
+   * UNA sola primera ola por producto sin lógica de app (CA-3). Un segundo
+   * intento colisiona y devuelve `{ ok:false, exists:true }` (idempotente/
+   * rechazo explícito), NUNCA duplica ni sobreescribe.
+   *
+   * La ola queda namespaceada por `contextProjectId` (PK) — jamás en el
+   * `waves.json` global mono-producto de Intrale (CA-4, aislamiento).
+   *
+   * @param {object} wave   payload de la ola (objeto; ej. { descriptorRef, ... }).
+   * @returns {{ ok:boolean, created?:boolean, exists?:boolean, version?:number }}
+   */
+  async function associateFirstWave(wave) {
+    // `waves` está en la allowlist fija (DEFAULT_KNOWN_KEYS); validamos igual
+    // por si el caller reconfiguró `knownKeys` sin incluirla (fail-closed).
+    assertKnownKey('waves');
+    // `updatedBy`/`updatedAt` los sella el envelope con `instanceId`/`now()`;
+    // no se pasan campos de claim (owner/expiresAt) — la ola no es un lease.
+    return initStateCore('waves', wave);
+  }
+
+  /**
    * Compare-and-set optimista por versión. Escribe `value` sólo si la versión
    * actual coincide con `expectedVersion`; incrementa la versión.
    *
@@ -445,6 +467,7 @@ function createCoordinationStore(deps = {}) {
     knownKeys: [...knownKeys],
     getState,
     initState,
+    associateFirstWave,
     compareAndSet,
     debitPaid,
     claim,

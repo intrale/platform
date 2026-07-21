@@ -38,13 +38,17 @@
 // estado sin namespace.
 // =============================================================================
 
+const path = require('node:path');
+
 const { createKernelStore, KernelStoreIsolationError } = require('./kernel-store');
 const {
   isSafeId,
   deriveRouting,
   deriveConcurrency,
   deriveCapabilityPartitions,
+  loadDescriptor,
 } = require('./project-descriptor');
+const { createCoordinationStore } = require('./kernel-coordination-store');
 const repoTarget = require('./repo-target');
 const { resolveScopedRefs, redactScoped } = require('./credentials');
 const { segmentProductState } = require('./product-state-segment');
@@ -323,6 +327,25 @@ function createKernelSupervisor(deps = {}) {
   const maxConcurrentInstances = Number.isInteger(deps.maxConcurrentInstances) && deps.maxConcurrentInstances > 0
     ? deps.maxConcurrentInstances
     : null;
+
+  // #4809 · create-wave — factory del coordination store por producto (namespaceado
+  // por `contextProjectId`). Default: in-memory de `createCoordinationStore` (mismo
+  // criterio que `storeFactory`); el boot durable inyecta el factory real con
+  // `config.coordinationTableName`. NUNCA se comparte handle entre productos.
+  const coordinationStoreFactory = typeof deps.coordinationStoreFactory === 'function'
+    ? deps.coordinationStoreFactory
+    : (projectId) => createCoordinationStore({ contextProjectId: projectId, config: deps.config, onAlert });
+  // Gate del descriptor (CA-2). Default: carga+valida `descriptors/<projectId>.json`
+  // fail-closed (== "descriptor completo"). Inyectable por tests / boot durable.
+  const waveDescriptorsDir = typeof deps.descriptorsDir === 'string' && deps.descriptorsDir
+    ? deps.descriptorsDir
+    : require('./product-control-drainer').DEFAULT_DESCRIPTORS_DIR;
+  const loadWaveDescriptorGate = typeof deps.loadWaveDescriptorGate === 'function'
+    ? deps.loadWaveDescriptorGate
+    : (projectId) => {
+        const res = loadDescriptor(path.join(waveDescriptorsDir, `${projectId}.json`));
+        return { valid: res.valid === true, errors: res.errors || [] };
+      };
 
   // Mapa PRIVADO del closure: projectId → instanceContext. Jamás expuesto por
   // referencia; jamás a nivel módulo. Dos supervisores distintos tienen mapas
@@ -842,8 +865,59 @@ function createKernelSupervisor(deps = {}) {
     return segmentProductState({ requestedProjectId: projectId, authorizedProjectIds, stateByProjectId });
   }
 
+  // ---- #4809 · CA-1/CA-2/CA-5 · drenaje de create-wave ("el kernel ejecuta") ----
+
+  /**
+   * Resuelve el conjunto AUTORIZADO de `projectId` OUT-OF-BAND (CA-5 · A01): el
+   * catálogo propio de ESTE contexto (credencial), NUNCA el id en banda. Incluye
+   * productos `onboarding` (la primera ola puede crearse antes de activar · #4805).
+   */
+  async function authorizedProjectIdSet() {
+    const set = new Set();
+    if (catalogStore && typeof catalogStore.listProducts === 'function') {
+      const products = await catalogStore.listProducts();
+      for (const p of Array.isArray(products) ? products : []) {
+        const pid = resolveProjectId(p);
+        if (isSafeId(pid)) set.add(pid);
+      }
+    }
+    return set;
+  }
+
+  /**
+   * CA-1/CA-2/CA-5 · Drena la cola `product-control/pendiente` de pedidos
+   * `create-wave` y ejecuta la asociación de la primera ola con:
+   *   - autorización out-of-band contra el catálogo del contexto (CA-5);
+   *   - gate fail-closed del descriptor (CA-2);
+   *   - `associateFirstWave` create-once del coordination store (CA-3), aislado
+   *     por `projectId` (CA-4).
+   * Best-effort: NUNCA lanza por un pedido individual (los rechazos son dato).
+   *
+   * @param {object} [opts]  { queueDir, processedDir, auditFile } (default: reales).
+   * @returns {Promise<{created:string[],idempotent:string[],rejected:Array,errors:Array}>}
+   */
+  async function drainCreateWaveQueue(opts = {}) {
+    const authorized = await authorizedProjectIdSet();
+    const impl = typeof deps.drainCreateWaveQueueImpl === 'function'
+      ? deps.drainCreateWaveQueueImpl
+      : require('./product-control-drainer').drainCreateWaveQueue;
+    return impl(opts, {
+      // CA-5: autoridad SÓLO del catálogo out-of-band; el id en banda no decide.
+      isAuthorized: (projectId) => authorized.has(projectId),
+      // CA-2: gate fail-closed del descriptor.
+      loadDescriptor: loadWaveDescriptorGate,
+      // CA-1/CA-3/CA-4: create-once en el store namespaceado por producto.
+      associateWave: async (projectId, wave) => {
+        const store = coordinationStoreFactory(projectId);
+        return store.associateFirstWave(wave);
+      },
+      now,
+    });
+  }
+
   return {
     bootProducts,
+    drainCreateWaveQueue,
     spawnInstance,
     getInstance,
     listInstances,
