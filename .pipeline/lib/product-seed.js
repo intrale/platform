@@ -101,6 +101,19 @@ const LABEL_NAME_RE = /^[^\x00-\x1F\x7F]{1,50}$/;
 // Color de label: 6 hex (sin `#`) o vacío (default del driver).
 const LABEL_COLOR_RE = /^[0-9a-fA-F]{6}$/;
 
+// Labels que representan gates ya cumplidos o bypasses de control humano. El
+// descriptor puede traer labels de dominio/admision, pero no estados de proceso.
+const FORBIDDEN_GATE_LABEL_EXACT = new Set([
+    'qa:passed',
+    'qa:skipped',
+    'recommendation:approved',
+]);
+const FORBIDDEN_GATE_LABEL_PATTERNS = Object.freeze([
+    /^(qa|build|tester|review|po|ux|architect|security):(passed|approved|aprobado|skipped)$/i,
+    /^gate[0-9_-]*:(passed|approved|aprobado|signed|firmado)$/i,
+    /^auto-approved:/i,
+]);
+
 // -----------------------------------------------------------------------------
 // Dependencias reusadas (inyectables para tests — nunca red en unit tests)
 // -----------------------------------------------------------------------------
@@ -245,6 +258,10 @@ function validateLabel(raw, errors) {
         errors.push(`label.name inválido: "${raw && raw.name}" (1–50 chars, sin control)`);
         return null;
     }
+    if (isForbiddenGateLabel(raw.name)) {
+        errors.push(`label.name prohibido por SEC-5: "${raw.name}" representa un gate cumplido o bypass de control`);
+        return null;
+    }
     let color = '';
     if (raw.color != null) {
         const c = String(raw.color).replace(/^#/, '');
@@ -256,6 +273,12 @@ function validateLabel(raw, errors) {
     }
     const description = typeof raw.description === 'string' ? raw.description.slice(0, 100) : '';
     return { name: raw.name, color, description };
+}
+
+function isForbiddenGateLabel(name) {
+    const normalized = String(name).trim().toLowerCase();
+    if (FORBIDDEN_GATE_LABEL_EXACT.has(normalized)) return true;
+    return FORBIDDEN_GATE_LABEL_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 // -----------------------------------------------------------------------------

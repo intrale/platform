@@ -295,6 +295,39 @@ test('validateDescriptor — descriptor válido devuelve spec con labels de admi
 // Semillas — buildSeeds deriva del stack
 // -----------------------------------------------------------------------------
 
+
+test('validateDescriptor - rechaza labels de gate cumplido del descriptor (SEC-5)', () => {
+    const di = require('./handoff').detectInjection;
+    const bad = seed.validateDescriptor(descriptor({
+        labels: [{ name: 'qa:passed' }, { name: 'Ready' }],
+    }), di);
+    assert.equal(bad.ok, false);
+    assert.ok(bad.errors.some((e) => /SEC-5/.test(e) && /qa:passed/.test(e)));
+});
+
+test('product-seed:SEC-5 - descriptor con qa:passed falla y no crea labels', async () => {
+    const driver = seed.createInMemoryGitHubDriver();
+    const store = fakeStore();
+
+    const res = await seedProduct(driver, store, {
+        labels: [{ name: 'qa:passed' }, { name: 'Ready' }],
+    });
+
+    assert.equal(res.status, seed.STATUS.FAILED);
+    assert.ok(res.diagnostics.some((d) => d.stage === 'validate' && /qa:passed/.test(d.message)));
+    assert.equal(driver._state.labels.size, 0);
+    assert.equal(driver._state.files.size, 0);
+    assert.equal(store.get('prod-nuevo').status, seed.PRODUCT_STATUS.NO_OPERATIVO);
+});
+
+test('validateDescriptor - rechaza bypasses y aprobaciones equivalentes (SEC-5)', () => {
+    const di = require('./handoff').detectInjection;
+    for (const name of ['qa:skipped', 'review:approved', 'gate2:signed', 'auto-approved:docs', 'recommendation:approved']) {
+        const bad = seed.validateDescriptor(descriptor({ labels: [{ name }] }), di);
+        assert.equal(bad.ok, false, `${name} debe rechazarse`);
+        assert.ok(bad.errors.some((e) => e.includes(name)));
+    }
+});
 test('buildSeeds — stack desconocido usa línea genérica (no hardcodea Intrale)', () => {
     const seeds = seed.buildSeeds({ name: 'X', slug: 'x', stack: 'rust-cli' });
     const claude = seeds.find((s) => s.path === 'CLAUDE.md').content;
