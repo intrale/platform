@@ -25,7 +25,7 @@
 
 | provider | env_var | owner | last_rotated | expires_at | account_id | rotation_runbook_url | revocation_endpoint |
 |----------|---------|-------|--------------|------------|------------|----------------------|---------------------|
-| anthropic | `ANTHROPIC_API_KEY` | leitolarreta | 2026-04-15 | 2026-07-14 | `intrale-pipeline-v3` | [runbook](runbooks/credential-rotation.md#anthropic) | https://console.anthropic.com/settings/keys |
+| anthropic | `ANTHROPIC_API_KEY` | leitolarreta | N/A (OAuth Max) | N/A (OAuth Max) | `intrale-pipeline-v3` | [runbook](runbooks/credential-rotation.md#anthropic) | https://console.anthropic.com/settings/keys |
 | openai-codex | `OPENAI_API_KEY` | leitolarreta | _no aplica todavía_ | _no aplica todavía_ | _pendiente alta_ | [runbook](runbooks/credential-rotation.md#openai) | https://platform.openai.com/api-keys |
 | nvidia-nim | `NVIDIA_NIM_API_KEY` | leitolarreta | _no aplica todavía_ | _no aplica todavía_ | _pendiente alta_ | [runbook](runbooks/credential-rotation.md#nvidia-nim) | https://build.nvidia.com (panel "API keys") |
 
@@ -34,6 +34,13 @@
 - `account_id` es un **identificador opaco** que el provider asocia a la cuenta
   emisora del token (ej: nombre del workspace, organization id). NO es el
   secret. Sirve para que la persona que rota sepa contra qué cuenta operar.
+- `anthropic` se autentica en este entorno con **OAuth Max** (credencial de
+  plan, login del CLI de Claude), **no** con `ANTHROPIC_API_KEY`. Por eso las
+  celdas `last_rotated`/`expires_at` llevan el sentinel `N/A (OAuth Max)`: el
+  cron de rotación reconoce el token `oauth` y **excluye** la fila (la emite con
+  `applies:false` y lo loguea, en vez de descartarla en silencio). No hay API
+  key que rotar, así que el recordatorio no aplica. Si a futuro se diera de alta
+  una `ANTHROPIC_API_KEY` real, reemplazar el sentinel por fechas ISO reales.
 - `openai-codex` está declarado en `agent-models.json` como provider opcional
   (referenciado por skills futuros vía rollout #3079). Mientras no haya skill
   asignado, NO requiere credencial inyectada y el cron no genera recordatorios.
