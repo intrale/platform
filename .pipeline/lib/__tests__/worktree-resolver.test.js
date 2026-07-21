@@ -301,6 +301,71 @@ test('findIssueWorktree — un solo candidato NO dispara rev-list (sin costo ext
     assert.equal(result.worktree, '/tmp/platform.agent-2505-delivery');
 });
 
+// ---- findIssueWorktree: rama contaminada que no matchea el issue (#4800) -----
+
+// Reproduce el incidente #4800 rev-3: el directorio `platform.agent-4800-pipeline-dev`
+// quedó con la rama `agent/4807-onboarding-descriptor-completo` checked-out
+// (contaminación por branch-switching). El resolver previo lo devolvía por
+// basename y, teniendo MÁS commits-ahead, ganaba la desambiguación → verificacion
+// diffeaba #4807 y rebotaba #4800 como falso negativo. El sibling backend-dev SÍ
+// tiene la rama correcta agent/4800-*.
+const MULTI_WORKTREE_4800_CONTAMINADO = [
+    'worktree /repo',
+    'branch refs/heads/main',
+    '',
+    'worktree /tmp/platform.agent-4800-backend-dev',
+    'branch refs/heads/agent/4800-backend-dev',
+    '',
+    'worktree /tmp/platform.agent-4800-pipeline-dev',
+    'branch refs/heads/agent/4807-onboarding-descriptor-completo',
+    '',
+].join('\n');
+
+test('findIssueWorktree — descarta worktree cuya rama checked-out no matchea el issue (#4800)', () => {
+    // Aunque el worktree contaminado tenga MÁS commits-ahead, no debe elegirse:
+    // su rama (agent/4807-*) no corresponde al issue 4800.
+    const spawnImpl = makeFakeSpawn([
+        { match: 'git worktree list --porcelain', stdout: MULTI_WORKTREE_4800_CONTAMINADO },
+        // Solo debería puntuarse el candidato que SÍ matchea la rama del issue.
+        { match: 'git rev-list --count origin/main..refs/heads/agent/4800-backend-dev', stdout: '1\n' },
+    ]);
+    const result = findIssueWorktree('/repo', 4800, { spawnImpl, fsImpl: fakeFs(true) });
+    assert.ok(result);
+    assert.equal(result.worktree, '/tmp/platform.agent-4800-backend-dev');
+    assert.equal(result.branch, 'refs/heads/agent/4800-backend-dev');
+});
+
+test('findIssueWorktree — skill exacto NO elige worktree contaminado (rama de otro issue) (#4800)', () => {
+    // Aunque el skill pida exactamente pipeline-dev, si ese worktree tiene rama
+    // de otro issue queda fuera del pool y gana el candidato con rama correcta.
+    const spawnImpl = makeFakeSpawn([
+        { match: 'git worktree list --porcelain', stdout: MULTI_WORKTREE_4800_CONTAMINADO },
+        { match: 'git rev-list --count origin/main..refs/heads/agent/4800-backend-dev', stdout: '1\n' },
+    ]);
+    const result = findIssueWorktree('/repo', 4800, { spawnImpl, fsImpl: fakeFs(true), skill: 'pipeline-dev' });
+    assert.ok(result);
+    assert.equal(result.worktree, '/tmp/platform.agent-4800-backend-dev');
+});
+
+test('findIssueWorktree — único candidato contaminado se conserva (sin regresión, deja auto-recovery al caller)', () => {
+    // Si el ÚNICO worktree del issue tiene rama de otro issue (o detached), NO lo
+    // descartamos silenciosamente: mantenemos el comportamiento previo (devolverlo)
+    // para no romper flujos con rama de slug no estándar ni disparar recovery espurio.
+    const spawnImpl = makeFakeSpawn([
+        {
+            match: 'git worktree list --porcelain',
+            stdout: [
+                'worktree /repo', 'branch refs/heads/main', '',
+                'worktree /tmp/platform.agent-4800-pipeline-dev',
+                'branch refs/heads/agent/4807-onboarding-descriptor-completo', '',
+            ].join('\n'),
+        },
+    ]);
+    const result = findIssueWorktree('/repo', 4800, { spawnImpl, fsImpl: fakeFs(true) });
+    assert.ok(result);
+    assert.equal(result.worktree, '/tmp/platform.agent-4800-pipeline-dev');
+});
+
 // ---- countCommitsAhead -------------------------------------------------------
 
 test('countCommitsAhead — parsea el conteo de rev-list', () => {
