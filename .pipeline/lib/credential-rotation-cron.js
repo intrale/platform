@@ -24,8 +24,13 @@
 // **Idempotencia**:
 //   - Cada threshold (T-14, T-7, T-3, T-1) se notifica UNA sola vez por
 //     env_var por ciclo de 90 días.
-//   - T-0 (expirada) se notifica en CADA tick hasta que el operador rote
-//     y commitee `last_rotated`. El ruido sostenido es deliberado (G-5).
+//   - T-0 (expirada) se notifica con BACKOFF DIARIO: máximo un recordatorio
+//     por día (no en cada tick horario) hasta que el operador rote y commitee
+//     `last_rotated`. El piso es 1 alerta/día — nunca "cero para siempre".
+//     Se persiste `last_expired_alert` (YYYY-MM-DD) para el backoff.
+//   - Filas marcadas como OAuth/no-aplicable (`applies:false`, ej: Anthropic
+//     con OAuth Max) se excluyen del cron: no se evalúan thresholds y se deja
+//     rastro en el log (metadata-only). No generan recordatorio nunca.
 //   - Si después de un commit con `last_rotated` actualizado, el cron
 //     detecta que `expires_at` saltó adelante y los thresholds previos ya
 //     no aplican, RESETEA el estado para esa env_var (nuevo ciclo).
@@ -101,6 +106,22 @@ function parseInventoryMarkdown(content) {
     const row = {};
     for (let c = 0; c < headerCols.length; c++) {
       row[headerCols[c]] = cols[c];
+    }
+    // Exclusión OAuth explícita (fail-safe, con rastro): si `last_rotated` o
+    // `expires_at` matchean el sentinel `/oauth/i` (ej: `N/A (OAuth Max)`), la
+    // credencial NO se autentica con API key rotable en este entorno. En vez de
+    // descartarla en silencio (como hace el skip genérico por no-ISO abajo), la
+    // emitimos con `applies:false` para que el evaluador la excluya CON LOG.
+    const oauthMarked = /oauth/i.test(row.last_rotated || '') || /oauth/i.test(row.expires_at || '');
+    if (oauthMarked) {
+      rows.push({
+        provider: row.provider,
+        env_var: stripBackticks(row.env_var),
+        owner: row.owner,
+        applies: false,
+        source_line: i + 1,
+      });
+      continue;
     }
     // Skip rows con last_rotated no parseable (ej: `_no aplica todavía_`).
     const lr = parseISODate(row.last_rotated);
@@ -195,13 +216,17 @@ function thresholdForEntry(entry, now) {
  *   - Si `threshold === null` (más de 14d) → no notifica.
  *   - Si threshold es T-14/T-7/T-3/T-1 y el estado YA tiene `last_reminder_sent_at[threshold]`
  *     → no notifica (idempotencia).
- *   - Si threshold es T-0 (expirada) → notifica SIEMPRE (ruido sostenido G-5).
+ *   - Si threshold es T-0 (expirada) → notifica con **backoff diario**: máximo
+ *     un recordatorio por día (piso, nunca "cero para siempre"). Si ya se avisó
+ *     hoy (`last_expired_alert === today`) → silencio hasta el próximo día.
  *   - Si la entrada no existe en `state` → notifica.
  *   - Si `last_rotated` saltó adelante (ej: el operador rotó y commiteó),
  *     el estado del ciclo previo se considera obsoleto y se resetea
  *     (los thresholds vuelven a poder dispararse para el nuevo ciclo).
+ *
+ * **Requiere `now`** para calcular el día del backoff diario de expiradas.
  */
-function shouldNotifyEntry(entry, threshold, state) {
+function shouldNotifyEntry(entry, threshold, state, now) {
   if (!threshold) return { shouldNotify: false, reason: 'fuera de ventana' };
 
   const envState = state && state[entry.env_var];
@@ -215,9 +240,16 @@ function shouldNotifyEntry(entry, threshold, state) {
     };
   }
 
-  // T-0 siempre notifica (G-5).
+  // T-0 (expirada): backoff diario. Máximo un recordatorio por día hasta rotar.
+  // Estado corrupto/ausente → fail-safe = notificar (nunca degradar a "nunca").
   if (threshold.expired) {
-    return { shouldNotify: true, reason: 'expirada — notificación sostenida' };
+    const today = now && typeof now.toISOString === 'function'
+      ? now.toISOString().slice(0, 10)
+      : null;
+    if (today && envState && envState.last_expired_alert === today) {
+      return { shouldNotify: false, reason: 'expirada — ya alertado hoy (backoff diario)' };
+    }
+    return { shouldNotify: true, reason: 'expirada — recordatorio diario' };
   }
 
   // Threshold ya disparado en este ciclo → silencio.
@@ -272,11 +304,24 @@ function buildTelegramMessage(entry, threshold) {
  */
 function evaluateRotationState({ now, inventoryRows, state }) {
   const alerts = [];
+  const excluded = [];
   const nextState = { ...(state || {}) };
 
   for (const entry of inventoryRows) {
+    // Exclusión OAuth/no-aplicable: no se evalúa threshold, se deja rastro.
+    // (fail-safe: SÓLO las filas marcadas explícitamente `applies:false` en el
+    // parser — el resto de credenciales reales se sigue evaluando).
+    if (entry.applies === false) {
+      excluded.push({
+        env_var: entry.env_var,
+        provider: entry.provider,
+        reason: 'no aplica (OAuth Max) — excluida del cron de rotación',
+      });
+      continue;
+    }
+
     const threshold = thresholdForEntry(entry, now);
-    const decision = shouldNotifyEntry(entry, threshold, nextState);
+    const decision = shouldNotifyEntry(entry, threshold, nextState, now);
 
     // Reset del ciclo: si last_rotated cambió, limpiar el state del env_var.
     if (decision.resetState) {
@@ -320,7 +365,7 @@ function evaluateRotationState({ now, inventoryRows, state }) {
         now.toISOString().slice(0, 10);
     }
   }
-  return { alerts, nextState };
+  return { alerts, nextState, excluded };
 }
 
 /**
@@ -376,8 +421,15 @@ function runRotationTick(opts = {}) {
   }
 
   // 4. Evaluar.
-  const { alerts, nextState } = evaluateRotationState({ now, inventoryRows: rows, state });
+  const { alerts, nextState, excluded } = evaluateRotationState({ now, inventoryRows: rows, state });
   result.alerts = alerts;
+  result.excluded = excluded || [];
+
+  // 4b. Loguear filas excluidas por OAuth (metadata-only, nunca el secret).
+  //     Deja rastro de POR QUÉ no se evaluó (requisito A05/A09 de security).
+  for (const ex of result.excluded) {
+    log(`[rotation-cron] skip ${ex.env_var} — ${ex.reason}`);
+  }
 
   // 5. Enviar alertas (best-effort por alerta — un fallo no bloquea las demás).
   for (const alert of alerts) {
