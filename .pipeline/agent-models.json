@@ -25,6 +25,9 @@
       ],
       "resets_at_cap_max_days": 7,
       "supports_tool_use": true,
+      "capabilities": [
+        "agentic-tool-use"
+      ],
       "prompt_caching": {
         "supported": true,
         "ttl_seconds_default": 300,
@@ -57,6 +60,9 @@
       ],
       "resets_at_cap_max_days": 31,
       "supports_tool_use": true,
+      "capabilities": [
+        "agentic-tool-use"
+      ],
       "prompt_caching": {
         "supported": true,
         "auto": true
@@ -84,6 +90,9 @@
       ],
       "resets_at_cap_max_days": 31,
       "supports_tool_use": true,
+      "capabilities": [
+        "agentic-tool-use"
+      ],
       "prompt_caching": {
         "supported": false
       },
@@ -113,6 +122,7 @@
       ],
       "resets_at_cap_max_days": 31,
       "supports_tool_use": false,
+      "capabilities": [],
       "prompt_caching": {
         "supported": false
       },
@@ -142,6 +152,9 @@
       ],
       "resets_at_cap_max_days": 31,
       "supports_tool_use": true,
+      "capabilities": [
+        "agentic-tool-use"
+      ],
       "prompt_caching": {
         "supported": false
       },
@@ -161,6 +174,9 @@
       "output_parser": "none",
       "quota_error_types": [],
       "supports_tool_use": false,
+      "capabilities": [
+        "agentic-tool-use"
+      ],
       "prompt_caching": {
         "supported": false
       }
@@ -170,6 +186,9 @@
     "backend-dev": {
       "provider": "anthropic",
       "model_override": "claude-opus-4-7",
+      "required_capabilities": [
+        "agentic-tool-use"
+      ],
       "fallbacks": [
         {
           "provider": "openai-codex",
@@ -180,6 +199,9 @@
     "pipeline-dev": {
       "provider": "anthropic",
       "model_override": "claude-opus-4-7",
+      "required_capabilities": [
+        "agentic-tool-use"
+      ],
       "fallbacks": [
         {
           "provider": "openai-codex",
@@ -190,6 +212,9 @@
     "android-dev": {
       "provider": "anthropic",
       "model_override": "claude-opus-4-7",
+      "required_capabilities": [
+        "agentic-tool-use"
+      ],
       "fallbacks": [
         {
           "provider": "openai-codex",
@@ -208,6 +233,9 @@
     "web-dev": {
       "provider": "anthropic",
       "model_override": "claude-opus-4-7",
+      "required_capabilities": [
+        "agentic-tool-use"
+      ],
       "fallbacks": [
         {
           "provider": "openai-codex",
@@ -224,10 +252,16 @@
       ]
     },
     "build": {
-      "provider": "deterministic"
+      "provider": "deterministic",
+      "required_capabilities": [
+        "agentic-tool-use"
+      ]
     },
     "tester": {
-      "provider": "deterministic"
+      "provider": "deterministic",
+      "required_capabilities": [
+        "agentic-tool-use"
+      ]
     },
     "security": {
       "provider": "anthropic",
@@ -246,6 +280,9 @@
     "qa": {
       "provider": "anthropic",
       "model_override": "claude-sonnet-4-6",
+      "required_capabilities": [
+        "agentic-tool-use"
+      ],
       "fallbacks": [
         {
           "provider": "openai-codex",
@@ -254,10 +291,6 @@
         {
           "provider": "gemini-google",
           "model_override": "gemini-2.0-flash"
-        },
-        {
-          "provider": "cerebras",
-          "model_override": "gpt-oss-120b"
         }
       ]
     },

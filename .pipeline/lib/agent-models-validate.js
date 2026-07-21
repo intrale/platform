@@ -30,6 +30,13 @@
 const fs = require('fs');
 const path = require('path');
 
+// #4839 — catálogo de capabilities de EJECUCIÓN (eje capacidad del motor). Es
+// namespace propio, separado del eje autorización de lib/capabilities.js: NO se
+// reusa `tool_use_gated` (cerebras lo tiene y llevaría a fail-open — SEC-1). Se
+// usa para (a) inyectar el enum cerrado en el schema (loadSchema, anti-drift) y
+// (b) el matching fail-closed rol×provider en validateCrossReferences.
+const { capabilityNames } = require('./execution-capabilities');
+
 // ─── Constantes inmutables — fuente única de verdad ──────────────────────────
 
 // Allowlist de launchers permitidos. El schema deriva su enum de esta lista
@@ -304,6 +311,35 @@ function loadSchema(schemaPath = CANONICAL_SCHEMA_PATH) {
     schema.$defs.providerDef.properties.output_parser.enum = [...ALLOWED_OUTPUT_PARSERS];
   }
 
+  // #4839 — inyectar el enum de capabilities de ejecución desde el catálogo
+  // (EXECUTION_CAPABILITY_CATALOG), mismo mecanismo anti-drift que launcher /
+  // output_parser. Cubre providerDef.capabilities.items y
+  // skillAssignment.required_capabilities.items. Enum cerrado ⇒ un string de
+  // capability arbitrario fuera del catálogo hace fallar la validación de
+  // schema (SEC-2), evitando que se evada el matching con una capability
+  // inventada.
+  const capEnum = capabilityNames();
+  if (
+    schema &&
+    schema.$defs &&
+    schema.$defs.providerDef &&
+    schema.$defs.providerDef.properties &&
+    schema.$defs.providerDef.properties.capabilities &&
+    schema.$defs.providerDef.properties.capabilities.items
+  ) {
+    schema.$defs.providerDef.properties.capabilities.items.enum = [...capEnum];
+  }
+  if (
+    schema &&
+    schema.$defs &&
+    schema.$defs.skillAssignment &&
+    schema.$defs.skillAssignment.properties &&
+    schema.$defs.skillAssignment.properties.required_capabilities &&
+    schema.$defs.skillAssignment.properties.required_capabilities.items
+  ) {
+    schema.$defs.skillAssignment.properties.required_capabilities.items.enum = [...capEnum];
+  }
+
   return schema;
 }
 
@@ -467,12 +503,89 @@ function validateCredentialsEnvAllowlist(config) {
 }
 
 /**
+ * #4839 — Matching FAIL-CLOSED de capabilities de EJECUCIÓN (eje capacidad del
+ * motor). Para cada skill con `required_capabilities` no vacío, valida que el
+ * provider primario Y cada fallback declaren TODAS las capabilities requeridas.
+ *
+ * Fail-closed (SEC-3): un provider sin `capabilities` (o con la lista ausente)
+ * se trata como "no ofrece ninguna" — nunca "asumir capaz". La ausencia de
+ * `required_capabilities` en el rol ⇒ sin exigencia (habilita providers de
+ * razonamiento sin agentic-tool-use, ej. review/po).
+ *
+ * Un provider referenciado pero inexistente NO se chequea acá: ya lo rechaza la
+ * cross-validation de refs rotas (mismo boot fail-fast), evitar doble error para
+ * un typo. La decisión sigue siendo fail-closed a nivel config (el boot aborta).
+ *
+ * Mensaje `[FAIL-CLOSED]` (SEC-5 / UX): emite SÓLO rol + provider + capability
+ * faltante. Prohibido interpolar env/keys; sin eval/shell. Lista todos los
+ * offenders (no corta en el primero) para que el operador fixee en una pasada.
+ *
+ * Devuelve array de errores con shape estándar (path, message, fix).
+ */
+function validateExecutionCapabilities(config) {
+  const errors = [];
+  if (!config || typeof config !== 'object') return errors;
+  if (!config.skills || typeof config.skills !== 'object') return errors;
+  const providers = (config.providers && typeof config.providers === 'object')
+    ? config.providers
+    : {};
+
+  for (const [skillKey, skillDef] of Object.entries(config.skills)) {
+    if (!skillDef || typeof skillDef !== 'object') continue;
+    const required = Array.isArray(skillDef.required_capabilities)
+      ? skillDef.required_capabilities
+      : [];
+    if (required.length === 0) continue; // rol sin exigencia — nada que validar
+
+    // Attempts a validar: provider primario + cada fallback normalizado (misma
+    // normalización string|object que el loop de fallbacks, vía resolveFallbackEntry).
+    const attempts = [];
+    if (typeof skillDef.provider === 'string' && skillDef.provider.length > 0) {
+      attempts.push({
+        provider: skillDef.provider,
+        source: 'primario',
+        path: `#/skills/${skillKey}/provider`,
+      });
+    }
+    const fallbacks = Array.isArray(skillDef.fallbacks) ? skillDef.fallbacks : [];
+    for (let i = 0; i < fallbacks.length; i++) {
+      const norm = resolveFallbackEntry(fallbacks[i]);
+      if (!norm) continue; // shape inválida — ya la rechaza el loop de fallbacks
+      attempts.push({
+        provider: norm.provider,
+        source: 'fallback',
+        path: `#/skills/${skillKey}/fallbacks/${i}`,
+      });
+    }
+
+    for (const attempt of attempts) {
+      const providerDef = providers[attempt.provider];
+      if (!providerDef) continue; // ref rota — ya emitida por otra cross-validation
+      // Fail-closed: capabilities ausente / no-array ⇒ set vacío (no ofrece nada).
+      const offered = Array.isArray(providerDef.capabilities) ? providerDef.capabilities : [];
+      const offeredSet = new Set(offered);
+      for (const cap of required) {
+        if (!offeredSet.has(cap)) {
+          errors.push({
+            path: attempt.path,
+            message: `[FAIL-CLOSED] rol "${skillKey}" requiere capability "${cap}" que el provider "${attempt.provider}" (${attempt.source}) no declara`,
+            fix: `agregar "${cap}" a providers.${attempt.provider}.capabilities si el motor la sostiene, o quitar "${attempt.provider}" del rol "${skillKey}"`,
+          });
+        }
+      }
+    }
+  }
+  return errors;
+}
+
+/**
  * Cross-checks que JSON Schema vanilla no expresa (refinamiento Guru #2):
  *   - default_provider debe ser key de providers.
  *   - skills.<x>.provider debe ser key de providers.
  *   - placeholders + denylist en spawn_args_template (delegado a validateSpawnArgsTemplate).
  *   - secrets hardcoded en cualquier string (validateNoHardcodedSecrets).
  *   - credentials_env contra allowlist (validateCredentialsEnvAllowlist).
+ *   - #4839 capabilities de ejecución rol×provider fail-closed (validateExecutionCapabilities).
  */
 function validateCrossReferences(config) {
   const errors = [];
@@ -696,6 +809,9 @@ function validateCrossReferences(config) {
 
   // Allowlist de env vars de credenciales (#3080 / S1 CA-3 refinamiento).
   errors.push(...validateCredentialsEnvAllowlist(config));
+
+  // #4839 — matching fail-closed de capabilities de ejecución rol×provider.
+  errors.push(...validateExecutionCapabilities(config));
 
   // #3077 SEC-2 — quota_error_types declarados por cada provider deben pertenecer
   // a la meta-allowlist hardcoded en lib/quota-exhausted.js (defensa anti
@@ -1276,6 +1392,7 @@ module.exports = {
   getEffectiveSchema,
   validateSpawnArgsTemplate,
   validateCrossReferences,
+  validateExecutionCapabilities,
   validateNoHardcodedSecrets,
   findHardcodedSecrets,
   validateCredentialsEnvAllowlist,
