@@ -322,3 +322,65 @@ test('CA-4 · claim exige owner seguro y leaseMs > 0', async () => {
   await assert.rejects(() => store.claim('job-x', { owner: 'BAD OWNER', leaseMs: 1000 }), /owner válido/);
   await assert.rejects(() => store.claim('job-x', { owner: 'worker-a', leaseMs: 0 }), /leaseMs/);
 });
+
+// =============================================================================
+// #4809 · associateFirstWave — primera ola create-once del producto
+// =============================================================================
+
+test('#4809 · associateFirstWave crea la ola bajo coord#waves (CA-1)', async () => {
+  const { store, driver } = makeStore();
+  const res = await store.associateFirstWave({ label: 'ola-inicial', descriptorRef: 'descriptor#self' });
+  assert.equal(res.ok, true);
+  assert.equal(res.created, true);
+  assert.equal(res.version, 1);
+
+  // Persistida bajo la partición del contexto y SK coord#waves.
+  const got = await driver.getItem(specFor(), { PK: CTX, SK: 'coord#waves' });
+  assert.ok(got.item, 'la ola quedó persistida');
+  assert.equal(got.item.SK, 'coord#waves');
+  assert.equal(got.item.body.value.label, 'ola-inicial');
+
+  // Lectura namespaceada vía getState('waves').
+  const state = await store.getState('waves');
+  assert.equal(state.value.label, 'ola-inicial');
+  assert.equal(state.version, 1);
+});
+
+test('#4809 · CA-3 — segunda primera ola NO duplica (create-once idempotente)', async () => {
+  const { store } = makeStore();
+  const first = await store.associateFirstWave({ label: 'primera' });
+  assert.equal(first.ok, true);
+
+  // Segundo intento colisiona (attribute_not_exists) → exists, NUNCA duplica ni pisa.
+  const second = await store.associateFirstWave({ label: 'segunda-intrusa' });
+  assert.equal(second.ok, false);
+  assert.equal(second.exists, true);
+
+  // El valor original se preserva (no fue sobreescrito).
+  const state = await store.getState('waves');
+  assert.equal(state.value.label, 'primera');
+  assert.equal(state.version, 1);
+});
+
+test('#4809 · CA-4 — la ola queda AISLADA por projectId entre dos productos', async () => {
+  // MISMA tabla/driver: la partición por PK=projectId es lo que aísla (anti-IDOR).
+  const driver = createInMemoryDynamoDriver();
+  const { store: a } = makeStore({ driver, contextProjectId: 'prod-a', instanceId: 'inst-a' });
+  const { store: b } = makeStore({ driver, contextProjectId: 'prod-b', instanceId: 'inst-b' });
+
+  await a.associateFirstWave({ label: 'ola-de-a' });
+  await b.associateFirstWave({ label: 'ola-de-b' });
+
+  const sa = await a.getState('waves');
+  const sb = await b.getState('waves');
+  assert.equal(sa.value.label, 'ola-de-a');
+  assert.equal(sb.value.label, 'ola-de-b');
+  // Cada partición ve SÓLO su propia ola (sin cross-contamination).
+  assert.notEqual(sa.value.label, sb.value.label);
+});
+
+test('#4809 · associateFirstWave rechaza payload no-objeto (fail-closed)', async () => {
+  const { store } = makeStore();
+  await assert.rejects(() => store.associateFirstWave([1, 2, 3]), /objeto/);
+  await assert.rejects(() => store.associateFirstWave('no'), /objeto/);
+});

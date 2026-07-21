@@ -114,12 +114,24 @@ function metricChip(label, value, extraCls) {
 }
 
 // Botones de ciclo de vida según el estado actual. Delegan en el kernel por POST
-// (CA-1.5). Un producto pausado/inactivo ofrece Arrancar; uno activo, Pausar.
+// (CA-1.5 · #4805 CA-1/CA-4). Reglas de habilitación (el disable es SÓLO UX; la
+// validación real es server-side, CA-2/CA-3):
+//   - Activar (#4805): SÓLO en `onboarding` (promueve status onboarding→active).
+//   - Arrancar: producto listo para trabajo sin ola en curso — `paused`,
+//     `inactive` o `unknown` (activo sin estado de runtime todavía, CA-4).
+//   - Pausar: sólo con una ola operando (`active`).
+// Glyph `⏻` (Activar) es visualmente distinto de `▶` (Arrancar) y `⏸` (Pausar)
+// para no confundir "promover estado" con "arrancar trabajo" (guideline UX).
 function lifecycleButtons(projectId, st) {
     const pidAttr = escapeHtmlAttr(projectId);
     const pidText = escapeHtmlText(projectId);
-    const canStart = st === 'paused' || st === 'inactive';
+    const canActivate = st === 'onboarding';
+    const canStart = st === 'paused' || st === 'inactive' || st === 'unknown';
     const canPause = st === 'active';
+    const activate = `<button type="button" class="ep-btn ep-btn-activate" ${canActivate ? '' : 'disabled '}`
+        + `data-action="activate" data-pid="${pidAttr}" `
+        + `aria-label="Activar el producto ${pidText}" title="Activar (promueve onboarding→activo)">`
+        + '<span aria-hidden="true">⏻</span> Activar</button>';
     const start = `<button type="button" class="ep-btn ep-btn-start" ${canStart ? '' : 'disabled '}`
         + `data-action="start" data-pid="${pidAttr}" `
         + `aria-label="Arrancar el producto ${pidText}" title="Arrancar (delega en el kernel)">`
@@ -128,7 +140,67 @@ function lifecycleButtons(projectId, st) {
         + `data-action="pause" data-pid="${pidAttr}" `
         + `aria-label="Pausar el producto ${pidText}" title="Pausar (delega en el kernel)">`
         + '<span aria-hidden="true">⏸</span> Pausar</button>';
-    return `<div class="ep-actions">${start}${pause}</div>`;
+    return `<div class="ep-actions">${activate}${start}${pause}</div>`;
+}
+
+// #4809 · Estado de la PRIMERA ola del producto, derivado EXCLUSIVAMENTE de su
+// propio namespace (`raw = productState[projectId]`) — nunca cross-product (CA-4).
+// Tres estados visibles (el 4º, la confirmación mutante, lo maneja el client
+// script mostrando el productId objetivo · SEC-7):
+//   - 'associated' (D): la primera ola ya está asociada (`raw.wave`).
+//   - 'gated'      (B): descriptor incompleto ⇒ gate + salida al wizard. El
+//                       `disabled` de la CTA es SÓLO cosmético; el gate real es
+//                       server-side fail-closed en el drainer (CA-2).
+//   - 'ready'      (A): descriptor completo, sin ola ⇒ CTA habilitada + slot vacío.
+function waveMeta(raw) {
+    const w = (raw && typeof raw.wave === 'object' && raw.wave) ? raw.wave : null;
+    const associated = !!(w && (w.associated === true || w.version != null || w.value !== undefined));
+    if (associated) return { state: 'associated' };
+    // Flag de completitud SÓLO para UX (disabled cosmético). Ausente ⇒ se asume
+    // completo (la autoridad es el rechazo server-side, no este flag).
+    const descriptorComplete = !(raw && raw.descriptorComplete === false);
+    return { state: descriptorComplete ? 'ready' : 'gated' };
+}
+
+// Ícono del sprite V3 (`#ic-*`) para los elementos NUEVOS de ola (no emojis del
+// SO · guideline UX). Siempre acompañado de rótulo textual (WCAG AA).
+function waveIco(id) {
+    return `<svg class="ep-ico" aria-hidden="true"><use href="#ic-${id}"/></svg>`;
+}
+
+// Fila de la primera ola dentro de la card. Consume tokens/clases existentes
+// (`ep-btn`, `ep-badge`-like) + íconos del sprite; sin colores hardcodeados fuera
+// de los fallbacks de token ya usados en el resto de la vista.
+function waveRow(projectId, wmeta) {
+    const pidAttr = escapeHtmlAttr(projectId);
+    const pidText = escapeHtmlText(projectId);
+    if (wmeta.state === 'associated') {
+        // D — Ola inicial asociada + nota de aislamiento (store namespaceado, CA-4).
+        return '<div class="ep-wave ep-wave-associated">'
+            + `<span class="ep-wave-chip">${waveIco('wave')} Ola inicial — Asociada</span>`
+            + `<span class="ep-wave-note">${waveIco('allowlist-check')} Estado aislado de este producto</span>`
+            + '</div>';
+    }
+    if (wmeta.state === 'gated') {
+        // B — Gate descriptor incompleto (fail-closed server-side) + salida al wizard.
+        return '<div class="ep-wave ep-wave-gated">'
+            + `<div class="ep-wave-gate">${waveIco('shield-lock')} <span>Falta completar el descriptor</span> `
+            + `<a class="ep-wave-wizard" href="/dashboard?view=onboarding" `
+            + `aria-label="Completar el descriptor del producto ${pidText} en el wizard">Completar →</a></div>`
+            + `<button type="button" class="ep-btn ep-btn-wave" disabled data-action="create-wave" data-pid="${pidAttr}" `
+            + `aria-label="Crear la primera ola de ${pidText} (bloqueado: descriptor incompleto)" `
+            + 'title="Crear primera ola (bloqueado: completá el descriptor)">'
+            + `${waveIco('wave-add')} Crear primera ola</button>`
+            + '</div>';
+    }
+    // A — Descriptor completo, sin ola: CTA habilitada + slot vacío legible.
+    return '<div class="ep-wave ep-wave-ready">'
+        + `<span class="ep-wave-empty">${waveIco('wave')} Sin ola asociada todavía</span>`
+        + `<button type="button" class="ep-btn ep-btn-wave" data-action="create-wave" data-pid="${pidAttr}" `
+        + `aria-label="Crear la primera ola del producto ${pidText}" `
+        + 'title="Crear/asociar la primera ola (delega en el kernel)">'
+        + `${waveIco('wave-add')} Crear primera ola</button>`
+        + '</div>';
 }
 
 // Card de UN producto. `raw` es EXCLUSIVAMENTE el estado del propio producto
@@ -174,6 +246,7 @@ function productCard(product, raw, activeProductId) {
         + idRow
         + metrics
         + noData
+        + waveRow(projectId, waveMeta(raw))
         + lifecycleButtons(projectId, st)
         + '</article>';
 }
@@ -209,9 +282,21 @@ function estadoProductosStyle() {
 .ep-actions{display:flex;gap:8px;margin-top:2px}
 .ep-btn{flex:1;display:inline-flex;align-items:center;justify-content:center;gap:5px;font-size:12px;font-weight:800;border-radius:9px;padding:8px 10px;border:1px solid transparent;cursor:pointer}
 .ep-btn:focus-visible{outline:2px solid var(--brand-cyan,#00D6FF);outline-offset:2px}
+.ep-btn-activate{color:#fff;background:var(--in-brand,#1f6feb);border-color:var(--in-brand,#1f6feb)}
 .ep-btn-start{color:#001b22;background:var(--brand-cyan,#00D6FF);border-color:var(--brand-cyan,#00D6FF)}
 .ep-btn-pause{color:var(--in-fg,#e6edf3);background:rgba(255,255,255,.05);border-color:var(--in-border,rgba(255,255,255,.16))}
+.ep-btn-wave{color:#001b22;background:var(--brand-cyan,#00D6FF);border-color:var(--brand-cyan,#00D6FF)}
 .ep-btn:disabled{opacity:.4;cursor:not-allowed}
+.ep-ico{width:13px;height:13px;flex:0 0 auto;fill:currentColor}
+.ep-wave{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border-radius:9px;background:rgba(255,255,255,.02);border:1px solid var(--in-border,rgba(255,255,255,.08))}
+.ep-wave-empty,.ep-wave-chip,.ep-wave-note,.ep-wave-gate{display:inline-flex;align-items:center;gap:5px;font-size:11.5px}
+.ep-wave-empty{color:var(--in-fg-soft,#5B6376)}
+.ep-wave-associated{border-color:rgba(45,212,191,.32);background:rgba(45,212,191,.08)}
+.ep-wave-chip{color:#9ff0e6;font-weight:800}
+.ep-wave-note{color:var(--in-fg-soft,#5B6376)}
+.ep-wave-gated{border-color:rgba(210,153,34,.3);background:rgba(210,153,34,.06)}
+.ep-wave-gate{color:#fcd9a0;flex-wrap:wrap}
+.ep-wave-wizard{color:var(--brand-cyan,#00D6FF);text-decoration:none;font-weight:800}
 .ep-btn-new{flex:0 0 auto;text-decoration:none}
 .ep-result{margin-top:12px;font-size:12px;border-radius:9px;padding:10px 12px;display:none}
 .ep-result-ok{display:block;color:#9be9a8;background:rgba(63,185,80,.1);border:1px solid rgba(63,185,80,.3)}
@@ -305,23 +390,49 @@ function renderEstadoProductosClientScript() {
     box.className='ep-result '+(ok?'ep-result-ok':'ep-result-err');
     box.innerHTML=(ok?'✅ ':'❌ ')+epEsc(msg);
   }
+  // #4805 — 'activate' promueve onboarding→activo (flip de estado, no spawnea):
+  // feedback inline SIN modal destructivo (UX). 'start' SÍ confirma (acción costosa
+  // = spawn real de agentes/tokens). 'pause' confirma igual que antes.
+  // #4809 — 'create-wave' crea/asocia la primera ola: confirma mostrando el
+  // productId objetivo (SEC-7, estado C del mockup, sin acción silenciosa).
+  var EP_VERBS={activate:'activar',start:'arrancar',pause:'pausar','create-wave':'crear la primera ola de'};
+  var EP_NEEDS_CONFIRM={start:true,pause:true,'create-wave':true};
+  // Endpoint por acción (default: la propia acción). 'create-wave' → /api/product/wave.
+  var EP_ENDPOINT={'create-wave':'wave'};
+  // Mensaje de confirmación por acción — SIEMPRE con el productId objetivo (SEC-7).
+  var EP_CONFIRM={
+    start:function(pid){return '¿Confirmás arrancar el producto "'+pid+'"? La acción la ejecuta el kernel.';},
+    pause:function(pid){return '¿Confirmás pausar el producto "'+pid+'"? La acción la ejecuta el kernel.';},
+    'create-wave':function(pid){return '¿Confirmás crear/asociar la primera ola del producto "'+pid+'"? La ejecuta el kernel (create-once, no duplica; gate del descriptor server-side).';}
+  };
   async function epControl(action,pid,btn){
     if(!pid){ epResult(false,'Falta el identificador de producto.'); return; }
-    var verb=(action==='start')?'arrancar':'pausar';
-    if(!window.confirm('¿Confirmás '+verb+' el producto "'+pid+'"? La acción la ejecuta el kernel.')) return;
+    var verb=EP_VERBS[action]||action;
+    if(EP_NEEDS_CONFIRM[action]){
+      var cmsg=EP_CONFIRM[action]?EP_CONFIRM[action](pid):('¿Confirmás '+verb+' el producto "'+pid+'"? La acción la ejecuta el kernel.');
+      if(!window.confirm(cmsg)) return;
+    }
     if(btn) btn.disabled=true;
     try {
       var t=await fetch('/api/product/csrf-token',{cache:'no-store'});
       var tj=await t.json();
       var token=tj&&tj.csrf_token;
       if(!token){ epResult(false,'No pude obtener el token CSRF; recargá y reintentá.'); return; }
-      var r=await fetch('/api/product/'+action,{
+      var endpoint=EP_ENDPOINT[action]||action;
+      var r=await fetch('/api/product/'+endpoint,{
         method:'POST',
         headers:{'Content-Type':'application/json','X-CSRF-Token':token},
         body:JSON.stringify({ productId: pid })
       });
       var j=await r.json();
-      if(j&&j.ok){ epResult(true,(j.msg)||('Pedido de '+verb+' encolado para "'+pid+'".')); }
+      if(j&&j.ok){
+        var okMsg=(j.msg)||((action==='activate')
+          ? ('Producto "'+pid+'" activado. Ya podés arrancar la primera ola.')
+          : (action==='create-wave')
+            ? ('Pedido de creación de la primera ola encolado para "'+pid+'".')
+            : ('Pedido de '+verb+' encolado para "'+pid+'".'));
+        epResult(true,okMsg);
+      }
       else { epResult(false,(j&&j.msg)||('Rechazado ('+((j&&j.code)||'error')+')')); }
     } catch(e){ epResult(false,'Error enviando el pedido: '+e.message); }
     finally { if(btn) btn.disabled=false; }
@@ -366,6 +477,7 @@ module.exports = {
     accentFor,
     pipelineSummary,
     stateMeta,
+    waveMeta,
     isSafeProductId,
     ACCENT_PALETTE,
     STATE_META,

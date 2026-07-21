@@ -415,6 +415,74 @@ function buildTableDescription(spec, status) {
 }
 
 // -----------------------------------------------------------------------------
+// Runner de producción AWS CLI (adapter real del puerto `run`)
+// -----------------------------------------------------------------------------
+
+/**
+ * Runner de producción que materializa el puerto `run(args)` que consume
+ * `createAwsCliDynamoDriver({ run })`. Hace `spawn('aws', ['dynamodb', ...args])`
+ * (async, promisificado) y resuelve `{ code, stdout, stderr }`.
+ *
+ * Contratos de seguridad (#4820 CA-1/CA-3, SEC-A02/A03):
+ *   - `args` viaja como ELEMENTOS SEPARADOS del array a `spawn`; nunca se
+ *     interpola en un shell string. `shell: false` explícito ⇒ sin inyección
+ *     de comandos (A03), aunque un valor traiga metacaracteres (`;`, `$()`,
+ *     backtick) llegan literales al proceso hijo.
+ *   - Fail-closed de credenciales ANTES de spawnear: si el `env` (scope `aws`
+ *     del ambiente hijo, `build-child-env.js`) no aporta `AWS_ACCESS_KEY_ID` +
+ *     `AWS_SECRET_ACCESS_KEY`, lanza un error accionable y NO invoca el CLI
+ *     con credenciales vacías (evita prompts interactivos / uso de credenciales
+ *     ambientales inesperadas).
+ *   - Sólo el `env` explícito del scope `aws` llega al hijo; NUNCA se mergea
+ *     `process.env` crudo. El `env`/salidas crudas no se loggean acá (SEC-A09):
+ *     el mapeo `{code, stdout, stderr}` se devuelve al caller, que decide qué
+ *     registrar (redactando).
+ *
+ * @param {object} env  Env del scope `aws` (AWS_ACCESS_KEY_ID/…); NO `process.env`.
+ * @param {object} [deps]
+ * @param {function} [deps.spawn]  Inyección de `child_process.spawn` (tests).
+ * @returns {{ run: (args: string[]) => Promise<{code:number,stdout:string,stderr:string}> }}
+ */
+function createAwsCliRunner(env, deps = {}) {
+    // Fail-closed de credenciales ANTES de spawnear (SEC-A02 / CA-3).
+    if (!env || !env.AWS_ACCESS_KEY_ID || !env.AWS_SECRET_ACCESS_KEY) {
+        throw new Error(
+            'createAwsCliRunner: faltan credenciales AWS (scope `aws` del ambiente hijo, '
+            + 'build-child-env.js: AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY). Fail-closed: '
+            + 'no se invoca la AWS CLI con credenciales vacías.',
+        );
+    }
+    // Lazy require: mantiene el módulo cargable en cualquier contexto Node y
+    // permite inyectar un `spawn` fake en tests sin mockear el módulo global.
+    const spawn = typeof deps.spawn === 'function'
+        ? deps.spawn
+        : require('child_process').spawn;
+
+    return {
+        run(args) {
+            return new Promise((resolve, reject) => {
+                // `dynamodb` es el token fijo; `args` (flags como elementos
+                // separados) NO se interpolan en shell string (A03 / CA-1).
+                const child = spawn('aws', ['dynamodb', ...args], {
+                    env,           // SÓLO el scope `aws`; nunca merge con process.env crudo.
+                    shell: false,  // PROHIBIDO shell:true (evita inyección de comandos).
+                });
+                let stdout = '';
+                let stderr = '';
+                if (child.stdout) child.stdout.on('data', (d) => { stdout += d; });
+                if (child.stderr) child.stderr.on('data', (d) => { stderr += d; });
+                child.on('error', reject);
+                child.on('close', (code) => resolve({
+                    code: typeof code === 'number' ? code : 0,
+                    stdout,
+                    stderr,
+                }));
+            });
+        },
+    };
+}
+
+// -----------------------------------------------------------------------------
 // Driver AWS CLI (adapter real, runner inyectable)
 // -----------------------------------------------------------------------------
 
@@ -531,15 +599,49 @@ function createAwsCliDynamoDriver({ run } = {}) {
     };
 }
 
-/** Convierte un ítem plano a formato AttributeValue de DynamoDB (S/N/BOOL). */
+/**
+ * Convierte un valor JS a un AttributeValue de DynamoDB. Soporta escalares
+ * (S/N/BOOL) y —recursivamente— objetos anidados (M) y arrays (L). El envelope
+ * del kernel-store lleva un campo `body` OBJETO (#4820): sin el mapeo recursivo,
+ * `body` se aplastaba a `{ S: "[object Object]" }` y el round-trip por el driver
+ * real perdía el contenido. El comportamiento para escalares queda idéntico al
+ * previo (retrocompat con el smoke del provisioner y #4743/#4777).
+ */
+function toAttrValue(v) {
+    if (typeof v === 'number') return { N: String(v) };
+    if (typeof v === 'boolean') return { BOOL: v };
+    if (typeof v === 'string') return { S: v };
+    if (Array.isArray(v)) return { L: v.map(toAttrValue) };
+    if (v !== null && typeof v === 'object') {
+        const m = {};
+        for (const [k, val] of Object.entries(v)) m[k] = toAttrValue(val);
+        return { M: m };
+    }
+    // null/undefined/otros → preserva el comportamiento previo (`{ S: String(v) }`).
+    return { S: String(v) };
+}
+
+/** Convierte un ítem plano a formato AttributeValue de DynamoDB (S/N/BOOL/M/L). */
 function toAttrValues(item) {
     const out = {};
-    for (const [k, v] of Object.entries(item)) {
-        if (typeof v === 'number') out[k] = { N: String(v) };
-        else if (typeof v === 'boolean') out[k] = { BOOL: v };
-        else out[k] = { S: String(v) };
-    }
+    for (const [k, v] of Object.entries(item)) out[k] = toAttrValue(v);
     return out;
+}
+
+/** Inverso de `toAttrValue`: decodifica un AttributeValue a valor JS. */
+function fromAttrValue(v) {
+    if (v == null) return undefined;
+    if ('S' in v) return v.S;
+    if ('N' in v) return Number(v.N);
+    if ('BOOL' in v) return Boolean(v.BOOL);
+    if ('NULL' in v) return null;
+    if ('M' in v) {
+        const out = {};
+        for (const [k, val] of Object.entries(v.M)) out[k] = fromAttrValue(val);
+        return out;
+    }
+    if ('L' in v) return v.L.map(fromAttrValue);
+    return undefined;
 }
 
 /** Inverso de `toAttrValues` para un ítem devuelto por get-item. */
@@ -547,9 +649,7 @@ function fromAttrValues(attrItem) {
     const out = {};
     for (const [k, v] of Object.entries(attrItem)) {
         if (v == null) continue;
-        if ('N' in v) out[k] = Number(v.N);
-        else if ('BOOL' in v) out[k] = Boolean(v.BOOL);
-        else out[k] = v.S;
+        out[k] = fromAttrValue(v);
     }
     return out;
 }
@@ -806,6 +906,7 @@ module.exports = {
     validateResourceContract,
     // drivers
     createInMemoryDynamoDriver,
+    createAwsCliRunner,
     createAwsCliDynamoDriver,
     buildTableDescription,
     toAttrValues,

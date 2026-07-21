@@ -255,17 +255,120 @@ function defaultRegisterProduct(entry, deps = {}) {
   return { registryPath, status: 'onboarding' };
 }
 
-/**
- * Orquesta el bootstrap completo. Fail-closed: aborta en el primer paso que falle.
- *
- * @param {object} args
- * @param {string} [args.descriptorPath]  path del descriptor (o pasar args.descriptor).
- * @param {object} [args.descriptor]      descriptor ya parseado (override).
- * @param {'dry-run'|'full'} [args.mode='dry-run']  'dry-run' NUNCA registra.
- * @param {object} [args.deps]  dependencias inyectables (probeAccess, discoverWork, registerProduct, registryPath, kernelGateFloor).
- * @returns {{ ok:boolean, stage:string, mode:string, ... }}
- */
-function runBootstrap(args = {}) {
+// -----------------------------------------------------------------------------
+// Flag de cutover `kernel.durable` (#4821 · CA-6). Se lee UNA SOLA VEZ por
+// operación al inicio del registro (nunca mid-flow) para evitar split-brain
+// FS↔DynamoDB. Inyectable por tests vía `deps.kernelConfig` / `deps.kernelDurable`.
+// Fail-closed a FS: cualquier error de lectura de config ⇒ `durable:false`.
+// -----------------------------------------------------------------------------
+const DEFAULT_CONFIG_PATH = path.resolve(__dirname, '..', 'config.yaml');
+
+function readKernelConfig(deps = {}) {
+  if (deps.kernelConfig && typeof deps.kernelConfig === 'object') {
+    return { durable: deps.kernelConfig.durable === true, tableName: deps.kernelConfig.tableName ?? null, region: deps.kernelConfig.region ?? null };
+  }
+  if (typeof deps.kernelDurable === 'boolean') {
+    return { durable: deps.kernelDurable, tableName: null, region: null };
+  }
+  try {
+    const yaml = require('js-yaml'); // safe-by-default (load, sin !!js/function)
+    const cfgPath = deps.configPath || DEFAULT_CONFIG_PATH;
+    const cfg = yaml.load(fs.readFileSync(cfgPath, 'utf8')) || {};
+    const k = (cfg.kernel && typeof cfg.kernel === 'object') ? cfg.kernel : {};
+    return { durable: k.durable === true, tableName: k.tableName ?? null, region: k.region ?? null };
+  } catch {
+    return { durable: false, tableName: null, region: null }; // fail-closed a FS
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Sanitización de errores al operador (#4821 · CA-5 / CA-14 / CA-15). El mensaje
+// visible NUNCA expone ARN / tableName / SK / partición: sólo un texto accionable
+// en español. `ConditionalCheckFailedException` (o condición de escritura fallida)
+// se distingue como "el estado NO quedó a medias" (CA-5), separado de un fallo de
+// infra genérico. El detalle técnico crudo queda para logs internos, jamás en la
+// respuesta al operador.
+// -----------------------------------------------------------------------------
+function classifyStoreError(err) {
+  const name = err && err.name ? String(err.name) : '';
+  const msg = err && err.message ? String(err.message) : '';
+  if (name === 'ConditionalCheckFailedError' || /ConditionalCheckFailed/i.test(name + ' ' + msg)) {
+    return 'conditional';
+  }
+  if (name === 'KernelStoreValidationError' || name === 'KernelStoreIsolationError' || name === 'KernelStoreSizeError') {
+    return 'validation';
+  }
+  return 'infra';
+}
+
+function sanitizeOperatorError(err) {
+  const cls = classifyStoreError(err);
+  if (cls === 'conditional' || cls === 'validation') {
+    // CA-5: condición de escritura / validación fail-closed ⇒ el alta no quedó a
+    // medias. Nada persistió de forma visible; el operador puede reintentar.
+    return { class: cls, operatorMessage: 'No se pudo completar el alta: el estado NO quedó a medias. Revisá los datos e intentá de nuevo.' };
+  }
+  // CA-14/15: fallo de infra ⇒ mensaje genérico, sin exponer detalle técnico.
+  return { class: 'infra', operatorMessage: 'No se pudo completar el alta por un problema temporal del almacenamiento. Volvé a intentar en unos minutos.' };
+}
+
+// -----------------------------------------------------------------------------
+// Registro DURABLE del producto (#4821 · write path). Persiste vía la API pública
+// del kernel-store — SIEMPRE por `putProduct` (nunca `driver.putItem` directo).
+//
+// Orden de escritura (CA-3, fail-safe): `putProduct` primero (interna: producto →
+// catálogo; si el 2º paso `addToCatalog` falla, el producto queda huérfano
+// INVISIBLE a `listProducts`), y `putDescriptor` al final. Así un fallo parcial
+// NUNCA deja un `descriptor#self` huérfano indexado. `putDescriptor`/`putProduct`
+// reejecutan la validación fail-closed (CA-10: `validateDescriptor` antes de
+// persistir; A04 `maxItemBytes`).
+//
+// CA-9 (anti tenant-hopping): `contextProjectId` DEBE derivar de la credencial de
+// la instancia (inyectado por el caller), NUNCA del descriptor/request del wizard.
+// El store valida `item.projectId === contextProjectId` como defensa en profundidad.
+// -----------------------------------------------------------------------------
+async function durableRegisterProduct(entry, descriptor, deps = {}) {
+  // CA-9: el contexto de tenant proviene de la credencial de la instancia, no del
+  // payload. Fail-closed si el caller no lo inyectó (no se deriva del descriptor).
+  const contextProjectId = deps.contextProjectId;
+  if (!contextProjectId) {
+    throw new KernelStoreContextError('contextProjectId ausente: debe derivar de la credencial de la instancia (CA-9), nunca del descriptor');
+  }
+  const kernelCfg = deps.kernelConfig || readKernelConfig(deps);
+  const factory = typeof deps.createStore === 'function'
+    ? deps.createStore
+    : require('./kernel-store').createKernelStore;
+  const store = factory({
+    contextProjectId,
+    config: { kernel: { tableName: kernelCfg.tableName, region: kernelCfg.region } },
+    driver: deps.storeDriver,
+    onAlert: deps.onAlert,
+  });
+
+  // CA-10: validación explícita antes de persistir (además de la que reejecuta el
+  // store). Fail-closed: si el descriptor no valida, no se escribe nada.
+  const dres = descriptorLib.validateDescriptor(descriptor);
+  if (!dres.valid) {
+    throw new KernelStoreContextError(`descriptor inválido antes de persistir (CA-10): ${dres.stage}`);
+  }
+
+  // CA-3: producto + catálogo primero (atómico interno, orden fail-safe); el
+  // descriptor#self se escribe al final para no dejar huérfanos indexados.
+  const put = await store.putProduct({ productId: entry.projectId, name: entry.name, status: 'onboarding' });
+  await store.putDescriptor(descriptor);
+  return { status: 'onboarding', durable: true, sk: put.sk, contextProjectId };
+}
+
+// Error interno del write path durable (no expone detalle al operador).
+class KernelStoreContextError extends Error {
+  constructor(message) { super(message); this.name = 'KernelStoreContextError'; }
+}
+
+// -----------------------------------------------------------------------------
+// Pipeline pre-registro compartido (validación → firma → acceso → dry-run).
+// Devuelve `{ error }` con el resultado fail-closed, o el contexto para registrar.
+// -----------------------------------------------------------------------------
+function prepareBootstrap(args = {}) {
   const mode = args.mode === 'full' ? 'full' : 'dry-run';
   const deps = args.deps || {};
 
@@ -274,14 +377,14 @@ function runBootstrap(args = {}) {
     ? descriptorLib.validateDescriptor(args.descriptor, { expectedChecksum: args.expectedChecksum })
     : descriptorLib.loadDescriptor(args.descriptorPath, { expectedChecksum: args.expectedChecksum });
   if (!validation.valid) {
-    return { ok: false, stage: `validation:${validation.stage}`, mode, errors: validation.errors, human: renderHuman({ ok: false, stage: `validation:${validation.stage}`, errors: validation.errors }) };
+    return { error: { ok: false, stage: `validation:${validation.stage}`, mode, errors: validation.errors, human: renderHuman({ ok: false, stage: `validation:${validation.stage}`, errors: validation.errors }) } };
   }
   const descriptor = validation.descriptor;
 
   // Gate de autoridad de firma (CA-D4): si signers vacío/inválido, bloquea.
   const sigGate = descriptorLib.resolveSignerAuthority(descriptor);
   if (sigGate.blocked) {
-    return { ok: false, stage: 'signature-gate', mode, errors: [{ path: 'authority.signers', detail: sigGate.reason }], human: renderHuman({ ok: false, stage: 'signature-gate', errors: [{ detail: sigGate.reason }] }) };
+    return { error: { ok: false, stage: 'signature-gate', mode, errors: [{ path: 'authority.signers', detail: sigGate.reason }], human: renderHuman({ ok: false, stage: 'signature-gate', errors: [{ detail: sigGate.reason }] }) } };
   }
 
   // Paso 2 — verificación de acceso (SSRF allowlist). En modo 'full' (drainer
@@ -295,51 +398,136 @@ function runBootstrap(args = {}) {
   const access = verifyAccess(descriptor, accessDeps);
   if (!access.ok) {
     const rejected = access.targets.filter((t) => !t.allowed || t.reachable === false);
-    return { ok: false, stage: 'access', mode, access, errors: rejected.map((t) => ({ path: `${t.kind}:${t.id}`, detail: t.reason || 'no alcanzable' })), human: renderHuman({ ok: false, stage: 'access', access }) };
+    return { error: { ok: false, stage: 'access', mode, access, errors: rejected.map((t) => ({ path: `${t.kind}:${t.id}`, detail: t.reason || 'no alcanzable' })), human: renderHuman({ ok: false, stage: 'access', access }) } };
   }
 
   // Paso 3 — dry-run side-effect-free.
   const dry = dryRun(descriptor, deps);
   if (!dry.ok) {
-    return { ok: false, stage: 'dry-run', mode, errors: [{ path: 'dry-run', detail: dry.reason }], human: renderHuman({ ok: false, stage: 'dry-run', errors: [{ detail: dry.reason }] }) };
+    return { error: { ok: false, stage: 'dry-run', mode, errors: [{ path: 'dry-run', detail: dry.reason }], human: renderHuman({ ok: false, stage: 'dry-run', errors: [{ detail: dry.reason }] }) } };
   }
 
-  if (mode === 'dry-run') {
-    // NUNCA registra. Estado del producto no muta.
-    return {
-      ok: true,
-      stage: 'dry-run',
-      mode,
-      sideEffects: false,
-      projectId: descriptor.identity.projectId,
-      access,
-      dryRun: dry,
-      human: renderHuman({ ok: true, stage: 'dry-run', projectId: descriptor.identity.projectId, access, dryRun: dry }),
-    };
-  }
+  return { descriptor, access, dry, mode, deps };
+}
 
-  // Paso 4 — registrar onboarding (INACTIVO) hasta OK humano. `args.registerMeta`
-  // (#4800) permite al drainer reflejar cómo quedó asociado el repo (creado vs
-  // existente) sin filtrar secretos.
-  const registerEntry = Object.assign(
-    { projectId: descriptor.identity.projectId, name: descriptor.identity.name },
-    (args.registerMeta && typeof args.registerMeta === 'object') ? args.registerMeta : {},
-  );
-  const register = typeof deps.registerProduct === 'function'
-    ? deps.registerProduct(registerEntry, deps)
-    : defaultRegisterProduct(registerEntry, deps);
+function dryRunResult(descriptor, access, dry, mode) {
+  return {
+    ok: true,
+    stage: 'dry-run',
+    mode,
+    sideEffects: false,
+    projectId: descriptor.identity.projectId,
+    access,
+    dryRun: dry,
+    human: renderHuman({ ok: true, stage: 'dry-run', projectId: descriptor.identity.projectId, access, dryRun: dry }),
+  };
+}
 
+function registeredResult(descriptor, access, dry, mode, register, durable) {
   return {
     ok: true,
     stage: 'registered',
     mode,
     status: 'onboarding',
+    durable: !!durable,
     projectId: descriptor.identity.projectId,
     access,
     dryRun: dry,
     register,
     human: renderHuman({ ok: true, stage: 'registered', projectId: descriptor.identity.projectId, status: 'onboarding', access, dryRun: dry }),
   };
+}
+
+/**
+ * Orquesta el bootstrap completo (SÍNCRONO · camino FS). Fail-closed: aborta en el
+ * primer paso que falle. Este entry point NO ejecuta el write path durable (que es
+ * async): con `kernel.durable:false` (default) el comportamiento FS no cambia
+ * (CA-6). Para el alta durable usar `runBootstrapAsync`.
+ *
+ * @param {object} args
+ * @param {string} [args.descriptorPath]  path del descriptor (o pasar args.descriptor).
+ * @param {object} [args.descriptor]      descriptor ya parseado (override).
+ * @param {'dry-run'|'full'} [args.mode='dry-run']  'dry-run' NUNCA registra.
+ * @param {object} [args.deps]  dependencias inyectables (probeAccess, discoverWork, registerProduct, registryPath, kernelGateFloor).
+ * @returns {{ ok:boolean, stage:string, mode:string, ... }}
+ */
+function runBootstrap(args = {}) {
+  const prep = prepareBootstrap(args);
+  if (prep.error) return prep.error;
+  const { descriptor, access, dry, mode, deps } = prep;
+
+  if (mode === 'dry-run') return dryRunResult(descriptor, access, dry, mode);
+
+  // Paso 4 — registrar onboarding (INACTIVO) hasta OK humano. Camino FS.
+  // `args.registerMeta` (#4800) permite al drainer reflejar cómo quedó asociado el
+  // repo (creado vs existente) sin filtrar secretos.
+  const entry = Object.assign(
+    { projectId: descriptor.identity.projectId, name: descriptor.identity.name },
+    (args.registerMeta && typeof args.registerMeta === 'object') ? args.registerMeta : {},
+  );
+  const register = typeof deps.registerProduct === 'function'
+    ? deps.registerProduct(entry, deps)
+    : defaultRegisterProduct(entry, deps);
+
+  return registeredResult(descriptor, access, dry, mode, register, false);
+}
+
+/**
+ * Variante ASÍNCRONA del bootstrap (#4821). Idéntica a `runBootstrap` salvo que
+ * el paso 4 puede tomar el WRITE PATH DURABLE cuando `kernel.durable` está ON.
+ *
+ * El flag se lee UNA SOLA VEZ al inicio del registro (CA-6): no se re-consulta
+ * mid-flow, evitando split-brain FS↔DynamoDB. Con el flag OFF (default) delega en
+ * el mismo registro FS que `runBootstrap`. Con el flag ON persiste vía el
+ * kernel-store (`putProduct` + `putDescriptor`) con errores sanitizados al
+ * operador (CA-5/14/15) y `contextProjectId` derivado de la credencial (CA-9).
+ *
+ * @returns {Promise<{ ok:boolean, stage:string, mode:string, ... }>}
+ */
+async function runBootstrapAsync(args = {}) {
+  const prep = prepareBootstrap(args);
+  if (prep.error) return prep.error;
+  const { descriptor, access, dry, mode, deps } = prep;
+
+  if (mode === 'dry-run') return dryRunResult(descriptor, access, dry, mode);
+
+  // CA-6: el flag de cutover se evalúa UNA sola vez, al inicio de la operación.
+  const kernelCfg = readKernelConfig(deps);
+  // `args.registerMeta` (#4800): refleja cómo quedó asociado el repo (creado vs
+  // existente) sin filtrar secretos; aplica tanto al camino durable como al FS.
+  const entry = Object.assign(
+    { projectId: descriptor.identity.projectId, name: descriptor.identity.name },
+    (args.registerMeta && typeof args.registerMeta === 'object') ? args.registerMeta : {},
+  );
+
+  if (kernelCfg.durable) {
+    try {
+      const register = await durableRegisterProduct(entry, descriptor, { ...deps, kernelConfig: kernelCfg });
+      return registeredResult(descriptor, access, dry, mode, register, true);
+    } catch (err) {
+      // CA-4: fail-closed — el alta no queda a medias y se reporta al operador.
+      // CA-14/15: mensaje accionable sin ARN/tabla/SK; el detalle técnico va a logs.
+      const op = sanitizeOperatorError(err);
+      const errors = [{ path: 'store', detail: op.operatorMessage }];
+      return {
+        ok: false,
+        stage: 'register-durable',
+        mode,
+        durable: true,
+        errorClass: op.class,
+        errors,
+        // detalle técnico crudo SOLO para logs internos, nunca en `human`.
+        _internalError: err && err.message ? String(err.message) : String(err),
+        human: renderHuman({ ok: false, stage: 'register-durable', errors }),
+      };
+    }
+  }
+
+  // Flag OFF (default) — mismo registro FS que el camino síncrono (CA-6: FS sin cambios).
+  const register = typeof deps.registerProduct === 'function'
+    ? deps.registerProduct(entry, deps)
+    : defaultRegisterProduct(entry, deps);
+  return registeredResult(descriptor, access, dry, mode, register, false);
 }
 
 // -----------------------------------------------------------------------------
@@ -389,8 +577,14 @@ module.exports = {
   verifyAccess,
   dryRun,
   runBootstrap,
+  runBootstrapAsync,
+  durableRegisterProduct,
+  readKernelConfig,
+  sanitizeOperatorError,
+  classifyStoreError,
   renderHuman,
   DEFAULT_REGISTRY_PATH,
+  DEFAULT_CONFIG_PATH,
 };
 
 // -----------------------------------------------------------------------------
@@ -407,12 +601,19 @@ if (require.main === module) {
     process.exit(2);
   }
   const mode = flags.has('--full') ? 'full' : 'dry-run';
-  const res = runBootstrap({ descriptorPath, mode });
-  if (flags.has('--json')) {
-    // El resultado JSON no contiene secretos (redacción por diseño).
-    process.stdout.write(JSON.stringify({ ...res, human: undefined }, null, 2) + '\n');
-  } else {
-    process.stdout.write(res.human + '\n');
-  }
-  process.exit(res.ok ? 0 : 1);
+  // Usa el entry async para respetar el flag `kernel.durable` (CA-6). Con el flag
+  // OFF (default) el resultado es idéntico al camino FS síncrono.
+  runBootstrapAsync({ descriptorPath, mode }).then((res) => {
+    if (flags.has('--json')) {
+      // El resultado JSON no contiene secretos (redacción por diseño); el detalle
+      // técnico interno del write path durable no se emite al operador.
+      process.stdout.write(JSON.stringify({ ...res, human: undefined, _internalError: undefined }, null, 2) + '\n');
+    } else {
+      process.stdout.write(res.human + '\n');
+    }
+    process.exit(res.ok ? 0 : 1);
+  }).catch((e) => {
+    process.stderr.write(`error inesperado: ${e && e.message ? e.message : e}\n`);
+    process.exit(1);
+  });
 }

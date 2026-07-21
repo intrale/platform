@@ -266,3 +266,67 @@ test('#4030: sanitizeWaveMetaForWrite strip de control-chars', () => {
     assert.equal(m.wave_name, 'Memoria');
     assert.equal(m.wave_number, 4);
 });
+
+// -----------------------------------------------------------------------------
+// #4832 — readFullPauseOrigin (fail-closed): distingue pausa auto-generada por
+// corrupción de config (recuperable) de pausa manual/legacy (persistente).
+// -----------------------------------------------------------------------------
+
+function writePauseFile(content) {
+    const { PAUSE_FILE } = pp._paths();
+    fs.writeFileSync(PAUSE_FILE, content);
+}
+
+test('#4832: marker JSON con source=config-corruption-halt → recuperable', () => {
+    resetFs();
+    writePauseFile(JSON.stringify({
+        source: 'config-corruption-halt',
+        ts: '2026-07-21T00:00:00.000Z',
+        detail: 'YAML inválido (línea 3, col 1)',
+    }));
+    const origin = pp.readFullPauseOrigin();
+    assert.equal(origin.source, 'config-corruption-halt');
+});
+
+test('#4832: marker ISO plano legacy → manual (NO recuperable)', () => {
+    resetFs();
+    writePauseFile('2026-07-21T00:00:00.000Z');
+    assert.equal(pp.readFullPauseOrigin().source, 'manual');
+});
+
+test('#4832: marker JSON con otro source → manual (NO recuperable)', () => {
+    resetFs();
+    writePauseFile(JSON.stringify({ source: 'manual', ts: '2026-07-21T00:00:00.000Z' }));
+    assert.equal(pp.readFullPauseOrigin().source, 'manual');
+});
+
+test('#4832: marker JSON sin campo source → manual (NO recuperable)', () => {
+    resetFs();
+    writePauseFile(JSON.stringify({ ts: '2026-07-21T00:00:00.000Z' }));
+    assert.equal(pp.readFullPauseOrigin().source, 'manual');
+});
+
+test('#4832: marker JSON malformado → manual (NO recuperable)', () => {
+    resetFs();
+    writePauseFile('{ source: "config-corruption-halt"');  // JSON roto
+    assert.equal(pp.readFullPauseOrigin().source, 'manual');
+});
+
+test('#4832: marker vacío → manual (NO recuperable)', () => {
+    resetFs();
+    writePauseFile('   ');
+    assert.equal(pp.readFullPauseOrigin().source, 'manual');
+});
+
+test('#4832: sin marker .paused → unknown (NO recuperable)', () => {
+    resetFs();
+    const origin = pp.readFullPauseOrigin();
+    assert.equal(origin.source, 'unknown');
+    assert.equal(origin.raw, null);
+});
+
+test('#4832: source config-corruption-halt como substring pero no exacto → manual', () => {
+    resetFs();
+    writePauseFile(JSON.stringify({ source: 'config-corruption-halt-manual' }));
+    assert.equal(pp.readFullPauseOrigin().source, 'manual');
+});

@@ -21,7 +21,12 @@ const assert = require('node:assert/strict');
 
 const { createInMemoryDynamoDriver } = require('../provisioner-infra');
 const { createKernelStore, KernelStoreIsolationError } = require('../kernel-store');
-const { createKernelSupervisor, resolveProjectId } = require('../kernel-supervisor');
+const {
+  createKernelSupervisor,
+  resolveProjectId,
+  bootKernelDurable,
+  MAX_CONCURRENT_INSTANCES_DEFAULT,
+} = require('../kernel-supervisor');
 const { isSafeId } = require('../project-descriptor');
 const { isSafeProjectId, segmentProductState } = require('../product-state-segment');
 
@@ -84,6 +89,42 @@ test('CA-1 · bootProducts instancia exactamente uno por producto active y omite
   // cada instancia activa ligó su store a su propio projectId
   assert.deepEqual(calls.map((c) => c.contextProjectId).sort(), ['acme', 'globex']);
   assert.deepEqual(calls.find((c) => c.contextProjectId === 'acme').allowedNamespaces, ['acme']);
+});
+
+// #4801 · CA-3 — bootProducts drena la cola de onboarding ANTES de listar.
+test('CA-3 · bootProducts invoca el drenador de onboarding antes de listProducts', async () => {
+  const order = [];
+  const supervisor = createKernelSupervisor({
+    catalogStore: { listProducts: async () => { order.push('list'); return []; } },
+    drainOnboardQueue: () => { order.push('drain'); },
+    hydrate: false,
+  });
+  await supervisor.bootProducts();
+  assert.deepEqual(order, ['drain', 'list'], 'el drenaje corre antes de listar el catálogo');
+});
+
+test('CA-3 · un fallo del drenador NO tumba bootProducts (best-effort)', async () => {
+  const alerts = [];
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore(CATALOG_MIXTO),
+    storeFactory: recordingStoreFactory([]),
+    hydrate: false,
+    drainOnboardQueue: () => { throw new Error('drain boom'); },
+    onAlert: (a) => alerts.push(a),
+  });
+  const res = await supervisor.bootProducts();
+  assert.deepEqual(res.spawned.sort(), ['acme', 'globex'], 'los activos igual se instancian');
+  assert.ok(alerts.some(a => a.stage === 'drain-onboard'), 'se emitió alerta del fallo de drenaje');
+});
+
+test('CA-3 · drainOnboardQueue:false desactiva el drenaje en bootProducts', async () => {
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore([]),
+    hydrate: false,
+    drainOnboardQueue: false,
+  });
+  const res = await supervisor.bootProducts();
+  assert.deepEqual(res.spawned, []);
 });
 
 test('CA-1 · spawnInstance es idempotente: exactamente una instancia por projectId', async () => {
@@ -814,4 +855,242 @@ test('A03 · isSafeProjectId espeja isSafeId de project-descriptor (anti-drift)'
   for (const v of battery) {
     assert.equal(isSafeProjectId(v), isSafeId(v), `desacuerdo con isSafeId para ${JSON.stringify(v)}`);
   }
+});
+
+// -----------------------------------------------------------------------------
+// #4805 CA-8 · Entrada automática al supervisor de un producto RECIÉN activado.
+// Simula el flip onboarding→active entre dos reconciliaciones (bootProducts):
+// el producto queda instanciado EXACTAMENTE una vez y la reconciliación es
+// idempotente; onboarding/archived siguen omitidos.
+// -----------------------------------------------------------------------------
+test('#4805 CA-8 · bootProducts instancia el producto recién activado (idempotente)', async () => {
+  // Catálogo mutable: initech arranca en onboarding y luego pasa a active.
+  const catalog = [
+    { productId: 'acme', projectId: 'acme', name: 'ACME', status: 'active' },
+    { productId: 'initech', projectId: 'initech', name: 'Initech', status: 'onboarding' },
+  ];
+  const supervisor = createKernelSupervisor({
+    catalogStore: { listProducts: async () => catalog.map((p) => ({ ...p })) },
+    storeFactory: recordingStoreFactory([]),
+    hydrate: false,
+  });
+
+  // 1ra reconciliación: initech (onboarding) NO se instancia.
+  const first = await supervisor.bootProducts();
+  assert.deepEqual(first.spawned.sort(), ['acme']);
+  assert.equal(supervisor.getInstance('initech'), null, 'onboarding aún no instanciado');
+  const acmeCtx1 = supervisor.getInstance('acme');
+
+  // El kernel persiste la activación (project-descriptor.transitionStatus) ⇒ el
+  // catálogo ahora reporta initech como active.
+  catalog.find((p) => p.projectId === 'initech').status = 'active';
+
+  // 2da reconciliación: initech entra al supervisor; acme NO se re-instancia
+  // (spawnInstance es idempotente: devuelve la MISMA instancia, no duplica).
+  const second = await supervisor.bootProducts();
+  assert.ok(second.spawned.includes('initech'), 'el producto activado entra al supervisor');
+  assert.ok(supervisor.getInstance('initech'), 'initech instanciado exactamente una vez');
+  assert.equal(supervisor.getInstance('acme'), acmeCtx1, 'acme conserva la MISMA instancia (no re-spawnea)');
+  assert.equal(supervisor.listInstances().length, 2, 'exactamente 2 instancias');
+
+  // 3ra reconciliación idempotente: no cambia el conteo.
+  await supervisor.bootProducts();
+  assert.equal(supervisor.listInstances().length, 2, 'idempotente: sin duplicados');
+});
+
+// =============================================================================
+// #4822 (Split 3/3 de #4804) — Cota de instancias + boot durable gateado
+// =============================================================================
+
+// Catálogo de N>cap productos active para ejercitar la cota (CA-SEC-4).
+const CATALOG_N_ACTIVOS = [
+  { productId: 'acme', projectId: 'acme', name: 'ACME', status: 'active' },
+  { productId: 'globex', projectId: 'globex', name: 'Globex', status: 'active' },
+  { productId: 'initech', projectId: 'initech', name: 'Initech', status: 'active' },
+  { productId: 'soylent', projectId: 'soylent', name: 'Soylent', status: 'active' },
+];
+
+// CA-SEC-4 / REQ-SEC-BOOT-5 — la cota es el núcleo de este split: un catálogo con
+// N>cap productos active NO spawnea sin techo; el excedente se saltea y se audita.
+test('#4822 · CA-SEC-4 · bootProducts respeta el cap con catálogo de N>cap activos', async () => {
+  const alerts = [];
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore(CATALOG_N_ACTIVOS),
+    storeFactory: recordingStoreFactory([]),
+    hydrate: false,
+    maxConcurrentInstances: 2,
+    onAlert: (a) => alerts.push(a),
+  });
+
+  const res = await supervisor.bootProducts();
+
+  assert.equal(res.spawned.length, 2, 'exactamente `cap` instancias spawneadas');
+  assert.equal(supervisor.listInstances().length, 2, 'solo 2 instancias vivas');
+  const capSkips = res.skipped.filter((s) => s.reason === 'cap de instancias alcanzado');
+  assert.equal(capSkips.length, 2, 'los N-cap restantes se saltean por cap');
+  const capAlerts = alerts.filter((a) => a.stage === 'cap');
+  assert.equal(capAlerts.length, 2, 'cada excedente emite alerta de cap (CA-SEC-6)');
+  assert.ok(capAlerts.every((a) => a.projectId), 'la alerta de cap lleva el projectId de origen');
+});
+
+// Compat: sin cota configurada, el comportamiento previo se mantiene (todos los
+// activos se instancian). La cota es opt-in a nivel supervisor.
+test('#4822 · sin maxConcurrentInstances el boot instancia todos los activos (compat)', async () => {
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore(CATALOG_N_ACTIVOS),
+    storeFactory: recordingStoreFactory([]),
+    hydrate: false,
+  });
+  const res = await supervisor.bootProducts();
+  assert.equal(res.spawned.length, 4, 'sin cap se instancian los 4 activos');
+  assert.equal(res.skipped.filter((s) => s.reason === 'cap de instancias alcanzado').length, 0, 'sin skips por cap');
+});
+
+// CA-6 / CA-SEC-1 — fail-closed del flag: sin `kernel.durable === true` el boot
+// durable NO corre. buildCatalogStore NUNCA se invoca (no se toca AWS) y el
+// supervisor tampoco se instancia.
+for (const [caso, cfg] of [
+  ['flag ausente', {}],
+  ['kernel ausente', { otra: 1 }],
+  ['durable:false', { kernel: { durable: false } }],
+  ['durable truthy no-booleano', { kernel: { durable: 'true' } }],
+  ['durable:1', { kernel: { durable: 1 } }],
+]) {
+  test(`#4822 · CA-6/CA-SEC-1 · boot durable NO corre con ${caso}`, async () => {
+    let builtStore = false;
+    let builtSupervisor = false;
+    const res = await bootKernelDurable({
+      config: cfg,
+      buildCatalogStore: () => { builtStore = true; return fakeCatalogStore([]); },
+      createSupervisor: () => { builtSupervisor = true; return { bootProducts: async () => ({ spawned: [], skipped: [] }) }; },
+    });
+    assert.equal(res.ran, false, 'no corre el boot durable');
+    assert.equal(res.reason, 'flag-off', 'razón flag-off');
+    assert.equal(builtStore, false, 'buildCatalogStore NO se invoca (cero AWS con flag OFF)');
+    assert.equal(builtSupervisor, false, 'no se instancia el supervisor con flag OFF');
+  });
+}
+
+// CA-1 (integración del wiring) — con el flag ON, bootKernelDurable carga los
+// `active` desde el catálogo durable y los instancia respetando la cota de config.
+test('#4822 · CA-1 · boot durable con flag ON instancia los active del store durable', async () => {
+  const spawnedProducts = [];
+  const res = await bootKernelDurable({
+    config: { kernel: { durable: true, max_concurrent_instances: 3 } },
+    buildCatalogStore: () => fakeCatalogStore(CATALOG_MIXTO),
+    buildStoreFactory: () => recordingStoreFactory([]),
+    spawn: (ctx) => { spawnedProducts.push(ctx.projectId); return { alive: true }; },
+  });
+  assert.equal(res.ran, true, 'corre el boot durable');
+  assert.equal(res.cap, 3, 'usa la cota de config');
+  assert.deepEqual(res.spawned.sort(), ['acme', 'globex'], 'solo los active se instancian');
+  assert.deepEqual(spawnedProducts.sort(), ['acme', 'globex'], 'spawn AISLADO invocado por cada active');
+  assert.ok(res.skipped.some((s) => s.reason === 'inactivo'), 'onboarding/archived salteados');
+});
+
+// CA-SEC-4 end-to-end vía bootKernelDurable: cap de config aplicado sobre N>cap.
+test('#4822 · CA-SEC-4 · boot durable aplica el cap de config sobre N>cap activos', async () => {
+  const res = await bootKernelDurable({
+    config: { kernel: { durable: true, max_concurrent_instances: 1 } },
+    buildCatalogStore: () => fakeCatalogStore(CATALOG_N_ACTIVOS),
+    buildStoreFactory: () => recordingStoreFactory([]),
+    spawn: () => ({ alive: true }),
+  });
+  assert.equal(res.ran, true);
+  assert.equal(res.cap, 1, 'cap=1 de config');
+  assert.equal(res.spawned.length, 1, 'solo 1 instancia bajo cap=1');
+  assert.equal(res.skipped.filter((s) => s.reason === 'cap de instancias alcanzado').length, 3, 'los 3 restantes salteados por cap');
+});
+
+// Con flag ON pero sin cota válida en config, cae al default seguro (nunca sin techo).
+test('#4822 · CA-SEC-4 · sin cota válida en config el boot durable usa el default seguro', async () => {
+  const res = await bootKernelDurable({
+    config: { kernel: { durable: true } },
+    buildCatalogStore: () => fakeCatalogStore(CATALOG_N_ACTIVOS),
+    buildStoreFactory: () => recordingStoreFactory([]),
+    spawn: () => ({ alive: true }),
+  });
+  assert.equal(res.ran, true);
+  assert.equal(res.cap, MAX_CONCURRENT_INSTANCES_DEFAULT, 'cae al default seguro');
+  assert.equal(res.spawned.length, MAX_CONCURRENT_INSTANCES_DEFAULT, 'no spawnea por encima del default');
+});
+
+// Best-effort: un fallo construyendo el store NO lanza; devuelve {ran:false} y audita.
+test('#4822 · boot durable es best-effort: un fallo del store no lanza (no tumba el pulpo)', async () => {
+  const alerts = [];
+  const res = await bootKernelDurable({
+    config: { kernel: { durable: true, max_concurrent_instances: 2 } },
+    buildCatalogStore: () => { throw new Error('driver AWS no disponible'); },
+    onAlert: (a) => alerts.push(a),
+  });
+  assert.equal(res.ran, false, 'no corrió (falló)');
+  assert.equal(res.reason, 'error', 'razón error');
+  assert.match(res.error, /driver AWS no disponible/, 'propaga el detalle del fallo');
+  assert.ok(alerts.some((a) => a.stage === 'boot-durable'), 'audita el fallo por onAlert');
+});
+
+// Falta buildCatalogStore con flag ON ⇒ best-effort error, no throw.
+test('#4822 · boot durable sin buildCatalogStore devuelve error sin lanzar', async () => {
+  const res = await bootKernelDurable({ config: { kernel: { durable: true } } });
+  assert.equal(res.ran, false);
+  assert.equal(res.reason, 'error');
+  assert.match(res.error, /buildCatalogStore/, 'explica el requisito faltante');
+});
+
+// -----------------------------------------------------------------------------
+// #4809 · drainCreateWaveQueue (create-wave) — wiring out-of-band del supervisor
+// -----------------------------------------------------------------------------
+
+test('#4809 · CA-5 — autoriza SÓLO projectId del catálogo (incluye onboarding)', async () => {
+  const seen = [];
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore(CATALOG_MIXTO), // acme/globex active, initech onboarding
+    storeFactory: recordingStoreFactory([]),
+    hydrate: false,
+    // Interceptamos el drenador para observar el `isAuthorized` resuelto del catálogo.
+    drainCreateWaveQueueImpl: async (opts, deps) => {
+      seen.push({
+        acme: deps.isAuthorized('acme'),
+        initech: deps.isAuthorized('initech'),   // onboarding ⇒ autorizado (ola pre-activación)
+        umbrella: deps.isAuthorized('umbrella'),  // archived pero en catálogo ⇒ autorizado
+        intruso: deps.isAuthorized('intruso'),    // fuera de catálogo ⇒ NO
+      });
+      return { created: [], idempotent: [], rejected: [], errors: [] };
+    },
+  });
+  await supervisor.drainCreateWaveQueue({});
+  assert.deepEqual(seen[0], { acme: true, initech: true, umbrella: true, intruso: false });
+});
+
+test('#4809 · CA-2 — el gate del descriptor y associate se cablean al drenador', async () => {
+  let gate = null;
+  let associate = null;
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore(CATALOG_MIXTO),
+    storeFactory: recordingStoreFactory([]),
+    hydrate: false,
+    loadWaveDescriptorGate: (pid) => ({ valid: pid === 'acme', errors: [] }),
+    coordinationStoreFactory: (pid) => ({ associateFirstWave: async (wave) => ({ ok: true, created: true, pid, wave }) }),
+    drainCreateWaveQueueImpl: async (opts, deps) => {
+      gate = await deps.loadDescriptor('globex');       // incompleto por el fake
+      associate = await deps.associateWave('acme', { label: 'x' });
+      return { created: ['acme'], idempotent: [], rejected: [], errors: [] };
+    },
+  });
+  const sum = await supervisor.drainCreateWaveQueue({});
+  assert.equal(gate.valid, false);                      // CA-2: gate fail-closed cableado
+  assert.equal(associate.ok, true);
+  assert.equal(associate.pid, 'acme');                  // store namespaceado por projectId (CA-4)
+  assert.deepEqual(sum.created, ['acme']);
+});
+
+test('#4809 · drainCreateWaveQueue usa el drenador real por default (sin impl inyectada)', async () => {
+  // Sin cola real ⇒ fail-open del drenador real (summary vacío), sin lanzar.
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore([]),
+    storeFactory: recordingStoreFactory([]),
+    hydrate: false,
+  });
+  const sum = await supervisor.drainCreateWaveQueue({ queueDir: '/tmp/no-existe-4809', processedDir: '/tmp/p', auditFile: '/tmp/a.jsonl' });
+  assert.deepEqual(sum, { created: [], idempotent: [], rejected: [], errors: [] });
 });

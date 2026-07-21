@@ -122,7 +122,8 @@
           "type": "array",
           "uniqueItems": true,
           "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,63}$" }
-        }
+        },
+        "version": { "type": "integer", "minimum": 1 }
       }
     },
     "coordinationBody": {

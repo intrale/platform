@@ -12195,8 +12195,11 @@ const server = http.createServer((req, res) => {
         res.writeHead(out.status || (out.ok ? 202 : 400), { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify(out));
       } catch (e) {
+        // CA-4 · info-disclosure: no propagar `e.message` (stack/paths/parser) al
+        // cliente. Mensaje genérico; el detalle real queda sólo en el log server-side.
+        log(`Action: product onboard (error) ${e && e.message ? e.message : e}`);
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, msg: e.message }));
+        res.end(JSON.stringify({ ok: false, msg: 'no se pudo procesar el alta (payload inválido)' }));
       }
     });
     return;
@@ -12226,6 +12229,65 @@ const server = http.createServer((req, res) => {
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // #4805 · CA-1 · Activación de producto (onboarding→active). Acción DURABLE:
+  // encola un pedido que el kernel drena invocando project-descriptor.
+  // transitionStatus (writer atómico, validación fail-closed del descriptor). Mismo
+  // molde endurecido que /start,/pause (gate loopback/Origin + CSRF double-submit).
+  // Prohibido GET (SEC-7a/SR-A01); body ≤16KB como /start. "Activar" NO spawnea por
+  // sí sola (el spawn lo dispara "Arrancar"): no requiere confirmación destructiva.
+  if (req.url === '/api/product/activate' && req.method === 'POST') {
+    if (_productGuardRejected()) return;
+    let body = '';
+    req.on('data', chunk => { body += chunk; if (body.length > 16 * 1024) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const parsed = body ? JSON.parse(body) : {};
+        const out = productControl.enqueueActivate({
+          projectId: parsed.productId || parsed.projectId,
+          actor: parsed.actor,
+          remoteAddress: (req.socket && req.socket.remoteAddress) || '',
+        });
+        log(`Action: product activate ${out.projectId || '(rechazado)'} (${out.status}) ${out.msg || ''}`);
+        res.writeHead(out.status || (out.ok ? 202 : 400), { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(out));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // #4809 · CA-1 · Crear/asociar la PRIMERA ola de un producto. Acción DURABLE:
+  // encola un pedido `create-wave` que el kernel drena con autorización out-of-band
+  // contra el contexto de la instancia (CA-5), gate fail-closed del descriptor
+  // (CA-2) y `associateFirstWave` create-once (CA-3). Mismo molde endurecido que
+  // /start,/pause,/activate (gate loopback/Origin + CSRF double-submit vía
+  // `_productGuardRejected`). Prohibido GET con efecto de estado (SEC-7a); body ≤16KB.
+  if (req.url === '/api/product/wave' && req.method === 'POST') {
+    if (_productGuardRejected()) return;
+    let body = '';
+    req.on('data', chunk => { body += chunk; if (body.length > 16 * 1024) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const parsed = body ? JSON.parse(body) : {};
+        const out = productControl.enqueueCreateWave({
+          projectId: parsed.productId || parsed.projectId,
+          wave: parsed.wave,
+          actor: parsed.actor,
+          remoteAddress: (req.socket && req.socket.remoteAddress) || '',
+        });
+        log(`Action: product create-wave ${out.projectId || '(rechazado)'} (${out.status}) ${out.msg || ''}`);
+        res.writeHead(out.status || (out.ok ? 202 : 400), { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(out));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'no se pudo procesar la creación de la ola (payload inválido)' }));
       }
     });
     return;

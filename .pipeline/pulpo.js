@@ -81,6 +81,7 @@ const repoTarget = require('./lib/repo-target');
 // En single-product (default hoy) el router queda en null y el ruteo cae al
 // repo-target global (getRepoForIssue/getPrimaryRepo) sin cambio de comportamiento.
 const kernelSupervisor = require('./lib/kernel-supervisor');
+const productControlDrainer = require('./lib/product-control-drainer'); // #4801 · CA-3
 // #4775 (Ola Puente P5a) — Scheduler global de dos niveles del kernel multi-producto.
 // Módulo puro: consume la señal de presión (getResourcePressure) y reparte slots.
 const kernelScheduler = require('./lib/kernel-scheduler');
@@ -437,7 +438,17 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const ROOT = path.resolve(__dirname, '..');
-const PIPELINE = path.resolve(__dirname);
+// #4832 — El directorio base del pipeline honra `PIPELINE_DIR_OVERRIDE` (LA MISMA
+// env var que ya usa `lib/partial-pause.js`), de modo que `CONFIG_PATH`,
+// `PAUSE_FILE`, el `pauseFile()` del helper y la cola de Telegram apunten todos
+// al MISMO directorio. Esto habilita el test de integración hermético del ciclo
+// loadConfig ↔ haltOnConfigCorruption ↔ auto-recovery sobre un tmpdir aislado,
+// sin tocar el `.paused` real ni la cola de Telegram de producción.
+// En producción la env var NUNCA está definida → PIPELINE = __dirname (idéntico
+// al comportamiento previo; cero cambio en caliente).
+const PIPELINE = process.env.PIPELINE_DIR_OVERRIDE
+  ? path.resolve(process.env.PIPELINE_DIR_OVERRIDE)
+  : path.resolve(__dirname);
 const CONFIG_PATH = path.join(PIPELINE, 'config.yaml');
 const LOG_DIR = path.join(PIPELINE, 'logs');
 
@@ -1232,7 +1243,18 @@ function haltOnConfigCorruption(reason, redactedDetail) {
   // (sólo en runtime, nunca en carga) ya está inicializado.
   try {
     if (!fs.existsSync(PAUSE_FILE)) {
-      fs.writeFileSync(PAUSE_FILE, new Date().toISOString());
+      // #4832 — Marker estructurado con ORIGEN distinguible. Permite el paso
+      // inverso de auto-recovery (loadConfig branch de éxito) que sólo levanta
+      // la pausa si la generó esta ruta (`source: config-corruption-halt`).
+      // Idempotente: si el marker ya existe (ej. pausa manual preexistente) NO
+      // lo pisamos → la manual gana y nunca se auto-levanta.
+      // SEC-2: `detail` sólo lleva metadata YA redactada (reason + línea/col),
+      // NUNCA el snippet crudo de config.yaml.
+      fs.writeFileSync(PAUSE_FILE, JSON.stringify({
+        source: 'config-corruption-halt',
+        ts: new Date().toISOString(),
+        detail: redactedDetail || reason || 'config-corruption',
+      }));
     }
     paused = true;
   } catch (e) {
@@ -1280,6 +1302,33 @@ function loadConfig() {
     return lastGoodConfig || {};
   }
   lastGoodConfig = raw;
+  // #4832 — Paso INVERSO de haltOnConfigCorruption: si la pausa activa fue
+  // auto-generada por corrupción (source: config-corruption-halt) y el config
+  // volvió a parsear OK, la levantamos solas dentro de este mismo ciclo (~30s).
+  // Fail-closed: readFullPauseOrigin devuelve 'config-corruption-halt' SÓLO si
+  // el marker es JSON válido con ese source; cualquier ambigüedad → 'manual'
+  // → NO se auto-levanta (respeta CA-3 y la pausa deliberada del operador).
+  try {
+    if (fs.existsSync(PAUSE_FILE) &&
+        partialPause.readFullPauseOrigin().source === 'config-corruption-halt') {
+      partialPause.clearFullPause({
+        source: 'config-auto-recovery',
+        justification: 'config.yaml volvió a parsear OK — halt por corrupción levantado',
+      });
+      paused = false;
+      // Log auditable (CA-4): qué disparó el halt / config sano detectado / reanudación.
+      log('pulpo', '[#4832] Auto-recovery: config.yaml sano → pausa config-corruption-halt levantada → dispatch reanudado');
+      // Alerta Telegram redactada (sin volcar contenido del marker, SEC-2/A09).
+      try {
+        sendTelegram(
+          '✅ *Pipeline REANUDADO* — `config.yaml` volvió a parsear OK.\n' +
+          'La pausa automática por corrupción se levantó sola (auto-recovery #4832).'
+        );
+      } catch { /* best-effort */ }
+    }
+  } catch (e) {
+    // Fail-closed: ante cualquier error, la pausa persiste (no reanudamos).
+  }
   return raw;
 }
 
@@ -17735,6 +17784,69 @@ async function mainLoop() {
     log('pulpo', `WARN [wave-recovery] boot hook falló: ${e.message}`);
   }
 
+  // #4822 (Split 3/3 de #4804) — Boot durable del supervisor multi-producto.
+  // Gateado OUT-OF-BAND por `config.kernel.durable === true` (fail-closed:
+  // ausente/false ⇒ NO corre, el arranque FS actual del pulpo no cambia — CA-6/
+  // CA-SEC-1). En modo durable, `bootKernelDurable` carga los productos `active`
+  // desde el store durable (DynamoDB) y spawnea un pipeline AISLADO por producto,
+  // respetando la cota de instancias (CA-SEC-4).
+  //
+  // BEST-EFFORT: un fallo del boot durable (driver AWS ausente, catálogo corrupto,
+  // credenciales faltantes) NUNCA tumba el arranque del pulpo — `bootKernelDurable`
+  // no lanza y este bloque va igual en try/catch (mismo patrón que wave-recovery).
+  try {
+    const cfg = loadConfig();
+    if (cfg && cfg.kernel && cfg.kernel.durable === true) {
+      // Constructor LAZY del store durable: sólo se instancia con el flag ON, de
+      // modo que con `durable:false` NO se construye ningún driver ni se toca AWS.
+      const buildDurableStore = (contextProjectId, allowedNamespaces, onAlert) => {
+        const { createAwsCliRunner, createAwsCliDynamoDriver } = require('./lib/provisioner-infra');
+        const { buildAwsScopedEnv } = require('./lib/kernel-provision');
+        const { createKernelStore } = require('./lib/kernel-store');
+        const env = buildAwsScopedEnv(process.env, cfg.kernel.region);
+        const { run } = createAwsCliRunner(env);
+        const driver = createAwsCliDynamoDriver({ run });
+        return createKernelStore({
+          driver,
+          config: { kernel: cfg.kernel },
+          contextProjectId,
+          allowedNamespaces,
+          onAlert,
+        });
+      };
+
+      const result = await kernelSupervisor.bootKernelDurable({
+        config: cfg,
+        onAlert: (a) => {
+          const pid = a && a.projectId ? String(a.projectId) : '—';
+          const det = a && a.errors && a.errors[0] && a.errors[0].detail ? a.errors[0].detail : '';
+          log('pulpo', `WARN [kernel-durable] rechazo boot (${(a && a.stage) || '?'}/${pid}): ${det}`);
+        },
+        // Catálogo del control-plane: `listProducts()` lee el índice global (no una
+        // partición de tenant), por eso usa un contextProjectId dedicado y seguro.
+        buildCatalogStore: () => buildDurableStore('kernel-control-plane', ['kernel-control-plane']),
+        // Store por instancia: MISMO driver durable ligado a cada tenant con su
+        // propio `projectId` derivado del registro (A01 — nunca en banda).
+        buildStoreFactory: () => (o) => buildDurableStore(o.contextProjectId, o.allowedNamespaces, o.onAlert),
+        // spawn AISLADO por instancia. El runtime concreto del pipeline por producto
+        // se cablea en un split posterior; acá se registra/audita la instancia. El
+        // supervisor la trackea e hidrata de forma aislada aunque el handle sea null.
+        spawn: (ctx) => {
+          log('pulpo', `[kernel-durable] instancia registrada para producto ${ctx && ctx.projectId}`);
+          return null;
+        },
+      });
+
+      if (result.ran) {
+        log('pulpo', `[kernel-durable] boot: ${(result.spawned || []).length} activos instanciados, ${(result.skipped || []).length} salteados (cap ${result.cap}).`);
+      } else if (result.reason === 'error') {
+        log('pulpo', `WARN [kernel-durable] boot durable falló (no bloquea el arranque): ${result.error}`);
+      }
+    }
+  } catch (e) {
+    log('pulpo', `WARN [kernel-durable] boot hook falló: ${e.message}`);
+  }
+
   // #4370 CA-4/SEC-3 — verificación de integridad del estado al arrancar.
   // Distingue corrupción silenciosa / tampering schema-válido de un estado sano.
   // Best-effort: NO pone el pipeline fuera de servicio (regla "el pipeline no
@@ -18352,6 +18464,17 @@ async function mainLoop() {
         await outbox.drainQueue();
       } catch (e) {}
 
+      // #4801 · CA-3 — Drenar la cola de onboarding de productos. El wizard sólo
+      // encola (`enqueueOnboard`); acá el kernel registra el producto como
+      // `status:onboarding` (INACTIVO) para que aparezca en la pestaña Productos.
+      // Best-effort: fail-open interno, nunca rompe el loop principal.
+      try {
+        const drained = productControlDrainer.drainOnboardQueue();
+        if (drained && drained.registered && drained.registered.length) {
+          log('kernel', `onboarding: ${drained.registered.length} producto(s) registrado(s) → ${drained.registered.join(', ')}`);
+        }
+      } catch (e) { log('kernel', `[onboard-drain] tick error: ${e.message}`); }
+
       // Context bridge tick (sync preguntas pendientes, relay, cleanup)
       try {
         const bridge = require(path.join(ROOT, '.claude', 'hooks', 'context-bridge'));
@@ -18602,6 +18725,22 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     readYamlSafe,
     WorkFileCorruptionError,
     PAUSE_FILE,
+    // #4832 — seam de integración del ciclo loadConfig ↔ haltOnConfigCorruption ↔
+    // auto-recovery. Se ejercen sobre un tmpdir aislado vía PIPELINE_DIR_OVERRIDE
+    // (que redirige CONFIG_PATH/PAUSE_FILE/cola-Telegram). Los getters/reset
+    // permiten aseverar el flag `paused` y resetear estado entre casos sin tocar
+    // producción. Cubren CA-1 (halt→marker JSON con origen), CA-2 (config sano→
+    // auto-recovery levanta la pausa en un tick) y CA-5 (pausa manual/legacy
+    // persiste, jamás se auto-levanta).
+    loadConfig,
+    haltOnConfigCorruption,
+    CONFIG_PATH,
+    _getPaused: () => paused,
+    _resetConfigCorruptionState: () => {
+      paused = false;
+      lastGoodConfig = null;
+      lastConfigCorruptionAlertMs = 0;
+    },
     // EP5-H1 (#3938) — módulos puros de los brazos + frontera FS, expuestos
     // para tests de integración del cableado (la lógica pura se testea en
     // lib/__tests__/brazo-*-core.test.js y workfile-name.test.js).

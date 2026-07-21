@@ -505,3 +505,141 @@ test('#4800: collectRepositoryProvenanceHits — create con name inválido (inye
   });
   assert.ok(hits.some((h) => /create\.name/.test(h.path)));
 });
+
+// -----------------------------------------------------------------------------
+// #4805 — transitionStatus: writer atómico dueño del estado (onboarding→active).
+//   CA-1 : onboarding→active persiste status:"active" atómico + checksum.
+//   CA-2 : active→active y transición arbitraria rechazadas SIN mutar.
+//   CA-3 : descriptor incompleto ⇒ bloqueo con detalle de campos faltantes.
+//   CA-7 : escritura atómica (tmp+rename), jamás in-place sobre el store.
+// -----------------------------------------------------------------------------
+
+// fs fake que registra el orden de writes/renames (para probar atomicidad).
+function makeSpyFs(seed = {}) {
+  const files = { ...seed };
+  const ops = [];
+  return {
+    files, ops,
+    writeFileSync(p, data) { ops.push({ op: 'write', path: String(p) }); files[String(p)] = String(data); },
+    renameSync(from, to) { ops.push({ op: 'rename', from: String(from), to: String(to) }); files[String(to)] = files[String(from)]; delete files[String(from)]; },
+    unlinkSync(p) { ops.push({ op: 'unlink', path: String(p) }); delete files[String(p)]; },
+  };
+}
+
+// loadDescriptor fake: devuelve un descriptor onboarding válido (o el override).
+function fakeLoader(result) { return () => result; }
+
+const DESC_PATH = '/tmp/descriptors/acme-store.json';
+
+test('#4805 CA-1: onboarding→active persiste status active atómico + checksum recomputado', () => {
+  const onboarding = validDescriptor({ status: 'onboarding' });
+  const spy = makeSpyFs();
+  const res = d.transitionStatus(
+    { descriptorPath: DESC_PATH, from: 'onboarding', to: 'active' },
+    { fsImpl: spy, loadDescriptorImpl: fakeLoader({ valid: true, descriptor: onboarding }), now: () => 1234 },
+  );
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.to, 'active');
+  assert.equal(res.projectId, 'acme-store');
+  // El descriptor final quedó en DESC_PATH con status:"active".
+  const written = JSON.parse(spy.files[DESC_PATH]);
+  assert.equal(written.status, 'active');
+  // Checksum recomputado y coherente con computeChecksum (sin el bloque integrity).
+  assert.equal(written.integrity.algorithm, 'sha256');
+  assert.equal(written.integrity.checksum, d.computeChecksum(written));
+  assert.equal(res.checksum, written.integrity.checksum);
+});
+
+test('#4805 CA-7: la escritura es atómica (write a *.tmp + rename), jamás in-place', () => {
+  const onboarding = validDescriptor({ status: 'onboarding' });
+  const spy = makeSpyFs();
+  d.transitionStatus(
+    { descriptorPath: DESC_PATH, from: 'onboarding', to: 'active' },
+    { fsImpl: spy, loadDescriptorImpl: fakeLoader({ valid: true, descriptor: onboarding }), now: () => 1234 },
+  );
+  // Orden: primero un write a un tmp (≠ DESC_PATH), luego rename tmp→DESC_PATH.
+  assert.equal(spy.ops[0].op, 'write');
+  assert.notEqual(spy.ops[0].path, DESC_PATH, 'el primer write NO debe ser in-place al store');
+  assert.ok(spy.ops[0].path.endsWith('.tmp'), 'el write intermedio es a un archivo .tmp');
+  assert.equal(spy.ops[1].op, 'rename');
+  assert.equal(spy.ops[1].to, DESC_PATH);
+  // Nunca hubo un write directo a DESC_PATH.
+  assert.ok(!spy.ops.some((o) => o.op === 'write' && o.path === DESC_PATH));
+});
+
+test('#4805 CA-2: active→active se rechaza sin mutar (doble activación)', () => {
+  const active = validDescriptor({ status: 'active' });
+  const spy = makeSpyFs();
+  // Pedido legítimo de la arista (onboarding→active) pero el estado actual ya es active.
+  const res = d.transitionStatus(
+    { descriptorPath: DESC_PATH, from: 'onboarding', to: 'active' },
+    { fsImpl: spy, loadDescriptorImpl: fakeLoader({ valid: true, descriptor: active }) },
+  );
+  assert.equal(res.ok, false);
+  assert.equal(res.status, 409);
+  assert.equal(spy.ops.length, 0, 'no debe escribir nada');
+  // Y la arista active→active tampoco es válida como transición.
+  const res2 = d.transitionStatus(
+    { descriptorPath: DESC_PATH, from: 'active', to: 'active' },
+    { fsImpl: spy, loadDescriptorImpl: fakeLoader({ valid: true, descriptor: active }) },
+  );
+  assert.equal(res2.ok, false);
+  assert.equal(res2.status, 409);
+  assert.equal(spy.ops.length, 0);
+});
+
+test('#4805 CA-2: transición arbitraria (onboarding→archived) rechazada sin mutar', () => {
+  const onboarding = validDescriptor({ status: 'onboarding' });
+  const spy = makeSpyFs();
+  const res = d.transitionStatus(
+    { descriptorPath: DESC_PATH, from: 'onboarding', to: 'archived' },
+    { fsImpl: spy, loadDescriptorImpl: fakeLoader({ valid: true, descriptor: onboarding }) },
+  );
+  assert.equal(res.ok, false);
+  assert.equal(res.status, 409);
+  assert.equal(res.stage, 'transition');
+  assert.equal(spy.ops.length, 0);
+});
+
+test('#4805 CA-3: descriptor incompleto ⇒ bloqueo con detalle de campos faltantes, sin mutar', () => {
+  const spy = makeSpyFs();
+  const res = d.transitionStatus(
+    { descriptorPath: DESC_PATH, from: 'onboarding', to: 'active' },
+    {
+      fsImpl: spy,
+      loadDescriptorImpl: fakeLoader({
+        valid: false, stage: 'schema', descriptor: null,
+        errors: [{ path: '(root)', keyword: 'required', detail: 'falta clave requerida: authority' }],
+      }),
+    },
+  );
+  assert.equal(res.ok, false);
+  assert.equal(res.status, 400);
+  assert.ok(res.errors.some((e) => /authority/.test(e.detail)), 'detalla el campo faltante');
+  assert.equal(spy.ops.length, 0, 'fail-closed: no escribe nada');
+});
+
+test('#4805: isValidStatusEdge sólo acepta onboarding→active', () => {
+  assert.equal(d.isValidStatusEdge('onboarding', 'active'), true);
+  assert.equal(d.isValidStatusEdge('active', 'active'), false);
+  assert.equal(d.isValidStatusEdge('onboarding', 'archived'), false);
+  assert.equal(d.isValidStatusEdge('active', 'onboarding'), false);
+});
+
+test('#4805 CA-7: round-trip real en disco — status durable + integrity válido al recargar', () => {
+  const os = require('node:os');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'desc-4805-'));
+  const p = path.join(tmpDir, 'acme-store.json');
+  // Descriptor onboarding SIN integrity (para no exigir checksum en la 1ra carga).
+  fs.writeFileSync(p, JSON.stringify(validDescriptor({ status: 'onboarding' }), null, 2), 'utf8');
+  try {
+    const res = d.transitionStatus({ descriptorPath: p, from: 'onboarding', to: 'active' });
+    assert.equal(res.ok, true, JSON.stringify(res));
+    // Recarga: loadDescriptor exige el integrity.checksum recién escrito ⇒ debe validar.
+    const reloaded = d.loadDescriptor(p);
+    assert.equal(reloaded.valid, true, JSON.stringify(reloaded.errors));
+    assert.equal(reloaded.descriptor.status, 'active');
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* cleanup */ }
+  }
+});

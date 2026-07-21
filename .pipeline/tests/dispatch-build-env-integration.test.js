@@ -28,6 +28,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 
+// Aísla del kill-switch operacional live (`provider-disabled.json` global): sin
+// esto, un provider drenado en runtime por el pulpo volvía flaky la chain
+// (#4801 rebote). Ver lib/__tests__/isolate-provider-disabled.helper.js.
+require('../lib/__tests__/isolate-provider-disabled.helper');
 const {
     resolveSpawnWithFallback,
 } = require('../lib/agent-launcher/dispatch-with-fallback');

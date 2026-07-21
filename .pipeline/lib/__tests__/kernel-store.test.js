@@ -348,6 +348,54 @@ test('CA-8: ítem sobre-tamaño es rechazado antes de escribir', async () => {
 });
 
 // -----------------------------------------------------------------------------
+// #4811 CA-6 — atomicidad del catalog#index bajo concurrencia real (A08)
+//
+// `addToCatalog` hacía read-modify-write SIN escritura condicional: dos altas
+// concurrentes de productos distintos reproducían un last-write-wins (la segunda
+// escritura pisaba el índice recién escrito por la primera y perdía una entrada).
+// Estos casos ejercitan la carrera real sobre el driver in-memory (cuyos
+// get/putItem ceden el turno en cada `await`, interleaving determinístico) y
+// verifican el fix por CAS optimista con reintento.
+// -----------------------------------------------------------------------------
+
+test('#4811 CA-6: dos putProduct concurrentes conservan ambos ids + la entrada previa', async () => {
+  const { store } = makeStore({ contextProjectId: 'intrale-platform', allowedNamespaces: ['intrale-platform'] });
+  // Pre-seed: la entrada del monorepo ya existe en el catálogo.
+  await store.putProduct({ productId: 'intrale-platform', name: 'Monorepo' });
+
+  // Alta simultánea de dos productos distintos por el mismo escritor lógico.
+  await Promise.all([
+    store.putProduct({ productId: 'producto-alfa', name: 'Alfa' }),
+    store.putProduct({ productId: 'producto-beta', name: 'Beta' }),
+  ]);
+
+  const ids = (await store.listProducts()).map((p) => p.productId).sort();
+  assert.deepEqual(
+    ids,
+    ['intrale-platform', 'producto-alfa', 'producto-beta'],
+    'ninguna entrada del catálogo se pierde bajo concurrencia (A08 · sin last-write-wins)',
+  );
+});
+
+test('#4811 CA-6: alta concurrente de N productos no pierde ninguna entrada del índice', async () => {
+  const { store } = makeStore();
+  const N = 10;
+  await Promise.all(
+    Array.from({ length: N }, (_, i) => store.putProduct({ productId: `prod-${i}`, name: `Producto ${i}` })),
+  );
+  const ids = (await store.listProducts()).map((p) => p.productId);
+  assert.equal(new Set(ids).size, N, 'las N entradas concurrentes quedan en el índice sin pérdida');
+});
+
+test('#4811 CA-6: putProduct del mismo id repetido es idempotente (no duplica en el índice)', async () => {
+  const { store } = makeStore();
+  await store.putProduct({ productId: 'prod-x', name: 'X' });
+  await store.putProduct({ productId: 'prod-x', name: 'X actualizado' });
+  const ids = (await store.listProducts()).map((p) => p.productId);
+  assert.deepEqual(ids, ['prod-x'], 'un id repetido no genera entradas duplicadas ni rompe el CAS');
+});
+
+// -----------------------------------------------------------------------------
 // Config / naming (A05 · sin hardcode)
 // -----------------------------------------------------------------------------
 

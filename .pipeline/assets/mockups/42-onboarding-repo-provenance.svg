@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 42 — Paso 2 del wizard de onboarding: provenance del repo (#4800)
+  ----------------------------------------------------------------------------
+  Extiende el mockup 37 (wizard de descriptor, #4691). Superficie: paso
+  "2 · Repositorios y tablero" de onboarding-wizard.js. Se agrega un selector
+  segmentado "Usar existente / Crear nuevo" que togglea la UI y la forma del
+  descriptor (repositories[0].provenance). area:infra (dashboard interno V3),
+  sin app:*.
+
+  Sistema de diseño reusado (tokens de onboarding-wizard.js):
+    --in-bg-2   #1C2128   input bg
+    --in-fg     #e6edf3   fg
+    --in-fg-dim #8A93A6   labels
+    --in-fg-soft#5B6376   hints
+    --in-border rgba(255,255,255,.12)
+    --brand-cyan#00D6FF   acento / activo
+    ok    #3FB950 / #9be9a8   error #F87171 / #fca5a5   warn #F59E0B / #fcd9a0
+
+  Estados representados (izq→der, arriba→abajo):
+    A. Selector segmentado (segmented control) — 2 opciones, radiogroup
+    B. Modo "Usar existente"  -> input URL + validación de acceso inline (CA-2)
+    C. Modo "Crear nuevo"     -> nombre / org(allowlist) / visibilidad(private
+       default) / base ref + nota "la URL se completa sola"
+    D. Estados de feedback: creando (async), éxito (URL auto, read-only),
+       error (nombre tomado / sin permiso / URL inaccesible)
+
+  Decisiones UX (autoritativas, ver comentario del issue):
+    - Segmented control, no dropdown: 2 opciones binarias mutuamente
+      excluyentes de igual peso => segmented es el patrón correcto (elección
+      visible de un vistazo, sin click extra).
+    - Default seguro = "Usar existente" (comportamiento actual intacto, CA-3).
+    - Visibilidad default = private SIEMPRE; public exige toggle explícito +
+      warning visible (security A02/A05).
+    - Org es <select> contra allowlist, nunca texto libre (security A01).
+    - En "Crear nuevo" el campo URL desaparece; se muestra chip "URL: se
+      completa automáticamente" para dejar claro que no es un olvido.
+    - Feedback fail-closed: error de creación (nombre tomado/permiso) o de
+      acceso (URL inaccesible) => mensaje accionable en ow-result, el producto
+      NO se da de alta a medias (Gherkin #2).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="1160" viewBox="0 0 1180 1160" font-family="ui-sans-serif,system-ui,Segoe UI,Roboto,Arial">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0D1117"/>
+      <stop offset="1" stop-color="#0A0E14"/>
+    </linearGradient>
+    <style>
+      .card{fill:#12171F;stroke:rgba(255,255,255,.10);stroke-width:1;rx:14}
+      .sect{fill:rgba(255,255,255,.02);stroke:rgba(255,255,255,.10);stroke-width:1}
+      .legend{fill:#e6edf3;font-size:14px;font-weight:800}
+      .label{fill:#8A93A6;font-size:12px;font-weight:700}
+      .hint{fill:#5B6376;font-size:11px}
+      .val{fill:#e6edf3;font-size:13px}
+      .ph{fill:#5B6376;font-size:13px}
+      .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+      .input{fill:#1C2128;stroke:rgba(255,255,255,.12);stroke-width:1;rx:8}
+      .caption{fill:#8A93A6;font-size:12px}
+      .title{fill:#e6edf3;font-size:19px;font-weight:800}
+    </style>
+  </defs>
+
+  <rect width="1180" height="1160" fill="url(#bg)"/>
+
+  <!-- ===== HEADER ===== -->
+  <text x="40" y="52" class="title">🧩 Onboarding · Paso 2 — Repositorios · provenance del repo (#4800)</text>
+  <text x="40" y="76" class="caption">Selector "Usar existente / Crear nuevo" · dashboard interno V3 · sistema de diseño ow-* (brand-cyan #00D6FF)</text>
+  <line x1="40" y1="90" x2="1140" y2="90" stroke="rgba(0,214,255,.28)" stroke-width="1"/>
+
+  <!-- ===== A. SEGMENTED CONTROL ===== -->
+  <text x="40" y="128" class="legend">A · Selector de origen del repositorio primario</text>
+  <text x="40" y="150" class="hint">Segmented control (role="radiogroup"). Default = "Usar existente" (no rompe el flujo actual). Igual peso visual, elección de un vistazo.</text>
+
+  <!-- segmented -->
+  <rect x="40" y="164" width="440" height="46" rx="10" fill="#1C2128" stroke="rgba(255,255,255,.12)"/>
+  <rect x="46" y="170" width="214" height="34" rx="7" fill="#00D6FF"/>
+  <text x="153" y="192" text-anchor="middle" fill="#001b22" font-size="13" font-weight="800">✓ Usar existente</text>
+  <text x="373" y="192" text-anchor="middle" fill="#8A93A6" font-size="13" font-weight="800">＋ Crear nuevo</text>
+
+  <!-- ===== B. MODO USAR EXISTENTE ===== -->
+  <text x="40" y="262" class="legend">B · Modo "Usar existente" — comportamiento actual + validación de acceso (CA-2)</text>
+  <rect x="40" y="278" width="540" height="300" rx="14" class="card"/>
+  <text x="62" y="308" class="label">REPO PRIMARIO (URL)</text>
+  <rect x="62" y="318" width="496" height="40" class="input"/>
+  <text x="76" y="343" class="val mono">https://github.com/acme/store</text>
+  <text x="62" y="378" class="hint">Sólo https:// a hosts aprobados (GitHub). IPs internas/loopback rechazadas (anti-SSRF).</text>
+
+  <text x="62" y="410" class="label">REPO ID</text>
+  <rect x="62" y="420" width="230" height="38" class="input"/>
+  <text x="76" y="444" class="val mono">main</text>
+  <text x="312" y="410" class="label">BASE REF POR DEFECTO</text>
+  <rect x="312" y="420" width="246" height="38" class="input"/>
+  <text x="326" y="444" class="val mono">main</text>
+
+  <!-- validación de acceso: verificando + OK -->
+  <rect x="62" y="478" width="496" height="34" rx="8" fill="rgba(0,214,255,.06)" stroke="rgba(0,214,255,.20)"/>
+  <circle cx="82" cy="495" r="7" fill="none" stroke="#00D6FF" stroke-width="2" stroke-dasharray="30 12"/>
+  <text x="100" y="500" fill="#8A93A6" font-size="12">Verificando acceso al repo… (gh repo view, tras allowlist)</text>
+
+  <rect x="62" y="522" width="496" height="34" rx="8" fill="rgba(63,185,80,.10)" stroke="rgba(63,185,80,.30)"/>
+  <text x="76" y="543" fill="#9be9a8" font-size="12">✅ Repo accesible — <tspan class="mono">acme/store</tspan> existe y el token puede leerlo.</text>
+
+  <!-- ===== C. MODO CREAR NUEVO ===== -->
+  <text x="620" y="262" class="legend">C · Modo "Crear nuevo" — el kernel crea el repo (CA-1)</text>
+  <rect x="620" y="278" width="520" height="300" rx="14" class="card"/>
+
+  <!-- chip URL automatica -->
+  <rect x="642" y="298" width="476" height="30" rx="8" fill="rgba(0,214,255,.06)" stroke="rgba(0,214,255,.20)"/>
+  <text x="656" y="318" fill="#8ad9ff" font-size="12">🔗 URL: se completa automáticamente al crear (no la escribís).</text>
+
+  <text x="642" y="352" class="label">NOMBRE DEL REPO</text>
+  <rect x="642" y="362" width="230" height="38" class="input"/>
+  <text x="656" y="386" class="val mono">store</text>
+  <text x="892" y="352" class="label">ORG (allowlist)</text>
+  <rect x="892" y="362" width="226" height="38" class="input"/>
+  <text x="906" y="386" class="val mono">intrale ▾</text>
+
+  <text x="642" y="426" class="label">VISIBILIDAD</text>
+  <!-- toggle private/public -->
+  <rect x="642" y="436" width="130" height="34" rx="8" fill="#00D6FF"/>
+  <text x="707" y="458" text-anchor="middle" fill="#001b22" font-size="12" font-weight="800">🔒 Private</text>
+  <rect x="776" y="436" width="130" height="34" rx="8" fill="#1C2128" stroke="rgba(255,255,255,.12)"/>
+  <text x="841" y="458" text-anchor="middle" fill="#8A93A6" font-size="12" font-weight="800">🌐 Public</text>
+  <text x="642" y="490" class="hint">Default private SIEMPRE. Public exige toggle explícito + confirmación (expone código).</text>
+
+  <text x="920" y="426" class="label">BASE REF</text>
+  <rect x="920" y="436" width="198" height="38" class="input"/>
+  <text x="934" y="460" class="val mono">main</text>
+
+  <!-- warning si public -->
+  <rect x="642" y="506" width="476" height="50" rx="8" fill="rgba(245,158,11,.08)" stroke="rgba(245,158,11,.30)"/>
+  <text x="656" y="526" fill="#fcd9a0" font-size="12" font-weight="700">⚠ Vas a crear un repo PÚBLICO</text>
+  <text x="656" y="544" fill="#fcd9a0" font-size="11">El código del producto quedará visible para cualquiera. Confirmá que es intencional.</text>
+
+  <!-- ===== D. ESTADOS DE FEEDBACK (ow-result) ===== -->
+  <text x="40" y="628" class="legend">D · Estados de feedback al confirmar el alta (fail-closed, Gherkin #2)</text>
+
+  <!-- D1 creando -->
+  <rect x="40" y="646" width="360" height="150" rx="12" class="card"/>
+  <text x="60" y="674" class="label">D1 · CREANDO (async)</text>
+  <circle cx="72" cy="712" r="9" fill="none" stroke="#00D6FF" stroke-width="2.5" stroke-dasharray="38 14"/>
+  <text x="92" y="717" fill="#e6edf3" font-size="13">Creando repositorio…</text>
+  <text x="60" y="748" class="hint">Botón "Dar de alta" deshabilitado + spinner.</text>
+  <text x="60" y="768" class="hint">Sin doble submit. Token nunca visible en UI.</text>
+
+  <!-- D2 exito -->
+  <rect x="420" y="646" width="360" height="150" rx="12" class="card"/>
+  <text x="440" y="674" class="label">D2 · ÉXITO</text>
+  <rect x="440" y="690" width="320" height="56" rx="8" fill="rgba(63,185,80,.10)" stroke="rgba(63,185,80,.30)"/>
+  <text x="456" y="712" fill="#9be9a8" font-size="12.5" font-weight="700">✅ Repo creado y producto dado de alta</text>
+  <text x="456" y="732" fill="#9be9a8" font-size="11" class="mono">https://github.com/intrale/store</text>
+  <text x="440" y="774" class="hint">URL auto-completada, mostrada read-only (no editable).</text>
+
+  <!-- D3 error -->
+  <rect x="800" y="646" width="340" height="150" rx="12" class="card"/>
+  <text x="820" y="674" class="label">D3 · ERROR (no deja producto a medias)</text>
+  <rect x="820" y="686" width="300" height="30" rx="7" fill="rgba(248,113,113,.10)" stroke="rgba(248,113,113,.30)"/>
+  <text x="834" y="706" fill="#fca5a5" font-size="11.5">❌ Ese nombre ya existe en <tspan class="mono">intrale</tspan></text>
+  <rect x="820" y="722" width="300" height="30" rx="7" fill="rgba(248,113,113,.10)" stroke="rgba(248,113,113,.30)"/>
+  <text x="834" y="742" fill="#fca5a5" font-size="11.5">❌ Sin permiso para crear en esa org</text>
+  <rect x="820" y="758" width="300" height="30" rx="7" fill="rgba(248,113,113,.10)" stroke="rgba(248,113,113,.30)"/>
+  <text x="834" y="778" fill="#fca5a5" font-size="11.5">❌ URL inaccesible / repo inexistente (CA-2)</text>
+
+  <!-- ===== E. GUIDELINES / A11Y ===== -->
+  <text x="40" y="846" class="legend">E · Guidelines de accesibilidad e interacción (WCAG AA)</text>
+  <rect x="40" y="862" width="1100" height="258" rx="14" class="sect"/>
+
+  <text x="64" y="894" fill="#8ad9ff" font-size="13" font-weight="800">Semántica</text>
+  <text x="64" y="918" class="caption">• Segmented control = <tspan class="mono" fill="#c8d3e0">role="radiogroup"</tspan> con 2 <tspan class="mono" fill="#c8d3e0">radio</tspan>; navegable con flechas.</text>
+  <text x="64" y="940" class="caption">• Toggle visibilidad = 2 radios (Private/Public), no checkbox ambiguo.</text>
+  <text x="64" y="962" class="caption">• Org = <tspan class="mono" fill="#c8d3e0">&lt;select&gt;</tspan> (allowlist), jamás input libre.</text>
+  <text x="64" y="984" class="caption">• <tspan class="mono" fill="#c8d3e0">ow-result</tspan> con <tspan class="mono" fill="#c8d3e0">aria-live="polite"</tspan> anuncia creando/éxito/error.</text>
+  <text x="64" y="1006" class="caption">• Foco visible: <tspan class="mono" fill="#c8d3e0">outline 2px brand-cyan</tspan> (ya en ow-input/ow-btn).</text>
+
+  <text x="600" y="894" fill="#8ad9ff" font-size="13" font-weight="800">Copy (español, accionable)</text>
+  <text x="600" y="918" class="caption">• Segmentos: “Usar existente” / “Crear nuevo”.</text>
+  <text x="600" y="940" class="caption">• Hint crear: “La URL se completa sola al crear el repo”.</text>
+  <text x="600" y="962" class="caption">• Errores accionables, no técnicos: “Ese nombre ya existe</text>
+  <text x="600" y="982" class="caption">   en {org}. Probá otro o usá ‘Usar existente’.”</text>
+  <text x="600" y="1004" class="caption">• Nunca exponer token/stderr crudo de gh en la UI.</text>
+
+  <text x="64" y="1044" fill="#8ad9ff" font-size="13" font-weight="800">Contraste verificado (AA ≥ 4.5:1 texto)</text>
+  <text x="64" y="1068" class="caption">• Texto activo #001b22 sobre brand-cyan #00D6FF · #e6edf3 sobre #12171F · error #fca5a5 sobre fondo rojo translúcido.</text>
+  <text x="64" y="1090" class="caption">• Estados NO dependen sólo del color: ícono ✓/＋/⚠/✅/❌ + texto acompañan cada estado (daltonismo).</text>
+  <text x="64" y="1108" class="caption">• Touch targets ≥ 34px alto en segmentos, toggles y botones.</text>
+
+  <text x="40" y="1150" class="hint">Mockup 42 · UX #4800 · reusa tokens de onboarding-wizard.js — cero colores hardcodeados fuera del sistema. Referencia para la fase desarrollo.</text>
+</svg>

@@ -601,6 +601,107 @@ function deriveKernelPin(descriptor, opts = {}) {
   return { version: fallback, channel, source: 'manifest' };
 }
 
+// -----------------------------------------------------------------------------
+// Máquina de estados del producto (Ola "Cierre de gestión de producto nuevo"
+// · #4805 · CA-2/SR-A04). Aristas VÁLIDAS del ciclo de vida — cualquier
+// transición no listada se rechaza fail-closed. Hoy la única arista soportada es
+// la activación (`onboarding→active`); el resto (archivado, re-onboarding) se
+// suma acá cuando exista su historia, nunca desde el request en banda.
+// -----------------------------------------------------------------------------
+const STATUS_TRANSITIONS = Object.freeze({
+  onboarding: Object.freeze(new Set(['active'])),
+});
+
+function isValidStatusEdge(from, to) {
+  return Object.prototype.hasOwnProperty.call(STATUS_TRANSITIONS, from)
+    && STATUS_TRANSITIONS[from].has(to);
+}
+
+/**
+ * Writer atómico DUEÑO del estado del descriptor (#4805 · SR-A08/CA-7). Es la
+ * ÚNICA vía para mutar `status` de forma durable: nunca se escribe `status` con
+ * `fs.writeFileSync` in-place al store desde otro módulo.
+ *
+ * Operación guardada única (anti-TOCTOU · CA-7): carga + valida fail-closed +
+ * verifica la arista de la máquina de estados + verifica que el `status` actual
+ * en disco sea exactamente `from` + escribe atómicamente (write a `*.tmp` +
+ * `fs.renameSync`), recomputando `integrity.checksum`. El "descriptor completo"
+ * (CA-3) es la propia validación fail-closed de `loadDescriptor`: si faltan
+ * campos requeridos, se devuelve el detalle (redactado) y NO se muta nada.
+ *
+ * Seguridad:
+ *   - CA-2/SR-A04: sólo `onboarding→active` es arista válida; `active→active` y
+ *     cualquier transición arbitraria del request se rechazan sin mutar.
+ *   - CA-3/SR-A03: validación server-side fail-closed (no depende del cliente).
+ *   - CA-7/SR-A08: escritura atómica tmp+rename; jamás in-place al store.
+ *
+ * @param {object} args
+ * @param {string} args.descriptorPath  ruta del descriptor a mutar (out-of-band).
+ * @param {string} [args.from='onboarding']  estado esperado de origen.
+ * @param {string} [args.to='active']         estado destino.
+ * @param {object} [deps]  { fsImpl, loadDescriptorImpl, now }
+ * @returns {{ ok:boolean, status:number, from?:string, to?:string, projectId?:string, checksum?:string, stage?:string, errors?:Array, msg?:string }}
+ */
+function transitionStatus(args = {}, deps = {}) {
+  const _fs = deps.fsImpl || fs;
+  const loadImpl = typeof deps.loadDescriptorImpl === 'function' ? deps.loadDescriptorImpl : loadDescriptor;
+  const now = typeof deps.now === 'function' ? deps.now : () => Date.now();
+
+  const descriptorPath = args.descriptorPath;
+  const from = args.from == null ? 'onboarding' : args.from;
+  const to = args.to == null ? 'active' : args.to;
+
+  if (typeof descriptorPath !== 'string' || descriptorPath.trim() === '') {
+    return { ok: false, status: 400, stage: 'load', errors: [{ path: '(path)', detail: 'path de descriptor inválido' }], msg: 'path de descriptor inválido' };
+  }
+
+  // 1) Arista de máquina de estados (CA-2/SR-A04). Rechazo ANTES de tocar el FS.
+  if (!isValidStatusEdge(from, to)) {
+    return { ok: false, status: 409, stage: 'transition', from, to, errors: [{ path: 'status', detail: `transición ${from}→${to} no permitida (única arista válida: onboarding→active)` }], msg: `transición ${from}→${to} no permitida` };
+  }
+
+  // 2) Carga + validación fail-closed (== "descriptor completo", CA-3). Un
+  //    descriptor incompleto/ inválido devuelve el detalle de campos faltantes.
+  const loaded = loadImpl(descriptorPath);
+  if (!loaded || !loaded.valid || !loaded.descriptor) {
+    return { ok: false, status: 400, stage: (loaded && loaded.stage) || 'validate', errors: (loaded && loaded.errors) || [{ path: '(root)', detail: 'descriptor inválido' }], msg: 'descriptor incompleto o inválido — activación bloqueada' };
+  }
+  const descriptor = loaded.descriptor;
+  const projectId = descriptor.identity && descriptor.identity.projectId;
+
+  // 3) Guardia anti-TOCTOU / anti doble-activación: el `status` ACTUAL en disco
+  //    debe ser exactamente `from`. Un producto ya `active` (o cualquier otro
+  //    estado) hace que `active→active`/arbitrario se rechace server-side.
+  const current = typeof descriptor.status === 'string' ? descriptor.status : 'onboarding';
+  if (current !== from) {
+    return { ok: false, status: 409, stage: 'transition', from, to, projectId, errors: [{ path: 'status', detail: `estado actual "${current}" ≠ origen esperado "${from}" — transición rechazada` }], msg: `el producto no está en estado ${from} (actual: ${current})` };
+  }
+
+  // 4) Flip sobre el snapshot ya validado (misma operación guardada) + recompute
+  //    del checksum de integridad sobre el descriptor con el nuevo status.
+  const next = { ...descriptor, status: to };
+  const checksum = computeChecksum(next);
+  next.integrity = { algorithm: 'sha256', checksum };
+
+  // 5) Escritura ATÓMICA: write a tmp en el MISMO dir + rename (nunca in-place).
+  const dir = path.dirname(descriptorPath);
+  const tmpPath = path.join(dir, `.${path.basename(descriptorPath)}.${process.pid}.${now()}.tmp`);
+  const serialized = JSON.stringify(next, null, 2) + '\n';
+  try {
+    _fs.writeFileSync(tmpPath, serialized, 'utf8');
+  } catch (e) {
+    return { ok: false, status: 500, stage: 'write', projectId, errors: [{ path: '(path)', detail: `no se pudo escribir el tmp del descriptor: ${e.code || e.message}` }], msg: 'fallo de escritura atómica (tmp)' };
+  }
+  try {
+    _fs.renameSync(tmpPath, descriptorPath);
+  } catch (e) {
+    try { _fs.unlinkSync(tmpPath); } catch { /* best-effort cleanup */ }
+    return { ok: false, status: 500, stage: 'write', projectId, errors: [{ path: '(path)', detail: `no se pudo renombrar el tmp sobre el descriptor: ${e.code || e.message}` }], msg: 'fallo de escritura atómica (rename)' };
+  }
+
+  return { ok: true, status: 200, from, to, projectId, checksum, msg: `status del producto ${projectId} transicionado ${from}→${to} de forma durable` };
+}
+
 module.exports = {
   SCHEMA_PATH,
   schema,
@@ -631,4 +732,7 @@ module.exports = {
   resolveSignerAuthority,
   authorizeSigner,
   deriveKernelPin,
+  STATUS_TRANSITIONS,
+  isValidStatusEdge,
+  transitionStatus,
 };

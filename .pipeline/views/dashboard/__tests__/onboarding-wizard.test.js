@@ -120,3 +120,35 @@ test('#4800: owBuildDescriptor arma provenance según el modo (create sin url, e
     assert.ok(script.includes('function owRepoMode('));
     assert.ok(script.includes('function owVisibilityChange('));
 });
+
+// =============================================================================
+// #4801 · CA-4 + G-1..G-4 — endurecimiento de feedback del wizard.
+// =============================================================================
+
+test('G-3: muestra estado intermedio "Validando…" durante el POST', () => {
+    const script = renderOnboardingWizardClientScript();
+    assert.ok(script.includes('function owRenderPending('));
+    assert.ok(script.includes('owRenderPending('), 'owSubmit debe pintar el estado intermedio');
+    assert.ok(/Validando/.test(script));
+});
+
+test('G-1/G-2: copy de éxito dice "encolado≠activo" y apunta a la pestaña Productos', () => {
+    const script = renderOnboardingWizardClientScript();
+    assert.ok(script.includes('function owRenderSuccess('));
+    assert.ok(/Onboarding/.test(script) && /inactivo/i.test(script), 'aclara que queda inactivo');
+    assert.ok(script.includes('?view=estado-productos'), 'apunta a la pestaña Productos');
+});
+
+test('G-4/CA-4: mapea el rechazo a copy humano sin jerga ni internals', () => {
+    const script = renderOnboardingWizardClientScript();
+    assert.ok(script.includes('function owHumanError('));
+    // El éxito sólo se marca si el backend confirmó (fail-closed).
+    assert.ok(script.includes('if(j && j.ok){ owRenderSuccess('));
+    // No se vuelca `j.errors` crudo del backend a la UI (evita filtrar host/paths).
+    assert.ok(!script.includes('owHumanError(j)') ? false : true);
+    assert.ok(!/owRenderResult\(false, \(j && j\.msg\)/.test(script), 'no propaga msg crudo del backend');
+    // Sin jerga técnica en el copy de error del operador.
+    for (const jargon of ['fail-closed', 'dry-run', 'TOCTOU', 'SSRF']) {
+        assert.ok(!new RegExp(jargon, 'i').test(script.split('function owHumanError(')[1].split('}')[0] || ''), `owHumanError no debe usar "${jargon}"`);
+    }
+});
