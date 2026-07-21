@@ -79,6 +79,48 @@ test('las opciones de skills reflejan la allowlist del kernel', () => {
     for (const s of KERNEL_SKILLS) assert.ok(html.includes(s), `falta mención del skill ${s}`);
 });
 
+// -----------------------------------------------------------------------------
+// #4800 — segmented control "Usar existente / Crear nuevo" + campos de creación
+// -----------------------------------------------------------------------------
+
+test('CA-UX-1: el paso 2 muestra el segmented control con "Usar existente" activo por default', () => {
+    const html = renderOnboardingWizardSsr();
+    assert.ok(html.includes('id="ow-repo-mode-existing"'));
+    assert.ok(html.includes('id="ow-repo-mode-create"'));
+    // Segmented (radiogroup), no dropdown; existente activo.
+    assert.ok(/ow-repo-mode-existing[^>]*ow-seg-active/.test(html) || /ow-seg-active[^>]*ow-repo-mode-existing/.test(html)
+        || html.includes('class="ow-seg-btn ow-seg-active" id="ow-repo-mode-existing"'));
+    assert.ok(html.includes('role="radiogroup"'));
+});
+
+test('CA-UX-2: modo crear expone nombre/org(select)/visibilidad + chip de URL automática', () => {
+    const html = renderOnboardingWizardSsr();
+    assert.ok(html.includes('id="ow-repo-name"'));
+    assert.ok(html.includes('id="ow-repo-org"'));
+    assert.ok(html.includes('name="ow-repo-visibility"'));
+    // org es <select> contra allowlist (A01), no texto libre.
+    assert.ok(/<select[^>]*id="ow-repo-org"/.test(html));
+    // Chip informativo de URL automática.
+    assert.ok(/se completa autom/i.test(html));
+});
+
+test('CA-UX-3: visibilidad arranca en private; existe warning para public', () => {
+    const html = renderOnboardingWizardSsr();
+    assert.ok(/value="private"[^>]*checked|checked[^>]*value="private"/.test(html));
+    assert.ok(html.includes('id="ow-repo-public-warn"'));
+    assert.ok(/PÚBLICO/.test(html));
+});
+
+test('#4800: owBuildDescriptor arma provenance según el modo (create sin url, existing con url)', () => {
+    const script = renderOnboardingWizardClientScript();
+    assert.ok(script.includes("provenance = 'create'"));
+    assert.ok(script.includes('repo.create = {'));
+    assert.ok(script.includes("provenance = 'existing'"));
+    // toggle de modo y warning de visibilidad presentes.
+    assert.ok(script.includes('function owRepoMode('));
+    assert.ok(script.includes('function owVisibilityChange('));
+});
+
 // =============================================================================
 // #4801 · CA-4 + G-1..G-4 — endurecimiento de feedback del wizard.
 // =============================================================================

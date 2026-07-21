@@ -205,26 +205,54 @@ function findIssueWorktree(ROOT, issue, { skill = null, spawnImpl = spawnSync, f
     }
 
     if (candidates.length === 0) return null;
-    if (candidates.length === 1) return candidates[0];
 
-    // (1) Match exacto por skill. Si el skill no es válido para derivar basename,
-    //     saltamos el match exacto en vez de romper la resolución.
+    // #4800 — Preferir worktrees cuya rama checked-out corresponda al issue.
+    //   El match previo era SOLO por basename del directorio
+    //   (`platform.agent-<issue>-*`) y nunca validaba la rama checked-out. Un
+    //   directorio del issue puede quedar transitoriamente con OTRA rama activa
+    //   (branch-switching entre skills / contaminación), y en ese caso el
+    //   resolver lo devolvía igual → las fases downstream (build/verificacion)
+    //   diffeaban la rama equivocada.
+    //   Incidente real #4800 rev-3: `verificacion` diffeó `agent/4807-*` porque
+    //   el worktree `platform.agent-4800-pipeline-dev` tenía esa rama checked-out
+    //   y ganó la desambiguación por commits-ahead → falso negativo ("el HEAD no
+    //   implementa #4800") que rebotó el issue sin defecto de código real.
+    //
+    //   Filtramos SOLO cuando queda ≥1 candidato cuya rama matchee
+    //   `agent/<issue>-`. Si NINGUNO matchea (p.ej. único worktree en
+    //   detached-HEAD, rebase en curso, o rama con slug no estándar) conservamos
+    //   TODOS los candidatos → comportamiento previo intacto, sin descartar el
+    //   único worktree ni disparar auto-recovery espurio. La comparación es pura
+    //   sobre el campo `branch` ya parseado: no agrega git calls.
+    const issueBranchPrefix = `agent/${String(issue)}-`;
+    const branchMatchesIssue = (e) => {
+        if (typeof e.branch !== 'string' || !e.branch) return false;
+        return e.branch.replace(/^refs\/heads\//, '').startsWith(issueBranchPrefix);
+    };
+    const branchMatched = candidates.filter(branchMatchesIssue);
+    const pool = branchMatched.length > 0 ? branchMatched : candidates;
+
+    if (pool.length === 1) return pool[0];
+
+    // (1) Match exacto por skill (dentro del pool ya filtrado por rama). Si el
+    //     skill no es válido para derivar basename, saltamos el match exacto en
+    //     vez de romper la resolución.
     if (skill) {
         let exactBase = null;
         try { exactBase = worktreeBasename(issue, skill); } catch { exactBase = null; }
         if (exactBase) {
-            const exact = candidates.find((c) => path.basename(c.worktree) === exactBase);
+            const exact = pool.find((c) => path.basename(c.worktree) === exactBase);
             if (exact) return exact;
         }
     }
 
-    // (2) Preferir el worktree con más commits sobre origin/main.
-    let best = candidates[0];
+    // (2) Preferir el worktree con más commits sobre origin/main (dentro del pool).
+    let best = pool[0];
     let bestAhead = countCommitsAhead(ROOT, best.branch, { spawnImpl });
-    for (let i = 1; i < candidates.length; i++) {
-        const ahead = countCommitsAhead(ROOT, candidates[i].branch, { spawnImpl });
+    for (let i = 1; i < pool.length; i++) {
+        const ahead = countCommitsAhead(ROOT, pool[i].branch, { spawnImpl });
         if (ahead > bestAhead) {
-            best = candidates[i];
+            best = pool[i];
             bestAhead = ahead;
         }
     }

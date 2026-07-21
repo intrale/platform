@@ -21,6 +21,7 @@ const path = require('node:path');
 
 const drainer = require('../product-control-drainer');
 const productCatalog = require('../product-catalog');
+const { createKernelSupervisor } = require('../kernel-supervisor');
 
 // -----------------------------------------------------------------------------
 // Fake fs en memoria (para casos de fallo controlado sin tocar disco).
@@ -227,6 +228,141 @@ test('el descriptor onboarding registrado es legible por product-catalog.listPro
     assert.equal(p.status, 'onboarding');
 
     fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+// =============================================================================
+// #4800 — creación automática del repo cableada al path REAL del kernel.
+//
+// El review semántico rechazó que la lógica de `gh repo create` (product-control-drain)
+// fuera código huérfano: el drenador cableado al kernel (`drainOnboardQueue`) NO
+// creaba repos. Estos tests demuestran que ahora SÍ se materializa la creación en el
+// path real (drainOnboardQueue y, end-to-end, `bootProducts` del kernel).
+// =============================================================================
+
+// Fake `gh` con firma execFileSync: registra invocaciones; `viewExists` decide si el
+// repo "ya existe"; `createThrows` fuerza un fallo real de `gh repo create`.
+function makeFakeGh({ viewExists = false, createThrows = null } = {}) {
+    const calls = [];
+    const exec = (bin, args) => {
+        calls.push([bin, ...(Array.isArray(args) ? args : [])]);
+        if (Array.isArray(args) && args[1] === 'view') {
+            if (viewExists) return '';
+            throw new Error('not found');
+        }
+        if (Array.isArray(args) && args[1] === 'create') {
+            if (createThrows) throw new Error(createThrows);
+            return '';
+        }
+        return '';
+    };
+    return { calls, exec };
+}
+
+// Pedido de onboarding en modalidad `provenance:'create'` (sin url — la crea el kernel).
+function createOnboardRequest(projectId = 'newco') {
+    return {
+        type: 'product_onboard_request',
+        projectId,
+        actor: 'leo',
+        created_at: 1700000000000,
+        descriptor: {
+            schemaVersion: '1.0',
+            status: 'active', // el drenador debe forzar onboarding
+            identity: { projectId, name: 'NewCo' },
+            repositories: [{
+                id: 'main', role: 'primary', defaultBaseRef: 'main',
+                provenance: 'create', create: { name: `${projectId}-repo`, org: 'intrale', visibility: 'private' },
+            }],
+        },
+    };
+}
+
+test('#4800 · CA-1 — provenance:create: drainOnboardQueue crea el repo (gh por array de args) y persiste la url limpia', () => {
+    const gh = makeFakeGh({ viewExists: false });
+    const reqPath = path.join(QUEUE, 'onboard-newco-1.json');
+    const _fs = makeFs({ [reqPath]: JSON.stringify(createOnboardRequest('newco')) });
+
+    const res = drainer.drainOnboardQueue(
+        { ...opts(), allowedOrgs: ['intrale'] },
+        { fsImpl: _fs, auditImpl: makeAudit(), now: () => 1, execFileSync: gh.exec },
+    );
+
+    assert.deepEqual(res.registered, ['newco']);
+    // `gh repo create` invocado SIEMPRE por array de args (anti command-injection · A03).
+    assert.deepEqual(gh.calls.find(c => c[2] === 'create'), ['gh', 'repo', 'create', 'intrale/newco-repo', '--private']);
+    // Descriptor persistido CON la url limpia + provenance existing + status onboarding.
+    const desc = JSON.parse(_fs.files.get(path.join(DESC, 'newco.json')));
+    assert.equal(desc.status, 'onboarding');
+    assert.equal(desc.repositories[0].url, 'https://github.com/intrale/newco-repo');
+    assert.equal(desc.repositories[0].provenance, 'existing');
+    assert.ok(!desc.repositories[0].create, 'la spec create no se persiste en el descriptor');
+});
+
+test('#4800 · CA-4 — provenance:create idempotente: si el repo ya existe NO se re-crea pero igual persiste la url', () => {
+    const gh = makeFakeGh({ viewExists: true });
+    const reqPath = path.join(QUEUE, 'onboard-newco-2.json');
+    const _fs = makeFs({ [reqPath]: JSON.stringify(createOnboardRequest('newco')) });
+
+    const res = drainer.drainOnboardQueue(opts(), { fsImpl: _fs, auditImpl: makeAudit(), now: () => 1, execFileSync: gh.exec });
+
+    assert.deepEqual(res.registered, ['newco']);
+    assert.ok(!gh.calls.some(c => c[2] === 'create'), 'no debe crear si el repo ya existe');
+    const desc = JSON.parse(_fs.files.get(path.join(DESC, 'newco.json')));
+    assert.equal(desc.repositories[0].url, 'https://github.com/intrale/newco-repo');
+});
+
+test('#4800 · fail-closed — org fuera de la allowlist: NO registra, NO invoca gh create, aparta el pedido a procesado', () => {
+    const gh = makeFakeGh({ viewExists: false });
+    const req = createOnboardRequest('newco');
+    req.descriptor.repositories[0].create.org = 'evilcorp';
+    const reqPath = path.join(QUEUE, 'onboard-newco-3.json');
+    const _fs = makeFs({ [reqPath]: JSON.stringify(req) });
+
+    const res = drainer.drainOnboardQueue(opts(), { fsImpl: _fs, auditImpl: makeAudit(), now: () => 1, execFileSync: gh.exec });
+
+    assert.deepEqual(res.registered, []);
+    assert.ok(res.rejected.some(r => r.projectId === 'newco'), 'debe rechazar el pedido');
+    assert.equal(gh.calls.filter(c => c[2] === 'create').length, 0, 'no debe invocar gh create con org fuera de allowlist');
+    assert.ok(!_fs.files.has(path.join(DESC, 'newco.json')), 'no debe registrar descriptor (nunca producto a medias)');
+    assert.ok(_fs.files.has(path.join(PROC, 'onboard-newco-3.json')), 'pedido terminal apartado a procesado');
+});
+
+test('#4800 · fail-closed — fallo real de gh create es recuperable: pedido queda en pendiente y NO se registra', () => {
+    const gh = makeFakeGh({ viewExists: false, createThrows: 'HTTP 403: Resource not accessible' });
+    const reqPath = path.join(QUEUE, 'onboard-newco-4.json');
+    const _fs = makeFs({ [reqPath]: JSON.stringify(createOnboardRequest('newco')) });
+
+    const res = drainer.drainOnboardQueue(opts(), { fsImpl: _fs, auditImpl: makeAudit(), now: () => 1, execFileSync: gh.exec });
+
+    assert.deepEqual(res.registered, []);
+    assert.ok(res.errors.some(e => /repo-create-failed/.test(e.reason)), 'el fallo de creación se reporta como error recuperable');
+    assert.ok(!_fs.files.has(path.join(DESC, 'newco.json')), 'no registra descriptor a medias');
+    assert.ok(_fs.files.has(reqPath), 'el pedido permanece en pendiente para reintentar el próximo ciclo');
+});
+
+test('#4800 · integración kernel — bootProducts drena onboarding y materializa el repo (path real, no drainOnce directo)', async () => {
+    const gh = makeFakeGh({ viewExists: false });
+    const reqPath = path.join(QUEUE, 'onboard-newco-5.json');
+    const _fs = makeFs({ [reqPath]: JSON.stringify(createOnboardRequest('newco')) });
+    let drainSummary = null;
+
+    const supervisor = createKernelSupervisor({
+        catalogStore: { listProducts: async () => [] },
+        hydrate: false,
+        // El loop del kernel (`bootProducts`) invoca ESTE drainOnboardQueue, que corre el
+        // drenador REAL con `gh` mockeado — NO una llamada directa a drainOnce.
+        drainOnboardQueue: () => {
+            drainSummary = drainer.drainOnboardQueue(opts(), { fsImpl: _fs, auditImpl: makeAudit(), now: () => 1, execFileSync: gh.exec });
+        },
+    });
+
+    await supervisor.bootProducts();
+
+    assert.ok(drainSummary && drainSummary.registered.includes('newco'), 'el loop del kernel registró el producto onboarding');
+    assert.deepEqual(gh.calls.find(c => c[2] === 'create'), ['gh', 'repo', 'create', 'intrale/newco-repo', '--private']);
+    const desc = JSON.parse(_fs.files.get(path.join(DESC, 'newco.json')));
+    assert.equal(desc.status, 'onboarding');
+    assert.equal(desc.repositories[0].url, 'https://github.com/intrale/newco-repo', 'la url limpia quedó persistida por el path del kernel (CA-1)');
 });
 
 // =============================================================================

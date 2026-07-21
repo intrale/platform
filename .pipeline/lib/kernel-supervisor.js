@@ -301,6 +301,9 @@ function createKernelSupervisor(deps = {}) {
   // productos para que un alta recién encolada se registre (`status:onboarding`)
   // y aparezca en el catálogo. Inyectable/deshabilitable por tests: `false`
   // desactiva; una función la reemplaza; por default se usa el drenador real.
+  // #4800 — ese mismo drenador real (`product-control-drainer.drainOnboardQueue`)
+  // crea el repo `provenance:'create'` (idempotente) y completa la url ANTES de
+  // registrar, así el path del kernel materializa la creación automática (CA-1).
   const drainOnboardQueue = deps.drainOnboardQueue === false
     ? null
     : (typeof deps.drainOnboardQueue === 'function'

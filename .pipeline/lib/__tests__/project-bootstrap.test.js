@@ -147,7 +147,8 @@ test('CA-D2: dry-run expone ruteo resuelto contra la allowlist (skills validados
 test('CA-D1: modo full registra status:onboarding (inactivo)', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pb-'));
   const registryPath = path.join(tmp, 'registry.json');
-  const res = b.runBootstrap({ descriptor: validDescriptor(), mode: 'full', deps: { registryPath } });
+  // Probe inyectado (determinístico, sin red): en full mode el default probea con `gh`.
+  const res = b.runBootstrap({ descriptor: validDescriptor(), mode: 'full', deps: { registryPath, probeAccess: () => true } });
   assert.equal(res.ok, true);
   assert.equal(res.stage, 'registered');
   assert.equal(res.status, 'onboarding');
@@ -158,7 +159,7 @@ test('CA-D1: modo full registra status:onboarding (inactivo)', () => {
 
 test('CA-D1: el render humano deja explícito el estado ONBOARDING pendiente de aprobación', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pb-'));
-  const res = b.runBootstrap({ descriptor: validDescriptor(), mode: 'full', deps: { registryPath: path.join(tmp, 'r.json') } });
+  const res = b.runBootstrap({ descriptor: validDescriptor(), mode: 'full', deps: { registryPath: path.join(tmp, 'r.json'), probeAccess: () => true } });
   assert.match(res.human, /ONBOARDING/);
   assert.match(res.human, /aprobación humana/i);
 });
@@ -187,4 +188,65 @@ test('bootstrap rechaza descriptor inválido antes de verificar acceso', () => {
 test('bootstrap desde path inexistente ⇒ error como dato', () => {
   const res = b.runBootstrap({ descriptorPath: '/no/existe.json', mode: 'dry-run' });
   assert.equal(res.ok, false);
+});
+
+// -----------------------------------------------------------------------------
+// #4800 · CA-2 — probeAccess real: alcance verificado en modo existente
+// -----------------------------------------------------------------------------
+
+test('CA-2: verifyAccess con probeAccess real — repo accesible ⇒ reachable=true', () => {
+  const desc = validDescriptor();
+  const res = b.verifyAccess(desc, { probeAccess: () => true });
+  assert.equal(res.ok, true);
+  assert.equal(res.targets.find((t) => t.kind === 'repo').reachable, true);
+});
+
+test('CA-2: verifyAccess con probeAccess real — repo inaccesible ⇒ rechazo', () => {
+  const desc = validDescriptor();
+  const res = b.verifyAccess(desc, { probeAccess: (t) => (t.kind === 'repo' ? false : null) });
+  assert.equal(res.ok, false);
+  assert.equal(res.targets.find((t) => t.kind === 'repo').reachable, false);
+});
+
+test('CA-2: probe que devuelve null (board / no probeable) se trata como no-probado (accesible)', () => {
+  const desc = validDescriptor();
+  const res = b.verifyAccess(desc, { probeAccess: () => null });
+  assert.equal(res.ok, true);
+  assert.equal(res.targets.find((t) => t.kind === 'repo').reachable, null);
+});
+
+test('CA-2: bootstrap full con URL inaccesible (probe false) rechaza en stage=access', () => {
+  const res = b.runBootstrap({ descriptor: validDescriptor(), mode: 'full', deps: { probeAccess: () => false } });
+  assert.equal(res.ok, false);
+  assert.equal(res.stage, 'access');
+});
+
+test('CA-2: modo create NO prueba URL (repo aún no existe) — verifyAccess sólo mira el board', () => {
+  const desc = validDescriptor({
+    repositories: [{ id: 'main', role: 'primary', provenance: 'create', create: { name: 'store', org: 'intrale', visibility: 'private' } }],
+  });
+  let probedRepo = false;
+  const res = b.verifyAccess(desc, { probeAccess: (t) => { if (t.kind === 'repo') probedRepo = true; return null; } });
+  assert.equal(probedRepo, false, 'el repo a crear NO debe probarse');
+  assert.equal(res.ok, true);
+  // Sólo queda el board como target (el repo create se saltea).
+  assert.equal(res.targets.filter((t) => t.kind === 'repo').length, 0);
+});
+
+test('defaultProbeAccess parsea owner/repo y sólo prueba repos (board ⇒ null)', () => {
+  // board target ⇒ null (no se prueba acá).
+  assert.equal(b.defaultProbeAccess({ kind: 'board', url: 'https://github.com/orgs/acme/projects/1' }), null);
+  // repo accesible ⇒ true con execFileSync inyectado que no lanza.
+  const okProbe = b.defaultProbeAccess({ kind: 'repo', url: 'https://github.com/acme/store' }, { execFileSync: (bin, args) => { assert.deepEqual(args.slice(0, 3), ['repo', 'view', 'acme/store']); return ''; } });
+  assert.equal(okProbe, true);
+  // repo inaccesible ⇒ false (gh lanza).
+  const failProbe = b.defaultProbeAccess({ kind: 'repo', url: 'https://github.com/acme/nope' }, { execFileSync: () => { throw new Error('not found'); } });
+  assert.equal(failProbe, false);
+});
+
+test('parseOwnerRepo extrae slug de URL github y rechaza formas inválidas', () => {
+  assert.equal(b.parseOwnerRepo('https://github.com/acme/store'), 'acme/store');
+  assert.equal(b.parseOwnerRepo('https://github.com/acme/store.git'), 'acme/store');
+  assert.equal(b.parseOwnerRepo('https://github.com/acme'), null);
+  assert.equal(b.parseOwnerRepo('not-a-url'), null);
 });

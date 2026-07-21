@@ -181,6 +181,55 @@ function collectThresholdViolations(descriptor) {
   return hits;
 }
 
+// Nombre de repo válido para creación (#4800). Espeja el pattern del schema
+// (`repositories[].create.name`) — la superficie de command-injection nace acá,
+// así que el nombre se re-valida imperativamente antes de que el drainer kernel-side
+// lo pase a `gh repo create` (fail-closed, defensa-en-profundidad).
+const CREATE_REPO_NAME_RE = /^[A-Za-z0-9._-]{1,100}$/;
+
+/**
+ * Validación cruzada de la PROVENANCE de cada repo (#4800 · alta con repo nuevo vs
+ * existente). JSON Schema ya modela la forma (if/then sobre `provenance`), pero se
+ * re-verifica imperativa y fail-closed como defensa-en-profundidad y para exigir
+ * `create.org` (que el schema deja opcional porque su allowlist vive en la capa lib):
+ *   - `provenance:'create'`  ⇒ exige `create.name` (regex) y `create.org`; PROHÍBE `url`.
+ *   - `provenance:'existing'` (o ausente, retro-compat) ⇒ exige `url`.
+ * Devuelve violaciones como DATO — nunca lanza.
+ *
+ * @param {object} descriptor
+ * @returns {Array<{path:string, detail:string}>}
+ */
+function collectRepositoryProvenanceHits(descriptor) {
+  const hits = [];
+  const repos = (descriptor && descriptor.repositories) || [];
+  if (!Array.isArray(repos)) return hits;
+  repos.forEach((r, i) => {
+    if (!r || typeof r !== 'object') return;
+    if (r.provenance === 'create') {
+      const c = r.create;
+      if (!c || typeof c !== 'object' || Array.isArray(c)) {
+        hits.push({ path: `repositories[${i}].create`, detail: 'provenance:create exige el subobjeto create' });
+        return;
+      }
+      if (typeof c.name !== 'string' || !CREATE_REPO_NAME_RE.test(c.name)) {
+        hits.push({ path: `repositories[${i}].create.name`, detail: 'create.name ausente o inválido (^[A-Za-z0-9._-]{1,100}$)' });
+      }
+      if (typeof c.org !== 'string' || c.org.trim() === '') {
+        hits.push({ path: `repositories[${i}].create.org`, detail: 'create.org es obligatorio en provenance:create' });
+      }
+      if (r.url !== undefined) {
+        hits.push({ path: `repositories[${i}].url`, detail: 'provenance:create no admite url (el kernel la completa al crear el repo)' });
+      }
+    } else {
+      // existing explícito o ausente (retro-compat) ⇒ exige url.
+      if (typeof r.url !== 'string' || r.url.trim() === '') {
+        hits.push({ path: `repositories[${i}].url`, detail: 'provenance:existing exige url' });
+      }
+    }
+  });
+  return hits;
+}
+
 // -----------------------------------------------------------------------------
 // Checksum de integridad (paso 2). Cálculo determinístico sobre el descriptor
 // SIN el bloque `integrity` (no se auto-incluye en su propio hash).
@@ -272,6 +321,18 @@ function validateDescriptor(obj, opts = {}) {
       valid: false,
       stage: 'thresholds',
       errors: thresholdHits.map((h) => ({ path: h.path, keyword: 'thresholdViolation', detail: h.detail })),
+      descriptor: null,
+    };
+  }
+
+  // 6) Validación cruzada de provenance de repos (#4800): create exige name/org y
+  //    prohíbe url; existing exige url. Defensa-en-profundidad sobre el if/then del schema.
+  const provenanceHits = collectRepositoryProvenanceHits(descriptor);
+  if (provenanceHits.length > 0) {
+    return {
+      valid: false,
+      stage: 'repositories',
+      errors: provenanceHits.map((h) => ({ path: h.path, keyword: 'repositoryProvenance', detail: h.detail })),
       descriptor: null,
     };
   }
@@ -657,6 +718,8 @@ module.exports = {
   isSafeWorktreePath,
   collectPathTraversalHits,
   collectThresholdViolations,
+  collectRepositoryProvenanceHits,
+  CREATE_REPO_NAME_RE,
   redactAjvErrors,
   deriveRouting,
   deriveAdmissionLabels,

