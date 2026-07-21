@@ -137,6 +137,12 @@
           "items": { "type": "string", "minLength": 1 },
           "maxItems": 3,
           "uniqueItems": true
+        },
+        "capabilities": {
+          "type": "array",
+          "description": "#4839 — Capabilities de EJECUCIÓN que el motor del provider declara sostener (eje CAPACIDAD DEL MOTOR, NO el eje autorización de lib/capabilities.js). El enum de valores válidos se inyecta programáticamente desde EXECUTION_CAPABILITY_CATALOG (lib/execution-capabilities.js) al cargar el schema — el literal abajo es informativo. Opcional: la AUSENCIA de `capabilities` se trata FAIL-CLOSED como 'no ofrece ninguna' en el matching de fallbacks (validateCrossReferences), nunca 'asumir capaz' (SEC-3). Enum cerrado + uniqueItems para que no se pueda inyectar una capability arbitraria que evada el matching (SEC-2).",
+          "items": { "type": "string", "enum": ["agentic-tool-use"] },
+          "uniqueItems": true
         }
       }
     },
@@ -164,6 +170,12 @@
         "interactive_supported": {
           "type": "boolean",
           "description": "Issue #3605: opt-in para habilitar chat operador↔agente vía stdin pipe. Si true, agent-launcher abre stdio[0]='pipe' (en vez de 'ignore' default), pulpo registra el child en lib/agent-ipc y el endpoint /api/agent-chat acepta mensajes para este skill. Default false preserva el invariante I3 del agent-launcher (regresión cero CA-4). Solo válido para providers que soportan input incremental por stdin (anthropic CLI sí; gemini-google HTTP no). El endpoint responde 412 Precondition Failed si el cliente intenta usar este flag con un provider que no lo soporta. NO documentar en agent-models.json sin coordinar con docs/pipeline/multi-provider.md."
+        },
+        "required_capabilities": {
+          "type": "array",
+          "description": "#4839 — Capabilities de EJECUCIÓN que el rol EXIGE a su provider primario y a cada fallback. El enum de valores válidos se inyecta programáticamente desde EXECUTION_CAPABILITY_CATALOG (lib/execution-capabilities.js) al cargar el schema — el literal abajo es informativo. Opcional: ausente o `[]` ⇒ rol sin exigencia (habilita providers de razonamiento/texto sin agentic-tool-use, ej. review/po). Los roles agénticos (dev *, qa, tester, build) declaran ['agentic-tool-use']: el validador rechaza FAIL-CLOSED cualquier provider (primario o fallback) que no declare la capability requerida (validateCrossReferences). Enum cerrado + uniqueItems (SEC-2).",
+          "items": { "type": "string", "enum": ["agentic-tool-use"] },
+          "uniqueItems": true
         },
         "balancing": {
           "type": "object",
