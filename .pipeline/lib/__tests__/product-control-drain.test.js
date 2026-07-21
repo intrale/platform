@@ -155,10 +155,10 @@ test('CA-4: fallo de creación (permiso) NO registra el producto (no queda a med
 });
 
 // -----------------------------------------------------------------------------
-// provenance:existing — no toca gh; delega el probe real a runBootstrap full
+// provenance:existing — no toca gh; inyecta el probe real (repo-probe) explícitamente
 // -----------------------------------------------------------------------------
 
-test('existing: no invoca gh y registra vía runBootstrap full (probe real por default)', () => {
+test('existing: no invoca gh y registra vía runBootstrap full (inyecta probe real CA-2)', () => {
   const gh = makeFakeGh({ viewExists: true });
   let bootArg = null;
   const drain = drainLib.createProductControlDrain({ execFileSync: gh.exec, runBootstrap: (a) => { bootArg = a; return { ok: true }; } });
@@ -167,8 +167,8 @@ test('existing: no invoca gh y registra vía runBootstrap full (probe real por d
   assert.equal(res.repoOrigin, 'existing');
   assert.equal(gh.calls.length, 0, 'existing no crea repos');
   assert.equal(bootArg.mode, 'full');
-  // No inyecta probe: runBootstrap full cablea el probe real (CA-2).
-  assert.equal(bootArg.deps.probeAccess, undefined);
+  // Inyecta el probe REAL explícitamente (least-privilege) para verificar alcance (CA-2).
+  assert.equal(typeof bootArg.deps.probeAccess, 'function', 'existing inyecta el probe real (CA-2)');
 });
 
 // -----------------------------------------------------------------------------

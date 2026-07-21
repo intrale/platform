@@ -45,6 +45,7 @@ const trace = require('./traceability');
 const redact = require('./redact');
 const descriptorLib = require('./project-descriptor');
 const bootstrap = require('./project-bootstrap');
+const repoProbe = require('./repo-probe');
 
 const PIPELINE_DIR = path.join(trace.REPO_ROOT, '.pipeline');
 const DEFAULT_QUEUE_DIR = path.join(PIPELINE_DIR, 'product-control', 'pendiente');
@@ -81,6 +82,10 @@ function createProductControlDrain(deps = {}) {
   const _fs = deps.fsImpl || fs;
   const exec = deps.execFileSync || execFileSync;
   const runBootstrap = typeof deps.runBootstrap === 'function' ? deps.runBootstrap : bootstrap.runBootstrap;
+  // Probe de alcance REAL (CA-2) para repos existentes-de-URL. Inyección explícita
+  // least-privilege (alineado con la arquitectura de `repo-probe.js`); ya no se
+  // delega a un auto-cableado por default de runBootstrap.
+  const probeAccess = typeof deps.probeAccess === 'function' ? deps.probeAccess : repoProbe.probeAccess;
   const queueDir = deps.queueDir || DEFAULT_QUEUE_DIR;
   const doneDir = deps.doneDir || DEFAULT_DONE_DIR;
   const registryPath = deps.registryPath || undefined;
@@ -224,9 +229,9 @@ function createProductControlDrain(deps = {}) {
       log(`onboard ${projectId}: repo ${spec.org}/${spec.name} ${created ? 'creado' : 'ya existía'} (${spec.visibility})`);
     }
 
-    // Registro fail-closed en modo full. El repo recién creado ya existe ⇒ inyectamos
-    // un probe que confirma alcance sin re-consultar red (para repos existentes-de-URL
-    // corre el probe real por default de runBootstrap · CA-2).
+    // Registro fail-closed en modo full. Para repos recién creados inyectamos un probe
+    // que confirma alcance sin re-consultar red; para repos existentes-de-URL inyectamos
+    // el probe REAL (`repo-probe.js`) que verifica alcance vía `gh repo view` (CA-2).
     let boot;
     try {
       const bootDeps = {};
@@ -234,6 +239,9 @@ function createProductControlDrain(deps = {}) {
       if (createdUrl) {
         // El/los repos recién creados son alcanzables; no re-probar por red.
         bootDeps.probeAccess = (t) => (t && t.kind === 'repo' ? true : null);
+      } else {
+        // Camino "usar existente": alcance verificado por red (least-privilege).
+        bootDeps.probeAccess = probeAccess;
       }
       boot = runBootstrap({
         descriptor: resolved,

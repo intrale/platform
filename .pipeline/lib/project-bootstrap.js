@@ -387,15 +387,11 @@ function prepareBootstrap(args = {}) {
     return { error: { ok: false, stage: 'signature-gate', mode, errors: [{ path: 'authority.signers', detail: sigGate.reason }], human: renderHuman({ ok: false, stage: 'signature-gate', errors: [{ detail: sigGate.reason }] }) } };
   }
 
-  // Paso 2 — verificación de acceso (SSRF allowlist). En modo 'full' (drainer
-  // kernel-side) se cablea un probe de alcance REAL por default (CA-2 · #4800) si el
-  // caller no inyecta uno; en dry-run NO se toca la red (validación de intención,
-  // side-effect-free por invariante).
-  let accessDeps = deps;
-  if (mode === 'full' && typeof deps.probeAccess !== 'function') {
-    accessDeps = Object.assign({}, deps, { probeAccess: (t) => defaultProbeAccess(t, deps) });
-  }
-  const access = verifyAccess(descriptor, accessDeps);
+  // Paso 2 — verificación de acceso (SSRF allowlist). El probe de alcance REAL
+  // (CA-2 · #4800) NO se auto-cablea acá: los callers kernel-side (product-control-*)
+  // inyectan `deps.probeAccess` explícitamente (least-privilege, vía `repo-probe.js`).
+  // Sin probe inyectado, `reachable` queda null y se trata como no-probado (accesible).
+  const access = verifyAccess(descriptor, deps);
   if (!access.ok) {
     const rejected = access.targets.filter((t) => !t.allowed || t.reachable === false);
     return { error: { ok: false, stage: 'access', mode, access, errors: rejected.map((t) => ({ path: `${t.kind}:${t.id}`, detail: t.reason || 'no alcanzable' })), human: renderHuman({ ok: false, stage: 'access', access }) } };
