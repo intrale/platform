@@ -311,3 +311,68 @@ test('#4805: activate no está en CONTROL_ACTIONS (es acción durable dedicada, 
     assert.equal(res.status, 400);
     assert.ok(!pcr.CONTROL_ACTIONS.includes('activate'));
 });
+
+// =============================================================================
+// #4809 — enqueueCreateWave (crear/asociar la primera ola)
+// =============================================================================
+
+test('#4809 · A03 — create-wave pertenece a la allowlist cerrada CONTROL_ACTIONS', () => {
+    assert.ok(pcr.CONTROL_ACTIONS.includes('create-wave'));
+    // Acción fuera de la allowlist ⇒ enqueueControl la rechaza fail-closed.
+    const deps = fakeDeps();
+    const res = pcr.enqueueControl({ action: 'destroy', projectId: 'acme-store' }, deps);
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 400);
+});
+
+test('#4809 · CA-1/CA-6 — create-wave válido encola pedido (202) + audit hash-chained', () => {
+    const deps = fakeDeps();
+    const res = pcr.enqueueCreateWave({ projectId: 'acme-store', wave: { label: 'ola-1' }, actor: 'leo' }, deps);
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(res.status, 202);
+    assert.equal(res.action, 'create-wave');
+    assert.equal(res.projectId, 'acme-store');
+    // Un pedido escrito en la cola con el prefijo esperado.
+    const written = Object.keys(deps.fsImpl.files);
+    assert.equal(written.length, 1);
+    assert.ok(written[0].includes('create-wave-acme-store-1700000000000'));
+    // CA-6 — audit persistido con type/action correctos.
+    assert.equal(res.audit_persisted, true);
+    assert.equal(deps.auditImpl.entries.length, 1);
+    assert.equal(deps.auditImpl.entries[0].type, 'product_control_request');
+    assert.equal(deps.auditImpl.entries[0].action, 'create-wave');
+    // El payload de la ola viaja en el pedido encolado.
+    const record = JSON.parse(deps.fsImpl.files[written[0]]);
+    assert.equal(record.wave.label, 'ola-1');
+});
+
+test('#4809 · SEC-1b — projectId inseguro ⇒ fail-closed sin encolar', () => {
+    const deps = fakeDeps();
+    const res = pcr.enqueueCreateWave({ projectId: '../../etc/passwd', wave: {} }, deps);
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 400);
+    assert.equal(Object.keys(deps.fsImpl.files).length, 0, 'no debe encolar con id inseguro');
+});
+
+test('#4809 · CA-5.1 — sin projectId ⇒ producto único (intrale)', () => {
+    const deps = fakeDeps();
+    const res = pcr.enqueueCreateWave({ wave: {} }, deps);
+    assert.equal(res.ok, true);
+    assert.equal(res.projectId, 'intrale');
+});
+
+test('#4809 · wave no-objeto (array/escalar) ⇒ 400 sin encolar', () => {
+    const deps = fakeDeps();
+    const res = pcr.enqueueCreateWave({ projectId: 'acme-store', wave: [1, 2] }, deps);
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 400);
+    assert.equal(Object.keys(deps.fsImpl.files).length, 0);
+});
+
+test('#4809 · wave ausente ⇒ default {} y encola OK', () => {
+    const deps = fakeDeps();
+    const res = pcr.enqueueCreateWave({ projectId: 'acme-store' }, deps);
+    assert.equal(res.ok, true);
+    const record = JSON.parse(deps.fsImpl.files[Object.keys(deps.fsImpl.files)[0]]);
+    assert.deepEqual(record.wave, {});
+});

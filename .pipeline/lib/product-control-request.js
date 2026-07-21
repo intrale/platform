@@ -55,7 +55,10 @@ const DEFAULT_AUDIT_FILE = path.join(PIPELINE_DIR, 'audit', 'product-control-req
 const DEFAULT_DESCRIPTORS_DIR = path.join(PIPELINE_DIR, 'descriptors');
 
 // A03 — allowlist cerrada de acciones de control de ciclo de vida. Congelada.
-const CONTROL_ACTIONS = Object.freeze(['start', 'pause']);
+// `create-wave` (#4809) es una acción durable dedicada (como `activate`): NO es
+// control efímero de instancia, pero se lista acá para que la allowlist siga
+// siendo la fuente única cerrada de acciones reconocidas (A03).
+const CONTROL_ACTIONS = Object.freeze(['start', 'pause', 'create-wave']);
 
 // CA-5.1 — default retro-compatible: sin productId explícito, el kernel mapea al
 // producto único (Intrale). Se materializa como constante para el audit/pedido,
@@ -309,10 +312,82 @@ function enqueueActivate(args = {}, deps = {}) {
     };
 }
 
+/**
+ * Encola la CREACIÓN/ASOCIACIÓN de la PRIMERA ola de un producto (#4809 · CA-1).
+ * Igual que `activate`, es una acción durable dedicada: el dashboard NO crea la
+ * ola por su cuenta (invariante "el adaptador pide, el kernel ejecuta"). Acá sólo
+ * se valida el id fail-closed, se transporta el payload de la ola, se audita y se
+ * encola en `product-control/pendiente`. El kernel (supervisor/drainer) drena el
+ * pedido y ejecuta con AUTORIZACIÓN out-of-band contra el contexto de la instancia
+ * (CA-5), gate fail-closed del descriptor (CA-2) y `associateFirstWave` create-once
+ * (CA-3) — nunca desde el `projectId` en banda.
+ *
+ * Seguridad:
+ *   - SEC-1b/A01: `isSafeId(projectId)` fail-closed ANTES de construir el path del
+ *     pedido (anti path-traversal/IDOR). La autorización real la impone el kernel.
+ *   - SEC-7b/A09: audit hash-chained redactado (`auditAndEnqueue`) con
+ *     `action=create-wave` — non-repudio de quién/qué/cuándo/productId (CA-6).
+ *   - A03: `create-wave` pertenece a la allowlist cerrada `CONTROL_ACTIONS`.
+ *
+ * @param {object} args
+ * @param {string} [args.projectId]     — id del producto (validado isSafeId). Sin
+ *                                         valor ⇒ producto único (Intrale · CA-5.1).
+ * @param {object} [args.wave]          — payload de la ola (objeto; ej. { label }).
+ *                                         Se transporta tal cual; el kernel valida.
+ * @param {string} [args.actor]         — identidad del operador (audit).
+ * @param {string} [args.remoteAddress] — ip de origen (audit).
+ * @param {object} [deps]               — { queueDir, auditFile, fsImpl, now, auditImpl }
+ * @returns {{ok:boolean, status:number, action?:string, projectId?:string, request_path?:string, msg?:string}}
+ */
+function enqueueCreateWave(args = {}, deps = {}) {
+    // CA-5.1 — sin productId ⇒ producto único; con productId ⇒ debe ser seguro.
+    const rawId = (args.projectId == null || args.projectId === '') ? DEFAULT_PRODUCT_ID : args.projectId;
+    if (!isSafeId(rawId)) {
+        // SEC-1b — id inseguro/inexistente ⇒ fail-closed, sin encolar ni enumerar.
+        return { ok: false, status: 400, msg: 'projectId inseguro o inexistente' };
+    }
+    const projectId = rawId;
+
+    // El payload de la ola es opcional en el pedido (el kernel puede sembrar una
+    // ola inicial mínima); si viene, debe ser un objeto (no array/escalar).
+    let wave = args.wave;
+    if (wave === undefined || wave === null) {
+        wave = {};
+    } else if (typeof wave !== 'object' || Array.isArray(wave)) {
+        return { ok: false, status: 400, msg: 'wave inválida (se esperaba un objeto)' };
+    }
+
+    const now = typeof deps.now === 'function' ? deps.now : () => Date.now();
+    const ts = now();
+    const record = {
+        type: 'product_control_request',
+        action: 'create-wave',
+        projectId,
+        wave,
+        actor: args.actor ? String(args.actor) : 'dashboard-operator',
+        remote_address: args.remoteAddress ? String(args.remoteAddress) : null,
+        source: 'dashboard',
+        created_at: ts,
+    };
+
+    const res = auditAndEnqueue(record, `create-wave-${projectId}-${ts}`, deps);
+    if (!res.ok) return res;
+    return {
+        ok: true,
+        status: 202,
+        action: 'create-wave',
+        projectId,
+        request_path: res.request_path,
+        audit_persisted: res.audit_persisted,
+        msg: `creación de la primera ola de "${projectId}" encolada; el kernel la asociará create-once (gate de descriptor fail-closed, autorización contra el contexto de la instancia)`,
+    };
+}
+
 module.exports = {
     enqueueOnboard,
     enqueueControl,
     enqueueActivate,
+    enqueueCreateWave,
     CONTROL_ACTIONS,
     DEFAULT_PRODUCT_ID,
     DEFAULT_QUEUE_DIR,

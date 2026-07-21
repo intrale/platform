@@ -228,3 +228,132 @@ test('el descriptor onboarding registrado es legible por product-catalog.listPro
 
     fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+// =============================================================================
+// #4809 — drainCreateWaveQueue (drenaje de create-wave · "el kernel ejecuta")
+// =============================================================================
+
+function waveRequest(projectId, wave, ts = 1700000000000) {
+    return JSON.stringify({
+        type: 'product_control_request',
+        action: 'create-wave',
+        projectId,
+        wave: wave || {},
+        actor: 'leo',
+        source: 'dashboard',
+        created_at: ts,
+    });
+}
+
+const Q = path.join(os.tmpdir(), 'pcw', 'pendiente');
+const P = path.join(os.tmpdir(), 'pcw', 'procesado');
+const A = path.join(os.tmpdir(), 'pcw', 'audit.jsonl');
+const qf = (name) => path.join(Q, name);
+const pf = (name) => path.join(P, name);
+
+function baseDeps(over = {}) {
+    return Object.assign({
+        fsImpl: null, // se setea en cada test
+        auditImpl: makeAudit(),
+        now: () => 1700000000000,
+        isAuthorized: () => true,
+        loadDescriptor: () => ({ valid: true, errors: [] }),
+        associateWave: async () => ({ ok: true, created: true, version: 1 }),
+    }, over);
+}
+
+test('#4809 · CA-1 — create-wave autorizado + descriptor completo ⇒ crea la ola y procesa', async () => {
+    const fsImpl = makeFs({ [qf('create-wave-acme-store-1.json')]: waveRequest('acme-store', { label: 'ola-1' }) });
+    let associated = null;
+    const deps = baseDeps({ fsImpl, associateWave: async (pid, wave) => { associated = { pid, wave }; return { ok: true, created: true, version: 1 }; } });
+    const sum = await drainer.drainCreateWaveQueue({ queueDir: Q, processedDir: P, auditFile: A }, deps);
+    assert.deepEqual(sum.created, ['acme-store']);
+    assert.equal(sum.rejected.length, 0);
+    assert.deepEqual(associated, { pid: 'acme-store', wave: { label: 'ola-1' } });
+    // Pedido movido a procesado.
+    assert.ok(fsImpl.files.has(pf('create-wave-acme-store-1.json')));
+    assert.ok(!fsImpl.files.has(qf('create-wave-acme-store-1.json')));
+    // Audit del resultado.
+    assert.ok(deps.auditImpl.entries.some(e => e.type === 'create_wave_drain_result' && e.outcome === 'created'));
+});
+
+test('#4809 · CA-2 — descriptor incompleto ⇒ NO se crea ola (fail-closed server-side)', async () => {
+    const fsImpl = makeFs({ [qf('create-wave-acme-store-1.json')]: waveRequest('acme-store') });
+    let called = false;
+    const deps = baseDeps({
+        fsImpl,
+        loadDescriptor: () => ({ valid: false, errors: [{ path: 'authority', detail: 'falta' }] }),
+        associateWave: async () => { called = true; return { ok: true, created: true }; },
+    });
+    const sum = await drainer.drainCreateWaveQueue({ queueDir: Q, processedDir: P, auditFile: A }, deps);
+    assert.equal(called, false, 'no debe asociar ola con descriptor incompleto');
+    assert.equal(sum.created.length, 0);
+    assert.deepEqual(sum.rejected, [{ projectId: 'acme-store', reason: 'descriptor-incomplete' }]);
+    assert.ok(deps.auditImpl.entries.some(e => e.outcome === 'rejected' && e.reason === 'descriptor-incomplete'));
+});
+
+test('#4809 · CA-5 — projectId no perteneciente al contexto ⇒ 403-lógico sin efecto', async () => {
+    const fsImpl = makeFs({ [qf('create-wave-otro-1.json')]: waveRequest('otro-tenant') });
+    let called = false;
+    const deps = baseDeps({
+        fsImpl,
+        isAuthorized: (pid) => pid === 'acme-store', // el contexto NO incluye 'otro-tenant'
+        loadDescriptor: () => { throw new Error('no debería leer el descriptor de otro tenant'); },
+        associateWave: async () => { called = true; return { ok: true, created: true }; },
+    });
+    const sum = await drainer.drainCreateWaveQueue({ queueDir: Q, processedDir: P, auditFile: A }, deps);
+    assert.equal(called, false, 'sin efecto: no asocia ola de otro tenant');
+    assert.deepEqual(sum.rejected, [{ projectId: 'otro-tenant', reason: 'forbidden' }]);
+    assert.ok(deps.auditImpl.entries.some(e => e.outcome === 'rejected' && e.reason === 'forbidden'));
+});
+
+test('#4809 · CA-3 — segunda primera ola (exists) ⇒ idempotente, no duplica', async () => {
+    const fsImpl = makeFs({ [qf('create-wave-acme-store-2.json')]: waveRequest('acme-store') });
+    const deps = baseDeps({ fsImpl, associateWave: async () => ({ ok: false, exists: true }) });
+    const sum = await drainer.drainCreateWaveQueue({ queueDir: Q, processedDir: P, auditFile: A }, deps);
+    assert.deepEqual(sum.idempotent, ['acme-store']);
+    assert.equal(sum.created.length, 0);
+    assert.ok(deps.auditImpl.entries.some(e => e.outcome === 'already-exists'));
+});
+
+test('#4809 · SEC-1b — projectId inseguro en el pedido ⇒ rechazo sin tocar path', async () => {
+    const fsImpl = makeFs({ [qf('create-wave-bad.json')]: waveRequest('../../etc') });
+    const deps = baseDeps({ fsImpl, isAuthorized: () => { throw new Error('no debe autorizar id inseguro'); } });
+    const sum = await drainer.drainCreateWaveQueue({ queueDir: Q, processedDir: P, auditFile: A }, deps);
+    assert.deepEqual(sum.rejected, [{ projectId: null, reason: 'unsafe-id' }]);
+});
+
+test('#4809 · fallo de infra del store ⇒ error recuperable, NO se procesa (reintenta)', async () => {
+    const fsImpl = makeFs({ [qf('create-wave-acme-store-3.json')]: waveRequest('acme-store') });
+    const deps = baseDeps({ fsImpl, associateWave: async () => { throw new Error('dynamo down'); } });
+    const sum = await drainer.drainCreateWaveQueue({ queueDir: Q, processedDir: P, auditFile: A }, deps);
+    assert.equal(sum.created.length, 0);
+    assert.equal(sum.errors.length, 1);
+    // Queda en pendiente para reintentar (no movido).
+    assert.ok(fsImpl.files.has(qf('create-wave-acme-store-3.json')));
+});
+
+test('#4809 · cola inexistente ⇒ fail-open (summary vacío)', async () => {
+    const fsImpl = makeFs({});
+    const deps = baseDeps({ fsImpl });
+    const sum = await drainer.drainCreateWaveQueue({ queueDir: '/tmp/nope', processedDir: P, auditFile: A }, deps);
+    assert.deepEqual(sum, { created: [], idempotent: [], rejected: [], errors: [] });
+});
+
+test('#4809 · deps de decisión ausentes ⇒ throw fail-closed (nunca crea ola sin autz/gate)', async () => {
+    const fsImpl = makeFs({});
+    await assert.rejects(
+        () => drainer.drainCreateWaveQueue({ queueDir: Q }, { fsImpl, isAuthorized: () => true }),
+        /isAuthorized, loadDescriptor y associateWave/,
+    );
+});
+
+test('#4809 · pedidos de otro type/action se ignoran (no se tocan)', async () => {
+    const other = JSON.stringify({ type: 'product_control_request', action: 'start', projectId: 'acme-store' });
+    const fsImpl = makeFs({ [qf('start-acme.json')]: other });
+    const deps = baseDeps({ fsImpl });
+    const sum = await drainer.drainCreateWaveQueue({ queueDir: Q, processedDir: P, auditFile: A }, deps);
+    assert.deepEqual(sum, { created: [], idempotent: [], rejected: [], errors: [] });
+    // El pedido start sigue en pendiente (no lo drena este consumidor).
+    assert.ok(fsImpl.files.has(qf('start-acme.json')));
+});

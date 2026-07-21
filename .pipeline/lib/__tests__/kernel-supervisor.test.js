@@ -1036,3 +1036,61 @@ test('#4822 · boot durable sin buildCatalogStore devuelve error sin lanzar', as
   assert.equal(res.reason, 'error');
   assert.match(res.error, /buildCatalogStore/, 'explica el requisito faltante');
 });
+
+// -----------------------------------------------------------------------------
+// #4809 · drainCreateWaveQueue (create-wave) — wiring out-of-band del supervisor
+// -----------------------------------------------------------------------------
+
+test('#4809 · CA-5 — autoriza SÓLO projectId del catálogo (incluye onboarding)', async () => {
+  const seen = [];
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore(CATALOG_MIXTO), // acme/globex active, initech onboarding
+    storeFactory: recordingStoreFactory([]),
+    hydrate: false,
+    // Interceptamos el drenador para observar el `isAuthorized` resuelto del catálogo.
+    drainCreateWaveQueueImpl: async (opts, deps) => {
+      seen.push({
+        acme: deps.isAuthorized('acme'),
+        initech: deps.isAuthorized('initech'),   // onboarding ⇒ autorizado (ola pre-activación)
+        umbrella: deps.isAuthorized('umbrella'),  // archived pero en catálogo ⇒ autorizado
+        intruso: deps.isAuthorized('intruso'),    // fuera de catálogo ⇒ NO
+      });
+      return { created: [], idempotent: [], rejected: [], errors: [] };
+    },
+  });
+  await supervisor.drainCreateWaveQueue({});
+  assert.deepEqual(seen[0], { acme: true, initech: true, umbrella: true, intruso: false });
+});
+
+test('#4809 · CA-2 — el gate del descriptor y associate se cablean al drenador', async () => {
+  let gate = null;
+  let associate = null;
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore(CATALOG_MIXTO),
+    storeFactory: recordingStoreFactory([]),
+    hydrate: false,
+    loadWaveDescriptorGate: (pid) => ({ valid: pid === 'acme', errors: [] }),
+    coordinationStoreFactory: (pid) => ({ associateFirstWave: async (wave) => ({ ok: true, created: true, pid, wave }) }),
+    drainCreateWaveQueueImpl: async (opts, deps) => {
+      gate = await deps.loadDescriptor('globex');       // incompleto por el fake
+      associate = await deps.associateWave('acme', { label: 'x' });
+      return { created: ['acme'], idempotent: [], rejected: [], errors: [] };
+    },
+  });
+  const sum = await supervisor.drainCreateWaveQueue({});
+  assert.equal(gate.valid, false);                      // CA-2: gate fail-closed cableado
+  assert.equal(associate.ok, true);
+  assert.equal(associate.pid, 'acme');                  // store namespaceado por projectId (CA-4)
+  assert.deepEqual(sum.created, ['acme']);
+});
+
+test('#4809 · drainCreateWaveQueue usa el drenador real por default (sin impl inyectada)', async () => {
+  // Sin cola real ⇒ fail-open del drenador real (summary vacío), sin lanzar.
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore([]),
+    storeFactory: recordingStoreFactory([]),
+    hydrate: false,
+  });
+  const sum = await supervisor.drainCreateWaveQueue({ queueDir: '/tmp/no-existe-4809', processedDir: '/tmp/p', auditFile: '/tmp/a.jsonl' });
+  assert.deepEqual(sum, { created: [], idempotent: [], rejected: [], errors: [] });
+});

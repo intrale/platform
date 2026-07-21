@@ -265,3 +265,86 @@ test('#4805 SSR: el botón Activar escapa el productId en atributos (anti-XSS)',
     assert.ok(!html.includes('<img src=x>'), 'el nombre malicioso no se refleja crudo');
     assert.ok(html.includes('aria-label="Activar el producto acme-store"'));
 });
+
+// =============================================================================
+// #4809 — Card de la primera ola (4 estados A/B/C/D del mockup 44)
+// =============================================================================
+
+test('#4809 · waveMeta deriva el estado desde el propio namespace (CA-4)', () => {
+    assert.equal(view.waveMeta({ wave: { version: 1 } }).state, 'associated');
+    assert.equal(view.waveMeta({ wave: { associated: true } }).state, 'associated');
+    assert.equal(view.waveMeta({ descriptorComplete: false }).state, 'gated');
+    assert.equal(view.waveMeta({ descriptorComplete: true }).state, 'ready');
+    assert.equal(view.waveMeta({}).state, 'ready');           // ausente ⇒ completo (autoridad server-side)
+    assert.equal(view.waveMeta(null).state, 'ready');
+});
+
+test('#4809 · A — descriptor completo sin ola ⇒ CTA habilitada + slot vacío', () => {
+    const html = renderEstadoProductosSsr({
+        products: [{ projectId: 'acme-store', name: 'ACME', status: 'active' }],
+        productState: { 'acme-store': { state: 'active', descriptorComplete: true } },
+    });
+    assert.ok(html.includes('ep-btn-wave'), 'CTA crear ola presente');
+    assert.ok(html.includes('data-action="create-wave"'));
+    assert.ok(html.includes('Sin ola asociada todavía'));
+    assert.ok(html.includes('#ic-wave-add'), 'ícono del sprite, no emoji');
+    // CTA A NO está deshabilitada.
+    assert.ok(/ep-btn-wave"(?!\s+disabled)/.test(html) || html.includes('ep-btn-wave" data-action="create-wave"'));
+});
+
+test('#4809 · B — descriptor incompleto ⇒ gate + CTA disabled (cosmético) + wizard', () => {
+    const html = renderEstadoProductosSsr({
+        products: [{ projectId: 'acme-store', name: 'ACME', status: 'onboarding' }],
+        productState: { 'acme-store': { state: 'onboarding', descriptorComplete: false } },
+    });
+    assert.ok(html.includes('Falta completar el descriptor'));
+    assert.ok(html.includes('#ic-shield-lock'), 'ícono de gate');
+    assert.ok(html.includes('ep-btn-wave" disabled') || /ep-btn-wave"\s+disabled/.test(html), 'CTA deshabilitada (cosmético)');
+    assert.ok(html.includes('view=onboarding'), 'salida al wizard');
+});
+
+test('#4809 · D — ola asociada ⇒ chip "Ola inicial — Asociada"', () => {
+    const html = renderEstadoProductosSsr({
+        products: [{ projectId: 'acme-store', name: 'ACME', status: 'active' }],
+        productState: { 'acme-store': { state: 'active', wave: { version: 1, value: { label: 'ola-1' } } } },
+    });
+    assert.ok(html.includes('Ola inicial — Asociada'));
+    assert.ok(html.includes('#ic-wave'));
+    // En estado D no se ofrece crear otra ola.
+    assert.ok(!html.includes('data-action="create-wave"'), 'sin CTA de crear cuando ya está asociada');
+});
+
+test('#4809 · C — client script confirma con el productId objetivo (SEC-7) y postea a /api/product/wave', () => {
+    const script = renderEstadoProductosClientScript();
+    assert.ok(script.includes("'create-wave'"), 'acción create-wave manejada');
+    assert.ok(/create-wave['"]?\s*:\s*true/.test(script), 'create-wave exige confirmación');
+    assert.ok(script.includes("EP_ENDPOINT"), 'mapeo de endpoint');
+    assert.ok(script.includes("'wave'"), 'endpoint /api/product/wave');
+    // El mensaje de confirmación incluye el productId (interpolado como "+pid+").
+    assert.ok(script.includes('primera ola del producto'));
+});
+
+test('#4809 · aislamiento — la ola de un producto no aparece en la card de otro (CA-4)', () => {
+    const html = renderEstadoProductosSsr({
+        products: [
+            { projectId: 'prod-a', name: 'A', status: 'active' },
+            { projectId: 'prod-b', name: 'B', status: 'active' },
+        ],
+        productState: {
+            'prod-a': { state: 'active', wave: { version: 1 } },     // asociada
+            'prod-b': { state: 'active', descriptorComplete: true },  // sin ola
+        },
+    });
+    // Hay exactamente un chip "Asociada" (el de A) y una CTA (la de B).
+    const chips = html.match(/Ola inicial — Asociada/g) || [];
+    const ctas = html.match(/data-action="create-wave"/g) || [];
+    assert.equal(chips.length, 1);
+    assert.equal(ctas.length, 1);
+});
+
+test('#4809 · retro-compat — 1 producto sin datos de ola no rompe el render (CA-1/UX-5)', () => {
+    const html = renderEstadoProductosSsr({});   // producto único intrale, sin productState
+    assert.ok(html.includes('ep-card'));
+    // Sin datos de ola ⇒ estado ready (CTA), no rompe.
+    assert.ok(html.includes('ep-wave'));
+});

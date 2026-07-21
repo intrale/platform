@@ -12263,6 +12263,36 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // #4809 · CA-1 · Crear/asociar la PRIMERA ola de un producto. Acción DURABLE:
+  // encola un pedido `create-wave` que el kernel drena con autorización out-of-band
+  // contra el contexto de la instancia (CA-5), gate fail-closed del descriptor
+  // (CA-2) y `associateFirstWave` create-once (CA-3). Mismo molde endurecido que
+  // /start,/pause,/activate (gate loopback/Origin + CSRF double-submit vía
+  // `_productGuardRejected`). Prohibido GET con efecto de estado (SEC-7a); body ≤16KB.
+  if (req.url === '/api/product/wave' && req.method === 'POST') {
+    if (_productGuardRejected()) return;
+    let body = '';
+    req.on('data', chunk => { body += chunk; if (body.length > 16 * 1024) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const parsed = body ? JSON.parse(body) : {};
+        const out = productControl.enqueueCreateWave({
+          projectId: parsed.productId || parsed.projectId,
+          wave: parsed.wave,
+          actor: parsed.actor,
+          remoteAddress: (req.socket && req.socket.remoteAddress) || '',
+        });
+        log(`Action: product create-wave ${out.projectId || '(rechazado)'} (${out.status}) ${out.msg || ''}`);
+        res.writeHead(out.status || (out.ok ? 202 : 400), { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(out));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'no se pudo procesar la creación de la ola (payload inválido)' }));
+      }
+    });
+    return;
+  }
+
   // API: pause/resume pipeline
   if (req.url === '/api/pause' && req.method === 'POST') {
     let body = '';
