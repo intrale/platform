@@ -472,6 +472,169 @@ test('runRotationTick · estado corrupto → reset silencioso, no crashea', () =
   }
 });
 
+// ─── Exclusión OAuth (#4834) ─────────────────────────────────────────────────
+
+test('parseInventoryMarkdown · reconoce sentinel OAuth → fila con applies:false', () => {
+  const md = [
+    '| provider | env_var | owner | last_rotated | expires_at |',
+    '|----------|---------|-------|--------------|------------|',
+    '| anthropic | `ANTHROPIC_API_KEY` | leo | N/A (OAuth Max) | N/A (OAuth Max) |',
+    '| openai | `OPENAI_API_KEY` | leo | 2026-04-01 | 2026-06-30 |',
+  ].join('\n');
+  const rows = cron.parseInventoryMarkdown(md);
+  // NO la descarta: la emite marcada como no-aplicable.
+  assert.equal(rows.length, 2);
+  const anthropic = rows.find((r) => r.env_var === 'ANTHROPIC_API_KEY');
+  assert.ok(anthropic, 'la fila OAuth se emite (no se descarta en silencio)');
+  assert.equal(anthropic.applies, false);
+  // La real conserva su parseo normal.
+  const openai = rows.find((r) => r.env_var === 'OPENAI_API_KEY');
+  assert.ok(openai);
+  assert.notEqual(openai.applies, false);
+});
+
+test('parseInventoryMarkdown · sentinel OAuth sólo en expires_at también marca applies:false', () => {
+  const md = [
+    '| provider | env_var | owner | last_rotated | expires_at |',
+    '|----------|---------|-------|--------------|------------|',
+    '| anthropic | `ANTHROPIC_API_KEY` | leo | 2026-04-15 | oauth |',
+  ].join('\n');
+  const rows = cron.parseInventoryMarkdown(md);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].applies, false);
+});
+
+test('evaluateRotationState · excluye fila OAuth pero sigue evaluando reales (no-regresión)', () => {
+  const inventoryRows = [
+    { provider: 'anthropic', env_var: 'ANTHROPIC_API_KEY', owner: 'leo', applies: false },
+    { provider: 'openai', env_var: 'OPENAI_API_KEY', owner: 'leo',
+      last_rotated: dateUTC('2026-04-01'), expires_at: dateUTC('2026-06-30') },
+  ];
+  const r = cron.evaluateRotationState({
+    now: dateUTC('2026-07-15'),  // openai vencida hace días
+    inventoryRows,
+    state: {},
+  });
+  // Anthropic NO genera alerta.
+  assert.equal(r.alerts.some((a) => a.env_var === 'ANTHROPIC_API_KEY'), false);
+  // Anthropic figura en excluded con motivo.
+  assert.equal(r.excluded.length, 1);
+  assert.equal(r.excluded[0].env_var, 'ANTHROPIC_API_KEY');
+  assert.match(r.excluded[0].reason, /OAuth/i);
+  // La credencial real vencida SÍ alerta (cobertura no regresa).
+  const openaiAlert = r.alerts.find((a) => a.env_var === 'OPENAI_API_KEY');
+  assert.ok(openaiAlert);
+  assert.equal(openaiAlert.threshold, 'T-0');
+});
+
+// ─── Backoff diario de expiradas (#4834) ─────────────────────────────────────
+
+test('shouldNotifyEntry · expirada con last_expired_alert=hoy → no notifica (backoff)', () => {
+  const entry = { env_var: 'KEY', last_rotated: dateUTC('2026-04-01') };
+  const threshold = { key: 'T-0', expired: true };
+  const now = dateUTC('2026-07-21');
+  const state = { KEY: { last_rotated: '2026-04-01', last_expired_alert: '2026-07-21' } };
+  const decision = cron.shouldNotifyEntry(entry, threshold, state, now);
+  assert.equal(decision.shouldNotify, false);
+  assert.match(decision.reason, /backoff/);
+});
+
+test('shouldNotifyEntry · expirada con last_expired_alert=ayer → notifica', () => {
+  const entry = { env_var: 'KEY', last_rotated: dateUTC('2026-04-01') };
+  const threshold = { key: 'T-0', expired: true };
+  const now = dateUTC('2026-07-21');
+  const state = { KEY: { last_rotated: '2026-04-01', last_expired_alert: '2026-07-20' } };
+  const decision = cron.shouldNotifyEntry(entry, threshold, state, now);
+  assert.equal(decision.shouldNotify, true);
+});
+
+test('shouldNotifyEntry · expirada sin estado previo → notifica (fail-safe)', () => {
+  const entry = { env_var: 'KEY', last_rotated: dateUTC('2026-04-01') };
+  const threshold = { key: 'T-0', expired: true };
+  const decision = cron.shouldNotifyEntry(entry, threshold, {}, dateUTC('2026-07-21'));
+  assert.equal(decision.shouldNotify, true);
+});
+
+test('evaluateRotationState · backoff diario: expirada con last_expired_alert=hoy → 0 alertas', () => {
+  const inventoryRows = [{
+    provider: 'openai', env_var: 'KEY', owner: 'leo',
+    last_rotated: dateUTC('2026-04-01'), expires_at: dateUTC('2026-06-30'),
+  }];
+  const state = { KEY: { last_rotated: '2026-04-01', last_expired_alert: '2026-07-21' } };
+  const r = cron.evaluateRotationState({ now: dateUTC('2026-07-21'), inventoryRows, state });
+  assert.equal(r.alerts.length, 0, 'mismo día no re-notifica');
+});
+
+test('evaluateRotationState · backoff diario: expirada con last_expired_alert=ayer → 1 alerta y persiste hoy', () => {
+  const inventoryRows = [{
+    provider: 'openai', env_var: 'KEY', owner: 'leo',
+    last_rotated: dateUTC('2026-04-01'), expires_at: dateUTC('2026-06-30'),
+  }];
+  const state = { KEY: { last_rotated: '2026-04-01', last_expired_alert: '2026-07-20' } };
+  const r = cron.evaluateRotationState({ now: dateUTC('2026-07-21'), inventoryRows, state });
+  assert.equal(r.alerts.length, 1, 'nuevo día → exactamente 1 alerta (piso diario)');
+  assert.equal(r.alerts[0].threshold, 'T-0');
+  // Persiste la fecha de hoy para bloquear el próximo tick del mismo día.
+  assert.equal(r.nextState.KEY.last_expired_alert, '2026-07-21');
+});
+
+test('evaluateRotationState · expirada: dos ticks el mismo día → sólo la primera notifica', () => {
+  const inventoryRows = [{
+    provider: 'openai', env_var: 'KEY', owner: 'leo',
+    last_rotated: dateUTC('2026-04-01'), expires_at: dateUTC('2026-06-30'),
+  }];
+  // Primer tick del día: notifica.
+  const r1 = cron.evaluateRotationState({ now: dateUTC('2026-07-21'), inventoryRows, state: {} });
+  assert.equal(r1.alerts.length, 1);
+  // Segundo tick (1h después, mismo día): silencio por backoff.
+  const r2 = cron.evaluateRotationState({ now: dateUTC('2026-07-21'), inventoryRows, state: r1.nextState });
+  assert.equal(r2.alerts.length, 0);
+});
+
+test('evaluateRotationState · anti-leak: campos nuevos (applies/excluded/last_expired_alert) sin valor de secret', () => {
+  const inventoryRows = [
+    { provider: 'anthropic', env_var: 'ANTHROPIC_API_KEY', owner: 'leo', applies: false },
+    { provider: 'openai', env_var: 'OPENAI_API_KEY', owner: 'leo',
+      last_rotated: dateUTC('2026-04-01'), expires_at: dateUTC('2026-06-30') },
+  ];
+  const r = cron.evaluateRotationState({ now: dateUTC('2026-07-21'), inventoryRows, state: {} });
+  const allText = JSON.stringify(r.alerts) + JSON.stringify(r.excluded) + JSON.stringify(r.nextState);
+  assert.doesNotMatch(allText, /sk-ant-[A-Za-z0-9_-]{6,}/);
+  assert.doesNotMatch(allText, /sk-(?!ant-)[A-Za-z0-9_-]{6,}/);
+  // El estado nuevo sólo lleva fechas/booleanos/env_vars.
+  assert.equal(r.nextState.OPENAI_API_KEY.last_expired_alert, '2026-07-21');
+});
+
+test('runRotationTick · fila OAuth se loguea como skip y no envía alerta', () => {
+  const dir = tmpDir();
+  try {
+    const inventoryFile = path.join(dir, 'inv.md');
+    const stateFile = path.join(dir, 'state.json');
+    fs.writeFileSync(inventoryFile, [
+      '| provider | env_var | owner | last_rotated | expires_at | account_id | rotation_runbook_url | revocation_endpoint |',
+      '|----------|---------|-------|--------------|------------|------------|----------------------|---------------------|',
+      '| anthropic | `ANTHROPIC_API_KEY` | leo | N/A (OAuth Max) | N/A (OAuth Max) | acct | [runbook](https://x.com) | https://x.com |',
+    ].join('\n'));
+
+    const sent = [];
+    const logs = [];
+    const result = cron.runRotationTick({
+      pipelineDir: dir,
+      now: dateUTC('2026-07-21'),
+      sendTelegramFn: (m) => sent.push(m),
+      inventoryPath: inventoryFile,
+      statePath: stateFile,
+      log: (m) => logs.push(m),
+    });
+    assert.equal(result.alerts.length, 0);
+    assert.equal(sent.length, 0);
+    assert.equal(result.excluded.length, 1);
+    assert.ok(logs.some((l) => /skip ANTHROPIC_API_KEY/.test(l)));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ─── THRESHOLDS export ──────────────────────────────────────────────────────
 
 test('THRESHOLDS · expone los 4 thresholds documentados', () => {
