@@ -11901,6 +11901,61 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       return resolve(commanderMP.cannedAllGatedResponse(resolution));
     }
 
+    // #4870 — MODO REDUCIDO. Se evalúa DESPUÉS del gate all-gated (CA-5: la chain
+    // enteramente gateada NO es modo reducido). Dispara cuando TODOS los pagos
+    // (billing:'paid' → Anthropic + Codex) están gateados por cuota pero quedó un
+    // free sano como candidato. En ese estado NO ejecutamos acciones: respondemos
+    // el canned advisory determinístico y NO spawneamos el free (decisión PO D1 —
+    // least-privilege, no quema free tier). Estado derivado en vivo por
+    // `isReducedMode` (re-resuelve la chain sin side-effects); al recuperar un pago
+    // el próximo turno resuelve a pago y sale solo (CA-4, sin flag sticky).
+    // Detrás de `reduced_mode.enabled` (default OFF → regresión cero) + kill_switch.
+    try {
+      const rmCfg = (loadConfig() || {}).reduced_mode || {};
+      if (commanderMP.shouldRespondReducedMode({ config: rmCfg, pipelineDir: PIPELINE })) {
+        // downProviders = pagos configurados en la chain del commander; en modo
+        // reducido todos ellos están gateados por definición (CA-3: qué pagos caídos).
+        let downProviders = [];
+        try {
+          const models = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'agent-models.json'), 'utf8'));
+          const skillCfg = models.skills && models.skills['telegram-commander'];
+          if (skillCfg) {
+            const names = [skillCfg.provider];
+            (Array.isArray(skillCfg.fallbacks) ? skillCfg.fallbacks : [])
+              .forEach((fb) => names.push(typeof fb === 'string' ? fb : (fb && fb.provider)));
+            downProviders = names.filter(Boolean).filter((p) => {
+              const def = models.providers && models.providers[p];
+              return def && def.billing === 'paid';
+            });
+          }
+        } catch { downProviders = []; }
+        log('commander', `🟡 Modo reducido: pagos gateados (${downProviders.join(', ') || 'n/a'}) + free sano — respondo advisory sin ejecutar acciones (no spawneo el free).`);
+        try {
+          commanderMP.auditCommanderRequest({
+            pipelineDir: PIPELINE,
+            event: 'reduced_mode',
+            providerIntended: 'anthropic',
+            providerEffective: null,
+            chainTried: resolution.chainTried,
+            chatId: getTelegramChatId(),
+            prompt: prompt,
+            errorCode: 'reduced_mode_advisory',
+            requestId: turnRequestId, // #3577 CA-S6
+          });
+        } catch { /* best-effort */ }
+        // El canned ES la respuesta directa al pedido del operador (siempre se
+        // envía — deduplicar una respuesta dejaría al operador sin contestación).
+        // El return temprano evita además el notice proactivo de crossProvider
+        // (que SÍ está deduplicado por shouldEmitFallbackNotice), evitando doble
+        // señal: respeta el dedup 5 min anti-spam del aviso.
+        return resolve(commanderMP.cannedReducedModeResponse({ downProviders }));
+      }
+    } catch (e) {
+      // Fail-open: un bug del modo reducido NUNCA debe dejar mudo al Commander.
+      // Si algo falla, seguimos al flujo normal (spawn del provider resuelto).
+      log('commander', `⚠️ #4870 chequeo de modo reducido falló (best-effort): ${e.message}`);
+    }
+
     // CA-5 + SR-6 — Si el dispatcher resolvió a un fallback distinto del
     // primary, emitimos aviso a Leo en formato UX-G1 (lenguaje natural,
     // sin jerga operativa). El runtime ya encoló un mensaje genérico

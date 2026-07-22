@@ -712,6 +712,34 @@ handoff:
     - aprobacion
     - entrega
 
+# #4870 — Modo reducido: aviso advisory cuando no hay proveedor PAGO disponible.
+#
+# Diseño: receta del Arquitecto en el body del issue #4870. Cuando TODOS los
+# providers pagos (billing:'paid' → Anthropic + Codex, ver agent-models.json)
+# están gateados por cuota pero queda un free sano en la chain del commander, el
+# Commander entra en "modo reducido": responde un canned advisory determinístico
+# ("modo reducido, sin ejecución de acciones") y NO spawnea el free (decisión de
+# PO D1 — least-privilege, no quema free tier ni expone datos al TOS de un free).
+#
+# El estado es DERIVADO EN VIVO por lib/commander/multi-provider.js::isReducedMode
+# (re-resuelve la chain sin side-effects); no hay flag sticky persistido. Al
+# recuperarse un pago (reset de la ventana de cuota) el próximo turno resuelve a
+# pago y sale solo (CA-4). El scope es SÓLO el canal Commander (decisión PO D2).
+#
+# Claves:
+#   - enabled:      flag de rollout. Default OFF (false) ⇒ flujo IDÉNTICO al
+#                   actual (regresión cero, CA-7). Activar tras smoke test.
+#   - kill_switch:  override inmediato de enabled (corte de emergencia). Con true,
+#                   el modo reducido queda desactivado sin tocar `enabled`.
+#
+# Rollout sugerido:
+#   1. Mergear con `enabled: false`. Validar node --test + smoke test.
+#   2. `enabled: true`. Observar el audit `reduced_mode` y el aviso al operador.
+#   3. Ante cualquier anomalía del aviso ⇒ `kill_switch: true`.
+reduced_mode:
+  enabled: false
+  kill_switch: false
+
 # #4576 — Índice de confiabilidad + calibración + escalera de autonomía.
 #
 # Épico #4570 · Diseño: docs/pipeline/gates-firma-operador.md §4.4 / §12.

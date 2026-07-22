@@ -541,6 +541,21 @@ function readAgentModelsRaw(pipelineDir, fsImpl) {
     }
 }
 
+// #4870 — billingOf: deriva la clasificación de facturación ('paid'|'free') de un
+// provider a partir de `agent-models.json`. FAIL-SAFE: cualquier provider sin
+// `billing` declarado (o modelo ilegible) se trata como 'free' — un provider sin
+// marcar NUNCA se confunde con pago (evita entrar en modo reducido por error, o
+// peor, creer que hay pago cuando no lo hay). Fuente única de verdad del gate
+// "¿hay pago disponible?" del modo reducido (isReducedMode).
+function billingOf(provider, models) {
+    try {
+        const pdef = models && models.providers && models.providers[provider];
+        return pdef && pdef.billing === 'paid' ? 'paid' : 'free';
+    } catch {
+        return 'free';
+    }
+}
+
 // -----------------------------------------------------------------------------
 // MP-09 (#3809) — Health-gate FAIL-OPEN sobre la cascada de fallbacks.
 //
@@ -1080,6 +1095,7 @@ function resolveSpawnWithFallback(opts = {}) {
                     handler: resolvedHandler,
                     source: 'forced-override',
                     gated: false,
+                    providerBilling: billingOf(forcedProvider, readAgentModelsRaw(pipelineDir, fsImpl)),
                     fallbackUsed: null,
                     primaryProvider: forcedProvider,
                     chainTried: [forcedProvider],
@@ -1097,12 +1113,19 @@ function resolveSpawnWithFallback(opts = {}) {
     const primary = _resolveProvider(skill, { pipelineDir, fsImpl });
     const primaryProvider = primary && primary.provider;
 
+    // #4870 — lectura única de agent-models.json para derivar el `billing` del
+    // provider resuelto en cada return (fuente de verdad de "¿es pago o free?").
+    // Nombre propio (_billingModels) para no colisionar con el `models` que la
+    // rama de fallbacks lee más abajo (L1343).
+    const _billingModels = readAgentModelsRaw(pipelineDir, fsImpl);
+
     // Si no hay quotaModule, devolvemos el primary sin gate (modo legacy).
     if (!quotaModule || typeof quotaModule.shouldGateSpawn !== 'function') {
         return {
             ...primary,
             source: primary.source || 'primary',
             gated: false,
+            providerBilling: billingOf(primaryProvider, _billingModels),
             fallbackUsed: null,
             primaryProvider,
             chainTried: [primaryProvider],
@@ -1118,6 +1141,7 @@ function resolveSpawnWithFallback(opts = {}) {
             ...primary,
             source: primary.source || 'primary',
             gated: false,
+            providerBilling: billingOf(primaryProvider, _billingModels),
             fallbackUsed: null,
             primaryProvider,
             chainTried: [primaryProvider],
@@ -1288,6 +1312,7 @@ function resolveSpawnWithFallback(opts = {}) {
             ...primary,
             source: primary.source || 'primary',
             gated: false,
+            providerBilling: billingOf(primaryProvider, _billingModels),
             fallbackUsed: null,
             primaryProvider,
             chainTried: [primaryProvider],
@@ -1311,6 +1336,7 @@ function resolveSpawnWithFallback(opts = {}) {
             ...primary,
             source: primary.source || 'primary',
             gated: false,
+            providerBilling: billingOf(primaryProvider, _billingModels),
             softGatedPrimaryUsed: true,
             pacingCede: !!opts2.pacingCede,
             fallbackUsed: null,
@@ -1384,6 +1410,7 @@ function resolveSpawnWithFallback(opts = {}) {
             ...primary,
             source: 'all-gated',
             gated: true,
+            providerBilling: billingOf(primaryProvider, _billingModels),
             reason: noFbAllSchedule ? 'todos_inactivos_por_horario' : 'all_gated',
             allInactiveBySchedule: noFbAllSchedule,
             fallbackUsed: null,
@@ -1751,6 +1778,7 @@ function resolveSpawnWithFallback(opts = {}) {
             mode: fbMode, // #4274 — modo canónico por provider (NUEVO)
             source: 'fallback',
             gated: false,
+            providerBilling: billingOf(fbName, models),
             fallbackUsed: { index: i, provider: fbName },
             primaryProvider,
             chainTried,
@@ -1823,6 +1851,7 @@ function resolveSpawnWithFallback(opts = {}) {
         ...primary,
         source: 'all-gated',
         gated: true,
+        providerBilling: billingOf(primaryProvider, _billingModels),
         reason: exhaustReason,
         allInactiveBySchedule,
         fallbackUsed: null,
@@ -1862,6 +1891,10 @@ module.exports = {
     formatProviderResolutionLog,
     SKIP_REASON_CODES,
     SKIP_REASON_LABELS,
+
+    // #4870 — clasificación de facturación del provider (fuente de verdad del
+    // gate "¿hay pago?" del modo reducido). FAIL-SAFE: default 'free'.
+    billingOf,
 
     // exposed for tests
     _readAgentModelsRaw: readAgentModelsRaw,
