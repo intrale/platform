@@ -48,7 +48,7 @@ const path = require('path');
 const trace = require('./traceability');
 const auditLogDefault = require('./audit-log');
 const redact = require('./redact');
-const { isSafeId } = require('./project-descriptor');
+const { isSafeId, transitionStatus: defaultTransitionStatus } = require('./project-descriptor');
 
 const PIPELINE_DIR = path.join(trace.REPO_ROOT, '.pipeline');
 
@@ -60,6 +60,8 @@ const DEFAULT_AUDIT_FILE = path.join(PIPELINE_DIR, 'audit', 'product-control-dra
 const ONBOARD_TYPE = 'product_onboard_request';
 const CONTROL_TYPE = 'product_control_request';
 const CREATE_WAVE_ACTION = 'create-wave';
+const EDIT_ACTION = 'edit';
+const DEACTIVATE_ACTION = 'deactivate';
 
 /**
  * Registra un producto como `status:onboarding` escribiendo su descriptor de
@@ -353,6 +355,13 @@ async function drainCreateWaveQueue(opts = {}, deps = {}) {
             moveOrError(fileName);
             continue;
         }
+        const gateStatus = gate.status || (gate.descriptor && gate.descriptor.status);
+        if (gateStatus === 'archived') {
+            summary.rejected.push({ projectId, reason: 'archived' });
+            audit({ type: 'create_wave_drain_result', outcome: 'rejected', reason: 'archived', projectId, file: fileName, at: now() });
+            moveOrError(fileName);
+            continue;
+        }
 
         // (d) Ejecutar create-once en el coordination store del producto.
         let res;
@@ -384,9 +393,179 @@ async function drainCreateWaveQueue(opts = {}, deps = {}) {
     return summary;
 }
 
+async function drainEditQueue(opts = {}, deps = {}) {
+    const queueDir = opts.queueDir || DEFAULT_QUEUE_DIR;
+    const processedDir = opts.processedDir || DEFAULT_PROCESSED_DIR;
+    const auditFile = opts.auditFile || DEFAULT_AUDIT_FILE;
+    const _fs = deps.fsImpl || fsDefault;
+    const auditImpl = deps.auditImpl || auditLogDefault;
+    const now = typeof deps.now === 'function' ? deps.now : () => Date.now();
+    const isAuthorized = typeof deps.isAuthorized === 'function' ? deps.isAuthorized : null;
+    const loadDescriptor = typeof deps.loadDescriptor === 'function' ? deps.loadDescriptor : null;
+    const putDescriptor = typeof deps.putDescriptor === 'function' ? deps.putDescriptor : null;
+    const summary = { edited: [], rejected: [], errors: [] };
+
+    if (!isAuthorized || !loadDescriptor || !putDescriptor) {
+        throw new Error('drainEditQueue requiere isAuthorized, loadDescriptor y putDescriptor (deps de decisión)');
+    }
+
+    let entries;
+    try { entries = _fs.readdirSync(queueDir); } catch { return summary; }
+    const audit = (entry) => {
+        try { auditImpl.appendChained({ file: auditFile, entry: redact.redactObject(entry), fsImpl: _fs }); }
+        catch { /* el audit no puede tumbar el drenaje */ }
+    };
+    const moveOrError = (fileName) => {
+        try { moveToProcessed(fileName, queueDir, processedDir, _fs); }
+        catch (me) { summary.errors.push({ file: fileName, reason: `move-failed: ${me.message}` }); }
+    };
+
+    for (const fileName of Array.isArray(entries) ? entries : []) {
+        if (!/\.json$/i.test(fileName)) continue;
+        const full = path.join(queueDir, fileName);
+        let record;
+        try { record = JSON.parse(_fs.readFileSync(full, 'utf8')); }
+        catch {
+            summary.rejected.push({ projectId: null, reason: 'unparseable' });
+            audit({ type: 'edit_drain_result', outcome: 'rejected', reason: 'unparseable', file: fileName, at: now() });
+            moveOrError(fileName);
+            continue;
+        }
+        if (!record || record.type !== CONTROL_TYPE || record.action !== EDIT_ACTION) continue;
+        const projectId = record.projectId;
+        const descriptor = record.descriptor;
+        const descId = descriptor && descriptor.identity && descriptor.identity.projectId;
+        if (!isSafeId(projectId) || !isSafeId(descId) || projectId !== descId) {
+            summary.rejected.push({ projectId: isSafeId(projectId) ? projectId : null, reason: 'unsafe-id' });
+            audit({ type: 'edit_drain_result', outcome: 'rejected', reason: 'unsafe-id', projectId: isSafeId(projectId) ? projectId : null, file: fileName, at: now() });
+            moveOrError(fileName);
+            continue;
+        }
+        let authorized = false;
+        try { authorized = isAuthorized(projectId) === true; } catch { authorized = false; }
+        if (!authorized) {
+            summary.rejected.push({ projectId, reason: 'forbidden' });
+            audit({ type: 'edit_drain_result', outcome: 'rejected', reason: 'forbidden', projectId, file: fileName, at: now() });
+            moveOrError(fileName);
+            continue;
+        }
+        let gate;
+        try { gate = await loadDescriptor(projectId); }
+        catch (e) { gate = { valid: false, errors: [{ detail: e && e.message ? e.message : String(e) }] }; }
+        if (!gate || gate.valid !== true) {
+            summary.rejected.push({ projectId, reason: 'descriptor-incomplete' });
+            audit({ type: 'edit_drain_result', outcome: 'rejected', reason: 'descriptor-incomplete', projectId, file: fileName, at: now() });
+            moveOrError(fileName);
+            continue;
+        }
+        const currentStatus = gate.status || (gate.descriptor && gate.descriptor.status) || 'onboarding';
+        if (currentStatus === 'archived') {
+            summary.rejected.push({ projectId, reason: 'archived' });
+            audit({ type: 'edit_drain_result', outcome: 'rejected', reason: 'archived', projectId, file: fileName, at: now() });
+            moveOrError(fileName);
+            continue;
+        }
+        try {
+            await putDescriptor(projectId, Object.assign({}, descriptor, { status: currentStatus }));
+        } catch (e) {
+            const reason = e && e.message ? e.message : String(e);
+            summary.rejected.push({ projectId, reason: 'descriptor-invalid' });
+            audit({ type: 'edit_drain_result', outcome: 'rejected', reason: 'descriptor-invalid', detail: reason, projectId, file: fileName, at: now() });
+            moveOrError(fileName);
+            continue;
+        }
+        summary.edited.push(projectId);
+        audit({ type: 'edit_drain_result', outcome: 'edited', projectId, file: fileName, at: now() });
+        moveOrError(fileName);
+    }
+    return summary;
+}
+
+async function drainDeactivateQueue(opts = {}, deps = {}) {
+    const queueDir = opts.queueDir || DEFAULT_QUEUE_DIR;
+    const processedDir = opts.processedDir || DEFAULT_PROCESSED_DIR;
+    const auditFile = opts.auditFile || DEFAULT_AUDIT_FILE;
+    const descriptorsDir = opts.descriptorsDir || DEFAULT_DESCRIPTORS_DIR;
+    const _fs = deps.fsImpl || fsDefault;
+    const auditImpl = deps.auditImpl || auditLogDefault;
+    const now = typeof deps.now === 'function' ? deps.now : () => Date.now();
+    const isAuthorized = typeof deps.isAuthorized === 'function' ? deps.isAuthorized : null;
+    const loadDescriptor = typeof deps.loadDescriptor === 'function' ? deps.loadDescriptor : null;
+    const transitionStatus = typeof deps.transitionStatus === 'function' ? deps.transitionStatus : defaultTransitionStatus;
+    const summary = { archived: [], rejected: [], errors: [] };
+
+    if (!isAuthorized || !loadDescriptor) {
+        throw new Error('drainDeactivateQueue requiere isAuthorized y loadDescriptor (deps de decisión)');
+    }
+
+    let entries;
+    try { entries = _fs.readdirSync(queueDir); } catch { return summary; }
+    const audit = (entry) => {
+        try { auditImpl.appendChained({ file: auditFile, entry: redact.redactObject(entry), fsImpl: _fs }); }
+        catch { /* el audit no puede tumbar el drenaje */ }
+    };
+    const moveOrError = (fileName) => {
+        try { moveToProcessed(fileName, queueDir, processedDir, _fs); }
+        catch (me) { summary.errors.push({ file: fileName, reason: `move-failed: ${me.message}` }); }
+    };
+
+    for (const fileName of Array.isArray(entries) ? entries : []) {
+        if (!/\.json$/i.test(fileName)) continue;
+        const full = path.join(queueDir, fileName);
+        let record;
+        try { record = JSON.parse(_fs.readFileSync(full, 'utf8')); }
+        catch {
+            summary.rejected.push({ projectId: null, reason: 'unparseable' });
+            audit({ type: 'deactivate_drain_result', outcome: 'rejected', reason: 'unparseable', file: fileName, at: now() });
+            moveOrError(fileName);
+            continue;
+        }
+        if (!record || record.type !== CONTROL_TYPE || record.action !== DEACTIVATE_ACTION) continue;
+        const projectId = record.projectId;
+        if (!isSafeId(projectId)) {
+            summary.rejected.push({ projectId: null, reason: 'unsafe-id' });
+            audit({ type: 'deactivate_drain_result', outcome: 'rejected', reason: 'unsafe-id', projectId: null, file: fileName, at: now() });
+            moveOrError(fileName);
+            continue;
+        }
+        let authorized = false;
+        try { authorized = isAuthorized(projectId) === true; } catch { authorized = false; }
+        if (!authorized) {
+            summary.rejected.push({ projectId, reason: 'forbidden' });
+            audit({ type: 'deactivate_drain_result', outcome: 'rejected', reason: 'forbidden', projectId, file: fileName, at: now() });
+            moveOrError(fileName);
+            continue;
+        }
+        let gate;
+        try { gate = await loadDescriptor(projectId); }
+        catch (e) { gate = { valid: false, errors: [{ detail: e && e.message ? e.message : String(e) }] }; }
+        if (!gate || gate.valid !== true) {
+            summary.rejected.push({ projectId, reason: 'descriptor-incomplete' });
+            audit({ type: 'deactivate_drain_result', outcome: 'rejected', reason: 'descriptor-incomplete', projectId, file: fileName, at: now() });
+            moveOrError(fileName);
+            continue;
+        }
+        const from = gate.status || (gate.descriptor && gate.descriptor.status) || 'onboarding';
+        const descriptorPath = gate.descriptorPath || path.join(descriptorsDir, `${projectId}.json`);
+        const res = transitionStatus({ descriptorPath, from, to: 'archived' }, { fsImpl: _fs, now });
+        if (!res || res.ok !== true) {
+            summary.rejected.push({ projectId, reason: 'transition-rejected' });
+            audit({ type: 'deactivate_drain_result', outcome: 'rejected', reason: 'transition-rejected', detail: res && res.msg, projectId, file: fileName, at: now() });
+            moveOrError(fileName);
+            continue;
+        }
+        summary.archived.push(projectId);
+        audit({ type: 'deactivate_drain_result', outcome: 'archived', projectId, file: fileName, checksum: res.checksum, at: now() });
+        moveOrError(fileName);
+    }
+    return summary;
+}
+
 module.exports = {
     drainOnboardQueue,
     drainCreateWaveQueue,
+    drainEditQueue,
+    drainDeactivateQueue,
     registerOnboarding,
     DEFAULT_QUEUE_DIR,
     DEFAULT_PROCESSED_DIR,
@@ -395,4 +574,6 @@ module.exports = {
     ONBOARD_TYPE,
     CONTROL_TYPE,
     CREATE_WAVE_ACTION,
+    EDIT_ACTION,
+    DEACTIVATE_ACTION,
 };

@@ -35,6 +35,8 @@ function validDescriptor(overrides = {}) {
       admissionLabels: ['Ready'],
       routing: [{ label: 'area:backend', capability: 'backend' }],
     },
+    providers: { order: ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim'] },
+    pullRequests: { policy: 'required' },
     credentials: [{ ref: '~/.claude/secrets/credentials.json#acme', scopes: ['github'] }],
     capabilities: [{ interface: 'backend', skills: ['backend-dev'] }],
     authority: { signers: ['leitolarreta'], gates: { gate2: 'enforce' } },
@@ -63,6 +65,69 @@ test('descriptor válido mínimo pasa la validación', () => {
 // -----------------------------------------------------------------------------
 // CA-B1 — capability→skill allowlist, NUNCA require()
 // -----------------------------------------------------------------------------
+
+test('#4849: deriveProviderOrder usa default canonico si no hay override', () => {
+  const desc = validDescriptor();
+  delete desc.providers;
+  assert.deepEqual(d.deriveProviderOrder(desc), d.DEFAULT_PROVIDER_ORDER);
+  assert.equal(d.validateDescriptor(desc).valid, true);
+});
+
+test('#4849: deriveProviderOrder respeta override valido y devuelve copia defensiva', () => {
+  const desc = validDescriptor({ providers: { order: ['openai-codex', 'anthropic'] } });
+  const first = d.deriveProviderOrder(desc);
+  assert.deepEqual(first, ['openai-codex', 'anthropic']);
+  first.push('gemini-google');
+  assert.deepEqual(d.deriveProviderOrder(desc), ['openai-codex', 'anthropic']);
+  assert.notEqual(first, desc.providers.order);
+});
+
+test('#4849: deriveProviderOrder rechaza groq, desconocidos, duplicados, vacio y exceso', () => {
+  assert.throws(() => d.deriveProviderOrder({ providers: { order: ['groq'] } }), /provider no permitido/);
+  assert.throws(() => d.deriveProviderOrder({ providers: { order: ['unknown-provider'] } }), /provider no permitido/);
+  assert.throws(() => d.deriveProviderOrder({ providers: { order: ['anthropic', 'anthropic'] } }), /duplicado/);
+  assert.throws(() => d.deriveProviderOrder({ providers: { order: [] } }), /cantidad fuera de rango/);
+  assert.throws(() => d.deriveProviderOrder({ providers: { order: ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim', 'extra'] } }), /cantidad fuera de rango/);
+  assert.throws(() => d.deriveProviderOrder({ providers: { order: 'anthropic' } }), /order debe ser una lista/);
+});
+
+test('#4849: validateDescriptor rechaza providers.order desconocido y duplicado', () => {
+  const groq = d.validateDescriptor(validDescriptor({ providers: { order: ['groq'] } }));
+  assert.equal(groq.valid, false);
+  assert.equal(groq.stage, 'schema');
+
+  const dup = d.validateDescriptor(validDescriptor({ providers: { order: ['anthropic', 'anthropic'] } }));
+  assert.equal(dup.valid, false);
+  assert.equal(dup.stage, 'schema');
+});
+
+test('#4849: repositories[].defaultBaseRef invalida es rechazada con validateBaseRef', () => {
+  for (const badRef of ['-main', 'feature/foo;rm', 'feature/foo bar', '$(echo pwn)']) {
+    const res = d.validateDescriptor(validDescriptor({
+      repositories: [{ id: 'main', url: 'https://github.com/acme/store', defaultBaseRef: badRef }],
+    }));
+    assert.equal(res.valid, false, badRef);
+    assert.ok(['schema', 'policy'].includes(res.stage), `stage=${res.stage}`);
+  }
+});
+
+test('#4849: pullRequests.policy invalida es rechazada fail-closed', () => {
+  const res = d.validateDescriptor(validDescriptor({ pullRequests: { policy: 'optional' } }));
+  assert.equal(res.valid, false);
+  assert.equal(res.stage, 'schema');
+
+  const hits = d.collectDescriptorPolicyViolations({ pullRequests: { policy: 'optional' }, authority: { signers: ['leo'] } });
+  assert.ok(hits.some((h) => h.path === 'pullRequests.policy'));
+});
+
+test('#4849: authority.signers vacio es rechazado server-side', () => {
+  const res = d.validateDescriptor(validDescriptor({ authority: { signers: [], gates: {} } }));
+  assert.equal(res.valid, false);
+  assert.equal(res.stage, 'schema');
+
+  const hits = d.collectDescriptorPolicyViolations({ providers: { order: ['anthropic'] }, authority: { signers: [] } });
+  assert.ok(hits.some((h) => h.path === 'authority.signers'));
+});
 
 test('CA-B1: resolveCapabilitySkill acepta skills de la allowlist del kernel', () => {
   assert.equal(d.resolveCapabilitySkill('backend-dev'), 'backend-dev');
@@ -603,10 +668,16 @@ test('#4805 CA-2: transición arbitraria (onboarding→archived) rechazada sin m
     { descriptorPath: DESC_PATH, from: 'onboarding', to: 'archived' },
     { fsImpl: spy, loadDescriptorImpl: fakeLoader({ valid: true, descriptor: onboarding }) },
   );
-  assert.equal(res.ok, false);
-  assert.equal(res.status, 409);
-  assert.equal(res.stage, 'transition');
-  assert.equal(spy.ops.length, 0);
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(JSON.parse(spy.files[DESC_PATH]).status, 'archived');
+  const active = validDescriptor({ status: 'active' });
+  const spy2 = makeSpyFs();
+  const res2 = d.transitionStatus(
+    { descriptorPath: DESC_PATH, from: 'active', to: 'archived' },
+    { fsImpl: spy2, loadDescriptorImpl: fakeLoader({ valid: true, descriptor: active }) },
+  );
+  assert.equal(res2.ok, true, JSON.stringify(res2));
+  assert.equal(JSON.parse(spy2.files[DESC_PATH]).status, 'archived');
 });
 
 test('#4805 CA-3: descriptor incompleto ⇒ bloqueo con detalle de campos faltantes, sin mutar', () => {
@@ -629,8 +700,10 @@ test('#4805 CA-3: descriptor incompleto ⇒ bloqueo con detalle de campos faltan
 
 test('#4805: isValidStatusEdge sólo acepta onboarding→active', () => {
   assert.equal(d.isValidStatusEdge('onboarding', 'active'), true);
+  assert.equal(d.isValidStatusEdge('onboarding', 'archived'), true);
+  assert.equal(d.isValidStatusEdge('active', 'archived'), true);
   assert.equal(d.isValidStatusEdge('active', 'active'), false);
-  assert.equal(d.isValidStatusEdge('onboarding', 'archived'), false);
+  assert.equal(d.isValidStatusEdge('archived', 'active'), false);
   assert.equal(d.isValidStatusEdge('active', 'onboarding'), false);
 });
 

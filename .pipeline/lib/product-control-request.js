@@ -104,6 +104,19 @@ function auditAndEnqueue(record, fileBase, deps) {
     return { ok: true, status: 202, request_path: requestPath, audit_persisted: auditRes.persisted };
 }
 
+function auditRequestFailure(record, deps) {
+    const _fs = deps.fsImpl || fs;
+    const auditImpl = deps.auditImpl || auditLog;
+    const auditFile = deps.auditFile || DEFAULT_AUDIT_FILE;
+    try {
+        const redacted = redact.redactObject(record);
+        const r = auditImpl.appendChained({ file: auditFile, entry: redacted, fsImpl: _fs });
+        return { persisted: true, hash_self: r && r.hash_self };
+    } catch (e) {
+        return { persisted: false, error: e.message };
+    }
+}
+
 /**
  * Encola el ALTA de un producto (onboarding por wizard). Valida el descriptor
  * fail-closed vía `project-bootstrap.runBootstrap` en modo dry-run (schema +
@@ -383,11 +396,130 @@ function enqueueCreateWave(args = {}, deps = {}) {
     };
 }
 
+function enqueueEdit(args = {}, deps = {}) {
+    const descriptor = args.descriptor;
+    if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor)) {
+        return { ok: false, status: 400, msg: 'descriptor ausente o inválido (se esperaba un objeto)' };
+    }
+
+    const rawId = args.projectId || (descriptor.identity && descriptor.identity.projectId);
+    if (!isSafeId(rawId)) {
+        return { ok: false, status: 400, msg: 'projectId inseguro o inexistente' };
+    }
+    const projectId = rawId;
+    const descId = descriptor.identity && descriptor.identity.projectId;
+    if (!isSafeId(descId) || descId !== projectId) {
+        return { ok: false, status: 400, msg: 'descriptor no coincide con el producto objetivo' };
+    }
+
+    const runBootstrap = typeof deps.runBootstrap === 'function' ? deps.runBootstrap : bootstrap.runBootstrap;
+    let boot;
+    try {
+        boot = runBootstrap({
+            descriptor,
+            mode: 'dry-run',
+            deps: Object.assign(
+                { kernelGateFloor: 'enforce', probeAccess: repoProbe.probeAccess },
+                deps.bootstrapDeps || {},
+            ),
+        });
+    } catch (e) {
+        const auditRes = auditRequestFailure({
+            type: 'product_control_request_failure',
+            action: 'edit',
+            projectId,
+            actor: args.actor ? String(args.actor) : 'dashboard-operator',
+            remote_address: args.remoteAddress ? String(args.remoteAddress) : null,
+            source: 'dashboard',
+            stage: 'bootstrap',
+            error: e && e.message ? String(e.message) : String(e),
+            created_at: (typeof deps.now === 'function' ? deps.now : () => Date.now())(),
+        }, deps);
+        return {
+            ok: false,
+            status: 500,
+            msg: 'no se pudo validar el descriptor del producto',
+            audit_persisted: auditRes.persisted,
+        };
+    }
+    if (!boot || !boot.ok) {
+        return {
+            ok: false,
+            status: 400,
+            stage: boot ? boot.stage : 'bootstrap',
+            errors: (boot && boot.errors) || [{ path: '(root)', detail: 'bootstrap rechazó el descriptor' }],
+            msg: 'descriptor rechazado (fail-closed)',
+        };
+    }
+
+    const now = typeof deps.now === 'function' ? deps.now : () => Date.now();
+    const ts = now();
+    const record = {
+        type: 'product_control_request',
+        action: 'edit',
+        projectId,
+        descriptor,
+        actor: args.actor ? String(args.actor) : 'dashboard-operator',
+        remote_address: args.remoteAddress ? String(args.remoteAddress) : null,
+        source: 'dashboard',
+        created_at: ts,
+    };
+
+    const res = auditAndEnqueue(record, `edit-${projectId}-${ts}`, deps);
+    if (!res.ok) return res;
+    return {
+        ok: true,
+        status: 202,
+        action: 'edit',
+        projectId,
+        request_path: res.request_path,
+        audit_persisted: res.audit_persisted,
+        msg: `edición de "${projectId}" encolada; el kernel persistirá el descriptor validado`,
+    };
+}
+
+function enqueueDeactivate(args = {}, deps = {}) {
+    const rawId = (args.projectId == null || args.projectId === '') ? DEFAULT_PRODUCT_ID : args.projectId;
+    if (!isSafeId(rawId)) {
+        return { ok: false, status: 400, msg: 'projectId inseguro o inexistente' };
+    }
+    if (typeof args.nonce !== 'string' || args.nonce.trim() === '') {
+        return { ok: false, status: 400, msg: 'nonce de confirmación requerido' };
+    }
+    const projectId = rawId;
+    const now = typeof deps.now === 'function' ? deps.now : () => Date.now();
+    const ts = now();
+    const record = {
+        type: 'product_control_request',
+        action: 'deactivate',
+        projectId,
+        nonce: args.nonce,
+        actor: args.actor ? String(args.actor) : 'dashboard-operator',
+        remote_address: args.remoteAddress ? String(args.remoteAddress) : null,
+        source: 'dashboard',
+        created_at: ts,
+    };
+
+    const res = auditAndEnqueue(record, `deactivate-${projectId}-${ts}`, deps);
+    if (!res.ok) return res;
+    return {
+        ok: true,
+        status: 202,
+        action: 'deactivate',
+        projectId,
+        request_path: res.request_path,
+        audit_persisted: res.audit_persisted,
+        msg: `baja de "${projectId}" encolada; el kernel persistirá status archived (soft-delete)`,
+    };
+}
+
 module.exports = {
     enqueueOnboard,
     enqueueControl,
     enqueueActivate,
     enqueueCreateWave,
+    enqueueEdit,
+    enqueueDeactivate,
     CONTROL_ACTIONS,
     DEFAULT_PRODUCT_ID,
     DEFAULT_QUEUE_DIR,

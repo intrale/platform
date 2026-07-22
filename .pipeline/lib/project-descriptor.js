@@ -28,6 +28,7 @@ const Ajv = require('ajv');
 
 const { detectInjection } = require('./handoff');
 const migrations = require('./project-descriptor-migrations');
+const { validateBaseRef } = require('./worktree-prefix');
 
 const SCHEMA_PATH = path.resolve(__dirname, '..', 'contracts', 'project.schema.json');
 const schema = JSON.parse(fs.readFileSync(SCHEMA_PATH, 'utf8'));
@@ -54,6 +55,11 @@ const KERNEL_INTERFACES = Object.freeze(new Set(['backend', 'frontend', 'pipelin
 const GATE_NAMES = Object.freeze(['gate0', 'gate2', 'visual']);
 const KNOWN_GATE_MODES = Object.freeze(new Set(['enforce', 'dry-run']));
 
+const LIVE_PROVIDER_IDS = Object.freeze(['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim']);
+const LIVE_PROVIDER_SET = Object.freeze(new Set(LIVE_PROVIDER_IDS));
+const DEFAULT_PROVIDER_ORDER = Object.freeze(['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim']);
+const KNOWN_PR_POLICIES = Object.freeze(new Set(['required', 'direct-to-main']));
+
 // Campos de texto NO confiables sobre los que corre el detector de prompt-injection.
 function collectInjectionHits(descriptor) {
   const identity = descriptor && descriptor.identity;
@@ -65,6 +71,16 @@ function collectInjectionHits(descriptor) {
   if (board && Array.isArray(board.admissionLabels)) {
     board.admissionLabels.forEach((l, i) => candidates.push([`board.admissionLabels[${i}]`, l]));
   }
+  const providers = descriptor && descriptor.providers;
+  if (providers && Array.isArray(providers.order)) {
+    providers.order.forEach((provider, i) => candidates.push([`providers.order[${i}]`, provider]));
+  }
+  const repos = (descriptor && descriptor.repositories) || [];
+  if (Array.isArray(repos)) {
+    repos.forEach((r, i) => candidates.push([`repositories[${i}].defaultBaseRef`, r && r.defaultBaseRef]));
+  }
+  const pullRequests = descriptor && descriptor.pullRequests;
+  candidates.push(['pullRequests.policy', pullRequests && pullRequests.policy]);
   const hits = [];
   for (const [label, value] of candidates) {
     if (typeof value !== 'string' || value === '') continue;
@@ -235,6 +251,44 @@ function collectRepositoryProvenanceHits(descriptor) {
   return hits;
 }
 
+function collectDescriptorPolicyViolations(descriptor) {
+  const hits = [];
+
+  try {
+    deriveProviderOrder(descriptor);
+  } catch (e) {
+    hits.push({ path: 'providers.order', detail: e.message });
+  }
+
+  const repos = (descriptor && descriptor.repositories) || [];
+  if (Array.isArray(repos)) {
+    repos.forEach((r, i) => {
+      if (!r || r.defaultBaseRef === undefined) return;
+      try {
+        validateBaseRef(r.defaultBaseRef);
+      } catch {
+        hits.push({ path: `repositories[${i}].defaultBaseRef`, detail: 'defaultBaseRef invalido segun validateBaseRef()' });
+      }
+    });
+  }
+
+  const pullRequests = descriptor && descriptor.pullRequests;
+  if (pullRequests !== undefined) {
+    if (!pullRequests || typeof pullRequests !== 'object' || Array.isArray(pullRequests)) {
+      hits.push({ path: 'pullRequests', detail: 'pullRequests debe ser un objeto cerrado' });
+    } else if (!KNOWN_PR_POLICIES.has(pullRequests.policy)) {
+      hits.push({ path: 'pullRequests.policy', detail: 'politica de PR fuera del enum permitido' });
+    }
+  }
+
+  const signers = descriptor && descriptor.authority && descriptor.authority.signers;
+  if (!Array.isArray(signers) || signers.length === 0 || signers.some((s) => typeof s !== 'string' || s.length === 0)) {
+    hits.push({ path: 'authority.signers', detail: 'authority.signers vacio o invalido (fail-closed)' });
+  }
+
+  return hits;
+}
+
 // -----------------------------------------------------------------------------
 // Checksum de integridad (paso 2). Cálculo determinístico sobre el descriptor
 // SIN el bloque `integrity` (no se auto-incluye en su propio hash).
@@ -338,6 +392,18 @@ function validateDescriptor(obj, opts = {}) {
       valid: false,
       stage: 'repositories',
       errors: provenanceHits.map((h) => ({ path: h.path, keyword: 'repositoryProvenance', detail: h.detail })),
+      descriptor: null,
+    };
+  }
+
+  // 7) Contrato completo del descriptor: providers vivos, refs git seguras,
+  //    politica de PR cerrada y autoridad de firma no vacia.
+  const policyHits = collectDescriptorPolicyViolations(descriptor);
+  if (policyHits.length > 0) {
+    return {
+      valid: false,
+      stage: 'policy',
+      errors: policyHits.map((h) => ({ path: h.path, keyword: 'descriptorPolicy', detail: h.detail })),
       descriptor: null,
     };
   }
@@ -469,6 +535,27 @@ function deriveProviderBudget(descriptor) {
   const sum = Object.values(budget).reduce((a, v) => a + (typeof v === 'number' ? v : 0), 0);
   if (sum > 100) throw new Error(`providerBudget inválido: Σ ${sum}% excede el 100% de la cuota central`);
   return budget;
+}
+
+// providers.order (orden preferido de adaptadores vivos).
+function deriveProviderOrder(descriptor) {
+  const providers = descriptor && descriptor.providers;
+  if (providers !== undefined && (!providers || typeof providers !== 'object' || Array.isArray(providers))) {
+    throw new Error('providers.order invalido: providers debe ser un objeto');
+  }
+  const raw = providers && providers.order;
+  if (providers !== undefined && !Array.isArray(raw)) {
+    throw new Error('providers.order invalido: order debe ser una lista');
+  }
+  const order = Array.isArray(raw) ? raw : DEFAULT_PROVIDER_ORDER;
+  const seen = new Set();
+  if (order.length < 1 || order.length > 5) throw new Error('providers.order invalido: cantidad fuera de rango');
+  for (const provider of order) {
+    if (!LIVE_PROVIDER_SET.has(provider)) throw new Error(`providers.order invalido: provider no permitido ${JSON.stringify(provider)}`);
+    if (seen.has(provider)) throw new Error(`providers.order invalido: provider duplicado ${JSON.stringify(provider)}`);
+    seen.add(provider);
+  }
+  return [...order];
 }
 
 // interface → skills (partición del puerto dev).
@@ -614,7 +701,8 @@ function deriveKernelPin(descriptor, opts = {}) {
 // suma acá cuando exista su historia, nunca desde el request en banda.
 // -----------------------------------------------------------------------------
 const STATUS_TRANSITIONS = Object.freeze({
-  onboarding: Object.freeze(new Set(['active'])),
+  onboarding: Object.freeze(new Set(['active', 'archived'])),
+  active: Object.freeze(new Set(['archived'])),
 });
 
 function isValidStatusEdge(from, to) {
@@ -713,6 +801,9 @@ module.exports = {
   KERNEL_SKILLS,
   KERNEL_INTERFACES,
   GATE_NAMES,
+  LIVE_PROVIDER_IDS,
+  DEFAULT_PROVIDER_ORDER,
+  KNOWN_PR_POLICIES,
   validateDescriptor,
   loadDescriptor,
   resolveCapabilitySkill,
@@ -726,6 +817,7 @@ module.exports = {
   collectPathTraversalHits,
   collectThresholdViolations,
   collectRepositoryProvenanceHits,
+  collectDescriptorPolicyViolations,
   CREATE_REPO_NAME_RE,
   redactAjvErrors,
   deriveRouting,
@@ -734,6 +826,7 @@ module.exports = {
   derivePriorityWindows,
   deriveAgentCap,
   deriveProviderBudget,
+  deriveProviderOrder,
   deriveCapabilityPartitions,
   resolveGate,
   resolveSignerAuthority,

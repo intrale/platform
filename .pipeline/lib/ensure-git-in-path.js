@@ -44,6 +44,16 @@ const POSIX_CANDIDATES = [
     '/usr/bin', '/usr/local/bin', '/opt/homebrew/bin',
 ];
 
+function pathEnvKey(env) {
+    return Object.keys(env).find((key) => key.toLowerCase() === 'path') || 'PATH';
+}
+
+function prependPath(env, dir) {
+    const key = pathEnvKey(env);
+    env[key] = `${dir}${path.delimiter}${env[key] || ''}`;
+    if (key !== 'PATH') delete env.PATH;
+}
+
 /**
  * Verifica si `git --version` funciona con el env dado.
  * Retorna true si está disponible, false si falta.
@@ -77,7 +87,7 @@ function ensureGitInEnv(env) {
     for (const dir of candidates) {
         try {
             if (fs.existsSync(path.join(dir, exe))) {
-                env.PATH = `${dir}${path.delimiter}${env.PATH || ''}`;
+                prependPath(env, dir);
                 return env;
             }
         } catch { /* siguiente */ }
@@ -87,7 +97,7 @@ function ensureGitInEnv(env) {
     const installRoot = env.GIT_INSTALL_ROOT || env.GIT_HOME;
     if (installRoot) {
         const candidate = path.join(installRoot, 'cmd');
-        env.PATH = `${candidate}${path.delimiter}${env.PATH || ''}`;
+        prependPath(env, candidate);
     }
     return env;
 }
@@ -107,4 +117,5 @@ module.exports = {
     ensureGitInEnv,
     ensureGitInProcessPath,
     gitWorks,
+    pathEnvKey,
 };
