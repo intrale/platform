@@ -40,7 +40,7 @@ const {
   KernelStoreValidationError,
 } = require('../kernel-store');
 const projectDescriptor = require('../project-descriptor');
-const { isSafeId, isSafeWorktreePath, collectPathTraversalHits } = projectDescriptor;
+const { isSafeId, isSafeWorktreePath, collectPathTraversalHits, isReservedProjectId } = projectDescriptor;
 
 const MONOREPO = 'intrale-platform';
 const NUEVO = 'producto-nuevo';
@@ -101,6 +101,43 @@ function makeStore(driver, contextProjectId) {
   });
 }
 
+// Spec de la tabla in-memory del kernel-store (mismo tableName por defecto que
+// `kernel-store.js`: DEFAULT_INMEMORY_TABLE = 'kernel-store-local').
+const specFor = (tableName = 'kernel-store-local') => ({
+  type: 'dynamodb_table',
+  tableName,
+  keys: [
+    { name: 'PK', attributeType: 'S', keyType: 'HASH' },
+    { name: 'SK', attributeType: 'S', keyType: 'RANGE' },
+  ],
+});
+
+// Ítem crudo con el mismo envelope que produce el kernel-store internamente.
+function rawItem(entityType, sk, body, projectId) {
+  return { PK: projectId, SK: sk, entityType, projectId, schemaVersion: '1.0', body };
+}
+
+/**
+ * Siembra un producto como estado durable *legacy* escribiendo directo en el
+ * driver, SIN pasar por la ruta pública `store.putProduct(...)`. Necesario para
+ * `intrale-platform`: desde #4852 el id reservado del monorepo es rechazado en
+ * el alta pública (`stage: 'reserved-id'`), así que simular su estado durable
+ * preexistente requiere inyección controlada (misma técnica que el fixture
+ * legacy de `kernel-store.test.js`). Escribe `product#<id>` y agrega `<id>` al
+ * `catalog#index` para que `listProducts()` lo recupere.
+ */
+async function seedLegacyProduct(driver, projectId, product) {
+  const spec = specFor();
+  await driver.createTable(spec); // idempotente
+  const body = { productId: product.productId, name: product.name };
+  await driver.putItem(spec, rawItem('product', `product#${product.productId}`, body, projectId));
+  const cur = await driver.getItem(spec, { PK: projectId, SK: 'catalog#index' });
+  const ids = cur && cur.item ? (cur.item.body.productIds || []).slice() : [];
+  const version = cur && cur.item && Number.isInteger(cur.item.body.version) ? cur.item.body.version : 0;
+  if (!ids.includes(product.productId)) ids.push(product.productId);
+  await driver.putItem(spec, rawItem('catalog', 'catalog#index', { productIds: ids, version: version + 1 }, projectId));
+}
+
 /**
  * Proyección canónica y determinística del estado durable legible de un producto
  * (descriptor + catálogo de productos). Base del hash tamper-evident (CA-8).
@@ -116,10 +153,21 @@ async function snapshotState(store) {
   return { canonical, hash: crypto.createHash('md5').update(canonical).digest('hex') };
 }
 
-/** "Corre la ola" del producto: ciclo de vida durable completo sobre su partición. */
-async function runOla(store) {
+/**
+ * "Corre la ola" del producto: ciclo de vida durable completo sobre su partición.
+ * `driver` habilita la siembra legacy del producto self cuando el contexto es el
+ * id reservado del monorepo (`intrale-platform`), que #4852 ya no admite por la
+ * ruta pública de alta.
+ */
+async function runOla(store, driver) {
   await store.putDescriptor(descriptorFor(store.contextProjectId, `Producto ${store.contextProjectId}`));
-  await store.putProduct({ productId: store.contextProjectId, name: 'Self' });
+  if (isReservedProjectId(store.contextProjectId)) {
+    // Estado durable preexistente del monorepo: se inyecta como fixture legacy,
+    // no por `putProduct` (que rechaza el id reservado desde #4852).
+    await seedLegacyProduct(driver, store.contextProjectId, { productId: store.contextProjectId, name: 'Self' });
+  } else {
+    await store.putProduct({ productId: store.contextProjectId, name: 'Self' });
+  }
   await store.putProduct({ productId: `${store.contextProjectId}-svc`, name: 'Servicio' });
   await store.appendAuditEntry({ action: 'wave-started', actor: 'pulpo' });
   await store.putSignature({ signer: 'leitolarreta', target: 'pr-x', checksum: 'a'.repeat(64), algorithm: 'sha256' });
@@ -137,13 +185,13 @@ describe('#4811 CA-1 · aislamiento de olas (estado durable del monorepo intacto
 
     // El monorepo ya tiene su estado (su "ola" corrida).
     const mono = makeStore(driver, MONOREPO);
-    await runOla(mono);
+    await runOla(mono, driver);
     const before = await snapshotState(mono);
 
     // Alta + ola del producto nuevo sobre el MISMO driver (mismo host/tabla).
     const nuevo = makeStore(driver, NUEVO);
     mutations.length = 0; // sólo observamos las mutaciones de la ola del producto nuevo
-    await runOla(nuevo);
+    await runOla(nuevo, driver);
 
     // El snapshot durable del monorepo no cambió (hash idéntico = diff vacío).
     const after = await snapshotState(mono);
@@ -165,7 +213,7 @@ describe('#4811 CA-2 · frontera FS/worktrees por partición separada, no namesp
     const base = createInMemoryDynamoDriver();
     const { driver, mutations } = spyDriver(base);
     const nuevo = makeStore(driver, NUEVO);
-    await runOla(nuevo);
+    await runOla(nuevo, driver);
     // Frontera durable: el 100% de las mutaciones del producto nuevo llevan PK=NUEVO.
     const fuera = mutations.filter((m) => m.pk !== NUEVO);
     assert.deepEqual(fuera, [], 'hubo mutaciones fuera de la partición del producto (frontera rota)');
@@ -259,7 +307,7 @@ describe('#4811 CA-5 · caso negativo de path traversal (bloqueante)', () => {
     const { driver, mutations } = spyDriver(base);
 
     const mono = makeStore(driver, MONOREPO);
-    await runOla(mono);
+    await runOla(mono, driver);
     const before = await snapshotState(mono);
 
     const nuevo = makeStore(driver, NUEVO);
@@ -294,8 +342,11 @@ describe('#4811 CA-5 · caso negativo de path traversal (bloqueante)', () => {
 
 describe('#4811 CA-6 · atomicidad del catalog#index bajo concurrencia', () => {
   test('altas concurrentes de productos distintos no pierden entradas del índice', async () => {
-    const store = makeStore(createInMemoryDynamoDriver(), MONOREPO);
-    await store.putProduct({ productId: MONOREPO, name: 'Monorepo' });
+    const driver = createInMemoryDynamoDriver();
+    const store = makeStore(driver, MONOREPO);
+    // Fixture legacy controlado: la entrada del monorepo ya existe en el catálogo;
+    // el id reservado no admite alta por la ruta pública (#4852).
+    await seedLegacyProduct(driver, MONOREPO, { productId: MONOREPO, name: 'Monorepo' });
     await Promise.all([
       store.putProduct({ productId: 'producto-alfa', name: 'Alfa' }),
       store.putProduct({ productId: 'producto-beta', name: 'Beta' }),
@@ -340,7 +391,7 @@ describe('#4811 CA-8 · evidencia tamper-evident del estado del monorepo', () =>
   test('el hash del estado durable del monorepo es estable ante toda la actividad del producto nuevo', async () => {
     const base = createInMemoryDynamoDriver();
     const mono = makeStore(base, MONOREPO);
-    await runOla(mono);
+    await runOla(mono, base);
     const h0 = (await snapshotState(mono)).hash;
 
     // Actividad intensa del producto nuevo: descriptor, N productos, audit, firmas.
