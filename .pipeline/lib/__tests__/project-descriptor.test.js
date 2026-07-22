@@ -179,10 +179,18 @@ for (const badId of ['acme.store', 'acme/store', '../etc', 'acme..store', 'ACME'
 test('CA-B2: isSafeId rechaza traversal y acepta ids válidos', () => {
   assert.equal(d.isSafeId('acme-store'), true);
   assert.equal(d.isSafeId('a1'), true);
+  assert.equal(d.isSafeId('intrale-platform'), true);
   assert.equal(d.isSafeId('../etc'), false);
   assert.equal(d.isSafeId('a/b'), false);
   assert.equal(d.isSafeId('a..b'), false);
   assert.equal(d.isSafeId('Acme'), false);
+});
+
+test('CA-B2: isReservedProjectId reconoce ids reservados sin mezclar validacion sintactica', () => {
+  assert.equal(d.isReservedProjectId('intrale-platform'), true);
+  assert.equal(d.isReservedProjectId('acme-store'), false);
+  assert.equal(d.isReservedProjectId(null), false);
+  assert.ok(d.RESERVED_PROJECT_IDS instanceof Set);
 });
 
 // -----------------------------------------------------------------------------

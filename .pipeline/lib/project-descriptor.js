@@ -112,12 +112,17 @@ function redactAjvErrors(ajvErrors) {
 // de workspace/estado (requisito #2 · A01).
 // -----------------------------------------------------------------------------
 const SAFE_ID_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;
+const RESERVED_PROJECT_IDS = Object.freeze(new Set(['intrale-platform']));
 
 function isSafeId(id) {
   if (typeof id !== 'string') return false;
   if (!SAFE_ID_RE.test(id)) return false;
   if (id.includes('..') || id.includes('/') || id.includes('\\')) return false;
   return true;
+}
+
+function isReservedProjectId(id) {
+  return typeof id === 'string' && RESERVED_PROJECT_IDS.has(id);
 }
 
 // Root ficticio para el prefix-check de rutas de worktree (nunca se toca el FS).
@@ -806,6 +811,8 @@ module.exports = {
   computeChecksum,
   canonicalize,
   isSafeId,
+  RESERVED_PROJECT_IDS,
+  isReservedProjectId,
   isSafeWorktreePath,
   collectPathTraversalHits,
   collectThresholdViolations,
