@@ -43,6 +43,7 @@ const path = require('node:path');
 const { createKernelStore, KernelStoreIsolationError } = require('./kernel-store');
 const {
   isSafeId,
+  isReservedProjectId,
   deriveRouting,
   deriveConcurrency,
   deriveCapabilityPartitions,
@@ -486,6 +487,17 @@ function createKernelSupervisor(deps = {}) {
         onAlert({ projectId: null, stage: 'isSafeId', errors: [{ detail: `projectId inseguro descartado: ${String(projectId)}` }] });
         continue;
       }
+      // #4853 · A01/A04/A05 — política de ids reservados: un producto `active` cuyo
+      // id resuelto sea el namespace raíz del monorepo (`intrale-platform`) NO puede
+      // materializarse como tenant. Se descarta fail-closed ANTES de spawnInstance
+      // (nunca deriva path/worktree ni crea store), se audita en `skipped` y se emite
+      // la alerta operativa (descarte NO silencioso). Sintaxis (isSafeId) ≠ política:
+      // `intrale-platform` es sintácticamente válido pero está reservado.
+      if (isReservedProjectId(projectId)) {
+        skipped.push({ projectId, reason: 'id reservado' });
+        onAlert({ projectId, stage: 'reserved-id', errors: [{ detail: `id reservado descartado del boot: ${projectId}` }] });
+        continue;
+      }
       // #4822 · CA-SEC-4 (REQ-SEC-BOOT-5) — cota de instancias concurrentes: un
       // catálogo con N>cap productos `active` NO spawnea procesos sin techo (RAM
       // crítica del host). No aborta el boot: saltea el excedente y lo audita, de
@@ -515,6 +527,18 @@ function createKernelSupervisor(deps = {}) {
       throw new KernelStoreIsolationError(
         `spawnInstance: projectId inseguro "${String(projectId)}" — fail-closed antes de derivar path/spawn`,
         { requested: projectId == null ? null : String(projectId) },
+      );
+    }
+    // #4853 · A01/A04 — guard fail-closed propio de la política de ids reservados:
+    // aunque `bootProducts()` ya filtra, un caller directo (o futuro) de
+    // `spawnInstance()` NO puede materializar el namespace raíz (`intrale-platform`)
+    // como tenant. Falla ANTES de consultar `instances`, construir la instancia,
+    // derivar paths/worktree o crear store/runtime. Defensa en profundidad, no
+    // duplica la fuente de verdad: reutiliza `isReservedProjectId` del descriptor.
+    if (isReservedProjectId(projectId)) {
+      throw new KernelStoreIsolationError(
+        `spawnInstance: projectId reservado "${projectId}" — el namespace raíz del monorepo no puede spawnearse como tenant (fail-closed)`,
+        { requested: projectId, reserved: true },
       );
     }
     const existing = instances.get(projectId);
@@ -881,6 +905,10 @@ function createKernelSupervisor(deps = {}) {
    * Resuelve el conjunto AUTORIZADO de `projectId` OUT-OF-BAND (CA-5 · A01): el
    * catálogo propio de ESTE contexto (credencial), NUNCA el id en banda. Incluye
    * productos `onboarding` (la primera ola puede crearse antes de activar · #4805).
+   *
+   * #4853 · A01 — excluye ids reservados: aunque boot/spawn ya los filtren, el
+   * namespace raíz del monorepo (`intrale-platform`) NO puede colarse como tenant
+   * autorizado si el catálogo llegara a contenerlo (defensa en profundidad).
    */
   async function authorizedProjectIdSet() {
     const set = new Set();
@@ -888,7 +916,7 @@ function createKernelSupervisor(deps = {}) {
       const products = await catalogStore.listProducts();
       for (const p of Array.isArray(products) ? products : []) {
         const pid = resolveProjectId(p);
-        if (isSafeId(pid)) set.add(pid);
+        if (isSafeId(pid) && !isReservedProjectId(pid)) set.add(pid);
       }
     }
     return set;
@@ -963,6 +991,9 @@ function createKernelSupervisor(deps = {}) {
 
   return {
     bootProducts,
+    // #4853 · A01 — conjunto autorizado out-of-band (excluye reservados). Expuesto
+    // para verificación: los drenajes de create/edit/deactivate lo usan internamente.
+    authorizedProjectIdSet,
     drainCreateWaveQueue,
     drainEditQueue,
     drainDeactivateQueue,
