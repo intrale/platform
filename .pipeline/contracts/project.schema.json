@@ -82,6 +82,31 @@
         ]
       }
     },
+    "providers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["order"],
+      "properties": {
+        "order": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 5,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": ["anthropic", "openai-codex", "gemini-google", "cerebras", "nvidia-nim"]
+          }
+        }
+      }
+    },
+    "pullRequests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy"],
+      "properties": {
+        "policy": { "type": "string", "enum": ["required", "direct-to-main"] }
+      }
+    },
     "board": {
       "type": "object",
       "additionalProperties": false,
@@ -107,26 +132,6 @@
                 "enum": ["backend", "frontend", "pipeline", "generic"]
               }
             }
-          }
-        }
-      }
-    },
-    "pullRequestPolicy": {
-      "type": "string",
-      "enum": ["required", "draft-first", "maintainer-push"]
-    },
-    "providers": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["order"],
-      "properties": {
-        "order": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {
-            "type": "string",
-            "enum": ["anthropic", "openai-codex", "gemini-google", "cerebras", "nvidia-nim"]
           }
         }
       }

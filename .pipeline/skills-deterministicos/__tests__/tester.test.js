@@ -1324,6 +1324,31 @@ test('git --version disponible en el child', () => {
     assert.equal(r.exit_code, 0);
 });
 
+test('#4849 rev-1 — runNodeTests preserva Path de Windows al agregar node al child env', async () => {
+    if (process.platform !== 'win32') return;
+    const fresh = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-pathcase-'));
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(fresh, '.pipeline', 'tests', 'git-needed-pathcase.test.js'), `
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { spawnSync } = require('child_process');
+test('git --version disponible con Path case-preserved', () => {
+    const r = spawnSync('git', ['--version'], { encoding: 'utf8' });
+    assert.equal(r.status, 0, 'git debe estar accesible. error=' + (r.error && r.error.code));
+});
+`);
+    const env = {
+        SystemRoot: process.env.SystemRoot || 'C:\\Windows',
+        Path: 'C:\\Windows\\System32;C:\\Windows',
+    };
+    const r = await tester.runNodeTests(fresh, env);
+    assert.equal(r.summary.failures, 0,
+        `el child no debe perder git por duplicar Path/PATH. failed_tests=${JSON.stringify(r.summary.failed_tests)}`);
+    assert.equal(r.summary.tests, 1);
+    assert.equal(r.exit_code, 0);
+});
+
 // #3091 rebote rev-1 (réplica del test #3090 rev-1) — Regresión empírica.
 // El tester corre `node --test` desde el worktree del agente cuando éste
 // existe (introducido por #3081), pero los worktrees creados por

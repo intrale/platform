@@ -20,6 +20,12 @@
       "defaultBaseRef": "main"
     }
   ],
+  "providers": {
+    "order": ["anthropic", "openai-codex", "gemini-google", "cerebras", "nvidia-nim"]
+  },
+  "pullRequests": {
+    "policy": "required"
+  },
   "board": {
     "ref": "https://github.com/orgs/intrale/projects/2",
     "admissionLabels": ["needs-definition", "Ready"],

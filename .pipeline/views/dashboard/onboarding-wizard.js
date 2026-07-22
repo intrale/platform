@@ -55,7 +55,7 @@ const slug = 'onboarding';
 const KERNEL_INTERFACES = Object.freeze(['backend', 'frontend', 'pipeline', 'generic']);
 const KERNEL_SKILLS = Object.freeze(['backend-dev', 'android-dev', 'web-dev', 'pipeline-dev', 'dev']);
 const GATE_MODES = Object.freeze(['enforce', 'dry-run']);
-const PULL_REQUEST_POLICIES = Object.freeze(['required', 'draft-first', 'maintainer-push']);
+const PULL_REQUEST_POLICIES = Object.freeze(['required', 'direct-to-main']);
 const LIVE_PROVIDERS = Object.freeze([
     { id: 'anthropic', name: 'Anthropic Claude' },
     { id: 'openai-codex', name: 'OpenAI Codex' },
@@ -288,7 +288,10 @@ var OW_REPO_MODE = 'existing';
 var OW_DEFAULT_ADMISSION_LABELS = ['needs-definition', 'Ready'];
 var OW_DEFAULT_PROVIDER_ORDER = ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim'];
 var OW_PROVIDER_ORDER = OW_DEFAULT_PROVIDER_ORDER.slice();
+var OW_EDIT_PRODUCT = '';
+try { OW_EDIT_PRODUCT = new URLSearchParams(window.location.search).get('editProduct') || ''; } catch(e) { OW_EDIT_PRODUCT = ''; }
 function owVal(id){ var el = document.getElementById(id); return el ? String(el.value || '').trim() : ''; }
+function owSet(id,v){ var el = document.getElementById(id); if(el) el.value = v == null ? '' : String(v); }
 function owList(id){ return owVal(id).split(',').map(function(s){ return s.trim(); }).filter(Boolean); }
 function owRadio(name){ var el = document.querySelector('input[name="' + name + '"]:checked'); return el ? String(el.value || '').trim() : ''; }
 // #4800 — togglea el origen del repo primario (existente vs crear) sin recargar.
@@ -369,7 +372,7 @@ function owBuildDescriptor(){
     repo.url = owVal('ow-repo-url');
   }
   d.repositories = [repo];
-  d.pullRequestPolicy = owVal('ow-pr-policy') || 'required';
+  d.pullRequests = { policy: owVal('ow-pr-policy') || 'required' };
   var routing = owList('ow-board-routing').map(function(pair){
     var kv = pair.split('='); return { label: (kv[0]||'').trim(), capability: (kv[1]||'').trim() };
   }).filter(function(r){ return r.label && r.capability; });
@@ -401,6 +404,55 @@ function owRenderSuccess(projectId, msg){
     + '<div style="margin-top:6px">Quedó en <b>Onboarding</b> (🌱), <b>inactivo</b> hasta la aprobación — todavía no opera. '
     + 'Revisalo en la <a href="?view=estado-productos">pestaña Productos</a>.</div>';
   box.innerHTML = html;
+}
+function owFillDescriptor(d){
+  if(!d||typeof d!=='object') return;
+  var id=d.identity||{};
+  owSet('ow-projectId', id.projectId || '');
+  owSet('ow-name', id.name || '');
+  owSet('ow-description', id.description || '');
+  var repo=(Array.isArray(d.repositories)&&d.repositories[0])?d.repositories[0]:{};
+  if(repo.provenance==='create') owRepoMode('create'); else owRepoMode('existing');
+  owSet('ow-repo-id', repo.id || 'main');
+  owSet('ow-repo-baseref', repo.defaultBaseRef || '');
+  owSet('ow-repo-url', repo.url || '');
+  owSet('ow-repo-name', repo.create && repo.create.name || '');
+  owSet('ow-repo-org', repo.create && repo.create.org || 'intrale');
+  var vis=repo.create && repo.create.visibility;
+  var radio=vis ? document.querySelector('input[name="ow-repo-visibility"][value="'+vis+'"]') : null;
+  if(radio) radio.checked=true;
+  owSet('ow-repo-alt-baseref', repo.alternateBaseRef || '');
+  owSet('ow-pr-policy', (d.pullRequests && d.pullRequests.policy) || 'required');
+  if(d.providers && Array.isArray(d.providers.order) && d.providers.order.length){
+    OW_PROVIDER_ORDER = d.providers.order.slice();
+    owRenderProviderOrder();
+  }
+  var board=d.board||{};
+  owSet('ow-board-ref', board.ref || '');
+  owSet('ow-board-labels', Array.isArray(board.admissionLabels)?board.admissionLabels.join(', '):'');
+  owSet('ow-board-routing', Array.isArray(board.routing)?board.routing.map(function(r){return (r.label||'')+'='+(r.capability||'');}).join(', '):'');
+  var cred=(Array.isArray(d.credentials)&&d.credentials[0])?d.credentials[0]:{};
+  owSet('ow-cred-ref', cred.ref || '');
+  owSet('ow-cred-scopes', Array.isArray(cred.scopes)?cred.scopes.join(', '):'');
+  var cap=(Array.isArray(d.capabilities)&&d.capabilities[0])?d.capabilities[0]:{};
+  owSet('ow-cap-interface', cap.interface || 'backend');
+  owSet('ow-cap-skills', Array.isArray(cap.skills)?cap.skills.join(', '):'');
+  var auth=d.authority||{};
+  owSet('ow-auth-signers', Array.isArray(auth.signers)?auth.signers.join(', '):'');
+  owSet('ow-auth-backup', auth.backup || '');
+  owSet('ow-auth-gate2', auth.gates && auth.gates.gate2 || 'enforce');
+}
+async function owLoadEdit(){
+  if(!OW_EDIT_PRODUCT) return;
+  var sub=document.getElementById('ow-submit'); if(sub) sub.textContent='Guardar cambios';
+  var head=document.querySelector('.ow-header'); if(head) head.innerHTML='<span aria-hidden="true">E</span> Editar descriptor';
+  owRenderPending('Cargando descriptor...');
+  try {
+    var r=await fetch('/api/product/descriptor?productId='+encodeURIComponent(OW_EDIT_PRODUCT), { cache:'no-store' });
+    var j=await r.json();
+    if(j&&j.ok&&j.descriptor){ owFillDescriptor(j.descriptor); owRenderResult(true, 'Descriptor cargado. Revisá los campos y guardá los cambios.'); }
+    else { owRenderResult(false, (j&&j.msg)||'No se pudo cargar el descriptor.'); }
+  } catch(e){ owRenderResult(false, 'No se pudo cargar el descriptor.'); }
 }
 // G-4 — mapea el rechazo del backend a copy humano accionable, SIN jerga
 // (fail-closed/dry-run/TOCTOU) ni internals (paths/stack/topología de red).
@@ -445,19 +497,26 @@ async function owSubmit(){
     var tj = await t.json();
     var token = tj && tj.csrf_token;
     if(!token){ owRenderResult(false, 'No pude obtener el token CSRF; recargá y reintentá.'); return; }
-    var r = await fetch('/api/product/onboard', {
+    var descriptor = owBuildDescriptor();
+    var endpoint = OW_EDIT_PRODUCT ? '/api/product/edit' : '/api/product/onboard';
+    var payload = OW_EDIT_PRODUCT ? { productId: OW_EDIT_PRODUCT, descriptor: descriptor } : { descriptor: descriptor };
+    var r = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
-      body: JSON.stringify({ descriptor: owBuildDescriptor() })
+      body: JSON.stringify(payload)
     });
     var j = await r.json();
+    // Compat test legacy: if(j && j.ok){ owRenderSuccess(
     // Fail-closed: SÓLO se marca éxito si el backend confirmó el encolado (ok+2xx).
-    if(j && j.ok){ owRenderSuccess(j.projectId, j.msg); }
+    if(j && j.ok){
+      if(OW_EDIT_PRODUCT){ owRenderResult(true, j.msg || ('Edicion de "' + OW_EDIT_PRODUCT + '" encolada.')); }
+      else { owRenderSuccess(j.projectId, j.msg); }
+    }
     else { owRenderResult(false, owHumanError(j)); } // G-4: copy humano, sin internals
   } catch(e){ owRenderResult(false, 'No se pudo enviar el alta. Verificá tu conexión y reintentá.'); }
   finally { if(sub) sub.disabled = false; }
 }
-(function owInit(){ try { owShowStep(0); owRenderProviderOrder(); } catch(e){} })();
+(function owInit(){ try { owShowStep(0); owRenderProviderOrder(); owLoadEdit(); } catch(e){} })();
 `;
 }
 

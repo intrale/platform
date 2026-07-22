@@ -169,7 +169,7 @@ test('#4851: el script serializa defaults, providers.order y autoridad GATE 2 si
     const script = renderOnboardingWizardClientScript();
     assert.ok(script.includes("defaultBaseRef: owVal('ow-repo-baseref') || 'main'"));
     assert.ok(script.includes('alternateBaseRef'));
-    assert.ok(script.includes("d.pullRequestPolicy = owVal('ow-pr-policy') || 'required'"));
+    assert.ok(script.includes("d.pullRequests = { policy: owVal('ow-pr-policy') || 'required' }"));
     assert.ok(script.includes('d.providers = { order: OW_PROVIDER_ORDER.slice() }'));
     assert.ok(script.includes("signers.length ? signers : ['leitolarreta']"));
     assert.ok(script.includes("d.authority.backup = owVal('ow-auth-backup') || 'leitolarreta'"));

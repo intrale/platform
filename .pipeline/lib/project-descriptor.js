@@ -28,6 +28,7 @@ const Ajv = require('ajv');
 
 const { detectInjection } = require('./handoff');
 const migrations = require('./project-descriptor-migrations');
+const { validateBaseRef } = require('./worktree-prefix');
 
 const SCHEMA_PATH = path.resolve(__dirname, '..', 'contracts', 'project.schema.json');
 const schema = JSON.parse(fs.readFileSync(SCHEMA_PATH, 'utf8'));
@@ -50,16 +51,14 @@ const KERNEL_SKILLS = Object.freeze(new Set([
 // Interfaces (capabilities) reconocidas por el kernel.
 const KERNEL_INTERFACES = Object.freeze(new Set(['backend', 'frontend', 'pipeline', 'generic']));
 
-const ALLOWED_PROVIDER_ORDER = Object.freeze(['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim']);
-const ALLOWED_PROVIDER_ORDER_SET = Object.freeze(new Set(ALLOWED_PROVIDER_ORDER));
-const DEPRECATED_PROVIDER_ID = ['gr', 'oq'].join('');
-
-const DEFAULT_PULL_REQUEST_POLICY = 'required';
-const ALLOWED_PULL_REQUEST_POLICIES = Object.freeze(new Set(['required', 'draft-first', 'maintainer-push']));
-
 // Gates que el kernel entiende. Valor efectivo se resuelve fail-closed (CA-D5).
 const GATE_NAMES = Object.freeze(['gate0', 'gate2', 'visual']);
 const KNOWN_GATE_MODES = Object.freeze(new Set(['enforce', 'dry-run']));
+
+const LIVE_PROVIDER_IDS = Object.freeze(['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim']);
+const LIVE_PROVIDER_SET = Object.freeze(new Set(LIVE_PROVIDER_IDS));
+const DEFAULT_PROVIDER_ORDER = Object.freeze(['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim']);
+const KNOWN_PR_POLICIES = Object.freeze(new Set(['required', 'direct-to-main']));
 
 // Campos de texto NO confiables sobre los que corre el detector de prompt-injection.
 function collectInjectionHits(descriptor) {
@@ -72,6 +71,16 @@ function collectInjectionHits(descriptor) {
   if (board && Array.isArray(board.admissionLabels)) {
     board.admissionLabels.forEach((l, i) => candidates.push([`board.admissionLabels[${i}]`, l]));
   }
+  const providers = descriptor && descriptor.providers;
+  if (providers && Array.isArray(providers.order)) {
+    providers.order.forEach((provider, i) => candidates.push([`providers.order[${i}]`, provider]));
+  }
+  const repos = (descriptor && descriptor.repositories) || [];
+  if (Array.isArray(repos)) {
+    repos.forEach((r, i) => candidates.push([`repositories[${i}].defaultBaseRef`, r && r.defaultBaseRef]));
+  }
+  const pullRequests = descriptor && descriptor.pullRequests;
+  candidates.push(['pullRequests.policy', pullRequests && pullRequests.policy]);
   const hits = [];
   for (const [label, value] of candidates) {
     if (typeof value !== 'string' || value === '') continue;
@@ -237,42 +246,42 @@ function collectRepositoryProvenanceHits(descriptor) {
   return hits;
 }
 
-function collectProviderOrderHits(descriptor) {
+function collectDescriptorPolicyViolations(descriptor) {
   const hits = [];
-  const providers = descriptor && descriptor.providers;
-  if (providers === undefined) return hits;
-  const order = providers && providers.order;
-  if (!Array.isArray(order) || order.length === 0) {
-    return [{ path: 'providers.order', detail: 'providers.order debe declarar al menos un provider de la allowlist' }];
-  }
-  const seen = new Set();
-  order.forEach((id, i) => {
-    if (typeof id !== 'string' || id.trim() === '') {
-      hits.push({ path: `providers.order[${i}]`, detail: 'provider vacio o invalido' });
-      return;
-    }
-    if (id.toLowerCase() === DEPRECATED_PROVIDER_ID) {
-      hits.push({ path: `providers.order[${i}]`, detail: 'provider no permitido' });
-      return;
-    }
-    if (!ALLOWED_PROVIDER_ORDER_SET.has(id)) {
-      hits.push({ path: `providers.order[${i}]`, detail: `provider desconocido: ${id}` });
-    }
-    if (seen.has(id)) {
-      hits.push({ path: `providers.order[${i}]`, detail: `provider duplicado: ${id}` });
-    }
-    seen.add(id);
-  });
-  return hits;
-}
 
-function collectPullRequestPolicyHits(descriptor) {
-  if (!descriptor || descriptor.pullRequestPolicy === undefined) return [];
-  const value = descriptor.pullRequestPolicy;
-  if (typeof value !== 'string' || !ALLOWED_PULL_REQUEST_POLICIES.has(value)) {
-    return [{ path: 'pullRequestPolicy', detail: `politica de PR fuera de enum: ${JSON.stringify(value)}` }];
+  try {
+    deriveProviderOrder(descriptor);
+  } catch (e) {
+    hits.push({ path: 'providers.order', detail: e.message });
   }
-  return [];
+
+  const repos = (descriptor && descriptor.repositories) || [];
+  if (Array.isArray(repos)) {
+    repos.forEach((r, i) => {
+      if (!r || r.defaultBaseRef === undefined) return;
+      try {
+        validateBaseRef(r.defaultBaseRef);
+      } catch {
+        hits.push({ path: `repositories[${i}].defaultBaseRef`, detail: 'defaultBaseRef invalido segun validateBaseRef()' });
+      }
+    });
+  }
+
+  const pullRequests = descriptor && descriptor.pullRequests;
+  if (pullRequests !== undefined) {
+    if (!pullRequests || typeof pullRequests !== 'object' || Array.isArray(pullRequests)) {
+      hits.push({ path: 'pullRequests', detail: 'pullRequests debe ser un objeto cerrado' });
+    } else if (!KNOWN_PR_POLICIES.has(pullRequests.policy)) {
+      hits.push({ path: 'pullRequests.policy', detail: 'politica de PR fuera del enum permitido' });
+    }
+  }
+
+  const signers = descriptor && descriptor.authority && descriptor.authority.signers;
+  if (!Array.isArray(signers) || signers.length === 0 || signers.some((s) => typeof s !== 'string' || s.length === 0)) {
+    hits.push({ path: 'authority.signers', detail: 'authority.signers vacio o invalido (fail-closed)' });
+  }
+
+  return hits;
 }
 
 // -----------------------------------------------------------------------------
@@ -382,23 +391,14 @@ function validateDescriptor(obj, opts = {}) {
     };
   }
 
-  // 7) Providers/politica de PR: allowlists server-side. El schema lo expresa y
-  //    esta capa lo repite para callers que consuman derivadores directo.
-  const providerHits = collectProviderOrderHits(descriptor);
-  if (providerHits.length > 0) {
+  // 7) Contrato completo del descriptor: providers vivos, refs git seguras,
+  //    politica de PR cerrada y autoridad de firma no vacia.
+  const policyHits = collectDescriptorPolicyViolations(descriptor);
+  if (policyHits.length > 0) {
     return {
       valid: false,
-      stage: 'providers',
-      errors: providerHits.map((h) => ({ path: h.path, keyword: 'providerOrder', detail: h.detail })),
-      descriptor: null,
-    };
-  }
-  const prPolicyHits = collectPullRequestPolicyHits(descriptor);
-  if (prPolicyHits.length > 0) {
-    return {
-      valid: false,
-      stage: 'pullRequestPolicy',
-      errors: prPolicyHits.map((h) => ({ path: h.path, keyword: 'pullRequestPolicy', detail: h.detail })),
+      stage: 'policy',
+      errors: policyHits.map((h) => ({ path: h.path, keyword: 'descriptorPolicy', detail: h.detail })),
       descriptor: null,
     };
   }
@@ -532,6 +532,43 @@ function deriveProviderBudget(descriptor) {
   return budget;
 }
 
+// providers.order (orden preferido de adaptadores vivos).
+function deriveProviderOrder(descriptor) {
+  const providers = descriptor && descriptor.providers;
+  if (providers !== undefined && (!providers || typeof providers !== 'object' || Array.isArray(providers))) {
+    throw new Error('providers.order invalido: providers debe ser un objeto');
+  }
+  const raw = providers && providers.order;
+  if (providers !== undefined && !Array.isArray(raw)) {
+    throw new Error('providers.order invalido: order debe ser una lista');
+  }
+  const order = Array.isArray(raw) ? raw : DEFAULT_PROVIDER_ORDER;
+  const seen = new Set();
+  if (order.length < 1 || order.length > 5) throw new Error('providers.order invalido: cantidad fuera de rango');
+  for (const provider of order) {
+    if (!LIVE_PROVIDER_SET.has(provider)) throw new Error(`providers.order invalido: provider no permitido ${JSON.stringify(provider)}`);
+    if (seen.has(provider)) throw new Error(`providers.order invalido: provider duplicado ${JSON.stringify(provider)}`);
+    seen.add(provider);
+  }
+  return [...order];
+}
+
+// #4851 — política de PR efectiva (default seguro `required` cuando el operador no
+// la declara). Fail-closed: si `pullRequests.policy` está declarada fuera del enum
+// vivo, se rechaza en vez de degradar silenciosamente.
+function derivePullRequestPolicy(descriptor) {
+  const pullRequests = descriptor && descriptor.pullRequests;
+  if (pullRequests === undefined) return 'required';
+  if (!pullRequests || typeof pullRequests !== 'object' || Array.isArray(pullRequests)) {
+    throw new Error('pullRequests invalido: debe ser un objeto cerrado');
+  }
+  const policy = pullRequests.policy;
+  if (!KNOWN_PR_POLICIES.has(policy)) {
+    throw new Error(`pullRequests.policy invalida: ${JSON.stringify(policy)}`);
+  }
+  return policy;
+}
+
 // interface → skills (partición del puerto dev).
 function deriveCapabilityPartitions(descriptor) {
   const out = {};
@@ -539,30 +576,6 @@ function deriveCapabilityPartitions(descriptor) {
     if (cap && KERNEL_INTERFACES.has(cap.interface)) out[cap.interface] = [...(cap.skills || [])];
   }
   return out;
-}
-
-function deriveProviderOrder(descriptor) {
-  const providers = descriptor && descriptor.providers;
-  const raw = providers && Array.isArray(providers.order) ? providers.order : ALLOWED_PROVIDER_ORDER;
-  if (!Array.isArray(raw) || raw.length === 0) throw new Error('providers.order invalido: lista vacia');
-  const seen = new Set();
-  for (const id of raw) {
-    if (typeof id !== 'string' || id.trim() === '') throw new Error('providers.order invalido: provider vacio');
-    if (id.toLowerCase() === DEPRECATED_PROVIDER_ID) throw new Error('providers.order invalido: provider no permitido');
-    if (!ALLOWED_PROVIDER_ORDER_SET.has(id)) throw new Error(`providers.order invalido: provider desconocido ${JSON.stringify(id)}`);
-    if (seen.has(id)) throw new Error(`providers.order invalido: provider duplicado ${JSON.stringify(id)}`);
-    seen.add(id);
-  }
-  return [...raw];
-}
-
-function derivePullRequestPolicy(descriptor) {
-  const raw = descriptor && descriptor.pullRequestPolicy;
-  if (raw === undefined || raw === null || raw === '') return DEFAULT_PULL_REQUEST_POLICY;
-  if (typeof raw !== 'string' || !ALLOWED_PULL_REQUEST_POLICIES.has(raw)) {
-    throw new Error(`pullRequestPolicy invalida: ${JSON.stringify(raw)}`);
-  }
-  return raw;
 }
 
 /**
@@ -699,7 +712,8 @@ function deriveKernelPin(descriptor, opts = {}) {
 // suma acá cuando exista su historia, nunca desde el request en banda.
 // -----------------------------------------------------------------------------
 const STATUS_TRANSITIONS = Object.freeze({
-  onboarding: Object.freeze(new Set(['active'])),
+  onboarding: Object.freeze(new Set(['active', 'archived'])),
+  active: Object.freeze(new Set(['archived'])),
 });
 
 function isValidStatusEdge(from, to) {
@@ -797,10 +811,10 @@ module.exports = {
   schema,
   KERNEL_SKILLS,
   KERNEL_INTERFACES,
-  ALLOWED_PROVIDER_ORDER,
-  DEFAULT_PULL_REQUEST_POLICY,
-  ALLOWED_PULL_REQUEST_POLICIES,
   GATE_NAMES,
+  LIVE_PROVIDER_IDS,
+  DEFAULT_PROVIDER_ORDER,
+  KNOWN_PR_POLICIES,
   validateDescriptor,
   loadDescriptor,
   resolveCapabilitySkill,
@@ -812,8 +826,7 @@ module.exports = {
   collectPathTraversalHits,
   collectThresholdViolations,
   collectRepositoryProvenanceHits,
-  collectProviderOrderHits,
-  collectPullRequestPolicyHits,
+  collectDescriptorPolicyViolations,
   CREATE_REPO_NAME_RE,
   redactAjvErrors,
   deriveRouting,
@@ -822,9 +835,9 @@ module.exports = {
   derivePriorityWindows,
   deriveAgentCap,
   deriveProviderBudget,
-  deriveCapabilityPartitions,
   deriveProviderOrder,
   derivePullRequestPolicy,
+  deriveCapabilityPartitions,
   resolveGate,
   resolveSignerAuthority,
   authorizeSigner,

@@ -142,15 +142,15 @@ test('CA-D2: dry-run expone ruteo resuelto contra la allowlist (skills validados
 
 test('#4851: dry-run expone providers y politica de PR efectivos', () => {
   const desc = validDescriptor({
-    pullRequestPolicy: 'maintainer-push',
+    pullRequests: { policy: 'direct-to-main' },
     providers: { order: ['nvidia-nim', 'cerebras', 'gemini-google', 'openai-codex', 'anthropic'] },
   });
   const res = b.runBootstrap({ descriptor: desc, mode: 'dry-run' });
   assert.equal(res.ok, true, JSON.stringify(res.errors));
   assert.deepEqual(res.dryRun.providerOrder, ['nvidia-nim', 'cerebras', 'gemini-google', 'openai-codex', 'anthropic']);
-  assert.equal(res.dryRun.pullRequestPolicy, 'maintainer-push');
+  assert.equal(res.dryRun.pullRequestPolicy, 'direct-to-main');
   assert.match(res.human, /nvidia-nim/);
-  assert.match(res.human, /maintainer-push/);
+  assert.match(res.human, /direct-to-main/);
 });
 
 test('#4851: dry-run deriva defaults seguros cuando providers/politica faltan', () => {
