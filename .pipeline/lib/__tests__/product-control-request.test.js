@@ -191,6 +191,82 @@ test('SEC-6: host fuera de la allowlist (evil.com) es rechazado', () => {
 });
 
 // -----------------------------------------------------------------------------
+// #4850 — backend de onboarding interpreta el descriptor completo y rechaza
+// payloads hostiles fail-closed (400 SIN escritura de cola). La validación la
+// delega `enqueueOnboard` en `project-bootstrap.runBootstrap({ mode:'dry-run' })`
+// con `kernelGateFloor:'enforce'`; acá se asegura que cada override inválido del
+// descriptor completo (providers / rama / política de PR / firma) corta antes de
+// encolar. Evidencia de backend propia de la historia (A01/A03/A08).
+// -----------------------------------------------------------------------------
+
+test('#4850: provider desconocido ⇒ 400 sin encolar', () => {
+    const deps = fakeDeps();
+    const res = pcr.enqueueOnboard({ descriptor: validDescriptor({ providers: { order: ['unknown-llm'] } }) }, deps);
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 400);
+    assert.match(res.stage || '', /validation/);
+    assert.equal(Object.keys(deps.fsImpl.files).length, 0, 'no debe encolar con provider desconocido');
+});
+
+test('#4850: provider deprecado/no-vivo (groq) ⇒ 400 sin encolar', () => {
+    const deps = fakeDeps();
+    const res = pcr.enqueueOnboard({ descriptor: validDescriptor({ providers: { order: ['groq'] } }) }, deps);
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 400);
+    assert.equal(Object.keys(deps.fsImpl.files).length, 0, 'sólo providers vivos son admisibles');
+});
+
+test('#4850: providers.order duplicados ⇒ 400 sin encolar', () => {
+    const deps = fakeDeps();
+    const res = pcr.enqueueOnboard({ descriptor: validDescriptor({ providers: { order: ['anthropic', 'anthropic'] } }) }, deps);
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 400);
+    assert.equal(Object.keys(deps.fsImpl.files).length, 0, 'no debe encolar con providers duplicados');
+});
+
+test('#4850: rama base (defaultBaseRef) inválida ⇒ 400 sin encolar', () => {
+    const deps = fakeDeps();
+    const res = pcr.enqueueOnboard({
+        descriptor: validDescriptor({ repositories: [{ id: 'main', url: 'https://github.com/acme/store', role: 'primary', defaultBaseRef: '../evil branch' }] }),
+    }, deps);
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 400);
+    assert.match(res.stage || '', /validation/);
+    assert.equal(Object.keys(deps.fsImpl.files).length, 0, 'no debe encolar con rama inválida');
+});
+
+test('#4850: política de PR fuera del enum ⇒ 400 sin encolar', () => {
+    const deps = fakeDeps();
+    const res = pcr.enqueueOnboard({ descriptor: validDescriptor({ pullRequests: { policy: 'yolo' } }) }, deps);
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 400);
+    assert.equal(Object.keys(deps.fsImpl.files).length, 0, 'no debe encolar con política de PR inválida');
+});
+
+test('#4850: authority.signers vacío ⇒ 400 sin encolar', () => {
+    const deps = fakeDeps();
+    const res = pcr.enqueueOnboard({ descriptor: validDescriptor({ authority: { signers: [], gates: { gate2: 'enforce' } } }) }, deps);
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 400);
+    assert.equal(Object.keys(deps.fsImpl.files).length, 0, 'firma vacía no puede encolar (fail-closed)');
+});
+
+test('#4850: overrides válidos del descriptor completo (providers vivos + política declarada) ⇒ 202 encola', () => {
+    const deps = fakeDeps();
+    const res = pcr.enqueueOnboard({
+        descriptor: validDescriptor({
+            providers: { order: ['anthropic', 'openai-codex'] },
+            pullRequests: { policy: 'direct-to-main' },
+        }),
+        actor: 'leo',
+    }, deps);
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(res.status, 202);
+    // El pedido válido sí queda encolado exactamente una vez.
+    assert.equal(Object.keys(deps.fsImpl.files).length, 1);
+});
+
+// -----------------------------------------------------------------------------
 // CA-1.5 — start/pause encolados (delegación al kernel)
 // -----------------------------------------------------------------------------
 
