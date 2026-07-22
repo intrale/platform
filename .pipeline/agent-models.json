@@ -38,7 +38,8 @@
       ],
       "permissions_mode": "bypassPermissions",
       "auth_mode": "oauth",
-      "display_in_health": "not_applicable"
+      "display_in_health": "not_applicable",
+      "billing": "paid"
     },
     "openai-codex": {
       "launcher": "codex",
@@ -71,7 +72,8 @@
         "OPENAI_API_KEY"
       ],
       "auth_mode": "oauth",
-      "permissions_mode": "full-auto"
+      "permissions_mode": "full-auto",
+      "billing": "paid"
     },
     "gemini-google": {
       "launcher": "gemini-google",
@@ -103,7 +105,8 @@
       "permissions_mode": "bypassPermissions",
       "alternative_models": [
         "gemini-2.5-flash"
-      ]
+      ],
+      "billing": "free"
     },
     "cerebras": {
       "launcher": "cerebras",
@@ -132,7 +135,8 @@
       "permissions_mode": "bypassPermissions",
       "alternative_models": [
         "zai-glm-4.7"
-      ]
+      ],
+      "billing": "free"
     },
     "nvidia-nim": {
       "launcher": "nvidia-nim",
@@ -161,7 +165,8 @@
       "credentials_env": [
         "NVIDIA_NIM_API_KEY"
       ],
-      "permissions_mode": "bypassPermissions"
+      "permissions_mode": "bypassPermissions",
+      "billing": "free"
     },
     "deterministic": {
       "launcher": "node",

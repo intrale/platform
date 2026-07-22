@@ -143,6 +143,11 @@
           "description": "#4839 — Capabilities de EJECUCIÓN que el motor del provider declara sostener (eje CAPACIDAD DEL MOTOR, NO el eje autorización de lib/capabilities.js). El enum de valores válidos se inyecta programáticamente desde EXECUTION_CAPABILITY_CATALOG (lib/execution-capabilities.js) al cargar el schema — el literal abajo es informativo. Opcional: la AUSENCIA de `capabilities` se trata FAIL-CLOSED como 'no ofrece ninguna' en el matching de fallbacks (validateCrossReferences), nunca 'asumir capaz' (SEC-3). Enum cerrado + uniqueItems para que no se pueda inyectar una capability arbitraria que evada el matching (SEC-2).",
           "items": { "type": "string", "enum": ["agentic-tool-use"] },
           "uniqueItems": true
+        },
+        "billing": {
+          "type": "string",
+          "description": "#4870 — Clasificación de facturación del provider: 'paid' (Anthropic, OpenAI-Codex) o 'free' (Gemini, Cerebras, NVIDIA NIM). Fuente única de verdad de '¿hay pago disponible?' para el modo reducido (isReducedMode en lib/commander/multi-provider.js). Opcional (retrocompat): la AUSENCIA de `billing` se trata FAIL-SAFE como 'free' en todo lookup del código — un provider sin marcar NUNCA se confunde con pago. Los providers determinísticos/canned (sin LLM tarifado) quedan sin `billing`. Enum cerrado para que no se pueda inyectar un tier arbitrario.",
+          "enum": ["paid", "free"]
         }
       }
     },

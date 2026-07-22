@@ -275,6 +275,70 @@ function isCommanderChainGated(opts = {}) {
     }
 }
 
+// -----------------------------------------------------------------------------
+// #4870 — ¿el commander está en "modo reducido"? READ-ONLY.
+//
+// Modo reducido = TODOS los providers PAGOS (billing:'paid' → Anthropic, Codex)
+// están gateados por cuota, PERO queda al menos un provider FREE sano en la chain
+// (billing:'free' → Gemini, Cerebras, NVIDIA NIM). En ese estado el Commander NO
+// ejecuta acciones: responde un aviso advisory (cannedReducedModeResponse) y NO
+// spawnea el free (decisión de PO D1 — least-privilege, no quema free tier).
+//
+// La distinción con `isCommanderChainGated` es clave (CA-5): si la chain está
+// ENTERAMENTE gateada (ni pagos ni frees sanos) → `res.gated === true` → NO es
+// modo reducido (es "todos caídos" → canned all-providers-failed existente).
+// Modo reducido SOLO cuando la resolución NO está gated pero el candidato
+// resuelto es `providerBilling === 'free'` (los pagos gateados dejaron un free
+// sano como candidato).
+//
+// Estado DERIVADO EN VIVO de la resolución de cuota por-provider (los flags se
+// limpian al resetear la ventana): sin flag sticky persistido (SEC-REQ-3). Al
+// recuperarse un pago, el próximo dispatch resuelve a pago y sale solo (CA-4).
+//
+// Reusa el patrón read-only silenciado de `isCommanderChainGated` (sin audit,
+// sin notice, sin logs, sin balancer). Fail-open: ante cualquier error devuelve
+// `false` (nunca dejar mudo al Commander por un bug propio).
+// -----------------------------------------------------------------------------
+function isReducedMode(opts = {}) {
+    const { pipelineDir, fsImpl, quotaModule, now, dispatchModule } = opts;
+    try {
+        const _dispatch = dispatchModule || require('../agent-launcher/dispatch-with-fallback');
+        const res = _dispatch.resolveSpawnWithFallback({
+            skill: COMMANDER_SKILL,
+            issue: 'commander-reduced-check',
+            pipelineDir,
+            fsImpl,
+            quotaModule: quotaModule || require('../quota-exhausted'),
+            now,
+            onLog: () => {},                          // sin logs
+            notify: () => {},                         // sin notice a Telegram
+            auditLog: { appendChained: () => {} },    // sin escritura de audit
+        });
+        return !!(res && !res.gated && res.providerBilling === 'free');
+    } catch {
+        return false; // fail-open: nunca advisory-lock por un bug propio
+    }
+}
+
+// -----------------------------------------------------------------------------
+// #4870 — shouldRespondReducedMode: decisión COMBINADA de si el Commander debe
+// responder en modo reducido. Función PURA (combina el gate de rollout de
+// config con el estado derivado en vivo) para que CA-7 (enabled:false → flujo
+// idéntico al actual, regresión cero) sea unit-testeable sin arrancar el pulpo.
+//
+// `config` = bloque `reduced_mode` de config.yaml ({ enabled, kill_switch }).
+// Con `enabled !== true` (default OFF) o `kill_switch === true` devuelve false
+// SIN consultar la resolución de cuota — regresión cero + corte de emergencia.
+// Sólo cuando el rollout está activo consulta `isReducedMode(...)`.
+// -----------------------------------------------------------------------------
+function shouldRespondReducedMode(opts = {}) {
+    const { config, ...rest } = opts;
+    const cfg = config || {};
+    if (cfg.enabled !== true) return false;      // rollout OFF → flujo actual
+    if (cfg.kill_switch === true) return false;  // corte de emergencia
+    return isReducedMode(rest);
+}
+
 // #4413 — asegura que una resolución exponga las 3 claves de metadata de
 // balanceo (weight/quotaPct/selectionReason). Si ya vienen (camino balanceado),
 // no las pisa; si no (camino estricto), las agrega en null. Aditivo: preserva
@@ -284,6 +348,9 @@ function _normalizeBalancerMeta(res) {
     if (!('weight' in res)) res.weight = null;
     if (!('quotaPct' in res)) res.quotaPct = null;
     if (!('selectionReason' in res)) res.selectionReason = null;
+    // #4870 — default fail-safe para el shape simétrico: cualquier resolución que
+    // no traiga `providerBilling` (paths legacy sin quotaModule) queda 'free'.
+    if (!('providerBilling' in res)) res.providerBilling = 'free';
     return res;
 }
 
@@ -606,10 +673,15 @@ function _buildBalancedResolution(args = {}) {
     // #4413 CA-9 — metadata ADITIVA de la decisión de ruteo para la auditoría.
     // El caller (pulpo) la pasa a `auditCommanderRequest`. En el camino estricto
     // (OFF) estas claves no existen → el audit las persiste como null.
+    // #4870 — `providerBilling` del provider elegido, para mantener el shape
+    // idéntico al del camino estricto (que lo expone vía dispatch). FAIL-SAFE:
+    // default 'free' si el provider no declara `billing`.
+    const _pickedBillingDef = (models.providers && models.providers[provider]) || null;
     const balMeta = {
         weight: Number.isFinite(picked.weight) ? picked.weight : null,
         quotaPct: Number.isFinite(picked.quotaPct) ? picked.quotaPct : null,
         selectionReason: picked.reason ? String(picked.reason) : null,
+        providerBilling: (_pickedBillingDef && _pickedBillingDef.billing === 'paid') ? 'paid' : 'free',
     };
 
     if (isPrimary) {
@@ -1780,6 +1852,54 @@ function cannedAllProvidersFailedResponse({ chainTried, verifiedAllFailed = fals
 }
 
 // -----------------------------------------------------------------------------
+// #4870 — cannedReducedModeResponse — aviso advisory del MODO REDUCIDO.
+//
+// Se emite cuando TODOS los pagos (billing:'paid') están gateados por cuota pero
+// queda un free sano en la chain (isReducedMode === true). Decisión de PO D1:
+// canned determinístico, NO se spawnea el free (least-privilege, no quema free
+// tier, no expone datos del pipeline al TOS de un free externo).
+//
+// Contrato del copy (CA-3 + guidelines UX):
+//  - Explicita textualmente "modo reducido" y "sin ejecución de acciones".
+//  - Estado primero (primera línea) — el operador lo lee en 1 segundo.
+//  - Indica qué pagos están caídos EN LENGUAJE DE OPERADOR (Anthropic / Codex),
+//    SIN nombres de modelos, timers ni términos internos (gated/chain/billing).
+//  - Cierra con la salida automática (CA-4): retoma solo al recuperar un pago.
+//  - Tono calmo (degradación controlada, no alarma), español, auto-contenido.
+//
+// SEC-REQ-4: el copy NO interpola secrets ni valores de `credentials_env`; aun
+// así pasa por `redactSecretValue` (defensa en profundidad, belt-and-suspenders).
+// -----------------------------------------------------------------------------
+const _PAID_PROVIDER_LABELS = Object.freeze({
+    'anthropic': 'Anthropic',
+    'openai-codex': 'Codex',
+});
+
+function cannedReducedModeResponse({ downProviders } = {}) {
+    // Mapear nombres internos de los pagos caídos a etiquetas de operador. Se
+    // ignora cualquier nombre desconocido (nunca se filtra un nombre crudo).
+    const labels = (Array.isArray(downProviders) ? downProviders : [])
+        .map((p) => _PAID_PROVIDER_LABELS[String(p || '').toLowerCase()] || null)
+        .filter(Boolean);
+    const uniq = [...new Set(labels)]; // dedup preservando orden
+    const causa = uniq.length === 0
+        ? 'los proveedores pagos'
+        : (uniq.length === 1 ? uniq[0] : uniq.join(' y '));
+
+    const text =
+        `🟡 Estamos en modo reducido — sin ejecución de acciones.\n` +
+        `Se agotó la cuota de ${causa}, así que por este canal no estoy avanzando tareas del pipeline (dev/build/QA). ` +
+        `Los comandos determinísticos (/status, /listado, /lanzar) siguen funcionando. ` +
+        `Retomo la ejecución normal apenas se recupere un proveedor pago, sin que tengas que hacer nada.`;
+
+    const r = redactModule();
+    if (r && typeof r.redactSecretValue === 'function') {
+        try { return r.redactSecretValue(text); } catch { /* fall-through */ }
+    }
+    return text;
+}
+
+// -----------------------------------------------------------------------------
 // #3275 — Re-export del módulo de fallback in-flight para tener una sola
 // superficie pública en `require('./multi-provider')`. El módulo dedicado
 // vive en `./inflight-fallback.js` y tiene su propia suite de tests.
@@ -1798,6 +1918,9 @@ module.exports = {
     resolveCommanderProviderExcluding,
     // #4565 (rebote rev-1) — gate de cuota read-only: ¿toda la cadena gateada?
     isCommanderChainGated,
+    // #4870 — modo reducido read-only: pagos gateados pero free sano.
+    isReducedMode,
+    shouldRespondReducedMode,
     formatFallbackNotice,
     shouldEmitFallbackNotice,
     auditCommanderRequest,
@@ -1811,6 +1934,8 @@ module.exports = {
     cannedAllGatedResponse,
     cannedAllProvidersFailedResponse,
     cannedDataResidencyResponse,
+    // #4870 — aviso advisory del modo reducido (canned determinístico D1).
+    cannedReducedModeResponse,
 
     // #3275 — in-flight fallback (re-export del módulo dedicado)
     decideInflightFallback: inflight.decideInflightFallback,
