@@ -2449,11 +2449,29 @@ function quotaSlice(state, ctx) {
         try { quotaCache = providerQuotaAgg.readCache(PIPELINE) || {}; } catch { quotaCache = {}; }
     }
     const nowMs = Date.now();
+    // #4863 — Proveedores con tope de cuota REALMENTE activo, leídos de la MISMA
+    // fuente que alimenta el banner de degradación (`quota-exhausted-state`, que
+    // lee `quota-exhausted.json` read-only). Se pasa a `enrich` para reconciliar
+    // la tarjeta "cuota por proveedor" con el banner: en el mode 'event' (Codex)
+    // la tarjeta deriva "agotada" del mismo snapshot que el banner, y nunca
+    // muestra "sin límite" mientras el banner dice "agotada" (CA-1/CA-2).
+    let exhaustedProviders = new Set();
+    if (quotaExhaustedState && typeof quotaExhaustedState.getQuotaState === 'function') {
+        try {
+            const qflag = quotaExhaustedState.getQuotaState({ now: nowMs });
+            if (qflag && qflag.active && Array.isArray(qflag.providers)) {
+                for (const slot of qflag.providers) {
+                    if (slot && typeof slot.id === 'string' && slot.id) exhaustedProviders.add(slot.id);
+                }
+            }
+        } catch { /* fail-safe: sin la señal, no marcamos ningún provider agotado */ }
+    }
     for (const [p, result] of Object.entries(providers)) {
         const normalized = normalizeProviderQuota(p, result);
         // #4533 — agrega available%, reset propio por bucket, ventana y modo.
+        // #4863 — exhaustedProviders reconcilia el estado 'event' con el banner.
         if (providerQuotaAgg && typeof providerQuotaAgg.enrich === 'function') {
-            try { providerQuotaAgg.enrich(p, normalized, result, { cache: quotaCache, now: nowMs }); }
+            try { providerQuotaAgg.enrich(p, normalized, result, { cache: quotaCache, now: nowMs, exhaustedProviders }); }
             catch { /* fail-safe: el enrich nunca tumba el slice de cuota */ }
         }
         providersClient[p] = normalized;

@@ -2587,11 +2587,30 @@ function _mzHydrateWinCell(key, slot, b){
     const meta = MZ_PROVIDER_META[key] || { name: key, src: '' };
     const mode = b && b.mode;
 
-    // Estado por eventos (Codex): sin barra, chip "sin límite" / "tope activo".
+    // Estado por eventos (Codex): sin barra. #4863 — TRES estados explícitos
+    // (CA-4), derivados de la fuente única reconciliada con el banner:
+    //   'ok'        → "✓ sin límite" (dato fresco, sin tope).
+    //   'exhausted' → "tope activo"  (mismo snapshot que el banner de degradación).
+    //   'nodata'    → "sin dato"     (stale por inactividad / sin lectura fresca) —
+    //                  NUNCA se pinta verde: distingue "sin dato por inactividad"
+    //                  de "sin límite" y de "agotada".
     if(mode === 'event'){
         cell.classList.add('mz-qm-event');
         if(barEl) barEl.style.width = '0%';
-        const ok = !b || b.eventOk !== false;
+        // Deriva del eventState nuevo; degrada al booleano legacy eventOk si un
+        // slice viejo no lo trae (backward-compat).
+        let evState = b && b.eventState;
+        if(!evState) evState = (!b || b.eventOk !== false) ? 'ok' : 'exhausted';
+        if(evState === 'nodata'){
+            cell.classList.add('mz-qm-nodata');
+            if(pctEl) pctEl.textContent = 'sin dato';
+            if(rstEl) rstEl.textContent = '';
+            cell.setAttribute('title', meta.name + ': sin dato de cuota fresco (proveedor inactivo >1h · '
+                + 'no se muestra un % viejo · fuente ' + meta.src + ').');
+            cell.setAttribute('aria-label', meta.name + ' ' + (b && b.win ? b.win : '') + ': sin dato');
+            return { healthy: false };
+        }
+        const ok = evState === 'ok';
         if(pctEl) pctEl.textContent = ok ? '✓ sin límite' : 'tope activo';
         if(rstEl) rstEl.textContent = '';
         cell.setAttribute('title', ok

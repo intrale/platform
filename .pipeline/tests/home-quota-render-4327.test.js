@@ -138,6 +138,43 @@ test('#4533: _mzHydrateWinCell mode event (Codex) muestra "sin límite" sin barr
     assert.equal(r.healthy, true, 'sin límite cuenta como proveedor sano');
 });
 
+// ---------------------------------------------------------------------------
+// #4863 — mode event con TRES estados: ok / exhausted / nodata.
+// ---------------------------------------------------------------------------
+test('#4863: mode event eventState "ok" → "sin límite" y proveedor sano', () => {
+    const { cid, els } = makeCell('openai-codex', 'short');
+    const r = loadWinCellHelper(els)._mzHydrateWinCell('openai-codex', 'short',
+        { mode: 'event', eventState: 'ok', win: 'Roll' });
+    assert.match(els[cid + '-pct'].textContent, /sin límite/);
+    assert.equal(r.healthy, true);
+});
+
+test('#4863: mode event eventState "exhausted" → "tope activo", NO sano', () => {
+    const { cid, els } = makeCell('openai-codex', 'short');
+    const r = loadWinCellHelper(els)._mzHydrateWinCell('openai-codex', 'short',
+        { mode: 'event', eventState: 'exhausted', win: 'Roll' });
+    assert.equal(els[cid + '-pct'].textContent, 'tope activo', 'agotada → "tope activo"');
+    assert.ok(!/sin límite/.test(els[cid + '-pct'].textContent), 'NUNCA "sin límite" cuando el banner dice agotada');
+    assert.equal(r.healthy, false);
+});
+
+test('#4863: mode event eventState "nodata" (stale por inactividad) → "sin dato", NO verde', () => {
+    const { cid, els } = makeCell('openai-codex', 'short');
+    const r = loadWinCellHelper(els)._mzHydrateWinCell('openai-codex', 'short',
+        { mode: 'event', eventState: 'nodata', win: 'Roll' });
+    assert.equal(els[cid + '-pct'].textContent, 'sin dato', 'inactividad → "sin dato", no "sin límite"');
+    assert.ok(!/sin límite/.test(els[cid + '-pct'].textContent), 'NUNCA verde espurio por inactividad');
+    assert.ok(els[cid]._classes.has('mz-qm-nodata'), 'marca visualmente "sin dato"');
+    assert.equal(r.healthy, false, 'sin dato no cuenta como proveedor sano');
+});
+
+test('#4863: backward-compat — sin eventState, eventOk:false renderiza "tope activo"', () => {
+    const { cid, els } = makeCell('openai-codex', 'short');
+    loadWinCellHelper(els)._mzHydrateWinCell('openai-codex', 'short',
+        { mode: 'event', eventOk: false, win: 'Roll' });
+    assert.equal(els[cid + '-pct'].textContent, 'tope activo', 'slice viejo sin eventState degrada por eventOk');
+});
+
 test('#4533: _mzThresholdClass respeta los umbrales verde/ámbar/rojo', () => {
     const { _mzThresholdClass } = loadWinCellHelper({});
     assert.equal(_mzThresholdClass(80), 'ok');
