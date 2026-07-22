@@ -1094,3 +1094,92 @@ test('#4809 · drainCreateWaveQueue usa el drenador real por default (sin impl i
   const sum = await supervisor.drainCreateWaveQueue({ queueDir: '/tmp/no-existe-4809', processedDir: '/tmp/p', auditFile: '/tmp/a.jsonl' });
   assert.deepEqual(sum, { created: [], idempotent: [], rejected: [], errors: [] });
 });
+
+// -----------------------------------------------------------------------------
+// #4853 · Política de ids reservados en supervisor/runtime
+//   El namespace raíz del monorepo (`intrale-platform`) NO puede materializarse
+//   como tenant/instancia aunque el catálogo activo llegue a contenerlo.
+//   Sintaxis (isSafeId=true) ≠ política (isReservedProjectId=true).
+// -----------------------------------------------------------------------------
+
+const CATALOG_RESERVADO = [
+  { productId: 'acme', projectId: 'acme', name: 'ACME', status: 'active' },
+  { productId: 'intrale-platform', projectId: 'intrale-platform', name: 'Root', status: 'active' },
+];
+
+test('#4853 · bootProducts descarta el producto active con id reservado antes de spawnInstance (skipped + alerta, sin store)', async () => {
+  const calls = [];
+  const alerts = [];
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore(CATALOG_RESERVADO),
+    storeFactory: recordingStoreFactory(calls),
+    hydrate: false,
+    onAlert: (a) => alerts.push(a),
+  });
+
+  const res = await supervisor.bootProducts();
+
+  // el reservado NO se instancia; el resto del catálogo boota normal
+  assert.deepEqual(res.spawned, ['acme'], 'solo el activo no-reservado se instancia');
+  assert.equal(supervisor.getInstance('intrale-platform'), null, 'el id reservado NO tiene instancia');
+  assert.equal(supervisor.listInstances().length, 1, 'exactamente una instancia (la no-reservada)');
+
+  // queda auditado en skipped con razón clara
+  const skip = res.skipped.find((s) => s.projectId === 'intrale-platform');
+  assert.ok(skip, 'el reservado aparece en skipped');
+  assert.equal(skip.reason, 'id reservado', 'razón explícita del descarte');
+
+  // alerta operativa emitida (descarte NO silencioso)
+  const alert = alerts.find((a) => a.stage === 'reserved-id' && a.projectId === 'intrale-platform');
+  assert.ok(alert, 'se emitió alerta operativa del id reservado');
+
+  // NINGÚN store fue creado para el id reservado (guard antes de storeFactory)
+  assert.ok(!calls.some((c) => c.contextProjectId === 'intrale-platform'), 'no se creó store para el reservado');
+});
+
+test('#4853 · spawnInstance falla cerrado ante id reservado antes de consultar instances/construir store', () => {
+  const calls = [];
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore([]),
+    storeFactory: recordingStoreFactory(calls),
+    hydrate: false,
+  });
+
+  assert.throws(
+    () => supervisor.spawnInstance({ productId: 'intrale-platform', projectId: 'intrale-platform', status: 'active' }),
+    (err) => err instanceof KernelStoreIsolationError && /reservado/.test(err.message),
+    'spawnInstance lanza KernelStoreIsolationError para id reservado',
+  );
+
+  // fail-closed: ni instancia ni store creados
+  assert.equal(supervisor.getInstance('intrale-platform'), null, 'no quedó instancia registrada');
+  assert.equal(supervisor.listInstances().length, 0, 'no se registró ninguna instancia');
+  assert.ok(!calls.some((c) => c.contextProjectId === 'intrale-platform'), 'no se creó store para el reservado');
+});
+
+test('#4853 · spawnInstance con id reservado NO crea store REAL (verificación con store namespaceado)', () => {
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore([]),
+    storeFactory: realStoreFactory,
+    hydrate: false,
+  });
+
+  assert.throws(
+    () => supervisor.spawnInstance({ productId: 'intrale-platform', projectId: 'intrale-platform', status: 'active' }),
+    (err) => err instanceof KernelStoreIsolationError,
+  );
+  assert.equal(supervisor.getInstance('intrale-platform'), null, 'sin instancia tras el fallo');
+});
+
+test('#4853 · authorizedProjectIdSet excluye ids reservados (no autoriza el namespace raíz como tenant)', async () => {
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore(CATALOG_RESERVADO),
+    storeFactory: recordingStoreFactory([]),
+    hydrate: false,
+  });
+
+  const authorized = await supervisor.authorizedProjectIdSet();
+
+  assert.ok(authorized.has('acme'), 'el producto no-reservado sí está autorizado');
+  assert.ok(!authorized.has('intrale-platform'), 'el id reservado NO está autorizado out-of-band');
+});
