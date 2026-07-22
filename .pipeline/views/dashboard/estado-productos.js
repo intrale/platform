@@ -182,7 +182,7 @@ function waveIco(id) {
 // Fila de la primera ola dentro de la card. Consume tokens/clases existentes
 // (`ep-btn`, `ep-badge`-like) + íconos del sprite; sin colores hardcodeados fuera
 // de los fallbacks de token ya usados en el resto de la vista.
-function waveRow(projectId, wmeta) {
+function waveRow(projectId, wmeta, readOnly) {
     const pidAttr = escapeHtmlAttr(projectId);
     const pidText = escapeHtmlText(projectId);
     if (wmeta.state === 'associated') {
@@ -207,7 +207,7 @@ function waveRow(projectId, wmeta) {
     // A — Descriptor completo, sin ola: CTA habilitada + slot vacío legible.
     return '<div class="ep-wave ep-wave-ready">'
         + `<span class="ep-wave-empty">${waveIco('wave')} Sin ola asociada todavía</span>`
-        + `<button type="button" class="ep-btn ep-btn-wave" data-action="create-wave" data-pid="${pidAttr}" `
+        + `<button type="button" class="ep-btn ep-btn-wave" ${readOnly ? 'disabled ' : ''}data-action="create-wave" data-pid="${pidAttr}" `
         + `aria-label="Crear la primera ola del producto ${pidText}" `
         + 'title="Crear/asociar la primera ola (delega en el kernel)">'
         + `${waveIco('wave-add')} Crear primera ola</button>`
@@ -222,7 +222,8 @@ function productCard(product, raw, activeProductId) {
     // El estado efectivo sale del propio namespace; si no hay entrada, mapeamos el
     // status del descriptor (onboarding/inactive) o 'unknown' (sin datos).
     let st = raw && typeof raw.state === 'string' ? raw.state : null;
-    if (!st) st = (product.status === 'onboarding') ? 'onboarding' : (product.status === 'archived' ? 'archived' : (product.status === 'active' ? 'unknown' : 'inactive'));
+    if (product.status === 'archived') st = 'archived';
+    if (!st) st = (product.status === 'onboarding') ? 'onboarding' : (product.status === 'active' ? 'unknown' : 'inactive');
     const meta = stateMeta(st);
     const phase = raw && typeof raw.phase === 'string' ? raw.phase : '';
     const sum = pipelineSummary(raw);
@@ -257,7 +258,7 @@ function productCard(product, raw, activeProductId) {
         + idRow
         + metrics
         + noData
-        + waveRow(projectId, waveMeta(raw))
+        + waveRow(projectId, waveMeta(raw), st === 'archived')
         + lifecycleButtons(projectId, st)
         + '</article>';
 }
