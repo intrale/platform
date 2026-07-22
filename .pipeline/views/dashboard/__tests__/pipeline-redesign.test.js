@@ -20,9 +20,121 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const vm = require('node:vm');
 
 const MOD_PATH = path.resolve(__dirname, '..', 'pipeline-redesign.js');
 const pr = require(MOD_PATH);
+
+// #4866 — El bucketing por fase (plBuildPhaseBuckets) vive dentro del client
+// script (template string servido al browser), así que para testearlo lo
+// ejecutamos en un sandbox vm con stubs de las APIs de browser/commonHelpers.
+// Las funciones declaradas con `function` quedan expuestas en el global del
+// contexto; los `const` (PL_PHASE_FLOW…) siguen accesibles por cierre léxico.
+function loadClientSandbox() {
+    const script = pr.pipelineRedesignClientScript();
+    const noop = () => {};
+    const domNode = { style: {}, dataset: {}, setAttribute: noop, getAttribute: () => null,
+        appendChild: noop, addEventListener: noop, textContent: '', innerHTML: '' };
+    const sandbox = {
+        console,
+        JSON, Math, Object, Array, Number, String, Boolean, Promise,
+        sessionStorage: { getItem: () => null, setItem: noop },
+        document: {
+            getElementById: () => null, querySelector: () => null,
+            querySelectorAll: () => [], createElement: () => domNode,
+        },
+        window: {},
+        location: { href: '' },
+        setInterval: () => 0, clearInterval: noop, setTimeout: () => 0,
+        fetchJson: async () => null,
+        setText: noop, escapeHtml: (s) => String(s == null ? '' : s),
+        SKILL_ICONS: {}, pipelineModeState: { mode: 'running', allowedIssues: [] },
+        moveIssue: noop, pauseIssue: noop,
+        // Ticks definidos en otros client-scripts concatenados en la página real;
+        // acá los stubeamos para que el módulo cargue aislado.
+        tickHeader: async () => {}, tickWaves: async () => {},
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(script, sandbox, { filename: 'pipeline-redesign.client.js' });
+    return sandbox;
+}
+
+const SANDBOX = loadClientSandbox();
+const plBuildPhaseBuckets = SANDBOX.plBuildPhaseBuckets;
+
+// Helpers de aserción sobre buckets.
+// Array.from del realm del test: los buckets vienen del realm del vm y su
+// prototype no es reference-equal con el Array del host (rompería deepEqual).
+function idsIn(buckets, key) { return Array.from(buckets[key] || [], (i) => String(i.issue)); }
+
+// --- #4866 · Bucketing por fase: issues cerrados/entregados ------------------
+test('plBuildPhaseBuckets está expuesto por el client script', () => {
+    assert.equal(typeof plBuildPhaseBuckets, 'function');
+});
+
+test('CA-1: issue cerrado/entregado (no en matrix) va a done, nunca a def', () => {
+    const waveMembers = ['1001'];
+    const waveDelivered = { '1001': { delivered: true, title: 'Feature cerrada' } };
+    const buckets = plBuildPhaseBuckets({}, {}, [], waveMembers, waveDelivered);
+    assert.deepEqual(idsIn(buckets, 'done'), ['1001']);
+    assert.ok(!idsIn(buckets, 'def').includes('1001'), 'no debe caer en Definición');
+    // Reusa el path visual terminal 'finalizado' (columna verde 📦✓, guideline UX).
+    const item = buckets.done.find((i) => String(i.issue) === '1001');
+    assert.equal(item.estado, 'finalizado');
+    assert.equal(item.title, 'Feature cerrada');
+});
+
+test('CA-3: fallback a Definición solo para issue sin fase y NO cerrado', () => {
+    const waveMembers = ['2001', '2002'];
+    const waveDelivered = {
+        '2001': { delivered: false, title: 'Abierto sin arrancar' }, // → def (no-ingreso)
+        '2002': { delivered: true, title: 'Cerrado' },               // → done
+    };
+    const buckets = plBuildPhaseBuckets({}, {}, [], waveMembers, waveDelivered);
+    assert.ok(idsIn(buckets, 'def').includes('2001'), 'abierto sin fase cae a def');
+    assert.deepEqual(idsIn(buckets, 'done'), ['2002']);
+    assert.ok(!idsIn(buckets, 'def').includes('2002'), 'cerrado nunca en def');
+});
+
+test('CA-5: precedencia — entregado gana aunque tenga faseActual en matrix', () => {
+    const waveMembers = ['3001'];
+    const matrix = { '3001': { faseActual: 'desarrollo/dev', title: 'En transición', agents: [] } };
+    const waveDelivered = { '3001': { delivered: true, title: 'En transición' } };
+    const buckets = plBuildPhaseBuckets(matrix, {}, [], waveMembers, waveDelivered);
+    assert.deepEqual(idsIn(buckets, 'done'), ['3001'], 'gana entregado');
+    assert.ok(!idsIn(buckets, 'dev').includes('3001'), 'no queda en dev pese al faseActual');
+});
+
+test('CA-2: consistencia — mayoría cerrados se distribuyen en done, no amontonados en def', () => {
+    const waveMembers = ['10', '11', '12', '13'];
+    const matrix = { '13': { faseActual: 'desarrollo/dev', title: 'En vuelo', agents: [] } };
+    const waveDelivered = {
+        '10': { delivered: true, title: 'a' },
+        '11': { delivered: true, title: 'b' },
+        '12': { delivered: true, title: 'c' },
+        '13': { delivered: false, title: 'd' }, // el único en vuelo real
+    };
+    const buckets = plBuildPhaseBuckets(matrix, {}, [], waveMembers, waveDelivered);
+    assert.deepEqual(idsIn(buckets, 'done').sort(), ['10', '11', '12']);
+    assert.deepEqual(idsIn(buckets, 'dev'), ['13']);
+    assert.equal(idsIn(buckets, 'def').length, 0, 'nada amontonado en Definición');
+});
+
+test('regresión: issue en vuelo (no entregado) respeta su fase real del matrix', () => {
+    const waveMembers = ['4001'];
+    const matrix = { '4001': { faseActual: 'desarrollo/build', title: 'Compilando', agents: [] } };
+    const waveDelivered = { '4001': { delivered: false, title: 'Compilando' } };
+    const buckets = plBuildPhaseBuckets(matrix, {}, [], waveMembers, waveDelivered);
+    assert.deepEqual(idsIn(buckets, 'build'), ['4001']);
+    assert.equal(idsIn(buckets, 'done').length, 0);
+});
+
+test('franja terminal finalizado (sin flag delivered) sigue yendo a done', () => {
+    const waveMembers = ['5001'];
+    const extraById = { '5001': { issue: '5001', estado: 'finalizado', title: 'Entregado legacy' } };
+    const buckets = plBuildPhaseBuckets({}, extraById, [], waveMembers, {});
+    assert.deepEqual(idsIn(buckets, 'done'), ['5001']);
+});
 
 // --- 1. Mapeo macro de fases -------------------------------------------------
 test('macroPhaseOf mapea cada pipeline/fase real a su etapa macro', () => {
