@@ -1,0 +1,8 @@
+﻿QA del issue 4851: Wizard de onboarding captura descriptor completo con controles cerrados.
+Verifiqué que el wizard conserva exactamente cinco pasos en el flujo existente: Identidad, Repos y tablero, Credenciales, Capacidades, y Autoridad y firma.
+En el paso Repos y tablero confirmé la captura de repo primario, rama base por defecto, rama alternativa opcional, política de PR con selector cerrado y labels de admisión con defaults visibles.
+En el paso Capacidades confirmé la lista ordenable de providers con nombre humano e ID canónico. Ejecuté reordenamiento por teclado con Alt más flecha arriba sobre openai-codex, y el descriptor serializado quedó con openai-codex primero, seguido de anthropic, gemini-google, cerebras y nvidia-nim.
+También confirmé búsqueda negativa: Groq no aparece en el HTML ni en el script operativo del wizard, ni en schema, validador o bootstrap operativos afectados.
+En Autoridad y firma confirmé que GATE 2 se serializa dentro de authority.gates.gate2, con signers y backup, sin crear gate2Approver paralelo.
+Ejecuté los tests obligatorios de onboarding route, project descriptor, project bootstrap y wizard. Todos pasaron.
+Resultado: aprobado, con evidencia visual y funcional del wizard renderizado.

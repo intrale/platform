@@ -14,7 +14,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 
 const view = require('..' + path.sep + 'onboarding-wizard.js');
-const { slug, renderOnboardingWizardSsr, renderOnboardingWizardClientScript, STEPS, KERNEL_SKILLS } = view;
+const { slug, renderOnboardingWizardSsr, renderOnboardingWizardClientScript, STEPS, KERNEL_SKILLS, LIVE_PROVIDERS } = view;
 
 test('exporta el contrato canónico', () => {
     assert.equal(slug, 'onboarding');
@@ -151,4 +151,37 @@ test('G-4/CA-4: mapea el rechazo a copy humano sin jerga ni internals', () => {
     for (const jargon of ['fail-closed', 'dry-run', 'TOCTOU', 'SSRF']) {
         assert.ok(!new RegExp(jargon, 'i').test(script.split('function owHumanError(')[1].split('}')[0] || ''), `owHumanError no debe usar "${jargon}"`);
     }
+});
+
+test('#4851: renderiza campos nuevos sin mencionar Groq/groq', () => {
+    const html = renderOnboardingWizardSsr();
+    for (const id of ['ow-repo-alt-baseref', 'ow-pr-policy', 'ow-provider-order']) {
+        assert.ok(html.includes(`id="${id}"`), `falta ${id}`);
+    }
+    for (const p of LIVE_PROVIDERS) {
+        assert.ok(html.includes(`data-provider-id="${p.id}"`), `falta provider ${p.id}`);
+        assert.ok(html.includes(p.name), `falta nombre humano ${p.name}`);
+    }
+    assert.ok(!/groq/i.test(html), 'Groq/groq no debe aparecer en el SSR');
+});
+
+test('#4851: el script serializa defaults, providers.order y autoridad GATE 2 sin gate2Approver', () => {
+    const script = renderOnboardingWizardClientScript();
+    assert.ok(script.includes("defaultBaseRef: owVal('ow-repo-baseref') || 'main'"));
+    assert.ok(script.includes('alternateBaseRef'));
+    assert.ok(script.includes("d.pullRequests = { policy: owVal('ow-pr-policy') || 'required' }"));
+    assert.ok(script.includes('d.providers = { order: OW_PROVIDER_ORDER.slice() }'));
+    assert.ok(script.includes("signers.length ? signers : ['leitolarreta']"));
+    assert.ok(script.includes("d.authority.backup = owVal('ow-auth-backup') || 'leitolarreta'"));
+    assert.ok(!script.includes('gate2Approver'));
+    assert.ok(!/groq/i.test(script), 'Groq/groq no debe aparecer en el script');
+});
+
+test('#4851: providers son reordenables por botones y teclado', () => {
+    const script = renderOnboardingWizardClientScript();
+    assert.ok(script.includes('function owMoveProvider('));
+    assert.ok(script.includes('function owProviderKey('));
+    assert.ok(script.includes("ev.key !== 'ArrowUp'"));
+    assert.ok(script.includes("ev.key !== 'ArrowDown'"));
+    assert.ok(script.includes('OW_PROVIDER_ORDER.splice'));
 });

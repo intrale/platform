@@ -55,6 +55,14 @@ const slug = 'onboarding';
 const KERNEL_INTERFACES = Object.freeze(['backend', 'frontend', 'pipeline', 'generic']);
 const KERNEL_SKILLS = Object.freeze(['backend-dev', 'android-dev', 'web-dev', 'pipeline-dev', 'dev']);
 const GATE_MODES = Object.freeze(['enforce', 'dry-run']);
+const PULL_REQUEST_POLICIES = Object.freeze(['required', 'direct-to-main']);
+const LIVE_PROVIDERS = Object.freeze([
+    { id: 'anthropic', name: 'Anthropic Claude' },
+    { id: 'openai-codex', name: 'OpenAI Codex' },
+    { id: 'gemini-google', name: 'Gemini Google' },
+    { id: 'cerebras', name: 'Cerebras' },
+    { id: 'nvidia-nim', name: 'NVIDIA NIM' },
+]);
 // #4800 — orgs destino permitidas para "Crear nuevo" (se refleja como <select>,
 // nunca texto libre · security A01). La validación autoritativa vive en el drainer
 // kernel-side (`product-control-drain.js`); acá sólo se ofrece la opción.
@@ -131,6 +139,8 @@ function stepRepos() {
       </div>
       ${field('Repo ID', 'ow-repo-id', { placeholder: 'main' })}
       ${field('Base ref por defecto', 'ow-repo-baseref', { placeholder: 'main' })}
+      ${field('Base ref alternativa', 'ow-repo-alt-baseref', { placeholder: 'develop', hint: 'opcional; se omite si queda vacia.' })}
+      ${selectField('Política de PR', 'ow-pr-policy', PULL_REQUEST_POLICIES, { hint: 'required por defecto; opciones cerradas.' })}
       ${field('Tablero (URL del Project)', 'ow-board-ref', { placeholder: 'https://github.com/orgs/acme/projects/1' })}
       ${field('Labels de admisión', 'ow-board-labels', { placeholder: 'Ready, needs-definition', hint: 'separados por coma.' })}
       ${field('Ruteo (label → capability)', 'ow-board-routing', { placeholder: 'area:backend=backend, area:pipeline=pipeline', hint: 'pares label=capability separados por coma.' })}
@@ -146,12 +156,30 @@ function stepCredentials() {
     </fieldset>`;
 }
 
+function providerOrderList() {
+    const rows = LIVE_PROVIDERS.map((p, i) => `
+        <li class="ow-provider-row" data-provider-id="${escapeHtmlAttr(p.id)}" tabindex="0" onkeydown="owProviderKey(event)">
+          <span class="ow-provider-pos">${i + 1}</span>
+          <span class="ow-provider-main"><b>${escapeHtmlText(p.name)}</b><code>${escapeHtmlText(p.id)}</code></span>
+          <span class="ow-provider-actions">
+            <button type="button" class="ow-icon-btn" title="Subir provider" aria-label="Subir ${escapeHtmlAttr(p.name)}" onclick="owMoveProvider('${escapeHtmlAttr(p.id)}', -1)">↑</button>
+            <button type="button" class="ow-icon-btn" title="Bajar provider" aria-label="Bajar ${escapeHtmlAttr(p.name)}" onclick="owMoveProvider('${escapeHtmlAttr(p.id)}', 1)">↓</button>
+          </span>
+        </li>`).join('');
+    return `<div class="ow-field">
+      <span class="ow-label">Orden de providers</span>
+      <ol class="ow-provider-list" id="ow-provider-order" aria-label="Orden de providers">${rows}</ol>
+      <span class="ow-hint">Usa los botones o Alt+↑/Alt+↓ con foco en una fila. El descriptor guarda IDs canónicos.</span>
+    </div>`;
+}
+
 function stepCapabilities() {
     return `<fieldset class="ow-section ow-hidden" data-step="3">
       <legend>4 · Capacidades</legend>
       <div class="ow-note">Los skills se resuelven contra la allowlist fija del kernel — un skill fuera de ella se rechaza.</div>
       ${selectField('Interface', 'ow-cap-interface', KERNEL_INTERFACES)}
       ${field('Skills', 'ow-cap-skills', { placeholder: 'backend-dev', hint: `permitidos: ${KERNEL_SKILLS.join(', ')} (coma).` })}
+      ${providerOrderList()}
     </fieldset>`;
 }
 
@@ -193,6 +221,16 @@ function onboardingWizardStyle() {
 .ow-radio{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:700;color:var(--in-fg,#e6edf3);min-height:34px;cursor:pointer}
 .ow-radio input{accent-color:var(--brand-cyan,#00D6FF)}
 .ow-radio input:focus-visible{outline:2px solid var(--brand-cyan,#00D6FF);outline-offset:2px}
+.ow-provider-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.ow-provider-row{display:grid;grid-template-columns:28px 1fr auto;align-items:center;gap:10px;border:1px solid var(--in-border,rgba(255,255,255,.12));border-radius:8px;background:rgba(255,255,255,.035);padding:7px 9px}
+.ow-provider-row:focus-visible{outline:2px solid var(--brand-cyan,#00D6FF);outline-offset:2px}
+.ow-provider-pos{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;font-size:11px;font-weight:800;color:#001b22;background:var(--brand-cyan,#00D6FF)}
+.ow-provider-main{display:flex;flex-direction:column;gap:2px;min-width:0}
+.ow-provider-main b{font-size:12.5px;color:var(--in-fg,#e6edf3)}
+.ow-provider-main code{font-size:11px;color:var(--in-fg-dim,#8A93A6);word-break:break-word}
+.ow-provider-actions{display:flex;gap:4px}
+.ow-icon-btn{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:8px;border:1px solid var(--in-border,rgba(255,255,255,.14));background:rgba(255,255,255,.05);color:var(--in-fg,#e6edf3);font-weight:900;cursor:pointer}
+.ow-icon-btn:focus-visible{outline:2px solid var(--brand-cyan,#00D6FF);outline-offset:2px}
 .ow-sec-badge{font-size:10px;font-weight:800;color:#9ff0e6;background:rgba(45,212,191,.14);border:1px solid rgba(45,212,191,.36);border-radius:999px;padding:1px 8px}
 .ow-actions{display:flex;gap:8px;justify-content:space-between;flex-wrap:wrap;margin-top:6px}
 .ow-btn{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:800;border-radius:9px;padding:9px 18px;border:1px solid transparent;cursor:pointer}
@@ -247,6 +285,9 @@ function renderOnboardingWizardClientScript() {
 var OW_STEP = 0;
 var OW_MAX = 5;
 var OW_REPO_MODE = 'existing';
+var OW_DEFAULT_ADMISSION_LABELS = ['needs-definition', 'Ready'];
+var OW_DEFAULT_PROVIDER_ORDER = ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim'];
+var OW_PROVIDER_ORDER = OW_DEFAULT_PROVIDER_ORDER.slice();
 var OW_EDIT_PRODUCT = '';
 try { OW_EDIT_PRODUCT = new URLSearchParams(window.location.search).get('editProduct') || ''; } catch(e) { OW_EDIT_PRODUCT = ''; }
 function owVal(id){ var el = document.getElementById(id); return el ? String(el.value || '').trim() : ''; }
@@ -283,13 +324,44 @@ function owShowStep(n){
   var sub = document.getElementById('ow-submit'); if(sub) sub.style.display = (OW_STEP === OW_MAX - 1) ? '' : 'none';
 }
 function owStep(delta){ owShowStep(OW_STEP + delta); }
+function owRenderProviderOrder(focusId){
+  var list = document.getElementById('ow-provider-order'); if(!list) return;
+  var rows = Array.prototype.slice.call(list.querySelectorAll('[data-provider-id]'));
+  var byId = {}; rows.forEach(function(row){ byId[row.getAttribute('data-provider-id')] = row; });
+  OW_PROVIDER_ORDER.forEach(function(id, index){
+    var row = byId[id]; if(!row) return;
+    var pos = row.querySelector('.ow-provider-pos'); if(pos) pos.textContent = String(index + 1);
+    list.appendChild(row);
+  });
+  if(focusId){
+    var focusRow = list.querySelector('[data-provider-id="' + focusId + '"]');
+    if(focusRow) focusRow.focus();
+  }
+}
+function owMoveProvider(id, delta){
+  var idx = OW_PROVIDER_ORDER.indexOf(id);
+  if(idx < 0) return;
+  var next = Math.max(0, Math.min(OW_PROVIDER_ORDER.length - 1, idx + delta));
+  if(next === idx) return;
+  var moved = OW_PROVIDER_ORDER.splice(idx, 1)[0];
+  OW_PROVIDER_ORDER.splice(next, 0, moved);
+  owRenderProviderOrder(id);
+}
+function owProviderKey(ev){
+  if(!ev || !ev.altKey || (ev.key !== 'ArrowUp' && ev.key !== 'ArrowDown')) return;
+  var row = ev.currentTarget;
+  var id = row && row.getAttribute('data-provider-id');
+  if(!id) return;
+  ev.preventDefault();
+  owMoveProvider(id, ev.key === 'ArrowUp' ? -1 : 1);
+}
 // Construye el descriptor desde el form. SÓLO referencias de credenciales (SEC-4).
 function owBuildDescriptor(){
   var d = { schemaVersion: '1.0' };
   d.identity = { projectId: owVal('ow-projectId'), name: owVal('ow-name') };
   var desc = owVal('ow-description'); if(desc) d.identity.description = desc;
-  var repo = { id: owVal('ow-repo-id') || 'main', role: 'primary' };
-  var baseref = owVal('ow-repo-baseref'); if(baseref) repo.defaultBaseRef = baseref;
+  var repo = { id: owVal('ow-repo-id') || 'main', role: 'primary', defaultBaseRef: owVal('ow-repo-baseref') || 'main' };
+  var altBaseRef = owVal('ow-repo-alt-baseref'); if(altBaseRef) repo.alternateBaseRef = altBaseRef;
   if(OW_REPO_MODE === 'create'){
     // #4800 — "Crear nuevo": el kernel crea el repo y completa la URL; el descriptor
     // NO lleva url (la prohíbe el contrato en provenance:create).
@@ -300,15 +372,20 @@ function owBuildDescriptor(){
     repo.url = owVal('ow-repo-url');
   }
   d.repositories = [repo];
+  d.pullRequests = { policy: owVal('ow-pr-policy') || 'required' };
   var routing = owList('ow-board-routing').map(function(pair){
     var kv = pair.split('='); return { label: (kv[0]||'').trim(), capability: (kv[1]||'').trim() };
   }).filter(function(r){ return r.label && r.capability; });
-  d.board = { ref: owVal('ow-board-ref'), admissionLabels: owList('ow-board-labels'), routing: routing };
+  var admissionLabels = owList('ow-board-labels');
+  d.board = { ref: owVal('ow-board-ref'), admissionLabels: admissionLabels.length ? admissionLabels : OW_DEFAULT_ADMISSION_LABELS.slice(), routing: routing };
   var credRef = owVal('ow-cred-ref');
   if(credRef){ d.credentials = [{ ref: credRef, scopes: owList('ow-cred-scopes') }]; }
-  d.capabilities = [{ interface: owVal('ow-cap-interface') || 'backend', skills: owList('ow-cap-skills') }];
-  d.authority = { signers: owList('ow-auth-signers'), gates: { gate2: owVal('ow-auth-gate2') || 'enforce' } };
-  var backup = owVal('ow-auth-backup'); if(backup) d.authority.backup = backup;
+  var skills = owList('ow-cap-skills');
+  d.capabilities = [{ interface: owVal('ow-cap-interface') || 'backend', skills: skills.length ? skills : ['backend-dev'] }];
+  d.providers = { order: OW_PROVIDER_ORDER.slice() };
+  var signers = owList('ow-auth-signers');
+  d.authority = { signers: signers.length ? signers : ['leitolarreta'], gates: { gate2: owVal('ow-auth-gate2') || 'enforce' } };
+  d.authority.backup = owVal('ow-auth-backup') || 'leitolarreta';
   return d;
 }
 // G-3 — estado intermedio mientras corre el POST (la prueba de accesibilidad del
@@ -344,6 +421,12 @@ function owFillDescriptor(d){
   var vis=repo.create && repo.create.visibility;
   var radio=vis ? document.querySelector('input[name="ow-repo-visibility"][value="'+vis+'"]') : null;
   if(radio) radio.checked=true;
+  owSet('ow-repo-alt-baseref', repo.alternateBaseRef || '');
+  owSet('ow-pr-policy', (d.pullRequests && d.pullRequests.policy) || 'required');
+  if(d.providers && Array.isArray(d.providers.order) && d.providers.order.length){
+    OW_PROVIDER_ORDER = d.providers.order.slice();
+    owRenderProviderOrder();
+  }
   var board=d.board||{};
   owSet('ow-board-ref', board.ref || '');
   owSet('ow-board-labels', Array.isArray(board.admissionLabels)?board.admissionLabels.join(', '):'');
@@ -433,7 +516,7 @@ async function owSubmit(){
   } catch(e){ owRenderResult(false, 'No se pudo enviar el alta. Verificá tu conexión y reintentá.'); }
   finally { if(sub) sub.disabled = false; }
 }
-(function owInit(){ try { owShowStep(0); owLoadEdit(); } catch(e){} })();
+(function owInit(){ try { owShowStep(0); owRenderProviderOrder(); owLoadEdit(); } catch(e){} })();
 `;
 }
 
@@ -468,5 +551,7 @@ module.exports = {
     KERNEL_INTERFACES,
     KERNEL_SKILLS,
     GATE_MODES,
+    PULL_REQUEST_POLICIES,
+    LIVE_PROVIDERS,
     KERNEL_ORG_ALLOWLIST,
 };

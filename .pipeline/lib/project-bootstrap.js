@@ -216,6 +216,8 @@ function dryRun(descriptor, deps = {}) {
     ok: true,
     sideEffects: false,
     admissionLabels: descriptorLib.deriveAdmissionLabels(descriptor),
+    providerOrder: descriptorLib.deriveProviderOrder(descriptor),
+    pullRequestPolicy: descriptorLib.derivePullRequestPolicy(descriptor),
     resolvedRouting,
     signers: descriptorLib.resolveSignerAuthority(descriptor).signers,
     gates: {
@@ -551,6 +553,8 @@ function renderHuman(res) {
   }
   if (res.dryRun) {
     lines.push(`   labels de admisión: ${(res.dryRun.admissionLabels || []).join(', ') || '(ninguno)'}`);
+    lines.push(`   providers: ${(res.dryRun.providerOrder || []).join(', ') || '(ninguno)'}`);
+    lines.push(`   política de PR: ${res.dryRun.pullRequestPolicy || '(no declarada)'}`);
     lines.push(`   ruteo resuelto: ${(res.dryRun.resolvedRouting || []).map((r) => `${r.label}→${r.capability}[${r.skills.join('/')}]`).join(', ') || '(ninguno)'}`);
     lines.push(`   signers: ${(res.dryRun.signers || []).join(', ')}`);
     lines.push(`   gates: gate0=${res.dryRun.gates.gate0} gate2=${res.dryRun.gates.gate2} visual=${res.dryRun.gates.visual}`);

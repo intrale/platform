@@ -558,6 +558,22 @@ function deriveProviderOrder(descriptor) {
   return [...order];
 }
 
+// #4851 — política de PR efectiva (default seguro `required` cuando el operador no
+// la declara). Fail-closed: si `pullRequests.policy` está declarada fuera del enum
+// vivo, se rechaza en vez de degradar silenciosamente.
+function derivePullRequestPolicy(descriptor) {
+  const pullRequests = descriptor && descriptor.pullRequests;
+  if (pullRequests === undefined) return 'required';
+  if (!pullRequests || typeof pullRequests !== 'object' || Array.isArray(pullRequests)) {
+    throw new Error('pullRequests invalido: debe ser un objeto cerrado');
+  }
+  const policy = pullRequests.policy;
+  if (!KNOWN_PR_POLICIES.has(policy)) {
+    throw new Error(`pullRequests.policy invalida: ${JSON.stringify(policy)}`);
+  }
+  return policy;
+}
+
 // interface → skills (partición del puerto dev).
 function deriveCapabilityPartitions(descriptor) {
   const out = {};
@@ -827,6 +843,7 @@ module.exports = {
   deriveAgentCap,
   deriveProviderBudget,
   deriveProviderOrder,
+  derivePullRequestPolicy,
   deriveCapabilityPartitions,
   resolveGate,
   resolveSignerAuthority,
