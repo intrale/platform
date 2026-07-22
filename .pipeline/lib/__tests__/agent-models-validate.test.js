@@ -1064,7 +1064,9 @@ test('#3220 + #3353 + #3501 · ALLOWED_MODELS_BY_LAUNCHER declara modelos por pr
   const models = validateMod.ALLOWED_MODELS_BY_LAUNCHER;
   assert.ok(models, 'ALLOWED_MODELS_BY_LAUNCHER debe exportarse');
   assert.ok(Object.isFrozen(models), 'top-level debe estar congelado');
-  assert.deepEqual([...models.claude].sort(), ['claude-haiku-4-5', 'claude-opus-4-7', 'claude-sonnet-4-6']);
+  // #4880 — `kimi-k2-6` se suma a la allowlist del launcher `claude` porque el
+  // provider `kimi-moonshot` reusa ese launcher (drop-in Anthropic-compat).
+  assert.deepEqual([...models.claude].sort(), ['claude-haiku-4-5', 'claude-opus-4-7', 'claude-sonnet-4-6', 'kimi-k2-6']);
   // #3799 — Sherlock baja su fallback Codex de gpt-5.4 → gpt-5.4-mini (sign-off Leo
   // 2026-06-02), por lo que gpt-5.4-mini se suma a la allowlist del launcher codex.
   assert.deepEqual([...models.codex].sort(), ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5']);

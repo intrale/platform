@@ -35,6 +35,10 @@ const PROVIDER_HANDLERS = {
     // otros 3 free providers: error accionable hasta que #3198 entregue el
     // wrapper real, sin tokens consumidos, sin crash del pulpo.
     'nvidia-nim': require('./providers/nvidia-nim'),
+    // #4880 — Kimi (Moonshot), drop-in de Claude Code contra su endpoint
+    // Anthropic-compatible. El handler delega en el de Anthropic (mismo launcher
+    // `claude`, spawn y stream-json) y sólo aporta su propia detección de cuota.
+    'kimi-moonshot': require('./providers/kimi-moonshot'),
     'deterministic': require('./providers/deterministic'),
     // Groq fue descontinuado en #3353 (mayo 2026) por política de bloqueos
     // arbitrarios — el handler stub y la referencia se removieron del mapa.

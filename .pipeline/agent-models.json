@@ -168,6 +168,40 @@
       "permissions_mode": "bypassPermissions",
       "billing": "free"
     },
+    "kimi-moonshot": {
+      "launcher": "claude",
+      "model": "kimi-k2-6",
+      "spawn_args_template": [
+        "-p",
+        "{user_prompt}",
+        "--system-prompt-file",
+        "{system_file}",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--permission-mode",
+        "bypassPermissions"
+      ],
+      "output_parser": "anthropic-stream-json",
+      "quota_error_types": [
+        "rate_limit_exceeded",
+        "quota_exceeded",
+        "insufficient_quota"
+      ],
+      "resets_at_cap_max_days": 31,
+      "supports_tool_use": false,
+      "capabilities": [],
+      "prompt_caching": {
+        "supported": false
+      },
+      "credentials_env": [
+        "ANTHROPIC_AUTH_TOKEN"
+      ],
+      "permissions_mode": "bypassPermissions",
+      "auth_mode": "api_key",
+      "display_in_health": "live",
+      "billing": "free"
+    },
     "deterministic": {
       "launcher": "node",
       "model": "deterministic",
@@ -310,6 +344,10 @@
         {
           "provider": "cerebras",
           "model_override": "gpt-oss-120b"
+        },
+        {
+          "provider": "kimi-moonshot",
+          "model_override": "kimi-k2-6"
         }
       ]
     },
@@ -328,6 +366,10 @@
         {
           "provider": "cerebras",
           "model_override": "gpt-oss-120b"
+        },
+        {
+          "provider": "kimi-moonshot",
+          "model_override": "kimi-k2-6"
         }
       ]
     },

@@ -214,6 +214,16 @@ const KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER = Object.freeze({
         'quota_exceeded',
         'insufficient_quota',
     ]),
+    // #4880 — Kimi (Moonshot). Drop-in de Claude Code contra el endpoint
+    // Anthropic-compatible: el error viaja con shape Anthropic-like por el
+    // stream-json, pero con SU allowlist de tipos (api-key metered, NO el
+    // snapshot MAX de Anthropic). El handler `providers/kimi-moonshot.js` la usa
+    // vía `_detectAnthropic` con `provider: 'kimi-moonshot'`.
+    'kimi-moonshot': Object.freeze([
+        'rate_limit_exceeded',
+        'quota_exceeded',
+        'insufficient_quota',
+    ]),
 });
 
 // -----------------------------------------------------------------------------

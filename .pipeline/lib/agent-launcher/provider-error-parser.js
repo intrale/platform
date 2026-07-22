@@ -159,6 +159,10 @@ const KNOWN_PROVIDERS = Object.freeze(new Set([
     'gemini-google',
     'cerebras',
     'nvidia-nim',
+    // #4880 — Kimi (Moonshot), drop-in Anthropic-compatible. Provider conocido
+    // para que el parser NO falle cerrado al detectar su cuota (usa
+    // `_detectAnthropic` con la allowlist de kimi-moonshot).
+    'kimi-moonshot',
 ]));
 
 // Transports válidos.

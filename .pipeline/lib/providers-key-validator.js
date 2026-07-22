@@ -29,6 +29,9 @@ const PROVIDER_REGEX = Object.freeze({
     google:    /^[A-Za-z0-9_-]{30,}$/,          // GEMINI_API_KEY (Google AI Studio, formato variable).
     cerebras:  /^csk-[A-Za-z0-9_-]{32,}$/,
     nvidia:    /^nvapi-[A-Za-z0-9_-]{32,}$/,
+    // #4880 — Kimi (Moonshot). Las keys de Moonshot usan prefijo `sk-` seguido de
+    // ~48 chars. Se guarda en `providers.moonshot.api_key` → ANTHROPIC_AUTH_TOKEN.
+    moonshot:  /^sk-[A-Za-z0-9_-]{32,}$/,
 });
 
 /**
