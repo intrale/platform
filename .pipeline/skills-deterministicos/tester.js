@@ -34,7 +34,7 @@ const { spawn, execFile, execSync, spawnSync } = require('child_process');
 const trace = require('../lib/traceability');
 const gradleParser = require('./lib/gradle-parser');
 const kover = require('./lib/kover-parser');
-const { ensureGitInEnv } = require('../lib/ensure-git-in-path');
+const { ensureGitInEnv, pathEnvKey } = require('../lib/ensure-git-in-path');
 const { withGradleLock } = require('../lib/gradle-lock');
 const { writeDeliverable } = require('../lib/write-deliverable');
 // CA-B2 (#4694) — needle del worktree derivado del helper compartido.
@@ -843,7 +843,9 @@ async function runNodeTests(repoRoot, env, opts = {}) {
         // vive junto a `npm`/`npm.cmd`; prependemos ese dir al PATH del child.
         // Idempotente (solo prepende) y no muta el env externo.
         const nodeBinDir = path.dirname(process.execPath);
-        childEnv.PATH = `${nodeBinDir}${path.delimiter}${childEnv.PATH || ''}`;
+        const childPathKey = pathEnvKey(childEnv);
+        childEnv[childPathKey] = `${nodeBinDir}${path.delimiter}${childEnv[childPathKey] || ''}`;
+        if (childPathKey !== 'PATH') delete childEnv.PATH;
 
         // #3091 rebote rev-1 (réplica del fix #3090 rev-1) — Garantizar que
         // los tests del worktree puedan resolver las dependencias instaladas
