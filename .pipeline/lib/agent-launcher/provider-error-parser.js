@@ -287,10 +287,31 @@ function truncateInput(raw) {
 // estructural sobre el prefijo es suficiente porque el shape vive en el
 // inicio del JSON.
 // -----------------------------------------------------------------------------
-function splitBoundedLines(input) {
+// #4865 — variante con metadata de truncación. Necesitamos saber QUÉ líneas
+// fueron cortadas por el cap para no clasificarlas como texto libre más abajo
+// (ver `detectFromCliStderr`). Devuelve `{ text, truncated }` por línea.
+function splitBoundedLinesMeta(input) {
     if (!input) return [];
     const lines = input.split(/\r\n|\r|\n/);
-    return lines.map(l => l.length > MAX_LINE_BYTES ? l.slice(0, MAX_LINE_BYTES) : l);
+    return lines.map(l => l.length > MAX_LINE_BYTES
+        ? { text: l.slice(0, MAX_LINE_BYTES), truncated: true }
+        : { text: l, truncated: false });
+}
+
+function splitBoundedLines(input) {
+    return splitBoundedLinesMeta(input).map((m) => m.text);
+}
+
+// #4865 — ¿la línea ARRANCA como un frame estructurado (JSON stream-json / SSE)?
+// Se usa para distinguir un frame truncado por el cap (que NO parsea pero
+// tampoco es stderr de texto libre) de una línea de stderr genuina. Un frame
+// estructurado empieza con `{`, `[` o el prefijo SSE `data: {`/`data: [`.
+function startsWithStructuredFramePrefix(line) {
+    const t = (line || '').replace(/^\s+/, '');
+    if (!t) return false;
+    if (t[0] === '{' || t[0] === '[') return true;
+    if (/^data:\s*[\{\[]/.test(t)) return true;
+    return false;
 }
 
 // -----------------------------------------------------------------------------
@@ -325,7 +346,8 @@ function tryParseJson(line) {
 // Devuelve `{ errorClass, evidence }` o `null` si no hay match.
 // -----------------------------------------------------------------------------
 function detectFromCliStderr(input, provider, quotaModule) {
-    const lines = splitBoundedLines(input);
+    const linesMeta = splitBoundedLinesMeta(input);
+    const lines = linesMeta.map((m) => m.text);
     // Helper local: strip prefijo SSE `data: ` para que JSON.parse vea el JSON.
     // SR-9: cap por línea aplicado upstream en splitBoundedLines.
     const parseJsonOrSSE = (line) => {
@@ -407,7 +429,22 @@ function detectFromCliStderr(input, provider, quotaModule) {
     // llegan como texto libre (crash del CLI antes del JSON, "Usage credits
     // required", etc.). Alineado con SR-1 ("PROHIBIDO substring sobre el content
     // del modelo").
-    const plainTextLines = lines.filter((line) => parseJsonOrSSE(line) == null);
+    // #4865 (Bug 1 — falso positivo por truncación 16KB): un frame stream-json/
+    // SSE cuyo `tool_result` supera MAX_LINE_BYTES se corta en `splitBoundedLines`
+    // → deja de parsear como JSON → caería en `plainTextLines` y el body del
+    // issue (que puede mencionar "quota exhausted"/"insufficient_quota") matchea
+    // CLI_QUOTA_PATTERNS y dispara un `setFlag` espurio. #4541 blindó el substring
+    // contra frames estructurados, pero la truncación convierte un frame en
+    // "texto plano" y reabre la clase para frames grandes. Defensa: una línea que
+    // (a) NO parsea como JSON/SSE Y (b) fue truncada por el cap Y (c) ARRANCA como
+    // frame estructurado, NO es stderr — la excluimos del scan de texto libre.
+    const plainTextLines = linesMeta
+        .filter(({ text, truncated }) => {
+            if (parseJsonOrSSE(text) != null) return false;
+            if (truncated && startsWithStructuredFramePrefix(text)) return false;
+            return true;
+        })
+        .map(({ text }) => text);
 
     // #3506: el subcaso "Usage credits required for 1M context" se evalúa
     // ANTES del genérico para evitar misclassification a quota_exhausted.
@@ -786,6 +823,8 @@ module.exports = {
     // Internos expuestos para tests (prefijo _).
     _truncateInput: truncateInput,
     _splitBoundedLines: splitBoundedLines,
+    _splitBoundedLinesMeta: splitBoundedLinesMeta,
+    _startsWithStructuredFramePrefix: startsWithStructuredFramePrefix,
     _tryParseJson: tryParseJson,
     _detectFromCliStderr: detectFromCliStderr,
     _detectFromApiResponse: detectFromApiResponse,

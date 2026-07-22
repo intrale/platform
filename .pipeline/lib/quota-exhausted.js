@@ -806,6 +806,129 @@ function clearFlag(opts = {}) {
 }
 
 // -----------------------------------------------------------------------------
+// #4865 — Subordinación a la fuente única de verdad de cuota por proveedor.
+//
+// El gate de cuota agotada (`setFlag`/`shouldGateSpawn`) es un CONSUMIDOR de
+// cuota: decide spawn/no-spawn. Antes de #4865 decidía en base a la detección
+// por substring del stdout del agente (heurística), no al valor real del
+// adapter canónico (`lib/quota-adapters`) que #4861 (Anthropic, `claude -p
+// /usage`) y #4868/#4863 (Codex, `codex.rate_limits`) consolidan como fuente
+// única. Un falso positivo por substring (issue cuyo body menciona "quota
+// exhausted") marcaba anthropic agotado siendo falso y bloqueaba todo el
+// dispatch.
+//
+// Solución: reconciliar contra el adapter ANTES de SETEAR o de HONRAR un flag.
+// Si el adapter reporta el proveedor SANO con dato FRESCO (adapterStatus 'ok' y
+// pct claramente por debajo del techo), se VETA el set/gate y se audita la
+// discrepancia. Fail-closed: si el adapter NO tiene dato fresco (unknown/stale/
+// error/ausente), se mantiene el comportamiento conservador actual (set/gate).
+//
+// La lectura es OFFLINE y NO bloqueante: `autoRefresh:false` → el adapter sólo
+// LEE el cache de /usage, nunca spawnea desde el hot-path del detector.
+// -----------------------------------------------------------------------------
+
+// pct por debajo del cual, con dato FRESCO, una señal de "cuota agotada" se
+// considera falso positivo. 90 coincide con el corte 'critical' del adapter y
+// con el gateo de provider-health (`adapterStatus==='ok' && status==='critical'`):
+// por debajo de 90% el proveedor NO está agotado, así que una detección por
+// substring es espuria. En 90%+ el adapter coincide en que está cerca del techo
+// → NO vetamos (honramos el flag).
+const RECONCILE_HEALTHY_MAX_PCT = 90;
+
+// Normalización de alias de provider hacia el id canónico del adapter.
+const RECONCILE_PROVIDER_ALIAS = Object.freeze({
+    openai: 'openai-codex',
+    'anthropic-claude': 'anthropic',
+});
+
+function metricsDir() {
+    return path.join(pipelineDir(), 'metrics');
+}
+
+function repoRootDir() {
+    // pipelineDir() == <repo>/.pipeline → el root del repo es su padre.
+    return path.resolve(pipelineDir(), '..');
+}
+
+// Carga perezosa de los adapters de cuota. Cache local. Devuelve null si el
+// módulo no carga (defensa: el detector NUNCA debe crashear el pipeline).
+let _quotaAdaptersCache = null;
+function getQuotaAdapters(override) {
+    if (override) return override;
+    if (_quotaAdaptersCache) return _quotaAdaptersCache;
+    try {
+        _quotaAdaptersCache = require('./quota-adapters');
+    } catch {
+        _quotaAdaptersCache = null;
+    }
+    return _quotaAdaptersCache;
+}
+
+/**
+ * #4865 — Reconcilia una señal de cuota agotada contra la fuente única de
+ * verdad (adapter canónico) del proveedor.
+ *
+ * @param {string} provider  provider del flag/skill.
+ * @param {object} [opts]
+ *   @property {number}   [now]              reloj override (tests).
+ *   @property {function} [_quotaUsageImpl]  inyección de quotaUsage (tests).
+ *   @property {object}   [_quotaAdapters]   inyección del módulo (tests).
+ * @returns {{ veto: boolean, reason: string, adapterStatus: string|null, pct: number|null }}
+ *   veto=true SÓLO cuando el adapter reporta SANO + FRESCO (adapterStatus 'ok'
+ *   y pct < RECONCILE_HEALTHY_MAX_PCT). En todo otro caso veto=false (fail-closed:
+ *   el caller mantiene el comportamiento conservador).
+ */
+function reconcileWithCanonicalSource(provider, opts = {}) {
+    const noVeto = (reason, extra = {}) =>
+        ({ veto: false, reason, adapterStatus: null, pct: null, ...extra });
+
+    // Kill-switch operacional: si por bug la reconciliación bloquea sets
+    // legítimos, `QUOTA_RECONCILE_DISABLED=1` la desactiva sin redeploy y el
+    // gate vuelve al comportamiento legacy (substring como autoridad).
+    if (process.env.QUOTA_RECONCILE_DISABLED === '1') return noVeto('reconcile_disabled');
+
+    const canonical = RECONCILE_PROVIDER_ALIAS[provider] || provider;
+
+    const adapters = getQuotaAdapters(opts._quotaAdapters);
+    const quotaUsageFn = opts._quotaUsageImpl
+        || (adapters && typeof adapters.quotaUsage === 'function' ? adapters.quotaUsage : null);
+    if (!quotaUsageFn) return noVeto('no_adapter');
+
+    // Sólo providers con adapter de cuota real. Un provider fuera de la allowlist
+    // (o free) no tiene /usage canónico → fail-closed (no veto).
+    const allowed = adapters && Array.isArray(adapters.ALLOWED_PROVIDERS)
+        ? adapters.ALLOWED_PROVIDERS : [];
+    if (allowed.length && !allowed.includes(canonical)) {
+        return noVeto('provider_not_in_adapters', { adapterStatus: null });
+    }
+
+    let q;
+    try {
+        q = quotaUsageFn(canonical, {
+            metricsDir: metricsDir(),
+            activityLogPath: path.join(repoRootDir(), '.claude', 'activity-log.jsonl'),
+            // NO spawnear desde el detector: sólo lectura del cache canónico.
+            autoRefresh: false,
+            now: Number.isFinite(opts.now) ? opts.now : undefined,
+        });
+    } catch {
+        return noVeto('adapter_threw'); // fail-closed ante excepción del adapter.
+    }
+    if (!q || typeof q !== 'object') return noVeto('adapter_no_result');
+
+    const adapterStatus = typeof q.adapterStatus === 'string' ? q.adapterStatus : 'unknown';
+    const pct = Number.isFinite(q.pct) ? q.pct : null;
+
+    // Veto SÓLO con dato fresco ('ok') y pct claramente por debajo del techo.
+    // Cualquier otro estado (unknown/stale/error/no_usage_data, o pct null, o
+    // pct >= techo) es fail-closed: mantenemos el comportamiento conservador.
+    if (adapterStatus === 'ok' && pct != null && pct < RECONCILE_HEALTHY_MAX_PCT) {
+        return { veto: true, reason: 'provider_healthy_fresh', adapterStatus, pct };
+    }
+    return { veto: false, reason: 'no_fresh_healthy_signal', adapterStatus, pct };
+}
+
+// -----------------------------------------------------------------------------
 // Set del flag (escritor único: pulpo.js — CA-6)
 // -----------------------------------------------------------------------------
 
@@ -864,6 +987,33 @@ function setFlag(opts = {}) {
     const provider = opts.provider || DEFAULT_PROVIDER;
     const model = opts.model || null;
     const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+
+    // #4865 — Subordinación a la fuente única: antes de SETEAR el flag,
+    // reconciliar contra el adapter canónico. Si la fuente de verdad dice que el
+    // proveedor está sano con dato fresco, la señal por substring es un falso
+    // positivo → vetamos el set y auditamos la discrepancia (no fail-open: sólo
+    // vetamos con dato fresco; sin dato, se persiste igual — fail-closed).
+    const reconciliation = reconcileWithCanonicalSource(provider, opts);
+    if (reconciliation.veto) {
+        if (opts.auditLogEnabled !== false) {
+            appendAudit({
+                event: 'flag_set_vetoed',
+                agent: opts.agent || null,
+                provider,
+                model,
+                error_type: errorType,
+                raw_excerpt: `reconcile veto: adapter_status=${reconciliation.adapterStatus} pct=${reconciliation.pct} pattern="${errorType}"`,
+                flag_set: false,
+            }, { now });
+        }
+        return {
+            flagPath: flagFile(),
+            payload: null,
+            vetoed: true,
+            source: 'reconcile_veto',
+            reconciliation,
+        };
+    }
     // Codex/ChatGPT `usage_limit_reached` es un cap rolling: si el caller no
     // aportó un `resets_at` (el CLI lo emite como texto libre, sin campo
     // estructurado), gateamos por una ventana corta en vez del fallback semanal.
@@ -1237,7 +1387,27 @@ function shouldGateSpawn(skill, opts = {}) {
     // proveedores agotados, cada uno gatea sólo sus propios skills.
     if (opts.provider) {
         const slots = Array.isArray(flag.providers) ? flag.providers : [];
-        return slots.some((p) => p.provider === opts.provider);
+        const hasSlot = slots.some((p) => p.provider === opts.provider);
+        if (!hasSlot) return false;
+        // #4865 — antes de HONRAR el gate, reconciliar contra la fuente única.
+        // Si el adapter canónico reporta el proveedor sano con dato fresco, el
+        // slot activo es un remanente o falso positivo → NO gateamos y auditamos
+        // la discrepancia. Fail-closed: sin dato fresco, honramos el flag (return
+        // true), preservando el comportamiento conservador previo.
+        const reconciliation = reconcileWithCanonicalSource(opts.provider, opts);
+        if (reconciliation.veto) {
+            appendAudit({
+                event: 'gate_vetoed',
+                agent: skill || null,
+                provider: opts.provider,
+                model: null,
+                error_type: null,
+                raw_excerpt: `reconcile veto: adapter_status=${reconciliation.adapterStatus} pct=${reconciliation.pct}`,
+                flag_set: false,
+            }, { now: Number.isFinite(opts.now) ? opts.now : undefined });
+            return false;
+        }
+        return true;
     }
     // Sin provider del caller: comportamiento legacy (cualquier flag bloquea).
     return true;
@@ -1258,6 +1428,8 @@ module.exports = {
     shouldGateSpawn,
     isDeterministicSkill,
     appendAudit,
+    // #4865 — reconciliación contra la fuente única de verdad por proveedor.
+    reconcileWithCanonicalSource,
 
     // Helpers expuestos para integración con pulpo.js
     capResetsAt,
@@ -1281,6 +1453,7 @@ module.exports = {
     CODEX_USAGE_LIMIT_RESET_MS,
     MIN_TTL_DAYS,
     MAX_TTL_DAYS,
+    RECONCILE_HEALTHY_MAX_PCT,
 
     // Paths (útiles para tests)
     flagFile,
