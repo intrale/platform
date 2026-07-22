@@ -660,10 +660,16 @@ test('#4805 CA-2: transición arbitraria (onboarding→archived) rechazada sin m
     { descriptorPath: DESC_PATH, from: 'onboarding', to: 'archived' },
     { fsImpl: spy, loadDescriptorImpl: fakeLoader({ valid: true, descriptor: onboarding }) },
   );
-  assert.equal(res.ok, false);
-  assert.equal(res.status, 409);
-  assert.equal(res.stage, 'transition');
-  assert.equal(spy.ops.length, 0);
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(JSON.parse(spy.files[DESC_PATH]).status, 'archived');
+  const active = validDescriptor({ status: 'active' });
+  const spy2 = makeSpyFs();
+  const res2 = d.transitionStatus(
+    { descriptorPath: DESC_PATH, from: 'active', to: 'archived' },
+    { fsImpl: spy2, loadDescriptorImpl: fakeLoader({ valid: true, descriptor: active }) },
+  );
+  assert.equal(res2.ok, true, JSON.stringify(res2));
+  assert.equal(JSON.parse(spy2.files[DESC_PATH]).status, 'archived');
 });
 
 test('#4805 CA-3: descriptor incompleto ⇒ bloqueo con detalle de campos faltantes, sin mutar', () => {
@@ -686,8 +692,10 @@ test('#4805 CA-3: descriptor incompleto ⇒ bloqueo con detalle de campos faltan
 
 test('#4805: isValidStatusEdge sólo acepta onboarding→active', () => {
   assert.equal(d.isValidStatusEdge('onboarding', 'active'), true);
+  assert.equal(d.isValidStatusEdge('onboarding', 'archived'), true);
+  assert.equal(d.isValidStatusEdge('active', 'archived'), true);
   assert.equal(d.isValidStatusEdge('active', 'active'), false);
-  assert.equal(d.isValidStatusEdge('onboarding', 'archived'), false);
+  assert.equal(d.isValidStatusEdge('archived', 'active'), false);
   assert.equal(d.isValidStatusEdge('active', 'onboarding'), false);
 });
 

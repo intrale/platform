@@ -346,8 +346,15 @@ function createKernelSupervisor(deps = {}) {
   const loadWaveDescriptorGate = typeof deps.loadWaveDescriptorGate === 'function'
     ? deps.loadWaveDescriptorGate
     : (projectId) => {
-        const res = loadDescriptor(path.join(waveDescriptorsDir, `${projectId}.json`));
-        return { valid: res.valid === true, errors: res.errors || [] };
+        const descriptorPath = path.join(waveDescriptorsDir, `${projectId}.json`);
+        const res = loadDescriptor(descriptorPath);
+        return {
+          valid: res.valid === true,
+          errors: res.errors || [],
+          descriptor: res.descriptor,
+          status: res.descriptor && res.descriptor.status,
+          descriptorPath,
+        };
       };
 
   // Mapa PRIVADO del closure: projectId → instanceContext. Jamás expuesto por
@@ -918,9 +925,47 @@ function createKernelSupervisor(deps = {}) {
     });
   }
 
+  async function drainEditQueue(opts = {}) {
+    const authorized = await authorizedProjectIdSet();
+    const impl = typeof deps.drainEditQueueImpl === 'function'
+      ? deps.drainEditQueueImpl
+      : require('./product-control-drainer').drainEditQueue;
+    return impl(opts, {
+      isAuthorized: (projectId) => authorized.has(projectId),
+      loadDescriptor: loadWaveDescriptorGate,
+      putDescriptor: async (projectId, descriptor) => {
+        const store = storeFactory({
+          contextProjectId: projectId,
+          allowedNamespaces: [projectId],
+          onAlert,
+        });
+        return store.putDescriptor(descriptor);
+      },
+      now,
+    });
+  }
+
+  async function drainDeactivateQueue(opts = {}) {
+    const authorized = await authorizedProjectIdSet();
+    const impl = typeof deps.drainDeactivateQueueImpl === 'function'
+      ? deps.drainDeactivateQueueImpl
+      : require('./product-control-drainer').drainDeactivateQueue;
+    const summary = await impl(Object.assign({ descriptorsDir: waveDescriptorsDir }, opts), {
+      isAuthorized: (projectId) => authorized.has(projectId),
+      loadDescriptor: loadWaveDescriptorGate,
+      now,
+    });
+    for (const projectId of summary.archived || []) {
+      try { stopInstance(projectId); } catch { /* aislado: la baja durable ya fue aplicada */ }
+    }
+    return summary;
+  }
+
   return {
     bootProducts,
     drainCreateWaveQueue,
+    drainEditQueue,
+    drainDeactivateQueue,
     spawnInstance,
     getInstance,
     listInstances,
@@ -1004,7 +1049,20 @@ async function bootKernelDurable(opts = {}) {
     });
 
     const { spawned, skipped } = await supervisor.bootProducts();
-    return { ran: true, cap, spawned, skipped };
+    const drains = {};
+    for (const [name, fn] of [
+      ['edit', () => supervisor.drainEditQueue()],
+      ['deactivate', () => supervisor.drainDeactivateQueue()],
+      ['createWave', () => supervisor.drainCreateWaveQueue()],
+    ]) {
+      try { drains[name] = await fn(); }
+      catch (e) {
+        const detail = e && e.message ? e.message : String(e);
+        drains[name] = { error: detail };
+        try { onAlert({ projectId: null, stage: `drain-${name}`, errors: [{ detail }] }); } catch { /* best-effort */ }
+      }
+    }
+    return { ran: true, cap, spawned, skipped, drains };
   } catch (e) {
     const detail = e && e.message ? e.message : String(e);
     try { onAlert({ projectId: null, stage: 'boot-durable', errors: [{ detail }] }); } catch { /* alerta best-effort */ }

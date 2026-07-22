@@ -696,7 +696,8 @@ function deriveKernelPin(descriptor, opts = {}) {
 // suma acá cuando exista su historia, nunca desde el request en banda.
 // -----------------------------------------------------------------------------
 const STATUS_TRANSITIONS = Object.freeze({
-  onboarding: Object.freeze(new Set(['active'])),
+  onboarding: Object.freeze(new Set(['active', 'archived'])),
+  active: Object.freeze(new Set(['archived'])),
 });
 
 function isValidStatusEdge(from, to) {
