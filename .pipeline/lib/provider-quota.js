@@ -207,6 +207,22 @@ async function debitPaidQuota(store, params) {
     return store.debitPaid(_quotaKeyFor(provider), deltaTokens, { maxRetries: p.maxRetries });
 }
 
+// #4863 — ¿el proveedor tiene un tope de cuota REALMENTE activo? El set de
+// proveedores agotados lo computa el caller (`quotaSlice`) leyendo el MISMO
+// flag `quota-exhausted.json` que alimenta el banner de degradación (vía
+// `quota-exhausted-state.getQuotaState()`), y lo pasa por `opts.exhaustedProviders`.
+// Reconciliar acá garantiza que la tarjeta "cuota por proveedor" y el banner
+// deriven del mismo snapshot (CA-2): nunca "sin límite" en la tarjeta mientras
+// el banner dice "agotada". Acepta Set, Array o iterable; ausencia ⇒ false
+// (fail-safe: sin la señal, no fabricamos un "agotado").
+function _isProviderExhausted(provider, opts) {
+    const ex = opts && opts.exhaustedProviders;
+    if (!ex) return false;
+    if (typeof ex.has === 'function') return ex.has(provider);
+    if (Array.isArray(ex)) return ex.includes(provider);
+    return false;
+}
+
 // Devuelve la muestra cacheada fresca para provider+bucket, o null si no hay o
 // está stale (más vieja que CACHE_TTL_MS).
 function _freshCacheSample(cache, provider, bucketKind, now) {
@@ -234,7 +250,10 @@ function _freshCacheSample(cache, provider, bucketKind, now) {
  * @param {string} provider
  * @param {Object} normalized  { provider, adapterStatus, session:{pct,confidence}, weekly:{pct,confidence} }
  * @param {Object} adapterResult  QuotaResult crudo del adapter (para reset/estado)
- * @param {Object} [opts] { cache, now }
+ * @param {Object} [opts] { cache, now, exhaustedProviders }
+ *   @property {Set<string>|string[]} [exhaustedProviders] #4863 — proveedores
+ *     con tope activo según el flag `quota-exhausted` (misma fuente que el
+ *     banner). Reconcilia tarjeta↔banner en el mode 'event'.
  * @returns {Object} el mismo `normalized`, enriquecido
  */
 function enrich(provider, normalized, adapterResult, opts) {
@@ -272,10 +291,35 @@ function enrich(provider, normalized, adapterResult, opts) {
             sub.mode = 'event';
             sub.available = null;
             sub.resetAt = _resetAtFor(provider, bmeta.kind, adapterResult);
-            // "sin límite" salvo que el adapter reporte un tope activo.
+            // #4863 — FUENTE ÚNICA RECONCILIADA (CA-1/CA-2/CA-4). Tres estados
+            // explícitos, en vez del booleano `eventOk` que colapsaba
+            // "sin dato" con "sin límite" (verde espurio por inactividad):
+            //   - 'exhausted': tope real activo. Se deriva del MISMO flag que
+            //      alimenta el banner de degradación (`quota-exhausted`, vía
+            //      opts.exhaustedProviders) o de un adapter en 'critical'. Así
+            //      tarjeta y banner NUNCA se contradicen (escenario Gherkin #1).
+            //   - 'ok': dato FRESCO del adapter y sin tope → "sin límite" real.
+            //   - 'nodata': el adapter no tiene dato utilizable (stale por
+            //      inactividad >1h, 'unknown', 'error' o 'no_usage_data') → se
+            //      muestra "sin dato", NUNCA verde. Distingue "sin dato por
+            //      inactividad" de "sin límite" y de "agotada" (CA-4).
             const st = adapterResult && adapterResult.adapterStatus;
             const q = adapterResult && adapterResult.status;
-            sub.eventOk = !(st === 'error' || q === 'critical');
+            let eventState;
+            if (q === 'critical' || _isProviderExhausted(provider, opts)) {
+                eventState = 'exhausted';
+            } else if (st === 'ok' && (q === 'ok' || q === 'normal' || q === 'warning')) {
+                eventState = 'ok';
+            } else {
+                // 'unknown' (stale/inactividad), 'error', 'no_usage_data',
+                // 'not_implemented', o status 'unknown' → sin dato confiable.
+                eventState = 'nodata';
+            }
+            sub.eventState = eventState;
+            // Backward-compat: `eventOk` sigue expuesto (algún caller/lector aún
+            // lo consulta como `!== false`). Sólo es true en el estado 'ok'.
+            sub.eventOk = eventState === 'ok';
+            sub.eventExhausted = eventState === 'exhausted';
             continue;
         }
 
@@ -312,4 +356,5 @@ module.exports = {
     _availableFromConsumed,
     _resetAtFor,
     _quotaKeyFor,
+    _isProviderExhausted,
 };
