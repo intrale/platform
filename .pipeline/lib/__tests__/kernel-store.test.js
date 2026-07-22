@@ -132,6 +132,38 @@ test('CA-1: listProducts sin catálogo devuelve lista vacía', async () => {
   assert.deepEqual(await store.listProducts(), []);
 });
 
+test('#4852: putProduct rechaza productId reservado sin mutar producto ni catalogo', async () => {
+  const { store, driver } = makeStore({ contextProjectId: 'intrale-platform', allowedNamespaces: ['intrale-platform'] });
+  await driver.createTable(specFor());
+
+  await assert.rejects(
+    () => store.putProduct({ productId: 'intrale-platform', name: 'Monorepo' }),
+    (e) => e instanceof KernelStoreValidationError && e.stage === 'reserved-id' && /reservado/.test(e.message),
+  );
+
+  const product = await driver.getItem(specFor(), { PK: 'intrale-platform', SK: 'product#intrale-platform' });
+  const catalog = await driver.getItem(specFor(), { PK: 'intrale-platform', SK: 'catalog#index' });
+  assert.equal(product.item, null);
+  assert.equal(catalog.item, null);
+  assert.deepEqual(await store.listProducts(), []);
+});
+
+test('#4852: putProduct rechaza projectId reservado antes de sanitizar y sin mutar catalogo', async () => {
+  const { store, driver } = makeStore({ contextProjectId: 'intrale-platform', allowedNamespaces: ['intrale-platform'] });
+  await driver.createTable(specFor());
+
+  await assert.rejects(
+    () => store.putProduct({ productId: 'producto-valido', projectId: 'intrale-platform', name: 'Valido' }),
+    (e) => e instanceof KernelStoreValidationError && e.stage === 'reserved-id' && /reservado/.test(e.message),
+  );
+
+  const product = await driver.getItem(specFor(), { PK: 'intrale-platform', SK: 'product#producto-valido' });
+  const catalog = await driver.getItem(specFor(), { PK: 'intrale-platform', SK: 'catalog#index' });
+  assert.equal(product.item, null);
+  assert.equal(catalog.item, null);
+  assert.deepEqual(await store.listProducts(), []);
+});
+
 // -----------------------------------------------------------------------------
 // CA-2 — contrato fail-closed al leer
 // -----------------------------------------------------------------------------
@@ -359,9 +391,12 @@ test('CA-8: ítem sobre-tamaño es rechazado antes de escribir', async () => {
 // -----------------------------------------------------------------------------
 
 test('#4811 CA-6: dos putProduct concurrentes conservan ambos ids + la entrada previa', async () => {
-  const { store } = makeStore({ contextProjectId: 'intrale-platform', allowedNamespaces: ['intrale-platform'] });
-  // Pre-seed: la entrada del monorepo ya existe en el catálogo.
-  await store.putProduct({ productId: 'intrale-platform', name: 'Monorepo' });
+  const { store, driver } = makeStore({ contextProjectId: 'intrale-platform', allowedNamespaces: ['intrale-platform'] });
+  await driver.createTable(specFor());
+  // Fixture legacy controlado: la entrada del monorepo ya existe en el catalogo,
+  // pero las altas nuevas no pueden usar el id reservado por la ruta publica.
+  await driver.putItem(specFor(), rawItem('product', 'product#intrale-platform', { productId: 'intrale-platform', name: 'Monorepo' }, 'intrale-platform'));
+  await driver.putItem(specFor(), rawItem('catalog', 'catalog#index', { productIds: ['intrale-platform'], version: 1 }, 'intrale-platform'));
 
   // Alta simultánea de dos productos distintos por el mismo escritor lógico.
   await Promise.all([
