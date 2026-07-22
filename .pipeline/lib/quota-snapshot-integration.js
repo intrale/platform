@@ -9,8 +9,9 @@
 //
 //   1. `evaluateSnapshotAndGate(snapshot, opts)` — invocada por el scheduler
 //      del #3012 después de cada parse exitoso. Decide si llamar
-//      `setFlag({errorType:'snapshot_threshold_90', resetsAt})` y/o
-//      `saveCalibration(metricsDir, obs)` con defense-in-depth (CA-S1).
+//      `setFlag({errorType:'snapshot_threshold_90', resetsAt})`.
+//      #4861: la calibración EMA (`saveCalibration`) se retiró de esta cadena;
+//      la fuente única de cuota Anthropic es el snapshot real de `/usage`.
 //
 //   2. `getBannerState(opts)` — lectura pasiva para el dashboard
 //      (`/api/dash/quota-snapshot`). Devuelve `{state, lastSnapshot, ageMs,
@@ -59,14 +60,8 @@ function integrationStateFile() {
     return path.join(pipelineDir(), '.quota-snapshot-integration-state.json');
 }
 
-function metricsDir() {
-    return path.join(pipelineDir(), 'metrics');
-}
-
-function activityLogPath() {
-    if (process.env.ACTIVITY_LOG_PATH) return process.env.ACTIVITY_LOG_PATH;
-    return path.resolve(pipelineDir(), '..', '.claude', 'activity-log.jsonl');
-}
+// #4861: metricsDir()/activityLogPath() se retiraron junto con la calibración
+// EMA — eran sólo insumos de weeklyQuota.computeQuota, ya fuera del flujo.
 
 // TTL/STALE/GATE defaults (configurables por env, narrativa §2.1).
 const DEFAULT_TTL_MIN = 90;             // QUOTA_BANNER_TTL_MIN
@@ -632,7 +627,9 @@ function evaluateSnapshotAndGate(snapshot, opts = {}) {
     }
 
     let didGate = false;
-    let didCalibrate = false;
+    // #4861: didCalibrate queda en false permanente — la calibración EMA se
+    // retiró de la cadena Anthropic (fuente única = snapshot real de /usage).
+    const didCalibrate = false;
     const gatePct = getGatePct();
 
     // CA-12 / CA-S5: gate al detector binario (con kill switch granular).
@@ -678,28 +675,11 @@ function evaluateSnapshotAndGate(snapshot, opts = {}) {
         }
     }
 
-    // CA-13: calibración EMA con dato real. Importante: computeQuota ANTES
-    // para tener el pct heurístico SIN calibrar (ver guru §"Calibración:
-    // secuencia obligatoria"). Si computeQuota falla (sin metrics dir),
-    // saltea calibración pero NO falla todo el wire.
-    try {
-        const baseline = weeklyQuota.computeQuota(metricsDir(), activityLogPath());
-        weeklyQuota.saveCalibration(metricsDir(), {
-            realWeeklyPct: snapshot.weekly_all_models_pct,
-            realSessionPct: snapshot.session_pct,
-            pipelineWeeklyPct: baseline && Number.isFinite(baseline.pct) ? baseline.pct : 0,
-            pipelineSessionPct: baseline && baseline.session && Number.isFinite(baseline.session.pct)
-                ? baseline.session.pct : 0,
-            sessionResetsInMinutes: snapshot.session_minutes_to_reset,
-        });
-        didCalibrate = true;
-        const state = loadIntegrationState();
-        state.last_calibration_at = new Date(now).toISOString();
-        saveIntegrationState(state);
-    } catch (e) {
-        // Logs sin PII (R7): solo categoría.
-        log('warn', `quota-snapshot-integration: calibration skipped — ${e.message ? 'io_error' : 'unknown'}`);
-    }
+    // #4861: la calibración EMA (computeQuota + saveCalibration) se retiró de
+    // la cadena Anthropic. La fuente única de verdad es el snapshot real de
+    // `claude -p /usage` vía lib/anthropic-usage.js + quota-adapters/anthropic.js.
+    // El snapshot ya no se usa para calibrar una heurística; sólo alimenta el
+    // gate y las alertas más arriba. Ver docs/quota-tracking.md.
 
     // #4282 — evaluación anticipatoria multi-provider. Best-effort: nunca debe
     // romper el wire del snapshot. Reusa el ciclo periódico de este módulo como
@@ -711,6 +691,8 @@ function evaluateSnapshotAndGate(snapshot, opts = {}) {
         log('warn', `quota-snapshot-integration: provider-quota-guard skip — ${e && e.message ? 'error' : 'unknown'}`);
     }
 
+    // #4861: didCalibrate ya no puede ser true (calibración EMA retirada). El
+    // action 'calibrated'/'gated_and_calibrated' queda como legacy inalcanzable.
     let action = 'none';
     if (didGate && didCalibrate) action = 'gated_and_calibrated';
     else if (didGate) action = 'gated';

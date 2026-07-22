@@ -2407,24 +2407,35 @@ function quotaSlice(state, ctx) {
                 if (provider === 'anthropic') anthropicResult = result;
             } catch (err) {
                 // Defensa: el dispatcher es fail-secure, pero por si acaso.
-                providers[provider] = {
+                const failClosed = {
                     provider,
                     adapterStatus: 'error',
                     errorReason: err && err.message ? err.message : 'unknown',
                     pct: null,
                     status: 'unknown',
                 };
+                providers[provider] = failClosed;
+                // #4861 / CA-4 (OWASP A04): si el adapter de Anthropic falla,
+                // el resultado top-level debe ser sin-dato explícito, NUNCA un
+                // default permisivo (pct:0) — la cuota gobierna pacing/gating y
+                // un fail-open habilita cost-DoS por sobreconsumo pago.
+                if (provider === 'anthropic') anthropicResult = failClosed;
             }
         }
     } catch (e) {
-        // quota-adapters no está disponible — cae al cómputo legacy directo.
-        try {
-            const quotaLib = require('./weekly-quota');
-            anthropicResult = quotaLib.computeQuota(metricsDir, activityLog, { configLimitHours });
-            providers.anthropic = anthropicResult;
-        } catch (e2) {
-            return { error: e2.message, hoursUsed7d: 0, pct: 0, status: 'unknown', providers: {} };
-        }
+        // #4861 — quota-adapters no está disponible. Antes se caía a la
+        // heurística `computeQuota` (calibración EMA), que producía el valor
+        // divergente 57%/76%. Ahora fail-closed: sin dato de cuota Anthropic,
+        // NO un default permisivo. La fuente única es `claude -p /usage` vía
+        // quota-adapters/anthropic.js; si no carga, se reporta unknown/stale.
+        anthropicResult = {
+            provider: 'anthropic',
+            adapterStatus: 'error',
+            errorReason: e && e.message ? e.message : 'quota-adapters unavailable',
+            pct: null,
+            status: 'unknown',
+        };
+        providers.anthropic = anthropicResult;
     }
 
     // Retrocompat: campos legacy de Anthropic en el top-level (alimentan
@@ -2433,7 +2444,8 @@ function quotaSlice(state, ctx) {
     // o se rompería `out.session` (misma referencia).
     const out = anthropicResult && typeof anthropicResult === 'object'
         ? { ...anthropicResult }
-        : { hoursUsed7d: 0, pct: 0, status: 'unknown' };
+        // #4861 / CA-4: fail-closed por defensa (pct:null, no pct:0 permisivo).
+        : { hoursUsed7d: 0, pct: null, status: 'unknown', adapterStatus: 'error' };
 
     // #4202 — `providers` se entrega NORMALIZADO al shape mínimo de cliente
     // (security req#5): por proveedor/bucket solo `{pct, confidence}`. Se
