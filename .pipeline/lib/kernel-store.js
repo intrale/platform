@@ -51,7 +51,7 @@ const {
   ConditionalCheckFailedError,
 } = require('./provisioner-infra');
 const projectDescriptor = require('./project-descriptor');
-const { validateDescriptor, isSafeId, redactAjvErrors } = projectDescriptor;
+const { validateDescriptor, isSafeId, isReservedProjectId, redactAjvErrors } = projectDescriptor;
 const { detectInjection } = require('./handoff');
 const { parseSecretRef } = require('./credentials');
 
@@ -445,6 +445,13 @@ function createKernelStore(deps = {}) {
 
   async function putProduct(product) {
     const productId = product && product.productId;
+    const projectId = product && product.projectId;
+    if (isReservedProjectId(productId) || isReservedProjectId(projectId)) {
+      throw new KernelStoreValidationError('id de producto/proyecto reservado', {
+        stage: 'reserved-id',
+        errors: [{ path: 'productId/projectId', detail: 'id reservado' }],
+      });
+    }
     const item = envelope(ENTITY.PRODUCT, SK.product(productId), sanitizeProduct(product));
     await ensureTable();
     assertWritable(item); // schema-valida el body product (rechaza campo extra)
