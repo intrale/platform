@@ -643,3 +643,55 @@ test('#4805 CA-7: round-trip real en disco — status durable + integrity válid
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* cleanup */ }
   }
 });
+// -----------------------------------------------------------------------------
+// #4851 — descriptor completo desde wizard: providers, politica de PR y GATE 2.
+// -----------------------------------------------------------------------------
+
+test('#4851: providers.order valido y pullRequestPolicy valida pasan con contrato cerrado', () => {
+  const res = d.validateDescriptor(validDescriptor({
+    pullRequestPolicy: 'draft-first',
+    providers: { order: ['openai-codex', 'anthropic', 'gemini-google', 'cerebras', 'nvidia-nim'] },
+  }));
+  assert.equal(res.valid, true, JSON.stringify(res.errors));
+  assert.deepEqual(d.deriveProviderOrder(res.descriptor), ['openai-codex', 'anthropic', 'gemini-google', 'cerebras', 'nvidia-nim']);
+  assert.equal(d.derivePullRequestPolicy(res.descriptor), 'draft-first');
+});
+
+test('#4851: providers.order ausente deriva default seguro sin groq', () => {
+  const res = d.validateDescriptor(validDescriptor());
+  assert.equal(res.valid, true, JSON.stringify(res.errors));
+  assert.deepEqual(d.deriveProviderOrder(res.descriptor), ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim']);
+  assert.equal(d.derivePullRequestPolicy(res.descriptor), 'required');
+  assert.ok(!d.deriveProviderOrder(res.descriptor).some((id) => /groq/i.test(id)));
+});
+
+for (const badOrder of [
+  ['anthropic', 'anthropic'],
+  ['anthropic', 'unknown-provider'],
+  ['groq'],
+  [''],
+]) {
+  test(`#4851: providers.order invalido se rechaza: ${JSON.stringify(badOrder)}`, () => {
+    const res = d.validateDescriptor(validDescriptor({ providers: { order: badOrder } }));
+    assert.equal(res.valid, false);
+    assert.ok(['schema', 'providers'].includes(res.stage), `stage=${res.stage}`);
+  });
+}
+
+test('#4851: deriveProviderOrder falla fail-closed si se usa directo con provider invalido', () => {
+  assert.throws(() => d.deriveProviderOrder({ providers: { order: ['groq'] } }), /no permitido/i);
+  assert.throws(() => d.deriveProviderOrder({ providers: { order: ['anthropic', 'anthropic'] } }), /duplicado/i);
+  assert.throws(() => d.deriveProviderOrder({ providers: { order: ['unknown-provider'] } }), /desconocido/i);
+});
+
+test('#4851: pullRequestPolicy fuera de enum y gate2Approver paralelo son rechazados', () => {
+  const invalidPolicy = d.validateDescriptor(validDescriptor({ pullRequestPolicy: 'free-text' }));
+  assert.equal(invalidPolicy.valid, false);
+  assert.ok(['schema', 'pullRequestPolicy'].includes(invalidPolicy.stage));
+  assert.throws(() => d.derivePullRequestPolicy({ pullRequestPolicy: 'free-text' }), /pullRequestPolicy/);
+
+  const gate2Approver = d.validateDescriptor(validDescriptor({ gate2Approver: 'leitolarreta' }));
+  assert.equal(gate2Approver.valid, false);
+  assert.equal(gate2Approver.stage, 'schema');
+  assert.ok(gate2Approver.errors.some((e) => e.keyword === 'additionalProperties'));
+});

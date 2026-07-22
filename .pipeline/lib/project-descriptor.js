@@ -50,6 +50,13 @@ const KERNEL_SKILLS = Object.freeze(new Set([
 // Interfaces (capabilities) reconocidas por el kernel.
 const KERNEL_INTERFACES = Object.freeze(new Set(['backend', 'frontend', 'pipeline', 'generic']));
 
+const ALLOWED_PROVIDER_ORDER = Object.freeze(['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim']);
+const ALLOWED_PROVIDER_ORDER_SET = Object.freeze(new Set(ALLOWED_PROVIDER_ORDER));
+const DEPRECATED_PROVIDER_ID = ['gr', 'oq'].join('');
+
+const DEFAULT_PULL_REQUEST_POLICY = 'required';
+const ALLOWED_PULL_REQUEST_POLICIES = Object.freeze(new Set(['required', 'draft-first', 'maintainer-push']));
+
 // Gates que el kernel entiende. Valor efectivo se resuelve fail-closed (CA-D5).
 const GATE_NAMES = Object.freeze(['gate0', 'gate2', 'visual']);
 const KNOWN_GATE_MODES = Object.freeze(new Set(['enforce', 'dry-run']));
@@ -230,6 +237,44 @@ function collectRepositoryProvenanceHits(descriptor) {
   return hits;
 }
 
+function collectProviderOrderHits(descriptor) {
+  const hits = [];
+  const providers = descriptor && descriptor.providers;
+  if (providers === undefined) return hits;
+  const order = providers && providers.order;
+  if (!Array.isArray(order) || order.length === 0) {
+    return [{ path: 'providers.order', detail: 'providers.order debe declarar al menos un provider de la allowlist' }];
+  }
+  const seen = new Set();
+  order.forEach((id, i) => {
+    if (typeof id !== 'string' || id.trim() === '') {
+      hits.push({ path: `providers.order[${i}]`, detail: 'provider vacio o invalido' });
+      return;
+    }
+    if (id.toLowerCase() === DEPRECATED_PROVIDER_ID) {
+      hits.push({ path: `providers.order[${i}]`, detail: 'provider no permitido' });
+      return;
+    }
+    if (!ALLOWED_PROVIDER_ORDER_SET.has(id)) {
+      hits.push({ path: `providers.order[${i}]`, detail: `provider desconocido: ${id}` });
+    }
+    if (seen.has(id)) {
+      hits.push({ path: `providers.order[${i}]`, detail: `provider duplicado: ${id}` });
+    }
+    seen.add(id);
+  });
+  return hits;
+}
+
+function collectPullRequestPolicyHits(descriptor) {
+  if (!descriptor || descriptor.pullRequestPolicy === undefined) return [];
+  const value = descriptor.pullRequestPolicy;
+  if (typeof value !== 'string' || !ALLOWED_PULL_REQUEST_POLICIES.has(value)) {
+    return [{ path: 'pullRequestPolicy', detail: `politica de PR fuera de enum: ${JSON.stringify(value)}` }];
+  }
+  return [];
+}
+
 // -----------------------------------------------------------------------------
 // Checksum de integridad (paso 2). Cálculo determinístico sobre el descriptor
 // SIN el bloque `integrity` (no se auto-incluye en su propio hash).
@@ -333,6 +378,27 @@ function validateDescriptor(obj, opts = {}) {
       valid: false,
       stage: 'repositories',
       errors: provenanceHits.map((h) => ({ path: h.path, keyword: 'repositoryProvenance', detail: h.detail })),
+      descriptor: null,
+    };
+  }
+
+  // 7) Providers/politica de PR: allowlists server-side. El schema lo expresa y
+  //    esta capa lo repite para callers que consuman derivadores directo.
+  const providerHits = collectProviderOrderHits(descriptor);
+  if (providerHits.length > 0) {
+    return {
+      valid: false,
+      stage: 'providers',
+      errors: providerHits.map((h) => ({ path: h.path, keyword: 'providerOrder', detail: h.detail })),
+      descriptor: null,
+    };
+  }
+  const prPolicyHits = collectPullRequestPolicyHits(descriptor);
+  if (prPolicyHits.length > 0) {
+    return {
+      valid: false,
+      stage: 'pullRequestPolicy',
+      errors: prPolicyHits.map((h) => ({ path: h.path, keyword: 'pullRequestPolicy', detail: h.detail })),
       descriptor: null,
     };
   }
@@ -473,6 +539,30 @@ function deriveCapabilityPartitions(descriptor) {
     if (cap && KERNEL_INTERFACES.has(cap.interface)) out[cap.interface] = [...(cap.skills || [])];
   }
   return out;
+}
+
+function deriveProviderOrder(descriptor) {
+  const providers = descriptor && descriptor.providers;
+  const raw = providers && Array.isArray(providers.order) ? providers.order : ALLOWED_PROVIDER_ORDER;
+  if (!Array.isArray(raw) || raw.length === 0) throw new Error('providers.order invalido: lista vacia');
+  const seen = new Set();
+  for (const id of raw) {
+    if (typeof id !== 'string' || id.trim() === '') throw new Error('providers.order invalido: provider vacio');
+    if (id.toLowerCase() === DEPRECATED_PROVIDER_ID) throw new Error('providers.order invalido: provider no permitido');
+    if (!ALLOWED_PROVIDER_ORDER_SET.has(id)) throw new Error(`providers.order invalido: provider desconocido ${JSON.stringify(id)}`);
+    if (seen.has(id)) throw new Error(`providers.order invalido: provider duplicado ${JSON.stringify(id)}`);
+    seen.add(id);
+  }
+  return [...raw];
+}
+
+function derivePullRequestPolicy(descriptor) {
+  const raw = descriptor && descriptor.pullRequestPolicy;
+  if (raw === undefined || raw === null || raw === '') return DEFAULT_PULL_REQUEST_POLICY;
+  if (typeof raw !== 'string' || !ALLOWED_PULL_REQUEST_POLICIES.has(raw)) {
+    throw new Error(`pullRequestPolicy invalida: ${JSON.stringify(raw)}`);
+  }
+  return raw;
 }
 
 /**
@@ -707,6 +797,9 @@ module.exports = {
   schema,
   KERNEL_SKILLS,
   KERNEL_INTERFACES,
+  ALLOWED_PROVIDER_ORDER,
+  DEFAULT_PULL_REQUEST_POLICY,
+  ALLOWED_PULL_REQUEST_POLICIES,
   GATE_NAMES,
   validateDescriptor,
   loadDescriptor,
@@ -719,6 +812,8 @@ module.exports = {
   collectPathTraversalHits,
   collectThresholdViolations,
   collectRepositoryProvenanceHits,
+  collectProviderOrderHits,
+  collectPullRequestPolicyHits,
   CREATE_REPO_NAME_RE,
   redactAjvErrors,
   deriveRouting,
@@ -728,6 +823,8 @@ module.exports = {
   deriveAgentCap,
   deriveProviderBudget,
   deriveCapabilityPartitions,
+  deriveProviderOrder,
+  derivePullRequestPolicy,
   resolveGate,
   resolveSignerAuthority,
   authorizeSigner,

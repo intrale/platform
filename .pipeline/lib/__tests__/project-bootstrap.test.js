@@ -140,6 +140,26 @@ test('CA-D2: dry-run expone ruteo resuelto contra la allowlist (skills validados
   assert.deepEqual(r.skills, ['backend-dev']);
 });
 
+test('#4851: dry-run expone providers y politica de PR efectivos', () => {
+  const desc = validDescriptor({
+    pullRequestPolicy: 'maintainer-push',
+    providers: { order: ['nvidia-nim', 'cerebras', 'gemini-google', 'openai-codex', 'anthropic'] },
+  });
+  const res = b.runBootstrap({ descriptor: desc, mode: 'dry-run' });
+  assert.equal(res.ok, true, JSON.stringify(res.errors));
+  assert.deepEqual(res.dryRun.providerOrder, ['nvidia-nim', 'cerebras', 'gemini-google', 'openai-codex', 'anthropic']);
+  assert.equal(res.dryRun.pullRequestPolicy, 'maintainer-push');
+  assert.match(res.human, /nvidia-nim/);
+  assert.match(res.human, /maintainer-push/);
+});
+
+test('#4851: dry-run deriva defaults seguros cuando providers/politica faltan', () => {
+  const res = b.runBootstrap({ descriptor: validDescriptor(), mode: 'dry-run' });
+  assert.equal(res.ok, true, JSON.stringify(res.errors));
+  assert.deepEqual(res.dryRun.providerOrder, ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim']);
+  assert.equal(res.dryRun.pullRequestPolicy, 'required');
+});
+
 // -----------------------------------------------------------------------------
 // CA-D1 — modo full registra onboarding (inactivo) hasta OK humano
 // -----------------------------------------------------------------------------

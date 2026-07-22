@@ -52,6 +52,26 @@ test('SEC-7a: la vista embebe POST /api/product/onboard + CSRF, sin GET mutante'
     assert.ok(res.body.includes("method: 'POST'"));
 });
 
+test('#4851: onboarding conserva 5 pasos y expone los campos del descriptor completo', () => {
+    const { handle } = fresh();
+    const req = fakeReq({ url: '/dashboard?view=onboarding' });
+    const res = fakeRes();
+    handle(req, res, fakeCtx);
+    const steps = [...res.body.matchAll(/class="ow-step-num"/g)];
+    assert.equal(steps.length, 5, 'debe mantener exactamente 5 pasos');
+    for (const id of ['ow-repo-baseref', 'ow-repo-alt-baseref', 'ow-pr-policy', 'ow-board-labels', 'ow-provider-order', 'ow-auth-signers', 'ow-auth-gate2']) {
+        assert.ok(res.body.includes(`id="${id}"`), `falta ${id}`);
+    }
+    assert.ok(res.body.includes('data-provider-id="anthropic"'));
+    assert.ok(res.body.includes('data-provider-id="openai-codex"'));
+    assert.ok(res.body.includes('data-provider-id="gemini-google"'));
+    assert.ok(res.body.includes('data-provider-id="cerebras"'));
+    assert.ok(res.body.includes('data-provider-id="nvidia-nim"'));
+    assert.ok(res.body.includes('function owMoveProvider('));
+    assert.ok(res.body.includes('function owProviderKey('));
+    assert.ok(!/groq/i.test(res.body), 'Groq/groq no debe aparecer en UI/script del wizard');
+});
+
 test('CA-S1: onboarding es un slug de la allowlist (partial desde loopback no da 400)', () => {
     const { handle } = fresh();
     const req = fakeReq({ url: '/dashboard/partial?view=onboarding', headers: { 'sec-fetch-site': 'same-origin' } });
