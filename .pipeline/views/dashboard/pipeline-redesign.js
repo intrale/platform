@@ -774,6 +774,91 @@ function plItemTerminal(issue, title, macro, estado){
     };
 }
 
+// #4866 — Clasificación pura de los issues en columnas por fase (buckets). Se
+// extrajo de tickPipelineRedesign para poder testearla sin DOM ni fetch.
+//   matrix        : hijos en vuelo (faseActual/agentes), del /api/dash/pipeline.
+//   extraById     : franja terminal por id ('finalizado'/'no-ingreso').
+//   waveExtra     : misma franja como array (para el fallback sin ola).
+//   waveMembers   : ids de la ola activa (fuente de verdad) o null.
+//   waveDelivered : id → { delivered, title } derivado del payload de olas.
+function plBuildPhaseBuckets(matrix, extraById, waveExtra, waveMembers, waveDelivered){
+    matrix = matrix || {};
+    extraById = extraById || {};
+    waveExtra = Array.isArray(waveExtra) ? waveExtra : [];
+    waveDelivered = waveDelivered || {};
+    const buckets = {};
+    for(const p of PL_PHASE_FLOW) buckets[p.key] = [];
+
+    if(waveMembers && waveMembers.length){
+        // WAVE MODE: todos los hijos de la ola, enriquecidos. Sin filtro allowlist:
+        // la membresía de la ola ya delimita la vista (CA-1).
+        for(const id of waveMembers){
+            const m = matrix[id];
+            const ex = extraById[id];
+            const wd = waveDelivered[id];
+            // #4866 — CA-1/CA-3/CA-5: si el payload de olas lo marca entregado
+            // (cerrado/merge), gana "entregado" ANTES de re-derivar la fase o de
+            // caer al fallback "Definición". Precedencia intencional: aunque el
+            // issue todavía tenga faseActual en matrix (edge case de transición),
+            // la pantalla principal es la fuente de verdad y lo muestra entregado
+            // → el tablero por fase debe coincidir (CA-2). Reusa el mismo path
+            // visual que los hijos 'finalizado' (columna Done, tono verde + 📦 + ✓).
+            if(wd && wd.delivered){
+                const title = (m && m.title) || (ex && ex.title) || wd.title;
+                buckets.done.push(plItemTerminal(id, title, 'done', 'finalizado'));
+                continue;
+            }
+            if(m){
+                const macro = plMacroOf(m.faseActual);
+                if(macro){ buckets[macro].push(plItemFromMatrix(id, m, macro)); }
+                else if(m.progressState === 'entre-fases'){
+                    // #4362 — avanza entre fases: NO es "sin arrancar". Se ubica
+                    // en la columna Definición pero con badge/tono "En curso".
+                    const it = plItemFromMatrix(id, m, 'def');
+                    it.between = true;
+                    buckets.def.push(it);
+                }
+                else { buckets.def.push(plItemTerminal(id, m.title, 'def', m.estadoActual)); }
+                continue;
+            }
+            if(ex && ex.estado === 'finalizado'){
+                buckets.done.push(plItemTerminal(id, ex.title, 'done', 'finalizado'));
+            } else {
+                // no-ingreso (open, sin work-file) o desconocido → definición sin
+                // arrancar. #4866 CA-3: este fallback solo aplica a issues no
+                // entregados (los entregados ya se ramificaron arriba a 'done').
+                buckets.def.push(plItemTerminal(id, ex ? ex.title : '', 'def', 'no-ingreso'));
+            }
+        }
+        return buckets;
+    }
+
+    // FALLBACK (sin ola activa): vista legacy basada en el matrix, con el
+    // filtro de allowlist de la pausa parcial. Mantiene el pipeline vivo
+    // cuando waves.json no expone una ola activa.
+    for(const [issue, data] of Object.entries(matrix)){
+        const macro = plMacroOf(data.faseActual);
+        if(!macro){
+            // #4362 — sin fase activa pero avanza entre fases: hacerlo visible
+            // (antes se descartaba, quedaba en blanco) en Definición como "En curso".
+            if(data.progressState === 'entre-fases' && (!plOnlyWave || plAllowlistOk(issue))){
+                const it = plItemFromMatrix(issue, data, 'def');
+                it.between = true;
+                buckets.def.push(it);
+            }
+            continue;
+        }
+        if(plOnlyWave && !plAllowlistOk(issue)) continue;
+        buckets[macro].push(plItemFromMatrix(issue, data, macro));
+    }
+    for(const ex of waveExtra){
+        if(plOnlyWave && !plAllowlistOk(ex.issue)) continue;
+        if(ex.estado === 'finalizado') buckets.done.push(plItemTerminal(ex.issue, ex.title, 'done', 'finalizado'));
+        else buckets.def.push(plItemTerminal(ex.issue, ex.title, 'def', 'no-ingreso'));
+    }
+    return buckets;
+}
+
 async function tickPipelineRedesign(){
     // #4234 — VISTA TOTAL DE LA OLA: cruzamos la membresía de la ola activa
     // (/api/dash/waves → solo IDs) con el matrix del pipeline (hijos en vuelo,
@@ -790,68 +875,27 @@ async function tickPipelineRedesign(){
     for(const e of waveExtra){ if(e && e.issue != null) extraById[String(e.issue)] = e; }
 
     // Membresía de la ola (CA-1). Si hay ola activa, ES la fuente de verdad.
+    // #4866 — además del id, conservamos el estado de entrega que viaja en el
+    // payload de /api/dash/waves (status:'completed' / merged:true) y el title,
+    // para no re-derivar la fase de un issue ya cerrado y mandarlo al fallback
+    // "Definición". La pantalla principal usa ese mismo dato como entregado.
     let waveMembers = null;
+    const waveDelivered = {};   // id → { delivered:bool, title:string }
     if(w && w.active_wave && Array.isArray(w.active_wave.issues)){
         waveMembers = [];
         for(const x of w.active_wave.issues){
-            if(x && x.id != null) waveMembers.push(String(x.id));
+            if(x && x.id != null){
+                const id = String(x.id);
+                waveMembers.push(id);
+                waveDelivered[id] = {
+                    delivered: (x.status === 'completed' || x.merged === true),
+                    title: x.title || '',
+                };
+            }
         }
     }
 
-    const buckets = {};
-    for(const p of PL_PHASE_FLOW) buckets[p.key] = [];
-
-    if(waveMembers && waveMembers.length){
-        // WAVE MODE: todos los hijos de la ola, enriquecidos. Sin filtro allowlist:
-        // la membresía de la ola ya delimita la vista (CA-1).
-        for(const id of waveMembers){
-            const m = matrix[id];
-            if(m){
-                const macro = plMacroOf(m.faseActual);
-                if(macro){ buckets[macro].push(plItemFromMatrix(id, m, macro)); }
-                else if(m.progressState === 'entre-fases'){
-                    // #4362 — avanza entre fases: NO es "sin arrancar". Se ubica
-                    // en la columna Definición pero con badge/tono "En curso".
-                    const it = plItemFromMatrix(id, m, 'def');
-                    it.between = true;
-                    buckets.def.push(it);
-                }
-                else { buckets.def.push(plItemTerminal(id, m.title, 'def', m.estadoActual)); }
-                continue;
-            }
-            const ex = extraById[id];
-            if(ex && ex.estado === 'finalizado'){
-                buckets.done.push(plItemTerminal(id, ex.title, 'done', 'finalizado'));
-            } else {
-                // no-ingreso (open, sin work-file) o desconocido → definición sin arrancar.
-                buckets.def.push(plItemTerminal(id, ex ? ex.title : '', 'def', 'no-ingreso'));
-            }
-        }
-    } else {
-        // FALLBACK (sin ola activa): vista legacy basada en el matrix, con el
-        // filtro de allowlist de la pausa parcial. Mantiene el pipeline vivo
-        // cuando waves.json no expone una ola activa.
-        for(const [issue, data] of Object.entries(matrix)){
-            const macro = plMacroOf(data.faseActual);
-            if(!macro){
-                // #4362 — sin fase activa pero avanza entre fases: hacerlo visible
-                // (antes se descartaba, quedaba en blanco) en Definición como "En curso".
-                if(data.progressState === 'entre-fases' && (!plOnlyWave || plAllowlistOk(issue))){
-                    const it = plItemFromMatrix(issue, data, 'def');
-                    it.between = true;
-                    buckets.def.push(it);
-                }
-                continue;
-            }
-            if(plOnlyWave && !plAllowlistOk(issue)) continue;
-            buckets[macro].push(plItemFromMatrix(issue, data, macro));
-        }
-        for(const ex of waveExtra){
-            if(plOnlyWave && !plAllowlistOk(ex.issue)) continue;
-            if(ex.estado === 'finalizado') buckets.done.push(plItemTerminal(ex.issue, ex.title, 'done', 'finalizado'));
-            else buckets.def.push(plItemTerminal(ex.issue, ex.title, 'def', 'no-ingreso'));
-        }
-    }
+    const buckets = plBuildPhaseBuckets(matrix, extraById, waveExtra, waveMembers, waveDelivered);
 
     // Bloque 1: Flujo de fases — SIEMPRE las 6 fases con su conteo (CA-3),
     // atenuando las que están en 0 (su conteo se conserva acá).
