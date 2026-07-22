@@ -1171,6 +1171,35 @@ test('#4853 · spawnInstance con id reservado NO crea store REAL (verificación 
   assert.equal(supervisor.getInstance('intrale-platform'), null, 'sin instancia tras el fallo');
 });
 
+test('#4853 · bootProducts descarta el reservado aunque resolveProjectId lo DERIVE de productId (sin projectId explícito)', async () => {
+  // El issue exige descartar productos cuyo `resolveProjectId()` DERIVE un id
+  // reservado, no solo el literal `projectId`. `resolveProjectId` cae a `productId`
+  // cuando no hay `projectId`; el guard debe atrapar igual ese camino de derivación.
+  const calls = [];
+  const alerts = [];
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore([
+      { productId: 'acme', name: 'ACME', status: 'active' },
+      { productId: 'intrale-platform', name: 'Root', status: 'active' }, // sin projectId → deriva de productId
+    ]),
+    storeFactory: recordingStoreFactory(calls),
+    hydrate: false,
+    onAlert: (a) => alerts.push(a),
+  });
+
+  const res = await supervisor.bootProducts();
+
+  assert.deepEqual(res.spawned, ['acme'], 'solo el activo no-reservado se instancia');
+  assert.equal(supervisor.getInstance('intrale-platform'), null, 'el id reservado derivado NO tiene instancia');
+  const skip = res.skipped.find((s) => s.projectId === 'intrale-platform');
+  assert.ok(skip && skip.reason === 'id reservado', 'el reservado derivado queda en skipped con razón clara');
+  assert.ok(
+    alerts.some((a) => a.stage === 'reserved-id' && a.projectId === 'intrale-platform'),
+    'se emitió alerta del reservado derivado (descarte no silencioso)',
+  );
+  assert.ok(!calls.some((c) => c.contextProjectId === 'intrale-platform'), 'no se creó store para el reservado derivado');
+});
+
 test('#4853 · authorizedProjectIdSet excluye ids reservados (no autoriza el namespace raíz como tenant)', async () => {
   const supervisor = createKernelSupervisor({
     catalogStore: fakeCatalogStore(CATALOG_RESERVADO),
