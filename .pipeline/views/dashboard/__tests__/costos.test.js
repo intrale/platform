@@ -301,9 +301,11 @@ test('renderCostosRedesign: compone todo con el contenedor morphing-target', () 
     assert.match(html, /Cuota por proveedor/);        // sección de cuotas
     assert.match(html, /cz-budget-save/);             // presupuesto
     assert.match(html, /id="cz-budget-input"/);
-    // Calibración de Claude preservada con IDs invariantes (binding del shell).
-    assert.match(html, /id="calib-weekly"/);
-    assert.match(html, /id="calib-save"/);
+    // #4861 — La herramienta de calibración manual se ELIMINÓ (fuente única =
+    // claude -p /usage). El markup ya no debe contener controles de calibración.
+    assert.ok(!/id="calib-weekly"/.test(html), 'no debe quedar input de calibración');
+    assert.ok(!/id="calib-save"/.test(html), 'no debe quedar botón de calibración');
+    assert.ok(!/cz-calib/.test(html), 'no debe quedar markup .cz-calib');
 });
 
 test('renderCostosRedesign: NO re-renderiza la chrome del shell (sin onclick inline)', () => {
@@ -327,6 +329,7 @@ test('renders degradan a aviso visible ante slice vacío (no rompen)', () => {
     assert.doesNotThrow(() => costos.renderProjectionsCards({}));
     assert.doesNotThrow(() => costos.renderDrillDown({}));
     assert.doesNotThrow(() => costos.renderProviderQuota({}));
-    assert.doesNotThrow(() => costos.renderCalibrationTool());
+    // #4861 — renderCalibrationTool eliminado (ya no se exporta).
+    assert.equal(costos.renderCalibrationTool, undefined);
     assert.doesNotThrow(() => costos.renderCostosRedesign({}));
 });

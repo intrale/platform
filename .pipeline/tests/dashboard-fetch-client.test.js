@@ -136,7 +136,9 @@ test('fetchJson adjunta X-CSRF-Token en DELETE (R2)', async () => {
     let captured = null;
     const fetchImpl = async (url, opts) => { captured = opts; return { ok: true, status: 200, json: async () => ({}) }; };
     const { api } = loadClient({ fetchImpl, csrfToken: 'tok-xyz' });
-    await api.fetchJson('/api/dash/quota/calibrate', { method: 'DELETE' });
+    // #4861 — el endpoint /api/dash/quota/calibrate se eliminó; este test valida
+    // el header CSRF genérico en DELETE con un path de mutación cualquiera.
+    await api.fetchJson('/api/dash/some-mutation', { method: 'DELETE' });
     assert.equal(captured.headers['X-CSRF-Token'], 'tok-xyz');
 });
 

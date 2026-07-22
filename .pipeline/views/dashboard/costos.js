@@ -755,29 +755,10 @@ function renderProviderQuota(slice) {
     }
 }
 
-// --- Calibración de la estimación de Claude (preservada de #3735) ------------
-// Mantiene los IDs invariantes que el client script del shell (satellites.js
-// tickQuota) bindea por getElementById: calib-weekly / calib-session /
-// calib-session-at / calib-weekly-at / calib-save / calib-clear / calib-status /
-// calib-history. Mover el markup acá no rompe el binding (es por ID, no por DOM).
-function renderCalibrationTool() {
-    return `<details class="cz-calib" id="quota-calib">
-  <summary>🎯 Calibrar la estimación de Claude con valores reales de claude.ai/settings/usage</summary>
-  <p class="cz-calib-help">Pegá los % que ves y, si querés mejorar la precisión del reset semanal, también el día/hora de cada reset. Cada calibración entra al historial — los factores se promedian con EMA.</p>
-  <div class="cz-calib-grid">
-    <div><label>% semanal real</label><input id="calib-weekly" type="number" step="0.1" min="0" max="100" placeholder="ej: 22"></div>
-    <div><label>% sesión 5h real</label><input id="calib-session" type="number" step="0.1" min="0" max="100" placeholder="ej: 60"></div>
-    <div><label>Sesión: día y hora del reset (opcional)</label><input id="calib-session-at" type="datetime-local"></div>
-    <div><label>Semanal: día y hora del reset (opcional)</label><input id="calib-weekly-at" type="datetime-local"></div>
-  </div>
-  <div class="cz-calib-actions">
-    <button id="calib-save" class="cz-calib-btn cz-calib-apply" type="button">▶ Aplicar y aprender</button>
-    <button id="calib-clear" class="cz-calib-btn" type="button">✕ Borrar calibración</button>
-  </div>
-  <div id="calib-status" class="cz-calib-status" role="status" aria-live="polite"></div>
-  <div id="calib-history"></div>
-</details>`;
-}
+// #4861 — renderCalibrationTool() ELIMINADO. La herramienta de calibración
+// manual (IDs calib-weekly/calib-session/calib-save/calib-clear/…) alimentaba
+// los endpoints POST/DELETE /api/dash/quota/calibrate, ya retirados. La cuota
+// Anthropic ahora tiene fuente única (claude -p /usage) y no se calibra a mano.
 
 // --- Script cliente del presupuesto: POST + re-render sin recarga completa ---
 // Tras un POST 200, re-fetchea el partial de la vista Costos y reemplaza el
@@ -942,7 +923,6 @@ function renderCostosRedesign(slice) {
   <div class="cz-panel">
     ${panelHeader('🔌', 'Cuota por proveedor', 'límites y consumo de los 5 proveedores del pipeline — no solo Anthropic', 'Cada proveedor tiene su propio modelo de límite: Claude por sesión 5h + semanal (Plan Max), Codex por plan pago, y los free tier (Groq/Gemini/Cerebras) por requests y tokens diarios. Las cuotas que el proveedor no expone por API se estiman desde el activity-log.')}
     ${renderProviderQuota(slice)}
-    ${renderCalibrationTool()}
   </div>`;
     } catch (e) {
         inner = `<div class="cz-empty">Rediseño de Costos no disponible.</div>`;
@@ -1114,18 +1094,7 @@ function costosRedesignStyle() {
 #costos-redesign .cz-pqbar i{display:block;height:100%;border-radius:5px}
 #costos-redesign .cz-pqreset{font-size:9.5px;color:var(--cz-mut2);line-height:1.35;margin-top:auto}
 #costos-redesign .cz-est{color:#fdba74;font-weight:700}
-/* CALIBRACIÓN */
-#costos-redesign .cz-calib{margin-top:16px;border-top:1px solid var(--cz-line);padding-top:13px}
-#costos-redesign .cz-calib>summary{cursor:pointer;font-size:12px;color:var(--cz-mut);user-select:none;font-weight:600}
-#costos-redesign .cz-calib-help{font-size:11px;color:var(--cz-mut2);margin:10px 0 8px}
-#costos-redesign .cz-calib-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
-@media (max-width:560px){#costos-redesign .cz-calib-grid{grid-template-columns:1fr}}
-#costos-redesign .cz-calib-grid label{font-size:11px;color:var(--cz-mut2);display:block;margin-bottom:4px}
-#costos-redesign .cz-calib-grid input{width:100%;background:var(--cz-bg);border:1px solid var(--cz-line2);border-radius:8px;padding:7px 10px;color:var(--cz-txt);font-size:13px;font-family:'Cascadia Code',Consolas,monospace}
-#costos-redesign .cz-calib-actions{display:flex;gap:8px;flex-wrap:wrap}
-#costos-redesign .cz-calib-btn{font-size:12px;font-weight:700;padding:8px 14px;border-radius:9px;cursor:pointer;background:transparent;border:1px solid var(--cz-line2);color:var(--cz-mut)}
-#costos-redesign .cz-calib-apply{border-color:var(--cz-cy);color:var(--cz-cy)}
-#costos-redesign .cz-calib-status{margin-top:10px;font-size:11px;color:var(--cz-mut2)}
+/* #4861 — estilos de la herramienta de calibración eliminados (fuente única) */
 </style>`;
 }
 
@@ -1142,7 +1111,6 @@ module.exports = {
     renderProjectionsCards,
     renderDrillDown,
     renderProviderQuota,
-    renderCalibrationTool,
     renderBudgetClientScript,
     renderCostosRedesign,
     PROVIDER_STACK_ORDER,

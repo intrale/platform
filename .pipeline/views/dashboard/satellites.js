@@ -1715,11 +1715,11 @@ function renderCostos(opts) {
     //
     // El rediseño ABSORBE el contenido legacy: la antigua sección «Cuota Plan
     // Max» (sólo Anthropic) la reemplazan las 5 tarjetas de cuota por proveedor
-    // (CA-2); la herramienta de calibración de Claude se preserva DENTRO del
-    // rediseño con los mismos IDs (calib-*), por lo que el script de abajo
-    // (tickQuota) la sigue cableando por getElementById sin cambios. Los IDs
-    // legacy que ya no existen (quota-grid/costos-grid/costos-detail) están
-    // guardados con `if(el)` en el script → no rompen.
+    // (CA-2). #4861 — la herramienta de calibración manual de Claude se ELIMINÓ
+    // (fuente única = claude -p /usage); `tickQuota` ahora muestra sólo el % real
+    // y hace fail-closed sin dato. Los IDs legacy que ya no existen
+    // (quota-grid/costos-grid/costos-detail) están guardados con `if(el)` en el
+    // script → no rompen.
     const redesignHtml = (opts && typeof opts.redesignHtml === 'string') ? opts.redesignHtml : '';
     const body = redesignHtml || `<section class="in-section"><div class="in-empty">Pantalla de Costos no disponible (módulo de render no cargó). Reintentá el refresh.</div></section>`;
     const css = `
@@ -1739,168 +1739,63 @@ function renderCostos(opts) {
 .kp-tile.kp-ok .kp-tile-value { color: var(--in-ok); }`;
     const script = `
 async function tickQuota(){
+    // #4861 — Fuente UNICA de cuota Anthropic: claude -p /usage (adapter
+    // quota-adapters/anthropic.js). Ya no hay heuristica de duracion ni
+    // calibracion manual: el % que se muestra ES el real. Fail-closed si el
+    // adapter no tiene dato fresco (adapterStatus != ok o pct null): mostramos
+    // 'sin dato', NUNCA 0% (0% se leeria como cuota disponible y desviaria el
+    // pacing). Ver guidelines UX G1/G2 del issue.
     const d = await fetchJson('/api/dash/quota');
     const grid = document.getElementById('quota-grid');
     const barWrap = document.getElementById('quota-bar-wrap');
     const meta = document.getElementById('quota-meta');
     if(!d || d.error){
-        if(grid) grid.innerHTML = '<div class="in-empty">Sin datos de cuota: '+(d && d.error || 'activity-log vacío')+'</div>';
+        if(grid) grid.innerHTML = '<div class="in-empty">Sin datos de cuota: '+(d && d.error || 'activity-log vacio')+'</div>';
         return;
     }
-    const sess = d.session || { hoursUsed: 0, pct: 0, realPct: null, hoursRemaining: 5, status: 'ok', realStatus: 'ok' };
-    const sessShownPct = sess.realPct != null ? sess.realPct : sess.pct;
-    const sessShownStatus = sess.realPct != null ? sess.realStatus : sess.status;
-    const sessCls = sessShownStatus==='critical'?'kp-bad':sessShownStatus==='warning'?'kp-warn':sessShownStatus==='normal'?'':'kp-ok';
-    const weekShownPct = d.realPct != null ? d.realPct : d.pct;
-    const weekShownStatus = d.realPct != null ? d.realStatus : d.status;
-    const weekCls = weekShownStatus==='critical'?'kp-bad':weekShownStatus==='warning'?'kp-warn':weekShownStatus==='normal'?'':'kp-ok';
-    const resetTxt = d.daysToReset != null ? 'Reset en '+d.daysToReset.toFixed(1)+' días' : '';
-    const sessLabel = sess.realPct != null ? 'Sesión 5h · estimado real' : 'Sesión actual · 5h';
-    const sessCap = sess.realPctCapped ? ' ⚠ recalibrar' : '';
-    const sessRawTxt = sess.realPctRaw != null && sess.realPctCapped
-        ? ' (raw '+sess.realPctRaw.toFixed(1)+'%)'
-        : '';
-    const sessSub = sess.realPct != null
-        ? 'pipeline '+sess.pct.toFixed(1)+'% × '+(d.calibration && d.calibration.session_factor ? d.calibration.session_factor : 1)+sessRawTxt+sessCap
-        : sess.hoursUsed.toFixed(2)+'h / 5h';
-    const weekLabel = d.realPct != null ? 'Semanal · estimado real' : 'Semanal · cuota';
-    const weekCap = d.realPctCapped ? ' ⚠ recalibrar' : '';
-    const weekRawTxt = d.realPctRaw != null && d.realPctCapped
-        ? ' (raw '+d.realPctRaw.toFixed(1)+'%)'
-        : '';
-    const weekSub = d.realPct != null
-        ? 'pipeline '+d.pct.toFixed(1)+'% × '+(d.calibration && d.calibration.weekly_factor ? d.calibration.weekly_factor : 1)+weekRawTxt+weekCap
-        : 'de '+d.effectiveLimitHours+'h estimadas';
+    const hasReal = d.adapterStatus === 'ok' && d.pct != null;
+    const sess = d.session || {};
+    const clsOf = (st) => st==='critical'?'kp-bad':st==='warning'?'kp-warn':st==='normal'?'':st==='ok'?'kp-ok':'kp-warn';
+    if(!hasReal){
+        const reason = d.errorReason || 'Sin lectura de /usage (adapter no disponible o snapshot vencido) — pacing en modo conservador';
+        if(grid){
+            const html = '<div class="kp-tile kp-warn" role="status" aria-label="Sin dato de cuota Anthropic" title="'+escapeHtml(reason)+'">'
+                +'<div class="kp-tile-label">Cuota Anthropic</div>'
+                +'<div class="kp-tile-value">&#9203; sin dato</div>'
+                +'<div class="kp-tile-sub">'+escapeHtml(reason)+'</div></div>';
+            if(grid.innerHTML !== html) grid.innerHTML = html;
+        }
+        if(barWrap && barWrap.innerHTML !== '') barWrap.innerHTML = '';
+        if(meta && meta.textContent !== reason) meta.textContent = reason;
+        return;
+    }
+    const weekPct = d.pct;
+    const weekStatus = d.status;
+    const sessPct = sess.pct;
+    const sessStatus = sess.status;
+    const fmtPct = (v) => (v != null ? Number(v).toFixed(1)+'%' : '—');
     const tiles = [
-        { label: sessLabel, value: sessShownPct.toFixed(1)+'%', sub: sessSub, cls: sessCls },
-        { label: 'Sesión · restante (pipeline)', value: sess.hoursRemaining.toFixed(2)+'h', sub: 'reset rolling 5h', cls: '' },
-        { label: 'Semanal · pipeline usado', value: d.hoursUsed7d.toFixed(1)+'h', sub: d.sessionsCount7d+' sesiones desde dom 21h', cls: '' },
-        { label: weekLabel, value: weekShownPct.toFixed(1)+'%', sub: weekSub, cls: weekCls },
-        { label: 'Horas restantes (pipeline)', value: d.hoursRemaining+'h', sub: resetTxt, cls: '' },
-        { label: 'Burn rate (pipeline)', value: d.burnRatePerDay+'h/d', sub: 'últimas 24h o promedio semana', cls: '' },
-        { label: 'Días al límite', value: d.daysToLimit != null ? d.daysToLimit.toFixed(1)+'d' : '∞', sub: 'al ritmo actual', cls: d.daysToLimit != null && d.daysToLimit < 1 ? 'kp-bad' : d.daysToLimit != null && d.daysToLimit < 2 ? 'kp-warn' : '' },
-        { label: 'Auto-ajustes', value: d.adjustmentsCount, sub: 'observed: '+d.observedMaxHours+'h', cls: '' },
+        { label: 'Sesion 5h - uso real', value: fmtPct(sessPct), sub: d.sessionResetsRaw ? 'reset: '+d.sessionResetsRaw : 'rolling 5h', cls: clsOf(sessStatus) },
+        { label: 'Semanal - uso real', value: fmtPct(weekPct), sub: d.weeklyResetsRaw ? 'reset: '+d.weeklyResetsRaw : 'ventana semanal', cls: clsOf(weekStatus) },
     ];
     let html = '';
     for(const t of tiles) html += '<div class="kp-tile '+t.cls+'"><div class="kp-tile-label">'+escapeHtml(t.label)+'</div><div class="kp-tile-value">'+escapeHtml(String(t.value))+'</div><div class="kp-tile-sub">'+escapeHtml(t.sub)+'</div></div>';
     if(grid && grid.innerHTML !== html) grid.innerHTML = html;
     if(barWrap){
-        const barCls = d.status==='critical'?'bad':d.status==='warning'?'warn':'';
-        const barHtml = '<div class="quota-bar '+barCls+'"><span style="width:'+Math.min(100,d.pct).toFixed(1)+'%"></span></div><div class="quota-bar-label"><span>'+d.hoursUsed7d.toFixed(1)+'h consumidas</span><span>'+d.effectiveLimitHours+'h estimadas</span></div>';
+        const barCls = weekStatus==='critical'?'bad':weekStatus==='warning'?'warn':'';
+        const sessTxt = sessPct != null ? sessPct.toFixed(1)+'% sesion' : '';
+        const barHtml = '<div class="quota-bar '+barCls+'"><span style="width:'+Math.min(100,weekPct).toFixed(1)+'%"></span></div><div class="quota-bar-label"><span>'+weekPct.toFixed(1)+'% semanal</span><span>'+sessTxt+'</span></div>';
         if(barWrap.innerHTML !== barHtml) barWrap.innerHTML = barHtml;
     }
-    // fmtART al scope de la función (no dentro de if(meta)) porque también
-    // lo usa el bloque de calibración debajo. Antes estaba scoped al if(meta)
-    // y rompía con ReferenceError → el binding del botón nunca se ejecutaba.
-    const fmtART = (iso) => new Date(iso).toLocaleString('es-AR', { hour12: false, day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
     if(meta){
-        const lines = [];
-        if(d.lastResetAt && d.nextResetAt){
-            lines.push('🗓 Semana actual: ' + fmtART(d.lastResetAt) + ' → ' + fmtART(d.nextResetAt));
+        const lines = ['Fuente: claude -p /usage (valor real).'];
+        if(d.usageSource && d.usageSource.capturedAt){
+            const cap = new Date(d.usageSource.capturedAt).toLocaleString('es-AR', { hour12: false, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+            lines.push('Capturado: '+cap);
         }
-        if(d.adjustmentsCount > 0) lines.push('🔧 Límite auto-ajustado '+d.adjustmentsCount+' vez/veces (config: '+d.configLimitHours+'h → actual: '+d.effectiveLimitHours+'h)');
-        if(d.daysToLimit != null && d.daysToLimit < 2) lines.push('⚠ Llegás al límite en ~'+d.daysToLimit.toFixed(1)+' días al ritmo actual');
-        else if(d.daysToLimit == null || d.daysToLimit > (d.daysToReset || 7)) lines.push('✓ Cuota dura hasta el próximo reset al ritmo actual');
-        if(d.observedMaxAt) lines.push('Pico observado en la semana: '+d.observedMaxHours+'h (' + fmtART(d.observedMaxAt) + ')');
-        const txt = lines.join(' · ');
+        if(d.weeklyResetsRaw) lines.push('Reset semanal: '+d.weeklyResetsRaw);
+        const txt = lines.join(' - ');
         if(meta.textContent !== txt) meta.textContent = txt;
-    }
-    // Renderizar status de calibración + bind del botón (idempotente).
-    const calibStatus = document.getElementById('calib-status');
-    if(calibStatus){
-        let ctxt;
-        if(d.calibration){
-            const at = fmtART(d.calibration.at);
-            const stale = d.calibrationStale ? ' ⚠ ' : ' ✓ ';
-            const ageInfo = d.calibrationAgeDays != null ? ' (hace '+d.calibrationAgeDays+'d)' : '';
-            ctxt = stale+'Calibrado #'+d.calibration.sample_count+' · '+at+ageInfo+' · factor smooth(w=×'+d.calibration.weekly_factor+', s=×'+d.calibration.session_factor+') raw esta vez(w=×'+d.calibration.weekly_factor_obs+', s=×'+d.calibration.session_factor_obs+') · α EMA '+d.calibration.ema_alpha;
-            if(d.calibrationStale) ctxt += ' — recomendado recalibrar';
-            if(d.weeklyResetDriftMin) ctxt += ' · drift TZ del reset semanal: '+d.weeklyResetDriftMin+' min';
-        } else {
-            ctxt = 'Sin calibrar. Pegá los % que ves en claude.ai/settings/usage para extrapolar el real.';
-        }
-        if(calibStatus.textContent !== ctxt) calibStatus.textContent = ctxt;
-    }
-
-    // Historial de calibraciones (tabla compacta)
-    const calibHist = document.getElementById('calib-history');
-    if(calibHist){
-        const arr = (d.calibrations || []).slice().reverse();
-        if(arr.length === 0){
-            calibHist.innerHTML = '';
-        } else {
-            const rows = arr.slice(0, 10).map(c => '<tr>'+
-                '<td style="padding:4px 8px">'+fmtART(c.at)+'</td>'+
-                '<td style="padding:4px 8px;text-align:right">'+c.real_weekly_pct+'%</td>'+
-                '<td style="padding:4px 8px;text-align:right">'+c.real_session_pct+'%</td>'+
-                '<td style="padding:4px 8px;text-align:right;color:var(--in-fg-dim)">'+c.pipeline_weekly_pct_at.toFixed(1)+'%</td>'+
-                '<td style="padding:4px 8px;text-align:right;color:var(--in-fg-dim)">'+c.pipeline_session_pct_at.toFixed(1)+'%</td>'+
-                '<td style="padding:4px 8px;text-align:right">×'+c.weekly_factor_obs+'</td>'+
-                '<td style="padding:4px 8px;text-align:right">×'+c.session_factor_obs+'</td>'+
-                '</tr>').join('');
-            const html = '<details style="margin-top:6px"><summary style="cursor:pointer;font-size:11px;color:var(--in-fg-dim);user-select:none">📜 Historial de '+arr.length+' calibración'+(arr.length===1?'':'es')+'</summary>'+
-                '<table style="width:100%;font-size:11px;font-family:var(--in-mono);margin-top:8px;border-collapse:collapse"><thead><tr style="color:var(--in-fg-dim);border-bottom:1px solid var(--in-border)">'+
-                '<th style="padding:4px 8px;text-align:left">Fecha</th>'+
-                '<th style="padding:4px 8px;text-align:right">Sem real</th>'+
-                '<th style="padding:4px 8px;text-align:right">Ses real</th>'+
-                '<th style="padding:4px 8px;text-align:right">Sem pipe</th>'+
-                '<th style="padding:4px 8px;text-align:right">Ses pipe</th>'+
-                '<th style="padding:4px 8px;text-align:right">×Sem</th>'+
-                '<th style="padding:4px 8px;text-align:right">×Ses</th>'+
-                '</tr></thead><tbody>'+rows+'</tbody></table></details>';
-            if(calibHist.innerHTML !== html) calibHist.innerHTML = html;
-        }
-    }
-
-    // Bind del botón Aplicar
-    const calibBtn = document.getElementById('calib-save');
-    if(calibBtn && !calibBtn.dataset._bound){
-        calibBtn.dataset._bound = '1';
-        calibBtn.addEventListener('click', async () => {
-            const w = parseFloat(document.getElementById('calib-weekly').value);
-            const s = parseFloat(document.getElementById('calib-session').value);
-            const sAtRaw = document.getElementById('calib-session-at').value;
-            const wAtRaw = document.getElementById('calib-weekly-at').value;
-            // datetime-local NO incluye TZ — el browser lo interpreta como local.
-            // new Date('2026-04-27T22:00') usa TZ del browser, que para el
-            // operador es ART (lo que queremos). Convertimos a ISO UTC.
-            const sAt = sAtRaw ? new Date(sAtRaw).toISOString() : null;
-            const wAt = wAtRaw ? new Date(wAtRaw).toISOString() : null;
-            if(!Number.isFinite(w) || !Number.isFinite(s)){
-                showToast('Ingresá ambos % (semanal y sesión)', false);
-                return;
-            }
-            try{
-                const body = { real_weekly_pct: w, real_session_pct: s };
-                if(sAt) body.session_resets_at = sAt;
-                if(wAt) body.weekly_resets_at = wAt;
-                const r = await fetch('/api/dash/quota/calibrate', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-                const j = await r.json();
-                showToast(j.msg || (j.ok?'Calibrado':'Falló'), j.ok);
-                if(j.ok){
-                    document.getElementById('calib-weekly').value = '';
-                    document.getElementById('calib-session').value = '';
-                    document.getElementById('calib-session-at').value = '';
-                    document.getElementById('calib-weekly-at').value = '';
-                }
-                setTimeout(() => tickQuota().catch(()=>{}), 400);
-            } catch(e){ showToast('Error: '+e.message, false); }
-        });
-    }
-
-    // Bind del botón Borrar
-    const calibClear = document.getElementById('calib-clear');
-    if(calibClear && !calibClear.dataset._bound){
-        calibClear.dataset._bound = '1';
-        calibClear.addEventListener('click', async () => {
-            if(!(await inConfirm({ title:'Borrar calibración', message:'El KPI vuelve a mostrar el pipeline raw. El historial de calibraciones previas se conserva.', confirmLabel:'Borrar' }))) return;
-            try{
-                const r = await fetch('/api/dash/quota/calibrate', {method:'DELETE', headers: nhCsrfHeaders()});
-                const j = await r.json();
-                showToast(j.msg || (j.ok?'Borrada':'Falló'), j.ok);
-                setTimeout(() => tickQuota().catch(()=>{}), 400);
-            } catch(e){ showToast('Error: '+e.message, false); }
-        });
     }
 }
 

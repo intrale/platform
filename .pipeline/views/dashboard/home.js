@@ -2439,18 +2439,34 @@ function fmtETA(ms){
 function renderQuotaCard(d){
     const card = document.getElementById('kpi-quota');
     if(!card || !d) return;
-    const weekPct = d.realPct != null ? d.realPct : (d.pct || 0);
-    const sessPct = d.session && d.session.realPct != null ? d.session.realPct : ((d.session && d.session.pct) || 0);
-    const weekStatus = d.realPct != null ? d.realStatus : d.status;
-    const sessStatus = d.session && d.session.realPct != null ? d.session.realStatus : (d.session && d.session.status);
+    // #4861 — Fuente UNICA: claude -p /usage. El % que se muestra ES el real
+    // (sin calibracion). Fail-closed: si el adapter no tiene dato fresco
+    // (adapterStatus != ok o pct null) mostramos 'sin dato', NUNCA 0.0%
+    // (0% se leeria como cuota disponible → decision de pacing erronea).
+    const hasReal = d.adapterStatus === 'ok' && d.pct != null;
+    if(!hasReal){
+        setText('kpi-quota-session-pct', '—');
+        setText('kpi-quota-week-pct', '—');
+        setText('kpi-quota-session-eta', '·');
+        setText('kpi-quota-week-eta', '·');
+        card.classList.remove('kpi-ok','kpi-warn','kpi-bad');
+        card.classList.add('kpi-warn');
+        card.title = d.errorReason || 'Sin lectura de /usage (adapter no disponible o snapshot vencido) — pacing en modo conservador';
+        return;
+    }
+    const weekPct = d.pct;
+    const sessPct = (d.session && d.session.pct != null) ? d.session.pct : 0;
+    const weekStatus = d.status;
+    const sessStatus = d.session && d.session.status;
 
     setText('kpi-quota-session-pct', sessPct.toFixed(1)+'%');
     setText('kpi-quota-week-pct', weekPct.toFixed(1)+'%');
 
-    // #4249 CA-A4 — ORIGEN CANONICO DE CADA METRICA DE CUOTA (auditoria):
+    // #4249 CA-A4 / #4861 — ORIGEN CANONICO DE CADA METRICA DE CUOTA (auditoria):
     //   - % sesion (5h) / semanal AGREGADO  -> endpoint /api/dash/quota
-    //     (ticker tickQuota, este archivo) -> lib/quota-adapters/* (Anthropic
-    //     real) + lib/weekly-quota.js, calibrado contra muestras de claude.ai.
+    //     (ticker tickQuota, este archivo) -> lib/quota-adapters/anthropic.js
+    //     (uso REAL de claude -p /usage, fuente unica). Sin heuristica de
+    //     duracion ni calibracion manual.
     //     Alimenta el kpi card oculto (kpi-quota-*), NO el panel visible.
     //   - #4533 — El panel visible del home MIZPA ya NO muestra un % agregado:
     //     pasó a la matriz de cuota DISPONIBLE por proveedor × ventana
@@ -2512,13 +2528,16 @@ function renderQuotaCard(d){
     else if(worst === 'warning') card.classList.add('kpi-warn');
     else if(worst === 'normal') card.classList.add('kpi-ok');
 
-    const realLine = d.realPct != null
-        ? 'Calibrado vs claude.ai (×'+(d.calibration?d.calibration.weekly_factor:'?')+' sem, ×'+(d.calibration?d.calibration.session_factor:'?')+' ses, '+(d.calibration?d.calibration.sample_count:0)+' muestras).'
-        : 'Sin calibrar — pipeline raw. Calibrá en /costos para mejor precisión.';
-    let extraTitle = '';
-    if(d.realPctCapped) extraTitle += ' ⚠ Semanal capeado al 100% (raw '+d.realPctRaw+'%) — recalibrar.';
-    if(d.session && d.session.realPctCapped) extraTitle += ' ⚠ Sesión capeada al 100% (raw '+d.session.realPctRaw+'%) — recalibrar.';
-    card.title = realLine+extraTitle;
+    // #4861 — Fuente única: el % ES el real de claude -p /usage. Sin líneas de
+    // calibración (×factor/muestras) ni capeado-recalibrar.
+    let sourceLine = 'Cuota Anthropic real (claude -p /usage).';
+    if(d.usageSource && d.usageSource.capturedAt){
+        try {
+            const cap = new Date(d.usageSource.capturedAt).toLocaleString('es-AR', { hour12: false, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+            sourceLine += ' Capturado: '+cap+'.';
+        } catch(e){ /* fecha inválida: omitir */ }
+    }
+    card.title = sourceLine;
 }
 
 async function tickQuota(){
@@ -4908,7 +4927,7 @@ function renderKpiGrid(state) {
 function _pulseFaroKpis() {
     return `
     <div class="pulse-kpis" aria-label="KPIs clave">
-      <div class="kpi-quota-wrap" id="kpi-quota" title="Cuota Plan Max (sin API pública de Anthropic — calibrado contra valores reales de claude.ai).">
+      <div class="kpi-quota-wrap" id="kpi-quota" title="Cuota Plan Max — uso real de claude -p /usage (fuente única).">
         <div class="kpi-faro" id="kpi-quota-session">
           <span class="kpi-faro-label">⏳ Cuota sesión 5h</span>
           <span class="kpi-faro-value" id="kpi-quota-session-pct">…</span>

@@ -14181,63 +14181,12 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // #2801 — Calibración manual de la cuota Plan Max contra el real de claude.ai.
-  // El operador pega los % que ve en claude.ai/settings/usage; el sistema guarda
-  // factor = real/pipeline para extrapolar futuras lecturas.
-  if (req.url === '/api/dash/quota/calibrate' && req.method === 'POST') {
-    let body = '';
-    req.on('data', c => { body += c; if (body.length > 4 * 1024) req.destroy(); });
-    req.on('end', () => {
-      try {
-        const payload = body ? JSON.parse(body) : {};
-        const realWeekly = Number(payload.real_weekly_pct);
-        const realSession = Number(payload.real_session_pct);
-        if (!Number.isFinite(realWeekly) || !Number.isFinite(realSession)) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: false, msg: 'real_weekly_pct y real_session_pct son requeridos (números)' }));
-          return;
-        }
-        const quotaLib = require('./lib/weekly-quota');
-        const metricsDir = path.join(PIPELINE, 'metrics');
-        const activityLog = path.join(ROOT, '.claude', 'activity-log.jsonl');
-        const current = quotaLib.computeQuota(metricsDir, activityLog);
-        const calibration = quotaLib.saveCalibration(metricsDir, {
-          realWeeklyPct: realWeekly,
-          realSessionPct: realSession,
-          pipelineWeeklyPct: current.pct,
-          pipelineSessionPct: current.session ? current.session.pct : 0,
-          // Opcionales — tiempos de reset reportados por el operador.
-          // Acepta ISO absoluto (preferido) o minutos relativos (legacy).
-          sessionResetsAt: payload.session_resets_at || null,
-          weeklyResetsAt: payload.weekly_resets_at || null,
-          sessionResetsInMinutes: Number.isFinite(payload.session_resets_in_minutes) ? Number(payload.session_resets_in_minutes) : null,
-          weeklyResetsInMinutes: Number.isFinite(payload.weekly_resets_in_minutes) ? Number(payload.weekly_resets_in_minutes) : null,
-        });
-        log(`quota: calibrado #${calibration.sample_count} real(w=${realWeekly}%, s=${realSession}%) → pipeline(w=${current.pct}%, s=${current.session?.pct}%) → factor smooth(w=${calibration.weekly_factor}, s=${calibration.session_factor}) raw(w=${calibration.weekly_factor_obs}, s=${calibration.session_factor_obs}) α=${calibration.ema_alpha}`);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, msg: `Calibración #${calibration.sample_count} guardada · factor semanal ×${calibration.weekly_factor} · sesión ×${calibration.session_factor} (EMA α=${calibration.ema_alpha})`, calibration }));
-      } catch (e) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, msg: 'Error: ' + e.message }));
-      }
-    });
-    return;
-  }
-
-  if (req.url === '/api/dash/quota/calibrate' && req.method === 'DELETE') {
-    try {
-      const quotaLib = require('./lib/weekly-quota');
-      const metricsDir = path.join(PIPELINE, 'metrics');
-      const result = quotaLib.clearCalibration(metricsDir);
-      log('quota: calibración borrada por operador');
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, msg: result.msg }));
-    } catch (e) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, msg: 'Error: ' + e.message }));
-    }
-    return;
-  }
+  // #4861 — Endpoints POST/DELETE /api/dash/quota/calibrate ELIMINADOS.
+  // La calibración manual EMA (factor real/pipeline sobre la heurística
+  // duration_ms) producía el valor divergente 57%/76%. La fuente única de
+  // verdad de la cuota Anthropic es ahora `claude -p /usage` vía
+  // lib/anthropic-usage.js + lib/quota-adapters/anthropic.js. Se retiran
+  // ambas rutas mutantes no autenticadas (mejora de postura OWASP A01/A05).
 
   // Nuevo dashboard kiosk vertical (#2801) — home + 9 tabs satélite + slices JSON
   // bajo /api/dash/*. Anti-flicker: cliente hace polling JSON y muta DOM in-place.

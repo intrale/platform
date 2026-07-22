@@ -168,23 +168,28 @@ test('#4597: quotaUsage(anthropic) SIN cache de /usage degrada a unknown (fallba
     assert.match(result.errorReason, /fallback degradado/);
 });
 
-test('computeQuota legacy sigue funcionando sin cambios (no breaking)', () => {
-    const tmp = makeTmpDir();
-    const metricsDir = path.join(tmp, 'metrics');
-    fs.mkdirSync(metricsDir);
-    const log = path.join(tmp, 'activity-log.jsonl');
-    writeJsonl(log, [
-        { event: 'session:end', ts: new Date().toISOString(), duration_ms: 3600000, model: 'claude' },
-    ]);
-
+test('#4861: computeQuota/saveCalibration/clearCalibration ya NO se exportan (heurística/EMA retiradas)', () => {
     const wq = freshWeekly();
-    const result = wq.computeQuota(metricsDir, log);
-    // Shape legacy intacto — NO tiene los campos del envelope multi-provider.
-    assert.equal(typeof result.pct, 'number');
-    assert.equal(typeof result.status, 'string');
-    assert.equal(typeof result.session, 'object');
-    // Estos campos son nuevos del envelope; la API legacy NO los expone.
-    assert.equal(result.provider, undefined);
-    assert.equal(result.adapterStatus, undefined);
-    assert.equal(result.schemaVersion, undefined);
+    // La heurística de duration_ms y la calibración manual EMA salieron del
+    // módulo: la fuente única de cuota Anthropic es claude -p /usage.
+    assert.equal(wq.computeQuota, undefined, 'computeQuota debe estar retirada');
+    assert.equal(wq.saveCalibration, undefined, 'saveCalibration debe estar retirada');
+    assert.equal(wq.clearCalibration, undefined, 'clearCalibration debe estar retirada');
+});
+
+test('#4861: helpers de reset semanal siguen exportados (pacing/exhaustion los consumen)', () => {
+    const wq = freshWeekly();
+    assert.equal(typeof wq.getLastWeeklyResetMs, 'function', 'getLastWeeklyResetMs debe seguir exportado');
+    assert.equal(typeof wq.getNextWeeklyResetMs, 'function', 'getNextWeeklyResetMs debe seguir exportado');
+    const now = Date.now();
+    const last = wq.getLastWeeklyResetMs(now);
+    const next = wq.getNextWeeklyResetMs(now);
+    assert.equal(typeof last, 'number');
+    assert.equal(typeof next, 'number');
+    assert.ok(next > last, 'el próximo reset debe ser posterior al último');
+    // Los módulos que dependen de estos helpers deben resolverlos sin romperse.
+    assert.doesNotThrow(() => {
+        require('../pacing-bucket');
+        require('../quota-exhausted');
+    });
 });
