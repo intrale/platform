@@ -104,6 +104,19 @@ function auditAndEnqueue(record, fileBase, deps) {
     return { ok: true, status: 202, request_path: requestPath, audit_persisted: auditRes.persisted };
 }
 
+function auditRequestFailure(record, deps) {
+    const _fs = deps.fsImpl || fs;
+    const auditImpl = deps.auditImpl || auditLog;
+    const auditFile = deps.auditFile || DEFAULT_AUDIT_FILE;
+    try {
+        const redacted = redact.redactObject(record);
+        const r = auditImpl.appendChained({ file: auditFile, entry: redacted, fsImpl: _fs });
+        return { persisted: true, hash_self: r && r.hash_self };
+    } catch (e) {
+        return { persisted: false, error: e.message };
+    }
+}
+
 /**
  * Encola el ALTA de un producto (onboarding por wizard). Valida el descriptor
  * fail-closed vía `project-bootstrap.runBootstrap` en modo dry-run (schema +
@@ -411,7 +424,23 @@ function enqueueEdit(args = {}, deps = {}) {
             ),
         });
     } catch (e) {
-        return { ok: false, status: 500, msg: `validaciÃ³n de bootstrap fallÃ³: ${e.message}` };
+        const auditRes = auditRequestFailure({
+            type: 'product_control_request_failure',
+            action: 'edit',
+            projectId,
+            actor: args.actor ? String(args.actor) : 'dashboard-operator',
+            remote_address: args.remoteAddress ? String(args.remoteAddress) : null,
+            source: 'dashboard',
+            stage: 'bootstrap',
+            error: e && e.message ? String(e.message) : String(e),
+            created_at: (typeof deps.now === 'function' ? deps.now : () => Date.now())(),
+        }, deps);
+        return {
+            ok: false,
+            status: 500,
+            msg: 'no se pudo validar el descriptor del producto',
+            audit_persisted: auditRes.persisted,
+        };
     }
     if (!boot || !boot.ok) {
         return {

@@ -2,6 +2,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const pcr = require('../product-control-request');
 
@@ -59,6 +61,27 @@ test('#4806 edit: rechaza id inseguro y descriptor que no coincide', () => {
     assert.equal(pcr.enqueueEdit({ projectId: '../bad', descriptor: descriptor() }, d).status, 400);
     assert.equal(pcr.enqueueEdit({ projectId: 'otro', descriptor: descriptor() }, d).status, 400);
     assert.equal(Object.keys(d.fsImpl.files).length, 0);
+});
+
+test('#4806 edit: no expone detalles internos si falla bootstrap', () => {
+    const d = deps();
+    d.runBootstrap = () => {
+        throw new Error('INTERNAL_PATH C:/Workspaces/Intrale/platform/.pipeline/secrets.json');
+    };
+    const res = pcr.enqueueEdit({ projectId: 'acme-store', descriptor: descriptor(), actor: 'leo' }, d);
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 500);
+    assert.equal(res.msg, 'no se pudo validar el descriptor del producto');
+    assert.equal(JSON.stringify(res).includes('INTERNAL_PATH'), false);
+    assert.equal(JSON.stringify(res).includes('secrets.json'), false);
+    assert.equal(d.auditImpl.entries[0].error.includes('INTERNAL_PATH'), true);
+});
+
+test('#4806 dashboard: product edit normaliza respuestas fallidas antes de serializar', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'dashboard.js'), 'utf8');
+    assert.match(src, /function _publicProductEditResult\(out\)/);
+    assert.match(src, /JSON\.stringify\(_publicProductEditResult\(out\)\)/);
+    assert.doesNotMatch(src, /\/api\/product\/edit[\s\S]{0,900}JSON\.stringify\(out\)/);
 });
 
 test('#4806 deactivate: exige nonce y encola action=deactivate', () => {

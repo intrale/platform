@@ -12376,6 +12376,17 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  function _publicProductEditResult(out) {
+    if (!out || out.ok) return out;
+    return {
+      ok: false,
+      status: out.status || 400,
+      action: out.action || 'edit',
+      projectId: out.projectId,
+      msg: 'no se pudo procesar la edicion del producto',
+    };
+  }
+
   if (req.url === '/api/product/edit' && req.method === 'POST') {
     if (_productGuardRejected()) return;
     let body = '';
@@ -12391,7 +12402,7 @@ const server = http.createServer((req, res) => {
         });
         log(`Action: product edit ${out.projectId || '(rechazado)'} (${out.status}) ${out.msg || out.stage || ''}`);
         res.writeHead(out.status || (out.ok ? 202 : 400), { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify(out));
+        return res.end(JSON.stringify(_publicProductEditResult(out)));
       } catch (e) {
         log(`Action: product edit (error) ${e && e.message ? e.message : e}`);
         res.writeHead(400, { 'Content-Type': 'application/json' });
