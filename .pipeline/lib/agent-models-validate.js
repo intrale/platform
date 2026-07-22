@@ -150,6 +150,12 @@ const ALLOWED_MODELS_BY_LAUNCHER = Object.freeze({
     // Era el primario de ~12 skills + el Commander → causa raíz de fragilidad.
     'claude-sonnet-4-6',
     'claude-haiku-4-5',
+    // #4880 — Kimi K2.6 (Moonshot). El provider `kimi-moonshot` reusa el
+    // launcher `claude` apuntado al endpoint Anthropic-compat de Moonshot
+    // (ANTHROPIC_BASE_URL), por lo que su `model` viaja por el mismo template
+    // que Anthropic y se valida contra ESTA allowlist. El id es el que acepta el
+    // endpoint Moonshot (spike #4871), no un modelo de Anthropic.
+    'kimi-k2-6',
   ]),
   codex: Object.freeze([
     // 2026-06-04 (sign-off Leo por voz) — Codex con cuenta ChatGPT (OAuth) solo
@@ -256,6 +262,13 @@ const ALLOWED_CREDENTIAL_ENV_VARS = Object.freeze([
   // convención `<PROVIDER>_API_KEY` (credencial explícita del provider, no var
   // del SO). Security aprobó el handler en el análisis del issue.
   'NVIDIA_NIM_API_KEY',
+  // #4880 SEC-1 — Kimi (Moonshot) se integra como drop-in de Claude Code contra
+  // su endpoint Anthropic-compatible (launcher `claude` + ANTHROPIC_BASE_URL).
+  // Autentica con su PROPIO token en `ANTHROPIC_AUTH_TOKEN` (var distinta de
+  // `ANTHROPIC_API_KEY`, la key OAuth/Max real de Anthropic) — así el child de
+  // Kimi nunca recibe la credencial de Anthropic. Termina en `_TOKEN`, respeta
+  // la convención de credencial explícita del provider.
+  'ANTHROPIC_AUTH_TOKEN',
   'GH_TOKEN',
   'GITHUB_TOKEN',
   'OLLAMA_HOST',

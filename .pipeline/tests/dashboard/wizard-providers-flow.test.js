@@ -49,7 +49,10 @@ function newSession() { return { steps: new Map() }; }
 
 test('listProviders deriva los providers de ENV_MAPPING (sin hardcoding)', () => {
     const names = providers.listProviders().map((p) => p.name);
-    assert.deepEqual([...names].sort(), ['anthropic', 'cerebras', 'google', 'nvidia', 'openai']);
+    // #4880 — 'moonshot' (Kimi) se suma al derivar la lista de ENV_MAPPING
+    // (providers.moonshot.api_key → ANTHROPIC_AUTH_TOKEN). El operador carga su
+    // token por este wizard, fuente única credentials.json.
+    assert.deepEqual([...names].sort(), ['anthropic', 'cerebras', 'google', 'moonshot', 'nvidia', 'openai']);
 });
 
 test('validateStep rechaza providers fuera de la allowlist (R#4 path-traversal)', () => {

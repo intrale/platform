@@ -40,6 +40,13 @@ const PROVIDER_WINDOWS = Object.freeze({
     'gemini-google': { short: { win: 'Min', kind: 'short' }, long: { win: 'Día', kind: 'long' }, mode: 'gauge' },
     'cerebras':      { short: { win: 'Min', kind: 'short' }, long: { win: 'Día', kind: 'long' }, mode: 'gauge' },
     'nvidia-nim':    { short: { win: 'Min', kind: 'short' }, long: { win: 'Día', kind: 'long' }, mode: 'gauge' },
+    // #4880 — Kimi (Moonshot): auth por API-key metered (pay-per-token), NO el
+    // contador central OAuth/MAX de Anthropic. Se rinde en modo 'gauge' con
+    // medición LOCAL (recordSample), igual que los free — evita reusar la lógica
+    // de snapshot MAX (`snapshot_threshold_90`) que dispararía un falso
+    // "degradado". Sin muestra fresca cae a 'nodata' ("sin dato" explícito),
+    // nunca a un falso "sin cuota".
+    'kimi-moonshot': { short: { win: 'Min', kind: 'short' }, long: { win: 'Día', kind: 'long' }, mode: 'gauge' },
 });
 
 const DEFAULT_WINDOW = Object.freeze({
@@ -54,8 +61,14 @@ const DEFAULT_WINDOW = Object.freeze({
 //     se pierde. Medición fidedigna (feedback_quota-fidedigna-pagos-vs-free).
 //   - FREE (Gemini/Groq-Cerebras/NVIDIA): medición LOCAL flexible (recordSample,
 //     snapshot de disponible por headers/eventos). No requiere contador central.
+// NOTA: esta clasificación es por MODELO DE CONTABILIDAD de cuota, no por si el
+// provider cuesta dinero. #4880 — Kimi (Moonshot) es pay-per-token (cuesta),
+// pero su cuota se mide LOCALMENTE (metered api-key, sin contador central
+// OAuth/MAX), así que va en el bucket FREE de accounting: usa recordSample y
+// NO el débito atómico ni `snapshot_threshold_90` (que son propios de Anthropic
+// MAX y generarían un falso "degradado" — CA-9).
 const PAID_PROVIDERS = Object.freeze(['anthropic', 'openai-codex']);
-const FREE_PROVIDERS = Object.freeze(['gemini-google', 'cerebras', 'nvidia-nim']);
+const FREE_PROVIDERS = Object.freeze(['gemini-google', 'cerebras', 'nvidia-nim', 'kimi-moonshot']);
 
 function isPaidProvider(provider) {
     return PAID_PROVIDERS.includes(provider);

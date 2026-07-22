@@ -48,6 +48,12 @@ const ENV_MAPPING = Object.freeze({
   // providers.groq.api_key se removió en #3353 — Groq descontinuado.
   'providers.cerebras.api_key':    'CEREBRAS_API_KEY',
   'providers.nvidia.api_key':      'NVIDIA_NIM_API_KEY',
+  // #4880 — Kimi (Moonshot). Drop-in de Claude Code contra el endpoint
+  // Anthropic-compat: autentica con su token en `ANTHROPIC_AUTH_TOKEN` (var
+  // distinta de `ANTHROPIC_API_KEY`, la OAuth/Max real). Fuente única en
+  // credentials.json; jamás por Telegram (SEC-5). El valor nunca se loguea (el
+  // loader sólo lista nombres de var).
+  'providers.moonshot.api_key':    'ANTHROPIC_AUTH_TOKEN',
 });
 
 // Mapeo legacy: telegram-config.json usa flat keys (no nested). Solo cubre las

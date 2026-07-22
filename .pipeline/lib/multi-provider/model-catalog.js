@@ -84,6 +84,20 @@ const CATALOG = Object.freeze({
             recommended_for: ['telegram-sherlock'],
         },
     ]),
+    // #4880 — Kimi (Moonshot), drop-in de Claude Code contra el endpoint
+    // Anthropic-compatible. Provider CLI-first para roles NO agénticos (po/review).
+    // Costo/ventana de contexto según spike #4871 (K2.6, pay-per-token barato).
+    'kimi-moonshot': Object.freeze([
+        {
+            id: 'kimi-k2-6',
+            label: 'Kimi K2.6 (Moonshot, Anthropic-compat)',
+            capabilities: ['chat', 'cache'],
+            cost_per_1m: { input: 0.60, output: 2.50 },
+            context_window: 256_000,
+            release_date: '2026-07',
+            recommended_for: ['po', 'review'],
+        },
+    ]),
     deterministic: Object.freeze([
         {
             id: 'deterministic',
