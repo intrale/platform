@@ -399,7 +399,7 @@ function enqueueCreateWave(args = {}, deps = {}) {
 function enqueueEdit(args = {}, deps = {}) {
     const descriptor = args.descriptor;
     if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor)) {
-        return { ok: false, status: 400, msg: 'descriptor ausente o invÃ¡lido (se esperaba un objeto)' };
+        return { ok: false, status: 400, msg: 'descriptor ausente o inválido (se esperaba un objeto)' };
     }
 
     const rawId = args.projectId || (descriptor.identity && descriptor.identity.projectId);
@@ -447,7 +447,7 @@ function enqueueEdit(args = {}, deps = {}) {
             ok: false,
             status: 400,
             stage: boot ? boot.stage : 'bootstrap',
-            errors: (boot && boot.errors) || [{ path: '(root)', detail: 'bootstrap rechazÃ³ el descriptor' }],
+            errors: (boot && boot.errors) || [{ path: '(root)', detail: 'bootstrap rechazó el descriptor' }],
             msg: 'descriptor rechazado (fail-closed)',
         };
     }
@@ -474,7 +474,7 @@ function enqueueEdit(args = {}, deps = {}) {
         projectId,
         request_path: res.request_path,
         audit_persisted: res.audit_persisted,
-        msg: `ediciÃ³n de "${projectId}" encolada; el kernel persistirÃ¡ el descriptor validado`,
+        msg: `edición de "${projectId}" encolada; el kernel persistirá el descriptor validado`,
     };
 }
 
@@ -484,7 +484,7 @@ function enqueueDeactivate(args = {}, deps = {}) {
         return { ok: false, status: 400, msg: 'projectId inseguro o inexistente' };
     }
     if (typeof args.nonce !== 'string' || args.nonce.trim() === '') {
-        return { ok: false, status: 400, msg: 'nonce de confirmaciÃ³n requerido' };
+        return { ok: false, status: 400, msg: 'nonce de confirmación requerido' };
     }
     const projectId = rawId;
     const now = typeof deps.now === 'function' ? deps.now : () => Date.now();
@@ -509,7 +509,7 @@ function enqueueDeactivate(args = {}, deps = {}) {
         projectId,
         request_path: res.request_path,
         audit_persisted: res.audit_persisted,
-        msg: `baja de "${projectId}" encolada; el kernel persistirÃ¡ status archived (soft-delete)`,
+        msg: `baja de "${projectId}" encolada; el kernel persistirá status archived (soft-delete)`,
     };
 }
 

@@ -406,7 +406,7 @@ async function drainEditQueue(opts = {}, deps = {}) {
     const summary = { edited: [], rejected: [], errors: [] };
 
     if (!isAuthorized || !loadDescriptor || !putDescriptor) {
-        throw new Error('drainEditQueue requiere isAuthorized, loadDescriptor y putDescriptor (deps de decisiÃ³n)');
+        throw new Error('drainEditQueue requiere isAuthorized, loadDescriptor y putDescriptor (deps de decisión)');
     }
 
     let entries;
@@ -495,7 +495,7 @@ async function drainDeactivateQueue(opts = {}, deps = {}) {
     const summary = { archived: [], rejected: [], errors: [] };
 
     if (!isAuthorized || !loadDescriptor) {
-        throw new Error('drainDeactivateQueue requiere isAuthorized y loadDescriptor (deps de decisiÃ³n)');
+        throw new Error('drainDeactivateQueue requiere isAuthorized y loadDescriptor (deps de decisión)');
     }
 
     let entries;
