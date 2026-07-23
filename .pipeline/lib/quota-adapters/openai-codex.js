@@ -240,23 +240,34 @@ function extractLatestRateLimits(content) {
 }
 
 /**
- * Recorre los rollouts más recientes (nuevo→viejo) y devuelve el primer evento
- * con un objeto `rate_limits` legible. El rollout activo se actualiza en cada
- * llamada de Codex, así que es el más nuevo y normalmente resuelve al primer
- * archivo. NO lanza: `null` ante cualquier error o ausencia de dato.
+ * Recorre los rollouts más recientes (nuevo→viejo) y devuelve el evento
+ * `rate_limits` con el timestamp global más reciente. El nombre del rollout
+ * indica cuándo empezó la sesión, no cuándo recibió su último evento: una
+ * sesión anterior puede seguir activa o reanudarse y escribir después que una
+ * sesión cuyo archivo ordena primero. NO lanza: `null` ante cualquier error o
+ * ausencia de dato.
  *
  * @param {string} sessionsDir  Directorio de sesiones (`~/.codex/sessions`).
  * @returns {{tsMs:(number|null), rateLimits:Object}|null}
  */
 function readLatestEvent(sessionsDir) {
     const files = listRecentRolloutFiles(sessionsDir, MAX_ROLLOUTS_TO_SCAN);
+    let latest = null;
     for (const file of files) {
         const content = readFileTail(file, ROLLOUT_TAIL_BYTES);
         if (content == null) continue;
         const event = extractLatestRateLimits(content);
-        if (event) return event;
+        if (!event) continue;
+        // Conservar un evento sin timestamp sólo como fallback degradado. Un
+        // evento fechado siempre es preferible y, entre fechados, gana el más
+        // reciente sin importar el orden de inicio de las sesiones.
+        if (!latest
+            || (Number.isFinite(event.tsMs)
+                && (!Number.isFinite(latest.tsMs) || event.tsMs > latest.tsMs))) {
+            latest = event;
+        }
     }
-    return null;
+    return latest;
 }
 
 /**
