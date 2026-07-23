@@ -160,6 +160,9 @@ scripts/planner-plan.json
 # #2653 — cache de recomendaciones pendientes (refresca desde gh) — efímero
 .pipeline/recommendations-cache.json
 # #2895 — caches de issue title/summary (refresca desde gh) — efímero
+# #4882 — puro cache derivado: el reset --hard del restart lo pisaba con la
+#   version de main y falseaba el avance de la ola (94%->18%). Untrackeado para
+#   que syncWithMain() no lo borre. Mismo patron que #4532 (waves.json).
 .pipeline/.issue-title-cache.json
 .pipeline/.issue-summary-cache.json
 # #3012 — snapshots de cuota Claude Desktop (PNG + JSONL + lockfile + estado alerter)
