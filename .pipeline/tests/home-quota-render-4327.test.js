@@ -11,8 +11,9 @@
 // Cubre:
 //   UX-G4 — `_mzHydrateWinCell` con bucket sin dato (mode 'nodata' o null)
 //           escribe el literal "sin dato" (no "0%", no un número).
-//   #4533 — con % disponible real escribe "<n>%" y color por umbral
-//           (ok/warn/bad); 0% disponible => bad (AGOTADA).
+//   #4884 — con gauge real escribe el "<n>%" CONSUMIDO (= 100 - disponible) y
+//           color por umbral (ok/warn/bad); 100% consumido => bad (AGOTADA).
+//           Regresión dura: motor 55%/11% → panel 55%/11%, no 45%/89%.
 //   #4533 — Codex (mode 'event') muestra "✓ sin límite", sin barra ni %.
 //   CA-5  — `pillTextFor(state)` para `stale`/`missing` devuelve la etiqueta de
 //           estado, nunca un porcentaje; `pctTextClient(null)` → "--%" (no "0%").
@@ -105,28 +106,49 @@ test('UX-G4: _mzHydrateWinCell con mode nodata escribe "sin dato" (no 0%, no nú
     assert.equal(c2.els[c2.cid + '-pct'].textContent, 'sin dato', 'b null → sin dato');
 });
 
-test('#4533: _mzHydrateWinCell con % disponible real escribe el porcentaje + color por umbral', () => {
-    // Holgado → ok (verde).
+test('#4884: _mzHydrateWinCell con gauge escribe el % CONSUMIDO (no el disponible) + color por umbral', () => {
+    // Motor holgado: 18% consumido (available 82) → ok (verde).
     const a = makeCell('anthropic', 'short');
     loadWinCellHelper(a.els)._mzHydrateWinCell('anthropic', 'short',
         { mode: 'gauge', available: 82, win: '5h', resetAt: null });
-    assert.equal(a.els[a.cid + '-pct'].textContent, '82%', 'con dato real muestra el % disponible');
-    assert.ok(a.els[a.cid]._classes.has('ok'), '82% disponible → color ok');
+    assert.equal(a.els[a.cid + '-pct'].textContent, '18%', 'muestra el % consumido = 100 - disponible');
+    assert.ok(a.els[a.cid]._classes.has('ok'), '18% consumido → color ok (holgado)');
+    assert.match(a.els[a.cid].getAttribute('title'), /18% consumido/, 'tooltip habla de consumido');
 
-    // Medio → warn (ámbar).
+    // Medio: 60% consumido (available 40) → warn (ámbar).
     const b = makeCell('anthropic', 'short');
     loadWinCellHelper(b.els)._mzHydrateWinCell('anthropic', 'short',
         { mode: 'gauge', available: 40, win: '5h', resetAt: null });
-    assert.ok(b.els[b.cid]._classes.has('warn'), '40% disponible → color warn');
+    assert.equal(b.els[b.cid + '-pct'].textContent, '60%', '60% consumido');
+    assert.ok(b.els[b.cid]._classes.has('warn'), '60% consumido → color warn');
 
-    // Agotado → bad (rojo), 0% disponible = AGOTADA.
+    // Agotado: 100% consumido (available 0) = AGOTADA → bad (rojo).
     const c = makeCell('anthropic', 'long');
     const res = loadWinCellHelper(c.els)._mzHydrateWinCell('anthropic', 'long',
         { mode: 'gauge', available: 0, win: 'Sem', resetAt: null });
-    assert.equal(c.els[c.cid + '-pct'].textContent, '0%', '0% disponible');
-    assert.ok(c.els[c.cid]._classes.has('bad'), '0% disponible → color bad (AGOTADA)');
+    assert.equal(c.els[c.cid + '-pct'].textContent, '100%', '100% consumido');
+    assert.ok(c.els[c.cid]._classes.has('bad'), '100% consumido → color bad (AGOTADA)');
     assert.match(c.els[c.cid].getAttribute('title'), /AGOTADA/, 'tooltip marca AGOTADA');
-    assert.equal(res.healthy, false, '0% disponible no es proveedor sano');
+    assert.equal(res.healthy, false, '100% consumido no es proveedor sano');
+});
+
+// Regresión dura #4884: dado el motor real (55% semanal / 11% sesión, iguales al
+// CLI /usage y al cliente cloud), el panel principal DEBE pintar 55% y 11% — el
+// consumido —, nunca su complemento 45%/89% (el bug que #4884 revierte de #4533).
+test('#4884: motor 55%/11% consumido → panel principal pinta 55%/11% (no 45%/89%)', () => {
+    // El slice viaja `available = 100 - consumido` (motor intacto, CA-2):
+    //   semanal: consumido 55 → available 45 ; sesión: consumido 11 → available 89.
+    const wk = makeCell('anthropic', 'long');
+    loadWinCellHelper(wk.els)._mzHydrateWinCell('anthropic', 'long',
+        { mode: 'gauge', available: 45, win: 'Sem', resetAt: null });
+    assert.equal(wk.els[wk.cid + '-pct'].textContent, '55%', 'semanal: 55% consumido, no 45%');
+    assert.notEqual(wk.els[wk.cid + '-pct'].textContent, '45%', 'NUNCA el complemento');
+
+    const ses = makeCell('anthropic', 'short');
+    loadWinCellHelper(ses.els)._mzHydrateWinCell('anthropic', 'short',
+        { mode: 'gauge', available: 89, win: '5h', resetAt: null });
+    assert.equal(ses.els[ses.cid + '-pct'].textContent, '11%', 'sesión: 11% consumido, no 89%');
+    assert.notEqual(ses.els[ses.cid + '-pct'].textContent, '89%', 'NUNCA el complemento');
 });
 
 test('#4533: _mzHydrateWinCell mode event (Codex) muestra "sin límite" sin barra ni %', () => {
@@ -175,14 +197,17 @@ test('#4863: backward-compat — sin eventState, eventOk:false renderiza "tope a
     assert.equal(els[cid + '-pct'].textContent, 'tope activo', 'slice viejo sin eventState degrada por eventOk');
 });
 
-test('#4533: _mzThresholdClass respeta los umbrales verde/ámbar/rojo', () => {
+test('#4884: _mzThresholdClass por % CONSUMIDO — verde bajo, ámbar medio, rojo agotado', () => {
     const { _mzThresholdClass } = loadWinCellHelper({});
-    assert.equal(_mzThresholdClass(80), 'ok');
+    // Consumo bajo → holgado (verde).
+    assert.equal(_mzThresholdClass(0), 'ok');
     assert.equal(_mzThresholdClass(50), 'ok');
-    assert.equal(_mzThresholdClass(49), 'warn');
-    assert.equal(_mzThresholdClass(20), 'warn');
-    assert.equal(_mzThresholdClass(19), 'bad');
-    assert.equal(_mzThresholdClass(0), 'bad');
+    // Medio → ámbar.
+    assert.equal(_mzThresholdClass(51), 'warn');
+    assert.equal(_mzThresholdClass(80), 'warn');
+    // Alto/agotado → rojo.
+    assert.equal(_mzThresholdClass(81), 'bad');
+    assert.equal(_mzThresholdClass(100), 'bad');
     assert.equal(_mzThresholdClass(null), '');
 });
 

@@ -2568,13 +2568,15 @@ const QUOTA_SINDATO_REASON = {
 };
 const QUOTA_SINDATO_DEFAULT = 'Sin dato de cuota disponible para este proveedor en esta ventana.';
 
-// Umbral de color por cuota DISPONIBLE (CA #4533): verde=holgado, ámbar=medio,
-// rojo=agotado. 0% disponible (= consumo 100%) => rojo AGOTADA.
-function _mzThresholdClass(avail){
-    if(avail == null) return '';
-    if(avail <= 0) return 'bad';
-    if(avail < 20) return 'bad';
-    if(avail < 50) return 'warn';
+// Umbral de color por cuota CONSUMIDA (#4884 revierte la semántica DISPONIBLE de
+// #4533): verde=holgado, ámbar=medio, rojo=agotado. 100% consumido (= 0%
+// disponible) => rojo AGOTADA. Los cortes son el complemento exacto de los de
+// #4533 (avail<20→bad, avail<50→warn) para no alterar el color de ninguna celda.
+function _mzThresholdClass(consumed){
+    if(consumed == null) return '';
+    if(consumed >= 100) return 'bad';
+    if(consumed > 80) return 'bad';
+    if(consumed > 50) return 'warn';
     return 'ok';
 }
 
@@ -2639,24 +2641,29 @@ function _mzHydrateWinCell(key, slot, b){
         return { healthy: ok };
     }
 
-    // Gauge con % disponible real.
+    // Gauge con % CONSUMIDO real (#4884). El slice sigue viajando 'available'
+    // (motor intacto, CA-2); aca se deriva el consumido = 100 - disponible para
+    // pintar el mismo numero que reporta el CLI /usage (ej. 55% sem, 11% ses),
+    // NO su complemento. La barra crece con el consumo y el color vira a rojo al
+    // agotarse (ver _mzThresholdClass).
     if(mode === 'gauge' && b && b.available != null && Number.isFinite(Number(b.available))){
         const avail = Number(b.available);
-        const cls = _mzThresholdClass(avail);
+        const consumed = Math.max(0, Math.min(100, 100 - avail));
+        const cls = _mzThresholdClass(consumed);
         if(cls) cell.classList.add(cls);
-        if(barEl) barEl.style.width = Math.max(0, Math.min(100, avail)) + '%';
-        if(pctEl) pctEl.textContent = avail.toFixed(0) + '%';
+        if(barEl) barEl.style.width = consumed + '%';
+        if(pctEl) pctEl.textContent = consumed.toFixed(0) + '%';
         let rst = '';
         if(b.resetAt){
             const ts = Date.parse(b.resetAt);
             if(Number.isFinite(ts)) rst = _fmtResetShort(ts - Date.now());
         }
         if(rstEl) rstEl.textContent = rst;
-        const label = avail <= 0 ? 'AGOTADA (0% disponible)' : avail.toFixed(0) + '% disponible';
+        const label = consumed >= 100 ? 'AGOTADA (100% consumido)' : consumed.toFixed(0) + '% consumido';
         cell.setAttribute('title', meta.name + ' · ' + (b.win || '') + ': ' + label
             + (rst ? ' · reset ' + rst.replace('↻', '') : '') + ' (fuente: ' + meta.src + ').');
         cell.setAttribute('aria-label', meta.name + ' ' + (b.win || '') + ': ' + label);
-        return { healthy: avail > 0 };
+        return { healthy: consumed < 100 };
     }
 
     // Sin dato explícito.
@@ -5460,7 +5467,7 @@ const MZ_PROVIDER_WINDOWS = Object.freeze({
 function _mzWinCell(key, slot, winLabel) {
     const cid = 'mz-qm-' + key + '-' + slot;
     return `
-        <div class="mz-qm-cell" id="${cid}" title="Se hidrata con la cuota disponible real del proveedor en esta ventana.">
+        <div class="mz-qm-cell" id="${cid}" title="Se hidrata con la cuota consumida real del proveedor en esta ventana.">
           <span class="mz-qm-wtag" id="${cid}-tag">${escapeHtmlText(winLabel)}</span>
           <span class="mz-qm-mini"><i id="${cid}-bar" style="width:0%"></i></span>
           <span class="mz-qm-pct" id="${cid}-pct">…</span>
@@ -5490,8 +5497,8 @@ function _mzProviderMatrix() {
 // Panel "Estado del sistema + Cuotas" (#4533). Izquierda: estado del sistema
 // COMPACTO (semáforo dot + label, sin el círculo gigante ni el chip redundante)
 // + señales accionables (anomalía, rebote de la ola, proveedores sanos).
-// Derecha: matriz de cuota DISPONIBLE por proveedor (5) × ventana (corta/larga)
-// con % disponible, color por umbral, y reset propio por bucket. Panel de
+// Derecha: matriz de cuota CONSUMIDA por proveedor (5) × ventana (corta/larga)
+// con % consumido (#4884), color por umbral, y reset propio por bucket. Panel de
 // APOYO: compacto, no compite con "Ahora · En Ejecución" ni "Issues de la Ola".
 // El semáforo completo (con sus IDs `semaforo-*`) vive en el sink de telemetría
 // oculto para que `_missionMirrorKpis` y `tickAlertTray` sigan leyéndolo.
