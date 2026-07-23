@@ -134,6 +134,11 @@ const WAVE_VELOCITY_WINDOW_MS = 3 * 60 * 60 * 1000; // 3 h (extremo del rango 2�
 // #4734 — Factor de suavizado del EWMA sobre las pendientes por tramo de la
 // ventana. 0 < α ≤ 1: más alto = más peso al tramo reciente. 0.5 da un promedio
 // exponencial estable que no salta por un único snapshot nuevo (CA-3).
+// #4886 (rev-1) — SIN USO: el EWMA por tramo se reemplazó por la pendiente
+// AGREGADA sobre la ventana temporal (ver `calculateWaveVelocityETA`). Sobre una
+// señal cuantizada el EWMA pesa cada escalón sin mirar su duración, así que
+// oscilaba según si el último tramo tenía un cierre o no. Se conserva la
+// constante exportada por compatibilidad con consumidores/tests existentes.
 const WAVE_EWMA_ALPHA = 0.5;
 // #4734 — Tope de iteraciones de la proyección de reposo futuro (b). Una ventana
 // OFF que empuja la meta puede caer dentro de OTRA ventana OFF; iteramos hasta
@@ -156,7 +161,8 @@ let _lastVelocitySampleTs = 0;
 // local y el avance salta de golpe (18% → 97% = 79 puntos en un tick): eso es
 // discontinuidad de estado, no ritmo. Los tramos que lo superan se EXCLUYEN del
 // EWMA para que no contaminen ni la velocidad mostrada ni el histórico.
-// Configurable por env `WAVE_VELOCITY_MAX_STEP_PCT`.
+// Usado como umbral SÓLO cuando no se puede resolver el quantum de la ola
+// (ver `_jumpThresholdPct`). Configurable por env `WAVE_VELOCITY_MAX_STEP_PCT`.
 const WAVE_MAX_STEP_PCT = 25;
 
 function _maxStepPct() {
@@ -164,6 +170,75 @@ function _maxStepPct() {
     if (raw === undefined || raw === null || raw === '') return WAVE_MAX_STEP_PCT;
     const n = Number(raw);
     return (Number.isFinite(n) && n > 0) ? n : WAVE_MAX_STEP_PCT;
+}
+
+// #4886 (rev-1) — GRANULARIDAD DE LA SEÑAL. `avancePct` es ENTERO y está
+// cuantizado en saltos de `100/N` puntos (N = issues de la ola): cerrar UN issue
+// en una ola de 37 mueve 2,7 puntos DE GOLPE. Con la cadencia real de
+// `wave-progress.jsonl` (~33 s) eso son 4,9 %/min instantáneos — muy por encima
+// de cualquier techo físico razonable. Medir la pendiente tramo a tramo sobre una
+// señal cuantizada clasifica TODO cierre real como "salto artificial" (en olas de
+// menos de ~91 issues, todos). Por eso:
+//   (a) el umbral de discontinuidad se expresa en QUANTUMS de la ola, no en
+//       %/min absolutos → `WAVE_MAX_STEP_ISSUES` issues "cerrados" en un mismo
+//       tick es el límite de lo atribuible a cierres reales;
+//   (b) la pendiente se mide AGREGADA sobre toda la ventana efectiva (mínimo
+//       `WAVE_VELOCITY_MIN_SPAN_MS`), donde %/min sí es una magnitud con sentido.
+const WAVE_MAX_STEP_ISSUES = 4;
+// Span EFECTIVO mínimo sobre el que tiene sentido medir un %/min. Por debajo de
+// esto la señal cuantizada no da una pendiente informativa: un único cierre en
+// una ventana de 2 min da 1,35 %/min y en una de 30 s da 5,4 %/min, sin que el
+// ritmo real haya cambiado. Con ≥ 15 min de agregación un cierre aislado en la
+// ola 8 vale 0,18 %/min, que sí es una magnitud comparable entre lecturas.
+const WAVE_VELOCITY_MIN_SPAN_MS = 15 * 60 * 1000;
+
+/**
+ * #4886 (rev-1) — Cantidad de issues de la ola `waveKey`, para derivar el quantum
+ * de avance (`100/N`). Se resuelve desde `waves.json` (activa / planificadas /
+ * archivadas). Lazy-require + try/catch: este módulo no puede romperse porque
+ * `waves.json` falte o esté corrupto (regla "el pipeline no puede morir").
+ *
+ * @param {number} waveKey
+ * @returns {number|null} N > 0, o `null` si no se puede resolver.
+ */
+function _waveIssueCount(waveKey) {
+    try {
+        const waves = require('./waves');
+        const state = waves.listWaves();
+        if (!state || typeof state !== 'object') return null;
+        const buckets = [
+            state.active_wave ? [state.active_wave] : [],
+            Array.isArray(state.planned_waves) ? state.planned_waves : [],
+            Array.isArray(state.archived_waves) ? state.archived_waves : [],
+        ];
+        for (const group of buckets) {
+            for (const w of group) {
+                if (!w || w.number !== waveKey) continue;
+                const n = Array.isArray(w.issues) ? w.issues.length : 0;
+                return n > 0 ? n : null;
+            }
+        }
+    } catch { /* best-effort: sin quantum se usa el umbral absoluto */ }
+    return null;
+}
+
+/**
+ * #4886 (rev-1) — Umbral (en puntos porcentuales) por encima del cual un salto de
+ * avance en UN tramo crudo NO es atribuible a cierres reales de issues.
+ *
+ * Con N conocido el umbral es `WAVE_MAX_STEP_ISSUES × (100/N)`: en la ola 8
+ * (N=37) da 10,8 puntos → los cierres reales observados (+3/+4/+7/+8 = 1 a 3
+ * issues) se CONSERVAN y la re-hidratación del espejo (+18 = 6,7 issues, +79 =
+ * 29 issues) se descarta. Sin N (ola no resoluble) se cae al absoluto histórico
+ * `WAVE_MAX_STEP_PCT`.
+ *
+ * @param {number} waveKey
+ * @returns {number} umbral en puntos porcentuales (> 0)
+ */
+function _jumpThresholdPct(waveKey) {
+    const n = _waveIssueCount(waveKey);
+    if (n === null) return _maxStepPct();
+    return (100 / n) * WAVE_MAX_STEP_ISSUES;
 }
 
 // ─── Paths (con override por env para tests) ───────────────────────────────
@@ -779,6 +854,44 @@ function _streamWaveProgress(waveKey) {
     });
 }
 
+// ─── Saneo de la serie de avance de la ola (#4886 rev-1) ───────────────────
+
+/**
+ * #4886 (rev-1) — REPARA la serie quitando los saltos DISCONTINUOS de
+ * reset/restore, en vez de descartar los tramos que los contienen.
+ *
+ * Un reset/restore re-hidrata el espejo local y el avance salta de golpe
+ * (97 → 18 → 97). Esos escalones son discontinuidades de ESTADO, no ritmo. Se
+ * detectan por `|Δ| > jumpThresholdPct` (umbral en quantums de la ola) y se
+ * neutralizan acumulando un OFFSET: la serie reparada continúa desde el nivel
+ * previo al salto, así el avance real ANTERIOR y POSTERIOR al restore sigue
+ * siendo medible (antes se perdía todo el tramo).
+ *
+ * El filtro es SIMÉTRICO (`Math.abs`): la caída de −94 puntos que produce el
+ * espejo al vaciarse es tan artificial como la subida de +79 que viene después.
+ *
+ * @param {Array<{ts:number, avancePct:number}>} snapshots — orden ascendente.
+ * @param {number} jumpThresholdPct — umbral en puntos porcentuales (> 0).
+ * @returns {{series: Array<{ts:number, avancePct:number}>, discardedJumps:number}}
+ */
+function _repairDiscontinuities(snapshots, jumpThresholdPct) {
+    if (!Array.isArray(snapshots) || snapshots.length === 0) {
+        return { series: [], discardedJumps: 0 };
+    }
+    const series = [{ ts: snapshots[0].ts, avancePct: snapshots[0].avancePct }];
+    let offset = 0;
+    let discardedJumps = 0;
+    for (let i = 1; i < snapshots.length; i++) {
+        const delta = snapshots[i].avancePct - snapshots[i - 1].avancePct;
+        if (Number.isFinite(delta) && Math.abs(delta) > jumpThresholdPct) {
+            offset += delta;                 // el escalón se anula, no se propaga
+            discardedJumps++;
+        }
+        series.push({ ts: snapshots[i].ts, avancePct: snapshots[i].avancePct - offset });
+    }
+    return { series, discardedJumps };
+}
+
 // ─── Ventanas de reposo de proveedor (#4734) ───────────────────────────────
 
 /**
@@ -927,9 +1040,20 @@ function _projectRestForward(window, nowMs, computeMs) {
  * canónica (Leo 2026-07-16); `velocityPctPerMin` se conserva por compat + histórico.
  *
  * #4886 — Higiene contra SALTOS ARTIFICIALES de reset/restore:
- *   - Los tramos con un salto de avance > `WAVE_MAX_STEP_PCT` o con pendiente por
- *     encima del techo físico (`maxPlausiblePctPerMin`) se EXCLUYEN del EWMA: son
- *     re-hidratación del espejo local, no ritmo de cierres de issues.
+ *   - Los saltos de avance por encima del umbral de discontinuidad se NEUTRALIZAN
+ *     con un offset acumulado (`_repairDiscontinuities`): son re-hidratación del
+ *     espejo local, no ritmo de cierres de issues. El umbral se expresa en
+ *     QUANTUMS de la ola (`WAVE_MAX_STEP_ISSUES × 100/N`), no en %/min absolutos,
+ *     porque `avancePct` está CUANTIZADO: en una ola de 37 issues un solo cierre
+ *     mueve 2,7 puntos de golpe y un techo absoluto lo clasificaría como
+ *     artificial. El filtro es simétrico (la caída del espejo al vaciarse es tan
+ *     artificial como la subida posterior).
+ *   - La pendiente se mide AGREGADA sobre toda la ventana efectiva (mínimo
+ *     `WAVE_VELOCITY_MIN_SPAN_MS`), no tramo a tramo sobre la cadencia cruda
+ *     (~33 s), que con una señal cuantizada sólo puede dar 0 o un pico. El
+ *     recorte por conteo de snapshots (`WAVE_VELOCITY_WINDOW`) quedó SIN USO:
+ *     con la cadencia real dejaba una ventana de 2,2 min, y por eso "sin ritmo
+ *     medible" era el estado permanente en vez del excepcional.
  *   - Con la ola QUIETA (snapshots suficientes pero sin pendiente positiva) se
  *     devuelve `{source:'fallback'}` — el banner muestra "sin datos suficientes" y
  *     el ETA "—" — en vez de caer al promedio histórico (que estaba envenenado y
@@ -1021,19 +1145,28 @@ async function calculateWaveVelocityETA(waveKey, avancePctActual, now, opts = {}
     // recorte era por cantidad (últimos N), que podía abarcar minutos o muchas
     // horas y diluir el ritmo tras un reposo (raíz técnica del ETA errático).
     const windowStart = ts - WAVE_VELOCITY_WINDOW_MS;
-    let windowed = snapshots.filter((s) => s.ts >= windowStart && s.ts <= ts);
-    // Tope duro de seguridad: nunca más de N puntos aunque la ventana los contenga
-    // (acota el costo del EWMA); se conservan los MÁS RECIENTES.
-    if (windowed.length > WAVE_VELOCITY_WINDOW) {
-        windowed = windowed.slice(windowed.length - WAVE_VELOCITY_WINDOW);
-    }
+    const windowed = snapshots.filter((s) => s.ts >= windowStart && s.ts <= ts);
+    // #4886 (rev-1) — Ya NO se recorta por conteo de snapshots crudos. El tope
+    // `WAVE_VELOCITY_WINDOW` (5) con la cadencia real (~33 s) dejaba una ventana
+    // efectiva de 2,2 min: como el avance real llega cada ~14 min, casi nunca se
+    // veía pendiente y "sin ritmo medible" pasaba a ser el estado permanente en
+    // vez del excepcional. El costo ya no depende de la cantidad de muestras: la
+    // pendiente agregada se calcula con los DOS extremos de la ventana.
 
     if (windowed.length < WAVE_MIN_SNAPSHOTS) {
         return historicalFallback('insufficient-snapshots');  // CA-6 → histórico si hay
     }
 
-    const first = windowed[0];
-    const last = windowed[windowed.length - 1];
+    // #4886 (rev-1) — Reparar los saltos artificiales de reset/restore sobre la
+    // serie CRUDA, que es donde la discontinuidad es observable (un escalón entre
+    // dos snapshots consecutivos). La serie reparada conserva el avance real
+    // anterior Y posterior al restore, en vez de perder esos tramos.
+    const { series: repaired, discardedJumps } = _repairDiscontinuities(
+        windowed, _jumpThresholdPct(waveKey),
+    );
+
+    const first = repaired[0];
+    const last = repaired[repaired.length - 1];
     const wallDeltaMs = last.ts - first.ts;
     // #4734 (a) — DESCONTAR reposo pasado: el tiempo efectivo de reloj de pared es
     // el transcurrido MENOS los tramos OFF de proveedor solapados con la ventana.
@@ -1043,55 +1176,53 @@ async function calculateWaveVelocityETA(waveKey, avancePctActual, now, opts = {}
     if (!Number.isFinite(effectiveMs) || effectiveMs < WAVE_MIN_DELTA_MS) {
         return historicalFallback('delta-too-small');  // CA-6
     }
-
-    // #4734 (CA-3) — VELOCIDAD por EWMA sobre las pendientes por tramo (%/ms de
-    // reloj efectivo), no la pendiente global punta-a-punta (que saltaba con cada
-    // snapshot). Cada tramo descuenta su propio reposo OFF. Los tramos totalmente
-    // dentro de un reposo (Δefectivo ≤ 0) se ignoran (no aportan ritmo).
-    // #4886 — Además se DESCARTAN los tramos DISCONTINUOS: un salto de avance por
-    // encima de `WAVE_MAX_STEP_PCT` (o una pendiente por encima del techo físico de
-    // %/min) es re-hidratación de un reset/restore, no ritmo de cierres. Sin este
-    // filtro el salto 18% → 97% entraba al EWMA y de ahí al histórico cross-ola.
-    const maxStepPct = _maxStepPct();
-    const maxPctPerMin = velocityHistory.maxPlausiblePctPerMin();
-    let ewma = null;
-    let discardedJumps = 0;
-    for (let i = 1; i < windowed.length; i++) {
-        const segWall = windowed[i].ts - windowed[i - 1].ts;
-        const segOff = _offOverlapMs(restWindow, windowed[i - 1].ts, windowed[i].ts);
-        const segEff = segWall - segOff;
-        if (!(segEff > 0)) continue; // tramo enteramente en reposo → sin ritmo medible
-        const segDeltaPct = windowed[i].avancePct - windowed[i - 1].avancePct;
-        const segSlope = segDeltaPct / segEff;
-        if (!Number.isFinite(segSlope)) continue;
-        // Salto artificial: delta gigante en un tramo, o ritmo físicamente imposible.
-        if (segDeltaPct > maxStepPct || (segSlope * 60000) > maxPctPerMin) {
-            discardedJumps++;
-            continue;
-        }
-        ewma = (ewma === null) ? segSlope : (WAVE_EWMA_ALPHA * segSlope + (1 - WAVE_EWMA_ALPHA) * ewma);
+    // #4886 (rev-1) — VENTANA DE AGREGACIÓN MÍNIMA. Medir %/min sobre menos de
+    // `WAVE_VELOCITY_MIN_SPAN_MS` de reloj efectivo no informa nada sobre una señal
+    // cuantizada: el mismo ritmo real da 0 o un pico según dónde caiga el cierre.
+    if (effectiveMs < WAVE_VELOCITY_MIN_SPAN_MS) {
+        return historicalFallback('delta-too-small');
     }
 
+    // #4886 (rev-1) — VELOCIDAD = pendiente AGREGADA sobre toda la ventana efectiva
+    // (Δavance reparado / Δt efectivo), no un EWMA sobre las pendientes por tramo.
+    //
+    // Por qué cambió respecto de #4734 (CA-3): aquel EWMA existía para amortiguar
+    // una ventana de sólo `WAVE_VELOCITY_WINDOW` (5) snapshots, que con la cadencia
+    // real (~33 s) medía apenas 2,2 min y por eso "saltaba con cada snapshot". La
+    // causa del salto era la VENTANA ANGOSTA, no el estimador. Al ensancharla a las
+    // 3 h de `WAVE_VELOCITY_WINDOW_MS` (D2), la pendiente agregada ya es estable —
+    // un cierre nuevo la mueve ~1/N de su valor — y además es la ÚNICA que da el
+    // ritmo correcto sobre una señal en escalones: el EWMA sobre tramos le da a
+    // cada escalón un peso independiente de su duración, así que sobreestima
+    // cuando el último tramo tuvo un cierre y subestima cuando no.
+    //
+    // El reposo del proveedor ya está descontado en `effectiveMs` (#4734 (a)), y los
+    // escalones de reset/restore ya fueron neutralizados en `_repairDiscontinuities`.
+    const maxPctPerMin = velocityHistory.maxPlausiblePctPerMin();
+    const slope = (last.avancePct - first.avancePct) / effectiveMs;
+
     // Clamp (CA-14 + #4886): velocidad ≤ 0 / no finita (rebotes / `/wave add` que
-    // bajan el avancePct, todos los tramos en reposo, o todos los tramos descartados
-    // por artificiales) → DEGRADACIÓN HONESTA. Antes caía a la estimación histórica,
-    // que con el store envenenado producía los ~308 %/hora sobre una ola quieta. El
-    // histórico sigue siendo válido para una ola NUEVA sin serie propia
-    // (`insufficient-snapshots` / `delta-too-small`), no para una ola que YA tiene
-    // snapshots suficientes y simplemente no se está moviendo (#4532 intacto).
-    if (ewma === null || !Number.isFinite(ewma) || ewma <= 0) {
+    // bajan el avancePct, o una ola simplemente detenida) → DEGRADACIÓN HONESTA.
+    // Antes caía a la estimación histórica, que con el store envenenado producía los
+    // ~308 %/hora sobre una ola quieta. El histórico sigue siendo válido para una ola
+    // NUEVA sin serie propia (`insufficient-snapshots` / `delta-too-small`), no para
+    // una ola que YA tiene snapshots suficientes y no se está moviendo (#4532 intacto).
+    // #4886 (rev-1) — Este blanco duro es ahora el estado EXCEPCIONAL que pide CA-3:
+    // significa "sin avance neto en hasta 3 h", no "en los últimos 2,2 min" como
+    // pasaba con el recorte por conteo de snapshots.
+    if (!Number.isFinite(slope) || slope <= 0) {
         return {
             source: 'fallback',
             reason: discardedJumps > 0 ? 'discontinuous-jump' : 'non-positive-velocity',
         };
     }
 
-    const velocity = ewma;                        // %/ms de reloj efectivo
+    const velocity = slope;                       // %/ms de reloj efectivo
     const velocityPctPerMin = velocity * 60000;   // back-compat + histórico cross-ola
     const velocityPctPerHour = velocity * 3600000; // #4734 — unidad canónica (%/hora)
     // #4886 — Blindaje final: la velocidad mostrada NUNCA supera el techo físico.
-    // (El EWMA ya sólo promedia tramos plausibles, así que esto es una red de
-    // seguridad para futuras variantes del cálculo, no el camino esperado.)
+    // Con la ventana de agregación mínima esto ya no debería dispararse por
+    // granularidad; queda como red de seguridad ante series patológicas.
     if (velocityPctPerMin > maxPctPerMin) {
         return { source: 'fallback', reason: 'implausible-velocity' };
     }
@@ -1223,6 +1354,12 @@ module.exports = {
         // #4886 — techo de salto discontinuo (re-hidratación de reset/restore)
         WAVE_MAX_STEP_PCT,
         _maxStepPct,
+        // #4886 (rev-1) — granularidad de la señal: quantum de la ola + span mínimo
+        WAVE_MAX_STEP_ISSUES,
+        WAVE_VELOCITY_MIN_SPAN_MS,
+        _waveIssueCount,
+        _jumpThresholdPct,
+        _repairDiscontinuities,
         _resolveRestWindow,
         _offOverlapMs,
         _projectRestForward,

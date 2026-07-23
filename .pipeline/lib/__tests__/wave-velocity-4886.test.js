@@ -249,6 +249,167 @@ test('la velocidad medida real (ritmo plausible) sigue funcionando y se registra
     }
 });
 
+// ─── 7. rev-1 · CADENCIA REAL DE PRODUCCIÓN ────────────────────────────────
+//
+// Los tests de arriba usan snapshots separados 10–30 min. La cadencia REAL de
+// `wave-progress.jsonl` es ~33 s (mediana medida sobre la ola 8: 0,55 min) y
+// `avancePct` es ENTERO, así que la señal está CUANTIZADA en saltos de 100/N
+// puntos. Sobre esa señal, cualquier criterio de plausibilidad expresado en
+// %/min por TRAMO clasifica los cierres reales como saltos artificiales: en la
+// ola 8 (N=37) un solo cierre mueve 2,7 puntos en un tick = 4,9 %/min.
+//
+// Estos tests reproducen esa cadencia para que el fixture no pueda "pasar por
+// cadencia irreal" (defecto D3 del rechazo rev-0).
+
+const CADENCIA_REAL_MS = 33 * 1000;   // ~0,55 min, mediana real de la ola 8
+const OLA_8_ISSUES = 37;              // quantum = 100/37 = 2,7 puntos
+
+/**
+ * Serie con la cadencia real de producción: un snapshot cada ~33 s, y el avance
+ * subiendo de a un quantum entero cada `cierreCadaMin`.
+ */
+function serieCadenciaReal({ now, durationMin, cierreCadaMin, avanceInicial, nIssues }) {
+    const quantum = 100 / nIssues;
+    const points = [];
+    const start = now - durationMin * MIN;
+    for (let t = start; t <= now; t += CADENCIA_REAL_MS) {
+        const cierres = Math.floor((t - start) / (cierreCadaMin * MIN));
+        // avancePct es ENTERO en producción (lo redondea el writer).
+        points.push({ ts: t, avancePct: Math.round(avanceInicial + cierres * quantum) });
+    }
+    return points;
+}
+
+test('rev-1 · con la cadencia REAL (~33 s) un cierre cada ~20 min da velocity, no fallback', async () => {
+    const now = 60_000_000;
+    // Ola de 37 issues cerrando 1 issue cada 20 min durante 3 h.
+    const puntos = serieCadenciaReal({
+        now, durationMin: 180, cierreCadaMin: 20, avanceInicial: 40, nIssues: OLA_8_ISSUES,
+    });
+    const ultimo = puntos[puntos.length - 1].avancePct;
+    const { restore } = withSeries(21, puntos);
+    try {
+        const r = await etaWave.calculateWaveVelocityETA(21, ultimo, now, { restWindow: null });
+        // ANTES (rev-0): cada cierre daba 4,9 %/min > techo de 2 → 'discontinuous-jump'
+        // y la card quedaba en "sin datos suficientes" el 98 % del tiempo.
+        assert.equal(r.source, 'velocity',
+            `esperaba velocity con ritmo real, obtuvo ${r.source}/${r.reason}`);
+        // Ritmo esperado: 9 cierres × 2,7 puntos en 3 h ≈ 8,1 %/h.
+        assert.ok(r.velocityPctPerHour > 5 && r.velocityPctPerHour < 12,
+            `ritmo implausible: ${r.velocityPctPerHour} %/h`);
+        // Y sigue respetando el techo físico (CA-2).
+        assert.ok(r.velocityPctPerMin <= hist.maxPlausiblePctPerMin());
+        assert.ok(Number.isFinite(r.remainingMs) && r.remainingMs > 0, 'debe emitir ETA');
+    } finally {
+        restore();
+    }
+});
+
+test('rev-1 · un cierre aislado a cadencia real NO se descarta como salto artificial', async () => {
+    const now = 70_000_000;
+    // Ola quieta que cierra UN issue (2,7 → 3 puntos enteros) en un solo tick.
+    const puntos = [];
+    const start = now - 40 * MIN;
+    for (let t = start; t <= now; t += CADENCIA_REAL_MS) {
+        puntos.push({ ts: t, avancePct: t < now - 20 * MIN ? 50 : 53 });
+    }
+    const { restore } = withSeries(22, puntos);
+    try {
+        const r = await etaWave.calculateWaveVelocityETA(22, 53, now, { restWindow: null });
+        // +3 puntos en 0,55 min = 5,4 %/min: rev-0 lo tiraba como artificial.
+        assert.equal(r.source, 'velocity',
+            `un cierre real no puede ser artificial (${r.source}/${r.reason})`);
+        assert.ok(r.velocityPctPerHour > 0);
+    } finally {
+        restore();
+    }
+});
+
+test('rev-1 · el restore sigue siendo artificial aunque la cadencia sea real', async () => {
+    const now = 80_000_000;
+    // Misma cadencia, pero el espejo se vacía (−79) y se re-hidrata (+79).
+    const puntos = [];
+    const start = now - 60 * MIN;
+    for (let t = start; t <= now; t += CADENCIA_REAL_MS) {
+        let v = 97;
+        if (t >= now - 40 * MIN && t < now - 20 * MIN) v = 18;   // espejo vacío
+        puntos.push({ ts: t, avancePct: v });
+    }
+    const { dir, restore } = withSeries(23, puntos);
+    try {
+        const r = await etaWave.calculateWaveVelocityETA(23, 97, now, { restWindow: null });
+        // Los DOS escalones (−79 y +79) se neutralizan → serie plana → sin ritmo.
+        assert.equal(r.source, 'fallback');
+        assert.equal(r.reason, 'discontinuous-jump');
+        assert.equal(r.remainingMs, undefined, 'sin velocidad confiable no se emite ETA');
+        assert.deepEqual(hist.readSamples({ pipelineRoot: dir }), []);
+    } finally {
+        restore();
+    }
+});
+
+test('rev-1 · el avance real ANTES y DESPUÉS de un restore sigue siendo medible', async () => {
+    const now = 90_000_000;
+    // La ola avanza de a 3 puntos cada 20 min; en el medio hay un restore que
+    // vacía y re-hidrata el espejo. El ritmo real NO debe perderse.
+    const puntos = [];
+    const start = now - 120 * MIN;
+    for (let t = start; t <= now; t += CADENCIA_REAL_MS) {
+        const cierres = Math.floor((t - start) / (20 * MIN));
+        let v = 50 + cierres * 3;
+        // Restore entre los minutos 60 y 70: el espejo cae a 5 y vuelve.
+        if (t >= now - 60 * MIN && t < now - 50 * MIN) v = 5;
+        puntos.push({ ts: t, avancePct: v });
+    }
+    const { restore } = withSeries(24, puntos);
+    try {
+        const r = await etaWave.calculateWaveVelocityETA(24, 68, now, { restWindow: null });
+        // rev-0 descartaba los tramos del salto y perdía TODO el ritmo del período.
+        assert.equal(r.source, 'velocity',
+            `el ritmo real debe sobrevivir al restore (${r.source}/${r.reason})`);
+        // 6 cierres × 3 puntos en 2 h = 9 %/h.
+        assert.ok(r.velocityPctPerHour > 6 && r.velocityPctPerHour < 12,
+            `ritmo esperado ~9 %/h, obtuvo ${r.velocityPctPerHour}`);
+    } finally {
+        restore();
+    }
+});
+
+test('rev-1 · el umbral de discontinuidad se expresa en QUANTUMS de la ola', () => {
+    const { _jumpThresholdPct, _repairDiscontinuities, WAVE_MAX_STEP_ISSUES } = etaWave._internal;
+    // Sin waves.json resoluble cae al umbral absoluto histórico.
+    assert.equal(_jumpThresholdPct(999), etaWave._internal._maxStepPct());
+
+    // Con quantum de la ola 8 (2,7 puntos), el umbral son 4 cierres = 10,8 puntos:
+    const umbralOla8 = (100 / OLA_8_ISSUES) * WAVE_MAX_STEP_ISSUES;
+    assert.ok(umbralOla8 > 10 && umbralOla8 < 11, `umbral ${umbralOla8}`);
+
+    // Los deltas REALES observados en la ola 8 quedan de cada lado del umbral:
+    // +3/+4/+7/+8 son 1–3 cierres (se conservan); +18 y +79 son re-hidratación.
+    const serie = [0, 3, 7, 15, 23, 41, 120].map((v, i) => ({ ts: i * 33_000, avancePct: v }));
+    const { series, discardedJumps } = _repairDiscontinuities(serie, umbralOla8);
+    assert.equal(discardedJumps, 2, '+18 y +79 son los únicos artificiales');
+    // El avance REAL acumulado (3+4+8+8 = 23) sobrevive intacto.
+    assert.equal(series[series.length - 1].avancePct - series[0].avancePct, 23);
+});
+
+test('rev-1 · el filtro de discontinuidad es SIMÉTRICO (la caída del espejo también)', () => {
+    const { _repairDiscontinuities } = etaWave._internal;
+    // Serie real: el restore vacía el espejo (−94 puntos en 0,43 min) y luego
+    // re-hidrata. rev-0 sólo miraba `segDelta > umbral`, así que la CAÍDA entraba
+    // al cálculo y se reportaba como 'non-positive-velocity'.
+    const serie = [
+        { ts: 0, avancePct: 97 },
+        { ts: 26_000, avancePct: 3 },     // −94 artificial
+        { ts: 60_000, avancePct: 6 },     // +3 real
+        { ts: 90_000, avancePct: 100 },   // +94 artificial
+    ];
+    const { series, discardedJumps } = _repairDiscontinuities(serie, 25);
+    assert.equal(discardedJumps, 2, 'la caída y la subida son ambas artificiales');
+    // Neto real = +3, no −94 ni +94.
+    assert.equal(series[series.length - 1].avancePct - series[0].avancePct, 3);
+});
+
 // ─── 6. El banner traduce el fallback a leyenda + ETA "—" ───────────────────
 
 test('el banner muestra leyenda explícita y ETA vacío cuando no hay ritmo confiable', () => {
