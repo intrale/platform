@@ -5564,7 +5564,7 @@ function renderSystemQuotaPanel(state) {
       </div>
       <div class="mz-sq-matrix">
         <div class="mz-qm-head">
-          <span class="mz-qm-h-l">🔌 CUOTA DISPONIBLE POR PROVEEDOR</span>
+          <span class="mz-qm-h-l">🔌 CUOTA POR PROVEEDOR</span>
           <span class="mz-qm-h-note">% leído del proveedor · reset propio por bucket</span>
         </div>
         <div class="mz-qm-cols">

@@ -211,6 +211,13 @@ test('#4884 CA-4: el skeleton _mzWinCell dice "consumida" solo en Anthropic; el 
     }
 });
 
+test('#4884 CA-4: el header visible usa copy neutral para la matriz de semántica mixta', () => {
+    const html = home.renderSystemQuotaPanel({ semaforo: { level: 'ok', label: 'SALUDABLE' } });
+    assert.match(html, /CUOTA POR PROVEEDOR/, 'el header no atribuye una semántica única a toda la matriz');
+    assert.doesNotMatch(html, /CUOTA DISPONIBLE POR PROVEEDOR/,
+        'el header no presenta el consumo de Anthropic como cuota disponible');
+});
+
 // Regresión dura #4884: dado el motor real (55% semanal / 11% sesión, iguales al
 // CLI /usage y al cliente cloud), el panel principal DEBE pintar 55% y 11% — el
 // consumido —, nunca su complemento 45%/89% (el bug que #4884 revierte de #4533).
