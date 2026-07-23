@@ -34,6 +34,7 @@ const PIPELINE_SRC = path.resolve(__dirname, '..');
 const dashboardPath = path.join(PIPELINE_SRC, 'dashboard.js');
 
 let tmpDir, child, port;
+const LOCAL_HTTP_TIMEOUT_MS = 15000;
 
 function mkdirp(p) { fs.mkdirSync(p, { recursive: true }); }
 
@@ -44,7 +45,7 @@ function readWaves() {
 // GET simple (para /api/health y para pedir el token CSRF).
 function httpGet(urlPath) {
     return new Promise((resolve, reject) => {
-        http.get({ host: '127.0.0.1', port, path: urlPath, timeout: 5000 }, (res) => {
+        http.get({ host: '127.0.0.1', port, path: urlPath, timeout: LOCAL_HTTP_TIMEOUT_MS }, (res) => {
             let data = '';
             res.on('data', (c) => { data += c; });
             res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: data }));
@@ -57,7 +58,7 @@ function httpPost(urlPath, payload, headers) {
     return new Promise((resolve, reject) => {
         const body = payload === undefined ? '' : JSON.stringify(payload);
         const req = http.request({
-            host: '127.0.0.1', port, path: urlPath, method: 'POST', timeout: 5000,
+            host: '127.0.0.1', port, path: urlPath, method: 'POST', timeout: LOCAL_HTTP_TIMEOUT_MS,
             headers: Object.assign({ 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }, headers || {}),
         }, (res) => {
             let data = '';
