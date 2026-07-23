@@ -1,20 +1,25 @@
 // =============================================================================
-// Tests quota-adapters/openai-codex.js — adapter real desde el log de Codex (#4598)
+// Tests quota-adapters/openai-codex.js — adapter real desde los rollouts JSONL
+// de Codex >= v0.145.0 (#4885, evolución de #4868/#4865).
 //
 // Cubre:
 //
-//   * Parse tolerante del `feedback_log_body` (prefijo "Received message {...}").
-//   * Mapeo primary(5h)→sesión / secondary(7d)→semanal con used_percent + reset.
+//   * Extracción del objeto `payload.rate_limits` desde una línea JSONL.
+//   * Mapeo por `window_minutes` (5h→sesión / 7d→semanal), NO por posición
+//     primary/secondary — en v0.145.0 el semanal viene en `primary`.
+//   * Rename `reset_at` → `resets_at`.
 //   * Frescura (CA-3): evento viejo → degradado (`unknown`, pct null), NO stale.
-//   * Sin evento legible → `no_usage_data`, pct null (NO 0% — security CA-#3).
-//   * Body corrupto / shape inesperado → `error`, pct null.
-//   * Invariante offline (security CA-#6): cero HTTP en el fuente del adapter.
+//   * Sin rollout legible → `no_usage_data`, pct null (NO 0% — security CA-#3).
+//   * Shape inesperado → `error`, pct null.
+//   * Selección del rollout más nuevo entre archivos por fecha.
+//   * Invariante offline (security CA-#6): cero HTTP y cero proceso externo.
 // =============================================================================
 'use strict';
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 function freshAdapter() {
@@ -23,66 +28,101 @@ function freshAdapter() {
     return require('../../quota-adapters/openai-codex');
 }
 
-// Body real observado en `~/.codex/logs_2.sqlite` (#4598), con prefijo.
-function makeBody({ primaryPct = 44, secondaryPct = 68, primaryReset = 1783552546, secondaryReset = 1784002587 } = {}) {
-    return 'Received message ' + JSON.stringify({
-        type: 'codex.rate_limits',
+// Objeto `rate_limits` como lo persiste Codex v0.145.0. En v0.145.0 el semanal
+// viene en `primary` (window 10080) con `secondary: null`, pero el adapter debe
+// clasificar por ventana, así que los tests usan ambas variantes.
+function makeRateLimits({
+    sessionPct = 44, weeklyPct = 68,
+    sessionReset = 1783552546, weeklyReset = 1784002587,
+    includeSession = true, includeWeekly = true,
+} = {}) {
+    const primary = includeWeekly
+        ? { used_percent: weeklyPct, window_minutes: 10080, resets_at: weeklyReset }
+        : null;
+    const secondary = includeSession
+        ? { used_percent: sessionPct, window_minutes: 300, resets_at: sessionReset }
+        : null;
+    return {
+        limit_id: 'codex',
+        limit_name: null,
+        primary,
+        secondary,
+        credits: { has_credits: false, unlimited: false, balance: '0' },
         plan_type: 'plus',
-        rate_limits: {
-            allowed: true,
-            limit_reached: false,
-            primary: { used_percent: primaryPct, window_minutes: 300, reset_after_seconds: 7546, reset_at: primaryReset },
-            secondary: { used_percent: secondaryPct, window_minutes: 10080, reset_after_seconds: 457587, reset_at: secondaryReset },
-        },
-        code_review_rate_limits: null,
+    };
+}
+
+// Línea JSONL real (event_msg / token_count) que envuelve el rate_limits.
+function makeLine(rateLimits, timestamp) {
+    return JSON.stringify({
+        timestamp,
+        type: 'event_msg',
+        payload: { type: 'token_count', info: {}, rate_limits: rateLimits },
     });
 }
 
-// Inyector de `readLatestEvent` para no tocar el SQLite real.
+// Inyector de `readLatestEvent`: devuelve el evento ya extraído.
 function fakeReader(event) {
     return () => event;
 }
 
-// ts real observado (1783545001). Usamos un `now` justo después → fresco.
-const EVENT_TS = 1783545001;
-const NOW_FRESH = (EVENT_TS + 60) * 1000; // 1 min después.
+const EVENT_TS_ISO = '2026-07-23T19:38:32.183Z';
+const EVENT_TS_MS = Date.parse(EVENT_TS_ISO);
+const NOW_FRESH = EVENT_TS_MS + 60 * 1000; // 1 min después.
 
-test('codex mapea primary(5h)->sesion y secondary(7d)->semanal con el % real', () => {
+test('codex mapea por window_minutes: 5h->sesion, 7d->semanal, con el % real', () => {
     const adapter = freshAdapter();
     const r = adapter({
         now: NOW_FRESH,
-        readEventImpl: fakeReader({ ts: EVENT_TS, body: makeBody({ primaryPct: 44, secondaryPct: 68 }) }),
+        readEventImpl: fakeReader({
+            tsMs: EVENT_TS_MS,
+            rateLimits: makeRateLimits({ sessionPct: 44, weeklyPct: 68 }),
+        }),
     });
     assert.equal(r.adapterStatus, 'ok');
-    // secondary (semanal) → top-level.
+    // semanal (window 10080) → top-level.
     assert.equal(r.pct, 68);
     assert.equal(r.status, 'normal'); // 68% → 50..75
-    // primary (5h) → sesión.
+    // sesión (window 300) → session.
     assert.equal(r.session.pct, 44);
     assert.equal(r.session.status, 'ok'); // 44% < 50
-    // Resets propagados como ISO.
+    // Resets (resets_at) propagados como ISO.
     assert.equal(r.nextResetAt, new Date(1784002587 * 1000).toISOString());
     assert.equal(r.weeklyResetsAtReported, new Date(1784002587 * 1000).toISOString());
     assert.equal(r.sessionResetsAt, new Date(1783552546 * 1000).toISOString());
+});
+
+test('codex clasifica por ventana aunque el semanal venga en primary (v0.145.0)', () => {
+    const adapter = freshAdapter();
+    // Caso real v0.145.0: primary=semanal (10080), secondary=null.
+    const rateLimits = makeRateLimits({ weeklyPct: 73, includeSession: false });
+    const r = adapter({ now: NOW_FRESH, readEventImpl: fakeReader({ tsMs: EVENT_TS_MS, rateLimits }) });
+    assert.equal(r.adapterStatus, 'ok');
+    assert.equal(r.pct, 73, 'primary con window 10080 se mapea a semanal, no a sesión');
+    assert.equal(r.status, 'normal');
+    assert.equal(r.session.pct, null, 'sin ventana de sesión → session sin dato');
 });
 
 test('codex: status refleja los cortes del pipeline (critical >=90 en la ventana correcta)', () => {
     const adapter = freshAdapter();
     const r = adapter({
         now: NOW_FRESH,
-        readEventImpl: fakeReader({ ts: EVENT_TS, body: makeBody({ primaryPct: 95, secondaryPct: 30 }) }),
+        readEventImpl: fakeReader({
+            tsMs: EVENT_TS_MS,
+            rateLimits: makeRateLimits({ sessionPct: 95, weeklyPct: 30 }),
+        }),
     });
     assert.equal(r.adapterStatus, 'ok');
-    assert.equal(r.status, 'ok', 'semanal (secondary) 30% → ok');
-    assert.equal(r.session.status, 'critical', 'sesión (primary) 95% → critical');
+    assert.equal(r.status, 'ok', 'semanal 30% → ok');
+    assert.equal(r.session.status, 'critical', 'sesión 95% → critical');
 });
 
 test('codex: evento stale -> degradado (unknown, pct null), NO muestra el % viejo (CA-3)', () => {
     const adapter = freshAdapter();
-    const now = (EVENT_TS + 3 * 60 * 60) * 1000; // 3h después, umbral default 1h.
+    const now = EVENT_TS_MS + 3 * 60 * 60 * 1000; // 3h después, umbral default 1h.
     const r = adapter({
         now,
-        readEventImpl: fakeReader({ ts: EVENT_TS, body: makeBody() }),
+        readEventImpl: fakeReader({ tsMs: EVENT_TS_MS, rateLimits: makeRateLimits() }),
     });
     assert.equal(r.adapterStatus, 'unknown', 'dato viejo → unknown, no ok');
     assert.equal(r.pct, null, 'NUNCA mostrar el % stale como actual');
@@ -92,18 +132,52 @@ test('codex: evento stale -> degradado (unknown, pct null), NO muestra el % viej
 
 test('codex: umbral de frescura configurable por sessionData.stalenessMs', () => {
     const adapter = freshAdapter();
-    const now = (EVENT_TS + 120) * 1000; // 2 min después.
-    // Con umbral de 1 min, 2 min es stale.
+    const now = EVENT_TS_MS + 120 * 1000; // 2 min después.
     const r = adapter({
         now,
-        stalenessMs: 60 * 1000,
-        readEventImpl: fakeReader({ ts: EVENT_TS, body: makeBody() }),
+        stalenessMs: 60 * 1000, // con umbral de 1 min, 2 min es stale.
+        readEventImpl: fakeReader({ tsMs: EVENT_TS_MS, rateLimits: makeRateLimits() }),
     });
     assert.equal(r.adapterStatus, 'unknown');
     assert.equal(r.pct, null);
 });
 
-test('codex: sin evento legible -> no_usage_data (pct null, NO 0%)', () => {
+test('codex: evento sin timestamp -> degradado (unknown), no se garantiza frescura', () => {
+    const adapter = freshAdapter();
+    const r = adapter({
+        now: NOW_FRESH,
+        readEventImpl: fakeReader({ tsMs: null, rateLimits: makeRateLimits() }),
+    });
+    assert.equal(r.adapterStatus, 'unknown');
+    assert.equal(r.pct, null);
+});
+
+test('codex: evento fechado en el futuro -> degradado (clock skew, no se da por fresco)', () => {
+    const adapter = freshAdapter();
+    // Evento 3 meses adelante del `now`: edad negativa. Sin guard pasaría el
+    // chequeo de staleness y se mostraría como fresco un dato no confiable.
+    const now = EVENT_TS_MS - 90 * 24 * 60 * 60 * 1000;
+    const r = adapter({
+        now,
+        readEventImpl: fakeReader({ tsMs: EVENT_TS_MS, rateLimits: makeRateLimits() }),
+    });
+    assert.equal(r.adapterStatus, 'unknown');
+    assert.equal(r.pct, null);
+    assert.match(r.errorReason, /futuro|skew/i);
+});
+
+test('codex: tolera un skew chico hacia el futuro (reloj levemente adelantado)', () => {
+    const adapter = freshAdapter();
+    const now = EVENT_TS_MS - 60 * 1000; // evento 1 min en el futuro.
+    const r = adapter({
+        now,
+        readEventImpl: fakeReader({ tsMs: EVENT_TS_MS, rateLimits: makeRateLimits({ weeklyPct: 50 }) }),
+    });
+    assert.equal(r.adapterStatus, 'ok', 'skew menor a la tolerancia sigue siendo válido');
+    assert.equal(r.pct, 50);
+});
+
+test('codex: sin rollout legible -> no_usage_data (pct null, NO 0%)', () => {
     const adapter = freshAdapter();
     const r = adapter({ now: NOW_FRESH, readEventImpl: fakeReader(null) });
     assert.equal(r.adapterStatus, 'no_usage_data');
@@ -113,71 +187,50 @@ test('codex: sin evento legible -> no_usage_data (pct null, NO 0%)', () => {
     assert.equal(r.session.pct, null);
 });
 
-test('codex: body corrupto -> error (pct null)', () => {
+test('codex: rate_limits sin used_percent valido -> error', () => {
     const adapter = freshAdapter();
-    const r = adapter({
-        now: NOW_FRESH,
-        readEventImpl: fakeReader({ ts: EVENT_TS, body: 'Received message {no-json' }),
-    });
+    const rateLimits = { primary: {}, secondary: {} };
+    const r = adapter({ now: NOW_FRESH, readEventImpl: fakeReader({ tsMs: EVENT_TS_MS, rateLimits }) });
     assert.equal(r.adapterStatus, 'error');
     assert.equal(r.pct, null);
 });
 
-test('codex: evento sin used_percent valido -> error', () => {
+test('codex: solo semanal legible -> semanal poblado, sesion sin dato', () => {
     const adapter = freshAdapter();
-    const body = 'Received message ' + JSON.stringify({
-        type: 'codex.rate_limits',
-        rate_limits: { primary: {}, secondary: {} },
-    });
-    const r = adapter({ now: NOW_FRESH, readEventImpl: fakeReader({ ts: EVENT_TS, body }) });
-    assert.equal(r.adapterStatus, 'error');
-    assert.equal(r.pct, null);
-});
-
-test('codex: parseRateLimits es tolerante al prefijo y valida el type', () => {
-    const adapter = freshAdapter();
-    const rl = adapter.parseRateLimits(makeBody({ primaryPct: 10, secondaryPct: 20 }));
-    assert.ok(rl);
-    assert.equal(rl.primary.used_percent, 10);
-    assert.equal(rl.secondary.used_percent, 20);
-    // No es un evento rate_limits → null.
-    assert.equal(adapter.parseRateLimits('Received message {"type":"otra.cosa"}'), null);
-    // Sin JSON → null.
-    assert.equal(adapter.parseRateLimits('no hay json aca'), null);
-    assert.equal(adapter.parseRateLimits(''), null);
-    assert.equal(adapter.parseRateLimits(null), null);
-});
-
-test('codex: solo secondary legible -> semanal poblado, sesion sin dato', () => {
-    const adapter = freshAdapter();
-    const body = 'Received message ' + JSON.stringify({
-        type: 'codex.rate_limits',
-        rate_limits: { secondary: { used_percent: 55, reset_at: 1784002587 } },
-    });
-    const r = adapter({ now: NOW_FRESH, readEventImpl: fakeReader({ ts: EVENT_TS, body }) });
+    const rateLimits = { primary: { used_percent: 55, window_minutes: 10080, resets_at: 1784002587 } };
+    const r = adapter({ now: NOW_FRESH, readEventImpl: fakeReader({ tsMs: EVENT_TS_MS, rateLimits }) });
     assert.equal(r.adapterStatus, 'ok');
     assert.equal(r.pct, 55);
     assert.equal(r.session.pct, null);
 });
 
-test('codex: solo primary legible -> sesion poblada, semanal sin dato (status unknown)', () => {
+test('codex: solo sesion legible -> sesion poblada, semanal sin dato (status unknown)', () => {
     const adapter = freshAdapter();
-    const body = 'Received message ' + JSON.stringify({
-        type: 'codex.rate_limits',
-        rate_limits: { primary: { used_percent: 33, reset_at: 1783552546 } },
-    });
-    const r = adapter({ now: NOW_FRESH, readEventImpl: fakeReader({ ts: EVENT_TS, body }) });
+    const rateLimits = { primary: { used_percent: 33, window_minutes: 300, resets_at: 1783552546 } };
+    const r = adapter({ now: NOW_FRESH, readEventImpl: fakeReader({ tsMs: EVENT_TS_MS, rateLimits }) });
     assert.equal(r.adapterStatus, 'ok');
     assert.equal(r.pct, null, 'sin semanal → null, no fabricamos %');
     assert.equal(r.status, 'unknown');
     assert.equal(r.session.pct, 33);
 });
 
+test('codex: bucket sin window_minutes se trata como sesion (no fabrica semanal falso)', () => {
+    const adapter = freshAdapter();
+    const rateLimits = { primary: { used_percent: 40, resets_at: 1783552546 } };
+    const r = adapter({ now: NOW_FRESH, readEventImpl: fakeReader({ tsMs: EVENT_TS_MS, rateLimits }) });
+    assert.equal(r.adapterStatus, 'ok');
+    assert.equal(r.pct, null, 'ventana desconocida no alimenta el semanal/gating');
+    assert.equal(r.session.pct, 40);
+});
+
 test('codex: used_percent > 100 se capea a 100', () => {
     const adapter = freshAdapter();
     const r = adapter({
         now: NOW_FRESH,
-        readEventImpl: fakeReader({ ts: EVENT_TS, body: makeBody({ primaryPct: 150, secondaryPct: 120 }) }),
+        readEventImpl: fakeReader({
+            tsMs: EVENT_TS_MS,
+            rateLimits: makeRateLimits({ sessionPct: 150, weeklyPct: 120 }),
+        }),
     });
     assert.equal(r.pct, 100);
     assert.equal(r.session.pct, 100);
@@ -203,17 +256,99 @@ test('codex: excepcion del reader -> degradado, no propaga (fail-secure)', () =>
     assert.equal(r.pct, null);
 });
 
+// --- Helpers puros -----------------------------------------------------------
+
+test('codex: extractLatestRateLimits toma el ULTIMO rate_limits del JSONL', () => {
+    const adapter = freshAdapter();
+    const rlOld = makeRateLimits({ weeklyPct: 10, includeSession: false });
+    const rlNew = makeRateLimits({ weeklyPct: 88, includeSession: false });
+    const content = [
+        makeLine(rlOld, '2026-07-23T18:00:00.000Z'),
+        JSON.stringify({ timestamp: '2026-07-23T18:30:00.000Z', type: 'response_item', payload: { type: 'message' } }),
+        makeLine(rlNew, EVENT_TS_ISO),
+    ].join('\n') + '\n';
+    const ev = adapter.extractLatestRateLimits(content);
+    assert.ok(ev);
+    assert.equal(ev.tsMs, EVENT_TS_MS);
+    assert.equal(ev.rateLimits.primary.used_percent, 88, 'toma el evento más nuevo, no el primero');
+});
+
+test('codex: extractLatestRateLimits tolera lineas parciales/corruptas', () => {
+    const adapter = freshAdapter();
+    const rl = makeRateLimits({ weeklyPct: 42, includeSession: false });
+    // Primera línea partida (como quedaría un corte de cola) + una válida.
+    const content = 'ts":"parcial","payload":{"rate_limits":{ roto\n' + makeLine(rl, EVENT_TS_ISO) + '\n';
+    const ev = adapter.extractLatestRateLimits(content);
+    assert.ok(ev);
+    assert.equal(ev.rateLimits.primary.used_percent, 42);
+});
+
+test('codex: extractLatestRateLimits devuelve null sin eventos de cuota', () => {
+    const adapter = freshAdapter();
+    const content = JSON.stringify({ timestamp: EVENT_TS_ISO, type: 'response_item', payload: { type: 'message' } }) + '\n';
+    assert.equal(adapter.extractLatestRateLimits(content), null);
+    assert.equal(adapter.extractLatestRateLimits(''), null);
+    assert.equal(adapter.extractLatestRateLimits(null), null);
+});
+
+test('codex: classifyBuckets mapea por window_minutes con umbral 1440', () => {
+    const adapter = freshAdapter();
+    const { session, weekly } = adapter.classifyBuckets({
+        primary: { used_percent: 5, window_minutes: 10080, resets_at: 100 },
+        secondary: { used_percent: 9, window_minutes: 300, resets_at: 200 },
+    });
+    assert.equal(weekly.usedPercent, 5);
+    assert.equal(session.usedPercent, 9);
+    assert.equal(adapter.WEEKLY_WINDOW_MIN_THRESHOLD, 1440);
+});
+
+// --- Lectura real de FS (integración liviana con archivos temporales) --------
+
+test('codex: readLatestEvent elige el rollout mas nuevo entre archivos de fecha', () => {
+    const adapter = freshAdapter();
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-rollout-'));
+    const dayDir = path.join(base, '2026', '07', '23');
+    fs.mkdirSync(dayDir, { recursive: true });
+    // Dos rollouts; el de nombre lexicográficamente mayor es el más nuevo.
+    fs.writeFileSync(
+        path.join(dayDir, 'rollout-2026-07-23T10-00-00-aaaa.jsonl'),
+        makeLine(makeRateLimits({ weeklyPct: 11, includeSession: false }), '2026-07-23T10:00:00.000Z') + '\n');
+    fs.writeFileSync(
+        path.join(dayDir, 'rollout-2026-07-23T16-38-03-bbbb.jsonl'),
+        makeLine(makeRateLimits({ weeklyPct: 77, includeSession: false }), EVENT_TS_ISO) + '\n');
+
+    const ev = adapter.readLatestEvent(base);
+    assert.ok(ev);
+    assert.equal(ev.rateLimits.primary.used_percent, 77, 'toma el rollout más nuevo');
+
+    // End-to-end vía el adapter público, apuntando al dir temporal.
+    const r = adapter({ now: EVENT_TS_MS + 60 * 1000, codexSessionsDir: base });
+    assert.equal(r.adapterStatus, 'ok');
+    assert.equal(r.pct, 77);
+
+    fs.rmSync(base, { recursive: true, force: true });
+});
+
+test('codex: readLatestEvent devuelve null si el dir no existe', () => {
+    const adapter = freshAdapter();
+    assert.equal(adapter.readLatestEvent(path.join(os.tmpdir(), 'no-existe-codex-xyz-4885')), null);
+});
+
+// --- Invariantes de seguridad ------------------------------------------------
+
 test('codex: invariante offline — cero HTTP en el fuente (security CA-#6)', () => {
     const src = fs.readFileSync(
         path.join(__dirname, '..', '..', 'quota-adapters', 'openai-codex.js'), 'utf8');
     assert.ok(!/\bfetch\b|\baxios\b|https?\.request|node-fetch/.test(src),
-        'el adapter NO debe hacer HTTP — todo offline desde el SQLite local');
+        'el adapter NO debe hacer HTTP — todo offline desde los rollouts locales');
 });
 
-test('codex: no agrega dependencia SQLite nativa — usa el CLI sqlite3', () => {
+test('codex: sin proceso externo ni dependencia nativa — solo lectura fs', () => {
     const src = fs.readFileSync(
         path.join(__dirname, '..', '..', 'quota-adapters', 'openai-codex.js'), 'utf8');
     assert.ok(!/require\(['"](better-sqlite3|sqlite3)['"]\)/.test(src),
-        'sin dependencia nativa: se lee vía execFileSync del binario sqlite3');
-    assert.ok(/execFileSync/.test(src), 'lee el SQLite con execFileSync(sqlite3)');
+        'sin dependencia SQLite nativa');
+    assert.ok(!/child_process|execFileSync|execSync|spawn/.test(src),
+        'sin proceso externo: los rollouts se leen con fs, no con sqlite3 CLI');
+    assert.ok(/require\('fs'\)/.test(src), 'lee los rollouts con el módulo fs');
 });
