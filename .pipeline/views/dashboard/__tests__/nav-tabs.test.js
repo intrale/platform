@@ -1,0 +1,239 @@
+// =============================================================================
+// Tests de la barra de navegacion unificada V3 (#3726).
+//
+// Cubre:
+//   - NAV_TABS tiene exactamente 13 entradas con el orden esperado y la forma
+//     { slug, label, iconId, href, ariaLabel } (CA-1, CA-2). #3965 sumó "mp-health".
+//   - renderNavTabsSsr('equipo') marca exactamente 1 tab con aria-current="page"
+//     y emite los 13 <a class="v3-tab"> (CA-3).
+//   - renderNavTabsSsr('<slug-invalido>') NO inyecta el string crudo en el
+//     HTML (defensa anti-XSS reclamada por security en #3726, vector A03).
+//   - El HTML emitido NO contiene <script>, onclick=, ni javascript: (CA-4).
+//   - Cada iconId del catalogo existe como <symbol id="…"> en sprite.svg
+//     (anti-desincronizacion al renombrar iconos, CA-6).
+//   - opts.badgeForSlug se invoca y su retorno se concatena dentro del <a>
+//     manteniendo los <span class="area-pill-badge"> historicos (CA-10).
+//
+// Se ejecuta con: node --test .pipeline/views/dashboard/__tests__/nav-tabs.test.js
+// =============================================================================
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const {
+    NAV_TABS,
+    renderNavTabsSsr,
+    loadIconSprite,
+    _resetSpriteCacheForTests,
+} = require('..' + path.sep + 'nav-tabs.js');
+
+const SPRITE_PATH = path.resolve(__dirname, '..', '..', '..', 'assets', 'icons', 'sprite.svg');
+
+// ---------------------------------------------------------------------------
+// NAV_TABS — inventario y forma de cada entrada
+// ---------------------------------------------------------------------------
+
+test('NAV_TABS tiene exactamente 15 entradas en el orden esperado (CA-1)', () => {
+    // #3965 (EP8-H12): se sumó la tab "mp-health" al final del catálogo.
+    // #4378: se sumó la tab "roadmap" después de "matriz".
+    // #4778: se sumó la tab "estado-productos" después de "bloqueados".
+    assert.equal(NAV_TABS.length, 15, 'NAV_TABS debe tener 15 tabs');
+    const expectedOrder = [
+        'home', 'equipo', 'pipeline', 'bloqueados', 'estado-productos', 'issues', 'matriz', 'roadmap',
+        'ops', 'kpis', 'historial', 'costos', 'descanso', 'providers', 'mp-health',
+    ];
+    assert.deepEqual(NAV_TABS.map(t => t.slug), expectedOrder);
+});
+
+test('cada NAV_TABS tiene { slug, label, iconId, href, ariaLabel } no vacios (CA-2)', () => {
+    for (const tab of NAV_TABS) {
+        for (const field of ['slug', 'label', 'iconId', 'href', 'ariaLabel']) {
+            assert.equal(typeof tab[field], 'string', `${tab.slug}.${field} debe ser string`);
+            assert.ok(tab[field].length > 0, `${tab.slug}.${field} no debe ser vacio`);
+        }
+        assert.ok(tab.href.startsWith('/'), `${tab.slug}.href debe empezar con "/"`);
+    }
+});
+
+test('NAV_TABS preserva href reales para descanso/providers/mp-health (CA-2)', () => {
+    const descanso = NAV_TABS.find(t => t.slug === 'descanso');
+    const providers = NAV_TABS.find(t => t.slug === 'providers');
+    const mpHealth = NAV_TABS.find(t => t.slug === 'mp-health');
+    assert.equal(descanso.href, '/modo-descanso');
+    // #4201 — la tab Providers apunta a la consola unificada MIZPÁ (/providers),
+    // que reemplaza la vista con solapas internas servida en /multi-provider.
+    assert.equal(providers.href, '/providers');
+    assert.equal(mpHealth.href, '/multi-provider-health');
+});
+
+// ---------------------------------------------------------------------------
+// renderNavTabsSsr — marcado SSR
+// ---------------------------------------------------------------------------
+
+test('renderNavTabsSsr emite <nav class="v3-nav"> con role=navigation y aria-label', () => {
+    const html = renderNavTabsSsr('home');
+    assert.match(html, /<nav class="v3-nav" role="navigation" aria-label="Ventanas del dashboard">/);
+    assert.match(html, /<\/nav>$/);
+});
+
+test('renderNavTabsSsr emite exactamente 15 anchors class="v3-tab" (CA-3)', () => {
+    const html = renderNavTabsSsr('equipo');
+    const matches = html.match(/<a class="v3-tab(?: v3-tab-active)?"/g) || [];
+    assert.equal(matches.length, 15, `Esperaba 15 anchors v3-tab, obtuve ${matches.length}`);
+});
+
+test('renderNavTabsSsr marca SOLO la tab activa con aria-current="page" (CA-3)', () => {
+    const html = renderNavTabsSsr('equipo');
+    const currentMatches = html.match(/aria-current="page"/g) || [];
+    assert.equal(currentMatches.length, 1, 'Debe haber exactamente 1 aria-current');
+    // La activa lleva tambien la clase v3-tab-active
+    assert.match(html, /<a class="v3-tab v3-tab-active" href="\/equipo"[^>]*aria-current="page"/);
+});
+
+test('renderNavTabsSsr sin activeSlug no marca ninguna tab', () => {
+    const html = renderNavTabsSsr('');
+    assert.equal((html.match(/aria-current="page"/g) || []).length, 0);
+    assert.equal((html.match(/v3-tab-active/g) || []).length, 0);
+});
+
+test('cada anchor tiene aria-label no vacio (CA-4)', () => {
+    const html = renderNavTabsSsr('home');
+    const ariaMatches = html.match(/aria-label="[^"]+"/g) || [];
+    // 15 anchors + 1 del <nav> = 16 aria-labels
+    assert.ok(ariaMatches.length >= 16, `Esperaba >=16 aria-labels, obtuve ${ariaMatches.length}`);
+    // ninguno puede estar vacio
+    for (const m of ariaMatches) {
+        assert.doesNotMatch(m, /aria-label=""/);
+    }
+});
+
+test('cada <svg> del icono lleva aria-hidden="true" y focusable="false" (CA-4)', () => {
+    const html = renderNavTabsSsr('home');
+    const svgMatches = html.match(/<svg [^>]*>/g) || [];
+    assert.equal(svgMatches.length, 15, 'Debe haber 15 <svg> de tab');
+    for (const svg of svgMatches) {
+        assert.match(svg, /aria-hidden="true"/, `svg sin aria-hidden: ${svg}`);
+        assert.match(svg, /focusable="false"/, `svg sin focusable=false: ${svg}`);
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Defensas anti-XSS (vector A03 del security comment)
+// ---------------------------------------------------------------------------
+
+test('renderNavTabsSsr no inyecta activeSlug crudo cuando es desconocido (anti-XSS)', () => {
+    const html = renderNavTabsSsr('<script>alert(1)</script>');
+    assert.doesNotMatch(html, /<script>alert/);
+    assert.doesNotMatch(html, /alert\(1\)/);
+});
+
+test('el HTML emitido no contiene <script>, onclick= ni javascript: (CA-4)', () => {
+    const html = renderNavTabsSsr('home');
+    assert.doesNotMatch(html, /<script\b/i);
+    assert.doesNotMatch(html, /\bonclick=/i);
+    assert.doesNotMatch(html, /\bjavascript:/i);
+    assert.doesNotMatch(html, /<foreignObject\b/i);
+});
+
+// ---------------------------------------------------------------------------
+// Sincronizacion con sprite.svg (CA-6)
+// ---------------------------------------------------------------------------
+
+test('cada iconId de NAV_TABS existe como <symbol id="…"> en sprite.svg (CA-6)', () => {
+    const sprite = fs.readFileSync(SPRITE_PATH, 'utf8');
+    for (const tab of NAV_TABS) {
+        const symbolPattern = new RegExp(`<symbol[^>]*\\bid="${tab.iconId}"`);
+        assert.match(sprite, symbolPattern, `Falta <symbol id="${tab.iconId}"> para tab "${tab.slug}"`);
+    }
+});
+
+test('sprite.svg no contiene patrones de XSS (script/foreignObject/handlers)', () => {
+    const raw = fs.readFileSync(SPRITE_PATH, 'utf8');
+    // Eliminar comentarios XML/HTML antes de testear (el header del archivo
+    // documenta los patrones prohibidos, lo que generaria falsos positivos).
+    const sprite = raw.replace(/<!--[\s\S]*?-->/g, '');
+    assert.doesNotMatch(sprite, /<script\b/i, 'sprite no debe contener <script>');
+    assert.doesNotMatch(sprite, /<foreignObject\b/i, 'sprite no debe contener <foreignObject>');
+    assert.doesNotMatch(sprite, /\son[a-z]+\s*=/i, 'sprite no debe contener handlers on*=');
+    assert.doesNotMatch(sprite, /href\s*=\s*"(http|https|data|javascript):/i, 'sprite no debe contener hrefs externos');
+});
+
+// ---------------------------------------------------------------------------
+// loadIconSprite — cache compartido
+// ---------------------------------------------------------------------------
+
+test('loadIconSprite devuelve el contenido del sprite y cachea el resultado', () => {
+    _resetSpriteCacheForTests();
+    const first = loadIconSprite();
+    const second = loadIconSprite();
+    assert.ok(first.length > 100, 'sprite cargado debe tener contenido real');
+    assert.equal(first, second, 'segunda llamada debe devolver el mismo string');
+    assert.match(first, /<symbol[^>]*id="ic-tab-home"/, 'sprite debe incluir los iconos nuevos');
+});
+
+// ---------------------------------------------------------------------------
+// opts.badgeForSlug — interop con tickers existentes (CA-10)
+// ---------------------------------------------------------------------------
+
+test('renderNavTabsSsr llama badgeForSlug con cada slug y concatena el resultado', () => {
+    const seen = [];
+    const html = renderNavTabsSsr('home', {
+        badgeForSlug: (slug) => {
+            seen.push(slug);
+            if (slug === 'equipo') return '<span class="area-pill-badge" id="badge-equipo">7</span>';
+            return null;
+        },
+    });
+    assert.deepEqual(seen, NAV_TABS.map(t => t.slug), 'badgeForSlug se llama una vez por tab en orden');
+    assert.match(html, /<span class="area-pill-badge" id="badge-equipo">7<\/span>/);
+    // Solo equipo recibe badge
+    assert.equal((html.match(/area-pill-badge/g) || []).length, 1);
+});
+
+test('renderNavTabsSsr sin badgeForSlug no emite area-pill-badge', () => {
+    const html = renderNavTabsSsr('home');
+    assert.doesNotMatch(html, /area-pill-badge/);
+});
+
+// ---------------------------------------------------------------------------
+// #4189 — Nav curada: 5 esenciales en la barra + popover "⋯ Más" con el resto
+// ---------------------------------------------------------------------------
+
+test('#4454: exactamente 4 tabs llevan primary y definen la barra', () => {
+    const primaries = NAV_TABS.filter(t => t.primary).sort((a, b) => a.primary - b.primary);
+    assert.equal(primaries.length, 4, 'deben ser 4 tabs esenciales');
+    assert.deepEqual(primaries.map(t => t.slug), ['home', 'pipeline', 'roadmap', 'providers'],
+        'orden de la barra: Inicio · Pipeline · Roadmap · Providers');
+});
+
+test('#4189: el popover <details> agrupa las secciones secundarias con contador', () => {
+    const html = renderNavTabsSsr('home');
+    assert.match(html, /<details class="v3-more"/, 'emite el contenedor del popover');
+    assert.match(html, /<summary class="v3-more-btn"/, 'tiene botón summary nativo (sin JS)');
+    const secondaryCount = NAV_TABS.filter(t => !t.primary).length;
+    // #4454: roadmap y providers pasan a primarias; issues, bloqueados y costos
+    // pasan a secundarias → neto +1 secundaria respecto de #4378 (9 → 10).
+    // #4778: se suma "estado-productos" como secundaria (10 → 11).
+    assert.equal(secondaryCount, 11, 'hay 11 tabs secundarias');
+    assert.match(html, new RegExp('<span class="v3-more-count" aria-hidden="true">' + secondaryCount + '</span>'),
+        'el contador refleja la cantidad de secciones escondidas');
+    // El popover sigue conteniendo anchors v3-tab reales (no se pierde ninguna ruta).
+    assert.match(html, /<div class="v3-more-menu"[^>]*>[\s\S]*href="\/equipo"/, 'equipo vive dentro del popover');
+});
+
+test('#4189: vista secundaria activa abre el popover y lo marca activo', () => {
+    const html = renderNavTabsSsr('equipo');
+    assert.match(html, /<details class="v3-more v3-more-active" open>/,
+        'cuando la vista activa es secundaria, el popover queda abierto y marcado');
+    // Y sigue habiendo exactamente 1 aria-current (la tab activa dentro del popover).
+    assert.equal((html.match(/aria-current="page"/g) || []).length, 1);
+});
+
+test('#4189: vista primaria activa NO abre el popover', () => {
+    const html = renderNavTabsSsr('home');
+    assert.doesNotMatch(html, /v3-more-active/);
+    assert.doesNotMatch(html, /<details class="v3-more" open>/);
+});

@@ -26,6 +26,13 @@ const PIPELINE_DIR = path.join(REPO_ROOT, '.pipeline');
 const CACHE_FILE = path.join(PIPELINE_DIR, 'partial-pause-deps-cache.json');
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const MAX_DEPTH = 3;
+// Cap absoluto de profundidad (defensa contra opts.maxDepth descontrolado).
+// Cualquier override debe quedar dentro de [1, ABSOLUTE_MAX_DEPTH].
+const ABSOLUTE_MAX_DEPTH = 10;
+// #3742 — Cap absoluto de nodos visitados (defensa DoS local contra grafos
+// gigantes o malformados en el wizard de allowlist). Cualquier override de
+// opts.maxNodes se clampea dentro de [1, ABSOLUTE_MAX_NODES].
+const ABSOLUTE_MAX_NODES = 200;
 
 // Regex para detectar referencias a issues en body/comments.
 // Convenciones soportadas:
@@ -42,19 +49,31 @@ const DEP_PATTERNS = [
     /\bblocked\s+by\s+#(\d+)/gi,
 ];
 
+// #4732 — Default robusto al binario absoluto que usa el resto del pipeline
+// (dashboard.js: `C:/Workspaces/gh-cli/bin/gh`). Correr el refresco sin `gh` en
+// el PATH era la causa raíz del caché envenenado: `spawnSync('gh', ...)` fallaba
+// con ENOENT y toda la caché volvía `unknown`. `process.env.GH_PATH` sigue con
+// prioridad; el default absoluto sólo aplica como fallback.
+const GH_BIN_DEFAULT = 'C:/Workspaces/gh-cli/bin/gh';
+
 function defaultGhRunner(args, opts = {}) {
     const env = Object.assign({}, process.env, opts.env || {});
-    const ghPath = process.env.GH_PATH || 'gh';
+    const ghPath = process.env.GH_PATH || GH_BIN_DEFAULT;
     const r = spawnSync(ghPath, args, {
         env,
         encoding: 'utf8',
         timeout: opts.timeoutMs || 30000,
     });
+    // #4732 — `spawnSync` ante binario ausente devuelve `r.error` (ENOENT) con
+    // `r.status === null`. Propagar el error para que el caller distinga
+    // "spawn falló" (degradación de gh) de "gh corrió y devolvió !=0".
     return {
         ok: r.status === 0,
         stdout: r.stdout || '',
         stderr: r.stderr || '',
         status: r.status,
+        error: r.error || null,
+        spawnFailed: !!r.error,
     };
 }
 
@@ -105,6 +124,70 @@ function parseDepsFromText(text) {
     return [...found].sort((a, b) => a - b);
 }
 
+// #3742 — Referencias de PROCEDENCIA (upward): el issue actual es HIJO del
+// referenciado. "Split de #N" y "Tracked by #N" indican que N es el padre/épico,
+// NO una dependencia forward que bloquee al issue actual. Recorrerlas como deps
+// es incorrecto: sube al padre y baja a hermanos no relacionados, y además
+// genera back-edges padre↔hijo que la detección de ciclos (#3742) marcaría como
+// truncado en el caso normal de un split (regresión del incidente CA-1
+// 2026-04-30). Por eso se excluyen del grafo de traversal en `resolveOpenDeps`.
+// `parseDepsFromText` las sigue reconociendo (otros consumidores las usan).
+const PROVENANCE_PATTERNS = [
+    /\bsplit\s+(?:de|of)\s+#(\d+)/gi,
+    /\btracked\s+by\s+#(\d+)/gi,
+];
+
+/**
+ * Extrae las referencias de procedencia (upward) de un texto. Devuelve un Set
+ * de números de issue padre/épico declarados con "Split de #N" / "Tracked by #N".
+ * @param {string} text
+ * @returns {Set<number>}
+ */
+function parseProvenanceRefs(text) {
+    const found = new Set();
+    if (!text || typeof text !== 'string') return found;
+    for (const pattern of PROVENANCE_PATTERNS) {
+        pattern.lastIndex = 0;
+        let m;
+        while ((m = pattern.exec(text)) !== null) {
+            const n = parseInt(m[1], 10);
+            if (Number.isInteger(n) && n > 0) found.add(n);
+        }
+    }
+    return found;
+}
+
+/**
+ * #4732 — Devuelve la entrada a usar cuando la consulta a `gh` se degradó
+ * (spawn ENOENT / gh !=0 / body ilegible / issueNum inválido).
+ *
+ * Fail-safe (CA-1): NO se persiste `unknown` pisando el caché.
+ *   - Si hay last-known-good con `state` real (`open`/`closed`), se devuelve tal
+ *     cual (el caller no reescribe el caché) → el estado válido se conserva.
+ *   - Si no hay dato previo utilizable, se devuelve un marcador `transient` con
+ *     `state: 'unknown'` que NO se escribe al caché. `resolveOpenDeps` nunca
+ *     marca bloqueado un dep con estado `unknown` (sólo `open` bloquea), así que
+ *     jamás se deriva "bloqueado" por no poder consultar.
+ *
+ * @param {object|undefined} existing - entrada previa del caché para este issue
+ * @param {number} now
+ * @param {string} cause - motivo de la degradación (para trazabilidad/tests)
+ */
+function degradedEntry(existing, now, cause) {
+    if (existing && existing.state && existing.state !== 'unknown') {
+        return existing; // last-known-good; el caller NO reescribe el caché.
+    }
+    return {
+        state: 'unknown',
+        deps: [],
+        forwardDeps: [],
+        title: (existing && existing.title) || '',
+        fetchedAt: now,
+        transient: true,
+        error: cause,
+    };
+}
+
 /**
  * Consulta un issue vía gh y devuelve {state, deps[]}.
  * Usa cache TTL 5 min.
@@ -114,49 +197,65 @@ function fetchIssueInfo(issueNum, { ghRunner = defaultGhRunner, repo = 'intrale/
     const c = cache || readCache(cacheFile);
     const key = String(issueNum);
     const existing = c.issues[key];
-    if (existing && isFresh(existing, now)) {
+    // #3742 — los entries de formato viejo (sin `forwardDeps`) se tratan como
+    // cache miss para garantizar que el campo siempre esté presente en el walk.
+    if (existing && isFresh(existing, now) && Array.isArray(existing.forwardDeps)) {
         return existing;
     }
 
+    // #4732 (security §4) — validar el número de issue antes del spawn. Con
+    // `spawnSync` (sin shell) el riesgo de inyección es bajo, pero un `issueNum`
+    // no numérico podría inyectar flags a `gh issue view`. Defensa en profundidad
+    // (mismo guard que `parseDepsFromText`). Sin dato válido: degradar a transient
+    // conservando el last-known-good, nunca derivar bloqueado.
+    const n = Number(issueNum);
+    if (!Number.isInteger(n) || n <= 0) {
+        return degradedEntry(existing, now, `issueNum inválido: ${JSON.stringify(issueNum)}`);
+    }
+
     const args = [
-        'issue', 'view', String(issueNum),
+        'issue', 'view', String(n),
         '--repo', repo,
         '--json', 'number,title,state,body,comments',
     ];
     const r = ghRunner(args);
     if (!r.ok) {
-        const errEntry = {
-            state: 'unknown',
-            deps: [],
-            title: '',
-            fetchedAt: now,
-            error: r.stderr ? r.stderr.split('\n')[0].trim() : `gh exit ${r.status}`,
-        };
-        c.issues[key] = errEntry;
-        c.updatedAt = now;
-        writeCache(c, cacheFile);
-        return errEntry;
+        // #4732 (CA-1 + CA-5) — degradación de `gh` NO envenena el caché. Si el
+        // spawn falla (ENOENT / PATH sin gh) o `gh` devuelve !=0, conservar el
+        // last-known-good en vez de sobreescribir con `unknown`. Fail-safe:
+        // jamás derivar "bloqueado" por no poder consultar.
+        const cause = r.spawnFailed && r.error
+            ? `spawn ${r.error.code || 'error'}`
+            : (r.stderr ? r.stderr.split('\n')[0].trim() : `gh exit ${r.status}`);
+        // CA-5 (A09): loguear exit code + primer renglón de stderr. NUNCA volcar
+        // process.env ni el env expandido del spawn (arrastra GH_TOKEN).
+        try { console.warn(`[deps] gh degradado para #${n}: ${cause}`); } catch { /* logger no debe romper */ }
+        return degradedEntry(existing, now, cause);
     }
 
     let parsed;
     try {
         parsed = JSON.parse(r.stdout);
     } catch {
-        const errEntry = { state: 'unknown', deps: [], title: '', fetchedAt: now, error: 'json-parse' };
-        c.issues[key] = errEntry;
-        c.updatedAt = now;
-        writeCache(c, cacheFile);
-        return errEntry;
+        // #4732 — body ilegible = fallo real del comando, mismo trato conservador.
+        try { console.warn(`[deps] gh degradado para #${n}: json-parse`); } catch { /* noop */ }
+        return degradedEntry(existing, now, 'json-parse');
     }
 
     const body = parsed.body || '';
     const comments = (parsed.comments || []).map(co => co.body || '').join('\n');
-    const deps = parseDepsFromText(body + '\n' + comments)
+    const text = body + '\n' + comments;
+    const deps = parseDepsFromText(text)
         .filter(n => n !== Number(issueNum)); // no auto-referencias
+    // #3742 — `forwardDeps` excluye referencias de procedencia (Split de / Tracked by).
+    // Es el conjunto que `resolveOpenDeps` recorre como dependencias reales.
+    const provenance = parseProvenanceRefs(text);
+    const forwardDeps = deps.filter(n => !provenance.has(n));
 
     const entry = {
         state: parsed.state ? parsed.state.toLowerCase() : 'unknown',
         deps,
+        forwardDeps,
         title: parsed.title || '',
         fetchedAt: now,
     };
@@ -170,31 +269,70 @@ function fetchIssueInfo(issueNum, { ghRunner = defaultGhRunner, repo = 'intrale/
  * Resuelve recursivamente las dependencias abiertas de un issue.
  * Recursión limitada a MAX_DEPTH (3) — si se llega al límite emite warning.
  *
+ * #3742 — Agregado `opts.maxNodes` (cap de nodos visitados, default y máximo
+ * ABSOLUTE_MAX_NODES=200) y detección explícita de ciclos. El resultado expone
+ * `nodesVisited` y `reason` para que el wizard de allowlist muestre "truncado"
+ * (por profundidad, nodos o ciclo) sin colgarse.
+ *
  * @returns {{
  *   openDeps: number[],
  *   chains: {[issueNum]: {title, deps}},
- *   truncated: boolean
+ *   truncated: boolean,
+ *   reason: 'max_depth'|'max_nodes'|'cycle'|null,
+ *   nodesVisited: number
  * }}
  */
 function resolveOpenDeps(issueNum, opts = {}) {
     const { ghRunner = defaultGhRunner, repo = 'intrale/platform', cacheFile = CACHE_FILE, now = Date.now() } = opts;
+    // maxDepth override (issue #3142): permite a `/promote` aumentar el alcance
+    // a 5 niveles (cumple CA-Sec-12) sin tocar callers existentes (default 3).
+    // Se clampea contra [1, ABSOLUTE_MAX_DEPTH] para evitar loops descontrolados.
+    let maxDepth = Number.isFinite(opts.maxDepth) ? Math.floor(opts.maxDepth) : MAX_DEPTH;
+    if (maxDepth < 1) maxDepth = 1;
+    if (maxDepth > ABSOLUTE_MAX_DEPTH) maxDepth = ABSOLUTE_MAX_DEPTH;
+    // #3742 — maxNodes override. Default = cap absoluto. Se clampea a [1, 200].
+    let maxNodes = Number.isFinite(opts.maxNodes) ? Math.floor(opts.maxNodes) : ABSOLUTE_MAX_NODES;
+    if (maxNodes < 1) maxNodes = 1;
+    if (maxNodes > ABSOLUTE_MAX_NODES) maxNodes = ABSOLUTE_MAX_NODES;
     const cache = readCache(cacheFile);
     const visited = new Set();
     const openDeps = new Set();
     const chains = {};
     let truncated = false;
+    let reason = null;
+    let nodesVisited = 0;
+    let cycleDetected = false;
 
-    function walk(num, depth) {
+    // `ancestors` es el conjunto de nodos en el camino activo (recursion stack).
+    // Una back-edge hacia un ancestro = ciclo. Un revisit que NO es ancestro
+    // (diamante de dependencias) NO es ciclo: ya fue explorado, se omite.
+    function walk(num, depth, ancestors) {
         const key = String(num);
+        if (ancestors.has(key)) {
+            cycleDetected = true;
+            return;
+        }
         if (visited.has(key)) return;
-        visited.add(key);
-        if (depth > MAX_DEPTH) {
+        if (nodesVisited >= maxNodes) {
             truncated = true;
+            if (!reason) reason = 'max_nodes';
+            return;
+        }
+        visited.add(key);
+        nodesVisited += 1;
+        if (depth > maxDepth) {
+            truncated = true;
+            if (!reason) reason = 'max_depth';
             return;
         }
         const info = fetchIssueInfo(num, { ghRunner, repo, cache, cacheFile, now });
         chains[key] = { title: info.title, deps: info.deps, state: info.state };
-        for (const dep of info.deps) {
+        const nextAncestors = new Set(ancestors);
+        nextAncestors.add(key);
+        // #3742 — recorremos sólo dependencias forward; las referencias de
+        // procedencia (Split de / Tracked by) apuntan al padre/épico y no son
+        // dependencias bloqueantes (evita falsos ciclos en splits — CA-1).
+        for (const dep of (info.forwardDeps || info.deps)) {
             // Para decidir si lo incluimos, necesitamos su estado.
             const subInfo = fetchIssueInfo(dep, { ghRunner, repo, cache, cacheFile, now });
             chains[String(dep)] = { title: subInfo.title, deps: subInfo.deps, state: subInfo.state };
@@ -202,16 +340,25 @@ function resolveOpenDeps(issueNum, opts = {}) {
             // Recursión: profundizar incluso si el dep está cerrado podría revelar deps
             // abiertas anidadas — mejor cortar al primer nivel cerrado para evitar ruido.
             if (subInfo.state === 'open') {
-                walk(dep, depth + 1);
+                walk(dep, depth + 1, nextAncestors);
             }
         }
     }
 
-    walk(Number(issueNum), 0);
+    walk(Number(issueNum), 0, new Set());
+    // Un ciclo también es una forma de truncado (el wizard lo muestra como
+    // warning, no como hang). La razón de ciclo no pisa max_depth/max_nodes si
+    // ya se reportó una causa anterior.
+    if (cycleDetected) {
+        truncated = true;
+        if (!reason) reason = 'cycle';
+    }
     return {
         openDeps: [...openDeps].sort((a, b) => a - b),
         chains,
         truncated,
+        reason,
+        nodesVisited,
     };
 }
 
@@ -269,8 +416,11 @@ module.exports = {
     CACHE_FILE,
     CACHE_TTL_MS,
     MAX_DEPTH,
+    ABSOLUTE_MAX_DEPTH,
+    ABSOLUTE_MAX_NODES,
     DEP_PATTERNS,
     parseDepsFromText,
+    parseProvenanceRefs,
     fetchIssueInfo,
     resolveOpenDeps,
     findMissingDeps,

@@ -26,6 +26,7 @@
 const fs = require('fs');
 const path = require('path');
 const { EventEmitter } = require('events');
+const jsonlRotation = require('./lib/jsonl-rotation');
 
 const REPO_ROOT = process.env.PIPELINE_REPO_ROOT || process.cwd();
 const PIPELINE_DIR = path.join(REPO_ROOT, '.pipeline');
@@ -191,6 +192,8 @@ function persistEvaluation(record, file) {
         alerted: !!record.alerted,
     };
     fs.appendFileSync(target, JSON.stringify(payload) + '\n', 'utf8');
+    // #4174 — rotación + gzip + retención del JSONL si supera el umbral.
+    try { jsonlRotation.rotateIfNeeded({ path: target, redact: true }); } catch (e) { /* no bloquea */ }
 }
 
 // loadConfigFromYaml: lee `anomaly_detector` de `.pipeline/config.yaml`.

@@ -291,11 +291,31 @@ function checkDiffSize({ files_changed = 0, additions = 0, deletions = 0 } = {},
 /**
  * Verifica que al menos un commit en la rama referencie el issue con "Closes #N".
  * Acepta variantes: Closes, Fixes, Resolves (case-insensitive).
+ *
+ * (#3819) Caso "entrega previa": si la rama NO tiene commits propios pero la
+ * base (origin/main) YA contiene commits que referencian el issue — trabajo
+ * arrastrado por el PR de otro issue, ej. el entregable de #3819 entró vía
+ * #3821 — NO se bloquea con `pr:no-commits`. Se emite `pr:already-delivered`
+ * (warn) con la evidencia, para que el ciclo pueda continuar en vez de
+ * rebotar para siempre contra una rama legítimamente vacía. El caller obtiene
+ * la evidencia con git-ops.getPriorDeliveryRefs().
+ *
+ * @param {string[]} commitMessages — mensajes de commits propios de la rama
+ * @param {number} issue — número de issue
+ * @param {{priorDeliveryRefs?: string[]}} [opts] — evidencia "<sha7> <subject>"
  */
-function checkClosesIssue(commitMessages, issue) {
+function checkClosesIssue(commitMessages, issue, opts = {}) {
     const findings = [];
     if (!issue) return findings;
     if (!commitMessages || !commitMessages.length) {
+        const prior = (opts && Array.isArray(opts.priorDeliveryRefs)) ? opts.priorDeliveryRefs : [];
+        if (prior.length) {
+            findings.push({
+                rule: 'pr:already-delivered', severity: 'warn',
+                message: `Rama sin commits propios, pero el entregable del issue ya está mergeado en main: ${prior.slice(0, 3).join(' · ')}`,
+            });
+            return findings;
+        }
         findings.push({
             rule: 'pr:no-commits', severity: 'error',
             message: 'No se encontraron commits en la rama',

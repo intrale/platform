@@ -1,0 +1,13 @@
+# Stub de test para backend:SwaggerRouteTest.
+# La spec real vive en users/src/main/resources/openapi.yaml (classpath del Lambda).
+openapi: 3.0.3
+info:
+  title: Intrale API (test stub)
+  version: '1.0'
+paths:
+  /health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: OK

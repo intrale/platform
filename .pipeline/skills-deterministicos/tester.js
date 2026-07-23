@@ -34,7 +34,11 @@ const { spawn, execFile, execSync, spawnSync } = require('child_process');
 const trace = require('../lib/traceability');
 const gradleParser = require('./lib/gradle-parser');
 const kover = require('./lib/kover-parser');
-const { ensureGitInEnv } = require('../lib/ensure-git-in-path');
+const { ensureGitInEnv, pathEnvKey } = require('../lib/ensure-git-in-path');
+const { withGradleLock } = require('../lib/gradle-lock');
+const { writeDeliverable } = require('../lib/write-deliverable');
+// CA-B2 (#4694) — needle del worktree derivado del helper compartido.
+const { worktreeNeedle } = require('../lib/worktree-prefix');
 
 // ── Constantes y paths ──────────────────────────────────────────────
 const REPO_ROOT = process.env.PIPELINE_REPO_ROOT || process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
@@ -46,6 +50,40 @@ const HEARTBEAT_INTERVAL_MS = 30 * 1000;
 
 // Umbral de cobertura por defecto (línea) — igual al skill LLM.
 const DEFAULT_COVERAGE_THRESHOLD = 80;
+
+// Timeouts del spawn de `node --test` (issue #3344).
+// Antes: sin timeout. Si un .test.js dejaba un handle activo (timer/socket/server
+// no clearado) el child quedaba colgado para siempre → el watchdog del Pulpo
+// mataba al tester a los 45min pero el reporte JUnit quedaba vacío (0 tests).
+// Ahora:
+//   1) `--test-timeout` corta cada test individual.
+//   2) Wall-clock duro mata el child (con árbol) si la batería completa no
+//      termina, mucho antes del watchdog del Pulpo. El motivo se reporta.
+//   3) Heartbeat de progreso para diagnosticar a cuál archivo le tocaba el cuelgue.
+const NODE_TEST_PER_TEST_TIMEOUT_MS = 120 * 1000;
+const NODE_TEST_WALL_TIMEOUT_MS = 12 * 60 * 1000;
+const NODE_TEST_IDLE_LOG_INTERVAL_MS = 30 * 1000;
+
+// Presupuesto de longitud para la porción de archivos de la línea de comandos
+// de `node --test <files...>` (rebote #3953).
+//
+// Causa raíz del rebote: `runNodeTests` volcaba TODAS las rutas absolutas de
+// los .test.js (307 al momento del fallo) en un único spawn. En Windows el
+// límite de `CreateProcess` es 32767 chars para toda la línea; con rutas de
+// worktree largas (`C:\Workspaces\Intrale\platform.agent-XXXX-...\.pipeline\...`)
+// la línea alcanzó 32906 chars y el spawn falló con `ENAMETOOLONG`, abortando
+// el tester antes de correr un solo test.
+//
+// Fix: (a) pasar rutas RELATIVAS a repoRoot (cwd ya es repoRoot) — independiza
+// la longitud del prefijo del worktree y la reduce a ~1/3; (b) si aun así la
+// porción de archivos supera este presupuesto, partir en batches secuenciales
+// que comparten deadline de wall-clock y se agregan en un solo summary.
+//
+// 28000 deja ~4700 chars de headroom bajo 32767 para el resto de la línea
+// (execPath ~60, flags y rutas de reporters ~400). A 307 archivos en rutas
+// relativas (~10KB) entra en un solo batch; el batching solo se activa si el
+// pipeline crece mucho más.
+const NODE_TEST_MAX_CMDLINE = 28000;
 
 // Anti-stale de XML reports (rebote #2892):
 // Cuando gradle aborta antes de ejecutar tests (ej. cmd.exe no entiende
@@ -149,24 +187,145 @@ const MODULE_DIRS = {
 //                     Verificado: `grep` por `qa/evidence` en *.gradle.kts/*.kt
 //                     devuelve 0 referencias.
 //
+// Rebote #2398 rev-1 (mismo síntoma, archivo distinto):
+//   - #2398 (ghostbusters: limpiar branches agent/* stale) trajo cambios puros
+//     Node.js bajo `.pipeline/lib/` + `.pipeline/ghostbusters.js` + el archivo
+//     de skill instructions `.claude/skills/ghostbusters/SKILL.md` (que el
+//     harness Claude Code consume al invocar el skill). El path bajo `.claude/`
+//     rompió el match `every` y forzó la ruta gradle, que para un cambio sin
+//     código Kotlin no produjo reportes JUnit:
+//       diff vs origin/main: 4 archivos
+//         .claude/skills/ghostbusters/SKILL.md
+//         .pipeline/ghostbusters.js
+//         .pipeline/lib/__tests__/stale-branches.test.js
+//         .pipeline/lib/stale-branches.js
+//       → tester rebote: "[tester] No se encontraron reportes JUnit"
+//
+//   `.claude/`     → instrucciones de skills (`.claude/skills/<skill>/SKILL.md`),
+//                    hooks Node.js del harness (`.claude/hooks/*.js`), settings
+//                    (`.claude/settings.json`, `.claude/settings.local.json`) y
+//                    permisos. Todo este árbol lo consume Claude Code, no
+//                    Gradle. Verificado: `grep` por `\.claude` en
+//                    `**/*.{gradle.kts,gradle,kt}` devuelve 0 referencias.
+//                    Cualquier cambio acá afecta el comportamiento del harness/
+//                    agentes pero NO la compilación Kotlin ni la cobertura
+//                    Kover. Encaja exactamente en pipeline-only.
+//
+// Rebote #3409 rev-1 (mismo síntoma, archivos distintos):
+//   - #3409 (hook `qa/scripts/promote-screenshots.js` para promover
+//     screenshots a la librería de referencia visual) entregó un cambio
+//     puramente Node.js bajo `qa/scripts/` + `qa/scripts/__tests__/` +
+//     `.claude/skills/qa/SKILL.md` + `docs/qa/screenshot-promotion.md` +
+//     `package.json`. Tres de los cinco archivos matcheaban patterns
+//     existentes, pero los dos archivos bajo `qa/scripts/*.js` rompían el
+//     match `every`. El tester cayó a la ruta gradle, corrió todas las
+//     tasks UP-TO-DATE (sin código Kotlin tocado) y produjo 0 JUnit
+//     reports → rebote "[tester] No se encontraron reportes JUnit".
+//     Verificación empírica en `.pipeline/logs/3409-tester.log`:
+//       [tester] git diff vs main: 5 archivos · pipeline_only=false
+//       [tester] gradle exit_code=0 wall_ms=56911 (BUILD SUCCESSFUL,
+//                tareas UP-TO-DATE)
+//       - No se encontraron reportes JUnit
+//
+//   El pattern agregado abajo (`/^qa\/scripts\/.*\.(js|mjs|cjs)$/`) es
+//   deliberadamente narrow: solo matchea archivos Node.js bajo qa/scripts/,
+//   NO archivos .sh, .kt, .gradle.kts. Esto mantiene la frontera del rebote
+//   #3092: `qa/scripts/qa-android.sh` y compañía siguen forzando ruta
+//   gradle (su modificación puede afectar el comportamiento del QA real),
+//   pero los hooks Node.js puros (`promote-screenshots.js`, `qa-narration.js`,
+//   `qa-summarize-results.js`, etc.) ahora caen en pipeline-only.
+//   Verificación de seguridad: `grep` por `qa/scripts` en
+//   `**/*.{kts,gradle,kt,properties}` devuelve 0 referencias, así que
+//   Gradle no consume estos scripts.
+//
+//   - #3576 (Hook onSpawnExit cross-skill + audit unificado) entregó un
+//     script bash auxiliar `scripts/diff-parser-codepaths.sh` que compara
+//     paridad entre los codepaths legacy y generalized leyendo el log
+//     textual del pulpo. Es 100% pipeline-only — un log-analyzer que ni
+//     siquiera está referenciado por Gradle (ver verificación de
+//     seguridad abajo) — pero el archivo cae bajo `scripts/` que no tiene
+//     pattern de allowlist. El cambio del PR incluía:
+//       .pipeline/lib/agent-launcher/*  (matchea ^\.pipeline\/)
+//       .pipeline/lib/quota-exhausted.js
+//       .pipeline/pulpo.js
+//       docs/pipeline/multi-provider.md (matchea ^docs\/)
+//       scripts/diff-parser-codepaths.sh  ← rompía el `every` match
+//     El tester cayó a ruta gradle, todo UP-TO-DATE, 0 JUnit reports →
+//     rebote "[tester] No se encontraron reportes JUnit". Verificación en
+//     `.pipeline/logs/3576-tester.log`:
+//       [tester] git diff vs main: 13 archivos · pipeline_only=false
+//       [tester] gradle exit_code=0 wall_ms=65814 BUILD SUCCESSFUL UP-TO-DATE
+//       - No se encontraron reportes JUnit
+//
+//   El pattern agregado abajo (`/^scripts\/diff-parser-codepaths\.sh$/`)
+//   es deliberadamente exacto (no wildcard sobre `scripts/`): otros
+//   scripts en `scripts/` como `local-up.sh`, `local-app.sh`,
+//   `smart-build.sh` SÍ orquestan Gradle/AWS y deben seguir forzando la
+//   ruta gradle. Verificación de seguridad: `grep` por
+//   `scripts/diff-parser-codepaths` en `**/*.{kts,gradle,kt,properties}`
+//   devuelve 0 referencias; el script es invocado únicamente a mano por
+//   el operador (documentado en `docs/pipeline/multi-provider.md`).
+//
 // Excluido a propósito: `README.md` y otros .md root, `gradle.properties`,
-// `settings.gradle.kts`, `build.gradle.kts`, `.claude/`, `qa/build.gradle.kts`,
-// `qa/src/`, `qa/scripts/`, `qa/test-cases/`, `qa/regression-suite.json` (todos
-// pueden afectar build/coverage o testing real). El test `paths fuera de los
-// patrones permitidos rompen el match` documenta y protege esa frontera.
+// `settings.gradle.kts`, `build.gradle.kts`, `qa/build.gradle.kts`,
+// `qa/src/`, `qa/scripts/*.sh` (scripts shell que pueden orquestar gradle),
+// `qa/test-cases/`, `qa/regression-suite.json` (todos pueden afectar
+// build/coverage o testing real). El test `paths fuera de los patrones
+// permitidos rompen el match` documenta y protege esa frontera.
 const PIPELINE_ONLY_PATTERNS = [
-    /^\.pipeline\//,        // pipeline V3 (Node.js)
-    /^docs\//,              // documentación pura
-    /^agents\//,            // reglas para agentes
-    /^\.github\//,          // GitHub Actions / templates
-    /^\.gitignore$/,        // gitignore root — no afecta compilación Kotlin
-    /^\.gitattributes$/,    // git attributes — no afecta compilación Kotlin
-    /^\.editorconfig$/,     // editor config — no afecta cobertura
-    /^\.husky\//,           // husky git hooks (Node.js) — fuera de classpath Gradle
-    /^package\.json$/,      // npm manifest — usado solo por `.pipeline/` Node.js
-    /^package-lock\.json$/, // npm lockfile — usado solo por `.pipeline/` Node.js
-    /^qa\/evidence\//,      // QA artifacts (video/screenshots/reports) — fuera de Gradle
+    /^\.pipeline\//,                       // pipeline V3 (Node.js)
+    /^docs\//,                             // documentación pura
+    /^agents\//,                           // reglas para agentes
+    /^\.github\//,                         // GitHub Actions / templates
+    /^\.claude\//,                         // skills/hooks/settings de Claude Code — fuera de Gradle
+    /^\.gitignore$/,                       // gitignore root — no afecta compilación Kotlin
+    /^\.gitattributes$/,                   // git attributes — no afecta compilación Kotlin
+    /^\.editorconfig$/,                    // editor config — no afecta cobertura
+    /^\.husky\//,                          // husky git hooks (Node.js) — fuera de classpath Gradle
+    /^package\.json$/,                     // npm manifest — usado solo por `.pipeline/` Node.js
+    /^package-lock\.json$/,                // npm lockfile — usado solo por `.pipeline/` Node.js
+    /^qa\/evidence\//,                     // QA artifacts (video/screenshots/reports) — fuera de Gradle
+    /^qa\/scripts\/.*\.(js|mjs|cjs)$/,     // Node.js scripts/hooks QA — fuera de Gradle (rebote #3409)
+    /^scripts\/.*\.(js|mjs|cjs)$/,         // Node.js scripts operativos del pipeline — fuera de Gradle (rebote #3929)
+    /^scripts\/diff-parser-codepaths\.sh$/, // log-analyzer pipeline (rebote #3576) — NO toca Gradle
 ];
+
+// ── Inputs de Gradle: su ELIMINACIÓN puede alterar compilación/cobertura ──
+// Contexto (rebote #3943): los issues de limpieza (épica EP-6) BORRAN basura
+// de la raíz del repo — `delivery-all.sh`, `bash.exe.stackdump`,
+// `UsersAdministratoragent-teams-report.html`, `.js` con nombres "mangled",
+// un `.jsonl` de auditoría, etc. Esos paths root NO matchean ningún
+// PIPELINE_ONLY_PATTERN, así que rompían el `every` de isPipelineOnlyChange
+// → ruta gradle → 0 reportes JUnit → rebote "[tester] No se encontraron
+// reportes JUnit". Verificación empírica en `.pipeline/logs/3943-tester.log`:
+//   [tester] git diff vs main: 15 archivos · pipeline_only=false
+//   [tester] gradle exit_code=0 wall_ms=55313 (0 tests, sin JUnit)
+//
+// Principio del fix: una ELIMINACIÓN solo puede afectar el build/cobertura de
+// Gradle si el archivo borrado era un *input* de Gradle (código Kotlin/Java,
+// scripts de build, properties, o recursos bajo `src/.../res|resources/`).
+// Borrar un `.html`/`.sh`/`.stackdump`/`.jsonl` de la raíz no cambia nada que
+// Gradle compile o mida → es neutro para la decisión gradle-vs-node y NO debe
+// forzar la ruta gradle. Las MODIFICACIONES y ADICIONES conservan la frontera
+// estricta clásica (solo PIPELINE_ONLY_PATTERNS las hace neutras).
+//
+// Deliberadamente conservador: cualquier borrado que matchee un input de
+// Gradle (ej. borrar un `.kt` de producción, que SÍ baja cobertura) sigue
+// forzando la ruta gradle. El test `#3943` documenta y protege esta frontera.
+const GRADLE_INPUT_PATTERNS = [
+    /\.(kt|kts|java|gradle|properties|pro)$/i, // fuentes/build/proguard
+    /(^|\/)src\/.*\/(res|resources)\//,        // recursos Android/JVM
+];
+
+/**
+ * `true` si la eliminación del path puede alterar lo que Gradle compila o la
+ * cobertura que mide. Solo se consulta para archivos BORRADOS (ver
+ * isPipelineOnlyChange). Para no-borrados la frontera sigue siendo
+ * PIPELINE_ONLY_PATTERNS.
+ */
+function isGradleInput(file) {
+    return GRADLE_INPUT_PATTERNS.some((re) => re.test(file));
+}
 
 /**
  * Resuelve el directorio que contiene `git.exe`/`git` para asegurarse de que
@@ -226,7 +385,8 @@ function findIssueWorktree(repoRoot, issue) {
     } catch {
         return null;
     }
-    const needle = `platform.agent-${issue}-`;
+    let needle;
+    try { needle = worktreeNeedle(issue); } catch { return null; }
     for (const line of raw.split('\n')) {
         if (!line.startsWith('worktree ')) continue;
         const wt = line.replace('worktree ', '').trim();
@@ -258,33 +418,115 @@ function getChangedFilesVsMain(repoRoot) {
     });
 }
 
-function isPipelineOnlyChange(files) {
-    if (!Array.isArray(files) || files.length === 0) return false;
-    return files.every((f) => PIPELINE_ONLY_PATTERNS.some((re) => re.test(f)));
+/**
+ * Devuelve un Set con los archivos ELIMINADOS respecto a `origin/main`
+ * (`git diff --diff-filter=D`) o un Set vacío si git falla. Se usa para que
+ * isPipelineOnlyChange pueda tratar como neutros los borrados de basura que no
+ * son inputs de Gradle (rebote #3943). Probamos las mismas bases que
+ * getChangedFilesVsMain para cubrir worktrees sin `origin/main` local.
+ */
+function getDeletedFilesVsMain(repoRoot) {
+    return new Promise((resolve) => {
+        const bases = ['origin/main', 'main', 'origin/HEAD'];
+        const tryNext = (idx) => {
+            if (idx >= bases.length) return resolve(new Set());
+            execFile('git', ['diff', '--name-only', '--diff-filter=D', `${bases[idx]}...HEAD`], {
+                cwd: repoRoot, windowsHide: true, maxBuffer: 4 * 1024 * 1024,
+            }, (err, stdout) => {
+                if (err) return tryNext(idx + 1);
+                const files = String(stdout).split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+                resolve(new Set(files));
+            });
+        };
+        tryNext(0);
+    });
+}
+
+function isPipelineOnlyChange(files, deletedPaths) {
+    // Distinguimos tres casos:
+    //   1) files no es array (null/undefined): no se pudo determinar el diff
+    //      (git falló o no hay base). Conservar comportamiento legacy: caer
+    //      a ruta gradle para que el operador vea la falla de gradle si
+    //      corresponde.
+    //   2) files === []: el diff sí se pudo calcular y dio cero archivos.
+    //      Esto pasa cuando el branch del agente está en sync con main sin
+    //      commits propios (caso típico del rebote #3342: el dev creó
+    //      `agent/3342-completion-client` como rama paralela y dejó el
+    //      worktree del pipeline en `agent/3342-pipeline-dev` sin commits
+    //      propios; al hacer `git diff origin/main...HEAD` sale vacío).
+    //      Tratamos como vacuously pipeline-only (`every` sobre conjunto
+    //      vacío es true) y ruteamos a `node --test`: si el pipeline está
+    //      sano aprueba limpio sin gastar 1 minuto de Gradle UP-TO-DATE que
+    //      no produce JUnit reports nuevos. Sin este branch el tester
+    //      rebotaba con "[tester] No se encontraron reportes JUnit"
+    //      (verificado en `.pipeline/logs/3342-tester.log`:
+    //      gradle exit_code=0 wall_ms=68724 BUILD SUCCESSFUL con todas las
+    //      tasks UP-TO-DATE y minMtimeMs filtrando todos los XMLs viejos
+    //      → `tests.valid=false`).
+    //   3) files con cambios: comportamiento clásico, every match patterns —
+    //      excepto que una ELIMINACIÓN de un archivo que NO es input de Gradle
+    //      se considera neutra (rebote #3943, ver GRADLE_INPUT_PATTERNS). Esto
+    //      cubre los issues de limpieza (EP-6) que borran basura de la raíz sin
+    //      tocar nada que Gradle compile o mida.
+    //
+    // `deletedPaths` es un Set opcional con los paths borrados (diff-filter=D).
+    // Si no se provee (llamadas legacy/tests de un solo argumento), se asume
+    // vacío y el comportamiento es idéntico al clásico.
+    if (!Array.isArray(files)) return false;
+    if (files.length === 0) return true; // rebote #3342: vacuously pipeline-only
+    const deleted = deletedPaths instanceof Set ? deletedPaths : new Set();
+    return files.every((f) => {
+        if (PIPELINE_ONLY_PATTERNS.some((re) => re.test(f))) return true;
+        // Borrado de un no-input de Gradle → neutro (rebote #3943).
+        if (deleted.has(f) && !isGradleInput(f)) return true;
+        return false;
+    });
 }
 
 /**
- * Encuentra recursivamente los archivos *.test.js dentro de `.pipeline/`,
- * excluyendo `node_modules` y directorios ocultos.
+ * Encuentra recursivamente los archivos *.test.js para la ruta pipeline-only.
+ *
+ * Roots escaneados:
+ *   - `.pipeline/` — tests del propio pipeline (V3, hooks, lib, etc.).
+ *   - `qa/scripts/__tests__/` — tests Node de hooks/scripts QA. Agregado
+ *     en el rebote #3409: el hook `promote-screenshots.js` y sus 18 tests
+ *     viven acá; sin escanear este root, los pipeline-only sin tests bajo
+ *     `.pipeline/` daban `no_tests:true` y aprobaban como qa:skipped en
+ *     vez de validar los tests reales que SI existen.
+ *
+ * Excluye `node_modules`, directorios ocultos, y backlogs/estado del
+ * pipeline (`desarrollo/`, `definicion/`, `logs/`).
  */
 function findNodeTestFiles(repoRoot) {
     const out = [];
-    const root = path.join(repoRoot, '.pipeline');
-    if (!fs.existsSync(root)) return out;
-    const stack = [root];
-    while (stack.length > 0) {
-        const cur = stack.pop();
-        let entries;
-        try { entries = fs.readdirSync(cur, { withFileTypes: true }); } catch { continue; }
-        for (const ent of entries) {
-            const full = path.join(cur, ent.name);
-            if (ent.isDirectory()) {
-                if (ent.name === 'node_modules' || ent.name.startsWith('.')) continue;
-                // Excluir backlogs/estado del pipeline (no contienen tests)
-                if (ent.name === 'desarrollo' || ent.name === 'definicion' || ent.name === 'logs') continue;
-                stack.push(full);
-            } else if (ent.isFile() && /\.test\.js$/i.test(ent.name)) {
-                out.push(full);
+    const roots = [
+        path.join(repoRoot, '.pipeline'),
+        path.join(repoRoot, 'qa', 'scripts', '__tests__'),
+        // Tests Node de scripts operativos del pipeline (rebote #3929): el
+        // `report-to-pdf-telegram.test.js` (y futuros tests de `scripts/*.js`)
+        // viven acá. Sin escanear este root, un cambio pipeline-only que solo
+        // toca `scripts/*.js` no corría ningún test propio del archivo
+        // modificado. `scripts/` solo contiene Node/shell/ps1 (cero inputs de
+        // Gradle), así que es seguro escanearlo por `.test.js`.
+        path.join(repoRoot, 'scripts'),
+    ];
+    for (const root of roots) {
+        if (!fs.existsSync(root)) continue;
+        const stack = [root];
+        while (stack.length > 0) {
+            const cur = stack.pop();
+            let entries;
+            try { entries = fs.readdirSync(cur, { withFileTypes: true }); } catch { continue; }
+            for (const ent of entries) {
+                const full = path.join(cur, ent.name);
+                if (ent.isDirectory()) {
+                    if (ent.name === 'node_modules' || ent.name.startsWith('.')) continue;
+                    // Excluir backlogs/estado del pipeline (no contienen tests)
+                    if (ent.name === 'desarrollo' || ent.name === 'definicion' || ent.name === 'logs') continue;
+                    stack.push(full);
+                } else if (ent.isFile() && /\.test\.js$/i.test(ent.name)) {
+                    out.push(full);
+                }
             }
         }
     }
@@ -378,34 +620,196 @@ function ensureGitInPath(env) {
 }
 
 /**
- * Corre `node --test --test-reporter=junit` sobre los tests del pipeline.
- * Devuelve resultado con shape compatible con `aggregateTestResults`.
+ * Parte la lista de archivos de test en batches cuya porción de línea de
+ * comandos no excede `maxLen` chars (rebote #3953). Devuelve los archivos como
+ * rutas RELATIVAS a `repoRoot` (que es el cwd del spawn), lo que:
+ *   - independiza la longitud del prefijo del worktree (puede ser muy largo);
+ *   - reduce la línea a ~1/3 respecto de las rutas absolutas.
+ *
+ * Función pura (sin I/O ni spawn) para poder testearla sin ejecutar tests.
+ * Un archivo cuya ruta relativa por sí sola excede `maxLen` se emite igual en
+ * su propio batch (no se puede partir más); `node --test` lo recibirá solo.
+ *
+ * @param {string[]} files  rutas absolutas de los .test.js
+ * @param {string} repoRoot raíz (== cwd del child); base de las rutas relativas
+ * @param {number} maxLen   presupuesto de chars para la porción de archivos
+ * @returns {string[][]} batches de rutas relativas
  */
-function runNodeTests(repoRoot, env) {
+function buildNodeTestBatches(files, repoRoot, maxLen = NODE_TEST_MAX_CMDLINE) {
+    const rels = files.map((f) => {
+        const rel = path.relative(repoRoot, f);
+        // Si por algún motivo la relativa sale vacía o sube fuera del root,
+        // caemos a la absoluta (correctitud por sobre brevedad).
+        return rel && !rel.startsWith('..') ? rel : f;
+    });
+    const batches = [];
+    let cur = [];
+    let curLen = 0;
+    for (const rel of rels) {
+        const add = rel.length + 1; // +1 por el separador de argumentos
+        if (cur.length > 0 && curLen + add > maxLen) {
+            batches.push(cur);
+            cur = [];
+            curLen = 0;
+        }
+        cur.push(rel);
+        curLen += add;
+    }
+    if (cur.length > 0) batches.push(cur);
+    return batches;
+}
+
+/**
+ * Spawnea un único batch de `node --test ... <files>` y resuelve con el
+ * resultado parseado de ese batch. Comparte la mecánica de heartbeat +
+ * wall-timeout del run completo: `remainingMs` es el presupuesto de tiempo
+ * que le queda al run global cuando arranca este batch.
+ */
+function spawnNodeTestBatch({ repoRoot, childEnv, batchFiles, reportFile, remainingMs, onLog, batchLabel }) {
     return new Promise((resolve) => {
         const started = Date.now();
-        const files = findNodeTestFiles(repoRoot);
-        if (files.length === 0) {
-            return resolve({
-                exit_code: 0, no_tests: true,
-                stdout: '', stderr: '',
-                wall_ms: Date.now() - started,
-                report_file: null, files: [],
+        // Borrar reporte previo para evitar parsear cache de runs anteriores
+        try { fs.unlinkSync(reportFile); } catch {}
+        const args = [
+            '--test',
+            `--test-timeout=${NODE_TEST_PER_TEST_TIMEOUT_MS}`,
+            '--test-force-exit',
+            '--test-reporter=junit',
+            `--test-reporter-destination=${reportFile}`,
+            '--test-reporter=spec',
+            '--test-reporter-destination=stdout',
+            ...batchFiles,
+        ];
+        let stdout = '';
+        let stderr = '';
+        let lastProgressLine = '';
+        let lastOutputAt = Date.now();
+        let timedOut = false;
+        let resolved = false;
+        const finish = (result) => {
+            if (resolved) return;
+            resolved = true;
+            resolve(result);
+        };
+        const readSummary = () => {
+            let xml = '';
+            try { xml = fs.readFileSync(reportFile, 'utf8'); } catch {}
+            return parseNodeTestJunit(xml);
+        };
+        // #3897 rev-2 — `stdin: 'ignore'`: evita que un test que lea stdin
+        // accidentalmente espere EOF para siempre.
+        const child = spawn(process.execPath, args, {
+            cwd: repoRoot, env: childEnv, shell: false, windowsHide: true,
+            stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        const trackProgress = (chunk) => {
+            lastOutputAt = Date.now();
+            const lines = chunk.toString().split(/\r?\n/).filter((l) => l.trim());
+            if (lines.length) lastProgressLine = lines[lines.length - 1].slice(0, 240);
+        };
+        if (child.stdout) child.stdout.on('data', (d) => { stdout += d.toString(); trackProgress(d); });
+        if (child.stderr) child.stderr.on('data', (d) => { stderr += d.toString(); trackProgress(d); });
+
+        const heartbeat = setInterval(() => {
+            const elapsed = Math.round((Date.now() - started) / 1000);
+            const idle = Math.round((Date.now() - lastOutputAt) / 1000);
+            onLog(`[tester:node-test] batch ${batchLabel} alive elapsed=${elapsed}s idle=${idle}s last="${lastProgressLine}"`);
+        }, NODE_TEST_IDLE_LOG_INTERVAL_MS);
+        heartbeat.unref?.();
+
+        // Wall-clock: el batch no puede consumir más que el tiempo restante del
+        // run global. Si lo excede, matamos el child (árbol en Windows).
+        const wallMs = Math.max(1, remainingMs);
+        const wallTimer = setTimeout(() => {
+            timedOut = true;
+            const elapsed = Math.round((Date.now() - started) / 1000);
+            onLog(`[tester:node-test] WALL-TIMEOUT batch ${batchLabel} ${elapsed}s — matando child (PID ${child.pid}). last="${lastProgressLine}"`);
+            try {
+                if (process.platform === 'win32' && child.pid) {
+                    spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
+                } else {
+                    child.kill('SIGKILL');
+                }
+            } catch {}
+        }, wallMs);
+        wallTimer.unref?.();
+
+        child.on('error', (e) => {
+            clearInterval(heartbeat);
+            clearTimeout(wallTimer);
+            stderr += `\n[spawn-error] ${e.message}\n`;
+            finish({
+                exit_code: 2, stdout, stderr,
+                timed_out: false,
+                last_progress_line: lastProgressLine,
                 summary: { valid: false, tests: 0, failures: 0, errors: 0, skipped: 0,
                            time_seconds: 0, suites: 0, failed_tests: [] },
             });
-        }
-        const reportFile = path.join(repoRoot, '.pipeline', 'logs', 'node-tests-junit.xml');
-        try { fs.mkdirSync(path.dirname(reportFile), { recursive: true }); } catch {}
-        // Borrar reporte previo para evitar parsear cache de runs anteriores
-        try { fs.unlinkSync(reportFile); } catch {}
+        });
+        child.on('exit', (code, signal) => {
+            clearInterval(heartbeat);
+            clearTimeout(wallTimer);
+            const summary = readSummary();
+            let exitCode;
+            if (timedOut) {
+                exitCode = 124; // POSIX timeout
+            } else if (code != null) {
+                exitCode = code;
+            } else {
+                exitCode = 1; // killed por señal sin code
+            }
+            finish({
+                exit_code: exitCode,
+                stdout, stderr,
+                timed_out: timedOut,
+                last_progress_line: lastProgressLine,
+                summary,
+            });
+        });
+    });
+}
 
-        const args = [
-            '--test',
-            '--test-reporter=junit',
-            `--test-reporter-destination=${reportFile}`,
-            ...files,
-        ];
+/**
+ * Corre `node --test --test-reporter=junit` sobre los tests del pipeline.
+ * Devuelve resultado con shape compatible con `aggregateTestResults`.
+ *
+ * Issue #3344: spawn con timeout duro + streaming a un log para diagnosticar
+ * cuelgues. Si un test individual excede `NODE_TEST_PER_TEST_TIMEOUT_MS`
+ * Node lo cancela y sigue. Si toda la batería excede
+ * `NODE_TEST_WALL_TIMEOUT_MS`, matamos el child con árbol y reportamos
+ * `exit_code=124` (convención POSIX para timeout) + last_progress_line para
+ * diagnóstico.
+ *
+ * Rebote #3953: la batería se parte en batches (`buildNodeTestBatches`) con
+ * rutas relativas para que la línea de comandos nunca exceda el límite de
+ * Windows (`ENAMETOOLONG`). Los batches corren en secuencia compartiendo un
+ * único deadline de wall-clock y se agregan en un solo summary.
+ */
+async function runNodeTests(repoRoot, env, opts = {}) {
+    const onLog = typeof opts.onLog === 'function' ? opts.onLog : () => {};
+    const started = Date.now();
+    const files = findNodeTestFiles(repoRoot);
+    if (files.length === 0) {
+        return {
+            exit_code: 0, no_tests: true,
+            stdout: '', stderr: '',
+            wall_ms: Date.now() - started,
+            report_file: null, files: [],
+            summary: { valid: false, tests: 0, failures: 0, errors: 0, skipped: 0,
+                       time_seconds: 0, suites: 0, failed_tests: [] },
+        };
+    }
+    const logsDir = path.join(repoRoot, '.pipeline', 'logs');
+    try { fs.mkdirSync(logsDir, { recursive: true }); } catch {}
+
+        // #3897 rev-2 — endurecimiento anti-cuelgue (exit 124 sin JUnit), ahora
+        // por batch en `spawnNodeTestBatch`:
+        //   a) `--test-force-exit`: el runner sale al terminar los tests aunque
+        //      algún .test.js haya dejado un handle vivo. El reporter flushea
+        //      antes del exit. Soportado por Node >= 22; el pipeline corre 24.
+        //   b) Reporter dual: `junit` al archivo (lo parsea el tester) + `spec`
+        //      a stdout (heartbeat con la última línea de progreso).
+        //
         // Strip NODE_TEST_CONTEXT del env del child: si tester.js corre dentro
         // de `node --test` (caso típico en self-tests), Node propaga esa env
         // al child y el sub-runner rechaza ejecutar files con un warning
@@ -428,6 +832,20 @@ function runNodeTests(repoRoot, env) {
         // temporales fallan con `'git' no se reconoce como un comando interno
         // o externo`. ensureGitInPath es un wrapper local sobre ensureGitInEnv.
         ensureGitInPath(childEnv);
+
+        // Rebote #4732 — Garantizar que `npm`/`node` sean ejecutables desde el
+        // child spawn. Misma causa raíz que git (#2891): cuando el pulpo corre
+        // como servicio Windows, su PATH heredado puede no incluir el directorio
+        // de Node (`C:\Program Files\nodejs`, que contiene `npm.cmd`). Los tests
+        // del pipeline que hacen `execSync('npm ci ...')` (ej. la demo del kernel
+        // en `fixtures/demo/run-cycle.js`) fallan con `"npm" no se reconoce como
+        // un comando interno o externo`. Como este proceso ES node, su binario
+        // vive junto a `npm`/`npm.cmd`; prependemos ese dir al PATH del child.
+        // Idempotente (solo prepende) y no muta el env externo.
+        const nodeBinDir = path.dirname(process.execPath);
+        const childPathKey = pathEnvKey(childEnv);
+        childEnv[childPathKey] = `${nodeBinDir}${path.delimiter}${childEnv[childPathKey] || ''}`;
+        if (childPathKey !== 'PATH') delete childEnv.PATH;
 
         // #3091 rebote rev-1 (réplica del fix #3090 rev-1) — Garantizar que
         // los tests del worktree puedan resolver las dependencias instaladas
@@ -467,36 +885,84 @@ function runNodeTests(repoRoot, env) {
                     : extraNodePaths.join(sep);
             }
         }
+        // Partir la batería en batches que respeten el límite de línea de
+        // comandos de Windows (rebote #3953). Con rutas relativas la inmensa
+        // mayoría de los runs entra en un único batch; el batching solo se
+        // activa si el pipeline crece muy por encima de los ~900 test files.
+        const maxCmdline = Number.isInteger(opts.maxCmdline) && opts.maxCmdline > 0
+            ? opts.maxCmdline : NODE_TEST_MAX_CMDLINE;
+        const batches = buildNodeTestBatches(files, repoRoot, maxCmdline);
+        const singleBatch = batches.length === 1;
+        onLog(`[tester:node-test] ${files.length} archivos en ${batches.length} batch(es) (límite cmdline ${maxCmdline} chars)`);
+
+        // Acumulador del summary agregado (shape compatible con parseNodeTestJunit).
+        const agg = {
+            valid: true, tests: 0, failures: 0, errors: 0, skipped: 0,
+            time_seconds: 0, suites: 0, failed_tests: [],
+        };
         let stdout = '';
         let stderr = '';
-        const child = spawn(process.execPath, args, {
-            cwd: repoRoot, env: childEnv, shell: false, windowsHide: true,
-        });
-        if (child.stdout) child.stdout.on('data', (d) => { stdout += d.toString(); });
-        if (child.stderr) child.stderr.on('data', (d) => { stderr += d.toString(); });
-        child.on('error', (e) => {
-            stderr += `\n[spawn-error] ${e.message}\n`;
-            resolve({
-                exit_code: 2, stdout, stderr,
-                wall_ms: Date.now() - started,
-                report_file: reportFile, files,
-                summary: { valid: false, tests: 0, failures: 0, errors: 0, skipped: 0,
-                           time_seconds: 0, suites: 0, failed_tests: [] },
+        let exitCode = 0;
+        let timedOut = false;
+        let lastProgressLine = '';
+        let lastReportFile = null;
+
+        // Deadline global compartido por todos los batches: el wall-clock total
+        // de la batería no puede exceder NODE_TEST_WALL_TIMEOUT_MS.
+        const deadlineAt = started + NODE_TEST_WALL_TIMEOUT_MS;
+
+        for (let i = 0; i < batches.length; i++) {
+            const batchLabel = `${i + 1}/${batches.length}`;
+            const remainingMs = deadlineAt - Date.now();
+            if (remainingMs <= 0) {
+                timedOut = true;
+                exitCode = 124;
+                onLog(`[tester:node-test] WALL-TIMEOUT antes del batch ${batchLabel} — sin tiempo restante`);
+                break;
+            }
+            // Un solo batch conserva el nombre histórico del reporte (consumido
+            // por logs y eventuales lectores); múltiples batches usan sufijo.
+            const reportFile = path.join(logsDir, singleBatch ? 'node-tests-junit.xml' : `node-tests-junit.${i}.xml`);
+            const res = await spawnNodeTestBatch({
+                repoRoot, childEnv, batchFiles: batches[i],
+                reportFile, remainingMs, onLog, batchLabel,
             });
-        });
-        child.on('exit', (code) => {
-            let xml = '';
-            try { xml = fs.readFileSync(reportFile, 'utf8'); } catch {}
-            const summary = parseNodeTestJunit(xml);
-            resolve({
-                exit_code: code == null ? 1 : code,
-                stdout, stderr,
-                wall_ms: Date.now() - started,
-                report_file: reportFile, files,
-                summary,
-            });
-        });
-    });
+            lastReportFile = reportFile;
+            stdout += res.stdout;
+            stderr += res.stderr;
+            if (res.last_progress_line) lastProgressLine = res.last_progress_line;
+            const s = res.summary;
+            agg.tests += s.tests;
+            agg.failures += s.failures;
+            agg.errors += s.errors;
+            agg.skipped += s.skipped;
+            agg.time_seconds += s.time_seconds;
+            agg.suites += s.suites;
+            if (Array.isArray(s.failed_tests)) agg.failed_tests.push(...s.failed_tests);
+            // El agregado es válido solo si CADA batch produjo un JUnit parseable.
+            agg.valid = agg.valid && s.valid;
+            // Primer exit code no-cero gana (preserva el detalle del fallo); un
+            // timeout en cualquier batch corta la secuencia (el deadline global
+            // ya está vencido o por vencerse).
+            if (res.timed_out) {
+                timedOut = true;
+                exitCode = 124;
+                break;
+            }
+            if (res.exit_code !== 0 && exitCode === 0) {
+                exitCode = res.exit_code;
+            }
+        }
+
+        return {
+            exit_code: timedOut ? 124 : exitCode,
+            stdout, stderr,
+            wall_ms: Date.now() - started,
+            report_file: lastReportFile, files,
+            timed_out: timedOut,
+            last_progress_line: lastProgressLine,
+            summary: agg,
+        };
 }
 
 // ── Parseo de argumentos ────────────────────────────────────────────
@@ -610,13 +1076,78 @@ function buildGradleCommand(module, coverage) {
     };
 }
 
+// ── Detección "todas las tasks de test UP-TO-DATE" (rebote #4155) ─────
+// Mapea cada módulo a sus tasks de test reales (mismo criterio que
+// buildGradleCommand). app/composeApp enumera las tres variantes de flavor.
+function expectedTestTasks(modules) {
+    const map = {
+        backend: [':backend:test'],
+        users:   [':users:test'],
+        app:     [
+            ':app:composeApp:testClientDebugUnitTest',
+            ':app:composeApp:testBusinessDebugUnitTest',
+            ':app:composeApp:testDeliveryDebugUnitTest',
+        ],
+    };
+    const out = [];
+    for (const m of modules) out.push(...(map[m] || []));
+    return out;
+}
+
+/**
+ * True si el stdout de Gradle muestra TODA task de test esperada como
+ * `UP-TO-DATE` (rebote #4155).
+ *
+ * Contexto: en `verificacion` el tester corre Gradle en REPO_ROOT (main). Un
+ * cambio que toca SOLO inputs de configuración de Gradle (p. ej.
+ * `gradle.properties` / `build.gradle.kts`, como este issue) no invalida los
+ * inputs de las tasks de test, así que Gradle las reporta UP-TO-DATE: no las
+ * re-ejecuta y no escribe XMLs JUnit nuevos. El filtro `minMtimeMs` descarta los
+ * XMLs existentes (de un run previo) → `tests.valid=false` → el tester rebotaba
+ * con "No se encontraron reportes JUnit" pese a que los tests están verdes.
+ *
+ * UP-TO-DATE GARANTIZA que la task corrió y pasó con esos mismos inputs (Gradle
+ * NUNCA marca UP-TO-DATE una task de test fallida: una falla deja la task
+ * desactualizada y la re-ejecuta hasta que pase). Por eso los XMLs en disco son
+ * válidos para el código actual y se pueden releer sin el filtro de mtime.
+ *
+ * IMPORTANTE: sólo cuenta `UP-TO-DATE`. Una task `SKIPPED` (test excluido —
+ * violaría CA-1 de #4155) NO matchea → el tester sigue rebotando, como debe.
+ */
+function allExpectedTestTasksUpToDate(stdout, modules) {
+    if (!stdout) return false;
+    const tasks = expectedTestTasks(modules);
+    if (tasks.length === 0) return false;
+    return tasks.every((t) => {
+        const escaped = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        // Línea Gradle: "> Task :backend:test UP-TO-DATE"
+        const re = new RegExp(`>\\s*Task\\s+${escaped}\\s+UP-TO-DATE`);
+        return re.test(stdout);
+    });
+}
+
 // ── Spawn con captura completa ───────────────────────────────────────
-function runGradle({ cmd, args, cwd, env }) {
+// #4155 — `runGradle` envuelve el spawn con el lock global de Gradle: el tester
+// (concurrencia 2) puede coexistir con la fase `build` y con los devs, lo que
+// es parte de la causa raíz del incidente inter-agente del 2026-06-24. Con el
+// lock, la suite de tests encola en vez de competir por CPU/RAM (CA-4). El lock
+// se libera en `finally` aunque el spawn falle (auto-release, CA-5).
+// `spawnFn` es un parámetro de inyección OPCIONAL exclusivo para tests (#4164):
+// permite reemplazar el `spawn` real por un stub in-process y volver determinista
+// el test del probe. SEGURIDAD: NUNCA debe leerse de env/config/runtime — solo se
+// inyecta como argumento de función desde el test — para no convertir la DI en un
+// sink de RCE. El default preserva el comportamiento productivo exacto.
+function runGradle({ cmd, args, cwd, env, spawnFn }) {
+    return withGradleLock(() => spawnGradle({ cmd, args, cwd, env, spawnFn }));
+}
+
+function spawnGradle({ cmd, args, cwd, env, spawnFn }) {
+    const _spawn = spawnFn || spawn;
     return new Promise((resolve) => {
         const started = Date.now();
         let stdout = '';
         let stderr = '';
-        const child = spawn(cmd, args, { cwd, env, shell: process.platform === 'win32', windowsHide: true });
+        const child = _spawn(cmd, args, { cwd, env, shell: process.platform === 'win32', windowsHide: true });
         if (child.stdout) child.stdout.on('data', (d) => { stdout += d.toString(); });
         if (child.stderr) child.stderr.on('data', (d) => { stderr += d.toString(); });
         child.on('error', (e) => {
@@ -716,7 +1247,12 @@ function updateMarker(trabajandoPath, payload) {
 }
 
 // ── Render del reporte final ─────────────────────────────────────────
-function renderReport({ issue, module, coverage, threshold, gradle, tests, coverageAgg, exitCode, motivo }) {
+// `pipelineOnly` y `exception` (#4511): cuando la cobertura Kover no aplica
+// (issue pipeline-only sin módulos Gradle testeables), el reporte documenta
+// explícitamente el motivo de excepción en vez de silencio (CA-4). El bloque
+// "Baseline y gaps" cubre el CA-1 (delta vs baseline + gaps) aunque hoy no
+// exista baseline estructurado en HEAD.
+function renderReport({ issue, module, coverage, threshold, gradle, tests, coverageAgg, exitCode, motivo, pipelineOnly, exception }) {
     const verdict = exitCode === 0 ? 'APROBADO ✅' : 'RECHAZADO ❌';
     const durMs = gradle ? gradle.wall_ms : 0;
     const mins = Math.floor(durMs / 60000);
@@ -735,6 +1271,34 @@ function renderReport({ issue, module, coverage, threshold, gradle, tests, cover
         lines.push(kover.renderCoverageSection(coverageAgg, threshold));
         lines.push('');
     }
+
+    // Baseline y gaps (CA-1). No hay baseline estructurado histórico en HEAD:
+    // se registra explícito en vez de omitir la sección.
+    lines.push('### Baseline y gaps');
+    lines.push('- Delta vs baseline: `baseline: no disponible` — sin baseline estructurado de cobertura en HEAD.');
+    if (coverage && coverageAgg && coverageAgg.valid) {
+        const weak = [...coverageAgg.packages]
+            .filter((p) => (p.line.covered + p.line.missed) > 0 && p.line_percent < threshold)
+            .sort((a, b) => a.line_percent - b.line_percent)
+            .slice(0, 3);
+        if (weak.length > 0) {
+            lines.push('- Gaps de cobertura (paquetes bajo umbral):');
+            for (const p of weak) lines.push(`  - \`${p.name}\` — ${p.line_percent}% líneas`);
+        } else {
+            lines.push('- Gaps de cobertura: sin paquetes bajo umbral detectados.');
+        }
+    } else {
+        lines.push('- Gaps de cobertura: no aplica (Kover no ejecutado en esta corrida).');
+    }
+    lines.push('');
+
+    // Excepción explícita (CA-4): entregable generado igual, con motivo acotado.
+    if (exception) {
+        lines.push('### Excepción explícita');
+        lines.push(`- ${exception}`);
+        lines.push('');
+    }
+
     if (motivo) {
         lines.push('### Motivo del rebote');
         lines.push(`- ${motivo}`);
@@ -796,7 +1360,10 @@ async function main() {
         logAppend(`[tester] worktree del agente detectado: ${issueWorktree}`);
     }
     const changedFiles = await getChangedFilesVsMain(diffCwd);
-    const pipelineOnly = isPipelineOnlyChange(changedFiles);
+    // Rebote #3943: los borrados de basura (no-inputs de Gradle) no deben forzar
+    // la ruta gradle. Pasamos el set de eliminaciones para tratarlos como neutros.
+    const deletedFiles = await getDeletedFilesVsMain(diffCwd);
+    const pipelineOnly = isPipelineOnlyChange(changedFiles, deletedFiles);
     if (changedFiles) {
         logAppend(`[tester] git diff vs main: ${changedFiles.length} archivos · pipeline_only=${pipelineOnly}`);
         if (pipelineOnly) {
@@ -815,6 +1382,8 @@ async function main() {
     const handle = trace.emitSessionStart({
         skill: 'tester', issue, phase: process.env.PIPELINE_FASE || 'verificacion',
         model: 'deterministic',
+        // (#3078) Provider explícito para el dispatch del classifier por allowlist.
+        provider: 'deterministic',
     });
 
     let gradleResult;
@@ -839,7 +1408,11 @@ async function main() {
             // *.test.js de main no tienen los cambios del issue. Correr desde
             // el worktree del agente cuando esté disponible.
             const nodeTestRoot = issueWorktree || REPO_ROOT;
-            const nodeRes = await runNodeTests(nodeTestRoot, env);
+            // #3897 rev-2 — conectar onLog: sin esto el heartbeat de 30s y el
+            // aviso de WALL-TIMEOUT con last_progress_line iban a un no-op y
+            // el post-mortem del exit 124 quedaba ciego (JUnit de 52 bytes y
+            // ninguna pista de qué archivo colgó).
+            const nodeRes = await runNodeTests(nodeTestRoot, env, { onLog: logAppend });
             gradleResult = {
                 exit_code: nodeRes.exit_code, wall_ms: nodeRes.wall_ms,
                 stdout: nodeRes.stdout, stderr: nodeRes.stderr,
@@ -894,6 +1467,32 @@ async function main() {
                 artifacts = copyArtifacts(koverData.files);
             }
 
+            // #4155 — Falso negativo "No se encontraron reportes JUnit" en
+            // cambios que tocan SOLO config de Gradle (gradle.properties /
+            // build.gradle.kts, como este issue). En `verificacion` el tester
+            // corre Gradle en REPO_ROOT (main); si los inputs de test no
+            // cambiaron, las tasks salen UP-TO-DATE → Gradle no re-ejecuta ni
+            // escribe XMLs nuevos → el filtro `minMtimeMs` descarta los XMLs
+            // existentes y `tests.valid` queda false → rebote espurio.
+            //
+            // UP-TO-DATE garantiza que la task de test corrió y pasó con esos
+            // mismos inputs (Gradle nunca marca UP-TO-DATE un test fallido), así
+            // que los XMLs en disco son válidos para el código actual. Cuando
+            // TODAS las tasks de test esperadas están UP-TO-DATE y Gradle salió
+            // 0, releemos los reportes JUnit SIN filtro de mtime para recuperar
+            // los resultados reales. NO releemos Kover: los tests no se
+            // re-ejecutaron, así que no medimos cobertura nueva (evita un rechazo
+            // espurio por cobertura baseline del repo, ajena a un cambio de
+            // paralelismo). Una task SKIPPED (test excluido) NO cuenta como
+            // UP-TO-DATE → el rebote se mantiene, protegiendo CA-1.
+            if (!tests.valid
+                && gradleResult.exit_code === 0
+                && allExpectedTestTasksUpToDate(gradleResult.stdout, cmd.modules)) {
+                logAppend('[tester] todas las tasks de test UP-TO-DATE (ya verdes en run previo con mismos inputs); releyendo reportes JUnit existentes sin filtro de mtime (#4155)');
+                tests = collectTestReports(cmd.modules, {});
+                logAppend(`[tester] re-lectura sin filtro de mtime: tests=${tests.tests} valid=${tests.valid} failures=${tests.failures} errors=${tests.errors}`);
+            }
+
             // Detección temprana: gradle abortó sin ejecutar tests.
             // Síntoma: exit_code ≠ 0 + wall_ms muy bajo (típicamente <2s) +
             // ningún XML fresco. Esto pasa cuando el shell no entiende
@@ -941,16 +1540,52 @@ async function main() {
         motivo = `Excepción en tester.js: ${e.message}`;
         logAppend(`[tester] EXCEPTION: ${e.stack || e.message}`);
     } finally {
+        // Motivo final + detección de excepción explícita (CA-4). Se computa
+        // ANTES de renderReport para que el reporte documente el motivo de
+        // excepción cuando la cobertura no aplica (pipeline-only sin tests Node).
+        let finalMotivo = motivo;
+        let exceptionNote = null;
+        if (exitCode === 0 && pipelineOnly && !(tests && tests.valid)) {
+            finalMotivo = 'Pipeline-only sin tests Node ejecutables — qa:skipped equivalente';
+            exceptionNote = 'Cobertura no aplicable: issue pipeline-only sin módulos Gradle con tests. Se documenta como qa:skipped; el entregable se genera igual.';
+        } else if (exitCode === 0 && pipelineOnly) {
+            finalMotivo = `Tests Node verdes (${tests.tests} tests pasaron)`;
+        } else if (exitCode === 0 && !finalMotivo) {
+            finalMotivo = 'Tests verdes';
+        } else if (!finalMotivo) {
+            finalMotivo = 'Tests fallidos';
+        }
+
         // Reporte
         const report = renderReport({
             issue, module: args.module, coverage: args.coverage, threshold: args.threshold,
             gradle: gradleResult, tests: tests || { valid: false },
             coverageAgg: koverData.aggregate, exitCode, motivo,
+            pipelineOnly, exception: exceptionNote,
         });
         logAppend('[tester] --- REPORTE ---');
         logAppend(report);
         const reportPath = path.join(LOG_DIR, `tester-${issue}-report.md`);
         try { fs.writeFileSync(reportPath, report); } catch {}
+
+        // Entregable phase-scoped de cierre de fase (#4511 / épico #4255).
+        // SIEMPRE se escribe (éxito o fallo) porque está en el `finally`, fuera
+        // de cualquier condicional de exitCode. Reusa el `report` ya renderizado
+        // como cuerpo. `writeDeliverable` aplica redacción de secrets por default
+        // (CA-5) y actualiza el índice `.pipeline/deliverables/<issue>.json`.
+        // El fallo del entregable NO debe romper el cierre de fase → try/catch.
+        let deliverablePath = null;
+        try {
+            const dv = writeDeliverable('tester', issue, {
+                fase: 'verificacion',
+                md: report,
+                pipelineRoot: REPO_ROOT,
+            });
+            deliverablePath = dv.path;
+            logAppend(`[tester] entregable escrito: ${dv.path} (indexed=${dv.indexed})`);
+        } catch (e) {
+            logAppend(`[tester] WARN no se pudo escribir entregable: ${e.message}`);
+        }
 
         // Escalación por tipo de fallo
         let escalateTo = null;
@@ -977,21 +1612,10 @@ async function main() {
             }
         }
 
-        // Para pipeline-only sin tests, generamos un motivo "qa:skipped" explícito
-        let finalMotivo = motivo;
-        if (exitCode === 0 && pipelineOnly && !(tests && tests.valid)) {
-            finalMotivo = 'Pipeline-only sin tests Node ejecutables — qa:skipped equivalente';
-        } else if (exitCode === 0 && pipelineOnly) {
-            finalMotivo = `Tests Node verdes (${tests.tests} tests pasaron)`;
-        } else if (exitCode === 0 && !finalMotivo) {
-            finalMotivo = 'Tests verdes';
-        } else if (!finalMotivo) {
-            finalMotivo = 'Tests fallidos';
-        }
-
         updateMarker(args.trabajando, {
             resultado: exitCode === 0 ? 'aprobado' : 'rechazado',
             motivo: finalMotivo,
+            tester_deliverable_path: deliverablePath,
             tester_module: pipelineOnly ? 'pipeline' : args.module,
             tester_runner: testRunner,
             tester_duration_ms: gradleResult ? gradleResult.wall_ms : 0,
@@ -1070,6 +1694,56 @@ if (require.main === module) {
                 const isPipelineOnly = isPipelineOnlyChange(['.pipeline/foo.js', 'app/composeApp/build.gradle.kts']);
                 if (isPipelineOnly) throw new Error('NO debió detectar pipeline-only con build.gradle.kts');
             }},
+            { name: 'PIPELINE_ONLY_PATTERNS detecta .claude/skills/<>/SKILL.md junto con .pipeline/ (rebote #2398)', fn: () => {
+                const isPipelineOnly = isPipelineOnlyChange([
+                    '.claude/skills/ghostbusters/SKILL.md',
+                    '.pipeline/ghostbusters.js',
+                    '.pipeline/lib/__tests__/stale-branches.test.js',
+                    '.pipeline/lib/stale-branches.js',
+                ]);
+                if (!isPipelineOnly) throw new Error('debió detectar pipeline-only con .claude/skills/<>/SKILL.md');
+            }},
+            { name: 'PIPELINE_ONLY_PATTERNS detecta qa/scripts/*.js + qa/scripts/__tests__/ (rebote #3409)', fn: () => {
+                const isPipelineOnly = isPipelineOnlyChange([
+                    '.claude/skills/qa/SKILL.md',
+                    'docs/qa/screenshot-promotion.md',
+                    'package.json',
+                    'qa/scripts/__tests__/promote-screenshots.test.js',
+                    'qa/scripts/promote-screenshots.js',
+                ]);
+                if (!isPipelineOnly) throw new Error('debió detectar pipeline-only con qa/scripts/*.js (#3409)');
+            }},
+            { name: 'PIPELINE_ONLY_PATTERNS sigue rechazando qa/scripts/*.sh (frontera #3092)', fn: () => {
+                const isPipelineOnly = isPipelineOnlyChange([
+                    '.pipeline/config.yaml',
+                    'qa/scripts/qa-android.sh',
+                ]);
+                if (isPipelineOnly) throw new Error('NO debió detectar pipeline-only con qa/scripts/qa-android.sh');
+            }},
+            { name: 'PIPELINE_ONLY_PATTERNS detecta scripts/*.js + scripts/*.test.js (rebote #3929)', fn: () => {
+                // El diff real de #3929: doctrina + helper + hardening CA-7 en
+                // scripts/report-to-pdf-telegram.js. Antes del fix estos dos
+                // archivos no matcheaban → ruta gradle → 0 JUnit → rebote
+                // "[tester] No se encontraron reportes JUnit".
+                const isPipelineOnly = isPipelineOnlyChange([
+                    '.claude/skills/tester/SKILL.md',
+                    '.pipeline/lib/write-deliverable.js',
+                    'docs/qa/generate-pdf.js',
+                    'scripts/report-to-pdf-telegram.js',
+                    'scripts/report-to-pdf-telegram.test.js',
+                ]);
+                if (!isPipelineOnly) throw new Error('debió detectar pipeline-only con scripts/*.js (#3929)');
+            }},
+            { name: 'PIPELINE_ONLY_PATTERNS sigue rechazando scripts/*.sh genérico (frontera Kotlin/infra)', fn: () => {
+                // scripts/*.sh (salvo el allowlist explícito) sigue forzando la
+                // ruta gradle: son wrappers de build/local que pueden tocar el
+                // entorno de compilación.
+                const isPipelineOnly = isPipelineOnlyChange([
+                    '.pipeline/config.yaml',
+                    'scripts/local-up.sh',
+                ]);
+                if (isPipelineOnly) throw new Error('NO debió detectar pipeline-only con scripts/local-up.sh');
+            }},
         ]);
         return;
     }
@@ -1088,16 +1762,27 @@ module.exports = {
     collectKoverReports,
     copyArtifacts,
     renderReport,
+    // Recuperación de falso negativo "No se encontraron reportes JUnit" cuando
+    // todas las tasks de test salen UP-TO-DATE (rebote #4155).
+    expectedTestTasks,
+    allExpectedTestTasksUpToDate,
+    // Lock global de Gradle (#4155): `runGradle` con lock, `spawnGradle` crudo.
+    runGradle,
+    spawnGradle,
     // Pipeline-only routing (issue #2891 + worktree fix #2892)
     isPipelineOnlyChange,
     findIssueWorktree,
     findNodeTestFiles,
     parseNodeTestJunit,
+    buildNodeTestBatches,
     runNodeTests,
     ensureGitInPath,
     getChangedFilesVsMain,
+    getDeletedFilesVsMain,
+    isGradleInput,
     resolveGitDir,
     PIPELINE_ONLY_PATTERNS,
+    GRADLE_INPUT_PATTERNS,
     GIT_FALLBACK_DIRS_WIN32,
     MODULE_DIRS,
     DEFAULT_COVERAGE_THRESHOLD,

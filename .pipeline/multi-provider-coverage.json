@@ -1,0 +1,30 @@
+{
+  "$schema": "./multi-provider-coverage.schema.json",
+  "_doc": "docs/pipeline/multi-provider-coverage.md",
+  "version": "1.0.0",
+  "generated_at": "2026-07-03T02:58:49.624Z",
+  "run_id": "run-1783047529624-528b4940",
+  "agent_models_source_sha256": "4aa77fd77657c5440fbfe95eab757ba0041a35275a666f341d8443387159182c",
+  "matrix": [
+    {
+      "skill": "backend-dev",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "status": "PASS",
+      "latency_bucket": "<=100ms",
+      "error_class": null,
+      "evidence_hash": "sha256:66c740c8f1853e4ea5cb88cffa5cd5f368c54a6c3793ea246e7e1e2b987ac43f",
+      "reason": "dry-run (provider no invocado)"
+    }
+  ],
+  "summary": {
+    "pass": 1,
+    "warn": 0,
+    "fail": 0,
+    "skipped": 0,
+    "na": 0,
+    "total_combinations": 1,
+    "skills_llm_count": 1,
+    "providers_llm_count": 1
+  }
+}

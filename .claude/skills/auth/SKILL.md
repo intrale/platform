@@ -4,6 +4,7 @@ user-invocable: true
 argument-hint: "[--audit] [--log] [--clean] [--remove <patron>] [--health]"
 allowed-tools: Bash, Read, Edit, Glob, Grep
 model: claude-haiku-4-5-20251001
+required_permissions: [file_read, file_write_repo, bash, child_spawn]
 ---
 
 # /auth — Auth

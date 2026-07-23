@@ -1,0 +1,8 @@
+<!-- architect-signoff issue=3963 -->
+## ✅ Arquitecto — firma de pre-admisión
+
+**Receta técnica:** ver sección "Detalles Técnicos" del body
+**Modelo:** Sonnet 4.7 (fallback: ninguno)
+**Resumen:** 6 archivos a tocar (núcleo lógico en `lib/dashboard-slices.js`, no en el monolito), patrón de slice paginado server-side con reutilización de `_percentile`/`dailyBuckets`/`escapeHtml`/saneo de filenames ya existentes, 7 riesgos con mitigación (ReDoS/XSS/path-traversal/granularidad de costo), tests obligatorios con cobertura de seguridad REQ-SEC-1/5.
+
+Issue habilitado para promoción a `Ready`.

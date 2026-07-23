@@ -23,7 +23,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const zlib = require('zlib');
+const jsonlRotation = require('./jsonl-rotation');
 
 const PIPELINE_DIR = path.resolve(__dirname, '..');
 const DEFAULT_HISTORY_PATH = path.join(PIPELINE_DIR, '.quota-history.jsonl');
@@ -61,42 +61,19 @@ function appendSnapshot(snapshot, opts = {}) {
 }
 
 /**
- * Rota el JSONL si supera el umbral de tamaño. El archivo rotado se escribe
- * como `.quota-history.YYYY-MM-DD.jsonl.gz` (gzip estándar) y el JSONL queda
- * vacío para seguir append.
+ * Rota el JSONL si supera el umbral de tamaño. Delega en el helper genérico
+ * `jsonl-rotation.js` (mecanismo único, #4174). Mantiene la firma legacy
+ * (`opts.historyPath`) y los defaults/env `QUOTA_*` por compat.
  *
  * @returns {{ rotated: boolean, archivePath?: string }}
  */
 function rotateIfNeeded(opts = {}) {
-  const targetPath = opts.historyPath || DEFAULT_HISTORY_PATH;
-  const limitMb = Number.isFinite(opts.limitMb) ? opts.limitMb : DEFAULT_JSONL_ROTATE_MB;
-  if (!fs.existsSync(targetPath)) return { rotated: false };
-
-  let size = 0;
-  try { size = fs.statSync(targetPath).size; } catch { return { rotated: false }; }
-  if (size < limitMb * 1024 * 1024) return { rotated: false };
-
-  const stamp = (opts.now ? new Date(opts.now()) : new Date()).toISOString().slice(0, 10);
-  const dir = path.dirname(targetPath);
-  const base = path.basename(targetPath, '.jsonl');
-  let archivePath = path.join(dir, `${base}.${stamp}.jsonl.gz`);
-  // Si ya existe, sufijar con N.
-  let counter = 1;
-  while (fs.existsSync(archivePath)) {
-    archivePath = path.join(dir, `${base}.${stamp}.${counter}.jsonl.gz`);
-    counter += 1;
-  }
-
-  try {
-    const raw = fs.readFileSync(targetPath);
-    const gz = zlib.gzipSync(raw);
-    fs.writeFileSync(archivePath, gz);
-    fs.writeFileSync(targetPath, '', { encoding: 'utf8' });
-    return { rotated: true, archivePath };
-  } catch (e) {
-    // No bloqueamos la pipeline; el caller decide si loguear.
-    return { rotated: false, error: e && e.message };
-  }
+  return jsonlRotation.rotateIfNeeded({
+    path: opts.historyPath || DEFAULT_HISTORY_PATH,
+    limitMb: Number.isFinite(opts.limitMb) ? opts.limitMb : DEFAULT_JSONL_ROTATE_MB,
+    redact: opts.redact, // undefined → helper aplica redacción por defecto (OWASP A09).
+    now: opts.now,
+  });
 }
 
 /**

@@ -11,6 +11,50 @@
 const fs = require('fs');
 const path = require('path');
 
+// #3726 — Nav bar V3 unificada. renderNavTabsSsr inyecta el <nav class="v3-nav">
+// con los 12 tabs en TODOS los satelites y loadIconSprite() lee el cache
+// compartido del sprite.svg para que <use href="#ic-tab-*"> resuelva inline.
+const { renderNavTabsSsr, loadIconSprite, navMoreAutoCloseClientScript } = require('./nav-tabs');
+// #4463 — Header compartido con home.js. Emite las tres pills invariantes
+// (#hdr-resources, #hdr-pulpo, #hdr-clock) + #hdr-mode en los satélites, que
+// antes NO mostraban CPU/RAM ni uptime del Pulpo (causa raíz del problema 2).
+const { renderHeaderMetaSsr, headerPillsClientScript } = require('./header-meta');
+
+// #3953 (EP8-H0) — Wrapper único de fetchJson (CA-2) y framework de modal de
+// confirmación con preview (CA-3). Reemplazan la copia local con .catch(()=>null)
+// y los confirm() nativos. nhCsrfHeaders() (de FETCH_CLIENT_JS) cubre R2.
+const { FETCH_CLIENT_JS } = require('./fetch-client.js');
+// #4296 — Accessor compartido del banner de ola (avance %, velocidad %/h, ETA)
+// desde la fuente determinística viva /api/dash/ola-eta (no conteos done/total).
+// Se inyecta una sola vez en el shell satélite → cubre TODAS las subventanas.
+const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
+const { CONFIRM_MODAL_JS } = require('./confirm-modal.js');
+
+// #4190 (Ola 7.1) — Rediseño integral de la pantalla PIPELINE (lenguaje MIZPÁ:
+// brand bar + selector + banner de misión + flujo de fases + issues por fase).
+// Degradación defensiva: si el módulo no carga, renderPipeline cae al board
+// legacy (ver fallback en la propia función).
+let pipelineRedesign = null;
+try { pipelineRedesign = require('./pipeline-redesign'); } catch (_) { /* fallback legacy */ }
+
+// #4240 (Ola 7.1) — EQUIPO adopta el marco común MIZPÁ. Se reutiliza el helper
+// compartido `renderMissionBanner` de la HOME (#4189) — el banner de ola común
+// (② del marco: tag OLA + título + métricas + bloque AVANCE) — en vez de
+// duplicar su markup (CA-5). Degradación defensiva: si el módulo no carga, el
+// slot `missionHtml` queda vacío y el resto del marco sigue intacto.
+let homeView = null;
+try { homeView = require('./home'); } catch (_) { /* sin banner de ola común */ }
+
+// #4239 (Ola 7.1) — COSTOS adopta el marco común MIZPÁ. Reutiliza el helper
+// compartido del marco (`mizpa-frame`): ① cabecera de marca (renderBrandBar) y
+// ② banner de ola común SSR-poblado (renderMissionBanner(collectWave())), el
+// mismo markup/CSS `mz-*` del resto de las pantallas, en vez de duplicarlo
+// (CA-5). Es la misma vía que usa LOGS (#4236). Degradación defensiva: si el
+// módulo no carga, el marco cae a la cabecera legacy del shell y el resto del
+// satélite sigue intacto («el pipeline no puede morir»).
+let mizpaFrame = null;
+try { mizpaFrame = require('./mizpa-frame'); } catch (_) { /* sin marco común */ }
+
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 function loadTheme() {
     try { return fs.readFileSync(THEME_CSS_PATH, 'utf8'); } catch { return ''; }
@@ -22,7 +66,6 @@ function fmtDur(ms){ if(!ms||ms<0) return '—'; const s=Math.round(ms/1000); if
 function fmtNum(n){ if(n==null||isNaN(n)) return '—'; if(n>=1e6) return (n/1e6).toFixed(1)+'M'; if(n>=1e3) return (n/1e3).toFixed(1)+'k'; return String(n); }
 function fmtPct(n){ return n==null?'—':n.toFixed(1)+'%'; }
 function setText(id, value){ const el=document.getElementById(id); if(el && el.textContent!==String(value)) el.textContent=value; }
-function fetchJson(url){ return fetch(url, {cache:'no-store'}).then(r => r.ok ? r.json() : null).catch(()=>null); }
 function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c])); }
 
 const SKILL_ICONS = {
@@ -56,21 +99,16 @@ function _saneAllowedIssues(arr){
 async function tickHeader(){
     const d = await fetchJson('/api/dash/header');
     if(!d) return;
-    setText('hdr-clock', new Date().toLocaleTimeString('es-AR'));
-    // #3045 — actualizar el cache compartido ANTES del render del modePill,
-    // así el render del próximo tickPipeline (que puede dispararse en paralelo)
-    // ya ve el estado fresco.
+    // #3045 — actualizar el cache compartido ANTES del render, así el próximo
+    // tickPipeline (que puede dispararse en paralelo) ya ve el estado fresco.
     pipelineModeState = {
         mode: d.mode || 'running',
         allowedIssues: _saneAllowedIssues(d.allowedIssues),
     };
-    const modePill = document.getElementById('hdr-mode');
-    if(modePill){
-        modePill.classList.remove('in-mode-running','in-mode-paused','in-mode-partial');
-        if(d.mode==='paused'){ modePill.classList.add('in-mode-paused'); modePill.textContent='⏸ Pausado'; }
-        else if(d.mode==='partial_pause'){ modePill.classList.add('in-mode-partial'); modePill.textContent='⏸ Parcial · '+pipelineModeState.allowedIssues.length+' issues'; }
-        else { modePill.classList.add('in-mode-running'); modePill.textContent='🟢 Running'; }
-    }
+    // #4531 / #4463 — Toda la bandeja (reloj + mode + build + recursos + pulpo)
+    // se hidrata con la MISMA lógica compartida (header-meta.js), sin tickers
+    // duplicados por vista. Sólo .textContent/.classList/.title (SEC-1, sin innerHTML).
+    if(typeof window.__hydrateHeaderPills === 'function') window.__hydrateHeaderPills(d);
     // #3045 — Si el filtro de allowlist está montado en la Pipeline view,
     // refrescar su visibilidad cuando cambia el modo (running ⇄ partial_pause).
     if(typeof refreshAllowlistToggleVisibility === 'function'){
@@ -99,10 +137,16 @@ function showToast(msg, ok){
     t._timeout = setTimeout(() => { t.style.opacity = '0'; t.style.transform = 'translateX(-50%) translateY(8px)'; }, 3500);
 }
 
-async function killAgent(issue, skill, pipeline, fase){
-    if(!confirm('¿Cancelar agente '+skill+' en #'+issue+'?')) return;
+async function killAgent(issue, skill, pipeline, fase, durationMs){
+    // CA-2 — preview con Skill · Issue · Fase · Tiempo invertido. SEC-2 — el POST
+    // viaja con token CSRF (killAgentPost) en vez del nhCsrfHeaders (meta) que
+    // esta vista no embebe.
+    const preview = [{label:'Skill', value:skill},{label:'Issue', value:'#'+issue}];
+    if(fase) preview.push({label:'Fase', value:fase});
+    if(durationMs != null) preview.push({label:'Tiempo invertido', value:fmtDur(durationMs)});
+    if(!(await inConfirm({ title:'Cancelar agente', message:'Se cancelará el agente en curso. Esta acción no se puede deshacer.', confirmLabel:'Cancelar agente', preview:preview }))) return;
     try{
-        const r = await fetch('/api/kill-agent', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({issue, skill, pipeline, fase})});
+        const r = await killAgentPost({issue, skill, pipeline, fase});
         const j = await r.json();
         showToast(j.msg || (j.ok?'Agente cancelado':'Falló la cancelación'), j.ok);
         if(typeof runAll === 'function') setTimeout(runAll, 600);
@@ -111,11 +155,11 @@ async function killAgent(issue, skill, pipeline, fase){
 
 async function killSkillGroup(skill, agents){
     if(!agents || !agents.length) return;
-    if(!confirm('¿Cancelar todos los agentes '+skill+' ('+agents.length+' activos)?')) return;
+    if(!(await inConfirm({ title:'Cancelar todos los agentes', message:'Se cancelarán todos los agentes activos de este skill.', confirmLabel:'Cancelar todos', preview:[{label:'Skill', value:skill},{label:'Activos', value:String(agents.length)}] }))) return;
     let ok=0, fail=0;
     for(const a of agents){
         try{
-            const r = await fetch('/api/kill-agent', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({issue: a.issue, skill: a.skill, pipeline: a.pipeline, fase: a.fase})});
+            const r = await killAgentPost({issue: a.issue, skill: a.skill, pipeline: a.pipeline, fase: a.fase});
             const j = await r.json();
             if(j.ok) ok++; else fail++;
         } catch{ fail++; }
@@ -138,7 +182,7 @@ async function nhReactivate(issue){
     try{
         const r = await fetch('/api/needs-human/'+issue+'/reactivate', {
             method: 'POST',
-            headers: {'Content-Type':'application/json'},
+            headers: Object.assign({'Content-Type':'application/json'}, nhCsrfHeaders()),
             body: JSON.stringify({ guidance: guidance.trim() }),
         });
         const j = await r.json();
@@ -151,7 +195,7 @@ async function nhDismiss(issue){
     const reason = prompt('Razón para desestimar #'+issue+' (opcional):') || '';
     if(reason === null) return;
     try{
-        const r = await fetch('/api/needs-human/'+issue+'/dismiss', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({reason})});
+        const r = await fetch('/api/needs-human/'+issue+'/dismiss', {method:'POST', headers:Object.assign({'Content-Type':'application/json'}, nhCsrfHeaders()), body: JSON.stringify({reason})});
         const j = await r.json();
         showToast(j.msg || (j.ok?'Desestimado':'Falló'), j.ok);
         if(typeof runAll === 'function') setTimeout(runAll, 600);
@@ -160,7 +204,7 @@ async function nhDismiss(issue){
 
 async function moveIssue(issue, direction){
     try{
-        const r = await fetch('/api/issue/'+issue+'/'+direction, {method:'POST'});
+        const r = await fetch('/api/issue/'+issue+'/'+direction, {method:'POST', headers: nhCsrfHeaders()});
         const j = await r.json();
         showToast(j.msg || (j.ok?'Movido':'Falló'), j.ok);
         if(typeof runAll === 'function') setTimeout(runAll, 400);
@@ -169,9 +213,9 @@ async function moveIssue(issue, direction){
 
 async function pauseIssue(issue, paused){
     const verb = paused ? 'Reanudar' : 'Pausar';
-    if(!confirm('¿'+verb+' #'+issue+'? '+(paused ? '(quita label blocked:dependencies)' : '(agrega label blocked:dependencies)'))) return;
+    if(!(await inConfirm({ title:verb+' issue', message:(paused ? 'Quita el label blocked:dependencies y vuelve a la cola del pipeline.' : 'Agrega el label blocked:dependencies; el pulpo lo saltea hasta reanudar.'), confirmLabel:verb, danger: !paused, preview:[{label:'Issue', value:'#'+issue},{label:'Acción', value:verb}] }))) return;
     try{
-        const r = await fetch('/api/issue/'+issue+'/'+(paused?'resume':'pause'), {method:'POST'});
+        const r = await fetch('/api/issue/'+issue+'/'+(paused?'resume':'pause'), {method:'POST', headers: nhCsrfHeaders()});
         const j = await r.json();
         showToast(j.msg || (j.ok?(paused?'Reanudado':'Pausado'):'Falló'), j.ok);
         if(typeof runAll === 'function') setTimeout(runAll, 600);
@@ -182,8 +226,34 @@ document.addEventListener('visibilitychange', () => { if(document.visibilityStat
 `;
 }
 
-function pageShell(title, subtitle, bodyHtml, scripts, extraCss = '') {
+// #3726 — pageShell ahora recibe `activeSlug` para marcar la tab activa
+// dentro del <nav class="v3-nav"> que reemplaza al back-link "Operacion".
+// Si el caller no pasa activeSlug, ninguna tab queda activa pero la nav
+// igual se rendera completa (degradacion limpia).
+// #4195 — `opts` opcional (backward-compatible): un satélite migrado a MIZPÁ
+// puede inyectar su propia barra de marca (`opts.brandHtml`) en lugar del
+// `in-header-brand` legacy, y una miga de pan (`opts.breadcrumbHtml`) debajo de
+// la nav. Sin `opts` el shell se comporta igual que antes (sisters no migradas).
+// #4190 — Pipeline usa `opts.brandHtml` para inyectar la marca MIZPÁ completa
+// (logo + tagline + selector multiproyecto), por la misma vía que Equipo (#4195).
+function pageShell(title, subtitle, bodyHtml, scripts, extraCss = '', activeSlug = '', opts = {}) {
     const theme = loadTheme();
+    const spriteInline = loadIconSprite();
+    const navHtml = renderNavTabsSsr(activeSlug);
+    const brandHtml = (opts && opts.brandHtml) || `
+    <div class="in-header-brand">
+      <div class="in-header-logo">i</div>
+      <div>
+        <div class="in-header-title">${title}</div>
+        <div class="in-header-subtitle">${subtitle}</div>
+      </div>
+    </div>`;
+    const breadcrumbHtml = (opts && opts.breadcrumbHtml) || '';
+    // #4240 — Slot opcional para el banner de ola común (② del marco MIZPÁ). Se
+    // inyecta entre el header (①) y la nav (③) para respetar el orden del marco
+    // (idéntico al de la HOME). Backward-compatible: sin `missionHtml` el shell
+    // se comporta igual que antes (satélites no migrados).
+    const missionHtml = (opts && opts.missionHtml) || '';
     return `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -194,6 +264,9 @@ function pageShell(title, subtitle, bodyHtml, scripts, extraCss = '') {
 <style>
 .satellite-frame { max-width: 1600px; margin: 0 auto; padding: 0; }
 .satellite-body { padding: 22px 28px; display: flex; flex-direction: column; gap: 18px; }
+/* #4240 — El banner de ola común (② del marco) vive fuera del .satellite-body
+   (entre header y nav), así que se alinea con el padding horizontal del cuerpo. */
+.satellite-frame > .mz-mission { margin: 18px 28px 0; }
 .in-mode-running { color: var(--in-ok); border-color: var(--in-ok); background: var(--in-ok-soft); }
 .in-mode-paused { color: var(--in-bad); border-color: var(--in-bad); background: var(--in-bad-soft); }
 .in-mode-partial { color: var(--in-warn); border-color: var(--in-warn); background: var(--in-warn-soft); }
@@ -201,438 +274,623 @@ ${extraCss}
 </style>
 </head>
 <body>
+<!-- #3726 — Sprite SVG inline para resolver <use href="#ic-tab-*"> dentro
+     del <nav class="v3-nav">. Oculto con display:none; los simbolos
+     siguen siendo referenciables por id. -->
+<div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">${spriteInline}</div>
 <div class="satellite-frame">
   <header class="in-header">
-    <div class="in-header-brand">
-      <a class="in-back-link" href="/" target="_self">Operación</a>
-      <div class="in-header-logo">i</div>
-      <div>
-        <div class="in-header-title">${title}</div>
-        <div class="in-header-subtitle">${subtitle}</div>
-      </div>
-    </div>
-    <div class="in-header-meta">
-      <span class="in-pill" id="hdr-mode">…</span>
-      <span class="in-clock" id="hdr-clock">…</span>
-    </div>
+    ${brandHtml}
+    ${renderHeaderMetaSsr({ withMode: true })}
   </header>
+  ${missionHtml}
+  ${navHtml}
+  ${breadcrumbHtml}
   <main class="satellite-body">${bodyHtml}</main>
   <footer class="in-footer">
     <span>Refresh independiente · sin flicker</span>
     <span>Intrale V3</span>
   </footer>
 </div>
-<script>${commonHelpers()}\n${scripts}</script>
+<script>${FETCH_CLIENT_JS}\n${CONFIRM_MODAL_JS}\n${commonHelpers()}\n${scripts}\n${headerPillsClientScript()}\n${missionOlaEtaClientScript()}\n${navMoreAutoCloseClientScript()}</script>
 </body>
 </html>`;
 }
 
 // ─────────────────── Equipo ───────────────────
+// #4195 (Ola 7.1) — Rediseño integral MIZPÁ: la pantalla deja de ser un acordeón
+// vacío y pasa a ser la VISTA DE DOTACIÓN del equipo de agentes. Hereda la barra
+// de marca MIZPÁ + nav curada (popover «⋯ Más» con Equipo dentro + miga de pan),
+// un banner de misión en clave operativa (agentes en vivo, roles despiertos/total,
+// tok/min, el más veterano, en enfriamiento + visor de slots de concurrencia),
+// una ficha por agente vivo (rol, issue linkeado, fase, proveedor, tiempo, rebotes
+// y rama, con acciones matar/reiniciar) y el listado completo de roles
+// diferenciando despiertos de dormidos/congelados.
+//
+// Datos: /api/dash/equipo expone { skills, roster, banner, providersBySkill } y
+// /api/dash/active expone los agentes vivos enriquecidos (provider/branch/bounces).
+// Render 100% por DOM (textContent/setAttribute) → XSS-safe (SEC-5). Kill reusa
+// killAgent() (CSRF, SEC-2); reiniciar reusa restartAgent() (mismo endpoint con
+// flag restart). Commander = no cancelable (CA-3); cooldown server-authoritative.
+function renderEquipoBrandBar() {
+    const logoSvg = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">'
+        + '<path d="M12 2.5 5 6v5c0 4.6 3 8 7 9.5 4-1.5 7-4.9 7-9.5V6l-7-3.5Z" stroke="#06121a" stroke-width="1.6" fill="rgba(255,255,255,.16)"/>'
+        + '<path d="M9.5 12.5 11.3 14.3 14.8 10.4" stroke="#06121a" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    return `
+    <div class="in-header-brand">
+      <div class="mz-logo" aria-hidden="true" title="MIZPÁ · atalaya de agentes (Génesis 31:49)">${logoSvg}</div>
+      <div class="mz-id">
+        <div class="mz-name">MIZPÁ</div>
+        <div class="mz-sub">«Que el Señor vigile» · atalaya de agentes</div>
+      </div>
+      <div class="mz-projsel" role="button" tabindex="0"
+           title="Proyecto activo. MIZPÁ es el motor; el proyecto es intercambiable (multiproyecto — selección en evaluación)."
+           aria-label="Proyecto activo: Intrale, 1 de 3">
+        <span class="mz-proj-avatar" aria-hidden="true">i</span>
+        <span class="mz-proj-id">
+          <span class="mz-proj-name">Intrale</span>
+          <span class="mz-proj-state">PROYECTO ACTIVO</span>
+        </span>
+        <span class="mz-proj-badge">1 / 3</span>
+        <span class="mz-proj-caret" aria-hidden="true">▾</span>
+      </div>
+    </div>`;
+}
+
 function renderEquipo() {
+    // Miga de pan: Equipo vive dentro de «⋯ Más» (tab secundario). La nav ya deja
+    // el popover abierto + Equipo marcado vía renderNavTabsSsr('equipo'); la miga
+    // refuerza la ubicación (CA-1).
+    const breadcrumb = `
+  <div class="mz-crumb" aria-label="Ubicación: Más › Equipo">
+    <span class="mz-crumb-sep">⋯ Más</span>
+    <span class="mz-crumb-sep">›</span>
+    <b>👥 Equipo</b>
+    <span class="mz-crumb-desc">· dotación de agentes por rol</span>
+  </div>`;
+
     const body = `
-<section class="in-section">
-  <h2 class="in-section-title"><span class="in-section-title-icon">👥</span>Equipo · carga por skill</h2>
-  <div id="equipo-grid" class="eq-grid"></div>
+<section class="eq2" aria-label="Dotación del equipo de agentes">
+  <!-- Banner de misión -->
+  <div class="eqm" id="eq-banner">
+    <div class="eqm-live">
+      <span class="eqm-live-k">EN VIVO</span>
+      <span class="eqm-live-n" id="eq-live-n">—</span>
+      <span class="eqm-live-u">agentes activos</span>
+    </div>
+    <div class="eqm-text">
+      <div class="eqm-ttl">La dotación trabajando ahora
+        <span class="eqm-badge" id="eq-roles-badge">— / — roles despiertos</span>
+      </div>
+      <div class="eqm-desc">Cada agente es on-demand: nace para una fase, consume tokens mientras corre y se apaga al terminar. Acá ves quién está vivo, en qué issue, con qué proveedor — y podés matar o reiniciar cualquiera individualmente.</div>
+      <div class="eqm-metrics">
+        <div class="eqm-wm"><div class="eqm-wm-l">🔥 QUEMANDO AHORA</div><div class="eqm-wm-v" id="eq-tokmin">—</div><div class="eqm-wm-s">tok/min · ≈ promedio 24h</div></div>
+        <div class="eqm-wm"><div class="eqm-wm-l">⏱ EL MÁS VETERANO</div><div class="eqm-wm-v" id="eq-veteran-v">—</div><div class="eqm-wm-s" id="eq-veteran-s">sin agentes vivos</div></div>
+        <div class="eqm-wm"><div class="eqm-wm-l">❄ EN ENFRIAMIENTO</div><div class="eqm-wm-v" id="eq-cooling">—</div><div class="eqm-wm-s">terminaron, enfriando</div></div>
+      </div>
+    </div>
+    <div class="eqm-slots">
+      <div class="eqm-slots-head">⚡ SLOTS DE CONCURRENCIA <span id="eq-slots-count">—</span></div>
+      <div class="eqm-slots-bars" id="eq-slots-bars"></div>
+      <div class="eqm-slots-note" id="eq-slots-note">Cupos de agentes simultáneos.</div>
+    </div>
+  </div>
+
+  <!-- Resumen + búsqueda -->
+  <div class="eq2-bar">
+    <div class="eq2-chips">
+      <div class="eq2-chip"><b id="eq-chip-vivos">—</b> vivos</div>
+      <div class="eq2-chip"><b id="eq-chip-cool">—</b> enfriando</div>
+      <div class="eq2-chip"><b id="eq-chip-idle">—</b> ociosos</div>
+      <div class="eq2-chip eq2-chip-total"><b id="eq-chip-total">—</b> roles totales</div>
+    </div>
+    <input type="search" id="eq-search" class="eq2-search" placeholder="Buscar por rol, #issue o proveedor…" aria-label="Buscar rol, issue o proveedor">
+  </div>
+
+  <!-- Roster por categoría -->
+  <div id="eq-roster" class="eq2-roster"><div class="eq2-empty">Cargando dotación…</div></div>
 </section>`;
+
     const css = `
-.eq-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
-.eq-card { background: var(--in-bg-3); border: 1px solid var(--in-border); border-radius: var(--in-radius-sm); padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; transition: border-color 0.2s; }
-.eq-card.busy { border-color: var(--in-accent); }
-.eq-card-head { display: flex; align-items: center; gap: 10px; }
-.eq-avatar { width: 32px; height: 32px; border-radius: 9px; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 16px; }
-.eq-name { font-weight: 600; font-size: 13px; }
-.eq-load { font-size: 12px; color: var(--in-fg-dim); margin-left: auto; font-variant-numeric: tabular-nums; }
-.eq-bar { height: 6px; border-radius: 3px; background: var(--in-bg); overflow: hidden; }
-.eq-bar > span { display: block; height: 100%; background: var(--in-fg-dim); transition: width 0.4s, background 0.2s; }
-.eq-kill { background: transparent; border: 1px solid var(--in-bad); color: var(--in-bad); border-radius: 6px; padding: 3px 9px; font-size: 11px; cursor: pointer; transition: background 0.15s; margin-left: 6px; }
-.eq-kill:hover { background: var(--in-bad-soft); }
-.eq-card.busy .eq-kill { display: inline-block; }
-.eq-kill { display: none; }`;
+.eq2 { display: flex; flex-direction: column; gap: 16px; }
+.eq2-empty { color: var(--in-fg-dim); font-size: 13px; padding: 18px; text-align: center; }
+
+/* Banner de misión */
+.eqm { display: flex; align-items: stretch; gap: 20px; position: relative; overflow: hidden; flex-wrap: wrap;
+  background: linear-gradient(110deg, rgba(52,217,224,.14), rgba(124,92,255,.08) 45%, transparent 75%), linear-gradient(180deg, var(--in-bg-2,#11151E), var(--in-bg-3,#141925));
+  border: 1px solid rgba(52,217,224,.22); border-radius: 16px; padding: 18px 22px; }
+.eqm-live { display: flex; flex-direction: column; align-items: center; justify-content: center; min-width: 104px; padding: 12px 16px; border-radius: 14px; flex: none;
+  background: linear-gradient(135deg, rgba(52,217,224,.22), rgba(124,92,255,.16)); border: 1px solid rgba(52,217,224,.3); }
+.eqm-live-k { font-size: 10px; font-weight: 800; letter-spacing: 1.5px; color: #9fe9ee; }
+.eqm-live-n { font-size: 38px; font-weight: 800; color: #bff3f6; line-height: 1; font-variant-numeric: tabular-nums; }
+.eqm-live-u { font-size: 10px; color: var(--in-fg-dim,#8A93A6); font-weight: 600; margin-top: 4px; letter-spacing: .3px; }
+.eqm-text { flex: 1; min-width: 280px; }
+.eqm-ttl { font-size: 19px; font-weight: 800; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.eqm-badge { font-size: 11px; color: var(--brand-cyan,#34D9E0); background: rgba(52,217,224,.12); border: 1px solid rgba(52,217,224,.3); padding: 3px 9px; border-radius: 20px; font-weight: 700; letter-spacing: .3px; }
+.eqm-desc { font-size: 13px; color: var(--in-fg-dim,#8A93A6); margin-top: 5px; max-width: 620px; line-height: 1.45; }
+.eqm-metrics { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.eqm-wm { flex: 1; min-width: 150px; background: rgba(255,255,255,.035); border: 1px solid var(--in-border,rgba(255,255,255,.07)); border-radius: 11px; padding: 9px 12px; }
+.eqm-wm-l { font-size: 9.5px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#5B6376); }
+.eqm-wm-v { font-size: 18px; font-weight: 800; margin-top: 3px; line-height: 1; font-variant-numeric: tabular-nums; }
+.eqm-wm-s { font-size: 10px; color: var(--in-fg-dim,#5B6376); margin-top: 4px; }
+.eqm-slots { min-width: 230px; flex: 1; display: flex; flex-direction: column; gap: 8px; background: rgba(255,255,255,.03); border: 1px solid var(--in-border,rgba(255,255,255,.07)); border-radius: 12px; padding: 12px 14px; }
+.eqm-slots-head { font-size: 10px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#8A93A6); display: flex; justify-content: space-between; gap: 8px; }
+.eqm-slots-head span { color: #bff3f6; }
+.eqm-slots-bars { display: flex; gap: 7px; }
+.eqm-slot { flex: 1; height: 26px; border-radius: 7px; border: 1px solid var(--in-border); background: var(--in-bg); }
+.eqm-slot.busy { background: linear-gradient(135deg,#34D9E0,#7C5CFF); border-color: rgba(52,217,224,.5); }
+.eqm-slots-note { font-size: 10px; color: var(--in-fg-dim,#5B6376); line-height: 1.4; }
+
+/* Resumen + búsqueda */
+.eq2-bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.eq2-chips { display: flex; gap: 10px; flex-wrap: wrap; }
+.eq2-chip { font-size: 12px; color: var(--in-fg-dim); background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 999px; padding: 6px 13px; }
+.eq2-chip b { color: var(--in-fg); font-variant-numeric: tabular-nums; font-weight: 800; }
+.eq2-chip-total b { color: var(--brand-cyan,#34D9E0); }
+.eq2-search { margin-left: auto; flex: 1; min-width: 240px; max-width: 420px; background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 10px; padding: 9px 13px; color: var(--in-fg); font-size: 13px; }
+.eq2-search:focus-visible { outline: 2px solid var(--in-accent); outline-offset: 1px; }
+
+/* Roster por categoría */
+.eq2-roster { display: flex; flex-direction: column; gap: 14px; }
+.eq2-cat-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.eq2-cat-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.eq2-cat-name { font-size: 12px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; }
+.eq2-cat-meta { font-size: 11px; color: var(--in-fg-dim); background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 999px; padding: 2px 10px; }
+.eq2-cat-roles { font-size: 11px; color: var(--in-fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.eq2-cat-list { display: flex; flex-direction: column; gap: 8px; }
+
+/* Ficha de agente vivo */
+.eq2-card { display: flex; gap: 14px; background: var(--in-bg-3); border: 1px solid var(--in-border); border-left: 3px solid var(--in-ok); border-radius: var(--in-radius-sm); padding: 13px 15px; }
+.eq2-card-id { display: flex; flex-direction: column; gap: 6px; min-width: 168px; flex: none; }
+.eq2-card-persona { display: flex; align-items: center; gap: 9px; }
+.eq2-avatar { width: 34px; height: 34px; border-radius: 9px; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 17px; flex: none; }
+.eq2-card-name { font-size: 14px; font-weight: 700; }
+.eq2-card-tag { font-size: 10.5px; color: var(--in-fg-dim); }
+.eq2-card-pid { font-size: 10px; color: var(--in-fg-soft); font-variant-numeric: tabular-nums; word-break: break-all; }
+.eq2-state-live { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 700; color: var(--in-ok); border: 1px solid var(--in-ok); background: var(--in-ok-soft); border-radius: 999px; padding: 2px 9px; width: fit-content; text-transform: uppercase; letter-spacing: .5px; }
+.eq2-state-live::before { content: "●"; animation: eqPulse 1.6s ease-in-out infinite; }
+@keyframes eqPulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+.eq2-card-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 7px; }
+.eq2-card-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.eq2-issue { color: #58a6ff; font-weight: 800; font-size: 13px; text-decoration: none; }
+.eq2-issue:hover { text-decoration: underline; }
+.eq2-fase { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; padding: 2px 8px; border-radius: 9px; background: var(--in-bg); color: var(--in-fg-dim); border: 1px solid var(--in-border); }
+.eq2-card-title { font-size: 13px; color: var(--in-fg); }
+.eq2-card-facts { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--in-fg-dim); align-items: center; }
+.eq2-fact { display: inline-flex; align-items: center; gap: 5px; font-variant-numeric: tabular-nums; }
+.eq2-fact b { color: var(--in-fg); font-weight: 600; }
+.eq2-prov-dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+.eq2-rebotes { color: var(--in-warn); }
+.eq2-card-prog { display: flex; align-items: center; gap: 9px; }
+.eq2-bar { flex: 1; max-width: 240px; height: 6px; border-radius: 3px; background: var(--in-bg); overflow: hidden; }
+.eq2-bar > span { display: block; height: 100%; background: linear-gradient(90deg,#34D9E0,#7C5CFF); transition: width .4s; }
+.eq2-bar.indet > span { width: 30%; animation: eqIndet 1.2s ease-in-out infinite; }
+@keyframes eqIndet { 0%{margin-left:-30%} 100%{margin-left:100%} }
+.eq2-pct { font-size: 11px; color: #79c0ff; font-variant-numeric: tabular-nums; min-width: 34px; }
+.eq2-card-actions { display: flex; flex-direction: column; gap: 7px; flex: none; align-items: stretch; min-width: 124px; }
+.eq2-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; border-radius: 8px; padding: 7px 12px; cursor: pointer; text-decoration: none; border: 1px solid var(--in-border); background: var(--in-bg-2); color: var(--in-fg); }
+.eq2-btn:hover { border-color: var(--in-accent); }
+.eq2-btn-kill { color: #fff; font-weight: 700; border: none; background: linear-gradient(135deg,#f85149,#d1242f); }
+.eq2-btn-kill:hover { filter: brightness(1.08); }
+.eq2-btn-row { display: flex; gap: 7px; }
+.eq2-btn-row .eq2-btn { flex: 1; }
+.eq2-protected { display: inline-flex; align-items: center; justify-content: center; font-size: 11px; color: #c9b6ff; border: 1px solid #a371f7; border-radius: 8px; padding: 7px 10px; }
+
+/* Fila de rol dormido / congelado */
+.eq2-idle { display: flex; align-items: center; gap: 12px; background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: var(--in-radius-sm); padding: 10px 15px; }
+.eq2-idle .eq2-avatar { width: 30px; height: 30px; font-size: 15px; opacity: .85; }
+.eq2-idle-id { display: flex; flex-direction: column; }
+.eq2-idle-name { font-size: 13px; font-weight: 700; }
+.eq2-idle-tag { font-size: 11px; color: var(--in-fg-dim); }
+.eq2-idle-badge { margin-left: auto; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; border-radius: 999px; padding: 3px 11px; }
+.eq2-badge-idle { color: var(--in-fg-dim); border: 1px solid var(--in-border); background: var(--in-bg); }
+.eq2-badge-frozen { color: #d2a86a; border: 1px solid #6b5526; background: rgba(210,168,106,.1); }
+.eq2-hidden { display: none !important; }`;
+
     const script = `
-// Cachea agents activos para que el botón × del skill sepa a quién matar.
-let _activeAgents = [];
-async function refreshActiveAgents(){
-    const d = await fetchJson('/api/dash/active');
-    if(d) _activeAgents = d.agents || [];
+// === Equipo MIZPÁ (#4195) — vista de dotación =================================
+const GH_ISSUE_BASE = 'https://github.com/intrale/platform/issues/';
+let _eq = { roster: null, banner: null, providersBySkill: {}, skills: {} };
+let _agentsBySkill = {};
+let _allAgents = [];
+
+function fmtModel(model){
+    if(!model) return '';
+    return String(model).replace(/^claude-/,'').replace(/^gpt-/,'gpt ').replace(/-/g,' ');
+}
+function agentProgress(durationMs, etaMs){
+    if(!etaMs || etaMs <= 0) return { pct: 0, indeterminate: true };
+    return { pct: Math.min(100, Math.round((durationMs/etaMs)*100)), indeterminate: false };
+}
+function roleMetaFor(skill){
+    const r = (_eq.roster && _eq.roster._bySkill) ? _eq.roster._bySkill[skill] : null;
+    if(r) return r;
+    return { skill: skill, name: skill, tagline: '', icon: '⚙', color: '#8b949e', state: 'idle', liveCount: 0, max: 0 };
 }
 
-async function killSkillFromCard(skill){
-    if(!_activeAgents.length) await refreshActiveAgents();
-    const agents = _activeAgents.filter(a => a.skill === skill);
-    if(!agents.length){ showToast('Sin agentes '+skill+' corriendo', false); return; }
-    await killSkillGroup(skill, agents);
-}
-
-async function tickEquipo(){
-    await refreshActiveAgents();
-    const d = await fetchJson('/api/dash/equipo');
-    if(!d) return;
-    const grid = document.getElementById('equipo-grid');
-    if(!grid) return;
-    const seen = new Set();
-    for(const sk of (d.skills || [])){
-        seen.add(sk.skill);
-        let card = grid.querySelector('[data-skill="'+sk.skill+'"]');
-        if(!card){
-            card = document.createElement('div');
-            card.className = 'eq-card';
-            card.dataset.skill = sk.skill;
-            card.innerHTML = '<div class="eq-card-head"><span class="eq-avatar"></span><span class="eq-name"></span><span class="eq-load"></span><button class="eq-kill" title="Cancelar agentes de este skill">✕</button></div><div class="eq-bar"><span></span></div>';
-            card.querySelector('.eq-kill').addEventListener('click', () => killSkillFromCard(sk.skill));
-            grid.appendChild(card);
-        }
-        card.classList.toggle('busy', sk.running > 0);
-        const av = card.querySelector('.eq-avatar');
-        av.style.background = SKILL_COLORS[sk.skill] || '#8b949e';
-        av.textContent = SKILL_ICONS[sk.skill] || '⚙';
-        card.querySelector('.eq-name').textContent = sk.skill;
-        card.querySelector('.eq-load').textContent = sk.running + '/' + sk.max;
-        const bar = card.querySelector('.eq-bar > span');
-        bar.style.width = Math.min(100, sk.utilization * 100) + '%';
-        bar.style.background = sk.utilization >= 1 ? 'var(--in-bad)' : sk.utilization > 0 ? 'var(--in-accent)' : 'var(--in-fg-soft)';
+// --- Banner ---------------------------------------------------------------
+function renderBanner(){
+    const b = _eq.banner;
+    if(!b) return;
+    setText('eq-live-n', b.agentsLive);
+    setText('eq-roles-badge', b.rolesAwake + ' / ' + b.rolesTotal + ' roles despiertos');
+    setText('eq-tokmin', b.tokPerMin != null ? fmtNum(b.tokPerMin) : '—');
+    if(b.veteran){
+        setText('eq-veteran-v', fmtDur(b.veteran.durationMs));
+        setText('eq-veteran-s', '#' + (b.veteran.issue||'?') + ' · ' + (b.veteran.name||b.veteran.skill||''));
+    } else {
+        setText('eq-veteran-v', '—'); setText('eq-veteran-s', 'sin agentes vivos');
     }
-    for(const card of [...grid.children]){ if(!seen.has(card.dataset.skill)) card.remove(); }
+    setText('eq-cooling', b.coolingCount);
+    // Visor de slots.
+    const slots = b.slots || { used: 0, max: 0 };
+    setText('eq-slots-count', slots.used + ' / ' + slots.max);
+    const bars = document.getElementById('eq-slots-bars');
+    if(bars){
+        bars.innerHTML = '';
+        for(let i=0;i<slots.max;i++){
+            const s = document.createElement('span');
+            s.className = 'eqm-slot' + (i < slots.used ? ' busy' : '');
+            s.title = i < slots.used ? 'Cupo ocupado' : 'Cupo libre';
+            bars.appendChild(s);
+        }
+    }
+    const note = document.getElementById('eq-slots-note');
+    if(note){
+        note.textContent = slots.used >= slots.max && slots.max > 0
+            ? 'Límite alcanzado — los listos esperan turno. El cupo se libera al apagarse un agente.'
+            : (slots.max - slots.used) + ' cupo' + ((slots.max - slots.used)===1?'':'s') + ' libre' + ((slots.max - slots.used)===1?'':'s') + ' para nuevos agentes.';
+    }
+    // Chips.
+    let idle = 0;
+    if(_eq.roster){ for(const c of _eq.roster.categories) for(const r of c.roles) if(r.state==='idle') idle++; }
+    setText('eq-chip-vivos', b.agentsLive);
+    setText('eq-chip-cool', b.coolingCount);
+    setText('eq-chip-idle', idle);
+    setText('eq-chip-total', b.rolesTotal);
 }
-const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickEquipo, ms: 5000 }];
+
+// --- Ficha de agente vivo -------------------------------------------------
+function buildFicha(a){
+    const meta = roleMetaFor(a.skill);
+    const card = document.createElement('div'); card.className = 'eq2-card';
+    card.dataset.search = ((meta.name||a.skill) + ' ' + a.skill + ' #' + a.issue + ' ' + (a.provider && a.provider.label || '') + ' ' + (a.title||'')).toLowerCase();
+
+    // Columna identidad.
+    const id = document.createElement('div'); id.className = 'eq2-card-id';
+    const persona = document.createElement('div'); persona.className = 'eq2-card-persona';
+    const av = document.createElement('span'); av.className = 'eq2-avatar';
+    av.style.background = meta.color || '#8b949e'; av.textContent = meta.icon || '⚙'; persona.appendChild(av);
+    const pid = document.createElement('div');
+    const nm = document.createElement('div'); nm.className = 'eq2-card-name'; nm.textContent = meta.name || a.skill; pid.appendChild(nm);
+    const tg = document.createElement('div'); tg.className = 'eq2-card-tag'; tg.textContent = meta.tagline || ''; pid.appendChild(tg);
+    persona.appendChild(pid); id.appendChild(persona);
+    const live = document.createElement('span'); live.className = 'eq2-state-live'; live.textContent = 'trabajando'; id.appendChild(live);
+    const branchEl = document.createElement('div'); branchEl.className = 'eq2-card-pid';
+    branchEl.textContent = 'rama ' + (a.branch || '—'); branchEl.title = a.branch || ''; id.appendChild(branchEl);
+    card.appendChild(id);
+
+    // Columna principal.
+    const main = document.createElement('div'); main.className = 'eq2-card-main';
+    const head = document.createElement('div'); head.className = 'eq2-card-head';
+    const issue = document.createElement('a'); issue.className = 'eq2-issue';
+    issue.textContent = '#' + a.issue + ' ↗';
+    if(/^[0-9]+$/.test(String(a.issue))){ issue.href = GH_ISSUE_BASE + a.issue; issue.target = '_blank'; issue.rel = 'noopener noreferrer'; }
+    head.appendChild(issue);
+    const fase = document.createElement('span'); fase.className = 'eq2-fase'; fase.textContent = 'fase · ' + (a.fase||''); head.appendChild(fase);
+    main.appendChild(head);
+    if(a.title){ const t = document.createElement('div'); t.className = 'eq2-card-title'; t.textContent = a.title; main.appendChild(t); }
+
+    const facts = document.createElement('div'); facts.className = 'eq2-card-facts';
+    // Proveedor.
+    const prov = document.createElement('span'); prov.className = 'eq2-fact';
+    const pdot = document.createElement('span'); pdot.className = 'eq2-prov-dot';
+    pdot.style.background = (meta.color || '#8b949e'); prov.appendChild(pdot);
+    const pl = a.provider ? (a.provider.label + (a.provider.model ? ' ' + fmtModel(a.provider.model) : '')) : 'proveedor —';
+    const provTxt = document.createElement('b'); provTxt.textContent = pl; prov.appendChild(provTxt);
+    prov.title = 'Proveedor asignado al rol (agent-models.json)'; facts.appendChild(prov);
+    // Tiempo en fase.
+    const dur = document.createElement('span'); dur.className = 'eq2-fact'; dur.textContent = '⏱ ' + fmtDur(a.durationMs||0); dur.title = 'Tiempo en fase'; facts.appendChild(dur);
+    // Rebotes.
+    const reb = document.createElement('span'); reb.className = 'eq2-fact' + ((a.bounces||0) > 0 ? ' eq2-rebotes' : '');
+    reb.textContent = '↩ ' + (a.bounces||0) + ' rebote' + ((a.bounces||0)===1?'':'s'); reb.title = 'Rebotes acumulados del issue'; facts.appendChild(reb);
+    main.appendChild(facts);
+
+    // Progreso.
+    const prog = agentProgress(a.durationMs||0, a.etaMs);
+    const progRow = document.createElement('div'); progRow.className = 'eq2-card-prog';
+    const bar = document.createElement('span'); bar.className = 'eq2-bar' + (prog.indeterminate ? ' indet' : '');
+    const fill = document.createElement('span'); if(!prog.indeterminate) fill.style.width = prog.pct + '%'; bar.appendChild(fill);
+    progRow.appendChild(bar);
+    const pct = document.createElement('span'); pct.className = 'eq2-pct'; pct.textContent = prog.indeterminate ? '—' : (prog.pct + '%'); progRow.appendChild(pct);
+    main.appendChild(progRow);
+    card.appendChild(main);
+
+    // Columna acciones.
+    const actions = document.createElement('div'); actions.className = 'eq2-card-actions';
+    const cooldown = a.cooldown || null;
+    if(cooldown){
+        const cd = document.createElement('span'); cd.className = 'eq2-protected eq2-ag-cooldown';
+        cd.setAttribute('data-cooldown-until', cooldown.cooldownUntil || '');
+        cd.textContent = '⏳ cooldown · ' + (cooldown.failures||0) + ' fallos';
+        actions.appendChild(cd);
+    } else {
+        const kill = document.createElement('button'); kill.className = 'eq2-btn eq2-btn-kill';
+        kill.textContent = '⏹ Matar agente'; kill.title = 'Cancelar este agente';
+        kill.addEventListener('click', () => killAgent(a.issue, a.skill, a.pipeline, a.fase, a.durationMs));
+        actions.appendChild(kill);
+        const restart = document.createElement('button'); restart.className = 'eq2-btn';
+        restart.textContent = '↻ Reiniciar'; restart.title = 'Reiniciar este agente (lo devuelve a la cola para relanzarse)';
+        restart.addEventListener('click', () => restartAgent(a.issue, a.skill, a.pipeline, a.fase, a.durationMs));
+        actions.appendChild(restart);
+    }
+    const row = document.createElement('div'); row.className = 'eq2-btn-row';
+    const issueBtn = document.createElement('a'); issueBtn.className = 'eq2-btn'; issueBtn.textContent = '↗ Issue';
+    if(/^[0-9]+$/.test(String(a.issue))){ issueBtn.href = GH_ISSUE_BASE + a.issue; issueBtn.target = '_blank'; issueBtn.rel = 'noopener noreferrer'; }
+    row.appendChild(issueBtn);
+    if(a.hasLog && a.logFile){
+        const log = document.createElement('a'); log.className = 'eq2-btn';
+        log.href = '/logs/view/' + encodeURIComponent(a.logFile) + '?live=1'; log.target = '_blank'; log.rel = 'noopener noreferrer';
+        log.textContent = '📄 Logs'; row.appendChild(log);
+    }
+    actions.appendChild(row);
+    card.appendChild(actions);
+    return card;
+}
+
+// --- Fila de rol dormido / congelado --------------------------------------
+function buildIdleRow(role){
+    const row = document.createElement('div'); row.className = 'eq2-idle';
+    row.dataset.search = (role.name + ' ' + role.skill).toLowerCase();
+    const av = document.createElement('span'); av.className = 'eq2-avatar';
+    av.style.background = role.color || '#8b949e'; av.textContent = role.icon || '⚙'; row.appendChild(av);
+    const idEl = document.createElement('div'); idEl.className = 'eq2-idle-id';
+    const nm = document.createElement('div'); nm.className = 'eq2-idle-name'; nm.textContent = role.name || role.skill; idEl.appendChild(nm);
+    const tg = document.createElement('div'); tg.className = 'eq2-idle-tag'; tg.textContent = role.tagline || ''; idEl.appendChild(tg);
+    row.appendChild(idEl);
+    const badge = document.createElement('span');
+    if(role.state === 'frozen'){ badge.className = 'eq2-idle-badge eq2-badge-frozen'; badge.textContent = 'congelado'; badge.title = 'Skill congelado · reactivable por issue'; }
+    else { badge.className = 'eq2-idle-badge eq2-badge-idle'; badge.textContent = 'ocioso'; badge.title = 'Sin tarea asignada'; }
+    row.appendChild(badge);
+    return row;
+}
+
+// --- Roster por categoría -------------------------------------------------
+function renderRoster(){
+    const cont = document.getElementById('eq-roster');
+    if(!cont) return;
+    if(!_eq.roster || !_eq.roster.categories || _eq.roster.categories.length === 0){
+        cont.innerHTML = '<div class="eq2-empty">Sin roles configurados</div>';
+        return;
+    }
+    cont.innerHTML = '';
+    for(const cat of _eq.roster.categories){
+        const block = document.createElement('div'); block.className = 'eq2-cat';
+        const head = document.createElement('div'); head.className = 'eq2-cat-head';
+        const dot = document.createElement('span'); dot.className = 'eq2-cat-dot'; dot.style.background = cat.color || '#8b949e'; head.appendChild(dot);
+        const name = document.createElement('span'); name.className = 'eq2-cat-name'; name.textContent = cat.label; head.appendChild(name);
+        const m = document.createElement('span'); m.className = 'eq2-cat-meta'; m.textContent = cat.liveCount + ' vivo' + (cat.liveCount===1?'':'s') + ' · ' + cat.total + ' roles'; head.appendChild(m);
+        const roles = document.createElement('span'); roles.className = 'eq2-cat-roles';
+        roles.textContent = cat.roles.map(r => r.skill).join(', '); roles.title = roles.textContent; head.appendChild(roles);
+        block.appendChild(head);
+
+        const list = document.createElement('div'); list.className = 'eq2-cat-list';
+        for(const role of cat.roles){
+            if(role.state === 'live'){
+                const agents = _agentsBySkill[role.skill] || [];
+                if(agents.length){ for(const a of agents) list.appendChild(buildFicha(a)); }
+                else { list.appendChild(buildIdleRow(role)); } // defensivo: vivo sin agente listado
+            } else {
+                list.appendChild(buildIdleRow(role));
+            }
+        }
+        block.appendChild(list);
+        cont.appendChild(block);
+    }
+    applySearch();
+}
+
+// --- Búsqueda -------------------------------------------------------------
+function applySearch(){
+    const input = document.getElementById('eq-search');
+    const q = (input && input.value || '').trim().toLowerCase();
+    document.querySelectorAll('#eq-roster [data-search]').forEach(el => {
+        const match = !q || el.dataset.search.indexOf(q) !== -1;
+        el.classList.toggle('eq2-hidden', !match);
+    });
+    // Ocultar categorías sin coincidencias visibles.
+    document.querySelectorAll('#eq-roster .eq2-cat').forEach(cat => {
+        const visible = cat.querySelectorAll('[data-search]:not(.eq2-hidden)').length;
+        cat.classList.toggle('eq2-hidden', q && visible === 0);
+    });
+}
+
+// --- Cooldown countdown ---------------------------------------------------
+function tickCooldownCountdowns(){
+    const now = Date.now();
+    document.querySelectorAll('.eq2-ag-cooldown[data-cooldown-until]').forEach(el => {
+        const until = Date.parse(el.getAttribute('data-cooldown-until'));
+        if(!until || isNaN(until)) return;
+        const leftMs = until - now;
+        const failsPart = el.textContent.split(' · ')[1] || '';
+        if(leftMs <= 0){ el.textContent = '⏳ por expirar · ' + failsPart; return; }
+        const s = Math.floor(leftMs/1000), mm = Math.floor(s/60), ss = s%60;
+        el.textContent = '⏳ ' + mm + ':' + (ss<10?'0':'') + ss + ' · ' + failsPart;
+    });
+}
+
+// --- Reiniciar agente -----------------------------------------------------
+async function restartAgent(issue, skill, pipeline, fase, durationMs){
+    const preview = [{label:'Skill', value:skill},{label:'Issue', value:'#'+issue}];
+    if(fase) preview.push({label:'Fase', value:fase});
+    if(durationMs != null) preview.push({label:'Tiempo en fase', value:fmtDur(durationMs)});
+    if(!(await inConfirm({ title:'Reiniciar agente', message:'Se cancela el agente en curso y se devuelve a la cola para que el Pulpo lo relance.', confirmLabel:'Reiniciar agente', preview:preview }))) return;
+    try{
+        const r = await killAgentPost({issue, skill, pipeline, fase, restart:true});
+        const j = await r.json();
+        showToast(j.msg || (j.ok?'Agente reiniciado':'Falló el reinicio'), j.ok);
+        if(typeof runAll === 'function') setTimeout(runAll, 600);
+    } catch(e){ showToast('Error: '+e.message, false); }
+}
+
+// --- Polling --------------------------------------------------------------
+function indexRoster(roster){
+    if(!roster) return;
+    roster._bySkill = {};
+    for(const c of roster.categories) for(const r of c.roles) roster._bySkill[r.skill] = r;
+}
+async function tickEquipo(){
+    const e = await fetchJson('/api/dash/equipo');
+    if(e){ _eq = { roster: e.roster, banner: e.banner, providersBySkill: e.providersBySkill||{}, skills: e.skills||[] }; indexRoster(_eq.roster); }
+    const a = await fetchJson('/api/dash/active');
+    if(a){
+        _allAgents = (a.agents||[]).filter(x => !(x.observational === true || x.cancelable === false));
+        _agentsBySkill = {};
+        for(const ag of _allAgents){ (_agentsBySkill[ag.skill] = _agentsBySkill[ag.skill] || []).push(ag); }
+    }
+    renderBanner();
+    renderRoster();
+}
+
+// #4240 — Hidratación del banner de ola común (② del marco). El SSR llega neutro
+// (igual que en la HOME); este tick espeja /api/dash/waves a los IDs mission-*
+// del helper compartido renderMissionBanner. Defensivo: cualquier dato ausente
+// degrada a neutro sin romper el resto de la pantalla.
+async function tickEquipoMission(){
+    const d = await fetchJson('/api/dash/waves');
+    if(!d) return;
+    try {
+        const wave = d.active_wave;
+        if(!wave){
+            setText('mission-wave-num', '—');
+            setText('mission-wave-name', 'Sin ola activa');
+            setText('mission-wave-desc', 'Esperando la planificación de la ola activa.');
+            return;
+        }
+        if(Number.isFinite(wave.number)) setText('mission-wave-num', String(wave.number));
+        setText('mission-wave-name', wave.name ? ('Ola ' + wave.number + ' · ' + wave.name) : ('Ola ' + wave.number));
+        setText('mission-wave-desc', wave.goal || wave.description || ('Issues de la ola ' + wave.number + ' en curso.'));
+        const tag = document.getElementById('mission-wave-tag');
+        if(tag) tag.style.display = wave.isLast ? '' : 'none';
+        const issues = Array.isArray(wave.issues) ? wave.issues : [];
+        let done=0, active=0, blocked=0, queue=0;
+        for(const it of issues){
+            const s = it && it.status;
+            if(s === 'completed') done++;
+            else if(s === 'in-progress') active++;
+            else if(s === 'blocked') blocked++;
+            else queue++;
+        }
+        const total = issues.length || 0;
+        // #4296 — avance % lo hidrata el accessor compartido (/api/dash/ola-eta);
+        // acá sólo leyenda/barras/entregados desde los conteos de la ola.
+        setText('mission-leg-done', String(done));
+        setText('mission-leg-active', String(active));
+        setText('mission-leg-blocked', String(blocked));
+        setText('mission-leg-queue', String(queue));
+        // #4452 — la barra de avance (#mission-bar-progress) la hidrata
+        // __applyMissionOlaEta desde avancePct; NO se rellena por distribución.
+        // #4451 — ENTREGADOS lee el entero autoritativo del server (mismo origen
+        // que el avance del roadmap, computeClosedSet). Fallback al conteo
+        // client-side "done" por back-compat con payloads sin el campo.
+        const delivered = Number.isInteger(wave.delivered) ? wave.delivered : done;
+        const dv = document.getElementById('mission-delivered-value');
+        if(dv) dv.innerHTML = delivered + '<span class="mz-wm-u"> / ' + total + '</span>';
+        const dsub = document.getElementById('mission-delivered-sub');
+        if(dsub) dsub.textContent = Math.max(0, total-delivered) + ' restantes';
+        // #4296 — velocidad (%/h) y ETA los hidrata el accessor compartido desde
+        // /api/dash/ola-eta (ritmo determinístico de la ola), no desde openedAt.
+    } catch(_) {}
+}
+
+document.addEventListener('input', (ev) => { if(ev.target && ev.target.id === 'eq-search') applySearch(); });
+
+const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickEquipo, ms: 5000 }, { fn: tickEquipoMission, ms: 30000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
-for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('Equipo', 'Carga y disponibilidad por skill', body, script, css);
+for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }
+setInterval(tickCooldownCountdowns, 1000);`;
+
+    // #4240 — Marco común MIZPÁ: ① cabecera de marca (renderEquipoBrandBar, mismo
+    // markup/clases `.mz-*` del theme.css que el resto de las pantallas), ② banner
+    // de ola común (renderMissionBanner compartido de la HOME, vía `missionHtml`),
+    // ③ barra de accesos (renderNavTabsSsr('equipo'), ya inyectada por pageShell).
+    // El contenido propio de EQUIPO (`.eq2`) queda debajo del marco (CA-4). El
+    // banner de ola se sirve neutro en SSR (igual que la HOME) y lo hidrata
+    // tickEquipoMission() desde /api/dash/waves (CA-2/CA-6).
+    const missionHtml = (homeView && typeof homeView.renderMissionBanner === 'function')
+        ? homeView.renderMissionBanner()
+        : '';
+    return pageShell('Equipo', 'Dotación de agentes · MIZPÁ', body, script, css, 'equipo', {
+        brandHtml: renderEquipoBrandBar(),
+        missionHtml,
+        breadcrumbHtml: breadcrumb,
+    });
 }
 
 // ─────────────────── Pipeline ───────────────────
 function renderPipeline() {
-    // #3045 — Toggle de filtro "solo issues habilitados" (allowlist de la
-    // pausa parcial). Markup accesible (role=switch, aria-checked, foco
-    // visible). Hidden por default — refreshAllowlistToggleVisibility lo
-    // muestra cuando pipelineModeState.mode === 'partial_pause'.
+    // #4190 (Ola 7.1) — Rediseño integral MIZPÁ. La pantalla se reorganiza en
+    // DOS bloques (Flujo de fases + Issues por fase), con marca + selector +
+    // banner de misión consistentes con la HOME (#4189). El render concreto lo
+    // produce el módulo views/dashboard/pipeline-redesign.js. Si el módulo no
+    // cargó, se degrada al board legacy (defensa en profundidad — CA-A3).
+    if (!pipelineRedesign) return renderPipelineLegacy();
+
+    const brandHtml = pipelineRedesign.renderBrandBarPipeline();
+    const body = pipelineRedesign.renderPipelineRedesignBody();
+    const css = pipelineRedesign.PIPELINE_REDESIGN_CSS;
+    const script = pipelineRedesign.pipelineRedesignClientScript();
+    return pageShell('Pipeline', 'Issues por fase · centro de mando MIZPÁ', body, script, css, 'pipeline', { brandHtml });
+}
+
+// Board legacy (pre-#4190) — fallback si el módulo de rediseño no carga. Misma
+// hidratación client-side sobre /api/dash/pipeline; columna por fase con scroll
+// horizontal. Se conserva sólo como red de seguridad.
+function renderPipelineLegacy() {
     const body = `
 <section class="in-section">
   <div class="pl-section-head">
     <h2 class="in-section-title"><span class="in-section-title-icon">🔄</span>Pipeline · issues por fase</h2>
-    <div class="pl-allowlist-toggle" id="pl-allowlist-toggle" role="switch"
-         aria-checked="false" tabindex="0"
-         title="Mostrar solo los issues incluidos en la pausa parcial activa"
-         style="display:none">
-      <span class="pl-toggle-track"><span class="pl-toggle-thumb"></span></span>
-      <span class="pl-toggle-label">Solo issues habilitados</span>
-    </div>
   </div>
   <div id="pipeline-board" class="pl-board"></div>
+  <div id="pipeline-wave-band"></div>
 </section>`;
     const css = `
-/* #3045 — Header de la sección con título a la izquierda y toggle a la derecha. */
-.pl-section-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
-.pl-section-head .in-section-title { margin: 0; }
-.pl-allowlist-toggle {
-    margin-left: auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 11px;
-    color: var(--in-fg-dim);
-    cursor: pointer;
-    user-select: none;
-    border-radius: 999px;
-    padding: 4px 8px;
-    transition: color 0.15s, background 0.15s;
-}
-.pl-allowlist-toggle:hover { color: var(--in-fg); background: var(--in-bg-3); }
-.pl-allowlist-toggle:focus-visible { outline: 2px solid var(--in-accent); outline-offset: 2px; }
-.pl-allowlist-toggle[aria-checked="true"] { color: var(--in-ok); }
-.pl-allowlist-toggle .pl-toggle-track {
-    width: 28px; height: 14px;
-    background: var(--in-bg-3);
-    border: 1px solid var(--in-border);
-    border-radius: 999px;
-    position: relative;
-    transition: background 0.15s, border-color 0.15s;
-    flex: 0 0 28px;
-}
-.pl-allowlist-toggle[aria-checked="true"] .pl-toggle-track {
-    background: var(--in-ok-soft);
-    border-color: var(--in-ok);
-}
-.pl-allowlist-toggle .pl-toggle-thumb {
-    position: absolute; top: 1px; left: 1px;
-    width: 10px; height: 10px;
-    background: var(--in-fg-soft);
-    border-radius: 50%;
-    transition: left 0.15s, background 0.15s;
-}
-.pl-allowlist-toggle[aria-checked="true"] .pl-toggle-thumb {
-    left: 15px;
-    background: var(--in-ok);
-}
 .pl-board { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 8px; }
 .pl-col { min-width: 220px; flex: 1; background: var(--in-bg-3); border-radius: var(--in-radius-sm); padding: 10px; border: 1px solid var(--in-border); }
 .pl-col-head { display: flex; align-items: center; justify-content: space-between; font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--in-fg-dim); margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--in-border); }
 .pl-col-count { background: var(--in-bg); padding: 1px 8px; border-radius: 9px; font-size: 10px; color: var(--in-fg); }
-.pl-card { background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; font-size: 12px; transition: border-color 0.2s, background 0.2s; color: var(--in-fg); }
-.pl-card:hover { border-color: var(--in-accent); background: var(--in-bg-3); }
-.pl-card-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
-.pl-card-issue { font-weight: 600; color: var(--in-info); }
-.pl-card-issue a { color: inherit; text-decoration: none; }
-.pl-card-issue a:hover { text-decoration: underline; }
-.pl-card-prio { color: var(--in-fg-soft); font-size: 10px; margin-left: auto; font-variant-numeric: tabular-nums; }
-.pl-card-title { font-size: 11px; color: var(--in-fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pl-card-actions { display: flex; gap: 3px; margin-top: 6px; opacity: 0.55; transition: opacity 0.15s; }
-.pl-card:hover .pl-card-actions { opacity: 1; }
-.pl-card-btn { background: transparent; border: 1px solid var(--in-border); color: var(--in-fg-dim); border-radius: 3px; width: 22px; height: 20px; font-size: 10px; cursor: pointer; padding: 0; line-height: 1; transition: background 0.12s, border-color 0.12s, color 0.12s; }
-.pl-card-btn:hover { background: var(--in-bg); border-color: var(--in-accent); color: var(--in-accent); }
-.pl-card-btn.pause:hover { border-color: var(--in-warn); color: var(--in-warn); }
-.pl-card-btn.paused { border-color: var(--in-warn); color: var(--in-warn); }
-.pl-card-state-trabajando { border-color: var(--in-accent); }
-.pl-card-state-listo { border-color: var(--in-ok); }
-.pl-card-state-pendiente { border-color: var(--in-fg-soft); }
-/* #3045 — Card "habilitada" por la pausa parcial activa. Borde verde +
-   halo sutil para que se distinga a la distancia (operación en kiosko).
-   Si la card está simultáneamente "trabajando" Y "allowlisted", la spec UX
-   prioriza el borde de estado de flujo (trabajando, accent) — la clase
-   .pl-card-state-allowlisted se aplica SOLO cuando el estado del flujo
-   no es trabajando, para evitar el ruido visual de dos bordes en pugna. */
-.pl-card-state-allowlisted { border-color: var(--in-ok); box-shadow: 0 0 0 1px var(--in-ok-soft); }
-.pl-card-allowlist-badge {
-    display: inline-block;
-    font-size: 9px;
-    font-weight: 600;
-    color: var(--in-ok);
-    background: var(--in-ok-soft);
-    border: 1px solid var(--in-ok);
-    border-radius: 3px;
-    padding: 0 5px;
-    margin-left: 4px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    line-height: 1.4;
-}
-.pl-card-paused-badge { display: inline-block; font-size: 9px; color: var(--in-warn); border: 1px solid var(--in-warn); border-radius: 3px; padding: 0 4px; margin-left: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
-.pl-card-rebote { display: inline-block; font-size: 9px; font-weight: 600; color: var(--in-bad); border: 1px solid var(--in-bad); background: var(--in-bad-soft); border-radius: 3px; padding: 0 4px; margin-top: 4px; cursor: help; }
-/* #2894 — Pills de agentes esperados en la fase activa (ux spec) */
-.pl-card-agents { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 0 0; padding-top: 6px; border-top: 1px dashed var(--in-border-soft); }
-.pl-card-agent { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; padding: 1px 6px; border-radius: 999px; background: var(--in-bg-3); border: 1px solid var(--in-border); cursor: pointer; transition: background 0.15s, border-color 0.15s, transform 0.15s; font-variant-numeric: tabular-nums; text-decoration: none; color: var(--in-fg); }
-.pl-card-agent.no-log { cursor: default; }
-.pl-card-agent:hover { border-color: var(--in-accent); background: var(--in-bg); transform: translateY(-1px); }
-.pl-card-agent-icon { font-size: 11px; line-height: 1; }
-.pl-card-agent-state { font-size: 10px; line-height: 1; font-weight: 600; }
-.pl-card-agent.state-listo { border-color: var(--in-ok); }
-.pl-card-agent.state-listo .pl-card-agent-state { color: var(--in-ok); }
-.pl-card-agent.state-trabajando { border-color: var(--in-accent); animation: pl-agent-pulse 1.6s ease-in-out infinite; }
-.pl-card-agent.state-trabajando .pl-card-agent-state { color: var(--in-accent); }
-.pl-card-agent.state-pendiente .pl-card-agent-state { color: var(--in-fg-soft); }
-.pl-card-agent.state-bloqueado { border-color: var(--in-warn); }
-.pl-card-agent.state-bloqueado .pl-card-agent-state { color: var(--in-warn); }
-.pl-card-agent.state-fallido { border-color: var(--in-bad); background: var(--in-bad-soft); }
-.pl-card-agent.state-fallido .pl-card-agent-state { color: var(--in-bad); }
-.pl-card-agent.is-blocker { box-shadow: 0 0 0 1px var(--in-warn); }
-@keyframes pl-agent-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
-.pl-card-stale-badge { display: inline-flex; align-items: center; gap: 3px; font-size: 9px; font-weight: 600; color: var(--in-warn); border: 1px solid var(--in-warn); background: var(--in-warn-soft); border-radius: 3px; padding: 1px 5px; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; width: fit-content; }`;
+.pl-card { background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; font-size: 12px; color: var(--in-fg); }
+.pl-card-title { font-size: 11px; color: var(--in-fg-dim); line-height: 1.4; }
+.pl-card-issue a { color: var(--in-info); text-decoration: none; }`;
     const script = `
-function compareByPriority(orderMap){
-    return (a, b) => {
-        const trab = (b.estado==='trabajando'?1:0) - (a.estado==='trabajando'?1:0);
-        if(trab !== 0) return trab;
-        const oa = orderMap.get(String(a.issue));
-        const ob = orderMap.get(String(b.issue));
-        if(oa != null && ob != null) return oa - ob;
-        if(oa != null) return -1;
-        if(ob != null) return 1;
-        return Number(a.issue) - Number(b.issue);
-    };
-}
-
-// #3045 — Estado del filtro de allowlist. NO se persiste en localStorage:
-// el modo del pipeline cambia entre sesiones y un valor stale ahí confunde
-// al operador. Booleano en memoria de módulo, REQ-SEC-3 enforced
-// (no se interpola crudo a HTML; se escribe vía aria-checked + classList).
-let onlyAllowlistFilter = false;
-
-// #3045 — Issue está en la allowlist activa? Coerción estricta a integer > 0
-// (REQ-SEC-2). Sin partial_pause, NO matchea: el badge sigue oculto en running.
-function _allowlistOk(issue){
-    if(pipelineModeState.mode !== 'partial_pause') return false;
-    const n = Number(issue);
-    if(!Number.isInteger(n) || n <= 0) return false;
-    return pipelineModeState.allowedIssues.includes(n);
-}
-
-// #3045 — Mostrar/ocultar el toggle según el modo. Llamada desde tickHeader
-// cuando muta pipelineModeState; idempotente.
-function refreshAllowlistToggleVisibility(){
-    const toggle = document.getElementById('pl-allowlist-toggle');
-    if(!toggle) return;
-    const visible = pipelineModeState.mode === 'partial_pause'
-        && pipelineModeState.allowedIssues.length > 0;
-    toggle.style.display = visible ? 'inline-flex' : 'none';
-    if(!visible && onlyAllowlistFilter){
-        // Si dejó de haber pausa parcial, desactivar el filtro para no
-        // ocultar issues "fantasma" en running.
-        onlyAllowlistFilter = false;
-        toggle.setAttribute('aria-checked', 'false');
-        // Re-renderizar con el filtro apagado.
-        if(typeof tickPipeline === 'function') tickPipeline().catch(()=>{});
-    }
-}
-
-// #3045 — Wiring del toggle. Single source of truth: el atributo aria-checked
-// del propio elemento. Soporta click + Space + Enter (CA-UX-2).
-function wireAllowlistToggle(){
-    const toggle = document.getElementById('pl-allowlist-toggle');
-    if(!toggle || toggle.dataset.wired === '1') return;
-    toggle.dataset.wired = '1';
-    function flip(){
-        if(toggle.style.display === 'none') return; // oculto = no operable
-        onlyAllowlistFilter = !onlyAllowlistFilter;
-        toggle.setAttribute('aria-checked', onlyAllowlistFilter ? 'true' : 'false');
-        if(typeof tickPipeline === 'function') tickPipeline().catch(()=>{});
-    }
-    toggle.addEventListener('click', (ev) => { ev.preventDefault(); flip(); });
-    toggle.addEventListener('keydown', (ev) => {
-        if(ev.key === ' ' || ev.key === 'Enter'){ ev.preventDefault(); flip(); }
-    });
-}
-
-async function tickPipeline(){
+async function tickPipelineLegacy(){
     const d = await fetchJson('/api/dash/pipeline');
     if(!d) return;
     const board = document.getElementById('pipeline-board');
     if(!board) return;
     const fases = d.fases || [];
     const matrix = d.matrix || {};
-    const orderMap = new Map((d.priorityOrder || []).map((id, idx) => [String(id), idx]));
     const cols = {};
-    for(const { pipeline: p, fase } of fases){
-        const key = p+'/'+fase;
-        cols[key] = { p, fase, items: [] };
-    }
+    for(const { pipeline: p, fase } of fases){ cols[p+'/'+fase] = []; }
     for(const [issue, data] of Object.entries(matrix)){
         if(data.faseActual && cols[data.faseActual]){
-            const labels = data.labels || [];
-            const paused = labels.includes('blocked:dependencies');
-            cols[data.faseActual].items.push({
-                issue, title: data.title, estado: data.estadoActual,
-                bounces: data.bounces, staleMin: data.staleMin, paused,
-                rebote: data.rebote, rebote_tipo: data.rebote_tipo,
-                motivo_rechazo: data.motivo_rechazo,
-                rechazado_en_fase: data.rechazado_en_fase,
-                rechazado_skill_previo: data.rechazado_skill_previo,
-                // #2894 — agentes esperados en la fase actual + flags de stale
-                agents: data.agents || [],
-                stale: !!data.stale,
-                blockerSkill: data.blockerSkill || null,
-                blockerAgeMin: data.blockerAgeMin || 0,
-            });
+            cols[data.faseActual].push({ issue, title: data.title });
         }
     }
-    const cmp = compareByPriority(orderMap);
-    // #2894 — glifos de estado (pills) — coinciden con la spec del UX en el issue
-    const AGENT_STATE_GLYPH = { listo:'☑', trabajando:'►', pendiente:'☐', bloqueado:'⚠', fallido:'✗' };
-    const AGENT_STATE_LABEL = { listo:'listo', trabajando:'trabajando', pendiente:'pendiente', bloqueado:'bloqueado', fallido:'fallido' };
-    function renderAgentPills(item){
-        if(!item.agents || item.agents.length === 0) return '';
-        const pills = item.agents.map(a => {
-            const icon = SKILL_ICONS[a.skill] || '·';
-            const glyph = AGENT_STATE_GLYPH[a.estado] || '?';
-            const label = AGENT_STATE_LABEL[a.estado] || a.estado;
-            const ageStr = (a.ageMin != null && a.ageMin > 0) ? (' · ' + a.ageMin + 'm') : '';
-            const motivoStr = (a.estado === 'fallido' && a.motivo) ? ' · ' + String(a.motivo).slice(0, 60) : '';
-            const tip = a.skill + ' · ' + label + ageStr + motivoStr;
-            const isBlocker = item.stale && item.blockerSkill === a.skill;
-            const cls = ['pl-card-agent', 'state-' + a.estado];
-            if(isBlocker) cls.push('is-blocker');
-            if(!a.hasLog) cls.push('no-log');
-            const dataLog = a.hasLog && a.logFile ? ' data-log="'+escapeHtml(a.logFile)+'"' : '';
-            return '<span class="'+cls.join(' ')+'" data-skill="'+escapeHtml(a.skill)+'"'+dataLog+' title="'+escapeHtml(tip)+'">'
-                + '<span class="pl-card-agent-icon">'+icon+'</span>'
-                + '<span class="pl-card-agent-state">'+glyph+'</span>'
-                + '</span>';
-        }).join('');
-        return '<div class="pl-card-agents">' + pills + '</div>';
-    }
-    function renderStaleBadge(item){
-        if(!item.stale) return '';
-        const tip = 'Sin avance en la fase hace '+item.blockerAgeMin+'m'+(item.blockerSkill?' (bloqueador: '+item.blockerSkill+')':'');
-        return '<div class="pl-card-stale-badge" title="'+escapeHtml(tip)+'">⏱ estancado · '+item.blockerAgeMin+'m</div>';
-    }
     let html = '';
-    for(const [key, col] of Object.entries(cols)){
-        col.items.sort(cmp);
-        // #3045 — Filtro "solo issues habilitados". Se aplica POR COLUMNA antes
-        // del slice(0, 12) — si filtramos después del slice, perderíamos cards
-        // habilitadas que cayeron fuera del top 12 de la columna.
-        const visible = onlyAllowlistFilter
-            ? col.items.filter(i => _allowlistOk(i.issue))
-            : col.items;
-        const cards = visible.slice(0, 12).map(i => {
-            const prio = orderMap.has(String(i.issue)) ? '#' + (orderMap.get(String(i.issue)) + 1) : '';
-            const pausedBadge = i.paused ? '<span class="pl-card-paused-badge">⏸ pausado</span>' : '';
-            // #3045 — Badge "✅ habilitado" + clase de borde verde cuando el
-            // issue está en la allowlist activa. Si simultáneamente está
-            // "trabajando", priorizamos el borde de estado del flujo (accent)
-            // y el badge sigue siendo señal suficiente — UX-5.
-            const isAllowed = _allowlistOk(i.issue);
-            const allowlistBadge = isAllowed
-              ? '<span class="pl-card-allowlist-badge" title="Habilitado por la pausa parcial activa">✅ habilitado</span>'
-              : '';
-            const allowlistCls = (isAllowed && i.estado !== 'trabajando') ? ' pl-card-state-allowlisted' : '';
-            const reboteBadge = i.rebote
-              ? '<div class="pl-card-rebote" title="Rechazado en ' + escapeHtml(i.rechazado_en_fase||'?') + (i.rechazado_skill_previo?'/'+escapeHtml(i.rechazado_skill_previo):'') + ': ' + escapeHtml((i.motivo_rechazo||'').replace(/"/g,"\\u0027").slice(0,400)) + '">↩ rebote' + (i.rebote_tipo?' · '+escapeHtml(i.rebote_tipo):'') + '</div>'
-              : '';
-            const pauseBtn = '<button class="pl-card-btn pause' + (i.paused?' paused':'') + '" data-issue="'+escapeHtml(i.issue)+'" data-action="' + (i.paused?'resume':'pause') + '" title="' + (i.paused?'Reanudar issue':'Pausar issue') + '">' + (i.paused?'▶':'⏸') + '</button>';
-            return '<div class="pl-card pl-card-state-'+escapeHtml(i.estado||'')+allowlistCls+'" data-issue="'+escapeHtml(i.issue)+'">'
-              + '<div class="pl-card-head"><span class="pl-card-issue"><a href="https://github.com/intrale/platform/issues/'+escapeHtml(i.issue)+'" target="_blank" rel="noopener">#'+escapeHtml(i.issue)+'</a></span>'+pausedBadge+allowlistBadge+'<span class="pl-card-prio">'+prio+'</span></div>'
-              + '<div class="pl-card-title" title="'+escapeHtml(i.title||'')+'">'+escapeHtml((i.title||'').slice(0,60))+'</div>'
-              + reboteBadge
-              + renderAgentPills(i)
-              + renderStaleBadge(i)
-              + '<div class="pl-card-actions">'
-              +   '<button class="pl-card-btn" data-issue="'+escapeHtml(i.issue)+'" data-action="move-top" title="Máxima prioridad">⏫</button>'
-              +   '<button class="pl-card-btn" data-issue="'+escapeHtml(i.issue)+'" data-action="move-up" title="Subir">▲</button>'
-              +   '<button class="pl-card-btn" data-issue="'+escapeHtml(i.issue)+'" data-action="move-down" title="Bajar">▼</button>'
-              +   '<button class="pl-card-btn" data-issue="'+escapeHtml(i.issue)+'" data-action="move-bottom" title="Mínima prioridad">⏬</button>'
-              +   pauseBtn
-              + '</div>'
-              + '</div>';
-        }).join('');
-        // #3045 — Cuenta visible vs total cuando hay filtro activo, para
-        // que el operador entienda por qué la columna se ve "vacía".
-        const countLabel = (onlyAllowlistFilter && visible.length !== col.items.length)
-            ? (visible.length + '/' + col.items.length)
-            : String(col.items.length);
-        html += '<div class="pl-col"><div class="pl-col-head"><span>'+escapeHtml(key)+'</span><span class="pl-col-count">'+countLabel+'</span></div>'+(cards || '<div class="in-empty" style="padding:14px 4px;font-size:11px">vacío</div>')+'</div>';
+    for(const [key, items] of Object.entries(cols)){
+        const cards = items.map(i => '<div class="pl-card"><div class="pl-card-issue"><a href="https://github.com/intrale/platform/issues/'+escapeHtml(i.issue)+'" target="_blank" rel="noopener">#'+escapeHtml(i.issue)+'</a></div><div class="pl-card-title">'+escapeHtml(i.title||'')+'</div></div>').join('');
+        html += '<div class="pl-col"><div class="pl-col-head"><span>'+escapeHtml(key)+'</span><span class="pl-col-count">'+items.length+'</span></div>'+(cards||'<div class="in-empty">vacío</div>')+'</div>';
     }
-    if(board.innerHTML !== html){
-        board.innerHTML = html;
-        board.querySelectorAll('.pl-card-btn').forEach(b => {
-            const action = b.dataset.action;
-            b.addEventListener('click', (ev) => {
-                ev.preventDefault();
-                ev.stopPropagation();
-                const issue = b.dataset.issue;
-                if(action === 'pause' || action === 'resume') return pauseIssue(issue, action === 'resume');
-                return moveIssue(issue, action);
-            });
-        });
-        // #2894 — Click en pill = abrir log del agente en nueva pestaña.
-        // Event delegation: un solo listener en el board basta para todas las cards.
-        board.querySelectorAll('.pl-card-agent[data-log]').forEach(p => {
-            p.addEventListener('click', (ev) => {
-                ev.preventDefault();
-                ev.stopPropagation();
-                const log = p.dataset.log;
-                if(log) window.open('/logs/'+encodeURIComponent(log), '_blank', 'noopener');
-            });
-        });
-    }
+    if(board.innerHTML !== html) board.innerHTML = html;
 }
-const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickPipeline, ms: 5000 }];
+const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickPipelineLegacy, ms: 5000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
-// #3045 — Wirear el toggle ANTES del primer poll para que cuando tickHeader
-// llame a refreshAllowlistToggleVisibility() ya exista el handler.
-wireAllowlistToggle();
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('Pipeline', 'Issues distribuidos por fase', body, script, css);
+    return pageShell('Pipeline', 'Issues distribuidos por fase', body, script, css, 'pipeline');
 }
 
 // ─────────────────── Bloqueados ───────────────────
@@ -813,7 +1071,7 @@ const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickBloqueados, ms: 30000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('Bloqueados', 'Issues esperando intervención humana', body, script, css);
+    return pageShell('Bloqueados', 'Issues esperando intervención humana', body, script, css, 'bloqueados');
 }
 
 // ─────────────────── Issues ───────────────────
@@ -915,257 +1173,12 @@ const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickIssues, ms: 60000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('Issues', 'Backlog completo y filtros', body, script, css);
+    return pageShell('Issues', 'Backlog completo y filtros', body, script, css, 'issues');
 }
 
-// ─────────────────── Matriz ───────────────────
-function renderMatriz() {
-    const body = `
-<section class="in-section">
-  <h2 class="in-section-title"><span class="in-section-title-icon">📈</span>Matriz · skill × fase (carga actual)</h2>
-  <div id="matriz-table"></div>
-</section>`;
-    const css = `
-.mtx-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.mtx-table th, .mtx-table td { padding: 9px 11px; border: 1px solid var(--in-border); text-align: center; font-variant-numeric: tabular-nums; }
-.mtx-table th { background: var(--in-bg-3); font-weight: 600; color: var(--in-fg-dim); text-transform: uppercase; font-size: 10px; letter-spacing: 0.6px; }
-.mtx-table th.skill-h, .mtx-table td.skill { text-align: left; font-weight: 500; background: var(--in-bg-3); position: sticky; left: 0; }
-.mtx-cell-0 { color: var(--in-fg-soft); }
-.mtx-cell-active { background: var(--in-accent-soft); color: var(--in-accent); font-weight: 600; }
-.mtx-cell-hot { background: var(--in-warn-soft); color: var(--in-warn); font-weight: 600; }
-.mtx-totals td { background: var(--in-bg-3); font-weight: 600; color: var(--in-fg-dim); border-top: 2px solid var(--in-border); }`;
-    const script = `
-async function tickMatriz(){
-    const d = await fetchJson('/api/dash/pipeline');
-    if(!d) return;
-    const c = document.getElementById('matriz-table');
-    if(!c) return;
-    const fases = d.fases || [];
-    const counts = d.matrixCounts || {};
-    // Skills: usar SKILL_COLORS (orden estable, conocido) + cualquiera que aparezca en counts.
-    const SKILL_LIST = Object.keys(SKILL_COLORS);
-    const extraSkills = new Set();
-    for(const fase of Object.values(counts)) for(const sk of Object.keys(fase)) if(!SKILL_LIST.includes(sk)) extraSkills.add(sk);
-    const allSkills = [...SKILL_LIST, ...extraSkills];
-
-    // Calcular totales por fase y por skill para totals row/col
-    const totalsByFase = {};
-    const totalsBySkill = {};
-    let grandTotal = 0;
-    for(const { pipeline: p, fase } of fases){
-        const key = p+'/'+fase;
-        let sum = 0;
-        for(const sk of allSkills){ sum += (counts[key]||{})[sk] || 0; }
-        totalsByFase[key] = sum;
-        grandTotal += sum;
-    }
-    for(const sk of allSkills){
-        let sum = 0;
-        for(const { pipeline: p, fase } of fases){ sum += (counts[p+'/'+fase]||{})[sk] || 0; }
-        totalsBySkill[sk] = sum;
-    }
-
-    let html = '<table class="mtx-table"><thead><tr><th class="skill-h">Skill</th>';
-    for(const { pipeline: p, fase } of fases){ html += '<th title="'+escapeHtml(p+'/'+fase)+'">'+escapeHtml(p[0].toUpperCase()+':'+fase)+'</th>'; }
-    html += '<th>Total</th></tr></thead><tbody>';
-    // Solo mostrar skills con al menos 1 issue activo (los demás son ruido).
-    const visibleSkills = allSkills.filter(sk => totalsBySkill[sk] > 0);
-    if(visibleSkills.length === 0){
-        html += '<tr><td colspan="'+(fases.length+2)+'"><div class="in-empty">Sin issues activos en este momento</div></td></tr>';
-    } else {
-        for(const skill of visibleSkills){
-            html += '<tr><td class="skill"><span style="color:'+(SKILL_COLORS[skill]||'inherit')+'">'+(SKILL_ICONS[skill]||'⚙')+'</span> '+escapeHtml(skill)+'</td>';
-            for(const { pipeline: p, fase } of fases){
-                const n = (counts[p+'/'+fase]||{})[skill] || 0;
-                let cls = 'mtx-cell-0';
-                if(n >= 5) cls = 'mtx-cell-hot';
-                else if(n > 0) cls = 'mtx-cell-active';
-                html += '<td class="'+cls+'">'+(n || '·')+'</td>';
-            }
-            html += '<td><strong>'+totalsBySkill[skill]+'</strong></td></tr>';
-        }
-    }
-    // Totals row
-    html += '<tr class="mtx-totals"><td>Total fase</td>';
-    for(const { pipeline: p, fase } of fases){ html += '<td>'+(totalsByFase[p+'/'+fase] || 0)+'</td>'; }
-    html += '<td>'+grandTotal+'</td></tr>';
-    html += '</tbody></table>';
-    if(c.innerHTML !== html) c.innerHTML = html;
-}
-const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickMatriz, ms: 30000 }];
-async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
-runAll();
-for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('Matriz', 'Skill × Fase', body, script, css);
-}
-
-// ─────────────────── Ops ───────────────────
-function renderOps() {
-    const body = `
-<div id="ops-tg-banner" class="ops-banner-hidden"></div>
-<section class="in-section">
-  <h2 class="in-section-title"><span class="in-section-title-icon">🛠</span>Procesos del pipeline</h2>
-  <div id="ops-procesos" class="ops-grid"></div>
-</section>
-<section class="in-section" aria-label="Métrica de salud del reconciler GitHub">
-  <h2 class="in-section-title"><span class="in-section-title-icon">⏳</span>Reconciler · órdenes descartadas (stale)</h2>
-  <div class="stale-orders-panel" id="stale-orders-panel">
-    <div class="stale-orders-main">
-      <div class="stale-orders-count" id="stale-orders-count">…</div>
-      <div class="stale-orders-caption">últimas 24h</div>
-    </div>
-    <div class="stale-orders-breakdown" id="stale-orders-breakdown"></div>
-  </div>
-</section>
-<section class="in-section">
-  <h2 class="in-section-title"><span class="in-section-title-icon">📡</span>QA Environment</h2>
-  <pre id="ops-qaenv" class="ops-pre"></pre>
-</section>`;
-    const css = `
-.ops-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
-.ops-card { background: var(--in-bg-3); padding: 12px 14px; border-radius: var(--in-radius-sm); border: 1px solid var(--in-border); display: flex; flex-direction: column; gap: 4px; }
-.ops-card.alive { border-color: var(--in-ok); }
-.ops-card.dead { border-color: var(--in-bad); opacity: 0.7; }
-.ops-card.bot-down { border-color: var(--in-bad); background: var(--in-bad-soft); }
-.ops-card-name { font-weight: 600; }
-.ops-card-meta { font-size: 11px; color: var(--in-fg-dim); font-family: var(--in-mono); }
-.ops-card-error { font-size: 11px; color: var(--in-bad); font-weight: 600; margin-top: 2px; }
-.ops-queues { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-.ops-queue-group { display: flex; align-items: center; gap: 3px; padding: 2px 6px; border-radius: 999px; background: var(--in-bg-2); border: 1px solid var(--in-border); font-size: 10px; font-family: var(--in-mono); font-variant-numeric: tabular-nums; }
-.ops-queue-group .ops-queue-name { color: var(--in-fg-dim); margin-right: 2px; font-weight: 600; text-transform: lowercase; }
-.ops-chip { display: inline-flex; align-items: center; gap: 2px; padding: 0 4px; border-radius: 6px; color: var(--in-fg-dim); }
-.ops-chip.hot { color: var(--in-warn); font-weight: 600; }
-.ops-chip.work { color: var(--in-info); font-weight: 600; }
-.ops-banner-hidden { display: none; }
-.ops-banner { display: block; padding: 12px 16px; margin-bottom: 14px; border-radius: var(--in-radius-sm); border: 1px solid var(--in-bad); background: var(--in-bad-soft); color: var(--in-bad); font-weight: 600; }
-.ops-banner-sub { font-weight: 400; font-size: 12px; color: var(--in-fg-dim); margin-top: 4px; font-family: var(--in-mono); }
-.ops-pre { background: var(--in-bg-3); padding: 14px; border-radius: var(--in-radius-sm); font-family: var(--in-mono); font-size: 11px; overflow: auto; max-height: 280px; border: 1px solid var(--in-border); }
-/* #2994 — panel del reconciler stale orders. Reusa --warning/--font-mono.
-   Estado vacío: número 0 en --in-fg-dim para señalar salud sin alarma. */
-.stale-orders-panel { display: flex; flex-direction: column; gap: 12px; padding: 12px 14px; background: var(--in-bg-3); border: 1px solid var(--in-border); border-radius: var(--in-radius-sm); min-width: 260px; }
-.stale-orders-main { display: flex; flex-direction: column; gap: 2px; }
-.stale-orders-count { font-family: var(--in-mono, var(--font-mono, monospace)); font-size: 32px; font-weight: 600; color: var(--warning, var(--in-warn, #D29922)); font-variant-numeric: tabular-nums; line-height: 1.1; }
-.stale-orders-count.is-zero { color: var(--in-fg-dim); }
-.stale-orders-caption { font-size: 12px; color: var(--in-fg-dim); }
-.stale-orders-breakdown { display: flex; flex-direction: column; gap: 4px; }
-.stale-orders-breakdown-row { display: flex; justify-content: space-between; gap: 12px; font-family: var(--in-mono, monospace); font-size: 12px; font-variant-numeric: tabular-nums; padding: 2px 0; }
-.stale-orders-breakdown-reason { color: var(--in-fg-default, var(--in-fg)); }
-.stale-orders-breakdown-value { color: var(--warning, var(--in-warn, #D29922)); font-weight: 600; }
-.stale-orders-empty { color: var(--in-fg-dim); font-size: 12px; }`;
-    const script = `
-const PROC_QUEUES = {
-    'listener': ['commander', 'telegram'],
-    'svc-telegram': ['telegram'],
-    'svc-github': ['github'],
-    'svc-drive': ['drive'],
-    'svc-emulador': ['emulador'],
-};
-function chip(icon, n, cls){
-    const v = Number(n) || 0;
-    const c = (cls === 'pend' && v > 0) ? 'ops-chip hot'
-            : (cls === 'work' && v > 0) ? 'ops-chip work'
-            : 'ops-chip';
-    return '<span class="'+c+'" title="'+escapeHtml(cls)+'">'+icon+' '+v+'</span>';
-}
-function queuesHTML(name, servicios){
-    const queues = PROC_QUEUES[name] || [];
-    if(!queues.length) return '';
-    let html = '<div class="ops-queues">';
-    for(const q of queues){
-        const s = (servicios && servicios[q]) || { pendiente: 0, trabajando: 0, listo: 0 };
-        html += '<span class="ops-queue-group" title="cola '+escapeHtml(q)+'">'
-            + '<span class="ops-queue-name">'+escapeHtml(q)+'</span>'
-            + chip('⏳', s.pendiente, 'pend')
-            + chip('⚙', s.trabajando, 'work')
-            + chip('✓', s.listo, 'done')
-            + '</span>';
-    }
-    html += '</div>';
-    return html;
-}
-const TG_PROCS = new Set(['listener', 'svc-telegram']);
-async function tickOps(){
-    const d = await fetchJson('/api/dash/ops');
-    if(!d) return;
-    const tgHealth = d.telegramHealth;
-    const tgDown = tgHealth && tgHealth.ok === false;
-
-    const banner = document.getElementById('ops-tg-banner');
-    if(banner){
-        if(tgDown){
-            const err = tgHealth.lastError || {};
-            const desc = (err.description || 'sin detalle').slice(0, 200);
-            const code = err.code || '—';
-            const src = err.source || '—';
-            const upd = tgHealth.updatedAt ? new Date(tgHealth.updatedAt).toLocaleString('es-AR') : '—';
-            const html = '<div class="ops-banner">⚠ Bot de Telegram caído'
-                + '<div class="ops-banner-sub">'+escapeHtml(desc)+' · code='+escapeHtml(String(code))+' · origen='+escapeHtml(String(src))+' · actualizado '+escapeHtml(upd)+'</div>'
-                + '<div class="ops-banner-sub">Acción: rotar token con BotFather y guardarlo en ~/.claude/secrets/telegram-config.json (fuera del repo). Reiniciar listener.</div>'
-                + '</div>';
-            if(banner.innerHTML !== html){ banner.className = ''; banner.innerHTML = html; }
-        } else if(banner.className !== 'ops-banner-hidden'){
-            banner.className = 'ops-banner-hidden';
-            banner.innerHTML = '';
-        }
-    }
-
-    const grid = document.getElementById('ops-procesos');
-    if(grid){
-        let html = '';
-        for(const [name, p] of Object.entries(d.procesos || {})){
-            const isTg = TG_PROCS.has(name);
-            let cls = p.alive ? 'alive' : 'dead';
-            if(isTg && tgDown) cls = (p.alive ? 'alive ' : 'dead ') + 'bot-down';
-            const errLine = (isTg && tgDown)
-                ? '<div class="ops-card-error">⚠ '+escapeHtml((tgHealth.lastError||{}).description || 'API rechazada').slice(0, 80)+'</div>'
-                : '';
-            html += '<div class="ops-card '+cls+'">'
-                + '<div class="ops-card-name">'+(p.alive?'\u{1F7E2}':'\u{1F534}')+' '+escapeHtml(name)+'</div>'
-                + '<div class="ops-card-meta">PID '+(p.pid||'—')+'</div>'
-                + '<div class="ops-card-meta">uptime '+fmtDur(p.uptime||0)+'</div>'
-                + errLine
-                + queuesHTML(name, d.servicios)
-                + '</div>';
-        }
-        if(grid.innerHTML !== html) grid.innerHTML = html;
-    }
-    const pre = document.getElementById('ops-qaenv');
-    if(pre){
-        const txt = JSON.stringify({ qaEnv: d.qaEnv, qaRemote: d.qaRemote, infraHealth: d.infraHealth, telegramHealth: d.telegramHealth }, null, 2);
-        if(pre.textContent !== txt) pre.textContent = txt;
-    }
-}
-async function tickStaleOrders(){
-    const d = await fetchJson('/api/dash/reconciler-stale-orders');
-    if(!d) return;
-    const countEl = document.getElementById('stale-orders-count');
-    const breakdownEl = document.getElementById('stale-orders-breakdown');
-    if(!countEl || !breakdownEl) return;
-    const total = Number(d.total_24h) || 0;
-    const txt = String(total);
-    if(countEl.textContent !== txt) countEl.textContent = txt;
-    countEl.className = total === 0 ? 'stale-orders-count is-zero' : 'stale-orders-count';
-    const reasons = d.by_reason || {};
-    let html = '';
-    if(total === 0){
-        html = '<div class="stale-orders-empty">Sin descartes en 24h — saludable</div>';
-    } else {
-        const entries = Object.entries(reasons).sort((a,b) => b[1] - a[1]);
-        for(const [reason, n] of entries){
-            html += '<div class="stale-orders-breakdown-row">'
-                + '<span class="stale-orders-breakdown-reason">— '+escapeHtml(reason)+'</span>'
-                + '<span class="stale-orders-breakdown-value">'+(Number(n)||0)+'</span>'
-                + '</div>';
-        }
-    }
-    if(breakdownEl.innerHTML !== html) breakdownEl.innerHTML = html;
-}
-const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickOps, ms: 5000 }, { fn: tickStaleOrders, ms: 30000 }];
-async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
-runAll();
-for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('Ops', 'Procesos, servicios e infraestructura', body, script, css);
-}
+// #3731 — renderMatriz extraído a views/dashboard/matriz.js (split del épico
+// #3715). El render legacy + tickMatriz + CSS de la grilla viven ahora en el
+// módulo propio. `/matriz` y `?view=matriz` resuelven a él vía dashboard-routes.js.
 
 // ─────────────────── KPIs (detalle) ───────────────────
 function renderKpisDetail() {
@@ -1191,17 +1204,26 @@ async function tickKpis(){
     if(!d) return;
     const grid = document.getElementById('kpis-grid');
     if(grid){
+        // (#3357 CA-2/3/4) shapes nuevos para tokens24h, agentDurationMedianMs,
+        // bouncePct. Mantenemos compat con shapes viejos (number) por si el
+        // server queda atrás del cliente durante un deploy escalonado.
+        const tk = d.tokens24h;
+        const tkTotal = (tk && typeof tk === 'object') ? tk.total : tk;
+        const cyc = d.agentDurationMedianMs != null ? d.agentDurationMedianMs : d.cycleTimeMs;
+        const bp = d.bouncePct;
+        const bpOverall = (bp && typeof bp === 'object') ? bp.overall : bp;
         const tiles = [
             { label: 'PRs · 7d', value: d.prsLast7d==null?'—':d.prsLast7d, sub: 'mergeados' },
-            { label: 'Tokens · 24h', value: fmtNum(d.tokens24h), sub: 'in + out' },
-            { label: 'Cycle time', value: fmtDur(d.cycleTimeMs), sub: 'mediana' },
-            { label: '% rebote', value: fmtPct(d.bouncePct), sub: 'rechazos / total' },
+            { label: 'Tokens · 24h', value: fmtNum(tkTotal), sub: 'todos los providers' },
+            { label: 'Duración por agente', value: fmtDur(cyc), sub: 'mediana por marker' },
+            { label: 'Cycle time issue', value: fmtDur(d.issueCycleTimeMs), sub: 'creación → cierre' },
+            { label: '% rebote · 7d', value: fmtPct(bpOverall), sub: 'issues con ≥1 rebote' },
         ];
         let html = '';
         for(const t of tiles) html += '<div class="kp-tile"><div class="kp-tile-label">'+escapeHtml(t.label)+'</div><div class="kp-tile-value">'+escapeHtml(t.value)+'</div><div class="kp-tile-sub">'+escapeHtml(t.sub)+'</div></div>';
         if(grid.innerHTML !== html) grid.innerHTML = html;
     }
-    const snap = await fetchJson('/metrics/snapshot?window=24h').catch(()=>null);
+    const snap = await fetchJson('/metrics/snapshot?window=24h');
     const pre = document.getElementById('kpis-snapshot');
     if(pre){
         const txt = snap ? JSON.stringify(snap, null, 2).slice(0, 8000) : '— sin snapshot V3 —';
@@ -1212,93 +1234,494 @@ const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickKpis, ms: 60000 }];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('KPIs', 'Métricas detalladas', body, script, css);
+    return pageShell('KPIs', 'Métricas detalladas', body, script, css, 'kpis');
 }
 
 // ─────────────────── Historial ───────────────────
-function renderHistorial() {
-    const body = `
-<section class="in-section">
-  <h2 class="in-section-title"><span class="in-section-title-icon">📜</span>Actividad reciente</h2>
-  <div id="hist-list" class="hist-list"></div>
-</section>`;
-    const css = `
-.hist-list { display: flex; flex-direction: column; gap: 4px; }
-.hist-row { display: grid; grid-template-columns: 130px 60px 1fr; gap: 10px; padding: 8px 12px; border-radius: var(--in-radius-sm); background: var(--in-bg-3); font-size: 12px; align-items: center; }
-.hist-time { color: var(--in-fg-dim); font-family: var(--in-mono); font-size: 11px; }
-.hist-dir-out { color: var(--in-info); }
-.hist-dir-in { color: var(--in-accent); }
-.hist-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }`;
-    const script = `
-async function tickHist(){
-    const d = await fetchJson('/api/dash/historial');
-    if(!d) return;
-    const c = document.getElementById('hist-list');
-    if(!c) return;
-    const arr = (d.actividad || []).slice().reverse();
-    if(arr.length === 0){ c.innerHTML = '<div class="in-empty">Sin actividad reciente</div>'; return; }
-    let html = '';
-    for(const a of arr){
-        const ts = a.ts ? new Date(a.ts).toLocaleString('es-AR') : '—';
-        const dirCls = a.dir==='in' ? 'hist-dir-in' : 'hist-dir-out';
-        html += '<div class="hist-row"><span class="hist-time">'+escapeHtml(ts)+'</span><span class="'+dirCls+'">'+escapeHtml(a.dir||'·')+'</span><span class="hist-text">'+escapeHtml(a.text||'')+'</span></div>';
-    }
-    if(c.innerHTML !== html) c.innerHTML = html;
+// #4199 (Ola 7.1) — Rediseño integral MIZPÁ: la pantalla deja de ser el estado
+// vacío «Sin actividad reciente» y pasa a ser la BITÁCORA / línea de tiempo del
+// pipeline. Hereda el lenguaje visual MIZPÁ ya consensuado en las hermanas
+// (#4189→#4198): barra de marca MIZPÁ (logo + tagline + selector multiproyecto)
+// + nav curada 5 + «⋯ Más» (Historial vive dentro del popover + miga de pan),
+// un banner de misión que resume el pulso reciente (eventos hoy, último merge,
+// último rebote, agente más reciente, agregado ejecuciones/%✓), filtros (tipo de
+// evento, skill, proveedor, issue + búsqueda de texto + chips de período) y un
+// feed cronológico agrupado por día con enlaces directos por evento (issue en
+// GitHub, log, PR, reporte PDF).
+//
+// Datos: /api/dash/historial expone el timeline real { groups[], aggregates,
+// nextCursor, total, facets, filters } vía historialTimelineSlice. Cada item
+// trae eventType (derivado) y provider (join del activity-log, #4199). El render
+// del feed es 100% por DOM (createElement/textContent) → XSS-safe; los selects
+// se pueblan desde `facets` (no del set crudo) para no vaciarse al filtrar.
+function renderHistorialBrandBar() {
+    const logoSvg = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">'
+        + '<path d="M12 2.5 5 6v5c0 4.6 3 8 7 9.5 4-1.5 7-4.9 7-9.5V6l-7-3.5Z" stroke="#06121a" stroke-width="1.6" fill="rgba(255,255,255,.16)"/>'
+        + '<path d="M9.5 12.5 11.3 14.3 14.8 10.4" stroke="#06121a" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    return `
+    <div class="in-header-brand">
+      <div class="mz-logo" aria-hidden="true" title="MIZPÁ · atalaya de agentes (Génesis 31:49)">${logoSvg}</div>
+      <div class="mz-id">
+        <div class="mz-name">MIZPÁ</div>
+        <div class="mz-sub">«Que el Señor vigile» · atalaya de agentes</div>
+      </div>
+      <div class="mz-projsel" role="button" tabindex="0"
+           title="Proyecto activo. MIZPÁ es el motor; el proyecto es intercambiable (multiproyecto — selección en evaluación)."
+           aria-label="Proyecto activo: Intrale, 1 de 3">
+        <span class="mz-proj-avatar" aria-hidden="true">i</span>
+        <span class="mz-proj-id">
+          <span class="mz-proj-name">Intrale</span>
+          <span class="mz-proj-state">PROYECTO ACTIVO</span>
+        </span>
+        <span class="mz-proj-badge">1 / 3</span>
+        <span class="mz-proj-caret" aria-hidden="true">▾</span>
+      </div>
+    </div>`;
 }
-const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickHist, ms: 10000 }];
+
+function renderHistorial() {
+    // Miga de pan: Historial vive dentro de «⋯ Más» (tab secundario). La nav ya
+    // deja el popover abierto + Historial marcado vía renderNavTabsSsr('historial');
+    // la miga refuerza la ubicación (CA-1).
+    const breadcrumb = `
+  <div class="mz-crumb" aria-label="Ubicación: Más › Historial">
+    <span class="mz-crumb-sep">⋯ Más</span>
+    <span class="mz-crumb-sep">›</span>
+    <b>🕓 Historial</b>
+    <span class="mz-crumb-desc">· bitácora cronológica del pipeline</span>
+  </div>`;
+
+    const body = `
+<section class="hm" aria-label="Bitácora del pipeline">
+  <!-- Banner de misión: pulso reciente -->
+  <div class="hm-banner" id="hm-banner">
+    <div class="hm-live">
+      <span class="hm-live-k">EVENTOS HOY</span>
+      <span class="hm-live-n" id="hm-today">—</span>
+      <span class="hm-live-u">en la bitácora</span>
+    </div>
+    <div class="hm-bm-text">
+      <div class="hm-bm-ttl">El pulso reciente del pipeline
+        <span class="hm-bm-badge"><b id="hm-aggr-count">—</b> ejec. · <b id="hm-aggr-pct">—</b> ✓</span>
+      </div>
+      <div class="hm-bm-desc">Cada lanzamiento de agente, cambio de fase, build, merge, rebote y bloqueo queda registrado acá en orden cronológico. Filtrá por tipo de evento, issue, skill o proveedor, y saltá directo al issue o a los logs de cada evento.</div>
+      <div class="hm-bm-metrics">
+        <div class="hm-bm-wm"><div class="hm-bm-wm-l">🔀 ÚLTIMO MERGE</div><div class="hm-bm-wm-v" id="hm-merge">—</div></div>
+        <div class="hm-bm-wm"><div class="hm-bm-wm-l">↩ ÚLTIMO REBOTE</div><div class="hm-bm-wm-v" id="hm-rebote">—</div></div>
+        <div class="hm-bm-wm"><div class="hm-bm-wm-l">⚡ AGENTE MÁS RECIENTE</div><div class="hm-bm-wm-v" id="hm-recent">—</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Filtros + búsqueda -->
+  <div class="hm-filters" data-hm-filters>
+    <span class="hm-chips" role="group" aria-label="Período">
+      <button type="button" class="hm-chip hm-chip-on" data-hm-period="all">Todo</button>
+      <button type="button" class="hm-chip" data-hm-period="today">Hoy</button>
+      <button type="button" class="hm-chip" data-hm-period="7d">7 d</button>
+      <button type="button" class="hm-chip" data-hm-period="30d">30 d</button>
+    </span>
+    <select class="hm-sel" data-hm-filter="eventType" aria-label="Filtrar por tipo de evento"><option value="">Todo evento</option></select>
+    <select class="hm-sel" data-hm-filter="skill" aria-label="Filtrar por agente o skill"><option value="">Todo skill</option></select>
+    <select class="hm-sel" data-hm-filter="provider" aria-label="Filtrar por proveedor"><option value="">Todo proveedor</option></select>
+    <input class="hm-issue-filter" type="search" inputmode="numeric" data-hm-filter="issue" placeholder="# issue" autocomplete="off" maxlength="12" aria-label="Filtrar por número de issue">
+    <input class="hm-search" type="search" data-hm-filter="q" placeholder="🔍 buscar texto…" autocomplete="off" maxlength="200" aria-label="Buscar texto libre">
+  </div>
+
+  <!-- Feed cronológico -->
+  <div class="hm-timeline" id="hm-timeline" data-hm-timeline><div class="hm-empty"><div class="hm-empty-strong">Cargando bitácora…</div></div></div>
+  <button type="button" class="hm-load-more" id="hm-load-more" style="display:none">Ver más eventos…</button>
+</section>`;
+
+    const css = `
+.hm { display: flex; flex-direction: column; gap: 16px; }
+
+/* Banner de misión */
+.hm-banner { display: flex; align-items: stretch; gap: 20px; position: relative; overflow: hidden; flex-wrap: wrap;
+  background: linear-gradient(110deg, rgba(52,217,224,.14), rgba(124,92,255,.08) 45%, transparent 75%), linear-gradient(180deg, var(--in-bg-2,#11151E), var(--in-bg-3,#141925));
+  border: 1px solid rgba(52,217,224,.22); border-radius: 16px; padding: 18px 22px; }
+.hm-live { display: flex; flex-direction: column; align-items: center; justify-content: center; min-width: 112px; padding: 12px 16px; border-radius: 14px; flex: none;
+  background: linear-gradient(135deg, rgba(52,217,224,.22), rgba(124,92,255,.16)); border: 1px solid rgba(52,217,224,.3); }
+.hm-live-k { font-size: 9.5px; font-weight: 800; letter-spacing: 1.2px; color: #9fe9ee; text-align: center; }
+.hm-live-n { font-size: 38px; font-weight: 800; color: #bff3f6; line-height: 1; font-variant-numeric: tabular-nums; }
+.hm-live-u { font-size: 10px; color: var(--in-fg-dim,#8A93A6); font-weight: 600; margin-top: 4px; letter-spacing: .3px; }
+.hm-bm-text { flex: 1; min-width: 280px; }
+.hm-bm-ttl { font-size: 19px; font-weight: 800; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.hm-bm-badge { font-size: 11px; color: var(--brand-cyan,#34D9E0); background: rgba(52,217,224,.12); border: 1px solid rgba(52,217,224,.3); padding: 3px 9px; border-radius: 20px; font-weight: 600; letter-spacing: .3px; }
+.hm-bm-badge b { color: #bff3f6; font-variant-numeric: tabular-nums; }
+.hm-bm-desc { font-size: 13px; color: var(--in-fg-dim,#8A93A6); margin-top: 5px; max-width: 640px; line-height: 1.45; }
+.hm-bm-metrics { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.hm-bm-wm { flex: 1; min-width: 184px; background: rgba(255,255,255,.035); border: 1px solid var(--in-border,rgba(255,255,255,.07)); border-radius: 11px; padding: 9px 12px; }
+.hm-bm-wm-l { font-size: 9.5px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#5B6376); }
+.hm-bm-wm-v { font-size: 13px; font-weight: 600; margin-top: 4px; line-height: 1.3; color: var(--in-fg); }
+.hm-bm-wm-v.hm-bm-empty { color: var(--in-fg-dim,#5B6376); font-weight: 400; font-style: italic; }
+.hm-bm-issue { color: #58a6ff; font-weight: 800; text-decoration: none; }
+.hm-bm-issue:hover { text-decoration: underline; }
+
+/* Filtros */
+.hm-filters { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.hm-chips { display: inline-flex; gap: 6px; }
+.hm-chip { font-size: 12px; color: var(--in-fg-dim); background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 999px; padding: 6px 13px; cursor: pointer; transition: border-color .12s, color .12s; }
+.hm-chip:hover { color: var(--in-fg); border-color: var(--in-accent); }
+.hm-chip-on { color: #06121a; background: linear-gradient(135deg,#34D9E0,#7C5CFF); border-color: transparent; font-weight: 700; }
+.hm-sel, .hm-issue-filter, .hm-search { background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 10px; padding: 8px 11px; color: var(--in-fg); font-size: 12px; }
+.hm-sel:focus-visible, .hm-issue-filter:focus-visible, .hm-search:focus-visible { outline: 2px solid var(--in-accent); outline-offset: 1px; }
+.hm-issue-filter { width: 92px; }
+.hm-search { flex: 1; min-width: 200px; max-width: 360px; margin-left: auto; }
+
+/* Timeline */
+.hm-timeline { display: flex; flex-direction: column; gap: 16px; }
+.hm-day-group { display: flex; flex-direction: column; gap: 8px; }
+.hm-day { display: flex; align-items: baseline; gap: 12px; padding: 4px 2px; border-bottom: 1px solid var(--in-border-soft,rgba(255,255,255,.06)); position: sticky; top: 0; }
+.hm-day-label { font-size: 13px; font-weight: 800; letter-spacing: .4px; text-transform: capitalize; }
+.hm-day-aggr { font-size: 11px; color: var(--in-fg-dim); font-variant-numeric: tabular-nums; }
+.hm-day-items { display: flex; flex-direction: column; gap: 6px; }
+
+/* Card de evento */
+.hm-item { background: var(--in-bg-3); border: 1px solid var(--in-border); border-left: 3px solid var(--in-border); border-radius: var(--in-radius-sm); overflow: hidden; }
+.hm-item[open] { border-color: var(--in-accent); }
+.hm-item.hm-ev-merge { border-left-color: #2ee6c1; }
+.hm-item.hm-ev-rebote { border-left-color: var(--in-warn,#d29922); }
+.hm-item.hm-ev-rechazo { border-left-color: var(--in-bad,#f85149); }
+.hm-item.hm-ev-aprob { border-left-color: var(--in-ok,#3fb950); }
+.hm-item.hm-ev-run { border-left-color: var(--in-accent,#58a6ff); }
+.hm-item.hm-ev-fase { border-left-color: var(--in-fg-soft,#6b7280); }
+.hm-card { display: flex; align-items: center; gap: 10px; padding: 9px 13px; cursor: pointer; list-style: none; flex-wrap: wrap; }
+.hm-card::-webkit-details-marker { display: none; }
+.hm-card:hover { background: rgba(255,255,255,.03); }
+.hm-status-ic { font-size: 13px; width: 16px; text-align: center; flex: none; }
+.hm-status-ic.hm-ev-merge { color: #2ee6c1; }
+.hm-status-ic.hm-ev-rebote { color: var(--in-warn,#d29922); }
+.hm-status-ic.hm-ev-rechazo { color: var(--in-bad,#f85149); }
+.hm-status-ic.hm-ev-aprob { color: var(--in-ok,#3fb950); }
+.hm-status-ic.hm-ev-run { color: var(--in-accent,#58a6ff); }
+.hm-avatar { width: 26px; height: 26px; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 14px; flex: none; }
+.hm-issue { font-size: 13px; min-width: 0; max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hm-issue b { color: #58a6ff; font-weight: 700; }
+.hm-title { color: var(--in-fg-dim); }
+.hm-skill { font-size: 11px; color: var(--in-fg-dim); }
+.hm-type { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; padding: 2px 8px; border-radius: 9px; border: 1px solid var(--in-border); background: var(--in-bg); color: var(--in-fg-dim); }
+.hm-type.hm-ev-merge { color: #2ee6c1; border-color: rgba(46,230,193,.4); }
+.hm-type.hm-ev-rebote { color: var(--in-warn,#d29922); border-color: rgba(210,153,34,.4); }
+.hm-type.hm-ev-rechazo { color: var(--in-bad,#f85149); border-color: rgba(248,81,73,.4); }
+.hm-type.hm-ev-aprob { color: var(--in-ok,#3fb950); border-color: rgba(63,185,80,.4); }
+.hm-type.hm-ev-run { color: var(--in-accent,#58a6ff); border-color: rgba(88,166,255,.4); }
+.hm-prov { font-size: 10px; color: #c9b6ff; border: 1px solid rgba(163,113,247,.4); background: rgba(163,113,247,.08); border-radius: 9px; padding: 2px 8px; }
+.hm-meta { font-size: 11px; color: var(--in-fg-dim); font-variant-numeric: tabular-nums; }
+.hm-time { font-size: 11px; color: var(--in-fg-soft); margin-left: auto; white-space: nowrap; }
+.hm-actions { display: inline-flex; gap: 6px; flex: none; }
+.hm-act { font-size: 11px; color: var(--in-fg-dim); border: 1px solid var(--in-border); border-radius: 7px; padding: 3px 8px; text-decoration: none; }
+.hm-act:hover { border-color: var(--in-accent); color: var(--in-accent); }
+
+/* Detalle expandible */
+.hm-detail { padding: 4px 14px 12px 42px; }
+.hm-d-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.hm-d-item { font-size: 11px; color: var(--in-fg-dim); background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 6px; padding: 3px 9px; }
+.hm-d-item.hm-d-warn { color: var(--in-warn,#d29922); border-color: rgba(210,153,34,.35); }
+.hm-d-item.hm-d-cause { color: var(--in-fg); max-width: 100%; }
+.hm-d-attach { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 7px; }
+.hm-attach { font-size: 10px; color: var(--in-fg-dim); background: var(--in-bg); border: 1px dashed var(--in-border); border-radius: 6px; padding: 2px 8px; }
+
+/* Estado vacío + load more */
+.hm-empty { text-align: center; padding: 40px 18px; color: var(--in-fg-dim); display: flex; flex-direction: column; gap: 8px; align-items: center; }
+.hm-empty-ic { font-size: 38px; opacity: .7; }
+.hm-empty-strong { font-size: 15px; font-weight: 700; color: var(--in-fg); }
+.hm-empty-sub { font-size: 12px; max-width: 420px; line-height: 1.5; }
+.hm-load-more { align-self: center; font-size: 12px; color: var(--in-fg-dim); background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 999px; padding: 8px 18px; cursor: pointer; }
+.hm-load-more:hover { border-color: var(--in-accent); color: var(--in-accent); }`;
+
+    const script = `
+// === Historial MIZPÁ (#4199) — bitácora del pipeline ==========================
+const GH_ISS = 'https://github.com/intrale/platform/issues/';
+const EVENT_META = {
+  merge:      { ic: '🔀', label: 'merge',      cls: 'hm-ev-merge' },
+  rebote:     { ic: '↩',  label: 'rebote',     cls: 'hm-ev-rebote' },
+  rechazo:    { ic: '✗',  label: 'rechazo',    cls: 'hm-ev-rechazo' },
+  aprobacion: { ic: '✓',  label: 'aprobación', cls: 'hm-ev-aprob' },
+  ejecucion:  { ic: '●',  label: 'en curso',   cls: 'hm-ev-run' },
+  fase:       { ic: '•',  label: 'fase',       cls: 'hm-ev-fase' }
+};
+const EVENT_LABELS = { merge:'Merges', rebote:'Rebotes', rechazo:'Rechazos', aprobacion:'Aprobaciones', ejecucion:'En curso', fase:'Fases' };
+let hmState = { period:'all', eventType:'', skill:'', provider:'', issue:'', q:'' };
+let hmFacetsSig = '';
+
+function hmEl(tag, cls, txt){ var e=document.createElement(tag); if(cls) e.className=cls; if(txt!=null) e.textContent=txt; return e; }
+function hmRel(ts){ var t = typeof ts==='string'?Date.parse(ts):ts; if(!isFinite(t)||t<=0) return ''; var d=Date.now()-t; if(d<0) d=0; var m=Math.floor(d/60000); if(m<1) return 'ahora'; if(m<60) return 'hace '+m+' min'; var h=Math.floor(m/60); if(h<24) return 'hace '+h+' h'; return 'hace '+Math.floor(h/24)+' d'; }
+function hmTs(h){ return h.estado==='trabajando' ? h.startedAt : h.finishedAt; }
+function hmPct(p){ var v=Number(p); return isFinite(v)? Math.round(v*100)+' %':'—'; }
+function hmSafeFile(s){ return /^[A-Za-z0-9._-]+$/.test(String(s||'')); }
+function hmLink(href, label, title){ var a=hmEl('a','hm-act',label); a.href=href; a.target='_blank'; a.rel='noopener noreferrer'; if(title) a.title=title; a.addEventListener('click', function(ev){ ev.stopPropagation(); }); return a; }
+
+function hmBuildQuery(cursor){
+  var p = new URLSearchParams();
+  if(hmState.period && hmState.period!=='all') p.set('period', hmState.period);
+  if(hmState.eventType) p.set('eventType', hmState.eventType);
+  if(hmState.skill) p.set('skill', hmState.skill);
+  if(hmState.provider) p.set('provider', hmState.provider);
+  if(hmState.issue) p.set('issue', hmState.issue);
+  if(hmState.q) p.set('q', hmState.q);
+  if(cursor) p.set('cursor', cursor);
+  return p.toString();
+}
+
+function hmCard(h){
+  var meta = EVENT_META[h.eventType] || EVENT_META.fase;
+  var det = document.createElement('details');
+  det.className = 'hm-item ' + meta.cls;
+  var sum = hmEl('summary','hm-card');
+  sum.appendChild(hmEl('span','hm-status-ic '+meta.cls, meta.ic));
+  var av = hmEl('span','hm-avatar', SKILL_ICONS[h.skill] || '⚙');
+  av.style.background = SKILL_COLORS[h.skill] || '#30363d';
+  sum.appendChild(av);
+  var iss = hmEl('span','hm-issue');
+  iss.appendChild(hmEl('b', null, '#'+h.issue));
+  if(h.titulo) iss.appendChild(hmEl('span','hm-title', ' '+String(h.titulo).slice(0,52)));
+  sum.appendChild(iss);
+  sum.appendChild(hmEl('span','hm-skill', h.skill||''));
+  sum.appendChild(hmEl('span','hm-type '+meta.cls, meta.label));
+  if(h.provider) sum.appendChild(hmEl('span','hm-prov', h.provider));
+  sum.appendChild(hmEl('span','hm-meta', (h.fase||'') + ' · ' + fmtDur(h.duration)));
+  sum.appendChild(hmEl('span','hm-time', hmRel(hmTs(h))));
+  var acts = hmEl('span','hm-actions');
+  var n = Number(h.issue);
+  acts.appendChild(hmLink(GH_ISS + (isFinite(n)?n:''), 'issue ↗', 'Ver issue en GitHub'));
+  if(h.hasLog && hmSafeFile(h.logFile)) acts.appendChild(hmLink('/logs/view/'+h.logFile+(h.estado==='trabajando'?'?live=1':''), 'log', 'Ver log del evento'));
+  if(h.prUrl && /^https:\\/\\/(github\\.com|.*\\.github\\.com)\\//.test(h.prUrl)) acts.appendChild(hmLink(h.prUrl, 'PR ↗', 'Ver Pull Request'));
+  if(h.hasRejectionPdf && hmSafeFile(h.rejectionPdf)) acts.appendChild(hmLink('/logs/'+h.rejectionPdf, '📄', 'Reporte de rechazo (PDF)'));
+  sum.appendChild(acts);
+  det.appendChild(sum);
+
+  var d = hmEl('div','hm-detail');
+  var row = hmEl('div','hm-d-row');
+  row.appendChild(hmEl('span','hm-d-item', 'fase ' + (h.fase||'—') + ' · ' + fmtDur(h.duration)));
+  if(Number(h.reboteNumero)>0) row.appendChild(hmEl('span','hm-d-item hm-d-warn', 'rebote ×'+Number(h.reboteNumero)));
+  if(Number(h.crossphaseCount)>0) row.appendChild(hmEl('span','hm-d-item hm-d-warn', 'cross-phase ×'+Number(h.crossphaseCount)));
+  if(h.provider) row.appendChild(hmEl('span','hm-d-item', 'proveedor: '+h.provider));
+  var costo = (h.costo!=null && isFinite(Number(h.costo))) ? Number(h.costo).toFixed(2)+' USD' : 's/d';
+  row.appendChild(hmEl('span','hm-d-item', 'costo: '+costo));
+  if(h.motivo) row.appendChild(hmEl('span','hm-d-item hm-d-cause', 'causa: '+String(h.motivo).slice(0,180)));
+  d.appendChild(row);
+  if(Array.isArray(h.attachments) && h.attachments.length){
+    var at = hmEl('div','hm-d-attach');
+    h.attachments.slice(0,8).forEach(function(a){ var lbl=(a && (a.descriptor || a.path)) || 'entregable'; at.appendChild(hmEl('span','hm-attach', '📎 '+String(lbl).slice(0,40))); });
+    d.appendChild(at);
+  }
+  det.appendChild(d);
+  return det;
+}
+
+function hmEmpty(){
+  var box = hmEl('div','hm-empty');
+  box.appendChild(hmEl('div','hm-empty-ic', '🕓'));
+  box.appendChild(hmEl('div','hm-empty-strong', 'Sin eventos para estos filtros'));
+  box.appendChild(hmEl('div','hm-empty-sub', 'La bitácora del pipeline aparece acá apenas hay actividad: lanzamientos de agentes, fases, builds, merges, rebotes y bloqueos.'));
+  return box;
+}
+
+function hmRenderTimeline(data, append){
+  var tl = document.getElementById('hm-timeline'); if(!tl) return;
+  if(!append) tl.textContent = '';
+  if(!data || !data.groups || !data.groups.length){
+    if(!append) tl.appendChild(hmEmpty());
+    return;
+  }
+  data.groups.forEach(function(g){
+    var grp = hmEl('div','hm-day-group');
+    var day = hmEl('div','hm-day');
+    day.appendChild(hmEl('span','hm-day-label', g.dayLabel));
+    day.appendChild(hmEl('span','hm-day-aggr', g.count + ' ejec. · ' + hmPct(g.pctApproved) + ' ✓'));
+    grp.appendChild(day);
+    var items = hmEl('div','hm-day-items');
+    g.items.forEach(function(h){ items.appendChild(hmCard(h)); });
+    grp.appendChild(items);
+    tl.appendChild(grp);
+  });
+}
+
+function hmFillSelect(sel, values, selected, allLabel, labelMap){
+  if(!sel) return;
+  var cur = selected || '';
+  sel.textContent = '';
+  var o0 = hmEl('option', null, allLabel); o0.value=''; sel.appendChild(o0);
+  values.forEach(function(v){ var o=hmEl('option', null, (labelMap && labelMap[v]) ? labelMap[v] : v); o.value=v; sel.appendChild(o); });
+  sel.value = cur;
+}
+
+function hmUpdateFacets(facets){
+  if(!facets) return;
+  var sig = JSON.stringify(facets) + '|' + hmState.eventType + '|' + hmState.skill + '|' + hmState.provider;
+  if(sig === hmFacetsSig) return;
+  hmFacetsSig = sig;
+  hmFillSelect(document.querySelector('[data-hm-filter="eventType"]'), facets.eventTypes||[], hmState.eventType, 'Todo evento', EVENT_LABELS);
+  hmFillSelect(document.querySelector('[data-hm-filter="skill"]'), facets.skills||[], hmState.skill, 'Todo skill', null);
+  hmFillSelect(document.querySelector('[data-hm-filter="provider"]'), facets.providers||[], hmState.provider, 'Todo proveedor', null);
+}
+
+function hmSetBanner(id, h, emptyTxt){
+  var box = document.getElementById(id); if(!box) return;
+  box.textContent = '';
+  if(!h){ box.appendChild(document.createTextNode(emptyTxt)); box.classList.add('hm-bm-empty'); return; }
+  box.classList.remove('hm-bm-empty');
+  var a = document.createElement('a'); a.href = GH_ISS + h.issue; a.target='_blank'; a.rel='noopener noreferrer'; a.className='hm-bm-issue'; a.textContent = '#'+h.issue;
+  box.appendChild(a);
+  box.appendChild(document.createTextNode(' ' + (h.skill||'') + ' · ' + hmRel(hmTs(h))));
+}
+
+function hmUpdateBanner(data){
+  if(!data) return;
+  var today = 0;
+  (data.groups||[]).forEach(function(g){ if(g.dayLabel==='Hoy') today = g.count; });
+  setText('hm-today', today);
+  var flat = [];
+  (data.groups||[]).forEach(function(g){ (g.items||[]).forEach(function(h){ flat.push(h); }); });
+  var merge=null, rebote=null;
+  for(var i=0;i<flat.length;i++){ var h=flat[i]; if(!merge && h.eventType==='merge') merge=h; if(!rebote && h.eventType==='rebote') rebote=h; if(merge && rebote) break; }
+  hmSetBanner('hm-merge', merge, 'sin merges recientes');
+  hmSetBanner('hm-rebote', rebote, 'sin rebotes recientes');
+  hmSetBanner('hm-recent', flat[0], 'sin actividad');
+  var agg = data.aggregates || {};
+  setText('hm-aggr-count', agg.count!=null ? agg.count : '—');
+  setText('hm-aggr-pct', hmPct(agg.pctApproved));
+}
+
+var hmLoadMore = document.getElementById('hm-load-more');
+function hmApply(cursor, append){
+  return fetchJson('/api/dash/historial?' + hmBuildQuery(cursor)).then(function(data){
+    if(!data) return;
+    hmRenderTimeline(data, append);
+    hmUpdateFacets(data.facets);
+    if(hmLoadMore){
+      if(data.nextCursor!=null){ hmLoadMore.style.display=''; hmLoadMore.setAttribute('data-next', data.nextCursor); }
+      else hmLoadMore.style.display='none';
+    }
+  });
+}
+function hmRefreshBanner(){
+  // Pulso global (sin filtros), independiente de lo que el operador esté viendo.
+  return fetchJson('/api/dash/historial?period=all&limit=40').then(function(data){ if(data) hmUpdateBanner(data); });
+}
+
+var hmFilters = document.querySelector('[data-hm-filters]');
+var hmDebounce;
+if(hmFilters){
+  hmFilters.addEventListener('click', function(ev){
+    var chip = ev.target.closest('[data-hm-period]'); if(!chip) return;
+    hmState.period = chip.getAttribute('data-hm-period');
+    hmFilters.querySelectorAll('[data-hm-period]').forEach(function(c){ c.classList.toggle('hm-chip-on', c===chip); });
+    hmApply(0, false);
+  });
+  hmFilters.addEventListener('change', function(ev){
+    var f = ev.target.getAttribute && ev.target.getAttribute('data-hm-filter'); if(!f || f==='q' || f==='issue') return;
+    hmState[f] = ev.target.value || '';
+    hmApply(0, false);
+  });
+  hmFilters.addEventListener('input', function(ev){
+    var f = ev.target.getAttribute && ev.target.getAttribute('data-hm-filter'); if(f!=='q' && f!=='issue') return;
+    clearTimeout(hmDebounce);
+    // El filtro de issue es numérico: descarta cualquier no-dígito.
+    if(f==='issue') hmState.issue = (ev.target.value||'').replace(/[^0-9]/g,'');
+    else hmState.q = ev.target.value || '';
+    hmDebounce = setTimeout(function(){ hmApply(0, false); }, 300);
+  });
+}
+if(hmLoadMore){
+  hmLoadMore.addEventListener('click', function(){ var c = hmLoadMore.getAttribute('data-next'); if(c!=null) hmApply(c, true); });
+}
+
+// #4244 — Hidratación del banner de ola común (② del marco MIZPÁ). El SSR llega
+// neutro (igual que en la HOME / EQUIPO); este tick espeja /api/dash/waves a los
+// IDs mission-* del helper compartido renderMissionBanner. Defensivo: cualquier
+// dato ausente degrada a neutro sin romper el resto de la pantalla.
+async function hmTickMission(){
+  const d = await fetchJson('/api/dash/waves');
+  if(!d) return;
+  try {
+    const wave = d.active_wave;
+    if(!wave){
+      setText('mission-wave-num', '—');
+      setText('mission-wave-name', 'Sin ola activa');
+      setText('mission-wave-desc', 'Esperando la planificación de la ola activa.');
+      return;
+    }
+    if(Number.isFinite(wave.number)) setText('mission-wave-num', String(wave.number));
+    setText('mission-wave-name', wave.name ? ('Ola ' + wave.number + ' · ' + wave.name) : ('Ola ' + wave.number));
+    setText('mission-wave-desc', wave.goal || wave.description || ('Issues de la ola ' + wave.number + ' en curso.'));
+    const tag = document.getElementById('mission-wave-tag');
+    if(tag) tag.style.display = wave.isLast ? '' : 'none';
+    const issues = Array.isArray(wave.issues) ? wave.issues : [];
+    let done=0, active=0, blocked=0, queue=0;
+    for(const it of issues){
+      const s = it && it.status;
+      if(s === 'completed') done++;
+      else if(s === 'in-progress') active++;
+      else if(s === 'blocked') blocked++;
+      else queue++;
+    }
+    const total = issues.length || 0;
+    // #4296 — avance % lo hidrata el accessor compartido (/api/dash/ola-eta);
+    // acá sólo leyenda/barras/entregados desde los conteos de la ola.
+    setText('mission-leg-done', String(done));
+    setText('mission-leg-active', String(active));
+    setText('mission-leg-blocked', String(blocked));
+    setText('mission-leg-queue', String(queue));
+    // #4452 — la barra de avance (#mission-bar-progress) la hidrata
+    // __applyMissionOlaEta desde avancePct; NO se rellena por distribución.
+    const dv = document.getElementById('mission-delivered-value');
+    if(dv) dv.innerHTML = done + '<span class="mz-wm-u"> / ' + total + '</span>';
+    const dsub = document.getElementById('mission-delivered-sub');
+    if(dsub) dsub.textContent = Math.max(0, total-done) + ' restantes';
+    // #4296 — velocidad (%/h) y ETA los hidrata el accessor compartido desde
+    // /api/dash/ola-eta (ritmo determinístico de la ola), no desde openedAt.
+  } catch(_) {}
+}
+
+const POLLS = [
+  { fn: tickHeader, ms: 5000 },
+  { fn: hmTickMission, ms: 30000 },
+  { fn: hmRefreshBanner, ms: 15000 },
+  { fn: function(){ return hmApply(0, false); }, ms: 45000 }
+];
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('Historial', 'Eventos del pipeline', body, script, css);
+
+    // #4244 — Marco común MIZPÁ en HISTORIAL (de #4234): ① cabecera de marca
+    // (renderHistorialBrandBar, mismo markup/clases `.mz-*` del theme.css que el
+    // resto), ② banner de ola común (renderMissionBanner compartido de la HOME,
+    // vía `missionHtml`, SSR neutro + hidratado por hmTickMission desde
+    // /api/dash/waves), ③ barra de accesos (renderNavTabsSsr('historial'), ya
+    // inyectada por pageShell). El contenido propio de HISTORIAL (`.hm`, su banner
+    // de pulso reciente y el feed) queda debajo del marco (CA-4). Reusa los
+    // helpers/CSS compartidos del marco (CA-5: el CSS `mz-*` ya vive en theme.css,
+    // no se duplica markup). Si la HOME no cargó, `missionHtml` queda vacío y el
+    // resto del marco sigue intacto (defensa en profundidad — el pipeline no puede morir).
+    const missionHtml = (homeView && typeof homeView.renderMissionBanner === 'function')
+        ? homeView.renderMissionBanner()
+        : '';
+    return pageShell('Historial', 'Bitácora del pipeline · MIZPÁ', body, script, css, 'historial', {
+        brandHtml: renderHistorialBrandBar(),
+        missionHtml,
+        breadcrumbHtml: breadcrumb,
+    });
 }
 
 // ─────────────────── Costos ───────────────────
-function renderCostos() {
-    const body = `
-<section class="in-section">
-  <h2 class="in-section-title"><span class="in-section-title-icon">📊</span>Cuota Plan Max · sesión 5h + semanal (reset domingo 21:00 ART)</h2>
-  <p style="color:var(--in-fg-dim);font-size:12px;margin:0 0 14px 0">Anthropic no expone API. Estimación basada en duration_ms del activity-log (solo agentes Claude del pipeline; tu uso interactivo en claude.ai cuenta aparte). Auto-ajuste pasivo del límite semanal cuando el observado lo supera sin bloqueos.</p>
-  <div id="quota-grid" class="kp-grid"></div>
-  <div id="quota-bar-wrap" style="margin-top:14px"></div>
-  <div id="quota-meta" style="margin-top:10px;font-size:12px;color:var(--in-fg-dim)"></div>
-  <details id="quota-calib" style="margin-top:14px;border-top:1px solid var(--in-border);padding-top:12px">
-    <summary style="cursor:pointer;font-size:12px;color:var(--in-fg-dim);user-select:none">🎯 Calibrar con valores reales de claude.ai/settings/usage (con aprendizaje)</summary>
-    <p style="font-size:11px;color:var(--in-fg-dim);margin:10px 0 6px 0">Pegá los % que ves y, si querés mejorar la precisión del reset semanal, también el tiempo restante hasta cada reset. Cada calibración entra al historial — los factores se promedian con EMA (más muestras = más estables, menos sensibles a outliers).</p>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
-      <div>
-        <label style="font-size:11px;color:var(--in-fg-dim);display:block;margin-bottom:4px">% semanal real</label>
-        <input id="calib-weekly" type="number" step="0.1" min="0" max="100" placeholder="ej: 22" class="in-btn" style="width:100%;background:var(--in-bg-3);font-family:var(--in-mono)">
-      </div>
-      <div>
-        <label style="font-size:11px;color:var(--in-fg-dim);display:block;margin-bottom:4px">% sesión 5h real</label>
-        <input id="calib-session" type="number" step="0.1" min="0" max="100" placeholder="ej: 60" class="in-btn" style="width:100%;background:var(--in-bg-3);font-family:var(--in-mono)">
-      </div>
-      <div>
-        <label style="font-size:11px;color:var(--in-fg-dim);display:block;margin-bottom:4px">Sesión: día y hora del reset (opcional)</label>
-        <input id="calib-session-at" type="datetime-local" class="in-btn" style="width:100%;background:var(--in-bg-3);font-family:var(--in-mono)">
-      </div>
-      <div>
-        <label style="font-size:11px;color:var(--in-fg-dim);display:block;margin-bottom:4px">Semanal: día y hora del reset (opcional)</label>
-        <input id="calib-weekly-at" type="datetime-local" class="in-btn" style="width:100%;background:var(--in-bg-3);font-family:var(--in-mono)">
-      </div>
-    </div>
-    <div style="display:flex;gap:8px">
-      <button id="calib-save" class="in-btn" style="border-color:var(--in-accent);color:var(--in-accent)">▶ Aplicar y aprender</button>
-      <button id="calib-clear" class="in-btn" style="border-color:var(--in-fg-soft);color:var(--in-fg-dim)">✕ Borrar calibración</button>
-    </div>
-    <div id="calib-status" style="margin-top:10px;font-size:11px;color:var(--in-fg-dim)"></div>
-    <div id="calib-history" style="margin-top:14px"></div>
-  </details>
-</section>
-<section class="in-section">
-  <h2 class="in-section-title"><span class="in-section-title-icon">💰</span>Consumo · tokens y costo</h2>
-  <p style="color:var(--in-fg-dim);font-size:12px;margin:0 0 14px 0">Datos del aggregator V3 (.pipeline/metrics/snapshot.json). Reload cada 60s.</p>
-  <div id="costos-grid" class="kp-grid"></div>
-</section>
-<section class="in-section">
-  <h2 class="in-section-title"><span class="in-section-title-icon">📋</span>Por skill</h2>
-  <pre id="costos-detail" class="kp-pre"></pre>
-</section>`;
+function renderCostos(opts) {
+    // #4194 EP7.1 — la pantalla COSTOS es ahora el rediseño integral MIZPÁ
+    // (banner de misión + gráfico de barras apiladas 14d por proveedor +
+    // proyecciones + detalle por skill con columna de proveedor + «Cuota por
+    // proveedor» con las 5 tarjetas). El `redesignHtml` lo arma SSR el módulo
+    // views/dashboard/costos.js (renderCostosRedesign) desde costosSlice.
+    //
+    // El rediseño ABSORBE el contenido legacy: la antigua sección «Cuota Plan
+    // Max» (sólo Anthropic) la reemplazan las 5 tarjetas de cuota por proveedor
+    // (CA-2). #4861 — la herramienta de calibración manual de Claude se ELIMINÓ
+    // (fuente única = claude -p /usage); `tickQuota` ahora muestra sólo el % real
+    // y hace fail-closed sin dato. Los IDs legacy que ya no existen
+    // (quota-grid/costos-grid/costos-detail) están guardados con `if(el)` en el
+    // script → no rompen.
+    const redesignHtml = (opts && typeof opts.redesignHtml === 'string') ? opts.redesignHtml : '';
+    const body = redesignHtml || `<section class="in-section"><div class="in-empty">Pantalla de Costos no disponible (módulo de render no cargó). Reintentá el refresh.</div></section>`;
     const css = `
 .kp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
 .kp-tile { background: var(--in-bg-3); padding: 18px; border-radius: var(--in-radius); border: 1px solid var(--in-border); display: flex; flex-direction: column; gap: 6px; }
@@ -1316,168 +1739,63 @@ function renderCostos() {
 .kp-tile.kp-ok .kp-tile-value { color: var(--in-ok); }`;
     const script = `
 async function tickQuota(){
+    // #4861 — Fuente UNICA de cuota Anthropic: claude -p /usage (adapter
+    // quota-adapters/anthropic.js). Ya no hay heuristica de duracion ni
+    // calibracion manual: el % que se muestra ES el real. Fail-closed si el
+    // adapter no tiene dato fresco (adapterStatus != ok o pct null): mostramos
+    // 'sin dato', NUNCA 0% (0% se leeria como cuota disponible y desviaria el
+    // pacing). Ver guidelines UX G1/G2 del issue.
     const d = await fetchJson('/api/dash/quota');
     const grid = document.getElementById('quota-grid');
     const barWrap = document.getElementById('quota-bar-wrap');
     const meta = document.getElementById('quota-meta');
     if(!d || d.error){
-        if(grid) grid.innerHTML = '<div class="in-empty">Sin datos de cuota: '+(d && d.error || 'activity-log vacío')+'</div>';
+        if(grid) grid.innerHTML = '<div class="in-empty">Sin datos de cuota: '+(d && d.error || 'activity-log vacio')+'</div>';
         return;
     }
-    const sess = d.session || { hoursUsed: 0, pct: 0, realPct: null, hoursRemaining: 5, status: 'ok', realStatus: 'ok' };
-    const sessShownPct = sess.realPct != null ? sess.realPct : sess.pct;
-    const sessShownStatus = sess.realPct != null ? sess.realStatus : sess.status;
-    const sessCls = sessShownStatus==='critical'?'kp-bad':sessShownStatus==='warning'?'kp-warn':sessShownStatus==='normal'?'':'kp-ok';
-    const weekShownPct = d.realPct != null ? d.realPct : d.pct;
-    const weekShownStatus = d.realPct != null ? d.realStatus : d.status;
-    const weekCls = weekShownStatus==='critical'?'kp-bad':weekShownStatus==='warning'?'kp-warn':weekShownStatus==='normal'?'':'kp-ok';
-    const resetTxt = d.daysToReset != null ? 'Reset en '+d.daysToReset.toFixed(1)+' días' : '';
-    const sessLabel = sess.realPct != null ? 'Sesión 5h · estimado real' : 'Sesión actual · 5h';
-    const sessCap = sess.realPctCapped ? ' ⚠ recalibrar' : '';
-    const sessRawTxt = sess.realPctRaw != null && sess.realPctCapped
-        ? ' (raw '+sess.realPctRaw.toFixed(1)+'%)'
-        : '';
-    const sessSub = sess.realPct != null
-        ? 'pipeline '+sess.pct.toFixed(1)+'% × '+(d.calibration && d.calibration.session_factor ? d.calibration.session_factor : 1)+sessRawTxt+sessCap
-        : sess.hoursUsed.toFixed(2)+'h / 5h';
-    const weekLabel = d.realPct != null ? 'Semanal · estimado real' : 'Semanal · cuota';
-    const weekCap = d.realPctCapped ? ' ⚠ recalibrar' : '';
-    const weekRawTxt = d.realPctRaw != null && d.realPctCapped
-        ? ' (raw '+d.realPctRaw.toFixed(1)+'%)'
-        : '';
-    const weekSub = d.realPct != null
-        ? 'pipeline '+d.pct.toFixed(1)+'% × '+(d.calibration && d.calibration.weekly_factor ? d.calibration.weekly_factor : 1)+weekRawTxt+weekCap
-        : 'de '+d.effectiveLimitHours+'h estimadas';
+    const hasReal = d.adapterStatus === 'ok' && d.pct != null;
+    const sess = d.session || {};
+    const clsOf = (st) => st==='critical'?'kp-bad':st==='warning'?'kp-warn':st==='normal'?'':st==='ok'?'kp-ok':'kp-warn';
+    if(!hasReal){
+        const reason = d.errorReason || 'Sin lectura de /usage (adapter no disponible o snapshot vencido) — pacing en modo conservador';
+        if(grid){
+            const html = '<div class="kp-tile kp-warn" role="status" aria-label="Sin dato de cuota Anthropic" title="'+escapeHtml(reason)+'">'
+                +'<div class="kp-tile-label">Cuota Anthropic</div>'
+                +'<div class="kp-tile-value">&#9203; sin dato</div>'
+                +'<div class="kp-tile-sub">'+escapeHtml(reason)+'</div></div>';
+            if(grid.innerHTML !== html) grid.innerHTML = html;
+        }
+        if(barWrap && barWrap.innerHTML !== '') barWrap.innerHTML = '';
+        if(meta && meta.textContent !== reason) meta.textContent = reason;
+        return;
+    }
+    const weekPct = d.pct;
+    const weekStatus = d.status;
+    const sessPct = sess.pct;
+    const sessStatus = sess.status;
+    const fmtPct = (v) => (v != null ? Number(v).toFixed(1)+'%' : '—');
     const tiles = [
-        { label: sessLabel, value: sessShownPct.toFixed(1)+'%', sub: sessSub, cls: sessCls },
-        { label: 'Sesión · restante (pipeline)', value: sess.hoursRemaining.toFixed(2)+'h', sub: 'reset rolling 5h', cls: '' },
-        { label: 'Semanal · pipeline usado', value: d.hoursUsed7d.toFixed(1)+'h', sub: d.sessionsCount7d+' sesiones desde dom 21h', cls: '' },
-        { label: weekLabel, value: weekShownPct.toFixed(1)+'%', sub: weekSub, cls: weekCls },
-        { label: 'Horas restantes (pipeline)', value: d.hoursRemaining+'h', sub: resetTxt, cls: '' },
-        { label: 'Burn rate (pipeline)', value: d.burnRatePerDay+'h/d', sub: 'últimas 24h o promedio semana', cls: '' },
-        { label: 'Días al límite', value: d.daysToLimit != null ? d.daysToLimit.toFixed(1)+'d' : '∞', sub: 'al ritmo actual', cls: d.daysToLimit != null && d.daysToLimit < 1 ? 'kp-bad' : d.daysToLimit != null && d.daysToLimit < 2 ? 'kp-warn' : '' },
-        { label: 'Auto-ajustes', value: d.adjustmentsCount, sub: 'observed: '+d.observedMaxHours+'h', cls: '' },
+        { label: 'Sesion 5h - uso real', value: fmtPct(sessPct), sub: d.sessionResetsRaw ? 'reset: '+d.sessionResetsRaw : 'rolling 5h', cls: clsOf(sessStatus) },
+        { label: 'Semanal - uso real', value: fmtPct(weekPct), sub: d.weeklyResetsRaw ? 'reset: '+d.weeklyResetsRaw : 'ventana semanal', cls: clsOf(weekStatus) },
     ];
     let html = '';
     for(const t of tiles) html += '<div class="kp-tile '+t.cls+'"><div class="kp-tile-label">'+escapeHtml(t.label)+'</div><div class="kp-tile-value">'+escapeHtml(String(t.value))+'</div><div class="kp-tile-sub">'+escapeHtml(t.sub)+'</div></div>';
     if(grid && grid.innerHTML !== html) grid.innerHTML = html;
     if(barWrap){
-        const barCls = d.status==='critical'?'bad':d.status==='warning'?'warn':'';
-        const barHtml = '<div class="quota-bar '+barCls+'"><span style="width:'+Math.min(100,d.pct).toFixed(1)+'%"></span></div><div class="quota-bar-label"><span>'+d.hoursUsed7d.toFixed(1)+'h consumidas</span><span>'+d.effectiveLimitHours+'h estimadas</span></div>';
+        const barCls = weekStatus==='critical'?'bad':weekStatus==='warning'?'warn':'';
+        const sessTxt = sessPct != null ? sessPct.toFixed(1)+'% sesion' : '';
+        const barHtml = '<div class="quota-bar '+barCls+'"><span style="width:'+Math.min(100,weekPct).toFixed(1)+'%"></span></div><div class="quota-bar-label"><span>'+weekPct.toFixed(1)+'% semanal</span><span>'+sessTxt+'</span></div>';
         if(barWrap.innerHTML !== barHtml) barWrap.innerHTML = barHtml;
     }
-    // fmtART al scope de la función (no dentro de if(meta)) porque también
-    // lo usa el bloque de calibración debajo. Antes estaba scoped al if(meta)
-    // y rompía con ReferenceError → el binding del botón nunca se ejecutaba.
-    const fmtART = (iso) => new Date(iso).toLocaleString('es-AR', { hour12: false, day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
     if(meta){
-        const lines = [];
-        if(d.lastResetAt && d.nextResetAt){
-            lines.push('🗓 Semana actual: ' + fmtART(d.lastResetAt) + ' → ' + fmtART(d.nextResetAt));
+        const lines = ['Fuente: claude -p /usage (valor real).'];
+        if(d.usageSource && d.usageSource.capturedAt){
+            const cap = new Date(d.usageSource.capturedAt).toLocaleString('es-AR', { hour12: false, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+            lines.push('Capturado: '+cap);
         }
-        if(d.adjustmentsCount > 0) lines.push('🔧 Límite auto-ajustado '+d.adjustmentsCount+' vez/veces (config: '+d.configLimitHours+'h → actual: '+d.effectiveLimitHours+'h)');
-        if(d.daysToLimit != null && d.daysToLimit < 2) lines.push('⚠ Llegás al límite en ~'+d.daysToLimit.toFixed(1)+' días al ritmo actual');
-        else if(d.daysToLimit == null || d.daysToLimit > (d.daysToReset || 7)) lines.push('✓ Cuota dura hasta el próximo reset al ritmo actual');
-        if(d.observedMaxAt) lines.push('Pico observado en la semana: '+d.observedMaxHours+'h (' + fmtART(d.observedMaxAt) + ')');
-        const txt = lines.join(' · ');
+        if(d.weeklyResetsRaw) lines.push('Reset semanal: '+d.weeklyResetsRaw);
+        const txt = lines.join(' - ');
         if(meta.textContent !== txt) meta.textContent = txt;
-    }
-    // Renderizar status de calibración + bind del botón (idempotente).
-    const calibStatus = document.getElementById('calib-status');
-    if(calibStatus){
-        let ctxt;
-        if(d.calibration){
-            const at = fmtART(d.calibration.at);
-            const stale = d.calibrationStale ? ' ⚠ ' : ' ✓ ';
-            const ageInfo = d.calibrationAgeDays != null ? ' (hace '+d.calibrationAgeDays+'d)' : '';
-            ctxt = stale+'Calibrado #'+d.calibration.sample_count+' · '+at+ageInfo+' · factor smooth(w=×'+d.calibration.weekly_factor+', s=×'+d.calibration.session_factor+') raw esta vez(w=×'+d.calibration.weekly_factor_obs+', s=×'+d.calibration.session_factor_obs+') · α EMA '+d.calibration.ema_alpha;
-            if(d.calibrationStale) ctxt += ' — recomendado recalibrar';
-            if(d.weeklyResetDriftMin) ctxt += ' · drift TZ del reset semanal: '+d.weeklyResetDriftMin+' min';
-        } else {
-            ctxt = 'Sin calibrar. Pegá los % que ves en claude.ai/settings/usage para extrapolar el real.';
-        }
-        if(calibStatus.textContent !== ctxt) calibStatus.textContent = ctxt;
-    }
-
-    // Historial de calibraciones (tabla compacta)
-    const calibHist = document.getElementById('calib-history');
-    if(calibHist){
-        const arr = (d.calibrations || []).slice().reverse();
-        if(arr.length === 0){
-            calibHist.innerHTML = '';
-        } else {
-            const rows = arr.slice(0, 10).map(c => '<tr>'+
-                '<td style="padding:4px 8px">'+fmtART(c.at)+'</td>'+
-                '<td style="padding:4px 8px;text-align:right">'+c.real_weekly_pct+'%</td>'+
-                '<td style="padding:4px 8px;text-align:right">'+c.real_session_pct+'%</td>'+
-                '<td style="padding:4px 8px;text-align:right;color:var(--in-fg-dim)">'+c.pipeline_weekly_pct_at.toFixed(1)+'%</td>'+
-                '<td style="padding:4px 8px;text-align:right;color:var(--in-fg-dim)">'+c.pipeline_session_pct_at.toFixed(1)+'%</td>'+
-                '<td style="padding:4px 8px;text-align:right">×'+c.weekly_factor_obs+'</td>'+
-                '<td style="padding:4px 8px;text-align:right">×'+c.session_factor_obs+'</td>'+
-                '</tr>').join('');
-            const html = '<details style="margin-top:6px"><summary style="cursor:pointer;font-size:11px;color:var(--in-fg-dim);user-select:none">📜 Historial de '+arr.length+' calibración'+(arr.length===1?'':'es')+'</summary>'+
-                '<table style="width:100%;font-size:11px;font-family:var(--in-mono);margin-top:8px;border-collapse:collapse"><thead><tr style="color:var(--in-fg-dim);border-bottom:1px solid var(--in-border)">'+
-                '<th style="padding:4px 8px;text-align:left">Fecha</th>'+
-                '<th style="padding:4px 8px;text-align:right">Sem real</th>'+
-                '<th style="padding:4px 8px;text-align:right">Ses real</th>'+
-                '<th style="padding:4px 8px;text-align:right">Sem pipe</th>'+
-                '<th style="padding:4px 8px;text-align:right">Ses pipe</th>'+
-                '<th style="padding:4px 8px;text-align:right">×Sem</th>'+
-                '<th style="padding:4px 8px;text-align:right">×Ses</th>'+
-                '</tr></thead><tbody>'+rows+'</tbody></table></details>';
-            if(calibHist.innerHTML !== html) calibHist.innerHTML = html;
-        }
-    }
-
-    // Bind del botón Aplicar
-    const calibBtn = document.getElementById('calib-save');
-    if(calibBtn && !calibBtn.dataset._bound){
-        calibBtn.dataset._bound = '1';
-        calibBtn.addEventListener('click', async () => {
-            const w = parseFloat(document.getElementById('calib-weekly').value);
-            const s = parseFloat(document.getElementById('calib-session').value);
-            const sAtRaw = document.getElementById('calib-session-at').value;
-            const wAtRaw = document.getElementById('calib-weekly-at').value;
-            // datetime-local NO incluye TZ — el browser lo interpreta como local.
-            // new Date('2026-04-27T22:00') usa TZ del browser, que para el
-            // operador es ART (lo que queremos). Convertimos a ISO UTC.
-            const sAt = sAtRaw ? new Date(sAtRaw).toISOString() : null;
-            const wAt = wAtRaw ? new Date(wAtRaw).toISOString() : null;
-            if(!Number.isFinite(w) || !Number.isFinite(s)){
-                showToast('Ingresá ambos % (semanal y sesión)', false);
-                return;
-            }
-            try{
-                const body = { real_weekly_pct: w, real_session_pct: s };
-                if(sAt) body.session_resets_at = sAt;
-                if(wAt) body.weekly_resets_at = wAt;
-                const r = await fetch('/api/dash/quota/calibrate', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-                const j = await r.json();
-                showToast(j.msg || (j.ok?'Calibrado':'Falló'), j.ok);
-                if(j.ok){
-                    document.getElementById('calib-weekly').value = '';
-                    document.getElementById('calib-session').value = '';
-                    document.getElementById('calib-session-at').value = '';
-                    document.getElementById('calib-weekly-at').value = '';
-                }
-                setTimeout(() => tickQuota().catch(()=>{}), 400);
-            } catch(e){ showToast('Error: '+e.message, false); }
-        });
-    }
-
-    // Bind del botón Borrar
-    const calibClear = document.getElementById('calib-clear');
-    if(calibClear && !calibClear.dataset._bound){
-        calibClear.dataset._bound = '1';
-        calibClear.addEventListener('click', async () => {
-            if(!confirm('¿Borrar la calibración actual? El KPI vuelve a mostrar el pipeline raw. El historial de calibraciones previas se conserva.')) return;
-            try{
-                const r = await fetch('/api/dash/quota/calibrate', {method:'DELETE'});
-                const j = await r.json();
-                showToast(j.msg || (j.ok?'Borrada':'Falló'), j.ok);
-                setTimeout(() => tickQuota().catch(()=>{}), 400);
-            } catch(e){ showToast('Error: '+e.message, false); }
-        });
     }
 }
 
@@ -1533,199 +1851,45 @@ const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickQuota, ms: 60000 }, { fn:
 async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
 runAll();
 for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('Costos', 'Cuota Plan Max + tokens y consumo', body, script, css);
-}
-
-// ─────────────────── Modo descanso (#2890 PR-A) ───────────────────
-function renderModoDescanso() {
-    const body = `
-<section class="in-section">
-  <h2 class="in-section-title"><span class="in-section-title-icon">🌙</span>Modo descanso · gating horario</h2>
-  <p style="color:var(--in-fg-dim);font-size:12px;margin:0 0 14px 0">
-    Durante la ventana configurada, sólo corren los <strong>skills determinísticos</strong>
-    (delivery, builder, linter, tester). El resto se queda en cola y arranca al cerrar la ventana.
-    Los issues con label <code>priority:critical</code> hacen bypass del gate.
-  </p>
-  <div id="rm-status" class="rm-status">…</div>
-  <form id="rm-form" class="rm-form" novalidate>
-    <div class="rm-row">
-      <label class="rm-label">
-        <input type="checkbox" id="rm-active"> <strong>Activar modo descanso</strong>
-      </label>
-      <span class="rm-hint">Si destildás, el pipeline opera sin restricciones (CA-1.9).</span>
-    </div>
-    <div class="rm-row rm-row-grid">
-      <label>
-        <span class="rm-label-text">Inicio (HH:MM)</span>
-        <input type="time" id="rm-start" required>
-      </label>
-      <label>
-        <span class="rm-label-text">Fin (HH:MM)</span>
-        <input type="time" id="rm-end" required>
-      </label>
-      <label>
-        <span class="rm-label-text">Timezone</span>
-        <input type="text" id="rm-timezone" placeholder="America/Argentina/Buenos_Aires" list="rm-tz-list">
-        <datalist id="rm-tz-list"></datalist>
-      </label>
-    </div>
-    <div class="rm-row">
-      <span class="rm-label-text">Días activos</span>
-      <div class="rm-days" id="rm-days">
-        <label><input type="checkbox" data-day="1"> Lun</label>
-        <label><input type="checkbox" data-day="2"> Mar</label>
-        <label><input type="checkbox" data-day="3"> Mié</label>
-        <label><input type="checkbox" data-day="4"> Jue</label>
-        <label><input type="checkbox" data-day="5"> Vie</label>
-        <label><input type="checkbox" data-day="6"> Sáb</label>
-        <label><input type="checkbox" data-day="0"> Dom</label>
-      </div>
-    </div>
-    <div class="rm-row rm-actions">
-      <button type="submit" class="in-btn rm-save">💾 Guardar configuración</button>
-      <span id="rm-msg" class="rm-msg"></span>
-    </div>
-  </form>
-  <div class="rm-meta">
-    <p><strong>Bypass labels</strong> (read-only, viven en <code>config.yaml</code>):
-      <span id="rm-bypass">…</span></p>
-    <p><strong>Última actualización:</strong> <span id="rm-updated">—</span></p>
-  </div>
-</section>`;
-    const css = `
-.rm-status { padding: 12px 16px; border-radius: var(--in-radius-sm); border: 1px solid var(--in-border); background: var(--in-bg-3); margin-bottom: 16px; font-size: 13px; }
-.rm-status.rm-active { border-color: rgba(124,92,255,0.55); color: var(--rest-mode-fg, #C5B7FF); background: var(--rest-mode-bg, rgba(124,92,255,0.16)); }
-.rm-status.rm-inactive { color: var(--in-fg-dim); }
-.rm-form { display: flex; flex-direction: column; gap: 14px; }
-.rm-row { display: flex; flex-direction: column; gap: 6px; }
-.rm-row-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
-.rm-row label { font-size: 12px; color: var(--in-fg); display: flex; flex-direction: column; gap: 4px; }
-.rm-label { flex-direction: row !important; align-items: center; gap: 8px !important; }
-.rm-label-text { font-size: 11px; text-transform: uppercase; color: var(--in-fg-dim); letter-spacing: 0.5px; }
-.rm-hint { font-size: 11px; color: var(--in-fg-soft); }
-.rm-form input[type="time"], .rm-form input[type="text"] { padding: 7px 9px; background: var(--in-bg); color: var(--in-fg); border: 1px solid var(--in-border); border-radius: 4px; font-family: var(--in-mono); font-size: 12px; }
-.rm-form input:focus { outline: none; border-color: var(--in-accent); }
-.rm-days { display: flex; flex-wrap: wrap; gap: 12px; padding: 6px 0; }
-.rm-days label { flex-direction: row !important; align-items: center; gap: 5px !important; font-size: 12px; color: var(--in-fg); }
-.rm-actions { flex-direction: row !important; align-items: center; gap: 14px; padding-top: 8px; }
-.rm-save { background: var(--rest-mode-bg, rgba(124,92,255,0.16)); border-color: rgba(124,92,255,0.55); color: var(--rest-mode-fg, #C5B7FF); padding: 8px 16px; }
-.rm-save:hover { filter: brightness(1.18); }
-.rm-msg { font-size: 12px; color: var(--in-fg-dim); }
-.rm-msg.rm-ok { color: var(--in-ok); }
-.rm-msg.rm-err { color: var(--in-bad); }
-.rm-meta { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--in-border); font-size: 12px; color: var(--in-fg-dim); }
-.rm-meta p { margin: 4px 0; }
-.rm-meta code { font-family: var(--in-mono); background: var(--in-bg-3); padding: 1px 6px; border-radius: 3px; }`;
-    const script = `
-const TZ_DEFAULTS = ['America/Argentina/Buenos_Aires','UTC','America/New_York','America/Mexico_City','America/Sao_Paulo','Europe/Madrid','Europe/London'];
-
-function setMsg(text, kind){
-    const el = document.getElementById('rm-msg');
-    if(!el) return;
-    el.textContent = text || '';
-    el.classList.remove('rm-ok','rm-err');
-    if(kind === 'ok') el.classList.add('rm-ok');
-    if(kind === 'err') el.classList.add('rm-err');
-}
-
-function renderStatus(payload){
-    const status = document.getElementById('rm-status');
-    if(!status || !payload) return;
-    const w = payload.window || {};
-    status.classList.remove('rm-active','rm-inactive');
-    if(w.active && w.start && w.end){
-        status.classList.add('rm-active');
-        const within = payload.isWithinWindow ? '· **AHORA** dentro de la ventana' : '· programada';
-        status.innerHTML = '🌙 <strong>Activa</strong> '+escapeHtml(w.start)+'–'+escapeHtml(w.end)+' ('+escapeHtml(w.timezone||'')+') '+within.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');
-    } else {
-        status.classList.add('rm-inactive');
-        status.textContent = '○ Inactivo · pipeline opera sin restricciones.';
-    }
-    document.getElementById('rm-bypass').textContent = (payload.bypassLabels || []).join(', ') || '(ninguno)';
-    document.getElementById('rm-updated').textContent = w.updatedAt ? new Date(w.updatedAt).toLocaleString('es-AR') : '—';
-}
-
-function syncFormFromState(payload){
-    const w = (payload && payload.window) || {};
-    document.getElementById('rm-active').checked = !!w.active;
-    if(w.start) document.getElementById('rm-start').value = w.start;
-    if(w.end) document.getElementById('rm-end').value = w.end;
-    document.getElementById('rm-timezone').value = w.timezone || '';
-    const days = Array.isArray(w.days) ? w.days : [0,1,2,3,4,5,6];
-    document.querySelectorAll('#rm-days input[type=checkbox]').forEach(cb => {
-        const d = parseInt(cb.dataset.day, 10);
-        cb.checked = days.indexOf(d) >= 0;
+    // #4239 — Marco común MIZPÁ en COSTOS (de #4234): ① cabecera de marca
+    // (renderBrandBar), ② banner de ola común (renderMissionBanner(collectWave()),
+    // SSR-poblado igual que LOGS), ③ barra de accesos (renderNavTabsSsr('costos'),
+    // ya inyectada por pageShell vía el slot de nav). El contenido propio de COSTOS
+    // (`#costos-redesign`, incluido su banner de alarma de presupuesto) queda
+    // debajo del marco, sin tocarlo (CA-4). Reusa los helpers/CSS compartidos del
+    // marco (CA-5: no se duplica markup; el CSS `mz-*` ya vive en theme.css). Si el
+    // módulo del marco no cargó, `brandHtml`/`missionHtml` quedan vacíos y pageShell
+    // cae a su cabecera legacy (defensa en profundidad — el pipeline no puede morir).
+    const brandHtml = (mizpaFrame && typeof mizpaFrame.renderBrandBar === 'function')
+        ? mizpaFrame.renderBrandBar()
+        : undefined;
+    const missionHtml = (mizpaFrame && typeof mizpaFrame.renderMissionBanner === 'function')
+        ? mizpaFrame.renderMissionBanner(mizpaFrame.collectWave())
+        : '';
+    return pageShell('Costos', 'Consumo diario por proveedor · presupuesto y cuota de los 5 proveedores', body, script, css, 'costos', {
+        brandHtml,
+        missionHtml,
     });
 }
 
-function buildTimezoneList(){
-    const list = document.getElementById('rm-tz-list');
-    if(!list) return;
-    let zones = TZ_DEFAULTS;
-    try {
-        if(typeof Intl.supportedValuesOf === 'function'){
-            const all = Intl.supportedValuesOf('timeZone');
-            if(Array.isArray(all) && all.length) zones = all;
-        }
-    } catch(e){}
-    list.innerHTML = zones.map(z => '<option value="'+escapeHtml(z)+'"></option>').join('');
-}
-
-async function fetchRestMode(){
-    const r = await fetch('/api/rest-mode', {cache:'no-store'});
-    if(!r.ok) return null;
-    return r.json();
-}
-
-async function tickRestMode(){
-    const d = await fetchRestMode();
-    if(!d || !d.ok) return;
-    renderStatus(d);
-    if(!document.activeElement || !document.activeElement.closest('#rm-form')){
-        // Solo morphear el form si el usuario no está editando.
-        syncFormFromState(d);
-    }
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-    buildTimezoneList();
-    const form = document.getElementById('rm-form');
-    if(form){
-        form.addEventListener('submit', async (ev) => {
-            ev.preventDefault();
-            const days = [...document.querySelectorAll('#rm-days input[type=checkbox]')]
-                .filter(cb => cb.checked)
-                .map(cb => parseInt(cb.dataset.day, 10));
-            const payload = {
-                active: document.getElementById('rm-active').checked,
-                start: document.getElementById('rm-start').value,
-                end: document.getElementById('rm-end').value,
-                timezone: document.getElementById('rm-timezone').value || 'America/Argentina/Buenos_Aires',
-                days: days.length ? days : [0,1,2,3,4,5,6],
-                manual: true,
-            };
-            setMsg('Guardando…');
-            try {
-                const r = await fetch('/api/rest-mode', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-                const j = await r.json();
-                if(j.ok){
-                    setMsg('✓ Guardado · hot-reload sin reinicio del pipeline (CA-3.3).', 'ok');
-                    tickRestMode();
-                } else {
-                    setMsg('✗ '+(j.errors ? j.errors.join(' · ') : (j.msg || 'Error')), 'err');
-                }
-            } catch(e){
-                setMsg('✗ Error de red: '+e.message, 'err');
-            }
-        });
-    }
-});
-
-const POLLS = [{ fn: tickHeader, ms: 5000 }, { fn: tickRestMode, ms: 8000 }];
-async function runAll(){ for(const p of POLLS){ try{ await p.fn(); } catch{} } }
-runAll();
-for(const p of POLLS){ setInterval(() => { p.fn().catch(()=>{}); }, p.ms); }`;
-    return pageShell('Modo descanso', 'Ventana horaria · gating de skills LLM', body, script, css);
+// ─────────────────── Modo descanso (#3230 / hija frontend #3242) ───────────────────
+// Rediseño completo: grid semanal de 7 columnas con N periodos por día, basado en
+// los mockups `agent/3230-ux-rest-mode-redesign` (05-rest-mode-settings.svg y
+// 05b-rest-mode-validacion.svg). Reemplaza al form single-window del PR-A (#2890).
+//
+// El render del grid usa `document.createElement` + `.textContent` para todos los
+// campos provenientes del servidor (FE-SEC-1 / PO-FE-SEC-1 / CA-XSS).
+//
+// La validación cliente de overlap espeja la lógica del helper compartido
+// `lib/rest-mode-schedule.js` (que vive en este mismo PR) — el backend de la hija
+// #3241 va a usar ese mismo helper como source of truth. El cliente NUNCA confía
+// en su propia validación: siempre hace el round-trip a `POST /api/rest-mode`.
+// nota: solo UX, backend revalida en POST /api/rest-mode (FE-SEC-2 / SEC-9).
+// #3736 — Cuerpo extraído a views/dashboard/descanso.js (padre #3715). Se
+// mantiene este delegante de una línea para compat con HTML_ROUTES legacy
+// y cualquier caller que aún importe sat.renderModoDescanso.
+function renderModoDescanso() {
+    return require('./descanso').renderDescanso();
 }
 
 module.exports = {
@@ -1733,8 +1897,8 @@ module.exports = {
     renderPipeline,
     renderBloqueados,
     renderIssues,
-    renderMatriz,
-    renderOps,
+    // #3731 — renderMatriz extraído a views/dashboard/matriz.js (split del épico #3715).
+    // #3732 — renderOps extraído a views/dashboard/ops.js (split del épico #3715).
     renderKpisDetail,
     renderHistorial,
     renderCostos,

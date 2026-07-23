@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/intrale/platform/.pipeline/multi-provider-coverage.schema.json",
+  "title": "multi-provider-coverage.json — matriz skill × provider del smoke test (#3680)",
+  "description": "Schema canónico para .pipeline/multi-provider-coverage.json (split A del épico #3669, hijo A). Representa el último run del harness multi-provider-smoke-test: matriz skill × provider con estado (PASS/WARN/FAIL/SKIPPED/N/A), bucket de latencia (jamás ms absolutos — REQ-SEC-9 / CA-A7), hash de evidencia (SHA-256 del raw output que vive en el audit log). Ruling 2 PO: sibling del JSON (no .pipeline/schemas/). El validador fail-fast al boot usa Ajv 2020-12 — patrón análogo a agent-models-validate.js (#3081).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "generated_at", "run_id", "matrix", "summary"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Ref al schema. Conveniencia para IDEs."
+    },
+    "_doc": {
+      "type": "string",
+      "description": "Puntero a la documentación canónica (docs/pipeline/multi-provider-coverage.md)."
+    },
+    "version": {
+      "type": "string",
+      "const": "1.0.0",
+      "description": "Schema version. Bumpear sólo con migración explícita."
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO8601 UTC del run que generó esta matriz."
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identificador único del run (ej. timestamp + nonce). Anclado a cada entry del audit log para correlacionar — mitiga R7 (rotación diaria del JSONL)."
+    },
+    "agent_models_source_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA-256 del agent-models.json del que se derivó la matriz. Permite detectar drift entre coverage.json y agent-models.json sin recorrer."
+    },
+    "matrix": {
+      "type": "array",
+      "description": "Una entry por (skill, provider). N skills LLM × M providers (provider deterministic excluido). Tamaño no fijado por diseño — derivado dinámicamente desde agent-models.json (ruling 1 PO).",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/matrixEntry" }
+    },
+    "summary": { "$ref": "#/$defs/summary" },
+    "warnings": {
+      "type": "array",
+      "description": "Warnings de boot del harness (sidecar warning, etc). Informativo, no rompe validación.",
+      "items": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "matrixEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["skill", "provider", "model", "status", "latency_bucket"],
+      "properties": {
+        "skill": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Nombre del skill (debe existir en agent-models.json.skills)."
+        },
+        "provider": {
+          "type": "string",
+          "enum": [
+            "anthropic",
+            "openai-codex",
+            "gemini-google",
+            "cerebras",
+            "nvidia-nim"
+          ],
+          "description": "Provider LLM. 'deterministic' nunca aparece en la matriz (skill deterministic se excluye en buildMatrixFromAgentModels)."
+        },
+        "model": {
+          "type": ["string", "null"],
+          "description": "Modelo efectivo invocado (model_override del skill o default del provider). null si SKIPPED/N/A sin model resolvable."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["PASS", "WARN", "FAIL", "SKIPPED", "N/A"],
+          "description": "Veredicto de la combinación. PASS/WARN/FAIL clasifican según CA-A6. SKIPPED = credencial placeholder o ausente. N/A = combinación no aplica por diseño (ej. refinar × non-anthropic, anti-Gemini para security)."
+        },
+        "latency_bucket": {
+          "type": "string",
+          "enum": ["<=100ms", "<=500ms", "<=2s", "<=10s", ">10s", "N/A"],
+          "description": "Bucket discreto de latencia (CA-A7). 'N/A' cuando no se invocó (SKIPPED/N/A). PROHIBIDO ms absolutos (timing oracle — REQ-SEC-9)."
+        },
+        "error_class": {
+          "type": ["string", "null"],
+          "enum": [
+            null,
+            "quota_exhausted",
+            "rate_limit",
+            "transient_5xx",
+            "auth",
+            "permanent_failure",
+            "cli_1m_context_glitch",
+            "unknown",
+            "parser_well_formed_violation",
+            "baseline_divergence",
+            "data_residency_blocked",
+            "timeout",
+            "cap_exceeded"
+          ],
+          "description": "Taxonomía cerrada de errores (provider-error-parser + clases internas del harness). null para PASS/N/A."
+        },
+        "evidence_hash": {
+          "type": ["string", "null"],
+          "pattern": "^(sha256:[a-f0-9]{64}|null)?$|^$",
+          "description": "SHA-256 del raw output (formato 'sha256:<hex>'). Apunta al audit log donde vive el raw. null si no hubo invocación. PROHIBIDO incluir el raw output acá ni en issue body (CA-A17, CA-A20)."
+        },
+        "reason": {
+          "type": ["string", "null"],
+          "maxLength": 280,
+          "description": "Motivo human-readable corto (≤ 280 chars). Sin secrets — el módulo redact.js debe haberlo sanitizado. Útil para SKIPPED ('credencial placeholder'), N/A ('single-provider por diseño'), etc."
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pass", "warn", "fail", "skipped", "na", "total_combinations"],
+      "properties": {
+        "pass":               { "type": "integer", "minimum": 0 },
+        "warn":               { "type": "integer", "minimum": 0 },
+        "fail":               { "type": "integer", "minimum": 0 },
+        "skipped":            { "type": "integer", "minimum": 0 },
+        "na":                 { "type": "integer", "minimum": 0 },
+        "total_combinations": { "type": "integer", "minimum": 1 },
+        "skills_llm_count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Total de skills LLM derivados dinámicamente desde agent-models.json (excluye deterministic). El issue mencionaba 15, HEAD tiene 17+ — el harness deriva, no hardcodea (ruling 1 PO)."
+        },
+        "providers_llm_count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Total de providers LLM activos (excluye deterministic)."
+        }
+      }
+    }
+  }
+}

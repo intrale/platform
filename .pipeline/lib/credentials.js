@@ -1,0 +1,272 @@
+// =============================================================================
+// credentials.js — Cargador unificado de credenciales (#3311)
+//
+// Fuente única de verdad: ~/.claude/secrets/credentials.json
+// Lee el archivo al boot del Pulpo/restart.js y popula process.env para que
+// `validateCredentialsEnvPresence` (agent-models-validate.js) encuentre las
+// credenciales sin que el operador tenga que setear setx manualmente por cada
+// provider.
+//
+// Estructura esperada del JSON:
+//   {
+//     "telegram":   { "bot_token": "...", "chat_id": "..." },
+//     "providers":  { "google": {"api_key": "..."}, "cerebras": {...}, ... }
+//   }
+//
+// #3353 (mayo 2026): Groq fue descontinuado. Si el credentials.json todavía
+// tiene `providers.groq`, la key se ignora silenciosamente (sin entrada en
+// ENV_MAPPING) — el operador puede limpiarlo cuando quiera.
+//
+// Precedencia (alineada con loadApiKeys de telegram-secrets.js):
+//   1. process.env ya seteado → respetar, no sobrescribir
+//   2. credentials.json (canonical)
+//   3. telegram-config.json (legacy, fallback con warning)
+// =============================================================================
+
+'use strict';
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const CANONICAL_PATH = path.join(os.homedir(), '.claude', 'secrets', 'credentials.json');
+const LEGACY_PATH = path.join(os.homedir(), '.claude', 'secrets', 'telegram-config.json');
+
+// Mapeo canónico: dot-path en credentials.json → env var que esperan los CLIs.
+// Mantener ordenado por categoría para facilitar el code-review.
+const ENV_MAPPING = Object.freeze({
+  // Telegram bot
+  'telegram.bot_token':            'TELEGRAM_BOT_TOKEN',
+  'telegram.chat_id':              'TELEGRAM_CHAT_ID',
+  // Chat del operador (Leo) para handlers proactivos (mockup UX, etc. — #3384).
+  // Si no está configurada, el handler correspondiente se autodeshabilita.
+  'telegram.leo_operator_chat_id': 'TELEGRAM_LEO_OPERATOR_CHAT_ID',
+  // Providers IA (allowlist en agent-models-validate.js:ALLOWED_CREDENTIAL_ENV_VARS)
+  'providers.openai.api_key':      'OPENAI_API_KEY',
+  'providers.anthropic.api_key':   'ANTHROPIC_API_KEY',
+  'providers.google.api_key':      'GEMINI_API_KEY',
+  // providers.groq.api_key se removió en #3353 — Groq descontinuado.
+  'providers.cerebras.api_key':    'CEREBRAS_API_KEY',
+  'providers.nvidia.api_key':      'NVIDIA_NIM_API_KEY',
+  // #4880 — Kimi (Moonshot). Drop-in de Claude Code contra el endpoint
+  // Anthropic-compat: autentica con su token en `ANTHROPIC_AUTH_TOKEN` (var
+  // distinta de `ANTHROPIC_API_KEY`, la OAuth/Max real). Fuente única en
+  // credentials.json; jamás por Telegram (SEC-5). El valor nunca se loguea (el
+  // loader sólo lista nombres de var).
+  'providers.moonshot.api_key':    'ANTHROPIC_AUTH_TOKEN',
+});
+
+// Mapeo legacy: telegram-config.json usa flat keys (no nested). Solo cubre las
+// que existían en ese formato — providers nuevos (google/cerebras/nvidia) no
+// se cargan del legacy porque no existían cuando ese archivo era canónico.
+//
+// #3353 (mayo 2026): `groq_api_key` se removió del mapping legacy junto con la
+// descontinuación de Groq. Si aparece en el JSON legacy se ignora silenciosamente.
+const LEGACY_MAPPING = Object.freeze({
+  'bot_token':           'TELEGRAM_BOT_TOKEN',
+  'chat_id':             'TELEGRAM_CHAT_ID',
+  'openai_api_key':      'OPENAI_API_KEY',
+  'anthropic_api_key':   'ANTHROPIC_API_KEY',
+});
+
+const PLACEHOLDER_RE = /(REVOKED|PLACEHOLDER|MOVED|EXAMPLE|REPLACE|CHANGE_ME)/i;
+
+function isPlaceholderOrEmpty(value) {
+  if (value === null || value === undefined) return true;
+  const s = String(value);
+  if (s.trim().length === 0) return true;
+  return PLACEHOLDER_RE.test(s);
+}
+
+function getNested(obj, dotPath) {
+  return dotPath.split('.').reduce(
+    (acc, k) => (acc && typeof acc === 'object') ? acc[k] : undefined,
+    obj
+  );
+}
+
+function readJsonFile(filePath) {
+  const raw = fs.readFileSync(filePath, 'utf8');
+  return JSON.parse(raw);
+}
+
+/**
+ * Lee credentials.json y popula `env` con las credenciales mapeadas.
+ *
+ * @param {object} [opts]
+ * @param {function} [opts.logger=console.log] Logger para warnings/errors.
+ * @param {string}   [opts.canonicalPath]      Path del archivo canónico (override para tests).
+ * @param {string}   [opts.legacyPath]         Path del archivo legacy (override para tests).
+ * @param {object}   [opts.env=process.env]    Env target (override para tests).
+ * @returns {{source: 'canonical'|'legacy'|'none', hydrated: string[], skipped_existing: string[], skipped_empty: string[]}}
+ */
+function loadIntoEnv(opts = {}) {
+  const logger = typeof opts.logger === 'function' ? opts.logger : console.log;
+  const canonicalPath = opts.canonicalPath || CANONICAL_PATH;
+  const legacyPath = opts.legacyPath || LEGACY_PATH;
+  const env = opts.env || process.env;
+
+  const result = { source: 'none', hydrated: [], skipped_existing: [], skipped_empty: [] };
+
+  let data = null;
+  let usingMapping = null;
+
+  if (fs.existsSync(canonicalPath)) {
+    try {
+      data = readJsonFile(canonicalPath);
+      result.source = 'canonical';
+      usingMapping = ENV_MAPPING;
+    } catch (e) {
+      logger(`[credentials] WARN: ${canonicalPath} es JSON invalido (${e.message}); intentando fallback al legacy`);
+    }
+  }
+
+  if (!data && fs.existsSync(legacyPath)) {
+    try {
+      data = readJsonFile(legacyPath);
+      result.source = 'legacy';
+      usingMapping = LEGACY_MAPPING;
+      logger(`[credentials] WARN: usando archivo legacy ${legacyPath}. Migrar a ${canonicalPath} (ver docs/runbooks/credential-rotation.md)`);
+    } catch (e) {
+      logger(`[credentials] ERROR: legacy ${legacyPath} es JSON invalido (${e.message}); process.env queda como esta`);
+      return result;
+    }
+  }
+
+  if (!data) {
+    logger(`[credentials] WARN: no se encontro ${canonicalPath} ni ${legacyPath}; process.env queda como esta`);
+    return result;
+  }
+
+  for (const [sourceKey, envVar] of Object.entries(usingMapping)) {
+    if (env[envVar] && String(env[envVar]).length > 0) {
+      result.skipped_existing.push(envVar);
+      continue;
+    }
+    const raw = (usingMapping === ENV_MAPPING)
+      ? getNested(data, sourceKey)
+      : data[sourceKey];
+    if (isPlaceholderOrEmpty(raw)) {
+      result.skipped_empty.push(envVar);
+      continue;
+    }
+    env[envVar] = String(raw);
+    result.hydrated.push(envVar);
+  }
+
+  return result;
+}
+
+// =============================================================================
+// resolveScopedRefs — brokering de secretos por producto (#4687 · CA-C2)
+//
+// Aislamiento de blast radius (§5.1 · requisito de seguridad #3): un descriptor
+// referencia credenciales por `ref` namespaceado + `scopes` declarados. El loader
+// entrega SOLO los scopes declarados de ese namespace, SIN expandir a todo el
+// archivo de credenciales. Preserva el mapping legacy (loadIntoEnv intacto).
+//
+// El valor de retorno CONTIENE los secretos resueltos (para inyección de env por
+// proceso). Para logs/output usar `redactScoped()` — NUNCA loguear el objeto crudo.
+// =============================================================================
+
+// `~/.claude/secrets/credentials.json#intrale`  →  { path, namespace }
+function parseSecretRef(ref) {
+  const m = /^(~?[A-Za-z0-9._/-]+)#([A-Za-z0-9._:-]+)$/.exec(String(ref == null ? '' : ref).trim());
+  if (!m) return null;
+  return { path: m[1], namespace: m[2] };
+}
+
+function expandHome(p) {
+  if (typeof p === 'string' && (p === '~' || p.startsWith('~/'))) {
+    return path.join(os.homedir(), p.slice(1));
+  }
+  return p;
+}
+
+/**
+ * Resuelve SOLO los scopes declarados de un namespace del archivo de credenciales.
+ *
+ * @param {string} ref     referencia namespaceada (`path#namespace`).
+ * @param {string[]} scopes scopes declarados por el descriptor.
+ * @param {object} [opts]
+ * @param {object} [opts.data]  credentials ya parseadas (override para tests; evita leer disco).
+ * @param {string} [opts.canonicalPath] path del archivo (override para tests).
+ * @returns {{ ok:boolean, namespace:string|null, scopes:object, missing:string[], error?:string }}
+ */
+function resolveScopedRefs(ref, scopes, opts = {}) {
+  const parsed = parseSecretRef(ref);
+  if (!parsed) return { ok: false, namespace: null, scopes: {}, missing: [], error: 'ref inválida: se esperaba referencia namespaceada (patrón ...#scope)' };
+  if (!Array.isArray(scopes) || scopes.length === 0) {
+    return { ok: false, namespace: parsed.namespace, scopes: {}, missing: [], error: 'scopes requerido (array no vacío)' };
+  }
+
+  let data = opts.data;
+  if (!data) {
+    const filePath = opts.canonicalPath || expandHome(parsed.path);
+    try {
+      data = readJsonFile(filePath);
+    } catch (e) {
+      return { ok: false, namespace: parsed.namespace, scopes: {}, missing: [], error: 'no se pudo leer el archivo de credenciales' };
+    }
+  }
+
+  // El namespace vive bajo `namespaces.<ns>` (canónico multi-producto) o, para
+  // retrocompat, como una clave top-level del archivo. NUNCA se expande el
+  // archivo entero: sólo el sub-objeto del namespace resuelto.
+  const nsObj = (data && typeof data.namespaces === 'object' && data.namespaces && typeof data.namespaces[parsed.namespace] === 'object')
+    ? data.namespaces[parsed.namespace]
+    : (data && typeof data[parsed.namespace] === 'object' ? data[parsed.namespace] : null);
+
+  if (!nsObj) {
+    return { ok: false, namespace: parsed.namespace, scopes: {}, missing: [...scopes], error: `namespace no encontrado: ${parsed.namespace}` };
+  }
+
+  const out = {};
+  const missing = [];
+  for (const s of scopes) {
+    if (Object.prototype.hasOwnProperty.call(nsObj, s) && !isPlaceholderOrEmpty(nsObj[s])) {
+      out[s] = nsObj[s];
+    } else {
+      missing.push(s);
+    }
+  }
+  return { ok: missing.length === 0, namespace: parsed.namespace, scopes: out, missing };
+}
+
+// Redacta un resultado de resolveScopedRefs para logging: sólo nombres de scope,
+// nunca valores (CA-C3).
+function redactScoped(resolved) {
+  if (!resolved || typeof resolved !== 'object') return { namespace: null, scopes: [] };
+  return {
+    ok: !!resolved.ok,
+    namespace: resolved.namespace || null,
+    scopes: Object.keys(resolved.scopes || {}),
+    missing: resolved.missing || [],
+  };
+}
+
+module.exports = {
+  loadIntoEnv,
+  CANONICAL_PATH,
+  LEGACY_PATH,
+  ENV_MAPPING,
+  LEGACY_MAPPING,
+  isPlaceholderOrEmpty,
+  getNested,
+  parseSecretRef,
+  resolveScopedRefs,
+  redactScoped,
+};
+
+// CLI: dry-run que imprime resumen sin valores. Útil para diagnóstico operativo.
+//   node .pipeline/lib/credentials.js
+if (require.main === module) {
+  const result = loadIntoEnv({ logger: (m) => process.stderr.write(m + '\n') });
+  process.stdout.write(JSON.stringify({
+    source: result.source,
+    hydrated_count: result.hydrated.length,
+    hydrated: result.hydrated,
+    skipped_existing: result.skipped_existing,
+    skipped_empty: result.skipped_empty,
+  }, null, 2) + '\n');
+}

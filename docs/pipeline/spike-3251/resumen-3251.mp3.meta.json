@@ -1,0 +1,9 @@
+{
+  "profile": "pipeline-dev",
+  "provider": "edge",
+  "voice": "",
+  "character_name": "",
+  "output": "docs/pipeline/spike-3251/resumen-3251.mp3",
+  "generated_at": "2026-05-16T16:18:15.638Z",
+  "source": "tts-generate.js"
+}

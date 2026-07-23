@@ -1,54 +1,207 @@
 {
   "$schema": "./agent-models.schema.json",
-  "_doc": "Configuración multi-proveedor del pipeline V3 — issue #3072 (H1) + #3077 (H5). Documento canónico: docs/pipeline-multi-provider.md §3.1 + §3.5. Para agregar/cambiar un provider, primero editar agent-models.schema.json (allowlist de launcher/model) y después este archivo. El boot del pulpo valida con Ajv 2020-12 y aborta si no matchea — ver lib/agent-models-validate.js (#3081 S3). Los strings de 'quota_error_types' se cross-validan contra la meta-allowlist hardcoded en lib/quota-exhausted.js (KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER) — agregar un valor fuera de esa meta-allowlist hace boot fail-fast (SEC-2 de #3077).",
-
+  "_doc": "Configuración multi-proveedor del pipeline V3 — issue #3072 (H1) + #3077 (H5) + #3221 (sign-off Leo 2026-05-15 por agente) + #3258 (skill virtual `telegram-commander`). Documento canónico: docs/pipeline/multi-provider.md. Para agregar/cambiar un provider, primero editar agent-models.schema.json (allowlist de launcher/model) y después este archivo. El boot del pulpo valida con Ajv 2020-12 y aborta si no matchea — ver lib/agent-models-validate.js (#3081 S3). Los strings de 'quota_error_types' se cross-validan contra la meta-allowlist hardcoded en lib/quota-exhausted.js (KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER) — agregar un valor fuera de esa meta-allowlist hace boot fail-fast (SEC-2 de #3077). Los `fallbacks[]` por skill respetan el orden sign-off Leo 2026-05-15 (memoria project_multi-provider-per-agent-order); los skills con Gemini EXCLUIDO procesan secrets/código fuente sensible (TOS AI Studio entrena con prompts free). El skill virtual `telegram-commander` (#3258) NO está en `skills_por_fase` — es consumido por pulpo.js (commander chat de Telegram) vía lib/commander/multi-provider.js para el dispatch con fallback chain. Reorden 2026-06-02 (sign-off Leo por voz): (A) devs (backend/pipeline/android/web) + security sacan Cerebras del fallback y meten nvidia-nim — Cerebras no soporta tool_use y no puede editar archivos; NVIDIA es free + tool_use. (B) default global de chain = Claude → Codex → Gemini → Cerebras (Cerebras queda como tail solo en skills de chat/verificación que no requieren tool_use). Corrección de runtime: el modelo Cerebras pasa de `llama-3.3-70b` (muerto, no está en free tier) a `gpt-oss-120b` (verificado GET /v1/models + smoke #3794); alternative_models → `zai-glm-4.7`. telegram-commander suma nvidia-nim al final para alinear el JSON con el código de #3796. Reorden de modelos 2026-06-02 (sign-off Leo por voz): telegram-commander baja su primario de claude-opus-4-7 → claude-sonnet-4-7 y su fallback Codex de gpt-5-codex → gpt-5 (es el cerebro, conserva calidad pero ahorra ~5x vs Opus sin pérdida relevante en chat/operación). telegram-sherlock MANTIENE claude-haiku-4-5 como primario (es el piso de calidad del verificador y NO se baja — un verificador flojo aprueba cualquier cosa) y baja solo su fallback Codex de gpt-5 → gpt-5-mini (verificación no necesita el tope). gpt-5-mini se agregó a ALLOWED_MODELS_BY_LAUNCHER.codex en lib/agent-models-validate.js. Reorden Grupo B 2026-06-02 (sign-off Leo por voz): qa/po/ux bajan de claude-opus-4-7 → claude-sonnet-4-7 (no escriben código de producción — evalúan, validan video por frames+capturas y redactan criterios; la capacidad de visión de Sonnet es la misma que Opus, ahorro ~5x sin pérdida relevante). refinar tenía un bug de config: solo declaraba `provider:anthropic` sin model_override → heredaba el default claude-opus-4-7 y SIN fallbacks; ahora explicita claude-sonnet-4-7 + fallbacks [codex gpt-5, cerebras gpt-oss-120b]. Grupo A (backend/pipeline/android/web-dev + security) MANTIENE claude-opus-4-7 — su output va a main y un dev flojo genera rebotes que cuestan más que el ahorro. CORRECCIÓN DE NOMBRES DE MODELOS 2026-06-04 (sign-off Leo por voz, verificado en vivo contra cada CLI/API): los nombres configurados arriba estaban desactualizados y rotos. (1) `claude-sonnet-4-7` NO existe en el catálogo Anthropic → reemplazado por `claude-sonnet-4-6` (13 refs). (2) Codex con cuenta ChatGPT rechaza `gpt-5-codex`/`gpt-5`/`gpt-5-mini` con 400 ('not supported when using Codex with a ChatGPT account'); catálogo real = gpt-5.5 (frontier, strongest agentic coding), gpt-5.4, gpt-5.4-mini → mapeo preservando tiering: skills de código (gpt-5-codex) → gpt-5.5, eval/chat (gpt-5) → gpt-5.4, verificador Sherlock (gpt-5-mini) → gpt-5.4-mini; el `model` default del provider openai-codex pasa a gpt-5.5. (3) `gemini-1.5-flash` (alternative_models) fue retirado de Google → `gemini-2.5-flash`. Cerebras (gpt-oss-120b, zai-glm-4.7) y NVIDIA (deepseek-v4-pro) verificados vigentes, sin cambios. La allowlist ALLOWED_MODELS_BY_LAUNCHER en lib/agent-models-validate.js se actualizó en sincronía. claude-opus-4-7 se mantiene (vigente y funcional; existe claude-opus-4-8 más nuevo pero el cambio queda fuera de alcance por ser decisión de costo/calidad, no un fix).",
   "default_provider": "anthropic",
-
   "providers": {
     "anthropic": {
       "launcher": "claude",
       "model": "claude-opus-4-7",
       "spawn_args_template": [
-        "-p", "{user_prompt}",
-        "--system-prompt-file", "{system_file}",
-        "--output-format", "stream-json",
+        "-p",
+        "{user_prompt}",
+        "--system-prompt-file",
+        "{system_file}",
+        "--output-format",
+        "stream-json",
         "--verbose",
-        "--permission-mode", "bypassPermissions"
+        "--permission-mode",
+        "bypassPermissions"
       ],
       "output_parser": "anthropic-stream-json",
-      "quota_error_types": ["usage_limit_error", "weekly_quota_exhausted", "snapshot_threshold_90"],
+      "quota_error_types": [
+        "usage_limit_error",
+        "weekly_quota_exhausted",
+        "snapshot_threshold_90"
+      ],
       "resets_at_cap_max_days": 7,
       "supports_tool_use": true,
+      "capabilities": [
+        "agentic-tool-use"
+      ],
       "prompt_caching": {
         "supported": true,
         "ttl_seconds_default": 300,
         "ttl_seconds_extended": 3600
       },
-      "credentials_env": ["ANTHROPIC_API_KEY"],
-      "permissions_mode": "bypassPermissions"
+      "credentials_env": [
+        "ANTHROPIC_API_KEY"
+      ],
+      "permissions_mode": "bypassPermissions",
+      "auth_mode": "oauth",
+      "display_in_health": "not_applicable",
+      "billing": "paid"
     },
-
     "openai-codex": {
       "launcher": "codex",
-      "model": "gpt-5-codex",
+      "model": "gpt-5.5",
       "spawn_args_template": [
-        "exec", "--full-auto",
-        "--model", "{model}",
-        "--system", "{system_file}",
+        "exec",
+        "--full-auto",
+        "--model",
+        "{model}",
+        "--system",
+        "{system_file}",
         "{user_prompt}"
       ],
       "output_parser": "openai-sse",
-      "quota_error_types": ["insufficient_quota", "billing_hard_limit_reached"],
+      "quota_error_types": [
+        "insufficient_quota",
+        "billing_hard_limit_reached",
+        "usage_limit_reached"
+      ],
       "resets_at_cap_max_days": 31,
       "supports_tool_use": true,
+      "capabilities": [
+        "agentic-tool-use"
+      ],
       "prompt_caching": {
         "supported": true,
         "auto": true
       },
-      "credentials_env": ["OPENAI_API_KEY"],
-      "permissions_mode": "bypassPermissions"
+      "credentials_env": [
+        "OPENAI_API_KEY"
+      ],
+      "auth_mode": "oauth",
+      "permissions_mode": "full-auto",
+      "billing": "paid"
     },
-
+    "gemini-google": {
+      "launcher": "gemini-google",
+      "model": "gemini-2.0-flash",
+      "spawn_args_template": [
+        "--model",
+        "{model}",
+        "--system",
+        "{system_file}",
+        "{user_prompt}"
+      ],
+      "output_parser": "gemini-stream",
+      "quota_error_types": [
+        "quota_exceeded",
+        "resource_exhausted"
+      ],
+      "resets_at_cap_max_days": 31,
+      "supports_tool_use": true,
+      "capabilities": [
+        "agentic-tool-use"
+      ],
+      "prompt_caching": {
+        "supported": false
+      },
+      "credentials_env": [
+        "GEMINI_API_KEY"
+      ],
+      "auth_mode": "oauth",
+      "permissions_mode": "bypassPermissions",
+      "alternative_models": [
+        "gemini-2.5-flash"
+      ],
+      "billing": "free"
+    },
+    "cerebras": {
+      "launcher": "cerebras",
+      "model": "gpt-oss-120b",
+      "spawn_args_template": [
+        "--model",
+        "{model}",
+        "--system",
+        "{system_file}",
+        "{user_prompt}"
+      ],
+      "output_parser": "openai-sse",
+      "quota_error_types": [
+        "rate_limit_exceeded",
+        "quota_exceeded"
+      ],
+      "resets_at_cap_max_days": 31,
+      "supports_tool_use": false,
+      "capabilities": [],
+      "prompt_caching": {
+        "supported": false
+      },
+      "credentials_env": [
+        "CEREBRAS_API_KEY"
+      ],
+      "permissions_mode": "bypassPermissions",
+      "alternative_models": [
+        "zai-glm-4.7"
+      ],
+      "billing": "free"
+    },
+    "nvidia-nim": {
+      "launcher": "nvidia-nim",
+      "model": "deepseek-ai/deepseek-v4-pro",
+      "spawn_args_template": [
+        "--model",
+        "{model}",
+        "--system",
+        "{system_file}",
+        "{user_prompt}"
+      ],
+      "output_parser": "openai-sse",
+      "quota_error_types": [
+        "rate_limit_exceeded",
+        "quota_exceeded",
+        "insufficient_quota"
+      ],
+      "resets_at_cap_max_days": 31,
+      "supports_tool_use": true,
+      "capabilities": [
+        "agentic-tool-use"
+      ],
+      "prompt_caching": {
+        "supported": false
+      },
+      "credentials_env": [
+        "NVIDIA_NIM_API_KEY"
+      ],
+      "permissions_mode": "bypassPermissions",
+      "billing": "free"
+    },
+    "kimi-moonshot": {
+      "launcher": "claude",
+      "model": "kimi-k2-6",
+      "spawn_args_template": [
+        "-p",
+        "{user_prompt}",
+        "--system-prompt-file",
+        "{system_file}",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--permission-mode",
+        "bypassPermissions"
+      ],
+      "output_parser": "anthropic-stream-json",
+      "quota_error_types": [
+        "rate_limit_exceeded",
+        "quota_exceeded",
+        "insufficient_quota"
+      ],
+      "resets_at_cap_max_days": 31,
+      "supports_tool_use": false,
+      "capabilities": [],
+      "prompt_caching": {
+        "supported": false
+      },
+      "credentials_env": [
+        "ANTHROPIC_AUTH_TOKEN"
+      ],
+      "permissions_mode": "bypassPermissions",
+      "auth_mode": "api_key",
+      "display_in_health": "live",
+      "billing": "free"
+    },
     "deterministic": {
       "launcher": "node",
       "model": "deterministic",
@@ -60,29 +213,362 @@
       "output_parser": "none",
       "quota_error_types": [],
       "supports_tool_use": false,
-      "prompt_caching": { "supported": false }
+      "capabilities": [
+        "agentic-tool-use"
+      ],
+      "prompt_caching": {
+        "supported": false
+      }
     }
   },
-
   "skills": {
-    "guru":         { "provider": "anthropic" },
-    "security":     { "provider": "anthropic" },
-    "po":           { "provider": "anthropic" },
-    "ux":           { "provider": "anthropic" },
-    "planner":      { "provider": "anthropic" },
-    "review":       { "provider": "anthropic" },
-    "refinar":      { "provider": "anthropic" },
-
-    "backend-dev":  { "provider": "anthropic" },
-    "android-dev":  { "provider": "anthropic" },
-    "web-dev":      { "provider": "anthropic" },
-    "pipeline-dev": { "provider": "anthropic" },
-
-    "tester":       { "provider": "deterministic" },
-    "qa":           { "provider": "anthropic" },
-
-    "build":        { "provider": "deterministic" },
-    "linter":       { "provider": "deterministic" },
-    "delivery":     { "provider": "deterministic" }
+    "backend-dev": {
+      "provider": "anthropic",
+      "model_override": "claude-opus-4-7",
+      "required_capabilities": [
+        "agentic-tool-use"
+      ],
+      "fallbacks": [
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5.5"
+        }
+      ]
+    },
+    "pipeline-dev": {
+      "provider": "anthropic",
+      "model_override": "claude-opus-4-7",
+      "required_capabilities": [
+        "agentic-tool-use"
+      ],
+      "fallbacks": [
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5.5"
+        }
+      ]
+    },
+    "android-dev": {
+      "provider": "anthropic",
+      "model_override": "claude-opus-4-7",
+      "required_capabilities": [
+        "agentic-tool-use"
+      ],
+      "fallbacks": [
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5.5"
+        },
+        {
+          "provider": "gemini-google",
+          "model_override": "gemini-2.0-flash"
+        },
+        {
+          "provider": "nvidia-nim",
+          "model_override": "deepseek-ai/deepseek-v4-pro"
+        }
+      ]
+    },
+    "web-dev": {
+      "provider": "anthropic",
+      "model_override": "claude-opus-4-7",
+      "required_capabilities": [
+        "agentic-tool-use"
+      ],
+      "fallbacks": [
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5.5"
+        },
+        {
+          "provider": "gemini-google",
+          "model_override": "gemini-2.0-flash"
+        },
+        {
+          "provider": "nvidia-nim",
+          "model_override": "deepseek-ai/deepseek-v4-pro"
+        }
+      ]
+    },
+    "build": {
+      "provider": "deterministic",
+      "required_capabilities": [
+        "agentic-tool-use"
+      ]
+    },
+    "tester": {
+      "provider": "deterministic",
+      "required_capabilities": [
+        "agentic-tool-use"
+      ]
+    },
+    "security": {
+      "provider": "anthropic",
+      "model_override": "claude-opus-4-7",
+      "fallbacks": [
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5.5"
+        },
+        {
+          "provider": "nvidia-nim",
+          "model_override": "deepseek-ai/deepseek-v4-pro"
+        }
+      ]
+    },
+    "qa": {
+      "provider": "anthropic",
+      "model_override": "claude-sonnet-4-6",
+      "required_capabilities": [
+        "agentic-tool-use"
+      ],
+      "fallbacks": [
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5.4"
+        },
+        {
+          "provider": "gemini-google",
+          "model_override": "gemini-2.0-flash"
+        }
+      ]
+    },
+    "review": {
+      "provider": "anthropic",
+      "model_override": "claude-sonnet-4-6",
+      "fallbacks": [
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5.5"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "gpt-oss-120b"
+        },
+        {
+          "provider": "kimi-moonshot",
+          "model_override": "kimi-k2-6"
+        }
+      ]
+    },
+    "po": {
+      "provider": "anthropic",
+      "model_override": "claude-sonnet-4-6",
+      "fallbacks": [
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5.4"
+        },
+        {
+          "provider": "gemini-google",
+          "model_override": "gemini-2.0-flash"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "gpt-oss-120b"
+        },
+        {
+          "provider": "kimi-moonshot",
+          "model_override": "kimi-k2-6"
+        }
+      ]
+    },
+    "ux": {
+      "provider": "anthropic",
+      "model_override": "claude-sonnet-4-6",
+      "fallbacks": [
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5.4"
+        },
+        {
+          "provider": "gemini-google",
+          "model_override": "gemini-2.0-flash"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "gpt-oss-120b"
+        }
+      ]
+    },
+    "doc": {
+      "provider": "anthropic",
+      "model_override": "claude-sonnet-4-6",
+      "fallbacks": [
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5.5"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "gpt-oss-120b"
+        }
+      ]
+    },
+    "planner": {
+      "provider": "anthropic",
+      "model_override": "claude-sonnet-4-6",
+      "fallbacks": [
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5.5"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "gpt-oss-120b"
+        }
+      ]
+    },
+    "guru": {
+      "provider": "anthropic",
+      "model_override": "claude-sonnet-4-6",
+      "fallbacks": [
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5.5"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "gpt-oss-120b"
+        },
+        {
+          "provider": "nvidia-nim",
+          "model_override": "deepseek-ai/deepseek-v4-pro"
+        }
+      ]
+    },
+    "architect": {
+      "provider": "anthropic",
+      "model_override": "claude-sonnet-4-6",
+      "fallbacks": [
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5.5"
+        },
+        {
+          "provider": "gemini-google",
+          "model_override": "gemini-2.0-flash"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "gpt-oss-120b"
+        }
+      ]
+    },
+    "ops": {
+      "provider": "anthropic",
+      "model_override": "claude-sonnet-4-6",
+      "fallbacks": [
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5.5"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "gpt-oss-120b"
+        }
+      ]
+    },
+    "perf": {
+      "provider": "anthropic",
+      "model_override": "claude-sonnet-4-6",
+      "fallbacks": [
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5.5"
+        },
+        {
+          "provider": "gemini-google",
+          "model_override": "gemini-2.0-flash"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "gpt-oss-120b"
+        }
+      ]
+    },
+    "auth": {
+      "provider": "anthropic",
+      "model_override": "claude-sonnet-4-6",
+      "fallbacks": [
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5.5"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "gpt-oss-120b"
+        }
+      ]
+    },
+    "refinar": {
+      "provider": "anthropic",
+      "model_override": "claude-sonnet-4-6",
+      "fallbacks": [
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5.4"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "gpt-oss-120b"
+        }
+      ]
+    },
+    "linter": {
+      "provider": "deterministic"
+    },
+    "delivery": {
+      "provider": "deterministic"
+    },
+    "telegram-commander": {
+      "provider": "anthropic",
+      "model_override": "claude-sonnet-4-6",
+      "fallbacks": [
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5.4"
+        },
+        {
+          "provider": "gemini-google",
+          "model_override": "gemini-2.0-flash"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "gpt-oss-120b"
+        },
+        {
+          "provider": "nvidia-nim",
+          "model_override": "deepseek-ai/deepseek-v4-pro"
+        }
+      ],
+      "balancing": {
+        "enabled": false,
+        "quality_bias": 0.7,
+        "min_primary_quota_pct": 30
+      }
+    },
+    "telegram-sherlock": {
+      "provider": "anthropic",
+      "model_override": "claude-haiku-4-5",
+      "fallbacks": [
+        {
+          "provider": "openai-codex",
+          "model_override": "gpt-5.4-mini"
+        },
+        {
+          "provider": "gemini-google",
+          "model_override": "gemini-2.0-flash"
+        },
+        {
+          "provider": "cerebras",
+          "model_override": "gpt-oss-120b"
+        },
+        {
+          "provider": "nvidia-nim",
+          "model_override": "deepseek-ai/deepseek-v4-pro"
+        }
+      ]
+    }
   }
 }

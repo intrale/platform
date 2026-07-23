@@ -46,6 +46,11 @@ const FAKE_GITHUB = 'ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaXX';
 const FAKE_JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.abc123_xyz';
 const FAKE_TG_BOT = '1234567890:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 const FAKE_GOOGLE_API = 'AIzaSyA-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+// Multi-provider (issue #3073)
+const FAKE_ANTHROPIC = 'sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH_-AAAA';
+const FAKE_OPENAI_CLASSIC = 'sk-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJKKKKLLLL';
+const FAKE_OPENAI_PROJECT = 'sk-proj-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJ_KKKK';
+const FAKE_GOOGLE_OAUTH_ACCESS = 'ya29.A0AfH6SMBAAAABBBBCCCCDDDDEEEEFFFFGGGG';
 
 // =============================================================================
 // sanitizeTelegramPayload
@@ -193,6 +198,93 @@ test('filenameHasSecret: detector simple', () => {
     assert.strictEqual(filenameHasSecret(`leak-${FAKE_AWS_AK}.mp4`), true);
     assert.strictEqual(filenameHasSecret(''), false);
     assert.strictEqual(filenameHasSecret(null), false);
+});
+
+// =============================================================================
+// Multi-provider (issue #3073, S2 multi-provider)
+// =============================================================================
+
+test('telegram multi-provider: redacta sk-ant-... con placeholder propio', () => {
+    const out = sanitizeTelegramPayload({ text: `Anthropic key leak ${FAKE_ANTHROPIC}` });
+    assert.ok(!out.text.includes(FAKE_ANTHROPIC), `leak: ${out.text}`);
+    assert.ok(out.text.includes('[REDACTED:ANTHROPIC_KEY]'), out.text);
+});
+
+test('telegram multi-provider: redacta sk-proj-... con placeholder propio', () => {
+    const out = sanitizeTelegramPayload({ caption: `proj=${FAKE_OPENAI_PROJECT}` });
+    assert.ok(!out.caption.includes(FAKE_OPENAI_PROJECT));
+    assert.ok(out.caption.includes('[REDACTED:OPENAI_PROJECT_KEY]'));
+});
+
+test('telegram multi-provider: redacta sk- clásico', () => {
+    const out = sanitizeTelegramPayload({ text: `OPENAI_API_KEY=${FAKE_OPENAI_CLASSIC}` });
+    assert.ok(!out.text.includes(FAKE_OPENAI_CLASSIC));
+    assert.ok(out.text.includes('[REDACTED:OPENAI_KEY]'));
+});
+
+test('telegram multi-provider: redacta ya29.... con placeholder propio', () => {
+    const out = sanitizeTelegramPayload({ text: `oauth=${FAKE_GOOGLE_OAUTH_ACCESS}` });
+    assert.ok(!out.text.includes(FAKE_GOOGLE_OAUTH_ACCESS));
+    assert.ok(out.text.includes('[REDACTED:GOOGLE_OAUTH_TOKEN]'));
+});
+
+test('github multi-provider: redacta sk-ant-... en body de comentario', () => {
+    const out = sanitizeGithubPayload({
+        action: 'comment', issue: 3073,
+        body: `Falla auth con key ${FAKE_ANTHROPIC}`,
+    });
+    assert.ok(!out.body.includes(FAKE_ANTHROPIC));
+    assert.ok(out.body.includes('[REDACTED:ANTHROPIC_KEY]'));
+});
+
+test('drive multi-provider: redacta sk- clásico en description', () => {
+    const out = sanitizeDrivePayload({
+        file: 'qa/evidence/3073/video.mp4',
+        description: `Test usado ${FAKE_OPENAI_CLASSIC}`,
+    });
+    assert.ok(!out.description.includes(FAKE_OPENAI_CLASSIC));
+    assert.ok(out.description.includes('[REDACTED:OPENAI_KEY]'));
+});
+
+test('filename multi-provider: detecta sk-ant-... y trunca con hash', () => {
+    const out = sanitizeDriveFilename(`dump-${FAKE_ANTHROPIC}.log`);
+    assert.ok(!out.includes(FAKE_ANTHROPIC), `leak: ${out}`);
+    assert.ok(out.endsWith('.log'));
+    assert.ok(/^redacted-[0-9a-f]{8}\.log$/.test(out), `formato: ${out}`);
+});
+
+test('filename multi-provider: detecta sk-proj-... y trunca con hash', () => {
+    const out = sanitizeDriveFilename(`leak-${FAKE_OPENAI_PROJECT}.txt`);
+    assert.ok(!out.includes(FAKE_OPENAI_PROJECT));
+    assert.ok(out.endsWith('.txt'));
+});
+
+test('filename multi-provider: detecta sk- clásico OpenAI y trunca', () => {
+    const out = sanitizeDriveFilename(`oai-${FAKE_OPENAI_CLASSIC}.log`);
+    assert.ok(!out.includes(FAKE_OPENAI_CLASSIC));
+    assert.ok(out.endsWith('.log'));
+});
+
+test('filename multi-provider: detecta ya29.... y trunca', () => {
+    const out = sanitizeDriveFilename(`oauth-${FAKE_GOOGLE_OAUTH_ACCESS}.txt`);
+    assert.ok(!out.includes(FAKE_GOOGLE_OAUTH_ACCESS));
+    assert.ok(out.endsWith('.txt'));
+});
+
+test('filename multi-provider: pass-through filename normal con prefijo "sk" en slug', () => {
+    // No debe disparar el rename si el "sk-" es de un slug y no llega a 48 chars
+    // alfanuméricos sólidos del patrón OpenAI.
+    assert.strictEqual(
+        sanitizeDriveFilename('qa-sk-button-3073.mp4'),
+        'qa-sk-button-3073.mp4',
+    );
+});
+
+test('filenameHasSecret multi-provider: detector cubre los 4 prefijos', () => {
+    assert.strictEqual(filenameHasSecret(`x-${FAKE_ANTHROPIC}.log`), true);
+    assert.strictEqual(filenameHasSecret(`x-${FAKE_OPENAI_PROJECT}.log`), true);
+    assert.strictEqual(filenameHasSecret(`x-${FAKE_OPENAI_CLASSIC}.log`), true);
+    assert.strictEqual(filenameHasSecret(`x-${FAKE_GOOGLE_OAUTH_ACCESS}.log`), true);
 });
 
 // ─── Run ────────────────────────────────────────────────────────────────────

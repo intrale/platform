@@ -1,0 +1,203 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 16b — Mensajes Telegram del Pulpo (#3259, CA-8 y CA-10)
+  -----------------------------------------------------------------------------
+  Muestra el formato visual exacto de los dos mensajes que el Pulpo encola
+  en la cola filesystem-queue (`.pipeline/servicios/telegram/pendiente/`):
+
+    Mensaje 1 — PAUSA (CA-4 + CA-8): cuando primary + todos los fallbacks
+    estan gated. Trigger: dispatchResolution.gated en pulpo.js (linea ~5009).
+
+    Mensaje 2 — DESTRABE (CA-10): cuando el brazo de retry detecta que un
+    provider volvio. Trigger: brazoRetryProviderExhaustion al detectar
+    transicion gated -> ok.
+
+  El mockup respeta el estilo Telegram dark theme + formato markdown que ya
+  usa el bot Intrale (memoria feedback_telegram-messages-natural).
+
+  Restricciones aplicadas (heredadas de security review fila A03):
+    - body sanitizado via lib/telegram/sanitize.js
+    - max 4096 bytes (limite Telegram)
+    - error_excerpt truncado a 512 bytes max
+    - no markdown control chars no escapados
+    - no API keys / secrets en el payload
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 940"
+     font-family="-apple-system, 'Segoe UI Variable', 'Segoe UI', Roboto, sans-serif">
+  <defs>
+    <!-- Avatar del bot -->
+    <symbol id="m-bot-avatar" viewBox="0 0 40 40">
+      <circle cx="20" cy="20" r="20" fill="#1F6FEB"/>
+      <path d="M20 10 L11 26 L29 26 Z" fill="none" stroke="#FFFFFF" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="M20 16 L16.4 22.4 L23.6 22.4 Z" fill="#FFFFFF"/>
+    </symbol>
+  </defs>
+
+  <!-- Fondo Telegram dark theme -->
+  <rect width="1080" height="940" fill="#17212B"/>
+
+  <!-- Label de contexto -->
+  <text x="24" y="32" fill="#7D8E98" font-size="13">Telegram · bot @intrale_bot · grupo "Intrale Pipeline V3"</text>
+
+  <!-- ========================================================================
+       MENSAJE 1 — PAUSA POR EXHAUSTION (CA-4 + CA-8)
+       ======================================================================== -->
+
+  <!-- Avatar -->
+  <g transform="translate(24,72)">
+    <svg width="40" height="40"><use href="#m-bot-avatar"/></svg>
+  </g>
+
+  <!-- Nombre y timestamp -->
+  <text x="76" y="86" fill="#00D6FF" font-size="13" font-weight="600">Intrale Pipeline</text>
+  <text x="190" y="86" fill="#5D7689" font-size="11">bot · 15:42</text>
+
+  <!-- Burbuja del mensaje 1 -->
+  <g transform="translate(76,96)">
+    <!-- Burbuja (ancho 720, ambar con borde) -->
+    <rect width="780" height="316" rx="10" fill="#212D3B" stroke="#E8770D" stroke-width="1.5"/>
+    <!-- Banda lateral izq color (urgencia) -->
+    <rect width="4" height="316" rx="10" fill="#E8770D"/>
+
+    <!-- Titulo -->
+    <text x="20" y="32" fill="#E8770D" font-size="16" font-weight="700">[!] Pipeline pausado — cuota agotada</text>
+
+    <!-- Hilo -->
+    <g transform="translate(20,52)">
+      <!-- Issue afectado -->
+      <text x="0" y="14" fill="#B9C5CF" font-size="13"><tspan fill="#7D8E98">Issue:</tspan> </text>
+      <text x="58" y="14" fill="#5BA1E5" font-size="13" font-weight="600" text-decoration="underline">#3271 — feat(android): rediseño card de transacciones</text>
+
+      <!-- Skill afectado -->
+      <text x="0" y="38" fill="#B9C5CF" font-size="13"><tspan fill="#7D8E98">Skill:</tspan> <tspan fill="#E6EDF3" font-weight="500">android-dev</tspan> · fase <tspan fill="#E6EDF3" font-weight="500">desarrollo</tspan></text>
+
+      <!-- Providers intentados (estructurado) -->
+      <text x="0" y="68" fill="#7D8E98" font-size="12" font-weight="600" letter-spacing="0.06em">PROVIDERS INTENTADOS</text>
+
+      <g transform="translate(0,78)" font-family="'SF Mono', Consolas, monospace" font-size="12">
+        <text x="0" y="14" fill="#E8770D">→ anthropic        </text>
+        <text x="180" y="14" fill="#F85149">usage_limit_error</text>
+        <text x="360" y="14" fill="#7D8E98">(resets en 4d 02h)</text>
+
+        <text x="0" y="34" fill="#E8770D">→ openai-codex     </text>
+        <text x="180" y="34" fill="#F85149">insufficient_quota</text>
+        <text x="360" y="34" fill="#7D8E98">(resets en 6d 18h)</text>
+
+        <text x="0" y="54" fill="#E8770D">→ groq             </text>
+        <text x="180" y="54" fill="#F85149">rate_limit_exceeded</text>
+        <text x="360" y="54" fill="#7D8E98">(resets en 23h)</text>
+
+        <text x="0" y="74" fill="#E8770D">→ cerebras         </text>
+        <text x="180" y="74" fill="#F85149">quota_exceeded</text>
+        <text x="360" y="74" fill="#7D8E98">(resets en 18h)</text>
+      </g>
+
+      <!-- Reintenta en -->
+      <g transform="translate(0,196)">
+        <rect x="0" y="0" width="220" height="32" rx="6" fill="rgba(245,158,11,0.16)" stroke="#F59E0B" stroke-width="1"/>
+        <text x="14" y="20" fill="#F59E0B" font-size="12" font-weight="600">⏱ Reintenta en 5 min</text>
+      </g>
+
+      <!-- Sugerencia accionable -->
+      <text x="0" y="252" fill="#7D8E98" font-size="11" font-style="italic">
+        Que podes hacer:
+      </text>
+      <text x="0" y="268" fill="#B9C5CF" font-size="11">
+        1. Esperar — el Pulpo destraba solo cuando algun provider libere.
+      </text>
+      <text x="0" y="282" fill="#B9C5CF" font-size="11">
+        2. Sacar la label <tspan fill="#E6EDF3" font-family="'SF Mono', Consolas, monospace">provider-exhaustion-pause</tspan> manual si queres forzar reintento ya.
+      </text>
+    </g>
+  </g>
+
+  <!-- Reactions (chips bajo el mensaje 1) -->
+  <g transform="translate(76,432)">
+    <rect width="60" height="26" rx="13" fill="#2B5278" stroke="#3D7BAD" stroke-width="1"/>
+    <text x="14" y="18" fill="#FFFFFF" font-size="12">👀 2</text>
+    <rect x="68" y="0" width="60" height="26" rx="13" fill="#2B5278" stroke="#3D7BAD" stroke-width="1"/>
+    <text x="82" y="18" fill="#FFFFFF" font-size="12">😤 1</text>
+  </g>
+
+  <!-- ========================================================================
+       MENSAJE 2 — DESTRABE (CA-10)
+       ======================================================================== -->
+
+  <g transform="translate(24,500)">
+    <svg width="40" height="40"><use href="#m-bot-avatar"/></svg>
+  </g>
+
+  <text x="76" y="514" fill="#00D6FF" font-size="13" font-weight="600">Intrale Pipeline</text>
+  <text x="190" y="514" fill="#5D7689" font-size="11">bot · 16:23</text>
+
+  <!-- Burbuja del mensaje 2 (verde, mas chica) -->
+  <g transform="translate(76,524)">
+    <rect width="780" height="140" rx="10" fill="#212D3B" stroke="#3FB950" stroke-width="1.5"/>
+    <rect width="4" height="140" rx="10" fill="#3FB950"/>
+
+    <!-- Titulo -->
+    <text x="20" y="32" fill="#3FB950" font-size="16" font-weight="700">[OK] Pipeline destrabado — Groq volvio</text>
+
+    <g transform="translate(20,52)">
+      <text x="0" y="14" fill="#B9C5CF" font-size="13">
+        Provider <tspan fill="#FF6B47" font-weight="600">groq</tspan> respondio ok despues de 41 min en pausa.
+      </text>
+      <text x="0" y="34" fill="#B9C5CF" font-size="13">
+        Issue <tspan fill="#5BA1E5" font-weight="600" text-decoration="underline">#3271</tspan> queda elegible para el proximo barrido del Pulpo.
+      </text>
+
+      <!-- Detalle del cambio de estado -->
+      <g transform="translate(0,54)" font-family="'SF Mono', Consolas, monospace" font-size="11">
+        <text x="0" y="14" fill="#7D8E98">groq:</text>
+        <text x="50" y="14" fill="#F85149">gated</text>
+        <text x="92" y="14" fill="#7D8E98">→</text>
+        <text x="108" y="14" fill="#3FB950">ok</text>
+        <text x="140" y="14" fill="#7D8E98">(ping 89ms)</text>
+      </g>
+
+      <text x="0" y="92" fill="#7D8E98" font-size="11" font-style="italic">
+        label <tspan fill="#E6EDF3" font-family="'SF Mono', Consolas, monospace">provider-exhaustion-pause</tspan> removida automaticamente
+      </text>
+    </g>
+  </g>
+
+  <!-- Reactions mensaje 2 -->
+  <g transform="translate(76,684)">
+    <rect width="60" height="26" rx="13" fill="#2B5278" stroke="#3D7BAD" stroke-width="1"/>
+    <text x="20" y="18" fill="#FFFFFF" font-size="12">🎉 3</text>
+  </g>
+
+  <!-- ========================================================================
+       NOTAS DE COPY / TONO
+       ======================================================================== -->
+  <g transform="translate(24,750)">
+    <text x="0" y="0" fill="#5D7689" font-size="11" letter-spacing="0.06em">REGLAS DE COPY (refuerzo)</text>
+
+    <text x="0" y="22" fill="#B9C5CF" font-size="12">
+      • Tono natural argento, sin emoji decorativo en exceso (memoria <tspan fill="#E6EDF3">feedback_telegram-messages-natural</tspan>).
+    </text>
+    <text x="0" y="42" fill="#B9C5CF" font-size="12">
+      • Variar redaccion entre eventos — NO repetir "El pipeline esta pausado" cada vez. Usar pool de plantillas (CA-8).
+    </text>
+    <text x="0" y="62" fill="#B9C5CF" font-size="12">
+      • Nombre del provider SIEMPRE en color identitario (matches design-tokens.css 3.d).
+    </text>
+    <text x="0" y="82" fill="#B9C5CF" font-size="12">
+      • Issue siempre clickeable (link directo a GitHub) — no truncar el titulo si entra en una linea.
+    </text>
+    <text x="0" y="102" fill="#B9C5CF" font-size="12">
+      • Idempotencia (CA-9): NO repetir el mismo mensaje del mismo issue dentro de 2h salvo que cambie el set de providers gated.
+    </text>
+    <text x="0" y="122" fill="#B9C5CF" font-size="12">
+      • Mensaje de destrabe (CA-10) NO se de-duplica — siempre se manda al volver un provider, porque es noticia positiva accionable.
+    </text>
+    <text x="0" y="142" fill="#B9C5CF" font-size="12">
+      • Sanitizado obligatorio via <tspan fill="#E6EDF3" font-family="'SF Mono', Consolas, monospace">lib/telegram/sanitize.js</tspan> — strip de markdown chars + max 4096 bytes (limite Telegram).
+    </text>
+  </g>
+
+  <!-- Pie de mockup -->
+  <g transform="translate(24,930)">
+    <text fill="#5D7689" font-size="10" font-family="'SF Mono', Consolas, monospace">mockup 16b · telegram-exhaustion · v1 · issue #3259 CA-8 + CA-10 · sanitizado lib/telegram/sanitize.js · 4096 bytes max</text>
+  </g>
+</svg>

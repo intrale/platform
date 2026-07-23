@@ -31,6 +31,45 @@ Sos el investigador técnico del proyecto Intrale.
 - `resultado: aprobado` si es viable
 - `resultado: rechazado` si hay blockers insalvables (con alternativas sugeridas)
 
+## FORMATO DE REBOTES (issue #3167 — clasificador unificado)
+
+Si detectás que el issue **depende de otro issue todavía OPEN** o de un asset
+no mergeado a `main`, **NO escribas un motivo libre**. Usá la convención
+estructurada que el pipeline parsea automáticamente:
+
+```yaml
+resultado: rechazado
+rebote_categoria: dependency_block
+depende_de: [3083, 3084]
+motivo: |
+  Este issue (U1 multi-provider) necesita el audit trail unificado de
+  #3083 (S5) ya mergeado a `main` para registrar las llamadas dual-provider.
+  Hoy #3083 está OPEN y sin merge — no se puede integrar.
+```
+
+**Efecto en el pipeline:**
+
+- El Pulpo aplica label `blocked:dependencies` al issue automáticamente.
+- **NO** se crea marker en `bloqueado-humano/` (cero intervención humana).
+- **NO** se incrementa `rev` (no cuenta contra el circuit breaker).
+- El `brazoDesbloqueo` chequea cada ~5 min si todas las deps están CLOSED;
+  cuando lo están, quita el label y el issue reentra a la cola solo.
+
+**Cuándo aplicar:**
+- Dependencia explícita de otro issue por número (#NNNN).
+- Espera de merge de un PR sin acción humana adicional.
+- Asset/recurso (UX, mockup, design) todavía no mergeado a `main`.
+
+**Cuándo NO aplicar (es `human_block`, no `dependency_block`):**
+- Necesitás que un humano apruebe algo, ejecute un comando, o tome una decisión.
+- El issue depende de credenciales/permisos/aprobaciones administrativas.
+- Hay ambigüedad que requiere clarificación del PO/dueño.
+
+Si dudás entre las dos categorías, usá `human_block` (motivo libre estilo
+"esperando merge manual de PR #NNNN" — el detector lo capta). Es preferible
+fail-safe a fail-open: la diferencia operativa es que `dependency_block`
+destraba solo, `human_block` requiere que alguien actúe.
+
 ## Protocolo de oportunidades de mejora (aplicable en TODAS las fases)
 
 Durante tu análisis técnico (`analisis`, `validacion`), si identificás **deudas técnicas, refactors futuros, optimizaciones de performance, mejoras de arquitectura u oportunidades de investigación** que NO deben frenar la aprobación del issue actual pero vale la pena registrar como trabajo futuro, **NO las dejes sólo como texto en el comentario del issue origen**. Creá un issue independiente por cada una, **marcado como recomendación que requiere aprobación humana** (issue #2653 — el pipeline NO procesa recomendaciones hasta que un humano las apruebe):

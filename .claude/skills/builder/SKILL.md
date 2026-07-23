@@ -4,6 +4,7 @@ user-invocable: true
 argument-hint: "[modulo] [--clean] [--verify] [--fast]"
 allowed-tools: Bash, Read, Grep, Glob, TaskCreate, TaskUpdate, TaskList
 model: claude-haiku-4-5-20251001
+required_permissions: [file_read, bash, child_spawn, tool_use_gated, long_running_watcher]
 ---
 
 # /build — Builder
@@ -200,3 +201,25 @@ Para cada error de compilacion:
 - Workdir: `/c/Workspaces/Intrale/platform` — correr todos los comandos desde ahi
 - Si un error es ambiguo, leer el codigo fuente antes de proponer solucion
 - Ante duda entre fix rapido y fix correcto, siempre el correcto
+
+## Entregable de cierre de fase
+
+> Doctrina común (#3929 / EP3-H3): cada productor deja el **artefacto físico** de su fase, no sólo un comentario en el issue. Reglas completas de formato, paths y seguridad (CA-5..CA-9): [`docs/pipeline/entregables-multimedia-por-agente.md`](../../../docs/pipeline/entregables-multimedia-por-agente.md) → §5.bis "Doctrina de cierre de fase".
+
+Antes de salir (después de escribir tu resultado), generá el artefacto en el root issue-scoped:
+
+- **Path:** `.pipeline/assets/docs/{issue}/`
+- **Formato:** Markdown o PDF (resumen de build **curado**, NUNCA el log crudo)
+
+Usá el helper compartido, que centraliza validación de `issue` (CA-5), redacción de secrets (CA-6) y sanitización SVG (CA-8) — **no reimplementes estas reglas**:
+
+```js
+const path = require("path");
+const { writeDeliverable } = require(path.resolve(".pipeline/lib/write-deliverable"));
+// #4466 — pasar `fase` puebla el índice .pipeline/deliverables/<issue>.json (store #4255)
+// y da filename phase-scoped. Tomamos la fase real del pipeline desde el env inyectado.
+const fase = process.env.PIPELINE_FASE || "build";
+writeDeliverable("build", issue, { fase, md /* o svg para mockups/diagramas */ });
+```
+
+El enforcement es **warn-only**: no generar el archivo no bloquea el pipeline, pero cuenta para la cobertura ≥80% de la ola (CA-4).

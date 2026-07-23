@@ -1,0 +1,15 @@
+{
+  "issue": 4541,
+  "entries": [
+    {
+      "issue": 4541,
+      "fase": "aprobacion",
+      "agente": "review",
+      "tipo": "document",
+      "path": ".pipeline/assets/docs/4541/review-aprobacion-4541.md",
+      "bytes": 807,
+      "sensible": false,
+      "timestamp": "2026-07-07T16:29:12.993Z"
+    }
+  ]
+}

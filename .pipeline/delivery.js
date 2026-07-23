@@ -17,6 +17,7 @@
 
 'use strict';
 
+const fs = require('fs');
 const { spawnSync } = require('child_process');
 const path = require('path');
 
@@ -24,6 +25,58 @@ const gitCtx = require('./lib/delivery/git-context');
 const classifier = require('./lib/delivery/change-classifier');
 const commitBuilder = require('./lib/delivery/commit-builder');
 const prBuilder = require('./lib/delivery/pr-builder');
+const operatorSignature = require('./lib/operator-signature');
+
+// ---- #4575 · GATE 2 defense-in-depth (revalidación firma↔HEAD) --------------
+//
+// La retención estructural vive en pulpo.js (no promueve `aprobacion → entrega`
+// sin firma, así delivery ni corre para un issue sin firmar). Esto es la segunda
+// barrera anti-TOCTOU (CA-3): justo antes de crear/mergear el PR, revalidamos que
+// exista una firma verde ligada AL HEAD ACTUAL. Kill switch OFF por default.
+//
+// Función pura y testeable: recibe headSha + config + signers y devuelve
+// `{ ok, reason }`. NO ejecuta git/gh (eso lo resuelve `main`).
+function checkOperatorSignatureGate({ issueNumber, headSha, config, authorizedSigners, pipelineDir }) {
+  const sig = (config && config.operator_signature) || {};
+  if (sig.enabled !== true) return { ok: true, reason: 'gate disabled (kill switch)' };
+  if (!issueNumber) return { ok: true, reason: 'sin issue asociado — gate no aplica' };
+
+  const res = operatorSignature.evaluate({
+    issue: { number: issueNumber },
+    headOid: headSha,
+    config: sig,
+    options: { authorizedSigners, pipelineDir },
+  });
+  if (res.decision === 'block') {
+    return { ok: false, reason: `GATE 2 (firma de aceptación): ${res.reason}` };
+  }
+  return { ok: true, reason: res.reason };
+}
+
+// Carga best-effort de config.yaml (sólo para leer `operator_signature`/`cua`).
+function loadConfigBestEffort(pipelineDir) {
+  try {
+    const yaml = require('js-yaml');
+    const raw = fs.readFileSync(path.join(pipelineDir, 'config.yaml'), 'utf8');
+    return yaml.load(raw) || {};
+  } catch { return {}; }
+}
+
+// Firmantes autorizados (CA-4): allowlist única `cua.operator_chat_ids` +
+// credential dedicada del operador (env). NO se crea lista paralela.
+function resolveAuthorizedSigners(config) {
+  const ids = new Set();
+  const cua = (config && config.cua) || {};
+  if (Array.isArray(cua.operator_chat_ids)) {
+    for (const raw of cua.operator_chat_ids) {
+      const s = String(raw == null ? '' : raw).trim();
+      if (s) ids.add(s);
+    }
+  }
+  const envOperator = String(process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID || '').trim();
+  if (envOperator) ids.add(envOperator);
+  return Array.from(ids);
+}
 
 // ---- CLI parsing -----------------------------------------------------------
 
@@ -123,6 +176,7 @@ function main() {
     issueComments: issue.comments,
     type: inferredType,
     description: args.description,
+    issueNumber: args.issue,
   });
 
   // 5. Construir pr-body
@@ -172,6 +226,27 @@ function main() {
     console.log(pr.body);
     console.log('\n(--dry-run: no se ejecutó push ni se creó PR)');
     return;
+  }
+
+  // 5.5 #4575 — GATE 2 defense-in-depth: revalidar firma verde ligada al HEAD
+  // actual antes de tocar remoto (anti-TOCTOU CA-3). Kill switch OFF ⇒ no-op.
+  const pipelineDir = path.join(__dirname);
+  const cfg = loadConfigBestEffort(pipelineDir);
+  if (((cfg.operator_signature || {}).enabled === true) && args.issue) {
+    const headRev = spawnSync('git', ['-C', cwd, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+    const headSha = headRev.status === 0 ? (headRev.stdout || '').trim() : '';
+    const gate = checkOperatorSignatureGate({
+      issueNumber: parseInt(args.issue, 10),
+      headSha,
+      config: cfg,
+      authorizedSigners: resolveAuthorizedSigners(cfg),
+      pipelineDir,
+    });
+    if (!gate.ok) {
+      console.error(`❌ Merge/entrega bloqueado — ${gate.reason}`);
+      process.exit(1);
+    }
+    console.log(`🔏 GATE 2 OK: ${gate.reason}`);
   }
 
   // 6. Push (asume commits ya hechos por el agente)
@@ -245,4 +320,12 @@ if (require.main === module) {
   }
 }
 
-module.exports = { parseArgs, fetchIssue, main };
+module.exports = {
+  parseArgs,
+  fetchIssue,
+  main,
+  // #4575 — GATE 2 defense-in-depth (exportados para tests)
+  checkOperatorSignatureGate,
+  resolveAuthorizedSigners,
+  loadConfigBestEffort,
+};

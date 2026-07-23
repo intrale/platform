@@ -1,0 +1,44 @@
+{
+  "sprint_id": "SPR-TEST",
+  "suite": "regression-test",
+  "timestamp": "2026-05-16T13:50:42.952Z",
+  "summary": {
+    "total": 3,
+    "passed": 1,
+    "failed": 1,
+    "skipped": 1
+  },
+  "passed": false,
+  "results": [
+    {
+      "id": "R1",
+      "title": "T1",
+      "app": "business",
+      "flow": "f1.yaml",
+      "passed": true,
+      "skipped": false,
+      "error": null,
+      "durationMs": 1200
+    },
+    {
+      "id": "R2",
+      "title": "T2",
+      "app": "client",
+      "flow": "f2.yaml",
+      "passed": false,
+      "skipped": false,
+      "error": "FAIL",
+      "durationMs": 800
+    },
+    {
+      "id": "R3",
+      "title": "T3",
+      "app": "client",
+      "flow": "f3.yaml",
+      "passed": false,
+      "skipped": true,
+      "error": null,
+      "durationMs": 0
+    }
+  ]
+}

@@ -1,0 +1,457 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 22 — Widget "Audit trail · Allowlist mutations" + estados (#3625)
+  -----------------------------------------------------------------------------
+  Widget que registra y muestra las mutaciones sobre .pipeline/.partial-pause.json
+  con trazabilidad hash-chain (lib/audit-log.appendChained). Vive en la solapa
+  Pipeline del dashboard V3, debajo de "Allowlist activa & Candidatos" (mockup 14).
+
+  Cuatro estados visuales que el dev DEBE implementar (CA-5 de #3625):
+
+    A) Mutacion OK con autoria humana (commander:leo)
+       - Fila con fondo neutro (--surface-1)
+       - Chip authorized_by verde (--success) + icono shield-check
+       - Diff con added (verde) / removed (gris)
+
+    B) Mutacion OK con autoria de subsistema (wave-promote, restart:rollback,
+       resume:operator, planner-split:auto, recursive-deps:from-N, pulpo:cleanup)
+       - Fila con fondo neutro
+       - Chip authorized_by azul info (--info) + icono shield-lock
+       - Tooltip explica el subsistema
+
+    C) Mutacion REJECTED por el gate (authorizedBy invalido o removal sin autoria)
+       - Fila con borde y fondo rojo tenue (--danger-bg)
+       - Chip action danger + icono x-shield
+       - Texto del motivo de rechazo visible (REJECTED: <razon>)
+
+    D) Mutacion sin autoria registrada (authorized_by: null, ej. backfill o
+       legacy pre-gate) — caso del incidente 09:39 BA de Ola N+11
+       - Fila con borde amarillo (--warning) + icono triangulo
+       - Banner "sin autoria" tipo etiqueta
+       - Si _backfill:true, badge adicional "BACKFILL"
+
+  Convenciones:
+    - Paleta: design-tokens.css (var(--success), var(--danger), var(--warning),
+      var(--info), var(--purple), var(--surface-*), var(--text-*))
+    - Iconos: sprite.svg referenciados con <use href="#ic-*"/>. En este mockup
+      standalone se inlinen como <symbol id="m-*"/> para preview sin sprite cargado.
+    - Tipografia: var(--font-sans) — system stack, monospace en numeros/IDs
+    - WCAG AA: todos los pares texto/fondo verificados >= 4.5:1 contra surface-0/1.
+    - Anti-info-solo-por-color: cada estado tiene icono + texto, no solo color.
+
+  Tamano: 1440x900 (encaja como section card en la solapa Pipeline).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 900"
+     font-family="-apple-system, 'Segoe UI Variable', 'Segoe UI', Roboto, sans-serif">
+  <defs>
+    <!-- ===== Iconos inline (preview standalone) ===== -->
+    <symbol id="m-audit-log" viewBox="0 0 24 24">
+      <!-- Pergamino con sello/chain — semantica: log inmutable -->
+      <path d="M5 4 H17 A2 2 0 0 1 19 6 V18 A2 2 0 0 1 17 20 H7 A2 2 0 0 1 5 18 V4 Z"
+            fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M8 8 H16 M8 11 H14 M8 14 H16 M8 17 H12"
+            stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+      <circle cx="18" cy="18" r="3.2" fill="#0D1117" stroke="currentColor" stroke-width="1.4"/>
+      <path d="M16.6 18 L17.6 19.2 L19.6 16.8" fill="none" stroke="currentColor"
+            stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-shield-check" viewBox="0 0 24 24">
+      <path d="M12 3 L20 6 V12 C20 16.5 16.5 19.5 12 21 C7.5 19.5 4 16.5 4 12 V6 Z"
+            fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M8 12 L11 15 L16 9" fill="none" stroke="currentColor"
+            stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-shield-x" viewBox="0 0 24 24">
+      <path d="M12 3 L20 6 V12 C20 16.5 16.5 19.5 12 21 C7.5 19.5 4 16.5 4 12 V6 Z"
+            fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M9 9 L15 15 M15 9 L9 15" stroke="currentColor"
+            stroke-width="1.6" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-shield-lock" viewBox="0 0 24 24">
+      <path d="M12 3 L20 6 V12 C20 16.5 16.5 19.5 12 21 C7.5 19.5 4 16.5 4 12 V6 Z"
+            fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <rect x="9.5" y="11.5" width="5" height="5" rx="0.6"
+            fill="currentColor" opacity="0.16"/>
+      <rect x="9.5" y="11.5" width="5" height="5" rx="0.6"
+            fill="none" stroke="currentColor" stroke-width="1.3"/>
+      <path d="M10.5 11.5 V10 C10.5 9.2 11.1 8.5 12 8.5 C12.9 8.5 13.5 9.2 13.5 10 V11.5"
+            fill="none" stroke="currentColor" stroke-width="1.2"/>
+    </symbol>
+    <symbol id="m-warning" viewBox="0 0 24 24">
+      <path d="M12 3 L22 20 H2 Z" fill="none" stroke="currentColor"
+            stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M12 9.5 V14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <circle cx="12" cy="17" r="0.9" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-chain-broken" viewBox="0 0 24 24">
+      <path d="M8 12 H6 A3 3 0 0 1 6 6 H9" fill="none" stroke="currentColor"
+            stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M16 12 H18 A3 3 0 0 1 18 18 H15" fill="none" stroke="currentColor"
+            stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M3 3 L21 21" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-link" viewBox="0 0 24 24">
+      <path d="M10 14 L14 10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M9 7 H7 A5 5 0 0 0 7 17 H9" fill="none" stroke="currentColor"
+            stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M15 7 H17 A5 5 0 0 1 17 17 H15" fill="none" stroke="currentColor"
+            stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-clock" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+      <path d="M12 7 V12 L15.5 14" fill="none" stroke="currentColor"
+            stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-info" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <circle cx="12" cy="8" r="1" fill="currentColor"/>
+      <path d="M12 11 V17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-user" viewBox="0 0 24 24">
+      <circle cx="12" cy="8" r="3.5" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M5 20 C5 16.5 8 14 12 14 C16 14 19 16.5 19 20"
+            fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-machine" viewBox="0 0 24 24">
+      <rect x="4" y="6" width="16" height="11" rx="1.2"
+            fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M9 17 V20 M15 17 V20 M7 20 H17" stroke="currentColor"
+            stroke-width="1.6" stroke-linecap="round"/>
+      <circle cx="8.5" cy="11.5" r="1" fill="currentColor"/>
+      <path d="M11 11.5 H16" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      <path d="M8 14.5 H16" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-backfill" viewBox="0 0 24 24">
+      <path d="M5 12 H19" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M5 12 L10 7 M5 12 L10 17" fill="none" stroke="currentColor"
+            stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="19" cy="12" r="1.5" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-bell" viewBox="0 0 24 24">
+      <path d="M6 17 L18 17 C16.5 15.5 16 14 16 11 C16 7.5 14.2 5 12 5 C9.8 5 8 7.5 8 11 C8 14 7.5 15.5 6 17 Z"
+            fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M10 20 C10.5 20.8 11.2 21 12 21 C12.8 21 13.5 20.8 14 20"
+            fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    </symbol>
+  </defs>
+
+  <!-- =========================================================================
+       FONDO (surface-0)
+       ========================================================================= -->
+  <rect width="1440" height="900" fill="#0D1117"/>
+
+  <!-- =========================================================================
+       BREADCRUMB + TITULO
+       ========================================================================= -->
+  <text x="24" y="36" fill="#8B949E" font-size="13">Pipeline · Allowlist · Audit trail</text>
+  <text x="24" y="68" fill="#E6EDF3" font-size="24" font-weight="600">Audit trail · Mutaciones de la allowlist</text>
+  <text x="24" y="92" fill="#B1BAC4" font-size="13">Toda escritura sobre .pipeline/.partial-pause.json queda registrada con hash-chain SHA-256 (lib/audit-log.appendChained). El gate rechaza removals sin autoria explicita.</text>
+
+  <!-- =========================================================================
+       KPIs DE LAS ULTIMAS 24h (CA-5 metric)
+       ========================================================================= -->
+  <g transform="translate(24,116)">
+    <!-- Total -->
+    <rect x="0" y="0" width="220" height="76" rx="8" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+    <g transform="translate(16,16)" color="#58A6FF">
+      <svg width="20" height="20" viewBox="0 0 24 24"><use href="#m-audit-log"/></svg>
+    </g>
+    <text x="44" y="32" fill="#8B949E" font-size="11" letter-spacing="0.08em" font-weight="600">MUTACIONES 24h</text>
+    <text x="16" y="64" fill="#E6EDF3" font-size="28" font-weight="600"
+          font-family="'SF Mono', Consolas, monospace">12</text>
+
+    <!-- Autorizadas -->
+    <rect x="236" y="0" width="220" height="76" rx="8" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+    <g transform="translate(252,16)" color="#3FB950">
+      <svg width="20" height="20" viewBox="0 0 24 24"><use href="#m-shield-check"/></svg>
+    </g>
+    <text x="280" y="32" fill="#8B949E" font-size="11" letter-spacing="0.08em" font-weight="600">AUTORIZADAS</text>
+    <text x="252" y="64" fill="#3FB950" font-size="28" font-weight="600"
+          font-family="'SF Mono', Consolas, monospace">9</text>
+
+    <!-- Rejected -->
+    <rect x="472" y="0" width="220" height="76" rx="8" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+    <g transform="translate(488,16)" color="#F85149">
+      <svg width="20" height="20" viewBox="0 0 24 24"><use href="#m-shield-x"/></svg>
+    </g>
+    <text x="516" y="32" fill="#8B949E" font-size="11" letter-spacing="0.08em" font-weight="600">REJECTED</text>
+    <text x="488" y="64" fill="#F85149" font-size="28" font-weight="600"
+          font-family="'SF Mono', Consolas, monospace">2</text>
+
+    <!-- Sin autoria -->
+    <rect x="708" y="0" width="220" height="76" rx="8" fill="#161B22" stroke="#D29922" stroke-width="1"/>
+    <g transform="translate(724,16)" color="#D29922">
+      <svg width="20" height="20" viewBox="0 0 24 24"><use href="#m-warning"/></svg>
+    </g>
+    <text x="752" y="32" fill="#8B949E" font-size="11" letter-spacing="0.08em" font-weight="600">SIN AUTORIA</text>
+    <text x="724" y="64" fill="#D29922" font-size="28" font-weight="600"
+          font-family="'SF Mono', Consolas, monospace">1</text>
+
+    <!-- Hash-chain status -->
+    <rect x="944" y="0" width="448" height="76" rx="8" fill="#161B22" stroke="#3FB950" stroke-width="1"/>
+    <g transform="translate(960,16)" color="#3FB950">
+      <svg width="20" height="20" viewBox="0 0 24 24"><use href="#m-link"/></svg>
+    </g>
+    <text x="988" y="32" fill="#8B949E" font-size="11" letter-spacing="0.08em" font-weight="600">HASH-CHAIN</text>
+    <text x="960" y="56" fill="#E6EDF3" font-size="15" font-weight="600">verificado</text>
+    <text x="1060" y="56" fill="#8B949E" font-size="12">— 247 entries, ultima verificacion hace 12 min</text>
+    <g transform="translate(1340,20)">
+      <rect width="92" height="36" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/>
+      <text x="46" y="22" fill="#3FB950" font-size="12" font-weight="600" text-anchor="middle">verifyChain</text>
+    </g>
+  </g>
+
+  <!-- =========================================================================
+       BANNER: SIN AUTORIA detectada (alerta crítica)
+       ========================================================================= -->
+  <g transform="translate(24,212)">
+    <rect width="1392" height="48" rx="8" fill="rgba(210,153,34,0.12)" stroke="#D29922" stroke-width="1"/>
+    <g transform="translate(16,12)" color="#D29922">
+      <svg width="22" height="22" viewBox="0 0 24 24"><use href="#m-bell"/></svg>
+    </g>
+    <text x="50" y="22" fill="#D29922" font-size="13" font-weight="600">1 mutacion sin autoria detectada — alerta enviada al Commander</text>
+    <text x="50" y="38" fill="#B1BAC4" font-size="12">Entry del 2026-05-29 12:39:00Z con authorized_by=null. Telegram notificado a 09:39 BA. Pendiente revision del operador.</text>
+    <g transform="translate(1232,11)">
+      <rect width="148" height="26" rx="6" fill="#0D1117" stroke="#D29922" stroke-width="1"/>
+      <text x="74" y="17" fill="#D29922" font-size="12" font-weight="600" text-anchor="middle">Marcar como revisada</text>
+    </g>
+  </g>
+
+  <!-- =========================================================================
+       SECCION — Tabla de mutaciones (últimas 3 + total con scroll virtual)
+       ========================================================================= -->
+  <g transform="translate(24,284)">
+    <!-- Titulo + leyenda -->
+    <g color="#58A6FF">
+      <svg x="0" y="-13" width="20" height="20" viewBox="0 0 24 24"><use href="#m-audit-log"/></svg>
+    </g>
+    <text x="30" y="4" fill="#E6EDF3" font-size="17" font-weight="600">Ultimas mutaciones</text>
+    <text x="200" y="4" fill="#8B949E" font-size="13">mostrando 3 de 247 — append-only, tail eficiente</text>
+    <g transform="translate(1278,-14)">
+      <rect width="114" height="28" rx="6" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+      <text x="57" y="18" fill="#B1BAC4" font-size="12" font-weight="500" text-anchor="middle">Ver historial</text>
+    </g>
+
+    <!-- Card contenedora -->
+    <rect x="0" y="24" width="1392" height="328" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+
+    <!-- Headers -->
+    <g transform="translate(20,52)">
+      <text x="0"    y="0" fill="#8B949E" font-size="11" letter-spacing="0.08em" font-weight="600">CUANDO</text>
+      <text x="146"  y="0" fill="#8B949E" font-size="11" letter-spacing="0.08em" font-weight="600">SOURCE</text>
+      <text x="296"  y="0" fill="#8B949E" font-size="11" letter-spacing="0.08em" font-weight="600">ACCION</text>
+      <text x="406"  y="0" fill="#8B949E" font-size="11" letter-spacing="0.08em" font-weight="600">DIFF (allowlist)</text>
+      <text x="816"  y="0" fill="#8B949E" font-size="11" letter-spacing="0.08em" font-weight="600">AUTORIZADO POR</text>
+      <text x="1108" y="0" fill="#8B949E" font-size="11" letter-spacing="0.08em" font-weight="600">JUSTIFICACION</text>
+    </g>
+    <line x1="20" y1="62" x2="1372" y2="62" stroke="#21262D" stroke-width="1"/>
+
+    <!-- ================================================================
+         FILA 1 — Estado A: mutacion OK por humano (commander:leo)
+         ================================================================ -->
+    <g transform="translate(20,86)" font-size="13">
+      <text x="0" y="0" fill="#E6EDF3" font-weight="500" font-family="'SF Mono', Consolas, monospace">hace 8 min</text>
+      <text x="0" y="18" fill="#6E7681" font-size="11" font-family="'SF Mono', Consolas, monospace">12:51:14Z</text>
+
+      <!-- Source pill -->
+      <g transform="translate(146,-14)" color="#BC8CFF">
+        <rect width="138" height="24" rx="12" fill="rgba(188,140,255,0.12)" stroke="#BC8CFF" stroke-width="1"/>
+        <g transform="translate(8,4)"><svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-user"/></svg></g>
+        <text x="28" y="16" fill="#BC8CFF" font-size="11" font-weight="600">commander:leo</text>
+      </g>
+
+      <!-- Accion -->
+      <g transform="translate(296,-14)" color="#58A6FF">
+        <rect width="88" height="24" rx="6" fill="rgba(88,166,255,0.12)" stroke="#58A6FF" stroke-width="1"/>
+        <text x="44" y="16" fill="#58A6FF" font-size="11" font-weight="600" text-anchor="middle">write</text>
+      </g>
+
+      <!-- Diff -->
+      <g transform="translate(406,-2)" font-family="'SF Mono', Consolas, monospace" font-size="12">
+        <text x="0" y="0" fill="#3FB950" font-weight="600">+ [#3625]</text>
+        <text x="120" y="0" fill="#8B949E">add</text>
+      </g>
+
+      <!-- Authorized by -->
+      <g transform="translate(816,-14)" color="#3FB950">
+        <rect width="186" height="24" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3FB950" stroke-width="1"/>
+        <g transform="translate(8,4)"><svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-shield-check"/></svg></g>
+        <text x="28" y="16" fill="#3FB950" font-size="11" font-weight="600">commander:leo</text>
+      </g>
+
+      <!-- Justification -->
+      <text x="1108" y="0" fill="#B1BAC4" font-size="12">Autoriza issue de hardening de allowlist</text>
+      <text x="1108" y="18" fill="#6E7681" font-size="11">pid 4892</text>
+    </g>
+    <line x1="20" y1="138" x2="1372" y2="138" stroke="#21262D" stroke-width="1"/>
+
+    <!-- ================================================================
+         FILA 2 — Estado C: REJECTED (removal sin authorizedBy)
+         ================================================================ -->
+    <g transform="translate(0,138)">
+      <rect x="0" y="0" width="1392" height="74" fill="rgba(248,81,73,0.08)"/>
+      <rect x="0" y="0" width="4" height="74" fill="#F85149"/>
+    </g>
+    <g transform="translate(20,160)" font-size="13">
+      <text x="0" y="0" fill="#E6EDF3" font-weight="500" font-family="'SF Mono', Consolas, monospace">hace 26 min</text>
+      <text x="0" y="18" fill="#6E7681" font-size="11" font-family="'SF Mono', Consolas, monospace">12:33:02Z</text>
+
+      <!-- Source pill (unknown script) -->
+      <g transform="translate(146,-14)" color="#F0A500">
+        <rect width="138" height="24" rx="12" fill="rgba(240,165,0,0.12)" stroke="#F0A500" stroke-width="1"/>
+        <g transform="translate(8,4)"><svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-machine"/></svg></g>
+        <text x="28" y="16" fill="#F0A500" font-size="11" font-weight="600">unknown:script</text>
+      </g>
+
+      <!-- Accion REJECTED -->
+      <g transform="translate(296,-14)" color="#F85149">
+        <rect width="88" height="24" rx="6" fill="rgba(248,81,73,0.16)" stroke="#F85149" stroke-width="1"/>
+        <g transform="translate(8,4)"><svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-shield-x"/></svg></g>
+        <text x="56" y="16" fill="#F85149" font-size="11" font-weight="600" text-anchor="middle">reject</text>
+      </g>
+
+      <!-- Diff propuesto (no aplicado) -->
+      <g transform="translate(406,-2)" font-family="'SF Mono', Consolas, monospace" font-size="12">
+        <text x="0" y="0" fill="#F85149" font-weight="600">- [#3559, #3605]</text>
+        <text x="160" y="0" fill="#8B949E">propuesto, no aplicado</text>
+      </g>
+
+      <!-- Authorized by NULL -->
+      <g transform="translate(816,-14)" color="#F85149">
+        <rect width="186" height="24" rx="6" fill="rgba(248,81,73,0.16)" stroke="#F85149" stroke-width="1"/>
+        <g transform="translate(8,4)"><svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-warning"/></svg></g>
+        <text x="28" y="16" fill="#F85149" font-size="11" font-weight="600">null — gate REJECTED</text>
+      </g>
+
+      <!-- Justification rechazo -->
+      <text x="1108" y="0" fill="#F85149" font-size="12" font-weight="600">REJECTED: removal sin autoria</text>
+      <text x="1108" y="18" fill="#B1BAC4" font-size="11">authorizedBy fuera de enum cerrado</text>
+    </g>
+
+    <!-- ================================================================
+         FILA 3 — Estado B: mutacion OK por subsistema (planner-split:auto)
+         ================================================================ -->
+    <line x1="20" y1="212" x2="1372" y2="212" stroke="#21262D" stroke-width="1"/>
+    <g transform="translate(20,234)" font-size="13">
+      <text x="0" y="0" fill="#E6EDF3" font-weight="500" font-family="'SF Mono', Consolas, monospace">hace 1 h 04 min</text>
+      <text x="0" y="18" fill="#6E7681" font-size="11" font-family="'SF Mono', Consolas, monospace">11:55:48Z</text>
+
+      <!-- Source pill (subsistema) -->
+      <g transform="translate(146,-14)" color="#58A6FF">
+        <rect width="138" height="24" rx="12" fill="rgba(88,166,255,0.12)" stroke="#58A6FF" stroke-width="1"/>
+        <g transform="translate(8,4)"><svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-machine"/></svg></g>
+        <text x="28" y="16" fill="#58A6FF" font-size="11" font-weight="600">pipeline:planner</text>
+      </g>
+
+      <!-- Accion write -->
+      <g transform="translate(296,-14)" color="#58A6FF">
+        <rect width="88" height="24" rx="6" fill="rgba(88,166,255,0.12)" stroke="#58A6FF" stroke-width="1"/>
+        <text x="44" y="16" fill="#58A6FF" font-size="11" font-weight="600" text-anchor="middle">write</text>
+      </g>
+
+      <!-- Diff -->
+      <g transform="translate(406,-2)" font-family="'SF Mono', Consolas, monospace" font-size="12">
+        <text x="0" y="0" fill="#3FB950" font-weight="600">+ [#3613, #3614, #3615]</text>
+        <text x="220" y="0" fill="#8B949E">hijos de #3559</text>
+      </g>
+
+      <!-- Authorized by (subsistema con escudo lock) -->
+      <g transform="translate(816,-14)" color="#58A6FF">
+        <rect width="186" height="24" rx="6" fill="rgba(88,166,255,0.10)" stroke="#58A6FF" stroke-width="1"/>
+        <g transform="translate(8,4)"><svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-shield-lock"/></svg></g>
+        <text x="28" y="16" fill="#58A6FF" font-size="11" font-weight="600">planner-split:auto</text>
+      </g>
+
+      <!-- Justification -->
+      <text x="1108" y="0" fill="#B1BAC4" font-size="12">Auto-promote desde split de #3559</text>
+      <text x="1108" y="18" fill="#6E7681" font-size="11">TTL 48h · expira 31/05 11:55Z</text>
+    </g>
+
+    <!-- ================================================================
+         FILA 4 (parcial / mas visible) — Estado D: backfill sin autoria
+         ================================================================ -->
+    <line x1="20" y1="286" x2="1372" y2="286" stroke="#21262D" stroke-width="1"/>
+    <g transform="translate(0,286)">
+      <rect x="0" y="0" width="1392" height="42" fill="rgba(210,153,34,0.06)"/>
+      <rect x="0" y="0" width="4" height="42" fill="#D29922"/>
+    </g>
+    <g transform="translate(20,310)" font-size="13">
+      <text x="0" y="0" fill="#E6EDF3" font-weight="500" font-family="'SF Mono', Consolas, monospace">hace 4 h</text>
+
+      <!-- Source pill backfill -->
+      <g transform="translate(146,-14)" color="#D29922">
+        <rect width="138" height="24" rx="12" fill="rgba(210,153,34,0.12)" stroke="#D29922" stroke-width="1"/>
+        <g transform="translate(8,4)"><svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-backfill"/></svg></g>
+        <text x="28" y="16" fill="#D29922" font-size="11" font-weight="600">backfill:ola-N11</text>
+      </g>
+
+      <!-- Accion -->
+      <g transform="translate(296,-14)" color="#D29922">
+        <rect width="88" height="24" rx="6" fill="rgba(210,153,34,0.12)" stroke="#D29922" stroke-width="1"/>
+        <text x="44" y="16" fill="#D29922" font-size="11" font-weight="600" text-anchor="middle">backfill</text>
+      </g>
+
+      <!-- Diff incidente -->
+      <g transform="translate(406,-2)" font-family="'SF Mono', Consolas, monospace" font-size="12">
+        <text x="0" y="0" fill="#D29922" font-weight="600">- [#3559, #3605] + [#3617]</text>
+      </g>
+
+      <!-- Sin autoria + BACKFILL badge -->
+      <g transform="translate(816,-14)" color="#D29922">
+        <rect width="186" height="24" rx="6" fill="rgba(210,153,34,0.12)" stroke="#D29922" stroke-width="1"/>
+        <g transform="translate(8,4)"><svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-warning"/></svg></g>
+        <text x="28" y="16" fill="#D29922" font-size="11" font-weight="600">null · BACKFILL</text>
+      </g>
+
+      <!-- Justification -->
+      <text x="1108" y="0" fill="#B1BAC4" font-size="12">Recuperacion incidente 09:39 BA (#3625)</text>
+    </g>
+  </g>
+
+  <!-- =========================================================================
+       PIE: LEYENDA DE ESTADOS (referencia rápida del color-coding)
+       ========================================================================= -->
+  <g transform="translate(24,668)">
+    <text x="0" y="0" fill="#8B949E" font-size="11" letter-spacing="0.08em" font-weight="600">LEYENDA</text>
+
+    <g transform="translate(0,16)" font-size="12">
+      <!-- Estado A -->
+      <g transform="translate(0,0)" color="#3FB950">
+        <svg width="16" height="16" viewBox="0 0 24 24"><use href="#m-shield-check"/></svg>
+      </g>
+      <text x="22" y="13" fill="#B1BAC4">Humano · commander:leo — autoria humana via Telegram</text>
+
+      <!-- Estado B -->
+      <g transform="translate(380,0)" color="#58A6FF">
+        <svg width="16" height="16" viewBox="0 0 24 24"><use href="#m-shield-lock"/></svg>
+      </g>
+      <text x="402" y="13" fill="#B1BAC4">Subsistema · wave-promote / planner-split:auto / recursive-deps:from-N / etc.</text>
+
+      <!-- Estado C -->
+      <g transform="translate(0,30)" color="#F85149">
+        <svg width="16" height="16" viewBox="0 0 24 24"><use href="#m-shield-x"/></svg>
+      </g>
+      <text x="22" y="43" fill="#B1BAC4">REJECTED — gate rechazo: enum invalido o removal sin autoria + alerta Telegram</text>
+
+      <!-- Estado D -->
+      <g transform="translate(380,30)" color="#D29922">
+        <svg width="16" height="16" viewBox="0 0 24 24"><use href="#m-warning"/></svg>
+      </g>
+      <text x="402" y="43" fill="#B1BAC4">Sin autoria / Backfill — banner amarillo + accion "Marcar como revisada"</text>
+    </g>
+  </g>
+
+  <!-- =========================================================================
+       NOTA TECNICA AL PIE
+       ========================================================================= -->
+  <g transform="translate(24,776)">
+    <rect width="1392" height="92" rx="8" fill="#161B22" stroke="#21262D" stroke-width="1"/>
+    <g transform="translate(16,16)" color="#8B949E">
+      <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-info"/></svg>
+    </g>
+    <text x="44" y="30" fill="#B1BAC4" font-size="12" font-weight="600">Datos consumidos por dashboard-slices.js (slice partialPauseAuditSlice)</text>
+    <text x="44" y="50" fill="#8B949E" font-size="11">Tail de las ultimas 3 entries de .pipeline/audit/partial-pause-mutations.jsonl + KPIs sobre las ultimas 24h (cron 30 min).</text>
+    <text x="44" y="68" fill="#8B949E" font-size="11">Hash-chain verificado en background (cron 30 min); si verifyChain() falla, banner critico de toda esta seccion + bloqueo de escrituras nuevas + alerta Telegram severidad alta.</text>
+    <text x="44" y="84" fill="#6E7681" font-size="10">Issue origen: #3625 · Mockup 22 · CA-5 (widget) + CA-6 (sanitizacion) — sin info solo por color, todos los estados tienen icono + texto + posicion estable.</text>
+  </g>
+</svg>

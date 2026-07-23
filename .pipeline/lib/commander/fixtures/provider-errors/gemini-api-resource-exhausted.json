@@ -1,0 +1,11 @@
+{
+  "_doc": "Fixture sintético: Gemini API REST emite JSON con error.code=resource_exhausted (equivalente a quota). Shape documentado en ai.google.dev/api/rest. Reemplazable cuando se activen handlers reales.",
+  "synthetic": true,
+  "source_url": "https://ai.google.dev/api/rest/v1beta/Code",
+  "provider": "gemini-google",
+  "transport": "api",
+  "expected_error_class": "quota_exhausted",
+  "expected_should_fallback": true,
+  "expected_retriable": false,
+  "raw": "{\"error\":{\"code\":429,\"status\":\"RESOURCE_EXHAUSTED\",\"message\":\"Resource has been exhausted (e.g. check quota).\",\"type\":\"resource_exhausted\"}}"
+}

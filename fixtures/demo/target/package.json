@@ -1,0 +1,7 @@
+{
+  "name": "kernel-fixtures-demo-target",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Target controlado del kernel para la demo del ciclo (#4700). Deps vacias a proposito: el bootstrap 'npm ci' verifica el lockfile pineado sin instalar rangos abiertos.",
+  "dependencies": {}
+}

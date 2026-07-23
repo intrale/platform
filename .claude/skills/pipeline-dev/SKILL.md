@@ -4,6 +4,7 @@ user-invocable: true
 argument-hint: "<issue-o-tarea> [--plan] [--test]"
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, TaskCreate, TaskUpdate, TaskList
 model: claude-sonnet-4-6
+required_permissions: [file_read, file_write_repo, bash, child_spawn, tool_use_gated]
 ---
 
 # /pipeline-dev — PipelineDev
@@ -198,3 +199,49 @@ motivo: <si aplica, especialmente si tests_pasados=0>
 - SIEMPRE usa try/catch defensivo en operaciones filesystem
 - Si no podés testear con `node --test`, justificá en el PR
 - El pipeline **no puede morir** — cada commit es un release candidate en producción
+
+## Entregable de cierre de fase
+
+> Doctrina común (#3929 / EP3-H3): cada productor deja el **artefacto físico** de su fase, no sólo un comentario en el issue. Reglas completas de formato, paths y seguridad (CA-5..CA-9): [`docs/pipeline/entregables-multimedia-por-agente.md`](../../../docs/pipeline/entregables-multimedia-por-agente.md) → §5.bis "Doctrina de cierre de fase".
+
+Antes de salir (después de escribir tu resultado), generá el artefacto en el root issue-scoped:
+
+- **Path:** `.pipeline/assets/docs/{issue}/`
+- **Formato:** Markdown o PDF (resumen del cambio)
+
+Usá el helper compartido, que centraliza validación de `issue` (CA-5), redacción de secrets (CA-6) y sanitización SVG (CA-8) — **no reimplementes estas reglas**:
+
+```js
+const path = require("path");
+const { writeDeliverable } = require(path.resolve(".pipeline/lib/write-deliverable"));
+// #4466 — pasar `fase` puebla el índice .pipeline/deliverables/<issue>.json (store #4255)
+// y da filename phase-scoped. Tomamos la fase real del pipeline desde el env inyectado.
+const fase = process.env.PIPELINE_FASE || "dev";
+writeDeliverable("pipeline-dev", issue, { fase, md /* o svg para mockups/diagramas */ });
+```
+
+> **Obligatorio en `desarrollo/dev` (#4509).** Para `pipeline-dev` al cerrar la
+> fase `dev`, el warn-only original **quedó superado**: la nota de implementación
+> ya **no es opcional**. Al aprobar sin adjunto, el pulpo materializa SIEMPRE un
+> `.md` mínimo por vos (fallback obligatorio #4523, `pulpo.js`), así que el
+> silencio es imposible. Si por la naturaleza del issue el entregable **no
+> aplica**, registrá una **excepción explícita** con motivo redactado en vez de
+> dejar la carpeta vacía:
+>
+> ```js
+> const { writeDeliverableException } = require(path.resolve(".pipeline/lib/write-deliverable"));
+> const pipelineRoot = process.env.PIPELINE_ROOT || process.cwd();
+> writeDeliverableException("pipeline-dev", issue, {
+>   fase,                          // 'dev' — token del enum, no la etiqueta humana
+>   motivo: "Por qué no corresponde entregable en este issue",
+>   pipelineRoot,
+> });
+> ```
+>
+> Ambos caminos (nota o excepción) terminan en el store `issue → fase → agente`
+> (`.pipeline/deliverables/<issue>.json`) y se disponibilizan por Telegram sin
+> allowlist que los bloquee. La ausencia silenciosa **no** satisface el cierre.
+
+Para el resto de los skills/fases sigue vigente el enforcement **warn-only**: no
+generar el archivo no bloquea el pipeline, pero cuenta para la cobertura ≥80% de
+la ola (CA-4).

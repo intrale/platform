@@ -6,6 +6,7 @@ import com.amazonaws.services.lambda.runtime.RequestHandler
 import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyRequestEvent
 import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyResponseEvent
 import com.google.gson.Gson
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import kotlinx.coroutines.runBlocking
 import org.kodein.di.DI
@@ -51,15 +52,7 @@ abstract class LambdaRequestHandler  : RequestHandler<APIGatewayProxyRequestEven
                 val httpMethod = requestEvent.httpMethod ?: "POST"
 
                 if (httpMethod.equals("OPTIONS", ignoreCase = true)) {
-                    val map = mutableMapOf<String, String>()
-                    map["Access-Control-Allow-Origin"] = "*"
-                    map["Access-Control-Allow-Methods"] = "GET, OPTIONS, HEAD, PUT, POST, DELETE"
-                    map["Access-Control-Allow-Headers"] =
-                        "Content-Type,Accept,Referer,User-Agent,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,Access-Control-Allow-Origin,Access-Control-Allow-Headers,function,idToken,businessName,filename"
-                    return APIGatewayProxyResponseEvent().apply {
-                        headers = map
-                        statusCode = 200
-                    }
+                    return buildCorsPreflightResponse(requestEvent)
                 }
 
                 logger.info("Path ${requestEvent.path}")
@@ -178,5 +171,38 @@ abstract class LambdaRequestHandler  : RequestHandler<APIGatewayProxyRequestEven
             body = "Unexpected Error"
         }
 
+    }
+}
+
+/**
+ * Construye la respuesta al preflight CORS (OPTIONS) del entrypoint AWS Lambda (CA-S6).
+ *
+ * Endurecimiento estricto: NUNCA emite `Access-Control-Allow-Origin: *`. Sólo refleja el
+ * `Origin` recibido si pertenece a la allowlist ([allowedOrigins], por defecto la variable de
+ * entorno `CORS_ALLOWED_ORIGINS`); si el origen no está permitido, no se emite ningún ACAO
+ * (comportamiento mismo-origen). Mismo criterio que el handler OPTIONS del path Netty.
+ *
+ * Se extrae como función top-level para poder verificarla por unit test con la allowlist
+ * inyectada, sin depender de variables de entorno.
+ */
+internal fun buildCorsPreflightResponse(
+    requestEvent: APIGatewayProxyRequestEvent,
+    allowedOrigins: Set<String> = allowedCorsOrigins()
+): APIGatewayProxyResponseEvent {
+    val map = mutableMapOf<String, String>()
+    val origin = requestEvent.headers
+        ?.entries
+        ?.firstOrNull { it.key.equals(HttpHeaders.Origin.toString(), ignoreCase = true) }
+        ?.value
+    if (origin != null && allowedOrigins.contains(origin)) {
+        map["Access-Control-Allow-Origin"] = origin
+        map["Vary"] = HttpHeaders.Origin.toString()
+    }
+    map["Access-Control-Allow-Methods"] = "GET, OPTIONS, HEAD, PUT, POST, DELETE"
+    map["Access-Control-Allow-Headers"] =
+        "Content-Type,Accept,Referer,User-Agent,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,function,idToken,businessName,filename"
+    return APIGatewayProxyResponseEvent().apply {
+        headers = map
+        statusCode = 200
     }
 }

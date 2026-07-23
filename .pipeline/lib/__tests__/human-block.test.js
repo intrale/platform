@@ -465,3 +465,403 @@ test('e2e: cuando humano desbloquea, el siguiente ciclo del pulpo procesa normal
         .filter(f => f.startsWith(String(issue) + '.') && !f.endsWith('.guidance.txt'));
     assert.equal(archivos.length, 1, 'el archivo del issue volvió a pendiente/');
 });
+
+// =============================================================================
+// #4068 — Botones de acción rápida en la alerta de needs-human
+// =============================================================================
+
+// Fake del módulo action-token: firma determinística sin secreto real.
+const fakeActionToken = {
+    sign: ({ issue, action }) => `v1.${action}-${issue}.sig`,
+};
+
+test('#4068 buildBlockedActionMarkup devuelve inline_keyboard 2×2 con exactamente los 4 botones', () => {
+    const markup = hb.buildBlockedActionMarkup(4068, { actionToken: fakeActionToken, dashboardUrl: 'http://localhost:3200' });
+    assert.ok(markup && Array.isArray(markup.inline_keyboard), 'devuelve inline_keyboard');
+    const buttons = markup.inline_keyboard.flat();
+    assert.equal(buttons.length, 4, 'exactamente 4 botones');
+    assert.equal(markup.inline_keyboard.length, 2, 'layout 2×2');
+    // CA-1: cada URL lleva action, issue=N y token no vacío.
+    const expected = ['unblock', 'mas-contexto', 'devolver-definicion', 'priorizar'];
+    for (const action of expected) {
+        const btn = buttons.find(b => b.url.includes(`action=${action}&`));
+        assert.ok(btn, `existe botón para ${action}`);
+        assert.match(btn.url, new RegExp(`issue=4068`), `${action} lleva issue=4068`);
+        assert.match(btn.url, /token=[^&]+/, `${action} lleva token no vacío`);
+        assert.ok(btn.text.length > 0, `${action} tiene label`);
+    }
+    // CA-PO: NO existe botón pausar.
+    assert.ok(!buttons.some(b => /action=pausar/.test(b.url)), 'no hay botón pausar');
+});
+
+test('#4068 buildBlockedActionMarkup devuelve undefined si el token no se puede firmar (degradación)', () => {
+    const brokenToken = { sign: () => { throw new Error('sin secreto'); } };
+    const markup = hb.buildBlockedActionMarkup(10, { actionToken: brokenToken });
+    assert.equal(markup, undefined);
+});
+
+test('#4068 buildBlockedActionMarkup rechaza issue inválido', () => {
+    assert.equal(hb.buildBlockedActionMarkup(0, { actionToken: fakeActionToken }), undefined);
+    assert.equal(hb.buildBlockedActionMarkup('x', { actionToken: fakeActionToken }), undefined);
+});
+
+test('#4068 buildBlockedSummaryMarkdown NO cambió su firma (CA-Q1, no-regresión)', () => {
+    // Acepta opts object y devuelve string — contrato intacto para callers sin botones.
+    const md = hb.buildBlockedSummaryMarkdown({});
+    assert.equal(typeof md, 'string');
+});
+
+// --- executeQuickAction con deps inyectadas (sin tocar GH real) -------------
+function makeExecDeps(blockedMarkers) {
+    const enqueued = [];
+    let unblockCalls = 0;
+    return {
+        enqueued,
+        get unblockCalls() { return unblockCalls; },
+        deps: {
+            enqueueGithub: (action, payload) => { enqueued.push({ action, ...payload }); return true; },
+            findBlockedMarker: (i) => (blockedMarkers && blockedMarkers.has(i) ? { issue: i, skill: 'po', phase: 'dev', pipeline: 'desarrollo' } : null),
+            dismissBlockedIssue: ({ issue }) => { if (blockedMarkers) blockedMarkers.delete(issue); return { ok: true, issue }; },
+            unblockIssue: ({ issue }) => {
+                if (blockedMarkers && blockedMarkers.has(issue)) { blockedMarkers.delete(issue); unblockCalls++; return { ok: true, issue, skill: 'po', from_phase: 'dev', to_phase: 'dev' }; }
+                return { ok: false, error: 'no bloqueado' };
+            },
+        },
+    };
+}
+
+test('#4068 executeQuickAction unblock: desbloquea y encola remove-label + comment', () => {
+    const blocked = new Set([4068]);
+    const h = makeExecDeps(blocked);
+    const r = hb.executeQuickAction({ issue: 4068, action: 'unblock', deps: h.deps });
+    assert.equal(r.ok, true);
+    assert.equal(r.reactivated, 1);
+    assert.ok(h.enqueued.some(e => e.action === 'remove-label' && e.label === hb.NEEDS_HUMAN_LABEL));
+    assert.ok(h.enqueued.some(e => e.action === 'comment'));
+});
+
+test('#4068 executeQuickAction unblock idempotente: issue ya no bloqueado → noop sin error', () => {
+    const h = makeExecDeps(new Set()); // nada bloqueado
+    const r = hb.executeQuickAction({ issue: 4068, action: 'unblock', deps: h.deps });
+    assert.equal(r.ok, true);
+    assert.equal(r.noop, true);
+});
+
+test('#4068 executeQuickAction mas-contexto: mantiene bloqueo, solo comenta', () => {
+    const h = makeExecDeps(new Set([1]));
+    const r = hb.executeQuickAction({ issue: 1, action: 'mas-contexto', deps: h.deps });
+    assert.equal(r.ok, true);
+    assert.ok(h.enqueued.every(e => e.action === 'comment'), 'solo comentario, no toca labels');
+});
+
+test('#4068 executeQuickAction devolver-definicion: dismiss + needs-definition + quita needs-human', () => {
+    const blocked = new Set([2]);
+    const h = makeExecDeps(blocked);
+    const r = hb.executeQuickAction({ issue: 2, action: 'devolver-definicion', deps: h.deps });
+    assert.equal(r.ok, true);
+    assert.equal(r.dismissed, true);
+    assert.ok(h.enqueued.some(e => e.action === 'label' && e.label === 'needs-definition'));
+    assert.ok(h.enqueued.some(e => e.action === 'remove-label' && e.label === hb.NEEDS_HUMAN_LABEL));
+});
+
+test('#4068 executeQuickAction priorizar: sube priority:high y desbloquea', () => {
+    const blocked = new Set([3]);
+    const h = makeExecDeps(blocked);
+    const r = hb.executeQuickAction({ issue: 3, action: 'priorizar', deps: h.deps });
+    assert.equal(r.ok, true);
+    assert.ok(h.enqueued.some(e => e.action === 'label' && e.label === 'priority:high'));
+    assert.equal(r.reactivated, 1);
+});
+
+test('#4068 executeQuickAction rechaza action no permitida e issue inválido', () => {
+    assert.equal(hb.executeQuickAction({ issue: 1, action: 'pausar', deps: {} }).ok, false);
+    assert.equal(hb.executeQuickAction({ issue: 0, action: 'unblock', deps: {} }).ok, false);
+});
+
+test('#4068 auditQuickAction asienta result_status y campos extra', () => {
+    const records = [];
+    const fakeCreate = () => ({ record: (row) => { records.push(row); return row; } });
+    const row = hb.auditQuickAction({
+        issue: 4068, action: 'unblock', from: 'dashboard-local', result_status: 'authorized',
+        remote_address: '127.0.0.1',
+        deps: { createAuditLog: fakeCreate, redact: (s) => s },
+    });
+    assert.equal(records.length, 1);
+    assert.equal(records[0].result_status, 'authorized');
+    assert.equal(records[0].issue, 4068);
+    assert.equal(records[0].action, 'unblock');
+    assert.equal(records[0].remote_address, '127.0.0.1');
+});
+
+test('#4068 HUMAN_BLOCK_ACTIONS son las 4 acciones sin pausar', () => {
+    assert.deepEqual([...hb.HUMAN_BLOCK_ACTIONS].sort(),
+        ['devolver-definicion', 'mas-contexto', 'priorizar', 'unblock']);
+});
+
+// =============================================================================
+// #4067 (split de #4050) — buildNeedHumanAudioText: guion narrable del audio TTS
+// de la alerta needs-human. Cubre formato (CA-2), redacción SEC-3 y degradación.
+// =============================================================================
+
+test('buildNeedHumanAudioText narra motivo + decisión en español con encabezado fijo', () => {
+    const txt = hb.buildNeedHumanAudioText({
+        reason: 'el PR quedó bloqueado por CODEOWNERS',
+        question: 'mergealo a mano o reasigná el review',
+    });
+    // G-2: encabezado fijo de alerta (earcon verbal) siempre presente.
+    assert.ok(txt.startsWith('Atención: un issue requiere intervención humana.'),
+        'arranca con el encabezado de alerta fijo');
+    assert.ok(txt.includes('El motivo del bloqueo es: el PR quedó bloqueado por CODEOWNERS.'),
+        'incluye el motivo narrado');
+    assert.ok(txt.includes('La decisión que necesitamos es: mergealo a mano o reasigná el review.'),
+        'incluye la decisión narrada');
+});
+
+test('buildNeedHumanAudioText SEC-3: redacta un AWS key del motivo antes de narrar', () => {
+    const txt = hb.buildNeedHumanAudioText({
+        reason: 'falló con la clave AKIAIOSFODNN7EXAMPLE en el deploy',
+        question: 'rotá la credencial',
+    });
+    assert.ok(!txt.includes('AKIAIOSFODNN7EXAMPLE'),
+        'el AWS key NO aparece literal en el texto narrable');
+    assert.ok(txt.includes('[REDACTED]'), 'el secreto fue reemplazado por el marcador');
+});
+
+test('buildNeedHumanAudioText SEC-3: redacta un github_pat_* de la decisión', () => {
+    const pat = 'github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345';
+    const txt = hb.buildNeedHumanAudioText({
+        reason: 'el token expiró',
+        question: `usá ${pat} para reautenticar`,
+    });
+    assert.ok(!txt.includes(pat), 'el PAT NO aparece literal en el texto narrable');
+    assert.ok(txt.includes('[REDACTED]'), 'el PAT fue reemplazado por el marcador');
+});
+
+test('buildNeedHumanAudioText SEC-3: redacta un JWT embebido en el motivo', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+    const txt = hb.buildNeedHumanAudioText({ reason: `bearer ${jwt}`, question: 'revocá' });
+    assert.ok(!txt.includes(jwt), 'el JWT NO aparece literal');
+    assert.ok(txt.includes('[REDACTED]'), 'el JWT fue reemplazado por el marcador');
+});
+
+test('buildNeedHumanAudioText degrada a alerta mínima con input vacío (no rompe)', () => {
+    const vacio = hb.buildNeedHumanAudioText({});
+    assert.equal(vacio, 'Atención: un issue requiere intervención humana.',
+        'sin motivo/decisión devuelve solo el encabezado de alerta');
+    const sinArgs = hb.buildNeedHumanAudioText();
+    assert.equal(sinArgs, 'Atención: un issue requiere intervención humana.',
+        'sin argumentos no lanza y devuelve el encabezado');
+    // input parcial: solo motivo.
+    const parcial = hb.buildNeedHumanAudioText({ reason: 'solo motivo' });
+    assert.ok(parcial.includes('El motivo del bloqueo es: solo motivo.'));
+    assert.ok(!parcial.includes('La decisión'), 'sin question no agrega la cláusula de decisión');
+});
+
+test('buildNeedHumanAudioText acota la longitud a 600 chars (CA-NF / G-3)', () => {
+    const largo = 'x'.repeat(2000);
+    const txt = hb.buildNeedHumanAudioText({ reason: largo, question: largo });
+    assert.ok(txt.length <= 600, `longitud ${txt.length} <= 600`);
+});
+
+// ---- mergeGithubBlockedLabels (#4653) ---------------------------------------
+
+test('mergeGithubBlockedLabels reconoce blocked:routing-manual y lo fusiona sin duplicar', () => {
+    // El issue #4632 está en la lista FS. GitHub también lo reporta con label
+    // blocked:routing-manual → NO debe duplicarse (se preserva la entrada FS).
+    const fsList = [
+        { issue: 4632, skill: 'build', phase: 'build', pipeline: 'desarrollo', reason: 'fs-context', age_hours: 3 },
+    ];
+    const ghList = [
+        { number: 4632, title: 'ya en FS', labels: [{ name: 'blocked:routing-manual' }] },
+        { number: 4581, title: 'solo en GitHub', labels: [{ name: 'blocked:routing-manual' }] },
+    ];
+    const merged = hb.mergeGithubBlockedLabels(fsList, ghList);
+    // 4632 (FS) + 4581 (GitHub) = 2, sin duplicar 4632.
+    assert.equal(merged.length, 2);
+    const n4632 = merged.filter((b) => b.issue === 4632);
+    assert.equal(n4632.length, 1, '4632 no se duplica');
+    assert.equal(n4632[0].reason, 'fs-context', 'se preserva el contexto FS más rico');
+    const n4581 = merged.find((b) => b.issue === 4581);
+    assert.ok(n4581, '4581 (solo GitHub) se agrega');
+    assert.equal(n4581.phase, 'routing-manual');
+    assert.equal(n4581.source, 'github-label');
+});
+
+test('mergeGithubBlockedLabels con FS vacío devuelve solo los de GitHub', () => {
+    const merged = hb.mergeGithubBlockedLabels([], [
+        { number: 4632, title: 't', labels: ['blocked:routing-manual'] },
+    ]);
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0].issue, 4632);
+    assert.equal(merged[0].reason, 't');
+});
+
+test('mergeGithubBlockedLabels ignora entradas sin número válido', () => {
+    const merged = hb.mergeGithubBlockedLabels([], [
+        { title: 'sin número' },
+        { number: 'abc' },
+        null,
+        { number: 4700, title: 'ok' },
+    ]);
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0].issue, 4700);
+});
+
+test('mergeGithubBlockedLabels es tolerante a args no-array', () => {
+    assert.deepEqual(hb.mergeGithubBlockedLabels(null, null), []);
+    assert.deepEqual(hb.mergeGithubBlockedLabels(undefined, undefined), []);
+});
+
+test('GITHUB_HUMAN_BLOCK_LABELS incluye blocked:routing-manual', () => {
+    assert.ok(hb.GITHUB_HUMAN_BLOCK_LABELS.includes('blocked:routing-manual'));
+});
+
+// =============================================================================
+// #4748 — precondition: registro estructurado del motivo del freeze
+// =============================================================================
+
+test('reportHumanBlock persiste precondition dependency en .reason.json', () => {
+    resetFs();
+    const result = hb.reportHumanBlock({
+        issue: 4745, skill: 'po', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'necesita intervención humana: depende de #4744 abierto',
+        question: '¿mergeamos #4744?',
+        precondition: { type: 'dependency', depends_on: [4744] },
+    });
+    assert.deepEqual(result.precondition, { type: 'dependency', depends_on: [4744] });
+    const meta = JSON.parse(fs.readFileSync(result.marker_path + '.reason.json', 'utf8'));
+    assert.deepEqual(meta.precondition, { type: 'dependency', depends_on: [4744] });
+});
+
+test('reportHumanBlock sin precondition → default human_judgment (fail-closed SEC-4)', () => {
+    resetFs();
+    const result = hb.reportHumanBlock({
+        issue: 4801, skill: 'review', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'rechazo semántico: el criterio AC#3 no se cumple',
+        question: '¿revisás el enfoque?',
+    });
+    assert.deepEqual(result.precondition, { type: 'human_judgment' });
+    const meta = JSON.parse(fs.readFileSync(result.marker_path + '.reason.json', 'utf8'));
+    assert.deepEqual(meta.precondition, { type: 'human_judgment' });
+});
+
+test('reportHumanBlock: dependency con depends_on vacío degrada a human_judgment', () => {
+    resetFs();
+    const result = hb.reportHumanBlock({
+        issue: 4802, skill: 'po', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'r', question: 'q',
+        precondition: { type: 'dependency', depends_on: [] },
+    });
+    assert.deepEqual(result.precondition, { type: 'human_judgment' });
+});
+
+test('reportHumanBlock: depends_on con basura se coacciona a enteros positivos únicos', () => {
+    resetFs();
+    const result = hb.reportHumanBlock({
+        issue: 4803, skill: 'po', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'r', question: 'q',
+        precondition: { type: 'dependency', depends_on: [4744, '4744', -1, 0, 'x', 4700] },
+    });
+    assert.deepEqual(result.precondition, { type: 'dependency', depends_on: [4700, 4744] });
+});
+
+test('listBlockedIssues expone precondition (dependency y default legacy)', () => {
+    resetFs();
+    hb.reportHumanBlock({
+        issue: 4810, skill: 'po', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'r', question: 'q',
+        precondition: { type: 'dependency', depends_on: [4744, 4700] },
+    });
+    // marker legacy sin precondition en el .reason.json
+    const dir = path.join(TMP_DIR, '.pipeline', 'desarrollo', 'dev', 'bloqueado-humano');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, '4811.review'), '');
+    fs.writeFileSync(path.join(dir, '4811.review.reason.json'), JSON.stringify({
+        issue: 4811, skill: 'review', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'legacy', question: 'q',
+    }));
+    const list = hb.listBlockedIssues();
+    const dep = list.find(i => i.issue === 4810);
+    assert.deepEqual(dep.precondition, { type: 'dependency', depends_on: [4700, 4744] });
+    const legacy = list.find(i => i.issue === 4811);
+    assert.deepEqual(legacy.precondition, { type: 'human_judgment' }, 'legacy sin precondition → human_judgment');
+});
+
+test('normalizePrecondition: formas inválidas colapsan a human_judgment', () => {
+    assert.deepEqual(hb.normalizePrecondition(null), { type: 'human_judgment' });
+    assert.deepEqual(hb.normalizePrecondition({}), { type: 'human_judgment' });
+    assert.deepEqual(hb.normalizePrecondition({ type: 'dependency' }), { type: 'human_judgment' });
+    assert.deepEqual(hb.normalizePrecondition({ type: 'dependency', depends_on: ['x'] }), { type: 'human_judgment' });
+});
+
+// --- classifyPrecondition: SÓLO hint estructural, nunca texto libre (SEC-1) ---
+
+test('classifyPrecondition: campo estructurado depende_de → dependency', () => {
+    const pc = hb.classifyPrecondition([{ motivo: 'necesita intervención humana', depende_de: [4744] }]);
+    assert.deepEqual(pc, { type: 'dependency', depends_on: [4744] });
+});
+
+test('classifyPrecondition: campo precondicion_issues también sirve', () => {
+    const pc = hb.classifyPrecondition([{ motivo: 'x', precondicion_issues: [10, 11] }]);
+    assert.deepEqual(pc, { type: 'dependency', depends_on: [10, 11] });
+});
+
+test('classifyPrecondition: #NNNN en texto libre NO clasifica dependency (SEC-1)', () => {
+    const pc = hb.classifyPrecondition([
+        { motivo: 'bloqueo humano: revisar el diseño relacionado con #4744 y #4700' },
+    ]);
+    assert.deepEqual(pc, { type: 'human_judgment' }, 'texto libre nunca alimenta dependency');
+});
+
+test('classifyPrecondition: extraDeps (hint estructural) se incorpora', () => {
+    const pc = hb.classifyPrecondition([{ motivo: 'x' }], [4744, 4700]);
+    assert.deepEqual(pc, { type: 'dependency', depends_on: [4700, 4744] });
+});
+
+test('classifyPrecondition: sin rechazos ni extraDeps → human_judgment', () => {
+    assert.deepEqual(hb.classifyPrecondition([]), { type: 'human_judgment' });
+    assert.deepEqual(hb.classifyPrecondition(null), { type: 'human_judgment' });
+    assert.deepEqual(hb.classifyPrecondition([{ motivo: 'x' }]), { type: 'human_judgment' });
+});
+
+test('classifyPrecondition: combina deps de varios rechazos + extraDeps y dedup', () => {
+    const pc = hb.classifyPrecondition([
+        { motivo: 'a', depende_de: [4744] },
+        { motivo: 'b', depende_de: [4744, 4700] },
+    ], [4700, 4800]);
+    assert.deepEqual(pc, { type: 'dependency', depends_on: [4700, 4744, 4800] });
+});
+
+test('unblockIssue borra el .reason.json (con precondition) al re-encolar', () => {
+    resetFs();
+    const r = hb.reportHumanBlock({
+        issue: 4820, skill: 'po', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'r', question: 'q',
+        precondition: { type: 'dependency', depends_on: [4744] },
+    });
+    assert.ok(fs.existsSync(r.marker_path + '.reason.json'));
+    const res = hb.unblockIssue({ issue: 4820, unlocker: 'brazo-desbloqueo:precondicion' });
+    assert.equal(res.ok, true);
+    assert.equal(fs.existsSync(r.marker_path + '.reason.json'), false, 'reason.json (y su precondition) se limpia');
+});
+
+test('e2e #4748: precondición resuelta → selector core lo mueve a toRelease; juicio humano intacto', () => {
+    resetFs();
+    hb.reportHumanBlock({
+        issue: 4745, skill: 'po', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'necesita intervención humana: depende de #4744', question: '¿mergeás #4744?',
+        precondition: { type: 'dependency', depends_on: [4744] },
+    });
+    hb.reportHumanBlock({
+        issue: 4746, skill: 'review', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'rechazo semántico del enfoque', question: '¿revisás?',
+    });
+    const core = require('../brazo-desbloqueo-core');
+    const markers = hb.listBlockedIssues();
+    // #4744 abierto → nada se libera.
+    let out = core.selectHumanBlocksToRelease({ markers, issueStates: { 4744: 'OPEN' } });
+    assert.equal(out.toRelease.length, 0);
+    // #4744 cerrado → sólo #4745 (dependency) se libera; #4746 (juicio) intacto.
+    out = core.selectHumanBlocksToRelease({ markers, issueStates: { 4744: 'CLOSED' } });
+    assert.deepEqual(out.toRelease.map(m => m.issue), [4745]);
+});

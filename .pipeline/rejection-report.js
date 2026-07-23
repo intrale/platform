@@ -24,6 +24,9 @@ const { sanitize: sanitizeReportText } = require('./sanitizer');
 // sólo tasks Release (bug AGP+KMP) mientras los APKs Debug se generaban bien.
 // Este helper nos da extract-failure-lines + checkDebugApksFresh + dismiss log.
 const apkFreshness = require('./lib/apk-freshness');
+// #3088: lookup del contexto multi-provider (provider/model/cli_version) sobre
+// el audit trail emitido por #3083. Single source of truth, SIN inferencia.
+const traceability = require('./lib/traceability');
 
 const ROOT = path.resolve(__dirname, '..');
 const PIPELINE = __dirname;
@@ -59,6 +62,13 @@ const elapsed = getArg('elapsed') || '?';
 const motivo = getArg('motivo') || 'Sin motivo registrado';
 const logFile = getArg('log') || `${issue}-${skill}.log`;
 const pipeline = getArg('pipeline') || 'desarrollo';
+// #3088 — multi-provider audit fields (CA-1/CA-6/CA-9): el pulpo los pasa
+// como flags cuando lanza el reporte. Si no llegan, intentamos lookup en el
+// audit trail (traceability.getSessionContext) y, en última instancia, caemos
+// al literal "unknown". Prohibido inferir provider por substring del model.
+const argProvider = getArg('provider');
+const argModel = getArg('model');
+const argCliVersion = getArg('cli-version');
 
 // --- Helpers ---
 function readLastLines(filePath, n) {
@@ -97,6 +107,95 @@ function escapeHtml(str) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+// =============================================================================
+// (#3088 / CA-6) Resolver provider/model/cli_version desde audit trail
+// =============================================================================
+//
+// Single source of truth: el contrato entregado por #3083 en `traceability.js`.
+// Reglas (SEC-3):
+//   1) Si llegaron por CLI args (--provider/--model/--cli-version) → usarlos
+//      tal cual (escapados al render). El pulpo es el caller autoritativo.
+//   2) Si no, lookup en `getSessionContext({ issue, skill })`.
+//   3) Si tampoco → literal "unknown" (la ausencia es información — NUNCA
+//      inferir provider por substring del model, NUNCA re-ejecutar --version).
+//
+// `recentWindow` se setea fijo en 5 (alineado con CA-2 default; en el futuro
+// será leído de `config.yaml#narration.recent_switch_window`). El módulo de
+// traceability NUNCA throw: si el audit-log no existe o JSON está corrupto,
+// devuelve null y caemos a "unknown" en los 3.
+function resolveSessionContext(issueArg, skillArg, opts) {
+  opts = opts || {};
+  const trace = opts.traceabilityImpl || traceability;
+  const recentWindow = Number.isFinite(opts.recentWindow) ? opts.recentWindow : 5;
+  // Permitir override de CLI args para testing (sino, fallback a los del proceso).
+  const overrideProvider = opts.argProvider !== undefined ? opts.argProvider : argProvider;
+  const overrideModel = opts.argModel !== undefined ? opts.argModel : argModel;
+  const overrideCliVersion = opts.argCliVersion !== undefined ? opts.argCliVersion : argCliVersion;
+  let ctx = null;
+  try {
+    const issueNum = Number(issueArg);
+    if (Number.isFinite(issueNum) && skillArg && skillArg !== '?') {
+      ctx = trace.getSessionContext({ issue: issueNum, skill: skillArg, recentWindow });
+    }
+  } catch (_) { ctx = null; }
+
+  // CLI args ganan al lookup (caller autoritativo); en su ausencia, lookup;
+  // en su ausencia, literal "unknown" — NUNCA undefined/null en los 3 campos.
+  const cliArgsProvided = !!(overrideProvider || overrideModel || overrideCliVersion);
+  const provider = (overrideProvider || (ctx && ctx.provider) || 'unknown');
+  const model = (overrideModel || (ctx && ctx.model) || 'unknown');
+  const cliVersion = (overrideCliVersion || (ctx && ctx.cli_version) || 'unknown');
+  return {
+    provider, model, cliVersion,
+    // flags de regla determinística para CA-2; sólo válidos cuando vino del
+    // audit trail (sin lookup no podemos saber si es primer run o switch
+    // reciente, así que esos triggers quedan en false → no se menciona en audio).
+    firstWithCombo: ctx ? !!ctx.first_with_combo : false,
+    recentSwitch: ctx ? !!ctx.recent_switch : false,
+    // marcador para tests/UX: si los 3 son "unknown" y no hubo CLI args, el
+    // audit trail no resolvió la sesión. La ausencia se sigue mostrando.
+    resolvedFromAudit: !!(ctx && (ctx.provider || ctx.model)),
+    cliArgsProvided,
+  };
+}
+
+// =============================================================================
+// (#3088 / CA-2) Heurística "fallo cualitativo" — regla 3 del audio
+// =============================================================================
+//
+// Excluye fallos de infra/quota/timeout/cooldown (todo lo que NO es fallo
+// del agente como tal). La heurística es estricta y conservadora: si match
+// alguno de los patrones de "infra" → fallo NO cualitativo. Defaults a
+// "cualitativo" cuando el motivo es genérico ("Sin motivo", etc.) — la
+// frase del audio sólo se activa cuando además provider != 'deterministic',
+// así que un default cualitativo no satura el audio: pasa el filtro de la
+// regla 3 sólo cuando hay un provider LLM real involucrado.
+function isQualitativeFailure(motivoStr) {
+  const m = String(motivoStr || '').toLowerCase();
+  if (!m) return true; // default cualitativo (ver justificación arriba)
+  // Patrones de infra/quota/timeout — NO cualitativos.
+  const infraPatterns = [
+    /muerte prematura/,
+    /timeout/,
+    /time[- ]?limit/,
+    /\bquota\b/,
+    /rate[- ]?limit/,
+    /cooldown/,
+    /\binfra(?:structura)?\b/,
+    /emulador/,
+    /adb /,
+    /gradle daemon/,
+    /\bdisk\b/,
+    /\bram\b/,
+    /memoria insuficiente/,
+    /process killed/,
+    /signal (?:sigkill|sigterm)/,
+    /econnreset|enotfound|etimedout/,
+  ];
+  for (const re of infraPatterns) if (re.test(m)) return false;
+  return true;
 }
 
 // --- Preflight del pulpo: ¿el emulador estaba OK antes del run actual? ---
@@ -267,7 +366,9 @@ function getGateStatus(issueNum) {
   const gates = [];
   const verifyDir = path.join(PIPELINE, 'desarrollo', 'verificacion', 'listo');
   try {
-    const files = fs.readdirSync(verifyDir).filter(fn => fn.startsWith(issueNum + '.'));
+    // #3638 CA-F-9: filtrar artifacts auxiliares para evitar falsos gates.
+    const { isMarkerArtifact } = require('./lib/marker-artifact');
+    const files = fs.readdirSync(verifyDir).filter(fn => fn.startsWith(issueNum + '.') && !isMarkerArtifact(fn));
     for (const fn of files) {
       try {
         const yaml = require('js-yaml');
@@ -1325,10 +1426,16 @@ function collectReportData() {
     ? 'RECHAZADO_CON_CAUSA'
     : 'RECHAZADO_SIN_CAUSA';
 
+  // (#3088 / CA-1 + CA-6) Contexto multi-provider — provider/model/cli_version
+  // resueltos desde audit trail o CLI args, NUNCA inferidos.
+  const sessionCtx = resolveSessionContext(issue, skill);
+
   return {
     // Identifiers
     issue, skill, fase, exitCode, elapsed, motivo, pipeline, logFile,
     timestamp, isoDate: now.toISOString().slice(0, 10),
+    // (#3088) Multi-provider context — los 3 campos NUNCA son null/undefined.
+    sessionCtx,
     // System
     memUsedPct, memUsedGB, memTotalGB, cpuCores,
     avgCpu, avgMem, avgAgents, pressureLevels, recentMetrics,
@@ -1350,6 +1457,121 @@ function collectReportData() {
 }
 
 // =============================================================================
+// (#3088 / CA-1 + CA-8) Render del bloque <p class="session-meta"> con los 3
+// badges multi-provider. Orden fijo: provider → model → cli. Reglas:
+//   - provider/model usan `badge-blue` (consistencia semántica con la badge
+//     "fuente" del reporte: ambos identifican origen).
+//   - cli usa `badge-gray` (monoespaciada — identificador técnico, no etiqueta).
+//   - Si los 3 son literal "unknown", igual renderiza los 3 badges con ese
+//     texto (la ausencia es información — SEC-3).
+//   - Trunca model/cli a 240px si > 32 chars (G-UX-1); tooltip con valor
+//     completo via `title="..."`. `provider` nunca se trunca.
+//   - Pasa por `escapeHtml` (SEC-1 anti-injection). El delimitador de atributos
+//     del template es comilla doble, por lo que `escapeHtml` actual cubre
+//     `provider="<script>alert(1)</script>"`, `model='"><img onerror...>'` y
+//     equivalentes — no se generan nodos DOM extra ni atributos inyectados.
+// =============================================================================
+function renderSessionMeta(session) {
+  const s = session || { provider: 'unknown', model: 'unknown', cliVersion: 'unknown' };
+  const truncCls = (v) => (String(v || '').length > 32 ? ' badge-trunc' : '');
+  const titleAttr = (v) => (String(v || '').length > 32 ? ` title="${escapeHtml(v)}"` : '');
+  const provider = String(s.provider || 'unknown');
+  const model = String(s.model || 'unknown');
+  const cliVersion = String(s.cliVersion || 'unknown');
+  // provider nunca se trunca (siempre cabe en pocos chars: "anthropic", "openai", "deterministic").
+  return `<p class="session-meta">
+  <span class="badge badge-blue">provider: ${escapeHtml(provider)}</span>
+  <span class="badge badge-blue${truncCls(model)}"${titleAttr(model)}>model: ${escapeHtml(model)}</span>
+  <span class="badge badge-gray${truncCls(cliVersion)}"${titleAttr(cliVersion)}>cli: ${escapeHtml(cliVersion)}</span>
+</p>`;
+}
+
+// =============================================================================
+// renderVisualComparisonBlock(visualComparison) — Issue #3383 (CA-12, CA-13)
+//
+// Renderiza el bloque side-by-side mockup vs entrega cuando la causa del
+// rechazo es un visual mismatch. Layout y tokens descritos en
+// `docs/pipeline/visual-validation.md §4` y referencia visual en
+// `.pipeline/assets/mockups/19-rejection-visual-comparison.svg`.
+//
+// Shape esperado (todos opcionales — si falta, se renderiza placeholder):
+//   {
+//     mockup:   { src, label?, baseline?, timestamp? },
+//     delivery: { src, label?, timestamp? },
+//     diffs:    [ { title, description, impact: 'alto'|'medio'|'bajo' }, ... ],
+//     suggestedAction: { skill, text }
+//   }
+//
+// `src` puede ser:
+//   - data URI (`data:image/png;base64,...`) — ya sanitizado por el caller.
+//   - URL pública absoluta (`https://...`).
+//   - Path absoluto del filesystem (se lee como base64 inline).
+//
+// Si `visualComparison` es null/undefined, retorna cadena vacía (no render).
+// =============================================================================
+function renderVisualComparisonBlock(visualComparison) {
+  if (!visualComparison || typeof visualComparison !== 'object') return '';
+  const v = visualComparison;
+
+  const renderColumn = (col, side) => {
+    const label = escapeHtml(col?.label || (side === 'mockup' ? 'MOCKUP ESPERADO' : 'ENTREGA ACTUAL'));
+    const subtitle = escapeHtml(col?.subtitle ||
+      (side === 'mockup' ? 'adjunto en definición · UX' : 'captura QA · pipeline'));
+    const badge = side === 'mockup'
+      ? `<span class="badge badge-green">${escapeHtml('baseline · ' + (col?.baseline || 'v1'))}</span>`
+      : `<span class="badge badge-red">no matchea</span>`;
+    const borderClass = side === 'mockup' ? 'visual-col-mockup' : 'visual-col-delivery';
+    const imgHtml = col?.src
+      ? `<img src="${escapeHtml(col.src)}" alt="${label}" />`
+      : `<div class="visual-placeholder">⚠ ${label} no disponible</div>`;
+    return `
+      <div class="visual-col ${borderClass}">
+        <div class="visual-col-header">
+          <span class="visual-col-label">${label}</span>
+          ${badge}
+        </div>
+        <div class="visual-col-subtitle">${subtitle}</div>
+        <div class="visual-col-img">${imgHtml}</div>
+      </div>`;
+  };
+
+  const diffs = Array.isArray(v.diffs) ? v.diffs.slice(0, 5) : [];
+  const diffsBlock = diffs.length === 0
+    ? '<p><em>Sin hallazgos narrados disponibles. Revisión humana de QA pendiente.</em></p>'
+    : `<ol class="visual-diffs">
+        ${diffs.map((d, i) => {
+          const impact = (d?.impact || 'medio').toLowerCase();
+          const impactClass = impact === 'alto' ? 'badge-red'
+            : impact === 'medio' ? 'badge-yellow' : 'badge-blue';
+          return `<li>
+            <strong>${escapeHtml(d?.title || `Hallazgo ${i + 1}`)}</strong>
+            <p>${escapeHtml(d?.description || '')}</p>
+            <span class="badge ${impactClass}">impacto: ${escapeHtml(impact)}</span>
+          </li>`;
+        }).join('')}
+       </ol>`;
+
+  const actionBlock = v.suggestedAction
+    ? `<div class="visual-action">
+         <p><strong>→ Rebote a ${escapeHtml(v.suggestedAction.skill || 'dev')}</strong></p>
+         <p>${escapeHtml(v.suggestedAction.text || 'Re-implementar respetando el mockup referenciado.')}</p>
+       </div>`
+    : '';
+
+  return `
+<h2>Comparativo visual — mockup vs entrega</h2>
+<p><span class="badge badge-red">VISUAL MISMATCH</span></p>
+<div class="visual-compare">
+  ${renderColumn(v.mockup, 'mockup')}
+  ${renderColumn(v.delivery, 'delivery')}
+</div>
+<h3>Diferencias identificadas</h3>
+${diffsBlock}
+${actionBlock}
+`;
+}
+
+// =============================================================================
 // renderHtml(data) — reporte estricto v6: veredicto + causa única + evidencia
 // =============================================================================
 function renderHtml(data) {
@@ -1358,7 +1580,16 @@ function renderHtml(data) {
     issueCtx, rejectHistory,
     logTail, readableLog, depIssues, autoCreatedDeps,
     preflight, evidence, primaryCause, verdict, inconclusive,
+    sessionCtx,
+    // #3383 — bloque side-by-side opcional (visual mismatch en QA).
+    visualComparison,
   } = data;
+  // (#3088 / CA-1) Contexto multi-provider; fallback defensivo si por algún
+  // motivo `collectReportData` no lo pobló (tests legacy, callers viejos).
+  const session = sessionCtx || {
+    provider: 'unknown', model: 'unknown', cliVersion: 'unknown',
+    firstWithCombo: false, recentSwitch: false,
+  };
 
   const verdictLabel = inconclusive
     ? 'INCONCLUYENTE'
@@ -1412,6 +1643,13 @@ function renderHtml(data) {
   .badge-yellow { background: #fef9e7; color: #f39c12; }
   .badge-green { background: #d5f5e3; color: #27ae60; }
   .badge-blue { background: #d6eaf8; color: #2980b9; }
+  /* #3088 — badge gris monoespaciado para cli_version (G-UX-1 / CA-8) */
+  .badge-gray { background: #ecf0f1; color: #555; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 0.78em; }
+  /* #3088 — meta de sesión multi-provider (debajo del badge de veredicto, antes del h2) */
+  .session-meta { margin: 6px 0 14px 0; display: flex; gap: 6px; flex-wrap: wrap; }
+  /* #3088 — truncamiento visual para model/cli largos (CA-8) */
+  .session-meta .badge { overflow: hidden; text-overflow: ellipsis; }
+  .session-meta .badge-trunc { max-width: 240px; white-space: nowrap; }
   pre { background: #1e1e2e; color: #cdd6f4; padding: 14px; border-radius: 6px; overflow-x: auto; font-size: 0.82em; line-height: 1.5; max-height: 400px; overflow-y: auto; }
   code { font-family: 'Cascadia Code', 'Fira Code', monospace; }
   .metric-row { display: flex; gap: 12px; flex-wrap: wrap; margin: 8px 0; }
@@ -1427,16 +1665,35 @@ function renderHtml(data) {
   .gate-rejected { color: #c0392b; font-weight: 600; }
   .label-tag { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 0.8em; background: #ecf0f1; color: #2c3e50; margin: 1px; }
   .footer { margin-top: 30px; padding-top: 12px; border-top: 1px solid #ddd; font-size: 0.8em; color: #999; text-align: center; }
+  /* #3383 — Bloque side-by-side mockup vs entrega (CA-12, CA-13). Tokens
+     consumidos sin nueva paleta — derivados de design-tokens.css ya en uso
+     en el dashboard. */
+  .visual-compare { display: flex; gap: 24px; margin: 12px 0; align-items: stretch; }
+  .visual-col { flex: 1 1 50%; background: #f8f9fa; border: 1px solid #ddd; border-radius: 6px; padding: 12px; display: flex; flex-direction: column; }
+  .visual-col-mockup { border-color: #ddd; }
+  .visual-col-delivery { border-color: #c0392b; box-shadow: 0 0 0 1px rgba(192,57,43,0.18); }
+  .visual-col-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .visual-col-label { font-weight: 700; font-size: 0.85em; letter-spacing: 1px; text-transform: uppercase; color: #2c3e50; }
+  .visual-col-subtitle { font-size: 0.78em; color: #7f8c8d; margin-bottom: 8px; }
+  .visual-col-img { flex: 1; background: #ecf0f1; border-radius: 4px; overflow: hidden; min-height: 220px; display: flex; align-items: center; justify-content: center; }
+  .visual-col-img img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+  .visual-placeholder { background: repeating-linear-gradient(45deg, #ecf0f1, #ecf0f1 8px, #dfe6e9 8px, #dfe6e9 16px); color: #c0392b; font-weight: 600; padding: 18px; text-align: center; font-size: 0.85em; width: 100%; }
+  .visual-diffs { padding-left: 20px; }
+  .visual-diffs li { margin-bottom: 10px; }
+  .visual-diffs strong { color: #2c3e50; }
+  .visual-action { background: #d5f5e3; border-left: 4px solid #27ae60; padding: 14px; margin: 12px 0; border-radius: 0 6px 6px 0; }
 </style>
 </head><body>
 
 <h1>Rechazo QA &mdash; #${escapeHtml(issue)} ${escapeHtml(skill)}</h1>
 <p><span class="badge ${verdictClass}">${escapeHtml(verdictLabel)}</span> &nbsp; ${escapeHtml(timestamp)} &nbsp; <code>${escapeHtml(fase)}</code></p>
-
+${renderSessionMeta(session)}
 <h2>Issue bajo prueba</h2>
 <div class="context-box">
   <h3>#${escapeHtml(issue)} &mdash; ${escapeHtml(issueCtx.title)}</h3>
 </div>
+
+${renderVisualComparisonBlock(visualComparison)}
 
 <h2>Causa identificada</h2>
 <div class="${inconclusive ? 'history-box' : 'rootcause-box'}">
@@ -1478,13 +1735,70 @@ ${rejectHistory.length > 1 ? `
 }
 
 // =============================================================================
+// (#3088 / CA-2) Sufijo determinístico para mencionar provider/model en audio
+// =============================================================================
+//
+// Regla determinística (SEC-6 — reproducible bajo mismo audit trail):
+//   1) Primera sesión del skill con la combinación (provider, model) →
+//      ", primera vez con esta combinación."
+//   2) Switch automático cross-provider/cross-model en las últimas N sesiones
+//      (N=5 por default — config: narration.recent_switch_window) →
+//      ", hubo switch automático reciente."
+//   3) Rebote con provider != 'deterministic' AND fallo cualitativo →
+//      "." (frase base sin trailer).
+//   Si ninguna regla cumple → cadena vacía (no mencionar nada).
+//
+// Reglas inquebrantables (UX / SEC-6):
+//   - Nunca decir `cli_version` en audio (vive en el PDF).
+//   - Nunca decir literal "unknown" en audio — si provider o model es unknown,
+//     omitir la frase entera (ruido para el oyente).
+//   - Orden fijo: provider → model. Sin adjetivos. Sin traducción del modelo.
+function providerNarrationSuffix(data) {
+  const session = (data && data.sessionCtx) || null;
+  if (!session) return '';
+  const { provider, model, firstWithCombo, recentSwitch } = session;
+  if (!provider || provider === 'unknown') return '';
+  if (!model || model === 'unknown') return '';
+
+  let trailer = null;
+  if (firstWithCombo) {
+    trailer = ', primera vez con esta combinación.';
+  } else if (recentSwitch) {
+    trailer = ', hubo switch automático reciente.';
+  } else if (provider !== 'deterministic' && isQualitativeFailure(data && data.motivo)) {
+    trailer = '.';
+  }
+  if (!trailer) return '';
+  // (G-UX-2) Orden fijo: provider primero, luego model — tal cual.
+  return ` Esta sesión corrió con ${provider} ${model}${trailer}`;
+}
+
+// =============================================================================
 // generateNarration(data) — narración corta para TTS (20-30s, ~300 chars)
 // =============================================================================
 function generateNarration(data) {
-  const { issue, primaryCause, inconclusive, autoCreatedDeps } = data;
+  const { issue, primaryCause, inconclusive, autoCreatedDeps, visualComparison } = data;
+
+  // (#3088 / CA-2) Sufijo determinístico opcional con provider+model. Vacío
+  // cuando ninguna regla del audio se activa (la mayoría de los casos).
+  const provSuffix = providerNarrationSuffix(data);
+
+  // #3383 / CA-UX-5 — audio narrado del rejection report visual: lee
+  // diferencias + acción sugerida, máximo 3 hallazgos, < 60 segundos.
+  // Solo se activa cuando el bloque side-by-side está presente.
+  if (visualComparison && Array.isArray(visualComparison.diffs) && visualComparison.diffs.length > 0) {
+    const diffs = visualComparison.diffs.slice(0, 3);
+    const list = diffs.map((d, i) => {
+      const title = (d?.title || `hallazgo ${i + 1}`).replace(/\.$/, '');
+      const impact = (d?.impact || 'medio').toLowerCase();
+      return `${title} — impacto ${impact}`;
+    }).join('. ');
+    const actionSkill = visualComparison.suggestedAction?.skill || 'el desarrollador del área';
+    return `Issue ${issue}: rechazo visual. ${list}. Acción sugerida: rebotar a ${actionSkill} para re-implementar respetando el mockup adjunto en definición.${provSuffix}`;
+  }
 
   if (inconclusive) {
-    return `Issue ${issue}: rechazo inconcluyente. El preflight confirmó emulador disponible pero el agente declaró rechazo. Requiere revisión humana del log.`;
+    return `Issue ${issue}: rechazo inconcluyente. El preflight confirmó emulador disponible pero el agente declaró rechazo. Requiere revisión humana del log.${provSuffix}`;
   }
 
   if (primaryCause) {
@@ -1495,10 +1809,10 @@ function generateNarration(data) {
     let tail = '';
     if (created > 0) tail = ` Se creó issue de dependencia.`;
     else if (existing > 0) tail = ` Dependencia ya existente, se sumó evidencia.`;
-    return `Issue ${issue}: rechazado. Causa: ${trimmed}.${tail}`;
+    return `Issue ${issue}: rechazado. Causa: ${trimmed}.${tail}${provSuffix}`;
   }
 
-  return `Issue ${issue}: rechazado sin causa identificada. Revisión humana requerida.`;
+  return `Issue ${issue}: rechazado sin causa identificada. Revisión humana requerida.${provSuffix}`;
 }
 
 // =============================================================================
@@ -1896,4 +2210,26 @@ async function main() {
   }
 }
 
-main();
+// (#3088) — exportar helpers para tests sin disparar `main()`. El comportamiento
+// CLI se preserva cuando se ejecuta vía `node rejection-report.js`.
+module.exports = {
+  // CA-1 / CA-8
+  renderSessionMeta,
+  renderHtml,
+  // CA-2
+  generateNarration,
+  providerNarrationSuffix,
+  isQualitativeFailure,
+  // CA-6
+  resolveSessionContext,
+  // Helpers de bajo nivel — útiles para vectores de injection (SEC-1).
+  escapeHtml,
+  // #3383 — bloque side-by-side (CA-12, CA-13).
+  renderVisualComparisonBlock,
+  // Acceso a la implementación real de traceability (override en tests).
+  _traceability: traceability,
+};
+
+if (require.main === module) {
+  main();
+}

@@ -20,9 +20,16 @@ const {
   findPidByPort,
   pidAlive,
   invalidateCache,
+  waitForPortFree,
+  commandLineForPid,
   SCRIPT_MAP,
 } = require('./pid-discovery');
 const { clearAllMarkers } = require('./lib/ready-marker');
+const { annotateAndMoveOrphans } = require('./lib/restart-orphan-annotator');
+// #4664 (Ola 9.1 · cutover de wiring) — el arranque del motor (pulpo/dashboard)
+// se resuelve vía el kernel-resolver: apunta al kernel migrado cuando el consumo
+// está habilitado, y al motor local de `.pipeline/` en coexistencia (default).
+const kernelResolver = require('./lib/kernel-resolver');
 
 // Saneado global de JAVA_HOME — si restart.js heredó una ruta stale (ej. JBR
 // de IntelliJ obsoleto), la corregimos antes de spawnear pulpo/servicios, así
@@ -30,6 +37,40 @@ const { clearAllMarkers } = require('./lib/ready-marker');
 require('./lib/java-home-normalizer').normalizeJavaHome({
   log: (msg) => console.error(msg),
 });
+
+// #3311 — Hidratar process.env desde ~/.claude/secrets/credentials.json antes
+// de spawnear los hijos del pipeline (pulpo, listener, svc-*). Los procesos
+// hijo heredan el env del padre, así que con una sola invocación acá todos
+// los componentes reciben las API keys de providers + tokens Telegram sin que
+// el operador tenga que setear setx manualmente. Degradación silenciosa si
+// el archivo no existe.
+require('./lib/credentials').loadIntoEnv({
+  logger: (m) => console.error(m),
+});
+
+// --- VALIDACIÓN FORCE_PROVIDER_OVERRIDE (#3680 CA-A9) ---
+// Boot fail-fast EN restart.js TAMBIÉN (no sólo pulpo). Si el operador hace
+// `set FORCE_PROVIDER_OVERRIDE=cerebras` y después `node .pipeline/restart.js`,
+// el flag se hereda a los spawn children del pulpo y rompe la disciplina de
+// routing productivo. Defense-in-depth contra esa misma ruta de bypass —
+// abortar acá mismo antes de matar/relanzar los componentes.
+//
+// Escape hatch: PULPO_ALLOW_FORCE_PROVIDER_OVERRIDE=1 acepta el flag igual
+// (sólo emergencias documentadas).
+if (process.env.FORCE_PROVIDER_OVERRIDE && process.env.PULPO_ALLOW_FORCE_PROVIDER_OVERRIDE !== '1') {
+  console.error(
+    '[restart] FATAL FORCE_PROVIDER_OVERRIDE prohibido en runtime productivo — ' +
+    'uso exclusivo del harness multi-provider-smoke-test (per-spawn env del child). ' +
+    'Unset la variable (`set FORCE_PROVIDER_OVERRIDE=` en Windows, ' +
+    '`unset FORCE_PROVIDER_OVERRIDE` en bash) y reintentar.'
+  );
+  process.exit(2);
+} else if (process.env.FORCE_PROVIDER_OVERRIDE && process.env.PULPO_ALLOW_FORCE_PROVIDER_OVERRIDE === '1') {
+  console.error(
+    '[restart] WARN FORCE_PROVIDER_OVERRIDE presente con PULPO_ALLOW_FORCE_PROVIDER_OVERRIDE=1 — ' +
+    'pipeline corre en modo override forzado. Sólo emergencias documentadas.'
+  );
+}
 
 const PIPELINE = path.resolve(__dirname);
 const ROOT = path.resolve(PIPELINE, '..');
@@ -67,8 +108,36 @@ function sleep(ms) {
 function syncWithMain() {
   try {
     execSync('git fetch origin main', { cwd: ROOT, timeout: 30000, windowsHide: true });
+    // #4577 GATE 3 — INVARIANTE log-antes-de-mutar (RS-2/RS-6): registrar el
+    // reset del working tree ANTES del `git reset --hard`. Corre fuera del loop
+    // del Pulpo durante recovery; si el proceso muere entre el log y el reset,
+    // queda el intento registrado y el working tree intacto (recuperable).
+    // Best-effort: el audit NUNCA rompe el rollback transaccional.
+    try {
+      require('./lib/kernel-actions-audit').safeAppendAction({
+        action: 'worktree-reset', impact: 'alto',
+        reason: 'syncWithMain: git reset --hard FETCH_HEAD (recovery de restart)',
+        authorizedBy: 'restart:rollback',
+      });
+      require('./lib/kernel-action-policy').enforceActionPolicy('worktree-reset', {
+        impact: 'alto',
+        reason: 'syncWithMain: git reset --hard FETCH_HEAD (recovery de restart)',
+      });
+    } catch {}
     execSync('git reset --hard FETCH_HEAD', { cwd: ROOT, timeout: 15000, windowsHide: true, encoding: 'utf8' });
     log('Sincronizado con origin/main');
+    // #4460 — Registrar el HEAD tras el reset como SHA canónico de "qué corre
+    // vivo". Es la referencia que la detección de drift compara contra
+    // origin/main para saber si hay entregables del modelo operativo sin
+    // aplicar. Best-effort: si falla, el marker queda como estaba (el slice lo
+    // trata como estado desconocido, nunca como "sin pendientes").
+    try {
+      const head = execSync('git rev-parse HEAD', { cwd: ROOT, timeout: 10000, windowsHide: true, encoding: 'utf8' }).trim();
+      const res = require('./lib/runtime-boot').writeBootMarker(head, { pipelineDir: PIPELINE });
+      if (res && res.ok) log(`Boot marker actualizado: ${head.slice(0, 8)}`);
+    } catch (e2) {
+      log(`Warning: no se pudo escribir runtime-boot.json: ${(e2 && e2.message || '').slice(0, 80)}`);
+    }
   } catch (e) {
     log(`Warning: no se pudo sincronizar con main: ${e.message.slice(0, 100)}`);
   }
@@ -181,28 +250,31 @@ function killAll() {
   // dueño; sin esta limpieza, el mecanismo [huerfanos] del Pulpo tarda hasta
   // `orphan_timeout_minutes` (10min default) en moverlos — dejando el
   // dashboard mostrando "activos" agentes que ya no existen.
-  // Formato de archivo de agente: `<issueId>.<skill>` (ej. 1915.qa, 2441.guru).
-  // Filtramos `.gitkeep` y cualquier otro archivo sin ese patrón.
-  const agenteFileRegex = /^\d+\.[a-z][a-z0-9-]*$/;
-  let orphansMoved = 0;
-  for (const pipeline of ['desarrollo', 'definicion']) {
-    const pipeDir = path.join(PIPELINE, pipeline);
-    if (!fs.existsSync(pipeDir)) continue;
-    for (const fase of fs.readdirSync(pipeDir)) {
-      const trabajando = path.join(pipeDir, fase, 'trabajando');
-      const pendiente = path.join(pipeDir, fase, 'pendiente');
-      if (!fs.existsSync(trabajando)) continue;
-      try {
-        if (!fs.existsSync(pendiente)) fs.mkdirSync(pendiente, { recursive: true });
-        for (const f of fs.readdirSync(trabajando)) {
-          if (!agenteFileRegex.test(f)) continue;
-          fs.renameSync(path.join(trabajando, f), path.join(pendiente, f));
-          orphansMoved++;
-        }
-      } catch {}
-    }
-  }
-  if (orphansMoved > 0) log(`  ${orphansMoved} agente(s) huérfano(s) de fases → pendiente/`);
+  //
+  // #2374 Parte 1 — preservación de trabajo interrumpido por restart:
+  //   Hoy `killAll()` mata claude.exe (spawn no-detached), por lo que el
+  //   trabajo en memoria del agente se pierde. El YAML del archivo SE PRESERVA
+  //   (el helper lo escribe íntegro en `pendiente/`), pero el agente re-lanzado
+  //   parte de cero. Para dejar trazabilidad del corte el helper agrega al
+  //   YAML las claves `restart_interrupted: true` y `restart_at: <ISO>` — el
+  //   agente que re-tome el archivo verá explícitamente que es un re-run
+  //   post-restart y puede decidir comportamiento defensivo (por ejemplo,
+  //   builder puede limpiar daemons stale antes de empezar).
+  //
+  //   Hot-restart real (preservar el proceso del agente vivo, sin matarlo,
+  //   y que el nuevo pulpo lo reattach) requiere `detached:true` en
+  //   `lib/agent-launcher.js`, persistencia de PID + heartbeat, y handler de
+  //   reattach en pulpo.js. Esa entrega queda como follow-up por el riesgo
+  //   regresivo en el spawn.
+  //
+  //   El helper `annotateAndMoveOrphans` está testeado en
+  //   `lib/__tests__/restart-orphan-annotator.test.js`.
+  const { movedCount: orphansMoved } = annotateAndMoveOrphans({
+    pipelineRoot: PIPELINE,
+    pipelinesScan: ['desarrollo', 'definicion'],
+    restartAt: new Date().toISOString(),
+  });
+  if (orphansMoved > 0) log(`  ${orphansMoved} agente(s) interrumpido(s) por restart → pendiente/ (marcados con restart_interrupted: true)`);
 
   // Escribir timestamp de último restart para evitar restarts encadenados
   try {
@@ -230,6 +302,46 @@ function killAll() {
   }
 }
 
+// --- LIBERACIÓN DETERMINÍSTICA DEL PUERTO DEL DASHBOARD (#4308) ---
+//
+// Entre killAll() y launchAll() verificamos de forma ACOTADA que el puerto del
+// dashboard (3200 por default) quedó libre antes de relanzar. Sin esto, si el
+// socket TCP no se liberó aún o un proceso respawneó entre scan y kill, el
+// dashboard nuevo choca con EADDRINUSE, el smoke test falla 2× y se dispara un
+// rollback espurio a `pipeline-stable`.
+//
+// onHolder (SEC-2 / CA-2): antes de re-matar valida ownership por commandLine
+// (solo procesos del pipeline: `dashboard.js` o `.pipeline`), LOGUEA PID +
+// commandLine ANTES de matar (auditoría), y mata SOLO por PID numérico vía
+// taskkill (SEC-1 / CA-6: nada de `$(...)`, `fkill <puerto>` ni interpolar
+// salida de netstat). Un proceso ajeno que casualmente tome el puerto NO se
+// mata. Si el backoff se agota, degradamos al comportamiento actual (avanzar +
+// retry EADDRINUSE del dashboard) — nunca peor que hoy (CA-3).
+function freeDashboardPortOrAdvance() {
+  const dashPort = parseInt(process.env.DASHBOARD_PORT || '3200', 10);
+  const onHolder = (pid) => {
+    if (pid === process.pid) return;
+    const cmd = commandLineForPid(pid);
+    const owned = !!cmd && (cmd.includes('dashboard.js') || cmd.includes('.pipeline'));
+    log(`  [puerto ${dashPort}] holder PID ${pid} cmd=${cmd || '<desconocido>'}`); // auditoría ANTES de matar
+    if (!owned) {
+      log(`  [puerto ${dashPort}] PID ${pid} no es del pipeline — no se mata`);
+      return;
+    }
+    try {
+      execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, stdio: 'ignore' });
+      log(`  [puerto ${dashPort}] Re-killed PID ${pid}`);
+    } catch {}
+  };
+  const free = waitForPortFree(dashPort, { attempts: 6, delayMs: 500, onHolder });
+  if (free) {
+    log(`  [puerto ${dashPort}] libre antes de launchAll()`);
+  } else {
+    log(`  [puerto ${dashPort}] sigue tomado tras backoff — se avanza igual (retry EADDRINUSE del dashboard como red secundaria)`);
+  }
+  return free;
+}
+
 // --- LAUNCH ---
 
 function launchAll() {
@@ -239,7 +351,20 @@ function launchAll() {
   if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
 
   for (const comp of COMPONENTS) {
-    const scriptPath = path.join(PIPELINE, comp.script);
+    // #4664 — pulpo y dashboard son los entrypoints del motor que migraron a
+    // `core/` del kernel: se resuelven vía kernel-resolver (kernel migrado vs
+    // motor local, según coexistencia). El resto de servicios (listener/svc-*)
+    // son del adaptador y quedan en `.pipeline/`.
+    let scriptPath;
+    if (comp.name === 'pulpo' || comp.name === 'dashboard') {
+      const resolved = kernelResolver.resolveEntry(comp.name);
+      scriptPath = resolved.path;
+      if (resolved.source === 'kernel') {
+        log(`  ${comp.name}: usando kernel migrado @${resolved.version} (${scriptPath})`);
+      }
+    } else {
+      scriptPath = path.join(PIPELINE, comp.script);
+    }
     if (!fs.existsSync(scriptPath)) continue;
 
     const logPath = path.join(logsDir, `${comp.name}.log`);
@@ -411,7 +536,11 @@ function status() {
 // --- MAIN ---
 
 const action = process.argv[2] || 'restart';
-const flagPaused = process.argv.includes('--paused');
+// Estado de pausa PREVIO al restart: si el pipeline estaba en pausa total
+// (.paused presente) antes de reiniciar, el restart debe CONSERVAR esa pausa
+// en lugar de soltarla. Un /restart no es un "destrabe" implícito.
+const wasPausedBefore = fs.existsSync(path.join(PIPELINE, '.paused'));
+const flagPaused = process.argv.includes('--paused') || wasPausedBefore;
 const flagNoSmokeTest = process.argv.includes('--no-smoke-test');
 const flagNoRollback = process.argv.includes('--no-rollback');
 const flagNoSync = process.argv.includes('--no-sync');
@@ -437,9 +566,10 @@ switch (action) {
     } else {
       try { fs.unlinkSync(path.join(PIPELINE, '.paused')); } catch {}
     }
+    freeDashboardPortOrAdvance(); // #4308 — puerto 3200 libre antes de relanzar
     launchAll();
     const ok = status();
-    log(ok ? '=== Pipeline V2 operativo ===' : '=== Revisar componentes ===');
+    log(ok ? '=== Pipeline operativo ===' : '=== Revisar componentes ===');
 
     // Smoke test + tag pipeline-stable + auto-rollback
     // Se omite si --no-smoke-test (caso típico: rollback.sh relanza restart.js).
@@ -455,6 +585,7 @@ switch (action) {
       if (!smoke.ok && !flagNoRollback) {
         log('Primer smoke test FAIL — reintento tras limpieza de stragglers');
         killAll();
+        freeDashboardPortOrAdvance(); // #4308 — puerto 3200 libre antes de relanzar
         launchAll();
         sleep(5000);
         smoke = runSmokeTest();

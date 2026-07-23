@@ -33,6 +33,25 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# ── Heap del build (override de memoria) ──────────────────────────
+# #4155 — El gradle.properties GLOBAL (~/.gradle/gradle.properties) puede fijar
+# un org.gradle.jvmargs con -Xmx menor (en esta máquina: -Xmx2g) que SOMBREA el
+# -Xmx6g del proyecto: en Gradle, GRADLE_USER_HOME gana sobre el gradle.properties
+# del repo. Con ese techo de 2g la compilación Wasm de :app:composeApp
+# (compileTestDevelopmentExecutableKotlinWasmJs) se queda sin heap y OOMea
+# ("Not enough memory to run compilation") — rebote del build del 2026-06-24.
+#
+# GRADLE_OPTS NO sirve (afecta solo al launcher, no al single-use daemon que corre
+# la compilación con daemon=false). El único override fiable es pasar
+# -Dorg.gradle.jvmargs por línea de comando: una system property de -D tiene la
+# máxima precedencia y le gana al gradle.properties global, sin depender de la
+# config de memoria de la máquina. Verificado: heap efectivo 2048MB -> 6144MB.
+#
+# Coherente con #4155: los builds pesados ya quedan serializados por el lock
+# global de Gradle (un build por vez), así que un único JVM de 6g no satura.
+# Se preserva -Dfile.encoding=UTF-8 (requerido por el proyecto para strings).
+GRADLE_HEAP_ARGS=(-Dorg.gradle.jvmargs="-Xmx6g -XX:MaxMetaspaceSize=1g -XX:+UseG1GC -Dfile.encoding=UTF-8")
+
 # ── Colores ───────────────────────────────────────────────────────
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -44,17 +63,26 @@ echo -e "${CYAN}>> Smart Build — detectando módulos afectados${NC}"
 # ── Build completo si se pide ─────────────────────────────────────
 if $FORCE_ALL; then
   echo -e "${YELLOW}>> Modo --all: compilando todo${NC}"
-  ./gradlew check
+  ./gradlew "${GRADLE_HEAP_ARGS[@]}" check
   exit $?
 fi
 
 # ── Detectar archivos cambiados ──────────────────────────────────
-if git rev-parse --verify "$BASE_BRANCH" > /dev/null 2>&1; then
-  changed=$(git diff --name-only "$BASE_BRANCH"...HEAD 2>/dev/null || git diff --name-only HEAD)
-elif git rev-parse --verify "origin/$BASE_BRANCH" > /dev/null 2>&1; then
+# IMPORTANTE: preferimos `origin/<base>` sobre el ref local porque en
+# worktrees de agentes el ref local `main` suele quedar stale (no se
+# actualiza con cada `git fetch origin main`). Si comparamos contra un
+# `main` stale, el diff incluye TODO lo que origin/main avanzó desde
+# entonces (cientos de archivos en módulos no tocados), y smart-build
+# termina disparando `./gradlew check` completo aunque el agente solo
+# haya tocado `.pipeline/`. Esto se observó en el rebote del issue
+# #3073 (ref local main = fa71bdb1 vs origin/main = 520880f8, diff =
+# 1179 archivos vs los 7 reales contra origin/main).
+if git rev-parse --verify "origin/$BASE_BRANCH" > /dev/null 2>&1; then
   changed=$(git diff --name-only "origin/$BASE_BRANCH"...HEAD 2>/dev/null || git diff --name-only HEAD)
+elif git rev-parse --verify "$BASE_BRANCH" > /dev/null 2>&1; then
+  changed=$(git diff --name-only "$BASE_BRANCH"...HEAD 2>/dev/null || git diff --name-only HEAD)
 else
-  echo -e "${YELLOW}>> No se encontró rama base '$BASE_BRANCH', usando cambios uncommitted${NC}"
+  echo -e "${YELLOW}>> No se encontró rama base '$BASE_BRANCH' ni 'origin/$BASE_BRANCH', usando cambios uncommitted${NC}"
   changed=$(git diff --name-only HEAD)
 fi
 
@@ -94,7 +122,7 @@ done <<< "$changed"
 # Cambio en archivos compartidos → compilar todo
 if $shared; then
   echo -e "${YELLOW}>> Cambio en archivos compartidos (gradle/buildSrc) — compilando todo${NC}"
-  ./gradlew check
+  ./gradlew "${GRADLE_HEAP_ARGS[@]}" check
   exit $?
 fi
 
@@ -133,4 +161,4 @@ echo ""
 echo -e "${CYAN}>> Ejecutando: ./gradlew$tasks${NC}"
 echo ""
 
-./gradlew $tasks
+./gradlew "${GRADLE_HEAP_ARGS[@]}" $tasks

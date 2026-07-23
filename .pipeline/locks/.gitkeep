@@ -1,0 +1,2 @@
+# Carpeta de locks del pipeline. Se mantiene en git para que exista el directorio
+# donde gradle-lock.js (#4155) crea el lock global de Gradle.

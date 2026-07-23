@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<style>
+:root{
+  --in-bg:#0d1117; --in-bg-2:#161b22; --in-bg-3:#1f2937;
+  --in-fg:#e6edf3; --in-fg-dim:#8b949e; --in-fg-soft:#6e7681;
+  --in-border:#30363d; --in-border-soft:rgba(255,255,255,.06);
+  --in-brand:#34D9E0; --in-brand-soft:rgba(52,217,224,.10);
+  --in-accent:#2ee6c1; --in-accent2:#bc8cff;
+  --in-ok:#3fb950; --in-ok-soft:rgba(63,185,80,.16);
+  --in-warn:#d29922; --in-warn-soft:rgba(210,153,34,.16);
+  --in-bad:#f85149; --in-bad-soft:rgba(248,81,73,.16);
+  --in-info:#58a6ff; --in-info-soft:rgba(88,166,255,.16);
+  --in-mono:'SFMono-Regular',ui-monospace,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--in-bg);font-family:'Segoe UI',system-ui,-apple-system,sans-serif;color:var(--in-fg);
+  padding:26px 22px;-webkit-font-smoothing:antialiased}
+.wrap{width:1080px}
+
+/* ---- Header band, una sola fila ---- */
+.hdr{display:flex;align-items:center;gap:16px;height:72px;padding:0 24px;
+  background:linear-gradient(135deg,var(--in-brand-soft),transparent 58%),var(--in-bg-2);
+  border:1px solid var(--in-border);border-bottom-color:rgba(52,217,224,.28);border-radius:16px;
+  box-shadow:0 10px 30px -18px rgba(0,0,0,.8)}
+
+/* ---- Identidad ---- */
+.brand{display:flex;align-items:center;gap:13px;flex:none}
+.logo{width:44px;height:44px;border-radius:13px;flex:none;display:flex;align-items:center;justify-content:center;
+  background:linear-gradient(140deg,var(--in-brand),var(--in-accent2));box-shadow:0 6px 16px -6px rgba(52,217,224,.6)}
+.logo svg{width:25px;height:25px}
+.bid{display:flex;flex-direction:column;line-height:1}
+.bname{font-size:21px;font-weight:800;letter-spacing:1px}
+.bsub{font-size:10.5px;color:var(--in-fg-dim);font-weight:600;letter-spacing:.4px;margin-top:5px}
+
+.divider{width:1px;height:38px;background:var(--in-border);flex:none;opacity:.8}
+
+/* ---- Selector de proyecto (control) ---- */
+.proj{display:flex;align-items:center;gap:10px;flex:none;cursor:pointer;
+  background:var(--in-bg-3);border:1px solid var(--in-border);border-radius:12px;padding:6px 10px 6px 7px;
+  transition:border-color .15s}
+.proj:hover{border-color:var(--in-brand)}
+.pav{width:29px;height:29px;border-radius:9px;flex:none;display:flex;align-items:center;justify-content:center;
+  background:linear-gradient(140deg,var(--in-brand),var(--in-accent2));color:#06121a;font-weight:800;font-size:15px}
+.pid{display:flex;flex-direction:column;line-height:1}
+.pname{font-size:13.5px;font-weight:800}
+.pstate{font-size:9px;color:var(--in-fg-soft);font-weight:700;letter-spacing:.4px;margin-top:3px}
+.pbadge{font-size:10px;font-weight:800;color:#9fe9ee;background:rgba(52,217,224,.12);
+  border:1px solid rgba(52,217,224,.3);border-radius:7px;padding:2px 7px}
+.pcaret{color:var(--in-fg-dim);font-size:10px}
+
+/* ---- Bandeja de salud del sistema (derecha, contenedor único) ---- */
+.tray{margin-left:auto;display:flex;align-items:stretch;flex:none;height:44px;
+  background:var(--in-bg-3);border:1px solid var(--in-border);border-radius:12px;overflow:hidden}
+.seg{display:inline-flex;align-items:center;gap:8px;padding:0 14px;white-space:nowrap;font-size:12.5px;font-weight:600}
+.seg + .seg{border-left:1px solid var(--in-border)}
+.seg .lbl{color:var(--in-fg-dim);font-weight:700;font-size:9.5px;letter-spacing:.6px;text-transform:uppercase}
+.dot{width:8px;height:8px;border-radius:50%;flex:none}
+.dot.ok{background:var(--in-ok);box-shadow:0 0 0 3px var(--in-ok-soft)}
+.dot.idle{background:var(--in-fg-soft);box-shadow:0 0 0 3px rgba(255,255,255,.05)}
+
+/* build */
+.seg.build .val{font-weight:800;color:var(--in-fg)}
+.seg.build .sec{color:var(--in-fg-dim);font-weight:600;font-size:11px}
+
+/* recursos con alerta legible cuando supera el cap */
+.seg.res.alert{background:linear-gradient(180deg,var(--in-bad-soft),transparent)}
+.res-metrics{display:flex;align-items:center;gap:9px}
+.metric{display:flex;align-items:center;gap:6px}
+.metric .mk{color:var(--in-fg-dim);font-size:9.5px;font-weight:800;letter-spacing:.3px}
+.metric .mv{font-variant-numeric:tabular-nums;font-weight:800;font-size:12.5px}
+.metric .mv.hot{color:var(--in-bad)}
+.gauge{width:30px;height:5px;border-radius:3px;background:rgba(255,255,255,.10);overflow:hidden;flex:none}
+.gauge i{display:block;height:100%;border-radius:3px}
+.midsep{width:1px;height:15px;background:var(--in-border)}
+
+/* pulpo */
+.seg.pulpo .up{font-variant-numeric:tabular-nums;color:var(--in-fg);font-weight:800}
+
+/* reloj */
+.seg.clock{font-family:var(--in-mono);gap:9px}
+.clk-time{font-size:13.5px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--in-fg)}
+.clk-date{font-size:9.5px;color:var(--in-fg-dim);font-weight:600;line-height:1.2}
+.clk-ic{font-size:13px;filter:grayscale(.1)}
+.clk-stack{display:flex;flex-direction:column;line-height:1.05}
+</style></head>
+<body><div class="wrap">
+  <div class="hdr">
+    <!-- identidad -->
+    <div class="brand">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M12 2.5 5 6v5c0 4.6 3 8 7 9.5 4-1.5 7-4.9 7-9.5V6l-7-3.5Z" stroke="#06121a" stroke-width="1.6" fill="rgba(255,255,255,.16)"/>
+          <path d="M9.5 12.5 11.3 14.3 14.8 10.4" stroke="#06121a" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <div class="bid">
+        <div class="bname">MIZPÁ</div>
+        <div class="bsub">«Que el Señor vigile» · atalaya de agentes</div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- proyecto -->
+    <div class="proj" title="Proyecto activo (multiproyecto)">
+      <span class="pav">i</span>
+      <span class="pid">
+        <span class="pname">Intrale</span>
+        <span class="pstate">PROYECTO ACTIVO</span>
+      </span>
+      <span class="pbadge">1 / 3</span>
+      <span class="pcaret">▾</span>
+    </div>
+
+    <!-- salud del sistema: bandeja única -->
+    <div class="tray">
+      <span class="seg build" title="Estado del build del pipeline">
+        <span class="dot idle"></span>
+        <span class="val">Build</span><span class="sec">idle</span>
+      </span>
+
+      <span class="seg res alert" title="CPU 12% (cap 70%) · RAM 81% (12.7GB/15.7GB · cap 70%) · 8 cores">
+        <span class="dot warn" style="background:var(--in-bad);box-shadow:0 0 0 3px var(--in-bad-soft)"></span>
+        <span class="res-metrics">
+          <span class="metric"><span class="mk">CPU</span><span class="mv">12%</span></span>
+          <span class="midsep"></span>
+          <span class="metric"><span class="mk">RAM</span><span class="mv hot">81%</span></span>
+        </span>
+      </span>
+
+      <span class="seg pulpo" title="Pulpo activo · uptime 15h 39m">
+        <span class="dot ok"></span>
+        <span class="lbl">Pulpo</span><span class="up">15h&nbsp;39m</span>
+      </span>
+
+      <span class="seg clock" title="Hora local (America/Argentina/Buenos_Aires)">
+        <span class="clk-ic">🕐</span>
+        <span class="clk-stack">
+          <span class="clk-time">04:24</span>
+          <span class="clk-date">dom 6 jul</span>
+        </span>
+      </span>
+    </div>
+  </div>
+</div></body></html>

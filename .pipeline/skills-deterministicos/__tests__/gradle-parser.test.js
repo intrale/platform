@@ -86,6 +86,41 @@ test('parseGradleOutput — output vacío no rompe y retorna UNKNOWN', () => {
     assert.equal(r.duration_ms, 0);
 });
 
+test('parseGradleOutput — smart-build no-op (sin módulos compilables) cuenta como éxito', () => {
+    // Reproduce exactamente el output que produce smart-build.sh cuando los
+    // cambios solo tocan docs/, scripts/ o .pipeline/ — no debe rebotar (#3073).
+    const out = [
+        '>> Smart Build — detectando módulos afectados',
+        '>> Archivos cambiados:',
+        '.pipeline/lib/sanitize-payload.js',
+        'docs/pipeline-multi-provider.md',
+        '',
+        '>> Los cambios no afectan módulos compilables (docs, scripts, etc.)',
+    ].join('\n');
+    const r = parseGradleOutput(out, '');
+    assert.equal(r.success, true, 'no-op debe ser success=true');
+    assert.equal(r.build_status, 'NO_OP');
+    assert.equal(r.errors.length, 0);
+});
+
+test('parseGradleOutput — smart-build no-op (sin cambios detectados) cuenta como éxito', () => {
+    const out = '>> Smart Build — detectando módulos afectados\n>> Sin cambios detectados. Nada que compilar.\n';
+    const r = parseGradleOutput(out, '');
+    assert.equal(r.success, true);
+    assert.equal(r.build_status, 'NO_OP');
+    assert.equal(r.errors.length, 0);
+});
+
+test('renderMarkdownReport — NO_OP muestra veredicto coherente sin marcar fallo', () => {
+    const r = parseGradleOutput('>> Los cambios no afectan módulos compilables (docs, scripts, etc.)', '');
+    const md = renderMarkdownReport(r, { issue: 3073, scope: 'smart' });
+    assert.ok(md.includes('SIN CAMBIOS COMPILABLES'));
+    assert.ok(md.includes('OMITIDO'));
+    assert.ok(!md.includes('FALLIDO'));
+    assert.ok(!md.includes('Hay errores que corregir'));
+    assert.ok(md.includes('Se aprueba sin compilar'));
+});
+
 test('classifyError — detecta todos los patrones conocidos', () => {
     assert.equal(classifyError('OutOfMemoryError: Java heap space').type, 'oom');
     assert.equal(classifyError('Kotlin version mismatch in metadata').type, 'kotlin_version_mismatch');
@@ -134,4 +169,64 @@ test('ERROR_PATTERNS — cada patrón tiene type, regex, fix y severity', () => 
         assert.ok(p.regex instanceof RegExp, `pattern sin regex válido: ${p.type}`);
         assert.ok(p.severity, `pattern sin severity: ${p.type}`);
     }
+});
+
+// ── smart-build no-op (issue #3078 — rebote 3) ───────────────────────
+// Regression: cuando los cambios no afectan módulos Gradle (típico en issues
+// que solo tocan .pipeline/* o docs/), smart-build.sh sale con exit 0 sin
+// invocar Gradle, así que NO aparece "BUILD SUCCESSFUL" en stdout. Antes del
+// fix el parser dejaba success=false por default y el build skill rebotaba
+// con "Build FAILED sin error clasificado".
+
+test('parseGradleOutput — smart-build no-op "Sin cambios detectados" se clasifica como NO_OP exitoso', () => {
+    const stdout = '>> Smart Build — detectando módulos afectados\n>> Sin cambios detectados. Nada que compilar.\n';
+    const r = parseGradleOutput(stdout);
+    assert.equal(r.success, true);
+    assert.equal(r.build_status, 'NO_OP');
+    assert.equal(r.errors.length, 0);
+});
+
+test('parseGradleOutput — smart-build no-op "no afectan módulos compilables" se clasifica como NO_OP', () => {
+    const stdout = '>> Smart Build — detectando módulos afectados\n>> Archivos cambiados:\nscripts/foo.sh\n>> Los cambios no afectan módulos compilables (docs, scripts, etc.)\n';
+    const r = parseGradleOutput(stdout);
+    assert.equal(r.success, true);
+    assert.equal(r.build_status, 'NO_OP');
+    assert.equal(r.errors.length, 0);
+});
+
+test('parseGradleOutput — BUILD SUCCESSFUL real convive con frase NO_OP en el output sin romper', () => {
+    // Si el output contiene ambos (ej. logs concatenados), igual debe
+    // clasificar como éxito. La precedencia exacta no importa mientras
+    // success=true.
+    const stdout = 'Sin cambios detectados. Nada que compilar.\n> Task :backend:compileKotlin\nBUILD SUCCESSFUL in 5s\n';
+    const r = parseGradleOutput(stdout);
+    assert.equal(r.success, true);
+    assert.ok(r.build_status === 'NO_OP' || r.build_status === 'SUCCESSFUL');
+});
+
+test('parseGradleOutput — output sin BUILD SUCCESSFUL ni NO_OP sigue UNKNOWN/success=false (no regresión)', () => {
+    // Salvaguarda: el fix no debe romper el caso histórico de output
+    // truncado/vacío. build.js tiene defensa adicional por exit_code === 0
+    // para esos casos.
+    const r = parseGradleOutput('algun output random sin keywords\n');
+    assert.equal(r.success, false);
+    assert.equal(r.build_status, 'UNKNOWN');
+});
+
+test('renderMarkdownReport — NO_OP usa veredicto específico, no "FALLIDO"', () => {
+    const stdout = '>> Sin cambios detectados. Nada que compilar.\n';
+    const r = parseGradleOutput(stdout);
+    const md = renderMarkdownReport(r, { issue: 3078, scope: 'smart' });
+    // Tras merge con #3164 (main), el header NO_OP es "SIN CAMBIOS COMPILABLES" en
+    // vez de "NO-OP". Mantiene la semántica: distinguible de "FALLIDO" y describe
+    // el caso. Verificamos por presencia de cualquiera de los marcadores válidos.
+    assert.ok(
+        md.includes('SIN CAMBIOS COMPILABLES') || md.includes('NO-OP'),
+        `Esperaba veredicto NO_OP específico en el reporte: ${md}`
+    );
+    assert.ok(!md.includes('FALLIDO'), `No debería decir "FALLIDO" para no-op: ${md}`);
+    assert.ok(
+        md.includes('no afectan módulos') || md.includes('sin compilar'),
+        `Veredicto debería explicar el no-op: ${md}`
+    );
 });

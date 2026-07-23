@@ -1,20 +1,26 @@
 // commander/multimedia-handler.js — Procesamiento multimedia (audio, vision, TTS)
 // Responsabilidad: transcripción de audio, análisis de imágenes, text-to-speech
 // Un fallo aquí NO debe tirar el poller principal
+//
+// EP1-H2 (#3917): retiradas las rutas OpenAI pagas (STT/TTS). Este handler es
+// código legacy del Commander pre-Pulpo (no lo referencia ningún módulo vivo);
+// si llegara a revivir, transcribe con whisper local y narra con Edge TTS —
+// ambos motores gratuitos resueltos por `.pipeline/`. Cero `Bearer` de OpenAI.
 "use strict";
 
 const https = require("https");
+const path = require("path");
+
+// Raíz del pipeline (motores gratuitos viven acá). Desde
+// .claude/hooks/commander/ subimos 3 niveles hasta el repo y entramos a .pipeline/.
+const PIPELINE_DIR = path.resolve(__dirname, "..", "..", "..", ".pipeline");
+function liveMultimedia() { return require(path.join(PIPELINE_DIR, "multimedia.js")); }
+function whisperLocalLib() { return require(path.join(PIPELINE_DIR, "lib", "whisper-local.js")); }
 
 // ─── Configuración (inyectada desde el orchestrator) ─────────────────────────
 let _config = {
     anthropicApiKey: null,
-    openaiApiKey: null,
-    elevenlabsApiKey: null,
-    elevenlabsVoiceId: "pNInz6obpgDQGcFmaJgB",
     visionModel: "claude-haiku-4-5-20251001",
-    transcriptionModel: "gpt-4o-mini-transcribe",
-    ttsModel: "gpt-4o-mini-tts",
-    ttsVoice: "ash",
     audioMaxDurationSec: 300,
 };
 
@@ -88,57 +94,27 @@ function callAnthropicVision(base64Image, mediaType, textPrompt) {
     });
 }
 
-// ─── OpenAI Transcription API ────────────────────────────────────────────────
-
-function callOpenAITranscription(audioBuffer, filename) {
-    return new Promise((resolve, reject) => {
-        const boundary = "----FormBoundary" + Date.now().toString(36);
-        const parts = [];
-
-        parts.push("--" + boundary + "\r\n"
-            + "Content-Disposition: form-data; name=\"model\"\r\n\r\n"
-            + _config.transcriptionModel + "\r\n");
-
-        parts.push("--" + boundary + "\r\n"
-            + "Content-Disposition: form-data; name=\"file\"; filename=\"" + (filename || "audio.ogg") + "\"\r\n"
-            + "Content-Type: audio/ogg\r\n\r\n");
-
-        const header = Buffer.from(parts.join(""));
-        const footer = Buffer.from("\r\n--" + boundary + "--\r\n");
-        const body = Buffer.concat([header, audioBuffer, footer]);
-
-        const req = https.request({
-            hostname: "api.openai.com",
-            path: "/v1/audio/transcriptions",
-            method: "POST",
-            headers: {
-                "Content-Type": "multipart/form-data; boundary=" + boundary,
-                "Authorization": "Bearer " + _config.openaiApiKey,
-                "Content-Length": body.length
-            },
-            timeout: 60000
-        }, (res) => {
-            let d = "";
-            res.on("data", (c) => d += c);
-            res.on("end", () => {
-                try {
-                    const r = JSON.parse(d);
-                    if (r.error) {
-                        reject(new Error("OpenAI Transcription: " + (r.error.message || JSON.stringify(r.error))));
-                        return;
-                    }
-                    resolve(r.text || "(sin transcripción)");
-                } catch (e) { reject(new Error("OpenAI parse error: " + e.message)); }
-            });
-        });
-        req.on("timeout", () => { req.destroy(); reject(new Error("OpenAI Transcription timeout")); });
-        req.on("error", reject);
-        req.write(body);
-        req.end();
-    });
+// ─── Transcripción de audio (whisper local, motor gratuito) ──────────────────
+// EP1-H2 (#3917): reemplaza la antigua ruta paga a `api.openai.com`. Transcribe
+// 100% offline con whisper local (`.pipeline/lib/whisper-local.js`). Sin Bearer,
+// sin cuota muerta, sin latencia previa al fallback. Lanza un Error con motivo
+// accionable cuando el motor local no está disponible o falla, para que el
+// caller degrade a texto.
+async function transcribeAudioLocal(audioBuffer, filename) {
+    const whisper = whisperLocalLib();
+    if (!whisper.isAvailable()) {
+        throw new Error("whisper local no está instalado (pip install -U openai-whisper)");
+    }
+    const res = await whisper.transcribeLocal({ audioBuffer, logger: _log });
+    if (!res || !res.ok) {
+        const kind = res ? res.errorKind : "unknown";
+        const raw = res && res.raw ? (": " + res.raw) : "";
+        throw new Error("whisper local falló (" + kind + ")" + raw);
+    }
+    return res.text || "(sin transcripción)";
 }
 
-// ─── OpenAI TTS API ──────────────────────────────────────────────────────────
+// ─── TTS (Edge, motor gratuito) ──────────────────────────────────────────────
 
 // Partir texto en chunks para TTS respetando límites de oraciones
 function splitTextForTTS(text, maxChars) {
@@ -174,100 +150,17 @@ function splitTextForTTS(text, maxChars) {
     return result;
 }
 
-function callOpenAITTS(text) {
-    return new Promise((resolve, reject) => {
-        // OpenAI TTS soporta hasta 4096 chars — NO truncar
-        const body = JSON.stringify({
-            model: _config.ttsModel,
-            input: text.substring(0, 4096),
-            voice: _config.ttsVoice,
-            instructions: "Hablás como un porteño de Buenos Aires, con tonada rioplatense auténtica. Usás 'vos' en vez de 'tú', decís 'dale', 'che', 'mirá', 'boludo' cuando viene al caso. El ritmo es el de una charla entre amigos en un bar — pausas naturales, énfasis expresivo, te reís si algo es gracioso. Sos inteligente pero cero formal, como un ingeniero argentino joven explicándole algo a un amigo. Nunca sonás como locutor ni como robot — sonás como un pibe real.",
-            response_format: "opus"
-        });
-
-        const req = https.request({
-            hostname: "api.openai.com",
-            path: "/v1/audio/speech",
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "Authorization": "Bearer " + _config.openaiApiKey,
-                "Content-Length": Buffer.byteLength(body)
-            },
-            timeout: 60000
-        }, (res) => {
-            if (res.statusCode !== 200) {
-                let d = "";
-                res.on("data", (c) => d += c);
-                res.on("end", () => reject(new Error("OpenAI TTS HTTP " + res.statusCode + ": " + d.substring(0, 200))));
-                return;
-            }
-            const chunks = [];
-            res.on("data", (c) => chunks.push(c));
-            res.on("end", () => resolve(Buffer.concat(chunks)));
-            res.on("error", reject);
-        });
-        req.on("timeout", () => { req.destroy(); reject(new Error("OpenAI TTS timeout")); });
-        req.on("error", reject);
-        req.write(body);
-        req.end();
-    });
-}
-
-// ─── ElevenLabs TTS API ──────────────────────────────────────────────────────
-
-function callElevenLabsTTS(text) {
-    return new Promise((resolve, reject) => {
-        // ElevenLabs soporta textos largos — NO truncar
-        const body = JSON.stringify({
-            text: text,
-            model_id: "eleven_multilingual_v2",
-            output_format: "opus_48000_32"
-        });
-
-        const req = https.request({
-            hostname: "api.elevenlabs.io",
-            path: "/v1/text-to-speech/" + _config.elevenlabsVoiceId,
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "xi-api-key": _config.elevenlabsApiKey,
-                "Content-Length": Buffer.byteLength(body)
-            },
-            timeout: 60000
-        }, (res) => {
-            if (res.statusCode !== 200) {
-                let d = "";
-                res.on("data", (c) => d += c);
-                res.on("end", () => reject(new Error("ElevenLabs TTS HTTP " + res.statusCode + ": " + d.substring(0, 200))));
-                return;
-            }
-            const chunks = [];
-            res.on("data", (c) => chunks.push(c));
-            res.on("end", () => resolve(Buffer.concat(chunks)));
-            res.on("error", reject);
-        });
-        req.on("timeout", () => { req.destroy(); reject(new Error("ElevenLabs TTS timeout")); });
-        req.on("error", reject);
-        req.write(body);
-        req.end();
-    });
-}
-
-// ─── TTS con fallback ────────────────────────────────────────────────────────
-
 async function callTTS(text) {
-    if (_config.elevenlabsApiKey) {
-        try {
-            _log("TTS: usando ElevenLabs (voice_id=" + _config.elevenlabsVoiceId + ")");
-            return await callElevenLabsTTS(text);
-        } catch (e) {
-            _log("ElevenLabs TTS falló (" + e.message + ") — fallback a OpenAI");
-            if (!_config.openaiApiKey) throw e;
-        }
+    // EP1-H2 (#3917): narración 100% por Edge TTS (motor oficial y gratuito),
+    // delegada a `.pipeline/multimedia.js`. Ese módulo aplica el sanitizador
+    // pre-TTS (#2958) que redacta secretos antes de salir al endpoint de
+    // Microsoft, así que esta ruta hereda esa protección sin duplicar lógica.
+    _log("TTS: usando Edge (motor único)");
+    const audioBuffer = await liveMultimedia().textToSpeech(text);
+    if (!audioBuffer) {
+        throw new Error("Edge TTS no devolvió audio");
     }
-    _log("TTS: usando OpenAI");
-    return await callOpenAITTS(text);
+    return audioBuffer;
 }
 
 // ─── Extracción de respuesta de Claude ───────────────────────────────────────
@@ -341,8 +234,11 @@ async function handlePhoto(msg) {
 }
 
 async function handleVoiceOrAudio(msg) {
-    if (!_config.openaiApiKey) {
-        await _tgApi.sendMessage("🎤 Audio recibido pero <b>multimedia no configurado</b>.\n\nConfigurá <code>openai_api_key</code> en telegram-config.json o la variable de entorno <code>OPENAI_API_KEY</code>.");
+    // EP1-H2 (#3917): la transcripción corre en whisper local (motor gratuito);
+    // ya no se exige ninguna API key paga. Si el binario local no está instalado
+    // avisamos en vez de intentar un motor inexistente.
+    if (!whisperLocalLib().isAvailable()) {
+        await _tgApi.sendMessage("🎤 Audio recibido pero el <b>motor de transcripción local (whisper) no está instalado</b>.\n\nInstalalo con <code>pip install -U openai-whisper</code> y repetímelo, o mandámelo por texto.");
         return;
     }
 
@@ -362,7 +258,7 @@ async function handleVoiceOrAudio(msg) {
         _log("Audio descargado: " + file.filePath + " (" + file.buffer.length + " bytes, " + duration + "s)");
 
         const filename = (file.filePath.split("/").pop() || "audio.ogg").replace(/\.oga$/, ".ogg");
-        const transcription = await callOpenAITranscription(file.buffer, filename);
+        const transcription = await transcribeAudioLocal(file.buffer, filename);
 
         _log("Transcripción: " + transcription.substring(0, 200));
 
@@ -397,9 +293,9 @@ async function handleVoiceOrAudio(msg) {
 
         // Si es voice y TTS disponible: responder SOLO con audio (sin eco, sin texto, sin imagen)
         // Asumimos que si el usuario envía audio es porque no puede mirar texto.
-        if (isVoice && result.code === 0 && claudeResponse && (_config.elevenlabsApiKey || _config.openaiApiKey)) {
+        if (isVoice && result.code === 0 && claudeResponse) {
             try {
-                const TTS_CHUNK_SIZE = 3800; // Margen bajo el límite de 4096 de OpenAI
+                const TTS_CHUNK_SIZE = 3800; // Margen holgado por chunk para Edge TTS
                 const chunks = splitTextForTTS(claudeResponse, TTS_CHUNK_SIZE);
                 _log("Generando TTS para respuesta (" + claudeResponse.length + " chars, " + chunks.length + " parte(s))");
 
@@ -429,9 +325,7 @@ async function handleVoiceOrAudio(msg) {
 module.exports = {
     init,
     callAnthropicVision,
-    callOpenAITranscription,
-    callOpenAITTS,
-    callElevenLabsTTS,
+    transcribeAudioLocal,
     callTTS,
     splitTextForTTS,
     extractClaudeResponse,

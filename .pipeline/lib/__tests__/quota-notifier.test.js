@@ -23,10 +23,15 @@ const {
   DEFAULT_REMINDER_INTERVAL_MIN,
   DEBOUNCE_CANNED_MS,
   MIN_BLOCK_DURATION_FOR_RESTORED_MS,
+  PROVIDER_LABELS,
+  DEFAULT_PROVIDER_KEY,
   formatHHMM,
   formatCountdown,
   interpolate,
   buildVars,
+  parseResetsAt,
+  providerLabel,
+  normalizeProviderKey,
 } = require('../quota-notifier');
 
 // -- Test helper: clock + setInterval/clearInterval mockeables ----------------
@@ -442,9 +447,10 @@ test('CA-10 · canned NO contiene caracteres peligrosos del input (CA-S7: prohib
       `template canned contiene placeholder peligroso ${ch}`);
   }
   // Y los placeholders del canned deben ser solo del set permitido
+  // (#4565: se agrega `provider`, campo de sistema — NO input de usuario).
   const placeholders = [...QUOTA_COPY.cannedFreeText.matchAll(/\{(\w+)\}/g)].map(m => m[1]);
   for (const p of placeholders) {
-    assert.ok(['hhmm', 'countdown', 'n', 'isFallback'].includes(p),
+    assert.ok(['hhmm', 'countdown', 'n', 'isFallback', 'provider'].includes(p),
       `placeholder no autorizado en canned: ${p}`);
   }
 });
@@ -633,4 +639,349 @@ test('constantes públicas tienen los valores documentados', () => {
   assert.equal(DEFAULT_REMINDER_INTERVAL_MIN, 120);
   assert.equal(DEBOUNCE_CANNED_MS, 2 * 60 * 1000);
   assert.equal(MIN_BLOCK_DURATION_FOR_RESTORED_MS, 5 * 60 * 1000);
+});
+
+// =============================================================================
+// #4565 Bug 2 — parseResetsAt / buildVars con resets_at ISO8601
+// =============================================================================
+test('#4565 · parseResetsAt acepta ISO8601 (el bug del --:--)', () => {
+  const iso = '2026-07-13T00:00:00.000Z';
+  assert.equal(parseResetsAt(iso), Date.parse(iso));
+  assert.ok(Number.isFinite(parseResetsAt(iso)));
+});
+
+test('#4565 · parseResetsAt acepta epoch-ms number (fixtures y flag legacy)', () => {
+  assert.equal(parseResetsAt(5_000_000), 5_000_000);
+});
+
+test('#4565 · parseResetsAt acepta string numérico epoch-ms', () => {
+  assert.equal(parseResetsAt('5000000'), 5_000_000);
+});
+
+test('#4565 · parseResetsAt devuelve NaN para basura', () => {
+  assert.ok(Number.isNaN(parseResetsAt(undefined)));
+  assert.ok(Number.isNaN(parseResetsAt(null)));
+  assert.ok(Number.isNaN(parseResetsAt('')));
+  assert.ok(Number.isNaN(parseResetsAt('no-es-fecha')));
+  assert.ok(Number.isNaN(parseResetsAt(NaN)));
+});
+
+test('#4565 · buildVars con resets_at ISO8601 produce hhmm real (NO "--:--")', () => {
+  // Reset a las 14:30 hora local, expresado como ISO8601 (como persiste el flag).
+  const resetLocal = new Date(2026, 6, 8, 14, 30, 0);
+  const nowMs = new Date(2026, 6, 8, 10, 0, 0).getTime();
+  const vars = buildVars(
+    { resets_at: resetLocal.toISOString() },
+    nowMs,
+    0
+  );
+  assert.equal(vars.hhmm, '14:30');
+  assert.notEqual(vars.hhmm, '--:--');
+  assert.equal(vars.countdown, '4 h 30 min');
+});
+
+test('#4565 · regresión: Number() sobre ISO daba NaN → "--:--"; parseResetsAt lo evita', () => {
+  const iso = '2026-07-13T00:00:00.000Z';
+  // Comportamiento viejo (bug):
+  assert.ok(Number.isNaN(Number(iso)));
+  assert.equal(formatHHMM(Number(iso)), '--:--');
+  // Comportamiento nuevo:
+  assert.notEqual(formatHHMM(parseResetsAt(iso)), '--:--');
+});
+
+// =============================================================================
+// #4565 Bug 1 — provider legible en templates (no hardcodear "Anthropic")
+// =============================================================================
+test('#4565 · providerLabel mapea claves a labels humanos, nunca la clave cruda', () => {
+  assert.equal(providerLabel('anthropic'), 'Anthropic');
+  assert.equal(providerLabel('openai-codex'), 'OpenAI Codex');
+  assert.equal(providerLabel('gemini-google'), 'Gemini');
+  // Aliases
+  assert.equal(providerLabel('openai'), 'OpenAI Codex');
+  assert.equal(providerLabel('codex'), 'OpenAI Codex');
+  // Desconocido / faltante → default anthropic (backward-compat)
+  assert.equal(providerLabel(undefined), 'Anthropic');
+  assert.equal(providerLabel(''), 'Anthropic');
+  assert.equal(providerLabel('proveedor-inexistente'), 'Anthropic');
+  // Nunca devuelve la clave cruda
+  assert.notEqual(providerLabel('openai-codex'), 'openai-codex');
+});
+
+test('#4565 · normalizeProviderKey canoniza aliases y default', () => {
+  assert.equal(normalizeProviderKey('openai'), 'openai-codex');
+  assert.equal(normalizeProviderKey('claude'), 'anthropic');
+  assert.equal(normalizeProviderKey('anthropic'), 'anthropic');
+  assert.equal(normalizeProviderKey(undefined), DEFAULT_PROVIDER_KEY);
+  assert.equal(normalizeProviderKey('OPENAI-CODEX'), 'openai-codex');
+});
+
+test('#4565 · notificacion inicial nombra el provider agotado (Codex, no Anthropic)', () => {
+  const clock = makeFakeClock();
+  const sender = makeFakeSender();
+  clock.nowMs = new Date(2026, 6, 8, 10, 0, 0).getTime();
+  const notifier = createQuotaNotifier({
+    sendMessage: sender.sendMessage,
+    now: () => clock.nowMs,
+    setIntervalFn: clock.setIntervalFn,
+    clearIntervalFn: clock.clearIntervalFn,
+    // El commander usa Codex en este escenario, así que el gate igual bloquea.
+    getCommanderProvider: () => 'openai-codex',
+  });
+  notifier.onFlagSet(makeFlag(clock, {
+    provider: 'openai-codex',
+    resets_at: new Date(2026, 6, 8, 14, 30, 0).toISOString(),
+  }));
+
+  assert.equal(sender.sent.length, 1);
+  const msg = sender.sent[0].text;
+  assert.match(msg, /Cuota OpenAI Codex agotada/);
+  assert.doesNotMatch(msg, /Cuota Anthropic agotada/);
+  assert.match(msg, /14:30/);
+  // Nunca la clave cruda
+  assert.doesNotMatch(msg, /openai-codex/);
+});
+
+test('#4565 · mensaje de restaurada nombra el provider recuperado', () => {
+  const clock = makeFakeClock();
+  const sender = makeFakeSender();
+  const notifier = createQuotaNotifier({
+    sendMessage: sender.sendMessage,
+    now: () => clock.nowMs,
+    setIntervalFn: clock.setIntervalFn,
+    clearIntervalFn: clock.clearIntervalFn,
+    getQueuedAgentsCount: () => 0,
+    getCommanderProvider: () => 'gemini-google',
+  });
+  notifier.onFlagSet(makeFlag(clock, { provider: 'gemini-google' }));
+  clock.advance(10 * 60 * 1000); // > 5min
+  notifier.onFlagCleared();
+  const closeMsg = sender.sent[sender.sent.length - 1].text;
+  assert.match(closeMsg, /Cuota Gemini restaurada/);
+});
+
+test('#4565 · sin campo provider, cae a "Anthropic" (backward-compat)', () => {
+  const clock = makeFakeClock();
+  const sender = makeFakeSender();
+  const notifier = createQuotaNotifier({
+    sendMessage: sender.sendMessage,
+    now: () => clock.nowMs,
+    setIntervalFn: clock.setIntervalFn,
+    clearIntervalFn: clock.clearIntervalFn,
+  });
+  notifier.onFlagSet(makeFlag(clock)); // sin provider
+  assert.match(sender.sent[0].text, /Cuota Anthropic agotada/);
+});
+
+// =============================================================================
+// #4565 CA-3 — gate selectivo por provider
+// =============================================================================
+test('#4565 CA-3 · provider agotado != commander → gate NO bloquea (gatesLlm=false)', () => {
+  const clock = makeFakeClock();
+  const sender = makeFakeSender();
+  const notifier = createQuotaNotifier({
+    sendMessage: sender.sendMessage,
+    now: () => clock.nowMs,
+    setIntervalFn: clock.setIntervalFn,
+    clearIntervalFn: clock.clearIntervalFn,
+    // Se agotó Codex; el commander usa Anthropic → NO debe bloquear.
+    getCommanderProvider: () => 'anthropic',
+  });
+  notifier.onFlagSet(makeFlag(clock, { provider: 'openai-codex' }));
+  sender.sent.length = 0;
+
+  const st = notifier.getState();
+  assert.equal(st.active, true, 'el flag sigue activo (hay notificaciones)');
+  assert.equal(st.gatesLlm, false, 'NO gatea el LLM del commander');
+  assert.equal(st.provider, 'openai-codex');
+
+  const gate = notifier.handleCommanderFreeText();
+  assert.equal(gate.gated, false, 'el LLM sano debe procesar el texto libre');
+  assert.equal(sender.sent.length, 0, 'no se envía canned');
+});
+
+test('#4565 CA-3 · provider agotado == commander → gate SÍ bloquea', () => {
+  const clock = makeFakeClock();
+  const sender = makeFakeSender();
+  const notifier = createQuotaNotifier({
+    sendMessage: sender.sendMessage,
+    now: () => clock.nowMs,
+    setIntervalFn: clock.setIntervalFn,
+    clearIntervalFn: clock.clearIntervalFn,
+    getCommanderProvider: () => 'anthropic',
+  });
+  notifier.onFlagSet(makeFlag(clock, {
+    provider: 'anthropic',
+    resets_at: new Date(2026, 6, 8, 14, 30, 0).toISOString(),
+  }));
+  sender.sent.length = 0;
+
+  const st = notifier.getState();
+  assert.equal(st.gatesLlm, true, 'Anthropic agotado + commander Anthropic → gatea');
+
+  const gate = notifier.handleCommanderFreeText();
+  assert.equal(gate.gated, true);
+  assert.equal(gate.debounced, false);
+  assert.equal(sender.sent.length, 1, 'se envía canned');
+  assert.equal(sender.sent[0].opts.plain, true);
+});
+
+test('#4565 CA-3 · aliases: commander "claude" == flag "anthropic" → bloquea', () => {
+  const clock = makeFakeClock();
+  const sender = makeFakeSender();
+  const notifier = createQuotaNotifier({
+    sendMessage: sender.sendMessage,
+    now: () => clock.nowMs,
+    setIntervalFn: clock.setIntervalFn,
+    clearIntervalFn: clock.clearIntervalFn,
+    getCommanderProvider: () => 'claude', // alias de anthropic
+  });
+  notifier.onFlagSet(makeFlag(clock, { provider: 'anthropic' }));
+  assert.equal(notifier.getState().gatesLlm, true);
+});
+
+test('#4565 CA-3 · sin flag activo, gatesLlm=false y getState.provider=null', () => {
+  const clock = makeFakeClock();
+  const sender = makeFakeSender();
+  const notifier = createQuotaNotifier({
+    sendMessage: sender.sendMessage,
+    now: () => clock.nowMs,
+    setIntervalFn: clock.setIntervalFn,
+    clearIntervalFn: clock.clearIntervalFn,
+  });
+  const st = notifier.getState();
+  assert.equal(st.active, false);
+  assert.equal(st.gatesLlm, false);
+  assert.equal(st.provider, null);
+  assert.equal(st.providerLabel, null);
+});
+
+test('#4565 CA-3 · default getCommanderProvider es anthropic', () => {
+  const clock = makeFakeClock();
+  const sender = makeFakeSender();
+  const notifier = createQuotaNotifier({
+    sendMessage: sender.sendMessage,
+    now: () => clock.nowMs,
+    setIntervalFn: clock.setIntervalFn,
+    clearIntervalFn: clock.clearIntervalFn,
+  });
+  // flag anthropic + default commander → bloquea
+  notifier.onFlagSet(makeFlag(clock, { provider: 'anthropic' }));
+  assert.equal(notifier.getState().gatesLlm, true);
+});
+
+// =============================================================================
+// #4565 (rebote rev-1) CA-3 — gate por RESOLUCIÓN DE CADENA (isLlmGated)
+// Cierra el gap del rechazo de review: cuando Anthropic (primario) está agotado
+// pero hay un fallback SANO en la cadena, el gate NO debe pre-emptir con canned;
+// debe dejar que `ejecutarClaude` use ese provider sano. La autoridad es la
+// resolución de la cadena completa (`isLlmGated`), NO el estado del primario.
+// =============================================================================
+test('#4565 rebote · Anthropic agotado + fallback SANO → gatesLlm=false (NO pre-emptir canned)', () => {
+  const clock = makeFakeClock();
+  const sender = makeFakeSender();
+  const notifier = createQuotaNotifier({
+    sendMessage: sender.sendMessage,
+    now: () => clock.nowMs,
+    setIntervalFn: clock.setIntervalFn,
+    clearIntervalFn: clock.clearIntervalFn,
+    // La cadena resuelve a un fallback sano → NO gateada, aunque el primario
+    // Anthropic esté agotado. Este es exactamente el escenario del rechazo.
+    isLlmGated: () => false,
+    // Heurístico que, de usarse, bloquearía (anthropic==anthropic). Debe ser
+    // IGNORADO cuando isLlmGated resuelve.
+    getCommanderProvider: () => 'anthropic',
+  });
+  notifier.onFlagSet(makeFlag(clock, { provider: 'anthropic' }));
+  sender.sent.length = 0;
+
+  const st = notifier.getState();
+  assert.equal(st.active, true, 'el flag sigue activo');
+  assert.equal(st.gatesLlm, false, 'hay fallback sano → NO gatea el LLM');
+
+  const gate = notifier.handleCommanderFreeText();
+  assert.equal(gate.gated, false, 'ejecutarClaude debe usar el fallback sano');
+  assert.equal(sender.sent.length, 0, 'no se envía canned determinístico');
+});
+
+test('#4565 rebote · cadena ENTERAMENTE gateada → gatesLlm=true (canned)', () => {
+  const clock = makeFakeClock();
+  const sender = makeFakeSender();
+  const notifier = createQuotaNotifier({
+    sendMessage: sender.sendMessage,
+    now: () => clock.nowMs,
+    setIntervalFn: clock.setIntervalFn,
+    clearIntervalFn: clock.clearIntervalFn,
+    // Primario + todos los fallbacks gateados → sí bloquea.
+    isLlmGated: () => true,
+    getCommanderProvider: () => 'anthropic',
+  });
+  notifier.onFlagSet(makeFlag(clock, {
+    provider: 'anthropic',
+    resets_at: new Date(2026, 6, 8, 14, 30, 0).toISOString(),
+  }));
+  sender.sent.length = 0;
+
+  assert.equal(notifier.getState().gatesLlm, true, 'sin provider sano → gatea');
+  const gate = notifier.handleCommanderFreeText();
+  assert.equal(gate.gated, true);
+  assert.equal(gate.debounced, false);
+  assert.equal(sender.sent.length, 1, 'se envía canned');
+  assert.equal(sender.sent[0].opts.plain, true);
+});
+
+test('#4565 rebote · isLlmGated tiene PRECEDENCIA sobre el heurístico por provider', () => {
+  const clock = makeFakeClock();
+  const sender = makeFakeSender();
+  const notifier = createQuotaNotifier({
+    sendMessage: sender.sendMessage,
+    now: () => clock.nowMs,
+    setIntervalFn: clock.setIntervalFn,
+    clearIntervalFn: clock.clearIntervalFn,
+    // El heurístico diría "bloquear" (exhausted anthropic == commander anthropic),
+    // pero la cadena tiene un sano → isLlmGated manda y NO bloquea.
+    isLlmGated: () => false,
+    getCommanderProvider: () => 'anthropic',
+  });
+  notifier.onFlagSet(makeFlag(clock, { provider: 'anthropic' }));
+  assert.equal(notifier.getState().gatesLlm, false, 'isLlmGated=false gana sobre el heurístico');
+});
+
+test('#4565 rebote · isLlmGated que lanza → fail-open (NO bloquea, cae al no-gate)', () => {
+  const clock = makeFakeClock();
+  const sender = makeFakeSender();
+  const logs = [];
+  const notifier = createQuotaNotifier({
+    sendMessage: sender.sendMessage,
+    now: () => clock.nowMs,
+    setIntervalFn: clock.setIntervalFn,
+    clearIntervalFn: clock.clearIntervalFn,
+    log: (m) => logs.push(m),
+    // Bug del resolver: lanza. Fail-open = NO pre-emptir con canned; que
+    // ejecutarClaude re-resuelva y decida (preserva CA-3 en el error path).
+    isLlmGated: () => { throw new Error('resolver boom'); },
+    getCommanderProvider: () => 'anthropic',
+  });
+  notifier.onFlagSet(makeFlag(clock, { provider: 'anthropic' }));
+  sender.sent.length = 0;
+
+  assert.equal(notifier.getState().gatesLlm, false, 'fail-open: no bloquea ante error del resolver');
+  const gate = notifier.handleCommanderFreeText();
+  assert.equal(gate.gated, false);
+  assert.equal(sender.sent.length, 0, 'no se envía canned');
+  assert.ok(logs.some((m) => /isLlmGated lanzó/.test(m)), 'loguea el fail-open');
+});
+
+test('#4565 rebote · sin isLlmGated → heurístico por provider (backward-compat)', () => {
+  const clock = makeFakeClock();
+  const sender = makeFakeSender();
+  const notifier = createQuotaNotifier({
+    sendMessage: sender.sendMessage,
+    now: () => clock.nowMs,
+    setIntervalFn: clock.setIntervalFn,
+    clearIntervalFn: clock.clearIntervalFn,
+    // NO se inyecta isLlmGated → cae al heurístico existente.
+    getCommanderProvider: () => 'anthropic',
+  });
+  notifier.onFlagSet(makeFlag(clock, { provider: 'anthropic' }));
+  assert.equal(notifier.getState().gatesLlm, true, 'heurístico: anthropic==anthropic → bloquea');
 });

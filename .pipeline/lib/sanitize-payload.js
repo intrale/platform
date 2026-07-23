@@ -99,6 +99,12 @@ function sanitizeDrivePayload(data) {
 // conocido (subset de los patrones del sanitizer core — no incluye patterns
 // que requieren contexto con "key:" o "secret=" porque en un filename no
 // aparecen así). Si alguno matchea, hay que renombrar.
+//
+// Multi-provider (issue #3073): se incluyen también los prefijos LLM
+// (Anthropic, OpenAI clásico, OpenAI project, Google OAuth access). El
+// orden de los patrones acá es indiferente — sólo se usa para decidir
+// si renombrar; no se aplica un placeholder por proveedor en el filename
+// (todos los matches caen al mismo `redacted-<hash>.<ext>`).
 const FILENAME_SECRET_RE = new RegExp(
     [
         '(?:AKIA|ASIA)[0-9A-Z]{16}',              // AWS access key
@@ -107,7 +113,11 @@ const FILENAME_SECRET_RE = new RegExp(
         'eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+', // JWT
         'AIza[0-9A-Za-z_-]{35}',                  // Google API key
         '1//[0-9A-Za-z_-]{43,}',                  // Google OAuth refresh
+        'ya29\\.[A-Za-z0-9_-]{20,}',              // Google OAuth access (#3073)
         '\\d{6,}:[A-Za-z0-9_-]{35,}',             // Telegram bot token
+        'sk-ant-[A-Za-z0-9_-]{20,}',              // Anthropic key (#3073)
+        'sk-proj-[A-Za-z0-9_-]{40,}',             // OpenAI project key (#3073)
+        'sk-[A-Za-z0-9]{48,}',                    // OpenAI classic key (#3073)
     ].join('|'),
 );
 

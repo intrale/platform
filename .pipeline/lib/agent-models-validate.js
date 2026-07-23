@@ -30,11 +30,52 @@
 const fs = require('fs');
 const path = require('path');
 
+// #4839 — catálogo de capabilities de EJECUCIÓN (eje capacidad del motor). Es
+// namespace propio, separado del eje autorización de lib/capabilities.js: NO se
+// reusa `tool_use_gated` (cerebras lo tiene y llevaría a fail-open — SEC-1). Se
+// usa para (a) inyectar el enum cerrado en el schema (loadSchema, anti-drift) y
+// (b) el matching fail-closed rol×provider en validateCrossReferences.
+const { capabilityNames } = require('./execution-capabilities');
+
 // ─── Constantes inmutables — fuente única de verdad ──────────────────────────
 
 // Allowlist de launchers permitidos. El schema deriva su enum de esta lista
 // (composición programática), evitando drift schema↔código (refinamiento Guru #1).
-const ALLOWED_LAUNCHERS = Object.freeze(['claude', 'codex', 'gemini', 'ollama', 'node']);
+//
+// #3220 — incorporación multi-provider sign-off 2026-05-15:
+//   - `gemini-google` (rename ex-`gemini`, naming coherente con el sign-off).
+//   - `cerebras` (API OpenAI-compatible, modelos llama).
+// Las entradas suman launchers nuevos. El runtime real (wrapper Node por
+// provider) se materializa con #3198 — por ahora la allowlist habilita
+// declarar los providers en agent-models.json sin que el boot falle.
+//
+// #3353 (mayo 2026) — Groq fue descontinuado por política de bloqueos
+// arbitrarios. El launcher 'groq' se removió de la allowlist; cualquier
+// agent-models.json que lo declare ahora falla el boot con mensaje accionable.
+const ALLOWED_LAUNCHERS = Object.freeze([
+  'claude',
+  'codex',
+  'gemini-google',
+  'cerebras',
+  // #3243 — NVIDIA NIM, 4to free provider (API OpenAI-compat). Sign-off
+  // 2026-05-17 (security + guru + ux + po aprobados en análisis del issue).
+  // El runtime real llega con #3198; este alias habilita declarar el provider
+  // en agent-models.json sin que el boot falle.
+  'nvidia-nim',
+  'ollama',
+  'node',
+]);
+
+// #4306 — launchers cuyo auth es login interactivo del CLI (OAuth). Un provider
+// con `auth_mode: "oauth"` SOLO es coherente si su launcher está acá; cualquier
+// otro (HTTP API key pelada: cerebras/nvidia-nim, o local: node/ollama) marcado
+// `oauth` debe FALLAR al cargar (fail-closed, CA-3 / REQ-SEC-1) — sino correría
+// sin credencial alguna.
+const OAUTH_CAPABLE_LAUNCHERS = Object.freeze([
+  'claude',         // Claude Max (OAuth)
+  'codex',          // ChatGPT Plus (codex login)
+  'gemini-google',  // cuenta Google (gemini login)
+]);
 
 // Launchers que requieren shell:true en spawn (caso heredado del .cmd shim de
 // Windows en detectClaudeLauncher pulpo.js:127). Default es shell:false.
@@ -76,6 +117,12 @@ const DENIED_FLAGS = Object.freeze([
 ]);
 
 // Output parsers válidos (composición consistente con el schema).
+//
+// #3220 — Cerebras expone una API drop-in OpenAI-compatible; el handler
+// `_detectOpenAI` en lib/quota-exhausted.js ya parsea el shape canónico
+// (`event=error data.error.type`) y alternativo (`response.error`). Por lo
+// tanto reusa `openai-sse` sin agregar parsers nuevos. Gemini conserva su
+// `gemini-stream` declarativo (handler estructurado pendiente — #3226).
 const ALLOWED_OUTPUT_PARSERS = Object.freeze([
   'anthropic-stream-json',
   'openai-sse',
@@ -83,6 +130,79 @@ const ALLOWED_OUTPUT_PARSERS = Object.freeze([
   'ollama-jsonl',
   'none',
 ]);
+
+// #3220 — Allowlist de modelos por launcher (cross-validate ante
+// `provider.model` y `skills.<x>.model_override`). El comentario histórico
+// en validateCrossReferences mencionaba esta constante pero no existía como
+// código — recién entra acá. Si un caller declara un modelo fuera de su
+// launcher, el boot rechaza con mensaje accionable.
+//
+// Para los launchers determinísticos / locales sin LLM (node, ollama) la
+// lista queda vacía: cualquier string como `model` se acepta — son alias
+// informativos del script o del modelo local que el operador eligió, no
+// un binding a un endpoint de provider remoto.
+const ALLOWED_MODELS_BY_LAUNCHER = Object.freeze({
+  claude: Object.freeze([
+    'claude-opus-4-7',
+    // 2026-06-04 (sign-off Leo por voz) — `claude-sonnet-4-7` NO existe en el
+    // catálogo de Anthropic (verificado en vivo: el CLI lo rechaza con "may not
+    // exist"). Reemplazado por `claude-sonnet-4-6`, el Sonnet real disponible.
+    // Era el primario de ~12 skills + el Commander → causa raíz de fragilidad.
+    'claude-sonnet-4-6',
+    'claude-haiku-4-5',
+    // #4880 — Kimi K2.6 (Moonshot). El provider `kimi-moonshot` reusa el
+    // launcher `claude` apuntado al endpoint Anthropic-compat de Moonshot
+    // (ANTHROPIC_BASE_URL), por lo que su `model` viaja por el mismo template
+    // que Anthropic y se valida contra ESTA allowlist. El id es el que acepta el
+    // endpoint Moonshot (spike #4871), no un modelo de Anthropic.
+    'kimi-k2-6',
+  ]),
+  codex: Object.freeze([
+    // 2026-06-04 (sign-off Leo por voz) — Codex con cuenta ChatGPT (OAuth) solo
+    // sirve sus propios modelos. Los nombres viejos `gpt-5-codex` / `gpt-5` /
+    // `gpt-5-mini` los rechaza con 400 ("not supported when using Codex with a
+    // ChatGPT account"). Catálogo real verificado en vivo (models_cache.json):
+    // gpt-5.5 (frontier, strongest agentic coding), gpt-5.4, gpt-5.4-mini.
+    // Mapeo preservando el tiering: código→5.5, eval/chat→5.4, verificador→5.4-mini.
+    'gpt-5.5',
+    'gpt-5.4',
+    'gpt-5.4-mini',
+  ]),
+  // #3501 — `gemini-1.5-flash` se agrega como modelo alternativo del provider
+  // gemini-google para que Sherlock pueda preservar adversariality parcial
+  // cuando coincide en provider con el Commander. La policy de swap intra-provider
+  // vive en lib/sherlock-verifier.js::resolveSherlockProvider (CA-3); la
+  // declaración del modelo como alternative_models vive en agent-models.json.
+  'gemini-google': Object.freeze([
+    'gemini-2.0-flash',
+    // 2026-06-04 — `gemini-1.5-flash` fue retirado del catálogo de Google
+    // (verificado en vivo: ya no aparece en GET /v1beta/models). Reemplazado por
+    // `gemini-2.5-flash`, free tier vigente, como modelo alternativo de Sherlock.
+    'gemini-2.5-flash',
+  ]),
+  // 2026-06-02 — Corrección free tier real: el free tier de Cerebras NO sirve
+  // modelos `llama-*` (verificado contra GET /v1/models). Los únicos servibles
+  // hoy son `gpt-oss-120b` (default, menor overhead de reasoning) y `zai-glm-4.7`
+  // (alternativo para adversariality #3501). El smoke test del adapter (PR #3794)
+  // confirmó `gpt-oss-120b` con la key free real (exit 0, "OK", 83 in / 102 out).
+  cerebras: Object.freeze([
+    'gpt-oss-120b',
+    'zai-glm-4.7',
+  ]),
+  // #3243 — NVIDIA NIM expone modelos hosted con naming `vendor/model`. La
+  // allowlist se inicializa con los 2 modelos sign-off del issue (DeepSeek
+  // V4-Pro para razonamiento/código y Kimi K2.6 para agentic loops). El
+  // catálogo crece editando esta lista — fuente única de verdad cross-validada
+  // contra `provider.model` y `skills.<x>.model_override`. `gpt-oss-120b` queda
+  // pendiente de validar disponibilidad/cuota antes de sumarse.
+  'nvidia-nim': Object.freeze([
+    'deepseek-ai/deepseek-v4-pro',
+    'moonshotai/kimi-k2-instruct',
+  ]),
+  // launchers sin allowlist explícita → cualquier string `model` es válido.
+  node: Object.freeze([]),
+  ollama: Object.freeze([]),
+});
 
 // Patrones de secrets hardcoded prohibidos en cualquier string del JSON
 // (#3080 / S1 multi-provider). Cubre prefijos públicos conocidos de
@@ -130,6 +250,25 @@ const ALLOWED_CREDENTIAL_ENV_VARS = Object.freeze([
   'OPENAI_API_KEY',
   'GOOGLE_API_KEY',
   'GEMINI_API_KEY',
+  // #3220 SEC-1 — providers nuevos sign-off 2026-05-15. Sigue la convención
+  // `<PROVIDER>_API_KEY` (credencial explícita del provider, no var del SO).
+  // Review de seguridad aprobado en análisis del issue.
+  //
+  // #3353 (mayo 2026) — `GROQ_API_KEY` se removió de la allowlist porque Groq
+  // fue descontinuado: cualquier agent-models.json que lo declare ahora falla
+  // el boot por env var fuera de allowlist, con mensaje accionable.
+  'CEREBRAS_API_KEY',
+  // #3243 SEC-1 — NVIDIA NIM, 4to free provider sign-off 2026-05-17. Sigue la
+  // convención `<PROVIDER>_API_KEY` (credencial explícita del provider, no var
+  // del SO). Security aprobó el handler en el análisis del issue.
+  'NVIDIA_NIM_API_KEY',
+  // #4880 SEC-1 — Kimi (Moonshot) se integra como drop-in de Claude Code contra
+  // su endpoint Anthropic-compatible (launcher `claude` + ANTHROPIC_BASE_URL).
+  // Autentica con su PROPIO token en `ANTHROPIC_AUTH_TOKEN` (var distinta de
+  // `ANTHROPIC_API_KEY`, la key OAuth/Max real de Anthropic) — así el child de
+  // Kimi nunca recibe la credencial de Anthropic. Termina en `_TOKEN`, respeta
+  // la convención de credencial explícita del provider.
+  'ANTHROPIC_AUTH_TOKEN',
   'GH_TOKEN',
   'GITHUB_TOKEN',
   'OLLAMA_HOST',
@@ -183,6 +322,35 @@ function loadSchema(schemaPath = CANONICAL_SCHEMA_PATH) {
     schema.$defs.providerDef.properties.output_parser
   ) {
     schema.$defs.providerDef.properties.output_parser.enum = [...ALLOWED_OUTPUT_PARSERS];
+  }
+
+  // #4839 — inyectar el enum de capabilities de ejecución desde el catálogo
+  // (EXECUTION_CAPABILITY_CATALOG), mismo mecanismo anti-drift que launcher /
+  // output_parser. Cubre providerDef.capabilities.items y
+  // skillAssignment.required_capabilities.items. Enum cerrado ⇒ un string de
+  // capability arbitrario fuera del catálogo hace fallar la validación de
+  // schema (SEC-2), evitando que se evada el matching con una capability
+  // inventada.
+  const capEnum = capabilityNames();
+  if (
+    schema &&
+    schema.$defs &&
+    schema.$defs.providerDef &&
+    schema.$defs.providerDef.properties &&
+    schema.$defs.providerDef.properties.capabilities &&
+    schema.$defs.providerDef.properties.capabilities.items
+  ) {
+    schema.$defs.providerDef.properties.capabilities.items.enum = [...capEnum];
+  }
+  if (
+    schema &&
+    schema.$defs &&
+    schema.$defs.skillAssignment &&
+    schema.$defs.skillAssignment.properties &&
+    schema.$defs.skillAssignment.properties.required_capabilities &&
+    schema.$defs.skillAssignment.properties.required_capabilities.items
+  ) {
+    schema.$defs.skillAssignment.properties.required_capabilities.items.enum = [...capEnum];
   }
 
   return schema;
@@ -308,6 +476,20 @@ function findHardcodedSecrets(node) {
 }
 
 /**
+ * Helper anti-leak (#3220). Devuelve true si el string parece ser un secret
+ * hardcoded según HARDCODED_SECRET_PATTERNS. Usado por errores de
+ * cross-validation cuyo mensaje cita el valor del campo — si el valor es
+ * un secret, redactamos para no exfiltrarlo a stderr/Telegram/PDF.
+ */
+function looksLikeSecret(value) {
+  if (typeof value !== 'string' || value.length === 0) return false;
+  for (const { re } of HARDCODED_SECRET_PATTERNS) {
+    if (re.test(value)) return true;
+  }
+  return false;
+}
+
+/**
  * Valida que cada string en `credentials_env` esté en
  * ALLOWED_CREDENTIAL_ENV_VARS. Bloquea declaraciones tipo `PATH`,
  * `AWS_SECRET_ACCESS_KEY` que exfiltrarían vars sensibles del operador al
@@ -334,12 +516,89 @@ function validateCredentialsEnvAllowlist(config) {
 }
 
 /**
+ * #4839 — Matching FAIL-CLOSED de capabilities de EJECUCIÓN (eje capacidad del
+ * motor). Para cada skill con `required_capabilities` no vacío, valida que el
+ * provider primario Y cada fallback declaren TODAS las capabilities requeridas.
+ *
+ * Fail-closed (SEC-3): un provider sin `capabilities` (o con la lista ausente)
+ * se trata como "no ofrece ninguna" — nunca "asumir capaz". La ausencia de
+ * `required_capabilities` en el rol ⇒ sin exigencia (habilita providers de
+ * razonamiento sin agentic-tool-use, ej. review/po).
+ *
+ * Un provider referenciado pero inexistente NO se chequea acá: ya lo rechaza la
+ * cross-validation de refs rotas (mismo boot fail-fast), evitar doble error para
+ * un typo. La decisión sigue siendo fail-closed a nivel config (el boot aborta).
+ *
+ * Mensaje `[FAIL-CLOSED]` (SEC-5 / UX): emite SÓLO rol + provider + capability
+ * faltante. Prohibido interpolar env/keys; sin eval/shell. Lista todos los
+ * offenders (no corta en el primero) para que el operador fixee en una pasada.
+ *
+ * Devuelve array de errores con shape estándar (path, message, fix).
+ */
+function validateExecutionCapabilities(config) {
+  const errors = [];
+  if (!config || typeof config !== 'object') return errors;
+  if (!config.skills || typeof config.skills !== 'object') return errors;
+  const providers = (config.providers && typeof config.providers === 'object')
+    ? config.providers
+    : {};
+
+  for (const [skillKey, skillDef] of Object.entries(config.skills)) {
+    if (!skillDef || typeof skillDef !== 'object') continue;
+    const required = Array.isArray(skillDef.required_capabilities)
+      ? skillDef.required_capabilities
+      : [];
+    if (required.length === 0) continue; // rol sin exigencia — nada que validar
+
+    // Attempts a validar: provider primario + cada fallback normalizado (misma
+    // normalización string|object que el loop de fallbacks, vía resolveFallbackEntry).
+    const attempts = [];
+    if (typeof skillDef.provider === 'string' && skillDef.provider.length > 0) {
+      attempts.push({
+        provider: skillDef.provider,
+        source: 'primario',
+        path: `#/skills/${skillKey}/provider`,
+      });
+    }
+    const fallbacks = Array.isArray(skillDef.fallbacks) ? skillDef.fallbacks : [];
+    for (let i = 0; i < fallbacks.length; i++) {
+      const norm = resolveFallbackEntry(fallbacks[i]);
+      if (!norm) continue; // shape inválida — ya la rechaza el loop de fallbacks
+      attempts.push({
+        provider: norm.provider,
+        source: 'fallback',
+        path: `#/skills/${skillKey}/fallbacks/${i}`,
+      });
+    }
+
+    for (const attempt of attempts) {
+      const providerDef = providers[attempt.provider];
+      if (!providerDef) continue; // ref rota — ya emitida por otra cross-validation
+      // Fail-closed: capabilities ausente / no-array ⇒ set vacío (no ofrece nada).
+      const offered = Array.isArray(providerDef.capabilities) ? providerDef.capabilities : [];
+      const offeredSet = new Set(offered);
+      for (const cap of required) {
+        if (!offeredSet.has(cap)) {
+          errors.push({
+            path: attempt.path,
+            message: `[FAIL-CLOSED] rol "${skillKey}" requiere capability "${cap}" que el provider "${attempt.provider}" (${attempt.source}) no declara`,
+            fix: `agregar "${cap}" a providers.${attempt.provider}.capabilities si el motor la sostiene, o quitar "${attempt.provider}" del rol "${skillKey}"`,
+          });
+        }
+      }
+    }
+  }
+  return errors;
+}
+
+/**
  * Cross-checks que JSON Schema vanilla no expresa (refinamiento Guru #2):
  *   - default_provider debe ser key de providers.
  *   - skills.<x>.provider debe ser key de providers.
  *   - placeholders + denylist en spawn_args_template (delegado a validateSpawnArgsTemplate).
  *   - secrets hardcoded en cualquier string (validateNoHardcodedSecrets).
  *   - credentials_env contra allowlist (validateCredentialsEnvAllowlist).
+ *   - #4839 capabilities de ejecución rol×provider fail-closed (validateExecutionCapabilities).
  */
 function validateCrossReferences(config) {
   const errors = [];
@@ -359,10 +618,99 @@ function validateCrossReferences(config) {
   }
 
   // skills.<x>.provider ∈ providers + spawn_args_template per provider
+  // + cross-validation `model` vs ALLOWED_MODELS_BY_LAUNCHER (#3220).
   if (config.providers && typeof config.providers === 'object') {
     for (const [key, providerDef] of Object.entries(config.providers)) {
       if (providerDef && Array.isArray(providerDef.spawn_args_template)) {
         errors.push(...validateSpawnArgsTemplate(providerDef.spawn_args_template, key));
+      }
+      // #4306 CA-3 / REQ-SEC-1 — coherencia auth_mode: un provider con
+      // `auth_mode: "oauth"` DEBE tener un launcher de login CLI
+      // (OAUTH_CAPABLE_LAUNCHERS). Marcarlo oauth con un launcher HTTP
+      // (cerebras/nvidia-nim) o local (node/ollama) es fail-open: saltearía la
+      // validación de credenciales y correría sin auth. Error de carga, no
+      // warning. `credentials_env` pasa a ser opcional cuando auth_mode=oauth
+      // (no se valida acá; el bypass de presencia ya lo contempla).
+      if (providerDef && providerDef.auth_mode === 'oauth'
+          && typeof providerDef.launcher === 'string'
+          && !OAUTH_CAPABLE_LAUNCHERS.includes(providerDef.launcher)) {
+        errors.push({
+          path: `#/providers/${key}/auth_mode`,
+          message: `provider "${key}" declara auth_mode "oauth" pero su launcher "${providerDef.launcher}" no es de login CLI (válidos: [${OAUTH_CAPABLE_LAUNCHERS.join(', ')}]) — un provider HTTP/local marcado oauth correría sin credencial`,
+          fix: `usar auth_mode "api_key" (default) para launchers HTTP/local, o asignar un launcher de login CLI si efectivamente autentica por OAuth`,
+        });
+      }
+      // #3220 — model default del provider debe pertenecer a la allowlist
+      // de su launcher (cuando la allowlist existe y no está vacía).
+      // Launchers sin allowlist (node, ollama) aceptan cualquier `model`
+      // string — su `model` es alias informativo del script local, no un
+      // binding a un endpoint de provider remoto.
+      //
+      // Anti-leak: si el valor de `model` matchea un patrón de secret
+      // hardcoded conocido (vector: alguien pone una API key en `model`),
+      // emitimos el mensaje con `[REDACTED]` para no exfiltrar el valor
+      // en stderr / Telegram / PDF. La validación de hardcoded-secret se
+      // ejecuta independientemente vía findHardcodedSecrets (defensa
+      // primaria); este redact es defensa en profundidad cross-error.
+      if (providerDef && typeof providerDef.model === 'string' && typeof providerDef.launcher === 'string') {
+        const allowedModels = ALLOWED_MODELS_BY_LAUNCHER[providerDef.launcher];
+        if (Array.isArray(allowedModels) && allowedModels.length > 0
+            && !allowedModels.includes(providerDef.model)) {
+          const safeValue = looksLikeSecret(providerDef.model) ? '[REDACTED]' : providerDef.model;
+          errors.push({
+            path: `#/providers/${key}/model`,
+            message: `model "${safeValue}" no está en ALLOWED_MODELS_BY_LAUNCHER["${providerDef.launcher}"] (válidos: [${allowedModels.join(', ')}])`,
+            fix: 'usar uno de los modelos soportados por el launcher o agregar el nuevo a ALLOWED_MODELS_BY_LAUNCHER en lib/agent-models-validate.js (decisión de plataforma — requiere review)',
+          });
+        }
+      }
+      // #3501 CA-SEC-SWAP-1 — alternative_models[] debe estar en
+      // ALLOWED_MODELS_BY_LAUNCHER del launcher del provider. Defensa
+      // anti-supply-chain idéntica a la de `model` y `model_override`:
+      // un atacante con write-access al config no puede declarar un
+      // modelo arbitrario fuera de la allowlist para swap intra-provider.
+      //
+      // Anti-leak: si el valor matchea un patrón de secret hardcoded
+      // conocido, se redacta con [REDACTED]. Mismo patrón que `model`.
+      //
+      // Defense in depth contra el cap del schema (maxItems: 3): aunque
+      // ajv ya capea por items.maxItems, validamos cada item igual para
+      // que un swap del schema no abra ventana de bypass.
+      if (providerDef && Array.isArray(providerDef.alternative_models)
+          && typeof providerDef.launcher === 'string') {
+        const allowedModels = ALLOWED_MODELS_BY_LAUNCHER[providerDef.launcher];
+        for (let i = 0; i < providerDef.alternative_models.length; i++) {
+          const altModel = providerDef.alternative_models[i];
+          if (typeof altModel !== 'string' || altModel.length === 0) {
+            // Schema ya rechaza, defense in depth.
+            errors.push({
+              path: `#/providers/${key}/alternative_models/${i}`,
+              message: `alternative_models[${i}] debe ser string no vacío`,
+              fix: 'declarar un modelo válido o quitar el item',
+            });
+            continue;
+          }
+          // El default del provider NO debería estar en alternative_models —
+          // sería un no-op (swap a sí mismo). Marcamos para que el operador
+          // limpie la config.
+          if (providerDef.model && altModel === providerDef.model) {
+            errors.push({
+              path: `#/providers/${key}/alternative_models/${i}`,
+              message: `alternative_models[${i}]="${altModel}" duplica el model default del provider — no aporta adversariality`,
+              fix: `quitar "${altModel}" de alternative_models — el swap a sí mismo es no-op`,
+            });
+            continue;
+          }
+          if (Array.isArray(allowedModels) && allowedModels.length > 0
+              && !allowedModels.includes(altModel)) {
+            const safeValue = looksLikeSecret(altModel) ? '[REDACTED]' : altModel;
+            errors.push({
+              path: `#/providers/${key}/alternative_models/${i}`,
+              message: `alternative_models[${i}]="${safeValue}" no está en ALLOWED_MODELS_BY_LAUNCHER["${providerDef.launcher}"] (válidos: [${allowedModels.join(', ')}])`,
+              fix: 'usar uno de los modelos soportados por el launcher o agregar el nuevo a ALLOWED_MODELS_BY_LAUNCHER en lib/agent-models-validate.js (decisión de plataforma — requiere review)',
+            });
+          }
+        }
       }
     }
   }
@@ -376,6 +724,96 @@ function validateCrossReferences(config) {
           fix: `declarar el provider en la sección providers o cambiar el assignment del skill`,
         });
       }
+      // #3220 — model_override debe pertenecer a la allowlist del launcher
+      // del provider asignado. Sin provider o sin launcher conocido, se
+      // saltea (otra validación arriba ya capturó el error de provider).
+      // Anti-leak idéntico al de provider.model arriba.
+      if (skillDef && typeof skillDef.model_override === 'string'
+          && typeof skillDef.provider === 'string'
+          && config.providers && config.providers[skillDef.provider]
+          && typeof config.providers[skillDef.provider].launcher === 'string') {
+        const launcher = config.providers[skillDef.provider].launcher;
+        const allowedModels = ALLOWED_MODELS_BY_LAUNCHER[launcher];
+        if (Array.isArray(allowedModels) && allowedModels.length > 0
+            && !allowedModels.includes(skillDef.model_override)) {
+          const safeValue = looksLikeSecret(skillDef.model_override) ? '[REDACTED]' : skillDef.model_override;
+          errors.push({
+            path: `#/skills/${skillKey}/model_override`,
+            message: `model_override "${safeValue}" no está en ALLOWED_MODELS_BY_LAUNCHER["${launcher}"] (válidos: [${allowedModels.join(', ')}])`,
+            fix: 'usar uno de los modelos soportados por el launcher del provider asignado, o agregar el nuevo a ALLOWED_MODELS_BY_LAUNCHER en lib/agent-models-validate.js',
+          });
+        }
+      }
+      // #3177 / #3221 — fallbacks (opcional): cada item debe estar declarado
+      // en providers y NO repetir el primario. Cross-validation estricta para
+      // evitar UI/handmade edits que dejen el JSON con referencias rotas.
+      //
+      // #3221 — los items aceptan dos shapes (backward-compat):
+      //   (a) string con el nombre del provider (legacy).
+      //   (b) object {provider, model_override} para pinear modelo concreto.
+      // El validador normaliza ambos a `{ providerName, modelOverride }` antes
+      // de cruzar contra providers + ALLOWED_MODELS_BY_LAUNCHER.
+      if (skillDef && Array.isArray(skillDef.fallbacks)) {
+        for (let i = 0; i < skillDef.fallbacks.length; i++) {
+          const fb = skillDef.fallbacks[i];
+          let providerName = null;
+          let modelOverride = null;
+          if (typeof fb === 'string') {
+            providerName = fb;
+          } else if (fb && typeof fb === 'object' && !Array.isArray(fb)
+                     && typeof fb.provider === 'string') {
+            providerName = fb.provider;
+            modelOverride = typeof fb.model_override === 'string' ? fb.model_override : null;
+          } else {
+            errors.push({
+              path: `#/skills/${skillKey}/fallbacks/${i}`,
+              message: `fallback en posición ${i} debe ser string o object {provider, model_override}`,
+              fix: 'editar fallbacks dejando string con nombre del provider, o objeto con provider + model_override opcional',
+            });
+            continue;
+          }
+          if (!providerName || providerName.length === 0) {
+            errors.push({
+              path: `#/skills/${skillKey}/fallbacks/${i}`,
+              message: `fallback en posición ${i} tiene provider vacío`,
+              fix: 'declarar provider no vacío en el fallback',
+            });
+            continue;
+          }
+          if (!providerKeys.includes(providerName)) {
+            errors.push({
+              path: `#/skills/${skillKey}/fallbacks/${i}`,
+              message: `fallback "${providerName}" no está declarado en providers (válidos: [${providerKeys.join(', ')}])`,
+              fix: `declarar "${providerName}" en providers o quitarlo de fallbacks`,
+            });
+          }
+          if (providerName === skillDef.provider) {
+            errors.push({
+              path: `#/skills/${skillKey}/fallbacks/${i}`,
+              message: `fallback "${providerName}" duplica el provider primario — no tiene sentido como fallback`,
+              fix: 'quitar el provider primario de la lista de fallbacks',
+            });
+          }
+          // #3221 — model_override del fallback debe estar en ALLOWED_MODELS_BY_LAUNCHER
+          // del launcher del provider apuntado (cuando la allowlist existe).
+          // Anti-leak idéntico al de provider.model arriba.
+          if (modelOverride && providerKeys.includes(providerName)
+              && config.providers[providerName]
+              && typeof config.providers[providerName].launcher === 'string') {
+            const launcher = config.providers[providerName].launcher;
+            const allowedModels = ALLOWED_MODELS_BY_LAUNCHER[launcher];
+            if (Array.isArray(allowedModels) && allowedModels.length > 0
+                && !allowedModels.includes(modelOverride)) {
+              const safeValue = looksLikeSecret(modelOverride) ? '[REDACTED]' : modelOverride;
+              errors.push({
+                path: `#/skills/${skillKey}/fallbacks/${i}/model_override`,
+                message: `model_override "${safeValue}" no está en ALLOWED_MODELS_BY_LAUNCHER["${launcher}"] (válidos: [${allowedModels.join(', ')}])`,
+                fix: 'usar uno de los modelos soportados por el launcher del provider fallback, o agregar el nuevo a ALLOWED_MODELS_BY_LAUNCHER en lib/agent-models-validate.js',
+              });
+            }
+          }
+        }
+      }
     }
   }
 
@@ -384,6 +822,9 @@ function validateCrossReferences(config) {
 
   // Allowlist de env vars de credenciales (#3080 / S1 CA-3 refinamiento).
   errors.push(...validateCredentialsEnvAllowlist(config));
+
+  // #4839 — matching fail-closed de capabilities de ejecución rol×provider.
+  errors.push(...validateExecutionCapabilities(config));
 
   // #3077 SEC-2 — quota_error_types declarados por cada provider deben pertenecer
   // a la meta-allowlist hardcoded en lib/quota-exhausted.js (defensa anti
@@ -427,6 +868,22 @@ function validateCrossReferences(config) {
  * inyectada al boot. Esto evita rebote falso para el operador que tenga
  * agent-models.json con providers preparados pero no en uso.
  *
+ * Bypass para `auth_mode: "oauth"` (#4306, generaliza #3154): los providers
+ * que autentican vía login del CLI (`claude` OAuth Max, `codex` ChatGPT Plus,
+ * `gemini-google` cuenta Google) no usan API key por env — su token vive en
+ * stores locales (`~/.claude/.credentials.json`, `~/.codex`, cuenta Google).
+ * Cualquier `credentials_env` declarado para un provider OAuth se ignora a
+ * propósito en este chequeo (es informativo). Para el resto de launchers
+ * (`cerebras`, `nvidia-nim`, `ollama`, `node`) la presencia de la env var
+ * sigue siendo obligatoria al boot.
+ *
+ * Compat: seguimos bypaseando `launcher === 'claude'` aunque no declare
+ * `auth_mode`, porque históricamente Anthropic se autenticó por OAuth Max sin
+ * el flag. El nuevo camino declarativo (`auth_mode`) lo cubre y además habilita
+ * codex/gemini. La coherencia `oauth ⇒ launcher CLI` se valida como error de
+ * carga en validateCrossReferences (fail-closed, #4306 CA-3) para evitar
+ * fail-open si un provider HTTP se etiqueta `oauth` por error.
+ *
  * Devuelve array de errores con shape estándar (path, message, fix).
  *
  * REGLAS DE NO-LEAK:
@@ -452,6 +909,10 @@ function validateCredentialsEnvPresence(config, processEnv) {
     const providerDef = config.providers[providerName];
     if (!providerDef) continue; // ya lo agarra validateCrossReferences
     if (!Array.isArray(providerDef.credentials_env)) continue;
+    // Bypass #4306 (generaliza #3154): providers OAuth/CLI login autentican
+    // fuera del env. Ver JSDoc arriba. La coherencia oauth⇒launcher CLI se
+    // valida como error de carga en validateCrossReferences.
+    if (providerDef.auth_mode === 'oauth' || providerDef.launcher === 'claude') continue;
     for (const envVar of providerDef.credentials_env) {
       if (typeof envVar !== 'string' || !envVar) continue;
       // Presencia en processEnv. Una string vacía NO cuenta como "seteada"
@@ -795,6 +1256,74 @@ function stringifyContextValue(v) {
   return String(v);
 }
 
+// ─── Helper: resolución de fallback entry (#3221) ────────────────────────────
+
+/**
+ * Normaliza un fallback entry a `{ provider, model_override }` para que el
+ * runtime consumer (dispatch-with-fallback.js) tenga una API estable
+ * independiente de la shape declarada en agent-models.json (string suelto vs
+ * objeto). Devuelve null si el entry no es válido — el caller decide skip vs
+ * crash; la validación primaria ocurre en validateCrossReferences.
+ *
+ * Casos:
+ *   resolveFallbackEntry('cerebras')                          → { provider: 'cerebras', model_override: null }
+ *   resolveFallbackEntry({ provider: 'openai-codex', model_override: 'gpt-5' })
+ *                                                             → { provider: 'openai-codex', model_override: 'gpt-5' }
+ *   resolveFallbackEntry({ provider: 'cerebras' })            → { provider: 'cerebras', model_override: null }
+ *   resolveFallbackEntry(null|123|[])                         → null
+ *   resolveFallbackEntry({ })                                 → null (sin provider)
+ */
+function resolveFallbackEntry(entry) {
+  if (typeof entry === 'string' && entry.length > 0) {
+    return { provider: entry, model_override: null };
+  }
+  if (entry && typeof entry === 'object' && !Array.isArray(entry)
+      && typeof entry.provider === 'string' && entry.provider.length > 0) {
+    const modelOverride = (typeof entry.model_override === 'string' && entry.model_override.length > 0)
+      ? entry.model_override
+      : null;
+    return { provider: entry.provider, model_override: modelOverride };
+  }
+  return null;
+}
+
+/**
+ * Devuelve el orden completo de attempts (primary + fallbacks normalizados)
+ * para un skill dado, leyendo `config.skills[skill]` + `config.providers`.
+ * Cada attempt es `{ provider, model, source }` donde `source ∈ {'primary','fallback'}`
+ * y `model` es el override si está declarado, o el `model` default del provider.
+ *
+ * Útil para tests y para el dispatcher cuando quiera previsualizar la chain
+ * sin llamar a quotaModule.shouldGateSpawn.
+ *
+ * Devuelve `[]` si el skill no existe o el provider primario no resuelve.
+ */
+function resolveSkillChain(config, skill) {
+  if (!config || !config.skills || !config.skills[skill]) return [];
+  if (!config.providers || typeof config.providers !== 'object') return [];
+  const skillCfg = config.skills[skill];
+  const providers = config.providers;
+
+  const chain = [];
+  const primaryProvider = skillCfg.provider;
+  if (typeof primaryProvider !== 'string' || !providers[primaryProvider]) return [];
+  const primaryModel = (typeof skillCfg.model_override === 'string' && skillCfg.model_override.length > 0)
+    ? skillCfg.model_override
+    : (providers[primaryProvider].model || null);
+  chain.push({ provider: primaryProvider, model: primaryModel, source: 'primary' });
+
+  const fallbacks = Array.isArray(skillCfg.fallbacks) ? skillCfg.fallbacks : [];
+  for (const raw of fallbacks) {
+    const norm = resolveFallbackEntry(raw);
+    if (!norm) continue;
+    const providerDef = providers[norm.provider];
+    if (!providerDef) continue; // referencia rota — validateCrossReferences ya emite el error
+    const model = norm.model_override || providerDef.model || null;
+    chain.push({ provider: norm.provider, model, source: 'fallback' });
+  }
+  return chain;
+}
+
 // ─── Helpers de export para schema sincronización ────────────────────────────
 
 /**
@@ -857,6 +1386,7 @@ module.exports = {
   ALLOWED_PLACEHOLDERS,
   DENIED_FLAGS,
   ALLOWED_OUTPUT_PARSERS,
+  ALLOWED_MODELS_BY_LAUNCHER,
   HARDCODED_SECRET_PATTERNS,
   ALLOWED_CREDENTIAL_ENV_VARS,
   EXIT_CODES,
@@ -867,12 +1397,15 @@ module.exports = {
   validate,
   validateOrExit,
   expandSpawnArgs,
+  resolveFallbackEntry,
+  resolveSkillChain,
 
   // Helpers (testing).
   loadSchema,
   getEffectiveSchema,
   validateSpawnArgsTemplate,
   validateCrossReferences,
+  validateExecutionCapabilities,
   validateNoHardcodedSecrets,
   findHardcodedSecrets,
   validateCredentialsEnvAllowlist,

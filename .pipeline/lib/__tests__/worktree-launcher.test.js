@@ -21,11 +21,24 @@ const { execSync } = require('node:child_process');
 
 const {
     ensureLaunchWorktree,
+    prepareWorkspace,
     WorktreeLaunchError,
     localBranchExists,
     worktreeUsingBranch,
     validateInputs,
 } = require('../worktree-launcher');
+
+// #4694 — el `git worktree add` se migró a execFileSync (shell:false, args como
+// array). Los tests mock deben inyectar execFileImpl (sino cae al git real) y
+// un fsImpl con realpathSync (assertContained canonicaliza el parent).
+function makeExecFileCapture(calls) {
+    return function execFileMock(cmd, args, _opts) {
+        calls.push({ cmd, args });
+        return '';
+    };
+}
+// fsImpl mock: worktree no existe (no idempotente) + realpath identidad.
+const fsImplNew = { existsSync: () => false, realpathSync: (p) => p };
 
 // ---- validateInputs ---------------------------------------------------------
 
@@ -84,25 +97,31 @@ test('idempotente: si worktreePath ya existe no toca git', () => {
     assert.equal(calls.length, 0, 'No debería ejecutar comandos git');
 });
 
-test('camino feliz: branch no existe → worktree add -b directo', () => {
+test('camino feliz: branch no existe → worktree add -b directo (execFile sin shell)', () => {
     const calls = [];
     const execImpl = makeMockExec([
         { match: 'git worktree prune', result: '' },
         { match: 'git show-ref', error: 'not a ref' },
-        { match: 'git worktree add', result: '' },
     ]);
     const wrappedExec = (cmd, opts) => { calls.push(cmd); return execImpl(cmd, opts); };
-    const fsImpl = { existsSync: () => false };
+    const fileCalls = [];
+    const execFileImpl = makeExecFileCapture(fileCalls);
 
     const result = ensureLaunchWorktree({
         ROOT: '/repo', issue: 3155, skill: 'pipeline-dev',
-        execImpl: wrappedExec, fsImpl,
+        execImpl: wrappedExec, execFileImpl, fsImpl: fsImplNew,
     });
 
     assert.equal(result.created, true);
     assert.equal(result.recovered, false);
     assert.ok(calls.some(c => c.includes('worktree prune')));
-    assert.ok(calls.some(c => c.includes('worktree add') && c.includes('-b "agent/3155-pipeline-dev"')));
+    // El add ahora va por execFileSync con args como array (SEC-2, sin shell).
+    assert.equal(fileCalls.length, 1);
+    assert.equal(fileCalls[0].cmd, 'git');
+    assert.deepEqual(fileCalls[0].args.slice(0, 5),
+        ['worktree', 'add', result.worktreePath, '-b', 'agent/3155-pipeline-dev']);
+    // base ref del manifiesto real (default_base_ref = 'main'), NO 'origin/main'.
+    assert.equal(fileCalls[0].args[5], 'main');
     assert.ok(!calls.some(c => c.includes('branch -D')));
 });
 
@@ -116,11 +135,12 @@ test('branch huérfana: crea backup tag + delete + add', () => {
         }
         return '';
     };
-    const fsImpl = { existsSync: () => false };
+    const fileCalls = [];
+    const execFileImpl = makeExecFileCapture(fileCalls);
 
     const result = ensureLaunchWorktree({
         ROOT: '/repo', issue: 3073, skill: 'pipeline-dev',
-        execImpl: wrappedExec, fsImpl,
+        execImpl: wrappedExec, execFileImpl, fsImpl: fsImplNew,
     });
 
     assert.equal(result.created, true);
@@ -129,7 +149,7 @@ test('branch huérfana: crea backup tag + delete + add', () => {
         'Debe crear backup tag');
     assert.ok(calls.some(c => c === 'git branch -D "agent/3073-pipeline-dev"'),
         'Debe borrar la branch huérfana');
-    assert.ok(calls.some(c => c.includes('worktree add')));
+    assert.ok(fileCalls.some(c => c.args[0] === 'worktree' && c.args[1] === 'add'));
 });
 
 test('branch en uso por otro worktree → BRANCH_IN_USE sin tocar nada', () => {
@@ -177,16 +197,17 @@ test('backup tag falla pero limpieza continúa (best-effort)', () => {
         if (cmd.includes('git tag')) throw new Error('tag failed');
         return '';
     };
-    const fsImpl = { existsSync: () => false };
+    const fileCalls = [];
+    const execFileImpl = makeExecFileCapture(fileCalls);
 
     const result = ensureLaunchWorktree({
         ROOT: '/repo', issue: 3073, skill: 'pipeline-dev',
-        execImpl: wrappedExec, fsImpl,
+        execImpl: wrappedExec, execFileImpl, fsImpl: fsImplNew,
     });
 
     assert.equal(result.recovered, true);
     assert.ok(calls.some(c => c.includes('branch -D')));
-    assert.ok(calls.some(c => c.includes('worktree add')));
+    assert.ok(fileCalls.some(c => c.args[0] === 'worktree' && c.args[1] === 'add'));
 });
 
 test('branch -D falla → BRANCH_DELETE_FAILED', () => {

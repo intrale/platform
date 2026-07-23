@@ -13,6 +13,26 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { EventEmitter } = require('events');
+
+// #4164 — Stub in-process del probe del lock (idéntico al de build.test.js).
+// Reemplaza el spawn real de `node` (load-sensitive: EAGAIN/EMFILE al forkear bajo
+// saturación → rebotaba con exit_code 1) por una réplica determinista: lee el
+// lockfile y escribe el marker síncronamente, luego emite exit 0. Solo se inyecta
+// vía el parámetro `spawnFn` de runGradle/spawnGradle (DI exclusiva de test).
+function fakeProbeSpawn(_cmd, _args, opts) {
+    const env = (opts && opts.env) || {};
+    try {
+        if (env.MARKER) {
+            fs.writeFileSync(env.MARKER, fs.existsSync(env.LOCKFILE) ? 'held' : 'free');
+        }
+    } catch {}
+    const child = new EventEmitter();
+    child.stdout = null;
+    child.stderr = null;
+    process.nextTick(() => child.emit('exit', 0));
+    return child;
+}
 
 // rebote #2891 rev-3: garantizar git en PATH antes de invocar `execSync('git ...')`.
 // El test `findIssueWorktree` arma un repo temporal con `git init` y depende
@@ -230,6 +250,85 @@ test('renderReport — verdict RECHAZADO con motivo cuando exitCode!=0', () => {
     assert.ok(report.includes('2 failures'));
 });
 
+// ── #4511 — entregable phase-scoped del tester (épico #4255) ─────────
+
+test('#4511 — renderReport incluye sección "Baseline y gaps" con baseline no disponible (CA-1)', () => {
+    const xml = fs.readFileSync(path.join(__dirname, 'fixtures', 'kover-backend.xml'), 'utf8');
+    const coverageAgg = kover.aggregateKover([kover.parseKoverXml(xml)]);
+    const report = tester.renderReport({
+        issue: 4511, module: 'all', coverage: true, threshold: 80,
+        gradle: { wall_ms: 1000 },
+        tests: { valid: true, tests: 3, failures: 0, errors: 0, skipped: 0, time_seconds: 0.5, failed_tests: [] },
+        coverageAgg, exitCode: 0, motivo: null,
+    });
+    assert.ok(report.includes('### Baseline y gaps'), 'debe incluir la sección de baseline/gaps');
+    assert.ok(report.includes('baseline: no disponible'), 'debe documentar baseline no disponible explícito');
+    assert.ok(/Gaps de cobertura/.test(report), 'debe incluir la línea de gaps de cobertura');
+});
+
+test('#4511 — renderReport documenta la excepción explícita en ruta pipeline-only (CA-4)', () => {
+    const coverageAgg = kover.aggregateKover([]); // valid=false
+    const report = tester.renderReport({
+        issue: 4511, module: 'pipeline', coverage: false, threshold: 80,
+        gradle: { wall_ms: 500 },
+        tests: { valid: false },
+        coverageAgg, exitCode: 0, motivo: null,
+        pipelineOnly: true,
+        exception: 'Cobertura no aplicable: issue pipeline-only sin módulos Gradle con tests.',
+    });
+    assert.ok(report.includes('### Excepción explícita'), 'debe incluir la sección de excepción');
+    assert.ok(report.includes('Cobertura no aplicable'), 'debe documentar el motivo de excepción');
+    assert.ok(report.includes('no aplica'), 'gaps debe indicar que Kover no aplica');
+});
+
+test('#4511 — cierre exitoso escribe entregable phase-scoped e indexa (CA-1/CA-2/CA-6)', () => {
+    // Replica el flujo del `finally` de main(): render del reporte + writeDeliverable
+    // con fase 'verificacion'. Verifica el artefacto físico y el índice issue→fase→agente.
+    const { writeDeliverable } = require('../../lib/write-deliverable');
+    const { readDeliverableIndex } = require('../../lib/deliverable-index');
+    const xml = fs.readFileSync(path.join(__dirname, 'fixtures', 'kover-backend.xml'), 'utf8');
+    const coverageAgg = kover.aggregateKover([kover.parseKoverXml(xml)]);
+    const report = tester.renderReport({
+        issue: 45110, module: 'all', coverage: true, threshold: 80,
+        gradle: { wall_ms: 1000 },
+        tests: { valid: true, tests: 5, failures: 0, errors: 0, skipped: 0, time_seconds: 0.5, failed_tests: [] },
+        coverageAgg, exitCode: 0, motivo: null,
+    });
+    const dv = writeDeliverable('tester', 45110, { fase: 'verificacion', md: report, pipelineRoot: TMP });
+    assert.equal(dv.indexed, true);
+    assert.ok(
+        dv.path.replace(/\\/g, '/').endsWith('.pipeline/assets/docs/45110/tester-verificacion-45110.md'),
+        dv.path,
+    );
+    assert.ok(fs.existsSync(dv.path), 'el archivo físico del entregable debe existir');
+
+    const read = readDeliverableIndex(45110, { pipelineRoot: path.join(TMP, '.pipeline') });
+    const entry = read.entries.find((e) => e.agente === 'tester' && e.fase === 'verificacion');
+    assert.ok(entry, 'el índice debe tener entrada tester::verificacion');
+    assert.equal(entry.tipo, 'document');
+    assert.ok(entry.path.endsWith('tester-verificacion-45110.md'), entry.path);
+});
+
+test('#4511 — pipeline-only sin tests genera entregable igual con excepción documentada (CA-4/CA-6)', () => {
+    const { writeDeliverable } = require('../../lib/write-deliverable');
+    const { readDeliverableIndex } = require('../../lib/deliverable-index');
+    const report = tester.renderReport({
+        issue: 45111, module: 'pipeline', coverage: false, threshold: 80,
+        gradle: { wall_ms: 300 },
+        tests: { valid: false },
+        coverageAgg: kover.aggregateKover([]), exitCode: 0, motivo: null,
+        pipelineOnly: true,
+        exception: 'Cobertura no aplicable: issue pipeline-only sin módulos Gradle con tests.',
+    });
+    const dv = writeDeliverable('tester', 45111, { fase: 'verificacion', md: report, pipelineRoot: TMP });
+    assert.ok(fs.existsSync(dv.path), 'el entregable se genera aunque la cobertura no aplique');
+    const written = fs.readFileSync(dv.path, 'utf8');
+    assert.ok(written.includes('Excepción explícita'), 'el entregable documenta la excepción');
+
+    const read = readDeliverableIndex(45111, { pipelineRoot: path.join(TMP, '.pipeline') });
+    assert.ok(read.entries.some((e) => e.agente === 'tester' && e.fase === 'verificacion'));
+});
+
 // ── findIssueWorktree (rebote #2892, técnica de #2893) ─────────────
 
 test('findIssueWorktree — devuelve null si no hay issue', () => {
@@ -340,19 +439,102 @@ test('isPipelineOnlyChange — false si hay archivos Kotlin/Compose', () => {
     ]), false);
 });
 
-test('isPipelineOnlyChange — false con array vacío', () => {
-    assert.equal(tester.isPipelineOnlyChange([]), false);
+test('#3943 — isPipelineOnlyChange ignora borrados de basura root (no-inputs de Gradle)', () => {
+    // Reproduce el rebote real de #3943: un issue de limpieza (EP-6) que toca
+    // solo `.pipeline/`, `.gitignore`, `.claude/` y BORRA basura de la raíz.
+    // Los paths root borrados no matchean ningún PIPELINE_ONLY_PATTERN, pero al
+    // ser eliminaciones de no-inputs de Gradle son neutros → pipeline-only.
+    const changed = [
+        '.claude/skills/delivery/SKILL.md',
+        '.gitignore',
+        '.pipeline/cleanup-root-oneshot.js',
+        '.pipeline/config.yaml',
+        '.pipeline/ghostbusters.js',
+        '.pipeline/lib/__tests__/ghostbusters-worktrees.test.js',
+        '.pipeline/lib/ghostbusters-worktrees.js',
+        '.pipeline/pulpo.js',
+        'UsersAdministratoragent-teams-report.html',
+        'WorkspacesIntraleplatform.claudehooksagent-doctor.js',
+        'WorkspacesIntraleplatform/.pipeline/audit/architect-tokens.jsonl',
+        'bash.exe.stackdump',
+        'delivery-all.sh',
+    ];
+    const deleted = new Set([
+        'UsersAdministratoragent-teams-report.html',
+        'WorkspacesIntraleplatform.claudehooksagent-doctor.js',
+        'WorkspacesIntraleplatform/.pipeline/audit/architect-tokens.jsonl',
+        'bash.exe.stackdump',
+        'delivery-all.sh',
+    ]);
+    assert.equal(tester.isPipelineOnlyChange(changed, deleted), true);
+});
+
+test('#3943 — un borrado de basura root NO modificada como cambio (sin set) sigue rompiendo el match', () => {
+    // Sin el set de borrados (llamada legacy de un solo argumento) el path root
+    // no matchea ningún patrón → frontera estricta clásica conservada.
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/ghostbusters.js',
+        'bash.exe.stackdump',
+    ]), false);
+});
+
+test('#3943 — borrar un input de Gradle (.kt) SÍ fuerza la ruta gradle aunque sea eliminación', () => {
+    // Borrar código de producción Kotlin puede bajar la cobertura medida por
+    // Kover → debe seguir forzando gradle aunque el archivo esté en el set de
+    // borrados. Frontera de seguridad del fix.
+    const deleted = new Set(['app/composeApp/src/commonMain/kotlin/asdo/Old.kt']);
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/ghostbusters.js',
+        'app/composeApp/src/commonMain/kotlin/asdo/Old.kt',
+    ], deleted), false);
+});
+
+test('#3943 — borrar un recurso bajo src/.../res/ SÍ fuerza gradle', () => {
+    const deleted = new Set(['app/composeApp/src/androidMain/res/values/strings.xml']);
+    assert.equal(tester.isPipelineOnlyChange([
+        'app/composeApp/src/androidMain/res/values/strings.xml',
+    ], deleted), false);
+});
+
+test('#3943 — isGradleInput clasifica inputs vs basura', () => {
+    assert.equal(tester.isGradleInput('app/src/main/kotlin/X.kt'), true);
+    assert.equal(tester.isGradleInput('build.gradle.kts'), true);
+    assert.equal(tester.isGradleInput('gradle.properties'), true);
+    assert.equal(tester.isGradleInput('app/src/main/res/values/x.xml'), true);
+    assert.equal(tester.isGradleInput('bash.exe.stackdump'), false);
+    assert.equal(tester.isGradleInput('delivery-all.sh'), false);
+    assert.equal(tester.isGradleInput('UsersAdministratoragent-teams-report.html'), false);
+    assert.equal(tester.isGradleInput('WorkspacesIntraleplatform/.pipeline/audit/x.jsonl'), false);
+});
+
+test('isPipelineOnlyChange — false con null/undefined (diff no determinable)', () => {
+    // null/undefined significan "no se pudo calcular el diff" (git falló, base
+    // ausente, etc.). Conservamos el fallback a gradle por seguridad.
     assert.equal(tester.isPipelineOnlyChange(null), false);
     assert.equal(tester.isPipelineOnlyChange(undefined), false);
 });
 
+test('#3342 rev-1 — isPipelineOnlyChange devuelve true con array vacío (branch en sync con main)', () => {
+    // Cuando el branch del agente está en sync con main (porque la impl fue
+    // mergeada vía sibling branch — caso típico cuando el dev usa
+    // `agent/<issue>-completion-client` como rama de trabajo y el worktree del
+    // pipeline quedó en `agent/<issue>-pipeline-dev` sin commits), `git diff
+    // origin/main...HEAD` devuelve []. Antes el tester rebotaba con
+    // "No se encontraron reportes JUnit" porque caía a la ruta gradle, todo
+    // estaba UP-TO-DATE y ningún XML JUnit fresco quedaba para parsear. Ahora
+    // tratamos array vacío como vacuously pipeline-only (`every` sobre vacío
+    // es true por definición) y ruteamos a `node --test` que aprueba limpio si
+    // el pipeline está sano.
+    //
+    // Verificación empírica del bug original en `.pipeline/logs/3342-tester.log`:
+    //   [tester] git diff vs main: 0 archivos · pipeline_only=false
+    //   [tester] gradle exit_code=0 wall_ms=68724  (BUILD SUCCESSFUL UP-TO-DATE)
+    //   - ⏭️ No se encontraron reportes JUnit
+    assert.equal(tester.isPipelineOnlyChange([]), true);
+});
+
 test('isPipelineOnlyChange — paths fuera de los patrones permitidos rompen el match', () => {
-    // .claude/ NO está en pipeline-only (puede afectar build behavior)
-    assert.equal(tester.isPipelineOnlyChange([
-        '.pipeline/config.yaml',
-        '.claude/settings.json',
-    ]), false);
-    // README.md en raíz no está
+    // README.md en raíz no está (puede ser parte del producto)
     assert.equal(tester.isPipelineOnlyChange(['README.md']), false);
     // gradle.properties / build.gradle.kts SÍ pueden afectar build, no son pipeline-only
     assert.equal(tester.isPipelineOnlyChange([
@@ -362,6 +544,11 @@ test('isPipelineOnlyChange — paths fuera de los patrones permitidos rompen el 
     assert.equal(tester.isPipelineOnlyChange([
         '.pipeline/config.yaml',
         'build.gradle.kts',
+    ]), false);
+    // settings.gradle.kts también afecta build
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/config.yaml',
+        'settings.gradle.kts',
     ]), false);
 });
 
@@ -541,9 +728,14 @@ test('#3092 rev-1 — isPipelineOnlyChange NO acepta otros subdirectorios de qa/
     // deben caer en pipeline-only:
     //   qa/build.gradle.kts         → módulo Gradle real (afecta build)
     //   qa/src/test/                → código Kotlin/JS de test
-    //   qa/scripts/                 → scripts de QA ejecutados por gradlew
+    //   qa/scripts/*.sh             → scripts shell de QA (pueden orquestar gradle)
     //   qa/test-cases/<id>.json     → casos consumidos por scripts QA
     //   qa/regression-suite.json    → catálogo de regresión
+    //
+    // Frontera afinada por rebote #3409: los archivos .js/.mjs/.cjs bajo
+    // `qa/scripts/` ahora SÍ caen en pipeline-only (son hooks Node.js
+    // puros que no consume Gradle), pero el resto sigue forzando ruta
+    // gradle. El test `#3409 rev-1` documenta el nuevo branch positivo.
     assert.equal(tester.isPipelineOnlyChange([
         '.pipeline/config.yaml',
         'qa/build.gradle.kts',
@@ -566,6 +758,67 @@ test('#3092 rev-1 — isPipelineOnlyChange NO acepta otros subdirectorios de qa/
     ]), false);
 });
 
+// ── Rebote #3409 rev-1 ────────────────────────────────────────────────
+// El hook `qa/scripts/promote-screenshots.js` (Node.js puro, 434 líneas)
+// + sus 18 tests bajo `qa/scripts/__tests__/promote-screenshots.test.js`
+// + `.claude/skills/qa/SKILL.md` modificado + `docs/qa/screenshot-promotion.md`
+// + `package.json` formaron un cambio puramente pipeline-only que el
+// tester clasificó como mixto porque los .js bajo `qa/scripts/` no
+// matcheaban ningún pattern. Resultado: ruta gradle, 0 JUnit reports,
+// rebote por "No se encontraron reportes JUnit".
+//
+// Verificación de seguridad: `grep` por `qa/scripts` en `**/*.gradle*`
+// devuelve 0 referencias — Gradle no consume estos scripts; los invoca
+// el skill /qa (Node.js).
+test('#3409 rev-1 — isPipelineOnlyChange acepta qa/scripts/*.js y __tests__/*.test.js', () => {
+    // Hook Node.js bajo qa/scripts/ → pipeline-only.
+    assert.equal(tester.isPipelineOnlyChange([
+        'qa/scripts/promote-screenshots.js',
+    ]), true);
+    // Test del hook bajo qa/scripts/__tests__/ → pipeline-only.
+    assert.equal(tester.isPipelineOnlyChange([
+        'qa/scripts/__tests__/promote-screenshots.test.js',
+    ]), true);
+    // Variantes .mjs / .cjs también caen en pipeline-only.
+    assert.equal(tester.isPipelineOnlyChange([
+        'qa/scripts/some-hook.mjs',
+    ]), true);
+    assert.equal(tester.isPipelineOnlyChange([
+        'qa/scripts/legacy-hook.cjs',
+    ]), true);
+    // Caso real del rebote #3409: 5 archivos exactos del diff vs origin/main.
+    assert.equal(tester.isPipelineOnlyChange([
+        '.claude/skills/qa/SKILL.md',
+        'docs/qa/screenshot-promotion.md',
+        'package.json',
+        'qa/scripts/__tests__/promote-screenshots.test.js',
+        'qa/scripts/promote-screenshots.js',
+    ]), true);
+});
+
+test('#3409 rev-1 — isPipelineOnlyChange mantiene la frontera #3092 para shells/configs/casos QA', () => {
+    // Los .sh bajo qa/scripts/ siguen forzando ruta gradle: pueden orquestar
+    // ejecuciones gradle/emulador y un cambio ahí debe verificarse en flujo
+    // QA real, no por tests Node aislados.
+    assert.equal(tester.isPipelineOnlyChange([
+        'qa/scripts/qa-android.sh',
+    ]), false);
+    assert.equal(tester.isPipelineOnlyChange([
+        'qa/scripts/promote-screenshots.js',
+        'qa/scripts/qa-android.sh',
+    ]), false);
+    // Subdirectorios anidados que NO son __tests__/ y archivos sin extensión
+    // .js/.mjs/.cjs no califican (defensa contra typos / archivos opacos).
+    assert.equal(tester.isPipelineOnlyChange([
+        'qa/scripts/promote-screenshots',  // sin extensión
+    ]), false);
+    // qa/scripts/ anidado dentro de un módulo NO debe disparar pipeline-only
+    // (mismo ancla a raíz que el resto de patrones #3092/#2398).
+    assert.equal(tester.isPipelineOnlyChange([
+        'app/qa/scripts/foo.js',
+    ]), false);
+});
+
 test('#3092 rev-1 — isPipelineOnlyChange NO confunde qa/evidence en subdirectorios anidados', () => {
     // El patrón `^qa\/evidence\/` ancla a raíz. Un `qa/evidence/` dentro de
     // un módulo (improbable pero posible) NO debe disparar pipeline-only.
@@ -574,6 +827,122 @@ test('#3092 rev-1 — isPipelineOnlyChange NO confunde qa/evidence en subdirecto
     ]), false);
     assert.equal(tester.isPipelineOnlyChange([
         'backend/qa/evidence/log.txt',
+    ]), false);
+});
+
+// ── Rebote #3576 rev-1 ────────────────────────────────────────────────
+// El #3576 (Hook onSpawnExit cross-skill + audit unificado) entregó un
+// script bash auxiliar `scripts/diff-parser-codepaths.sh` que compara
+// paridad entre los codepaths legacy y generalized leyendo el log textual
+// del pulpo. Es 100% pipeline-only — un log-analyzer que ni siquiera está
+// referenciado por Gradle — pero el archivo cae bajo `scripts/` que no
+// tenía pattern de allowlist. El cambio del PR incluía:
+//   .pipeline/lib/agent-launcher/...
+//   .pipeline/lib/quota-exhausted.js
+//   .pipeline/pulpo.js
+//   docs/pipeline/multi-provider.md
+//   scripts/diff-parser-codepaths.sh   ← rompía el `every` match
+// El tester cayó a la ruta gradle, todo UP-TO-DATE, 0 JUnit reports →
+// rebote "[tester] No se encontraron reportes JUnit". Verificación
+// empírica en `.pipeline/logs/3576-tester.log`:
+//   [tester] git diff vs main: 13 archivos · pipeline_only=false
+//   [tester] gradle exit_code=0 wall_ms=65814 BUILD SUCCESSFUL UP-TO-DATE
+//   - No se encontraron reportes JUnit
+//
+// Verificación de seguridad: `grep` por `scripts/diff-parser-codepaths`
+// en `**/*.{kts,gradle,kt,properties}` devuelve 0 referencias — Gradle
+// no consume este script; se invoca a mano por el operador (documentado
+// en `docs/pipeline/multi-provider.md`).
+test('#3576 rev-1 — isPipelineOnlyChange acepta scripts/diff-parser-codepaths.sh', () => {
+    // Script aislado → pipeline-only.
+    assert.equal(tester.isPipelineOnlyChange([
+        'scripts/diff-parser-codepaths.sh',
+    ]), true);
+    // Caso real del rebote #3576: 13 archivos exactos del diff vs origin/main.
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/lib/agent-launcher/__tests__/fixtures/skill-real/builder-timeout-noresult.json',
+        '.pipeline/lib/agent-launcher/__tests__/fixtures/skill-real/commander-anthropic-result-event.json',
+        '.pipeline/lib/agent-launcher/__tests__/fixtures/skill-real/guru-anthropic-cli-usage-limit.json',
+        '.pipeline/lib/agent-launcher/__tests__/fixtures/skill-real/planner-anthropic-cli-credits-required.json',
+        '.pipeline/lib/agent-launcher/__tests__/fixtures/skill-real/qa-openai-codex-sse-insufficient-quota.json',
+        '.pipeline/lib/agent-launcher/__tests__/onSpawnExit.test.js',
+        '.pipeline/lib/agent-launcher/__tests__/provider-error-parser.test.js',
+        '.pipeline/lib/agent-launcher/dispatch-with-fallback.js',
+        '.pipeline/lib/agent-launcher/providers/anthropic.js',
+        '.pipeline/lib/quota-exhausted.js',
+        '.pipeline/pulpo.js',
+        'docs/pipeline/multi-provider.md',
+        'scripts/diff-parser-codepaths.sh',
+    ]), true);
+});
+
+test('#3576 rev-1 — isPipelineOnlyChange mantiene la frontera de scripts/ (resto sigue forzando gradle)', () => {
+    // El pattern es exacto a `scripts/diff-parser-codepaths.sh` — el resto de
+    // `scripts/` puede orquestar Gradle/AWS/emulador y debe seguir cayendo a
+    // ruta gradle. Defensa contra falsos positivos.
+    assert.equal(tester.isPipelineOnlyChange([
+        'scripts/local-up.sh',
+    ]), false);
+    assert.equal(tester.isPipelineOnlyChange([
+        'scripts/local-app.sh',
+    ]), false);
+    assert.equal(tester.isPipelineOnlyChange([
+        'scripts/smart-build.sh',
+    ]), false);
+    // Variantes sospechosas — typos / renames — siguen forzando gradle.
+    assert.equal(tester.isPipelineOnlyChange([
+        'scripts/diff-parser-codepaths.bash',  // extensión distinta
+    ]), false);
+    assert.equal(tester.isPipelineOnlyChange([
+        'scripts/diff-parser-codepaths',       // sin extensión
+    ]), false);
+    // Anidamiento bajo módulos (improbable pero posible) no debe disparar.
+    assert.equal(tester.isPipelineOnlyChange([
+        'app/scripts/diff-parser-codepaths.sh',
+    ]), false);
+});
+
+// ── Rebote #2398 rev-1 ────────────────────────────────────────────
+// El cambio del ghostbusters (#2398) tocó archivos puramente Node.js bajo
+// `.pipeline/lib/` + `.pipeline/ghostbusters.js` + el archivo de
+// instrucciones del skill `.claude/skills/ghostbusters/SKILL.md`. El path
+// bajo `.claude/` rompió el match `every` y forzó la ruta gradle, que
+// para un cambio sin código Kotlin no produjo reportes JUnit:
+//   diff vs origin/main: 4 archivos
+//   → tester rebote: "[tester] No se encontraron reportes JUnit"
+test('#2398 rev-1 — isPipelineOnlyChange acepta .claude/skills/<skill>/SKILL.md', () => {
+    // Archivo de instrucciones de skill solo (cambio puro de docs del skill) → pipeline-only.
+    assert.equal(tester.isPipelineOnlyChange([
+        '.claude/skills/ghostbusters/SKILL.md',
+    ]), true);
+    // Hooks Node.js del harness Claude Code → pipeline-only.
+    assert.equal(tester.isPipelineOnlyChange([
+        '.claude/hooks/agent-concurrency-check.js',
+    ]), true);
+    // Settings del harness → pipeline-only.
+    assert.equal(tester.isPipelineOnlyChange([
+        '.claude/settings.json',
+    ]), true);
+    assert.equal(tester.isPipelineOnlyChange([
+        '.claude/settings.local.json',
+    ]), true);
+    // Caso real del rebote #2398: 4 archivos exactos del diff vs origin/main.
+    assert.equal(tester.isPipelineOnlyChange([
+        '.claude/skills/ghostbusters/SKILL.md',
+        '.pipeline/ghostbusters.js',
+        '.pipeline/lib/__tests__/stale-branches.test.js',
+        '.pipeline/lib/stale-branches.js',
+    ]), true);
+});
+
+test('#2398 rev-1 — isPipelineOnlyChange NO confunde .claude en subdirectorios anidados', () => {
+    // El patrón `^\.claude\/` ancla a raíz. Un `.claude/` dentro de un
+    // módulo (improbable pero posible) NO debe disparar pipeline-only.
+    assert.equal(tester.isPipelineOnlyChange([
+        'app/.claude/skills/foo.md',
+    ]), false);
+    assert.equal(tester.isPipelineOnlyChange([
+        'backend/.claude/hooks/bar.js',
     ]), false);
 });
 
@@ -671,6 +1040,65 @@ test('findNodeTestFiles — encuentra *.test.js dentro de .pipeline/ y excluye n
     assert.ok(!found.some((f) => f.includes('desarrollo')), 'desarrollo/ debe estar excluido');
 });
 
+// Rebote #3409 rev-1: el tester corre `node --test` sobre los archivos que
+// findNodeTestFiles le devuelve. Sin esta extensión, los 18 tests del hook
+// `qa/scripts/promote-screenshots.js` no se ejecutaban en la ruta
+// pipeline-only y el tester aprobaba como qa:skipped sin haber corrido tests
+// reales. Acá validamos que el segundo root (`qa/scripts/__tests__/`) se
+// escanea de forma simétrica a `.pipeline/`.
+test('#3409 rev-1 — findNodeTestFiles escanea también qa/scripts/__tests__/', () => {
+    // Crear un repo fresco para no contaminar con tests de los otros casos.
+    const fresh = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-tester-3409-'));
+    // .pipeline/ test
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });
+    fs.writeFileSync(path.join(fresh, '.pipeline', 'tests', 'pipe.test.js'), '// pipeline test');
+    // qa/scripts/__tests__/ test (objetivo del rebote)
+    fs.mkdirSync(path.join(fresh, 'qa', 'scripts', '__tests__'), { recursive: true });
+    fs.writeFileSync(
+        path.join(fresh, 'qa', 'scripts', '__tests__', 'promote-screenshots.test.js'),
+        '// qa script test'
+    );
+    // Archivos no-test bajo qa/scripts/__tests__/ → ignorados (no terminan en .test.js)
+    fs.writeFileSync(
+        path.join(fresh, 'qa', 'scripts', '__tests__', 'helpers.js'),
+        '// helper, sin sufijo .test.js'
+    );
+    // qa/scripts/promote-screenshots.js (NO está en __tests__/) → ignorado
+    fs.writeFileSync(
+        path.join(fresh, 'qa', 'scripts', 'promote-screenshots.js'),
+        '// hook implementation, no tests'
+    );
+    // qa/evidence/ no debe contar como root de tests (no es escaneado).
+    fs.mkdirSync(path.join(fresh, 'qa', 'evidence', '3409'), { recursive: true });
+    fs.writeFileSync(
+        path.join(fresh, 'qa', 'evidence', '3409', 'stray.test.js'),
+        '// no debe levantarse'
+    );
+
+    const found = tester.findNodeTestFiles(fresh).map((f) => path.relative(fresh, f).replace(/\\/g, '/'));
+    assert.ok(found.includes('.pipeline/tests/pipe.test.js'),
+        `esperaba .pipeline/tests/pipe.test.js, fue: ${JSON.stringify(found)}`);
+    assert.ok(found.includes('qa/scripts/__tests__/promote-screenshots.test.js'),
+        `esperaba qa/scripts/__tests__/promote-screenshots.test.js, fue: ${JSON.stringify(found)}`);
+    assert.ok(!found.some((f) => f.includes('helpers.js')), 'helpers.js no debe contarse como test');
+    assert.ok(!found.some((f) => f.endsWith('promote-screenshots.js') && !f.endsWith('.test.js')),
+        'el hook (no-test) no debe contarse');
+    assert.ok(!found.some((f) => f.includes('qa/evidence')),
+        'qa/evidence/ no debe escanearse aunque tenga *.test.js sueltos');
+});
+
+// Defensa: si qa/scripts/__tests__/ no existe en el repo, findNodeTestFiles
+// no debe romper. Esto cubre repos que no usan el patrón QA Node aún (ej.
+// worktrees viejos o forks limpios).
+test('#3409 rev-1 — findNodeTestFiles tolera ausencia de qa/scripts/__tests__/', () => {
+    const fresh = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-tester-3409-empty-'));
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });
+    fs.writeFileSync(path.join(fresh, '.pipeline', 'tests', 'only-pipe.test.js'), '// solo pipeline');
+    // qa/ NO existe.
+    const found = tester.findNodeTestFiles(fresh).map((f) => path.relative(fresh, f).replace(/\\/g, '/'));
+    assert.deepEqual(found, ['.pipeline/tests/only-pipe.test.js']);
+});
+
 test('runNodeTests — sin tests detectados devuelve no_tests:true y exit_code:0', async () => {
     // TMP en este punto puede tener tests del test anterior — usemos un repo fresco
     const fresh = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-fresh-'));
@@ -719,6 +1147,147 @@ test('siempre rompe', () => { assert.equal(1, 2); });
     assert.equal(r.summary.failed_tests[0].name, 'siempre rompe');
 });
 
+// #3344 — Antes de este fix, un test que dejaba un handle activo (timer,
+// socket, server HTTP sin cerrar) hacía que `node --test` nunca terminara,
+// porque el runner top-level espera a que todos los workers cierren sus
+// handles. El tester quedaba colgado hasta que el watchdog del Pulpo lo
+// mataba a los 45min, con reporte JUnit vacío. El fix: spawn lanza
+// `--test-timeout=120000` (corta tests individuales), `runNodeTests` aplica
+// wall-clock duro de 12min (mata el child con SIGKILL/taskkill /T /F) y
+// emite heartbeat de progreso vía opts.onLog. Verificamos los hooks nuevos
+// sobre un test normal sin alterar el éxito del run.
+test('#3344 — runNodeTests acepta opts.onLog (heartbeat) sin romper runs normales', async () => {
+    const fresh = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-3344-onlog-'));
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(fresh, '.pipeline', 'tests', 'fast.test.js'), `
+const test = require('node:test');
+const assert = require('node:assert/strict');
+test('ok', () => { assert.equal(1, 1); });
+`);
+    const logs = [];
+    const r = await tester.runNodeTests(fresh, process.env, {
+        onLog: (m) => logs.push(m),
+    });
+    assert.equal(r.exit_code, 0);
+    assert.equal(r.timed_out, false);
+    assert.equal(typeof r.last_progress_line, 'string');
+    // El run termina rápido, así que el heartbeat (intervalo 30s) puede no
+    // disparar nunca — sólo verificamos que el callback se aceptó sin error.
+    assert.ok(Array.isArray(logs));
+});
+
+test('#3344 — runNodeTests setea timed_out:false en run normal y last_progress_line presente', async () => {
+    const fresh = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-3344-fields-'));
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(fresh, '.pipeline', 'tests', 'sample.test.js'), `
+const test = require('node:test');
+const assert = require('node:assert/strict');
+test('ok', () => { assert.equal(2, 2); });
+`);
+    const r = await tester.runNodeTests(fresh, process.env);
+    assert.equal(r.timed_out, false);
+    assert.equal(r.exit_code, 0);
+    assert.equal(typeof r.last_progress_line, 'string');
+});
+
+// #3737 (rebote rev-2) — Regresión del exit 124 "sin reporte JUnit parseable".
+// Un *.test.js cuyos tests PASAN pero deja un handle activo (setInterval,
+// socket, server sin cerrar) mantenía vivo su child process; el runner
+// top-level esperaba indefinidamente, el wall-timeout de 12min mataba el
+// árbol, y como el reporter junit bufferea todo el documento hasta el final
+// del run, el XML quedaba en 52 bytes (solo el header <testsuites>) →
+// tests=0 → rebote. El fix `--test-force-exit` fuerza la salida del child
+// al completar sus tests. Sin el flag, este test colgaría hasta el
+// --test-timeout del runner padre; con el flag termina en segundos.
+test('#3737 rev-2 — runNodeTests termina y flushea JUnit aunque un test deje un handle abierto', async () => {
+    const fresh = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-3737-handle-'));
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(fresh, '.pipeline', 'tests', 'leaky.test.js'), `
+const test = require('node:test');
+const assert = require('node:assert/strict');
+test('pasa pero deja un interval vivo', () => { assert.equal(1, 1); });
+// Handle residual post-éxito: sin --test-force-exit este child nunca sale.
+setInterval(() => {}, 1000);
+`);
+    fs.writeFileSync(path.join(fresh, '.pipeline', 'tests', 'normal.test.js'), `
+const test = require('node:test');
+const assert = require('node:assert/strict');
+test('normal ok', () => { assert.equal(2, 2); });
+`);
+    const r = await tester.runNodeTests(fresh, process.env);
+    assert.equal(r.timed_out, false, 'el run NO debe llegar al wall-timeout');
+    assert.equal(r.exit_code, 0, 'ambos files pasan → exit 0');
+    assert.equal(r.summary.valid, true, 'el JUnit debe flushearse completo (no 52 bytes)');
+    assert.equal(r.summary.tests, 2, 'los 2 tests deben quedar reportados');
+    assert.equal(r.summary.failures, 0);
+});
+
+// #3897 rev-2 — endurecimiento anti-cuelgue del runner.
+//
+// Contexto del rebote: 2/2 runs reales del tester sobre #3897 colgaron 12 min
+// (exit 124) con JUnit de 52 bytes (solo header `<testsuites>`) y stdout
+// vacío, mientras la MISMA batería de 279 archivos pasaba en ~79s corrida a
+// mano. La clase de cuelgue: un .test.js cuyos tests PASAN pero cuyo proceso
+// queda vivo por un handle no clausurado (timer/socket/watcher) — el runner
+// top-level espera a ese worker para siempre y el reporter junit nunca
+// flushea las suites. `--test-timeout` no cubre este caso (corta tests, no
+// handles post-test). El fix: `--test-force-exit` (Node >= 22).
+test('#3897 rev-2 — handle vivo post-test NO cuelga el run (--test-force-exit)', async () => {
+    const fresh = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-3897-handle-'));
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'logs'), { recursive: true });
+    // Test que pasa pero deja un setInterval SIN unref: sin --test-force-exit
+    // el proceso del test queda vivo y runNodeTests solo terminaría por
+    // wall-timeout de 12 min (exit 124, JUnit vacío — el síntoma del rebote).
+    fs.writeFileSync(path.join(fresh, '.pipeline', 'tests', 'leaky.test.js'), `
+const test = require('node:test');
+const assert = require('node:assert/strict');
+test('pasa pero deja un timer vivo', () => {
+    setInterval(() => {}, 60 * 1000); // handle vivo a propósito (sin unref)
+    assert.equal(1, 1);
+});
+`);
+    const r = await tester.runNodeTests(fresh, process.env);
+    assert.equal(r.timed_out, false, 'el run NO debe llegar al wall-timeout');
+    assert.equal(r.exit_code, 0, 'los tests pasan y el runner sale igual');
+    assert.equal(r.summary.valid, true, 'el JUnit debe quedar parseable (flusheado antes del force-exit)');
+    assert.equal(r.summary.tests, 1);
+    assert.equal(r.summary.failures, 0);
+});
+
+test('#3897 rev-2 — reporter dual: stdout trae progreso spec además del JUnit a archivo', async () => {
+    const fresh = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-3897-spec-'));
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(fresh, '.pipeline', 'tests', 'visible.test.js'), `
+const test = require('node:test');
+const assert = require('node:assert/strict');
+test('progreso visible en stdout', () => { assert.equal(1, 1); });
+`);
+    const r = await tester.runNodeTests(fresh, process.env);
+    assert.equal(r.exit_code, 0);
+    // Antes del fix junit era el ÚNICO reporter → stdout vacío →
+    // last_progress_line "" y el heartbeat no identificaba el archivo colgado.
+    assert.ok(r.stdout.includes('progreso visible en stdout'),
+        'el reporter spec debe volcar el progreso a stdout');
+    assert.ok(r.last_progress_line.length > 0,
+        'last_progress_line debe quedar poblada para el post-mortem del wall-timeout');
+    // Y el JUnit del archivo sigue siendo la fuente parseable.
+    assert.equal(r.summary.valid, true);
+    assert.equal(r.summary.tests, 1);
+});
+
+// NOTA #3897 rev-2: el spawn de runNodeTests pasa `stdio: ['ignore', 'pipe',
+// 'pipe']` como defensa adicional (stdin pipe nunca cerrado por el tester era
+// un EOF que jamás llegaba). No hay test dedicado: el runner de node --test
+// reconecta el stdin de sus workers a discreción, así que un test que lea
+// stdin cuelga hasta el per-test timeout (120s) sin importar el stdio del
+// runner — verificado empíricamente. La clase de cuelgue queda cubierta por
+// `--test-force-exit` + `--test-timeout` (tests de arriba).
+
 // #2895 (rebote rev-1): regresión empírica del rebote del 2026-04-30.
 // Los tests del pipeline fallaban en producción cuando el pulpo arrancaba
 // como servicio sin git en el PATH heredado. Este test simula ese caso
@@ -751,6 +1320,31 @@ test('git --version disponible en el child', () => {
     const r = await tester.runNodeTests(fresh, minimalEnv);
     assert.equal(r.summary.failures, 0,
         `el test debe pasar gracias a ensureGitInPath. failed_tests=${JSON.stringify(r.summary.failed_tests)}`);
+    assert.equal(r.summary.tests, 1);
+    assert.equal(r.exit_code, 0);
+});
+
+test('#4849 rev-1 — runNodeTests preserva Path de Windows al agregar node al child env', async () => {
+    if (process.platform !== 'win32') return;
+    const fresh = fs.mkdtempSync(path.join(require('os').tmpdir(), 'v3-tester-pathcase-'));
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'tests'), { recursive: true });
+    fs.mkdirSync(path.join(fresh, '.pipeline', 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(fresh, '.pipeline', 'tests', 'git-needed-pathcase.test.js'), `
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { spawnSync } = require('child_process');
+test('git --version disponible con Path case-preserved', () => {
+    const r = spawnSync('git', ['--version'], { encoding: 'utf8' });
+    assert.equal(r.status, 0, 'git debe estar accesible. error=' + (r.error && r.error.code));
+});
+`);
+    const env = {
+        SystemRoot: process.env.SystemRoot || 'C:\\Windows',
+        Path: 'C:\\Windows\\System32;C:\\Windows',
+    };
+    const r = await tester.runNodeTests(fresh, env);
+    assert.equal(r.summary.failures, 0,
+        `el child no debe perder git por duplicar Path/PATH. failed_tests=${JSON.stringify(r.summary.failed_tests)}`);
     assert.equal(r.summary.tests, 1);
     assert.equal(r.exit_code, 0);
 });
@@ -931,4 +1525,205 @@ test('GIT_FALLBACK_DIRS_WIN32 — incluye Git for Windows estándar', () => {
     assert.ok(Array.isArray(tester.GIT_FALLBACK_DIRS_WIN32));
     assert.ok(tester.GIT_FALLBACK_DIRS_WIN32.includes('C:\\Program Files\\Git\\cmd'));
     assert.ok(tester.GIT_FALLBACK_DIRS_WIN32.includes('C:\\Program Files\\Git\\mingw64\\bin'));
+});
+
+// ── #4155 — lock global de Gradle ────────────────────────────────────
+// El tester (concurrencia 2) puede coexistir con la fase build y con los devs;
+// esa es parte de la causa raíz del incidente inter-agente del 2026-06-24.
+// `runGradle` debe envolver el spawn con el lock global para que la suite de
+// tests encole en vez de competir por CPU/RAM (CA-4).
+test('runGradle del tester envuelve el spawn con el lock global de Gradle (#4155)', async () => {
+    const savedLock = process.env.GRADLE_LOCK_PATH;
+    const lockLogical = path.join(TMP, 'tester-gradle.lock');
+    const lockFile = `${lockLogical}.lock`;
+    const marker = path.join(TMP, 'tester-lock-probe.marker');
+    process.env.GRADLE_LOCK_PATH = lockLogical;
+    try {
+        delete require.cache[require.resolve('../../lib/gradle-lock')];
+        delete require.cache[require.resolve('../tester')];
+        const t = require('../tester');
+        const res = await t.runGradle({
+            cmd: 'node',
+            args: [],
+            cwd: TMP,
+            env: { ...process.env, LOCKFILE: lockFile, MARKER: marker },
+            spawnFn: fakeProbeSpawn,
+        });
+        assert.equal(res.exit_code, 0, 'el proceso probe debe salir 0');
+        assert.equal(fs.readFileSync(marker, 'utf8'), 'held', 'el lock debe estar tomado durante el spawn');
+        assert.equal(fs.existsSync(lockFile), false, 'el lock debe liberarse tras el spawn');
+    } finally {
+        if (savedLock === undefined) delete process.env.GRADLE_LOCK_PATH;
+        else process.env.GRADLE_LOCK_PATH = savedLock;
+        delete require.cache[require.resolve('../tester')];
+        require('../tester');
+    }
+});
+
+test('spawnGradle del tester NO toma el lock global (#4155)', async () => {
+    const savedLock = process.env.GRADLE_LOCK_PATH;
+    const lockLogical = path.join(TMP, 'tester-spawn.lock');
+    const lockFile = `${lockLogical}.lock`;
+    const marker = path.join(TMP, 'tester-spawn-probe.marker');
+    process.env.GRADLE_LOCK_PATH = lockLogical;
+    try {
+        const res = await tester.spawnGradle({
+            cmd: 'node',
+            args: [],
+            cwd: TMP,
+            env: { ...process.env, LOCKFILE: lockFile, MARKER: marker },
+            spawnFn: fakeProbeSpawn,
+        });
+        assert.equal(res.exit_code, 0);
+        assert.equal(fs.readFileSync(marker, 'utf8'), 'free', 'spawnGradle no debe tomar el lock');
+    } finally {
+        if (savedLock === undefined) delete process.env.GRADLE_LOCK_PATH;
+        else process.env.GRADLE_LOCK_PATH = savedLock;
+    }
+});
+
+// #4164 — Wiring de la inyección: `spawnGradle` del tester debe invocar el `spawnFn`
+// provisto (espía) en vez del spawn real, forwardeando cmd/args intactos.
+test('spawnGradle del tester invoca el spawnFn inyectado (wiring #4164)', async () => {
+    let calls = 0;
+    let seenCmd = null;
+    let seenArgs = null;
+    const spy = (cmd, args) => {
+        calls += 1;
+        seenCmd = cmd;
+        seenArgs = args;
+        const child = new EventEmitter();
+        child.stdout = null;
+        child.stderr = null;
+        process.nextTick(() => child.emit('exit', 0));
+        return child;
+    };
+    const res = await tester.spawnGradle({ cmd: 'node', args: ['--version'], cwd: TMP, env: process.env, spawnFn: spy });
+    assert.equal(calls, 1, 'el spawnFn inyectado debe invocarse exactamente una vez');
+    assert.equal(seenCmd, 'node', 'el cmd debe forwardearse sin cambios');
+    assert.deepEqual(seenArgs, ['--version'], 'los args deben forwardearse intactos');
+    assert.equal(res.exit_code, 0);
+});
+
+// #4164 — Determinismo del caso de fallo del tester: si el proceso emite `error`,
+// el helper resuelve exit_code 1 de forma determinista.
+test('spawnGradle del tester resuelve exit_code 1 ante error del proceso (#4164)', async () => {
+    const failingSpawn = () => {
+        const child = new EventEmitter();
+        child.stdout = null;
+        child.stderr = null;
+        process.nextTick(() => child.emit('error', new Error('EAGAIN simulado')));
+        return child;
+    };
+    const res = await tester.spawnGradle({ cmd: 'node', args: [], cwd: TMP, env: process.env, spawnFn: failingSpawn });
+    assert.equal(res.exit_code, 1, 'el error del proceso debe mapear a exit_code 1 de forma determinista');
+    assert.match(res.stderr, /\[spawn-error\]/, 'el stderr debe registrar el spawn-error');
+});
+
+// ── Rebote #4155 rev-1 ────────────────────────────────────────────────
+// Cambio que toca SOLO config de Gradle (gradle.properties + build.gradle.kts):
+// en `verificacion` el tester corre Gradle en REPO_ROOT (main), las tasks de
+// test salen UP-TO-DATE (inputs de test sin cambios), Gradle no re-ejecuta ni
+// escribe XMLs nuevos, y el filtro `minMtimeMs` descarta los XMLs existentes →
+// `tests.valid=false` → rebote "No se encontraron reportes JUnit" pese a que los
+// tests están verdes. Verificación empírica en `.pipeline/logs/4155-tester.log`:
+//   [tester] git diff vs main: 11 archivos · pipeline_only=false
+//   [tester] gradle exit_code=0 wall_ms=59562 (BUILD SUCCESSFUL, 226 up-to-date)
+//   - No se encontraron reportes JUnit
+// Fix: detectar el caso "todas las tasks de test UP-TO-DATE + exit 0" y releer
+// los reportes JUnit existentes sin filtro de mtime (UP-TO-DATE garantiza que
+// pasaron). Una task SKIPPED NO cuenta como UP-TO-DATE (protege CA-1).
+
+test('#4155 — expectedTestTasks mapea módulos a sus tasks de test (app = 3 flavors)', () => {
+    assert.deepEqual(tester.expectedTestTasks(['backend']), [':backend:test']);
+    assert.deepEqual(tester.expectedTestTasks(['users']), [':users:test']);
+    assert.deepEqual(tester.expectedTestTasks(['app']), [
+        ':app:composeApp:testClientDebugUnitTest',
+        ':app:composeApp:testBusinessDebugUnitTest',
+        ':app:composeApp:testDeliveryDebugUnitTest',
+    ]);
+    assert.deepEqual(tester.expectedTestTasks(['backend', 'users', 'app']).slice(0, 2),
+        [':backend:test', ':users:test']);
+    assert.deepEqual(tester.expectedTestTasks([]), []);
+});
+
+test('#4155 — allExpectedTestTasksUpToDate true cuando TODAS las tasks salen UP-TO-DATE', () => {
+    const stdout = [
+        '> Task :backend:test UP-TO-DATE',
+        '> Task :backend:koverXmlReport UP-TO-DATE',
+        '> Task :users:test UP-TO-DATE',
+        '> Task :app:composeApp:testClientDebugUnitTest UP-TO-DATE',
+        '> Task :app:composeApp:testBusinessDebugUnitTest UP-TO-DATE',
+        '> Task :app:composeApp:testDeliveryDebugUnitTest UP-TO-DATE',
+        'BUILD SUCCESSFUL in 59s',
+    ].join('\n');
+    assert.equal(tester.allExpectedTestTasksUpToDate(stdout, ['backend', 'users', 'app']), true);
+    assert.equal(tester.allExpectedTestTasksUpToDate(stdout, ['backend']), true);
+});
+
+test('#4155 — allExpectedTestTasksUpToDate false si alguna task NO está UP-TO-DATE', () => {
+    // backend ejecutó (no UP-TO-DATE) → no aplica el atajo (habría XMLs frescos).
+    const ejecutada = [
+        '> Task :backend:test',
+        '> Task :users:test UP-TO-DATE',
+    ].join('\n');
+    assert.equal(tester.allExpectedTestTasksUpToDate(ejecutada, ['backend', 'users']), false);
+    // Falta la task de app entre las esperadas.
+    const sinApp = '> Task :backend:test UP-TO-DATE\n> Task :users:test UP-TO-DATE';
+    assert.equal(tester.allExpectedTestTasksUpToDate(sinApp, ['backend', 'users', 'app']), false);
+});
+
+test('#4155 — allExpectedTestTasksUpToDate NO cuenta SKIPPED como UP-TO-DATE (protege CA-1)', () => {
+    // Una task SKIPPED = test excluido → debe seguir rebotando.
+    const skipped = [
+        '> Task :backend:test UP-TO-DATE',
+        '> Task :users:test SKIPPED',
+    ].join('\n');
+    assert.equal(tester.allExpectedTestTasksUpToDate(skipped, ['backend', 'users']), false);
+});
+
+test('#4155 — allExpectedTestTasksUpToDate false con stdout vacío o sin módulos', () => {
+    assert.equal(tester.allExpectedTestTasksUpToDate('', ['backend']), false);
+    assert.equal(tester.allExpectedTestTasksUpToDate(null, ['backend']), false);
+    assert.equal(tester.allExpectedTestTasksUpToDate('> Task :backend:test UP-TO-DATE', []), false);
+});
+
+test('#4155 — re-lectura sin filtro de mtime recupera XMLs UP-TO-DATE (escenario del rebote)', () => {
+    // Reproduce la cadena: XML válido en disco pero "viejo". Con filtro de mtime
+    // se descarta (tests.valid=false); sin filtro se recupera y queda verde.
+    const fresh = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-tester-4155-'));
+    const dir = path.join(fresh, 'backend', 'build', 'test-results', 'test');
+    fs.mkdirSync(dir, { recursive: true });
+    const xmlPath = path.join(dir, 'TEST-Green.xml');
+    const xml = '<?xml version="1.0" encoding="UTF-8"?>\n'
+        + '<testsuite name="GreenSuite" tests="3" failures="0" errors="0" skipped="0" time="0.4">\n'
+        + '<testcase classname="ar.com.intrale.ConfigTest" name="ok1" time="0.1"/>\n'
+        + '<testcase classname="ar.com.intrale.ConfigTest" name="ok2" time="0.1"/>\n'
+        + '<testcase classname="ar.com.intrale.ConfigTest" name="ok3" time="0.2"/>\n'
+        + '</testsuite>\n';
+    fs.writeFileSync(xmlPath, xml);
+    setMtime(xmlPath, 60 * 60 * 1000); // 1h viejo
+
+    const savedRepo = process.env.PIPELINE_REPO_ROOT;
+    const savedDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.PIPELINE_REPO_ROOT = fresh;
+    process.env.CLAUDE_PROJECT_DIR = fresh;
+    delete require.cache[require.resolve('../tester')];
+    const t2 = require('../tester');
+    try {
+        // Con filtro reciente → descarta el XML viejo (causa del falso negativo).
+        const cutoff = Date.now() - 5 * 60 * 1000;
+        const conFiltro = t2.collectTestReports(['backend'], { minMtimeMs: cutoff });
+        assert.equal(conFiltro.valid, false, 'el filtro de mtime descarta el XML viejo');
+        // Sin filtro → lo recupera, verde (lo que hace el atajo #4155).
+        const sinFiltro = t2.collectTestReports(['backend'], {});
+        assert.equal(sinFiltro.valid, true);
+        assert.equal(sinFiltro.tests, 3);
+        assert.equal(sinFiltro.failures, 0);
+        assert.equal(sinFiltro.errors, 0);
+    } finally {
+        process.env.PIPELINE_REPO_ROOT = savedRepo;
+        process.env.CLAUDE_PROJECT_DIR = savedDir;
+        delete require.cache[require.resolve('../tester')];
+    }
 });

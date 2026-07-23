@@ -1,0 +1,18 @@
+{
+  "default_provider": "openai-codex",
+  "providers": {
+    "openai-codex": {
+      "launcher": "codex",
+      "model": "gpt-5-codex",
+      "spawn_args_template": ["exec", "--full-auto", "--model", "{model}", "{user_prompt}"],
+      "output_parser": "openai-sse",
+      "quota_error_types": ["insufficient_quota"],
+      "supports_tool_use": true,
+      "prompt_caching": { "supported": true, "auto": true },
+      "credentials_env": ["OPENAI_API_KEY"]
+    }
+  },
+  "skills": {
+    "guru": { "provider": "openai-codex" }
+  }
+}
