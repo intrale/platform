@@ -2568,11 +2568,25 @@ const QUOTA_SINDATO_REASON = {
 };
 const QUOTA_SINDATO_DEFAULT = 'Sin dato de cuota disponible para este proveedor en esta ventana.';
 
-// Umbral de color por cuota CONSUMIDA (#4884 revierte la semántica DISPONIBLE de
-// #4533): verde=holgado, ámbar=medio, rojo=agotado. 100% consumido (= 0%
-// disponible) => rojo AGOTADA. Los cortes son el complemento exacto de los de
-// #4533 (avail<20→bad, avail<50→warn) para no alterar el color de ninguna celda.
-function _mzThresholdClass(consumed){
+// Umbral de color por cuota DISPONIBLE (CA #4533): verde=holgado, ámbar=medio,
+// rojo=agotado. 0% disponible (= consumo 100%) => rojo AGOTADA.
+// Sirve a las celdas gauge de los FREE-TIERS (gemini/cerebras/nvidia/kimi), cuyo
+// available es la disponibilidad genuina (100*remaining/limit, provider-quota
+// .js:166) y NO un "100 - consumido". #4884 NO toca esta semántica (CA-5).
+function _mzThresholdClass(avail){
+    if(avail == null) return '';
+    if(avail <= 0) return 'bad';
+    if(avail < 20) return 'bad';
+    if(avail < 50) return 'warn';
+    return 'ok';
+}
+
+// Umbral de color por cuota CONSUMIDA (#4884). Espejo exacto de
+// _mzThresholdClass: los cortes son el complemento de los de #4533
+// (avail<20→bad ⇔ consumed>80→bad; avail<50→warn ⇔ consumed>50→warn), así
+// ninguna celda cambia de color respecto del render anterior. Se aplica SOLO a
+// la vista-consumido de Anthropic (ver _mzHydrateWinCell).
+function _mzConsumedClass(consumed){
     if(consumed == null) return '';
     if(consumed >= 100) return 'bad';
     if(consumed > 80) return 'bad';
@@ -2641,29 +2655,46 @@ function _mzHydrateWinCell(key, slot, b){
         return { healthy: ok };
     }
 
-    // Gauge con % CONSUMIDO real (#4884). El slice sigue viajando 'available'
-    // (motor intacto, CA-2); aca se deriva el consumido = 100 - disponible para
-    // pintar el mismo numero que reporta el CLI /usage (ej. 55% sem, 11% ses),
-    // NO su complemento. La barra crece con el consumo y el color vira a rojo al
-    // agotarse (ver _mzThresholdClass).
+    // Gauge. Dos semánticas, gateadas por proveedor (#4884 CA-5, alcance
+    // "SOLO Anthropic/Cloud"):
+    //
+    //   - ANTHROPIC -> vista CONSUMIDO. El bug de #4884 era pintar available
+    //     (= 100 - consumido) como si fuera el consumo, invirtiendo el numero
+    //     (45%/89% en vez del 55%/11% que reportan motor, CLI /usage y cloud).
+    //     Se pinta b.pct — el consumido CRUDO del motor — para evitar la doble
+    //     negacion (100 - (100 - pct)); si el slice no trajera pct se degrada
+    //     a "100 - available", que es su equivalente exacto.
+    //   - RESTO DE LOS GAUGE (gemini-google, cerebras, nvidia-nim,
+    //     kimi-moonshot) -> vista DISPONIBLE, SIN CAMBIOS. Para los free-tiers
+    //     available es la disponibilidad genuina (100*remaining/limit,
+    //     provider-quota.js:166), no un "100 - consumido": invertirla seria un
+    //     bug nuevo de la misma clase que este issue corrige.
+    //
+    // El motor y el slice quedan intactos (CA-2): esto es solo capa de render.
     if(mode === 'gauge' && b && b.available != null && Number.isFinite(Number(b.available))){
         const avail = Number(b.available);
-        const consumed = Math.max(0, Math.min(100, 100 - avail));
-        const cls = _mzThresholdClass(consumed);
+        const isConsumedView = (key === 'anthropic');
+        const rawPct = Number(b.pct);
+        const shown = isConsumedView
+            ? Math.max(0, Math.min(100, Number.isFinite(rawPct) ? rawPct : 100 - avail))
+            : avail;
+        const cls = isConsumedView ? _mzConsumedClass(shown) : _mzThresholdClass(shown);
         if(cls) cell.classList.add(cls);
-        if(barEl) barEl.style.width = consumed + '%';
-        if(pctEl) pctEl.textContent = consumed.toFixed(0) + '%';
+        if(barEl) barEl.style.width = Math.max(0, Math.min(100, shown)) + '%';
+        if(pctEl) pctEl.textContent = shown.toFixed(0) + '%';
         let rst = '';
         if(b.resetAt){
             const ts = Date.parse(b.resetAt);
             if(Number.isFinite(ts)) rst = _fmtResetShort(ts - Date.now());
         }
         if(rstEl) rstEl.textContent = rst;
-        const label = consumed >= 100 ? 'AGOTADA (100% consumido)' : consumed.toFixed(0) + '% consumido';
+        const label = isConsumedView
+            ? (shown >= 100 ? 'AGOTADA (100% consumido)' : shown.toFixed(0) + '% consumido')
+            : (shown <= 0 ? 'AGOTADA (0% disponible)' : shown.toFixed(0) + '% disponible');
         cell.setAttribute('title', meta.name + ' · ' + (b.win || '') + ': ' + label
             + (rst ? ' · reset ' + rst.replace('↻', '') : '') + ' (fuente: ' + meta.src + ').');
         cell.setAttribute('aria-label', meta.name + ' ' + (b.win || '') + ': ' + label);
-        return { healthy: consumed < 100 };
+        return { healthy: isConsumedView ? shown < 100 : shown > 0 };
     }
 
     // Sin dato explícito.
@@ -5466,8 +5497,15 @@ const MZ_PROVIDER_WINDOWS = Object.freeze({
 // (_mzHydrateWinCell) reescribe estado/color/countdown sin re-render.
 function _mzWinCell(key, slot, winLabel) {
     const cid = 'mz-qm-' + key + '-' + slot;
+    // #4884 CA-4/CA-5: el copy del skeleton acompaña la semántica REAL que va a
+    // hidratar la celda. Anthropic muestra CONSUMIDO; el resto (free-tiers gauge
+    // y Codex por eventos) sigue mostrando DISPONIBLE, así el rótulo no
+    // contradice al número en ninguna fila.
+    const hint = key === 'anthropic'
+        ? 'Se hidrata con la cuota consumida real del proveedor en esta ventana.'
+        : 'Se hidrata con la cuota disponible real del proveedor en esta ventana.';
     return `
-        <div class="mz-qm-cell" id="${cid}" title="Se hidrata con la cuota consumida real del proveedor en esta ventana.">
+        <div class="mz-qm-cell" id="${cid}" title="${escapeHtmlText(hint)}">
           <span class="mz-qm-wtag" id="${cid}-tag">${escapeHtmlText(winLabel)}</span>
           <span class="mz-qm-mini"><i id="${cid}-bar" style="width:0%"></i></span>
           <span class="mz-qm-pct" id="${cid}-pct">…</span>
@@ -5497,8 +5535,9 @@ function _mzProviderMatrix() {
 // Panel "Estado del sistema + Cuotas" (#4533). Izquierda: estado del sistema
 // COMPACTO (semáforo dot + label, sin el círculo gigante ni el chip redundante)
 // + señales accionables (anomalía, rebote de la ola, proveedores sanos).
-// Derecha: matriz de cuota CONSUMIDA por proveedor (5) × ventana (corta/larga)
-// con % consumido (#4884), color por umbral, y reset propio por bucket. Panel de
+// Derecha: matriz de cuota por proveedor (5) × ventana (corta/larga) — Anthropic
+// rinde % CONSUMIDO (#4884), el resto % DISPONIBLE (#4533) —, color por umbral
+// según la semántica de cada fila, y reset propio por bucket. Panel de
 // APOYO: compacto, no compite con "Ahora · En Ejecución" ni "Issues de la Ola".
 // El semáforo completo (con sus IDs `semaforo-*`) vive en el sink de telemetría
 // oculto para que `_missionMirrorKpis` y `tickAlertTray` sigan leyéndolo.
