@@ -24,6 +24,14 @@ const path = require('path');
 // tmp dir único, requiere fresh el módulo, y limpia al final. Esto evita
 // race entre tests que comparten `.pipeline/quota-exhausted.json`.
 
+// #4885 — HERMETICIDAD: `setFlag` pasa por el reconcile de cuota (#4865), que
+// consulta el adapter real de Codex. Desde #4885 ese adapter lee los rollouts
+// JSONL de `~/.codex/sessions`, así que sin aislar, los tests dependerían del
+// estado real de Codex en la máquina/CI (si Codex reporta cuota sobrante, el
+// reconcile vetea el flag y los asserts fallan). Apuntamos el dir a un path
+// inexistente → el adapter degrada a `no_usage_data` → fail-closed, sin veto.
+process.env.CODEX_SESSIONS_DIR = path.join(os.tmpdir(), 'no-existe-codex-sessions-4885');
+
 function freshModule(tmpDir) {
     process.env.PIPELINE_DIR_OVERRIDE = tmpDir;
     delete require.cache[require.resolve('../quota-exhausted')];
