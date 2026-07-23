@@ -334,6 +334,72 @@ test('codex: readLatestEvent devuelve null si el dir no existe', () => {
     assert.equal(adapter.readLatestEvent(path.join(os.tmpdir(), 'no-existe-codex-xyz-4885')), null);
 });
 
+// --- Aislamiento del origen (hook de tests hermeticos) -----------------------
+//
+// Los rollouts viven en `~/.codex/sessions`: estado GLOBAL de la máquina que NO
+// depende de `PIPELINE_DIR_OVERRIDE`. Las suites que ejercitan la reconciliación
+// de cuota (#4865: dispatch-billing-flag, reduced-mode) necesitan neutralizar esa
+// fuente para no depender de si el operador usó Codex hace un rato. El hook es
+// `CODEX_SESSIONS_DIR`; estos tests lo blindan como contrato.
+
+test('codex: CODEX_SESSIONS_DIR redirige el origen de los rollouts', () => {
+    const adapter = freshAdapter();
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-envdir-'));
+    const dayDir = path.join(base, '2026', '07', '23');
+    fs.mkdirSync(dayDir, { recursive: true });
+    fs.writeFileSync(
+        path.join(dayDir, 'rollout-2026-07-23T16-38-03-cccc.jsonl'),
+        makeLine(makeRateLimits({ weeklyPct: 42, includeSession: false }), EVENT_TS_ISO) + '\n');
+
+    const prev = process.env.CODEX_SESSIONS_DIR;
+    try {
+        process.env.CODEX_SESSIONS_DIR = base;
+        const r = adapter({ now: EVENT_TS_MS + 60 * 1000 });
+        assert.equal(r.adapterStatus, 'ok');
+        assert.equal(r.pct, 42, 'lee del dir apuntado por el env, no de ~/.codex/sessions');
+    } finally {
+        if (prev === undefined) delete process.env.CODEX_SESSIONS_DIR;
+        else process.env.CODEX_SESSIONS_DIR = prev;
+        fs.rmSync(base, { recursive: true, force: true });
+    }
+});
+
+test('codex: CODEX_SESSIONS_DIR a un dir vacío → no_usage_data (aísla tests)', () => {
+    const adapter = freshAdapter();
+    const prev = process.env.CODEX_SESSIONS_DIR;
+    try {
+        process.env.CODEX_SESSIONS_DIR = path.join(os.tmpdir(), 'codex-sessions-vacio-4885');
+        const r = adapter({ now: EVENT_TS_MS });
+        assert.equal(r.adapterStatus, 'no_usage_data',
+            'sin dato canónico ⇒ la reconciliación de #4865 queda fail-closed');
+        assert.equal(r.pct, null);
+    } finally {
+        if (prev === undefined) delete process.env.CODEX_SESSIONS_DIR;
+        else process.env.CODEX_SESSIONS_DIR = prev;
+    }
+});
+
+test('codex: el arg explícito codexSessionsDir gana sobre CODEX_SESSIONS_DIR', () => {
+    const adapter = freshAdapter();
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-prec-'));
+    const dayDir = path.join(base, '2026', '07', '23');
+    fs.mkdirSync(dayDir, { recursive: true });
+    fs.writeFileSync(
+        path.join(dayDir, 'rollout-2026-07-23T16-38-03-dddd.jsonl'),
+        makeLine(makeRateLimits({ weeklyPct: 33, includeSession: false }), EVENT_TS_ISO) + '\n');
+
+    const prev = process.env.CODEX_SESSIONS_DIR;
+    try {
+        process.env.CODEX_SESSIONS_DIR = path.join(os.tmpdir(), 'codex-env-ignorado-4885');
+        const r = adapter({ now: EVENT_TS_MS + 60 * 1000, codexSessionsDir: base });
+        assert.equal(r.pct, 33, 'precedencia: arg explícito → env → default ~/.codex/sessions');
+    } finally {
+        if (prev === undefined) delete process.env.CODEX_SESSIONS_DIR;
+        else process.env.CODEX_SESSIONS_DIR = prev;
+        fs.rmSync(base, { recursive: true, force: true });
+    }
+});
+
 // --- Invariantes de seguridad ------------------------------------------------
 
 test('codex: invariante offline — cero HTTP en el fuente (security CA-#6)', () => {

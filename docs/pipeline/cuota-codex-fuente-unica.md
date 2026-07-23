@@ -106,9 +106,35 @@ staleness y mostraría como fresco un dato no confiable.
 quedó obsoleto junto con la fuente SQLite (también `CODEX_SQLITE3_BIN`).
 
 > **Consecuencia operativa:** el reconcile de cuota (#4865) vuelve a recibir dato
-> real de Codex. Los tests que ejercitan `setFlag` deben fijar
-> `CODEX_SESSIONS_DIR` a un path inexistente para no depender del estado real de
-> la máquina (si Codex reporta cuota sobrante, el reconcile vetea el flag).
+> real de Codex. Los tests que ejercitan `setFlag` **o** `shouldGateSpawn` deben
+> fijar `CODEX_SESSIONS_DIR` a un path inexistente para no depender del estado
+> real de la máquina (si Codex reporta cuota sobrante, el reconcile vetea el
+> flag).
+
+### 3.1.1. Hermeticidad de los tests que reconcilian (regresión #4885)
+
+`PIPELINE_DIR_OVERRIDE` aísla el estado del pipeline, pero **no** los rollouts:
+viven en `~/.codex/sessions`, fuera del árbol del repo. Mientras la fuente era el
+SQLite (que en v0.145.0 ya no trae `used_percent`) el adapter siempre devolvía
+degradado y ningún test lo notaba. Al restaurar la lectura real, toda suite que
+escriba `quota-exhausted.json` y espere que el gate lo **honre** empezó a
+depender de si el operador usó Codex hace poco: con Codex fresco al 2% el
+reconcile vetea el gate (`provider_healthy_fresh`) y Codex resuelve como sano.
+
+Suites afectadas y ya blindadas (setean `CODEX_SESSIONS_DIR` a un dir vacío del
+tmp dentro de su helper `withTempPipeline`):
+
+| Suite | Qué asumía |
+|---|---|
+| `lib/agent-launcher/__tests__/dispatch-billing-flag.test.js` | Anthropic+Codex gateados ⇒ el fallback resuelve `cerebras` |
+| `lib/commander/__tests__/reduced-mode.test.js` | "todos los pagos gateados" ⇒ `isReducedMode=true` |
+| `lib/__tests__/quota-exhausted.test.js` | `setFlag` persiste sin veto |
+
+Regla para tests nuevos: **si el test escribe el flag de cuota y espera que se
+honre, apuntá `CODEX_SESSIONS_DIR` a un dir vacío.** Sin dato canónico el
+reconcile es fail-closed y manda el flag — que es el mundo que el test describe.
+La precedencia del origen (`codexSessionsDir` explícito → env → default) está
+cubierta por tests en `lib/__tests__/quota-adapters/openai-codex.test.js`.
 
 ## 3. Probe / dato fresco tras inactividad (CA-3)
 

@@ -54,18 +54,34 @@ function agentModels() {
     };
 }
 
+// #4885 — Aislamiento de la fuente única de cuota de Codex.
+//
+// `shouldGateSpawn` reconcilia el flag contra el adapter canónico (#4865): si el
+// adapter reporta el provider SANO con dato FRESCO, VETA el gate. El adapter de
+// Codex lee los rollouts JSONL de `~/.codex/sessions` — estado GLOBAL de la
+// máquina, ajeno al `PIPELINE_DIR_OVERRIDE`. Sin aislar, estos tests dependen de
+// si el operador usó Codex hace poco (con Codex fresco al 2% el flag se veta y
+// el fallback resuelve `openai-codex` en vez de `cerebras`).
+//
+// Apuntamos `CODEX_SESSIONS_DIR` a un dir vacío del tmp: el adapter devuelve
+// `no_usage_data` → la reconciliación es fail-closed → el flag de cuota MANDA,
+// que es exactamente el mundo que estos tests describen.
 function withTempPipeline(setupFiles, fn) {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'billing4870-'));
     const prev = process.env.PIPELINE_DIR_OVERRIDE;
+    const prevCodex = process.env.CODEX_SESSIONS_DIR;
     try {
         for (const [name, content] of Object.entries(setupFiles)) {
             fs.writeFileSync(path.join(tmp, name), content, 'utf8');
         }
         process.env.PIPELINE_DIR_OVERRIDE = tmp;
+        process.env.CODEX_SESSIONS_DIR = path.join(tmp, 'codex-sessions-vacio');
         return fn(tmp);
     } finally {
         if (prev === undefined) delete process.env.PIPELINE_DIR_OVERRIDE;
         else process.env.PIPELINE_DIR_OVERRIDE = prev;
+        if (prevCodex === undefined) delete process.env.CODEX_SESSIONS_DIR;
+        else process.env.CODEX_SESSIONS_DIR = prevCodex;
         try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best-effort */ }
     }
 }
