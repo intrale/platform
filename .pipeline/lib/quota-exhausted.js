@@ -822,7 +822,8 @@ function clearFlag(opts = {}) {
 // cuota: decide spawn/no-spawn. Antes de #4865 decidía en base a la detección
 // por substring del stdout del agente (heurística), no al valor real del
 // adapter canónico (`lib/quota-adapters`) que #4861 (Anthropic, `claude -p
-// /usage`) y #4868/#4863 (Codex, `codex.rate_limits`) consolidan como fuente
+// /usage`) y #4868/#4863 (Codex, `rate_limits` local; fuente migrada a los
+// rollouts JSONL por #4885) consolidan como fuente
 // única. Un falso positivo por substring (issue cuyo body menciona "quota
 // exhausted") marcaba anthropic agotado siendo falso y bloqueaba todo el
 // dispatch.
