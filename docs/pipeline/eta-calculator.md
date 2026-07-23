@@ -271,6 +271,44 @@ PIPELINE_ROOT_OVERRIDE=/tmp/fixture-pipeline node -e "..."
 
 ---
 
+## Higiene de la serie de velocidad de la ola (#4886)
+
+La velocidad de la ola (`calculateWaveVelocityETA`, `.pipeline/lib/eta-wave.js`) se
+persiste entre olas en `.pipeline/wave-velocity-history.jsonl`
+(`.pipeline/lib/wave-velocity-history.js`) para que una ola nueva herede una
+estimación previa (#4532). Esa serie se contaminaba con los **saltos artificiales**
+de los resets/restores: al re-hidratarse el espejo local, el avance salta de golpe
+(18% → 97% entre dos snapshots) y esa pendiente gigante —positiva, así que pasaba
+los filtros de #4532— entraba al store como si fuera ritmo real. El promedio
+resultante daba ~307 %/hora sobre una ola quieta, y la ETA derivada de ese número
+mostraba tiempos absurdos ("2 minutos").
+
+Defensas (todas activas a la vez):
+
+| Punto | Regla | Dónde |
+|-------|-------|-------|
+| Medición | Se descarta el tramo cuyo salto de avance supera `WAVE_VELOCITY_MAX_STEP_PCT` (default 25 puntos) o cuya pendiente supera el techo físico → no entra al EWMA | `eta-wave.js` |
+| Escritura | `recordSample()` rechaza toda muestra > techo (el store no se re-contamina en el próximo reinicio) | `wave-velocity-history.js` |
+| Lectura | `readSamples()` ignora las muestras implausibles ya persistidas (higiene retroactiva, sin borrar el archivo) | `wave-velocity-history.js` |
+| Poda | `pruneStore()` las elimina del disco (saneo permanente) | `wave-velocity-history.js` |
+| Consumo | `getHistoricalVelocity()` devuelve `null` si el promedio queda por encima del techo | `wave-velocity-history.js` |
+
+**Techo de plausibilidad**: `WAVE_VELOCITY_MAX_PCT_PER_MIN`, default **2 %/min**
+(= 120 %/hora). La velocidad real proviene de cierres de issues: con N issues de la
+ola, cerrar uno mueve `100/N` puntos y los cierres llegan de a pocos por hora.
+2 %/min implicaría completar una ola entera en 50 minutos — un orden de magnitud
+por encima de cualquier ritmo observado. Ambos umbrales son configurables por env
+(un valor inválido cae al default; nunca rompe el pipeline).
+
+**Degradación honesta**: con la ola quieta (snapshots suficientes pero sin pendiente
+positiva) el cálculo devuelve `{source:'fallback', reason:'non-positive-velocity'|'discontinuous-jump'}`
+en vez de caer al promedio histórico. El banner muestra la leyenda
+`sin datos suficientes` (#4325) y el ETA `—`, nunca un tiempo falso. El histórico
+sigue reservado a la ola **nueva** sin serie propia (`insufficient-snapshots` /
+`delta-too-small`), que es el caso para el que se creó en #4532.
+
+---
+
 ## Limitaciones conocidas
 
 - El modelo de paralelismo `ceil(sum / concurrency)` es una cota superior. Cuando los tiempos por issue varían mucho, el agregado puede sobreestimar. No es planning exacto; el dashboard lo declara así en la UI (subtítulo "concurrency 3").
@@ -280,5 +318,7 @@ PIPELINE_ROOT_OVERRIDE=/tmp/fixture-pipeline node -e "..."
 ---
 
 ## Historial
+
+- **2026-07-23** — Issue #4886. Velocidad/ETA de la ola falseadas por la serie histórica envenenada con saltos de reset/restore. Se agregó el techo de plausibilidad (escritura + lectura + poda), el descarte de tramos discontinuos en el EWMA y la degradación honesta con la ola quieta. Medición sobre el store real: 112 de 761 muestras eran picos artificiales (máximo 78,7 %/min ≈ 4723 %/hora); el promedio de las últimas 20 pasó de 306,8 %/hora a 51,5 %/hora.
 
 - **2026-05-25** — Issue #3492 cerrado. Librería + tests entregados en commit `6b064aee`. Integración (dashboard, home, doc) entregada en este rebote (rebote_numero 3, motivo "entrega incompleta vs sizing"). Verificado contra CA-1..CA-24.

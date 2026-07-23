@@ -151,6 +151,21 @@ const WAVE_REST_PROVIDER = 'anthropic';
 const VELOCITY_SAMPLE_MIN_INTERVAL_MS = 5 * 60 * 1000;
 let _lastVelocitySampleTs = 0;
 
+// #4886 — Salto de avance (en puntos porcentuales) que un solo tramo NO puede
+// producir por cierres reales de issues. Un reset/restore re-hidrata el espejo
+// local y el avance salta de golpe (18% → 97% = 79 puntos en un tick): eso es
+// discontinuidad de estado, no ritmo. Los tramos que lo superan se EXCLUYEN del
+// EWMA para que no contaminen ni la velocidad mostrada ni el histórico.
+// Configurable por env `WAVE_VELOCITY_MAX_STEP_PCT`.
+const WAVE_MAX_STEP_PCT = 25;
+
+function _maxStepPct() {
+    const raw = process.env.WAVE_VELOCITY_MAX_STEP_PCT;
+    if (raw === undefined || raw === null || raw === '') return WAVE_MAX_STEP_PCT;
+    const n = Number(raw);
+    return (Number.isFinite(n) && n > 0) ? n : WAVE_MAX_STEP_PCT;
+}
+
 // ─── Paths (con override por env para tests) ───────────────────────────────
 
 function pipelineRoot() {
@@ -911,6 +926,19 @@ function _projectRestForward(window, nowMs, computeMs) {
  * reposo futuro dentro del horizonte del ETA. `velocityPctPerHour` es la unidad
  * canónica (Leo 2026-07-16); `velocityPctPerMin` se conserva por compat + histórico.
  *
+ * #4886 — Higiene contra SALTOS ARTIFICIALES de reset/restore:
+ *   - Los tramos con un salto de avance > `WAVE_MAX_STEP_PCT` o con pendiente por
+ *     encima del techo físico (`maxPlausiblePctPerMin`) se EXCLUYEN del EWMA: son
+ *     re-hidratación del espejo local, no ritmo de cierres de issues.
+ *   - Con la ola QUIETA (snapshots suficientes pero sin pendiente positiva) se
+ *     devuelve `{source:'fallback'}` — el banner muestra "sin datos suficientes" y
+ *     el ETA "—" — en vez de caer al promedio histórico (que estaba envenenado y
+ *     producía ~308 %/hora sobre una ola detenida). El histórico se reserva a la
+ *     ola NUEVA sin serie propia (`insufficient-snapshots` / `delta-too-small`),
+ *     que es el caso para el que se creó en #4532.
+ *   - La ETA deriva SIEMPRE de una velocidad confiable: si no la hay, no se emite
+ *     ETA (el consumidor muestra "—"), nunca un tiempo falso.
+ *
  * @param {number} waveKey — entero positivo (`waves.getActiveWave().number`).
  * @param {number} avancePctActual — `snapshot.totalPct` (0..100).
  * @param {number} [now=Date.now()] — inyectable para tests determinísticos.
@@ -947,7 +975,10 @@ async function calculateWaveVelocityETA(waveKey, avancePctActual, now, opts = {}
         let histPctPerMin;
         try { histPctPerMin = velocityHistory.getHistoricalVelocity({}); }
         catch { histPctPerMin = null; }
-        if (!Number.isFinite(histPctPerMin) || histPctPerMin <= 0) {
+        // #4886 — defensa en profundidad: aunque el store ya filtra al leer, un
+        // promedio implausible NUNCA se muestra como estimación. Preferimos el
+        // fallback honesto ("sin datos suficientes") a un número envenenado.
+        if (!velocityHistory.isPlausibleVelocity(histPctPerMin)) {
             return { source: 'fallback', reason };
         }
         const remainingPct = 100 - avancePctActual;
@@ -1017,26 +1048,53 @@ async function calculateWaveVelocityETA(waveKey, avancePctActual, now, opts = {}
     // reloj efectivo), no la pendiente global punta-a-punta (que saltaba con cada
     // snapshot). Cada tramo descuenta su propio reposo OFF. Los tramos totalmente
     // dentro de un reposo (Δefectivo ≤ 0) se ignoran (no aportan ritmo).
+    // #4886 — Además se DESCARTAN los tramos DISCONTINUOS: un salto de avance por
+    // encima de `WAVE_MAX_STEP_PCT` (o una pendiente por encima del techo físico de
+    // %/min) es re-hidratación de un reset/restore, no ritmo de cierres. Sin este
+    // filtro el salto 18% → 97% entraba al EWMA y de ahí al histórico cross-ola.
+    const maxStepPct = _maxStepPct();
+    const maxPctPerMin = velocityHistory.maxPlausiblePctPerMin();
     let ewma = null;
+    let discardedJumps = 0;
     for (let i = 1; i < windowed.length; i++) {
         const segWall = windowed[i].ts - windowed[i - 1].ts;
         const segOff = _offOverlapMs(restWindow, windowed[i - 1].ts, windowed[i].ts);
         const segEff = segWall - segOff;
         if (!(segEff > 0)) continue; // tramo enteramente en reposo → sin ritmo medible
-        const segSlope = (windowed[i].avancePct - windowed[i - 1].avancePct) / segEff;
+        const segDeltaPct = windowed[i].avancePct - windowed[i - 1].avancePct;
+        const segSlope = segDeltaPct / segEff;
         if (!Number.isFinite(segSlope)) continue;
+        // Salto artificial: delta gigante en un tramo, o ritmo físicamente imposible.
+        if (segDeltaPct > maxStepPct || (segSlope * 60000) > maxPctPerMin) {
+            discardedJumps++;
+            continue;
+        }
         ewma = (ewma === null) ? segSlope : (WAVE_EWMA_ALPHA * segSlope + (1 - WAVE_EWMA_ALPHA) * ewma);
     }
 
-    // Clamp (CA-14): velocidad ≤ 0 / no finita (rebotes / `/wave add` que bajan el
-    // avancePct, o todos los tramos en reposo) → cae a la estimación histórica.
+    // Clamp (CA-14 + #4886): velocidad ≤ 0 / no finita (rebotes / `/wave add` que
+    // bajan el avancePct, todos los tramos en reposo, o todos los tramos descartados
+    // por artificiales) → DEGRADACIÓN HONESTA. Antes caía a la estimación histórica,
+    // que con el store envenenado producía los ~308 %/hora sobre una ola quieta. El
+    // histórico sigue siendo válido para una ola NUEVA sin serie propia
+    // (`insufficient-snapshots` / `delta-too-small`), no para una ola que YA tiene
+    // snapshots suficientes y simplemente no se está moviendo (#4532 intacto).
     if (ewma === null || !Number.isFinite(ewma) || ewma <= 0) {
-        return historicalFallback('non-positive-velocity');
+        return {
+            source: 'fallback',
+            reason: discardedJumps > 0 ? 'discontinuous-jump' : 'non-positive-velocity',
+        };
     }
 
     const velocity = ewma;                        // %/ms de reloj efectivo
     const velocityPctPerMin = velocity * 60000;   // back-compat + histórico cross-ola
     const velocityPctPerHour = velocity * 3600000; // #4734 — unidad canónica (%/hora)
+    // #4886 — Blindaje final: la velocidad mostrada NUNCA supera el techo físico.
+    // (El EWMA ya sólo promedia tramos plausibles, así que esto es una red de
+    // seguridad para futuras variantes del cálculo, no el camino esperado.)
+    if (velocityPctPerMin > maxPctPerMin) {
+        return { source: 'fallback', reason: 'implausible-velocity' };
+    }
     // #4532 — Registrar la muestra medida en el histórico cross-ola (throttled).
     // Se PERSISTE en `velocityPctPerMin` (unidad histórica de `wave-velocity-history`);
     // la conversión a %/hora se hace AL LEER (×60), sin reescribir el JSONL (#4734
@@ -1162,6 +1220,9 @@ module.exports = {
         WAVE_VELOCITY_WINDOW_MS,
         WAVE_EWMA_ALPHA,
         WAVE_REST_PROVIDER,
+        // #4886 — techo de salto discontinuo (re-hidratación de reset/restore)
+        WAVE_MAX_STEP_PCT,
+        _maxStepPct,
         _resolveRestWindow,
         _offOverlapMs,
         _projectRestForward,
