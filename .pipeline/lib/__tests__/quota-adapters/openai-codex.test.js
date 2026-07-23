@@ -304,27 +304,33 @@ test('codex: classifyBuckets mapea por window_minutes con umbral 1440', () => {
 
 // --- Lectura real de FS (integración liviana con archivos temporales) --------
 
-test('codex: readLatestEvent elige el rollout mas nuevo entre archivos de fecha', () => {
+test('codex: readLatestEvent elige el evento global más reciente entre sesiones concurrentes', () => {
     const adapter = freshAdapter();
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-rollout-'));
     const dayDir = path.join(base, '2026', '07', '23');
     fs.mkdirSync(dayDir, { recursive: true });
-    // Dos rollouts; el de nombre lexicográficamente mayor es el más nuevo.
+    // La sesión que empezó antes recibe el evento global más reciente (12:00).
+    // Ordenar sólo por filename elegiría incorrectamente 11:05/pct=20.
     fs.writeFileSync(
         path.join(dayDir, 'rollout-2026-07-23T10-00-00-aaaa.jsonl'),
-        makeLine(makeRateLimits({ weeklyPct: 11, includeSession: false }), '2026-07-23T10:00:00.000Z') + '\n');
+        makeLine(makeRateLimits({ weeklyPct: 80, includeSession: false }), '2026-07-23T12:00:00.000Z') + '\n');
     fs.writeFileSync(
-        path.join(dayDir, 'rollout-2026-07-23T16-38-03-bbbb.jsonl'),
-        makeLine(makeRateLimits({ weeklyPct: 77, includeSession: false }), EVENT_TS_ISO) + '\n');
+        path.join(dayDir, 'rollout-2026-07-23T11-00-00-bbbb.jsonl'),
+        makeLine(makeRateLimits({ weeklyPct: 20, includeSession: false }), '2026-07-23T11:05:00.000Z') + '\n');
 
     const ev = adapter.readLatestEvent(base);
     assert.ok(ev);
-    assert.equal(ev.rateLimits.primary.used_percent, 77, 'toma el rollout más nuevo');
+    assert.equal(ev.tsMs, Date.parse('2026-07-23T12:00:00.000Z'));
+    assert.equal(ev.rateLimits.primary.used_percent, 80,
+        'toma el evento más reciente, aunque esté en la sesión iniciada antes');
 
     // End-to-end vía el adapter público, apuntando al dir temporal.
-    const r = adapter({ now: EVENT_TS_MS + 60 * 1000, codexSessionsDir: base });
+    const r = adapter({
+        now: Date.parse('2026-07-23T12:01:00.000Z'),
+        codexSessionsDir: base,
+    });
     assert.equal(r.adapterStatus, 'ok');
-    assert.equal(r.pct, 77);
+    assert.equal(r.pct, 80);
 
     fs.rmSync(base, { recursive: true, force: true });
 });
