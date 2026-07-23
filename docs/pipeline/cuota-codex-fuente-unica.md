@@ -9,11 +9,13 @@ El cálculo de cuota de Codex tenía **dos subsistemas que no se hablaban**, y e
 dashboard se contradecía a sí mismo:
 
 - **Tarjeta "cuota por proveedor"** (medición real): el adapter
-  `lib/quota-adapters/openai-codex.js` lee el uso real que Codex persiste en su
-  log local (`~/.codex/logs_2.sqlite`, eventos `codex.rate_limits`, equivalente a
-  su `/status`). Cero inferencia, cero HTTP. Regla de frescura: si el último
-  evento es de hace **>1h** (Codex inactivo) devuelve `adapterStatus:'unknown'` /
-  `pct:null`.
+  `lib/quota-adapters/openai-codex.js` lee el uso real que Codex persiste
+  localmente (equivalente a su `/status`). Cero inferencia, cero HTTP. Regla de
+  frescura: si el último evento es de hace **>1h** (Codex inactivo) devuelve
+  `adapterStatus:'unknown'` / `pct:null`.
+  > **Actualizado por #4885:** la fuente local cambió con Codex v0.145.0 — ya no
+  > es el SQLite `~/.codex/logs_2.sqlite` sino los rollouts JSONL de sesión.
+  > Ver §3.1.
 - **Banner de degradación** (arriba): lee el flag `.pipeline/quota-exhausted.json`
   (escrito por `detectQuotaExhausted()` cuando un spawn real falla por límite).
   Fuente totalmente distinta.
@@ -60,14 +62,70 @@ if (q === 'critical' || _isProviderExhausted(provider, opts)) {
 Se distingue explícitamente **"sin dato por inactividad"** de **"sin límite"** y
 de **"cuota agotada"** (CA-4).
 
+## 3.1. Fuente local del dato (actualizada por #4885 — Codex v0.145.0)
+
+Codex **v0.145.0 cambió dónde persiste la cuota**. El adapter se actualizó para
+seguir el dato; la disciplina de fuente única y el invariante offline no cambian.
+
+| | Antes (Codex < 0.145.0, #4868) | Ahora (Codex ≥ 0.145.0, #4885) |
+|---|---|---|
+| Archivo | `~/.codex/logs_2.sqlite` (tabla `logs`) | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` |
+| Evento | `codex.rate_limits` en `feedback_log_body` | `payload.rate_limits` en líneas `event_msg`/`token_count` |
+| Lectura | CLI `sqlite3` vía `execFileSync` | `fs` (sin proceso externo ni dependencia nativa) |
+| Campo de reset | `reset_at` | `resets_at` |
+| Mapeo de ventanas | **posicional**: `primary`=5h, `secondary`=7d | **por `window_minutes`**: `<1440`→sesión, `≥1440`→semanal |
+
+**Por qué el mapeo dejó de ser posicional:** en v0.145.0 el uso **semanal** llega
+en `primary` (`window_minutes: 10080`) con `secondary: null`. Asumir la posición
+mandaba el semanal al bucket de sesión y dejaba el gating/pacing sin dato. La
+ventana es el único discriminante confiable.
+
+Muestra real capturada (v0.145.0):
+
+```json
+{"timestamp":"2026-07-23T19:38:32.183Z","type":"event_msg",
+ "payload":{"type":"token_count","info":{...},
+   "rate_limits":{"limit_id":"codex","limit_name":null,
+     "primary":{"used_percent":1.0,"window_minutes":10080,"resets_at":1785373521},
+     "secondary":null,"plan_type":"plus", ...}}}
+```
+
+**Mecánica de lectura:** se recorren los rollouts del más nuevo al más viejo
+(orden lexicográfico de `YYYY/MM/DD` + nombre prefijado por ISO ⇒ cronológico,
+sin `stat` por archivo, tope de 40 archivos) y se toma el **último** objeto
+`rate_limits` del primer rollout que tenga uno. Se lee sólo la **cola** del
+archivo (512 KB) para no cargar rollouts grandes; las líneas partidas por el
+corte fallan el `JSON.parse` y se descartan.
+
+**Frescura:** anclada al `timestamp` del evento en el JSONL. Un evento sin
+timestamp, o fechado **en el futuro** más allá de 5 min (clock skew / timestamp
+corrupto), degrada a `unknown` — una edad negativa atravesaría el chequeo de
+staleness y mostraría como fresco un dato no confiable.
+
+**Override:** `CODEX_SESSIONS_DIR` (env) reemplaza a `CODEX_QUOTA_LOG_PATH`, que
+quedó obsoleto junto con la fuente SQLite (también `CODEX_SQLITE3_BIN`).
+
+> **Consecuencia operativa:** el reconcile de cuota (#4865) vuelve a recibir dato
+> real de Codex. Los tests que ejercitan `setFlag` deben fijar
+> `CODEX_SESSIONS_DIR` a un path inexistente para no depender del estado real de
+> la máquina (si Codex reporta cuota sobrante, el reconcile vetea el flag).
+
 ## 3. Probe / dato fresco tras inactividad (CA-3)
 
-**Estado actual: fail-safe SQLite-only.** Tras >1h sin eventos, la tarjeta
+> **Nota #4885:** el dilema de abajo era sobre **de dónde sacar el dato**. Con
+> v0.145.0 el dato **sigue persistiéndose localmente** (rollouts, §3.1), así que
+> **no hace falta probe ni canal HTTP** para leerlo: el invariante offline se
+> mantiene. Lo que sigue vigente es el problema de **inactividad** (si Codex no
+> corre, no hay evento nuevo y el dato envejece), y para eso la política sigue
+> siendo la de esta sección.
+
+**Estado actual: fail-safe, sin probe.** Tras >1h sin eventos, la tarjeta
 muestra **"sin dato"** (no un % viejo, no "sin límite" espurio). El síntoma que
 motivó el issue —el verde espurio por inactividad— queda **eliminado**.
 
-Refrescar el `codex.rate_limits` real de forma proactiva requiere una de dos
-rutas, ambas con costo, y la **decisión de arquitectura sigue abierta**:
+Refrescar el `rate_limits` real de forma proactiva **tras un período de
+inactividad** requiere una de dos rutas, ambas con costo, y la **decisión de
+arquitectura sigue abierta**:
 
 1. **`codex exec` mínimo** (prompt trivial hardcodeado): escribe un evento fresco
    pero **consume tokens** (un turn completo). Requiere medir el costo real y
@@ -140,6 +198,15 @@ al alcanzar el límite lo **quemaría en días**. Es un anti-patrón operacional
 - `views/dashboard/home.js` — `_mzHydrateWinCell`: render de `ok`/`exhausted`/`nodata`.
 - Tests: `tests/provider-quota-codex-reconcile-4863.test.js`,
   `tests/home-quota-render-4327.test.js` (casos #4863).
+
+**#4885 (migración a rollouts JSONL):**
+
+- `lib/quota-adapters/openai-codex.js` — lectura de rollouts JSONL, clasificación
+  por `window_minutes`, `resets_at`, guard de evento futuro.
+- `lib/quota-adapters/index.js` — doc del contrato (`codexSessionsDir`).
+- Tests: `lib/__tests__/quota-adapters/openai-codex.test.js` (reescrito),
+  `lib/__tests__/dashboard-slices-kpis.test.js` y
+  `lib/__tests__/quota-exhausted.test.js` (hermeticidad vía `CODEX_SESSIONS_DIR`).
 
 ## 7. Trabajo diferido (issues de recomendación)
 
