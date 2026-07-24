@@ -44,17 +44,19 @@ test('getHistoricalVelocity promedia las últimas muestras positivas; null si no
     const root = freshRoot();
     assert.equal(hist.getHistoricalVelocity({ pipelineRoot: root }), null); // vacío → null
 
-    hist.recordSample({ pipelineRoot: root, waveKey: 1, velocityPctPerMin: 1.0, now: 1000 });
-    hist.recordSample({ pipelineRoot: root, waveKey: 1, velocityPctPerMin: 3.0, now: 2000 });
-    // Promedio de las dos muestras = 2.0.
-    assert.equal(hist.getHistoricalVelocity({ pipelineRoot: root }), 2.0);
+    // #4886 — muestras dentro del techo de plausibilidad (antes 1.0 y 3.0; 3.0
+    // supera el techo físico de 2 %/min y hoy se descarta al escribir).
+    hist.recordSample({ pipelineRoot: root, waveKey: 1, velocityPctPerMin: 0.5, now: 1000 });
+    hist.recordSample({ pipelineRoot: root, waveKey: 1, velocityPctPerMin: 1.5, now: 2000 });
+    // Promedio de las dos muestras = 1.0.
+    assert.equal(hist.getHistoricalVelocity({ pipelineRoot: root }), 1.0);
 });
 
 test('getHistoricalVelocity puede excluir la ola actual (estimación de olas previas)', () => {
     const root = freshRoot();
     hist.recordSample({ pipelineRoot: root, waveKey: 1, velocityPctPerMin: 2.0, now: 1000 });
     hist.recordSample({ pipelineRoot: root, waveKey: 1, velocityPctPerMin: 2.0, now: 2000 });
-    hist.recordSample({ pipelineRoot: root, waveKey: 2, velocityPctPerMin: 9.0, now: 3000 });
+    hist.recordSample({ pipelineRoot: root, waveKey: 2, velocityPctPerMin: 1.2, now: 3000 });
     // Excluyendo la ola 2, sólo quedan las muestras de la ola 1 (promedio 2.0).
     assert.equal(hist.getHistoricalVelocity({ pipelineRoot: root, excludeWaveKey: 2 }), 2.0);
 });
@@ -66,12 +68,12 @@ test('readSamples tolera líneas corruptas y descarta no-positivas persistidas',
         '{"ts":1000,"waveKey":1,"velocityPctPerMin":1.5}',
         'no-es-json',
         '{"ts":2000,"waveKey":1,"velocityPctPerMin":-2}',   // negativa → descartada
-        '{"ts":3000,"waveKey":2,"velocityPctPerMin":2.5}',
+        '{"ts":3000,"waveKey":2,"velocityPctPerMin":1.8}',
         '',
     ].join('\n'));
     const samples = hist.readSamples({ pipelineRoot: root });
     assert.equal(samples.length, 2);
-    assert.deepEqual(samples.map((s) => s.velocityPctPerMin), [1.5, 2.5]);
+    assert.deepEqual(samples.map((s) => s.velocityPctPerMin), [1.5, 1.8]);
 });
 
 test('pruneStore respeta retención temporal', () => {

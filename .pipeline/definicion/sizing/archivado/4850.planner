@@ -1,0 +1,37 @@
+issue: 4850
+fase: sizing
+pipeline: definicion
+resultado: aprobado
+sizing: medio
+notas: |
+  Dimensionamiento: medio.
+
+  Evidencia revisada en esta pasada:
+  - Issue GitHub #4850: historia hija de #4803 para conectar el descriptor completo
+    al backend de onboarding.
+  - Labels actuales del issue: ya incluye `size:medium`.
+  - Contexto previo:
+    `.pipeline/definicion/analisis/procesado/4850.guru`,
+    `.pipeline/definicion/analisis/procesado/4850.security`,
+    `.pipeline/definicion/criterios/procesado/4850.architect`,
+    `.pipeline/definicion/criterios/procesado/4850.po`.
+  - Pasada previa del planner en
+    `.pipeline/definicion/sizing/listo/4850.planner`, que ya habia aprobado
+    sizing medio.
+
+  Justificacion:
+  - El alcance esperado toca 2 archivos principales:
+    `.pipeline/lib/project-bootstrap.js` y
+    `.pipeline/lib/product-control-request.js`.
+  - Requiere tests asociados en
+    `.pipeline/lib/__tests__/project-bootstrap.test.js` y
+    `.pipeline/lib/__tests__/product-control-request.test.js`.
+  - Puede ajustar la respuesta dry-run/API interna, pero no implica migraciones,
+    breaking changes publicos ni multiples modulos.
+  - No corresponde split: el bloqueo funcional por #4849 no aumenta el tamano
+    de esta historia; solo condiciona cuando puede avanzar con criterios firmes.
+
+  Dependencia observada:
+  - #4849 sigue OPEN al momento de esta pasada, segun `gh issue view 4849`.
+    Esto ya fue tratado por analisis/criterios como dependency_block, pero sizing
+    puede cerrarse como medio sin dividir.

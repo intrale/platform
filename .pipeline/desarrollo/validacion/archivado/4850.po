@@ -1,0 +1,5 @@
+issue: 4850
+fase: validacion
+pipeline: desarrollo
+repo: intrale/platform
+resultado: aprobado
