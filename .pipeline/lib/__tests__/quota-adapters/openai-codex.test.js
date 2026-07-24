@@ -166,15 +166,16 @@ test('codex: evento fechado en el futuro -> degradado (clock skew, no se da por 
     assert.match(r.errorReason, /futuro|skew/i);
 });
 
-test('codex: tolera un skew chico hacia el futuro (reloj levemente adelantado)', () => {
+test('codex: cualquier timestamp futuro degrada, incluso un skew chico', () => {
     const adapter = freshAdapter();
     const now = EVENT_TS_MS - 60 * 1000; // evento 1 min en el futuro.
     const r = adapter({
         now,
         readEventImpl: fakeReader({ tsMs: EVENT_TS_MS, rateLimits: makeRateLimits({ weeklyPct: 50 }) }),
     });
-    assert.equal(r.adapterStatus, 'ok', 'skew menor a la tolerancia sigue siendo válido');
-    assert.equal(r.pct, 50);
+    assert.equal(r.adapterStatus, 'unknown');
+    assert.equal(r.pct, null);
+    assert.match(r.errorReason, /futuro|skew/i);
 });
 
 test('codex: sin rollout legible -> no_usage_data (pct null, NO 0%)', () => {
@@ -214,13 +215,13 @@ test('codex: solo sesion legible -> sesion poblada, semanal sin dato (status unk
     assert.equal(r.session.pct, 33);
 });
 
-test('codex: bucket sin window_minutes se trata como sesion (no fabrica semanal falso)', () => {
+test('codex: bucket sin window_minutes degrada sin clasificar por posición', () => {
     const adapter = freshAdapter();
     const rateLimits = { primary: { used_percent: 40, resets_at: 1783552546 } };
     const r = adapter({ now: NOW_FRESH, readEventImpl: fakeReader({ tsMs: EVENT_TS_MS, rateLimits }) });
-    assert.equal(r.adapterStatus, 'ok');
+    assert.equal(r.adapterStatus, 'error');
     assert.equal(r.pct, null, 'ventana desconocida no alimenta el semanal/gating');
-    assert.equal(r.session.pct, 40);
+    assert.equal(r.session.pct, null);
 });
 
 test('codex: used_percent > 100 se capea a 100', () => {
