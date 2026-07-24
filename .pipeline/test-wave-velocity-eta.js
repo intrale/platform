@@ -85,9 +85,14 @@ async function run() {
     // ── CA-1 — el restante DECRECE entre dos lecturas ────────────────────────
     test('CA-1: el restante decrece entre dos lecturas con avancePct creciente', async () => {
         const root = freshRoot();
-        const tA = BASE + 9 * MIN;
+        // #4886 (rev-1) — spans llevados a ≥ WAVE_VELOCITY_MIN_SPAN_MS (15 min).
+        // Los 9 min originales quedaban por debajo de la ventana de agregación
+        // mínima que ahora exige la métrica (medir %/min sobre una señal
+        // cuantizada con menos de 15 min no informa el ritmo real). La propiedad
+        // que valida el test — el restante DECRECE — es la misma.
+        const tA = BASE + 20 * MIN;
         const tB = BASE + 32 * MIN;
-        // Lectura 1 (10:09): existen dos snapshots (10:00,18) y (10:09,21).
+        // Lectura 1 (10:20): existen dos snapshots (10:00,18) y (10:20,21).
         seed(root, 4, [[BASE, 18], [tA, 21]]);
         const r1 = await etaWave.calculateWaveVelocityETA(4, 21, tA);
         assert(r1.source === 'velocity', `r1 esperaba velocity, fue ${r1.source}`);
@@ -102,13 +107,14 @@ async function run() {
     // ── CA-5 — convergencia: hora meta no retrocede con velocidad estable ────
     test('CA-5: convergencia — con velocidad estable la hora meta no retrocede', async () => {
         const root = freshRoot();
-        // Velocidad constante de 1%/min: (0,10),(10,20),(20,30).
-        const tA = BASE + 10 * MIN;
-        const tB = BASE + 20 * MIN;
-        seed(root, 4, [[BASE, 10], [tA, 20]]);
-        const rA = await etaWave.calculateWaveVelocityETA(4, 20, tA);
-        seed(root, 4, [[tB, 30]]);
-        const rB = await etaWave.calculateWaveVelocityETA(4, 30, tB);
+        // Velocidad constante de 1%/min: (0,10),(20,30),(40,50). #4886 (rev-1):
+        // pasos de 20 min (≥ ventana de agregación mínima), misma velocidad.
+        const tA = BASE + 20 * MIN;
+        const tB = BASE + 40 * MIN;
+        seed(root, 4, [[BASE, 10], [tA, 30]]);
+        const rA = await etaWave.calculateWaveVelocityETA(4, 30, tA);
+        seed(root, 4, [[tB, 50]]);
+        const rB = await etaWave.calculateWaveVelocityETA(4, 50, tB);
         assert(rA.source === 'velocity' && rB.source === 'velocity', 'ambas deben ser velocity');
         // La hora meta no debe alejarse (converge). Tolerancia de 1 min por redondeos.
         assert(rB.absoluteMs <= rA.absoluteMs + 1 * MIN,
@@ -151,9 +157,11 @@ async function run() {
     // ── CA-14 — velocidad ≤ 0 por rebote → clamp/fallback, sin NaN/Inf/neg ───
     test('CA-14: velocidad ≤ 0 por rebote → fallback, sin NaN/Infinity/negativo', async () => {
         const root = freshRoot();
-        // avancePct baja (rebote / /wave add): 30% → 20%.
-        seed(root, 4, [[BASE, 30], [BASE + 10 * MIN, 20]]);
-        const r = await etaWave.calculateWaveVelocityETA(4, 20, BASE + 10 * MIN);
+        // avancePct baja (rebote / /wave add): 30% → 20%. #4886 (rev-1): span de
+        // 20 min para que el caso evaluado sea la pendiente NEGATIVA y no el
+        // recorte previo por ventana de agregación insuficiente.
+        seed(root, 4, [[BASE, 30], [BASE + 20 * MIN, 20]]);
+        const r = await etaWave.calculateWaveVelocityETA(4, 20, BASE + 20 * MIN);
         assert(r.source === 'fallback', `esperaba fallback, fue ${r.source}`);
         assert(r.reason === 'non-positive-velocity', `reason=${r.reason}`);
         // No hay remaining/absolute degenerados expuestos.
@@ -179,11 +187,11 @@ async function run() {
     // ── Ola completada (100%) — restante 0, meta = ahora ─────────────────────
     test('avancePct ≥ 100 → restante 0, meta = ahora', async () => {
         const root = freshRoot();
-        seed(root, 4, [[BASE, 90], [BASE + 10 * MIN, 100]]);
-        const r = await etaWave.calculateWaveVelocityETA(4, 100, BASE + 10 * MIN);
+        seed(root, 4, [[BASE, 90], [BASE + 20 * MIN, 100]]);
+        const r = await etaWave.calculateWaveVelocityETA(4, 100, BASE + 20 * MIN);
         assert(r.source === 'velocity', `esperaba velocity, fue ${r.source}`);
         assert(r.remainingMs === 0, `remainingMs=${r.remainingMs} esperaba 0`);
-        assert(r.absoluteMs === BASE + 10 * MIN, 'meta = ahora');
+        assert(r.absoluteMs === BASE + 20 * MIN, 'meta = ahora');
     });
 }
 

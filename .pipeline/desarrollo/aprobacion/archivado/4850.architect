@@ -1,0 +1,44 @@
+issue: 4850
+fase: aprobacion
+pipeline: desarrollo
+resultado: aprobado
+notas: |
+  ## Arquitecto Fase 2 (aprobacion) — issue #4850
+
+  Gate architect evaluado vía el entry point gateado `evaluateGate`
+  (NUNCA verifyPrAdherence directo, para respetar kill switch y evitar
+  el rebote de issues sanos — causa raíz #4246/#4235/#3954).
+
+  Config vigente (.pipeline/config.yaml → sección architect):
+    enabled: false
+    gate_mode: dry-run
+    go_live_date: 2026-05-29T00:00:00Z
+
+  Resultado del gate (empírico, esta pasada):
+    $ node -e "verify.evaluateGate({issue:4850, pr_number:null, config, issue_created_at:'2026-07-22T00:08:44Z'})"
+    decision       = aprobado
+    skipped        = true
+    gate_mode      = disabled
+    motivo         = "architect Fase 2 deshabilitado (kill switch: architect.enabled !== true) —
+                      verificación de adherencia omitida"
+    structured_comment = null
+
+  Por rollout actual (enabled=false, dry-run), el gate SIEMPRE aprueba
+  salteando la verificación de adherencia. Además, en `aprobacion` todavía
+  no existe PR (lo crea la fase `entrega`, posterior): `gh pr list` para
+  #4850 devolvió []. Y con el gate OFF, Fase 1 nunca produjo receta firmada
+  (## Detalles Técnicos) — no hay contrato canónico contra el cual verificar
+  el diff. No se postea comment ni se rebota.
+
+  Dictamen de integridad técnica: persistido SIEMPRE (CA-1/CA-3, rama de
+  excepción CA-5 = N/A) vía writeDeliverable →
+    .pipeline/assets/docs/4850/architect-aprobacion-4850.md (491 bytes, indexado)
+
+  Auditoría: registrada en architect-tokens.jsonl con
+    phase=aprobacion, decision=signoff.
+
+  Contexto del issue (informativo, verificado en comments): #4850 estuvo
+  bloqueado por dependencia #4849 (contrato/derivadores del descriptor);
+  #4849 ya cerró/mergeó (PR #4855), guru re-aprobó post-desbloqueo y
+  security aprobó sin hallazgos (70/70 tests, 6 negativos 400 + 1 positivo
+  defaults). El cambio propio de #4850 es cobertura negativa de backend.

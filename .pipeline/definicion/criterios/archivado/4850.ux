@@ -1,0 +1,49 @@
+issue: 4850
+fase: criterios
+pipeline: definicion
+resultado: aprobado
+notas: |
+  ## UX - criterios
+
+  Veredicto UX: aprobado sin entrega de assets.
+
+  #4850 es una historia de backend/infra sobre validaciones y defaults del
+  onboarding en `.pipeline/lib/project-bootstrap.js` y
+  `.pipeline/lib/product-control-request.js`. El issue tiene label `area:infra`
+  y no tiene labels `app:*`, por lo que no introduce pantallas, branding,
+  iconografia, componentes visuales ni flujos de usuario final.
+
+  No corresponde producir SVG/PNG/mockups ni criterios visuales adicionales.
+
+  Evidencia verificada:
+
+  $ gh issue view 4850 --repo intrale/platform --json title,body,labels,comments
+  title=[Split de #4803] Backend de onboarding interpreta descriptor completo y rechaza payloads invalidos
+  labels=enhancement, area:infra, needs-definition, priority:medium, size:medium
+
+  $ gh issue view 4849 --repo intrale/platform --json number,title,state
+  state=OPEN
+  title=[Split de #4803] Contrato y derivadores del descriptor completo de producto
+
+  Contexto de fases previas:
+  - `.pipeline/definicion/analisis/procesado/4850.guru` rechazo por
+    `dependency_block` y `depende_de: [4849]`.
+  - `.pipeline/definicion/criterios/procesado/4850.architect` rechazo porque no
+    puede producir receta tecnica firmable sin los entregables de #4849 en HEAD.
+  - `.pipeline/definicion/criterios/procesado/4850.po` rechazo por dependencia
+    funcional abierta con #4849.
+
+  Consideraciones UX para desarrollo/verificacion:
+  - Mantener respuestas de error claras y accionables para payloads invalidos
+    (`400`) sin filtrar datos sensibles.
+  - Preservar nombres de campos comprensibles en el resumen `dryRun`,
+    especialmente `providerOrder` efectivo y politica de PR resuelta.
+  - Evitar exponer credenciales crudas o detalles internos en logs/audit/
+    respuestas humanas.
+
+  Comentario UX publicado:
+  https://github.com/intrale/platform/issues/4850#issuecomment-5040462901
+
+  No se crearon issues de recomendacion: no se detectaron oportunidades UX
+  independientes. El bloqueo activo registrado por otros roles es una
+  dependencia funcional, no un problema de experiencia visual.

@@ -1,0 +1,29 @@
+issue: 4850
+fase: validacion
+pipeline: desarrollo
+resultado: aprobado
+notas: |
+  Re-entrada tras desbloqueo. El dependency_block previo era por #4849 OPEN.
+  Verificacion empirica de esta pasada (contra origin/main = base de desarrollo):
+
+  #4849 CLOSED/COMPLETED, mergeado por PR #4855.
+
+  $ git show origin/main:.pipeline/lib/project-descriptor.js | grep -nE 'deriveProviderOrder|DEFAULT_PROVIDER_ORDER'
+  60:const DEFAULT_PROVIDER_ORDER = Object.freeze([...])
+  541:function deriveProviderOrder(descriptor)
+  845:  deriveProviderOrder,   (exportado)
+
+  $ git show origin/main:.pipeline/descriptors/intrale-platform.json
+  providers.order y pullRequests.policy presentes.
+
+  $ git show origin/main:.pipeline/lib/project-bootstrap.js | grep -nE 'providerOrder|pullRequestPolicy'
+  219:    providerOrder: descriptorLib.deriveProviderOrder(descriptor),
+  220:    pullRequestPolicy: descriptorLib.derivePullRequestPolicy(descriptor),
+
+  El contrato/derivadores canonicos que #4850 debe consumir ya viven en HEAD de origin/main.
+  Contexto tecnico suficiente, sin blockers abiertos. Requisitos de seguridad del architect
+  (A01/A03/A10/A02/A08) vigentes como criterios de cierre.
+
+  ADVERTENCIA para desarrollo: ramificar desde origin/main actualizado; el worktree local
+  agent/4834-* esta stale y NO contiene los derivadores (verificado: deriveProviderOrder ausente
+  en el checkout local, presente en origin/main).
