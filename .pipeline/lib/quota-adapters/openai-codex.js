@@ -77,7 +77,6 @@ const DEFAULT_STALENESS_MS = (() => {
 // adelante que esto no es confiable (clock skew, timestamp corrupto, rollout
 // copiado de otra máquina) y NO debe pasar como "fresco": una edad negativa
 // atraviesa el chequeo de staleness sin filtrarse.
-const FUTURE_SKEW_TOLERANCE_MS = 5 * 60 * 1000; // 5 min
 
 // Frontera semana/sesión por `window_minutes`. La ventana de sesión de Codex es
 // de 5h (300 min); la semanal es de 7d (10080 min). Cualquier ventana >= 1 día
@@ -293,6 +292,7 @@ function classifyBuckets(rateLimits) {
         const resetAt = Number.isFinite(resetRaw) && resetRaw > 0 ? resetRaw : null;
         const wmRaw = Number(b.window_minutes);
         const windowMinutes = Number.isFinite(wmRaw) && wmRaw > 0 ? wmRaw : null;
+        if (windowMinutes == null) continue;
         const bucket = {
             usedPercent: Math.min(100, usedPercent),
             resetAt,
@@ -301,7 +301,7 @@ function classifyBuckets(rateLimits) {
         // Sin window_minutes no podemos clasificar por ventana: lo tratamos como
         // SESIÓN (bucket rolling corto) para no fabricar un semanal falso que
         // alimente el gating/pacing con un número de ventana desconocida.
-        const isWeekly = windowMinutes != null && windowMinutes >= WEEKLY_WINDOW_MIN_THRESHOLD;
+        const isWeekly = windowMinutes >= WEEKLY_WINDOW_MIN_THRESHOLD;
         if (isWeekly) {
             if (!result.weekly) result.weekly = bucket;
         } else if (!result.session) {
@@ -369,7 +369,7 @@ function openaiCodexAdapter(sessionData) {
     // rollout de otra máquina. Una edad negativa pasaría el chequeo de staleness
     // de abajo y mostraría como "fresco" un dato NO confiable. Toleramos un
     // margen chico de desfasaje de reloj; más allá, degradamos.
-    if (-ageMs > FUTURE_SKEW_TOLERANCE_MS) {
+    if (ageMs < 0) {
         const aheadMin = Math.round(-ageMs / 60000);
         return emptyResult('openai-codex', ADAPTER_STATUS.UNKNOWN,
             `Cuota Codex: evento rate_limits fechado ~${aheadMin} min en el futuro `
