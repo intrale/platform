@@ -154,8 +154,22 @@ test('#4900 rebote QA: el CSS de evento excluye el estado fresco (barra+color vi
     // (no el DOM falso) para que un revert del CSS rompa la suite.
     assert.match(HOME_SRC, /\.mz-qm-cell\.mz-qm-event:not\(\.mz-qm-fresh\)\s+\.mz-qm-mini/,
         'el ocultado de la mini-barra debe excluir .mz-qm-fresh');
-    assert.match(HOME_SRC, /\.mz-qm-cell\.mz-qm-event:not\(\.mz-qm-fresh\)\s+\.mz-qm-pct/,
-        'el override de color info debe excluir .mz-qm-fresh');
+});
+
+test('#4900 rebote PO: los estados categóricos coinciden con el mockup (exhausted rojo, sin dato gris)', () => {
+    // Regresión del rechazo del PO (render vs mockup codex-quota-states.svg):
+    // "tope activo" (exhausted) debe ser texto ROJO #f85149 y "sin dato" (nodata)
+    // texto GRIS #6e7681, NO el chip azul info que aplicaba antes. Se lee la fuente
+    // real para que revertir el color rompa la suite.
+    // exhausted → rojo crítico (--in-bad / #f85149), sin chip azul.
+    assert.match(HOME_SRC, /\.mz-qm-cell\.mz-qm-event\.mz-qm-exhausted\s+\.mz-qm-pct\s*\{[^}]*color:\s*var\(--in-bad,#f85149\)/,
+        'exhausted debe renderizarse en rojo #f85149 (mockup), no como chip azul');
+    // nodata → gris neutro (--in-fg-soft / #6e7681).
+    assert.match(HOME_SRC, /\.mz-qm-cell\.mz-qm-nodata\s+\.mz-qm-pct\s*\{[^}]*color:\s*var\(--in-fg-soft,#6e7681\)/,
+        'sin dato debe renderizarse en gris #6e7681 (mockup)');
+    // El chip azul info (#58a6ff) ya NO debe aplicar a los estados categóricos.
+    assert.doesNotMatch(HOME_SRC, /\.mz-qm-cell\.mz-qm-event:not\(\.mz-qm-fresh\)\s+\.mz-qm-pct\s*\{[^}]*#58a6ff/,
+        'ningún estado categórico debe quedar con el chip azul info preexistente');
 });
 
 test('#4900: Codex fresco cubre límites 0/100 y umbrales cromáticos', () => {
@@ -177,8 +191,11 @@ test('#4863: mode event eventState "exhausted" → "tope activo", NO sano', () =
     assert.equal(els[cid + '-pct'].textContent, 'tope activo', 'agotada → "tope activo"');
     assert.ok(!/sin límite/.test(els[cid + '-pct'].textContent), 'NUNCA "sin límite" cuando el banner dice agotada');
     // exhausted es categórico: NO debe llevar mz-qm-fresh, así el override de
-    // evento (chip info, sin barra) sigue aplicando en el render real.
+    // evento (sin barra) sigue aplicando en el render real.
     assert.ok(!els[cid]._classes.has('mz-qm-fresh'), 'exhausted no es estado fresco');
+    // #4900 rebote PO: marca mz-qm-exhausted para que el CSS lo pinte en rojo
+    // (#f85149, mockup) en vez del chip azul info preexistente.
+    assert.ok(els[cid]._classes.has('mz-qm-exhausted'), 'exhausted marca mz-qm-exhausted (color rojo del mockup)');
     assert.equal(r.healthy, false);
 });
 

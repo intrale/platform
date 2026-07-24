@@ -1845,15 +1845,22 @@ function homeStyles() {
 .mz-qm-cell.ok   .mz-qm-pct { color: var(--in-ok,#3fb950); }   .mz-qm-cell.ok   .mz-qm-mini i { background: var(--in-ok,#3fb950); }
 .mz-qm-cell.warn .mz-qm-pct { color: var(--in-warn,#d29922); } .mz-qm-cell.warn .mz-qm-mini i { background: var(--in-warn,#d29922); }
 .mz-qm-cell.bad  .mz-qm-pct { color: var(--in-bad,#f85149); }  .mz-qm-cell.bad  .mz-qm-mini i { background: var(--in-bad,#f85149); }
-/* El override de evento (barra oculta + chip color info) aplica sólo a los
-   estados categóricos (exhausted → "tope activo"; sin dato). El estado fresco
-   de Codex se marca con .mz-qm-fresh y queda EXCLUIDO para que la mini-barra y
-   el color por umbral (ok/warn/bad) que setea el JS se vean en el render real
-   (#4900 rebote QA — antes .mz-qm-event neutralizaba barra y color). */
+/* El override de evento oculta la mini-barra y el reset en los estados
+   categóricos (exhausted → "tope activo"; nodata → "sin dato"). El estado
+   fresco de Codex se marca con .mz-qm-fresh y queda EXCLUIDO para que la
+   mini-barra y el color por umbral (ok/warn/bad) que setea el JS se vean en el
+   render real (#4900 rebote QA — antes .mz-qm-event neutralizaba barra y color). */
 .mz-qm-cell.mz-qm-event:not(.mz-qm-fresh) .mz-qm-mini, .mz-qm-cell.mz-qm-event:not(.mz-qm-fresh) .mz-qm-rst { display: none; }
-.mz-qm-cell.mz-qm-event:not(.mz-qm-fresh) .mz-qm-pct { color: var(--in-info,#58a6ff); background: rgba(88,166,255,.14); border-radius: 5px; padding: 2px 7px; font-size: 9.5px; font-weight: 700; min-width: 0; }
+/* exhausted → "tope activo": texto rojo crítico, sin chip de fondo. El mockup
+   acordado (assets/mockups/4900/codex-quota-states.svg) lo define en #f85149 con
+   precedencia máxima; antes se pintaba como chip azul info y NO coincidía con el
+   contrato visual (#4900 rebote PO: render vs mockup). */
+.mz-qm-cell.mz-qm-event.mz-qm-exhausted .mz-qm-pct { color: var(--in-bad,#f85149); font-weight: 800; font-size: 10px; min-width: 0; }
+/* nodata → "sin dato": texto neutro gris (#6e7681), sin barra ni chip. El mockup
+   lo define como texto atenuado; antes la regla de evento azul le ganaba por
+   especificidad y lo pintaba azul (#4900 rebote PO: render vs mockup). */
 .mz-qm-cell.mz-qm-nodata .mz-qm-mini, .mz-qm-cell.mz-qm-nodata .mz-qm-rst { display: none; }
-.mz-qm-cell.mz-qm-nodata .mz-qm-pct { color: var(--in-fg-soft,#6e7681); font-weight: 600; font-size: 10px; }
+.mz-qm-cell.mz-qm-nodata .mz-qm-pct { color: var(--in-fg-soft,#6e7681); font-weight: 600; font-size: 10px; min-width: 0; }
 
 /* --- Grilla 2-col + paneles --- */
 .mz-grid { display: grid; grid-template-columns: 1fr 1.62fr; gap: 16px; align-items: start; }
@@ -2606,7 +2613,7 @@ function _mzHydrateWinCell(key, slot, b){
     const barEl = document.getElementById(cid + '-bar');
     const pctEl = document.getElementById(cid + '-pct');
     const rstEl = document.getElementById(cid + '-rst');
-    cell.classList.remove('ok', 'warn', 'bad', 'mz-qm-event', 'mz-qm-nodata', 'mz-qm-fresh');
+    cell.classList.remove('ok', 'warn', 'bad', 'mz-qm-event', 'mz-qm-nodata', 'mz-qm-fresh', 'mz-qm-exhausted');
     if(tagEl && b && b.win) tagEl.textContent = b.win;
     const meta = MZ_PROVIDER_META[key] || { name: key, src: '' };
     const mode = b && b.mode;
@@ -2622,6 +2629,9 @@ function _mzHydrateWinCell(key, slot, b){
         let evState = b && b.eventState;
         if(!evState) evState = (!b || b.eventOk !== false) ? 'ok' : 'exhausted';
         if(evState === 'exhausted'){
+            // Estado categórico crítico: el mockup #4900 lo pide en rojo (#f85149),
+            // no como chip azul info. Se marca con mz-qm-exhausted para el CSS.
+            cell.classList.add('mz-qm-exhausted');
             if(pctEl) pctEl.textContent = 'tope activo';
             if(rstEl) rstEl.textContent = '';
             cell.setAttribute('title', meta.name + ': tope de cuota activo — el proveedor rechazó por límite.');
