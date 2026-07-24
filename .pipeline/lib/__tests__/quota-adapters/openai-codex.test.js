@@ -238,6 +238,76 @@ test('codex: used_percent > 100 se capea a 100', () => {
     assert.equal(r.status, 'critical');
 });
 
+test('codex: used_percent conserva 0 numérico y rechaza tipos coercibles', () => {
+    const adapter = freshAdapter();
+    for (const invalid of [null, '', '0', false, true, NaN, Infinity, -Infinity]) {
+        const buckets = adapter.classifyBuckets({
+            primary: { used_percent: invalid, window_minutes: 10080, resets_at: 1 },
+        });
+        assert.equal(buckets.weekly, null, `no debe aceptar ${String(invalid)}`);
+    }
+    const zero = adapter.classifyBuckets({
+        primary: { used_percent: 0, window_minutes: 10080, resets_at: 1 },
+    });
+    assert.equal(zero.weekly.usedPercent, 0);
+});
+
+test('codex: normaliza porcentajes fuera de rango a [0,100]', () => {
+    const adapter = freshAdapter();
+    const low = adapter.classifyBuckets({
+        primary: { used_percent: -4, window_minutes: 300, resets_at: 1 },
+    });
+    const high = adapter.classifyBuckets({
+        primary: { used_percent: 104, window_minutes: 10080, resets_at: 1 },
+    });
+    assert.equal(low.session.usedPercent, 0);
+    assert.equal(high.weekly.usedPercent, 100);
+});
+
+test('codex: window_minutes y resets_at no se coercionan', () => {
+    const adapter = freshAdapter();
+    for (const invalidWindow of [null, '10080', true, 0, -1, NaN, Infinity]) {
+        const buckets = adapter.classifyBuckets({
+            primary: { used_percent: 42, window_minutes: invalidWindow, resets_at: 1 },
+        });
+        assert.equal(buckets.weekly, null);
+        assert.equal(buckets.session, null);
+    }
+    const buckets = adapter.classifyBuckets({
+        primary: { used_percent: 42, window_minutes: 10080, resets_at: '1784002587' },
+        secondary: { used_percent: 10, window_minutes: 300, resets_at: false },
+    });
+    assert.equal(buckets.weekly.resetAt, null);
+    assert.equal(buckets.session.resetAt, null);
+});
+
+test('codex: resets_at inválido no fabrica una fecha', () => {
+    const adapter = freshAdapter();
+    const r = adapter({
+        now: NOW_FRESH,
+        readEventImpl: fakeReader({
+            tsMs: EVENT_TS_MS,
+            rateLimits: {
+                primary: { used_percent: 42, window_minutes: 10080, resets_at: '1784002587' },
+            },
+        }),
+    });
+    assert.equal(r.pct, 42);
+    assert.equal(r.nextResetAt, null);
+    assert.equal(r.weeklyResetsAtReported, null);
+
+    const outOfRange = adapter({
+        now: NOW_FRESH,
+        readEventImpl: fakeReader({
+            tsMs: EVENT_TS_MS,
+            rateLimits: {
+                primary: { used_percent: 42, window_minutes: 10080, resets_at: Number.MAX_VALUE },
+            },
+        }),
+    });
+    assert.equal(outOfRange.nextResetAt, null);
+});
+
 test('codex: mantiene shape canonico (todos los campos presentes)', () => {
     const adapter = freshAdapter();
     const r = adapter({ now: NOW_FRESH, readEventImpl: fakeReader(null) });
@@ -305,6 +375,23 @@ test('codex: classifyBuckets mapea por window_minutes con umbral 1440', () => {
 
 // --- Lectura real de FS (integración liviana con archivos temporales) --------
 
+test('codex: helpers cubren entradas inválidas, duplicados y cortes de status', () => {
+    const adapter = freshAdapter();
+    assert.deepEqual(adapter.classifyBuckets(null), { session: null, weekly: null });
+    assert.deepEqual(adapter.classifyBuckets({ primary: 'inválido' }), { session: null, weekly: null });
+    const duplicate = adapter.classifyBuckets({
+        primary: { used_percent: 11, window_minutes: 10080, resets_at: 1 },
+        secondary: { used_percent: 99, window_minutes: 10080, resets_at: 2 },
+    });
+    assert.equal(duplicate.weekly.usedPercent, 11);
+    assert.equal(adapter.statusFromPct(49), 'ok');
+    assert.equal(adapter.statusFromPct(50), 'normal');
+    assert.equal(adapter.statusFromPct(75), 'warning');
+    assert.equal(adapter.statusFromPct(90), 'critical');
+    assert.deepEqual(adapter.listRecentRolloutFiles(null, 40), []);
+    assert.equal(adapter.extractLatestRateLimits('{"payload":null,"rate_limits":true}\n'), null);
+});
+
 test('codex: readLatestEvent elige el evento global más reciente entre sesiones concurrentes', () => {
     const adapter = freshAdapter();
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-rollout-'));
@@ -341,6 +428,70 @@ test('codex: readLatestEvent devuelve null si el dir no existe', () => {
     assert.equal(adapter.readLatestEvent(path.join(os.tmpdir(), 'no-existe-codex-xyz-4885')), null);
 });
 
+test('codex: enumera como máximo 40 rollouts regulares de la jerarquía esperada', () => {
+    const adapter = freshAdapter();
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-limit-'));
+    try {
+        const dayDir = path.join(base, '2026', '07', '23');
+        fs.mkdirSync(dayDir, { recursive: true });
+        for (let i = 0; i < 45; i++) {
+            fs.writeFileSync(path.join(dayDir, `rollout-${String(i).padStart(2, '0')}.jsonl`), '{}\n');
+        }
+        fs.writeFileSync(path.join(dayDir, 'otro.jsonl'), '{}\n');
+        fs.mkdirSync(path.join(dayDir, 'rollout-directorio.jsonl'));
+        fs.mkdirSync(path.join(base, '26', '07', '23'), { recursive: true });
+        fs.writeFileSync(path.join(base, '26', '07', '23', 'rollout-fuera.jsonl'), '{}\n');
+
+        const files = adapter.listRecentRolloutFiles(base, adapter.MAX_ROLLOUTS_TO_SCAN);
+        assert.equal(files.length, 40);
+        assert.ok(files.every((file) => path.basename(file).startsWith('rollout-')));
+        assert.ok(files.every((file) => fs.statSync(file).isFile()));
+        assert.ok(files.every((file) => file.includes(`${path.sep}2026${path.sep}07${path.sep}23${path.sep}`)));
+    } finally {
+        fs.rmSync(base, { recursive: true, force: true });
+    }
+});
+
+test('codex: omite symlinks aunque apunten a un rollout válido', (t) => {
+    const adapter = freshAdapter();
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-symlink-'));
+    try {
+        const dayDir = path.join(base, '2026', '07', '23');
+        fs.mkdirSync(dayDir, { recursive: true });
+        const outside = path.join(base, 'outside.jsonl');
+        fs.writeFileSync(outside, makeLine(makeRateLimits(), EVENT_TS_ISO) + '\n');
+        const link = path.join(dayDir, 'rollout-link.jsonl');
+        try {
+            fs.symlinkSync(outside, link, 'file');
+        } catch (error) {
+            t.skip(`symlink no disponible en este entorno: ${error.code}`);
+            return;
+        }
+        assert.deepEqual(adapter.listRecentRolloutFiles(base, 40), []);
+        assert.equal(adapter.readLatestEvent(base), null);
+    } finally {
+        fs.rmSync(base, { recursive: true, force: true });
+    }
+});
+
+test('codex: sólo lee los últimos 512 KiB de un rollout grande', () => {
+    const adapter = freshAdapter();
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-tail-'));
+    try {
+        const file = path.join(base, 'rollout-large.jsonl');
+        const old = makeLine(makeRateLimits({ weeklyPct: 99 }), '2026-07-23T10:00:00.000Z') + '\n';
+        const filler = 'x'.repeat(adapter.ROLLOUT_TAIL_BYTES + 128) + '\n';
+        const latest = makeLine(makeRateLimits({ weeklyPct: 7 }), EVENT_TS_ISO) + '\n';
+        fs.writeFileSync(file, old + filler + latest);
+        const tail = adapter.readFileTail(file, adapter.ROLLOUT_TAIL_BYTES);
+        assert.ok(Buffer.byteLength(tail, 'utf8') <= adapter.ROLLOUT_TAIL_BYTES);
+        assert.ok(!tail.includes('"used_percent":99'));
+        assert.equal(adapter.extractLatestRateLimits(tail).rateLimits.primary.used_percent, 7);
+    } finally {
+        fs.rmSync(base, { recursive: true, force: true });
+    }
+});
+
 // --- Aislamiento del origen (hook de tests hermeticos) -----------------------
 //
 // Los rollouts viven en `~/.codex/sessions`: estado GLOBAL de la máquina que NO
@@ -348,6 +499,19 @@ test('codex: readLatestEvent devuelve null si el dir no existe', () => {
 // de cuota (#4865: dispatch-billing-flag, reduced-mode) necesitan neutralizar esa
 // fuente para no depender de si el operador usó Codex hace un rato. El hook es
 // `CODEX_SESSIONS_DIR`; estos tests lo blindan como contrato.
+
+test('codex: readFileTail degrada archivos ausentes y maneja archivo vacío', () => {
+    const adapter = freshAdapter();
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-tail-errors-'));
+    try {
+        const empty = path.join(base, 'empty.jsonl');
+        fs.writeFileSync(empty, '');
+        assert.equal(adapter.readFileTail(empty, 1024), '');
+        assert.equal(adapter.readFileTail(path.join(base, 'missing.jsonl'), 1024), null);
+    } finally {
+        fs.rmSync(base, { recursive: true, force: true });
+    }
+});
 
 test('codex: CODEX_SESSIONS_DIR redirige el origen de los rollouts', () => {
     const adapter = freshAdapter();
@@ -405,6 +569,35 @@ test('codex: el arg explícito codexSessionsDir gana sobre CODEX_SESSIONS_DIR', 
         else process.env.CODEX_SESSIONS_DIR = prev;
         fs.rmSync(base, { recursive: true, force: true });
     }
+});
+
+test('codex: errores degradados no filtran paths ni transcript', () => {
+    const adapter = freshAdapter();
+    const secretPath = path.join(os.tmpdir(), 'sesion-secreta-4898');
+    const transcript = 'CONTENIDO_PRIVADO_4898';
+    const results = [
+        adapter({ codexSessionsDir: secretPath, now: NOW_FRESH }),
+        adapter({
+            now: NOW_FRESH,
+            readEventImpl: () => { throw new Error(`${secretPath}: ${transcript}`); },
+        }),
+        adapter({
+            now: NOW_FRESH,
+            readEventImpl: fakeReader({ tsMs: null, rateLimits: makeRateLimits() }),
+        }),
+    ];
+    for (const result of results) {
+        const serialized = JSON.stringify(result);
+        assert.ok(!serialized.includes(secretPath));
+        assert.ok(!serialized.includes(transcript));
+        assert.equal(result.pct, null);
+    }
+});
+
+test('codex: no usa lectura completa para los rollouts', () => {
+    const src = fs.readFileSync(
+        path.join(__dirname, '..', '..', 'quota-adapters', 'openai-codex.js'), 'utf8');
+    assert.ok(!/readFileSync/.test(src));
 });
 
 // --- Invariantes de seguridad ------------------------------------------------
