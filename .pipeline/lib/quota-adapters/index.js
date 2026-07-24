@@ -83,7 +83,7 @@ function getAdapter(provider) {
  *     metricsDir:        string,    path absoluto a .pipeline/metrics
  *     activityLogPath:   string,    path absoluto a .claude/activity-log.jsonl
  *     configLimitHours?: number,    límite del config (override, Anthropic)
- *     codexLogPath?:     string,    override del SQLite de Codex (#4598)
+ *     codexSessionsDir?: string,    override del dir de rollouts JSONL de Codex (#4898)
  *     stalenessMs?:      number,    umbral de frescura Codex (#4598)
  *     now?:              number,    timestamp para tests determinísticos
  *   }

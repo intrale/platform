@@ -545,6 +545,9 @@ async function runOnce(opts = {}) {
         httpImpl: opts.httpImpl,
         pingImpl: opts.pingImpl,
         cliProbe: opts.cliProbe,
+        quotaAssessImpl: opts.quotaAssessImpl,
+        defaultProvider: opts.defaultProvider,
+        now,
     });
     const snapshot = buildSnapshot({ providers: providerResults, now });
 

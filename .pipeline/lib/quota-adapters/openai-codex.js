@@ -1,90 +1,104 @@
 // =============================================================================
-// quota-adapters/openai-codex.js — Adapter OpenAI/Codex (#4598).
+// quota-adapters/openai-codex.js — Adapter OpenAI/Codex.
 //
-// Estrategia (OFFLINE — security CA-#6): leer el USO REAL que Codex muestra en
-// `/status`, SIN inferir nada.
+// FUENTE DE VERDAD (#4868) + GATE DE CUOTA (#4865): un único adapter que lee el
+// USO REAL que Codex reportaría en `/status`, SIN inferir ni hacer red.
 //
-//   * `codex exec "/status"` NO ejecuta el slash command (corre el modelo),
-//     pero Codex **persiste** el rate-limit que mostraría `/status` en su log
-//     SQLite `~/.codex/logs_2.sqlite`, tabla `logs`, columna `feedback_log_body`,
-//     como eventos `codex.rate_limits`. Cada llamada de Codex escribe uno nuevo.
+// HISTORIA DEL FORMATO:
 //
-//   * Mapeo verificado en vivo (#4598):
-//       - `primary`   → ventana 5h  (`window_minutes: 300`)   → bucket SESIÓN.
-//       - `secondary` → ventana 7d  (`window_minutes: 10080`) → bucket SEMANAL.
-//     Cada uno trae `used_percent` (0..100) y `reset_at` (epoch s).
+//   * AHORA (Codex >= 0.145.0 — #4885): Codex dejó de persistir `used_percent`
+//     en el origen legacy (el evento `account/rateLimits/read` sólo lleva el span de
+//     telemetría, sin porcentajes). El objeto con `used_percent` se MOVIÓ a los
+//     ROLLOUTS de sesión: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`. Cada
+//     línea es un evento JSON; los eventos `event_msg`/`token_count` incluyen un
+//     objeto `payload.rate_limits`. Muestra real (v0.145.0):
 //
-//   * El bucket SEMANAL (secondary) se mapea al top-level `pct`/`status`
-//     (igual que Anthropic) para que pacing (`pacing-bucket.js` lee
-//     `weekly.pct`) y el gating (`provider-health.assessProviderQuota` lee
-//     `status`) consuman el número real. El bucket SESIÓN (primary 5h) va a
-//     `session.pct`/`session.status`.
+//       {"timestamp":"2026-07-23T19:38:32.183Z","type":"event_msg",
+//        "payload":{"type":"token_count","info":{...},
+//          "rate_limits":{"limit_id":"codex","limit_name":null,
+//            "primary":{"used_percent":1.0,"window_minutes":10080,"resets_at":1785373521},
+//            "secondary":null,"credits":{...},"plan_type":"plus", ...}}}
 //
-//   * FRESCURA (CA-3): el evento se escribe en cada llamada de Codex. Si el
-//     último es viejo (Codex inactivo), NO mostramos el porcentaje stale como
-//     actual: devolvemos estado degradado (`adapterStatus: 'unknown'`,
-//     `pct: null`) con `errorReason` explicando la antigüedad. Umbral
-//     configurable vía `CODEX_QUOTA_STALENESS_MS` (piso conservador).
+// CAMBIOS QUE ESTE ADAPTER MANEJA (respecto del formato legacy):
 //
-//   * PARSE TOLERANTE: `feedback_log_body` viene prefijado como
-//     `Received message {...}` (no JSON puro). Extraemos desde el primer `{`,
-//     validamos `type === 'codex.rate_limits'` y navegamos defensivamente —
-//     es un log interno de Codex y puede cambiar entre versiones.
+//   1. FUENTE: archivos JSONL de rollout leídos con `fs`, sin proceso externo.
+//   2. RENAME DE CAMPO: `reset_at` (viejo) → `resets_at` (nuevo).
+//   3. SEMÁNTICA DE VENTANAS: el mapeo bucket→ventana YA NO es posicional
+//      (primary=5h, secondary=7d). Se clasifica por `window_minutes`:
+//        - `window_minutes` < 1440 (< 1 día)  → bucket SESIÓN (5h ≈ 300).
+//        - `window_minutes` >= 1440 (>= 1 día) → bucket SEMANAL (7d = 10080).
+//      En v0.145.0 el uso semanal viene en `primary` con `secondary: null`, así
+//      que la posición NO sirve: hay que mirar la ventana.
+//   4. FRESCURA (CA-3): anclada al `timestamp` ISO del evento en el JSONL (no al
+//      mtime del archivo). Si el evento es viejo (Codex inactivo), NO mostramos
+//      el % stale como actual → estado degradado (`unknown`, pct null).
 //
-//   * CERO INFERENCIA / CERO RED: leemos SQLite local con el binario `sqlite3`
-//     (CLI, `-readonly`, timeout acotado). No agregamos dependencia nativa
-//     (`better-sqlite3`) ni hacemos HTTP a OpenAI (evita SSRF/secrets en
-//     runtime del dashboard — el check de "cero clientes HTTP" sigue en verde).
+// MAPEO AL SHAPE CANÓNICO (igual que antes, preservando #4868):
+//   * bucket SEMANAL → top-level `pct`/`status` (lo consume pacing
+//     `pacing-bucket.js` vía `weekly.pct` y el gating
+//     `provider-health.assessProviderQuota` vía `status`).
+//   * bucket SESIÓN  → `session.pct`/`session.status`.
+//
+// CERO INFERENCIA / CERO RED (security CA-#6): sólo lectura local de archivos
+// JSONL con `fs`. No HTTP a OpenAI, no proceso externo, no dependencia nativa.
 //
 // Estados degradados (security CA-#3 + UX G1: "sin dato" != "0% real"):
 //
-//   - No se pudo leer el SQLite (archivo ausente, `sqlite3` no disponible,
-//     query fallida) o DB sin eventos → `no_usage_data`, pct null (reprobe-elegible).
-//   - Evento presente pero body ilegible / shape inesperado
-//                             → `error`,          pct null.
-//   - Evento presente pero STALE (Codex inactivo)
-//                             → `unknown`,        pct null.
-//   - Evento fresco y válido  → `ok`, primary→sesión / secondary→semanal.
+//   - No hay rollout legible con un objeto `rate_limits` → `no_usage_data`,
+//     pct null (reprobe-elegible: Codex podría no haber corrido aún).
+//   - Rollout presente pero shape inesperado / sin `used_percent` válido en
+//     ninguna ventana → `error`, pct null.
+//   - Evento presente pero STALE (Codex inactivo) → `unknown`, pct null.
+//   - Evento fresco y válido → `ok`, semanal→top-level / sesión→session.
 // =============================================================================
 'use strict';
 
 const os = require('os');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const fs = require('fs');
 const { ADAPTER_STATUS, QUOTA_STATUS, emptyResult } = require('./_shape');
 
-// Umbral de frescura por defecto (CA-3). Si el último evento `codex.rate_limits`
-// es más viejo que esto, el dato es stale (Codex inactivo) → degradado, NUNCA
-// mostramos el porcentaje viejo como actual. La ventana `primary` es de 5h y se
-// recarga continuamente: pasada ~1h de inactividad el % ya no representa el uso
-// real. Configurable vía env con piso conservador de 5 min anti-parpadeo.
+// Umbral de frescura por defecto (CA-3). Si el último evento `rate_limits` es
+// más viejo que esto, el dato es stale (Codex inactivo) → degradado, NUNCA
+// mostramos el porcentaje viejo como actual. Configurable vía env con piso
+// conservador de 5 min anti-parpadeo. Default 1 hora.
 const DEFAULT_STALENESS_MS = (() => {
     const raw = Number(process.env.CODEX_QUOTA_STALENESS_MS);
     if (Number.isFinite(raw) && raw >= 5 * 60 * 1000) return raw;
     return 60 * 60 * 1000; // 1 hora
 })();
 
-// Timeout del spawn de `sqlite3` (anti-cuelgue si la DB está bloqueada/inflada).
-const SQLITE_TIMEOUT_MS = 5000;
-// Cap de lectura del stdout de `sqlite3` (una fila JSON ~ pocos KB).
-const SQLITE_MAX_BUFFER = 1 * 1024 * 1024;
+// Tolerancia de desfasaje de reloj hacia el futuro. Un evento fechado más
+// adelante que esto no es confiable (clock skew, timestamp corrupto, rollout
+// copiado de otra máquina) y NO debe pasar como "fresco": una edad negativa
+// atraviesa el chequeo de staleness sin filtrarse.
 
-// Separador de columnas: unit separator (0x1f). No aparece en JSON compacto,
-// así evitamos colisión con `|` (default de sqlite3) que puede estar en el body.
-const COL_SEP = '\x1f';
+// Frontera semana/sesión por `window_minutes`. La ventana de sesión de Codex es
+// de 5h (300 min); la semanal es de 7d (10080 min). Cualquier ventana >= 1 día
+// (1440 min) se considera semanal; el resto, sesión. Umbral robusto ante
+// variaciones menores del proveedor.
+const WEEKLY_WINDOW_MIN_THRESHOLD = 1440;
 
-// Query: último evento `codex.rate_limits` por timestamp. Indexado por `ts DESC`.
-const RATE_LIMITS_SQL =
-    "SELECT ts, feedback_log_body FROM logs " +
-    "WHERE feedback_log_body LIKE '%codex.rate_limits%' " +
-    "ORDER BY ts DESC, id DESC LIMIT 1;";
+// Cantidad máxima de archivos de rollout a escanear (del más nuevo al más
+// viejo) buscando un objeto `rate_limits`. Cota anti-cuelgue si hay muchas
+// sesiones sin el dato. El activo, que se actualiza en cada llamada de Codex,
+// es el más nuevo → normalmente se resuelve en el primer archivo.
+const MAX_ROLLOUTS_TO_SCAN = 40;
+
+// Cap de bytes a leer del final de cada rollout. Los eventos `rate_limits` se
+// escriben continuamente, así que el último vive cerca del final del archivo.
+// Leer sólo la cola evita cargar archivos gigantes en memoria (anti-OOM). Si el
+// corte parte una línea, esa línea parcial falla el JSON.parse y se descarta:
+// escaneamos desde el final y la última línea completa queda intacta.
+const ROLLOUT_TAIL_BYTES = 512 * 1024; // 512 KB
 
 /**
- * Path por defecto del log SQLite de Codex (`~/.codex/logs_2.sqlite`).
+ * Path por defecto del directorio de sesiones/rollouts de Codex
+ * (`~/.codex/sessions`).
  * @returns {string}
  */
-function defaultCodexLogPath() {
-    return path.join(os.homedir(), '.codex', 'logs_2.sqlite');
+function defaultCodexSessionsDir() {
+    return path.join(os.homedir(), '.codex', 'sessions');
 }
 
 /**
@@ -98,50 +112,6 @@ function statusFromPct(pct) {
     if (pct >= 75) return QUOTA_STATUS.WARNING;
     if (pct >= 50) return QUOTA_STATUS.NORMAL;
     return QUOTA_STATUS.OK;
-}
-
-/**
- * Parse tolerante del `feedback_log_body`. El body viene prefijado (p.ej.
- * `Received message {...}`), así que extraemos desde el primer `{`, validamos
- * `type === 'codex.rate_limits'` y devolvemos el objeto `rate_limits`. NO lanza:
- * cualquier problema devuelve `null`.
- *
- * @param {string} bodyText
- * @returns {Object|null}  El objeto `rate_limits` ({primary, secondary, ...}).
- */
-function parseRateLimits(bodyText) {
-    if (typeof bodyText !== 'string' || bodyText.length === 0) return null;
-    const start = bodyText.indexOf('{');
-    if (start < 0) return null;
-    let obj;
-    try {
-        obj = JSON.parse(bodyText.slice(start));
-    } catch {
-        return null;
-    }
-    if (!obj || typeof obj !== 'object' || obj.type !== 'codex.rate_limits') return null;
-    const rl = obj.rate_limits;
-    if (!rl || typeof rl !== 'object') return null;
-    return rl;
-}
-
-/**
- * Extrae `{ usedPercent, resetAt }` de un bucket (`primary`/`secondary`) del
- * objeto `rate_limits`, defensivamente. Devuelve `null` si falta el
- * `used_percent` numérico (dato mínimo requerido).
- *
- * @param {Object} rateLimits
- * @param {string} key  'primary' | 'secondary'
- * @returns {{usedPercent:number, resetAt:(number|null)}|null}
- */
-function readBucket(rateLimits, key) {
-    const b = rateLimits && typeof rateLimits === 'object' ? rateLimits[key] : null;
-    if (!b || typeof b !== 'object') return null;
-    const usedPercent = Number(b.used_percent);
-    if (!Number.isFinite(usedPercent) || usedPercent < 0) return null;
-    const resetRaw = Number(b.reset_at);
-    const resetAt = Number.isFinite(resetRaw) && resetRaw > 0 ? resetRaw : null;
-    return { usedPercent: Math.min(100, usedPercent), resetAt };
 }
 
 /**
@@ -159,137 +129,280 @@ function isoFromEpochSeconds(epochSeconds) {
 }
 
 /**
- * Lee el último evento `codex.rate_limits` del SQLite vía CLI `sqlite3`
- * (`-readonly`, timeout acotado). NO lanza: devuelve `null` ante cualquier
- * error (archivo ausente, binario no disponible, query fallida).
+ * Lista los archivos de rollout más recientes bajo `sessionsDir`, ordenados del
+ * MÁS NUEVO al más viejo, sin `stat` por archivo: la jerarquía es
+ * `YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl` y tanto los directorios de fecha
+ * (zero-padded) como el nombre del rollout (prefijado por timestamp ISO) ordenan
+ * cronológicamente por comparación lexicográfica. NO lanza: devuelve `[]` ante
+ * cualquier error de FS.
  *
- * @param {string} logPath      path al `logs_2.sqlite`.
- * @param {string} sqlite3Bin   binario a invocar (default `sqlite3` del PATH).
- * @returns {{ts:number, body:string}|null}
+ * @param {string} sessionsDir
+ * @param {number} max  Cota superior de archivos a devolver.
+ * @returns {string[]}  Paths absolutos, más nuevo primero.
  */
-function readLatestEvent(logPath, sqlite3Bin) {
-    if (typeof logPath !== 'string' || logPath.length === 0) return null;
-    // Prioridad: override explícito → env `CODEX_SQLITE3_BIN` → `sqlite3` (PATH).
-    // El env permite apuntar al binario si no está en el PATH del runtime del
-    // pipeline (p.ej. el `sqlite3` de Android SDK platform-tools).
-    const envBin = typeof process.env.CODEX_SQLITE3_BIN === 'string'
-        && process.env.CODEX_SQLITE3_BIN.length > 0
-        ? process.env.CODEX_SQLITE3_BIN
-        : null;
-    const bin = (typeof sqlite3Bin === 'string' && sqlite3Bin.length > 0)
-        ? sqlite3Bin
-        : (envBin || 'sqlite3');
-    let out;
-    try {
-        out = execFileSync(
-            bin,
-            ['-readonly', '-batch', '-noheader', '-separator', COL_SEP, logPath, RATE_LIMITS_SQL],
-            { timeout: SQLITE_TIMEOUT_MS, maxBuffer: SQLITE_MAX_BUFFER, encoding: 'utf8', windowsHide: true },
-        );
-    } catch {
-        // Archivo ausente, `sqlite3` no instalado, DB corrupta, timeout, etc.
-        return null;
+function listRecentRolloutFiles(sessionsDir, max) {
+    const out = [];
+    if (typeof sessionsDir !== 'string' || sessionsDir.length === 0) return out;
+    const descNum = (a, b) => Number(b) - Number(a);
+    const descStr = (a, b) => (a < b ? 1 : a > b ? -1 : 0);
+    const readDirs = (dir, kind, filter, sorter) => {
+        let entries;
+        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return []; }
+        return entries
+            .filter((entry) => kind(entry) && filter(entry.name))
+            .map((entry) => entry.name)
+            .sort(sorter);
+    };
+    const directory = (entry) => entry.isDirectory() && !entry.isSymbolicLink();
+    const regularFile = (entry) => entry.isFile() && !entry.isSymbolicLink();
+    const years = readDirs(sessionsDir, directory, (name) => /^\d{4}$/.test(name), descNum);
+    for (const y of years) {
+        const yDir = path.join(sessionsDir, y);
+        for (const m of readDirs(yDir, directory, (name) => /^(0[1-9]|1[0-2])$/.test(name), descNum)) {
+            const mDir = path.join(yDir, m);
+            for (const d of readDirs(mDir, directory, (name) => /^(0[1-9]|[12]\d|3[01])$/.test(name), descNum)) {
+                const dDir = path.join(mDir, d);
+                const files = readDirs(
+                    dDir,
+                    regularFile,
+                    (name) => /^rollout-[^\\/]+\.jsonl$/.test(name),
+                    descStr,
+                );
+                for (const f of files) {
+                    out.push(path.join(dDir, f));
+                    if (out.length >= max) return out;
+                }
+            }
+        }
     }
-    if (typeof out !== 'string') return null;
-    const line = out.replace(/\r/g, '').split('\n').find((l) => l.length > 0);
-    if (!line) return null; // DB legible pero sin filas → sin eventos.
-    const sepIdx = line.indexOf(COL_SEP);
-    if (sepIdx < 0) return null;
-    const ts = Number(line.slice(0, sepIdx));
-    const body = line.slice(sepIdx + 1);
-    if (!Number.isFinite(ts) || ts <= 0) return null;
-    return { ts, body };
+    return out;
 }
 
 /**
- * Adapter OpenAI/Codex. Lee el uso real de `/status` desde el SQLite de Codex
- * (primary=5h → sesión, secondary=7d → semanal), con detección de dato stale.
+ * Lee la cola (últimos `maxBytes`) de un archivo como texto UTF-8. Para archivos
+ * chicos lee el archivo entero. NO lanza: devuelve `null` ante cualquier error.
+ *
+ * @param {string} filePath
+ * @param {number} maxBytes
+ * @returns {string|null}
+ */
+function readFileTail(filePath, maxBytes) {
+    let fd;
+    try {
+        fd = fs.openSync(filePath, 'r');
+    } catch {
+        return null;
+    }
+    try {
+        const size = fs.fstatSync(fd).size;
+        const start = size > maxBytes ? size - maxBytes : 0;
+        const len = size - start;
+        if (len <= 0) return '';
+        const buf = Buffer.alloc(len);
+        fs.readSync(fd, buf, 0, len, start);
+        return buf.toString('utf8');
+    } catch {
+        return null;
+    } finally {
+        try { fs.closeSync(fd); } catch { /* noop */ }
+    }
+}
+
+/**
+ * Extrae de un contenido JSONL el ÚLTIMO objeto `rate_limits` (el más reciente),
+ * escaneando de la última línea hacia atrás. Cada evento del rollout es un JSON
+ * por línea; los que traen cuota exponen `payload.rate_limits`. Devuelve el
+ * objeto de cuota + el timestamp ISO del evento (en ms). NO lanza: `null` si no
+ * hay ninguno legible.
+ *
+ * @param {string} content  Texto JSONL (puede ser una cola parcial del archivo).
+ * @returns {{tsMs:(number|null), rateLimits:Object}|null}
+ */
+function extractLatestRateLimits(content) {
+    if (typeof content !== 'string' || content.length === 0) return null;
+    const lines = content.split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim();
+        // Fast-path: descartar líneas sin la clave antes de parsear JSON.
+        if (line.length === 0 || line.indexOf('rate_limits') < 0) continue;
+        let obj;
+        try {
+            obj = JSON.parse(line);
+        } catch {
+            // Línea parcial (corte de cola) o corrupta → seguir hacia atrás.
+            continue;
+        }
+        const rl = obj && obj.payload && typeof obj.payload === 'object'
+            ? obj.payload.rate_limits
+            : null;
+        if (!rl || typeof rl !== 'object') continue;
+        const tsMs = typeof obj.timestamp === 'string' ? Date.parse(obj.timestamp) : NaN;
+        return { tsMs: Number.isFinite(tsMs) ? tsMs : null, rateLimits: rl };
+    }
+    return null;
+}
+
+/**
+ * Recorre los rollouts más recientes (nuevo→viejo) y devuelve el evento
+ * `rate_limits` con el timestamp global más reciente. El nombre del rollout
+ * indica cuándo empezó la sesión, no cuándo recibió su último evento: una
+ * sesión anterior puede seguir activa o reanudarse y escribir después que una
+ * sesión cuyo archivo ordena primero. NO lanza: `null` ante cualquier error o
+ * ausencia de dato.
+ *
+ * @param {string} sessionsDir  Directorio de sesiones (`~/.codex/sessions`).
+ * @returns {{tsMs:(number|null), rateLimits:Object}|null}
+ */
+function readLatestEvent(sessionsDir) {
+    const files = listRecentRolloutFiles(sessionsDir, MAX_ROLLOUTS_TO_SCAN);
+    let latest = null;
+    for (const file of files) {
+        const content = readFileTail(file, ROLLOUT_TAIL_BYTES);
+        if (content == null) continue;
+        const event = extractLatestRateLimits(content);
+        if (!event) continue;
+        // Conservar un evento sin timestamp sólo como fallback degradado. Un
+        // evento fechado siempre es preferible y, entre fechados, gana el más
+        // reciente sin importar el orden de inicio de las sesiones.
+        if (!latest
+            || (Number.isFinite(event.tsMs)
+                && (!Number.isFinite(latest.tsMs) || event.tsMs > latest.tsMs))) {
+            latest = event;
+        }
+    }
+    return latest;
+}
+
+/**
+ * Clasifica los buckets del objeto `rate_limits` en SESIÓN / SEMANAL según
+ * `window_minutes` (NO por posición primary/secondary — ver header). Recorre
+ * `primary` y `secondary`; para cada uno con `used_percent` numérico válido lo
+ * ubica en su ventana. Si dos buckets caen en la misma ventana, gana el primero
+ * (primary antes que secondary).
+ *
+ * @param {Object} rateLimits
+ * @returns {{session:(Bucket|null), weekly:(Bucket|null)}}
+ * @typedef {{usedPercent:number, resetAt:(number|null), windowMinutes:(number|null)}} Bucket
+ */
+function classifyBuckets(rateLimits) {
+    const result = { session: null, weekly: null };
+    if (!rateLimits || typeof rateLimits !== 'object') return result;
+    for (const key of ['primary', 'secondary']) {
+        const b = rateLimits[key];
+        if (!b || typeof b !== 'object') continue;
+        const usedPercent = b.used_percent;
+        if (typeof usedPercent !== 'number' || !Number.isFinite(usedPercent)) continue;
+        const resetRaw = b.resets_at;
+        const resetAt = typeof resetRaw === 'number'
+            && Number.isFinite(resetRaw) && resetRaw > 0 ? resetRaw : null;
+        const wmRaw = b.window_minutes;
+        const windowMinutes = typeof wmRaw === 'number'
+            && Number.isFinite(wmRaw) && wmRaw > 0 ? wmRaw : null;
+        if (windowMinutes == null) continue;
+        const bucket = {
+            usedPercent: Math.max(0, Math.min(100, usedPercent)),
+            resetAt,
+            windowMinutes,
+        };
+        // Sin window_minutes no podemos clasificar por ventana: lo tratamos como
+        // SESIÓN (bucket rolling corto) para no fabricar un semanal falso que
+        // alimente el gating/pacing con un número de ventana desconocida.
+        const isWeekly = windowMinutes >= WEEKLY_WINDOW_MIN_THRESHOLD;
+        if (isWeekly) {
+            if (!result.weekly) result.weekly = bucket;
+        } else if (!result.session) {
+            result.session = bucket;
+        }
+    }
+    return result;
+}
+
+/**
+ * Adapter OpenAI/Codex. Lee el uso real desde el rollout JSONL más reciente de
+ * Codex (>= v0.145.0), clasificando buckets por `window_minutes` (sesión 5h /
+ * semanal 7d) y con detección de dato stale.
  *
  * @param {Object} sessionData
- *   @property {string}  [codexLogPath]  override del path al `logs_2.sqlite`.
- *   @property {string}  [sqlite3Path]   override del binario `sqlite3`.
- *   @property {number}  [stalenessMs]   override del umbral de frescura.
- *   @property {number}  [now]           epoch ms para tests / frescura.
- *   @property {Function} [readEventImpl] inyección de `readLatestEvent` (tests).
+ *   @property {string}   [codexSessionsDir]  override del dir de rollouts.
+ *   @property {number}   [stalenessMs]       override del umbral de frescura.
+ *   @property {number}   [now]               epoch ms para tests / frescura.
+ *   @property {Function} [readEventImpl]     inyección de `readLatestEvent` (tests).
  * @returns {QuotaResult}
  */
 function openaiCodexAdapter(sessionData) {
     const sd = sessionData && typeof sessionData === 'object' ? sessionData : {};
-    // Prioridad del path del SQLite: override explícito → env
-    // `CODEX_QUOTA_LOG_PATH` → default `~/.codex/logs_2.sqlite`. El env permite
-    // apuntar a otra ubicación (o a un path inexistente en tests) sin tocar el
-    // caller, que invoca con sessionData fijo.
-    const envLogPath = typeof process.env.CODEX_QUOTA_LOG_PATH === 'string'
-        && process.env.CODEX_QUOTA_LOG_PATH.length > 0
-        ? process.env.CODEX_QUOTA_LOG_PATH
+    // Prioridad del dir de rollouts: override explícito → env
+    // `CODEX_SESSIONS_DIR` → default `~/.codex/sessions`.
+    const envDir = typeof process.env.CODEX_SESSIONS_DIR === 'string'
+        && process.env.CODEX_SESSIONS_DIR.length > 0
+        ? process.env.CODEX_SESSIONS_DIR
         : null;
-    const logPath = (typeof sd.codexLogPath === 'string' && sd.codexLogPath.length > 0)
-        ? sd.codexLogPath
-        : (envLogPath || defaultCodexLogPath());
+    const sessionsDir = (typeof sd.codexSessionsDir === 'string' && sd.codexSessionsDir.length > 0)
+        ? sd.codexSessionsDir
+        : (envDir || defaultCodexSessionsDir());
     const stalenessMs = Number.isFinite(sd.stalenessMs) && sd.stalenessMs > 0
         ? sd.stalenessMs
         : DEFAULT_STALENESS_MS;
     const nowMs = Number.isFinite(sd.now) ? sd.now : Date.now();
     const readEvent = typeof sd.readEventImpl === 'function' ? sd.readEventImpl : readLatestEvent;
 
-    // 1. Leer el último evento del SQLite.
+    // 1. Leer el último evento `rate_limits` del rollout más reciente.
     let event;
     try {
-        event = readEvent(logPath, sd.sqlite3Path);
+        event = readEvent(sessionsDir);
     } catch {
         event = null; // fail-secure: cualquier excepción del reader → degradado.
     }
     if (!event) {
-        // No pudimos leer NINGÚN evento. Puede ser: DB ausente, `sqlite3` no
-        // disponible, o DB legible pero sin eventos `codex.rate_limits` todavía.
-        // No podemos discriminar con certeza desde el reader (devuelve null en
-        // ambos casos), así que lo tratamos como AUSENCIA DE DATO reprobe-elegible
-        // (Codex podría estar vivo pero sin haber escrito un rate_limits aún).
+        // No hay rollout legible con un objeto `rate_limits`. Puede ser: dir
+        // ausente, Codex no corrió aún, o rollouts sin cuota todavía. Ausencia
+        // de dato reprobe-elegible (Codex podría estar vivo sin haber escrito).
         return emptyResult('openai-codex', ADAPTER_STATUS.NO_USAGE_DATA,
-            'Cuota Codex: sin evento codex.rate_limits legible en el log SQLite '
-            + '(Codex no corrió aún o sqlite3 no disponible)');
+            'Cuota Codex: no hay datos de uso legibles');
     }
 
-    // 2. Frescura (CA-3): el `ts` del log es epoch s. Si el evento es viejo,
-    //    Codex está inactivo → degradado, NO mostramos el % stale como actual.
-    const eventMs = event.ts * 1000;
-    const ageMs = nowMs - eventMs;
-    if (ageMs > stalenessMs) {
-        const ageMin = Math.round(ageMs / 60000);
+    // 2. Frescura (CA-3): si el evento no trae timestamp, no podemos afirmar que
+    //    sea actual → degradado. Si es viejo, Codex está inactivo → degradado.
+    const eventMs = Number.isFinite(event.tsMs) ? event.tsMs : null;
+    if (eventMs == null) {
         return emptyResult('openai-codex', ADAPTER_STATUS.UNKNOWN,
-            `Cuota Codex: dato stale (último /status hace ~${ageMin} min, umbral `
-            + `${Math.round(stalenessMs / 60000)} min) — Codex inactivo, no se muestra el % viejo`);
+            'Cuota Codex: timestamp inválido');
+    }
+    const ageMs = nowMs - eventMs;
+    // Evento en el FUTURO (edad negativa): clock skew, timestamp corrupto o
+    // rollout de otra máquina. Una edad negativa pasaría el chequeo de staleness
+    // de abajo y mostraría como "fresco" un dato NO confiable. Toleramos un
+    // margen chico de desfasaje de reloj; más allá, degradamos.
+    if (ageMs < 0) {
+        return emptyResult('openai-codex', ADAPTER_STATUS.UNKNOWN,
+            'Cuota Codex: timestamp futuro');
+    }
+    if (ageMs > stalenessMs) {
+        return emptyResult('openai-codex', ADAPTER_STATUS.UNKNOWN,
+            'Cuota Codex: dato stale');
     }
 
-    // 3. Parse tolerante del body.
-    const rateLimits = parseRateLimits(event.body);
-    if (!rateLimits) {
+    // 3. Clasificar buckets por window_minutes.
+    const { session, weekly } = classifyBuckets(event.rateLimits);
+    if (!session && !weekly) {
         return emptyResult('openai-codex', ADAPTER_STATUS.ERROR,
-            'Cuota Codex: no se pudo parsear el evento codex.rate_limits '
-            + '(formato de log cambió o body corrupto)');
+            'Cuota Codex: ventanas inválidas');
     }
 
-    const primary = readBucket(rateLimits, 'primary');     // 5h → sesión
-    const secondary = readBucket(rateLimits, 'secondary'); // 7d → semanal
-    if (!primary && !secondary) {
-        return emptyResult('openai-codex', ADAPTER_STATUS.ERROR,
-            'Cuota Codex: evento codex.rate_limits sin used_percent válido en primary/secondary');
-    }
-
-    // 4. Construir el shape. secondary (7d) → top-level (pacing + gating);
-    //    primary (5h) → session.
+    // 4. Construir el shape. semanal (7d) → top-level (pacing + gating);
+    //    sesión (5h) → session.
     const result = emptyResult('openai-codex', ADAPTER_STATUS.OK, null);
 
-    if (secondary) {
-        const weeklyPct = Math.round(secondary.usedPercent * 10) / 10;
+    if (weekly) {
+        const weeklyPct = Math.round(weekly.usedPercent * 10) / 10;
         result.pct = weeklyPct;
         result.realPct = null; // el pct YA es el dato real de Codex.
         result.realPctRaw = weeklyPct;
         result.realPctCapped = false;
         result.status = statusFromPct(weeklyPct);
         result.realStatus = result.status;
-        result.nextResetAt = isoFromEpochSeconds(secondary.resetAt);
-        result.weeklyResetsAtReported = isoFromEpochSeconds(secondary.resetAt);
+        result.nextResetAt = isoFromEpochSeconds(weekly.resetAt);
+        result.weeklyResetsAtReported = isoFromEpochSeconds(weekly.resetAt);
     } else {
         // Sin bucket semanal legible pero sí sesión: top-level queda "sin dato"
         // (null) para no fabricar un % semanal. status 'unknown' (no verde).
@@ -297,26 +410,31 @@ function openaiCodexAdapter(sessionData) {
         result.realStatus = QUOTA_STATUS.UNKNOWN;
     }
 
-    if (primary) {
-        const sessionPct = Math.round(primary.usedPercent * 10) / 10;
+    if (session) {
+        const sessionPct = Math.round(session.usedPercent * 10) / 10;
         result.session.pct = sessionPct;
         result.session.realPct = null;
         result.session.realPctRaw = sessionPct;
         result.session.realPctCapped = false;
         result.session.status = statusFromPct(sessionPct);
         result.session.realStatus = result.session.status;
-        result.sessionResetsAt = isoFromEpochSeconds(primary.resetAt);
+        result.sessionResetsAt = isoFromEpochSeconds(session.resetAt);
     }
 
     return result;
 }
 
 // Exponer helpers puros + constantes para tests y consumidores.
-openaiCodexAdapter.parseRateLimits = parseRateLimits;
-openaiCodexAdapter.readBucket = readBucket;
-openaiCodexAdapter.statusFromPct = statusFromPct;
+openaiCodexAdapter.classifyBuckets = classifyBuckets;
+openaiCodexAdapter.extractLatestRateLimits = extractLatestRateLimits;
+openaiCodexAdapter.listRecentRolloutFiles = listRecentRolloutFiles;
 openaiCodexAdapter.readLatestEvent = readLatestEvent;
-openaiCodexAdapter.defaultCodexLogPath = defaultCodexLogPath;
+openaiCodexAdapter.readFileTail = readFileTail;
+openaiCodexAdapter.statusFromPct = statusFromPct;
+openaiCodexAdapter.defaultCodexSessionsDir = defaultCodexSessionsDir;
 openaiCodexAdapter.DEFAULT_STALENESS_MS = DEFAULT_STALENESS_MS;
+openaiCodexAdapter.WEEKLY_WINDOW_MIN_THRESHOLD = WEEKLY_WINDOW_MIN_THRESHOLD;
+openaiCodexAdapter.MAX_ROLLOUTS_TO_SCAN = MAX_ROLLOUTS_TO_SCAN;
+openaiCodexAdapter.ROLLOUT_TAIL_BYTES = ROLLOUT_TAIL_BYTES;
 
 module.exports = openaiCodexAdapter;
