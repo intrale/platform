@@ -122,11 +122,12 @@ test('el cooldown aísla por proveedor (no cruza providers)', async () => {
         providers: {
             cerebras: { api_key: 'csk-test-realkey-1234567890' },
             google: { api_key: 'AIza-test-realkey-1234567890' },
+            nvidia: { api_key: 'nvapi-test-realkey-1234567890' },
         },
     }));
 
     const a = await livePing.ping({ provider: 'cerebras', secretsPath, httpImpl, nowMs: 1_000, minIntervalMs: 10_000 });
-    const b = await livePing.ping({ provider: 'gemini-google', secretsPath, httpImpl, nowMs: 1_000, minIntervalMs: 10_000 });
+    const b = await livePing.ping({ provider: 'nvidia-nim', secretsPath, httpImpl, nowMs: 1_000, minIntervalMs: 10_000 });
 
     assert.equal(a.ok, true);
     assert.equal(b.ok, true, 'otro provider no queda afectado por el cooldown del primero');
