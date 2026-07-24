@@ -166,10 +166,13 @@ test('#4863: mode event eventState "exhausted" → "tope activo", NO sano', () =
 test('#4863: mode event eventState "nodata" (stale por inactividad) → "sin dato", NO verde', () => {
     const { cid, els } = makeCell('openai-codex', 'short');
     const r = loadWinCellHelper(els)._mzHydrateWinCell('openai-codex', 'short',
-        { mode: 'event', eventState: 'nodata', win: 'Roll' });
+        { mode: 'event', eventState: 'nodata', pct: 88, win: 'Roll' });
     assert.equal(els[cid + '-pct'].textContent, 'sin dato', 'inactividad → "sin dato", no "sin límite"');
     assert.ok(!/sin límite/.test(els[cid + '-pct'].textContent), 'NUNCA verde espurio por inactividad');
     assert.ok(els[cid]._classes.has('mz-qm-nodata'), 'marca visualmente "sin dato"');
+    assert.equal(els[cid + '-bar'].style.width, '0%');
+    assert.match(els[cid].getAttribute('title'), /sin dato/);
+    assert.match(els[cid].getAttribute('aria-label'), /sin dato/);
     assert.equal(r.healthy, false, 'sin dato no cuenta como proveedor sano');
 });
 

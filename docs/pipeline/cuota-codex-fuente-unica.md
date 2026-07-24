@@ -9,11 +9,10 @@ El cálculo de cuota de Codex tenía **dos subsistemas que no se hablaban**, y e
 dashboard se contradecía a sí mismo:
 
 - **Tarjeta "cuota por proveedor"** (medición real): el adapter
-  `lib/quota-adapters/openai-codex.js` lee el uso real que Codex persiste en su
-  log local (`~/.codex/logs_2.sqlite`, eventos `codex.rate_limits`, equivalente a
-  su `/status`). Cero inferencia, cero HTTP. Regla de frescura: si el último
-  evento es de hace **>1h** (Codex inactivo) devuelve `adapterStatus:'unknown'` /
-  `pct:null`.
+  `lib/quota-adapters/openai-codex.js` lee el uso real que Codex persiste
+  localmente en sus rollouts JSONL (equivalente a `/status`). Cero inferencia,
+  cero HTTP. Si el último evento es de hace **>1h** (Codex inactivo), devuelve
+  `adapterStatus:'unknown'` / `pct:null`.
 - **Banner de degradación** (arriba): lee el flag `.pipeline/quota-exhausted.json`
   (escrito por `detectQuotaExhausted()` cuando un spawn real falla por límite).
   Fuente totalmente distinta.
@@ -60,13 +59,55 @@ if (q === 'critical' || _isProviderExhausted(provider, opts)) {
 Se distingue explícitamente **"sin dato por inactividad"** de **"sin límite"** y
 de **"cuota agotada"** (CA-4).
 
+## 3.1. Fuente JSONL canónica
+
+Desde Codex v0.145.0 la fuente local vigente es
+`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`. El adapter procesa los objetos
+`payload.rate_limits` de eventos `event_msg`/`token_count`; no consulta el
+SQLite legacy, no llama un endpoint y no expone líneas, prompts, tokens,
+identificadores de sesión ni paths al dashboard.
+
+La selección no depende sólo del nombre del rollout. Se inspeccionan hasta 40
+archivos, de cada uno se obtiene el último objeto `rate_limits`, se comparan sus
+timestamps internos y se elige el máximo global. Esto permite que una sesión
+anterior reanudada prevalezca sobre un archivo cuyo nombre sea más reciente.
+Cada archivo se lee defensivamente desde su cola (hasta 512 KB); JSON inválido,
+parcial o sin timestamp utilizable se descarta.
+
+Las ventanas se clasifican por `window_minutes`, no por la posición
+`primary`/`secondary`:
+
+- `< 1440` minutos: ventana de sesión.
+- `>= 1440` minutos: ventana semanal.
+
+`used_percent` se transforma en porcentaje disponible dentro de `0..100`, y
+`resets_at` se conserva como reset de la ventana correspondiente. El slice
+normalizado es la única entrada del renderer: la vista no relee rollouts ni
+recalcula ventanas o frescura.
+
+La frescura se ancla al timestamp interno del evento. Un timestamp ausente,
+inválido, futuro por más de cinco minutos o más viejo que
+`CODEX_QUOTA_STALENESS_MS` (1 hora por defecto, piso de 5 minutos) degrada a
+`unknown`/`pct:null`; el dashboard lo representa como `sin dato`. Un estado
+canónico `exhausted` conserva precedencia aun si queda un porcentaje residual.
+
+`CODEX_SESSIONS_DIR` permite reemplazar el directorio por defecto. Los tests
+deben apuntarlo a un directorio temporal controlado —vacío para probar ausencia
+o poblado con fixtures sintéticos— para aislarse de las sesiones reales del
+operador. No se usan muestras de sesiones reales en documentación ni fixtures.
+
+Este mecanismo mantiene el invariante offline: sólo usa `fs`, no crea procesos
+externos, no consume cuota para refrescar el dato y no agrega endpoints ni
+dependencias. Tras inactividad, el comportamiento deliberado es fail-safe:
+`sin dato` hasta que Codex escriba un evento nuevo.
+
 ## 3. Probe / dato fresco tras inactividad (CA-3)
 
-**Estado actual: fail-safe SQLite-only.** Tras >1h sin eventos, la tarjeta
+**Estado actual: fail-safe, sin probe.** Tras >1h sin eventos, la tarjeta
 muestra **"sin dato"** (no un % viejo, no "sin límite" espurio). El síntoma que
 motivó el issue —el verde espurio por inactividad— queda **eliminado**.
 
-Refrescar el `codex.rate_limits` real de forma proactiva requiere una de dos
+Refrescar `rate_limits` de forma proactiva tras inactividad requiere una de dos
 rutas, ambas con costo, y la **decisión de arquitectura sigue abierta**:
 
 1. **`codex exec` mínimo** (prompt trivial hardcodeado): escribe un evento fresco
@@ -140,6 +181,11 @@ al alcanzar el límite lo **quemaría en días**. Es un anti-patrón operacional
 - `views/dashboard/home.js` — `_mzHydrateWinCell`: render de `ok`/`exhausted`/`nodata`.
 - Tests: `tests/provider-quota-codex-reconcile-4863.test.js`,
   `tests/home-quota-render-4327.test.js` (casos #4863).
+- `lib/quota-adapters/openai-codex.js` — lectura offline de rollouts JSONL,
+  selección global, clasificación por ventana y guardas de frescura.
+- `lib/__tests__/quota-adapters/openai-codex.test.js` y
+  `lib/__tests__/dashboard-slices-kpis.test.js` — fixtures aislados y
+  propagación adapter → slice.
 
 ## 7. Trabajo diferido (issues de recomendación)
 
