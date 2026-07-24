@@ -1,0 +1,25 @@
+{
+  "issue": 4900,
+  "entries": [
+    {
+      "issue": 4900,
+      "fase": "build",
+      "agente": "build",
+      "tipo": "document",
+      "path": ".pipeline/assets/docs/4900/build-build-4900.md",
+      "bytes": 841,
+      "sensible": false,
+      "timestamp": "2026-07-24T10:43:40.779Z"
+    },
+    {
+      "issue": 4900,
+      "fase": "aprobacion",
+      "agente": "architect",
+      "tipo": "document",
+      "path": ".pipeline/assets/docs/4900/architect-aprobacion-4900.md",
+      "bytes": 295,
+      "sensible": false,
+      "timestamp": "2026-07-24T14:10:33.353Z"
+    }
+  ]
+}
