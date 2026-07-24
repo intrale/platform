@@ -76,9 +76,18 @@ function probeCliProvider(spec, { env = process.env, fsImpl = fs, cliProbe } = {
     const available = typeof cliProbe === 'function'
         ? !!cliProbe(binary)
         : isBinaryOnPath(binary, { env, fsImpl });
-    return available
-        ? { ok: true, reason: 'cli_oauth_ok', provider: spec.provider, cli_oauth: true }
-        : { ok: false, reason: 'cli_unavailable', provider: spec.provider, cli_oauth: true };
+    if (!available) {
+        return { ok: false, reason: 'cli_unavailable', provider: spec.provider, cli_oauth: true };
+    }
+    if (spec.readiness_env && env[spec.readiness_env] !== '1') {
+        return {
+            ok: false,
+            reason: 'cli_license_unavailable',
+            provider: spec.provider,
+            cli_oauth: true,
+        };
+    }
+    return { ok: true, reason: 'cli_oauth_ok', provider: spec.provider, cli_oauth: true };
 }
 
 module.exports = {

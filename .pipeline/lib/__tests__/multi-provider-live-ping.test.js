@@ -176,37 +176,20 @@ test('isAllowedProvider acepta los free providers vivos (#3260 + #3243 + #3353)'
 
 // Tests "ping Groq con ..." se eliminaron en #3353 — Groq descontinuado.
 
-test('ping Gemini-Google con status 200 devuelve authenticated', async () => {
+test('ping Gemini-Google usa el probe CLI-OAuth y no una API key HTTP', async () => {
     const dir = tmpDir();
     const f = path.join(dir, 'config.json');
     writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
-    const r = await livePing.ping({ provider: 'gemini-google', secretsPath: f, httpImpl: fakeHttp({ status: 200 }) });
-    assert.equal(r.ok, true);
-    assert.equal(r.reason, 'authenticated');
-});
-
-test('ping Gemini-Google con 400 API_KEY_INVALID → invalid_credentials', async () => {
-    const dir = tmpDir();
-    const f = path.join(dir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
+    let httpCalls = 0;
     const r = await livePing.ping({
         provider: 'gemini-google',
         secretsPath: f,
-        httpImpl: fakeHttp({ status: 400, body: '{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"API key not valid. Please pass a valid API key."}}' }),
+        cliProbe: () => false,
+        httpImpl: () => { httpCalls++; },
     });
-    assert.equal(r.reason, 'invalid_credentials');
-});
-
-test('ping Gemini-Google con 429 quota → quota_exhausted', async () => {
-    const dir = tmpDir();
-    const f = path.join(dir, 'config.json');
-    writeKeys(f, { gemini_google_api_key: 'AIzaSyTest_1234567890abcdef000' });
-    const r = await livePing.ping({
-        provider: 'gemini-google',
-        secretsPath: f,
-        httpImpl: fakeHttp({ status: 429, body: '{"error":{"status":"RESOURCE_EXHAUSTED","message":"Quota exceeded"}}' }),
-    });
-    assert.equal(r.reason, 'quota_exhausted');
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'cli_unavailable');
+    assert.equal(httpCalls, 0);
 });
 
 test('ping Cerebras con status 200 devuelve authenticated', async () => {

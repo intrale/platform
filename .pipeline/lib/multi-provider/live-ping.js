@@ -222,7 +222,7 @@ async function ping({ provider, secretsPath, fsImpl, httpImpl, nowMs, minInterva
     // `reason_code` (`cli_oauth_ok` / `cli_unavailable`) en ping manual y tick.
     const managedSpec = secretsRw.MANAGED_KEYS.find(k => k.provider === provider);
     if (managedSpec && managedSpec.auth_mode === 'oauth') {
-        return { ...probeCliProvider({ provider, cli_binary: managedSpec.cli_binary }, { fsImpl, cliProbe }), provider };
+        return { ...probeCliProvider(managedSpec, { fsImpl, cliProbe }), provider };
     }
     const key = secretsRw.getRawKey({ provider, secretsPath, fsImpl });
     if (!key) {

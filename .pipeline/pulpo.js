@@ -18,6 +18,10 @@ const execFileAsync = promisify(execFile);
 require('./lib/credentials').loadIntoEnv({
   logger: (m) => process.stderr.write(m + '\n'),
 });
+// #4869 — un servicio Windows conserva el PATH con el que arrancó y no ve
+// instalaciones posteriores. Refrescar agy en este mismo proceso garantiza
+// que todos los agentes hijos hereden PATH y AGY_BIN sin reiniciar el host.
+require('./lib/ensure-agy-in-path').ensureAgyInProcessPath();
 
 const yaml = require('js-yaml');
 const dedupLib = require('./dedup-lib');
