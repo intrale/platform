@@ -33,8 +33,17 @@
 //                          operador debe revisar `errorReason`.
 //   - 'not_implemented' → provider declarado pero el adapter no está hecho
 //                          todavía (e.g. OpenAI/Codex stub durante M2a).
-//   - 'no_quota'        → provider no tiene cuota (e.g. Ollama local). pct
-//                          siempre `null`, status siempre 'no_quota'.
+//   - 'no_quota'        → provider SIN CONCEPTO de cuota (e.g. Ollama local,
+//                          skills deterministas). pct siempre `null`, status
+//                          siempre 'no_quota'. NO significa "cuota agotada".
+//   - 'no_usage_data'   → el provider SÍ tiene cuota, pero no hay consumo
+//                          registrado este mes (e.g. Codex sin entradas en
+//                          `dailyByProvider` del snapshot). Es AUSENCIA DE
+//                          DATO, no "sin cuota" ni "0% real": pct SIEMPRE
+//                          `null` y status 'unknown' (NUNCA verde/`no_quota`
+//                          — evita la "luz verde silenciosa", security req#4).
+//                          Desambigua el enum: separa "sin concepto de cuota"
+//                          (`no_quota`) de "sin consumo medido" (#4365).
 //
 // Estados posibles de `status` (cuota propiamente dicha — solo válidos cuando
 // `adapterStatus === 'ok'`):
@@ -126,6 +135,10 @@ const ADAPTER_STATUS = Object.freeze({
     ERROR: 'error',
     NOT_IMPLEMENTED: 'not_implemented',
     NO_QUOTA: 'no_quota',
+    // #4365 — "el provider tiene cuota pero no hay consumo medido este mes".
+    // Distinto de NO_QUOTA (sin concepto de cuota). Mapea a status 'unknown'
+    // con pct null (nunca verde) en emptyResult().
+    NO_USAGE_DATA: 'no_usage_data',
 });
 
 const QUOTA_STATUS = Object.freeze({
@@ -150,6 +163,10 @@ const SCHEMA_VERSION = 2;
  * @returns {QuotaResult}
  */
 function emptyResult(provider, adapterStatus, errorReason = null) {
+    // Sólo NO_QUOTA (sin concepto de cuota) mapea a status 'no_quota'. Todo el
+    // resto de estados degradados — incluido NO_USAGE_DATA (#4365: "sin consumo
+    // medido") — mapea a 'unknown'. Nunca colapsan a 'ok'/verde ni a pct 0:
+    // "sin dato" ≠ "cuota disponible" (security req#4 / UX G1).
     const status = adapterStatus === ADAPTER_STATUS.NO_QUOTA
         ? QUOTA_STATUS.NO_QUOTA
         : QUOTA_STATUS.UNKNOWN;
