@@ -58,21 +58,145 @@ const ASSET_MIME = {
 const HOOKS_DIR = path.resolve(__dirname, "../../.claude/hooks");
 const CONFIG_PATH = path.join(HOOKS_DIR, "telegram-config.json");
 
-let BOT_TOKEN = "";
-let CHAT_ID = "";
-let DRIVE_FOLDER_ID = "";
-let DRIVE_CREDENTIALS_PATH = "";
+// #4907: el store unificado (~/.claude/secrets/credentials.json) es la fuente
+// canonica de bot_token/chat_id. El archivo versionado telegram-config.json
+// quedo con placeholders tras la unificacion (#3311) y solo sirve de fallback
+// (y como unica fuente de la config de Google Drive).
+const CREDENTIALS_LIB_PATH = path.resolve(__dirname, "../../.pipeline/lib/credentials.js");
+let credentialsLib = null;
 try {
-    const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
-    BOT_TOKEN = cfg.bot_token || "";
-    // Preferir sponsor_chat_id si existe, fallback a chat_id
-    CHAT_ID = cfg.sponsor_chat_id || cfg.chat_id || "";
-    DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID || cfg.google_drive_folder_id || "";
-    DRIVE_CREDENTIALS_PATH = process.env.GOOGLE_CREDENTIALS_PATH || cfg.google_credentials_path || "";
+    credentialsLib = require(CREDENTIALS_LIB_PATH);
 } catch (e) {
-    console.error("[qa-video-share] No se pudo leer telegram-config.json:", e.message);
-    process.exit(1);
+    console.error("[qa-video-share] WARN: no se pudo cargar el store unificado de credenciales (" + e.message + ")");
+    credentialsLib = null;
 }
+
+// Formato real de un bot token de Telegram: "<bot_id>:<secreto>".
+const TELEGRAM_TOKEN_RE = /^\d{5,}:[A-Za-z0-9_-]{30,}$/;
+
+// Detecta placeholders (MOVED_TO_HOME_DOT_CLAUDE_SECRETS, REVOKED, etc.).
+// Reusa el detector del loader central; si el loader no esta disponible, aplica
+// la misma regex localmente para no perder la validacion.
+const LOCAL_PLACEHOLDER_RE = /(REVOKED|PLACEHOLDER|MOVED|EXAMPLE|REPLACE|CHANGE_ME)/i;
+function isPlaceholderOrEmpty(value) {
+    if (credentialsLib && typeof credentialsLib.isPlaceholderOrEmpty === "function") {
+        return credentialsLib.isPlaceholderOrEmpty(value);
+    }
+    if (value === null || value === undefined) return true;
+    const s = String(value);
+    if (s.trim().length === 0) return true;
+    return LOCAL_PLACEHOLDER_RE.test(s);
+}
+
+function isValidBotToken(value) {
+    if (isPlaceholderOrEmpty(value)) return false;
+    return TELEGRAM_TOKEN_RE.test(String(value).trim());
+}
+
+// chat_id puede ser numerico (-100123...) o un @username de canal. Solo se
+// exige que no este vacio ni sea un placeholder.
+function isValidChatId(value) {
+    return !isPlaceholderOrEmpty(value);
+}
+
+function readJsonSafe(filePath) {
+    try {
+        return JSON.parse(fs.readFileSync(filePath, "utf8"));
+    } catch (e) {
+        return null;
+    }
+}
+
+// Hidrata un env descartable con el store unificado (no toca process.env).
+function readUnifiedStore(opts = {}) {
+    const lib = opts.credentialsLib !== undefined ? opts.credentialsLib : credentialsLib;
+    if (!lib || typeof lib.loadIntoEnv !== "function") return {};
+    const scratch = {};
+    const loadOpts = { env: scratch, logger: () => {} };
+    if (opts.canonicalPath) loadOpts.canonicalPath = opts.canonicalPath;
+    if (opts.storeLegacyPath) loadOpts.legacyPath = opts.storeLegacyPath;
+    try {
+        lib.loadIntoEnv(loadOpts);
+    } catch (e) {
+        return {};
+    }
+    return scratch;
+}
+
+/**
+ * Resuelve bot_token / chat_id de Telegram con precedencia explicita (#4907):
+ *   1. process.env (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID) — override operativo
+ *   2. store unificado ~/.claude/secrets/credentials.json — fuente canonica
+ *   3. .claude/hooks/telegram-config.json — legacy, solo fallback
+ *
+ * Cada candidato se valida por FORMA (no solo presencia): un placeholder o un
+ * token mal formado se descarta y se pasa al siguiente nivel. Devuelve tambien
+ * de que fuente salio cada valor para que un futuro fallo se diagnostique en el
+ * log y no con otra investigacion.
+ *
+ * @param {object} [opts] overrides para tests (env, legacyConfig/legacyConfigPath,
+ *                        canonicalPath, storeLegacyPath, credentialsLib).
+ * @returns {{botToken:string, chatId:string, botTokenSource:string|null,
+ *            chatIdSource:string|null, valid:boolean, missing:string[]}}
+ */
+function resolveTelegramCredentials(opts = {}) {
+    const env = opts.env || process.env;
+    const legacyConfig = (opts.legacyConfig !== undefined)
+        ? (opts.legacyConfig || {})
+        : (readJsonSafe(opts.legacyConfigPath || CONFIG_PATH) || {});
+    const store = (opts.store !== undefined) ? (opts.store || {}) : readUnifiedStore(opts);
+
+    const legacyLabel = "legacy:" + path.basename(opts.legacyConfigPath || CONFIG_PATH);
+    const tokenCandidates = [
+        { source: "env:TELEGRAM_BOT_TOKEN", value: env.TELEGRAM_BOT_TOKEN },
+        { source: "store:credentials.json", value: store.TELEGRAM_BOT_TOKEN },
+        { source: legacyLabel, value: legacyConfig.bot_token },
+    ];
+    // sponsor_chat_id mantiene la precedencia historica sobre chat_id, pero pasa
+    // por el mismo filtro de placeholder.
+    const chatCandidates = [
+        { source: "env:TELEGRAM_CHAT_ID", value: env.TELEGRAM_CHAT_ID },
+        { source: "store:credentials.json", value: store.TELEGRAM_CHAT_ID },
+        { source: legacyLabel + "#sponsor_chat_id", value: legacyConfig.sponsor_chat_id },
+        { source: legacyLabel, value: legacyConfig.chat_id },
+    ];
+
+    const token = tokenCandidates.find(c => isValidBotToken(c.value));
+    const chat = chatCandidates.find(c => isValidChatId(c.value));
+
+    const missing = [];
+    if (!token) missing.push("bot_token");
+    if (!chat) missing.push("chat_id");
+
+    return {
+        botToken: token ? String(token.value).trim() : "",
+        chatId: chat ? String(chat.value).trim() : "",
+        botTokenSource: token ? token.source : null,
+        chatIdSource: chat ? chat.source : null,
+        valid: missing.length === 0,
+        missing,
+    };
+}
+
+// Mensaje explicito para CA-3: va a stderr ANTES de cualquier intento de envio,
+// para que el operador no vea un 404 opaco de la API de Telegram.
+function describeMissingTelegramCredentials(cred) {
+    const canonical = (credentialsLib && credentialsLib.CANONICAL_PATH) || "~/.claude/secrets/credentials.json";
+    return "[qa-video-share] credenciales de Telegram no configuradas: falta " +
+        cred.missing.join(" y ") +
+        ". Fuentes consultadas (en orden): env TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID > " +
+        canonical + " > " + CONFIG_PATH + ".";
+}
+
+const TELEGRAM_CREDENTIALS = resolveTelegramCredentials();
+const BOT_TOKEN = TELEGRAM_CREDENTIALS.botToken;
+const CHAT_ID = TELEGRAM_CREDENTIALS.chatId;
+
+// Drive sigue leyendo el archivo legacy: google_drive_folder_id y
+// google_credentials_path viven SOLO ahi (no estan en ENV_MAPPING del store).
+const LEGACY_CONFIG = readJsonSafe(CONFIG_PATH) || {};
+const DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID || LEGACY_CONFIG.google_drive_folder_id || "";
+const DRIVE_CREDENTIALS_PATH = process.env.GOOGLE_CREDENTIALS_PATH || LEGACY_CONFIG.google_credentials_path || "";
 
 // R2 config (opcional, desde env)
 const R2_CONFIG = {
@@ -129,6 +253,12 @@ function parseArgs() {
 
 function sendTelegramVideo(videoBuffer, filename, caption) {
     return new Promise((resolve, reject) => {
+        // #4907: cortar antes de pegarle a la API — sin credenciales validas la
+        // respuesta seria un 404 opaco imposible de diagnosticar en el log.
+        if (!TELEGRAM_CREDENTIALS.valid) {
+            reject(new Error(describeMissingTelegramCredentials(TELEGRAM_CREDENTIALS)));
+            return;
+        }
         const boundary = "----QAVideoBoundary" + Date.now().toString(36);
         const CRLF = "\r\n";
 
@@ -191,6 +321,11 @@ function sendTelegramVideo(videoBuffer, filename, caption) {
 
 function sendTelegramMessage(text) {
     return new Promise((resolve, reject) => {
+        // #4907: idem sendTelegramVideo — error explicito en lugar de 404 opaco.
+        if (!TELEGRAM_CREDENTIALS.valid) {
+            reject(new Error(describeMissingTelegramCredentials(TELEGRAM_CREDENTIALS)));
+            return;
+        }
         const payload = JSON.stringify({
             chat_id: CHAT_ID,
             text: text,
@@ -863,10 +998,17 @@ async function main() {
         return;
     }
 
-    if (!BOT_TOKEN || !CHAT_ID) {
-        console.error("[qa-video-share] Telegram no configurado");
+    // #4907: validar FORMA, no solo presencia. Los placeholders del archivo
+    // legacy son strings no vacios: el guard viejo los dejaba pasar y el error
+    // recien emergia 140 lineas despues como un 404 opaco de Telegram.
+    if (!TELEGRAM_CREDENTIALS.valid) {
+        console.error(describeMissingTelegramCredentials(TELEGRAM_CREDENTIALS));
         process.exit(1);
     }
+    console.log(
+        "[qa-video-share] credenciales Telegram OK (bot_token <- " + TELEGRAM_CREDENTIALS.botTokenSource +
+        ", chat_id <- " + TELEGRAM_CREDENTIALS.chatIdSource + ")"
+    );
 
     const videoPaths = data.videos.split(",").filter(v => v.trim());
     if (videoPaths.length === 0) {
@@ -1014,7 +1156,12 @@ async function main() {
                         "Video: `" + driveFilename + "` (" + sizeStr + ")\n" +
                         "Error: " + e.message.substring(0, 200)
                     );
-                } catch (e2) {}
+                } catch (e2) {
+                    // #4907: no tragarse el error del aviso. Si el canal de
+                    // notificacion es justamente el que fallo, el operador tiene
+                    // que verlo en el log local.
+                    console.error("[qa-video-share] tampoco se pudo notificar el fallo por Telegram: " + e2.message);
+                }
                 failed++;
             }
             continue;
@@ -1092,4 +1239,13 @@ if (require.main === module) {
 }
 
 // #4173: API reusable para subir assets y registrar qa-results.json
-module.exports = { uploadToDrive, updateQaResults, isCanonicalUrl };
+// #4907: resolucion de credenciales exportada e inyectable para tests.
+module.exports = {
+    uploadToDrive,
+    updateQaResults,
+    isCanonicalUrl,
+    resolveTelegramCredentials,
+    describeMissingTelegramCredentials,
+    isValidBotToken,
+    isValidChatId,
+};

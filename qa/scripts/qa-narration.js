@@ -49,18 +49,60 @@ const CONFIG_PATH = path.join(HOOKS_DIR, "telegram-config.json");
 
 const BACKUP_PATH = path.join(os.homedir(), ".intrale-api-keys.json");
 
+// #4907: mismo patron que qa-video-share.js — el store unificado
+// (~/.claude/secrets/credentials.json) es la fuente canonica; telegram-config.json
+// quedo con placeholders tras la unificacion (#3311) y ahora es solo fallback.
+let credentialsLib = null;
+try {
+    credentialsLib = require(path.resolve(__dirname, "../../.pipeline/lib/credentials.js"));
+} catch (e) {
+    credentialsLib = null;
+}
+
+const LOCAL_PLACEHOLDER_RE = /(REVOKED|PLACEHOLDER|MOVED|EXAMPLE|REPLACE|CHANGE_ME)/i;
+function isPlaceholderOrEmpty(value) {
+    if (credentialsLib && typeof credentialsLib.isPlaceholderOrEmpty === "function") {
+        return credentialsLib.isPlaceholderOrEmpty(value);
+    }
+    if (value === null || value === undefined) return true;
+    const s = String(value);
+    if (s.trim().length === 0) return true;
+    return LOCAL_PLACEHOLDER_RE.test(s);
+}
+
+// Lee el store unificado sin tocar process.env.
+function readUnifiedStore() {
+    if (!credentialsLib || typeof credentialsLib.loadIntoEnv !== "function") return {};
+    const scratch = {};
+    try {
+        credentialsLib.loadIntoEnv({ env: scratch, logger: () => {} });
+    } catch (e) { return {}; }
+    return scratch;
+}
+
 function loadOpenAIKey() {
-    // Prioridad: env var > telegram-config.json > backup (~/.intrale-api-keys.json)
-    if (process.env.OPENAI_API_KEY) return process.env.OPENAI_API_KEY;
+    // Prioridad: env var > store unificado > telegram-config.json (legacy) >
+    // backup (~/.intrale-api-keys.json). Cada candidato se filtra por placeholder.
+    if (!isPlaceholderOrEmpty(process.env.OPENAI_API_KEY)) return process.env.OPENAI_API_KEY;
+
+    const store = readUnifiedStore();
+    if (!isPlaceholderOrEmpty(store.OPENAI_API_KEY)) {
+        console.log("[qa-narration] OpenAI key cargada del store unificado (credentials.json)");
+        return String(store.OPENAI_API_KEY);
+    }
+
     try {
         const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
         const key = cfg.openai_api_key || cfg.openaiApiKey || null;
-        if (key && key.trim() !== "") return key;
+        if (!isPlaceholderOrEmpty(key)) {
+            console.log("[qa-narration] OpenAI key cargada del archivo legacy telegram-config.json");
+            return key;
+        }
     } catch (e) { /* config no encontrado */ }
     try {
         const backup = JSON.parse(fs.readFileSync(BACKUP_PATH, "utf8"));
         const key = backup.openai_api_key || backup.openaiApiKey || null;
-        if (key && key.trim() !== "") {
+        if (!isPlaceholderOrEmpty(key)) {
             console.log("[qa-narration] OpenAI key cargada desde backup (~/.intrale-api-keys.json)");
             return key;
         }
