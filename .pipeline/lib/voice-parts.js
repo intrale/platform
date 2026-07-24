@@ -76,7 +76,87 @@ function isValidState(obj) {
   if (!rec.isValidCorrelationId(obj.correlationId)) return false;
   if (!Number.isInteger(obj.partTotal) || obj.partTotal < 1) return false;
   if (!obj.parts || typeof obj.parts !== 'object') return false;
+  // #4903 — `dedupeKey` es OPCIONAL (backward-compat con estados previos que no lo
+  // llevan). Si está presente debe ser string no vacío; cualquier otra cosa → inválido.
+  if (obj.dedupeKey != null && (typeof obj.dedupeKey !== 'string' || obj.dedupeKey.length === 0)) return false;
   return true;
+}
+
+// -----------------------------------------------------------------------------
+// #4903 — Deduplicación cross-retry de audios ya entregados.
+//
+// Problema (incidente real cmd-1784896035259-a7b1accb): cuando la confirmación de
+// entrega de un turno falla pero los audios SÍ llegaron, el reintento re-despacha
+// la respuesta completa con un `correlationId` NUEVO — el estado fresco no conoce
+// las partes ya entregadas y las reenvía → el usuario recibe la misma serie de
+// audios 2-3 veces.
+//
+// Fix: atar el audio a una IDENTIDAD ESTABLE de la respuesta que sobreviva al
+// reintento (el `correlationId` cambia por dispatch; el texto verificado no). El
+// audio es TTS del texto de respuesta → misma (chat, texto) ⇒ mismo audio lógico,
+// mismo split de chunks ⇒ mismos `partIndex`. Antes de reenviar, se consultan los
+// estados (activos + archivados) con el mismo `dedupeKey` y se omiten las partes
+// ya confirmadas (entregadas). PURA.
+// -----------------------------------------------------------------------------
+function computeDedupeKey({ chatId, text }) {
+  const norm = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
+  if (norm.length === 0) return null;
+  const h = crypto.createHash('sha256').update(`${chatId == null ? '' : chatId}\n${norm}`).digest('hex');
+  return `vk_${h.slice(0, 32)}`;
+}
+
+// isFullyDelivered — PURA: todas las partes registradas están confirmadas y hay al
+// menos `partTotal` partes registradas (respuesta entregada completa).
+function isFullyDelivered(state) {
+  if (!isValidState(state)) return false;
+  for (let i = 0; i < state.partTotal; i++) {
+    const p = state.parts[String(i)];
+    if (!p || !p.confirmed) return false;
+  }
+  return true;
+}
+
+// confirmedIndexes — PURA: Set de índices de parte confirmados en un estado.
+function confirmedIndexes(state) {
+  const out = new Set();
+  if (!state || !state.parts || typeof state.parts !== 'object') return out;
+  for (const [k, p] of Object.entries(state.parts)) {
+    if (p && p.confirmed) {
+      const n = Number(k);
+      if (Number.isInteger(n) && n >= 0) out.add(n);
+    }
+  }
+  return out;
+}
+
+// findDeliveredParts — I/O acotado: busca en estados ACTIVOS + ARCHIVADOS los que
+// comparten `dedupeKey` dentro de la ventana `ttlMs` y consolida qué índices de
+// parte ya fueron entregados (confirmados). Base de la deduplicación cross-retry:
+// al reintentar un turno, los audios ya entregados no se reenvían (CA-1/CA-2). Un
+// `dedupeKey` fuera de ventana o inexistente → `{ found:false, confirmed:∅ }`.
+function findDeliveredParts({ pipelineDir, dedupeKey, now, ttlMs }) {
+  const res = { found: false, partTotal: 0, confirmed: new Set() };
+  if (!dedupeKey || typeof dedupeKey !== 'string') return res;
+  const nowMs = Number.isFinite(now) ? now : Date.now();
+  const ttl = Number.isFinite(ttlMs) ? ttlMs : 86400000;
+  const dirs = [voicePartsDir(pipelineDir), archivedVoicePartsDir(pipelineDir)];
+  for (const dir of dirs) {
+    let files;
+    try {
+      files = fs.readdirSync(dir).filter((f) => !f.startsWith('.') && f.endsWith('.json'));
+    } catch { continue; }
+    for (const f of files) {
+      let obj;
+      try { obj = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); } catch { continue; }
+      if (!isValidState(obj) || obj.dedupeKey !== dedupeKey) continue;
+      const createdMs = Date.parse(obj.createdAt);
+      if (Number.isFinite(createdMs) && (nowMs - createdMs) > ttl) continue; // fuera de ventana
+      res.found = true;
+      if (obj.partTotal > res.partTotal) res.partTotal = obj.partTotal;
+      for (const idx of confirmedIndexes(obj)) res.confirmed.add(idx);
+    }
+  }
+  return res;
 }
 
 function readState(dir, correlationId) {
@@ -114,7 +194,7 @@ function archiveState(dir, archivedDir, correlationId) {
 // initState — crea el estado al producir la respuesta de voz. `parts` es
 // `[{ partIndex, path, enqueuedAt? }]`. Persiste y devuelve el estado.
 // -----------------------------------------------------------------------------
-function buildInitialState({ correlationId, partTotal, chatId, parts, now }) {
+function buildInitialState({ correlationId, partTotal, chatId, parts, now, dedupeKey }) {
   if (!rec.isValidCorrelationId(correlationId)) {
     throw new Error(`voice-parts: correlationId inválido: ${JSON.stringify(correlationId)}`);
   }
@@ -131,6 +211,8 @@ function buildInitialState({ correlationId, partTotal, chatId, parts, now }) {
     notified: false,
     parts: {},
   };
+  // #4903 — identidad estable de la respuesta para dedup cross-retry (opcional).
+  if (typeof dedupeKey === 'string' && dedupeKey.length > 0) state.dedupeKey = dedupeKey;
   for (const p of (parts || [])) {
     const idx = rec.coercePartInt(p.partIndex);
     if (idx == null || idx >= pt) continue; // acotado (SEC-R2)
@@ -138,14 +220,16 @@ function buildInitialState({ correlationId, partTotal, chatId, parts, now }) {
       path: typeof p.path === 'string' ? p.path : null,
       enqueuedAt: typeof p.enqueuedAt === 'string' && p.enqueuedAt.length > 0 ? p.enqueuedAt : createdAt,
       retries: 0,
-      confirmed: false,
+      // #4903 — una parte puede nacer ya `confirmed` cuando se sabe que fue
+      // entregada en una pasada anterior (dedup): no se reenvía, solo se contabiliza.
+      confirmed: p.confirmed === true,
     };
   }
   return state;
 }
 
-function initState({ pipelineDir, correlationId, partTotal, chatId, parts, now }) {
-  const state = buildInitialState({ correlationId, partTotal, chatId, parts, now });
+function initState({ pipelineDir, correlationId, partTotal, chatId, parts, now, dedupeKey }) {
+  const state = buildInitialState({ correlationId, partTotal, chatId, parts, now, dedupeKey });
   writeState(voicePartsDir(pipelineDir), state);
   return state;
 }
@@ -376,4 +460,9 @@ module.exports = {
   planSweep,
   formatMissingNotice,
   sweepVoiceStates,
+  // #4903 — dedup cross-retry
+  computeDedupeKey,
+  isFullyDelivered,
+  confirmedIndexes,
+  findDeliveredParts,
 };
