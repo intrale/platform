@@ -1,0 +1,6 @@
+issue: 4840
+fase: validacion
+pipeline: desarrollo
+repo: intrale/platform
+cancelado_por: fast-fail-rebote
+cancelado_ts: '2026-07-21T21:31:14.505Z'

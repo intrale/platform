@@ -1,0 +1,19 @@
+issue: 4850
+fase: analisis
+pipeline: definicion
+repo: intrale/platform
+resultado: aprobado
+notas: |
+  Security analizo el issue #4850 y comento los requisitos de seguridad en GitHub:
+  https://github.com/intrale/platform/issues/4850#issuecomment-5040370634
+
+  Alcance revisado en definicion:
+  - .pipeline/lib/project-bootstrap.js
+  - .pipeline/lib/product-control-request.js
+
+  Requisitos fijados para desarrollo/verificacion:
+  - enqueueOnboard debe delegar en project-bootstrap.runBootstrap({ mode: 'dry-run', deps: { kernelGateFloor: 'enforce', probeAccess } }) antes de escribir cola.
+  - Payloads con provider desconocido/deprecado, duplicados, rama invalida, politica invalida, signer vacio, URL no permitida o seniales de inyeccion deben devolver 400 sin crear archivos en .pipeline/product-control/pendiente.
+  - Mantener guard SSRF: solo https, sin credenciales embebidas, sin IP interna/loopback/link-local/metadata y host dentro de allowlist; probeAccess no debe ejecutarse si el guard falla.
+  - No exponer credenciales crudas, tokens, URLs con userinfo ni detalle interno de storage en audit/log/respuesta humana.
+  - El dryRun debe exponer providerOrder efectivo y politica de PR resuelta como datos derivados/validados, no eco ciego del payload.

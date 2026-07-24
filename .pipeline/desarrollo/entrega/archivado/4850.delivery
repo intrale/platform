@@ -1,0 +1,12 @@
+issue: 4850
+fase: entrega
+pipeline: desarrollo
+resultado: "aprobado"
+motivo: "Entrega completada"
+delivery_pr_number: 4862
+delivery_pr_url: "https://github.com/intrale/platform/pull/4862"
+delivery_merge_sha: "3a9fe7fc3698023751eb03e41ef9b45c5b29465f"
+delivery_labels: "qa:skipped"
+delivery_duration_ms: 15226
+delivery_phases: "{\"stage_commit\":176,\"integracion\":1444,\"push\":1649,\"pr_create\":6062,\"pr_merge\":5083}"
+delivery_mode: "deterministic"

@@ -1,0 +1,42 @@
+issue: 4850
+fase: criterios
+pipeline: definicion
+resultado: rechazado
+motivo: "contexto insuficiente para producir receta técnica firmable: #4850 depende de #4849 y el contrato/derivadores del descriptor completo todavía no existen en HEAD"
+notas: |
+  ## Arquitecto — pre-admisión bloqueada
+
+  No se escribió `## Detalles Técnicos` ni se emitió marker `architect-signoff`
+  porque la receta de #4850 depende directamente de la hija #4849.
+
+  Comentario publicado:
+  https://github.com/intrale/platform/issues/4850#issuecomment-5040430600
+
+  Evidencia de dependencia abierta:
+
+  $ gh issue view 4849 --json number,title,state
+  state=OPEN
+  title=[Split de #4803] Contrato y derivadores del descriptor completo de producto
+
+  Evidencia del HEAD actual:
+
+  $ rg -n "runBootstrap|enqueueOnboard|validateDescriptor|deriveProvider|providerOrder|prPolicy|kernelGateFloor|probeAccess|product-control" .pipeline/lib .pipeline/descriptors
+  .pipeline/lib/project-bootstrap.js:134:function dryRun(descriptor, deps = {})
+  .pipeline/lib/project-bootstrap.js:157:return { ok: true, sideEffects: false, admissionLabels, resolvedRouting, signers, gates, discovered }
+  .pipeline/lib/product-control-request.js:121:function enqueueOnboard(args = {}, deps = {})
+  .pipeline/lib/product-control-request.js:132:boot = runBootstrap({ descriptor, mode: 'dry-run', deps: { kernelGateFloor: 'enforce', probeAccess: repoProbe.probeAccess, ... } })
+  .pipeline/lib/project-descriptor.js:666:deriveProviderBudget,
+
+  Mapeo técnico preparado:
+  - `.pipeline/lib/project-bootstrap.js:134-169` es el punto donde debe exponerse
+    `providerOrder` efectivo y política de PR resuelta dentro del resumen dry-run.
+  - `.pipeline/lib/project-bootstrap.js:309-341` ya centraliza validación,
+    signature gate, SSRF/probeAccess y dry-run sin efectos de lado.
+  - `.pipeline/lib/product-control-request.js:121-155` ya delega en
+    `runBootstrap({ mode:'dry-run', deps:{ kernelGateFloor:'enforce', probeAccess } })`
+    antes de encolar; #4850 debe conservar ese patrón.
+  - Tests obligatorios cuando #4849 esté mergeado:
+    `node --test .pipeline/lib/__tests__/project-bootstrap.test.js .pipeline/lib/__tests__/product-control-request.test.js`.
+
+  Audit append-only registrado en `.pipeline/audit/architect-tokens.jsonl`
+  con `phase:"criterios"` y `decision:"rebote"`.

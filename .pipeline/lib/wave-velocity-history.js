@@ -21,6 +21,13 @@
 //     producen pendiente ≤ 0 (el avancePct baja al crecer el denominador); esas
 //     NO se registran, así el histórico jamás se contamina con velocidades
 //     negativas (issue #4532 — "robusta a rebotes, sin velocidades negativas").
+//   - #4886 — Sólo se registran muestras FÍSICAMENTE PLAUSIBLES (≤ techo). Un
+//     reset/restore re-hidrata el avance de golpe (18% → 97% en segundos) y esa
+//     pendiente gigante —positiva, así que pasaba el filtro anterior— entraba al
+//     JSONL como si fuera ritmo real, envenenando el promedio (los ~308 %/hora
+//     que mostraba el dashboard). El techo se aplica AL ESCRIBIR (para que el
+//     store no se vuelva a contaminar), AL LEER (higiene retroactiva del JSONL
+//     ya contaminado) y AL PODAR (saneo permanente).
 //   - `getHistoricalVelocity()` promedia las últimas K muestras (cross-ola), o
 //     devuelve null si no hay ninguna.
 //   - Append-only con cota dura + retención temporal. Best-effort: NUNCA tira ni
@@ -39,6 +46,17 @@ const MAX_LINES = 2000;
 const PRUNE_EVERY_N = 50;
 // Ventana de muestras para el promedio histórico (últimas K positivas).
 const HISTORICAL_WINDOW = 20;
+
+// #4886 — TECHO DE PLAUSIBILIDAD FÍSICA de la velocidad de ola, en % de avance
+// por minuto. La velocidad real sale de CIERRES de issues: con una ola de N
+// issues, cerrar uno mueve 100/N puntos, y los cierres llegan de a pocos por
+// hora. 2 %/min = 120 %/hora implicaría completar una ola ENTERA en 50 minutos:
+// jamás ocurrió y es un orden de magnitud por encima de cualquier ritmo real.
+// Todo lo que supera ese techo es un SALTO DISCONTINUO de re-hidratación
+// (reset/restore que reconstruye el espejo local y hace saltar el avance), no
+// ritmo. Configurable por env `WAVE_VELOCITY_MAX_PCT_PER_MIN` (se lee en cada
+// llamada, sin cachear, para que un ajuste operativo aplique sin reiniciar).
+const MAX_PLAUSIBLE_PCT_PER_MIN = 2;
 
 let _appendCounter = 0;
 
@@ -66,17 +84,46 @@ function isFiniteNumber(n) {
 }
 
 /**
- * Registra una muestra de velocidad. Sólo persiste muestras positivas y finitas
- * (una pendiente ≤ 0 por rebote / `/wave add` se descarta silenciosamente para
- * no contaminar el histórico). Devuelve `true` si registró, `false` si descartó
- * o falló (nunca tira).
+ * #4886 — Techo de plausibilidad vigente (%/min). Lee el override de entorno en
+ * cada llamada; si es inválido (no numérico, ≤ 0, no finito) cae al default sin
+ * romper (el pipeline no puede morir por una env mal seteada).
+ *
+ * @returns {number}
+ */
+function maxPlausiblePctPerMin() {
+    const raw = process.env.WAVE_VELOCITY_MAX_PCT_PER_MIN;
+    if (raw === undefined || raw === null || raw === '') return MAX_PLAUSIBLE_PCT_PER_MIN;
+    const n = Number(raw);
+    return (Number.isFinite(n) && n > 0) ? n : MAX_PLAUSIBLE_PCT_PER_MIN;
+}
+
+/**
+ * #4886 — ¿La muestra es ritmo real y no un salto artificial de reset/restore?
+ * Positiva, finita y por debajo del techo de plausibilidad física.
+ *
+ * @param {number} n — velocidad en %/min.
+ * @returns {boolean}
+ */
+function isPlausibleVelocity(n) {
+    return isPositiveFinite(n) && n <= maxPlausiblePctPerMin();
+}
+
+/**
+ * Registra una muestra de velocidad. Sólo persiste muestras positivas, finitas y
+ * PLAUSIBLES (una pendiente ≤ 0 por rebote / `/wave add`, o un salto artificial
+ * de reset/restore por encima del techo, se descartan silenciosamente para no
+ * contaminar el histórico). Devuelve `true` si registró, `false` si descartó o
+ * falló (nunca tira).
+ *
+ * #4886 — el filtro vive AL ESCRIBIR (no sólo al leer) para que el store no se
+ * vuelva a envenenar en el próximo reinicio.
  *
  * @param {{pipelineRoot?:string, waveKey:number, velocityPctPerMin:number, now?:number}} args
  * @returns {boolean}
  */
 function recordSample({ pipelineRoot: pipelineRootArg, waveKey, velocityPctPerMin, now } = {}) {
     if (!isValidWaveKey(waveKey)) return false;
-    if (!isPositiveFinite(velocityPctPerMin)) return false; // robusto a rebotes
+    if (!isPlausibleVelocity(velocityPctPerMin)) return false; // rebotes + saltos de restore
     const ts = isFiniteNumber(now) ? now : Date.now();
 
     const rec = { ts, waveKey, velocityPctPerMin };
@@ -98,6 +145,10 @@ function recordSample({ pipelineRoot: pipelineRootArg, waveKey, velocityPctPerMi
  * Lee todas las muestras válidas (tolerante a líneas corruptas), ordenadas por
  * `ts` ascendente. Filtra opcionalmente por `waveKey`.
  *
+ * #4886 — descarta también las muestras IMPLAUSIBLES ya persistidas (higiene
+ * retroactiva: el JSONL contaminado por los resets previos deja de envenenar el
+ * promedio sin necesidad de borrar el archivo a mano).
+ *
  * @param {{pipelineRoot?:string, waveKey?:number}} args
  * @returns {Array<{ts:number, waveKey:number, velocityPctPerMin:number}>}
  */
@@ -115,7 +166,7 @@ function readSamples({ pipelineRoot: pipelineRootArg, waveKey } = {}) {
         try { rec = JSON.parse(line); } catch { continue; }
         if (!rec || typeof rec !== 'object') continue;
         if (!isValidWaveKey(rec.waveKey)) continue;
-        if (!isFiniteNumber(rec.ts) || !isPositiveFinite(rec.velocityPctPerMin)) continue;
+        if (!isFiniteNumber(rec.ts) || !isPlausibleVelocity(rec.velocityPctPerMin)) continue;
         if (filterKey !== null && rec.waveKey !== filterKey) continue;
         out.push({ ts: rec.ts, waveKey: rec.waveKey, velocityPctPerMin: rec.velocityPctPerMin });
     }
@@ -141,11 +192,15 @@ function getHistoricalVelocity({ pipelineRoot: pipelineRootArg, excludeWaveKey, 
     const recent = samples.slice(-window);
     const sum = recent.reduce((acc, s) => acc + s.velocityPctPerMin, 0);
     const avg = sum / recent.length;
-    return Number.isFinite(avg) && avg > 0 ? avg : null;
+    // #4886 — blindaje final: un promedio por encima del techo no es una
+    // estimación, es contaminación → null (el caller degrada honestamente en vez
+    // de mostrar un número imposible).
+    return isPlausibleVelocity(avg) ? avg : null;
 }
 
 /**
- * Reescribe el store descartando muestras más viejas que `RETENTION_MS` y
+ * Reescribe el store descartando muestras más viejas que `RETENTION_MS`,
+ * las IMPLAUSIBLES (#4886 — saneo permanente de los picos de reset/restore) y
  * aplicando la cota dura `MAX_LINES` (conserva las más recientes). Idempotente,
  * best-effort: nunca tira. Devuelve counts agregados (sin contenido raw).
  *
@@ -166,7 +221,8 @@ function pruneStore({ pipelineRoot: pipelineRootArg, now } = {}) {
         try { rec = JSON.parse(line); } catch { continue; }
         if (!rec || typeof rec !== 'object') continue;
         if (!isValidWaveKey(rec.waveKey)) continue;
-        if (!isFiniteNumber(rec.ts) || !isPositiveFinite(rec.velocityPctPerMin)) continue;
+        // #4886 — el saneo elimina del disco los picos artificiales heredados.
+        if (!isFiniteNumber(rec.ts) || !isPlausibleVelocity(rec.velocityPctPerMin)) continue;
         if ((ts - rec.ts) > RETENTION_MS) continue; // fuera de retención
         kept.push(rec);
     }
@@ -190,10 +246,13 @@ module.exports = {
     readSamples,
     getHistoricalVelocity,
     pruneStore,
+    isPlausibleVelocity,
+    maxPlausiblePctPerMin,
     RETENTION_MS,
     MAX_LINES,
     PRUNE_EVERY_N,
     HISTORICAL_WINDOW,
+    MAX_PLAUSIBLE_PCT_PER_MIN,
     _internal: {
         storePath,
         pipelineRoot,

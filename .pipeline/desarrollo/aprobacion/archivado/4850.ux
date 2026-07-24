@@ -1,0 +1,59 @@
+issue: 4850
+fase: aprobacion
+pipeline: desarrollo
+resultado: aprobado
+motivo: >-
+  Aprobado por evaluacion UX (PASO 2-bis, sin requisito de video). Issue de infra
+  pura del pipeline (area:infra, sin ningun app:*, sin UI de usuario final): backend
+  de onboarding en .pipeline/lib/. Por politica de CLAUDE.md ("Tipos de issue y
+  criterio QA": area:infra sin app:*) el gate se satisface con QA structural. QA
+  aprobo en modo: structural, y el PO ya relajo el video por scope infra en esta
+  misma fase; mantengo la simetria PO/UX y no exijo video.
+notas: |
+  ## PASO 0.A — Clasificacion de scope
+  Labels del issue: enhancement, Ready, area:infra, priority:medium, size:medium.
+  $ gh issue view 4850 --json labels --jq '.labels[].name' | grep 'app:'  -> NINGUN app:*
+  => NO requiere video (infra pura del pipeline, Node.js de .pipeline/, sin UI de
+     usuario final). Ruta PASO 2-bis (assets+mockups+code review). QA .qa reporta
+     resultado: aprobado, modo: structural (consistente con la politica).
+
+  ## PASO 2-bis — Evaluacion UX por code review (no hay assets/mockups porque no
+  hay impacto visual: es logica de validacion backend, sin pantallas ni branding)
+
+  Verificacion empirica en el worktree dev (agent/4850-pipeline-dev, HEAD 6dcf7138e):
+
+  1) UX consideracion de criterios "campos comprensibles en el resumen dryRun,
+     especialmente providerOrder efectivo y politica de PR resuelta":
+     $ grep -nE 'providerOrder|pullRequestPolicy|providers:|politica de PR' \
+         .pipeline/lib/project-bootstrap.js
+     219:  providerOrder: descriptorLib.deriveProviderOrder(descriptor),
+     220:  pullRequestPolicy: descriptorLib.derivePullRequestPolicy(descriptor),
+     556:  lines.push(`   providers: ${(res.dryRun.providerOrder || []).join(', ') || '(ninguno)'}`);
+     557:  lines.push(`   política de PR: ${res.dryRun.pullRequestPolicy || '(no declarada)'}`);
+     => El resumen dryRun expone los campos con nombres legibles y ademas los
+        renderiza en texto humano en espanol con fallbacks claros ("(ninguno)",
+        "(no declarada)"). Cumple.
+
+  2) UX consideracion "respuestas de error claras y accionables para payloads
+     invalidos (400) sin filtrar datos sensibles":
+     $ grep -nE '400|msg:' .pipeline/lib/product-control-request.js
+     137: msg: 'descriptor ausente o invalido (se esperaba un objeto)'
+     166: msg: 'descriptor rechazado (fail-closed)'
+     174: msg: 'projectId inseguro para namespacing'
+     185: msg: 'ya existe un producto con el identificador "..."; elegi otro'
+     => Mensajes 400 legibles, en espanol, accionables y sin exponer internals.
+        Cumple.
+
+  3) UX consideracion "evitar exponer credenciales crudas o detalles internos en
+     logs/audit/respuestas humanas": ya auditado y aprobado por security (A02:
+     redact.redactObject sobre audit, sanitizeOperatorError sin ARN/tableName,
+     secretos solo por referencia; git diff sin password/secret/token/apikey/AKIA).
+     Cumple.
+
+  ## Consistencia de gates
+  - QA structural: aprobado (70 pass / 0 fail).
+  - Tester: aprobado (node-test verde).
+  - Security: aprobado sin hallazgos (A01/A05, A03, A10, A02, A08).
+  - PO: aprobado, relajando video por scope infra pura (misma politica CLAUDE.md).
+  Sin regresiones visuales (no hay area visual tocada). No creo issues de mejora
+  UX: no hay oportunidades de experiencia de usuario final en scope de infra.

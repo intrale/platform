@@ -271,6 +271,73 @@ PIPELINE_ROOT_OVERRIDE=/tmp/fixture-pipeline node -e "..."
 
 ---
 
+## Higiene de la serie de velocidad de la ola (#4886)
+
+La velocidad de la ola (`calculateWaveVelocityETA`, `.pipeline/lib/eta-wave.js`) se
+persiste entre olas en `.pipeline/wave-velocity-history.jsonl`
+(`.pipeline/lib/wave-velocity-history.js`) para que una ola nueva herede una
+estimación previa (#4532). Esa serie se contaminaba con los **saltos artificiales**
+de los resets/restores: al re-hidratarse el espejo local, el avance salta de golpe
+(18% → 97% entre dos snapshots) y esa pendiente gigante —positiva, así que pasaba
+los filtros de #4532— entraba al store como si fuera ritmo real. El promedio
+resultante daba ~307 %/hora sobre una ola quieta, y la ETA derivada de ese número
+mostraba tiempos absurdos ("2 minutos").
+
+Defensas (todas activas a la vez):
+
+| Punto | Regla | Dónde |
+|-------|-------|-------|
+| Medición | Los saltos discontinuos se **neutralizan con un offset** (`_repairDiscontinuities`), no descartan el tramo: el avance real anterior y posterior al restore se conserva | `eta-wave.js` |
+| Escritura | `recordSample()` rechaza toda muestra > techo (el store no se re-contamina en el próximo reinicio) | `wave-velocity-history.js` |
+| Lectura | `readSamples()` ignora las muestras implausibles ya persistidas (higiene retroactiva, sin borrar el archivo) | `wave-velocity-history.js` |
+| Poda | `pruneStore()` las elimina del disco (saneo permanente) | `wave-velocity-history.js` |
+| Consumo | `getHistoricalVelocity()` devuelve `null` si el promedio queda por encima del techo | `wave-velocity-history.js` |
+
+**Techo de plausibilidad**: `WAVE_VELOCITY_MAX_PCT_PER_MIN`, default **2 %/min**
+(= 120 %/hora). La velocidad real proviene de cierres de issues: con N issues de la
+ola, cerrar uno mueve `100/N` puntos y los cierres llegan de a pocos por hora.
+2 %/min implicaría completar una ola entera en 50 minutos — un orden de magnitud
+por encima de cualquier ritmo observado. Ambos umbrales son configurables por env
+(un valor inválido cae al default; nunca rompe el pipeline).
+
+**Degradación honesta**: con la ola quieta (snapshots suficientes pero sin pendiente
+positiva) el cálculo devuelve `{source:'fallback', reason:'non-positive-velocity'|'discontinuous-jump'}`
+en vez de caer al promedio histórico. El banner muestra la leyenda
+`sin datos suficientes` (#4325) y el ETA `—`, nunca un tiempo falso. El histórico
+sigue reservado a la ola **nueva** sin serie propia (`insufficient-snapshots` /
+`delta-too-small`), que es el caso para el que se creó en #4532.
+
+### Granularidad de la señal: por qué el criterio va en quantums y no en %/min
+
+`avancePct` es **entero** y la cadencia real de `wave-progress.jsonl` es **~33 s**
+(mediana medida sobre la ola 8: 0,55 min). La señal está **cuantizada** en escalones
+de `100/N` puntos: en una ola de 37 issues, cerrar **uno solo** mueve 2,7 puntos de
+golpe, que instantáneamente son **4,9 %/min** — 2,5× el techo físico. Un criterio de
+plausibilidad aplicado **tramo a tramo** clasifica entonces todo cierre real como
+"salto artificial": hace falta `100/N ≤ 2 × 0,55`, o sea `N ≥ 91` issues, para que un
+cierre pase el techo. En cualquier ola de menos de ~91 issues se descartarían **todos**.
+
+Por eso el cálculo trabaja en dos escalas distintas:
+
+| Qué | Escala | Umbral |
+|-----|--------|--------|
+| Detectar el escalón artificial | Tramo **crudo** (~33 s), donde la discontinuidad es observable | `WAVE_MAX_STEP_ISSUES` (4) × quantum `100/N` de la ola — 10,8 puntos en la ola 8. Sin `N` resoluble cae al absoluto `WAVE_VELOCITY_MAX_STEP_PCT` |
+| Medir el ritmo | Pendiente **agregada** sobre toda la ventana efectiva (mínimo `WAVE_VELOCITY_MIN_SPAN_MS` = 15 min, típicamente las 3 h de `WAVE_VELOCITY_WINDOW_MS`) | Techo físico `WAVE_VELOCITY_MAX_PCT_PER_MIN`, que a esa escala sí es una magnitud con sentido |
+
+El filtro de discontinuidad es **simétrico** (`Math.abs`): la caída de −94 puntos que
+produce el espejo al vaciarse es tan artificial como la subida de +79 posterior.
+
+**Estimador agregado, no EWMA por tramo.** #4734 promediaba las pendientes por tramo
+con un EWMA para que la velocidad "no saltara con cada snapshot". La causa de ese
+salto era la **ventana angosta** (`WAVE_VELOCITY_WINDOW` = 5 snapshots ≈ 2,2 min a la
+cadencia real), no el estimador. Al ensancharla a las 3 h de `WAVE_VELOCITY_WINDOW_MS`
+la pendiente agregada ya es estable —un cierre nuevo la mueve ~1/N de su valor— y
+además es la única correcta sobre una señal en escalones: el EWMA por tramo pesa cada
+escalón independientemente de su duración, así que sobreestima cuando el último tramo
+tuvo un cierre y subestima cuando no. `WAVE_VELOCITY_WINDOW` quedó **sin uso**.
+
+---
+
 ## Limitaciones conocidas
 
 - El modelo de paralelismo `ceil(sum / concurrency)` es una cota superior. Cuando los tiempos por issue varían mucho, el agregado puede sobreestimar. No es planning exacto; el dashboard lo declara así en la UI (subtítulo "concurrency 3").
@@ -280,5 +347,9 @@ PIPELINE_ROOT_OVERRIDE=/tmp/fixture-pipeline node -e "..."
 ---
 
 ## Historial
+
+- **2026-07-23** — Issue #4886. Velocidad/ETA de la ola falseadas por la serie histórica envenenada con saltos de reset/restore. Se agregó el techo de plausibilidad (escritura + lectura + poda), el descarte de tramos discontinuos y la degradación honesta con la ola quieta. Medición sobre el store real: 112 de 761 muestras eran picos artificiales (máximo 78,7 %/min ≈ 4723 %/hora); el promedio de las últimas 20 pasó de 306,8 %/hora a 51,5 %/hora.
+
+- **2026-07-23 (rev-1)** — Rebote de review sobre #4886: el fix anterior sobre-corregía y dejaba la métrica inutilizable. El techo de 2 %/min aplicado **tramo a tramo** quedaba por debajo de la granularidad de la señal (1 cierre = 4,9 %/min instantáneos), y la ventana de 5 snapshots medía sólo 2,2 min, así que "sin ritmo medible" pasó a ser el estado permanente. Se movió el criterio de discontinuidad a **quantums de la ola**, se hizo **simétrico**, se reemplazó el descarte de tramos por **reparación con offset**, y la medición pasó a la **pendiente agregada** sobre la ventana temporal. Replay A/B sobre las 45 h reales de la ola 8 (1250 evaluaciones, histórico limpio en ambos lados): número visible **4,8 % → 44,7 %**; momentos con avance real en los últimos 30 min sin número en pantalla **88,8 % → 36,9 %**; máximo mostrado 26,6 %/hora (bajo el techo, sin recorte). Los 198 huecos restantes son honestos: 138 con avance neto negativo en 3 h (reset / `wave add`), 47 con la ola plana 3 h, 14 en la ventana del salto de re-hidratación (CA-5 lo exige) y 3 en el arranque de la ola (van al histórico).
 
 - **2026-05-25** — Issue #3492 cerrado. Librería + tests entregados en commit `6b064aee`. Integración (dashboard, home, doc) entregada en este rebote (rebote_numero 3, motivo "entrega incompleta vs sizing"). Verificado contra CA-1..CA-24.

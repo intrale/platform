@@ -1,0 +1,49 @@
+issue: 4850
+fase: aprobacion
+pipeline: desarrollo
+resultado: aprobado
+notas: |
+  Code review semántico — issue #4850 (backend onboarding descriptor completo, cobertura negativa).
+
+  Alcance del cambio (diff vs origin/main):
+    .pipeline/lib/__tests__/product-control-request.test.js | 76 ++++++++
+    1 file changed, 76 insertions(+), 0 deletions(-)
+  La lógica funcional que interpreta el descriptor ya vive en origin/main (#4855/#4849:
+  project-bootstrap.js:219-220 deriva providerOrder/pullRequestPolicy). El deliverable
+  propio de #4850 es la cobertura negativa de backend sobre enqueueOnboard (A01/A03/A08).
+
+  Calidad semántica (foco reviewer, no repite chequeos del linter):
+  - Patrones del proyecto respetados: tests en español, descriptivos, DI vía fakeDeps()
+    determinística (probeAccess()=>true, sin red/gh), fakes con prefijo Fake/fake. OK.
+  - Cohesión y nombres: cada test nombra el override hostil y el efecto esperado. OK.
+  - Cobertura lógica real del caso de uso: diseño diferencial sólido — validDescriptor()
+    sin overrides produce 202 (probado por CA-1.1), así cada test negativo aísla el único
+    factor inválido. Cubre: provider desconocido, deprecado (groq), duplicados,
+    defaultBaseRef inválida, política PR fuera de enum, authority.signers vacío → 400 +
+    0 escrituras de cola; más caso positivo (providers vivos + política declarada → 202,
+    encola exactamente 1). Corresponde a criterios CA-3/CA-4 del issue.
+  - Sin código muerto ni TODOs (grep limpio). Sin test.skip/xit.
+  - Sin riesgos arquitectónicos: no cruza capas, no acopla, no toca implementación.
+
+  Verificación empírica en esta pasada:
+    $ node --test project-bootstrap.test.js product-control-request.test.js
+    → tests 70 | pass 70 | fail 0
+    Los 7 tests #4850 aparecen ejecutados (no skippeados):
+      ✔ #4850: provider desconocido ⇒ 400 sin encolar
+      ✔ #4850: provider deprecado/no-vivo (groq) ⇒ 400 sin encolar
+      ✔ #4850: providers.order duplicados ⇒ 400 sin encolar
+      ✔ #4850: rama base (defaultBaseRef) inválida ⇒ 400 sin encolar
+      ✔ #4850: política de PR fuera del enum ⇒ 400 sin encolar
+      ✔ #4850: authority.signers vacío ⇒ 400 sin encolar
+      ✔ #4850: overrides válidos ⇒ 202 encola
+
+  Observación no bloqueante (no amerita rechazo ni issue): 4 de 6 tests negativos aseveran
+  solo status:400 + sin-escritura sin fijar stage/motivo (provider desconocido y rama sí
+  chequean /validation/). Dado el baseline diferencial (validDescriptor=202), el riesgo de
+  falso-positivo es bajo.
+
+  Nota: no hay PR abierto todavía (delivery lo crea aguas abajo), por eso el review no se
+  postea en un PR. Tampoco existe artefacto de reporte del linter para 4850, pero eso es
+  competencia de la fase linteo, no del review semántico.
+
+  Veredicto: aprobado. Sin cambios requeridos.

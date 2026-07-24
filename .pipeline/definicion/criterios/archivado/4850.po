@@ -1,0 +1,38 @@
+issue: 4850
+fase: criterios
+pipeline: definicion
+resultado: rechazado
+motivo: "dependencia funcional abierta: #4850 depende de #4849 y el contrato/derivadores del descriptor completo todavia no existen como base firmable para criterios implementables"
+depende_de: [4849]
+notas: |
+  ## PO - criterios bloqueados por dependencia
+
+  La historia tiene valor de producto claro: conectar el descriptor completo al
+  backend de onboarding para que `dryRun` y el encolado usen defaults y
+  validaciones cerradas. Los criterios existentes en el body del issue y los
+  requisitos de security son verificables.
+
+  Sin embargo, esta pasada queda rechazada porque #4850 depende funcionalmente
+  de #4849, que debe entregar el contrato/derivadores del descriptor completo
+  (`providers.order`, politica de PR y derivador/export canonico de provider
+  order) antes de cerrar criterios implementables para backend.
+
+  Evidencia verificada en esta pasada:
+
+  $ gh issue view 4849 --repo intrale/platform --json number,title,state
+  state=OPEN
+  title=[Split de #4803] Contrato y derivadores del descriptor completo de producto
+
+  Contexto de fases previas:
+  - `.pipeline/definicion/analisis/procesado/4850.guru` tiene
+    `resultado: rechazado`, `rebote_categoria: dependency_block` y
+    `depende_de: [4849]`.
+  - `.pipeline/definicion/criterios/procesado/4850.architect` tiene
+    `resultado: rechazado` porque no puede producir receta tecnica firmable sin
+    los entregables de #4849 en HEAD.
+
+  Comentario PO publicado:
+  https://github.com/intrale/platform/issues/4850#issuecomment-5040452485
+
+  No se crearon issues de recomendacion: no se detectaron oportunidades de
+  producto independientes; el bloqueo es una dependencia funcional directa.

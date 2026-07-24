@@ -1,0 +1,42 @@
+issue: 4850
+fase: verificacion
+pipeline: desarrollo
+resultado: aprobado
+notas: |
+  Auditoría de seguridad OWASP del backend de onboarding (#4850). El cambio
+  entregado es cobertura negativa en product-control-request.test.js (76 líneas);
+  la lógica de validación ya vive en origin/main (#4855) y fue auditada.
+
+  A01/A05 (autorización / defaults cerrados): enqueueOnboard delega en
+  runBootstrap({mode:'dry-run', deps:{kernelGateFloor:'enforce'}}) ANTES de
+  encolar. Ningún override relaja GATE 2, signers, provider allowlist, labels ni
+  base ref. authority.signers vacío ⇒ 400 sin escritura (verificado por test).
+
+  A03 (inyección / descriptor hostil): deriveProviderOrder valida contra
+  LIVE_PROVIDER_SET (project-descriptor.js:58,553-556): provider desconocido,
+  deprecado (groq), duplicado o fuera de rango ⇒ throw ⇒ 400 sin encolar. Rama
+  inválida y política de PR fuera de enum ⇒ 400. probeAccess ejecuta gh por array
+  con token solo por env (project-bootstrap.js:139-149) — sin command-injection.
+
+  A10 (SSRF): assertUrlAllowed (solo https, sin userinfo, sin IP interna/loopback/
+  link-local/metadata, host en allowlist). verifyAccess sólo prueba alcance si
+  guard.allowed (project-bootstrap.js:176) — el probe NO corre con guard fallido.
+
+  A02 (secretos): audit hash-chained pasa por redact.redactObject
+  (product-control-request.js:82,112,194); error de operador sanitizado
+  (sanitizeOperatorError) sin ARN/tableName/detalle interno; descriptor transporta
+  secretos solo por referencia. Sin credenciales crudas en el diff.
+
+  A08 (integridad): dryRun expone providerOrder/pullRequestPolicy como salida
+  derivada/validada (deriveProviderOrder/derivePullRequestPolicy), no eco ciego.
+  Orden fail-closed: validateDescriptor(379) -> signature-gate(389) ->
+  verifyAccess(396) -> dryRun(403). Cola escrita solo tras validación completa con
+  isSafeId(projectId) reasertado (defensa en profundidad anti path-traversal).
+
+  Evidencia empírica:
+  $ node --test project-bootstrap.test.js product-control-request.test.js
+  => tests 70, pass 70, fail 0 (incluye 6 negativos #4850 + 1 positivo defaults).
+  $ git diff origin/main...HEAD | grep -iE 'password|secret|token|apikey|AKIA'
+  => NINGUNO.
+
+  Sin vulnerabilidades explotables. Veredicto: aprobado.

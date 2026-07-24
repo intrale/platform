@@ -1,0 +1,74 @@
+issue: 4850
+fase: verificacion
+pipeline: desarrollo
+resultado: aprobado
+veredicto: passed
+modo: structural
+evidencia: "node --test .pipeline/lib/__tests__/project-bootstrap.test.js .pipeline/lib/__tests__/product-control-request.test.js ⇒ 70 pass / 0 fail"
+entorno:
+  modo: structural
+  backend: "no aplica (infra Node.js del pipeline — sin backend remoto ni emulador)"
+  apk: "no aplica"
+criterios:
+  - id: "CA-1"
+    estado: cumple
+    detalle: "dryRun expone providerOrder (deriveProviderOrder) y pullRequestPolicy (derivePullRequestPolicy) en project-bootstrap.js:219-220 y en el render humano (lineas 556-557). Derivers definidos/exportados en project-descriptor.js:541,564,845-846; require carga sin crash."
+  - id: "CA-2"
+    estado: cumple
+    detalle: "enqueueOnboard conserva la delegacion en project-bootstrap.runBootstrap({mode:'dry-run', deps:{kernelGateFloor:'enforce', probeAccess}}) antes de encolar (product-control-request.js:134-152)."
+  - id: "CA-3"
+    estado: cumple
+    detalle: "Payloads invalidos devuelven 400 sin escribir cola. Tests #4850: provider desconocido, provider deprecado (groq), providers.order duplicados, defaultBaseRef invalida, politica de PR fuera del enum, authority.signers vacio."
+  - id: "CA-4"
+    estado: cumple
+    detalle: "Defaults cerrados aplicados: test 'overrides validos del descriptor completo (providers vivos + politica declarada) ⇒ 202 encola'; dry-run corre con kernelGateFloor enforce (GATE 2 no se relaja)."
+  - id: "CA-5"
+    estado: cumple
+    detalle: "SSRF preservado: SEC-6 rechaza IP link-local/metadata (169.254.169.254), credenciales embebidas en URL, IPs internas/loopback y hosts fuera de allowlist (bateria assertUrlAllowed en project-bootstrap.test.js)."
+  - id: "CA-6"
+    estado: cumple
+    detalle: "node --test .pipeline/lib/__tests__/project-bootstrap.test.js .pipeline/lib/__tests__/product-control-request.test.js ⇒ tests 70, pass 70, fail 0."
+defectos: ninguno
+notas: |
+  ## Verificacion estructural — issue 4850 (branch agent/4850-pipeline-dev)
+
+  El branch de dev tiene un unico commit vs origin/main:
+    6dcf7138e test(pipeline): #4850 cobertura negativa de onboarding descriptor completo
+    (unico archivo: .pipeline/lib/__tests__/product-control-request.test.js, +76 lineas)
+  El codigo de produccion (project-bootstrap.js / product-control-request.js) proviene
+  del trabajo previo mergeado a main (hijas de descriptor #4741, alta de producto #4836/#4845),
+  y el issue explicita "Se apoya en el contrato/derivadores de la hija de descriptor, pero
+  debe tener evidencia propia de backend antes de cerrar" — esa evidencia son los tests
+  negativos agregados por 4850, que se ejecutaron OK contra el codigo real.
+
+  Comandos ejecutados (worktree C:/Workspaces/Intrale/platform.agent-4850-pipeline-dev):
+
+  $ node --check .pipeline/lib/project-bootstrap.js         -> OK
+  $ node --check .pipeline/lib/product-control-request.js   -> OK
+  $ node -e "const b=require('.../project-descriptor.js'); ..."
+    -> deriveProviderOrder: function | derivePullRequestPolicy: function
+  $ node --test project-bootstrap.test.js product-control-request.test.js
+    -> tests 70 | pass 70 | fail 0 | skipped 0
+
+  CA-1 (dryRun expone providerOrder + politica de PR):
+    project-bootstrap.js:219  providerOrder: descriptorLib.deriveProviderOrder(descriptor),
+    project-bootstrap.js:220  pullRequestPolicy: descriptorLib.derivePullRequestPolicy(descriptor),
+    project-bootstrap.js:556  lines.push("   providers: ...")
+    project-bootstrap.js:557  lines.push("   politica de PR: ...")
+
+  CA-2 (enqueueOnboard delega dry-run enforce):
+    product-control-request.js:145-152  runBootstrap({ mode:'dry-run',
+      deps:{ kernelGateFloor:'enforce', probeAccess: repoProbe.probeAccess } })
+
+  CA-3/CA-4 (tests #4850 en product-control-request.test.js):
+    #4850: provider desconocido ⇒ 400 sin encolar
+    #4850: provider deprecado/no-vivo (groq) ⇒ 400 sin encolar
+    #4850: providers.order duplicados ⇒ 400 sin encolar
+    #4850: rama base (defaultBaseRef) invalida ⇒ 400 sin encolar
+    #4850: politica de PR fuera del enum ⇒ 400 sin encolar
+    #4850: authority.signers vacio ⇒ 400 sin encolar
+    #4850: overrides validos (providers vivos + politica declarada) ⇒ 202 encola
+
+  Modo structural correcto: issue area:infra, deliverables Node.js del pipeline,
+  sin copy/card/banner visible del dashboard atribuible a 4850. Sin backend remoto
+  ni emulador involucrados. Todos los criterios verificados empiricamente.
