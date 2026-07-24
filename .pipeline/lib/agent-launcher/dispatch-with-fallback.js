@@ -604,6 +604,13 @@ const DURABLE_RED_REASONS = Object.freeze(new Set([
     'unknown_provider',        // misconfig
     'cli_unavailable',         // binario CLI ausente del PATH
     'cli_binary_undeclared',   // provider CLI sin binario declarado
+    'cli_license_unavailable', // #4869 — CLI instalado pero sin licencia/billing
+                               // (agy). Fail-closed durable: sin licencia el
+                               // provider no puede autenticarse y `agy` bloquea
+                               // en OAuth hasta timeout → el agente muere con
+                               // exit 1. Gatearlo saca a gemini-google de la
+                               // cascada hasta habilitar AGY_LICENSE_READY, sin
+                               // tumbar el dispatch (cae al siguiente provider).
     'quota_exhausted',         // sin cuota — el flag de cuota ya lo cubre, doble defensa
     'quota_exhausted_real',    // #4283 — cuota REAL agotada (≥90%, #4202): logueado pero sin cuota usable
 ]));
