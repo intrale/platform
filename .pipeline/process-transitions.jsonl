@@ -61,3 +61,17 @@
 {"ts":"2026-07-23T23:17:09.486Z","service":"svc-drive","from":"dead","to":"alive","reason":"recovered","lastError":""}
 {"ts":"2026-07-23T23:17:09.486Z","service":"svc-reconciler","from":"dead","to":"alive","reason":"recovered","lastError":""}
 {"ts":"2026-07-23T23:17:09.486Z","service":"dashboard","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-24T02:23:50.252Z","service":"pulpo","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-24T02:23:50.252Z","service":"listener","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-24T02:23:50.252Z","service":"svc-telegram","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-24T02:23:50.252Z","service":"svc-github","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-24T02:23:50.252Z","service":"svc-drive","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-24T02:23:50.252Z","service":"svc-reconciler","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-24T02:23:50.252Z","service":"dashboard","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-24T02:24:04.187Z","service":"pulpo","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-24T02:24:04.187Z","service":"listener","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-24T02:24:04.187Z","service":"svc-telegram","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-24T02:24:04.187Z","service":"svc-github","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-24T02:24:04.187Z","service":"svc-drive","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-24T02:24:04.187Z","service":"svc-reconciler","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-24T02:24:04.187Z","service":"dashboard","from":"dead","to":"alive","reason":"recovered","lastError":""}
