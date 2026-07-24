@@ -1,0 +1,37 @@
+issue: 4850
+fase: analisis
+pipeline: definicion
+repo: intrale/platform
+resultado: rechazado
+rebote_categoria: dependency_block
+depende_de: [4849]
+motivo: |
+  Este issue (#4850, backend de onboarding) necesita que #4849 entregue y cierre el
+  contrato/derivadores del descriptor completo (`providers.order`, politica de PR
+  y `deriveProviderOrder`) antes de poder conectar el backend contra esos campos.
+  Hoy #4849 esta OPEN y el HEAD actual todavia no expone esos derivadores ni
+  esos campos en el resumen dry-run.
+notas: |
+  ## Analisis tecnico - guru
+
+  Se publico comentario en el issue:
+  https://github.com/intrale/platform/issues/4850#issuecomment-5040414909
+
+  Evidencia de dependencia abierta:
+
+  $ gh issue view 4849 --repo intrale/platform --json title,state
+  state=OPEN
+  title=[Split de #4803] Contrato y derivadores del descriptor completo de producto
+
+  Evidencia del HEAD actual:
+
+  $ node -e "const d=require('./.pipeline/lib/project-descriptor'); const b=require('./.pipeline/lib/project-bootstrap'); const desc=require('./.pipeline/descriptors/intrale-platform.json'); const v=d.validateDescriptor(desc); console.log('descriptorValid='+v.valid+' stage='+(v.stage||'ok')+' errors='+v.errors.length); const res=b.runBootstrap({descriptor:desc,mode:'dry-run',deps:{kernelGateFloor:'enforce'}}); console.log('bootstrapOk='+res.ok+' stage='+res.stage); console.log('dryRunKeys='+Object.keys(res.dryRun||{}).join(',')); console.log('providerOrder='+JSON.stringify(res.dryRun&&res.dryRun.providerOrder)); console.log('prPolicy='+JSON.stringify(res.dryRun&&res.dryRun.prPolicy)); console.log('providersExport=' + ('deriveProviderOrder' in d));"
+  descriptorValid=true stage=ok errors=0
+  bootstrapOk=true stage=dry-run
+  dryRunKeys=ok,sideEffects,admissionLabels,resolvedRouting,signers,gates,discovered
+  providerOrder=undefined
+  prPolicy=undefined
+  providersExport=false
+
+  No se crearon issues de recomendacion: no se detecto deuda independiente fuera
+  del alcance actual; el bloqueo es una dependencia funcional directa de #4849.

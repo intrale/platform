@@ -1,0 +1,68 @@
+issue: 4850
+fase: dev
+pipeline: desarrollo
+rebote: true
+rebote_numero: 1
+rebote_tipo: codigo
+motivo_rechazo: '[build] Build FAILED sin error clasificado'
+rechazado_en_fase: build
+diff_hash_previo: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+resultado: aprobado
+branch: agent/4850-pipeline-dev
+commit: 6dcf7138e
+tests_pasados: 70
+smoke_test_ejecutado: false
+notas: |
+  ## Verificación del rechazo build rev-1
+
+  Motivo del rechazo: "[build] Build FAILED sin error clasificado".
+
+  ### Causa raíz (NO era un error de código del issue)
+  El log real del build lo evidencia (.pipeline/logs/4850-build.log):
+
+      [build] scope=smart cmd="bash scripts/smart-build.sh"
+      (node:18372) [DEP0190] DeprecationWarning: Passing args ... shell option true
+      [build] gradle exit_code=1 wall_ms=33
+      [build] --- stderr ---
+      "bash" no se reconoce como un comando interno o externo,
+
+  El build corrió en el worktree `platform.agent-4850-pipeline-dev`, que en ese
+  momento estaba en un commit STALE (520880f86, 533 commits detrás de origin/main).
+  Ese build.js es ANTERIOR al fix #3157 y no tiene `resolveBashCommand`:
+
+      $ git show 520880f86:.pipeline/skills-deterministicos/build.js | sed -n '111p'
+          const child = spawn(cmd, args, { cwd, env, shell: process.platform === 'win32', windowsHide: true });
+      $ git show 520880f86:.pipeline/skills-deterministicos/build.js | grep -c resolveBashCommand
+      0
+
+  Con `spawn('bash', ..., {shell:true})` en Windows, cmd.exe no encuentra `bash`
+  (regresión que #3157 ya había resuelto vía Git Bash explícito). El fallo fue de
+  infra por worktree stale, no del cambio de #4850.
+
+  ### Correcciones aplicadas
+  1. Fast-forward de `agent/4850-pipeline-dev` a origin/main → build.js del worktree
+     ahora tiene `resolveBashCommand` (grep -c = 3). Verificado que resuelve Git Bash:
+        resolve bash: {"cmd":"C:\\Program Files\\Git\\bin\\bash.exe","useShell":false}
+  2. Consolidé el entregable real de #4850 (commit 30f0416a4, cobertura negativa de
+     onboarding) en mi branch vía cherry-pick → commit 6dcf7138e. El worktree que el
+     pulpo elige primero para el build (`platform.agent-4850-pipeline-dev`) ahora
+     contiene el trabajo real, no un diff vacío.
+
+  ### Evidencia empírica de que el build ahora pasa
+  - node --test project-bootstrap.test.js product-control-request.test.js → 70 pass / 0 fail.
+  - Reproducción de smart-build (lo que corre el build determinístico):
+        $ git diff --name-only origin/main...HEAD
+        .pipeline/lib/__tests__/product-control-request.test.js
+        $ bash scripts/smart-build.sh
+        >> Los cambios no afectan módulos compilables (docs, scripts, etc.)
+        exit code: 0
+    Cambio pipeline-only → smart-build no-op → build verde (NO_OP success en build.js:464).
+  - Push OK: origin/agent/4850-pipeline-dev (branch nueva creada).
+
+  ### Nota para el pipeline (no bloqueante para este issue)
+  Existe un worktree/branch duplicado para #4850: `wt-4850` en
+  `agent/4850-backend-onboarding-descriptor` (mismo entregable de test). El pulpo
+  elige `platform.agent-4850-pipeline-dev` primero por orden en `git worktree list`.
+  Ambas ramas contienen el mismo cambio de test, así que delivery entregará lo mismo
+  desde cualquiera. La limpieza del worktree duplicado corresponde a hygiene del
+  pipeline (gestión de worktrees del pulpo), no a este issue.

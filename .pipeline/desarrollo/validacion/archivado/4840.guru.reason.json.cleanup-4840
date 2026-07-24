@@ -1,0 +1,12 @@
+{
+  "issue": 4840,
+  "skill": "guru",
+  "phase": "validacion",
+  "pipeline": "desarrollo",
+  "depends_on": [
+    4839,
+    4841
+  ],
+  "reason": "Rebote de re-intake (rechazado_skill_previo: po). Verifiqué empíricamente los\n3 claims del rechazo en HEAD (2026-07-21) y los CONFIRMO todos. La historia\n#4840 NO puede pasar a dev: su Definition of Ready exige que #4839/#4841\n(modelo capability-aware, fundación de CA-1) cierren ANTES, y siguen OPEN.\n\n## Verificación empírica del rechazo (este ciclo)\n\n1) Estado de dependencias duras:\n   $ gh issue view 4839 --json state,title\n     state=OPEN  \"Validación capability-aware del fallback de providers por agente (fail-closed)\"\n   $ gh issue view 4841 --json state,title\n     state=OPEN  \"Validación capability-aware del fallback de providers por agente (fail-closed)\"\n\n2) Fundación de CA-1 ausente (el modelo de capabilities NO distingue todavía\n   roles agénticos/no-agénticos ni ingesta de código):\n   $ grep -nE '\"agentic\"|ingests_source_code|requires_tool_use' .pipeline/lib/capabilities.js       -> exit=1 (0 matches)\n   $ grep -nE '\"agentic\"|ingests_source_code|requires_tool_use' .pipeline/agent-models.json          -> exit=1 (0 matches)\n   $ grep -nE 'agentic|ingests_source_code|requires_tool_use'   .pipeline/agent-models.schema.json   -> exit=1 (0 matches)\n\n3) Sin block real que proteja el gate de dev:\n   $ gh issue view 4840 --json labels -> enhancement, Ready, area:infra, size:medium, area:pipeline\n     (ningún label block/depend/hold)\n   $ grep -rnE '4839|4841' .pipeline/desarrollo/**/*.json -> sin coincidencias\n     (no hay dependencia 4840->4839/4841 registrada en el estado d",
+  "blocked_at": "2026-07-21T21:41:00.324Z"
+}

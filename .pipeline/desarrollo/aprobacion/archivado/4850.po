@@ -1,0 +1,32 @@
+issue: 4850
+fase: aprobacion
+pipeline: desarrollo
+resultado: aprobado
+motivo: |
+  Aprobado. Issue de infra pura del pipeline (area:infra, sin labels app:*, sin
+  mockup UI versionado): backend de onboarding en .pipeline/lib/*.js. Por politica
+  de CLAUDE.md ("Tipos de issue y criterio QA") no se exige video E2E — QA structural
+  aprobado (modo: structural, resultado: aprobado) es suficiente.
+
+  Verificacion empirica de criterios de aceptacion (PASO 2, lectura de codigo + tests):
+  - CA-1: dryRun expone providerOrder (deriveProviderOrder) y pullRequestPolicy
+    (derivePullRequestPolicy) — project-bootstrap.js:219-220. Verificado.
+  - CA-2: enqueueOnboard conserva la delegacion fail-closed en
+    runBootstrap({mode:'dry-run', deps:{kernelGateFloor:'enforce', probeAccess}})
+    antes de encolar — product-control-request.js:145-152. Verificado.
+  - CA-3: payloads con provider desconocido/deprecado, duplicados, rama invalida,
+    politica invalida, signer vacio -> 400 sin escribir cola (tests negativos #4850).
+  - CA-4: defaults cerrados aplicados (signer leitolarreta, labels needs-definition/Ready,
+    base ref main, GATE 2 enforce, providers vivos) -> 202 encola.
+  - CA-5: SSRF preservado (assertUrlAllowed: solo https, sin userinfo, sin IP
+    interna/loopback/link-local/metadata, host en allowlist).
+  - CA-6: node --test project-bootstrap.test.js product-control-request.test.js
+    -> tests 70, pass 70, fail 0 (re-ejecutado en esta pasada).
+
+  Requisitos de seguridad de definicion (A01/A05, A03, A10, A02, A08) auditados y
+  aprobados por security sin hallazgos. Tester verde, build y linter aprobados.
+notas: |
+  No se exigio video por scope infra pura (justificacion de trazabilidad).
+  Sin PR ni entrada de cola drive aun: esperado en fase aprobacion (delivery posterior).
+  Sin recomendaciones de producto independientes: la historia es backend/infra sin
+  deuda de producto adyacente identificable.

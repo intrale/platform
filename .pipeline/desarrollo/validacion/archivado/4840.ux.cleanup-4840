@@ -1,0 +1,29 @@
+issue: 4840
+fase: validacion
+pipeline: desarrollo
+repo: intrale/platform
+rebote: true
+rebote_tipo: re-intake
+rebote_re_intake: true
+motivo_rechazo: |-
+  La definición es de alta calidad (criterios CA-1..CA-10 verificables, Gherkin, requisitos de seguridad integrados, labels correctos: area:infra + area:pipeline, sin app:* → QA structural sin video). PERO la historia NO está lista para desarrollo: su propia Definition of Ready exige que #4839/#4841 (modelo capability-aware, fundación de CA-1) cierren ANTES del desarrollo, y ambos siguen OPEN. Verificación empírica en este ciclo (HEAD 2026-07-21):
+  1) Estado de dependencias duras:
+     $ gh issue view 4839 --json state → OPEN
+     $ gh issue view 4841 --json state → OPEN
+
+  2) Fundación de CA-1 ausente (el modelo de capabilities NO distingue todavía
+     roles agénticos/no-agénticos ni ingests_source_code):
+     $ grep -nE '"agentic"|ingests_source_code|requires_tool_use' .pipeline/lib/capabilities.js      → 0 matches
+     $ grep -nE '"agentic"|ingests_source_code|requires_tool_use' .pipeline/agent-models.json         → 0 matches
+     $ grep -nE 'agentic|ingests_source_code|requires_tool_use' .pipeline/agent-models.schema.json    → 0 matches
+
+  3) El dependency_block que los comentarios dan por "aplicado" NO tiene traza
+     empírica que proteja el gate de dev: el issue #4840 no tiene ningún label de
+     bloqueo (block/depend/hold) y no hay dependencia 4840→4839/4841 registrada en
+     el estado del pipeline (.pipeline/**/*.json). Nada frena el arranque de dev.
+
+  Como en el pipeline `desarrollo` la fase `validacion` está inmediatamente antes de `dev`, aprobar ahora mandaría el issue a desarrollo donde el dev no puede cumplir CA-1 (la fundación de #4839 no existe) y arriesga inventar/duplicar la clasificación por su cuenta, divergiendo de #4839 — exactamente el riesgo que ya señalaron guru ("tendría que inventar la clasificación... generando divergencia") y el arquitecto ("no arrancar dev hasta que #4839/#4841 cierren").
+  Acción requerida (no es un fix de código del dev): cerrar #4839 y #4841 primero (o re-aplicar el dependency_block real para que el brazoDesbloqueo reingrese este issue solo cuando cierren). Una vez cerradas las deps y presente el modelo de capabilities, re-validar: la definición ya está lista y se aprobaría sin cambios.
+rechazado_en_fase: validacion
+rechazado_skill_previo: po
+rechazado_at: '2026-07-21T21:29:50.434Z'
