@@ -187,7 +187,14 @@ porque aumenta el blast radius (recomendación de seguridad #2).
   si sale mal. Si la aprobación pasa por Telegram, respeta `feedback_telegram-messages-natural`
   (mensaje claro, contextual, no volcado técnico).
 
-### 5.4. Por qué híbrido y no canal 100% separado
+### 5.4. Modelo de ejecución: instancia productiva ↔ instancia en construcción
+
+El corolario operativo de esta decisión (dos instancias del kernel: **KERNEL-PROD** pinneada y en
+ejecución, **KERNEL-BUILD** working copy que se modifica como cualquier producto; y el
+**launcher/updater externo** que hace el swap porque un proceso no puede reemplazarse a sí mismo)
+está desarrollado en [`corte-kernel-y-tres-proyectos.md`](./corte-kernel-y-tres-proyectos.md) §4.
+
+### 5.5. Por qué híbrido y no canal 100% separado
 
 Un canal 100% separado para **todo** (incluido el trabajo de producto) tiraría el dogfooding que hoy
 mantiene al kernel probado contra carga real. La asimetría de riesgo lo justifica: el trabajo de
