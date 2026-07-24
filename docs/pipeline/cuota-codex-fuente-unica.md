@@ -52,12 +52,14 @@ if (q === 'critical' || _isProviderExhausted(provider, opts)) {
   snapshot** y nunca se contradicen (escenario Gherkin #1).
 - La distinción de los tres estados llega hasta el render
   (`views/dashboard/home.js` → `_mzHydrateWinCell`):
-  - `ok` → "✓ sin límite" (celda sana).
+  - `ok` → porcentaje **disponible** real (`N% disponible`, clase `mz-qm-fresh`
+    + color por umbral). Reemplaza al literal `✓ sin límite` que mostraba la
+    versión previa: ese texto era justamente el síntoma del bug padre #4885.
   - `exhausted` → "tope activo".
   - `nodata` → "sin dato" (clase `mz-qm-nodata`), **nunca verde**.
 
-Se distingue explícitamente **"sin dato por inactividad"** de **"sin límite"** y
-de **"cuota agotada"** (CA-4).
+Se distingue explícitamente **"sin dato por inactividad"** de **"cuota
+disponible"** y de **"cuota agotada"** (CA-4).
 
 ## 3.1. Fuente JSONL canónica
 
@@ -80,10 +82,44 @@ Las ventanas se clasifican por `window_minutes`, no por la posición
 - `< 1440` minutos: ventana de sesión.
 - `>= 1440` minutos: ventana semanal.
 
-`used_percent` se transforma en porcentaje disponible dentro de `0..100`, y
 `resets_at` se conserva como reset de la ventana correspondiente. El slice
 normalizado es la única entrada del renderer: la vista no relee rollouts ni
 recalcula ventanas o frescura.
+
+### Polaridad del porcentaje: dónde se convierte consumo → disponible (#4900)
+
+Este es el punto que originó el bug padre #4885 y hay que leerlo con cuidado,
+porque **la magnitud cambia de significado a mitad de camino**:
+
+| Capa | Campo | Semántica |
+|------|-------|-----------|
+| Rollout JSONL | `used_percent` | **consumo** (0..100) |
+| `lib/quota-adapters/openai-codex.js` | `result.pct` / `result.session.pct` | **consumo**, clampeado a `0..100` y redondeado a 1 decimal |
+| `lib/provider-quota.js` → `enrich()` mode `event` | `sub.pct` | **consumo** (se propaga tal cual); `sub.available` queda **`null`** |
+| `views/dashboard/home.js` → `_mzHydrateWinCell()` | valor pintado | **disponible** = `clamp(100 - consumo, 0, 100)` |
+
+La rama `event` de `enrich()` sale antes de derivar `available` (eso sólo ocurre
+en la rama `gauge`, vía `_availableFromConsumed()`), así que **la conversión la
+hace el renderer**. `_mzHydrateWinCell()` vive dentro del script cliente
+serializado al browser y **no puede `require()`** `provider-quota.js`: replica la
+fórmula, no la importa.
+
+Invariantes del render fresco (cubiertos por
+`tests/home-quota-render-4327.test.js`):
+
+- Una **única magnitud entera** (`availPct`) alimenta texto, ancho de barra,
+  clase cromática (`ok|warn|bad`), `title`, `aria-label` y el booleano `healthy`
+  que cuenta en `mz-sig-healthy`. No pueden divergir entre sí.
+- El rótulo es `N% disponible`, idéntico al de las celdas `gauge` de la misma
+  matriz; con `0% disponible` la copia es `AGOTADA (0% disponible)`.
+- Los umbrales de `_mzThresholdClass()` se aplican **sobre el disponible**:
+  `>=50` verde, `20..49` ámbar, `<20` (y `0`) rojo.
+- Extremos: consumo `0%` → `100% disponible`, verde, `healthy:true`; consumo
+  `100%` → `0% disponible`, rojo, `healthy:false`. Pintar el consumo crudo con
+  esta escala invierte la lectura (una cuota casi libre se vería crítica y una
+  agotada se contaría como proveedor sano).
+- El valor se escribe con `textContent`; nunca `innerHTML` ni texto crudo del
+  JSONL.
 
 La frescura se ancla al timestamp interno del evento. Un timestamp ausente,
 inválido, futuro por más de cinco minutos o más viejo que

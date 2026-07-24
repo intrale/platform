@@ -2620,7 +2620,9 @@ function _mzHydrateWinCell(key, slot, b){
 
     // Estado por eventos (Codex): #4863 / #4900.
     // exhausted y nodata conservan precedencia; sólo un porcentaje normalizado
-    // fresco alimenta texto, barra, color y atributos accesibles.
+    // fresco alimenta texto, barra, color y atributos accesibles. Ese porcentaje
+    // se expresa siempre como DISPONIBLE (= 100 - consumo), igual que la rama
+    // gauge, para que toda la matriz se lea con una única polaridad.
     if(mode === 'event'){
         cell.classList.add('mz-qm-event');
         if(barEl) barEl.style.width = '0%';
@@ -2652,18 +2654,29 @@ function _mzHydrateWinCell(key, slot, b){
         // el override de evento (barra oculta + color info) reservado a
         // exhausted/nodata. Así la mini-barra y el color por umbral que setea el
         // JS quedan visibles en el render real (#4900 rebote QA).
-        const normalizedPct = Math.round(pct);
+        //
+        // POLARIDAD (#4900): b.pct del slice es CONSUMO (used_percent del
+        // adapter, openai-codex.js), pero _mzThresholdClass() y las celdas
+        // gauge de la misma matriz trabajan con DISPONIBLE y rotulan
+        // "N% disponible". En mode 'event' el slice entrega available:null
+        // (provider-quota.js sale de la rama antes de derivarlo), así que la
+        // conversión se hace acá, replicando _availableFromConsumed():
+        // clamp(100 - consumido, 0, 100). No se puede require() el módulo:
+        // esta función vive en el script cliente serializado al browser.
+        // Una única magnitud entera (availPct) alimenta texto, barra, color,
+        // title, aria-label y healthy, para que no puedan divergir.
+        const availPct = Math.round(Math.max(0, Math.min(100, 100 - pct)));
         cell.classList.add('mz-qm-fresh');
-        const cls = _mzThresholdClass(normalizedPct);
+        const cls = _mzThresholdClass(availPct);
         if(cls) cell.classList.add(cls);
-        if(barEl) barEl.style.width = normalizedPct + '%';
-        if(pctEl) pctEl.textContent = normalizedPct + '%';
+        if(barEl) barEl.style.width = availPct + '%';
+        if(pctEl) pctEl.textContent = availPct + '%';
         if(rstEl) rstEl.textContent = '';
-        const pctLabel = normalizedPct + '%';
+        const pctLabel = availPct <= 0 ? 'AGOTADA (0% disponible)' : availPct + '% disponible';
         cell.setAttribute('title', meta.name + ' · ' + (b && b.win ? b.win : '') + ': ' + pctLabel
             + ' (fuente: ' + meta.src + ').');
         cell.setAttribute('aria-label', meta.name + ' ' + (b && b.win ? b.win : '') + ': ' + pctLabel);
-        return { healthy: normalizedPct > 0 };
+        return { healthy: availPct > 0 };
     }
 
     // Gauge con % disponible real.

@@ -39,18 +39,23 @@ const MOCKUP_SVG = path.resolve(
 const COMPARE_HTML = path.join(OUT_DIR, 'compare-render-vs-mockup.html');
 const COMPARE_PNG = path.join(OUT_DIR, 'compare-render-vs-mockup.png');
 
-// Escenarios del mockup (codex-quota-states.svg) + límites 0/100 pedidos por el
-// PO. Cada uno se hidrata con la MISMA función real `_mzHydrateWinCell`.
+// Escenarios del mockup (codex-quota-states.svg) + límites pedidos por el PO.
+// Cada uno se hidrata con la MISMA función real `_mzHydrateWinCell`.
 // key/slot dan un cid único `mz-qm-<key>-short`; el resto del shape imita el
 // bucket que produce el backend (mode:'event' = proveedor Codex por eventos).
+//
+// POLARIDAD (#4900): `b.pct` del slice es CONSUMO; la celda pinta DISPONIBLE
+// (= 100 - consumo). Por eso los escenarios se alimentan con el consumo que
+// produce el disponible del mockup: 28→72, 65→35, 88→12, 0→100, 100→0.
+// `avail` documenta el valor esperado en pantalla y lo consume la suite.
 const SCENARIOS = [
-    { id: 'c72', cap: 'FRESCO 72% · ok (verde)', expect: 'barra verde + 72%', b: { win: '5H', mode: 'event', eventState: 'ok', pct: 72 } },
-    { id: 'c35', cap: 'FRESCO 35% · warn (ámbar)', expect: 'barra ámbar + 35%', b: { win: '7D', mode: 'event', eventState: 'ok', pct: 35 } },
-    { id: 'c12', cap: 'FRESCO 12% · bad (rojo)', expect: 'barra roja + 12%', b: { win: '5H', mode: 'event', eventState: 'ok', pct: 12 } },
-    { id: 'c100', cap: 'LÍMITE 100% · ok', expect: 'barra llena verde + 100%', b: { win: '5H', mode: 'event', eventState: 'ok', pct: 100 } },
-    { id: 'c0', cap: 'LÍMITE 0% · bad', expect: 'track visible + 0% rojo', b: { win: '5H', mode: 'event', eventState: 'ok', pct: 0 } },
-    { id: 'cnd', cap: 'SIN DATO · nodata', expect: 'sin barra + "sin dato"', b: { win: '5H', mode: 'event', eventState: 'nodata' } },
-    { id: 'cex', cap: 'TOPE ACTIVO · exhausted', expect: 'sin barra + "tope activo"', b: { win: '5H', mode: 'event', eventState: 'exhausted' } },
+    { id: 'c72', cap: 'FRESCO · 72% disponible (ok/verde)', expect: 'barra verde + 72% (consumo 28%)', avail: 72, b: { win: '5H', mode: 'event', eventState: 'ok', pct: 28 } },
+    { id: 'c35', cap: 'FRESCO · 35% disponible (warn/ámbar)', expect: 'barra ámbar + 35% (consumo 65%)', avail: 35, b: { win: '7D', mode: 'event', eventState: 'ok', pct: 65 } },
+    { id: 'c12', cap: 'FRESCO · 12% disponible (bad/rojo)', expect: 'barra roja + 12% (consumo 88%)', avail: 12, b: { win: '5H', mode: 'event', eventState: 'ok', pct: 88 } },
+    { id: 'c100', cap: 'LÍMITE · 100% disponible (ok)', expect: 'barra llena verde + 100% (consumo 0%)', avail: 100, b: { win: '5H', mode: 'event', eventState: 'ok', pct: 0 } },
+    { id: 'c0', cap: 'LÍMITE · 0% disponible (bad, AGOTADA)', expect: 'track visible + 0% rojo (consumo 100%)', avail: 0, b: { win: '5H', mode: 'event', eventState: 'ok', pct: 100 } },
+    { id: 'cnd', cap: 'SIN DATO · nodata', expect: 'sin barra + "sin dato"', avail: null, b: { win: '5H', mode: 'event', eventState: 'nodata' } },
+    { id: 'cex', cap: 'TOPE ACTIVO · exhausted', expect: 'sin barra + "tope activo"', avail: null, b: { win: '5H', mode: 'event', eventState: 'exhausted' } },
 ];
 
 // Construye el HTML del harness usando EXCLUSIVAMENTE código real de home.js.
@@ -137,6 +142,24 @@ function findChrome() {
     return candidates.find((c) => fs.existsSync(c)) || null;
 }
 
+// Sleep sincrónico sin dependencias (Chrome headless a veces cierra el proceso
+// antes de que el PNG termine de bajar a disco).
+function sleepSync(ms) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// Espera a que el PNG exista y tenga contenido. Devuelve true/false; NO lanza.
+function waitForFile(p, timeoutMs) {
+    const deadline = timeoutMs / 100;
+    for (let i = 0; i <= deadline; i++) {
+        try {
+            if (fs.existsSync(p) && fs.statSync(p).size > 0) return true;
+        } catch { /* archivo a medio escribir: reintenta */ }
+        sleepSync(100);
+    }
+    return false;
+}
+
 function screenshot(chrome, htmlPath, pngPath, size) {
     execFileSync(chrome, [
         '--headless=new', '--disable-gpu', '--no-sandbox', '--hide-scrollbars',
@@ -163,15 +186,21 @@ function main() {
         process.exit(2);
     }
 
+    try { fs.rmSync(HARNESS_PNG, { force: true }); } catch { /* no existía */ }
     screenshot(chrome, HARNESS_HTML, HARNESS_PNG, '960,640');
-    if (!fs.existsSync(HARNESS_PNG) || fs.statSync(HARNESS_PNG).size === 0) {
+    if (!waitForFile(HARNESS_PNG, 10000)) {
         console.error('[4900] Chrome no produjo el render PNG.');
         process.exit(3);
     }
     console.log('[4900] render PNG     -> ' + HARNESS_PNG);
 
     fs.writeFileSync(COMPARE_HTML, buildCompareHtml(HARNESS_PNG), 'utf8');
+    try { fs.rmSync(COMPARE_PNG, { force: true }); } catch { /* no existía */ }
     screenshot(chrome, COMPARE_HTML, COMPARE_PNG, '1300,860');
+    if (!waitForFile(COMPARE_PNG, 10000)) {
+        console.error('[4900] Chrome no produjo el PNG comparativo.');
+        process.exit(4);
+    }
     console.log('[4900] compare PNG    -> ' + COMPARE_PNG);
 }
 
