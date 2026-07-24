@@ -2608,7 +2608,8 @@ function _mzHydrateWinCell(key, slot, b){
 
     // Estado por eventos (Codex): sin barra. #4863 — TRES estados explícitos
     // (CA-4), derivados de la fuente única reconciliada con el banner:
-    //   'ok'        → "✓ sin límite" (dato fresco, sin tope).
+    //   'ok'        → porcentaje real cuando el adapter lo informa; para slices
+    //                 legacy sin porcentaje, "✓ sin límite".
     //   'exhausted' → "tope activo"  (mismo snapshot que el banner de degradación).
     //   'nodata'    → "sin dato"     (stale por inactividad / sin lectura fresca) —
     //                  NUNCA se pinta verde: distingue "sin dato por inactividad"
@@ -2630,6 +2631,18 @@ function _mzHydrateWinCell(key, slot, b){
             return { healthy: false };
         }
         const ok = evState === 'ok';
+        const eventPct = b && b.pct != null && b.pct !== '' && Number.isFinite(Number(b.pct))
+            ? Number(b.pct)
+            : null;
+        if(ok && eventPct != null){
+            if(pctEl) pctEl.textContent = eventPct.toFixed(0) + '%';
+            if(rstEl) rstEl.textContent = '';
+            cell.setAttribute('title', meta.name + ' · ' + (b.win || '')
+                + ': ' + eventPct.toFixed(0) + '% de uso (dato fresco · fuente ' + meta.src + ').');
+            cell.setAttribute('aria-label', meta.name + ' ' + (b.win || '')
+                + ': ' + eventPct.toFixed(0) + '% de uso');
+            return { healthy: true };
+        }
         if(pctEl) pctEl.textContent = ok ? '✓ sin límite' : 'tope activo';
         if(rstEl) rstEl.textContent = '';
         cell.setAttribute('title', ok

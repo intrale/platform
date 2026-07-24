@@ -147,6 +147,22 @@ test('#4863: mode event eventState "ok" → "sin límite" y proveedor sano', () 
         { mode: 'event', eventState: 'ok', win: 'Roll' });
     assert.match(els[cid + '-pct'].textContent, /sin límite/);
     assert.equal(r.healthy, true);
+
+    const legacyNull = makeCell('openai-codex', 'long');
+    loadWinCellHelper(legacyNull.els)._mzHydrateWinCell('openai-codex', 'long',
+        { mode: 'event', eventState: 'ok', pct: null, win: 'Sem' });
+    assert.match(legacyNull.els[legacyNull.cid + '-pct'].textContent, /sin límite/,
+        'pct null no se coerciona a 0%');
+});
+
+test('#4885: mode event con porcentaje fresco prioriza el porcentaje real', () => {
+    const { cid, els } = makeCell('openai-codex', 'long');
+    const r = loadWinCellHelper(els)._mzHydrateWinCell('openai-codex', 'long',
+        { mode: 'event', eventState: 'ok', eventOk: true, pct: 42, confidence: 'fresh', win: 'Sem' });
+    assert.equal(els[cid + '-pct'].textContent, '42%', 'el porcentaje real no se reemplaza por "sin límite"');
+    assert.ok(!/sin límite/.test(els[cid + '-pct'].textContent));
+    assert.match(els[cid].getAttribute('title'), /42% de uso/);
+    assert.equal(r.healthy, true);
 });
 
 test('#4863: mode event eventState "exhausted" → "tope activo", NO sano', () => {
