@@ -5792,6 +5792,14 @@ ${navMoreAutoCloseClientScript()}</script>
 
 module.exports = {
     renderHomeHTML,
+    // #4900 (rebote QA visual) — CSS y script cliente expuestos como fuente única
+    // para harnesses de QA visual. Antes el harness de evidencia hardcodeaba una
+    // copia del CSS (sin `:not(.mz-qm-fresh)`) y armaba la celda fresca sin la
+    // clase `mz-qm-fresh`, reproduciendo el DEFECTO en vez del fix (escape #4531).
+    // Exponerlos permite generar el render real derivándolo del código en HEAD,
+    // sin drift posible.
+    homeStyles,
+    renderClientScript,
     // #3725 — Composer + sub-funciones puras exportadas para test aislado por
     // pieza (CA-3725.7). Las sub-funciones son puras (reciben state, devuelven
     // string); `collectHomeState` es el único punto con I/O.
