@@ -307,11 +307,14 @@ test('MANAGED_KEYS incluye los free providers vivos con canonicalPath', () => {
 });
 
 test('free providers son editable=true (rotables vía UI)', () => {
-    for (const p of ['gemini-google', 'cerebras', 'nvidia-nim']) {
+    for (const p of ['cerebras', 'nvidia-nim']) {
         const spec = secrets.MANAGED_KEYS.find(k => k.provider === p);
         assert.equal(spec.editable, true, `${p} debe ser editable`);
         assert.ok(spec.free_tier_notes, `${p} debe tener free_tier_notes`);
     }
+    const gemini = secrets.MANAGED_KEYS.find(k => k.provider === 'gemini-google');
+    assert.equal(gemini.editable, false, 'Gemini OAuth no rota API keys vía UI');
+    assert.ok(gemini.free_tier_notes);
 });
 
 test('rotateKey de free provider sobre CANONICAL crea backup + write atómico 0600 (SR-1)', () => {

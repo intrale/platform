@@ -1073,7 +1073,9 @@ test('#3220 + #3353 + #3501 · ALLOWED_MODELS_BY_LAUNCHER declara modelos por pr
   // #3501 — gemini-2.5-flash agregado como modelo alternativo para preservar
   // adversariality intra-provider en Sherlock (ver
   // sherlock-verifier.js::resolveSherlockProvider).
-  assert.deepEqual([...models['gemini-google']].sort(), ['gemini-2.0-flash', 'gemini-2.5-flash']);
+  assert.deepEqual([...models['gemini-google']].sort(), [
+    'gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-3-flash-preview',
+  ]);
   // #3797 — Corrección free tier real de Cerebras: NO sirve modelos llama-*. Los
   // únicos servibles son gpt-oss-120b (default) y zai-glm-4.7 (alternativo #3501).
   assert.deepEqual([...models.cerebras].sort(), ['gpt-oss-120b', 'zai-glm-4.7']);
