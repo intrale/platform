@@ -1845,8 +1845,13 @@ function homeStyles() {
 .mz-qm-cell.ok   .mz-qm-pct { color: var(--in-ok,#3fb950); }   .mz-qm-cell.ok   .mz-qm-mini i { background: var(--in-ok,#3fb950); }
 .mz-qm-cell.warn .mz-qm-pct { color: var(--in-warn,#d29922); } .mz-qm-cell.warn .mz-qm-mini i { background: var(--in-warn,#d29922); }
 .mz-qm-cell.bad  .mz-qm-pct { color: var(--in-bad,#f85149); }  .mz-qm-cell.bad  .mz-qm-mini i { background: var(--in-bad,#f85149); }
-.mz-qm-cell.mz-qm-event .mz-qm-mini, .mz-qm-cell.mz-qm-event .mz-qm-rst { display: none; }
-.mz-qm-cell.mz-qm-event .mz-qm-pct { color: var(--in-info,#58a6ff); background: rgba(88,166,255,.14); border-radius: 5px; padding: 2px 7px; font-size: 9.5px; font-weight: 700; min-width: 0; }
+/* El override de evento (barra oculta + chip color info) aplica sólo a los
+   estados categóricos (exhausted → "tope activo"; sin dato). El estado fresco
+   de Codex se marca con .mz-qm-fresh y queda EXCLUIDO para que la mini-barra y
+   el color por umbral (ok/warn/bad) que setea el JS se vean en el render real
+   (#4900 rebote QA — antes .mz-qm-event neutralizaba barra y color). */
+.mz-qm-cell.mz-qm-event:not(.mz-qm-fresh) .mz-qm-mini, .mz-qm-cell.mz-qm-event:not(.mz-qm-fresh) .mz-qm-rst { display: none; }
+.mz-qm-cell.mz-qm-event:not(.mz-qm-fresh) .mz-qm-pct { color: var(--in-info,#58a6ff); background: rgba(88,166,255,.14); border-radius: 5px; padding: 2px 7px; font-size: 9.5px; font-weight: 700; min-width: 0; }
 .mz-qm-cell.mz-qm-nodata .mz-qm-mini, .mz-qm-cell.mz-qm-nodata .mz-qm-rst { display: none; }
 .mz-qm-cell.mz-qm-nodata .mz-qm-pct { color: var(--in-fg-soft,#6e7681); font-weight: 600; font-size: 10px; }
 
@@ -2601,7 +2606,7 @@ function _mzHydrateWinCell(key, slot, b){
     const barEl = document.getElementById(cid + '-bar');
     const pctEl = document.getElementById(cid + '-pct');
     const rstEl = document.getElementById(cid + '-rst');
-    cell.classList.remove('ok', 'warn', 'bad', 'mz-qm-event', 'mz-qm-nodata');
+    cell.classList.remove('ok', 'warn', 'bad', 'mz-qm-event', 'mz-qm-nodata', 'mz-qm-fresh');
     if(tagEl && b && b.win) tagEl.textContent = b.win;
     const meta = MZ_PROVIDER_META[key] || { name: key, src: '' };
     const mode = b && b.mode;
@@ -2633,7 +2638,12 @@ function _mzHydrateWinCell(key, slot, b){
             cell.setAttribute('aria-label', meta.name + ' ' + (b && b.win ? b.win : '') + ': sin dato');
             return { healthy: false };
         }
+        // Estado fresco: se marca con 'mz-qm-fresh' para que el CSS NO le aplique
+        // el override de evento (barra oculta + color info) reservado a
+        // exhausted/nodata. Así la mini-barra y el color por umbral que setea el
+        // JS quedan visibles en el render real (#4900 rebote QA).
         const normalizedPct = Math.round(pct);
+        cell.classList.add('mz-qm-fresh');
         const cls = _mzThresholdClass(normalizedPct);
         if(cls) cell.classList.add(cls);
         if(barEl) barEl.style.width = normalizedPct + '%';

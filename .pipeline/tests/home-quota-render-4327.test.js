@@ -139,7 +139,23 @@ test('#4900: Codex fresco sincroniza porcentaje, barra, color, title y aria-labe
     assert.match(els[cid].getAttribute('title'), /72%/);
     assert.match(els[cid].getAttribute('aria-label'), /72%/);
     assert.ok(els[cid]._classes.has('mz-qm-event'), 'la celda marca estado por evento');
+    // #4900 rebote QA: el estado fresco DEBE marcarse con mz-qm-fresh para que el
+    // CSS le muestre la mini-barra y el color por umbral (el override de evento
+    // .mz-qm-event:not(.mz-qm-fresh) los ocultaba). Sin este marcador, el render
+    // real muestra sólo el texto, sin barra ni color.
+    assert.ok(els[cid]._classes.has('mz-qm-fresh'), 'estado fresco marca mz-qm-fresh (habilita barra+color)');
     assert.equal(r.healthy, true);
+});
+
+test('#4900 rebote QA: el CSS de evento excluye el estado fresco (barra+color visibles)', () => {
+    // Regresión de la causa raíz del rechazo: las reglas .mz-qm-event ocultaban
+    // la barra y forzaban color info, neutralizando lo que setea el JS. El fix
+    // scopea esas reglas con :not(.mz-qm-fresh). Este test lee la fuente real
+    // (no el DOM falso) para que un revert del CSS rompa la suite.
+    assert.match(HOME_SRC, /\.mz-qm-cell\.mz-qm-event:not\(\.mz-qm-fresh\)\s+\.mz-qm-mini/,
+        'el ocultado de la mini-barra debe excluir .mz-qm-fresh');
+    assert.match(HOME_SRC, /\.mz-qm-cell\.mz-qm-event:not\(\.mz-qm-fresh\)\s+\.mz-qm-pct/,
+        'el override de color info debe excluir .mz-qm-fresh');
 });
 
 test('#4900: Codex fresco cubre límites 0/100 y umbrales cromáticos', () => {
@@ -160,6 +176,9 @@ test('#4863: mode event eventState "exhausted" → "tope activo", NO sano', () =
         { mode: 'event', eventState: 'exhausted', pct: 70, win: 'Roll' });
     assert.equal(els[cid + '-pct'].textContent, 'tope activo', 'agotada → "tope activo"');
     assert.ok(!/sin límite/.test(els[cid + '-pct'].textContent), 'NUNCA "sin límite" cuando el banner dice agotada');
+    // exhausted es categórico: NO debe llevar mz-qm-fresh, así el override de
+    // evento (chip info, sin barra) sigue aplicando en el render real.
+    assert.ok(!els[cid]._classes.has('mz-qm-fresh'), 'exhausted no es estado fresco');
     assert.equal(r.healthy, false);
 });
 
@@ -184,6 +203,7 @@ test('#4900: porcentaje Codex inválido degrada a "sin dato"', () => {
         assert.equal(els[cid + '-pct'].textContent, 'sin dato');
         assert.equal(els[cid + '-bar'].style.width, '0%');
         assert.ok(els[cid]._classes.has('mz-qm-nodata'));
+        assert.ok(!els[cid]._classes.has('mz-qm-fresh'), 'sin dato no es estado fresco');
         assert.equal(r.healthy, false);
     }
 });
