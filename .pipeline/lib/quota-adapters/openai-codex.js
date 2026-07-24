@@ -6,12 +6,8 @@
 //
 // HISTORIA DEL FORMATO:
 //
-//   * ANTES (Codex < 0.145.0): el rate-limit se persistía en el log SQLite
-//     `~/.codex/logs_2.sqlite` (tabla `logs`, columna `feedback_log_body`) como
-//     eventos `codex.rate_limits`. El adapter lo leía con el CLI `sqlite3`.
-//
 //   * AHORA (Codex >= 0.145.0 — #4885): Codex dejó de persistir `used_percent`
-//     en el SQLite (el evento `account/rateLimits/read` sólo lleva el span de
+//     en el origen legacy (el evento `account/rateLimits/read` sólo lleva el span de
 //     telemetría, sin porcentajes). El objeto con `used_percent` se MOVIÓ a los
 //     ROLLOUTS de sesión: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`. Cada
 //     línea es un evento JSON; los eventos `event_msg`/`token_count` incluyen un
@@ -23,10 +19,9 @@
 //            "primary":{"used_percent":1.0,"window_minutes":10080,"resets_at":1785373521},
 //            "secondary":null,"credits":{...},"plan_type":"plus", ...}}}
 //
-// CAMBIOS QUE ESTE ADAPTER MANEJA (respecto del formato SQLite viejo):
+// CAMBIOS QUE ESTE ADAPTER MANEJA (respecto del formato legacy):
 //
-//   1. FUENTE: SQLite (`sqlite3` CLI) → archivos JSONL de rollout leídos con
-//      `fs` (sin dependencia de `sqlite3` ni proceso externo; sigue offline).
+//   1. FUENTE: archivos JSONL de rollout leídos con `fs`, sin proceso externo.
 //   2. RENAME DE CAMPO: `reset_at` (viejo) → `resets_at` (nuevo).
 //   3. SEMÁNTICA DE VENTANAS: el mapeo bucket→ventana YA NO es posicional
 //      (primary=5h, secondary=7d). Se clasifica por `window_minutes`:
@@ -150,20 +145,29 @@ function listRecentRolloutFiles(sessionsDir, max) {
     if (typeof sessionsDir !== 'string' || sessionsDir.length === 0) return out;
     const descNum = (a, b) => Number(b) - Number(a);
     const descStr = (a, b) => (a < b ? 1 : a > b ? -1 : 0);
-    const readDirs = (dir, filter, sorter) => {
+    const readDirs = (dir, kind, filter, sorter) => {
         let entries;
-        try { entries = fs.readdirSync(dir); } catch { return []; }
-        return entries.filter(filter).sort(sorter);
+        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return []; }
+        return entries
+            .filter((entry) => kind(entry) && filter(entry.name))
+            .map((entry) => entry.name)
+            .sort(sorter);
     };
-    const numeric = (name) => /^\d+$/.test(name);
-    const years = readDirs(sessionsDir, numeric, descNum);
+    const directory = (entry) => entry.isDirectory() && !entry.isSymbolicLink();
+    const regularFile = (entry) => entry.isFile() && !entry.isSymbolicLink();
+    const years = readDirs(sessionsDir, directory, (name) => /^\d{4}$/.test(name), descNum);
     for (const y of years) {
         const yDir = path.join(sessionsDir, y);
-        for (const m of readDirs(yDir, numeric, descNum)) {
+        for (const m of readDirs(yDir, directory, (name) => /^(0[1-9]|1[0-2])$/.test(name), descNum)) {
             const mDir = path.join(yDir, m);
-            for (const d of readDirs(mDir, numeric, descNum)) {
+            for (const d of readDirs(mDir, directory, (name) => /^(0[1-9]|[12]\d|3[01])$/.test(name), descNum)) {
                 const dDir = path.join(mDir, d);
-                const files = readDirs(dDir, (f) => /^rollout-.*\.jsonl$/.test(f), descStr);
+                const files = readDirs(
+                    dDir,
+                    regularFile,
+                    (name) => /^rollout-[^\\/]+\.jsonl$/.test(name),
+                    descStr,
+                );
                 for (const f of files) {
                     out.push(path.join(dDir, f));
                     if (out.length >= max) return out;
@@ -286,15 +290,17 @@ function classifyBuckets(rateLimits) {
     for (const key of ['primary', 'secondary']) {
         const b = rateLimits[key];
         if (!b || typeof b !== 'object') continue;
-        const usedPercent = Number(b.used_percent);
-        if (!Number.isFinite(usedPercent) || usedPercent < 0) continue;
-        const resetRaw = Number(b.resets_at);
-        const resetAt = Number.isFinite(resetRaw) && resetRaw > 0 ? resetRaw : null;
-        const wmRaw = Number(b.window_minutes);
-        const windowMinutes = Number.isFinite(wmRaw) && wmRaw > 0 ? wmRaw : null;
+        const usedPercent = b.used_percent;
+        if (typeof usedPercent !== 'number' || !Number.isFinite(usedPercent)) continue;
+        const resetRaw = b.resets_at;
+        const resetAt = typeof resetRaw === 'number'
+            && Number.isFinite(resetRaw) && resetRaw > 0 ? resetRaw : null;
+        const wmRaw = b.window_minutes;
+        const windowMinutes = typeof wmRaw === 'number'
+            && Number.isFinite(wmRaw) && wmRaw > 0 ? wmRaw : null;
         if (windowMinutes == null) continue;
         const bucket = {
-            usedPercent: Math.min(100, usedPercent),
+            usedPercent: Math.max(0, Math.min(100, usedPercent)),
             resetAt,
             windowMinutes,
         };
@@ -352,8 +358,7 @@ function openaiCodexAdapter(sessionData) {
         // ausente, Codex no corrió aún, o rollouts sin cuota todavía. Ausencia
         // de dato reprobe-elegible (Codex podría estar vivo sin haber escrito).
         return emptyResult('openai-codex', ADAPTER_STATUS.NO_USAGE_DATA,
-            'Cuota Codex: sin objeto rate_limits legible en los rollouts '
-            + '(~/.codex/sessions) — Codex no corrió aún o el formato cambió');
+            'Cuota Codex: no hay datos de uso legibles');
     }
 
     // 2. Frescura (CA-3): si el evento no trae timestamp, no podemos afirmar que
@@ -361,8 +366,7 @@ function openaiCodexAdapter(sessionData) {
     const eventMs = Number.isFinite(event.tsMs) ? event.tsMs : null;
     if (eventMs == null) {
         return emptyResult('openai-codex', ADAPTER_STATUS.UNKNOWN,
-            'Cuota Codex: evento rate_limits sin timestamp legible — no se puede '
-            + 'garantizar frescura, no se muestra el % (posible dato stale)');
+            'Cuota Codex: timestamp inválido');
     }
     const ageMs = nowMs - eventMs;
     // Evento en el FUTURO (edad negativa): clock skew, timestamp corrupto o
@@ -370,23 +374,19 @@ function openaiCodexAdapter(sessionData) {
     // de abajo y mostraría como "fresco" un dato NO confiable. Toleramos un
     // margen chico de desfasaje de reloj; más allá, degradamos.
     if (ageMs < 0) {
-        const aheadMin = Math.round(-ageMs / 60000);
         return emptyResult('openai-codex', ADAPTER_STATUS.UNKNOWN,
-            `Cuota Codex: evento rate_limits fechado ~${aheadMin} min en el futuro `
-            + '(clock skew o timestamp corrupto) — no se puede confiar en la frescura');
+            'Cuota Codex: timestamp futuro');
     }
     if (ageMs > stalenessMs) {
-        const ageMin = Math.round(ageMs / 60000);
         return emptyResult('openai-codex', ADAPTER_STATUS.UNKNOWN,
-            `Cuota Codex: dato stale (último rate_limits hace ~${ageMin} min, umbral `
-            + `${Math.round(stalenessMs / 60000)} min) — Codex inactivo, no se muestra el % viejo`);
+            'Cuota Codex: dato stale');
     }
 
     // 3. Clasificar buckets por window_minutes.
     const { session, weekly } = classifyBuckets(event.rateLimits);
     if (!session && !weekly) {
         return emptyResult('openai-codex', ADAPTER_STATUS.ERROR,
-            'Cuota Codex: objeto rate_limits sin used_percent válido en ninguna ventana');
+            'Cuota Codex: ventanas inválidas');
     }
 
     // 4. Construir el shape. semanal (7d) → top-level (pacing + gating);
@@ -429,9 +429,12 @@ openaiCodexAdapter.classifyBuckets = classifyBuckets;
 openaiCodexAdapter.extractLatestRateLimits = extractLatestRateLimits;
 openaiCodexAdapter.listRecentRolloutFiles = listRecentRolloutFiles;
 openaiCodexAdapter.readLatestEvent = readLatestEvent;
+openaiCodexAdapter.readFileTail = readFileTail;
 openaiCodexAdapter.statusFromPct = statusFromPct;
 openaiCodexAdapter.defaultCodexSessionsDir = defaultCodexSessionsDir;
 openaiCodexAdapter.DEFAULT_STALENESS_MS = DEFAULT_STALENESS_MS;
 openaiCodexAdapter.WEEKLY_WINDOW_MIN_THRESHOLD = WEEKLY_WINDOW_MIN_THRESHOLD;
+openaiCodexAdapter.MAX_ROLLOUTS_TO_SCAN = MAX_ROLLOUTS_TO_SCAN;
+openaiCodexAdapter.ROLLOUT_TAIL_BYTES = ROLLOUT_TAIL_BYTES;
 
 module.exports = openaiCodexAdapter;

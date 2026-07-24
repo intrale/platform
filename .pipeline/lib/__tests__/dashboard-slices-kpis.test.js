@@ -281,19 +281,18 @@ test('CA-5: quotaSlice expone `providers` con anthropic + stubs not_implemented'
             deterministic: {}, // debe filtrarse
         },
     }));
-    // #4885 — el adapter Codex lee los rollouts JSONL de `~/.codex/sessions`.
-    // Para hacer el test determinista (no dependa del estado real de la
-    // máquina/CI), apuntamos el dir a un path inexistente → el adapter degrada a
-    // `no_usage_data`.
-    const prevSessionsEnv = process.env.CODEX_SESSIONS_DIR;
-    process.env.CODEX_SESSIONS_DIR = path.join(root, 'no-existe-codex-sessions');
+    // #4598 — el adapter Codex lee `~/.codex/logs_2.sqlite`. Para hacer el test
+    // determinista (no dependa del estado real de la máquina/CI), apuntamos el
+    // log a un path inexistente → el adapter degrada a `no_usage_data`.
+    const prevLogEnv = process.env.CODEX_QUOTA_LOG_PATH;
+    process.env.CODEX_QUOTA_LOG_PATH = path.join(root, 'no-existe-codex.sqlite');
     const slices = freshSlices();
     let out;
     try {
         out = slices.quotaSlice({}, { ROOT: root, PIPELINE: pipeline });
     } finally {
-        if (prevSessionsEnv === undefined) delete process.env.CODEX_SESSIONS_DIR;
-        else process.env.CODEX_SESSIONS_DIR = prevSessionsEnv;
+        if (prevLogEnv === undefined) delete process.env.CODEX_QUOTA_LOG_PATH;
+        else process.env.CODEX_QUOTA_LOG_PATH = prevLogEnv;
     }
 
     assert.ok(out.providers, 'debe exponer `providers`');
