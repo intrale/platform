@@ -1,0 +1,17 @@
+{
+  "providers": {
+    "anthropic": {
+      "launcher": "claude",
+      "model": "claude-opus-4-7",
+      "spawn_args_template": ["-p", "{user_prompt}"],
+      "output_parser": "anthropic-stream-json",
+      "quota_error_types": [],
+      "supports_tool_use": true,
+      "prompt_caching": { "supported": true },
+      "credentials_env": ["ANTHROPIC_API_KEY"]
+    }
+  },
+  "skills": {
+    "guru": { "provider": "anthropic" }
+  }
+}

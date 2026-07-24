@@ -7,7 +7,7 @@ pipelines:
     fase_rechazo: null  # No hay rechazo en definición (se escala al usuario)
     skills_por_fase:
       analisis: [guru, security]
-      criterios: [po, ux]
+      criterios: [po, ux, architect]  # #3613 — architect entra en `criterios` con espera blanda (docs/pipeline/architect-role.md §2)
       sizing: [planner]
 
   desarrollo:
@@ -15,11 +15,11 @@ pipelines:
     fase_rechazo: dev   # Los rechazos siempre vuelven a dev
     skills_por_fase:
       validacion: [po, ux, guru]
-      dev: [backend-dev, android-dev, web-dev, pipeline-dev]  # Uno solo por historia, según labels
+      dev: [backend-dev, android-dev, web-dev, pipeline-dev, dev]  # Uno solo por historia, según labels
       build: [build]                             # Agente Claude (haiku) — gradlew check
       verificacion: [tester, security, qa]
       linteo: [linter]                           # Determinístico (Node, #2491) — chequeos mecánicos antes del LLM
-      aprobacion: [review, po, ux]
+      aprobacion: [review, po, ux, architect]   # #3613 — architect Fase 2: verifica adherencia diff vs receta firmada (architect-role.md §9)
       entrega: [delivery]
 
 # Concurrencia máxima por rol (instancias simultáneas de Claude)
@@ -29,6 +29,7 @@ concurrencia:
   ux: 2
   guru: 2
   security: 2
+  architect: 2           # #3613 — mismo nivel que po/ux/guru; corre en `criterios` y `aprobacion`
   planner: 1             # Necesita ver panorama completo
 
   # Desarrollo — worktree por issue
@@ -36,6 +37,7 @@ concurrencia:
   android-dev: 2
   web-dev: 2
   pipeline-dev: 2        # Scripts Node.js del pipeline (.pipeline/*.js)
+  dev: 1                 # Fallback genérico stack-agnóstico, capacidad mínima
 
   # Verificación
   tester: 2
@@ -71,23 +73,90 @@ intake:
     label: "Ready"
     fase_entrada: validacion
 
+# #3175 — Admission gate: garantiza que todo issue/PR creado tenga un label
+# de admisión (`needs-definition` o `Ready`). Defensa en dos capas:
+#
+#   1. GitHub Action (`.github/workflows/admission-gate.yml`) — event-driven,
+#      aplica el label dentro de ~30s del open. Configurable con la variable
+#      de repo `ADMISSION_GATE_DRY_RUN=1` para correr sin aplicar.
+#
+#   2. Sweep periódico en `servicio-reconciler.js` — defensa en profundidad
+#      para issues/PRs que escaparon al workflow (downtime de Actions,
+#      huérfanos pre-deploy, forks con permisos limitados). Corre en cada
+#      ciclo de reconcile (5min default) junto con el sweep de needs-human.
+#
+# La configuración real de runtime se hace por env vars que setea el pulpo
+# al lanzar servicio-reconciler:
+#   - ADMISSION_SWEEP_ENABLED=0  → desactiva el sweep del reconciler.
+#                                   El workflow event-driven sigue funcionando.
+#   - ADMISSION_GATE_DRY_RUN=1   → reconciler y workflow loguean decisiones
+#                                   pero NO aplican labels ni encolan alertas.
+#
+# Este bloque YAML es declarativo (visibilidad operacional). Los valores
+# acá NO se leen al iniciar el reconciler — son referencia y futura
+# extensión si decidimos hidratar via env desde config.yaml.
+admission_gate:
+  # Sweep del reconciler activo por default. Para apagar: setear
+  # ADMISSION_SWEEP_ENABLED=0 en el entorno del proceso.
+  sweep_enabled: true
+  # Modo dry-run global (loguea pero no aplica). Setear ADMISSION_GATE_DRY_RUN=1
+  # en el entorno para activar runtime.
+  dry_run: false
+  # Cap de huérfanos a aplicar por sweep. Si N>10, los primeros 10 se etiquetan
+  # y se manda alerta especial 🔴 al Commander pidiendo revisión humana antes
+  # de continuar. Valor sincronizado con lib/admission-gate.js → BOOTSTRAP_CAP.
+  bootstrap_cap: 10
+
+# =============================================================================
+# Puerto `e2e` — generador de evidencia para GATE 2 (#4573 · épico #4570)
+# -----------------------------------------------------------------------------
+# `lib/e2e-evidence-port.js` produce evidencia render-vs-mockup del dashboard
+# (Tier 1, siempre) y evidencia de producto APK/emulador/video (Tier 2, lazy).
+# La representatividad (frescura del mtime, viewport efectivo, hash SHA-256,
+# estado capturado) es VERIFICABLE, no auto-declarada.
+#
+# Feature-flag por env var (patrón visual-gate.js), default OFF:
+#   - PIPELINE_E2E_EVIDENCE_ENABLED=1 -> el puerto produce evidencia.
+#   - Ausente / =0 -> runE2eEvidence devuelve status=skipped (kill-switch).
+#
+# Este bloque es declarativo (visibilidad operacional). El valor efectivo se
+# lee de la env var del proceso, no de este YAML.
+e2e_evidence:
+  # Default off en este PR — activacion posterior cuando GATE 2 (#4574) consuma
+  # la evidencia. Setear PIPELINE_E2E_EVIDENCE_ENABLED=1 en el entorno para on.
+  enabled: false
+
 # Mapeo de labels de GitHub a skill de desarrollo
 dev_skill_mapping:
   "area:pipeline": "pipeline-dev" # Scripts Node.js del pipeline (.pipeline/*.js, roles, hooks)
+  "area:dashboard": "pipeline-dev" # Ventanas del dashboard V3 (Node.js, .pipeline/dashboard.js + views/)
   "area:infra": "backend-dev"    # Infra kotlin/gradle/ci-cd (NO pipeline — eso es area:pipeline)
   "area:backend": "backend-dev"
   "app:client": "android-dev"
   "app:business": "android-dev"
   "app:delivery": "android-dev"
   "area:web": "web-dev"
+  generic_fallback: "dev"        # Fallback stack-agnóstico si el producto no declara capability de stack
   default: "backend-dev"         # Si no tiene label de área (priority:critical se rutea por área)
+
+# Particiones declarativas del puerto `dev` (kernel) a skills concretos (adaptador).
+# Intrale conserva comportamiento observable: default -> backend-dev. Si un producto
+# no declara capabilities backend/frontend/pipeline, `generic_fallback` rutea a `dev`.
+dev_skill_partitions:
+  backend: [backend-dev]
+  frontend: [android-dev, web-dev]
+  pipeline: [pipeline-dev]
+  generic: [dev]
 
 # Prioridad de ruteo cuando un issue tiene MÚLTIPLES labels de dominio (ej. area:infra + app:client).
 # Orden de mayor a menor prioridad. El primer label presente en el issue define la ruta.
 # Rationale: si alguien tagueó `area:pipeline` o `area:infra`, esa intención manda — issues del pipeline
 # no deben caer en android-dev sólo porque tienen `app:client` por error (ej. #2328).
+# El dev genérico NO participa de esta prioridad: entra último, sólo cuando no hay
+# capability de stack resuelta para el producto.
 dev_routing_priority:
   - "area:pipeline"
+  - "area:dashboard"
   - "area:infra"
   - "area:backend"
   - "area:web"
@@ -143,14 +212,40 @@ feature_priority:
 # Límites de recursos del sistema — presión graduada en vez de binario
 resource_limits:
   # Umbrales graduados (verde → amarillo → naranja → rojo)
-  green_max_percent: 50            # Debajo de esto: capacidad total, sin restricciones
-  yellow_max_percent: 65           # Moderado: concurrencia reducida al 50%, limpieza suave
-  orange_max_percent: 80           # Alto: solo 1 agente total, limpieza agresiva
-  red_max_percent: 90              # Crítico: bloquear todo, kill de emergencia
+  # NOTA (config drift, ver #4542 / #4051): el baseline REAL de RAM de esta
+  # máquina es ~70-77% incluso idle (CPU ~7%). Con los umbrales viejos
+  # (orange 80) ese baseline diurno clavaba el gate en ORANGE → techo de 1
+  # agente → stall del pipeline. El night_window ya relajaba esto de
+  # 22:00-07:00; acá alineamos el DIURNO al mismo baseline vetado para que
+  # 70-77% sea YELLOW (no ORANGE). RED sigue como tope duro anti-swap/OOM.
+  green_max_percent: 55            # Debajo de esto: capacidad total, sin restricciones
+  yellow_max_percent: 78           # RAM 70-77% (baseline real) → YELLOW: concurrencia 50%, limpieza suave
+  orange_max_percent: 88           # Naranja recién sobre 88%: solo 1 agente, limpieza agresiva
+  red_max_percent: 93              # Crítico: bloquear todo, kill de emergencia (tope duro anti-swap/OOM)
 
   qa_env_max_cpu_percent: 60       # QA env (3 servicios pesados) necesita más margen
   qa_env_max_mem_percent: 60       # QA env: DynamoDB + Gradle + emulador consumen mucha RAM
   max_concurrent_devs: 1           # Máximo de desarrolladores simultáneos
+
+  # #4051 — Ventana nocturna: umbrales relajados + piso de concurrencia garantizado.
+  # Durante la ventana de inactividad de Anthropic (22:00–07:00) el trabajo cae a
+  # la cadena de respaldo (Codex / free tiers). La RAM baseline nocturna (70-77%)
+  # clavaba el gate en ORANGE → techo de 1 agente → ~0,67 agentes promedio. Acá
+  # relajamos los umbrales y garantizamos un piso para que el pipeline avance.
+  # Mecanismo INDEPENDIENTE de rest_mode (que corre 24/7 con schedule vacío).
+  # red_max_percent se mantiene como tope duro (RED sigue bloqueando todo) para
+  # evitar swap/OOM. enabled:false desactiva el modo nocturno por completo.
+  night_window:
+    enabled: true
+    start: "22:00"
+    end: "07:00"
+    timezone: "America/Argentina/Buenos_Aires"
+    green_max_percent: 55          # Mismo criterio diurno, leve holgura
+    yellow_max_percent: 78         # RAM 70-77% pasa a YELLOW (no ORANGE)
+    orange_max_percent: 88         # Naranja recién sobre 88%
+    red_max_percent: 93            # Tope duro: RED sigue bloqueando todo
+    min_concurrency_floor: 2       # Piso de agentes simultáneos aunque haya naranja
+    max_concurrent_devs: 2         # Piso de devs nocturno (override del 1 diurno)
 
   # Limpieza proactiva
   proactive_cleanup_cycles: 10     # Cada N ciclos del Pulpo, limpiar aunque no haya presión
@@ -191,6 +286,16 @@ timeouts:
     linter: 5                     # Determinístico — sólo lee diff/git log, debería durar segundos
     delivery: 90                  # Espera CI completo (OWASP ~28min, check-app ~15min) + gate de review + merge + reporte
 
+# Desync waves.json ↔ .partial-pause.json (#4439)
+# Ventana de validez de la "traza de origen legítimo" que habilita el auto-resync
+# aditivo de una divergencia ambigua (CA-3). Una suma a la allowlist con
+# authorized_by ∈ {wave-promote, commander:leo} en el audit encadenado (#3625)
+# dentro de esta ventana se resincroniza a la ola activa en vez de frenarla.
+# Fuera de ventana → ambiguo → human-block (fail-safe SEC-4439-3). Default 90000ms
+# (3 ciclos de dispatch a poll_interval 30s). TTL corto a propósito: no debilitar A08.
+desync:
+  legit_add_ttl_ms: 90000
+
 # Build (#2405 CA-1) — Allowlist de JAVA_HOME para el rol build
 # Se compara normalizando separadores (C:/Users/... y C:\Users\...), case-insensitive.
 # Paths con `..` o whitespace embebido son rechazados.
@@ -209,12 +314,40 @@ build:
 # (cap duro antisabotaje, default 20) — este es el threshold "escalar a humano".
 circuit_breaker:
   infra_escalate_threshold: 5
+  # #4707 (SEC-R1 / CA-4) — cap de rebotes de código del circuit breaker genérico.
+  # Al alcanzarlo, el issue NO se "para en silencio": escala a needs-human con
+  # causa raíz + alerta Telegram (fail-closed). Debe ser entero ≥ 1; un valor
+  # inválido (0, negativo, no numérico, Infinity) cae al default 3 con clamp —
+  # nunca puede desactivar el breaker (cota superior sana de 20).
+  rebotes_max: 3
+  # #3940 — auto-resume del CB de infra. Tras N prechecks OK consecutivos reales
+  # (no hits del cache de 30s), el Pulpo cierra el CB solo y notifica por Telegram.
+  # El cierre manual (node .pipeline/resume.js) sigue disponible como override.
+  # SEC-R1: debe ser entero ≥ 1; un valor inválido (0, negativo, no numérico)
+  # cae al default 3 con warning — nunca deshabilita el fail-closed de #2305.
+  auto_resume_ok_threshold: 3
+  # #4160 — auto-promoción por convergencia. Cuando un issue rebota de
+  # `verificacion` a `dev` sin una observación accionable real y el dev produce
+  # el MISMO diff que en el rebote anterior (convergencia) con el build verde, el
+  # Pulpo auto-promueve en lugar de seguir rebotando hasta agotar el breaker.
+  auto_promote_on_convergence: true
+  # Condición necesaria: el build del issue debe estar verde para auto-promover.
+  convergence_requires_build_green: true
+  # Gate RIESGO-1 (NO NEGOCIABLE): rechazos originados por estos skills NUNCA se
+  # auto-promueven por convergencia — siguen el circuit breaker hacia humano.
+  # `security` queda además excluido por código (defensa-en-profundidad).
+  convergence_excludes_skills: [security]
 
 # GitHub
-github:
-  owner: "intrale"
-  repo: "platform"
-  project_number: 2               # GitHub Project V2
+# DEPRECADO (#4693 · CA-0): la fuente de verdad del repo destino se consolidó en
+# el bloque `repos` de pipeline.config.json, consumido vía .pipeline/lib/repo-target.js.
+# Este bloque queda como legacy comentado para no reintroducir un segundo lector
+# divergente. `project_number` no tiene consumidores JS (verificado con grep);
+# si algún path futuro lo necesita, migrarlo también al manifiesto.
+# github:
+#   owner: "intrale"
+#   repo: "platform"
+#   project_number: 2               # GitHub Project V2
 
 # Pre-check de conectividad (#2317) — evita lanzar agentes cuando la red está caída
 precheck:
@@ -266,6 +399,22 @@ cost_anomaly_alert:
     telegram: true            # Encolar en .pipeline/servicios/telegram/pendiente/
     dashboard_banner: true    # Renderizar banner + pill en /
 
+# (#3943, EP6-H1) Cron de ghostbusters --worktrees: retira worktrees muertos.
+# Criterio compuesto (RS-3): seguridad (sin uncommitted + sin unpushed + sin
+# proceso vivo) AND abandono (rama inexistente en remoto O antigüedad > umbral).
+# Guard anti-suicidio (RS-1) y git sin shell (RS-2) en lib/ghostbusters-worktrees.js.
+# Audit JSONL append-only en .pipeline/audit/ghostbusters-worktrees.jsonl (RS-4).
+#
+# ⚠️ dry_run: true es el default OBLIGATORIO de la primera ejecución (RS-4).
+# Habilitar borrado real (dry_run: false) SOLO después de revisar el output
+# del dry-run en .pipeline/logs/ghostbusters-cron.log.
+ghostbusters_cron:
+  enabled: true
+  intervalMin: 60            # Cadencia del cron interno (clamp 5-1440)
+  cap: 5                     # Máximo de worktrees borrados por corrida (RS-4)
+  dry_run: true              # Default seguro: reportar sin borrar
+  age_threshold_days: 30     # Umbral de antigüedad para criterio de abandono
+
 # Modo descanso (#2890 PR-A, parte del épico #2882) — gating horario.
 # Durante la ventana configurada, sólo corren los skills determinísticos
 # (delivery, builder, linter, tester). El resto queda en `pendiente/` sin
@@ -299,6 +448,52 @@ staleness:
   build_log_max_age_hours: 24     # Default — logs de build más viejos se consideran stale
   max_resets_per_issue: 5         # Tope duro: más de 5 resets por stale-log → escalar, no resetear
 
+# =============================================================================
+# Watchdog resiliente (#4077) — auto-supervisión del watchdog
+# =============================================================================
+# El watchdog (.pipeline/watchdog.ps1) escribe un heartbeat propio en cada
+# ciclo (.pipeline/logs/watchdog.heartbeat). Una 2da tarea de Task Scheduler
+# (Intrale-Pipeline-V2-Watchdog-Supervisor → watchdog-supervisor.ps1) lee ese
+# heartbeat y relanza el watchdog si está stale. La lógica de decisión vive en
+# .pipeline/lib/watchdog-supervisor.js (testeada con node --test).
+# Override por env: WATCHDOG_STALE_MINUTES (entero positivo; inválido → default,
+# NUNCA "nunca stale" — SEC-2).
+watchdog:
+  stale_minutes: 6                 # heartbeat más viejo que esto = watchdog stale (3 ciclos de 2 min)
+  supervisor_max_restarts: 3       # SEC-4: cap duro de relanzamientos por ventana antes de escalar a needs-human
+  supervisor_cooldown_seconds: 90  # mín. entre relanzamientos (reusa semántica del cooldown de last-restart.json)
+  supervisor_window_minutes: 60    # ventana para contar relanzamientos contra el cap
+  # #4154 — Liveness real del Pulpo. El Pulpo emite un heartbeat por iteración
+  # (.pipeline/last-tick.json); el watchdog lo lee y, si su edad supera este
+  # umbral con el proceso vivo, lo declara zombi (loop colgado) y lo reinicia.
+  # DESACOPLADO del display: /salud usa "esperado < 30s" sólo para MOSTRAR salud;
+  # 30s == 1 poll_interval del Pulpo, un ciclo lento lo rozaría sin ser zombi.
+  # 90s = max(90, 3×poll_interval) evita falsos positivos (CA-4) y restart-storms
+  # (SEC-3). Override por env PULPO_LIVENESS_KILL_SECONDS (entero positivo;
+  # inválido → default, NUNCA "nunca stale" — SEC-2).
+  pulpo_liveness_kill_seconds: 180
+
+# =============================================================================
+# Wave-stall watchdog (#4708) — dead-man's switch de la ola
+# =============================================================================
+# Detecta la condición "trabajo habilitado + 0 despacho durante N minutos + sin
+# causa declarada" y alerta a Telegram + escala la ola a `needs_attention`
+# (label `needs-human`). NO cierra la ola ni mata agentes: sólo observabilidad
+# fail-closed (incidente raíz #4700). La lógica de decisión vive en
+# .pipeline/lib/wave-stall-watchdog.js (función pura testeada con node --test);
+# el brazo del Pulpo recolecta los hechos del filesystem y la invoca.
+#
+# stall_minutes se valida con clamp fail-closed (SEC-3): 0, negativo, no-numérico
+# o absurdamente grande (> 1440 min = 24h) cae al default seguro — NUNCA
+# "nunca stall" ni deshabilita de facto el watchdog.
+wave_watchdog:
+  enabled: false                 # rollout gradual — activar tras smoke test post-restart
+  kill_switch: false             # corte de emergencia: true desactiva el brazo sin tocar `enabled`
+  stall_minutes: 20              # 0 despacho más de esto (con trabajo habilitado y sin causa) = estancada
+  alert_cooldown_minutes: 30     # SEC-4: mín. entre re-alertas del mismo episodio (anti-flood)
+  window_minutes: 60             # ventana de referencia para la serie de avance/despacho
+  tick_ms: 60000                 # cada cuánto corre el brazo (default 1 min)
+
 # Dashboard — opciones del dashboard del pipeline
 dashboard:
   # #2895 — Threshold (% del promedio histórico) a partir del cual un agente
@@ -306,6 +501,23 @@ dashboard:
   # Default 150 evita falsos positivos por varianza natural; subir a 200 si
   # los promedios todavía son ruidosos por pocas muestras.
   eta_stuck_threshold_pct: 150
+
+  # #3961 EP8-H8 — Umbrales configurables de los KPIs del panel de métricas.
+  # Migrados desde los hardcodeados (SHERLOCK_PRECISION_TARGET / _SAME_PROVIDER
+  # de dashboard-slices.js y los targets DORA de dashboard.js). El loader
+  # (lib/dashboard-thresholds.js) valida tipo/rango con default seguro y clamp;
+  # un valor ausente/invalido cae al default y un valor fuera de rango se acota.
+  # Cuando un KPI excede su umbral, la card se pinta y se genera una entrada en
+  # la bandeja de alertas (a traves de alertTraySlice()).
+  thresholds:
+    sherlock_precision_target: 0.90        # [0..1] verde >= target
+    sherlock_precision_alert_below: 0.80   # [0..1] alerta visible < este valor
+    sherlock_same_provider_target: 0.10    # [0..1] meta < 10% (independencia del juez)
+    voice_p95_max_ms: 8000                 # [0..600000] banda saludable de p95 latencia de voz
+    deliverables_min_pct: 80               # [0..100] % minimo de fases con entregable por skill
+    dora_lead_time_max_h: 6                # [0..720] target lead time < 6h
+    dora_throughput_min_per_day: 2         # [0..1000] target throughput > 2/dia
+    dora_fail_rate_max_pct: 15             # [0..100] target change fail rate < 15%
 
 # =============================================================================
 # Detector de cuota Anthropic agotada (#2974, hija de #2955)
@@ -339,6 +551,21 @@ quota_detector:
   # Anthropic. OpenAI suele usar cuotas mensuales (31 días) — declarado en
   # agent-models.json:providers.openai-codex.resets_at_cap_max_days.
   resets_at_cap_max_days: 7
+  # #4731 — TTL (cap de `resets_at`) CONFIGURABLE POR PROVEEDOR, en días. Evita
+  # el flag huérfano de larga vida del incidente 14–15/07 (Codex disparó y el
+  # fallback semanal lo dejaba prendido ~30hs). Cada valor se clampa en código a
+  # [MIN_TTL_DAYS=1h, MAX_TTL_DAYS=31d] (security A05): un valor inválido o fuera
+  # de rango cae al default conservador (`resets_at_cap_max_days`) y se acota —
+  # nunca deja flags eternos ni expira sin evidencia. Un proveedor ausente acá
+  # usa `resets_at_cap_max_days`. El cap real por evento sigue acotado por
+  # `capResetsAt`; para Codex `usage_limit_reached` (cap rolling) manda la
+  # ventana corta de 1h de `CODEX_USAGE_LIMIT_RESET_MS` cuando no hay `resets_at`.
+  ttl_by_provider:
+    anthropic: 7          # ciclo semanal Plan Max
+    openai-codex: 1       # cap rolling del plan (usage_limit_reached ~horas); techo 1d
+    cerebras: 1           # free tier — recuperación rápida
+    gemini-google: 1      # free tier — recuperación rápida
+    nvidia-nim: 1         # free tier — recuperación rápida
   # Si `false`, el detector funciona pero no escribe `.pipeline/logs/quota-detector-*.log`.
   # Útil para apagar audit en caso de problema de espacio en disco — no debería
   # ser necesario nunca con la rotación normal.
@@ -349,6 +576,87 @@ quota_detector:
   # demasiado spamea (memoria `feedback_telegram-messages-natural`). El rango
   # razonable está documentado en #2979 — validación pendiente como hardening.
   reminder_interval_minutes: 120
+
+# =============================================================================
+# Alerta y switch preventivo por cuota de proveedor (#4282)
+# =============================================================================
+# Anticipa la caída de un proveedor: avisa (Telegram + banner del dashboard) y
+# —si el switch preventivo está activo— degrada el primary a fallback ANTES de
+# quedarse sin cuota, en vez de descubrirlo al reventar (incidente 27-28/06).
+#
+# Fuente de dato: `dashboard-slices.quotaSlice` (consumo, NO re-extracción).
+# El guard (`lib/provider-quota-guard.js`) SOLO actúa con `confidence === fresh`
+# (REQ-SEC-4). Cobertura real por proveedor:
+#   - anthropic: session + weekly (el switch preventivo aplica a weekly — caso
+#     del incidente).
+#   - openai-codex: sin ventana de sesión (session siempre "sin dato"); weekly
+#     según presupuesto mensual cuando hay dato fresco.
+#   - gemini-google y free-tier: buckets "missing" → no se alertan (sin ruido).
+#
+# Validación fail-safe (REQ-SEC-2): cada par debe cumplir `0 < warn < crit <= 100`
+# numérico; ante valor inválido se cae a `defaults` y se loggea, sin romper el
+# ticker. `preventive_switch.enabled` solo activa el switch con `true` literal.
+multi_provider:
+  # Cron de health por provider (#4402 CA-3).
+  health:
+    # Cadencia del cron de health. Default 5 min.
+    # Clamp [1,240] min con piso duro ≥60s (RS-5.5) anti-DoS free tier
+    # (Gemini RPM 15, Cerebras RPM 30). Jitter ±60s se conserva en código.
+    # Un typo/valor inválido cae al default 5 min sin romper el arranque.
+    interval_minutes: 5
+  quota_alert:
+    # Umbrales por defecto si un proveedor no declara los suyos.
+    defaults:
+      warn: 80    # % que dispara aviso temprano
+      crit: 95    # % que dispara aviso crítico (+ degradación si el switch está ON)
+    # Umbrales por proveedor (anticipan el incidente de Anthropic semanal).
+    anthropic:
+      warn: 80
+      crit: 95
+    openai-codex:
+      warn: 80
+      crit: 95
+    gemini-google:
+      warn: 80
+      crit: 95
+    # Switch preventivo: degrada primary→fallback de forma controlada al cruzar
+    # `crit` con dato fresco. DEFAULT OFF (solo alerta). El soft-gate NUNCA fuerza
+    # el hard gate ni vacía la chain de fallbacks (REQ-SEC-3, ver dispatch-with-fallback).
+    preventive_switch:
+      enabled: false
+      # Vigencia del marker de degradación (respaldo anti-zombie). Default 90 min.
+      marker_ttl_minutes: 90
+
+# =============================================================================
+# Presupuesto de ritmo (pacing budget) por proveedor (#4289)
+# =============================================================================
+# Reparte proporcionalmente la cuota SEMANAL de cada proveedor para no agotar
+# todo el cupo en pocos días. Token bucket semanal: cada hora se acredita la
+# porción proporcional del cupo (quota / 168h) y se descuenta el consumo real.
+#
+#   🟢 verde    — en ritmo: operación normal.
+#   🟡 amarillo — adelantado (con saldo): de-prioriza en el reparto (prefiere
+#                 fallback) SIN apagar. Aviso Telegram.
+#   🔴 rojo     — saldo acumulado agotado: desactiva temporalmente vía
+#                 provider-disabled (source:'pacing', TTL) y deriva al fallback.
+#                 Vuelve solo al recargarse el bucket.
+#
+# Invariantes: FAIL-OPEN (estado corrupto ⇒ no de-prioriza ni apaga), GRANULAR
+# (solo afecta al proveedor excedido), y NO override de la matriz de permisos
+# (si pacing dejaría sin candidato, cede ante la matriz — ver dispatch-with-
+# fallback CA-6). La ventana semanal se ancla al reset de weekly-quota.js
+# (domingo 21:00 ART, configurable por QUOTA_TZ_OFFSET_MIN).
+#
+# Rollout con kill-switch: `enabled: false` por default. Activar tras validar
+# tests + smoke. Overrides por env: PACING_YELLOW_MARGIN_PCT, PACING_TTL_RED_MIN.
+pacing:
+  enabled: false
+  # Cupo semanal por proveedor, en puntos porcentuales (100% = cupo completo).
+  weekly_quota_pct_per_provider: 100
+  # Adelanto (en puntos %) sobre el ritmo lineal que dispara 🟡 amarillo.
+  yellow_margin_pct: 5
+  # Vigencia del disable por 🔴 rojo (respaldo + recuperación automática). Min.
+  ttl_red_min: 60
 
 # =============================================================================
 # Handoff cross-agente (#2993)
@@ -404,6 +712,210 @@ handoff:
     - aprobacion
     - entrega
 
+# #4870 — Modo reducido: aviso advisory cuando no hay proveedor PAGO disponible.
+#
+# Diseño: receta del Arquitecto en el body del issue #4870. Cuando TODOS los
+# providers pagos (billing:'paid' → Anthropic + Codex, ver agent-models.json)
+# están gateados por cuota pero queda un free sano en la chain del commander, el
+# Commander entra en "modo reducido": responde un canned advisory determinístico
+# ("modo reducido, sin ejecución de acciones") y NO spawnea el free (decisión de
+# PO D1 — least-privilege, no quema free tier ni expone datos al TOS de un free).
+#
+# El estado es DERIVADO EN VIVO por lib/commander/multi-provider.js::isReducedMode
+# (re-resuelve la chain sin side-effects); no hay flag sticky persistido. Al
+# recuperarse un pago (reset de la ventana de cuota) el próximo turno resuelve a
+# pago y sale solo (CA-4). El scope es SÓLO el canal Commander (decisión PO D2).
+#
+# Claves:
+#   - enabled:      flag de rollout. Default OFF (false) ⇒ flujo IDÉNTICO al
+#                   actual (regresión cero, CA-7). Activar tras smoke test.
+#   - kill_switch:  override inmediato de enabled (corte de emergencia). Con true,
+#                   el modo reducido queda desactivado sin tocar `enabled`.
+#
+# Rollout sugerido:
+#   1. Mergear con `enabled: false`. Validar node --test + smoke test.
+#   2. `enabled: true`. Observar el audit `reduced_mode` y el aviso al operador.
+#   3. Ante cualquier anomalía del aviso ⇒ `kill_switch: true`.
+reduced_mode:
+  enabled: false
+  kill_switch: false
+
+# #4576 — Índice de confiabilidad + calibración + escalera de autonomía.
+#
+# Épico #4570 · Diseño: docs/pipeline/gates-firma-operador.md §4.4 / §12.
+#
+# Gobierna la auto-aprobación de firma del operador (GATE 1 / GATE 2). El
+# default es SEGURO = firma humana: la auto-aprobación es opt-in por bucket
+# calibrado, revocable, con kill-switch global (CA-10). Ante ausencia o
+# corrupción de datos de calibración ⇒ firma humana (fail-closed, §12).
+#
+# Módulos que consumen esta sección:
+#   - lib/confidence-index.js   — descomposición de confianza por criterio.
+#   - lib/autonomy-ladder.js    — buckets, acuerdo, decay, auto-revocación.
+#   - lib/operator-signature-gate.js — gate fail-closed de auto-aprobación.
+#
+# Claves:
+#   - enabled:            flag global de rollout. Default OFF (false). Con
+#                         false, el gate hace cortocircuito ⇒ siempre firma
+#                         humana (CA-10).
+#   - kill_switch:        override inmediato de enabled (apagado total sin
+#                         rebootear el pulpo). true ⇒ toda auto-aprobación off.
+#   - modo:               disabled | dry-run | enforce. En dry-run el gate
+#                         computa la decisión lógica pero NUNCA auto-aprueba de
+#                         verdad (effective = firma_humana) — sirve para medir
+#                         acuerdo antes de activar. Default dry-run.
+#   - umbral_acuerdo_pct: X — % mínimo de acuerdo para calibrar un bucket (CA-6).
+#   - muestras_minimas:   N — muestras mínimas para calibrar (anti-envenenamiento,
+#                         CA-8). Sin N ⇒ un bucket nunca calibra.
+#   - decay_dias:         antigüedad máxima de una muestra para contar (CA-8).
+#                         Muestras más viejas no perpetúan autonomía obsoleta.
+#   - auditoria_pct:      % de auto-aprobaciones marcadas para auditoría humana
+#                         aleatoria (CA-11, crypto.randomBytes, no sembrable).
+#   - go_live_date:       ISO date. Issues previos NO se auto-aprueban (van a
+#                         firma humana, sin autonomía retroactiva). null = off.
+#
+# Rollout sugerido:
+#   1. Mergear con `enabled: false`. Validar tests unitarios + smoke.
+#   2. `enabled: true` + `modo: dry-run`. Observar acuerdo por bucket en
+#      `audit/operator-calibration.jsonl` durante ≥N muestras.
+#   3. Solo cuando un bucket supere X% sobre N muestras, `modo: enforce`.
+#      Ante cualquier caída de acuerdo, el bucket se auto-revoca (CA-9).
+firma_operador:
+  enabled: false
+  kill_switch: false
+  modo: dry-run
+  umbral_acuerdo_pct: 95
+  muestras_minimas: 20
+  decay_dias: 30
+  auditoria_pct: 10
+  go_live_date: null
+
+# #4578 — Gate de coherencia a nivel ola (cross-issue).
+#
+# Épico #4570 · hijo #8 (último de la cadena de gates).
+# Diseño: docs/pipeline/gates-firma-operador.md §10.2.
+# Contrato: docs/pipeline/contrato-kernel-adaptador.md — puertos `gates`/`e2e`,
+#           estado `waiting-operator` (§5), veredicto `requires-operator` (§3).
+#
+# Motor del gate agregado que corre al CERRAR una ola: evalúa la coherencia
+# CROSS-ISSUE de los entregables (los gates por-issue pueden pasar individualmente
+# y la ola quedar incoherente) y emite un veredicto estructurado que permite al
+# operador vetar el cierre. Es un SUPERCONJUNTO del GATE 2 por-issue (#4575/#4643).
+#
+# Módulos que consumen esta sección:
+#   - lib/wave-coherence-gate.js — motor del gate (fail-closed, evidencia
+#     redactada, audit append-only, veredicto estructurado con conflicts[]).
+#   - lib/waves.js — estado `waiting-operator` a nivel ola (retención por el kernel).
+#
+# Superficies del veto (fuera de scope de este motor):
+#   - #4579 (Telegram, aprobación un-toque) · #4580 (bandeja del dashboard).
+#
+# Claves:
+#   - enabled:      flag global de rollout. Default OFF (false). Con false, el
+#                   gate es INERTE — el Pulpo se comporta igual que hoy (no corre
+#                   el paso wave-close). Rollout gradual (patrón visual-gate).
+#   - kill_switch:  override inmediato de enabled (apagado total sin rebootear).
+#
+# Comportamiento (SIEMPRE, independiente del flag, cuando SÍ se invoca):
+#   - FAIL-CLOSED (A04): evidencia ausente/corrupta o error → `fail`, cierre
+#     DENEGADO. NUNCA `pass` silencioso. Sin auto-cierre por timeout: si el
+#     operador no responde, la ola permanece `waiting-operator`.
+#   - CONTENIDO = DATO (A08): texto agregado sanitizado con handoff.detectInjection.
+#   - SIN SECRETS (A05): evidencia redactada vía write-deliverable.redactContent.
+#   - AUDIT APPEND-ONLY (A09): cada decisión → JSONL inmutable en audit/.
+#
+# Rollout sugerido:
+#   1. Mergear con `enabled: false`. Validar `node --test` + smoke test.
+#   2. `enabled: true` observando el audit `audit/wave-coherence-gate.jsonl` y el
+#      estado `waiting-operator` en waves.json antes de confiar el veto al flujo.
+wave_coherence_gate:
+  enabled: false
+  kill_switch: false
+
+# #4136 — Frontera activo/histórico.
+#
+# El Pulpo muda al `historico/` (raíz aparte, mismo volumen → rename atómico) los
+# artefactos `procesado/` de issues en REPOSO TOTAL (sin archivos en
+# pendiente/trabajando/listo de ninguna fase, y que alcanzaron su fase terminal o
+# están `closed` en GitHub). Así el camino vivo se mantiene acotado solo y el
+# snapshot del dashboard (`_genPipelineState`) deja de congelar el event loop.
+# El histórico se consulta on-demand por id validado; NO lo walkea el snapshot.
+#
+#   - enabled:        habilita el barrido (rollout gradual; default true).
+#   - max_per_tick:   tope de issues archivados por tick del Pulpo.
+#   - retention_days: ventana de retención del histórico (limpieza futura).
+historico:
+  enabled: true
+  max_per_tick: 200
+  retention_days: 90
+
+# #4444 — Retención del histórico de logs de ejecución de agentes (por intento).
+#
+# El Pulpo persiste el log de cada ejecución de agente en un archivo por intento
+# (`logs/${issue}-${skill}.attempt-N.log`) además del alias del intento vigente
+# (`logs/${issue}-${skill}.log`, compat con dashboard). Así los rebotes ya no se
+# sobrescriben y el dashboard puede exponer el log de CADA intento por separado
+# (endpoint `/logs/history/<issue>/<agente>` + selector en el popup del stepper).
+#
+# `.pipeline/logs/` ya pesa varios GB; retener N intentos por (issue, skill) sin
+# tope acelera el crecimiento y amplía la ventana de exposición de secrets
+# (REQ-SEC-4). Esta política acota ambas dimensiones:
+#
+#   - enabled:                habilita la persistencia por intento + la poda.
+#                             Si false, NO se poda (rollout reversible).
+#   - max_attempts_per_agent: máx. de intentos retenidos por (issue, skill).
+#                             Al superarlo se podan los más viejos (nunca el
+#                             vigente). Default 20.
+#   - max_bytes_per_log:      tope de bytes servidos por request en el endpoint
+#                             de log completo (anti-DoS por fs.readFileSync de
+#                             logs multi-MB). Se sirve la cola con un marcador si
+#                             se trunca. Default 5 MB.
+#   - retention_days:         TTL por intento; los intentos más viejos que esta
+#                             ventana se podan (nunca el vigente). 0 = sin TTL.
+#                             Default 30.
+logs_history:
+  enabled: true
+  max_attempts_per_agent: 20
+  max_bytes_per_log: 5242880
+  retention_days: 30
+
+# #3416 — Rebobinado del pipeline tras rechazo del operador.
+#
+# El operador dispara `/rechazar <issue> <alias>` desde Telegram. El Commander
+# (productor #3441, `lib/commander/rechazar-handler.js`) valida y escribe un
+# archivo JSON en `.pipeline/rejections/<issue>-<unix-ts>.json`. El `brazoRewind`
+# del pulpo (consumer #3416) lo consume vía adapter
+# (`lib/rewind-event-adapter.js`), valida (whitelist alias, fase no-futura,
+# punto de no retorno, deny-list de prompt injection), mata al agente activo
+# si corresponde, mueve el archivo `.<skill>` a la fase destino y postea
+# comentario en GitHub. Tras procesar mueve el evento a
+# `.pipeline/rejections/listo/`.
+#
+# Mitigaciones de seguridad (#3416 SEC-1..SEC-8 del análisis de security):
+#   - SEC-1 prompt injection: deny-list + cap 2KB + wrap XML `<rejection_feedback>`.
+#   - SEC-2 autorización: source debe ser `telegram-commander` o `cli-local`.
+#   - SEC-3 validación estricta de fase: whitelist enum cerrada.
+#   - SEC-4 path traversal: `Number(issue)` strict guard.
+#   - SEC-5 race con agente activo: SIGTERM → SIGKILL con grace period.
+#   - SEC-6 inyección comentario GitHub: motivo dentro de fenced code block.
+#   - SEC-7 audit log: hash chain SHA-256 reusando `lib/audit-log.js`.
+#   - SEC-8 rate limit suave: alerta (no bloqueo) ≥10 rewinds/hora.
+#
+# Ver: docs/pipeline/rewind-operador.md
+rewind:
+  # Tiempo de gracia antes de escalar SIGTERM → SIGKILL al agente activo.
+  # 30s es suficiente para que el agente termine un flush de logs pero corto
+  # para no trabar al operador esperando un rewind.
+  kill_grace_seconds: 30
+  # Ventana del rate limit suave (CA-8). El umbral es `rate_limit_threshold`
+  # rewinds por issue en esta ventana — al superar, alerta a Telegram, NO
+  # bloquea. Respeta la decisión de Leo de no tener circuit breaker.
+  rate_limit_window_minutes: 60
+  rate_limit_threshold: 10
+  # TTL de markers in-flight (CA-9 recovery). Si el pulpo crasha durante un
+  # rewind, los markers > ttl se limpian al boot y el operador puede reintentar.
+  in_flight_stale_minutes: 5
+
 # #3085 / S7 multi-provider — aislamiento de credenciales por proceso.
 #
 # Cuando `env_isolation_enabled: true`, el pulpo filtra `process.env` antes de
@@ -427,3 +939,853 @@ handoff:
 # Ver: docs/pipeline-multi-provider.md §5.2 (acoplamiento A16).
 pipeline:
   env_isolation_enabled: false
+
+  # (#3083 / CA-7 / SEC-6) Retención forense del audit trail (activity-log.jsonl).
+  #
+  # Define cuántos días de logs append-only conservamos antes de rotar /
+  # depurar. Cualquier valor menor a 30 se eleva automáticamente al piso por
+  # `lib/traceability.js` (clamp en código — NO se puede bajar desde config
+  # por error humano o config maliciosa).
+  #
+  # Default: 90 días. Recomendado mínimo: 30 días (piso hardcoded).
+  audit_retention_days: 90
+
+# =============================================================================
+# #4821 (Split de #4804) — Cutover a persistencia durable del alta de producto.
+#
+# `kernel.durable` es el FLAG DE CUTOVER ÚNICO (CA-6): gatea a la vez la ESCRITURA
+# del alta (`project-bootstrap` → `store.putProduct`) y la LECTURA del catálogo
+# (`product-catalog` → `store.listProducts`). Con `false` (default) el pipeline
+# usa EXACTAMENTE el camino FS actual (registry.json + descriptors/*.json). Con
+# `true`, lectura Y escritura van al store durable (DynamoDB); nunca coexisten
+# FS-read + DynamoDB-write. El flag se lee UNA SOLA VEZ por operación (no se
+# re-consulta mid-flow) para evitar split-brain FS↔DynamoDB.
+#
+# La sección `kernel:` (tableName/region/durable) la aporta #4828/#4820 y vive
+# MÁS ABAJO en este archivo (bloque "kernel-store"). NO se duplica acá para no
+# romper el parser YAML con una clave top-level repetida.
+#
+# =============================================================================
+# #4309 — Ejecución del fallback in-flight (revive #3578)
+#
+# Cuando un agente arranca su turno con Anthropic y Anthropic se cuelga DURANTE
+# el stream (caída in-flight, no pre-spawn), los detectores shadow de #3577
+# (first-byte / stream-gap / eof-premature / transient-5xx) emiten la señal de
+# DECISIÓN (`inflight_signal_observed`). Lo que faltaba cablear era la
+# EJECUCIÓN: tras decidir el secundario (openai-codex), spawnearlo y correr el
+# turno con él reusando la maquinaria pre-spawn.
+#
+# Cuando `execution_enabled: true`, el pulpo, al disparar un detector in-flight:
+#   1. mata el primario (taskkill /T confirma terminación),
+#   2. decide el secundario vía `decideInflightFallback` (cap=1 + budget 90s),
+#   3. lo spawnea con la MISMA ruta que el pre-spawn (buildChildEnv partial-
+#      override → aislamiento de credenciales S-2 → runNonAnthropic),
+#   4. emite `inflight_fallback_completed` (EJECUCIÓN ≠ señal de decisión).
+#
+# DEFAULT: ON. El ejecutor in-flight viene prendido — un fix no puede shippear
+# apagado y degradar al comportamiento viejo (detecta pero no ejecuta). Este
+# flag queda SOLO como kill-switch explícito: para volver al modo shadow-only
+# (#3577, sin matar el primario ni spawnear el secundario) hay que setearlo
+# explícitamente en `false`. Ausente/indefinido => ON.
+#
+# Aplica a CUALQUIER agente del pipeline (el ejecutor es skill-agnóstico), no
+# solo al Telegram Commander. El cap=1 + budget acotan la amplificación de
+# spawns ante una caída sostenida de Anthropic (modo de falla conocido).
+inflight_fallback:
+  execution_enabled: true
+
+# =============================================================================
+# #3343 — Sherlock verifier adversarial (split de #3331)
+#
+# Sherlock corre como capa interna del Commander de Telegram: antes de mandar
+# cada respuesta, refuta el análisis con evidencia del estado actual del
+# sistema. Usa la chain `telegram-sherlock` de `agent-models.json` con el orden
+# de calidad aprobado (Anthropic Haiku 4.5 → Codex → Gemini → Cerebras →
+# NVIDIA NIM). Si detecta inconsistencias, reelabora la respuesta (1 vez, cap
+# hardcoded). Si timeout/error/sin-provider, agrega disclaimer F-6 y manda la
+# original.
+#
+# Defensas (CA-SEC-1..9):
+#   - sherlock_enabled solo se lee desde este archivo (CA-SEC-7 anti-toggle
+#     remoto: cualquier intento de cambio via input del usuario emite
+#     `sherlock_toggle_attempt_ignored` en el audit log y se ignora).
+#   - sherlock_max_reelaboraciones es un CAP. El código aplica
+#     `Math.min(valor, 1)` así que aunque alguien edite y ponga 99 acá,
+#     el invariante hardcoded gana (CA-SEC-9). Mantener `1` documenta la
+#     intención y evita confusión.
+#
+# Timeout (#3484, 2026-05-23):
+#   El timeout local de Sherlock se ELIMINÓ — quedaba en 10s (default) con
+#   clamp absoluto 30s, insuficiente para verificación adversarial real. Ahora
+#   el presupuesto se delega al `lib/multi-provider/completion-client.js`:
+#     - DEFAULT_TIMEOUT_MS  =  90 s   (per-request)
+#     - ABSOLUTE_MAX_TIMEOUT_MS = 180 s (cap defensivo, no removible)
+#   La defensa adicional vive en `pulpo.js` con un soft-timeout de 120s para
+#   todo el turn handler — si Sherlock cuelga, libera el chat con mensaje
+#   honesto al usuario (UX-2 / CA-UX-2).
+#   `sherlock_timeout_ms` quedó como NO-OP: si está presente, se ignora con un
+#   warning en el log. NO removerlo de configs viejas — el cargador es tolerante.
+# =============================================================================
+sherlock_enabled: true
+# sherlock_timeout_ms: 10000      # DEPRECATED (#3484) — ahora delegado al cliente.
+# Presupuesto por provider de la cascada Sherlock (#4104, revierte "timeout 0"
+# del 2026-06-02 — ver #3925 / #3920). Default 40000, rango válido 30000–45000.
+# Se propaga como timeoutMs a los spawn helpers; cuando un eslabón supera el
+# presupuesto recibe SIGTERM y la cascada salta al siguiente provider sin abortar
+# la verificación global. NO confundir con la deprecada sherlock_timeout_ms
+# (NO-OP por CA-SEC-7). Input malformado cae al default 40000 (clamp fail-safe).
+sherlock_provider_budget_ms: 40000
+sherlock_max_reelaboraciones: 1
+# #4139 — Flujo SÍNCRONO de Sherlock (reemplaza el modelo OPTIMISTA de #4105).
+# Presupuesto MÁXIMO de espera del verdict antes de despachar: el Commander espera
+# SIEMPRE el verdict y entrega un único mensaje final consolidado (texto + audio ya
+# verificados). Si el presupuesto se agota sin verdict, DEGRADA a F-6 ("no pude
+# verificar; te muestro la original") y despacha igual — nunca cuelga el chat.
+# Clamp duro [10000ms, 90000ms]: fuera de rango cae al default 90000ms.
+sherlock_wait_budget_ms: 90000
+
+# =============================================================================
+# Agrupamiento de bursts de notificaciones Telegram (#3668)
+# =============================================================================
+# El drainer `servicio-telegram.js` agrupa archivos en `servicios/telegram/
+# pendiente/` por clave (`pid + meta.type + skill + issue`) dentro de una
+# ventana temporal antes de enviar a Telegram. Si N>1 archivos coinciden, se
+# emite UN mensaje consolidado enumerando provider+error_class de cada intento
+# (CA-1..CA-5 / S-5).
+#
+# El cap hardcoded en `lib/telegram-burst-grouper.js` clampea el valor a
+# [BURST_WINDOW_MIN_MS=10s, BURST_WINDOW_MAX_MS=300s] sin importar lo que diga
+# este archivo (S-10 — defense in depth contra config inválida o malicia).
+#
+# Default 60_000ms (60s) — cubre cascadas Sherlock de ~7ms-200ms holgadamente
+# y produce 1 mensaje cada 60s en el peor caso.
+telegram_burst_window_ms: 60000
+
+# =============================================================================
+# Reintentos de salientes Telegram (#4082)
+# =============================================================================
+# Confirmación de entrega real: `svc-telegram` marca un saliente como `enviado`
+# SOLO cuando el API de Telegram responde `ok:true` con `message_id`. Si la
+# entrega falla, el dropfile se reintenta con BACKOFF (no reencolado inmediato):
+# `handleSendFailure` estampa `_nextRetryAt` y el poll de selección saltea los
+# dropfiles cuyo `_nextRetryAt` sea futuro.
+#
+# IMPORTANTE: NO confundir con `precheck.max_retries` ni con el `max_retries` de
+# RED de una sola request del http-client. Estas claves gobiernan los reintentos
+# de la COLA de salientes (entrega lógica, cross-poll).
+#
+# SEC-3 (anti retry-storm): el barredor one-shot de `fallido/` al boot estampa
+# `_nextRetryAt` escalonado para no reencolar los fallidos de golpe (HTTP 429).
+# SEC-4 (anti stale): `stale_ttl_ms` descarta salientes `-cmd.json` más viejos
+# que el TTL en vez de reenviarlos fuera de contexto.
+#
+# Valores fuera de rango caen al default con warning — nunca rompen el servicio.
+telegram_outbound:
+  max_retries: 5            # Tope estricto de reintentos antes de fallido/ terminal
+  backoff_base_ms: 5000     # Base del backoff exponencial: base * 2^(intento-1)
+  backoff_max_ms: 300000    # Tope del backoff por intento (5 min)
+  stale_ttl_ms: 86400000    # TTL de descarte de salientes viejos (24h) — SEC-4
+  sweep_stagger_ms: 3000    # Escalonado entre fallidos reencolados por el barredor — SEC-3
+
+# =============================================================================
+# Notificación de entregables del pipeline (#3414)
+# =============================================================================
+# Cuando un skill notificable (guru, po, ux, planner) cierra una fase del
+# pipeline `definicion` con `resultado: aprobado`, el pulpo encola un mensaje
+# Telegram con preview del entregable + envelope canónico que `/rechazar`
+# (#3415) puede parsear. Es human-in-the-loop OPCIONAL y NO bloqueante.
+#
+# Reglas de seguridad (lib/deliverable-notify.js):
+#   - CA-SEC-1: validación de path del adjunto bajo `attachment_root`. Rechaza
+#     `..`, null-bytes, absolutes fuera del root y symlinks que escapan.
+#   - CA-SEC-2: envelope HTML comment con `skill`/`fase`/`pipeline` derivados
+#     del nombre del archivo y directorio — NUNCA del YAML editable del agente.
+#   - CA-SEC-3: audit log JSONL con content_hash + preview sanitizado (200
+#     chars max, redact defense-in-depth) + ruta relativa.
+#
+# Lo que SÍ es configurable acá:
+#   - enabled:               flag global. Default OFF (rollout gradual).
+#   - kill_switch:           override de enabled (true → apagado total runtime).
+#   - skills:                subset notificable. Cambios requieren OK humano.
+#   - truncate_chars:        cap del preview de `notas:` en el mensaje.
+#   - attachment_roots:      root allowlisteado por tipo de adjunto (ver abajo).
+#                            (#3931 — el legacy `attachment_root` plano se eliminó;
+#                            era redundante con `attachment_roots.image`.)
+#   - dedup_window_hours:    ventana de dedup por content_hash.
+#   - audit_file:            JSONL append-only. Path relativo al repo root.
+#
+# #3539 (CA-UX-9) — audio TTS automático junto con la notificación de texto.
+#   - audio_enabled:         dispara TTS post-enqueue del texto (fire-and-forget).
+#                            Default OFF (rollout gradual). Cuando esta en true,
+#                            cada notificacion enviada genera 1-3 chunks .ogg
+#                            con la voz del skill (Sócrates para guru, Meche para
+#                            po, Lili para ux, Don Julio para planner).
+#   - kill_switch_audio:     corta SOLO el audio sin afectar el texto/foto
+#                            (independiente de kill_switch).
+#   - audio_root:            root donde se persisten los .ogg generados
+#                            (relativo al repo). Listado en .gitignore.
+#   - max_tts_chunks:        cap de chunks por notificacion (CA-SEC-2 anti
+#                            chunk-bombing). Default 3.
+#   - tts_chunk_timeout_ms:  timeout por chunk TTS (CA-SEC-4). Default 30000.
+#
+# Rollout sugerido:
+#   1. Mergear con `enabled: false`. Validar tests unitarios + smoke.
+#   2. Activar con `enabled: true` y observar audit JSONL durante 1-2 días.
+#   3. Si aparecen ruidos no esperados, `kill_switch: true` corta sin reiniciar.
+#   4. Para audio: activar `audio_enabled: true` cuando el texto se valide en
+#      caliente (rollout independiente).
+# =============================================================================
+# #4586 — Política de audio TTS POR TIPO DE EVENTO.
+# =============================================================================
+# Principio: **audio para lo que necesita atención/acción del operador; texto
+# para el firehose informativo.** Reemplaza el flag "global" `audio_enabled`
+# (que adjuntaba audio a TODA notificación de entregable y lo mezclaba con la
+# conversación del operador con el Commander).
+#
+# Motor: `.pipeline/lib/audio-policy.js` (`shouldEmitAudio(policy, evento)`).
+# Lo consulta `deliverable-notify.js` (vía el pulpo, evento `agent_deliverable`
+# y `cua_stage`). Los otros eventos (respuestas del Commander, rejection
+# reports, /status) viven en paths separados y conservan su audio.
+#
+# Flags:
+#   - enabled:       si `false`, apaga TODA la política (sin audio por evento).
+#   - kill_switch:   corte en caliente de TODO el audio (sin reiniciar).
+#   - by_event:      audio por tipo de evento. Si un evento no está declarado
+#                    acá, cae al default del módulo (DEFAULT_BY_EVENT).
+#
+# Eventos:
+#   - commander_reply   → respuestas del Commander al operador (conversación).
+#   - rejection_report  → reportes de rechazo (audio obligatorio por memoria).
+#   - status            → /status y snapshots ejecutivos (audio obligatorio).
+#   - gate_signature    → pedidos de firma de gates (épico #4570, futuro).
+#   - agent_deliverable → notificación de entregable de agente → 🔇 texto-only.
+#   - cua_stage         → stages intermedios de comandos CUA → 🔇 texto-only.
+audio_policy:
+  enabled: true
+  kill_switch: false
+  by_event:
+    commander_reply:   true
+    rejection_report:  true
+    status:            true
+    gate_signature:    true
+    agent_deliverable: false
+    cua_stage:         false
+
+deliverable_notifications:
+  enabled: true
+  kill_switch: false
+  # EP3-H2 (#3928) — whitelist ampliada a 13 skills. Sincronizada con
+  # `attachments_per_skill` (abajo) y `SKILL_SOURCES`
+  # (.pipeline/lib/skill-deliverable-attachments.js). Los 3 cambios van juntos.
+  # #4019 — `delivery` sumado para notificar el avance de ola al entregar/mergear
+  # un issue (la sección de ola solo se calcula para skill=delivery, fase=entrega).
+  skills: [guru, po, ux, planner, qa, tester, security, build, architect, review, backend-dev, android-dev, web-dev, pipeline-dev, delivery]
+  truncate_chars: 1500
+  dedup_window_hours: 24
+  audit_file: ".pipeline/audit/deliverable-notifications.jsonl"
+  # #3539 — audio TTS opcional. Default OFF (rollout gradual). Activar con OK
+  # operativo y monitorear audit JSONL para records `kind:'audio'`.
+  # EP3-H4 (#3930) paso 2: rollout reanudado — audio del entregable con Edge TTS
+  # (stack gratuito EP-1). Corte en caliente sin reiniciar: kill_switch_audio: true.
+  # #4586 — el audio del ENTREGABLE DE AGENTE (firehose) se apaga: pasa a ser
+  # texto + documento sin audio, gobernado por la política por tipo de evento
+  # `audio_policy` (más abajo). El flag `audio_enabled` queda en false como
+  # back-compat/defensa (callers/tests sin política caen a este flag); la
+  # política `audio_policy.by_event.agent_deliverable: false` es la fuente de
+  # verdad en producción (el pulpo la pasa a `notify`). Ver docs abajo.
+  audio_enabled: false
+  kill_switch_audio: false
+  audio_root: ".pipeline/audio/notifications"
+  max_tts_chunks: 3
+  tts_chunk_timeout_ms: 30000
+
+  # #4586 (Palanca 2a) — topic/hilo separado para el firehose de entregables.
+  # `message_thread_id` (forum topic del grupo) donde se postean las notis de
+  # agentes, aislado de la conversación operador↔Commander (que queda en el
+  # General, sin thread). Default `null` → sin thread = comportamiento de hoy
+  # (rollout gradual: requiere activar "Topics" en el grupo de Telegram y crear
+  # el hilo "🏭 Entregables pipeline"; poner acá el id numérico del topic).
+  telegram_thread_id: null
+
+  # =========================================================================
+  # #3540 — Adjuntos multimedia (V1: document, image, video, animation).
+  # HTML diferido a V2 (requiere DOMPurify+jsdom, #3547 sin mergear).
+  # =========================================================================
+  # CA-FUNC-1: por skill, qué tipos de adjuntos esperar + qué extensiones.
+  # Validación negativa: cualquier extensión fuera de `formats` se rechaza
+  # (`format_not_allowed`) sin bloquear el resto.
+  attachments_per_skill:
+    guru:    { types: [document],                   formats: [.pdf, .md] }
+    po:      { types: [document],                   formats: [.pdf, .md] }
+    planner: { types: [document],                   formats: [.pdf, .md] }
+    # #3931 — ux produce imágenes (PNG/JPG mockups) y videos (MP4/WEBM demos).
+    # El type `animation` y el format `.gif` se quitaron: ningún productor de ux
+    # los emite (los `.gif` se descubrían como `image`, no como `animation`).
+    # El engine sigue soportando `animation` para futuros productores (#3540).
+    ux:      { types: [image, video],               formats: [.png, .jpg, .jpeg, .mp4, .webm] }
+    qa:      { types: [video, document],            formats: [.mp4, .webm, .pdf] }
+    # EP3-H2 (#3928) — perfiles nuevos. SEC-1: `build` SOLO .md/.pdf curado, NO
+    # .log crudo (filtra secretos). SEC-4: devs adjuntan resumen .md, no código.
+    tester:    { types: [document],                 formats: [.pdf, .md] }
+    security:  { types: [document],                 formats: [.pdf, .md] }
+    build:     { types: [document],                 formats: [.pdf, .md] }
+    architect: { types: [document],                 formats: [.pdf, .md] }
+    # #4513 — perfil `review`. Sincronizado con la whitelist `skills` y con
+    # SKILL_SOURCES (los 3 cambios van juntos). Reporte de revisión de código.
+    review:       { types: [document],              formats: [.md, .pdf] }
+    backend-dev:  { types: [document],              formats: [.md, .pdf] }
+    android-dev:  { types: [document],              formats: [.md, .pdf] }
+    web-dev:      { types: [document],              formats: [.md, .pdf] }
+    pipeline-dev: { types: [document],              formats: [.md, .pdf] }
+    # #4466 — `delivery` estaba en la whitelist `skills` pero sin perfil de
+    # adjuntos: el fallback determinístico no podía entregar su artefacto (resumen
+    # de entrega PR/commit). Perfil documental como el resto (CA-3, 14 skills).
+    delivery:     { types: [document],              formats: [.md, .pdf] }
+
+  # CA-SEC-EXT-1: root allowlisteado por tipo. Cualquier path fuera del root
+  # configurado se rechaza con `outside_root` SIN tocar disco.
+  # #3931 (B9) — `video` repunta a `qa/evidence` (donde ux/qa realmente graban
+  # los .mp4: `qa/evidence/<issue>/`). Antes apuntaba a `.pipeline/assets/videos`,
+  # un dir inexistente sin productor → todo video real se rechazaba `outside_root`.
+  # El root `animation` se eliminó (sin productor; el engine usa su default JS si
+  # algún productor futuro emite type `animation`).
+  attachment_roots:
+    document:  ".pipeline/assets/docs"
+    image:     ".pipeline/assets/mockups"
+    video:     "qa/evidence"
+
+  # CA-SEC-EXT-5: caps absolutos contra resource exhaustion.
+  attachment_max_count: 5                     # >5 adjuntos por notificación → resto rechazado
+  attachment_max_size_bytes: 52428800         # 50 MB cap local (más que los 20 MB Telegram)
+  attachment_video_max_duration_s: 300        # 5 min máximo por video (ffprobe duration check)
+
+# Issue #3541 — Entregables parciales del CUA (Comando de Usuario Asistido).
+#
+# Cuando el operador ejecuta un comando determinístico (ej. /cargar-ola, /wave
+# promote, /listado), el commander emite stages intermedios (`init`,
+# `validation`, `analysis`, `completion`) que se notifican a Telegram con
+# texto + audio TTS + adjuntos opcionales. La pieza vive en
+# `.pipeline/lib/deliverable-notify.js` (notifyCua) y se invoca desde
+# `commander-deterministic.js` con CA-TEC-2 (filtrado en el caller).
+#
+# Flags:
+#   - enabled:                kill principal. Default false → rollout gradual.
+#                             Activar con OK operativo y revisar audit JSONL
+#                             antes de subir el flag a true en main.
+#   - kill_switch:            corta sin reiniciar el pulpo (CA-FUNC-5).
+#   - notifiable_stages:      qué stages se notifican. Quitar entradas para
+#                             rebajar verbosity. `init` y `completion` son los
+#                             más útiles para baseline; `validation` y
+#                             `analysis` para comandos complejos.
+#   - allowed_commands:       whitelist sincronizada con SEC-3 del security
+#                             agent. Doble check con regex `^[a-z][a-z0-9-]{0,40}$`.
+#                             Comandos fuera de esta lista → audit
+#                             `invalid_command` y NO notifican.
+#   - query_only_commands:    (#4145) subconjunto de `allowed_commands` que son
+#                             solo-consulta de estado. Saltean el auto-emit de
+#                             notis `init`/`completion` (y su envelope
+#                             `<!-- pipeline-meta -->`): la respuesta del handler
+#                             ya es la entrega, las notis serían ruido en Telegram.
+#                             NUNCA incluir comandos con efecto lateral (pausar,
+#                             reanudar, restart, stop, limpiar, load-wave,
+#                             allowlist, dashboard-up/down, ghostbusters, descanso):
+#                             esos SÍ deben emitir trazabilidad. Un comando aquí
+#                             que no esté en `allowed_commands` simplemente no
+#                             tiene efecto (el gate exige ambas listas). El audit
+#                             (`auditLog.record`) corre igual para todos.
+#   - truncate_chars:         max chars del preview narrable. Excede →
+#                             truncatePreserveLines + ' (continúa en el issue)'.
+#                             Default 1500 (igual que pipeline issues).
+#   - dedup_window_hours:     CA-UX-7 — ventana de dedup. Default 1h (NO 24h
+#                             del patrón issues — el operador corre comandos
+#                             repetidos varias veces el mismo día).
+#   - max_attachment_bytes:   CA-SEC-2 — cap antes del upload (default 5 MB).
+#                             Rechazo previo con audit `attachment_too_large`.
+#   - attachment_subroot:     subdir bajo `.pipeline/cua-outputs/` (root
+#                             hardcodeado, CA-SEC-5). Vacío = root directo.
+#   - audit_file:             JSONL append-only — mismo archivo que
+#                             deliverable_notifications, discriminado por
+#                             skill:'cua' + command presente.
+#   - audio_enabled:          CA-FUNC-3 — audio TTS opt-in (default OFF).
+#                             Activar después del rollout texto-only.
+#   - kill_switch_audio:      corta audio sin afectar texto.
+#   - audio_root:             ruta de los .ogg generados (default compartido
+#                             con notifications).
+#
+# Rollout sugerido (mismo patrón que #3414/#3539):
+#   1. Mergear con `enabled: false`. Validar tests unitarios + smoke local.
+#   2. Activar `enabled: true` + `audio_enabled: false`. Observar audit JSONL
+#      por 1-2 días para detectar ruido.
+#   3. Una vez estable, `audio_enabled: true` para activar TTS.
+#   4. Si aparece ruido inesperado, `kill_switch: true` corta sin reiniciar.
+cua:
+  # EP3-H4 (#3930) — rollout reanudado (paso 1: CUA texto-only). El operador
+  # autorizado a /rechazar se resuelve desde credentials.json (env), ver
+  # operator_chat_ids más abajo. Corte en caliente: kill_switch: true.
+  enabled: true
+  kill_switch: false
+  notifiable_stages: [init, validation, analysis, completion]
+  # Sincronizado con security SEC-3. AGREGAR comandos nuevos solo después de
+  # decidir su nombre canónico (debe matchear regex `^[a-z][a-z0-9-]{0,40}$`).
+  allowed_commands:
+    - load-wave
+    - wave
+    - validate-issue
+    - generate-report
+    - listado
+    - status
+    - snapshot
+    - allowlist
+    - tail
+    - dashboard-up
+    - dashboard-down
+    - screenshot
+    - procesos
+    - salud
+    - descanso
+    - quota
+    - actividad
+    - ghostbusters
+    - pausar
+    - reanudar
+    - costos
+    - limpiar
+    - restart
+    - bloqueados
+    - stop
+  # Comandos solo-consulta: saltean el auto-emit de notis init/completion
+  # (#4145). La respuesta del handler ya es la entrega; las notis serían ruido.
+  # NO incluir comandos con efecto lateral (ver doc del bloque arriba).
+  query_only_commands:
+    - wave
+    - status
+    - listado
+    - snapshot
+    - salud
+    - quota
+    - actividad
+    - costos
+    - bloqueados
+  truncate_chars: 1500
+  dedup_window_hours: 1
+  max_attachment_bytes: 5242880  # 5 MB (CA-SEC-2)
+  attachment_subroot: ""           # default: directo bajo .pipeline/cua-outputs/
+  audit_file: ".pipeline/audit/deliverable-notifications.jsonl"
+  # Issue #3541 — CA-SEC-6: chat_ids autorizados a `/rechazar` CUA.
+  #
+  # EP3-H4 (#3930): el chat_id del operador NO se hardcodea acá — este es un
+  # archivo público del repo y la convención mantiene los chat_ids en
+  # credentials.json (mismo criterio que el bot_token/chat_id y el handler
+  # #3384). El wiring `resolveCuaOperatorChatIds` (pulpo.js) resuelve el
+  # operador por precedencia:
+  #   1. esta lista (allowlist explícita, para operadores extra no sensibles)
+  #   2. TELEGRAM_LEO_OPERATOR_CHAT_ID (credential dedicada del operador)
+  #   3. fallback al chat principal autorizado (getTelegramChatId) — el único
+  #      que pasa el filtro expectedChatId del dispatcher.
+  # Por eso esta lista queda vacía: el operador (Leo) ya viene del chat
+  # principal de credentials.json. NO es fail-closed pese al `[]`.
+  operator_chat_ids: []
+  # Audio TTS opt-in (CA-FUNC-3, CA-UX-3). Default OFF — el rollout texto se
+  # estabiliza antes.
+  audio_enabled: false
+  kill_switch_audio: false
+  audio_root: ".pipeline/audio/notifications"
+  max_tts_chunks: 3
+  tts_chunk_timeout_ms: 30000
+
+# =============================================================================
+# #4820 (split 1/3 de #4804) — Persistencia durable del kernel (DynamoDB)
+# =============================================================================
+# Fundación de persistencia durable a nivel driver/config/tabla, SIN activarla.
+# El flag `durable: false` por default es el fail-safe: todo sigue en FS y NO se
+# instancia el driver real ni se hace una sola llamada AWS. Las partes 2/3 de
+# #4804 cablean el alta/catálogo/boot detrás de este mismo flag.
+#
+# Reglas (CA-2 / A05): tabla, región, ARNs, account-id y credenciales NUNCA se
+# hardcodean en `.pipeline/`. La tabla/región vienen de acá; las credenciales,
+# exclusivamente del scope `aws` del ambiente hijo (build-child-env.js), nunca
+# de este archivo público (mismo criterio que cua.operator_chat_ids).
+#
+# `normalizeConfig` (lib/kernel-store.js) EXIGE `tableName` no vacío para el
+# driver real: con `durable: true` y `tableName: ""` falla fail-closed. Dejar
+# `tableName`/`region` vacíos mientras `durable: false` es correcto y esperado.
+#
+# La tabla + policy IAM (least-privilege, append-only sobre signature#*/audit#*)
+# se aprovisiona con un PASO ADMIN separado (lib/kernel-provision.js +
+# docs/pipeline/kernel-iam-policy.json), NUNCA en el boot normal del pulpo.
+kernel:
+  tableName: ""      # requerido para el driver real (normalizeConfig lo exige)
+  region: ""         # región AWS destino (vacío mientras durable:false)
+  durable: false     # default OFF -- todo sigue en FS, cero llamadas AWS
+  # #4822 (split 3/3 de #4804) — Cota de instancias del boot durable del supervisor
+  # multi-producto (CA-SEC-4 / REQ-SEC-BOOT-5, A04/DoS). Sibling de `durable` (que
+  # sigue siendo booleano para no romper el fail-closed de #4820). El boot durable
+  # spawnea COMO MÁXIMO este número de pipelines por producto `active`; un catálogo
+  # con más activos saltea el excedente y lo audita. Default conservador: la RAM
+  # del host es crítica (ver umbrales de presión del Pulpo).
+  max_concurrent_instances: 2
+
+# =============================================================================
+# #3613 — Bootstrap del skill `architect` (paraguas #3559, spike #3507)
+# =============================================================================
+# El skill `architect` corre en dos fases:
+#   1. `definicion/criterios` — produce la receta técnica ("Detalles Técnicos")
+#      antes de que el issue se promueva a `Ready`. Debe esperar (espera
+#      blanda, docs/pipeline/architect-role.md §2) hasta que al menos uno
+#      entre PO o UX deje un comment en `criterios`. El polling NO se
+#      ejecuta como instrucción del prompt LLM (caro y propenso a errores);
+#      vive en banda como wiring determinístico del agent-launcher que
+#      dispara al architect cuando hay primer comment PO/UX en `criterios`
+#      o cuando expira el cap.
+#   2. `desarrollo/aprobacion` — verifica adherencia diff vs receta firmada
+#      (architect-role.md §9). En esta fase NO hay espera blanda.
+#
+# Lo configurable acá:
+#   - poll_cap_min: tope superior (en minutos) de la espera blanda en
+#                   `criterios`. Default 30 min. Si tras este cap no
+#                   aparecen comments PO/UX, el architect arranca igual
+#                   con lo que tenga (body refinado + análisis previos).
+#   - poll_interval_seconds: cadencia del polling en banda. Default 30s.
+#                            Mantener corto para no introducir latencia
+#                            visible al pipeline.
+#
+# CAPs hardcoded (NO configurables desde acá por defensa anti-config-malicioso,
+# patrón cost_anomaly_alert.max_snooze_hours):
+#   - El polling efectivo se clamp a [1, 120] minutos en lib/agent-launcher.
+#     Aunque alguien edite y ponga `poll_cap_min: 9999`, el cap absoluto gana.
+architect:
+  poll_cap_min: 30
+  poll_interval_seconds: 30
+
+  # ===========================================================================
+  # #3614 — Gate de promoción criterios → Ready (B3 del paraguas #3559)
+  # ===========================================================================
+  # El gate verifica 3 condiciones antes de aprobar la promoción de un issue
+  # del pipeline `definicion` al label `Ready`:
+  #   1. Sección `## Detalles Técnicos` ≥200 chars en el body.
+  #   2. Comment con marker `<!-- architect-signoff issue=NNNN -->` del bot.
+  #   3. Entrada signoff con marker_hash matching en architect-tokens.jsonl.
+  #
+  # Defaults fail-safe (rollout sin sorpresas):
+  #   - `enabled: false` → gate ni se invoca (cortocircuito, kill switch R6).
+  #   - `gate_mode: dry-run` → cuando se active, evalúa pero NO bloquea.
+  #
+  # Para activar el piloto:
+  #   1. `enabled: true` con `gate_mode: dry-run` (semanas 1-2 del rollout).
+  #   2. Una vez validado el go/no-go (<5% falsos positivos), cambiar a
+  #      `gate_mode: enforce`.
+  #
+  # `go_live_date`: ISO8601. Issues con `createdAt` anterior a esta fecha
+  # se grandfatherean automáticamente (CA-4), sin evaluar las 3 condiciones.
+  # Permite rollout sin paralizar issues legacy.
+  #
+  # `bot_login`: cuenta GitHub autorizada a emitir el marker comment. Default
+  # `architect-bot` (Opción A, cuenta dedicada — ver architect-rollout-plan.md
+  # §4). Si se opta por Opción B (github-actions), cambiar a
+  # `github-actions[bot]`.
+  #
+  # Ver: docs/pipeline/architect-rollout-plan.md, .pipeline/lib/architect-signoff-gate.js
+  enabled: false
+  gate_mode: dry-run
+  go_live_date: '2026-05-29T00:00:00Z'
+  bot_login: architect-bot
+
+# =============================================================================
+# #4574 — GATE 1 · Firma de Definición del operador (épico #4570)
+# =============================================================================
+# Firma humana obligatoria al cerrar la fase `criterios` del pipeline
+# `definicion`, ANTES de admitir el issue a `desarrollo`. El gate retiene el
+# enqueue del label `Ready` hasta que el operador FIRMA la definición (criterios
+# + mockup) por el canal de firma (#4579). Es hermano del `architect:` gate.
+#
+# Diseño: docs/pipeline/gates-firma-operador.md (§3 GATE 1, §10.4 re-definición,
+# §12 fail-closed, §13 autoridad e integridad).
+# Módulo: .pipeline/lib/operator-signoff-gate.js
+#
+# Defaults fail-safe (rollout gradual, espeja architect:):
+#   - `enabled: false` → gate ni se invoca (cortocircuito, kill switch).
+#   - `gate_mode: dry-run` → cuando se active, evalúa y loguea pero NUNCA bloquea.
+#
+# Para activar el piloto:
+#   1. `enabled: true` con `gate_mode: dry-run` (observar barridos sin bloquear).
+#   2. Una vez validado el estado nuevo `waiting-operator-def`, `gate_mode:
+#      enforce` (retiene la admisión hasta la firma; NUNCA auto-admite por
+#      timeout — §12, fail-closed).
+#
+# `go_live_date`: ISO8601. Issues con `createdAt` anterior se grandfatherean
+# (aprueban sin exigir firma) para no paralizar el backlog legacy durante el
+# rollout.
+#
+# `preauthorized_classes`: opt-out pre-autorizado por el operador (§4). Lista de
+# LABELS: un issue con alguno de estos labels se admite sin firma. Esta lista es
+# READ-ONLY para el pipeline — SÓLO el operador humano la edita; ningún agente la
+# muta (security A01). Default vacía (todos los issues requieren firma).
+#
+# Autoridad del firmante (A01): el `chat_id` del operador NO va acá (es secreto);
+# se resuelve server-side desde credentials.json (`TELEGRAM_LEO_OPERATOR_CHAT_ID`)
+# y se inyecta al gate en runtime.
+operator_signoff:
+  enabled: false
+  gate_mode: dry-run
+  go_live_date: '2026-07-10T00:00:00Z'
+  preauthorized_classes: []
+
+# =============================================================================
+# #4575 — GATE 2 · Firma de Aceptación del operador (épico #4570)
+# =============================================================================
+# Firma humana obligatoria al cerrar la fase `aprobacion` del pipeline
+# `desarrollo`, ANTES de promover a `entrega` (merge). Es el gate que habría
+# atajado #4531/#4500/#4532. Hermano de `operator_signoff:` (GATE 1) y del
+# `architect:` gate. Retiene la promoción `aprobacion → entrega` hasta que el
+# operador FIRMA la aceptación por el canal de firma (#4579).
+#
+# A DIFERENCIA de GATE 1 (que ancla la firma al `sha256(body)` de los criterios),
+# GATE 2 ancla la firma al **commit SHA** del HEAD que se va a mergear
+# (anti-TOCTOU firma↔merge, CA-3). Si el HEAD avanza tras firmar ⇒ firma inválida
+# ⇒ re-firma.
+#
+# Diseño: docs/pipeline/gates-firma-operador.md (§4.6 GATE 2, §11 matriz
+# auto-vs-gateado, §12 fail-closed, §13 autoridad e integridad).
+# Módulo: .pipeline/lib/operator-signature.js
+#
+# Defaults fail-safe (rollout gradual, espeja operator_signoff:/architect:):
+#   - `enabled: false` → gate ni se invoca (cortocircuito, kill switch).
+#   - `gate_mode: dry-run` → cuando se active, evalúa y loguea pero NUNCA bloquea.
+#
+# Para activar el piloto:
+#   1. `enabled: true` con `gate_mode: dry-run` (observar barridos sin bloquear).
+#   2. Una vez validado el estado nuevo `esperando-firma/`, `gate_mode: enforce`
+#      (retiene la promoción a `entrega` hasta la firma; NUNCA auto-promueve por
+#      timeout — §12, fail-closed).
+#
+# `go_live_date`: ISO8601. Issues con `createdAt` anterior se grandfatherean
+# (aprueban sin exigir firma) para no paralizar el backlog legacy en el rollout.
+#
+# `preauthorized_classes` (CA-6): opt-out por LABEL. Lista ESTÁTICA/versionada —
+# un issue con alguno de estos labels se promueve sin firma. READ-ONLY para el
+# pipeline: SÓLO el operador humano la edita; ningún agente la muta ni puede
+# auto-clasificarse como exento (A01). Default vacía (todos requieren firma).
+#
+# `nonce_ttl_seconds` (CA-5): validez del nonce de un solo uso. Clampeado a
+# [1, 86400] en el módulo (defensa anti-config-malicioso). Default 3600 (1h).
+#
+# `max_signature_rebotes` (CA-7): rechazos de firma antes de que el
+# circuit-breaker escale a `needs-human` (NUNCA auto-aprueba). Clampeado a
+# [1, 10] en el módulo. Default 3.
+#
+# Autoridad del firmante (A01/CA-4): el `chat_id` del operador NO va acá (es
+# secreto); se resuelve server-side desde `telegram.operator_chat_ids` +
+# credentials.json (`TELEGRAM_LEO_OPERATOR_CHAT_ID`) y se inyecta al gate en
+# runtime (`options.authorizedSigners`). NO se crea allowlist paralela.
+operator_signature:
+  enabled: true
+  gate_mode: dry-run
+  go_live_date: '2026-07-10T00:00:00Z'
+  preauthorized_classes: []
+  nonce_ttl_seconds: 3600
+  max_signature_rebotes: 3
+
+# =============================================================================
+# #4502 — Gate de entregable obligatorio del PO al cerrar Definición
+# =============================================================================
+# Al promover `definicion/criterios → sizing`, el pulpo verifica que el agente
+# `po` haya dejado su Ficha de definición en el store `issue → criterios → po`
+# (#4255), o bien una excepción explícita ("no aplica + motivo"). El gate es
+# AUTORITATIVO en el pulpo (SEC-REQ-1), NO en el YAML editable del agente: la
+# entry `tipo:'exception'` la escribe el pulpo tras validar el input del PO
+# (`entregable_no_aplica` + `motivo_no_aplica`).
+#
+# Backstop anti-deadlock (#4466): antes de decidir, si el PO no dejó entregable
+# pero sus notas son sustantivas, el pulpo las materializa vía writeDeliverable.
+# Así la retención efectiva es un último recurso, no la norma.
+#
+# Defaults fail-safe (rollout gradual, sin deadlock durante CA-4):
+#   - `enabled: false` → gate ni se invoca (cortocircuito, kill switch).
+#   - `gate_mode: dry-run` → cuando se active, evalúa y loguea pero NUNCA bloquea.
+#   - `kill_switch: true` → override de emergencia (apagado total en caliente).
+#
+# Para activar el piloto:
+#   1. `enabled: true` con `gate_mode: dry-run` (observar barridos sin bloquear).
+#   2. Una vez validado, `gate_mode: enforce` (retiene y re-encola al PO; circuit
+#      breaker de 3 intentos → label needs-human).
+#
+# Ver: .pipeline/lib/deliverable-gate.js,
+#      docs/pipeline/entregables-multimedia-por-agente.md §5.bis
+deliverable_gate:
+  enabled: false
+  kill_switch: false
+  gate_mode: dry-run
+
+# =============================================================================
+# GATE 3 — Gobernanza de las acciones autónomas del kernel (#4577, épico #4570)
+# =============================================================================
+# El kernel se muta a sí mismo (re-seeds de ola, realigns de allowlist, flags de
+# cuota, auto-resolves de desync, reset del working tree) sobre su ESTADO
+# OPERATIVO (no código de producto). Los 3 incidentes del 2026-07-08 (#4565
+# quota-flag, #4566 realign, 3er reset del working tree) ocurrieron sin traza.
+#
+# GATE 3 instrumenta esos sitios contra el registro canónico
+# `.pipeline/audit/kernel-actions.jsonl` (hash-chain, log-antes-de-mutar) y una
+# capa de política por-acción. Módulos: `lib/kernel-actions-audit.js` (registro)
+# + `lib/kernel-action-policy.js` (política). Ambos con defaults seguros si esta
+# sección no existe — la instrumentación del registro corre SIEMPRE; la política
+# solo gobierna el modo notificar/confirmar.
+#
+# policy: modo por-acción (NO global).
+#   - notify-and-proceed: aplica la acción y notifica al operador (recovery
+#     crítico — no bloquear el destrabe).
+#   - wait-confirmation: espera confirmación del operador antes de aplicar
+#     (electivas — realign/reseed que resetean progreso/cohorte).
+#
+# timeout_ms: ventana de espera en modo wait-confirmation (default 900000 = 15min).
+# timeout_fallback: qué hacer al vencer el timeout sin respuesta del operador
+#   (CA-6 / anti-deadlock). `proceed` aplica igual; `abort` NO aplica (deja el
+#   estado como estaba). Default: abort para electivas, proceed para recovery.
+gates:
+  gate3:
+    policy:
+      realign-allowlist:  wait-confirmation
+      reseed-wave:        wait-confirmation
+      quota-flag:         notify-and-proceed
+      worktree-reset:     notify-and-proceed
+      desync-autoresolve: notify-and-proceed
+    timeout_ms:
+      realign-allowlist:  900000
+      reseed-wave:        900000
+    timeout_fallback:
+      realign-allowlist:  abort
+      reseed-wave:        abort
+      quota-flag:         proceed
+      worktree-reset:     proceed
+      desync-autoresolve: proceed
+
+  # ===========================================================================
+  # Operador ausente — política de auto-proceder auditado (#4632, split de #4581)
+  # ===========================================================================
+  # Gobierna qué hace el pipeline cuando el operador está AUSENTE frente a un
+  # gate en estado `waiting-operator`. Default DURO: fail-closed (bloquear y
+  # esperar firma humana). El auto-proceder es una excepción acotada que SOLO se
+  # habilita con la escalera de seguridad completa (ver lib/operator-absence-policy.js).
+  #
+  # Invariantes NO configurables desde acá (hard-coded en el módulo):
+  #   - GATE 1 (Definición) y GATE 2 (Aceptación) NUNCA auto-proceden.
+  #   - Sin base de confianza vigente (#4576) → fail-closed puro para toda clase.
+  #
+  # Campos:
+  #   kill_switch: true  → apagado total de auto-proceder (default seguro).
+  #                        Basta con dejarlo en true para volver a fail-closed puro.
+  #   allowlist: []      → clases de bajo riesgo delegables. VACÍA = nada delegable.
+  #                        Config parcial/ausente == fail-closed (nunca fail-open).
+  #   confidence_index_ref → de dónde sale la base de confianza (#4576). Sólo
+  #                        documental: el módulo exige `confidenceIndex.vigente === true`
+  #                        provisto por el caller en runtime.
+  #   non_delegable_gates → documental/redundante: el hard-deny vive en código.
+  #
+  # Ver: docs/pipeline/operador-ausente.md
+  operator_absence:
+    kill_switch: true
+    allowlist: []
+    confidence_index_ref: ".pipeline/lib/confidence-index.js (#4576)"
+    non_delegable_gates:
+      - gate1
+      - gate2
+
+# #3488 (Spike #3378 H2) — Planificación multi-ola del skill /planner.
+#
+# Capacidad por ola: cuántos issues máximos entran cuando el operador ejecuta
+# `/planner componer-ola <N>` o `/planner horizonte N`. La composición respeta
+# este cap como hard limit; los issues que no entran quedan en el backlog
+# remanente y se reportan al operador.
+#
+# Horizonte máximo: cuántas olas adelante puede planificar `/planner horizonte`.
+# Limitar evita que un descuido (ej. `horizonte 1000`) bloquee la terminal
+# imprimiendo miles de issues. SEC-1 del análisis de seguridad de #3488.
+#
+# Estos valores son leídos por `.pipeline/scripts/planner-waves-cli.js` con
+# defaults seguros si la sección no existe.
+waves:
+  capacity: 9
+  max_horizon: 12
+
+# =============================================================================
+# Transición automática de ola (#4368, Ola 8.3)
+# =============================================================================
+# El brazo `brazoTransicionOla` (pulpo.js) detecta si TODOS los issues de la ola
+# activa están cerrados en GitHub y, según `mode`:
+#   - notify (DEFAULT): NO promueve; avisa al operador ("/wave ready-to-close N")
+#     y deja evidencia en logs/waves.jsonl. Respeta el diseño aprobado
+#     `docs/pipeline/modelo-planificacion-multi-ola.md` §3 ("nunca se abre una ola
+#     por automatismo") y la regla "preferir bloqueado-humano a rebote automático".
+#   - auto: promueve la siguiente ola planificada vía promoteWaveAtomic
+#     (transacción atómica + backup a archived/ + rollback). Opt-in EXPLÍCITO de
+#     Leo; habilitar sólo tras validar `mode: notify` en producción y con #4350
+#     (sync allowlist↔waves) sólido.
+#
+# Kill-switch (CA-6): `enabled: false` o `kill_switch: true` ⇒ el brazo no hace
+# NADA (ni notify ni auto). Default conservador. Todo fail-closed: ante cualquier
+# ambigüedad de `gh` (exit≠0, timeout, issue ausente) NO promueve.
+#
+# Corte en caliente: `kill_switch: true` desactiva sin reiniciar el pulpo.
+wave_auto_transition:
+  enabled: false        # kill switch maestro: false ⇒ el brazo no hace nada
+  kill_switch: false    # override de emergencia adicional
+  mode: notify          # "notify" (default) | "auto" (opt-in explícito de Leo)
+  gh_timeout_ms: 30000  # timeout por consulta `gh issue view`
+
+# =============================================================================
+# Telegram — config PÚBLICA del bot (#3957, EP8-H4 / CA-3)
+# =============================================================================
+# bot_username es el handle público del bot (sin @). Se usa para construir el
+# deep-link `https://t.me/<username>?start=<payload>` de la ventana Bloqueados.
+# Validado contra `^[A-Za-z0-9_]{5,32}$` antes de exponerse al dashboard.
+#
+# SEGURIDAD: acá SÓLO va información pública. El `bot_token` y el `chat_id`
+# (secretos) viven en `~/.claude/secrets/credentials.json`, NUNCA en este
+# archivo ni en el HTML renderizado. Si bot_username falta o es inválido, el
+# dashboard simplemente no renderiza el deep-link de Telegram (degradación
+# limpia: queda el deep-link a GitHub).
+telegram:
+  bot_username: "intrale_bot"
+
+# =============================================================================
+# Commander product-aware — binding server-side productId → operadores (#4780)
+# =============================================================================
+# Ola Puente P6 (split de #4691 §4.7). El Telegram Commander pasa de "un chat
+# autorizado global" a "N productos, cada uno con operadores autorizados". La
+# autorización de acciones destructivas keyea en la IDENTIDAD del operador
+# (`msg.from.id`), NO en `chat.id` (en un grupo cualquier miembro comparte
+# chat.id — SR-1/A07). Este mapeo se resuelve SIEMPRE server-side; el `productId`
+# NUNCA se lee "de confianza" del texto del usuario.
+#
+# SEGURIDAD: acá van SOLO identificadores de operador (chat/user id de Telegram),
+# que no son secretos per se pero identifican a quién puede operar cada producto.
+# El `bot_token` sigue viviendo exclusivamente en credentials.json.
+#
+# Retro-compat (SR-6 / CA-5.1): si `products` está vacío, el registry sintetiza
+# el producto default `Intrale` con el operador único histórico
+# (`telegram.leo_operator_chat_id` de credentials.json) → el Commander
+# mono-producto sigue operando idéntico, sin wildcard.
+#
+# `default_product`: producto al que resuelve una petición SIN productId.
+commander_products:
+  default_product: "Intrale"
+  # RETRO-COMPAT RUNTIME (SR-6): con `products: {}` VACÍO, el registry SINTETIZA
+  # en runtime el producto default `Intrale` con el operador único histórico
+  # (`telegram.leo_operator_chat_id`/`chat_id` → `defaultOperator` del loader).
+  # Es el camino que `listener-telegram.getProductCommander()` ejecuta hoy en
+  # producción y el que ejercita `product-command-integration.test.js`
+  # (mensaje entrante → authz → confirmación → ejecución real → audit).
+  #
+  # CUIDADO: declarar `Intrale` acá con `operators: []` NO hereda el operador
+  # histórico — con `products` no vacío la síntesis se SALTEA y un set de
+  # operadores vacío deja a TODOS sin autorización (fail-closed). Para declarar
+  # productos explícitos, listá SIEMPRE sus operadores por `chat_id`:
+  #   products:
+  #     Intrale:
+  #       name: "Intrale"
+  #       operators: ["<chat_id_operador>"]   # el operador histórico, explícito
+  #     Comercios-AR:
+  #       name: "Comercios-AR"
+  #       operators: ["<chat_id_operador_B>"]
+  products: {}
+

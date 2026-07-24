@@ -83,14 +83,17 @@ function _resetLauncherCacheForTesting() {
 // Acá solo prependemos `prefixArgs` del launcher (ej. la ruta a cli.js cuando
 // usamos node directo) y armamos `spawnOpts` con shell del launcher.
 // -----------------------------------------------------------------------------
-function buildSpawn({ args, cwd, env }) {
+function buildSpawn({ args, cwd, env, interactive_supported }) {
     const launcher = getLauncher();
+    // #3605 — Opt-in por skill+provider. Default 'ignore' preserva I3
+    // (regresión cero CA-4); 'pipe' habilita stdin para chat operador→agente.
+    const stdin = interactive_supported === true ? 'pipe' : 'ignore';
     return {
         cmd: launcher.cmd,
         args: [...launcher.prefixArgs, ...args],
         spawnOpts: {
             cwd,
-            stdio: ['ignore', 'pipe', 'pipe'],
+            stdio: [stdin, 'pipe', 'pipe'],
             detached: false,
             shell: launcher.shell,
             windowsHide: true,
@@ -134,33 +137,79 @@ function parseTokensFromLog(logPath, fsImpl) {
 // detectQuotaExhausted — busca un result event con shape de cuota agotada
 // (ej. error_type === 'rate_limit_error' || matches del patrón configurado).
 //
-// El detector vive en `lib/quota-exhausted.js` (módulo agnóstico). Acá lo
-// usamos line-by-line sobre el log del agente. Devuelve `{matched, errorType,
-// resetsAt, rawLine}` o `{matched: false}`.
+// #3576 CA-4: refactoreado para consumir el parser generalizado
+// (`lib/agent-launcher/provider-error-parser`). El parser ya delega a
+// `quotaModule._detectAnthropic` con la allowlist por provider, lo que
+// preserva la semántica original (mismo errorType, mismas líneas detectadas)
+// sin duplicar la lógica de match estructural.
+//
+// Contrato preservado (no breaking para callers existentes ni tests):
+//   {matched, errorType, resetsAt, rawLine, evt} | {matched: false}
+//
+// El segundo parámetro `cfg` se acepta pero ya no se usa para el dispatcher
+// de matching (el parser interno tiene su propia allowlist via
+// `KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER`). Lo mantenemos en la firma por
+// compatibilidad con callers existentes (anclados al shape del módulo
+// `quota-exhausted.js`).
 // -----------------------------------------------------------------------------
-function detectQuotaExhausted(logPath, cfg, quotaExhaustedModule, fsImpl) {
+function detectQuotaExhausted(logPath, cfg, quotaExhaustedModule, fsImpl, parserModuleOverride) {
     const _fs = fsImpl || fs;
-    if (!quotaExhaustedModule || typeof quotaExhaustedModule.detectFromResultEvent !== 'function') {
+    if (!quotaExhaustedModule || typeof quotaExhaustedModule._detectAnthropic !== 'function') {
         return { matched: false };
     }
     let raw = '';
     try { raw = _fs.readFileSync(logPath, 'utf8'); } catch { return { matched: false }; }
     if (!raw) return { matched: false };
+
+    // Parser generalizado (#3576). Lo cargamos perezosamente para evitar
+    // ciclos de require (parser ↔ providers ↔ launcher) y para permitir
+    // inyectar fakes en tests.
+    const parser = parserModuleOverride || require('../provider-error-parser');
+
+    // El parser opera sobre el contenido como `transport: 'cli'`. Le pasamos
+    // todo el log (truncado internamente a 64KB por SR-3) — el parser barre
+    // línea por línea y detecta el primer match estructural.
+    let verdict;
+    try {
+        verdict = parser.parseProviderError(raw, {
+            provider: 'anthropic',
+            transport: 'cli',
+            _quotaModule: quotaExhaustedModule,
+        });
+    } catch {
+        return { matched: false };
+    }
+
+    if (!verdict || verdict.errorClass !== 'quota_exhausted') {
+        return { matched: false };
+    }
+
+    // El parser nos da la línea exacta (evidence) y el errorType detectado va
+    // implícito (lo extraemos del evidence para preservar el contrato existente).
+    // Iteramos las líneas que arrancan con `{` para recuperar el evt completo
+    // (el contrato original expone `evt` y `resetsAt` que NO vienen del parser).
     for (const line of raw.split('\n')) {
         if (!line.startsWith('{')) continue;
         let evt;
         try { evt = JSON.parse(line); } catch { continue; }
-        const det = quotaExhaustedModule.detectFromResultEvent(evt, cfg);
-        if (det.matched) {
+        // Re-evaluamos contra _detectAnthropic con la allowlist canónica para
+        // que el errorType extraído mantenga byte-identidad con el detector
+        // legacy (los tests existentes de anthropic.js dependen de esto).
+        const allowlist = (quotaExhaustedModule.KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER || {})['anthropic']
+            || (cfg && cfg.error_types)
+            || [];
+        const r = quotaExhaustedModule._detectAnthropic(evt, allowlist);
+        if (r && r.matched) {
             return {
                 matched: true,
-                errorType: det.errorType,
+                errorType: r.errorType,
                 resetsAt: evt.resets_at,
                 rawLine: line,
                 evt,
             };
         }
     }
+
     return { matched: false };
 }
 

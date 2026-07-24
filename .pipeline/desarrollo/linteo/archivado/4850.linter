@@ -1,0 +1,12 @@
+issue: 4850
+fase: linteo
+pipeline: desarrollo
+resultado: "aprobado"
+motivo: "Linter aprobado sin findings bloqueantes"
+linter_errors: 0
+linter_warnings: 0
+linter_info: 0
+linter_total_findings: 0
+linter_duration_ms: 1846
+linter_report_path: "C:\\Workspaces\\Intrale\\platform\\.pipeline\\logs\\lint-4850-report.md"
+linter_mode: "deterministic"

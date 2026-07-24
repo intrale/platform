@@ -1,0 +1,31 @@
+{
+  "schemaVersion": "1.0",
+  "status": "active",
+  "identity": {
+    "projectId": "product-b",
+    "name": "Producto B (fixture de ruteo)",
+    "description": "Descriptor sintetico B para tests del multiplexor product-aware (#4763). Datos inertes: sin secrets ni repos productivos."
+  },
+  "repositories": [
+    {
+      "id": "product-b-app",
+      "url": "https://github.com/globex-org/product-b",
+      "role": "primary",
+      "defaultBaseRef": "trunk"
+    }
+  ],
+  "board": {
+    "ref": "globex-org/product-b/projects/7",
+    "admissionLabels": ["Ready"],
+    "routing": [
+      { "label": "area:frontend", "capability": "frontend" }
+    ]
+  },
+  "capabilities": [
+    { "interface": "frontend", "skills": ["web-dev"] }
+  ],
+  "authority": {
+    "signers": ["globex-signer"],
+    "gates": { "gate0": "enforce" }
+  }
+}

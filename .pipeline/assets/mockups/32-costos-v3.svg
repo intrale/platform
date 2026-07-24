@@ -1,0 +1,865 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 32 — Ventana Costos V3 (split de #3715, sub-historia #3735)
+  Resolucion target: 1080x1920 (kiosk vertical, identica a la familia 26..31)
+  Demuestra:
+    - Layout del modulo standalone .pipeline/views/dashboard/costos.js extraido
+      del monolito (banner+pill kiosk dashboard.js:5023-5099 +
+      KPIs/tablas/projections/LLM-vs-det/TTS embebidos al consumir snapshot global).
+    - Header colapsable con chevron + chip de costo agregado (USD/h) + popout
+      a /?section=costos (DOM morphing preserva IDs).
+    - Banner persistente de anomalia (rosa-rojo) con dual-encoding rail + icono +
+      texto: headline + detalle + top-3 skills + acciones ack/snooze (CA-4.1
+      tooltips en 7 acciones operativas).
+    - KPI grid (6 KPIs: costo total ventana, TTS costo, sesiones, tokens,
+      latencia media, ratio LLM/det). Cada KPI con chip de leyenda y tooltip
+      explicativo (CA-C5).
+    - Tabla por skill (top consumers) con costo, sesiones, % del total. Filas
+      clicables (drill-down). Rail lateral del color del proveedor (#3086).
+    - Tabla por fase + tabla por issue (compactas, side-by-side).
+    - Tarjetas de proyeccion mensual con semaforo (over/warning/ok) coherente
+      con --danger/--warning/--success.
+    - Toggle LLM vs determinístico (savings) con barra horizontal comparativa.
+    - TTS por issue + drilldown providers (sub-tabla expandible <details>).
+    - Leyenda CA-C5 fija con explicacion de los 4 estados de semaforo de quota.
+    - VARIANTE FALLBACK INERTE (CA-A3 / REQ-SEC-7) ilustrada abajo del flujo
+      principal: cuando require('./views/dashboard/costos') arroja, dashboard.js
+      muestra un cartel visible (NO string vacio silencioso).
+
+  Datos consumidos (state.{costAnomaly, costs, totals, projections, llmVsDet, ttsByIssue}):
+    costAnomaly.visible       = boolean — activa el banner + pill
+    costAnomaly.ratio         = number  — multiplo sobre baseline (1.0 = baseline)
+    costAnomaly.actual_usd_h  = number  — USD por hora actual
+    costAnomaly.expected_usd_h= number  — USD por hora baseline
+    costAnomaly.top_skills    = array<{skill, cost_usd}>
+    costAnomaly.snoozed_until = ts | null — silenciado hasta
+    totals.cost_usd           = number  — costo total ventana
+    totals.tts_cost_usd       = number  — costo TTS de la ventana
+    totals.sessions           = number  — sesiones contadas
+    totals.tokens_in/out      = numbers — tokens IO de la ventana
+    totals.avg_latency_ms     = number  — latencia media
+    totals.llm_ratio          = number  — % de sesiones LLM vs determinístico
+    costsBySkill[]            = {skill, cost_usd, sessions, pct, provider}
+    costsByPhase[]            = {fase, cost_usd, sessions, pct}
+    costsByIssue[]            = {issue, titulo, cost_usd, sessions}
+    projections.month_usd     = number  — proyeccion mensual
+    projections.quota_usd     = number  — cap mensual configurado
+    projections.status        = 'ok' | 'warning' | 'over'
+    llmVsDet.savings_usd      = number  — ahorro vs LLM puro
+    llmVsDet.savings_pct      = number  — % de ahorro
+    ttsByIssue[]              = {issue, titulo, tts_usd, providers: [{name, usd, sec}]}
+
+  Decisiones congeladas del mockup (PO + guru + security):
+    1. Banner de anomalia preserva el visual de 06-cost-anomaly-alert
+       (--alert-anomaly + --alert-anomaly-bg + --alert-anomaly-fg + glow)
+       pero adaptado al frame kiosk vertical 1080x1920.
+    2. Tooltips informativos en las 7 acciones operativas (CA-4.1):
+       ack, snooze 1h/4h/24h, click fila skill, click fila issue, toggle LLM/det.
+       Texto estatico server-side, escapado con escapeHtmlSsr (CA-C3).
+    3. KPI grid 3x2 (6 KPIs). Cada uno con valor grande + label + delta% vs
+       periodo previo. Chip de leyenda en --teal para "Costo estimado" porque
+       es la metrica protagonica de la ventana.
+    4. Tabla por skill: rail lateral 3px del --provider-* token (#3086) para
+       que el operador identifique de un vistazo si el consumo es Anthropic,
+       Codex, Groq, etc. Coercion Number() en cost_usd antes de format.
+    5. Tabla por fase: compacta, dos columnas (fase + cost). Sin filas clicables
+       (la fase no tiene drill-down separado, ya esta en la tabla por skill).
+    6. Tabla por issue: filas clicables -> drill-down a timeline cronologica
+       del issue (route delegado, no parte del split). Tooltip CA-4.1.
+    7. Projection cards: tres tarjetas (mensual, semanal, hoy). Cada una con
+       semaforo dual-encoding (color + icono + texto): over rojo, warning
+       amarillo, ok verde. WCAG AA.
+    8. LLM vs determinístico: barra horizontal comparativa con dos segmentos
+       (LLM en --info, determinístico en --deterministic). Tooltip CA-4.1.
+       Muestra savings_usd + savings_pct.
+    9. TTS por issue: tabla con expand button por fila -> drilldown providers
+       (edge-tts, groq-tts, gemini-tts) con USD + segundos. Patron <details>.
+   10. Endpoints POST migrados a lib/cost-anomaly/api.js (CA-3.4):
+       - POST /api/cost-anomaly/ack
+       - POST /api/cost-anomaly/snooze (body {hours: 1|4|24})
+       Defensas: Sec-Fetch-Site, Content-Type estricto, hours whitelist.
+   11. onclick inline eliminados (CA-3.3 / R2): TODO handler via
+       addEventListener en renderCostosClientScript() — preparacion CSP #3688.
+   12. Estructura HTML 100% preservada (R3 / Opcion A): el banner se exporta
+       como renderCostosBanner(state) e invoca tambien desde home.js, sin
+       duplicar request al endpoint. R3 cerrado por guru.
+   13. Todos los estilos via tokens del design-tokens.css. Sin HEX libres.
+       Sin tokens nuevos — el semaforo de quota usa --danger/--warning/--success
+       existentes.
+   14. Iconografia: sprite.svg para los glyphs (popout, ack, snooze, chevron,
+       drilldown). Si falta un icono nuevo (ej. coin/usd specific), se agrega
+       al sprite via assets/icons/extract.js, NO inline.
+   15. Out-of-scope explicito: pagina /consumo standalone (linea 7913) NO se
+       toca en este split — recomendacion #3779. Export CSV NO se agrega
+       (riesgo CSV injection si entra sin threat model).
+
+  IDs DOM invariantes (CA-25 / R6 architect — DOM morphing client-side):
+    #costos-window          (wrapper raiz)
+    #cost-anomaly-pill      (pill en el header)
+    #cost-anomaly-banner    (banner persistente)
+    data-section="costos"   (data-attribute del DOM morphing)
+    .matrix-section         (clase del wrapper)
+    .matrix-header          (clase del header)
+    .section-title-clickable
+    .section-chevron
+    .section-popout
+    .section-body
+    .cost-kpi-grid          (contenedor 3x2 de KPIs)
+    .cost-kpi-card          (KPI individual)
+    .cost-kpi-value         (valor grande)
+    .cost-kpi-delta         (delta vs periodo previo)
+    .cost-bs-table          (table by-skill)
+    .cost-bs-row            (fila skill con rail provider)
+    .cost-bp-table          (table by-phase)
+    .cost-bi-table          (table by-issue)
+    .cost-bi-row            (fila issue clicable)
+    .cost-proj-grid         (proyecciones)
+    .cost-proj-card.over    (modificadores semaforo)
+    .cost-proj-card.warning
+    .cost-proj-card.ok
+    .cost-llm-bar           (barra LLM vs det)
+    .cost-tts-table         (TTS por issue)
+    .cost-tts-row           (fila TTS expandible)
+    .cost-tts-drilldown     (drilldown providers, <details>)
+    .cost-anomaly-actions   (wrapper ack + 3 botones snooze)
+    .cost-anomaly-top3      (lista top-3 skills)
+
+  Out-of-scope explicito del split (NO ilustrado como funcional en costos.js):
+    - Pagina /consumo standalone (linea 7913)            -> #3779 (rec abierta)
+    - Boton "Exportar a CSV"                             -> historia futura con threat model
+    - CSRF / CSP estricta para POST /api/cost-anomaly/*  -> #3688 / #2532 / #2745
+    - Migracion onclick -> data-attributes               -> #3758
+    - Snapshot test cross-window de DOM IDs              -> #3755
+    - Enforcement axe-core en CI                          -> #3717
+    - Helper compartido lib/escape-html.js               -> #3722 (fallback transitorio)
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1920" viewBox="0 0 1080 1920"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif">
+
+  <!-- ============================================================
+       Tokens embebidos (self-contained, alineados con design-tokens.css)
+       ============================================================ -->
+  <defs>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="headerGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0D274D" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#161B22" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="alertBannerGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#FF6B8A" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#FF6B8A" stop-opacity="0.06"/>
+    </linearGradient>
+    <linearGradient id="spikeGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FF6B8A" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#FF6B8A" stop-opacity="0.0"/>
+    </linearGradient>
+    <linearGradient id="tealStripe" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2DD4BF"/>
+      <stop offset="100%" stop-color="#0D9488"/>
+    </linearGradient>
+    <linearGradient id="dangerStripe" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#F85149"/>
+      <stop offset="100%" stop-color="#8B1A14"/>
+    </linearGradient>
+    <linearGradient id="warningStripe" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#D29922"/>
+      <stop offset="100%" stop-color="#9E6A03"/>
+    </linearGradient>
+    <linearGradient id="successStripe" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3FB950"/>
+      <stop offset="100%" stop-color="#196C2E"/>
+    </linearGradient>
+  </defs>
+
+  <!-- ============================================================
+       Fondo kiosk
+       ============================================================ -->
+  <rect width="1080" height="1920" fill="#0D1117"/>
+
+  <!-- ============================================================
+       BRAND BAR superior (fuera de scope — referencia visual del frame)
+       ============================================================ -->
+  <rect x="0" y="0" width="1080" height="68" fill="url(#headerGrad)"/>
+  <rect x="0" y="67" width="1080" height="1" fill="#30363D"/>
+  <g opacity="0.55">
+    <circle cx="40" cy="34" r="14" fill="url(#brandGrad)"/>
+    <text x="68" y="40" font-size="18" font-weight="700" fill="#E6EDF3">INTRALE V3</text>
+    <text x="180" y="40" font-size="14" fill="#8B949E">/ Costos</text>
+  </g>
+  <text x="1040" y="40" font-size="11" fill="#6E7681" text-anchor="end">[area fuera de scope de #3735]</text>
+
+  <!-- ============================================================
+       CONTROL BAR (fuera de scope) — tab activa "Costos"
+       ============================================================ -->
+  <rect x="0" y="68" width="1080" height="56" fill="#161B22"/>
+  <rect x="0" y="123" width="1080" height="1" fill="#21262D"/>
+  <g opacity="0.6">
+    <rect x="22" y="82" width="84" height="28" rx="14" fill="#1C2128" stroke="#30363D"/>
+    <text x="64" y="100" font-size="12" fill="#B1BAC4" text-anchor="middle">Home</text>
+    <rect x="116" y="82" width="86" height="28" rx="14" fill="#1C2128" stroke="#30363D"/>
+    <text x="159" y="100" font-size="12" fill="#B1BAC4" text-anchor="middle">Ops</text>
+    <rect x="212" y="82" width="118" height="28" rx="14" fill="#1C2128" stroke="#30363D"/>
+    <text x="271" y="100" font-size="12" fill="#B1BAC4" text-anchor="middle">Bloqueados</text>
+    <rect x="340" y="82" width="116" height="28" rx="14" fill="#1C2128" stroke="#30363D"/>
+    <text x="398" y="100" font-size="12" fill="#B1BAC4" text-anchor="middle">Historial</text>
+    <!-- Tab activa Costos (teal — V3 badge para distinguir de Info azul) -->
+    <rect x="466" y="82" width="100" height="28" rx="14" fill="rgba(45,212,191,0.14)" stroke="#2DD4BF" stroke-width="1.5"/>
+    <g transform="translate(478,87)">
+      <!-- glyph dollar -->
+      <circle cx="9" cy="9" r="8" fill="none" stroke="#2DD4BF" stroke-width="1.5"/>
+      <text x="9" y="13" font-size="11" font-weight="700" fill="#2DD4BF" text-anchor="middle">$</text>
+    </g>
+    <text x="528" y="100" font-size="12" font-weight="600" fill="#2DD4BF" text-anchor="middle">Costos</text>
+    <text x="1040" y="100" font-size="11" fill="#6E7681" text-anchor="end" font-family="monospace">view=costos</text>
+  </g>
+
+  <!-- ============================================================
+       MAIN VIEW BOUNDARY — <main id="view-content"> del router #3773.
+       Todo lo de abajo es scope de #3735.
+       ============================================================ -->
+  <rect x="20" y="142" width="1040" height="1640" rx="14"
+        fill="#161B22" stroke="#30363D" stroke-width="1"/>
+  <text x="40" y="170" font-size="11" fill="#6E7681" font-family="monospace">&lt;main id="view-content" data-slug="costos"&gt;</text>
+
+  <!-- ============================================================
+       HEADER de la ventana — #costos-window > .matrix-header
+       ============================================================ -->
+  <g transform="translate(40,190)">
+    <!-- Rail lateral del header — teal (V3 badge / metrica protagonica) -->
+    <rect x="0" y="0" width="4" height="76" fill="url(#tealStripe)" rx="2"/>
+
+    <!-- Avatar icono ventana — moneda con $ -->
+    <circle cx="44" cy="38" r="24" fill="rgba(45,212,191,0.16)"/>
+    <g transform="translate(28,22)" stroke="#2DD4BF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="16" cy="16" r="13"/>
+      <text x="16" y="21" font-size="16" font-weight="700" fill="#2DD4BF" stroke="none" text-anchor="middle">$</text>
+    </g>
+
+    <!-- Chevron de colapso (.section-chevron) + titulo (.section-title-clickable) -->
+    <g transform="translate(80,18)">
+      <text x="0" y="20" font-size="12" fill="#8B949E" font-family="monospace">▼</text>
+      <text x="20" y="22" font-size="24" font-weight="700" fill="#E6EDF3">Costos</text>
+    </g>
+
+    <!-- Chip de costo agregado en vivo (USD/h) -->
+    <g transform="translate(80,46)">
+      <rect x="0" y="0" width="156" height="24" rx="12" fill="rgba(45,212,191,0.14)" stroke="#2DD4BF" stroke-opacity="0.4"/>
+      <text x="78" y="16" font-size="12" font-weight="600" fill="#2DD4BF" text-anchor="middle">$4.72 USD/h actual</text>
+    </g>
+
+    <!-- Popout (.section-popout) -->
+    <g transform="translate(960,18)">
+      <rect x="0" y="0" width="40" height="40" rx="8" fill="#1C2128" stroke="#30363D"/>
+      <g transform="translate(11,11)" stroke="#8B949E" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M11 3 H17 V9"/>
+        <path d="M17 3 L9 11"/>
+        <path d="M14 13 V17 H3 V6 H7"/>
+      </g>
+    </g>
+    <text x="980" y="74" font-size="9" fill="#6E7681" text-anchor="middle" font-family="monospace">popout</text>
+
+    <!-- Leyenda CA-C5 del header -->
+    <text x="260" y="62" font-size="11" fill="#8B949E">
+      Lectura. Ack y snooze actuan sobre el detector de anomalias (cron 10min).
+    </text>
+  </g>
+
+  <!-- ============================================================
+       BANNER PERSISTENTE DE ANOMALIA — #cost-anomaly-banner
+       (Preserva visual de 06-cost-anomaly-alert, adaptado a kiosk vertical)
+       ============================================================ -->
+  <g transform="translate(40,294)">
+    <!-- Fondo gradient + rail rosa-rojo -->
+    <rect x="0" y="0" width="1000" height="172" rx="12" fill="url(#alertBannerGrad)" stroke="#B8254A" stroke-opacity="0.45"/>
+    <rect x="0" y="0" width="4" height="172" fill="#FF6B8A" rx="2"/>
+
+    <!-- Icono pico de consumo grande -->
+    <g transform="translate(24,22)" fill="none" stroke="#FFD2DC" stroke-width="2">
+      <path d="M3 36 H44" stroke-opacity="0.5"/>
+      <path d="M3 28 H44" stroke-dasharray="3 3" stroke-opacity="0.6"/>
+      <path d="M3 28 L10 28 L14 27 L18 26 L22 8 L26 26 L30 27 L34 28 L44 28"
+            stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4"/>
+      <circle cx="22" cy="8" r="2.5" fill="#FFD2DC" stroke="none"/>
+    </g>
+
+    <!-- Headline -->
+    <text x="92" y="42" font-size="16" font-weight="700" fill="#E6EDF3">
+      Pico de consumo — ultima hora 213% sobre baseline
+    </text>
+    <!-- Detail -->
+    <text x="92" y="66" font-size="13" font-weight="600" fill="#FFD2DC">
+      $4.72 USD/h consumidos · esperado $1.51 USD/h · franja 14:00-15:00 (rolling 7d)
+    </text>
+    <!-- Top-3 skills (.cost-anomaly-top3) -->
+    <text x="92" y="92" font-size="12" fill="#B1BAC4">
+      Top 3:
+      <tspan fill="#E6EDF3" font-weight="600">android-dev</tspan> ($2.10) ·
+      <tspan fill="#E6EDF3" font-weight="600">backend-dev</tspan> ($1.34) ·
+      <tspan fill="#E6EDF3" font-weight="600">guru</tspan> ($0.78)
+    </text>
+    <text x="92" y="112" font-size="11" fill="#8B949E" font-style="italic">
+      Persistente hasta acuse manual o vuelta a baseline (2 chequeos consecutivos).
+    </text>
+
+    <!-- Mini-grafico inline al centro-derecha -->
+    <g transform="translate(600,22)">
+      <rect width="200" height="80" rx="8" fill="#0D1117" stroke="#FF6B8A" stroke-opacity="0.35"/>
+      <text x="12" y="18" font-size="9" fill="#8B949E" letter-spacing="1.2">ULTIMAS 24H</text>
+      <path d="M12 70 H188" stroke="#30363D" stroke-width="1"/>
+      <path d="M12 52 H188" stroke="#8B949E" stroke-width="1" stroke-dasharray="2 2.5" opacity="0.6"/>
+      <path d="M12 70 L12 56 L36 54 L56 52 L76 50 L96 52 L116 54 L136 56 L156 52 L176 26 L188 70 Z"
+            fill="url(#spikeGrad)"/>
+      <path d="M12 56 L36 54 L56 52 L76 50 L96 52 L116 54 L136 56 L156 52 L176 26 L188 64"
+            fill="none" stroke="#FF6B8A" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="176" cy="26" r="3.5" fill="#FF6B8A"/>
+      <text x="176" y="18" font-size="10" font-weight="700" fill="#FFD2DC" text-anchor="middle">+213%</text>
+    </g>
+
+    <!-- ACCIONES (.cost-anomaly-actions) — boton ack + selector snooze -->
+    <g transform="translate(92,128)">
+      <text x="0" y="-4" font-size="10" fill="#8B949E" letter-spacing="1.4">ACCIONES OPERATIVAS</text>
+
+      <!-- Boton "Ya lo vi" (ack) — tooltip CA-4.1 #1 -->
+      <g transform="translate(0,4)">
+        <rect width="118" height="32" rx="8" fill="rgba(255,107,138,0.18)" stroke="#FF6B8A" stroke-opacity="0.55"/>
+        <g transform="translate(12,7)" fill="none" stroke="#FFD2DC" stroke-width="1.6">
+          <circle cx="9" cy="9" r="8"/>
+          <path d="M5 9.5 L8 12.5 L13 6.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </g>
+        <text x="68" y="20" font-size="12" font-weight="700" fill="#FFD2DC" text-anchor="middle">Ya lo vi</text>
+      </g>
+      <text x="6" y="50" font-size="9" fill="#6E7681" font-family="monospace">tip: "Confirma que viste la alerta..."</text>
+
+      <!-- Selector snooze -->
+      <g transform="translate(132,4)">
+        <rect width="232" height="32" rx="8" fill="#161B22" stroke="#30363D"/>
+        <g transform="translate(10,8)" fill="none" stroke="#B1BAC4" stroke-width="1.5">
+          <path d="M5 12 V8 A5 5 0 0 1 15 8 V12 L17 14 H3 Z" stroke-linejoin="round" stroke-linecap="round"/>
+        </g>
+        <text x="38" y="20" font-size="11" fill="#B1BAC4">Silenciar</text>
+
+        <!-- 1h — tooltip CA-4.1 #2 -->
+        <g transform="translate(102,5)">
+          <rect width="36" height="22" rx="6" fill="rgba(177,186,196,0.10)" stroke="#484F58" stroke-opacity="0.55"/>
+          <text x="18" y="15" font-size="11" font-weight="600" fill="#B1BAC4" text-anchor="middle">1h</text>
+        </g>
+        <!-- 4h — tooltip CA-4.1 #3 -->
+        <g transform="translate(142,5)">
+          <rect width="36" height="22" rx="6" fill="rgba(177,186,196,0.10)" stroke="#484F58" stroke-opacity="0.55"/>
+          <text x="18" y="15" font-size="11" font-weight="600" fill="#B1BAC4" text-anchor="middle">4h</text>
+        </g>
+        <!-- 24h (cap) — tooltip CA-4.1 #4 -->
+        <g transform="translate(182,5)">
+          <rect width="40" height="22" rx="6" fill="#7C5CFF" fill-opacity="0.20" stroke="#7C5CFF" stroke-opacity="0.55"/>
+          <text x="20" y="15" font-size="11" font-weight="700" fill="#C5B7FF" text-anchor="middle">24h</text>
+        </g>
+      </g>
+      <text x="138" y="50" font-size="9" fill="#6E7681" font-family="monospace">tips: "Silencia 1h..." / "...4h..." / "Cap maximo. 24h hardcoded."</text>
+    </g>
+
+    <!-- Defense audit footer del banner -->
+    <text x="600" y="160" font-size="9" fill="#6E7681" text-anchor="start" font-family="monospace">
+      POST /api/cost-anomaly/ack | POST /api/cost-anomaly/snooze {hours: 1|4|24}
+    </text>
+  </g>
+
+  <!-- ============================================================
+       KPI GRID 3x2 — .cost-kpi-grid (6 KPIs)
+       ============================================================ -->
+  <text x="40" y="502" font-size="11" font-weight="600" fill="#8B949E" letter-spacing="0.08em">
+    KPIs DE LA VENTANA — ULTIMAS 24H
+  </text>
+
+  <!-- KPI 1: Costo estimado total -->
+  <g transform="translate(40,514)">
+    <rect width="320" height="98" rx="12" fill="#1C2128" stroke="#30363D"/>
+    <rect x="0" y="0" width="3" height="98" fill="#2DD4BF" rx="2"/>
+    <text x="18" y="24" font-size="10" font-weight="600" fill="#8B949E" letter-spacing="0.08em">COSTO ESTIMADO</text>
+    <text x="18" y="58" font-size="28" font-weight="700" fill="#E6EDF3" font-family="monospace">$42.18</text>
+    <text x="142" y="58" font-size="14" fill="#8B949E">USD</text>
+    <!-- Delta vs ayer -->
+    <g transform="translate(18,68)">
+      <text x="0" y="14" font-size="11" font-weight="600" fill="#F85149">▲ +18.4%</text>
+      <text x="68" y="14" font-size="11" fill="#8B949E">vs ayer · $35.62</text>
+    </g>
+    <!-- Tooltip leyenda -->
+    <g transform="translate(280,12)">
+      <circle cx="12" cy="12" r="10" fill="rgba(177,186,196,0.10)" stroke="#484F58"/>
+      <text x="12" y="16" font-size="11" font-weight="600" fill="#B1BAC4" text-anchor="middle">i</text>
+    </g>
+  </g>
+
+  <!-- KPI 2: TTS costo -->
+  <g transform="translate(380,514)">
+    <rect width="320" height="98" rx="12" fill="#1C2128" stroke="#30363D"/>
+    <rect x="0" y="0" width="3" height="98" fill="#7C5CFF" rx="2"/>
+    <text x="18" y="24" font-size="10" font-weight="600" fill="#8B949E" letter-spacing="0.08em">TTS COSTO</text>
+    <text x="18" y="58" font-size="28" font-weight="700" fill="#E6EDF3" font-family="monospace">$3.42</text>
+    <text x="118" y="58" font-size="14" fill="#8B949E">USD</text>
+    <g transform="translate(18,68)">
+      <text x="0" y="14" font-size="11" font-weight="600" fill="#3FB950">▼ -22.1%</text>
+      <text x="68" y="14" font-size="11" fill="#8B949E">vs ayer · $4.40</text>
+    </g>
+    <g transform="translate(280,12)">
+      <circle cx="12" cy="12" r="10" fill="rgba(177,186,196,0.10)" stroke="#484F58"/>
+      <text x="12" y="16" font-size="11" font-weight="600" fill="#B1BAC4" text-anchor="middle">i</text>
+    </g>
+  </g>
+
+  <!-- KPI 3: Sesiones -->
+  <g transform="translate(720,514)">
+    <rect width="320" height="98" rx="12" fill="#1C2128" stroke="#30363D"/>
+    <rect x="0" y="0" width="3" height="98" fill="#58A6FF" rx="2"/>
+    <text x="18" y="24" font-size="10" font-weight="600" fill="#8B949E" letter-spacing="0.08em">SESIONES</text>
+    <text x="18" y="58" font-size="28" font-weight="700" fill="#E6EDF3" font-family="monospace">187</text>
+    <text x="92" y="58" font-size="14" fill="#8B949E">runs</text>
+    <g transform="translate(18,68)">
+      <text x="0" y="14" font-size="11" font-weight="600" fill="#F85149">▲ +24</text>
+      <text x="58" y="14" font-size="11" fill="#8B949E">vs ayer · 163</text>
+    </g>
+    <g transform="translate(280,12)">
+      <circle cx="12" cy="12" r="10" fill="rgba(177,186,196,0.10)" stroke="#484F58"/>
+      <text x="12" y="16" font-size="11" font-weight="600" fill="#B1BAC4" text-anchor="middle">i</text>
+    </g>
+  </g>
+
+  <!-- KPI 4: Tokens IO -->
+  <g transform="translate(40,624)">
+    <rect width="320" height="98" rx="12" fill="#1C2128" stroke="#30363D"/>
+    <rect x="0" y="0" width="3" height="98" fill="#BC8CFF" rx="2"/>
+    <text x="18" y="24" font-size="10" font-weight="600" fill="#8B949E" letter-spacing="0.08em">TOKENS (IN/OUT)</text>
+    <text x="18" y="58" font-size="22" font-weight="700" fill="#E6EDF3" font-family="monospace">2.8M / 0.9M</text>
+    <g transform="translate(18,68)">
+      <text x="0" y="14" font-size="11" font-weight="600" fill="#F85149">▲ +12.7%</text>
+      <text x="74" y="14" font-size="11" fill="#8B949E">in · ▲ +8.3% out</text>
+    </g>
+    <g transform="translate(280,12)">
+      <circle cx="12" cy="12" r="10" fill="rgba(177,186,196,0.10)" stroke="#484F58"/>
+      <text x="12" y="16" font-size="11" font-weight="600" fill="#B1BAC4" text-anchor="middle">i</text>
+    </g>
+  </g>
+
+  <!-- KPI 5: Latencia media -->
+  <g transform="translate(380,624)">
+    <rect width="320" height="98" rx="12" fill="#1C2128" stroke="#30363D"/>
+    <rect x="0" y="0" width="3" height="98" fill="#D29922" rx="2"/>
+    <text x="18" y="24" font-size="10" font-weight="600" fill="#8B949E" letter-spacing="0.08em">LATENCIA MEDIA</text>
+    <text x="18" y="58" font-size="28" font-weight="700" fill="#E6EDF3" font-family="monospace">4.2s</text>
+    <text x="88" y="58" font-size="14" fill="#8B949E">por sesion</text>
+    <g transform="translate(18,68)">
+      <text x="0" y="14" font-size="11" font-weight="600" fill="#3FB950">▼ -0.8s</text>
+      <text x="58" y="14" font-size="11" fill="#8B949E">vs ayer · 5.0s</text>
+    </g>
+    <g transform="translate(280,12)">
+      <circle cx="12" cy="12" r="10" fill="rgba(177,186,196,0.10)" stroke="#484F58"/>
+      <text x="12" y="16" font-size="11" font-weight="600" fill="#B1BAC4" text-anchor="middle">i</text>
+    </g>
+  </g>
+
+  <!-- KPI 6: Ratio LLM vs Determinístico -->
+  <g transform="translate(720,624)">
+    <rect width="320" height="98" rx="12" fill="#1C2128" stroke="#30363D"/>
+    <rect x="0" y="0" width="3" height="98" fill="#3FB950" rx="2"/>
+    <text x="18" y="24" font-size="10" font-weight="600" fill="#8B949E" letter-spacing="0.08em">RATIO LLM / DET</text>
+    <text x="18" y="58" font-size="28" font-weight="700" fill="#E6EDF3" font-family="monospace">34%</text>
+    <text x="86" y="58" font-size="14" fill="#8B949E">LLM</text>
+    <g transform="translate(18,68)">
+      <text x="0" y="14" font-size="11" font-weight="600" fill="#3FB950">▼ -6 pp</text>
+      <text x="58" y="14" font-size="11" fill="#8B949E">det gana terreno</text>
+    </g>
+    <g transform="translate(280,12)">
+      <circle cx="12" cy="12" r="10" fill="rgba(177,186,196,0.10)" stroke="#484F58"/>
+      <text x="12" y="16" font-size="11" font-weight="600" fill="#B1BAC4" text-anchor="middle">i</text>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       TABLA POR SKILL — .cost-bs-table (top consumers, rail provider)
+       ============================================================ -->
+  <text x="40" y="762" font-size="11" font-weight="600" fill="#8B949E" letter-spacing="0.08em">
+    TOP SKILLS POR COSTO — CLICK PARA DRILL-DOWN DE SESIONES
+  </text>
+
+  <g transform="translate(40,776)">
+    <rect width="1000" height="206" rx="12" fill="#1C2128" stroke="#30363D"/>
+
+    <!-- Header tabla -->
+    <g font-size="10" fill="#8B949E" letter-spacing="0.08em" font-weight="600">
+      <text x="20" y="24">SKILL</text>
+      <text x="200" y="24">PROVIDER</text>
+      <text x="380" y="24">SESIONES</text>
+      <text x="540" y="24">COSTO USD</text>
+      <text x="700" y="24">% TOTAL</text>
+      <text x="820" y="24">PROMEDIO/SESION</text>
+    </g>
+    <path d="M16 32 H984" stroke="#30363D" stroke-width="1"/>
+
+    <!-- Fila 1: android-dev (Anthropic) -->
+    <g transform="translate(0,40)">
+      <rect x="0" y="0" width="1000" height="32" fill="transparent"/>
+      <rect x="0" y="6" width="3" height="20" fill="#D97757"/>
+      <text x="20" y="20" font-size="13" font-weight="600" fill="#E6EDF3">android-dev</text>
+      <g transform="translate(200,8)">
+        <rect width="78" height="16" rx="8" fill="rgba(217,119,87,0.14)" stroke="#D97757" stroke-opacity="0.4"/>
+        <text x="39" y="11" font-size="10" font-weight="600" fill="#D97757" text-anchor="middle">Anthropic</text>
+      </g>
+      <text x="380" y="20" font-size="12" fill="#E6EDF3" font-family="monospace">42</text>
+      <text x="540" y="20" font-size="12" fill="#E6EDF3" font-family="monospace" font-weight="600">$15.84</text>
+      <text x="700" y="20" font-size="12" fill="#B1BAC4" font-family="monospace">37.6%</text>
+      <text x="820" y="20" font-size="12" fill="#B1BAC4" font-family="monospace">$0.377</text>
+      <!-- Glyph drilldown -->
+      <text x="970" y="20" font-size="14" fill="#6E7681" text-anchor="middle">›</text>
+    </g>
+    <path d="M16 76 H984" stroke="#21262D" stroke-width="1"/>
+
+    <!-- Fila 2: backend-dev (Anthropic) -->
+    <g transform="translate(0,80)">
+      <rect x="0" y="6" width="3" height="20" fill="#D97757"/>
+      <text x="20" y="20" font-size="13" font-weight="600" fill="#E6EDF3">backend-dev</text>
+      <g transform="translate(200,8)">
+        <rect width="78" height="16" rx="8" fill="rgba(217,119,87,0.14)" stroke="#D97757" stroke-opacity="0.4"/>
+        <text x="39" y="11" font-size="10" font-weight="600" fill="#D97757" text-anchor="middle">Anthropic</text>
+      </g>
+      <text x="380" y="20" font-size="12" fill="#E6EDF3" font-family="monospace">31</text>
+      <text x="540" y="20" font-size="12" fill="#E6EDF3" font-family="monospace" font-weight="600">$9.42</text>
+      <text x="700" y="20" font-size="12" fill="#B1BAC4" font-family="monospace">22.3%</text>
+      <text x="820" y="20" font-size="12" fill="#B1BAC4" font-family="monospace">$0.304</text>
+      <text x="970" y="20" font-size="14" fill="#6E7681" text-anchor="middle">›</text>
+    </g>
+    <path d="M16 116 H984" stroke="#21262D" stroke-width="1"/>
+
+    <!-- Fila 3: guru (Anthropic) -->
+    <g transform="translate(0,120)">
+      <rect x="0" y="6" width="3" height="20" fill="#D97757"/>
+      <text x="20" y="20" font-size="13" font-weight="600" fill="#E6EDF3">guru</text>
+      <g transform="translate(200,8)">
+        <rect width="78" height="16" rx="8" fill="rgba(217,119,87,0.14)" stroke="#D97757" stroke-opacity="0.4"/>
+        <text x="39" y="11" font-size="10" font-weight="600" fill="#D97757" text-anchor="middle">Anthropic</text>
+      </g>
+      <text x="380" y="20" font-size="12" fill="#E6EDF3" font-family="monospace">28</text>
+      <text x="540" y="20" font-size="12" fill="#E6EDF3" font-family="monospace" font-weight="600">$7.18</text>
+      <text x="700" y="20" font-size="12" fill="#B1BAC4" font-family="monospace">17.0%</text>
+      <text x="820" y="20" font-size="12" fill="#B1BAC4" font-family="monospace">$0.256</text>
+      <text x="970" y="20" font-size="14" fill="#6E7681" text-anchor="middle">›</text>
+    </g>
+    <path d="M16 156 H984" stroke="#21262D" stroke-width="1"/>
+
+    <!-- Fila 4: po (Codex) — provider distinto -->
+    <g transform="translate(0,160)">
+      <rect x="0" y="6" width="3" height="20" fill="#10A37F"/>
+      <text x="20" y="20" font-size="13" font-weight="600" fill="#E6EDF3">po</text>
+      <g transform="translate(200,8)">
+        <rect width="78" height="16" rx="8" fill="rgba(16,163,127,0.14)" stroke="#10A37F" stroke-opacity="0.4"/>
+        <text x="39" y="11" font-size="10" font-weight="600" fill="#10A37F" text-anchor="middle">Codex</text>
+      </g>
+      <text x="380" y="20" font-size="12" fill="#E6EDF3" font-family="monospace">22</text>
+      <text x="540" y="20" font-size="12" fill="#E6EDF3" font-family="monospace" font-weight="600">$4.92</text>
+      <text x="700" y="20" font-size="12" fill="#B1BAC4" font-family="monospace">11.7%</text>
+      <text x="820" y="20" font-size="12" fill="#B1BAC4" font-family="monospace">$0.224</text>
+      <text x="970" y="20" font-size="14" fill="#6E7681" text-anchor="middle">›</text>
+    </g>
+
+    <!-- Footer tabla -->
+    <text x="500" y="200" font-size="10" fill="#6E7681" text-anchor="middle" font-style="italic">
+      Click en cualquier fila para drill-down de las ultimas sesiones del skill.
+    </text>
+  </g>
+  <text x="40" y="998" font-size="9" fill="#6E7681" font-family="monospace">
+    tip: "Click para drill-down de las ultimas sesiones de este skill." (CA-4.1 #5)
+  </text>
+
+  <!-- ============================================================
+       TABLAS COMPACTAS: POR FASE + POR ISSUE — side-by-side
+       ============================================================ -->
+  <text x="40" y="1028" font-size="11" font-weight="600" fill="#8B949E" letter-spacing="0.08em">
+    DISTRIBUCION POR FASE Y POR ISSUE
+  </text>
+
+  <!-- Por fase (.cost-bp-table) -->
+  <g transform="translate(40,1042)">
+    <rect width="490" height="190" rx="12" fill="#1C2128" stroke="#30363D"/>
+    <text x="20" y="24" font-size="13" font-weight="600" fill="#E6EDF3">Por fase</text>
+
+    <g font-size="10" fill="#8B949E" letter-spacing="0.08em" font-weight="600">
+      <text x="20" y="48">FASE</text>
+      <text x="280" y="48">COSTO</text>
+      <text x="380" y="48">% TOTAL</text>
+    </g>
+    <path d="M16 56 H474" stroke="#30363D" stroke-width="1"/>
+
+    <g font-size="12" font-family="monospace">
+      <g transform="translate(0,68)">
+        <g transform="translate(20,0)">
+          <rect width="84" height="20" rx="10" fill="rgba(188,140,255,0.14)" stroke="#BC8CFF" stroke-opacity="0.4"/>
+          <text x="42" y="14" font-size="11" fill="#BC8CFF" text-anchor="middle">criterios</text>
+        </g>
+        <text x="280" y="14" fill="#E6EDF3" font-weight="600">$14.22</text>
+        <text x="380" y="14" fill="#B1BAC4">33.7%</text>
+      </g>
+      <g transform="translate(0,96)">
+        <g transform="translate(20,0)">
+          <rect width="84" height="20" rx="10" fill="rgba(45,212,191,0.14)" stroke="#2DD4BF" stroke-opacity="0.4"/>
+          <text x="42" y="14" font-size="11" fill="#2DD4BF" text-anchor="middle">dev</text>
+        </g>
+        <text x="280" y="14" fill="#E6EDF3" font-weight="600">$18.06</text>
+        <text x="380" y="14" fill="#B1BAC4">42.8%</text>
+      </g>
+      <g transform="translate(0,124)">
+        <g transform="translate(20,0)">
+          <rect width="84" height="20" rx="10" fill="rgba(63,185,80,0.14)" stroke="#3FB950" stroke-opacity="0.4"/>
+          <text x="42" y="14" font-size="11" fill="#3FB950" text-anchor="middle">aprobacion</text>
+        </g>
+        <text x="280" y="14" fill="#E6EDF3" font-weight="600">$5.82</text>
+        <text x="380" y="14" fill="#B1BAC4">13.8%</text>
+      </g>
+      <g transform="translate(0,152)">
+        <g transform="translate(20,0)">
+          <rect width="84" height="20" rx="10" fill="rgba(88,166,255,0.14)" stroke="#58A6FF" stroke-opacity="0.4"/>
+          <text x="42" y="14" font-size="11" fill="#58A6FF" text-anchor="middle">verificacion</text>
+        </g>
+        <text x="280" y="14" fill="#E6EDF3" font-weight="600">$4.08</text>
+        <text x="380" y="14" fill="#B1BAC4">9.7%</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- Por issue (.cost-bi-table) — filas clicables -->
+  <g transform="translate(550,1042)">
+    <rect width="490" height="190" rx="12" fill="#1C2128" stroke="#30363D"/>
+    <text x="20" y="24" font-size="13" font-weight="600" fill="#E6EDF3">Por issue</text>
+
+    <g font-size="10" fill="#8B949E" letter-spacing="0.08em" font-weight="600">
+      <text x="20" y="48">ISSUE</text>
+      <text x="270" y="48">COSTO</text>
+      <text x="380" y="48">SESIONES</text>
+    </g>
+    <path d="M16 56 H474" stroke="#30363D" stroke-width="1"/>
+
+    <g font-size="12" font-family="monospace">
+      <g transform="translate(0,68)">
+        <text x="20" y="14" fill="#E6EDF3" font-weight="600">#3735</text>
+        <text x="80" y="14" fill="#B1BAC4" font-family="-apple-system,sans-serif">Ventana Costos V3</text>
+        <text x="270" y="14" fill="#E6EDF3" font-weight="600">$8.42</text>
+        <text x="380" y="14" fill="#B1BAC4">28</text>
+        <text x="460" y="14" fill="#6E7681" text-anchor="middle">›</text>
+      </g>
+      <g transform="translate(0,96)">
+        <text x="20" y="14" fill="#E6EDF3" font-weight="600">#3734</text>
+        <text x="80" y="14" fill="#B1BAC4" font-family="-apple-system,sans-serif">Ventana Historial V3</text>
+        <text x="270" y="14" fill="#E6EDF3" font-weight="600">$6.78</text>
+        <text x="380" y="14" fill="#B1BAC4">22</text>
+        <text x="460" y="14" fill="#6E7681" text-anchor="middle">›</text>
+      </g>
+      <g transform="translate(0,124)">
+        <text x="20" y="14" fill="#E6EDF3" font-weight="600">#3733</text>
+        <text x="80" y="14" fill="#B1BAC4" font-family="-apple-system,sans-serif">Ventana KPIs V3</text>
+        <text x="270" y="14" fill="#E6EDF3" font-weight="600">$5.92</text>
+        <text x="380" y="14" fill="#B1BAC4">19</text>
+        <text x="460" y="14" fill="#6E7681" text-anchor="middle">›</text>
+      </g>
+      <g transform="translate(0,152)">
+        <text x="20" y="14" fill="#E6EDF3" font-weight="600">#3715</text>
+        <text x="80" y="14" fill="#B1BAC4" font-family="-apple-system,sans-serif">Rediseño UX integral</text>
+        <text x="270" y="14" fill="#E6EDF3" font-weight="600">$4.16</text>
+        <text x="380" y="14" fill="#B1BAC4">14</text>
+        <text x="460" y="14" fill="#6E7681" text-anchor="middle">›</text>
+      </g>
+    </g>
+  </g>
+  <text x="550" y="1248" font-size="9" fill="#6E7681" font-family="monospace">
+    tip: "Click para ver timeline cronologica del issue." (CA-4.1 #6)
+  </text>
+
+  <!-- ============================================================
+       PROYECCIONES MENSUALES — .cost-proj-grid (3 cards con semaforo)
+       ============================================================ -->
+  <text x="40" y="1278" font-size="11" font-weight="600" fill="#8B949E" letter-spacing="0.08em">
+    PROYECCIONES — EXTRAPOLACION CON RATIO HISTORICO ULTIMOS 7 DIAS
+  </text>
+
+  <!-- Card OVER (rojo) — proyeccion mensual -->
+  <g transform="translate(40,1292)">
+    <rect width="320" height="118" rx="12" fill="#1C2128" stroke="#F85149" stroke-opacity="0.45"/>
+    <rect x="0" y="0" width="3" height="118" fill="url(#dangerStripe)" rx="2"/>
+    <text x="18" y="24" font-size="10" font-weight="600" fill="#F85149" letter-spacing="0.08em">PROYECCION MENSUAL</text>
+    <text x="18" y="58" font-size="26" font-weight="700" fill="#E6EDF3" font-family="monospace">$1,847</text>
+    <text x="138" y="58" font-size="14" fill="#8B949E">USD/mes</text>
+    <!-- Semaforo dual-encoding -->
+    <g transform="translate(18,72)">
+      <rect width="120" height="22" rx="11" fill="rgba(248,81,73,0.14)" stroke="#F85149" stroke-opacity="0.5"/>
+      <path d="M14 11 L24 5 L24 17 Z" fill="#F85149"/>
+      <text x="38" y="15" font-size="11" font-weight="600" fill="#F85149">SUPERA QUOTA</text>
+    </g>
+    <text x="148" y="86" font-size="11" fill="#B1BAC4" font-family="monospace">+18% sobre $1,560</text>
+    <text x="18" y="108" font-size="10" fill="#6E7681">cap mensual config: $1,560 USD</text>
+  </g>
+
+  <!-- Card WARNING (amber) — proyeccion semanal -->
+  <g transform="translate(380,1292)">
+    <rect width="320" height="118" rx="12" fill="#1C2128" stroke="#D29922" stroke-opacity="0.45"/>
+    <rect x="0" y="0" width="3" height="118" fill="url(#warningStripe)" rx="2"/>
+    <text x="18" y="24" font-size="10" font-weight="600" fill="#D29922" letter-spacing="0.08em">PROYECCION SEMANAL</text>
+    <text x="18" y="58" font-size="26" font-weight="700" fill="#E6EDF3" font-family="monospace">$412</text>
+    <text x="106" y="58" font-size="14" fill="#8B949E">USD/sem</text>
+    <g transform="translate(18,72)">
+      <rect width="106" height="22" rx="11" fill="rgba(210,153,34,0.14)" stroke="#D29922" stroke-opacity="0.5"/>
+      <path d="M18 5 L24 13 L18 13 L12 13 Z" fill="#D29922"/>
+      <text x="34" y="15" font-size="11" font-weight="600" fill="#D29922">CERCA DE CAP</text>
+    </g>
+    <text x="132" y="86" font-size="11" fill="#B1BAC4" font-family="monospace">85% del cap semanal</text>
+    <text x="18" y="108" font-size="10" fill="#6E7681">cap semanal config: $485 USD</text>
+  </g>
+
+  <!-- Card OK (verde) — proyeccion hoy -->
+  <g transform="translate(720,1292)">
+    <rect width="320" height="118" rx="12" fill="#1C2128" stroke="#3FB950" stroke-opacity="0.45"/>
+    <rect x="0" y="0" width="3" height="118" fill="url(#successStripe)" rx="2"/>
+    <text x="18" y="24" font-size="10" font-weight="600" fill="#3FB950" letter-spacing="0.08em">PROYECCION HOY</text>
+    <text x="18" y="58" font-size="26" font-weight="700" fill="#E6EDF3" font-family="monospace">$58.40</text>
+    <text x="138" y="58" font-size="14" fill="#8B949E">USD/dia</text>
+    <g transform="translate(18,72)">
+      <rect width="100" height="22" rx="11" fill="rgba(63,185,80,0.14)" stroke="#3FB950" stroke-opacity="0.5"/>
+      <path d="M14 11 L18 15 L24 8" fill="none" stroke="#3FB950" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="38" y="15" font-size="11" font-weight="600" fill="#3FB950">DENTRO CAP</text>
+    </g>
+    <text x="126" y="86" font-size="11" fill="#B1BAC4" font-family="monospace">73% del cap diario</text>
+    <text x="18" y="108" font-size="10" fill="#6E7681">cap diario config: $80 USD</text>
+  </g>
+
+  <!-- ============================================================
+       LLM vs DETERMINISTICO — .cost-llm-bar
+       ============================================================ -->
+  <text x="40" y="1438" font-size="11" font-weight="600" fill="#8B949E" letter-spacing="0.08em">
+    LLM vs DETERMINISTICO — AHORRO POR MIGRAR ROLEPLAY A SCRIPT
+  </text>
+
+  <g transform="translate(40,1452)">
+    <rect width="1000" height="100" rx="12" fill="#1C2128" stroke="#30363D"/>
+
+    <!-- Barra comparativa -->
+    <g transform="translate(20,18)">
+      <text x="0" y="14" font-size="12" font-weight="600" fill="#E6EDF3">Distribucion del trabajo</text>
+      <text x="960" y="14" font-size="12" fill="#8B949E" text-anchor="end" font-family="monospace">187 sesiones · ventana 24h</text>
+
+      <!-- Barra (LLM 34% + Det 66%) -->
+      <g transform="translate(0,24)">
+        <rect x="0" y="0" width="960" height="22" rx="11" fill="#0D1117"/>
+        <rect x="0" y="0" width="326" height="22" rx="11" fill="#58A6FF"/>
+        <rect x="316" y="0" width="20" height="22" fill="#58A6FF"/>
+        <rect x="326" y="0" width="634" height="22" rx="11" fill="rgba(177,186,196,0.42)"/>
+        <text x="163" y="15" font-size="11" font-weight="700" fill="#0D1117" text-anchor="middle">LLM 34%</text>
+        <text x="643" y="15" font-size="11" font-weight="700" fill="#0D1117" text-anchor="middle">DETERMINISTICO 66%</text>
+      </g>
+    </g>
+
+    <!-- Savings -->
+    <g transform="translate(20,70)" font-size="12">
+      <rect width="14" height="14" rx="4" fill="#58A6FF"/>
+      <text x="22" y="11" fill="#B1BAC4">LLM: <tspan fill="#E6EDF3" font-weight="600">64 sesiones · $32.40 USD</tspan></text>
+
+      <g transform="translate(280,0)">
+        <rect width="14" height="14" rx="4" fill="rgba(177,186,196,0.42)"/>
+        <text x="22" y="11" fill="#B1BAC4">Det: <tspan fill="#E6EDF3" font-weight="600">123 sesiones · $9.78 USD</tspan></text>
+      </g>
+
+      <g transform="translate(560,0)">
+        <text x="0" y="11" fill="#3FB950" font-weight="700">▼ Ahorro estimado: $44.62 USD/dia</text>
+        <text x="240" y="11" fill="#B1BAC4">vs LLM puro · <tspan fill="#3FB950" font-weight="700">-58%</tspan></text>
+      </g>
+    </g>
+  </g>
+  <text x="40" y="1568" font-size="9" fill="#6E7681" font-family="monospace">
+    tip: "Comparativa de costo por skill: cuanto se ahorro migrando el roleplay de LLM a deterministico." (CA-4.1 #7)
+  </text>
+
+  <!-- ============================================================
+       TTS POR ISSUE — .cost-tts-table (con drilldown <details>)
+       ============================================================ -->
+  <text x="40" y="1596" font-size="11" font-weight="600" fill="#8B949E" letter-spacing="0.08em">
+    TTS POR ISSUE — EXPAND PARA DRILLDOWN POR PROVIDER (EDGE / GROQ / GEMINI)
+  </text>
+
+  <g transform="translate(40,1610)">
+    <rect width="1000" height="142" rx="12" fill="#1C2128" stroke="#30363D"/>
+
+    <g font-size="10" fill="#8B949E" letter-spacing="0.08em" font-weight="600">
+      <text x="20" y="24">ISSUE</text>
+      <text x="500" y="24">TTS COSTO</text>
+      <text x="640" y="24">SEGUNDOS</text>
+      <text x="780" y="24">PROVIDERS</text>
+    </g>
+    <path d="M16 32 H984" stroke="#30363D" stroke-width="1"/>
+
+    <!-- Fila 1: #3735 expandido (details abierto) -->
+    <g transform="translate(0,40)">
+      <text x="20" y="14" font-size="12" fill="#E6EDF3" font-weight="600" font-family="monospace">▼ #3735</text>
+      <text x="84" y="14" font-size="12" fill="#B1BAC4">Ventana Costos V3 — narrativa Lili + audio Murble</text>
+      <text x="500" y="14" font-size="12" fill="#E6EDF3" font-weight="600" font-family="monospace">$1.42</text>
+      <text x="640" y="14" font-size="12" fill="#B1BAC4" font-family="monospace">312s</text>
+      <text x="780" y="14" font-size="12" fill="#B1BAC4" font-family="monospace">edge + groq</text>
+
+      <!-- Drilldown providers -->
+      <g transform="translate(48,26)">
+        <rect width="920" height="56" rx="8" fill="#0D1117" stroke="#21262D"/>
+        <g transform="translate(16,18)" font-size="11" font-family="monospace">
+          <text x="0" y="0" fill="#8B949E">└─</text>
+          <g transform="translate(20,-2)">
+            <rect width="68" height="16" rx="8" fill="rgba(45,212,191,0.14)" stroke="#2DD4BF" stroke-opacity="0.4"/>
+            <text x="34" y="11" font-size="10" font-weight="600" fill="#2DD4BF" text-anchor="middle">edge-tts</text>
+          </g>
+          <text x="100" y="0" fill="#B1BAC4">free tier · 248s · <tspan fill="#3FB950" font-weight="600">$0.00</tspan></text>
+
+          <text x="320" y="0" fill="#8B949E">└─</text>
+          <g transform="translate(340,-2)">
+            <rect width="68" height="16" rx="8" fill="rgba(245,158,11,0.14)" stroke="#F59E0B" stroke-opacity="0.4"/>
+            <text x="34" y="11" font-size="10" font-weight="600" fill="#F59E0B" text-anchor="middle">groq-tts</text>
+          </g>
+          <text x="420" y="0" fill="#B1BAC4">paid · 64s · <tspan fill="#E6EDF3" font-weight="600">$1.42</tspan></text>
+        </g>
+      </g>
+    </g>
+
+    <path d="M16 102 H984" stroke="#21262D" stroke-width="1"/>
+
+    <!-- Fila 2: #3734 colapsado -->
+    <g transform="translate(0,108)">
+      <text x="20" y="14" font-size="12" fill="#E6EDF3" font-weight="600" font-family="monospace">▶ #3734</text>
+      <text x="84" y="14" font-size="12" fill="#B1BAC4">Ventana Historial V3 — narrativa Lili</text>
+      <text x="500" y="14" font-size="12" fill="#E6EDF3" font-weight="600" font-family="monospace">$0.78</text>
+      <text x="640" y="14" font-size="12" fill="#B1BAC4" font-family="monospace">186s</text>
+      <text x="780" y="14" font-size="12" fill="#B1BAC4" font-family="monospace">edge only</text>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       FOOTER tecnico de la ventana — out-of-scope + handlers
+       ============================================================ -->
+  <g transform="translate(40,1772)">
+    <rect width="1000" height="0.5" fill="#21262D"/>
+  </g>
+  <text x="40" y="1796" font-size="9" fill="#6E7681" font-family="monospace">
+    <tspan x="40" dy="0">// out-of-scope del split: pagina /consumo (rec #3779), export CSV, CSRF estricta (#3688)</tspan>
+    <tspan x="40" dy="14">// handlers via addEventListener en renderCostosClientScript() — sin onclick inline (CA-3.3, prep CSP #3688)</tspan>
+  </text>
+
+  <!-- ============================================================
+       VARIANTE FALLBACK INERTE (CA-A3 / REQ-SEC-7)
+       Ilustrada compacta abajo del frame principal
+       ============================================================ -->
+  <g transform="translate(20,1842)">
+    <rect width="1040" height="68" rx="12" fill="#1C2128" stroke="#D29922" stroke-opacity="0.55" stroke-dasharray="6 4"/>
+    <g transform="translate(20,16)" stroke="#D29922" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M18 4 L34 32 L2 32 Z"/>
+      <path d="M18 14 V22"/>
+      <circle cx="18" cy="27" r="1.2" fill="#D29922" stroke="none"/>
+    </g>
+    <text x="64" y="26" font-size="13" font-weight="700" fill="#E6EDF3">VARIANTE FALLBACK INERTE — Ventana Costos no disponible</text>
+    <text x="64" y="44" font-size="11" fill="#B1BAC4">El modulo views/dashboard/costos.js fallo al cargar. Ver logs del dashboard.</text>
+    <text x="64" y="60" font-size="10" fill="#6E7681" font-family="monospace">log("costos view unavailable: " + e.message) emitido por dashboard.js — el render no queda en blanco.</text>
+    <text x="1024" y="60" font-size="9" fill="#6E7681" text-anchor="end" font-family="monospace">CA-A3 / REQ-SEC-7</text>
+  </g>
+
+</svg>

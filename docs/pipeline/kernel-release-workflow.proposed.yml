@@ -1,0 +1,135 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# PROPUESTA de release.yml para el repo SEPARADO `intrale/kernel`
+# Destino real: intrale/kernel/.github/workflows/release.yml  (hoy 404 · greenfield)
+#
+# ⚠️ CA-C0 (BLOQUEANTE · #4695 · OWASP A01): este YAML NO se commitea al repo del
+#    kernel hasta el sign-off de `security` sobre este archivo concreto. Se versiona
+#    acá (repo del producto) como artefacto revisable para que la fase de
+#    verificación lo evalúe contra el checklist §4 de kernel-repo-design.md.
+#
+# Controles de seguridad incorporados (verificables punto por punto):
+#  · CA-C1 (A01): sin auto-publish. El job `publish` está detrás de un
+#    `environment: release` con required reviewers → GitHub PAUSA el job hasta la
+#    aprobación humana. `permissions:` a nivel workflow = `contents: read`;
+#    `packages/id-token/contents: write` se elevan SÓLO en `publish`.
+#  · CA-C1: chequeo `tag == package.json.version` antes de publicar (job `verify`,
+#    sin permisos elevados) → impide publicar una versión que no corresponde al tag.
+#  · CA-C2 (A08): firma del tag con sigstore/cosign OIDC keyless (id-token: write),
+#    sin gestión de claves privadas de larga vida. La firma se adjunta al GitHub
+#    Release; el consumidor la verifica en kernel-resolver.assertReleaseSignature.
+#  · CA-C4 (A01): token de publish = `secrets.GITHUB_TOKEN` scoped al job (NO PAT de
+#    larga vida embebido). Branch protection + 2FA se configuran fuera del YAML
+#    (Settings del repo del kernel) y forman parte del checklist de CA-C0.
+#  · A05/A07: sin secretos hardcodeados; sólo el GITHUB_TOKEN builtin. Escaneo de
+#    secretos antes del primer commit (parte de CA-C0).
+# ─────────────────────────────────────────────────────────────────────────────
+name: release
+
+# Dispara al pushear un tag de versión (vX.Y.Z), o manualmente sobre un tag
+# existente. El PUBLISH NO es automático: queda detrás del gate humano del
+# environment `release` (required reviewers). Nada se publica sin aprobación.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag de release existente a publicar (vX.Y.Z)'
+        required: true
+
+# Permisos mínimos a nivel workflow: SÓLO lectura. Se elevan por-job.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  # 1) Validación SIN permisos elevados: el tag debe coincidir con
+  #    package.json.version y ser un pin exacto (nada de rangos).
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - name: Checkout del tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+          persist-credentials: false
+      - name: Verificar tag == package.json.version (pin exacto)
+        id: check
+        run: |
+          set -euo pipefail
+          REF="${{ github.event.inputs.tag || github.ref_name }}"
+          TAG_VERSION="${REF#v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          echo "tag=$TAG_VERSION package.json=$PKG_VERSION"
+          if ! printf '%s' "$PKG_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::package.json.version ($PKG_VERSION) no es un pin exacto X.Y.Z."
+            exit 1
+          fi
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::El tag ($TAG_VERSION) no coincide con package.json.version ($PKG_VERSION)."
+            exit 1
+          fi
+          echo "version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+
+  # 2) Publish + firma. GATE HUMANO: environment `release` con required reviewers.
+  #    GitHub pausa este job hasta la aprobación de un reviewer autorizado ⇒ no hay
+  #    auto-publish (CA-C1). Permisos elevados SÓLO en este job.
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: release   # required reviewers en Settings → Environments (gate humano)
+    permissions:
+      contents: write      # adjuntar los assets de firma al GitHub Release
+      packages: write      # publicar a GitHub Packages
+      id-token: write      # OIDC keyless para cosign (CA-C2)
+    steps:
+      - name: Checkout del tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+          persist-credentials: false
+      - name: Setup Node + registry de GitHub Packages
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@intrale'
+      - name: Instalar dependencias (reproducible)
+        run: npm ci
+      - name: Publicar a GitHub Packages
+        run: npm publish
+        env:
+          # Token scoped al job (builtin), NO un PAT de larga vida embebido (CA-C4).
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Instalar cosign
+        uses: sigstore/cosign-installer@v3
+      - name: Firmar el release con cosign (OIDC keyless · CA-C2)
+        env:
+          COSIGN_YES: 'true'
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.verify.outputs.version }}"
+          # Blob canónico firmado = tarball publicado del paquete.
+          npm pack
+          BLOB="$(ls intrale-operating-kernel-*.tgz)"
+          cosign sign-blob --yes \
+            --output-signature "kernel-${VERSION}.sig" \
+            --output-certificate "kernel-${VERSION}.pem" \
+            "$BLOB"
+      - name: Adjuntar firma al GitHub Release (consumidor la verifica antes de bumpear)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.verify.outputs.version }}"
+          gh release upload "v${VERSION}" \
+            "kernel-${VERSION}.sig" "kernel-${VERSION}.pem" \
+            --clobber

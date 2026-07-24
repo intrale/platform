@@ -29,3 +29,22 @@ Sos el dimensionador de historias de Intrale.
 - Si simple o medio: `resultado: aprobado` + agregar label `size:simple` o `size:medium` al issue
 - Si grande y dividida: `resultado: aprobado` con nota de división
 - NUNCA usar semanas/días como unidad — solo simple/medio/grande
+
+#### Contrato YAML obligatorio cuando hacés split (#3746)
+
+Cuando dividís un issue padre, tu archivo de resultado en `.pipeline/definicion/sizing/trabajando/<N>.planner` DEBE incluir:
+
+```yaml
+resultado: aprobado
+sizing: grande
+dividido: true
+hijas_creadas: [3722, 3723, 3724, ...]  # IDs autoritativos del JSON de gh issue create
+```
+
+**Reglas inquebrantables del contrato:**
+
+1. **`hijas_creadas` SOLO acepta IDs autoritativos** — los números deben venir del JSON estructurado de `gh issue create --json number,url` (campo `.number`). Prohibido tomar IDs del prompt del LLM, de stdout sin parsear o del cuerpo del comentario que armás en GitHub. Esta disciplina cierra el vector A03 Injection (cuando el padre está en allowlist, esos IDs se agregan automáticamente con TTL 48h por el Pulpo).
+2. **`dividido: true` es la señal explícita** — si falta o vale `false`, el Pulpo NO intenta heredar la ola al hijo (incluso si `hijas_creadas` está poblado).
+3. **Si no dividís (simple/medio)** — no escribas `dividido` ni `hijas_creadas`. El Pulpo trata el resultado como sizing normal.
+
+El Pulpo detecta este contrato en su callback `on('exit')` del skill `planner` en fase `sizing` y, si el padre está en `.partial-pause.json` → `allowed_issues`, agrega las hijas a la allowlist con `authorizedBy: 'planner-split:auto'` y TTL 48h (reusa `lib/allowlist-recursive-promote.autoPromoteSplitChildren`, hermano del camino Commander de Telegram). Si el padre NO está en allowlist, no hace nada y no es error.

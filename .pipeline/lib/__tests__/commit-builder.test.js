@@ -10,6 +10,7 @@ const {
     build,
     parseDeliveryPayload,
     buildFallbackMessage,
+    ensureClosesReference,
 } = require('../delivery/commit-builder');
 
 // ---- parseDeliveryPayload --------------------------------------------------
@@ -152,4 +153,85 @@ test('build estructura retornada siempre contiene message y source', () => {
     assert.ok('message' in r1);
     assert.ok('source' in r1);
     assert.match(r1.source, /^(issue-payload|fallback)$/);
+});
+
+// ---- ensureClosesReference (#4080) -----------------------------------------
+
+test('ensureClosesReference agrega "Closes #N" cuando falta', () => {
+    const msg = ensureClosesReference('fix: corregir bug', 4080);
+    assert.equal(msg, 'fix: corregir bug\n\nCloses #4080');
+});
+
+test('ensureClosesReference es idempotente si ya existe Closes #N', () => {
+    const original = 'fix: algo\n\nCloses #4080';
+    assert.equal(ensureClosesReference(original, 4080), original);
+});
+
+test('ensureClosesReference reconoce fixes/resolves además de closes', () => {
+    const conFixes = 'fix: algo\n\nFixes #4080';
+    assert.equal(ensureClosesReference(conFixes, 4080), conFixes);
+    const conResolves = 'fix: algo\n\nResolves #4080';
+    assert.equal(ensureClosesReference(conResolves, 4080), conResolves);
+});
+
+test('ensureClosesReference no confunde #4080 con #40801', () => {
+    const msg = ensureClosesReference('fix: algo\n\nCloses #40801', 4080);
+    assert.match(msg, /Closes #4080\b/);
+    assert.match(msg, /Closes #40801/);
+});
+
+test('ensureClosesReference acepta issueNumber como string con o sin #', () => {
+    assert.equal(ensureClosesReference('fix: x', '4080'), 'fix: x\n\nCloses #4080');
+    assert.equal(ensureClosesReference('fix: x', '#4080'), 'fix: x\n\nCloses #4080');
+});
+
+test('ensureClosesReference sin issueNumber devuelve el mensaje intacto', () => {
+    assert.equal(ensureClosesReference('fix: x', null), 'fix: x');
+    assert.equal(ensureClosesReference('fix: x', undefined), 'fix: x');
+});
+
+test('ensureClosesReference ignora issueNumber no numérico', () => {
+    assert.equal(ensureClosesReference('fix: x', 'abc'), 'fix: x');
+});
+
+test('build inyecta Closes #N en mensaje de payload', () => {
+    const result = build({
+        issueComments: [
+            { body: '<!-- delivery-payload -->\n## commit-message\nfeat: x\n## pr-body\n...\n<!-- /delivery-payload -->' },
+        ],
+        issueNumber: 4080,
+    });
+    assert.equal(result.source, 'issue-payload');
+    assert.match(result.message, /Closes #4080\b/);
+});
+
+test('build inyecta Closes #N en mensaje fallback', () => {
+    const result = build({
+        issueComments: [{ body: 'sin payload' }],
+        type: 'fix',
+        description: 'algún bug',
+        issueNumber: 4080,
+    });
+    assert.equal(result.source, 'fallback');
+    assert.match(result.message, /Closes #4080\b/);
+});
+
+test('build no duplica Closes si el payload ya lo trae', () => {
+    const result = build({
+        issueComments: [
+            { body: '<!-- delivery-payload -->\n## commit-message\nfeat: x\n\nCloses #4080\n## pr-body\n...\n<!-- /delivery-payload -->' },
+        ],
+        issueNumber: 4080,
+    });
+    const ocurrencias = (result.message.match(/Closes #4080/g) || []).length;
+    assert.equal(ocurrencias, 1);
+});
+
+test('build sin issueNumber no agrega Closes (compat hacia atrás)', () => {
+    const result = build({
+        issueComments: [{ body: 'sin payload' }],
+        type: 'fix',
+        description: 'algún bug',
+    });
+    assert.doesNotMatch(result.message, /Closes #/);
 });

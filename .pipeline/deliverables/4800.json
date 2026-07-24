@@ -1,0 +1,15 @@
+{
+  "issue": 4800,
+  "entries": [
+    {
+      "issue": 4800,
+      "fase": "build",
+      "agente": "build",
+      "tipo": "document",
+      "path": ".pipeline/assets/docs/4800/build-build-4800.md",
+      "bytes": 841,
+      "sensible": false,
+      "timestamp": "2026-07-20T08:08:22.837Z"
+    }
+  ]
+}

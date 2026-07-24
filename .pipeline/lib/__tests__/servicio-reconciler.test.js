@@ -362,6 +362,318 @@ test('#2994 CA3 no toca markers cuyo label sí está en GitHub', () => {
 });
 
 // =============================================================================
+// #3186 — reconcileResolvedMarkers archiva markers cuando el guardian
+// re-aprueba (listo/ o procesado/ posterior) o aplica TTL como red de seguridad.
+// =============================================================================
+
+function ensurePhaseDirs(pipeline, phase) {
+    const phaseRoot = path.join(PIPELINE, pipeline, phase);
+    fs.mkdirSync(path.join(phaseRoot, 'bloqueado-humano'), { recursive: true });
+    fs.mkdirSync(path.join(phaseRoot, 'pendiente'), { recursive: true });
+    fs.mkdirSync(path.join(phaseRoot, 'listo'), { recursive: true });
+    fs.mkdirSync(path.join(phaseRoot, 'procesado'), { recursive: true });
+    fs.mkdirSync(path.join(phaseRoot, 'archivado'), { recursive: true });
+}
+
+function writeMarker(pipeline, phase, issue, skill, mtimeMs) {
+    const dir = path.join(PIPELINE, pipeline, phase, 'bloqueado-humano');
+    fs.mkdirSync(dir, { recursive: true });
+    const markerPath = path.join(dir, `${issue}.${skill}`);
+    fs.writeFileSync(markerPath, '');
+    fs.writeFileSync(markerPath + '.reason.json', JSON.stringify({
+        issue, skill, phase, pipeline,
+        blocked_at: new Date(mtimeMs || Date.now()).toISOString(),
+        blocked_by: skill,
+    }));
+    if (mtimeMs) {
+        const secs = mtimeMs / 1000;
+        fs.utimesSync(markerPath, secs, secs);
+    }
+    return markerPath;
+}
+
+function writeStateFile(pipeline, phase, state, issue, skill, mtimeMs) {
+    const dir = path.join(PIPELINE, pipeline, phase, state);
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, `${issue}.${skill}`);
+    fs.writeFileSync(filePath, '');
+    if (mtimeMs) {
+        const secs = mtimeMs / 1000;
+        fs.utimesSync(filePath, secs, secs);
+    }
+    return filePath;
+}
+
+function clearStateDirs(pipeline, phase) {
+    const phaseRoot = path.join(PIPELINE, pipeline, phase);
+    for (const state of ['listo', 'procesado', 'archivado']) {
+        const dir = path.join(phaseRoot, state);
+        if (!fs.existsSync(dir)) continue;
+        for (const f of fs.readdirSync(dir)) {
+            try { fs.unlinkSync(path.join(dir, f)); } catch {}
+        }
+    }
+}
+
+test('#3186 reconcileResolvedMarkers archiva marker cuando guardian dropea listo/ posterior', () => {
+    clearAllMarkers();
+    clearGhQueue();
+    ensurePhaseDirs('definicion', 'analisis');
+    clearStateDirs('definicion', 'analisis');
+
+    // Marker viejo (5 min atrás)
+    const markerMtime = Date.now() - 5 * 60 * 1000;
+    writeMarker('definicion', 'analisis', 3082, 'guru', markerMtime);
+    // Guardian re-aprobó: listo/ con mtime POSTERIOR al marker
+    writeStateFile('definicion', 'analisis', 'listo', 3082, 'guru', Date.now() - 60 * 1000);
+
+    const markers = [{ issue: 3082, skill: 'guru', phase: 'analisis', pipeline: 'definicion' }];
+    const result = reconciler.reconcileResolvedMarkers(markers);
+
+    assert.equal(result.archived, 1);
+    assert.equal(result.archivedIssues.has(3082), true);
+    assert.equal(result.removeLabelsEnqueued, 1, 'sin otros markers → remove-label encolado');
+
+    // Marker movido a archivado/ con sufijo guardian-resolved
+    const archivedDir = path.join(PIPELINE, 'definicion', 'analisis', 'archivado');
+    const archivedFiles = fs.readdirSync(archivedDir).filter(f => f.startsWith('3082.guru.'));
+    assert.equal(archivedFiles.length, 1);
+    assert.match(archivedFiles[0], /^3082\.guru\.guardian-resolved-/);
+
+    // reason.json eliminado
+    const blockedDir = path.join(PIPELINE, 'definicion', 'analisis', 'bloqueado-humano');
+    assert.equal(fs.existsSync(path.join(blockedDir, '3082.guru.reason.json')), false);
+
+    // Orden remove-label encolada
+    const orders = fs.readdirSync(GH_QUEUE)
+        .filter(f => f.endsWith('.json'))
+        .map(f => JSON.parse(fs.readFileSync(path.join(GH_QUEUE, f), 'utf8')));
+    const removeOrders = orders.filter(o => o.action === 'remove-label');
+    assert.equal(removeOrders.length, 1);
+    assert.equal(removeOrders[0].issue, 3082);
+    assert.equal(removeOrders[0].label, 'needs-human');
+});
+
+test('#3186 reconcileResolvedMarkers también detecta resolución en procesado/ (no solo listo/)', () => {
+    clearAllMarkers();
+    clearGhQueue();
+    ensurePhaseDirs('definicion', 'analisis');
+    clearStateDirs('definicion', 'analisis');
+
+    const markerMtime = Date.now() - 5 * 60 * 1000;
+    writeMarker('definicion', 'analisis', 3083, 'guru', markerMtime);
+    // El pulpo movió listo/ → procesado/ al promover. Reconciler corre tarde.
+    writeStateFile('definicion', 'analisis', 'procesado', 3083, 'guru', Date.now() - 60 * 1000);
+
+    const markers = [{ issue: 3083, skill: 'guru', phase: 'analisis', pipeline: 'definicion' }];
+    const result = reconciler.reconcileResolvedMarkers(markers);
+
+    assert.equal(result.archived, 1, 'también archiva si la resolución está en procesado/');
+});
+
+test('#3186 reconcileResolvedMarkers NO archiva si listo/ no existe', () => {
+    clearAllMarkers();
+    clearGhQueue();
+    ensurePhaseDirs('definicion', 'analisis');
+    clearStateDirs('definicion', 'analisis');
+
+    writeMarker('definicion', 'analisis', 3084, 'guru', Date.now() - 5 * 60 * 1000);
+    // NO escribimos archivo en listo/ ni procesado/
+
+    const markers = [{ issue: 3084, skill: 'guru', phase: 'analisis', pipeline: 'definicion' }];
+    const result = reconciler.reconcileResolvedMarkers(markers, { ttlMs: 30 * 24 * 60 * 60 * 1000 });
+
+    assert.equal(result.archived, 0);
+    assert.equal(result.removeLabelsEnqueued, 0);
+    const blockedDir = path.join(PIPELINE, 'definicion', 'analisis', 'bloqueado-humano');
+    assert.equal(fs.existsSync(path.join(blockedDir, '3084.guru')), true, 'marker intacto');
+});
+
+test('#3186 reconcileResolvedMarkers NO archiva si listo/ existe pero mtime ANTERIOR al marker', () => {
+    clearAllMarkers();
+    clearGhQueue();
+    ensurePhaseDirs('definicion', 'analisis');
+    clearStateDirs('definicion', 'analisis');
+
+    // Caso: el guardian aprobó antes, después rechazó (marker más nuevo que listo/).
+    const oldListoMtime = Date.now() - 10 * 60 * 1000;
+    const newerMarkerMtime = Date.now() - 2 * 60 * 1000;
+    writeStateFile('definicion', 'analisis', 'listo', 3085, 'guru', oldListoMtime);
+    writeMarker('definicion', 'analisis', 3085, 'guru', newerMarkerMtime);
+
+    const markers = [{ issue: 3085, skill: 'guru', phase: 'analisis', pipeline: 'definicion' }];
+    const result = reconciler.reconcileResolvedMarkers(markers, { ttlMs: 30 * 24 * 60 * 60 * 1000 });
+
+    assert.equal(result.archived, 0, 'listo/ más viejo que marker no cuenta como resolución');
+});
+
+test('#3186 reconcileResolvedMarkers aplica TTL como red de seguridad (7d sin movimiento)', () => {
+    clearAllMarkers();
+    clearGhQueue();
+    ensurePhaseDirs('definicion', 'analisis');
+    clearStateDirs('definicion', 'analisis');
+
+    // Marker de hace 10 días, sin archivo en listo/ ni procesado/
+    const tenDaysAgo = Date.now() - 10 * 24 * 60 * 60 * 1000;
+    writeMarker('definicion', 'analisis', 3086, 'guru', tenDaysAgo);
+
+    const markers = [{ issue: 3086, skill: 'guru', phase: 'analisis', pipeline: 'definicion' }];
+    const result = reconciler.reconcileResolvedMarkers(markers); // ttl default 7d
+
+    assert.equal(result.archived, 1, 'marker stale debe archivarse por TTL');
+    assert.equal(result.removeLabelsEnqueued, 1);
+
+    const archivedDir = path.join(PIPELINE, 'definicion', 'analisis', 'archivado');
+    const archivedFiles = fs.readdirSync(archivedDir).filter(f => f.startsWith('3086.guru.'));
+    assert.equal(archivedFiles.length, 1);
+    assert.match(archivedFiles[0], /^3086\.guru\.ttl-expired-/);
+});
+
+test('#3186 reconcileResolvedMarkers NO aplica TTL si está dentro del límite', () => {
+    clearAllMarkers();
+    clearGhQueue();
+    ensurePhaseDirs('definicion', 'analisis');
+    clearStateDirs('definicion', 'analisis');
+
+    // Marker de 3 días — dentro del TTL de 7d
+    const threeDaysAgo = Date.now() - 3 * 24 * 60 * 60 * 1000;
+    writeMarker('definicion', 'analisis', 3087, 'guru', threeDaysAgo);
+
+    const markers = [{ issue: 3087, skill: 'guru', phase: 'analisis', pipeline: 'definicion' }];
+    const result = reconciler.reconcileResolvedMarkers(markers);
+
+    assert.equal(result.archived, 0, 'TTL aún no se cumplió');
+});
+
+test('#3186 reconcileResolvedMarkers solo encola remove-label si NO quedan otros markers cross-fase', () => {
+    clearAllMarkers();
+    clearGhQueue();
+    ensurePhaseDirs('definicion', 'analisis');
+    ensurePhaseDirs('desarrollo', 'dev');
+    clearStateDirs('definicion', 'analisis');
+    clearStateDirs('desarrollo', 'dev');
+
+    // Issue #3088 tiene markers en DOS fases. Resolvemos solo el de definicion.
+    const markerMtime = Date.now() - 5 * 60 * 1000;
+    writeMarker('definicion', 'analisis', 3088, 'guru', markerMtime);
+    writeMarker('desarrollo', 'dev', 3088, 'po', markerMtime); // otro marker activo
+
+    // Resolución del guardian guru en definicion
+    writeStateFile('definicion', 'analisis', 'listo', 3088, 'guru', Date.now() - 60 * 1000);
+
+    const markers = [
+        { issue: 3088, skill: 'guru', phase: 'analisis', pipeline: 'definicion' },
+        { issue: 3088, skill: 'po', phase: 'dev', pipeline: 'desarrollo' },
+    ];
+    const result = reconciler.reconcileResolvedMarkers(markers);
+
+    assert.equal(result.archived, 1, 'archiva solo el resuelto');
+    assert.equal(result.removeLabelsEnqueued, 0, 'NO encola remove-label porque queda el de po');
+
+    // Verificar que no hay orden remove-label en la queue
+    const orders = fs.readdirSync(GH_QUEUE)
+        .filter(f => f.endsWith('.json'))
+        .map(f => JSON.parse(fs.readFileSync(path.join(GH_QUEUE, f), 'utf8')));
+    const removeOrders = orders.filter(o => o.action === 'remove-label');
+    assert.equal(removeOrders.length, 0);
+});
+
+test('#3186 reconcileResolvedMarkers encola remove-label cuando archiva el ÚLTIMO marker del issue', () => {
+    clearAllMarkers();
+    clearGhQueue();
+    ensurePhaseDirs('definicion', 'analisis');
+    ensurePhaseDirs('desarrollo', 'dev');
+    clearStateDirs('definicion', 'analisis');
+    clearStateDirs('desarrollo', 'dev');
+
+    const markerMtime = Date.now() - 5 * 60 * 1000;
+    writeMarker('definicion', 'analisis', 3089, 'guru', markerMtime);
+    writeMarker('desarrollo', 'dev', 3089, 'po', markerMtime);
+
+    // Ambos guardians re-aprobaron
+    writeStateFile('definicion', 'analisis', 'listo', 3089, 'guru', Date.now() - 60 * 1000);
+    writeStateFile('desarrollo', 'dev', 'listo', 3089, 'po', Date.now() - 60 * 1000);
+
+    const markers = [
+        { issue: 3089, skill: 'guru', phase: 'analisis', pipeline: 'definicion' },
+        { issue: 3089, skill: 'po', phase: 'dev', pipeline: 'desarrollo' },
+    ];
+    const result = reconciler.reconcileResolvedMarkers(markers);
+
+    assert.equal(result.archived, 2);
+    assert.equal(result.removeLabelsEnqueued, 1, 'todos archivados → un único remove-label');
+
+    const orders = fs.readdirSync(GH_QUEUE)
+        .filter(f => f.endsWith('.json'))
+        .map(f => JSON.parse(fs.readFileSync(path.join(GH_QUEUE, f), 'utf8')));
+    const removeOrders = orders.filter(o => o.action === 'remove-label');
+    assert.equal(removeOrders.length, 1);
+    assert.equal(removeOrders[0].issue, 3089);
+});
+
+test('#3186 reconcileResolvedMarkers log con reason=guardian-resolved escribe stale-orders.log', () => {
+    clearAllMarkers();
+    clearGhQueue();
+    ensurePhaseDirs('definicion', 'analisis');
+    clearStateDirs('definicion', 'analisis');
+
+    const logFile = path.join(PIPELINE, 'logs', 'stale-orders.log');
+    try { fs.unlinkSync(logFile); } catch {}
+
+    const markerMtime = Date.now() - 5 * 60 * 1000;
+    writeMarker('definicion', 'analisis', 3090, 'guru', markerMtime);
+    writeStateFile('definicion', 'analisis', 'listo', 3090, 'guru', Date.now() - 60 * 1000);
+
+    const markers = [{ issue: 3090, skill: 'guru', phase: 'analisis', pipeline: 'definicion' }];
+    reconciler.reconcileResolvedMarkers(markers);
+
+    const raw = fs.readFileSync(logFile, 'utf8').trim();
+    const lines = raw.split('\n').filter(Boolean);
+    assert.ok(lines.length >= 1);
+    const ev = JSON.parse(lines[lines.length - 1]);
+    assert.equal(ev.reason, 'guardian-resolved');
+    assert.equal(ev.issue, 3090);
+    assert.equal(ev.label, 'needs-human');
+    assert.match(ev.detail, /definicion\/analisis\/listo\/3090\.guru/);
+});
+
+test('#3186 safeTsSuffix produce filename Windows-safe (sin : ni .)', () => {
+    const suffix = reconciler.safeTsSuffix(Date.parse('2026-05-14T22:30:45.123Z'));
+    assert.equal(suffix.includes(':'), false, 'sin dos puntos');
+    assert.equal(suffix.includes('.'), false, 'sin punto');
+    assert.match(suffix, /^2026-05-14T22-30-45-123Z$/);
+});
+
+test('#3186 findGuardianResolution prefiere listo/ sobre procesado/ cuando ambos existen', () => {
+    clearAllMarkers();
+    clearGhQueue();
+    ensurePhaseDirs('definicion', 'analisis');
+    clearStateDirs('definicion', 'analisis');
+
+    const markerMtime = Date.now() - 10 * 60 * 1000;
+    const listoMtime = Date.now() - 5 * 60 * 1000;
+    const procesadoMtime = Date.now() - 3 * 60 * 1000;
+    writeStateFile('definicion', 'analisis', 'listo', 3091, 'guru', listoMtime);
+    writeStateFile('definicion', 'analisis', 'procesado', 3091, 'guru', procesadoMtime);
+
+    const result = reconciler.findGuardianResolution(
+        { issue: 3091, skill: 'guru', phase: 'analisis', pipeline: 'definicion' },
+        markerMtime,
+    );
+    assert.ok(result, 'encuentra resolución');
+    assert.equal(result.state, 'listo', 'primero busca en listo/');
+});
+
+test('#3186 enqueueLabelRemove escribe JSON con shape correcto', () => {
+    clearGhQueue();
+    reconciler.enqueueLabelRemove(7777, 'needs-human');
+    const files = fs.readdirSync(GH_QUEUE).filter(f => f.endsWith('.json'));
+    assert.equal(files.length, 1);
+    const cmd = JSON.parse(fs.readFileSync(path.join(GH_QUEUE, files[0]), 'utf8'));
+    assert.deepEqual(cmd, { action: 'remove-label', issue: 7777, label: 'needs-human' });
+});
+
+// =============================================================================
 // #2994 — CA5: appendStaleOrderLog escribe JSONL en logs/stale-orders.log
 // =============================================================================
 
@@ -384,4 +696,347 @@ test('#2994 CA5 appendStaleOrderLog persiste línea JSONL', () => {
     assert.equal(ev.current_mtime, 12345.67);
     assert.equal(ev.snapshot_at, '2026-05-05T19:30:00Z');
     assert.ok(/^\d{4}-/.test(ev.ts));
+});
+
+// =============================================================================
+// #4222 — Cruce label needs-human ↔ avance físico de fases (anti bloqueo fantasma)
+// =============================================================================
+
+// Crea un marker físico de avance (`listo/` o `procesado/`) para un issue en una
+// fase concreta del pipeline desarrollo/definicion.
+function writeProgressMarker(pipeline, phase, state, issue, skill) {
+    const dir = path.join(PIPELINE, pipeline, phase, state);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${issue}.${skill}`), '');
+}
+
+function clearProgressMarkers() {
+    for (const pipeline of ['desarrollo', 'definicion']) {
+        const root = path.join(PIPELINE, pipeline);
+        if (!fs.existsSync(root)) continue;
+        for (const phase of fs.readdirSync(root)) {
+            for (const state of ['listo', 'procesado']) {
+                const dir = path.join(root, phase, state);
+                if (!fs.existsSync(dir)) continue;
+                for (const f of fs.readdirSync(dir)) {
+                    try { fs.unlinkSync(path.join(dir, f)); } catch {}
+                }
+            }
+        }
+    }
+}
+
+function listGhQueueRemoveLabels() {
+    return fs.readdirSync(GH_QUEUE)
+        .filter(f => f.endsWith('.json'))
+        .map(f => JSON.parse(fs.readFileSync(path.join(GH_QUEUE, f), 'utf8')))
+        .filter(c => c.action === 'remove-label');
+}
+
+test('#4222 findFurthestPhysicalPhaseIndex devuelve la fase física más avanzada', () => {
+    clearProgressMarkers();
+    const order = reconciler.loadGlobalPhaseOrder();
+    // Sin markers → -1
+    assert.equal(reconciler.findFurthestPhysicalPhaseIndex(4191, order), -1);
+    // Marker en verificacion/listo → índice de desarrollo/verificacion
+    writeProgressMarker('desarrollo', 'verificacion', 'listo', 4191, 'tester');
+    const idxVerif = reconciler.globalPhaseIndex(order, 'desarrollo', 'verificacion');
+    assert.equal(reconciler.findFurthestPhysicalPhaseIndex(4191, order), idxVerif);
+    // Agregar marker más avanzado (aprobacion/procesado) → debe ganar el más avanzado
+    writeProgressMarker('desarrollo', 'aprobacion', 'procesado', 4191, 'review');
+    const idxAprob = reconciler.globalPhaseIndex(order, 'desarrollo', 'aprobacion');
+    assert.equal(reconciler.findFurthestPhysicalPhaseIndex(4191, order), idxAprob);
+    clearProgressMarkers();
+});
+
+test('#4222 findFurthestPhysicalPhaseIndex ignora artifacts (.reason.json)', () => {
+    clearProgressMarkers();
+    const order = reconciler.loadGlobalPhaseOrder();
+    const dir = path.join(PIPELINE, 'desarrollo', 'verificacion', 'listo');
+    fs.mkdirSync(dir, { recursive: true });
+    // Solo un artifact, sin marker base → no cuenta como avance
+    fs.writeFileSync(path.join(dir, '4191.tester.reason.json'), '{}');
+    assert.equal(reconciler.findFurthestPhysicalPhaseIndex(4191, order), -1);
+    clearProgressMarkers();
+});
+
+test('#4222 isNeedsHumanStaleByProgress: stale cuando progresó más allá del placeholder', () => {
+    clearProgressMarkers();
+    // Placeholder de un issue Ready cae en desarrollo/dev. Marker físico en
+    // verificacion (posterior) → stale.
+    writeProgressMarker('desarrollo', 'verificacion', 'listo', 4191, 'tester');
+    const r = reconciler.isNeedsHumanStaleByProgress(4191, 'desarrollo', 'dev');
+    assert.equal(r.stale, true);
+    assert.equal(r.furthestPhase, 'desarrollo/verificacion');
+    clearProgressMarkers();
+});
+
+test('#4222 isNeedsHumanStaleByProgress: NO stale cuando avance == fase del placeholder', () => {
+    clearProgressMarkers();
+    // Marker en la MISMA fase del placeholder (dev) — done con dev pero el bloqueo
+    // en dev sigue siendo consistente. Conservador: no stale.
+    writeProgressMarker('desarrollo', 'dev', 'listo', 4300, 'pipeline-dev');
+    const r = reconciler.isNeedsHumanStaleByProgress(4300, 'desarrollo', 'dev');
+    assert.equal(r.stale, false);
+    clearProgressMarkers();
+});
+
+test('#4222 isNeedsHumanStaleByProgress: NO stale sin markers de avance', () => {
+    clearProgressMarkers();
+    const r = reconciler.isNeedsHumanStaleByProgress(4301, 'desarrollo', 'dev');
+    assert.equal(r.stale, false);
+    clearProgressMarkers();
+});
+
+// Escenario Gherkin 1: Label needs-human stale no genera bloqueo fantasma
+test('#4222 Gherkin: needs-human stale NO crea bloqueo y limpia el label', () => {
+    clearAllMarkers();
+    clearGhQueue();
+    clearProgressMarkers();
+    const logFile = path.join(PIPELINE, 'logs', 'stale-orders.log');
+    try { fs.unlinkSync(logFile); } catch {}
+
+    // Issue #4191: markers físicos en fase posterior (verificacion + aprobacion + listo),
+    // pero label needs-human viejo en GitHub (Ready → placeholder en dev).
+    writeProgressMarker('desarrollo', 'verificacion', 'procesado', 4191, 'tester');
+    writeProgressMarker('desarrollo', 'aprobacion', 'listo', 4191, 'review');
+
+    const ghIssues = [{ number: 4191, labels: ['ready', 'needs-human'] }];
+    const created = reconciler.reconcileLabelToFilesystem(ghIssues, new Map());
+
+    // No crea placeholder
+    assert.equal(created, 0, 'no debe crear placeholder para label stale');
+    const marker = path.join(PIPELINE, 'desarrollo', 'dev', 'bloqueado-humano', '4191.guru');
+    assert.equal(fs.existsSync(marker), false, 'no debe existir marker de bloqueo');
+
+    // Limpia el label stale (encola remove-label)
+    const removes = listGhQueueRemoveLabels();
+    assert.equal(removes.length, 1, 'debe encolar un remove-label');
+    assert.equal(removes[0].issue, 4191);
+    assert.equal(removes[0].label, 'needs-human');
+
+    // Registra el destrabe en el log para auditoría (CA-3)
+    const logRaw = fs.readFileSync(logFile, 'utf8').trim();
+    const ev = JSON.parse(logRaw.split('\n').pop());
+    assert.equal(ev.reason, 'stale-needs-human-phase-progress');
+    assert.equal(ev.issue, 4191);
+    assert.match(ev.detail, /progres/i);
+
+    clearProgressMarkers();
+});
+
+// Escenario Gherkin 2: Label needs-human legítimo mantiene el bloqueo
+test('#4222 Gherkin: needs-human legítimo (sin avance) mantiene el bloqueo', () => {
+    clearAllMarkers();
+    clearGhQueue();
+    clearProgressMarkers();
+
+    // Issue cuya fase física actual justifica decisión humana: sin markers de
+    // avance posterior. Mantiene el comportamiento actual (crea placeholder).
+    const ghIssues = [{ number: 4400, labels: ['ready', 'needs-human'] }];
+    const created = reconciler.reconcileLabelToFilesystem(ghIssues, new Map());
+
+    assert.equal(created, 1, 'debe crear placeholder legítimo');
+    const marker = path.join(PIPELINE, 'desarrollo', 'dev', 'bloqueado-humano', '4400.guru');
+    assert.equal(fs.existsSync(marker), true, 'debe existir marker de bloqueo');
+
+    // No limpia ningún label
+    const removes = listGhQueueRemoveLabels();
+    assert.equal(removes.length, 0, 'no debe encolar remove-label para bloqueo legítimo');
+
+    clearProgressMarkers();
+    clearAllMarkers();
+});
+
+// =============================================================================
+// #4231 — Barrido de markers de fase huérfanos al cerrar un issue.
+// listPhaseMarkers (human-block) recorre colas normales; reconcileClosedPhaseMarkers
+// archiva los markers de issues CLOSED de esas colas (no solo bloqueado-humano).
+// =============================================================================
+
+function writeNormalQueueMarker(pipeline, phase, state, issue, skill) {
+    const dir = path.join(PIPELINE, pipeline, phase, state);
+    fs.mkdirSync(dir, { recursive: true });
+    const p = path.join(dir, `${issue}.${skill}`);
+    fs.writeFileSync(p, '');
+    return p;
+}
+
+function clearNormalQueues() {
+    for (const pipeline of ['desarrollo', 'definicion']) {
+        const root = path.join(PIPELINE, pipeline);
+        if (!fs.existsSync(root)) continue;
+        for (const phase of fs.readdirSync(root)) {
+            for (const state of ['pendiente', 'trabajando', 'listo', 'procesado', 'archivado']) {
+                const dir = path.join(root, phase, state);
+                if (!fs.existsSync(dir)) continue;
+                for (const f of fs.readdirSync(dir)) {
+                    try { fs.unlinkSync(path.join(dir, f)); } catch {}
+                }
+            }
+        }
+    }
+}
+
+test('#4231 listPhaseMarkers recorre colas normales y omite artifacts/.gitkeep', () => {
+    clearNormalQueues();
+    writeNormalQueueMarker('definicion', 'analisis', 'listo', 3488, 'security');
+    writeNormalQueueMarker('desarrollo', 'validacion', 'listo', 3987, 'ux');
+    writeNormalQueueMarker('desarrollo', 'dev', 'trabajando', 4231, 'backend-dev');
+    // Artifacts que NO deben contar como markers
+    const dir = path.join(PIPELINE, 'definicion', 'analisis', 'listo');
+    fs.writeFileSync(path.join(dir, '3488.security.reason.json'), '{}');
+    fs.writeFileSync(path.join(dir, '.gitkeep'), '');
+
+    const markers = humanBlock.listPhaseMarkers();
+    const keys = markers.map(m => `${m.pipeline}/${m.phase}/${m.state}/${m.issue}.${m.skill}`).sort();
+    assert.deepEqual(keys, [
+        'definicion/analisis/listo/3488.security',
+        'desarrollo/dev/trabajando/4231.backend-dev',
+        'desarrollo/validacion/listo/3987.ux',
+    ]);
+    // El artifact .reason.json no aparece
+    assert.equal(markers.some(m => m.skill.includes('reason')), false);
+    clearNormalQueues();
+});
+
+test('#4231 listPhaseMarkers NO mira bloqueado-humano/', () => {
+    clearNormalQueues();
+    clearAllMarkers();
+    const blockedDir = path.join(PIPELINE, 'desarrollo', 'validacion', 'bloqueado-humano');
+    fs.mkdirSync(blockedDir, { recursive: true });
+    fs.writeFileSync(path.join(blockedDir, '9100.po'), '');
+    const markers = humanBlock.listPhaseMarkers();
+    assert.equal(markers.some(m => m.issue === 9100), false, 'bloqueado-humano fuera de scope');
+    clearNormalQueues();
+    clearAllMarkers();
+});
+
+test('#4231 reconcileClosedPhaseMarkers archiva marker de issue CLOSED (mueve, no borra)', () => {
+    clearNormalQueues();
+    const src = writeNormalQueueMarker('definicion', 'analisis', 'listo', 3488, 'security');
+    const markers = humanBlock.listPhaseMarkers();
+    const archived = reconciler.reconcileClosedPhaseMarkers(markers, () => 'CLOSED');
+
+    assert.equal(archived, 1);
+    assert.equal(fs.existsSync(src), false, 'marker movido fuera de la cola');
+    const dst = path.join(PIPELINE, 'definicion', 'analisis', 'archivado', '3488.security');
+    assert.equal(fs.existsSync(dst), true, 'marker presente en archivado/ (no borrado)');
+    clearNormalQueues();
+});
+
+test('#4231 reconcileClosedPhaseMarkers NO toca markers de issues OPEN', () => {
+    clearNormalQueues();
+    const src = writeNormalQueueMarker('desarrollo', 'dev', 'trabajando', 4231, 'backend-dev');
+    const markers = humanBlock.listPhaseMarkers();
+    const archived = reconciler.reconcileClosedPhaseMarkers(markers, () => 'OPEN');
+
+    assert.equal(archived, 0);
+    assert.equal(fs.existsSync(src), true, 'marker de issue OPEN permanece en su cola');
+    clearNormalQueues();
+});
+
+test('#4231 reconcileClosedPhaseMarkers NO toca UNKNOWN (degradación segura)', () => {
+    clearNormalQueues();
+    const src = writeNormalQueueMarker('desarrollo', 'dev', 'pendiente', 4500, 'backend-dev');
+    const markers = humanBlock.listPhaseMarkers();
+    const archived = reconciler.reconcileClosedPhaseMarkers(markers, () => 'UNKNOWN');
+    assert.equal(archived, 0);
+    assert.equal(fs.existsSync(src), true, 'UNKNOWN no se archiva');
+    clearNormalQueues();
+});
+
+test('#4231 reconcileClosedPhaseMarkers archiva markers del MISMO issue en varias fases/colas', () => {
+    clearNormalQueues();
+    // #3987 CLOSED con markers en 3 ubicaciones distintas (backfill real)
+    const s1 = writeNormalQueueMarker('definicion', 'analisis', 'listo', 3987, 'security');
+    const s2 = writeNormalQueueMarker('desarrollo', 'validacion', 'listo', 3987, 'guru');
+    const s3 = writeNormalQueueMarker('desarrollo', 'validacion', 'procesado', 3987, 'ux');
+
+    const markers = humanBlock.listPhaseMarkers();
+    const archived = reconciler.reconcileClosedPhaseMarkers(markers, () => 'CLOSED');
+
+    assert.equal(archived, 3, 'archiva los 3 markers del issue cerrado');
+    assert.equal(fs.existsSync(s1), false);
+    assert.equal(fs.existsSync(s2), false);
+    assert.equal(fs.existsSync(s3), false);
+    assert.equal(fs.existsSync(path.join(PIPELINE, 'definicion', 'analisis', 'archivado', '3987.security')), true);
+    assert.equal(fs.existsSync(path.join(PIPELINE, 'desarrollo', 'validacion', 'archivado', '3987.guru')), true);
+    assert.equal(fs.existsSync(path.join(PIPELINE, 'desarrollo', 'validacion', 'archivado', '3987.ux')), true);
+    clearNormalQueues();
+});
+
+test('#4231 reconcileClosedPhaseMarkers deduplica el chequeo de estado por issue', () => {
+    clearNormalQueues();
+    writeNormalQueueMarker('definicion', 'analisis', 'listo', 4110, 'security');
+    writeNormalQueueMarker('desarrollo', 'validacion', 'listo', 4110, 'guru');
+    writeNormalQueueMarker('desarrollo', 'validacion', 'listo', 4110, 'po');
+
+    const markers = humanBlock.listPhaseMarkers();
+    const seen = [];
+    const archived = reconciler.reconcileClosedPhaseMarkers(markers, (n) => { seen.push(n); return 'CLOSED'; });
+
+    assert.equal(archived, 3, 'archiva los 3 markers');
+    assert.equal(seen.length, 1, 'el estado se consulta una sola vez para el issue 4110');
+    assert.equal(seen[0], 4110);
+    clearNormalQueues();
+});
+
+test('#4231 reconcileClosedPhaseMarkers usa sufijo timestamp ante colisión en archivado/', () => {
+    clearNormalQueues();
+    // Ya existe un archivado previo con el mismo nombre.
+    const archDir = path.join(PIPELINE, 'desarrollo', 'dev', 'archivado');
+    fs.mkdirSync(archDir, { recursive: true });
+    fs.writeFileSync(path.join(archDir, '4600.backend-dev'), 'previo');
+    writeNormalQueueMarker('desarrollo', 'dev', 'pendiente', 4600, 'backend-dev');
+
+    const markers = humanBlock.listPhaseMarkers();
+    const archived = reconciler.reconcileClosedPhaseMarkers(markers, () => 'CLOSED', { now: Date.parse('2026-06-26T12:00:00.000Z') });
+
+    assert.equal(archived, 1);
+    // El archivado previo no se pisa
+    assert.equal(fs.readFileSync(path.join(archDir, '4600.backend-dev'), 'utf8'), 'previo');
+    const suffixed = fs.readdirSync(archDir).filter(f => f.startsWith('4600.backend-dev.'));
+    assert.equal(suffixed.length, 1, 'el nuevo se archiva con sufijo timestamp');
+    assert.match(suffixed[0], /4600\.backend-dev\.2026-06-26T12-00-00-000Z/);
+    clearNormalQueues();
+});
+
+test('#4231 reconcileClosedPhaseMarkers escribe stale-orders.log con reason closed-phase-marker-archived', () => {
+    clearNormalQueues();
+    const logFile = path.join(PIPELINE, 'logs', 'stale-orders.log');
+    try { fs.unlinkSync(logFile); } catch {}
+    writeNormalQueueMarker('definicion', 'analisis', 'listo', 3935, 'security');
+
+    const markers = humanBlock.listPhaseMarkers();
+    reconciler.reconcileClosedPhaseMarkers(markers, () => 'CLOSED');
+
+    const ev = JSON.parse(fs.readFileSync(logFile, 'utf8').trim().split('\n').pop());
+    assert.equal(ev.reason, 'closed-phase-marker-archived');
+    assert.equal(ev.issue, 3935);
+    assert.match(ev.detail, /definicion\/analisis\/listo\/3935\.security/);
+    clearNormalQueues();
+});
+
+// Escenario Gherkin 1: issue cerrado con marker en cola normal → se archiva
+test('#4231 Gherkin: issue CLOSED con marker en listo/ se archiva', () => {
+    clearNormalQueues();
+    const src = writeNormalQueueMarker('desarrollo', 'verificacion', 'listo', 3488, 'tester');
+    const markers = humanBlock.listPhaseMarkers();
+    const archived = reconciler.reconcileClosedPhaseMarkers(markers, () => 'CLOSED');
+    assert.equal(archived, 1);
+    assert.equal(fs.existsSync(src), false);
+    assert.equal(fs.existsSync(path.join(PIPELINE, 'desarrollo', 'verificacion', 'archivado', '3488.tester')), true);
+    clearNormalQueues();
+});
+
+// Escenario Gherkin 2: issue abierto con marker en trabajando/ → no se toca
+test('#4231 Gherkin: issue OPEN con marker en trabajando/ permanece', () => {
+    clearNormalQueues();
+    const src = writeNormalQueueMarker('desarrollo', 'dev', 'trabajando', 4231, 'backend-dev');
+    const markers = humanBlock.listPhaseMarkers();
+    const archived = reconciler.reconcileClosedPhaseMarkers(markers, () => 'OPEN');
+    assert.equal(archived, 0);
+    assert.equal(fs.existsSync(src), true);
+    clearNormalQueues();
 });

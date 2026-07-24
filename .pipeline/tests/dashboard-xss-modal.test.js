@@ -112,3 +112,257 @@ test('_escHtml extraído de la fuente neutraliza el payload XSS del rebote', () 
     assert.ok(out.includes('&lt;img'), 'el < debe estar escapado');
     assert.ok(out.includes('&quot;'), 'las " deben estar escapadas');
 });
+
+// ----- #2800 — Board Kanban centerpiece (rediseño V3) ------------------------
+//
+// El issue movió el Kanban al protagonista visual del dashboard. Estos tests
+// congelan los invariantes:
+//   1. laneTitle (título de cada card) usa esc() — antes solo escapaba comillas,
+//      lo que dejaba pasar `<script>` en el body de .lc-title (vector XSS si un
+//      MEMBER del repo crea un issue con título malicioso).
+//   2. matrixHTML ya NO arranca colapsado por default (CA-1.2).
+//   3. matrixHTML lleva el título "Board Kanban · Pipeline V3" + badge V3.
+//   4. matrixHTML se renderiza ANTES de kpis-row en el template (CA-1.1, CA-1.6).
+//   5. Existe el anchor `id="board-kanban"` para deep-links (CA-6.1).
+//   6. La media query mobile colapsa lanes a 1 columna en `<768px` (CA-5.1).
+
+test('#2800 — laneTitle escapa con esc() (no solo comillas) en cards del Kanban', () => {
+    // Anclamos la búsqueda al comentario único insertado por el fix.
+    const idx = src.indexOf('#2800 CA-2.3/CA-4.1');
+    assert.ok(idx > 0, 'el comentario del fix XSS debe existir junto al cambio');
+
+    // Aceptamos plantilla literal `Issue #${issueNum}` o concatenación cruda.
+    const laneTitleMatch = src.match(/const laneTitle = esc\(data\.title \|\| [`'"]/);
+    assert.ok(
+        laneTitleMatch,
+        'laneTitle debe construirse con esc(data.title || ...) — no con replace(/"/g) parcial',
+    );
+
+    // Aseguramos que la versión vieja (sólo escape de comillas) NO está más.
+    assert.doesNotMatch(
+        src,
+        /const laneTitle = \(data\.title[^)]*\)\.replace\(\/\"\/g, '&quot;'\)/,
+        'la versión vieja con escape parcial de comillas debe haberse eliminado',
+    );
+
+    // searchKey también debe pasar por esc() — sino el atributo data-search
+    // podría romperse con comillas o `<` en el título.
+    assert.match(
+        src,
+        /const searchKey = esc\(\(/,
+        'searchKey debe envolverse con esc() para evitar romper atributos del card',
+    );
+});
+
+test('#2800 — matrixHTML arranca expandido (sin section-collapsed default)', () => {
+    // Buscamos la declaración del template del Kanban (única ocurrencia).
+    const open = src.indexOf('const matrixHTML = `');
+    assert.ok(open > 0, 'el template matrixHTML debe existir');
+
+    // El cierre del template literal de matrixHTML es el primer `;` después del bloque.
+    const close = src.indexOf('`;', open);
+    assert.ok(close > open, 'cierre del template matrixHTML no encontrado');
+    const body = src.slice(open, close);
+
+    // Debe seguir teniendo la clase section-collapsible (toggleable) pero NO
+    // section-collapsed (default colapsado). Los usuarios que lo colapsen lo
+    // persisten en localStorage, ese path no se toca.
+    assert.match(body, /class="matrix-section section-collapsible board-kanban-centerpiece"/);
+    assert.doesNotMatch(
+        body,
+        /class="matrix-section section-collapsible section-collapsed"/,
+        'el default debe ser expandido — sin section-collapsed',
+    );
+});
+
+test('#2800 — título del Kanban es "Board Kanban · Pipeline V3" con badge V3', () => {
+    const open = src.indexOf('const matrixHTML = `');
+    const close = src.indexOf('`;', open);
+    const body = src.slice(open, close);
+
+    assert.match(
+        body,
+        /🎯 Board Kanban · Pipeline <span class="kanban-v3-badge"/,
+        'el título visible debe ser "🎯 Board Kanban · Pipeline V3"',
+    );
+    assert.match(
+        body,
+        /<span class="kanban-v3-badge"[^>]*>V3<\/span>/,
+        'el badge V3 debe estar presente dentro del título',
+    );
+});
+
+test('#2800 — anchor id="board-kanban" existe para deep-links', () => {
+    const open = src.indexOf('const matrixHTML = `');
+    const close = src.indexOf('`;', open);
+    const body = src.slice(open, close);
+
+    assert.match(
+        body,
+        /id="board-kanban"/,
+        'el anchor id="board-kanban" debe existir antes del bloque .matrix-section',
+    );
+});
+
+test('#2800 — matrixHTML se renderiza ANTES del bloque kpis-row (centerpiece)', () => {
+    // La fuente debe interpolar ${matrixHTML} antes de `<div class="kpis-row">`
+    // en la primera ocurrencia del HTML emitido. Si alguien lo vuelve a colocar
+    // al final, este test rompe.
+    const matrixIdx = src.indexOf('${matrixHTML}');
+    assert.ok(matrixIdx > 0, '${matrixHTML} debe seguir interpolado en algún lugar del template');
+
+    const kpisIdx = src.indexOf('<div class="kpis-row">');
+    assert.ok(kpisIdx > 0, 'el bloque kpis-row debe existir');
+
+    assert.ok(
+        matrixIdx < kpisIdx,
+        `matrixHTML debe interpolarse antes de kpis-row (matrixHTML=${matrixIdx}, kpis-row=${kpisIdx})`,
+    );
+
+    // Por consistencia con el rediseño, NO debe quedar una segunda
+    // interpolación de matrixHTML al final del template (legacy position).
+    const lastMatrix = src.lastIndexOf('${matrixHTML}');
+    assert.equal(
+        matrixIdx,
+        lastMatrix,
+        'solo debe haber UNA interpolación de matrixHTML — la del centerpiece',
+    );
+});
+
+test('#3956 — CA-7 responsive: la línea se mantiene horizontal-scrollable en mobile <768px', () => {
+    // El rediseño EP8-H3 (#3956) reemplaza el grid fijo de 3 lanes (que colapsaba
+    // a 1 columna <768px en #2800) por UNA línea horizontal scrollable: la ola
+    // vive de punta a punta en la misma línea (CA-7). En viewports angostos no se
+    // colapsa a columna — se reduce el ancho mínimo de cada etapa para que entren
+    // más sin romper el flujo horizontal.
+    assert.match(
+        src,
+        /@media\(max-width:768px\)\{\.it-lanes > \.it-lane\{flex-basis:180px;min-width:180px\}\}/,
+        'la media query <=768px reduce el ancho de etapa, no colapsa a columna (CA-7)',
+    );
+    // Y el contenedor de la línea usa flex horizontal scrollable (no grid).
+    assert.match(
+        src,
+        /\.it-lanes\{display:flex;flex-direction:row;[^}]*overflow-x:auto/,
+        'la línea es flex horizontal scrollable (reemplaza el grid de 3 columnas)',
+    );
+});
+
+test('#2800 — payload XSS en título de issue queda neutralizado al pasar por esc()', () => {
+    // Reproducimos esc() server-side (línea 933) y validamos contra el payload
+    // de ataque típico que podría incrustarse en el título de un issue.
+    function esc(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+    const payload = '<script>fetch("/api/kill-pipeline",{method:"POST"})</script>';
+    const escaped = esc(payload);
+
+    // Tanto el body de <div class="lc-title">${laneTitle}</div> como el
+    // atributo title="${laneTitle}" deben quedar seguros.
+    assert.ok(!escaped.includes('<script>'), '<script> debe quedar escapado');
+    assert.ok(escaped.includes('&lt;script&gt;'), '< y > deben estar escapados');
+    assert.ok(escaped.includes('&quot;'), 'las comillas dobles deben estar escapadas');
+});
+
+// =============================================================================
+// EP8-H0 (#3953) — Framework de modal de confirmación con preview (CA-3, R1).
+//
+// El nuevo confirm-modal.js reemplaza el confirm() nativo y renderiza datos
+// externos (títulos de issue, motivos, paths de worktree) en el preview. La
+// garantía de seguridad es estructural: TODO dato dinámico se inserta con
+// textContent, NUNCA con innerHTML. Estos tests lo ejercitan en un DOM falso
+// con el payload `<img src=x onerror>` y confirman que no sobrevive como HTML.
+// =============================================================================
+
+const { CONFIRM_MODAL_JS } = require('../views/dashboard/confirm-modal.js');
+
+function makeModalEl(tag, created) {
+    const el = {
+        tagName: tag, id: '', className: '', type: '', textContent: '',
+        _innerHTML: '', attrs: {}, children: [],
+        set innerHTML(v) { this._innerHTML = v; },
+        get innerHTML() { return this._innerHTML; },
+        setAttribute(k, v) { this.attrs[k] = v; },
+        appendChild(c) { this.children.push(c); },
+        addEventListener() {},
+        focus() {},
+    };
+    created.push(el);
+    return el;
+}
+
+function runModal(opts) {
+    const created = [];
+    const body = makeModalEl('body', created);
+    const byId = {};
+    const origAppend = body.appendChild.bind(body);
+    body.appendChild = (el) => { origAppend(el); if (el.id) byId[el.id] = el; };
+    const document = {
+        body,
+        activeElement: { focus() {} },
+        getElementById: (id) => byId[id] || null,
+        createElement: (tag) => makeModalEl(tag, created),
+        createElementNS: (_ns, tag) => makeModalEl(tag, created),
+        addEventListener() {},
+        removeEventListener() {},
+    };
+    const factory = new Function('document', CONFIRM_MODAL_JS + '\nreturn { inConfirm };');
+    const api = factory(document);
+    // El executor de la Promise construye el DOM sincrónicamente.
+    api.inConfirm(opts);
+    return created;
+}
+
+const XSS = '<img src=x onerror="fetch(\'/api/kill-agent\',{method:\'POST\'})">';
+
+test('#3953 inConfirm inserta el title vía textContent (no se interpreta como HTML)', () => {
+    const created = runModal({ title: XSS, message: 'm', preview: [] });
+    const titleNode = created.find((e) => e.id === 'in-modal-title');
+    assert.ok(titleNode, 'debe existir el título del modal');
+    // textContent guarda el payload CRUDO (el browser lo escapa al renderizar).
+    assert.equal(titleNode.textContent, XSS);
+    // Y nunca se usó innerHTML con el payload.
+    assert.ok(!titleNode.innerHTML.includes('<img'), 'el title NO debe setearse vía innerHTML');
+});
+
+test('#3953 inConfirm inserta label/value del preview vía textContent (R1)', () => {
+    const created = runModal({
+        title: 'Limpiar worktree',
+        preview: [{ label: XSS, value: XSS }],
+    });
+    const dds = created.filter((e) => e.tagName === 'dd');
+    const dts = created.filter((e) => e.tagName === 'dt');
+    assert.ok(dds.length >= 1 && dts.length >= 1, 'debe renderizar filas de preview');
+    assert.equal(dds[0].textContent, XSS, 'el value del preview va por textContent');
+    assert.equal(dts[0].textContent, XSS, 'el label del preview va por textContent');
+});
+
+test('#3953 ningún nodo del modal vuelca el payload XSS vía innerHTML', () => {
+    const created = runModal({ title: XSS, message: XSS, preview: [{ label: 'Worktree', value: XSS }] });
+    for (const el of created) {
+        assert.ok(!String(el.innerHTML).includes('<img'), `nodo ${el.tagName} no debe tener <img en innerHTML`);
+        assert.ok(!String(el.innerHTML).includes('onerror='), `nodo ${el.tagName} no debe tener onerror= en innerHTML`);
+    }
+});
+
+test('#3953 el modal NO usa innerHTML en absoluto (construcción 100% por DOM)', () => {
+    const created = runModal({ title: 'x', message: 'y', preview: [{ label: 'a', value: 'b' }] });
+    const withInner = created.filter((e) => e._innerHTML);
+    assert.equal(withInner.length, 0, 'ningún nodo del modal debe usar innerHTML');
+    // El ícono se construye por DOM con href de la allowlist.
+    const uses = created.filter((e) => e.tagName === 'use');
+    assert.ok(uses.length >= 1, 'debe crear el <use> del ícono por DOM');
+    assert.match(uses[0].attrs.href, /^#ic-(bad|warn)$/, 'el href del ícono sale de la allowlist');
+});
+
+test('#3953 CONFIRM_MODAL_JS no usa innerHTML y setea title vía textContent (source-level)', () => {
+    // Defensa estática: el framework no usa innerHTML en ningún lado y el title
+    // se inserta vía textContent.
+    assert.doesNotMatch(CONFIRM_MODAL_JS, /\.innerHTML\s*=/);
+    assert.match(CONFIRM_MODAL_JS, /\.textContent\s*=\s*o\.title/);
+});

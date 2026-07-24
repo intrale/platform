@@ -1,0 +1,9 @@
+{
+  "issue": 3484,
+  "skill": "po",
+  "phase": "aprobacion",
+  "pipeline": "desarrollo",
+  "reason": "Label needs-human aplicado en GitHub — pipeline pausa el skill hasta que un humano remueva el label.",
+  "question": "¿Podés revisar #3484 y quitar el label `needs-human` cuando esté listo para reentrar?",
+  "blocked_at": "2026-05-25T16:53:43.942Z"
+}

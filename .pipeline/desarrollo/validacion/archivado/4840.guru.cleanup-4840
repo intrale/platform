@@ -1,0 +1,52 @@
+issue: 4840
+fase: validacion
+pipeline: desarrollo
+repo: intrale/platform
+resultado: rechazado
+rebote_categoria: dependency_block
+depende_de: [4839, 4841]
+motivo: |-
+  Rebote de re-intake (rechazado_skill_previo: po). Verifiqué empíricamente los
+  3 claims del rechazo en HEAD (2026-07-21) y los CONFIRMO todos. La historia
+  #4840 NO puede pasar a dev: su Definition of Ready exige que #4839/#4841
+  (modelo capability-aware, fundación de CA-1) cierren ANTES, y siguen OPEN.
+
+  ## Verificación empírica del rechazo (este ciclo)
+
+  1) Estado de dependencias duras:
+     $ gh issue view 4839 --json state,title
+       state=OPEN  "Validación capability-aware del fallback de providers por agente (fail-closed)"
+     $ gh issue view 4841 --json state,title
+       state=OPEN  "Validación capability-aware del fallback de providers por agente (fail-closed)"
+
+  2) Fundación de CA-1 ausente (el modelo de capabilities NO distingue todavía
+     roles agénticos/no-agénticos ni ingesta de código):
+     $ grep -nE '"agentic"|ingests_source_code|requires_tool_use' .pipeline/lib/capabilities.js       -> exit=1 (0 matches)
+     $ grep -nE '"agentic"|ingests_source_code|requires_tool_use' .pipeline/agent-models.json          -> exit=1 (0 matches)
+     $ grep -nE 'agentic|ingests_source_code|requires_tool_use'   .pipeline/agent-models.schema.json   -> exit=1 (0 matches)
+
+  3) Sin block real que proteja el gate de dev:
+     $ gh issue view 4840 --json labels -> enhancement, Ready, area:infra, size:medium, area:pipeline
+       (ningún label block/depend/hold)
+     $ grep -rnE '4839|4841' .pipeline/desarrollo/**/*.json -> sin coincidencias
+       (no hay dependencia 4840->4839/4841 registrada en el estado del pipeline)
+
+  ## Diagnóstico
+
+  Como en el pipeline `desarrollo` la fase `validacion` está inmediatamente antes
+  de `dev`, aprobar mandaría el issue a desarrollo donde el dev no puede cumplir
+  CA-1 (la fundación de #4839 no existe) y arriesgaría inventar/duplicar la
+  clasificación por su cuenta, divergiendo de #4839 -- el riesgo ya señalado por
+  guru y el arquitecto. La definición en sí es de alta calidad; el bloqueo es
+  puramente de dependencias, sin acción humana requerida.
+
+  ## Acción
+
+  Emito dependency_block (#3167): el Pulpo aplica label `blocked:dependencies`,
+  NO incrementa rev (no cuenta contra el circuit breaker), NO crea marker humano.
+  El brazoDesbloqueo reingresa #4840 solo cuando #4839 y #4841 estén CLOSED y el
+  modelo de capabilities esté presente. Una vez cerradas las deps, re-validar:
+  la definición ya está lista y se aprobaría sin cambios.
+notas: |-
+  Claims confirmados: 3/3. Dependencias duras: #4839 (OPEN), #4841 (OPEN).
+  Sin recomendaciones de mejora creadas (el bloqueo es de dependencias, no deuda técnica).

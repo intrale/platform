@@ -1,0 +1,24 @@
+{
+  "sprint_id": "SPR-LOAD-TEST",
+  "suite": "t",
+  "timestamp": "2026-05-16T13:50:42.964Z",
+  "summary": {
+    "total": 1,
+    "passed": 1,
+    "failed": 0,
+    "skipped": 0
+  },
+  "passed": true,
+  "results": [
+    {
+      "id": "R1",
+      "title": "T",
+      "app": "client",
+      "flow": "f.yaml",
+      "passed": true,
+      "skipped": false,
+      "error": null,
+      "durationMs": 500
+    }
+  ]
+}

@@ -19,7 +19,20 @@
 //     pipelineExtras: { PIPELINE_ISSUE: '1234', ... },
 //     // inyectables para tests:
 //     fsImpl, skillConfigOverride: { skill: {...}, providers: {...} },
+//     // o partial-override #3198 (cross-provider fallback runtime):
+//     skillConfigOverride: { provider: 'openai-codex' },
 //   });
+//
+// **Override shapes** (`skillConfigOverride`):
+//   - Full: `{ skill: {...}, providers: {...} }` — reemplaza por completo lo
+//     que se hubiera leído de `agent-models.json`. Usado por tests y por el
+//     commander (pulpo.js).
+//   - Partial (#3198): `{ provider: '<name>' }` — el dispatcher de fallback
+//     resolvió que el child debe correr con otro provider. Mergeamos el
+//     skill leído de disk con `{ provider: <override> }` y conservamos el
+//     `providers` config completo del disk para resolver `credentials_env`
+//     del fallback. Indispensable para S-2: garantiza que el child del
+//     fallback reciba SOLO la API key del fallback (no la del primary).
 //
 // **Estrategia**:
 //   1. Allowlist hardcoded de variables del sistema (Windows-compatible).
@@ -146,6 +159,37 @@ const CREDENTIAL_SCOPES = Object.freeze({
 const SCOPES_ALWAYS_ON = Object.freeze(['telegram-hooks']);
 
 // -----------------------------------------------------------------------------
+// PROVIDER_STATIC_ENV — variables de entorno ESTÁTICAS por provider (#4880).
+//
+// A diferencia de las API keys (que vienen del env del pulpo hidratado desde
+// credentials.json), estas son CONSTANTES DE CÓDIGO: no derivan del issue, del
+// prompt, del título ni de ningún input de usuario. Se vuelcan al env del child
+// SOLO cuando el provider activo coincide con la clave del mapa.
+//
+// Caso `kimi-moonshot` (SEC-2, #4880): Kimi (Moonshot) se integra como drop-in
+// de Claude Code apuntando `ANTHROPIC_BASE_URL` a su endpoint Anthropic-compat.
+// Requisitos de seguridad que este diseño satisface:
+//   - La URL es una CONSTANTE HTTPS literal (no `NODE_TLS_REJECT_UNAUTHORIZED=0`,
+//     sin proxy, jamás derivada de input). Previene SSRF / redirección de
+//     tráfico Anthropic a un endpoint atacante.
+//   - Se inyecta SOLO en el child con `providerName === 'kimi-moonshot'`. NUNCA
+//     global en el pulpo ni en childs de anthropic/codex/otros → no envenena el
+//     tráfico Anthropic legítimo (que va a api.anthropic.com por default).
+//   - `ANTHROPIC_BASE_URL` no está en SYSTEM_ALLOWLIST ni en ningún scope, así
+//     que aunque el operador la exporte global NUNCA se propaga desde processEnv:
+//     el único origen posible es este mapa.
+//
+// **NO agregar entradas sin justificación de seguridad** — cada var estática es
+// una decisión de plataforma (igual criterio que SYSTEM_ALLOWLIST / SCOPES).
+const PROVIDER_STATIC_ENV = Object.freeze({
+    'kimi-moonshot': Object.freeze({
+        // Endpoint Anthropic-compatible de Moonshot (spike #4871). El launcher
+        // `claude` habla contra esta base URL en vez de api.anthropic.com.
+        ANTHROPIC_BASE_URL: 'https://api.moonshot.ai/anthropic',
+    }),
+});
+
+// -----------------------------------------------------------------------------
 // DEFAULT_REQUIRES_BY_SKILL — defaults usados cuando agent-models.json no
 // existe o el skill no declara `requires_credentials`. Se sobreescribe por el
 // archivo cuando #3072 (H1) lo entregue.
@@ -166,7 +210,6 @@ const DEFAULT_REQUIRES_BY_SKILL = Object.freeze({
     priorizar: ['github'],
     historia: ['github'],
     doc: ['github'],
-    scrum: ['github'],
     handoff: ['github'],
 
     // Skills LLM que tocan código → necesitan github (comentarios + branches).
@@ -214,10 +257,34 @@ function readAgentModelsDefensive(pipelineDir, fsImpl) {
 function resolveSkillConfig(skill, opts = {}) {
     const { pipelineDir, fsImpl, skillConfigOverride } = opts;
 
+    // Full override: tests + commander pasan ambos campos.
     if (skillConfigOverride && skillConfigOverride.skill !== undefined) {
         return {
             skillCfg: skillConfigOverride.skill || {},
             providersCfg: skillConfigOverride.providers || {},
+        };
+    }
+
+    // Partial override (#3198): el dispatcher de fallback decide en runtime
+    // que el child debe correr con otro provider (ej. anthropic→openai-codex).
+    // Mergeamos el skillCfg leído de disk con `{ provider: <override> }` para
+    // que el resto de la config (requires_credentials, model, etc.) se
+    // preserve, pero el `provider` apunte al FALLBACK. Conservamos los
+    // `providers` config completos del disk para que `credentials_env` del
+    // fallback se resuelva correctamente.
+    //
+    // INVARIANTE S-2 (defensa cross-provider credential isolation):
+    //   Cuando esta rama dispara, el `providerKeyVar` resultante DEBE ser el
+    //   del fallback (ej. OPENAI_API_KEY), nunca el del primary
+    //   (ej. ANTHROPIC_API_KEY). Tests dedicados en
+    //   build-child-env.test.js (#3198) verifican el invariante.
+    if (skillConfigOverride && typeof skillConfigOverride.provider === 'string') {
+        const models = readAgentModelsDefensive(pipelineDir, fsImpl);
+        const diskSkillCfg = (models && models.skills && models.skills[skill]) || {};
+        const providersCfg = (models && models.providers) || {};
+        return {
+            skillCfg: { ...diskSkillCfg, provider: skillConfigOverride.provider },
+            providersCfg,
         };
     }
 
@@ -268,9 +335,17 @@ function buildChildEnv(opts = {}) {
     // Provider del skill (default: anthropic).
     const providerName = skillCfg.provider || 'anthropic';
     const providerEntry = providersCfg[providerName] || {};
-    const providerKeyVar = (providerEntry.credentials_env !== undefined)
-        ? providerEntry.credentials_env
-        : PROVIDER_DEFAULT_CREDENTIAL_ENV[providerName];
+    // #4306 — providers OAuth/CLI login (auth_mode: 'oauth') autentican fuera
+    // del env (~/.codex, cuenta Google, OAuth Max). NO exigimos ni inyectamos
+    // su key: ni desde `credentials_env` ni desde el fallback
+    // PROVIDER_DEFAULT_CREDENTIAL_ENV (REQ-SEC-3, env-isolation). Default-safe:
+    // provider sin auth_mode → camino api_key (exige key, fail-fast más abajo).
+    const isOauthProvider = providerEntry.auth_mode === 'oauth';
+    const providerKeyVar = isOauthProvider
+        ? null
+        : ((providerEntry.credentials_env !== undefined)
+            ? providerEntry.credentials_env
+            : PROVIDER_DEFAULT_CREDENTIAL_ENV[providerName]);
 
     // 1. SYSTEM_ALLOWLIST.
     const out = Object.create(null);
@@ -298,6 +373,19 @@ function buildChildEnv(opts = {}) {
             );
         }
         out[providerKeyVar] = processEnv[providerKeyVar];
+    }
+
+    // 3.b Env estático por provider (#4880). Constantes de código scopeadas al
+    //     provider activo (ej. ANTHROPIC_BASE_URL → endpoint Kimi para
+    //     `kimi-moonshot`). Se vuelca DESPUÉS de la key del provider y ANTES de
+    //     los scopes/pipelineExtras. Nunca se toma de processEnv (SEC-2): el
+    //     único origen es PROVIDER_STATIC_ENV, así el operador no puede
+    //     envenenar el tráfico Anthropic legítimo con una var global.
+    const staticEnv = PROVIDER_STATIC_ENV[providerName];
+    if (staticEnv) {
+        for (const [k, v] of Object.entries(staticEnv)) {
+            out[k] = v;
+        }
     }
 
     // 4. Scopes declarados por el skill (`requires_credentials`) o defaults
@@ -393,6 +481,7 @@ module.exports = {
     // Constantes exportadas para inspección (tests + dashboard futuro).
     SYSTEM_ALLOWLIST,
     PROVIDER_DEFAULT_CREDENTIAL_ENV,
+    PROVIDER_STATIC_ENV,
     CREDENTIAL_SCOPES,
     SCOPES_ALWAYS_ON,
     DEFAULT_REQUIRES_BY_SKILL,

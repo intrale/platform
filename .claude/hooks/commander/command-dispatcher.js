@@ -276,11 +276,10 @@ async function handleHelp() {
     msg += "  🎤 Audio/voz → transcripción + Claude responde";
     // Accedemos a multimedia config a través del contexto
     const mmConfig = _cmdContext.getMultimediaConfig ? _cmdContext.getMultimediaConfig() : {};
-    if (mmConfig.elevenlabsApiKey) msg += " + TTS (ElevenLabs)";
-    else if (mmConfig.openaiApiKey) msg += " + TTS (OpenAI)";
+    if (mmConfig.openaiApiKey) msg += " + TTS (OpenAI)";
     msg += "\n";
     if (!mmConfig.anthropicApiKey) msg += "  <i>⚠️ Imágenes: falta anthropic_api_key</i>\n";
-    if (!mmConfig.elevenlabsApiKey && !mmConfig.openaiApiKey) msg += "  <i>⚠️ Audio TTS: falta elevenlabs_api_key u openai_api_key</i>\n";
+    if (!mmConfig.openaiApiKey) msg += "  <i>⚠️ Audio TTS: falta openai_api_key</i>\n";
     msg += "\n<b>Texto libre:</b> cualquier mensaje sin / se ejecuta como prompt directo.";
     await _tgApi.sendLongMessage(msg);
 }

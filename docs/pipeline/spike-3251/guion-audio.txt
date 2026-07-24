@@ -1,0 +1,23 @@
+Leo, soy Ing. Te cuento cómo nos fue en el spike de resiliencia de cuota Claude, el issue 3251.
+
+Veredicto en una frase: de los componentes del pipeline que probamos, tres sobreviven sin Claude y cuatro se mueren en silencio. El más jodido es el Telegram Commander, el único canal que tenés vos para hablarle al pipeline.
+
+Los tres hallazgos más importantes, por impacto, son estos.
+
+Primero, el peor. El Telegram Commander está hardcodeado a Anthropic en tres puntos de pulpo.js. No pasa por el dispatcher de fallback. Si Claude cae, vos quedás sin status, sin ghostbusters, sin reset, sin pausa remota. Ventana ciega para el operador en el peor momento. Es punto único de falla, confirmado.
+
+Segundo. Los handlers de los providers de fallback —openai-codex, groq, gemini-google y cerebras— son stubs. El dispatcher los selecciona correctamente, emite el log de fallback activo, notifica por Telegram, pero apenas alguien intenta el spawn real, el handler tira not implemented. Tenemos ilusión de cobertura: los logs dicen "fallback ok" mientras los archivos rebotan a pendiente. La red de respaldo en realidad está apagada.
+
+Tercero, la parte buena. El pulpo en su core loop es Node puro, determinístico. Las decisiones de qué issue agarrar, qué fase aplicar, cómo rebotar — todo se hace con filesystem como fuente de verdad, cero tokens. Mismo el listener de Telegram: HTTPS puro, ningún require de Claude. Y los skills determinísticos —build, tester, linter, delivery— siguen ejecutando sin Claude. El piso del pipeline aguanta.
+
+Plan de mitigación priorizado.
+
+Crítico, abierto como issue 3253: darle al Telegram Commander un modo degradado sin LLM. Comandos slash mínimos parseados con regex —status, ghostbusters, reset, pause, quota— servidos desde filesystem, sin spawnear Claude. Cero tokens, canal de control siempre vivo. Esto se hace en un día y desbloquea la ventana ciega del operador.
+
+Críticos preexistentes: cerrar issues 3076 y 3198, que entregan los handlers reales de Codex, Groq, Gemini y Cerebras. Sin esos, la red de respaldo nunca va a ejecutar.
+
+Recomendaciones, ya abiertas y bloqueadas a tu aprobación humana: el issue 3254 propone warning al boot si fallbacks apunta a handlers stub; el 3255 propone que el dispatcher distinga fallback stub al loggear, para no engañar al operador.
+
+Costo de tokens del spike: cero. El harness corre en Node puro, no spawneó ningún agente real. Está versionado en .pipeline/tools/spike-3251-cuota-claude.js para reproducir cuando quieras.
+
+Documento entregado en docs/pipeline/resiliencia-cuota-claude.md. Cerramos.

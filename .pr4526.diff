@@ -1,0 +1,981 @@
+diff --git a/.pipeline/assets/mockups/41-wave-timeline-sparkline.svg b/.pipeline/assets/mockups/41-wave-timeline-sparkline.svg
+new file mode 100644
+index 00000000..076b4dbc
+--- /dev/null
++++ b/.pipeline/assets/mockups/41-wave-timeline-sparkline.svg
+@@ -0,0 +1,129 @@
++<svg xmlns="http://www.w3.org/2000/svg" width="960" height="720" viewBox="0 0 960 720" font-family="Inter, 'Segoe UI', system-ui, sans-serif">
++  <!-- ============================================================
++       Mockup UX — Issue #4500
++       "Timeline de la ola" + sparkline de ritmo
++       Reemplaza las 4 stat-cards (COMIENZO·ETA·VELOCIDAD·ENTREGADAS)
++       + barra de avance separada, por un ÚNICO componente narrativo.
++       Design tokens (theme.css): --in-bg #0d1117 · --in-bg-2 #161b22
++       --in-ok #3fb950 · --in-info #58a6ff · --in-bad #f85149
++       --in-fg #e6edf3 · --in-fg-dim #8b949e · brand-cyan #34D9E0 · accent #2ee6c1
++       ============================================================ -->
++  <defs>
++    <linearGradient id="fill" x1="0" y1="0" x2="1" y2="0">
++      <stop offset="0" stop-color="#2ee6c1"/>
++      <stop offset="1" stop-color="#3fb950"/>
++    </linearGradient>
++    <linearGradient id="spark" x1="0" y1="0" x2="0" y2="1">
++      <stop offset="0" stop-color="#34D9E0" stop-opacity="0.35"/>
++      <stop offset="1" stop-color="#34D9E0" stop-opacity="0"/>
++    </linearGradient>
++    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
++      <feDropShadow dx="0" dy="0" stdDeviation="3.5" flood-color="#34D9E0" flood-opacity="0.9"/>
++    </filter>
++  </defs>
++
++  <rect width="960" height="720" fill="#0d1117"/>
++  <text x="32" y="42" fill="#e6edf3" font-size="20" font-weight="800">Timeline de la ola — mockup UX #4500</text>
++  <text x="32" y="66" fill="#8b949e" font-size="13">Un solo componente con narrativa comienzo → ahora → cierre + sparkline de ritmo</text>
++
++  <!-- =========================== ESTADO A: ola en curso =========================== -->
++  <text x="32" y="110" fill="#2ee6c1" font-size="12" font-weight="800" letter-spacing="1.2">ESTADO A · OLA EN CURSO (datos suficientes)</text>
++
++  <!-- banner card -->
++  <rect x="32" y="124" width="896" height="212" rx="14" fill="#161b22" stroke="rgba(255,255,255,0.08)"/>
++  <!-- watermark ola -->
++  <text x="892" y="150" fill="#34D9E0" opacity="0.06" font-size="90" text-anchor="end">🌊</text>
++
++  <!-- wavetag -->
++  <rect x="52" y="146" width="92" height="90" rx="12" fill="rgba(52,217,224,0.08)" stroke="rgba(52,217,224,0.25)"/>
++  <text x="98" y="176" fill="#9fe9ee" font-size="10" font-weight="800" letter-spacing="1.5" text-anchor="middle">OLA</text>
++  <text x="98" y="214" fill="#bff3f6" font-size="34" font-weight="800" text-anchor="middle">3</text>
++
++  <!-- title + desc -->
++  <text x="164" y="166" fill="#e6edf3" font-size="18" font-weight="800">Ola 3 · Auditoría modelo operativo</text>
++  <rect x="470" y="153" width="118" height="18" rx="9" fill="rgba(52,217,224,0.12)"/>
++  <text x="529" y="166" fill="#34D9E0" font-size="10" font-weight="800" text-anchor="middle">ÚLTIMA DEL PLAN</text>
++  <text x="164" y="188" fill="#8b949e" font-size="12.5">Ritmo de entrega y cierre estimado de un vistazo.</text>
++
++  <!-- === TIMELINE === -->
++  <!-- eje: comienzo (izq) -> ETA (der). now marker at 64% -->
++  <g>
++    <!-- etiquetas extremos -->
++    <text x="164" y="228" fill="#8b949e" font-size="9.5" font-weight="800" letter-spacing="0.7">🗓 COMIENZO</text>
++    <text x="164" y="243" fill="#e6edf3" font-size="13" font-weight="800">2 jul 09:54</text>
++
++    <text x="892" y="228" fill="#8b949e" font-size="9.5" font-weight="800" letter-spacing="0.7" text-anchor="end">⏳ ETA CIERRE</text>
++    <text x="892" y="243" fill="#e6edf3" font-size="13" font-weight="800" text-anchor="end">~8 jul 18:00</text>
++
++    <!-- rail base -->
++    <rect x="164" y="266" width="728" height="10" rx="5" fill="rgba(255,255,255,0.07)"/>
++    <!-- fill de progreso SOBRE la misma línea (64%) -->
++    <rect x="164" y="266" width="466" height="10" rx="5" fill="url(#fill)"/>
++    <!-- ticks comienzo / eta -->
++    <circle cx="164" cy="271" r="6" fill="#2ee6c1" stroke="#0d1117" stroke-width="2"/>
++    <circle cx="892" cy="271" r="6" fill="#161b22" stroke="#8b949e" stroke-width="2"/>
++
++    <!-- marcador AHORA a 64% (x = 164 + 0.64*728 = 630) -->
++    <line x1="630" y1="256" x2="630" y2="286" stroke="#34D9E0" stroke-width="2"/>
++    <circle cx="630" cy="271" r="7" fill="#34D9E0" stroke="#0d1117" stroke-width="2" filter="url(#glow)"/>
++    <rect x="596" y="290" width="68" height="18" rx="9" fill="#34D9E0"/>
++    <text x="630" y="303" fill="#0d1117" font-size="10.5" font-weight="800" text-anchor="middle">AHORA · 64%</text>
++
++    <!-- anotación velocidad cerca del marcador -->
++    <text x="630" y="252" fill="#3fb950" font-size="12" font-weight="800" text-anchor="middle">🚀 2,3 issues/día</text>
++
++    <!-- anotación entregados hacia el final -->
++    <text x="800" y="252" fill="#58a6ff" font-size="12" font-weight="800" text-anchor="middle">📦 14 / 22</text>
++  </g>
++
++  <!-- === SPARKLINE de ritmo (delta entre snapshots) === -->
++  <text x="164" y="326" fill="#8b949e" font-size="9.5" font-weight="800" letter-spacing="0.7">📈 RITMO DE ENTREGA (últimos días)</text>
++  <!-- área + polyline: acelera hacia el final -->
++  <path d="M 470 320 L 500 316 L 530 318 L 560 310 L 590 312 L 620 302 L 650 305 L 680 294 L 710 296 L 740 285 L 770 288 L 800 278 L 830 270 L 860 266 L 892 262
++           L 892 330 L 470 330 Z" fill="url(#spark)"/>
++  <polyline points="470,320 500,316 530,318 560,310 590,312 620,302 650,305 680,294 710,296 740,285 770,288 800,278 830,270 860,266 892,262"
++            fill="none" stroke="#34D9E0" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
++  <circle cx="892" cy="262" r="3.2" fill="#34D9E0"/>
++  <text x="892" y="326" fill="#3fb950" font-size="10" font-weight="700" text-anchor="end">▲ acelerando</text>
++
++  <!-- =========================== ESTADO B: ola recién iniciada =========================== -->
++  <text x="32" y="404" fill="#d29922" font-size="12" font-weight="800" letter-spacing="1.2">ESTADO B · OLA RECIÉN INICIADA (datos insuficientes → degrada con gracia)</text>
++
++  <rect x="32" y="418" width="896" height="182" rx="14" fill="#161b22" stroke="rgba(255,255,255,0.08)"/>
++  <text x="892" y="444" fill="#34D9E0" opacity="0.06" font-size="90" text-anchor="end">🌊</text>
++
++  <rect x="52" y="440" width="92" height="90" rx="12" fill="rgba(52,217,224,0.08)" stroke="rgba(52,217,224,0.25)"/>
++  <text x="98" y="470" fill="#9fe9ee" font-size="10" font-weight="800" letter-spacing="1.5" text-anchor="middle">OLA</text>
++  <text x="98" y="508" fill="#bff3f6" font-size="34" font-weight="800" text-anchor="middle">4</text>
++
++  <text x="164" y="460" fill="#e6edf3" font-size="18" font-weight="800">Ola 4 · recién activada</text>
++  <text x="164" y="482" fill="#8b949e" font-size="12.5">Sin histórico de ritmo todavía. El layout no se rompe.</text>
++
++  <!-- timeline con marcador cerca del inicio -->
++  <text x="164" y="520" fill="#8b949e" font-size="9.5" font-weight="800" letter-spacing="0.7">🗓 COMIENZO</text>
++  <text x="164" y="535" fill="#e6edf3" font-size="13" font-weight="800">hoy 10:12</text>
++  <text x="892" y="520" fill="#8b949e" font-size="9.5" font-weight="800" letter-spacing="0.7" text-anchor="end">⏳ ETA CIERRE</text>
++  <text x="892" y="535" fill="#8b949e" font-size="13" font-weight="800" text-anchor="end">— sin dato</text>
++
++  <rect x="164" y="556" width="728" height="10" rx="5" fill="rgba(255,255,255,0.07)"/>
++  <rect x="164" y="556" width="22" height="10" rx="5" fill="url(#fill)"/>
++  <circle cx="164" cy="561" r="6" fill="#2ee6c1" stroke="#0d1117" stroke-width="2"/>
++  <circle cx="892" cy="561" r="6" fill="#161b22" stroke="#8b949e" stroke-width="2"/>
++  <!-- marcador AHORA cerca del inicio (3%) -->
++  <line x1="186" y1="546" x2="186" y2="576" stroke="#34D9E0" stroke-width="2"/>
++  <circle cx="186" cy="561" r="7" fill="#34D9E0" stroke="#0d1117" stroke-width="2" filter="url(#glow)"/>
++  <rect x="160" y="580" width="52" height="18" rx="9" fill="#34D9E0"/>
++  <text x="186" y="593" fill="#0d1117" font-size="10.5" font-weight="800" text-anchor="middle">AHORA</text>
++  <text x="300" y="542" fill="#8b949e" font-size="12" font-weight="700">🚀 — issues/día · 📦 0 / 18</text>
++
++  <!-- sparkline placeholder -->
++  <text x="470" y="542" fill="#8b949e" font-size="9.5" font-weight="800" letter-spacing="0.7">📈 RITMO</text>
++  <line x1="520" y1="537" x2="892" y2="537" stroke="#8b949e" stroke-width="1.5" stroke-dasharray="3 4" opacity="0.55"/>
++  <text x="706" y="530" fill="#8b949e" font-size="10.5" text-anchor="middle" font-style="italic">datos insuficientes</text>
++
++  <!-- =========================== notas =========================== -->
++  <text x="32" y="644" fill="#8b949e" font-size="11.5" font-weight="700">Reglas de diseño:</text>
++  <text x="32" y="664" fill="#8b949e" font-size="11">• Solo tokens existentes: fill=accent→ok · marcador/sparkline=brand-cyan · velocidad=ok · entregados=info · sin dato=fg-dim. Cero colores nuevos.</text>
++  <text x="32" y="682" fill="#8b949e" font-size="11">• Marcador "ahora" left:clamp(0,100,avancePct)% sobre la MISMA línea del fill (reusar #mission-bar-progress). Anotaciones = texto, no cards.</text>
++  <text x="32" y="700" fill="#8b949e" font-size="11">• Sparkline grafica el DELTA entre snapshots (ritmo), no el avance monótono. &lt;2 puntos → línea punteada + "datos insuficientes".</text>
++</svg>
+diff --git a/.pipeline/dashboard.js b/.pipeline/dashboard.js
+index 79db1019..64e01850 100644
+--- a/.pipeline/dashboard.js
++++ b/.pipeline/dashboard.js
+@@ -886,6 +886,11 @@ function _scheduleOlaETARefresh(state) {
+       // leyenda explícita hasta que haya ventana medible (G-UX-3).
+       let waveThroughputPerDay = null;
+       let waveThroughputState = 'insufficient';
++      // #4500 — serie temporal de avance de la ola para el sparkline de ritmo del
++      // banner (Timeline). Se lee de `wave-progress.readSnapshots` y se recorta a
++      // los últimos N puntos, con whitelist numérico `{ts, avancePct}` (SEC: sólo
++      // agregados numéricos, sin metadata interna de issues). null → placeholder.
++      let waveSeries = null;
+       try {
+         if (waveProgressLib && wavesLib && waveResolverLib && waveSnapshotLib && waveStateLib) {
+           const activeWave = wavesLib.getActiveWave();
+@@ -941,12 +946,26 @@ function _scheduleOlaETARefresh(state) {
+               const vel = await etaWaveLib.calculateWaveVelocityETA(waveKey, wSnap.totalPct, nowTs);
+               if (vel && vel.source === 'velocity') velocityETA = { ...vel, totalPct: wSnap.totalPct };
+             }
++            // #4500 — serie temporal de avance para el sparkline de ritmo. Se lee
++            // DESPUÉS de `appendSnapshot` para incluir el punto recién escrito.
++            // Whitelist numérico estricto y recorte a los últimos 60 puntos: sólo
++            // `{ts, avancePct}` — nunca metadata interna (SEC A03/A08). Placeholder
++            // (serie con <2 puntos) queda a cargo del render del cliente.
++            try {
++              const allSnaps = waveProgressLib.readSnapshots({ pipelineRoot: PIPELINE, waveKey });
++              if (Array.isArray(allSnaps) && allSnaps.length) {
++                waveSeries = allSnaps
++                  .filter((s) => s && Number.isFinite(s.ts) && Number.isFinite(s.avancePct))
++                  .slice(-60)
++                  .map((s) => ({ ts: s.ts, avancePct: s.avancePct }));
++              }
++            } catch { /* sin serie → sparkline en placeholder */ }
+           }
+         }
+       } catch { /* fallback: sin velocityETA */ }
+-      return { olaResult, historical, velocityETA, waveTotalPct, waveClosedCount, waveTotalIssues, waveThroughputPerDay, waveThroughputState };
++      return { olaResult, historical, velocityETA, waveTotalPct, waveClosedCount, waveTotalIssues, waveThroughputPerDay, waveThroughputState, waveSeries };
+     })
+-    .then(({ olaResult, historical, velocityETA, waveTotalPct, waveClosedCount, waveTotalIssues, waveThroughputPerDay, waveThroughputState }) => {
++    .then(({ olaResult, historical, velocityETA, waveTotalPct, waveClosedCount, waveTotalIssues, waveThroughputPerDay, waveThroughputState, waveSeries }) => {
+       _olaETACache = {
+         issues: olaIssues,
+         totalP50: olaResult.totalP50,
+@@ -969,6 +988,9 @@ function _scheduleOlaETARefresh(state) {
+         // #4450 — throughput de entrega (issues/día) + estado measured/insufficient.
+         throughputPerDay: Number.isFinite(waveThroughputPerDay) ? waveThroughputPerDay : null,
+         throughputState: waveThroughputState === 'measured' ? 'measured' : 'insufficient',
++        // #4500 — serie temporal de avance (últimos 60 puntos) para el sparkline
++        // de ritmo del Timeline. `[]` cuando no hay serie (placeholder cliente).
++        series: Array.isArray(waveSeries) ? waveSeries : [],
+         refreshedAt: Date.now(),
+       };
+       _olaETACacheAt = Date.now();
+diff --git a/.pipeline/lib/__tests__/dashboard-routes-ola-eta.test.js b/.pipeline/lib/__tests__/dashboard-routes-ola-eta.test.js
+index b80e930e..b959cdea 100644
+--- a/.pipeline/lib/__tests__/dashboard-routes-ola-eta.test.js
++++ b/.pipeline/lib/__tests__/dashboard-routes-ola-eta.test.js
+@@ -128,9 +128,37 @@ test('R-2: el payload sólo expone agregados de la ola, sin metadata interna', (
+     const allowed = new Set([
+         'ready', 'issues', 'totalP50', 'totalP75', 'totalP90', 'byIssue',
+         'concurrencyUsed', 'bySize', 'rebounceRate', 'velocityETA', 'etaSource',
+-        'totalPct', 'throughputPerDay', 'throughputState', 'refreshedAt',
++        'totalPct', 'throughputPerDay', 'throughputState', 'series', 'refreshedAt',
+     ]);
+     for (const k of Object.keys(out)) {
+         assert.ok(allowed.has(k), `campo inesperado en el payload: ${k}`);
+     }
+ });
++
++test('#4500 — serie temporal: whitelist numérico {ts,avancePct}, degrada a [] sin cache', () => {
++    // Sin serie en el cache → array vacío (placeholder cliente), nunca undefined.
++    const sinSerie = olaETARoute({ olaETA: { issues: [], etaSource: 'fallback' } });
++    assert.deepEqual(sinSerie.series, [], 'sin serie → []');
++
++    // Con serie: sólo puntos numéricos finitos, y sólo las claves ts/avancePct.
++    const out = olaETARoute({
++        olaETA: {
++            issues: [1],
++            etaSource: 'fallback',
++            series: [
++                { ts: 1000, avancePct: 10 },
++                { ts: 2000, avancePct: 25, waveKey: 7, _leak: 'x' }, // ruido a descartar
++                { ts: NaN, avancePct: 30 },                          // ts no finito → fuera
++                { ts: 3000, avancePct: 'x' },                        // avance no numérico → fuera
++            ],
++        },
++    });
++    assert.deepEqual(out.series, [
++        { ts: 1000, avancePct: 10 },
++        { ts: 2000, avancePct: 25 },
++    ], 'sólo puntos finitos y sólo ts/avancePct (sin waveKey ni _leak)');
++
++    // Serie no-array en el cache → [] (defensivo).
++    const basura = olaETARoute({ olaETA: { issues: [], etaSource: 'fallback', series: 'nope' } });
++    assert.deepEqual(basura.series, []);
++});
+diff --git a/.pipeline/lib/__tests__/mission-ola-eta.test.js b/.pipeline/lib/__tests__/mission-ola-eta.test.js
+index bc6e7fe6..e6328fc5 100644
+--- a/.pipeline/lib/__tests__/mission-ola-eta.test.js
++++ b/.pipeline/lib/__tests__/mission-ola-eta.test.js
+@@ -334,3 +334,169 @@ test('ninguna vista escribe mission-vel-value por JS (fuente única = mission-ol
+         assert.ok(!jsWriterRe.test(src), `la vista ${f} no debe escribir mission-vel-value por JS`);
+     }
+ });
++
++// -----------------------------------------------------------------------------
++// #4500 — Timeline: marcador "ahora", anotación de velocidad y sparkline de ritmo.
++// El client script posiciona el marcador (#mission-tl-now) y la anotación de
++// velocidad (#mission-vel-annot) por avancePct clampeado, y dibuja el sparkline
++// de ritmo (delta) client-side por DOM/SVG. Se evalúa el script en un DOM falso.
++// -----------------------------------------------------------------------------
++
++function fakeNode() {
++    return {
++        _attrs: {}, _children: [], className: '', textContent: '', style: {},
++        get firstChild() { return this._children.length ? this._children[0] : null; },
++        appendChild(c) { this._children.push(c); return c; },
++        removeChild(c) { const i = this._children.indexOf(c); if (i >= 0) this._children.splice(i, 1); return c; },
++        setAttribute(k, v) { this._attrs[k] = String(v); },
++        getAttribute(k) { return Object.prototype.hasOwnProperty.call(this._attrs, k) ? this._attrs[k] : null; },
++    };
++}
++
++function bootClientScript(elements) {
++    const src = missionOlaEtaClientScript();
++    const fakeDoc = {
++        getElementById: (id) => (Object.prototype.hasOwnProperty.call(elements, id) ? elements[id] : null),
++        createTextNode: (t) => ({ nodeValue: String(t) }),
++        createElement: () => fakeNode(),
++        createElementNS: () => fakeNode(),
++    };
++    const fakeWin = {};
++    const runner = new Function('window', 'document', 'setInterval', src);
++    runner(fakeWin, fakeDoc, () => 0);
++    return fakeWin;
++}
++
++test('#4500 — el marcador "ahora" se posiciona por avancePct clampeado [0,100] con aria-label textual', () => {
++    const nowMark = fakeNode();
++    const velAnnot = fakeNode();
++    const elements = {
++        'mission-bar-progress': { style: { width: '0%' } },
++        'mission-avance-pct': fakeNode(),
++        'mission-tl-now': nowMark,
++        'mission-vel-annot': velAnnot,
++        'mission-spark-plot': fakeNode(),
++        'mission-spark-note': fakeNode(),
++        'mission-spark': fakeNode(),
++    };
++    const win = bootClientScript(elements);
++
++    win.__applyMissionOlaEta({ etaSource: 'fallback', totalPct: 64 });
++    assert.equal(nowMark.style.left, '64%');
++    assert.equal(velAnnot.style.left, '64%', 'la anotación de velocidad ancla al marcador');
++    assert.equal(nowMark.getAttribute('aria-label'), 'Avance de la ola: 64%');
++    assert.equal(nowMark.getAttribute('title'), 'Avance de la ola: 64%');
++
++    win.__applyMissionOlaEta({ etaSource: 'fallback', totalPct: 150 });
++    assert.equal(nowMark.style.left, '100%', 'clamp superior');
++
++    // null (totalPct ausente) → cerca del inicio (0%) + label "sin dato aún"
++    win.__applyMissionOlaEta({ etaSource: 'fallback' });
++    assert.equal(nowMark.style.left, '0%');
++    assert.equal(nowMark.getAttribute('aria-label'), 'Avance de la ola: sin dato aún');
++});
++
++test('#4500 — sparkline: <2 puntos degrada a placeholder "datos insuficientes" sin romper', () => {
++    const plot = fakeNode();
++    const note = fakeNode();
++    const spark = fakeNode();
++    const elements = {
++        'mission-bar-progress': { style: { width: '0%' } },
++        'mission-avance-pct': fakeNode(),
++        'mission-tl-now': fakeNode(),
++        'mission-spark-plot': plot,
++        'mission-spark-note': note,
++        'mission-spark': spark,
++    };
++    const win = bootClientScript(elements);
++
++    // Sin serie → placeholder (línea punteada + nota).
++    win.__applyMissionOlaEta({ etaSource: 'fallback', totalPct: 5 });
++    assert.equal(note.textContent, 'datos insuficientes');
++    assert.equal(plot._children.length, 1, 'dibuja el rail placeholder');
++    assert.equal(spark.getAttribute('aria-label'), 'Ritmo de entrega: datos insuficientes');
++
++    // Un solo punto (0 deltas) → sigue placeholder.
++    win.__applyMissionOlaEta({ etaSource: 'fallback', totalPct: 5, series: [{ ts: 1, avancePct: 5 }] });
++    assert.equal(note.textContent, 'datos insuficientes');
++});
++
++test('#4500 — sparkline: con serie suficiente dibuja polyline y calcula tendencia', () => {
++    const plot = fakeNode();
++    const note = fakeNode();
++    const spark = fakeNode();
++    const elements = {
++        'mission-bar-progress': { style: { width: '0%' } },
++        'mission-avance-pct': fakeNode(),
++        'mission-tl-now': fakeNode(),
++        'mission-spark-plot': plot,
++        'mission-spark-note': note,
++        'mission-spark': spark,
++    };
++    const win = bootClientScript(elements);
++
++    // Deltas crecientes (2,3,10,20) → acelerando.
++    const series = [
++        { ts: 1, avancePct: 0 },
++        { ts: 2, avancePct: 2 },
++        { ts: 3, avancePct: 5 },
++        { ts: 4, avancePct: 15 },
++        { ts: 5, avancePct: 35 },
++    ];
++    win.__applyMissionOlaEta({ etaSource: 'fallback', totalPct: 35, series });
++    assert.equal(plot._children.length, 1, 'un <svg> con la polyline');
++    const svg = plot._children[0];
++    assert.equal(svg._children.length, 1);
++    const poly = svg._children[0];
++    assert.ok(poly.getAttribute('points'), 'la polyline tiene puntos');
++    assert.equal(note.textContent, 'acelerando');
++    assert.equal(spark.getAttribute('aria-label'), 'Ritmo de entrega: acelerando');
++});
++
++// -----------------------------------------------------------------------------
++// #4500 — Guardias estáticas: el markup del banner conserva los IDs hidratables
++// y suma los nodos nuevos del Timeline (marcador, anotaciones, sparkline). Se
++// verifica sobre el SSR canónico (pipeline-redesign.js) y el fallback (home.js),
++// que deben declarar los mismos IDs para no divergir (#4499).
++// -----------------------------------------------------------------------------
++
++test('#4500 — el banner (SSR y fallback) conserva los IDs hidratables y suma los del Timeline', () => {
++    const viewsDir = path.join(__dirname, '..', '..', 'views', 'dashboard');
++    const requiredIds = [
++        // hidratables preexistentes (no se pueden perder)
++        'mission-started-value', 'mission-eta-value', 'mission-vel-value',
++        'mission-delivered-value', 'mission-avance-pct', 'mission-bar-progress',
++        'mission-leg-done', 'mission-leg-active', 'mission-leg-blocked', 'mission-leg-queue',
++        // nuevos del Timeline
++        'mission-timeline', 'mission-tl-now', 'mission-vel-annot',
++        'mission-spark', 'mission-spark-plot', 'mission-spark-note',
++    ];
++    for (const f of ['pipeline-redesign.js', 'home.js']) {
++        const src = fs.readFileSync(path.join(viewsDir, f), 'utf8');
++        for (const id of requiredIds) {
++            assert.ok(src.includes(`id="${id}"`), `${f} debe declarar id="${id}"`);
++        }
++        // las 4 stat-cards viejas ya no se renderizan como tiles independientes.
++        assert.ok(!src.includes('class="mz-mission-metrics"'), `${f} no debe conservar .mz-mission-metrics`);
++    }
++});
++
++test('#4500 — guardia CSS: toda copia que estiliza .mz-mission también estiliza el Timeline', () => {
++    // El bloque COMPLETO del CSS del banner (no un override de media-query suelto)
++    // está duplicado en theme.css + 4 vistas (lección #4499/#4492). Se ancla por
++    // `.mz-prog-bar {`, presente sólo en las copias completas; cada una DEBE
++    // declarar también `.mz-timeline {` y `.mz-spark {` o el Timeline se ve roto
++    // en esa ventana. Las vistas satélite con sólo un override toman el CSS del
++    // theme global, ya cubierto.
++    const viewsDir = path.join(__dirname, '..', '..', 'views', 'dashboard');
++    const files = fs.readdirSync(viewsDir).filter((f) => f.endsWith('.js') || f.endsWith('.css'));
++    let copies = 0;
++    for (const f of files) {
++        const src = fs.readFileSync(path.join(viewsDir, f), 'utf8');
++        if (!src.includes('.mz-prog-bar {')) continue; // no tiene el bloque completo → no aplica
++        copies++;
++        assert.ok(src.includes('.mz-timeline {'), `${f} tiene el bloque del banner pero le falta .mz-timeline`);
++        assert.ok(src.includes('.mz-spark {'), `${f} tiene el bloque del banner pero le falta .mz-spark`);
++    }
++    assert.ok(copies >= 5, `se esperaban ≥5 copias completas del CSS del banner, se hallaron ${copies}`);
++});
+diff --git a/.pipeline/lib/dashboard-routes.js b/.pipeline/lib/dashboard-routes.js
+index d6505320..733d0469 100644
+--- a/.pipeline/lib/dashboard-routes.js
++++ b/.pipeline/lib/dashboard-routes.js
+@@ -1429,6 +1429,15 @@ const API_ROUTES = {
+             // Sólo agregados numéricos/estado; sin metadata interna de issues.
+             throughputPerDay: Number.isFinite(data.throughputPerDay) ? data.throughputPerDay : null,
+             throughputState: data.throughputState === 'measured' ? 'measured' : 'insufficient',
++            // #4500 — serie temporal de avance para el sparkline de ritmo del
++            // Timeline. Whitelist numérico estricto: SÓLO `{ts, avancePct}` finitos,
++            // nunca metadata interna de issues (A03/A08). Degrada a `[]` si el cache
++            // no la trae (pipeline previo a #4500 o primer refresh sin snapshots).
++            series: Array.isArray(data.series)
++                ? data.series
++                    .filter((s) => s && Number.isFinite(s.ts) && Number.isFinite(s.avancePct))
++                    .map((s) => ({ ts: s.ts, avancePct: s.avancePct }))
++                : [],
+             refreshedAt: data.refreshedAt,
+         };
+     },
+diff --git a/.pipeline/lib/mission-ola-eta.js b/.pipeline/lib/mission-ola-eta.js
+index 4fec3e04..fb787921 100644
+--- a/.pipeline/lib/mission-ola-eta.js
++++ b/.pipeline/lib/mission-ola-eta.js
+@@ -120,6 +120,72 @@ function missionOlaEtaClientScript() {
+     u.textContent = unitText;
+     el.appendChild(u);
+   }
++  // #4500 — Sparkline de RITMO de entrega del Timeline. Grafica el DELTA entre
++  // snapshots (derivada del avance), no el avance crudo monótono, para reflejar
++  // aceleración/desaceleración (matiz UX/guru). Render 100% por DOM/SVG con
++  // series NUMÉRICAS (createElementNS) — nunca innerHTML (XSS-safe, series ya
++  // whitelisted en el route). Degrada con gracia: <2 deltas -> línea punteada
++  // placeholder + nota "datos insuficientes" (Gherkin escenario 2), sin romper
++  // el layout. Devuelve el texto de tendencia para el aria-label del contenedor.
++  var SVG_NS = 'http://www.w3.org/2000/svg';
++  function renderMissionSpark(series){
++    var plot = document.getElementById('mission-spark-plot');
++    var note = document.getElementById('mission-spark-note');
++    var spark = document.getElementById('mission-spark');
++    if(!plot) return;
++    while(plot.firstChild) plot.removeChild(plot.firstChild);
++    var pts = Array.isArray(series)
++      ? series.filter(function(s){ return s && Number.isFinite(s.ts) && Number.isFinite(s.avancePct); })
++      : [];
++    var deltas = [];
++    for(var i=1;i<pts.length;i++){ deltas.push(Math.max(0, pts[i].avancePct - pts[i-1].avancePct)); }
++    var W = 100, H = 24, pad = 2;
++    if(deltas.length < 2){
++      // Placeholder: rail punteado + nota explícita. Nunca rompe el layout.
++      var svgP = document.createElementNS(SVG_NS, 'svg');
++      svgP.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
++      svgP.setAttribute('class', 'mz-spark-svg');
++      svgP.setAttribute('preserveAspectRatio', 'none');
++      var ln = document.createElementNS(SVG_NS, 'line');
++      ln.setAttribute('x1', '0'); ln.setAttribute('y1', String(H/2));
++      ln.setAttribute('x2', String(W)); ln.setAttribute('y2', String(H/2));
++      ln.setAttribute('stroke', 'var(--in-fg-dim,#8b949e)');
++      ln.setAttribute('stroke-width', '1'); ln.setAttribute('stroke-dasharray', '3 3');
++      svgP.appendChild(ln); plot.appendChild(svgP);
++      if(note){ note.textContent = 'datos insuficientes'; }
++      if(spark) spark.setAttribute('aria-label', 'Ritmo de entrega: datos insuficientes');
++      return;
++    }
++    var max = 0;
++    for(var j=0;j<deltas.length;j++){ if(deltas[j] > max) max = deltas[j]; }
++    var n = deltas.length, stepX = (n > 1) ? (W/(n-1)) : 0, coords = [];
++    for(var k=0;k<n;k++){
++      var x = (n > 1) ? (k*stepX) : (W/2);
++      var norm = (max > 0) ? (deltas[k]/max) : 0;
++      var y = (H - pad) - norm*(H - 2*pad);
++      coords.push(x.toFixed(1) + ',' + y.toFixed(1));
++    }
++    var svg = document.createElementNS(SVG_NS, 'svg');
++    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
++    svg.setAttribute('class', 'mz-spark-svg');
++    svg.setAttribute('preserveAspectRatio', 'none');
++    var poly = document.createElementNS(SVG_NS, 'polyline');
++    poly.setAttribute('points', coords.join(' '));
++    poly.setAttribute('fill', 'none');
++    poly.setAttribute('stroke', 'var(--brand-cyan,#34D9E0)');
++    poly.setAttribute('stroke-width', '1.5');
++    poly.setAttribute('stroke-linejoin', 'round');
++    poly.setAttribute('stroke-linecap', 'round');
++    svg.appendChild(poly); plot.appendChild(svg);
++    // Tendencia: promedio de la 2da mitad vs la 1ra (±15% de banda muerta).
++    var mid = Math.floor(n/2), a = 0, b = 0, ca = 0, cb = 0;
++    for(var p=0;p<n;p++){ if(p < mid){ a += deltas[p]; ca++; } else { b += deltas[p]; cb++; } }
++    var avgA = ca ? a/ca : 0, avgB = cb ? b/cb : 0, trend = 'estable';
++    if(avgB > avgA*1.15) trend = 'acelerando';
++    else if(avgB < avgA*0.85) trend = 'desacelerando';
++    if(note){ note.textContent = trend; }
++    if(spark) spark.setAttribute('aria-label', 'Ritmo de entrega: ' + trend);
++  }
+   window.__applyMissionOlaEta = function(d){
+     try{
+       var m = deriveMissionOlaEta(d);
+@@ -130,11 +196,29 @@ function missionOlaEtaClientScript() {
+       // Clamp [0,100] (SEC req #3); null -> 0%. Solo style.width numerico,
+       // NUNCA innerHTML (SEC req #1,#2).
+       var bar = document.getElementById('mission-bar-progress');
++      var posPct = (m.avancePct === null) ? 0 : Math.max(0, Math.min(100, m.avancePct));
+       if(bar){
+-        var pct = (m.avancePct === null) ? 0 : Math.max(0, Math.min(100, m.avancePct));
+-        var wStr = pct + '%';
++        var wStr = posPct + '%';
+         if(bar.style.width !== wStr) bar.style.width = wStr;
+       }
++      // #4500 — el marcador "ahora" del Timeline vive SOBRE la misma línea que el
++      // fill (#mission-bar-progress). Se posiciona por avancePct (clamp [0,100]);
++      // null -> cerca del inicio (0%). aria-label/title con el % TEXTUAL para no
++      // depender sólo de la posición visual (accesibilidad UX). Sólo style.left
++      // numérico + setAttribute con texto derivado — nunca innerHTML (XSS-safe).
++      var nowMark = document.getElementById('mission-tl-now');
++      if(nowMark){
++        var lStr = posPct + '%';
++        if(nowMark.style.left !== lStr) nowMark.style.left = lStr;
++        var lbl = 'Avance de la ola: ' + (m.avancePct === null ? 'sin dato aún' : m.avancePct + '%');
++        if(nowMark.getAttribute('aria-label') !== lbl){
++          nowMark.setAttribute('aria-label', lbl);
++          nowMark.setAttribute('title', lbl);
++        }
++      }
++      // La anotación de velocidad ancla al marcador "ahora" (UX: velocidad↔marcador).
++      var velAnnot = document.getElementById('mission-vel-annot');
++      if(velAnnot){ var vlStr = posPct + '%'; if(velAnnot.style.left !== vlStr) velAnnot.style.left = vlStr; }
+       var vv = document.getElementById('mission-vel-value');
+       if(vv){
+         // #4450 (G-UX-1) — la celda 🚀 VELOCIDAD expresa THROUGHPUT de entrega
+@@ -156,6 +240,9 @@ function missionOlaEtaClientScript() {
+         else { var h = Math.floor(x/60), r = Math.round(x%60); txt = r>0 ? h+'h '+r+'m' : h+'h'; }
+         if(ev.textContent !== txt) ev.textContent = txt;
+       }
++      // #4500 — sparkline de ritmo. La serie viaja en el payload crudo d.series
++      // (whitelist numerico del route), no en el objeto derivado m.
++      try{ renderMissionSpark(d && d.series); }catch(_){}
+     }catch(e){}
+   };
+   window.__tickMissionOlaEta = function(){
+diff --git a/.pipeline/runtime-boot.json b/.pipeline/runtime-boot.json
+new file mode 100644
+index 00000000..c1e95c56
+--- /dev/null
++++ b/.pipeline/runtime-boot.json
+@@ -0,0 +1,4 @@
++{
++  "sha": "de756a0e78af9c19c32b33694db7326f2c916d95",
++  "startedAt": "2026-07-06T01:42:49.882Z"
++}
+diff --git a/.pipeline/views/dashboard/home.js b/.pipeline/views/dashboard/home.js
+index 06ed68a0..5a520c55 100644
+--- a/.pipeline/views/dashboard/home.js
++++ b/.pipeline/views/dashboard/home.js
+@@ -1639,6 +1639,41 @@ function homeStyles() {
+ .mz-prog-legend span { display: flex; align-items: center; gap: 5px; }
+ .mz-prog-legend b { font-variant-numeric: tabular-nums; }
+ .mz-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
++/* #4500 — Timeline único de la ola (reemplaza .mz-mission-metrics + .mz-mission-prog).
++   Narrativa comienzo→ahora→cierre en UNA línea, con el fill de progreso SOBRE el
++   mismo rail, velocidad/entregados como anotaciones y un sparkline de ritmo debajo.
++   Sólo tokens de theme.css (cero hex nuevos): fill --in-accent→--in-ok, marcador
++   y sparkline --brand-cyan, velocidad --in-ok, entregados --in-info, dim --in-fg-dim. */
++.mz-timeline { margin-top: 14px; }
++.mz-tl-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
++.mz-tl-cap { display: flex; flex-direction: column; min-width: 0; }
++.mz-tl-cap-mid { align-items: center; }
++.mz-tl-cap-eta { align-items: flex-end; text-align: right; }
++.mz-tl-cap-l { font-size: 9.5px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#8b949e); }
++.mz-tl-cap-v { font-size: 15px; font-weight: 800; margin-top: 2px; line-height: 1; font-variant-numeric: tabular-nums; }
++.mz-tl-cap-s { font-size: 10px; color: var(--in-fg-dim,#8b949e); margin-top: 2px; }
++.mz-tl-cap .mz-wm-u { font-size: 11px; color: var(--in-fg-dim,#8b949e); font-weight: 600; }
++.mz-tl-cap-mid .mz-prog-pct { font-size: 22px; }
++.mz-tl-track { position: relative; margin-top: 34px; height: 8px; }
++.mz-tl-annots { position: absolute; left: 0; right: 0; bottom: 14px; height: 0; }
++.mz-tl-annot { position: absolute; bottom: 0; display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
++.mz-tl-annot .mz-wm-u { font-size: 10px; color: var(--in-fg-dim,#8b949e); font-weight: 600; }
++.mz-tl-annot-vel { transform: translateX(-50%); color: var(--in-ok,#3fb950); transition: left .4s ease; }
++.mz-tl-annot-del { right: 0; color: var(--in-info,#58a6ff); }
++.mz-tl-annot-s { color: var(--in-fg-dim,#8b949e); font-weight: 600; font-size: 10px; }
++.mz-tl-annot-l { color: var(--in-fg-dim,#8b949e); font-weight: 600; font-size: 10px; letter-spacing: .04em; }
++.mz-tl-rail { position: relative; height: 8px; border-radius: 6px; background: rgba(255,255,255,.07); }
++.mz-tl-fill { position: absolute; left: 0; top: 0; height: 100%; width: 0; border-radius: 6px;
++    background: linear-gradient(90deg, var(--in-accent,#2ee6c1), var(--in-ok,#3fb950)); transition: width .4s ease; }
++.mz-tl-now { position: absolute; top: 50%; left: 0; width: 14px; height: 14px; border-radius: 50%;
++    background: var(--brand-cyan,#34D9E0); border: 2px solid var(--in-bg-2,#161b22);
++    box-shadow: 0 0 0 3px rgba(52,217,224,.25); transform: translate(-50%,-50%); transition: left .4s ease; z-index: 2; }
++.mz-spark { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
++.mz-spark-cap { font-size: 9.5px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#8b949e); flex: none; }
++.mz-spark-plot { display: block; flex: 1; height: 24px; min-width: 60px; }
++.mz-spark-plot .mz-spark-svg { width: 100%; height: 100%; display: block; }
++.mz-spark-note { font-size: 10.5px; font-weight: 700; color: var(--brand-cyan,#34D9E0); flex: none; font-variant-numeric: tabular-nums; }
++.mz-tl-legend { margin-top: 14px; }
+ 
+ /* --- Nav curada: botón ⋯ Más + popover (<details>) --- */
+ .v3-nav { position: relative; flex-wrap: wrap; }
+@@ -4934,41 +4969,58 @@ function renderMissionBanner(state) {
+                 title="Marca contextual de la ola (p. ej. última del plan).">ÚLTIMA DEL PLAN</span>
+         </div>
+         <div class="mz-mission-desc" id="mission-wave-desc">Esperando la planificación de la ola activa.</div>
+-        <div class="mz-mission-metrics">
+-          <div class="mz-wm" id="mission-started-wm" title="Fecha y hora en que se activó la ola.">
+-            <div class="mz-wm-l">🗓️ COMIENZO</div>
+-            <div class="mz-wm-v" id="mission-started-value">—</div>
+-            <div class="mz-wm-s">inicio de la ola</div>
++        <div class="mz-timeline" id="mission-timeline" title="Línea de tiempo de la ola: comienzo, avance actual y cierre estimado.">
++          <div class="mz-tl-head">
++            <div class="mz-tl-cap mz-tl-cap-start" id="mission-started-wm" title="Fecha y hora en que se activó la ola.">
++              <span class="mz-tl-cap-l">🗓️ COMIENZO</span>
++              <span class="mz-tl-cap-v" id="mission-started-value">—</span>
++            </div>
++            <div class="mz-tl-cap mz-tl-cap-mid" title="Avance total de la ola.">
++              <span class="mz-tl-cap-l">AVANCE</span>
++              <span class="mz-prog-pct" id="mission-avance-pct">0%</span>
++            </div>
++            <div class="mz-tl-cap mz-tl-cap-eta" title="Tiempo estimado para cerrar la ola (proyección por velocidad de entrega).">
++              <span class="mz-tl-cap-l">⏳ ETA DE LA OLA</span>
++              <span class="mz-tl-cap-v" id="mission-eta-value">—</span>
++              <span class="mz-tl-cap-s" id="mission-eta-sub">cierre estimado</span>
++            </div>
+           </div>
+-          <div class="mz-wm" title="Tiempo estimado para cerrar la ola (proyección por velocidad / percentiles de duración).">
+-            <div class="mz-wm-l">⏳ ETA DE LA OLA</div>
+-            <div class="mz-wm-v" id="mission-eta-value">—</div>
+-            <div class="mz-wm-s" id="mission-eta-sub">cierre estimado</div>
++          <div class="mz-tl-track">
++            <div class="mz-tl-annots">
++              <div class="mz-tl-annot mz-tl-annot-vel" id="mission-vel-annot" style="left:0%"
++                   title="Velocidad de la ola: throughput de issues entregados por unidad de tiempo (issues/día).">
++                <span class="mz-tl-annot-ic" aria-hidden="true">🚀</span>
++                <span class="mz-tl-annot-l">VELOCIDAD</span>
++                <span class="mz-tl-annot-v" id="mission-vel-value">— <span class="mz-wm-u">issues/día</span></span>
++              </div>
++              <div class="mz-tl-annot mz-tl-annot-del"
++                   title="Issues entregados sobre el total de la ola.">
++                <span class="mz-tl-annot-ic" aria-hidden="true">📦</span>
++                <span class="mz-tl-annot-l">ENTREGADOS</span>
++                <span class="mz-tl-annot-v" id="mission-delivered-value">—<span class="mz-wm-u"> / —</span></span>
++                <span class="mz-tl-annot-s" id="mission-delivered-sub">restantes</span>
++              </div>
++            </div>
++            <div class="mz-tl-rail">
++              <i class="mz-tl-fill" id="mission-bar-progress" style="width:0%"></i>
++              <span class="mz-tl-now" id="mission-tl-now" style="left:0%"
++                    title="Avance de la ola: sin dato aún" aria-label="Avance de la ola: sin dato aún"></span>
++            </div>
+           </div>
+-          <div class="mz-wm" title="Velocidad de la ola: throughput de issues entregados por unidad de tiempo (issues/día).">
+-            <div class="mz-wm-l">🚀 VELOCIDAD</div>
+-            <div class="mz-wm-v" id="mission-vel-value">— <span class="mz-wm-u">issues/día</span></div>
+-            <div class="mz-wm-s">throughput de entrega</div>
++          <div class="mz-spark" id="mission-spark" aria-label="Ritmo de entrega: datos insuficientes"
++               title="Ritmo de entrega de la ola: variación del avance entre mediciones (acelerando / desacelerando).">
++            <span class="mz-spark-cap">📈 RITMO</span>
++            <span class="mz-spark-plot" id="mission-spark-plot"></span>
++            <span class="mz-spark-note" id="mission-spark-note">datos insuficientes</span>
+           </div>
+-          <div class="mz-wm" title="Issues entregados sobre el total de la ola.">
+-            <div class="mz-wm-l">📦 ENTREGADOS</div>
+-            <div class="mz-wm-v" id="mission-delivered-value">—<span class="mz-wm-u"> / —</span></div>
+-            <div class="mz-wm-s" id="mission-delivered-sub">restantes</div>
++          <div class="mz-prog-legend mz-tl-legend">
++            <span><i class="mz-dot" style="background:var(--in-ok,#3fb950)"></i> <b id="mission-leg-done">0</b> hechos</span>
++            <span><i class="mz-dot" style="background:var(--in-info,#58a6ff)"></i> <b id="mission-leg-active">0</b> activos</span>
++            <span><i class="mz-dot" style="background:var(--in-bad,#f85149)"></i> <b id="mission-leg-blocked">0</b> bloq.</span>
++            <span><i class="mz-dot" style="background:rgba(255,255,255,.25)"></i> <b id="mission-leg-queue">0</b> cola</span>
+           </div>
+         </div>
+       </div>
+-      <div class="mz-mission-prog" title="Avance total de la ola, desglosado por estado de sus issues.">
+-        <div class="mz-prog-head"><span>AVANCE</span><span class="mz-prog-pct" id="mission-avance-pct">—</span></div>
+-        <div class="mz-prog-bar">
+-          <i id="mission-bar-progress" style="width:0%;background:var(--in-ok,#3fb950)"></i>
+-        </div>
+-        <div class="mz-prog-legend">
+-          <span><i class="mz-dot" style="background:var(--in-ok,#3fb950)"></i> <b id="mission-leg-done">0</b> hechos</span>
+-          <span><i class="mz-dot" style="background:var(--in-info,#58a6ff)"></i> <b id="mission-leg-active">0</b> activos</span>
+-          <span><i class="mz-dot" style="background:var(--in-bad,#f85149)"></i> <b id="mission-leg-blocked">0</b> bloq.</span>
+-          <span><i class="mz-dot" style="background:rgba(255,255,255,.25)"></i> <b id="mission-leg-queue">0</b> cola</span>
+-        </div>
+-      </div>
+     </section>`;
+ }
+ 
+diff --git a/.pipeline/views/dashboard/mizpa-frame.js b/.pipeline/views/dashboard/mizpa-frame.js
+index cc008ccd..1d738fb5 100644
+--- a/.pipeline/views/dashboard/mizpa-frame.js
++++ b/.pipeline/views/dashboard/mizpa-frame.js
+@@ -267,6 +267,41 @@ const MIZPA_FRAME_CSS = `
+ .mz-prog-legend span { display: flex; align-items: center; gap: 5px; }
+ .mz-prog-legend b { font-variant-numeric: tabular-nums; }
+ .mz-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
++/* #4500 — Timeline único de la ola (reemplaza .mz-mission-metrics + .mz-mission-prog).
++   Narrativa comienzo→ahora→cierre en UNA línea, con el fill de progreso SOBRE el
++   mismo rail, velocidad/entregados como anotaciones y un sparkline de ritmo debajo.
++   Sólo tokens de theme.css (cero hex nuevos): fill --in-accent→--in-ok, marcador
++   y sparkline --brand-cyan, velocidad --in-ok, entregados --in-info, dim --in-fg-dim. */
++.mz-timeline { margin-top: 14px; }
++.mz-tl-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
++.mz-tl-cap { display: flex; flex-direction: column; min-width: 0; }
++.mz-tl-cap-mid { align-items: center; }
++.mz-tl-cap-eta { align-items: flex-end; text-align: right; }
++.mz-tl-cap-l { font-size: 9.5px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#8b949e); }
++.mz-tl-cap-v { font-size: 15px; font-weight: 800; margin-top: 2px; line-height: 1; font-variant-numeric: tabular-nums; }
++.mz-tl-cap-s { font-size: 10px; color: var(--in-fg-dim,#8b949e); margin-top: 2px; }
++.mz-tl-cap .mz-wm-u { font-size: 11px; color: var(--in-fg-dim,#8b949e); font-weight: 600; }
++.mz-tl-cap-mid .mz-prog-pct { font-size: 22px; }
++.mz-tl-track { position: relative; margin-top: 34px; height: 8px; }
++.mz-tl-annots { position: absolute; left: 0; right: 0; bottom: 14px; height: 0; }
++.mz-tl-annot { position: absolute; bottom: 0; display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
++.mz-tl-annot .mz-wm-u { font-size: 10px; color: var(--in-fg-dim,#8b949e); font-weight: 600; }
++.mz-tl-annot-vel { transform: translateX(-50%); color: var(--in-ok,#3fb950); transition: left .4s ease; }
++.mz-tl-annot-del { right: 0; color: var(--in-info,#58a6ff); }
++.mz-tl-annot-s { color: var(--in-fg-dim,#8b949e); font-weight: 600; font-size: 10px; }
++.mz-tl-annot-l { color: var(--in-fg-dim,#8b949e); font-weight: 600; font-size: 10px; letter-spacing: .04em; }
++.mz-tl-rail { position: relative; height: 8px; border-radius: 6px; background: rgba(255,255,255,.07); }
++.mz-tl-fill { position: absolute; left: 0; top: 0; height: 100%; width: 0; border-radius: 6px;
++    background: linear-gradient(90deg, var(--in-accent,#2ee6c1), var(--in-ok,#3fb950)); transition: width .4s ease; }
++.mz-tl-now { position: absolute; top: 50%; left: 0; width: 14px; height: 14px; border-radius: 50%;
++    background: var(--brand-cyan,#34D9E0); border: 2px solid var(--in-bg-2,#161b22);
++    box-shadow: 0 0 0 3px rgba(52,217,224,.25); transform: translate(-50%,-50%); transition: left .4s ease; z-index: 2; }
++.mz-spark { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
++.mz-spark-cap { font-size: 9.5px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#8b949e); flex: none; }
++.mz-spark-plot { display: block; flex: 1; height: 24px; min-width: 60px; }
++.mz-spark-plot .mz-spark-svg { width: 100%; height: 100%; display: block; }
++.mz-spark-note { font-size: 10.5px; font-weight: 700; color: var(--brand-cyan,#34D9E0); flex: none; font-variant-numeric: tabular-nums; }
++.mz-tl-legend { margin-top: 14px; }
+ @media (max-width: 880px) {
+     .mz-mission { flex-direction: column; align-items: stretch; }
+ }
+diff --git a/.pipeline/views/dashboard/pipeline-redesign.js b/.pipeline/views/dashboard/pipeline-redesign.js
+index 866027c7..e6772234 100644
+--- a/.pipeline/views/dashboard/pipeline-redesign.js
++++ b/.pipeline/views/dashboard/pipeline-redesign.js
+@@ -141,42 +141,74 @@ function renderMissionBannerPipeline() {
+                 title="Marca contextual de la ola (p. ej. última del plan).">ÚLTIMA DEL PLAN</span>
+         </div>
+         <div class="mz-mission-desc" id="mission-wave-desc">Cada issue de la ola recorre el flujo de fases de izquierda a derecha. Acá ves dónde está parado cada uno.</div>
+-        <div class="mz-mission-metrics">
+-          <div class="mz-wm" id="mission-started-wm" title="Fecha y hora en que se activó la ola.">
+-            <div class="mz-wm-l">🗓️ COMIENZO</div>
+-            <div class="mz-wm-v" id="mission-started-value">—</div>
+-            <div class="mz-wm-s">inicio de la ola</div>
++        ${renderMissionTimeline()}
++      </div>
++    </section>`;
++}
++
++// --- Timeline único de la ola (#4500) ---------------------------------------
++// Reemplaza las 4 stat-cards (.mz-wm) + la barra de avance separada (.mz-mission-prog)
++// por UN solo elemento narrativo: comienzo (izq.) → marcador "ahora" (por %) →
++// ETA (der.), con el fill de progreso SOBRE la misma línea y velocidad/entregados
++// como anotaciones. Debajo, un sparkline de ritmo (delta de avance). Conserva
++// TODOS los IDs hidratables (mission-started-value, mission-eta-value,
++// mission-vel-value, mission-delivered-value, mission-avance-pct,
++// mission-bar-progress, mission-leg-*) para no romper la hidratación por tick.
++// Fuente ÚNICA del markup: home.js (fallback inline) replica byte a byte este
++// bloque; si divergen, HOME sin el módulo común pinta un banner distinto (#4499).
++function renderMissionTimeline() {
++    return `
++        <div class="mz-timeline" id="mission-timeline" title="Línea de tiempo de la ola: comienzo, avance actual y cierre estimado.">
++          <div class="mz-tl-head">
++            <div class="mz-tl-cap mz-tl-cap-start" id="mission-started-wm" title="Fecha y hora en que se activó la ola.">
++              <span class="mz-tl-cap-l">🗓️ COMIENZO</span>
++              <span class="mz-tl-cap-v" id="mission-started-value">—</span>
++            </div>
++            <div class="mz-tl-cap mz-tl-cap-mid" title="Avance total de la ola.">
++              <span class="mz-tl-cap-l">AVANCE</span>
++              <span class="mz-prog-pct" id="mission-avance-pct">0%</span>
++            </div>
++            <div class="mz-tl-cap mz-tl-cap-eta" title="Tiempo estimado para cerrar la ola (proyección por velocidad de entrega).">
++              <span class="mz-tl-cap-l">⏳ ETA DE LA OLA</span>
++              <span class="mz-tl-cap-v" id="mission-eta-value">—</span>
++              <span class="mz-tl-cap-s" id="mission-eta-sub">cierre estimado</span>
++            </div>
+           </div>
+-          <div class="mz-wm" title="Tiempo estimado para cerrar la ola (proyección por velocidad de entrega).">
+-            <div class="mz-wm-l">⏳ ETA DE LA OLA</div>
+-            <div class="mz-wm-v" id="mission-eta-value">—</div>
+-            <div class="mz-wm-s" id="mission-eta-sub">cierre estimado</div>
++          <div class="mz-tl-track">
++            <div class="mz-tl-annots">
++              <div class="mz-tl-annot mz-tl-annot-vel" id="mission-vel-annot" style="left:0%"
++                   title="Velocidad de la ola: throughput de issues entregados por unidad de tiempo (issues/día).">
++                <span class="mz-tl-annot-ic" aria-hidden="true">🚀</span>
++                <span class="mz-tl-annot-l">VELOCIDAD</span>
++                <span class="mz-tl-annot-v" id="mission-vel-value">— <span class="mz-wm-u">issues/día</span></span>
++              </div>
++              <div class="mz-tl-annot mz-tl-annot-del"
++                   title="Issues entregados sobre el total de la ola.">
++                <span class="mz-tl-annot-ic" aria-hidden="true">📦</span>
++                <span class="mz-tl-annot-l">ENTREGADOS</span>
++                <span class="mz-tl-annot-v" id="mission-delivered-value">—<span class="mz-wm-u"> / —</span></span>
++                <span class="mz-tl-annot-s" id="mission-delivered-sub">restantes</span>
++              </div>
++            </div>
++            <div class="mz-tl-rail">
++              <i class="mz-tl-fill" id="mission-bar-progress" style="width:0%"></i>
++              <span class="mz-tl-now" id="mission-tl-now" style="left:0%"
++                    title="Avance de la ola: sin dato aún" aria-label="Avance de la ola: sin dato aún"></span>
++            </div>
+           </div>
+-          <div class="mz-wm" title="Velocidad de la ola: throughput de issues entregados por unidad de tiempo (issues/día).">
+-            <div class="mz-wm-l">🚀 VELOCIDAD</div>
+-            <div class="mz-wm-v" id="mission-vel-value">— <span class="mz-wm-u">issues/día</span></div>
+-            <div class="mz-wm-s">throughput de entrega</div>
++          <div class="mz-spark" id="mission-spark" aria-label="Ritmo de entrega: datos insuficientes"
++               title="Ritmo de entrega de la ola: variación del avance entre mediciones (acelerando / desacelerando).">
++            <span class="mz-spark-cap">📈 RITMO</span>
++            <span class="mz-spark-plot" id="mission-spark-plot"></span>
++            <span class="mz-spark-note" id="mission-spark-note">datos insuficientes</span>
+           </div>
+-          <div class="mz-wm" title="Issues entregados sobre el total de la ola.">
+-            <div class="mz-wm-l">📦 ENTREGADOS</div>
+-            <div class="mz-wm-v" id="mission-delivered-value">—<span class="mz-wm-u"> / —</span></div>
+-            <div class="mz-wm-s" id="mission-delivered-sub">restantes</div>
++          <div class="mz-prog-legend mz-tl-legend">
++            <span><i class="mz-dot" style="background:var(--in-ok,#3fb950)"></i> <b id="mission-leg-done">0</b> hechos</span>
++            <span><i class="mz-dot" style="background:var(--in-info,#58a6ff)"></i> <b id="mission-leg-active">0</b> activos</span>
++            <span><i class="mz-dot" style="background:var(--in-bad,#f85149)"></i> <b id="mission-leg-blocked">0</b> bloq.</span>
++            <span><i class="mz-dot" style="background:rgba(255,255,255,.25)"></i> <b id="mission-leg-queue">0</b> cola</span>
+           </div>
+-        </div>
+-      </div>
+-      <div class="mz-mission-prog" title="Avance total de la ola, desglosado por estado de sus issues.">
+-        <div class="mz-prog-head"><span>AVANCE</span><span class="mz-prog-pct" id="mission-avance-pct">0%</span></div>
+-        <div class="mz-prog-bar">
+-          <i id="mission-bar-progress" style="width:0%;background:var(--in-ok,#3fb950)"></i>
+-        </div>
+-        <div class="mz-prog-legend">
+-          <span><i class="mz-dot" style="background:var(--in-ok,#3fb950)"></i> <b id="mission-leg-done">0</b> hechos</span>
+-          <span><i class="mz-dot" style="background:var(--in-info,#58a6ff)"></i> <b id="mission-leg-active">0</b> activos</span>
+-          <span><i class="mz-dot" style="background:var(--in-bad,#f85149)"></i> <b id="mission-leg-blocked">0</b> bloq.</span>
+-          <span><i class="mz-dot" style="background:rgba(255,255,255,.25)"></i> <b id="mission-leg-queue">0</b> cola</span>
+-        </div>
+-      </div>
+-    </section>`;
++        </div>`;
+ }
+ 
+ // --- Bloque 1: Flujo de fases (SSR del esqueleto) ----------------------------
+@@ -329,6 +361,41 @@ const PIPELINE_REDESIGN_CSS = `
+ .mz-prog-legend span { display: flex; align-items: center; gap: 5px; }
+ .mz-prog-legend b { font-variant-numeric: tabular-nums; }
+ .mz-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
++/* #4500 — Timeline único de la ola (reemplaza .mz-mission-metrics + .mz-mission-prog).
++   Narrativa comienzo→ahora→cierre en UNA línea, con el fill de progreso SOBRE el
++   mismo rail, velocidad/entregados como anotaciones y un sparkline de ritmo debajo.
++   Sólo tokens de theme.css (cero hex nuevos): fill --in-accent→--in-ok, marcador
++   y sparkline --brand-cyan, velocidad --in-ok, entregados --in-info, dim --in-fg-dim. */
++.mz-timeline { margin-top: 14px; }
++.mz-tl-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
++.mz-tl-cap { display: flex; flex-direction: column; min-width: 0; }
++.mz-tl-cap-mid { align-items: center; }
++.mz-tl-cap-eta { align-items: flex-end; text-align: right; }
++.mz-tl-cap-l { font-size: 9.5px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#8b949e); }
++.mz-tl-cap-v { font-size: 15px; font-weight: 800; margin-top: 2px; line-height: 1; font-variant-numeric: tabular-nums; }
++.mz-tl-cap-s { font-size: 10px; color: var(--in-fg-dim,#8b949e); margin-top: 2px; }
++.mz-tl-cap .mz-wm-u { font-size: 11px; color: var(--in-fg-dim,#8b949e); font-weight: 600; }
++.mz-tl-cap-mid .mz-prog-pct { font-size: 22px; }
++.mz-tl-track { position: relative; margin-top: 34px; height: 8px; }
++.mz-tl-annots { position: absolute; left: 0; right: 0; bottom: 14px; height: 0; }
++.mz-tl-annot { position: absolute; bottom: 0; display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
++.mz-tl-annot .mz-wm-u { font-size: 10px; color: var(--in-fg-dim,#8b949e); font-weight: 600; }
++.mz-tl-annot-vel { transform: translateX(-50%); color: var(--in-ok,#3fb950); transition: left .4s ease; }
++.mz-tl-annot-del { right: 0; color: var(--in-info,#58a6ff); }
++.mz-tl-annot-s { color: var(--in-fg-dim,#8b949e); font-weight: 600; font-size: 10px; }
++.mz-tl-annot-l { color: var(--in-fg-dim,#8b949e); font-weight: 600; font-size: 10px; letter-spacing: .04em; }
++.mz-tl-rail { position: relative; height: 8px; border-radius: 6px; background: rgba(255,255,255,.07); }
++.mz-tl-fill { position: absolute; left: 0; top: 0; height: 100%; width: 0; border-radius: 6px;
++    background: linear-gradient(90deg, var(--in-accent,#2ee6c1), var(--in-ok,#3fb950)); transition: width .4s ease; }
++.mz-tl-now { position: absolute; top: 50%; left: 0; width: 14px; height: 14px; border-radius: 50%;
++    background: var(--brand-cyan,#34D9E0); border: 2px solid var(--in-bg-2,#161b22);
++    box-shadow: 0 0 0 3px rgba(52,217,224,.25); transform: translate(-50%,-50%); transition: left .4s ease; z-index: 2; }
++.mz-spark { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
++.mz-spark-cap { font-size: 9.5px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#8b949e); flex: none; }
++.mz-spark-plot { display: block; flex: 1; height: 24px; min-width: 60px; }
++.mz-spark-plot .mz-spark-svg { width: 100%; height: 100%; display: block; }
++.mz-spark-note { font-size: 10.5px; font-weight: 700; color: var(--brand-cyan,#34D9E0); flex: none; font-variant-numeric: tabular-nums; }
++.mz-tl-legend { margin-top: 14px; }
+ 
+ /* Bloques. */
+ .pl-block { background: linear-gradient(180deg, var(--in-bg-2,#11151E), var(--in-bg-3,#141925));
+diff --git a/.pipeline/views/dashboard/providers.js b/.pipeline/views/dashboard/providers.js
+index 081ef74e..30cc8311 100644
+--- a/.pipeline/views/dashboard/providers.js
++++ b/.pipeline/views/dashboard/providers.js
+@@ -623,6 +623,41 @@ const PANEL_CSS = `
+ .mz-prog-legend span { display: flex; align-items: center; gap: 5px; }
+ .mz-prog-legend b { font-variant-numeric: tabular-nums; }
+ .mz-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
++/* #4500 — Timeline único de la ola (reemplaza .mz-mission-metrics + .mz-mission-prog).
++   Narrativa comienzo→ahora→cierre en UNA línea, con el fill de progreso SOBRE el
++   mismo rail, velocidad/entregados como anotaciones y un sparkline de ritmo debajo.
++   Sólo tokens de theme.css (cero hex nuevos): fill --in-accent→--in-ok, marcador
++   y sparkline --brand-cyan, velocidad --in-ok, entregados --in-info, dim --in-fg-dim. */
++.mz-timeline { margin-top: 14px; }
++.mz-tl-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
++.mz-tl-cap { display: flex; flex-direction: column; min-width: 0; }
++.mz-tl-cap-mid { align-items: center; }
++.mz-tl-cap-eta { align-items: flex-end; text-align: right; }
++.mz-tl-cap-l { font-size: 9.5px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#8b949e); }
++.mz-tl-cap-v { font-size: 15px; font-weight: 800; margin-top: 2px; line-height: 1; font-variant-numeric: tabular-nums; }
++.mz-tl-cap-s { font-size: 10px; color: var(--in-fg-dim,#8b949e); margin-top: 2px; }
++.mz-tl-cap .mz-wm-u { font-size: 11px; color: var(--in-fg-dim,#8b949e); font-weight: 600; }
++.mz-tl-cap-mid .mz-prog-pct { font-size: 22px; }
++.mz-tl-track { position: relative; margin-top: 34px; height: 8px; }
++.mz-tl-annots { position: absolute; left: 0; right: 0; bottom: 14px; height: 0; }
++.mz-tl-annot { position: absolute; bottom: 0; display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
++.mz-tl-annot .mz-wm-u { font-size: 10px; color: var(--in-fg-dim,#8b949e); font-weight: 600; }
++.mz-tl-annot-vel { transform: translateX(-50%); color: var(--in-ok,#3fb950); transition: left .4s ease; }
++.mz-tl-annot-del { right: 0; color: var(--in-info,#58a6ff); }
++.mz-tl-annot-s { color: var(--in-fg-dim,#8b949e); font-weight: 600; font-size: 10px; }
++.mz-tl-annot-l { color: var(--in-fg-dim,#8b949e); font-weight: 600; font-size: 10px; letter-spacing: .04em; }
++.mz-tl-rail { position: relative; height: 8px; border-radius: 6px; background: rgba(255,255,255,.07); }
++.mz-tl-fill { position: absolute; left: 0; top: 0; height: 100%; width: 0; border-radius: 6px;
++    background: linear-gradient(90deg, var(--in-accent,#2ee6c1), var(--in-ok,#3fb950)); transition: width .4s ease; }
++.mz-tl-now { position: absolute; top: 50%; left: 0; width: 14px; height: 14px; border-radius: 50%;
++    background: var(--brand-cyan,#34D9E0); border: 2px solid var(--in-bg-2,#161b22);
++    box-shadow: 0 0 0 3px rgba(52,217,224,.25); transform: translate(-50%,-50%); transition: left .4s ease; z-index: 2; }
++.mz-spark { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
++.mz-spark-cap { font-size: 9.5px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#8b949e); flex: none; }
++.mz-spark-plot { display: block; flex: 1; height: 24px; min-width: 60px; }
++.mz-spark-plot .mz-spark-svg { width: 100%; height: 100%; display: block; }
++.mz-spark-note { font-size: 10.5px; font-weight: 700; color: var(--brand-cyan,#34D9E0); flex: none; font-variant-numeric: tabular-nums; }
++.mz-tl-legend { margin-top: 14px; }
+ @media (max-width: 1100px) { .mz-mission { flex-direction: column; align-items: stretch; } }
+ 
+ /* Banner de misión */
+diff --git a/.pipeline/views/dashboard/theme.css b/.pipeline/views/dashboard/theme.css
+index e0386e7d..963b4b67 100644
+--- a/.pipeline/views/dashboard/theme.css
++++ b/.pipeline/views/dashboard/theme.css
+@@ -401,6 +401,41 @@ a:hover { color: var(--in-accent); }
+ .mz-prog-legend span { display: flex; align-items: center; gap: 5px; }
+ .mz-prog-legend b { font-variant-numeric: tabular-nums; }
+ .mz-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
++/* #4500 — Timeline único de la ola (reemplaza .mz-mission-metrics + .mz-mission-prog).
++   Narrativa comienzo→ahora→cierre en UNA línea, con el fill de progreso SOBRE el
++   mismo rail, velocidad/entregados como anotaciones y un sparkline de ritmo debajo.
++   Sólo tokens de theme.css (cero hex nuevos): fill --in-accent→--in-ok, marcador
++   y sparkline --brand-cyan, velocidad --in-ok, entregados --in-info, dim --in-fg-dim. */
++.mz-timeline { margin-top: 14px; }
++.mz-tl-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
++.mz-tl-cap { display: flex; flex-direction: column; min-width: 0; }
++.mz-tl-cap-mid { align-items: center; }
++.mz-tl-cap-eta { align-items: flex-end; text-align: right; }
++.mz-tl-cap-l { font-size: 9.5px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#8b949e); }
++.mz-tl-cap-v { font-size: 15px; font-weight: 800; margin-top: 2px; line-height: 1; font-variant-numeric: tabular-nums; }
++.mz-tl-cap-s { font-size: 10px; color: var(--in-fg-dim,#8b949e); margin-top: 2px; }
++.mz-tl-cap .mz-wm-u { font-size: 11px; color: var(--in-fg-dim,#8b949e); font-weight: 600; }
++.mz-tl-cap-mid .mz-prog-pct { font-size: 22px; }
++.mz-tl-track { position: relative; margin-top: 34px; height: 8px; }
++.mz-tl-annots { position: absolute; left: 0; right: 0; bottom: 14px; height: 0; }
++.mz-tl-annot { position: absolute; bottom: 0; display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
++.mz-tl-annot .mz-wm-u { font-size: 10px; color: var(--in-fg-dim,#8b949e); font-weight: 600; }
++.mz-tl-annot-vel { transform: translateX(-50%); color: var(--in-ok,#3fb950); transition: left .4s ease; }
++.mz-tl-annot-del { right: 0; color: var(--in-info,#58a6ff); }
++.mz-tl-annot-s { color: var(--in-fg-dim,#8b949e); font-weight: 600; font-size: 10px; }
++.mz-tl-annot-l { color: var(--in-fg-dim,#8b949e); font-weight: 600; font-size: 10px; letter-spacing: .04em; }
++.mz-tl-rail { position: relative; height: 8px; border-radius: 6px; background: rgba(255,255,255,.07); }
++.mz-tl-fill { position: absolute; left: 0; top: 0; height: 100%; width: 0; border-radius: 6px;
++    background: linear-gradient(90deg, var(--in-accent,#2ee6c1), var(--in-ok,#3fb950)); transition: width .4s ease; }
++.mz-tl-now { position: absolute; top: 50%; left: 0; width: 14px; height: 14px; border-radius: 50%;
++    background: var(--brand-cyan,#34D9E0); border: 2px solid var(--in-bg-2,#161b22);
++    box-shadow: 0 0 0 3px rgba(52,217,224,.25); transform: translate(-50%,-50%); transition: left .4s ease; z-index: 2; }
++.mz-spark { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
++.mz-spark-cap { font-size: 9.5px; font-weight: 800; letter-spacing: .7px; color: var(--in-fg-dim,#8b949e); flex: none; }
++.mz-spark-plot { display: block; flex: 1; height: 24px; min-width: 60px; }
++.mz-spark-plot .mz-spark-svg { width: 100%; height: 100%; display: block; }
++.mz-spark-note { font-size: 10.5px; font-weight: 700; color: var(--brand-cyan,#34D9E0); flex: none; font-variant-numeric: tabular-nums; }
++.mz-tl-legend { margin-top: 14px; }
+ @media (max-width: 920px) {
+     .mz-mission { flex-direction: column; align-items: stretch; }
+ }

@@ -1,7 +1,7 @@
 # 🔁 Ejecución de Tareas Automáticas
 
 Precondición:
-1) Intentar mover issue a **In Progress**.
+1) Intentar mover issue a **In Progress** (al tomar de Todo; ver `16-status-transitions.md`).
 2) Si falla (permiso/error): mover a **Blocked** y comentar causa técnica
     + stacktrace/log.
 

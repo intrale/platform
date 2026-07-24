@@ -1,0 +1,78 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://intrale.dev/pipeline/cua-entregable.schema.json",
+  "title": "CUA Entregable",
+  "description": "Estructura del entregable parcial del CUA (Comando de Usuario Asistido) que se notifica a Telegram via deliverable-notify.notifyCua(). Issue #3541, cierre de CA-FUNC-1 + CA-SEC-4.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["command", "stage", "status"],
+  "properties": {
+    "command": {
+      "type": "string",
+      "description": "Nombre del comando CUA. Debe coincidir con cua.allowed_commands del config.yaml Y con la regex defensiva.",
+      "pattern": "^[a-z][a-z0-9-]{0,40}$",
+      "minLength": 1,
+      "maxLength": 41
+    },
+    "stage": {
+      "type": "string",
+      "description": "Etapa del comando que se notifica. Solo los listados en cua.notifiable_stages se envian a Telegram.",
+      "enum": ["init", "validation", "analysis", "completion"]
+    },
+    "status": {
+      "type": "string",
+      "description": "Resultado del stage. Determina el emoji de CA-UX-1 y el tono del audio TTS.",
+      "enum": ["ok", "fail", "in_progress"]
+    },
+    "preview": {
+      "type": "string",
+      "description": "Texto humano que se muestra en Telegram (max 1500 chars truncate) y se narra en TTS. CA-UX-2: imperativo, conciso, sin paths/hashes largos.",
+      "maxLength": 4000
+    },
+    "attachment": {
+      "type": "object",
+      "description": "Adjunto opcional. Path relativo al cua.attachment_subroot (bajo .pipeline/cua-outputs/) y tipo declarado.",
+      "additionalProperties": false,
+      "required": ["type", "path"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Extension declarada. Validada DOS veces: (a) contra whitelist hardcodeada de deliverable-notify, (b) contra la extension real del archivo.",
+          "enum": ["json", "csv", "xlsx", "pdf", "txt", "md", "log"]
+        },
+        "path": {
+          "type": "string",
+          "description": "Path al archivo. Debe estar bajo .pipeline/cua-outputs/<subroot>/ (CA-SEC-5). Path traversal explicito rechazado.",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "filename": {
+          "type": "string",
+          "description": "Nombre legible para el operador en Telegram (CA-UX-4). Opcional, default = basename(path).",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "caption": {
+          "type": "string",
+          "description": "Texto que acompana el adjunto (CA-UX-4). Opcional.",
+          "maxLength": 1024
+        }
+      }
+    },
+    "duration": {
+      "type": "number",
+      "description": "Duracion del stage en segundos. Opcional, informativo en el preview.",
+      "minimum": 0
+    },
+    "error": {
+      "type": "string",
+      "description": "Mensaje de error si status=fail. Se redacta antes del TTS (CA-SEC-7).",
+      "maxLength": 2000
+    },
+    "args": {
+      "type": "string",
+      "description": "Args del comando para mostrar en el header (CA-UX-5: '/comando <args>'). Opcional.",
+      "maxLength": 200
+    }
+  }
+}

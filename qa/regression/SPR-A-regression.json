@@ -1,0 +1,24 @@
+{
+  "sprint_id": "SPR-A",
+  "suite": "t",
+  "timestamp": "2026-05-16T13:50:42.959Z",
+  "summary": {
+    "total": 1,
+    "passed": 0,
+    "failed": 1,
+    "skipped": 0
+  },
+  "passed": false,
+  "results": [
+    {
+      "id": "R1",
+      "title": "T",
+      "app": "client",
+      "flow": "f.yaml",
+      "passed": false,
+      "skipped": false,
+      "error": "e",
+      "durationMs": 0
+    }
+  ]
+}

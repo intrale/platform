@@ -35,10 +35,21 @@ const { ADAPTER_STATUS, emptyResult } = require('./_shape');
 // Si en el futuro se suma un provider nuevo, se agrega acá Y se crea su
 // adapter en este directorio. Cualquier `provider` fuera de esta lista
 // hace fail-fast con `adapterStatus: 'error'`.
+// #3220 — Rename `gemini` → `gemini-google` (sign-off 2026-05-15). Adapter
+// stub trasladado a `gemini-google.js`. Sumamos también `cerebras` como stub
+// no-implementado — el wrapper real llega con #3198.
+//
+// #3353 (mayo 2026) — Groq fue descontinuado por política de bloqueos
+// arbitrarios. El adapter standalone y la entrada del switch se removieron.
+// #4533 — `nvidia-nim` se suma a la allowlist. API drop-in OpenAI-compatible
+// (headers `x-ratelimit-*`, idéntico a Cerebras). Adapter stub por ahora; la
+// cuota real se hidrata desde headers vía provider-quota.recordSample.
 const ALLOWED_PROVIDERS = Object.freeze([
     'anthropic',
     'openai-codex',
-    'gemini',
+    'gemini-google',
+    'cerebras',
+    'nvidia-nim',
     'ollama',
     'deterministic',
 ]);
@@ -54,7 +65,9 @@ function getAdapter(provider) {
     switch (provider) {
         case 'anthropic':       return require('./anthropic');
         case 'openai-codex':    return require('./openai-codex');
-        case 'gemini':          return require('./gemini');
+        case 'gemini-google':   return require('./gemini-google');
+        case 'cerebras':        return require('./cerebras');
+        case 'nvidia-nim':      return require('./nvidia-nim');
         case 'ollama':          return require('./ollama');
         case 'deterministic':   return require('./deterministic');
         default:                return null; // unreachable — la allowlist ya filtró.
@@ -69,8 +82,9 @@ function getAdapter(provider) {
  *   {
  *     metricsDir:        string,    path absoluto a .pipeline/metrics
  *     activityLogPath:   string,    path absoluto a .claude/activity-log.jsonl
- *     configLimitHours?: number,    límite del config (override)
- *     budgetUsd?:        number,    budget mensual (OpenAI/Codex)
+ *     configLimitHours?: number,    límite del config (override, Anthropic)
+ *     codexSessionsDir?: string,    override del dir de rollouts JSONL de Codex (#4898)
+ *     stalenessMs?:      number,    umbral de frescura Codex (#4598)
  *     now?:              number,    timestamp para tests determinísticos
  *   }
  * @returns {QuotaResult}

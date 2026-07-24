@@ -18,6 +18,7 @@
 //   6. QA artifacts viejos (qa/backend.log, qa/recordings/*)
 //   7. Consistencia agentes vs PRs (solo reporte)
 //   8. Entorno (Java, gh, disco — solo reporte)
+//   9. Branches stale (agent/* sin worktree, tip ya en origin/main) — issue #2398
 //
 // Uso CLI:
 //   node ghostbusters.js                 → dry-run completo (default seguro)
@@ -32,6 +33,7 @@
 //   node ghostbusters.js --qa            → solo qa artifacts
 //   node ghostbusters.js --agents        → solo consistencia agentes
 //   node ghostbusters.js --env           → solo entorno
+//   node ghostbusters.js --branches      → solo branches agent/* stale
 //
 // API programática:
 //   const gb = require('./ghostbusters');
@@ -51,6 +53,12 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync, spawnSync } = require('child_process');
+const staleBranchesLib = require('./lib/stale-branches');
+const gbWorktrees = require('./lib/ghostbusters-worktrees');
+const { isMarkerArtifact } = require('./lib/marker-artifact');
+// CA-B2/CA-SEC-5 — derivación de prefijo/regex compartida (sin re-duplicar 'platform.').
+const wtPrefix = require('./lib/worktree-prefix');
+const GB_MAIN = gbWorktrees.MAIN_REPO.replace(/\\/g, '/').toLowerCase();
 
 // -----------------------------------------------------------------------------
 // Constantes
@@ -88,7 +96,6 @@ const PROTECTED_FILES = new Set([
   'permissions-baseline.json', 'package.json', 'package-lock.json',
   'tg-session-store.json', 'tg-offsets.json', 'session-state.json',
   'agent-metrics.json', 'agent-participation.json', 'heartbeat-state.json',
-  'scrum-health-history.jsonl',
 ]);
 
 // -----------------------------------------------------------------------------
@@ -164,10 +171,17 @@ function parseCliArgs(argv) {
     explicitRun: flags.has('--run') || flags.has('--deep'),
     categories: new Set(),
   };
-  const knownCats = ['processes', 'worktrees', 'sessions', 'locks', 'logs', 'qa', 'agents', 'env'];
+  const knownCats = ['processes', 'worktrees', 'sessions', 'locks', 'logs', 'qa', 'agents', 'env', 'branches'];
   for (const c of knownCats) if (flags.has(`--${c}`)) opts.categories.add(c);
   if (opts.categories.size === 0) for (const c of knownCats) opts.categories.add(c);
   opts.dryRun = opts.explicitDryRun || !opts.explicitRun;
+  // #3943 — knobs del sweep de worktrees: --cap=N y --age-days=N
+  for (const a of argv) {
+    let m = a.match(/^--cap=(\d+)$/);
+    if (m) opts.worktreeCap = parseInt(m[1], 10);
+    m = a.match(/^--age-days=(\d+)$/);
+    if (m) opts.ageThresholdDays = parseInt(m[1], 10);
+  }
   return opts;
 }
 
@@ -275,39 +289,10 @@ function listWorktrees() {
   }
 }
 
+// #3943 — Migrado a lib/ghostbusters-worktrees.js: spawnSync con array de
+// argumentos (RS-2, sin shell interpolado) + testeable con spawnImpl.
 function isWorktreeSafeToDelete(wtPath, branch) {
-  try {
-    const status = execSync('git status --porcelain', {
-      cwd: wtPath, encoding: 'utf8', timeout: 10000, windowsHide: true,
-    }).trim();
-    const relevantChanges = status.split('\n').filter(l => {
-      if (!l.trim()) return false;
-      const filepath = l.substring(3).trim();
-      return !filepath.startsWith('.claude/') && !filepath.startsWith('.claude\\');
-    });
-    if (relevantChanges.length > 0) return { safe: false, reason: `${relevantChanges.length} archivo(s) sin commitear` };
-
-    if (branch) {
-      try {
-        const ahead = execSync(`git rev-list --count origin/${branch}..HEAD`, {
-          cwd: wtPath, encoding: 'utf8', timeout: 10000, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
-        }).trim();
-        const n = parseInt(ahead, 10) || 0;
-        if (n > 0) return { safe: false, reason: `${n} commit(s) ahead de origin/${branch}` };
-      } catch {
-        try {
-          const fromMain = execSync(`git rev-list --count origin/main..HEAD`, {
-            cwd: wtPath, encoding: 'utf8', timeout: 10000, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
-          }).trim();
-          const n = parseInt(fromMain, 10) || 0;
-          if (n > 0) return { safe: false, reason: `rama no pusheada con ${n} commit(s) sobre main` };
-        } catch {}
-      }
-    }
-    return { safe: true };
-  } catch (e) {
-    return { safe: false, reason: `no pude inspeccionar: ${e.message.slice(0, 60)}` };
-  }
+  return gbWorktrees.isWorktreeSafeToDelete(wtPath, branch);
 }
 
 function issueIsOpen(issueNum) {
@@ -348,27 +333,11 @@ function dirSizeBytes(dir) {
   }
 }
 
+// #3943 — Migrado a lib/ghostbusters-worktrees.js: guard anti-suicidio (RS-1)
+// como primera línea, cubriendo TANTO `git worktree remove` como el fallback
+// fs.rmSync recursivo. Git via spawnSync con array de args (RS-2).
 function removeWorktree(wtPath) {
-  try {
-    const claudeLink = path.join(wtPath, '.claude');
-    if (fs.existsSync(claudeLink)) {
-      try {
-        spawnSync('cmd', ['/c', 'rmdir', claudeLink.replace(/\//g, '\\')], {
-          timeout: 5000, windowsHide: true, stdio: 'ignore',
-        });
-      } catch {}
-    }
-    execSync(`git worktree remove "${wtPath}" --force`, {
-      cwd: ROOT, timeout: 30000, windowsHide: true, stdio: 'ignore',
-    });
-    if (fs.existsSync(wtPath)) {
-      try { fs.rmSync(wtPath, { recursive: true, force: true }); } catch {}
-    }
-    return true;
-  } catch (e) {
-    log(`⚠️ no pude remover ${wtPath}: ${e.message.slice(0, 120)}`);
-    return false;
-  }
+  return gbWorktrees.removeWorktree(wtPath, { mainRepo: ROOT, logger: log });
 }
 
 // -----------------------------------------------------------------------------
@@ -396,7 +365,8 @@ function pipelineHasActiveWork(issueNum) {
     for (const estado of activeStates) {
       const dir = path.join(PIPELINE, 'desarrollo', fase, estado);
       try {
-        const files = fs.readdirSync(dir);
+        const files = fs.readdirSync(dir)
+          .filter(f => !f.startsWith('.') && !f.endsWith('.gitkeep') && !isMarkerArtifact(f));
         if (files.some(f => f.startsWith(`${issueNum}.`))) return true;
       } catch {}
     }
@@ -404,21 +374,35 @@ function pipelineHasActiveWork(issueNum) {
   return false;
 }
 
-function findAbandonedWorktrees(procs) {
-  const worktrees = listWorktrees();
+function findAbandonedWorktrees(procs, opts = {}) {
+  const ageThresholdDays = opts.ageThresholdDays || gbWorktrees.DEFAULT_AGE_THRESHOLD_DAYS;
+  const worktrees = opts.worktrees || listWorktrees();
   const abandoned = [];
-  const myCwd = isPathMe();
+  const myCwd = opts.myCwd || isPathMe();
+  let siblingPrefix;
+  let agentWorktreeRe;
+  let liveCwdRe;
+  try {
+    const repoBase = wtPrefix.deriveRepoBase(opts.projectId, opts.configOverride);
+    const escapedRepoBase = repoBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    siblingPrefix = `${path.dirname(GB_MAIN)}/${wtPrefix.deriveSiblingPrefix(opts.projectId, opts.configOverride).toLowerCase()}`;
+    agentWorktreeRe = wtPrefix.agentWorktreeRegex(opts.projectId, opts.configOverride);
+    liveCwdRe = new RegExp(`C:[\\\\/]Workspaces[\\\\/]Intrale[\\\\/](${escapedRepoBase}[^\\\\/\\s"]*)`, 'i');
+  } catch (e) {
+    log(`WARN prefijo de worktree invalido: ${e.message.slice(0, 120)}`);
+    return [];
+  }
   const cwds = new Set();
   for (const p of procs) {
-    const m = p.cmd.match(/C:[\\/]Workspaces[\\/]Intrale[\\/](platform[^\\/\s"]*)/i);
+    const m = p.cmd.match(liveCwdRe);
     if (m) cwds.add(m[0].replace(/\\/g, '/').toLowerCase());
   }
   for (const wt of worktrees) {
     const wtPathNorm = wt.path.replace(/\\/g, '/');
     const wtLower = wtPathNorm.toLowerCase();
-    if (wtLower === 'c:/workspaces/intrale/platform') continue;
+    if (wtLower === GB_MAIN) continue;
     if (myCwd.startsWith(wtLower)) continue;
-    if (!wtLower.startsWith('c:/workspaces/intrale/platform.')) continue;
+    if (!wtLower.startsWith(siblingPrefix)) continue;
     let hasLiveProc = false;
     for (const cwd of cwds) {
       if (cwd.startsWith(wtLower)) { hasLiveProc = true; break; }
@@ -427,32 +411,46 @@ function findAbandonedWorktrees(procs) {
     const branch = wt.branch || '';
     let issueNum = null;
     let reason = null;
-    const agentMatch = wtPathNorm.match(/platform\.agent-(\d+)-/);
+    const agentMatch = wtPathNorm.match(agentWorktreeRe);
     const sessionMatch = wtPathNorm.match(/platform\.session-/);
     if (agentMatch) {
       issueNum = parseInt(agentMatch[1], 10);
-      const hasWork = pipelineHasActiveWork(issueNum);
-      const issueOpen = issueIsOpen(issueNum);
+      const hasWork = (opts.pipelineHasActiveWorkImpl || pipelineHasActiveWork)(issueNum);
+      const issueOpen = (opts.issueIsOpenImpl || issueIsOpen)(issueNum);
       if (!hasWork && !issueOpen) {
         reason = `issue #${issueNum} cerrado y sin trabajo activo`;
       } else if (!hasWork && issueOpen) {
-        const pr = prForBranch(branch);
+        const pr = (opts.prForBranchImpl || prForBranch)(branch);
         if (!pr) reason = `issue #${issueNum} abierto pero sin PR ni trabajo en pipeline`;
       }
     } else if (sessionMatch) {
-      const pr = prForBranch(branch);
+      const pr = (opts.prForBranchImpl || prForBranch)(branch);
       if (!pr) reason = `session sin PR abierto`;
     } else {
-      const pr = prForBranch(branch);
+      const pr = (opts.prForBranchImpl || prForBranch)(branch);
       if (!pr) reason = `rama sin PR abierto`;
     }
     if (reason) {
-      const safety = isWorktreeSafeToDelete(wt.path, branch);
+      // #3943 RS-3 — criterio compuesto: seguridad (todas) AND abandono (al
+      // menos una: rama inexistente en remoto O antigüedad > umbral). Un solo
+      // criterio NO alcanza para habilitar el borrado.
+      const safety = (opts.isWorktreeSafeToDeleteImpl || isWorktreeSafeToDelete)(wt.path, branch);
       if (!safety.safe) {
         abandoned.push({ path: wt.path, branch, issue: issueNum, reason, skip: true, skipReason: safety.reason });
-      } else {
-        abandoned.push({ path: wt.path, branch, issue: issueNum, reason });
+        continue;
       }
+      const checkAbandonment = opts.checkAbandonmentImpl || gbWorktrees.checkAbandonment;
+      const abandonment = checkAbandonment(wt.path, branch, {
+        mainRepo: ROOT,
+        ageThresholdDays,
+        projectId: opts.projectId,
+        configOverride: opts.configOverride,
+      });
+      if (!abandonment.abandoned) {
+        abandoned.push({ path: wt.path, branch, issue: issueNum, reason, skip: true, skipReason: abandonment.reason });
+        continue;
+      }
+      abandoned.push({ path: wt.path, branch, issue: issueNum, reason: `${reason}; ${abandonment.reason}` });
     }
   }
   return abandoned;
@@ -855,7 +853,7 @@ function run(opts = {}) {
   const dryRun = opts.dryRun === true;
   const cats = opts.categories instanceof Set
     ? opts.categories
-    : new Set(opts.categories || ['processes', 'worktrees', 'sessions', 'locks', 'logs', 'qa', 'agents', 'env']);
+    : new Set(opts.categories || ['processes', 'worktrees', 'sessions', 'locks', 'logs', 'qa', 'agents', 'env', 'branches']);
   const deep = opts.deep === true;
 
   const procs = wmicProcesses();
@@ -884,6 +882,8 @@ function run(opts = {}) {
     qaArtifacts: [],
     agentInconsistencies: [],
     envIssues: [],
+    staleBranches: [],
+    staleBranchesSkipped: [],
     ramFreedBytes: 0,
     diskFreedBytes: 0,
   };
@@ -914,20 +914,24 @@ function run(opts = {}) {
   }
 
   if (cats.has('worktrees')) {
-    const abandoned = findAbandonedWorktrees(procs);
-    for (const w of abandoned) {
-      const size = dirSizeBytes(w.path);
-      const entry = { path: w.path, branch: w.branch, issue: w.issue, reason: w.reason, diskBytes: size };
-      if (w.skip) {
-        entry.skipped = true;
-        entry.skipReason = w.skipReason;
-        entry.removed = false;
-      } else {
-        const ok = dryRun ? false : removeWorktree(w.path);
-        entry.removed = ok;
-        if (ok) report.diskFreedBytes += size;
-      }
-      report.worktrees.push(entry);
+    // #3943 RS-4 — cap por corrida (default 5) + audit log JSONL append-only
+    // en .pipeline/audit/ghostbusters-worktrees.jsonl. El sweep ejecuta el
+    // borrado solo fuera de dry-run; el audit registra ambos modos.
+    const abandoned = findAbandonedWorktrees(procs, { ageThresholdDays: opts.ageThresholdDays });
+    const candidates = abandoned.map(w => ({
+      path: w.path, branch: w.branch, issue: w.issue, reason: w.reason,
+      skip: w.skip, skipReason: w.skipReason,
+      diskBytes: dirSizeBytes(w.path),
+    }));
+    const entries = gbWorktrees.sweepWorktrees(candidates, {
+      cap: opts.worktreeCap || gbWorktrees.DEFAULT_CAP,
+      dryRun,
+      removeImpl: (p) => removeWorktree(p),
+      logger: log,
+    });
+    for (const e of entries) {
+      report.worktrees.push(e);
+      if (e.removed) report.diskFreedBytes += e.diskBytes || 0;
     }
   }
 
@@ -987,6 +991,45 @@ function run(opts = {}) {
     report.envIssues = findEnvIssues();
   }
 
+  // Branches stale agent/* — issue #2398
+  // Refresca origin/main para evitar falsos negativos cuando el local está
+  // desactualizado vs el remoto (sugerencia del análisis Guru).
+  if (cats.has('branches')) {
+    try {
+      const { candidates, skipped } = staleBranchesLib.detectStale({
+        repoRoot: ROOT,
+        fetchOrigin: true,
+        withIssueState: true,
+      });
+      const cleanResults = staleBranchesLib.cleanStale(candidates, {
+        repoRoot: ROOT,
+        dryRun,
+        backupTag: true,
+      });
+      // Merge: cada cleanResult ya trae name/issueNum/removed/backupTag/error.
+      // Sumamos reason e issueState del detect.
+      const candByName = new Map(candidates.map((c) => [c.name, c]));
+      report.staleBranches = cleanResults.map((r) => {
+        const det = candByName.get(r.name) || {};
+        return {
+          name: r.name,
+          issueNum: r.issueNum,
+          skill: det.skill,
+          issueState: det.issueState || r.issueState,
+          reason: det.reason,
+          removed: r.removed,
+          backupTag: r.backupTag,
+          error: r.error,
+        };
+      });
+      report.staleBranchesSkipped = skipped;
+    } catch (e) {
+      log(`⚠️ stale-branches falló: ${e.message.slice(0, 120)}`);
+      report.staleBranches = [];
+      report.staleBranchesSkipped = [];
+    }
+  }
+
   if (deep && !dryRun) {
     const deepDirs = [
       path.join(MAIN_ROOT, '.gradle'),
@@ -1026,7 +1069,8 @@ function fmtReport(r) {
   const otherCounts =
     r.worktrees.length + r.sessions.length + r.locks.length +
     r.logs.length + r.qaArtifacts.length +
-    r.agentInconsistencies.length + r.envIssues.length;
+    r.agentInconsistencies.length + r.envIssues.length +
+    (r.staleBranches ? r.staleBranches.length : 0);
 
   if (procCounts === 0 && otherCounts === 0) {
     lines.push('✅ Sistema sano. No hay fantasmas.');
@@ -1109,6 +1153,25 @@ function fmtReport(r) {
   section('Issues de entorno', r.envIssues, (e) =>
     `⚠️ ${e.kind}: ${e.detail}`);
 
+  // Branches stale agent/* (issue #2398)
+  if (r.staleBranches && r.staleBranches.length > 0) {
+    const removed = r.staleBranches.filter((b) => b.removed).length;
+    const tag = r.dryRun ? 'dry-run' : `${removed} borradas`;
+    lines.push(`*Branches stale (agent/*):* ${r.staleBranches.length} (${tag})`);
+    lines.push(`  Tip en origin/main, sin worktree, sin contenido único`);
+    const shownB = r.staleBranches.slice(0, MAX_PER_SECTION);
+    for (const b of shownB) {
+      const icon = r.dryRun ? '🔍' : (b.removed ? '🗑' : '⚠️');
+      const state = b.issueState && b.issueState !== 'UNKNOWN' ? ` ${b.issueState}` : '';
+      const errSuffix = !r.dryRun && !b.removed && b.error ? ` — ${b.error}` : '';
+      lines.push(`  ${icon} ${b.name} (issue #${b.issueNum}${state})${errSuffix}`);
+    }
+    if (r.staleBranches.length > MAX_PER_SECTION) {
+      lines.push(`  …y ${r.staleBranches.length - MAX_PER_SECTION} más`);
+    }
+    lines.push('');
+  }
+
   if (r.deepCleaned && r.deepCleaned.length > 0) {
     section('Deep clean', r.deepCleaned, (d) => {
       const icon = d.removed ? '🗑' : '⚠️';
@@ -1139,6 +1202,8 @@ if (require.main === module) {
     dryRun: opts.dryRun,
     categories: opts.categories,
     deep: opts.deep,
+    worktreeCap: opts.worktreeCap,
+    ageThresholdDays: opts.ageThresholdDays,
   });
   if (opts.json) {
     process.stdout.write(JSON.stringify(report, null, 2));
@@ -1147,4 +1212,8 @@ if (require.main === module) {
   }
 }
 
-module.exports = { run, fmtReport, parseCliArgs, isWhitelisted, WHITELIST, TH };
+module.exports = {
+  run, fmtReport, parseCliArgs, isWhitelisted, WHITELIST, TH,
+  // #3943 — lógica de worktrees extraída (testeable con spawnImpl/fsImpl)
+  removeWorktree, isWorktreeSafeToDelete, findAbandonedWorktrees,
+};

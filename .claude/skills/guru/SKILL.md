@@ -4,6 +4,7 @@ user-invocable: true
 argument-hint: "<pregunta-o-tema-a-investigar>"
 allowed-tools: Bash, Read, Glob, Grep, WebFetch, WebSearch
 model: claude-sonnet-4-6
+required_permissions: [file_read, bash, child_spawn, network_out]
 ---
 
 # /guru — Guru
@@ -175,3 +176,45 @@ Estructurá siempre el reporte así:
 - Incluir versión de la librería cuando des ejemplos de código
 - Si encontrás un patrón en el codebase, priorizarlo sobre la doc genérica
 - No modificar ningún archivo del proyecto — solo leer e investigar
+
+## Entregable de cierre de fase
+
+> Doctrina común (#3929 / EP3-H3): cada productor deja el **artefacto físico** de su fase, no sólo un comentario en el issue. Reglas completas de formato, paths y seguridad (CA-5..CA-9): [`docs/pipeline/entregables-multimedia-por-agente.md`](../../../docs/pipeline/entregables-multimedia-por-agente.md) → §5.bis "Doctrina de cierre de fase".
+
+Antes de salir (después de escribir tu resultado), generá el artefacto en el root issue-scoped:
+
+- **Path:** `.pipeline/assets/docs/{issue}/`
+- **Formato:** Markdown o PDF (análisis técnico; diagramas en SVG sanitizado)
+
+Usá el helper compartido, que centraliza validación de `issue` (CA-5), redacción de secrets (CA-6) y sanitización SVG (CA-8) — **no reimplementes estas reglas**:
+
+```js
+const path = require("path");
+const { writeDeliverable } = require(path.resolve(".pipeline/lib/write-deliverable"));
+// #4466 — pasar `fase` puebla el índice .pipeline/deliverables/<issue>.json (store #4255)
+// y da filename phase-scoped. Tomamos la fase real del pipeline desde el env inyectado.
+const fase = process.env.PIPELINE_FASE || "analisis";
+writeDeliverable("guru", issue, { fase, md /* o svg para mockups/diagramas */ });
+```
+
+### Prohibición de secrets (SEC-3 / CA-5)
+
+El dossier **se auto-publica a Telegram** al cerrar la fase. Por eso:
+
+- Documentá *tipos y requisitos* de credenciales de servicios externos (ej. "requiere una API key de tipo Bearer con scope `read:foo`"), **NUNCA valores reales** de tokens, keys, passwords ni secrets.
+- `writeDeliverable` redacta AWS keys / JWT / API keys por default (CA-6), pero es la última red — no dependas de la redacción para tapar un secret que no debería estar ahí.
+
+### El entregable de `guru` en Definición es OBLIGATORIO (#4504, CA-1)
+
+Ya **no** es warn-only: al cerrar `analisis` (Definición), guru siempre deja **document o excepción indexada**. Si de verdad el issue no amerita dossier (naturaleza que no aplica), registrá la excepción explícita en vez de cerrar sin nada — nunca un silencio:
+
+```js
+const { writeDeliverableException } = require(path.resolve(".pipeline/lib/write-deliverable"));
+// El `motivo` se redacta antes de persistir (SEC-1); igual, no pegues paths ni secrets.
+writeDeliverableException("guru", issue, {
+  fase,
+  motivo: "Issue puramente operativo/mecánico: no requiere investigación técnica ni comparativa de variantes.",
+});
+```
+
+Como red de seguridad, el Pulpo garantiza el entregable de guru/analisis aunque el SKILL no lo produzca (materializa el dossier desde las notas o registra la excepción). Pero el productor primario es este skill: dejá el dossier o la excepción vos mismo.

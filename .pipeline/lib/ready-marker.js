@@ -26,8 +26,12 @@ function ensureDir() {
   if (!fs.existsSync(READY_DIR)) fs.mkdirSync(READY_DIR, { recursive: true });
 }
 
-function markerPath(name) {
-  return path.join(READY_DIR, `${name}.ready`);
+// `readyDir` es opcional y por defecto apunta al directorio de markers del
+// checkout local (comportamiento histórico). El smoke-test lo usa para leer
+// los markers del runtime CANÓNICO cuando corre desde un worktree de agente,
+// donde el estado vivo no existe en la copia local del código (#4686).
+function markerPath(name, readyDir = READY_DIR) {
+  return path.join(readyDir, `${name}.ready`);
 }
 
 // Llamado desde cada componente cuando completó init.
@@ -50,9 +54,9 @@ function signalReady(name, meta = {}) {
 }
 
 // Lee marker si existe. Retorna null si no existe o es inválido.
-function readMarker(name) {
+function readMarker(name, readyDir = READY_DIR) {
   try {
-    const raw = fs.readFileSync(markerPath(name), 'utf8');
+    const raw = fs.readFileSync(markerPath(name, readyDir), 'utf8');
     return JSON.parse(raw);
   } catch {
     return null;
@@ -96,8 +100,8 @@ function clearMarker(name) {
 //   ready    → marker existe y PID está vivo
 //   stale    → marker existe pero el PID murió (crash o no-arrancó)
 //   missing  → no hay marker (aún no señalizó ready)
-function componentState(name) {
-  const m = readMarker(name);
+function componentState(name, readyDir = READY_DIR) {
+  const m = readMarker(name, readyDir);
   if (!m) return { state: 'missing', marker: null };
   if (!pidAlive(m.pid)) return { state: 'stale', marker: m };
   return { state: 'ready', marker: m };
@@ -107,14 +111,14 @@ function componentState(name) {
 // o hasta que se agote el timeout. Retorna detalle por componente.
 // Si `timeoutMs` se agota con alguno aún en `missing`, ese se reporta
 // como tal (no como fail duro) — el caller decide qué hacer.
-async function waitForMarkers(names, timeoutMs = 60000, pollMs = 1000) {
+async function waitForMarkers(names, timeoutMs = 60000, pollMs = 1000, readyDir = READY_DIR) {
   const deadline = Date.now() + timeoutMs;
   let last = {};
   while (Date.now() < deadline) {
     last = {};
     let allReady = true;
     for (const name of names) {
-      const st = componentState(name);
+      const st = componentState(name, readyDir);
       last[name] = st;
       if (st.state !== 'ready') allReady = false;
     }

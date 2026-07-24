@@ -203,3 +203,130 @@ test('isIssueAllowedInState — partial_pause con allowedIssues no-array es segu
     const state = { mode: 'partial_pause' };
     assert.equal(pp.isIssueAllowedInState(2891, state), false);
 });
+
+// ─── #4030 — Metadata estructurada de la ola (campos aditivos) ──────────────
+
+function readPartialRaw() {
+    const { PARTIAL_FILE } = pp._paths();
+    return JSON.parse(fs.readFileSync(PARTIAL_FILE, 'utf8'));
+}
+
+test('#4030: setPartialPause persiste wave_number/wave_name/wave_goal cuando se proveen por opts', () => {
+    resetFs();
+    pp.setPartialPause([4030], {
+        source: 'telegram:commander',
+        waveNumber: 4,
+        waveName: 'Memoria + dashboard operativo núcleo',
+        waveGoal: 'Núcleo operativo.',
+    });
+    const raw = readPartialRaw();
+    assert.equal(raw.wave_number, 4);
+    assert.equal(raw.wave_name, 'Memoria + dashboard operativo núcleo');
+    assert.equal(raw.wave_goal, 'Núcleo operativo.');
+});
+
+test('#4030: setPartialPause NO escribe los campos de ola cuando no se proveen', () => {
+    resetFs();
+    pp.setPartialPause([4030], { source: 'telegram' });
+    const raw = readPartialRaw();
+    assert.equal('wave_number' in raw, false);
+    assert.equal('wave_name' in raw, false);
+    assert.equal('wave_goal' in raw, false);
+});
+
+test('#4030: setPartialPauseAtomic persiste los campos de ola saneados (cap + strip prefijo)', () => {
+    resetFs();
+    pp.setPartialPauseAtomic([4030], {
+        source: 'wave-promote-atomic',
+        authorizedBy: 'wave-promote',
+        waveNumber: 5,
+        waveName: 'Ola 5 — Título con prefijo',
+        waveGoal: 'g'.repeat(600),
+    });
+    const raw = readPartialRaw();
+    assert.equal(raw.wave_number, 5);
+    assert.equal(raw.wave_name, 'Título con prefijo', 'strip del prefijo "Ola N — "');
+    assert.equal(raw.wave_goal.length, 500, 'cap de goal a 500');
+});
+
+test('#4030: meta de ola inválida (number ≤0 / name no-string) NO se persiste', () => {
+    resetFs();
+    pp.setPartialPause([4030], {
+        source: 'telegram',
+        waveNumber: 0,
+        waveName: 'Nombre',
+    });
+    const raw = readPartialRaw();
+    assert.equal('wave_number' in raw, false);
+    assert.equal('wave_name' in raw, false);
+});
+
+test('#4030: sanitizeWaveMetaForWrite strip de control-chars', () => {
+    const m = pp.sanitizeWaveMetaForWrite({ waveNumber: 4, waveName: 'Mem\x00oria\x1f' });
+    assert.equal(m.wave_name, 'Memoria');
+    assert.equal(m.wave_number, 4);
+});
+
+// -----------------------------------------------------------------------------
+// #4832 — readFullPauseOrigin (fail-closed): distingue pausa auto-generada por
+// corrupción de config (recuperable) de pausa manual/legacy (persistente).
+// -----------------------------------------------------------------------------
+
+function writePauseFile(content) {
+    const { PAUSE_FILE } = pp._paths();
+    fs.writeFileSync(PAUSE_FILE, content);
+}
+
+test('#4832: marker JSON con source=config-corruption-halt → recuperable', () => {
+    resetFs();
+    writePauseFile(JSON.stringify({
+        source: 'config-corruption-halt',
+        ts: '2026-07-21T00:00:00.000Z',
+        detail: 'YAML inválido (línea 3, col 1)',
+    }));
+    const origin = pp.readFullPauseOrigin();
+    assert.equal(origin.source, 'config-corruption-halt');
+});
+
+test('#4832: marker ISO plano legacy → manual (NO recuperable)', () => {
+    resetFs();
+    writePauseFile('2026-07-21T00:00:00.000Z');
+    assert.equal(pp.readFullPauseOrigin().source, 'manual');
+});
+
+test('#4832: marker JSON con otro source → manual (NO recuperable)', () => {
+    resetFs();
+    writePauseFile(JSON.stringify({ source: 'manual', ts: '2026-07-21T00:00:00.000Z' }));
+    assert.equal(pp.readFullPauseOrigin().source, 'manual');
+});
+
+test('#4832: marker JSON sin campo source → manual (NO recuperable)', () => {
+    resetFs();
+    writePauseFile(JSON.stringify({ ts: '2026-07-21T00:00:00.000Z' }));
+    assert.equal(pp.readFullPauseOrigin().source, 'manual');
+});
+
+test('#4832: marker JSON malformado → manual (NO recuperable)', () => {
+    resetFs();
+    writePauseFile('{ source: "config-corruption-halt"');  // JSON roto
+    assert.equal(pp.readFullPauseOrigin().source, 'manual');
+});
+
+test('#4832: marker vacío → manual (NO recuperable)', () => {
+    resetFs();
+    writePauseFile('   ');
+    assert.equal(pp.readFullPauseOrigin().source, 'manual');
+});
+
+test('#4832: sin marker .paused → unknown (NO recuperable)', () => {
+    resetFs();
+    const origin = pp.readFullPauseOrigin();
+    assert.equal(origin.source, 'unknown');
+    assert.equal(origin.raw, null);
+});
+
+test('#4832: source config-corruption-halt como substring pero no exacto → manual', () => {
+    resetFs();
+    writePauseFile(JSON.stringify({ source: 'config-corruption-halt-manual' }));
+    assert.equal(pp.readFullPauseOrigin().source, 'manual');
+});

@@ -20,6 +20,13 @@
 
 'use strict';
 
+// #3517 — `fmtAbsoluteHHMM` se trasladó a `lib/eta-markers.js` para que tanto
+// este módulo (card render del dashboard) como `lib/eta-wave.js` (panel de
+// ola) puedan importarlo sin duplicarlo. Aquí lo re-exportamos verbatim para
+// preservar el contrato público de `eta.js` (CA-F3: la firma `fmtAbsoluteHHMM`
+// sigue disponible desde `require('./lib/eta')`).
+const { fmtAbsoluteHHMM } = require('./eta-markers');
+
 const DEFAULT_STUCK_THRESHOLD_PCT = 150;
 
 /**
@@ -144,16 +151,8 @@ function computeLaneEmptyEta(issuesEta) {
   return maxAbs;
 }
 
-/**
- * Formatea un epoch ms a "HH:MM" en hora local.
- */
-function fmtAbsoluteHHMM(epochMs) {
-  if (!epochMs) return '—';
-  const d = new Date(epochMs);
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  return `${hh}:${mm}`;
-}
+// fmtAbsoluteHHMM se importa desde `./eta-markers` (ver header). Se re-exporta
+// más abajo para mantener el contrato público de este módulo.
 
 module.exports = {
   computeIssueEta,

@@ -104,7 +104,7 @@ test('CA-4 #2 · path fuera de exclusión SÍ aparece (anti-falso-positivo)', ()
   ];
   const result = filter.filterPathsForProvider({
     paths: safePaths,
-    provider: 'gemini',
+    provider: 'gemini-google',
     exclusions: sidecar.exclusions,
     defaultPolicy: sidecar.default_policy,
   });
@@ -157,7 +157,7 @@ test('CA-4 #3b · path_hash es SHA-256 truncado a 12 hex', () => {
 test('CA-4 #3c · appendAudit no escribe nada cuando blocked está vacío', () => {
   const tmp = makeTmpDir('audit-empty');
   const auditPath = path.join(tmp, 'audit.jsonl');
-  const r = filter.appendAudit({ skill: 'qa', provider: 'gemini', blocked: [], auditPath });
+  const r = filter.appendAudit({ skill: 'qa', provider: 'gemini-google', blocked: [], auditPath });
   assert.equal(r.written, 0);
   assert.equal(fs.existsSync(auditPath), false);
 });
@@ -346,12 +346,12 @@ test('normalizePath · convierte backslashes Windows a forward slashes', () => {
 test('Integración · exclusión por nombre de provider concreto matchea ese provider, no otros', () => {
   const sidecar = defaultSidecar({
     exclusions: [
-      { pattern: 'special/file.json', providers: ['gemini'], motivo: 'solo gemini' },
+      { pattern: 'special/file.json', providers: ['gemini-google'], motivo: 'solo gemini-google' },
     ],
   });
   const r1 = filter.filterPathsForProvider({
     paths: ['special/file.json', 'other/file.json'],
-    provider: 'gemini',
+    provider: 'gemini-google',
     exclusions: sidecar.exclusions,
     defaultPolicy: sidecar.default_policy,
   });

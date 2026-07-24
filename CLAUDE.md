@@ -193,6 +193,23 @@ gh pr view --json labels --jq '.labels[].name' | grep -E "qa:passed|qa:skipped"
 ```
 Si no existe ninguno de los dos labels → **BLOQUEAR merge** y escalar a `/qa`.
 
+### Gate de aceptación humano (GATE 2) — modelo previsto, NO enforzado aún
+
+> **Estado:** modelo objetivo / previsto. **No enforzado aún** por el pipeline. Diseño completo en `docs/pipeline/gates-firma-operador.md`. Este bloque **describe** el modelo, no afirma enforcement vigente.
+
+El modelo operativo de gates de firma del operador prevé un **gate de aceptación humano (GATE 2)** que se suma a la cadena de QA vigente, **sin reemplazarla**:
+
+```
+QA E2E → Tester → PO acceptance → 🔵 GATE 2 · Firma de Aceptación humana (previsto, no enforzado aún)
+```
+
+- **GATE 2** frena el merge a `main` de cambios visuales/producto que el operador no verificó, adjuntando evidencia autogenerada (render vs mockup, tests, muestra de API).
+- **Fail-closed:** ante no-respuesta del operador, el gate **bloquea y escala** (`needs-human` / circuit breaker); **NUNCA auto-aprueba al vencer el timeout**. Ningún ítem gateado (merge a `main`, delivery/deploy a Lambda, mutación de estado del pipeline) degrada a automático por silencio.
+- **Autoridad e integridad:** sólo una identidad autorizada (por default `leitolarreta`, o un aprobador de respaldo designado) puede firmar; cada firma se registra de forma no repudiable (quién / qué commit-PR / cuándo) y queda atada al commit firmado.
+- **Coexistencia (no relaja el gate de QA):** los labels `qa:passed` / `qa:skipped` siguen siendo **obligatorios** y **coexisten** con GATE 2; el gate humano **no los sustituye ni los relaja**.
+
+Ver matriz auto-vs-gateado y política de timeout/defaults en `docs/pipeline/gates-firma-operador.md` (§11, §12, §13).
+
 ## Lanzamiento de agentes (CRITICO)
 
 Los agentes se lanzan automáticamente por el **Pulpo** (`.pipeline/pulpo.js`). El pipeline V2 gestiona todo el ciclo de vida:

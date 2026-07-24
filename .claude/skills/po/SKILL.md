@@ -4,6 +4,7 @@ user-invocable: true
 argument-hint: "[definir <area>|validar <issue>|acceptance <issue>|revisar-ux <pantalla>|revisar-videos <issue>|gaps]"
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob, WebSearch, TaskCreate, TaskUpdate, TaskList
 model: claude-sonnet-4-6
+required_permissions: [file_read, file_write_repo, bash, child_spawn, network_out, tool_use_gated]
 ---
 
 # /po — Product Owner
@@ -878,3 +879,130 @@ Si se detectaron gaps nuevos, actualizar la sección "Gaps conocidos" en `.claud
   ```bash
   export PATH="/c/Workspaces/gh-cli/bin:$PATH"
   ```
+
+## Criterio de aceptación visual en validación post-construcción (#3383)
+
+Para issues con labels `app:client | app:business | app:delivery`, además de
+los criterios de aceptación funcionales, validar visualmente que la entrega
+matchea el mockup esperado adjunto en definición.
+
+**Protocolo de validación**:
+
+1. **Verificar definición visual completa**:
+   - El issue tiene sección `## Screenshots & Mockups` con al menos un mockup
+     esperado + casos borde (vacío, error, datos largos).
+   - El mockup no fue invalidado por un rebote anterior sin re-confirmación de
+     UX (CA-15 — buscar comment `✓ mockup re-confirmado` o `⟳ mockup
+     regenerado` en el último ciclo).
+
+2. **Leer el rejection report visual** si QA emitió uno:
+   - El PDF incluye bloque side-by-side mockup vs entrega (CA-12).
+   - Lista de 3-5 diferencias narradas con título + descripción objetivable +
+     impacto clasificado (CA-13).
+   - Audio narrado (~60s) lee las diferencias + acción sugerida (CA-14).
+
+3. **Aplicar criterio de impacto al veredicto**:
+   - Si todos los hallazgos son **bajo**: el visual es probablemente aceptable.
+     Evaluar `WONTFIX` con razón documentada, no rebote.
+   - Si hay al menos uno **medio**: rebotar al dev — la jerarquía o legibilidad
+     está afectada.
+   - Si hay al menos uno **alto**: rebote bloqueante — afecta la acción
+     principal del usuario.
+
+4. **Validar objetividad de los hallazgos antes de rebotar**:
+   - Si un hallazgo dice "no me gusta" / "queda raro" / "medio feo" sin citar
+     tokens/números/patrones → escalar a UX antes de pasar al dev. No rebotamos
+     al dev con feedback subjetivo.
+   - Si hay duda sobre si el mockup sigue vigente → pedir re-confirmación a UX
+     antes de rebotar.
+
+**Anti-patrones**:
+- Aprobar funcional sin mirar el bloque side-by-side cuando el rejection
+  report visual está presente.
+- Rebotar al dev con feedback de UX que UX nunca validó.
+- Pasar por alto el visual mismatch porque "los tests pasan".
+
+Guía completa: `docs/pipeline/visual-validation.md §6` (checklist UX para PO
+durante validación visual).
+
+## Entregable de cierre de fase
+
+> Doctrina común (#3929 / EP3-H3): cada productor deja el **artefacto físico** de su fase, no sólo un comentario en el issue. Reglas completas de formato, paths y seguridad (CA-5..CA-9): [`docs/pipeline/entregables-multimedia-por-agente.md`](../../../docs/pipeline/entregables-multimedia-por-agente.md) → §5.bis "Doctrina de cierre de fase".
+
+Antes de salir (después de escribir tu resultado), generá el artefacto en el root issue-scoped:
+
+- **Path:** `.pipeline/assets/docs/{issue}/`
+- **Formato:** Markdown o PDF (criterios de aceptación)
+
+Usá el helper compartido, que centraliza validación de `issue` (CA-5), redacción de secrets (CA-6) y sanitización SVG (CA-8) — **no reimplementes estas reglas**:
+
+```js
+const path = require("path");
+const { writeDeliverable } = require(path.resolve(".pipeline/lib/write-deliverable"));
+// #4466 — pasar `fase` puebla el índice .pipeline/deliverables/<issue>.json (store #4255)
+// y da filename phase-scoped. Tomamos la fase real del pipeline desde el env inyectado.
+const fase = process.env.PIPELINE_FASE || "criterios";
+writeDeliverable("po", issue, { fase, md /* o svg para mockups/diagramas */ });
+```
+
+### Obligatorio en fase `criterios`: Ficha de definición (#4502)
+
+Si `fase === "criterios"` (Definición), la generación del entregable es
+**obligatoria**, ya NO warn-only. Al cerrar la fase, el pulpo verifica —de forma
+**autoritativa**— que dejaste la Ficha de definición en el store
+`issue → criterios → po`. Si no está y no registraste excepción, el pulpo
+**retiene** la fase (no promueve a `sizing`), comenta el issue de forma
+accionable y te re-encola para que la produzcas (circuit breaker: máx 3 intentos
+→ label `needs-human`).
+
+> El pulpo también corre un **backstop**: si dejaste notas sustantivas en tu
+> YAML pero no llamaste `writeDeliverable`, materializa la ficha por vos. Aun
+> así, la vía correcta es llamar `writeDeliverable` explícitamente.
+
+### Excepción explícita en Definición (cuando no aplica)
+
+Si por la naturaleza del issue el entregable de Definición **no aplica**, NO lo
+omitas en silencio: declaralo como **input** en tu YAML de resultado. El pulpo
+valida el motivo y escribe la entry autoritativa `tipo:'exception'` en el store;
+vos **no** escribís el índice a mano (SEC-REQ-1):
+
+```yaml
+resultado: aprobado
+entregable_no_aplica: true
+motivo_no_aplica: "Explicación en criollo de por qué no aplica (mínimo 15 chars, legible)."
+```
+
+`entregable_no_aplica` + `motivo_no_aplica` son **input**, NO un flag de bypass:
+la decisión de aceptar la excepción y cerrar la fase la toma el pulpo. Un motivo
+vacío o demasiado corto NO habilita la excepción.
+
+### Obligatorio en fase `aprobacion`: veredicto de aceptación (#4515)
+
+Si `fase === "aprobacion"`, el entregable **no es opcional**. Después de determinar
+el dictamen en RV5, SIEMPRE persistí el veredicto con:
+
+```js
+const path = require("path");
+const { writeDeliverable } = require(path.resolve(".pipeline/lib/write-deliverable"));
+const fase = process.env.PIPELINE_FASE || "aprobacion";
+
+// OBLIGATORIO en aprobacion: veredicto o excepción explícita, nunca silencio.
+const md = veredictoMarkdown;
+writeDeliverable("po", issue, { fase, md });
+```
+
+El `md` del veredicto debe contener, como mínimo:
+
+- Primera línea escaneable con el dictamen final: `✅ aceptado` o `❌ rechazado`.
+- Cada criterio de aceptación uno por uno, con estado y evidencia de QA asociada.
+- Sección **Brechas** cuando el dictamen sea rechazado, con gaps concretos.
+- Sección **Alcance evaluado** con issue, fase, artefactos QA revisados y límites de la evaluación.
+
+Si por la naturaleza del issue el veredicto-entregable no aplica, igual llamá
+`writeDeliverable("po", issue, { fase: "aprobacion", md })` con un bloque destacado
+que registre el motivo de la excepción. En `aprobacion`, cerrar sin archivo y sin
+motivo explícito es incumplimiento del contrato de fase.
+
+Para fases distintas de `criterios` y `aprobacion`, el enforcement sigue siendo
+**warn-only**: no generar el archivo no bloquea el pipeline, pero cuenta para la
+cobertura ≥80% de la ola (CA-4).

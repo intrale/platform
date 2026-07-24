@@ -1,0 +1,15 @@
+{
+  "issue": 4504,
+  "entries": [
+    {
+      "issue": 4504,
+      "fase": "criterios",
+      "agente": "ux",
+      "tipo": "exception",
+      "motivo": "no aplica [REDACTED]",
+      "bytes": null,
+      "sensible": false,
+      "timestamp": "2026-07-07T15:33:54.403Z"
+    }
+  ]
+}

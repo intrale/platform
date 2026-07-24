@@ -48,7 +48,7 @@
         "launcher": {
           "type": "string",
           "description": "Alias del launcher. DEBE estar dentro del allowlist hardcoded de pulpo.js (issue S3 + §6.10 del doc).",
-          "enum": ["claude", "codex", "gemini", "ollama", "node"]
+          "enum": ["claude", "codex", "gemini-google", "groq", "cerebras", "ollama", "node"]
         },
         "model": {
           "type": "string",

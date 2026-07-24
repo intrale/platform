@@ -185,18 +185,19 @@ test('merge: openai/edge de un perfil se mergean con defaults si faltan campos',
   assert.equal(r.edge.character_name, 'Tommy');      // heredado de DEFAULT
 });
 
-test('tts-config.json real tiene 13 perfiles y todos tienen primary/fallback/openai/edge', () => {
+// Post-#3992 (retiro de OpenAI/ElevenLabs de la cadena multimedia) los perfiles
+// son edge-only: primary='edge', fallback=null y sin objeto `openai`. Post-#4093
+// se agrego el perfil `need-human`, quedando 14 perfiles.
+test('tts-config.json real tiene 14 perfiles edge-only con edge.character_name', () => {
   const real = JSON.parse(fs.readFileSync(path.join(__dirname, 'tts-config.json'), 'utf8'));
   assert.ok(real.profiles);
   const profileNames = Object.keys(real.profiles);
-  assert.equal(profileNames.length, 13);
+  assert.equal(profileNames.length, 14);
   for (const name of profileNames) {
     const p = real.profiles[name];
-    assert.ok(p.primary, `${name}: falta primary`);
-    assert.ok(p.fallback, `${name}: falta fallback`);
-    assert.ok(p.openai, `${name}: falta openai`);
+    assert.equal(p.primary, 'edge', `${name}: primary deberia ser edge (motor unico post-#3992)`);
+    assert.equal(p.fallback, null, `${name}: fallback deberia ser null (OpenAI retirado)`);
     assert.ok(p.edge, `${name}: falta edge`);
-    assert.ok(p.openai.character_name, `${name}: openai sin character_name`);
     assert.ok(p.edge.character_name, `${name}: edge sin character_name`);
   }
 });
@@ -209,16 +210,15 @@ test('tts-config.json real tiene todos los agentes esperados', () => {
   }
 });
 
-test('tts-config.json: perfil qa tiene primary edge (por costo)', () => {
+test('tts-config.json: perfil qa es edge-only (Nacho) por costo', () => {
   const real = JSON.parse(fs.readFileSync(path.join(__dirname, 'tts-config.json'), 'utf8'));
   assert.equal(real.profiles.qa.primary, 'edge');
-  assert.equal(real.profiles.qa.fallback, 'openai');
+  assert.equal(real.profiles.qa.fallback, null);
   assert.equal(real.profiles.qa.edge.character_name, 'Nacho');
-  assert.equal(real.profiles.qa.openai.character_name, 'Rulo');
 });
 
-test('tts-config.json: perfil default mantiene Claudito/Tommy (no roto)', () => {
+test('tts-config.json: perfil default mantiene Tommy en edge (no roto)', () => {
   const real = JSON.parse(fs.readFileSync(path.join(__dirname, 'tts-config.json'), 'utf8'));
-  assert.equal(real.profiles.default.openai.character_name, 'Claudito');
+  assert.equal(real.profiles.default.primary, 'edge');
   assert.equal(real.profiles.default.edge.character_name, 'Tommy');
 });

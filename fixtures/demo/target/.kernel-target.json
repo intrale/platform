@@ -1,0 +1,7 @@
+{
+  "repo": "intrale/kernel",
+  "projectId": "kernel-fixtures",
+  "origin": "https://github.com/intrale/kernel",
+  "ref": "agent/4699-fixtures",
+  "note": "Marker de identidad del target controlado del kernel. Copia local equivalente del fixture agent/4699-fixtures (#4699). NUNCA representa intrale/platform. #4706 reemplaza ref por 'main' cuando los fixtures esten publicados en intrale/kernel@main."
+}

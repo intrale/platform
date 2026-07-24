@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentación del pipeline V3
+    url: https://github.com/intrale/platform/blob/main/docs/pipeline/roles-guru-architect.md
+    about: Fronteras entre los roles guru (investigador) y architect (técnico) — leer antes de abrir issue.

@@ -1,0 +1,461 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 10 — Badge `provider:model` en agentes activos + columna `model_used` en histórico
+  --------------------------------------------------------------------------------------
+  Issue:        #3086 (U1 multi-provider — dashboard V3)
+  Bloqueante:   #3083 (S5 — audit trail dinámico)
+  Bloqueante:   #3072 (H1 — agent-models.json — fuente de allowlist)
+
+  Demuestra:
+    1. Vista live: cards de agente con badge `provider:model` arriba a la derecha.
+    2. Histórico: tabla con columna nueva `model_used` + filtro por provider.
+    3. Tooltip de leyenda explicando los 5 valores posibles del enum:
+       anthropic / openai / openai-codex / deterministic / unknown.
+    4. Estado `unknown` (R6 — sin fallback heurístico): badge ambar + glyph "?"
+       cuando el audit trail no reporta provider; nunca asume default silencioso.
+    5. Histórico de switches recientes (7d) — gap detectado en §7.1 del doc
+       multi-provider, sugerencia de Guru de incluirlo en este mismo PR (opt).
+
+  Sistema visual:
+    - 100% reuso de design-tokens.css con la nueva paleta §3.c PROVIDERS.
+    - Anthropic copper #E5946B, OpenAI emerald #34D399, Codex deep emerald #10B981,
+      Deterministic gris (existente), Unknown amber (= --warning, R6).
+    - Iconos del sprite: `ic-provider-anthropic`, `ic-provider-openai`,
+      `ic-provider-openai-codex`, `ic-provider-deterministic`, `ic-provider-unknown`.
+
+  Accesibilidad:
+    - Cada badge combina color + icono + texto (R2 review de seguridad).
+    - Contraste verificado: copper 7.4:1, emerald 8.9:1, deep-emerald 5.8:1.
+    - aria-label con valor explícito en cada badge (sin tooltip-only).
+    - prefers-reduced-motion respetado en cards (sin animación pulsante en mockup).
+
+  Seguridad:
+    - Todos los textos del mockup pasan por escapeHtml() (R1) — el mockup
+      muestra strings limpios; ver tests con strings hostiles en .pipeline/tests.
+    - Allowlist centralizada en `lib/provider-allowlist.js` — derivada de #3072.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="980" viewBox="0 0 1440 980"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif"
+     role="img" aria-label="Mockup provider:model badges en dashboard V3 — vista live + histórico con filtro">
+  <defs>
+    <linearGradient id="brandGradPM" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="anthroGradPM" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#E5946B"/>
+      <stop offset="100%" stop-color="#A8633F"/>
+    </linearGradient>
+    <linearGradient id="openaiGradPM" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#34D399"/>
+      <stop offset="100%" stop-color="#0E7C5F"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Fondo del dashboard -->
+  <rect width="1440" height="980" fill="#0D1117"/>
+
+  <!-- ========================= Header compacto ========================= -->
+  <rect x="0" y="0" width="1440" height="60" fill="#161B22"/>
+  <rect x="0" y="59" width="1440" height="1" fill="#30363D"/>
+  <g transform="translate(32, 18)">
+    <rect width="26" height="26" rx="7" fill="#0D274D"/>
+    <path d="M13 5.5 L4 21 L22 21 Z" fill="none" stroke="url(#brandGradPM)" stroke-width="2.2" stroke-linejoin="round"/>
+    <path d="M13 12 L9 19 L17 19 Z" fill="url(#brandGradPM)"/>
+  </g>
+  <text x="66" y="38" fill="#E6EDF3" font-size="16" font-weight="700">Intrale Pipeline</text>
+  <text x="230" y="38" fill="#8B949E" font-size="13">· Dashboard V3 — multi-provider</text>
+
+  <!-- Indicador audit trail / provider live status -->
+  <g transform="translate(1180, 16)">
+    <rect width="228" height="28" rx="14" fill="#161B22" stroke="#30363D"/>
+    <circle cx="16" cy="14" r="4" fill="#3FB950"/>
+    <text x="28" y="18" fill="#B1BAC4" font-size="12">audit-trail:</text>
+    <text x="92" y="18" fill="#3FB950" font-size="12" font-weight="700">v2 dinámico</text>
+    <text x="160" y="18" fill="#8B949E" font-size="11">· #3083 OK</text>
+  </g>
+
+  <!-- ========================= Titulo ========================= -->
+  <text x="32" y="108" fill="#E6EDF3" font-size="26" font-weight="700">Agentes activos</text>
+  <text x="32" y="134" fill="#8B949E" font-size="14">3 corriendo · poll 2s · provider:model desde session:start del audit-trail</text>
+
+  <!-- ========================= Vista live: 3 cards de agente ========================= -->
+
+  <!-- Card 1: guru / anthropic:claude-opus-4-7 -->
+  <g transform="translate(32, 160)">
+    <rect width="440" height="170" rx="14" fill="#161B22" stroke="#30363D"/>
+    <!-- Header de la card -->
+    <g transform="translate(20, 18)">
+      <rect width="36" height="36" rx="9" fill="#252B33" stroke="#30363D"/>
+      <text x="18" y="24" fill="#BC8CFF" font-size="18" font-weight="700" text-anchor="middle">G</text>
+    </g>
+    <text x="68" y="34" fill="#E6EDF3" font-size="16" font-weight="700">guru</text>
+    <text x="68" y="52" fill="#8B949E" font-size="12">issue #3086 · fase análisis · 1m 24s</text>
+
+    <!-- Badge provider:model (top-right) — Anthropic copper -->
+    <g transform="translate(254, 16)" aria-label="provider anthropic, modelo claude-opus-4-7">
+      <rect width="172" height="30" rx="15"
+            fill="rgba(229, 148, 107, 0.14)"
+            stroke="#E5946B" stroke-opacity="0.55"/>
+      <!-- Icono asterisco/spark Anthropic -->
+      <g transform="translate(8, 7) scale(0.66)" stroke="#E5946B" fill="#E5946B">
+        <line x1="12" y1="3.5" x2="12" y2="20.5" stroke-width="1.75" stroke-linecap="round" fill="none"/>
+        <line x1="5" y1="7.5" x2="19" y2="16.5" stroke-width="1.75" stroke-linecap="round" fill="none"/>
+        <line x1="5" y1="16.5" x2="19" y2="7.5" stroke-width="1.75" stroke-linecap="round" fill="none"/>
+        <circle cx="12" cy="12" r="2.2"/>
+      </g>
+      <text x="32" y="20" fill="#E5946B" font-size="11.5" font-weight="700"
+            font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace">
+        anthropic:claude-opus-4-7
+      </text>
+    </g>
+
+    <!-- Progress bar -->
+    <rect x="20" y="100" width="400" height="6" rx="3" fill="#252B33"/>
+    <rect x="20" y="100" width="186" height="6" rx="3" fill="url(#brandGradPM)"/>
+    <text x="20" y="125" fill="#8B949E" font-size="11">Analizando dependencias técnicas (47%)</text>
+    <text x="420" y="125" fill="#8B949E" font-size="11" text-anchor="end">3 / 7 pasos</text>
+
+    <!-- Footer con cli_version + git_sha (R5/R7 — info adicional sin filtrar payload) -->
+    <line x1="20" y1="142" x2="420" y2="142" stroke="#21262D"/>
+    <text x="20" y="158" fill="#6E7681" font-size="10"
+          font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace">
+      cli claude-cli-1.4.2 · adapter @ a3f291b
+    </text>
+  </g>
+
+  <!-- Card 2: pipeline-dev / openai-codex:gpt-5-codex -->
+  <g transform="translate(496, 160)">
+    <rect width="440" height="170" rx="14" fill="#161B22" stroke="#30363D"/>
+    <g transform="translate(20, 18)">
+      <rect width="36" height="36" rx="9" fill="#252B33" stroke="#30363D"/>
+      <text x="18" y="24" fill="#58A6FF" font-size="16" font-weight="700" text-anchor="middle">PD</text>
+    </g>
+    <text x="68" y="34" fill="#E6EDF3" font-size="16" font-weight="700">pipeline-dev</text>
+    <text x="68" y="52" fill="#8B949E" font-size="12">issue #3072 · fase desarrollo · 4m 02s</text>
+
+    <!-- Badge provider:model — Codex deep emerald -->
+    <g transform="translate(254, 16)" aria-label="provider openai-codex, modelo gpt-5-codex">
+      <rect width="172" height="30" rx="15"
+            fill="rgba(16, 185, 129, 0.14)"
+            stroke="#10B981" stroke-opacity="0.55"/>
+      <!-- Hex con chevrons -->
+      <g transform="translate(8, 7) scale(0.66)" stroke="#10B981" fill="none">
+        <path d="M12 3.5 L19.5 7.75 L19.5 16.25 L12 20.5 L4.5 16.25 L4.5 7.75 Z"
+              stroke-width="1.75" stroke-linejoin="round"/>
+        <path d="M10.5 9.5 L8 12 L10.5 14.5" stroke-width="1.6" stroke-linecap="round"/>
+        <path d="M13.5 9.5 L16 12 L13.5 14.5" stroke-width="1.6" stroke-linecap="round"/>
+      </g>
+      <text x="32" y="20" fill="#10B981" font-size="11.5" font-weight="700"
+            font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace">
+        openai-codex:gpt-5-codex
+      </text>
+    </g>
+
+    <rect x="20" y="100" width="400" height="6" rx="3" fill="#252B33"/>
+    <rect x="20" y="100" width="280" height="6" rx="3" fill="#34D399"/>
+    <text x="20" y="125" fill="#8B949E" font-size="11">Implementando provider-allowlist.js (70%)</text>
+    <text x="420" y="125" fill="#8B949E" font-size="11" text-anchor="end">7 / 10 pasos</text>
+
+    <line x1="20" y1="142" x2="420" y2="142" stroke="#21262D"/>
+    <text x="20" y="158" fill="#6E7681" font-size="10"
+          font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace">
+      cli codex-cli-0.9.1 · adapter @ b71fa42
+    </text>
+  </g>
+
+  <!-- Card 3: builder / deterministic -->
+  <g transform="translate(960, 160)">
+    <rect width="448" height="170" rx="14" fill="#161B22" stroke="#30363D"/>
+    <g transform="translate(20, 18)">
+      <rect width="36" height="36" rx="9" fill="#252B33" stroke="#30363D"/>
+      <text x="18" y="24" fill="#B1BAC4" font-size="16" font-weight="700" text-anchor="middle">B</text>
+    </g>
+    <text x="68" y="34" fill="#E6EDF3" font-size="16" font-weight="700">builder</text>
+    <text x="68" y="52" fill="#8B949E" font-size="12">issue #3072 · fase build · 0m 38s</text>
+
+    <!-- Badge deterministic — gris neutro -->
+    <g transform="translate(262, 16)" aria-label="skill determinístico, sin LLM">
+      <rect width="172" height="30" rx="15"
+            fill="rgba(177, 186, 196, 0.10)"
+            stroke="#B1BAC4" stroke-opacity="0.35"/>
+      <!-- Icono chip -->
+      <g transform="translate(8, 7) scale(0.66)" stroke="#B1BAC4" fill="#B1BAC4">
+        <rect x="6" y="6" width="12" height="12" rx="1.5" fill="none" stroke-width="1.75" stroke-linejoin="round"/>
+        <line x1="9.5"  y1="3"  x2="9.5"  y2="6"  stroke-width="1.5" stroke-linecap="round"/>
+        <line x1="14.5" y1="3"  x2="14.5" y2="6"  stroke-width="1.5" stroke-linecap="round"/>
+        <line x1="9.5"  y1="18" x2="9.5"  y2="21" stroke-width="1.5" stroke-linecap="round"/>
+        <line x1="14.5" y1="18" x2="14.5" y2="21" stroke-width="1.5" stroke-linecap="round"/>
+        <line x1="3"  y1="9.5"  x2="6"  y2="9.5"  stroke-width="1.5" stroke-linecap="round"/>
+        <line x1="3"  y1="14.5" x2="6"  y2="14.5" stroke-width="1.5" stroke-linecap="round"/>
+        <line x1="18" y1="9.5"  x2="21" y2="9.5"  stroke-width="1.5" stroke-linecap="round"/>
+        <line x1="18" y1="14.5" x2="21" y2="14.5" stroke-width="1.5" stroke-linecap="round"/>
+        <circle cx="12" cy="12" r="1.6"/>
+      </g>
+      <text x="32" y="20" fill="#B1BAC4" font-size="11.5" font-weight="700"
+            font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace">
+        deterministic:gradle
+      </text>
+    </g>
+
+    <rect x="20" y="100" width="408" height="6" rx="3" fill="#252B33"/>
+    <rect x="20" y="100" width="82" height="6" rx="3" fill="#3FB950"/>
+    <text x="20" y="125" fill="#8B949E" font-size="11">./gradlew :app:composeApp:assembleClientDebug (20%)</text>
+    <text x="428" y="125" fill="#8B949E" font-size="11" text-anchor="end">1 / 5 tareas</text>
+
+    <line x1="20" y1="142" x2="428" y2="142" stroke="#21262D"/>
+    <text x="20" y="158" fill="#6E7681" font-size="10"
+          font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace">
+      no-LLM · gradle 8.5 · 0 tokens
+    </text>
+  </g>
+
+  <!-- ========================= Histórico ========================= -->
+  <text x="32" y="386" fill="#E6EDF3" font-size="22" font-weight="700">Histórico de issues procesados</text>
+  <text x="32" y="408" fill="#8B949E" font-size="13">Últimos 50 · columna model_used desde audit-trail · filtro por provider validado en backend (R3)</text>
+
+  <!-- Filtro por provider (validado server-side, R3) -->
+  <g transform="translate(32, 432)">
+    <text x="0" y="14" fill="#8B949E" font-size="12" font-weight="600">FILTRAR POR PROVIDER</text>
+    <!-- Chips de filtro -->
+    <g font-size="12" font-weight="600" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace">
+      <!-- todos (activo) -->
+      <g transform="translate(0, 28)">
+        <rect width="62" height="30" rx="15" fill="#1F6FEB" fill-opacity="0.18" stroke="#58A6FF" stroke-opacity="0.55"/>
+        <text x="31" y="20" fill="#58A6FF" text-anchor="middle">todos</text>
+      </g>
+      <g transform="translate(72, 28)">
+        <rect width="100" height="30" rx="15" fill="rgba(229, 148, 107, 0.14)" stroke="#E5946B" stroke-opacity="0.4"/>
+        <text x="50" y="20" fill="#E5946B" text-anchor="middle">anthropic</text>
+      </g>
+      <g transform="translate(182, 28)">
+        <rect width="80" height="30" rx="15" fill="rgba(52, 211, 153, 0.14)" stroke="#34D399" stroke-opacity="0.4"/>
+        <text x="40" y="20" fill="#34D399" text-anchor="middle">openai</text>
+      </g>
+      <g transform="translate(272, 28)">
+        <rect width="118" height="30" rx="15" fill="rgba(16, 185, 129, 0.14)" stroke="#10B981" stroke-opacity="0.4"/>
+        <text x="59" y="20" fill="#10B981" text-anchor="middle">openai-codex</text>
+      </g>
+      <g transform="translate(400, 28)">
+        <rect width="118" height="30" rx="15" fill="rgba(177, 186, 196, 0.10)" stroke="#B1BAC4" stroke-opacity="0.30"/>
+        <text x="59" y="20" fill="#B1BAC4" text-anchor="middle">deterministic</text>
+      </g>
+      <g transform="translate(528, 28)">
+        <rect width="76" height="30" rx="15" fill="rgba(210, 153, 34, 0.14)" stroke="#D29922" stroke-opacity="0.4"/>
+        <text x="38" y="20" fill="#D29922" text-anchor="middle">unknown</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- Tabla del histórico -->
+  <g transform="translate(32, 510)">
+    <rect width="1376" height="320" rx="14" fill="#161B22" stroke="#30363D"/>
+
+    <!-- Header de la tabla -->
+    <g transform="translate(0, 0)" font-size="11" font-weight="700" fill="#8B949E"
+       font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace"
+       letter-spacing="0.05em">
+      <text x="20"   y="28">ISSUE</text>
+      <text x="100"  y="28">SKILL</text>
+      <text x="220"  y="28">FASE</text>
+      <text x="340"  y="28">RESULTADO</text>
+      <text x="470"  y="28">MODEL_USED</text>
+      <text x="800"  y="28">DURACIÓN</text>
+      <text x="920"  y="28">TOKENS IN/OUT</text>
+      <text x="1100" y="28">FINALIZADO</text>
+      <line x1="0" y1="44" x2="1376" y2="44" stroke="#30363D"/>
+    </g>
+
+    <!-- Fila 1: 3086 / guru / aprobado / anthropic -->
+    <g transform="translate(0, 60)" font-size="12" fill="#E6EDF3"
+       font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace">
+      <text x="20" y="14" fill="#58A6FF" font-weight="600">#3086</text>
+      <text x="100" y="14">guru</text>
+      <text x="220" y="14" fill="#BC8CFF">análisis</text>
+      <g transform="translate(340, 0)">
+        <rect width="76" height="20" rx="10" fill="rgba(63, 185, 80, 0.18)" stroke="#3FB950" stroke-opacity="0.4"/>
+        <text x="38" y="14" fill="#3FB950" font-weight="700" text-anchor="middle">aprobado</text>
+      </g>
+      <!-- model_used badge -->
+      <g transform="translate(470, -3)" aria-label="model_used anthropic claude-opus-4-7">
+        <rect width="280" height="26" rx="13" fill="rgba(229, 148, 107, 0.14)" stroke="#E5946B" stroke-opacity="0.45"/>
+        <g transform="translate(7, 5) scale(0.6)" stroke="#E5946B" fill="#E5946B">
+          <line x1="12" y1="3.5" x2="12" y2="20.5" stroke-width="1.75" stroke-linecap="round" fill="none"/>
+          <line x1="5" y1="7.5" x2="19" y2="16.5" stroke-width="1.75" stroke-linecap="round" fill="none"/>
+          <line x1="5" y1="16.5" x2="19" y2="7.5" stroke-width="1.75" stroke-linecap="round" fill="none"/>
+          <circle cx="12" cy="12" r="2.2"/>
+        </g>
+        <text x="29" y="17" fill="#E5946B" font-size="11" font-weight="700">anthropic:claude-opus-4-7</text>
+      </g>
+      <text x="800" y="14" fill="#B1BAC4">1m 24s</text>
+      <text x="920" y="14" fill="#B1BAC4">8.4k / 2.1k</text>
+      <text x="1100" y="14" fill="#8B949E">hace 12s</text>
+    </g>
+
+    <line x1="20" y1="92" x2="1356" y2="92" stroke="#21262D"/>
+
+    <!-- Fila 2: 3072 / pipeline-dev / aprobado / openai-codex -->
+    <g transform="translate(0, 108)" font-size="12" fill="#E6EDF3"
+       font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace">
+      <text x="20" y="14" fill="#58A6FF" font-weight="600">#3072</text>
+      <text x="100" y="14">pipeline-dev</text>
+      <text x="220" y="14" fill="#58A6FF">desarrollo</text>
+      <g transform="translate(340, 0)">
+        <rect width="76" height="20" rx="10" fill="rgba(63, 185, 80, 0.18)" stroke="#3FB950" stroke-opacity="0.4"/>
+        <text x="38" y="14" fill="#3FB950" font-weight="700" text-anchor="middle">aprobado</text>
+      </g>
+      <g transform="translate(470, -3)" aria-label="model_used openai-codex gpt-5-codex">
+        <rect width="280" height="26" rx="13" fill="rgba(16, 185, 129, 0.14)" stroke="#10B981" stroke-opacity="0.45"/>
+        <g transform="translate(7, 5) scale(0.6)" stroke="#10B981" fill="none">
+          <path d="M12 3.5 L19.5 7.75 L19.5 16.25 L12 20.5 L4.5 16.25 L4.5 7.75 Z"
+                stroke-width="1.75" stroke-linejoin="round"/>
+          <path d="M10.5 9.5 L8 12 L10.5 14.5" stroke-width="1.6" stroke-linecap="round"/>
+          <path d="M13.5 9.5 L16 12 L13.5 14.5" stroke-width="1.6" stroke-linecap="round"/>
+        </g>
+        <text x="29" y="17" fill="#10B981" font-size="11" font-weight="700">openai-codex:gpt-5-codex</text>
+      </g>
+      <text x="800" y="14" fill="#B1BAC4">8m 12s</text>
+      <text x="920" y="14" fill="#B1BAC4">42.3k / 11.8k</text>
+      <text x="1100" y="14" fill="#8B949E">hace 1m</text>
+    </g>
+
+    <line x1="20" y1="140" x2="1356" y2="140" stroke="#21262D"/>
+
+    <!-- Fila 3: 3072 / builder / passed / deterministic -->
+    <g transform="translate(0, 156)" font-size="12" fill="#E6EDF3"
+       font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace">
+      <text x="20" y="14" fill="#58A6FF" font-weight="600">#3072</text>
+      <text x="100" y="14">builder</text>
+      <text x="220" y="14" fill="#3FB950">build</text>
+      <g transform="translate(340, 0)">
+        <rect width="76" height="20" rx="10" fill="rgba(63, 185, 80, 0.18)" stroke="#3FB950" stroke-opacity="0.4"/>
+        <text x="38" y="14" fill="#3FB950" font-weight="700" text-anchor="middle">aprobado</text>
+      </g>
+      <g transform="translate(470, -3)" aria-label="skill determinístico">
+        <rect width="280" height="26" rx="13" fill="rgba(177, 186, 196, 0.10)" stroke="#B1BAC4" stroke-opacity="0.30"/>
+        <g transform="translate(7, 5) scale(0.6)" stroke="#B1BAC4" fill="#B1BAC4">
+          <rect x="6" y="6" width="12" height="12" rx="1.5" fill="none" stroke-width="1.75"/>
+          <line x1="9.5" y1="3" x2="9.5" y2="6" stroke-width="1.5"/>
+          <line x1="14.5" y1="3" x2="14.5" y2="6" stroke-width="1.5"/>
+          <line x1="9.5" y1="18" x2="9.5" y2="21" stroke-width="1.5"/>
+          <line x1="14.5" y1="18" x2="14.5" y2="21" stroke-width="1.5"/>
+          <line x1="3" y1="9.5" x2="6" y2="9.5" stroke-width="1.5"/>
+          <line x1="3" y1="14.5" x2="6" y2="14.5" stroke-width="1.5"/>
+          <line x1="18" y1="9.5" x2="21" y2="9.5" stroke-width="1.5"/>
+          <line x1="18" y1="14.5" x2="21" y2="14.5" stroke-width="1.5"/>
+          <circle cx="12" cy="12" r="1.6"/>
+        </g>
+        <text x="29" y="17" fill="#B1BAC4" font-size="11" font-weight="700">deterministic:gradle</text>
+      </g>
+      <text x="800" y="14" fill="#B1BAC4">3m 47s</text>
+      <text x="920" y="14" fill="#B1BAC4" opacity="0.5">— / —</text>
+      <text x="1100" y="14" fill="#8B949E">hace 4m</text>
+    </g>
+
+    <line x1="20" y1="188" x2="1356" y2="188" stroke="#21262D"/>
+
+    <!-- Fila 4: 2998 / po / aprobado / openai -->
+    <g transform="translate(0, 204)" font-size="12" fill="#E6EDF3"
+       font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace">
+      <text x="20" y="14" fill="#58A6FF" font-weight="600">#2998</text>
+      <text x="100" y="14">po</text>
+      <text x="220" y="14" fill="#58A6FF">aprobación</text>
+      <g transform="translate(340, 0)">
+        <rect width="76" height="20" rx="10" fill="rgba(63, 185, 80, 0.18)" stroke="#3FB950" stroke-opacity="0.4"/>
+        <text x="38" y="14" fill="#3FB950" font-weight="700" text-anchor="middle">aprobado</text>
+      </g>
+      <g transform="translate(470, -3)" aria-label="model_used openai gpt-5">
+        <rect width="280" height="26" rx="13" fill="rgba(52, 211, 153, 0.14)" stroke="#34D399" stroke-opacity="0.45"/>
+        <g transform="translate(7, 5) scale(0.6)" stroke="#34D399" fill="none">
+          <path d="M12 3.5 L19.5 7.75 L19.5 16.25 L12 20.5 L4.5 16.25 L4.5 7.75 Z"
+                stroke-width="1.75" stroke-linejoin="round"/>
+          <path d="M12 6.5 L17 9.5 L17 14.5 L12 17.5 L7 14.5 L7 9.5 Z"
+                stroke-width="1.4" stroke-linejoin="round" opacity="0.55"/>
+        </g>
+        <text x="29" y="17" fill="#34D399" font-size="11" font-weight="700">openai:gpt-5</text>
+      </g>
+      <text x="800" y="14" fill="#B1BAC4">2m 31s</text>
+      <text x="920" y="14" fill="#B1BAC4">15.2k / 3.4k</text>
+      <text x="1100" y="14" fill="#8B949E">hace 8m</text>
+    </g>
+
+    <line x1="20" y1="236" x2="1356" y2="236" stroke="#21262D"/>
+
+    <!-- Fila 5: legacy 2812 / guru / unknown (R6 — sin fallback heurístico) -->
+    <g transform="translate(0, 252)" font-size="12" fill="#E6EDF3"
+       font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace">
+      <text x="20" y="14" fill="#58A6FF" font-weight="600">#2812</text>
+      <text x="100" y="14">guru</text>
+      <text x="220" y="14" fill="#BC8CFF">análisis</text>
+      <g transform="translate(340, 0)">
+        <rect width="76" height="20" rx="10" fill="rgba(63, 185, 80, 0.18)" stroke="#3FB950" stroke-opacity="0.4"/>
+        <text x="38" y="14" fill="#3FB950" font-weight="700" text-anchor="middle">aprobado</text>
+      </g>
+      <!-- Badge unknown — sesión legacy pre-S5 -->
+      <g transform="translate(470, -3)" aria-label="provider no reconocido — sesión legacy pre-S5">
+        <rect width="280" height="26" rx="13" fill="rgba(210, 153, 34, 0.14)" stroke="#D29922" stroke-opacity="0.55"/>
+        <g transform="translate(7, 5) scale(0.6)" stroke="#D29922" fill="#D29922">
+          <circle cx="12" cy="12" r="8.5" fill="none" stroke-width="1.75"/>
+          <path d="M9.5 9.5 C9.5 8 10.7 7 12 7 C13.4 7 14.5 8 14.5 9.3 C14.5 10.6 13.5 11 12.5 11.6 C12 12 12 12.5 12 13.2"
+                fill="none" stroke-width="1.6" stroke-linecap="round"/>
+          <circle cx="12" cy="16.5" r="1"/>
+        </g>
+        <text x="29" y="17" fill="#D29922" font-size="11" font-weight="700">n/d (sesión legacy pre-#3083)</text>
+      </g>
+      <text x="800" y="14" fill="#B1BAC4">1m 02s</text>
+      <text x="920" y="14" fill="#B1BAC4" opacity="0.5">— / —</text>
+      <text x="1100" y="14" fill="#8B949E">hace 5d</text>
+    </g>
+  </g>
+
+  <!-- ========================= Leyenda de providers (tooltip expandido) ========================= -->
+  <g transform="translate(32, 856)">
+    <rect width="1376" height="100" rx="14" fill="#161B22" stroke="#30363D"/>
+    <text x="20" y="26" fill="#E6EDF3" font-size="13" font-weight="700">Leyenda de proveedores</text>
+    <text x="180" y="26" fill="#8B949E" font-size="11">Allowlist desde agent-models.json (#3072) · validada en backend (R3) · sin fallback heurístico (R6)</text>
+
+    <g transform="translate(20, 50)" font-size="11"
+       font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace">
+      <!-- anthropic -->
+      <g transform="translate(0, 0)">
+        <rect width="14" height="14" rx="3" fill="#E5946B"/>
+        <text x="22" y="11" fill="#E6EDF3" font-weight="600">anthropic</text>
+        <text x="22" y="28" fill="#8B949E" font-family="-apple-system, sans-serif" font-size="10.5">
+          Claude (Opus / Sonnet / Haiku)
+        </text>
+      </g>
+      <!-- openai -->
+      <g transform="translate(220, 0)">
+        <rect width="14" height="14" rx="3" fill="#34D399"/>
+        <text x="22" y="11" fill="#E6EDF3" font-weight="600">openai</text>
+        <text x="22" y="28" fill="#8B949E" font-family="-apple-system, sans-serif" font-size="10.5">
+          GPT-5 / GPT-4o (vía API)
+        </text>
+      </g>
+      <!-- openai-codex -->
+      <g transform="translate(400, 0)">
+        <rect width="14" height="14" rx="3" fill="#10B981"/>
+        <text x="22" y="11" fill="#E6EDF3" font-weight="600">openai-codex</text>
+        <text x="22" y="28" fill="#8B949E" font-family="-apple-system, sans-serif" font-size="10.5">
+          GPT-5-Codex (CLI especializado)
+        </text>
+      </g>
+      <!-- deterministic -->
+      <g transform="translate(620, 0)">
+        <rect width="14" height="14" rx="3" fill="#B1BAC4"/>
+        <text x="22" y="11" fill="#E6EDF3" font-weight="600">deterministic</text>
+        <text x="22" y="28" fill="#8B949E" font-family="-apple-system, sans-serif" font-size="10.5">
+          builder / tester (no-LLM, 0 tokens)
+        </text>
+      </g>
+      <!-- unknown -->
+      <g transform="translate(860, 0)">
+        <rect width="14" height="14" rx="3" fill="#D29922"/>
+        <text x="22" y="11" fill="#E6EDF3" font-weight="600">unknown</text>
+        <text x="22" y="28" fill="#8B949E" font-family="-apple-system, sans-serif" font-size="10.5">
+          fuera de allowlist · sesión legacy
+        </text>
+      </g>
+    </g>
+  </g>
+</svg>

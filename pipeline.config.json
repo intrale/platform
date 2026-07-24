@@ -1,0 +1,45 @@
+{
+  "contractVersion": "0.1.0",
+  "projectId": "intrale-platform",
+  "displayName": "Intrale Platform",
+  "kernel": {
+    "package": "@intrale/operating-kernel",
+    "version": "0.1.0",
+    "registry": "https://npm.pkg.github.com",
+    "consume": false,
+    "signature": {
+      "mechanism": "sigstore-cosign-oidc",
+      "tagPattern": "v{version}",
+      "certificateIdentityRegexp": "^https://github\\.com/Intrale/kernel/\\.github/workflows/release\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+$",
+      "certificateOidcIssuer": "https://token.actions.githubusercontent.com",
+      "note": "CA-C2 (#4695): firma del git tag con sigstore/cosign OIDC keyless (NO GPG, NO provenance npm — GitHub Packages no la soporta; decisión de diseño cerrada por el arquitecto). kernel-resolver.assertReleaseSignature mapea version->tag (tagPattern) y verifica la firma del asset detached del GitHub Release ANTES de bumpear (fail-closed). blobPath/signaturePath/certificatePath los provee el flujo de consumo cuando consume:true. Comando manual: cosign verify-blob --certificate-identity-regexp <id> --certificate-oidc-issuer https://token.actions.githubusercontent.com <blob> --signature <sig> --certificate <cert>."
+    },
+    "integrity": {
+      "algorithm": "sha512",
+      "sri": null,
+      "note": "CA-C3 (#4695): pin EXACTO (version 'X.Y.Z', nunca ^/~) + npm ci contra package-lock.json con hashes SRI. 'sri' se puebla desde el lockfile cuando @intrale/operating-kernel@0.1.0 esté publicado y firmado (gate humano CA-C1 en intrale/kernel/.github/workflows/release.yml). Migrado desde pinnedRef 'github:Intrale/kernel#704167b82c9a95115cf9d569b55ce135500e1366' (Ola 9.1). consume:false permanece = coexistencia; el motor local de .pipeline/ sigue operativo (freeze en sub-ola 9.5, fuera de #4695). No degradar en silencio: resolver fail-closed si consume:true y firma/paquete no verifican."
+    }
+  },
+  "capabilities": {
+    "android": true,
+    "backend": true,
+    "web": true,
+    "build": true,
+    "test": true,
+    "e2e": true,
+    "package": true,
+    "deploy": true
+  },
+  "routing": {
+    "source": ".pipeline/config.yaml",
+    "note": "La externalización de la tabla label->skill al manifiesto es la sub-ola 9.4. Durante 9.1 el ruteo vivo permanece en .pipeline/config.yaml sin cambio de comportamiento."
+  },
+  "repos": {
+    "primary": "intrale/platform",
+    "allowlist": ["intrale/platform", "intrale/kernel"],
+    "intake": ["intrale/platform"],
+    "default_base_ref": "main",
+    "note": "Fuente de verdad única del repo destino (CA-0 · #4693). Consumido SOLO vía .pipeline/lib/repo-target.js; deprecan config.yaml github: y servicio-github.js DEFAULT_REPO. `allowlist` = frontera de confianza (repos que pueden generar spawns). `intake` = repos efectivamente consultados por el Pulpo. GATE REQ-SEC-5: intrale/kernel está allowlisted pero FUERA de `intake` hasta cerrar el naming repo-scoped de #4694 (el key de estado ${issue}.${skill} no es repo-scoped y platform#N colisionaría con kernel#N). No mover kernel a `intake` hasta cerrar #4694."
+  },
+  "extensionPoints": ["resolveRouting", "evaluateGate", "prepareWorkspace"]
+}

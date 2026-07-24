@@ -2,6 +2,7 @@
 name: reset
 description: "Reset — Hard reset completo: mata procesos, limpia estado, pull main, reinicia infra"
 user_invocable: true
+required_permissions: [file_read, file_write_repo, bash, child_spawn, long_running_watcher]
 ---
 
 # /reset — Hard Reset Operativo

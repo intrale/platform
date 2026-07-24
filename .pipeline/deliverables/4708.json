@@ -1,0 +1,15 @@
+{
+  "issue": 4708,
+  "entries": [
+    {
+      "issue": 4708,
+      "fase": "aprobacion",
+      "agente": "architect",
+      "tipo": "document",
+      "path": ".pipeline/assets/docs/4708/architect-aprobacion-4708.md",
+      "bytes": 345,
+      "sensible": false,
+      "timestamp": "2026-07-14T18:34:11.684Z"
+    }
+  ]
+}

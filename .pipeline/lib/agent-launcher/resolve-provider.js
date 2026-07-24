@@ -27,7 +27,21 @@ const path = require('node:path');
 const PROVIDER_HANDLERS = {
     'anthropic': require('./providers/anthropic'),
     'openai-codex': require('./providers/openai-codex'),
+    // #3220 — providers sign-off 2026-05-15. Handlers stub: tiran error
+    // accionable si se les pide spawn antes de #3198 (runtime real).
+    'gemini-google': require('./providers/gemini-google'),
+    'cerebras': require('./providers/cerebras'),
+    // #3243 — NVIDIA NIM, 4to free provider. Stub idéntico al patrón de los
+    // otros 3 free providers: error accionable hasta que #3198 entregue el
+    // wrapper real, sin tokens consumidos, sin crash del pulpo.
+    'nvidia-nim': require('./providers/nvidia-nim'),
+    // #4880 — Kimi (Moonshot), drop-in de Claude Code contra su endpoint
+    // Anthropic-compatible. El handler delega en el de Anthropic (mismo launcher
+    // `claude`, spawn y stream-json) y sólo aporta su propia detección de cuota.
+    'kimi-moonshot': require('./providers/kimi-moonshot'),
     'deterministic': require('./providers/deterministic'),
+    // Groq fue descontinuado en #3353 (mayo 2026) por política de bloqueos
+    // arbitrarios — el handler stub y la referencia se removieron del mapa.
 };
 
 const VALID_PROVIDERS = Object.freeze(Object.keys(PROVIDER_HANDLERS));
@@ -99,11 +113,19 @@ function resolveProviderForSkill(skill, opts = {}) {
     //    (no consulta agent-models.json, son Node puro y sin tokens).
     const determHandler = PROVIDER_HANDLERS.deterministic;
     if (determHandler.isDeterministic(skill)) {
+        // #3605 — `interactive_supported` puede estar declarado por skill en
+        // agent-models.json incluso para skills determinísticos (un script Node
+        // que implemente un loop de lectura de stdin sí podría aprovecharlo).
+        // Si no está, default false (preserva I3 del agent-launcher).
+        const models0 = readAgentModels(pipelineDir, fsImpl);
+        const skillCfg0 = (models0 && !models0.__readError && models0.skills && models0.skills[skill]) || null;
         return {
             provider: 'deterministic',
             model: null,
+            mode: 'native',
             handler: determHandler,
             source: 'deterministic-allowlist',
+            interactive_supported: !!(skillCfg0 && skillCfg0.interactive_supported === true),
         };
     }
 
@@ -113,17 +135,21 @@ function resolveProviderForSkill(skill, opts = {}) {
         return {
             provider: 'anthropic',
             model: LEGACY_ANTHROPIC_MODEL,
+            mode: 'bypassPermissions',
             handler: PROVIDER_HANDLERS.anthropic,
             source: 'fallback-no-config',
+            interactive_supported: false,
         };
     }
     if (models.__readError) {
         return {
             provider: 'anthropic',
             model: LEGACY_ANTHROPIC_MODEL,
+            mode: 'bypassPermissions',
             handler: PROVIDER_HANDLERS.anthropic,
             source: 'fallback-read-error',
             warning: `agent-models.json no se pudo parsear: ${models.__readError}`,
+            interactive_supported: false,
         };
     }
 
@@ -134,8 +160,10 @@ function resolveProviderForSkill(skill, opts = {}) {
         return {
             provider: 'anthropic',
             model: defaultModel,
+            mode: resolvePermissionMode(models, 'anthropic'),
             handler: PROVIDER_HANDLERS.anthropic,
             source: 'fallback-skill-not-found',
+            interactive_supported: false,
         };
     }
 
@@ -144,9 +172,51 @@ function resolveProviderForSkill(skill, opts = {}) {
     return {
         provider: providerName,
         model: skillCfg.model || defaultModel,
+        // #3082 (CA-8): el mode efectivo del provider para este skill es lo
+        // que la matriz capability×(provider, mode) consume. Lo extraemos del
+        // bloque providers.<X>.permissions_mode de agent-models.json. Si no
+        // está declarado, el caller cae al default por provider (anthropic →
+        // bypassPermissions, openai-codex → full-auto).
+        mode: resolvePermissionMode(models, providerName),
         handler,
         source: 'agent-models',
+        // #3605 — Opt-in por skill+provider. Solo cuando true:
+        //   (a) agent-launcher pisa `stdio[0] = 'pipe'` para habilitar IPC.
+        //   (b) el endpoint /api/agent-chat acepta mensajes para este skill.
+        // Default false: NO se cambia I3 global (regresión cero CA-4).
+        interactive_supported: skillCfg.interactive_supported === true,
     };
+}
+
+// -----------------------------------------------------------------------------
+// resolvePermissionMode — #3082 (CA-8): extrae el `permissions_mode` del bloque
+// `providers.<name>` de agent-models.json. Si está ausente, devuelve el default
+// canónico por provider documentado en docs/pipeline-multi-provider/permission-mapping.md.
+//
+// El default por provider es **conservador**: el mode más permisivo que el pulpo
+// usa hoy (`bypassPermissions` para anthropic, `full-auto` para openai-codex,
+// `native` para deterministic). Cambiar el default acá requiere actualizar la
+// matriz capability del validator y la doc canónica.
+// -----------------------------------------------------------------------------
+function resolvePermissionMode(models, providerName) {
+    const defaultsByProvider = {
+        anthropic: 'bypassPermissions',
+        'openai-codex': 'full-auto',
+        // #3220 — providers nuevos sign-off 2026-05-15. Default
+        // `bypassPermissions` consistente con cómo el pulpo trata a Claude;
+        // si #3198 detecta que un wrapper de provider concreto necesita
+        // otro modo, lo declara via providers.<x>.permissions_mode.
+        'gemini-google': 'bypassPermissions',
+        'cerebras': 'bypassPermissions',
+        // #3243 — NVIDIA NIM default consistent con otros free providers.
+        'nvidia-nim': 'bypassPermissions',
+        deterministic: 'native',
+    };
+    if (!models || !models.providers || !models.providers[providerName]) {
+        return defaultsByProvider[providerName] || null;
+    }
+    const block = models.providers[providerName];
+    return block.permissions_mode || defaultsByProvider[providerName] || null;
 }
 
 module.exports = {
@@ -156,4 +226,5 @@ module.exports = {
     getProviderHandler,
     resolveProviderForSkill,
     readAgentModels,
+    resolvePermissionMode,
 };

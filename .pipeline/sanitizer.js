@@ -39,6 +39,21 @@ const P = {
     TELEGRAM_BOT_TOKEN: '[REDACTED:TELEGRAM_BOT_TOKEN]',
     GOOGLE_API_KEY: '[REDACTED:GOOGLE_API_KEY]',
     GOOGLE_OAUTH_REFRESH: '[REDACTED:GOOGLE_OAUTH_REFRESH]',
+    GOOGLE_OAUTH_TOKEN: '[REDACTED:GOOGLE_OAUTH_TOKEN]',
+    ANTHROPIC_KEY: '[REDACTED:ANTHROPIC_KEY]',
+    OPENAI_KEY: '[REDACTED:OPENAI_KEY]',
+    OPENAI_PROJECT_KEY: '[REDACTED:OPENAI_PROJECT_KEY]',
+    // GROQ_API_KEY: MANTENIDO post-#3353 como defense-in-depth.
+    // Groq fue descontinuado como provider (mayo 2026), pero las keys legacy
+    // con prefijo `gsk_` pueden seguir apareciendo en logs viejos, backups
+    // (`~/.claude/secrets/backups/`), rejection reports archivados y dumps de
+    // incidentes (#3310, #3348). Verificación empírica en #3353-rev-1 mostró
+    // que CONF_STRUCTURED genérico NO cubre 6 de 7 escenarios realistas
+    // (bare keys, JSON, `Key=`, `groq_api_key=`, etc.), por lo que el pattern
+    // explícito sigue siendo necesario para evitar regresión de leak.
+    GROQ_API_KEY: '[REDACTED:GROQ_API_KEY]',
+    CEREBRAS_API_KEY: '[REDACTED:CEREBRAS_API_KEY]',
+    NVIDIA_NIM_API_KEY: '[REDACTED:NVIDIA_NIM_API_KEY]',
     COGNITO_SECRET: '[REDACTED:COGNITO_SECRET]',
     PRIVATE_KEY: '[REDACTED:PRIVATE_KEY]',
     BASIC_AUTH: '[REDACTED:BASIC_AUTH]',
@@ -238,6 +253,123 @@ const PATTERNS = [
         name: 'GOOGLE_OAUTH_REFRESH',
         re: /\b1\/\/[0-9A-Za-z_-]{43,}\b/g,
         replace: () => P.GOOGLE_OAUTH_REFRESH,
+    },
+
+    // -------------------------------------------------------------------------
+    // Multi-provider LLM API keys (issue #3073, S2 multi-provider)
+    //
+    // Orden interno crítico: las variantes con prefijo más específico
+    // (`sk-ant-`, `sk-proj-`) DEBEN ir ANTES que el patrón genérico `sk-`
+    // de OpenAI clásico, sino el genérico se "come" parte del prefijo y
+    // rompe la atribución por proveedor (test "orden mixto sk-ant + sk-").
+    //
+    // Anchors: usamos lookbehind/lookahead negativos sobre el charset del
+    // secreto en lugar de `\b`, porque `_` es word-char y `-` no lo es,
+    // entonces `\b` se vuelve frágil si la key termina en `-` o si está
+    // pegada a otro token alfanumérico. Los anchors explícitos garantizan
+    // que el match está delimitado por separadores claros (espacio,
+    // puntuación, fin de línea, comillas).
+    // -------------------------------------------------------------------------
+
+    // Anthropic API key — formato `sk-ant-<variant>-<base64url>`.
+    // Variantes oficiales: `sk-ant-api03-...`, `sk-ant-sid01-...`, etc.
+    // Mínimo 20 chars después del prefijo para evitar falsos positivos
+    // tipo `sk-ant-AAA` (inputs maliciosos cortos).
+    // Fuente: https://docs.anthropic.com/claude/reference/getting-started-with-the-api
+    {
+        name: 'ANTHROPIC_KEY',
+        re: /(?<![A-Za-z0-9_-])sk-ant-[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])/g,
+        replace: () => P.ANTHROPIC_KEY,
+    },
+
+    // OpenAI project-scoped key — formato `sk-proj-<base64url>` (>=40 chars
+    // después del prefijo). Introducido por OpenAI en 2024 para keys
+    // restringidas a un proyecto. Va ANTES que `sk-` clásico porque
+    // comparte el prefijo `sk-`.
+    // Fuente: https://platform.openai.com/docs/api-reference/authentication
+    {
+        name: 'OPENAI_PROJECT_KEY',
+        re: /(?<![A-Za-z0-9_-])sk-proj-[A-Za-z0-9_-]{40,}(?![A-Za-z0-9_-])/g,
+        replace: () => P.OPENAI_PROJECT_KEY,
+    },
+
+    // OpenAI classic API key — formato `sk-<48+ chars base62 estricto>`.
+    // Negative lookahead `(?!ant-|proj-)` evita matchear las variantes
+    // específicas de Anthropic/proyecto (que ya quedaron redactadas arriba
+    // con su placeholder por proveedor; este patrón no debería verlas en
+    // input limpio, pero el lookahead es defensa adicional).
+    // Charset estricto `[A-Za-z0-9]` (sin `_-`) y longitud mínima 48 evitan
+    // falsos positivos sobre código legítimo (clases CSS Tailwind tipo
+    // `sk-button-primary`, slugs SEO `sk-thumbnail-default`, identificadores
+    // tipo `sk-key`, etc., que nunca llegan a 48 chars alfanuméricos sólidos).
+    // Fuente: https://platform.openai.com/docs/api-reference/authentication
+    {
+        name: 'OPENAI_KEY',
+        re: /(?<![A-Za-z0-9_-])sk-(?!ant-|proj-)[A-Za-z0-9]{48,}(?![A-Za-z0-9])/g,
+        replace: () => P.OPENAI_KEY,
+    },
+
+    // Google OAuth access token — formato `ya29.<base64url>`. Diferente
+    // del refresh token (`1//...`, ya cubierto arriba) y del API key
+    // (`AIza...`, también arriba). Aparece en headers `Authorization: Bearer`
+    // (cubierto por HEADER_AUTHORIZATION → BEARER_TOKEN) y en cuerpos JSON
+    // de respuestas OAuth.
+    // Fuente: https://developers.google.com/identity/protocols/oauth2
+    {
+        name: 'GOOGLE_OAUTH_TOKEN',
+        re: /(?<![A-Za-z0-9_-])ya29\.[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])/g,
+        replace: () => P.GOOGLE_OAUTH_TOKEN,
+    },
+
+    // -------------------------------------------------------------------------
+    // Free-tier providers (#3310, ola N+1 multi-provider)
+    //
+    // Patrones para credenciales de los providers que oficialmente son free
+    // (Cerebras, NVIDIA NIM) + legacy de Groq (descontinuado en #3353, pero
+    // las keys con prefijo `gsk_` siguen apareciendo en logs viejos y backups).
+    // Mismo enfoque que las keys de Anthropic/OpenAI más arriba: lookbehind/
+    // lookahead negativos sobre el charset del secreto + longitud mínima 40
+    // para evitar falsos positivos sobre slugs, clases CSS o identificadores
+    // legítimos del codebase.
+    //
+    // Estos patrones DEBEN ir antes del bloque genérico CONF_STRUCTURED para
+    // que cada placeholder atribuya correctamente el proveedor.
+    // -------------------------------------------------------------------------
+
+    // Groq API key — formato `gsk_<52 chars base62>`.
+    // MANTENIDO post-#3353 (provider descontinuado pero keys legacy pueden
+    // seguir apareciendo en logs viejos, backups en `~/.claude/secrets/backups/`,
+    // rejection reports archivados y documentos de incidentes — defense-in-depth
+    // como recomendó security review en rev-1 de #3353).
+    // Verificación empírica: CONF_STRUCTURED genérico NO cubre bare keys,
+    // JSON `"api_key":"gsk_..."`, `groq_api_key=...` ni `Key=gsk_...`.
+    // Mínimo 40 chars después del prefijo (la consola Groq genera 52).
+    // Fuente: https://console.groq.com (sección "API Keys").
+    {
+        name: 'GROQ_API_KEY',
+        re: /(?<![A-Za-z0-9_-])gsk_[A-Za-z0-9]{40,}(?![A-Za-z0-9_-])/g,
+        replace: () => P.GROQ_API_KEY,
+    },
+
+    // Cerebras API key — formato `csk-<52 chars base62>`.
+    // El charset documentado por Cerebras incluye `_-`, pero exigimos mínimo
+    // 40 chars alfanuméricos sólidos después del prefijo para no colisionar
+    // con identificadores `csk-foo` cortos.
+    // Fuente: https://cloud.cerebras.ai (página de API Keys).
+    {
+        name: 'CEREBRAS_API_KEY',
+        re: /(?<![A-Za-z0-9_-])csk-[A-Za-z0-9]{40,}(?![A-Za-z0-9_-])/g,
+        replace: () => P.CEREBRAS_API_KEY,
+    },
+
+    // NVIDIA NIM API key — formato `nvapi-<base64url ~50 chars>`.
+    // El charset incluye `_-` (es base64url). El prefijo `nvapi-` no aparece
+    // en código legítimo del repo.
+    // Fuente: https://build.nvidia.com (sección "API Key").
+    {
+        name: 'NVIDIA_NIM_API_KEY',
+        re: /(?<![A-Za-z0-9_-])nvapi-[A-Za-z0-9_-]{40,}(?![A-Za-z0-9_-])/g,
+        replace: () => P.NVIDIA_NIM_API_KEY,
     },
 
     // Cognito client secret (AWS Cognito típico: 52 base64url chars en config).
