@@ -179,6 +179,8 @@ const ALLOWED_MODELS_BY_LAUNCHER = Object.freeze({
     // (verificado en vivo: ya no aparece en GET /v1beta/models). Reemplazado por
     // `gemini-2.5-flash`, free tier vigente, como modelo alternativo de Sherlock.
     'gemini-2.5-flash',
+    // Antigravity CLI 1.1.x (migración #4869).
+    'gemini-3-flash-preview',
   ]),
   // 2026-06-02 — Corrección free tier real: el free tier de Cerebras NO sirve
   // modelos `llama-*` (verificado contra GET /v1/models). Los únicos servibles

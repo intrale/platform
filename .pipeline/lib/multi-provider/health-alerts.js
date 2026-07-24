@@ -59,6 +59,12 @@ const ALLOWED_REASON_CODES = Object.freeze(new Set([
     'cli_oauth_ok',
     'cli_unavailable',
     'cli_binary_undeclared',
+    // #4869 — provider CLI-OAuth instalado pero sin licencia/billing (agy).
+    // Fail-closed: el binario existe pero no puede autenticarse hasta habilitar
+    // la licencia. Debe sobrevivir al sanitize para que el health-gate del
+    // dispatch lo trate como rojo DURABLE y saltee el provider (no lo colapses
+    // a 'unknown', que el dispatch interpreta como rojo transitorio → fail-open).
+    'cli_license_unavailable',
 ]));
 
 // Estados válidos del provider (espejan los CA-3 / narrativa UX).

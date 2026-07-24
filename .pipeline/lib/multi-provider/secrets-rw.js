@@ -82,14 +82,17 @@ const MANAGED_KEYS = Object.freeze([
     },
     {
         provider: 'gemini-google',
-        label: 'Gemini (Google AI Studio)',
-        editable: true,
-        // En el credentials.json canónico vive bajo `providers.google` (alineado
-        // con credentials.js → GEMINI_API_KEY). En la UI seguimos llamándolo
-        // 'gemini-google' para diferenciarlo de Vertex AI.
+        label: 'Gemini (Antigravity CLI)',
+        editable: false,
+        reason: 'Antigravity CLI usa OAuth; la licencia se habilita fuera del almacén de API keys.',
+        // Los paths legacy se conservan sólo para compatibilidad de lectura;
+        // editable:false impide administrar una API key para este provider OAuth.
         canonicalPath: 'providers.google.api_key',
         legacyField: 'gemini_google_api_key',
-        free_tier_notes: 'RPM 15 / RPD 1500 / TPM 1M (free) — ver docs/pipeline/multi-provider.md §8.',
+        auth_mode: 'oauth',
+        cli_binary: 'agy',
+        readiness_env: 'AGY_LICENSE_READY',
+        free_tier_notes: 'Antigravity CLI; disponibilidad sujeta a sesión OAuth y licencia/billing.',
     },
     {
         provider: 'cerebras',

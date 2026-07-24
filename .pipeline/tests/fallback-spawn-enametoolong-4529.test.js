@@ -124,8 +124,8 @@ test('#4529 gemini: system >32K va por stdin, `-p` vacío, spawn real sin ENAMET
         });
         assert.ok(argvBytes(spawnDef.args) < 4096, `argv demasiado grande: ${argvBytes(spawnDef.args)}`);
         assert.ok(spawnDef.args.every((a) => !String(a).includes('Sos el Commander')));
-        const pIdx = spawnDef.args.indexOf('-p');
-        assert.equal(spawnDef.args[pIdx + 1], '');
+        assert.ok(spawnDef.args.includes('--print'));
+        assert.ok(!spawnDef.args.includes('Contame el estado'));
         assert.ok(spawnDef.stdinPayload.length > WINDOWS_CMDLINE_LIMIT);
         assert.ok(spawnDef.stdinPayload.includes('Contame el estado'));
         const r = spawnSync(spawnDef.cmd, spawnDef.args, {
