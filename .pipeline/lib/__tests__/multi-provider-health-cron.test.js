@@ -168,7 +168,7 @@ test('runOnce: pingea sólo los providers presentes en secretos', async () => {
     const auditDir = path.join(dir, 'audit');
     const secretsPath = makeSecretsFile(dir, {
         cerebras_api_key: 'csk_test_aaaaaaaaaaaaaaaaaaaa',
-        // gemini ausente → status absent → skipped
+        // Gemini usa OAuth y no depende del almacén de API keys.
     });
     const result = await healthCron.runOnce({
         stateDir,
@@ -188,7 +188,7 @@ test('runOnce: pingea sólo los providers presentes en secretos', async () => {
     assert.equal(cerebras.reason_code, 'authenticated');
     const gemini = result.snapshot.providers.find(p => p.provider === 'gemini-google');
     assert.equal(gemini.state, 'red');
-    assert.equal(gemini.reason_code, 'no_key_configured');
+    assert.equal(gemini.reason_code, 'cli_unavailable');
 });
 
 // ─── #3802 — providers CLI-OAuth (Claude Code / Codex): validar CLI, no key.

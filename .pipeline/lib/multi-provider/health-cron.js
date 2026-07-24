@@ -382,7 +382,9 @@ async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl =
             latency_ms: typeof pingResult.latency_ms === 'number' ? pingResult.latency_ms : null,
             rate_limit_hit_24h: rate24,
             last_checked_at: new Date(Date.now()).toISOString(),
-            key_status: keyInfo ? keyInfo.status : 'absent',
+            key_status: spec.auth_mode === 'oauth'
+                ? 'not_applicable'
+                : (keyInfo ? keyInfo.status : 'absent'),
             free_tier_notes: spec.free_tier_notes || null,
             // #3802 — el frontend usa esto para mostrar "CLI/OAuth" en vez de
             // sugerir que falta una API key cuando el provider corre por CLI.
