@@ -204,19 +204,15 @@ const WAVE_VELOCITY_MIN_SPAN_MS = 15 * 60 * 1000;
 function _waveIssueCount(waveKey) {
     try {
         const waves = require('./waves');
-        const state = waves.listWaves();
-        if (!state || typeof state !== 'object') return null;
-        const buckets = [
-            state.active_wave ? [state.active_wave] : [],
-            Array.isArray(state.planned_waves) ? state.planned_waves : [],
-            Array.isArray(state.archived_waves) ? state.archived_waves : [],
-        ];
-        for (const group of buckets) {
-            for (const w of group) {
-                if (!w || w.number !== waveKey) continue;
-                const n = Array.isArray(w.issues) ? w.issues.length : 0;
-                return n > 0 ? n : null;
-            }
+        // `listWaves()` ya aplana activa, planificadas y archivadas en un array.
+        // Consumir ese contrato público evita acoplar este cálculo al shape
+        // persistido de waves.json.
+        const listed = waves.listWaves();
+        if (!Array.isArray(listed)) return null;
+        for (const w of listed) {
+            if (!w || w.number !== waveKey) continue;
+            const n = Array.isArray(w.issues) ? w.issues.length : 0;
+            return n > 0 ? n : null;
         }
     } catch { /* best-effort: sin quantum se usa el umbral absoluto */ }
     return null;

@@ -31,6 +31,7 @@ const path = require('node:path');
 
 const hist = require('../wave-velocity-history');
 const etaWave = require('../eta-wave');
+const waves = require('../waves');
 const { deriveMissionOlaEta, MISSION_INSUFFICIENT_DATA } = require('../mission-ola-eta');
 
 const MIN = 60 * 1000;
@@ -391,6 +392,47 @@ test('rev-1 · el umbral de discontinuidad se expresa en QUANTUMS de la ola', ()
     assert.equal(discardedJumps, 2, '+18 y +79 son los únicos artificiales');
     // El avance REAL acumulado (3+4+8+8 = 23) sobrevive intacto.
     assert.equal(series[series.length - 1].avancePct - series[0].avancePct, 23);
+});
+
+test('rev-2 · waves.json activa el quantum y el camino público descarta +18', async () => {
+    const now = 95_000_000;
+    const prevPipelineDir = process.env.PIPELINE_DIR_OVERRIDE;
+    const { dir, restore } = withSeries(8, [
+        { ts: now - 40 * MIN, avancePct: 18 },
+        { ts: now - 20 * MIN, avancePct: 36 }, // re-hidratación: +18
+        { ts: now, avancePct: 36 },
+    ]);
+    process.env.PIPELINE_DIR_OVERRIDE = path.join(dir, '.pipeline');
+    fs.writeFileSync(path.join(dir, '.pipeline', 'waves.json'), JSON.stringify({
+        version: 1,
+        active_wave: {
+            number: 8,
+            name: 'Fixture ola 8',
+            issues: Array.from({ length: OLA_8_ISSUES }, (_, i) => ({ number: 1000 + i })),
+        },
+        planned_waves: [],
+        archived_waves: [],
+        dependencies: [],
+    }));
+    waves.invalidateCache();
+
+    try {
+        assert.equal(etaWave._internal._waveIssueCount(8), 37);
+        const threshold = etaWave._internal._jumpThresholdPct(8);
+        assert.ok(Math.abs(threshold - (400 / 37)) < 1e-12, `umbral ${threshold}`);
+
+        const result = await etaWave.calculateWaveVelocityETA(8, 36, now, { restWindow: null });
+        assert.equal(result.source, 'fallback');
+        assert.equal(result.reason, 'discontinuous-jump');
+        assert.equal(result.velocityPctPerHour, undefined);
+        assert.equal(result.remainingMs, undefined);
+        assert.deepEqual(hist.readSamples({ pipelineRoot: dir }), []);
+    } finally {
+        if (prevPipelineDir === undefined) delete process.env.PIPELINE_DIR_OVERRIDE;
+        else process.env.PIPELINE_DIR_OVERRIDE = prevPipelineDir;
+        waves.invalidateCache();
+        restore();
+    }
 });
 
 test('rev-1 · el filtro de discontinuidad es SIMÉTRICO (la caída del espejo también)', () => {
