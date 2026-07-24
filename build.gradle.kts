@@ -80,6 +80,7 @@ tasks.register("verifyNoLegacyStrings") {
             "build",
             "generated",
             "node_modules",
+            "worktrees",
             "ios",
             "wasm",
             "desktop",
