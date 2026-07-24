@@ -90,12 +90,14 @@ Muestra real capturada (v0.145.0):
      "secondary":null,"plan_type":"plus", ...}}}
 ```
 
-**Mecánica de lectura:** se recorren los rollouts del más nuevo al más viejo
-(orden lexicográfico de `YYYY/MM/DD` + nombre prefijado por ISO ⇒ cronológico,
-sin `stat` por archivo, tope de 40 archivos) y se toma el **último** objeto
-`rate_limits` del primer rollout que tenga uno. Se lee sólo la **cola** del
-archivo (512 KB) para no cargar rollouts grandes; las líneas partidas por el
-corte fallan el `JSON.parse` y se descartan.
+**Mecánica de lectura:** se inspeccionan hasta 40 rollouts, ordenados del más
+nuevo al más viejo por `YYYY/MM/DD` + nombre prefijado por ISO (sin `stat` por
+archivo). De cada rollout se obtiene su **último** objeto `rate_limits`; luego
+se comparan los timestamps internos de esos eventos y se elige el máximo
+global. Así, una sesión anterior que siga activa o sea reanudada puede superar
+a otra cuyo archivo tenga un nombre más reciente. Se lee sólo la **cola** de
+cada archivo (512 KB) para no cargar rollouts grandes; las líneas partidas por
+el corte fallan el `JSON.parse` y se descartan.
 
 **Frescura:** anclada al `timestamp` del evento en el JSONL. Un evento sin
 timestamp, o fechado **en el futuro** más allá de 5 min (clock skew / timestamp
