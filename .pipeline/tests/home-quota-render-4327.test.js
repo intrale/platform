@@ -13,7 +13,7 @@
 //           escribe el literal "sin dato" (no "0%", no un número).
 //   #4533 — con % disponible real escribe "<n>%" y color por umbral
 //           (ok/warn/bad); 0% disponible => bad (AGOTADA).
-//   #4533 — Codex (mode 'event') muestra "✓ sin límite", sin barra ni %.
+//   #4900 — Codex fresco sincroniza porcentaje, barra, color y accesibilidad.
 //   CA-5  — `pillTextFor(state)` para `stale`/`missing` devuelve la etiqueta de
 //           estado, nunca un porcentaje; `pctTextClient(null)` → "--%" (no "0%").
 //   UX-G5 — `MZ_ACTIVE_PROVIDERS` (fuente única) lista exactamente los 5
@@ -129,30 +129,35 @@ test('#4533: _mzHydrateWinCell con % disponible real escribe el porcentaje + col
     assert.equal(res.healthy, false, '0% disponible no es proveedor sano');
 });
 
-test('#4533: _mzHydrateWinCell mode event (Codex) muestra "sin límite" sin barra ni %', () => {
+test('#4900: Codex fresco sincroniza porcentaje, barra, color, title y aria-label', () => {
     const { cid, els } = makeCell('openai-codex', 'short');
     const r = loadWinCellHelper(els)._mzHydrateWinCell('openai-codex', 'short',
-        { mode: 'event', eventOk: true, win: 'Roll' });
-    assert.match(els[cid + '-pct'].textContent, /sin límite/, 'evento sin tope → "sin límite"');
+        { mode: 'event', eventState: 'ok', pct: 72.4, win: 'Roll' });
+    assert.equal(els[cid + '-pct'].textContent, '72%');
+    assert.equal(els[cid + '-bar'].style.width, '72%');
+    assert.ok(els[cid]._classes.has('ok'));
+    assert.match(els[cid].getAttribute('title'), /72%/);
+    assert.match(els[cid].getAttribute('aria-label'), /72%/);
     assert.ok(els[cid]._classes.has('mz-qm-event'), 'la celda marca estado por evento');
-    assert.equal(r.healthy, true, 'sin límite cuenta como proveedor sano');
+    assert.equal(r.healthy, true);
 });
 
-// ---------------------------------------------------------------------------
-// #4863 — mode event con TRES estados: ok / exhausted / nodata.
-// ---------------------------------------------------------------------------
-test('#4863: mode event eventState "ok" → "sin límite" y proveedor sano', () => {
-    const { cid, els } = makeCell('openai-codex', 'short');
-    const r = loadWinCellHelper(els)._mzHydrateWinCell('openai-codex', 'short',
-        { mode: 'event', eventState: 'ok', win: 'Roll' });
-    assert.match(els[cid + '-pct'].textContent, /sin límite/);
-    assert.equal(r.healthy, true);
+test('#4900: Codex fresco cubre límites 0/100 y umbrales cromáticos', () => {
+    for (const [pct, cls, healthy] of [[0, 'bad', false], [20, 'warn', true], [50, 'ok', true], [100, 'ok', true]]) {
+        const { cid, els } = makeCell('openai-codex', 'short');
+        const r = loadWinCellHelper(els)._mzHydrateWinCell('openai-codex', 'short',
+            { mode: 'event', eventState: 'ok', pct, win: 'Roll' });
+        assert.equal(els[cid + '-pct'].textContent, pct + '%');
+        assert.equal(els[cid + '-bar'].style.width, pct + '%');
+        assert.ok(els[cid]._classes.has(cls));
+        assert.equal(r.healthy, healthy);
+    }
 });
 
 test('#4863: mode event eventState "exhausted" → "tope activo", NO sano', () => {
     const { cid, els } = makeCell('openai-codex', 'short');
     const r = loadWinCellHelper(els)._mzHydrateWinCell('openai-codex', 'short',
-        { mode: 'event', eventState: 'exhausted', win: 'Roll' });
+        { mode: 'event', eventState: 'exhausted', pct: 70, win: 'Roll' });
     assert.equal(els[cid + '-pct'].textContent, 'tope activo', 'agotada → "tope activo"');
     assert.ok(!/sin límite/.test(els[cid + '-pct'].textContent), 'NUNCA "sin límite" cuando el banner dice agotada');
     assert.equal(r.healthy, false);
@@ -166,6 +171,18 @@ test('#4863: mode event eventState "nodata" (stale por inactividad) → "sin dat
     assert.ok(!/sin límite/.test(els[cid + '-pct'].textContent), 'NUNCA verde espurio por inactividad');
     assert.ok(els[cid]._classes.has('mz-qm-nodata'), 'marca visualmente "sin dato"');
     assert.equal(r.healthy, false, 'sin dato no cuenta como proveedor sano');
+});
+
+test('#4900: porcentaje Codex inválido degrada a "sin dato"', () => {
+    for (const pct of [undefined, null, NaN, Infinity, -1, 101, '<img src=x onerror=alert(1)>']) {
+        const { cid, els } = makeCell('openai-codex', 'short');
+        const r = loadWinCellHelper(els)._mzHydrateWinCell('openai-codex', 'short',
+            { mode: 'event', eventState: 'ok', pct, win: 'Roll' });
+        assert.equal(els[cid + '-pct'].textContent, 'sin dato');
+        assert.equal(els[cid + '-bar'].style.width, '0%');
+        assert.ok(els[cid]._classes.has('mz-qm-nodata'));
+        assert.equal(r.healthy, false);
+    }
 });
 
 test('#4863: backward-compat — sin eventState, eventOk:false renderiza "tope activo"', () => {

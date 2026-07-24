@@ -2606,13 +2606,9 @@ function _mzHydrateWinCell(key, slot, b){
     const meta = MZ_PROVIDER_META[key] || { name: key, src: '' };
     const mode = b && b.mode;
 
-    // Estado por eventos (Codex): sin barra. #4863 — TRES estados explícitos
-    // (CA-4), derivados de la fuente única reconciliada con el banner:
-    //   'ok'        → "✓ sin límite" (dato fresco, sin tope).
-    //   'exhausted' → "tope activo"  (mismo snapshot que el banner de degradación).
-    //   'nodata'    → "sin dato"     (stale por inactividad / sin lectura fresca) —
-    //                  NUNCA se pinta verde: distingue "sin dato por inactividad"
-    //                  de "sin límite" y de "agotada".
+    // Estado por eventos (Codex): #4863 / #4900.
+    // exhausted y nodata conservan precedencia; sólo un porcentaje normalizado
+    // fresco alimenta texto, barra, color y atributos accesibles.
     if(mode === 'event'){
         cell.classList.add('mz-qm-event');
         if(barEl) barEl.style.width = '0%';
@@ -2620,7 +2616,15 @@ function _mzHydrateWinCell(key, slot, b){
         // slice viejo no lo trae (backward-compat).
         let evState = b && b.eventState;
         if(!evState) evState = (!b || b.eventOk !== false) ? 'ok' : 'exhausted';
-        if(evState === 'nodata'){
+        if(evState === 'exhausted'){
+            if(pctEl) pctEl.textContent = 'tope activo';
+            if(rstEl) rstEl.textContent = '';
+            cell.setAttribute('title', meta.name + ': tope de cuota activo — el proveedor rechazó por límite.');
+            cell.setAttribute('aria-label', meta.name + ' ' + (b && b.win ? b.win : '') + ': tope activo');
+            return { healthy: false };
+        }
+        const pct = Number(b && b.pct);
+        if(evState === 'nodata' || !b || b.pct == null || !Number.isFinite(pct) || pct < 0 || pct > 100){
             cell.classList.add('mz-qm-nodata');
             if(pctEl) pctEl.textContent = 'sin dato';
             if(rstEl) rstEl.textContent = '';
@@ -2629,14 +2633,17 @@ function _mzHydrateWinCell(key, slot, b){
             cell.setAttribute('aria-label', meta.name + ' ' + (b && b.win ? b.win : '') + ': sin dato');
             return { healthy: false };
         }
-        const ok = evState === 'ok';
-        if(pctEl) pctEl.textContent = ok ? '✓ sin límite' : 'tope activo';
+        const normalizedPct = Math.round(pct);
+        const cls = _mzThresholdClass(normalizedPct);
+        if(cls) cell.classList.add(cls);
+        if(barEl) barEl.style.width = normalizedPct + '%';
+        if(pctEl) pctEl.textContent = normalizedPct + '%';
         if(rstEl) rstEl.textContent = '';
-        cell.setAttribute('title', ok
-            ? meta.name + ': sin tope de cuota activo (estado por eventos del proveedor · fuente ' + meta.src + ').'
-            : meta.name + ': tope de cuota activo — el proveedor rechazó por límite.');
-        cell.setAttribute('aria-label', meta.name + ' ' + (b && b.win ? b.win : '') + ': ' + (ok ? 'sin límite' : 'tope activo'));
-        return { healthy: ok };
+        const pctLabel = normalizedPct + '%';
+        cell.setAttribute('title', meta.name + ' · ' + (b && b.win ? b.win : '') + ': ' + pctLabel
+            + ' (fuente: ' + meta.src + ').');
+        cell.setAttribute('aria-label', meta.name + ' ' + (b && b.win ? b.win : '') + ': ' + pctLabel);
+        return { healthy: normalizedPct > 0 };
     }
 
     // Gauge con % disponible real.
