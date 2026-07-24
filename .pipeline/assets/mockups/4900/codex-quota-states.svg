@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Issue #4900 — Estados visuales de cuota Codex.
+  Referencia final para la matriz proveedor × ventana del Dashboard V3.
+  El layout, tipografía y tokens reproducen home.js; no introduce componentes nuevos.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif" role="img"
+     aria-labelledby="title description">
+  <title id="title">Estados visuales de cuota Codex</title>
+  <desc id="description">Comparación de porcentaje fresco saludable, advertencia, crítico, sin dato y tope activo.</desc>
+  <defs>
+    <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#11151E"/>
+      <stop offset="1" stop-color="#141925"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="720" fill="#0D1117"/>
+  <text x="64" y="70" fill="#E6EDF3" font-size="28" font-weight="750">Cuota Codex real</text>
+  <text x="64" y="102" fill="#8A93A6" font-size="14">Misma magnitud en texto, barra, color, title y aria-label</text>
+
+  <g transform="translate(64 140)">
+    <rect width="1072" height="500" rx="18" fill="url(#panel)" stroke="#30363D"/>
+    <text x="32" y="46" fill="#8A93A6" font-size="11" font-weight="800" letter-spacing="1">PROVEEDOR × VENTANA</text>
+    <text x="735" y="46" fill="#6E7681" font-size="10">FRESCO · FINITO · 0..100</text>
+
+    <text x="32" y="94" fill="#6E7681" font-size="10" font-weight="800">PROVEEDOR</text>
+    <text x="340" y="94" fill="#6E7681" font-size="10" font-weight="800">SESIÓN</text>
+    <text x="700" y="94" fill="#6E7681" font-size="10" font-weight="800">SEMANAL</text>
+    <line x1="32" y1="110" x2="1040" y2="110" stroke="#30363D"/>
+
+    <circle cx="40" cy="150" r="5" fill="#58A6FF"/>
+    <text x="56" y="154" fill="#E6EDF3" font-size="15" font-weight="800">Codex</text>
+    <text x="56" y="173" fill="#6E7681" font-size="10" font-weight="700">JSONL CANÓNICO</text>
+
+    <!-- Estado fresco saludable -->
+    <g transform="translate(340 126)">
+      <text x="0" y="29" fill="#6E7681" font-size="9" font-weight="800">5H</text>
+      <rect x="42" y="20" width="156" height="7" rx="4" fill="#21262D"/>
+      <rect x="42" y="20" width="112" height="7" rx="4" fill="#3FB950"/>
+      <text x="214" y="30" fill="#3FB950" font-size="15" font-weight="800">72%</text>
+      <text x="0" y="58" fill="#8A93A6" font-size="10">aria-label: “Codex 5h: 72% disponible”</text>
+    </g>
+
+    <!-- Estado fresco advertencia -->
+    <g transform="translate(700 126)">
+      <text x="0" y="29" fill="#6E7681" font-size="9" font-weight="800">7D</text>
+      <rect x="42" y="20" width="156" height="7" rx="4" fill="#21262D"/>
+      <rect x="42" y="20" width="55" height="7" rx="4" fill="#D29922"/>
+      <text x="214" y="30" fill="#D29922" font-size="15" font-weight="800">35%</text>
+      <text x="0" y="58" fill="#8A93A6" font-size="10">title y aria-label reflejan 35%</text>
+    </g>
+
+    <line x1="32" y1="214" x2="1040" y2="214" stroke="#30363D"/>
+    <text x="32" y="253" fill="#E6EDF3" font-size="13" font-weight="750">Variantes verificables</text>
+
+    <!-- Crítico -->
+    <g transform="translate(32 278)">
+      <rect width="310" height="78" rx="10" fill="#0D1117" stroke="#F85149" stroke-opacity=".45"/>
+      <text x="18" y="25" fill="#8A93A6" font-size="10" font-weight="800">DATO FRESCO · CRÍTICO</text>
+      <rect x="18" y="42" width="156" height="7" rx="4" fill="#21262D"/>
+      <rect x="18" y="42" width="19" height="7" rx="4" fill="#F85149"/>
+      <text x="192" y="53" fill="#F85149" font-size="15" font-weight="800">12%</text>
+    </g>
+
+    <!-- Sin dato -->
+    <g transform="translate(365 278)">
+      <rect width="310" height="78" rx="10" fill="#0D1117" stroke="#30363D"/>
+      <text x="18" y="25" fill="#8A93A6" font-size="10" font-weight="800">AUSENTE · INVÁLIDO · FUTURO · STALE</text>
+      <text x="18" y="55" fill="#6E7681" font-size="14" font-weight="650">sin dato</text>
+    </g>
+
+    <!-- Tope activo -->
+    <g transform="translate(698 278)">
+      <rect width="342" height="78" rx="10" fill="#0D1117" stroke="#F85149" stroke-opacity=".45"/>
+      <text x="18" y="25" fill="#8A93A6" font-size="10" font-weight="800">EXHAUSTED · PRECEDENCIA MÁXIMA</text>
+      <text x="18" y="55" fill="#F85149" font-size="14" font-weight="800">tope activo</text>
+    </g>
+
+    <g transform="translate(32 392)">
+      <rect width="1008" height="76" rx="10" fill="#161B22" stroke="#30363D"/>
+      <text x="18" y="25" fill="#E6EDF3" font-size="12" font-weight="750">Contrato de interacción</text>
+      <text x="18" y="49" fill="#8A93A6" font-size="11">Sin cambio de layout · barra animada existente · contraste por token · texto dinámico con textContent</text>
+      <text x="18" y="66" fill="#6E7681" font-size="10">El color refuerza el significado; el porcentaje o estado siempre lo expresa en texto.</text>
+    </g>
+  </g>
+</svg>
