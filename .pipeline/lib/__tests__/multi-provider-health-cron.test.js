@@ -240,6 +240,7 @@ test('runOnce: provider OAuth con CLI disponible → green sin pinear la API key
         // pingImpl NO debe ser invocado para providers OAuth.
         pingImpl: async () => { throw new Error('no debería pinear un provider OAuth'); },
         cliProbe: () => true, // CLI disponible
+        quotaAssessImpl: () => ({ adapterStatus: 'ok', status: 'ok', pct: 10, gated: false }),
         telegramSender: () => true,
         dedupFile: path.join(dir, 'dedup.json'),
         skipAudit: true,
