@@ -174,6 +174,49 @@ test('resolveBashCommand — Windows + bash sin Git Bash cae a shell:true fallba
     }
 });
 
+test('resolveBashCommand — #4898 fallback dinámico vía git --exec-path resuelve bash.exe', () => {
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const savedGitBash = process.env.GIT_BASH_PATH;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    // GIT_BASH_PATH inexistente → ningún candidato hardcoded pasa.
+    process.env.GIT_BASH_PATH = path.join(TMP, 'no-existe-4898.exe');
+    // fsImpl inyectado: solo el bash.exe derivado de git --exec-path existe.
+    const derivedBash = path.join('C:', 'Program Files', 'Git', 'bin', 'bash.exe');
+    const fakeFs = { existsSync: (p) => p === derivedBash };
+    // execSyncImpl inyectado: emula git --exec-path devolviendo la raíz git-core.
+    const fakeExecSync = (cmd) => {
+        assert.match(String(cmd), /git --exec-path/);
+        return 'C:/Program Files/Git/mingw64/libexec/git-core\n';
+    };
+    try {
+        const r = builder.resolveBashCommand('bash', { execSyncImpl: fakeExecSync, fsImpl: fakeFs });
+        assert.equal(r.cmd, derivedBash);
+        assert.equal(r.useShell, false);
+    } finally {
+        Object.defineProperty(process, 'platform', originalPlatform);
+        if (savedGitBash === undefined) delete process.env.GIT_BASH_PATH;
+        else process.env.GIT_BASH_PATH = savedGitBash;
+    }
+});
+
+test('resolveBashCommand — #4898 sin candidatos y git error cae a shell:true (último recurso)', () => {
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const savedGitBash = process.env.GIT_BASH_PATH;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    process.env.GIT_BASH_PATH = path.join(TMP, 'no-existe-4898b.exe');
+    const fakeFs = { existsSync: () => false };
+    const fakeExecSync = () => { throw new Error('git no disponible'); };
+    try {
+        const r = builder.resolveBashCommand('bash', { execSyncImpl: fakeExecSync, fsImpl: fakeFs });
+        assert.equal(r.cmd, 'bash');
+        assert.equal(r.useShell, true);
+    } finally {
+        Object.defineProperty(process, 'platform', originalPlatform);
+        if (savedGitBash === undefined) delete process.env.GIT_BASH_PATH;
+        else process.env.GIT_BASH_PATH = savedGitBash;
+    }
+});
+
 test('startHeartbeat — escribe archivo agent-<issue>.heartbeat y lo limpia al stop', () => {
     const hb = builder.startHeartbeat(2476);
     const hbFile = path.join(TMP, '.claude', 'hooks', 'agent-2476.heartbeat');

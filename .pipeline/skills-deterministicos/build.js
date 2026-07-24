@@ -24,7 +24,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const trace = require('../lib/traceability');
 const { writeDeliverable } = require('../lib/write-deliverable');
 const { parseGradleOutput, renderMarkdownReport } = require('./lib/gradle-parser');
@@ -138,7 +138,14 @@ function buildGradleCommand(scope, mod) {
 // rompa el path con espacios de "Program Files").
 //
 // Devuelve { cmd, useShell } — el caller debe usar ambos al spawn.
-function resolveBashCommand(cmd) {
+// `execSyncImpl`/`fsImpl` son parámetros de inyección OPCIONALES exclusivos para
+// tests (#4898): permiten exercitar el fallback dinámico vía `git --exec-path` sin
+// depender del Git Bash real de la máquina. SEGURIDAD: NUNCA leerse de env/config —
+// solo se inyectan como argumento desde el test. El default preserva el comportamiento
+// productivo exacto (execSync real + fs real).
+function resolveBashCommand(cmd, { execSyncImpl, fsImpl } = {}) {
+    const _execSync = execSyncImpl || execSync;
+    const _fs = fsImpl || fs;
     if (process.platform !== 'win32') {
         return { cmd, useShell: false };
     }
@@ -154,13 +161,44 @@ function resolveBashCommand(cmd) {
     ].filter(Boolean);
     for (const candidate of candidates) {
         try {
-            if (fs.existsSync(candidate)) {
+            if (_fs.existsSync(candidate)) {
                 return { cmd: candidate, useShell: false };
             }
         } catch {}
     }
-    // No se encontró Git Bash — fallback a 'bash' por PATH (puede caer
-    // en WSL bash). Mejor fallar con stack trace claro que silenciosamente.
+    // #4898 — Resolución dinámica vía `git` cuando los paths hardcoded fallan.
+    // Regresión observada: el build de #4898 (cambio puro .pipeline/) rebotó con
+    // `"bash" no se reconoce como un comando interno o externo` PESE a tener Git
+    // Bash instalado en `C:\Program Files\Git\bin\bash.exe`. La causa: se alcanzó
+    // este fallback (spawn de `bash` vía cmd.exe, que en máquinas sin WSL bash en
+    // PATH muere en ~40ms). Los candidatos hardcoded pueden no cubrir instalaciones
+    // en rutas no estándar, y un lock transitorio de FS/antivirus puede hacer que
+    // `existsSync` devuelva false por un instante. `git` SIEMPRE está en el PATH del
+    // pipeline (todo el flujo lo usa), así que derivamos la raíz de Git desde
+    // `git --exec-path` (ej. `…/Git/mingw64/libexec/git-core` → raíz `…/Git`) y
+    // ubicamos `bin/bash.exe` o `usr/bin/bash.exe`. Es una resolución robusta que
+    // no depende de rutas fijas ni de una única lectura de existsSync.
+    try {
+        const execPath = String(_execSync('git --exec-path', {
+            encoding: 'utf8', timeout: 5000, windowsHide: true,
+        })).trim();
+        if (execPath) {
+            const gitRoot = path.resolve(execPath, '..', '..', '..');
+            const derived = [
+                path.join(gitRoot, 'bin', 'bash.exe'),
+                path.join(gitRoot, 'usr', 'bin', 'bash.exe'),
+            ];
+            for (const candidate of derived) {
+                try {
+                    if (_fs.existsSync(candidate)) {
+                        return { cmd: candidate, useShell: false };
+                    }
+                } catch {}
+            }
+        }
+    } catch { /* git no disponible o error de spawn — cae al último recurso */ }
+    // No se encontró Git Bash por ningún medio — fallback a 'bash' por PATH (puede
+    // caer en WSL bash). Mejor fallar con stack trace claro que silenciosamente.
     return { cmd, useShell: true };
 }
 
