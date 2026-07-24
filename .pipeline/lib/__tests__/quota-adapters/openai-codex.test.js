@@ -303,6 +303,88 @@ test('codex: classifyBuckets mapea por window_minutes con umbral 1440', () => {
     assert.equal(adapter.WEEKLY_WINDOW_MIN_THRESHOLD, 1440);
 });
 
+// --- Validación de tipos SIN coerción (used_percent es input no confiable) ----
+//
+// El JSONL de Codex es dato externo. `Number(null)`/`Number('')`/`Number(false)`
+// dan 0 y `Number(true)` da 1: coercionar fabricaría un `0%`/`1%` VERDE a partir
+// de un campo ausente o corrupto (riesgo central de #4898). Sólo un `number`
+// finito genuino debe poblar la cuota; el resto degrada.
+
+test('codex: used_percent no numérico NO fabrica 0% (null/""/"0"/false/true/string)', () => {
+    const adapter = freshAdapter();
+    for (const bad of [null, undefined, '', '0', '55', false, true, {}, []]) {
+        const { session, weekly } = adapter.classifyBuckets({
+            primary: { used_percent: bad, window_minutes: 10080, resets_at: 100 },
+        });
+        assert.equal(weekly, null, `used_percent=${JSON.stringify(bad)} no debe fabricar un bucket`);
+        assert.equal(session, null);
+    }
+});
+
+test('codex: used_percent numérico 0 es un dato REAL (0% legítimo, no degradado)', () => {
+    const adapter = freshAdapter();
+    const { weekly } = adapter.classifyBuckets({
+        primary: { used_percent: 0, window_minutes: 10080, resets_at: 100 },
+    });
+    assert.ok(weekly, 'un 0 numérico genuino es 0% real, no ausencia de dato');
+    assert.equal(weekly.usedPercent, 0);
+});
+
+test('codex: used_percent negativo o NaN degrada (fuera de rango)', () => {
+    const adapter = freshAdapter();
+    for (const bad of [-1, -0.01, NaN, Infinity, -Infinity]) {
+        const { weekly } = adapter.classifyBuckets({
+            primary: { used_percent: bad, window_minutes: 10080, resets_at: 100 },
+        });
+        assert.equal(weekly, null, `used_percent=${bad} fuera de rango debe degradar`);
+    }
+});
+
+test('codex: used_percent no numérico end-to-end → error (pct null, NO 0% verde)', () => {
+    const adapter = freshAdapter();
+    const rateLimits = { primary: { used_percent: null, window_minutes: 10080, resets_at: 100 } };
+    const r = adapter({ now: NOW_FRESH, readEventImpl: fakeReader({ tsMs: EVENT_TS_MS, rateLimits }) });
+    assert.equal(r.adapterStatus, 'error');
+    assert.equal(r.pct, null, 'used_percent null no debe convertirse en 0% verde');
+    assert.notEqual(r.pct, 0);
+});
+
+test('codex: window_minutes como string NO se coerce → bucket descartado', () => {
+    const adapter = freshAdapter();
+    const { session, weekly } = adapter.classifyBuckets({
+        primary: { used_percent: 50, window_minutes: '10080', resets_at: 100 },
+    });
+    assert.equal(weekly, null, 'string "10080" no clasifica como ventana válida');
+    assert.equal(session, null);
+});
+
+test('codex: window_minutes cero o negativo degrada el bucket', () => {
+    const adapter = freshAdapter();
+    for (const bad of [0, -5, NaN]) {
+        const { session, weekly } = adapter.classifyBuckets({
+            primary: { used_percent: 50, window_minutes: bad, resets_at: 100 },
+        });
+        assert.equal(weekly, null);
+        assert.equal(session, null);
+    }
+});
+
+test('codex: resets_at inválido → resetAt null pero el % sigue válido', () => {
+    const adapter = freshAdapter();
+    for (const bad of ['123', null, 0, -1, NaN]) {
+        const { weekly } = adapter.classifyBuckets({
+            primary: { used_percent: 60, window_minutes: 10080, resets_at: bad },
+        });
+        assert.ok(weekly, 'un resets_at corrupto no invalida el porcentaje');
+        assert.equal(weekly.resetAt, null, `resets_at=${JSON.stringify(bad)} → null, no ISO fabricado`);
+    }
+    // End-to-end: nextResetAt queda null sin romper el pct.
+    const rateLimits = { primary: { used_percent: 60, window_minutes: 10080, resets_at: '123' } };
+    const r = adapter({ now: NOW_FRESH, readEventImpl: fakeReader({ tsMs: EVENT_TS_MS, rateLimits }) });
+    assert.equal(r.pct, 60);
+    assert.equal(r.nextResetAt, null);
+});
+
 // --- Lectura real de FS (integración liviana con archivos temporales) --------
 
 test('codex: readLatestEvent elige el evento global más reciente entre sesiones concurrentes', () => {
@@ -339,6 +421,97 @@ test('codex: readLatestEvent elige el evento global más reciente entre sesiones
 test('codex: readLatestEvent devuelve null si el dir no existe', () => {
     const adapter = freshAdapter();
     assert.equal(adapter.readLatestEvent(path.join(os.tmpdir(), 'no-existe-codex-xyz-4885')), null);
+});
+
+// --- Cotas anti-cuelgue / anti-OOM (riesgos #4898) ---------------------------
+
+test('codex: listRecentRolloutFiles respeta el cap de 40 archivos', () => {
+    const adapter = freshAdapter();
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-cap-'));
+    const dayDir = path.join(base, '2026', '07', '23');
+    fs.mkdirSync(dayDir, { recursive: true });
+    for (let i = 0; i < 50; i++) {
+        const hh = String(i).padStart(2, '0');
+        fs.writeFileSync(path.join(dayDir, `rollout-2026-07-23T${hh}-00-00-${hh}.jsonl`), 'x\n');
+    }
+    const files = adapter.listRecentRolloutFiles(base, 40);
+    assert.equal(files.length, 40, 'nunca enumera más de 40 rollouts (cota anti-cuelgue)');
+    fs.rmSync(base, { recursive: true, force: true });
+});
+
+test('codex: readLatestEvent no escanea más allá del cap (dato en un rollout viejo se pierde)', () => {
+    const adapter = freshAdapter();
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-cap2-'));
+    const dayDir = path.join(base, '2026', '07', '23');
+    fs.mkdirSync(dayDir, { recursive: true });
+    // 40 rollouts nuevos SIN cuota (nombres 90..51, ordenan primero) + 1 viejo
+    // CON cuota (nombre 00). El cap de 40 corta antes de alcanzar el viejo.
+    for (let i = 90; i > 50; i--) {
+        fs.writeFileSync(path.join(dayDir, `rollout-2026-07-23T${i}-00-00-${i}.jsonl`), '{"noise":1}\n');
+    }
+    fs.writeFileSync(
+        path.join(dayDir, 'rollout-2026-07-23T00-00-00-old.jsonl'),
+        makeLine(makeRateLimits({ weeklyPct: 88, includeSession: false }), EVENT_TS_ISO) + '\n');
+    const ev = adapter.readLatestEvent(base);
+    assert.equal(ev, null, 'la cuota vive fuera de los 40 rollouts más nuevos → no se alcanza');
+    fs.rmSync(base, { recursive: true, force: true });
+});
+
+test('codex: sólo lee la cola de 512 KiB (cuota antes de la cola se pierde)', () => {
+    const adapter = freshAdapter();
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-tail-'));
+    const dayDir = path.join(base, '2026', '07', '23');
+    fs.mkdirSync(dayDir, { recursive: true });
+    const validLine = makeLine(makeRateLimits({ weeklyPct: 77, includeSession: false }), EVENT_TS_ISO);
+    const filler = '{"noise":1}\n'.repeat(70000); // ~840 KiB, supera el cap de 512.
+    // Cuota al PRINCIPIO, relleno gigante después → cae fuera de la cola.
+    fs.writeFileSync(path.join(dayDir, 'rollout-2026-07-23T10-00-00-tail.jsonl'), validLine + '\n' + filler);
+    assert.equal(adapter.readLatestEvent(base), null,
+        'la cuota quedó fuera de los últimos 512 KiB → no leída (cota anti-OOM)');
+    fs.rmSync(base, { recursive: true, force: true });
+});
+
+test('codex: encuentra la cuota si está dentro de los últimos 512 KiB', () => {
+    const adapter = freshAdapter();
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-tail2-'));
+    const dayDir = path.join(base, '2026', '07', '23');
+    fs.mkdirSync(dayDir, { recursive: true });
+    const validLine = makeLine(makeRateLimits({ weeklyPct: 77, includeSession: false }), EVENT_TS_ISO);
+    const filler = '{"noise":1}\n'.repeat(70000);
+    // Relleno primero, cuota al FINAL → dentro de la cola.
+    fs.writeFileSync(path.join(dayDir, 'rollout-2026-07-23T10-00-00-tail.jsonl'), filler + validLine + '\n');
+    const ev = adapter.readLatestEvent(base);
+    assert.ok(ev);
+    assert.equal(ev.rateLimits.primary.used_percent, 77);
+    fs.rmSync(base, { recursive: true, force: true });
+});
+
+test('codex: omite symlinks y entradas no regulares donde se espera un rollout', () => {
+    const adapter = freshAdapter();
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-sym-'));
+    const dayDir = path.join(base, '2026', '07', '23');
+    fs.mkdirSync(dayDir, { recursive: true });
+    // Target con cuota FUERA del root: un symlink no debe exponerlo.
+    const outside = path.join(base, 'outside-secret.jsonl');
+    fs.writeFileSync(outside,
+        makeLine(makeRateLimits({ weeklyPct: 99, includeSession: false }), EVENT_TS_ISO) + '\n');
+    let symlinkOk = true;
+    try {
+        fs.symlinkSync(outside, path.join(dayDir, 'rollout-2026-07-23T20-00-00-link.jsonl'));
+    } catch { symlinkOk = false; } // Windows sin privilegios: se omite la aserción.
+    // Directorio con nombre de rollout: entrada no regular.
+    fs.mkdirSync(path.join(dayDir, 'rollout-2026-07-23T21-00-00-dir.jsonl'));
+
+    const files = adapter.listRecentRolloutFiles(base, 40);
+    for (const f of files) {
+        assert.ok(!f.endsWith('dir.jsonl'), 'no incluye un directorio como rollout');
+        if (symlinkOk) assert.ok(!f.endsWith('link.jsonl'), 'no sigue symlinks fuera del root');
+    }
+    if (symlinkOk) {
+        assert.equal(adapter.readLatestEvent(base), null,
+            'el dato de un symlink fuera del root no se lee (confinamiento)');
+    }
+    fs.rmSync(base, { recursive: true, force: true });
 });
 
 // --- Aislamiento del origen (hook de tests hermeticos) -----------------------
@@ -424,4 +597,30 @@ test('codex: sin proceso externo ni dependencia nativa — solo lectura fs', () 
     assert.ok(!/child_process|execFileSync|execSync|spawn/.test(src),
         'sin proceso externo: los rollouts se leen con fs, no con sqlite3 CLI');
     assert.ok(/require\('fs'\)/.test(src), 'lee los rollouts con el módulo fs');
+});
+
+test('codex: no lee rollouts completos con readFileSync (cota anti-OOM)', () => {
+    const src = fs.readFileSync(
+        path.join(__dirname, '..', '..', 'quota-adapters', 'openai-codex.js'), 'utf8');
+    assert.ok(!/readFileSync\s*\(/.test(src),
+        'los rollouts se leen por cola con fs.readSync, no completos con readFileSync');
+});
+
+test('codex: los outputs degradados no exponen paths ni fragmentos de transcript', () => {
+    const adapter = freshAdapter();
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-leak-'));
+    const dayDir = path.join(base, '2026', '07', '23');
+    fs.mkdirSync(dayDir, { recursive: true });
+    // Rollout con un secreto en el transcript y sin cuota válida → error degradado.
+    fs.writeFileSync(path.join(dayDir, 'rollout-2026-07-23T10-00-00-leak.jsonl'),
+        JSON.stringify({
+            timestamp: EVENT_TS_ISO, type: 'event_msg',
+            payload: { type: 'token_count', rate_limits: { primary: { used_percent: null, window_minutes: 10080 } } },
+        }) + '\n');
+    const r = adapter({ now: EVENT_TS_MS + 60 * 1000, codexSessionsDir: base });
+    assert.equal(r.pct, null);
+    const reason = String(r.errorReason || '');
+    assert.ok(!reason.includes(base), 'el motivo no debe filtrar el path absoluto del rollout');
+    assert.ok(!reason.includes('rollout-'), 'el motivo no debe filtrar el nombre del archivo');
+    fs.rmSync(base, { recursive: true, force: true });
 });

@@ -155,6 +155,19 @@ function listRecentRolloutFiles(sessionsDir, max) {
         try { entries = fs.readdirSync(dir); } catch { return []; }
         return entries.filter(filter).sort(sorter);
     };
+    // Lista SÓLO archivos regulares con nombre `rollout-*.jsonl`, omitiendo
+    // symlinks (pueden escapar del root configurado a un target arbitrario) y
+    // entradas no regulares (un directorio donde se espera archivo). Usa
+    // `withFileTypes` para no seguir el enlace ni hacer un `stat` extra: el tipo
+    // del Dirent describe la entrada, no su destino.
+    const listRolloutFiles = (dir) => {
+        let entries;
+        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return []; }
+        return entries
+            .filter((e) => e.isFile() && /^rollout-.*\.jsonl$/.test(e.name))
+            .map((e) => e.name)
+            .sort(descStr);
+    };
     const numeric = (name) => /^\d+$/.test(name);
     const years = readDirs(sessionsDir, numeric, descNum);
     for (const y of years) {
@@ -163,7 +176,7 @@ function listRecentRolloutFiles(sessionsDir, max) {
             const mDir = path.join(yDir, m);
             for (const d of readDirs(mDir, numeric, descNum)) {
                 const dDir = path.join(mDir, d);
-                const files = readDirs(dDir, (f) => /^rollout-.*\.jsonl$/.test(f), descStr);
+                const files = listRolloutFiles(dDir);
                 for (const f of files) {
                     out.push(path.join(dDir, f));
                     if (out.length >= max) return out;
@@ -286,21 +299,27 @@ function classifyBuckets(rateLimits) {
     for (const key of ['primary', 'secondary']) {
         const b = rateLimits[key];
         if (!b || typeof b !== 'object') continue;
-        const usedPercent = Number(b.used_percent);
-        if (!Number.isFinite(usedPercent) || usedPercent < 0) continue;
-        const resetRaw = Number(b.resets_at);
-        const resetAt = Number.isFinite(resetRaw) && resetRaw > 0 ? resetRaw : null;
-        const wmRaw = Number(b.window_minutes);
-        const windowMinutes = Number.isFinite(wmRaw) && wmRaw > 0 ? wmRaw : null;
-        if (windowMinutes == null) continue;
+        // VALIDACIÓN DE TIPOS SIN COERCIÓN (input no confiable): el JSONL de Codex
+        // es dato externo. `Number(null)`/`Number('')`/`Number(false)` valen 0 y
+        // `Number(true)` vale 1 → coercionar fabricaría un `0%` (o `1%`) VERDE a
+        // partir de un campo ausente/corrupto (riesgo #4898). Sólo aceptamos un
+        // `number` finito genuino; cualquier otro tipo descarta el bucket.
+        const usedPercent = b.used_percent;
+        if (typeof usedPercent !== 'number' || !Number.isFinite(usedPercent) || usedPercent < 0) continue;
+        // `window_minutes` clasifica sesión/semanal: sólo número finito positivo.
+        // Un string "10080" NO se coerce; sin ventana válida no clasificamos.
+        const windowMinutes = b.window_minutes;
+        if (typeof windowMinutes !== 'number' || !Number.isFinite(windowMinutes) || windowMinutes <= 0) continue;
+        // `resets_at` es epoch-seconds: número finito positivo o `null` (opcional).
+        const resetRaw = b.resets_at;
+        const resetAt = (typeof resetRaw === 'number' && Number.isFinite(resetRaw) && resetRaw > 0)
+            ? resetRaw
+            : null;
         const bucket = {
             usedPercent: Math.min(100, usedPercent),
             resetAt,
             windowMinutes,
         };
-        // Sin window_minutes no podemos clasificar por ventana: lo tratamos como
-        // SESIÓN (bucket rolling corto) para no fabricar un semanal falso que
-        // alimente el gating/pacing con un número de ventana desconocida.
         const isWeekly = windowMinutes >= WEEKLY_WINDOW_MIN_THRESHOLD;
         if (isWeekly) {
             if (!result.weekly) result.weekly = bucket;
