@@ -1253,9 +1253,21 @@ test('#4353 CA-3 · éxito real de un provider drena SU flag no_quota (revalidac
     const q = freshModule(tmpDir);
     try {
         const resetsAt = Date.now() + 3600 * 1000; // 1h en el futuro (no expira solo)
-        q.setFlag({ errorType: 'insufficient_quota', provider: 'openai-codex', resetsAt, maxDays: 31 });
+        const sinDatoCanonico = () => ({ adapterStatus: 'no_usage_data', pct: null });
+        q.setFlag({
+            errorType: 'insufficient_quota',
+            provider: 'openai-codex',
+            resetsAt,
+            maxDays: 31,
+            _quotaUsageImpl: sinDatoCanonico,
+        });
         // Antes del drenado: el provider está gated.
-        assert.equal(q.shouldGateSpawn('telegram-commander', { provider: 'openai-codex' }), true);
+        assert.equal(q.shouldGateSpawn('telegram-commander', {
+            provider: 'openai-codex',
+            // El caso prueba drenado explícito, no reconciliación con sesiones
+            // reales del host. Sin dato canónico, el gate conserva el flag.
+            _quotaUsageImpl: sinDatoCanonico,
+        }), true);
         // El pulpo drena tras recibir generación real del provider.
         const drained = q.clearFlag({ event: 'success_spawn_fallback', reason: 'commander_fallback_success', provider: 'openai-codex' });
         assert.equal(drained, true, 'debe drenar el flag del provider que respondió');

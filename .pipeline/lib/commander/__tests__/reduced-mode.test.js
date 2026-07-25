@@ -65,15 +65,21 @@ function agentModels() {
 function withTempPipeline(setupFiles, fn) {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'reduced4870-'));
     const prev = process.env.PIPELINE_DIR_OVERRIDE;
+    const prevReconcile = process.env.QUOTA_RECONCILE_DISABLED;
     try {
         for (const [name, content] of Object.entries(setupFiles)) {
             fs.writeFileSync(path.join(tmp, name), content, 'utf8');
         }
         process.env.PIPELINE_DIR_OVERRIDE = tmp;
+        // El fixture define toda la cadena de cuota. Evita que sesiones Codex
+        // del host invaliden esos flags sintéticos y escriban logs de auditoría.
+        process.env.QUOTA_RECONCILE_DISABLED = '1';
         return fn(tmp);
     } finally {
         if (prev === undefined) delete process.env.PIPELINE_DIR_OVERRIDE;
         else process.env.PIPELINE_DIR_OVERRIDE = prev;
+        if (prevReconcile === undefined) delete process.env.QUOTA_RECONCILE_DISABLED;
+        else process.env.QUOTA_RECONCILE_DISABLED = prevReconcile;
         try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best-effort */ }
     }
 }
