@@ -14,6 +14,7 @@ const { sanitize } = require('./sanitizer');
 const { sanitizeDrivePayload, sanitizeDriveFilename, filenameHasSecret } = require('./lib/sanitize-payload');
 // CA-3 / RS-3 (#3927): notificación de fallo a Telegram con texto redactado.
 const { notifyTelegram } = require('./lib/notify-telegram');
+const { isMarkerArtifact } = require('./lib/marker-artifact');
 // RS-3 (#3927): `redactSensitive` cubre emails/URLs/bot-tokens, pero NO los
 // patrones de VALOR de proveedores (AWS `AKIA…`, `sk-ant-…`, JWT, etc.) — esos
 // los redacta `redactSecretValue`. Componemos ambas para no volcar NINGÚN
@@ -226,6 +227,7 @@ function readQaVerdictFromYaml(issue) {
   try {
     if (!fs.existsSync(procesadoDir)) return {};
     const files = fs.readdirSync(procesadoDir)
+      .filter((f) => !isMarkerArtifact(f))
       .filter((f) => f.startsWith(String(issue) + '.') && f.endsWith('.yaml') && f.includes('qa'));
     if (files.length === 0) return {};
     // Preferir el más reciente
