@@ -2633,17 +2633,26 @@ function _mzHydrateWinCell(key, slot, b){
             cell.setAttribute('aria-label', meta.name + ' ' + (b && b.win ? b.win : '') + ': sin dato');
             return { healthy: false };
         }
-        const normalizedPct = Math.round(pct);
-        const cls = _mzThresholdClass(normalizedPct);
+        // POLARIDAD (#4900, misma clase de falla que el bug padre #4885):
+        // el slice entrega pct = CONSUMO (openai-codex.js, used_percent),
+        // mientras _mzThresholdClass() y las celdas gauge de esta misma
+        // matriz trabajan con DISPONIBLE. Se convierte UNA sola vez acá y ese
+        // entero alimenta texto, barra, color, title, aria-label y healthy.
+        // Réplica inline de _availableFromConsumed() (provider-quota.js): este
+        // bloque vive en el script CLIENTE, no puede require() el módulo.
+        const disponible = Math.max(0, Math.min(100, 100 - Math.round(pct)));
+        const cls = _mzThresholdClass(disponible);
         if(cls) cell.classList.add(cls);
-        if(barEl) barEl.style.width = normalizedPct + '%';
-        if(pctEl) pctEl.textContent = normalizedPct + '%';
+        if(barEl) barEl.style.width = disponible + '%';
+        if(pctEl) pctEl.textContent = disponible + '%';
         if(rstEl) rstEl.textContent = '';
-        const pctLabel = normalizedPct + '%';
+        // Rótulo accesible idéntico al de la rama gauge: el operador debe
+        // leer si SOBRA o si FALTA cuota, no un número ambiguo.
+        const pctLabel = disponible <= 0 ? 'AGOTADA (0% disponible)' : disponible + '% disponible';
         cell.setAttribute('title', meta.name + ' · ' + (b && b.win ? b.win : '') + ': ' + pctLabel
             + ' (fuente: ' + meta.src + ').');
         cell.setAttribute('aria-label', meta.name + ' ' + (b && b.win ? b.win : '') + ': ' + pctLabel);
-        return { healthy: normalizedPct > 0 };
+        return { healthy: disponible > 0 };
     }
 
     // Gauge con % disponible real.

@@ -2,8 +2,135 @@
 
 > Gemelo de #4861 (Anthropic sobre `claude -p /usage`). Mantiene la misma
 > disciplina de **una sola fuente fidedigna** por proveedor.
+>
+> **Actualizado en #4900** (fuente JSONL de rollouts + polaridad de render). La
+> descripción del origen SQLite que aparece más abajo en la sección 1 es
+> **historia**: el formato vigente está descrito en la sección 0.
 
-## 1. Problema que resolvió
+## 0. Fuente vigente: rollouts JSONL de sesión (#4885 / #4900)
+
+Desde Codex >= 0.145.0 el `used_percent` **ya no vive en el SQLite**
+(`logs_2.sqlite`, evento `codex.rate_limits`): el evento legacy quedó sin
+porcentajes. El dato real se lee de los **rollouts de sesión**:
+
+```
+~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl
+```
+
+Cada línea es un evento JSON; los de tipo `event_msg`/`token_count` traen
+`payload.rate_limits`. Muestra real (v0.145.0):
+
+```json
+{"timestamp":"2026-07-23T19:38:32.183Z","type":"event_msg",
+ "payload":{"type":"token_count","info":{},
+   "rate_limits":{"limit_id":"codex",
+     "primary":{"used_percent":1.0,"window_minutes":10080,"resets_at":1785373521},
+     "secondary":null,"plan_type":"plus"}}}
+```
+
+### 0.1 Selección global por timestamp interno
+
+El nombre del rollout indica **cuándo empezó** la sesión, no cuándo recibió su
+último evento: una sesión anterior puede reanudarse y escribir después que una
+sesión cuyo archivo ordena primero. Por eso `readLatestEvent()` **no se queda con
+el primer archivo**: recorre hasta `MAX_ROLLOUTS_TO_SCAN` (40) rollouts del más
+nuevo al más viejo y elige el evento con el **timestamp interno más reciente**.
+Un evento sin timestamp sólo se conserva como fallback degradado.
+
+De cada archivo se lee sólo la **cola** (`ROLLOUT_TAIL_BYTES` = 512 KB,
+anti-OOM), escaneando líneas de atrás hacia adelante; si el corte parte una
+línea, esa línea falla el `JSON.parse` y se descarta sin afectar a la última
+línea completa.
+
+### 0.2 Clasificación por `window_minutes` (no por posición)
+
+El mapeo bucket→ventana **ya no es posicional** (`primary`=5h, `secondary`=7d).
+En v0.145.0 el uso semanal puede venir en `primary` con `secondary: null`. Se
+clasifica por ventana, con frontera `WEEKLY_WINDOW_MIN_THRESHOLD` = 1440:
+
+| `window_minutes` | Bucket | Destino en el shape canónico |
+|------------------|--------|------------------------------|
+| < 1440 (5h ≈ 300) | **sesión** | `session.pct` / `session.status`, `sessionResetsAt` |
+| >= 1440 (7d = 10080) | **semanal** | `pct` / `status` top-level, `nextResetAt` / `weeklyResetsAtReported` |
+
+`resets_at` (epoch en segundos; **rename** del viejo `reset_at`) se convierte a
+ISO-8601. Sin bucket semanal legible, el top-level queda `pct:null` +
+`status:'unknown'` — nunca se fabrica un % semanal.
+
+### 0.3 Frescura, timestamp futuro y estados degradados
+
+La frescura se ancla al `timestamp` ISO **del evento**, no al `mtime` del
+archivo. Umbral `CODEX_QUOTA_STALENESS_MS` (env, default 1h, piso 5 min):
+
+| Situación | `adapterStatus` | `pct` |
+|-----------|-----------------|-------|
+| No hay rollout legible con `rate_limits` | `no_usage_data` (reprobe-elegible) | `null` |
+| Evento sin timestamp parseable | `unknown` ("timestamp inválido") | `null` |
+| Evento **fechado en el futuro** (edad negativa) | `unknown` ("timestamp futuro") | `null` |
+| Evento más viejo que el umbral | `unknown` ("dato stale") | `null` |
+| `rate_limits` sin ventana válida | `error` ("ventanas inválidas") | `null` |
+| Evento fresco y válido | `ok` | real |
+
+El caso **timestamp futuro** es explícito: una edad negativa atravesaría el
+chequeo de staleness y pintaría como "fresco" un dato no confiable (clock skew,
+rollout copiado de otra máquina).
+
+### 0.4 Override `CODEX_SESSIONS_DIR` y aislamiento de tests
+
+Prioridad del directorio de rollouts:
+
+1. `sessionData.codexSessionsDir` (override explícito, usado por los tests).
+2. Env **`CODEX_SESSIONS_DIR`** (redirige el origen sin tocar código).
+3. Default `~/.codex/sessions`.
+
+Los tests nunca leen el `~/.codex` real: arman un árbol temporal y lo inyectan
+por `codexSessionsDir`, o setean/restauran `CODEX_SESSIONS_DIR` alrededor del
+caso (`lib/__tests__/quota-adapters/openai-codex.test.js`). También se puede
+inyectar `readEventImpl` y `now` para fijar frescura de forma determinística.
+
+### 0.5 Invariante offline
+
+Se mantiene el invariante de los adapters (CA-#6 de #3092): **cero red, cero
+proceso externo**. La lectura es `fs` puro sobre archivos locales — ya ni
+siquiera se invoca el binario `sqlite3` del origen legacy. No hay HTTP a OpenAI,
+no hay dependencia nativa, y cualquier excepción del reader degrada fail-secure
+a "sin dato".
+
+### 0.6 Polaridad del render: el slice entrega CONSUMO, la celda pinta DISPONIBLE
+
+`used_percent` es **consumo**. El adapter lo propaga tal cual (`pct` = consumo),
+pero la matriz proveedor × ventana del dashboard trabaja en **disponible**:
+`_mzThresholdClass(avail)` pinta verde cuando **sobra** cuota y las celdas
+`gauge` rotulan `N% disponible` (`available = 100 - consumido`, ver
+`_availableFromConsumed()` en `lib/provider-quota.js`).
+
+Por eso `_mzHydrateWinCell()` convierte una sola vez al entrar a la rama fresca
+de `mode: 'event'`:
+
+```js
+const disponible = Math.max(0, Math.min(100, 100 - Math.round(pct)));
+```
+
+y **ese** entero alimenta texto, ancho de barra, clase cromática, `title`,
+`aria-label` y `healthy`. La conversión se replica **inline** porque el bloque
+vive dentro del template literal del script **cliente** de `views/dashboard/home.js`
+y no puede `require()` el módulo. Tampoco sirve `b.available`: en `mode: 'event'`
+el slice lo entrega `null`, así que la única fuente es `b.pct` (consumo).
+
+Pintar el consumo crudo con esa escala **invierte la semántica** (12% consumido
+se vería rojo teniendo 88% libre; 100% consumido se vería verde y sumaría al
+contador `mz-sig-healthy`). Es la misma clase de falla que originó el bug padre
+#4885, y está blindada por los casos de polaridad de
+`tests/home-quota-render-4327.test.js` (consumo 0 → `100%` verde y sano; consumo
+100 → `0%` rojo y no sano; consumo 28 → `72% disponible`; consumo 88 →
+`12% disponible`). El contrato visual está versionado en
+`.pipeline/assets/mockups/4900/codex-quota-states.svg`.
+
+Precedencia dentro de `mode: 'event'` (sin cambios): `exhausted` → `tope activo`;
+`nodata` o porcentaje no finito/fuera de rango → `sin dato`; recién después la
+rama numérica convierte a disponible.
+
+## 1. Problema que resolvió (historia — origen SQLite)
 
 El cálculo de cuota de Codex tenía **dos subsistemas que no se hablaban**, y el
 dashboard se contradecía a sí mismo:
@@ -62,7 +189,8 @@ de **"cuota agotada"** (CA-4).
 
 ## 3. Probe / dato fresco tras inactividad (CA-3)
 
-**Estado actual: fail-safe SQLite-only.** Tras >1h sin eventos, la tarjeta
+**Estado actual: fail-safe sólo-lectura-local** (hoy sobre los rollouts JSONL de
+la sección 0; el texto original decía "SQLite-only"). Tras >1h sin eventos, la tarjeta
 muestra **"sin dato"** (no un % viejo, no "sin límite" espurio). El síntoma que
 motivó el issue —el verde espurio por inactividad— queda **eliminado**.
 
@@ -137,9 +265,15 @@ al alcanzar el límite lo **quemaría en días**. Es un anti-patrón operacional
   `_isProviderExhausted(provider, opts)`.
 - `lib/dashboard-slices.js` — `quotaSlice`: computa `exhaustedProviders` desde
   `quota-exhausted-state.getQuotaState()` y lo pasa a `enrich`.
-- `views/dashboard/home.js` — `_mzHydrateWinCell`: render de `ok`/`exhausted`/`nodata`.
+- `views/dashboard/home.js` — `_mzHydrateWinCell`: render de `ok`/`exhausted`/`nodata`
+  y (#4900) conversión consumo→disponible de la rama fresca.
+- `lib/quota-adapters/openai-codex.js` — (#4885/#4900) lectura de rollouts JSONL,
+  selección global por timestamp, clasificación por `window_minutes`, frescura y
+  override `CODEX_SESSIONS_DIR`.
 - Tests: `tests/provider-quota-codex-reconcile-4863.test.js`,
-  `tests/home-quota-render-4327.test.js` (casos #4863).
+  `tests/home-quota-render-4327.test.js` (casos #4863 + polaridad #4900),
+  `lib/__tests__/quota-adapters/openai-codex.test.js` (fuente JSONL, override,
+  timestamp futuro/stale).
 
 ## 7. Trabajo diferido (issues de recomendación)
 

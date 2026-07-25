@@ -129,29 +129,58 @@ test('#4533: _mzHydrateWinCell con % disponible real escribe el porcentaje + col
     assert.equal(res.healthy, false, '0% disponible no es proveedor sano');
 });
 
-test('#4900: Codex fresco sincroniza porcentaje, barra, color, title y aria-label', () => {
+test('#4900: Codex fresco sincroniza DISPONIBLE en porcentaje, barra, color, title y aria-label', () => {
+    // El slice entrega CONSUMO: 27.6% consumido => 72% disponible (mockup).
     const { cid, els } = makeCell('openai-codex', 'short');
     const r = loadWinCellHelper(els)._mzHydrateWinCell('openai-codex', 'short',
-        { mode: 'event', eventState: 'ok', pct: 72.4, win: 'Roll' });
+        { mode: 'event', eventState: 'ok', pct: 27.6, win: 'Roll' });
     assert.equal(els[cid + '-pct'].textContent, '72%');
     assert.equal(els[cid + '-bar'].style.width, '72%');
     assert.ok(els[cid]._classes.has('ok'));
-    assert.match(els[cid].getAttribute('title'), /72%/);
-    assert.match(els[cid].getAttribute('aria-label'), /72%/);
+    assert.match(els[cid].getAttribute('title'), /72% disponible/);
+    assert.match(els[cid].getAttribute('aria-label'), /72% disponible/);
     assert.ok(els[cid]._classes.has('mz-qm-event'), 'la celda marca estado por evento');
     assert.equal(r.healthy, true);
 });
 
-test('#4900: Codex fresco cubre límites 0/100 y umbrales cromáticos', () => {
-    for (const [pct, cls, healthy] of [[0, 'bad', false], [20, 'warn', true], [50, 'ok', true], [100, 'ok', true]]) {
+test('#4900: polaridad — el consumo se pinta como DISPONIBLE (100 - consumo)', () => {
+    // [consumo, texto/barra esperados (= disponible), clase, healthy].
+    // Fija la polaridad correcta: consumo 0 => 100% disponible verde y sano;
+    // consumo 100 => 0% disponible rojo y NO sano. Lo inverso es el bug #4885.
+    const casos = [
+        [0, '100%', 'ok', true],
+        [12, '88%', 'ok', true],
+        [28, '72%', 'ok', true],    // caso verde del mockup versionado
+        [51, '49%', 'warn', true],
+        [88, '12%', 'bad', true],   // caso rojo crítico del mockup versionado
+        [100, '0%', 'bad', false],
+    ];
+    for (const [pct, esperado, cls, healthy] of casos) {
         const { cid, els } = makeCell('openai-codex', 'short');
         const r = loadWinCellHelper(els)._mzHydrateWinCell('openai-codex', 'short',
             { mode: 'event', eventState: 'ok', pct, win: 'Roll' });
-        assert.equal(els[cid + '-pct'].textContent, pct + '%');
-        assert.equal(els[cid + '-bar'].style.width, pct + '%');
-        assert.ok(els[cid]._classes.has(cls));
-        assert.equal(r.healthy, healthy);
+        assert.equal(els[cid + '-pct'].textContent, esperado, 'consumo ' + pct + ' => ' + esperado + ' disponible');
+        assert.equal(els[cid + '-bar'].style.width, esperado, 'la barra usa el disponible');
+        assert.ok(els[cid]._classes.has(cls), 'consumo ' + pct + ' => clase ' + cls);
+        assert.equal(r.healthy, healthy, 'consumo ' + pct + ' => healthy ' + healthy);
     }
+});
+
+test('#4900: el rótulo accesible dice "disponible" y marca AGOTADA en 0%', () => {
+    const libre = makeCell('openai-codex', 'short');
+    loadWinCellHelper(libre.els)._mzHydrateWinCell('openai-codex', 'short',
+        { mode: 'event', eventState: 'ok', pct: 28, win: 'Roll' });
+    assert.match(libre.els[libre.cid].getAttribute('aria-label'), /72% disponible/,
+        'el operador lee cuánta cuota SOBRA, no un número ambiguo');
+
+    const agotada = makeCell('openai-codex', 'long');
+    const r = loadWinCellHelper(agotada.els)._mzHydrateWinCell('openai-codex', 'long',
+        { mode: 'event', eventState: 'ok', pct: 100, win: 'Sem' });
+    assert.equal(agotada.els[agotada.cid + '-pct'].textContent, '0%');
+    assert.match(agotada.els[agotada.cid].getAttribute('title'), /AGOTADA \(0% disponible\)/,
+        'copia coherente con la rama gauge de la misma matriz');
+    assert.match(agotada.els[agotada.cid].getAttribute('aria-label'), /AGOTADA \(0% disponible\)/);
+    assert.equal(r.healthy, false, 'cuota consumida al 100% NUNCA cuenta como proveedor sano');
 });
 
 test('#4863: mode event eventState "exhausted" → "tope activo", NO sano', () => {
