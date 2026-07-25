@@ -4,8 +4,7 @@
 //
 // Objetivo: invocar el provider real (no mockeado) y verificar que el
 // pipeline buildSpawn → child_process.spawn → parseTokensFromLog cierra el
-// contrato canónico contra `gemini --skip-trust -o json -p ...` con OAuth
-// gratuito (cuenta Google, free tier real).
+// contrato canónico contra `agy --print` con OAuth.
 //
 // NO toca el pulpo. NO requiere pipeline corriendo. Es un smoke aislado.
 // =============================================================================

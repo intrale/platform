@@ -33,7 +33,7 @@ const { ADAPTER_STATUS, emptyResult } = require('./_shape');
 
 function geminiGoogleAdapter(_sessionData) {
     return emptyResult('gemini-google', ADAPTER_STATUS.NOT_IMPLEMENTED,
-        'Cuota Gemini (Google): sin dato — el free tier no expone consumo acumulado por API (solo RPM/RPD + 429)');
+        'Cuota Antigravity CLI: sin dato; disponibilidad determinada por sesión OAuth y licencia/billing');
 }
 
 module.exports = geminiGoogleAdapter;

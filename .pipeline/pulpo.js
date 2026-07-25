@@ -18,6 +18,10 @@ const execFileAsync = promisify(execFile);
 require('./lib/credentials').loadIntoEnv({
   logger: (m) => process.stderr.write(m + '\n'),
 });
+// #4869 — un servicio Windows conserva el PATH con el que arrancó y no ve
+// instalaciones posteriores. Refrescar agy en este mismo proceso garantiza
+// que todos los agentes hijos hereden PATH y AGY_BIN sin reiniciar el host.
+require('./lib/ensure-agy-in-path').ensureAgyInProcessPath();
 
 const yaml = require('js-yaml');
 const dedupLib = require('./dedup-lib');
@@ -15212,9 +15216,20 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
               prevProvider = finalProvider;
             }
             if (voiceBuffers.length > 0) {
-              const { correlationId: voiceCid, enqueued } = dispatchVoiceParts(voiceBuffers, chatId, path.join(LOG_DIR, 'media'));
-              enviado = enqueued > 0;
-              if (enviado) log('telegram', `[chat] ${enqueued} parte(s) de audio encoladas con recibo por chunk (cid=${voiceCid})`);
+              // #4903 — dedupeKey estable por (chat, texto de respuesta): el audio es
+              // TTS del `outboundText` ya verificado, así que sobrevive al reintento del
+              // turno (el correlationId cambia por dispatch; el texto no). Permite omitir
+              // audios ya entregados cuando solo falló la confirmación de entrega del texto.
+              const voiceDedupeKey = voiceParts.computeDedupeKey({ chatId, text: outboundText });
+              const { correlationId: voiceCid, enqueued, skipped } = dispatchVoiceParts(
+                voiceBuffers, chatId, path.join(LOG_DIR, 'media'), { dedupeKey: voiceDedupeKey });
+              // Voz entregada si se encoló algo nuevo O si ya estaba entregada (dedup).
+              enviado = enqueued > 0 || skipped > 0;
+              if (enqueued > 0) {
+                log('telegram', `[chat] ${enqueued} parte(s) de audio encoladas con recibo por chunk (cid=${voiceCid})${skipped > 0 ? `, ${skipped} omitida(s) por ya-entregadas` : ''}`);
+              } else if (skipped > 0) {
+                log('telegram', `[chat] audio ya entregado en pasada anterior: ${skipped} parte(s) omitidas por dedup, sin reenvío (CA-1 #4903)`);
+              }
             }
             // EP1-H4 (#3919, CA-2): aviso consolidado de degradación TTS. Solo si
             // se esperaba voz (esAudio) y hubo al menos un chunk fallido. Pasa por
@@ -15465,16 +15480,47 @@ function enqueueTelegramVoice(audioPath, opts = {}) {
 // acoplar TTS acá) como `[{ buffer, spokenLabel? }]` y devuelve el correlationId
 // padre + cuántas partes se encolaron. El estado de contabilidad se persiste
 // para que el sweep de reconciliación detecte/reenvíe faltantes.
-function dispatchVoiceParts(buffers, chatId, mediaDir) {
-  if (!Array.isArray(buffers) || buffers.length === 0) return { correlationId: null, enqueued: 0 };
-  const correlationId = telegramReceipt.generateCorrelationId('voice');
+function dispatchVoiceParts(buffers, chatId, mediaDir, opts = {}) {
+  if (!Array.isArray(buffers) || buffers.length === 0) return { correlationId: null, enqueued: 0, skipped: 0 };
   const partTotal = buffers.length;
   const nowMs = Date.now();
   const nowIso = new Date(nowMs).toISOString();
+
+  // #4903 — Deduplicación cross-retry: si esta MISMA respuesta (mismo `dedupeKey`,
+  // derivado de chat+texto) ya tuvo partes entregadas en una pasada anterior (aun
+  // si la confirmación de entrega del turno falló), NO las reenviamos. El audio es
+  // TTS del texto → mismo texto ⇒ mismo split ⇒ mismos `partIndex`, así que la
+  // dedup por índice es sólida. Distingue "no llegó nada" (delivered.confirmed=∅ →
+  // se reenvía todo) de "la confirmación falló pero el contenido llegó".
+  const dedupeKey = (typeof opts.dedupeKey === 'string' && opts.dedupeKey.length > 0) ? opts.dedupeKey : null;
+  let delivered = { found: false, confirmed: new Set() };
+  if (dedupeKey) {
+    try {
+      const outboundCfg = resolveTelegramOutboundConfig(loadConfig());
+      const ttlMs = Number.isFinite(outboundCfg.stale_ttl_ms) ? outboundCfg.stale_ttl_ms : 86400000;
+      delivered = voiceParts.findDeliveredParts({ pipelineDir: PIPELINE, dedupeKey, now: nowMs, ttlMs });
+    } catch (e) {
+      log('telegram', `[voice] dedup lookup falló (best-effort, se reenvía normal): ${e.message}`);
+    }
+  }
+
+  const correlationId = telegramReceipt.generateCorrelationId('voice');
   try { fs.mkdirSync(mediaDir, { recursive: true }); } catch { /* best-effort */ }
   const stateParts = [];
+  const preConfirmed = [];
   let enqueued = 0;
+  let skipped = 0;
   for (let idx = 0; idx < buffers.length; idx++) {
+    // #4903 — parte ya entregada en una pasada anterior (mismo dedupeKey): se OMITE
+    // el reenvío. Se registra pre-confirmada en el nuevo estado para que el sweep no
+    // la trate como faltante (contabilidad coherente, CA-2).
+    if (delivered.confirmed.has(idx)) {
+      stateParts.push({ partIndex: idx, path: null, enqueuedAt: nowIso, confirmed: true });
+      preConfirmed.push(idx);
+      skipped++;
+      log('telegram', `[voice] parte ${idx + 1}/${partTotal} OMITIDA por ya-entregada en pasada previa (dedup, cid=${correlationId})`);
+      continue;
+    }
     const audioPath = path.join(mediaDir, `tts-${nowMs}-${correlationId}-${idx}.ogg`);
     try {
       fs.writeFileSync(audioPath, buffers[idx].buffer);
@@ -15489,21 +15535,34 @@ function dispatchVoiceParts(buffers, chatId, mediaDir) {
       log('telegram', `Audio TTS parte ${idx + 1}/${partTotal} encolada (recibo por chunk, cid=${correlationId})`);
     }
   }
-  if (enqueued > 0) {
-    try {
-      voiceParts.initState({
-        pipelineDir: PIPELINE,
-        correlationId,
-        partTotal,
-        chatId,
-        parts: stateParts,
-        now: nowMs,
-      });
-    } catch (e) {
-      log('telegram', `[voice] no se pudo inicializar estado de contabilidad (cid=${correlationId}): ${e.message}`);
+
+  // #4903 — Toda la respuesta ya estaba entregada (nada nuevo que encolar): no
+  // creamos estado nuevo ni reenviamos. El texto (que es lo que falló) lo maneja el
+  // caller aparte. Log explícito de qué se omitió (CA-4).
+  if (enqueued === 0) {
+    if (skipped > 0) {
+      log('telegram', `[voice] respuesta ya entregada previamente: ${skipped}/${partTotal} parte(s) omitidas por dedup, sin reenvío (cid=${correlationId})`);
     }
+    return { correlationId: null, enqueued: 0, skipped };
   }
-  return { correlationId, enqueued };
+
+  try {
+    voiceParts.initState({
+      pipelineDir: PIPELINE,
+      correlationId,
+      partTotal,
+      chatId,
+      parts: stateParts,
+      now: nowMs,
+      dedupeKey,
+    });
+    if (preConfirmed.length > 0) {
+      log('telegram', `[voice] ${enqueued} parte(s) encoladas, ${skipped} omitidas por dedup (cid=${correlationId}, dedupeKey=${dedupeKey})`);
+    }
+  } catch (e) {
+    log('telegram', `[voice] no se pudo inicializar estado de contabilidad (cid=${correlationId}): ${e.message}`);
+  }
+  return { correlationId, enqueued, skipped };
 }
 
 // #3484 CA-UX-1 — sendChatActionTyping: refresca el indicador "escribiendo..."

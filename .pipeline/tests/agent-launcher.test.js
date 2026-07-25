@@ -335,9 +335,9 @@ test('codex pasa `-` como posicional y foldea persona+mensaje para stdin (#4529)
 // -----------------------------------------------------------------------------
 // 6b. Provider 'gemini-google' real (post adapter): launchAgent dispara el
 //     spawn del gemini CLI traduciendo los args estilo Claude al shape Gemini
-//     (`--skip-trust -o json -m <model> -p <prompt>`).
+//     (`agy --print --model <model>`).
 // -----------------------------------------------------------------------------
-test('launchAgent con provider gemini-google spawnea el gemini CLI con args traducidos', () => {
+test('launchAgent con provider gemini-google spawnea agy con args traducidos', () => {
     const modelsPath = path.join(PIPELINE, 'agent-models.json');
     const fsi = fakeFs([modelsPath], {
         [modelsPath]: JSON.stringify({
@@ -352,9 +352,9 @@ test('launchAgent con provider gemini-google spawnea el gemini CLI con args trad
     // Forzamos un launcher determinístico (evita depender de fs real para
     // detectar el bundle / shim de gemini).
     PROVIDERS['gemini-google']._setLauncherForTesting({
-        kind: 'node-bundle-js',
-        cmd: '/fake/node',
-        prefixArgs: ['/fake/gemini.js'],
+        kind: 'native-exe',
+        cmd: '/fake/agy',
+        prefixArgs: [],
         shell: false,
     });
     try {
@@ -374,17 +374,12 @@ test('launchAgent con provider gemini-google spawnea el gemini CLI con args trad
     }
     assert.equal(spi.calls.length, 1);
     const call = spi.calls[0];
-    assert.equal(call.cmd, '/fake/node');
-    // prefijo del launcher (bundle js) + args traducidos.
-    assert.equal(call.args[0], '/fake/gemini.js');
-    assert.ok(call.args.includes('--skip-trust'));
-    assert.deepEqual(call.args.slice(1, 4), ['--skip-trust', '-o', 'json']);
-    assert.ok(call.args.includes('-m'));
+    assert.equal(call.cmd, '/fake/agy');
+    assert.deepEqual(call.args.slice(0, 4), [
+        '--print', '--dangerously-skip-permissions', '--print-timeout', '5m',
+    ]);
+    assert.ok(call.args.includes('--model'));
     assert.ok(call.args.includes('gemini-3-flash-preview'));
-    // #4529 — `-p ''` dispara headless; el prompt real ('probe') va por stdin.
-    assert.ok(call.args.includes('-p'));
-    const pIdx = call.args.indexOf('-p');
-    assert.equal(call.args[pIdx + 1], '');
     assert.ok(!call.args.includes('probe'));
     assert.ok(call.stdinData.includes('probe'));
 });
