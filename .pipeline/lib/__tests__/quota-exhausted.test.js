@@ -14,7 +14,7 @@
 // =============================================================================
 'use strict';
 
-const test = require('node:test');
+const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
@@ -23,6 +23,21 @@ const path = require('path');
 // Aislamiento por test: cada test setea su propio PIPELINE_DIR_OVERRIDE en un
 // tmp dir único, requiere fresh el módulo, y limpia al final. Esto evita
 // race entre tests que comparten `.pipeline/quota-exhausted.json`.
+// La suite también fija la fuente Codex para que reconcile nunca lea sesiones
+// reales de la máquina. node:test ejecuta cada archivo en un proceso aislado.
+const previousCodexSessionsDir = process.env.CODEX_SESSIONS_DIR;
+let isolatedCodexSessionsDir;
+
+before(() => {
+    isolatedCodexSessionsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-codex-sessions-'));
+    process.env.CODEX_SESSIONS_DIR = isolatedCodexSessionsDir;
+});
+
+after(() => {
+    if (previousCodexSessionsDir === undefined) delete process.env.CODEX_SESSIONS_DIR;
+    else process.env.CODEX_SESSIONS_DIR = previousCodexSessionsDir;
+    fs.rmSync(isolatedCodexSessionsDir, { recursive: true, force: true });
+});
 
 function freshModule(tmpDir) {
     process.env.PIPELINE_DIR_OVERRIDE = tmpDir;

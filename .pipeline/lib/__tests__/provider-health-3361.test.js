@@ -164,6 +164,7 @@ test('CA-16: getProviderHealth diferencia not_applicable, no_key_configured y au
         forcePing: true,
         pingImpl: fakePing,
         pipelineDir: dir,
+        quotaUsageImpl: () => ({ adapterStatus: 'ok', status: 'ok', pct: 10 }),
     });
 
     const anthropic = result.providers.find(p => p.id === 'anthropic');

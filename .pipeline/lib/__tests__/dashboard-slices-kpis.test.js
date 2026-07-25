@@ -281,18 +281,18 @@ test('CA-5: quotaSlice expone `providers` con anthropic + stubs not_implemented'
             deterministic: {}, // debe filtrarse
         },
     }));
-    // #4598 — el adapter Codex lee `~/.codex/logs_2.sqlite`. Para hacer el test
-    // determinista (no dependa del estado real de la máquina/CI), apuntamos el
-    // log a un path inexistente → el adapter degrada a `no_usage_data`.
-    const prevLogEnv = process.env.CODEX_QUOTA_LOG_PATH;
-    process.env.CODEX_QUOTA_LOG_PATH = path.join(root, 'no-existe-codex.sqlite');
+    // #4885 — el adapter Codex lee rollouts JSONL. Para hacer el test
+    // determinista (sin depender de sesiones reales de la máquina/CI), apuntamos
+    // el directorio a un path inexistente → degrada a `no_usage_data`.
+    const prevSessionsEnv = process.env.CODEX_SESSIONS_DIR;
+    process.env.CODEX_SESSIONS_DIR = path.join(root, 'no-existen-sesiones-codex');
     const slices = freshSlices();
     let out;
     try {
         out = slices.quotaSlice({}, { ROOT: root, PIPELINE: pipeline });
     } finally {
-        if (prevLogEnv === undefined) delete process.env.CODEX_QUOTA_LOG_PATH;
-        else process.env.CODEX_QUOTA_LOG_PATH = prevLogEnv;
+        if (prevSessionsEnv === undefined) delete process.env.CODEX_SESSIONS_DIR;
+        else process.env.CODEX_SESSIONS_DIR = prevSessionsEnv;
     }
 
     assert.ok(out.providers, 'debe exponer `providers`');
@@ -315,6 +315,71 @@ test('CA-5: quotaSlice expone `providers` con anthropic + stubs not_implemented'
     // Compat top-level: campos legacy del banner siguen visibles desde Anthropic.
     assert.ok('hoursUsed7d' in out, 'hoursUsed7d top-level para banner legacy');
     assert.ok('pct' in out, 'pct top-level para banner legacy');
+});
+
+function writeCodexRollout(sessionsDir, timestamp, weeklyPct) {
+    const date = new Date(timestamp);
+    const rolloutDir = path.join(
+        sessionsDir,
+        String(date.getUTCFullYear()),
+        String(date.getUTCMonth() + 1).padStart(2, '0'),
+        String(date.getUTCDate()).padStart(2, '0'),
+    );
+    fs.mkdirSync(rolloutDir, { recursive: true });
+    const event = {
+        timestamp: date.toISOString(),
+        type: 'event_msg',
+        payload: {
+            type: 'token_count',
+            rate_limits: {
+                primary: {
+                    used_percent: weeklyPct,
+                    window_minutes: 10080,
+                    resets_at: Math.floor((Date.now() + 3600000) / 1000),
+                },
+                secondary: null,
+            },
+        },
+    };
+    fs.writeFileSync(path.join(rolloutDir, 'rollout-quota-test.jsonl'),
+        `${JSON.stringify(event)}\n`, 'utf8');
+}
+
+test('CA-5 #4899: quotaSlice propaga semanal fresca y degrada ausencia, error y stale a null', () => {
+    const { root, pipeline } = mkTmpPipeline();
+    fs.writeFileSync(path.join(pipeline, 'agent-models.json'), JSON.stringify({
+        providers: { 'openai-codex': {} },
+    }));
+    const sessionsDir = path.join(root, 'codex-sessions');
+    const previous = process.env.CODEX_SESSIONS_DIR;
+    process.env.CODEX_SESSIONS_DIR = sessionsDir;
+    try {
+        const slices = freshSlices();
+
+        writeCodexRollout(sessionsDir, Date.now() - 1000, 73.25);
+        let out = slices.quotaSlice({}, { ROOT: root, PIPELINE: pipeline });
+        assert.equal(out.providers['openai-codex'].weekly.pct, 73.25,
+            'el dashboard conserva el porcentaje semanal real sin redondearlo');
+
+        fs.rmSync(sessionsDir, { recursive: true, force: true });
+        out = slices.quotaSlice({}, { ROOT: root, PIPELINE: pipeline });
+        assert.equal(out.providers['openai-codex'].weekly.pct, null,
+            'origen ausente conserva null');
+
+        writeCodexRollout(sessionsDir, Date.now() - 1000, 'dato-inválido');
+        out = slices.quotaSlice({}, { ROOT: root, PIPELINE: pipeline });
+        assert.equal(out.providers['openai-codex'].weekly.pct, null,
+            'porcentaje inválido conserva null');
+
+        fs.rmSync(sessionsDir, { recursive: true, force: true });
+        writeCodexRollout(sessionsDir, Date.now() - 24 * 60 * 60 * 1000, 41);
+        out = slices.quotaSlice({}, { ROOT: root, PIPELINE: pipeline });
+        assert.equal(out.providers['openai-codex'].weekly.pct, null,
+            'muestra stale conserva null');
+    } finally {
+        if (previous === undefined) delete process.env.CODEX_SESSIONS_DIR;
+        else process.env.CODEX_SESSIONS_DIR = previous;
+    }
 });
 
 test('CA-5.1: weekly-quota.computeUsageSince filtra eventos de providers no-Anthropic', () => {

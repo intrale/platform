@@ -1,18 +1,15 @@
 // =============================================================================
 // providers/gemini-google.js — Handler real del provider Google Gemini
 //
-// Implementa el contrato del wrapper de agent-launcher para el CLI oficial
-// `@google/gemini-cli` (`gemini --skip-trust -o json -p "..."`) usando OAuth
-// gratuito (cuenta Google, free tier real). Reemplaza el stub previo
-// (#3198 / #3220) que tiraba _notImplemented.
+// Implementa el contrato del wrapper de agent-launcher para Antigravity CLI
+// (`agy --print`) usando OAuth. No existe fallback al cliente retirado.
 //
 // Wiring acá:
-//   1) detectLauncher — multi-tier detection (wrapper Node bundle / .cmd shim /
-//      PATH fallback). El paquete es JS puro (no hay binario nativo como Codex),
-//      así que la ruta preferida es ejecutar el bundle con `node` directo.
+//   1) detectLauncher — binario nativo configurado, ubicación oficial Windows
+//      o fallback al PATH.
 //   2) buildSpawn — traduce los args legacy del pulpo (estilo Claude CLI:
 //      `-p`, `--system-prompt-file`, `--output-format stream-json`) al shape
-//      que entiende Gemini (`--skip-trust -o json -m <model> -p <prompt>`).
+//      que entiende Antigravity (`--print --model <model>`).
 //      Gemini NO tiene flag de system prompt, así que el contenido del
 //      `--system-prompt-file` se foldea al inicio del prompt.
 //   3) parseTokensFromLog — Gemini con `-o json` devuelve UN ÚNICO objeto JSON
@@ -23,13 +20,12 @@
 //      contra la allowlist canónica en `quota-exhausted.js`
 //      (`KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER['gemini-google']`).
 //
-// Auth: OAuth via `gemini` (login interactivo en el browser, cuenta Google).
-// No necesita API key paga — el free tier real cubre el uso del pipeline.
+// Auth: OAuth via `agy`; nunca API key. El health exige AGY_LICENSE_READY=1
+// para no declarar disponible una instalación sin licencia/billing.
 //
 // Seguridad:
-//  - Tabla hardcoded de paths del bundle (sin require dinámico de provider).
-//  - Args como argv estricto (sin shell concat — shell:true sólo para el
-//    .cmd shim como con Anthropic/Codex).
+//  - Ruta oficial hardcoded y override AGY_BIN, sin require dinámico.
+//  - Args como argv estricto y shell:false.
 //  - Detección de cuota SOLO por shape estructural sobre campos dedicados de
 //    error (status/code/reason). NUNCA substring sobre `response` (canal de
 //    contenido controlado por el modelo).
@@ -40,28 +36,17 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 // -----------------------------------------------------------------------------
-// detectLauncher — multi-tier (preservar precedencia I6 como en anthropic.js)
-//
-// Orden (más a menos preferida; todas evitan cmd.exe salvo el .cmd shim):
-//   1. Bundle JS @google/gemini-cli/bundle/gemini.js → node directo (sin shell)
-//   2. .cmd shim de npm → shell:true (último recurso por compat)
-//   3. PATH fallback → process.env.GEMINI_BIN o 'gemini' (último recurso)
-//
-// El paquete de Gemini es JS puro (bundle único), no publica binario nativo
-// platform-específico como Codex; por eso no hay tier `native-exe`.
+// detectLauncher — AGY_BIN, ubicación oficial Windows o PATH.
 // -----------------------------------------------------------------------------
 function detectLauncher() {
-    const pkgDir = path.join(process.env.APPDATA || '', 'npm', 'node_modules', '@google', 'gemini-cli');
-    const bundleJs = path.join(pkgDir, 'bundle', 'gemini.js');
-    const cmdShim = path.join(process.env.APPDATA || '', 'npm', 'gemini.cmd');
-
-    if (fs.existsSync(bundleJs)) {
-        return { kind: 'node-bundle-js', cmd: process.execPath, prefixArgs: [bundleJs], shell: false };
+    if (process.env.AGY_BIN) {
+        return { kind: 'configured-native', cmd: process.env.AGY_BIN, prefixArgs: [], shell: false };
     }
-    if (fs.existsSync(cmdShim)) {
-        return { kind: 'cmd-shim', cmd: cmdShim, prefixArgs: [], shell: true };
+    const windowsBin = path.join(process.env.LOCALAPPDATA || '', 'agy', 'bin', 'agy.exe');
+    if (process.platform === 'win32' && fs.existsSync(windowsBin)) {
+        return { kind: 'native-exe', cmd: windowsBin, prefixArgs: [], shell: false };
     }
-    return { kind: 'path-fallback', cmd: process.env.GEMINI_BIN || 'gemini', prefixArgs: [], shell: true };
+    return { kind: 'path-fallback', cmd: 'agy', prefixArgs: [], shell: false };
 }
 
 let cachedLauncher = null;
@@ -81,18 +66,10 @@ function _resetLauncherCacheForTesting() { cachedLauncher = null; }
 // Contrato de entrada (lo que el pulpo construye en pulpo.js:5846):
 //   ['-p', userPrompt, '--system-prompt-file', systemFile, ...]
 //
-// Contrato de salida (lo que Gemini CLI acepta):
-//   ['--skip-trust', '-o', 'json', '-m', model?, '-p', '']
-//
-// #4529 — El prompt (system foldeado + mensaje) YA NO va en el valor de `-p`:
-// se pasa `-p ''` (vacío) y el payload real se pipea por STDIN. Gemini en modo
-// headless "appends the `-p` prompt to input on stdin (if any)", así que con
-// `-p ''` el prompt efectivo es exactamente lo que llega por stdin. Pasar `-p`
-// (aunque vacío) es lo que DISPARA el modo non-interactive/headless (verificado
-// empíricamente: `-p ''` no cuelga esperando TTY, entra headless y lee stdin).
-// Esto evita `spawn ENAMETOOLONG` en Windows cuando el system prompt + historial
-// supera el límite de la línea de comando (~32K). El payload lo devuelve
-// `buildSpawn` en `stdinPayload`.
+// Contrato de salida (agy 1.1.x):
+//   ['--print', '--dangerously-skip-permissions', '--print-timeout', timeout,
+//    '--model', model?]
+// El payload real se pipea por STDIN para evitar ENAMETOOLONG en Windows.
 // -----------------------------------------------------------------------------
 function foldGeminiPayload(args, env, fsImpl) {
     const _fs = fsImpl || fs;
@@ -120,11 +97,10 @@ function translateClaudeArgsToGemini(args, env) {
     // su default (con OAuth gratuito el main es `gemini-3-flash-preview` y el
     // router `gemini-3.1-flash-lite`). El pulpo inyecta GEMINI_MODEL via
     // env-isolation cuando el skill resuelve un modelo específico.
-    const model = env && env.GEMINI_MODEL;
-    const out = ['--skip-trust', '-o', 'json'];
-    if (model) out.push('-m', model);
-    // `-p ''` dispara headless; el prompt real llega por stdin (ver header).
-    out.push('-p', '');
+    const model = env && (env.AGY_MODEL || env.GEMINI_MODEL);
+    const timeout = (env && env.AGY_PRINT_TIMEOUT) || '5m';
+    const out = ['--print', '--dangerously-skip-permissions', '--print-timeout', timeout];
+    if (model) out.push('--model', model);
     return out;
 }
 
