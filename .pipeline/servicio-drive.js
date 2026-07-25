@@ -185,6 +185,19 @@ function resolveVideoPath(filePath) {
   return null;
 }
 
+// QA estructural no produce video por contrato. Algunos agentes dejan un
+// Markdown auditable y encolan un job para conservar la trazabilidad. Ese job
+// no debe llegar al uploader de videos ni fallar por el containment RS-2.
+// Exigimos ambos campos canónicos para que un payload común no pueda saltear
+// accidentalmente el upload con sólo declarar `mode: structural`.
+function isStructuralEvidenceJob(data) {
+  return Boolean(
+    data
+    && data.mode === 'structural'
+    && data.source === 'qa-structural',
+  );
+}
+
 // #2519: lee qa-narration.meta.json (si existe) para saber qué proveedor TTS
 // narró el audio. El campo `provider` mapea a Nacho/Rulo del perfil qa.
 // Devuelve string vacío si no hay meta confiable — el template omite la línea
@@ -355,6 +368,13 @@ async function processJob(file) {
       return;
     }
 
+    if (isStructuralEvidenceJob(data)) {
+      log(`Job ${file.name}: QA estructural sin video; cola Drive eximida`);
+      ensureDir(LISTO);
+      fs.renameSync(trabajandoPath, path.join(LISTO, file.name));
+      return;
+    }
+
     const resolvedPath = resolveVideoPath(videoFile);
     if (!resolvedPath) {
       log(`Job ${file.name}: video no encontrado o fuera de directorios permitidos: ${videoFile}`);
@@ -487,6 +507,8 @@ module.exports = {
   notifyDriveFailure,
   extractIssue,
   extractTitle,
+  isStructuralEvidenceJob,
+  processJob,
   ALLOWED_VIDEO_DIRS,
 };
 
