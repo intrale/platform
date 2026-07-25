@@ -394,7 +394,9 @@ function openaiCodexAdapter(sessionData) {
     const result = emptyResult('openai-codex', ADAPTER_STATUS.OK, null);
 
     if (weekly) {
-        const weeklyPct = Math.round(weekly.usedPercent * 10) / 10;
+        // Codex ya entrega el porcentaje real validado. Conservar su precisión
+        // evita que quotaSlice publique un valor distinto al observado (#4899).
+        const weeklyPct = weekly.usedPercent;
         result.pct = weeklyPct;
         result.realPct = null; // el pct YA es el dato real de Codex.
         result.realPctRaw = weeklyPct;
@@ -411,7 +413,7 @@ function openaiCodexAdapter(sessionData) {
     }
 
     if (session) {
-        const sessionPct = Math.round(session.usedPercent * 10) / 10;
+        const sessionPct = session.usedPercent;
         result.session.pct = sessionPct;
         result.session.realPct = null;
         result.session.realPctRaw = sessionPct;
