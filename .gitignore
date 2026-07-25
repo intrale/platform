@@ -180,6 +180,9 @@ scripts/planner-plan.json
 # (cuota de providers) a git. El runtime los regenera. NO commitear.
 .pipeline/.provider-quota-guard-state.json
 .pipeline/.provider-preventive-degrade.json
+# #4900 — `.dur` es el scratch de duracion que dejan los wrappers de timing del
+# runtime en la raiz del worktree. Se colo al diff del PR #4902; no es codigo.
+.dur
 .pipeline/definicion/*/pendiente/*
 .pipeline/definicion/*/trabajando/*
 .pipeline/definicion/*/listo/*

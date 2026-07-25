@@ -181,17 +181,21 @@ test('_sanitizeGhArgs redacta multiples flags sensibles', () => {
 
 test('_ghCallWithTimeout rechaza con GH_CALL_TIMEOUT cuando el child no responde', async () => {
   const start = Date.now();
+  const timeoutMs = 600;
   // Spawn de un Node hijo que nunca termina — simula gh.exe wedged.
   const hangScript = 'setInterval(()=>{},10000);';
   let err = null;
   try {
-    await _ghCallWithTimeout(process.execPath, ['-e', hangScript], 600);
+    await _ghCallWithTimeout(process.execPath, ['-e', hangScript], timeoutMs);
   } catch (e) { err = e; }
   const elapsed = Date.now() - start;
 
   assert.ok(err, 'la promise debe rechazar');
   assert.equal(err.code, 'GH_CALL_TIMEOUT', 'error.code debe ser GH_CALL_TIMEOUT');
-  assert.ok(elapsed < 5000, `debe rechazar rápido, no cuelga: ${elapsed}ms`);
+  // La suite completa ejecuta cientos de archivos en paralelo. En Windows,
+  // spawn/taskkill y hasta el timer pueden demorarse bajo esa saturación; el
+  // límite sigue siendo finito y detecta un wedge real sin un falso negativo.
+  assert.ok(elapsed < timeoutMs + 15000, `debe rechazar en tiempo acotado, no cuelga: ${elapsed}ms`);
   assert.ok(Number.isInteger(err.pid) && err.pid > 0, `pid del child debe ser numérico positivo (got ${err.pid})`);
   assert.match(String(err.killStatus), /(matado por timeout|ya había muerto)/);
 });

@@ -28,6 +28,7 @@ const GIT_FALLBACK_DIRS_WIN32 = [
     'C:\\Program Files (x86)\\Git\\cmd',
     'C:\\Program Files (x86)\\Git\\bin',
 ];
+const GIT_PROBE_TIMEOUT_MS = 15000;
 
 let _cached = undefined; // undefined = no chequeado, null = no encontrado, string = path
 
@@ -37,7 +38,7 @@ let _cached = undefined; // undefined = no chequeado, null = no encontrado, stri
 function gitIsInvokable() {
     try {
         const r = spawnSync('git', ['--version'], {
-            encoding: 'utf8', windowsHide: true, shell: false, timeout: 5000,
+            encoding: 'utf8', windowsHide: true, shell: false, timeout: GIT_PROBE_TIMEOUT_MS,
         });
         return r && r.status === 0 && /^git version/.test(r.stdout || '');
     } catch {
@@ -54,7 +55,7 @@ function locateGitDir() {
     const lookup = process.platform === 'win32' ? 'where' : 'which';
     try {
         const r = spawnSync(lookup, ['git'], {
-            encoding: 'utf8', windowsHide: true, shell: false, timeout: 5000,
+            encoding: 'utf8', windowsHide: true, shell: false, timeout: GIT_PROBE_TIMEOUT_MS,
         });
         if (r && r.status === 0 && typeof r.stdout === 'string') {
             const firstLine = r.stdout.split(/\r?\n/).map(s => s.trim()).find(Boolean);

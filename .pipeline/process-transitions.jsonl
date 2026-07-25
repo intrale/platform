@@ -61,3 +61,17 @@
 {"ts":"2026-07-23T23:17:09.486Z","service":"svc-drive","from":"dead","to":"alive","reason":"recovered","lastError":""}
 {"ts":"2026-07-23T23:17:09.486Z","service":"svc-reconciler","from":"dead","to":"alive","reason":"recovered","lastError":""}
 {"ts":"2026-07-23T23:17:09.486Z","service":"dashboard","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-25T14:29:34.807Z","service":"pulpo","from":"alive","to":"dead","reason":"CORRUPCI","lastError":"[2026-07-23T23:57:12.214Z] [pulpo] CORRUPCIÓN config.yaml (config.yaml parse-error) → .paused global. Detalle: YAML inválido (línea 1, col 6)"}
+{"ts":"2026-07-25T14:29:34.807Z","service":"listener","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-25T14:29:34.807Z","service":"svc-telegram","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-25T14:29:34.807Z","service":"svc-github","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-25T14:29:34.807Z","service":"svc-drive","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-25T14:29:34.807Z","service":"svc-reconciler","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-25T14:29:34.807Z","service":"dashboard","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-25T14:29:46.717Z","service":"pulpo","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-25T14:29:46.717Z","service":"listener","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-25T14:29:46.717Z","service":"svc-telegram","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-25T14:29:46.717Z","service":"svc-github","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-25T14:29:46.717Z","service":"svc-drive","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-25T14:29:46.717Z","service":"svc-reconciler","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-25T14:29:46.717Z","service":"dashboard","from":"dead","to":"alive","reason":"recovered","lastError":""}
