@@ -1845,10 +1845,22 @@ function homeStyles() {
 .mz-qm-cell.ok   .mz-qm-pct { color: var(--in-ok,#3fb950); }   .mz-qm-cell.ok   .mz-qm-mini i { background: var(--in-ok,#3fb950); }
 .mz-qm-cell.warn .mz-qm-pct { color: var(--in-warn,#d29922); } .mz-qm-cell.warn .mz-qm-mini i { background: var(--in-warn,#d29922); }
 .mz-qm-cell.bad  .mz-qm-pct { color: var(--in-bad,#f85149); }  .mz-qm-cell.bad  .mz-qm-mini i { background: var(--in-bad,#f85149); }
-.mz-qm-cell.mz-qm-event .mz-qm-mini, .mz-qm-cell.mz-qm-event .mz-qm-rst { display: none; }
-.mz-qm-cell.mz-qm-event .mz-qm-pct { color: var(--in-info,#58a6ff); background: rgba(88,166,255,.14); border-radius: 5px; padding: 2px 7px; font-size: 9.5px; font-weight: 700; min-width: 0; }
+/* El override de evento oculta la mini-barra y el reset en los estados
+   categóricos (exhausted → "tope activo"; nodata → "sin dato"). El estado
+   fresco de Codex se marca con .mz-qm-fresh y queda EXCLUIDO para que la
+   mini-barra y el color por umbral (ok/warn/bad) que setea el JS se vean en el
+   render real (#4900 rebote QA — antes .mz-qm-event neutralizaba barra y color). */
+.mz-qm-cell.mz-qm-event:not(.mz-qm-fresh) .mz-qm-mini, .mz-qm-cell.mz-qm-event:not(.mz-qm-fresh) .mz-qm-rst { display: none; }
+/* exhausted → "tope activo": texto rojo crítico, sin chip de fondo. El mockup
+   acordado (assets/mockups/4900/codex-quota-states.svg) lo define en #f85149 con
+   precedencia máxima; antes se pintaba como chip azul info y NO coincidía con el
+   contrato visual (#4900 rebote PO: render vs mockup). */
+.mz-qm-cell.mz-qm-event.mz-qm-exhausted .mz-qm-pct { color: var(--in-bad,#f85149); font-weight: 800; font-size: 10px; min-width: 0; }
+/* nodata → "sin dato": texto neutro gris (#6e7681), sin barra ni chip. El mockup
+   lo define como texto atenuado; antes la regla de evento azul le ganaba por
+   especificidad y lo pintaba azul (#4900 rebote PO: render vs mockup). */
 .mz-qm-cell.mz-qm-nodata .mz-qm-mini, .mz-qm-cell.mz-qm-nodata .mz-qm-rst { display: none; }
-.mz-qm-cell.mz-qm-nodata .mz-qm-pct { color: var(--in-fg-soft,#6e7681); font-weight: 600; font-size: 10px; }
+.mz-qm-cell.mz-qm-nodata .mz-qm-pct { color: var(--in-fg-soft,#6e7681); font-weight: 600; font-size: 10px; min-width: 0; }
 
 /* --- Grilla 2-col + paneles --- */
 .mz-grid { display: grid; grid-template-columns: 1fr 1.62fr; gap: 16px; align-items: start; }
@@ -2617,18 +2629,16 @@ function _mzHydrateWinCell(key, slot, b){
     const barEl = document.getElementById(cid + '-bar');
     const pctEl = document.getElementById(cid + '-pct');
     const rstEl = document.getElementById(cid + '-rst');
-    cell.classList.remove('ok', 'warn', 'bad', 'mz-qm-event', 'mz-qm-nodata');
+    cell.classList.remove('ok', 'warn', 'bad', 'mz-qm-event', 'mz-qm-nodata', 'mz-qm-fresh', 'mz-qm-exhausted');
     if(tagEl && b && b.win) tagEl.textContent = b.win;
     const meta = MZ_PROVIDER_META[key] || { name: key, src: '' };
     const mode = b && b.mode;
 
-    // Estado por eventos (Codex): sin barra. #4863 — TRES estados explícitos
-    // (CA-4), derivados de la fuente única reconciliada con el banner:
-    //   'ok'        → "✓ sin límite" (dato fresco, sin tope).
-    //   'exhausted' → "tope activo"  (mismo snapshot que el banner de degradación).
-    //   'nodata'    → "sin dato"     (stale por inactividad / sin lectura fresca) —
-    //                  NUNCA se pinta verde: distingue "sin dato por inactividad"
-    //                  de "sin límite" y de "agotada".
+    // Estado por eventos (Codex): #4863 / #4900.
+    // exhausted y nodata conservan precedencia; sólo un porcentaje normalizado
+    // fresco alimenta texto, barra, color y atributos accesibles. Ese porcentaje
+    // se expresa siempre como DISPONIBLE (= 100 - consumo), igual que la rama
+    // gauge, para que toda la matriz se lea con una única polaridad.
     if(mode === 'event'){
         cell.classList.add('mz-qm-event');
         if(barEl) barEl.style.width = '0%';
@@ -2636,7 +2646,18 @@ function _mzHydrateWinCell(key, slot, b){
         // slice viejo no lo trae (backward-compat).
         let evState = b && b.eventState;
         if(!evState) evState = (!b || b.eventOk !== false) ? 'ok' : 'exhausted';
-        if(evState === 'nodata'){
+        if(evState === 'exhausted'){
+            // Estado categórico crítico: el mockup #4900 lo pide en rojo (#f85149),
+            // no como chip azul info. Se marca con mz-qm-exhausted para el CSS.
+            cell.classList.add('mz-qm-exhausted');
+            if(pctEl) pctEl.textContent = 'tope activo';
+            if(rstEl) rstEl.textContent = '';
+            cell.setAttribute('title', meta.name + ': tope de cuota activo — el proveedor rechazó por límite.');
+            cell.setAttribute('aria-label', meta.name + ' ' + (b && b.win ? b.win : '') + ': tope activo');
+            return { healthy: false };
+        }
+        const pct = Number(b && b.pct);
+        if(evState === 'nodata' || !b || b.pct == null || !Number.isFinite(pct) || pct < 0 || pct > 100){
             cell.classList.add('mz-qm-nodata');
             if(pctEl) pctEl.textContent = 'sin dato';
             if(rstEl) rstEl.textContent = '';
@@ -2645,14 +2666,33 @@ function _mzHydrateWinCell(key, slot, b){
             cell.setAttribute('aria-label', meta.name + ' ' + (b && b.win ? b.win : '') + ': sin dato');
             return { healthy: false };
         }
-        const ok = evState === 'ok';
-        if(pctEl) pctEl.textContent = ok ? '✓ sin límite' : 'tope activo';
+        // Estado fresco: se marca con 'mz-qm-fresh' para que el CSS NO le aplique
+        // el override de evento (barra oculta + color info) reservado a
+        // exhausted/nodata. Así la mini-barra y el color por umbral que setea el
+        // JS quedan visibles en el render real (#4900 rebote QA).
+        //
+        // POLARIDAD (#4900): b.pct del slice es CONSUMO (used_percent del
+        // adapter, openai-codex.js), pero _mzThresholdClass() y las celdas
+        // gauge de la misma matriz trabajan con DISPONIBLE y rotulan
+        // "N% disponible". En mode 'event' el slice entrega available:null
+        // (provider-quota.js sale de la rama antes de derivarlo), así que la
+        // conversión se hace acá, replicando _availableFromConsumed():
+        // clamp(100 - consumido, 0, 100). No se puede require() el módulo:
+        // esta función vive en el script cliente serializado al browser.
+        // Una única magnitud entera (availPct) alimenta texto, barra, color,
+        // title, aria-label y healthy, para que no puedan divergir.
+        const availPct = Math.round(Math.max(0, Math.min(100, 100 - pct)));
+        cell.classList.add('mz-qm-fresh');
+        const cls = _mzThresholdClass(availPct);
+        if(cls) cell.classList.add(cls);
+        if(barEl) barEl.style.width = availPct + '%';
+        if(pctEl) pctEl.textContent = availPct + '%';
         if(rstEl) rstEl.textContent = '';
-        cell.setAttribute('title', ok
-            ? meta.name + ': sin tope de cuota activo (estado por eventos del proveedor · fuente ' + meta.src + ').'
-            : meta.name + ': tope de cuota activo — el proveedor rechazó por límite.');
-        cell.setAttribute('aria-label', meta.name + ' ' + (b && b.win ? b.win : '') + ': ' + (ok ? 'sin límite' : 'tope activo'));
-        return { healthy: ok };
+        const pctLabel = availPct <= 0 ? 'AGOTADA (0% disponible)' : availPct + '% disponible';
+        cell.setAttribute('title', meta.name + ' · ' + (b && b.win ? b.win : '') + ': ' + pctLabel
+            + ' (fuente: ' + meta.src + ').');
+        cell.setAttribute('aria-label', meta.name + ' ' + (b && b.win ? b.win : '') + ': ' + pctLabel);
+        return { healthy: availPct > 0 };
     }
 
     // Gauge. Dos semánticas, gateadas por proveedor (#4884 CA-5, alcance
@@ -5821,6 +5861,14 @@ ${navMoreAutoCloseClientScript()}</script>
 
 module.exports = {
     renderHomeHTML,
+    // #4900 (rebote QA visual) — CSS y script cliente expuestos como fuente única
+    // para harnesses de QA visual. Antes el harness de evidencia hardcodeaba una
+    // copia del CSS (sin `:not(.mz-qm-fresh)`) y armaba la celda fresca sin la
+    // clase `mz-qm-fresh`, reproduciendo el DEFECTO en vez del fix (escape #4531).
+    // Exponerlos permite generar el render real derivándolo del código en HEAD,
+    // sin drift posible.
+    homeStyles,
+    renderClientScript,
     // #3725 — Composer + sub-funciones puras exportadas para test aislado por
     // pieza (CA-3725.7). Las sub-funciones son puras (reciben state, devuelven
     // string); `collectHomeState` es el único punto con I/O.

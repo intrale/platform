@@ -11,6 +11,8 @@
 // Cubre:
 //   UX-G4 — `_mzHydrateWinCell` con bucket sin dato (mode 'nodata' o null)
 //           escribe el literal "sin dato" (no "0%", no un número).
+//   #4533 — con % disponible real escribe "<n>%" y color por umbral
+//           (ok/warn/bad); 0% disponible => bad (AGOTADA).
 //   #4884 — ANTHROPIC (y solo Anthropic) con gauge real escribe el "<n>%"
 //           CONSUMIDO y su color por umbral (ok/warn/bad); 100% consumido =>
 //           bad (AGOTADA). Regresión dura: motor 55%/11% → panel 55%/11%, no
@@ -18,7 +20,9 @@
 //   #4884 CA-5 — ALCANCE: los demás gauge (free-tiers gemini/cerebras/nvidia/
 //           kimi) siguen pintando su % DISPONIBLE sin invertir, y su copy sigue
 //           diciendo "disponible" (celda + skeleton).
-//   #4533 — Codex (mode 'event') muestra "✓ sin límite", sin barra ni %.
+//   #4900 — Codex fresco (mode 'event') sincroniza porcentaje, barra, color y
+//           accesibilidad, SIEMPRE con semántica DISPONIBLE (= 100 - consumo
+//           del slice). Reemplaza el "✓ sin límite" legacy de #4533.
 //   CA-5  — `pillTextFor(state)` para `stale`/`missing` devuelve la etiqueta de
 //           estado, nunca un porcentaje; `pctTextClient(null)` → "--%" (no "0%").
 //   UX-G5 — `MZ_ACTIVE_PROVIDERS` (fuente única) lista exactamente los 5
@@ -238,43 +242,168 @@ test('#4884: motor 55%/11% consumido → panel principal pinta 55%/11% (no 45%/8
     assert.notEqual(ses.els[ses.cid + '-pct'].textContent, '89%', 'NUNCA el complemento');
 });
 
-test('#4533: _mzHydrateWinCell mode event (Codex) muestra "sin límite" sin barra ni %', () => {
+test('#4900: Codex fresco sincroniza porcentaje DISPONIBLE, barra, color, title y aria-label', () => {
+    // POLARIDAD (causa raíz del bug padre #4885): `b.pct` es CONSUMO. La celda
+    // debe pintar DISPONIBLE = 100 - consumo, igual que la rama `gauge` y que el
+    // mockup versionado (codex-quota-states.svg rotula "72% disponible" en verde).
     const { cid, els } = makeCell('openai-codex', 'short');
     const r = loadWinCellHelper(els)._mzHydrateWinCell('openai-codex', 'short',
-        { mode: 'event', eventOk: true, win: 'Roll' });
-    assert.match(els[cid + '-pct'].textContent, /sin límite/, 'evento sin tope → "sin límite"');
+        { mode: 'event', eventState: 'ok', pct: 27.6, win: 'Roll' });
+    assert.equal(els[cid + '-pct'].textContent, '72%', '27.6% consumido → 72% disponible');
+    assert.equal(els[cid + '-bar'].style.width, '72%', 'la barra usa la MISMA magnitud que el texto');
+    assert.ok(els[cid]._classes.has('ok'), '72% disponible → verde (no rojo por leer consumo)');
+    assert.match(els[cid].getAttribute('title'), /72% disponible/);
+    assert.match(els[cid].getAttribute('aria-label'), /72% disponible/);
     assert.ok(els[cid]._classes.has('mz-qm-event'), 'la celda marca estado por evento');
-    assert.equal(r.healthy, true, 'sin límite cuenta como proveedor sano');
+    // #4900 rebote QA: el estado fresco DEBE marcarse con mz-qm-fresh para que el
+    // CSS le muestre la mini-barra y el color por umbral (el override de evento
+    // .mz-qm-event:not(.mz-qm-fresh) los ocultaba). Sin este marcador, el render
+    // real muestra sólo el texto, sin barra ni color.
+    assert.ok(els[cid]._classes.has('mz-qm-fresh'), 'estado fresco marca mz-qm-fresh (habilita barra+color)');
+    assert.equal(r.healthy, true);
 });
 
-// ---------------------------------------------------------------------------
-// #4863 — mode event con TRES estados: ok / exhausted / nodata.
-// ---------------------------------------------------------------------------
-test('#4863: mode event eventState "ok" → "sin límite" y proveedor sano', () => {
-    const { cid, els } = makeCell('openai-codex', 'short');
-    const r = loadWinCellHelper(els)._mzHydrateWinCell('openai-codex', 'short',
-        { mode: 'event', eventState: 'ok', win: 'Roll' });
-    assert.match(els[cid + '-pct'].textContent, /sin límite/);
-    assert.equal(r.healthy, true);
+test('#4900 rebote QA: el CSS de evento excluye el estado fresco (barra+color visibles)', () => {
+    // Regresión de la causa raíz del rechazo: las reglas .mz-qm-event ocultaban
+    // la barra y forzaban color info, neutralizando lo que setea el JS. El fix
+    // scopea esas reglas con :not(.mz-qm-fresh). Este test lee la fuente real
+    // (no el DOM falso) para que un revert del CSS rompa la suite.
+    assert.match(HOME_SRC, /\.mz-qm-cell\.mz-qm-event:not\(\.mz-qm-fresh\)\s+\.mz-qm-mini/,
+        'el ocultado de la mini-barra debe excluir .mz-qm-fresh');
+});
+
+test('#4900 rebote PO: los estados categóricos coinciden con el mockup (exhausted rojo, sin dato gris)', () => {
+    // Regresión del rechazo del PO (render vs mockup codex-quota-states.svg):
+    // "tope activo" (exhausted) debe ser texto ROJO #f85149 y "sin dato" (nodata)
+    // texto GRIS #6e7681, NO el chip azul info que aplicaba antes. Se lee la fuente
+    // real para que revertir el color rompa la suite.
+    // exhausted → rojo crítico (--in-bad / #f85149), sin chip azul.
+    assert.match(HOME_SRC, /\.mz-qm-cell\.mz-qm-event\.mz-qm-exhausted\s+\.mz-qm-pct\s*\{[^}]*color:\s*var\(--in-bad,#f85149\)/,
+        'exhausted debe renderizarse en rojo #f85149 (mockup), no como chip azul');
+    // nodata → gris neutro (--in-fg-soft / #6e7681).
+    assert.match(HOME_SRC, /\.mz-qm-cell\.mz-qm-nodata\s+\.mz-qm-pct\s*\{[^}]*color:\s*var\(--in-fg-soft,#6e7681\)/,
+        'sin dato debe renderizarse en gris #6e7681 (mockup)');
+    // El chip azul info (#58a6ff) ya NO debe aplicar a los estados categóricos.
+    assert.doesNotMatch(HOME_SRC, /\.mz-qm-cell\.mz-qm-event:not\(\.mz-qm-fresh\)\s+\.mz-qm-pct\s*\{[^}]*#58a6ff/,
+        'ningún estado categórico debe quedar con el chip azul info preexistente');
+});
+
+test('#4900: Codex fresco cubre límites 0/100 y umbrales cromáticos (semántica disponible)', () => {
+    // [consumo, disponible esperado, clase, healthy]. Los extremos son la
+    // afirmación anti-inversión: consumo 0 → 100% verde/sano; consumo 100 →
+    // 0% rojo/no sano. Con la polaridad invertida ambas filas fallan.
+    const CASES = [
+        [0, 100, 'ok', true],
+        [50, 50, 'ok', true],
+        [51, 49, 'warn', true],
+        [80, 20, 'warn', true],
+        [81, 19, 'bad', true],
+        [100, 0, 'bad', false],
+    ];
+    for (const [pct, avail, cls, healthy] of CASES) {
+        const { cid, els } = makeCell('openai-codex', 'short');
+        const r = loadWinCellHelper(els)._mzHydrateWinCell('openai-codex', 'short',
+            { mode: 'event', eventState: 'ok', pct, win: 'Roll' });
+        assert.equal(els[cid + '-pct'].textContent, avail + '%',
+            'consumo ' + pct + '% → texto ' + avail + '%');
+        assert.equal(els[cid + '-bar'].style.width, avail + '%',
+            'consumo ' + pct + '% → barra ' + avail + '%');
+        assert.ok(els[cid]._classes.has(cls),
+            'consumo ' + pct + '% (disponible ' + avail + '%) → clase ' + cls);
+        assert.equal(r.healthy, healthy, 'consumo ' + pct + '% → healthy=' + healthy);
+    }
+});
+
+test('#4900: los extremos NO se leen con la polaridad invertida (anti-regresión #4885)', () => {
+    // Cuota libre: NUNCA rojo ni "no sano".
+    const libre = makeCell('openai-codex', 'short');
+    const rLibre = loadWinCellHelper(libre.els)._mzHydrateWinCell('openai-codex', 'short',
+        { mode: 'event', eventState: 'ok', pct: 0, win: 'Roll' });
+    assert.equal(libre.els[libre.cid + '-pct'].textContent, '100%');
+    assert.ok(!libre.els[libre.cid]._classes.has('bad'), 'cuota 100% libre nunca es roja');
+    assert.equal(rLibre.healthy, true);
+
+    // Cuota agotada: NUNCA verde ni "sano", y la copia iguala a la rama gauge.
+    const agotada = makeCell('openai-codex', 'long');
+    const rAgot = loadWinCellHelper(agotada.els)._mzHydrateWinCell('openai-codex', 'long',
+        { mode: 'event', eventState: 'ok', pct: 100, win: 'Sem' });
+    assert.equal(agotada.els[agotada.cid + '-pct'].textContent, '0%');
+    assert.ok(!agotada.els[agotada.cid]._classes.has('ok'), 'cuota agotada nunca es verde');
+    assert.ok(agotada.els[agotada.cid]._classes.has('bad'));
+    assert.match(agotada.els[agotada.cid].getAttribute('title'), /AGOTADA \(0% disponible\)/,
+        'copia coherente con la rama gauge');
+    assert.match(agotada.els[agotada.cid].getAttribute('aria-label'), /AGOTADA \(0% disponible\)/);
+    assert.equal(rAgot.healthy, false, 'agotada no cuenta en mz-sig-healthy');
+});
+
+test('#4900: el rótulo accesible del estado fresco dice "disponible" (igual que gauge)', () => {
+    // Baseline de comparación: un gauge de vista DISPONIBLE. Desde #4884 CA-5
+    // `anthropic` es la ÚNICA celda que pinta CONSUMIDO, así que no sirve como
+    // referencia de polaridad; los free-tiers (gemini-google, cerebras,
+    // nvidia-nim) siguen pintando disponible y son la matriz con la que la
+    // celda Codex debe leerse igual.
+    const evt = makeCell('openai-codex', 'short');
+    loadWinCellHelper(evt.els)._mzHydrateWinCell('openai-codex', 'short',
+        { mode: 'event', eventState: 'ok', pct: 28, win: '5H' });
+    const gauge = makeCell('gemini-google', 'short');
+    loadWinCellHelper(gauge.els)._mzHydrateWinCell('gemini-google', 'short',
+        { mode: 'gauge', available: 72, win: '5h', resetAt: null });
+
+    // Misma magnitud y mismo rótulo para la misma situación real (72% libre).
+    assert.equal(evt.els[evt.cid + '-pct'].textContent, gauge.els[gauge.cid + '-pct'].textContent);
+    assert.match(evt.els[evt.cid].getAttribute('aria-label'), /: 72% disponible$/);
+    assert.match(gauge.els[gauge.cid].getAttribute('aria-label'), /: 72% disponible$/);
+
+    // Anti-regresión de alcance (#4884 CA-5): la excepción CONSUMIDO es sólo de
+    // anthropic y NO debe filtrarse a la rama event de Codex.
+    const anth = makeCell('anthropic', 'short');
+    loadWinCellHelper(anth.els)._mzHydrateWinCell('anthropic', 'short',
+        { mode: 'gauge', available: 72, pct: 28, win: '5h', resetAt: null });
+    assert.equal(anth.els[anth.cid + '-pct'].textContent, '28%',
+        'anthropic sigue en vista CONSUMIDO (#4884)');
+    assert.notEqual(evt.els[evt.cid + '-pct'].textContent, anth.els[anth.cid + '-pct'].textContent,
+        'Codex fresco NO adopta la vista consumido de anthropic');
 });
 
 test('#4863: mode event eventState "exhausted" → "tope activo", NO sano', () => {
     const { cid, els } = makeCell('openai-codex', 'short');
     const r = loadWinCellHelper(els)._mzHydrateWinCell('openai-codex', 'short',
-        { mode: 'event', eventState: 'exhausted', win: 'Roll' });
+        { mode: 'event', eventState: 'exhausted', pct: 70, win: 'Roll' });
     assert.equal(els[cid + '-pct'].textContent, 'tope activo', 'agotada → "tope activo"');
     assert.ok(!/sin límite/.test(els[cid + '-pct'].textContent), 'NUNCA "sin límite" cuando el banner dice agotada');
+    // exhausted es categórico: NO debe llevar mz-qm-fresh, así el override de
+    // evento (sin barra) sigue aplicando en el render real.
+    assert.ok(!els[cid]._classes.has('mz-qm-fresh'), 'exhausted no es estado fresco');
+    // #4900 rebote PO: marca mz-qm-exhausted para que el CSS lo pinte en rojo
+    // (#f85149, mockup) en vez del chip azul info preexistente.
+    assert.ok(els[cid]._classes.has('mz-qm-exhausted'), 'exhausted marca mz-qm-exhausted (color rojo del mockup)');
     assert.equal(r.healthy, false);
 });
 
 test('#4863: mode event eventState "nodata" (stale por inactividad) → "sin dato", NO verde', () => {
     const { cid, els } = makeCell('openai-codex', 'short');
     const r = loadWinCellHelper(els)._mzHydrateWinCell('openai-codex', 'short',
-        { mode: 'event', eventState: 'nodata', win: 'Roll' });
+        { mode: 'event', eventState: 'nodata', pct: 88, win: 'Roll' });
     assert.equal(els[cid + '-pct'].textContent, 'sin dato', 'inactividad → "sin dato", no "sin límite"');
     assert.ok(!/sin límite/.test(els[cid + '-pct'].textContent), 'NUNCA verde espurio por inactividad');
     assert.ok(els[cid]._classes.has('mz-qm-nodata'), 'marca visualmente "sin dato"');
+    assert.equal(els[cid + '-bar'].style.width, '0%');
+    assert.match(els[cid].getAttribute('title'), /sin dato/);
+    assert.match(els[cid].getAttribute('aria-label'), /sin dato/);
     assert.equal(r.healthy, false, 'sin dato no cuenta como proveedor sano');
+});
+
+test('#4900: porcentaje Codex inválido degrada a "sin dato"', () => {
+    for (const pct of [undefined, null, NaN, Infinity, -1, 101, '<img src=x onerror=alert(1)>']) {
+        const { cid, els } = makeCell('openai-codex', 'short');
+        const r = loadWinCellHelper(els)._mzHydrateWinCell('openai-codex', 'short',
+            { mode: 'event', eventState: 'ok', pct, win: 'Roll' });
+        assert.equal(els[cid + '-pct'].textContent, 'sin dato');
+        assert.equal(els[cid + '-bar'].style.width, '0%');
+        assert.ok(els[cid]._classes.has('mz-qm-nodata'));
+        assert.ok(!els[cid]._classes.has('mz-qm-fresh'), 'sin dato no es estado fresco');
+        assert.equal(r.healthy, false);
+    }
 });
 
 test('#4863: backward-compat — sin eventState, eventOk:false renderiza "tope activo"', () => {
