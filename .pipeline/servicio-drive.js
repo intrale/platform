@@ -14,6 +14,7 @@ const { sanitize } = require('./sanitizer');
 const { sanitizeDrivePayload, sanitizeDriveFilename, filenameHasSecret } = require('./lib/sanitize-payload');
 // CA-3 / RS-3 (#3927): notificación de fallo a Telegram con texto redactado.
 const { notifyTelegram } = require('./lib/notify-telegram');
+const { isMarkerArtifact } = require('./lib/marker-artifact');
 // RS-3 (#3927): `redactSensitive` cubre emails/URLs/bot-tokens, pero NO los
 // patrones de VALOR de proveedores (AWS `AKIA…`, `sk-ant-…`, JWT, etc.) — esos
 // los redacta `redactSecretValue`. Componemos ambas para no volcar NINGÚN
@@ -185,6 +186,19 @@ function resolveVideoPath(filePath) {
   return null;
 }
 
+// QA estructural no produce video por contrato. Algunos agentes dejan un
+// Markdown auditable y encolan un job para conservar la trazabilidad. Ese job
+// no debe llegar al uploader de videos ni fallar por el containment RS-2.
+// Exigimos ambos campos canónicos para que un payload común no pueda saltear
+// accidentalmente el upload con sólo declarar `mode: structural`.
+function isStructuralEvidenceJob(data) {
+  return Boolean(
+    data
+    && data.mode === 'structural'
+    && data.source === 'qa-structural',
+  );
+}
+
 // #2519: lee qa-narration.meta.json (si existe) para saber qué proveedor TTS
 // narró el audio. El campo `provider` mapea a Nacho/Rulo del perfil qa.
 // Devuelve string vacío si no hay meta confiable — el template omite la línea
@@ -213,6 +227,7 @@ function readQaVerdictFromYaml(issue) {
   try {
     if (!fs.existsSync(procesadoDir)) return {};
     const files = fs.readdirSync(procesadoDir)
+      .filter((f) => !isMarkerArtifact(f))
       .filter((f) => f.startsWith(String(issue) + '.') && f.endsWith('.yaml') && f.includes('qa'));
     if (files.length === 0) return {};
     // Preferir el más reciente
@@ -355,6 +370,13 @@ async function processJob(file) {
       return;
     }
 
+    if (isStructuralEvidenceJob(data)) {
+      log(`Job ${file.name}: QA estructural sin video; cola Drive eximida`);
+      ensureDir(LISTO);
+      fs.renameSync(trabajandoPath, path.join(LISTO, file.name));
+      return;
+    }
+
     const resolvedPath = resolveVideoPath(videoFile);
     if (!resolvedPath) {
       log(`Job ${file.name}: video no encontrado o fuera de directorios permitidos: ${videoFile}`);
@@ -487,6 +509,8 @@ module.exports = {
   notifyDriveFailure,
   extractIssue,
   extractTitle,
+  isStructuralEvidenceJob,
+  processJob,
   ALLOWED_VIDEO_DIRS,
 };
 

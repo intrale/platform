@@ -66,6 +66,7 @@ function withTempPipeline(setupFiles, fn) {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'reduced4870-'));
     const prev = process.env.PIPELINE_DIR_OVERRIDE;
     const prevReconcile = process.env.QUOTA_RECONCILE_DISABLED;
+    const prevCodexSessionsDir = process.env.CODEX_SESSIONS_DIR;
     try {
         for (const [name, content] of Object.entries(setupFiles)) {
             fs.writeFileSync(path.join(tmp, name), content, 'utf8');
@@ -73,16 +74,32 @@ function withTempPipeline(setupFiles, fn) {
         process.env.PIPELINE_DIR_OVERRIDE = tmp;
         // El fixture define toda la cadena de cuota. Evita que sesiones Codex
         // del host invaliden esos flags sintéticos y escriban logs de auditoría.
+        // Doble aislamiento complementario: `CODEX_SESSIONS_DIR` (#4899) apunta
+        // la lectura de rollouts JSONL a un directorio del fixture, y
+        // `QUOTA_RECONCILE_DISABLED` (#4900) desactiva el veto de reconciliación
+        // en `quota-exhausted.js`. Cubren capas distintas de la cadena de cuota.
         process.env.QUOTA_RECONCILE_DISABLED = '1';
+        process.env.CODEX_SESSIONS_DIR = path.join(tmp, 'codex-sessions');
         return fn(tmp);
     } finally {
         if (prev === undefined) delete process.env.PIPELINE_DIR_OVERRIDE;
         else process.env.PIPELINE_DIR_OVERRIDE = prev;
         if (prevReconcile === undefined) delete process.env.QUOTA_RECONCILE_DISABLED;
         else process.env.QUOTA_RECONCILE_DISABLED = prevReconcile;
+        if (prevCodexSessionsDir === undefined) delete process.env.CODEX_SESSIONS_DIR;
+        else process.env.CODEX_SESSIONS_DIR = prevCodexSessionsDir;
         try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best-effort */ }
     }
 }
+
+test('#4899 · withTempPipeline restaura CODEX_SESSIONS_DIR ante una excepción', () => {
+    const previous = process.env.CODEX_SESSIONS_DIR;
+    assert.throws(() => withTempPipeline({}, () => {
+        assert.notEqual(process.env.CODEX_SESSIONS_DIR, previous);
+        throw new Error('fixture-error');
+    }), /fixture-error/);
+    assert.equal(process.env.CODEX_SESSIONS_DIR, previous);
+});
 
 // Flag de cuota REAL con schema por-proveedor (post-#4731): mapa `providers` con
 // un slot exhausted por cada provider pasado. Espejo top-level al slot primario
