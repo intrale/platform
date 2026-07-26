@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
+  <title id="title">Mockup de cuota real por proveedor para el dashboard Intrale</title>
+  <desc id="desc">Panel oscuro con cinco proveedores, ventanas propias, porcentajes disponibles reales y estados sin dato explícitos.</desc>
+  <defs>
+    <linearGradient id="brand" x1="0" x2="1">
+      <stop stop-color="#00D6FF"/>
+      <stop offset="1" stop-color="#1890FF"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="12" stdDeviation="18" flood-color="#000" flood-opacity=".32"/>
+    </filter>
+  </defs>
+  <rect width="1440" height="900" fill="#0D1117"/>
+  <circle cx="1320" cy="64" r="210" fill="#00D6FF" opacity=".035"/>
+  <g font-family="Inter, Arial, sans-serif">
+    <text x="96" y="86" fill="#8B949E" font-size="14" font-weight="700" letter-spacing="2">INTRALE · PULSO OPERATIVO</text>
+    <text x="96" y="132" fill="#E6EDF3" font-size="34" font-weight="750">Cuota por proveedor</text>
+    <text x="96" y="163" fill="#B1BAC4" font-size="16">Datos reales y frescos · nunca se agregan entre proveedores</text>
+
+    <g transform="translate(96 204)" filter="url(#shadow)">
+      <rect width="1248" height="584" rx="16" fill="#161B22" stroke="#30363D"/>
+      <rect width="1248" height="3" rx="2" fill="url(#brand)"/>
+      <text x="28" y="49" fill="#E6EDF3" font-size="18" font-weight="700">Disponibilidad actual</text>
+      <text x="1220" y="49" fill="#8B949E" font-size="13" text-anchor="end">Actualizado hace 38 s</text>
+      <line x1="28" y1="72" x2="1220" y2="72" stroke="#30363D"/>
+
+      <g fill="#8B949E" font-size="12" font-weight="700" letter-spacing=".8">
+        <text x="32" y="104">PROVEEDOR</text>
+        <text x="310" y="104">VENTANA CORTA</text>
+        <text x="770" y="104">VENTANA LARGA</text>
+      </g>
+
+      <!-- Anthropic -->
+      <g transform="translate(28 124)">
+        <rect width="1192" height="78" rx="10" fill="#1C2128"/>
+        <circle cx="20" cy="24" r="6" fill="#D97757"/>
+        <text x="38" y="29" fill="#E6EDF3" font-size="15" font-weight="700">Anthropic</text>
+        <text x="38" y="52" fill="#8B949E" font-size="12">Lectura real /usage</text>
+        <text x="282" y="23" fill="#8B949E" font-size="12">5 h</text>
+        <text x="282" y="50" fill="#3FB950" font-size="18" font-weight="750">74% disponible</text>
+        <rect x="442" y="37" width="240" height="7" rx="4" fill="#30363D"/><rect x="442" y="37" width="178" height="7" rx="4" fill="#3FB950"/>
+        <text x="742" y="23" fill="#8B949E" font-size="12">Semanal</text>
+        <text x="742" y="50" fill="#D29922" font-size="18" font-weight="750">38% disponible</text>
+        <rect x="914" y="37" width="240" height="7" rx="4" fill="#30363D"/><rect x="914" y="37" width="91" height="7" rx="4" fill="#D29922"/>
+      </g>
+
+      <!-- Codex -->
+      <g transform="translate(28 210)">
+        <rect width="1192" height="78" rx="10" fill="#1C2128"/>
+        <circle cx="20" cy="24" r="6" fill="#58A6FF"/>
+        <text x="38" y="29" fill="#E6EDF3" font-size="15" font-weight="700">Codex / OpenAI</text>
+        <text x="38" y="52" fill="#8B949E" font-size="12">Evento usage-limit</text>
+        <text x="282" y="23" fill="#8B949E" font-size="12">Evento actual</text>
+        <text x="282" y="50" fill="#F85149" font-size="15" font-weight="800">■ TOPE ACTIVO</text>
+        <text x="742" y="23" fill="#8B949E" font-size="12">Ventana informada</text>
+        <text x="742" y="50" fill="#6E7681" font-size="15" font-weight="650">sin dato</text>
+        <text x="1154" y="50" fill="#8B949E" font-size="12" text-anchor="end">No expuesto por el provider</text>
+      </g>
+
+      <!-- Gemini -->
+      <g transform="translate(28 296)">
+        <rect width="1192" height="78" rx="10" fill="#1C2128"/>
+        <circle cx="20" cy="24" r="6" fill="#BC8CFF"/>
+        <text x="38" y="29" fill="#E6EDF3" font-size="15" font-weight="700">Gemini</text>
+        <text x="38" y="52" fill="#8B949E" font-size="12">Headers de rate-limit</text>
+        <text x="282" y="23" fill="#8B949E" font-size="12">Por minuto</text>
+        <text x="282" y="50" fill="#3FB950" font-size="18" font-weight="750">91% disponible</text>
+        <rect x="442" y="37" width="240" height="7" rx="4" fill="#30363D"/><rect x="442" y="37" width="218" height="7" rx="4" fill="#3FB950"/>
+        <text x="742" y="23" fill="#8B949E" font-size="12">Diaria</text>
+        <text x="742" y="50" fill="#6E7681" font-size="15" font-weight="650">sin dato</text>
+      </g>
+
+      <!-- Cerebras -->
+      <g transform="translate(28 382)">
+        <rect width="1192" height="78" rx="10" fill="#1C2128"/>
+        <circle cx="20" cy="24" r="6" fill="#F0A500"/>
+        <text x="38" y="29" fill="#E6EDF3" font-size="15" font-weight="700">Cerebras</text>
+        <text x="38" y="52" fill="#8B949E" font-size="12">Muestra fresca del provider</text>
+        <text x="282" y="23" fill="#8B949E" font-size="12">Por minuto</text>
+        <text x="282" y="50" fill="#D29922" font-size="18" font-weight="750">42% disponible</text>
+        <rect x="442" y="37" width="240" height="7" rx="4" fill="#30363D"/><rect x="442" y="37" width="101" height="7" rx="4" fill="#D29922"/>
+        <text x="742" y="23" fill="#8B949E" font-size="12">Diaria</text>
+        <text x="742" y="50" fill="#6E7681" font-size="15" font-weight="650">sin dato</text>
+      </g>
+
+      <!-- Nvidia -->
+      <g transform="translate(28 468)">
+        <rect width="1192" height="78" rx="10" fill="#1C2128"/>
+        <circle cx="20" cy="24" r="6" fill="#76B900"/>
+        <text x="38" y="29" fill="#E6EDF3" font-size="15" font-weight="700">NVIDIA NIM</text>
+        <text x="38" y="52" fill="#8B949E" font-size="12">Muestra fresca del provider</text>
+        <text x="282" y="23" fill="#8B949E" font-size="12">Por minuto</text>
+        <text x="282" y="50" fill="#F85149" font-size="18" font-weight="750">12% disponible</text>
+        <rect x="442" y="37" width="240" height="7" rx="4" fill="#30363D"/><rect x="442" y="37" width="29" height="7" rx="4" fill="#F85149"/>
+        <text x="742" y="23" fill="#8B949E" font-size="12">Diaria</text>
+        <text x="742" y="50" fill="#6E7681" font-size="15" font-weight="650">sin dato</text>
+      </g>
+    </g>
+
+    <g transform="translate(96 824)" font-size="13">
+      <circle cx="6" cy="-4" r="5" fill="#3FB950"/><text x="20" fill="#B1BAC4">≥ 50% disponible</text>
+      <circle cx="184" cy="-4" r="5" fill="#D29922"/><text x="198" fill="#B1BAC4">20–49%</text>
+      <circle cx="302" cy="-4" r="5" fill="#F85149"/><text x="316" fill="#B1BAC4">&lt; 20% o tope</text>
+      <text x="1248" fill="#8B949E" text-anchor="end">El texto y el estado acompañan siempre al color</text>
+    </g>
+  </g>
+</svg>
