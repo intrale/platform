@@ -1,6 +1,7 @@
 package ui.sc.delivery
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,10 +14,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Card
@@ -45,6 +48,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.lifecycle.viewmodel.compose.viewModel
+import ar.com.intrale.appconfig.AppRuntimeConfig
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
 import asdo.delivery.DeliveryAvailabilityBlock
@@ -54,6 +58,8 @@ import kotlinx.datetime.DayOfWeek
 import ui.cp.buttons.IntralePrimaryButton
 import ui.cp.inputs.InputState
 import ui.cp.inputs.TextField
+import ui.sc.auth.TWO_FACTOR_SETUP_PATH
+import ui.sc.auth.TWO_FACTOR_VERIFY_PATH
 import ui.sc.shared.Screen
 import ui.th.spacing
 
@@ -265,6 +271,14 @@ class DeliveryProfileScreen : Screen(DELIVERY_PROFILE_PATH) {
                         state = state
                     )
 
+                    DeliverySecurityActionsSection(
+                        twoFactorEnabled = AppRuntimeConfig.twoFactorEnabled,
+                        setupLabel = Txt(MessageKey.dashboard_menu_setup_two_factor),
+                        verifyLabel = Txt(MessageKey.dashboard_menu_verify_two_factor),
+                        onSetupTwoFactor = { navigate(TWO_FACTOR_SETUP_PATH) },
+                        onVerifyTwoFactor = { navigate(TWO_FACTOR_VERIFY_PATH) }
+                    )
+
                     Column(
                         verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
                     ) {
@@ -311,6 +325,69 @@ class DeliveryProfileScreen : Screen(DELIVERY_PROFILE_PATH) {
                 }
             }
         }
+    }
+}
+
+@Composable
+internal fun DeliverySecurityActionsSection(
+    twoFactorEnabled: Boolean,
+    setupLabel: String,
+    verifyLabel: String,
+    onSetupTwoFactor: () -> Unit,
+    onVerifyTwoFactor: () -> Unit
+) {
+    if (!twoFactorEnabled) return
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(MaterialTheme.spacing.x3),
+            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+        ) {
+            DeliverySecurityActionRow(
+                icon = Icons.Default.VerifiedUser,
+                label = setupLabel,
+                onClick = onSetupTwoFactor
+            )
+            DeliverySecurityActionRow(
+                icon = Icons.Default.Check,
+                label = verifyLabel,
+                onClick = onVerifyTwoFactor
+            )
+        }
+    }
+}
+
+@Composable
+private fun DeliverySecurityActionRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.medium)
+            .background(MaterialTheme.colorScheme.surface)
+            .clickable(onClick = onClick)
+            .padding(vertical = MaterialTheme.spacing.x1_5, horizontal = MaterialTheme.spacing.x2)
+            .semantics { contentDescription = label },
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = MaterialTheme.colorScheme.primary
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyLarge
+        )
     }
 }
 
