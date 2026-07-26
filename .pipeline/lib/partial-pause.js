@@ -1,7 +1,7 @@
 // V3 Partial pause — pausa del pipeline con allowlist explícita de issues (#2490).
 //
 // Tres estados del pipeline:
-//   - running        → procesa todo (sin archivos de control)
+//   - running        → sin archivos de control (ver #5060: NO es barra libre)
 //   - paused         → .pipeline/.paused existe → no procesa nada
 //   - partial_pause  → .pipeline/.partial-pause.json existe → procesa solo issues del allowlist
 //
@@ -9,7 +9,9 @@
 // .partial-pause.json, .paused gana (más restrictivo).
 //
 // La tabla de verdad de isIssueAllowed(issue):
-//   running          → true
+//   running          → false (#5060: ejecución solo por olas; sin allowlist no
+//                      hay ola vigente que acote el dispatch. Escape hatch de
+//                      diagnóstico: PIPELINE_ALLOW_UNSCOPED_DISPATCH=1)
 //   paused           → false
 //   partial_pause    → issue in allowedIssues
 //
@@ -207,6 +209,41 @@ function getPipelineMode() {
     };
 }
 
+// -----------------------------------------------------------------------------
+// #5060 — Ejecución SOLO por olas (fail-closed sin allowlist).
+//
+// Incidente 2026-07-26: al cerrarse la ola 8, la poda convergente (#4753)
+// llamó `setPartialPause([])`, que con lista vacía delega en
+// `clearPartialPause()` y BORRA `.partial-pause.json`. Sin ese archivo el modo
+// caía a `running` y `isIssueAllowedInState()` devolvía `true` para cualquier
+// issue: el Pulpo perdió su único freno y dispatchó ~320 agentes sobre ~100
+// issues del backlog histórico, que a su vez generaron 97 issues nuevos.
+//
+// El alcance de la ola NO se enforza en `waves.json` (registro semántico) sino
+// en esta allowlist. Por eso "sin allowlist" pasa a significar **denegar**, no
+// **permitir**: el estado natural del pipeline es acotado a la ola vigente.
+//
+// El escape hatch existe para diagnóstico/recuperación, apagado por default y
+// con warning en cada uso — jamás debe quedar prendido en operación normal.
+// -----------------------------------------------------------------------------
+function unscopedDispatchEnabled() {
+    return process.env.PIPELINE_ALLOW_UNSCOPED_DISPATCH === '1';
+}
+
+// Warning una sola vez por proceso: el gate se consulta por issue y por tick,
+// loguear en cada llamada inundaría el log del Pulpo.
+let unscopedWarned = false;
+function warnUnscopedOnce() {
+    if (unscopedWarned) return;
+    unscopedWarned = true;
+    try {
+        console.warn(
+            '[partial-pause] ⚠️  PIPELINE_ALLOW_UNSCOPED_DISPATCH=1 — dispatch SIN filtro de ola. ' +
+            'Escape hatch de diagnóstico (#5060): el pipeline puede tomar cualquier issue del backlog.'
+        );
+    } catch { /* best-effort: el warning nunca rompe el gate */ }
+}
+
 /**
  * Determina si un issue puede procesarse según el estado actual.
  * @param {number|string} issue
@@ -223,6 +260,11 @@ function isIssueAllowed(issue) {
  * de cola, reconciler) y no quieren pagar el costo de releer el filesystem
  * por cada uno. La política es la misma que `isIssueAllowed`.
  *
+ * Tabla de verdad (#5060 cambia la primera fila):
+ *   running        → false, salvo `PIPELINE_ALLOW_UNSCOPED_DISPATCH=1`
+ *   paused         → false
+ *   partial_pause  → issue ∈ allowedIssues
+ *
  * @param {number|string} issue
  * @param {ReturnType<typeof getPipelineMode>} state
  * @returns {boolean}
@@ -231,7 +273,12 @@ function isIssueAllowedInState(issue, state) {
     const n = normalizeIssue(issue);
     if (!n) return false;
     if (!state || state.mode === 'paused') return false;
-    if (state.mode === 'running') return true;
+    // #5060 — sin allowlist NO hay ola vigente que acote el dispatch: fail-closed.
+    if (state.mode === 'running') {
+        if (!unscopedDispatchEnabled()) return false;
+        warnUnscopedOnce();
+        return true;
+    }
     return Array.isArray(state.allowedIssues) && state.allowedIssues.includes(n);
 }
 
@@ -242,10 +289,16 @@ function isIssueAllowedInState(issue, state) {
 // componentes que no son issues concretos pero quieren correr en ventanas de
 // pausa (ej. multi-provider-smoke-test, harnesses de diagnóstico futuros).
 //
-// Política exactamente análoga:
+// Política:
 //   running         → true (no hay pausa)
 //   paused          → false (halt total)
 //   partial_pause   → skill ∈ allowedSkills
+//
+// #5060 — NO se le aplica el fail-closed de `isIssueAllowedInState`. El gate de
+// issues acota el BACKLOG a la ola vigente; los skills de acá son componentes
+// del control-plane (smoke-test de providers, harnesses de diagnóstico) que no
+// consumen backlog y deben seguir corriendo entre olas. Denegarlos dejaría al
+// pipeline sin diagnóstico justo cuando no hay ola activa.
 // -----------------------------------------------------------------------------
 function isSkillAllowed(skillName) {
     return isSkillAllowedInState(skillName, getPipelineMode());
@@ -869,5 +922,9 @@ module.exports = {
     evaluateAndAudit,
     // #4030 — saneado de metadata de ola (expuesto para tests).
     sanitizeWaveMetaForWrite,
+    // #5060 — estado del escape hatch de dispatch sin ola. Lo consulta el Pulpo
+    // para declarar la causa del wave-stall watchdog (#4708/#4709) cuando el
+    // dispatch está detenido por falta de ola y no por halt humano.
+    unscopedDispatchEnabled,
     _paths: () => ({ PARTIAL_FILE: partialFile(), PAUSE_FILE: pauseFile() }),
 };

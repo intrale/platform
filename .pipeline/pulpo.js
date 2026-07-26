@@ -1481,6 +1481,7 @@ function listWorkFiles(dir) {
  *
  * Causas reconocidas (interino hasta #4709 unifique el registro):
  *   - halt humano (.paused / .partial-pause.json)   → kind 'human-halt'
+ *   - sin ola vigente que acote el dispatch (#5060) → kind 'wave-empty'
  *   - ventana de reposo / night-window              → kind 'night-window'
  *   - cuota agotada                                 → kind 'quota'
  *   - presión de recursos (ORANGE/RED)              → kind 'resource-pressure'
@@ -1495,6 +1496,13 @@ function readDeclaredCauseForWave(cfgRoot, waves) {
   try {
     const mode = partialPause.getPipelineMode().mode;
     if (mode && mode !== 'running') return declare('human-halt');
+    // #5060 — `running` ya no es barra libre: sin allowlist no hay ola vigente
+    // y el dispatch está fail-closed. Es una espera legítima (falta promover la
+    // ola siguiente), NO una ola estancada — declararla evita que el wave-stall
+    // watchdog (#4708/#4709) alerte por algo que el operador ya controla.
+    if (mode === 'running' && !partialPause.unscopedDispatchEnabled()) {
+      return declare('wave-empty');
+    }
   } catch { /* fail-closed */ }
 
   // 2. Ventana de reposo / madrugada — no alertar de noche (CA-2).
@@ -16139,8 +16147,13 @@ function autoResolveReductiveDesyncByClosure(probe, opts = {}) {
   // `realignActiveWaveDispatch` corta en `empty_expansion` ANTES de podar (fail-
   // safe para no vaciar una allowlist viva por un realign). Pero acá la poda ES
   // la convergencia correcta: marcamos los cerrados `completed` en waves.json y
-  // dejamos la allowlist vacía (una allowlist vacía == running, NO frena — ver
-  // feedback_partial-pause-empty-not-block). Sin esto, el desync reincidiría.
+  // dejamos la allowlist vacía. Sin esto, el desync reincidiría.
+  //
+  // #5060 — la allowlist vacía YA NO significa "procesa todo": desde el fix de
+  // ejecución-solo-por-olas equivale a dispatch detenido (fail-closed). Ese es
+  // el estado correcto al cerrarse una ola, pero es INVISIBLE para el operador
+  // si no se avisa: en el incidente 2026-07-26 el pipeline quedó suelto sin que
+  // nadie lo notara durante 10 horas. Por eso la poda ahora notifica el cierre.
   if (r && r.reason === 'empty_expansion') {
     const waves = require('./lib/waves');
     const closed = divergent.filter((n) => { try { return isClosed(n) === true; } catch { return false; } });
@@ -16155,15 +16168,29 @@ function autoResolveReductiveDesyncByClosure(probe, opts = {}) {
     } catch (e) {
       return { ok: false, reason: 'prune_failed', error: e.message };
     }
-    // Limpiar la allowlist de los extras cerrados: queda vacía (== running).
+    // Limpiar la allowlist de los extras cerrados: queda vacía → dispatch
+    // detenido hasta que se promueva la ola siguiente (#5060).
     try {
       partialPause.setPartialPause([], {
         source: 'wave-promote:autoresolve-reductive',
         authorizedBy: 'wave-promote',
-        justification: 'ola sin issues abiertos tras poda de cerrados (#4753): allowlist vacía == running',
+        justification: 'ola sin issues abiertos tras poda de cerrados (#4753): allowlist vacía = dispatch detenido (#5060)',
       });
     } catch { /* best-effort: la poda de waves.json ya convergió el probe */ }
     const active = (() => { try { return waves.getActiveWave(); } catch { return null; } })();
+    // #5060 — avisar al operador que la ola cerró y el pipeline quedó a la
+    // espera. Best-effort: la notificación NUNCA rompe la convergencia.
+    try {
+      const nombre = active && active.name ? ` — ${active.name}` : '';
+      sendTelegram(
+        `🌊 Ola ${active ? active.number : '?'}${nombre} cerrada: todos sus issues están completos.\n\n` +
+        `El dispatch queda DETENIDO (allowlist vacía = ejecución solo por olas, #5060). ` +
+        `Promové la ola siguiente para que el pipeline vuelva a tomar trabajo.`
+      );
+    } catch (e) {
+      log('pulpo', `[poda-convergente] no se pudo notificar el cierre de ola: ${e.message}`);
+    }
+    log('pulpo', `[poda-convergente] ola ${active ? active.number : '?'} sin abiertos → allowlist vacía; dispatch DETENIDO hasta promover la siguiente (#5060)`);
     return { ok: true, allowlist: [], activeWave: active && active.number, prunedFromWave: pruned };
   }
 
