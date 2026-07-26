@@ -114,6 +114,34 @@
   --deterministic:      var(--text-secondary);  /* skill no-LLM (ejecuta sin tokens) */
   --deterministic-bg:   rgba(177, 186, 196, 0.10);
 
+  /* Criterio NO-VERIFICABLE — indeterminacion fail-closed (#4971).
+   *
+   * Semantica: el gate intento ejercer el criterio contra el sistema vivo y NO
+   * pudo determinar su estado (verificador desconocido, destino fuera de
+   * allowlist, timeout, output cap). BLOQUEA el qa:passed igual que `fallido`,
+   * pero la remediacion es distinta: fallido => arreglar el producto;
+   * no-verificable => arreglar el verificador/destino. Por eso NO puede
+   * compartir color con --danger ni degradar a --warning (que en este sistema
+   * significa "atencion NO bloqueante").
+   *
+   * Por que magenta y no un naranja/terracota: medido contra la paleta viva,
+   * es el unico candidato con separacion cromatica real del cluster rojo-ambar
+   * (deltaE RGB: 112 vs --danger, 149 vs --warning, 175 vs --retry, 89 vs
+   * --purple). Un terracota (#E3785C) queda a deltaE 48 de --danger: los dos
+   * estados bloqueantes se leerian como el mismo en un PDF a escala real.
+   *
+   * Contraste sobre surface-0:
+   *   - unverifiable (#D66BB0) = 5.94:1 (AA texto normal, AA UI/iconos)
+   *   - unverifiable-fg (#F5D2E8) = 12.1:1 (AAA)
+   *
+   * NUNCA usar el color solo: siempre acompanado de #ic-criterio-no-verificable
+   * y de la etiqueta textual "no-verificable · bloquea".
+   */
+  --unverifiable:       #D66BB0;   /* magenta — indeterminacion que bloquea */
+  --unverifiable-dim:   #8E3A6E;   /* borde/hover del magenta */
+  --unverifiable-bg:    rgba(214, 107, 176, 0.16);
+  --unverifiable-fg:    #F5D2E8;   /* texto sobre unverifiable-bg */
+
   /* ---------------------------------------------------------------------------
    * 3.c PROVIDERS DE LLM (multi-provider — #3086 / U1 multi-provider §7.1)
    * Cada proveedor LLM tiene un color identitario que se usa en:

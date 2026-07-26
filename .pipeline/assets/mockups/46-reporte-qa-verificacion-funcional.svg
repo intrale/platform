@@ -1,0 +1,251 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 900" width="1440" height="900"
+     font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
+     role="img"
+     aria-label="Mockup del reporte QA con verificacion funcional para el issue 4971: tabla criterio a evidencia con cuatro estados diferenciados y leyenda de bloqueo">
+
+  <!--
+    #4971 — Reporte QA con verificacion funcional (contrato visual para el dev).
+
+    Que resuelve este mockup, en una linea: hoy el estado `no-verificable`
+    renderiza con el MISMO glifo que `no-aplica` (verificado en HEAD 253132b19
+    ejecutando buildQaReport), o sea que el estado que BLOQUEA se ve igual que
+    el estado benigno. Este diseno separa los dos ejes que el CA-4 del PO exige
+    separar: evidencia audiovisual (puede ser N/A) vs mapeo criterio->evidencia
+    (nunca N/A).
+
+    Fuente de verdad de color: .pipeline/assets/design-tokens.css
+    Los hex estan inline porque un SVG standalone no resuelve variables CSS;
+    cada uno lleva el nombre del token al lado para que el dev no invente valores.
+  -->
+
+  <defs>
+    <linearGradient id="gBrand" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#00D6FF"/>
+      <stop offset="1" stop-color="#1890FF"/>
+    </linearGradient>
+  </defs>
+
+  <!-- ===================== fondo (surface-0) ===================== -->
+  <rect width="1440" height="900" fill="#0D1117"/>
+
+  <!-- ===================== header ===================== -->
+  <rect x="0" y="0" width="1440" height="64" fill="#161B22"/>
+  <rect x="0" y="63" width="1440" height="1" fill="#21262D"/>
+  <path d="M32 20 L20 41 L44 41 Z" fill="none" stroke="url(#gBrand)" stroke-width="2"
+        stroke-linejoin="round"/>
+  <path d="M32 29 L27.5 36 L36.5 36 Z" fill="url(#gBrand)"/>
+  <text x="60" y="33" fill="#E6EDF3" font-size="15" font-weight="600">Reporte QA · verificación funcional</text>
+  <text x="60" y="50" fill="#8B949E" font-size="12">#4971 · fase verificacion · persistido con writeDeliverable(sensible: true)</text>
+
+  <!-- badge veredicto -->
+  <rect x="1160" y="18" width="248" height="28" rx="14" fill="rgba(248, 81, 73, 0.14)" stroke="#8B1A14"/>
+  <circle cx="1180" cy="32" r="6.5" fill="none" stroke="#F85149" stroke-width="1.75"/>
+  <path d="M1177.5 29.5 L1182.5 34.5 M1182.5 29.5 L1177.5 34.5" stroke="#F85149"
+        stroke-width="1.75" stroke-linecap="round"/>
+  <text x="1194" y="37" fill="#F85149" font-size="13" font-weight="600">qa:passed BLOQUEADO — 3 criterios</text>
+
+  <!-- ===================== columna izquierda: el reporte ===================== -->
+  <rect x="32" y="92" width="880" height="700" rx="10" fill="#161B22" stroke="#30363D"/>
+
+  <text x="56" y="124" fill="#E6EDF3" font-size="14" font-weight="600">Criterios de aceptación · evidencia funcional</text>
+  <text x="56" y="143" fill="#8B949E" font-size="11.5">Cada fila responde: qué se ejecutó contra el sistema vivo y qué se observó.</text>
+
+  <!-- encabezado de tabla -->
+  <rect x="56" y="158" width="832" height="30" rx="5" fill="#1C2128"/>
+  <text x="70"  y="177" fill="#B1BAC4" font-size="11" font-weight="600" letter-spacing="0.4">CRITERIO</text>
+  <text x="188" y="177" fill="#B1BAC4" font-size="11" font-weight="600" letter-spacing="0.4">ESTADO</text>
+  <text x="358" y="177" fill="#B1BAC4" font-size="11" font-weight="600" letter-spacing="0.4">VERIFICADOR · ACCIÓN</text>
+  <text x="600" y="177" fill="#B1BAC4" font-size="11" font-weight="600" letter-spacing="0.4">SALIDA OBSERVADA</text>
+  <text x="828" y="177" fill="#B1BAC4" font-size="11" font-weight="600" letter-spacing="0.4">EVID.</text>
+
+  <!-- ========== fila 1: verificado ========== -->
+  <rect x="56" y="192" width="832" height="52" rx="5" fill="#0D1117" stroke="#21262D"/>
+  <rect x="56" y="192" width="3" height="52" rx="1.5" fill="#3FB950"/>
+  <text x="70" y="216" fill="#E6EDF3" font-size="12.5" font-weight="600">CA-1</text>
+  <text x="70" y="233" fill="#8B949E" font-size="10.5">gate sobre body</text>
+  <circle cx="196" cy="213" r="7.5" fill="none" stroke="#3FB950" stroke-width="1.75"/>
+  <path d="M192.5 213 L195 215.6 L199.8 210" fill="none" stroke="#3FB950" stroke-width="1.75"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="210" y="217" fill="#3FB950" font-size="12" font-weight="600">verificado</text>
+  <text x="210" y="233" fill="#6E7681" font-size="10">no bloquea</text>
+  <text x="358" y="212" fill="#B1BAC4" font-size="11">http-probe</text>
+  <text x="358" y="228" fill="#6E7681" font-size="10.5">GET dashboard:/api/wave</text>
+  <text x="600" y="212" fill="#B1BAC4" font-size="11">200 · 31 issues en payload</text>
+  <text x="600" y="228" fill="#6E7681" font-size="10.5">esperado 31 · observado 31</text>
+  <g transform="translate(828, 205)">
+    <path d="M2 1.5 H10.2 L14.4 5.7 V15.3 A2.2 2.2 0 0 1 12.2 17.5 H2 A2.2 2.2 0 0 1 -0.2 15.3 V3.7 A2.2 2.2 0 0 1 2 1.5 Z"
+          fill="none" stroke="#58A6FF" stroke-width="1.4" stroke-linejoin="round"/>
+    <path d="M9.9 1.6 V6 H14.3" fill="none" stroke="#58A6FF" stroke-width="1.3"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M4.5 9.3 H10 M4 12.7 H9.5 M6.4 8.1 L5.4 13.9 M8.9 8.1 L7.9 13.9"
+          fill="none" stroke="#58A6FF" stroke-width="1.25" stroke-linecap="round"/>
+  </g>
+  <text x="852" y="228" fill="#6E7681" font-size="9.5">a3f9…</text>
+
+  <!-- ========== fila 2: fallido (la regresion #3905) ========== -->
+  <rect x="56" y="252" width="832" height="52" rx="5" fill="rgba(248, 81, 73, 0.06)" stroke="#8B1A14"/>
+  <rect x="56" y="252" width="3" height="52" rx="1.5" fill="#F85149"/>
+  <text x="70" y="276" fill="#E6EDF3" font-size="12.5" font-weight="600">CA-5</text>
+  <text x="70" y="293" fill="#8B949E" font-size="10.5">regresión #3905</text>
+  <circle cx="196" cy="273" r="7.5" fill="none" stroke="#F85149" stroke-width="1.75"/>
+  <path d="M193 270 L199 276 M199 270 L193 276" stroke="#F85149" stroke-width="1.75"
+        stroke-linecap="round"/>
+  <text x="210" y="277" fill="#F85149" font-size="12" font-weight="600">fallido</text>
+  <text x="210" y="293" fill="#F85149" font-size="10" font-weight="600">BLOQUEA</text>
+  <text x="358" y="272" fill="#B1BAC4" font-size="11">dom-count</text>
+  <text x="358" y="288" fill="#6E7681" font-size="10.5">contar filas de ola</text>
+  <text x="600" y="272" fill="#F85149" font-size="11" font-weight="600">observado 4 de 31</text>
+  <text x="600" y="288" fill="#6E7681" font-size="10.5">27 entradas sin faseActual</text>
+  <g transform="translate(828, 265)">
+    <path d="M2 1.5 H10.2 L14.4 5.7 V15.3 A2.2 2.2 0 0 1 12.2 17.5 H2 A2.2 2.2 0 0 1 -0.2 15.3 V3.7 A2.2 2.2 0 0 1 2 1.5 Z"
+          fill="none" stroke="#58A6FF" stroke-width="1.4" stroke-linejoin="round"/>
+    <path d="M9.9 1.6 V6 H14.3" fill="none" stroke="#58A6FF" stroke-width="1.3"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M4.5 9.3 H10 M4 12.7 H9.5 M6.4 8.1 L5.4 13.9 M8.9 8.1 L7.9 13.9"
+          fill="none" stroke="#58A6FF" stroke-width="1.25" stroke-linecap="round"/>
+  </g>
+  <text x="852" y="288" fill="#6E7681" font-size="9.5">7c21…</text>
+
+  <!-- ========== fila 3: no-verificable (EL ESTADO NUEVO) ========== -->
+  <rect x="56" y="312" width="832" height="52" rx="5" fill="rgba(214, 107, 176, 0.10)" stroke="#8E3A6E"/>
+  <rect x="56" y="312" width="3" height="52" rx="1.5" fill="#D66BB0"/>
+  <text x="70" y="336" fill="#E6EDF3" font-size="12.5" font-weight="600">CA-7</text>
+  <text x="70" y="353" fill="#8B949E" font-size="10.5">contenido no confiable</text>
+  <circle cx="196" cy="333" r="7.5" fill="none" stroke="#D66BB0" stroke-width="1.75"/>
+  <path d="M193.7 331.4 A2.25 2.25 0 1 1 196 334 V335" fill="none" stroke="#D66BB0"
+        stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M196 337.2 H196.01" stroke="#D66BB0" stroke-width="1.9" stroke-linecap="round"/>
+  <text x="210" y="337" fill="#D66BB0" font-size="12" font-weight="600">no-verificable</text>
+  <text x="210" y="353" fill="#D66BB0" font-size="10" font-weight="600">BLOQUEA</text>
+  <text x="358" y="332" fill="#B1BAC4" font-size="11">—</text>
+  <text x="358" y="348" fill="#6E7681" font-size="10.5">destino fuera de allowlist</text>
+  <text x="600" y="332" fill="#D66BB0" font-size="11">sin ejecución: 0 procesos, 0 tráfico</text>
+  <text x="600" y="348" fill="#6E7681" font-size="10.5">fail-closed · host no resoluble</text>
+  <text x="828" y="340" fill="#6E7681" font-size="10.5">n/a</text>
+
+  <!-- ========== fila 4: alcance delegado ========== -->
+  <rect x="56" y="372" width="832" height="52" rx="5" fill="rgba(214, 107, 176, 0.10)" stroke="#8E3A6E"/>
+  <rect x="56" y="372" width="3" height="52" rx="1.5" fill="#D66BB0"/>
+  <text x="70" y="396" fill="#E6EDF3" font-size="12.5" font-weight="600">CA-8</text>
+  <text x="70" y="413" fill="#8B949E" font-size="10.5">doc operativa</text>
+  <g transform="translate(188, 390)">
+    <path d="M0.6 3.5 A1.3 1.3 0 0 1 1.9 2.2 H5.5 L6.8 3.8 H0.6 Z" fill="none"
+          stroke="#D66BB0" stroke-width="1.3" stroke-linejoin="round"/>
+    <path d="M0.6 3.8 H6.9 V10.7 A1.3 1.3 0 0 1 5.6 12 H1.9 A1.3 1.3 0 0 1 0.6 10.7 Z"
+          fill="none" stroke="#D66BB0" stroke-width="1.3" stroke-linejoin="round"/>
+    <path d="M8.6 7 H12.9 M11.4 5.1 L13.4 7 L11.4 8.9" fill="none" stroke="#D66BB0"
+          stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="13.1" cy="12.2" r="2.5" fill="none" stroke="#D66BB0" stroke-width="1.25"
+            stroke-dasharray="1.3 1.6"/>
+  </g>
+  <text x="210" y="397" fill="#D66BB0" font-size="12" font-weight="600">alcance delegado</text>
+  <text x="210" y="413" fill="#D66BB0" font-size="10" font-weight="600">BLOQUEA</text>
+  <text x="358" y="392" fill="#B1BAC4" font-size="11">—</text>
+  <text x="358" y="408" fill="#6E7681" font-size="10.5">delega a fase siguiente</text>
+  <text x="600" y="392" fill="#D66BB0" font-size="11">sin issue enlazado que lo registre</text>
+  <text x="600" y="408" fill="#6E7681" font-size="10.5">crear el issue y enlazarlo</text>
+  <text x="828" y="400" fill="#6E7681" font-size="10.5">n/a</text>
+
+  <!-- ========== fila 5: no-aplica (benigno, NO bloquea) ========== -->
+  <rect x="56" y="432" width="832" height="52" rx="5" fill="#0D1117" stroke="#21262D"/>
+  <rect x="56" y="432" width="3" height="52" rx="1.5" fill="#6E7681"/>
+  <text x="70" y="456" fill="#E6EDF3" font-size="12.5" font-weight="600">CA-6</text>
+  <text x="70" y="473" fill="#8B949E" font-size="10.5">no regresión A/V</text>
+  <circle cx="196" cy="453" r="7.5" fill="none" stroke="#6E7681" stroke-width="1.6"
+          stroke-dasharray="2 2.4"/>
+  <path d="M192.6 453 H199.4" stroke="#6E7681" stroke-width="1.75" stroke-linecap="round"/>
+  <text x="210" y="457" fill="#8B949E" font-size="12" font-weight="600">no-aplica</text>
+  <text x="210" y="473" fill="#6E7681" font-size="10">no bloquea</text>
+  <text x="358" y="452" fill="#B1BAC4" font-size="11">—</text>
+  <text x="358" y="468" fill="#6E7681" font-size="10.5">modo structural</text>
+  <text x="600" y="452" fill="#8B949E" font-size="11">evidencia audiovisual N/A</text>
+  <text x="600" y="468" fill="#6E7681" font-size="10.5">exime el video, no el mapeo</text>
+  <text x="828" y="460" fill="#6E7681" font-size="10.5">n/a</text>
+
+  <!-- ========== motivo accionable ========== -->
+  <rect x="56" y="504" width="832" height="112" rx="6" fill="#0D1117" stroke="#30363D"/>
+  <text x="72" y="527" fill="#B1BAC4" font-size="11" font-weight="600" letter-spacing="0.4">MOTIVO (lo que lee el developer que corrige)</text>
+  <rect x="72" y="537" width="800" height="1" fill="#21262D"/>
+  <text x="72" y="558" fill="#E6EDF3" font-size="11.5">CA-5 fallido: la vista de ola muestra 4 de 31 issues; las 27 entradas del matrix sin `faseActual` no se</text>
+  <text x="72" y="576" fill="#E6EDF3" font-size="11.5">renderizan. CA-7 no-verificable: el destino declarado no está en la allowlist, no se ejecutó nada.</text>
+  <text x="72" y="594" fill="#E6EDF3" font-size="11.5">CA-8 alcance delegado sin issue enlazado. → 3 criterios impiden qa:passed.</text>
+
+  <!-- ========== redaccion ========== -->
+  <rect x="56" y="632" width="832" height="60" rx="6" fill="rgba(88, 166, 255, 0.08)" stroke="#1F6FEB"/>
+  <circle cx="80" cy="662" r="8" fill="none" stroke="#58A6FF" stroke-width="1.6"/>
+  <path d="M80 657.5 V663" stroke="#58A6FF" stroke-width="1.7" stroke-linecap="round"/>
+  <path d="M80 666.4 H80.01" stroke="#58A6FF" stroke-width="2" stroke-linecap="round"/>
+  <text x="100" y="657" fill="#58A6FF" font-size="11.5" font-weight="600">Redacción visible, no borrado silencioso</text>
+  <text x="100" y="675" fill="#B1BAC4" font-size="11">authorization: ***  ·  el campo se ve recortado, nunca desaparece (CA-3 · CA-UX-3 de #4970)</text>
+
+  <text x="56" y="720" fill="#6E7681" font-size="10.5">Persistido en docs/qa/ vía writeDeliverable('qa', 4971, { fase: 'verificacion', sensible: true }) — único camino permitido.</text>
+  <text x="56" y="740" fill="#6E7681" font-size="10.5">La salida observada es dato NO confiable: se muestra como texto plano, nunca como HTML activo.</text>
+  <text x="56" y="768" fill="#6E7681" font-size="10.5">Superficie real del reporte = markdown en GitHub. El color de este mockup aplica al dashboard y al PDF de rejection.</text>
+
+  <!-- ===================== columna derecha: leyenda ===================== -->
+  <rect x="936" y="92" width="472" height="368" rx="10" fill="#161B22" stroke="#30363D"/>
+  <text x="960" y="124" fill="#E6EDF3" font-size="14" font-weight="600">Los dos ejes, separados</text>
+  <text x="960" y="143" fill="#8B949E" font-size="11.5">CA-4: `api`/`structural` eximen el video, nunca</text>
+  <text x="960" y="160" fill="#8B949E" font-size="11.5">el mapeo criterio→evidencia.</text>
+
+  <rect x="960" y="176" width="212" height="86" rx="6" fill="#0D1117" stroke="#30363D"/>
+  <text x="976" y="198" fill="#B1BAC4" font-size="11" font-weight="600">Eje audiovisual</text>
+  <text x="976" y="218" fill="#3FB950" font-size="11">puede ser N/A</text>
+  <text x="976" y="236" fill="#6E7681" font-size="10.5">qa:skipped, modo api</text>
+  <text x="976" y="252" fill="#6E7681" font-size="10.5">o structural</text>
+
+  <rect x="1188" y="176" width="204" height="86" rx="6" fill="rgba(214, 107, 176, 0.10)" stroke="#8E3A6E"/>
+  <text x="1204" y="198" fill="#B1BAC4" font-size="11" font-weight="600">Eje funcional</text>
+  <text x="1204" y="218" fill="#D66BB0" font-size="11" font-weight="600">NUNCA es N/A</text>
+  <text x="1204" y="236" fill="#6E7681" font-size="10.5">todo criterio necesita</text>
+  <text x="1204" y="252" fill="#6E7681" font-size="10.5">evidencia funcional</text>
+
+  <rect x="960" y="280" width="432" height="56" rx="6" fill="rgba(248, 81, 73, 0.08)" stroke="#8B1A14"/>
+  <text x="976" y="302" fill="#F85149" font-size="11.5" font-weight="600">Regla que el wiring NO puede romper</text>
+  <text x="976" y="322" fill="#B1BAC4" font-size="11">shouldSkipVisualEvidence() no puede eximir el mapeo funcional.</text>
+
+  <text x="960" y="366" fill="#E6EDF3" font-size="13" font-weight="600">Default fail-closed</text>
+  <text x="960" y="388" fill="#B1BAC4" font-size="11.5">Estado desconocido o ausente NO cae a `no-aplica`.</text>
+  <text x="960" y="406" fill="#B1BAC4" font-size="11.5">Cae a `no-verificable` y bloquea.</text>
+  <text x="960" y="430" fill="#6E7681" font-size="10.5">Hoy markFor() hace lo contrario: cualquier estado</text>
+  <text x="960" y="446" fill="#6E7681" font-size="10.5">desconocido cae a ➖ y se lee como benigno.</text>
+
+  <!-- ========== tabla de glifos markdown ========== -->
+  <rect x="936" y="480" width="472" height="312" rx="10" fill="#161B22" stroke="#30363D"/>
+  <text x="960" y="512" fill="#E6EDF3" font-size="14" font-weight="600">Glifos del reporte markdown</text>
+  <text x="960" y="531" fill="#8B949E" font-size="11.5">El .md no resuelve SVG ni CSS: el glifo es el único</text>
+  <text x="960" y="548" fill="#8B949E" font-size="11.5">canal. Debe distinguir bloqueante de benigno.</text>
+
+  <rect x="960" y="562" width="432" height="28" rx="5" fill="#1C2128"/>
+  <text x="976"  y="581" fill="#B1BAC4" font-size="10.5" font-weight="600">GLIFO</text>
+  <text x="1040" y="581" fill="#B1BAC4" font-size="10.5" font-weight="600">ESTADO</text>
+  <text x="1200" y="581" fill="#B1BAC4" font-size="10.5" font-weight="600">¿BLOQUEA?</text>
+
+  <text x="978"  y="614" font-size="14">✅</text>
+  <text x="1040" y="614" fill="#E6EDF3" font-size="11.5">verificado</text>
+  <text x="1200" y="614" fill="#6E7681" font-size="11">no</text>
+
+  <text x="978"  y="644" font-size="14">❌</text>
+  <text x="1040" y="644" fill="#E6EDF3" font-size="11.5">fallido</text>
+  <text x="1200" y="644" fill="#F85149" font-size="11" font-weight="600">sí</text>
+
+  <text x="978"  y="674" font-size="14">❓</text>
+  <text x="1040" y="674" fill="#E6EDF3" font-size="11.5">no-verificable</text>
+  <text x="1200" y="674" fill="#D66BB0" font-size="11" font-weight="600">sí</text>
+
+  <text x="978"  y="704" font-size="14">🔗</text>
+  <text x="1040" y="704" fill="#E6EDF3" font-size="11.5">alcance delegado</text>
+  <text x="1200" y="704" fill="#D66BB0" font-size="11" font-weight="600">sí</text>
+
+  <text x="978"  y="734" font-size="14">➖</text>
+  <text x="1040" y="734" fill="#E6EDF3" font-size="11.5">no-aplica</text>
+  <text x="1200" y="734" fill="#6E7681" font-size="11">no</text>
+
+  <rect x="960" y="750" width="432" height="1" fill="#21262D"/>
+  <text x="960" y="772" fill="#6E7681" font-size="10.5">❓ y ➖ hoy comparten el mismo ➖ — ése es el defecto.</text>
+
+  <!-- ===================== footer ===================== -->
+  <text x="32" y="832" fill="#6E7681" font-size="10.5">Tokens: --success #3FB950 · --danger #F85149 · --unverifiable #D66BB0 (nuevo, AA 5.94:1) · --text-dim #8B949E · --surface-1 #161B22</text>
+  <text x="32" y="852" fill="#6E7681" font-size="10.5">Iconos: #ic-cell-pass · #ic-cell-fail · #ic-criterio-no-verificable · #ic-alcance-delegado · #ic-evidencia-hash (los 3 últimos sujetos a #5023)</text>
+  <text x="32" y="872" fill="#6E7681" font-size="10.5">El color nunca informa solo: cada estado lleva glifo propio + etiqueta textual "BLOQUEA" / "no bloquea" (WCAG 1.4.1).</text>
+</svg>

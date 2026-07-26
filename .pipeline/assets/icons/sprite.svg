@@ -1555,4 +1555,60 @@
           stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
   </symbol>
 
+  <!-- ===========================================================================
+       #4971 — Gate bloqueante de verificacion funcional.
+       Eje NUEVO: no reemplaza a ic-cell-pass / ic-cell-fail / ic-cell-na (que
+       siguen describiendo el resultado del criterio), sino que nombra los dos
+       estados que hoy no tienen glifo propio y que el gate necesita distinguir
+       para no confundir al operador.
+       =========================================================================== -->
+
+  <!-- ic-criterio-no-verificable: circulo (misma familia que ic-cell-*) con
+       signo de interrogacion. Semantica: el criterio NO pudo determinarse
+       (verificador desconocido, destino fuera de allowlist, timeout, output
+       cap) y por fail-closed BLOQUEA el qa:passed.
+       Se tinta con var(--unverifiable) — NUNCA con var(--warning), que en este
+       sistema significa atencion no bloqueante, ni con var(--danger), que es
+       "se observo y fallo". Acompanar siempre del texto "no-verificable". -->
+  <symbol id="ic-criterio-no-verificable" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.75"/>
+    <path d="M9.4 9.7 A2.7 2.7 0 1 1 12.15 12.75 V13.9" fill="none" stroke="currentColor"
+          stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M12.15 16.6 H12.16" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round"/>
+  </symbol>
+
+  <!-- ic-alcance-delegado: caja de alcance con flecha saliente hacia un issue
+       punteado (= issue enlazado ausente). Semantica: el body delega alcance a
+       una fase siguiente sin issue que lo registre; el gate lo rechaza pidiendo
+       el issue faltante. Se tinta con var(--unverifiable) cuando bloquea, o con
+       var(--info) cuando el issue destino SI existe (referencia sana). -->
+  <symbol id="ic-alcance-delegado" viewBox="0 0 24 24">
+    <path d="M3.6 6.5 A1.6 1.6 0 0 1 5.2 4.9 H9.6 L11.2 6.9 H3.6 Z" fill="none"
+          stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M3.6 6.9 H11.4 V15.4 A1.6 1.6 0 0 1 9.8 17 H5.2
+             A1.6 1.6 0 0 1 3.6 15.4 Z" fill="none" stroke="currentColor"
+          stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M13.6 11 H18.9 M16.9 8.6 L19.4 11 L16.9 13.4" fill="none"
+          stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+          stroke-linejoin="round"/>
+    <circle cx="19.1" cy="17.4" r="3.1" fill="none" stroke="currentColor"
+            stroke-width="1.5" stroke-linecap="round" stroke-dasharray="1.6 1.9"/>
+  </symbol>
+
+  <!-- ic-evidencia-hash: hoja de evidencia sellada con hash. Semantica: la
+       entrada criterio->evidencia trae evidencia_ref + evidencia_hash, o sea
+       la observacion quedo anclada y es auditable. Se tinta con var(--info);
+       su AUSENCIA en una fila es la senal visual de cobertura incompleta. -->
+  <symbol id="ic-evidencia-hash" viewBox="0 0 24 24">
+    <path d="M6 3.8 H14.2 L18.4 8 V17.6 A2.2 2.2 0 0 1 16.2 19.8 H6
+             A2.2 2.2 0 0 1 3.8 17.6 V6 A2.2 2.2 0 0 1 6 3.8 Z" fill="none"
+          stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+    <path d="M13.9 3.9 V8.3 H18.3" fill="none" stroke="currentColor"
+          stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M8.5 11.6 H14 M8 15 H13.5 M10.4 10.4 L9.4 16.2 M12.9 10.4 L11.9 16.2"
+          fill="none" stroke="currentColor" stroke-width="1.45"
+          stroke-linecap="round"/>
+  </symbol>
+
 </svg>
