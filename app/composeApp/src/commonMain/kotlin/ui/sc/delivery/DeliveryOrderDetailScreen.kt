@@ -17,9 +17,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.Chat
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.Place
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -49,6 +51,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import ui.util.rememberOpenExternalMap
+import ui.util.rememberDialPhone
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -118,6 +121,7 @@ class DeliveryOrderDetailScreen : Screen(DELIVERY_ORDER_DETAIL_PATH) {
         val errorText = Txt(MessageKey.delivery_order_detail_error)
         val retryText = Txt(MessageKey.delivery_order_detail_retry)
         val noMapAppMessage = Txt(MessageKey.delivery_order_detail_location_no_address)
+        val callUnavailableMessage = Txt(MessageKey.delivery_order_detail_call_unavailable)
 
         if (state.showDeliveredConfirmDialog) {
             DeliveredConfirmDialog(
@@ -197,8 +201,16 @@ class DeliveryOrderDetailScreen : Screen(DELIVERY_ORDER_DETAIL_PATH) {
                                     snackbarHostState.showSnackbar(noMapAppMessage)
                                 }
                             }
-                            BusinessSection(detail)
-                            CustomerSection(detail)
+                            BusinessSection(detail) {
+                                coroutineScope.launch {
+                                    snackbarHostState.showSnackbar(callUnavailableMessage)
+                                }
+                            }
+                            CustomerSection(detail) {
+                                coroutineScope.launch {
+                                    snackbarHostState.showSnackbar(callUnavailableMessage)
+                                }
+                            }
                             ItemsSection(detail.items)
                             PaymentSection(detail)
                             detail.notes?.let { notes ->
@@ -613,10 +625,11 @@ private fun LocationSection(detail: DeliveryOrderDetail, onOpenMapFailed: () -> 
 }
 
 @Composable
-private fun BusinessSection(detail: DeliveryOrderDetail) {
+private fun BusinessSection(detail: DeliveryOrderDetail, onDialFailed: () -> Unit) {
     val sectionTitle = Txt(MessageKey.delivery_order_detail_section_business)
     val addressLabel = Txt(MessageKey.delivery_order_detail_address)
     val notesLabel = Txt(MessageKey.delivery_order_detail_address_notes)
+    val phoneLabel = Txt(MessageKey.delivery_order_detail_business_phone)
 
     SectionCard(title = sectionTitle) {
         Text(
@@ -628,6 +641,14 @@ private fun BusinessSection(detail: DeliveryOrderDetail) {
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        detail.businessPhone?.takeIf { it.isNotBlank() }?.let { phone ->
+            LabeledField(label = phoneLabel, value = phone)
+            ContactActions(
+                phone = phone,
+                callDescription = Txt(MessageKey.delivery_order_detail_call_business),
+                onDialFailed = onDialFailed
+            )
+        }
         detail.address?.let { address ->
             LabeledField(label = addressLabel, value = address)
         }
@@ -638,7 +659,7 @@ private fun BusinessSection(detail: DeliveryOrderDetail) {
 }
 
 @Composable
-private fun CustomerSection(detail: DeliveryOrderDetail) {
+private fun CustomerSection(detail: DeliveryOrderDetail, onDialFailed: () -> Unit) {
     val sectionTitle = Txt(MessageKey.delivery_order_detail_section_customer)
     val nameLabel = Txt(MessageKey.delivery_order_detail_customer_name)
     val phoneLabel = Txt(MessageKey.delivery_order_detail_customer_phone)
@@ -649,14 +670,54 @@ private fun CustomerSection(detail: DeliveryOrderDetail) {
         detail.customerName?.let { name ->
             LabeledField(label = nameLabel, value = name)
         }
-        detail.customerPhone?.let { phone ->
+        detail.customerPhone?.takeIf { it.isNotBlank() }?.let { phone ->
             LabeledField(label = phoneLabel, value = phone)
+            ContactActions(
+                phone = phone,
+                callDescription = Txt(MessageKey.delivery_order_detail_call_customer),
+                onDialFailed = onDialFailed
+            )
         }
         detail.address?.let { address ->
             LabeledField(label = addressLabel, value = address)
         }
         detail.addressNotes?.let { notes ->
             LabeledField(label = notesLabel, value = notes)
+        }
+    }
+}
+
+@Composable
+private fun ContactActions(
+    phone: String,
+    callDescription: String,
+    onDialFailed: () -> Unit
+) {
+    val dialPhone = rememberDialPhone()
+    val whatsappDescription = Txt(MessageKey.delivery_order_detail_whatsapp_coming_soon)
+
+    Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)) {
+        IconButton(
+            onClick = {
+                if (!dialPhone(phone)) {
+                    onDialFailed()
+                }
+            }
+        ) {
+            Icon(
+                imageVector = Icons.Default.Phone,
+                contentDescription = callDescription,
+                tint = MaterialTheme.colorScheme.primary
+            )
+        }
+        IconButton(
+            onClick = {},
+            enabled = false
+        ) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Outlined.Chat,
+                contentDescription = whatsappDescription
+            )
         }
     }
 }

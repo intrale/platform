@@ -19,6 +19,8 @@ data class DeliveryOrderDTO(
     @SerialName("shortCode")
     val shortCode: String? = null,
     val businessName: String = "",
+    @SerialName("businessPhone")
+    val businessPhone: String? = null,
     val neighborhood: String = "",
     val status: String = "",
     @SerialName("promisedAt")

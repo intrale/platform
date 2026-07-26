@@ -19,6 +19,7 @@ data class DeliveryOrderDetailResponse(
     val publicId: String? = null,
     val shortCode: String? = null,
     val businessName: String = "",
+    val businessPhone: String? = null,
     val neighborhood: String = "",
     val status: String = "",
     val promisedAt: String? = null,

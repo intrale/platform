@@ -130,6 +130,7 @@ class DeliveryOrdersFunctionTest {
             address = "Av. Santa Fe 1234",
             customerName = "Carlos García",
             customerPhone = "+5491155556666",
+            businessPhone = "+5491144443333",
             items = listOf(DeliveryOrderItemPayload(name = "Pizza grande", quantity = 2))
         ))
 

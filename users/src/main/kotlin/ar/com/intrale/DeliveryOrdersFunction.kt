@@ -71,6 +71,7 @@ class DeliveryOrdersFunction(
                     publicId = order.publicId,
                     shortCode = order.shortCode,
                     businessName = order.businessName,
+                    businessPhone = order.businessPhone,
                     neighborhood = order.neighborhood,
                     status = order.status,
                     promisedAt = order.promisedAt,

@@ -188,6 +188,7 @@ class DeliveryOrdersServiceTest {
             "items":[{"name":"Pizza grande","quantity":2,"notes":"Sin cebolla"}],
             "notes":"Entregar en mano","customerName":"Juan Perez",
             "customerPhone":"+5491155551234",
+            "businessPhone":"+5491144443333",
             "createdAt":"2026-02-21T12:00:00","updatedAt":"2026-02-21T12:30:00"
         }""".trimIndent()
         val service = DeliveryOrdersService(mockClient(HttpStatusCode.OK, body), FakeStorage(), jsonConfig)
@@ -205,6 +206,7 @@ class DeliveryOrdersServiceTest {
         assertEquals(2, detail.items.first().quantity)
         assertEquals("Juan Perez", detail.customerName)
         assertEquals("+5491155551234", detail.customerPhone)
+        assertEquals("+5491144443333", detail.businessPhone)
     }
 
     @Test

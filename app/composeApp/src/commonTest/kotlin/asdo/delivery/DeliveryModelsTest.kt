@@ -159,6 +159,7 @@ class DeliveryOrderModelsTest {
             publicId = "PUB-1",
             shortCode = null,
             businessName = "Pizzeria",
+            businessPhone = "+541143215678",
             neighborhood = "Centro",
             status = "in_progress",
             eta = "12:00",
@@ -191,6 +192,7 @@ class DeliveryOrderModelsTest {
         assertEquals(2, detail.items.first().quantity)
         assertEquals("Sin aceitunas", detail.items.first().notes)
         assertEquals("Juan Perez", detail.customerName)
+        assertEquals("+541143215678", detail.businessPhone)
         assertEquals("Efectivo", detail.paymentMethod)
         assertEquals(true, detail.collectOnDelivery)
     }
