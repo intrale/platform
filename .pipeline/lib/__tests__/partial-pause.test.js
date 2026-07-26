@@ -28,11 +28,49 @@ test('getPipelineMode retorna running cuando no hay ningún marker', () => {
     assert.deepEqual(state.allowedIssues, []);
 });
 
-test('isIssueAllowed retorna true para cualquier issue cuando pipeline está running', () => {
+// #5060 — ejecución solo por olas. Sin allowlist no hay ola vigente que acote
+// el dispatch, así que el gate deniega en vez de permitir. Antes de este fix
+// devolvía `true` para todo, y eso hizo que al cerrarse la ola 8 el pipeline
+// dispatchara ~100 issues del backlog histórico (incidente 2026-07-26).
+test('isIssueAllowed deniega todo issue cuando no hay allowlist (fail-closed #5060)', () => {
     resetFs();
+    delete process.env.PIPELINE_ALLOW_UNSCOPED_DISPATCH;
+    assert.equal(pp.getPipelineMode().mode, 'running');
+    assert.equal(pp.isIssueAllowed(2490), false);
+    assert.equal(pp.isIssueAllowed('2491'), false);
+    assert.equal(pp.isIssueAllowed('#9999'), false);
+});
+
+test('el escape hatch PIPELINE_ALLOW_UNSCOPED_DISPATCH=1 reabre el dispatch sin ola (#5060)', () => {
+    resetFs();
+    process.env.PIPELINE_ALLOW_UNSCOPED_DISPATCH = '1';
+    try {
+        assert.equal(pp.isIssueAllowed(2490), true);
+        assert.equal(pp.isIssueAllowed('#9999'), true);
+    } finally {
+        delete process.env.PIPELINE_ALLOW_UNSCOPED_DISPATCH;
+    }
+    // Al apagarlo vuelve a fail-closed, sin estado pegajoso entre llamadas.
+    assert.equal(pp.isIssueAllowed(2490), false);
+});
+
+test('allowlist que queda vacía tras la poda no reabre el backlog (#5060)', () => {
+    resetFs();
+    delete process.env.PIPELINE_ALLOW_UNSCOPED_DISPATCH;
+    pp.setPartialPause([2490, 2491], { source: 'telegram' });
     assert.equal(pp.isIssueAllowed(2490), true);
-    assert.equal(pp.isIssueAllowed('2491'), true);
-    assert.equal(pp.isIssueAllowed('#9999'), true);
+    // Esto es exactamente lo que hace la poda convergente #4753 al cerrar la ola.
+    pp.setPartialPause([], { source: 'wave-promote:autoresolve-reductive', authorizedBy: 'wave-promote' });
+    assert.equal(pp.getPipelineMode().mode, 'running');
+    assert.equal(pp.isIssueAllowed(2490), false);
+    assert.equal(pp.isIssueAllowed(9999), false);
+});
+
+test('los skills del control-plane siguen habilitados sin allowlist (#5060)', () => {
+    resetFs();
+    delete process.env.PIPELINE_ALLOW_UNSCOPED_DISPATCH;
+    // El fail-closed acota el BACKLOG, no los harnesses de diagnóstico.
+    assert.equal(pp.isSkillAllowed('multi-provider-smoke-test'), true);
 });
 
 test('setPartialPause con [2490, 2491] activa partial_pause', () => {
@@ -166,10 +204,11 @@ test('isIssueAllowed(null|undefined|"abc") retorna false sin error', () => {
 // a callers que iteran muchos issues en un mismo tick (counters de cola)
 // reutilizar la misma decisión sin pagar IO por elemento.
 
-test('isIssueAllowedInState — modo running deja pasar todo', () => {
+test('isIssueAllowedInState — modo running deniega sin allowlist (#5060)', () => {
+    delete process.env.PIPELINE_ALLOW_UNSCOPED_DISPATCH;
     const state = { mode: 'running', allowedIssues: [] };
-    assert.equal(pp.isIssueAllowedInState(2490, state), true);
-    assert.equal(pp.isIssueAllowedInState('#9999', state), true);
+    assert.equal(pp.isIssueAllowedInState(2490, state), false);
+    assert.equal(pp.isIssueAllowedInState('#9999', state), false);
 });
 
 test('isIssueAllowedInState — modo paused bloquea todo', () => {

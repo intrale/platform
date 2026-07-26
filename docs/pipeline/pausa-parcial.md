@@ -6,13 +6,47 @@ Documenta los tres estados del pipeline (running, paused, partial_pause), cómo 
 
 | Estado | Marker en `.pipeline/` | Comportamiento |
 |---|---|---|
-| `running` | (ninguno) | Procesa todo, intake/lanzamiento/barrido normales. |
+| `running` | (ninguno) | **No dispatcha ningún issue** (#5060). Sin allowlist no hay ola vigente que acote el trabajo. |
 | `paused` | `.paused` | Bloquea TODO lanzamiento. Solo Telegram queda activo. |
 | `partial_pause` | `.partial-pause.json` | Procesa exclusivamente los issues listados en `allowed_issues`. |
 
 **Precedencia**: `paused` > `partial_pause` > `running`. Si coexisten `.paused` y `.partial-pause.json`, gana el más restrictivo.
 
 API canónica: `lib/partial-pause.js` exporta `getPipelineMode()`, `isIssueAllowed(n)`, `setPartialPause(list, opts)`, `clearPartialPause()`, `resumeAll()`.
+
+## Ejecución solo por olas (#5060)
+
+El pipeline **no tiene un modo "procesar todo el backlog"**. El único camino para
+que un issue se dispatche es estar en `allowed_issues`, que se puebla al promover
+una ola. Sin allowlist, `isIssueAllowed()` deniega.
+
+Esto cambió tras el incidente del 2026-07-26. Hasta entonces `running` significaba
+barra libre: al cerrarse la ola 8, la poda convergente (#4753) ejecutó
+`setPartialPause([])`, que con lista vacía borra el marker, y el Pulpo quedó sin
+filtro durante ~10 horas — ~320 agentes sobre ~100 issues del backlog histórico,
+que a su vez generaron 97 issues nuevos en cadena.
+
+El alcance de la ola **no se enforza en `waves.json`** (ese archivo es el registro
+semántico de qué contiene la ola); se enforza en esta allowlist. Por eso "sin
+allowlist" tiene que significar *denegar*, no *permitir*.
+
+### Consecuencias operativas
+
+- Al cerrarse una ola el dispatch queda **detenido**, y la poda convergente lo
+  avisa por Telegram. Hay que promover la ola siguiente para que el pipeline
+  vuelva a tomar trabajo.
+- El wave-stall watchdog (#4708/#4709) declara la causa `wave-empty` en ese
+  estado, así que no alerta por una espera que el operador ya controla.
+- `isSkillAllowed()` **no** cambió: los skills del control-plane (smoke-test de
+  providers, harnesses de diagnóstico) no consumen backlog y deben poder correr
+  entre olas.
+
+### Escape hatch
+
+`PIPELINE_ALLOW_UNSCOPED_DISPATCH=1` reabre el dispatch sin ola. Es para
+diagnóstico y recuperación, está apagado por default y loguea una advertencia en
+cada arranque que lo use. **No debe quedar prendido en operación normal**: es
+exactamente el comportamiento que causó el incidente.
 
 ## Shape del marker `.partial-pause.json`
 
