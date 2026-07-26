@@ -182,7 +182,7 @@ test('CA-7 — primaryDurationMs >= budget dispara global_budget_exceeded', () =
         const d = inflight.decideInflightFallback({
             primaryProvider: 'anthropic',
             primaryErrorClass: 'timeout_no_new_bytes_30s',
-            primaryDurationMs: 601_000, // #4329 — excede budget default 600s
+            primaryDurationMs: 3_601_000, // excede el techo anti-zombi (60 min)
             primaryPartialOutput: '',
             attemptIndex: 0,
             budgetMs: inflight.TURN_BUDGET_MS,
@@ -193,14 +193,15 @@ test('CA-7 — primaryDurationMs >= budget dispara global_budget_exceeded', () =
         assert.equal(d.shouldRetry, false);
         assert.equal(d.reason, 'global_budget_exceeded');
         assert.equal(d.budgetRemainingMs, 0);
-        assert.match(d.cannedResponse, /⏱️/);
-        // #4329 CA-3 — el mensaje ya no debe mencionar "90s".
+        assert.match(d.cannedResponse, /trabada/);
+        // El mensaje ya no debe mencionar "90s" ni culpar al reloj.
         assert.doesNotMatch(d.cannedResponse, /90s/);
+        assert.doesNotMatch(d.cannedResponse, /tard[oó] m[aá]s de/);
         const audit = readAuditLines(dir);
         const ev = audit.find(e => e.event === 'inflight_fallback_global_timeout');
         assert.ok(ev, 'falta evento global_timeout');
-        assert.equal(ev.primary_duration_ms, 601_000);
-        assert.equal(ev.budget_ms, 600_000);
+        assert.equal(ev.primary_duration_ms, 3_601_000);
+        assert.equal(ev.budget_ms, 3_600_000);
     } finally { cleanup(dir); }
 });
 
@@ -770,7 +771,7 @@ test('re-exports desde commander/multi-provider apuntan al módulo dedicado', ()
     assert.equal(typeof mp.precheckCommanderProviderRanking, 'function');
     assert.equal(typeof mp.makePrecheckHandle, 'function');
     assert.equal(typeof mp.formatInflightFallbackNotice, 'function');
-    assert.equal(mp.INFLIGHT_BUDGET_MS, 600 * 1000); // #4329 — budget efectivo (default 600s)
+    assert.equal(mp.INFLIGHT_BUDGET_MS, 60 * 60 * 1000); // budget efectivo (techo anti-zombi, 60 min)
     assert.equal(mp.MAX_INFLIGHT_FALLBACKS, 1);
 });
 
@@ -778,10 +779,10 @@ test('re-exports desde commander/multi-provider apuntan al módulo dedicado', ()
 // #4329 — Budget del turno del Commander: resolver env + clamp + copy sincronizado
 // -----------------------------------------------------------------------------
 
-test('#4329 CA-1 — resolveTurnBudgetMs sin env → 600000 (default 600s)', () => {
-    assert.equal(inflight.resolveTurnBudgetMs({}), 600_000);
-    assert.equal(inflight.DEFAULT_BUDGET_MS, 600_000);
-    assert.equal(inflight.TURN_BUDGET_MS, 600_000);
+test('#4329 CA-1 — resolveTurnBudgetMs sin env → 60 min (techo anti-zombi, ya no 10 min)', () => {
+    assert.equal(inflight.resolveTurnBudgetMs({}), 60 * 60 * 1000);
+    assert.equal(inflight.DEFAULT_BUDGET_MS, 60 * 60 * 1000);
+    assert.equal(inflight.TURN_BUDGET_MS, 60 * 60 * 1000);
 });
 
 test('#4329 CA-2 — resolveTurnBudgetMs con env válido → valor configurado', () => {
@@ -790,24 +791,26 @@ test('#4329 CA-2 — resolveTurnBudgetMs con env válido → valor configurado',
 });
 
 test('#4329 CA-5 (SR-1) — resolveTurnBudgetMs fail-closed ante env inválido', () => {
+    const DEF = 60 * 60 * 1000;
     for (const bad of ['', 'abc', '0', '-5', 'NaN', '  ', undefined]) {
         assert.equal(
             inflight.resolveTurnBudgetMs({ COMMANDER_TURN_BUDGET_MS: bad }),
-            600_000,
-            `env inválido ${JSON.stringify(bad)} debe caer al default 600s`,
+            DEF,
+            `env inválido ${JSON.stringify(bad)} debe caer al default`,
         );
     }
     // Sin la clave definida.
-    assert.equal(inflight.resolveTurnBudgetMs({ OTRA: 'x' }), 600_000);
+    assert.equal(inflight.resolveTurnBudgetMs({ OTRA: 'x' }), DEF);
 });
 
 test('#4329 CA-6 (SR-2) — resolveTurnBudgetMs clampea al techo MAX_BUDGET_MS', () => {
-    assert.equal(inflight.MAX_BUDGET_MS, 30 * 60 * 1000);
-    assert.equal(inflight.resolveTurnBudgetMs({ COMMANDER_TURN_BUDGET_MS: '999999999' }), 1_800_000);
+    const MAX = 4 * 60 * 60 * 1000;
+    assert.equal(inflight.MAX_BUDGET_MS, MAX);
+    assert.equal(inflight.resolveTurnBudgetMs({ COMMANDER_TURN_BUDGET_MS: '999999999' }), MAX);
     // Exactamente en el techo → se mantiene.
-    assert.equal(inflight.resolveTurnBudgetMs({ COMMANDER_TURN_BUDGET_MS: String(1_800_000) }), 1_800_000);
+    assert.equal(inflight.resolveTurnBudgetMs({ COMMANDER_TURN_BUDGET_MS: String(MAX) }), MAX);
     // Justo por encima → clamp.
-    assert.equal(inflight.resolveTurnBudgetMs({ COMMANDER_TURN_BUDGET_MS: String(1_800_001) }), 1_800_000);
+    assert.equal(inflight.resolveTurnBudgetMs({ COMMANDER_TURN_BUDGET_MS: String(MAX + 1) }), MAX);
 });
 
 test('#4329 CA-7 (SR-3) — LATE_RESPONSE_TTL_MS estrictamente mayor al peor budget', () => {
@@ -819,15 +822,73 @@ test('#4329 CA-7 (SR-3) — LATE_RESPONSE_TTL_MS estrictamente mayor al peor bud
 test('#4329 CA-3 — cannedInflightBudgetTimeoutResponse no dice "90s" y refleja minutos', () => {
     const def = inflight.cannedInflightBudgetTimeoutResponse();
     assert.doesNotMatch(def, /90s/);
-    assert.match(def, /10 min/); // 600000ms → 10 min
+    assert.match(def, /60 min/); // 3600000ms → 60 min
     // Budget custom en minutos.
     assert.match(inflight.cannedInflightBudgetTimeoutResponse(300_000), /5 min/);
     // Budget < 60s → expresado en segundos (guideline UX, evita "0 min").
     const chico = inflight.cannedInflightBudgetTimeoutResponse(30_000);
     assert.match(chico, /30s/);
     assert.doesNotMatch(chico, /0 min/);
-    // Argumento inválido → cae al default 600s (10 min).
-    assert.match(inflight.cannedInflightBudgetTimeoutResponse('nope'), /10 min/);
+    // Argumento inválido → cae al default.
+    assert.match(inflight.cannedInflightBudgetTimeoutResponse('nope'), /60 min/);
+});
+
+// -----------------------------------------------------------------------------
+// Corte del turno por INACTIVIDAD (reemplaza el corte por duración total).
+//
+// Contexto: el operador pidió explícitamente sacar el corte a los 10 min y el
+// mensaje "tardó más de 10 min y corté" — un pedido que avanza no se corta, y
+// para informar están las notificaciones parciales cada 2 min.
+// -----------------------------------------------------------------------------
+
+test('idle watchdog — resolveIdleTimeoutMs default 10 min, fail-closed y clampeado', () => {
+    assert.equal(inflight.DEFAULT_IDLE_TIMEOUT_MS, 10 * 60 * 1000);
+    assert.equal(inflight.resolveIdleTimeoutMs(undefined), 10 * 60 * 1000);
+    for (const bad of ['', 'abc', '0', '-5', 'NaN', '  ', null]) {
+        assert.equal(
+            inflight.resolveIdleTimeoutMs(bad),
+            10 * 60 * 1000,
+            `env inválido ${JSON.stringify(bad)} nunca desactiva el corte`,
+        );
+    }
+    assert.equal(inflight.resolveIdleTimeoutMs('120000'), 120_000);
+    // Clamp: un env desmedido no reintroduce el cuelgue infinito.
+    assert.equal(inflight.resolveIdleTimeoutMs('999999999'), inflight.MAX_IDLE_TIMEOUT_MS);
+});
+
+test('idle watchdog — resolveAbsoluteMaxMs default 60 min, fail-closed y clampeado', () => {
+    assert.equal(inflight.DEFAULT_ABSOLUTE_MAX_MS, 60 * 60 * 1000);
+    assert.equal(inflight.resolveAbsoluteMaxMs(undefined), 60 * 60 * 1000);
+    for (const bad of ['', 'abc', '0', '-5', 'NaN', null]) {
+        assert.equal(inflight.resolveAbsoluteMaxMs(bad), 60 * 60 * 1000);
+    }
+    assert.equal(inflight.resolveAbsoluteMaxMs('900000'), 900_000);
+    assert.equal(inflight.resolveAbsoluteMaxMs('999999999'), inflight.MAX_ABSOLUTE_MAX_MS);
+});
+
+test('idle watchdog — el techo absoluto es > que el idle (el cuelgue corta antes que el techo)', () => {
+    assert.ok(inflight.DEFAULT_ABSOLUTE_MAX_MS > inflight.DEFAULT_IDLE_TIMEOUT_MS);
+    assert.ok(inflight.MAX_ABSOLUTE_MAX_MS >= inflight.MAX_IDLE_TIMEOUT_MS);
+});
+
+test('pulpo.js ya NO corta el turno del Commander por duración total de 10 min', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const pulpoSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'pulpo.js'), 'utf8');
+
+    // El hard timeout absoluto de 10 min quedó eliminado.
+    assert.doesNotMatch(
+        pulpoSrc,
+        /const\s+HARD_TIMEOUT_MS\s*=/,
+        'HARD_TIMEOUT_MS (corte por duración total) no debe volver',
+    );
+    // Y en su lugar el turno se corta por inactividad + techo anti-zombi.
+    assert.match(pulpoSrc, /IDLE_TIMEOUT_MS\s*=\s*inflightFallback\.resolveIdleTimeoutMs/);
+    assert.match(pulpoSrc, /ABSOLUTE_MAX_MS\s*=\s*inflightFallback\.resolveAbsoluteMaxMs/);
+    // El watchdog no debe matar mientras haya una herramienta en vuelo.
+    assert.match(pulpoSrc, /if\s*\(pendingToolUses\.size\s*>\s*0\)\s*return;/);
+    // Las notificaciones parciales (cada 2 min) siguen siendo el canal de aviso.
+    assert.match(pulpoSrc, /\}, 120000\);/);
 });
 
 test('#4329 SR-4 — pulpo.js deriva HARD_NON_ANTH_MS del budget, no del literal 90*1000', () => {

@@ -92,21 +92,70 @@ const crypto = require('node:crypto');
 const path = require('node:path');
 
 const COMMANDER_SKILL = 'telegram-commander';
-// #4329 — budget global del turno del Commander. Subido de 90s → 600s (10 min)
-// para no cortar investigación en vivo. Configurable por env
-// `COMMANDER_TURN_BUDGET_MS`, fail-closed (SR-1) + clamp superior (SR-2).
-const DEFAULT_BUDGET_MS = 600 * 1000;        // 600s / 10 min (era 90s)
-const MAX_BUDGET_MS = 30 * 60 * 1000;        // techo duro: 30 min (SR-2, no eliminar el breaker)
+// Budget global del turno del Commander.
+//
+// Historia: 90s (#3475) → 600s / 10 min (#4329, "no cortar investigación en
+// vivo") → 60 min (acá).
+//
+// Por qué se sube de nuevo: el corte a los 10 min seguía matando pedidos
+// LEGÍTIMOS y largos (builds, QA E2E, auditorías, releases) y le mandaba al
+// operador un "tardó más de 10 min y corté" que no le sirve para nada — él
+// espera la respuesta, no un aviso de que dejamos de trabajar. El feedback del
+// operador es explícito: mientras el turno avanza NO se corta; para informar
+// están las notificaciones parciales que salen cada 2 min (`progressTimer` en
+// `pulpo.js`).
+//
+// El breaker NO se elimina: lo que corta ahora es un **cuelgue real** —
+// inactividad sostenida sin stream ni herramienta en vuelo, evaluada por el
+// watchdog de `pulpo.js` (`COMMANDER_IDLE_TIMEOUT_MS`). Este budget queda como
+// techo anti-zombi de último recurso, deliberadamente alto para no volver a
+// pisar trabajo real.
+//
+// Configurable por env `COMMANDER_TURN_BUDGET_MS`, fail-closed (SR-1) + clamp
+// superior (SR-2).
+const DEFAULT_BUDGET_MS = 60 * 60 * 1000;    // 60 min (era 600s / 10 min)
+const MAX_BUDGET_MS = 4 * 60 * 60 * 1000;    // techo duro: 4h (SR-2, no eliminar el breaker)
 const MAX_INFLIGHT_FALLBACKS = 1;   // 1 fallback in-flight + el intento primario = 2 totales
+
+// -----------------------------------------------------------------------------
+// Watchdog de INACTIVIDAD del turno (reemplaza el corte por duración total).
+//
+// `IDLE_TIMEOUT_MS`  — tiempo sin NINGUNA señal de vida (line del stream) y sin
+//                      herramienta en vuelo tras el cual se considera cuelgue.
+//                      Un turno que trabaja 40 min nunca lo alcanza.
+// `ABSOLUTE_MAX_MS`  — red final anti-zombi: aún con actividad aparente, el
+//                      turno no puede vivir para siempre (el Commander es un
+//                      proceso de días; un child huérfano filtraría memoria).
+//
+// Ambos fail-closed: valor no numérico / NaN / <= 0 → default (nunca desactivan
+// el corte), y clamp superior para que un env mal seteado no reintroduzca el
+// cuelgue infinito.
+// -----------------------------------------------------------------------------
+const DEFAULT_IDLE_TIMEOUT_MS = 10 * 60 * 1000;   // 10 min SIN actividad
+const MAX_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_ABSOLUTE_MAX_MS = 60 * 60 * 1000;   // 60 min de vida del turno
+const MAX_ABSOLUTE_MAX_MS = 4 * 60 * 60 * 1000;
+
+function _resolveClamped(raw, def, max) {
+    const v = Number(raw);
+    const base = (Number.isFinite(v) && v > 0) ? v : def;
+    return Math.min(base, max);
+}
+
+function resolveIdleTimeoutMs(raw) {
+    return _resolveClamped(raw, DEFAULT_IDLE_TIMEOUT_MS, MAX_IDLE_TIMEOUT_MS);
+}
+
+function resolveAbsoluteMaxMs(raw) {
+    return _resolveClamped(raw, DEFAULT_ABSOLUTE_MAX_MS, MAX_ABSOLUTE_MAX_MS);
+}
 
 // resolveTurnBudgetMs — resuelve el budget del turno desde el env, una sola vez
 // a nivel módulo. SR-1 fail-closed: no numérico / NaN / <=0 / vacío → default
-// 600s (nunca desactiva el corte). SR-2 clamp: por encima del techo → clamp al
+// 60 min (nunca desactiva el corte). SR-2 clamp: por encima del techo → clamp al
 // techo, no al valor crudo (un env mal configurado no reintroduce el cuelgue).
 function resolveTurnBudgetMs(env = process.env) {
-    const v = Number(env && env.COMMANDER_TURN_BUDGET_MS);
-    const base = (Number.isFinite(v) && v > 0) ? v : DEFAULT_BUDGET_MS;
-    return Math.min(base, MAX_BUDGET_MS);
+    return _resolveClamped(env && env.COMMANDER_TURN_BUDGET_MS, DEFAULT_BUDGET_MS, MAX_BUDGET_MS);
 }
 // Budget efectivo del turno (env-resuelto + clampeado). Lo derivan tanto el
 // ciclo lógico como el kill duro de `pulpo.js` (SR-4: un único valor).
@@ -199,12 +248,17 @@ function cannedInflightExhaustedResponse({ requestId }) {
 }
 
 // -----------------------------------------------------------------------------
-// cannedInflightBudgetTimeoutResponse — Mensaje cuando el budget global SR-5
-// se agotó antes de poder completar el ciclo. Distinto de exhausted porque
-// puede haber sido un primario lento, no necesariamente fallido.
-// #4329 (CA-3): el umbral se deriva del budget efectivo, sin literal "90s".
-// Para budgets < 60s (posible vía env) se expresa en segundos, para no mostrar
-// "más de 0 min" (guideline UX).
+// cannedInflightBudgetTimeoutResponse — Mensaje cuando el techo anti-zombi del
+// turno se agotó antes de poder completar el ciclo.
+//
+// Con el budget de 60 min este caso YA NO es "tardaste mucho": un turno que
+// avanza manda notificaciones parciales cada 2 min y nunca llega acá. Llegar
+// acá significa que la ejecución quedó trabada. El copy lo dice así — el
+// operador necesita saber que se colgó, no que le cortamos por reloj.
+//
+// El umbral se sigue derivando del budget efectivo (sin literal hardcodeado).
+// Para budgets < 60s (posible vía env en tests) se expresa en segundos, para no
+// mostrar "más de 0 min" (guideline UX).
 // -----------------------------------------------------------------------------
 function cannedInflightBudgetTimeoutResponse(budgetMs = TURN_BUDGET_MS) {
     const ms = (Number.isFinite(budgetMs) && budgetMs > 0) ? budgetMs : DEFAULT_BUDGET_MS;
@@ -212,8 +266,8 @@ function cannedInflightBudgetTimeoutResponse(budgetMs = TURN_BUDGET_MS) {
         ? `${Math.round(ms / 60000)} min`
         : `${Math.round(ms / 1000)}s`;
     return (
-        `⏱️ Tu pedido tardó más de ${umbral} en completarse y corté para no dejarte esperando. ` +
-        'Reformulá con algo más puntual o probá de nuevo en un momento.'
+        `⚠️ La ejecución de tu pedido quedó trabada y la corté recién ahora, tras ${umbral}. ` +
+        'No es que haya tardado de más: se colgó. Pedímelo de nuevo y lo retomo.'
     );
 }
 
@@ -659,6 +713,13 @@ module.exports = {
     MAX_BUDGET_MS,
     TURN_BUDGET_MS,
     resolveTurnBudgetMs,
+    // Watchdog de inactividad (reemplaza el corte por duración total)
+    DEFAULT_IDLE_TIMEOUT_MS,
+    MAX_IDLE_TIMEOUT_MS,
+    DEFAULT_ABSOLUTE_MAX_MS,
+    MAX_ABSOLUTE_MAX_MS,
+    resolveIdleTimeoutMs,
+    resolveAbsoluteMaxMs,
     MAX_INFLIGHT_FALLBACKS,
     LATE_RESPONSE_TTL_MS,
 
