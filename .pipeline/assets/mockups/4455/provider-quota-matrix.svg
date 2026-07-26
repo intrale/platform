@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="980" viewBox="0 0 1440 980" role="img" aria-labelledby="title desc">
+  <title id="title">Mockup de cuota real por proveedor</title>
+  <desc id="desc">Dashboard Intrale sin cuotas agregadas, con cinco proveedores y estados de disponibilidad por ventana.</desc>
+  <defs>
+    <style>
+      .bg{fill:#0b1020}.panel{fill:#141b2d;stroke:#2a354d;stroke-width:1}.muted{fill:#94a3b8}
+      .text{fill:#f8fafc;font-family:Inter,Arial,sans-serif}.label{font-size:18px;font-weight:700}
+      .small{font-size:14px}.value{font-size:20px;font-weight:800}.track{fill:#293449}
+      .green{fill:#37d39a}.amber{fill:#f5b942}.red{fill:#f0616c}.neutral{fill:#64748b}
+      .chip{fill:#202a40}.dash{stroke:#64748b;stroke-width:2;stroke-dasharray:6 6}
+    </style>
+  </defs>
+  <rect class="bg" width="1440" height="980"/>
+  <text class="text" x="100" y="94" font-size="34" font-weight="800">Cuota por proveedor</text>
+  <text class="muted" x="100" y="126" font-family="Inter,Arial,sans-serif" font-size="16">Datos reales por ventana · Actualización automática · Sin estimaciones</text>
+  <rect class="panel" x="80" y="160" width="1280" height="700" rx="20"/>
+
+  <g transform="translate(110 205)">
+    <text class="muted small" x="0" y="0">PROVEEDOR</text>
+    <text class="muted small" x="300" y="0">VENTANA</text>
+    <text class="muted small" x="540" y="0">DISPONIBILIDAD</text>
+    <text class="muted small" x="1060" y="0">ACTUALIZACIÓN</text>
+  </g>
+
+  <g transform="translate(110 250)">
+    <text class="text label" y="22">Anthropic</text><text class="muted small" y="47">Claude</text>
+    <rect class="chip" x="300" y="0" width="150" height="40" rx="20"/><text class="text small" x="330" y="26">Sesión · 5 h</text>
+    <text class="text value" x="540" y="24">61% disponible</text>
+    <rect class="track" x="540" y="45" width="420" height="12" rx="6"/><rect class="green" x="540" y="45" width="256" height="12" rx="6"/>
+    <text class="muted small" x="1060" y="24">hace 2 min</text>
+  </g>
+  <line x1="110" y1="330" x2="1330" y2="330" stroke="#2a354d"/>
+
+  <g transform="translate(110 365)">
+    <text class="text label" y="22">Codex / OpenAI</text>
+    <rect class="chip" x="300" y="0" width="150" height="40" rx="20"/><text class="text small" x="334" y="26">Semanal</text>
+    <text class="text value" x="540" y="24">34% disponible</text>
+    <rect class="track" x="540" y="45" width="420" height="12" rx="6"/><rect class="amber" x="540" y="45" width="143" height="12" rx="6"/>
+    <text class="muted small" x="1060" y="24">hace 4 min</text>
+  </g>
+  <line x1="110" y1="445" x2="1330" y2="445" stroke="#2a354d"/>
+
+  <g transform="translate(110 480)">
+    <text class="text label" y="22">Gemini</text><text class="muted small" y="47">Google</text>
+    <rect class="chip" x="300" y="0" width="150" height="40" rx="20"/><text class="text small" x="342" y="26">Diaria</text>
+    <text class="muted value" x="540" y="24">sin dato</text>
+    <line class="dash" x1="540" y1="51" x2="960" y2="51"/>
+    <text class="muted small" x="1060" y="24">fuente no disponible</text>
+  </g>
+  <line x1="110" y1="560" x2="1330" y2="560" stroke="#2a354d"/>
+
+  <g transform="translate(110 595)">
+    <text class="text label" y="22">Cerebras</text>
+    <rect class="chip" x="300" y="0" width="150" height="40" rx="20"/><text class="text small" x="330" y="26">Por minuto</text>
+    <text class="text value" x="540" y="24">18% disponible</text>
+    <rect class="track" x="540" y="45" width="420" height="12" rx="6"/><rect class="red" x="540" y="45" width="76" height="12" rx="6"/>
+    <text class="muted small" x="1060" y="24">hace 1 min</text>
+  </g>
+  <line x1="110" y1="675" x2="1330" y2="675" stroke="#2a354d"/>
+
+  <g transform="translate(110 710)">
+    <text class="text label" y="22">NVIDIA NIM</text>
+    <rect class="chip" x="300" y="0" width="150" height="40" rx="20"/><text class="text small" x="321" y="26">Rate limit</text>
+    <text class="text value" x="540" y="24">TOPE ACTIVO</text>
+    <rect class="track" x="540" y="45" width="420" height="12" rx="6"/><rect class="red" x="540" y="45" width="420" height="12" rx="6"/>
+    <text class="muted small" x="1060" y="24">reintento en 38 s</text>
+  </g>
+
+  <rect x="100" y="890" width="16" height="16" rx="4" class="green"/><text class="muted small" x="126" y="903">≥50%</text>
+  <rect x="220" y="890" width="16" height="16" rx="4" class="amber"/><text class="muted small" x="246" y="903">20–49%</text>
+  <rect x="360" y="890" width="16" height="16" rx="4" class="red"/><text class="muted small" x="386" y="903">&lt;20% / tope</text>
+  <rect x="530" y="890" width="16" height="16" rx="4" class="neutral"/><text class="muted small" x="556" y="903">sin dato</text>
+  <text class="muted small" x="1060" y="903">Desktop · mobile apila ventana y estado</text>
+</svg>
