@@ -35,6 +35,7 @@ fun testConfig(vararg businesses: String): UsersConfig {
         secretAccessKey = "secret",
         awsCognitoUserPoolId = "pool",
         awsCognitoClientId = "client",
+        hmacKey = java.util.Base64.getEncoder().encodeToString(ByteArray(32) { 1 }),
         tableBusiness = table
     )
 }

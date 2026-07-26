@@ -32,6 +32,7 @@ import ar.com.intrale.kernel.management.CreateProjectFunction
 import ar.com.intrale.kernel.management.KernelProductStatusFunction
 import ar.com.intrale.kernel.management.RejectProductFunction
 import ar.com.intrale.kernel.management.SignProductFunction
+import java.time.Clock
 
 private const val LOCAL_APP_AVAILABLE_BUSINESSES = "AVAILABLE_BUISNESS"
 private const val LOCAL_AWS_REGION = "REGION_VALUE"
@@ -49,6 +50,7 @@ private const val AWS_ACCESS_KEY_ID = "aws.accessKeyId"
 private const val AWS_SECRET_ACCESS_KEY = "aws.secretAccessKey"
 private const val AWS_COGNITO_USER_POOL_ID = "aws.cognito.userPoolId"
 private const val AWS_COGNITO_CLIENT_ID = "aws.cognito.clientId"
+private const val INVITATION_HMAC_KEY = "invitation.hmacKey"
 
 val appModule = DI.Module("appModule") {
 
@@ -132,9 +134,22 @@ val appModule = DI.Module("appModule") {
                 secretAccessKey = System.getenv(LOCAL_AWS_SECRET_ACCESS_KEY) ?: configFactory.stringValue(AWS_SECRET_ACCESS_KEY),
                 awsCognitoUserPoolId = System.getenv(LOCAL_AWS_COGNITO_USER_POOL_ID) ?: configFactory.stringValue(AWS_COGNITO_USER_POOL_ID),
                 awsCognitoClientId = System.getenv(LOCAL_AWS_COGNITO_CLIENT_ID) ?: configFactory.stringValue(AWS_COGNITO_CLIENT_ID),
+                hmacKey = System.getenv("INVITATION_HMAC_KEY") ?: configFactory.stringValue(INVITATION_HMAC_KEY),
                 tableBusiness = instance()
             )
         }
+    }
+
+    bind<Clock> {
+        singleton { Clock.systemUTC() }
+    }
+
+    bind<HmacTokenGenerator> {
+        singleton { HmacTokenGenerator(instance<UsersConfig>().hmacKeyBytes, instance()) }
+    }
+
+    bind<RateLimitService> {
+        singleton { RateLimitService(instance(), instance()) }
     }
 
     bind<Faker> {

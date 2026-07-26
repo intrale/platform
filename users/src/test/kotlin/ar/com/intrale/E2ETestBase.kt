@@ -32,6 +32,7 @@ abstract class E2ETestBase {
             secretAccessKey = "secret",
             awsCognitoUserPoolId = "pool",
             awsCognitoClientId = "test-client-id",
+            hmacKey = java.util.Base64.getEncoder().encodeToString(ByteArray(32) { 1 }),
             tableBusiness = tableBusiness
         )
         return DI.Module("e2e", allowSilentOverride = true) {
