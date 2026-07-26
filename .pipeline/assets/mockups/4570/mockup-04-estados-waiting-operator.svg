@@ -1,0 +1,431 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 04 — Sistema de estados `waiting-operator` en el dashboard (épico #4570)
+  ============================================================================
+  Define cómo se ve, en toda la superficie V3, el hecho de que un issue esté
+  detenido esperando una firma humana, y cómo se distingue de "en ejecución"
+  y de "fallado".
+
+  Contenido:
+    1. Fila de badges de estado (waiting-operator-def / -acc, requires-operator,
+       needs-human, gate 3 confirmación pendiente) con contraste anotado.
+    2. Tira del lifecycle (definicion y desarrollo) con la posición exacta de
+       GATE 1, GATE 0 y GATE 2 y qué queda bloqueado detrás de GATE 2.
+    3. Tres tarjetas de board comparadas: ejecución vs espera humana vs fallo.
+    4. Widget de ETA descompuesto (agente / cola / espera-de-operador) con los
+       dos ETAs del §8.13: pipeline-bound y con latencia de firma.
+    5. Estado vacío positivo cuando no hay nada esperando firma.
+
+  Decisiones de diseño (UX, #4570):
+    - La espera humana tiene color propio (#7C5CFF) que NO pertenece ni a la
+      familia de error (rojo) ni a la de progreso (azul/verde). Esperar firma
+      no es un fallo ni es avance: es una tercera categoría.
+    - El gate se codifica en un marcador secundario (G0 ámbar, G1 azul, G2 cyan,
+      G3 violeta claro) DENTRO del badge de estado. Estado y gate no compiten.
+    - Redundancia de canal: cada estado combina color + icono + texto, y además
+      forma de borde (sólido / punteado / sólido) para lectura sin color.
+    - El ETA se muestra siempre en dos números; un único ETA mezclado escondería
+      el bottleneck humano que estos gates introducen a propósito.
+    - El estado vacío se pinta como logro, con acento success y sin CTA de
+      reintento ni iconografía de alerta.
+
+  Criterios UX verificables que este mockup fija:
+    - CA-UX-10: ningún estado se comunica sólo por color.
+    - CA-UX-11: la tarjeta en espera humana es distinguible de la fallada en
+      escala de grises (borde punteado + icono de pausa).
+    - CA-UX-12: todo ETA de ola expone el reparto agente / cola / espera.
+    - CA-UX-13: contraste ≥4.5:1 en texto normal, anotado por badge.
+
+  Render previsto: dashboard V3, 1600px de ancho útil, tema oscuro.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1200" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif">
+  <defs>
+    <filter id="elev4" x="-12%" y="-12%" width="124%" height="124%">
+      <feDropShadow dx="0" dy="2" stdDeviation="5" flood-color="#000" flood-opacity="0.40"/>
+    </filter>
+  </defs>
+
+  <rect x="0" y="0" width="1600" height="1200" fill="#0D1117"/>
+
+  <!-- ===================================================== HEADER -->
+  <text x="40" y="52" fill="#E6EDF3" font-size="24" font-weight="700">Issue #4570 — Estados `waiting-operator` en el dashboard</text>
+  <text x="40" y="80" fill="#8B949E" font-size="14">Mockup UX · badges + lifecycle + tarjetas comparadas + ETA descompuesto (§8.13) + estado vacío · fail-closed · WCAG AA</text>
+
+  <!-- =================================================================== -->
+  <!-- 1. FILA DE BADGES                                                    -->
+  <!-- =================================================================== -->
+  <g transform="translate(40, 110)">
+    <rect x="0" y="0" width="1520" height="200" rx="14" fill="#161B22" stroke="#30363D"/>
+    <text x="20" y="30" fill="#E6EDF3" font-size="15" font-weight="700">1 · Badges de estado</text>
+    <text x="180" y="30" fill="#8B949E" font-size="12">el estado pinta el fondo (violeta = espera humana); el gate pinta el marcador de la izquierda</text>
+    <line x1="20" y1="44" x2="1500" y2="44" stroke="#21262D"/>
+
+    <!-- (1) waiting-operator-def -->
+    <g transform="translate(20, 62)">
+      <rect x="0" y="0" width="270" height="44" rx="22" fill="rgba(124,92,255,0.16)" stroke="#7C5CFF" stroke-width="1.5"/>
+      <!-- marcador de gate: pluma (definición) en azul GATE 1 -->
+      <circle cx="24" cy="22" r="13" fill="rgba(88,166,255,0.14)" stroke="#58A6FF"/>
+      <path d="M18 27 l9 -9 l3 3 l-9 9 l-4 1 z" fill="none" stroke="#58A6FF" stroke-width="1.6" stroke-linejoin="round"/>
+      <text x="46" y="20" fill="#C5B7FF" font-size="12.5" font-weight="700">waiting-operator-def</text>
+      <text x="46" y="35" fill="#B1BAC4" font-size="11">GATE 1 · firma de definición</text>
+      <g transform="translate(0, 58)" font-size="11">
+        <text x="0" y="0" fill="#8B949E">Aparece: al cerrar la fase <tspan fill="#E6EDF3">criterios</tspan>.</text>
+        <text x="0" y="17" fill="#8B949E">Bloquea: admisión a <tspan fill="#E6EDF3">desarrollo</tspan>.</text>
+        <text x="0" y="34" fill="#3FB950">#C5B7FF sobre #0D1117 → 8.1:1 AA</text>
+        <text x="0" y="51" fill="#8B949E">Icono #58A6FF → 6.4:1 (no-texto OK)</text>
+      </g>
+    </g>
+
+    <!-- (2) waiting-operator-acc -->
+    <g transform="translate(322, 62)">
+      <rect x="0" y="0" width="270" height="44" rx="22" fill="rgba(124,92,255,0.16)" stroke="#7C5CFF" stroke-width="1.5"/>
+      <!-- marcador de gate: escudo con check en cyan GATE 2 -->
+      <circle cx="24" cy="22" r="13" fill="rgba(0,214,255,0.14)" stroke="#00D6FF"/>
+      <path d="M24 15 l6 2.5 v4 c0 4 -3 6.5 -6 7.5 c-3 -1 -6 -3.5 -6 -7.5 v-4 z" fill="none" stroke="#00D6FF" stroke-width="1.4" stroke-linejoin="round"/>
+      <path d="M21 22 l2 2 l4 -4.5" fill="none" stroke="#00D6FF" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="46" y="20" fill="#C5B7FF" font-size="12.5" font-weight="700">waiting-operator-acc</text>
+      <text x="46" y="35" fill="#B1BAC4" font-size="11">GATE 2 · firma de aceptación</text>
+      <g transform="translate(0, 58)" font-size="11">
+        <text x="0" y="0" fill="#8B949E">Aparece: al cerrar la fase <tspan fill="#E6EDF3">aprobacion</tspan>.</text>
+        <text x="0" y="17" fill="#8B949E">Bloquea: <tspan fill="#E6EDF3">merge · delivery · deploy</tspan>.</text>
+        <text x="0" y="34" fill="#3FB950">#C5B7FF sobre #0D1117 → 8.1:1 AA</text>
+        <text x="0" y="51" fill="#8B949E">Icono #00D6FF → 11.4:1 AAA</text>
+      </g>
+    </g>
+
+    <!-- (3) requires-operator -->
+    <g transform="translate(624, 62)">
+      <rect x="0" y="0" width="270" height="44" rx="22" fill="rgba(210,153,34,0.14)" stroke="#D29922" stroke-width="1.5"/>
+      <circle cx="24" cy="22" r="13" fill="rgba(210,153,34,0.14)" stroke="#D29922"/>
+      <path d="M24 15 L31 28 L17 28 Z" fill="none" stroke="#D29922" stroke-width="1.6" stroke-linejoin="round"/>
+      <rect x="23.1" y="19.5" width="1.8" height="4.5" rx="0.9" fill="#D29922"/>
+      <rect x="23.1" y="25.4" width="1.8" height="1.8" rx="0.9" fill="#D29922"/>
+      <text x="46" y="20" fill="#D29922" font-size="12.5" font-weight="700">requires-operator</text>
+      <text x="46" y="35" fill="#B1BAC4" font-size="11">GATE 0 · veredicto honesto</text>
+      <g transform="translate(0, 58)" font-size="11">
+        <text x="0" y="0" fill="#8B949E">Aparece: en <tspan fill="#E6EDF3">verificacion</tspan>, si hay</text>
+        <text x="0" y="17" fill="#8B949E">criterios <tspan fill="#E6EDF3">human-only</tspan> sin resolver.</text>
+        <text x="0" y="34" fill="#3FB950">#D29922 sobre #0D1117 → 7.0:1 AA</text>
+        <text x="0" y="51" fill="#8B949E">Reemplaza al `passed` global falso.</text>
+      </g>
+    </g>
+
+    <!-- (4) needs-human -->
+    <g transform="translate(926, 62)">
+      <rect x="0" y="0" width="270" height="44" rx="22" fill="rgba(248,81,73,0.14)" stroke="#F85149" stroke-width="1.5"/>
+      <circle cx="24" cy="22" r="13" fill="rgba(248,81,73,0.14)" stroke="#F85149"/>
+      <path d="M24 14 c-4 0 -6 3 -6 6 v4 l-2 3 h16 l-2 -3 v-4 c0 -3 -2 -6 -6 -6 z" fill="none" stroke="#F85149" stroke-width="1.4" stroke-linejoin="round"/>
+      <path d="M22 29 c0 1.6 1 2.4 2 2.4 c1 0 2 -0.8 2 -2.4" fill="none" stroke="#F85149" stroke-width="1.4" stroke-linecap="round"/>
+      <text x="46" y="20" fill="#F85149" font-size="12.5" font-weight="700">needs-human</text>
+      <text x="46" y="35" fill="#B1BAC4" font-size="11">escalado · timeout vencido</text>
+      <g transform="translate(0, 58)" font-size="11">
+        <text x="0" y="0" fill="#8B949E">Aparece: al vencer el plazo de firma.</text>
+        <text x="0" y="17" fill="#8B949E">Efecto: <tspan fill="#F85149" font-weight="700">bloquea</tspan>, nunca aprueba.</text>
+        <text x="0" y="34" fill="#3FB950">#F85149 sobre #0D1117 → 5.4:1 AA</text>
+        <text x="0" y="51" fill="#8B949E">Convive con el estado waiting-*.</text>
+      </g>
+    </g>
+
+    <!-- (5) gate 3 -->
+    <g transform="translate(1228, 62)">
+      <rect x="0" y="0" width="270" height="44" rx="22" fill="rgba(188,140,255,0.14)" stroke="#BC8CFF" stroke-width="1.5"/>
+      <circle cx="24" cy="22" r="13" fill="rgba(188,140,255,0.14)" stroke="#BC8CFF"/>
+      <rect x="18.5" y="21" width="11" height="8" rx="2" fill="none" stroke="#BC8CFF" stroke-width="1.4"/>
+      <path d="M21 21 v-2.5 a3 3 0 0 1 6 0 v2.5" fill="none" stroke="#BC8CFF" stroke-width="1.4"/>
+      <text x="46" y="20" fill="#BC8CFF" font-size="12.5" font-weight="700">gate 3 · confirmación</text>
+      <text x="46" y="35" fill="#B1BAC4" font-size="11">acción autónoma del kernel</text>
+      <g transform="translate(0, 58)" font-size="11">
+        <text x="0" y="0" fill="#8B949E">Aparece: re-seed, realign de ola,</text>
+        <text x="0" y="17" fill="#8B949E">flags de cuota, reset del working tree.</text>
+        <text x="0" y="34" fill="#3FB950">#BC8CFF sobre #0D1117 → 8.7:1 AA</text>
+        <text x="0" y="51" fill="#8B949E">No cuelga de un issue: es del kernel.</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- =================================================================== -->
+  <!-- 2. TIRA DEL LIFECYCLE                                                -->
+  <!-- =================================================================== -->
+  <g transform="translate(40, 330)">
+    <rect x="0" y="0" width="1520" height="310" rx="14" fill="#161B22" stroke="#30363D"/>
+    <text x="20" y="30" fill="#E6EDF3" font-size="15" font-weight="700">2 · Dónde caen los gates en el lifecycle</text>
+    <text x="330" y="30" fill="#8B949E" font-size="12">fases mecánicas = auto (reversibles, sin efecto en producción) · fases con gate = firma humana, nunca degradable por timeout</text>
+    <line x1="20" y1="44" x2="1500" y2="44" stroke="#21262D"/>
+
+    <!-- Marcador GATE 1 (sobre criterios) -->
+    <g transform="translate(362, 62)">
+      <rect x="0" y="0" width="196" height="24" rx="12" fill="rgba(88,166,255,0.14)" stroke="#58A6FF"/>
+      <circle cx="14" cy="12" r="4.5" fill="#58A6FF"/>
+      <text x="26" y="16" fill="#58A6FF" font-size="11" font-weight="700">GATE 1 · Firma de Definición</text>
+      <path d="M98 24 v14" stroke="#58A6FF" stroke-width="1.5"/>
+      <path d="M94 34 l4 5 l4 -5" fill="#58A6FF"/>
+    </g>
+
+    <!-- Fila definicion -->
+    <g transform="translate(20, 100)">
+      <rect x="0" y="0" width="130" height="52" rx="8" fill="rgba(188,140,255,0.14)" stroke="#BC8CFF"/>
+      <text x="65" y="24" fill="#BC8CFF" font-size="12.5" font-weight="700" text-anchor="middle">definicion</text>
+      <text x="65" y="40" fill="#8B949E" font-size="10.5" text-anchor="middle">pipeline</text>
+
+      <!-- analisis -->
+      <rect x="150" y="0" width="172" height="52" rx="8" fill="#1C2128" stroke="#30363D"/>
+      <text x="236" y="23" fill="#E6EDF3" font-size="12.5" font-weight="600" text-anchor="middle">analisis</text>
+      <text x="236" y="40" fill="#8B949E" font-size="10.5" text-anchor="middle">guru · security · auto</text>
+      <path d="M326 26 h14 M336 21 l5 5 l-5 5" fill="none" stroke="#484F58" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+
+      <!-- criterios (GATE 1) -->
+      <rect x="346" y="0" width="188" height="52" rx="8" fill="rgba(88,166,255,0.14)" stroke="#58A6FF" stroke-width="1.8"/>
+      <text x="440" y="23" fill="#58A6FF" font-size="12.5" font-weight="700" text-anchor="middle">criterios</text>
+      <text x="440" y="40" fill="#B1BAC4" font-size="10.5" text-anchor="middle">po · ux · architect · gateado</text>
+      <path d="M538 26 h14 M548 21 l5 5 l-5 5" fill="none" stroke="#484F58" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+
+      <!-- sizing -->
+      <rect x="558" y="0" width="172" height="52" rx="8" fill="#1C2128" stroke="#30363D"/>
+      <text x="644" y="23" fill="#E6EDF3" font-size="12.5" font-weight="600" text-anchor="middle">sizing</text>
+      <text x="644" y="40" fill="#8B949E" font-size="10.5" text-anchor="middle">planner · auto</text>
+
+      <!-- nota de estado retenido -->
+      <g transform="translate(760, 6)">
+        <rect x="0" y="0" width="292" height="40" rx="10" fill="rgba(124,92,255,0.16)" stroke="#7C5CFF" stroke-dasharray="5 4"/>
+        <circle cx="22" cy="20" r="9" fill="none" stroke="#7C5CFF" stroke-width="1.6"/>
+        <path d="M22 14 v6 l4.5 3" fill="none" stroke="#7C5CFF" stroke-width="1.6" stroke-linecap="round"/>
+        <text x="40" y="17" fill="#C5B7FF" font-size="11.5" font-weight="700">retenido en waiting-operator-def</text>
+        <text x="40" y="32" fill="#B1BAC4" font-size="10.5">el issue no entra a desarrollo sin firma</text>
+      </g>
+    </g>
+
+    <!-- Marcadores GATE 0 y GATE 2 -->
+    <g transform="translate(627, 174)">
+      <rect x="0" y="0" width="196" height="24" rx="12" fill="rgba(210,153,34,0.14)" stroke="#D29922"/>
+      <circle cx="14" cy="12" r="4.5" fill="#D29922"/>
+      <text x="26" y="16" fill="#D29922" font-size="11" font-weight="700">GATE 0 · veredicto honesto</text>
+      <path d="M98 24 v14" stroke="#D29922" stroke-width="1.5"/>
+      <path d="M94 34 l4 5 l4 -5" fill="#D29922"/>
+    </g>
+    <g transform="translate(970, 174)">
+      <rect x="0" y="0" width="200" height="24" rx="12" fill="rgba(0,214,255,0.14)" stroke="#00D6FF"/>
+      <circle cx="14" cy="12" r="4.5" fill="#00D6FF"/>
+      <text x="26" y="16" fill="#00D6FF" font-size="11" font-weight="700">GATE 2 · Firma de Aceptación</text>
+      <path d="M100 24 v14" stroke="#00D6FF" stroke-width="1.5"/>
+      <path d="M96 34 l4 5 l4 -5" fill="#00D6FF"/>
+    </g>
+
+    <!-- Fila desarrollo -->
+    <g transform="translate(20, 212)">
+      <rect x="0" y="0" width="130" height="52" rx="8" fill="rgba(88,166,255,0.14)" stroke="#58A6FF"/>
+      <text x="65" y="24" fill="#58A6FF" font-size="12.5" font-weight="700" text-anchor="middle">desarrollo</text>
+      <text x="65" y="40" fill="#8B949E" font-size="10.5" text-anchor="middle">pipeline</text>
+
+      <!-- validacion -->
+      <rect x="150" y="0" width="150" height="52" rx="8" fill="#1C2128" stroke="#30363D"/>
+      <text x="225" y="23" fill="#E6EDF3" font-size="12" font-weight="600" text-anchor="middle">validacion</text>
+      <text x="225" y="39" fill="#8B949E" font-size="10" text-anchor="middle">auto</text>
+      <path d="M304 26 h10 M311 22 l4 4 l-4 4" fill="none" stroke="#484F58" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <!-- dev -->
+      <rect x="320" y="0" width="130" height="52" rx="8" fill="#1C2128" stroke="#30363D"/>
+      <text x="385" y="23" fill="#E6EDF3" font-size="12" font-weight="600" text-anchor="middle">dev</text>
+      <text x="385" y="39" fill="#8B949E" font-size="10" text-anchor="middle">auto</text>
+      <path d="M454 26 h10 M461 22 l4 4 l-4 4" fill="none" stroke="#484F58" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <!-- build -->
+      <rect x="470" y="0" width="130" height="52" rx="8" fill="#1C2128" stroke="#30363D"/>
+      <text x="535" y="23" fill="#E6EDF3" font-size="12" font-weight="600" text-anchor="middle">build</text>
+      <text x="535" y="39" fill="#8B949E" font-size="10" text-anchor="middle">auto</text>
+      <path d="M604 26 h10 M611 22 l4 4 l-4 4" fill="none" stroke="#484F58" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <!-- verificacion (GATE 0) -->
+      <rect x="620" y="0" width="170" height="52" rx="8" fill="rgba(210,153,34,0.14)" stroke="#D29922" stroke-width="1.8"/>
+      <text x="705" y="23" fill="#D29922" font-size="12" font-weight="700" text-anchor="middle">verificacion</text>
+      <text x="705" y="39" fill="#B1BAC4" font-size="10" text-anchor="middle">tester · security · qa</text>
+      <path d="M794 26 h10 M801 22 l4 4 l-4 4" fill="none" stroke="#484F58" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <!-- linteo -->
+      <rect x="810" y="0" width="130" height="52" rx="8" fill="#1C2128" stroke="#30363D"/>
+      <text x="875" y="23" fill="#E6EDF3" font-size="12" font-weight="600" text-anchor="middle">linteo</text>
+      <text x="875" y="39" fill="#8B949E" font-size="10" text-anchor="middle">auto</text>
+      <path d="M944 26 h10 M951 22 l4 4 l-4 4" fill="none" stroke="#484F58" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <!-- aprobacion (GATE 2) -->
+      <rect x="960" y="0" width="180" height="52" rx="8" fill="rgba(0,214,255,0.14)" stroke="#00D6FF" stroke-width="1.8"/>
+      <text x="1050" y="23" fill="#00D6FF" font-size="12" font-weight="700" text-anchor="middle">aprobacion</text>
+      <text x="1050" y="39" fill="#B1BAC4" font-size="10" text-anchor="middle">review · po · ux · architect</text>
+      <!-- conector bloqueado -->
+      <path d="M1144 26 h14 M1155 22 l4 4 l-4 4" fill="none" stroke="#F85149" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <!-- entrega (bloqueada) -->
+      <rect x="1170" y="0" width="180" height="52" rx="8" fill="#1C2128" stroke="#F85149" stroke-width="1.6" stroke-dasharray="6 4"/>
+      <rect x="1188" y="20" width="13" height="10" rx="2" fill="none" stroke="#F85149" stroke-width="1.5"/>
+      <path d="M1191 20 v-3 a3.5 3.5 0 0 1 7 0 v3" fill="none" stroke="#F85149" stroke-width="1.5"/>
+      <text x="1272" y="23" fill="#F85149" font-size="12" font-weight="700" text-anchor="middle">entrega</text>
+      <text x="1272" y="39" fill="#B1BAC4" font-size="10" text-anchor="middle">bloqueada hasta GATE 2</text>
+    </g>
+
+    <!-- Nota SEC-3 -->
+    <g transform="translate(20, 274)">
+      <rect x="0" y="0" width="1480" height="26" rx="8" fill="rgba(248,81,73,0.14)" stroke="#8B1A14"/>
+      <text x="12" y="17" fill="#E6EDF3" font-size="11.5"><tspan fill="#F85149" font-weight="700">SEC-3 · </tspan>Detrás de GATE 2 quedan bloqueados: <tspan font-weight="700">merge a main</tspan> · <tspan font-weight="700">delivery / deploy a AWS Lambda</tspan> · <tspan font-weight="700">mutación de estado del pipeline</tspan> (allowlist, flags de cuota, seeds de ola, gobernados además por GATE 3). Ninguna configuración, opt-out ni vencimiento de timeout los reclasifica como `auto`.</text>
+    </g>
+  </g>
+
+  <!-- =================================================================== -->
+  <!-- 3. TARJETAS COMPARADAS                                               -->
+  <!-- =================================================================== -->
+  <g transform="translate(40, 660)">
+    <rect x="0" y="0" width="760" height="340" rx="14" fill="#161B22" stroke="#30363D"/>
+    <text x="20" y="30" fill="#E6EDF3" font-size="15" font-weight="700">3 · La espera humana no es error ni progreso</text>
+    <text x="20" y="50" fill="#8B949E" font-size="11.5">Tres tarjetas del board, lado a lado: se distinguen por color, icono, forma de borde y métrica destacada.</text>
+
+    <!-- (A) EN EJECUCIÓN -->
+    <g transform="translate(16, 64)">
+      <rect x="0" y="0" width="232" height="222" rx="12" fill="#1C2128" stroke="#58A6FF" stroke-width="1.5"/>
+      <rect x="0" y="0" width="232" height="4" rx="2" fill="#58A6FF"/>
+      <g transform="translate(14, 18)">
+        <circle cx="11" cy="11" r="10" fill="none" stroke="#30363D" stroke-width="2.4"/>
+        <path d="M11 1 a10 10 0 0 1 8.7 5" fill="none" stroke="#58A6FF" stroke-width="2.4" stroke-linecap="round"/>
+        <text x="30" y="10" fill="#58A6FF" font-size="11.5" font-weight="700">EN EJECUCIÓN</text>
+        <text x="30" y="25" fill="#8B949E" font-size="10.5">el pipeline está trabajando</text>
+      </g>
+      <text x="14" y="76" fill="#E6EDF3" font-size="12.5" font-weight="700">#4604 — Endpoint de firma</text>
+      <text x="14" y="94" fill="#8B949E" font-size="11">fase <tspan fill="#E6EDF3">dev</tspan> · backend-dev</text>
+      <!-- barra de progreso -->
+      <rect x="14" y="112" width="204" height="10" rx="5" fill="#21262D"/>
+      <rect x="14" y="112" width="122" height="10" rx="5" fill="#58A6FF"/>
+      <text x="14" y="140" fill="#B1BAC4" font-size="11">60% · corriendo hace 12 m</text>
+      <line x1="14" y1="154" x2="218" y2="154" stroke="#21262D"/>
+      <text x="14" y="174" fill="#8B949E" font-size="10.5">Métrica destacada: <tspan fill="#58A6FF">progreso</tspan></text>
+      <text x="14" y="191" fill="#8B949E" font-size="10.5">Borde: sólido azul · icono: arco</text>
+      <text x="14" y="208" fill="#8B949E" font-size="10.5">Cuenta para la velocidad del pipeline</text>
+    </g>
+
+    <!-- (B) ESPERANDO TU FIRMA -->
+    <g transform="translate(264, 64)">
+      <rect x="0" y="0" width="232" height="222" rx="12" fill="#1C2128" stroke="#7C5CFF" stroke-width="1.8" stroke-dasharray="7 5"/>
+      <rect x="0" y="0" width="232" height="4" rx="2" fill="#7C5CFF"/>
+      <g transform="translate(14, 18)">
+        <circle cx="11" cy="11" r="10" fill="rgba(124,92,255,0.16)" stroke="#7C5CFF" stroke-width="1.6"/>
+        <rect x="7.5" y="6.5" width="2.6" height="9" rx="1.3" fill="#7C5CFF"/>
+        <rect x="12.4" y="6.5" width="2.6" height="9" rx="1.3" fill="#7C5CFF"/>
+        <text x="30" y="10" fill="#C5B7FF" font-size="11.5" font-weight="700">ESPERA TU FIRMA</text>
+        <text x="30" y="25" fill="#8B949E" font-size="10.5">ni error ni avance: pausa</text>
+      </g>
+      <text x="14" y="76" fill="#E6EDF3" font-size="12.5" font-weight="700">#4531 — Card de transacciones</text>
+      <text x="14" y="94" fill="#8B949E" font-size="11">fase <tspan fill="#E6EDF3">aprobacion</tspan> · GATE 2</text>
+      <!-- barra "congelada" -->
+      <rect x="14" y="112" width="204" height="10" rx="5" fill="#21262D"/>
+      <rect x="14" y="112" width="204" height="10" rx="5" fill="rgba(124,92,255,0.30)"/>
+      <g stroke="#7C5CFF" stroke-width="1">
+        <path d="M30 112 v10 M50 112 v10 M70 112 v10 M90 112 v10 M110 112 v10 M130 112 v10 M150 112 v10 M170 112 v10 M190 112 v10 M210 112 v10"/>
+      </g>
+      <text x="14" y="140" fill="#C5B7FF" font-size="11" font-weight="600">esperando 3 h 20 m · 2 criterios tu ojo</text>
+      <line x1="14" y1="154" x2="218" y2="154" stroke="#21262D"/>
+      <text x="14" y="174" fill="#8B949E" font-size="10.5">Métrica destacada: <tspan fill="#7C5CFF">tiempo de espera</tspan></text>
+      <text x="14" y="191" fill="#8B949E" font-size="10.5">Borde: punteado violeta · icono: pausa</text>
+      <text x="14" y="208" fill="#8B949E" font-size="10.5">NO cuenta para la velocidad; sí para el ETA</text>
+    </g>
+
+    <!-- (C) FALLADO -->
+    <g transform="translate(512, 64)">
+      <rect x="0" y="0" width="232" height="222" rx="12" fill="#1C2128" stroke="#F85149" stroke-width="1.5"/>
+      <rect x="0" y="0" width="232" height="4" rx="2" fill="#F85149"/>
+      <g transform="translate(14, 18)">
+        <circle cx="11" cy="11" r="10" fill="rgba(248,81,73,0.14)" stroke="#F85149" stroke-width="1.6"/>
+        <path d="M7 7 l8 8 M15 7 l-8 8" fill="none" stroke="#F85149" stroke-width="2" stroke-linecap="round"/>
+        <text x="30" y="10" fill="#F85149" font-size="11.5" font-weight="700">FALLADO</text>
+        <text x="30" y="25" fill="#8B949E" font-size="10.5">algo se rompió, hay que corregir</text>
+      </g>
+      <text x="14" y="76" fill="#E6EDF3" font-size="12.5" font-weight="700">#4588 — Migración de flags</text>
+      <text x="14" y="94" fill="#8B949E" font-size="11">fase <tspan fill="#E6EDF3">verificacion</tspan> · qa:failed</text>
+      <rect x="14" y="112" width="204" height="10" rx="5" fill="#21262D"/>
+      <rect x="14" y="112" width="78" height="10" rx="5" fill="#F85149"/>
+      <text x="14" y="140" fill="#F85149" font-size="11" font-weight="600">rebote 2 / 3 · vuelve a dev</text>
+      <line x1="14" y1="154" x2="218" y2="154" stroke="#21262D"/>
+      <text x="14" y="174" fill="#8B949E" font-size="10.5">Métrica destacada: <tspan fill="#F85149">motivo del fallo</tspan></text>
+      <text x="14" y="191" fill="#8B949E" font-size="10.5">Borde: sólido rojo · icono: cruz</text>
+      <text x="14" y="208" fill="#8B949E" font-size="10.5">Consume circuit breaker de rebotes</text>
+    </g>
+
+    <text x="16" y="308" fill="#8B949E" font-size="11">Lectura sin color (daltonismo / escala de grises): el borde punteado y el icono de pausa identifican la espera humana; la cruz y el borde sólido, el fallo.</text>
+    <text x="16" y="326" fill="#8B949E" font-size="11">Ordenamiento del board: las tarjetas violetas nunca se mezclan con las rojas — viven en una franja propia, arriba, ordenadas por antigüedad de espera.</text>
+  </g>
+
+  <!-- =================================================================== -->
+  <!-- 4. WIDGET DE ETA DESCOMPUESTO                                        -->
+  <!-- =================================================================== -->
+  <g transform="translate(820, 660)">
+    <rect x="0" y="0" width="740" height="340" rx="14" fill="#161B22" stroke="#30363D"/>
+    <text x="20" y="30" fill="#E6EDF3" font-size="15" font-weight="700">4 · ETA descompuesto (§8.13)</text>
+    <text x="20" y="50" fill="#8B949E" font-size="11.5">Lead time del issue #4531, repartido en agente / cola / espera-de-operador.</text>
+
+    <!-- barra apilada -->
+    <g transform="translate(20, 66)">
+      <rect x="0" y="0" width="294" height="36" rx="6" fill="rgba(88,166,255,0.30)" stroke="#58A6FF"/>
+      <text x="147" y="16" fill="#E6EDF3" font-size="11.5" font-weight="700" text-anchor="middle">agente</text>
+      <text x="147" y="30" fill="#B1BAC4" font-size="10.5" text-anchor="middle">6 h 10 m · 42%</text>
+
+      <rect x="294" y="0" width="126" height="36" fill="rgba(139,148,158,0.22)" stroke="#484F58"/>
+      <text x="357" y="16" fill="#E6EDF3" font-size="11.5" font-weight="700" text-anchor="middle">cola</text>
+      <text x="357" y="30" fill="#B1BAC4" font-size="10.5" text-anchor="middle">2 h 40 m · 18%</text>
+
+      <rect x="420" y="0" width="280" height="36" rx="6" fill="rgba(124,92,255,0.30)" stroke="#7C5CFF"/>
+      <text x="560" y="16" fill="#E6EDF3" font-size="11.5" font-weight="700" text-anchor="middle">espera de operador</text>
+      <text x="560" y="30" fill="#C5B7FF" font-size="10.5" text-anchor="middle">5 h 55 m · 40%</text>
+
+      <!-- cota total -->
+      <path d="M0 46 h700 M0 42 v8 M700 42 v8" stroke="#484F58" stroke-width="1"/>
+      <text x="350" y="62" fill="#8B949E" font-size="10.5" text-anchor="middle">lead time total 14 h 45 m</text>
+    </g>
+
+    <!-- Dos ETAs -->
+    <g transform="translate(20, 148)">
+      <rect x="0" y="0" width="340" height="82" rx="10" fill="#1C2128" stroke="#58A6FF"/>
+      <text x="14" y="22" fill="#58A6FF" font-size="11" font-weight="700" letter-spacing="0.04em">ETA PIPELINE-BOUND</text>
+      <text x="14" y="52" fill="#E6EDF3" font-size="22" font-weight="700">8 h 50 m</text>
+      <text x="14" y="70" fill="#8B949E" font-size="10.5">excluye la espera de firma · mide la velocidad real</text>
+
+      <rect x="360" y="0" width="340" height="82" rx="10" fill="#1C2128" stroke="#7C5CFF" stroke-width="1.6"/>
+      <text x="374" y="22" fill="#C5B7FF" font-size="11" font-weight="700" letter-spacing="0.04em">ETA CON LATENCIA DE FIRMA</text>
+      <text x="374" y="52" fill="#E6EDF3" font-size="22" font-weight="700">14 h 45 m</text>
+      <text x="374" y="70" fill="#8B949E" font-size="10.5">el que entra en el ETA de la ola · lo que ve el operador</text>
+    </g>
+
+    <!-- delta + desglose por gate -->
+    <g transform="translate(20, 244)">
+      <rect x="0" y="0" width="340" height="46" rx="10" fill="rgba(124,92,255,0.16)" stroke="#7C5CFF" stroke-dasharray="5 4"/>
+      <path d="M18 23 h16 M28 17 l6 6 l-6 6" fill="none" stroke="#7C5CFF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="44" y="21" fill="#C5B7FF" font-size="12" font-weight="700">+5 h 55 m de espera humana</text>
+      <text x="44" y="37" fill="#B1BAC4" font-size="10.5">40% del lead time — el bottleneck que estos gates crean</text>
+
+      <rect x="360" y="0" width="340" height="46" rx="10" fill="#1C2128" stroke="#30363D"/>
+      <text x="374" y="18" fill="#8B949E" font-size="10.5" font-weight="600" letter-spacing="0.05em">ESPERA MEDIA POR GATE (7 d)</text>
+      <circle cx="380" cy="34" r="4" fill="#58A6FF"/>
+      <text x="392" y="38" fill="#B1BAC4" font-size="10.5">GATE 1 · 2 h 05 m</text>
+      <circle cx="510" cy="34" r="4" fill="#00D6FF"/>
+      <text x="522" y="38" fill="#B1BAC4" font-size="10.5">GATE 2 · 6 h 30 m</text>
+      <circle cx="640" cy="34" r="4" fill="#BC8CFF"/>
+      <text x="652" y="38" fill="#B1BAC4" font-size="10.5">G3 · 18 m</text>
+    </g>
+
+    <text x="20" y="316" fill="#8B949E" font-size="11">La velocidad del pipeline excluye la espera; el ETA de la ola la incluye. Nunca se publica un único número mezclado: escondería el costo de los gates.</text>
+  </g>
+
+  <!-- =================================================================== -->
+  <!-- 5. ESTADO VACÍO                                                      -->
+  <!-- =================================================================== -->
+  <g transform="translate(40, 1020)">
+    <rect x="0" y="0" width="1520" height="120" rx="14" fill="#161B22" stroke="#30363D"/>
+
+    <!-- ilustración -->
+    <g transform="translate(36, 26)">
+      <circle cx="34" cy="34" r="30" fill="rgba(63,185,80,0.14)" stroke="#3FB950" stroke-width="1.6"/>
+      <path d="M21 35 l9 9 l18 -21" fill="none" stroke="#3FB950" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+
+    <text x="126" y="46" fill="#E6EDF3" font-size="16" font-weight="700">Nada espera tu firma</text>
+    <text x="126" y="70" fill="#B1BAC4" font-size="12.5">Ningún issue retenido en <tspan font-weight="600" fill="#C5B7FF">waiting-operator</tspan> y ninguna acción del kernel pendiente de confirmar.</text>
+    <text x="126" y="92" fill="#8B949E" font-size="11.5">Última firma: #4531 hace 12 min · 4 firmas hoy · espera media 1 h 42 m · circuit breaker de firmas sin activaciones.</text>
+
+    <line x1="880" y1="24" x2="880" y2="96" stroke="#21262D"/>
+    <text x="906" y="42" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.05em">POR QUÉ ES UN ESTADO POSITIVO</text>
+    <text x="906" y="62" fill="#B1BAC4" font-size="11.5">Acento success, fondo neutro, sin iconografía de alerta y sin CTA de reintento:</text>
+    <text x="906" y="80" fill="#B1BAC4" font-size="11.5">la bandeja vacía es un logro del pipeline, no una pantalla rota. Se mantiene la</text>
+    <text x="906" y="98" fill="#B1BAC4" font-size="11.5">métrica de firmas del día para que el operador confirme que el canal está vivo.</text>
+  </g>
+
+  <!-- ===================================================== FOOTER -->
+  <text x="40" y="1172" fill="#6E7681" font-size="11.5">Épico #4570 · convención de color: GATE 0 #D29922 · GATE 1 #58A6FF · GATE 2 #00D6FF · GATE 3 #BC8CFF · waiting-operator #7C5CFF · machine-verified #3FB950 · human-only #D29922. Fail-closed: ningún estado de espera transiciona a aprobado por vencimiento de plazo.</text>
+</svg>

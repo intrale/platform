@@ -1,0 +1,215 @@
+<!--
+  Intrale Pipeline V3 — Iconos de gates de firma del operador (epico #4570)
+  =============================================================================
+  BLOQUE A MERGEAR EN .pipeline/assets/icons/sprite.svg
+
+  Este archivo NO se incluye en el dashboard: es el entregable de diseno.
+  Cuando el issue se implemente, copiar los 11 <symbol> de abajo dentro del
+  <svg> del sprite (seccion nueva "GATES DE FIRMA DEL OPERADOR", al final,
+  antes del cierre (cierre svg)) y borrar este archivo o dejarlo como referencia.
+
+  Convenciones respetadas (identicas al sprite):
+    - viewBox 24x24
+    - stroke="currentColor" / fill="none"
+    - stroke-width="1.75" (detalles secundarios 1.3-1.6)
+    - stroke-linecap="round" stroke-linejoin="round"
+    - relleno solido (fill="currentColor") solo en acentos puntuales
+    - knockout con fill="#0D1117" solo para badges superpuestos
+      (mismo recurso que ya usa ic-allowlist-check en el sprite)
+    - sin scripts embebidos, sin objetos foraneos, sin manejadores de eventos,
+      sin href externos (solo fragmentos locales)
+    - sin <title> propio: el aria-label del contexto manda
+
+  IDS Y ARIA-LABEL SUGERIDO
+  =============================================================================
+  | id                   | dibujo                          | aria-label sugerido                                  |
+  |======================|=================================|======================================================|
+  | ic-gate-sign         | pluma firmando sobre una linea  | "firma del operador"                                  |
+  | ic-gate-0            | dos baldes: check / interrogante| "gate 0: veredicto honesto (maquina vs humano)"       |
+  | ic-gate-1            | documento con check + pluma     | "gate 1: firma de definicion"                         |
+  | ic-gate-2            | paquete con sello de firma      | "gate 2: firma de aceptacion"                         |
+  | ic-gate-3            | engranaje dentro de escudo      | "gate 3: gobernanza de acciones autonomas del kernel" |
+  | ic-waiting-operator  | persona + reloj de arena        | "esperando firma del operador"                        |
+  | ic-human-only        | persona + ojo                   | "criterio solo-humano"                                |
+  | ic-machine-verified  | chip con check                  | "criterio verificable por maquina"                    |
+  | ic-evidence          | frame de video + franja de hash | "evidencia servida para firmar"                       |
+  | ic-audit-log         | registro + flecha de append     | "audit log append-only"                               |
+  | ic-nonce-expired     | ticket tachado + reloj          | "solicitud vencida: replay bloqueado"                 |
+
+  COLOR SEMANTICO (lo inyecta el contexto CSS via `color:`, token del design system
+  del epico; los guiones dobles de las custom properties se omiten aca porque no
+  son validos dentro de un comentario XML)
+    ic-gate-0 => token gate-0 #D29922 | ic-gate-1 => token gate-1 #58A6FF
+    ic-gate-2 => token gate-2 #00D6FF | ic-gate-3 => token gate-3 #BC8CFF
+    ic-waiting-operator => token waiting-operator #7C5CFF
+    ic-human-only => token gate-0 #D29922 | ic-machine-verified => token ok #3FB950
+    ic-gate-sign / ic-evidence / ic-audit-log / ic-nonce-expired => token fg #E6EDF3
+
+  NO SE CLONA (ya existe en el sprite, reusar tal cual):
+    ic-shield-lock (integridad/no repudio), ic-ttl-countdown (timeout del gate),
+    ic-estado-needs-human (escalamiento fail-closed), ic-key (nonce vigente),
+    ic-eye-on (ver evidencia), ic-diff (render vs mockup), ic-transition-history.
+
+  Vista previa a 16/24/48 px: iconos-gates-4570-preview.svg
+-->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+
+  <!-- =========================================================================
+       GATES DE FIRMA DEL OPERADOR (#4570)
+       ========================================================================= -->
+
+  <!-- ic-gate-sign: pluma firmando sobre la linea (accion generica de firmar) -->
+  <symbol id="ic-gate-sign" viewBox="0 0 24 24">
+    <!-- Linea de firma -->
+    <path d="M3 20.6 H21" fill="none" stroke="currentColor" stroke-width="1.75"
+          stroke-linecap="round"/>
+    <!-- Rubrica -->
+    <path d="M3.4 17.6 C5.2 12.4 7.2 18.8 9.2 15.8 C10.4 14 11.8 16.4 13.2 16.4"
+          fill="none" stroke="currentColor" stroke-width="1.6"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- Pluma (punta apoyada al final de la rubrica) -->
+    <path d="M13.6 17.2 L14.6 14 L18.8 9.8 L21 12 L16.8 16.2 Z"
+          fill="none" stroke="currentColor" stroke-width="1.6"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- Virola de la pluma -->
+    <path d="M14.6 14 L16.8 16.2" fill="none" stroke="currentColor"
+          stroke-width="1.2" stroke-linecap="round" opacity="0.55"/>
+  </symbol>
+
+  <!-- ic-gate-0: veredicto honesto — balde maquina (check) vs balde humano (?) -->
+  <symbol id="ic-gate-0" viewBox="0 0 24 24">
+    <!-- Check: lo que la maquina si puede verificar -->
+    <path d="M4 7.4 L6.2 9.6 L10.2 4.8" fill="none" stroke="currentColor"
+          stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- Interrogante: lo que solo el humano puede juzgar -->
+    <path d="M14.6 6 C14.6 4.4 15.8 3.4 17.3 3.4 C18.9 3.4 20 4.4 20 5.8
+             C20 7.5 18.2 7.8 17.9 9.4"
+          fill="none" stroke="currentColor" stroke-width="1.7"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="17.85" cy="11.4" r="0.95" fill="currentColor"/>
+    <!-- Los dos baldes del veredicto -->
+    <path d="M3.2 14.4 H10.8 L9.9 20.8 H4.1 Z"
+          fill="none" stroke="currentColor" stroke-width="1.75"
+          stroke-linejoin="round"/>
+    <path d="M13.2 14.4 H20.8 L19.9 20.8 H14.1 Z"
+          fill="none" stroke="currentColor" stroke-width="1.75"
+          stroke-linejoin="round"/>
+  </symbol>
+
+  <!-- ic-gate-1: firma de definicion — documento aprobado + pluma -->
+  <symbol id="ic-gate-1" viewBox="0 0 24 24">
+    <!-- Documento con esquina plegada -->
+    <path d="M3.4 2.6 H11.4 L15.6 6.8 V16.8 H3.4 Z"
+          fill="none" stroke="currentColor" stroke-width="1.75"
+          stroke-linejoin="round"/>
+    <path d="M11.2 2.8 V7 H15.4" fill="none" stroke="currentColor"
+          stroke-width="1.4" stroke-linejoin="round" opacity="0.65"/>
+    <!-- Check de definicion acordada -->
+    <path d="M6 11 L8.2 13.2 L12.6 8.4" fill="none" stroke="currentColor"
+          stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- Pluma que firma la definicion -->
+    <path d="M14.2 21.9 L15.1 18.8 L19.2 14.7 L21.4 16.9 L17.3 21 Z"
+          fill="none" stroke="currentColor" stroke-width="1.5"
+          stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+
+  <!-- ic-gate-2: firma de aceptacion — entrega/paquete con sello de firma -->
+  <symbol id="ic-gate-2" viewBox="0 0 24 24">
+    <!-- Paquete (entrega lista para aceptar) -->
+    <path d="M12 2.8 L20.6 7.2 V15.8 L12 20.2 L3.4 15.8 V7.2 Z"
+          fill="none" stroke="currentColor" stroke-width="1.75"
+          stroke-linejoin="round"/>
+    <path d="M3.4 7.2 L12 11.6 L20.6 7.2 M12 11.6 V20.2"
+          fill="none" stroke="currentColor" stroke-width="1.4"
+          stroke-linejoin="round" opacity="0.6"/>
+    <!-- Sello de firma sobre la entrega -->
+    <circle cx="18.2" cy="17.4" r="4.3" fill="#0D1117"
+            stroke="currentColor" stroke-width="1.6"/>
+    <path d="M15.7 18.9 C16.3 15.4 17.4 19.9 18.3 17.2 C18.9 15.4 19.6 18.8 20.7 17.1"
+          fill="none" stroke="currentColor" stroke-width="1.45"
+          stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+
+  <!-- ic-gate-3: gobernanza de acciones autonomas del kernel — engranaje bajo escudo -->
+  <symbol id="ic-gate-3" viewBox="0 0 24 24">
+    <path d="M12 3 L20 6 V12 C20 16.5 16.5 19.5 12 21 C7.5 19.5 4 16.5 4 12 V6 Z"
+          fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+    <circle cx="12" cy="12" r="3.1" fill="none" stroke="currentColor" stroke-width="1.55"/>
+    <path d="M12 6.8 V8.2 M12 15.8 V17.2 M6.8 12 H8.2 M15.8 12 H17.2
+             M8.3 8.3 L9.3 9.3 M14.7 14.7 L15.7 15.7
+             M8.3 15.7 L9.3 14.7 M14.7 9.3 L15.7 8.3"
+          fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/>
+    <circle cx="12" cy="12" r="1.05" fill="currentColor"/>
+  </symbol>
+
+  <!-- ic-waiting-operator: espera de firma humana (persona + reloj de arena, NO es error) -->
+  <symbol id="ic-waiting-operator" viewBox="0 0 24 24">
+    <circle cx="8.4" cy="7" r="3.3" fill="none" stroke="currentColor" stroke-width="1.75"/>
+    <path d="M2.4 19.4 C2.4 15.7 5.1 12.9 8.4 12.9 C10 12.9 11.4 13.4 12.5 14.3"
+          fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+    <!-- Reloj de arena: espera activa, legible a 16px -->
+    <path d="M14.8 11.8 H21.6 L18.2 16.4 L21.6 21 H14.8 L18.2 16.4 Z"
+          fill="none" stroke="currentColor" stroke-width="1.6"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M16.6 19.6 H19.8 L18.2 17.4 Z" fill="currentColor"/>
+  </symbol>
+
+  <!-- ic-human-only: criterio que solo puede juzgar una persona (persona + ojo) -->
+  <symbol id="ic-human-only" viewBox="0 0 24 24">
+    <circle cx="6" cy="6.6" r="2.9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+    <path d="M2 17.4 C2 14.2 3.8 12.2 6 12.2 C7.1 12.2 8.1 12.7 8.9 13.5"
+          fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    <path d="M10.5 15.5 C12.4 11.9 14.4 10.1 16.5 10.1 C18.6 10.1 20.6 11.9 22.5 15.5
+             C20.6 19.1 18.6 20.9 16.5 20.9 C14.4 20.9 12.4 19.1 10.5 15.5 Z"
+          fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+    <circle cx="16.5" cy="15.5" r="1.9" fill="currentColor"/>
+  </symbol>
+
+  <!-- ic-machine-verified: criterio verificable por maquina (chip con check) -->
+  <symbol id="ic-machine-verified" viewBox="0 0 24 24">
+    <rect x="5.2" y="5.2" width="13.6" height="13.6" rx="2.2"
+          fill="none" stroke="currentColor" stroke-width="1.75"/>
+    <path d="M9.4 2.8 V5.2 M14.6 2.8 V5.2 M9.4 18.8 V21.2 M14.6 18.8 V21.2
+             M2.8 9.4 H5.2 M2.8 14.6 H5.2 M18.8 9.4 H21.2 M18.8 14.6 H21.2"
+          fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round"/>
+    <path d="M8.6 12.2 L10.9 14.5 L15.4 9.4" fill="none" stroke="currentColor"
+          stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+
+  <!-- ic-evidence: evidencia servida para firmar (frame de video + franja de hash) -->
+  <symbol id="ic-evidence" viewBox="0 0 24 24">
+    <rect x="2.4" y="5" width="19.2" height="14" rx="2"
+          fill="none" stroke="currentColor" stroke-width="1.75"/>
+    <path d="M9.4 8.6 L15.4 11.8 L9.4 15 Z" fill="currentColor"/>
+    <path d="M5.2 17 H9.2 M10.6 17 H13.4 M14.8 17 H18.8"
+          fill="none" stroke="currentColor" stroke-width="1.4"
+          stroke-linecap="round" opacity="0.7"/>
+  </symbol>
+
+  <!-- ic-audit-log: registro append-only (entradas + flecha que solo agrega al final) -->
+  <symbol id="ic-audit-log" viewBox="0 0 24 24">
+    <path d="M3.2 5.4 H4.4 M6.2 5.4 H15.4
+             M3.2 10 H4.4 M6.2 10 H15.4
+             M3.2 14.6 H4.4 M6.2 14.6 H12.6"
+          fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+    <path d="M19.6 5.6 V16.6 M16.7 13.7 L19.6 16.6 L22.5 13.7"
+          fill="none" stroke="currentColor" stroke-width="1.6"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M3.2 19.6 H22" fill="none" stroke="currentColor"
+          stroke-width="1.6" stroke-linecap="round" opacity="0.55"/>
+  </symbol>
+
+  <!-- ic-nonce-expired: solicitud de firma vencida / replay bloqueado (ticket tachado + reloj) -->
+  <symbol id="ic-nonce-expired" viewBox="0 0 24 24">
+    <path d="M2.8 7 H21.2 V10.6 A1.9 1.9 0 0 0 21.2 14.4 V18 H2.8 V14.4
+             A1.9 1.9 0 0 0 2.8 10.6 Z"
+          fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+    <path d="M5 17 L15 8" fill="none" stroke="currentColor"
+          stroke-width="1.85" stroke-linecap="round"/>
+    <circle cx="18.6" cy="17.8" r="4.4" fill="#0D1117"
+            stroke="currentColor" stroke-width="1.6"/>
+    <path d="M18.6 15.2 V17.8 L20.5 19" fill="none" stroke="currentColor"
+          stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+
+</svg>

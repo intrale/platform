@@ -530,3 +530,53 @@
   --overflow-more:        var(--info);        /* indicador "+N fases" */
   --overflow-more-bg:     var(--info-bg);
 }
+
+/* =============================================================================
+ * GATES DE FIRMA DEL OPERADOR (epico #4570)
+ * -----------------------------------------------------------------------------
+ * Tokens del sistema visual de los gates humanos: bandeja "Esperando tu firma",
+ * panel de firma (GATE 1 / GATE 2), badges de waiting-operator, tarjeta de
+ * Telegram y ETA descompuesto.
+ *
+ * Reglas de uso (medidas sobre --surface-1 #161B22, WCAG 2.1):
+ *   - Los tokens base (--gate-N, --waiting-operator) son BORDE / RELLENO de chip
+ *     / barra. NUNCA texto: --waiting-operator sobre surface-1 da 3.98 (< AA).
+ *   - El texto va siempre en el par *-fg sobre el par *-bg (todos >= 8:1).
+ *   - El color nunca es el unico portador de significado: chip = color + icono
+ *     (sprite ic-gate-*) + texto.
+ *
+ * Referencia de diseno: .pipeline/assets/mockups/4570/guidelines-ux-4570.md
+ * ========================================================================== */
+:root {
+  /* Gates — un color por gate, estable en toda la superficie */
+  --gate-0:               #D29922;   /* veredicto honesto (requires-operator) */
+  --gate-0-bg:            rgba(210, 153, 34, 0.14);
+  --gate-0-fg:            #FFE099;   /* 10.74:1 sobre el chip */
+  --gate-1:               #58A6FF;   /* firma de definicion */
+  --gate-1-bg:            rgba(88, 166, 255, 0.14);
+  --gate-1-fg:            #CBE0FF;   /* 10.26:1 */
+  --gate-2:               #00D6FF;   /* firma de aceptacion */
+  --gate-2-bg:            rgba(0, 214, 255, 0.14);
+  --gate-2-fg:            #A8ECFF;   /* 9.98:1 */
+  --gate-3:               #BC8CFF;   /* gobernanza de acciones autonomas */
+  --gate-3-bg:            rgba(188, 140, 255, 0.14);
+  --gate-3-fg:            #D9BBFF;   /* 8.15:1 */
+
+  /* Espera humana — NO es error (rojo) ni progreso (verde).
+   * Comparte familia con --rest-mode: "detenido por decision, no por fallo". */
+  --waiting-operator:     #7C5CFF;
+  --waiting-operator-bg:  rgba(124, 92, 255, 0.16);
+  --waiting-operator-fg:  #C5B7FF;   /* 8.09:1 */
+
+  /* Clasificacion de criterios (GATE 0) */
+  --machine-verified:     var(--success);
+  --machine-verified-bg:  var(--success-bg);
+  --machine-verified-fg:  #B8F0C0;   /* 10.70:1 */
+  --human-only:           var(--warning);
+  --human-only-bg:        var(--warning-bg);
+  --human-only-fg:        #FFE099;   /* 10.74:1 */
+
+  /* Evidencia no representativa (stale / viewport distinto / cacheada) */
+  --evidence-stale:       #D29922;
+  --evidence-stale-bg:    rgba(210, 153, 34, 0.10);
+}
