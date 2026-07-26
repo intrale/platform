@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Issue #2599 — ETA total restante del Issue Tracker.
+  Referencia UX para badge + tooltip nativo. No introduce un componente nuevo:
+  conserva el chip ETA actual y define jerarquía, copy y estados.
+
+  Tokens alineados al dashboard:
+  surface-0 #0D1117 · surface-1 #161B22 · border #30363D
+  text-primary #E6EDF3 · text-secondary #8B949E · accent #58A6FF
+
+  Contrato:
+  - Badge: "⏱ ~28m total"; nunca muestra sólo el agente activo.
+  - Tooltip: encabezado + una línea por fase pendiente, en orden del pipeline.
+  - Fase activa: agrega "(en curso)".
+  - Fase paralela: identifica el skill crítico y usa MAX.
+  - Sin historia: explicita "fallback p75"; no oculta la incertidumbre.
+  - El mismo desglose debe exponerse en aria-label o texto accesible.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="620" viewBox="0 0 1120 620"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif"
+     role="img" aria-labelledby="title desc">
+  <title id="title">ETA total con desglose por fases para el Issue Tracker</title>
+  <desc id="desc">Tarjeta oscura de un issue con badge de veintiocho minutos totales y tooltip que desglosa las fases restantes.</desc>
+
+  <rect width="1120" height="620" fill="#0D1117"/>
+  <text x="64" y="64" fill="#E6EDF3" font-size="26" font-weight="750">ETA total restante</text>
+  <text x="64" y="94" fill="#8B949E" font-size="14">El badge responde “¿cuánto falta para terminar el issue?”, no “¿cuánto falta para este agente?”</text>
+
+  <!-- Issue card -->
+  <g transform="translate(64 134)">
+    <rect width="992" height="116" rx="14" fill="#161B22" stroke="#30363D"/>
+    <rect x="20" y="22" width="48" height="24" rx="12" fill="#1F6FEB" fill-opacity=".18" stroke="#58A6FF" stroke-opacity=".45"/>
+    <text x="44" y="39" text-anchor="middle" fill="#79C0FF" font-size="11" font-weight="800">DEV</text>
+    <text x="82" y="40" fill="#E6EDF3" font-size="16" font-weight="700">#2599 · ETA del Issue Tracker suma todas las fases restantes</text>
+    <text x="20" y="80" fill="#8B949E" font-size="12">pipeline-dev · trabajando · 3m transcurridos</text>
+
+    <!-- Badge: mismo lenguaje visual que el dashboard, total explícito -->
+    <g transform="translate(818 68)">
+      <rect width="150" height="30" rx="15" fill="#58A6FF" fill-opacity=".12" stroke="#58A6FF" stroke-opacity=".45"/>
+      <text x="75" y="20" text-anchor="middle" fill="#79C0FF" font-size="12" font-weight="750">⏱ ~28m total</text>
+    </g>
+  </g>
+
+  <!-- Tooltip nativo representado como panel para especificar contenido -->
+  <g transform="translate(458 270)">
+    <path d="M520 0 l12 14 h-24 z" fill="#21262D" stroke="#484F58"/>
+    <rect y="13" width="520" height="282" rx="10" fill="#21262D" stroke="#484F58"/>
+    <text x="20" y="45" fill="#E6EDF3" font-size="14" font-weight="750">ETA total restante: ~28m</text>
+    <line x1="20" y1="60" x2="500" y2="60" stroke="#30363D"/>
+
+    <text x="20" y="88" fill="#79C0FF" font-size="12" font-weight="700">dev</text>
+    <text x="116" y="88" fill="#E6EDF3" font-size="12">~4m · pipeline-dev en curso</text>
+    <text x="418" y="88" fill="#8B949E" font-size="11">avg</text>
+
+    <text x="20" y="120" fill="#E6EDF3" font-size="12" font-weight="700">build</text>
+    <text x="116" y="120" fill="#E6EDF3" font-size="12">~6m · build</text>
+    <text x="418" y="120" fill="#8B949E" font-size="11">avg</text>
+
+    <text x="20" y="152" fill="#E6EDF3" font-size="12" font-weight="700">verificación</text>
+    <text x="116" y="152" fill="#E6EDF3" font-size="12">~12m · QA determina MAX</text>
+    <text x="418" y="152" fill="#8B949E" font-size="11">avg</text>
+
+    <text x="20" y="184" fill="#E6EDF3" font-size="12" font-weight="700">linteo</text>
+    <text x="116" y="184" fill="#E6EDF3" font-size="12">~1m · linter</text>
+    <text x="418" y="184" fill="#8B949E" font-size="11">avg</text>
+
+    <text x="20" y="216" fill="#E6EDF3" font-size="12" font-weight="700">aprobación</text>
+    <text x="116" y="216" fill="#E6EDF3" font-size="12">~3m · review determina MAX</text>
+    <text x="418" y="216" fill="#8B949E" font-size="11">avg</text>
+
+    <text x="20" y="248" fill="#E6EDF3" font-size="12" font-weight="700">entrega</text>
+    <text x="116" y="248" fill="#E6EDF3" font-size="12">~2m · sin historia suficiente</text>
+    <text x="418" y="248" fill="#D29922" font-size="11" font-weight="700">fallback p75</text>
+    <text x="20" y="276" fill="#8B949E" font-size="10">Actualizado con cada refresh · valores redondeados para lectura rápida</text>
+  </g>
+
+  <!-- Notas de accesibilidad -->
+  <g transform="translate(64 300)">
+    <text fill="#8B949E" font-size="11" font-weight="800" letter-spacing="1">CRITERIOS VISUALES</text>
+    <circle cx="5" cy="34" r="3" fill="#58A6FF"/>
+    <text x="16" y="38" fill="#B1BAC4" font-size="12">“total” evita confundir el ETA con el agente activo.</text>
+    <circle cx="5" cy="68" r="3" fill="#58A6FF"/>
+    <text x="16" y="72" fill="#B1BAC4" font-size="12">La fuente se expresa con texto; no depende sólo del color.</text>
+    <circle cx="5" cy="102" r="3" fill="#58A6FF"/>
+    <text x="16" y="106" fill="#B1BAC4" font-size="12">Nombres y tiempos siguen el orden real del pipeline.</text>
+    <circle cx="5" cy="136" r="3" fill="#58A6FF"/>
+    <text x="16" y="140" fill="#B1BAC4" font-size="12">El title debe duplicarse en aria-label para teclado/lector.</text>
+  </g>
+</svg>
