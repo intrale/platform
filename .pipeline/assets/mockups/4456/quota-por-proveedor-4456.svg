@@ -1,0 +1,245 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1040" viewBox="0 0 1200 1040" font-family="'Segoe UI', system-ui, -apple-system, sans-serif">
+  <defs>
+    <linearGradient id="brandbar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <style>
+      .t-title  { fill:#E6EDF3; font-size:19px; font-weight:700; }
+      .t-sub    { fill:#8B949E; font-size:12px; }
+      .t-head   { fill:#B1BAC4; font-size:11px; font-weight:700; letter-spacing:.09em; }
+      .t-gh     { fill:#6E7681; font-size:9.5px; font-weight:700; letter-spacing:.10em; }
+      .t-note   { fill:#8B949E; font-size:10px; }
+      .t-prov   { fill:#E6EDF3; font-size:12px; font-weight:700; }
+      .t-src    { fill:#6E7681; font-size:9.5px; }
+      .t-wtag   { fill:#8B949E; font-size:9.5px; font-weight:700; letter-spacing:.06em; }
+      .t-pct    { font-size:11.5px; font-weight:800; font-variant-numeric:tabular-nums; }
+      .t-rst    { fill:#6E7681; font-size:9px; font-variant-numeric:tabular-nums; }
+      .t-nodata { fill:#8B949E; font-size:10.5px; font-weight:600; }
+      .t-pend   { fill:#6E7681; font-size:10.5px; font-weight:600; }
+      .t-ok     { fill:#3FB950; } .t-warn { fill:#D29922; } .t-bad { fill:#F85149; }
+      .t-lbl    { fill:#B1BAC4; font-size:11px; }
+      .t-lbl-b  { fill:#E6EDF3; font-size:11px; font-weight:700; }
+      .t-cap    { fill:#6E7681; font-size:10px; }
+      .t-badge  { font-size:9.5px; font-weight:700; letter-spacing:.06em; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="1040" fill="#0D1117"/>
+  <rect x="0" y="0" width="1200" height="3" fill="url(#brandbar)"/>
+
+  <text x="40" y="46" class="t-title">#4456 · Cuota de consumo REAL por proveedor</text>
+  <text x="40" y="66" class="t-sub">Mockup UX · panel «Estado + Cuota por proveedor» de la vista principal (home MIZPÁ) · polaridad unificada en % CONSUMIDO</text>
+
+  <!-- =========================== A · ESTADO OBJETIVO =========================== -->
+  <text x="40" y="106" class="t-head">A · ESTADO OBJETIVO DEL PANEL</text>
+  <rect x="40" y="118" width="1120" height="250" rx="10" fill="#161B22" stroke="#21262D"/>
+
+  <!-- Columna izquierda: ESTADO -->
+  <text x="60" y="146" class="t-head">📟 ESTADO</text>
+  <circle cx="66" cy="176" r="5" fill="#3FB950"/>
+  <text x="80" y="180" style="fill:#3FB950;font-size:15px;font-weight:800;letter-spacing:.04em">SALUDABLE</text>
+  <rect x="58" y="196" width="260" height="24" rx="6" fill="#1C2128" stroke="#21262D"/>
+  <text x="70" y="212" class="t-cap">⚠ Anomalía consumo</text>
+  <rect x="58" y="226" width="260" height="24" rx="6" fill="#1C2128" stroke="#21262D"/>
+  <text x="70" y="242" class="t-cap">↩ Rebote ola</text><text x="300" y="242" class="t-cap" text-anchor="end">—</text>
+  <rect x="58" y="256" width="260" height="24" rx="6" fill="#1C2128" stroke="#21262D"/>
+  <text x="70" y="272" class="t-cap">✓ Proveedores</text><text x="300" y="272" class="t-lbl-b" text-anchor="end">3/5</text>
+  <text x="58" y="298" class="t-cap">«Proveedores» = con cuota utilizable</text>
+  <text x="58" y="312" class="t-cap">(consumo &lt; 100% y dato fresco).</text>
+
+  <line x1="340" y1="134" x2="340" y2="352" stroke="#21262D"/>
+
+  <!-- Columna derecha: matriz -->
+  <text x="366" y="146" class="t-head">🔌 CUOTA POR PROVEEDOR</text>
+  <text x="1140" y="146" class="t-note" text-anchor="end">% CONSUMIDO · leído del proveedor · reset propio por bucket</text>
+
+  <text x="366" y="172" class="t-gh">PROVEEDOR</text>
+  <text x="646" y="172" class="t-gh">VENTANA CORTA</text>
+  <text x="896" y="172" class="t-gh">VENTANA LARGA</text>
+
+  <!-- fila helper: y base 196, paso 34 -->
+  <g>
+    <!-- Anthropic -->
+    <line x1="366" y1="182" x2="1140" y2="182" stroke="#21262D"/>
+    <circle cx="372" cy="200" r="4" fill="#D29922"/>
+    <text x="386" y="204" class="t-prov">Anthropic</text><text x="466" y="204" class="t-src">· CLI</text>
+    <text x="646" y="204" class="t-wtag">5H</text>
+    <rect x="678" y="197" width="52" height="5" rx="2.5" fill="#FFFFFF" fill-opacity=".09"/>
+    <rect x="678" y="197" width="28.6" height="5" rx="2.5" fill="#D29922"/>
+    <text x="740" y="204" class="t-pct t-warn">55%</text>
+    <text x="782" y="204" class="t-rst">↻2h10m</text>
+    <text x="896" y="204" class="t-wtag">SEM</text>
+    <rect x="932" y="197" width="52" height="5" rx="2.5" fill="#FFFFFF" fill-opacity=".09"/>
+    <rect x="932" y="197" width="5.7" height="5" rx="2.5" fill="#3FB950"/>
+    <text x="994" y="204" class="t-pct t-ok">11%</text>
+    <text x="1036" y="204" class="t-rst">↻4d6h</text>
+
+    <!-- Codex -->
+    <line x1="366" y1="216" x2="1140" y2="216" stroke="#21262D"/>
+    <circle cx="372" cy="234" r="4" fill="#3FB950"/>
+    <text x="386" y="238" class="t-prov">Codex</text><text x="440" y="238" class="t-src">· CLI</text>
+    <text x="646" y="238" class="t-wtag">ROLL</text>
+    <rect x="678" y="231" width="52" height="5" rx="2.5" fill="#FFFFFF" fill-opacity=".09"/>
+    <rect x="678" y="231" width="32.2" height="5" rx="2.5" fill="#D29922"/>
+    <text x="740" y="238" class="t-pct t-warn">62%</text>
+    <text x="896" y="238" class="t-wtag">SEM</text>
+    <rect x="932" y="231" width="52" height="5" rx="2.5" fill="#FFFFFF" fill-opacity=".09"/>
+    <rect x="932" y="231" width="23.4" height="5" rx="2.5" fill="#3FB950"/>
+    <text x="994" y="238" class="t-pct t-ok">45%</text>
+
+    <!-- Gemini -->
+    <line x1="366" y1="250" x2="1140" y2="250" stroke="#21262D"/>
+    <circle cx="372" cy="268" r="4" fill="#58A6FF"/>
+    <text x="386" y="272" class="t-prov">Gemini</text><text x="444" y="272" class="t-src">· API</text>
+    <text x="646" y="272" class="t-wtag">MIN</text>
+    <text x="678" y="272" class="t-nodata">sin dato</text>
+    <text x="896" y="272" class="t-wtag">DÍA</text>
+    <text x="932" y="272" class="t-nodata">sin dato</text>
+
+    <!-- Cerebras -->
+    <line x1="366" y1="284" x2="1140" y2="284" stroke="#21262D"/>
+    <circle cx="372" cy="302" r="4" fill="#2EE6C1"/>
+    <text x="386" y="306" class="t-prov">Cerebras</text><text x="458" y="306" class="t-src">· headers</text>
+    <text x="646" y="306" class="t-wtag">MIN</text>
+    <rect x="678" y="299" width="52" height="5" rx="2.5" fill="#FFFFFF" fill-opacity=".09"/>
+    <rect x="678" y="299" width="6.2" height="5" rx="2.5" fill="#3FB950"/>
+    <text x="740" y="306" class="t-pct t-ok">12%</text>
+    <text x="782" y="306" class="t-rst">↻43s</text>
+    <text x="896" y="306" class="t-wtag">DÍA</text>
+    <rect x="932" y="299" width="52" height="5" rx="2.5" fill="#FFFFFF" fill-opacity=".09"/>
+    <rect x="932" y="299" width="43.7" height="5" rx="2.5" fill="#F85149"/>
+    <text x="994" y="306" class="t-pct t-bad">84%</text>
+    <text x="1036" y="306" class="t-rst">↻7h20m</text>
+
+    <!-- NVIDIA -->
+    <line x1="366" y1="318" x2="1140" y2="318" stroke="#21262D"/>
+    <circle cx="372" cy="336" r="4" fill="#BC8CFF"/>
+    <text x="386" y="340" class="t-prov">NVIDIA NIM</text><text x="470" y="340" class="t-src">· headers</text>
+    <text x="646" y="340" class="t-wtag">MIN</text>
+    <text x="678" y="340" class="t-nodata">sin dato</text>
+    <text x="896" y="340" class="t-wtag">DÍA</text>
+    <rect x="932" y="333" width="52" height="5" rx="2.5" fill="#FFFFFF" fill-opacity=".09"/>
+    <rect x="932" y="333" width="14" height="5" rx="2.5" fill="#3FB950"/>
+    <text x="994" y="340" class="t-pct t-ok">27%</text>
+    <text x="1036" y="340" class="t-rst">↻11h</text>
+    <line x1="366" y1="352" x2="1140" y2="352" stroke="#21262D"/>
+  </g>
+
+  <!-- =========================== B · CATÁLOGO DE ESTADOS =========================== -->
+  <text x="40" y="410" class="t-head">B · CATÁLOGO DE ESTADOS DE CELDA (una sola magnitud entera alimenta texto · barra · color · title · aria-label)</text>
+  <rect x="40" y="422" width="1120" height="232" rx="10" fill="#161B22" stroke="#21262D"/>
+
+  <!-- headers -->
+  <text x="62" y="450" class="t-gh">ESTADO</text>
+  <text x="250" y="450" class="t-gh">RENDER</text>
+  <text x="470" y="450" class="t-gh">TOKEN</text>
+  <text x="610" y="450" class="t-gh">CONDICIÓN</text>
+  <text x="900" y="450" class="t-gh">ARIA-LABEL / TITLE</text>
+  <line x1="62" y1="458" x2="1138" y2="458" stroke="#21262D"/>
+
+  <!-- 1 ok -->
+  <text x="62" y="484" class="t-lbl-b">Fresco · holgado</text>
+  <rect x="250" y="477" width="52" height="5" rx="2.5" fill="#FFFFFF" fill-opacity=".09"/>
+  <rect x="250" y="477" width="14" height="5" rx="2.5" fill="#3FB950"/>
+  <text x="312" y="484" class="t-pct t-ok">27%</text>
+  <text x="470" y="484" class="t-cap">--in-ok #3FB950</text>
+  <text x="610" y="484" class="t-cap">consumido 0–50</text>
+  <text x="900" y="484" class="t-cap">«Cerebras Día: 27% consumido»</text>
+  <line x1="62" y1="496" x2="1138" y2="496" stroke="#21262D"/>
+
+  <!-- 2 warn -->
+  <text x="62" y="518" class="t-lbl-b">Fresco · medio</text>
+  <rect x="250" y="511" width="52" height="5" rx="2.5" fill="#FFFFFF" fill-opacity=".09"/>
+  <rect x="250" y="511" width="28.6" height="5" rx="2.5" fill="#D29922"/>
+  <text x="312" y="518" class="t-pct t-warn">55%</text>
+  <text x="470" y="518" class="t-cap">--in-warn #D29922</text>
+  <text x="610" y="518" class="t-cap">consumido 51–80</text>
+  <text x="900" y="518" class="t-cap">«Anthropic 5h: 55% consumido»</text>
+  <line x1="62" y1="530" x2="1138" y2="530" stroke="#21262D"/>
+
+  <!-- 3 bad -->
+  <text x="62" y="552" class="t-lbl-b">Fresco · crítico</text>
+  <rect x="250" y="545" width="52" height="5" rx="2.5" fill="#FFFFFF" fill-opacity=".09"/>
+  <rect x="250" y="545" width="43.7" height="5" rx="2.5" fill="#F85149"/>
+  <text x="312" y="552" class="t-pct t-bad">84%</text>
+  <text x="470" y="552" class="t-cap">--in-bad #F85149</text>
+  <text x="610" y="552" class="t-cap">consumido 81–100</text>
+  <text x="900" y="552" class="t-cap">«Cerebras Día: 84% consumido»</text>
+  <line x1="62" y1="564" x2="1138" y2="564" stroke="#21262D"/>
+
+  <!-- 4 exhausted -->
+  <text x="62" y="586" class="t-lbl-b">Tope activo</text>
+  <text x="250" y="586" class="t-badge t-bad">tope activo</text>
+  <text x="470" y="586" class="t-cap">--in-bad #F85149</text>
+  <text x="610" y="586" class="t-cap">eventState=exhausted · precede a todo %</text>
+  <text x="900" y="586" class="t-cap">«Codex Roll: tope activo»</text>
+  <line x1="62" y1="598" x2="1138" y2="598" stroke="#21262D"/>
+
+  <!-- 5 sin dato -->
+  <text x="62" y="620" class="t-lbl-b">Sin dato</text>
+  <text x="250" y="620" class="t-nodata">sin dato</text>
+  <text x="470" y="620" class="t-cap">--text-dim #8B949E ▲</text>
+  <text x="610" y="620" class="t-cap">ausente · stale · futuro · fuera de rango · malformado</text>
+  <text x="900" y="620" class="t-cap">«Gemini Día: sin dato» + motivo</text>
+  <line x1="62" y1="632" x2="1138" y2="632" stroke="#21262D"/>
+
+  <!-- 6 pendiente -->
+  <text x="62" y="648" class="t-lbl-b">Pendiente (pre-tick)</text>
+  <text x="250" y="648" class="t-pend">…</text>
+  <text x="470" y="648" class="t-cap">--text-disabled #6E7681</text>
+  <text x="610" y="648" class="t-cap">aún no llegó el primer tick · SIN barra</text>
+  <text x="900" y="648" class="t-cap">«… : esperando primera lectura»</text>
+
+  <!-- =========================== C · REGLAS =========================== -->
+  <text x="40" y="700" class="t-head">C · REGLAS DE DISEÑO NO NEGOCIABLES</text>
+
+  <rect x="40" y="712" width="366" height="300" rx="10" fill="#161B22" stroke="#21262D"/>
+  <text x="62" y="740" class="t-lbl-b">① Polaridad única: CONSUMIDO</text>
+  <text x="62" y="762" class="t-lbl">Hoy Anthropic rinde «% consumido» y el</text>
+  <text x="62" y="778" class="t-lbl">resto «% disponible» en la MISMA tabla:</text>
+  <text x="62" y="794" class="t-lbl">dos filas con el mismo número significan</text>
+  <text x="62" y="810" class="t-lbl">cosas opuestas y no se pueden comparar.</text>
+  <text x="62" y="832" class="t-lbl-b">Toda la matriz pasa a % consumido.</text>
+  <text x="62" y="854" class="t-cap">Conversión exacta, sin pérdida:</text>
+  <text x="62" y="872" style="fill:#2EE6C1;font-size:11px;font-family:monospace">consumido = 100 − available</text>
+  <text x="62" y="890" style="fill:#2EE6C1;font-size:11px;font-family:monospace">= 100·(limit − remaining)/limit</text>
+  <text x="62" y="916" class="t-cap">El color NO cambia en ninguna celda:</text>
+  <text x="62" y="932" class="t-cap">_mzConsumedClass ya es el espejo exacto</text>
+  <text x="62" y="948" class="t-cap">de _mzThresholdClass (&gt;80 bad ⇔ &lt;20 bad).</text>
+  <text x="62" y="972" class="t-cap">Cambia el número y el rótulo, no la paleta</text>
+  <text x="62" y="988" class="t-cap">⇒ cero regresión cromática.</text>
+
+  <rect x="418" y="712" width="366" height="300" rx="10" fill="#161B22" stroke="#21262D"/>
+  <text x="440" y="740" class="t-lbl-b">② Rótulo explícito y redundante</text>
+  <text x="440" y="762" class="t-lbl">El encabezado del panel declara la</text>
+  <text x="440" y="778" class="t-lbl">magnitud una vez, en mayúscula:</text>
+  <rect x="440" y="790" width="322" height="26" rx="6" fill="#1C2128" stroke="#30363D"/>
+  <text x="452" y="807" class="t-cap">% CONSUMIDO · leído del proveedor · reset por bucket</text>
+  <text x="440" y="840" class="t-lbl">Cada celda repite la magnitud en su</text>
+  <text x="440" y="856" class="t-lbl">title y aria-label: «N% consumido».</text>
+  <text x="440" y="878" class="t-lbl-b">Nunca la palabra «disponible» en el panel.</text>
+  <text x="440" y="906" class="t-lbl-b">③ WCAG 1.4.1 — no sólo color</text>
+  <text x="440" y="928" class="t-lbl">El número y el literal «sin dato» /</text>
+  <text x="440" y="944" class="t-lbl">«tope activo» comunican el estado sin</text>
+  <text x="440" y="960" class="t-lbl">depender del matiz. La barra es refuerzo,</text>
+  <text x="440" y="976" class="t-lbl">nunca el único portador de significado.</text>
+
+  <rect x="796" y="712" width="364" height="300" rx="10" fill="#161B22" stroke="#21262D"/>
+  <text x="818" y="740" class="t-lbl-b">④ «sin dato» ≠ 0% · contraste AA</text>
+  <text x="818" y="762" class="t-lbl">CA-4 vuelve «sin dato» un estado</text>
+  <text x="818" y="778" class="t-lbl">protagonista (Gemini permanente).</text>
+  <text x="818" y="800" style="fill:#F85149;font-size:11px;font-weight:700">▲ Defecto actual a corregir:</text>
+  <text x="818" y="818" class="t-lbl">se pinta a 10px con #6E7681 = 3.77:1</text>
+  <text x="818" y="834" class="t-lbl">sobre #161B22 ⇒ FALLA WCAG AA (4.5:1).</text>
+  <text x="818" y="856" class="t-lbl-b">Subir a --text-dim #8B949E (5.62:1).</text>
+  <text x="818" y="884" class="t-lbl-b">⑤ Ausencia nunca se pinta como 0%</text>
+  <text x="818" y="906" class="t-lbl">«sin dato» y «pendiente» NO dibujan</text>
+  <text x="818" y="922" class="t-lbl">barra. Una barra vacía se lee como</text>
+  <text x="818" y="938" class="t-lbl">«0% consumido» = luz verde falsa y</text>
+  <text x="818" y="954" class="t-lbl">habilita una decisión de pacing errónea.</text>
+  <text x="818" y="978" class="t-cap">Cada «sin dato» lleva su motivo en el</text>
+  <text x="818" y="994" class="t-cap">tooltip: ausencia explicada, no un bug.</text>
+
+  <text x="40" y="1030" class="t-cap">Intrale · Pipeline V3 · assets/mockups/4456/ — tokens: design-tokens.css · agente ux (fase criterios)</text>
+</svg>
