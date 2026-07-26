@@ -76,6 +76,12 @@ Tomado de [`kernel-migration-plan.md` §3.2](kernel-migration-plan.md) — no se
 
 ---
 
+> **Refinamiento posterior (2026-07-24):** el encuadre de los **tres proyectos en paralelo**, el
+> **kernel como proyecto vivo** (instancia productiva ↔ en construcción) y la **red de seguridad del
+> corte** (rollback si nos quedamos sin operación, simulacro previo, modo degradado) viven en
+> [`corte-kernel-y-tres-proyectos.md`](corte-kernel-y-tres-proyectos.md), junto con las épicas
+> sugeridas (aún **sin crear**).
+
 ## 6. Próximo paso
 
 Arrancar **9.1 (migrar solo el repositorio del kernel)**. Antes de crear issues, confirmar con el

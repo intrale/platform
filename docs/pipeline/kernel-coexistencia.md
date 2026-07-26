@@ -274,6 +274,11 @@ pipeline", NO separar hardware.**
   del kernel estaba en juego, qué se restauró y cómo confirmar que el rollback funcionó.
 - Detalle del mecanismo de rollback **atómico y verificable** (reuso de `rollback.js`/`rollback.sh` +
   tags estables): [`kernel-updates.md`](./kernel-updates.md) §Decisión auto-hospedaje y §Auditoría.
+- **Caso duro — "el corte sale mal y nos quedamos sin operación":** esta tabla cubre el rollback **por
+  etapa**. Los tres niveles de recuperación (apagar consumo · rollback atómico · reconstrucción desde
+  snapshot), el botón de pánico independiente del sistema caído, el simulacro obligatorio previo al
+  corte y el modo degradado están en
+  [`corte-kernel-y-tres-proyectos.md`](./corte-kernel-y-tres-proyectos.md) §5.
 
 ---
 
