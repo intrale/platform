@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import androidx.core.app.NotificationCompat
+import ar.com.intrale.R
 import asdo.client.IncomingPushNotification
 import asdo.client.NotificationEventType
 import org.kodein.log.LoggerFactory
@@ -89,7 +90,7 @@ class AndroidPushNotificationDisplay(
             }
 
             val builder = NotificationCompat.Builder(context, channelId)
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(title)
                 .setContentText(body)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
