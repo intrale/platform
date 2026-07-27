@@ -29,6 +29,47 @@ const path = require('path');
 let CACHED_OFFICIAL = null;
 
 /**
+ * Extrae las líneas del bloque `pipelines:` de un YAML crudo.
+ *
+ * Se hace por escaneo de líneas y NO con un regex de bloque único. El regex
+ * anterior (`/^pipelines:\s*\n((?:[ \t]+.*\n)+)/m`) tenía dos fallas que
+ * dependían del checkout y silenciaban fases enteras:
+ *
+ *   - Con LF, `(?:[ \t]+.*\n)+` cortaba en la primera línea EN BLANCO —la que
+ *     separa `definicion:` de `desarrollo:`— y devolvía sólo el primer
+ *     pipeline. Resultado: `desarrollo/*` desaparecía del enum oficial y
+ *     `resolvePhase('validar')` respondía "fase que el config actual no
+ *     incluye".
+ *   - Con CRLF no matcheaba nada y caía al fallback hardcodeado, que por
+ *     casualidad sí tenía las 10 fases. O sea: el bug quedaba tapado en la
+ *     copia vieja del repo principal y sólo aparecía en los worktrees, que
+ *     desde el `.gitattributes` de #4695 (`*.yaml eol=lf`) siempre son LF.
+ *
+ * El escaneo normaliza saltos de línea, tolera líneas en blanco y comentarios
+ * dentro del bloque, y corta recién en la primera línea sin indentar (que es
+ * la clave YAML de nivel raíz siguiente).
+ *
+ * @param {string} raw - contenido del config.yaml
+ * @returns {string[]|null} líneas del bloque, o null si no hay clave `pipelines:`
+ */
+function extractPipelinesBlock(raw) {
+    const lines = String(raw).replace(/\r\n?/g, '\n').split('\n');
+    const start = lines.findIndex((l) => /^pipelines:[ \t]*(#.*)?$/.test(l));
+    if (start === -1) return null;
+
+    const block = [];
+    for (let i = start + 1; i < lines.length; i++) {
+        const line = lines[i];
+        // Línea en blanco: separador visual, sigue dentro del bloque.
+        if (/^[ \t]*$/.test(line)) { block.push(line); continue; }
+        // Primera línea sin indentar => empezó otra clave raíz: fin del bloque.
+        if (!/^[ \t]/.test(line)) break;
+        block.push(line);
+    }
+    return block;
+}
+
+/**
  * Lee `.pipeline/config.yaml` y devuelve la lista de fases oficiales en forma
  * `pipeline/fase`. Si el config no es legible, devuelve fallback hardcoded
  * (mismo valor que el config a la fecha del issue #3415).
@@ -57,16 +98,14 @@ function loadOfficialPhases(opts) {
     }
 
     const out = [];
-    // Sub-bloque por pipeline. Captura cada `<pipeline>:` con sus líneas indentadas.
-    const pipelinesBlockMatch = raw.match(/^pipelines:\s*\n((?:[ \t]+.*\n)+)/m);
-    if (!pipelinesBlockMatch) {
+    const block = extractPipelinesBlock(raw);
+    if (!block) {
         CACHED_OFFICIAL = HARDCODED_FALLBACK.slice();
         return CACHED_OFFICIAL;
     }
-    const block = pipelinesBlockMatch[1];
 
     // Cada pipeline aparece como `  <nombre>:` y su `fases: [a, b, c]` indentado.
-    const lines = block.split('\n');
+    const lines = block;
     let currentPipeline = null;
     for (const line of lines) {
         const pipMatch = line.match(/^ {2}([A-Za-z_-]+):\s*$/);

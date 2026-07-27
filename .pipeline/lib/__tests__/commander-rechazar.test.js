@@ -230,6 +230,104 @@ test('CA-6: nombre oficial `definicion/criterios` matchea exacto', () => {
     assert.equal(r.full, 'definicion/criterios');
 });
 
+// Regresión #5065 — el parser del bloque `pipelines:` cortaba en la línea en
+// blanco que separa `definicion:` de `desarrollo:`, así que el enum oficial se
+// quedaba sólo con el primer pipeline y toda fase `desarrollo/*` respondía
+// "fase que el config actual no incluye". Con CRLF el regex no matcheaba nada
+// y caía al fallback hardcodeado (que sí las tenía), por eso el bug sólo se
+// veía en los worktrees, LF por el `.gitattributes` de #4695.
+
+function withConfig(content, fn) {
+    const dir = mkTmp('phases-config-');
+    const configPath = path.join(dir, 'config.yaml');
+    fs.writeFileSync(configPath, content);
+    phasesAlias._clearCache();
+    try { return fn(configPath); }
+    finally { phasesAlias._clearCache(); }
+}
+
+const REAL_CONFIG_LF = fs
+    .readFileSync(path.resolve(__dirname, '..', '..', 'config.yaml'), 'utf8')
+    .replace(/\r\n?/g, '\n');
+
+for (const [eolName, content] of [
+    ['LF', REAL_CONFIG_LF],
+    ['CRLF', REAL_CONFIG_LF.replace(/\n/g, '\r\n')],
+]) {
+    test(`#5065: con ${eolName} el enum oficial incluye los dos pipelines del config`, () => {
+        withConfig(content, (configPath) => {
+            const fulls = phasesAlias
+                .loadOfficialPhases({ configPath, refresh: true })
+                .map((o) => o.full);
+            // No alcanza con contar: el fallback hardcodeado también tiene 10.
+            // Exigimos que salgan del config parseado, con ambos pipelines.
+            assert.ok(fulls.includes('definicion/analisis'), 'falta definicion/analisis');
+            assert.ok(fulls.includes('desarrollo/validacion'), 'falta desarrollo/validacion');
+            assert.ok(fulls.includes('desarrollo/entrega'), 'falta desarrollo/entrega');
+            assert.ok(
+                fulls.filter((f) => f.startsWith('desarrollo/')).length >= 7,
+                `el pipeline desarrollo quedó truncado: ${JSON.stringify(fulls)}`,
+            );
+        });
+    });
+
+    test(`#5065: con ${eolName} resolvePhase('validar') resuelve a desarrollo/validacion`, () => {
+        withConfig(content, (configPath) => {
+            const r = phasesAlias.resolvePhase('validar', { configPath });
+            assert.equal(r.ok, true, r.message);
+            assert.equal(r.full, 'desarrollo/validacion');
+        });
+    });
+}
+
+test('#5065: una línea en blanco entre pipelines no trunca el bloque', () => {
+    const yaml = [
+        'pipelines:',
+        '  uno:',
+        '    fases: [a, b]',
+        '',
+        '  dos:',
+        '    fases: [c]',
+        '',
+        'concurrencia:',
+        '  po: 2',
+        '',
+    ].join('\n');
+    withConfig(yaml, (configPath) => {
+        const fulls = phasesAlias
+            .loadOfficialPhases({ configPath, refresh: true })
+            .map((o) => o.full);
+        assert.deepEqual(fulls, ['uno/a', 'uno/b', 'dos/c']);
+    });
+});
+
+test('#5065: el bloque corta en la siguiente clave raíz (no absorbe otras secciones)', () => {
+    const yaml = [
+        'pipelines:',
+        '  uno:',
+        '    fases: [a]',
+        'otra_seccion:',
+        '  dos:',
+        '    fases: [zzz]',
+        '',
+    ].join('\n');
+    withConfig(yaml, (configPath) => {
+        const fulls = phasesAlias
+            .loadOfficialPhases({ configPath, refresh: true })
+            .map((o) => o.full);
+        assert.deepEqual(fulls, ['uno/a']);
+    });
+});
+
+test('#5065: sin clave `pipelines:` sigue cayendo al fallback hardcodeado', () => {
+    withConfig('concurrencia:\n  po: 2\n', (configPath) => {
+        const fulls = phasesAlias
+            .loadOfficialPhases({ configPath, refresh: true })
+            .map((o) => o.full);
+        assert.deepEqual(fulls, phasesAlias.HARDCODED_FALLBACK.map((o) => o.full));
+    });
+});
+
 test('CA-11 (SEC-1.4): path traversal en fase es rechazado', () => {
     const r = phasesAlias.resolvePhase('../etc/passwd');
     assert.equal(r.ok, false);
