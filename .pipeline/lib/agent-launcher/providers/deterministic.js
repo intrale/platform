@@ -30,13 +30,78 @@ function isDeterministic(skill) {
 }
 
 // -----------------------------------------------------------------------------
-// resolveDeterministicScript — resuelve la ruta absoluta del script Node del
-// skill. Si existe un worktree del issue (platform.agent-<issue>-*), prefiere
-// el script del worktree (puede haber cambios locales del developer).
-//
-// Si el worktree no tiene el script, fallback al de ROOT (el "oficial").
+// Base contra la que se mide "¿esta rama cambió el script?". Coincide con la
+// base de ramas de agente del repo (ver CLAUDE.md → Ramas y PRs).
 // -----------------------------------------------------------------------------
-function resolveDeterministicScript({ skill, issue, ROOT, PIPELINE, onWorktreeHit, execSyncImpl, fsImpl } = {}) {
+const DEFAULT_BASE_REF = 'origin/main';
+
+// El nombre del skill se interpola en una línea de comando de git. Ya viene
+// filtrado por DETERMINISTIC_SKILLS en `buildSpawn`, pero `resolveDeterministicScript`
+// es exportado y llamable por su cuenta: allowlist de caracteres, sin excepciones.
+const SAFE_SKILL_RE = /^[a-z0-9][a-z0-9._-]*$/i;
+
+// -----------------------------------------------------------------------------
+// worktreeOwnsScript — ¿la rama del worktree efectivamente MODIFICA el script
+// determinístico de este skill?
+//
+// Es la condición que habilita el override del worktree. Sin ella, un worktree
+// creado hace semanas devuelve una copia arbitrariamente vieja del motor del
+// pipeline (ver comentario de `resolveDeterministicScript`).
+//
+// Dos señales, cualquiera alcanza:
+//   1. Cambios COMMITEADOS: `git diff <base>...HEAD -- <script>`. Triple punto
+//      A PROPÓSITO — compara contra el merge-base, así que una rama meramente
+//      ATRASADA da vacío. Con dos puntos, la copia vieja del worktree "difiere"
+//      de la nueva de main y el override se activaría justo en el caso que este
+//      chequeo viene a atajar (diferencia invertida).
+//   2. Cambios SIN COMMITEAR en ese path: el agente está editando el script
+//      ahora mismo y todavía no cerró el commit.
+//
+// Fail-closed hacia ROOT: ante cualquier error de git devuelve false. ROOT es
+// siempre el motor vigente; el worktree es la excepción, y una excepción que no
+// se puede justificar no se aplica.
+// -----------------------------------------------------------------------------
+function worktreeOwnsScript({ worktree, skill, execSyncImpl, baseRef } = {}) {
+    const _execSync = execSyncImpl || execSync;
+    if (!SAFE_SKILL_RE.test(String(skill || ''))) return false;
+    const base = baseRef || DEFAULT_BASE_REF;
+    const rel = `.pipeline/skills-deterministicos/${skill}.js`;
+    const opts = { cwd: worktree, encoding: 'utf8', timeout: 5000, windowsHide: true };
+    try {
+        const out = _execSync(`git diff --name-only ${base}...HEAD -- ${rel}`, opts);
+        if (String(out).trim()) return true;
+    } catch { /* base no resoluble en este worktree — sigue con el chequeo 2 */ }
+    try {
+        const out = _execSync(`git status --porcelain -- ${rel}`, opts);
+        if (String(out).trim()) return true;
+    } catch { /* sin git utilizable — fail-closed a ROOT */ }
+    return false;
+}
+
+// -----------------------------------------------------------------------------
+// resolveDeterministicScript — resuelve la ruta absoluta del script Node del
+// skill.
+//
+// Regla: se usa la copia del worktree del issue SÓLO si la rama de ese worktree
+// modifica ese mismo script. En cualquier otro caso gana la copia de ROOT.
+//
+// Por qué (#5066): estos scripts NO son la carga del issue, son el motor del
+// pipeline. El override del worktree existe por un chicken-and-egg acotado
+// (#2893): si un agente pipeline-dev arregla `tester.js`, su fix tiene que
+// tomar efecto ANTES del merge o el issue rebota eternamente. Pero aplicarlo
+// incondicionalmente convierte a CUALQUIER worktree viejo en una máquina del
+// tiempo: corre el motor tal como estaba cuando se cortó la rama y revierte en
+// silencio todos los fixes posteriores.
+//
+// Caso observado en #5066: el worktree estaba 556 commits atrás de main, sobre
+// un commit anterior a `resolveBashCommand` (a922fb28). El build spawneó `bash`
+// vía cmd.exe, que no lo resuelve, y murió en 47 ms con
+// `"bash" no se reconoce como un comando interno o externo` — un fix que ya
+// llevaba dos meses en main.
+//
+// Si el worktree no tiene el script, o no lo modifica, fallback al de ROOT.
+// -----------------------------------------------------------------------------
+function resolveDeterministicScript({ skill, issue, ROOT, PIPELINE, onWorktreeHit, onWorktreeSkip, execSyncImpl, fsImpl, baseRef } = {}) {
     const _execSync = execSyncImpl || execSync;
     const _fs = fsImpl || fs;
     const rootScript = path.join(PIPELINE, 'skills-deterministicos', `${skill}.js`);
@@ -55,10 +120,17 @@ function resolveDeterministicScript({ skill, issue, ROOT, PIPELINE, onWorktreeHi
     if (issueWorktree) {
         const wtScript = path.join(issueWorktree, '.pipeline', 'skills-deterministicos', `${skill}.js`);
         if (_fs.existsSync(wtScript)) {
-            if (typeof onWorktreeHit === 'function') {
-                try { onWorktreeHit(issueWorktree); } catch { /* ignore */ }
+            if (worktreeOwnsScript({ worktree: issueWorktree, skill, execSyncImpl: _execSync, baseRef })) {
+                if (typeof onWorktreeHit === 'function') {
+                    try { onWorktreeHit(issueWorktree); } catch { /* ignore */ }
+                }
+                return wtScript;
             }
-            return wtScript;
+            // El worktree tiene el script pero no lo toca: es una copia heredada
+            // del corte de rama. Se ignora y se corre el motor vigente de ROOT.
+            if (typeof onWorktreeSkip === 'function') {
+                try { onWorktreeSkip(issueWorktree); } catch { /* ignore */ }
+            }
         }
     }
     return rootScript;
@@ -73,7 +145,7 @@ function resolveDeterministicScript({ skill, issue, ROOT, PIPELINE, onWorktreeHi
 //
 // Defensa I4: el `skill` debe estar en DETERMINISTIC_SKILLS. Si no, throw.
 // -----------------------------------------------------------------------------
-function buildSpawn({ skill, issue, trabajandoPath, cwd, env, ROOT, PIPELINE, onWorktreeHit, execSyncImpl, fsImpl, interactive_supported }) {
+function buildSpawn({ skill, issue, trabajandoPath, cwd, env, ROOT, PIPELINE, onWorktreeHit, onWorktreeSkip, execSyncImpl, fsImpl, interactive_supported }) {
     if (!isDeterministic(skill)) {
         throw new Error(
             `[agent-launcher/deterministic] skill "${skill}" no está en la allowlist de skills determinísticos.\n` +
@@ -81,7 +153,7 @@ function buildSpawn({ skill, issue, trabajandoPath, cwd, env, ROOT, PIPELINE, on
             `Esto suele indicar un bug en resolve-provider o un agent-models.json incorrecto.`
         );
     }
-    const scriptPath = resolveDeterministicScript({ skill, issue, ROOT, PIPELINE, onWorktreeHit, execSyncImpl, fsImpl });
+    const scriptPath = resolveDeterministicScript({ skill, issue, ROOT, PIPELINE, onWorktreeHit, onWorktreeSkip, execSyncImpl, fsImpl });
     // #3605 — Opt-in. Default 'ignore'; 'pipe' habilita IPC operador→agente.
     // Sólo aplica si el skill determinístico implementa loop de lectura de stdin.
     const stdin = interactive_supported === true ? 'pipe' : 'ignore';
@@ -117,6 +189,7 @@ module.exports = {
     DETERMINISTIC_SKILLS,
     isDeterministic,
     resolveDeterministicScript,
+    worktreeOwnsScript,
     buildSpawn,
     parseTokensFromLog,
     detectQuotaExhausted,
