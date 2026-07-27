@@ -7087,8 +7087,11 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
   // Ordenar candidatos: feature priority (menor=mejor) > fase inversa (mayor idx=más avanzada=primero).
   // #3938 — la prioridad se calcula en la frontera (acceso a labels/config) y el
   // orden puro (priority asc > fase inversa) se delega a brazo-lanzamiento-core.
+  const ppStateForPriority = partialPause.getPipelineMode();
   for (const c of candidates) {
-    c.priority = calcularPrioridad(issueFromFile(c.archivo.name), config);
+    const issueNum = issueFromFile(c.archivo.name);
+    if (!partialPause.isIssueAllowedInState(issueNum, ppStateForPriority)) { c.priority = 999; continue; }
+    c.priority = calcularPrioridad(issueNum, config);
   }
   candidates.sort(brazoLanzamientoCore.compareCandidates);
 
