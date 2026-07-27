@@ -1,5 +1,5 @@
 {
-  "contractVersion": "0.1.0",
+  "contractVersion": "0.2.0",
   "projectId": "intrale-platform",
   "displayName": "Intrale Platform",
   "kernel": {
@@ -20,6 +20,38 @@
       "note": "CA-C3 (#4695): pin EXACTO (version 'X.Y.Z', nunca ^/~) + npm ci contra package-lock.json con hashes SRI. 'sri' se puebla desde el lockfile cuando @intrale/operating-kernel@0.1.0 esté publicado y firmado (gate humano CA-C1 en intrale/kernel/.github/workflows/release.yml). Migrado desde pinnedRef 'github:Intrale/kernel#704167b82c9a95115cf9d569b55ce135500e1366' (Ola 9.1). consume:false permanece = coexistencia; el motor local de .pipeline/ sigue operativo (freeze en sub-ola 9.5, fuera de #4695). No degradar en silencio: resolver fail-closed si consume:true y firma/paquete no verifican."
     }
   },
+  "repo": {
+    "owner": "intrale",
+    "name": "platform"
+  },
+  "defaultAssignee": "leitolarreta",
+  "branch": {
+    "pattern": "agent/<issue>-<slug>",
+    "base": "origin/main",
+    "protected": ["main", "develop"]
+  },
+  "qaLabels": {
+    "passed": "qa:passed",
+    "skipped": "qa:skipped",
+    "pending": "qa:pending"
+  },
+  "commands": {
+    "build": "./gradlew clean build --no-daemon",
+    "test": "./gradlew check --no-daemon",
+    "e2e": "bash qa/scripts/qa-android.sh",
+    "package": "./gradlew :users:shadowJar --no-daemon"
+  },
+  "workspace": {
+    "root": "C:/Workspaces/Intrale/platform",
+    "worktreesRoot": "C:/Workspaces/Intrale",
+    "worktreePrefix": "platform"
+  },
+  "pr": {
+    "assignee": "leitolarreta",
+    "closesKeyword": "Closes",
+    "autoMerge": false,
+    "draft": false
+  },
   "capabilities": {
     "android": true,
     "backend": true,
@@ -30,6 +62,7 @@
     "package": true,
     "deploy": true
   },
+  "capabilitiesNote": "#5065 — `capabilities` (booleanos, eje interfaz/oferta) queda SIN CAMBIOS por compatibilidad hacia atrás: es el nombre que ya usan con otra semántica el eje de autorización (.pipeline/lib/capabilities.js), el de ejecución (execution-capabilities, #4839) y la partición de interfaces de .pipeline/contracts/project.schema.json. El contrato del adaptador introduce los COMANDOS bajo el nombre distinto `commands` (CA-7): ahí la presencia de la clave —no un booleano— es lo que habilita la capacidad. `deploy` no se declara en `commands` porque el despliegue lo ejecuta CI, no el kernel; su ausencia significa, por contrato, que el kernel nunca despliega.",
   "routing": {
     "source": ".pipeline/config.yaml",
     "note": "La externalización de la tabla label->skill al manifiesto es la sub-ola 9.4. Durante 9.1 el ruteo vivo permanece en .pipeline/config.yaml sin cambio de comportamiento."

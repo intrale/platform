@@ -65,7 +65,10 @@ test('el manifiesto del producto declara consume:false (coexistencia 9.1)', () =
   assert.ok(manifest, 'pipeline.config.json debe existir y parsear');
   assert.strictEqual(manifest.kernel.consume, false);
   assert.strictEqual(manifest.kernel.package, resolver.KERNEL_PACKAGE);
-  assert.strictEqual(manifest.contractVersion, '0.1.0');
+  // #5065 — bump 0.1.0 -> 0.2.0 al incorporar los bloques del contrato del
+  // adaptador (repo/branch/qaLabels/commands/workspace/pr). Sigue siendo major 0,
+  // así que SUPPORTED_CONTRACT_MAJOR no cambia.
+  assert.strictEqual(manifest.contractVersion, '0.2.0');
 });
 
 test('assertKernelCompatible acepta el major soportado y rechaza uno incompatible', () => {
