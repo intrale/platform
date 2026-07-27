@@ -7087,8 +7087,26 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
   // Ordenar candidatos: feature priority (menor=mejor) > fase inversa (mayor idx=más avanzada=primero).
   // #3938 — la prioridad se calcula en la frontera (acceso a labels/config) y el
   // orden puro (priority asc > fase inversa) se delega a brazo-lanzamiento-core.
+  //
+  // Los issues fuera de la allowlist se saltan en el loop de despacho (gate 0a,
+  // más abajo) sin llegar nunca a lanzarse. Resolverles la prioridad implica un
+  // `gh issue view` por issue con busy-wait SÍNCRONO de 2s (ghThrottle): con el
+  // backlog completo en cola (121 issues el 2026-07-27) el ciclo tardaba >300s,
+  // superaba el umbral de 180s del watchdog de liveness y el Pulpo era matado
+  // ANTES de terminar su primer ciclo. Como el caché de labels vive en memoria,
+  // cada respawn arrancaba en frío → bucle de muerte infinito: el loop principal
+  // nunca completaba una iteración y el busy-wait congelaba el event loop, así
+  // que el Commander (async) tampoco atendía los mensajes de Telegram.
+  //
+  // Prioridad neutra para los no-allowed: no se despachan igual, y el orden
+  // relativo de los que sí se despachan no cambia.
+  // Estado leído UNA vez para todo el lote (#2957): `isIssueAllowedInState` es
+  // la variante pura pensada para callers que iteran muchos issues por tick.
+  const ppStateForPriority = partialPause.getPipelineMode();
   for (const c of candidates) {
-    c.priority = calcularPrioridad(issueFromFile(c.archivo.name), config);
+    const issueNum = issueFromFile(c.archivo.name);
+    if (!partialPause.isIssueAllowedInState(issueNum, ppStateForPriority)) { c.priority = 999; continue; }
+    c.priority = calcularPrioridad(issueNum, config);
   }
   candidates.sort(brazoLanzamientoCore.compareCandidates);
 
