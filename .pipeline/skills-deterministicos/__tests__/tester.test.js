@@ -639,6 +639,55 @@ test('#3072 rev-1 — isPipelineOnlyChange NO confunde package.json en subdirect
     ]), false);
 });
 
+// #5065 rev-1 — regresión: el manifiesto del adaptador `pipeline.config.json`
+// vive en la RAÍZ del producto (es el único lugar donde el contrato del kernel
+// permite valores concretos de Intrale). No tenía pattern en la allowlist, así
+// que rompía el match `every` y forzaba la ruta gradle. Para un diff sin una
+// sola línea de Kotlin, gradle corrió la suite completa (6157 tests, 26 min) y
+// el tester rebotó por la cobertura Kover baseline del producto (35.08% < 80%).
+// Verificado en `.pipeline/logs/5065-tester.log`:
+//   [tester] git diff vs main: 3 archivos · pipeline_only=false
+//   [tester] gradle exit_code=0 wall_ms=1556353
+//   - Cobertura de líneas 35.08% por debajo del umbral 80%
+//
+// Seguridad: `grep` por `pipeline.config` en `**/*.{kts,gradle,kt,properties}`
+// devuelve 0 referencias — sólo lo leen módulos Node bajo `.pipeline/`.
+test('#5065 rev-1 — isPipelineOnlyChange acepta pipeline.config.json root', () => {
+    // El manifiesto solo (cambio puro de contrato del adaptador) → pipeline-only
+    assert.equal(tester.isPipelineOnlyChange(['pipeline.config.json']), true);
+    // Caso real del rebote: los 3 archivos exactos del diff vs origin/main.
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/tests/adapter-contract.test.js',
+        '.pipeline/tests/kernel-resolver.test.js',
+        'pipeline.config.json',
+    ]), true);
+});
+
+test('#5065 rev-1 — isPipelineOnlyChange NO confunde pipeline.config.json en subdirectorios', () => {
+    // El patrón es `^pipeline\.config\.json$`: un homónimo dentro de un módulo
+    // Gradle no está cubierto y debe seguir cayendo a la ruta gradle.
+    assert.equal(tester.isPipelineOnlyChange([
+        '.pipeline/config.yaml',
+        'app/composeApp/pipeline.config.json',
+    ]), false);
+    assert.equal(tester.isPipelineOnlyChange([
+        'backend/pipeline.config.json',
+    ]), false);
+});
+
+test('#5065 rev-1 — pipeline.config.json NO relaja la frontera de inputs de Gradle', () => {
+    // Sumar el manifiesto no debe volver pipeline-only a un diff que además
+    // toca Kotlin o scripts de build: la cobertura ahí sí es señal legítima.
+    assert.equal(tester.isPipelineOnlyChange([
+        'pipeline.config.json',
+        'app/composeApp/src/commonMain/kotlin/ui/sc/Login.kt',
+    ]), false);
+    assert.equal(tester.isPipelineOnlyChange([
+        'pipeline.config.json',
+        'build.gradle.kts',
+    ]), false);
+});
+
 test('#3081 rev-2 — isPipelineOnlyChange acepta .husky/, package.json y package-lock.json', () => {
     // Cada uno aislado debe dar pipeline-only.
     assert.equal(tester.isPipelineOnlyChange(['.husky/pre-commit']), true);

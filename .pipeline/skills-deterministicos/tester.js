@@ -266,6 +266,36 @@ const MODULE_DIRS = {
 //   devuelve 0 referencias; el script es invocado únicamente a mano por
 //   el operador (documentado en `docs/pipeline/multi-provider.md`).
 //
+// Rebote #5065 rev-1 (mismo síntoma, archivo distinto):
+//   - #5065 (Ola 9.2 · contrato de configuración del adaptador) entregó el
+//     manifiesto del adaptador `pipeline.config.json` en la raíz del producto
+//     más dos tests Node bajo `.pipeline/tests/`. Dos de los tres archivos
+//     matcheaban `^\.pipeline\/`, pero `pipeline.config.json` no tenía pattern
+//     y rompía el match `every`. El tester cayó a la ruta gradle, corrió la
+//     suite Kotlin completa (6157 tests, 26 min) y rebotó por la cobertura
+//     Kover baseline del producto (35.08% < 80%) — totalmente ajena a un
+//     cambio que no toca una sola línea de Kotlin. Verificación empírica en
+//     `.pipeline/logs/5065-tester.log`:
+//       [tester] git diff vs main: 3 archivos · pipeline_only=false
+//       [tester] gradle exit_code=0 wall_ms=1556353
+//       - Cobertura de líneas 35.08% por debajo del umbral 80%
+//     Los paquetes reportados bajo umbral (`ui`, `AndroidPlatform`,
+//     `ComposableSingletons$MainKt`) son todos Compose/Android, o sea baseline
+//     preexistente del producto y no regresión del diff.
+//
+//   `pipeline.config.json` → manifiesto del adaptador que el kernel exige al
+//                     producto (contrato `contracts/adapter-config.schema.json`).
+//                     Lo consumen únicamente módulos Node del pipeline:
+//                     `repo-target.js`, `kernel-resolver.js`,
+//                     `project-descriptor.js`, `worktree-launcher.js`,
+//                     `ghostbusters-worktrees.js`, `kernel-parity.js`,
+//                     `worktree-prefix.js`, `servicio-github.js` y
+//                     `bin/kernel-release.js`. Verificación de seguridad:
+//                     `grep` por `pipeline.config` en
+//                     `**/*.{kts,gradle,kt,properties}` devuelve 0 referencias,
+//                     así que Gradle no lo lee ni participa del classpath ni
+//                     de la medición de Kover.
+//
 // Excluido a propósito: `README.md` y otros .md root, `gradle.properties`,
 // `settings.gradle.kts`, `build.gradle.kts`, `qa/build.gradle.kts`,
 // `qa/src/`, `qa/scripts/*.sh` (scripts shell que pueden orquestar gradle),
@@ -284,6 +314,7 @@ const PIPELINE_ONLY_PATTERNS = [
     /^\.husky\//,                          // husky git hooks (Node.js) — fuera de classpath Gradle
     /^package\.json$/,                     // npm manifest — usado solo por `.pipeline/` Node.js
     /^package-lock\.json$/,                // npm lockfile — usado solo por `.pipeline/` Node.js
+    /^pipeline\.config\.json$/,            // manifiesto del adaptador (contrato kernel) — solo Node (rebote #5065)
     /^qa\/evidence\//,                     // QA artifacts (video/screenshots/reports) — fuera de Gradle
     /^qa\/scripts\/.*\.(js|mjs|cjs)$/,     // Node.js scripts/hooks QA — fuera de Gradle (rebote #3409)
     /^scripts\/.*\.(js|mjs|cjs)$/,         // Node.js scripts operativos del pipeline — fuera de Gradle (rebote #3929)

@@ -1,0 +1,159 @@
+Verificacion del rebote rev-1 (#5065) — pipeline-dev
+=====================================================
+Motivo del rechazo: "[tester] Tests Node fallidos: 1 failures + 0 errors sobre 10198 totales"
+
+CLAIM: 1 test Node fallido.
+Verificado: CONFIRMADO. Test identificado y corregido.
+
+
+1) IDENTIFICACION DEL TEST FALLIDO
+----------------------------------
+El log del tester no nombra el archivo, solo "test > validacion (archivo entero)".
+Se extrajo del JUnit XML que dejo la corrida:
+
+$ grep -c '<failure' .pipeline/logs/node-tests-junit.0.xml .pipeline/logs/node-tests-junit.1.xml
+.pipeline/logs/node-tests-junit.0.xml:1
+.pipeline/logs/node-tests-junit.1.xml:0
+
+$ grep -o '<testcase[^>]*validacion[^>]*>' .pipeline/logs/node-tests-junit.0.xml
+<testcase name="CA-6: alias `validar` resuelve a desarrollo/validacion"
+  classname="test"
+  file="...\.pipeline\lib\__tests__\commander-rechazar.test.js"
+  failure="Expected values to be strictly equal:&#10;&#10;false !== true&#10;">
+
+=> Test: .pipeline/lib/__tests__/commander-rechazar.test.js:221
+         "CA-6: alias `validar` resuelve a desarrollo/validacion"
+
+
+2) REPRODUCCION
+---------------
+$ node --test .pipeline/lib/__tests__/commander-rechazar.test.js
+  x CA-6: alias `validar` resuelve a desarrollo/validacion (0.6715ms)
+    AssertionError: Expected values to be strictly equal: false !== true
+      at commander-rechazar.test.js:223:12
+  i tests 43 / pass 42 / fail 1
+
+El mismo test EN EL REPO PRINCIPAL pasa:
+$ cd /c/Workspaces/Intrale/platform && node --test .pipeline/lib/__tests__/commander-rechazar.test.js
+  i tests 43 / pass 43 / fail 0
+
+El archivo de test y el modulo son IDENTICOS en ambos lados:
+$ git diff origin/main -- .pipeline/lib/commander/phases-alias.js \
+      .pipeline/lib/__tests__/commander-rechazar.test.js .pipeline/config.yaml
+(vacio)
+$ md5sum .pipeline/lib/commander/phases-alias.js   # ambos repos
+98eec05c36a92e8aadde66e178dfddce
+
+
+3) CAUSA RAIZ
+-------------
+No es el test: es phases-alias.js. `loadOfficialPhases()` parseaba el bloque
+`pipelines:` de config.yaml con un regex de bloque unico:
+
+    /^pipelines:\s*\n((?:[ \t]+.*\n)+)/m
+
+`(?:[ \t]+.*\n)+` exige que TODA linea del bloque arranque con espacio/tab, y
+config.yaml tiene una LINEA EN BLANCO separando `definicion:` de `desarrollo:`
+(linea 12). El resultado depende del fin de linea del checkout:
+
+$ node -e "... match sobre cada variante ..."
+  config LF   (worktree, 99026 bytes) -> match PARCIAL: captura 8 lineas
+                                          = solo el pipeline `definicion`
+  config CRLF (repo ppal, 100817 bytes) -> NO MATCH
+                                          = cae a HARDCODED_FALLBACK (10 fases)
+
+$ node -e "const pa=require('./.pipeline/lib/commander/phases-alias'); \
+           console.log(pa.loadOfficialPhases().map(o=>o.full))"
+  worktree (LF):   ["definicion/analisis","definicion/criterios","definicion/sizing"]
+  repo ppal (CRLF):["definicion/analisis",...,"desarrollo/validacion",...,"desarrollo/entrega"]
+
+$ file .pipeline/config.yaml
+  repo ppal: UTF-8 text, with CRLF line terminators
+  worktree : UTF-8 text                      (LF)
+
+Por que difieren si el blob de git es el mismo: .gitattributes (#4695) fuerza
+`*.yaml text eol=lf`. La copia del repo principal quedo con CRLF de antes de esa
+regla; todo checkout/worktree nuevo sale LF.
+
+$ git check-attr text eol -- .pipeline/config.yaml
+  .pipeline/config.yaml: text: set
+  .pipeline/config.yaml: eol: lf
+
+=> El bug estaba TAPADO en el repo principal (el fallback hardcodeado tenia
+   por casualidad las 10 fases correctas) y ACTIVO en todos los worktrees.
+
+Impacto real (no solo del test): el unico consumidor es
+.pipeline/lib/commander/rechazar-handler.js, o sea el comando /rechazar de
+Telegram. En cualquier checkout LF, `/rechazar <issue> dev|build|verificacion|
+validar|linteo|aprobacion|entrega` respondia "Alias X apunta a fase Y que el
+config actual no incluye". Se rompian las 7 fases de `desarrollo`.
+
+Nota sobre por que aparecio recien ahora: el commit previo de este issue
+(1daef93ec) agrego pipeline.config.json a PIPELINE_ONLY_PATTERNS, con lo cual el
+tester dejo de rutear a gradle y paso a correr la suite Node. El fallo es
+preexistente; ese cambio solo lo destapo.
+
+
+4) FIX
+------
+.pipeline/lib/commander/phases-alias.js — se reemplaza el regex de bloque por
+`extractPipelinesBlock()`, que escanea por lineas: normaliza CRLF/LF, tolera
+lineas en blanco y comentarios dentro del bloque, y corta recien en la primera
+linea sin indentar (siguiente clave raiz del YAML).
+
+Verificacion sobre las dos variantes de fin de linea:
+$ node -e "... loadOfficialPhases sobre config LF y CRLF ..."
+  LF   | fases: 10 | validar.ok: true -> desarrollo/validacion
+  CRLF | fases: 10 | validar.ok: true -> desarrollo/validacion
+  ["definicion/analisis","definicion/criterios","definicion/sizing",
+   "desarrollo/validacion","desarrollo/dev","desarrollo/build",
+   "desarrollo/verificacion","desarrollo/linteo","desarrollo/aprobacion",
+   "desarrollo/entrega"]
+(las 10 salen del config parseado, no del fallback)
+
+
+5) TESTS DE REGRESION
+---------------------
+7 tests nuevos en commander-rechazar.test.js. Prueba de que son guardas reales
+(no tests que pasan por casualidad): con el phases-alias.js de origin/main y los
+tests nuevos ->
+
+$ MSYS_NO_PATHCONV=1 git show "origin/main:.pipeline/lib/commander/phases-alias.js" > phases-alias.js
+$ node --test .pipeline/lib/__tests__/commander-rechazar.test.js
+  x CA-6: alias `validar` resuelve a desarrollo/validacion
+  x #5065: con LF el enum oficial incluye los dos pipelines del config
+  x #5065: con LF resolvePhase('validar') resuelve a desarrollo/validacion
+  x #5065: una linea en blanco entre pipelines no trunca el bloque
+  i tests 50 / pass 46 / fail 4
+
+Con el fix restaurado:
+$ node --test .pipeline/lib/__tests__/commander-rechazar.test.js
+  i tests 50 / pass 50 / fail 0
+
+
+6) SUITE NODE COMPLETA (misma coleccion que usa el tester)
+----------------------------------------------------------
+Coleccion via tester.findNodeTestFiles(repoRoot) -> 643 archivos (identico al
+conteo del tester en el rechazo).
+
+$ node --test <643 archivos, en 2 batches por limite de cmdline de Windows>
+  === batch 0 (446 archivos) ===
+  i tests 7038 / pass 7038 / fail 0 / skipped 0
+  === batch 1 (195 archivos) ===
+  i tests 3167 / pass 3166 / fail 0 / skipped 1
+
+  TOTAL: 10205 tests / 0 failures / 0 errors
+  (10198 previos + 7 nuevos; la unica falla del rechazo quedo corregida)
+
+
+7) CA-8 DEL ISSUE — consumidores vivos siguen en verde
+-------------------------------------------------------
+$ node -e "console.log(require('./.pipeline/lib/repo-target.js').getPrimaryRepo())"
+  intrale/platform
+
+$ node --test .pipeline/lib/__tests__/repo-target.test.js \
+               .pipeline/tests/kernel-resolver.test.js \
+               .pipeline/lib/__tests__/ghostbusters-worktrees.test.js \
+               .pipeline/tests/adapter-contract.test.js \
+               .pipeline/skills-deterministicos/__tests__/tester.test.js
+  i tests 140 / pass 140 / fail 0 / skipped 0
