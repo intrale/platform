@@ -304,6 +304,9 @@ const { createQuotaNotifier, DEFAULT_REMINDER_INTERVAL_MIN } = require('./lib/qu
 // deterministic / openai-codex). Reemplaza el bloque inline de spawn de Claude
 // que vivía acá pre-refactor (~líneas 4900-4994 de la versión previa).
 const { launchAgent } = require('./lib/agent-launcher');
+// #5066 — Provider determinístico: única implementación de resolveDeterministicScript.
+// El wrapper homónimo de este archivo delega acá (antes eran dos copias en paralelo).
+const determProvider = require('./lib/agent-launcher/providers/deterministic');
 // #3257 — Commander determinístico: router + audit-log + rate-limit + redact.
 // Reemplaza el parser de comandos inline por un módulo aislado y testable.
 // La pista determinística (status/listado/snapshot/tail/etc) responde SIEMPRE
@@ -1192,32 +1195,15 @@ function log(brazo, msg) {
  *
  * Retorna el path absoluto del script a ejecutar.
  */
-function resolveDeterministicScript({ skill, issue, ROOT, PIPELINE, onWorktreeHit, execSyncImpl, fsImpl } = {}) {
-  const _execSync = execSyncImpl || execSync;
-  const _fs = fsImpl || fs;
-  const rootScript = path.join(PIPELINE, 'skills-deterministicos', `${skill}.js`);
-  if (!issue || !ROOT) return rootScript;
-  let issueWorktree = null;
-  try {
-    const needle = wtNeedle(issue);
-    const worktrees = _execSync('git worktree list --porcelain', { cwd: ROOT, encoding: 'utf8', timeout: 5000, windowsHide: true });
-    for (const line of String(worktrees).split('\n')) {
-      if (line.startsWith('worktree ') && line.includes(needle)) {
-        issueWorktree = line.replace('worktree ', '').trim();
-        break;
-      }
-    }
-  } catch { /* sin worktree, fallback a ROOT */ }
-  if (issueWorktree) {
-    const wtScript = path.join(issueWorktree, '.pipeline', 'skills-deterministicos', `${skill}.js`);
-    if (_fs.existsSync(wtScript)) {
-      if (typeof onWorktreeHit === 'function') {
-        try { onWorktreeHit(issueWorktree); } catch { /* ignore */ }
-      }
-      return wtScript;
-    }
-  }
-  return rootScript;
+// #5066 — Este wrapper delega en `lib/agent-launcher/providers/deterministic.js`,
+// que es la implementación que corre de verdad (el dispatcher entra por
+// `launchAgent` → provider). Antes había acá una copia literal del algoritmo: dos
+// copias del mismo resolver que sólo se mantenían sincronizadas a mano. Un fix
+// aplicado a una y no a la otra deja al pipeline corriendo el comportamiento
+// viejo por el camino que nadie miró. Se conserva el export para no romper a los
+// consumidores (tests incluidos), pero la lógica vive en un solo lugar.
+function resolveDeterministicScript(opts = {}) {
+  return determProvider.resolveDeterministicScript(opts);
 }
 
 // #3941 (EP5-H4): última config válida conocida. Permite que el loop siga vivo
