@@ -12575,8 +12575,24 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
     let attemptGlitch = false;
     const startTime = Date.now();
 
-    // Límite absoluto: 10 minutos — si Claude no terminó, matar y resolver
-    const HARD_TIMEOUT_MS = 10 * 60 * 1000;
+    // El turno del Commander YA NO se corta por duración total.
+    //
+    // Antes había un `HARD_TIMEOUT_MS = 10 min` absoluto: cualquier pedido que
+    // trabajara más de eso moría y el operador recibía un "tardó más de 10 min y
+    // corté". Eso mataba trabajo legítimo (builds, QA E2E, auditorías, releases)
+    // justo cuando el operador estaba esperando el resultado. Para mantenerlo
+    // informado mientras el turno avanza están las notificaciones parciales que
+    // salen cada 2 min (`progressTimer`, más abajo).
+    //
+    // Lo que corta ahora es un CUELGUE REAL, no el reloj:
+    //   - `IDLE_TIMEOUT_MS`: nada de actividad (ningún line del JSON-stream) y
+    //     ninguna herramienta en vuelo durante ese lapso. Un turno que avanza
+    //     resetea el contador con cada line, así que nunca lo alcanza.
+    //   - `ABSOLUTE_MAX_MS`: red final anti-zombi. El Commander es un proceso de
+    //     días; un child huérfano que "parezca vivo" no puede quedar para siempre.
+    // Ambos fail-closed + clampeados en `inflight-fallback.js` (SR-1 / SR-2).
+    const IDLE_TIMEOUT_MS = inflightFallback.resolveIdleTimeoutMs(process.env.COMMANDER_IDLE_TIMEOUT_MS);
+    const ABSOLUTE_MAX_MS = inflightFallback.resolveAbsoluteMaxMs(process.env.COMMANDER_ABSOLUTE_MAX_MS);
 
     // #3418 CA-3 — watchdog específico para Skill /doc y /planner. Trackeamos
     // cada `tool_use` cuyo `name === 'Skill'` y limpiamos cuando llega el
@@ -12595,7 +12611,9 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
     // Sirve para pausar el stream-gap detector mientras una herramienta larga
     // (Bash/gradlew de 120-300s) está corriendo: en ese tramo no llegan lines
     // nuevos, pero es actividad legítima, no un cuelgue. NO tiene watchdog propio
-    // (el HARD_TIMEOUT de 10min sigue siendo el límite duro para tools no-Skill).
+    // (el watchdog de inactividad sigue siendo el límite para tools no-Skill:
+    // mientras haya una tool en vuelo NO cuenta como cuelgue, y el techo
+    // absoluto anti-zombi corta igual en el peor caso).
     const pendingToolUses = new Set(); // tool_use_id
     // #4530 CA-3 — umbral efectivo del stream-gap, resuelto una vez por turn
     // desde el env con fail-closed 180s + clamp [180s, 600s].
@@ -12624,7 +12642,8 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
     // prohibición YA NO aplica: el split shadow/exec está completo. #3886 reconcilió
     // este comentario con el runtime.
     //
-    // CA-A5: HARD_TIMEOUT 10min intocado.
+    // CA-A5: el corte duro del turno (hoy watchdog de inactividad) intocado por
+    // los detectores shadow.
     // CA-A6: SKILL_WATCHDOG_MS intocado; pendingSkillCalls NUNCA se muta acá.
     // (No confundir con la ocurrencia `CA-S7` del debounce en ~pulpo.js:11592,
     //  que es de otro subsistema y queda intacta.)
@@ -12743,7 +12762,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       if (resolved) return;
       resolved = true;
       clearInterval(progressTimer);
-      clearTimeout(hardTimer);
+      clearInterval(hardTimer);
       clearInterval(skillWatchdogTimer);
       // #3577 CA-S3 — cleanup determinístico de los timers shadow para evitar
       // handle leak en el Commander (proceso de larga vida, días).
@@ -12894,8 +12913,8 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
               // #3418 CA-3 — arrancar reloj del watchdog SOLO para
               // tool_use cuyo `name === 'Skill'` Y el `input.skill` esté
               // en la allowlist (`doc`/`planner`). Para otras tools
-              // (Bash, Read, Edit, etc.) el HARD_TIMEOUT de 10min sigue
-              // siendo el único límite.
+              // (Bash, Read, Edit, etc.) el watchdog de inactividad + el
+              // techo absoluto son el único límite.
               if (b.name === 'Skill' && b.id) {
                 const skillName = b.input && typeof b.input.skill === 'string' ? b.input.skill : null;
                 const watched = skillName && (skillName === 'doc' || skillName === 'planner');
@@ -13104,14 +13123,30 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       log('commander', `Progreso: ${msg}`);
     }, 120000);
 
-    // Hard timeout: si nada resolvió en 10 min, forzar finalización
-    const hardTimer = setTimeout(() => {
-      if (!resolved) {
-        log('commander', `HARD TIMEOUT (${HARD_TIMEOUT_MS / 60000}min) — matando Claude`);
+    // Watchdog de INACTIVIDAD (reemplaza el hard timeout absoluto de 10 min).
+    // Corre cada 15s y sólo mata si el turno está efectivamente colgado:
+    //   - sin ningún line del stream desde hace >= IDLE_TIMEOUT_MS, Y
+    //   - sin ninguna herramienta en vuelo (un `Bash`/gradlew de 20 min no emite
+    //     lines pero es actividad legítima — `pendingToolUses` lo cubre),
+    // o bien si se superó el techo absoluto anti-zombi.
+    // Mientras el turno avanza, `lastLineAt` se refresca y esto nunca dispara.
+    const hardTimer = setInterval(() => {
+      if (resolved) return;
+      const now = Date.now();
+      if (now - startTime >= ABSOLUTE_MAX_MS) {
+        log('commander', `TECHO ABSOLUTO (${Math.round(ABSOLUTE_MAX_MS / 60000)}min) — matando Claude`);
         killProc();
         finish(null, 'hard-timeout');
+        return;
       }
-    }, HARD_TIMEOUT_MS);
+      if (pendingToolUses.size > 0) return;       // herramienta trabajando: no es cuelgue
+      const idleMs = now - Math.max(lastLineAt || 0, startTime);
+      if (idleMs >= IDLE_TIMEOUT_MS) {
+        log('commander', `TURNO COLGADO: ${Math.round(idleMs / 1000)}s sin actividad ni herramienta en vuelo — matando Claude`);
+        killProc();
+        finish(null, 'idle-timeout');
+      }
+    }, 15000);
 
     // #3418 CA-3 — Skill watchdog: revisa cada 5s si hay algún Skill
     // (`/doc` o `/planner`) cuya emisión de `tool_use` excede los 60s sin
