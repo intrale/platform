@@ -54,9 +54,9 @@ kernel: C:\Workspaces\Intrale\kernel.agent-5068
         esperado (pre-9.2): "Intrale Platform"
         resuelto por contrato: "Intrale Platform"
         fuente: inventory.md §Capa 1 — nombre visible en la línea de rol (7 ocurrencias)
-    · entrypoint "pulpo" resuelto y presente: presente en .pipeline/pulpo.js
+    · entrypoint "pulpo" resuelto y presente: presente en .pipeline/pulpo.js · resolver → {"path":"C:\\Workspaces\\Intrale\\platform.agent-5068-pipeline-dev\\.pipeline\\pulpo.js","source":"local","version":null}
     · pulpo.js parsea (node --check): sin errores de sintaxis
-    · entrypoint "dashboard" resuelto y presente: presente en .pipeline/dashboard.js
+    · entrypoint "dashboard" resuelto y presente: presente en .pipeline/dashboard.js · resolver → {"path":"C:\\Workspaces\\Intrale\\platform.agent-5068-pipeline-dev\\.pipeline\\dashboard.js","source":"local","version":null}
     · dashboard.js parsea (node --check): sin errores de sintaxis
     · superficie de estado del pipeline presente: 3 directorios de cola verificados
 

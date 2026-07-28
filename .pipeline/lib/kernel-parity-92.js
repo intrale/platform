@@ -213,21 +213,37 @@ function verifyEngineBoot() {
   for (const entry of ['pulpo', 'dashboard']) {
     let resolved = null;
     let err = null;
-    try {
-      resolved = typeof resolver.resolveEntrypoint === 'function'
-        ? resolver.resolveEntrypoint(entry)
-        : null;
-    } catch (e) { err = e.message; }
+    // Fail-closed: si el resolver no expone la API, el flujo NO es verificable y
+    // por lo tanto NO es verde (antes se esquivaba con un `typeof` y el check
+    // quedaba evaluando sólo fs.existsSync).
+    if (typeof resolver.resolveEntry !== 'function') {
+      err = 'kernel-resolver no expone resolveEntry(name): el entrypoint no es verificable';
+    } else {
+      try {
+        resolved = resolver.resolveEntry(entry);
+      } catch (e) { err = e.message; }
+    }
 
     const script = path.join(PIPELINE_DIR, `${entry}.js`);
     const exists = fs.existsSync(script);
+
+    // Con el motor local (kernel.consume:false, estado de diseño de la 9.2) el
+    // resolver debe apuntar exactamente al script del pipeline. Si difiere, el
+    // arranque no es el que se está verificando.
+    let mismatch = null;
+    if (resolved && resolved.source === 'local' &&
+        normalizePath(resolved.path) !== normalizePath(script)) {
+      mismatch = `el resolver apunta a ${resolved.path} y no a .pipeline/${entry}.js`;
+    }
+
     checks.push({
       name: `entrypoint "${entry}" resuelto y presente`,
-      ok: exists && !err,
+      ok: exists && !err && !mismatch && resolved != null,
       detail: err
         ? `resolver falló: ${err}`
         : `${exists ? 'presente' : 'AUSENTE'} en .pipeline/${entry}.js` +
-          (resolved ? ` · resolver → ${JSON.stringify(resolved).slice(0, 200)}` : ''),
+          (resolved ? ` · resolver → ${JSON.stringify(resolved).slice(0, 200)}` : '') +
+          (mismatch ? ` · ✗ ${mismatch}` : ''),
     });
 
     if (exists) {

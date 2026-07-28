@@ -120,6 +120,50 @@ test('un manifiesto inválido rompe la paridad en vez de resolver defaults', (t)
 });
 
 // -----------------------------------------------------------------------------
+// La sonda del resolver no puede ser vacua
+// -----------------------------------------------------------------------------
+// Regresión: verifyEngineBoot llamaba a resolver.resolveEntrypoint(), función
+// inexistente. El guard `typeof === 'function'` la esquivaba en silencio, la
+// rama nunca corría y el check quedaba evaluando sólo fs.existsSync — verde por
+// omisión, justo lo que el encabezado del módulo declara prohibido.
+
+test('kernel-resolver expone la API que la sonda de arranque invoca', () => {
+  const resolver = require('../lib/kernel-resolver');
+  assert.strictEqual(
+    typeof resolver.resolveEntry, 'function',
+    'si la sonda invoca un nombre que no existe, el check se vuelve vacuo',
+  );
+});
+
+test('la sonda de arranque EJERCITA el resolver, no sólo la existencia del archivo', () => {
+  const checks = parity.verifyEngineBoot();
+  const resueltos = checks.filter((c) => /resuelto y presente/.test(c.name));
+
+  assert.strictEqual(resueltos.length, 2, 'se verifican pulpo y dashboard');
+
+  for (const c of resueltos) {
+    assert.ok(
+      c.detail.includes('resolver →'),
+      `"${c.name}" no ejercitó el resolver (detail: ${c.detail}). ` +
+      'Un check verde que sólo miró el filesystem es una sonda vacua.',
+    );
+    assert.strictEqual(c.ok, true, `"${c.name}" en rojo: ${c.detail}`);
+  }
+});
+
+test('el resolver apunta al motor local mientras kernel.consume sea false', () => {
+  const resolver = require('../lib/kernel-resolver');
+  for (const entry of ['pulpo', 'dashboard']) {
+    const r = resolver.resolveEntry(entry);
+    assert.strictEqual(r.source, 'local', 'estado de diseño de la 9.2');
+    assert.ok(
+      parity.normalizePath(r.path).endsWith(`/.pipeline/${entry}.js`),
+      `resolveEntry("${entry}") devolvió ${r.path}`,
+    );
+  }
+});
+
+// -----------------------------------------------------------------------------
 // Integración — el pipeline real contra el kernel real
 // -----------------------------------------------------------------------------
 
