@@ -572,16 +572,185 @@ test('addToAllowlist preserva los issues ya habilitados (read-modify-write)', ()
     } finally { teardownTmp(dir); }
 });
 
-test('removeFromAllowlist deja el resto intacto y vaciarla cae a running (deniega)', () => {
+test('removeFromAllowlist deja el resto intacto', () => {
     const dir = setupTmp();
     try {
         opState.setAllowlist([5108, 5109, 5110], { ...AUTH, source: 'test' });
         opState.removeFromAllowlist([5109], { ...AUTH, source: 'test' });
         assert.deepEqual(opState.getDispatchState().allowedIssues, [5108, 5110]);
+        assert.equal(opState.isIssueAllowed(5109), false);
+    } finally { teardownTmp(dir); }
+});
 
-        opState.removeFromAllowlist([5108, 5110], { ...AUTH, source: 'test' });
+// -----------------------------------------------------------------------------
+// Regresión del rebote rev-1 (security) — el RMW de los mutadores incrementales
+// debe preservar el marker COMPLETO, no sólo el eje `allowed_issues`.
+//
+// El bug: `readPreviousAllowlist()` devuelve sólo `allowed_issues` y
+// `setPartialPause()` reescribe el marker desde cero, así que un `add`/`remove`
+// borraba `allowed_skills` (gate #3680), `dep_sources`/`accepted_dep_risk`
+// (#2893), la metadata de ola (#4030) y dejaba `source` en "unknown" (#3625).
+// No era sólo pérdida de metadata: al caer el marker el modo va a `running`,
+// donde el gate de skills deja pasar TODOS los skills (delivery incluido).
+// -----------------------------------------------------------------------------
+
+function readMarker() {
+    return JSON.parse(fs.readFileSync(opState._internal.paths().PARTIAL_FILE, 'utf8'));
+}
+
+test('addToAllowlist preserva allowed_skills, dep_sources, accepted_dep_risk, metadata de ola y source', () => {
+    const dir = setupTmp();
+    try {
+        opState.setAllowlist([100, 200], {
+            ...AUTH,
+            source: 'wave-promote',
+            allowedSkills: ['qa', 'multi-provider-smoke-test'],
+            acceptedDepRisk: true,
+            depSources: { 100: 'recursive-deps:from-99' },
+            waveNumber: 9,
+            waveName: 'Ola 9.4',
+        });
+        assert.equal(opState.isSkillAllowed('qa'), true, 'precondición: la ventana de skills está activa');
+
+        opState.addToAllowlist([300], { ...AUTH });
+
+        const marker = readMarker();
+        assert.deepEqual(marker.allowed_issues, [100, 200, 300], 'el eje issues se mergea');
+        assert.deepEqual(
+            marker.allowed_skills,
+            ['multi-provider-smoke-test', 'qa'],
+            'el gate de skills #3680 sobrevive al add (era el ensanchamiento de autorización)',
+        );
+        assert.equal(marker.accepted_dep_risk, true, '#2893: accepted_dep_risk sobrevive');
+        assert.deepEqual(marker.dep_sources, { 100: 'recursive-deps:from-99' }, '#2893: dep_sources sobrevive');
+        assert.equal(marker.wave_number, 9, '#4030: metadata de ola sobrevive');
+        assert.equal(marker.wave_name, 'Ola 9.4');
+        assert.equal(marker.source, 'wave-promote', '#3625: la procedencia no se degrada a "unknown"');
+
+        const state = opState.getDispatchState();
+        assert.equal(opState.isSkillAllowedInState('qa', state), true, 'el skill sigue permitido…');
+        assert.equal(opState.isSkillAllowedInState('delivery', state), false, '…y el no listado sigue denegado');
+    } finally { teardownTmp(dir); }
+});
+
+test('addToAllowlist con halt total activo tampoco borra la ventana de skills del marker', () => {
+    const dir = setupTmp();
+    try {
+        // Con `.paused` presente, `getPipelineMode()` devuelve el estado `paused`
+        // con listas vacías: usarlo como fuente del RMW borraría los skills. El
+        // RMW lee el marker crudo justamente para no caer en eso.
+        opState.setAllowlist([100], { ...AUTH, source: 'wave-promote', allowedSkills: ['qa'] });
+        opState.setFullPause({ ...AUTH, source: 'test' });
+        assert.equal(opState.getDispatchState().mode, 'paused');
+
+        opState.addToAllowlist([200], { ...AUTH });
+
+        const marker = readMarker();
+        assert.deepEqual(marker.allowed_issues, [100, 200]);
+        assert.deepEqual(marker.allowed_skills, ['qa'], 'el marker de allowlist queda intacto bajo halt total');
+        assert.equal(marker.source, 'wave-promote');
+    } finally { teardownTmp(dir); }
+});
+
+test('removeFromAllowlist hasta vaciar NO ensancha el gate de skills', () => {
+    const dir = setupTmp();
+    try {
+        opState.setAllowlist([100], { ...AUTH, source: 'wave-promote', allowedSkills: ['qa'] });
+        assert.equal(opState.isSkillAllowed('delivery'), false, 'precondición: delivery denegado');
+
+        const res = opState.removeFromAllowlist([100], { ...AUTH });
+        assert.equal(res.ok, true);
+
+        const state = opState.getDispatchState();
+        assert.equal(state.mode, 'partial_pause', 'no degrada a running: la ventana de skills se conserva');
+        assert.deepEqual(state.allowedIssues, [], 'el issue removido efectivamente salió');
+        assert.equal(opState.isIssueAllowed(100), false, 'eje issues fail-closed (#5060 intacto)');
+        assert.equal(opState.isIssueAllowed(999), false);
+        assert.equal(opState.isSkillAllowed('qa'), true, 'el skill autorizado sigue autorizado');
+        assert.equal(
+            opState.isSkillAllowed('delivery'),
+            false,
+            'delivery (el que mergea a main) NO puede pasar de denegado a permitido por un remove',
+        );
+    } finally { teardownTmp(dir); }
+});
+
+test('removeFromAllowlist que vaciaría la allowlist sin skills se rechaza: borrar el gate es explícito', () => {
+    const dir = setupTmp();
+    try {
+        opState.setAllowlist([5108, 5110], { ...AUTH, source: 'test' });
+
+        const res = opState.removeFromAllowlist([5108, 5110], { ...AUTH });
+        assert.equal(res.ok, false, 'no se aplica');
+        assert.equal(res.rejected, true);
+        assert.equal(res.reason, 'would-clear-allowlist');
+        assert.match(res.msg, /clearAllowlist/, 'el mensaje dice cómo pedir el clear deliberado');
+
+        assert.equal(fs.existsSync(opState._internal.paths().PARTIAL_FILE), true, 'el marker sigue ahí');
+        assert.deepEqual(opState.getDispatchState().allowedIssues, [5108, 5110], 'el estado no se movió');
+
+        // La vía deliberada sí lo hace: `clearAllowlist()` audita como `clear`.
+        opState.clearAllowlist({ ...AUTH, source: 'test' });
         assert.equal(opState.getDispatchState().mode, 'running');
-        assert.equal(opState.isIssueAllowed(5108), false, 'allowlist vacía sigue siendo fail-closed');
+        assert.equal(opState.isIssueAllowed(5108), false, 'sin allowlist sigue siendo fail-closed (#5060)');
+    } finally { teardownTmp(dir); }
+});
+
+test('removeFromAllowlist con allowClear:true sí vacía (opt-in explícito del caller)', () => {
+    const dir = setupTmp();
+    try {
+        opState.setAllowlist([5108], { ...AUTH, source: 'test' });
+        const res = opState.removeFromAllowlist([5108], { ...AUTH, source: 'test', allowClear: true });
+        assert.equal(res.ok, true);
+        assert.equal(opState.getDispatchState().mode, 'running');
+        assert.equal(fs.existsSync(opState._internal.paths().PARTIAL_FILE), false, 'el marker se borró');
+    } finally { teardownTmp(dir); }
+});
+
+test('lo que el caller declara pisa lo preservado; lo que no declara se conserva', () => {
+    const dir = setupTmp();
+    try {
+        opState.setAllowlist([100], {
+            ...AUTH,
+            source: 'wave-promote',
+            allowedSkills: ['qa'],
+            acceptedDepRisk: true,
+        });
+
+        // Declara skills y source → los pisa. No declara acceptedDepRisk → lo conserva.
+        opState.addToAllowlist([200], { ...AUTH, source: 'telegram', allowedSkills: ['delivery'] });
+
+        const marker = readMarker();
+        assert.deepEqual(marker.allowed_skills, ['delivery'], 'el caller reemplaza la ventana que declara');
+        assert.equal(marker.source, 'telegram', 'y la procedencia que declara');
+        assert.equal(marker.accepted_dep_risk, true, 'lo no declarado se preserva');
+        assert.equal(opState.isSkillAllowed('qa'), false);
+        assert.equal(opState.isSkillAllowed('delivery'), true);
+    } finally { teardownTmp(dir); }
+});
+
+test('addToAllowlist sin issues válidos es no-op: un add nunca borra el marker', () => {
+    const dir = setupTmp();
+    try {
+        const res = opState.addToAllowlist([], { ...AUTH, source: 'test' });
+        assert.equal(res.ok, true);
+        assert.equal(res.noop, true);
+        assert.equal(fs.existsSync(opState._internal.paths().PARTIAL_FILE), false);
+        assert.equal(opState.getDispatchState().mode, 'running');
+    } finally { teardownTmp(dir); }
+});
+
+test('setAllowlist es REEMPLAZO declarado, no merge (contraste con los incrementales)', () => {
+    const dir = setupTmp();
+    try {
+        opState.setAllowlist([100], { ...AUTH, source: 'wave-promote', allowedSkills: ['qa'] });
+        // Semántica deliberada de setter: lo que no se declara, no se conserva.
+        opState.setAllowlist([200], { ...AUTH, source: 'telegram' });
+
+        const marker = readMarker();
+        assert.deepEqual(marker.allowed_issues, [200]);
+        assert.equal(marker.allowed_skills, undefined, 'el setter reemplaza el marker completo');
+        assert.equal(marker.source, 'telegram');
     } finally { teardownTmp(dir); }
 });
 

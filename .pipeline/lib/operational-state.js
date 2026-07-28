@@ -80,6 +80,7 @@
 
 'use strict';
 
+const fs = require('fs');
 const waves = require('./waves');
 const partialPause = require('./partial-pause');
 const { withLockSync } = require('./file-lock');
@@ -477,6 +478,11 @@ function withDispatchLock(fn) {
 /**
  * Reemplaza la allowlist efectiva completa.
  *
+ * REEMPLAZO, no merge: lo que el caller NO declara en `opts` no se conserva
+ * (skills, dep_sources, metadata de ola). Es la semántica deliberada de un
+ * setter — para mutaciones incrementales que preservan el resto del marker
+ * están `addToAllowlist` / `removeFromAllowlist`.
+ *
  * OJO (semántica vigente preservada): con lista de issues Y de skills vacías,
  * esto equivale a un `clearAllowlist()` — se borra el marker y el modo cae a
  * `running`, que DENIEGA (#5060). No es "habilitar todo".
@@ -499,9 +505,104 @@ function setAllowlistAtomic(issues, opts = {}) {
     return partialPause.setPartialPauseAtomic(issues, requireAuthorization('setAllowlistAtomic', opts));
 }
 
+// -----------------------------------------------------------------------------
+// RMW COMPLETO del marker (fix del rebote rev-1 · security)
+//
+// `partialPause.readPreviousAllowlist()` devuelve SÓLO `allowed_issues`, y
+// `setPartialPause()` reescribe el marker DESDE CERO. Un read-modify-write que
+// lea sólo el eje issues destruye en silencio todo lo demás del marker:
+// `allowed_skills` (el gate de skills #3680), `dep_sources` /
+// `accepted_dep_risk` (#2893), `wave_number` / `wave_name` (#4030) y `source`
+// (audit trail #3625, que quedaba en "unknown").
+//
+// Eso no era sólo pérdida de metadata: era un ENSANCHAMIENTO de autorización.
+// Al perderse `allowed_skills`, un `addToAllowlist` de un issue apagaba la
+// ventana de skills; y al vaciar los issues, el marker se borraba, el modo caía
+// a `running` y — como el gate de skills NO es fail-closed en `running`
+// (`partial-pause.js`: `if (state.mode === 'running') return true`) — quedaban
+// permitidos TODOS los skills, `delivery` (el que mergea a main) incluido. El
+// caller pedía quitar un issue y terminaba levantando una restricción que nunca
+// pidió levantar.
+//
+// Por eso el RMW lee el marker COMPLETO (raw) dentro del mismo lock y
+// re-propaga cada campo al `opts` de `setPartialPause`. No se usa
+// `getPipelineMode()` para esto por dos razones: (1) no devuelve
+// `wave_number`/`wave_name`/`wave_goal`, y (2) con `.paused` presente devuelve
+// el estado `paused` con listas vacías, así que un RMW durante un halt total
+// borraría igual los skills del marker de allowlist.
+//
+// La ruta física NO se conoce acá: se la pedimos al módulo dueño del estado
+// (`dispatchMarkerPath()`), igual que hace el lock. El invariante de §2 del
+// contrato se mantiene.
+// -----------------------------------------------------------------------------
+
+/** Lee el marker de allowlist crudo y completo. `null` si no existe o no parsea. */
+function readDispatchMarkerRaw() {
+    try {
+        const parsed = JSON.parse(fs.readFileSync(dispatchMarkerPath(), 'utf8'));
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    } catch {
+        // Marker ausente o ilegible: no hay nada que preservar. Fail-closed en el
+        // sentido que importa acá — no inventamos campos que no leímos.
+        return null;
+    }
+}
+
+/** Issues del marker crudo, normalizados igual que `partial-pause`. */
+function markerIssues(marker) {
+    const arr = marker && Array.isArray(marker.allowed_issues) ? marker.allowed_issues : [];
+    return arr.map(normalizeIssue).filter(Boolean);
+}
+
+function normalizeSkills(list) {
+    return Array.isArray(list)
+        ? [...new Set(list.filter((s) => typeof s === 'string').map((s) => s.trim()).filter(Boolean))].sort()
+        : [];
+}
+
 /**
- * Agrega issues a la allowlist efectiva preservando los existentes.
- * Read-modify-write bajo el lock del marker.
+ * Traduce los campos preservables del marker crudo a claves del `opts` que
+ * consume `setPartialPause`. Todo lo que NO esté acá se pierde en cada write:
+ * si mañana el marker gana un campo, se agrega en este mapa.
+ */
+function preservedOptsFromMarker(marker) {
+    if (!marker) return {};
+    const out = {};
+    const skills = normalizeSkills(marker.allowed_skills);
+    if (skills.length > 0) out.allowedSkills = skills;
+    if (marker.accepted_dep_risk === true) out.acceptedDepRisk = true;
+    if (marker.dep_sources && typeof marker.dep_sources === 'object') out.depSources = marker.dep_sources;
+    if (marker.authorization_ttls && typeof marker.authorization_ttls === 'object') {
+        out.authorizationTtls = marker.authorization_ttls;
+    }
+    if (typeof marker.source === 'string' && marker.source.trim()) out.source = marker.source;
+    if (Number.isInteger(marker.wave_number) && marker.wave_number > 0) out.waveNumber = marker.wave_number;
+    if (typeof marker.wave_name === 'string' && marker.wave_name.trim()) out.waveName = marker.wave_name;
+    if (typeof marker.wave_goal === 'string' && marker.wave_goal.trim()) out.waveGoal = marker.wave_goal;
+    return out;
+}
+
+/**
+ * Merge de preservados + declarados. El caller PISA lo preservado, pero sólo en
+ * las claves que declara explícitamente: una clave ausente (o `undefined`)
+ * conserva el valor del marker en vez de resetearlo.
+ */
+function mergeDeclaredOverPreserved(preserved, declared) {
+    const out = { ...preserved };
+    for (const [k, v] of Object.entries(declared || {})) {
+        if (v !== undefined) out[k] = v;
+    }
+    return out;
+}
+
+/**
+ * Agrega issues a la allowlist efectiva preservando los existentes **y el resto
+ * del marker** (skills, dep_sources, accepted_dep_risk, metadata de ola,
+ * source). Read-modify-write completo bajo el lock del marker.
+ *
+ * El caller puede pisar cualquier campo declarándolo en `opts` (ej. mandar
+ * `allowedSkills` reemplaza la ventana de skills); lo que NO declara se
+ * conserva.
  */
 function addToAllowlist(issues, opts = {}) {
     const authorized = requireAuthorization('addToAllowlist', opts);
@@ -509,29 +610,73 @@ function addToAllowlist(issues, opts = {}) {
         .map(normalizeIssue)
         .filter(Boolean);
     return withDispatchLock(() => {
-        const current = partialPause.readPreviousAllowlist();
+        const marker = readDispatchMarkerRaw();
+        const current = markerIssues(marker);
         const merged = [...new Set([...current, ...toAdd])].sort((a, b) => a - b);
-        return partialPause.setPartialPause(merged, authorized);
+        const effective = mergeDeclaredOverPreserved(preservedOptsFromMarker(marker), authorized);
+
+        // Un `add` jamás debe BORRAR el marker. Si no quedó nada que habilitar
+        // (nada para agregar y marker vacío/ausente), `setPartialPause([])`
+        // delegaría en `clearPartialPause` — un clear disfrazado de add. No-op.
+        if (merged.length === 0 && normalizeSkills(effective.allowedSkills).length === 0) {
+            return {
+                ok: true,
+                noop: true,
+                allowedIssues: [],
+                allowedSkills: [],
+                msg: 'addToAllowlist sin efecto: no hay issues válidos para agregar',
+            };
+        }
+        return partialPause.setPartialPause(merged, effective);
     });
 }
 
 /**
- * Quita issues de la allowlist efectiva preservando el resto.
- * Read-modify-write bajo el lock del marker.
+ * Quita issues de la allowlist efectiva preservando el resto **y el resto del
+ * marker**. Read-modify-write completo bajo el lock del marker.
  *
- * Si la remoción deja la lista vacía, la semántica vigente de `setPartialPause`
- * borra el marker → modo `running` → dispatch DENEGADO. Es fail-closed, no
- * fail-open.
+ * Borrar el gate tiene que ser DELIBERADO, no un efecto colateral de un
+ * `remove`. Por eso, si la remoción vaciaría `allowed_issues`:
+ *
+ *   - con `allowed_skills` activos → se conserva la ventana de skills: el marker
+ *     queda con `allowed_issues: []` y el modo sigue en `partial_pause`
+ *     (dispatch de issues denegado, gate de skills intacto).
+ *   - sin skills → se RECHAZA (`ok: false`, `reason: 'would-clear-allowlist'`)
+ *     y no se escribe nada. Vaciar la allowlist se pide con `clearAllowlist()`,
+ *     que es explícito y audita como `clear`. El caller que igual quiera el
+ *     clear desde acá lo declara con `allowClear: true`.
+ *
+ * El motivo es de autorización, no de prolijidad: al borrarse el marker el modo
+ * cae a `running`, donde el gate de skills pasa de restrictivo a permisivo (deja
+ * pasar TODOS los skills, `delivery` incluido).
  */
 function removeFromAllowlist(issues, opts = {}) {
     const authorized = requireAuthorization('removeFromAllowlist', opts);
+    const { allowClear = false, ...declared } = authorized;
     const toRemove = new Set(
         (Array.isArray(issues) ? issues : [issues]).map(normalizeIssue).filter(Boolean),
     );
     return withDispatchLock(() => {
-        const current = partialPause.readPreviousAllowlist();
+        const marker = readDispatchMarkerRaw();
+        const current = markerIssues(marker);
         const remaining = current.filter((n) => !toRemove.has(n));
-        return partialPause.setPartialPause(remaining, authorized);
+        const effective = mergeDeclaredOverPreserved(preservedOptsFromMarker(marker), declared);
+        const skills = normalizeSkills(effective.allowedSkills);
+
+        if (remaining.length === 0 && skills.length === 0 && !allowClear) {
+            return {
+                ok: false,
+                rejected: true,
+                reason: 'would-clear-allowlist',
+                allowedIssues: current,
+                allowedSkills: skills,
+                msg: 'removeFromAllowlist NO aplicado: vaciaría la allowlist y borraría el marker, ' +
+                     'lo que degrada el modo a `running` y ensancha el gate de skills (los permite ' +
+                     'todos, delivery incluido). Vaciarla es una decisión explícita: usá ' +
+                     'clearAllowlist(), o declará `allowClear: true` en el opts.',
+            };
+        }
+        return partialPause.setPartialPause(remaining, effective);
     });
 }
 
