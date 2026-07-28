@@ -1423,6 +1423,25 @@ kernel:
   coordinationTableName: ""   # requerido para el driver real (fail-closed sin ella)
   region: ""         # región AWS destino (vacío mientras durable:false)
   durable: false     # default OFF -- todo sigue en FS, cero llamadas AWS
+  # #5135 CA-1 -- Ventana de cutover SUPERVISADA. Default OFF (fail-closed: solo
+  # el booleano `true` exacto la abre).
+  #
+  # Que habilita:
+  #   - false (DEFAULT, regimen normal): el boot durable sigue siendo BEST-EFFORT.
+  #     Si el catalogo durable degrada a filesystem se emite una alerta FUERTE por
+  #     Telegram y el pulpo arranca igual sobre FS. Disponibilidad gana: el
+  #     arranque no esta supervisado y un throttle transitorio de DynamoDB no
+  #     puede ser un DoS de disparo trivial contra el pipeline.
+  #   - true (SOLO durante el cutover): integridad gana. Una degradacion del
+  #     catalogo durable ABORTA el encendido -- suspende el dispatch escribiendo
+  #     `.pipeline/.paused` (nunca process.exit, nunca throw). Es lo que evita el
+  #     falso verde de comparar filesystem contra filesystem mientras el write
+  #     path escribe a DynamoDB.
+  #
+  # Quien la abre/cierra: EL OPERADOR, a mano, inmediatamente antes y despues del
+  # cutover (operacion supervisada de minutos, con rollback manual). NUNCA se deja
+  # en `true` en regimen. Runbook: docs/pipeline/runbook-cutover-durable.md.
+  cutover_window: false
   # #4822 (split 3/3 de #4804) — Cota de instancias del boot durable del supervisor
   # multi-producto (CA-SEC-4 / REQ-SEC-BOOT-5, A04/DoS). Sibling de `durable` (que
   # sigue siendo booleano para no romper el fail-closed de #4820). El boot durable

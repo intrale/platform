@@ -142,6 +142,7 @@ function projectStoreProduct(body) {
  * @param {object}  [opts.store]         instancia de kernel-store (o pasar createStore).
  * @param {function}[opts.createStore]   factory lazy del store (evita instanciar en modo FS).
  * @param {function}[opts.onDegraded]    callback(reason) al caer a FS por infra.
+ * @param {boolean} [opts.failLoud=false] #5135 CA-2 — corta el fallback a FS (ver abajo).
  * @returns {Promise<Array<{projectId:string,name:string,status:string,role:string}>>}
  */
 async function listProductsResolved(opts = {}) {
@@ -159,13 +160,12 @@ async function listProductsResolved(opts = {}) {
             if (s && typeof s.listProducts === 'function') store = s;
         } catch (err) {
             // Falla al construir el store = infra no disponible → fallback FS.
-            logDegraded(opts, `no se pudo instanciar el store: ${err && err.message ? err.message : err}`);
-            return listProducts(descriptorsDir);
+            return degrade(opts, descriptorsDir,
+                `no se pudo instanciar el store: ${err && err.message ? err.message : err}`);
         }
     }
     if (!store) {
-        logDegraded(opts, 'store durable no disponible');
-        return listProducts(descriptorsDir);
+        return degrade(opts, descriptorsDir, 'store durable no disponible');
     }
 
     let raw;
@@ -173,10 +173,11 @@ async function listProductsResolved(opts = {}) {
         raw = await store.listProducts();
     } catch (err) {
         // security#2: catálogo corrupto/inyectado NO cae a FS — propaga/escala.
+        // #5135 CA-9: esta rama NO se toca — `failLoud` no la altera, la corrupción
+        // sigue escalando por su propio camino (validación ≠ degradación).
         if (err && err.name === 'KernelStoreValidationError') throw err;
         // Fallo de infra (store no disponible) → fallback FS loggeado (degradado).
-        logDegraded(opts, err && err.message ? err.message : String(err));
-        return listProducts(descriptorsDir);
+        return degrade(opts, descriptorsDir, err && err.message ? err.message : String(err));
     }
 
     const seen = new Set();
@@ -189,6 +190,42 @@ async function listProductsResolved(opts = {}) {
     }
     out.sort(sortCatalog);
     return out;
+}
+
+// -----------------------------------------------------------------------------
+// #5135 CA-2 — Degradación fail-loud.
+//
+// Error tipado que propaga la degradación en vez de enmascararla con el barrido
+// FS. Se distingue por `name` (igual que `KernelStoreValidationError`) para que
+// el caller pueda decidir sin acoplarse a la clase.
+// -----------------------------------------------------------------------------
+class KernelDegradedError extends Error {
+    constructor(reason) {
+        super(`el store durable degradó a filesystem: ${reason}`);
+        this.name = 'KernelDegradedError';
+        this.reason = reason;
+    }
+}
+
+/**
+ * #5135 CA-2 — Punto único de degradación a FS.
+ *
+ * Alerta SIEMPRE (el sink corre igual, para que el operador se entere) y después
+ * decide si sigue el fallback o lo corta:
+ *   - `failLoud` ausente/false (DEFAULT) ⇒ comportamiento ACTUAL sin cambios:
+ *     se loggea y se devuelve el barrido FS.
+ *   - `failLoud === true` ⇒ propaga `KernelDegradedError`.
+ *
+ * Por qué hace falta el flag explícito (R2, verificado por `architect`): inyectar
+ * un `onDegraded` que lance NO alcanza — el `try { } catch { }` de `logDegraded`
+ * lo silencia y el fallback a FS ocurre igual. Cumplir CA-2 "inyectando el sink"
+ * sería un falso verde; por eso el test assertea que NO hubo fallback, no sólo
+ * que el sink corrió.
+ */
+function degrade(opts, descriptorsDir, reason) {
+    logDegraded(opts, reason);
+    if (opts.failLoud === true) throw new KernelDegradedError(reason);
+    return listProducts(descriptorsDir);
 }
 
 function logDegraded(opts, reason) {
@@ -204,6 +241,7 @@ function logDegraded(opts, reason) {
 module.exports = {
     listProducts,
     listProductsResolved,
+    KernelDegradedError,
     projectDescriptor,
     projectStoreProduct,
     isSafeProjectId,
