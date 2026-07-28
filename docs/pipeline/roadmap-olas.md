@@ -108,12 +108,11 @@ después hay que corregir.
 | Orden | Bloque | Por qué acá | Estado |
 |-------|--------|-------------|--------|
 | ✅ | **Release firmado del kernel** (E1) | Sin release publicado, `consume:true` no tiene de dónde consumir. Raíz de todo. | **Hecho** — `v0.1.2` publicado y firmado |
-| **En curso** | **Ola 9.2 · Parametrizar los skills de orquestación** (épico #5064) | Deja los 10 skills de proceso libres de producto. Cadena estricta #5065 → #5066 → #5067 → #5068. | #5065 ✅ · #5066 ✅ · #5067, #5068 pendientes |
-| **1.º** | **Ola 9.4 · Partir config + externalizar estado por proyecto** (E2) | **Cuello de botella real.** Mientras el estado sea plano y global, dos proyectos se pisan: no hay multi-proyecto, no hay app operadora, no se puede encender el consumo en serio. | Sin épico creado |
-| **2.º** | **Ola 9.3 · Partir skills híbridos** (E6) | Grande y la **más riesgosa**: el producto puede perder reglas propias (strings, flavors, gates de QA) sin que nadie lo note. Su red de contención es el guardrail anti-regresión **#5068**, que todavía no arrancó. Hacerla antes de #5068 es migrar sin red. | Bloqueada por #5068 |
-| **3.º** | **Red de seguridad del corte** (E3) + **launcher/updater externo** (E5) | Precondición del cutover: botón de pánico independiente, snapshot verificado, timeout de decisión y **simulacro verde obligatorio**. Sin ensayo, no hay corte. | Sin épico creado |
-| **4.º** | **Ola 9.5 · Cutover con freeze + observación** (E7) | Punto de no retorno. Ventana acotada y agendada, drenaje previo, motor local congelado como destino de rollback. | Sin épico creado |
-| **5.º** | **App operadora móvil** (E9) | Prueba de fuego del desacople: si el kernel no puede operar un proyecto que no es Intrale, el corte no terminó. **Depende dura de E2** (una app móvil no lee archivos locales). | Sin épico creado |
+| **En curso** | **Ola 9.4 · Partir config + externalizar el estado operativo por proyecto** (épico #5107) | **Cuello de botella real.** Mientras el estado sea plano y global, dos proyectos se pisan: no hay multi-proyecto, no hay app operadora, no se puede encender el consumo en serio. Alcance ampliado por decisión del operador (28/07): incluye además el **encendido del store durable** y el **almacenamiento externo** del estado operativo. Cadena `#5108 → #5109 → #5110 → #5113`; **#5111** paralelo tras #5108; **#5112** totalmente paralelizable. | Abierta 28/07 — 6 hijos, #5108 y #5112 habilitados |
+| **1.º** | **Ola 9.3 · Partir skills híbridos** (E6) | Grande y la **más riesgosa**: el producto puede perder reglas propias (strings, flavors, gates de QA) sin que nadie lo note. Su red de contención, el guardrail anti-regresión **#5068**, ya está cerrada — la red existe. | Sin épico creado |
+| **2.º** | **Red de seguridad del corte** (E3) + **launcher/updater externo** (E5) | Precondición del cutover: botón de pánico independiente, snapshot verificado, timeout de decisión y **simulacro verde obligatorio**. Sin ensayo, no hay corte. | Sin épico creado |
+| **3.º** | **Ola 9.5 · Cutover con freeze + observación** (E7) | Punto de no retorno. Ventana acotada y agendada, drenaje previo, motor local congelado como destino de rollback. | Sin épico creado |
+| **4.º** | **App operadora móvil** (E9) | Prueba de fuego del desacople: si el kernel no puede operar un proyecto que no es Intrale, el corte no terminó. **Depende dura de E2** (una app móvil no lee archivos locales). | Sin épico creado |
 
 **Paralelizable en cualquier momento** (no toca el camino crítico): runbook de continuidad y modo
 degradado (E4) · cuota y prioridad por proyecto (E8) · deuda operativa y quick wins EP-9 ·
@@ -140,6 +139,7 @@ Aunque el número sugiera lo contrario:
 | **Ola 9.1** · Migrar el repositorio del kernel (épico #4661) | 6 | 13/07 | cadena #4662→#4665 |
 | **Ola Puente** · Kernel multi-producto (épico #4644) | 7 | 20/07 | 35 |
 | Ola · Cierre de gestión de producto nuevo | 8 | 27/07 | 42 |
+| **Ola 9.2** · Parametrizar los skills de orquestación (épico #5064) | 9 | 28/07 | cadena #5065→#5068 (4/4) |
 
 Las olas 1–7 de la auditoría 2026-06 y la Ola 8 de definición del desacople (épicas #4009–#4014)
 están cerradas y su salida son los documentos de diseño que este roadmap consume.
