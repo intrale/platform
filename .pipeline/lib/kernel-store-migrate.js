@@ -64,6 +64,59 @@ const MIGRATION_KNOWN_KEYS = Object.freeze(SOURCES.map((s) => s.key));
 const BACKUP_DIR_MODE = 0o700;
 const BACKUP_FILE_MODE = 0o600;
 
+// Directorio de descriptores de producto (#4821). Es el ORIGEN REAL del alcance
+// del cutover: 1:N con `product#<id>` en el store durable. No está en SOURCES.
+const DESCRIPTORS_DIR_NAME = 'descriptors';
+
+// Gramática cerrada de nombre de descriptor. Es LITERAL y está hard-codeada a
+// propósito (AD-3/R15): NUNCA se deriva del manifest, de un glob ni de un
+// readdir del backup. El manifest es contenido no confiable y no puede
+// ampliarla. Es el invariante que protege CA-13b.
+const DESCRIPTOR_NAME_RE = /^[A-Za-z0-9._-]+\.json$/;
+
+// -----------------------------------------------------------------------------
+// Copy de errores (CA-23 · UX-7)
+//
+// Estos mensajes son UI: se leen en una terminal, en el medio de la operación y
+// sin el código de error al lado. Cada uno dice QUÉ PASÓ, QUÉ HACER AHORA y
+// —donde aplique— CUÁL ES LA CORRECCIÓN INTUITIVA QUE ESTÁ PROHIBIDA.
+// -----------------------------------------------------------------------------
+
+function errSourcesInvalidas(received) {
+  return (
+    "sources_invalidas: 'sources' debe ser un array de {file,key} u omitirse. " +
+    `Recibido: ${Object.prototype.toString.call(received)}. ` +
+    'Omitilo para usar el default en dry-run, o pasá [] para no migrar ninguna fuente. ' +
+    'Ojo con la trampa: [] NO significa "usar el default" — significa "no migres nada", ' +
+    'y se respeta tal cual.'
+  );
+}
+
+// Nota (AD-1): este código es un error de API, no de CLI. El operador nunca lo
+// ve, porque `--apply` corta antes con `alcance_no_implementado`. Por eso el
+// mensaje NO menciona ningún flag `--sources` (no existe) ni manda a reintentar
+// `--apply` de otra forma: no hay tal camino.
+const ERR_SOURCES_NO_EXPLICITAS =
+  "sources_no_explicitas: migrateState({ apply: true }) requiere declarar 'sources' " +
+  'explícitamente. No pases SOURCES: son las 4 fuentes operativas (waves, blocked, ' +
+  'blocked-by-infra, health) que #5112 prohíbe migrar. Para ver el reporte sin mutar ' +
+  'nada, invocá con apply: false.';
+
+const ERR_ALCANCE_NO_IMPLEMENTADO =
+  'alcance_no_implementado: --apply no puede migrar nada todavía, así que no toca nada.\n' +
+  '\n' +
+  'Qué pasó: el alcance real del cutover (descriptor#self, product#<id>, catalog#index, ' +
+  'signature#, audit#, claim#) todavía NO tiene ruta de migración en este módulo. Las 4 ' +
+  'fuentes que este migrador sí sabe mover (waves, blocked, blocked-by-infra, health) son ' +
+  'justo las que #5112 prohíbe migrar.\n' +
+  '\n' +
+  'Qué hacer ahora: los descriptores y el catálogo se pueblan por durableRegisterProduct ' +
+  '(.pipeline/lib/project-bootstrap.js, #4821) — no por este migrador. Para ver el reporte ' +
+  'del estado de coordinación sin mutar nada, corré este mismo comando SIN flags (dry-run).\n' +
+  '\n' +
+  'La trampa: no "destrabes" esto pasando SOURCES al migrador. Eso migraría exactamente las ' +
+  '4 fuentes operativas prohibidas, que es el falso verde que #5136 existe para evitar.';
+
 // -----------------------------------------------------------------------------
 // Utilidades puras
 // -----------------------------------------------------------------------------
@@ -361,6 +414,32 @@ function buildReport({ mode, items, before, after, actions, backupDir, integrity
  * Migra el estado de coordinación JSON → store durable. Fail-closed, errores
  * como dato (NUNCA throw). Modo default: dry-run (no escribe).
  *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * QUÉ MIGRA ESTA FUNCIÓN, Y QUÉ NO (CA-14′ · D-6 · #5136)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ESTA FUNCIÓN **NO** PUEBLA LOS DESCRIPTORES NI EL CATÁLOGO DE PRODUCTOS.
+ *
+ * Los descriptores y el catálogo los puebla `durableRegisterProduct`
+ * (`.pipeline/lib/project-bootstrap.js`, #4821). El migrador nunca escribe esas
+ * claves: no hay un solo `putProduct`/`putDescriptor` en este módulo.
+ *
+ * Las claves reales del alcance del cutover, con su nombre literal:
+ *
+ *   - `descriptor#self`  — SINGULAR por partición: cada partición de proyecto
+ *     tiene exactamente UN descriptor propio bajo esa SK fija.
+ *   - `product#<id>`     — uno por producto registrado.
+ *   - `catalog#index`    — índice del catálogo, SK fija y única.
+ *
+ * Relación 1:N: el directorio `.pipeline/descriptors/` tiene N archivos y cada
+ * uno se proyecta a UN `product#<id>` distinto en el store durable, mientras que
+ * `descriptor#self` sigue siendo uno solo por partición. Por eso el backup del
+ * alcance real es `backupDescriptors()` (CA-13′) y no `createBackup()`.
+ *
+ * `SOURCES` (arriba, la constante) son las 4 fuentes OPERATIVAS de coordinación
+ * —waves, blocked, blocked-by-infra, health— que #5112 **prohíbe migrar** en el
+ * cutover. Son justamente lo que esta función sabe mover, y por eso el CLI
+ * `--apply` está bloqueado con `alcance_no_implementado` (D-4).
+ *
  * @param {object} opts
  * @param {object}  opts.store        instancia de `createCoordinationStore` (#4744). REQUERIDA para --apply.
  * @param {boolean} [opts.apply=false] false = dry-run (no escribe); true = persiste.
@@ -368,14 +447,35 @@ function buildReport({ mode, items, before, after, actions, backupDir, integrity
  * @param {string}  [opts.sourceDir]   dir de las 4 fuentes JSON (default `.pipeline/`).
  * @param {string}  [opts.backupRoot]  raíz de backups (default `.pipeline/backup/`).
  * @param {number}  [opts.now]         epoch ms para el <timestamp> del backup (default Date.now()).
- * @param {Array}   [opts.sources]     override de fuentes (para tests).
+ * @param {Array}   [opts.sources]     DECLARACIÓN DE ALCANCE (ya no es un "override para tests").
+ *   Con CA-12′ pasa a ser el contrato: quien muta estado declara qué muta. Tres casos:
+ *     - `undefined` → default `SOURCES`, y SÓLO en dry-run (con `apply:true` ⇒ `sources_no_explicitas`).
+ *     - array, INCLUIDO el vacío → se respeta tal cual; `[]` no migra ninguna fuente.
+ *     - cualquier otra cosa (null, {}, string, number) → `{ ok:false, code:'sources_invalidas' }`.
  * @returns {Promise<{ ok:boolean, code?:string, error?:string, report?:string, backupDir?:string, before?:object, after?:object }>}
  */
 async function migrateState(opts = {}) {
   const apply = opts.apply === true;
   const sourceDir = opts.sourceDir || defaultPipelineDir();
   const backupRoot = opts.backupRoot || path.join(defaultPipelineDir(), 'backup');
-  const sources = Array.isArray(opts.sources) && opts.sources.length ? opts.sources : SOURCES;
+
+  // CA-11′ (D-7 / GURU-10) — `sources` tiene TRES casos, no dos. El guard
+  // `Array.isArray` no se borra: se convierte en un error como DATO en vez de un
+  // fallback silencioso. Nunca throw (contrato del módulo).
+  if (opts.sources !== undefined && !Array.isArray(opts.sources)) {
+    return { ok: false, code: 'sources_invalidas', error: errSourcesInvalidas(opts.sources) };
+  }
+  // CA-12′ (SEC-10) — con `apply`, el alcance se DECLARA. Va acá arriba, ANTES
+  // del backup: es una operación que muta estado, manda el fail-closed.
+  if (apply && opts.sources === undefined) {
+    return { ok: false, code: 'sources_no_explicitas', error: ERR_SOURCES_NO_EXPLICITAS };
+  }
+  // ⚠️ NO reintroducir `&& opts.sources.length`: ésa es exactamente la trampa de
+  // CA-11′ — un array vacío es falsy por `.length` y caía al default, migrando
+  // las 4 fuentes que #5112 prohíbe migrar. Un `[]` llega tal cual a
+  // `readSources`, que devuelve `items = []` ⇒ `no_sources`, que es la semántica
+  // correcta de "no migres nada".
+  const sources = opts.sources !== undefined ? opts.sources : SOURCES;
   const epochMs = Number.isFinite(opts.now) ? opts.now : Date.now();
 
   // 0) Leer fuentes.
@@ -535,6 +635,317 @@ function rollbackState(opts = {}) {
 }
 
 // -----------------------------------------------------------------------------
+// Backup / restore de DESCRIPTORES (CA-13′ / CA-13b · #5136)
+//
+// `createBackup` respalda las 4 fuentes OPERATIVAS de coordinación, que son
+// justo las que #5112 prohíbe migrar. El origen del ALCANCE REAL del cutover es
+// `.pipeline/descriptors/` (1:N con `product#<id>`), que NO está en `SOURCES` —
+// o sea que hoy el alcance real no tiene ni backup ni ruta de restauración.
+// Estos dos helpers cierran ese hueco, con los mismos controles vigentes
+// (0700/0600, sha256 canónico, `assertWithin`) y en DESTINO PROPIO con MANIFEST
+// PROPIO, de modo que nunca puedan pisar el `manifest.json` de `createBackup`
+// para el mismo epoch (GURU-11: `backupDirName` es puro ⇒ mismo epoch, mismo dir).
+//
+// `rollbackState` y su `allowedFiles` NO se tocan (AD-3): su blindaje
+// anti-Zip-Slip funciona PORQUE el set es cerrado y literal.
+// -----------------------------------------------------------------------------
+
+function defaultDescriptorsDir() {
+  return path.join(defaultPipelineDir(), DESCRIPTORS_DIR_NAME);
+}
+
+/**
+ * Respalda `.pipeline/descriptors/` bajo `<backupRoot>/<ts>/descriptors/`, con
+ * manifest propio. Fail-closed, errores como dato (NUNCA throw).
+ *
+ * @param {object} opts
+ * @param {string} [opts.descriptorsDir] origen (default `.pipeline/descriptors/`).
+ * @param {string} [opts.backupRoot]     raíz de backups (default `.pipeline/backup/`).
+ * @param {number} [opts.epochMs]        epoch ms del <timestamp> (default Date.now()).
+ * @returns {{ ok:boolean, code?:string, error?:string, dir?:string, manifest?:object, count?:number }}
+ */
+function backupDescriptors(opts = {}) {
+  const descriptorsDir = opts.descriptorsDir || defaultDescriptorsDir();
+  const backupRoot = opts.backupRoot || path.join(defaultPipelineDir(), 'backup');
+  const epochMs = Number.isFinite(opts.epochMs) ? opts.epochMs : Date.now();
+
+  // 0) Enumerar descriptores con la MISMA gramática cerrada que usa la
+  //    restauración. Orden estable para que el manifest sea determinístico.
+  let names;
+  try {
+    names = fs.existsSync(descriptorsDir)
+      ? fs.readdirSync(descriptorsDir).filter((n) => DESCRIPTOR_NAME_RE.test(n)).sort()
+      : [];
+  } catch (e) {
+    return {
+      ok: false,
+      code: 'descriptors_backup_read_failed',
+      error: `descriptors_backup_read_failed: no se pudo listar ${descriptorsDir}: ${e.message}. `
+        + 'Qué hacer ahora: verificá que el directorio exista y sea legible por el usuario que corre el cutover, y reintentá ANTES de tocar el store.',
+    };
+  }
+  // Fail-closed: un backup vacío que devuelve ok es exactamente el falso verde
+  // que esta historia existe para evitar. Sin descriptores no hay qué respaldar,
+  // y el operador tiene que enterarse ANTES del cutover, no después.
+  if (names.length === 0) {
+    return {
+      ok: false,
+      code: 'descriptors_absent',
+      error: `descriptors_absent: no hay ningún descriptor .json en ${descriptorsDir}, así que no hay nada que respaldar. `
+        + 'Qué hacer ahora: NO sigas con el cutover. Un backup de descriptores vacío no protege nada. '
+        + 'Los descriptores los puebla durableRegisterProduct (.pipeline/lib/project-bootstrap.js, #4821): verificá que el bootstrap del proyecto haya corrido.',
+    };
+  }
+
+  // 1) Destino PROPIO: `<backupRoot>/<ts>/descriptors/`. Un nivel por debajo del
+  //    dir de `createBackup`, así los dos manifests conviven para el mismo epoch.
+  const parentDir = path.join(backupRoot, backupDirName(epochMs));
+  const dir = path.join(parentDir, DESCRIPTORS_DIR_NAME);
+  if (!assertWithin(backupRoot, dir)) {
+    return {
+      ok: false,
+      code: 'descriptors_backup_out_of_root',
+      error: `descriptors_backup_out_of_root: el destino de backup ${dir} cae fuera de ${backupRoot} (rechazado). `
+        + 'Qué hacer ahora: revisá `backupRoot`; no se escribe nada fuera de la raíz de backups.',
+    };
+  }
+  try {
+    fs.mkdirSync(backupRoot, { recursive: true, mode: BACKUP_DIR_MODE });
+    fs.mkdirSync(parentDir, { recursive: true, mode: BACKUP_DIR_MODE });
+    fs.mkdirSync(dir, { recursive: true, mode: BACKUP_DIR_MODE });
+    // mkdir respeta umask; el chmod explícito es el que garantiza el modo.
+    try { fs.chmodSync(parentDir, BACKUP_DIR_MODE); } catch (_) { /* best-effort */ }
+    try { fs.chmodSync(dir, BACKUP_DIR_MODE); } catch (_) { /* best-effort */ }
+  } catch (e) {
+    return {
+      ok: false,
+      code: 'descriptors_backup_mkdir_failed',
+      error: `descriptors_backup_mkdir_failed: no se pudo crear ${dir}: ${e.message}. `
+        + 'Qué hacer ahora: liberá espacio o corregí permisos sobre .pipeline/backup/ y reintentá ANTES del cutover.',
+    };
+  }
+
+  // 2) Copiar cada descriptor + checksum canónico.
+  const manifest = { schemaVersion: '1.0', kind: 'descriptors', createdAt: epochMs, files: {} };
+  for (const name of names) {
+    const src = assertWithin(descriptorsDir, path.join(descriptorsDir, name));
+    const dest = assertWithin(dir, path.join(dir, name));
+    if (!src || !dest) {
+      return {
+        ok: false,
+        code: 'descriptors_backup_out_of_root',
+        error: `descriptors_backup_out_of_root: "${name}" escapa del directorio permitido (rechazado). `
+          + 'Qué hacer ahora: revisá el contenido de .pipeline/descriptors/; no se respalda nada fuera de ese directorio.',
+      };
+    }
+    // Se respalda el archivo BYTE A BYTE (Buffer, sin re-serializar). Los
+    // descriptores están versionados en git y con CRLF: re-serializarlos haría
+    // que la restauración devuelva un archivo semánticamente igual pero
+    // byte-distinto, ensuciando el `git diff` justo cuando el operador está
+    // tratando de volver atrás. El checksum, en cambio, es CANÓNICO (indiferente
+    // al formato), igual que en `createBackup`.
+    let raw;
+    let value;
+    try {
+      raw = fs.readFileSync(src);
+      value = JSON.parse(raw.toString('utf8'));
+    } catch (e) {
+      return {
+        ok: false,
+        code: 'descriptors_backup_read_failed',
+        error: `descriptors_backup_read_failed: no se pudo leer/parsear ${name}: ${e.message}. `
+          + 'Qué hacer ahora: NO sigas con el cutover. Un descriptor ilegible no se puede respaldar con checksum, '
+          + 'y sin checksum la restauración no puede garantizar que lo que vuelve es lo que había. Arreglá el archivo y reintentá.',
+      };
+    }
+    try {
+      fs.writeFileSync(dest, raw, { mode: BACKUP_FILE_MODE });
+      try { fs.chmodSync(dest, BACKUP_FILE_MODE); } catch (_) { /* best-effort */ }
+    } catch (e) {
+      return {
+        ok: false,
+        code: 'descriptors_backup_write_failed',
+        error: `descriptors_backup_write_failed: no se pudo escribir el backup de ${name}: ${e.message}. `
+          + 'Qué hacer ahora: liberá espacio o corregí permisos sobre .pipeline/backup/ y reintentá ANTES del cutover.',
+      };
+    }
+    manifest.files[name] = {
+      present: true,
+      checksum: sha256Canonical(value),
+      records: countRecords(value),
+    };
+  }
+
+  // 3) Manifest PROPIO, dentro del subdirectorio. Nunca pisa el de createBackup.
+  try {
+    fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2), { mode: BACKUP_FILE_MODE });
+    try { fs.chmodSync(path.join(dir, 'manifest.json'), BACKUP_FILE_MODE); } catch (_) { /* best-effort */ }
+  } catch (e) {
+    return {
+      ok: false,
+      code: 'descriptors_manifest_failed',
+      error: `descriptors_manifest_failed: no se pudo escribir el manifest de descriptores: ${e.message}. `
+        + 'Qué hacer ahora: NO sigas con el cutover. Sin manifest no hay checksums, y sin checksums el backup no es restaurable.',
+    };
+  }
+
+  return { ok: true, dir, manifest, count: names.length };
+}
+
+/**
+ * Restaura descriptores desde un backup producido por `backupDescriptors`,
+ * verificando PRIMERO el checksum de cada entrada (no reintroducir estado
+ * corrupto · A05). Fail-closed, errores como dato (NUNCA throw).
+ *
+ * Contención anti-Zip-Slip (AD-3 / R15): como los basenames son dinámicos (1:N
+ * con `product#<id>`), el conjunto cerrado NO puede ser una lista literal de
+ * nombres — es una GRAMÁTICA cerrada, hard-codeada, que el manifest no puede
+ * ampliar. Triple contención independiente: identidad de basename, regex
+ * literal, y `assertWithin` sobre ORIGEN y DESTINO.
+ *
+ * Valida TODAS las entradas antes de escribir ninguna: si una sola se rechaza,
+ * no se escribe nada (fail-closed real, no "a medias").
+ *
+ * @param {object} opts
+ * @param {string} opts.fromDir      dir del backup (`.pipeline/backup/<ts>/descriptors/`).
+ * @param {string} [opts.targetDir]  destino (default `.pipeline/descriptors/`).
+ * @param {string} [opts.backupRoot] raíz permitida (default `.pipeline/backup/`).
+ * @returns {{ ok:boolean, code?:string, error?:string, restored?:string[], fromDir?:string, targetDir?:string }}
+ */
+function restoreDescriptors(opts = {}) {
+  const backupRoot = opts.backupRoot || path.join(defaultPipelineDir(), 'backup');
+  const targetDir = opts.targetDir || defaultDescriptorsDir();
+
+  if (!opts.fromDir || typeof opts.fromDir !== 'string') {
+    return {
+      ok: false,
+      code: 'descriptors_from_required',
+      error: 'descriptors_from_required: falta indicar el directorio del backup de descriptores. '
+        + 'Qué hacer ahora: pasá `fromDir` apuntando a .pipeline/backup/<timestamp>/descriptors/ (el subdirectorio, no el <timestamp> pelado).',
+    };
+  }
+  // Anti path-traversal: `fromDir` DEBE resolver dentro de backupRoot.
+  const fromDir = assertWithin(backupRoot, opts.fromDir);
+  if (!fromDir) {
+    return {
+      ok: false,
+      code: 'descriptors_from_out_of_root',
+      error: `descriptors_from_out_of_root: el origen cae fuera de ${backupRoot} (posible path-traversal, rechazado). `
+        + 'Qué hacer ahora: sólo se restaura desde .pipeline/backup/; copiá el backup adentro de esa raíz si viene de otro lado.',
+    };
+  }
+  if (!fs.existsSync(fromDir)) {
+    return {
+      ok: false,
+      code: 'descriptors_from_not_found',
+      error: `descriptors_from_not_found: no existe el backup ${fromDir}. `
+        + 'Qué hacer ahora: listá .pipeline/backup/ y elegí un <timestamp> que tenga subdirectorio descriptors/. '
+        + 'Ojo con la trampa: el backup de coordinación y el de descriptores son artefactos DISTINTOS; restaurar uno no restaura el otro.',
+    };
+  }
+
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(path.join(fromDir, 'manifest.json'), 'utf8'));
+  } catch (e) {
+    return {
+      ok: false,
+      code: 'descriptors_manifest_unreadable',
+      error: `descriptors_manifest_unreadable: manifest ilegible en ${fromDir}: ${e.message}. `
+        + 'Qué hacer ahora: NO restaures sin manifest — sin checksums no se puede verificar qué vuelve. Elegí otro backup.',
+    };
+  }
+
+  // Paso 1: VALIDAR TODO (gramática + checksum). Sin escribir una sola línea.
+  const planned = [];
+  for (const file of Object.keys((manifest && manifest.files) || {})) {
+    const meta = manifest.files[file];
+    if (!meta || !meta.present) continue;
+
+    // El contenido del manifest NO es de confianza: quien controla el backup
+    // controla la clave Y su checksum. Por eso el checksum no frena un Zip-Slip
+    // y la gramática cerrada es la que contiene.
+    const unsafe = file !== path.basename(file)
+      || file === '.' || file === '..'
+      || !DESCRIPTOR_NAME_RE.test(file);
+    if (unsafe) {
+      return {
+        ok: false,
+        code: 'unsafe_descriptor_entry',
+        error: `unsafe_descriptor_entry: entrada de manifest no permitida "${file}" — sólo se aceptan basenames <nombre>.json sin separadores de ruta (posible path-traversal, rechazado). `
+          + 'Qué hacer ahora: descartá ese backup, es sospechoso. No se restauró nada.',
+      };
+    }
+    // Defensa en profundidad: origen Y destino deben quedar adentro.
+    const src = assertWithin(fromDir, path.join(fromDir, file));
+    const dst = assertWithin(targetDir, path.join(targetDir, file));
+    if (!src || !dst) {
+      return {
+        ok: false,
+        code: 'unsafe_descriptor_entry',
+        error: `unsafe_descriptor_entry: la entrada "${file}" escapa del directorio permitido (posible path-traversal, rechazado). `
+          + 'Qué hacer ahora: descartá ese backup. No se restauró nada.',
+      };
+    }
+
+    // Se leen los bytes crudos: se verifica el checksum CANÓNICO sobre el valor
+    // parseado (fail-closed, indiferente al formato) pero se restaura el archivo
+    // BYTE A BYTE, para no ensuciar el `git diff` de un archivo versionado.
+    let raw;
+    let value;
+    try {
+      raw = fs.readFileSync(src);
+      value = JSON.parse(raw.toString('utf8'));
+    } catch (e) {
+      return {
+        ok: false,
+        code: 'descriptors_backup_file_unreadable',
+        error: `descriptors_backup_file_unreadable: archivo de backup ilegible ${file}: ${e.message}. `
+          + 'Qué hacer ahora: elegí otro backup. No se restauró nada.',
+      };
+    }
+    const actual = sha256Canonical(value);
+    if (actual !== meta.checksum) {
+      return {
+        ok: false,
+        code: 'descriptors_backup_corrupt',
+        error: `descriptors_backup_corrupt: el checksum de ${file} no coincide (esperado ${meta.checksum}, actual ${actual}) — NO se restaura estado corrupto. `
+          + 'Qué hacer ahora: elegí otro <timestamp> de backup. No se restauró nada.',
+      };
+    }
+    planned.push({ file, dst, raw });
+  }
+
+  // Paso 2: recién ahora, escribir.
+  try {
+    fs.mkdirSync(targetDir, { recursive: true });
+  } catch (e) {
+    return {
+      ok: false,
+      code: 'descriptors_restore_mkdir_failed',
+      error: `descriptors_restore_mkdir_failed: no se pudo crear ${targetDir}: ${e.message}. `
+        + 'Qué hacer ahora: corregí permisos sobre .pipeline/ y reintentá. No se restauró nada.',
+    };
+  }
+  const restored = [];
+  for (const p of planned) {
+    try {
+      fs.writeFileSync(p.dst, p.raw);
+      restored.push(p.file);
+    } catch (e) {
+      return {
+        ok: false,
+        code: 'descriptors_restore_write_failed',
+        error: `descriptors_restore_write_failed: no se pudo restaurar ${p.file}: ${e.message}. `
+          + `Qué hacer ahora: corregí permisos y reintentá. Restauración PARCIAL: ya volvieron [${restored.join(', ') || 'ninguno'}].`,
+      };
+    }
+  }
+
+  return { ok: true, restored, fromDir, targetDir };
+}
+
+// -----------------------------------------------------------------------------
 // CLI
 // -----------------------------------------------------------------------------
 
@@ -567,8 +978,36 @@ async function main() {
     return;
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // D-4 / CA-12b / AD-2 (#5136) · Guard de alcance del CLI.
+  //
+  // El alcance real del cutover (descriptor#self / product#<id> / catalog#index /
+  // signature# / audit# / claim#) todavía NO tiene ruta de migración en este
+  // módulo, y `SOURCES` son justo las 4 fuentes operativas que #5112 prohíbe
+  // migrar. Hasta que esa ruta exista, `--apply` dice la verdad y no toca nada.
+  //
+  // Va ACÁ, y no más abajo, por dos motivos duros (AD-2):
+  //   (a) un comando que no puede hacer nada NO debe exigir credenciales AWS;
+  //   (b) `defaultPipelineDir()` resuelve al `.pipeline/` REAL del repo, así que
+  //       un guard puesto después de `migrateState({ apply:true })` escribiría un
+  //       backup real en `.pipeline/backup/` antes de fallar. Acá el efecto de
+  //       filesystem es CERO, que es lo que hace ejecutable y seguro al test CLI.
+  //
+  // ⚠️ PUNTO DE REACTIVACIÓN — NO BORRAR el bloque de abajo (R14). Queda
+  // inalcanzable desde el CLI a propósito, no es dead code accidental: es el
+  // punto exacto donde se reengancha el `--apply` cuando aterrice la ruta de
+  // migración del alcance real.
+  // ───────────────────────────────────────────────────────────────────────────
+  process.stdout.write(ERR_ALCANCE_NO_IMPLEMENTADO + '\n');
+  // `exitCode` en vez de `process.exit()`: en Windows stdout hacia un pipe es
+  // asíncrono y `process.exit()` puede truncar el mensaje. Salir naturalmente
+  // garantiza el flush, y el código de salida sigue siendo ≠ 0 (CA-12b).
+  process.exitCode = 1;
+  return;
+
   // --apply: instanciar el store real. Se hace lazy para no requerir credenciales
   // en dry-run/rollback ni en el import del módulo (los tests inyectan su store).
+  // eslint-disable-next-line no-unreachable
   let store;
   try {
     const { createCoordinationStore } = require('./kernel-coordination-store');
@@ -607,4 +1046,7 @@ module.exports = {
   createBackup,
   readSources,
   parseArgs,
+  // Backup/restore del ALCANCE REAL del cutover (#5136 · CA-13′/CA-13b).
+  backupDescriptors,
+  restoreDescriptors,
 };
