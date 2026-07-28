@@ -1426,6 +1426,34 @@ kernel:
   max_concurrent_instances: 2
 
 # =============================================================================
+# #5067 — Entrega cross-repo: el entregable puede vivir en un repo hermano
+# =============================================================================
+# Con la migración al kernel (Ola 9.x), el entregable de un issue puede aterrizar
+# en `intrale/kernel` en vez de en `intrale/platform`. La rama del ciclo en este
+# repo queda LEGÍTIMAMENTE sin commits propios.
+#
+# El gate `pr:no-commits` del linter rebotaba esos issues para siempre: el escape
+# `pr:already-delivered` (#3819) no los cubre porque sólo consulta el
+# `origin/main` de ESTE repo. Caso real: #5067 rev-1 — trabajo hecho, auditado
+# por security y pusheado a `intrale/kernel`, rebotado igual.
+#
+# Con esta sección, ante una rama vacía el linter busca la entrega en los repos
+# declarados y emite `pr:delivered-in-sibling-repo` (warn, no bloquea) en vez de
+# `pr:no-commits` (error). Reglas:
+#   - Sólo cuenta trabajo PUSHEADO (se consulta `--remotes=origin`). Un commit
+#     local sin push no saltea el gate.
+#   - Sólo se consulta cuando la rama tiene 0 commits propios: costo cero en el
+#     flujo normal.
+#   - `enabled: false` o sección ausente => comportamiento previo intacto.
+#   - Los paths relativos se resuelven contra la raíz del checkout principal,
+#     no contra el worktree del agente (que cambia por issue).
+cross_repo_delivery:
+  enabled: true
+  repos:
+    - name: kernel
+      path: ../kernel
+
+# =============================================================================
 # #3613 — Bootstrap del skill `architect` (paraguas #3559, spike #3507)
 # =============================================================================
 # El skill `architect` corre en dos fases:

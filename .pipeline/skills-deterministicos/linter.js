@@ -161,7 +161,15 @@ function runAllChecks({ issue, cwd, base }) {
         ? git.getPriorDeliveryRefs(cwd, issue, base)
         : [];
 
-    findings.push(...checks.checkClosesIssue(commitMsgs, issue, { priorDeliveryRefs }));
+    // (#5067) Segundo escape: el entregable puede haber aterrizado en un repo
+    // HERMANO declarado (kernel, Ola 9.x) en vez de en este repo. Sólo se
+    // consulta si la rama está vacía Y el origin/main propio tampoco tiene la
+    // entrega — costo cero para el flujo normal y para el caso #3819.
+    const siblingDeliveryRefs = (commitMsgs.length === 0 && priorDeliveryRefs.length === 0)
+        ? git.getSiblingDeliveryRefs(issue, git.loadSiblingRepos(REPO_ROOT))
+        : [];
+
+    findings.push(...checks.checkClosesIssue(commitMsgs, issue, { priorDeliveryRefs, siblingDeliveryRefs }));
     findings.push(...checks.checkCommitSubjects(commitMsgs));
     findings.push(...checks.checkSensitiveFiles(changedFiles));
     findings.push(...checks.checkSecretsInDiff(diffText));

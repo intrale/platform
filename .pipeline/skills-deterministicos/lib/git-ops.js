@@ -488,9 +488,24 @@ function getPriorDeliveryRefs(cwd, issue, base = 'origin/main') {
         '-n', '20',
     ], { cwd, timeoutMs: 60 * 1000 });
     if (r.exit_code !== 0) return [];
+    return parseDeliveryRefs(r.stdout, issue);
+}
+
+/**
+ * Parsea la salida de `git log --pretty=format:%H%n%B%n---END-COMMIT---` y
+ * devuelve "<sha7> <subject>" sólo para los commits cuyo mensaje COMPLETO
+ * referencia `#<issue>` sin dígitos pegados (descarta #38190 cuando se busca
+ * #3819). Compartido por getPriorDeliveryRefs y getSiblingDeliveryRefs.
+ *
+ * @param {string} stdout  salida cruda de git log
+ * @param {number} issue   número de issue
+ * @param {string} [prefix] etiqueta opcional antepuesta a cada ref (ej. nombre del repo)
+ * @returns {string[]} máx 5 refs
+ */
+function parseDeliveryRefs(stdout, issue, prefix = '') {
     const rx = new RegExp(`#${issue}(?!\\d)`);
     const refs = [];
-    for (const chunk of (r.stdout || '').split('---END-COMMIT---')) {
+    for (const chunk of (stdout || '').split('---END-COMMIT---')) {
         const lines = chunk.trim().split(/\r?\n/);
         if (lines.length < 1 || !lines[0]) continue;
         const sha = lines[0].trim();
@@ -498,8 +513,113 @@ function getPriorDeliveryRefs(cwd, issue, base = 'origin/main') {
         if (!/^[0-9a-f]{40}$/i.test(sha)) continue;
         if (!rx.test(body)) continue;
         const subject = (lines[1] || '').trim();
-        refs.push(`${sha.slice(0, 7)} ${subject}`.trim());
+        refs.push(`${prefix}${sha.slice(0, 7)} ${subject}`.trim());
         if (refs.length >= 5) break;
+    }
+    return refs;
+}
+
+/**
+ * (#5067) Lee los repos HERMANOS declarados en `.pipeline/config.yaml`.
+ *
+ * Sección esperada (ausente => [] => comportamiento previo intacto):
+ *
+ *   cross_repo_delivery:
+ *     enabled: true
+ *     repos:
+ *       - name: kernel
+ *         path: ../kernel
+ *
+ * Defensivo por contrato: cualquier problema (archivo ausente, YAML corrupto,
+ * js-yaml no instalado, sección mal formada) devuelve [] en vez de tirar. El
+ * linter NUNCA debe caerse por culpa de esta config opcional — si no se puede
+ * leer, el gate simplemente vuelve al comportamiento estricto (`pr:no-commits`).
+ *
+ * @param {string} repoRoot  raíz del checkout principal (donde vive .pipeline/)
+ * @returns {Array<{name: string, path: string}>} paths ya resueltos a absolutos
+ */
+function loadSiblingRepos(repoRoot) {
+    try {
+        const yaml = require('js-yaml');
+        const cfgPath = path.join(repoRoot, '.pipeline', 'config.yaml');
+        if (!fs.existsSync(cfgPath)) return [];
+        const raw = yaml.load(fs.readFileSync(cfgPath, 'utf8')) || {};
+        const section = raw.cross_repo_delivery;
+        if (!section || section.enabled !== true) return [];
+        const repos = Array.isArray(section.repos) ? section.repos : [];
+        const out = [];
+        for (const entry of repos) {
+            if (!entry || typeof entry.path !== 'string' || !entry.path.trim()) continue;
+            const name = (typeof entry.name === 'string' && entry.name.trim())
+                ? entry.name.trim()
+                : path.basename(entry.path);
+            // Los paths relativos se resuelven contra la raíz del checkout
+            // principal, no contra el cwd del worktree del agente (que varía
+            // por issue). Así `../kernel` significa lo mismo siempre.
+            out.push({ name, path: path.resolve(repoRoot, entry.path) });
+        }
+        return out;
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * (#5067) Busca la entrega del issue en repos HERMANOS declarados.
+ *
+ * Caso real que motiva esto: con la migración al kernel (Ola 9.x), el
+ * entregable de un issue puede aterrizar en `intrale/kernel` en vez de en
+ * `intrale/platform`. La rama del ciclo en platform queda legítimamente sin
+ * commits, y `pr:already-delivered` (#3819) no la salva porque sólo consulta
+ * el `origin/main` del PROPIO repo. Resultado: `pr:no-commits` rebota el issue
+ * para siempre aunque el trabajo esté hecho, revisado y pusheado (#5067 rev-1).
+ *
+ * Sólo cuenta trabajo PUSHEADO: se consulta `--remotes=origin`, no refs
+ * locales. Un commit local sin push no alcanza para saltear el gate — si no
+ * llegó al remoto, para el resto del pipeline no existe. Cubre tanto la rama
+ * de agente (`origin/agent/<issue>-*`) como el caso ya mergeado (`origin/main`).
+ *
+ * Se hace un `fetch` best-effort antes de consultar: el checkout hermano puede
+ * estar desactualizado y no ver el push reciente. Si el fetch falla (sin red,
+ * sin permisos) se consulta igual con lo que haya en local — nunca bloquea.
+ *
+ * Costo cero en el flujo normal: el caller sólo invoca esto cuando la rama
+ * tiene 0 commits propios.
+ *
+ * @param {number} issue     número de issue
+ * @param {Array<{name: string, path: string}>} siblings  repos declarados
+ * @returns {string[]} líneas "<repo>@<sha7> <subject>" (máx 5), [] si no hay match
+ */
+function getSiblingDeliveryRefs(issue, siblings) {
+    if (!issue || !Array.isArray(siblings) || !siblings.length) return [];
+    const refs = [];
+    for (const sib of siblings) {
+        if (refs.length >= 5) break;
+        if (!sib || typeof sib.path !== 'string') continue;
+        // El path viene de config, no del issue: igual se valida que exista y
+        // sea un repo git antes de correr nada, para no spawnear git contra
+        // un directorio arbitrario ni propagar un ENOENT.
+        let isRepo = false;
+        try {
+            isRepo = fs.existsSync(sib.path) && fs.statSync(sib.path).isDirectory();
+        } catch { isRepo = false; }
+        if (!isRepo) continue;
+        const inside = runGit(['rev-parse', '--is-inside-work-tree'], { cwd: sib.path, timeoutMs: 30 * 1000 });
+        if (inside.exit_code !== 0 || !/true/i.test(inside.stdout || '')) continue;
+
+        // Best-effort: el hermano puede no haber fetcheado el push del ciclo.
+        runGit(['fetch', 'origin', '--quiet'], { cwd: sib.path, timeoutMs: 60 * 1000 });
+
+        const r = runGit([
+            'log', '--remotes=origin', `--grep=#${issue}`,
+            '--pretty=format:%H%n%B%n---END-COMMIT---',
+            '-n', '20',
+        ], { cwd: sib.path, timeoutMs: 60 * 1000 });
+        if (r.exit_code !== 0) continue;
+        for (const ref of parseDeliveryRefs(r.stdout, issue, `${sib.name}@`)) {
+            refs.push(ref);
+            if (refs.length >= 5) break;
+        }
     }
     return refs;
 }
@@ -744,6 +864,9 @@ module.exports = {
     getDiffStats,
     fetchOrigin,
     getPriorDeliveryRefs,
+    parseDeliveryRefs,
+    loadSiblingRepos,
+    getSiblingDeliveryRefs,
     rebaseOnto,
     rebaseAbort,
     mergeInto,

@@ -300,9 +300,18 @@ function checkDiffSize({ files_changed = 0, additions = 0, deletions = 0 } = {},
  * rebotar para siempre contra una rama legítimamente vacía. El caller obtiene
  * la evidencia con git-ops.getPriorDeliveryRefs().
  *
+ * (#5067) Caso "entrega cross-repo": con la migración al kernel (Ola 9.x) el
+ * entregable puede aterrizar en un repo HERMANO declarado (`intrale/kernel`)
+ * en vez de en este repo. La rama del ciclo queda legítimamente vacía y
+ * `pr:already-delivered` no la salva, porque sólo mira el `origin/main` propio.
+ * Con evidencia de commits pusheados en el hermano se emite
+ * `pr:delivered-in-sibling-repo` (warn) en vez de bloquear. El caller obtiene
+ * la evidencia con git-ops.getSiblingDeliveryRefs().
+ *
  * @param {string[]} commitMessages — mensajes de commits propios de la rama
  * @param {number} issue — número de issue
- * @param {{priorDeliveryRefs?: string[]}} [opts] — evidencia "<sha7> <subject>"
+ * @param {{priorDeliveryRefs?: string[], siblingDeliveryRefs?: string[]}} [opts]
+ *        evidencia "<sha7> <subject>" / "<repo>@<sha7> <subject>"
  */
 function checkClosesIssue(commitMessages, issue, opts = {}) {
     const findings = [];
@@ -313,6 +322,14 @@ function checkClosesIssue(commitMessages, issue, opts = {}) {
             findings.push({
                 rule: 'pr:already-delivered', severity: 'warn',
                 message: `Rama sin commits propios, pero el entregable del issue ya está mergeado en main: ${prior.slice(0, 3).join(' · ')}`,
+            });
+            return findings;
+        }
+        const sibling = (opts && Array.isArray(opts.siblingDeliveryRefs)) ? opts.siblingDeliveryRefs : [];
+        if (sibling.length) {
+            findings.push({
+                rule: 'pr:delivered-in-sibling-repo', severity: 'warn',
+                message: `Rama sin commits propios, pero el entregable del issue está pusheado en un repo hermano declarado: ${sibling.slice(0, 3).join(' · ')}`,
             });
             return findings;
         }
