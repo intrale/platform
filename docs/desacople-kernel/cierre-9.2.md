@@ -31,7 +31,36 @@ en el doc del kernel.
 
 ### Prueba de la regresión (CA-1)
 
-No asumida: se reintrodujo el acople a propósito y se observó el fallo.
+No asumida: se reintrodujo el acople a propósito **en un commit de prueba
+pusheado**, y se observó al CI del kernel fallar de verdad.
+
+| Corrida | Rama | Veredicto |
+|---|---|---|
+| [30350743684](https://github.com/intrale/kernel/actions/runs/30350743684) | `agent/5068-guardrail-paridad` | ✅ success — árbol limpio |
+| [30350824691](https://github.com/intrale/kernel/actions/runs/30350824691) | `prueba/5068-regresion-ci` (descartable, ya eliminada) | ❌ **failure** — regresión detectada |
+
+Log real del step *"Verificar que no hay acople de producto"* de la corrida que
+falló:
+
+```
+✗ Acople de producto detectado — 2 ocurrencia(s) que rompen el build:
+
+  skills/delivery/SKILL.md
+    skills/delivery/SKILL.md:636:21  término "product-name" → "intrale"
+      gh pr create --repo intrale/platform --assignee leitolarreta
+    skills/delivery/SKILL.md:636:49  término "operator-account" → "leitolarreta"
+      gh pr create --repo intrale/platform --assignee leitolarreta
+
+  Cómo seguir: resolvé el valor por el contrato del adaptador (contracts/README.md) en vez de
+  escribir el literal. Los skills leen los accessors vía `kernel-adapter-env`.
+  La lista de términos y sus excepciones vive en contracts/forbidden-terms.json.
+
+Resumen por scope:
+  skills-orchestration (strict): 2 hallazgo(s), 2 violación(es)
+  engine (baseline): 142 hallazgo(s), baseline 142, 0 violación(es)
+```
+
+Reproducción local equivalente:
 
 ```
 $ echo 'gh pr create --repo intrale/platform --assignee leitolarreta' >> skills/delivery/SKILL.md
