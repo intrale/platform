@@ -45,6 +45,9 @@ const { redact } = require('./redact');
 // #3934 (CA-3 / SEC-1) — escaneo por VALOR (entropía Shannon ≥4.5) para reforzar
 // la sanitización de los turnos del Commander antes de persistir.
 const { redactSecretValue } = require('./lib/redact');
+// #5135 — Sink fail-loud de la degradación del store durable a filesystem.
+// Borde de salida: enum cerrado + template fijo + rate-limit por causa (CA-3/D-2).
+const kernelDegradationAlert = require('./lib/kernel-degradation-alert');
 // #2404 — Detección de logs stale + reset seguro del circuit breaker.
 // Evita rebotar al developer con contexto obsoleto (log del build de hace >24h)
 // y en su lugar re-encola el issue a `build` con YAML limpio.
@@ -17971,9 +17974,23 @@ async function mainLoop() {
   // desde el store durable (DynamoDB) y spawnea un pipeline AISLADO por producto,
   // respetando la cota de instancias (CA-SEC-4).
   //
-  // BEST-EFFORT: un fallo del boot durable (driver AWS ausente, catálogo corrupto,
-  // credenciales faltantes) NUNCA tumba el arranque del pulpo — `bootKernelDurable`
-  // no lanza y este bloque va igual en try/catch (mismo patrón que wave-recovery).
+  // BEST-EFFORT, CON UNA EXCEPCIÓN ACOTADA (#5135 CA-1): un fallo del boot durable
+  // (driver AWS ausente, catálogo corrupto, credenciales faltantes) NUNCA tumba el
+  // arranque del pulpo — `bootKernelDurable` no lanza y este bloque va igual en
+  // try/catch (mismo patrón que wave-recovery).
+  //
+  // La excepción es `kernel.cutover_window: true` — la ventana de cutover que el
+  // operador abre A MANO por unos minutos. DENTRO de esa ventana la integridad
+  // gana sobre la disponibilidad: una degradación del catálogo durable a
+  // filesystem ABORTA el encendido (suspende dispatch vía `.paused`), porque si no
+  // la verificación de paridad del cutover puede dar verde comparando filesystem
+  // contra filesystem mientras el write path escribe a DynamoDB. FUERA de la
+  // ventana (default) el comportamiento best-effort NO cambia: alerta fuerte y el
+  // pipeline arranca igual sobre FS.
+  //
+  // El abort es SIEMPRE una llamada explícita (halt + `.paused`), nunca un `throw`
+  // ni un `process.exit`: el `catch (e)` que cierra este bloque se tragaría la
+  // excepción y matar el proceso violaría "el pipeline no puede morir".
   try {
     const cfg = loadConfig();
     if (cfg && cfg.kernel && cfg.kernel.durable === true) {
@@ -17995,12 +18012,67 @@ async function mainLoop() {
         });
       };
 
+      // #5135 CA-2/CA-20 — Abort del encendido DENTRO de la ventana de cutover.
+      // Espeja `haltOnConfigCorruption` (mismo patrón de halt idempotente) pero
+      // con `source` propio: `partial-pause.js` es fail-closed y sólo reconoce
+      // `config-corruption-halt`, así que este marker se lee como pausa manual y
+      // el auto-recovery de #4832 NO lo levanta solo — que es lo que queremos
+      // (rollback a mano). GURU-9/SEC-15: DEVUELVE si escribió su propio marker o
+      // si encontró una pausa preexistente, para que esa distinción viaje a la
+      // alerta y al log; si no, el operador levanta la pausa que ve y el cutover
+      // abortado desaparece sin registro.
+      const haltCutoverDegraded = (info) => {
+        let markerWritten = false;
+        let preexisting = false;
+        try {
+          if (fs.existsSync(PAUSE_FILE)) {
+            // Idempotente: NUNCA pisamos una pausa preexistente (manual o de
+            // corrupción) — la de otro origen gana.
+            preexisting = true;
+          } else {
+            fs.writeFileSync(PAUSE_FILE, JSON.stringify({
+              source: 'kernel-cutover-degraded-halt',
+              ts: new Date().toISOString(),
+              detail: `encendido durable abortado: el store degradó a filesystem (causa ${(info && info.cause) || 'desconocido'})`,
+            }));
+            markerWritten = true;
+          }
+          paused = true;
+        } catch { /* la auditoría del abort sale igual por log + alerta (CA-20) */ }
+        return { markerWritten, preexisting };
+      };
+
+      // #5135 CA-3/D-2 — El mapeo a enum + template + rate-limit viven en el BORDE
+      // DE SALIDA (este módulo), no en `kernel-supervisor.js`: `bootKernelDurable`
+      // sigue devolviendo el detalle CRUDO en `res.error`, que es lo que assertea
+      // `kernel-supervisor.test.js:1028` (#4822) y debe seguir verde sin tocarse.
+      const degradationSink = kernelDegradationAlert.createDegradationSink({
+        config: cfg,
+        sendTelegram,
+        log: (m) => log('pulpo', m),
+        halt: haltCutoverDegraded,
+        // CA-6/D-5/SEC-10 — el log local conserva el detalle DIAGNÓSTICO completo
+        // pero redactado: `pulpo.log` NO es una frontera de confianza (está en
+        // `TAIL_ALLOWED_FILES` y sale por Telegram vía `/tail` y `/salud`).
+        redact: redactSecretValue,
+      });
+
       const result = await kernelSupervisor.bootKernelDurable({
         config: cfg,
         onAlert: (a) => {
           const pid = a && a.projectId ? String(a.projectId) : '—';
           const det = a && a.errors && a.errors[0] && a.errors[0].detail ? a.errors[0].detail : '';
-          log('pulpo', `WARN [kernel-durable] rechazo boot (${(a && a.stage) || '?'}/${pid}): ${det}`);
+          const stage = (a && a.stage) || '?';
+          // CA-6 — log local: mismo mensaje diagnóstico de siempre, ahora redactado.
+          log('pulpo', `WARN [kernel-durable] rechazo boot (${stage}/${pid}): ${redactSecretValue(det)}`);
+          // D-6/GURU-7/SEC-12 — `onAlert` es MULTIPLEXADO: recibe 11 stages
+          // heterogéneos y sólo `boot-durable` es la degradación del catálogo.
+          // `cap` se dispara en el escenario NORMAL de un cutover (catálogo con
+          // 3+ activos contra el default `max_concurrent_instances: 2`), y
+          // `isSafeId`/`reserved-id`/`route-discard` son el control fail-closed
+          // FUNCIONANDO. Cablear el sink sin filtrar convertiría un control sano
+          // en un halt remoto del pipeline de disparo trivial.
+          if (stage === 'boot-durable') degradationSink.onDegraded(det, { stage });
         },
         // Catálogo del control-plane: `listProducts()` lee el índice global (no una
         // partición de tenant), por eso usa un contextProjectId dedicado y seguro.
@@ -18020,7 +18092,13 @@ async function mainLoop() {
       if (result.ran) {
         log('pulpo', `[kernel-durable] boot: ${(result.spawned || []).length} activos instanciados, ${(result.skipped || []).length} salteados (cap ${result.cap}).`);
       } else if (result.reason === 'error') {
-        log('pulpo', `WARN [kernel-durable] boot durable falló (no bloquea el arranque): ${result.error}`);
+        // CA-2 — el veredicto se decide sobre `result.reason === 'error'`, nunca
+        // sobre "hubo algún onAlert". `degradationSink.aborted` refleja si la
+        // ventana estaba abierta cuando llegó la degradación de `boot-durable`.
+        const desenlace = degradationSink.aborted
+          ? 'encendido ABORTADO por la ventana de cutover'
+          : 'no bloquea el arranque';
+        log('pulpo', `WARN [kernel-durable] boot durable falló (${desenlace}): ${redactSecretValue(String(result.error))}`);
       }
     }
   } catch (e) {

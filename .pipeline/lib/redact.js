@@ -279,12 +279,29 @@ const HIGH_ENTROPY_THRESHOLD = 4.5;
 // Cada patrón matchea el VALOR de un secreto conocido. El orden importa:
 // `sk-ant-` antes que el genérico `sk-` (aunque no se solapan porque el
 // genérico exige 20+ alfanuméricos pegados y `sk-ant-` corta con guiones).
+//
+// #5135 CA-7/SEC-11 — `topology: true` marca patrones que NO son secretos sino
+// TOPOLOGÍA (ARN, account-id). Se redactan igual, pero quedan EXCLUIDOS del gate
+// de la heurística de entropía de `redactSecretValue` (ver ahí el porqué).
 const SECRET_VALUE_PATTERNS = Object.freeze([
     { name: 'anthropic', re: /sk-ant-[A-Za-z0-9_-]+/g },
     { name: 'openai', re: /sk-[A-Za-z0-9]{20,}/g },
     { name: 'groq', re: /gsk_[A-Za-z0-9]+/g },
     { name: 'aws_access_key', re: /AKIA[0-9A-Z]{16}/g },
     { name: 'jwt', re: /eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g },
+    // #5135 CA-7 — Defensa en profundidad contra la fuga de topología AWS en los
+    // stderr del AWS CLI (`provisioner-infra.js` los re-lanza tal cual como
+    // `Error.message`). El control PRIMARIO es el template fijo de
+    // `kernel-degradation-alert.js`; esto es la segunda capa, no la red de
+    // contención (GURU-10).
+    //
+    // R5 · Anclados al CONTEXTO AWS a propósito. Un `\b\d{12}\b` suelto redactaría
+    // cualquier número de 12 dígitos del pipeline (ids, contadores, epochs
+    // recortados) y ensuciaría los logs de los 100+ callers de `redactSecretValue`
+    // /`redactObject`. El ARN se ancla a su prefijo; el account-id, a los
+    // delimitadores `::` … `:` que sólo aparecen dentro de un ARN.
+    { name: 'aws_arn', re: /arn:aws[a-z0-9-]*:[^\s"'`,)\]}]*/g, topology: true },
+    { name: 'aws_account_id', re: /(?<=::)\d{12}(?=:)/g, topology: true },
 ]);
 
 /**
@@ -308,8 +325,17 @@ function shannonEntropy(str) {
 /**
  * Redacta secretos embebidos en un string-valor:
  *   1. Aplica cada patrón de SECRET_VALUE_PATTERNS.
- *   2. Si NINGÚN patrón matcheó y el string es un token opaco (>40 chars, sin
- *      espacios) con entropía ≥ 4.5 → `[REDACTED:high-entropy]`.
+ *   2. Si NINGÚN patrón de SECRETO matcheó y el string es un token opaco
+ *      (>40 chars, sin espacios) con entropía ≥ 4.5 → `[REDACTED:high-entropy]`.
+ *
+ * #5135 SEC-11 — El gate del paso 2 mira SÓLO los patrones de secreto: los de
+ * topología (`topology: true`) no lo desactivan. Antes el gate era `out === str`,
+ * o sea "ningún patrón tocó el string". Con `aws_arn` —un patrón ANCHO que
+ * matchea texto no-secreto— ese gate se apagaba para cualquier string que
+ * contuviera un ARN, y el residuo de alta entropía (p. ej. un token opaco de 80
+ * chars en la misma línea) SOBREVIVÍA EN CLARO. Como el propósito mismo de CA-7
+ * es meter strings de AWS por esta función, habría sido una regresión de
+ * redacción sobre los 100+ callers de `redactSecretValue`/`redactObject`.
  *
  * No toca emails/URLs (eso lo hace el walk con las funciones existentes).
  * @param {string} str
@@ -318,10 +344,13 @@ function shannonEntropy(str) {
 function redactSecretValue(str) {
     if (typeof str !== 'string' || str.length === 0) return str;
     let out = str;
-    for (const { re } of SECRET_VALUE_PATTERNS) {
+    let secretMatched = false;
+    for (const { re, topology } of SECRET_VALUE_PATTERNS) {
+        const before = out;
         out = out.replace(re, REDACTION_MARKER);
+        if (!topology && out !== before) secretMatched = true;
     }
-    if (out === str) {
+    if (!secretMatched) {
         const trimmed = str.trim();
         if (
             trimmed.length > HIGH_ENTROPY_MIN_LEN &&
