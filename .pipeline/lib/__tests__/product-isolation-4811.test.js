@@ -171,7 +171,10 @@ async function runOla(store, driver) {
   await store.putProduct({ productId: `${store.contextProjectId}-svc`, name: 'Servicio' });
   await store.appendAuditEntry({ action: 'wave-started', actor: 'pulpo' });
   await store.putSignature({ signer: 'leitolarreta', target: 'pr-x', checksum: 'a'.repeat(64), algorithm: 'sha256' });
-  await store.claim(store.contextProjectId, 'dev');
+  // #5124 — el claim de fase salió de este store (Opción B′-1): ya no hay claims en
+  // la partición de no-repudio. Las 4 mutaciones restantes (descriptor, 2 productos,
+  // audit, firma) sostienen igual la assertion de aislamiento, y el hash de CA-8 no
+  // cambia porque `snapshotState()` proyecta sólo `descriptor` + `products`.
 }
 
 // ---------------------------------------------------------------------------

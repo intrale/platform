@@ -58,6 +58,71 @@ function skFor(key) {
   return `coord#${key}`;
 }
 
+// -----------------------------------------------------------------------------
+// #5124 CA-UX-1 — mensaje de claim legible para el operador
+// -----------------------------------------------------------------------------
+//
+// `claim()` tiene tres ramas de `!ok` y NO todas devuelven `owner`/`expiresAt`:
+// la de conflicto de versión devuelve `{ ok:false, exists:true, conflict:true }`
+// pelado, y la de carrera perdida puede devolver `owner: null`. Interpolar esos
+// campos a ciegas renderiza "lo tiene undefined hasta undefined" justo en el
+// escenario que esta función existe para explicar.
+//
+// Regla dura: el string devuelto NUNCA contiene `undefined` ni `null`. Cuando el
+// store no dice quién tiene el claim, no se inventa un owner — se dice que está
+// en disputa y que se reintente, que es la acción real del operador.
+//
+// El vencimiento se emite en tiempo RELATIVO: `expiresAt` es un epoch en ms y un
+// `1785312041234` crudo no es información para un humano.
+
+function labelForKey(key) {
+  const k = typeof key === 'string' && key ? key : 'desconocida';
+  // `phase-dev` → "fase dev"; cualquier otra clave se nombra tal cual.
+  const m = /^phase-(.+)$/.exec(k);
+  return m ? `fase ${m[1]}` : `clave de coordinación ${k}`;
+}
+
+/**
+ * Traduce el resultado de `claim()` a una línea accionable para el operador.
+ *
+ * @param {string} key   la clave reclamada (p. ej. `phase-dev`).
+ * @param {object} res   el objeto devuelto por `claim()`.
+ * @param {object} [opts] { now: function|number } — fuente de tiempo (test override).
+ * @returns {string} mensaje sin `undefined`/`null` interpolados.
+ */
+function describeClaimFailure(key, res, opts = {}) {
+  const label = labelForKey(key);
+  if (!res || typeof res !== 'object') {
+    return `${label}: el claim no devolvió resultado — reintentar`;
+  }
+  if (res.ok) {
+    return res.reclaimed
+      ? `${label} adquirida (el lease anterior estaba vencido, se reclamó)`
+      : `${label} adquirida`;
+  }
+
+  const nowMs = typeof opts.now === 'function' ? Math.floor(opts.now())
+    : (Number.isFinite(opts.now) ? Math.floor(opts.now) : Date.now());
+
+  // Owner válido = string no vacío. `null`/`undefined` caen a la rama de disputa.
+  const owner = (typeof res.owner === 'string' && res.owner) ? res.owner : null;
+  const expiresAt = Number.isFinite(res.expiresAt) ? res.expiresAt : null;
+
+  if (owner && expiresAt !== null) {
+    const restanteS = Math.round((expiresAt - nowMs) / 1000);
+    if (restanteS > 0) {
+      return `${label} tomada por ${owner}, lease vence en ${restanteS}s`;
+    }
+    // Lease ya vencido pero el claim sigue puesto: el próximo intento lo reclama.
+    return `${label} tomada por ${owner} con el lease ya vencido — reintentar para reclamarla`;
+  }
+  if (owner) {
+    return `${label} tomada por ${owner}, sin vencimiento conocido — reintentar`;
+  }
+  // Conflicto de versión o carrera perdida: el store no sabe quién la tiene.
+  return `${label} en disputa — reintentar`;
+}
+
 /**
  * Crea el store de coordinación sobre un driver DynamoDB inyectado.
  *
@@ -96,9 +161,14 @@ function createCoordinationStore(deps = {}) {
     ? cfg.coordinationTableName
     : (isInMemory ? DEFAULT_INMEMORY_TABLE : null);
   if (!tableName) {
+    // #5124 CA-UX-2 — el operador tiene que poder arreglarlo SIN abrir el código:
+    // el mensaje nombra el archivo y la clave exacta, y el `meta` transporta el
+    // driver que disparó el fail-closed (KernelStoreError hace Object.assign).
     throw new KernelStoreError(
-      'config.coordinationTableName requerido para el driver real (no hardcode de tabla/naming — A05)',
-      {},
+      'falta la tabla de coordinación del kernel: definí `kernel.coordinationTableName` '
+      + 'en `.pipeline/config.yaml` (no se hardcodea el naming de tabla — A05). '
+      + 'Es una tabla DISTINTA de `kernel.tableName`: la de no-repudio no admite borrado.',
+      { driverKind: driver.kind, configPath: '.pipeline/config.yaml', configKey: 'kernel.coordinationTableName' },
     );
   }
   const atomicUpdate = typeof deps.atomicUpdate === 'boolean' ? deps.atomicUpdate : !isInMemory;
@@ -477,6 +547,7 @@ function createCoordinationStore(deps = {}) {
 
 module.exports = {
   createCoordinationStore,
+  describeClaimFailure,
   DEFAULT_KNOWN_KEYS,
   SCHEMA_PATH,
 };

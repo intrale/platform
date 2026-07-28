@@ -13,21 +13,29 @@
       "Resource": "arn:aws:dynamodb:REGION:ACCOUNT:table/TABLE"
     },
     {
-      "Sid": "DenyMutateSignatureAudit",
+      "Sid": "DenyMutateNonRepudiation",
       "Effect": "Deny",
       "Action": [
         "dynamodb:UpdateItem",
-        "dynamodb:DeleteItem"
+        "dynamodb:DeleteItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:TransactWriteItems",
+        "dynamodb:PartiQLUpdate",
+        "dynamodb:PartiQLDelete",
+        "dynamodb:PartiQLInsert"
       ],
-      "Resource": "arn:aws:dynamodb:REGION:ACCOUNT:table/TABLE",
-      "Condition": {
-        "ForAllValues:StringLike": {
-          "dynamodb:LeadingKeys": [
-            "signature#*",
-            "audit#*"
-          ]
-        }
-      }
+      "Resource": "arn:aws:dynamodb:REGION:ACCOUNT:table/TABLE"
+    },
+    {
+      "Sid": "CoordinationReadWrite",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:ConditionCheckItem"
+      ],
+      "Resource": "arn:aws:dynamodb:REGION:ACCOUNT:table/COORD_TABLE"
     }
   ]
 }

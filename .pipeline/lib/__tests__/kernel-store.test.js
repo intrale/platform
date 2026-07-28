@@ -19,6 +19,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const {
   createInMemoryDynamoDriver,
@@ -308,42 +310,35 @@ test('CA-5: audit con prompt-injection en el detalle es rechazado', async () => 
 });
 
 // -----------------------------------------------------------------------------
-// CA-6 — claim optimista + lease
+// CA-6 — coordinación FUERA de la partición de no-repudio (#5124, Opción B′-1)
+//
+// Los 3 tests del bloque `CA-6 — claim optimista + lease` se MIGRARON a
+// `kernel-coordination-store.test.js` (bloque `#5124 CA-6(a|b|c)`), con la clave
+// `phase-dev` y conservando los tres escenarios: ganador único, lease vencido que
+// se reclama, y claim vigente que no se puede robar. Allá suman además la
+// assertion de que el reclamo NO invoca `deleteItem` (CA-A2), que es justamente
+// lo que el camino viejo sobre esta tabla no podía cumplir.
+//
+// Lo que se prueba acá es lo complementario: que la superficie de este store ya
+// no ofrece coordinación, para que nadie la reintroduzca sobre la tabla que el
+// `Deny` de IAM protege.
 // -----------------------------------------------------------------------------
 
-test('CA-6: sólo una instancia gana el claim concurrente', async () => {
-  const driver = createInMemoryDynamoDriver();
-  const { store: a } = makeStore({ driver, instanceId: 'acme-store' });
-  const { store: b } = makeStore({ driver, instanceId: 'acme-store' });
-  const r1 = await a.claim(CTX, 'dev');
-  const r2 = await b.claim(CTX, 'dev');
-  assert.equal(r1.acquired, true);
-  assert.equal(r2.acquired, false);
+test('CA-6 (#5124): el store de no-repudio ya no expone coordinación', () => {
+  const { store } = makeStore();
+  assert.equal(typeof store.claim, 'undefined',
+    'claim() se retiró: la coordinación vive en kernel-coordination-store (tabla dedicada)');
+  assert.ok(!('claim' in store), 'tampoco queda la clave en el objeto de retorno');
 });
 
-test('CA-6: instancia muerta libera el claim al expirar el lease', async () => {
-  const driver = createInMemoryDynamoDriver();
-  const first = makeStore({ driver });
-  const r1 = await first.store.claim(CTX, 'dev', { leaseMs: 100 });
-  assert.equal(r1.acquired, true);
-
-  // Avanza el reloj más allá del lease en una segunda instancia.
-  const second = makeStore({ driver });
-  second.clock.t = 5000;
-  const r2 = await second.store.claim(CTX, 'dev', { leaseMs: 100 });
-  assert.equal(r2.acquired, true);
-  assert.equal(r2.reclaimed, true);
-});
-
-test('CA-6: claim vigente no se puede robar antes de expirar', async () => {
-  const driver = createInMemoryDynamoDriver();
-  const first = makeStore({ driver });
-  await first.store.claim(CTX, 'dev', { leaseMs: 100000 });
-  const second = makeStore({ driver });
-  second.clock.t = 1050; // dentro del lease
-  const r2 = await second.store.claim(CTX, 'dev', { leaseMs: 100000 });
-  assert.equal(r2.acquired, false);
-  assert.equal(r2.heldBy, CTX);
+test('CA-6 (#5124): el módulo no contiene ninguna invocación de deleteItem', () => {
+  // El `Deny` de IAM sobre la tabla de no-repudio es incondicional: si este módulo
+  // volviera a necesitar borrado, el runtime rompería en producción con
+  // AccessDeniedException. La assertion es sobre la fuente, no sobre la API,
+  // porque el objetivo es que el permiso NO haga falta.
+  const src = fs.readFileSync(path.resolve(__dirname, '..', 'kernel-store.js'), 'utf8');
+  assert.equal(/\bdriver\.deleteItem\s*\(/.test(src), false,
+    'kernel-store.js no puede invocar deleteItem: el Deny de IAM lo bloquea');
 });
 
 // -----------------------------------------------------------------------------
