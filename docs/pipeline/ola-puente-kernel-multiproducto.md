@@ -388,8 +388,13 @@ extiende la allowlist del coordination store (`MIGRATION_KNOWN_KEYS`) con `block
 # 1) Dry-run (DEFAULT, seguro): genera backup + reporte proyectado, NO escribe al store.
 node .pipeline/lib/kernel-store-migrate.js
 
-# 2) Aplicar: escribe idempotente al store, verifica integridad fail-closed, reporta.
-node .pipeline/lib/kernel-store-migrate.js --apply     # (--commit es alias)
+# 2) Aplicar: BLOQUEADO hoy. Falla SIEMPRE con `alcance_no_implementado` y no toca nada.
+#    El alcance real del cutover (descriptor#self / product#<id> / catalog#index /
+#    signature# / audit# / claim#) todavía no tiene ruta de migración en este módulo,
+#    y las 4 fuentes de arriba son justo las que #5112 prohíbe migrar (#5136 · D-4).
+#    Lo que SÍ puebla descriptores y catálogo es `durableRegisterProduct`
+#    (.pipeline/lib/project-bootstrap.js, #4821), no el migrador.
+node .pipeline/lib/kernel-store-migrate.js --apply     # (--commit es alias) → exit 1
 
 # 3) Rollback: restaura los JSON desde un backup VERIFICADO por checksum.
 node .pipeline/lib/kernel-store-migrate.js --rollback --from .pipeline/backup/<timestamp>
