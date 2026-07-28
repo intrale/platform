@@ -217,10 +217,20 @@ test('#3506 _detectAnthropic sigue matcheando cuota REAL si el texto no menciona
 
 test('parseProviderError con 1MB de input ejecuta en <50ms (SR-3)', () => {
     const huge = 'a'.repeat(1024 * 1024); // 1MB de carácter benigno
-    const start = process.hrtime.bigint();
-    const r = parseProviderError(huge, { provider: 'anthropic', transport: 'cli' });
-    const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
-    assert.ok(elapsedMs < 50, `Esperaba <50ms, tardó ${elapsedMs.toFixed(2)}ms`);
+    // Mejor-de-N en vez de una sola muestra: el suite completo corre miles de
+    // tests en paralelo y una preemption del scheduler inflaba una medición
+    // puntual hasta hacerla fallar (~62ms) aun con el cap sano. El mínimo
+    // filtra ese ruido sin aflojar la garantía: si el cap de 64KB se rompiera,
+    // los regex escanearían el MB entero en TODAS las corridas y el mínimo
+    // también se iría por encima del umbral.
+    let best = Infinity;
+    let r;
+    for (let i = 0; i < 5; i++) {
+        const start = process.hrtime.bigint();
+        r = parseProviderError(huge, { provider: 'anthropic', transport: 'cli' });
+        best = Math.min(best, Number(process.hrtime.bigint() - start) / 1e6);
+    }
+    assert.ok(best < 50, `Esperaba <50ms, mejor de 5 corridas fue ${best.toFixed(2)}ms`);
     // Lo importante: NO clasifica como nada porque el input es benigno; el cap
     // protege que ni siquiera se evalúan los regex sobre el MB entero.
     assert.equal(r.errorClass, 'unknown');

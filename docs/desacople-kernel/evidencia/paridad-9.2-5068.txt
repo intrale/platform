@@ -1,0 +1,81 @@
+Paridad de la sub-ola 9.2 — el pipeline de Intrale con el kernel parametrizado (#5068)
+======================================================================================
+kernel: C:\Workspaces\Intrale\kernel.agent-5068
+        (resuelto por variable de entorno KERNEL_ROOT)
+
+✓ branch — Creación de rama con el patrón declarado
+    · ADAPTER_BRANCH_PATTERN
+        esperado (pre-9.2): "agent/<issue>-<slug>"
+        resuelto por contrato: "agent/<issue>-<slug>"
+        fuente: CLAUDE.md §Ramas y PRs — "Agentes IA · agent/<issue>-<slug>"
+    · ADAPTER_BRANCH_BASE
+        esperado (pre-9.2): "origin/main"
+        resuelto por contrato: "origin/main"
+        fuente: CLAUDE.md §Ramas y PRs — base de las ramas de agente
+    · ADAPTER_BRANCH_PROTECTED
+        esperado (pre-9.2): "main develop"
+        resuelto por contrato: "main develop"
+        fuente: CLAUDE.md §Protocolo de tareas — "nunca en main ni develop"
+
+✓ delivery — delivery crea PR en el repo correcto, con assignee y body de convención
+    · ADAPTER_REPO_SLUG
+        esperado (pre-9.2): "intrale/platform"
+        resuelto por contrato: "intrale/platform"
+        fuente: inventory.md §Capa 1 — slug del repositorio (16 ocurrencias)
+    · ADAPTER_ASSIGNEE
+        esperado (pre-9.2): "leitolarreta"
+        resuelto por contrato: "leitolarreta"
+        fuente: CLAUDE.md §Ramas y PRs — "Asignar a: leitolarreta"
+    · ADAPTER_PR_CLOSES_KEYWORD
+        esperado (pre-9.2): "Closes"
+        resuelto por contrato: "Closes"
+        fuente: CLAUDE.md §Ramas y PRs — body con "Closes #<n>"
+    · ADAPTER_PR_AUTO_MERGE
+        esperado (pre-9.2): "false"
+        resuelto por contrato: "false"
+        fuente: CLAUDE.md §Ramas y PRs — "NO auto-merge"
+
+✓ qa-gate — El gate de QA lee y escribe los labels declarados
+    · ADAPTER_QA_PASSED
+        esperado (pre-9.2): "qa:passed"
+        resuelto por contrato: "qa:passed"
+        fuente: CLAUDE.md §Gate de QA — labels requeridos antes de merge
+    · ADAPTER_QA_SKIPPED
+        esperado (pre-9.2): "qa:skipped"
+        resuelto por contrato: "qa:skipped"
+        fuente: CLAUDE.md §Gate de QA — labels requeridos antes de merge
+    · ADAPTER_QA_PENDING
+        esperado (pre-9.2): "qa:pending"
+        resuelto por contrato: "qa:pending"
+        fuente: CLAUDE.md §Gate de QA — "NUNCA mergear con qa:pending"
+
+✓ monitor-dashboard — Monitor y dashboard levantan y muestran estado
+    · ADAPTER_DISPLAY_NAME
+        esperado (pre-9.2): "Intrale Platform"
+        resuelto por contrato: "Intrale Platform"
+        fuente: inventory.md §Capa 1 — nombre visible en la línea de rol (7 ocurrencias)
+    · entrypoint "pulpo" resuelto y presente: presente en .pipeline/pulpo.js · resolver → {"path":"C:\\Workspaces\\Intrale\\platform.agent-5068-pipeline-dev\\.pipeline\\pulpo.js","source":"local","version":null}
+    · pulpo.js parsea (node --check): sin errores de sintaxis
+    · entrypoint "dashboard" resuelto y presente: presente en .pipeline/dashboard.js · resolver → {"path":"C:\\Workspaces\\Intrale\\platform.agent-5068-pipeline-dev\\.pipeline\\dashboard.js","source":"local","version":null}
+    · dashboard.js parsea (node --check): sin errores de sintaxis
+    · superficie de estado del pipeline presente: 3 directorios de cola verificados
+
+✓ reset-ops — reset y ops operan sobre el workspace declarado
+    · ADAPTER_WORKSPACE_ROOT
+        esperado (pre-9.2): "C:/Workspaces/Intrale/platform"
+        resuelto por contrato: "C:\\Workspaces\\Intrale\\platform"
+        fuente: inventory.md §Capa 1 — ruta absoluta del checkout (18 ocurrencias)
+    · ADAPTER_WORKTREES_ROOT
+        esperado (pre-9.2): "C:/Workspaces/Intrale"
+        resuelto por contrato: "C:\\Workspaces\\Intrale"
+        fuente: inventory.md §Capa 1 — directorio padre de los checkouts aislados
+    · ADAPTER_WORKTREE_PREFIX
+        esperado (pre-9.2): "platform"
+        resuelto por contrato: "platform"
+        fuente: pipeline.config.json §workspace.worktreePrefix
+    · workspace.root existe: C:\Workspaces\Intrale\platform
+    · workspace.root es un checkout git: toplevel = C:/Workspaces/Intrale/platform
+    · worktreesRoot existe: C:\Workspaces\Intrale
+
+======================================================================================
+✓ 5/5 flujos con paridad verificada.
