@@ -15,7 +15,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { createInMemoryDynamoDriver, ConditionalCheckFailedError } = require('../provisioner-infra');
-const { createCoordinationStore } = require('../kernel-coordination-store');
+const { createCoordinationStore, describeClaimFailure } = require('../kernel-coordination-store');
 const { KernelStoreValidationError, KernelStoreIsolationError } = require('../kernel-store');
 
 const CTX = 'acme-store';
@@ -133,7 +133,9 @@ test('driver real sin coordinationTableName falla (no hardcode)', () => {
   const fakeAws = { kind: 'aws-cli', createTable: async () => {}, getItem: async () => ({ item: null }), putItem: async () => ({}) };
   assert.throws(
     () => createCoordinationStore({ driver: fakeAws, contextProjectId: CTX }),
-    /coordinationTableName requerido/,
+    // #5124 CA-UX-2 — el fail-closed no cambió; sí el texto, que ahora nombra la
+    // clave de config concreta (la assertion de legibilidad completa está abajo).
+    /kernel\.coordinationTableName/,
   );
 });
 
@@ -321,6 +323,219 @@ test('CA-4 · claim exige owner seguro y leaseMs > 0', async () => {
   const { store } = makeStore({ atomicUpdate: true });
   await assert.rejects(() => store.claim('job-x', { owner: 'BAD OWNER', leaseMs: 1000 }), /owner válido/);
   await assert.rejects(() => store.claim('job-x', { owner: 'worker-a', leaseMs: 0 }), /leaseMs/);
+});
+
+// =============================================================================
+// #5124 · CA-6 migrado desde kernel-store.test.js — claim de FASE sobre la tabla
+// de coordinación (Opción B′-1).
+//
+// Los tres escenarios del bloque `CA-6 — claim optimista + lease` que vivían en
+// `kernel-store.test.js:310-347` se migran acá tal cual, con la clave `phase-dev`.
+// Conservan la cobertura completa y suman lo que el camino viejo NO podía probar:
+// que el reclamo de un lease vencido no invoca `deleteItem` sobre la partición de
+// no-repudio (CA-3 / CA-A2), porque ya no hay claims en esa tabla.
+// =============================================================================
+
+// Spy sobre el driver (mismo patrón que product-isolation-4811.test.js) para
+// poder afirmar QUÉ operaciones se ejecutaron, no sólo qué devolvieron.
+function spyDriver(inner) {
+  const ops = [];
+  return {
+    driver: {
+      kind: inner.kind,
+      createTable: (...a) => inner.createTable(...a),
+      describeTable: (...a) => inner.describeTable(...a),
+      async getItem(...a) { ops.push({ op: 'get' }); return inner.getItem(...a); },
+      async putItem(spec, item, opts) {
+        ops.push({ op: 'put', table: spec.tableName, pk: item.PK, sk: item.SK });
+        return inner.putItem(spec, item, opts);
+      },
+      async deleteItem(spec, key, opts) {
+        ops.push({ op: 'delete', table: spec.tableName, pk: key.PK, sk: key.SK });
+        return inner.deleteItem(spec, key, opts);
+      },
+    },
+    ops,
+  };
+}
+
+const PHASE_KEY = 'phase-dev';
+
+test('#5124 CA-6(a) · sólo una instancia gana el claim de fase concurrente', async () => {
+  const base = createInMemoryDynamoDriver();
+  const { driver } = spyDriver(base);
+  const { store: a } = makeStore({ driver, atomicUpdate: true, instanceId: 'inst-a' });
+  const { store: b } = makeStore({ driver, atomicUpdate: true, instanceId: 'inst-b' });
+
+  const [ra, rb] = await Promise.all([
+    a.claim(PHASE_KEY, { owner: 'inst-a', leaseMs: 100000 }),
+    b.claim(PHASE_KEY, { owner: 'inst-b', leaseMs: 100000 }),
+  ]);
+  assert.equal([ra, rb].filter((r) => r.ok).length, 1);
+  assert.equal([ra, rb].find((r) => !r.ok).exists, true);
+});
+
+test('#5124 CA-6(b) · instancia muerta: el lease vencido se reclama SIN deleteItem (CA-A2)', async () => {
+  const base = createInMemoryDynamoDriver();
+  const { driver, ops } = spyDriver(base);
+  const clock = { t: 1000 };
+  const nowFn = () => clock.t;
+
+  const { store: first } = makeStore({ driver, atomicUpdate: true, instanceId: 'inst-a', now: nowFn });
+  const r1 = await first.claim(PHASE_KEY, { owner: 'inst-a', leaseMs: 100 });
+  assert.equal(r1.ok, true);
+  assert.equal(r1.reclaimed, false);
+
+  // La instancia A "muere" con el claim tomado y el lease vence.
+  clock.t = 5000;
+  ops.length = 0; // sólo observamos las operaciones del reclamo
+
+  const { store: second } = makeStore({ driver, atomicUpdate: true, instanceId: 'inst-b', now: nowFn });
+  const r2 = await second.claim(PHASE_KEY, { owner: 'inst-b', leaseMs: 100 });
+
+  // El reclamo ADQUIERE el claim: la fase deja de estar trabada de forma permanente.
+  assert.equal(r2.ok, true, 'el lease vencido se reclama');
+  assert.equal(r2.reclaimed, true);
+  assert.equal(r2.owner, 'inst-b');
+
+  // CA-A2 / CA-3 — el camino de reclamo no necesita permiso de borrado en NINGUNA
+  // tabla, y en particular ninguna operación tocó la de no-repudio.
+  assert.deepEqual(ops.filter((o) => o.op === 'delete'), [],
+    'el reclamo no invocó deleteItem (no requiere el permiso)');
+  const tablasTocadas = [...new Set(ops.filter((o) => o.table).map((o) => o.table))];
+  assert.deepEqual(tablasTocadas, ['kernel-coordination-local'],
+    'el reclamo sólo escribe en la tabla de coordinación');
+});
+
+test('#5124 CA-6(c) · claim de fase vigente no se puede robar antes de expirar', async () => {
+  const base = createInMemoryDynamoDriver();
+  const { driver } = spyDriver(base);
+  const clock = { t: 1000 };
+  const nowFn = () => clock.t;
+
+  const { store: first } = makeStore({ driver, atomicUpdate: true, instanceId: 'inst-a', now: nowFn });
+  await first.claim(PHASE_KEY, { owner: 'inst-a', leaseMs: 100000 });
+
+  clock.t = 1050; // dentro del lease
+  const { store: second } = makeStore({ driver, atomicUpdate: true, instanceId: 'inst-b', now: nowFn });
+  const r2 = await second.claim(PHASE_KEY, { owner: 'inst-b', leaseMs: 100000 });
+  assert.equal(r2.ok, false);
+  assert.equal(r2.owner, 'inst-a');
+  assert.equal(r2.expiresAt, 101000);
+});
+
+test('#5124 · `phase-dev` es una clave de coordinación válida y no reservada', async () => {
+  const { store } = makeStore({ atomicUpdate: true });
+  // No reservada (waves/blocked/health) y pasa isSafeId → no lanza.
+  const r = await store.claim(PHASE_KEY, { owner: 'inst-a', leaseMs: 1000 });
+  assert.equal(r.ok, true);
+  // Contraprueba: una clave reservada SÍ es rechazada como claim.
+  await assert.rejects(() => store.claim('waves', { owner: 'inst-a', leaseMs: 1000 }), /reservada/);
+});
+
+// =============================================================================
+// #5124 · CA-UX-1 — el mensaje de "fase tomada" nunca dice undefined/null
+// =============================================================================
+
+test('#5124 CA-UX-1 · rama `conflict` (sin owner ni expiresAt) no interpola undefined/null', async () => {
+  // Rama real de claim(): `{ ok:false, exists:true, conflict:true }` — el store no
+  // sabe quién tiene el claim. Verificamos primero que la rama existe tal cual.
+  const driver = createInMemoryDynamoDriver();
+  const clock = { t: 1000 };
+  const { store: a } = makeStore({ driver, atomicUpdate: true, now: () => clock.t });
+  await a.claim(PHASE_KEY, { owner: 'inst-a', leaseMs: 100 });
+  clock.t = 5000; // lease vencido → entra al camino de compareAndSet
+
+  // Forzamos la pérdida de la carrera de versión: el CAS falla con CCFE.
+  const origPut = driver.putItem.bind(driver);
+  driver.putItem = async () => { driver.putItem = origPut; throw new ConditionalCheckFailedError('carrera de versión'); };
+  const res = await a.claim(PHASE_KEY, { owner: 'inst-b', leaseMs: 100 });
+
+  assert.equal(res.ok, false);
+  assert.equal(res.conflict, true);
+  assert.equal(res.owner, undefined, 'la rama de conflicto no devuelve owner (por eso existe CA-UX-1)');
+
+  const msg = describeClaimFailure(PHASE_KEY, res, { now: 5000 });
+  assert.ok(!/undefined|null/.test(msg), `el mensaje no puede tener undefined/null: ${msg}`);
+  assert.match(msg, /fase dev/);
+  assert.match(msg, /disputa/);
+  assert.match(msg, /reintentar/, 'el mensaje tiene que ser accionable');
+});
+
+test('#5124 CA-UX-1 · claim tomado: el vencimiento se emite RELATIVO, no como epoch', async () => {
+  const res = { ok: false, exists: true, owner: 'inst-a', expiresAt: 101000 };
+  const msg = describeClaimFailure(PHASE_KEY, res, { now: 1000 });
+  assert.ok(!/undefined|null/.test(msg), msg);
+  assert.equal(msg, 'fase dev tomada por inst-a, lease vence en 100s');
+  assert.ok(!msg.includes('101000'), 'un epoch en ms no es información para un humano');
+});
+
+test('#5124 CA-UX-1 · carrera de create-once con owner nulo cae a "en disputa", sin inventar owner', async () => {
+  // Rama `:396-400`: `owner: fresh && fresh.body.owner` → null si `fresh` es null.
+  const msg = describeClaimFailure(PHASE_KEY, { ok: false, exists: true, owner: null, expiresAt: null }, { now: 1000 });
+  assert.ok(!/undefined|null/.test(msg), msg);
+  assert.equal(msg, 'fase dev en disputa — reintentar');
+});
+
+test('#5124 CA-UX-1 · ninguna rama de claim() produce un mensaje con undefined/null', async () => {
+  // Barrido sobre todas las formas que claim() puede devolver, incluidas las
+  // degeneradas: ninguna puede filtrar un placeholder al operador.
+  const formas = [
+    { ok: true, owner: 'inst-a', expiresAt: 6000, version: 1, reclaimed: false },
+    { ok: true, owner: 'inst-a', expiresAt: 6000, version: 2, reclaimed: true },
+    { ok: false, exists: true, owner: 'inst-a', expiresAt: 6000 },
+    { ok: false, exists: true, owner: 'inst-a', expiresAt: 500 },   // lease ya vencido
+    { ok: false, exists: true, owner: 'inst-a' },                    // sin expiresAt
+    { ok: false, exists: true, owner: null, expiresAt: null },
+    { ok: false, exists: true, conflict: true },
+    {},
+    null,
+    undefined,
+  ];
+  for (const forma of formas) {
+    const msg = describeClaimFailure(PHASE_KEY, forma, { now: 1000 });
+    assert.equal(typeof msg, 'string');
+    assert.ok(msg.length > 0, 'siempre hay algo que decirle al operador');
+    assert.ok(!/undefined|null/.test(msg), `forma ${JSON.stringify(forma)} → ${msg}`);
+  }
+});
+
+// =============================================================================
+// #5124 · CA-UX-2 — el fail-closed de coordinationTableName dice dónde arreglarlo
+// =============================================================================
+
+test('#5124 CA-UX-2 · sin coordinationTableName y driver real, el error nombra archivo, clave y driver', () => {
+  // Driver "real" simulado: cualquier `kind` distinto de 'in-memory' exige la
+  // clave de config (no hay default de naming — A05).
+  const fakeRealDriver = {
+    kind: 'aws-cli',
+    createTable: async () => {}, describeTable: async () => {},
+    getItem: async () => ({ item: null }), putItem: async () => {}, deleteItem: async () => {},
+  };
+  assert.throws(
+    () => createCoordinationStore({ driver: fakeRealDriver, contextProjectId: CTX }),
+    (e) => {
+      assert.match(e.message, /\.pipeline\/config\.yaml/, 'dice el archivo a tocar');
+      assert.match(e.message, /kernel\.coordinationTableName/, 'dice la clave exacta');
+      assert.equal(e.driverKind, 'aws-cli', 'el meta transporta el driver que falló');
+      assert.equal(e.configKey, 'kernel.coordinationTableName');
+      return true;
+    },
+  );
+});
+
+test('#5124 CA-UX-2 · con coordinationTableName definida, el store usa esa tabla', () => {
+  const fakeRealDriver = {
+    kind: 'aws-cli',
+    createTable: async () => {}, describeTable: async () => {},
+    getItem: async () => ({ item: null }), putItem: async () => {}, deleteItem: async () => {},
+  };
+  const store = createCoordinationStore({
+    driver: fakeRealDriver,
+    contextProjectId: CTX,
+    config: { kernel: { coordinationTableName: 'kernel-coord-prod' } },
+  });
+  assert.equal(store.tableName, 'kernel-coord-prod');
 });
 
 // =============================================================================

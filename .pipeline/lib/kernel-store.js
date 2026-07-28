@@ -71,6 +71,10 @@ const ENTITY = Object.freeze({
   CATALOG: 'catalog',
   SIGNATURE: 'signature',
   AUDIT: 'audit',
+  // #5124 — `claim` queda SÓLO para poder LEER ítems legacy escritos antes de que
+  // la coordinación saliera de esta tabla (Opción B′-1). Nada lo escribe ya: el
+  // claim de fase vive en `kernel-coordination-store.js` (tabla dedicada). Su
+  // retiro del schema es alcance de la migración (#5125).
   CLAIM: 'claim',
 });
 
@@ -89,7 +93,6 @@ const SK = Object.freeze({
   catalog: () => 'catalog#index',
   signature: (ulid) => `signature#${ulid}`,
   audit: (ulid) => `audit#${ulid}`,
-  claim: (phase) => `claim#${phase}`,
 });
 
 // -----------------------------------------------------------------------------
@@ -188,7 +191,6 @@ function normalizeConfig(cfg, driver) {
  * @param {object} [deps.driver]           ResourceDriver de provisioner-infra (default: in-memory).
  * @param {string}  deps.contextProjectId  projectId de la instancia — DEBE derivar de la credencial
  *                                          (namespace), NUNCA venir en banda (A01/A07).
- * @param {string} [deps.instanceId]       id de la instancia que claimea (default: contextProjectId).
  * @param {object} [deps.config]           { kernel?: { tableName, region, leaseMs, maxItemBytes } }.
  * @param {string[]} [deps.allowedNamespaces] namespaces de credencial permitidos (default: [contextProjectId]).
  * @param {function} [deps.now]            fuente de tiempo (ms).
@@ -210,7 +212,6 @@ function createKernelStore(deps = {}) {
       { contextProjectId: contextProjectId == null ? null : String(contextProjectId) },
     );
   }
-  const instanceId = isSafeId(deps.instanceId) ? deps.instanceId : contextProjectId;
   const allowedNamespaces = (Array.isArray(deps.allowedNamespaces) && deps.allowedNamespaces.length)
     ? deps.allowedNamespaces.slice()
     : [contextProjectId];
@@ -617,56 +618,29 @@ function createKernelStore(deps = {}) {
     return { ok: true, sk: item.SK, auditId: ulid };
   }
 
-  /**
-   * Claim optimista con lease. Sólo una instancia gana; una instancia muerta
-   * libera el claim al expirar el lease. En producción, el conditional write con
-   * `attribute_not_exists(#pk) OR #until < :now` es atómico (lo evalúa AWS). El
-   * driver in-memory sólo evalúa `attribute_not_exists`, por eso el fallback
-   * lee el claim vigente y reclama si el lease expiró (determinístico offline).
-   */
-  async function claim(projectId, phase, opts = {}) {
-    assertSameProject(projectId, 'claim');
-    if (typeof phase !== 'string' || phase === '') {
-      throw new KernelStoreError('claim requiere una "phase" no vacía', { phase });
-    }
-    await ensureTable();
-    const leaseMs = Number.isFinite(opts.leaseMs) ? opts.leaseMs : config.leaseMs;
-    const t = Math.floor(now());
-    const sk = SK.claim(phase);
-    const claimId = idFactory();
-    const item = envelope(ENTITY.CLAIM, sk, { phase, claimId, claimedUntil: t + leaseMs, claimedBy: instanceId });
-    assertWritable(item);
-    try {
-      await driver.putItem(spec, item, {
-        conditionExpression: 'attribute_not_exists(#pk) OR #until < :now',
-        expressionAttributeNames: { '#pk': 'PK', '#until': 'claimedUntil' },
-        expressionAttributeValues: { ':now': t },
-      });
-      return { acquired: true, claim: item.body };
-    } catch (e) {
-      if (!(e instanceof ConditionalCheckFailedError)) throw e;
-      // Claim tomado. Verificamos el lease (fallback para drivers que sólo
-      // evalúan attribute_not_exists).
-      const cur = await readItem(sk, { entityType: ENTITY.CLAIM });
-      if (cur && cur.body && cur.body.claimedUntil <= t) {
-        // Lease expirado ⇒ reclamo. delete + create condicional: si otra
-        // instancia gana la carrera, su put condicional o el nuestro fallan.
-        await driver.deleteItem(spec, keyOf(sk));
-        try {
-          await driver.putItem(spec, item, appendOnlyOpts());
-          return { acquired: true, claim: item.body, reclaimed: true };
-        } catch (e2) {
-          if (e2 instanceof ConditionalCheckFailedError) return { acquired: false, heldBy: null };
-          throw e2;
-        }
-      }
-      return {
-        acquired: false,
-        heldBy: cur && cur.body ? cur.body.claimedBy : null,
-        claimedUntil: cur && cur.body ? cur.body.claimedUntil : null,
-      };
-    }
-  }
+  // #5124 (Opción B′-1) — `claim()` fue RETIRADO de este módulo a propósito.
+  //
+  // Este store es la partición de **no-repudio** (firmas + audit). Mientras los
+  // claims vivían acá, el `Deny` de IAM que los protege no podía ser efectivo:
+  // `dynamodb:LeadingKeys` condiciona por **partition key** y los prefijos del
+  // schema (`signature#`/`audit#`/`claim#`) viven en la **sort key**, así que la
+  // `Condition` no matcheaba nunca. Sacar la coordinación de esta tabla permite
+  // que el `Deny` sea incondicional sobre `table/TABLE` — trivialmente efectivo
+  // y sin poder volver a quedar inerte por un cambio de schema.
+  //
+  // El claim de fase se resuelve ahora con `kernel-coordination-store.js`, que ya
+  // corre sobre tabla dedicada (`kernel.coordinationTableName`) y reclama por
+  // `compareAndSet` sobre **versión** (fencing token) en vez de comparar el reloj
+  // del cliente — inmune al drift de NTP entre hosts:
+  //
+  //   const res = await coord.claim(`phase-${phase}`, { owner: instanceId, leaseMs });
+  //   if (!res.ok) log(describeClaimFailure(`phase-${phase}`, res, { now }));
+  //   // …y al terminar:
+  //   await coord.release(`phase-${phase}`, { expectedOwner: instanceId });
+  //
+  // NO reintroducir coordinación acá: obliga a conceder `DeleteItem` sobre la
+  // tabla de no-repudio, que es exactamente lo que el `Deny` existe para impedir.
+  // Ver `docs/pipeline/kernel-iam-policy.md`.
 
   return {
     // metadata
@@ -683,8 +657,6 @@ function createKernelStore(deps = {}) {
     putSignature,
     getSignature,
     appendAuditEntry,
-    // coordinación básica
-    claim,
     // validación (expuesta para reuso/tests)
     validateItemOnRead,
   };

@@ -1415,6 +1415,12 @@ cua:
 # docs/pipeline/kernel-iam-policy.json), NUNCA en el boot normal del pulpo.
 kernel:
   tableName: ""      # requerido para el driver real (normalizeConfig lo exige)
+  # #5124 — SEGUNDA tabla, distinta de `tableName`. Desde que la coordinación salió
+  # de la partición de no-repudio (Opción B′-1), el claim de fase vive acá y esta
+  # tabla es la única que admite `DeleteItem` en la policy IAM. Sin esta clave,
+  # `kernel-coordination-store.js` falla fail-closed con el driver real (al primer
+  # claim, no en el boot). Aprovisionarla es alcance del cutover (#5126).
+  coordinationTableName: ""   # requerido para el driver real (fail-closed sin ella)
   region: ""         # región AWS destino (vacío mientras durable:false)
   durable: false     # default OFF -- todo sigue en FS, cero llamadas AWS
   # #4822 (split 3/3 de #4804) — Cota de instancias del boot durable del supervisor
