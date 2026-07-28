@@ -7,9 +7,19 @@
  *  - unitaria: la lógica de comparación y la forma del contrato de flujos, con
  *    entradas sintéticas (determinística, corre siempre).
  *  - integración: el puente real del kernel contra el manifiesto real del
- *    producto. Requiere un checkout del kernel; si no hay, el test FALLA en vez
- *    de pasar en silencio — una paridad "verde por omisión" no vale nada. Se
- *    puede apuntar con la variable KERNEL_ROOT.
+ *    producto. Requiere un checkout del kernel con `bin/adapter-env.js`, que se
+ *    apunta con la variable KERNEL_ROOT.
+ *
+ * Sobre el fail-closed de la integración: la ausencia de checkout SKIPEA acá y
+ * FALLA en la corrida de paridad. El suite unitario compartido
+ * (`npm run test:pipeline`) corre en entornos que no tienen el kernel al lado
+ * — hacerlo fallar ahí rompe el build de todos los agentes sin agregar ninguna
+ * garantía. La garantía de que la paridad no se dé "verde por omisión" vive en
+ * los dos lugares donde efectivamente se afirma:
+ *  - `verifyParity()` devuelve ok:false + error si no hay puente (test abajo),
+ *    y el CLI `kernel-parity-92.js` sale con código 1 en ese caso;
+ *  - con KERNEL_PARITY_STRICT=1 la ausencia de checkout es un fallo duro acá.
+ *    Es lo que setea la corrida que genera la evidencia de la sub-ola.
  */
 
 const test = require('node:test');
@@ -90,9 +100,15 @@ test('sin puente del kernel la paridad NO se da por verde', () => {
   assert.ok(r.error, 'debe explicar por qué no pudo verificar');
 });
 
+test('el CLI sale distinto de 0 cuando no hay puente del kernel', () => {
+  const vacio = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'sin-kernel-cli-'));
+  const code = parity.main(['node', 'kernel-parity-92.js', '--kernel-root', vacio]);
+  assert.notStrictEqual(code, 0, 'sin puente el CLI debe fallar, no reportar paridad');
+});
+
 test('un manifiesto inválido rompe la paridad en vez de resolver defaults', (t) => {
-  const found = parity.resolveKernelRoot();
-  if (!found) return t.skip('sin checkout del kernel disponible');
+  const found = kernelOrSkip(t);
+  if (!found) return;
 
   const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'manifiesto-roto-'));
   const bad = path.join(dir, 'pipeline.config.json');
@@ -107,13 +123,28 @@ test('un manifiesto inválido rompe la paridad en vez de resolver defaults', (t)
 // Integración — el pipeline real contra el kernel real
 // -----------------------------------------------------------------------------
 
-test('los cinco flujos tienen paridad con el kernel parametrizado', () => {
+const STRICT = process.env.KERNEL_PARITY_STRICT === '1';
+
+/**
+ * Resuelve el checkout del kernel para los tests de integración.
+ * Sin checkout: skip normal, o fallo duro si KERNEL_PARITY_STRICT=1.
+ * @returns {{root: string, how: string} | null} null => el caller debe skipear.
+ */
+function kernelOrSkip(t) {
   const found = parity.resolveKernelRoot();
+  if (found) return found;
   assert.ok(
-    found,
-    'No se encontró el checkout del kernel (KERNEL_ROOT, paquete instalado o ../kernel). ' +
+    !STRICT,
+    'KERNEL_PARITY_STRICT=1 pero no se encontró el checkout del kernel ' +
+    '(KERNEL_ROOT, paquete instalado o ../kernel). ' +
     'La paridad no se da por verde sin poder ejercitar el contrato.',
   );
+  t.skip('sin checkout del kernel disponible (KERNEL_PARITY_STRICT=1 para exigirlo)');
+  return null;
+}
+
+test('los cinco flujos tienen paridad con el kernel parametrizado', (t) => {
+  if (!kernelOrSkip(t)) return;
 
   const r = parity.verifyParity();
   assert.strictEqual(r.error, null, `el puente falló: ${r.error}`);
@@ -129,9 +160,8 @@ test('los cinco flujos tienen paridad con el kernel parametrizado', () => {
   assert.strictEqual(r.ok, true);
 });
 
-test('el reporte nombra cada flujo y su veredicto', () => {
-  const found = parity.resolveKernelRoot();
-  if (!found) return; // el test de integración de arriba ya falla si falta.
+test('el reporte nombra cada flujo y su veredicto', (t) => {
+  if (!kernelOrSkip(t)) return;
 
   const texto = parity.formatReport(parity.verifyParity());
   for (const flow of parity.FLOWS) {

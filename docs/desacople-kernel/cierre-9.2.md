@@ -93,6 +93,35 @@ node .pipeline/lib/kernel-parity-92.js          # ../kernel por defecto
 KERNEL_ROOT=/ruta/al/kernel node .pipeline/lib/kernel-parity-92.js --json
 ```
 
+#### Dónde se enforza el fail-closed
+
+La paridad requiere un checkout del kernel con `bin/adapter-env.js`. Mientras la
+rama del kernel de la 9.2 no esté mergeada, ese binario sólo existe en el
+checkout de la sub-ola — no en el `../kernel` canónico. Por eso la ausencia de
+puente se trata distinto según quién pregunta:
+
+| Contexto | Sin checkout del kernel | Por qué |
+|---|---|---|
+| `npm run test:pipeline` (suite compartido) | los 3 tests de integración **skipean** | corre en entornos de todos los agentes; romperlo ahí no agrega garantía, sólo tira abajo el build del pipeline entero |
+| `KERNEL_PARITY_STRICT=1 node --test .pipeline/tests/kernel-parity-9.2.test.js` | **falla** (3 fallos) | es la corrida que respalda la evidencia de la sub-ola |
+| `node .pipeline/lib/kernel-parity-92.js` (CLI) | **exit 1** + error explicando cómo apuntar `KERNEL_ROOT` | es donde se *afirma* la paridad |
+
+La paridad nunca se da "verde por omisión": `verifyParity()` devuelve
+`ok:false` con error cuando no hay puente, y hay tests que cubren tanto ese
+retorno como el exit code del CLI. El skip del suite compartido es visible en
+el reporte (`﹣ ... # sin checkout del kernel disponible`), no silencioso.
+
+Corrida estricta contra el checkout de la sub-ola — 13/13:
+
+```bash
+KERNEL_PARITY_STRICT=1 KERNEL_ROOT=/c/Workspaces/Intrale/kernel.agent-5068 \
+  node --test .pipeline/tests/kernel-parity-9.2.test.js
+# ℹ tests 13 · pass 13 · fail 0 · skipped 0
+```
+
+Cuando la rama del kernel se mergee y `../kernel` traiga `bin/adapter-env.js`,
+los tres tests dejan de skipear solos, sin tocar código.
+
 ### Qué significa "opera idéntico"
 
 Un `SKILL.md` es un prompt en Markdown: no tiene superficie ejecutable que
