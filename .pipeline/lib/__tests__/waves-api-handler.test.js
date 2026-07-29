@@ -18,11 +18,16 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { Readable } = require('node:stream');
+const { seedPipelineConfig } = require('./_test-helpers');
 
 let waves, wavesApi, csrf, auditLog;
 
 function setupTmp() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'waves-api-handler-'));
+    // #5172 — el sandbox ES el pipelineDir: sin `config.yaml` la lectura de
+    // config falla cerrado en vez de degradar en silencio. Documento MÍNIMO
+    // para preservar los valores efectivos que este fixture asumía.
+    seedPipelineConfig(dir);
     process.env.PIPELINE_DIR_OVERRIDE = dir;
     delete require.cache[require.resolve('../waves')];
     delete require.cache[require.resolve('../waves-api')];

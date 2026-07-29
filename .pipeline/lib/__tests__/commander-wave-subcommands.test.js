@@ -29,6 +29,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { seedPipelineConfig } = require('./_test-helpers');
 
 // IMPORTANTE: el módulo commander-deterministic.js requiere lazy a `./waves`,
 // `./partial-pause`, `./wave-resolver`, etc. Por eso seteamos PIPELINE_DIR_OVERRIDE
@@ -43,6 +44,11 @@ function setupTmp() {
     fs.mkdirSync(path.join(dir, 'logs'), { recursive: true });
     fs.mkdirSync(path.join(dir, 'desarrollo'), { recursive: true });
     fs.mkdirSync(path.join(dir, 'definicion'), { recursive: true });
+    // #5172: leer config.yaml ya no degrada a default ante ENOENT, así que el
+    // sandbox necesita una config REAL para ejercitar el mismo camino que antes
+    // tomaba el `catch`. Se siembra el documento mínimo a propósito: sin sección
+    // `waves:` el techo sigue siendo el default (10) que estos tests asumen.
+    seedPipelineConfig(dir);
     process.env.PIPELINE_DIR_OVERRIDE = dir;
     // Reset de caches de módulos que reaccionan a PIPELINE_DIR_OVERRIDE.
     delete require.cache[require.resolve('../waves')];

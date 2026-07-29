@@ -19,6 +19,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { seedPipelineConfig } = require('./_test-helpers');
 
 function freshModule(tmpDir) {
     process.env.PIPELINE_DIR_OVERRIDE = tmpDir;
@@ -27,7 +28,13 @@ function freshModule(tmpDir) {
 }
 
 function newTmpDir() {
-    return fs.mkdtempSync(path.join(os.tmpdir(), 'v3-quota-reconcile-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-quota-reconcile-'));
+    // #5172: el sandbox hace de `.pipeline/`; sin `config.yaml` la lectura de
+    // config es un fallo tipado y `setFlag` explota antes de llegar al veto que
+    // este archivo ejercita. Documento mínimo: sin `quota_detector:` los TTL
+    // default son los mismos de siempre.
+    seedPipelineConfig(dir);
+    return dir;
 }
 
 function readFlag(tmpDir) {

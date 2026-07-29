@@ -29,11 +29,18 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { fork } = require('child_process');
+const { seedPipelineConfig } = require('./_test-helpers');
 
 const WORKER_PATH = path.resolve(__dirname, '_setflag-concurrent-worker.js');
 
 function mkTmpDir() {
-    return fs.mkdtempSync(path.join(os.tmpdir(), 'v3-quota-concurrent-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-quota-concurrent-'));
+    // #5172: el tmpDir hace de `.pipeline/` también para los workers forkeados,
+    // que heredan `PIPELINE_DIR_OVERRIDE`. Sin `config.yaml` cada `setFlag`
+    // muere con `ConfigParseViolation` antes de escribir. Documento mínimo: los
+    // TTL default siguen siendo los mismos que este test asume.
+    seedPipelineConfig(dir);
+    return dir;
 }
 
 function rmTmpDir(dir) {

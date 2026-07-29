@@ -27,8 +27,18 @@ const path = require('node:path');
 
 let waves; // se re-requiere con PIPELINE_DIR_OVERRIDE seteado
 
+const { seedPipelineConfig } = require('./_test-helpers');
+
+// #5172 — el sandbox hace de `.pipeline/` real. Desde que la lectura de config
+// pasa por `lib/config-resolver`, un pipelineDir SIN `config.yaml` es un fallo
+// de lectura tipado y ya no degrada en silencio al default del consumidor.
+// Se siembra config VÁLIDA y sin `waves:`, para que `max_concurrency` siga
+// cayendo en `WAVE_MAX_CONCURRENCY_DEFAULT` — el mismo valor efectivo que estos
+// tests venían usando por la rama del `catch`. Ninguna aserción cambia.
 function mkTmpPipeline() {
-    return fs.mkdtempSync(path.join(os.tmpdir(), 'waves-test-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'waves-test-'));
+    seedPipelineConfig(dir);
+    return dir;
 }
 
 function rmrf(dir) {

@@ -17,7 +17,8 @@
 
 'use strict';
 
-const fs = require('fs');
+// #5172 — `fs` quedó sin uso: la única lectura de disco de este archivo era el
+// `readFileSync` de config.yaml, que ahora hace el punto único.
 const { spawnSync } = require('child_process');
 const path = require('path');
 
@@ -258,7 +259,7 @@ function main() {
   // 5.5 #4575 — GATE 2 defense-in-depth: revalidar firma verde ligada al HEAD
   // actual antes de tocar remoto (anti-TOCTOU CA-3). Kill switch OFF ⇒ no-op.
   const pipelineDir = path.join(__dirname);
-  const cfg = loadConfigBestEffort(pipelineDir);
+  const cfg = loadConfigFailClosed(pipelineDir);
   if (((cfg.operator_signature || {}).enabled === true) && args.issue) {
     const headRev = spawnSync('git', ['-C', cwd, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
     const headSha = headRev.status === 0 ? (headRev.stdout || '').trim() : '';
@@ -354,5 +355,7 @@ module.exports = {
   // #4575 — GATE 2 defense-in-depth (exportados para tests)
   checkOperatorSignatureGate,
   resolveAuthorizedSigners,
-  loadConfigBestEffort,
+  // #5172 — renombrado desde `loadConfigBestEffort`: ya no es best-effort, es
+  // fail-closed. El nombre viejo describía justo la degradación que se eliminó.
+  loadConfigFailClosed,
 };

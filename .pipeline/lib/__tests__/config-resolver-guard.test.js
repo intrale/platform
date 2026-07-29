@@ -141,12 +141,66 @@ function argumentosDeYamlLoad(t) {
  */
 function asignacionesLocales(t) {
     const mapa = new Map();
-    const re = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]+)/g;
-    let m;
-    while ((m = re.exec(t)) !== null) {
+    const acumular = (nombre, expr) => {
         // Si una variable se reasigna, conservamos ambas expresiones concatenadas:
         // que CUALQUIERA de ellas sea el config alcanza para considerarla sospechosa.
-        mapa.set(m[1], (mapa.get(m[1]) || '') + ' ' + m[2]);
+        mapa.set(nombre, (mapa.get(nombre) || '') + ' ' + expr);
+    };
+
+    const re = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]+)/g;
+    let m;
+    while ((m = re.exec(t)) !== null) acumular(m[1], m[2]);
+
+    // Destructuring: `const { file, via } = resolveConfigPath(opts)`. Sin esto la
+    // cadena se corta en seco, porque el binding no matchea el regex de arriba
+    // y `file` queda como identificador desconocido (ver G-4 abajo).
+    const reDestr = /(?:const|let|var)\s*\{([^}]*)\}\s*=\s*([^;\n]+)/g;
+    while ((m = reDestr.exec(t)) !== null) {
+        for (const parte of m[1].split(',')) {
+            // Soporta `{ file }` y `{ file: f }`: nos interesa el binding LOCAL,
+            // que es el que después aparece dentro del `yaml.load`.
+            const nombre = (parte.includes(':') ? parte.split(':')[1] : parte).trim();
+            if (/^[A-Za-z_$][\w$]*$/.test(nombre)) acumular(nombre, m[2]);
+        }
+    }
+    return mapa;
+}
+
+/**
+ * Mapa `nombreDeFunción -> cuerpo`, para trazar a través de una llamada local.
+ *
+ * G-4 — Por qué hace falta: sin esto el guard NO detectaba a
+ * `lib/config-resolver.js`, o sea al único lector que TIENE que existir. Su
+ * cadena real es
+ *   `yaml.load(fs.readFileSync(file))` → `const { file } = resolveConfigPath(opts)`
+ *   → y el literal `'config.yaml'` vive DENTRO de `resolveConfigPath`.
+ * El trazado por variables se cortaba en `resolveConfigPath`, que no es una
+ * variable sino una función. El síntoma estaba enmascarado: el assert de
+ * infractores fallaba antes y nunca se llegaba a evaluar el self-check.
+ *
+ * Esto no es cosmética del self-check: cualquier módulo que envuelva su
+ * construcción de ruta en un helper local (el refactor más natural del mundo)
+ * quedaba invisible para el guard. Es la misma clase de falso verde que G-1.
+ *
+ * El cuerpo se extrae con barrido de llaves balanceadas — alcanza de sobra para
+ * las declaraciones `function f(...) { ... }` del codebase.
+ *
+ * @param {string} t - fuente YA sin comentarios.
+ */
+function funcionesLocales(t) {
+    const mapa = new Map();
+    const re = /function\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{/g;
+    let m;
+    while ((m = re.exec(t)) !== null) {
+        let depth = 1;
+        let i = m.index + m[0].length;
+        const start = i;
+        while (i < t.length && depth > 0) {
+            if (t[i] === '{') depth += 1;
+            else if (t[i] === '}') depth -= 1;
+            i += 1;
+        }
+        mapa.set(m[1], t.slice(start, depth === 0 ? i - 1 : i));
     }
     return mapa;
 }
@@ -166,6 +220,7 @@ function asignacionesLocales(t) {
 function esLectorDeConfig(src) {
     const t = stripComments(src);
     const vars = asignacionesLocales(t);
+    const funcs = funcionesLocales(t);
 
     /**
      * ¿La expresión `expr` termina, siguiendo variables locales, en el config?
@@ -184,9 +239,13 @@ function esLectorDeConfig(src) {
         if (TOKEN_CONFIG.test(expr)) return true;
         const ids = expr.match(/[A-Za-z_$][\w$]*/g) || [];
         return ids.some((id) => {
-            if (vistos.has(id) || !vars.has(id)) return false;
+            if (vistos.has(id)) return false;
+            // Una función local se traza igual que una variable: su CUERPO es la
+            // expresión de la que depende quien la llama (G-4).
+            const siguiente = vars.has(id) ? vars.get(id) : funcs.get(id);
+            if (siguiente === undefined) return false;
             vistos.add(id);
-            return trazaAConfig(vars.get(id), vistos, profundidad + 1);
+            return trazaAConfig(siguiente, vistos, profundidad + 1);
         });
     }
 
