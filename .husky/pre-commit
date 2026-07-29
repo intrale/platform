@@ -103,4 +103,36 @@ if [ "$RUN_GHOST_LINT" = "1" ] && [ -f ".pipeline/lib/ghost-artifact-lint.js" ];
   fi
 fi
 
+# =============================================================================
+# Issue #5175 CA-4b — Guardrail del envoltorio de estado operativo
+# (`.pipeline/lib/operational-state.js`), capa local del doble wiring.
+#
+# ATENCION: corre en `--report-only` y NO propaga el exit code. Esto CONTRADICE
+# el patron del bloque de arriba A PROPOSITO (R5 del issue). No lo "arregles":
+#
+#   - Al momento del merge de la parte 1 el repo tiene 18 violations reales: la
+#     migracion de lectores va en la parte 2 y la de escritores en la parte 3
+#     (#5109). Con `--check` acá, TODO commit que toque `.pipeline/` falla desde
+#     el merge, con el CI en verde — o sea, invisible.
+#   - El remedio obvio frente a eso es `--no-verify`, y eso mata la capa local
+#     del doble wiring de forma permanente. El costo de un falso bloqueo no es
+#     un commit molesto: es perder el hook para siempre.
+#   - El flip a `--check` va en la parte 3, con las violations en cero.
+#
+# Se filtra a los archivos staged (`--only`): sin filtro escupe avisos de
+# archivos que el dev no toco en cada commit que roce `.pipeline/`, y eso
+# entrena a ignorar el hook (UX-1).
+# =============================================================================
+RUN_OPSTATE_LINT=0
+case "$TOUCHED_FILES" in
+  *".pipeline/"*) RUN_OPSTATE_LINT=1 ;;
+esac
+
+if [ "$RUN_OPSTATE_LINT" = "1" ] && [ -f ".pipeline/lib/operational-state-lint.js" ]; then
+  OPSTATE_ONLY=$(printf '%s\n' "$TOUCHED_FILES" | grep '^\.pipeline/.*\.js$' | paste -sd, - 2>/dev/null || true)
+  if [ -n "$OPSTATE_ONLY" ]; then
+    node .pipeline/lib/operational-state-lint.js --report-only --only="$OPSTATE_ONLY" || true
+  fi
+fi
+
 exit 0
