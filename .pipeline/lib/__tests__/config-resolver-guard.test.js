@@ -286,6 +286,28 @@ test('CA-3 · toda entrada de la allowlist tiene justificación explícita', () 
     }
 });
 
+test('D-B · la excusa de la allowlist es una invariante, no una promesa: kernel-parity consume resolveForDiff', () => {
+    // El motivo allowlisteado para `lib/kernel-parity.js` afirma "usa
+    // resolveForDiff". Sin este test esa frase es sólo un comentario: el archivo
+    // podía (y durante un rato pudo) conservar su `yaml.load` propio mientras la
+    // allowlist declaraba lo contrario, y el guard no se enteraba porque su
+    // regex matchea el ARGUMENTO (`yaml.load(text)` no nombra config.yaml).
+    //
+    // Además fija el otro lado de D-B: `resolveForDiff` existe PARA este
+    // consumidor. Si nadie la usa, es superficie exportada sin dueño.
+    const src = fs.readFileSync(path.join(PIPELINE_DIR, 'lib/kernel-parity.js'), 'utf8');
+    const code = stripComments(src);
+
+    assert.match(code, /require\(['"]\.\/config-resolver['"]\)/,
+        'kernel-parity.js debe consumir el punto único, no un loader propio');
+    assert.match(code, /resolveForDiff\s*\(/,
+        'kernel-parity.js debe parsear por resolveForDiff(text) — D-B');
+    assert.equal(/yaml\.load\s*\(/.test(code), false,
+        'kernel-parity.js no puede conservar un yaml.load propio: es lo que la allowlist declara que NO hace');
+    assert.equal(/require\(['"]js-yaml['"]\)/.test(code), false,
+        'js-yaml queda encerrado en el resolver (redacción SEC-1 de errores de parseo)');
+});
+
 test('CA-3 · la allowlist no admite patrones ni prefijos', () => {
     for (const archivo of ALLOWLIST.keys()) {
         assert.equal(/[*?]/.test(archivo), false, 'prohibida la allowlist por patrón');
