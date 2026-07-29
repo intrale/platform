@@ -1155,20 +1155,27 @@ const CODEX_USAGE_LIMIT_RESET_MS = 60 * 60 * 1000; // 1h
 const MIN_TTL_DAYS = 1 / 24;              // 1h — piso (evita flags que expiran al instante)
 const MAX_TTL_DAYS = 31;                  // 31d — techo (cuota mensual OpenAI)
 
+// #5172 — La lectura y la validación pasan por el punto único
+// (`lib/config-resolver`). Se elimina el `catch { defaults }`: enmascaraba un
+// fallo de LECTURA (archivo ausente, YAML roto, schema violado) como "el
+// operador no configuró TTLs", que es indistinguible de la configuración por
+// defecto. Ahora el error tipado se PROPAGA.
+//
+// Lo que SÍ se conserva (D-4): un config VÁLIDO **sin sección `quota_detector:`**
+// no es corrupción ⇒ `{}` y cada TTL cae a su default conservador clampeado.
+//
+// El caché local sobrevive porque cachea la SECCIÓN ya extraída (el resolver
+// cachea el documento completo por ruta) y sólo se puebla en el camino de éxito:
+// un fallo de lectura no queda pegado como "sin configuración".
 let _quotaDetectorCfgCache = null;
 function loadQuotaDetectorConfig() {
     if (_quotaDetectorCfgCache !== null) return _quotaDetectorCfgCache;
-    let cfg = {};
-    try {
-        // Carga perezosa y defensiva de `config.yaml`. Si `js-yaml` o el archivo
-        // no están disponibles (tests aislados), quedamos con defaults.
-        const yaml = require('js-yaml');
-        const cfgPath = path.join(pipelineDir(), 'config.yaml');
-        const full = yaml.load(fs.readFileSync(cfgPath, 'utf8'));
-        if (full && full.quota_detector && typeof full.quota_detector === 'object') {
-            cfg = full.quota_detector;
-        }
-    } catch { /* best-effort: defaults */ }
+    // Lazy-require deliberado (G-3): el resolver arrastra `js-yaml` + `ajv`.
+    const configResolver = require('./config-resolver');
+    const full = configResolver.resolve({ pipelineDir: pipelineDir() });
+    const cfg = (full && full.quota_detector && typeof full.quota_detector === 'object')
+        ? full.quota_detector
+        : {};
     _quotaDetectorCfgCache = cfg;
     return cfg;
 }

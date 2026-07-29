@@ -10,6 +10,11 @@ function tmpRoot() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'build-deliverable-'));
     fs.mkdirSync(path.join(root, '.pipeline', 'logs'), { recursive: true });
     fs.mkdirSync(path.join(root, 'qa', 'artifacts'), { recursive: true });
+    // #5172 — el sandbox modela un `.pipeline/` real: la lectura de config pasa
+    // por `lib/config-resolver` y un dir sin `config.yaml` es fallo de lectura,
+    // ya no degrada en silencio. `pipelines: {}` es config VÁLIDA sin fases
+    // declaradas → enum vacío → `FALLBACK_PHASES` (el caso previo del fixture).
+    fs.writeFileSync(path.join(root, '.pipeline', 'config.yaml'), 'pipelines: {}\n');
     return root;
 }
 

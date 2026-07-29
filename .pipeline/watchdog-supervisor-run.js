@@ -38,7 +38,6 @@ const PIPELINE_DIR = __dirname;
 const LOG_DIR = process.env.WDS_LOG_DIR || path.join(PIPELINE_DIR, 'logs');
 const STATE_FILE = process.env.WDS_STATE_FILE || path.join(LOG_DIR, 'watchdog-supervisor-state.json');
 const SUP_LOG = path.join(LOG_DIR, 'watchdog-supervisor.log');
-const CONFIG_PATH = path.join(PIPELINE_DIR, 'config.yaml');
 
 const supervisor = require('./lib/watchdog-supervisor');
 
@@ -53,21 +52,53 @@ function log(msg) {
 }
 
 /**
- * Lee el bloque `watchdog:` de config.yaml. Fail-soft a defaults si js-yaml
- * no está disponible o el archivo está corrupto/ausente.
+ * Lee el bloque `watchdog:` de config.yaml vía el punto ÚNICO de lectura
+ * (#5172: `lib/config-resolver.js`, que parsea, valida contra el schema y lanza
+ * errores tipados YA redactados).
+ *
+ * #5172 · CASO G-3 — por qué el require es LAZY y no está en el tope:
+ *   `config-resolver` requiere `js-yaml` y `ajv` en su tope. Este runner corre
+ *   en worktrees que PUEDEN no tener `node_modules`; un require en el tope del
+ *   archivo mataría el proceso EN EL IMPORT, antes de llegar a cualquier
+ *   política, y el fallo sería MUDO (el .ps1 se quedaría sin línea ACTION). Por
+ *   eso se requiere dentro del `try` y `MODULE_NOT_FOUND` es fail-soft.
+ *
+ * #5172 · La degradación a defaults se LOGUEA siempre (nunca es silenciosa):
+ *   el propósito del issue es matar el `catch {}` mudo que convertía
+ *   "no pude leer la config" en "los umbrales son los defaults" sin traza.
+ *
+ * #5172 · `pipelineDir` va EXPLÍCITO: este runner fija su raíz a `__dirname` y
+ *   no usa env vars. Si dependiera de la cadena de env del resolver, heredar
+ *   `PIPELINE_REPO_ROOT` del entorno del pulpo le movería la raíz del worktree
+ *   al repo principal, en silencio.
  */
 function loadWatchdogConfig() {
   try {
-    // js-yaml puede no estar en un worktree sin node_modules: fail-soft.
     // eslint-disable-next-line global-require
-    const yaml = require('js-yaml');
-    const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
-    const cfg = yaml.load(raw);
+    const configResolver = require('./lib/config-resolver');
+    const cfg = configResolver.resolve({ pipelineDir: PIPELINE_DIR });
     if (cfg && typeof cfg === 'object' && cfg.watchdog && typeof cfg.watchdog === 'object') {
       return cfg.watchdog;
     }
-  } catch (_) {
-    /* fail-soft */
+    // #5172 / D-4: sección `watchdog:` ausente NO es corrupción; default seguro.
+    log('config.yaml sin sección `watchdog:` — se usan los defaults del supervisor');
+  } catch (err) {
+    if (err && err.code === 'MODULE_NOT_FOUND') {
+      // G-3: worktree sin node_modules. Degradación EXPLÍCITA, no silenciosa.
+      log(
+        'DEGRADACION: config-resolver no cargable (worktree sin node_modules o módulo ausente) — ' +
+          'se usan los defaults del supervisor; los umbrales de config.yaml NO se aplicaron'
+      );
+    } else {
+      // SEC-1: el error tipado ya viene redactado ({archivo, causa, linea,
+      // columna}); NUNCA se loguea el `.message` crudo de js-yaml.
+      log(
+        `DEGRADACION: config.yaml ilegible o inválido (causa=${(err && err.causa) || 'desconocida'}` +
+          `${err && err.linea != null ? `, linea=${err.linea}` : ''}` +
+          `${err && err.columna != null ? `, columna=${err.columna}` : ''}) — ` +
+          'se usan los defaults del supervisor'
+      );
+    }
   }
   return {};
 }

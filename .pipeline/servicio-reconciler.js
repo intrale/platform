@@ -28,7 +28,11 @@
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const yaml = require('js-yaml');
+// #5172 — punto único de lectura/validación de `config.yaml`. El reconciler ya
+// no hace su propio `yaml.load`: o la config es válida, o `resolve()` lanza el
+// error tipado (ya redactado).
+const configResolver = require('./lib/config-resolver');
+const configSchema = require('./lib/config-schema');
 
 require('./lib/sanitize-console').install();
 const { sanitize } = require('./sanitizer');
@@ -320,24 +324,54 @@ function isRecommendationIssue(labels) {
 // fuerte de avance (conservador: minimiza el riesgo de limpiar un bloqueo legítimo).
 const PROGRESS_STATES = ['listo', 'procesado'];
 
-// Fallback canónico si no se puede leer config.yaml (degradación segura). Debe
-// mantenerse sincronizado con `pipelines.<p>.fases` de config.yaml.
+// Orden canónico de fases. Debe mantenerse sincronizado con
+// `pipelines.<p>.fases` de config.yaml.
+//
+// #5172 — NO es el "fallback permisivo" que la historia elimina: no apaga
+// ningún gate ni degrada a objeto vacío, es el mismo orden que declara el
+// config. Lo que se eliminó es el `catch {}` MUDO que lo aplicaba sin que nadie
+// se enterara de que la config no se pudo leer.
 const FALLBACK_PHASE_ORDER = {
     definicion: ['analisis', 'criterios', 'sizing'],
     desarrollo: ['validacion', 'dev', 'build', 'verificacion', 'linteo', 'aprobacion', 'entrega'],
 };
 
 let _globalPhaseOrderCache = null;
+/** Último `detalle` de fallo de config ya logueado (anti-spam del loop de 5min). */
+let _lastConfigFailureDetail = null;
+
+// #5172 — Fail-closed RUIDOSO, sin `process.exit`: el reconciler es un servicio
+// continuo y si muere nadie reconcilia `needs-human` (el pipeline queda sin esa
+// pata). Se loguea el fallo YA redactado por `config-schema` y se deja que el
+// próximo ciclo reintente.
+function logConfigFailure(err) {
+    const estado = configSchema.describeConfigFailure(err, { archivo: err && err.archivo });
+    if (_lastConfigFailureDetail === estado.detalle) return;
+    _lastConfigFailureDetail = estado.detalle;
+    log(configSchema.formatConfigFailureLog(estado, {
+        titulo: 'CONFIG INVÁLIDA — orden de fases sin confirmar contra config.yaml',
+    }));
+}
 
 // Construye el orden GLOBAL de fases (pipeline+fase) leyendo el orden canónico
 // de config.yaml. El orden global encadena los pipelines en el orden en que
 // aparecen en config (definicion → desarrollo), reflejando el flujo natural del
 // issue. Se cachea: el orden de fases no cambia en runtime.
+//
+// #5172 — El caché AD-HOC del CONFIG desapareció (el resolver cachea por ruta);
+// sobrevive el caché del ORDEN YA CALCULADO, cuya semántica no cambia. Sólo se
+// cachea el orden confirmado contra el archivo: si la config estaba ilegible, no
+// se cachea, así el orden real entra en cuanto el archivo vuelve a ser válido.
 function loadGlobalPhaseOrder() {
     if (_globalPhaseOrderCache) return _globalPhaseOrderCache;
     let orders = FALLBACK_PHASE_ORDER;
+    let confirmado = false;
     try {
-        const cfg = yaml.load(fs.readFileSync(path.join(PIPELINE, 'config.yaml'), 'utf8')) || {};
+        const cfg = configResolver.resolve({ pipelineDir: PIPELINE });
+        confirmado = true;
+        // D-4: `pipelines:` ausente NO es corrupción — se conserva el default del
+        // consumidor. Lo eliminado es el `|| {}` + catch mudo sobre el FALLO DE
+        // LECTURA, no el default de sección ausente.
         if (cfg.pipelines && typeof cfg.pipelines === 'object') {
             const parsed = {};
             for (const [pname, pcfg] of Object.entries(cfg.pipelines)) {
@@ -345,14 +379,14 @@ function loadGlobalPhaseOrder() {
             }
             if (Object.keys(parsed).length > 0) orders = parsed;
         }
-    } catch {
-        // config.yaml ausente o ilegible (p. ej. entorno de test) → fallback.
+    } catch (e) {
+        logConfigFailure(e);
     }
     const global = [];
     for (const pname of Object.keys(orders)) {
         for (const fase of orders[pname]) global.push({ pipeline: pname, phase: fase });
     }
-    _globalPhaseOrderCache = global;
+    if (confirmado) _globalPhaseOrderCache = global;
     return global;
 }
 

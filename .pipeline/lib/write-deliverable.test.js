@@ -20,8 +20,16 @@ const {
 } = require('./write-deliverable');
 
 // Root temporal aislado por corrida — no toca el FS real del pipeline.
+// #5172 — se crea `<root>/.pipeline/config.yaml`: desde que la lectura de config
+// pasa por `lib/config-resolver`, un `.pipeline/` sin config.yaml es un fallo de
+// lectura y ya no degrada en silencio. `pipelines: {}` es config VÁLIDA sin fases
+// declaradas → enum vacío → `FALLBACK_PHASES`, exactamente el caso que este
+// fixture ejercitaba antes. Ninguna aserción cambia.
 function tmpRoot() {
-    return fs.mkdtempSync(path.join(os.tmpdir(), 'wd-test-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wd-test-'));
+    fs.mkdirSync(path.join(root, '.pipeline'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.pipeline', 'config.yaml'), 'pipelines: {}\n');
+    return root;
 }
 
 // El adapter `write-deliverable` recibe REPO ROOT y traduce a dir `.pipeline`

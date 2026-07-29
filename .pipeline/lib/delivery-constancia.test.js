@@ -18,8 +18,15 @@ const { ensureDeliveryConstancia } = require('./delivery-constancia');
 const deliverableIndex = require('./deliverable-index');
 
 // Root temporal aislado por corrida — no toca el FS real del pipeline.
+// #5172 — ver nota en write-deliverable.test.js: el sandbox escribe
+// `<root>/.pipeline/config.yaml` con `pipelines: {}` (config VÁLIDA sin fases
+// declaradas → `FALLBACK_PHASES`), porque un `.pipeline/` sin config.yaml ahora
+// es un fallo de lectura y no degrada en silencio. Ninguna aserción cambia.
 function tmpRoot() {
-    return fs.mkdtempSync(path.join(os.tmpdir(), 'dc-test-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dc-test-'));
+    fs.mkdirSync(path.join(root, '.pipeline'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.pipeline', 'config.yaml'), 'pipelines: {}\n');
+    return root;
 }
 
 // El adapter recibe REPO ROOT y traduce a dir `.pipeline` antes de poblar el

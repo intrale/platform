@@ -87,20 +87,23 @@ function _resolveRepoRoot(ctx) {
 }
 
 /**
- * Carga el config.yaml (preferimos `ctx.config` ya cargado por el dashboard;
- * fallback a lectura+parseo defensivo). FAIL-OPEN: ante cualquier error
- * devuelve `{}` → whitelists vacías → no se agrega nada (no rompe el endpoint).
+ * Carga el config.yaml. Se preserva el punto de inyección `ctx.config` (el
+ * dashboard ya lo trae cargado y los tests inyectan su fake por ahí); si no
+ * viene, se delega en el punto ÚNICO `lib/config-resolver` (#5172).
+ *
+ * FALLBACK ELIMINADO (#5172): el `catch { return {} }` convertía un FALLO DE
+ * LECTURA (config ausente, YAML roto, permisos) en whitelists vacías, o sea en
+ * "ningún skill es notificable" — el KPI se servía en 0/vacío como si fuera un
+ * dato real en vez de avisar que la config no se pudo leer. Ahora el error
+ * tipado del resolver se PROPAGA; sigue sin ser error que el documento parsee
+ * pero no declare `deliverable_notifications:` o `pipelines:` (ahí las
+ * whitelists vacías SÍ son el dato correcto).
  */
 function _loadConfig(ctx, repoRoot) {
     if (ctx && ctx.config && typeof ctx.config === 'object') return ctx.config;
-    try {
-        // eslint-disable-next-line global-require
-        const yaml = require('js-yaml'); // safe-by-default (yaml.load)
-        const cfgPath = path.join(repoRoot, '.pipeline', 'config.yaml');
-        return yaml.load(fs.readFileSync(cfgPath, 'utf8')) || {};
-    } catch {
-        return {};
-    }
+    // `repoRoot` es la raíz del REPO; el resolver recibe el dir `.pipeline`.
+    // eslint-disable-next-line global-require
+    return require('./config-resolver').resolve({ pipelineDir: path.join(repoRoot, '.pipeline') });
 }
 
 /**

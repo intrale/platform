@@ -20,6 +20,11 @@ const path = require('path');
 const os = require('os');
 const { exec, execSync, execFile, spawn, spawnSync } = require('child_process');
 const yaml = require('js-yaml');
+// #5172 — punto único de lectura/validación de la configuración del pipeline.
+// El dashboard NO tiene fallback permisivo: config inválida ⇒ `configErrorState`
+// explícito y cero decisiones derivadas (CA-8).
+const configResolver = require('./lib/config-resolver');
+const configSchema = require('./lib/config-schema');
 const pidDiscovery = require('./pid-discovery');
 const {
   findPidByComponent,
@@ -600,9 +605,67 @@ function tryCommentPromoted(issueNum, addedDeps) {
   } catch {}
 }
 
+// =============================================================================
+// #5172 · CA-8 — Fail-closed en el dashboard = negarse a servir, NO morir
+// =============================================================================
+//
+// ANTES: `catch { return { pipelines: {}, concurrencia: {} } }`. Como los
+// defaults del codebase son apagados por diseño de rollout, ese objeto casi
+// vacío no se veía como un error: se veía como *"el pipeline anda pero no hay
+// nada en las fases"*. Esa es exactamente la clase de fallo silencioso que
+// #5172 elimina.
+//
+// AHORA: un único `loadConfigOrError()` que setea `configErrorState` y devuelve
+// `null`; los consumidores chequean `null`. Envolver cada uno en su propio
+// `try/catch` es donde reaparecerían los fallbacks permisivos por la ventana.
+//
+// PROHIBIDO `process.exit`: si el dashboard muere, el operador pierde la única
+// pantalla que le diría que el pipeline está pausado por configuración inválida.
+
+/**
+ * Estado de error de configuración, consumible por la UI (contrato alineado con
+ * #5171). Trae `detalle` y `accion` YA redactados: la vista los renderiza tal
+ * cual y NO re-deriva copy desde `causa` (CA-UX-5) — es lo que garantiza que
+ * log, Telegram y pantalla digan lo mismo.
+ * @type {null|{ok:false, archivo:string, via:string, causa:string,
+ *               linea:number|null, columna:number|null, detalle:string,
+ *               accion:string, ts:string}}
+ */
+let configErrorState = null;
+
+function getConfigErrorState() { return configErrorState; }
+
+/**
+ * Punto único de lectura de config del dashboard.
+ * @returns {object|null} config válida, o `null` si es ilegible/inválida.
+ */
+function loadConfigOrError() {
+  try {
+    // `reload: true` = paridad con el comportamiento previo (antes se leía el
+    // archivo en cada llamada), y necesario para que una corrección en caliente
+    // de config.yaml se refleje sin reiniciar el dashboard.
+    const cfg = configResolver.resolve({ pipelineDir: PIPELINE, reload: true });
+    if (configErrorState) {
+      log(`configuración válida de nuevo: ${configErrorState.archivo} — estado de error levantado`);
+      configErrorState = null;
+    }
+    return cfg;
+  } catch (e) {
+    const estado = configSchema.describeConfigFailure(e, { archivo: e && e.archivo });
+    // Log throttleado: `loadConfig()` se llama por request y el visor de logs
+    // quedaría inservible si cada uno emitiera una línea.
+    if (!configErrorState || configErrorState.detalle !== estado.detalle) {
+      log(configSchema.formatConfigFailureLog(estado, {
+        titulo: 'CONFIG INVÁLIDA — el dashboard no sirve decisiones derivadas de config',
+      }));
+    }
+    configErrorState = estado;
+    return null;
+  }
+}
+
 function loadConfig() {
-  try { return yaml.load(fs.readFileSync(path.join(PIPELINE, 'config.yaml'), 'utf8')); }
-  catch { return { pipelines: {}, concurrencia: {} }; }
+  return loadConfigOrError();
 }
 
 // #4444 / REQ-SEC-1 — Allowlist de skills conocidos, derivada de
@@ -1319,6 +1382,13 @@ async function getPipelineStateAsync() {
 // loop con setImmediate en cada yield). Así el worker no starva /api/health.
 function* _genPipelineState() {
   const config = loadConfig();
+  // #5172 · CA-8 — sin configuración válida no se sirve el tablero: un board
+  // vacío es indistinguible de "no hay trabajo" y ese es justo el fallo
+  // silencioso que la historia elimina. Se devuelve el estado de error explícito
+  // y el proceso sigue vivo (el operador necesita esta pantalla para enterarse).
+  if (!config) {
+    return { config: null, configError: getConfigErrorState(), fases: [], agentes: [] };
+  }
   const state = { config };
   let _scanCount = 0;   // contador de archivos para trocear el scan en chunks
 
@@ -6812,11 +6882,16 @@ body.standalone .section-collapsed .section-body{display:block !important}
     isPaused,
     isPartialPause,
     trabajando,
+    // #5172 · D-C — SEGUNDO lector de config del dashboard, independiente del
+    // de `loadConfig()`. Resolvía la raíz por `ROOT` en vez de por `PIPELINE`,
+    // así que IGNORABA `PIPELINE_STATE_DIR` (leía el config del repo aunque el
+    // proceso corriera contra otro directorio de estado) y encima degradaba con
+    // `catch { return 3 }`. No figuraba en ningún CA. Ahora pasa por el punto
+    // único, con la MISMA raíz que el resto del dashboard.
     pwThreshold: (() => {
-      try {
-        const cfgYaml = yaml.load(fs.readFileSync(path.join(ROOT, '.pipeline', 'config.yaml'), 'utf8'));
-        return (cfgYaml.resource_limits || {}).priority_windows_activation_threshold || 3;
-      } catch { return 3; }
+      const cfgYaml = loadConfig();
+      if (!cfgYaml) return null;   // la vista muestra el estado de error, no un umbral inventado
+      return (cfgYaml.resource_limits || {}).priority_windows_activation_threshold || 3;
     })(),
     now: Date.now(),
     ic,
@@ -9838,6 +9913,9 @@ function inferHistoricalActivity() {
 
   // 1. Archivos procesados/listo de todas las fases — cada uno es un "agente terminó"
   const config = loadConfig();
+  // #5172 · CA-8 — sin config válida no se infiere actividad: devolver una serie
+  // vacía es honesto (no hay datos), inventar una derivada de defaults no lo es.
+  if (!config) return events;
   for (const [pName, pConfig] of Object.entries(config.pipelines)) {
     for (const fase of pConfig.fases) {
       for (const estado of ['procesado', 'listo', 'trabajando', 'pendiente']) {
@@ -13238,7 +13316,11 @@ const server = http.createServer((req, res) => {
   }
   function computeWouldPauseSkills(rmw, window, cfg, nowMs) {
     try {
-      const fullCfg = loadConfig() || {};
+      const fullCfg = loadConfig();
+      // #5172 · CA-8 — `null` (config inválida) NO es "ningún skill se pausa":
+      // sería una decisión derivada de config servida como si fuera válida. El
+      // endpoint que lo consume expone `configError` en su lugar.
+      if (!fullCfg) return null;
       const pipelines = fullCfg.pipelines || {};
       const catalog = new Set();
       for (const pk of Object.keys(pipelines)) {
@@ -13269,7 +13351,15 @@ const server = http.createServer((req, res) => {
       return;
     }
     try {
-      const cfg = (loadConfig() || {}).rest_mode || {};
+      // #5172 · CA-8 — el modo descanso es una decisión derivada de config:
+      // con config inválida se reporta el error explícito, no un default.
+      const fullCfg = loadConfig();
+      if (!fullCfg) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'configuración inválida', configError: getConfigErrorState() }));
+        return;
+      }
+      const cfg = fullCfg.rest_mode || {};
       const window = restModeWindow.getWindow({ pipelineDir: PIPELINE });
       const now = Date.now();
       const within = restModeWindow.isWithinWindow(window, now);

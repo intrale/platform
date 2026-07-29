@@ -31,8 +31,8 @@
 //     del driver (sólo PutItem/GetItem/Query/ConditionCheck).
 // =============================================================================
 
-const path = require('path');
-
+// #5172 — `path` ya no se importa: la única ruta que este módulo armaba era la
+// del `config.yaml` por default, y esa resolución ahora es del config-resolver.
 const {
     createAwsCliRunner,
     createAwsCliDynamoDriver,
@@ -43,16 +43,26 @@ const {
 const { CREDENTIAL_SCOPES } = require('./build-child-env');
 
 // -----------------------------------------------------------------------------
-// Carga de config (js-yaml safe-by-default; FAIL-CLOSED: sin config no hay tabla)
+// #5172 — Carga de config vía el punto ÚNICO (`lib/config-resolver.js`).
+// FAIL-CLOSED: sin config no hay tabla.
+//
+// Se eliminó el `|| {}` que seguía al `yaml.load`: un archivo vacío o a medio
+// escribir se volvía `{}` y de ahí `kernel: {}` — indistinguible de una config
+// válida que simplemente no declara la sección `kernel:`. Ahora eso es
+// `ConfigParseViolation` y se propaga (igual que un YAML roto o un schema
+// inválido), en vez de disfrazarse de "no hay tabla configurada".
+//
+// La inyección por firma (`cfgPath`, ruta de ARCHIVO) se conserva tal cual: es
+// código, no entorno — CA-12 restringe lo que puede aportar el ENTORNO.
+//
+// La AUSENCIA de la sección `kernel:` NO es error: devuelve `{}` y
+// `buildKernelTableContract` falla ruidoso por `tableName` requerido (CA-2/A05).
 // -----------------------------------------------------------------------------
 
 function loadKernelConfig(cfgPath) {
-    const resolved = cfgPath || path.join(__dirname, '..', 'config.yaml');
     // eslint-disable-next-line global-require
-    const yaml = require('js-yaml');
-    // eslint-disable-next-line global-require
-    const fs = require('fs');
-    const doc = yaml.load(fs.readFileSync(resolved, 'utf8')) || {};
+    const configResolver = require('./config-resolver');
+    const doc = configResolver.resolve(cfgPath ? { configPath: cfgPath } : {});
     return (doc && typeof doc.kernel === 'object' && doc.kernel) || {};
 }
 

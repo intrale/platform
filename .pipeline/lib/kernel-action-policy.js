@@ -103,9 +103,26 @@ function policyKey(action) {
 }
 
 // -----------------------------------------------------------------------------
-// Carga de config.yaml (lazy, js-yaml safe-by-default). NUNCA throw: ante
-// cualquier error devolvemos `{}` y caemos a los defaults. Mismo criterio
-// defensivo que el resto del pipeline (config puede faltar en tests/CI).
+// #5172 — Carga de config.yaml vía el punto ÚNICO (`lib/config-resolver.js`).
+//
+// Acá vivía un `yaml.load(config.yaml)` propio con `catch { return {} }`. Ese
+// catch convertía *"no pude leer la configuración"* en *"el config no declara
+// política"*, y GATE 3 caía a `DEFAULT_POLICY` sin que nadie se enterara: una
+// acción que el operador había marcado `wait-confirmation` en el YAML pasaba a
+// `notify-and-proceed` en silencio. Eso no es un default seguro, es fail-open.
+//
+// Ahora el error tipado (`ConfigParseViolation` / `ConfigSchemaViolation`, ya
+// redactados) se PROPAGA: sin política legible no se enforza GATE 3.
+//
+// Lo que NO cambia:
+//   - `opts.config` (inyección por firma) sigue cortocircuitando toda lectura.
+//   - La AUSENCIA de la sección `gates.gate3` NO es error: sección opcional
+//     ausente ⇒ `{}` ⇒ defaults por-acción de `DEFAULT_POLICY`.
+//   - `PIPELINE_DIR_OVERRIDE` se sigue honrando: está en la regla de raíz única
+//     del resolver (aporta DIRECTORIO, nunca nombre de archivo — CA-12).
+//
+// El `require` es lazy a propósito (el resolver arrastra `js-yaml` + `ajv`):
+// mismo criterio que tenía el `require('js-yaml')` que reemplaza.
 // -----------------------------------------------------------------------------
 function pipelineDir() {
     if (process.env.PIPELINE_DIR_OVERRIDE) return process.env.PIPELINE_DIR_OVERRIDE;
@@ -116,14 +133,9 @@ function loadGate3Config(configOverride) {
     if (configOverride && typeof configOverride === 'object') {
         return extractGate3(configOverride);
     }
-    try {
-        const yaml = require('js-yaml');
-        const file = path.join(pipelineDir(), 'config.yaml');
-        const doc = yaml.load(fs.readFileSync(file, 'utf8')) || {};
-        return extractGate3(doc);
-    } catch {
-        return {};
-    }
+    // eslint-disable-next-line global-require
+    const configResolver = require('./config-resolver');
+    return extractGate3(configResolver.resolve());
 }
 
 function extractGate3(doc) {

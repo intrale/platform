@@ -53,13 +53,40 @@ function checkOperatorSignatureGate({ issueNumber, headSha, config, authorizedSi
   return { ok: true, reason: res.reason };
 }
 
-// Carga best-effort de config.yaml (sólo para leer `operator_signature`/`cua`).
-function loadConfigBestEffort(pipelineDir) {
+// #5172 — Carga FAIL-CLOSED de config.yaml (lee `operator_signature` y `cua`).
+//
+// ANTES era "best-effort": `catch { return {} }`. Con `{}`,
+// `operator_signature.enabled !== true` ⇒ GATE 2 se saltaba entero. O sea: una
+// config ilegible APAGABA el gate de firma humana justo antes de pushear y crear
+// el PR, y el operador leía "🔏 gate disabled (kill switch)" como si fuera una
+// decisión suya. Ese es el fail-open que la historia mata.
+//
+// AHORA propaga el error tipado (ya redactado). delivery.js es un CLI de un solo
+// tiro: el `catch` de `require.main` imprime el motivo y sale con código 1 —
+// sin defaults silenciosos y sin haber tocado el remoto. La ausencia de las
+// secciones `operator_signature:`/`cua:` NO es error (D-4): eso lo siguen
+// resolviendo los defaults de `checkOperatorSignatureGate` y
+// `resolveAuthorizedSigners`.
+//
+// El parámetro `pipelineDir` (punto de inyección por firma) se conserva tal cual.
+function loadConfigFailClosed(pipelineDir) {
+  // Lazy: requerir el resolver en el tope obligaría a `js-yaml`+`ajv` a existir
+  // sólo para importar el módulo desde un test.
+  const configResolver = require('./lib/config-resolver');
   try {
-    const yaml = require('js-yaml');
-    const raw = fs.readFileSync(path.join(pipelineDir, 'config.yaml'), 'utf8');
-    return yaml.load(raw) || {};
-  } catch { return {}; }
+    return configResolver.resolve({ pipelineDir });
+  } catch (e) {
+    // Ruidoso y accionable ANTES de propagar: el `catch` de arriba sólo imprime
+    // `err.message`, que para un YAML roto no dice ni qué archivo ni qué línea.
+    try {
+      const configSchema = require('./lib/config-schema');
+      const estado = configSchema.describeConfigFailure(e, { archivo: e && e.archivo, contexto: 'cli' });
+      console.error(configSchema.formatConfigFailureLog(estado, {
+        titulo: 'CONFIG INVÁLIDA — delivery abortado (no se evalúa GATE 2 con defaults)',
+      }));
+    } catch { /* si ni el formateador carga, propaga igual */ }
+    throw e;
+  }
 }
 
 // Firmantes autorizados (CA-4): allowlist única `cua.operator_chat_ids` +
