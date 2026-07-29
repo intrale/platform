@@ -629,6 +629,12 @@ function sanitizeKeyName(name) {
     return String(name).slice(0, 64).replace(/[^A-Za-z0-9_.\-]/g, '?');
 }
 
+/** Sanea cada segmento de un instancePath sin perder su estructura. */
+function sanitizePath(instancePath) {
+    const segs = String(instancePath || '').split('/').filter(Boolean).map(sanitizeKeyName);
+    return segs.length ? '/' + segs.join('/') : '(root)';
+}
+
 /** Distancia de edición acotada (implementación local: no sumamos dependencia). */
 function levenshtein(a, b) {
     const m = a.length, n = b.length;
@@ -710,7 +716,7 @@ function redactErrors(ajvErrors) {
     if (!Array.isArray(ajvErrors)) return [];
     return ajvErrors.map((e) => {
         const params = e.params || {};
-        const path = e.instancePath && e.instancePath.length ? e.instancePath : '(root)';
+        const path = sanitizePath(e.instancePath);
         let dotted = dottedFrom(e.instancePath);
         let detail;
         switch (e.keyword) {
@@ -777,7 +783,7 @@ function collectSideViolations(node, segs, out) {
             && hasProductoDescendant(childSegs);
         if (puedeBajar) { collectSideViolations(child, childSegs, out); continue; }
         out.push({
-            path: '/' + childSegs.join('/'),
+            path: '/' + childSegs.map(sanitizeKeyName).join('/'),
             keyword: 'side',
             detail: `clave de lado '${side}': no puede vivir en la configuración `
                 + `del producto (acá sólo se admite lado 'producto')`,

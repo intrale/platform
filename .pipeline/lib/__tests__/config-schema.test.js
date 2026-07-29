@@ -379,21 +379,29 @@ test('#5173 el split de una sección gana sobre el lado de la sección', () => {
 
 // --- 6 · CA-10 / REQ-UX-5: saneo del nombre de clave -------------------------
 
-test('#5173 un nombre de clave con salto de línea y asterisco no aparece literal en la salida', () => {
-    const cfg = validConfig();
-    const CLAVE_HOSTIL = 'x*' + String.fromCharCode(10) + '_INYECTADO_';
-    cfg[CLAVE_HOSTIL] = 1;
-    const { valid, errors } = validateConfig(cfg);
-    assert.strictEqual(valid, false);
-    const salida = formatErrors(errors);
-    // No viaja crudo: ni el salto de línea ni el `*` que rompe el Markdown de Telegram.
-    assert.ok(!salida.includes(String.fromCharCode(10)), 'el detalle debe quedar en una sola línea');
-    assert.ok(!salida.includes('x*'), 'el asterisco crudo no debe viajar');
-    // Pero sigue siendo RECONOCIBLE (no se omite la clave).
-    assert.match(salida, /x\?\?_INYECTADO_/);
-    // Markdown balanceado: cantidad par de asteriscos y backticks.
-    assert.strictEqual((salida.match(/\*/g) || []).length % 2, 0);
-    assert.strictEqual((salida.match(/`/g) || []).length % 2, 0);
+test('#5173 sanea claves hostiles en los tres caminos que llegan a Telegram', () => {
+    const CLAVE_HOSTIL = 'ev*il' + String.fromCharCode(10) + '_INYECTADO_`x';
+    const anidado = validConfig();
+    anidado.concurrencia[CLAVE_HOSTIL] = 'no-integer';
+    const raiz = validConfig();
+    raiz[CLAVE_HOSTIL] = 1;
+
+    const casos = [
+        validateConfig(anidado),
+        validateConfig(raiz),
+        validateConfig({ [CLAVE_HOSTIL]: 1 }, { origin: 'producto' }),
+    ];
+    for (const { valid, errors } of casos) {
+        assert.strictEqual(valid, false);
+        const salida = formatErrorsForHuman(errors);
+        // Se mide la variante que alimenta Telegram, no el formato completo del log.
+        assert.ok(!salida.includes(String.fromCharCode(10)), 'el aviso debe quedar en una sola línea');
+        assert.ok(!salida.includes('ev*il'), 'el asterisco crudo no debe viajar');
+        // La clave sigue siendo reconocible aunque sus caracteres hostiles se colapsen.
+        assert.match(salida, /ev\?il\?_INYECTADO_\?x/);
+        assert.strictEqual((salida.match(/\*/g) || []).length % 2, 0);
+        assert.strictEqual((salida.match(/`/g) || []).length % 2, 0);
+    }
 });
 
 test('#5173 sanitizeKeyName acota a 64 chars y colapsa lo no imprimible', () => {
