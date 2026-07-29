@@ -12,8 +12,14 @@ const {
     validateConfig,
     redactErrors,
     formatErrors,
+    formatErrorsForHuman,
+    sanitizeKeyName,
+    resolveSide,
     ConfigSchemaViolation,
     PROVIDER_ENUM,
+    SIDE_MAP,
+    AUTHORITY_PREFIXES,
+    SCHEMA,
 } = require('../config-schema');
 
 // Config mínimo VÁLIDO con todas las claves críticas bien tipadas.
@@ -55,12 +61,28 @@ test('el config.yaml REAL del repo pasa la validación (no falsos positivos)', (
     assert.strictEqual(valid, true, 'config.yaml real debe validar: ' + formatErrors(errors));
 });
 
-test('clave extra NO crítica pasa (schema lenient global)', () => {
+// #5173 — este test afirmaba lo contrario (raíz lenient). Con la raíz cerrada
+// el comportamiento se invierte a propósito: es el corazón de la historia.
+test('#5173 clave top-level no declarada YA NO pasa (raíz cerrada)', () => {
     const cfg = validConfig();
     cfg.una_feature_nueva = { cualquier: 'cosa', anidada: { x: 1 } };
-    cfg.circuit_breaker.un_campo_nuevo = 42; // extra dentro de bloque crítico → lenient
-    const { valid } = validateConfig(cfg);
-    assert.strictEqual(valid, true);
+    const { valid, errors } = validateConfig(cfg);
+    assert.strictEqual(valid, false);
+    assert.match(formatErrors(errors), /una_feature_nueva/);
+});
+
+test('#5173 clave extra dentro de una sección kernel/producto sigue pasando (lenient interno)', () => {
+    const cfg = validConfig();
+    cfg.pipelines.desarrollo.campo_nuevo = 42; // `pipelines` es kernel → lenient
+    assert.strictEqual(validateConfig(cfg).valid, true);
+});
+
+test('#5173 clave extra dentro de una sección de AUTORIDAD es rechazada (estricta)', () => {
+    const cfg = validConfig();
+    cfg.circuit_breaker.un_campo_nuevo = 42; // `circuit_breaker` es autoridad → estricto
+    const { valid, errors } = validateConfig(cfg);
+    assert.strictEqual(valid, false);
+    assert.match(formatErrors(errors), /un_campo_nuevo/);
 });
 
 test('typo en clave crítica del circuit breaker es rechazado (clave requerida faltante)', () => {
@@ -238,4 +260,269 @@ test('#4576 firma_operador go_live_date acepta string o null', () => {
     assert.strictEqual(validateConfig(cfg).valid, true);
     cfg.firma_operador.go_live_date = 123; // número inválido.
     assert.strictEqual(validateConfig(cfg).valid, false);
+});
+
+// =============================================================================
+// #5173 · Raíz cerrada + clasificación por lado (Entrega B de #5111)
+// =============================================================================
+
+const CONFIG_PATH = path.join(__dirname, '..', '..', 'config.yaml');
+const realConfig = () => yaml.load(fs.readFileSync(CONFIG_PATH, 'utf8'));
+
+// --- 1 · CA-7: sin cambio de comportamiento ---------------------------------
+
+test('#5173 el config.yaml de HEAD valida verde contra el schema cerrado', () => {
+    const { valid, errors } = validateConfig(realConfig());
+    assert.strictEqual(valid, true,
+        'config.yaml NO debe editarse para que valide: ' + formatErrors(errors));
+});
+
+// --- 2 · CA-1/CA-15: cobertura schema ↔ config ↔ SIDE_MAP -------------------
+
+test('#5173 toda sección top-level de config.yaml está declarada en el schema y tiene lado', () => {
+    const secciones = Object.keys(realConfig());
+    const sinSchema = secciones.filter((k) => !(k in SCHEMA.properties));
+    const sinLado = secciones.filter((k) => !(k in SIDE_MAP));
+    assert.deepStrictEqual(sinSchema, [],
+        'secciones sin declarar en SCHEMA.properties (el pipeline arrancaría pausado)');
+    assert.deepStrictEqual(sinLado, [],
+        'secciones sin lado declarado en SIDE_MAP');
+    // Y al revés: el schema no declara secciones fantasma.
+    const fantasma = Object.keys(SCHEMA.properties).filter((k) => !secciones.includes(k));
+    assert.deepStrictEqual(fantasma, [], 'SCHEMA declara secciones que no existen en config.yaml');
+});
+
+test('#5173 la raíz del schema está cerrada', () => {
+    assert.strictEqual(SCHEMA.additionalProperties, false);
+});
+
+// --- 3 · CA-2: los arrays y escalares se tipan con su forma real -------------
+
+test('#5173 los arrays y las escalares top-level validan con su tipo real', () => {
+    const cfg = realConfig();
+    const ARRAYS = ['dev_routing_priority', 'pipeline_scope_keywords', 'prioridad_labels'];
+    const ESCALARES = ['sherlock_enabled', 'sherlock_provider_budget_ms',
+        'sherlock_max_reelaboraciones', 'sherlock_wait_budget_ms', 'telegram_burst_window_ms'];
+    for (const k of ARRAYS) {
+        assert.ok(Array.isArray(cfg[k]), k + ' debe ser array en config.yaml');
+        assert.strictEqual(SCHEMA.properties[k].type, 'array', k + ' mal tipado en el schema');
+    }
+    for (const k of ESCALARES) {
+        assert.ok(typeof cfg[k] !== 'object', k + ' debe ser escalar en config.yaml');
+        assert.ok(['boolean', 'number'].includes(SCHEMA.properties[k].type),
+            k + ' mal tipado en el schema');
+    }
+    // Tiparlos como `object` es la vía #1 de romper el arranque: lo verificamos.
+    const roto = realConfig();
+    roto.dev_routing_priority = { no: 'soy array' };
+    assert.strictEqual(validateConfig(roto).valid, false);
+});
+
+// --- 4 · CA-8: la lista de autoridad es inmutable y vive en código -----------
+
+test('#5173 la lista de autoridad es inmutable y no se sobreescribe desde configuración', () => {
+    assert.ok(Object.isFrozen(AUTHORITY_PREFIXES), 'AUTHORITY_PREFIXES debe estar congelada');
+    assert.ok(Object.isFrozen(SIDE_MAP), 'SIDE_MAP debe estar congelado');
+    const antes = AUTHORITY_PREFIXES.slice();
+    try { AUTHORITY_PREFIXES.push('firma_operador_falsa'); } catch { /* strict mode */ }
+    try { AUTHORITY_PREFIXES[0] = 'nada'; } catch { /* strict mode */ }
+    assert.deepStrictEqual(AUTHORITY_PREFIXES.slice(), antes);
+
+    // Y no se puede degradar desde el config: el lado resuelto no depende del YAML.
+    const cfg = realConfig();
+    cfg.firma_operador.modo = 'dry-run';
+    assert.strictEqual(resolveSide('firma_operador.modo'), 'autoridad');
+});
+
+// --- 5 · CA-9: la autoridad entra por sección entera, no por sub-clave suelta -
+
+test('#5173 toda clave de una sección de autoridad está cubierta por la lista congelada', () => {
+    const cfg = realConfig();
+    const SECCIONES_AUTORIDAD = Object.keys(SIDE_MAP)
+        .filter((k) => SIDE_MAP[k] === 'autoridad' && !k.includes('.'));
+    assert.ok(SECCIONES_AUTORIDAD.length >= 11, 'deben declararse al menos 11 secciones de autoridad');
+    for (const sec of SECCIONES_AUTORIDAD) {
+        assert.strictEqual(resolveSide(sec), 'autoridad', sec + ' debe resolver a autoridad');
+        for (const sub of Object.keys(cfg[sec] || {})) {
+            assert.strictEqual(resolveSide(sec + '.' + sub), 'autoridad',
+                sec + '.' + sub + ' quedó fuera de la cobertura de autoridad');
+        }
+    }
+    // Las que el snippet original del issue dejaba editables por enumerar
+    // sub-claves sueltas en vez de prefijos de sección:
+    for (const p of ['firma_operador.modo', 'operator_signoff.gate_mode',
+        'operator_signature.nonce_ttl_seconds', 'gates.gate3.timeout_ms',
+        'gates.gate3.timeout_ms.reseed-wave', 'commander_products.default_product',
+        'commander_products.products.Intrale.operators', 'cross_repo_delivery.repos']) {
+        assert.strictEqual(resolveSide(p), 'autoridad', p + ' debe ser autoridad');
+    }
+    // `architect` NO entra entera: su calibración es producto.
+    assert.strictEqual(resolveSide('architect.enabled'), 'autoridad');
+    assert.strictEqual(resolveSide('architect.poll_cap_min'), 'producto');
+});
+
+test('#5173 una clave sin lado declarado cae a kernel (fail-closed), nunca a producto', () => {
+    assert.strictEqual(resolveSide('seccion_que_no_existe'), 'kernel');
+    assert.strictEqual(resolveSide('routing.algo.muy.anidado'), 'kernel');
+    assert.strictEqual(resolveSide(''), 'kernel');
+    assert.strictEqual(resolveSide(null), 'kernel');
+});
+
+test('#5173 el split de una sección gana sobre el lado de la sección', () => {
+    assert.strictEqual(resolveSide('pipelines'), 'kernel');
+    assert.strictEqual(resolveSide('pipelines.desarrollo.fases'), 'kernel');
+    assert.strictEqual(resolveSide('pipelines.desarrollo.skills_por_fase'), 'producto');
+    assert.strictEqual(resolveSide('multi_provider'), 'kernel');
+    assert.strictEqual(resolveSide('multi_provider.order'), 'producto');
+    assert.strictEqual(resolveSide('deliverable_notifications.skills'), 'producto');
+});
+
+// --- 6 · CA-10 / REQ-UX-5: saneo del nombre de clave -------------------------
+
+test('#5173 un nombre de clave con salto de línea y asterisco no aparece literal en la salida', () => {
+    const cfg = validConfig();
+    const CLAVE_HOSTIL = 'x*' + String.fromCharCode(10) + '_INYECTADO_';
+    cfg[CLAVE_HOSTIL] = 1;
+    const { valid, errors } = validateConfig(cfg);
+    assert.strictEqual(valid, false);
+    const salida = formatErrors(errors);
+    // No viaja crudo: ni el salto de línea ni el `*` que rompe el Markdown de Telegram.
+    assert.ok(!salida.includes(String.fromCharCode(10)), 'el detalle debe quedar en una sola línea');
+    assert.ok(!salida.includes('x*'), 'el asterisco crudo no debe viajar');
+    // Pero sigue siendo RECONOCIBLE (no se omite la clave).
+    assert.match(salida, /x\?\?_INYECTADO_/);
+    // Markdown balanceado: cantidad par de asteriscos y backticks.
+    assert.strictEqual((salida.match(/\*/g) || []).length % 2, 0);
+    assert.strictEqual((salida.match(/`/g) || []).length % 2, 0);
+});
+
+test('#5173 sanitizeKeyName acota a 64 chars y colapsa lo no imprimible', () => {
+    assert.strictEqual(sanitizeKeyName('ok_key.name-1'), 'ok_key.name-1');
+    assert.strictEqual(sanitizeKeyName('a'.repeat(200)).length, 64);
+    assert.strictEqual(sanitizeKeyName('a b'), 'a?b');
+});
+
+// --- 7 · CA-11: la notificación se acota, el log no ---------------------------
+
+test('#5173 con más de 5 errores la notificación trae 5 más un contador y el log trae todos', () => {
+    const cfg = validConfig();
+    for (let i = 0; i < 9; i++) cfg['clave_mala_' + i] = 1;
+    const { valid, errors } = validateConfig(cfg);
+    assert.strictEqual(valid, false);
+    assert.ok(errors.length >= 9);
+
+    const humano = formatErrorsForHuman(errors);
+    const completo = formatErrors(errors);
+    assert.ok(humano.length < completo.length, 'la notificación debe ser más corta que el log');
+    assert.match(humano, /\(\+\d+ error\/es más/);
+    assert.strictEqual(humano.split('; ').length, 6, '5 errores + 1 línea de contador');
+    // El log conserva TODOS: no se pierde diagnóstico.
+    for (let i = 0; i < 9; i++) assert.match(completo, new RegExp('clave_mala_' + i));
+});
+
+test('#5173 formatErrorsForHuman no recorta cuando hay 5 errores o menos', () => {
+    assert.strictEqual(formatErrorsForHuman([]), '');
+    assert.strictEqual(formatErrorsForHuman(null), '');
+    const pocos = [{ path: '/a', detail: 'x' }, { path: '/b', detail: 'y' }];
+    assert.strictEqual(formatErrorsForHuman(pocos), formatErrors(pocos));
+});
+
+// --- 8 · CA-12: sugerencia de clave cercana ----------------------------------
+
+test('#5173 circuit_breker sugiere circuit_breaker y una clave lejana no sugiere nada', () => {
+    const cerca = validateConfig(Object.assign(validConfig(), { circuit_breker: {} }));
+    const salidaCerca = formatErrors(cerca.errors);
+    assert.match(salidaCerca, /¿quisiste decir 'circuit_breaker'\?/);
+    // Una sola candidata, nunca una lista.
+    assert.strictEqual((salidaCerca.match(/quisiste decir/g) || []).length, 1);
+
+    const lejos = validateConfig(Object.assign(validConfig(), { zzzzzzzzzzzzzzz: {} }));
+    assert.ok(!formatErrors(lejos.errors).includes('quisiste decir'),
+        'distancia > 2 no debe sugerir nada');
+});
+
+// --- 9 · CA-12 / hallazgo BAJA-A09: el mensaje no filtra la lista congelada ---
+
+test('#5173 el mensaje de lado autoridad no enumera la lista congelada', () => {
+    const { errors } = validateConfig({ gates: { gate3: {} } }, { origin: 'producto' });
+    const salida = formatErrors(errors);
+    assert.match(salida, /autoridad/);
+    const filtradas = AUTHORITY_PREFIXES
+        .filter((p) => !p.startsWith('gates'))
+        .filter((p) => salida.includes(p));
+    assert.deepStrictEqual(filtradas, [],
+        'el mensaje sólo puede nombrar el path que falló, no el resto de la lista');
+});
+
+// --- 10 · CA-4 + CA-7: las dos ramas de `origin` -----------------------------
+
+test('#5173 validateConfig sin origin NO aplica chequeo de lado', () => {
+    // El config real es 100% "monolito": tiene kernel + producto + autoridad
+    // junto. Sin `origin` debe pasar igual (es exactamente el caso de pulpo hoy).
+    assert.strictEqual(validateConfig(realConfig()).valid, true);
+    assert.strictEqual(validateConfig(realConfig(), {}).valid, true);
+    assert.strictEqual(validateConfig(realConfig(), { origin: 'monolito' }).valid, true);
+});
+
+test('#5173 con origin producto una clave de autoridad falla nombrando clave y lado', () => {
+    const { valid, errors } = validateConfig(
+        { firma_operador: { enabled: false, kill_switch: false, modo: 'dry-run' } },
+        { origin: 'producto' }
+    );
+    assert.strictEqual(valid, false);
+    const salida = formatErrors(errors);
+    assert.match(salida, /firma_operador/, 'debe nombrar la clave');
+    assert.match(salida, /autoridad/, 'debe nombrar el lado');
+    assert.ok(errors.some((e) => e.keyword === 'side' && e.lado === 'autoridad'));
+});
+
+test('#5173 con origin producto una clave de kernel también falla, y una de producto pasa', () => {
+    const soloProducto = {
+        build: { java_home_allowlist: [] },
+        telegram: { bot_username: 'x' },
+        dev_skill_mapping: { 'area:pipeline': 'pipeline-dev' },
+        pipelines: { desarrollo: { skills_por_fase: { dev: ['pipeline-dev'] } } },
+        architect: { poll_cap_min: 5 },
+    };
+    const ok = validateConfig(soloProducto, { origin: 'producto' });
+    assert.strictEqual(ok.valid, true, formatErrors(ok.errors));
+
+    // El mismo bloque + una clave de kernel del split ⇒ falla en el path exacto.
+    const conKernel = JSON.parse(JSON.stringify(soloProducto));
+    conKernel.pipelines.desarrollo.fases = ['dev'];
+    const r = validateConfig(conKernel, { origin: 'producto' });
+    assert.strictEqual(r.valid, false);
+    assert.ok(r.errors.some((e) => e.path === '/pipelines/desarrollo/fases' && e.lado === 'kernel'));
+});
+
+// --- SEC: los errores de lado tampoco vuelcan el valor crudo -----------------
+
+test('#5173 el chequeo de lado no vuelca el valor crudo', () => {
+    const SECRETO = 'sk-super-secret-token-1234567890';
+    const { errors } = validateConfig(
+        { commander_products: { default_product: SECRETO, products: {} } },
+        { origin: 'producto' }
+    );
+    const serializado = JSON.stringify(errors) + '|' + formatErrors(errors)
+        + '|' + formatErrorsForHuman(errors);
+    assert.ok(!serializado.includes(SECRETO), 'el valor crudo NO debe aparecer');
+});
+
+// --- 11 · CA-13 / REQ-UX-6: vocabulario único en el doc ----------------------
+
+test('#5173 §2.4 del contrato usa vocabulario único kernel/producto/autoridad', () => {
+    const docPath = path.join(__dirname, '..', '..', '..',
+        'docs', 'pipeline', 'contrato-kernel-adaptador.md');
+    const doc = fs.readFileSync(docPath, 'utf8');
+    const desde = doc.indexOf('### 2.4.');
+    assert.ok(desde > 0, 'debe existir la sección §2.4');
+    const hasta = doc.indexOf('### 2.5.', desde);
+    const s24 = doc.slice(desde, hasta > 0 ? hasta : undefined);
+
+    assert.ok(!/a-decidir/.test(s24), '§2.4 no puede seguir usando `a-decidir`');
+    assert.ok(!/\badaptador\b/.test(s24), '§2.4 debe decir `producto`, no `adaptador`');
+    // Y están las 58 secciones clasificadas.
+    for (const sec of Object.keys(realConfig())) {
+        assert.ok(s24.includes('`' + sec + '`'), '§2.4 no clasifica la sección ' + sec);
+    }
 });

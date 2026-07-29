@@ -32,7 +32,7 @@ const precheck = require('./connectivity-precheck');
 const { sanitize: sanitizePipelineText } = require('./sanitizer');
 // #3941 (EP5-H4): validación de schema de config.yaml + clasificación de
 // excepciones (infra transitoria vs corrupción de estado).
-const { validateConfig, formatErrors } = require('./lib/config-schema');
+const { validateConfig, formatErrors, formatErrorsForHuman } = require('./lib/config-schema');
 const { classify: classifyError } = require('./lib/error-classifier');
 const connectivityState = require('./connectivity-state'); // #2335
 const retryingState = require('./retrying-state');         // #2337 CA7/CA8
@@ -1229,9 +1229,13 @@ const CONFIG_CORRUPTION_ALERT_THROTTLE_MS = 5 * 60 * 1000;
  * loop vivo y pausado para que un humano corrija y reanude.
  *
  * @param {string} reason - etiqueta corta ('config.yaml parse-error' | 'config.yaml schema')
- * @param {string} redactedDetail - detalle YA redactado (sin valores crudos)
+ * @param {string} redactedDetail - detalle YA redactado y ACOTADO (va a Telegram,
+ *   que tiene tope de 4096 chars: con la raíz del schema cerrada un config muy
+ *   roto genera decenas de errores — #5173 CA-11).
+ * @param {string} [fullDetail] - detalle redactado COMPLETO, sin recortar. Va al
+ *   log en disco para no perder diagnóstico. Si se omite, se loguea `redactedDetail`.
  */
-function haltOnConfigCorruption(reason, redactedDetail) {
+function haltOnConfigCorruption(reason, redactedDetail, fullDetail) {
   // PAUSE_FILE se declara más abajo en el módulo; al ejecutarse esta función
   // (sólo en runtime, nunca en carga) ya está inicializado.
   try {
@@ -1253,7 +1257,9 @@ function haltOnConfigCorruption(reason, redactedDetail) {
   } catch (e) {
     // Si no podemos ni escribir el flag, al menos logueamos.
   }
-  const safeMsg = `[${new Date().toISOString()}] [pulpo] CORRUPCIÓN config.yaml (${reason}) → .paused global. Detalle: ${redactedDetail || '(sin detalle)'}`;
+  // #5173 CA-11 — el log en disco va SIN recortar: es la vía de diagnóstico.
+  const logDetail = fullDetail || redactedDetail;
+  const safeMsg = `[${new Date().toISOString()}] [pulpo] CORRUPCIÓN config.yaml (${reason}) → .paused global. Detalle: ${logDetail || '(sin detalle)'}`;
   try { fs.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'), safeMsg + '\n'); } catch {}
   console.error(safeMsg);
   // Alerta Telegram throttleada y redactada.
@@ -1262,9 +1268,14 @@ function haltOnConfigCorruption(reason, redactedDetail) {
     lastConfigCorruptionAlertMs = now;
     try {
       sendTelegram(
+        // #5173 CA-13 — el copy se alinea al auto-recovery real de #4832: la
+        // pausa se levanta sola cuando el config vuelve a validar, no hay que
+        // borrar `.paused` a mano. Si el detalle habla de "clave no permitida",
+        // lo más probable es una sección nueva sin declarar en el schema.
         `🛑 *Pipeline PAUSADO* — corrupción de \`config.yaml\` (${reason}).\n` +
         `Detalle (redactado): ${redactedDetail || '(sin detalle)'}\n` +
-        `Corregí el archivo y borrá \`.pipeline/.paused\` para reanudar.`
+        `Corregí \`config.yaml\` y la pausa se levanta sola en el próximo ciclo (~30s).\n` +
+        `Si es una sección nueva, declarala también en \`.pipeline/lib/config-schema.js\`.`
       );
     } catch { /* best-effort */ }
   }
@@ -1288,10 +1299,18 @@ function loadConfig() {
     // y pausado: un hot-fix de config.yaml se recarga y reanuda sin restart.
     return lastGoodConfig || {};
   }
+  // #5173 — `origin` va SIN setear a propósito: en esta entrega todas las claves
+  // siguen viviendo legítimamente en `config.yaml`, así que sólo corre el schema.
+  // El chequeo de lado (`{ origin: 'producto' }`) lo activa la Entrega C (#5174),
+  // cuando el archivo efectivamente se parta.
   const { valid, errors } = validateConfig(raw);
   if (!valid) {
-    const redacted = formatErrors(errors);
-    haltOnConfigCorruption('config.yaml schema', redacted);
+    // CA-11: acotado a Telegram, completo al log.
+    haltOnConfigCorruption(
+      'config.yaml schema',
+      formatErrorsForHuman(errors),
+      formatErrors(errors)
+    );
     return lastGoodConfig || {};
   }
   lastGoodConfig = raw;
