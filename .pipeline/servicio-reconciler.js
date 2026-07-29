@@ -59,12 +59,61 @@ const GH_QUEUE = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
 const RECONCILE_INTERVAL_MS = parseInt(process.env.RECONCILER_INTERVAL_MS || '300000', 10); // 5 min default
 const RECONCILER_LABEL = 'needs-human';
 
-// #3175 — Sweep paralelo de admission gate. Kill-switch por env var para
-// poder cortar instantáneo sin reiniciar el reconciler. Default ON; setear
-// `ADMISSION_SWEEP_ENABLED=0` para desactivar.
-const ADMISSION_SWEEP_ENABLED = process.env.ADMISSION_SWEEP_ENABLED !== '0';
-const ADMISSION_DRY_RUN = process.env.ADMISSION_GATE_DRY_RUN === '1';
+// #3175 — Sweep paralelo de admission gate. Kill-switch para poder cortar
+// instantáneo sin reiniciar el reconciler. Default ON.
+//
+// #5172 · CA-5 — La fuente de verdad pasó a ser `admission_gate.*` de la
+// configuración RESUELTA. Antes se leía `process.env.ADMISSION_SWEEP_ENABLED` /
+// `ADMISSION_GATE_DRY_RUN` directo y **en el load del módulo**, con dos
+// consecuencias: (1) apagar el gate por env no dejaba NINGUNA traza — el
+// operador auditaba `config.yaml`, lo veía en `true` y no entendía por qué el
+// gate estaba muerto; (2) el bloque `admission_gate:` del archivo era decorativo.
+// Ahora el override por env lo aplica y lo TRAZEA el resolver (`ENV_OVERRIDES`),
+// que es el único que lee esas variables. Ver `lib/config-resolver.js`.
 const ADMISSION_TELEGRAM_QUEUE = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
+
+// Defaults del consumidor, alineados con `config.yaml`. Se usan sólo si la
+// sección `admission_gate:` no está o si el archivo no se pudo leer.
+const ADMISSION_DEFAULTS = Object.freeze({ sweep_enabled: true, dry_run: false });
+
+/**
+ * Valores EFECTIVOS del admission gate en el momento de la llamada.
+ *
+ * Se resuelve por llamada (con `reload: true`) a propósito: el kill-switch tiene
+ * que cortar instantáneo, y cachearlo lo volvería un valor de arranque —
+ * justamente lo que se rompía cuando eran constantes de load del módulo.
+ *
+ * Config ilegible NO apaga el gate: se conservan los defaults del archivo y se
+ * aplican igual los overrides por env vía el resolver, para que la traza salga
+ * en los dos caminos. Degradar a "gate apagado" ante config rota es el fallo
+ * silencioso que #5172 elimina.
+ *
+ * @returns {{sweepEnabled: boolean, dryRun: boolean, origen: string}}
+ */
+function admissionGateSettings() {
+    let seccion;
+    let origen;
+    try {
+        const cfg = configResolver.resolve({ pipelineDir: PIPELINE, reload: true });
+        const ag = cfg && cfg.admission_gate;
+        seccion = (ag && typeof ag === 'object' && !Array.isArray(ag))
+            ? { ...ADMISSION_DEFAULTS, ...ag }
+            : { ...ADMISSION_DEFAULTS };
+        origen = 'config';
+    } catch (e) {
+        logConfigFailure(e);
+        // El resolver no llegó a aplicar los overrides (lanzó antes), así que se
+        // aplican acá sobre los defaults — mismo código, misma traza.
+        seccion = (configResolver.applyOverridesOnly({ admission_gate: { ...ADMISSION_DEFAULTS } }) || {}).admission_gate
+            || { ...ADMISSION_DEFAULTS };
+        origen = 'defaults+env';
+    }
+    return {
+        sweepEnabled: seccion.sweep_enabled !== false,
+        dryRun: seccion.dry_run === true,
+        origen,
+    };
+}
 
 // Labels que indican que `needs-human` está pegado por origen de recomendación
 // (security/guru/planner generan issues auto y los marcan así para triaje humano
@@ -1090,15 +1139,18 @@ function reconcileAdmissionOrphans(opts = {}) {
     // Devuelve {appliedCount, deferredCount, bootstrap, alertSent, dryRun}.
     // El opts.listIssues/opts.listPrs/opts.applyLabel/opts.enqueueAlert son
     // hooks para tests (todos opcionales; defaultean a las funciones reales).
-    if (!ADMISSION_SWEEP_ENABLED) {
-        return { skipped: true, reason: 'ADMISSION_SWEEP_ENABLED=0' };
+    // #5172 · CA-5 — valor EFECTIVO (archivo + override por env ya trazado por el
+    // resolver), resuelto en el momento de decidir. No es una constante de load.
+    const gate = admissionGateSettings();
+    if (!gate.sweepEnabled) {
+        return { skipped: true, reason: 'admission_gate.sweep_enabled=false' };
     }
 
     const listIssuesFn = opts.listIssues || (() => listGhItemsAll('issue'));
     const listPrsFn = opts.listPrs || (() => listGhItemsAll('pr'));
     const applyFn = opts.applyLabel || applyAdmissionLabel;
     const alertFn = opts.enqueueAlert || enqueueTelegramAlert;
-    const dryRun = opts.dryRun != null ? !!opts.dryRun : ADMISSION_DRY_RUN;
+    const dryRun = opts.dryRun != null ? !!opts.dryRun : gate.dryRun;
 
     const issues = listIssuesFn();
     const prs = listPrsFn();
@@ -1554,8 +1606,10 @@ module.exports = {
     applyAdmissionLabel,
     enqueueTelegramAlert,
     listGhItemsAll,
-    ADMISSION_SWEEP_ENABLED,
-    ADMISSION_DRY_RUN,
+    // #5172 · CA-5 — reemplaza a las constantes `ADMISSION_SWEEP_ENABLED` /
+    // `ADMISSION_DRY_RUN`, que congelaban el valor en el load del módulo y se
+    // salteaban la traza del resolver.
+    admissionGateSettings,
     reconcileWaveCompletion,
     buildWaveCompletionMessage,
     escapeMarkdownText,

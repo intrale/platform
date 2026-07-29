@@ -635,6 +635,86 @@ let configErrorState = null;
 
 function getConfigErrorState() { return configErrorState; }
 
+// #3722 — escaper compartido. Se requiere acá (y no se reimplementa) porque las
+// pantallas de error de abajo viven ANTES del `escapeHtml` local del archivo.
+const { escapeHtmlAttr: escHtml } = require('./lib/escape-html');
+
+/**
+ * #5172 · CA-8 — Pantalla de "configuración inválida".
+ *
+ * Es LA pantalla que justifica el contrato de más arriba: si el dashboard muere
+ * (o peor: renderiza un tablero vacío), el operador no tiene forma de enterarse
+ * de que el pipeline está pausado por config rota. Sólo se renderizan `detalle`
+ * y `accion`, que `config-schema.js` ya entrega redactados — acá NO se re-deriva
+ * copy ni se vuelca el valor crudo que falló (CA-UX-5 / SEC-1).
+ *
+ * @param {null|{archivo:string, via:string, detalle:string, accion:string, ts:string}} err
+ * @returns {string} HTML autocontenido (sin assets externos: la config está rota,
+ *                   no podemos depender de nada derivado de ella).
+ */
+function renderConfigErrorPage(err) {
+  const detalle = escHtml((err && err.detalle) || 'configuración del pipeline ilegible o inválida');
+  const accion = escHtml((err && err.accion) || 'revisá config.yaml y corregí el error de sintaxis o de schema');
+  // El nombre del archivo sale SIEMPRE de `err.archivo` (el resolver ya reporta
+  // la ruta efectiva, que puede no ser la del repo si el proceso corre con
+  // override). Hardcodearlo acá le mentiría al operador sobre qué archivo tocar.
+  const archivo = escHtml((err && err.archivo) || '(archivo de configuración del pipeline)');
+  const via = escHtml((err && err.via) || '');
+  const ts = escHtml((err && err.ts) || new Date().toISOString());
+  return `<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8">
+<title>Configuración inválida — Pipeline</title>
+<meta http-equiv="refresh" content="15">
+<style>
+  body { background:#0d1117; color:#c9d1d9; font-family:'Segoe UI',system-ui,sans-serif;
+         margin:0; padding:48px 24px; display:flex; justify-content:center; }
+  .card { max-width:760px; width:100%; background:#161b22; border:1px solid #f85149;
+          border-radius:10px; padding:28px 32px; }
+  h1 { margin:0 0 4px; font-size:20px; color:#f85149; }
+  .sub { color:#8b949e; font-size:13px; margin-bottom:22px; }
+  .row { margin-bottom:16px; }
+  .lbl { font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:#8b949e; margin-bottom:4px; }
+  .val { font-size:14px; line-height:1.5; }
+  code { background:#0d1117; border:1px solid #30363d; border-radius:4px; padding:2px 6px; font-size:13px; }
+  .foot { margin-top:24px; padding-top:16px; border-top:1px solid #30363d; color:#8b949e; font-size:12px; }
+</style></head>
+<body><div class="card">
+  <h1>⛔ Configuración inválida</h1>
+  <div class="sub">El tablero no sirve decisiones derivadas de una configuración que no pudo validarse.
+  Un board vacío sería indistinguible de "no hay trabajo", así que no se renderiza.</div>
+  <div class="row"><div class="lbl">Archivo</div><div class="val"><code>${archivo}</code>${via ? ` <span style="color:#8b949e">(vía ${via})</span>` : ''}</div></div>
+  <div class="row"><div class="lbl">Causa</div><div class="val">${detalle}</div></div>
+  <div class="row"><div class="lbl">Acción</div><div class="val">${accion}</div></div>
+  <div class="foot">El dashboard sigue vivo y reintenta solo: apenas la configuración vuelva a validar,
+  esta pantalla se reemplaza por el tablero (auto-refresh cada 15s). Detectado: ${ts}</div>
+</div></body></html>`;
+}
+
+/**
+ * #5172 · CA-8 — Rutas que devuelven una PÁGINA del tablero. Son las que se
+ * reemplazan por `renderConfigErrorPage` cuando la config no valida. Las APIs y
+ * `/logs/*` quedan fuera a propósito (ver el corte en el handler).
+ */
+const PAGINAS_HTML = new Set(['/', '', '/v3', '/v3/', '/dashboard', '/dashboard/', '/legacy', '/legacy/']);
+
+/**
+ * #5172 · CA-8 — Última red antes del `uncaughtException`. Un error de RENDER no
+ * puede costar el proceso: el dashboard es la única pantalla de diagnóstico del
+ * operador y matarlo es perder la vista justo cuando algo anda mal.
+ */
+function renderInternalErrorPage(e) {
+  return `<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8"><title>Error interno — Pipeline</title>
+<meta http-equiv="refresh" content="15">
+<style>body{background:#0d1117;color:#c9d1d9;font-family:'Segoe UI',system-ui,sans-serif;padding:48px 24px}
+h1{color:#f85149;font-size:20px} code{background:#161b22;border:1px solid #30363d;border-radius:4px;padding:2px 6px}</style>
+</head><body>
+<h1>⚠️ Error al renderizar el tablero</h1>
+<p>El dashboard sigue vivo. El detalle quedó en <code>logs/dashboard.log</code>.</p>
+<p><code>${escHtml(e && e.message)}</code></p>
+</body></html>`;
+}
+
 /**
  * Punto único de lectura de config del dashboard.
  * @returns {object|null} config válida, o `null` si es ilegible/inválida.
@@ -11678,7 +11758,12 @@ try {
   }
 } catch (e) { log(`wizard-providers unavailable: ${e.message}`); }
 
-const server = http.createServer((req, res) => {
+// #5172 · CA-8 — El cuerpo del handler vive en una función propia para poder
+// envolverlo en la red de contención de `http.createServer` (más abajo): una
+// excepción sincrónica acá NO puede escaparse al `uncaughtException`, porque ese
+// handler termina en `process.exit(1)` y matar el dashboard es dejar al operador
+// sin la única pantalla que le explica qué está pasando.
+function handleRequest(req, res) {
   // #4096 — /api/health: readiness liviano para el smoke (paso 2). DEBE ser lo
   // primero del handler, antes de cualquier ruta que toque el FS, y O(1): nunca
   // lee el histórico ni computa estado. El gate de rollback del restart depende
@@ -12001,7 +12086,14 @@ const server = http.createServer((req, res) => {
         // #4126 — leer el snapshot del worker (no recomputar en el path del SSE):
         // antes este tick reescaneaba todo el FS cada 5s por cada cliente SSE.
         const state = getCachedPipelineState();
-        const hash = crypto.createHash('md5').update(JSON.stringify(state.issueMatrix)).digest('hex').slice(0, 8);
+        // #5172 · CA-8 — con config inválida el estado degradado no trae
+        // `issueMatrix`. Se hashea el error en su lugar: así el cliente igual
+        // detecta el cambio y recarga (y ve la pantalla de config inválida) en
+        // vez de quedarse con el último tablero bueno en pantalla para siempre.
+        const payload = (state && state.config)
+          ? state.issueMatrix
+          : { configError: (state && state.configError && state.configError.detalle) || 'config inválida' };
+        const hash = crypto.createHash('md5').update(JSON.stringify(payload || {})).digest('hex').slice(0, 8);
         res.write(`data: ${hash}\n\n`);
       } catch {}
     };
@@ -14278,6 +14370,28 @@ const server = http.createServer((req, res) => {
   // lib/anthropic-usage.js + lib/quota-adapters/anthropic.js. Se retiran
   // ambas rutas mutantes no autenticadas (mejora de postura OWASP A01/A05).
 
+  // #5172 · CA-8 — Pantalla de configuración inválida en las rutas de PÁGINA.
+  //
+  // Va ANTES de `dashboard-routes` a propósito: la home V3 (`/`) es un shell SSR
+  // que no depende de config y se hidrata por JSON, así que sin este corte el
+  // operador veía un tablero prolijo y VACÍO — indistinguible de "no hay
+  // trabajo" — mientras el pipeline estaba pausado por config rota. Ese es el
+  // fallo silencioso que la historia elimina, y sólo se cierra si la pantalla
+  // lo DICE.
+  //
+  // Alcance deliberadamente acotado a las rutas HTML: `/api/health` (readiness
+  // del smoke del restart), `/logs/*` y el resto de las APIs siguen su curso —
+  // con la config rota, los logs son justo lo que el operador necesita leer.
+  if (PAGINAS_HTML.has((req.url || '').split('?')[0]) && !loadConfig()) {
+    res.writeHead(503, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    res.end(renderConfigErrorPage(getConfigErrorState()));
+    return;
+  }
+
   // Nuevo dashboard kiosk vertical (#2801) — home + 9 tabs satélite + slices JSON
   // bajo /api/dash/*. Anti-flicker: cliente hace polling JSON y muta DOM in-place.
   // Si la ruta no matchea aquí, cae al catch-all (home legacy en /legacy o /).
@@ -14296,8 +14410,54 @@ const server = http.createServer((req, res) => {
   // matcheadas). #4126 — sirve desde el snapshot del worker (no recomputa en el
   // request) para que `/` no se cuelgue bajo el ciclo de refresh (CA-3).
   const state = getCachedPipelineState();
-  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-  res.end(generateHTML(state));
+
+  // #5172 · CA-8 — Con config inválida `_genPipelineState()` corta temprano y
+  // devuelve el estado degradado (`config: null` + `configError`), que NO tiene
+  // las claves del snapshot completo que `generateHTML` asume (`issueMatrix`,
+  // `allFases`, ...). Renderizarlo igual tiraba `TypeError` en el primer
+  // `Object.entries(state.issueMatrix)` → `uncaughtException` → `process.exit(1)`,
+  // y como CUALQUIER URL no matcheada cae acá (incluido el `/favicon.ico` que
+  // pide todo navegador al abrir el tablero), alcanzaba con abrir el dashboard
+  // para matarlo. Servimos la pantalla de configuración inválida: es la única
+  // forma de que el operador se entere de por qué el pipeline está pausado.
+  if (!state || !state.config) {
+    res.writeHead(503, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    res.end(renderConfigErrorPage(state ? state.configError : getConfigErrorState()));
+    return;
+  }
+  try {
+    const html = generateHTML(state);
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+  } catch (e) {
+    // El render se hace ANTES del `writeHead(200)` justamente para poder
+    // responder 500 acá sin haber emitido ya un header de éxito.
+    log(`generateHTML falló: ${e && e.message}`);
+    res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(renderInternalErrorPage(e));
+  }
+}
+
+// #5172 · CA-8 — Red de contención del proceso. Cualquier excepción sincrónica
+// de una ruta se responde como 500 en vez de escalar a `uncaughtException`
+// (que hace `process.exit(1)`). El dashboard degrada la RESPUESTA, nunca el
+// PROCESO: mientras siga vivo el operador puede ver logs y el estado de config.
+const server = http.createServer((req, res) => {
+  try {
+    handleRequest(req, res);
+  } catch (e) {
+    log(`request handler falló (${req && req.method} ${req && req.url}): ${e && (e.stack || e.message)}`);
+    try {
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      }
+      res.end(renderInternalErrorPage(e));
+    } catch { try { res.destroy(); } catch {} }
+  }
 });
 
 // #3177 + #3191 — bind explícito a 127.0.0.1 por default (mitiga DNS rebinding

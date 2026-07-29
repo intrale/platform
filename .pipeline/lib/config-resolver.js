@@ -276,6 +276,24 @@ function applyEnvOverrides(doc, file, via) {
 }
 
 /**
+ * #5172 · CA-5 — Aplica **sólo** los overrides por env (con la MISMA traza que
+ * `resolve()`) sobre un objeto base.
+ *
+ * Existe para los consumidores de gates cuando el archivo no se pudo leer: sin
+ * esto, "config ilegible" volvería a apagar el gate por la ventana de atrás y en
+ * silencio — la degradación exacta que la historia elimina. La allowlist de
+ * `ENV_OVERRIDES` sigue siendo la única fuente: acá NO se lee ninguna otra env.
+ *
+ * @param {object} [base] - defaults del consumidor (no se muta el original).
+ * @param {{archivo?: string, via?: string}} [meta] - para la traza.
+ * @returns {object} copia de `base` con los overrides aplicados.
+ */
+function applyOverridesOnly(base = {}, meta = {}) {
+    const doc = (base && typeof base === 'object' && !Array.isArray(base)) ? copyOf(base) : {};
+    return applyEnvOverrides(doc, meta.archivo || '(config no disponible)', meta.via || 'defaults');
+}
+
+/**
  * Texto de alerta al operador para un override que debilita un gate (CA-UX-7).
  * La frase *"origen: entorno, no archivo"* es el punto UX: sin ella el operador
  * audita `config.yaml`, lo ve correcto y no entiende por qué el gate está apagado.
@@ -444,6 +462,7 @@ module.exports = {
     clearCache,
     setTraceSink,
     getTraces,
+    applyOverridesOnly,
     formatOverrideAlert,
     ENV_OVERRIDES,
     ConfigParseViolation,
