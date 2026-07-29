@@ -627,6 +627,24 @@ test('CA-4b/R5 · el hook pre-commit invoca --report-only, NUNCA --check', () =>
     assert.ok(linea, 'el hook debe invocar el guardrail');
     assert.match(linea, /--report-only/);
     assert.ok(!/--check/.test(linea), 'clonar el --check del template rompe todo commit bajo .pipeline/ (R5)');
+    assert.match(linea, /\|\| true/, 'no debe propagar el exit code');
+});
+
+test('CA-4a · el bloque del hook esta ANTES del primer `exit 0` (si no, es codigo muerto)', () => {
+    // Hallazgo empirico de este issue (verificado con `sh -x`): la validacion de
+    // agent-models hace `exit 0` cuando no se stagea `agent-models.json`, y eso
+    // corta el hook entero. Todo bloque posterior a ese `exit 0` NUNCA corre en
+    // un commit normal — que es exactamente lo que le pasa hoy al secret-scan
+    // (#3310) y al ghost-artifact-lint (#3638).
+    //
+    // Si alguien mueve este bloque hacia abajo "para agrupar los lints", la capa
+    // local del doble wiring desaparece en silencio. Este assert lo agarra.
+    const lines = fs.readFileSync(path.join(__dirname, '..', '..', '..', '.husky', 'pre-commit'), 'utf8').split('\n');
+    const idxLint = lines.findIndex(l => l.includes('operational-state-lint.js') && l.includes('node '));
+    const idxExit = lines.findIndex(l => /^\s*exit 0\s*$/.test(l));
+    assert.ok(idxLint >= 0, 'el hook debe invocar el guardrail');
+    assert.ok(idxExit >= 0, 'el hook tiene al menos un `exit 0`');
+    assert.ok(idxLint < idxExit, `el bloque del guardrail (linea ${idxLint + 1}) debe estar antes del primer \`exit 0\` (linea ${idxExit + 1})`);
 });
 
 test('CA-4a/CA-4c · el workflow corre en report-only, con permissions read y trigger pull_request', () => {
