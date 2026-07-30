@@ -1407,21 +1407,35 @@ cua:
 # de este archivo público (mismo criterio que cua.operator_chat_ids).
 #
 # `normalizeConfig` (lib/kernel-store.js) EXIGE `tableName` no vacío para el
-# driver real: con `durable: true` y `tableName: ""` falla fail-closed. Dejar
-# `tableName`/`region` vacíos mientras `durable: false` es correcto y esperado.
+# driver real: con `durable: true` y `tableName: ""` falla fail-closed.
+#
+# #5210 — Las tres claves (`tableName`/`coordinationTableName`/`region`) ya están
+# POBLADAS contra las tablas reales, y `durable` sigue en `false`. No es una
+# contradicción: poblar nombres es declarativo, `durable` es el único switch del
+# camino AWS. Verificable con `node .pipeline/lib/kernel-table-verify.js`.
 #
 # La tabla + policy IAM (least-privilege, append-only sobre signature#*/audit#*)
 # se aprovisiona con un PASO ADMIN separado (lib/kernel-provision.js +
 # docs/pipeline/kernel-iam-policy.json), NUNCA en el boot normal del pulpo.
 kernel:
-  tableName: ""      # requerido para el driver real (normalizeConfig lo exige)
+  # #5210 CA-1 — Tabla de NO-REPUDIO ya aprovisionada en AWS (ACTIVE, SSE KMS,
+  # deletion protection ON). Poblarla NO enciende nada: todo el camino durable
+  # está gateado por `durable === true` (pulpo.js bootKernelDurable + el
+  # constructor LAZY del store), así que con `durable: false` no se construye
+  # driver ni se emite una sola llamada a DynamoDB. Evidencia redactada y gap de
+  # verificación: docs/pipeline/kernel-tablas-cutover-5210.md.
+  tableName: "intrale-kernel-state"      # requerido para el driver real (normalizeConfig lo exige)
   # #5124 — SEGUNDA tabla, distinta de `tableName`. Desde que la coordinación salió
   # de la partición de no-repudio (Opción B′-1), el claim de fase vive acá y esta
   # tabla es la única que admite `DeleteItem` en la policy IAM. Sin esta clave,
   # `kernel-coordination-store.js` falla fail-closed con el driver real (al primer
   # claim, no en el boot). Aprovisionarla es alcance del cutover (#5126).
-  coordinationTableName: ""   # requerido para el driver real (fail-closed sin ella)
-  region: ""         # región AWS destino (vacío mientras durable:false)
+  #
+  # #5210 — DEBE ser distinta de `tableName`: la política de inmutabilidad
+  # (append-only sobre signature#*/audit#*) es de la tabla de no-repudio y NO se
+  # aplica acá; coordinación conserva `DeleteItem` para liberar claims.
+  coordinationTableName: "intrale-kernel-coordination"   # requerido para el driver real (fail-closed sin ella)
+  region: "us-east-2"         # región AWS destino (ambas tablas viven acá)
   durable: false     # default OFF -- todo sigue en FS, cero llamadas AWS
   # #5135 CA-1 -- Ventana de cutover SUPERVISADA. Default OFF (fail-closed: solo
   # el booleano `true` exacto la abre).
