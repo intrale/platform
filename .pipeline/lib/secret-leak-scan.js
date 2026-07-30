@@ -242,7 +242,15 @@ function scanLeakedSecrets({ roots = [], fsImpl = fsDefault } = {}) {
     const stack = [{ dir: claudeDir, depth: 0 }];
     while (stack.length) {
       const { dir, depth } = stack.pop();
-      if (depth > MAX_DEPTH) continue;
+      if (depth > MAX_DEPTH) {
+        filesUnparseable++;
+        const reason = `directorio no verificable: profundidad ${depth} supera el límite ${MAX_DEPTH}`;
+        errors.push({ root, file: toPosix(dir), reason });
+        findings.push(mkFinding(
+          root, dir, { key: '(directorio)', kind: 'limite-profundidad' },
+          'no-verificable', reason));
+        continue;
+      }
       let entries;
       try {
         entries = fsImpl.readdirSync(dir, { withFileTypes: true });
@@ -263,7 +271,16 @@ function scanLeakedSecrets({ roots = [], fsImpl = fsDefault } = {}) {
         let raw;
         try {
           const st = fsImpl.statSync(full);
-          if (st.size > MAX_FILE_BYTES) continue;
+          if (st.size > MAX_FILE_BYTES) {
+            filesUnparseable++;
+            const reason =
+              `archivo no verificable: tamaño ${st.size} supera el límite ${MAX_FILE_BYTES} bytes`;
+            errors.push({ root, file: toPosix(full), reason });
+            findings.push(mkFinding(
+              root, full, { key: '(archivo)', kind: 'limite-tamano' },
+              'no-verificable', reason));
+            continue;
+          }
           raw = fsImpl.readFileSync(full, 'utf8');
           filesScanned++;
         } catch (err) {

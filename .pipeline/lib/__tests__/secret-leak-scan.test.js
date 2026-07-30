@@ -267,6 +267,61 @@ test('scanLeakedSecrets parsea JSONL guardado con extension .json', () => {
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
+test('scanLeakedSecrets falla cerrado al alcanzar el limite de profundidad', () => {
+  const tmp = mkTmpDir('depth-limit');
+  const root = path.join(tmp, 'platform.session-fake');
+  let deepDir = path.join(root, '.claude');
+  for (let i = 0; i < 7; i++) deepDir = path.join(deepDir, `nivel-${i}`);
+  fs.mkdirSync(deepDir, { recursive: true });
+  fs.writeFileSync(path.join(deepDir, 'secreto.json'),
+    JSON.stringify({ refresh_token: FAKE.refreshToken }));
+
+  const r = scan.scanLeakedSecrets({ roots: [root] });
+
+  assert.strictEqual(r.filesScanned, 0, 'el archivo fuera del límite no se declara inspeccionado');
+  assert.strictEqual(r.filesUnparseable, 1, 'la superficie omitida se contabiliza');
+  assert.strictEqual(r.errors.length, 1, 'el límite queda visible como error de barrido');
+  assert.ok(r.findings.some((f) =>
+    f.category === 'no-verificable' &&
+    f.kind === 'limite-profundidad' &&
+    /profundidad 7 supera el límite 6/.test(f.reason)));
+  assert.strictEqual(scan.computeExitCode({
+    leakedSecrets: r.findings,
+    secretsScanErrors: r.errors,
+    secretsUnparseable: r.filesUnparseable,
+  }), scan.EXIT_CODES.UNVERIFIABLE);
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('scanLeakedSecrets falla cerrado ante un JSON mayor a 2 MiB', () => {
+  const tmp = mkTmpDir('size-limit');
+  const root = path.join(tmp, 'platform.session-fake');
+  const hooks = path.join(root, '.claude', 'hooks');
+  fs.mkdirSync(hooks, { recursive: true });
+  fs.writeFileSync(path.join(hooks, 'secreto-grande.json'), JSON.stringify({
+    refresh_token: FAKE.refreshToken,
+    padding: 'x'.repeat(2 * 1024 * 1024),
+  }));
+
+  const r = scan.scanLeakedSecrets({ roots: [root] });
+
+  assert.strictEqual(r.filesScanned, 0, 'el archivo fuera del límite no se declara inspeccionado');
+  assert.strictEqual(r.filesUnparseable, 1, 'el JSON grande se contabiliza');
+  assert.strictEqual(r.errors.length, 1, 'el límite queda visible como error de barrido');
+  assert.ok(r.findings.some((f) =>
+    f.category === 'no-verificable' &&
+    f.kind === 'limite-tamano' &&
+    /tamaño .* supera el límite 2097152 bytes/.test(f.reason)));
+  assert.strictEqual(scan.computeExitCode({
+    leakedSecrets: r.findings,
+    secretsScanErrors: r.errors,
+    secretsUnparseable: r.filesUnparseable,
+  }), scan.EXIT_CODES.UNVERIFIABLE);
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
 test('el barrido crudo encuentra un secreto dentro de un archivo que no parsea', () => {
   // Sin esta pasada, un secreto en un archivo con conflictos quedaría invisible:
   // el operador leería "no pude verificar" y seguiría de largo.
