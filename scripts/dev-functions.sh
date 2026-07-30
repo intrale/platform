@@ -85,43 +85,46 @@ HELP
     # Pre-registrar confianza del worktree en Claude Code
     _pre_trust_worktree "$current_dir"
 
-    # Copiar .claude/ con allowlist deny-by-default (NO junction — seguro contra rm -rf)
+    # Actualizar .claude/ con allowlist deny-by-default (NO junction)
     #
     # #5220 CA-2.c — Espeja el criterio de `.pipeline/lib/claude-copy-allowlist.js`
     # (fuente única de verdad de las listas). A diferencia del `cpSync` de
     # `cli-branch.js`, ESTE camino SÍ se ejecuta: produce los `platform.agent-*`.
     #
-    # El `rm -rf` previo se MANTIENE y es deliberado: es lo único que evita el
-    # anidamiento `.claude/.claude`. Con destino existente, `cp -r origen/.claude
-    # dst/.claude` anida en vez de fusionar — esa es exactamente la firma del
-    # productor que originó #5220 (33/33 worktrees `session-*` anidados contra
-    # 0/29 `agent-*`, que se salvan por esta línea).
+    # Se preserva el árbol que `git worktree add` acaba de materializar. Borrarlo
+    # deja como ` D` todos los trackeados que no están en la allowlist. La copia
+    # se hace archivo por archivo para evitar también `.claude/.claude`.
     if [ -d "$_INTRALE_MAIN/.claude" ]; then
         # Si hay junction legacy, desvincular primero
         if [ -L "$current_dir/.claude" ]; then
             local win_path=$(cygpath -w "$current_dir/.claude" 2>/dev/null)
             cmd /c rmdir "$win_path" 2>/dev/null
+            git -C "$current_dir" checkout -- .claude
         fi
-        rm -rf "$current_dir/.claude" 2>/dev/null
         mkdir -p "$current_dir/.claude"
 
-        # Se enumera qué SE COPIA. Todo lo demás queda afuera por default.
+        # Se enumera qué SE COPIA. Los archivos denegados nunca tocan el destino.
         local _allow=(settings.json permissions-baseline.json dashboard-server.js skills icons hooks)
-        local _entry
+        local _entry _source _file _rel
         for _entry in "${_allow[@]}"; do
-            [ -e "$_INTRALE_MAIN/.claude/$_entry" ] || continue
-            cp -r "$_INTRALE_MAIN/.claude/$_entry" "$current_dir/.claude/$_entry"
+            _source="$_INTRALE_MAIN/.claude/$_entry"
+            [ -e "$_source" ] || continue
+            if [ -f "$_source" ]; then
+                cp "$_source" "$current_dir/.claude/$_entry"
+                continue
+            fi
+            while IFS= read -r -d '' _file; do
+                _rel="${_file#"$_INTRALE_MAIN/.claude/"}"
+                case "$_rel" in
+                    hooks/telegram-config.json|worktrees/*|sessions/*|sessions-archive/*|tmp/*|settings.local.json|\
+                    *.jsonl|*.pid|*.heartbeat|*.heartbeat.stale|*.lock) continue ;;
+                esac
+                mkdir -p "$current_dir/.claude/$(dirname "$_rel")"
+                cp "$_file" "$current_dir/.claude/$_rel"
+            done < <(find "$_source" -type f -print0)
         done
 
-        # Excepciones dentro de lo permitido: el deny gana sobre el allow.
-        # `hooks/telegram-config.json` es el archivo que originó #5220.
-        rm -f "$current_dir/.claude/hooks/telegram-config.json" 2>/dev/null
-        find "$current_dir/.claude" \
-            \( -name '*.jsonl' -o -name '*.pid' -o -name '*.heartbeat' \
-               -o -name '*.heartbeat.stale' -o -name '*.lock' \) \
-            -type f -delete 2>/dev/null
-
-        echo ">> .claude/ copiado con allowlist (sin junction, sin secretos)"
+        echo ">> .claude/ actualizado con allowlist (sin junction, sin secretos)"
     fi
 
     echo ""

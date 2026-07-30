@@ -99,14 +99,15 @@ test('scripts/cli-branch.js usa el filtro en su cpSync', () => {
     'el cpSync de .claude debe ir filtrado');
 });
 
-test('scripts/dev-functions.sh copia por allowlist y conserva el rm -rf previo', () => {
-  // El `rm -rf` es lo único que evita el anidamiento `.claude/.claude`:
-  // 0/29 worktrees `agent-*` anidados contra 33/33 `session-*`.
+test('scripts/dev-functions.sh preserva trackeados y filtra antes de copiar', () => {
   const sh = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'scripts', 'dev-functions.sh'), 'utf8');
-  assert.ok(sh.includes('rm -rf "$current_dir/.claude"'), 'el rm -rf previo NO se puede quitar');
+  assert.ok(!sh.includes('rm -rf "$current_dir/.claude"'),
+    'no debe borrar el árbol trackeado que materializó git worktree');
   assert.ok(sh.includes('_allow=('), 'debe copiar por allowlist explícita');
-  assert.ok(sh.includes('rm -f "$current_dir/.claude/hooks/telegram-config.json"'),
-    'y excluir el archivo con secretos');
+  assert.match(sh, /hooks\/telegram-config\.json[^]*continue/,
+    'debe excluir el archivo con secretos antes del cp');
+  assert.ok(!sh.includes('rm -f "$current_dir/.claude/hooks/telegram-config.json"'),
+    'no debe post-borrar el secreto después de copiarlo');
   assert.ok(!/cp -r "\$_INTRALE_MAIN\/\.claude" "\$current_dir\/\.claude"/.test(sh),
     'ya no debe existir el cp -r completo sin filtro');
 });
