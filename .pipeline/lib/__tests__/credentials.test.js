@@ -263,3 +263,73 @@ test('ENV_MAPPING cubre los providers IA vivos + telegram + multimedia', () => {
   // #3353 — GROQ_API_KEY removida tras la descontinuación del provider.
   assert.ok(!values.has('GROQ_API_KEY'), 'GROQ_API_KEY debería estar removida tras #3353');
 });
+
+// ─── scope aws (#5126) ──────────────────────────────────────────────────────
+
+test('ENV_MAPPING cubre el scope aws que declara CREDENTIAL_SCOPES', () => {
+  const values = new Set(Object.values(ENV_MAPPING));
+  // Las tres vars que build-child-env.js reparte bajo el scope `aws` y que el
+  // driver DynamoDB del kernel necesita para no fallar fail-closed.
+  assert.ok(values.has('AWS_ACCESS_KEY_ID'));
+  assert.ok(values.has('AWS_SECRET_ACCESS_KEY'));
+  assert.ok(values.has('AWS_REGION'));
+});
+
+test('hidrata las credenciales AWS del runtime del kernel', () => {
+  withCleanEnv(() => {
+    withTmpFiles(({ canonical, legacy }) => {
+      writeJson(canonical, {
+        telegram: { bot_token: 'tok', chat_id: '1' },
+        aws: {
+          access_key_id: 'AKIATESTKEY000000001',
+          secret_access_key: 'x'.repeat(40),
+          region: 'us-east-2',
+          table_name: 'intrale-kernel-state',
+        },
+      });
+
+      const env = {};
+      const result = loadIntoEnv({ canonicalPath: canonical, legacyPath: legacy, env, logger: () => {} });
+
+      assert.equal(env.AWS_ACCESS_KEY_ID, 'AKIATESTKEY000000001');
+      assert.equal(env.AWS_SECRET_ACCESS_KEY, 'x'.repeat(40));
+      assert.equal(env.AWS_REGION, 'us-east-2');
+
+      // El resultado sólo lista NOMBRES de var — jamás el valor del secreto.
+      const asText = JSON.stringify(result);
+      assert.ok(!asText.includes('x'.repeat(40)), 'el secreto no debe aparecer en el resultado');
+      assert.ok(!asText.includes('AKIATESTKEY000000001'), 'el access key id no debe aparecer en el resultado');
+    });
+  });
+});
+
+test('sin scope aws el cargador no rompe: las vars quedan skipped', () => {
+  withCleanEnv(() => {
+    withTmpFiles(({ canonical, legacy }) => {
+      writeJson(canonical, { telegram: { bot_token: 'tok', chat_id: '1' } });
+
+      const env = {};
+      const result = loadIntoEnv({ canonicalPath: canonical, legacyPath: legacy, env, logger: () => {} });
+
+      assert.equal(result.source, 'canonical');
+      assert.ok(result.skipped_empty.includes('AWS_ACCESS_KEY_ID'));
+      assert.equal(env.AWS_ACCESS_KEY_ID, undefined);
+    });
+  });
+});
+
+test('no pisa credenciales AWS ya presentes en el entorno (el profile del deploy manda)', () => {
+  withCleanEnv(() => {
+    withTmpFiles(({ canonical, legacy }) => {
+      writeJson(canonical, {
+        aws: { access_key_id: 'AKIAFROMJSON00000AAA', secret_access_key: 'y'.repeat(40), region: 'us-east-2' },
+      });
+
+      const env = { AWS_ACCESS_KEY_ID: 'AKIAALREADYSET0000AA' };
+      const result = loadIntoEnv({ canonicalPath: canonical, legacyPath: legacy, env, logger: () => {} });
+
+      assert.equal(env.AWS_ACCESS_KEY_ID, 'AKIAALREADYSET0000AA');
+      assert.ok(result.skipped_existing.includes('AWS_ACCESS_KEY_ID'));
+    });
+  });
+});
