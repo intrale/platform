@@ -183,6 +183,14 @@ scripts/planner-plan.json
 # #4900 — `.dur` es el scratch de duracion que dejan los wrappers de timing del
 # runtime en la raiz del worktree. Se colo al diff del PR #4902; no es codigo.
 .dur
+# #5216 (R-1, hallazgo bloqueante de `security`) — el flag `sensible: true` de
+# `writeDeliverable` SOLO excluye el entregable del canal Drive; NO lo excluye de
+# git. Los .md de `.pipeline/assets/docs/` estan trackeados y este repo es PUBLICO,
+# asi que un entregable sensible se publicaria igual. Esta regla es la unica
+# contencion real. El inventario detallado de credenciales de #5216 mapea
+# `archivo:linea` de cada consumidor y su cadena de resolucion: es un mapa de
+# ataque, no documentacion. NO commitear.
+.pipeline/assets/docs/5216/
 .pipeline/definicion/*/pendiente/*
 .pipeline/definicion/*/trabajando/*
 .pipeline/definicion/*/listo/*
