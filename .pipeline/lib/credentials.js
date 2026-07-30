@@ -10,7 +10,8 @@
 // Estructura esperada del JSON:
 //   {
 //     "telegram":   { "bot_token": "...", "chat_id": "..." },
-//     "providers":  { "google": {"api_key": "..."}, "cerebras": {...}, ... }
+//     "providers":  { "google": {"api_key": "..."}, "cerebras": {...}, ... },
+//     "aws":        { "access_key_id": "...", "secret_access_key": "...", "region": "..." }
 //   }
 //
 // #3353 (mayo 2026): Groq fue descontinuado. Si el credentials.json todavía
@@ -54,6 +55,16 @@ const ENV_MAPPING = Object.freeze({
   // credentials.json; jamás por Telegram (SEC-5). El valor nunca se loguea (el
   // loader sólo lista nombres de var).
   'providers.moonshot.api_key':    'ANTHROPIC_AUTH_TOKEN',
+  // #5126 — Runtime del store durable del kernel. El scope `aws` ya existía en
+  // CREDENTIAL_SCOPES (build-child-env.js) pero nadie poblaba las vars: los
+  // agentes con `requires_credentials: [aws]` recibían el scope vacío y el
+  // driver DynamoDB fallaba fail-closed. Estas credenciales son las del
+  // principal de runtime least-privilege (sin CreateTable ni gestión IAM), NO
+  // las del deploy de Lambda / QA remoto — ésas siguen en el profile `intrale`
+  // de ~/.aws/credentials y no se tocan.
+  'aws.access_key_id':             'AWS_ACCESS_KEY_ID',
+  'aws.secret_access_key':         'AWS_SECRET_ACCESS_KEY',
+  'aws.region':                    'AWS_REGION',
 });
 
 // Mapeo legacy: telegram-config.json usa flat keys (no nested). Solo cubre las

@@ -1413,16 +1413,31 @@ cua:
 # La tabla + policy IAM (least-privilege, append-only sobre signature#*/audit#*)
 # se aprovisiona con un PASO ADMIN separado (lib/kernel-provision.js +
 # docs/pipeline/kernel-iam-policy.json), NUNCA en el boot normal del pulpo.
+# #5126 CA-B3 (2026-07-29) — Tablas y región CARGADAS, con `durable` todavía en
+# `false`. Este estado intermedio es deliberado y es el que pide el criterio: la
+# config queda completa y verificada ANTES de encender el flag, así el encendido
+# es un cambio de una línea y no un cambio de configuración a ciegas.
+#
+# Con `durable: false` estos tres valores no se leen: no se instancia el driver
+# real ni se hace una sola llamada AWS. El pipeline sigue operando 100% desde
+# filesystem.
+#
+# Qué SÍ va en este archivo público: nombre de tabla y región. No son secretos —
+# no otorgan acceso sin credenciales, y `us-east-2` ya figura en este mismo
+# archivo (sección de connectivity-precheck) y en `docs/qa/`.
+# Qué NUNCA va: account-id, ARNs completos y credenciales. Las credenciales
+# llegan exclusivamente por el scope `aws` del ambiente hijo (build-child-env.js),
+# alimentado desde `~/.claude/secrets/credentials.json` (fuera del repo).
 kernel:
-  tableName: ""      # requerido para el driver real (normalizeConfig lo exige)
+  tableName: "intrale-kernel-state"      # requerido para el driver real (normalizeConfig lo exige)
   # #5124 — SEGUNDA tabla, distinta de `tableName`. Desde que la coordinación salió
   # de la partición de no-repudio (Opción B′-1), el claim de fase vive acá y esta
   # tabla es la única que admite `DeleteItem` en la policy IAM. Sin esta clave,
   # `kernel-coordination-store.js` falla fail-closed con el driver real (al primer
   # claim, no en el boot). Aprovisionarla es alcance del cutover (#5126).
-  coordinationTableName: ""   # requerido para el driver real (fail-closed sin ella)
-  region: ""         # región AWS destino (vacío mientras durable:false)
-  durable: false     # default OFF -- todo sigue en FS, cero llamadas AWS
+  coordinationTableName: "intrale-kernel-coordination"   # requerido para el driver real (fail-closed sin ella)
+  region: "us-east-2"   # región AWS destino
+  durable: false     # sigue OFF -- todo en FS, cero llamadas AWS. Lo enciende CA-B5.
   # #5135 CA-1 -- Ventana de cutover SUPERVISADA. Default OFF (fail-closed: solo
   # el booleano `true` exacto la abre).
   #
