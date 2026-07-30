@@ -85,7 +85,17 @@ HELP
     # Pre-registrar confianza del worktree en Claude Code
     _pre_trust_worktree "$current_dir"
 
-    # Copiar .claude/ completo (NO junction — seguro contra rm -rf)
+    # Copiar .claude/ con allowlist deny-by-default (NO junction — seguro contra rm -rf)
+    #
+    # #5220 CA-2.c — Espeja el criterio de `.pipeline/lib/claude-copy-allowlist.js`
+    # (fuente única de verdad de las listas). A diferencia del `cpSync` de
+    # `cli-branch.js`, ESTE camino SÍ se ejecuta: produce los `platform.agent-*`.
+    #
+    # El `rm -rf` previo se MANTIENE y es deliberado: es lo único que evita el
+    # anidamiento `.claude/.claude`. Con destino existente, `cp -r origen/.claude
+    # dst/.claude` anida en vez de fusionar — esa es exactamente la firma del
+    # productor que originó #5220 (33/33 worktrees `session-*` anidados contra
+    # 0/29 `agent-*`, que se salvan por esta línea).
     if [ -d "$_INTRALE_MAIN/.claude" ]; then
         # Si hay junction legacy, desvincular primero
         if [ -L "$current_dir/.claude" ]; then
@@ -93,8 +103,25 @@ HELP
             cmd /c rmdir "$win_path" 2>/dev/null
         fi
         rm -rf "$current_dir/.claude" 2>/dev/null
-        cp -r "$_INTRALE_MAIN/.claude" "$current_dir/.claude"
-        echo ">> .claude/ copiado completo (sin junction)"
+        mkdir -p "$current_dir/.claude"
+
+        # Se enumera qué SE COPIA. Todo lo demás queda afuera por default.
+        local _allow=(settings.json permissions-baseline.json dashboard-server.js skills icons hooks)
+        local _entry
+        for _entry in "${_allow[@]}"; do
+            [ -e "$_INTRALE_MAIN/.claude/$_entry" ] || continue
+            cp -r "$_INTRALE_MAIN/.claude/$_entry" "$current_dir/.claude/$_entry"
+        done
+
+        # Excepciones dentro de lo permitido: el deny gana sobre el allow.
+        # `hooks/telegram-config.json` es el archivo que originó #5220.
+        rm -f "$current_dir/.claude/hooks/telegram-config.json" 2>/dev/null
+        find "$current_dir/.claude" \
+            \( -name '*.jsonl' -o -name '*.pid' -o -name '*.heartbeat' \
+               -o -name '*.heartbeat.stale' -o -name '*.lock' \) \
+            -type f -delete 2>/dev/null
+
+        echo ">> .claude/ copiado con allowlist (sin junction, sin secretos)"
     fi
 
     echo ""

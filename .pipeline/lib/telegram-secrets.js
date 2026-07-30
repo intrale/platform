@@ -129,4 +129,11 @@ function loadApiKeys({ legacyConfigPath } = {}) {
     };
 }
 
-module.exports = { loadTelegramSecrets, loadApiKeys, HOME_SECRETS, CANONICAL_SECRETS };
+// #5220 (A2) — `isLikelyToken` y `looksLikePlaceholder` se exportan para que el
+// barrido de credenciales filtradas (`lib/secret-leak-scan.js`) reuse el mismo
+// criterio de forma y de placeholder, en vez de re-implementarlo y divergir.
+// Cambio ADITIVO: no toca la implementación ni la API previa.
+module.exports = {
+    loadTelegramSecrets, loadApiKeys, HOME_SECRETS, CANONICAL_SECRETS,
+    isLikelyToken, looksLikePlaceholder,
+};
