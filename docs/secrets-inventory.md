@@ -6,6 +6,23 @@
 > chars" — aunque suene inofensivo, los logs van a Telegram/PDFs/dashboard y un
 > atacante con acceso parcial a esos canales pivota desde el prefijo.
 
+## Documento complementario
+
+Este archivo cubre la **metadata de rotación**. La **ubicación, durabilidad y
+alcance de migración** de cada credencial viven en
+[`docs/pipeline/inventario-credenciales.md`](pipeline/inventario-credenciales.md)
+(producido por el spike #5216, parte del épico #5215).
+
+| Documento | Responde |
+|---|---|
+| `docs/secrets-inventory.md` (este archivo) | Quién es el owner, cuándo se rotó, cuándo vence, contra qué cuenta se rota y con qué runbook. Es el insumo del cron `credential-rotation-cron.js`. |
+| [`docs/pipeline/inventario-credenciales.md`](pipeline/inventario-credenciales.md) | Qué credenciales existen, si son de kernel o de producto, si sobreviven a un respawn del entorno, y si entran en la migración al store único (#5217). |
+
+Los dos son públicos y **no se solapan**. Al dar de alta una credencial, agregarla
+a **ambos**: acá para programar su rotación, allá para planificar su migración.
+La restricción de contenido de este archivo (sólo metadata, nunca valores ni
+prefijos) aplica igual al otro documento.
+
 ## ¿Cómo se usa?
 
 1. Cuando se agrega un nuevo provider al pipeline (ver
