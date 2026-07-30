@@ -192,11 +192,102 @@ const TELEGRAM_CREDENTIALS = resolveTelegramCredentials();
 const BOT_TOKEN = TELEGRAM_CREDENTIALS.botToken;
 const CHAT_ID = TELEGRAM_CREDENTIALS.chatId;
 
-// Drive sigue leyendo el archivo legacy: google_drive_folder_id y
-// google_credentials_path viven SOLO ahi (no estan en ENV_MAPPING del store).
+/**
+ * Resuelve las credenciales de Google Drive con precedencia explicita (#5172):
+ *   1. process.env (GOOGLE_OAUTH_* / GOOGLE_DRIVE_FOLDER_ID) — override operativo
+ *   2. store unificado ~/.claude/secrets/credentials.json — fuente canonica
+ *   3. .claude/hooks/telegram-config.json — legacy, solo fallback
+ *
+ * Antes de #5172 Drive leia UNICAMENTE el nivel 3. Ese archivo es tracked por
+ * git y su copia commiteada no tiene claves `google_*`, asi que cada respawn
+ * con `reset --hard` borraba las credenciales y la evidencia de QA dejaba de
+ * persistirse hasta que el operador las recargaba a mano. El store externo
+ * sobrevive al reset, por eso pasa a ser la fuente canonica.
+ *
+ * Cada candidato se valida por presencia real (placeholders descartados) y se
+ * devuelve la fuente de la que salio, para que un fallo se diagnostique en el
+ * log y no con otra investigacion.
+ *
+ * @param {object} [opts] overrides para tests (env, legacyConfig/legacyConfigPath,
+ *                        canonicalPath, storeLegacyPath, credentialsLib, store).
+ */
+function resolveDriveCredentials(opts = {}) {
+    const env = opts.env || process.env;
+    const legacyConfig = (opts.legacyConfig !== undefined)
+        ? (opts.legacyConfig || {})
+        : (readJsonSafe(opts.legacyConfigPath || CONFIG_PATH) || {});
+    const store = (opts.store !== undefined) ? (opts.store || {}) : readUnifiedStore(opts);
+    const legacyLabel = "legacy:" + path.basename(opts.legacyConfigPath || CONFIG_PATH);
+
+    // Primer candidato con valor real (no vacio, no placeholder).
+    function pick(candidates) {
+        const hit = candidates.find((c) => !isPlaceholderOrEmpty(c.value));
+        return hit
+            ? { value: String(hit.value).trim(), source: hit.source }
+            : { value: "", source: null };
+    }
+
+    const clientId = pick([
+        { source: "env:GOOGLE_OAUTH_CLIENT_ID", value: env.GOOGLE_OAUTH_CLIENT_ID },
+        { source: "store:credentials.json", value: store.GOOGLE_OAUTH_CLIENT_ID },
+        { source: legacyLabel, value: legacyConfig.google_oauth_client_id },
+    ]);
+    const clientSecret = pick([
+        { source: "env:GOOGLE_OAUTH_CLIENT_SECRET", value: env.GOOGLE_OAUTH_CLIENT_SECRET },
+        { source: "store:credentials.json", value: store.GOOGLE_OAUTH_CLIENT_SECRET },
+        { source: legacyLabel, value: legacyConfig.google_oauth_client_secret },
+    ]);
+    const refreshToken = pick([
+        { source: "env:GOOGLE_OAUTH_REFRESH_TOKEN", value: env.GOOGLE_OAUTH_REFRESH_TOKEN },
+        { source: "store:credentials.json", value: store.GOOGLE_OAUTH_REFRESH_TOKEN },
+        { source: legacyLabel, value: legacyConfig.google_oauth_refresh_token },
+    ]);
+    const folderId = pick([
+        { source: "env:GOOGLE_DRIVE_FOLDER_ID", value: env.GOOGLE_DRIVE_FOLDER_ID },
+        { source: "store:credentials.json", value: store.GOOGLE_DRIVE_FOLDER_ID },
+        { source: legacyLabel, value: legacyConfig.google_drive_folder_id },
+    ]);
+    // Service Account: sigue siendo path a archivo, sin equivalente en el store.
+    const credentialsPath = pick([
+        { source: "env:GOOGLE_CREDENTIALS_PATH", value: env.GOOGLE_CREDENTIALS_PATH },
+        { source: legacyLabel, value: legacyConfig.google_credentials_path },
+    ]);
+
+    const missing = [];
+    if (!clientId.value) missing.push("oauth_client_id");
+    if (!clientSecret.value) missing.push("oauth_client_secret");
+    if (!refreshToken.value) missing.push("oauth_refresh_token");
+
+    return {
+        clientId: clientId.value,
+        clientSecret: clientSecret.value,
+        refreshToken: refreshToken.value,
+        folderId: folderId.value,
+        credentialsPath: credentialsPath.value,
+        clientIdSource: clientId.source,
+        clientSecretSource: clientSecret.source,
+        refreshTokenSource: refreshToken.source,
+        folderIdSource: folderId.source,
+        credentialsPathSource: credentialsPath.source,
+        oauthReady: missing.length === 0,
+        missing,
+    };
+}
+
+// Mensaje accionable: nombra las fuentes consultadas y que falta, sin volcar
+// NINGUN valor (los tres campos OAuth son secretos).
+function describeMissingDriveCredentials(cred) {
+    const canonical = (credentialsLib && credentialsLib.CANONICAL_PATH) || "~/.claude/secrets/credentials.json";
+    return "[qa-video-share] credenciales de Google Drive no configuradas: falta " +
+        cred.missing.join(", ") +
+        ". Fuentes consultadas (en orden): env GOOGLE_OAUTH_CLIENT_ID/GOOGLE_OAUTH_CLIENT_SECRET/GOOGLE_OAUTH_REFRESH_TOKEN > " +
+        canonical + " (claves google_drive.*) > " + CONFIG_PATH + " (claves google_oauth_*).";
+}
+
+const DRIVE_CREDENTIALS = resolveDriveCredentials();
 const LEGACY_CONFIG = readJsonSafe(CONFIG_PATH) || {};
-const DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID || LEGACY_CONFIG.google_drive_folder_id || "";
-const DRIVE_CREDENTIALS_PATH = process.env.GOOGLE_CREDENTIALS_PATH || LEGACY_CONFIG.google_credentials_path || "";
+const DRIVE_FOLDER_ID = DRIVE_CREDENTIALS.folderId;
+const DRIVE_CREDENTIALS_PATH = DRIVE_CREDENTIALS.credentialsPath;
 
 // R2 config (opcional, desde env)
 const R2_CONFIG = {
@@ -362,15 +453,11 @@ function sendTelegramMessage(text) {
 // --- Google Drive: Service Account JWT + REST API (Node.js puro) ---
 
 // OAuth config (alternativa a Service Account — funciona con cuentas personales)
-let OAUTH_CLIENT_ID = "";
-let OAUTH_CLIENT_SECRET = "";
-let OAUTH_REFRESH_TOKEN = "";
-try {
-    const cfg2 = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
-    OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID || cfg2.google_oauth_client_id || "";
-    OAUTH_CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET || cfg2.google_oauth_client_secret || "";
-    OAUTH_REFRESH_TOKEN = process.env.GOOGLE_OAUTH_REFRESH_TOKEN || cfg2.google_oauth_refresh_token || "";
-} catch (e) {}
+// #5172: sale de resolveDriveCredentials (env > store unificado > legacy). Antes
+// se leia SOLO del legacy versionado, que el respawn borraba.
+const OAUTH_CLIENT_ID = DRIVE_CREDENTIALS.clientId;
+const OAUTH_CLIENT_SECRET = DRIVE_CREDENTIALS.clientSecret;
+const OAUTH_REFRESH_TOKEN = DRIVE_CREDENTIALS.refreshToken;
 
 function driveAvailable() {
     // OAuth tiene prioridad para Drive personal (Service Account no tiene storage quota)
@@ -1074,8 +1161,9 @@ async function main() {
         // La evidencia de QA debe quedar persistida en Drive, no solo en Telegram.
         console.error("[qa-video-share] ERROR: Google Drive no configurado.");
         console.error("[qa-video-share] Sin Drive, la evidencia de video se pierde.");
+        console.error(describeMissingDriveCredentials(DRIVE_CREDENTIALS));
         console.error("[qa-video-share] Configurar OAuth con: node scripts/google-drive-oauth-setup.js <CLIENT_ID> <CLIENT_SECRET>");
-        console.error("[qa-video-share] O definir google_oauth_* en .claude/hooks/telegram-config.json");
+        console.error("[qa-video-share] El setup persiste en el store externo, que sobrevive al reset --hard del respawn.");
         // Enviar alerta a Telegram y fallar
         try {
             await sendTelegramMessage(
@@ -1246,6 +1334,8 @@ module.exports = {
     isCanonicalUrl,
     resolveTelegramCredentials,
     describeMissingTelegramCredentials,
+    resolveDriveCredentials,
+    describeMissingDriveCredentials,
     isValidBotToken,
     isValidChatId,
 };
