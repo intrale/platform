@@ -149,6 +149,33 @@ test('CA-6c · NO marca lineas comentadas aunque haya un path.join de otra cosa 
     assert.equal(violations.length, 0);
 });
 
+test('regresion review · detecta path-level dentro de un metodo generador', () => {
+    const src = [
+        "const path = require('path');",
+        'const loader = {',
+        "  *load() { return path.join(root, 'waves.json'); }",
+        '};',
+    ].join('\n');
+    const result = I.lintSource('lib/generator-loader.js', src, emptyAllowlist());
+    assert.deepEqual(result.violations, [
+        { file: 'lib/generator-loader.js', line: 3, rule: 'path-level' },
+    ]);
+    assert.equal(result.commentHits, 0);
+});
+
+test('regresion review · mantiene descartada una continuacion JSDoc real', () => {
+    const src = [
+        "const path = require('path');",
+        '/**',
+        " * Documenta 'waves.json' sin acceder al archivo.",
+        ' */',
+        "const logs = path.join(root, 'logs');",
+    ].join('\n');
+    const result = I.lintSource('lib/jsdoc.js', src, emptyAllowlist());
+    assert.deepEqual(result.violations, []);
+    assert.equal(result.commentHits, 1);
+});
+
 test('CA-1a · la aritmetica de buckets particiona exacto el numero bruto', () => {
     const root = makeTmpPipeline();
     // El literal de dominio va LEJOS del path.join (mas de +-3 lineas), si no

@@ -161,15 +161,22 @@ const PATH_CTX_RADIUS = 3;
 // domina el delta bruto-vs-confirmado: mayoritariamente comentario y doc.
 //
 // La regla mide si la LÍNEA arranca comentada, NO si el offset cae dentro de un
-// comentario. Es a propósito: un tokenizer de JS se confunde con literales de
-// regex que contienen comillas (`/['"`]/` abre un string fantasma) y eso sí
-// produciría FALSOS NEGATIVOS, que es lo único que este guardrail no puede
-// permitirse. Esta regla tiene riesgo de falso negativo CERO sobre código
-// ejecutable: ninguna línea que construya un path arranca con `//`, `/*` o `*`.
+// comentario. `*` requiere además estar dentro de un bloque abierto: también
+// puede iniciar un método generador ejecutable (`*load() { ... }`).
 // El residuo conocido es el comentario al final de una línea de código
 // (`const x = 1; // ver waves.json`), que se sigue reportando — conservador a
 // propósito.
-const COMMENT_LINE_RE = /^\s*(?:\/\/|\/\*|\*)/;
+const COMMENT_LINE_RE = /^\s*(?:\/\/|\/\*)/;
+
+function isCommentOnlyLine(src, srcLines, line) {
+    const text = srcLines[line - 1] || '';
+    if (COMMENT_LINE_RE.test(text)) return true;
+    if (!/^\s*\*/.test(text)) return false;
+
+    const lineStart = srcLines.slice(0, line - 1).reduce((n, value) => n + value.length + 1, 0);
+    const prefix = src.slice(0, lineStart);
+    return prefix.lastIndexOf('/*') > prefix.lastIndexOf('*/');
+}
 
 // ─── Regla 2 · internal-bypass ──────────────────────────────────────────────
 
@@ -449,7 +456,7 @@ function lintSource(rel, src, allowlist) {
     while ((m = STATE_LITERAL_RE.exec(src)) !== null) {
         rawLiteralHits++;
         const line = lineOfOffset(src, m.index);
-        if (COMMENT_LINE_RE.test(srcLines[line - 1] || '')) { commentHits++; continue; }
+        if (isCommentOnlyLine(src, srcLines, line)) { commentHits++; continue; }
         if (!PATH_CTX_RE.test(lookupContext(src, line, PATH_CTX_RADIUS))) { noCtxHits++; continue; }
         confirmedHits++;
         push(line, 'path-level');
@@ -793,7 +800,8 @@ module.exports = {
         resolveWrapperBindings, classifyScope, aggregateByFile,
         formatViolation, formatReport, remediationLines, parseArgv, main,
         LintConfigError, LintUsageError,
-        STATE_LITERAL_RE, PATH_CTX_RE, COMMENT_LINE_RE, ID_RE, SELF_EXEMPT, SKIP_DIRS, RULES,
+        STATE_LITERAL_RE, PATH_CTX_RE, COMMENT_LINE_RE, isCommentOnlyLine,
+        ID_RE, SELF_EXEMPT, SKIP_DIRS, RULES,
         ALLOWLIST_REL, USAGE,
     },
 };
