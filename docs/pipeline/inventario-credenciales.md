@@ -180,11 +180,25 @@ está versionado**.
 
 - **Ubicación:** `.pipeline/assets/docs/5216/pipeline-dev-dev-5216.md`
 - **Registrado en:** `.pipeline/deliverables/5216.json`, con `sensible: true`
-- **Excluido de git** por regla explícita en `.gitignore`
+- **Excluido de git** por regla explícita, verificada con `git check-ignore` ⇒ `rc=0`
 
 El flag `sensible: true` excluye el artefacto del canal de publicación
-automática, pero **no** lo excluye de git por sí solo: la regla de `.gitignore` es
-la contención efectiva y se agregó **antes** de generar el artefacto.
+automática, pero **no** lo excluye de git por sí solo: la regla de ignore es la
+contención efectiva.
+
+**Dónde tiene que existir esa regla.** El pipeline escribe los entregables en el root
+donde corre (`PIPELINE_REPO_ROOT`), que **no** es el worktree del agente. Una regla de
+`.gitignore` que viaja en la rama sólo protege donde ese commit está checkouteado, así
+que **hasta el merge no protege el root vivo** — que es justamente donde el artefacto se
+materializa. Por eso la contención es doble:
+
+- `.gitignore` (versionado) — durabilidad una vez mergeado, para cualquier checkout.
+- `.git/info/exclude` del root vivo — cobertura inmediata, desde antes de que el artefacto
+  exista. Vive dentro de `.git/`, así que sobrevive el `reset --hard` y el `clean` que el
+  root vivo hace en cada respawn.
+
+Verificar `check-ignore` únicamente en el worktree del agente da un **falso positivo de
+contención**: da `rc=0` ahí mientras el artefacto queda expuesto en el root vivo.
 
 ## Issues derivados
 
@@ -193,5 +207,26 @@ la contención efectiva y se agregó **antes** de generar el artefacto.
 | [#5217](https://github.com/intrale/platform/issues/5217) | Las credenciales marcadas "sí" en la columna de alcance |
 | [#5218](https://github.com/intrale/platform/issues/5218) | El detalle por consumidor registrado en el entregable sensible |
 | [#5219](https://github.com/intrale/platform/issues/5219) | El reparto kernel / producto de este documento |
-| [#5220](https://github.com/intrale/platform/issues/5220) | Los mecanismos de filtración detectados durante el barrido |
+| [#5220](https://github.com/intrale/platform/issues/5220) | Los mecanismos de filtración detectados durante el barrido, y la purga/rotación de la exposición vigente |
+| [#5226](https://github.com/intrale/platform/issues/5226) | El destrackeo del archivo de configuración de hooks que hoy tiene secretos vivos (ver nota de CA-15 abajo) |
 | [#5222](https://github.com/intrale/platform/issues/5222) | Las brechas de cobertura del escaneo de secretos en pre-commit |
+
+### Nota de CA-15 — hay una exposición de secretos real y vigente
+
+El barrido encontró **secretos vivos en una ubicación indebida**: un archivo de
+configuración trackeado por git, no cubierto por ninguna regla de ignore, cuya working
+copy contiene valores reales que la copia commiteada no tiene. La clasificación se hizo
+**sólo por forma** (presencia, longitud, match contra el patrón de placeholder), sin
+imprimir ni almacenar ningún valor.
+
+Este spike **no lo remedia** (CA-14/CA-15): el destrackeo y la rotación son de
+[#5226](https://github.com/intrale/platform/issues/5226) y
+[#5220](https://github.com/intrale/platform/issues/5220). La ubicación exacta y la
+clasificación por clave están en el entregable sensible, no acá.
+
+> Una versión anterior de este documento y del reporte a #5220 concluyó lo contrario
+> ("ningún valor de secreto en ubicación indebida"). Esa conclusión se emitió corriendo
+> el barrido sobre una **copia commiteada** en lugar del entorno vivo, y quedó
+> **retractada** en la pasada rev-1. El método de la sección correspondiente se corrigió:
+> los veredictos sobre estado vivo sólo valen si se verifican en el root donde corre el
+> pipeline.
