@@ -76,11 +76,29 @@ test('detectFormat distingue canonical de legacy', () => {
 test('setNested crea estructura intermedia y asigna el valor', () => {
     const obj = {};
     secrets.setNested(obj, 'providers.cerebras.api_key', 'csk_real');
-    assert.deepEqual(obj, { providers: { cerebras: { api_key: 'csk_real' } } });
+    assert.equal(Object.getPrototypeOf(obj.providers), null);
+    assert.equal(Object.getPrototypeOf(obj.providers.cerebras), null);
+    assert.equal(obj.providers.cerebras.api_key, 'csk_real');
 
     secrets.setNested(obj, 'providers.openai.api_key', 'sk-real');
     assert.equal(obj.providers.openai.api_key, 'sk-real');
     assert.equal(obj.providers.cerebras.api_key, 'csk_real', 'no debe pisar siblings');
+});
+
+test('setNested rechaza segmentos de prototype pollution sin contaminar Object.prototype', () => {
+    const obj = {};
+    const paths = [
+        '__proto__.polluted',
+        'safe.prototype.polluted',
+        'safe.constructor.polluted',
+    ];
+
+    for (const dotPath of paths) {
+        assert.throws(() => secrets.setNested(obj, dotPath, 'YES'), /dot-path inseguro rechazado/);
+        assert.equal(({}).polluted, undefined);
+        assert.equal(Object.prototype.hasOwnProperty.call(Object.prototype, 'polluted'), false);
+    }
+    assert.deepEqual(obj, {});
 });
 
 test('listKeys lee del formato CANONICAL nested', () => {
@@ -471,6 +489,29 @@ test('writeCanonicalPaths rechaza updates vacío o ausente', () => {
     assert.throws(() => secrets.writeCanonicalPaths(), /updates/);
     assert.throws(() => secrets.writeCanonicalPaths({}), /updates/);
     assert.throws(() => secrets.writeCanonicalPaths(null), /updates/);
+});
+
+test('writeCanonicalPaths rechaza dot-paths peligrosos antes de tocar el filesystem', () => {
+    const dir = tmpDir();
+    const file = path.join(dir, 'credentials.json');
+    const paths = [
+        '__proto__.polluted',
+        'safe.prototype.polluted',
+        'safe.constructor.polluted',
+    ];
+
+    for (const dotPath of paths) {
+        assert.throws(
+            () => secrets.writeCanonicalPaths(
+                { [dotPath]: 'YES' },
+                { secretsPath: file, backupDir: path.join(dir, 'backups') },
+            ),
+            /dot-path inseguro rechazado/,
+        );
+        assert.equal(fs.existsSync(file), false);
+        assert.equal(({}).polluted, undefined);
+        assert.equal(Object.prototype.hasOwnProperty.call(Object.prototype, 'polluted'), false);
+    }
 });
 
 test('rotateKey sigue verde delegando en writeCanonicalPaths', () => {

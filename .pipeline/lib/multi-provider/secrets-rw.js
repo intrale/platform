@@ -154,13 +154,26 @@ function getNested(obj, dotPath) {
     );
 }
 
-function setNested(obj, dotPath, value) {
+const FORBIDDEN_DOT_PATH_SEGMENTS = new Set(['__proto__', 'prototype', 'constructor']);
+
+function parseSafeDotPath(dotPath) {
+    if (typeof dotPath !== 'string' || !dotPath.trim()) {
+        throw new Error('[secrets-rw] dot-path inválido: debe ser un string no vacío.');
+    }
     const parts = dotPath.split('.');
+    if (parts.some(part => !part || FORBIDDEN_DOT_PATH_SEGMENTS.has(part))) {
+        throw new Error(`[secrets-rw] dot-path inseguro rechazado: "${dotPath}".`);
+    }
+    return parts;
+}
+
+function setNested(obj, dotPath, value) {
+    const parts = parseSafeDotPath(dotPath);
     const last = parts.pop();
     let cur = obj;
     for (const p of parts) {
         if (cur[p] === null || cur[p] === undefined || typeof cur[p] !== 'object') {
-            cur[p] = {};
+            cur[p] = Object.create(null);
         }
         cur = cur[p];
     }
@@ -269,6 +282,10 @@ function writeCanonicalPaths(updates, {
     if (!updates || typeof updates !== 'object' || Object.keys(updates).length === 0) {
         throw new Error('[secrets-rw] writeCanonicalPaths: "updates" requerido (objeto no vacío keyed por dot-path).');
     }
+    // Validar todos los paths antes de crear directorios o backups. Además de
+    // impedir prototype pollution, esto garantiza que un input inválido no
+    // produzca efectos secundarios parciales en el filesystem.
+    for (const dotPath of Object.keys(updates)) parseSafeDotPath(dotPath);
 
     const targetPath = secretsPath || HOME_CANONICAL;
     const dir = path.dirname(targetPath);
