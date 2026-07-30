@@ -79,6 +79,8 @@ const DEFAULTS = Object.freeze({
     user: 'intrale-kernel-runtime',
     policyName: 'IntraleKernelStore',
     profile: 'kernel-runtime',
+    // Alias de la CMK del store (la crea kernel-cmk-provision.js · runbook §3).
+    cmkAlias: 'alias/intrale-kernel-store',
 });
 
 const CRED_PATH = path.join(os.homedir(), '.claude', 'secrets', 'credentials.json');
@@ -144,6 +146,7 @@ function parseArgs(argv) {
         user: DEFAULTS.user,
         policyName: DEFAULTS.policyName,
         profile: DEFAULTS.profile,
+        cmkAlias: DEFAULTS.cmkAlias,
         adminProfile: process.env.AWS_PROFILE || 'intrale',
     };
     for (let i = 0; i < argv.length; i += 1) {
@@ -196,7 +199,25 @@ function assertGuards(cfg) {
 // Render de la policy desde la plantilla testeada de docs/
 // -----------------------------------------------------------------------------
 
-function renderPolicy(cfg, accountId) {
+/**
+ * Resuelve el ARN de la CMK del store si existe (alias creado por
+ * kernel-cmk-provision.js). Devuelve null si todavía no hay CMK.
+ *
+ * Hace falta porque el Deny catch-all de abajo se arma con `NotResource`: si el
+ * ARN de la CMK no está en esa lista, el `kms:Decrypt` que DynamoDB necesita cae
+ * en el Deny y el runtime **pierde acceso a la tabla**. Regenerar la policy sin
+ * consultar la CMK es la forma más fácil de romper el store con un comando que
+ * parece inocuo.
+ */
+function resolveCmkArn(cfg) {
+    const res = aws(['kms', 'describe-key', '--key-id', cfg.cmkAlias,
+        '--region', cfg.region, '--output', 'json'], { profile: cfg.adminProfile });
+    const md = res.json && res.json.KeyMetadata;
+    if (!md || md.KeyManager !== 'CUSTOMER') return null;
+    return md.Arn;
+}
+
+function renderPolicy(cfg, accountId, cmkArn) {
     const raw = fs.readFileSync(POLICY_TEMPLATE, 'utf8');
     const rendered = raw
         .replace(/REGION/g, cfg.region)
@@ -229,11 +250,18 @@ function renderPolicy(cfg, accountId) {
         Action: ['sts:GetCallerIdentity'],
         Resource: '*',
     });
+    // El ARN de la CMK va exceptuado del Deny. Sin esto, el `kms:Decrypt` que
+    // DynamoDB hace en nombre del runtime cae en el catch-all y la tabla queda
+    // inaccesible (con `SSEType: KMS` y una CMK propia, leer o escribir un ítem
+    // implica una llamada a KMS).
+    const notResource = [stateArn, coordArn];
+    if (cmkArn) notResource.push(cmkArn);
+
     doc.Statement.push({
         Sid: 'DenyEverythingOutsideKernelTables',
         Effect: 'Deny',
         NotAction: ['sts:GetCallerIdentity'],
-        NotResource: [stateArn, coordArn],
+        NotResource: notResource,
     });
 
     return doc;
@@ -759,7 +787,15 @@ function bootstrap(cfg) {
     // justamente el diagnóstico que sirve para entender por qué frenó.
     try {
         const accountId = stepIdentity(cfg, plan);
-        const policyDoc = renderPolicy(cfg, accountId);
+        const cmkArn = resolveCmkArn(cfg);
+        plan.steps.push({
+            step: 'cmk',
+            status: cmkArn ? 'detectada' : 'no-hay',
+            detail: cmkArn
+                ? `${cfg.cmkAlias} — se exceptúa del Deny catch-all`
+                : `${cfg.cmkAlias} inexistente; correr kernel-cmk-provision.js (runbook §3)`,
+        });
+        const policyDoc = renderPolicy(cfg, accountId, cmkArn);
 
         stepTable(cfg, plan, cfg.table, { pitr: true });
         stepTable(cfg, plan, cfg.coordinationTable, { pitr: false });
