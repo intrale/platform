@@ -163,6 +163,36 @@ test('regresion review · detecta path-level dentro de un metodo generador', () 
     assert.equal(result.commentHits, 0);
 });
 
+test('rebote rev-3 · un delimitador de bloque dentro de un string no oculta el metodo generador posterior', () => {
+    const src = [
+        "const path = require('path');",
+        "const marker = '/*';",
+        'const loader = {',
+        "  *load() { return path.join(root, 'waves.json'); }",
+        '};',
+    ].join('\n');
+    const result = I.lintSource('lib/generator-after-string.js', src, emptyAllowlist());
+    assert.deepEqual(result.violations, [
+        { file: 'lib/generator-after-string.js', line: 4, rule: 'path-level' },
+    ]);
+    assert.equal(result.commentHits, 0);
+});
+
+test('rebote rev-3 · delimitadores dentro de template y regex tampoco abren comentarios', () => {
+    for (const marker of ['const marker = `/*`;', 'const marker = /\\/\\*/;']) {
+        const src = [
+            "const path = require('path');",
+            marker,
+            'const loader = {',
+            "  *load() { return path.join(root, 'waves.json'); }",
+            '};',
+        ].join('\n');
+        const result = I.lintSource('lib/generator-after-literal.js', src, emptyAllowlist());
+        assert.equal(result.violations.length, 1, marker);
+        assert.equal(result.commentHits, 0, marker);
+    }
+});
+
 test('regresion review · mantiene descartada una continuacion JSDoc real', () => {
     const src = [
         "const path = require('path');",
@@ -172,6 +202,19 @@ test('regresion review · mantiene descartada una continuacion JSDoc real', () =
         "const logs = path.join(root, 'logs');",
     ].join('\n');
     const result = I.lintSource('lib/jsdoc.js', src, emptyAllowlist());
+    assert.deepEqual(result.violations, []);
+    assert.equal(result.commentHits, 1);
+});
+
+test('rebote rev-3 · mantiene un bloque real abierto despues de una division', () => {
+    const src = [
+        "const path = require('path');",
+        'const ratio = total / count; /*',
+        " * Documenta 'waves.json' sin acceder al archivo.",
+        ' */',
+        "const logs = path.join(root, 'logs');",
+    ].join('\n');
+    const result = I.lintSource('lib/jsdoc-after-division.js', src, emptyAllowlist());
     assert.deepEqual(result.violations, []);
     assert.equal(result.commentHits, 1);
 });

@@ -168,14 +168,79 @@ const PATH_CTX_RADIUS = 3;
 // propósito.
 const COMMENT_LINE_RE = /^\s*(?:\/\/|\/\*)/;
 
+/**
+ * Indica si `offset` cae dentro de un comentario de bloque real.
+ *
+ * No alcanza contar `/*` y `*/` sobre texto crudo: ambos delimitadores pueden
+ * aparecer legítimamente dentro de strings, templates o regex. Este scanner
+ * léxico mínimo ignora esos contextos y es conservador ante sintaxis incompleta
+ * (strings/regex se cierran al fin de línea; un bloque sólo se abre con `/*`
+ * observado en estado de código).
+ */
+function isInsideBlockComment(src, offset) {
+    let state = 'code';
+    let escaped = false;
+    let regexCharClass = false;
+    let previousSignificant = '';
+
+    for (let i = 0; i < offset; i++) {
+        const ch = src[i];
+        const next = src[i + 1];
+
+        if (state === 'block-comment') {
+            if (ch === '*' && next === '/') { state = 'code'; i++; }
+            continue;
+        }
+        if (state === 'line-comment') {
+            if (ch === '\n' || ch === '\r') state = 'code';
+            continue;
+        }
+        if (state === 'single' || state === 'double' || state === 'template') {
+            if (escaped) { escaped = false; continue; }
+            if (ch === '\\') { escaped = true; continue; }
+            if ((state === 'single' && ch === "'")
+                || (state === 'double' && ch === '"')
+                || (state === 'template' && ch === '`')) state = 'code';
+            continue;
+        }
+        if (state === 'regex') {
+            if (escaped) { escaped = false; continue; }
+            if (ch === '\\') { escaped = true; continue; }
+            if (ch === '[') { regexCharClass = true; continue; }
+            if (ch === ']' && regexCharClass) { regexCharClass = false; continue; }
+            if (ch === '/' && !regexCharClass) state = 'code';
+            if (ch === '\n' || ch === '\r') state = 'code';
+            continue;
+        }
+
+        if (ch === '/' && next === '*') { state = 'block-comment'; i++; continue; }
+        if (ch === '/' && next === '/') { state = 'line-comment'; i++; continue; }
+        if (ch === "'") { state = 'single'; escaped = false; previousSignificant = 'v'; continue; }
+        if (ch === '"') { state = 'double'; escaped = false; previousSignificant = 'v'; continue; }
+        if (ch === '`') { state = 'template'; escaped = false; previousSignificant = 'v'; continue; }
+        // Un regex que contiene `/*` debe ser tan inocuo como un string. Para
+        // esta decisión sólo importa no interpretar sus caracteres internos;
+        // tratar `/` no-comentario como regex hasta su cierre (o EOL) es
+        // conservador y no puede abrir falsamente un bloque.
+        if (ch === '/' && (!previousSignificant || /[([{:,;=!?&|+\-*%^~<>]/.test(previousSignificant))) {
+            state = 'regex';
+            escaped = false;
+            regexCharClass = false;
+            previousSignificant = 'v';
+            continue;
+        }
+        if (!/\s/.test(ch)) previousSignificant = ch;
+    }
+    return state === 'block-comment';
+}
+
 function isCommentOnlyLine(src, srcLines, line) {
     const text = srcLines[line - 1] || '';
     if (COMMENT_LINE_RE.test(text)) return true;
     if (!/^\s*\*/.test(text)) return false;
 
     const lineStart = srcLines.slice(0, line - 1).reduce((n, value) => n + value.length + 1, 0);
-    const prefix = src.slice(0, lineStart);
-    return prefix.lastIndexOf('/*') > prefix.lastIndexOf('*/');
+    return isInsideBlockComment(src, lineStart);
 }
 
 // ─── Regla 2 · internal-bypass ──────────────────────────────────────────────
@@ -800,7 +865,7 @@ module.exports = {
         resolveWrapperBindings, classifyScope, aggregateByFile,
         formatViolation, formatReport, remediationLines, parseArgv, main,
         LintConfigError, LintUsageError,
-        STATE_LITERAL_RE, PATH_CTX_RE, COMMENT_LINE_RE, isCommentOnlyLine,
+        STATE_LITERAL_RE, PATH_CTX_RE, COMMENT_LINE_RE, isCommentOnlyLine, isInsideBlockComment,
         ID_RE, SELF_EXEMPT, SKIP_DIRS, RULES,
         ALLOWLIST_REL, USAGE,
     },
