@@ -9,6 +9,8 @@ const { execFileSync, spawnSync } = require('node:child_process');
 const {
   collectAddedHunks, findingFor, parseHunks, run,
 } = require('../lib/precommit-secret-scan');
+const { IGNORE_MARKER } = require('../lib/secret-scan-lint');
+const { CONTROL_PATHS } = require('../lib/secret-allowlist');
 
 const EMPTY_ALLOWLIST = path.join(
   __dirname, '..', 'secret-scan-allowlist.json',
@@ -289,4 +291,91 @@ test('CA-9: la trampa del parser tampoco pasa por el modo range de CI', () => {
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stderr, /pr-hostil\.json/);
   assert.match(result.stderr, /\[REDACTED:GITHUB_TOKEN\]/);
+});
+
+// ── #5244 rev-3 · el escape NO puede ser un bypass silencioso ────────────────
+//
+// El rechazo de `verificacion` reprodujo el agujero con el scanner real: un PR
+// hostil agregaba `{"aws":"AKIA…","_c":"<marca>"}` y el job bloqueante de CI
+// terminaba en exit 0 con stdout y stderr en 0 bytes, indistinguible de un PR
+// limpio. `CODEOWNERS` no cubre `.pipeline/` ni `.claude/hooks/`, así que "la
+// marca la ve el reviewer" no alcanzaba. La marca sigue funcionando (CA-8d),
+// pero ahora se ANUNCIA.
+
+function scanRange(directory, base, format) {
+  return spawnSync(process.execPath, [
+    path.join(__dirname, '..', 'lib', 'precommit-secret-scan.js'),
+    '--mode=range', `--base=${base}`, '--head=HEAD', `--cwd=${directory}`,
+    `--allowlist=${EMPTY_ALLOWLIST}`, `--format=${format}`,
+  ], { encoding: 'utf8' });
+}
+
+function repoConBase(prefijo) {
+  const directory = sandboxRepo(prefijo);
+  stageFile(directory, 'README.md', 'base\n');
+  execFileSync('git', ['commit', '-m', 'base'], { cwd: directory });
+  const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: directory, encoding: 'utf8' }).trim();
+  return { directory, base };
+}
+
+test('una línea suprimida con la marca se anuncia en text y en github', () => {
+  const { directory, base } = repoConBase('secret-scan-supresion-');
+  // En JSON la marca entra como VALOR válido: no hace falta sintaxis de comentario.
+  stageFile(
+    directory, '.claude/hooks/prod.json',
+    `${JSON.stringify({ [SECRET_FIELD]: SYNTHETIC_TOKEN, _c: IGNORE_MARKER })}\n`,
+  );
+  execFileSync('git', ['commit', '-m', 'PR con supresion'], { cwd: directory });
+
+  const texto = scanRange(directory, base, 'text');
+  assert.equal(texto.status, 0, 'la marca sigue siendo un escape válido (CA-8d)');
+  assert.match(texto.stderr, /prod\.json:1/, 'la supresión se anuncia con path:linea');
+  assert.match(texto.stderr, new RegExp(IGNORE_MARKER));
+  assert.doesNotMatch(texto.stderr, new RegExp(SYNTHETIC_TOKEN), 'el valor crudo no se imprime');
+
+  const github = scanRange(directory, base, 'github');
+  assert.equal(github.status, 0);
+  assert.match(
+    github.stderr, /::warning file=\.claude\/hooks\/prod\.json,line=1::/,
+    'queda anotado en el log de Actions aunque nadie mire el diff',
+  );
+});
+
+test('la marca NO se honra sobre un path de control', () => {
+  const { directory, base } = repoConBase('secret-scan-control-');
+  const control = CONTROL_PATHS[0];
+  fs.mkdirSync(path.join(directory, path.dirname(control)), { recursive: true });
+  stageFile(directory, control, `const fixture = "${SYNTHETIC_TOKEN}"; // ${IGNORE_MARKER}\n`);
+  execFileSync('git', ['commit', '-m', 'apagar el gate desde adentro'], { cwd: directory });
+
+  const resultado = scanRange(directory, base, 'github');
+  assert.equal(resultado.status, 1, 'el gate no se apaga a sí mismo');
+  assert.match(resultado.stderr, /::error file=/, 'el secreto se reporta igual');
+  assert.match(resultado.stderr, /IGNORADA en path de control/);
+});
+
+test('sin supresiones el happy path no emite un solo byte (CA-UX-4)', () => {
+  const { directory, base } = repoConBase('secret-scan-limpio-');
+  stageFile(directory, '.claude/hooks/limpio.json', '{"nivel":"info"}\n');
+  execFileSync('git', ['commit', '-m', 'cambio limpio'], { cwd: directory });
+
+  for (const format of ['text', 'github']) {
+    const resultado = scanRange(directory, base, format);
+    assert.equal(resultado.status, 0);
+    assert.equal(resultado.stdout, '', `stdout debería ser 0 bytes en ${format}`);
+    assert.equal(resultado.stderr, '', `stderr debería ser 0 bytes en ${format}`);
+  }
+});
+
+test('run expone las supresiones como dato, no sólo como texto', () => {
+  const conMarca = `linea limpia\nconst k = "${SYNTHETIC_TOKEN}"; // ${IGNORE_MARKER}`;
+  const resultado = run(
+    { allowlist: EMPTY_ALLOWLIST, format: 'text' },
+    { collectAddedHunks: () => [{ path: 'src/fixtures.js', startLine: 40, text: conMarca }] },
+  );
+  assert.equal(resultado.exitCode, 0);
+  assert.deepEqual(
+    resultado.suppressions, [{ path: 'src/fixtures.js', line: 41, honored: true }],
+    'el número de línea se reporta en numeración del archivo nuevo, no del hunk',
+  );
 });

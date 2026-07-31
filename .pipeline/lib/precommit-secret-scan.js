@@ -10,8 +10,8 @@
 // agrega el escape por línea `secret-scan:ignore`. Ver su cabecera.
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { loadAllowlist, whichAllowlistEntry } = require('./secret-allowlist');
-const { IGNORE_MARKER, createLintSanitizer, stripIgnoredLines } = require('./secret-scan-lint');
+const { isControlPath, loadAllowlist, whichAllowlistEntry } = require('./secret-allowlist');
+const { IGNORE_MARKER, createLintSanitizer, markedLines, stripIgnoredLines } = require('./secret-scan-lint');
 
 const DEFAULT_ALLOWLIST = path.join(__dirname, '..', 'secret-scan-allowlist.json');
 const DEFAULT_SANITIZER = path.join(__dirname, '..', 'sanitizer.js');
@@ -134,7 +134,11 @@ function findingFor(hunk, sanitizer = defaultLintSanitizer()) {
   }
   // #5244 rev-2 — escape por línea. Se aplica antes de sanitizar para que el
   // delta de redacciones no vea lo que el dev marcó explícitamente.
-  const scannable = stripIgnoredLines(hunk.text).text;
+  // rev-3 — sobre un path de control la marca NO se honra: el hunk se escanea
+  // entero. Las supresiones que sí se honran las anuncia `suppressionsFor`.
+  const scannable = isControlPath(hunk.path)
+    ? hunk.text
+    : stripIgnoredLines(hunk.text, { startLine: hunk.startLine }).text;
   let sanitized;
   try { sanitized = sanitizer(scannable, hunk.path); } catch (error) {
     return { path: hunk.path, line: hunk.startLine, error: error?.message || 'sanitize falló' };
@@ -153,6 +157,29 @@ function findingFor(hunk, sanitizer = defaultLintSanitizer()) {
     if (delta > 0) redactions[placeholder] = delta;
   }
   return Object.keys(redactions).length ? { path: hunk.path, line: hunk.startLine, redactions } : null;
+}
+
+// #5244 rev-3 — supresiones del hunk, con `honored` según si la marca aplica.
+// Existe para que el escape deje de ser invisible: un PR que suprime líneas y
+// uno limpio ya no son indistinguibles en el log del job bloqueante de CI.
+function suppressionsFor(hunk) {
+  const honored = !isControlPath(hunk.path);
+  return markedLines(hunk.text, hunk.startLine || 1)
+    .map((line) => ({ path: hunk.path, line, honored }));
+}
+
+function formatSuppressions(suppressions, format) {
+  // CA-UX-4: sin supresiones no se emite un solo byte.
+  if (!suppressions.length) return '';
+  const detail = ({ honored }) => (honored
+    ? `secret-scan: linea suprimida con ${IGNORE_MARKER}`
+    : `secret-scan: marca ${IGNORE_MARKER} IGNORADA en path de control; la linea se escanea igual`);
+  if (format === 'github') {
+    return `${suppressions
+      .map((s) => `::warning file=${s.path},line=${s.line}::${detail(s)}`)
+      .join('\n')}\n`;
+  }
+  return `${suppressions.map((s) => `${s.path}:${s.line} — ${detail(s)}`).join('\n')}\n`;
 }
 
 function parseArgs(argv = process.argv.slice(2)) {
@@ -204,14 +231,19 @@ function run(options, dependencies = {}) {
   const sanitizer = dependencies.sanitize || defaultLintSanitizer(options.sanitizer || DEFAULT_SANITIZER);
   const allowlist = loadAllowlist(options.allowlist, { strict: true });
   const findings = [];
+  const suppressions = [];
   for (const hunk of collect(options)) {
     if (whichAllowlistEntry(hunk.path, allowlist)) continue;
+    suppressions.push(...suppressionsFor(hunk));
     const finding = findingFor(hunk, sanitizer);
     if (finding) findings.push(finding);
   }
+  // Las supresiones NO cambian el exit code (CA-8d: un lint que frena por un
+  // escape legítimo se desactiva). Sí cambian la salida: quedan anunciadas.
+  const warnings = formatSuppressions(suppressions, options.format);
   return findings.length
-    ? { exitCode: 1, output: formatFindings(findings, options.format), findings }
-    : { exitCode: 0, output: '', findings: [] };
+    ? { exitCode: 1, output: formatFindings(findings, options.format), findings, suppressions, warnings }
+    : { exitCode: 0, output: '', findings: [], suppressions, warnings };
 }
 
 function main(argv = process.argv.slice(2)) {
@@ -221,6 +253,7 @@ function main(argv = process.argv.slice(2)) {
       return 0;
     }
     const result = run(parseArgs(argv));
+    if (result.warnings) process.stderr.write(result.warnings);
     if (result.output) process.stderr.write(result.output);
     return result.exitCode;
   } catch (error) {
@@ -233,5 +266,6 @@ if (require.main === module) process.exit(main());
 module.exports = {
   CAPABILITIES_LINE, DEFAULT_ALLOWLIST, DEFAULT_SANITIZER, IGNORE_MARKER, SCAN_PROTOCOL,
   SENSITIVE_PATTERNS, collectAddedHunks, countRedactions, defaultLintSanitizer, findingFor,
-  formatFindings, isSensitive, main, parseArgs, parseHunks, run, unquoteDiffPath,
+  formatFindings, formatSuppressions, isSensitive, main, parseArgs, parseHunks, run,
+  suppressionsFor, unquoteDiffPath,
 };

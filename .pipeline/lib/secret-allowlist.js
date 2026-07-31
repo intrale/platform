@@ -14,6 +14,15 @@ const CONTROL_PATHS = [
   '.husky/pre-commit',
 ];
 
+// #5244 rev-3 — los paths de control no admiten NINGÚN mecanismo de escape:
+// ni allowlist (ya bloqueado en `loadAllowlist`) ni la marca por línea
+// `secret-scan:ignore`. Es el mismo criterio: el gate no puede apagarse a sí
+// mismo, y sobre estos archivos no hay review humana garantizada.
+function isControlPath(filePath) {
+  const normalized = String(filePath || '').replace(/\\/g, '/');
+  return CONTROL_PATHS.includes(normalized);
+}
+
 function globToRe(glob) {
   const escaped = String(glob).replace(/[.+^${}()|[\]\\?]/g, '\\$&');
   const source = escaped.replace(/\*\*/g, SENTINEL)
@@ -55,4 +64,6 @@ function isAllowlisted(filePath, allowlist) {
   return whichAllowlistEntry(filePath, allowlist) !== null;
 }
 
-module.exports = { CONTROL_PATHS, globToRe, loadAllowlist, isAllowlisted, whichAllowlistEntry };
+module.exports = {
+  CONTROL_PATHS, globToRe, isAllowlisted, isControlPath, loadAllowlist, whichAllowlistEntry,
+};

@@ -10,8 +10,9 @@ const path = require('node:path');
 
 const sanitizerModule = require('../sanitizer.js');
 const {
-  CONFIG_ONLY, IGNORE_MARKER, LINT_ALWAYS, createLintSanitizer, isConfigPath,
-  looksLikeSecret, selectPatterns, shannonEntropy, stripIgnoredLines,
+  CONFIG_ONLY, IGNORE_MARKER, LINT_ALWAYS, LITERAL_GUARD, SOURCE_GUARD,
+  createLintSanitizer, isConfigPath, looksLikeSecret, selectPatterns,
+  shannonEntropy, stripIgnoredLines,
 } = require('../lib/secret-scan-lint');
 const { findingFor, run } = require('../lib/precommit-secret-scan');
 
@@ -137,12 +138,20 @@ test('todo patrón de sanitizer.js está clasificado explícitamente', () => {
   );
 });
 
-test('selectPatterns filtra los genéricos fuera de los archivos de config', () => {
-  const enCodigo = selectPatterns(sanitizerModule.__forTestsOnly__.PATTERNS, 'a.js').map((p) => p.name);
-  const enConfig = selectPatterns(sanitizerModule.__forTestsOnly__.PATTERNS, 'a.json').map((p) => p.name);
-  assert.equal(enCodigo.includes('CONF_STRUCTURED'), false);
-  assert.equal(enConfig.includes('CONF_STRUCTURED'), true);
-  assert.equal(enCodigo.includes('AWS_ACCESS_KEY'), true, 'los específicos corren en todos lados');
+test('selectPatterns corre los genéricos con guarda fuera de los archivos de config', () => {
+  const enCodigo = selectPatterns(sanitizerModule.__forTestsOnly__.PATTERNS, 'a.js');
+  const enConfig = selectPatterns(sanitizerModule.__forTestsOnly__.PATTERNS, 'a.json');
+  const nombres = (lista) => lista.map((p) => p.name);
+  // #5244 rev-3 — fuera de config CONF_STRUCTURED ya no se APAGA: corre guardado.
+  const guardado = enCodigo.find((p) => p.name === 'CONF_STRUCTURED');
+  assert.ok(guardado, 'CONF_STRUCTURED debe correr también sobre código fuente');
+  assert.equal(guardado.guarded, true, 'sobre código fuente corre con guarda');
+  assert.equal(
+    enConfig.find((p) => p.name === 'CONF_STRUCTURED').guarded, undefined,
+    'en config corre crudo',
+  );
+  assert.equal(nombres(enCodigo).includes('HEADER_AUTHORIZATION'), false, 'sin guarda posible: sólo config');
+  assert.equal(nombres(enCodigo).includes('AWS_ACCESS_KEY'), true, 'los específicos corren en todos lados');
 });
 
 test('isConfigPath reconoce config y descarta código y docs', () => {
@@ -196,4 +205,49 @@ test('run end-to-end usa el modo lint y no bloquea por ruido benigno', () => {
   assert.equal(bloqueado.exitCode, 1);
   assert.match(bloqueado.output, new RegExp(IGNORE_MARKER), 'el mensaje ofrece el escape por línea');
   assert.doesNotMatch(bloqueado.output, new RegExp(GITHUB_TOKEN), 'el valor crudo no se imprime');
+});
+
+// ── #5244 rev-3 · credenciales hardcodeadas en CÓDIGO FUENTE ────────────────
+//
+// rev-2 apagó CONF_STRUCTURED / HEADER_* fuera de config y abrió un hueco: la
+// EXTENSIÓN del archivo decidía el veredicto, no el contenido (en tensión con
+// CA-8a). Además el charset de HARDCODED_SECRET era `[A-Za-z0-9+/=_.-]`, o sea
+// castigaba a la contraseña más fuerte: con `#`, `$` o `!` dejaba de matchear.
+
+const PASS_DEBIL = ['Intr4le', 'Prod2026'].join('');          // 15 chars, sin símbolos
+const PASS_FUERTE = ['Intr4le#', 'Prod2026$', 'Largo!'].join(''); // con símbolos
+const OPACO_CORTO = ['9fKq2Lm7Xp0R', 't5Ve2Bn6Cw4Jh8Ds'].join('');
+
+test('una credencial hardcodeada bloquea en código fuente, no sólo en config', () => {
+  for (const valor of [PASS_DEBIL, PASS_FUERTE]) {
+    for (const archivo of ['src/Auth.kt', 'src/auth.js', 'src/auth.py', 'conf.json']) {
+      assert.equal(
+        bloquea(`val dbPassword = "${valor}"`, archivo), true,
+        `${archivo} debería bloquear "${valor.slice(0, 4)}…" — el veredicto no puede depender de la extensión`,
+      );
+    }
+  }
+});
+
+test('los símbolos de una contraseña fuerte no la vuelven invisible', () => {
+  assert.equal(bloquea(`val p = "${PASS_FUERTE}"`, 'src/Auth.kt'), false, 'sin nombre de clave no hay señal');
+  assert.equal(bloquea(`val clientSecret = "${PASS_FUERTE}"`, 'src/Auth.kt'), true);
+  assert.equal(bloquea(`val accessToken = "${PASS_FUERTE}"`, 'src/Auth.kt'), true);
+});
+
+test('los headers sensibles embebidos en código fuente bloquean', () => {
+  assert.equal(bloquea(`val h = "x-api-key: ${OPACO_CORTO}"`, 'src/Api.kt'), true);
+  assert.equal(bloquea(`req.headers.cookie = "session=${OPACO_CORTO}"`, 'src/s.js'), true);
+});
+
+test('el piso de SOURCE_GUARD es 16 y está atado a un falso positivo medido', () => {
+  // `const token = String(errors[0]).trim()...` hace que CONF_STRUCTURED capture
+  // `String(errors[0`: 15 chars, entropía 3,37. Bajar el umbral lo revive.
+  const CAPTURADO = 'String(errors[0';
+  assert.equal(CAPTURADO.length, 15);
+  assert.equal(looksLikeSecret(CAPTURADO, { minLength: 15 }), true, 'con 15 el ruido vuelve');
+  assert.equal(looksLikeSecret(CAPTURADO, SOURCE_GUARD), false, 'con 16 queda afuera');
+  assert.equal(SOURCE_GUARD.minLength, 16);
+  // El literal entrecomillado es más específico: puede bajar sin ese riesgo.
+  assert.ok(LITERAL_GUARD.minLength < SOURCE_GUARD.minLength);
 });
