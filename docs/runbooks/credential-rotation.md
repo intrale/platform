@@ -176,6 +176,34 @@ hidratadas) y `skipped_*` (las que ya estaban en env o tenían placeholder).
 3. Revocá la vieja key desde la consola de NVIDIA.
 4. `node .pipeline/restart.js` (no impacta a nada hasta que se implemente #3243).
 
+## Moonshot Kimi (fallback multi-provider)
+
+> _Provider **activo y cableado**: `kimi-moonshot` es el último eslabón de las
+> cadenas de fallback de `review` y `po` en `agent-models.json`. Autentica por
+> `auth_mode: api_key` contra el endpoint Anthropic-compat, así que su token es
+> **fail-fast**: si la cadena degrada hasta Kimi y `ANTHROPIC_AUTH_TOKEN` no
+> está en el env del Pulpo, el child **no arranca** (`build-child-env` corta el
+> spawn). Ojo: es una var distinta de `ANTHROPIC_API_KEY` (la OAuth/Max real);
+> no las mezcles._
+
+1. Abrí <https://platform.moonshot.ai/console/api-keys> y creá una key nueva
+   nombrada `intrale-pipeline-YYYYMMDD`.
+2. Editá `~/.claude/secrets/credentials.json`:
+   ```json
+   { "providers": { "moonshot": { "api_key": "<nueva-key>" } } }
+   ```
+3. Revocá la vieja key desde la consola de Moonshot.
+4. `node .pipeline/restart.js`.
+
+### Cómo verificar que rotaste bien (Moonshot Kimi)
+
+- La clave está **ausente** del store mientras no la aprovisiones, y el health
+  check la reporta como faltante: es un provider requerido, no opcional. No la
+  declares como "no reponer" para silenciar el rojo — el rojo es correcto y
+  significa que `review` y `po` se quedan sin último fallback.
+- `node -e "console.log(!!require('os') && !!(JSON.parse(require('fs').readFileSync(require('path').join(require('os').homedir(),'.claude','secrets','credentials.json'),'utf8')).providers||{}).moonshot)"`
+  debe imprimir `true` después de rotar.
+
 ## GitHub (token de gh CLI / `GH_TOKEN`)
 
 > _Aplica si rotás `GH_TOKEN` o `GITHUB_TOKEN` usadas por skills LLM para

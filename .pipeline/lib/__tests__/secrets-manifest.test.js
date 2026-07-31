@@ -264,6 +264,7 @@ test('el conjunto nominal de consumer_status=resolved esta anclado', () => {
     'providers.openai.api_key',
     'providers.cerebras.api_key',
     'providers.nvidia.api_key',
+    'providers.moonshot.api_key',
     'google_drive.drive_folder_id',
   ]);
   // `resolved` implica `required_when` distinto de never: una clave que nadie
@@ -284,7 +285,7 @@ test('toda clave providers.* resolved esta declarada en credentials_env de agent
 
   const resueltasDeProviders = manifest.entries
     .filter((entry) => entry.service === 'providers' && entry.consumer_status === 'resolved');
-  assert.equal(resueltasDeProviders.length, 3);
+  assert.equal(resueltasDeProviders.length, 4);
   for (const entry of resueltasDeProviders) {
     assert.ok(declaradas.has(entry.env_var),
       `${entry.name}: ${entry.env_var} no figura en ningun credentials_env`);
@@ -300,6 +301,59 @@ test('toda clave providers.* resolved esta declarada en credentials_env de agent
     .filter((entry) => !declaradas.has(entry.env_var))
     .map((entry) => entry.name);
   assert.deepEqual(rotas, ['providers.google.api_key']);
+});
+
+test('ningun provider fail-fast puede declararse no_consumer/never en el manifiesto', () => {
+  // Candado INVERSO del anterior. El directo (resolved subconjunto de
+  // credentials_env) es unidireccional: impide INVENTAR un consumidor, pero no
+  // impide OCULTAR uno real. Por ese hueco paso `providers.moonshot.api_key`
+  // declarada never/no_consumer con 20 tests verdes, siendo el ultimo eslabon
+  // vivo de las cadenas de fallback de `review` y `po`. `build-child-env` trata
+  // a todo provider con auth_mode != 'oauth' por el camino api_key: EXIGE su
+  // credentials_env y hace throw si falta, o sea que el consumidor existe y es
+  // fail-fast. Declararlo "no reponer" deja al health-check del TRAMO 2 (#5243)
+  // reportando verde sobre una cadena que no puede lanzar.
+  const models = JSON.parse(fs.readFileSync(path.join(ROOT, '.pipeline', 'agent-models.json'), 'utf8'));
+
+  // Espejo exacto de la condicion de build-child-env: la AUSENCIA de auth_mode
+  // cae al camino api_key (default-safe), no al de oauth.
+  const exigenKey = Object.entries(models.providers || {})
+    .filter(([, provider]) => provider.auth_mode !== 'oauth')
+    .flatMap(([nombre, provider]) => {
+      const declarada = provider.credentials_env;
+      const vars = Array.isArray(declarada) ? declarada : (declarada ? [declarada] : []);
+      return vars.map((envVar) => [nombre, envVar]);
+    });
+  // Ancla del universo cubierto: sin esto el filtro puede quedar vacio y el
+  // candado pasar por vacuidad.
+  assert.deepEqual(exigenKey, [
+    ['cerebras', 'CEREBRAS_API_KEY'],
+    ['nvidia-nim', 'NVIDIA_NIM_API_KEY'],
+    ['kimi-moonshot', 'ANTHROPIC_AUTH_TOKEN'],
+  ]);
+
+  const ocultaConsumidor = (entries) => {
+    const porEnvVar = new Map(entries.map((entry) => [entry.env_var, entry]));
+    return exigenKey.filter(([, envVar]) => {
+      const entry = porEnvVar.get(envVar);
+      return !entry
+        || entry.consumer_status === 'no_consumer'
+        || entry.required_when === 'never';
+    }).map(([nombre]) => nombre);
+  };
+
+  assert.deepEqual(ocultaConsumidor(manifest.entries), [],
+    'provider fail-fast declarado sin consumidor / no reponible en el manifiesto');
+
+  // Control negativo: volver moonshot a lo que publico la pasada rechazada
+  // tiene que romper este candado. Sin esto, el candado no prueba nada.
+  const revertida = structuredClone(manifest);
+  const moonshot = revertida.entries.find((entry) => entry.name === 'providers.moonshot.api_key');
+  assert.equal(moonshot.consumer_status, 'resolved');
+  assert.equal(moonshot.required_when, 'service_active');
+  moonshot.consumer_status = 'no_consumer';
+  moonshot.required_when = 'never';
+  assert.deepEqual(ocultaConsumidor(revertida.entries), ['kimi-moonshot']);
 });
 
 test('regresion nominal de las cuatro claves google_drive', () => {
