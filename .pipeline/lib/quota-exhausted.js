@@ -1193,6 +1193,38 @@ function loadQuotaDetectorConfig() {
 }
 
 /**
+ * #5172 (rebote rev-1) — Deja traza de que el TTL cayó al default porque la
+ * configuración no se pudo leer. Nunca lanza (corre dentro del camino de
+ * escritura del flag) y nunca reexpone el `.message` crudo de js-yaml (SEC-1):
+ * de una violación de config sólo se emiten `causa`, `linea` y `columna`, que
+ * son metadata segura y accionable.
+ */
+function logMaxDaysDegradation(provider, err) {
+    try {
+        let detalle;
+        let esViolacion = false;
+        try {
+            esViolacion = require('./config-resolver').isConfigViolation(err);
+        } catch { /* resolver no cargable: se trata como no-violación */ }
+        if (esViolacion) {
+            detalle = `config inválida (causa=${(err && err.causa) || 'desconocida'}`
+                + `${err && err.linea != null ? `, linea=${err.linea}` : ''}`
+                + `${err && err.columna != null ? `, columna=${err.columna}` : ''})`;
+        } else if (err && err.code === 'MODULE_NOT_FOUND') {
+            detalle = 'config-resolver no cargable (worktree sin node_modules)';
+        } else {
+            detalle = `error inesperado (${(err && err.name) || 'Error'})`;
+        }
+        process.stderr.write(
+            `[quota-exhausted] DEGRADACION TTL: no se pudo resolver el cap de días para `
+            + `provider=${provider} — ${detalle}. Se usa el default conservador de `
+            + `${DEFAULT_MAX_RESETS_AT_DAYS}d y el flag de cuota SE PERSISTE igual `
+            + `(perderlo dejaría al pipeline despachando contra un proveedor agotado).\n`
+        );
+    } catch { /* fail-soft: si no podemos loguear, seguimos */ }
+}
+
+/**
  * #4731 — Resuelve el cap de días (`maxDays`) para un proveedor. Prioridad:
  *   1. `opts.maxDays` explícito del caller (contrato #3077 preservado).
  *   2. `config.quota_detector.ttl_by_provider.<provider>`.
@@ -1205,7 +1237,30 @@ function resolveMaxDays(provider, opts = {}) {
     if (Number.isFinite(opts.maxDays) && opts.maxDays > 0) {
         return Math.min(MAX_TTL_DAYS, Math.max(MIN_TTL_DAYS, opts.maxDays));
     }
-    const cfg = loadQuotaDetectorConfig();
+    // #5172 (rebote rev-1) — INVERSIÓN DEL FAIL-CLOSED EN ESTE PUNTO.
+    //
+    // `resolveMaxDays` se invoca DENTRO de `setFlag`, es decir en el camino de
+    // ESCRITURA del flag de cuota agotada. Propagar acá el error tipado del
+    // resolver NO es fail-closed: es fail-OPEN. El único call-site de producción
+    // (`lib/agent-launcher/dispatch-with-fallback.js`) envuelve `setFlag` en un
+    // catch best-effort, así que un config corrupto hacía que el flag NUNCA se
+    // persistiera y el pipeline siguiera despachando contra un proveedor en 429.
+    //
+    // Lo que se resuelve acá es SÓLO un cap de TTL cuyo default
+    // (`DEFAULT_MAX_RESETS_AT_DAYS`, clampeado a [MIN_TTL_DAYS, MAX_TTL_DAYS])
+    // es seguro por construcción. La acción conservadora ante config ilegible es
+    // PERSISTIR el flag con el TTL default — no perder la señal de cuota.
+    //
+    // La degradación NO es silenciosa: queda traza explícita. El fail-closed
+    // ruidoso del resolver sigue vigente en los lectores cuyo camino NO es una
+    // escritura de seguridad (pulpo, dashboard, project-bootstrap).
+    let cfg;
+    try {
+        cfg = loadQuotaDetectorConfig();
+    } catch (e) {
+        logMaxDaysDegradation(provider, e);
+        return Math.min(MAX_TTL_DAYS, Math.max(MIN_TTL_DAYS, DEFAULT_MAX_RESETS_AT_DAYS));
+    }
     let days = DEFAULT_MAX_RESETS_AT_DAYS;
     const perProvider = cfg && cfg.ttl_by_provider;
     if (perProvider && typeof perProvider === 'object'

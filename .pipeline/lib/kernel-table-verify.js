@@ -53,8 +53,6 @@
 //     región y nombre de recurso: sin eso la evidencia no probaría nada.
 // =============================================================================
 
-const path = require('path');
-
 const { SECRET_VALUE_PATTERNS, REDACTION_MARKER } = require('./redact');
 
 // -----------------------------------------------------------------------------
@@ -183,7 +181,8 @@ function classifyDeny(text) {
 // Config (fail-closed, sin hardcode · A05)
 // -----------------------------------------------------------------------------
 
-const DEFAULT_CONFIG_PATH = path.join(__dirname, '..', 'config.yaml');
+// #5172 — Ya no hace falta un `DEFAULT_CONFIG_PATH` propio: la resolución de la
+// ruta (y su precedencia) es responsabilidad del punto único, `config-resolver`.
 
 /**
  * Lee y valida la sección `kernel:` de config.yaml.
@@ -196,12 +195,17 @@ const DEFAULT_CONFIG_PATH = path.join(__dirname, '..', 'config.yaml');
 function readKernelTablesConfig(opts = {}) {
     let kernel = opts.kernelConfig;
     if (!kernel) {
+        // #5172 — La lectura pasa por el punto ÚNICO (`lib/config-resolver`), que
+        // parsea, valida contra el schema y lanza errores tipados ya redactados.
+        // Este módulo llegó desde #5276 con su propio `yaml.load` (el lector Nº29)
+        // mientras #5172 estaba en vuelo; el guard CA-2 lo detectó. Migrarlo
+        // preserva su fail-closed: un config ilegible ya no se hace pasar por
+        // "sección kernel: ausente" (que acá degrada a "faltan claves").
         // eslint-disable-next-line global-require
-        const yaml = require('js-yaml');
-        // eslint-disable-next-line global-require
-        const fs = require('fs');
-        const resolved = opts.configPath || DEFAULT_CONFIG_PATH;
-        const doc = yaml.load(fs.readFileSync(resolved, 'utf8')) || {};
+        const configResolver = require('./config-resolver');
+        const doc = configResolver.resolve(
+            opts.configPath ? { configPath: opts.configPath } : {},
+        ) || {};
         kernel = (doc && typeof doc.kernel === 'object' && doc.kernel) || {};
     }
 

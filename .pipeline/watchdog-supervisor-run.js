@@ -83,24 +83,55 @@ function loadWatchdogConfig() {
     // #5172 / D-4: sección `watchdog:` ausente NO es corrupción; default seguro.
     log('config.yaml sin sección `watchdog:` — se usan los defaults del supervisor');
   } catch (err) {
+    // #5172 (rebote rev-1) — La discriminación es por `isConfigViolation(err)`,
+    // NO por `err.code === 'MODULE_NOT_FOUND'` vs "todo lo demás": sólo el error
+    // tipado del resolver identifica corrupción de config.
+    if (isConfigViolation(err)) {
+      // FAIL-CLOSED: config corrupta ⇒ NO se relanza la tarea principal con
+      // umbrales degradados. Relanzar es la acción DESTRUCTIVA de este runner
+      // (restart-storms, SEC-3) y es la única que muta estado en disco. Se
+      // propaga un sentinel; el caller emite ACTION:skip y alerta al operador,
+      // de modo que la caída no queda muda ni se auto-remedia a ciegas.
+      // SEC-1: el error tipado ya viene redactado ({archivo, causa, linea,
+      // columna}); NUNCA se loguea el `.message` crudo de js-yaml.
+      log(
+        `FAIL-CLOSED: config.yaml ilegible o inválido (causa=${(err && err.causa) || 'desconocida'}` +
+          `${err && err.linea != null ? `, linea=${err.linea}` : ''}` +
+          `${err && err.columna != null ? `, columna=${err.columna}` : ''}) — ` +
+          'NO se aplican los defaults del supervisor y NO se relanza la tarea principal'
+      );
+      return { __configViolation: true };
+    }
     if (err && err.code === 'MODULE_NOT_FOUND') {
-      // G-3: worktree sin node_modules. Degradación EXPLÍCITA, no silenciosa.
+      // G-3: worktree sin node_modules. FAIL-SOFT a defaults: el módulo lector
+      // no está, pero no hay evidencia de que la config difiera del default.
+      // Degradación EXPLÍCITA, no silenciosa.
       log(
         'DEGRADACION: config-resolver no cargable (worktree sin node_modules o módulo ausente) — ' +
           'se usan los defaults del supervisor; los umbrales de config.yaml NO se aplicaron'
       );
     } else {
-      // SEC-1: el error tipado ya viene redactado ({archivo, causa, linea,
-      // columna}); NUNCA se loguea el `.message` crudo de js-yaml.
       log(
-        `DEGRADACION: config.yaml ilegible o inválido (causa=${(err && err.causa) || 'desconocida'}` +
-          `${err && err.linea != null ? `, linea=${err.linea}` : ''}` +
-          `${err && err.columna != null ? `, columna=${err.columna}` : ''}) — ` +
+        `DEGRADACION: error inesperado leyendo la configuración (${(err && err.name) || 'Error'}) — ` +
           'se usan los defaults del supervisor'
       );
     }
   }
   return {};
+}
+
+/**
+ * #5172 (rebote rev-1) — `isConfigViolation` vive en `config-resolver`, que
+ * puede no ser cargable (G-3: worktree sin node_modules). Si no carga, ningún
+ * error puede ser una violación tipada de config ⇒ `false`. Nunca lanza.
+ */
+function isConfigViolation(err) {
+  try {
+    // eslint-disable-next-line global-require
+    return require('./lib/config-resolver').isConfigViolation(err);
+  } catch (_) {
+    return false;
+  }
 }
 
 function envFlag(name) {
@@ -151,6 +182,25 @@ function downtimeText(ageMs) {
 
 function main() {
   const cfg = loadWatchdogConfig();
+
+  // #5172 (rebote rev-1) — FAIL-CLOSED por config corrupta: se corta ANTES de
+  // decidir, así no se relanza ni se muta el estado con umbrales degradados.
+  // No queda mudo: se alerta al operador para que la caída se atienda a mano.
+  if (cfg.__configViolation) {
+    log(
+      'ACTION:skip por FAIL-CLOSED de configuración — no se relanza la tarea principal ' +
+        'con umbrales degradados; se requiere intervención manual sobre config.yaml'
+    );
+    notify(
+      'error',
+      'config.yaml ilegible o inválido: el supervisor del watchdog NO puede decidir con confianza',
+      'Corregir config.yaml — el relanzamiento automático está suspendido hasta entonces',
+      { fail_closed: 'no se relanza la tarea principal' }
+    );
+    process.stdout.write('ACTION:skip\n');
+    return;
+  }
+
   const staleMinutes = supervisor.parseStaleMinutes(
     process.env.WATCHDOG_STALE_MINUTES,
     supervisor.parseStaleMinutes(cfg.stale_minutes, supervisor.DEFAULT_STALE_MINUTES)
