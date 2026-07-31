@@ -1318,6 +1318,13 @@ function haltOnConfigCorruption(reason, redactedDetail, err) {
   }
 }
 
+// #5172 — «¿este error lo tiró el resolver de configuración?». El predicado es
+// del resolver (dueño de los dos errores tipados); acá sólo se le pone alias en
+// castellano para leer los puntos de decisión de este archivo. NO se
+// reimplementa: una segunda copia de la lista de names se desactualiza en
+// silencio y rompe el fail-closed justo cuando tiene que actuar.
+const esViolacionDeConfig = configResolver.isConfigViolation;
+
 // #5172 — `loadConfig()` delega la LECTURA y la VALIDACIÓN en el punto único
 // (`lib/config-resolver`), y conserva acá la POLÍTICA, que es propia del pulpo y
 // de nadie más (D-3 / SEC-2): `haltOnConfigCorruption` + `lastGoodConfig` +
@@ -16147,23 +16154,57 @@ function realignAllowlistToActiveWave(desync, opts = {}) {
   // #4577 GATE 3 — INVARIANTE log-antes-de-mutar (RS-2): registrar el realign
   // de la allowlist a la ola activa ANTES de delegar la mutación (incidente
   // #4566, cambio de cohorte de la ola). Best-effort: el audit nunca bloquea el
-  // realign. La politica wait-confirmation se evalua aca mismo antes de mutar.
+  // realign.
   try {
     require('./lib/kernel-actions-audit').safeAppendAction({
       action: 'realign-allowlist', impact: 'alto',
       reason: `realignAllowlistToActiveWave: converger allowlist ← ola activa (desync=${desync && desync.classification ? desync.classification : 'n/a'})`,
       authorizedBy: 'wave-promote',
     });
-    const gate3 = require('./lib/kernel-action-policy').enforceActionPolicy('realign-allowlist', {
+  } catch { /* best-effort: el audit nunca bloquea el realign */ }
+
+  // #5172 — La política wait-confirmation se evalúa ACÁ, antes de mutar, y en su
+  // PROPIO try/catch — separado del audit.
+  //
+  // Acá había un único `catch {}` MUDO que envolvía audit + gate. Mientras
+  // `enforceActionPolicy` se comía sus errores de config puertas adentro
+  // (`catch { return {} }` → DEFAULT_POLICY) el catch mudo no se notaba; desde
+  // que el gate PROPAGA el error tipado del resolver, ese catch se lo tragaba y
+  // el flujo seguía derecho hasta `realignActiveWaveDispatch`: con config.yaml
+  // corrupto GATE 3 quedaba BYPASSEADO y la allowlist se mutaba igual. Es
+  // exactamente la clase de fallo silencioso que #5172 existe para eliminar.
+  //
+  // Ahora: SIN política legible NO se muta. Fail-closed ≠ crash (D-3) — se
+  // devuelve veredicto negativo, el pulpo sigue vivo, y cuando el operador
+  // corrige el archivo el auto-recovery de #4832 reanuda solo.
+  let gate3;
+  try {
+    gate3 = require('./lib/kernel-action-policy').enforceActionPolicy('realign-allowlist', {
       impact: 'alto',
       reason: `realignAllowlistToActiveWave: converger allowlist a ola activa (desync=${desync && desync.classification ? desync.classification : 'n/a'})`,
       confirmerChatId: opts.confirmerChatId,
       operatorAllowlist: opts.operatorAllowlist,
     });
-    if (!gate3.proceed) {
-      return { ok: false, reason: 'gate3_confirmation_required', policy: gate3 };
+  } catch (e) {
+    if (esViolacionDeConfig(e)) {
+      // Copy por el generador ÚNICO (CA-UX-6): archivo + causa + acción, ya
+      // redactados. Nunca el contenido crudo del config (SEC-1).
+      const copia = configSchema.describeConfigFailure(e, { archivo: e.archivo || CONFIG_PATH });
+      log('pulpo', configSchema.formatConfigFailureLog(copia, {
+        titulo: 'GATE 3 realign-allowlist no enforzable — realign ABORTADO (allowlist sin mutar)',
+      }));
+      return { ok: false, reason: 'gate3_config_unreadable', config_error: copia };
     }
-  } catch {}
+    // Error ajeno al config: `enforceActionPolicy` ya es defensivo puertas
+    // adentro (notify/append tienen su propio catch), así que esto sólo puede
+    // ser un bug. Se preserva la tolerancia previa hacia disponibilidad (RS-5),
+    // pero deja de ser MUDO: queda traza de que el gate no rindió veredicto.
+    log('pulpo', `GATE 3 realign-allowlist: error inesperado al enforzar política (${(e && e.name) || 'Error'}) — se continúa por disponibilidad`);
+    gate3 = null;
+  }
+  if (gate3 && !gate3.proceed) {
+    return { ok: false, reason: 'gate3_confirmation_required', policy: gate3 };
+  }
   // #4436 — el algoritmo de realineación se extrajo a `lib/wave-dispatch.js`
   // para reusarlo desde el dashboard (relanzar despacho de la ola activa) sin
   // duplicar lógica. El Pulpo delega manteniendo su `authorizedBy:'wave-promote'`
@@ -16223,7 +16264,16 @@ function autoResolveReductiveDesyncByClosure(probe, opts = {}) {
       classification: 'reductivo-por-cierre',
       issues: issuesCtx,
     });
-  } catch { /* best-effort: fail-open hacia disponibilidad para esta acción segura */ }
+  } catch (e) {
+    // #5172 — dejó de ser mudo. A diferencia de `realign-allowlist`, acá NO hay
+    // gate que bypassear: `desync-autoresolve` es notify-and-proceed y el
+    // default explícito (`policy = { proceed: true }`, l.16259) ya declara el
+    // fail-open hacia disponibilidad para esta acción segura. El control de
+    // flujo se preserva tal cual; lo único que cambia es que la pérdida del
+    // aviso al operador deja traza en vez de desaparecer.
+    require('./lib/kernel-action-policy').logPolicyEnforcementFailure(
+      'pulpo', 'desync-autoresolve', e);
+  }
   if (policy && policy.proceed === false) {
     return { ok: false, reason: 'policy_block' };
   }

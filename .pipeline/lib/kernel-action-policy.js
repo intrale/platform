@@ -144,6 +144,54 @@ function extractGate3(doc) {
     return gate3;
 }
 
+// -----------------------------------------------------------------------------
+// #5172 — Traza para los llamadores que NO gatean con el veredicto.
+// -----------------------------------------------------------------------------
+//
+// `enforceActionPolicy` tiene dos clases de llamador:
+//
+//   a) los que GATEAN: leen `.proceed` y frenan la mutación si es `false`.
+//      Hoy sólo `pulpo.realignAllowlistToActiveWave` (`realign-allowlist`,
+//      `wait-confirmation`). Ese camino falla CERRADO por su cuenta.
+//   b) los que sólo NOTIFICAN: descartan el retorno porque su acción es
+//      `notify-and-proceed` — no hay veredicto que respetar
+//      (`desync-autoresolve`, `quota-flag-*`, `worktree-reset`,
+//      `block-autoresolve`).
+//
+// Los de (b) envolvían la llamada en un `catch {}` MUDO. Mientras el gate se
+// comía sus errores de config puertas adentro no se notaba; desde que PROPAGA
+// el error tipado del resolver, ese catch se traga también la pérdida de la
+// notificación al operador. No es un bypass de gate — en (b) no hay gate — pero
+// sí es silencio, que es lo que #5172 existe para eliminar.
+//
+// Este helper NO cambia el control de flujo de (b): sólo deja traza. Cambiarlo
+// a fail-closed frenaría acciones que el operador declaró `notify-and-proceed`,
+// que es una decisión de producto distinta y no la que esta historia cierra.
+//
+// @param {string} modulo   — quién llamaba (para grepear el log).
+// @param {string} action   — acción de `KERNEL_ACTIONS` que no rindió veredicto.
+// @param {*} err           — el error atrapado.
+// @returns {void} nunca lanza: es traza, y una traza que rompe es peor que la
+//                 ausencia de traza.
+function logPolicyEnforcementFailure(modulo, action, err) {
+    try {
+        // eslint-disable-next-line global-require
+        const { isConfigViolation } = require('./config-resolver');
+        if (isConfigViolation(err)) {
+            // eslint-disable-next-line global-require
+            const configSchema = require('./config-schema');
+            const estado = configSchema.describeConfigFailure(err);
+            console.warn(`[${modulo}] GATE 3 '${action}' sin veredicto — `
+                + configSchema.formatConfigFailureLog(estado, {
+                    titulo: 'CONFIG INVÁLIDA (acción notify-and-proceed: se continúa)',
+                }));
+            return;
+        }
+        const nombre = (err && err.name) || 'Error';
+        console.warn(`[${modulo}] GATE 3 '${action}' sin veredicto — error inesperado (${nombre}); se continúa`);
+    } catch { /* la traza nunca rompe al llamador */ }
+}
+
 /**
  * Resuelve la política de una acción: `notify-and-proceed` | `wait-confirmation`.
  *
@@ -549,6 +597,8 @@ function enforceActionPolicy(action, opts = {}) {
 
 module.exports = {
     enforceActionPolicy,
+    // #5172 — traza para llamadores que no gatean con el veredicto.
+    logPolicyEnforcementFailure,
     notifyOperator,
     // #4753 — UX del copy + dedupe (expuestos para tests).
     buildOperatorMessage,

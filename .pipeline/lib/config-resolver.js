@@ -351,6 +351,30 @@ function copyOf(doc) {
     try { return structuredClone(doc); } catch { return JSON.parse(JSON.stringify(doc)); }
 }
 
+// -----------------------------------------------------------------------------
+// Predicado ÚNICO de «este error lo tiró el resolver de configuración».
+// -----------------------------------------------------------------------------
+//
+// Vive acá, junto a los dos errores que reconoce, porque hay más de un llamador
+// que necesita distinguir *"no pude leer la configuración"* (fail-closed) de
+// *"cualquier otro error"* — y cada copia local del predicado es una copia que
+// se puede desactualizar en silencio.
+//
+// Los dos `name` son contrato cerrado (D-G): `lib/error-classifier` clasifica la
+// corrupción de config por esta MISMA lista de names. Agregar un error tipado
+// nuevo obliga a tocar los dos lugares.
+//
+// Se compara por `name` y no con `instanceof` a propósito: el error cruza
+// fronteras de `require` (los call-sites lo reciben propagado desde módulos que
+// cargan el resolver por su cuenta) y un doble registro en la caché de módulos
+// haría fallar `instanceof` justo en el camino que tiene que fallar cerrado.
+//
+// @param {*} e
+// @returns {boolean}
+function isConfigViolation(e) {
+    return !!e && (e.name === 'ConfigParseViolation' || e.name === 'ConfigSchemaViolation');
+}
+
 /**
  * Lee, valida y resuelve la configuración del pipeline.
  *
@@ -464,6 +488,7 @@ module.exports = {
     getTraces,
     applyOverridesOnly,
     formatOverrideAlert,
+    isConfigViolation,
     ENV_OVERRIDES,
     ConfigParseViolation,
     ConfigSchemaViolation,

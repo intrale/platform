@@ -767,7 +767,13 @@ function clearFlag(opts = {}) {
                 impact: 'alto',
                 reason: `clearFlag event=${opts.event || 'cleared'} provider=${callerProvider || 'any'} reason=${opts.reason || 'manual_or_post_success'}`,
             });
-        } catch {}
+        } catch (e) {
+            // #5172 — dejó de ser mudo. `quota-flag-clear` es notify-and-proceed
+            // y el veredicto no se lee: el clear del flag sigue igual. Sólo se
+            // hace visible que el aviso al operador no salió.
+            require('./kernel-action-policy').logPolicyEnforcementFailure(
+                'quota-exhausted', 'quota-flag-clear', e);
+        }
     };
     const auditCleared = (provider, model) => {
         if (!auditEnabled) return;
@@ -1053,7 +1059,13 @@ function setFlag(opts = {}) {
             impact: 'alto',
             reason: `setFlag provider=${provider} error_type=${errorType} agent=${opts.agent || 'unknown'}`,
         });
-    } catch {}
+    } catch (e) {
+        // #5172 — dejó de ser mudo. `quota-flag-set` es notify-and-proceed y el
+        // veredicto no se lee: el set del flag sigue igual. Sólo se hace visible
+        // que el aviso al operador no salió.
+        require('./kernel-action-policy').logPolicyEnforcementFailure(
+            'quota-exhausted', 'quota-flag-set', e);
+    }
     // #4731 — Read-modify-write del mapa por-proveedor: NO pisa slots de otros
     // proveedores agotados (habilita coexistencia CA-3). Bajo concurrencia exacta
     // aplica last-writer-wins sobre el mapa (documentado, atomicidad garantizada
