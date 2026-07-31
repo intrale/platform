@@ -773,13 +773,25 @@ function getGoogleAccessToken(credentials) {
     return Promise.reject(new Error("No credentials available (neither Service Account nor OAuth)"));
 }
 
+const DRIVE_ROOT_FOLDER_ID = "root";
+
+// Google Drive acepta el alias estable "root" para representar la raiz del
+// usuario. Nunca serializar un parent vacio: produce requests invalidos.
+function resolveDriveParentId(parentId) {
+    if (typeof parentId !== "string" || !parentId.trim()) {
+        return DRIVE_ROOT_FOLDER_ID;
+    }
+    return parentId.trim();
+}
+
 // Listar carpetas hijas con un nombre dado dentro de un padre
 function driveListFolder(accessToken, name, parentId) {
     return new Promise((resolve, reject) => {
+        const resolvedParentId = resolveDriveParentId(parentId);
         const q = encodeURIComponent(
             "mimeType='application/vnd.google-apps.folder'" +
             " and name='" + name.replace(/'/g, "\\'") + "'" +
-            " and '" + parentId + "' in parents" +
+            " and '" + resolvedParentId + "' in parents" +
             " and trashed=false"
         );
         const req = https.request({
@@ -807,10 +819,11 @@ function driveListFolder(accessToken, name, parentId) {
 // Crear carpeta en Drive
 function driveCreateFolder(accessToken, name, parentId) {
     return new Promise((resolve, reject) => {
+        const resolvedParentId = resolveDriveParentId(parentId);
         const metadata = JSON.stringify({
             name: name,
             mimeType: "application/vnd.google-apps.folder",
-            parents: [parentId],
+            parents: [resolvedParentId],
         });
         const req = https.request({
             hostname: "www.googleapis.com",
@@ -1581,6 +1594,9 @@ module.exports = {
     resolveStoreScopes,
     resolveDriveServiceAccountPath,
     warnIfDriveFolderMissing,
+    driveGetOrCreateFolder,
+    resolveDriveParentId,
+    DRIVE_ROOT_FOLDER_ID,
     TELEGRAM_SPEC,
     DRIVE_SPEC,
     R2_SPEC,

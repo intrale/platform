@@ -17,8 +17,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
+const https = require('https');
 const os = require('os');
 const path = require('path');
+const { EventEmitter } = require('events');
 
 const {
     resolveTelegramCredentials,
@@ -30,6 +32,9 @@ const {
     describeMissingCredentials,
     resolveDriveServiceAccountPath,
     warnIfDriveFolderMissing,
+    driveGetOrCreateFolder,
+    resolveDriveParentId,
+    DRIVE_ROOT_FOLDER_ID,
     DRIVE_SPEC,
     R2_SPEC,
 } = require('../qa-video-share');
@@ -516,4 +521,59 @@ test('drive_folder_id ausente avisa que la evidencia va a la RAIZ del Drive', ()
     assert.match(lines[0], /\/fixture\/store\.json#google_drive\.drive_folder_id/);
     // CA-9: no propone escribirlo en el archivo trackeado del repo.
     assert.ok(!/escrib\w*\s+\w*\s*telegram-config/i.test(lines[0]));
+});
+
+async function captureDriveFolderRequests(parentId) {
+    const requests = [];
+    const originalRequest = https.request;
+
+    https.request = (options, callback) => {
+        const request = new EventEmitter();
+        let body = '';
+        request.write = (chunk) => { body += String(chunk); };
+        request.destroy = () => {};
+        request.end = () => {
+            requests.push({ options, body });
+            const response = new EventEmitter();
+            callback(response);
+            const payload = requests.length === 1
+                ? JSON.stringify({ files: [] })
+                : JSON.stringify({ id: 'created-folder', name: '#5217' });
+            queueMicrotask(() => {
+                response.emit('data', payload);
+                response.emit('end');
+            });
+        };
+        return request;
+    };
+
+    try {
+        const folderId = await driveGetOrCreateFolder('fake-access-token', '#5217', parentId);
+        assert.equal(folderId, 'created-folder');
+    } finally {
+        https.request = originalRequest;
+    }
+    return requests;
+}
+
+test('Drive representa el folder ausente como root en los requests de listar y crear', async () => {
+    assert.equal(resolveDriveParentId(''), DRIVE_ROOT_FOLDER_ID);
+    const requests = await captureDriveFolderRequests('');
+
+    assert.equal(requests.length, 2);
+    assert.match(decodeURIComponent(requests[0].options.path), /'root' in parents/);
+    assert.deepEqual(JSON.parse(requests[1].body).parents, ['root']);
+});
+
+test('Drive preserva el folder configurado en los requests de listar y crear', async () => {
+    const configuredFolderId = '1ConfiguredDriveFolder';
+    assert.equal(resolveDriveParentId(configuredFolderId), configuredFolderId);
+    const requests = await captureDriveFolderRequests(configuredFolderId);
+
+    assert.equal(requests.length, 2);
+    assert.match(
+        decodeURIComponent(requests[0].options.path),
+        new RegExp("'" + configuredFolderId + "' in parents")
+    );
+    assert.deepEqual(JSON.parse(requests[1].body).parents, [configuredFolderId]);
 });
