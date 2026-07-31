@@ -203,15 +203,60 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Resolver base sha
+      # Dos salidas distintas a propósito:
+      #   `sha`       → ref del árbol base que provee scanner/sanitizer/allowlist
+      #                 (cadena de confianza D-3: la base DECLARADA del PR).
+      #   `diff_base` → extremo izquierdo del rango a escanear (lo que ESTE PR agrega).
+      # El bloque es shell puro — las expresiones ${{ }} van en env: — para que
+      # .pipeline/tests/ci-secret-scan-range.test.js lo extraiga y lo ejecute tal cual.
+      - name: Resolver rango del diff
         id: base
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "sha=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
+          # #5244 rev-5 — el rango tiene que ser "lo que ESTE PR agrega", nada más.
+          # En eventos pull_request, GITHUB_SHA es el merge commit efímero
+          # (refs/pull/N/merge): parent1 = tip de la rama base (main ACTUAL),
+          # parent2 = head del PR. Por eso el rango PR_BASE_SHA..GITHUB_SHA
+          # arrastra todo lo que main avanzó desde que se abrió el PR y el gate
+          # bloquea por hallazgos ajenos (PR #5280 frenado por fb03a6b8e, de #5304).
+          # Se acota con merge-base contra el tip REAL de la base: main queda a
+          # ambos lados del rango y sale del diff.
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BASE_TIP=""
+            # parent1 sólo se usa si GITHUB_SHA es de verdad el merge efímero:
+            # si el checkout fuera el head del PR, `^1` sería el commit anterior
+            # de la propia rama y el rango se achicaría (fail-open).
+            if [ -n "$PR_HEAD_SHA" ] && [ "$GITHUB_SHA" != "$PR_HEAD_SHA" ] \
+               && git rev-parse -q --verify "$GITHUB_SHA^2" >/dev/null 2>&1; then
+              BASE_TIP="$(git rev-parse "$GITHUB_SHA^1")"
+            elif [ -n "$PR_BASE_REF" ]; then
+              BASE_TIP="$(git rev-parse -q --verify "origin/$PR_BASE_REF" 2>/dev/null || true)"
+            fi
+            [ -n "$BASE_TIP" ] || BASE_TIP="$PR_BASE_SHA"
+
+            DIFF_BASE="$(git merge-base "$BASE_TIP" "$GITHUB_SHA" 2>/dev/null || true)"
+            if [ -z "$DIFF_BASE" ]; then
+              # Sin ancestro común no hay forma de acotar. Se cae a la base
+              # declarada del PR: escanea de más, nunca de menos (fail-closed),
+              # y queda declarado en el log en vez de degradar en silencio.
+              DIFF_BASE="$PR_BASE_SHA"
+              echo "::warning::secret-scan: sin merge-base entre $BASE_TIP y $GITHUB_SHA; se escanea desde la base declarada del PR"
+            fi
+
+            echo "sha=$PR_BASE_SHA" >> "$GITHUB_OUTPUT"
+            echo "diff_base=$DIFF_BASE" >> "$GITHUB_OUTPUT"
+            echo "secret-scan: rango $DIFF_BASE..$GITHUB_SHA (base declarada del PR: $PR_BASE_SHA)"
           else
-            B="${{ github.event.before }}"
-            case "$B" in 0000000*) B=$(git rev-parse HEAD~1) ;; esac
+            B="$PUSH_BEFORE"
+            case "$B" in ''|0000000*) B="$(git rev-parse HEAD~1)" ;; esac
             echo "sha=$B" >> "$GITHUB_OUTPUT"
+            echo "diff_base=$B" >> "$GITHUB_OUTPUT"
+            echo "secret-scan: rango $B..$GITHUB_SHA"
           fi
 
       - name: Checkout base completo
@@ -232,7 +277,9 @@ jobs:
       # .pipeline/tests/ci-secret-scan-step.test.js lo extraiga y lo ejecute tal cual.
       - name: Secret scan del diff
         env:
-          BASE_SHA: ${{ steps.base.outputs.sha }}
+          # Rango acotado por merge-base (#5244 rev-5), NO la base declarada:
+          # ésta última sólo gobierna de qué árbol sale el scanner.
+          BASE_SHA: ${{ steps.base.outputs.diff_base }}
         run: |
           BASE_TREE="$GITHUB_WORKSPACE/.base"
           BASE_SCANNER="$BASE_TREE/.pipeline/lib/precommit-secret-scan.js"
