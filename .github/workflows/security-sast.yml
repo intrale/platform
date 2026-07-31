@@ -7,6 +7,8 @@ name: Security SAST
 on:
   pull_request:
     branches: [ main, develop ]
+  push:
+    branches: [ main ]
 
 permissions:
   contents: read
@@ -16,6 +18,7 @@ permissions:
 jobs:
   # ── OWASP Dependency Check (vulnerabilidades en dependencias) ─────
   dependency-check:
+    if: github.event_name == 'pull_request'
     name: OWASP Dependency Check
     runs-on: ubuntu-latest
     continue-on-error: true  # Modo warning — no bloquea el PR
@@ -72,6 +75,7 @@ jobs:
 
   # ── Semgrep — análisis estático de código Kotlin ─────────────────
   semgrep:
+    if: github.event_name == 'pull_request'
     name: Semgrep Static Analysis
     runs-on: ubuntu-latest
     continue-on-error: true  # Modo warning — no bloquea el PR
@@ -130,6 +134,7 @@ jobs:
 
   # ── detect-secrets — secretos hardcodeados ───────────────────────
   detect-secrets:
+    if: github.event_name == 'pull_request'
     name: detect-secrets Scan
     runs-on: ubuntu-latest
     continue-on-error: true  # Modo warning — no bloquea el PR
@@ -186,6 +191,47 @@ jobs:
           if-no-files-found: ignore
 
   # ── Reporte consolidado como PR comment ──────────────────────────
+  secret-scan:
+    name: Secret scan (blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: false
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolver base sha
+        id: base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "sha=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            B="${{ github.event.before }}"
+            case "$B" in 0000000*) B=$(git rev-parse HEAD~1) ;; esac
+            echo "sha=$B" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout base completo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.base.outputs.sha }}
+          path: .base
+          fetch-depth: 0
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Secret scan del diff
+        run: |
+          node .base/.pipeline/lib/precommit-secret-scan.js \
+            --mode=range --base=${{ steps.base.outputs.sha }} --head=$GITHUB_SHA \
+            --cwd="$GITHUB_WORKSPACE" --format=github
+
   sast-report:
     name: Publicar reporte SAST en PR
     runs-on: ubuntu-latest

@@ -1,106 +1,55 @@
 #!/usr/bin/env sh
-# =============================================================================
-# .husky/pre-commit — Validación de agent-models.json (#3081 CA-5)
-#
-# Comportamiento defensivo:
-#   - Happy path (validación OK): silencioso o una sola línea "[validate] OK".
-#   - Path con error: 4-line error UX format + exit code != 0 (rechaza commit).
-#   - Toolchain ausente (node_modules sin ajv): warning + exit 0 (no bloquea
-#     commits legítimos en clones frescos sin npm install).
-#
-# Re-usa exactamente el mismo módulo que el boot del pulpo (DRY).
-# =============================================================================
+# Gates de pre-commit independientes. Cada lint conserva su propio contrato.
 
-# Decidir cuándo validar:
-#   - Si se stage agent-models.json → validar SIEMPRE (es lo que estamos commiteando).
-#   - Si se stage solo el schema o el validador → validar solo si agent-models.json
-#     YA existe en disco. Esto evita la chicken-and-egg cuando #3072 todavía
-#     no mergeó (caso CA-2: archivo ausente con mensaje accionable).
-#   - Caso contrario → no validar (evita ruido en commits que no tocan el área).
 TOUCHED_FILES=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)
 
-RUN_VALIDATE=0
-case "$TOUCHED_FILES" in
-  *".pipeline/agent-models.json"*) RUN_VALIDATE=1 ;;
-esac
-
-if [ "$RUN_VALIDATE" = "0" ]; then
-  case "$TOUCHED_FILES" in
-    *".pipeline/agent-models.schema.json"*|*".pipeline/lib/agent-models-validate.js"*)
-      if [ -f ".pipeline/agent-models.json" ]; then
-        RUN_VALIDATE=1
-      fi
-      ;;
-  esac
-fi
-
-if [ "$RUN_VALIDATE" = "0" ]; then
-  exit 0
-fi
-
-# Bootstrapping defensivo: si node_modules/ajv no existe, NO bloquear el commit.
-# Esto cubre clones frescos y ramas que aún no corrieron `npm install`.
-# El operador queda avisado para correr npm install cuando pueda.
-if [ ! -d "node_modules/ajv" ]; then
-  printf '[warn] agent-models validate skip: falta "ajv" (correr "npm install" para activar)\n' >&2
-  exit 0
-fi
-
-# Validación real — el módulo se encarga del formato de error y exit code.
-node .pipeline/lib/agent-models-validate.js --quiet
-EXIT=$?
-
-# Exit code 3 = toolchain ausente runtime → trasladar a warning + exit 0.
-# Exit code 2 = config inválida → propagar (rechaza commit).
-# Exit code 0 = OK → propagar.
-if [ "$EXIT" = "3" ]; then
-  printf '[warn] agent-models validate skip: toolchain incompleto (correr "npm install")\n' >&2
-elif [ "$EXIT" != "0" ]; then
-  exit $EXIT
-fi
-
-# =============================================================================
-# Issue #3310 CA-5 — Secret-scan defensivo sobre archivos de estado del pipeline.
-#
-# Aunque `.pipeline/commander-session.json`, `commander-history.jsonl` y
-# `.pipeline/servicios/**/*.json` están en `.gitignore`, si alguien los
-# des-ignora por error este escáner bloquea el commit antes de que el secreto
-# llegue a la rama. Reusa el mismo `sanitizer.js` del runtime.
-#
-# El helper Node devuelve:
-#   - exit 0 → OK (no hay secretos detectados)
-#   - exit 1 → BLOQUEAR (secretos encontrados o sanitizer falló — fail-closed)
-# =============================================================================
+# Secret scan (#5244): corre para todo commit, sin filtro de paths.
 if [ -f ".pipeline/lib/precommit-secret-scan.js" ]; then
   node .pipeline/lib/precommit-secret-scan.js
   SCAN_EXIT=$?
   if [ "$SCAN_EXIT" != "0" ]; then
-    exit $SCAN_EXIT
+    exit "$SCAN_EXIT"
+  fi
+else
+  printf '[warn] secret-scan skip: falta .pipeline/lib/precommit-secret-scan.js\n' >&2
+fi
+
+# Validación de agent-models (#3081): gate propio.
+RUN_VALIDATE=0
+case "$TOUCHED_FILES" in
+  *".pipeline/agent-models.json"*) RUN_VALIDATE=1 ;;
+esac
+if [ "$RUN_VALIDATE" = "0" ]; then
+  case "$TOUCHED_FILES" in
+    *".pipeline/agent-models.schema.json"*|*".pipeline/lib/agent-models-validate.js"*)
+      if [ -f ".pipeline/agent-models.json" ]; then RUN_VALIDATE=1; fi
+      ;;
+  esac
+fi
+
+if [ "$RUN_VALIDATE" = "1" ]; then
+  if [ ! -d "node_modules/ajv" ]; then
+    printf '[warn] agent-models validate skip: falta "ajv" (correr "npm install")\n' >&2
+  else
+    node .pipeline/lib/agent-models-validate.js --quiet
+    VALIDATE_EXIT=$?
+    if [ "$VALIDATE_EXIT" = "3" ]; then
+      printf '[warn] agent-models validate skip: toolchain incompleto (correr "npm install")\n' >&2
+    elif [ "$VALIDATE_EXIT" != "0" ]; then
+      exit "$VALIDATE_EXIT"
+    fi
   fi
 fi
 
-# =============================================================================
-# Issue #3638 CA-F-11 — Ghost-artifact lint sobre archivos del pipeline.
-#
-# Bloquea commits que introduzcan readdirSync sobre carpetas operacionales
-# (.pipeline/definicion/**, .pipeline/desarrollo/**) sin aplicar el filtro
-# `isMarkerArtifact`. Defensa en profundidad complementada por el job CI
-# `ghost-artifact-lint` (CA-SEC-8) que captura bypass con --no-verify.
-#
-# Solo corre cuando se tocan archivos bajo `.pipeline/`. Sin matches,
-# no consume tiempo del flujo normal de commits.
-# =============================================================================
+# Ghost artifact lint (#3638): gate propio, ahora siempre alcanzable.
 RUN_GHOST_LINT=0
 case "$TOUCHED_FILES" in
   *".pipeline/"*) RUN_GHOST_LINT=1 ;;
 esac
-
 if [ "$RUN_GHOST_LINT" = "1" ] && [ -f ".pipeline/lib/ghost-artifact-lint.js" ]; then
   node .pipeline/lib/ghost-artifact-lint.js --check
   LINT_EXIT=$?
-  if [ "$LINT_EXIT" != "0" ]; then
-    exit $LINT_EXIT
-  fi
+  if [ "$LINT_EXIT" != "0" ]; then exit "$LINT_EXIT"; fi
 fi
 
 exit 0
