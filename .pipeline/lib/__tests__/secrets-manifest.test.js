@@ -8,6 +8,7 @@ const path = require('node:path');
 
 const {
   load, validate, listByService, isMetadataKey,
+  findEnvVarReaders, loadProductionSources,
 } = require('../secrets-manifest');
 const { ENV_MAPPING, loadIntoEnv } = require('../credentials');
 const {
@@ -261,16 +262,46 @@ test('el conjunto nominal de consumer_status=resolved esta anclado', () => {
   assert.deepEqual(resueltas, [
     'telegram.bot_token',
     'telegram.chat_id',
+    'telegram.leo_operator_chat_id',
     'providers.openai.api_key',
+    'providers.anthropic.api_key',
     'providers.cerebras.api_key',
     'providers.nvidia.api_key',
     'providers.moonshot.api_key',
     'google_drive.drive_folder_id',
   ]);
-  // `resolved` implica `required_when` distinto de never: una clave que nadie
-  // debe reponer no puede a la vez tener consumidor sano.
-  for (const entry of manifest.entries.filter((item) => item.consumer_status === 'resolved')) {
-    assert.notEqual(entry.required_when, 'never', entry.name);
+});
+
+test('consumer_status es ortogonal a required_when: el par resolved+never es expresable', () => {
+  // Este test REEMPLAZA al assert que exigia `resolved => required_when !=
+  // never`. Aquel candado hacia INEXPRESABLE el estado "tiene consumidor real
+  // pero por politica no se aprovisiona" y empujaba a declarar `no_consumer`
+  // una clave con lectores — que es exactamente como
+  // `providers.anthropic.api_key` termino publicada con una afirmacion falsa.
+  // SR5 declara los tres ejes ortogonales; el schema debe poder expresarlo.
+  const anthropic = manifest.entries.find((e) => e.name === 'providers.anthropic.api_key');
+  assert.equal(anthropic.consumer_status, 'resolved');
+  assert.equal(anthropic.required_when, 'never');
+  // Y el par sigue siendo valido para el loader, no solo para este archivo.
+  assert.equal(validate(manifest).ok, true);
+
+  // Control negativo: el loader NO debe aceptar `resolved` sin nombrar lectores.
+  // Sin esto, "resolved" vuelve a ser una opinion que nadie puede auditar.
+  const sinConsumers = structuredClone(manifest);
+  delete sinConsumers.entries.find((e) => e.name === 'providers.anthropic.api_key').consumers;
+  const roto = validate(sinConsumers);
+  assert.equal(roto.ok, false);
+  assert.match(roto.errors.join(' '), /consumers es obligatorio/);
+});
+
+test('todo consumer_status=resolved nombra consumidores que existen en el repo', () => {
+  const resueltas = manifest.entries.filter((entry) => entry.consumer_status === 'resolved');
+  assert.ok(resueltas.length >= 9);
+  for (const entry of resueltas) {
+    assert.ok(Array.isArray(entry.consumers) && entry.consumers.length > 0, entry.name);
+    for (const ref of entry.consumers) {
+      assert.ok(fs.existsSync(path.join(ROOT, ref)), `${entry.name}: no existe ${ref}`);
+    }
   }
 });
 
@@ -285,7 +316,16 @@ test('toda clave providers.* resolved esta declarada en credentials_env de agent
 
   const resueltasDeProviders = manifest.entries
     .filter((entry) => entry.service === 'providers' && entry.consumer_status === 'resolved');
-  assert.equal(resueltasDeProviders.length, 4);
+  // 5 = openai, anthropic, cerebras, nvidia, moonshot. `anthropic` entro al
+  // conjunto al corregir su `no_consumer` falso: su `ANTHROPIC_API_KEY` si
+  // figura en `credentials_env`, asi que el candado la acepta sin aflojarse.
+  assert.deepEqual(resueltasDeProviders.map((entry) => entry.name), [
+    'providers.openai.api_key',
+    'providers.anthropic.api_key',
+    'providers.cerebras.api_key',
+    'providers.nvidia.api_key',
+    'providers.moonshot.api_key',
+  ]);
   for (const entry of resueltasDeProviders) {
     assert.ok(declaradas.has(entry.env_var),
       `${entry.name}: ${entry.env_var} no figura en ningun credentials_env`);
@@ -354,6 +394,81 @@ test('ningun provider fail-fast puede declararse no_consumer/never en el manifie
   moonshot.consumer_status = 'no_consumer';
   moonshot.required_when = 'never';
   assert.deepEqual(ocultaConsumidor(revertida.entries), ['kimi-moonshot']);
+});
+
+test('ninguna entrada eager con lector real en el repo puede declararse no_consumer', () => {
+  // Candado GENERALIZADO. Los dos anteriores estan acotados a `service ===
+  // providers` y `auth_mode !== oauth`: por construccion no pueden ver
+  // `telegram.*` ni los providers OAuth, y por ese hueco se publicaron como
+  // `no_consumer` `telegram.leo_operator_chat_id` (el allowlist de firma
+  // fail-closed de GATE 2) y `providers.anthropic.api_key`, con 21 tests en
+  // verde. Este candado no pregunta por servicio ni por auth_mode: barre el
+  // codigo de produccion del repo y, si alguien LEE la env var, prohibe
+  // declararla sin consumidor.
+  //
+  // Acotado a `hydration: "eager"` a proposito: una entrada `deferred` nunca
+  // llega al `process.env` del Pulpo, asi que un lector suyo no se alcanza hoy
+  // (es el caso de las AWS, cuyo unico lector recibe un `env` inyectado del
+  // scope `aws`, que esta inerte: ningun skill declara `requires_credentials`).
+  const sources = loadProductionSources(ROOT);
+  assert.ok(sources.length > 100, `barrido vacio o mal enraizado: ${sources.length}`);
+
+  const conLectorReal = (entries) => entries
+    .filter((entry) => entry.hydration === 'eager')
+    .map((entry) => ({ entry, lectores: findEnvVarReaders(entry.env_var, { files: sources }) }))
+    .filter(({ entry, lectores }) => lectores.length > 0 && entry.consumer_status === 'no_consumer')
+    .map(({ entry }) => entry.name);
+
+  assert.deepEqual(conLectorReal(manifest.entries), [],
+    'entrada eager declarada no_consumer teniendo lectores en codigo de produccion');
+
+  // Ancla anti-vacuidad: el barrido tiene que estar encontrando lectores de
+  // verdad. Sin esto, una regex rota deja el candado verde para siempre.
+  assert.deepEqual(
+    findEnvVarReaders('TELEGRAM_LEO_OPERATOR_CHAT_ID', { files: sources }),
+    [
+      '.pipeline/delivery.js',
+      '.pipeline/lib/operator-gate.js',
+      '.pipeline/lib/telegram-notifier.js',
+      '.pipeline/pulpo.js',
+    ],
+  );
+  // Y una env var que de verdad no tiene lector sigue pudiendo ser no_consumer:
+  // el candado prohibe ocultar consumidores, no obliga a inventarlos.
+  assert.deepEqual(findEnvVarReaders('GEMINI_API_KEY', { files: sources }), []);
+
+  // Control negativo 1: revertir leo_operator_chat_id a lo que publico la
+  // pasada rechazada tiene que romper el candado.
+  const revertidaTelegram = structuredClone(manifest);
+  const leo = revertidaTelegram.entries.find((e) => e.name === 'telegram.leo_operator_chat_id');
+  assert.equal(leo.consumer_status, 'resolved');
+  assert.notEqual(leo.required_when, 'never');
+  leo.consumer_status = 'no_consumer';
+  assert.deepEqual(conLectorReal(revertidaTelegram.entries), ['telegram.leo_operator_chat_id']);
+
+  // Control negativo 2: idem para anthropic, el provider OAuth que el candado
+  // acotado a `auth_mode !== oauth` no podia ver.
+  const revertidaAnthropic = structuredClone(manifest);
+  const anthropic = revertidaAnthropic.entries.find((e) => e.name === 'providers.anthropic.api_key');
+  assert.equal(anthropic.consumer_status, 'resolved');
+  anthropic.consumer_status = 'no_consumer';
+  assert.deepEqual(conLectorReal(revertidaAnthropic.entries), ['providers.anthropic.api_key']);
+});
+
+test('los consumers declarados no omiten ningun lector que el barrido encuentra', () => {
+  // El defecto de la pasada anterior no fue solo el `consumer_status`: la prosa
+  // describia UN consumidor (el handler opcional) y omitia los cuatro
+  // restantes, incluido el gate de firma. Declarar de menos es la misma clase
+  // de afirmacion falsa que declarar de mas.
+  const sources = loadProductionSources(ROOT);
+  const omisiones = [];
+  for (const entry of manifest.entries.filter((item) => Array.isArray(item.consumers))) {
+    const declarados = new Set(entry.consumers);
+    for (const lector of findEnvVarReaders(entry.env_var, { files: sources })) {
+      if (!declarados.has(lector)) omisiones.push(`${entry.name} omite ${lector}`);
+    }
+  }
+  assert.deepEqual(omisiones, []);
 });
 
 test('regresion nominal de las cuatro claves google_drive', () => {

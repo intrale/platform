@@ -241,6 +241,38 @@ cubre una credencial **ausente** en una máquina limpia.
 4. Ejecutá `node .pipeline/lib/credentials.js` y verificá que el resumen nombre
    `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID`, sin mostrar sus valores.
 
+### Chat del operador firmante (GATE 2 y Commander)
+
+`telegram.leo_operator_chat_id` → `TELEGRAM_LEO_OPERATOR_CHAT_ID`. **No es un
+chat opcional de notificaciones**: es el allowlist de operadores autorizados a
+**firmar**. Sus consumidores:
+
+| Consumidor | Qué hace con la clave | Qué pasa si falta |
+|---|---|---|
+| `.pipeline/lib/operator-gate.js` | única fuente del allowlist del gate de firma **GATE 2** | fail-closed: el `Set` queda vacío y **todo callback de firma se rechaza** |
+| `.pipeline/listener-telegram.js` | reusa ese mismo allowlist para el **Commander** | fail-closed: el Commander se queda sin operador autorizado |
+| `.pipeline/delivery.js` | suma el chat a los firmantes autorizados del delivery | el delivery pierde ese firmante |
+| `.pipeline/pulpo.js` | lo suma a los operadores del CUA | cae al chat principal como último recurso |
+| `.pipeline/lib/telegram-notifier.js` | handler proactivo (#3384) | **único caso** donde el faltante sólo autodeshabilita una función opcional |
+
+Su ausencia **no** degrada un handler: deja GATE 2 y el Commander sin ningún
+firmante autorizado. Por eso se declara `required_when: service_active`, no
+`never`.
+
+Esta sección cubre la credencial **ausente** en una máquina limpia; para
+**rotar** una viva, repetí los pasos con el chat nuevo y recién después retirá
+el viejo.
+
+1. Obtené el `chat.id` del chat privado 1:1 con el operador autorizado, sin
+   publicarlo. En chat privado el `chat.id` coincide con el `from.id`, y por eso
+   sirve como identidad de operador.
+2. Escribí el dot-path `telegram.leo_operator_chat_id` en
+   `~/.claude/secrets/credentials.json`.
+3. Ejecutá `node .pipeline/lib/credentials.js` y verificá que el resumen nombre
+   `TELEGRAM_LEO_OPERATOR_CHAT_ID`, sin mostrar su valor.
+4. Verificá el gate: un callback de firma emitido desde ese chat debe ser
+   aceptado, y uno desde cualquier otro chat debe ser rechazado.
+
 ## AWS (reposicion)
 
 Para **rotar** credenciales vivas, usá el procedimiento de IAM correspondiente.

@@ -28,6 +28,8 @@ const SCHEMA = Object.freeze({
   ]),
   // Obligatorio solo en las entradas que viven en el store durable.
   store_required_fields: Object.freeze(['consumer_status']),
+  // Obligatorio solo cuando se afirma `consumer_status: "resolved"`.
+  resolved_required_fields: Object.freeze(['consumers']),
 });
 
 function isMetadataKey(dotPath) {
@@ -84,6 +86,21 @@ function validate(manifest) {
     } else if ('consumer_status' in entry) {
       errors.push(`${at}.consumer_status solo aplica a source=store`);
     }
+    // `consumers` obliga a NOMBRAR quien lee la clave cuando se afirma que su
+    // consumo esta resuelto. Sin este campo, `resolved` es una opinion que
+    // nadie puede auditar — y su reverso (`no_consumer` sobre una clave con
+    // lectores reales) fue exactamente el defecto de la pasada anterior.
+    if (entry.consumer_status === 'resolved') {
+      if (!Array.isArray(entry.consumers) || entry.consumers.length === 0) {
+        errors.push(`${at}.consumers es obligatorio y no vacio cuando consumer_status=resolved`);
+      }
+    }
+    if ('consumers' in entry) {
+      if (!Array.isArray(entry.consumers)
+        || entry.consumers.some((ref) => typeof ref !== 'string' || ref.trim().length === 0)) {
+        errors.push(`${at}.consumers debe ser un array de referencias no vacias`);
+      }
+    }
     if (entry.consumer_status === 'broken') {
       if (typeof entry.blocked_by !== 'string' || !BLOCKED_BY_RE.test(entry.blocked_by)) {
         errors.push(`${at}.blocked_by es obligatorio con forma #<issue> cuando consumer_status=broken`);
@@ -107,6 +124,86 @@ function validate(manifest) {
   return { ok: errors.length === 0, errors };
 }
 
+// ---------------------------------------------------------------------------
+// Detector de consumidores reales (candado generalizado de `no_consumer`).
+//
+// Por que existe: el candado inverso original estaba acotado a `service`
+// `providers` con `auth_mode != oauth`, asi que por construccion no podia ver
+// `telegram.*` ni los providers OAuth. Por ese hueco se publicaron como
+// `no_consumer` dos claves con lectores reales (una de ellas, el allowlist de
+// firma fail-closed de GATE 2). La regla ahora es del manifiesto entero y se
+// verifica mecanicamente contra el repo: si el codigo de produccion lee la
+// `env_var`, la entrada NO puede declararse `no_consumer`.
+// ---------------------------------------------------------------------------
+
+const REPO_ROOT = path.join(__dirname, '..', '..');
+// El barrido cubre el codigo de produccion del repo, no solo `.pipeline/`:
+// `google_drive.drive_folder_id` se consume desde `qa/scripts/`, y acotar el
+// scan a un directorio es la misma clase de angosto que dejo pasar los dos
+// falsos `no_consumer` de la pasada anterior.
+const READER_SCAN_ROOTS = Object.freeze(['.pipeline', 'qa']);
+// `credentials.js` declara el ENV_MAPPING: nombra la env var para hidratarla,
+// no la consume. Contarlo como lector haria que toda entrada eager se viera
+// "leida" y el candado pasaria a ser trivialmente cierto (verde por vacuidad).
+const READER_SCAN_EXCLUDED_FILES = Object.freeze(['.pipeline/lib/credentials.js']);
+const READER_SCAN_EXCLUDED_DIRS = Object.freeze([
+  'node_modules', '__tests__', 'tests', 'fixtures', 'logs', 'sessions',
+]);
+
+/** Quita comentarios de linea y de bloque: una mencion en prosa no es una lectura. */
+function stripComments(source) {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:\w])\/\/[^\n]*/g, '$1');
+}
+
+function listProductionSources(dir, baseDir, acc) {
+  let dirents;
+  try { dirents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return acc; }
+  for (const dirent of dirents) {
+    const full = path.join(dir, dirent.name);
+    if (dirent.isDirectory()) {
+      if (READER_SCAN_EXCLUDED_DIRS.includes(dirent.name)) continue;
+      listProductionSources(full, baseDir, acc);
+    } else if (dirent.name.endsWith('.js') && !dirent.name.endsWith('.test.js')) {
+      const rel = path.relative(baseDir, full).split(path.sep).join('/');
+      if (READER_SCAN_EXCLUDED_FILES.includes(rel)) continue;
+      acc.push({ rel, full });
+    }
+  }
+  return acc;
+}
+
+/** Lee una vez los fuentes de produccion del repo (cacheado por raiz). */
+function loadProductionSources(repoRoot = REPO_ROOT) {
+  const files = [];
+  for (const root of READER_SCAN_ROOTS) {
+    listProductionSources(path.join(repoRoot, root), repoRoot, files);
+  }
+  return files.map((file) => ({ rel: file.rel, source: fs.readFileSync(file.full, 'utf8') }));
+}
+
+/**
+ * Devuelve los archivos de produccion del repo que LEEN `envVar`.
+ * Se cuenta como lectura el acceso por propiedad (`process.env.X`, `env.X`) o
+ * por indice (`env['X']`), fuera de comentarios: una mencion en prosa no es un
+ * consumo.
+ *
+ * @param {string} envVar nombre de la variable de entorno
+ * @param {{ repoRoot?: string, files?: Array<{rel: string, source: string}> }} [opts]
+ * @returns {string[]} paths relativos a la raiz del repo, ordenados
+ */
+function findEnvVarReaders(envVar, opts = {}) {
+  const escaped = String(envVar).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // `process.env.X`, `env.X`, `childEnv.X`, `env['X']`, `env["X"]`.
+  const readRe = new RegExp(`(?:\\w*[eE]nv\\s*\\.\\s*${escaped}\\b|\\[\\s*['"\`]${escaped}['"\`]\\s*\\])`);
+  const files = opts.files || loadProductionSources(opts.repoRoot);
+  return files
+    .filter((file) => readRe.test(stripComments(file.source)))
+    .map((file) => file.rel)
+    .sort();
+}
+
 function load(opts = {}) {
   const manifestPath = opts.path || DEFAULT_PATH;
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -123,7 +220,17 @@ function listByService(manifest) {
   }, {});
 }
 
-module.exports = { load, SCHEMA, validate, listByService, isMetadataKey, DEFAULT_PATH };
+module.exports = {
+  load,
+  SCHEMA,
+  validate,
+  listByService,
+  isMetadataKey,
+  findEnvVarReaders,
+  loadProductionSources,
+  DEFAULT_PATH,
+  REPO_ROOT,
+};
 
 if (require.main === module) {
   try {
