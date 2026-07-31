@@ -261,7 +261,25 @@ function defaultRegisterProduct(entry, deps = {}) {
 // Flag de cutover `kernel.durable` (#4821 · CA-6). Se lee UNA SOLA VEZ por
 // operación al inicio del registro (nunca mid-flow) para evitar split-brain
 // FS↔DynamoDB. Inyectable por tests vía `deps.kernelConfig` / `deps.kernelDurable`.
-// Fail-closed a FS: cualquier error de lectura de config ⇒ `durable:false`.
+//
+// #5172 — La lectura y la validación pasan por el punto único
+// (`lib/config-resolver`). El `catch { durable:false }` que había acá era
+// EXACTAMENTE el fail-open que la historia viene a matar: convertía *"no pude
+// leer la config"* en *"el cutover durable está apagado"*, indistinguible de una
+// decisión deliberada del operador. Ahora el error tipado
+// (`ConfigParseViolation` / `ConfigSchemaViolation`, ya redactado por el
+// resolver) se PROPAGA: si la autoridad de la decisión no se puede leer, no hay
+// decisión.
+//
+// Lo que NO cambia (D-4): un config VÁLIDO **sin sección `kernel:`** no es
+// corrupción — es la sección opcional sin declarar ⇒ se conserva el default
+// seguro `durable:false`. Distinguir "no pude leer" de "la sección no está" es
+// el corazón del issue.
+//
+// `deps.configPath` sigue siendo el punto de inyección por firma y se mapea a
+// `resolve({configPath})` (ruta de ARCHIVO explícita). Sin él se usa la
+// `config.yaml` de este checkout, igual que antes: la resolución NO pasa a
+// depender de env vars, para no cambiar de archivo en silencio.
 // -----------------------------------------------------------------------------
 const DEFAULT_CONFIG_PATH = path.resolve(__dirname, '..', 'config.yaml');
 
@@ -272,15 +290,12 @@ function readKernelConfig(deps = {}) {
   if (typeof deps.kernelDurable === 'boolean') {
     return { durable: deps.kernelDurable, tableName: null, region: null };
   }
-  try {
-    const yaml = require('js-yaml'); // safe-by-default (load, sin !!js/function)
-    const cfgPath = deps.configPath || DEFAULT_CONFIG_PATH;
-    const cfg = yaml.load(fs.readFileSync(cfgPath, 'utf8')) || {};
-    const k = (cfg.kernel && typeof cfg.kernel === 'object') ? cfg.kernel : {};
-    return { durable: k.durable === true, tableName: k.tableName ?? null, region: k.region ?? null };
-  } catch {
-    return { durable: false, tableName: null, region: null }; // fail-closed a FS
-  }
+  // Lazy-require deliberado (G-3): el resolver arrastra `js-yaml` + `ajv`, y
+  // este módulo se carga también desde contextos sin `node_modules`.
+  const configResolver = require('./config-resolver');
+  const cfg = configResolver.resolve({ configPath: deps.configPath || DEFAULT_CONFIG_PATH });
+  const k = (cfg.kernel && typeof cfg.kernel === 'object') ? cfg.kernel : {};
+  return { durable: k.durable === true, tableName: k.tableName ?? null, region: k.region ?? null };
 }
 
 // -----------------------------------------------------------------------------

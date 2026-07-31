@@ -85,22 +85,22 @@ intake:
 #      huérfanos pre-deploy, forks con permisos limitados). Corre en cada
 #      ciclo de reconcile (5min default) junto con el sweep de needs-human.
 #
-# La configuración real de runtime se hace por env vars que setea el pulpo
-# al lanzar servicio-reconciler:
-#   - ADMISSION_SWEEP_ENABLED=0  → desactiva el sweep del reconciler.
-#                                   El workflow event-driven sigue funcionando.
-#   - ADMISSION_GATE_DRY_RUN=1   → reconciler y workflow loguean decisiones
-#                                   pero NO aplican labels ni encolan alertas.
-#
-# Este bloque YAML es declarativo (visibilidad operacional). Los valores
-# acá NO se leen al iniciar el reconciler — son referencia y futura
-# extensión si decidimos hidratar via env desde config.yaml.
+# #5172 · CA-5 — Estos valores SÍ se leen en runtime: `servicio-reconciler.js`
+# los consulta vía `lib/config-resolver.js` en cada sweep (no en el load del
+# módulo). Las env vars siguen funcionando como kill-switch instantáneo, pero
+# ahora las aplica el resolver, que las TRAZEA con nivel de alerta cuando
+# debilitan el gate:
+#   - ADMISSION_SWEEP_ENABLED=0  → sweep_enabled=false. Desactiva el sweep del
+#                                   reconciler. El workflow event-driven sigue.
+#   - ADMISSION_GATE_DRY_RUN=1   → dry_run=true. Loguea decisiones pero NO
+#                                   aplica labels ni encola alertas.
+# Al reiniciar sin esas variables, mandan los valores de este archivo.
 admission_gate:
-  # Sweep del reconciler activo por default. Para apagar: setear
-  # ADMISSION_SWEEP_ENABLED=0 en el entorno del proceso.
+  # Sweep del reconciler activo por default. Para apagar: poner `false` acá, o
+  # setear ADMISSION_SWEEP_ENABLED=0 en el entorno para un corte instantáneo.
   sweep_enabled: true
-  # Modo dry-run global (loguea pero no aplica). Setear ADMISSION_GATE_DRY_RUN=1
-  # en el entorno para activar runtime.
+  # Modo dry-run global (loguea pero no aplica). `true` acá, o
+  # ADMISSION_GATE_DRY_RUN=1 en el entorno.
   dry_run: false
   # Cap de huérfanos a aplicar por sweep. Si N>10, los primeros 10 se etiquetan
   # y se manda alerta especial 🔴 al Commander pidiendo revisión humana antes
@@ -1407,21 +1407,35 @@ cua:
 # de este archivo público (mismo criterio que cua.operator_chat_ids).
 #
 # `normalizeConfig` (lib/kernel-store.js) EXIGE `tableName` no vacío para el
-# driver real: con `durable: true` y `tableName: ""` falla fail-closed. Dejar
-# `tableName`/`region` vacíos mientras `durable: false` es correcto y esperado.
+# driver real: con `durable: true` y `tableName: ""` falla fail-closed.
+#
+# #5210 — Las tres claves (`tableName`/`coordinationTableName`/`region`) ya están
+# POBLADAS contra las tablas reales, y `durable` sigue en `false`. No es una
+# contradicción: poblar nombres es declarativo, `durable` es el único switch del
+# camino AWS. Verificable con `node .pipeline/lib/kernel-table-verify.js`.
 #
 # La tabla + policy IAM (least-privilege, append-only sobre signature#*/audit#*)
 # se aprovisiona con un PASO ADMIN separado (lib/kernel-provision.js +
 # docs/pipeline/kernel-iam-policy.json), NUNCA en el boot normal del pulpo.
 kernel:
-  tableName: ""      # requerido para el driver real (normalizeConfig lo exige)
+  # #5210 CA-1 — Tabla de NO-REPUDIO ya aprovisionada en AWS (ACTIVE, SSE KMS,
+  # deletion protection ON). Poblarla NO enciende nada: todo el camino durable
+  # está gateado por `durable === true` (pulpo.js bootKernelDurable + el
+  # constructor LAZY del store), así que con `durable: false` no se construye
+  # driver ni se emite una sola llamada a DynamoDB. Evidencia redactada y gap de
+  # verificación: docs/pipeline/kernel-tablas-cutover-5210.md.
+  tableName: "intrale-kernel-state"      # requerido para el driver real (normalizeConfig lo exige)
   # #5124 — SEGUNDA tabla, distinta de `tableName`. Desde que la coordinación salió
   # de la partición de no-repudio (Opción B′-1), el claim de fase vive acá y esta
   # tabla es la única que admite `DeleteItem` en la policy IAM. Sin esta clave,
   # `kernel-coordination-store.js` falla fail-closed con el driver real (al primer
   # claim, no en el boot). Aprovisionarla es alcance del cutover (#5126).
-  coordinationTableName: ""   # requerido para el driver real (fail-closed sin ella)
-  region: ""         # región AWS destino (vacío mientras durable:false)
+  #
+  # #5210 — DEBE ser distinta de `tableName`: la política de inmutabilidad
+  # (append-only sobre signature#*/audit#*) es de la tabla de no-repudio y NO se
+  # aplica acá; coordinación conserva `DeleteItem` para liberar claims.
+  coordinationTableName: "intrale-kernel-coordination"   # requerido para el driver real (fail-closed sin ella)
+  region: "us-east-2"         # región AWS destino (ambas tablas viven acá)
   durable: false     # default OFF -- todo sigue en FS, cero llamadas AWS
   # #5135 CA-1 -- Ventana de cutover SUPERVISADA. Default OFF (fail-closed: solo
   # el booleano `true` exacto la abre).

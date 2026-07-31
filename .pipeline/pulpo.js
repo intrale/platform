@@ -33,6 +33,10 @@ const { sanitize: sanitizePipelineText } = require('./sanitizer');
 // #3941 (EP5-H4): validación de schema de config.yaml + clasificación de
 // excepciones (infra transitoria vs corrupción de estado).
 const { validateConfig, formatErrors, formatErrorsForHuman } = require('./lib/config-schema');
+const configSchema = require('./lib/config-schema');
+// #5172 — punto ÚNICO de lectura y validación de config.yaml. El pulpo delega
+// acá el "leer y validar" y conserva la POLÍTICA (halt + lastGood + #4832).
+const configResolver = require('./lib/config-resolver');
 const { classify: classifyError } = require('./lib/error-classifier');
 const connectivityState = require('./connectivity-state'); // #2335
 const retryingState = require('./retrying-state');         // #2337 CA7/CA8
@@ -461,6 +465,16 @@ const PIPELINE = process.env.PIPELINE_DIR_OVERRIDE
   : path.resolve(__dirname);
 const CONFIG_PATH = path.join(PIPELINE, 'config.yaml');
 const LOG_DIR = path.join(PIPELINE, 'logs');
+
+// #5172 · CA-13 / SEC-3b — la traza del resolver ("qué config estoy enforzando y
+// por qué mecanismo") va al log del pulpo, no sólo a stderr: es la respuesta que
+// el operador necesita poder buscar en `logs/pulpo.log`. Los overrides por env
+// var que DEBILITAN un gate salen por el mismo canal con nivel de alerta.
+configResolver.setTraceSink((linea, nivel) => {
+  const prefijo = nivel === 'alerta' ? '⚠️ ' : '';
+  const msg = `[${new Date().toISOString()}] [pulpo] ${prefijo}${linea}\n`;
+  try { fs.appendFileSync(path.join(LOG_DIR, 'pulpo.log'), msg); } catch { /* best-effort */ }
+});
 
 // #4154 — Heartbeat de liveness del Pulpo.
 // Persiste el timestamp de la última iteración del loop principal en
@@ -1222,20 +1236,37 @@ let lastConfigCorruptionAlertMs = 0;
 const CONFIG_CORRUPTION_ALERT_THROTTLE_MS = 5 * 60 * 1000;
 
 /**
- * Reacción fail-fast ante corrupción de `config.yaml` (estado compartido del
- * que dependen >30 módulos). ÚNICA ruta que justifica `.paused` GLOBAL (SEC-3).
+ * Reacción fail-fast ante configuración inválida (estado compartido del que
+ * dependen >30 módulos). ÚNICA ruta que justifica `.paused` GLOBAL (SEC-3).
  * Escribe `.paused` (idempotente) + alerta Telegram REDACTADA (SEC-2: sólo
  * path + tipo esperado, jamás el valor crudo). NO hace process.exit — deja el
- * loop vivo y pausado para que un humano corrija y reanude.
+ * loop vivo y pausado para que un humano corrija y reanude (CA-5).
  *
- * @param {string} reason - etiqueta corta ('config.yaml parse-error' | 'config.yaml schema')
- * @param {string} redactedDetail - detalle YA redactado y ACOTADO (va a Telegram,
- *   que tiene tope de 4096 chars: con la raíz del schema cerrada un config muy
- *   roto genera decenas de errores — #5173 CA-11).
- * @param {string} [fullDetail] - detalle redactado COMPLETO, sin recortar. Va al
- *   log en disco para no perder diagnóstico. Si se omite, se loguea `redactedDetail`.
+ * #5172 · CA-15 / CA-UX-1..CA-UX-3 — el copy al operador:
+ *   - nombra el ARCHIVO CONCRETO resuelto y POR QUÉ MECANISMO (`vía …`). Desde
+ *     que existe la precedencia de D-1, decir sólo "config.yaml" es ambiguo: el
+ *     operador puede estar editando un archivo distinto del que el proceso
+ *     enforza (*wrong-file trap*).
+ *   - tiene DOS variantes. Si la pausa activa NO la generó esta corrupción (un
+ *     marker preexistente que el halt no pisó, por diseño idempotente), NO se
+ *     puede prometer auto-recovery: el paso inverso de #4832 sólo levanta
+ *     markers con `source: 'config-corruption-halt'`.
+ *   - NUNCA instruye borrar `.paused`. Ese texto era stale desde #4832 (el
+ *     operador no tiene que borrar nada) y, peor, es destructivo: si el marker
+ *     activo es una pausa MANUAL deliberada, quien siga la instrucción reanuda
+ *     dispatch que quería detenido, sin ninguna señal.
+ *
+ * @param {string} reason - etiqueta corta, contrato de máquina para el log/marker.
+ * @param {string} redactedDetail - detalle YA redactado (sin valores crudos).
+ * @param {Error} [err] - error tipado del resolver (`ConfigParseViolation` /
+ *        `ConfigSchemaViolation`), del que sale la tríada de copy.
  */
-function haltOnConfigCorruption(reason, redactedDetail, fullDetail) {
+function haltOnConfigCorruption(reason, redactedDetail, err) {
+  // ¿La pausa que va a quedar activa la generó ESTA corrupción, o ya había otra?
+  // Se decide ANTES de escribir, leyendo el marker: es lo que elige la variante
+  // de copy (CA-UX-3).
+  let pausaPreexistente = false;
+  try { pausaPreexistente = fs.existsSync(PAUSE_FILE); } catch { /* best-effort */ }
   // PAUSE_FILE se declara más abajo en el módulo; al ejecutarse esta función
   // (sólo en runtime, nunca en carga) ya está inicializado.
   try {
@@ -1257,9 +1288,32 @@ function haltOnConfigCorruption(reason, redactedDetail, fullDetail) {
   } catch (e) {
     // Si no podemos ni escribir el flag, al menos logueamos.
   }
-  // #5173 CA-11 — el log en disco va SIN recortar: es la vía de diagnóstico.
-  const logDetail = fullDetail || redactedDetail;
-  const safeMsg = `[${new Date().toISOString()}] [pulpo] CORRUPCIÓN config.yaml (${reason}) → .paused global. Detalle: ${logDetail || '(sin detalle)'}`;
+  // CA-UX-6 — un ÚNICO generador de texto (lib/config-schema). Log, Telegram y
+  // el estado de error del dashboard consumen la MISMA tríada; re-redactar por
+  // superficie es como divergen al primer cambio.
+  // El CONTEXTO decide la variante: sólo se puede prometer que "la pausa se
+  // levanta sola" cuando la pausa activa es la que acabamos de generar.
+  const contexto = pausaPreexistente ? 'halt-preexistente' : 'halt-auto';
+  const fallback = {
+    archivo: configSchema.formatConfigPath(CONFIG_PATH),
+    via: 'default',
+    detalle: redactedDetail || reason || 'configuración inválida',
+    accion: 'corregí el archivo',
+  };
+  const describir = (opts) => (err
+    ? configSchema.describeConfigFailure(err, { contexto, archivo: err.archivo || CONFIG_PATH, ...opts })
+    : fallback);
+  // #5173 CA-11 — MISMO generador, dos calibres. El log en disco va SIN recortar
+  // (es la vía de diagnóstico); la alerta va acotada porque Telegram corta en
+  // 4096 chars y, con la raíz del schema cerrada y `allErrors: true`, un config
+  // muy roto genera decenas de errores. Acotar es del generador, no del
+  // call-site: re-redactar acá es exactamente como divergen las superficies.
+  const copia = describir({});
+  const copiaBreve = describir({ maxErrores: 5 });
+  // Una sola línea, grep-friendly: el visor de logs del dashboard sirve por
+  // línea y un bloque multilínea rompe el filtrado.
+  const safeMsg = `[${new Date().toISOString()}] [pulpo] `
+    + configSchema.formatConfigFailureLog(copia, { titulo: 'CONFIG INVÁLIDA — dispatch pausado' });
   try { fs.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'), safeMsg + '\n'); } catch {}
   console.error(safeMsg);
   // Alerta Telegram throttleada y redactada.
@@ -1267,50 +1321,58 @@ function haltOnConfigCorruption(reason, redactedDetail, fullDetail) {
   if (now - lastConfigCorruptionAlertMs > CONFIG_CORRUPTION_ALERT_THROTTLE_MS) {
     lastConfigCorruptionAlertMs = now;
     try {
-      sendTelegram(
-        // #5173 CA-13 — el copy se alinea al auto-recovery real de #4832: la
-        // pausa se levanta sola cuando el config vuelve a validar, no hay que
-        // borrar `.paused` a mano. Si el detalle habla de "clave no permitida",
-        // lo más probable es una sección nueva sin declarar en el schema.
-        `🛑 *Pipeline PAUSADO* — corrupción de \`config.yaml\` (${reason}).\n` +
-        `Detalle (redactado): ${redactedDetail || '(sin detalle)'}\n` +
-        `Corregí \`config.yaml\` y la pausa se levanta sola en el próximo ciclo (~30s).\n` +
-        `Si es una sección nueva, declarala también en \`.pipeline/lib/config-schema.js\`.`
-      );
+      // #5173 CA-11 — a Telegram va la variante ACOTADA; el detalle completo ya
+      // quedó en `pulpo.log` (línea de arriba), que es a donde apunta el copy.
+      sendTelegram(configSchema.formatConfigFailureTelegram(copiaBreve, { pausaPreexistente }));
     } catch { /* best-effort */ }
   }
 }
 
+// #5172 — «¿este error lo tiró el resolver de configuración?». El predicado es
+// del resolver (dueño de los dos errores tipados); acá sólo se le pone alias en
+// castellano para leer los puntos de decisión de este archivo. NO se
+// reimplementa: una segunda copia de la lista de names se desactualiza en
+// silencio y rompe el fail-closed justo cuando tiene que actuar.
+const esViolacionDeConfig = configResolver.isConfigViolation;
+
+// #5172 — `loadConfig()` delega la LECTURA y la VALIDACIÓN en el punto único
+// (`lib/config-resolver`), y conserva acá la POLÍTICA, que es propia del pulpo y
+// de nadie más (D-3 / SEC-2): `haltOnConfigCorruption` + `lastGoodConfig` +
+// auto-recovery de #4832. Centralizar el last-good en el resolver habría
+// reinstalado la degradación silenciosa en los 22 módulos, esta vez sin el
+// `.paused` que la hace visible.
+//
+// `reload: true` es obligatorio: el pulpo hot-recarga cada ~30s y un caché sin
+// invalidación rompería el auto-recovery — el config arreglado nunca se
+// re-leería y la pausa no se levantaría sola (RIESGO BAJO de la receta).
+//
+// CA-5: fail-closed ≠ crash. Se suspende el dispatch, NUNCA `process.exit`.
+//
+// #5173 — la validación de schema NO se repite acá: `configResolver.resolve()`
+// ya corre `validateConfig` y tira `ConfigSchemaViolation` con los `errors`
+// crudos de ajv. Duplicarla sería una segunda copia que se desactualiza en
+// silencio. El chequeo de LADO (`{ origin: 'producto' }`) va SIN activar a
+// propósito: en esta entrega todas las claves siguen viviendo legítimamente en
+// `config.yaml`, así que sólo corre el schema. Lo enciende la Entrega C (#5174),
+// cuando el archivo efectivamente se parta.
 function loadConfig() {
   let raw;
   try {
-    raw = yaml.load(fs.readFileSync(CONFIG_PATH, 'utf8')); // js-yaml v4 safe-by-default (SEC-1)
+    raw = configResolver.resolve({ pipelineDir: PIPELINE, reload: true });
   } catch (e) {
-    // Parse-error de config.yaml = corrupción de estado compartido.
-    // Redactamos: NO incluir el snippet del error (puede volcar líneas del
-    // archivo → SEC-2). Sólo el tipo + posición (línea/col son metadata segura).
-    const pos = (e && e.mark && typeof e.mark.line === 'number')
-      ? ` (línea ${e.mark.line + 1}, col ${(e.mark.column || 0) + 1})`
-      : '';
-    const redacted = `YAML inválido${pos}`;
-    haltOnConfigCorruption('config.yaml parse-error', redacted);
+    // El error ya viene tipado y REDACTADO por el resolver: `{archivo, causa,
+    // linea, columna}`, jamás el `.message` de js-yaml (que trae el snippet
+    // crudo del archivo → SEC-1). Acá sólo se aplica la política.
+    const esSchema = e && e.name === 'ConfigSchemaViolation';
+    const reason = esSchema ? 'config schema' : 'config parse-error';
+    const redacted = esSchema
+      ? formatErrors(e.errors)
+      : `${e && e.causa === 'yaml-invalido' ? 'YAML inválido' : 'configuración ilegible'}`
+        + (e && typeof e.linea === 'number' ? ` (línea ${e.linea}, col ${e.columna})` : '');
+    haltOnConfigCorruption(reason, redacted, e);
     // Fail-fast = suspender dispatch (`.paused`), NO matar el proceso. Devolvemos
     // la última config buena (o {} en el primer boot) para que el loop siga vivo
-    // y pausado: un hot-fix de config.yaml se recarga y reanuda sin restart.
-    return lastGoodConfig || {};
-  }
-  // #5173 — `origin` va SIN setear a propósito: en esta entrega todas las claves
-  // siguen viviendo legítimamente en `config.yaml`, así que sólo corre el schema.
-  // El chequeo de lado (`{ origin: 'producto' }`) lo activa la Entrega C (#5174),
-  // cuando el archivo efectivamente se parta.
-  const { valid, errors } = validateConfig(raw);
-  if (!valid) {
-    // CA-11: acotado a Telegram, completo al log.
-    haltOnConfigCorruption(
-      'config.yaml schema',
-      formatErrorsForHuman(errors),
-      formatErrors(errors)
-    );
+    // y pausado: un hot-fix del archivo se recarga y reanuda sin restart.
     return lastGoodConfig || {};
   }
   lastGoodConfig = raw;
@@ -1329,13 +1391,12 @@ function loadConfig() {
       });
       paused = false;
       // Log auditable (CA-4): qué disparó el halt / config sano detectado / reanudación.
-      log('pulpo', '[#4832] Auto-recovery: config.yaml sano → pausa config-corruption-halt levantada → dispatch reanudado');
+      // #5172 · CA-15 — nombra el archivo concreto que se recuperó, no un genérico.
+      const archivoOk = configSchema.formatConfigPath(CONFIG_PATH);
+      log('pulpo', `[#4832] Auto-recovery: ${archivoOk} volvió a ser válida → pausa config-corruption-halt levantada → dispatch reanudado`);
       // Alerta Telegram redactada (sin volcar contenido del marker, SEC-2/A09).
       try {
-        sendTelegram(
-          '✅ *Pipeline REANUDADO* — `config.yaml` volvió a parsear OK.\n' +
-          'La pausa automática por corrupción se levantó sola (auto-recovery #4832).'
-        );
+        sendTelegram(configSchema.formatConfigRecoveryTelegram(archivoOk));
       } catch { /* best-effort */ }
     }
   } catch (e) {
@@ -16111,23 +16172,57 @@ function realignAllowlistToActiveWave(desync, opts = {}) {
   // #4577 GATE 3 — INVARIANTE log-antes-de-mutar (RS-2): registrar el realign
   // de la allowlist a la ola activa ANTES de delegar la mutación (incidente
   // #4566, cambio de cohorte de la ola). Best-effort: el audit nunca bloquea el
-  // realign. La politica wait-confirmation se evalua aca mismo antes de mutar.
+  // realign.
   try {
     require('./lib/kernel-actions-audit').safeAppendAction({
       action: 'realign-allowlist', impact: 'alto',
       reason: `realignAllowlistToActiveWave: converger allowlist ← ola activa (desync=${desync && desync.classification ? desync.classification : 'n/a'})`,
       authorizedBy: 'wave-promote',
     });
-    const gate3 = require('./lib/kernel-action-policy').enforceActionPolicy('realign-allowlist', {
+  } catch { /* best-effort: el audit nunca bloquea el realign */ }
+
+  // #5172 — La política wait-confirmation se evalúa ACÁ, antes de mutar, y en su
+  // PROPIO try/catch — separado del audit.
+  //
+  // Acá había un único `catch {}` MUDO que envolvía audit + gate. Mientras
+  // `enforceActionPolicy` se comía sus errores de config puertas adentro
+  // (`catch { return {} }` → DEFAULT_POLICY) el catch mudo no se notaba; desde
+  // que el gate PROPAGA el error tipado del resolver, ese catch se lo tragaba y
+  // el flujo seguía derecho hasta `realignActiveWaveDispatch`: con config.yaml
+  // corrupto GATE 3 quedaba BYPASSEADO y la allowlist se mutaba igual. Es
+  // exactamente la clase de fallo silencioso que #5172 existe para eliminar.
+  //
+  // Ahora: SIN política legible NO se muta. Fail-closed ≠ crash (D-3) — se
+  // devuelve veredicto negativo, el pulpo sigue vivo, y cuando el operador
+  // corrige el archivo el auto-recovery de #4832 reanuda solo.
+  let gate3;
+  try {
+    gate3 = require('./lib/kernel-action-policy').enforceActionPolicy('realign-allowlist', {
       impact: 'alto',
       reason: `realignAllowlistToActiveWave: converger allowlist a ola activa (desync=${desync && desync.classification ? desync.classification : 'n/a'})`,
       confirmerChatId: opts.confirmerChatId,
       operatorAllowlist: opts.operatorAllowlist,
     });
-    if (!gate3.proceed) {
-      return { ok: false, reason: 'gate3_confirmation_required', policy: gate3 };
+  } catch (e) {
+    if (esViolacionDeConfig(e)) {
+      // Copy por el generador ÚNICO (CA-UX-6): archivo + causa + acción, ya
+      // redactados. Nunca el contenido crudo del config (SEC-1).
+      const copia = configSchema.describeConfigFailure(e, { archivo: e.archivo || CONFIG_PATH });
+      log('pulpo', configSchema.formatConfigFailureLog(copia, {
+        titulo: 'GATE 3 realign-allowlist no enforzable — realign ABORTADO (allowlist sin mutar)',
+      }));
+      return { ok: false, reason: 'gate3_config_unreadable', config_error: copia };
     }
-  } catch {}
+    // Error ajeno al config: `enforceActionPolicy` ya es defensivo puertas
+    // adentro (notify/append tienen su propio catch), así que esto sólo puede
+    // ser un bug. Se preserva la tolerancia previa hacia disponibilidad (RS-5),
+    // pero deja de ser MUDO: queda traza de que el gate no rindió veredicto.
+    log('pulpo', `GATE 3 realign-allowlist: error inesperado al enforzar política (${(e && e.name) || 'Error'}) — se continúa por disponibilidad`);
+    gate3 = null;
+  }
+  if (gate3 && !gate3.proceed) {
+    return { ok: false, reason: 'gate3_confirmation_required', policy: gate3 };
+  }
   // #4436 — el algoritmo de realineación se extrajo a `lib/wave-dispatch.js`
   // para reusarlo desde el dashboard (relanzar despacho de la ola activa) sin
   // duplicar lógica. El Pulpo delega manteniendo su `authorizedBy:'wave-promote'`
@@ -16187,7 +16282,16 @@ function autoResolveReductiveDesyncByClosure(probe, opts = {}) {
       classification: 'reductivo-por-cierre',
       issues: issuesCtx,
     });
-  } catch { /* best-effort: fail-open hacia disponibilidad para esta acción segura */ }
+  } catch (e) {
+    // #5172 — dejó de ser mudo. A diferencia de `realign-allowlist`, acá NO hay
+    // gate que bypassear: `desync-autoresolve` es notify-and-proceed y el
+    // default explícito (`policy = { proceed: true }`, l.16259) ya declara el
+    // fail-open hacia disponibilidad para esta acción segura. El control de
+    // flujo se preserva tal cual; lo único que cambia es que la pérdida del
+    // aviso al operador deja traza en vez de desaparecer.
+    require('./lib/kernel-action-policy').logPolicyEnforcementFailure(
+      'pulpo', 'desync-autoresolve', e);
+  }
   if (policy && policy.proceed === false) {
     return { ok: false, reason: 'policy_block' };
   }

@@ -15,8 +15,15 @@ const gate = require('./deliverable-gate');
 const idx = require('./deliverable-index');
 
 // Root temporal aislado por corrida — el store cae en <root>/deliverables/.
+// #5172 — ver nota en write-deliverable.test.js: el sandbox escribe
+// `<root>/.pipeline/config.yaml` con `pipelines: {}` (config VÁLIDA sin fases
+// declaradas → `FALLBACK_PHASES`), porque un `.pipeline/` sin config.yaml ahora
+// es un fallo de lectura y no degrada en silencio. Ninguna aserción cambia.
 function tmpRoot() {
-    return fs.mkdtempSync(path.join(os.tmpdir(), 'dg-test-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dg-test-'));
+    fs.mkdirSync(path.join(root, '.pipeline'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.pipeline', 'config.yaml'), 'pipelines: {}\n');
+    return root;
 }
 
 const TS = '2026-07-06T10:00:00.000Z';

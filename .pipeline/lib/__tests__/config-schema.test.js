@@ -15,6 +15,9 @@ const {
     formatErrorsForHuman,
     sanitizeKeyName,
     resolveSide,
+    describeConfigFailure,
+    formatConfigFailureLog,
+    formatConfigFailureTelegram,
     ConfigSchemaViolation,
     PROVIDER_ENUM,
     SIDE_MAP,
@@ -402,6 +405,84 @@ test('#5173 sanea claves hostiles en los tres caminos que llegan a Telegram', ()
         assert.strictEqual((salida.match(/\*/g) || []).length % 2, 0);
         assert.strictEqual((salida.match(/`/g) || []).length % 2, 0);
     }
+});
+
+// Construye la violación tipada tal como la emite `config-resolver.resolve()`,
+// que es la ÚNICA entrada de `haltOnConfigCorruption` desde #5172.
+function violacionDeSchema(cfg) {
+    const { valid, errors } = validateConfig(cfg);
+    assert.strictEqual(valid, false, 'el caso de prueba tiene que ser inválido');
+    const e = new ConfigSchemaViolation(formatErrors(errors), errors,
+        { archivo: '/repo/.pipeline/config.yaml', via: 'default' });
+    e.causa = 'schema-invalido';
+    return e;
+}
+
+// Desde #5172 el texto que viaja a Telegram ya NO lo arma pulpo.js con un
+// template inline: sale de `describeConfigFailure` + `formatConfigFailureTelegram`.
+// El test de arriba mide `formatErrorsForHuman`, que es un ESLABÓN de esa cadena,
+// no su salida. Sin este test el saneo queda protegido en el eslabón y desprotegido
+// en la superficie real — exactamente el agujero que rebotó tres veces, corrido un
+// nivel más arriba.
+test('#5173 el copy que viaja a Telegram sanea la clave hostil (superficie de #5172)', () => {
+    const CLAVE_HOSTIL = 'ev*il' + String.fromCharCode(10) + '_INYECTADO_`x';
+    const anidado = validConfig();
+    anidado.concurrencia[CLAVE_HOSTIL] = 'no-integer';
+    const raiz = validConfig();
+    raiz[CLAVE_HOSTIL] = 1;
+
+    for (const cfg of [anidado, raiz]) {
+        const err = violacionDeSchema(cfg);
+        const superficies = [
+            formatConfigFailureTelegram(
+                describeConfigFailure(err, { contexto: 'halt-auto', maxErrores: 5 }),
+                { pausaPreexistente: false }),
+            formatConfigFailureLog(
+                describeConfigFailure(err, { contexto: 'halt-auto' }),
+                { titulo: 'CONFIG INVÁLIDA' }),
+        ];
+        for (const texto of superficies) {
+            assert.ok(!texto.includes('ev*il'), 'el asterisco crudo no debe viajar');
+            assert.ok(!texto.includes('ev*il' + String.fromCharCode(10)),
+                'el salto de línea crudo falsificaría un renglón de la alerta');
+            // Markdown balanceado: un `*` o un backtick impar hace que Telegram
+            // responda 400 y el aviso del halt NUNCA llegue.
+            assert.strictEqual((texto.match(/\*/g) || []).length % 2, 0,
+                'asteriscos impares rompen el parseo de Markdown');
+            assert.strictEqual((texto.match(/`/g) || []).length % 2, 0,
+                'backticks impares rompen el parseo de Markdown');
+            // Saneada, no omitida: el operador tiene que poder identificar la clave.
+            assert.match(texto, /ev\?il\?_INYECTADO_\?x/);
+        }
+    }
+});
+
+// CA-11 sobre la superficie real: el cap es del generador, no del call-site.
+test('#5173 el copy de Telegram va acotado y el del log completo', () => {
+    const cfg = validConfig();
+    for (let i = 0; i < 20; i++) cfg['seccion_desconocida_' + i] = { x: 1 };
+    const err = violacionDeSchema(cfg);
+
+    const telegram = formatConfigFailureTelegram(
+        describeConfigFailure(err, { contexto: 'halt-auto', maxErrores: 5 }),
+        { pausaPreexistente: false });
+    const log = formatConfigFailureLog(
+        describeConfigFailure(err, { contexto: 'halt-auto' }),
+        { titulo: 'CONFIG INVÁLIDA' });
+
+    assert.ok(telegram.length < 4096, 'Telegram corta en 4096 chars');
+    assert.match(telegram, /\(\+\d+ error\/es más/);
+    const nombradasEnTelegram = [...Array(20).keys()]
+        .filter((i) => telegram.includes('seccion_desconocida_' + i)).length;
+    assert.strictEqual(nombradasEnTelegram, 5, 'la alerta nombra 5 y cuenta el resto');
+
+    // El log es la vía de diagnóstico: no pierde ninguna, y sigue siendo una sola
+    // línea (el visor de logs del dashboard sirve por línea).
+    for (let i = 0; i < 20; i++) assert.match(log, new RegExp('seccion_desconocida_' + i));
+    assert.strictEqual(log.split(String.fromCharCode(10)).length, 1);
+
+    // CA-13: con la raíz cerrada, el copy apunta a declarar la sección nueva.
+    assert.match(telegram, /config-schema\.js/);
 });
 
 test('#5173 sanitizeKeyName acota a 64 chars y colapsa lo no imprimible', () => {

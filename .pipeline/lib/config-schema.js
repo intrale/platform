@@ -30,8 +30,10 @@
 //
 // En esta entrega todavía NO se movió ninguna clave de archivo: todo vive
 // legítimamente en `config.yaml`. Por eso el chequeo de lado es **opt-in** vía
-// `validateConfig(obj, { origin: 'producto' })`. `pulpo.loadConfig` sigue
-// llamando `validateConfig(raw)` ⇒ cero cambio de comportamiento.
+// `validateConfig(obj, { origin: 'producto' })`. Desde #5172 el único que llama
+// a `validateConfig` en el arranque es `lib/config-resolver.resolve()`, y lo
+// hace SIN `origin` ⇒ cero cambio de comportamiento. Lo enciende la Entrega C
+// (#5174), cuando el archivo efectivamente se parta.
 //
 // SEC-1: este módulo NO toca js-yaml ni su schema de deserialización. Sólo
 // valida un objeto ya parseado. La carga segura (safe-by-default v4) es
@@ -43,6 +45,7 @@
 // =============================================================================
 'use strict';
 
+const path = require('node:path');
 const Ajv = require('ajv');
 
 // -----------------------------------------------------------------------------
@@ -53,11 +56,54 @@ class ConfigSchemaViolation extends Error {
     /**
      * @param {string} message - mensaje YA redactado (sin valores crudos).
      * @param {Array<object>} [errors] - errores redactados (path + detail).
+     * @param {{archivo?: string, via?: string}} [meta] - #5172: ruta resuelta y
+     *        mecanismo de resolución, para que el copy al operador pueda nombrar
+     *        el archivo CONCRETO que falló (CA-15 / CA-UX-1). Opcional: los
+     *        llamadores previos a #5172 siguen construyendo el error con 2 args.
      */
-    constructor(message, errors) {
+    constructor(message, errors, meta) {
         super(message);
         this.name = 'ConfigSchemaViolation';
         this.errors = Array.isArray(errors) ? errors : [];
+        const m = meta && typeof meta === 'object' ? meta : {};
+        this.archivo = m.archivo || null;
+        this.via = m.via || null;
+        this.causa = 'schema-invalido';
+    }
+}
+
+// -----------------------------------------------------------------------------
+// #5172 · Error tipado de parse-error de config (clasificado como 'corruption')
+// -----------------------------------------------------------------------------
+//
+// SEC-1 / CA-14 — este error expone SÓLO `{ archivo, causa, linea, columna }`.
+// NUNCA encadena (`cause`) ni reexpone el error original de `js-yaml`: su
+// `.message` incluye el snippet crudo del archivo (y con él, cualquier valor
+// con forma de secreto que esté en las líneas adyacentes).
+//
+// D-G — el `name` es parte del contrato: `lib/error-classifier.js` clasifica por
+// lista cerrada de names. Renombrarlo hace que la corrupción de config deje de
+// clasificarse como 'corruption' (regresión silenciosa).
+//
+// NO se setea `err.code`: `error-classifier.classify()` mira `err.code` ANTES
+// que `err.name`, y 'ENOENT' está en TRANSIENT_CODES. Un `code: 'ENOENT'` acá
+// degradaría la corrupción de config a 'transient'. El código de máquina vive
+// en `causa`, que el clasificador no mira.
+class ConfigParseViolation extends Error {
+    /**
+     * @param {string} message - mensaje YA redactado (sin contenido del archivo).
+     * @param {{archivo?: string, via?: string, causa?: string,
+     *          linea?: number|null, columna?: number|null}} [meta]
+     */
+    constructor(message, meta) {
+        super(message);
+        this.name = 'ConfigParseViolation';
+        const m = meta && typeof meta === 'object' ? meta : {};
+        this.archivo = m.archivo || null;
+        this.via = m.via || null;
+        this.causa = m.causa || 'config-ilegible';
+        this.linea = typeof m.linea === 'number' ? m.linea : null;
+        this.columna = typeof m.columna === 'number' ? m.columna : null;
     }
 }
 
@@ -852,6 +898,223 @@ function formatErrorsForHuman(errors, max = 5) {
     return rest > 0 ? `${shown}; (+${rest} error/es más — ver pulpo.log)` : shown;
 }
 
+// =============================================================================
+// #5172 · Redacción de parse-errors de YAML (SEC-1 / CA-14)
+// =============================================================================
+
+/**
+ * Reduce un error de `js-yaml` a metadata SEGURA: línea y columna.
+ *
+ * Extraído de `pulpo.js:1288-1294`, donde vivía inline y era el ÚNICO lector de
+ * los 28 que redactaba bien. Los otros 27 se tragaban el error en un `catch`
+ * mudo; al pasar todos a reportar, ese redactor tiene que ser reusable o la
+ * fuga pasa de cero a veintidós call-sites.
+ *
+ * `e.message` de js-yaml incluye un snippet del archivo:
+ *
+ *     bad indentation of a mapping entry (3:17)
+ *      1 | gate:
+ *      2 |   token: SUPER-SECRETO-ABC123      <-- el valor crudo viaja acá
+ *      3 |    mal_indentado: x
+ *
+ * Por eso esta función NO devuelve nada derivado de `e.message`: sólo `e.mark`,
+ * que es posición numérica.
+ *
+ * @param {*} e - error de js-yaml (YAMLException) o cualquier cosa.
+ * @returns {{causa: string, linea: number|null, columna: number|null}}
+ */
+function redactYamlParseError(e) {
+    const mark = e && e.mark && typeof e.mark === 'object' ? e.mark : null;
+    const linea = mark && typeof mark.line === 'number' ? mark.line + 1 : null;
+    const columna = mark && typeof mark.column === 'number' ? mark.column + 1 : null;
+    return { causa: 'yaml-invalido', linea, columna };
+}
+
+// =============================================================================
+// #5172 · Generador ÚNICO del copy al operador (CA-15 / CA-UX-1..CA-UX-6)
+// =============================================================================
+//
+// Las tres superficies (log, Telegram, `configErrorState` del dashboard) y los
+// CLIs dicen lo mismo porque el texto se genera UNA SOLA VEZ acá. Prohibido
+// re-redactar por superficie: así es como divergen al primer cambio.
+//
+// Estructura obligatoria: tríada **archivo · causa · acción**, más el mecanismo
+// de resolución (`vía`) — sin él el operador puede estar editando un archivo
+// distinto del que el proceso enforza (*wrong-file trap*, motivo de CA-15).
+
+/**
+ * Tabla `causa` (contrato de máquina) → texto en español (superficie operador).
+ * CA-UX-4: `ENOENT` / `not-a-file` / `empty-or-not-a-map` NUNCA se muestran crudos.
+ */
+const CAUSA_COPY = Object.freeze({
+    'ENOENT': {
+        texto: 'no encontré el archivo de configuración',
+        accion: 'verificá la ruta; si el proceso corre con override, revisá a qué directorio apunta (el «vía» lo dice)',
+    },
+    'not-a-file': {
+        texto: 'la ruta de configuración no es un archivo regular',
+        accion: 'apunta a un directorio o a un link roto — corregí la raíz del pipeline',
+    },
+    'empty-or-not-a-map': {
+        texto: 'el archivo está vacío o no es un mapa de claves',
+        accion: '¿quedó a medio guardar? restaurá la última versión buena',
+    },
+    'yaml-invalido': {
+        texto: 'YAML inválido',
+        accion: 'corregí esa línea (suele ser indentación o dos puntos sueltos)',
+    },
+    'schema-invalido': {
+        texto: 'la configuración no cumple el esquema',
+        // #5173 CA-13 — con la raíz cerrada (`additionalProperties: false`) la
+        // causa más probable de este error es una sección NUEVA que todavía no
+        // se declaró en el schema. Sin nombrar el archivo, el operador tiende a
+        // borrar la sección buena creyendo que sobra.
+        accion: 'ajustá las claves que lista el detalle; si es una sección nueva, declarala también en .pipeline/lib/config-schema.js',
+    },
+    'config-ilegible': {
+        texto: 'no pude leer la configuración',
+        accion: 'revisá el archivo y sus permisos',
+    },
+});
+
+/**
+ * Frases de contexto que se suman a la acción de la tabla. Cada contexto es una
+ * promesa distinta sobre qué pasa después; mezclarlas es lo que produce el copy
+ * destructivo que CA-UX-3 viene a matar.
+ */
+const CONTEXTO_ACCION = Object.freeze({
+    // Variante A — la pausa la generó ESTA corrupción ⇒ auto-recovery #4832.
+    'halt-auto': 'la pausa se levanta sola en el próximo ciclo (~30s) — no hace falta borrar ningún archivo',
+    // Variante B — ya había un marker de pausa preexistente que NO se pisó. El
+    // auto-recovery sólo levanta markers con source 'config-corruption-halt', así
+    // que acá NO se puede prometer que se levante sola.
+    'halt-preexistente': 'la pausa activa no la generó esta corrupción, así que no se levanta sola: si reanudás con la configuración todavía inválida, el pipeline se vuelve a pausar',
+    // CLI — nada de defaults silenciosos: el resultado sería ficticio.
+    'cli': 'volvé a ejecutar. No se aplicaron defaults',
+});
+
+/**
+ * Devuelve la ruta lista para mostrar: relativa a la raíz del repo si el archivo
+ * está adentro, absoluta si está afuera (tmpdirs, overrides). Legible en el caso
+ * normal, inequívoca en el raro, y evita volcar layout de filesystem a Telegram.
+ *
+ * @param {string} archivo - ruta absoluta.
+ * @param {string} [repoRoot] - raíz del repo; por defecto la del checkout actual.
+ * @returns {string}
+ */
+function formatConfigPath(archivo, repoRoot) {
+    if (!archivo) return '(desconocido)';
+    const root = repoRoot || path.resolve(__dirname, '..', '..');
+    const rel = path.relative(root, archivo);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return archivo;
+    return rel.split(path.sep).join('/');
+}
+
+/**
+ * Genera el estado de fallo de configuración: la ÚNICA fuente del copy.
+ *
+ * @param {Error} err - `ConfigParseViolation` o `ConfigSchemaViolation`.
+ * @param {{contexto?: string, repoRoot?: string, archivo?: string, via?: string,
+ *          maxErrores?: number}} [opts]
+ *        `contexto` ∈ {'halt-auto','halt-preexistente','cli'}; sin contexto la
+ *        acción es sólo la de la tabla de causas (caso dashboard).
+ *        `maxErrores` (#5173 CA-11) acota la lista de errores de schema para
+ *        superficies con tope de tamaño (Telegram). Sin él sale completa, que
+ *        es lo que consume el log en disco.
+ * @returns {{ok: false, archivo: string, via: string, causa: string,
+ *            linea: number|null, columna: number|null, detalle: string,
+ *            accion: string, ts: string}}
+ */
+function describeConfigFailure(err, opts = {}) {
+    const e = err && typeof err === 'object' ? err : {};
+    const causa = CAUSA_COPY[e.causa] ? e.causa : 'config-ilegible';
+    const copy = CAUSA_COPY[causa];
+    const linea = typeof e.linea === 'number' ? e.linea : null;
+    const columna = typeof e.columna === 'number' ? e.columna : null;
+    const archivoAbs = opts.archivo || e.archivo || null;
+    const via = opts.via || e.via || 'default';
+
+    // `detalle` sale YA redactado: la UI lo renderiza tal cual (CA-UX-5) y no
+    // re-deriva copy desde `causa`.
+    let detalle = copy.texto;
+    if (causa === 'yaml-invalido' && linea !== null) {
+        detalle += ` — línea ${linea}` + (columna !== null ? `, col ${columna}` : '');
+    } else if (causa === 'schema-invalido') {
+        // `formatErrors(redactErrors(...))`: path + regla, nunca el valor crudo.
+        // #5173 CA-11 — con `opts.maxErrores` la lista sale ACOTADA (superficies
+        // con tope de tamaño: Telegram corta en 4096 chars y, con la raíz del
+        // schema cerrada y `allErrors: true`, un config muy roto genera decenas
+        // de errores). Sin `maxErrores` sale COMPLETA: es lo que consume el log
+        // en disco, que es la vía de diagnóstico a la que apunta el copy.
+        const detalleSchema = (typeof opts.maxErrores === 'number'
+            ? formatErrorsForHuman(e.errors, opts.maxErrores)
+            : formatErrors(e.errors)) || e.message || '';
+        if (detalleSchema) detalle += `: ${detalleSchema}`;
+    }
+
+    const extra = CONTEXTO_ACCION[opts.contexto];
+    const accion = extra ? `${copy.accion}; ${extra}` : copy.accion;
+
+    return {
+        ok: false,
+        archivo: formatConfigPath(archivoAbs, opts.repoRoot),
+        via,
+        causa,
+        linea,
+        columna,
+        detalle,
+        accion,
+        ts: new Date().toISOString(),
+    };
+}
+
+/**
+ * Línea única grep-friendly para `logs/*.log` y stderr. Una sola línea a
+ * propósito: el visor de logs del dashboard sirve por línea y un bloque
+ * multilínea rompe el filtrado.
+ *
+ * @param {object} estado - salida de `describeConfigFailure`.
+ * @param {{titulo?: string}} [opts]
+ * @returns {string}
+ */
+function formatConfigFailureLog(estado, opts = {}) {
+    const titulo = opts.titulo || 'CONFIG INVÁLIDA';
+    return `${titulo} | archivo: ${estado.archivo} (vía ${estado.via})`
+        + ` | causa: ${estado.detalle} | acción: ${estado.accion}`;
+}
+
+/**
+ * Alerta Telegram de configuración inválida. Dos variantes obligatorias
+ * (CA-UX-3), decididas por si la pausa activa la generó ESTA corrupción o ya
+ * existía. En ninguna se instruye borrar `.paused` (obsoleto desde #4832 y
+ * destructivo si el marker es una pausa manual del operador).
+ *
+ * @param {object} estado - salida de `describeConfigFailure`.
+ * @param {{pausaPreexistente?: boolean}} [opts]
+ * @returns {string}
+ */
+function formatConfigFailureTelegram(estado, opts = {}) {
+    const encabezado = opts.pausaPreexistente
+        ? '🛑 *Configuración inválida* — el dispatch ya estaba pausado por otro motivo.'
+        : '🛑 *Pipeline pausado — configuración inválida*';
+    const via = opts.pausaPreexistente ? '' : `\n_(ruta resuelta vía ${estado.via})_`;
+    return `${encabezado}\n\n`
+        + `*Archivo:* \`${estado.archivo}\`${via}\n`
+        + `*Causa:* ${estado.detalle}\n\n`
+        + `*Qué hacer:* ${estado.accion}.`;
+}
+
+/**
+ * Alerta Telegram de reanudación por auto-recovery (#4832).
+ * @param {string} archivo - ruta ya formateada por `formatConfigPath`.
+ * @returns {string}
+ */
+function formatConfigRecoveryTelegram(archivo) {
+    return '✅ *Pipeline reanudado* — la configuración volvió a ser válida.\n\n'
+        + `*Archivo:* \`${archivo || '(desconocido)'}\`\n`
+        + 'La pausa automática por configuración inválida se levantó sola (auto-recovery #4832).';
+}
+
 module.exports = {
     validateConfig,
     redactErrors,
@@ -859,7 +1122,15 @@ module.exports = {
     formatErrorsForHuman,
     sanitizeKeyName,
     resolveSide,
+    redactYamlParseError,
+    describeConfigFailure,
+    formatConfigPath,
+    formatConfigFailureLog,
+    formatConfigFailureTelegram,
+    formatConfigRecoveryTelegram,
+    CAUSA_COPY,
     ConfigSchemaViolation,
+    ConfigParseViolation,
     PROVIDER_ENUM,
     SIDE_MAP,
     AUTHORITY_PREFIXES,

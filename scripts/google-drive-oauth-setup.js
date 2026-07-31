@@ -16,9 +16,12 @@ const fs = require("fs");
 const path = require("path");
 const http = require("http");
 const https = require("https");
+const os = require("os");
 const { exec } = require("child_process");
 
-const CONFIG_PATH = path.resolve(__dirname, "..", ".claude", "hooks", "telegram-config.json");
+// #5172 — Store externo: unica ubicacion que sobrevive al `reset --hard` del
+// respawn. NO escribir credenciales en archivos versionados del repo.
+const STORE_PATH = path.join(os.homedir(), ".claude", "secrets", "credentials.json");
 
 const clientId = process.argv[2];
 const clientSecret = process.argv[3];
@@ -105,17 +108,35 @@ const server = http.createServer(function(req, res) {
                 console.log("  refresh_token: " + tokens.refresh_token.substring(0, 20) + "...");
                 console.log("  expires_in: " + tokens.expires_in + "s");
 
-                // Guardar en telegram-config.json
-                var config = {};
-                try { config = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")); } catch(e) {}
+                // #5172 — Persistir en el store EXTERNO (fuente canonica).
+                // telegram-config.json es tracked por git: su copia commiteada no
+                // tiene claves google_*, asi que cada respawn con `reset --hard`
+                // borraba estas credenciales y la evidencia de QA dejaba de subirse.
+                // ~/.claude/secrets/credentials.json sobrevive al reset.
+                var savedTo = [];
+                try {
+                    var store = {};
+                    try { store = JSON.parse(fs.readFileSync(STORE_PATH, "utf8")); } catch(e) {}
+                    store.google_drive = store.google_drive || {};
+                    store.google_drive.oauth_client_id = clientId;
+                    store.google_drive.oauth_client_secret = clientSecret;
+                    store.google_drive.oauth_refresh_token = tokens.refresh_token;
 
-                config.google_oauth_client_id = clientId;
-                config.google_oauth_client_secret = clientSecret;
-                config.google_oauth_refresh_token = tokens.refresh_token;
+                    fs.mkdirSync(path.dirname(STORE_PATH), { recursive: true });
+                    fs.writeFileSync(STORE_PATH, JSON.stringify(store, null, 2), { mode: 0o600 });
+                    savedTo.push(STORE_PATH);
+                } catch(e) {
+                    console.log("ADVERTENCIA: no se pudo escribir el store externo " + STORE_PATH + ": " + e.message);
+                }
 
-                fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
                 console.log("");
-                console.log("Guardado en " + CONFIG_PATH);
+                if (savedTo.length) {
+                    console.log("Guardado en " + savedTo.join(", "));
+                    console.log("El pipeline lo hidrata via .pipeline/lib/credentials.js (google_drive.*).");
+                } else {
+                    console.log("NO se pudo persistir el token. Revisar permisos de " + STORE_PATH + ".");
+                    process.exitCode = 1;
+                }
                 console.log("Listo — el refresh token no expira si la app esta publicada.");
 
             } catch(e) {
