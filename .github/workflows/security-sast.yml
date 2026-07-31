@@ -231,7 +231,10 @@ jobs:
           BASE_ALLOWLIST="$GITHUB_WORKSPACE/.base/.pipeline/secret-scan-allowlist.json"
           if [ ! -f "$BASE_ALLOWLIST" ]; then
             BASE_ALLOWLIST="$RUNNER_TEMP/secret-scan-bootstrap-allowlist.json"
-            printf '{"paths":[],"globs":[]}\n' > "$BASE_ALLOWLIST"
+            # Política bootstrap confiable: el base aún no tiene allowlist.
+            # Excluye sólo el fixture sintético que instala este mismo control.
+            printf '{"paths":[".pipeline/tests/precommit-secret-scan-content.test.js"],"globs":[]}\n' \
+              > "$BASE_ALLOWLIST"
           fi
           node .pipeline/lib/precommit-secret-scan.js \
             --mode=range --base=${{ steps.base.outputs.sha }} --head=$GITHUB_SHA \

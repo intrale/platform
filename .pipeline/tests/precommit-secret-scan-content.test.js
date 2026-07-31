@@ -95,7 +95,7 @@ test('scanner real bloquea un secreto staged sin depender del path', () => {
   assert.equal(result.exitCode, 1);
 });
 
-test('CI ejecuta el scanner de HEAD y bloquea un rango aunque base tenga scanner antiguo', () => {
+test('CI bootstrap permite el fixture benigno y bloquea un secreto fuera de él', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'secret-scan-range-'));
   execFileSync('git', ['init'], { cwd: directory });
   execFileSync('git', ['config', 'user.email', 'pipeline@example.invalid'], { cwd: directory });
@@ -110,6 +110,27 @@ test('CI ejecuta el scanner de HEAD y bloquea un rango aunque base tenga scanner
   execFileSync('git', ['commit', '-m', 'base con scanner antiguo'], { cwd: directory });
   const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: directory, encoding: 'utf8' }).trim();
 
+  const bootstrapAllowlist = path.join(directory, 'bootstrap-allowlist.json');
+  fs.writeFileSync(bootstrapAllowlist, JSON.stringify({
+    paths: ['.pipeline/tests/precommit-secret-scan-content.test.js'],
+    globs: [],
+  }));
+  const fixtureDir = path.join(directory, '.pipeline', 'tests');
+  fs.mkdirSync(fixtureDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(fixtureDir, 'precommit-secret-scan-content.test.js'),
+    fs.readFileSync(__filename),
+  );
+  execFileSync('git', ['add', '.'], { cwd: directory });
+  execFileSync('git', ['commit', '-m', 'agrega fixture benigno'], { cwd: directory });
+
+  const scanner = path.join(__dirname, '..', 'lib', 'precommit-secret-scan.js');
+  const benign = spawnSync(process.execPath, [
+    scanner, '--mode=range', `--base=${base}`, '--head=HEAD', `--cwd=${directory}`,
+    `--allowlist=${bootstrapAllowlist}`, '--format=github',
+  ], { encoding: 'utf8' });
+  assert.equal(benign.status, 0, benign.stderr);
+
   const nested = path.join(directory, '.claude', 'hooks');
   fs.mkdirSync(nested, { recursive: true });
   const token = ['gh', 'p_', 'abcdefghijklmnopqrstuvwxyz', 'ABCDEFGHIJKLMN'].join('');
@@ -117,10 +138,9 @@ test('CI ejecuta el scanner de HEAD y bloquea un rango aunque base tenga scanner
   execFileSync('git', ['add', '.'], { cwd: directory });
   execFileSync('git', ['commit', '-m', 'agrega secreto sintetico'], { cwd: directory });
 
-  const scanner = path.join(__dirname, '..', 'lib', 'precommit-secret-scan.js');
   const result = spawnSync(process.execPath, [
     scanner, '--mode=range', `--base=${base}`, '--head=HEAD', `--cwd=${directory}`,
-    `--allowlist=${EMPTY_ALLOWLIST}`, '--format=github',
+    `--allowlist=${bootstrapAllowlist}`, '--format=github',
   ], { encoding: 'utf8' });
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stderr, /audit-5244\.json/);
@@ -135,6 +155,10 @@ test('CI ejecuta el scanner de HEAD y bloquea un rango aunque base tenga scanner
   assert.doesNotMatch(workflow, /node \.base\/\.pipeline\/lib\/precommit-secret-scan\.js/);
   assert.match(workflow, /--sanitizer=.*\.base\/\.pipeline\/sanitizer\.js/);
   assert.match(workflow, /BASE_ALLOWLIST=.*\.base\/\.pipeline\/secret-scan-allowlist\.json/);
-  assert.match(workflow, /printf '\{"paths":\[\],"globs":\[\]\}/);
+  assert.match(
+    workflow,
+    /printf '\{"paths":\["\.pipeline\/tests\/precommit-secret-scan-content\.test\.js"\],"globs":\[\]\}/,
+  );
+  assert.doesNotMatch(workflow, /secret-scan-bootstrap-allowlist[\s\S]*?"globs":\[[^]]+]/);
   assert.match(workflow, /--allowlist="\$BASE_ALLOWLIST"/);
 });
