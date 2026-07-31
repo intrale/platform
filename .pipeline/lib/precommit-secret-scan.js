@@ -3,9 +3,15 @@
 
 // Escanea líneas agregadas, agrupadas por hunk para conservar secretos
 // multilínea. El mismo entrypoint sirve al pre-commit y a CI.
+//
+// #5244 rev-2 — el criterio de bloqueo NO es `sanitize()` completo. `sanitize()`
+// es modo REDACCIÓN (sobre-redactar cuesta cero); acá es modo LINT (sobre-redactar
+// frena al dev). `secret-scan-lint.js` separa los dos conjuntos de patrones y
+// agrega el escape por línea `secret-scan:ignore`. Ver su cabecera.
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { loadAllowlist, whichAllowlistEntry } = require('./secret-allowlist');
+const { IGNORE_MARKER, createLintSanitizer, stripIgnoredLines } = require('./secret-scan-lint');
 
 const DEFAULT_ALLOWLIST = path.join(__dirname, '..', 'secret-scan-allowlist.json');
 const DEFAULT_SANITIZER = path.join(__dirname, '..', 'sanitizer.js');
@@ -113,7 +119,11 @@ function collectAddedHunks({ mode = 'staged', base, head = 'HEAD', cwd = process
   return parseHunks(output);
 }
 
-function findingFor(hunk, sanitizer = require(DEFAULT_SANITIZER).sanitize) {
+function defaultLintSanitizer(sanitizerPath = DEFAULT_SANITIZER) {
+  return createLintSanitizer(require(sanitizerPath));
+}
+
+function findingFor(hunk, sanitizer = defaultLintSanitizer()) {
   // #5244 — git detecta binarios mirando los primeros ~8000 bytes: un \0 más
   // allá de ese umbral llega acá como texto. Descartar el hunk dejaba el
   // archivo entero sin escanear (con -U0 un alta es un solo hunk), así que un
@@ -122,8 +132,11 @@ function findingFor(hunk, sanitizer = require(DEFAULT_SANITIZER).sanitize) {
   if (String(hunk.text).includes('\0')) {
     return { path: hunk.path, line: hunk.startLine, error: 'NUL en el contenido agregado: no es escaneable (fail-closed)' };
   }
+  // #5244 rev-2 — escape por línea. Se aplica antes de sanitizar para que el
+  // delta de redacciones no vea lo que el dev marcó explícitamente.
+  const scannable = stripIgnoredLines(hunk.text).text;
   let sanitized;
-  try { sanitized = sanitizer(hunk.text); } catch (error) {
+  try { sanitized = sanitizer(scannable, hunk.path); } catch (error) {
     return { path: hunk.path, line: hunk.startLine, error: error?.message || 'sanitize falló' };
   }
   if (typeof sanitized !== 'string') {
@@ -132,7 +145,7 @@ function findingFor(hunk, sanitizer = require(DEFAULT_SANITIZER).sanitize) {
   if (sanitized.startsWith('[SANITIZER_ERROR:')) {
     return { path: hunk.path, line: hunk.startLine, error: 'SANITIZER_ERROR' };
   }
-  const before = countRedactions(hunk.text);
+  const before = countRedactions(scannable);
   const after = countRedactions(sanitized);
   const redactions = {};
   for (const [placeholder, count] of Object.entries(after)) {
@@ -177,15 +190,18 @@ function formatFindings(findings, format) {
       .map(([placeholder, count]) => `${placeholder} x${count}`).join(', ');
     return `${finding.path}:${finding.line || 1} — BLOQUEADO: ${detail} (${isSensitive(finding.path)})`;
   });
-  lines.push('', 'Revisá el contenido agregado. Si es un falso positivo, agregá sólo',
-    'ese path o un glob específico a .pipeline/secret-scan-allowlist.json.',
+  lines.push('',
+    `Revisá el contenido agregado. Si esa línea es un falso positivo, marcala`,
+    `con "${IGNORE_MARKER}" en la misma línea. Si es un archivo entero`,
+    'sin secretos, agregá ese path o un glob específico a',
+    '.pipeline/secret-scan-allowlist.json.',
     'El mismo control corre de forma bloqueante en CI; --no-verify no lo evita.');
   return `${lines.join('\n')}\n`;
 }
 
 function run(options, dependencies = {}) {
   const collect = dependencies.collectAddedHunks || collectAddedHunks;
-  const sanitizer = dependencies.sanitize || require(options.sanitizer || DEFAULT_SANITIZER).sanitize;
+  const sanitizer = dependencies.sanitize || defaultLintSanitizer(options.sanitizer || DEFAULT_SANITIZER);
   const allowlist = loadAllowlist(options.allowlist, { strict: true });
   const findings = [];
   for (const hunk of collect(options)) {
@@ -215,7 +231,7 @@ function main(argv = process.argv.slice(2)) {
 
 if (require.main === module) process.exit(main());
 module.exports = {
-  CAPABILITIES_LINE, DEFAULT_ALLOWLIST, DEFAULT_SANITIZER, SCAN_PROTOCOL, SENSITIVE_PATTERNS,
-  collectAddedHunks, countRedactions, findingFor, formatFindings, isSensitive, main, parseArgs,
-  parseHunks, run, unquoteDiffPath,
+  CAPABILITIES_LINE, DEFAULT_ALLOWLIST, DEFAULT_SANITIZER, IGNORE_MARKER, SCAN_PROTOCOL,
+  SENSITIVE_PATTERNS, collectAddedHunks, countRedactions, defaultLintSanitizer, findingFor,
+  formatFindings, isSensitive, main, parseArgs, parseHunks, run, unquoteDiffPath,
 };

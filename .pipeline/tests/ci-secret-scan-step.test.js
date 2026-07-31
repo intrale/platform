@@ -19,6 +19,7 @@ const WORKFLOW_TEXT = fs.readFileSync(WORKFLOW, 'utf8');
 const BASE_TREE_FILES = [
   '.pipeline/lib/precommit-secret-scan.js',
   '.pipeline/lib/secret-allowlist.js',
+  '.pipeline/lib/secret-scan-lint.js',
   '.pipeline/sanitizer.js',
   '.claude/hooks/telegram-sanitizer.js',
 ];
