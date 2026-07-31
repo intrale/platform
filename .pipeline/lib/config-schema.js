@@ -675,6 +675,46 @@ function sanitizeKeyName(name) {
     return String(name).slice(0, 64).replace(/[^A-Za-z0-9_.\-]/g, '?');
 }
 
+/**
+ * Escapa los metacaracteres del Markdown LEGACY de Telegram (`parse_mode:
+ * 'Markdown'`, el que usa `sendTelegram`) para texto que va FUERA de un code
+ * span.
+ *
+ * Por qué existe (#5173, rebote de seguridad): `sanitizeKeyName` deja pasar el
+ * `_` a propósito — todas las claves del pipeline son snake_case y colapsarlo a
+ * `?` destruiría la legibilidad que pide REQ-UX-5. Pero en el Markdown legacy el
+ * `_` es delimitador de itálica, así que una clave como
+ * `resource_limits/green_max_percent` mete 5 `_` (impar) y Telegram responde
+ * `400 Bad Request: can't parse entities`. Como `servicio-telegram` reintenta con
+ * el MISMO parse_mode y termina archivando en `fallido/`, la alerta de halt NUNCA
+ * llega: el pipeline queda pausado y el operador no se entera de la causa. Es el
+ * mismo agujero que el CA-10 cubre para `*`, pero por el `_`.
+ *
+ * Escapar (y no colapsar) preserva el nombre real de la clave: Telegram renderiza
+ * `\_` como `_`.
+ *
+ * @param {*} s
+ * @returns {string}
+ */
+function escapeMarkdownLegacy(s) {
+    return String(s).replace(/([_*`\[])/g, '\\$1');
+}
+
+/**
+ * Variante para texto que va DENTRO de un code span (`` `...` ``).
+ *
+ * Ahí el backslash NO escapa nada (el contenido es literal), así que aplicar
+ * `escapeMarkdownLegacy` mostraría los `\` crudos y ensuciaría la ruta. El único
+ * carácter que rompe es el backtick, que cierra el span antes de tiempo y
+ * desbalancea el mensaje entero.
+ *
+ * @param {*} s
+ * @returns {string}
+ */
+function escapeMarkdownCodeSpan(s) {
+    return String(s).replace(/`/g, "'");
+}
+
 /** Sanea cada segmento de un instancePath sin perder su estructura. */
 function sanitizePath(instancePath) {
     const segs = String(instancePath || '').split('/').filter(Boolean).map(sanitizeKeyName);
@@ -1097,11 +1137,18 @@ function formatConfigFailureTelegram(estado, opts = {}) {
     const encabezado = opts.pausaPreexistente
         ? '🛑 *Configuración inválida* — el dispatch ya estaba pausado por otro motivo.'
         : '🛑 *Pipeline pausado — configuración inválida*';
-    const via = opts.pausaPreexistente ? '' : `\n_(ruta resuelta vía ${estado.via})_`;
+    // #5173 — TODO lo interpolado acá deriva del INPUT (nombres de clave del
+    // config.yaml del usuario, rutas de archivo). Sale con `parse_mode:
+    // 'Markdown'` legacy, donde un metacaracter impar (`_` de snake_case, `*`,
+    // backtick) tumba el mensaje ENTERO con 400 y la alerta del halt no llega.
+    // `archivo` va dentro de un code span → sanitizado distinto (ver helpers).
+    const via = opts.pausaPreexistente
+        ? ''
+        : `\n_(ruta resuelta vía ${escapeMarkdownLegacy(estado.via)})_`;
     return `${encabezado}\n\n`
-        + `*Archivo:* \`${estado.archivo}\`${via}\n`
-        + `*Causa:* ${estado.detalle}\n\n`
-        + `*Qué hacer:* ${estado.accion}.`;
+        + `*Archivo:* \`${escapeMarkdownCodeSpan(estado.archivo)}\`${via}\n`
+        + `*Causa:* ${escapeMarkdownLegacy(estado.detalle)}\n\n`
+        + `*Qué hacer:* ${escapeMarkdownLegacy(estado.accion)}.`;
 }
 
 /**
@@ -1111,7 +1158,7 @@ function formatConfigFailureTelegram(estado, opts = {}) {
  */
 function formatConfigRecoveryTelegram(archivo) {
     return '✅ *Pipeline reanudado* — la configuración volvió a ser válida.\n\n'
-        + `*Archivo:* \`${archivo || '(desconocido)'}\`\n`
+        + `*Archivo:* \`${escapeMarkdownCodeSpan(archivo || '(desconocido)')}\`\n`
         + 'La pausa automática por configuración inválida se levantó sola (auto-recovery #4832).';
 }
 
@@ -1121,6 +1168,8 @@ module.exports = {
     formatErrors,
     formatErrorsForHuman,
     sanitizeKeyName,
+    escapeMarkdownLegacy,
+    escapeMarkdownCodeSpan,
     resolveSide,
     redactYamlParseError,
     describeConfigFailure,

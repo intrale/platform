@@ -424,8 +424,44 @@ function violacionDeSchema(cfg) {
 // no su salida. Sin este test el saneo queda protegido en el eslabón y desprotegido
 // en la superficie real — exactamente el agujero que rebotó tres veces, corrido un
 // nivel más arriba.
+// Metacaracteres del Markdown legacy de Telegram que, en cantidad IMPAR, hacen
+// que la API responda `400 Bad Request: can't parse entities` y el mensaje NO se
+// entregue. `servicio-telegram` reintenta con el mismo parse_mode y archiva en
+// `fallido/`, así que un desbalanceo = alerta de halt perdida.
+// El `_` entra acá desde el rebote de seguridad de #5173: todas las claves del
+// pipeline son snake_case, así que es el metacaracter MÁS probable, no el menos.
+const METACHARS_MARKDOWN_LEGACY = [
+    { nombre: 'asterisco', re: /\*/g },
+    { nombre: 'backtick', re: /`/g },
+    { nombre: 'guion bajo', re: /_/g },
+];
+
+/**
+ * Cuenta ocurrencias NO escapadas (las precedidas por `\` ya no delimitan).
+ * Telegram interpreta `\_` como un `_` literal, así que ese no cuenta.
+ */
+function contarSinEscapar(texto, re) {
+    let n = 0;
+    for (let i = 0; i < texto.length; i++) {
+        if (texto[i] === '\\') { i++; continue; }
+        re.lastIndex = 0;
+        if (re.test(texto[i])) n++;
+    }
+    return n;
+}
+
+/** Un mensaje sólo es entregable si cada delimitador queda balanceado. */
+function assertMarkdownEntregable(texto, contexto) {
+    for (const { nombre, re } of METACHARS_MARKDOWN_LEGACY) {
+        assert.strictEqual(contarSinEscapar(texto, re) % 2, 0,
+            `${contexto}: cantidad impar de ${nombre} — Telegram devuelve 400 y la alerta se pierde`);
+    }
+}
+
 test('#5173 el copy que viaja a Telegram sanea la clave hostil (superficie de #5172)', () => {
-    const CLAVE_HOSTIL = 'ev*il' + String.fromCharCode(10) + '_INYECTADO_`x';
+    // Impar a propósito: con 2 `_` el caso daba par de casualidad y el agujero
+    // del `_` pasaba verde (así se coló en el PR anterior).
+    const CLAVE_HOSTIL = 'ev*il' + String.fromCharCode(10) + '_INYECTADO_`x_impar';
     const anidado = validConfig();
     anidado.concurrencia[CLAVE_HOSTIL] = 'no-integer';
     const raiz = validConfig();
@@ -433,28 +469,74 @@ test('#5173 el copy que viaja a Telegram sanea la clave hostil (superficie de #5
 
     for (const cfg of [anidado, raiz]) {
         const err = violacionDeSchema(cfg);
-        const superficies = [
-            formatConfigFailureTelegram(
-                describeConfigFailure(err, { contexto: 'halt-auto', maxErrores: 5 }),
-                { pausaPreexistente: false }),
-            formatConfigFailureLog(
-                describeConfigFailure(err, { contexto: 'halt-auto' }),
-                { titulo: 'CONFIG INVÁLIDA' }),
-        ];
-        for (const texto of superficies) {
+        const telegram = formatConfigFailureTelegram(
+            describeConfigFailure(err, { contexto: 'halt-auto', maxErrores: 5 }),
+            { pausaPreexistente: false });
+        const log = formatConfigFailureLog(
+            describeConfigFailure(err, { contexto: 'halt-auto' }),
+            { titulo: 'CONFIG INVÁLIDA' });
+
+        for (const texto of [telegram, log]) {
             assert.ok(!texto.includes('ev*il'), 'el asterisco crudo no debe viajar');
             assert.ok(!texto.includes('ev*il' + String.fromCharCode(10)),
                 'el salto de línea crudo falsificaría un renglón de la alerta');
-            // Markdown balanceado: un `*` o un backtick impar hace que Telegram
-            // responda 400 y el aviso del halt NUNCA llegue.
-            assert.strictEqual((texto.match(/\*/g) || []).length % 2, 0,
-                'asteriscos impares rompen el parseo de Markdown');
-            assert.strictEqual((texto.match(/`/g) || []).length % 2, 0,
-                'backticks impares rompen el parseo de Markdown');
-            // Saneada, no omitida: el operador tiene que poder identificar la clave.
-            assert.match(texto, /ev\?il\?_INYECTADO_\?x/);
+            // Saneada, no omitida: el operador tiene que poder identificar la
+            // clave. Se comparan los `\` de escape aparte (abajo): son del
+            // transporte Markdown, no del nombre.
+            assert.match(texto.replace(/\\/g, ''), /ev\?il\?_INYECTADO_\?x_impar/);
+        }
+        // La paridad sólo aplica al saliente Markdown; el log va a disco en plano.
+        assertMarkdownEntregable(telegram, 'clave hostil');
+    }
+});
+
+// El rebote de seguridad de #5173: el guardián de arriba usa una clave INVENTADA
+// y por eso no representaba el caso real. Las claves que de verdad van a aparecer
+// en la alerta son las del config.yaml VIVO, y son todas snake_case: cada error
+// de tipo mete tantos `_` como la clave tenga. Sobre 18 casos simulados, 8 daban
+// `_` impar => 8 alertas de halt que Telegram descartaba con 400.
+test('#5173 toda clave del config.yaml real produce una alerta ENTREGABLE por Telegram', () => {
+    const real = yaml.load(fs.readFileSync(
+        path.resolve(__dirname, '..', '..', 'config.yaml'), 'utf8'));
+    assert.ok(real && typeof real === 'object', 'no se pudo leer el config.yaml real');
+
+    // Un error de tipo por sección top-level: reproduce "el operador editó el
+    // config y se equivocó en una clave", que es el disparador real del halt.
+    const casos = [];
+    for (const [seccion, valor] of Object.entries(real)) {
+        if (valor && typeof valor === 'object' && !Array.isArray(valor)) {
+            for (const clave of Object.keys(valor)) casos.push([seccion, clave]);
+        } else {
+            casos.push([seccion, null]);
         }
     }
+    assert.ok(casos.length > 0, 'el config.yaml real no aportó casos');
+
+    let evaluados = 0;
+    for (const [seccion, clave] of casos) {
+        const cfg = JSON.parse(JSON.stringify(real));
+        // Valor que no valida contra ningún tipo escalar esperado.
+        if (clave === null) cfg[seccion] = 'valor-de-tipo-invalido-#5173';
+        else cfg[seccion][clave] = 'valor-de-tipo-invalido-#5173';
+
+        const res = validateConfig(cfg);
+        if (res.valid) continue; // esa clave admite string: no dispara halt.
+        const err = new ConfigSchemaViolation('config inválida', res.errors);
+        const texto = formatConfigFailureTelegram(
+            describeConfigFailure(err, { contexto: 'halt-auto', maxErrores: 5 }),
+            { pausaPreexistente: false });
+
+        assertMarkdownEntregable(texto, `${seccion}${clave ? '.' + clave : ''}`);
+        // Legibilidad (REQ-UX-5): el nombre de la clave sigue siendo el real,
+        // sin colapsar a `?`, una vez quitados los escapes de transporte.
+        if (clave !== null) {
+            assert.ok(texto.replace(/\\/g, '').includes(clave),
+                `la alerta debe nombrar la clave ${clave} de forma legible`);
+        }
+        evaluados++;
+    }
+    assert.ok(evaluados >= 5,
+        `se esperaban varias claves que disparen halt, se evaluaron ${evaluados}`);
 });
 
 // CA-11 sobre la superficie real: el cap es del generador, no del call-site.
@@ -472,9 +554,14 @@ test('#5173 el copy de Telegram va acotado y el del log completo', () => {
 
     assert.ok(telegram.length < 4096, 'Telegram corta en 4096 chars');
     assert.match(telegram, /\(\+\d+ error\/es más/);
+    // #5173 (rebote seguridad) — el saliente lleva los `_` escapados para que
+    // Telegram no los lea como itálica; el nombre real se recupera quitando los
+    // `\` de transporte, que es lo que el operador termina viendo renderizado.
+    const telegramRenderizado = telegram.replace(/\\/g, '');
     const nombradasEnTelegram = [...Array(20).keys()]
-        .filter((i) => telegram.includes('seccion_desconocida_' + i)).length;
+        .filter((i) => telegramRenderizado.includes('seccion_desconocida_' + i)).length;
     assert.strictEqual(nombradasEnTelegram, 5, 'la alerta nombra 5 y cuenta el resto');
+    assertMarkdownEntregable(telegram, 'copy acotado de CA-11');
 
     // El log es la vía de diagnóstico: no pierde ninguna, y sigue siendo una sola
     // línea (el visor de logs del dashboard sirve por línea).
