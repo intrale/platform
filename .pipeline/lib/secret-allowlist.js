@@ -4,6 +4,11 @@ const fs = require('fs');
 const SENTINEL = '\0';
 const OVERBROAD = new Set(['*', '**', '**/*', '*/**', '**/**', '/**']);
 const CONTROL_PATHS = [
+  // #5244 rev-4 — `.gitattributes` puede apagar el gate desde adentro: con
+  // `* -diff` git reporta todo como binario y el scanner descartaba el diff.
+  // El agujero se cierra por contenido en el scanner; acá se le saca además
+  // todo mecanismo de escape, igual que a cualquier otro archivo de control.
+  '.gitattributes',
   '.pipeline/lib/precommit-secret-scan.js',
   '.pipeline/lib/secret-allowlist.js',
   '.pipeline/lib/secret-scan-lint.js',
@@ -20,6 +25,9 @@ const CONTROL_PATHS = [
 // mismo, y sobre estos archivos no hay review humana garantizada.
 function isControlPath(filePath) {
   const normalized = String(filePath || '').replace(/\\/g, '/');
+  // Un `.gitattributes` de subdirectorio tiene el mismo poder que el de la raíz
+  // sobre los paths que cuelgan de él: también es archivo de control.
+  if (normalized.endsWith('/.gitattributes')) return true;
   return CONTROL_PATHS.includes(normalized);
 }
 

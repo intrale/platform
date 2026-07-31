@@ -45,7 +45,15 @@ function scanStaged(directory) {
   return run({ cwd: directory, allowlist: EMPTY_ALLOWLIST, format: 'text' });
 }
 
-test('parseHunks agrupa líneas agregadas por hunk y omite binarios', () => {
+// #5244 rev-4 — este test asserteaba el SALTEO del camino binario como
+// comportamiento esperado, con un diff sintético: fijaba el bypass en vez de
+// detectarlo. `parseHunks` sigue sin emitir un hunk desde el marcador `Binary
+// files` (ese marcador no trae el path en forma parseable sin ambigüedad), pero
+// eso YA NO es la decisión final: `collectAddedHunks` releé el blob de cada path
+// que git declara binario y decide por contenido. La cobertura del camino
+// completo, con repos git reales, está en
+// precommit-secret-scan-gitattributes.test.js.
+test('parseHunks agrupa por hunk; el path binario lo resuelve collectAddedHunks', () => {
   const diff = [
     'diff --git a/a.txt b/a.txt', '--- a/a.txt', '+++ b/a.txt',
     '@@ -0,0 +4,2 @@', '+primera', '+segunda',
@@ -54,6 +62,18 @@ test('parseHunks agrupa líneas agregadas por hunk y omite binarios', () => {
   assert.deepEqual(parseHunks(diff), [{
     path: 'a.txt', startLine: 4, text: 'primera\nsegunda',
   }]);
+});
+
+test('un archivo declarado binario por .gitattributes llega igual al escaneo', () => {
+  const directory = sandboxRepo('secret-scan-attr-collect-');
+  fs.writeFileSync(path.join(directory, '.gitattributes'), '* -diff\n');
+  stageFile(directory, '.claude/hooks/config.json', fixtureConSecreto());
+  const hunks = collectAddedHunks({ cwd: directory });
+  const resuelto = hunks.find((hunk) => hunk.path === '.claude/hooks/config.json');
+  assert.ok(resuelto, 'el path binario no puede desaparecer del set a escanear');
+  assert.equal(resuelto.fromBinary, true, 'se resolvió releyendo el blob, no del diff');
+  assert.match(resuelto.text, new RegExp(SYNTHETIC_TOKEN));
+  assert.equal(scanStaged(directory).exitCode, 1);
 });
 
 test('findingFor usa delta de redacciones y no comparación de strings', () => {
@@ -343,7 +363,11 @@ test('una línea suprimida con la marca se anuncia en text y en github', () => {
 
 test('la marca NO se honra sobre un path de control', () => {
   const { directory, base } = repoConBase('secret-scan-control-');
-  const control = CONTROL_PATHS[0];
+  // Explícito, no `CONTROL_PATHS[0]`: el índice cambia cada vez que se suma un
+  // archivo de control (rev-4 agregó `.gitattributes`) y el test dejaba de
+  // ejercitar lo que dice su nombre sin que nadie se enterara.
+  const control = '.pipeline/lib/precommit-secret-scan.js';
+  assert.ok(CONTROL_PATHS.includes(control));
   fs.mkdirSync(path.join(directory, path.dirname(control)), { recursive: true });
   stageFile(directory, control, `const fixture = "${SYNTHETIC_TOKEN}"; // ${IGNORE_MARKER}\n`);
   execFileSync('git', ['commit', '-m', 'apagar el gate desde adentro'], { cwd: directory });

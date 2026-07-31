@@ -98,6 +98,10 @@ function parseHunks(diff) {
         filePath = decoded.startsWith('b/') ? decoded.slice(2) : decoded;
       }
     } else if (line.startsWith('Binary files ') || line.startsWith('GIT binary patch')) {
+      // El marcador no trae el path en forma parseable sin ambigüedad (renames,
+      // espacios). El path binario lo aporta `--numstat -z` y lo resuelve
+      // `resolveBinaryEntries`: acá sólo se cierra el archivo en curso. Este
+      // `flush()` NO es un descarte silencioso — ver rev-4 más abajo.
       flush();
       filePath = null;
     }
@@ -106,17 +110,109 @@ function parseHunks(diff) {
   return hunks;
 }
 
-function collectAddedHunks({ mode = 'staged', base, head = 'HEAD', cwd = process.cwd() } = {}) {
-  if (mode === 'range' && !base) throw new Error('secret-scan: falta --base en modo range');
-  const diffArgs = mode === 'range' ? ['diff', `${base}..${head}`] : ['diff', '--cached'];
-  const output = execFileSync('git', [
-    '-c', 'core.quotePath=false', ...diffArgs, '-U0', '--diff-filter=ACMR',
+const GIT_BUFFER = 256 * 1024 * 1024;
+
+function gitDiff({ mode, base, head = 'HEAD', cwd = process.cwd() }, extraArgs) {
+  const range = mode === 'range' ? [`${base}..${head}`] : ['--cached'];
+  return execFileSync('git', [
+    '-c', 'core.quotePath=false', 'diff', ...range, ...extraArgs, '--diff-filter=ACMR',
     '--no-color', '--no-ext-diff', '--no-textconv',
   ], {
-    cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
-    maxBuffer: 256 * 1024 * 1024,
+    cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: GIT_BUFFER,
   });
-  return parseHunks(output);
+}
+
+// `added\tdeleted\tpath`; en binarios los conteos son `-`.
+const NUMSTAT_RECORD = /^(-|\d+)\t(-|\d+)\t([\s\S]*)$/;
+
+// #5244 rev-4 — `--numstat -z` es la fuente confiable de "qué considera binario
+// git": separa los campos con NUL, así que no hay C-quoting ni ambigüedad con
+// paths que tienen espacios. En renames/copias el path del registro viene vacío
+// y los DOS campos siguientes son origen y destino.
+function parseNumstat(output) {
+  const fields = String(output).split('\0');
+  const records = [];
+  for (let index = 0; index < fields.length; index += 1) {
+    const field = fields[index];
+    if (!field) continue;
+    const match = field.match(NUMSTAT_RECORD);
+    if (!match) throw new Error(`numstat: registro inesperado ${JSON.stringify(field)}`);
+    let filePath = match[3];
+    if (filePath === '') {
+      filePath = fields[index + 2];
+      index += 2;
+      if (filePath === undefined) throw new Error('numstat: rename sin path destino');
+    }
+    const binary = match[1] === '-';
+    records.push({ path: filePath, binary, added: binary ? 0 : Number(match[1]) });
+  }
+  return records;
+}
+
+function readBlob({ mode, head = 'HEAD', cwd = process.cwd() }, filePath) {
+  // `<rev>:<path>` y `:0:<path>` resuelven contra la raíz del árbol mientras el
+  // path no empiece con `./`, así que no depende del cwd del proceso.
+  const spec = mode === 'range' ? `${head}:${filePath}` : `:0:${filePath}`;
+  return execFileSync('git', ['show', spec], {
+    cwd, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: GIT_BUFFER,
+  });
+}
+
+// #5244 rev-4 — un path que git reporta como binario NO se descarta más.
+// "Binario" no es un hecho del contenido: git lo decide leyendo el atributo
+// `diff` del `.gitattributes` del ÁRBOL DE TRABAJO, y en CI ese árbol es el
+// checkout del head, o sea el MISMO commit que trae el secreto. Una línea
+// `* -diff` agregada al `.gitattributes` de la raíz apagaba el gate entero, en
+// silencio y en los dos modos.
+//
+// Se decide por CONTENIDO REAL: se relee el blob y, si no tiene NUL, se escanea
+// igual (es texto disfrazado). Si tiene NUL es un binario de verdad: se saltea
+// —expandirlo con `git diff -a` sólo lo haría chocar contra la guarda NUL de
+// `findingFor` y trabaría todo PR con un binario legítimo— pero se ANUNCIA. Un
+// salteo nunca puede quedar indistinguible de un PR limpio.
+function resolveBinaryEntries(options, records) {
+  const entries = [];
+  for (const record of records) {
+    if (!record.binary) continue;
+    let blob;
+    try {
+      blob = readBlob(options, record.path);
+    } catch (error) {
+      entries.push({
+        path: record.path,
+        startLine: 1,
+        error: `declarado binario y no se pudo releer el blob: ${error?.message || error}`,
+      });
+      continue;
+    }
+    if (blob.includes(0)) {
+      entries.push({ path: record.path, skippedBinary: true, bytes: blob.length });
+      continue;
+    }
+    entries.push({
+      path: record.path, startLine: 1, text: blob.toString('utf8'), fromBinary: true,
+    });
+  }
+  return entries;
+}
+
+function collectAddedHunks({ mode = 'staged', base, head = 'HEAD', cwd = process.cwd() } = {}) {
+  if (mode === 'range' && !base) throw new Error('secret-scan: falta --base en modo range');
+  const options = { mode, base, head, cwd };
+  const hunks = parseHunks(gitDiff(options, ['-U0']));
+  const records = parseNumstat(gitDiff(options, ['--numstat', '-z']));
+  // Invariante "ningún path queda sin mirar en silencio": si numstat declara
+  // líneas agregadas y el parser no produjo un solo hunk para ese path, el diff
+  // no se entendió. Fail-closed en vez de verde silencioso.
+  const scanned = new Set(hunks.map((hunk) => hunk.path));
+  const unexplained = records
+    .filter((record) => !record.binary && record.added > 0 && !scanned.has(record.path))
+    .map((record) => ({
+      path: record.path,
+      startLine: 1,
+      error: `git declara ${record.added} linea(s) agregada(s) y el diff no produjo hunks: no escaneable (fail-closed)`,
+    }));
+  return [...hunks, ...resolveBinaryEntries(options, records), ...unexplained];
 }
 
 function defaultLintSanitizer(sanitizerPath = DEFAULT_SANITIZER) {
@@ -182,6 +278,19 @@ function formatSuppressions(suppressions, format) {
   return `${suppressions.map((s) => `${s.path}:${s.line} — ${detail(s)}`).join('\n')}\n`;
 }
 
+// #5244 rev-4 — un binario legítimo se saltea, pero queda anunciado por la
+// misma vía que las supresiones. CA-UX-4: sin binarios no se emite un byte.
+function formatSkippedBinaries(skipped, format) {
+  if (!skipped.length) return '';
+  const detail = ({ bytes }) => `secret-scan: binario real (NUL en el contenido, ${bytes} bytes), no escaneado`;
+  if (format === 'github') {
+    return `${skipped
+      .map((s) => `::warning file=${s.path},line=1::${detail(s)}`)
+      .join('\n')}\n`;
+  }
+  return `${skipped.map((s) => `${s.path} — ${detail(s)}`).join('\n')}\n`;
+}
+
 function parseArgs(argv = process.argv.slice(2)) {
   const options = {
     mode: 'staged', cwd: process.cwd(), allowlist: DEFAULT_ALLOWLIST,
@@ -232,18 +341,28 @@ function run(options, dependencies = {}) {
   const allowlist = loadAllowlist(options.allowlist, { strict: true });
   const findings = [];
   const suppressions = [];
+  const skippedBinaries = [];
   for (const hunk of collect(options)) {
     if (whichAllowlistEntry(hunk.path, allowlist)) continue;
+    if (hunk.skippedBinary) { skippedBinaries.push(hunk); continue; }
+    if (hunk.error) {
+      findings.push({ path: hunk.path, line: hunk.startLine || 1, error: hunk.error });
+      continue;
+    }
     suppressions.push(...suppressionsFor(hunk));
     const finding = findingFor(hunk, sanitizer);
     if (finding) findings.push(finding);
   }
-  // Las supresiones NO cambian el exit code (CA-8d: un lint que frena por un
-  // escape legítimo se desactiva). Sí cambian la salida: quedan anunciadas.
-  const warnings = formatSuppressions(suppressions, options.format);
+  // Ni las supresiones ni los binarios salteados cambian el exit code (CA-8d: un
+  // lint que frena por un escape legítimo se desactiva). Sí cambian la salida:
+  // quedan anunciados.
+  const warnings = `${formatSuppressions(suppressions, options.format)}${formatSkippedBinaries(skippedBinaries, options.format)}`;
+  const common = { findings: [], suppressions, skippedBinaries, warnings };
   return findings.length
-    ? { exitCode: 1, output: formatFindings(findings, options.format), findings, suppressions, warnings }
-    : { exitCode: 0, output: '', findings: [], suppressions, warnings };
+    ? {
+      ...common, exitCode: 1, output: formatFindings(findings, options.format), findings,
+    }
+    : { ...common, exitCode: 0, output: '' };
 }
 
 function main(argv = process.argv.slice(2)) {
@@ -266,6 +385,7 @@ if (require.main === module) process.exit(main());
 module.exports = {
   CAPABILITIES_LINE, DEFAULT_ALLOWLIST, DEFAULT_SANITIZER, IGNORE_MARKER, SCAN_PROTOCOL,
   SENSITIVE_PATTERNS, collectAddedHunks, countRedactions, defaultLintSanitizer, findingFor,
-  formatFindings, formatSuppressions, isSensitive, main, parseArgs, parseHunks, run,
-  suppressionsFor, unquoteDiffPath,
+  formatFindings, formatSkippedBinaries, formatSuppressions, isSensitive, main, parseArgs,
+  parseHunks, parseNumstat, readBlob, resolveBinaryEntries, run, suppressionsFor,
+  unquoteDiffPath,
 };
