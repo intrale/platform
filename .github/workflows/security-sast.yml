@@ -226,9 +226,39 @@ jobs:
         with:
           node-version: '20'
 
+      # Todo lo que decide (scanner, sanitizer, allowlist) sale del árbol base.
+      # Del head sólo salen los datos: el diff. El bloque es shell puro —
+      # las expresiones ${{ }} van arriba, en env — para que
+      # .pipeline/tests/ci-secret-scan-step.test.js lo extraiga y lo ejecute tal cual.
       - name: Secret scan del diff
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
         run: |
-          BASE_ALLOWLIST="$GITHUB_WORKSPACE/.base/.pipeline/secret-scan-allowlist.json"
+          BASE_TREE="$GITHUB_WORKSPACE/.base"
+          BASE_SCANNER="$BASE_TREE/.pipeline/lib/precommit-secret-scan.js"
+
+          # #5244 CA-9 — el scanner que decide viene del BASE, no del head: si
+          # corriera el del head, un PR que neutraliza el scanner en su propio
+          # diff pasaría en verde con un secreto adentro (`.pipeline/` está
+          # fuera de CODEOWNERS por D-4, así que nadie lo frena a mano).
+          # "El archivo existe" no alcanza: el scanner viejo ignora los flags y
+          # sale 0 sin mirar el rango. Se exige el protocolo declarado.
+          SCANNER="$BASE_SCANNER"
+          BASE_CAPS=""
+          if [ -f "$BASE_SCANNER" ]; then
+            BASE_CAPS="$(node "$BASE_SCANNER" --capabilities 2>/dev/null || true)"
+          fi
+          case "$BASE_CAPS" in
+            *secret-scan-protocol=range-v1*)
+              echo "secret-scan: scanner del árbol base (fail-closed)" ;;
+            *)
+              # Bootstrap: el base es anterior a este control. Único caso en el
+              # que corre el scanner del head. Se apaga solo cuando main lo tiene.
+              SCANNER="$GITHUB_WORKSPACE/.pipeline/lib/precommit-secret-scan.js"
+              echo "::warning::secret-scan bootstrap: el ref base no expone secret-scan-protocol=range-v1; corre el scanner de HEAD" ;;
+          esac
+
+          BASE_ALLOWLIST="$BASE_TREE/.pipeline/secret-scan-allowlist.json"
           if [ ! -f "$BASE_ALLOWLIST" ]; then
             BASE_ALLOWLIST="$RUNNER_TEMP/secret-scan-bootstrap-allowlist.json"
             # Política bootstrap confiable: el base aún no tiene allowlist.
@@ -236,10 +266,11 @@ jobs:
             printf '{"paths":[".pipeline/tests/precommit-secret-scan-content.test.js"],"globs":[]}\n' \
               > "$BASE_ALLOWLIST"
           fi
-          node .pipeline/lib/precommit-secret-scan.js \
-            --mode=range --base=${{ steps.base.outputs.sha }} --head=$GITHUB_SHA \
+
+          node "$SCANNER" \
+            --mode=range --base="$BASE_SHA" --head="$GITHUB_SHA" \
             --cwd="$GITHUB_WORKSPACE" \
-            --sanitizer="$GITHUB_WORKSPACE/.base/.pipeline/sanitizer.js" \
+            --sanitizer="$BASE_TREE/.pipeline/sanitizer.js" \
             --allowlist="$BASE_ALLOWLIST" \
             --format=github
 

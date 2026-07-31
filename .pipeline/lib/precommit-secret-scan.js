@@ -9,6 +9,12 @@ const { loadAllowlist, whichAllowlistEntry } = require('./secret-allowlist');
 
 const DEFAULT_ALLOWLIST = path.join(__dirname, '..', 'secret-scan-allowlist.json');
 const DEFAULT_SANITIZER = path.join(__dirname, '..', 'sanitizer.js');
+// Protocolo declarado por `--capabilities`. CI lo usa para decidir si el
+// scanner del árbol base entiende `--mode=range`: un scanner viejo ignora los
+// flags y termina en 0 sin mirar nada, así que "el archivo existe" no alcanza.
+// Bumpear sólo si cambia el contrato de flags de forma incompatible.
+const SCAN_PROTOCOL = 'range-v1';
+const CAPABILITIES_LINE = `secret-scan-protocol=${SCAN_PROTOCOL}`;
 const SENSITIVE_PATTERNS = [
   { name: 'commander-session', test: (p) => p === '.pipeline/commander-session.json' },
   { name: 'commander-history', test: (p) => p === '.pipeline/commander-history.jsonl' },
@@ -162,6 +168,10 @@ function run(options, dependencies = {}) {
 
 function main(argv = process.argv.slice(2)) {
   try {
+    if (argv.includes('--capabilities')) {
+      process.stdout.write(`${CAPABILITIES_LINE}\n`);
+      return 0;
+    }
     const result = run(parseArgs(argv));
     if (result.output) process.stderr.write(result.output);
     return result.exitCode;
@@ -173,7 +183,7 @@ function main(argv = process.argv.slice(2)) {
 
 if (require.main === module) process.exit(main());
 module.exports = {
-  DEFAULT_ALLOWLIST, DEFAULT_SANITIZER, SENSITIVE_PATTERNS, collectAddedHunks, countRedactions,
-  findingFor, formatFindings, isSensitive, main, parseArgs, parseHunks, run,
-  unquoteDiffPath,
+  CAPABILITIES_LINE, DEFAULT_ALLOWLIST, DEFAULT_SANITIZER, SCAN_PROTOCOL, SENSITIVE_PATTERNS,
+  collectAddedHunks, countRedactions, findingFor, formatFindings, isSensitive, main, parseArgs,
+  parseHunks, run, unquoteDiffPath,
 };

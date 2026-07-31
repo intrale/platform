@@ -146,19 +146,6 @@ test('CI bootstrap permite el fixture benigno y bloquea un secreto fuera de él'
   assert.match(result.stderr, /audit-5244\.json/);
   assert.match(result.stderr, /BLOQUEADO/);
   assert.match(result.stderr, /\[REDACTED:GITHUB_TOKEN\]/);
-
-  const workflow = fs.readFileSync(
-    path.join(__dirname, '..', '..', '.github', 'workflows', 'security-sast.yml'),
-    'utf8',
-  );
-  assert.match(workflow, /node \.pipeline\/lib\/precommit-secret-scan\.js/);
-  assert.doesNotMatch(workflow, /node \.base\/\.pipeline\/lib\/precommit-secret-scan\.js/);
-  assert.match(workflow, /--sanitizer=.*\.base\/\.pipeline\/sanitizer\.js/);
-  assert.match(workflow, /BASE_ALLOWLIST=.*\.base\/\.pipeline\/secret-scan-allowlist\.json/);
-  assert.match(
-    workflow,
-    /printf '\{"paths":\["\.pipeline\/tests\/precommit-secret-scan-content\.test\.js"\],"globs":\[\]\}/,
-  );
-  assert.doesNotMatch(workflow, /secret-scan-bootstrap-allowlist[\s\S]*?"globs":\[[^]]+]/);
-  assert.match(workflow, /--allowlist="\$BASE_ALLOWLIST"/);
+  // El cableado del job (scanner del base, probe de capacidades, política
+  // bootstrap) se verifica ejecutando el step real en ci-secret-scan-step.test.js.
 });
