@@ -202,6 +202,55 @@ test('el childEnv real no expone ninguna credencial deferred', () => {
   }
 });
 
+test('toda entrada source=store declara consumer_status del enum y broken exige blocked_by', () => {
+  const enumerado = ['resolved', 'broken', 'no_consumer'];
+  for (const entry of manifest.entries) {
+    if (entry.source === 'store') {
+      assert.ok(enumerado.includes(entry.consumer_status), `${entry.name}: ${entry.consumer_status}`);
+    } else {
+      assert.equal('consumer_status' in entry, false, entry.name);
+    }
+    if (entry.consumer_status === 'broken') assert.match(entry.blocked_by, /^#\d+$/, entry.name);
+    else assert.equal('blocked_by' in entry, false, entry.name);
+  }
+  const rotas = manifest.entries
+    .filter((entry) => entry.consumer_status === 'broken')
+    .map((entry) => [entry.name, entry.blocked_by]);
+  assert.deepEqual(rotas, [
+    ['google_drive.oauth_client_id', '#4890'],
+    ['google_drive.oauth_client_secret', '#4890'],
+    ['google_drive.oauth_refresh_token', '#4890'],
+  ]);
+  const sinStatus = structuredClone(manifest);
+  delete sinStatus.entries.find((entry) => entry.name === 'telegram.bot_token').consumer_status;
+  assert.equal(validate(sinStatus).ok, false);
+  const sinBlockedBy = structuredClone(manifest);
+  delete sinBlockedBy.entries.find((entry) => entry.name === 'google_drive.oauth_client_id').blocked_by;
+  assert.equal(validate(sinBlockedBy).ok, false);
+});
+
+test('ningun defer_reason afirma que el consumo funciona si su consumer_status es broken', () => {
+  // El candado no puede quedarse en el largo minimo: el texto falso de rev-3 tenia
+  // 100+ chars. Se combina una lista negra de afirmaciones de consumo sano con la
+  // exigencia positiva de declarar el estado roto y el issue que lo cierra.
+  const afirmaQueFunciona = /ya funciona|funciona hoy|fallback legacy|fallback vigente|resuelve por fallback|no desbloquea ning[uú]n consumo/i;
+  const rotas = manifest.entries.filter((entry) => entry.consumer_status === 'broken');
+  assert.equal(rotas.length, 3);
+  for (const entry of rotas) {
+    assert.doesNotMatch(entry.defer_reason, afirmaQueFunciona, entry.name);
+    assert.match(entry.defer_reason, /vac[ií]a?o?|roto/i, entry.name);
+    assert.ok(entry.defer_reason.includes(entry.blocked_by), entry.name);
+  }
+  // Control positivo: el candado atrapa el texto que rev-3 llego a publicar en
+  // esta misma rama. Sin esto, una lista negra desalineada pasa por vacuidad.
+  const publicadoEnRev3 = [
+    'Credencial OAuth con fallback legacy vigente; se difiere hasta habilitar el aislamiento de entorno #5040.',
+    'Secreto OAuth con fallback legacy vigente; hidratarlo hoy lo expondria a todos los hijos del Pulpo.',
+    'Token OAuth no expirante con fallback legacy; se difiere hasta que #5040 aisle el entorno de cada hijo.',
+  ];
+  for (const texto of publicadoEnRev3) assert.match(texto, afirmaQueFunciona);
+});
+
 test('regresion nominal de las cuatro claves google_drive', () => {
   const actual = Object.fromEntries(manifest.entries
     .filter((entry) => entry.name.startsWith('google_drive.'))

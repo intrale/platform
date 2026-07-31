@@ -232,6 +232,11 @@ sección cubre credenciales **ausentes** en una máquina limpia.
 4. Ejecutá `node .pipeline/lib/credentials.js`: sólo
    `GOOGLE_DRIVE_FOLDER_ID` debe figurar como hidratada; las credenciales OAuth
    permanecen `deferred`.
+5. Aviso al operador: reponer las tres credenciales OAuth **no** restablece por
+   sí solo la subida a Drive. Hoy ningún consumidor las resuelve — el manifiesto
+   las declara `consumer_status: broken` con `blocked_by: #4890`. El desbloqueo
+   llega cuando #5040 habilite el aislamiento de entorno y esas entradas pasen a
+   `eager`.
 
 ## Cloudflare R2 (reposicion)
 

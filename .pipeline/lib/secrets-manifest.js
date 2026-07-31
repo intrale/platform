@@ -11,15 +11,23 @@ const SERVICES = Object.freeze([
 const SOURCES = Object.freeze(['store', 'env', 'external']);
 const REQUIRED_WHEN = Object.freeze(['always', 'service_active', 'never']);
 const HYDRATION = Object.freeze(['eager', 'deferred', 'n/a']);
+// §R5: "presente en el store" no es lo mismo que "resoluble por su consumidor".
+// Sin este eje, el health-check del TRAMO 2 (#5243) reportaria verde una clave
+// guardada cuyo consumidor no puede resolverla.
+const CONSUMER_STATUS = Object.freeze(['resolved', 'broken', 'no_consumer']);
+const BLOCKED_BY_RE = /^#\d+$/;
 
 const SCHEMA = Object.freeze({
   services: SERVICES,
   sources: SOURCES,
   required_when: REQUIRED_WHEN,
   hydration: HYDRATION,
+  consumer_status: CONSUMER_STATUS,
   required_fields: Object.freeze([
     'name', 'service', 'source', 'env_var', 'required_when', 'hydration', 'shape', 'restore',
   ]),
+  // Obligatorio solo en las entradas que viven en el store durable.
+  store_required_fields: Object.freeze(['consumer_status']),
 });
 
 function isMetadataKey(dotPath) {
@@ -68,6 +76,20 @@ function validate(manifest) {
     }
     if (entry.hydration !== 'deferred' && 'defer_reason' in entry) {
       errors.push(`${at}.defer_reason solo aplica a hydration=deferred`);
+    }
+    if (entry.source === 'store') {
+      if (!CONSUMER_STATUS.includes(entry.consumer_status)) {
+        errors.push(`${at}.consumer_status es obligatorio y debe ser ${CONSUMER_STATUS.join('|')}`);
+      }
+    } else if ('consumer_status' in entry) {
+      errors.push(`${at}.consumer_status solo aplica a source=store`);
+    }
+    if (entry.consumer_status === 'broken') {
+      if (typeof entry.blocked_by !== 'string' || !BLOCKED_BY_RE.test(entry.blocked_by)) {
+        errors.push(`${at}.blocked_by es obligatorio con forma #<issue> cuando consumer_status=broken`);
+      }
+    } else if ('blocked_by' in entry) {
+      errors.push(`${at}.blocked_by solo aplica a consumer_status=broken`);
     }
     if (entry.required_when === 'never'
       && (typeof entry.restore !== 'string'
