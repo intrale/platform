@@ -155,4 +155,72 @@ function fakeHttpRes() {
     return res;
 }
 
-module.exports = { ensureGitOnPath, locateGitDir, gitIsInvokable, fakeHttpReq, fakeHttpRes };
+// =============================================================================
+// seedPipelineConfig — #5172
+// =============================================================================
+//
+// Desde que la lectura de `config.yaml` pasa por `lib/config-resolver`, un
+// directorio de pipeline SIN `config.yaml` es un fallo de lectura tipado
+// (`ConfigParseViolation`) y ya NO degrada en silencio a los defaults del
+// consumidor. Eso es justo lo que la historia viene a arreglar en producción,
+// pero deja al descubierto que decenas de tests montaban su sandbox
+// (`PIPELINE_DIR_OVERRIDE` / `pipelineRoot` a un `mkdtemp`) sin config alguna y
+// venían corriendo, sin saberlo, contra la rama del `catch`.
+//
+// Este helper materializa la config del sandbox de forma explícita.
+//
+// ## Por qué el default es un documento VACÍO (`{}`) y no una config rica
+//
+// Paridad de valores efectivos (CA-18). El contrato que estos tests ejercitaban
+// es *"sección ausente ⇒ default seguro del consumidor"* (D-4), que sigue
+// intacto: un config VÁLIDO sin `waves.max_concurrency` da
+// `WAVE_MAX_CONCURRENCY_DEFAULT`, exactamente el mismo 10 que antes producía el
+// `catch`. Sembrar valores concretos cambiaría silenciosamente lo que el test
+// afirma. Quien necesite un valor distinto lo pide por `extra` y queda a la
+// vista en el test.
+//
+// `pipelines: {}` es config válida sin fases declaradas ⇒ enum de fases vacío
+// ⇒ `FALLBACK_PHASES` en `deliverable-index`, que es el mismo camino que esos
+// fixtures tomaban antes.
+
+/**
+ * Escribe un `config.yaml` mínimo y VÁLIDO en el directorio de pipeline de un
+ * sandbox de test. Idempotente: sobrescribe.
+ *
+ * @param {string} pipelineDir - directorio que hará de `.pipeline/` (el que se
+ *   pasa como `PIPELINE_DIR_OVERRIDE` o `pipelineDir`). Se crea si no existe.
+ * @param {object} [extra] - secciones adicionales a mergear en la raíz del
+ *   documento, para el test que necesite un valor concreto (ej.
+ *   `{ waves: { max_concurrency: 3 } }`).
+ * @returns {string} ruta del `config.yaml` escrito.
+ */
+function seedPipelineConfig(pipelineDir, extra = {}) {
+    const yaml = require('js-yaml'); // eslint-disable-line global-require
+    fs.mkdirSync(pipelineDir, { recursive: true });
+    const file = path.join(pipelineDir, 'config.yaml');
+    fs.writeFileSync(file, yaml.dump({ pipelines: {}, ...extra }), 'utf8');
+    return file;
+}
+
+/**
+ * Variante para los sandboxes cuya raíz es el REPO ROOT (los que pasan
+ * `pipelineRoot`/`repoRoot`, no el `.pipeline/` directo): siembra en
+ * `<repoRoot>/.pipeline/config.yaml`.
+ *
+ * @param {string} repoRoot
+ * @param {object} [extra]
+ * @returns {string} ruta del `config.yaml` escrito.
+ */
+function seedRepoRootConfig(repoRoot, extra = {}) {
+    return seedPipelineConfig(path.join(repoRoot, '.pipeline'), extra);
+}
+
+module.exports = {
+    ensureGitOnPath,
+    locateGitDir,
+    gitIsInvokable,
+    fakeHttpReq,
+    fakeHttpRes,
+    seedPipelineConfig,
+    seedRepoRootConfig,
+};

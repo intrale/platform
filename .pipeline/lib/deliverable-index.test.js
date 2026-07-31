@@ -31,9 +31,15 @@ const {
 // #4507): `resolvePipelineDir` normaliza tolerante repo-root → `.pipeline`, así
 // que apuntar el root directo al dir `.pipeline` es idempotente y modela el
 // callsite real (pulpo pasa `PIPELINE` = dir `.pipeline`).
+// #5172 — el sandbox escribe `config.yaml`: desde que la lectura de config pasa
+// por `lib/config-resolver`, un `.pipeline/` SIN config.yaml es un fallo de
+// lectura y ya no degrada en silencio. `pipelines: {}` es config VÁLIDA sin
+// fases declaradas, que es exactamente el caso que este fixture ejercitaba antes
+// (enum vacío → `FALLBACK_PHASES`). Ninguna aserción cambia.
 function tmpRoot() {
     const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'di-test-')), '.pipeline');
     fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'config.yaml'), 'pipelines: {}\n');
     return dir;
 }
 

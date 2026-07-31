@@ -47,6 +47,13 @@ const TRANSIENT_SET = new Set(TRANSIENT_CODES);
 const CORRUPTION_NAMES = Object.freeze([
     'YAMLException',          // parse-error de YAML existente (js-yaml v4)
     'ConfigSchemaViolation', // schema-violation de config.yaml (lib/config-schema)
+    // #5172 (D-G) — parse-error/ilegibilidad de config.yaml redactado por el
+    // resolver único (lib/config-resolver). Va acá porque la clasificación es
+    // por lista CERRADA de names: un error nuevo sin registrar haría que la
+    // corrupción de config deje de clasificarse como 'corruption' en silencio.
+    // OJO: `ConfigParseViolation` NO setea `err.code`; si lo hiciera con
+    // 'ENOENT' ganaría TRANSIENT_SET (regla 2 precede a la 3).
+    'ConfigParseViolation',
     'WorkFileCorruptionError', // work-file de issue existente que no parsea (pulpo.readYaml)
 ]);
 

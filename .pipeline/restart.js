@@ -123,7 +123,13 @@ function syncWithMain() {
         impact: 'alto',
         reason: 'syncWithMain: git reset --hard FETCH_HEAD (recovery de restart)',
       });
-    } catch {}
+    } catch (e) {
+      // #5172 — dejó de ser mudo. `worktree-reset` es notify-and-proceed y el
+      // veredicto no se lee: el reset transaccional sigue igual (el audit NUNCA
+      // rompe el rollback). Sólo se hace visible que el aviso no salió.
+      require('./lib/kernel-action-policy').logPolicyEnforcementFailure(
+        'restart', 'worktree-reset', e);
+    }
     execSync('git reset --hard FETCH_HEAD', { cwd: ROOT, timeout: 15000, windowsHide: true, encoding: 'utf8' });
     log('Sincronizado con origin/main');
     // #4460 — Registrar el HEAD tras el reset como SHA canónico de "qué corre

@@ -44,9 +44,10 @@ const { redactSecretValue, redactSensitive, redactRagContent } = require('./reda
 // -----------------------------------------------------------------------------
 //
 // FALLBACK espeja el estado actual de `config.yaml` (definicion + desarrollo).
-// Se usa sólo si el config no se puede leer/parsear (defensa: nunca abrir el
-// enum por un config roto). El enum efectivo se recalcula desde el config real
-// en `getPhaseEnum`, cacheado por proceso.
+// #5172 — YA NO se usa ante config ILEGIBLE (eso ahora propaga el error tipado
+// del resolver): sólo aplica cuando el config es válido pero no declara
+// `pipelines.*.skills_por_fase`. El enum efectivo se recalcula desde el config
+// real en `getPhaseEnum`, cacheado por proceso.
 
 const FALLBACK_PHASES = Object.freeze([
     // definicion
@@ -58,14 +59,29 @@ const FALLBACK_PHASES = Object.freeze([
 let _phaseEnumCache = null;
 
 /**
- * Lee `config.yaml` (una vez por proceso) y extrae el set cerrado de nombres de
- * fase presentes en `pipelines.*.skills_por_fase`. Si algo falla, cae al
- * FALLBACK. El resultado se cachea.
+ * Lee `config.yaml` vía el punto ÚNICO `lib/config-resolver` (#5172) y extrae el
+ * set cerrado de nombres de fase presentes en `pipelines.*.skills_por_fase`. El
+ * resultado se cachea por proceso.
+ *
+ * FALLBACK ELIMINADO (#5172): el `catch {}` que envolvía la lectura convertía un
+ * FALLO DE LECTURA (config.yaml ausente, YAML roto, permisos, schema violado) en
+ * `FALLBACK_PHASES`. El enum seguía cerrado, sí, pero congelado en una copia
+ * hardcodeada del config de hace meses: si alguien agregaba una fase nueva y al
+ * mismo tiempo rompía el YAML, el índice rechazaba silenciosamente entregables
+ * de esa fase y el operador leía "fase fuera del enum cerrado" en vez de "tu
+ * config no se puede leer". Ahora el error tipado del resolver se PROPAGA.
+ *
+ * Lo que NO cambia (no es error): si el config parsea bien pero no declara
+ * `pipelines:` / `skills_por_fase`, el enum queda vacío y se aplica igual
+ * `FALLBACK_PHASES`. La ausencia de una sección opcional no es corrupción; sólo
+ * se eliminó el catch que enmascaraba el fallo de lectura.
  *
  * @param {object} [opts]
  * @param {string[]} [opts.phaseEnum] - override explícito (tests).
- * @param {string} [opts.pipelineRoot] - root del repo (default: padre de lib/).
+ * @param {string} [opts.pipelineRoot] - dir `.pipeline` o repo root (se normaliza
+ *        con `resolvePipelineDir`; default: padre de lib/).
  * @returns {Set<string>}
+ * @throws {ConfigParseViolation|ConfigSchemaViolation} config ilegible/invalida.
  */
 function getPhaseEnum(opts = {}) {
     if (Array.isArray(opts.phaseEnum)) {
@@ -74,22 +90,22 @@ function getPhaseEnum(opts = {}) {
     if (_phaseEnumCache) return _phaseEnumCache;
 
     const phases = new Set();
-    try {
-        const yaml = require('js-yaml');
-        const root =
-            typeof opts.pipelineRoot === 'string' && opts.pipelineRoot.length > 0
-                ? opts.pipelineRoot
-                : path.resolve(__dirname, '..');
-        const cfgPath = path.join(root, 'config.yaml');
-        const raw = fs.readFileSync(cfgPath, 'utf8');
-        const cfg = yaml.load(raw) || {};
-        const pipelines = cfg.pipelines || {};
-        for (const pipelineCfg of Object.values(pipelines)) {
-            const spf = (pipelineCfg && pipelineCfg.skills_por_fase) || {};
-            for (const fase of Object.keys(spf)) phases.add(String(fase));
-        }
-    } catch {
-        // Config ilegible → enum cerrado por FALLBACK (nunca free-form).
+    // #5172 — se reusa `resolvePipelineDir` (la MISMA normalización tolerante
+    // repo-root → `.pipeline` de #4507 que ya usa `deliverablesDir`) en vez de
+    // tomar `opts.pipelineRoot` crudo. Antes se leía `<pipelineRoot>/config.yaml`
+    // literal: los callers que pasan el REPO ROOT (`write-deliverable.js:172`,
+    // `:280` ← `pulpo.js` con `pipelineRoot: ROOT`) apuntaban a un archivo que
+    // NUNCA existe y caían al catch → FALLBACK. Al quitar el catch ese bug
+    // latente pasaría de silencioso a fatal, así que se corrige la resolución:
+    // el enum sale del `.pipeline/config.yaml` real, igual que el índice.
+    // Se inyecta como `pipelineDir` (DIRECTORIO): el nombre del archivo lo pone
+    // el resolver (CA-12).
+    // eslint-disable-next-line global-require
+    const cfg = require('./config-resolver').resolve({ pipelineDir: resolvePipelineDir(opts) });
+    const pipelines = cfg.pipelines || {};
+    for (const pipelineCfg of Object.values(pipelines)) {
+        const spf = (pipelineCfg && pipelineCfg.skills_por_fase) || {};
+        for (const fase of Object.keys(spf)) phases.add(String(fase));
     }
 
     if (phases.size === 0) {

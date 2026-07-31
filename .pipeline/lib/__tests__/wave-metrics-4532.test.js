@@ -19,11 +19,17 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+const { seedPipelineConfig } = require('./_test-helpers');
+
 const REPO = path.resolve(__dirname, '..', '..', '..');
 const TEMPLATE_SRC = path.join(REPO, '.pipeline', 'waves.json.template');
 
 function freshPipelineDir({ withTemplate = true } = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wm4532-'));
+    // #5172 — el sandbox ES el pipelineDir: sin `config.yaml` la lectura de
+    // config falla cerrado en vez de degradar en silencio. Documento MÍNIMO
+    // para preservar los valores efectivos que este fixture asumía.
+    seedPipelineConfig(dir);
     if (withTemplate) {
         fs.copyFileSync(TEMPLATE_SRC, path.join(dir, 'waves.json.template'));
     }

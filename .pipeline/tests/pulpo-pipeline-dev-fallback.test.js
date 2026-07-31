@@ -17,11 +17,17 @@ const path = require('node:path');
 const { buildMinimalDeliverableMd } = require('../lib/minimal-deliverable');
 const { writeDeliverable } = require('../lib/write-deliverable');
 const { readDeliverableIndex } = require('../lib/deliverable-index');
+const { seedRepoRootConfig } = require('../lib/__tests__/_test-helpers');
 
 // Root de repo temporal aislado por caso (evita tocar el store real).
 function tmpRepoRoot(tag) {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), `wf4523-${tag}-`));
     fs.mkdirSync(path.join(base, '.pipeline', 'deliverables'), { recursive: true });
+    // #5172 — el sandbox es un REPO ROOT, así que la config va en
+    // `<base>/.pipeline/`. Sin ella la validación de fase falla cerrado en vez
+    // de degradar; el documento MÍNIMO deja el enum en FALLBACK_PHASES (que ya
+    // incluye `dev`), o sea el mismo camino que este fixture tomaba antes.
+    seedRepoRootConfig(base);
     return base;
 }
 

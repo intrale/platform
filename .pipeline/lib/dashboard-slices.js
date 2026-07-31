@@ -10,6 +10,8 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+// #5172 — punto único de lectura/validación de config.yaml.
+const configResolver = require('./config-resolver');
 
 // #2890 PR-A — Modo descanso (ventana horaria).
 let restModeWindow = null;
@@ -2535,16 +2537,21 @@ function quotaSlice(state, ctx) {
     return out;
 }
 
-// #4282 — Lee config.yaml para el guard (js-yaml safe-by-default). Ante error
-// → `{}` (el guard cae a defaults conservadores, REQ-SEC-2).
+// #4282 — Configuración para el guard de cuota y el pacing budget.
+//
+// #5172 — Pasa por el punto único (`lib/config-resolver`). Antes degradaba
+// a `{}` ante cualquier error; como los defaults del codebase son
+// apagados por diseño, ese `{}` NO era "defaults conservadores": era el guard
+// apagado en silencio. Ahora PROPAGA el error tipado.
+//
+// La política de este consumidor (D-3) la aplican sus tres call-sites, que ya
+// envuelven la llamada en su propio `try/catch` best-effort: con configuración
+// inválida el guard simplemente NO CORRE (no se evalúa con una config
+// inventada) y el slice sigue sirviendo el resto de sus datos. El estado de
+// error de configuración lo expone `dashboard.js` (CA-8), que es la superficie
+// que el operador mira.
 function _loadGuardRawConfig(pipelineDir) {
-    try {
-        const yaml = require('js-yaml');
-        const cfgPath = path.join(pipelineDir, 'config.yaml');
-        return yaml.load(fs.readFileSync(cfgPath, 'utf8')) || {};
-    } catch {
-        return {};
-    }
+    return configResolver.resolve({ pipelineDir, reload: true });
 }
 
 // =============================================================================
