@@ -131,6 +131,14 @@ hidratadas) y `skipped_*` (las que ya estaban en env o tenían placeholder).
 
 ## Gemini (Google AI Studio — free tier)
 
+> **NO REPONER salvo que vuelva un consumidor.** El provider `gemini-google`
+> autentica por OAuth con `agy` (ver `providers/gemini-google.js`: «Auth: OAuth
+> via `agy`; nunca API key») y `agent-models.json` no le declara
+> `credentials_env`. Ningún módulo lee `GEMINI_API_KEY`, por eso el manifiesto la
+> declara `required_when: never` + `consumer_status: no_consumer`. Cargarla no
+> habilita nada y el health-check no debe pedirla. Los pasos de abajo aplican
+> sólo si en el futuro se recablea el provider a API key.
+
 1. Abrí <https://aistudio.google.com/apikey> con la cuenta GCP del proyecto.
 2. "Create API key" — asociar a un proyecto de Google Cloud existente o nuevo.
 3. Editá `~/.claude/secrets/credentials.json`:

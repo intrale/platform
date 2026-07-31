@@ -251,6 +251,57 @@ test('ningun defer_reason afirma que el consumo funciona si su consumer_status e
   for (const texto of publicadoEnRev3) assert.match(texto, afirmaQueFunciona);
 });
 
+test('el conjunto nominal de consumer_status=resolved esta anclado', () => {
+  // Espejo del ancla que ya tiene `broken`. Sin este deepEqual, marcar una clave
+  // como `resolved` no cuesta nada: asi paso `providers.google.api_key`
+  // (rev-4) por 18 tests verdes declarando un consumidor que no existe.
+  const resueltas = manifest.entries
+    .filter((entry) => entry.consumer_status === 'resolved')
+    .map((entry) => entry.name);
+  assert.deepEqual(resueltas, [
+    'telegram.bot_token',
+    'telegram.chat_id',
+    'providers.openai.api_key',
+    'providers.cerebras.api_key',
+    'providers.nvidia.api_key',
+    'google_drive.drive_folder_id',
+  ]);
+  // `resolved` implica `required_when` distinto de never: una clave que nadie
+  // debe reponer no puede a la vez tener consumidor sano.
+  for (const entry of manifest.entries.filter((item) => item.consumer_status === 'resolved')) {
+    assert.notEqual(entry.required_when, 'never', entry.name);
+  }
+});
+
+test('toda clave providers.* resolved esta declarada en credentials_env de agent-models', () => {
+  // El candado con dientes: `resolved` no es una opinion, es verificable contra
+  // el artefacto que cablea los providers. gemini-google autentica por OAuth via
+  // `agy` y NO declara credentials_env, por eso su api_key no puede ser resolved.
+  const models = JSON.parse(fs.readFileSync(path.join(ROOT, '.pipeline', 'agent-models.json'), 'utf8'));
+  const declaradas = new Set(Object.values(models.providers || {})
+    .flatMap((provider) => provider.credentials_env || []));
+  assert.ok(declaradas.size >= 4, `credentials_env vacio o no parseado: ${declaradas.size}`);
+
+  const resueltasDeProviders = manifest.entries
+    .filter((entry) => entry.service === 'providers' && entry.consumer_status === 'resolved');
+  assert.equal(resueltasDeProviders.length, 3);
+  for (const entry of resueltasDeProviders) {
+    assert.ok(declaradas.has(entry.env_var),
+      `${entry.name}: ${entry.env_var} no figura en ningun credentials_env`);
+  }
+  // Control negativo: revertir google a resolved tiene que romper este candado.
+  const revertida = structuredClone(manifest);
+  const google = revertida.entries.find((entry) => entry.name === 'providers.google.api_key');
+  assert.equal(google.consumer_status, 'no_consumer');
+  assert.equal(google.required_when, 'never');
+  google.consumer_status = 'resolved';
+  const rotas = revertida.entries
+    .filter((entry) => entry.service === 'providers' && entry.consumer_status === 'resolved')
+    .filter((entry) => !declaradas.has(entry.env_var))
+    .map((entry) => entry.name);
+  assert.deepEqual(rotas, ['providers.google.api_key']);
+});
+
 test('regresion nominal de las cuatro claves google_drive', () => {
   const actual = Object.fromEntries(manifest.entries
     .filter((entry) => entry.name.startsWith('google_drive.'))
