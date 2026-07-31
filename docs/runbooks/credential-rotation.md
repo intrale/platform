@@ -193,6 +193,67 @@ hidratadas) y `skipped_*` (las que ya estaban en env o tenían placeholder).
 - [ ] Pulpo arranca y procesa `intake` sin errores `gh CLI`.
 - [ ] Commit pusheado con `last_rotated`.
 
+## Telegram (reposicion)
+
+Para **rotar** una credencial viva, seguí el flujo del proveedor. Esta sección
+cubre una credencial **ausente** en una máquina limpia.
+
+1. Creá un bot con BotFather o recuperá el token del bot operativo.
+2. Obtené el identificador del chat autorizado desde Telegram, sin publicarlo.
+3. Escribí `telegram.bot_token` y `telegram.chat_id` en
+   `~/.claude/secrets/credentials.json`.
+4. Ejecutá `node .pipeline/lib/credentials.js` y verificá que el resumen nombre
+   `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID`, sin mostrar sus valores.
+
+## AWS (reposicion)
+
+Para **rotar** credenciales vivas, usá el procedimiento de IAM correspondiente.
+Esta sección cubre credenciales **ausentes** en una máquina limpia.
+
+1. Solicitá al administrador un acceso de mínimo privilegio para el servicio.
+2. Escribí los dot-paths `aws.access_key_id`, `aws.secret_access_key`,
+   `aws.region` y `aws.profile` en `~/.claude/secrets/credentials.json`.
+3. No agregues nombres de tablas: hoy no tienen consumidor operativo.
+4. Las claves AWS permanecen `deferred`; `node .pipeline/lib/credentials.js`
+   no debe informar variables AWS hidratadas. Un `AWS_PROFILE` ya presente en
+   la terminal conserva precedencia sobre cualquier configuración durable.
+
+## Google Drive (reposicion)
+
+Para **rotar** una credencial viva, ver el flujo específico de OAuth. Esta
+sección cubre credenciales **ausentes** en una máquina limpia.
+
+1. En Google Cloud Console creá o seleccioná un cliente OAuth de aplicación.
+2. Completá la autorización y obtené las credenciales requeridas sin copiarlas
+   a issues, logs ni documentación.
+3. Escribí `google_drive.oauth_client_id`,
+   `google_drive.oauth_client_secret`, `google_drive.oauth_refresh_token` y
+   `google_drive.drive_folder_id` en `~/.claude/secrets/credentials.json`.
+4. Ejecutá `node .pipeline/lib/credentials.js`: sólo
+   `GOOGLE_DRIVE_FOLDER_ID` debe figurar como hidratada; las credenciales OAuth
+   permanecen `deferred`.
+
+## Cloudflare R2 (reposicion)
+
+Para **rotar** credenciales vivas, usá el panel de tokens de Cloudflare. Esta
+sección cubre variables **ausentes** en una máquina limpia.
+
+1. Creá un token R2 de mínimo privilegio desde el panel de Cloudflare.
+2. Configurá `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` y
+   `R2_BUCKET` como variables de entorno del operador.
+3. No las escribas en `credentials.json`: R2 es una fuente `env`, no `store`.
+4. Verificá únicamente la presencia por nombre en el proceso que comparte la
+   evidencia; nunca imprimas sus valores.
+
+## Multimedia ElevenLabs (reposicion)
+
+Para **rotar** una credencial viva, usá el panel del proveedor. Esta sección
+cubre el caso **ausente** en una máquina limpia.
+
+`ELEVENLABS_API_KEY` y `ELEVENLABS_VOICE_ID` están inventariadas, pero no
+tienen consumidor activo. No deben reponerse ni hidratarse mientras su
+`required_when` sea `never`.
+
 ## Si algo sale mal
 
 ### "Revoqué la vieja antes de tener la nueva, el pulpo no arranca"

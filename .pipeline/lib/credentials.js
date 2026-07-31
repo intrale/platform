@@ -54,6 +54,9 @@ const ENV_MAPPING = Object.freeze({
   // credentials.json; jamás por Telegram (SEC-5). El valor nunca se loguea (el
   // loader sólo lista nombres de var).
   'providers.moonshot.api_key':    'ANTHROPIC_AUTH_TOKEN',
+  // Identificador no secreto con consumidor activo. Las credenciales deferred
+  // se declaran únicamente en secrets-manifest.json y no se hidratan (#5242).
+  'google_drive.drive_folder_id':  'GOOGLE_DRIVE_FOLDER_ID',
 });
 
 // Mapeo legacy: telegram-config.json usa flat keys (no nested). Solo cubre las
