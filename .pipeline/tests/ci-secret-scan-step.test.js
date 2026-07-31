@@ -131,8 +131,8 @@ test('CA-9: el scanner por defecto sale del árbol base y el head es sólo boots
   assert.match(block, /BASE_ALLOWLIST="\$BASE_TREE\/\.pipeline\/secret-scan-allowlist\.json"/);
   assert.match(
     block,
-    /printf '\{"paths":\["\.pipeline\/tests\/precommit-secret-scan-content\.test\.js"\],"globs":\[\]\}/,
-    'la política bootstrap debe seguir siendo un path exacto, sin globs',
+    /printf '\{"paths":\[\],"globs":\[\]\}/,
+    'la política bootstrap no puede exceptuar ningún path: sería un agujero permanente',
   );
   assert.match(WORKFLOW_TEXT, /secret-scan:\n(?:.*\n)*?\s+continue-on-error: false/);
 });

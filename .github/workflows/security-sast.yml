@@ -262,9 +262,10 @@ jobs:
           if [ ! -f "$BASE_ALLOWLIST" ]; then
             BASE_ALLOWLIST="$RUNNER_TEMP/secret-scan-bootstrap-allowlist.json"
             # Política bootstrap confiable: el base aún no tiene allowlist.
-            # Excluye sólo el fixture sintético que instala este mismo control.
-            printf '{"paths":[".pipeline/tests/precommit-secret-scan-content.test.js"],"globs":[]}\n' \
-              > "$BASE_ALLOWLIST"
+            # Sin excepciones — los fixtures de test arman sus tokens en
+            # runtime, así que no necesitan una exención permanente sobre un
+            # path escribible y fuera de CODEOWNERS (#5244 rev-1).
+            printf '{"paths":[],"globs":[]}\n' > "$BASE_ALLOWLIST"
           fi
 
           node "$SCANNER" \

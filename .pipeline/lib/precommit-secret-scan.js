@@ -39,19 +39,51 @@ function unquoteDiffPath(raw) {
   try { return JSON.parse(value); } catch { throw new Error(`diff: path C-quoted inválido: ${raw}`); }
 }
 
+// `@@ -viejo[,borradas] +nuevo[,agregadas] @@`. Los conteos delimitan el cuerpo.
+const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+
+// #5244 — el contenido NO se clasifica por su prefijo de texto, se consume por
+// el conteo que declara el encabezado @@. Con -U0 una línea agregada cuyo
+// contenido empieza con "++ " se emite como "+++ ...": si se la lee como
+// encabezado de archivo, el hunk se descarta y el resto del contenido nunca se
+// escanea. El cuerpo del hunk es una región cerrada: mientras queden líneas por
+// consumir, ninguna línea puede reinterpretarse como encabezado.
 function parseHunks(diff) {
   const hunks = [];
   let filePath = null;
   let current = null;
+  let pendingAdds = 0;
+  let pendingDeletions = 0;
   const flush = () => {
     if (current && current.lines.length) {
-      const text = current.lines.join('\n');
-      if (!text.includes('\0')) hunks.push({ path: current.path, startLine: current.startLine, text });
+      hunks.push({ path: current.path, startLine: current.startLine, text: current.lines.join('\n') });
     }
     current = null;
   };
   for (const line of String(diff).split(/\r?\n/)) {
-    if (line.startsWith('+++ ')) {
+    if (pendingAdds > 0 || pendingDeletions > 0) {
+      const marker = line.charAt(0);
+      if (marker === '+') {
+        if (current) current.lines.push(line.slice(1));
+        pendingAdds -= 1;
+      } else if (marker === '-') {
+        pendingDeletions -= 1;
+      } else if (marker === '\\' || marker === ' ') {
+        // `\ No newline at end of file` y contexto: no consumen cuota del hunk.
+      } else {
+        // Un diff bien formado no llega acá. Si llega, el conteo se
+        // desincronizó y no sabemos qué quedó sin mirar: fail-closed.
+        throw new Error(`diff: cuerpo de hunk inesperado en ${filePath || '<sin path>'}`);
+      }
+      continue;
+    }
+    const header = line.match(HUNK_HEADER);
+    if (header) {
+      flush();
+      pendingDeletions = header[2] === undefined ? 1 : Number(header[2]);
+      pendingAdds = header[4] === undefined ? 1 : Number(header[4]);
+      if (filePath && pendingAdds > 0) current = { path: filePath, startLine: Number(header[3]), lines: [] };
+    } else if (line.startsWith('+++ ')) {
       flush();
       const raw = line.slice(4);
       if (raw === '/dev/null') filePath = null;
@@ -62,14 +94,6 @@ function parseHunks(diff) {
     } else if (line.startsWith('Binary files ') || line.startsWith('GIT binary patch')) {
       flush();
       filePath = null;
-    } else {
-      const header = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-      if (header) {
-        flush();
-        if (filePath) current = { path: filePath, startLine: Number(header[1]), lines: [] };
-      } else if (current && line.startsWith('+') && !line.startsWith('+++')) {
-        current.lines.push(line.slice(1));
-      }
     }
   }
   flush();
@@ -90,6 +114,14 @@ function collectAddedHunks({ mode = 'staged', base, head = 'HEAD', cwd = process
 }
 
 function findingFor(hunk, sanitizer = require(DEFAULT_SANITIZER).sanitize) {
+  // #5244 — git detecta binarios mirando los primeros ~8000 bytes: un \0 más
+  // allá de ese umbral llega acá como texto. Descartar el hunk dejaba el
+  // archivo entero sin escanear (con -U0 un alta es un solo hunk), así que un
+  // \0 tardío alcanzaba para colar un secreto. Un hunk no escaneable BLOQUEA;
+  // los binarios reales ya salen antes por el marcador `Binary files`.
+  if (String(hunk.text).includes('\0')) {
+    return { path: hunk.path, line: hunk.startLine, error: 'NUL en el contenido agregado: no es escaneable (fail-closed)' };
+  }
   let sanitized;
   try { sanitized = sanitizer(hunk.text); } catch (error) {
     return { path: hunk.path, line: hunk.startLine, error: error?.message || 'sanitize falló' };
