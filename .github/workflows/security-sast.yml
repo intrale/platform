@@ -228,9 +228,17 @@ jobs:
 
       - name: Secret scan del diff
         run: |
-          node .base/.pipeline/lib/precommit-secret-scan.js \
+          BASE_ALLOWLIST="$GITHUB_WORKSPACE/.base/.pipeline/secret-scan-allowlist.json"
+          if [ ! -f "$BASE_ALLOWLIST" ]; then
+            BASE_ALLOWLIST="$RUNNER_TEMP/secret-scan-bootstrap-allowlist.json"
+            printf '{"paths":[],"globs":[]}\n' > "$BASE_ALLOWLIST"
+          fi
+          node .pipeline/lib/precommit-secret-scan.js \
             --mode=range --base=${{ steps.base.outputs.sha }} --head=$GITHUB_SHA \
-            --cwd="$GITHUB_WORKSPACE" --format=github
+            --cwd="$GITHUB_WORKSPACE" \
+            --sanitizer="$GITHUB_WORKSPACE/.base/.pipeline/sanitizer.js" \
+            --allowlist="$BASE_ALLOWLIST" \
+            --format=github
 
   sast-report:
     name: Publicar reporte SAST en PR

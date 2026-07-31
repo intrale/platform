@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 const {
   collectAddedHunks, findingFor, parseHunks, run,
 } = require('../lib/precommit-secret-scan');
@@ -93,4 +93,48 @@ test('scanner real bloquea un secreto staged sin depender del path', () => {
     { cwd: directory, allowlist: EMPTY_ALLOWLIST, format: 'text' },
   );
   assert.equal(result.exitCode, 1);
+});
+
+test('CI ejecuta el scanner de HEAD y bloquea un rango aunque base tenga scanner antiguo', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'secret-scan-range-'));
+  execFileSync('git', ['init'], { cwd: directory });
+  execFileSync('git', ['config', 'user.email', 'pipeline@example.invalid'], { cwd: directory });
+  execFileSync('git', ['config', 'user.name', 'Pipeline Test'], { cwd: directory });
+  fs.mkdirSync(path.join(directory, '.pipeline', 'lib'), { recursive: true });
+  fs.writeFileSync(
+    path.join(directory, '.pipeline', 'lib', 'precommit-secret-scan.js'),
+    '#!/usr/bin/env node\nprocess.exit(0);\n',
+  );
+  fs.writeFileSync(path.join(directory, 'README.md'), 'base\n');
+  execFileSync('git', ['add', '.'], { cwd: directory });
+  execFileSync('git', ['commit', '-m', 'base con scanner antiguo'], { cwd: directory });
+  const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: directory, encoding: 'utf8' }).trim();
+
+  const nested = path.join(directory, '.claude', 'hooks');
+  fs.mkdirSync(nested, { recursive: true });
+  const token = ['gh', 'p_', 'abcdefghijklmnopqrstuvwxyz', 'ABCDEFGHIJKLMN'].join('');
+  fs.writeFileSync(path.join(nested, 'audit-5244.json'), JSON.stringify({ token }));
+  execFileSync('git', ['add', '.'], { cwd: directory });
+  execFileSync('git', ['commit', '-m', 'agrega secreto sintetico'], { cwd: directory });
+
+  const scanner = path.join(__dirname, '..', 'lib', 'precommit-secret-scan.js');
+  const result = spawnSync(process.execPath, [
+    scanner, '--mode=range', `--base=${base}`, '--head=HEAD', `--cwd=${directory}`,
+    `--allowlist=${EMPTY_ALLOWLIST}`, '--format=github',
+  ], { encoding: 'utf8' });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /audit-5244\.json/);
+  assert.match(result.stderr, /BLOQUEADO/);
+  assert.match(result.stderr, /\[REDACTED:GITHUB_TOKEN\]/);
+
+  const workflow = fs.readFileSync(
+    path.join(__dirname, '..', '..', '.github', 'workflows', 'security-sast.yml'),
+    'utf8',
+  );
+  assert.match(workflow, /node \.pipeline\/lib\/precommit-secret-scan\.js/);
+  assert.doesNotMatch(workflow, /node \.base\/\.pipeline\/lib\/precommit-secret-scan\.js/);
+  assert.match(workflow, /--sanitizer=.*\.base\/\.pipeline\/sanitizer\.js/);
+  assert.match(workflow, /BASE_ALLOWLIST=.*\.base\/\.pipeline\/secret-scan-allowlist\.json/);
+  assert.match(workflow, /printf '\{"paths":\[\],"globs":\[\]\}/);
+  assert.match(workflow, /--allowlist="\$BASE_ALLOWLIST"/);
 });

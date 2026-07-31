@@ -5,10 +5,10 @@
 // multilínea. El mismo entrypoint sirve al pre-commit y a CI.
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { sanitize } = require('../sanitizer');
 const { loadAllowlist, whichAllowlistEntry } = require('./secret-allowlist');
 
 const DEFAULT_ALLOWLIST = path.join(__dirname, '..', 'secret-scan-allowlist.json');
+const DEFAULT_SANITIZER = path.join(__dirname, '..', 'sanitizer.js');
 const SENSITIVE_PATTERNS = [
   { name: 'commander-session', test: (p) => p === '.pipeline/commander-session.json' },
   { name: 'commander-history', test: (p) => p === '.pipeline/commander-history.jsonl' },
@@ -83,7 +83,7 @@ function collectAddedHunks({ mode = 'staged', base, head = 'HEAD', cwd = process
   return parseHunks(output);
 }
 
-function findingFor(hunk, sanitizer = sanitize) {
+function findingFor(hunk, sanitizer = require(DEFAULT_SANITIZER).sanitize) {
   let sanitized;
   try { sanitized = sanitizer(hunk.text); } catch (error) {
     return { path: hunk.path, line: hunk.startLine, error: error?.message || 'sanitize falló' };
@@ -107,7 +107,7 @@ function findingFor(hunk, sanitizer = sanitize) {
 function parseArgs(argv = process.argv.slice(2)) {
   const options = {
     mode: 'staged', cwd: process.cwd(), allowlist: DEFAULT_ALLOWLIST,
-    format: 'text', head: 'HEAD',
+    sanitizer: DEFAULT_SANITIZER, format: 'text', head: 'HEAD',
   };
   for (const arg of argv) {
     const [flag, ...rest] = arg.split('=');
@@ -117,6 +117,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     else if (flag === '--head') options.head = value;
     else if (flag === '--cwd') options.cwd = path.resolve(value);
     else if (flag === '--allowlist') options.allowlist = path.resolve(value);
+    else if (flag === '--sanitizer') options.sanitizer = path.resolve(value);
     else if (flag === '--format') options.format = value;
     else throw new Error(`secret-scan: argumento desconocido ${arg}`);
   }
@@ -146,7 +147,7 @@ function formatFindings(findings, format) {
 
 function run(options, dependencies = {}) {
   const collect = dependencies.collectAddedHunks || collectAddedHunks;
-  const sanitizer = dependencies.sanitize || sanitize;
+  const sanitizer = dependencies.sanitize || require(options.sanitizer || DEFAULT_SANITIZER).sanitize;
   const allowlist = loadAllowlist(options.allowlist, { strict: true });
   const findings = [];
   for (const hunk of collect(options)) {
@@ -172,7 +173,7 @@ function main(argv = process.argv.slice(2)) {
 
 if (require.main === module) process.exit(main());
 module.exports = {
-  DEFAULT_ALLOWLIST, SENSITIVE_PATTERNS, collectAddedHunks, countRedactions,
+  DEFAULT_ALLOWLIST, DEFAULT_SANITIZER, SENSITIVE_PATTERNS, collectAddedHunks, countRedactions,
   findingFor, formatFindings, isSensitive, main, parseArgs, parseHunks, run,
   unquoteDiffPath,
 };
