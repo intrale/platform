@@ -24,6 +24,52 @@ const MODULE_PATH = path.join(ROOT, '.pipeline', 'lib', 'secrets-manifest.js');
 const manifest = load({ path: MANIFEST_PATH });
 const runbook = fs.readFileSync(RUNBOOK_PATH, 'utf8');
 
+const fakeCredentialStore = {
+  _version: 1,
+  telegram: {
+    bot_token: 'fake-bot-token',
+    chat_id: '100000',
+    leo_operator_chat_id: '200000',
+  },
+  providers: {
+    openai: { api_key: 'fake-openai' },
+    anthropic: { api_key: 'fake-anthropic' },
+    google: { api_key: 'fake-google' },
+    cerebras: { api_key: 'fake-cerebras' },
+    nvidia: { api_key: 'fake-nvidia' },
+    moonshot: { api_key: 'fake-moonshot' },
+  },
+  google_drive: {
+    _note: 'metadata',
+    drive_folder_id: 'fake-folder',
+    oauth_client_id: 'fake-client',
+    oauth_client_secret: 'fake-secret',
+    oauth_refresh_token: 'fake-refresh',
+  },
+  aws: {
+    _principal: 'metadata',
+    access_key_id: 'fake-aws',
+    secret_access_key: 'fake-aws-secret',
+    region: 'fake-region',
+    profile: 'fake-profile',
+    table_name: 'fake-table',
+    coordination_table_name: 'fake-coordination-table',
+  },
+  multimedia: {
+    elevenlabs_api_key: 'fake-elevenlabs',
+    elevenlabs_voice_id: 'fake-voice',
+  },
+};
+
+function leafDotPaths(value, prefix = '') {
+  return Object.entries(value).flatMap(([key, child]) => {
+    const dotPath = prefix ? `${prefix}.${key}` : key;
+    return child && typeof child === 'object' && !Array.isArray(child)
+      ? leafDotPaths(child, dotPath)
+      : [dotPath];
+  });
+}
+
 function githubSlug(heading) {
   return heading.toLowerCase().trim()
     .replace(/[^\w\- ]+/g, '')
@@ -114,10 +160,16 @@ test('toda entrada deferred tiene defer_reason de al menos 40 caracteres', () =>
 });
 
 test('la invariante bidireccional relaciona store eager con ENV_MAPPING y excluye metadata por patron', () => {
+  const storeNames = leafDotPaths(fakeCredentialStore)
+    .filter((name) => !isMetadataKey(name)).sort();
+  const manifestStoreNames = manifest.entries
+    .filter((entry) => entry.source === 'store')
+    .map((entry) => entry.name).sort();
   const mappedNames = Object.keys(ENV_MAPPING).sort();
   const eagerNames = manifest.entries
     .filter((entry) => entry.source === 'store' && entry.hydration === 'eager')
     .map((entry) => entry.name).sort();
+  assert.deepEqual(storeNames, manifestStoreNames);
   assert.deepEqual(eagerNames, mappedNames);
   for (const entry of manifest.entries.filter((item) => item.hydration === 'deferred')) {
     assert.equal(ENV_MAPPING[entry.name], undefined, entry.name);
@@ -131,17 +183,10 @@ test('el childEnv real no expone ninguna credencial deferred', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'manifest-child-env-'));
   const canonical = path.join(tmp, 'credentials.json');
   const legacy = path.join(tmp, 'legacy.json');
-  const fakeStore = {
-    telegram: { bot_token: 'fake-bot-token', chat_id: '100000' },
-    google_drive: {
-      drive_folder_id: 'fake-folder',
-      oauth_client_id: 'fake-client',
-      oauth_client_secret: 'fake-secret',
-      oauth_refresh_token: 'fake-refresh',
-    },
-    aws: { access_key_id: 'fake-aws', secret_access_key: 'fake-aws-secret' },
-  };
-  fs.writeFileSync(canonical, JSON.stringify(fakeStore));
+  const deferred = manifest.entries.filter((item) => item.hydration === 'deferred');
+  assert.equal(deferred.length, 11);
+  assert.ok(deferred.every((entry) => leafDotPaths(fakeCredentialStore).includes(entry.name)));
+  fs.writeFileSync(canonical, JSON.stringify(fakeCredentialStore));
   try {
     const parentEnv = {};
     loadIntoEnv({ canonicalPath: canonical, legacyPath: legacy, env: parentEnv, logger: () => {} });
