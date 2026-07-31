@@ -15,9 +15,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { seedPipelineConfig } = require('./_test-helpers');
 
 function setupTmp() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'waves-api-domain-'));
+    // #5172: sin config.yaml el sandbox ya no cae al default por `catch` sino a
+    // un fallo tipado. Se siembra el documento mínimo para que el techo de
+    // concurrencia siga siendo el default (10) que asume `EWAVES_BOUNDS` con 999.
+    seedPipelineConfig(dir);
     process.env.PIPELINE_DIR_OVERRIDE = dir;
     delete require.cache[require.resolve('../waves')];
     const waves = require('../waves');

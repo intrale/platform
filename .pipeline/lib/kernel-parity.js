@@ -105,12 +105,32 @@ function baselineExists(ref = BASELINE_TAG) {
 }
 
 // -----------------------------------------------------------------------------
-// YAML — mismo loader lazy que el runtime (canonical-facts.js): js-yaml safe.
+// YAML — #5172 (D-B): CASO ESPECIAL del punto único de lectura.
+//
+// Este módulo no lee el `config.yaml` del disco: compara el de DOS revisiones
+// git (`showFile(ref, CONFIG_REL)`), así que `resolve()` no puede servirlo — no
+// hay ruta que resolver y el texto no es la config del runtime.
+//
+// Por eso consume `resolveForDiff(text)`, la contraparte del resolver para texto
+// arbitrario: parsea con el MISMO js-yaml safe-by-default y valida contra el
+// MISMO schema, pero **no lanza, no cachea y no trazea**. Un baseline viejo que
+// viola el schema actual es un dato del diff, no corrupción del runtime: no debe
+// disparar fail-closed ni contaminar el caché del camino de enforcement.
+//
+// Redacción (SEC-1): ante YAML inválido el error de js-yaml queda ENCERRADO
+// dentro del resolver, que devuelve sólo posición. Acá nunca se ve un `.message`
+// con el snippet crudo del archivo.
 // -----------------------------------------------------------------------------
+const configResolver = require('./config-resolver');
+
 function parseYaml(text) {
   if (text == null) return null;
-  const yaml = require('js-yaml'); // safe-by-default (load, sin !!js/function)
-  return yaml.load(text) || {};
+  // `config` viene poblado aunque `valid` sea false (el diff necesita el
+  // documento para comparar). Texto vacío / no-mapa / YAML roto ⇒ `null` ⇒ `{}`,
+  // que aguas abajo hace que `extractFlows` produzca flujos vacíos y la paridad
+  // dé distinta: fail-closed para el verificador, igual que antes.
+  const { config } = configResolver.resolveForDiff(text);
+  return config || {};
 }
 
 /**

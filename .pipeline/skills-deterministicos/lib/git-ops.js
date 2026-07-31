@@ -535,15 +535,33 @@ function parseDeliveryRefs(stdout, issue, prefix = '') {
  * linter NUNCA debe caerse por culpa de esta config opcional — si no se puede
  * leer, el gate simplemente vuelve al comportamiento estricto (`pr:no-commits`).
  *
+ * #5172 — La lectura pasa por el punto único (`lib/config-resolver`), pero acá
+ * el `catch → []` SE CONSERVA, y no por comodidad: la degradación de este
+ * lector apunta al lado SEGURO. Devolver `[]` hace que el gate vuelva a su
+ * comportamiento ESTRICTO (`pr:no-commits` rebota), no que se apague — es lo
+ * contrario del fail-open que la historia viene a matar. Propagar el error acá
+ * tumbaría el linter entero por una sección opcional.
+ *
+ * Lo que SÍ cambia es el silencio: antes un config ilegible desactivaba la
+ * detección cross-repo sin dejar rastro, y ese silencio es lo que hizo que
+ * #5067 rebotara para siempre con el trabajo hecho. Ahora se avisa por stderr.
+ *
+ * G-3: el `require` del resolver es LAZY y va dentro del `try`. El linter corre
+ * en worktrees de agente que pueden no tener `node_modules` (el resolver
+ * arrastra `js-yaml` + `ajv`); un require en el tope lo mataría en el import,
+ * antes de llegar a esta política, y el fallo sería mudo.
+ *
  * @param {string} repoRoot  raíz del checkout principal (donde vive .pipeline/)
  * @returns {Array<{name: string, path: string}>} paths ya resueltos a absolutos
  */
 function loadSiblingRepos(repoRoot) {
+    const cfgPath = path.join(repoRoot, '.pipeline', 'config.yaml');
     try {
-        const yaml = require('js-yaml');
-        const cfgPath = path.join(repoRoot, '.pipeline', 'config.yaml');
+        // Ausencia de config no es anomalía a reportar: es el caso normal de un
+        // checkout sin `.pipeline/`. Se corta antes de trazar nada.
         if (!fs.existsSync(cfgPath)) return [];
-        const raw = yaml.load(fs.readFileSync(cfgPath, 'utf8')) || {};
+        // eslint-disable-next-line global-require
+        const raw = require('../../lib/config-resolver').resolve({ pipelineDir: path.dirname(cfgPath) });
         const section = raw.cross_repo_delivery;
         if (!section || section.enabled !== true) return [];
         const repos = Array.isArray(section.repos) ? section.repos : [];
@@ -559,7 +577,15 @@ function loadSiblingRepos(repoRoot) {
             out.push({ name, path: path.resolve(repoRoot, entry.path) });
         }
         return out;
-    } catch {
+    } catch (e) {
+        // Se reporta el NOMBRE del error tipado y la ruta, nunca `e.message` de
+        // js-yaml (SEC-1: su mensaje trae el snippet crudo del archivo).
+        try {
+            process.stderr.write(
+                `[git-ops] cross_repo_delivery deshabilitado: no se pudo resolver ${cfgPath}`
+                + ` (${(e && e.name) || 'error'}). El gate de entrega queda en modo estricto.\n`,
+            );
+        } catch { /* best-effort: el aviso nunca puede tumbar el linter */ }
         return [];
     }
 }

@@ -1336,23 +1336,32 @@ function assertVersionMatch(state, expectedVersion) {
 /**
  * Lee el techo de concurrencia admisible desde `config.yaml`
  * (`waves.max_concurrency`). Defensa en profundidad: este valor SIEMPRE viene
- * del config server-side, jamás del request. Si el config no existe o no trae
- * la clave, cae al default seguro. Lazy-require de js-yaml con fallback para no
- * romper waves.js si la dependencia no estuviera disponible.
+ * del config server-side, jamás del request.
+ *
+ * #5172 — La lectura y la validación pasan por el punto único
+ * (`lib/config-resolver`). Se elimina el `catch → WAVE_MAX_CONCURRENCY_DEFAULT`:
+ * el default (10) es el techo MÁS PERMISIVO del rango, así que un config
+ * ilegible **subía** el techo de concurrencia en silencio — un bound de
+ * seguridad relajado por un fallo de lectura, indistinguible de la config real.
+ * Ahora el error tipado se PROPAGA y `createPlannedWave` no admite bounds que no
+ * pudo verificar.
+ *
+ * Lo que SÍ se conserva (D-4): un config VÁLIDO **sin `waves.max_concurrency`**
+ * no es corrupción ⇒ default seguro `WAVE_MAX_CONCURRENCY_DEFAULT`. Ídem un
+ * valor no-entero o < 1.
+ *
+ * No hay caché local: el resolver ya cachea el documento por ruta resuelta (D-2),
+ * y `pipelineDir()` se re-evalúa en cada llamada igual que antes.
  *
  * @returns {number} techo de concurrencia (>=1)
  */
 function readWaveMaxConcurrency() {
-    try {
-        // eslint-disable-next-line global-require
-        const yaml = require('js-yaml');
-        const cfgPath = path.join(pipelineDir(), 'config.yaml');
-        const cfg = yaml.load(fs.readFileSync(cfgPath, 'utf8')) || {};
-        const m = cfg.waves && cfg.waves.max_concurrency;
-        if (Number.isInteger(m) && m >= 1) return m;
-    } catch {
-        // config ausente / yaml no disponible → default seguro.
-    }
+    // Lazy-require deliberado (G-3): el resolver arrastra `js-yaml` + `ajv`.
+    // eslint-disable-next-line global-require
+    const configResolver = require('./config-resolver');
+    const cfg = configResolver.resolve({ pipelineDir: pipelineDir() });
+    const m = cfg.waves && cfg.waves.max_concurrency;
+    if (Number.isInteger(m) && m >= 1) return m;
     return WAVE_MAX_CONCURRENCY_DEFAULT;
 }
 

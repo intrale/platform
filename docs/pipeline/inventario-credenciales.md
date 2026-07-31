@@ -97,6 +97,17 @@ superficie del issue **#5220**, no del pipeline vivo.
 | `google_drive.drive_folder_id` | Google Drive (carpeta destino) | kernel | durable | **sí** |
 | `GOOGLE_CREDENTIALS_PATH` | Google Drive (service account) | kernel | volátil | **sí** |
 
+> **Actualización (#5172).** El caso testigo quedó cerrado del lado del consumo:
+> las cuatro claves `google_drive.*` ya están en el `ENV_MAPPING` de
+> `.pipeline/lib/credentials.js` y se hidratan como `GOOGLE_OAUTH_CLIENT_ID`,
+> `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN` y
+> `GOOGLE_DRIVE_FOLDER_ID`. Antes vivían **sólo** en el archivo versionado
+> `.claude/hooks/telegram-config.json`, cuya copia commiteada no las contiene:
+> cada respawn con `git reset --hard` las borraba y `qa-video-share` abortaba con
+> "Google Drive no configurado", perdiendo la evidencia de QA. `qa-video-share`
+> resuelve ahora con precedencia `env > store > legacy` y
+> `scripts/google-drive-oauth-setup.js` persiste en el store externo, no en el repo.
+
 ### Cloudflare R2
 
 | Identificador | Servicio | Dueño | Durabilidad | ¿Entra en #5217? |

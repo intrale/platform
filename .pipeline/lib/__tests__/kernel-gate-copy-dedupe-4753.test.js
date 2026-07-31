@@ -40,6 +40,13 @@ function assertNoJargon(msg) {
 
 function withTmp(fn) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-copy-4753-'));
+    // #5172 — el tmpdir hace de raíz del pipeline (PIPELINE_DIR_OVERRIDE), así que
+    // tiene que tener su `config.yaml`. Antes alcanzaba con un dir vacío porque
+    // `loadGate3Config` se tragaba el ENOENT en un `catch { return {} }`; ahora la
+    // config ilegible propaga error tipado y un dir vacío ya no es una raíz válida.
+    // El contenido es mínimo a propósito: `gates.gate3` AUSENTE ⇒ defaults por
+    // acción de `DEFAULT_POLICY`, que es justo lo que estos tests ejercitan.
+    fs.writeFileSync(path.join(dir, 'config.yaml'), 'gates: {}\n');
     const prev = process.env.PIPELINE_DIR_OVERRIDE;
     process.env.PIPELINE_DIR_OVERRIDE = dir;
     try { return fn(dir); }

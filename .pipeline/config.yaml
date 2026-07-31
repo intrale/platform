@@ -85,22 +85,22 @@ intake:
 #      huérfanos pre-deploy, forks con permisos limitados). Corre en cada
 #      ciclo de reconcile (5min default) junto con el sweep de needs-human.
 #
-# La configuración real de runtime se hace por env vars que setea el pulpo
-# al lanzar servicio-reconciler:
-#   - ADMISSION_SWEEP_ENABLED=0  → desactiva el sweep del reconciler.
-#                                   El workflow event-driven sigue funcionando.
-#   - ADMISSION_GATE_DRY_RUN=1   → reconciler y workflow loguean decisiones
-#                                   pero NO aplican labels ni encolan alertas.
-#
-# Este bloque YAML es declarativo (visibilidad operacional). Los valores
-# acá NO se leen al iniciar el reconciler — son referencia y futura
-# extensión si decidimos hidratar via env desde config.yaml.
+# #5172 · CA-5 — Estos valores SÍ se leen en runtime: `servicio-reconciler.js`
+# los consulta vía `lib/config-resolver.js` en cada sweep (no en el load del
+# módulo). Las env vars siguen funcionando como kill-switch instantáneo, pero
+# ahora las aplica el resolver, que las TRAZEA con nivel de alerta cuando
+# debilitan el gate:
+#   - ADMISSION_SWEEP_ENABLED=0  → sweep_enabled=false. Desactiva el sweep del
+#                                   reconciler. El workflow event-driven sigue.
+#   - ADMISSION_GATE_DRY_RUN=1   → dry_run=true. Loguea decisiones pero NO
+#                                   aplica labels ni encola alertas.
+# Al reiniciar sin esas variables, mandan los valores de este archivo.
 admission_gate:
-  # Sweep del reconciler activo por default. Para apagar: setear
-  # ADMISSION_SWEEP_ENABLED=0 en el entorno del proceso.
+  # Sweep del reconciler activo por default. Para apagar: poner `false` acá, o
+  # setear ADMISSION_SWEEP_ENABLED=0 en el entorno para un corte instantáneo.
   sweep_enabled: true
-  # Modo dry-run global (loguea pero no aplica). Setear ADMISSION_GATE_DRY_RUN=1
-  # en el entorno para activar runtime.
+  # Modo dry-run global (loguea pero no aplica). `true` acá, o
+  # ADMISSION_GATE_DRY_RUN=1 en el entorno.
   dry_run: false
   # Cap de huérfanos a aplicar por sweep. Si N>10, los primeros 10 se etiquetan
   # y se manda alerta especial 🔴 al Commander pidiendo revisión humana antes

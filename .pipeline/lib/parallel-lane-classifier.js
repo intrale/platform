@@ -190,7 +190,14 @@ function runParallelLane(motivos, ctx = {}, deps = {}) {
                 impact: 'medio',
                 classification: 'mecanico',
             });
-        } catch { /* best-effort: la notificacion nunca revierte la auto-resolucion */ }
+        } catch (e) {
+            // #5172 — dejó de ser mudo. `block-autoresolve` es notify-and-proceed
+            // y el veredicto no se lee: la auto-resolución sigue igual (la
+            // notificación nunca la revierte). Sólo se hace visible que el aviso
+            // al operador no salió.
+            require('./kernel-action-policy').logPolicyEnforcementFailure(
+                'parallel-lane-classifier', 'block-autoresolve', e);
+        }
     }
 
     return { resueltos, mecanicos: audited, decisiones };

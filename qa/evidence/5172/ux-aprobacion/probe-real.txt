@@ -1,0 +1,104 @@
+=================== CA-UX-1 / 4 / 5 · las 5 causas reales ===================
+[config-resolver] config resuelta: C:\Users\ADMINI~1\AppData\Local\Temp\ux5172-G0f0OC\yaml-roto.yaml (vía arg:configPath)
+
+########## fixture=yaml-roto.yaml → causa(maquina)=yaml-invalido (esperada yaml-invalido) ##########
+LOG (lineas=1) > CONFIG INVÁLIDA — dispatch pausado | archivo: C:\Users\ADMINI~1\AppData\Local\Temp\ux5172-G0f0OC\yaml-roto.yaml (vía arg:configPath) | causa: YAML inválido — línea 3, col 17 | acción: corregí esa línea (suele ser indentación o dos puntos sueltos); la pausa se levanta sola en el próximo ciclo (~30s) — no hace falta borrar ningún archivo
+TELEGRAM >
+🛑 *Pipeline pausado — configuración inválida*
+
+*Archivo:* `C:\Users\ADMINI~1\AppData\Local\Temp\ux5172-G0f0OC\yaml-roto.yaml`
+_(ruta resuelta vía arg:configPath)_
+*Causa:* YAML inválido — línea 3, col 17
+
+*Qué hacer:* corregí esa línea (suele ser indentación o dos puntos sueltos); la pausa se levanta sola en el próximo ciclo (~30s) — no hace falta borrar ningún archivo.
+configErrorState > {"archivo":"C:\\Users\\ADMINI~1\\AppData\\Local\\Temp\\ux5172-G0f0OC\\yaml-roto.yaml","via":"arg:configPath","causa":"yaml-invalido","linea":3,"columna":17,"detalle":"YAML inválido — línea 3, col 17","accion":"corregí esa línea (suele ser indentación o dos puntos sueltos); la pausa se levanta sola en el próximo ciclo (~30s) — no hace falta borrar ningún archivo"}
+>> CANARIO en log=false | en telegram=false | en detalle=false
+[config-resolver] config resuelta: C:\Users\ADMINI~1\AppData\Local\Temp\ux5172-G0f0OC\vacio.yaml (vía arg:configPath)
+
+########## fixture=vacio.yaml → causa(maquina)=empty-or-not-a-map (esperada empty-or-not-a-map) ##########
+LOG (lineas=1) > CONFIG INVÁLIDA — dispatch pausado | archivo: C:\Users\ADMINI~1\AppData\Local\Temp\ux5172-G0f0OC\vacio.yaml (vía arg:configPath) | causa: el archivo está vacío o no es un mapa de claves | acción: ¿quedó a medio guardar? restaurá la última versión buena; la pausa se levanta sola en el próximo ciclo (~30s) — no hace falta borrar ningún archivo
+TELEGRAM >
+🛑 *Pipeline pausado — configuración inválida*
+
+*Archivo:* `C:\Users\ADMINI~1\AppData\Local\Temp\ux5172-G0f0OC\vacio.yaml`
+_(ruta resuelta vía arg:configPath)_
+*Causa:* el archivo está vacío o no es un mapa de claves
+
+*Qué hacer:* ¿quedó a medio guardar? restaurá la última versión buena; la pausa se levanta sola en el próximo ciclo (~30s) — no hace falta borrar ningún archivo.
+configErrorState > {"archivo":"C:\\Users\\ADMINI~1\\AppData\\Local\\Temp\\ux5172-G0f0OC\\vacio.yaml","via":"arg:configPath","causa":"empty-or-not-a-map","linea":null,"columna":null,"detalle":"el archivo está vacío o no es un mapa de claves","accion":"¿quedó a medio guardar? restaurá la última versión buena; la pausa se levanta sola en el próximo ciclo (~30s) — no hace falta borrar ningún archivo"}
+>> CANARIO en log=false | en telegram=false | en detalle=false
+[config-resolver] config resuelta: C:\Users\ADMINI~1\AppData\Local\Temp\ux5172-G0f0OC\schema-roto.yaml (vía arg:configPath)
+
+########## fixture=schema-roto.yaml → causa(maquina)=schema-invalido (esperada schema-invalido) ##########
+LOG (lineas=1) > CONFIG INVÁLIDA — dispatch pausado | archivo: C:\Users\ADMINI~1\AppData\Local\Temp\ux5172-G0f0OC\schema-roto.yaml (vía arg:configPath) | causa: la configuración no cumple el esquema: /pipelines: tipo esperado: object | acción: ajustá las claves que lista el detalle; la pausa se levanta sola en el próximo ciclo (~30s) — no hace falta borrar ningún archivo
+TELEGRAM >
+🛑 *Pipeline pausado — configuración inválida*
+
+*Archivo:* `C:\Users\ADMINI~1\AppData\Local\Temp\ux5172-G0f0OC\schema-roto.yaml`
+_(ruta resuelta vía arg:configPath)_
+*Causa:* la configuración no cumple el esquema: /pipelines: tipo esperado: object
+
+*Qué hacer:* ajustá las claves que lista el detalle; la pausa se levanta sola en el próximo ciclo (~30s) — no hace falta borrar ningún archivo.
+configErrorState > {"archivo":"C:\\Users\\ADMINI~1\\AppData\\Local\\Temp\\ux5172-G0f0OC\\schema-roto.yaml","via":"arg:configPath","causa":"schema-invalido","linea":null,"columna":null,"detalle":"la configuración no cumple el esquema: /pipelines: tipo esperado: object","accion":"ajustá las claves que lista el detalle; la pausa se levanta sola en el próximo ciclo (~30s) — no hace falta borrar ningún archivo"}
+>> CANARIO en log=false | en telegram=false | en detalle=false
+[config-resolver] config resuelta: C:\Users\ADMINI~1\AppData\Local\Temp\ux5172-G0f0OC\soy-un-dir.yaml (vía arg:configPath)
+
+########## fixture=soy-un-dir.yaml → causa(maquina)=not-a-file (esperada not-a-file) ##########
+LOG (lineas=1) > CONFIG INVÁLIDA — dispatch pausado | archivo: C:\Users\ADMINI~1\AppData\Local\Temp\ux5172-G0f0OC\soy-un-dir.yaml (vía arg:configPath) | causa: la ruta de configuración no es un archivo regular | acción: apunta a un directorio o a un link roto — corregí la raíz del pipeline; la pausa se levanta sola en el próximo ciclo (~30s) — no hace falta borrar ningún archivo
+TELEGRAM >
+🛑 *Pipeline pausado — configuración inválida*
+
+*Archivo:* `C:\Users\ADMINI~1\AppData\Local\Temp\ux5172-G0f0OC\soy-un-dir.yaml`
+_(ruta resuelta vía arg:configPath)_
+*Causa:* la ruta de configuración no es un archivo regular
+
+*Qué hacer:* apunta a un directorio o a un link roto — corregí la raíz del pipeline; la pausa se levanta sola en el próximo ciclo (~30s) — no hace falta borrar ningún archivo.
+configErrorState > {"archivo":"C:\\Users\\ADMINI~1\\AppData\\Local\\Temp\\ux5172-G0f0OC\\soy-un-dir.yaml","via":"arg:configPath","causa":"not-a-file","linea":null,"columna":null,"detalle":"la ruta de configuración no es un archivo regular","accion":"apunta a un directorio o a un link roto — corregí la raíz del pipeline; la pausa se levanta sola en el próximo ciclo (~30s) — no hace falta borrar ningún archivo"}
+>> CANARIO en log=false | en telegram=false | en detalle=false
+[config-resolver] config resuelta: C:\Users\ADMINI~1\AppData\Local\Temp\ux5172-G0f0OC\no-existe.yaml (vía arg:configPath)
+
+########## fixture=no-existe.yaml → causa(maquina)=ENOENT (esperada ENOENT) ##########
+LOG (lineas=1) > CONFIG INVÁLIDA — dispatch pausado | archivo: C:\Users\ADMINI~1\AppData\Local\Temp\ux5172-G0f0OC\no-existe.yaml (vía arg:configPath) | causa: no encontré el archivo de configuración | acción: verificá la ruta; si el proceso corre con override, revisá a qué directorio apunta (el «vía» lo dice); la pausa se levanta sola en el próximo ciclo (~30s) — no hace falta borrar ningún archivo
+TELEGRAM >
+🛑 *Pipeline pausado — configuración inválida*
+
+*Archivo:* `C:\Users\ADMINI~1\AppData\Local\Temp\ux5172-G0f0OC\no-existe.yaml`
+_(ruta resuelta vía arg:configPath)_
+*Causa:* no encontré el archivo de configuración
+
+*Qué hacer:* verificá la ruta; si el proceso corre con override, revisá a qué directorio apunta (el «vía» lo dice); la pausa se levanta sola en el próximo ciclo (~30s) — no hace falta borrar ningún archivo.
+configErrorState > {"archivo":"C:\\Users\\ADMINI~1\\AppData\\Local\\Temp\\ux5172-G0f0OC\\no-existe.yaml","via":"arg:configPath","causa":"ENOENT","linea":null,"columna":null,"detalle":"no encontré el archivo de configuración","accion":"verificá la ruta; si el proceso corre con override, revisá a qué directorio apunta (el «vía» lo dice); la pausa se levanta sola en el próximo ciclo (~30s) — no hace falta borrar ningún archivo"}
+>> CANARIO en log=false | en telegram=false | en detalle=false
+
+
+=================== CA-UX-3 · las dos variantes, wiring real de pulpo.js:1294 ===================
+
+--- pausaPreexistente=false → variante A ---
+🛑 *Pipeline pausado — configuración inválida*
+
+*Archivo:* `C:\Users\ADMINI~1\AppData\Local\Temp\ux5172-G0f0OC\yaml-roto.yaml`
+_(ruta resuelta vía arg:configPath)_
+*Causa:* YAML inválido — línea 3, col 17
+
+*Qué hacer:* corregí esa línea (suele ser indentación o dos puntos sueltos); la pausa se levanta sola en el próximo ciclo (~30s) — no hace falta borrar ningún archivo.
+>> promete auto-recovery = true | niega auto-recovery = false
+
+--- pausaPreexistente=true → variante B ---
+🛑 *Configuración inválida* — el dispatch ya estaba pausado por otro motivo.
+
+*Archivo:* `C:\Users\ADMINI~1\AppData\Local\Temp\ux5172-G0f0OC\yaml-roto.yaml`
+*Causa:* YAML inválido — línea 3, col 17
+
+*Qué hacer:* corregí esa línea (suele ser indentación o dos puntos sueltos); la pausa activa no la generó esta corrupción, así que no se levanta sola: si reanudás con la configuración todavía inválida, el pipeline se vuelve a pausar.
+>> promete auto-recovery = false | niega auto-recovery = true
+
+
+=================== CA-UX-6 · reanudacion ===================
+✅ *Pipeline reanudado* — la configuración volvió a ser válida.
+
+*Archivo:* `.pipeline/config.yaml`
+La pausa automática por configuración inválida se levantó sola (auto-recovery #4832).
+
+
+=================== VIOLACIONES ===================
+NINGUNA
