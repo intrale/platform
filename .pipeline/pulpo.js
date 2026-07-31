@@ -32,7 +32,7 @@ const precheck = require('./connectivity-precheck');
 const { sanitize: sanitizePipelineText } = require('./sanitizer');
 // #3941 (EP5-H4): validación de schema de config.yaml + clasificación de
 // excepciones (infra transitoria vs corrupción de estado).
-const { validateConfig, formatErrors } = require('./lib/config-schema');
+const { validateConfig, formatErrors, formatErrorsForHuman } = require('./lib/config-schema');
 const configSchema = require('./lib/config-schema');
 // #5172 — punto ÚNICO de lectura y validación de config.yaml. El pulpo delega
 // acá el "leer y validar" y conserva la POLÍTICA (halt + lastGood + #4832).
@@ -1294,14 +1294,22 @@ function haltOnConfigCorruption(reason, redactedDetail, err) {
   // El CONTEXTO decide la variante: sólo se puede prometer que "la pausa se
   // levanta sola" cuando la pausa activa es la que acabamos de generar.
   const contexto = pausaPreexistente ? 'halt-preexistente' : 'halt-auto';
-  const copia = err
-    ? configSchema.describeConfigFailure(err, { contexto, archivo: err.archivo || CONFIG_PATH })
-    : {
-      archivo: configSchema.formatConfigPath(CONFIG_PATH),
-      via: 'default',
-      detalle: redactedDetail || reason || 'configuración inválida',
-      accion: 'corregí el archivo',
-    };
+  const fallback = {
+    archivo: configSchema.formatConfigPath(CONFIG_PATH),
+    via: 'default',
+    detalle: redactedDetail || reason || 'configuración inválida',
+    accion: 'corregí el archivo',
+  };
+  const describir = (opts) => (err
+    ? configSchema.describeConfigFailure(err, { contexto, archivo: err.archivo || CONFIG_PATH, ...opts })
+    : fallback);
+  // #5173 CA-11 — MISMO generador, dos calibres. El log en disco va SIN recortar
+  // (es la vía de diagnóstico); la alerta va acotada porque Telegram corta en
+  // 4096 chars y, con la raíz del schema cerrada y `allErrors: true`, un config
+  // muy roto genera decenas de errores. Acotar es del generador, no del
+  // call-site: re-redactar acá es exactamente como divergen las superficies.
+  const copia = describir({});
+  const copiaBreve = describir({ maxErrores: 5 });
   // Una sola línea, grep-friendly: el visor de logs del dashboard sirve por
   // línea y un bloque multilínea rompe el filtrado.
   const safeMsg = `[${new Date().toISOString()}] [pulpo] `
@@ -1313,7 +1321,9 @@ function haltOnConfigCorruption(reason, redactedDetail, err) {
   if (now - lastConfigCorruptionAlertMs > CONFIG_CORRUPTION_ALERT_THROTTLE_MS) {
     lastConfigCorruptionAlertMs = now;
     try {
-      sendTelegram(configSchema.formatConfigFailureTelegram(copia, { pausaPreexistente }));
+      // #5173 CA-11 — a Telegram va la variante ACOTADA; el detalle completo ya
+      // quedó en `pulpo.log` (línea de arriba), que es a donde apunta el copy.
+      sendTelegram(configSchema.formatConfigFailureTelegram(copiaBreve, { pausaPreexistente }));
     } catch { /* best-effort */ }
   }
 }
@@ -1337,6 +1347,14 @@ const esViolacionDeConfig = configResolver.isConfigViolation;
 // re-leería y la pausa no se levantaría sola (RIESGO BAJO de la receta).
 //
 // CA-5: fail-closed ≠ crash. Se suspende el dispatch, NUNCA `process.exit`.
+//
+// #5173 — la validación de schema NO se repite acá: `configResolver.resolve()`
+// ya corre `validateConfig` y tira `ConfigSchemaViolation` con los `errors`
+// crudos de ajv. Duplicarla sería una segunda copia que se desactualiza en
+// silencio. El chequeo de LADO (`{ origin: 'producto' }`) va SIN activar a
+// propósito: en esta entrega todas las claves siguen viviendo legítimamente en
+// `config.yaml`, así que sólo corre el schema. Lo enciende la Entrega C (#5174),
+// cuando el archivo efectivamente se parta.
 function loadConfig() {
   let raw;
   try {
