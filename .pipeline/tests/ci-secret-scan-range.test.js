@@ -191,8 +191,8 @@ test('el step de rango es shell puro: las expresiones de Actions van en env:', (
   );
   assert.match(
     WORKFLOW_TEXT,
-    /ref: \$\{\{ steps\.base\.outputs\.sha \}\}/,
-    'la cadena de confianza D-3 sigue apuntando a la base DECLARADA del PR',
+    /ref: \$\{\{ steps\.base\.outputs\.decider \}\}/,
+    'la cadena de confianza D-3 apunta al tip REAL de la rama base, no a la merge-base del PR',
   );
 });
 
@@ -202,7 +202,38 @@ test('el rango se acota al tip real de la base, no a la base declarada del PR', 
   assert.equal(paso.status, 0, paso.salida);
   assert.equal(paso.outputs.diff_base, C, `diff_base debía ser el tip de main (${C}):\n${paso.salida}`);
   assert.notEqual(paso.outputs.diff_base, A, 'usar la base declarada es justo el bug de rev-4');
-  assert.equal(paso.outputs.sha, A, 'el árbol base del scanner sigue siendo la base declarada (D-3)');
+  assert.equal(paso.outputs.sha, A, 'la base declarada del PR queda registrada, pero ya no gobierna el árbol');
+  assert.equal(paso.outputs.decider, C, 'el árbol que decide es el tip REAL de main');
+  assert.equal(paso.outputs.decider, paso.outputs.diff_base, 'en la vía normal decider == diff_base');
+});
+
+// #5244 rev-8 — el bypass de CA-9: `sha` es la merge-base del PR, así que un PR
+// que no mergea main deja el árbol que decide en una época anterior al control y
+// cae en bootstrap. Verificado contra la API: PR 5278 base.sha=ecb552459fb8 ≠
+// tip de main c0200429504b.
+test('el árbol que decide es el tip de main aunque el PR no haya mergeado main', () => {
+  const { workspace, A, B, C, M } = repoConMainAdelantado();
+  const paso = resolverRango({ workspace, ...envPr({ A, B, M }) });
+  assert.equal(paso.status, 0, paso.salida);
+  assert.notEqual(paso.outputs.decider, A, 'la merge-base del PR no puede gobernar el árbol que decide');
+  assert.equal(paso.outputs.decider, C, 'decider tiene que seguir al tip de main');
+  assert.equal(
+    paso.outputs.decider,
+    git(workspace, ['rev-parse', 'refs/remotes/origin/main']),
+    'decider == origin/main: no lo mueve el autor del PR',
+  );
+});
+
+// La vía de fallback (sin merge commit efímero) es donde `diff_base` degrada al
+// punto de fork. `decider` NO degrada: sigue siendo el tip de la rama base, así
+// que la rama de bootstrap tampoco se puede reabrir por acá.
+test('sin merge commit efímero el rango degrada al fork pero el árbol que decide no', () => {
+  const { workspace, A, B, C } = repoConMainAdelantado();
+  const paso = resolverRango({ workspace, ...envPr({ A, B, M: B }) });
+  assert.equal(paso.status, 0, paso.salida);
+  assert.equal(paso.outputs.diff_base, A, 'el rango se acota al punto de fork');
+  assert.equal(paso.outputs.decider, C, 'el árbol que decide sigue siendo el tip de main');
+  assert.notEqual(paso.outputs.decider, paso.outputs.diff_base);
 });
 
 test('regresión #5280: el PR benigno NO hereda los hallazgos del commit ajeno', () => {
@@ -278,6 +309,7 @@ test('en push el rango sigue siendo before..sha', () => {
   assert.equal(paso.status, 0, paso.salida);
   assert.equal(paso.outputs.diff_base, C);
   assert.equal(paso.outputs.sha, C);
+  assert.equal(paso.outputs.decider, C, 'en push el árbol que decide es el commit previo');
 
   const primerPush = resolverRango({
     workspace,

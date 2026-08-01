@@ -208,10 +208,23 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Dos salidas distintas a propósito:
-      #   `sha`       → ref del árbol base que provee scanner/sanitizer/allowlist
-      #                 (cadena de confianza D-3: la base DECLARADA del PR).
+      # Tres salidas distintas a propósito:
+      #   `sha`       → base DECLARADA del PR. Sólo informativa/log: es la
+      #                 merge-base de la rama con main, NO el tip de main.
       #   `diff_base` → extremo izquierdo del rango a escanear (lo que ESTE PR agrega).
+      #   `decider`   → ref del árbol base que provee scanner/sanitizer/allowlist
+      #                 (cadena de confianza D-3). Es el tip REAL de la rama base.
+      #
+      # #5244 rev-8 — `sha` NO puede gobernar el árbol que decide. Es la merge-base
+      # del PR, así que está bajo control del autor: alcanza con no mergear main (o
+      # ramificar desde un commit viejo) para que el árbol base quede en una época
+      # anterior a este control, caer en bootstrap y correr el scanner del HEAD.
+      # Ése es exactamente el bypass que CA-9 cierra. Verificado contra la API:
+      # PR 5278 base.sha=ecb552459fb8 ≠ tip de main c0200429504b.
+      # `decider` sale de BASE_TIP, que es el tip de la base y no lo mueve el autor
+      # del PR. En la vía normal (merge commit efímero) `decider` == `diff_base`,
+      # que es lo pedido por el rechazo; en la vía de fallback —sin merge efímero,
+      # donde `diff_base` degrada al punto de fork— `decider` sigue siendo el tip.
       # El bloque es shell puro — las expresiones ${{ }} van en env: — para que
       # .pipeline/tests/ci-secret-scan-range.test.js lo extraiga y lo ejecute tal cual.
       - name: Resolver rango del diff
@@ -255,19 +268,21 @@ jobs:
 
             echo "sha=$PR_BASE_SHA" >> "$GITHUB_OUTPUT"
             echo "diff_base=$DIFF_BASE" >> "$GITHUB_OUTPUT"
-            echo "secret-scan: rango $DIFF_BASE..$GITHUB_SHA (base declarada del PR: $PR_BASE_SHA)"
+            echo "decider=$BASE_TIP" >> "$GITHUB_OUTPUT"
+            echo "secret-scan: rango $DIFF_BASE..$GITHUB_SHA (árbol que decide: $BASE_TIP; base declarada del PR: $PR_BASE_SHA)"
           else
             B="$PUSH_BEFORE"
             case "$B" in ''|0000000*) B="$(git rev-parse HEAD~1)" ;; esac
             echo "sha=$B" >> "$GITHUB_OUTPUT"
             echo "diff_base=$B" >> "$GITHUB_OUTPUT"
+            echo "decider=$B" >> "$GITHUB_OUTPUT"
             echo "secret-scan: rango $B..$GITHUB_SHA"
           fi
 
       - name: Checkout base completo
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: ${{ steps.base.outputs.sha }}
+          ref: ${{ steps.base.outputs.decider }}
           path: .base
           fetch-depth: 0
 
@@ -304,8 +319,24 @@ jobs:
             *secret-scan-protocol=range-v1*)
               echo "secret-scan: scanner del árbol base (fail-closed)" ;;
             *)
-              # Bootstrap: el base es anterior a este control. Único caso en el
-              # que corre el scanner del head. Se apaga solo cuando main lo tiene.
+              # Bootstrap: el ref base es anterior a este control. Único caso en
+              # el que correría el scanner del head — y es justo el que un PR
+              # hostil busca alcanzar.
+              #
+              # #5244 rev-8 — FAIL-CLOSED sobre paths de CONTROL. Si el diff toca
+              # el propio mecanismo de detección, el head no puede auto-habilitarse:
+              # no queda ningún árbol confiable que pueda juzgarlo, así que se
+              # bloquea sin ejecutar nada suyo. Cubre la vía de fallback de
+              # BASE_TIP (PR sin merge commit efímero), donde el árbol que decide
+              # puede seguir siendo anterior a este control.
+              CONTROL_HITS="$(git -C "$GITHUB_WORKSPACE" diff --name-only "$BASE_SHA" "$GITHUB_SHA" 2>/dev/null \
+                | grep -E '^(\.pipeline/lib/[^/]*secret[^/]*|\.pipeline/sanitizer\.js|\.pipeline/secret-scan-allowlist\.json|\.claude/hooks/telegram-sanitizer\.js|\.husky/pre-commit|\.github/workflows/security-sast\.yml)$' \
+                || true)"
+              if [ -n "$CONTROL_HITS" ]; then
+                echo "::error::secret-scan BLOQUEADO (bootstrap sobre paths de control): el ref base no expone secret-scan-protocol=range-v1 y este diff modifica el propio control de secretos, así que no existe scanner confiable para juzgarlo. Paths: $(echo "$CONTROL_HITS" | tr '\n' ' ')"
+                echo "::error::Remediación: el control tiene que estar en la rama base ANTES de tocarlo desde un PR. Una vez que main expone secret-scan-protocol=range-v1, el árbol base decide y este camino deja de tomarse."
+                exit 1
+              fi
               SCANNER="$GITHUB_WORKSPACE/.pipeline/lib/precommit-secret-scan.js"
               echo "::warning::secret-scan bootstrap: el ref base no expone secret-scan-protocol=range-v1; corre el scanner de HEAD" ;;
           esac
