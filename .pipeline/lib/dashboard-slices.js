@@ -1451,8 +1451,27 @@ function equipoSlice(state) {
 // `dev_routing_priority`, cae a `dev_skill_mapping.default` si no hay match.
 function resolveDevSkillFromLabels(config, labels) {
     if (!config) return null;
-    const priority = Array.isArray(config.dev_routing_priority) ? config.dev_routing_priority : [];
-    const mapping = config.dev_skill_mapping || {};
+    // #5174 · CA-6 — quinto call-site de las claves migradas al lado producto.
+    // Acá el `|| {}` / `: []` no producía un ruteo malo (esto es una vista), pero
+    // sí una MENTIRA en el dashboard: el operador vería "sin skill resuelto"
+    // cuando la causa real es que la clave no llegó al lector. Se distingue el
+    // caso: config sin la clave ⇒ error explícito y ruidoso; config completa sin
+    // match ⇒ `null`, que es la respuesta legítima de siempre.
+    //
+    // NO se lanza: esta función corre dentro del armado de un slice del
+    // dashboard y una excepción acá tumbaría la vista entera. La regla #1 del
+    // pipeline es que no se muere; el error se hace visible por log y por el
+    // valor centinela, no matando el proceso.
+    const priority = config.dev_routing_priority;
+    const mapping = config.dev_skill_mapping;
+    if (!Array.isArray(priority) || !mapping || typeof mapping !== 'object') {
+        try {
+            console.error('[dashboard-slices] [config partida #5174] faltan dev_routing_priority /'
+                + ' dev_skill_mapping en la configuración resuelta (viven en pipeline.config.json →'
+                + ' productConfig). El lector quedó fuera de lib/config-resolver.');
+        } catch { /* best-effort */ }
+        return null;
+    }
     const labelSet = new Set(labels || []);
     for (const lab of priority) {
         if (labelSet.has(lab) && mapping[lab]) return mapping[lab];

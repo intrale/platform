@@ -29,6 +29,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { seedProductManifest } = require('./_test-helpers');
 
 const PIPELINE_DIR = path.join(__dirname, '..', '..');
 const REAL_LIB = path.join(PIPELINE_DIR, 'lib');
@@ -50,6 +51,7 @@ function armarPipelineFalso(runnerRel, configYaml, shims) {
 
     fs.copyFileSync(path.join(PIPELINE_DIR, runnerRel), path.join(dir, runnerRel));
     if (configYaml !== null) fs.writeFileSync(path.join(dir, 'config.yaml'), configYaml);
+    seedProductManifest(dir);   // #5174 — la configuración vive partida: el otro lado también
 
     for (const [nombre, rutaReal] of Object.entries(shims)) {
         if (rutaReal === null) continue; // ausente a propósito => MODULE_NOT_FOUND

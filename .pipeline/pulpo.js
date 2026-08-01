@@ -1364,10 +1364,17 @@ function loadConfig() {
     // linea, columna}`, jamás el `.message` de js-yaml (que trae el snippet
     // crudo del archivo → SEC-1). Acá sólo se aplica la política.
     const esSchema = e && e.name === 'ConfigSchemaViolation';
-    const reason = esSchema ? 'config schema' : 'config parse-error';
+    // #5174 · CA-5 / CA-14 — post-partición hay DOS archivos, así que `reason`
+    // (contrato de máquina que va al marker y al log) tiene que nombrar CUÁL
+    // falló. Un `reason: 'config schema'` genérico duplica el espacio de búsqueda
+    // del operador justo cuando el pipeline está parado. El nombre sale del
+    // `archivo` que el resolver ya adjunta al error tipado — no se adivina.
+    const cual = e && e.archivo ? path.basename(e.archivo) : 'config';
+    const reason = `${cual} ${esSchema ? 'schema' : 'parse-error'}`;
     const redacted = esSchema
       ? formatErrors(e.errors)
-      : `${e && e.causa === 'yaml-invalido' ? 'YAML inválido' : 'configuración ilegible'}`
+      : `${e && e.causa === 'yaml-invalido' ? 'YAML inválido'
+        : e && e.causa === 'json-invalido' ? 'JSON inválido' : 'configuración ilegible'}`
         + (e && typeof e.linea === 'number' ? ` (línea ${e.linea}, col ${e.columna})` : '');
     haltOnConfigCorruption(reason, redacted, e);
     // Fail-fast = suspender dispatch (`.paused`), NO matar el proceso. Devolvemos
@@ -1385,9 +1392,13 @@ function loadConfig() {
   try {
     if (fs.existsSync(PAUSE_FILE) &&
         partialPause.readFullPauseOrigin().source === 'config-corruption-halt') {
+      // #5174 · CA-5 — llegar acá significa que `configResolver.resolve()` NO
+      // lanzó, y post-partición eso exige que los DOS archivos hayan parseado y
+      // que el documento mergeado valide. Corregir uno solo no levanta la pausa:
+      // el fail-closed es total por construcción, no por un chequeo extra.
       partialPause.clearFullPause({
         source: 'config-auto-recovery',
-        justification: 'config.yaml volvió a parsear OK — halt por corrupción levantado',
+        justification: 'la configuración (kernel + producto) volvió a parsear OK — halt por corrupción levantado',
       });
       paused = false;
       // Log auditable (CA-4): qué disparó el halt / config sano detectado / reanudación.
@@ -6242,10 +6253,49 @@ function brazoBarrido(config) {
  * que cambios del pulpo/dashboard caigan en backend-dev (Kotlin/Gradle) que no
  * puede validarlos.
  */
+// #5174 · CA-6 — El riesgo MÁS GRAVE de la partición no es que el arranque
+// falle: es que NO falle. Estas cuatro claves viven ahora en
+// `pipeline.config.json`; si un lector siguiera viendo sólo el kernel, el `|| {}`
+// / `|| []` que tenían estos call-sites convertía *"la clave no llegó"* en
+// *"no hay mapeo"*, y el ruteo degradaba en silencio: todos los issues al
+// `default` hardcodeado, `pipeline_scope_keywords` vacío ⇒ el override de
+// contenido apagado, y ningún test sobre `resolveForDiff()` lo detecta (ejercita
+// el resolver, no los call-sites).
+//
+// Por eso el default permisivo pasa a ser un ERROR EXPLÍCITO para las claves
+// migradas. No es defensa contra un config mal escrito — el schema ya cubre eso
+// — es defensa contra un lector que se quedó fuera del resolver.
+const CLAVES_DE_PRODUCTO_REQUERIDAS = Object.freeze({
+  dev_skill_mapping: 'object',
+  dev_routing_priority: 'array',
+  dev_skill_partitions: 'object',
+  pipeline_scope_keywords: 'array',
+});
+
+/**
+ * Devuelve `config[clave]` o LANZA nombrando el archivo donde vive.
+ * @param {object} config - configuración RESUELTA (los dos lados mergeados).
+ * @param {string} clave
+ */
+function requerirClaveDeProducto(config, clave) {
+  const esperado = CLAVES_DE_PRODUCTO_REQUERIDAS[clave];
+  const v = config ? config[clave] : undefined;
+  const ok = esperado === 'array' ? Array.isArray(v) : (v !== null && typeof v === 'object' && !Array.isArray(v));
+  if (!ok) {
+    throw new Error(
+      `[config partida #5174] falta '${clave}' en la configuración resuelta. `
+      + 'Vive del lado PRODUCTO (pipeline.config.json → productConfig). '
+      + 'Si llegaste acá con un config leído a mano, el lector quedó fuera de '
+      + 'lib/config-resolver: el ruteo NO se degrada en silencio.'
+    );
+  }
+  return v;
+}
+
 function determinarDevSkill(issue, config) {
-  const mapping = config.dev_skill_mapping || {};
+  const mapping = requerirClaveDeProducto(config, 'dev_skill_mapping');
   const labels = getIssueLabels(issue);
-  const priority = config.dev_routing_priority || [];
+  const priority = requerirClaveDeProducto(config, 'dev_routing_priority');
 
   // 0) Override por contenido: area:infra + keywords del pipeline → pipeline-dev
   if (labels.includes('area:infra') && !labels.includes('area:pipeline') && mapping['area:pipeline']) {
@@ -6276,15 +6326,11 @@ function determinarDevSkill(issue, config) {
 }
 
 function getDevSkillPartitions(config) {
-  const raw = config && config.dev_skill_partitions;
-  if (!raw || typeof raw !== 'object') {
-    return {
-      backend: ['backend-dev'],
-      frontend: ['android-dev', 'web-dev'],
-      pipeline: ['pipeline-dev'],
-      generic: ['dev'],
-    };
-  }
+  // #5174 · CA-6 — el objeto hardcodeado que había acá era el default más
+  // peligroso de los cinco: no fallaba, devolvía la partición de Intrale. Si la
+  // clave migrada no llegaba, `isDeclaredStackDevSkill` seguía diciendo que sí
+  // y el problema no se veía hasta mirar a qué agente se lanzó.
+  const raw = requerirClaveDeProducto(config, 'dev_skill_partitions');
 
   const out = {};
   for (const [partition, skills] of Object.entries(raw)) {
@@ -6363,7 +6409,11 @@ function getIssueTitleCached(issueNum) {
 }
 
 function issueMentionsPipelineScope(issueNum, config) {
-  const keywords = config.pipeline_scope_keywords || [];
+  // #5174 · CA-6 — el `|| []` con early-return `false` era indistinguible de
+  // "ninguna keyword matcheó". Con la clave del lado producto, no llegar tiene
+  // que ser ruidoso: apaga el override que manda los issues de infra del
+  // pipeline a `pipeline-dev` en vez de a `backend-dev` (stack Kotlin).
+  const keywords = requerirClaveDeProducto(config, 'pipeline_scope_keywords');
   if (keywords.length === 0) return false;
   const text = getIssueText(issueNum);
   if (!text) return false;

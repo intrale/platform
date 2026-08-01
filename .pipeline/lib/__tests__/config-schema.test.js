@@ -25,6 +25,21 @@ const {
     SCHEMA,
 } = require('../config-schema');
 
+// #5174 — La configuración EFECTIVA del repo: `.pipeline/config.yaml` (kernel)
+// mergeado con `pipeline.config.json → productConfig`. Es lo que el pipeline
+// enforza y lo único contra lo que tiene sentido afirmar «valida verde» o «todas
+// las secciones están declaradas»: post-partición cada archivo por separado es,
+// por construcción, un documento incompleto (al kernel le falta
+// `pipelines.*.skills_por_fase`, que el schema exige).
+const configResolver = require('../config-resolver');
+
+function configReal() {
+    return configResolver.resolveMergedForDiff({
+        kernelText: fs.readFileSync(path.join(__dirname, '..', '..', 'config.yaml'), 'utf8'),
+        productText: fs.readFileSync(path.join(__dirname, '..', '..', '..', 'pipeline.config.json'), 'utf8'),
+    }).config;
+}
+
 // Config mínimo VÁLIDO con todas las claves críticas bien tipadas.
 function validConfig() {
     return {
@@ -57,11 +72,11 @@ test('config válido pasa la validación', () => {
     assert.deepStrictEqual(errors, []);
 });
 
-test('el config.yaml REAL del repo pasa la validación (no falsos positivos)', () => {
-    const configPath = path.join(__dirname, '..', '..', 'config.yaml');
-    const raw = yaml.load(fs.readFileSync(configPath, 'utf8'));
-    const { valid, errors } = validateConfig(raw);
-    assert.strictEqual(valid, true, 'config.yaml real debe validar: ' + formatErrors(errors));
+test('la configuración EFECTIVA del repo pasa la validación (no falsos positivos)', () => {
+    // #5174 — kernel + producto resueltos. Validar `config.yaml` suelto daría un
+    // falso NEGATIVO: post-partición le faltan las claves que viven en producto.
+    const { valid, errors } = validateConfig(configReal());
+    assert.strictEqual(valid, true, 'la config resuelta debe validar: ' + formatErrors(errors));
 });
 
 // #5173 — este test afirmaba lo contrario (raíz lenient). Con la raíz cerrada
@@ -269,8 +284,11 @@ test('#4576 firma_operador go_live_date acepta string o null', () => {
 // #5173 · Raíz cerrada + clasificación por lado (Entrega B de #5111)
 // =============================================================================
 
-const CONFIG_PATH = path.join(__dirname, '..', '..', 'config.yaml');
-const realConfig = () => yaml.load(fs.readFileSync(CONFIG_PATH, 'utf8'));
+// #5174 — post-partición el sujeto de estas afirmaciones es la configuración
+// EFECTIVA (kernel + producto), no el archivo del kernel suelto: éste ya no es
+// un documento completo por construcción (le falta `pipelines.*.skills_por_fase`
+// y las 9 secciones que se mudaron a `pipeline.config.json`).
+const realConfig = () => configReal();
 
 // --- 1 · CA-7: sin cambio de comportamiento ---------------------------------
 
@@ -495,10 +513,9 @@ test('#5173 el copy que viaja a Telegram sanea la clave hostil (superficie de #5
 // en la alerta son las del config.yaml VIVO, y son todas snake_case: cada error
 // de tipo mete tantos `_` como la clave tenga. Sobre 18 casos simulados, 8 daban
 // `_` impar => 8 alertas de halt que Telegram descartaba con 400.
-test('#5173 toda clave del config.yaml real produce una alerta ENTREGABLE por Telegram', () => {
-    const real = yaml.load(fs.readFileSync(
-        path.resolve(__dirname, '..', '..', 'config.yaml'), 'utf8'));
-    assert.ok(real && typeof real === 'object', 'no se pudo leer el config.yaml real');
+test('#5173 toda clave de la config real produce una alerta ENTREGABLE por Telegram', () => {
+    const real = configReal();   // #5174 — kernel + producto: el universo de claves vivas
+    assert.ok(real && typeof real === 'object', 'no se pudo resolver la config real');
 
     // Un error de tipo por sección top-level: reproduce "el operador editó el
     // config y se equivocó en una clave", que es el disparador real del halt.

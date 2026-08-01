@@ -28,12 +28,20 @@
 // un mapa sidecar congelado (`SIDE_MAP`) que se consulta DESPUÉS de validar.
 // Así el cierre de la raíz se revierte en una línea sin desarmar nada más.
 //
-// En esta entrega todavía NO se movió ninguna clave de archivo: todo vive
-// legítimamente en `config.yaml`. Por eso el chequeo de lado es **opt-in** vía
-// `validateConfig(obj, { origin: 'producto' })`. Desde #5172 el único que llama
-// a `validateConfig` en el arranque es `lib/config-resolver.resolve()`, y lo
-// hace SIN `origin` ⇒ cero cambio de comportamiento. Lo enciende la Entrega C
-// (#5174), cuando el archivo efectivamente se parta.
+// El chequeo de lado es **opt-in** vía `validateConfig(obj, { origin })` /
+// `checkSide(obj, lado)`. Desde #5172 `lib/config-resolver.resolve()` valida el
+// documento MERGEADO sin `origin` (cero cambio de comportamiento en el schema) y
+// desde #5174 corre `checkSide` por separado sobre cada lado del archivo partido.
+//
+// #5174 (Entrega C de #5111) — el chequeo es BIDIRECCIONAL:
+//   - `checkSide(productoDoc, 'producto')`: toda clave que NO sea de lado
+//     `producto` en el manifiesto del producto es una violación (regla invertida
+//     del issue: la autoridad la gana SIEMPRE el kernel).
+//   - `checkSide(kernelDoc, 'kernel')`: toda clave de lado `producto` que quedó
+//     del lado del kernel es una violación. Esta dirección no existía en #5173
+//     (`origin` sólo aceptaba `'producto'`) y sin ella el escenario Gherkin
+//     *"clave de producto en la configuración del kernel"* no tenía mensaje —
+//     y un modo de falla sin mensaje es peor que un mensaje malo (CA-14.4).
 //
 // SEC-1: este módulo NO toca js-yaml ni su schema de deserialización. Sólo
 // valida un objeto ya parseado. La carga segura (safe-by-default v4) es
@@ -68,7 +76,13 @@ class ConfigSchemaViolation extends Error {
         const m = meta && typeof meta === 'object' ? meta : {};
         this.archivo = m.archivo || null;
         this.via = m.via || null;
-        this.causa = 'schema-invalido';
+        // #5174 — la causa deja de ser fija: la partición agrega modos de falla
+        // que NO son "el documento no cumple el schema" (clave del lado
+        // equivocado, clave prohibida, override por env). Cada uno necesita su
+        // propia acción al operador; reusar la de `schema-invalido` es lo que
+        // producía el copy que instruye completar una sección de autoridad.
+        // Default intacto ⇒ los llamadores previos a #5174 no cambian.
+        this.causa = m.causa || 'schema-invalido';
     }
 }
 
@@ -850,32 +864,105 @@ function redactErrors(ajvErrors) {
 
 const MAX_SIDE_WALK_DEPTH = 6;
 
+// #5174 · CA-14 — nombres de los DOS archivos de la partición. El copy tiene que
+// nombrar el archivo DESTINO de la clave mal ubicada: sin eso el operador sabe
+// que algo está mal pero no adónde moverlo, que es la mitad del problema.
+const KERNEL_CONFIG_FILE = '.pipeline/config.yaml';
+const PRODUCT_CONFIG_FILE = 'pipeline.config.json';
+
+/** Archivo al que pertenece cada lado (destino de la corrección). */
+function archivoDeLado(lado) {
+    return lado === 'producto' ? PRODUCT_CONFIG_FILE : KERNEL_CONFIG_FILE;
+}
+
 /**
- * Recorre el objeto y reporta toda clave cuyo lado NO sea `producto`. Poda en
- * cuanto un subárbol es del producto; sólo baja donde hay un split declarado.
+ * #5174 · CA-14 — detalle de una violación de lado con las CUATRO piezas que el
+ * operador necesita para actuar sin leer código: qué clave (el `path` del error),
+ * en qué lado está, a qué lado/archivo pertenece, y qué hacer / qué NO hacer.
  *
- * El mensaje nombra la clave y el lado esperado, y NO enumera la lista de
- * autoridad (revelarla entera facilita buscar el hueco).
+ * El "qué NO hacer" es la pieza cara: el copy genérico de `schema-invalido`
+ * ("ajustá las claves que lista el detalle") aplicado a una sección de autoridad
+ * infiltrada del lado producto empuja al operador a COMPLETAR esa sección —
+ * exactamente la escalada de privilegio que la partición existe para impedir.
+ *
+ * SEC-2: path + lado + archivo. Nunca el valor.
  */
-function collectSideViolations(node, segs, out) {
+function detalleDeLado(lado, ladoEsperado) {
+    const destino = archivoDeLado(lado);
+    const aqui = archivoDeLado(ladoEsperado);
+    const porQue = lado === 'autoridad'
+        ? ' — es clave de autoridad y la gana siempre el kernel'
+        : '';
+    return `clave de lado '${lado}': está en ${aqui} y pertenece a ${destino}${porQue}`
+        + `. Movela a ${destino}; NO la completes ni la declares acá`;
+}
+
+/**
+ * Recorre el objeto y reporta toda clave cuyo lado no sea el admitido en este
+ * archivo. Poda en cuanto un subárbol es válido; sólo baja donde hay un split
+ * declarado (`pipelines.*.skills_por_fase`, `architect.poll_cap_min`, …).
+ *
+ * El mensaje nombra la clave, el lado y el archivo destino, y NO enumera la
+ * lista de autoridad (revelarla entera facilita buscar el hueco).
+ *
+ * @param {object} node
+ * @param {string[]} segs - prefijo recorrido.
+ * @param {Array<object>} out - acumulador de errores.
+ * @param {'producto'|'kernel'} esperado - lado admitido en este archivo.
+ *        `'producto'`: sólo lado `producto`. `'kernel'`: lado `kernel` y
+ *        `autoridad` (el kernel es dueño de ambos), nunca `producto`.
+ */
+function collectSideViolations(node, segs, out, esperado = 'producto') {
     if (segs.length > MAX_SIDE_WALK_DEPTH) return;
     for (const key of Object.keys(node || {})) {
         const childSegs = segs.concat(key);
         const dotted = childSegs.join('.');
         const side = resolveSide(dotted);
-        if (side === 'producto') continue;                 // subárbol permitido: podamos
+        const admitida = esperado === 'producto' ? side === 'producto' : side !== 'producto';
         const child = node[key];
-        const puedeBajar = child && typeof child === 'object' && !Array.isArray(child)
-            && hasProductoDescendant(childSegs);
-        if (puedeBajar) { collectSideViolations(child, childSegs, out); continue; }
+        const esMapa = child && typeof child === 'object' && !Array.isArray(child);
+        // Un subárbol admitido puede ESCONDER un split del otro lado más abajo
+        // (`pipelines` es kernel pero `pipelines.*.skills_por_fase` es producto).
+        // Sólo se baja cuando el SIDE_MAP declara un descendiente de producto;
+        // en cualquier otro caso el subárbol entero hereda el lado del padre.
+        if (admitida) {
+            if (esperado === 'kernel' && esMapa && hasProductoDescendant(childSegs)) {
+                collectSideViolations(child, childSegs, out, esperado);
+            }
+            continue;
+        }
+        if (esperado === 'producto' && esMapa && hasProductoDescendant(childSegs)) {
+            collectSideViolations(child, childSegs, out, esperado);
+            continue;
+        }
         out.push({
             path: '/' + childSegs.map(sanitizeKeyName).join('/'),
             keyword: 'side',
-            detail: `clave de lado '${side}': no puede vivir en la configuración `
-                + `del producto (acá sólo se admite lado 'producto')`,
+            detail: detalleDeLado(side, esperado),
             lado: side,
         });
     }
+}
+
+/**
+ * #5174 — Chequeo de lado AISLADO (sin schema). Lo consume
+ * `lib/config-resolver` sobre cada lado del archivo partido.
+ *
+ * Va separado de `validateConfig` a propósito: post-partición **ningún lado
+ * suelto valida contra el schema completo** (el kernel se queda sin
+ * `pipelines.*.skills_por_fase`, que es `required`; el producto se queda sin las
+ * secciones de autoridad). El schema se corre UNA vez, sobre el documento ya
+ * mergeado — que es además lo que garantiza la paridad clave por clave del CA-2.
+ *
+ * @param {*} obj
+ * @param {'producto'|'kernel'} esperado
+ * @returns {{valid: boolean, errors: Array<{path:string, keyword:string, detail:string, lado:string}>}}
+ */
+function checkSide(obj, esperado = 'producto') {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return { valid: true, errors: [] };
+    const errors = [];
+    collectSideViolations(obj, [], errors, esperado === 'kernel' ? 'kernel' : 'producto');
+    return { valid: errors.length === 0, errors };
 }
 
 /**
@@ -894,10 +981,16 @@ function validateConfig(obj, opts = {}) {
     // Un config que no es objeto (null, array, string) es corrupción de raíz.
     const valid = validateFn(obj);
     const errors = valid ? [] : redactErrors(validateFn.errors);
-    if ((opts && opts.origin) === 'producto' && obj && typeof obj === 'object' && !Array.isArray(obj)) {
+    const origin = opts && opts.origin;
+    if ((origin === 'producto' || origin === 'kernel') && obj && typeof obj === 'object' && !Array.isArray(obj)) {
         const sideErrors = [];
-        collectSideViolations(obj, [], sideErrors);
-        if (sideErrors.length) return { valid: false, errors: errors.concat(sideErrors) };
+        collectSideViolations(obj, [], sideErrors, origin);
+        // #5174 · CA-14.3 — los errores de LADO van PRIMERO. `formatErrorsForHuman`
+        // recorta a los primeros N por el tope de 4096 chars de Telegram: una
+        // sección mal ubicada genera además decenas de `required`/`additionalProperties`
+        // que son CONSECUENCIA, y si la causa real queda en la posición 8 de 9 el
+        // operador recibe una alerta que no nombra el problema.
+        if (sideErrors.length) return { valid: false, errors: sideErrors.concat(errors) };
     }
     return { valid: !!valid, errors };
 }
@@ -1011,6 +1104,40 @@ const CAUSA_COPY = Object.freeze({
         // borrar la sección buena creyendo que sobra.
         accion: 'ajustá las claves que lista el detalle; si es una sección nueva, declarala también en .pipeline/lib/config-schema.js',
     },
+    // #5174 · CA-14.1 — causa PROPIA de la violación de lado. No reusa el texto
+    // de `schema-invalido` porque su acción ("ajustá las claves que lista el
+    // detalle… declarala en config-schema.js") aplicada a una sección de
+    // autoridad infiltrada del lado producto instruye COMPLETARLA ahí, que es
+    // exactamente la escalada de privilegio que la partición impide.
+    'lado-invalido': {
+        texto: 'hay claves en el archivo equivocado de la configuración partida',
+        accion: 'mové cada clave al archivo que indica el detalle (la autoridad vive SIEMPRE en '
+            + `${KERNEL_CONFIG_FILE}); no la completes ni la declares en el archivo donde está`,
+    },
+    // #5174 — JSON del manifiesto de producto ilegible. Se distingue del YAML
+    // porque el operador tiene que abrir OTRO archivo.
+    'json-invalido': {
+        texto: 'JSON inválido en el manifiesto de producto',
+        accion: `corregí ${PRODUCT_CONFIG_FILE} (suele ser una coma de más o una comilla sin cerrar)`,
+    },
+    // #5174 · REQ-SEC-C3 — clave con forma de prototype pollution.
+    'clave-prohibida': {
+        texto: 'el manifiesto de producto declara una clave prohibida',
+        accion: `borrá esa clave de ${PRODUCT_CONFIG_FILE}: '__proto__', 'constructor' y 'prototype' `
+            + 'no son configuración, contaminan el prototipo y apagan fail-closeds que nadie declaró',
+    },
+    // #5174 · CA-3 — `PIPELINE_DIR_OVERRIDE` reubica los dos archivos o ninguno.
+    'reubicacion-parcial': {
+        texto: 'la reubicación de la configuración quedó a medias',
+        accion: `el override tiene que llevar ${KERNEL_CONFIG_FILE} y ${PRODUCT_CONFIG_FILE} juntos; `
+            + 'apuntar sólo uno mezcla el kernel de un checkout con el producto de otro',
+    },
+    // #5174 · CA-10 / REQ-SEC-C5 — canal genérico env→config, prohibido.
+    'env-prohibida': {
+        texto: 'hay una variable de entorno intentando inyectar configuración',
+        accion: 'sacá esa variable del entorno: el override por env sale de una allowlist cerrada '
+            + 'y enumerada en código, no de un patrón — y la autoridad no se override nunca',
+    },
     'config-ilegible': {
         texto: 'no pude leer la configuración',
         accion: 'revisá el archivo y sus permisos',
@@ -1024,7 +1151,12 @@ const CAUSA_COPY = Object.freeze({
  */
 const CONTEXTO_ACCION = Object.freeze({
     // Variante A — la pausa la generó ESTA corrupción ⇒ auto-recovery #4832.
-    'halt-auto': 'la pausa se levanta sola en el próximo ciclo (~30s) — no hace falta borrar ningún archivo',
+    // #5174 · CA-14.5 — post-partición la promesa es sobre LOS DOS archivos: el
+    // auto-recovery re-resuelve la configuración completa, así que corregir uno
+    // solo NO levanta la pausa. Prometer "~30s" sin decirlo dejaba al operador
+    // esperando una reanudación que no iba a llegar.
+    'halt-auto': `la pausa se levanta sola en el próximo ciclo (~30s) cuando ${KERNEL_CONFIG_FILE} `
+        + `y ${PRODUCT_CONFIG_FILE} parseen bien LOS DOS — no hace falta borrar ningún archivo`,
     // Variante B — ya había un marker de pausa preexistente que NO se pisó. El
     // auto-recovery sólo levanta markers con source 'config-corruption-halt', así
     // que acá NO se puede prometer que se levante sola.
@@ -1067,7 +1199,14 @@ function formatConfigPath(archivo, repoRoot) {
  */
 function describeConfigFailure(err, opts = {}) {
     const e = err && typeof err === 'object' ? err : {};
-    const causa = CAUSA_COPY[e.causa] ? e.causa : 'config-ilegible';
+    // #5174 · CA-14.2 — PRECEDENCIA DE CAUSA. Una sección mal ubicada arrastra
+    // detrás una cascada de `required` / `additionalProperties` de la sección que
+    // quedó incompleta. Esos son CONSECUENCIA; la causa es el lado. Si no se
+    // prioriza, el operador recibe "falta clave requerida 'enabled' en
+    // firma_operador" y, siguiendo la instrucción al pie de la letra, completa
+    // una sección de autoridad del lado producto.
+    const hayLado = Array.isArray(e.errors) && e.errors.some((x) => x && x.keyword === 'side');
+    const causa = hayLado ? 'lado-invalido' : (CAUSA_COPY[e.causa] ? e.causa : 'config-ilegible');
     const copy = CAUSA_COPY[causa];
     const linea = typeof e.linea === 'number' ? e.linea : null;
     const columna = typeof e.columna === 'number' ? e.columna : null;
@@ -1077,8 +1216,23 @@ function describeConfigFailure(err, opts = {}) {
     // `detalle` sale YA redactado: la UI lo renderiza tal cual (CA-UX-5) y no
     // re-deriva copy desde `causa`.
     let detalle = copy.texto;
-    if (causa === 'yaml-invalido' && linea !== null) {
+    if ((causa === 'yaml-invalido' || causa === 'json-invalido') && linea !== null) {
         detalle += ` — línea ${linea}` + (columna !== null ? `, col ${columna}` : '');
+    } else if (causa === 'lado-invalido') {
+        // #5174 · CA-14.3 — los errores de lado ya vienen al frente de la lista
+        // (`validateConfig` / `checkSide` los anteponen), así que sobreviven al
+        // recorte de `maxErrores`. Acá se los vuelve a filtrar para que la
+        // superficie ACOTADA no gaste sus 5 líneas en consecuencias.
+        const soloLado = e.errors.filter((x) => x && x.keyword === 'side');
+        const lista = typeof opts.maxErrores === 'number'
+            ? formatErrorsForHuman(soloLado, opts.maxErrores)
+            : formatErrors(soloLado);
+        if (lista) detalle += `: ${lista}`;
+    } else if (causa === 'clave-prohibida' || causa === 'env-prohibida' || causa === 'reubicacion-parcial') {
+        const lista = typeof opts.maxErrores === 'number'
+            ? formatErrorsForHuman(e.errors, opts.maxErrores)
+            : formatErrors(e.errors);
+        if (lista) detalle += `: ${lista}`;
     } else if (causa === 'schema-invalido') {
         // `formatErrors(redactErrors(...))`: path + regla, nunca el valor crudo.
         // #5173 CA-11 — con `opts.maxErrores` la lista sale ACOTADA (superficies
@@ -1171,6 +1325,8 @@ module.exports = {
     escapeMarkdownLegacy,
     escapeMarkdownCodeSpan,
     resolveSide,
+    checkSide,
+    archivoDeLado,
     redactYamlParseError,
     describeConfigFailure,
     formatConfigPath,
@@ -1184,4 +1340,6 @@ module.exports = {
     SIDE_MAP,
     AUTHORITY_PREFIXES,
     SCHEMA,
+    KERNEL_CONFIG_FILE,
+    PRODUCT_CONFIG_FILE,
 };

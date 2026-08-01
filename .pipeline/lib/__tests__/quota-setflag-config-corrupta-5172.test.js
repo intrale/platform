@@ -26,6 +26,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { seedProductManifest } = require('./_test-helpers');
 
 const QUOTA_MOD = path.join(__dirname, '..', 'quota-exhausted.js');
 
@@ -43,6 +44,7 @@ const YAML_SANO_TTL = 'quota_detector:\n  resets_at_cap_max_days: 1\n';
 function correrSetFlag(configYaml, opts) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'q5172-'));
     fs.writeFileSync(path.join(dir, 'config.yaml'), configYaml);
+    seedProductManifest(dir);   // #5174 — la configuración vive partida: el otro lado también
 
     const script = `
         process.env.PIPELINE_DIR_OVERRIDE = ${JSON.stringify(dir)};
