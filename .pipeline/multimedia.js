@@ -281,9 +281,15 @@ async function transcribeAudioWithFallback(audioBuffer, audioPath, filename, opt
 //    al operador a mutilar su mensaje por un problema que no era suyo.
 //  - `no_binary` ya NO sugiere `pip install openai-whisper`: el motor es
 //    faster-whisper desde #3916, así que ese comando no habilitaba nada.
+//
+// El motivo de motor ausente SÍ nombra el motor (`faster-whisper`), espejo de
+// TTS_DEGRADED_REASONS.no_binary que nombra `edge-tts`: es un fallo accionable
+// por el operador y sin el nombre no sabe qué instalar. Contrato verificado por
+// `__tests__/multimedia-free-stack.test.js` ("el mensaje de motor ausente
+// menciona el remedio local").
 const TRANSCRIPTION_FAILURE_REASONS = {
-  unavailable:     'El motor de transcripción no está instalado en la máquina.',
-  no_binary:       'El motor de transcripción no está instalado en la máquina.',
+  unavailable:     'El motor de transcripción (faster-whisper) no está instalado en la máquina.',
+  no_binary:       'El motor de transcripción (faster-whisper) no está instalado en la máquina.',
   cli_error:       'El motor de transcripción crasheó, probablemente por falta de memoria.',
   stalled:         'El motor de transcripción se quedó sin dar señales de vida y lo tuve que cortar.',
   timeout:         'El motor de transcripción arrancó pero nunca terminó.',
