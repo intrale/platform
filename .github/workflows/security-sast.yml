@@ -198,8 +198,13 @@ jobs:
     permissions:
       contents: read
     steps:
+      # #5244 rev-6 — actions pineadas al SHA de 40 chars (no al tag mutable):
+      # un tag puede ser repunteado en silencio por el dueño de la action
+      # (trivy-action / kics-github-action). Dejar el tag mutable en el ÚNICO job
+      # bloqueante del workflow contradice el alcance del propio issue.
+      # Regla: yaml.github-actions.security.github-actions-mutable-action-tag.
       - name: Checkout head
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
@@ -260,14 +265,14 @@ jobs:
           fi
 
       - name: Checkout base completo
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ steps.base.outputs.sha }}
           path: .base
           fetch-depth: 0
 
       - name: Setup Node 20
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '20'
 
