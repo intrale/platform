@@ -93,71 +93,223 @@ function downloadTelegramFile(fileId, botToken) {
 // por los ~2 GB de RAM del modelo large-v3-turbo). Cuando llega un audio mientras
 // otro se está transcribiendo, devuelve `busy`. ANTES eso descartaba el audio sin
 // avisar: si el operador mandaba varias notas de voz pegadas, las del medio se
-// perdían. Ahora, en vez de tirarlas, ESPERAMOS a que se libere el lock y
-// reintentamos — de hecho encolamos: cada audio se serializa detrás del que está
-// en curso. Presupuesto de espera generoso porque una transcripción larga puede
-// tardar minutos (timeout del motor = 5 min); pisable con env si hace falta.
+// perdían. Después se agregó una espera acotada por presupuesto (6 min), que seguía
+// descartando: con el motor ocupado, un audio encolado agotaba el presupuesto SIN
+// HABER ENTRADO NUNCA al motor y salía como `busy`.
+//
+// #5336 (CA-7): la espera en cola deja de ser un presupuesto que descarta. Un audio
+// encolado entra al motor cuando se libera el lock, sin importar cuánto esperó. Eso
+// es seguro porque el motor ahora SIEMPRE termina por sí solo (watchdog de
+// inactividad de whisper-local), así que la cola drena: la espera está acotada por
+// el trabajo real que tiene adelante, no por un reloj arbitrario.
 const BUSY_RETRY_DELAY_MS = Number(process.env.WHISPER_BUSY_RETRY_DELAY_MS || 3000);
-const BUSY_MAX_WAIT_MS = Number(process.env.WHISPER_BUSY_MAX_WAIT_MS || 360000); // 6 min
+
+// Backstop de LOCK FILTRADO, no presupuesto de trabajo. Si el lock quedara tomado
+// por un bug (proceso que ni siquiera el watchdog liberó), no queremos esperar para
+// siempre dentro del turno del commander. El valor está deliberadamente por encima
+// del ciclo de vida máximo del motor, de modo que una cola sana JAMÁS lo alcanza:
+// alcanzarlo es señal de bug, no de carga, y por eso tiene su propio errorKind.
+const QUEUE_STUCK_GUARD_MS = Number(process.env.WHISPER_QUEUE_STUCK_GUARD_MS || 60 * 60 * 1000); // 1 h
+
+// #5336 (CA-2/CA-8): umbrales de aviso. Dos estados visibles y DISTINGUIBLES para
+// el usuario — esperando turno vs. siendo transcripto. Un solo aviso por estado.
+const QUEUE_NOTICE_MS = Number(process.env.WHISPER_QUEUE_NOTICE_MS || 45000);
+const ENGINE_NOTICE_MS = Number(process.env.WHISPER_ENGINE_NOTICE_MS || 45000);
+const NOTICE_TICK_MS = Number(process.env.WHISPER_NOTICE_TICK_MS || 1000);
+
+// Copys de los avisos de progreso. Literales planos y cerrados (SEC-1/SEC-2): NO se
+// interpola `raw`, `e.message` ni paths. No prometen tiempo estimado — comunican
+// estado, no promesa (guideline UX del issue).
+const QUEUE_NOTICE_TEXT = '🎤 Recibí tu audio. Hay otro procesándose adelante — arranco con el tuyo apenas se libere.';
+const ENGINE_NOTICE_TEXT = '🎤 Recibí tu audio y lo estoy transcribiendo. Está tardando más de lo normal porque la máquina está cargada — te respondo apenas termine.';
+
+// #5336 (CA-3): reintentos automáticos ante fallo del motor.
+const TRANSCRIBE_MAX_ATTEMPTS = Number(process.env.WHISPER_MAX_ATTEMPTS || 3); // 1 intento + 2 reintentos
+// Backoff entre reintentos. Env-pisable (lista separada por comas) para que los
+// tests no tengan que esperar segundos reales; si el override viene vacío o basura,
+// caemos al default en vez de quedarnos sin backoff.
+const RETRY_BACKOFF_MS = (() => {
+  const raw = process.env.WHISPER_RETRY_BACKOFF_MS;
+  if (!raw) return [2000, 5000];
+  const parsed = String(raw).split(',').map((n) => Number(n.trim())).filter((n) => Number.isFinite(n) && n >= 0);
+  return parsed.length > 0 ? parsed : [2000, 5000];
+})();
+
+// Solo reintentamos lo que puede salir distinto en otra pasada (crash por presión
+// de memoria, proceso colgado, salida ilegible). Los fallos DETERMINÍSTICOS —falta
+// el binario, no hay input, el archivo no existe, supera el cap— dan exactamente lo
+// mismo en el reintento: reintentarlos solo retrasa el aviso al usuario.
+const RETRYABLE_ERROR_KINDS = new Set(['cli_error', 'spawn_error', 'no_output', 'read_error', 'stalled', 'timeout']);
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
-async function transcribeAudioWithFallback(audioBuffer, audioPath, filename) { // eslint-disable-line no-unused-vars
+// Espera a que el motor se libere y transcribe. Devuelve el resultado del motor.
+// `signalStage` reporta el estado visible ('queue' | 'engine') al notificador.
+async function transcribeWhenEngineFree(audioBuffer, audioPath, signalStage) {
+  const waitStart = Date.now();
+  let announcedWait = false;
+
+  for (;;) {
+    // OJO: acá NO se marca 'engine'. Cada poll de la cola vuelve a llamar al
+    // motor, y marcar el estado en cada vuelta reiniciaba el reloj de espera cada
+    // pocos segundos — con lo cual el aviso de cola no se emitía NUNCA por más
+    // que el audio llevara media hora esperando. El estado sólo cambia a 'engine'
+    // cuando el motor da su primer latido, que es la señal real de que arrancó.
+    const result = await whisperLocal({
+      audioPath,
+      audioBuffer,
+      logger: log,
+      onProgress: () => signalStage('engine'),
+    });
+
+    if (!result.ok && result.errorKind === 'busy') {
+      signalStage('queue');
+      const waitedMs = Date.now() - waitStart;
+      if (waitedMs >= QUEUE_STUCK_GUARD_MS) {
+        log(`[whisper local] el lock lleva ${Math.round(waitedMs / 1000)}s tomado — probable lock filtrado, no carga normal`);
+        return { ok: false, text: '', errorKind: 'queue_stuck', raw: `el motor no se liberó en ${Math.round(waitedMs / 1000)}s` };
+      }
+      if (!announcedWait) {
+        log('[whisper local] motor ocupado — el audio espera turno (sin presupuesto de descarte, CA-7)');
+        announcedWait = true;
+      }
+      await sleep(BUSY_RETRY_DELAY_MS);
+      continue;
+    }
+
+    if (announcedWait && result.ok) {
+      log(`[whisper local] lock liberado tras ~${Math.round((Date.now() - waitStart) / 1000)}s en cola — audio transcripto (no se perdió)`);
+    }
+    return result;
+  }
+}
+
+async function transcribeAudioWithFallback(audioBuffer, audioPath, filename, opts = {}) { // eslint-disable-line no-unused-vars
   if (!whisperLocalAvailable()) {
     log('whisper local no está disponible (binario ausente)');
     return { ok: false, text: '', source: 'local', errorKind: 'unavailable', raw: 'whisper CLI no encontrado' };
   }
 
-  // Reintento ante `busy`: esperamos a que el lock single-flight se libere en vez de
-  // descartar el audio. Total acotado por BUSY_MAX_WAIT_MS para no colgar el turno
-  // indefinidamente; si tras ese presupuesto sigue ocupado, devolvemos `busy` y el
-  // caller aplica el mensaje de fallback.
-  let localResult = await whisperLocal({ audioPath, audioBuffer, logger: log });
-  if (!localResult.ok && localResult.errorKind === 'busy') {
-    const waitStart = Date.now();
-    let waited = 0;
-    while (localResult.errorKind === 'busy' && (Date.now() - waitStart) < BUSY_MAX_WAIT_MS) {
-      waited += BUSY_RETRY_DELAY_MS;
-      log(`[whisper local] motor ocupado, esperando turno (${Math.round((Date.now() - waitStart) / 1000)}s)...`);
-      await sleep(BUSY_RETRY_DELAY_MS);
-      localResult = await whisperLocal({ audioPath, audioBuffer, logger: log });
+  // Notificador inyectado por el caller (pulpo tiene la ruta autorizada a Telegram
+  // y el dedup por chat). Sin notificador, el módulo funciona igual: los avisos son
+  // aditivos y jamás afectan el resultado de la transcripción.
+  const notify = typeof opts.notify === 'function' ? opts.notify : null;
+
+  // --- Avisos de progreso (CA-2/CA-8) ---
+  // Un solo aviso por estado, y CANCELADOS al resolver: un "estoy procesando" que
+  // llega después de la respuesta final es peor que el silencio.
+  let stage = 'engine';
+  let stageSince = Date.now();
+  const notified = { queue: false, engine: false };
+  let finished = false;
+
+  const signalStage = (next) => {
+    if (finished || next === stage) return;
+    stage = next;
+    stageSince = Date.now();
+  };
+
+  const noticeTimer = notify ? setInterval(() => {
+    if (finished) return;
+    const elapsed = Date.now() - stageSince;
+    if (stage === 'queue' && !notified.queue && elapsed >= QUEUE_NOTICE_MS) {
+      notified.queue = true;
+      try { notify(QUEUE_NOTICE_TEXT, 'queue'); } catch (e) { log(`[whisper local] aviso de cola no enviado: ${e.message}`); }
+    } else if (stage === 'engine' && !notified.engine && elapsed >= ENGINE_NOTICE_MS) {
+      notified.engine = true;
+      try { notify(ENGINE_NOTICE_TEXT, 'engine'); } catch (e) { log(`[whisper local] aviso de proceso no enviado: ${e.message}`); }
     }
+  }, NOTICE_TICK_MS) : null;
+  if (noticeTimer && typeof noticeTimer.unref === 'function') noticeTimer.unref();
+
+  try {
+    // --- Reintentos con backoff (CA-3) ---
+    // El audio original persiste todo el ciclo: cuando viene `audioPath`, es el .ogg
+    // que bajó el listener (nadie lo borra); cuando viene sólo buffer, sigue en
+    // memoria. Cada reintento relee la misma fuente, así que reprocesar es seguro.
+    let localResult = null;
+    for (let attempt = 1; attempt <= TRANSCRIBE_MAX_ATTEMPTS; attempt++) {
+      localResult = await transcribeWhenEngineFree(audioBuffer, audioPath, signalStage);
+      if (localResult.ok) {
+        if (attempt > 1) log(`[whisper local] transcripción OK en el intento ${attempt}/${TRANSCRIBE_MAX_ATTEMPTS}`);
+        break;
+      }
+      if (!RETRYABLE_ERROR_KINDS.has(localResult.errorKind)) {
+        log(`[whisper local] fallo no reintentable (${localResult.errorKind}) — no tiene sentido repetir`);
+        break;
+      }
+      if (attempt < TRANSCRIBE_MAX_ATTEMPTS) {
+        const backoff = RETRY_BACKOFF_MS[attempt - 1] || RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1];
+        log(`[whisper local] intento ${attempt}/${TRANSCRIBE_MAX_ATTEMPTS} falló (${localResult.errorKind}) — reintento en ${backoff}ms`);
+        await sleep(backoff);
+      } else {
+        log(`[whisper local] agotados los ${TRANSCRIBE_MAX_ATTEMPTS} intentos (último: ${localResult.errorKind})`);
+      }
+    }
+
     if (localResult.ok) {
-      log(`[whisper local] lock liberado tras esperar ~${Math.round((Date.now() - waitStart) / 1000)}s — audio transcripto (no se perdió)`);
-    } else if (localResult.errorKind === 'busy') {
-      log(`[whisper local] motor sigue ocupado tras ${Math.round(BUSY_MAX_WAIT_MS / 1000)}s — me rindo, fallback a texto`);
+      // #3918: propagamos `confidence` cuando el motor local la expone (whisper
+      // local deriva la métrica de los logprobs del JSON). Extensión aditiva: si
+      // el motor no la trae, queda undefined → "confianza desconocida".
+      const out = { ok: true, text: localResult.text, source: 'local' };
+      if (localResult.confidence) out.confidence = localResult.confidence;
+      return out;
     }
+    return { ...localResult, source: 'local' };
+  } finally {
+    // Cancelación del aviso pendiente (CA-8): idempotente y a prueba de excepciones.
+    finished = true;
+    if (noticeTimer) clearInterval(noticeTimer);
   }
-  if (localResult.ok) {
-    // #3918: propagamos `confidence` cuando el motor local la expone (whisper
-    // local deriva la métrica de los logprobs del JSON). Extensión aditiva: si
-    // el motor no la trae, queda undefined → "confianza desconocida".
-    const out = { ok: true, text: localResult.text, source: 'local' };
-    if (localResult.confidence) out.confidence = localResult.confidence;
-    return out;
-  }
-  return { ...localResult, source: 'local' };
 }
 
-// Mensaje human-friendly que va a Telegram cuando whisper local no pudo
-// transcribir. Es lo que va a leer Leo, así que tiene que ser breve y accionable.
-// El segundo parámetro se mantiene por compat de firma (callers históricos que
-// pasaban localErrorKind); hoy el único motor es el local, así que el errorKind
-// ya describe el fallo real.
+// Mensaje human-friendly que va a Telegram cuando no se pudo transcribir. Es lo
+// que va a leer Leo, así que tiene que ser breve, honesto y accionable.
+//
+// FUENTE ÚNICA DE COPY (#5336 CA-4): este es el ÚNICO lugar donde se redacta el
+// mensaje de fallo de transcripción. El router (`commander-deterministic.js`) NO
+// escribe un copy paralelo — detecta el marcador y deja que el caller use esta
+// función. Dos textos para el mismo evento se desincronizan.
+//
+// SEC-1/SEC-2 — enum CERRADO de motivos, espejo de TTS_DEGRADED_REASONS. Jamás se
+// interpola `e.message`, `raw`, paths ni nombres de temp: sólo strings curados.
+// Un errorKind desconocido cae en 'unknown' (degradación segura).
+//
+// #5336 (CA-9) — ningún motivo da un consejo que dejó de aplicar:
+//  - `timeout`/`stalled` ya NO dicen "reenvialo más cortito": eliminado el corte
+//    por duración, el largo del audio dejó de ser la causa, y ese consejo mandaba
+//    al operador a mutilar su mensaje por un problema que no era suyo.
+//  - `no_binary` ya NO sugiere `pip install openai-whisper`: el motor es
+//    faster-whisper desde #3916, así que ese comando no habilitaba nada.
+const TRANSCRIPTION_FAILURE_REASONS = {
+  unavailable:     'El motor de transcripción no está instalado en la máquina.',
+  no_binary:       'El motor de transcripción no está instalado en la máquina.',
+  cli_error:       'El motor de transcripción crasheó, probablemente por falta de memoria.',
+  stalled:         'El motor de transcripción se quedó sin dar señales de vida y lo tuve que cortar.',
+  timeout:         'El motor de transcripción arrancó pero nunca terminó.',
+  queue_stuck:     'El motor de transcripción quedó trabado y no se liberó para tomar tu audio.',
+  no_output:       'El motor de transcripción terminó pero no devolvió texto.',
+  read_error:      'El motor de transcripción terminó pero no devolvió texto.',
+  no_input:        'No encontré el archivo de audio para transcribir.',
+  missing_file:    'No encontré el archivo de audio para transcribir.',
+  spawn_error:     'No pude lanzar el motor de transcripción.',
+  too_large:       'El audio supera el tamaño máximo que puedo procesar.',
+  busy:            'El motor de transcripción estuvo ocupado con otros audios.',
+  download_failed: 'No pude descargar el audio de Telegram.',
+  unknown:         'El motor de transcripción falló.',
+};
+
 function transcriptionFailureMessage(errorKind, _localErrorKind = null) {
-  switch (errorKind) {
-    case 'unavailable':
-    case 'no_binary':   return '🎤 Audio recibido. El motor de transcripción local (whisper) no está instalado en la máquina — repetímelo por texto cuando puedas. Para habilitarlo: `pip install -U openai-whisper`.';
-    case 'cli_error':   return '🎤 Audio recibido. Whisper local crasheó (probable falta de memoria con audio largo) — repetímelo por texto, o reenvialo más cortito. Si persiste: bajar `WHISPER_LOCAL_MODEL` a `small` o reiniciar la máquina.';
-    case 'timeout':     return '🎤 Audio recibido. La transcripción local se colgó (timeout) — repetímelo por texto, o reenvialo más cortito.';
-    case 'no_output':
-    case 'read_error':  return '🎤 Audio recibido pero whisper local no devolvió texto — repetímelo por texto cuando puedas.';
-    case 'no_input':
-    case 'missing_file':return '🎤 Audio recibido pero no encontré el archivo para transcribir — reintentá o repetímelo por texto.';
-    case 'spawn_error': return '🎤 Audio recibido. No pude lanzar whisper local — repetímelo por texto. Revisá que `WHISPER_LOCAL_BIN`/PATH apunten al binario.';
-    case 'busy':        return '🎤 Audio recibido. El motor de transcripción estuvo ocupado un buen rato con otros audios y no se liberó a tiempo — repetímelo por texto, o reenvialo en unos segundos.';
-    default:            return '🎤 Audio recibido pero no pude transcribirlo — repetímelo por texto cuando puedas.';
-  }
+  const reason = TRANSCRIPTION_FAILURE_REASONS[errorKind] || TRANSCRIPTION_FAILURE_REASONS.unknown;
+  // Sólo mencionamos el reintento cuando REALMENTE hubo reintentos (CA-3): sirve
+  // para que el operador no insista al pedo. En los fallos no reintentables sería
+  // mentira. El detalle de cuántos/por qué va al log, no al chat.
+  const retried = RETRYABLE_ERROR_KINDS.has(errorKind)
+    ? ' Ya lo reintenté un par de veces sin suerte.'
+    : '';
+  // El encabezado es deliberadamente explícito sobre QUÉ falló: la infraestructura,
+  // no la comprensión. Nunca "no te entendí", que comunica algo falso.
+  return `🎤 Recibí tu audio pero no pude transcribirlo.${retried} ${reason} Repetímelo por texto o mandámelo de nuevo.`;
 }
 
 // EP1-H4 (#3919): aviso de degradación de TTS. Cuando el motor de voz falla y la
@@ -303,7 +455,10 @@ function describeImage(imageBuffer, mediaType) {
 
 // --- Preprocesar mensaje completo ---
 
-async function preprocessMessage(msg, botToken) {
+// `opts.notify(text, stage)` es opcional (#5336 CA-2/CA-8): el caller inyecta la
+// ruta autorizada a Telegram para los avisos de "esperá que estoy con tu audio".
+// Sin notificador el preprocesado funciona idéntico — los avisos son aditivos.
+async function preprocessMessage(msg, botToken, opts = {}) {
   const result = { text: msg.text || '', extras: [], audio: null };
 
   // Transcribir audio
@@ -323,7 +478,7 @@ async function preprocessMessage(msg, botToken) {
 
     if (audioBuffer) {
       log(`Transcribiendo audio (${audioBuffer.length} bytes)...`);
-      const tx = await transcribeAudioWithFallback(audioBuffer, msg.voice_path || null, 'audio.ogg');
+      const tx = await transcribeAudioWithFallback(audioBuffer, msg.voice_path || null, 'audio.ogg', { notify: opts.notify });
       if (tx.ok) {
         log(`Transcripcion [whisper local]: "${tx.text.slice(0, 100)}"`);
         result.text = tx.text;
@@ -348,7 +503,9 @@ async function preprocessMessage(msg, botToken) {
     } else {
       log('Audio no disponible');
       result.extras.push('(audio no disponible)');
-      result.audio = { ok: false, errorKind: 'download_failed', raw: 'no se pudo bajar el audio', fallbackMessage: '🎤 Audio recibido pero no pude descargarlo de Telegram — reintentá o repetímelo por texto.' };
+      // CA-4/CA-5: también este camino de excepción usa la fuente única de copy —
+      // sin esto el operador recibía un texto paralelo que se desincronizaba.
+      result.audio = { ok: false, errorKind: 'download_failed', raw: 'no se pudo bajar el audio', fallbackMessage: transcriptionFailureMessage('download_failed') };
     }
   }
 
@@ -767,5 +924,11 @@ module.exports = {
   getTransitionIntro,
   sendVoiceTelegram,
   splitTextForTTSChunks,
-  sanitizeForTts
+  sanitizeForTts,
+  // #5336: expuestos para los tests de contrato (avisos, reintentos, copys).
+  TRANSCRIPTION_FAILURE_REASONS,
+  RETRYABLE_ERROR_KINDS,
+  QUEUE_NOTICE_TEXT,
+  ENGINE_NOTICE_TEXT,
+  TRANSCRIBE_MAX_ATTEMPTS
 };
