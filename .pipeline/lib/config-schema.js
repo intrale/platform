@@ -215,6 +215,9 @@ const SIDE_MAP = Object.freeze({
     'deliverable_notifications.attachments_per_skill': 'producto',
     cua: 'kernel',
     kernel: 'kernel',
+    // #5352 — el vault direcciona secretos de INFRAESTRUCTURA por host: es
+    // mecanismo de orquestación, se muda al kernel sin conocer el producto.
+    vault: 'kernel',
     waves: 'kernel',
     architect: 'kernel',
     'architect.poll_cap_min': 'producto',        // calibración, no gate
@@ -442,6 +445,30 @@ const SCHEMA = {
         deliverable_notifications: OBJ(),
         cua: OBJ(),
         kernel: OBJ(),
+
+        // --- #5352 · vault de secretos (lectura) ------------------------------
+        // La raíz está CERRADA desde #5173: agregar `vault:` a config.yaml SIN
+        // declararlo acá deja el pipeline arrancando pausado. Por eso esta
+        // declaración va en el MISMO commit que la sección nueva.
+        // Se tipa (en vez de `OBJ()`) porque el gate y el tope de TTL son
+        // fail-closed: un `enabled: "false"` string o un TTL de 3600 pasarían
+        // como `additionalProperties: true` y sólo se descubrirían en runtime.
+        vault: {
+            type: 'object',
+            additionalProperties: true,
+            properties: {
+                enabled: { type: 'boolean' },
+                prefix: { type: 'string' },
+                projectId: { type: 'string' },
+                hostId: { type: 'string' },
+                // Tope DURO de SEC-6: el módulo también lo rechaza, pero acá el
+                // operador se entera al arrancar y no al encender el gate.
+                cache_ttl_seconds: { type: 'number', minimum: 1, maximum: 300 },
+                required_scopes: { type: 'array', items: { type: 'string' } },
+                shared_secrets: { type: 'array', items: { type: 'string' } },
+            },
+        },
+
         waves: OBJ(),
 
         // --- architect: el GATE es autoridad, la cadencia es calibración -----
