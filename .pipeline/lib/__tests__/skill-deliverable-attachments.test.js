@@ -21,7 +21,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const helper = require('../skill-deliverable-attachments');
-const { seedRepoRootConfig } = require('./_test-helpers');
+const { seedRepoRootConfig, readEffectiveConfig } = require('./_test-helpers');
 
 // -----------------------------------------------------------------------------
 // Fixtures: filesystem temporal con la estructura de directorios esperada
@@ -451,10 +451,10 @@ test('CA-7 (SEC-1) — build NO adjunta .log crudo (riesgo de fuga de secretos)'
 // -----------------------------------------------------------------------------
 
 test('CA-5 — coherencia: SKILL_SOURCES ⊆ skills ∩ attachments_per_skill (config.yaml)', () => {
-    const yaml = require('js-yaml');
-    const cfgPath = path.join(__dirname, '..', '..', 'config.yaml');
-    const cfg = yaml.load(fs.readFileSync(cfgPath, 'utf8'));
-    const dn = cfg.deliverable_notifications;
+    // #5174 — `deliverable_notifications.skills` y `.attachments_per_skill` son
+    // lado PRODUCTO: viven en el manifiesto, no en el kernel. Leer el
+    // `config.yaml` suelto devolvía `undefined` y la coherencia dejaba de verificarse.
+    const dn = readEffectiveConfig().deliverable_notifications;
     const whitelistSkills = new Set(dn.skills);
     const apsSkills = new Set(Object.keys(dn.attachments_per_skill));
 
@@ -473,10 +473,10 @@ test('CA-5 — coherencia: SKILL_SOURCES ⊆ skills ∩ attachments_per_skill (c
 });
 
 test('CA-5 — coherencia inversa: todo skill notificable tiene source en SKILL_SOURCES', () => {
-    const yaml = require('js-yaml');
-    const cfgPath = path.join(__dirname, '..', '..', 'config.yaml');
-    const cfg = yaml.load(fs.readFileSync(cfgPath, 'utf8'));
-    const dn = cfg.deliverable_notifications;
+    // #5174 — `deliverable_notifications.skills` y `.attachments_per_skill` son
+    // lado PRODUCTO: viven en el manifiesto, no en el kernel. Leer el
+    // `config.yaml` suelto devolvía `undefined` y la coherencia dejaba de verificarse.
+    const dn = readEffectiveConfig().deliverable_notifications;
     const catalog = helper.getSkillSourcesCatalog();
     const catalogSkills = new Set(Object.keys(catalog));
 

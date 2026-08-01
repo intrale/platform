@@ -12,6 +12,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
+const { seedProductManifest } = require('./__tests__/_test-helpers');
 const path = require('path');
 
 const { ensureDeliveryConstancia } = require('./delivery-constancia');
@@ -26,6 +27,11 @@ function tmpRoot() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dc-test-'));
     fs.mkdirSync(path.join(root, '.pipeline'), { recursive: true });
     fs.writeFileSync(path.join(root, '.pipeline', 'config.yaml'), 'pipelines: {}\n');
+    // #5174 — sembrar también `pipeline.config.json`: sin el manifiesto de
+    // producto junto al kernel el resolver falla cerrado. Fixture mínimo escrito
+    // a mano ⇒ `seedProductManifest` (auto-partición, slice vacío) y NO el real:
+    // `pipelines: {}` debe seguir dando enum de fases vacío → `FALLBACK_PHASES`.
+    seedProductManifest(path.join(root, '.pipeline'));
     return root;
 }
 

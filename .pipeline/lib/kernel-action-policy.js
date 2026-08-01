@@ -121,6 +121,19 @@ function policyKey(action) {
 //   - `PIPELINE_DIR_OVERRIDE` se sigue honrando: está en la regla de raíz única
 //     del resolver (aporta DIRECTORIO, nunca nombre de archivo — CA-12).
 //
+// #5174 — la inyección se detecta por PRESENCIA de la propiedad, no por que su
+// valor sea truthy. Antes `loadGate3Config(opts.config)` recibía sólo el valor,
+// así que `{config: null}` y `{config: 'basura'}` eran indistinguibles de "no
+// inyectó nada" y CAÍAN a la lectura ambiental. Dos consecuencias, las dos malas:
+//   a) un llamador que inyecta el doc que él mismo computó (y que le salió
+//      `null` por su propio fallo) terminaba gateando con la config del REPO en
+//      vez de con lo que creía haber pasado — silencioso y difícil de ver;
+//   b) desde que el resolver PROPAGA el error tipado, ese fall-through convierte
+//      una inyección explícita en un throw de IO ajeno al llamador.
+// Inyectar explícitamente es una afirmación: "esta es la config, no leas nada".
+// Un valor no-objeto se normaliza a `{}` ⇒ defaults, que es el contrato que el
+// test 'config null/no-objeto no rompe la resolución' fija desde siempre.
+//
 // El `require` es lazy a propósito (el resolver arrastra `js-yaml` + `ajv`):
 // mismo criterio que tenía el `require('js-yaml')` que reemplaza.
 // -----------------------------------------------------------------------------
@@ -129,9 +142,17 @@ function pipelineDir() {
     return path.resolve(__dirname, '..');
 }
 
-function loadGate3Config(configOverride) {
-    if (configOverride && typeof configOverride === 'object') {
-        return extractGate3(configOverride);
+function loadGate3Config(opts) {
+    // Presencia, no truthiness: inyectar `null` es inyectar.
+    //
+    // `undefined` es la ÚNICA excepción y queda del lado de "no inyectó": es el
+    // valor que devuelve una propiedad ausente, así que `{...base, config: x}`
+    // con `x === undefined` es indistinguible de no haber pasado nada. Mandarlo
+    // a defaults volvería fail-OPEN un caso que hoy es fail-closed, que es
+    // justo lo que #5172 vino a eliminar. `null` sí es una afirmación explícita.
+    if (opts && opts.config !== undefined
+        && Object.prototype.hasOwnProperty.call(opts, 'config')) {
+        return extractGate3(opts.config);
     }
     // eslint-disable-next-line global-require
     const configResolver = require('./config-resolver');
@@ -208,7 +229,7 @@ function logPolicyEnforcementFailure(modulo, action, err) {
  */
 function resolvePolicy(action, opts = {}) {
     const key = policyKey(action);
-    const gate3 = loadGate3Config(opts.config);
+    const gate3 = loadGate3Config(opts);
     const policyMap = (gate3 && typeof gate3.policy === 'object' && gate3.policy) || {};
 
     const fromConfig = policyMap[key];
@@ -293,7 +314,7 @@ function validateConfirmer(chatId, allowlist) {
  */
 function resolveTimeoutFallback(action, opts = {}) {
     const key = policyKey(action);
-    const gate3 = loadGate3Config(opts.config);
+    const gate3 = loadGate3Config(opts);
     const fbMap = (gate3 && typeof gate3.timeout_fallback === 'object' && gate3.timeout_fallback) || {};
     const tMap = (gate3 && typeof gate3.timeout_ms === 'object' && gate3.timeout_ms) || {};
 

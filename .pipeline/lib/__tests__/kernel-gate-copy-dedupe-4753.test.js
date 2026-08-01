@@ -26,6 +26,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const policy = require('../kernel-action-policy');
+const { seedProductManifest } = require('./_test-helpers');
 
 const JARGON = [
     'realign-allowlist', 'resoluble_reductivo', 'notify-and-proceed',
@@ -47,6 +48,7 @@ function withTmp(fn) {
     // El contenido es mínimo a propósito: `gates.gate3` AUSENTE ⇒ defaults por
     // acción de `DEFAULT_POLICY`, que es justo lo que estos tests ejercitan.
     fs.writeFileSync(path.join(dir, 'config.yaml'), 'gates: {}\n');
+    seedProductManifest(dir);   // #5174 — la configuración vive partida: el otro lado también
     const prev = process.env.PIPELINE_DIR_OVERRIDE;
     process.env.PIPELINE_DIR_OVERRIDE = dir;
     try { return fn(dir); }

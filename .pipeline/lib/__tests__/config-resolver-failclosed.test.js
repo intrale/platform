@@ -19,6 +19,7 @@ const path = require('node:path');
 
 const resolver = require('../config-resolver');
 const { classify } = require('../error-classifier');
+const { seedProductManifest } = require('./_test-helpers');
 
 const CONFIG_SANO = [
     'circuit_breaker:',
@@ -40,6 +41,7 @@ function mkTmp(nombre) {
 
 function escribir(dir, contenido) {
     fs.writeFileSync(path.join(dir, 'config.yaml'), contenido, 'utf8');
+    seedProductManifest(dir);   // #5174 — la configuración vive partida: el otro lado también
     return path.join(dir, 'config.yaml');
 }
 

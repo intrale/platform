@@ -17,6 +17,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const canonical = require('../canonical-facts');
+const { seedProductManifest } = require('./_test-helpers');
 const { resolveClaim } = canonical;
 
 function mkSandbox() {
@@ -29,6 +30,7 @@ function mkSandbox() {
         '    skills_por_fase:\n' +
         '      dev: [pipeline-dev]\n' +
         '      build: [build]\n');
+    seedProductManifest(pdir);   // #5174 — la configuración vive partida: el otro lado también
     process.env.PIPELINE_DIR_OVERRIDE = pdir;
     process.env.CANONICAL_HEARTBEAT_DIR_OVERRIDE = hbdir;
     canonical._resetConfigCache();

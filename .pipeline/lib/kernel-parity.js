@@ -40,6 +40,9 @@ const PRODUCT_ROOT = path.resolve(PIPELINE_DIR, '..');    // repo del producto
 
 const BASELINE_TAG = 'pre-ola9-migracion';
 const CONFIG_REL = '.pipeline/config.yaml';
+// #5174 — lado producto de la configuración. No existe en revisiones anteriores
+// a la partición: `showFile` devuelve `null` y el diff cae a modo monolito.
+const PRODUCT_REL = 'pipeline.config.json';
 
 // Frontera de CIERRE de la migración (Ola 9.1, commit de #4671): el último commit
 // de la migración, donde el motor local todavía es byte-idéntico al baseline.
@@ -120,6 +123,19 @@ function baselineExists(ref = BASELINE_TAG) {
 // Redacción (SEC-1): ante YAML inválido el error de js-yaml queda ENCERRADO
 // dentro del resolver, que devuelve sólo posición. Acá nunca se ve un `.message`
 // con el snippet crudo del archivo.
+//
+// #5174 — La partición rompe la premisa de que «la configuración de una revisión
+// es UN archivo». Los cuatro flujos que compara este módulo (`pipelines.*`,
+// `skills_por_fase.*`) viven ahora del lado PRODUCTO, así que parsear sólo el
+// `config.yaml` de HEAD devolvía flujos vacíos: `security` desaparecía de
+// `analisis`/`verificacion` y CA-4 daba regresión donde no la hay.
+//
+// Por eso la unidad de comparación pasa a ser la revisión ENTERA
+// (`configOfRef`): kernel + manifiesto de producto mergeados con
+// `resolveMergedForDiff`, la contraparte de dos lados. En el baseline
+// `pre-ola9-migracion` el manifiesto no existe, `showFile` devuelve `null` y el
+// resolver cae a modo monolito — que es exactamente el lado izquierdo correcto
+// del diff.
 // -----------------------------------------------------------------------------
 const configResolver = require('./config-resolver');
 
@@ -130,6 +146,26 @@ function parseYaml(text) {
   // que aguas abajo hace que `extractFlows` produzca flujos vacíos y la paridad
   // dé distinta: fail-closed para el verificador, igual que antes.
   const { config } = configResolver.resolveForDiff(text);
+  return config || {};
+}
+
+/**
+ * #5174 — Configuración EFECTIVA de una revisión git: kernel + producto.
+ *
+ * Es el reemplazo de `parseYaml(showFile(ref, CONFIG_REL))` en todo call-site
+ * que después mire claves migradas. Devuelve `null` sólo si la revisión no
+ * tiene `config.yaml` (revisión inexistente), que es la condición que los
+ * llamadores ya trataban como «no pude leer».
+ *
+ * @param {string} ref
+ * @returns {object|null}
+ */
+function configOfRef(ref) {
+  const kernelText = showFile(ref, CONFIG_REL);
+  if (kernelText == null) return null;
+  // Ausente en el baseline pre-partición ⇒ `null` ⇒ modo monolito.
+  const productText = showFile(ref, PRODUCT_REL);
+  const { config } = configResolver.resolveForDiff({ kernelText, productText });
   return config || {};
 }
 
@@ -194,17 +230,21 @@ function canonical(v) {
 // Intrale), no este verificador histórico.
 // -----------------------------------------------------------------------------
 function verifyFlowParity(baselineRef = BASELINE_TAG, headRef = MIGRATION_CLOSE_REF) {
-  const baseText = showFile(baselineRef, CONFIG_REL);
-  const headText = showFile(headRef, CONFIG_REL);
-  if (baseText == null || headText == null) {
+  // #5174 — configuración EFECTIVA de cada ref (kernel + producto). Los dos
+  // refs de este eje son anteriores a la partición, así que hoy resuelven igual
+  // que antes; usar `configOfRef` acá evita que el eje se rompa el día que la
+  // frontera de comparación se mueva a una revisión ya partida.
+  const baseCfg = configOfRef(baselineRef);
+  const headCfg = configOfRef(headRef);
+  if (baseCfg == null || headCfg == null) {
     return {
       ok: false,
-      reason: `no se pudo leer ${CONFIG_REL} en ${baseText == null ? baselineRef : headRef}`,
+      reason: `no se pudo leer ${CONFIG_REL} en ${baseCfg == null ? baselineRef : headRef}`,
       flows: [],
     };
   }
-  const baseFlows = extractFlows(parseYaml(baseText));
-  const headFlows = extractFlows(parseYaml(headText));
+  const baseFlows = extractFlows(baseCfg);
+  const headFlows = extractFlows(headCfg);
   const flows = ['intake', 'dispatch', 'gates', 'delivery'].map((name) => {
     const identical = stableEqual(baseFlows[name], headFlows[name]);
     return {
@@ -293,7 +333,10 @@ function verifyRollback(baselineRef = BASELINE_TAG) {
 // credenciales (path canónico fuera del repo) siguen intactos.
 // -----------------------------------------------------------------------------
 function verifySecurityGates(headRef = 'HEAD') {
-  const cfg = parseYaml(showFile(headRef, CONFIG_REL));
+  // #5174 — `pipelines.*` (y con él `skills_por_fase`) vive del lado producto:
+  // leer sólo el kernel daba `security` ausente de `analisis`/`verificacion` y
+  // reportaba una regresión de seguridad inexistente.
+  const cfg = configOfRef(headRef) || {};
   const flows = extractFlows(cfg);
   const securityInAnalisis = Array.isArray(flows.gates.analisis) && flows.gates.analisis.includes('security');
   const securityInVerificacion = Array.isArray(flows.gates.verificacion) && flows.gates.verificacion.includes('security');
@@ -372,6 +415,8 @@ module.exports = {
   showFile,
   baselineExists,
   parseYaml,
+  configOfRef,
+  PRODUCT_REL,
   extractFlows,
   stableEqual,
   // ejes

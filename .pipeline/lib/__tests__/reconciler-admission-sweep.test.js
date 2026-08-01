@@ -19,6 +19,8 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const resolver = require('../config-resolver');
+const { seedProductManifest } = require('./_test-helpers');
 
 // Setup tmpdir + env ANTES de require del reconciler (mismo patrón que
 // servicio-reconciler.test.js para que las constantes PIPELINE/ROOT etc.
@@ -220,10 +222,18 @@ function escribirConfigAdmission(seccion) {
         '',
     ].join('\n');
     fs.writeFileSync(CONFIG_PATH, cfg, 'utf8');
+    // #5174 — el otro lado de la partición. La auto-partición mueve
+    // `pipelines.*.skills_por_fase` al manifiesto, que es lado producto: sin
+    // esto el fixture no valida y el test diría "falta una clave requerida" en
+    // vez de ejercitar el gate de admisión.
+    seedProductManifest(path.dirname(CONFIG_PATH));
 }
 
 function limpiarConfig() {
     try { fs.unlinkSync(CONFIG_PATH); } catch {}
+    // Los dos archivos se van juntos: dejar el manifiesto huérfano haría que el
+    // caso "config ausente" ejercitara una corrupción distinta de la que espera.
+    try { fs.unlinkSync(resolver.productPathFor(path.dirname(CONFIG_PATH))); } catch {}
 }
 
 test('#5172 CA-5: sweep_enabled:false en config.yaml apaga el sweep (sin env var)', () => {

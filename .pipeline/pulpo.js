@@ -32,7 +32,7 @@ const precheck = require('./connectivity-precheck');
 const { sanitize: sanitizePipelineText } = require('./sanitizer');
 // #3941 (EP5-H4): validación de schema de config.yaml + clasificación de
 // excepciones (infra transitoria vs corrupción de estado).
-const { validateConfig, formatErrors } = require('./lib/config-schema');
+const { validateConfig, formatErrors, formatErrorsForHuman } = require('./lib/config-schema');
 const configSchema = require('./lib/config-schema');
 // #5172 — punto ÚNICO de lectura y validación de config.yaml. El pulpo delega
 // acá el "leer y validar" y conserva la POLÍTICA (halt + lastGood + #4832).
@@ -1294,14 +1294,22 @@ function haltOnConfigCorruption(reason, redactedDetail, err) {
   // El CONTEXTO decide la variante: sólo se puede prometer que "la pausa se
   // levanta sola" cuando la pausa activa es la que acabamos de generar.
   const contexto = pausaPreexistente ? 'halt-preexistente' : 'halt-auto';
-  const copia = err
-    ? configSchema.describeConfigFailure(err, { contexto, archivo: err.archivo || CONFIG_PATH })
-    : {
-      archivo: configSchema.formatConfigPath(CONFIG_PATH),
-      via: 'default',
-      detalle: redactedDetail || reason || 'configuración inválida',
-      accion: 'corregí el archivo',
-    };
+  const fallback = {
+    archivo: configSchema.formatConfigPath(CONFIG_PATH),
+    via: 'default',
+    detalle: redactedDetail || reason || 'configuración inválida',
+    accion: 'corregí el archivo',
+  };
+  const describir = (opts) => (err
+    ? configSchema.describeConfigFailure(err, { contexto, archivo: err.archivo || CONFIG_PATH, ...opts })
+    : fallback);
+  // #5173 CA-11 — MISMO generador, dos calibres. El log en disco va SIN recortar
+  // (es la vía de diagnóstico); la alerta va acotada porque Telegram corta en
+  // 4096 chars y, con la raíz del schema cerrada y `allErrors: true`, un config
+  // muy roto genera decenas de errores. Acotar es del generador, no del
+  // call-site: re-redactar acá es exactamente como divergen las superficies.
+  const copia = describir({});
+  const copiaBreve = describir({ maxErrores: 5 });
   // Una sola línea, grep-friendly: el visor de logs del dashboard sirve por
   // línea y un bloque multilínea rompe el filtrado.
   const safeMsg = `[${new Date().toISOString()}] [pulpo] `
@@ -1313,7 +1321,9 @@ function haltOnConfigCorruption(reason, redactedDetail, err) {
   if (now - lastConfigCorruptionAlertMs > CONFIG_CORRUPTION_ALERT_THROTTLE_MS) {
     lastConfigCorruptionAlertMs = now;
     try {
-      sendTelegram(configSchema.formatConfigFailureTelegram(copia, { pausaPreexistente }));
+      // #5173 CA-11 — a Telegram va la variante ACOTADA; el detalle completo ya
+      // quedó en `pulpo.log` (línea de arriba), que es a donde apunta el copy.
+      sendTelegram(configSchema.formatConfigFailureTelegram(copiaBreve, { pausaPreexistente }));
     } catch { /* best-effort */ }
   }
 }
@@ -1337,6 +1347,14 @@ const esViolacionDeConfig = configResolver.isConfigViolation;
 // re-leería y la pausa no se levantaría sola (RIESGO BAJO de la receta).
 //
 // CA-5: fail-closed ≠ crash. Se suspende el dispatch, NUNCA `process.exit`.
+//
+// #5173 — la validación de schema NO se repite acá: `configResolver.resolve()`
+// ya corre `validateConfig` y tira `ConfigSchemaViolation` con los `errors`
+// crudos de ajv. Duplicarla sería una segunda copia que se desactualiza en
+// silencio. El chequeo de LADO (`{ origin: 'producto' }`) va SIN activar a
+// propósito: en esta entrega todas las claves siguen viviendo legítimamente en
+// `config.yaml`, así que sólo corre el schema. Lo enciende la Entrega C (#5174),
+// cuando el archivo efectivamente se parta.
 function loadConfig() {
   let raw;
   try {
@@ -1346,10 +1364,17 @@ function loadConfig() {
     // linea, columna}`, jamás el `.message` de js-yaml (que trae el snippet
     // crudo del archivo → SEC-1). Acá sólo se aplica la política.
     const esSchema = e && e.name === 'ConfigSchemaViolation';
-    const reason = esSchema ? 'config schema' : 'config parse-error';
+    // #5174 · CA-5 / CA-14 — post-partición hay DOS archivos, así que `reason`
+    // (contrato de máquina que va al marker y al log) tiene que nombrar CUÁL
+    // falló. Un `reason: 'config schema'` genérico duplica el espacio de búsqueda
+    // del operador justo cuando el pipeline está parado. El nombre sale del
+    // `archivo` que el resolver ya adjunta al error tipado — no se adivina.
+    const cual = e && e.archivo ? path.basename(e.archivo) : 'config';
+    const reason = `${cual} ${esSchema ? 'schema' : 'parse-error'}`;
     const redacted = esSchema
       ? formatErrors(e.errors)
-      : `${e && e.causa === 'yaml-invalido' ? 'YAML inválido' : 'configuración ilegible'}`
+      : `${e && e.causa === 'yaml-invalido' ? 'YAML inválido'
+        : e && e.causa === 'json-invalido' ? 'JSON inválido' : 'configuración ilegible'}`
         + (e && typeof e.linea === 'number' ? ` (línea ${e.linea}, col ${e.columna})` : '');
     haltOnConfigCorruption(reason, redacted, e);
     // Fail-fast = suspender dispatch (`.paused`), NO matar el proceso. Devolvemos
@@ -1367,9 +1392,13 @@ function loadConfig() {
   try {
     if (fs.existsSync(PAUSE_FILE) &&
         partialPause.readFullPauseOrigin().source === 'config-corruption-halt') {
+      // #5174 · CA-5 — llegar acá significa que `configResolver.resolve()` NO
+      // lanzó, y post-partición eso exige que los DOS archivos hayan parseado y
+      // que el documento mergeado valide. Corregir uno solo no levanta la pausa:
+      // el fail-closed es total por construcción, no por un chequeo extra.
       partialPause.clearFullPause({
         source: 'config-auto-recovery',
-        justification: 'config.yaml volvió a parsear OK — halt por corrupción levantado',
+        justification: 'la configuración (kernel + producto) volvió a parsear OK — halt por corrupción levantado',
       });
       paused = false;
       // Log auditable (CA-4): qué disparó el halt / config sano detectado / reanudación.
@@ -6224,10 +6253,49 @@ function brazoBarrido(config) {
  * que cambios del pulpo/dashboard caigan en backend-dev (Kotlin/Gradle) que no
  * puede validarlos.
  */
+// #5174 · CA-6 — El riesgo MÁS GRAVE de la partición no es que el arranque
+// falle: es que NO falle. Estas cuatro claves viven ahora en
+// `pipeline.config.json`; si un lector siguiera viendo sólo el kernel, el `|| {}`
+// / `|| []` que tenían estos call-sites convertía *"la clave no llegó"* en
+// *"no hay mapeo"*, y el ruteo degradaba en silencio: todos los issues al
+// `default` hardcodeado, `pipeline_scope_keywords` vacío ⇒ el override de
+// contenido apagado, y ningún test sobre `resolveForDiff()` lo detecta (ejercita
+// el resolver, no los call-sites).
+//
+// Por eso el default permisivo pasa a ser un ERROR EXPLÍCITO para las claves
+// migradas. No es defensa contra un config mal escrito — el schema ya cubre eso
+// — es defensa contra un lector que se quedó fuera del resolver.
+const CLAVES_DE_PRODUCTO_REQUERIDAS = Object.freeze({
+  dev_skill_mapping: 'object',
+  dev_routing_priority: 'array',
+  dev_skill_partitions: 'object',
+  pipeline_scope_keywords: 'array',
+});
+
+/**
+ * Devuelve `config[clave]` o LANZA nombrando el archivo donde vive.
+ * @param {object} config - configuración RESUELTA (los dos lados mergeados).
+ * @param {string} clave
+ */
+function requerirClaveDeProducto(config, clave) {
+  const esperado = CLAVES_DE_PRODUCTO_REQUERIDAS[clave];
+  const v = config ? config[clave] : undefined;
+  const ok = esperado === 'array' ? Array.isArray(v) : (v !== null && typeof v === 'object' && !Array.isArray(v));
+  if (!ok) {
+    throw new Error(
+      `[config partida #5174] falta '${clave}' en la configuración resuelta. `
+      + 'Vive del lado PRODUCTO (pipeline.config.json → productConfig). '
+      + 'Si llegaste acá con un config leído a mano, el lector quedó fuera de '
+      + 'lib/config-resolver: el ruteo NO se degrada en silencio.'
+    );
+  }
+  return v;
+}
+
 function determinarDevSkill(issue, config) {
-  const mapping = config.dev_skill_mapping || {};
+  const mapping = requerirClaveDeProducto(config, 'dev_skill_mapping');
   const labels = getIssueLabels(issue);
-  const priority = config.dev_routing_priority || [];
+  const priority = requerirClaveDeProducto(config, 'dev_routing_priority');
 
   // 0) Override por contenido: area:infra + keywords del pipeline → pipeline-dev
   if (labels.includes('area:infra') && !labels.includes('area:pipeline') && mapping['area:pipeline']) {
@@ -6258,15 +6326,11 @@ function determinarDevSkill(issue, config) {
 }
 
 function getDevSkillPartitions(config) {
-  const raw = config && config.dev_skill_partitions;
-  if (!raw || typeof raw !== 'object') {
-    return {
-      backend: ['backend-dev'],
-      frontend: ['android-dev', 'web-dev'],
-      pipeline: ['pipeline-dev'],
-      generic: ['dev'],
-    };
-  }
+  // #5174 · CA-6 — el objeto hardcodeado que había acá era el default más
+  // peligroso de los cinco: no fallaba, devolvía la partición de Intrale. Si la
+  // clave migrada no llegaba, `isDeclaredStackDevSkill` seguía diciendo que sí
+  // y el problema no se veía hasta mirar a qué agente se lanzó.
+  const raw = requerirClaveDeProducto(config, 'dev_skill_partitions');
 
   const out = {};
   for (const [partition, skills] of Object.entries(raw)) {
@@ -6345,7 +6409,11 @@ function getIssueTitleCached(issueNum) {
 }
 
 function issueMentionsPipelineScope(issueNum, config) {
-  const keywords = config.pipeline_scope_keywords || [];
+  // #5174 · CA-6 — el `|| []` con early-return `false` era indistinguible de
+  // "ninguna keyword matcheó". Con la clave del lado producto, no llegar tiene
+  // que ser ruidoso: apaga el override que manda los issues de infra del
+  // pipeline a `pipeline-dev` en vez de a `backend-dev` (stack Kotlin).
+  const keywords = requerirClaveDeProducto(config, 'pipeline_scope_keywords');
   if (keywords.length === 0) return false;
   const text = getIssueText(issueNum);
   if (!text) return false;

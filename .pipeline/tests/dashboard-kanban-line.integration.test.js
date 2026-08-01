@@ -15,6 +15,7 @@ const path = require('path');
 const http = require('http');
 const { spawn } = require('child_process');
 const { getFreePort } = require('./helpers/free-port');
+const { seedConfig } = require('./helpers/sandbox-config');
 
 const PIPELINE_SRC = path.resolve(__dirname, '..');
 let tmpDir, child, port, html;
@@ -46,7 +47,9 @@ before(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dash3956-'));
     makePipelineDirs(tmpDir, config);
     // config.yaml para loadConfig()
-    fs.copyFileSync(path.join(PIPELINE_SRC, 'config.yaml'), path.join(tmpDir, 'config.yaml'));
+    // #5174 — los DOS lados de la config (kernel + pipeline.config.json).
+    // Copiar sólo el YAML deja el sandbox a medias y el resolver falla cerrado.
+    seedConfig(tmpDir);
 
     // Issue ACTIVO en dev (lane dev, debe tener botón ⓘ del popover de agente).
     fs.writeFileSync(path.join(tmpDir, 'desarrollo', 'dev', 'trabajando', '700.android-dev'),

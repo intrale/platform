@@ -132,6 +132,10 @@ function makeConfigRoot(yamlBody) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cross-repo-cfg-'));
     fs.mkdirSync(path.join(root, '.pipeline'), { recursive: true });
     fs.writeFileSync(path.join(root, '.pipeline', 'config.yaml'), yamlBody);
+    // #5174 — post-partición el resolver exige el manifiesto de producto junto
+    // al kernel. `cross_repo_delivery` es lado KERNEL, así que la auto-partición
+    // produce un slice vacío y el fixture sigue ejercitando exactamente lo mismo.
+    require('../../lib/__tests__/_test-helpers').seedProductManifest(path.join(root, '.pipeline'));
     return root;
 }
 
