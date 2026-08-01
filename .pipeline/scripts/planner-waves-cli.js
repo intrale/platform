@@ -33,15 +33,15 @@
 'use strict';
 
 const path = require('path');
-const fs = require('fs');
 const { spawnSync } = require('child_process');
-const yaml = require('js-yaml');
 
 const waves = require('../lib/waves');
 const pw = require('../lib/planner-waves');
+// #5172: punto ÚNICO de lectura/validación de config.yaml. Reemplaza el
+// `yaml.load()` propio de este CLI (y su `catch` con defaults silenciosos).
+const configResolver = require('../lib/config-resolver');
 
 const PIPELINE_ROOT = path.resolve(__dirname, '..');
-const CONFIG_PATH = path.join(PIPELINE_ROOT, 'config.yaml');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -50,24 +50,53 @@ function die(code, msg) {
     process.exit(code);
 }
 
+/**
+ * #5172 · CASO D-F — lee `waves:` por el resolver único. Dos fixes obligatorios:
+ *
+ *  1. FUGA DE SECRETOS (SEC-1, preexistente): el `catch` anterior imprimía
+ *     `err.message` de js-yaml, que INCLUYE EL SNIPPET CRUDO del archivo — con
+ *     él, cualquier valor con forma de secreto de las líneas adyacentes al error
+ *     terminaba en stderr (y en los logs del skill `/planner`). El error tipado
+ *     del resolver ya viene redactado ({archivo, causa, linea, columna}); acá
+ *     NUNCA se imprime el `.message` del error de YAML.
+ *
+ *  2. FAIL-OPEN (el que el issue mata): "no se pudo leer config.yaml → usando
+ *     defaults" convertía una config ilegible en una decisión de capacidad
+ *     tomada a ciegas. Política correcta para un CLI: mensaje redactado +
+ *     `exit 1`, sin defaults silenciosos.
+ *
+ * #5172 · `pipelineDir` va EXPLÍCITO: este CLI fija su raíz a `__dirname` y no
+ *   usa env vars. Si dependiera de la cadena de env del resolver, heredar
+ *   `PIPELINE_REPO_ROOT` del entorno del pulpo le movería la raíz al repo
+ *   principal, en silencio.
+ *
+ * D-4: la AUSENCIA de la sección `waves:` no es corrupción — ahí sí aplica el
+ * default seguro del consumidor.
+ */
 function loadCapacityConfig() {
+    let cfg;
     try {
-        const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
-        const cfg = yaml.load(raw);
-        const wavesCfg = (cfg && cfg.waves) || {};
-        return {
-            capacity: Number.isInteger(wavesCfg.capacity) && wavesCfg.capacity > 0
-                ? wavesCfg.capacity
-                : pw.DEFAULT_CAPACITY,
-            max_horizon: Number.isInteger(wavesCfg.max_horizon) && wavesCfg.max_horizon > 0
-                ? wavesCfg.max_horizon
-                : pw.DEFAULT_MAX_HORIZON,
-        };
+        cfg = configResolver.resolve({ pipelineDir: PIPELINE_ROOT });
     } catch (err) {
-        // No abortamos: usamos defaults para mantener la operación.
-        process.stderr.write(`[planner-waves-cli] WARN: no se pudo leer config.yaml waves: ${err.message}. Usando defaults.\n`);
-        return { capacity: pw.DEFAULT_CAPACITY, max_horizon: pw.DEFAULT_MAX_HORIZON };
+        // SEC-1: sólo metadata redactada del error tipado. Nada del contenido.
+        const causa = (err && err.causa) || 'desconocida';
+        const pos = err && err.linea != null
+            ? ` (línea ${err.linea}${err.columna != null ? `, columna ${err.columna}` : ''})`
+            : '';
+        const archivo = (err && err.archivo) || path.join(PIPELINE_ROOT, 'config.yaml');
+        die(1, `config.yaml inválido o no accesible: ${archivo} — causa: ${causa}${pos}. `
+            + 'Corregí el archivo y reintentá (no se aplican defaults sobre una config ilegible).');
+        return undefined; // inalcanzable: `die` hace process.exit.
     }
+    const wavesCfg = (cfg && cfg.waves) || {};
+    return {
+        capacity: Number.isInteger(wavesCfg.capacity) && wavesCfg.capacity > 0
+            ? wavesCfg.capacity
+            : pw.DEFAULT_CAPACITY,
+        max_horizon: Number.isInteger(wavesCfg.max_horizon) && wavesCfg.max_horizon > 0
+            ? wavesCfg.max_horizon
+            : pw.DEFAULT_MAX_HORIZON,
+    };
 }
 
 /**

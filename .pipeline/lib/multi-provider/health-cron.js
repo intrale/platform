@@ -108,29 +108,44 @@ function jitterMs(rangeMs = JITTER_RANGE_MS, rng = Math.random) {
 // -----------------------------------------------------------------------------
 // #4402 CA-3 — Cadencia configurable vía config.yaml
 //
-// Lee `multi_provider.health.interval_minutes` de `.pipeline/config.yaml`
-// (default 5 min). Lectura defensiva con `try/catch` + `js-yaml` (patrón
-// `pulpo.loadConfig`): CUALQUIER error → default. Clamp `[1, 240]` min con piso
-// duro ≥60s (RS-5.5, anti-DoS: Gemini RPM 15, Cerebras RPM 30).
+// Lee `multi_provider.health.interval_minutes` de `.pipeline/config.yaml`.
+// Clamp `[1, 240]` min con piso duro ≥60s (RS-5.5, anti-DoS: Gemini RPM 15,
+// Cerebras RPM 30).
+//
+// #5172 (D-D / CA-12) — DOS cambios acá:
+//
+//  1. Se ELIMINÓ `process.env.PIPELINE_CONFIG_PATH`. Aportaba por ENTORNO una
+//     RUTA DE ARCHIVO, que es exactamente lo que CA-12 prohíbe: permitía apuntar
+//     la configuración que enforza el pipeline a cualquier YAML del disco. La
+//     variable queda DEPRECIADA (ningún archivo de producción la lee) y la raíz
+//     la resuelve `config-resolver` con su regla única — el entorno aporta
+//     DIRECTORIO, el nombre del archivo lo pone el resolver.
+//
+//  2. Se ELIMINÓ el `catch { /* → default 5 min */ }`. Un config ilegible,
+//     un YAML roto o un `interval_minutes` que viola el schema ya no se
+//     disfrazan de "cadencia default": el error tipado (`ConfigParseViolation` /
+//     `ConfigSchemaViolation`, ya redactado) se PROPAGA al llamador.
+//
+// Lo que NO cambia: la inyección por firma `configPath` (es código, no entorno);
+// y la AUSENCIA de `multi_provider.health.interval_minutes` — o de la sección
+// entera — sigue cayendo al default de 5 min: sección opcional ausente no es
+// corrupción, y el clamp `[1,240]` sigue siendo responsabilidad del cron.
+//
+// (`fsImpl` se sacó de la firma: la lectura del config la hace el resolver, así
+// que un fs inyectado acá ya no tenía efecto. Los demás helpers del cron lo
+// conservan.)
 // -----------------------------------------------------------------------------
 
-function defaultConfigPath() {
-    return process.env.PIPELINE_CONFIG_PATH
-        || path.resolve(__dirname, '..', '..', 'config.yaml');
-}
-
-function readTickIntervalMs({ fsImpl = fs, configPath = defaultConfigPath() } = {}) {
+function readTickIntervalMs({ configPath } = {}) {
     let minutes = DEFAULT_INTERVAL_MINUTES;
-    try {
-        const yaml = require('js-yaml');
-        const raw = fsImpl.readFileSync(configPath, 'utf8');
-        const cfg = yaml.load(raw) || {};
-        const v = cfg
-            && cfg.multi_provider
-            && cfg.multi_provider.health
-            && cfg.multi_provider.health.interval_minutes;
-        if (typeof v === 'number' && Number.isFinite(v)) minutes = v;
-    } catch { /* config ilegible/typo → default 5 min (sin romper el arranque) */ }
+    // eslint-disable-next-line global-require
+    const configResolver = require('../config-resolver');
+    const cfg = configResolver.resolve(configPath ? { configPath } : {});
+    const v = cfg
+        && cfg.multi_provider
+        && cfg.multi_provider.health
+        && cfg.multi_provider.health.interval_minutes;
+    if (typeof v === 'number' && Number.isFinite(v)) minutes = v;
     if (!Number.isFinite(minutes)) minutes = DEFAULT_INTERVAL_MINUTES;
     // Clamp [1, 240] min. El piso de 1 min ya garantiza ≥60s; HARD_FLOOR_MS es
     // un segundo cinturón explícito (RS-5.5).
@@ -231,7 +246,9 @@ function releaseLock({ lockFile, fsImpl = fs } = {}) {
 function isTickDue({ stateFile, now = Date.now(), fsImpl = fs, jitter = jitterMs(), intervalMs } = {}) {
     const st = readJson(stateFile, fsImpl);
     if (!st || typeof st.last_tick_at !== 'number') return true;
-    const interval = Number.isFinite(intervalMs) ? intervalMs : readTickIntervalMs({ fsImpl });
+    // #5172 — `readTickIntervalMs` ya no toma `fsImpl`: el config lo lee el
+    // punto único (`config-resolver`), no un fs inyectado.
+    const interval = Number.isFinite(intervalMs) ? intervalMs : readTickIntervalMs();
     const elapsed = now - st.last_tick_at;
     return elapsed >= (interval + jitter);
 }
@@ -634,7 +651,8 @@ async function tickIfDue(opts = {}) {
 
     // #4402 CA-3 — resolver la cadencia (config.yaml → default 5 min). La
     // resolución vive acá; `pulpo.js` sigue llamando `tickIfDue({})` sin cambios.
-    const intervalMs = Number.isFinite(opts.intervalMs) ? opts.intervalMs : readTickIntervalMs({ fsImpl });
+    // #5172 — sin `fsImpl`: el config lo resuelve el punto único.
+    const intervalMs = Number.isFinite(opts.intervalMs) ? opts.intervalMs : readTickIntervalMs();
 
     if (!isTickDue({ stateFile, now, fsImpl, jitter: opts.jitter !== undefined ? opts.jitter : jitterMs(), intervalMs })) {
         return { skipped: true, reason: 'not_due' };
@@ -657,7 +675,8 @@ module.exports = {
     MAX_INTERVAL_MINUTES,
     HARD_FLOOR_MS,
     readTickIntervalMs,
-    defaultConfigPath,
+    // #5172 — `defaultConfigPath` se eliminó junto con `PIPELINE_CONFIG_PATH`:
+    // este módulo ya no decide QUÉ archivo es la config (lo hace el resolver).
     JITTER_RANGE_MS,
     WEEKLY_CHECK_INTERVAL_MS,
     LOCK_STALE_MS,

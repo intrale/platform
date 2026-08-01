@@ -6,13 +6,25 @@ process.env.PULPO_SKIP_DATA_RESIDENCY_VALIDATE = '1';
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const yaml = require('js-yaml');
 
 const pulpo = require('./pulpo');
+const configResolver = require('./lib/config-resolver');
 
-const config = yaml.load(fs.readFileSync(path.join(__dirname, 'config.yaml'), 'utf8'));
+// #5174 (rebote rev-1) — Este test leía `config.yaml` a mano con
+// `yaml.load(fs.readFileSync(...))`. Post-partición eso sólo ve el lado KERNEL,
+// y las cuatro claves de ruteo (`dev_skill_mapping`, `dev_routing_priority`,
+// `dev_skill_partitions`, `pipeline_scope_keywords`) viven del lado PRODUCTO
+// (`pipeline.config.json`). El fail-closed de `requerirClaveDeProducto`
+// (pulpo.js) hacía fallar los 6 tests — correctamente: el lector suelto había
+// quedado fuera del punto único de lectura.
+//
+// La config se resuelve por `lib/config-resolver`, que es exactamente la fuente
+// que usa el pulpo en producción, así que este canario vuelve a ejercitar el
+// ruteo real (kernel + producto mergeados) y no una vista parcial.
+//
+// `pipelineDir` se fija explícito a `.pipeline/` para que el test no dependa de
+// las env vars de raíz que puedan estar hidratadas en el proceso del agente.
+const config = configResolver.resolve({ pipelineDir: __dirname });
 
 function route(issue, labels, extraConfig, text) {
   pulpo._clearIssueRoutingCachesForTest();

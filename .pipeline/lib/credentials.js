@@ -54,9 +54,24 @@ const ENV_MAPPING = Object.freeze({
   // credentials.json; jamás por Telegram (SEC-5). El valor nunca se loguea (el
   // loader sólo lista nombres de var).
   'providers.moonshot.api_key':    'ANTHROPIC_AUTH_TOKEN',
-  // Identificador no secreto con consumidor activo. Las credenciales deferred
-  // se declaran únicamente en secrets-manifest.json y no se hidratan (#5242).
-  'google_drive.drive_folder_id':  'GOOGLE_DRIVE_FOLDER_ID',
+  // #5172 — Google Drive (persistencia de evidencia de QA).
+  //
+  // Hasta ahora estas credenciales vivían SÓLO en el archivo versionado
+  // `.claude/hooks/telegram-config.json`, que es tracked por git: la copia
+  // commiteada NO tiene las claves `google_*`, así que cada respawn con
+  // `git reset --hard` las borraba y `qa-video-share` quedaba con
+  // "Google Drive no configurado" hasta que el operador las recargaba a mano.
+  // Migradas al store externo (que sobrevive al reset) para cerrar ese ciclo.
+  // El refresh_token es un secreto: el loader sólo lista NOMBRES de var.
+  //
+  // #5242 — las cuatro se declaran `hydration: "eager"` /
+  // `consumer_status: "resolved"` en `.pipeline/secrets-manifest.json`, que es
+  // la fuente canónica. La invariante de CA-3b exige que este bloque y el
+  // manifiesto coincidan 1:1 para toda entrada `source: "store"` + `eager`.
+  'google_drive.oauth_client_id':     'GOOGLE_OAUTH_CLIENT_ID',
+  'google_drive.oauth_client_secret': 'GOOGLE_OAUTH_CLIENT_SECRET',
+  'google_drive.oauth_refresh_token': 'GOOGLE_OAUTH_REFRESH_TOKEN',
+  'google_drive.drive_folder_id':     'GOOGLE_DRIVE_FOLDER_ID',
 });
 
 // Mapeo legacy: telegram-config.json usa flat keys (no nested). Solo cubre las

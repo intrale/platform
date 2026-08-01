@@ -11,7 +11,10 @@
 
 const fs = require('fs');
 const path = require('path');
-const yaml = require('js-yaml');
+// #5172 — punto único de lectura/validación de `config.yaml`. Este servicio ya
+// no hace su propio `yaml.load` ni degrada a `{}` en silencio.
+const configResolver = require('./lib/config-resolver');
+const configSchema = require('./lib/config-schema');
 const httpClient = require('./lib/http-client');
 const { ERROR_CODES } = require('./lib/constants');
 // #2334 / CA6: patch console.* para que NUNCA se escriba un secreto al
@@ -39,16 +42,41 @@ const LISTO = path.join(QUEUE_DIR, 'listo');
 
 const MAIN_ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const TELEGRAM_CONFIG = path.join(MAIN_ROOT, '.claude', 'hooks', 'telegram-config.json');
-const CONFIG_PATH = path.join(PIPELINE, 'config.yaml');
+// #5172 — la ruta de `config.yaml` ya no se arma acá: la resuelve el punto único
+// a partir de `pipelineDir` (misma raíz `PIPELINE` que usaba este archivo).
 
-// #3668 — config loader best-effort para `telegram_burst_window_ms`. Si el
-// YAML no existe o no parsea, el grupo del burst usa el default hardcoded en
-// el módulo y NO crashea el drainer (anti-DoS de booting).
+// #5172 — Lectura de config por el punto único.
+//
+// ANTES: `catch { return {} }`. Ese `{}` era indistinguible de una config válida
+// sin sección `telegram_*`: el drainer aplicaba defaults sin que NADIE se
+// enterara de que el archivo estaba corrupto. Eso es lo que se elimina.
+//
+// AHORA: el fallo se loguea RUIDOSO (una línea grep-friendly por fallo distinto,
+// con detalle y acción ya redactados) y se devuelve `null` — que significa "no
+// hay config", NO "config vacía". Los dos consumidores (`resolveOutboundConfig`
+// y `burst-grouper`) aplican su default DOCUMENTADO ante `null`.
+//
+// Por qué acá el fail-closed es LOGUEAR y no propagar (ni `process.exit`): este
+// servicio es el ÚNICO transporte por el que el operador se entera de que la
+// config está inválida (`#5171` publica esa alerta por esta misma cola). Un
+// drainer que se niega a drenar por config inválida se lleva puesto el aviso de
+// que la config es inválida. Además lo que este servicio lee del YAML son
+// perillas de reintento/burst — no hay ningún gate que se pueda abrir por acá.
+let _lastConfigFailureDetail = null;
+
 function loadPipelineConfig() {
   try {
-    return yaml.load(fs.readFileSync(CONFIG_PATH, 'utf8')) || {};
-  } catch {
-    return {};
+    return configResolver.resolve({ pipelineDir: PIPELINE });
+  } catch (e) {
+    const estado = configSchema.describeConfigFailure(e, { archivo: e && e.archivo });
+    // Anti-spam: el drainer poletea cada 5s; una línea por fallo DISTINTO.
+    if (_lastConfigFailureDetail !== estado.detalle) {
+      _lastConfigFailureDetail = estado.detalle;
+      log(configSchema.formatConfigFailureLog(estado, {
+        titulo: 'CONFIG INVÁLIDA — el servicio sigue drenando con los defaults de reintento/burst',
+      }));
+    }
+    return null;
   }
 }
 const { loadTelegramSecrets } = require('./lib/telegram-secrets');

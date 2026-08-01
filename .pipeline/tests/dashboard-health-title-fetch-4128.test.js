@@ -31,6 +31,7 @@ const path = require('path');
 const http = require('http');
 const { spawn } = require('child_process');
 const { getFreePort } = require('./helpers/free-port');
+const { seedConfig } = require('./helpers/sandbox-config');
 
 const PIPELINE_SRC = path.resolve(__dirname, '..');
 const dashboardPath = path.join(PIPELINE_SRC, 'dashboard.js');
@@ -128,7 +129,9 @@ before(async function () {
     }
   }
   mkdirp(path.join(tmpDir, 'logs'));
-  fs.copyFileSync(path.join(PIPELINE_SRC, 'config.yaml'), path.join(tmpDir, 'config.yaml'));
+  // #5174 — los DOS lados de la config (kernel + pipeline.config.json).
+  // Copiar sólo el YAML deja el sandbox a medias y el resolver falla cerrado.
+  seedConfig(tmpDir);
 
   // Markers en `trabajando/` → entran al issueMatrix (= wantedIds). El cache de
   // títulos se pre-puebla pero VENCIDO (fetchedAt muy viejo) → titleCacheNeedsRefetch

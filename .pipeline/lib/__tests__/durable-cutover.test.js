@@ -313,10 +313,29 @@ test('security#6: el write path durable no usa driver.putItem directo ni registr
 test('CA-6: readKernelConfig honra kernelDurable inyectado y default fail-closed', () => {
   assert.equal(b.readKernelConfig({ kernelDurable: true }).durable, true);
   assert.equal(b.readKernelConfig({ kernelDurable: false }).durable, false);
-  // config.yaml del repo: default OFF.
+  // CA-6 / D-4 — config.yaml del repo: VÁLIDO y sin sección `kernel:` ⇒ default
+  // OFF. La ausencia de una sección opcional NO es corrupción y sigue cayendo al
+  // default seguro del consumidor. Esta es la aserción que preserva la paridad.
   assert.equal(b.readKernelConfig({}).durable, false, 'config.yaml default debe ser durable:false');
-  // path inexistente ⇒ fail-closed a FS.
-  assert.equal(b.readKernelConfig({ configPath: '/no/existe.yaml' }).durable, false);
+
+  // #5172 — CAMBIO DELIBERADO DE CONTRATO. Antes esta línea afirmaba que un
+  // `configPath` inexistente devolvía `durable:false`, y lo llamaba "fail-closed
+  // a FS". No lo era: era el fail-OPEN que la historia viene a eliminar. El issue
+  // lo cita por nombre como uno de los dos defectos canónicos
+  // (`project-bootstrap.js:266-284` → `catch { return { durable: false } }`) y lo
+  // pone como criterio de aceptación explícito: *"config ilegible falla
+  // fail-closed, no degrada a objeto vacío"*.
+  //
+  // Por qué importa que sea indistinguible: `durable:false` es TAMBIÉN el valor
+  // legítimo del rollout apagado (la aserción de arriba). Con el `catch`, "el
+  // kernel durable está apagado porque así se configuró" y "no pude leer la
+  // autoridad de la decisión" producían el MISMO valor, sin traza. Ahora sólo el
+  // primero devuelve; el segundo lanza.
+  assert.throws(
+    () => b.readKernelConfig({ configPath: '/no/existe.yaml' }),
+    (e) => e && e.name === 'ConfigParseViolation' && e.causa === 'ENOENT',
+    'un configPath ilegible debe PROPAGAR el error tipado, no degradar a durable:false',
+  );
 });
 
 // =============================================================================

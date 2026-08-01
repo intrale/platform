@@ -138,7 +138,13 @@ test('la precedencia declara intrale-api-keys como fuente conocida no canonica',
     && /NO canonica/i.test(item.estado)));
 });
 
-test('las 12 huerfanas estan declaradas y solo drive_folder_id es eager', () => {
+test('las 12 huerfanas estan declaradas y solo google_drive.* es eager', () => {
+  // Ancla actualizada tras el merge de #5172: las tres `google_drive.oauth_*`
+  // pasan a `eager`. NO es una relajacion del criterio de CA-3 — es la misma
+  // regla aplicada a un dato que cambio. El pilar (ii) ahora se cumple: el
+  // consumidor `qa/scripts/qa-video-share.js` las lee de `process.env`, y su
+  // nivel 2 (store) tambien resuelve via `loadIntoEnv`, o sea via ENV_MAPPING.
+  // Dejarlas `deferred` rompia la subida de evidencia de QA en los DOS niveles.
   const orphanNames = [
     'google_drive.drive_folder_id', 'google_drive.oauth_client_id',
     'google_drive.oauth_client_secret', 'google_drive.oauth_refresh_token',
@@ -148,10 +154,24 @@ test('las 12 huerfanas estan declaradas y solo drive_folder_id es eager', () => 
   ];
   const entries = orphanNames.map((name) => manifest.entries.find((entry) => entry.name === name));
   assert.ok(entries.every(Boolean));
-  assert.deepEqual(entries.filter((entry) => entry.hydration === 'eager').map((entry) => entry.name),
-    ['google_drive.drive_folder_id']);
-  assert.equal(entries.filter((entry) => entry.hydration === 'deferred').length, 11);
+  assert.deepEqual(entries.filter((entry) => entry.hydration === 'eager').map((entry) => entry.name), [
+    'google_drive.drive_folder_id',
+    'google_drive.oauth_client_id',
+    'google_drive.oauth_client_secret',
+    'google_drive.oauth_refresh_token',
+  ]);
+  assert.equal(entries.filter((entry) => entry.hydration === 'deferred').length, 8);
+  // El ancla del lado de ENV_MAPPING: las cuatro deben estar cableadas con el
+  // nombre exacto que espera el consumidor (el prefijo NO es simetrico).
   assert.equal(ENV_MAPPING['google_drive.drive_folder_id'], 'GOOGLE_DRIVE_FOLDER_ID');
+  assert.equal(ENV_MAPPING['google_drive.oauth_client_id'], 'GOOGLE_OAUTH_CLIENT_ID');
+  assert.equal(ENV_MAPPING['google_drive.oauth_client_secret'], 'GOOGLE_OAUTH_CLIENT_SECRET');
+  assert.equal(ENV_MAPPING['google_drive.oauth_refresh_token'], 'GOOGLE_OAUTH_REFRESH_TOKEN');
+  // Y ninguna `aws.*` / `multimedia.*` se cuela: ahi el pilar (ii) sigue sin
+  // cumplirse (scope `aws` inerte, ElevenLabs sin lector).
+  for (const entry of entries.filter((item) => item.hydration === 'deferred')) {
+    assert.equal(ENV_MAPPING[entry.name], undefined, entry.name);
+  }
 });
 
 test('toda entrada deferred tiene defer_reason de al menos 40 caracteres', () => {
@@ -185,7 +205,7 @@ test('el childEnv real no expone ninguna credencial deferred', () => {
   const canonical = path.join(tmp, 'credentials.json');
   const legacy = path.join(tmp, 'legacy.json');
   const deferred = manifest.entries.filter((item) => item.hydration === 'deferred');
-  assert.equal(deferred.length, 11);
+  assert.equal(deferred.length, 8);
   assert.ok(deferred.every((entry) => leafDotPaths(fakeCredentialStore).includes(entry.name)));
   fs.writeFileSync(canonical, JSON.stringify(fakeCredentialStore));
   try {
@@ -193,8 +213,15 @@ test('el childEnv real no expone ninguna credencial deferred', () => {
     loadIntoEnv({ canonicalPath: canonical, legacyPath: legacy, env: parentEnv, logger: () => {} });
     const pipelineExtras = { PIPELINE_ISSUE: '5242' };
     const childEnv = { ...parentEnv, ...pipelineExtras };
+    // Control positivo (obligatorio por CA-3d): sin esto el test pasa por
+    // vacuidad si `loadIntoEnv` no hidrata nada. Se amplia a las cuatro
+    // `google_drive.*`, que tras #5172 SI deben llegar al hijo — es el
+    // comportamiento que la version `deferred` de esta rama rompia.
     assert.equal(childEnv.TELEGRAM_BOT_TOKEN, 'fake-bot-token');
     assert.equal(childEnv.GOOGLE_DRIVE_FOLDER_ID, 'fake-folder');
+    assert.equal(childEnv.GOOGLE_OAUTH_CLIENT_ID, 'fake-client');
+    assert.equal(childEnv.GOOGLE_OAUTH_CLIENT_SECRET, 'fake-secret');
+    assert.equal(childEnv.GOOGLE_OAUTH_REFRESH_TOKEN, 'fake-refresh');
     for (const entry of manifest.entries.filter((item) => item.hydration === 'deferred')) {
       assert.equal(childEnv[entry.env_var], undefined, entry.env_var);
     }
@@ -214,20 +241,34 @@ test('toda entrada source=store declara consumer_status del enum y broken exige 
     if (entry.consumer_status === 'broken') assert.match(entry.blocked_by, /^#\d+$/, entry.name);
     else assert.equal('blocked_by' in entry, false, entry.name);
   }
+  // Tras el merge de #5172 ninguna entrada queda `broken`: las tres
+  // `google_drive.oauth_*` pasan a `resolved` porque su consumidor las resuelve.
+  // El ancla se mantiene como deepEqual (no como `length >= 0`) para que
+  // declarar algo `broken` siga siendo un cambio visible y deliberado.
   const rotas = manifest.entries
     .filter((entry) => entry.consumer_status === 'broken')
     .map((entry) => [entry.name, entry.blocked_by]);
-  assert.deepEqual(rotas, [
-    ['google_drive.oauth_client_id', '#4890'],
-    ['google_drive.oauth_client_secret', '#4890'],
-    ['google_drive.oauth_refresh_token', '#4890'],
-  ]);
+  assert.deepEqual(rotas, []);
   const sinStatus = structuredClone(manifest);
   delete sinStatus.entries.find((entry) => entry.name === 'telegram.bot_token').consumer_status;
   assert.equal(validate(sinStatus).ok, false);
-  const sinBlockedBy = structuredClone(manifest);
+  // El candado de `broken => blocked_by` NO puede quedar sin ejercitar solo
+  // porque hoy no hay ninguna entrada rota: se ejerce contra una entrada
+  // sintetica. Sin esto, la regla se apagaria en silencio y la proxima entrada
+  // `broken` entraria sin issue que la cierre.
+  const conRota = structuredClone(manifest);
+  const rota = conRota.entries.find((entry) => entry.name === 'google_drive.oauth_client_id');
+  rota.consumer_status = 'broken';
+  rota.blocked_by = '#4890';
+  delete rota.consumers;
+  assert.equal(validate(conRota).ok, true);
+  const sinBlockedBy = structuredClone(conRota);
   delete sinBlockedBy.entries.find((entry) => entry.name === 'google_drive.oauth_client_id').blocked_by;
   assert.equal(validate(sinBlockedBy).ok, false);
+  // Y `blocked_by` mal formado tampoco pasa (la forma `#\d+` es parte del CA).
+  const blockedByInvalido = structuredClone(conRota);
+  blockedByInvalido.entries.find((entry) => entry.name === 'google_drive.oauth_client_id').blocked_by = '4890';
+  assert.equal(validate(blockedByInvalido).ok, false);
 });
 
 test('ningun defer_reason afirma que el consumo funciona si su consumer_status es broken', () => {
@@ -235,13 +276,31 @@ test('ningun defer_reason afirma que el consumo funciona si su consumer_status e
   // 100+ chars. Se combina una lista negra de afirmaciones de consumo sano con la
   // exigencia positiva de declarar el estado roto y el issue que lo cierra.
   const afirmaQueFunciona = /ya funciona|funciona hoy|fallback legacy|fallback vigente|resuelve por fallback|no desbloquea ning[uú]n consumo/i;
+  // Regla unica, aplicada tanto a las entradas reales como a las sinteticas.
+  const cumpleCandado = (entry) => !afirmaQueFunciona.test(entry.defer_reason)
+    && /vac[ií]a?o?|roto/i.test(entry.defer_reason)
+    && entry.defer_reason.includes(entry.blocked_by);
+
   const rotas = manifest.entries.filter((entry) => entry.consumer_status === 'broken');
-  assert.equal(rotas.length, 3);
-  for (const entry of rotas) {
-    assert.doesNotMatch(entry.defer_reason, afirmaQueFunciona, entry.name);
-    assert.match(entry.defer_reason, /vac[ií]a?o?|roto/i, entry.name);
-    assert.ok(entry.defer_reason.includes(entry.blocked_by), entry.name);
-  }
+  for (const entry of rotas) assert.ok(cumpleCandado(entry), entry.name);
+
+  // Tras #5172 no queda ninguna entrada `broken`, asi que el bucle de arriba
+  // recorre cero elementos. El candado NO puede apagarse por eso: se ejerce
+  // contra fixtures sinteticos, con control positivo y negativo, para que siga
+  // vivo el dia que una entrada vuelva a nacer rota.
+  assert.equal(rotas.length, 0);
+  assert.equal(cumpleCandado({
+    defer_reason: 'El consumo esta roto: la cadena de resolucion no llega al consumidor. Se difiere por postura de seguridad, no porque el consumo este resuelto. Cierra #4890.',
+    blocked_by: '#4890',
+  }), true);
+  assert.equal(cumpleCandado({
+    defer_reason: 'Credencial OAuth con fallback legacy vigente; el consumo ya funciona sin cablearla. Ver #4890 para el detalle completo del caso.',
+    blocked_by: '#4890',
+  }), false, 'una afirmacion de consumo sano debe ser rechazada');
+  assert.equal(cumpleCandado({
+    defer_reason: 'El consumo esta roto y el consumidor no puede leer la clave; se difiere por postura de seguridad hasta nuevo aviso.',
+    blocked_by: '#4890',
+  }), false, 'un defer_reason que no nombra su blocked_by debe ser rechazado');
   // Control positivo: el candado atrapa el texto que rev-3 llego a publicar en
   // esta misma rama. Sin esto, una lista negra desalineada pasa por vacuidad.
   const publicadoEnRev3 = [
@@ -269,6 +328,9 @@ test('el conjunto nominal de consumer_status=resolved esta anclado', () => {
     'providers.nvidia.api_key',
     'providers.moonshot.api_key',
     'google_drive.drive_folder_id',
+    'google_drive.oauth_client_id',
+    'google_drive.oauth_client_secret',
+    'google_drive.oauth_refresh_token',
   ]);
 });
 

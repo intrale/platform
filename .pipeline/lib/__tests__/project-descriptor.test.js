@@ -19,6 +19,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const yaml = require('js-yaml');
+const { readEffectiveConfig } = require('./_test-helpers');
 
 const d = require('../project-descriptor');
 
@@ -392,8 +393,10 @@ test('CA-E1/E2: intrale-platform.json existe, valida y reproduce config.yaml sin
   assert.equal(loaded.valid, true, JSON.stringify(loaded.errors));
   const desc = loaded.descriptor;
 
-  const cfgPath = path.resolve(__dirname, '..', '..', 'config.yaml');
-  const cfg = yaml.load(fs.readFileSync(cfgPath, 'utf8'));
+  // #5174 — el descriptor reproduce la configuración EFECTIVA, no el kernel
+  // suelto: `dev_routing_priority` (y el resto de la tabla de ruteo) es lado
+  // producto y post-partición ya no está en el `config.yaml`.
+  const cfg = readEffectiveConfig();
 
   // 1) admission labels == intake labels de config.yaml.
   const admission = d.deriveAdmissionLabels(desc).sort();

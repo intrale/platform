@@ -19,6 +19,8 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const resolver = require('../config-resolver');
+const { seedProductManifest } = require('./_test-helpers');
 
 // Setup tmpdir + env ANTES de require del reconciler (mismo patrón que
 // servicio-reconciler.test.js para que las constantes PIPELINE/ROOT etc.
@@ -181,20 +183,129 @@ test('admission sweep: ambas APIs fallan → skipped', () => {
 test('admission sweep: kill-switch ADMISSION_SWEEP_ENABLED=0 cortocircuita', () => {
     clearGhQueue(); clearTgQueue();
     process.env.ADMISSION_SWEEP_ENABLED = '0';
-    delete require.cache[require.resolve('../../servicio-reconciler')];
-    const reconcilerOff = require('../../servicio-reconciler');
-    const result = reconcilerOff.reconcileAdmissionOrphans({
+    // #5172 · CA-5 — SIN volver a requerir el módulo: el valor efectivo se
+    // resuelve por llamada, no en el load. Si esto fallara, el kill-switch sería
+    // un valor de arranque y "cortar instantáneo" sería mentira.
+    const result = reconciler.reconcileAdmissionOrphans({
         listIssues: () => [{ number: 999, labels: [], title: 'x', url: 'u' }],
         listPrs: () => [],
     });
     assert.equal(result.skipped, true);
-    assert.equal(result.reason, 'ADMISSION_SWEEP_ENABLED=0');
+    assert.equal(result.reason, 'admission_gate.sweep_enabled=false');
     assert.equal(listGhQueue().length, 0);
     assert.equal(listTgQueue().length, 0);
 
     // Restaurar para próximos tests
     process.env.ADMISSION_SWEEP_ENABLED = '1';
-    delete require.cache[require.resolve('../../servicio-reconciler')];
+});
+
+// =============================================================================
+// #5172 · CA-5 — El gate se decide por la config RESUELTA, no por process.env
+// leído a mano. Antes del fix, `servicio-reconciler.js` leía las env vars
+// directo en el load del módulo y el bloque `admission_gate:` de config.yaml no
+// tenía NINGÚN consumidor de producción: apagar el gate era invisible en el
+// archivo y no dejaba traza.
+// =============================================================================
+
+const CONFIG_PATH = path.join(TMP_DIR, '.pipeline', 'config.yaml');
+
+function escribirConfigAdmission(seccion) {
+    const cfg = [
+        'pipelines:',
+        '  desarrollo:',
+        '    fases: [dev]',
+        '    skills_por_fase:',
+        '      dev: [pipeline-dev]',
+        'admission_gate:',
+        `  sweep_enabled: ${seccion.sweep_enabled}`,
+        `  dry_run: ${seccion.dry_run}`,
+        '',
+    ].join('\n');
+    fs.writeFileSync(CONFIG_PATH, cfg, 'utf8');
+    // #5174 — el otro lado de la partición. La auto-partición mueve
+    // `pipelines.*.skills_por_fase` al manifiesto, que es lado producto: sin
+    // esto el fixture no valida y el test diría "falta una clave requerida" en
+    // vez de ejercitar el gate de admisión.
+    seedProductManifest(path.dirname(CONFIG_PATH));
+}
+
+function limpiarConfig() {
+    try { fs.unlinkSync(CONFIG_PATH); } catch {}
+    // Los dos archivos se van juntos: dejar el manifiesto huérfano haría que el
+    // caso "config ausente" ejercitara una corrupción distinta de la que espera.
+    try { fs.unlinkSync(resolver.productPathFor(path.dirname(CONFIG_PATH))); } catch {}
+}
+
+test('#5172 CA-5: sweep_enabled:false en config.yaml apaga el sweep (sin env var)', () => {
+    clearGhQueue(); clearTgQueue();
+    delete process.env.ADMISSION_SWEEP_ENABLED;
+    escribirConfigAdmission({ sweep_enabled: false, dry_run: false });
+    try {
+        const result = reconciler.reconcileAdmissionOrphans({
+            listIssues: () => [{ number: 999, labels: [], title: 'x', url: 'u' }],
+            listPrs: () => [],
+        });
+        assert.equal(result.skipped, true);
+        assert.equal(result.reason, 'admission_gate.sweep_enabled=false');
+        assert.equal(listGhQueue().length, 0, 'no debe aplicar labels con el gate apagado por archivo');
+    } finally {
+        limpiarConfig();
+        process.env.ADMISSION_SWEEP_ENABLED = '1';
+    }
+});
+
+test('#5172 CA-5: dry_run:true en config.yaml no aplica ni encola (sin env var)', () => {
+    clearGhQueue(); clearTgQueue();
+    delete process.env.ADMISSION_GATE_DRY_RUN;
+    escribirConfigAdmission({ sweep_enabled: true, dry_run: true });
+    try {
+        const result = reconciler.reconcileAdmissionOrphans({
+            listIssues: () => [{ number: 999, labels: [], title: 'x', url: 'u' }],
+            listPrs: () => [],
+        });
+        assert.equal(result.dryRun, true, 'el dry-run del archivo debe mandar');
+        assert.equal(listGhQueue().length, 0, 'dry-run no aplica labels');
+        assert.equal(listTgQueue().length, 0, 'dry-run no encola alertas');
+    } finally {
+        limpiarConfig();
+    }
+});
+
+test('#5172 CA-5: la env var pisa al archivo y el valor efectivo se resuelve por llamada', () => {
+    escribirConfigAdmission({ sweep_enabled: true, dry_run: false });
+    try {
+        process.env.ADMISSION_SWEEP_ENABLED = '0';
+        assert.equal(reconciler.admissionGateSettings().sweepEnabled, false,
+            'env=0 debe pisar el sweep_enabled:true del archivo');
+
+        process.env.ADMISSION_SWEEP_ENABLED = '1';
+        assert.equal(reconciler.admissionGateSettings().sweepEnabled, true,
+            'sin re-require: el cambio de env se ve en la llamada siguiente');
+        assert.equal(reconciler.admissionGateSettings().origen, 'config');
+    } finally {
+        limpiarConfig();
+        process.env.ADMISSION_SWEEP_ENABLED = '1';
+    }
+});
+
+test('#5172 CA-5: config ilegible NO apaga el gate en silencio', () => {
+    fs.writeFileSync(CONFIG_PATH, 'pipelines: [[[\n  roto: : :\n', 'utf8');
+    try {
+        delete process.env.ADMISSION_SWEEP_ENABLED;
+        const gate = reconciler.admissionGateSettings();
+        // Degradar a "gate apagado" ante config rota es JUSTO el fallo silencioso
+        // que #5172 elimina: el default del archivo (ON) se conserva.
+        assert.equal(gate.sweepEnabled, true);
+        assert.equal(gate.dryRun, false);
+        assert.equal(gate.origen, 'defaults+env');
+
+        // ...pero el override por env se sigue aplicando (y trazando) igual.
+        process.env.ADMISSION_SWEEP_ENABLED = '0';
+        assert.equal(reconciler.admissionGateSettings().sweepEnabled, false);
+    } finally {
+        limpiarConfig();
+        process.env.ADMISSION_SWEEP_ENABLED = '1';
+    }
 });
 
 test('admission sweep: alerta Telegram NO contiene body/user/diff (CA-S4)', () => {

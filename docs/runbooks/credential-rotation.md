@@ -297,14 +297,18 @@ sección cubre credenciales **ausentes** en una máquina limpia.
 3. Escribí `google_drive.oauth_client_id`,
    `google_drive.oauth_client_secret`, `google_drive.oauth_refresh_token` y
    `google_drive.drive_folder_id` en `~/.claude/secrets/credentials.json`.
-4. Ejecutá `node .pipeline/lib/credentials.js`: sólo
-   `GOOGLE_DRIVE_FOLDER_ID` debe figurar como hidratada; las credenciales OAuth
-   permanecen `deferred`.
-5. Aviso al operador: reponer las tres credenciales OAuth **no** restablece por
-   sí solo la subida a Drive. Hoy ningún consumidor las resuelve — el manifiesto
-   las declara `consumer_status: broken` con `blocked_by: #4890`. El desbloqueo
-   llega cuando #5040 habilite el aislamiento de entorno y esas entradas pasen a
-   `eager`.
+4. Ejecutá `node .pipeline/lib/credentials.js`: las cuatro
+   (`GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`,
+   `GOOGLE_OAUTH_REFRESH_TOKEN`, `GOOGLE_DRIVE_FOLDER_ID`) deben figurar como
+   hidratadas. El comando lista **nombres** de variable, nunca valores.
+5. Verificá el consumo real: `qa/scripts/qa-video-share.js` resuelve estas
+   credenciales con precedencia `env` > store (`~/.claude/secrets/credentials.json`)
+   > legacy. Si el log dice `credenciales de Google Drive no configuradas`,
+   el mensaje nombra cuál falta y en qué orden se consultaron las fuentes.
+6. Aviso al operador: el store externo es la fuente canónica **porque sobrevive
+   al `git reset --hard` de cada respawn**. No repongas estas claves en
+   `.claude/hooks/telegram-config.json`: ese archivo está trackeado en un repo
+   público y su purga está pendiente en #5226.
 
 ## Cloudflare R2 (reposicion)
 
