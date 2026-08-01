@@ -13949,7 +13949,27 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
   // --- PREPROCESAR TODOS los mensajes (transcribir audios, etc.) ---
   for (const m of mensajes) {
     log('commander', `Preprocesando msg de ${m.from}: "${(m.text || '').slice(0, 50)}"`);
-    const processed = await preprocessMessage(m, botToken);
+    // #5336 (CA-2/CA-8) — Aviso de progreso cuando la transcripción se hace larga.
+    // Sin esto el operador ve silencio y asume que se lo está ignorando.
+    //
+    // Dos estados DISTINGUIBLES: 'queue' (hay otro audio adelante) y 'engine' (el
+    // suyo se está transcribiendo). El dedup por (chatId, tipo) reusa el mecanismo
+    // de #3919, así que un solo aviso por estado y por ventana — nada de heartbeat.
+    // Literal plano por la ruta autorizada (SEC-3/SEC-5).
+    //
+    // Best-effort absoluto: el aviso JAMÁS puede tumbar la transcripción, así que
+    // todo va envuelto en try/catch y un fallo sólo se loguea.
+    const notifyProgress = (texto, stage) => {
+      if (!chatId) return;
+      try {
+        if (!noteDegradationAndShouldNotify(String(chatId), `stt-progress-${stage}`, Date.now())) return;
+        sendTelegramPlain(texto);
+        log('commander', `[stt-progreso] aviso "${stage}" enviado`);
+      } catch (e) {
+        log('commander', `[stt-progreso] aviso no enviado (no bloqueante): ${e.message}`);
+      }
+    };
+    const processed = await preprocessMessage(m, botToken, { notify: notifyProgress });
     m._textoFinal = processed.text + (processed.extras.length > 0 ? ' ' + processed.extras.join(' ') : '');
     m._esAudio = !!(m.voice || m.voice_path);
     m._audio = processed.audio || null;
@@ -13990,7 +14010,21 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
   for (const m of mensajes) {
     const intent = commanderDet.classify(m._textoFinal);
     m._intent = intent;
-    if (intent.class === 'deterministic' || intent.class === 'unknown') {
+    // #5336 (CA-4/CA-5) — Audio que NO se pudo transcribir y sin texto propio.
+    //
+    // ANTES caía acá como `unknown` y el dispatcher respondía la plantilla
+    // `error-unknown` ("🤔 No te entendí, Leito"), que le miente al operador: el
+    // mensaje nunca llegó a escucharse, no es que no se entendió. El fallback de
+    // audio que YA existía más abajo (y que sí usa `transcriptionFailureMessage`)
+    // nunca se alcanzaba, porque sólo mira `textoLibre` y estos mensajes se iban
+    // a `comandos`.
+    //
+    // Mandándolos a `textoLibre` se enrutan al fallback correcto sin duplicar copy
+    // ni tocar el enum de `class`.
+    if (intent.audioFailed) {
+      log('commander', `[audio-fallido] "${(m._textoFinal || '').slice(0, 60)}" (kind=${intent.audioErrorKind}) → fallback de transcripción, no "no te entendí"`);
+      textoLibre.push(m);
+    } else if (intent.class === 'deterministic' || intent.class === 'unknown') {
       comandos.push({ m, intent });
     } else {
       // class === 'llm' → emitimos audit-log explícitamente (camino que
