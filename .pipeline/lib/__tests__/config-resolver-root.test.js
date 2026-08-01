@@ -19,6 +19,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const resolver = require('../config-resolver');
+const { seedProductManifest } = require('./_test-helpers');
 
 const ENV_KEYS = ['PIPELINE_DIR_OVERRIDE', 'PIPELINE_STATE_DIR', 'PIPELINE_REPO_ROOT'];
 const saved = {};
@@ -135,6 +136,7 @@ test('CA-11 · aislamiento: con DIR_OVERRIDE a un tmpdir se lee el tmpdir, nunca
     const dir = mkTmp('aislado');
     fs.writeFileSync(path.join(dir, 'config.yaml'),
         'circuit_breaker:\n  infra_escalate_threshold: 42\n  auto_resume_ok_threshold: 7\n');
+    seedProductManifest(dir);   // #5174 — la configuración vive partida: el otro lado también
     process.env.PIPELINE_DIR_OVERRIDE = dir;
     const cfg = resolver.resolve({});
     assert.equal(cfg.circuit_breaker.infra_escalate_threshold, 42);
@@ -145,6 +147,7 @@ test('CA-11 · lo mismo con STATE_DIR (los 9 tests que lo usan siguen aislados)'
     const dir = mkTmp('aislado-state');
     fs.writeFileSync(path.join(dir, 'config.yaml'),
         'circuit_breaker:\n  infra_escalate_threshold: 11\n  auto_resume_ok_threshold: 1\n');
+    seedProductManifest(dir);   // #5174 — la configuración vive partida: el otro lado también
     process.env.PIPELINE_STATE_DIR = dir;
     assert.equal(resolver.resolve({}).circuit_breaker.infra_escalate_threshold, 11);
 });
@@ -152,6 +155,7 @@ test('CA-11 · lo mismo con STATE_DIR (los 9 tests que lo usan siguen aislados)'
 test('CA-13 · la traza se emite UNA sola vez por proceso y nombra ruta + mecanismo', () => {
     const dir = mkTmp('traza');
     fs.writeFileSync(path.join(dir, 'config.yaml'), 'concurrencia:\n  dev: 3\n');
+    seedProductManifest(dir);   // #5174 — la configuración vive partida: el otro lado también
     const lineas = [];
     resolver.setTraceSink((l) => lineas.push(l));
 
@@ -159,10 +163,17 @@ test('CA-13 · la traza se emite UNA sola vez por proceso y nombra ruta + mecani
     resolver.resolve({ pipelineDir: dir });
     resolver.resolve({ pipelineDir: dir, reload: true });
 
+    // #5174 — la config vive partida: una traza por ARCHIVO (kernel + producto),
+    // y sigue siendo una sola vez por proceso pese a las tres resoluciones. Lo que
+    // el CA-13 protege es la deduplicación, no el número 1.
     const trazas = lineas.filter((l) => l.includes('config resuelta'));
-    assert.equal(trazas.length, 1, 'tres resoluciones, una sola traza');
-    assert.ok(trazas[0].includes(path.join(dir, 'config.yaml')), 'la traza nombra la ruta resuelta');
-    assert.ok(trazas[0].includes('vía arg:pipelineDir'), 'y el mecanismo por el que se resolvió');
+    assert.equal(trazas.length, 2, 'tres resoluciones, una traza por archivo');
+    assert.ok(trazas.some((t) => t.includes(path.join(dir, 'config.yaml'))),
+        'la traza nombra la ruta del kernel');
+    assert.ok(trazas.some((t) => t.includes(path.join(dir, 'pipeline.config.json'))),
+        'y la del manifiesto de producto');
+    assert.ok(trazas.every((t) => t.includes('vía arg:pipelineDir')),
+        'y el mecanismo por el que se resolvió');
 });
 
 test('CA-13 · el mecanismo trazado es el correcto para cada nivel', () => {
@@ -177,6 +188,7 @@ test('CA-13 · el mecanismo trazado es el correcto para cada nivel', () => {
         resolver._resetTraceState();
         const dir = mkTmp('mec');
         fs.writeFileSync(path.join(dir, 'config.yaml'), 'concurrencia:\n  dev: 1\n');
+        seedProductManifest(dir);   // #5174 — la configuración vive partida: el otro lado también
         const lineas = [];
         resolver.setTraceSink((l) => lineas.push(l));
         const { opts, via } = caso.setup(dir);
@@ -190,20 +202,26 @@ test('dos raíces distintas en el mismo proceso trazan una vez cada una', () => 
     const a = mkTmp('doble-a');
     const b = mkTmp('doble-b');
     fs.writeFileSync(path.join(a, 'config.yaml'), 'concurrencia:\n  dev: 1\n');
+    seedProductManifest(a);   // #5174 — la configuración vive partida: el otro lado también
     fs.writeFileSync(path.join(b, 'config.yaml'), 'concurrencia:\n  dev: 2\n');
+    seedProductManifest(b);   // #5174 — la configuración vive partida: el otro lado también
     const lineas = [];
     resolver.setTraceSink((l) => lineas.push(l));
     resolver.resolve({ pipelineDir: a });
     resolver.resolve({ pipelineDir: b });
     resolver.resolve({ pipelineDir: a });
-    assert.equal(lineas.filter((l) => l.includes('config resuelta')).length, 2);
+    // #5174 — dos raíces × dos archivos (kernel + producto) = 4, sin repetir la
+    // raíz `a` pese a resolverla dos veces.
+    assert.equal(lineas.filter((l) => l.includes('config resuelta')).length, 4);
 });
 
 test('el caché es por ruta resuelta: dos raíces no se pisan entre sí', () => {
     const a = mkTmp('cache-a');
     const b = mkTmp('cache-b');
     fs.writeFileSync(path.join(a, 'config.yaml'), 'concurrencia:\n  dev: 1\n');
+    seedProductManifest(a);   // #5174 — la configuración vive partida: el otro lado también
     fs.writeFileSync(path.join(b, 'config.yaml'), 'concurrencia:\n  dev: 2\n');
+    seedProductManifest(b);   // #5174 — la configuración vive partida: el otro lado también
     assert.equal(resolver.resolve({ pipelineDir: a }).concurrencia.dev, 1);
     assert.equal(resolver.resolve({ pipelineDir: b }).concurrencia.dev, 2);
     assert.equal(resolver.resolve({ pipelineDir: a }).concurrencia.dev, 1);

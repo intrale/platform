@@ -51,6 +51,12 @@ fs.mkdirSync(path.join(TMP, 'qa', 'artifacts', 'tester'), { recursive: true });
 // degrada en silencio. `pipelines: {}` es config VÁLIDA sin fases declaradas →
 // enum vacío → `FALLBACK_PHASES` (el caso que este fixture ejercitaba antes).
 fs.writeFileSync(path.join(TMP, '.pipeline', 'config.yaml'), 'pipelines: {}\n');
+// #5174 — el sandbox también siembra `pipeline.config.json`: post-partición el
+// resolver falla cerrado si el manifiesto de producto no está junto al kernel.
+// Fixture YAML mínimo escrito a mano ⇒ `seedProductManifest` en modo
+// auto-partición (slice vacío), NO el manifiesto real: `pipelines: {}` debe
+// seguir dando enum de fases vacío → `FALLBACK_PHASES`.
+require('../../lib/__tests__/_test-helpers').seedProductManifest(path.join(TMP, '.pipeline'));
 process.env.PIPELINE_REPO_ROOT = TMP;
 process.env.CLAUDE_PROJECT_DIR = TMP;
 

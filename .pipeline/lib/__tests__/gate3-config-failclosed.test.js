@@ -47,6 +47,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { seedRealProductManifest } = require('./_test-helpers');
 
 // --- Aislamiento: tmpdir + override ANTES de requerir pulpo.js ----------------
 const TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'gate3-failclosed-'));
@@ -70,6 +71,7 @@ process.env.PIPELINE_DIR_OVERRIDE = TMP_DIR;
 process.env.PULPO_NO_AUTOSTART = '1';
 
 fs.writeFileSync(CONFIG_FILE, GOOD_YAML);
+seedRealProductManifest(TMP_DIR);   // #5174 — fixture copiado del config.yaml real ⇒ manifiesto real
 const pulpo = require('../../pulpo.js');
 const configResolver = require('../config-resolver');
 
@@ -103,6 +105,7 @@ function allowlistEnDisco() {
 
 function conConfig(texto) {
     fs.writeFileSync(CONFIG_FILE, texto);
+    seedRealProductManifest(TMP_DIR);   // #5174 — fixture copiado del config.yaml real ⇒ manifiesto real
     // El resolver cachea por ruta: sin limpiar, seguiría sirviendo el documento
     // sano que se leyó al requerir pulpo.js y el test no probaría nada.
     configResolver.clearCache();

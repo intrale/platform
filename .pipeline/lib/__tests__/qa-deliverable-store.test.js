@@ -13,6 +13,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { seedProductManifest } = require('./_test-helpers');
 
 const { writeDeliverable } = require('../write-deliverable');
 const { collectAttachmentsForSkill } = require('../skill-deliverable-attachments');
@@ -28,6 +29,9 @@ function tmpRoot() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-deliverable-'));
     fs.mkdirSync(path.join(root, '.pipeline'), { recursive: true });
     fs.writeFileSync(path.join(root, '.pipeline', 'config.yaml'), 'pipelines: {}\n');
+    // #5174 — la configuración vive partida: un `.pipeline/` con kernel pero sin
+    // manifiesto de producto es corrupción TOTAL, no un sandbox a medias.
+    seedProductManifest(path.join(root, '.pipeline'));
     return root;
 }
 

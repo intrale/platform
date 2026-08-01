@@ -27,6 +27,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const { spawn } = require('child_process');
+const { seedProductManifest, seedRealProductManifest } = require('./_test-helpers');
 
 const DASHBOARD = path.resolve(__dirname, '..', '..', 'dashboard.js');
 // Puerto alto derivado del pid para no chocar con el dashboard real (3200) ni
@@ -66,6 +67,7 @@ test('#5172 CA-8: con config.yaml inválido el dashboard sirve la pantalla de er
     fs.mkdirSync(path.join(PIPE, 'logs'), { recursive: true });
     // YAML que no parsea (mismo shape que un archivo a medio escribir).
     fs.writeFileSync(path.join(PIPE, 'config.yaml'), 'pipelines: [[[\n  roto: : :\n', 'utf8');
+    seedProductManifest(PIPE);   // #5174 — la configuración vive partida: el otro lado también
 
     const child = spawn(process.execPath, [DASHBOARD], {
         env: {
@@ -116,6 +118,7 @@ test('#5172 CA-8: con config.yaml válido el tablero se sirve normal (no hay fal
     const PIPE = path.join(TMP, '.pipeline');
     fs.mkdirSync(path.join(PIPE, 'logs'), { recursive: true });
     fs.copyFileSync(path.resolve(__dirname, '..', '..', 'config.yaml'), path.join(PIPE, 'config.yaml'));
+    seedRealProductManifest(PIPE);   // #5174 — fixture copiado del config.yaml real ⇒ manifiesto real
 
     const port = PORT + 1;
     const child = spawn(process.execPath, [DASHBOARD], {

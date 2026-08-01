@@ -25,6 +25,7 @@ const path = require('node:path');
 
 const resolver = require('../config-resolver');
 const schema = require('../config-schema');
+const { seedProductManifest } = require('./_test-helpers');
 
 const SECRETO = 'SUPER-SECRETO-ABC123';
 const PASSWORD = 'pa55w0rd-de-prueba';
@@ -36,6 +37,7 @@ function mkTmp(nombre) {
 
 function escribir(dir, contenido) {
     fs.writeFileSync(path.join(dir, 'config.yaml'), contenido, 'utf8');
+    seedProductManifest(dir);   // #5174 — la configuración vive partida: el otro lado también
     return dir;
 }
 

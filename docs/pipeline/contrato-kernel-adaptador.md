@@ -249,20 +249,88 @@ editables justo las que importan: `firma_operador.modo`, `operator_signature.non
 `gates.gate3.timeout_ms`. La única excepción es `architect`, partido a propósito porque su
 cadencia de polling es calibración, no autoridad.
 
-#### 2.4.3. Alcance de esta entrega
+#### 2.4.3. Alcance de la Entrega B (#5173)
 
-Acá **no se movió ninguna clave de archivo**: las 58 secciones siguen en `config.yaml`. El
-chequeo de lado es **opt-in** vía `validateConfig(obj, { origin: 'producto' })`, y
-`pulpo.loadConfig` sigue llamando `validateConfig(raw)` sin segundo argumento ⇒ cero cambio de
-comportamiento. La Entrega C (#5174) es la que parte el archivo y activa `origin`.
+En #5173 **no se movió ninguna clave de archivo**: las 58 secciones seguían en `config.yaml`. El
+chequeo de lado era **opt-in** vía `validateConfig(obj, { origin: 'producto' })`, y
+`pulpo.loadConfig` llamaba `validateConfig(raw)` sin segundo argumento ⇒ cero cambio de
+comportamiento. La Entrega C (#5174) es la que parte el archivo y activa `origin`; su estado
+vigente se describe en §2.4.4.
 
 `repos.*` no entra en `SIDE_MAP`: verificado que no existe en `config.yaml` (vive en
-`pipeline.config.json`). Se documenta acá como **autoridad** por D-1; su enforcement es de
-#5174. La sección `cross_repo_delivery` sí existe en `config.yaml` y se clasifica **autoridad**
-por el mismo criterio: declara a qué repos externos puede pushear el pipeline.
+`pipeline.config.json`). Se documenta acá como **autoridad** por D-1. La sección
+`cross_repo_delivery` sí existe en `config.yaml` y se clasifica **autoridad** por el mismo
+criterio: declara a qué repos externos puede pushear el pipeline.
+
+**Estado del enforcement de `repos.*` tras #5174** (corrige lo que esta sección afirmaba antes:
+*«su enforcement es de #5174»*, sin decir con qué alcance). `repos.*` sigue viviendo en
+`pipeline.config.json` — el lado de **menor** confianza — por una **excepción de migración
+enumerada y acotada**, no porque haya dejado de ser autoridad. Lo que #5174 sí cierra:
+
+| Aspecto | Estado |
+|---|---|
+| Top-level del manifiesto | **Forma cerrada.** Toda clave fuera de `MANIFEST_KEYS` (`lib/config-resolver.js`) rompe el arranque nombrando clave y archivo destino. Una clave de autoridad (`firma_operador`, …) puesta ahí ya no pasa. |
+| Alcance de la excepción | **Enumerada** en `REPOS_GRANDFATHERED_SUBKEYS` (`primary`, `allowlist`, `intake`, `default_base_ref`, `note`). Una sub-clave nueva bajo `repos` ⇒ fail-closed. |
+| Coherencia del bloque | Verificada en el arranque: `intake ⊆ allowlist` y `primary ∈ allowlist`. |
+| Visibilidad | **Nunca silenciosa**: traza de nivel `alerta` en cada arranque, nombrando la excepción y el issue que la cierra. |
+| Contenido de `allowlist` | **NO enforzable por config.** Ningún chequeo puede distinguir un repo legítimo de uno hostil; agregar un repo es una decisión y su control es la revisión del cambio. |
+
+Por qué no se mudó al kernel el día 1: `repo-target.js` y `kernel-resolver.js` lo leen de
+`pipeline.config.json` desde #4693, **por fuera del resolver**, y moverlo rompería la paridad
+clave por clave del CA-2 sin ganar frontera — `.github/CODEOWNERS` **no** cubre `.pipeline/`
+(auto-merge habilitado), así que hoy los dos archivos están bajo el mismo control de revisión.
+El cierre de la excepción (mudar el bloque al kernel) es de **#4694**, que ya es la dependencia
+declarada del propio `note` del bloque. Fijado por `lib/__tests__/config-manifest-side.test.js`,
+incluido el test que documenta el límite.
 
 **Reversión (CA-14):** poner `additionalProperties: true` en la raíz de `config-schema.js`. Una
 línea. Deja el `SIDE_MAP` inerte y devuelve el comportamiento al de #3941.
+
+#### 2.4.4. Precedencia en tiempo de ejecución tras la partición (#5174)
+
+Desde #5174 la configuración vive **partida en dos archivos**: `.pipeline/config.yaml` (kernel) y
+`pipeline.config.json` → `productConfig` (producto). `lib/config-resolver.js` es el **único** punto
+que lee los dos y los une.
+
+La matriz de §2.4.1 responde *"¿de qué lado es esta clave?"*. La de acá responde *"si dos fuentes
+la aportan, ¿cuál gana?"*:
+
+| Categoría | Precedencia | Qué pasa si aparece del lado equivocado |
+|---|---|---|
+| Autoridad (lista congelada) | **kernel gana siempre** | Presencia del lado producto **o** en una env var ⇒ **falla el arranque**, nombrando la clave y el lado correcto |
+| Calibración / política de producto | `env > producto > kernel` | — |
+| Mecanismo del kernel | kernel | Clave de producto declarada del lado kernel ⇒ falla el arranque |
+| `PIPELINE_DIR_OVERRIDE` | reubica **ambos** archivos o ninguno | Reubicación parcial ⇒ falla el arranque |
+
+Cuatro propiedades que no son obvias desde la tabla:
+
+1. **Para autoridad, "kernel gana" NO es precedencia de merge: es fail-closed.** Si fuera
+   precedencia, un manifiesto de producto podría declarar `firma_operador.enabled: false` y el
+   resolver lo descartaría en silencio — y desde el log, *"lo ignoré"* es indistinguible de *"el
+   ataque no ocurrió"*. Por eso la **presencia sola** rompe el arranque.
+2. **El fallo es TOTAL, nunca un merge parcial.** Que cualquiera de los dos archivos esté ausente,
+   no parsee o venga vacío se trata como corrupción de la configuración entera y reusa
+   `haltOnConfigCorruption`. El auto-recovery de #4832 exige que **ambos** vuelvan a parsear OK
+   antes de levantar la pausa.
+3. **Los dos lados son disjuntos**, así que el merge es una **unión** y la paridad clave por clave
+   es demostrable (`config-partition-parity.test.js` la verifica contra un golden redactado del
+   estado pre-partición).
+4. **No existe un canal genérico `env → config`.** `PIPELINE_CFG_*` / `PIPELINE_CONFIG_SET_*` están
+   prohibidos enteros y rompen el arranque: `build-child-env.js` reenvía todo `PIPELINE_*` a cada
+   agente hijo, así que un patrón genérico volvería la configuración no auditable. La única
+   superficie de override por entorno es la allowlist cerrada y enumerada de `ENV_OVERRIDES`, que
+   por regla sólo admite claves de lado producto (con dos excepciones de autoridad ya auditadas y
+   enumeradas en `ENV_AUTHORITY_GRANDFATHERED`).
+
+La ubicación del archivo de producto se **deriva de la raíz del kernel** y se resuelve con
+`realpath`, rechazando `..` y symlinks que escapen. El kernel **nunca** toma esa ubicación desde el
+propio archivo de producto: no existe ningún `product_config_path:`.
+
+**Reversión (CA-12):** `PARTITION_ENABLED = false` en `lib/config-resolver.js` — una línea — más
+revertir el movimiento de claves en `config.yaml`. Con el flag apagado no se lee el manifiesto, no
+corre el chequeo de lado y no hay merge: el comportamiento vuelve al de #5172. Está **ejercitado**
+por `config-partition-rollback.test.js`, incluido el caso de que una clave migrada ausente tras el
+rollback **rompa** en vez de caer a un default permisivo.
 
 ### 2.5. `CLAUDE.md` y `.pipeline/*.js` + hooks — inventario §2.2 y §2.3
 

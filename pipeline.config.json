@@ -28,7 +28,10 @@
   "branch": {
     "pattern": "agent/<issue>-<slug>",
     "base": "origin/main",
-    "protected": ["main", "develop"]
+    "protected": [
+      "main",
+      "develop"
+    ]
   },
   "qaLabels": {
     "passed": "qa:passed",
@@ -63,16 +66,357 @@
     "deploy": true
   },
   "capabilitiesNote": "#5065 — `capabilities` (booleanos, eje interfaz/oferta) queda SIN CAMBIOS por compatibilidad hacia atrás: es el nombre que ya usan con otra semántica el eje de autorización (.pipeline/lib/capabilities.js), el de ejecución (execution-capabilities, #4839) y la partición de interfaces de .pipeline/contracts/project.schema.json. El contrato del adaptador introduce los COMANDOS bajo el nombre distinto `commands` (CA-7): ahí la presencia de la clave —no un booleano— es lo que habilita la capacidad. `deploy` no se declara en `commands` porque el despliegue lo ejecuta CI, no el kernel; su ausencia significa, por contrato, que el kernel nunca despliega.",
-  "routing": {
-    "source": ".pipeline/config.yaml",
-    "note": "La externalización de la tabla label->skill al manifiesto es la sub-ola 9.4. Durante 9.1 el ruteo vivo permanece en .pipeline/config.yaml sin cambio de comportamiento."
-  },
   "repos": {
     "primary": "intrale/platform",
-    "allowlist": ["intrale/platform", "intrale/kernel"],
-    "intake": ["intrale/platform"],
+    "allowlist": [
+      "intrale/platform",
+      "intrale/kernel"
+    ],
+    "intake": [
+      "intrale/platform"
+    ],
     "default_base_ref": "main",
     "note": "Fuente de verdad única del repo destino (CA-0 · #4693). Consumido SOLO vía .pipeline/lib/repo-target.js; deprecan config.yaml github: y servicio-github.js DEFAULT_REPO. `allowlist` = frontera de confianza (repos que pueden generar spawns). `intake` = repos efectivamente consultados por el Pulpo. GATE REQ-SEC-5: intrale/kernel está allowlisted pero FUERA de `intake` hasta cerrar el naming repo-scoped de #4694 (el key de estado ${issue}.${skill} no es repo-scoped y platform#N colisionaría con kernel#N). No mover kernel a `intake` hasta cerrar #4694."
   },
-  "extensionPoints": ["resolveRouting", "evaluateGate", "prepareWorkspace"]
+  "extensionPoints": [
+    "resolveRouting",
+    "evaluateGate",
+    "prepareWorkspace"
+  ],
+  "productConfig": {
+    "pipelines": {
+      "definicion": {
+        "skills_por_fase": {
+          "analisis": [
+            "guru",
+            "security"
+          ],
+          "criterios": [
+            "po",
+            "ux",
+            "architect"
+          ],
+          "sizing": [
+            "planner"
+          ]
+        }
+      },
+      "desarrollo": {
+        "skills_por_fase": {
+          "validacion": [
+            "po",
+            "ux",
+            "guru"
+          ],
+          "dev": [
+            "backend-dev",
+            "android-dev",
+            "web-dev",
+            "pipeline-dev",
+            "dev"
+          ],
+          "build": [
+            "build"
+          ],
+          "verificacion": [
+            "tester",
+            "security",
+            "qa"
+          ],
+          "linteo": [
+            "linter"
+          ],
+          "aprobacion": [
+            "review",
+            "po",
+            "ux",
+            "architect"
+          ],
+          "entrega": [
+            "delivery"
+          ]
+        }
+      }
+    },
+    "dev_skill_mapping": {
+      "area:pipeline": "pipeline-dev",
+      "area:dashboard": "pipeline-dev",
+      "area:infra": "backend-dev",
+      "area:backend": "backend-dev",
+      "app:client": "android-dev",
+      "app:business": "android-dev",
+      "app:delivery": "android-dev",
+      "area:web": "web-dev",
+      "generic_fallback": "dev",
+      "default": "backend-dev"
+    },
+    "dev_skill_partitions": {
+      "backend": [
+        "backend-dev"
+      ],
+      "frontend": [
+        "android-dev",
+        "web-dev"
+      ],
+      "pipeline": [
+        "pipeline-dev"
+      ],
+      "generic": [
+        "dev"
+      ]
+    },
+    "dev_routing_priority": [
+      "area:pipeline",
+      "area:dashboard",
+      "area:infra",
+      "area:backend",
+      "area:web",
+      "app:client",
+      "app:business",
+      "app:delivery"
+    ],
+    "pipeline_scope_keywords": [
+      ".pipeline/",
+      "pulpo.js",
+      "dashboard",
+      "restart.js",
+      "rollback.sh",
+      "smoke-test",
+      "rejection-report",
+      "listener-telegram",
+      "servicio-telegram",
+      "servicio-github",
+      "servicio-emulador",
+      "servicio-drive",
+      ".pipeline/roles/"
+    ],
+    "prioridad_labels": [
+      "priority:critical",
+      "priority:high",
+      "priority:medium",
+      "priority:low"
+    ],
+    "feature_priority": {
+      "critical": [
+        "feature:usuarios-auth",
+        "feature:catalogo-productos",
+        "feature:checkout-pagos",
+        "feature:delivery"
+      ],
+      "high": [
+        "feature:configuracion-negocio",
+        "feature:comunicacion"
+      ],
+      "medium": [
+        "feature:stock-inventario",
+        "feature:dashboard-analitica"
+      ],
+      "low": [
+        "feature:marketing-engagement",
+        "feature:ia"
+      ]
+    },
+    "build": {
+      "java_home_allowlist": [
+        "C:/Users/Administrator/.jdks/temurin-21.0.7",
+        "C:/Users/Administrator/.jdks/temurin-21.0.8"
+      ]
+    },
+    "audio_policy": {
+      "enabled": true,
+      "kill_switch": false,
+      "by_event": {
+        "commander_reply": true,
+        "rejection_report": true,
+        "status": true,
+        "gate_signature": true,
+        "agent_deliverable": false,
+        "cua_stage": false
+      }
+    },
+    "deliverable_notifications": {
+      "skills": [
+        "guru",
+        "po",
+        "ux",
+        "planner",
+        "qa",
+        "tester",
+        "security",
+        "build",
+        "architect",
+        "review",
+        "backend-dev",
+        "android-dev",
+        "web-dev",
+        "pipeline-dev",
+        "delivery"
+      ],
+      "attachments_per_skill": {
+        "guru": {
+          "types": [
+            "document"
+          ],
+          "formats": [
+            ".pdf",
+            ".md"
+          ]
+        },
+        "po": {
+          "types": [
+            "document"
+          ],
+          "formats": [
+            ".pdf",
+            ".md"
+          ]
+        },
+        "planner": {
+          "types": [
+            "document"
+          ],
+          "formats": [
+            ".pdf",
+            ".md"
+          ]
+        },
+        "ux": {
+          "types": [
+            "image",
+            "video"
+          ],
+          "formats": [
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".mp4",
+            ".webm"
+          ]
+        },
+        "qa": {
+          "types": [
+            "video",
+            "document"
+          ],
+          "formats": [
+            ".mp4",
+            ".webm",
+            ".pdf"
+          ]
+        },
+        "tester": {
+          "types": [
+            "document"
+          ],
+          "formats": [
+            ".pdf",
+            ".md"
+          ]
+        },
+        "security": {
+          "types": [
+            "document"
+          ],
+          "formats": [
+            ".pdf",
+            ".md"
+          ]
+        },
+        "build": {
+          "types": [
+            "document"
+          ],
+          "formats": [
+            ".pdf",
+            ".md"
+          ]
+        },
+        "architect": {
+          "types": [
+            "document"
+          ],
+          "formats": [
+            ".pdf",
+            ".md"
+          ]
+        },
+        "review": {
+          "types": [
+            "document"
+          ],
+          "formats": [
+            ".md",
+            ".pdf"
+          ]
+        },
+        "backend-dev": {
+          "types": [
+            "document"
+          ],
+          "formats": [
+            ".md",
+            ".pdf"
+          ]
+        },
+        "android-dev": {
+          "types": [
+            "document"
+          ],
+          "formats": [
+            ".md",
+            ".pdf"
+          ]
+        },
+        "web-dev": {
+          "types": [
+            "document"
+          ],
+          "formats": [
+            ".md",
+            ".pdf"
+          ]
+        },
+        "pipeline-dev": {
+          "types": [
+            "document"
+          ],
+          "formats": [
+            ".md",
+            ".pdf"
+          ]
+        },
+        "delivery": {
+          "types": [
+            "document"
+          ],
+          "formats": [
+            ".md",
+            ".pdf"
+          ]
+        }
+      }
+    },
+    "architect": {
+      "poll_cap_min": 30,
+      "poll_interval_seconds": 30,
+      "bot_login": "architect-bot"
+    },
+    "telegram": {
+      "bot_username": "intrale_bot"
+    }
+  },
+  "productConfigNote": "Lado PRODUCTO de la configuración del pipeline (#5174 · Ola 9.4 · E2). Reemplaza el placeholder `routing` de 9.1. La clasificación por lado es la lista congelada de #5173 (.pipeline/lib/config-schema.js → SIDE_MAP / AUTHORITY_PREFIXES) y NO se declara acá: una lista de autoridad configurable desde el lado de menor confianza sería auto-referencial. Precedencia: calibración `env > producto > kernel`; autoridad, el kernel gana SIEMPRE. Una clave de lado kernel o autoridad puesta acá FALLA el arranque nombrando la clave y el archivo destino, y una clave de producto que quede en .pipeline/config.yaml falla igual. ALCANCE del chequeo (rev-1 de #5174): cubre `productConfig` Y el top-level de este archivo, que tiene forma CERRADA — toda clave que no esté enumerada en MANIFEST_KEYS (.pipeline/lib/config-resolver.js) rompe el arranque. EXCEPCIÓN acotada y trazada: `repos.*` es lado AUTORIDAD (frontera de ejecución de código, ver .pipeline/lib/repo-target.js) y vive acá por migración; se admiten sólo las sub-claves enumeradas en REPOS_GRANDFATHERED_SUBKEYS, se verifican `intake ⊆ allowlist` y `primary ∈ allowlist`, y el arranque emite una traza de nivel `alerta`. El CONTENIDO de `allowlist` no lo valida ningún chequeo de config: agregar un repo es una decisión y su control es la revisión del cambio. Cierre de la excepción: #4694. Lectores: .pipeline/lib/config-resolver.js mergea `productConfig` con el kernel y valida el documento entero; `repos.*` lo leen además .pipeline/lib/repo-target.js y .pipeline/lib/kernel-resolver.js, y `build.java_home_allowlist` lo lee .pipeline/validate-java-home.js (que corre sin node_modules y por eso no puede pasar por el resolver).",
+  "productConfigNotes": {
+    "audio_policy": "#4586 — Política de audio TTS POR TIPO DE EVENTO.\nPrincipio: **audio para lo que necesita atención/acción del operador; texto\npara el firehose informativo.** Reemplaza el flag \"global\" `audio_enabled`\n(que adjuntaba audio a TODA notificación de entregable y lo mezclaba con la\nconversación del operador con el Commander).\n\nMotor: `.pipeline/lib/audio-policy.js` (`shouldEmitAudio(policy, evento)`).\nLo consulta `deliverable-notify.js` (vía el pulpo, evento `agent_deliverable`\ny `cua_stage`). Los otros eventos (respuestas del Commander, rejection\nreports, /status) viven en paths separados y conservan su audio.\n\nFlags:\n  - enabled:       si `false`, apaga TODA la política (sin audio por evento).\n  - kill_switch:   corte en caliente de TODO el audio (sin reiniciar).\n  - by_event:      audio por tipo de evento. Si un evento no está declarado\n                   acá, cae al default del módulo (DEFAULT_BY_EVENT).\n\nEventos:\n  - commander_reply   → respuestas del Commander al operador (conversación).\n  - rejection_report  → reportes de rechazo (audio obligatorio por memoria).\n  - status            → /status y snapshots ejecutivos (audio obligatorio).\n  - gate_signature    → pedidos de firma de gates (épico #4570, futuro).\n  - agent_deliverable → notificación de entregable de agente → 🔇 texto-only.\n  - cua_stage         → stages intermedios de comandos CUA → 🔇 texto-only.",
+    "build": "Build (#2405 CA-1) — Allowlist de JAVA_HOME para el rol build\nSe compara normalizando separadores (C:/Users/... y C:\\Users\\...), case-insensitive.\nPaths con `..` o whitespace embebido son rechazados.\nAgregar un JDK nuevo: appendear una entrada y commitear.\nVer docs/operacion-pipeline.md para el flujo completo.",
+    "deliverable_notifications.attachments_per_skill": "#3540 — Adjuntos multimedia (V1: document, image, video, animation).\nHTML diferido a V2 (requiere DOMPurify+jsdom, #3547 sin mergear).\nCA-FUNC-1: por skill, qué tipos de adjuntos esperar + qué extensiones.\nValidación negativa: cualquier extensión fuera de `formats` se rechaza\n(`format_not_allowed`) sin bloquear el resto.",
+    "deliverable_notifications.skills": "EP3-H2 (#3928) — whitelist ampliada a 13 skills. Sincronizada con\n`attachments_per_skill` (abajo) y `SKILL_SOURCES`\n(.pipeline/lib/skill-deliverable-attachments.js). Los 3 cambios van juntos.\n#4019 — `delivery` sumado para notificar el avance de ola al entregar/mergear\nun issue (la sección de ola solo se calcula para skill=delivery, fase=entrega).",
+    "dev_routing_priority": "Prioridad de ruteo cuando un issue tiene MÚLTIPLES labels de dominio (ej. area:infra + app:client).\nOrden de mayor a menor prioridad. El primer label presente en el issue define la ruta.\nRationale: si alguien tagueó `area:pipeline` o `area:infra`, esa intención manda — issues del pipeline\nno deben caer en android-dev sólo porque tienen `app:client` por error (ej. #2328).\nEl dev genérico NO participa de esta prioridad: entra último, sólo cuando no hay\ncapability de stack resuelta para el producto.",
+    "dev_skill_mapping": "Mapeo de labels de GitHub a skill de desarrollo",
+    "dev_skill_partitions": "Particiones declarativas del puerto `dev` (kernel) a skills concretos (adaptador).\nIntrale conserva comportamiento observable: default -> backend-dev. Si un producto\nno declara capabilities backend/frontend/pipeline, `generic_fallback` rutea a `dev`.",
+    "feature_priority": "Priorización por features — el pipeline ordena issues por feature priority\nIssues con feature de mayor prioridad se procesan primero dentro de cada nivel de priority",
+    "pipeline_scope_keywords": "Heurística de override por contenido: issues etiquetados `area:infra` pero con\nreferencias fuertes al pipeline Node.js se re-rutean a `pipeline-dev`. Evita que\ncambios del pulpo/dashboard caigan en backend-dev (stack Kotlin, no valida JS).",
+    "prioridad_labels": "Prioridad de intake (orden de procesamiento)",
+    "telegram": "Telegram — config PÚBLICA del bot (#3957, EP8-H4 / CA-3)\nbot_username es el handle público del bot (sin @). Se usa para construir el\ndeep-link `https://t.me/<username>?start=<payload>` de la ventana Bloqueados.\nValidado contra `^[A-Za-z0-9_]{5,32}$` antes de exponerse al dashboard.\n\nSEGURIDAD: acá SÓLO va información pública. El `bot_token` y el `chat_id`\n(secretos) viven en `~/.claude/secrets/credentials.json`, NUNCA en este\narchivo ni en el HTML renderizado. Si bot_username falta o es inválido, el\ndashboard simplemente no renderiza el deep-link de Telegram (degradación\nlimpia: queda el deep-link a GitHub)."
+  }
 }
