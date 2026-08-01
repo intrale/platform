@@ -258,9 +258,30 @@ comportamiento. La Entrega C (#5174) es la que parte el archivo y activa `origin
 vigente se describe en §2.4.4.
 
 `repos.*` no entra en `SIDE_MAP`: verificado que no existe en `config.yaml` (vive en
-`pipeline.config.json`). Se documenta acá como **autoridad** por D-1; su enforcement es de
-#5174. La sección `cross_repo_delivery` sí existe en `config.yaml` y se clasifica **autoridad**
-por el mismo criterio: declara a qué repos externos puede pushear el pipeline.
+`pipeline.config.json`). Se documenta acá como **autoridad** por D-1. La sección
+`cross_repo_delivery` sí existe en `config.yaml` y se clasifica **autoridad** por el mismo
+criterio: declara a qué repos externos puede pushear el pipeline.
+
+**Estado del enforcement de `repos.*` tras #5174** (corrige lo que esta sección afirmaba antes:
+*«su enforcement es de #5174»*, sin decir con qué alcance). `repos.*` sigue viviendo en
+`pipeline.config.json` — el lado de **menor** confianza — por una **excepción de migración
+enumerada y acotada**, no porque haya dejado de ser autoridad. Lo que #5174 sí cierra:
+
+| Aspecto | Estado |
+|---|---|
+| Top-level del manifiesto | **Forma cerrada.** Toda clave fuera de `MANIFEST_KEYS` (`lib/config-resolver.js`) rompe el arranque nombrando clave y archivo destino. Una clave de autoridad (`firma_operador`, …) puesta ahí ya no pasa. |
+| Alcance de la excepción | **Enumerada** en `REPOS_GRANDFATHERED_SUBKEYS` (`primary`, `allowlist`, `intake`, `default_base_ref`, `note`). Una sub-clave nueva bajo `repos` ⇒ fail-closed. |
+| Coherencia del bloque | Verificada en el arranque: `intake ⊆ allowlist` y `primary ∈ allowlist`. |
+| Visibilidad | **Nunca silenciosa**: traza de nivel `alerta` en cada arranque, nombrando la excepción y el issue que la cierra. |
+| Contenido de `allowlist` | **NO enforzable por config.** Ningún chequeo puede distinguir un repo legítimo de uno hostil; agregar un repo es una decisión y su control es la revisión del cambio. |
+
+Por qué no se mudó al kernel el día 1: `repo-target.js` y `kernel-resolver.js` lo leen de
+`pipeline.config.json` desde #4693, **por fuera del resolver**, y moverlo rompería la paridad
+clave por clave del CA-2 sin ganar frontera — `.github/CODEOWNERS` **no** cubre `.pipeline/`
+(auto-merge habilitado), así que hoy los dos archivos están bajo el mismo control de revisión.
+El cierre de la excepción (mudar el bloque al kernel) es de **#4694**, que ya es la dependencia
+declarada del propio `note` del bloque. Fijado por `lib/__tests__/config-manifest-side.test.js`,
+incluido el test que documenta el límite.
 
 **Reversión (CA-14):** poner `additionalProperties: true` en la raíz de `config-schema.js`. Una
 línea. Deja el `SIDE_MAP` inerte y devuelve el comportamiento al de #3941.

@@ -698,6 +698,10 @@ function clearCache() {
 function _resetTraceState() {
     traced.clear();
     traceLog.length = 0;
+    // La alerta de la excepción de `repos` es once-per-process como la traza de
+    // resolución: sin resetearla acá, el test que la verifica dependería del
+    // orden en que corran los archivos del runner.
+    reposTrazado.clear();
 }
 
 function copyOf(doc) {
@@ -887,6 +891,12 @@ function loadProductJson(file, via, ctx) {
             archivo: file, via, causa: 'clave-prohibida',
         });
     }
+    // REQ-SEC-C2 — el chequeo de lado del TOP-LEVEL, ANTES de quedarnos con el
+    // slice. Va acá y no en `resolve()` a propósito: es el único punto del
+    // proceso que tiene el manifiesto ENTERO en la mano; devolver sólo el slice
+    // y chequear después obligaría a pasear el documento completo, que es
+    // exactamente el descuido que dejó este agujero abierto en rev-1.
+    assertManifestTopLevel(doc, file, via);
     const slice = doc[PRODUCT_CONFIG_KEY];
     if (slice === undefined) {
         throw new ConfigParseViolation(
@@ -902,6 +912,185 @@ function loadProductJson(file, via, ctx) {
     }
     void ctx;
     return slice;
+}
+
+// -----------------------------------------------------------------------------
+// REQ-SEC-C2 / CA-8 — chequeo de lado del TOP-LEVEL del manifiesto
+// -----------------------------------------------------------------------------
+//
+// `assertSide(productDoc, 'producto')` corre sobre el slice `productConfig`. En
+// rev-1 TODO el resto del manifiesto —su top-level— quedaba fuera de cualquier
+// chequeo: un PR que tocara sólo este JSON podía agregar `firma_operador:
+// {enabled:false}` (lado autoridad) o una clave inventada, y el arranque lo
+// aceptaba sin fallar y sin traza. El `productConfigNote` del propio archivo
+// afirmaba lo contrario. Es el modo de falla que el issue prohíbe con todas las
+// letras: «ignorar en silencio es indistinguible de un ataque exitoso desde el
+// log».
+//
+// El manifiesto NO es un cajón libre: es un contrato de forma cerrada. Por eso la
+// lista va ENUMERADA y CONGELADA, nunca derivada de un patrón — una clave nueva
+// obliga a tocar esta constante, que es el punto donde se audita la frontera.
+// Default FAIL-CLOSED, igual que `resolveSide`: lo no enumerado se rechaza.
+const MANIFEST_KEYS = Object.freeze([
+    // Identidad y contrato
+    'contractVersion', 'projectId', 'displayName', 'kernel',
+    // Descriptor del repo destino y de la mecánica de entrega
+    'repo', 'repos', 'defaultAssignee', 'branch', 'qaLabels', 'commands',
+    'workspace', 'pr',
+    // Capacidades y puntos de extensión del adaptador
+    'capabilities', 'extensionPoints',
+    // Slice de configuración de producto (lo único que entra al merge)
+    PRODUCT_CONFIG_KEY,
+    // Notas: documentación embebida, sin efecto de runtime.
+    'capabilitiesNote', 'productConfigNote', 'productConfigNotes',
+]);
+
+// -----------------------------------------------------------------------------
+// CA-8 · Decisión sobre `repos.*` — se pronuncia acá y la fija un test
+// -----------------------------------------------------------------------------
+//
+// DECISIÓN: `repos.primary`, `repos.allowlist` y `repos.intake` son lado
+// **AUTORIDAD**. `repo-target.js:13-14` lo dice textual: sumar un repo a la
+// allowlist es «otorgarle confianza de ejecución de código con el token del
+// pipeline». Bajo la regla de esta entrega —autoridad ⇒ kernel gana siempre, la
+// sola presencia del lado producto rompe el arranque— no podrían vivir acá.
+//
+// EXCEPCIÓN DE MIGRACIÓN, enumerada y acotada (mismo patrón que
+// `ENV_AUTHORITY_GRANDFATHERED`): se conservan en el manifiesto porque
+//   (a) `repo-target.js` y `kernel-resolver.js` los leen de este archivo desde
+//       #4693, por fuera del resolver, y moverlos el día 1 rompería la paridad
+//       clave por clave del CA-2 sin ganar frontera: CODEOWNERS NO cubre
+//       `.pipeline/` (auto-merge habilitado, ver `.github/CODEOWNERS`), así que
+//       `config.yaml` y este manifiesto están HOY bajo el mismo control de
+//       revisión — mudar el bloque no agregaría un gate humano, sólo movería el
+//       archivo;
+//   (b) la excepción no es descubrible por patrón: está enumerada acá y sólo
+//       cubre las sub-claves que ya existían;
+//   (c) NO es silenciosa: se trazea con nivel `alerta` en cada arranque;
+//   (d) queda CHEQUEADA, no exenta: sub-clave nueva ⇒ fail-closed, y las
+//       invariantes de la frontera (`intake ⊆ allowlist`, `primary ∈ allowlist`)
+//       se verifican en el arranque.
+//
+// El cierre de la excepción —mover el bloque al kernel— es de #4694, que ya es
+// la dependencia declarada del `note` del propio bloque (naming repo-scoped).
+const REPOS_AUTHORITY_KEY = 'repos';
+const REPOS_GRANDFATHERED_SUBKEYS = Object.freeze([
+    'primary', 'allowlist', 'intake', 'default_base_ref', 'note',
+]);
+
+/** Claves `repos|file|via` ya trazadas: la alerta se emite una vez por proceso. */
+const reposTrazado = new Set();
+
+/**
+ * REQ-SEC-C2 — toda clave del top-level del manifiesto que no esté en la lista
+ * congelada rompe el arranque, nombrando la clave y el lado al que pertenece.
+ *
+ * @param {object} doc - manifiesto ENTERO (no el slice).
+ * @param {string} file
+ * @param {string} via
+ * @throws {ConfigSchemaViolation}
+ */
+function assertManifestTopLevel(doc, file, via) {
+    const errors = [];
+    for (const key of Object.keys(doc)) {
+        if (MANIFEST_KEYS.includes(key)) continue;
+        // `resolveSide` es la MISMA fuente de verdad que usa el chequeo del
+        // slice, así que una clave de autoridad se nombra como tal y el operador
+        // lee a qué archivo mudarla. Lo que no está en `SIDE_MAP` cae al default
+        // fail-closed (`kernel`), que también es un destino accionable.
+        const lado = resolveSide(key);
+        errors.push({
+            path: '/' + sanitizeKeyName(key),
+            keyword: 'manifest-key',
+            detail: `no es una clave del manifiesto de producto; es lado '${lado}' y va en ${archivoDeLado(lado)}`,
+            lado,
+        });
+    }
+    if (errors.length) {
+        throw new ConfigSchemaViolation(formatErrors(errors), errors, {
+            archivo: file, via, causa: 'clave-fuera-del-manifiesto',
+        });
+    }
+    if (Object.prototype.hasOwnProperty.call(doc, REPOS_AUTHORITY_KEY)) {
+        assertReposAuthorityBlock(doc[REPOS_AUTHORITY_KEY], file, via);
+    }
+}
+
+/**
+ * CA-8 — la excepción de migración de `repos.*` queda ACOTADA y CHEQUEADA.
+ *
+ * No valida la forma `owner/repo` de cada entrada: eso ya lo hace `repo-target`
+ * con default-deny en el punto de uso, y duplicar el regex crearía una segunda
+ * fuente de verdad que puede desfasarse. Acá se verifica lo que `repo-target` no
+ * puede ver desde una sola función: la COHERENCIA del bloque.
+ *
+ * Los errores NO vuelcan el valor (SEC-2): el manifiesto es mergeable por PR y el
+ * error viaja al log y a Telegram. Se nombra el path (con índice) y el motivo.
+ *
+ * @param {*} repos
+ * @param {string} file
+ * @param {string} via
+ * @throws {ConfigSchemaViolation}
+ */
+function assertReposAuthorityBlock(repos, file, via) {
+    const errors = [];
+    const push = (p, keyword, detail) => errors.push({ path: p, keyword, detail, lado: 'autoridad' });
+
+    if (!esMapa(repos)) {
+        push('/repos', 'shape', 'la frontera de confianza tiene que ser un mapa de claves');
+    } else {
+        for (const k of Object.keys(repos)) {
+            if (REPOS_GRANDFATHERED_SUBKEYS.includes(k)) continue;
+            push('/repos/' + sanitizeKeyName(k), 'authority-scope',
+                'no está en la excepción de migración enumerada; una clave nueva bajo la frontera de '
+                + `confianza es lado autoridad y va en ${archivoDeLado('autoridad')}`);
+        }
+        const arr = (k) => (Array.isArray(repos[k]) ? repos[k] : null);
+        if (repos.allowlist !== undefined && !arr('allowlist')) push('/repos/allowlist', 'type', 'se espera un array');
+        if (repos.intake !== undefined && !arr('intake')) push('/repos/intake', 'type', 'se espera un array');
+        if (repos.primary !== undefined && typeof repos.primary !== 'string') push('/repos/primary', 'type', 'se espera un string');
+
+        // Invariantes de la frontera: nada se consulta ni se toma como primario
+        // sin estar allowlisted. Un `intake` con un repo que no está en la
+        // allowlist es exactamente el desfasaje que #4693 vino a eliminar.
+        const allow = arr('allowlist');
+        if (allow) {
+            const permitidos = new Set(allow);
+            const intake = arr('intake');
+            if (intake) {
+                intake.forEach((r, i) => {
+                    if (!permitidos.has(r)) {
+                        push(`/repos/intake/${i}`, 'authority-invariant', 'el repo de intake no está en `allowlist`');
+                    }
+                });
+            }
+            if (typeof repos.primary === 'string' && !permitidos.has(repos.primary)) {
+                push('/repos/primary', 'authority-invariant', 'el repo primario no está en `allowlist`');
+            }
+        }
+    }
+
+    if (errors.length) {
+        throw new ConfigSchemaViolation(formatErrors(errors), errors, {
+            archivo: file, via, causa: 'frontera-de-confianza',
+        });
+    }
+
+    // (c) de la decisión: NUNCA silenciosa. Una vez por proceso, con nivel
+    // `alerta`, para que la excepción se vea en el log de todo arranque en vez
+    // de vivir sólo en un comentario.
+    const key = `${REPOS_AUTHORITY_KEY}|${file}|${via}`;
+    if (reposTrazado.has(key)) return;
+    reposTrazado.add(key);
+    emitTrace(
+        'alerta',
+        `[config-resolver] ALERTA autoridad: '${REPOS_AUTHORITY_KEY}' (frontera de ejecución de código) `
+        + `vive en ${PRODUCT_CONFIG_FILE} por excepción de migración acotada a `
+        + `[${REPOS_GRANDFATHERED_SUBKEYS.join(', ')}] — cierre en #4694. `
+        + 'Su CONTENIDO no lo valida el chequeo de lado: la revisión del cambio es el control.',
+        file,
+        via,
+    );
 }
 
 /**
@@ -1054,6 +1243,13 @@ module.exports = {
     productPathFor,
     PRODUCT_FILENAME,
     PRODUCT_CONFIG_KEY,
+    // #5174 rev-1 · REQ-SEC-C2 / CA-8 — la forma cerrada del manifiesto y la
+    // excepción de migración de la frontera de confianza. Se exportan para que
+    // el test itere sobre las listas congeladas en vez de duplicarlas: una
+    // clave nueva queda cubierta el día que se agrega.
+    MANIFEST_KEYS,
+    REPOS_AUTHORITY_KEY,
+    REPOS_GRANDFATHERED_SUBKEYS,
     PARTITION_ENABLED,
     FORBIDDEN_KEYS,
     ENV_AUTHORITY_GRANDFATHERED,
