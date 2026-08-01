@@ -1,0 +1,44 @@
+{
+  "sprints": [
+    {
+      "sprint_id": "2026-03-16",
+      "fecha_inicio": "2026-03-16",
+      "fecha_fin": "2026-03-20",
+      "recorded_at": "2026-03-12T03:35:56.086Z",
+      "agents_participated": [
+        "/delivery",
+        "/historia",
+        "/scrum",
+        "/planner",
+        "/review",
+        "/ops",
+        "/cleanup"
+      ],
+      "agents_total": 21,
+      "coverage_pct": 33
+    },
+    {
+      "sprint_id": "2026-03-17",
+      "fecha_inicio": "2026-03-17",
+      "fecha_fin": "2026-03-21",
+      "recorded_at": "2026-03-15T15:42:37.384Z",
+      "agents_participated": [
+        "/ops",
+        "/planner"
+      ],
+      "agents_total": 19,
+      "coverage_pct": 11
+    },
+    {
+      "sprint_id": "2026-03-15",
+      "fecha_inicio": "2026-03-15",
+      "fecha_fin": "2026-03-21",
+      "recorded_at": "2026-03-16T09:57:19.568Z",
+      "agents_participated": [
+        "/ops"
+      ],
+      "agents_total": 19,
+      "coverage_pct": 5
+    }
+  ]
+}

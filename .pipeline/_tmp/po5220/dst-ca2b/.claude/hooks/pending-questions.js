@@ -1,0 +1,207 @@
+// pending-questions.js — Persistencia de preguntas pendientes para Telegram
+// Usado por: permission-gate.js, ask-next-sprint.js, telegram-commander.js
+//
+// Formato del archivo pending-questions.json:
+// {
+//   "questions": [
+//     {
+//       "id": "abc123",
+//       "type": "permission" | "sprint" | "proposal",
+//       "timestamp": "2026-02-26T10:00:00.000Z",
+//       "message": "Texto del mensaje enviado",
+//       "telegram_message_id": 12345,
+//       "options": [{ "label": "Si", "action": "yes" }, ...],
+//       "action_data": { ... },  // datos para ejecutar la acción al responder
+//       "status": "pending" | "answered" | "expired" | "retried",
+//       "answered_at": null
+//     }
+//   ]
+// }
+
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
+const crypto = require("crypto");
+
+// Resolver siempre al repo principal (no al worktree) para centralizar permisos (#1404)
+function resolveMainHooksDir() {
+    try {
+        const { execSync } = require("child_process");
+        const output = execSync("git worktree list", {
+            encoding: "utf8", cwd: __dirname, timeout: 5000, windowsHide: true
+        });
+        const firstLine = output.split("\n")[0] || "";
+        const match = firstLine.match(/^(.+?)\s+[0-9a-f]{5,}/);
+        if (match) {
+            const mainPath = match[1].trim().replace(/^\/([a-z])\//, "$1:\\").replace(/\//g, "\\");
+            return path.join(mainPath, ".claude", "hooks");
+        }
+    } catch (e) {}
+    return __dirname;
+}
+const PENDING_FILE = path.join(resolveMainHooksDir(), "pending-questions.json");
+const MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h — limpiar automáticamente
+const LOAD_RETRY_COUNT = 3;
+const LOAD_RETRY_DELAY_MS = 50;
+
+function loadQuestions() {
+    for (let attempt = 0; attempt < LOAD_RETRY_COUNT; attempt++) {
+        try {
+            const raw = fs.readFileSync(PENDING_FILE, "utf8");
+            if (!raw || !raw.trim()) return { questions: [] };
+            const parsed = JSON.parse(raw);
+            if (!parsed || !Array.isArray(parsed.questions)) return { questions: [] };
+            return parsed;
+        } catch (e) {
+            // Si es JSON corrupto (race condition con escritura concurrente), reintentar
+            if (e instanceof SyntaxError && attempt < LOAD_RETRY_COUNT - 1) {
+                // Espera sincrónica breve antes de reintentar
+                const end = Date.now() + LOAD_RETRY_DELAY_MS;
+                while (Date.now() < end) { /* busy wait */ }
+                continue;
+            }
+            // ENOENT o último intento fallido — devolver vacío
+            return { questions: [] };
+        }
+    }
+    return { questions: [] };
+}
+
+// P-01: Escritura atómica — temp file + rename (atómico en mismo filesystem NTFS)
+function saveQuestions(data) {
+    try {
+        // P-01: Escritura atómica: escribir a archivo temporal → rename
+        // Esto previene race conditions cuando 2 agentes leen/escriben simultáneamente
+        const tmpFile = PENDING_FILE + "." + crypto.randomBytes(4).toString("hex") + ".tmp";
+        fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2), "utf8");
+        fs.renameSync(tmpFile, PENDING_FILE);
+    } catch (e) {
+        // Fallback: si rename falla (ej: cross-device), intentar escritura directa
+        try {
+            fs.writeFileSync(PENDING_FILE, JSON.stringify(data, null, 2), "utf8");
+        } catch (e2) {}
+    }
+}
+
+/**
+ * Registrar una nueva pregunta pendiente.
+ * @param {object} question - { id, type, message, telegram_message_id, options, action_data }
+ */
+function addPendingQuestion(question) {
+    const data = loadQuestions();
+    // Limpiar preguntas viejas (>24h)
+    const cutoff = Date.now() - MAX_AGE_MS;
+    data.questions = data.questions.filter(q => new Date(q.timestamp).getTime() > cutoff);
+
+    data.questions.push({
+        id: question.id,
+        type: question.type,
+        timestamp: new Date().toISOString(),
+        message: question.message,
+        original_html: question.original_html || null,
+        telegram_message_id: question.telegram_message_id || null,
+        options: question.options || [],
+        action_data: question.action_data || {},
+        skill_context: question.skill_context || null,
+        approver_pid: question.approver_pid || null,
+        status: "pending",
+        answered_at: null
+    });
+    saveQuestions(data);
+}
+
+/**
+ * Marcar una pregunta como respondida.
+ * @param {string} id - ID de la pregunta
+ * @param {string} status - "answered" | "expired"
+ * @param {string|null} via - "console" | "telegram" | null (origen de la respuesta)
+ * @param {string|null} actionResult - "allow" | "always" | "deny" | null (acción elegida)
+ */
+function resolveQuestion(id, status, via, actionResult) {
+    const data = loadQuestions();
+    const q = data.questions.find(q => q.id === id);
+    if (q) {
+        q.status = status || "answered";
+        q.answered_at = new Date().toISOString();
+        if (via) q.answered_via = via;
+        if (actionResult) q.action_result = actionResult;
+        saveQuestions(data);
+    }
+}
+
+/**
+ * Obtener preguntas pendientes (no respondidas ni expiradas ni canceladas).
+ * @returns {Array} preguntas pendientes
+ */
+function getPendingQuestions() {
+    const data = loadQuestions();
+    const cutoff = Date.now() - MAX_AGE_MS;
+    return data.questions.filter(q =>
+        q.status === "pending" &&
+        new Date(q.timestamp).getTime() > cutoff
+    );
+}
+
+/**
+ * Obtener preguntas expiradas de las últimas 24h.
+ * @returns {Array} preguntas expiradas
+ */
+function getExpiredQuestions() {
+    const data = loadQuestions();
+    const cutoff = Date.now() - MAX_AGE_MS;
+    return data.questions.filter(q =>
+        q.status === "expired" &&
+        new Date(q.timestamp).getTime() > cutoff
+    );
+}
+
+/**
+ * Reintentar una pregunta expirada: cambia status a "retried" y retorna action_data.
+ * @param {string} id - ID de la pregunta
+ * @returns {object|null} action_data de la pregunta, o null si no se encontró/no era expired
+ */
+function retryQuestion(id) {
+    const data = loadQuestions();
+    const q = data.questions.find(q => q.id === id);
+    if (!q || q.status !== "expired") return null;
+    q.status = "retried";
+    q.retried_at = new Date().toISOString();
+    saveQuestions(data);
+    return q.action_data || null;
+}
+
+/**
+ * Obtener una pregunta por ID.
+ * @param {string} id
+ * @returns {object|null}
+ */
+function getQuestionById(id) {
+    const data = loadQuestions();
+    return data.questions.find(q => q.id === id) || null;
+}
+
+/**
+ * Actualizar un campo de una pregunta pendiente.
+ * @param {string} id - ID de la pregunta
+ * @param {object} fields - Campos a actualizar (ej: { telegram_message_id: 123 })
+ */
+function updateQuestionField(id, fields) {
+    const data = loadQuestions();
+    const q = data.questions.find(q => q.id === id);
+    if (q) {
+        Object.assign(q, fields);
+        saveQuestions(data);
+    }
+}
+
+module.exports = {
+    addPendingQuestion,
+    resolveQuestion,
+    getPendingQuestions,
+    getExpiredQuestions,
+    retryQuestion,
+    getQuestionById,
+    updateQuestionField,
+    loadQuestions,
+    saveQuestions
+};
