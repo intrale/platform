@@ -101,6 +101,70 @@ test('fmtReport no contiene ninguna subcadena de 8 o mas caracteres del valor si
     'el hash truncado identifica la credencial sin revelarla');
 });
 
+test('ningun valor real sobrevive al camino disco -> barrido -> reporte ni a la salida --json', () => {
+  // ⛔ CA-3 — BLOQUEANTE, y el ÚNICO test que defiende el invariante de verdad.
+  //
+  // El test de arriba arma el hallazgo A MANO con los campos que ya sabe que son
+  // seguros, así que el valor sintético nunca entra a `fmtReport`: no puede
+  // fallar para NINGUNA implementación. Éste ejercita el camino REAL —
+  // escribe el valor en disco, lo hace pasar por `scanLeakedSecrets` +
+  // `classifyAll`, y barre las ventanas de 8 chars sobre las DOS salidas.
+  //
+  // Mutación que este test tiene que matar (verificada: sin él la suite entera
+  // queda en verde): agregar `value` al Finding en `mkFinding` o en `walkJson`.
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), '5220-e2e-'));
+  const root = path.join(tmp, 'platform.session-fake');
+  const hooks = path.join(root, '.claude', '.claude', 'hooks');
+  fs.mkdirSync(hooks, { recursive: true });
+
+  // Cuatro formas distintas, todas con valor real en disco.
+  const VALORES = {
+    bot_token: VALOR_SINTETICO,
+    openai_api_key: 'sk-proj-FakeSyntheticOpenAiKeyForTestsOnly000111222333',
+    google_oauth_client_secret: 'GOCSPX-FakeSyntheticClientSecret012',
+    google_oauth_refresh_token: '1//FakeSyntheticRefreshTokenForTestsOnly0123456789',
+  };
+  fs.writeFileSync(path.join(hooks, 'telegram-config.json'), JSON.stringify(VALORES, null, 2));
+
+  const barrido = scan.scanLeakedSecrets({ roots: [root] });
+  assert.ok(barrido.findings.length >= 4,
+    'precondición: el barrido encuentra las credenciales que acabamos de escribir');
+
+  const clasificados = scan.classifyAll(barrido.findings);
+  const r = reporteBase({
+    dryRun: true,
+    leakedSecrets: clasificados,
+    secretsScanErrors: barrido.errors,
+    secretsUnparseable: barrido.filesUnparseable,
+  });
+
+  // Las DOS salidas del comando: el reporte humano y el `--json` que consumen
+  // dashboard y automatismos (hoy sin ninguna cobertura).
+  const salidas = { 'fmtReport': gb.fmtReport(r), 'JSON.stringify(report)': JSON.stringify(r, null, 2) };
+
+  for (const [nombre, out] of Object.entries(salidas)) {
+    for (const [clave, valor] of Object.entries(VALORES)) {
+      for (let i = 0; i + 8 <= valor.length; i++) {
+        const sub = valor.slice(i, i + 8);
+        assert.ok(!out.includes(sub),
+          `${nombre} filtró una subcadena de 8 chars del valor de "${clave}" (offset ${i})`);
+      }
+    }
+  }
+
+  // Y lo que SÍ tiene que estar: identificación sin revelación.
+  const algunHash = clasificados.find((f) => f.hash8);
+  assert.ok(algunHash, 'los hallazgos se identifican por hash8');
+  assert.ok(salidas['fmtReport'].includes(algunHash.hash8),
+    'el hash truncado identifica la credencial sin revelarla');
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
 test('fmtReport reporta purgables, historial y no verificables por separado sin total agregado', () => {
   // CA-1 — mezclar las tres sugiere que «purgar 52» equivale a «rotar 13».
   const r = reporteBase({
@@ -189,8 +253,9 @@ test('el vocabulario de glifos de secretos no se confunde con el de basura', () 
   assert.ok(!seccion.includes('🗑'), 'un secreto vivo no lleva el glifo de "borrado"');
 });
 
-test('el CLI sale con codigo distinto de cero ante no verificables', () => {
-  // CA-5 / R10 — hasta #5220 el comando salía SIEMPRE con 0.
+test('computeExitCode devuelve el codigo semantico ante no verificables', () => {
+  // CA-5 / R10 — la FUNCIÓN. El cableado al proceso lo cubre el test de abajo:
+  // éste solo no alcanza (borrar `process.exitCode = exitCode` lo deja verde).
   const E = gb.EXIT_CODES;
   const conNoVerificable = reporteBase({
     leakedSecrets: [hallazgo({ category: 'no-verificable', hash8: null, len: null })],
@@ -201,6 +266,59 @@ test('el CLI sale con codigo distinto de cero ante no verificables', () => {
 
   // Y sigue saliendo 0 cuando no hay nada, para no romper a los callers (R10).
   assert.strictEqual(scan.computeExitCode(reporteBase()), 0);
+});
+
+test('el CLI real sale con codigo distinto de cero ante no verificables', { timeout: 90000 }, () => {
+  // ⛔ CA-5 / R10 — ejercita el PROCESO, no la función. La regresión que #5220
+  // vino a cerrar es «el comando salía SIEMPRE con 0»: sin este test, borrar la
+  // línea `process.exitCode = exitCode` de ghostbusters.js deja la suite entera
+  // en verde y la regresión vuelve sin que nadie se entere.
+  //
+  // El barrido real tarda ~11,5 s y depende del disco, así que se inyecta un
+  // stub por `--require`: el preload puebla el `require.cache` del módulo y
+  // parchea sus exports ANTES de que ghostbusters lo requiera (mismo path
+  // resuelto ⇒ mismo objeto de módulo). Determinístico y sin tocar el disco.
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { spawnSync } = require('child_process');
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), '5220-cli-'));
+  const modulo = path.resolve(__dirname, '..', 'secret-leak-scan.js').replace(/\\/g, '\\\\');
+  const cli = path.resolve(__dirname, '..', '..', 'ghostbusters.js');
+
+  const preload = path.join(tmp, 'stub.js');
+  fs.writeFileSync(preload, `
+    const scan = require('${modulo}');
+    scan.enumerateScanRoots = () => ['C:/fake/platform.session-stub'];
+    scan.scanLeakedSecrets = () => ({
+      findings: [{
+        root: 'C:/fake/platform.session-stub',
+        file: 'C:/fake/platform.session-stub/.claude/roto.json',
+        rel: '.claude/roto.json', key: '(archivo)', kind: 'json-invalido',
+        hash8: null, len: null, category: 'no-verificable', reason: 'JSON roto',
+      }],
+      errors: [], dirsScanned: 1, filesScanned: 1, filesUnparseable: 1,
+    });
+    scan.classifyAll = (fs_) => fs_;
+  `);
+
+  const r = spawnSync(process.execPath, ['--require', preload, cli, '--secrets', '--dry-run', '--json'],
+    { encoding: 'utf8', timeout: 80000 });
+
+  assert.strictEqual(r.error, undefined, `el CLI no llegó a correr: ${r.error && r.error.message}`);
+  assert.strictEqual(r.status, scan.EXIT_CODES.UNVERIFIABLE,
+    `el proceso tiene que salir ${scan.EXIT_CODES.UNVERIFIABLE} (UNVERIFIABLE), salió ${r.status}`);
+  assert.notStrictEqual(r.status, 0, 'un no-verificable NUNCA puede salir 0 (fail-closed)');
+
+  // Y la salida --json tampoco filtra el valor (no hay ninguno que filtrar acá,
+  // pero se verifica que el campo prohibido no exista en el contrato de salida).
+  const salida = JSON.parse(r.stdout);
+  for (const f of salida.leakedSecrets || []) {
+    assert.ok(!('value' in f), 'el Finding de la salida --json no puede tener campo `value`');
+  }
+
+  fs.rmSync(tmp, { recursive: true, force: true });
 });
 
 test('el reporte con hallazgos se parte en varios mensajes en vez de truncarse', () => {

@@ -116,7 +116,12 @@ HELP
             while IFS= read -r -d '' _file; do
                 _rel="${_file#"$_INTRALE_MAIN/.claude/"}"
                 case "$_rel" in
-                    hooks/telegram-config.json|worktrees/*|sessions/*|sessions-archive/*|tmp/*|settings.local.json|\
+                    # El secreto se deniega por FORMA, no por ruta exacta: `hooks/`
+                    # está allowlisteado en bloque, así que un `.bak` o un
+                    # `hooks/tests/telegram-config.json` se colaba. Espeja la
+                    # DENY_RE de claude-copy-allowlist.js.
+                    telegram-config*|*/telegram-config*|\
+                    worktrees/*|sessions/*|sessions-archive/*|tmp/*|settings.local.json|\
                     *.jsonl|*.pid|*.heartbeat|*.heartbeat.stale|*.lock) continue ;;
                 esac
                 mkdir -p "$current_dir/.claude/$(dirname "$_rel")"
@@ -124,7 +129,11 @@ HELP
             done < <(find "$_source" -type f -print0)
         done
 
-        echo ">> .claude/ actualizado con allowlist (sin junction, sin secretos)"
+        # "sin secretos NUEVOS" y no "sin secretos": al preservarse el árbol que
+        # `git worktree add` materializó (en vez de borrarlo), un `.claude/`
+        # destino preexistente que ya tuviera un secreto NO se limpia acá. Lo
+        # que esta copia garantiza es que no se agrega ninguno.
+        echo ">> .claude/ actualizado con allowlist (sin junction, sin secretos nuevos)"
     fi
 
     echo ""

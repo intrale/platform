@@ -266,7 +266,7 @@ test('#3837 · redactRagContent tolera input no-string', () => {
 test('#5220 · redactSecretValue redacta un client_secret de Google de 35 caracteres', () => {
     // Mide 35 chars: por debajo de HIGH_ENTROPY_MIN_LEN=40, así que la red de
     // entropía NO lo agarraba y salía en claro.
-    const secreto = 'GOCSPX-FakeSyntheticClientSecret01';
+    const secreto = 'GOCSPX-FakeSyntheticClientSecret012';
     assert.equal(secreto.length < 40, true, 'el caso interesante es justamente que mide menos de 40');
     const out = redactSecretValue(secreto);
     assert.ok(!out.includes(secreto), `debe redactar el client_secret: ${out}`);

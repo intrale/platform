@@ -434,7 +434,9 @@ function mkFinding(root, file, hit, category, reason) {
  *
  * Medido: `rev-parse` costaba un spawn por raíz y el barrido completo tardaba
  * 11,5 s, de los cuales sólo 1,8 s eran lectura de archivos — el resto, git.
- * Resolverlo por fs elimina la mitad de los spawns sin perder exactitud.
+ * Resolverlo por fs elimina la mitad de los spawns sin perder exactitud: el
+ * mismo barrido (68 raíces, 3261 archivos) quedó en ~1 s medido sobre el disco
+ * real. Ése es el número vigente; el 11,5 s es el estado PREVIO a este cambio.
  *
  * @returns {string|null} toplevel en formato posix, o `null` si no es árbol git.
  */
@@ -545,6 +547,16 @@ function purgeFindings(findings, { dryRun = true, fsImpl = fsDefault, mainRepo }
   const skipped = [];
   const rootChecks = new Map();
 
+  // Un hallazgo es UNA CREDENCIAL, pero `unlinkSync` borra EL ARCHIVO ENTERO.
+  // Los 13 archivos purgables del disco real tienen 4 credenciales cada uno:
+  // sin esta memo el 1er hallazgo borra el archivo y los 3 restantes fallan el
+  // `lstat` con ENOENT y caen en `skipped` con `removed` en false — o sea que
+  // tras una purga que limpió el 100% del disco el reporte decía «0/13
+  // eliminados» y `computeExitCode` devolvía 2 (PURGABLE_PENDING) en vez de 0.
+  // La decisión de borrado se toma UNA vez por archivo y su resultado se
+  // propaga a TODOS los hallazgos de ese archivo.
+  const fileOutcome = new Map();
+
   for (const f of findings) {
     if (f.category !== 'purgable') {
       skipped.push({ ...f, skipReason: `categoría ${f.category}: no se purga` });
@@ -570,24 +582,39 @@ function purgeFindings(findings, { dryRun = true, fsImpl = fsDefault, mainRepo }
       continue;
     }
 
-    let st;
-    try { st = fsImpl.lstatSync(f.file); }
-    catch (e) { skipped.push({ ...f, skipReason: `lstat: ${String(e.message).slice(0, 80)}` }); continue; }
-    if (!st.isFile()) {
-      skipped.push({ ...f, skipReason: 'no es un archivo regular' });
-      continue;
+    // Decisión POR ARCHIVO, tomada una sola vez. El ENOENT del 2º hallazgo de
+    // un archivo ya borrado en esta misma corrida no es un skip: es el mismo
+    // borrado exitoso visto de nuevo.
+    if (!fileOutcome.has(f.file)) {
+      fileOutcome.set(f.file, decidePurge(f.file, { dryRun, fsImpl }));
     }
+    const outcome = fileOutcome.get(f.file);
 
-    if (dryRun) { purged.push({ ...f, removed: false, dryRun: true }); continue; }
-
-    try {
-      fsImpl.unlinkSync(f.file);              // ← unlink de UN archivo. Nunca rmSync recursivo.
-      purged.push({ ...f, removed: true, dryRun: false });
-    } catch (e) {
-      skipped.push({ ...f, skipReason: `unlink: ${String(e.message).slice(0, 80)}` });
-    }
+    if (!outcome.ok) { skipped.push({ ...f, skipReason: outcome.skipReason }); continue; }
+    purged.push({ ...f, removed: outcome.removed, dryRun });
   }
   return { purged, skipped };
+}
+
+/**
+ * Resuelve el borrado de UN archivo. Se llama una vez por archivo (memoizado
+ * por `purgeFindings`), no una vez por credencial.
+ * @returns {{ok:true, removed:boolean}|{ok:false, skipReason:string}}
+ */
+function decidePurge(file, { dryRun, fsImpl }) {
+  let st;
+  try { st = fsImpl.lstatSync(file); }
+  catch (e) { return { ok: false, skipReason: `lstat: ${String(e.message).slice(0, 80)}` }; }
+  if (!st.isFile()) return { ok: false, skipReason: 'no es un archivo regular' };
+
+  if (dryRun) return { ok: true, removed: false };
+
+  try {
+    fsImpl.unlinkSync(file);                  // ← unlink de UN archivo. Nunca rmSync recursivo.
+    return { ok: true, removed: true };
+  } catch (e) {
+    return { ok: false, skipReason: `unlink: ${String(e.message).slice(0, 80)}` };
+  }
 }
 
 // -----------------------------------------------------------------------------

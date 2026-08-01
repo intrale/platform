@@ -19,7 +19,7 @@ const scan = require('../secret-leak-scan');
 const FAKE = {
   botToken: '123456789:AAFakeSyntheticTokenForTestsOnly0123456789',
   openai: 'sk-proj-FakeSyntheticOpenAiKeyForTestsOnly000111222333',
-  googleSecret: 'GOCSPX-FakeSyntheticClientSecret01',   // 35 chars, como el real
+  googleSecret: 'GOCSPX-FakeSyntheticClientSecret012',   // 35 chars, igual que el real
   googleRefresh: '1//FakeSyntheticRefreshTokenForTestsOnly0123456789',
   aws: 'AKIAFAKESYNTHETIC123',
 };
@@ -187,6 +187,112 @@ test('purgeFindings borra solo untracked y nunca directorios ni worktrees', () =
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
+test('purgeFindings marca como eliminados todos los hallazgos de un archivo con varias credenciales', () => {
+  // ⛔ Regresión de rev-1. Un hallazgo es UNA CREDENCIAL pero `unlinkSync` borra
+  // EL ARCHIVO: los 13 archivos purgables del disco real tienen 4 credenciales
+  // cada uno. Sin dedup por archivo, el 1er hallazgo borraba el archivo y los 3
+  // restantes fallaban el `lstat` con ENOENT → el reporte decía «0/13
+  // eliminados» tras una purga que limpió el 100% del disco, y el comando salía
+  // con 2 (PURGABLE_PENDING) en vez de 0 (CLEAN).
+  const tmp = mkTmpDir('purge-multi');
+  const root = path.join(tmp, 'platform.session-fake');
+  const hooks = path.join(root, '.claude', '.claude', 'hooks');
+  fs.mkdirSync(hooks, { recursive: true });
+
+  const file = path.join(hooks, 'telegram-config.json');
+  fs.writeFileSync(file, JSON.stringify({
+    bot_token: FAKE.botToken,
+    openai_api_key: FAKE.openai,
+    google_oauth_client_secret: FAKE.googleSecret,
+    google_oauth_refresh_token: FAKE.googleRefresh,
+  }, null, 2));
+
+  // Las 4 credenciales del MISMO archivo, tal como las emite el barrido real.
+  const claves = ['bot_token', 'openai_api_key', 'google_oauth_client_secret', 'google_oauth_refresh_token'];
+  const findings = claves.map((key, i) => ({
+    root: root.replace(/\\/g, '/'), file: file.replace(/\\/g, '/'),
+    rel: '.claude/.claude/hooks/telegram-config.json',
+    key, kind: 'telegram_bot_token', hash8: `aabbcc0${i}`, len: 46, category: 'purgable',
+  }));
+
+  const { purged, skipped } = scan.purgeFindings(findings, {
+    dryRun: false, mainRepo: path.join(tmp, 'platform'),
+  });
+
+  assert.strictEqual(purged.length, 4, 'los 4 hallazgos del archivo cuentan como purgados');
+  assert.strictEqual(purged.filter((p) => p.removed).length, 4,
+    'el borrado efectivo se propaga a TODAS las credenciales del archivo');
+  assert.strictEqual(skipped.length, 0, 'ningún ENOENT espurio por el archivo ya borrado');
+  assert.strictEqual(fs.existsSync(file), false, 'el archivo se eliminó una sola vez');
+
+  // El invariante que se rompía: tras un `--run` exitoso el comando sale CLEAN.
+  assert.strictEqual(scan.computeExitCode({
+    leakedSecrets: purged, secretsScanErrors: [], secretsUnparseable: 0,
+  }), scan.EXIT_CODES.CLEAN, 'purga 100% exitosa ⇒ exit 0, no 2');
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('purgeFindings distingue un ENOENT real de un archivo ya purgado en la misma corrida', () => {
+  // El fix no puede degradar a «tratar todo ENOENT como éxito»: un archivo que
+  // ya no estaba ANTES de la corrida sigue siendo un skip legítimo y visible.
+  const tmp = mkTmpDir('purge-enoent');
+  const root = path.join(tmp, 'platform.session-fake');
+  fs.mkdirSync(path.join(root, '.claude', 'hooks'), { recursive: true });
+  const fantasma = path.join(root, '.claude', 'hooks', 'no-existe.json');
+
+  const { purged, skipped } = scan.purgeFindings([{
+    root: root.replace(/\\/g, '/'), file: fantasma.replace(/\\/g, '/'),
+    rel: '.claude/hooks/no-existe.json',
+    key: 'bot_token', kind: 'telegram_bot_token', hash8: 'deadbeef', len: 46, category: 'purgable',
+  }], { dryRun: false, mainRepo: path.join(tmp, 'platform') });
+
+  assert.strictEqual(purged.length, 0, 'un archivo ausente de entrada no se declara purgado');
+  assert.strictEqual(skipped.length, 1);
+  assert.ok(/ENOENT/.test(skipped[0].skipReason), 'y el motivo queda visible, no mudo');
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('purgeFindings se niega a tocar el repo principal y sus ancestros', () => {
+  // La guarda `isForbiddenTarget` no tenía cobertura: neutralizarla dejaba
+  // 21/21 en verde. Es la que impide que el barrido se coma el repo vivo.
+  const tmp = mkTmpDir('guard');
+  const mainRepo = path.join(tmp, 'platform');
+  fs.mkdirSync(path.join(mainRepo, '.claude', 'hooks'), { recursive: true });
+  const enElMain = path.join(mainRepo, '.claude', 'hooks', 'telegram-config.json');
+  fs.writeFileSync(enElMain, '{"bot_token":"x"}');
+
+  // 1) El propio repo principal como raíz.
+  const r1 = scan.purgeFindings([{
+    root: mainRepo.replace(/\\/g, '/'), file: enElMain.replace(/\\/g, '/'),
+    rel: '.claude/hooks/telegram-config.json',
+    key: 'bot_token', kind: 'telegram_bot_token', hash8: 'aabbccdd', len: 46, category: 'purgable',
+  }], { dryRun: false, mainRepo });
+
+  assert.strictEqual(r1.purged.length, 0, 'jamás se purga dentro del repo principal');
+  assert.strictEqual(fs.existsSync(enElMain), true, 'el archivo del repo vivo sigue ahí');
+  assert.ok(/path protegido/.test(r1.skipped[0].skipReason), 'y el motivo lo dice');
+
+  // 2) Una raíz fuera del prefijo de worktrees hermanos `<repo>.*`.
+  const intruso = path.join(tmp, 'otro-proyecto');
+  fs.mkdirSync(path.join(intruso, '.claude'), { recursive: true });
+  const ajeno = path.join(intruso, '.claude', 'config.json');
+  fs.writeFileSync(ajeno, '{"bot_token":"x"}');
+
+  const r2 = scan.purgeFindings([{
+    root: intruso.replace(/\\/g, '/'), file: ajeno.replace(/\\/g, '/'),
+    rel: '.claude/config.json',
+    key: 'bot_token', kind: 'telegram_bot_token', hash8: 'aabbccdd', len: 46, category: 'purgable',
+  }], { dryRun: false, mainRepo });
+
+  assert.strictEqual(r2.purged.length, 0, 'fuera del prefijo `<repo>.*` no se toca nada');
+  assert.strictEqual(fs.existsSync(ajeno), true);
+  assert.ok(/path protegido/.test(r2.skipped[0].skipReason));
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
 test('purgeFindings en dry-run no toca el disco', () => {
   const tmp = mkTmpDir('dry');
   const root = path.join(tmp, 'platform.session-fake');
@@ -274,7 +380,7 @@ test('scanLeakedSecrets falla cerrado al alcanzar el limite de profundidad', () 
   for (let i = 0; i < 7; i++) deepDir = path.join(deepDir, `nivel-${i}`);
   fs.mkdirSync(deepDir, { recursive: true });
   fs.writeFileSync(path.join(deepDir, 'secreto.json'),
-    JSON.stringify({ refresh_token: FAKE.refreshToken }));
+    JSON.stringify({ refresh_token: FAKE.googleRefresh }));
 
   const r = scan.scanLeakedSecrets({ roots: [root] });
 
@@ -300,7 +406,7 @@ test('scanLeakedSecrets falla cerrado ante un JSON mayor a 2 MiB', () => {
   const hooks = path.join(root, '.claude', 'hooks');
   fs.mkdirSync(hooks, { recursive: true });
   fs.writeFileSync(path.join(hooks, 'secreto-grande.json'), JSON.stringify({
-    refresh_token: FAKE.refreshToken,
+    refresh_token: FAKE.googleRefresh,
     padding: 'x'.repeat(2 * 1024 * 1024),
   }));
 
@@ -358,6 +464,82 @@ test('el barrido no agrega entradas al git status ni deja trackeados en M o D', 
 // Rotación, agrupado y exit codes
 // -----------------------------------------------------------------------------
 
+test('el barrido corta la recursion en worktrees y sessions', () => {
+  // El corte `DENY_DIRS` del BARRIDO no tenía cobertura (el test de cli-branch
+  // cubre el del COPIADOR, que es otro). Sin `worktrees/` el barrido recursa en
+  // copias de copias y el costo explota.
+  const tmp = mkTmpDir('deny-dirs');
+  const root = path.join(tmp, 'platform.session-fake');
+
+  // Un secreto VISIBLE (se tiene que encontrar) y uno por cada dir denegado.
+  const visible = path.join(root, '.claude', 'hooks');
+  fs.mkdirSync(visible, { recursive: true });
+  fs.writeFileSync(path.join(visible, 'telegram-config.json'),
+    JSON.stringify({ bot_token: FAKE.botToken }));
+
+  for (const denegado of ['worktrees', 'sessions', 'sessions-archive', 'tmp', 'node_modules']) {
+    const d = path.join(root, '.claude', denegado, 'hooks');
+    fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(d, 'telegram-config.json'),
+      JSON.stringify({ bot_token: FAKE.botToken, openai_api_key: FAKE.openai }));
+  }
+
+  const r = scan.scanLeakedSecrets({ roots: [root] });
+
+  assert.strictEqual(r.findings.length, 1,
+    'sólo el secreto fuera de los directorios denegados entra al barrido');
+  assert.strictEqual(r.findings[0].kind, 'telegram_bot_token');
+  assert.ok(!r.findings.some((f) => /worktrees|sessions|node_modules|[\\/]tmp[\\/]/.test(f.file)),
+    'ningún hallazgo proviene de un directorio con corte de recursión');
+  assert.strictEqual(r.filesScanned, 1, 'los archivos denegados ni se abren');
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('loadRotationRegistry falla cerrado ante registro ausente o corrupto', () => {
+  // CA-7 — sin cobertura hasta acá. Si el registro se puede leer «optimista»,
+  // una credencial sin rotar pasa por rotada y el exit code miente.
+  const tmp = mkTmpDir('rotations');
+
+  // 1) Sin archivo declarado.
+  assert.strictEqual(scan.loadRotationRegistry({}).size, 0);
+
+  // 2) Archivo inexistente.
+  const ausente = path.join(tmp, 'no-existe.json');
+  assert.strictEqual(scan.loadRotationRegistry({ file: ausente }).size, 0);
+
+  // 3) JSON corrupto.
+  const corrupto = path.join(tmp, 'corrupto.json');
+  fs.writeFileSync(corrupto, '{ esto no es json');
+  assert.strictEqual(scan.loadRotationRegistry({ file: corrupto }).size, 0);
+
+  // 4) JSON válido sin la clave esperada.
+  const vacio = path.join(tmp, 'vacio.json');
+  fs.writeFileSync(vacio, JSON.stringify({ otra_cosa: [1, 2, 3] }));
+  assert.strictEqual(scan.loadRotationRegistry({ file: vacio }).size, 0);
+
+  // En los cuatro casos el hallazgo de historial queda PENDIENTE (fail-closed),
+  // nunca rotado — que es lo que sostiene la definición de «cero secretos».
+  const f = { hash8: 'aabbccdd', category: 'historial' };
+  for (const reg of [scan.loadRotationRegistry({}), scan.loadRotationRegistry({ file: corrupto })]) {
+    const st = scan.rotationStatusOf(f, reg);
+    assert.strictEqual(st.rotated, false, 'sin registro legible NADA cuenta como rotado');
+    assert.match(st.label, /PENDIENTE/);
+  }
+
+  // 5) Registro válido y completo: recién ahí cuenta como rotada.
+  const bueno = path.join(tmp, 'bueno.json');
+  fs.writeFileSync(bueno, JSON.stringify({ rotations: [
+    { hash8: 'aabbccdd', kind: 'telegram_bot_token', rotated_at: '2026-07-30',
+      revoked: true, verified_at: '2026-07-30' },
+  ] }));
+  const reg = scan.loadRotationRegistry({ file: bueno });
+  assert.strictEqual(reg.size, 1);
+  assert.strictEqual(scan.rotationStatusOf(f, reg).rotated, true);
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
 test('rotationStatusOf marca PENDIENTE salvo rotacion con revocacion verificada', () => {
   const f = { hash8: 'aabbccdd' };
   assert.strictEqual(scan.rotationStatusOf(f, new Map()).rotated, false);
@@ -374,14 +556,34 @@ test('rotationStatusOf marca PENDIENTE salvo rotacion con revocacion verificada'
 });
 
 test('groupFindings agrupa por credencial distinta sin perder ningun archivo', () => {
-  const mk = (root) => ({
+  const mk = (root, over = {}) => ({
     root, file: `${root}/.claude/.claude/hooks/telegram-config.json`, rel: 'x',
     key: 'bot_token', kind: 'telegram_bot_token', hash8: 'aabbccdd', len: 46, category: 'purgable',
+    ...over,
   });
+
+  // 1) La MISMA credencial en 3 worktrees colapsa en 1 línea (agrupar comprime).
   const g = scan.groupFindings([mk('/a'), mk('/b'), mk('/c')]);
   assert.strictEqual(g.length, 1, 'una línea por credencial distinta');
   assert.strictEqual(g[0].count, 3, 'sin perder ninguno: agrupar comprime, truncar pierde');
   assert.strictEqual(g[0].roots.length, 3);
+
+  // 2) Y lo DISTINTO se separa — que es la mitad que el test no probaba: con 3
+  //    hallazgos idénticos, sacar `hash8` de la clave de agrupación seguía verde.
+  const distintos = scan.groupFindings([
+    mk('/a'),                                                      // credencial A
+    mk('/b', { hash8: '11223344' }),                               // credencial B, mismo kind
+    mk('/c', { kind: 'openai_api_key', hash8: '55667788', key: 'openai_api_key' }),
+    mk('/d', { category: 'historial' }),                           // misma credencial, otra categoría
+  ]);
+  assert.strictEqual(distintos.length, 4,
+    'dos hash8 distintos, dos kind distintos y dos categorías distintas NO se mezclan');
+  assert.deepStrictEqual(
+    [...new Set(distintos.map((x) => x.hash8))].sort(),
+    ['11223344', '55667788', 'aabbccdd'],
+    'cada credencial distinta conserva su identidad propia');
+  assert.strictEqual(distintos.filter((x) => x.category === 'historial').length, 1,
+    'la categoría es parte de la clave: un purgable no se funde con un historial');
 });
 
 test('computeExitCode devuelve el codigo semantico mas alto', () => {

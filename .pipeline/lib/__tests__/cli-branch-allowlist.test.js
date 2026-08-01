@@ -26,6 +26,28 @@ test('la copia de .claude excluye telegram-config.json', () => {
   assert.strictEqual(isAllowed('hooks/messaging-config.json.example'), true);
 });
 
+test('el deny del secreto es por forma y no por ruta exacta', () => {
+  // El deny original era el path literal `hooks/telegram-config.json`, pero
+  // `hooks/` está allowlisteado EN BLOQUE: cualquier variante del nombre se
+  // copiaba al destino. Hoy no existe ninguno de estos archivos; la allowlist
+  // tiene que resistir que aparezcan.
+  for (const variante of [
+    'hooks/telegram-config.json',
+    'hooks/telegram-config.json.bak',
+    'hooks/telegram-config.json.orig',
+    'hooks/telegram-config.local.json',
+    'hooks/tests/telegram-config.json',
+    'hooks/backup/telegram-config.json.2026-07-30',
+    'telegram-config.json',
+  ]) {
+    assert.strictEqual(isAllowed(variante), false, `debería bloquear: ${variante}`);
+  }
+  // Y no se pasa de rosca: un hook cuyo nombre sólo MENCIONA telegram sí se copia.
+  assert.strictEqual(isAllowed('hooks/telegram-notify.js'), true);
+  assert.strictEqual(isAllowed('hooks/telegram-config-loader.js'), false,
+    'un loader que arranca con `telegram-config` cae del lado conservador');
+});
+
 test('la copia de .claude no recursa en worktrees ni sessions', () => {
   // Corte de recursión: sin esto se copian copias de copias.
   for (const denegado of [
@@ -104,8 +126,12 @@ test('scripts/dev-functions.sh preserva trackeados y filtra antes de copiar', ()
   assert.ok(!sh.includes('rm -rf "$current_dir/.claude"'),
     'no debe borrar el árbol trackeado que materializó git worktree');
   assert.ok(sh.includes('_allow=('), 'debe copiar por allowlist explícita');
-  assert.match(sh, /hooks\/telegram-config\.json[^]*continue/,
-    'debe excluir el archivo con secretos antes del cp');
+  // El deny se espeja por FORMA, no por ruta exacta: `hooks/` se copia en
+  // bloque, así que un `.bak` o un `hooks/tests/telegram-config.json` se colaba.
+  assert.match(sh, /telegram-config\*\|\*\/telegram-config\*[^]*continue/,
+    'debe excluir toda variante del archivo con secretos antes del cp');
+  assert.ok(!/case "\$_rel" in[^]*?hooks\/telegram-config\.json\|/.test(sh),
+    'el deny literal por ruta exacta quedó reemplazado por el glob de forma');
   assert.ok(!sh.includes('rm -f "$current_dir/.claude/hooks/telegram-config.json"'),
     'no debe post-borrar el secreto después de copiarlo');
   assert.ok(!/cp -r "\$_INTRALE_MAIN\/\.claude" "\$current_dir\/\.claude"/.test(sh),

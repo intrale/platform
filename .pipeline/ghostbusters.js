@@ -184,11 +184,21 @@ function parseCliArgs(argv) {
   };
   const knownCats = ['processes', 'worktrees', 'sessions', 'locks', 'logs', 'qa', 'agents', 'env', 'branches', 'secrets'];
   for (const c of knownCats) if (flags.has(`--${c}`)) opts.categories.add(c);
-  // #5220 CA-8 / R1 — `secrets` NO entra en la corrida default. Medido sobre el
-  // disco real: el barrido completo tarda ~11,5 s (68 raíces, 3260 archivos),
-  // muy por encima del techo de 5 s que fija CA-8. Se toma la vía alternativa
-  // que CA-8 habilita: la categoría queda detrás del flag `--secrets` y la
-  // corrida sin flags hace sólo el chequeo barato (`quickNestedClaudeCheck`).
+  // #5220 CA-8 / R1 — `secrets` NO entra en la corrida default.
+  //
+  // El motivo ORIGINAL era el tiempo: con un `git rev-parse` por raíz el barrido
+  // tardaba ~11,5 s, muy por encima del techo de 5 s que fija CA-8. Resolver el
+  // toplevel por fs (ver `gitTopLevel`) lo bajó a ~1 s medido sobre el mismo
+  // disco (68 raíces, 3261 archivos, 4 corridas: 880/960/1078/1144 ms), así que
+  // ese motivo YA NO APLICA.
+  //
+  // Sigue fuera del default por una razón distinta y vigente: el barrido es lo
+  // único que mueve el exit code del comando (R10), y hoy hay callers
+  // (dashboard, watchdogs) que asumen que la corrida sin flags sale 0. Meterlo
+  // al default cambiaría ese contrato en silencio. Reevaluarlo es un cambio de
+  // contrato con su propia decisión, no un ajuste de performance.
+  //
+  // La corrida sin flags hace sólo el chequeo barato (`quickNestedClaudeCheck`).
   const defaultCats = knownCats.filter((c) => c !== 'secrets');
   if (opts.categories.size === 0) for (const c of defaultCats) opts.categories.add(c);
   opts.dryRun = opts.explicitDryRun || !opts.explicitRun;
@@ -1044,7 +1054,16 @@ function run(opts = {}) {
       // hallazgos `no-verificable`: sumarlos también acá los contaba dos veces.
       report.secretsScanErrors = scan.errors;
       report.secretsUnparseable = scan.filesUnparseable;
-      report.secretsSkippedPurge = skipped.length;
+      // Un skip REAL es el de un hallazgo `purgable` que no se pudo borrar
+      // (path protegido, no es archivo regular, unlink falló). Los skips de
+      // `historial`/`no-verificable` son la política, no una anomalía: esos ya
+      // se reportan en su propia sección. Se guarda el detalle, no sólo el
+      // conteo: «0/13 eliminados» sin motivo al lado deja al operador a ciegas.
+      const skipsReales = skipped.filter((s) => s.category === 'purgable');
+      report.secretsSkippedPurge = skipsReales.length;
+      report.secretsPurgeSkips = skipsReales.map((s) => ({
+        root: s.root, rel: s.rel, key: s.key, skipReason: s.skipReason,
+      }));
       report.secretsRootsScanned = roots.length;
       report.secretsFilesScanned = scan.filesScanned;
       log(`🔐 secretos: ${roots.length} raíces, ${scan.filesScanned} archivos, ${withRotation.length} hallazgos`);
@@ -1223,9 +1242,8 @@ function fmtSecretsSection(r, lines) {
         const label = items.find((f) => f.hash8 === g.hash8 && f.rotationLabel);
         line += ` · ${label ? label.rotationLabel : 'rotación PENDIENTE'}`;
       }
-      if (b.cat === 'no-verificable' && g.reasons.length) {
-        line += ` · ${g.reasons[0]}`;
-      }
+      // (el bloque `no-verificable` sale por `continue` más arriba, así que
+      //  acá `b.cat` sólo puede ser `historial` o `purgable`)
       if (b.cat === 'purgable' && !r.dryRun) {
         const done = items.filter((f) => f.hash8 === g.hash8 && f.removed).length;
         line += ` · ${done}/${g.count} eliminados`;
@@ -1240,6 +1258,18 @@ function fmtSecretsSection(r, lines) {
           lines.push(`      ${shortPath(f)}`);
         }
       }
+    }
+    lines.push('');
+  }
+
+  // Un purgable que NO se pudo borrar nunca queda mudo: sin esto el operador
+  // lee «0/13 eliminados» sin ninguna explicación al lado.
+  const skips = r.secretsPurgeSkips || [];
+  if (skips.length > 0) {
+    lines.push(`*Purgas omitidas:* ${skips.length}`);
+    lines.push('  Untracked que el barrido NO pudo eliminar. Acción: revisar el motivo.');
+    for (const s of skips) {
+      lines.push(`  ● REVISAR ${path.basename(s.root || '')}/${s.rel} — ${s.key} · ${s.skipReason}`);
     }
     lines.push('');
   }

@@ -45,6 +45,13 @@ const DENY = Object.freeze([
 
 // Estado de runtime que no tiene sentido replicar (logs, locks, heartbeats).
 const DENY_RE = Object.freeze([
+  // El archivo de secretos que originó #5220, por FORMA y no por ruta exacta.
+  // El deny de `DENY` es un path literal (`hooks/telegram-config.json`), pero
+  // `hooks/` está allowlisteado en bloque: sin esta regex, un
+  // `hooks/telegram-config.json.bak` o un `hooks/tests/telegram-config.json`
+  // se copiaban al destino. Hoy no existe ninguno de esos archivos, pero la
+  // allowlist tiene que resistir que aparezcan.
+  /(^|\/)telegram-config[^/]*$/,
   /\.jsonl$/,
   /\.pid$/,
   /\.heartbeat(\.stale)?$/,
