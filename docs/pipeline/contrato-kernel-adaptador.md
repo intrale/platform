@@ -182,6 +182,7 @@ Reparto: **37 kernel · 12 autoridad · 9 producto**.
 | 17 | `circuit_breaker` (315) | obj | **autoridad** | Corta la autonomía del pipeline ante rebotes; decide autonomía. |
 | 18 | `precheck` (353) | obj | kernel | Chequeos previos al dispatch; mecanismo. |
 | 19 | `anomaly_detector` (372) | obj | kernel | Detección de anomalías del motor; mecanismo. |
+| 19b | `human_block_reminder` (291) | obj | kernel | Cadencia con que el motor insiste ante un bloqueo humano sin responder (#5337); mecanismo, no política de producto. |
 | 20 | `cost_anomaly_alert` (395) | obj | kernel | Alerta de anomalía de costo del motor; mecanismo. |
 | 21 | `ghostbusters_cron` (411) | obj | kernel | Higiene programada del motor; mecanismo. |
 | 22 | `rest_mode` (434) | obj | kernel | Modo descanso del motor; mecanismo. |

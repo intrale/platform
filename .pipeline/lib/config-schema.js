@@ -186,6 +186,9 @@ const SIDE_MAP = Object.freeze({
     desync: 'kernel',
     precheck: 'kernel',
     anomaly_detector: 'kernel',
+    // #5337 — cadencia del recordatorio de bloqueos humanos. Es mecanismo del
+    // pipeline (cuándo insiste), no política de producto.
+    human_block_reminder: 'kernel',
     cost_anomaly_alert: 'kernel',
     ghostbusters_cron: 'kernel',
     rest_mode: 'kernel',
@@ -374,6 +377,7 @@ const SCHEMA = {
         desync: OBJ(),
         precheck: OBJ(),
         anomaly_detector: OBJ(),
+        human_block_reminder: OBJ(),   // #5337 CA-5
         cost_anomaly_alert: OBJ(),
         ghostbusters_cron: OBJ(),
         rest_mode: OBJ(),

@@ -235,9 +235,175 @@ sin detectar.
 
 ---
 
+## Sección 5 — Contrato de notificación proactiva (#5337)
+
+> **Qué resuelve.** Hasta el 2026-08-01 el operador se enteraba de que el
+> pipeline lo necesitaba **sólo si preguntaba**. Ese día hubo cuatro issues
+> frenados (#5217, #5220, #5242, #5244), cada uno por una causa distinta, y no
+> salió ni una notificación: se enteró horas después, al preguntar por el estado.
+>
+> El canal ya funcionaba (comentario en el issue → Telegram con botonera →
+> audio TTS). Lo que faltaba era la **detección**: nada llegaba a
+> `reportHumanBlock`. Esta sección documenta qué situación produce bloqueo
+> humano, quién la emite, qué se le pide al operador y por qué canal.
+
+### Tabla de triggers
+
+| # | Situación | Quién la detecta | Qué se le pide al operador | Canal |
+|---|---|---|---|---|
+| 1 | **Hallazgos de seguridad** sin resolver que el ruleset de `main` exige | `detectSecurityFindingBlock` (`lib/human-block-triggers.js`) | Resolver los hallazgos o descartarlos como falso positivo | Telegram + botonera + audio |
+| 2 | **Conflicto de merge** real contra la base (`mergeStateStatus: DIRTY`) | `detectMergeStateBlock` | Resolver a mano o devolver a desarrollo | Telegram + botonera + audio |
+| 3 | **PO/UX/QA devuelven pidiendo una decisión** (no una corrección de código) | `detectDecisionRequestBlock` + `HUMAN_BLOCK_PATTERNS` | La decisión concreta que traba al agente | Telegram + botonera + audio |
+| 4 | **Review manual exigida por CODEOWNERS / ruleset** (`mergeStateStatus: BLOCKED`) | `detectMergeStateBlock` | Revisar y aprobar el PR | Telegram + botonera + audio |
+| 5 | **Rebotado N veces por la misma causa** | `detectRepeatedRejectionBlock` | Cómo destrabar: el pipeline no converge solo | Telegram + botonera + audio |
+| 6 | **Decisión de arquitectura no tomada** en definición | `detectDesignDecision` (`lib/design-decision-detect.js`) | Elegir entre las alternativas antes de que definición elija por default | Telegram + botonera |
+| 7 | **Bloqueo sin responder** (cualquiera de los anteriores) | `runReminderTick` (`lib/human-block-reminder.js`) | Recordatorio agrupado y espaciado | Telegram (un mensaje por tick) |
+
+Dónde se emite cada uno en `pulpo.js`:
+
+- **1, 2 y 4** — en el barrido, al cerrar el pipeline de `desarrollo`: el issue
+  terminó pero su PR sigue abierto esperando algo. El estado del PR llega por
+  `lib/pr-info-fetcher.js` (que ya se consultaba para el mensaje de cierre; se
+  le sumaron `mergeable` y `mergeStateStatus`, **sin requests extra**) y las
+  alertas por `lib/code-scanning-alerts.js`.
+- **3 y 5** — en el barrido, en el camino de rebote, sobre los motivos de rechazo.
+- **6** — en el intake de `definicion`, antes de que el issue entre a la fase.
+- **7** — desde un cron propio, cada 30 min.
+
+> **Un detector que nadie llama no existe.** Los detectores 1, 2 y 4 estuvieron
+> escritos y con tests en verde pero **sin cablear** en `pulpo.js`: la suite
+> pasaba y en producción no se notificaba nada — el mismo bug que #5337 vino a
+> arreglar, disfrazado de test verde. Por eso hay tests que leen el fuente del
+> pulpo y verifican el **cableado**, no sólo la lógica.
+
+### Los tres veredictos posibles
+
+Los detectores de estado de PR NO devuelven un booleano. Devuelven tres cosas
+distintas, y la del medio es la que evita los dos modos de falla:
+
+| Veredicto | Significado | Qué hace el pipeline |
+|---|---|---|
+| objeto con `trigger` | Bloqueo humano confirmado | Notifica y congela |
+| `{ inconclusive: true }` | El dato todavía no está disponible | **Ni bloquea ni aprueba** — reintenta el barrido siguiente |
+| `null` | Estado sano | Sigue el flujo normal |
+
+**Por qué existe `inconclusive`:** GitHub calcula `mergeable` de forma
+asíncrona y devuelve `UNKNOWN` mientras tanto. Tratarlo como conflicto genera
+bloqueos espurios; tratarlo como limpio es fail-open. Un estado desconocido
+nunca es un veredicto.
+
+### Dos falsos positivos que el diseño evita a propósito
+
+**Deuda preexistente de `main`.** La API de code-scanning devuelve todas las
+alertas del repo, incluidas las `open` sobre `refs/heads/main`. Si el trigger no
+filtrara por ref, **todo PR** quedaría bloqueado por deuda que no introdujo y el
+pipeline se autobloquearía entero. Por eso una alerta sólo cuenta si está
+instanciada en `refs/pull/<N>/head|merge` o en la rama del PR.
+
+**Frenar issues sanos.** El trigger 6 (decisión de arquitectura) es el único que
+clasifica texto libre, y el costo de su falso positivo es el **inverso exacto**
+del problema que #5337 arregla: un issue sano parado esperando a un humano que
+no tiene nada que decidir. De ahí que sea deliberadamente estrecho:
+
+- Las señales están **enumeradas en el código**, en `DESIGN_DECISION_SIGNALS`, y
+  en ningún otro lado.
+- Cada señal exige **dos** coincidencias (el tema + un calificador). "Rotar las
+  credenciales de Telegram" menciona credenciales pero no plantea ninguna
+  decisión; "dónde se almacenan las credenciales: ¿local o distribuido?" sí.
+- Ante duda o señal no reconocida: **dejar pasar y registrar**, nunca frenar.
+
+### Recordatorios: el silencio nunca aprueba
+
+El aviso inicial vive dentro del gate `if (!yaBloqueado)` del barrido —dispara
+sólo en la transición, para no repetir la misma alerta en cada tick—. Eso deja
+un hueco: si el operador no vio ese único mensaje, el bloqueo queda mudo para
+siempre. El cron de recordatorio lo cubre **sin relajar aquel gate**:
+
+| Escalón | Cuándo |
+|---|---|
+| 1º | a las 2 h del bloqueo |
+| 2º | a las 6 h |
+| 3º | a las 24 h |
+| siguientes | cada 72 h, indefinidamente |
+
+- **Un solo mensaje agrupado** con todos los bloqueos vencidos, no uno por issue.
+- Encabezado `🔁` y antigüedad por ítem, para distinguirlo del aviso inicial
+  (`🚧`). Si fueran idénticos, el operador no sabría si mira un bloqueo nuevo o
+  el mismo de hace seis horas.
+- **Nunca auto-resuelve por vencimiento de plazo.** Es una garantía estructural,
+  no una promesa: `human-block-reminder.js` no importa `unblockIssue`,
+  `dismissBlockedIssue` ni `executeQuickAction`, y un test lo verifica sobre el
+  código del módulo. Coherente con `gates-firma-operador.md`.
+- Si el envío falla, el contador **no** avanza: el próximo tick reintenta en vez
+  de dar por avisado algo que nunca salió.
+
+### Bloqueos reales vs recomendaciones
+
+El label `needs-human` se usa para dos cosas distintas, y mezclarlas mata la
+señal. Medición del 2026-08-01:
+
+```
+needs-human total ................. 880
+de esos tipo:recomendacion ........ 865
+bloqueos reales ...................  15   (1,7%)
+```
+
+Un **bloqueo real** tiene un agente frenado atrás. Una **recomendación** de
+`guru`/`security`/`po`/`ux`/`review` es backlog esperando triaje: nadie está
+esperando al operador. Sólo los primeros notifican.
+
+El discriminador es `lib/recommendation-labels.js` — **fuente única**, compartida
+por `human-block.js`, `servicio-reconciler.js` y el dashboard. Una copia inline
+del criterio sería una tercera fuente de verdad que se desincroniza.
+
+Dos matices que el filtro respeta:
+
+- Una recomendación con `recommendation:approved` **sí** cuenta: ya es trabajo
+  real del pipeline.
+- Un **marker en disco** nunca se filtra por labels. Lo creó `reportHumanBlock`,
+  o sea que hubo un agente frenado de verdad; el filtro sólo aplica a las
+  entradas que vienen únicamente de un label de GitHub.
+
+### Cómo agrego un trigger nuevo
+
+1. Sumá la entrada a `TRIGGERS` en `lib/human-block-triggers.js`.
+2. Escribí el detector: **puro**, sin red ni filesystem, recibiendo el estado ya
+   consultado. Nada bloqueante puede vivir ahí (corre dentro del barrido).
+3. Devolvé `reason`, `question` y `recommendation`. La recomendación no es
+   opcional-por-comodidad: sin ella el operador ve que algo está trabado pero no
+   qué le conviene hacer.
+4. Cableá el detector en el call-site (barrido o intake) dentro de un `try/catch`
+   que deje pasar el flujo si falla.
+5. Agregá tests en `human-block-notificacion.test.js`: uno que dispare y **uno
+   que NO dispare** ante el caso sano parecido. El segundo es el que importa.
+6. Sumá la fila a la tabla de esta sección.
+
+### Kill-switch y configuración
+
+```yaml
+# config.yaml
+human_block_reminder:
+  enabled: true        # false → no se inicia el cron
+  kill_switch: false   # true  → idem, para cortar en caliente
+  tick_ms: 1800000     # 30 min por default
+```
+
+El estado vive en `.pipeline/human-block-reminder-state.json`, **gitignoreado**:
+el repo principal hace `reset --hard` en cada respawn y un archivo versionado se
+pisaría con el template vacío, reiniciando el escalado solo (es lo que ya pasó
+con `waves.json`).
+
+---
+
 ## Referencias
 
 - Issue origen: [#3417](https://github.com/intrale/platform/issues/3417)
+- Notificación proactiva: [#5337](https://github.com/intrale/platform/issues/5337)
+- Módulos #5337: `lib/human-block-triggers.js`, `lib/design-decision-detect.js`,
+  `lib/human-block-reminder.js`, `lib/recommendation-labels.js`,
+  `lib/code-scanning-alerts.js`
+- Tests #5337: `.pipeline/lib/__tests__/human-block-notificacion.test.js`,
+  `.pipeline/lib/__tests__/code-scanning-alerts.test.js`
 - Issue del comando `/rechazar`: [#3415](https://github.com/intrale/platform/issues/3415)
 - Issue del rebobinado: [#3416](https://github.com/intrale/platform/issues/3416)
 - Módulo: `.pipeline/lib/pipeline-states.js`
