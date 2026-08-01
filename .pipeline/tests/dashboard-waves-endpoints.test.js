@@ -29,6 +29,7 @@ const path = require('path');
 const http = require('http');
 const { spawn } = require('child_process');
 const { getFreePort } = require('./helpers/free-port');
+const { seedConfig } = require('./helpers/sandbox-config');
 
 const PIPELINE_SRC = path.resolve(__dirname, '..');
 const dashboardPath = path.join(PIPELINE_SRC, 'dashboard.js');
@@ -91,7 +92,9 @@ async function csrfHeaders() {
 before(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dash4433-'));
     // El dashboard puede leer config.yaml (readWaveMaxConcurrency, loadConfig).
-    fs.copyFileSync(path.join(PIPELINE_SRC, 'config.yaml'), path.join(tmpDir, 'config.yaml'));
+    // #5174 — los DOS lados de la config (kernel + pipeline.config.json).
+    // Copiar sólo el YAML deja el sandbox a medias y el resolver falla cerrado.
+    seedConfig(tmpDir);
     mkdirp(path.join(tmpDir, 'logs'));
     // Seed: una ola ACTIVA (7, con issue 100) + una PLANIFICADA (8, con issue 200).
     const seed = {

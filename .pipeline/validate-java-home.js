@@ -3,7 +3,9 @@
 // validate-java-home.js — Fail-fast validator para $JAVA_HOME
 //
 // Criterio CA-1 de #2405:
-//   - Lee `build.java_home_allowlist` de `.pipeline/config.yaml`.
+//   - Lee `build.java_home_allowlist` de `pipeline.config.json` (lado producto,
+//     #5174), con fallback a `.pipeline/config.yaml` para el rollback de la
+//     partición.
 //   - Compara normalizando:
 //       * separadores `/` vs `\` (Windows)
 //       * case-insensitive (Windows FS default)
@@ -55,12 +57,73 @@ function realpathBestEffort(p) {
 }
 
 /**
- * Carga la allowlist desde config.yaml. Usa `yaml` si está disponible, si no
- * hace un parseo manual muy conservador (sólo el bloque `build.java_home_allowlist`).
+ * #5174 — Dónde vive `pipeline.config.json` dado el `config.yaml` del kernel.
+ *
+ * Réplica DELIBERADA de `productPathFor()` de `lib/config-resolver.js`: este
+ * script corre como validador fail-fast ANTES del build, también en worktrees
+ * sin `node_modules` (por eso el `require('yaml')` de abajo está en try/catch).
+ * `config-resolver` hace `require('js-yaml')` y `require('ajv')` en su tope, así
+ * que requerirlo acá mataría el validador en el import — el modo de fallo mudo
+ * que la nota G-3 de `config-resolver.js` advierte explícitamente.
+ *
+ * Lo que SÍ se comparte es la regla de ubicación: derivada de la raíz del
+ * kernel, nunca del entorno ni del propio manifiesto.
+ */
+function productManifestPathFor(configPath) {
+  const kernelDir = path.dirname(path.resolve(configPath));
+  const base = path.basename(kernelDir) === '.pipeline' ? path.dirname(kernelDir) : kernelDir;
+  return path.join(base, 'pipeline.config.json');
+}
+
+/**
+ * #5174 — Lee `build.java_home_allowlist` del lado PRODUCTO.
+ *
+ * `build:` es una de las 12 secciones que la partición movió de `config.yaml`
+ * a `pipeline.config.json`. Sin este lector la allowlist quedaba VACÍA y el
+ * validador rechazaba todo JAVA_HOME con exit 78: no es degradación silenciosa
+ * (falla cerrado, como debe), pero deja el build fuera de servicio.
+ *
+ * `JSON.parse` es built-in: cero dependencias, corre igual sin `node_modules`.
+ *
+ * @returns {string[]|null} la lista, o `null` si el manifiesto no está o no
+ *          declara la clave (⇒ el llamador cae al kernel, que es el estado
+ *          pre-partición y el destino del rollback).
+ */
+function loadAllowlistFromProduct(configPath) {
+  let raw = '';
+  try {
+    raw = fs.readFileSync(productManifestPathFor(configPath), 'utf8');
+  } catch {
+    return null; // sin manifiesto ⇒ partición apagada o rollback: usar el kernel
+  }
+  try {
+    const doc = JSON.parse(raw);
+    const slice = (doc && doc.productConfig) || doc;
+    const list = slice && slice.build && slice.build.java_home_allowlist;
+    if (!Array.isArray(list)) return null;
+    return list.filter((x) => typeof x === 'string');
+  } catch {
+    // Manifiesto ilegible: NO lo tapamos con el kernel (ahí la clave ya no está)
+    // ni inventamos una lista. Lista vacía ⇒ fail-closed en el validador.
+    return [];
+  }
+}
+
+/**
+ * Carga la allowlist desde la configuración del pipeline. Usa `yaml` si está
+ * disponible, si no hace un parseo manual muy conservador (sólo el bloque
+ * `build.java_home_allowlist`).
+ *
+ * #5174 — Post-partición `build:` vive en `pipeline.config.json`, así que ese
+ * lado tiene PRECEDENCIA. El kernel (`config.yaml`) queda como fallback para el
+ * rollback de la partición, donde la clave vuelve al YAML.
  *
  * Fail-closed: si no podemos parsear → allowlist vacía, el validador falla 78.
  */
 function loadAllowlist(configPath) {
+  const desdeProducto = loadAllowlistFromProduct(configPath);
+  if (desdeProducto !== null) return { ok: true, list: desdeProducto };
+
   let rawYaml = '';
   try {
     rawYaml = fs.readFileSync(configPath, 'utf8');
@@ -216,14 +279,15 @@ function mainCli() {
     lines.push('');
     lines.push(`  JAVA_HOME actual:  ${javaHome || '(vacio)'}`);
     lines.push(`  Razon:             ${result.reason}`);
-    lines.push('  Allowlist esperada (config.yaml `build.java_home_allowlist`):');
+    lines.push('  Allowlist esperada (`build.java_home_allowlist`):');
     for (const entry of loaded.list) {
       lines.push(`    - ${entry}`);
     }
     if (loaded.list.length === 0) lines.push('    (vacia — fail-closed)');
     lines.push('');
     lines.push('Como resolver:');
-    lines.push('  1. Si el path es legitimo -> agregalo a config.yaml y commitea');
+    lines.push('  1. Si el path es legitimo -> agregalo a `build.java_home_allowlist`');
+    lines.push('     de pipeline.config.json (lado producto, #5174) y commitea');
     lines.push('     (ver docs/operacion-pipeline.md).');
     lines.push('  2. Si el path es stale (ej. JDK desinstalado) -> corregi JAVA_HOME');
     lines.push('     en el profile del host.');
@@ -242,6 +306,8 @@ module.exports = {
   validateJavaHome,
   validateJavaHomeFs,
   loadAllowlist,
+  loadAllowlistFromProduct,
+  productManifestPathFor,
   normalizePath,
   isSuspicious,
   EXIT_CONFIG_ERROR,
