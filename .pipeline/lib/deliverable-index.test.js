@@ -9,6 +9,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
+const { seedProductManifest } = require('./__tests__/_test-helpers');
 const path = require('path');
 
 const idx = require('./deliverable-index');
@@ -36,10 +37,18 @@ const {
 // lectura y ya no degrada en silencio. `pipelines: {}` es config VÁLIDA sin
 // fases declaradas, que es exactamente el caso que este fixture ejercitaba antes
 // (enum vacío → `FALLBACK_PHASES`). Ninguna aserción cambia.
+// #5174 — el sandbox siembra también `pipeline.config.json`: post-partición el
+// resolver falla cerrado si el manifiesto de producto no está junto al kernel
+// (`ConfigSchemaViolation: la raíz se reubicó vía arg:pipelineDir`). El fixture
+// es un YAML mínimo escrito a mano, así que corresponde `seedProductManifest`
+// en modo auto-partición (slice vacío) y NO el manifiesto real: `pipelines: {}`
+// tiene que seguir dando enum de fases vacío → `FALLBACK_PHASES`, que es lo que
+// estos tests ejercitan. Ninguna aserción cambia.
 function tmpRoot() {
     const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'di-test-')), '.pipeline');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'config.yaml'), 'pipelines: {}\n');
+    seedProductManifest(dir);
     return dir;
 }
 
