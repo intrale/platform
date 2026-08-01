@@ -403,3 +403,77 @@ test('run expone las supresiones como dato, no sólo como texto', () => {
     'el número de línea se reporta en numeración del archivo nuevo, no del hunk',
   );
 });
+
+// #5244 rev-7 — regresión del bypass por typechange. El filtro era una lista
+// blanca (`ACMR`) y la letra `T` quedaba afuera: el path desaparecía de las DOS
+// salidas de git a la vez, así que el fail-closed de `unexplained` tampoco lo
+// veía y el gate daba VERDE. El vector no era teórico: el repo tiene entradas
+// tracked en modo 160000 y pisar una con un archivo regular es un `T`.
+// Estos tests fijan el comportamiento en los dos modos. Si alguien vuelve a
+// poner una lista blanca en `gitDiff`, se ponen rojos.
+test('typechange gitlink -> archivo regular con secreto BLOQUEA (modo range)', () => {
+  const { directory, base: seed } = repoConBase('secret-scan-typechange-gitlink-');
+  // Un gitlink (submódulo) apuntando a un sha cualquiera: alcanza con el modo.
+  execFileSync('git', ['update-index', '--add', `--cacheinfo`, `160000,${seed},vendor`], { cwd: directory });
+  execFileSync('git', ['commit', '-m', 'gitlink'], { cwd: directory });
+  const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: directory, encoding: 'utf8' }).trim();
+
+  // Se pisa el gitlink con un archivo regular que trae la credencial.
+  execFileSync('git', ['rm', '-q', '--cached', 'vendor'], { cwd: directory });
+  fs.writeFileSync(path.join(directory, 'vendor'), `${fixtureConSecreto()}\n`);
+  execFileSync('git', ['add', '-f', 'vendor'], { cwd: directory });
+  execFileSync('git', ['commit', '-m', 'typechange'], { cwd: directory });
+
+  // El test se valida a sí mismo: si git dejara de reportar `T`, dejaría de
+  // ejercitar el bypass y habría que revisarlo en vez de confiar en el verde.
+  const estado = execFileSync('git', ['diff', '--name-status', `${base}..HEAD`], { cwd: directory, encoding: 'utf8' });
+  assert.match(estado, /^T\t/m, 'el fixture tiene que producir un typechange real');
+
+  const resultado = scanRange(directory, base, 'text');
+  assert.equal(resultado.status, 1, 'un typechange no puede saltear el gate');
+  assert.match(resultado.stderr, /vendor:1 — BLOQUEADO/);
+  assert.doesNotMatch(resultado.stderr, new RegExp(SYNTHETIC_TOKEN), 'el valor crudo no se imprime');
+});
+
+test('typechange symlink -> archivo regular con secreto BLOQUEA (modo staged)', () => {
+  const directory = sandboxRepo('secret-scan-typechange-symlink-');
+  stageFile(directory, 'README.md', 'base\n');
+  execFileSync('git', ['commit', '-m', 'base'], { cwd: directory });
+  // `update-index --cacheinfo` evita depender de symlinks reales del SO
+  // (en Windows el checkout de un 120000 no es un symlink).
+  const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: directory, input: 'some/target', encoding: 'utf8' }).trim();
+  execFileSync('git', ['update-index', '--add', '--cacheinfo', `120000,${blob},creds.txt`], { cwd: directory });
+  execFileSync('git', ['commit', '-m', 'symlink'], { cwd: directory });
+
+  fs.writeFileSync(path.join(directory, 'creds.txt'), `${fixtureConSecreto()}\n`);
+  execFileSync('git', ['add', '-A'], { cwd: directory });
+
+  // Honestidad sobre lo que este caso prueba en cada plataforma: donde el SO no
+  // tiene symlinks (Windows) git resuelve el cambio como `M` y el gate ya lo
+  // veía con el filtro viejo; en Linux —o sea en CI— es un `T` y ahí es donde
+  // este test ejerce el bypass. El typechange que falla sin el fix en TODA
+  // plataforma es el del gitlink, en el test de arriba.
+  const estado = execFileSync('git', ['diff', '--cached', '--name-status'], { cwd: directory, encoding: 'utf8' });
+  assert.match(estado, /^[TM]\t/m, 'el fixture tiene que ser typechange (T) o, sin symlinks del SO, modificación (M)');
+
+  const resultado = scanStaged(directory);
+  assert.equal(resultado.exitCode, 1, 'el pre-commit tampoco puede dejar pasar el typechange');
+});
+
+// El filtro excluye `D` a propósito: un borrado no agrega contenido y, si el
+// archivo era binario, `resolveBinaryEntries` no podría releer su blob en el
+// head y bloquearía todo PR que borre un binario legítimo.
+test('borrar un binario no rompe el gate (el filtro sigue excluyendo D)', () => {
+  const { directory } = repoConBase('secret-scan-borra-binario-');
+  fs.writeFileSync(path.join(directory, 'logo.png'), Buffer.from([0x50, 0x4e, 0x47, 0x00, 0x01, 0x02]));
+  execFileSync('git', ['add', '-A'], { cwd: directory });
+  execFileSync('git', ['commit', '-m', 'agrega binario'], { cwd: directory });
+  const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: directory, encoding: 'utf8' }).trim();
+
+  execFileSync('git', ['rm', '-q', 'logo.png'], { cwd: directory });
+  execFileSync('git', ['commit', '-m', 'borra binario'], { cwd: directory });
+
+  const resultado = scanRange(directory, base, 'text');
+  assert.equal(resultado.status, 0, 'borrar un binario no puede trabar el PR');
+  assert.equal(resultado.stderr, '', 'ni siquiera debería anunciarlo');
+});

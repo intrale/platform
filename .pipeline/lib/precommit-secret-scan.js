@@ -112,10 +112,23 @@ function parseHunks(diff) {
 
 const GIT_BUFFER = 256 * 1024 * 1024;
 
+// #5244 rev-7 — el filtro es por EXCLUSIÓN (`d` minúscula = "todo menos
+// borrados"), no por lista blanca. La lista blanca `ACMR` dejaba afuera la letra
+// `T` (typechange: symlink<->regular, gitlink<->regular) y ese path desaparecía
+// de las DOS salidas de git a la vez —del `-U0` y del `--numstat`—, así que el
+// fail-closed de `unexplained` tampoco lo veía: daba VERDE. El vector era real
+// hoy: el repo tiene entradas tracked en modo 160000 y pisar una con un archivo
+// regular es un `T`, no un alta. Afectaba los dos modos (pre-commit y CI).
+// Se invierte el criterio para que el gate no dependa de mantener al día una
+// lista de tipos (quedaban afuera también `U`, `X`, `B`). Sólo se excluye `D`:
+// un borrado no agrega contenido y, si es binario, `resolveBinaryEntries` no
+// podría releer su blob en el head y bloquearía todo PR que borre un binario.
+// La mitad de borrado de un typechange sale con `+++ /dev/null` y la descarta
+// `parseHunks` sola; la mitad de alta sale con su `@@` y se escanea.
 function gitDiff({ mode, base, head = 'HEAD', cwd = process.cwd() }, extraArgs) {
   const range = mode === 'range' ? [`${base}..${head}`] : ['--cached'];
   return execFileSync('git', [
-    '-c', 'core.quotePath=false', 'diff', ...range, ...extraArgs, '--diff-filter=ACMR',
+    '-c', 'core.quotePath=false', 'diff', ...range, ...extraArgs, '--diff-filter=d',
     '--no-color', '--no-ext-diff', '--no-textconv',
   ], {
     cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: GIT_BUFFER,
