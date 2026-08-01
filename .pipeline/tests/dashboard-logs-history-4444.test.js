@@ -20,6 +20,7 @@ const path = require('path');
 const http = require('http');
 const { spawn } = require('child_process');
 const { getFreePort } = require('./helpers/free-port');
+const { seedConfig } = require('./helpers/sandbox-config');
 
 const PIPELINE_SRC = path.join(__dirname, '..');
 const dashboardPath = path.join(PIPELINE_SRC, 'dashboard.js');
@@ -56,7 +57,9 @@ before(async () => {
   const logsDir = path.join(tmpDir, 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
   // config.yaml real → getKnownSkills lee skills_por_fase (incluye pipeline-dev).
-  fs.copyFileSync(path.join(PIPELINE_SRC, 'config.yaml'), path.join(tmpDir, 'config.yaml'));
+  // #5174 — los DOS lados de la config (kernel + pipeline.config.json).
+  // Copiar sólo el YAML deja el sandbox a medias y el resolver falla cerrado.
+  seedConfig(tmpDir);
 
   // Poblar LOG_DIR: issue 4444 skill pipeline-dev con 3 intentos (rebotes).
   fs.writeFileSync(path.join(logsDir, '4444-pipeline-dev.attempt-1.log'), 'intento 1\n');

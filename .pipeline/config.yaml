@@ -5,22 +5,12 @@ pipelines:
   definicion:
     fases: [analisis, criterios, sizing]
     fase_rechazo: null  # No hay rechazo en definición (se escala al usuario)
-    skills_por_fase:
-      analisis: [guru, security]
-      criterios: [po, ux, architect]  # #3613 — architect entra en `criterios` con espera blanda (docs/pipeline/architect-role.md §2)
-      sizing: [planner]
+    # pipelines.definicion.skills_por_fase: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.pipelines.definicion.skills_por_fase
 
   desarrollo:
     fases: [validacion, dev, build, verificacion, linteo, aprobacion, entrega]
     fase_rechazo: dev   # Los rechazos siempre vuelven a dev
-    skills_por_fase:
-      validacion: [po, ux, guru]
-      dev: [backend-dev, android-dev, web-dev, pipeline-dev, dev]  # Uno solo por historia, según labels
-      build: [build]                             # Agente Claude (haiku) — gradlew check
-      verificacion: [tester, security, qa]
-      linteo: [linter]                           # Determinístico (Node, #2491) — chequeos mecánicos antes del LLM
-      aprobacion: [review, po, ux, architect]   # #3613 — architect Fase 2: verifica adherencia diff vs receta firmada (architect-role.md §9)
-      entrega: [delivery]
+    # pipelines.desarrollo.skills_por_fase: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.pipelines.desarrollo.skills_por_fase
 
 # Concurrencia máxima por rol (instancias simultáneas de Claude)
 concurrencia:
@@ -85,22 +75,22 @@ intake:
 #      huérfanos pre-deploy, forks con permisos limitados). Corre en cada
 #      ciclo de reconcile (5min default) junto con el sweep de needs-human.
 #
-# La configuración real de runtime se hace por env vars que setea el pulpo
-# al lanzar servicio-reconciler:
-#   - ADMISSION_SWEEP_ENABLED=0  → desactiva el sweep del reconciler.
-#                                   El workflow event-driven sigue funcionando.
-#   - ADMISSION_GATE_DRY_RUN=1   → reconciler y workflow loguean decisiones
-#                                   pero NO aplican labels ni encolan alertas.
-#
-# Este bloque YAML es declarativo (visibilidad operacional). Los valores
-# acá NO se leen al iniciar el reconciler — son referencia y futura
-# extensión si decidimos hidratar via env desde config.yaml.
+# #5172 · CA-5 — Estos valores SÍ se leen en runtime: `servicio-reconciler.js`
+# los consulta vía `lib/config-resolver.js` en cada sweep (no en el load del
+# módulo). Las env vars siguen funcionando como kill-switch instantáneo, pero
+# ahora las aplica el resolver, que las TRAZEA con nivel de alerta cuando
+# debilitan el gate:
+#   - ADMISSION_SWEEP_ENABLED=0  → sweep_enabled=false. Desactiva el sweep del
+#                                   reconciler. El workflow event-driven sigue.
+#   - ADMISSION_GATE_DRY_RUN=1   → dry_run=true. Loguea decisiones pero NO
+#                                   aplica labels ni encola alertas.
+# Al reiniciar sin esas variables, mandan los valores de este archivo.
 admission_gate:
-  # Sweep del reconciler activo por default. Para apagar: setear
-  # ADMISSION_SWEEP_ENABLED=0 en el entorno del proceso.
+  # Sweep del reconciler activo por default. Para apagar: poner `false` acá, o
+  # setear ADMISSION_SWEEP_ENABLED=0 en el entorno para un corte instantáneo.
   sweep_enabled: true
-  # Modo dry-run global (loguea pero no aplica). Setear ADMISSION_GATE_DRY_RUN=1
-  # en el entorno para activar runtime.
+  # Modo dry-run global (loguea pero no aplica). `true` acá, o
+  # ADMISSION_GATE_DRY_RUN=1 en el entorno.
   dry_run: false
   # Cap de huérfanos a aplicar por sweep. Si N>10, los primeros 10 se etiquetan
   # y se manda alerta especial 🔴 al Commander pidiendo revisión humana antes
@@ -126,88 +116,17 @@ e2e_evidence:
   # la evidencia. Setear PIPELINE_E2E_EVIDENCE_ENABLED=1 en el entorno para on.
   enabled: false
 
-# Mapeo de labels de GitHub a skill de desarrollo
-dev_skill_mapping:
-  "area:pipeline": "pipeline-dev" # Scripts Node.js del pipeline (.pipeline/*.js, roles, hooks)
-  "area:dashboard": "pipeline-dev" # Ventanas del dashboard V3 (Node.js, .pipeline/dashboard.js + views/)
-  "area:infra": "backend-dev"    # Infra kotlin/gradle/ci-cd (NO pipeline — eso es area:pipeline)
-  "area:backend": "backend-dev"
-  "app:client": "android-dev"
-  "app:business": "android-dev"
-  "app:delivery": "android-dev"
-  "area:web": "web-dev"
-  generic_fallback: "dev"        # Fallback stack-agnóstico si el producto no declara capability de stack
-  default: "backend-dev"         # Si no tiene label de área (priority:critical se rutea por área)
+# dev_skill_mapping: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.dev_skill_mapping (la prosa viajó a productConfigNotes)
 
-# Particiones declarativas del puerto `dev` (kernel) a skills concretos (adaptador).
-# Intrale conserva comportamiento observable: default -> backend-dev. Si un producto
-# no declara capabilities backend/frontend/pipeline, `generic_fallback` rutea a `dev`.
-dev_skill_partitions:
-  backend: [backend-dev]
-  frontend: [android-dev, web-dev]
-  pipeline: [pipeline-dev]
-  generic: [dev]
+# dev_skill_partitions: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.dev_skill_partitions (la prosa viajó a productConfigNotes)
 
-# Prioridad de ruteo cuando un issue tiene MÚLTIPLES labels de dominio (ej. area:infra + app:client).
-# Orden de mayor a menor prioridad. El primer label presente en el issue define la ruta.
-# Rationale: si alguien tagueó `area:pipeline` o `area:infra`, esa intención manda — issues del pipeline
-# no deben caer en android-dev sólo porque tienen `app:client` por error (ej. #2328).
-# El dev genérico NO participa de esta prioridad: entra último, sólo cuando no hay
-# capability de stack resuelta para el producto.
-dev_routing_priority:
-  - "area:pipeline"
-  - "area:dashboard"
-  - "area:infra"
-  - "area:backend"
-  - "area:web"
-  - "app:client"
-  - "app:business"
-  - "app:delivery"
+# dev_routing_priority: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.dev_routing_priority (la prosa viajó a productConfigNotes)
 
-# Heurística de override por contenido: issues etiquetados `area:infra` pero con
-# referencias fuertes al pipeline Node.js se re-rutean a `pipeline-dev`. Evita que
-# cambios del pulpo/dashboard caigan en backend-dev (stack Kotlin, no valida JS).
-pipeline_scope_keywords:
-  - ".pipeline/"
-  - "pulpo.js"
-  - "dashboard"
-  - "restart.js"
-  - "rollback.sh"
-  - "smoke-test"
-  - "rejection-report"
-  - "listener-telegram"
-  - "servicio-telegram"
-  - "servicio-github"
-  - "servicio-emulador"
-  - "servicio-drive"
-  - ".pipeline/roles/"
+# pipeline_scope_keywords: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.pipeline_scope_keywords (la prosa viajó a productConfigNotes)
 
-# Prioridad de intake (orden de procesamiento)
-prioridad_labels:
-  - "priority:critical"
-  - "priority:high"
-  - "priority:medium"    # Default si no tiene label
-  - "priority:low"
+# prioridad_labels: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.prioridad_labels (la prosa viajó a productConfigNotes)
 
-# Priorización por features — el pipeline ordena issues por feature priority
-# Issues con feature de mayor prioridad se procesan primero dentro de cada nivel de priority
-feature_priority:
-  # MVP Core — estas features tienen máxima prioridad de entrega
-  critical:
-    - "feature:usuarios-auth"
-    - "feature:catalogo-productos"
-    - "feature:checkout-pagos"
-    - "feature:delivery"
-  # Post-MVP
-  high:
-    - "feature:configuracion-negocio"
-    - "feature:comunicacion"
-  medium:
-    - "feature:stock-inventario"
-    - "feature:dashboard-analitica"
-  low:
-    - "feature:marketing-engagement"
-    - "feature:ia"
+# feature_priority: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.feature_priority (la prosa viajó a productConfigNotes)
 
 # Límites de recursos del sistema — presión graduada en vez de binario
 resource_limits:
@@ -296,15 +215,7 @@ timeouts:
 desync:
   legit_add_ttl_ms: 90000
 
-# Build (#2405 CA-1) — Allowlist de JAVA_HOME para el rol build
-# Se compara normalizando separadores (C:/Users/... y C:\Users\...), case-insensitive.
-# Paths con `..` o whitespace embebido son rechazados.
-# Agregar un JDK nuevo: appendear una entrada y commitear.
-# Ver docs/operacion-pipeline.md para el flujo completo.
-build:
-  java_home_allowlist:
-    - "C:/Users/Administrator/.jdks/temurin-21.0.7"
-    - "C:/Users/Administrator/.jdks/temurin-21.0.8"
+# build: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.build (la prosa viajó a productConfigNotes)
 
 # Circuit breaker de infra (#2405 CA-4)
 # Cuando un issue acumula N rebotes infra consecutivos sin recuperación, el Pulpo
@@ -1134,52 +1045,12 @@ telegram_outbound:
 #   3. Si aparecen ruidos no esperados, `kill_switch: true` corta sin reiniciar.
 #   4. Para audio: activar `audio_enabled: true` cuando el texto se valide en
 #      caliente (rollout independiente).
-# =============================================================================
-# #4586 — Política de audio TTS POR TIPO DE EVENTO.
-# =============================================================================
-# Principio: **audio para lo que necesita atención/acción del operador; texto
-# para el firehose informativo.** Reemplaza el flag "global" `audio_enabled`
-# (que adjuntaba audio a TODA notificación de entregable y lo mezclaba con la
-# conversación del operador con el Commander).
-#
-# Motor: `.pipeline/lib/audio-policy.js` (`shouldEmitAudio(policy, evento)`).
-# Lo consulta `deliverable-notify.js` (vía el pulpo, evento `agent_deliverable`
-# y `cua_stage`). Los otros eventos (respuestas del Commander, rejection
-# reports, /status) viven en paths separados y conservan su audio.
-#
-# Flags:
-#   - enabled:       si `false`, apaga TODA la política (sin audio por evento).
-#   - kill_switch:   corte en caliente de TODO el audio (sin reiniciar).
-#   - by_event:      audio por tipo de evento. Si un evento no está declarado
-#                    acá, cae al default del módulo (DEFAULT_BY_EVENT).
-#
-# Eventos:
-#   - commander_reply   → respuestas del Commander al operador (conversación).
-#   - rejection_report  → reportes de rechazo (audio obligatorio por memoria).
-#   - status            → /status y snapshots ejecutivos (audio obligatorio).
-#   - gate_signature    → pedidos de firma de gates (épico #4570, futuro).
-#   - agent_deliverable → notificación de entregable de agente → 🔇 texto-only.
-#   - cua_stage         → stages intermedios de comandos CUA → 🔇 texto-only.
-audio_policy:
-  enabled: true
-  kill_switch: false
-  by_event:
-    commander_reply:   true
-    rejection_report:  true
-    status:            true
-    gate_signature:    true
-    agent_deliverable: false
-    cua_stage:         false
+# audio_policy: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.audio_policy (la prosa viajó a productConfigNotes)
 
 deliverable_notifications:
   enabled: true
   kill_switch: false
-  # EP3-H2 (#3928) — whitelist ampliada a 13 skills. Sincronizada con
-  # `attachments_per_skill` (abajo) y `SKILL_SOURCES`
-  # (.pipeline/lib/skill-deliverable-attachments.js). Los 3 cambios van juntos.
-  # #4019 — `delivery` sumado para notificar el avance de ola al entregar/mergear
-  # un issue (la sección de ola solo se calcula para skill=delivery, fase=entrega).
-  skills: [guru, po, ux, planner, qa, tester, security, build, architect, review, backend-dev, android-dev, web-dev, pipeline-dev, delivery]
+  # deliverable_notifications.skills: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.deliverable_notifications.skills (la prosa viajó a productConfigNotes)
   truncate_chars: 1500
   dedup_window_hours: 24
   audit_file: ".pipeline/audit/deliverable-notifications.jsonl"
@@ -1207,40 +1078,7 @@ deliverable_notifications:
   # el hilo "🏭 Entregables pipeline"; poner acá el id numérico del topic).
   telegram_thread_id: null
 
-  # =========================================================================
-  # #3540 — Adjuntos multimedia (V1: document, image, video, animation).
-  # HTML diferido a V2 (requiere DOMPurify+jsdom, #3547 sin mergear).
-  # =========================================================================
-  # CA-FUNC-1: por skill, qué tipos de adjuntos esperar + qué extensiones.
-  # Validación negativa: cualquier extensión fuera de `formats` se rechaza
-  # (`format_not_allowed`) sin bloquear el resto.
-  attachments_per_skill:
-    guru:    { types: [document],                   formats: [.pdf, .md] }
-    po:      { types: [document],                   formats: [.pdf, .md] }
-    planner: { types: [document],                   formats: [.pdf, .md] }
-    # #3931 — ux produce imágenes (PNG/JPG mockups) y videos (MP4/WEBM demos).
-    # El type `animation` y el format `.gif` se quitaron: ningún productor de ux
-    # los emite (los `.gif` se descubrían como `image`, no como `animation`).
-    # El engine sigue soportando `animation` para futuros productores (#3540).
-    ux:      { types: [image, video],               formats: [.png, .jpg, .jpeg, .mp4, .webm] }
-    qa:      { types: [video, document],            formats: [.mp4, .webm, .pdf] }
-    # EP3-H2 (#3928) — perfiles nuevos. SEC-1: `build` SOLO .md/.pdf curado, NO
-    # .log crudo (filtra secretos). SEC-4: devs adjuntan resumen .md, no código.
-    tester:    { types: [document],                 formats: [.pdf, .md] }
-    security:  { types: [document],                 formats: [.pdf, .md] }
-    build:     { types: [document],                 formats: [.pdf, .md] }
-    architect: { types: [document],                 formats: [.pdf, .md] }
-    # #4513 — perfil `review`. Sincronizado con la whitelist `skills` y con
-    # SKILL_SOURCES (los 3 cambios van juntos). Reporte de revisión de código.
-    review:       { types: [document],              formats: [.md, .pdf] }
-    backend-dev:  { types: [document],              formats: [.md, .pdf] }
-    android-dev:  { types: [document],              formats: [.md, .pdf] }
-    web-dev:      { types: [document],              formats: [.md, .pdf] }
-    pipeline-dev: { types: [document],              formats: [.md, .pdf] }
-    # #4466 — `delivery` estaba en la whitelist `skills` pero sin perfil de
-    # adjuntos: el fallback determinístico no podía entregar su artefacto (resumen
-    # de entrega PR/commit). Perfil documental como el resto (CA-3, 14 skills).
-    delivery:     { types: [document],              formats: [.md, .pdf] }
+  # deliverable_notifications.attachments_per_skill: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.deliverable_notifications.attachments_per_skill (la prosa viajó a productConfigNotes)
 
   # CA-SEC-EXT-1: root allowlisteado por tipo. Cualquier path fuera del root
   # configurado se rechaza con `outside_root` SIN tocar disco.
@@ -1521,8 +1359,8 @@ cross_repo_delivery:
 #   - El polling efectivo se clamp a [1, 120] minutos en lib/agent-launcher.
 #     Aunque alguien edite y ponga `poll_cap_min: 9999`, el cap absoluto gana.
 architect:
-  poll_cap_min: 30
-  poll_interval_seconds: 30
+  # architect.poll_cap_min: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.architect.poll_cap_min
+  # architect.poll_interval_seconds: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.architect.poll_interval_seconds
 
   # ===========================================================================
   # #3614 — Gate de promoción criterios → Ready (B3 del paraguas #3559)
@@ -1555,7 +1393,7 @@ architect:
   enabled: false
   gate_mode: dry-run
   go_live_date: '2026-05-29T00:00:00Z'
-  bot_login: architect-bot
+  # architect.bot_login: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.architect.bot_login
 
 # =============================================================================
 # #4574 — GATE 1 · Firma de Definición del operador (épico #4570)
@@ -1799,20 +1637,7 @@ wave_auto_transition:
   mode: notify          # "notify" (default) | "auto" (opt-in explícito de Leo)
   gh_timeout_ms: 30000  # timeout por consulta `gh issue view`
 
-# =============================================================================
-# Telegram — config PÚBLICA del bot (#3957, EP8-H4 / CA-3)
-# =============================================================================
-# bot_username es el handle público del bot (sin @). Se usa para construir el
-# deep-link `https://t.me/<username>?start=<payload>` de la ventana Bloqueados.
-# Validado contra `^[A-Za-z0-9_]{5,32}$` antes de exponerse al dashboard.
-#
-# SEGURIDAD: acá SÓLO va información pública. El `bot_token` y el `chat_id`
-# (secretos) viven en `~/.claude/secrets/credentials.json`, NUNCA en este
-# archivo ni en el HTML renderizado. Si bot_username falta o es inválido, el
-# dashboard simplemente no renderiza el deep-link de Telegram (degradación
-# limpia: queda el deep-link a GitHub).
-telegram:
-  bot_username: "intrale_bot"
+# telegram: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.telegram (la prosa viajó a productConfigNotes)
 
 # =============================================================================
 # Commander product-aware — binding server-side productId → operadores (#4780)
@@ -1855,4 +1680,3 @@ commander_products:
   #       name: "Comercios-AR"
   #       operators: ["<chat_id_operador_B>"]
   products: {}
-

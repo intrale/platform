@@ -25,6 +25,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { Readable } = require('node:stream');
+const { seedPipelineConfig } = require('./_test-helpers');
 
 let waves, wavesApi, csrf, partialPause;
 
@@ -57,6 +58,10 @@ function makeGhRunner() {
 
 function setupTmp() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'waves-api-allowlist-'));
+    // #5172: leer config.yaml pasó a ser fail-loud, así que un tmp sin config
+    // rompe el harness. Se siembra el documento mínimo a propósito: sin sección
+    // `waves:` los defaults efectivos son los mismos que antes del cambio.
+    seedPipelineConfig(dir);
     process.env.PIPELINE_DIR_OVERRIDE = dir;
     for (const m of ['../waves', '../waves-api', '../partial-pause']) {
         try { delete require.cache[require.resolve(m)]; } catch { /* noop */ }

@@ -19,6 +19,7 @@ const det = require('../commander-deterministic');
 const { parseTextArgs, parseAudioTranscript, createRechazarHandler, STATUS } = require('../commander/rechazar-handler');
 const phasesAlias = require('../commander/phases-alias');
 const { createAuditLog } = require('../commander/audit-log');
+const { seedProductManifest } = require('./_test-helpers');
 
 // -----------------------------------------------------------------------------
 // Helpers
@@ -241,6 +242,7 @@ function withConfig(content, fn) {
     const dir = mkTmp('phases-config-');
     const configPath = path.join(dir, 'config.yaml');
     fs.writeFileSync(configPath, content);
+    seedProductManifest(dir);   // #5174 — la configuración vive partida: el otro lado también
     phasesAlias._clearCache();
     try { return fn(configPath); }
     finally { phasesAlias._clearCache(); }

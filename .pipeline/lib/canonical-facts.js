@@ -95,28 +95,37 @@ function heartbeatRoot() {
 }
 
 // -----------------------------------------------------------------------------
-// loadPipelineConfig — lee `config.yaml` (lazy-require de js-yaml con fallback,
-// mismo patrón que waves.js:515). Cacheado por path resuelto: tests con distinto
-// `PIPELINE_DIR_OVERRIDE` obtienen su propia entrada. FAIL-OPEN: cualquier error
-// (yaml ausente, archivo ilegible) → `{}` (los enums quedan vacíos → argsBuilder
-// lanza → not_verifiable).
+// loadPipelineConfig — delega en el punto ÚNICO `lib/config-resolver` (#5172).
+//
+// FALLBACK ELIMINADO (#5172): antes había un `catch { cfg = {} }` que convertía
+// cualquier FALLO DE LECTURA (config.yaml ausente, YAML roto, permisos) en `{}`.
+// Con `{}` los enums quedaban vacíos, `argsBuilder` lanzaba y el hecho canónico
+// salía `not_verifiable` — es decir, una config CORRUPTA se veía igual que un
+// hecho no verificable, y nadie se enteraba de la causa real. Ahora el error
+// tipado del resolver (`ConfigParseViolation` / `ConfigSchemaViolation`, ya
+// redactado) se PROPAGA al llamador, que decide su política.
+//
+// Lo que NO cambia (no es error): que el documento parsee pero no declare
+// `pipelines:` sigue dando enums vacíos. La ausencia de una sección opcional no
+// es corrupción; sólo se eliminó el catch que enmascaraba el fallo de lectura.
+//
+// El caché propio se elimina: el resolver ya cachea por ruta resuelta, con la
+// misma granularidad (tests con distinto `PIPELINE_DIR_OVERRIDE` resuelven a
+// archivos distintos → entradas distintas del caché).
+//
+// `require` lazy a propósito (mismo motivo que el lazy-require de js-yaml que
+// reemplaza): el resolver importa `js-yaml` + `ajv` en el tope, y este módulo lo
+// cargan runners que corren en worktrees sin `node_modules`.
 // -----------------------------------------------------------------------------
-const _cfgCache = new Map(); // cfgPath -> cfg
 function loadPipelineConfig() {
-    const cfgPath = path.join(pipelineRoot(), 'config.yaml');
-    if (_cfgCache.has(cfgPath)) return _cfgCache.get(cfgPath);
-    let cfg = {};
-    try {
-        // eslint-disable-next-line global-require
-        const yaml = require('js-yaml'); // safe-by-default (yaml.load, sin !!js/function)
-        cfg = yaml.load(require('node:fs').readFileSync(cfgPath, 'utf8')) || {};
-    } catch {
-        cfg = {}; // config ausente / yaml no disponible → enums vacíos.
-    }
-    _cfgCache.set(cfgPath, cfg);
-    return cfg;
+    // `pipelineRoot()` devuelve el DIRECTORIO `.pipeline` (honra
+    // `PIPELINE_DIR_OVERRIDE`), por eso se inyecta como `pipelineDir` y no como
+    // `configPath`: el nombre del archivo lo pone el resolver (CA-12).
+    // eslint-disable-next-line global-require
+    return require('./config-resolver').resolve({ pipelineDir: pipelineRoot() });
 }
-function _resetConfigCache() { _cfgCache.clear(); } // solo para tests
+// eslint-disable-next-line global-require
+function _resetConfigCache() { require('./config-resolver').clearCache(); } // solo para tests
 
 // Enums cerrados derivados de config.yaml (`pipelines.*`).
 function pipelineEnum() {
