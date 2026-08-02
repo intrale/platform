@@ -173,6 +173,14 @@ const ENV_MAPPING = Object.freeze(Object.fromEntries(
   Object.entries(ENV_DESCRIPTORS).map(([dotPath, d]) => [dotPath, d.env]),
 ));
 
+// B2.7 — nombres de las env vars que son anclas de autorización, derivados del
+// descriptor (no se duplica el inventario). Es un Set por NOMBRE porque el
+// camino del mapping legacy itera sin `dotPath`, y ahí no hay descriptor del que
+// leer `auth_anchor`: sin esto, el fail-closed del ancla tendría un agujero.
+const ANCHOR_ENV_VARS = Object.freeze(new Set(
+  Object.values(ENV_DESCRIPTORS).filter((d) => d.auth_anchor).map((d) => d.env),
+));
+
 // Mapeo legacy: telegram-config.json usa flat keys (no nested). Solo cubre las
 // que existían en ese formato — providers nuevos (google/cerebras/nvidia) no
 // se cargan del legacy porque no existían cuando ese archivo era canónico.
@@ -287,21 +295,57 @@ function estaDentroDelRepo(p) {
  * Lee la sección `vault:` de config.yaml (+ `kernel.region`, que el vault
  * REUTILIZA por diseño de #5352).
  *
- * Si la config no se puede leer, el gate queda CERRADO: el default commiteado
- * es `enabled: false`, así que degradar a "vault apagado" deja el pipeline
- * exactamente como corre hoy, y el dueño real de la corrupción de config
- * (`pulpo.js`, vía `config-resolver`) la trata con su propia política de halt.
+ * B2.7 (rev-1) — DOS decisiones de seguridad viven acá:
+ *
+ * 1. La RAÍZ de la config se fija en código (`REPO_ROOT`), igual que hace el
+ *    Pulpo (`pulpo.js`, `resolve({pipelineDir: PIPELINE})`). `resolve({})` deja
+ *    que el ENTORNO elija qué `config.yaml` es la autoridad
+ *    (`PIPELINE_DIR_OVERRIDE` / `PIPELINE_STATE_DIR` / `PIPELINE_REPO_ROOT`), y
+ *    esa es exactamente la capacidad que B2 asume en el adversario: quien puede
+ *    escribir `TELEGRAM_LEO_OPERATOR_CHAT_ID` puede escribir `PIPELINE_REPO_ROOT`,
+ *    desviar la lectura a una carpeta suya y apagar el gate del vault desde
+ *    afuera — con el gate apagado el ancla vuelve al régimen de `process.env` y
+ *    el atacante queda como firmante del gate del operador. Fijar la raíz cierra
+ *    el vector entero. `opts.pipelineDir` sigue disponible porque es un
+ *    ARGUMENTO (código), no entorno — la misma distinción que documenta
+ *    `config-resolver.js` para su propio orden de precedencia.
+ *
+ * 2. "No pude leer la config" NO es "vault apagado". Son estados distintos con
+ *    políticas opuestas: `enabled: false` es una decisión deliberada y commiteada;
+ *    un error de lectura es una condición NO gobernada. Colapsarlos es fail-open
+ *    disfrazado — el mismo razonamiento que el código ya aplica a B1.2 para el
+ *    error de red del driver. Por eso el retorno es un TRI-estado y el
+ *    indeterminado se propaga hasta la precedencia del ancla.
+ *
+ * @returns {{cfg: object|null, indeterminado: boolean, causa: string|null}}
  */
 function readVaultConfig(opts, logger) {
-  if (opts.vaultConfig !== undefined) return opts.vaultConfig;   // inyección de tests
+  // Inyección de tests: una config provista por firma es una decisión conocida,
+  // nunca un indeterminado.
+  if (opts.vaultConfig !== undefined) {
+    return { cfg: opts.vaultConfig, indeterminado: false, causa: null };
+  }
+  const pipelineDir = opts.pipelineDir
+    ? path.resolve(opts.pipelineDir)
+    : path.join(REPO_ROOT, '.pipeline');
   try {
-    const cfg = require('./config-resolver').resolve({});
-    if (!cfg || !cfg.vault) return null;
-    return { ...cfg.vault, region: cfg.kernel && cfg.kernel.region };
+    const cfg = require('./config-resolver').resolve({ pipelineDir });
+    // Config LEÍDA y sin sección `vault:` es una decisión conocida (el vault no
+    // está configurado), no un indeterminado: gate cerrado y nada más.
+    if (!cfg || !cfg.vault) return { cfg: null, indeterminado: false, causa: null };
+    return {
+      cfg: { ...cfg.vault, region: cfg.kernel && cfg.kernel.region },
+      indeterminado: false,
+      causa: null,
+    };
   } catch (e) {
-    logger('[credentials] WARN: no se pudo leer config.yaml para el vault '
-      + `(${(e && e.name) || 'error'}); el gate del vault queda CERRADO y se usa el archivo`);
-    return null;
+    const causa = (e && e.name) || 'error';
+    logger(`[credentials] WARN: no se pudo leer config.yaml para el vault (${causa}). `
+      + 'Impacto: el gate del vault queda CERRADO para los 12 secretos (se usa el archivo), '
+      + 'pero las anclas de autorizacion fallan CERRADAS: no se puede probar que el vault este '
+      + 'apagado a proposito, y un error de lectura no puede devolverle el ancla al ambiente (B2.7). '
+      + `Proximo paso: reparar ${path.join(pipelineDir, 'config.yaml')}`);
+    return { cfg: null, indeterminado: true, causa };
   }
 }
 
@@ -371,16 +415,29 @@ function evaluarVentanaBootstrap(cfg, { canonicalPath, legacyPath, ahora, logger
 /**
  * Resuelve el namespace del vault por el camino SYNC, memoizado por namespace.
  *
- * @returns {{enabled:boolean, namespace:string|null, payload:object|null, error:object|null}}
+ * @returns {{enabled:boolean, indeterminado:boolean, namespace:string|null,
+ *            payload:object|null, error:object|null}}
  */
 function resolverVault(opts, logger) {
-  const cfg = readVaultConfig(opts, logger);
+  const { cfg, indeterminado, causa } = readVaultConfig(opts, logger);
 
   // D-SYNC-8 — con el gate cerrado no se construye el vault, no se carga
   // `secret-vault.js` y no se toca el driver ni una vez. El comportamiento
   // productivo queda IDÉNTICO al de antes de #5353.
+  //
+  // B2.7 — `indeterminado` viaja aparte de `enabled`. Para los 12 no-ancla el
+  // camino es el mismo que con el gate cerrado (por eso `enabled: false`); lo
+  // que cambia es SÓLO la precedencia del ancla, que falla cerrada.
   if (!cfg || cfg.enabled !== true) {
-    return { enabled: false, namespace: null, payload: null, error: null, cfg };
+    return {
+      enabled: false,
+      indeterminado: !!indeterminado,
+      causaIndeterminado: causa || null,
+      namespace: null,
+      payload: null,
+      error: null,
+      cfg,
+    };
   }
 
   const ahora = typeof opts.now === 'function' ? opts.now() : Date.now();
@@ -477,6 +534,9 @@ const LEGACY_KEY_BY_ENV = Object.freeze(Object.fromEntries(
  * @param {string}   [opts.legacyPath]         Path del archivo legacy (override para tests).
  * @param {object}   [opts.env=process.env]    Env target (override para tests).
  * @param {object}   [opts.vaultConfig]        Sección `vault:` inyectada (tests).
+ * @param {string}   [opts.pipelineDir]        Raíz de `.pipeline` para resolver config.yaml.
+ *                                             Por default se fija en código (`REPO_ROOT`):
+ *                                             el ENTORNO no elige la autoridad (B2.7).
  * @param {object}   [opts.vaultDriver]        Driver del vault inyectado (tests).
  * @param {function} [opts.now]                Reloj inyectable en ms (tests de la ventana B1.5).
  * @returns {{source: string, hydrated: string[], skipped_existing: string[],
@@ -501,9 +561,41 @@ function loadIntoEnv(opts = {}) {
   const vaultEstado = resolverVault(opts, logger);
   result.vault = {
     enabled: vaultEstado.enabled,
+    // B2.7 — visible para quien audite el arranque: `enabled:false` con
+    // `indeterminado:true` NO es "el operador apagó el vault", es "no se pudo
+    // leer la config", y las anclas se trataron como fail-closed.
+    indeterminado: !!vaultEstado.indeterminado,
     namespace: vaultEstado.namespace,
     error: vaultEstado.error,
   };
+
+  // B2.7 — fail-closed de las anclas cuando el gate quedó INDETERMINADO (no se
+  // pudo leer config.yaml). Va ACÁ, antes de cualquier salida temprana: los
+  // caminos "no hay archivo de credenciales" y "el legacy es JSON inválido"
+  // retornan sin llegar al loop de precedencia, y ahí el ancla preseteada
+  // sobreviviría intacta — que es exactamente el bypass que hay que cerrar.
+  //
+  // No se puede probar que el vault esté apagado a propósito, así que el ancla
+  // NO vuelve al régimen de `process.env`: se descarta y se cuenta como
+  // faltante, igual que cuando el gate está abierto y el vault no la tiene
+  // (B2.4). Las 12 no-ancla no se tocan: su camino sigue siendo el del gate
+  // cerrado, idéntico al de antes de #5353.
+  const anclasCerradas = new Set();
+  if (vaultEstado.indeterminado) {
+    for (const envVar of ANCHOR_ENV_VARS) {
+      if (env[envVar] && String(env[envVar]).length > 0) {
+        delete env[envVar];
+        logger(`[credentials] WARN: ${envVar} estaba preseteada en el ambiente y se DESCARTO. `
+          + 'Causa: no se pudo leer config.yaml, asi que no hay forma de probar que el vault este '
+          + 'apagado a proposito, y un ancla de autorizacion no puede venir del ambiente (B2.7). '
+          + 'Impacto: el gate del operador queda con cero firmantes (fail-closed). '
+          + 'Proximo paso: reparar config.yaml y, si el vault esta encendido, subir el ancla al vault');
+      }
+      result.missing.push(envVar);
+      result.sources[envVar] = SOURCE.MISSING;
+      anclasCerradas.add(envVar);
+    }
+  }
 
   let data = null;
   let usingMapping = null;
@@ -579,6 +671,9 @@ function loadIntoEnv(opts = {}) {
     // B2.1 — el ancla sólo cambia de régimen con el gate ABIERTO.
     const esAncla = vaultEstado.enabled && !!(desc && desc.auth_anchor);
     const preexistente = !!(env[envVar] && String(env[envVar]).length > 0);
+
+    // B2.7 — el ancla ya se cerró arriba, antes de las salidas tempranas.
+    if (anclasCerradas.has(envVar)) continue;
 
     // B2.6 — para las 12 no-ancla la precedencia NO cambia: `process.env`
     // preseteado sigue ganando. Esta hija no es el lugar para reordenar la
@@ -787,6 +882,10 @@ module.exports = {
   SOURCE,
   vaultScopePlan,
   _resetVaultCache,
+  // B2.7 — expuesto SÓLO para el test que verifica que la raíz de la config la
+  // fija el código y no el entorno. No tiene call-site productivo fuera de
+  // `resolverVault`.
+  _readVaultConfig: readVaultConfig,
 };
 
 // CLI: dry-run que imprime resumen sin valores. Útil para diagnóstico operativo.

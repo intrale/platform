@@ -32,6 +32,7 @@ const {
   SOURCE,
   vaultScopePlan,
   _resetVaultCache,
+  _readVaultConfig,
 } = credentials;
 const { buildParameterPath, createInMemoryVaultDriver } = require('../secret-vault');
 const { resolveOperatorAllowlist } = require('../operator-gate');
@@ -628,6 +629,113 @@ test('B2.6 · para las 12 no-ancla la precedencia de process.env NO cambia', () 
   assert.equal(r.sources.OPENAI_API_KEY, SOURCE.ENV_PREEXISTING);
   // La única que cambia de régimen es el ancla.
   assert.deepEqual(r.hydrated, [ANCLA_ENV]);
+});
+
+// =============================================================================
+// B2.7 (rev-1) — el ENTORNO no puede desactivar el régimen del ancla
+//
+// Vector cerrado: `readVaultConfig` resolvía con `resolve({})`, así que
+// `PIPELINE_REPO_ROOT` / `PIPELINE_DIR_OVERRIDE` / `PIPELINE_STATE_DIR` elegían
+// qué config.yaml era la autoridad. Quien puede escribir el ancla en el ambiente
+// puede escribir ESAS, desviar la lectura a una carpeta vacía (o propia), dejar
+// el gate en "apagado" y quedarse como firmante del gate del operador.
+// =============================================================================
+
+/** Corre `fn` con las tres env vars de raíz apuntando a `valor`, y las restaura. */
+function conRaizDesviadaPorEntorno(valor, fn) {
+  const VARS = ['PIPELINE_DIR_OVERRIDE', 'PIPELINE_STATE_DIR', 'PIPELINE_REPO_ROOT'];
+  const previas = VARS.map((v) => [v, process.env[v]]);
+  for (const v of VARS) process.env[v] = valor;
+  try { return fn(); } finally {
+    for (const [v, prev] of previas) {
+      if (prev === undefined) delete process.env[v]; else process.env[v] = prev;
+    }
+  }
+}
+
+test('B2.7 · con vault.enabled true en la config real, una raiz de config desviada por entorno NO devuelve el ancla al regimen de process.env', () => {
+  const repoRoot = path.resolve(__dirname, '..', '..', '..');
+  const real = require('../config-resolver').resolve({
+    pipelineDir: path.join(repoRoot, '.pipeline'),
+  });
+
+  const leido = conRaizDesviadaPorEntorno(
+    path.join(os.tmpdir(), 'cred-vault-5353-raiz-del-atacante-inexistente'),
+    () => _readVaultConfig({}, capturarLogs()),
+  );
+
+  // La desviación NO tuvo efecto: se leyó la config real del checkout. Antes del
+  // fix esto tiraba ConfigParseViolation, el catch devolvía null, `resolverVault`
+  // lo colapsaba con "vault apagado" y el ancla preseteada sobrevivía.
+  assert.equal(leido.indeterminado, false,
+    'la raiz la fija el codigo: la desviacion por entorno no eligio la autoridad');
+  assert.ok(leido.cfg, 'se leyo la seccion vault: de la config REAL');
+  assert.equal(leido.cfg.enabled, real.vault.enabled,
+    'el gate resuelto es el que dice la config commiteada, no el que dice el entorno');
+  assert.equal(leido.cfg.prefix, real.vault.prefix);
+  assert.equal(leido.cfg.projectId, real.vault.projectId);
+});
+
+test('B2.7 · una config ilegible NO se colapsa con "vault apagado": el ancla falla CERRADA y las 12 no-ancla quedan identicas', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cred-vault-5353-cfg-rota-'));
+  const pipelineDir = path.join(dir, '.pipeline');
+  fs.mkdirSync(pipelineDir);
+  fs.writeFileSync(path.join(pipelineDir, 'config.yaml'), 'esto: [no es yaml\n  valido: {{{\n');
+
+  // El atacante dejó su chat id preseteado, y una API key cualquiera también.
+  const env = { [ANCLA_ENV]: '666666666', OPENAI_API_KEY: 'AMBIENTE-OPENAI' };
+  const logger = capturarLogs();
+  const driver = driverConSeed();
+
+  try {
+    // Con archivo presente para que el loop de precedencia corra completo: así
+    // se ve que el ancla tampoco sale del ARCHIVO, y que las no-ancla resuelven
+    // exactamente como con el gate cerrado.
+    const r = conArchivosTmp(({ canonicalPath, legacyPath }) => cargar({
+      canonicalPath, legacyPath, env, logger, pipelineDir, vaultDriver: driver,
+    }), {
+      canonical: {
+        telegram: { bot_token: 'ARCHIVO-BOT', chat_id: '42', leo_operator_chat_id: '777777777' },
+      },
+    });
+
+    assert.equal(driver.calls.length, 0, 'sin config legible no se abre el gate ni se toca el driver');
+    assert.equal(r.vault.enabled, false);
+    assert.equal(r.vault.indeterminado, true,
+      '"no pude leer la config" es un estado propio, distinto de "el operador apago el vault"');
+
+    // El ancla: fail-closed, igual que cuando el gate está abierto y falta (B2.4).
+    assert.ok(!(ANCLA_ENV in env),
+      'un error de lectura de config no puede devolverle el ancla al ambiente');
+    assert.ok(r.missing.includes(ANCLA_ENV));
+    assert.equal(r.sources[ANCLA_ENV], SOURCE.MISSING);
+    assert.ok(!r.hydrated.includes(ANCLA_ENV), 'ni del ambiente ni del archivo');
+    assert.equal(resolveOperatorAllowlist(env).size, 0, 'cero firmantes: el gate del operador no autoriza a nadie');
+    assert.match(logger.texto(), /no se pudo leer config\.yaml para el vault/);
+    // El WARN nombra la variable, nunca el valor (B2.3).
+    assert.ok(!logger.texto().includes('666666666'), 'el log jamas lleva el valor del ancla');
+    assert.ok(!logger.texto().includes('777777777'));
+
+    // Las no-ancla: camino IDÉNTICO al del gate cerrado.
+    assert.equal(env.OPENAI_API_KEY, 'AMBIENTE-OPENAI', 'process.env preseteado sigue ganando');
+    assert.equal(r.sources.OPENAI_API_KEY, SOURCE.ENV_PREEXISTING);
+    assert.ok(r.skipped_existing.includes('OPENAI_API_KEY'));
+    assert.ok(!r.missing.includes('OPENAI_API_KEY'));
+    assert.equal(env.TELEGRAM_BOT_TOKEN, 'ARCHIVO-BOT', 'las no-ancla siguen resolviendo del archivo');
+    assert.equal(r.sources.TELEGRAM_BOT_TOKEN, 'canonical');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('B2.7 · con la config LEGIBLE el estado nunca es indeterminado (vault.enabled false sigue siendo identico al actual)', () => {
+  const r = cargar({
+    ...sinArchivos(), env: {}, logger: () => {},
+    vaultConfig: configVault({ enabled: false }), vaultDriver: driverConSeed(),
+  });
+  assert.equal(r.vault.enabled, false);
+  assert.equal(r.vault.indeterminado, false,
+    'apagar el vault a proposito NO activa el fail-closed del ancla');
 });
 
 // =============================================================================

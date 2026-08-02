@@ -737,6 +737,30 @@ esta lista completa**:
    y `vault.shared_secrets` la membresía que corresponda. El vault sólo resuelve
    scopes declarados: uno faltante es fail-closed, no una lectura silenciosa.
 7. **G-6 a G-9 verificados** con control positivo en la misma corrida (B3.6).
+8. **El ancla no se apaga desde el ambiente** (B2.7 — rev-1 de la auditoría de
+   seguridad). El régimen del ancla depende de `vault.enabled`, así que quien
+   pueda elegir **qué `config.yaml` es la autoridad** puede apagar el control
+   entero — y eso es exactamente la capacidad que B2 asume en el adversario
+   (poder escribir variables de entorno). Dos invariantes lo cierran, y las dos
+   se verifican en `credentials-vault-5353.test.js`:
+
+   - La raíz de la config la fija el **código** (`REPO_ROOT`), igual que hace
+     `pulpo.js`. `PIPELINE_REPO_ROOT`, `PIPELINE_DIR_OVERRIDE` y
+     `PIPELINE_STATE_DIR` **no** eligen la autoridad para `credentials.js`.
+     Antes sí lo hacían: bastaba apuntar una de ellas a una carpeta vacía para
+     que el gate se leyera como apagado y el chat id preseteado en el ambiente
+     sobreviviera como firmante del gate del operador.
+   - «No se pudo leer la config» **no es** «el vault está apagado». Es un estado
+     propio (`result.vault.indeterminado: true`) y ante él las **anclas** fallan
+     cerradas: se descartan del ambiente y se cuentan en `missing`. Las 12
+     no-ancla siguen el camino del gate cerrado, idéntico al actual. Colapsar
+     los dos estados es fail-open disfrazado, el mismo razonamiento que B1.2
+     aplica al error de red del driver.
+
+   Verificación al encender: `result.vault.indeterminado === false` en el boot.
+   Si sale `true`, el `config.yaml` que manda no se está leyendo y el gate del
+   operador quedó **sin firmantes** a propósito — se repara la config, no se
+   repuebla la variable a mano.
 
 La ventana de bootstrap (`vault.bootstrap_fallback` +
 `bootstrap_fallback_until`) existe para el punto 3 y **sólo** para eso: permite
