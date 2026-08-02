@@ -6,6 +6,13 @@
 // (SSM Parameter Store / Secrets Manager) por **scope declarado**, con allowlist
 // de verbos read-only, caché en memoria por namespace y fail-closed explícito.
 //
+// AMPLIACIÓN DE #5353 (hija 3) — superficie SYNC sobre el MISMO núcleo:
+//   `resolveNamespaceSync` / `resolveScopeSync` y el port sync de los dos
+//   drivers. No es un gemelo duplicado: la lógica se escribe una sola vez como
+//   generador y dos conductores la ejecutan (ver "un solo cuerpo, dos
+//   conductores"). La API async de #5352 no cambia — sigue declarada `async`,
+//   sigue devolviendo `Promise`, y su suite queda verde sin editarse (D1.5).
+//
 // LO QUE ESTE MÓDULO **NO** HACE (a propósito):
 //   - NO escribe en el ambiente del proceso (CA-8). Esa decisión — precedencia y
 //     semántica de degradación de `loadIntoEnv` — vive en la hija 3 (#5353) y
@@ -490,12 +497,85 @@ function assertArgsSeguros(args) {
 }
 
 // -----------------------------------------------------------------------------
+// D1.1 / D-SYNC-3 (#5353) — un solo cuerpo, dos conductores
+// -----------------------------------------------------------------------------
+//
+// `credentials.js` hidrata el ambiente en el arranque del Pulpo y de
+// `restart.js` con llamadas A NIVEL DE MÓDULO (`pulpo.js:18`, `restart.js:47`)
+// cuya razón de ser es el ORDEN (#3311): CommonJS no tiene top-level `await`,
+// así que volver async ese camino no cambiaría una firma, destruiría la
+// garantía. Este módulo tiene que ofrecer, entonces, una superficie SYNC.
+//
+// La salida NO es un gemelo duplicado. Duplicar la caché, la allowlist, la
+// paginación y el fail-closed reintroduce exactamente la "cobertura ilusoria"
+// que G-2 documenta: los tests corren contra un camino y producción usa el
+// otro. La lógica se escribe UNA sola vez como generador — cada `yield` es un
+// PEDIDO al transporte, y el núcleo no sabe ni le importa si lo van a resolver
+// de forma sync o async. Los dos conductores de abajo son lo único que se
+// escribe dos veces.
+//
+// Habilitante: el transporte real YA ES SYNC (`execFileSync`, ver
+// `createAwsCliVaultRunner`), o sea que la asincronía de la API pública es
+// cosmética — ninguno de los `await` de este módulo espera I/O real.
+
+/**
+ * Conduce el núcleo resolviendo cada pedido de forma SÍNCRONA.
+ *
+ * @param {Generator} generador núcleo que `yield`ea pedidos al transporte
+ * @param {function} ejecutar   traductor `pedido -> valor` (sin promesas)
+ */
+function conducirSync(generador, ejecutar) {
+    let paso = generador.next();
+    while (!paso.done) {
+        let valor;
+        try {
+            valor = ejecutar(paso.value);
+        } catch (err) {
+            paso = generador.throw(err);
+            continue;
+        }
+        if (valor && typeof valor.then === 'function') {
+            // D-SYNC-6 — una Promise en el camino sync se rechaza de frente.
+            // PROHIBIDO esperarla con `Atomics.wait`, `worker_threads`, un Node
+            // hijo o `deasync`: todos convierten un problema de contrato en un
+            // bloqueo del event loop del Pulpo.
+            throw new VaultConfigError('vault.driver',
+                `\`${paso.value.op}\` devolvió una Promise en el camino sync. `
+                + 'Remediación: el camino sync exige un transporte sync '
+                + '(ver createAwsCliVaultRunner)');
+        }
+        paso = generador.next(valor);
+    }
+    return paso.value;
+}
+
+/** Conduce EL MISMO núcleo resolviendo cada pedido con `await`. */
+async function conducirAsync(generador, ejecutar) {
+    let paso = generador.next();
+    while (!paso.done) {
+        let valor;
+        try {
+            valor = await ejecutar(paso.value);
+        } catch (err) {
+            paso = generador.throw(err);
+            continue;
+        }
+        paso = generador.next(valor);
+    }
+    return paso.value;
+}
+
+// -----------------------------------------------------------------------------
 // Drivers (port/adapter) — AMBOS devuelven la MISMA forma (G-2)
 // -----------------------------------------------------------------------------
 //
 // Port:
 //   getParametersByPath(root) -> Promise<{ parameters: Array<{name, value}> }>
 //   getSecretValue(name)      -> Promise<{ name, value } | null>
+//
+// Port sync (D1.3), mismo contrato sin la envoltura de Promise:
+//   getParametersByPathSync(root) -> { parameters: Array<{name, value}> }
+//   getSecretValueSync(name)      -> { name, value } | null
 //
 // `value` es SIEMPRE un string con JSON serializado. El parseo vive arriba, en
 // `resolveScope`, para que los dos drivers no puedan divergir de tipo.
@@ -523,25 +603,38 @@ function createInMemoryVaultDriver({ parameters = {}, secrets = {} } = {}) {
 
     const calls = [];
 
+    // D1.3 — el cuerpo es UNO solo y ya era sync; las variantes async quedan
+    // como envoltorios finos. Así el fake no puede divergir entre caminos.
+    function leerParametros(root) {
+        calls.push({ op: 'getParametersByPath', root });
+        const out = [];
+        for (const [name, value] of store) {
+            if (name.startsWith(root)) out.push({ name, value });
+        }
+        // Orden estable: la resolución no puede depender del orden de inserción.
+        out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+        return { parameters: out };
+    }
+
+    function leerSecreto(name) {
+        calls.push({ op: 'getSecretValue', name });
+        if (!secretStore.has(name)) return null;
+        return { name, value: secretStore.get(name) };
+    }
+
     return {
         kind: 'in-memory',
         calls,
 
+        getParametersByPathSync: leerParametros,
+        getSecretValueSync: leerSecreto,
+
         async getParametersByPath(root) {
-            calls.push({ op: 'getParametersByPath', root });
-            const out = [];
-            for (const [name, value] of store) {
-                if (name.startsWith(root)) out.push({ name, value });
-            }
-            // Orden estable: la resolución no puede depender del orden de inserción.
-            out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-            return { parameters: out };
+            return leerParametros(root);
         },
 
         async getSecretValue(name) {
-            calls.push({ op: 'getSecretValue', name });
-            if (!secretStore.has(name)) return null;
-            return { name, value: secretStore.get(name) };
+            return leerSecreto(name);
         },
     };
 }
@@ -571,56 +664,81 @@ function createAwsCliVaultDriver({ run } = {}) {
         }
     }
 
+    // D1.1 — la paginación se escribe UNA vez. El `yield` es el pedido al
+    // runner; quién lo espera (o no) lo decide el conductor.
+    function* nucleoGetParametersByPath(root, opts) {
+        const scopes = opts.scopes || [];
+        const parameters = [];
+        let token = null;
+        let pagina = 0;
+        do {
+            // SEC-4: ningún flag de paginación acotada — la allowlist de
+            // flags no los admite. La paginación se sigue a mano hasta
+            // agotar `NextToken`, así que nunca se devuelve media respuesta.
+            const args = ['get-parameters-by-path', '--path', root, '--recursive', '--with-decryption'];
+            if (token) args.push('--starting-token', token);
+            const json = parsear(yield { op: 'run', service: 'ssm', args }, { root, scopes });
+            for (const p of Array.isArray(json.Parameters) ? json.Parameters : []) {
+                parameters.push({ name: p.Name, value: p.Value });
+            }
+            token = json.NextToken || null;
+            pagina += 1;
+            if (token && pagina >= MAX_PAGES) {
+                // Nunca devolver un resultado parcial en silencio: un scope
+                // que quedó en la página 51 se vería como «secreto ausente».
+                throw new VaultTruncatedResponseError({
+                    root, reason: `NextToken sin consumir tras ${pagina} páginas`, scopes,
+                });
+            }
+        } while (token);
+        return { parameters };
+    }
+
+    function* nucleoGetSecretValue(name, opts) {
+        const scopes = opts.scopes || [];
+        let raw;
+        try {
+            // D9 — `--version-stage AWSCURRENT` explícito y SIN `--version-id`:
+            // fijar una versión concreta congela el secreto y la rotación deja
+            // de tener efecto sin que nada falle.
+            raw = yield {
+                op: 'run',
+                service: 'secretsmanager',
+                args: ['get-secret-value', '--secret-id', name, '--version-stage', 'AWSCURRENT'],
+            };
+        } catch (err) {
+            if (err && err.name === 'VaultCliError' && /ResourceNotFound/i.test(err.message)) {
+                return null;
+            }
+            throw err;
+        }
+        const json = parsear(raw, { root: name, scopes });
+        if (json.SecretString == null) return null;
+        return { name, value: String(json.SecretString) };
+    }
+
+    // El traductor es el mismo para los dos caminos: `run` ya es sync en
+    // producción, y el conductor async sigue aceptando un runner que devuelva
+    // Promise (retrocompat del port original).
+    const ejecutar = (pedido) => run(pedido.service, pedido.args);
+
     return {
         kind: 'aws-cli',
 
+        getParametersByPathSync(root, opts = {}) {
+            return conducirSync(nucleoGetParametersByPath(root, opts), ejecutar);
+        },
+
+        getSecretValueSync(name, opts = {}) {
+            return conducirSync(nucleoGetSecretValue(name, opts), ejecutar);
+        },
+
         async getParametersByPath(root, opts = {}) {
-            const scopes = opts.scopes || [];
-            const parameters = [];
-            let token = null;
-            let pagina = 0;
-            do {
-                // SEC-4: ningún flag de paginación acotada — la allowlist de
-                // flags no los admite. La paginación se sigue a mano hasta
-                // agotar `NextToken`, así que nunca se devuelve media respuesta.
-                const args = ['get-parameters-by-path', '--path', root, '--recursive', '--with-decryption'];
-                if (token) args.push('--starting-token', token);
-                const json = parsear(await run('ssm', args), { root, scopes });
-                for (const p of Array.isArray(json.Parameters) ? json.Parameters : []) {
-                    parameters.push({ name: p.Name, value: p.Value });
-                }
-                token = json.NextToken || null;
-                pagina += 1;
-                if (token && pagina >= MAX_PAGES) {
-                    // Nunca devolver un resultado parcial en silencio: un scope
-                    // que quedó en la página 51 se vería como «secreto ausente».
-                    throw new VaultTruncatedResponseError({
-                        root, reason: `NextToken sin consumir tras ${pagina} páginas`, scopes,
-                    });
-                }
-            } while (token);
-            return { parameters };
+            return conducirAsync(nucleoGetParametersByPath(root, opts), ejecutar);
         },
 
         async getSecretValue(name, opts = {}) {
-            const scopes = opts.scopes || [];
-            let raw;
-            try {
-                // D9 — `--version-stage AWSCURRENT` explícito y SIN `--version-id`:
-                // fijar una versión concreta congela el secreto y la rotación deja
-                // de tener efecto sin que nada falle.
-                raw = await run('secretsmanager', [
-                    'get-secret-value', '--secret-id', name, '--version-stage', 'AWSCURRENT',
-                ]);
-            } catch (err) {
-                if (err && err.name === 'VaultCliError' && /ResourceNotFound/i.test(err.message)) {
-                    return null;
-                }
-                throw err;
-            }
-            const json = parsear(raw, { root: name, scopes });
-            if (json.SecretString == null) return null;
-            return { name, value: String(json.SecretString) };
+            return conducirAsync(nucleoGetSecretValue(name, opts), ejecutar);
         },
     };
 }
@@ -719,7 +837,35 @@ function createSecretVault({ config, driver, logger, now } = {}) {
         logger[nivel](msg, meta);   // CA-23: `meta` sólo lleva NOMBRES de scope
     }
 
+    // D-SYNC-6 — el camino sync exige el port sync del driver. Si falta, se
+    // falla cerrado NOMBRANDO el método: nunca se devuelve vacío y nunca se
+    // espera la Promise con un hack de bloqueo.
+    function ejecutarSync(pedido) {
+        const metodo = pedido.op === 'getParametersByPath'
+            ? 'getParametersByPathSync'
+            : 'getSecretValueSync';
+        if (!driver || typeof driver[metodo] !== 'function') {
+            throw new VaultConfigError('vault.driver',
+                `el driver "${(driver && driver.kind) || 'desconocido'}" no expone \`${metodo}\`, `
+                + 'que el camino sync exige. Remediación: usar `createAwsCliVaultDriver` o '
+                + '`createInMemoryVaultDriver`, o agregar el port sync al driver inyectado');
+        }
+        return pedido.op === 'getParametersByPath'
+            ? driver.getParametersByPathSync(pedido.root, pedido.opts)
+            : driver.getSecretValueSync(pedido.name, pedido.opts);
+    }
+
+    function ejecutarAsync(pedido) {
+        return pedido.op === 'getParametersByPath'
+            ? driver.getParametersByPath(pedido.root, pedido.opts)
+            : driver.getSecretValue(pedido.name, pedido.opts);
+    }
+
     /**
+     * Núcleo ÚNICO de la resolución del namespace (D1.1 / D-SYNC-3): caché,
+     * TTL, tiers, presupuesto de llamadas, fail-closed y taxonomía de errores
+     * viven acá una sola vez. Los dos caminos públicos lo conducen.
+     *
      * Resuelve el namespace completo con A LO SUMO DOS llamadas batch (SEC-3):
      * una a `<prefix>/<projectId>/shared/` y otra a
      * `<prefix>/<projectId>/hosts/<hostId>/`. Nunca una llamada por variable, y
@@ -727,9 +873,8 @@ function createSecretVault({ config, driver, logger, now } = {}) {
      *
      * @param {object} [opts]
      * @param {string[]} [opts.scopes] subconjunto de `required_scopes`
-     * @returns {Promise<{enabled:boolean, namespace:string|null, scopes:object, tiers:object}>}
      */
-    async function resolveNamespace(opts = {}) {
+    function* nucleoResolveNamespace(opts = {}) {
         if (!enabled) {
             // CA-25 / test 15 — ni una llamada al driver.
             return { enabled: false, namespace: null, scopes: {}, tiers: {} };
@@ -764,7 +909,9 @@ function createSecretVault({ config, driver, logger, now } = {}) {
                 const root = buildParameterPath({
                     prefix: cfg.prefix, projectId: cfg.projectId, hostId: cfg.hostId, tier, root: true,
                 });
-                const res = await driver.getParametersByPath(root, { scopes: scopesDelTier });
+                const res = yield {
+                    op: 'getParametersByPath', root, opts: { scopes: scopesDelTier },
+                };
                 const params = (res && Array.isArray(res.parameters)) ? res.parameters : [];
                 if (res && res.nextToken) {
                     // Un driver que devuelve un token sin consumir está entregando
@@ -837,14 +984,14 @@ function createSecretVault({ config, driver, logger, now } = {}) {
     }
 
     /**
-     * Devuelve SÓLO los scopes declarados, ya parseados desde JSON (G-2).
+     * Núcleo ÚNICO de `resolveScope` (D1.1). Devuelve SÓLO los scopes
+     * declarados, ya parseados desde JSON (G-2).
      *
      * @param {object} args
      * @param {string[]} args.scopes
      * @param {'shared'|'host'|'rotating'} [args.tier] `rotating` va a Secrets Manager
-     * @returns {Promise<object>} mapa `scope -> objeto`
      */
-    async function resolveScope({ scopes, tier } = {}) {
+    function* nucleoResolveScope({ scopes, tier } = {}) {
         if (!enabled) return {};
         if (tier === 'rotating') {
             const pedidos = normalizarScopes(scopes);
@@ -855,7 +1002,7 @@ function createSecretVault({ config, driver, logger, now } = {}) {
                 });
                 let res;
                 try {
-                    res = await driver.getSecretValue(name, { scopes: [scope] });
+                    res = yield { op: 'getSecretValue', name, opts: { scopes: [scope] } };
                 } catch (err) {
                     invalidarSiEsAuth(err);
                     throw err;
@@ -865,8 +1012,37 @@ function createSecretVault({ config, driver, logger, now } = {}) {
             }
             return out;
         }
-        const res = await resolveNamespace({ scopes });
+        const res = yield* nucleoResolveNamespace({ scopes });
         return res.scopes;
+    }
+
+    // -------------------------------------------------------------------------
+    // Superficie pública — dos caminos, un solo cuerpo (D1.1 / D1.2 / D-SYNC-2)
+    // -------------------------------------------------------------------------
+    //
+    // D1.5 / D-SYNC-4: las async siguen DECLARADAS `async` (su
+    // `constructor.name` sigue siendo `AsyncFunction` y siguen devolviendo
+    // `Promise`), así que la superficie observable de #5352 no cambia y su
+    // suite queda verde sin editarse.
+
+    /** @returns {Promise<{enabled:boolean, namespace:string|null, scopes:object, tiers:object}>} */
+    async function resolveNamespace(opts = {}) {
+        return conducirAsync(nucleoResolveNamespace(opts), ejecutarAsync);
+    }
+
+    /** @returns {Promise<object>} mapa `scope -> objeto` */
+    async function resolveScope(args = {}) {
+        return conducirAsync(nucleoResolveScope(args), ejecutarAsync);
+    }
+
+    /** Gemelo sync: MISMO cuerpo, mismos errores, mismos códigos (D1.4). */
+    function resolveNamespaceSync(opts = {}) {
+        return conducirSync(nucleoResolveNamespace(opts), ejecutarSync);
+    }
+
+    /** Gemelo sync: MISMO cuerpo, mismos errores, mismos códigos (D1.4). */
+    function resolveScopeSync(args = {}) {
+        return conducirSync(nucleoResolveScope(args), ejecutarSync);
     }
 
     /** SEC-6(c) — invalidación explícita, idempotente. */
@@ -894,6 +1070,21 @@ function createSecretVault({ config, driver, logger, now } = {}) {
             return `SecretVault ${render(forma, { ...(options || {}), depth: null })}`;
         },
     };
+
+    // D1.2 / D1.5 — los gemelos sync se cuelgan como propiedades NO
+    // ENUMERABLES a propósito. El test 8 de #5352 congela la superficie
+    // enumerable del vault (`Object.keys(vault).sort()` === los 3 de siempre)
+    // como parte de CA-20/SEC-6(d), y esa suite tiene que quedar verde SIN
+    // editarse. Non-enumerable satisface las dos cosas a la vez: el método es
+    // público, invocable y testeable, y `Object.keys` / `JSON.stringify` /
+    // `util.inspect` siguen viendo exactamente la forma que #5352 firmó.
+    Object.defineProperty(vault, 'resolveNamespaceSync', {
+        value: resolveNamespaceSync, enumerable: false, writable: false, configurable: false,
+    });
+    Object.defineProperty(vault, 'resolveScopeSync', {
+        value: resolveScopeSync, enumerable: false, writable: false, configurable: false,
+    });
+
     return vault;
 }
 

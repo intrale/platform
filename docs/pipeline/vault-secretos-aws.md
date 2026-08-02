@@ -498,17 +498,33 @@ sería el verde falso que esa disciplina existe para impedir.
 | **G-3** | Costo real facturado | `null` | requiere Cost Explorer sobre la cuenta; acá sólo hay precios de lista y un volumen medido en el host | un mes de facturación tras aplicar |
 | **G-4** | Enforcement efectivo de la policy (que `AccessDenied` ocurra donde el diseño dice) | `null` | la policy **no está aplicada**: es un artefacto de diseño | #5211 al aplicarla, con las pruebas negativas de § Aplicación |
 | **G-5** | Registro en CloudTrail del intento denegado | `null` | la auditoría de la CMK todavía no está configurada | #5212 |
+| **G-6** | B3.2 de #5353 — principal **distinguible por host**: `sts get-caller-identity` devuelve un principal distinto e identificable desde cada uno de los dos hosts | `null` | hay principals IAM no-root operativos, pero ninguno tiene concedido el prefijo del vault; la identidad por host todavía no existe como tal | #5211, al aplicar una policy por `HOST` |
+| **G-7** | B3.3 de #5353 (= CA-5 de #5338) — **multi-host**: dos hosts leen el mismo secreto compartido, sin copiar archivos entre máquinas | `null` | no hay nada aprovisionado que leer: `ssm:DescribeParameters` y `secretsmanager:ListSecrets` deniegan para los dos perfiles del host | #5211, tras el paso admin de § Aplicación |
+| **G-8** | B3.4 de #5353 (= CA-3 de #5338) — **aislamiento**: un host que intenta leer el namespace ajeno es denegado | `null` | hoy el `AccessDenied` saldría porque **ninguna** policy concede nada (y para `kernel-runtime`, por un `Deny` explícito de `IntraleKernelStore`), no porque el aislamiento funcione | #5211 — y sólo cuenta con el **control positivo** de G-9 en la misma corrida |
+| **G-9** | B3.6 de #5353 — **control positivo obligatorio**: la prueba negativa de G-8 sólo vale si el mismo host lee **su propio** namespace con ÉXITO en la misma corrida | `null` | ídem G-8 | #5211. Sin esto, un `AccessDenied` genérico se firmaría como "aislamiento verificado" siendo un falso positivo |
+
+> **G-6 a G-9 los aporta #5353** (integración del vault en `credentials.js`). El
+> **lado código** de B3 sí quedó cerrado y testeado ahí, sin AWS y con driver
+> inyectado (B3-A.1 el namespace sale de config, B3-A.2 la denegación es
+> fail-closed con la variable sin setear, B3-A.3 un `hostId` inválido falla
+> nombrando `vault.hostId`). Lo que viaja acá como gap es exclusivamente el
+> **lado cuenta**, que no es observable hasta que #5211 aplique la policy.
+> Estos cuatro gaps **no bloquean #5353**; bloquean el cierre del épico #5215.
 
 ```jsonc
 // Forma en que estos gaps deben viajar a cualquier reporte automatizado.
 // Ningún gap puede salir con verified: true; el fusible de kernel-table-verify
 // (assertNoUnverifiedClaims) tira en vez de imprimir un verde falso.
 "gaps": [
-  { "id": "G-1", "control": "kms:DescribeKey",      "verified": null, "blockedBy": "#5211" },
-  { "id": "G-2", "control": "kms:ListAliases",      "verified": null, "blockedBy": "#5211" },
-  { "id": "G-3", "control": "costo real facturado", "verified": null, "blockedBy": "#5211" },
-  { "id": "G-4", "control": "enforcement IAM",      "verified": null, "blockedBy": "#5211" },
-  { "id": "G-5", "control": "auditoría CloudTrail", "verified": null, "blockedBy": "#5212" }
+  { "id": "G-1", "control": "kms:DescribeKey",           "verified": null, "blockedBy": "#5211" },
+  { "id": "G-2", "control": "kms:ListAliases",           "verified": null, "blockedBy": "#5211" },
+  { "id": "G-3", "control": "costo real facturado",      "verified": null, "blockedBy": "#5211" },
+  { "id": "G-4", "control": "enforcement IAM",           "verified": null, "blockedBy": "#5211" },
+  { "id": "G-5", "control": "auditoría CloudTrail",      "verified": null, "blockedBy": "#5212" },
+  { "id": "G-6", "control": "principal por host",        "verified": null, "blockedBy": "#5211" },
+  { "id": "G-7", "control": "lectura multi-host",        "verified": null, "blockedBy": "#5211" },
+  { "id": "G-8", "control": "aislamiento de namespace",  "verified": null, "blockedBy": "#5211" },
+  { "id": "G-9", "control": "control positivo de G-8",   "verified": null, "blockedBy": "#5211" }
 ]
 ```
 
@@ -649,8 +665,9 @@ diseño. Sin esta tabla el operador queda ciego.
   necesita para no rediseñar está en § `path#namespace` (el esquema de referencia
   sin tocar el parser) y § Jerarquía (la barra inicial como discriminador de
   servicio). No debe aflojar la clase de caracteres del namespace.
-- **Hija 3 — `.pipeline/lib/credentials.js`.** La integración en el cliente. La
-  tabla de § Clasificación dice, secreto por secreto, dónde buscar cada uno.
+- **Hija 3 — `.pipeline/lib/credentials.js`.** ✅ **Entregada (#5353).** La
+  integración en el cliente, con el gate `vault.enabled` cerrado. Ver §
+  Encendido del gate.
 - **#5211 — mínimo privilegio IAM/KMS.** Aplica esta policy. Las pruebas negativas
   de § Aplicación cierran G-4; el `kms:DescribeKey` de un principal con lectura de
   KMS cierra G-1 y G-2.
@@ -662,3 +679,41 @@ diseño. Sin esta tabla el operador queda ciego.
 
 Mientras la policy no esté aplicada, este documento es un artefacto de diseño sin
 blast radius: no hay ningún permiso concedido ni ningún secreto en la cuenta.
+
+## Encendido del gate (`vault.enabled: true`) — #5353
+
+«El código es correcto» y «la cuenta está lista» son dos verdades distintas, con
+dueños distintos. #5353 entrega la primera con el gate **cerrado**: con
+`vault.enabled: false` (default commiteado en `config.yaml`) el comportamiento
+del pipeline es idéntico al previo y **no se emite una sola llamada AWS** — el
+módulo `secret-vault.js` ni siquiera se carga.
+
+Poner `vault.enabled: true` es una decisión de operación, y **no se aprueba sin
+esta lista completa**:
+
+1. **#5211 cerrado** — la policy IAM aplicada por host. Sin esto no hay nada que
+   leer y todo secreto sale fail-closed.
+2. **#5212 cerrado** — auditoría CloudTrail de la CMK (G-5).
+3. **Altas hechas** — los 13 valores de `ENV_DESCRIPTORS`
+   (`.pipeline/lib/credentials.js`) provisionados según la tabla de §
+   Clasificación: doce en `shared/` de Parameter Store y
+   `google_drive.oauth_refresh_token` en `rotating/` de Secrets Manager.
+4. **El ancla poblada** — `telegram.leo_operator_chat_id` (B2.5b). Es la única
+   fuente de la allowlist de firmantes del gate del operador
+   (`operator-gate.js`), y con el gate abierto se resuelve **exclusivamente**
+   desde el vault, sin fallback. Encender sin poblarla deja al operador sin
+   poder firmar nada. Verificación: `resolveOperatorAllowlist(env).size >= 1`
+   tras el boot — se reporta **el tamaño**, jamás el contenido.
+5. **`vault.hostId` seteado** al `os.hostname()` de la máquina. Se commitea
+   vacío a propósito (CA-29); con el gate abierto, vacío o inválido falla
+   nombrando la clave.
+6. **`vault.required_scopes`** declara `telegram`, `providers` y `google_drive`,
+   y `vault.shared_secrets` la membresía que corresponda. El vault sólo resuelve
+   scopes declarados: uno faltante es fail-closed, no una lectura silenciosa.
+7. **G-6 a G-9 verificados** con control positivo en la misma corrida (B3.6).
+
+La ventana de bootstrap (`vault.bootstrap_fallback` +
+`bootstrap_fallback_until`) existe para el punto 3 y **sólo** para eso: permite
+encender el gate antes de terminar todas las altas. Nunca se activa por un error
+del driver, nunca alcanza al ancla, y caduca sola. No es un mecanismo de
+resiliencia — si el vault falla, el pipeline degrada fail-closed y lo narra.

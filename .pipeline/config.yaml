@@ -1346,6 +1346,33 @@ vault:
   # `shared/` NO es el default: lo que no esté acá se busca en el namespace del
   # host (`hosts/<hostId>/`), que es lo que mantiene el aislamiento entre hosts.
   shared_secrets: []
+  # ---------------------------------------------------------------------------
+  # #5353 · B1 — ventana de bootstrap sobre el archivo de credenciales
+  # ---------------------------------------------------------------------------
+  # Con el gate del vault ABIERTO, la única puerta que queda al archivo
+  # (`~/.claude/secrets/credentials.json`). Existe para que una migración al
+  # vault no obligue a subir los 13 secretos en el mismo minuto en que se
+  # enciende el gate. NO es un fallback de resiliencia:
+  #
+  #   - B1.2 · Un error del driver (red, timeout, credenciales, permisos,
+  #     secreto ausente) NUNCA la habilita. Un fallback disparado por error de
+  #     red es fail-open disfrazado: cualquiera que degrade la red desactiva el
+  #     control entero.
+  #   - B1.7/B2.4 · Nunca alcanza a las anclas de autorización
+  #     (`auth_anchor: true`), ni encendida ni dentro de la ventana.
+  #   - B1.4 · Si el archivo resuelve DENTRO del árbol del repo, se rechaza
+  #     igual (coherente con #5218, que no se relaja por esto).
+  #   - B1.6 · Cada valor que resuelve por acá emite WARN con el NOMBRE de la
+  #     variable (jamás el valor) y reporta `source: file-bootstrap`, nunca
+  #     `vault`.
+  #
+  # Fail-closed: sólo el booleano `true` exacto la abre.
+  bootstrap_fallback: false
+  # B1.5 — OBLIGATORIA cuando `bootstrap_fallback: true`. Fecha ISO-8601 de
+  # caducidad: pasada esa fecha la ventana NO se aplica aunque el flag siga en
+  # `true`. Sin esto, "bootstrap temporal" se vuelve permanente por olvido, que
+  # es exactamente el modo de falla que la ventana existe para evitar.
+  bootstrap_fallback_until: ""
 
 # =============================================================================
 # #5067 — Entrega cross-repo: el entregable puede vivir en un repo hermano
