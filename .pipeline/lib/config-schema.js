@@ -466,6 +466,12 @@ const SCHEMA = {
                 cache_ttl_seconds: { type: 'number', minimum: 1, maximum: 300 },
                 required_scopes: { type: 'array', items: { type: 'string' } },
                 shared_secrets: { type: 'array', items: { type: 'string' } },
+                // #5353 · B1 — se tipan por el mismo motivo que `enabled`: son
+                // fail-closed. Un `bootstrap_fallback: "false"` string sería
+                // truthy para el YAML y sólo se descubriría el día que la
+                // ventana se abriera sola.
+                bootstrap_fallback: { type: 'boolean' },
+                bootstrap_fallback_until: { type: 'string' },
             },
         },
 
