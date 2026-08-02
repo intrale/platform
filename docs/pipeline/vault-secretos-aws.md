@@ -691,6 +691,32 @@ módulo `secret-vault.js` ni siquiera se carga.
 Poner `vault.enabled: true` es una decisión de operación, y **no se aprueba sin
 esta lista completa**:
 
+0. ⛔ **BLOQUEANTE ABIERTO — de dónde saca el vault sus PROPIAS credenciales AWS.**
+   Hoy **no hay respuesta**, y encender el gate sin cerrarlo deja el pipeline con
+   **cero credenciales**. Es el huevo-y-la-gallina del vault: para leer el vault
+   hacen falta credenciales AWS, y hoy viven en el archivo que el vault viene a
+   reemplazar. Verificado sobre `HEAD c10524e4d`:
+
+   - `ENV_DESCRIPTORS` (`credentials.js`) **no tiene ni una entrada del scope
+     `aws`** ⇒ `loadIntoEnv()` nunca hidrata `AWS_ACCESS_KEY_ID` /
+     `AWS_SECRET_ACCESS_KEY` al ambiente.
+   - `createAwsCliVaultRunner` (`secret-vault.js`) hace fail-closed si esas dos
+     no están ⇒ con el gate abierto, `vault.error = VAULT_CONFIG_INVALID` y las
+     **13** variables salen en `missing`.
+   - No hay escape en runtime: la ventana de bootstrap se desactiva justamente
+     por haber error del vault (B1.2), así que ni encendiéndola se recupera. La
+     única salida es editar `config.yaml` a mano y reiniciar.
+   - Incoherencia adicional: `AWS_PROFILE` **sí** está en el allowlist de
+     `build-child-env.js`, y `~/.aws/{config,credentials,login}` muestra que la
+     autenticación real de este host es **por perfil (`aws login`)** — pero el
+     guard exige las dos variables de clave estática, así que rechaza el único
+     mecanismo de auth que el host tiene. El propio mensaje de error sugiere
+     «Remediación: `aws login`», que **no** satisface el guard que lo emitió.
+
+   Cerrar esto es una decisión de criterio (¿el vault se autentica por perfil?
+   ¿por rol de instancia? ¿las claves del vault son el único secreto que sigue
+   viviendo en archivo, y con qué blast radius?), del mismo rango que B1/B2/B3 y
+   **no la cierra el dev por su cuenta**. Seguimiento: #5393.
 1. **#5211 cerrado** — la policy IAM aplicada por host. Sin esto no hay nada que
    leer y todo secreto sale fail-closed.
 2. **#5212 cerrado** — auditoría CloudTrail de la CMK (G-5).
