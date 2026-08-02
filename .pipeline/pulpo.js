@@ -225,6 +225,9 @@ const { resolveReboteDestino } = require('./lib/rebote-destino');
 const partialPauseDeps = require('./lib/partial-pause-deps');
 // #4614 — self-healing de fases varadas (reconciler).
 const { runStuckPhaseReconciler } = require('./lib/stuck-phase-reconciler-runner');
+// #5396 — el cableado de deps del reconciler vive en su propio módulo para que
+// el test pueda verificarlo SIN cargar pulpo.js (16k líneas con side-effects).
+const { buildStuckReconcilerDeps, evaluateSilenceHealth } = require('./lib/stuck-reconciler-deps');
 // #4622 — liveness real del pid + identidad (anti-heartbeat-zombi). Fuente única
 // compartida con canonical-facts y el hook activity-logger.
 const processLiveness = require('./lib/process-liveness');
@@ -16838,14 +16841,43 @@ function pollQuotaFlag() {
 let _lastStuckReconcilerAt = 0;
 const STUCK_RECONCILER_INTERVAL_MS = 10 * 60 * 1000;
 const STUCK_STALE_MS = 15 * 60 * 1000;
+// #5396 CA-7 / riesgo #2 — señal de vida del self-healing. El fix compone tres
+// silencios legítimos (fail-closed por caché, filtro de ola siempre activo,
+// allowlist vacía entre olas) que juntos pueden dejar al reconciler 100% mudo
+// *por diseño*. Sin esta señal, "apagarlo del todo" satisface CA-1…CA-4 y nadie
+// se entera — que es exactamente lo que venía pasando.
+//
+// La racha vive en su PROPIO archivo: `.stuck-reconciler-state.json` está
+// indexado por `issue|fase` y mezclar acá un contador global lo corrompería.
+// CA-UX-4: los contadores por tick van al log, NO a Telegram; sólo la señal de
+// vida (una vez por racha) notifica.
+const STUCK_HEALTH_FILE = path.join(PIPELINE, '.stuck-reconciler-health.json');
+function emitStuckReconcilerLiveness(agg) {
+  try {
+    let prev = null;
+    try { prev = JSON.parse(fs.readFileSync(STUCK_HEALTH_FILE, 'utf8')); } catch { /* primera vez */ }
+    const { next, emitSignal } = evaluateSilenceHealth(prev, agg);
+    try { fs.writeFileSync(STUCK_HEALTH_FILE, JSON.stringify(next, null, 2)); } catch { /* best-effort */ }
+    if (!emitSignal) return;
+    // Texto plano (SEC-4) y sin audio TTS (CA-UX-5: el audio queda reservado al
+    // circuit breaker; esto es una señal de diagnóstico, no una emergencia).
+    sendTelegramPlain(
+      `🔇 Self-healing mudo hace ${next.streak} ticks seguidos\n`
+      + `Evaluó ${agg.evaluados} issue(s) varado(s) y no actuó en ninguno.\n`
+      + `Supresiones: ola=${agg.suprimidos_por_ola} cache=${agg.suprimidos_por_cache} dedupe=${agg.suprimidos_por_dedupe}\n`
+      + `Revisá .pipeline/logs/pulpo.log (canal "reconciler") si no lo esperabas.`
+    );
+  } catch (e) {
+    log('reconciler', `señal de vida (best-effort) falló: ${e && e.message}`);
+  }
+}
+
 function runStuckReconcilerTick() {
   if (Date.now() - _lastStuckReconcilerAt < STUCK_RECONCILER_INTERVAL_MS) return;
   _lastStuckReconcilerAt = Date.now();
   try {
     const config = loadConfig();
     if (!config || !config.pipelines) return;
-    const STUCK_STATE_FILE = path.join(PIPELINE, '.stuck-reconciler-state.json');
-    const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
     const ppMode = partialPause.getPipelineMode();
     // Fases PARALELAS de `desarrollo` (todos los skills deben estar, modelo
     // `resultado: aprobado`). Mono-skill (dev/build/entrega) quedan afuera. Las
@@ -16857,106 +16889,36 @@ function runStuckReconcilerTick() {
       { pipeline: 'desarrollo', fase: 'verificacion' },
       { pipeline: 'desarrollo', fase: 'aprobacion' },
     ];
-    const allPhasesOf = (p) => (config.pipelines?.[p]?.fases) || [];
 
-    const deps = {
-      nowMs: Date.now(),
-      parallelPhases,
-      requiredSkillsFor: (p, f) => (config.pipelines?.[p]?.skills_por_fase?.[f]) || [],
-      listPhaseFiles: (p, f, state) => {
-        const dir = path.join(fasePath(p, f), state);
-        return (listWorkFiles(dir) || []).map((wf) => {
-          let mtimeMs = 0;
-          try { mtimeMs = fs.statSync(wf.path).mtimeMs; } catch { /* ausente */ }
-          return { name: wf.name, mtimeMs };
-        });
+    // #5396 (SEC-0) — el cableado vive en `lib/stuck-reconciler-deps.js` para que
+    // un test pueda verificar la POLÍTICA REAL (allowlist de ola, dedupe por
+    // marker/caché, escalado vía human-block) sin cargar este archivo.
+    const deps = buildStuckReconcilerDeps({
+      config, PIPELINE, ROOT, pauseFile: PAUSE_FILE, ppMode,
+      nowMs: Date.now(), staleMs: STUCK_STALE_MS, parallelPhases,
+      deps: {
+        fs, partialPause, humanBlock, processLiveness,
+        fasePath, listWorkFiles, readYamlSafe, log, sendTelegramWithMarkup,
       },
-      readYaml: (p, f, state, name) => readYamlSafe(path.join(fasePath(p, f), state, name)),
-      issueLiveElsewhere: (issue, p, currentFase) => {
-        for (const f of allPhasesOf(p)) {
-          if (f === currentFase) continue;
-          for (const st of ['pendiente', 'trabajando']) {
-            try {
-              if (fs.readdirSync(path.join(fasePath(p, f), st)).some((n) => n.startsWith(issue + '.'))) return true;
-            } catch { /* dir ausente */ }
-          }
-        }
-        return false;
-      },
-      hasNeedsHuman: (issue) => {
-        try {
-          if (fs.readdirSync(ghQueueDir).some((n) => n.startsWith(issue + '-needs-human'))) return true;
-        } catch { /* ausente */ }
-        for (const p of Object.keys(config.pipelines || {})) {
-          for (const f of allPhasesOf(p)) {
-            try {
-              if (fs.readdirSync(path.join(fasePath(p, f), 'bloqueado-humano')).some((n) => n.startsWith(issue + '.'))) return true;
-            } catch { /* ausente */ }
-          }
-        }
-        return false;
-      },
-      isAllowed: (issue) => ppMode.mode !== 'partial_pause' || (ppMode.allowed_issues || []).includes(Number(issue)),
-      // Solo actuar sobre issues confirmados OPEN (el title-cache trae el estado
-      // real de GitHub). Cerrado/notFound/desconocido → no tocar (residuo).
-      isIssueOpen: (issue) => {
-        try {
-          const cache = JSON.parse(fs.readFileSync(path.join(PIPELINE, '.issue-title-cache.json'), 'utf8'));
-          const e = cache[String(issue)];
-          return !!(e && e.state === 'OPEN');
-        } catch { return false; }
-      },
-      isPaused: () => { try { return fs.existsSync(PAUSE_FILE); } catch { return false; } },
-      // #4622 (CA-4): un `trabajando/` reciente ya NO alcanza como prueba de vida.
-      // Cruzamos el latido `agent-<issue>.heartbeat`: si su pid está muerto (o su
-      // identidad no matchea por reuso de PID), el skill NO cuenta como vivo → el
-      // reconciler lo trata como fase varada y decide requeue/escalate. Si no hay
-      // latido legible, caemos al criterio de mtime (compat: work-item recién
-      // creado que todavía no escribió su primer heartbeat).
-      livenessOk: (name, mtimeMs) => {
-        const recent = (Date.now() - mtimeMs) < STUCK_STALE_MS;
-        if (!recent) return false; // viejo → muerto, sin importar el latido
-        const issue = String(name).split('.')[0];
-        const hbPath = path.join(ROOT, '.claude', 'hooks', `agent-${issue}.heartbeat`);
-        let hb;
-        try { hb = JSON.parse(fs.readFileSync(hbPath, 'utf8')); }
-        catch { return recent; } // sin latido legible → mtime manda (compat)
-        return processLiveness.isAgentAlive(hb && hb.pid, {
-          startedAt: hb && hb.pid_started_at,
-          branch: hb && hb.branch,
-          session: hb && hb.session,
-        });
-      },
-      loadRetryState: () => { try { return JSON.parse(fs.readFileSync(STUCK_STATE_FILE, 'utf8')); } catch { return {}; } },
-      saveRetryState: (s) => { try { fs.writeFileSync(STUCK_STATE_FILE, JSON.stringify(s, null, 2)); } catch { /* best-effort */ } },
-      requeueWorkItem: (p, f, skill, issue) => {
-        const dir = path.join(fasePath(p, f), 'pendiente');
-        fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(path.join(dir, `${issue}.${skill}`), `issue: ${issue}\nfase: ${f}\npipeline: ${p}\n`);
-      },
-      escalate: (issue, reason) => {
-        try {
-          fs.mkdirSync(ghQueueDir, { recursive: true });
-          fs.writeFileSync(
-            path.join(ghQueueDir, `${issue}-needs-human-stuck-${Date.now()}.json`),
-            JSON.stringify({ action: 'label', issue: parseInt(issue, 10), label: 'needs-human' })
-          );
-        } catch (e) { log('reconciler', `error encolando needs-human #${issue}: ${e.message}`); }
-      },
-      workItemExists: (p, f, skill, issue) => {
-        for (const st of ['pendiente', 'trabajando']) {
-          try { if (fs.existsSync(path.join(fasePath(p, f), st, `${issue}.${skill}`))) return true; } catch { /* no-op */ }
-        }
-        return false;
-      },
-      notify: (msg) => { try { sendTelegram(msg); } catch { /* best-effort */ } },
-      audit: (rec) => log('reconciler', typeof rec === 'string' ? rec : JSON.stringify(rec)),
-    };
+    });
 
     const res = runStuckPhaseReconciler(deps, { maxRequeueAttempts: 2, capPerTick: 5, staleThresholdMs: STUCK_STALE_MS });
-    if (res.requeued || res.escalated) {
-      log('reconciler', `🔧 self-healing tick: requeue=${res.requeued} escalate=${res.escalated} skip=${res.skipped}`);
-    }
+
+    // #5396 CA-7 — el agregado se loguea SIEMPRE, no sólo cuando hubo acción.
+    // Un tick silencioso puede significar "todo sano" o "el self-healing está
+    // muerto"; sin estas tres causas de supresión desglosadas son indistinguibles
+    // (fue exactamente lo que pasó en producción y nadie se enteró).
+    const sup = res.suppressed || {};
+    const agg = {
+      evaluados: res.evaluados || 0,
+      suprimidos_por_ola: sup.ola || 0,
+      suprimidos_por_cache: sup.cache || 0,
+      suprimidos_por_dedupe: sup.dedupe || 0,
+      escalados: res.escalated || 0,
+      requeued: res.requeued || 0,
+    };
+    log('reconciler', `🔧 self-healing tick: ${JSON.stringify(agg)}`);
+    emitStuckReconcilerLiveness(agg);
   } catch (e) {
     log('reconciler', `tick error (no tumba el loop): ${e && e.message}`);
   }
