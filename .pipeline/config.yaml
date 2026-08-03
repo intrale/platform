@@ -414,7 +414,16 @@ wave_watchdog:
   # explican para siempre. Escala sólo si además hay trabajo elegible esperando
   # (aditivo: por debajo de este umbral el modo ola sigue mudo, #4751).
   # Mismo clamp que stall_minutes: [1, 1440]; un valor inválido cae al default 45.
+  # Se mide contra la INACTIVIDAD DE DESPACHO, no contra la antigüedad de la
+  # causa: con causas que alternan (ventana de prioridad ↔ concurrencia ↔
+  # cooldown) el reloj de la causa se reiniciaba en cada transición y el aviso
+  # no llegaba nunca. Esta misma clave gobierna el realce del banner de causa.
   declared_cause_escalate_minutes: 45
+  # Gracia extra mientras hay agentes corriendo (`trabajando/` > 0). Con slots
+  # ocupados el no-despacho suele ser saturación legítima, no un estancamiento:
+  # se suma a los dos umbrales de arriba. No es un skip — un agente clavado
+  # termina avisando igual, sólo que más tarde. Mismo clamp [1, 1440].
+  busy_grace_minutes: 60
 
 # Dashboard — opciones del dashboard del pipeline
 dashboard:

@@ -64,10 +64,14 @@ test('CA-1: segundo disparo del mismo episodio (tras cooldown) escala', () => {
 
 // ─── CA-2 · Causa declarada legítima ⇒ NO falsa alarma ──────────────────────
 
+// #5400: "vigente" pasó a significar "reciente". La causa suprime mientras la
+// INACTIVIDAD DE DESPACHO está por debajo de `declared_cause_escalate_minutes`
+// (45 default). 30 min sin despachar: por encima del umbral normal (20) y por
+// debajo del de escalada → sigue mudo, exactamente como en #4708/#4751.
 for (const kind of ['human-halt', 'quota', 'night-window', 'blocked-dependencies', 'resource-pressure', 'waiting-operator']) {
   test(`CA-2: causa declarada vigente (${kind}) => skip, NO alerta`, () => {
     const f = stalledFacts({
-      state: { lastMovementTs: 40 * MIN, lastSignature: '0:42', lastAlertTs: 0, alertCount: 0 },
+      state: { lastMovementTs: 70 * MIN, lastSignature: '0:42', lastAlertTs: 0, alertCount: 0 },
       cause: { declared: true, kind, expiresAt: 200 * MIN, readable: true },
     });
     const d = wd.decide(f);
@@ -77,9 +81,9 @@ for (const kind of ['human-halt', 'quota', 'night-window', 'blocked-dependencies
   });
 }
 
-test('CA-2: causa sin expiresAt (perpetua vigente) suprime', () => {
+test('CA-2: causa sin expiresAt (perpetua vigente) suprime mientras la inactividad es corta', () => {
   const f = stalledFacts({
-    state: { lastMovementTs: 40 * MIN, lastSignature: '0:42', lastAlertTs: 0, alertCount: 0 },
+    state: { lastMovementTs: 70 * MIN, lastSignature: '0:42', lastAlertTs: 0, alertCount: 0 },
     cause: { declared: true, kind: 'human-halt', readable: true },
   });
   assert.equal(wd.decide(f).action, 'skip');
@@ -239,7 +243,8 @@ test('CA-6: un episodio NUEVO (movió ficha y volvió a estancarse) re-alerta co
 
 test('ficha movida: cambia conteo trabajando/ con avancePct constante => NO estancada', () => {
   // Firma persistida "0:42"; ahora hay 2 en trabajando/ → firma "2:42" (nueva).
-  // dispatching>0 además corta antes: skip 'dispatching'.
+  // Sin estampa nunca vista, la proxy legacy de #4708 sigue valiendo: la firma
+  // cambió ⇒ movió ficha ⇒ el reloj se reinicia.
   const f = stalledFacts({
     dispatching: 2,
     progressSeries: [{ ts: 1, waveKey: 7, avancePct: 42 }],
@@ -247,7 +252,8 @@ test('ficha movida: cambia conteo trabajando/ con avancePct constante => NO esta
   });
   const d = wd.decide(f);
   assert.equal(d.action, 'skip');
-  assert.equal(d.reason, 'dispatching');
+  assert.equal(d.reason, 'within-threshold');
+  assert.equal(d.nextState.lastMovementTs, 100 * MIN);
 });
 
 test('ficha movida: avancePct cambió (promovió ficha) => reloj reiniciado', () => {
@@ -285,14 +291,40 @@ test('guard: sin trabajo habilitado => skip no-enabled-work', () => {
   assert.equal(d.reason, 'no-enabled-work');
 });
 
-test('guard: dispatching>0 => skip dispatching', () => {
+// #5400 (rev-1): `dispatching > 0` dejó de ser un skip incondicional — con eso,
+// un agente clavado congelaba la vigilancia para siempre (G-3). Ahora es una
+// GRACIA que se suma a los umbrales: con agentes en curso hay que estar mucho
+// más tiempo sin despachar para que se declare estancamiento.
+test('guard: dispatching>0 atenúa el umbral en vez de apagar el control', () => {
   const f = stalledFacts({
     dispatching: 1,
     state: { lastMovementTs: 40 * MIN, lastSignature: '1:42', lastAlertTs: 0, alertCount: 0 },
   });
+  // 60 min sin despachar: pasa el umbral normal (20) pero no el atenuado (80).
   const d = wd.decide(f);
   assert.equal(d.action, 'skip');
-  assert.equal(d.reason, 'dispatching');
+  assert.equal(d.reason, 'within-threshold');
+  assert.equal(d.dispatching, 1);
+
+  // Sin agentes en curso, la MISMA foto sí dispara: la diferencia es la gracia.
+  const sinAgentes = wd.decide(stalledFacts({
+    dispatching: 0,
+    state: { lastMovementTs: 40 * MIN, lastSignature: '0:42', lastAlertTs: 0, alertCount: 0 },
+  }));
+  assert.equal(sinAgentes.action, 'alert');
+});
+
+test('guard: la gracia por agentes en curso NO es un cheque en blanco', () => {
+  // Mismo escenario que arriba pero con 3 h sin despachar: la gracia se agota.
+  const d = wd.decide(stalledFacts({
+    now: 200 * MIN,
+    dispatching: 3,
+    state: { lastMovementTs: 20 * MIN, lastSignature: '3:42', lastAlertTs: 0, alertCount: 0 },
+  }));
+  assert.equal(d.action, 'alert');
+  assert.equal(d.reason, 'unexplained-stall');
+  // El aviso dice que hay agentes corriendo: cambia el diagnóstico por completo.
+  assert.ok(d.message.includes('3 agente(s) en curso'), d.message);
 });
 
 test('guard: dentro del umbral (< N min) => skip within-threshold', () => {
@@ -319,34 +351,44 @@ test('movementSignature: serie vacía o inválida => avance "na"', () => {
 
 // ─── Estado: load/save/normalize ────────────────────────────────────────────
 
-// #5400 — el estado creció con `causeKind`/`causeSinceTs` (reloj propio de la
-// causa declarada). Son ADITIVOS y opcionales: un archivo escrito por la versión
-// #4708 carga sin migración, con los campos nuevos en su default.
+// #5400 — el estado creció con `lastStampTs` (última estampa de despacho
+// OBSERVADA). Es ADITIVO y opcional: un archivo escrito por la versión #4708
+// carga sin migración, con el campo nuevo en su default.
+// rev-1: `causeKind`/`causeSinceTs` fueron eliminados (eran el reloj de la causa,
+// que dejaba al watchdog mudo ante causas alternantes — B1). Un estado viejo que
+// todavía los traiga se carga igual: simplemente se descartan.
 const EMPTY_STATE = {
   lastMovementTs: 0, lastSignature: null, lastAlertTs: 0, alertCount: 0,
-  causeKind: null, causeSinceTs: 0,
+  lastStampTs: 0,
 };
 
 test('normalizeState: tolera basura y campos ausentes', () => {
   assert.deepEqual(wd.normalizeState(null), EMPTY_STATE);
   assert.deepEqual(
-    wd.normalizeState({ lastMovementTs: -1, lastSignature: 5, lastAlertTs: 'x', alertCount: -2, causeKind: 9, causeSinceTs: -3 }),
+    wd.normalizeState({ lastMovementTs: -1, lastSignature: 5, lastAlertTs: 'x', alertCount: -2, lastStampTs: -3 }),
     EMPTY_STATE
   );
   assert.deepEqual(wd.normalizeState({ lastMovementTs: 10, lastSignature: '0:1', lastAlertTs: 20, alertCount: 3 }), {
     ...EMPTY_STATE, lastMovementTs: 10, lastSignature: '0:1', lastAlertTs: 20, alertCount: 3,
   });
-  assert.deepEqual(wd.normalizeState({ causeKind: 'human-halt', causeSinceTs: 42 }), {
-    ...EMPTY_STATE, causeKind: 'human-halt', causeSinceTs: 42,
-  });
+  assert.deepEqual(wd.normalizeState({ lastStampTs: 42 }), { ...EMPTY_STATE, lastStampTs: 42 });
 });
 
 test('normalizeState: un estado viejo (#4708) sin los campos nuevos carga sin migración', () => {
   const viejo = { lastMovementTs: 10, lastSignature: '0:1', lastAlertTs: 20, alertCount: 3 };
   const out = wd.normalizeState(viejo);
   assert.equal(out.lastMovementTs, 10);
-  assert.equal(out.causeKind, null);
-  assert.equal(out.causeSinceTs, 0);
+  assert.equal(out.lastStampTs, 0);
+});
+
+test('normalizeState: un estado de rev-0 con el reloj de causa se carga descartándolo', () => {
+  const rev0 = {
+    lastMovementTs: 10, lastSignature: '0:1', lastAlertTs: 20, alertCount: 3,
+    causeKind: 'human-halt', causeSinceTs: 999,
+  };
+  const out = wd.normalizeState(rev0);
+  assert.deepEqual(out, { ...EMPTY_STATE, lastMovementTs: 10, lastSignature: '0:1', lastAlertTs: 20, alertCount: 3 });
+  assert.equal('causeSinceTs' in out, false, 'el reloj de la causa ya no existe');
 });
 
 test('loadState/saveStateAtomic round-trip + fail-soft ante archivo ausente', () => {
@@ -354,13 +396,11 @@ test('loadState/saveStateAtomic round-trip + fail-soft ante archivo ausente', ()
   const file = path.join(dir, 'state.json');
   // Ausente → default
   assert.deepEqual(wd.loadState(file), EMPTY_STATE);
-  wd.saveStateAtomic(file, {
-    lastMovementTs: 5, lastSignature: '2:9', lastAlertTs: 7, alertCount: 1,
-    causeKind: 'wave-empty', causeSinceTs: 3,
-  });
+  assert.equal(wd.saveStateAtomic(file, {
+    lastMovementTs: 5, lastSignature: '2:9', lastAlertTs: 7, alertCount: 1, lastStampTs: 3,
+  }), true, 'saveStateAtomic reporta si pudo persistir');
   assert.deepEqual(wd.loadState(file), {
-    lastMovementTs: 5, lastSignature: '2:9', lastAlertTs: 7, alertCount: 1,
-    causeKind: 'wave-empty', causeSinceTs: 3,
+    lastMovementTs: 5, lastSignature: '2:9', lastAlertTs: 7, alertCount: 1, lastStampTs: 3,
   });
   // Corrupto → default (fail-soft)
   fs.writeFileSync(file, '{no json');

@@ -37,6 +37,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { writeJsonAtomic } = require('./atomic-json');
 
 const FILENAME = 'last-dispatch.json';
 
@@ -103,18 +104,14 @@ function normalizeMeta(meta) {
 function writeLastDispatch(stateDir, meta, nowMs) {
     try {
         const ts = Number.isFinite(nowMs) && nowMs > 0 ? nowMs : Date.now();
-        const payload = JSON.stringify({
+        // El write atómico (tmp por PID + rename, mkdir, fail-soft) es el
+        // compartido de `lib/atomic-json.js`: una sola implementación para todo
+        // el estado del pipeline.
+        return writeJsonAtomic(lastDispatchPath(stateDir), {
             ...normalizeMeta(meta),
             pid: process.pid,
             ts,
         });
-        const dest = lastDispatchPath(stateDir);
-        try { fs.mkdirSync(stateDir, { recursive: true }); } catch { /* ya existe */ }
-        // tmp por PID: dos procesos escribiendo a la vez no se pisan el temporal.
-        const tmp = `${dest}.${process.pid}.tmp`;
-        fs.writeFileSync(tmp, payload);
-        fs.renameSync(tmp, dest); // atómico dentro del mismo filesystem
-        return true;
     } catch (_) {
         // Fail-soft (regla #1 del rol): un fallo de FS jamás tumba el loop.
         return false;

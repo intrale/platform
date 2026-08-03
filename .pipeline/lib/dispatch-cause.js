@@ -126,15 +126,17 @@ const ARTIFACT_FILENAME = 'dispatch-cause.json';
 // intervalo (no silencio permanente, pero tampoco spam por tick).
 const ANOMALY_REALERT_COOLDOWN_MS = 30 * 60 * 1000; // 30 min
 
-// #5400 — Dimensión DURACIÓN. Una causa SILENCIOSA (modo ola, ventana horaria,
-// cooldown, sin agentes) explica un rato de no-despacho; no lo explica para
-// siempre. Pasado este umbral, con trabajo elegible esperando, deja de ser una
-// explicación y pasa a ser el problema: escala a alertable.
+// #5400 — Dimensión DURACIÓN, DISPLAY-ONLY. Una causa SILENCIOSA (modo ola,
+// ventana horaria, cooldown, sin agentes) explica un rato de no-despacho; no lo
+// explica para siempre. Pasado este umbral, con trabajo elegible esperando, el
+// banner del dashboard la pinta como grave en vez de como estado esperado.
 //
-// La escalada es ESTRICTAMENTE ADITIVA (R-3): requiere umbral alto Y elegibles
-// esperando. Por debajo de eso el comportamiento es idéntico al de #4751 — que
-// silenció `modo_ola` por pedido explícito del operador. Nada de lo que hoy
-// calla empieza a hablar por este cambio salvo que se sostenga demasiado.
+// rev-1 (B5): este flag NO envía Telegram. El aviso de "hace N sin despachar" lo
+// emite EXCLUSIVAMENTE `wave-stall-watchdog` — una sola cadena por hecho. Acá se
+// conserva únicamente la señal visual, que no tiene cooldown ni cola y por lo
+// tanto no puede duplicar nada. El valor default coincide a propósito con
+// `wave_watchdog.declared_cause_escalate_minutes` y el Pulpo se lo pasa desde esa
+// MISMA clave de config: la perilla gobierna aviso y banner a la vez.
 const DEFAULT_SILENT_ESCALATE_MS = 45 * 60 * 1000; // 45 min
 
 // ── Helpers ──
@@ -299,9 +301,9 @@ function publish(opts) {
     const logFn = typeof log === 'function' ? log : () => {};
     const alertFn = typeof alert === 'function' ? alert : null;
 
-    // #5400 — parámetros de la escalada por duración. Ausentes ⇒ desactivada
-    // (`elegiblesEsperando` 0), o sea: un caller que no los pasa conserva el
-    // comportamiento exacto de #4751.
+    // #5400 — parámetros del REALCE POR DURACIÓN del banner (display-only, B5).
+    // Ausentes ⇒ desactivado (`elegiblesEsperando` 0), o sea: un caller que no
+    // los pasa conserva el comportamiento exacto de #4751.
     const silentEscalateMs = Number.isFinite(o.silentEscalateMs) && o.silentEscalateMs > 0
         ? o.silentEscalateMs
         : DEFAULT_SILENT_ESCALATE_MS;
@@ -328,8 +330,9 @@ function publish(opts) {
     const prevAlertTs = mismaCausa && Number.isFinite(prev.lastAlertTs) ? prev.lastAlertTs : 0;
 
     // #5400 — ¿esta causa silenciosa se sostuvo demasiado? `ts` es el instante en
-    // que la causa EMPEZÓ (se preserva mientras no cambie), así que su antigüedad
-    // es exactamente lo que hay que medir.
+    // que la causa EMPEZÓ (se preserva mientras no cambie). Sirve para PINTAR el
+    // banner, no para alertar: la antigüedad de la causa se reinicia en cada
+    // transición y por eso no es un reloj válido para decidir un aviso (B1).
     const causaEdadMs = Math.max(0, nowMs - ts);
     const esSilenciosa = !resolved.anomalia && !CAUSAS_ALERTABLES.has(resolved.causa);
     const escalaPorDuracion = esSilenciosa
@@ -340,13 +343,6 @@ function publish(opts) {
     // anomalía, re-alertar pasado el cooldown (no silencio permanente, AC-6).
     let debeAlertar = !mismaCausa;
     if (mismaCausa && resolved.anomalia && (nowMs - prevAlertTs) >= ANOMALY_REALERT_COOLDOWN_MS) {
-        debeAlertar = true;
-    }
-    // #5400 — la escalada por duración reusa el MISMO cooldown y el MISMO
-    // `lastAlertTs` del artifact (CA-4: backoff verificable, sin cadena de avisos
-    // paralela). Ojo con el orden: si la causa recién apareció (`!mismaCausa`) su
-    // edad es 0, así que no puede escalar en la misma pasada en que se declara.
-    if (escalaPorDuracion && (nowMs - prevAlertTs) >= ANOMALY_REALERT_COOLDOWN_MS) {
         debeAlertar = true;
     }
 
@@ -383,24 +379,24 @@ function publish(opts) {
     // fail-closed). El banner/artifact se publica SIEMPRE (writeArtifact arriba);
     // acá se filtra únicamente el envío al canal externo. Un estado esperado como
     // MODO_OLA se ve en el dashboard pero no genera ruido de notificación.
-    // #5400 — se suma `escalaPorDuracion` como tercera vía de alertabilidad: una
-    // causa silenciosa sostenida con elegibles esperando SÍ amerita atención.
-    const esAlertable = resolved.anomalia
-        || CAUSAS_ALERTABLES.has(resolved.causa)
-        || escalaPorDuracion;
+    //
+    // #5400 (rev-1, B5) — `escalaPorDuracion` NO es una vía de alertabilidad.
+    // Lo fue en rev-0 y eso creó una SEGUNDA cadena de avisos para el MISMO
+    // hecho: las 5 causas silenciosas están todas mapeadas al vocabulario del
+    // watchdog, comparten el mismo instante de inicio y ambos emisores escalaban
+    // a los 45 min con cooldown de 30, sin dedup entre colas. El operador recibía
+    // el par, repetido cada media hora, contra "avisar UNA vez" (CA-4).
+    //
+    // La dimensión duración vive ahora en UN solo lugar: `wave-stall-watchdog`,
+    // que además mide contra la inactividad real de despacho en vez de contra la
+    // antigüedad de la causa (inmune al flapeo). Acá el flag queda como dato
+    // DISPLAY-ONLY del banner del dashboard: pinta la causa como grave, no envía.
+    const esAlertable = resolved.anomalia || CAUSAS_ALERTABLES.has(resolved.causa);
     if (debeAlertar && esAlertable && alertFn) {
         try {
-            let prefijo = 'Cola ociosa';
-            if (resolved.anomalia) prefijo = '⚠ ANOMALÍA de despacho';
-            else if (escalaPorDuracion) prefijo = '⏳ Sin despachar hace rato';
+            const prefijo = resolved.anomalia ? '⚠ ANOMALÍA de despacho' : 'Cola ociosa';
             const detTxt = resolved.detalle ? ` — ${resolved.detalle}` : '';
-            // El aviso por duración lleva el dato que lo justifica: cuánto lleva
-            // y cuánto trabajo elegible está esperando detrás.
-            const durTxt = escalaPorDuracion
-                ? ` — ${Math.round(causaEdadMs / 60000)} min sin despachar, `
-                  + `${elegiblesEsperando} elegible(s) esperando`
-                : '';
-            alertFn(`${prefijo}: ${resolved.label}${detTxt}${durTxt}`);
+            alertFn(`${prefijo}: ${resolved.label}${detTxt}`);
         } catch (e) {
             logFn(`dispatch-cause: alerta falló (${e.message})`);
         }

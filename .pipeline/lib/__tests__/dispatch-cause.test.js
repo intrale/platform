@@ -353,11 +353,15 @@ test('CA-6: causa ausente/ilegible → anomalía SÍ alerta (fail-closed) aunque
 });
 
 // =============================================================================
-// #5400 — Dimensión DURACIÓN: una causa silenciosa sostenida escala a alertable.
+// #5400 — Dimensión DURACIÓN: una causa silenciosa sostenida se REALZA en el
+// banner del dashboard. DISPLAY-ONLY: no manda Telegram.
 //
-// El agujero que cierra: el 2026-08-02 el pipeline estuvo 1h33 sin despachar con
-// una causa silenciosa declarada y no llegó ningún aviso. Una causa explica un
-// rato de no-despacho, no lo explica para siempre.
+// El agujero que cierra el issue (1h33 sin despachar y ningún aviso) lo cierra
+// `wave-stall-watchdog`, que mide contra la inactividad real de despacho. En
+// rev-0 este módulo TAMBIÉN alertaba por duración: dos cadenas para el mismo
+// hecho, ambas a 45 min con cooldown de 30 y sin dedup entre sí, o sea el
+// operador recibiendo el par cada media hora (B5 de la review). Acá queda la
+// señal visual, que no tiene cola ni cooldown y por lo tanto no puede duplicar.
 // =============================================================================
 
 const ESCALATE_MS = dc.DEFAULT_SILENT_ESCALATE_MS;
@@ -379,16 +383,36 @@ function publicarSostenida(gate, deltaMs, extra = {}) {
     return { dir, alerts, out };
 }
 
-test('#5400: una causa silenciosa sostenida con elegibles esperando escala a alertable', () => {
+test('#5400: una causa silenciosa sostenida con elegibles esperando se realza en el banner', () => {
     const { alerts, out } = publicarSostenida(CAUSAS.MODO_OLA, ESCALATE_MS + 1, {
         elegiblesEsperando: 7,
     });
-    assert.strictEqual(alerts.length, 1, 'debe emitir el aviso por duración');
-    assert.strictEqual(out.escaladoPorDuracion, true);
-    // El aviso nombra la causa concreta y el trabajo que está esperando (CA-2).
-    assert.match(alerts[0], /Modo de ejecución en olas/);
-    assert.match(alerts[0], /7 elegible\(s\) esperando/);
-    assert.match(alerts[0], /min sin despachar/);
+    assert.strictEqual(out.escaladoPorDuracion, true, 'el banner la pinta como grave');
+    assert.strictEqual(out.elegiblesEsperando, 7, 'el dato que lo justifica queda en el artifact');
+    assert.strictEqual(alerts.length, 0, 'el aviso lo emite el watchdog, no este módulo (B5)');
+});
+
+test('#5400 (B5): una causa silenciosa sostenida NO abre una segunda cadena de Telegram', () => {
+    // Todas las causas silenciosas están mapeadas al vocabulario del watchdog
+    // (`DISPATCH_CAUSE_TO_WATCHDOG_KIND`) y comparten el mismo instante de
+    // inicio: si este módulo también alertara, el operador recibiría DOS avisos
+    // del mismo hecho en el mismo tick, repetidos cada 30 min.
+    for (const gate of [CAUSAS.MODO_OLA, CAUSAS.VENTANA_HORARIA, CAUSAS.COOLDOWN, CAUSAS.SIN_AGENTES, CAUSAS.REST_MODE]) {
+        const { alerts, out } = publicarSostenida(gate, ESCALATE_MS * 10, { elegiblesEsperando: 5 });
+        assert.strictEqual(alerts.length, 0, `${gate} sostenida no debe emitir Telegram desde acá`);
+        assert.strictEqual(out.escaladoPorDuracion, true, `${gate} sí debe realzarse en el banner`);
+    }
+});
+
+test('#5400 (B5): el umbral del realce es inyectable — lo gobierna la config del watchdog', () => {
+    // La perilla `wave_watchdog.declared_cause_escalate_minutes` alimenta tanto
+    // el aviso como el banner. En rev-0 el banner tenía su propio valor fijo, así
+    // que mover la config movía la mitad del comportamiento que decía gobernar.
+    const { out } = publicarSostenida(CAUSAS.MODO_OLA, 11 * 60_000, {
+        elegiblesEsperando: 2,
+        silentEscalateMs: 10 * 60_000,
+    });
+    assert.strictEqual(out.escaladoPorDuracion, true, 'con umbral de 10 min, 11 min ya realza');
 });
 
 test('#5400: por debajo del umbral la causa silenciosa sigue muda (no-regresión #4751)', () => {
@@ -415,14 +439,9 @@ test('#5400: un caller que no pasa los parámetros nuevos conserva la conducta d
     assert.strictEqual(out.escaladoPorDuracion, false);
 });
 
-test('#5400: la escalada por duración aplica a todas las causas silenciosas', () => {
-    for (const gate of [CAUSAS.MODO_OLA, CAUSAS.VENTANA_HORARIA, CAUSAS.COOLDOWN, CAUSAS.SIN_AGENTES]) {
-        const { alerts } = publicarSostenida(gate, ESCALATE_MS + 1, { elegiblesEsperando: 3 });
-        assert.strictEqual(alerts.length, 1, `${gate} sostenida debe escalar`);
-    }
-});
-
-test('#5400: el aviso por duración no se repite en cada ciclo: hay backoff verificable', () => {
+test('#5400 (B5): una causa silenciosa sostenida no emite NADA por más ticks que pasen', () => {
+    // El equivalente del backoff acá es más fuerte: cero avisos, siempre. El
+    // backoff verificable (CA-4) vive en el watchdog, que es el único emisor.
     const dir = tmpDir();
     const alerts = [];
     const comun = {
@@ -431,19 +450,11 @@ test('#5400: el aviso por duración no se repite en cada ciclo: hay backoff veri
         alert: (m) => alerts.push(m),
         elegiblesEsperando: 4,
     };
-    dc.publish({ ...comun, now: NOW });                       // aparece: muda
-    dc.publish({ ...comun, now: NOW + ESCALATE_MS + 1 });      // escala: 1 aviso
-    assert.strictEqual(alerts.length, 1);
-
-    // Ticks siguientes dentro del cooldown → mudos, aunque siga escalada.
-    for (const delta of [60_000, 5 * 60_000, 20 * 60_000]) {
-        dc.publish({ ...comun, now: NOW + ESCALATE_MS + 1 + delta });
+    dc.publish({ ...comun, now: NOW });
+    for (const delta of [ESCALATE_MS + 1, ESCALATE_MS * 2, ESCALATE_MS * 5, ESCALATE_MS * 20]) {
+        dc.publish({ ...comun, now: NOW + delta });
     }
-    assert.strictEqual(alerts.length, 1, 'no debe re-alertar dentro del cooldown');
-
-    // Pasado el cooldown → re-avisa una sola vez más.
-    dc.publish({ ...comun, now: NOW + ESCALATE_MS + 1 + dc.ANOMALY_REALERT_COOLDOWN_MS + 1 });
-    assert.strictEqual(alerts.length, 2, 'pasado el cooldown vuelve a avisar');
+    assert.strictEqual(alerts.length, 0, 'ni una sola emisión por duración desde este módulo');
 });
 
 test('#5400: una causa YA alertable no cambia de conducta por la dimensión duración', () => {

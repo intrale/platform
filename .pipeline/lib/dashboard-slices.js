@@ -2898,7 +2898,12 @@ function readWatchdogStatus(PIPELINE, nowMs) {
     // watchdog que se murió sin avisar — exactamente lo que no puede pasar.
     const lastTickTs = Number.isFinite(raw.lastTickTs) ? raw.lastTickTs : null;
     const stale = lastTickTs == null || (nowMs - lastTickTs) > 10 * 60 * 1000;
-    const degraded = !enabled || stale;
+    // #5400 (rev-1, SEC-5) — el brazo también declara degradación cuando el
+    // RELOJ está degradado: estampa de despacho ausente, corrida hacia el futuro
+    // o imposible de escribir. En esos casos el watchdog sigue vigilando, pero
+    // con una medición peor que la honesta y el operador tiene que saberlo.
+    const relojDegradado = raw.degraded === true && enabled && !stale;
+    const degraded = !enabled || stale || relojDegradado;
 
     return {
         watchdogEnabled: enabled,
@@ -2906,7 +2911,7 @@ function readWatchdogStatus(PIPELINE, nowMs) {
         watchdogStaleTick: stale,
         watchdogReason: !enabled
             ? (raw.killSwitch === true ? 'kill-switch' : 'apagado')
-            : (stale ? 'sin latido' : null),
+            : (stale ? 'sin latido' : (relojDegradado ? 'con reloj degradado' : null)),
     };
 }
 

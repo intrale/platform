@@ -199,6 +199,23 @@ test('#5400 un watchdog con kill-switch o sin latido cuenta como degradado', () 
     fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('#5400 (rev-1) un watchdog vivo pero con el RELOJ degradado también se dice', () => {
+    // Vigila igual, pero la estampa de despacho está ausente, corrida al futuro
+    // o no se pudo escribir: la duración que informa es la mínima conocida.
+    // Callarlo sería la misma clase de error que este issue vino a arreglar.
+    const dir = tmpDir();
+    escribirStatusWatchdog(dir, {
+        enabled: true, killSwitch: false, lastTickTs: 1_500_000,
+        degraded: true, stampState: 'missing',
+    });
+    const s = slices.dispatchCauseSlice({}, { PIPELINE: dir, nowMs: 1_600_000 });
+    assert.strictEqual(s.watchdogEnabled, true, 'sigue encendido');
+    assert.strictEqual(s.watchdogStaleTick, false, 'y late');
+    assert.strictEqual(s.watchdogDegraded, true);
+    assert.strictEqual(s.watchdogReason, 'con reloj degradado');
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('#5400 sin archivo de estado el watchdog reporta "no consta", no un OK inventado', () => {
     const dir = tmpDir();
     dc.writeArtifact(dir, {

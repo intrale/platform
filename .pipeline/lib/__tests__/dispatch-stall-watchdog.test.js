@@ -169,19 +169,59 @@ test('un agente clavado en trabajando no congela el reloj de despacho', () => {
     assert.equal(d.stalledMs, 100 * MIN);
 });
 
-test('sin estampa de despacho se conserva la proxy legacy (skip dispatching)', () => {
-    // Instalación que todavía no escribió `last-dispatch.json`: conducta #4708.
-    const d = wd.decide(pipelineFacts({ dispatching: 3, lastDispatchTs: undefined }));
-    assert.equal(d.action, 'skip');
-    assert.equal(d.reason, 'dispatching');
+// ─── B4 · ceguera de arranque en frío ────────────────────────────────────────
+
+test('B4: sin estampa y con agentes en trabajando, el reloj ARRANCA en vez de callar', () => {
+    // Instalación que todavía no escribió `last-dispatch.json` (o Pulpo recién
+    // arrancado con el pipeline ya trabado: el caso G-3 que motiva el módulo).
+    // rev-0 salía por `skip: dispatching` en cada tick — 33 h de silencio con
+    // `degraded: false`. Ahora el primer tick fija el reloj y a partir de ahí
+    // cuenta de verdad.
+    const arranque = wd.decide(pipelineFacts({
+        now: 1 * MIN,
+        dispatching: 1,
+        enabledCount: 9,
+        lastDispatchTs: undefined,
+        state: { lastMovementTs: 0, lastSignature: null, lastAlertTs: 0, alertCount: 0 },
+    }));
+    assert.equal(arranque.nextState.lastMovementTs, 1 * MIN, 'el reloj arranca en el primer tick');
+    assert.equal(arranque.stampState, 'never');
+
+    // Ticks posteriores: mismos 9 pendientes, mismo agente clavado, nada
+    // despachado. Umbral atenuado por agentes en curso = 20 + 60 = 80 min.
+    for (const [min, esperado] of [[30, 'skip'], [79, 'skip'], [82, 'alert']]) {
+        const d = wd.decide(pipelineFacts({
+            now: min * MIN,
+            dispatching: 1,
+            enabledCount: 9,
+            lastDispatchTs: undefined,
+            state: arranque.nextState,
+        }));
+        assert.equal(d.action, esperado, `a los ${min} min debía ser ${esperado} (fue ${d.action}/${d.reason})`);
+    }
+});
+
+test('B4: 33 h sin despachar con un agente clavado NO puede reportar salud', () => {
+    const d = wd.decide(pipelineFacts({
+        now: 2000 * MIN,
+        dispatching: 1,
+        enabledCount: 9,
+        lastDispatchTs: undefined,
+        state: { lastMovementTs: 1 * MIN, lastSignature: '1:42', lastAlertTs: 0, alertCount: 0 },
+    }));
+    assert.equal(d.action, 'alert');
+    assert.ok(d.stalledMs > 30 * 60 * MIN, 'la duración informada es la real');
 });
 
 // ─── R-3 · no-regresión de #4751 ─────────────────────────────────────────────
 
 test('causa declarada por debajo del umbral sigue muda (no-regresión #4751)', () => {
-    // Modo ola declarado hace 10 min: por debajo de los 45 de escalada → mudo.
+    // Modo ola con 30 min sin despachar: por encima del umbral normal (20) y por
+    // debajo del de escalada (45) → mudo, igual que antes de este issue.
     const d = wd.decide(pipelineFacts({
         now: 120 * MIN,
+        lastDispatchTs: 90 * MIN,
+        state: { lastMovementTs: 90 * MIN, lastStampTs: 90 * MIN, lastSignature: `0:42:${90 * MIN}`, lastAlertTs: 0, alertCount: 0 },
         cause: { declared: true, kind: 'wave-empty', readable: true, sinceTs: 110 * MIN },
     }));
     assert.equal(d.action, 'skip');
@@ -189,33 +229,63 @@ test('causa declarada por debajo del umbral sigue muda (no-regresión #4751)', (
     assert.equal(d.message, null);
 });
 
-test('el reloj de la causa arranca solo cuando la causa aparece (sin sinceTs del caller)', () => {
-    // Es el caso de la PAUSA TOTAL: `getPipelineMode()` devuelve `createdAt: null`,
-    // así que el watchdog necesita su propio reloj o el incidente se repite.
+test('una causa declarada sin `sinceTs` igual escala: el reloj es el del despacho', () => {
+    // Es el caso de la PAUSA TOTAL: `getPipelineMode()` devuelve `createdAt: null`.
+    // El watchdog no depende de que la fuente registre cuándo empezó: mide desde
+    // el último despacho efectivo, que siempre conoce.
     const cause = { declared: true, kind: 'human-halt', readable: true };
-    const t1 = wd.decide(pipelineFacts({ now: 120 * MIN, cause }));
+    const t1 = wd.decide(pipelineFacts({ now: 40 * MIN, cause })); // 20 min sin despachar
     assert.equal(t1.action, 'skip');
     assert.equal(t1.reason, 'declared-cause:human-halt');
-    assert.equal(t1.nextState.causeSinceTs, 120 * MIN);
-    // 46 min después con la MISMA causa vigente → supera la escalada.
-    const t2 = wd.decide(pipelineFacts({ now: 166 * MIN, cause, state: t1.nextState }));
+    const t2 = wd.decide(pipelineFacts({ now: 66 * MIN, cause, state: t1.nextState })); // 46 min
     assert.equal(t2.action, 'alert');
     assert.equal(t2.reason, 'stale-declared-cause:human-halt');
 });
 
-test('cambiar de causa reinicia el reloj de la causa (no acumula entre causas distintas)', () => {
+// ─── B1 · una causa que ALTERNA no puede dejar mudo al watchdog ──────────────
+
+test('B1: causas que alternan cada 30 min NO silencian el watchdog para siempre', () => {
+    // El escenario real: ventanas de prioridad autoexcluyentes (QA>Build>Dev),
+    // presión de recursos oscilando en los umbrales y cooldown entre lanzamientos
+    // rotan la causa declarada. Midiendo contra la ANTIGÜEDAD DE LA CAUSA (rev-0)
+    // el reloj se reiniciaba en cada transición y jamás alcanzaba el umbral: 3 h
+    // sin despachar, 5 elegibles esperando, CERO alertas — el mismo silencio del
+    // 2026-08-02 que el issue existe para cerrar.
+    const kinds = ['cooldown', 'concurrency-limit'];
+    let state = { lastMovementTs: 0, lastStampTs: 0, lastSignature: null, lastAlertTs: 0, alertCount: 0 };
+    const acciones = [];
+    for (let i = 1; i <= 6; i++) {
+        const now = i * 30 * MIN;
+        const d = wd.decide(pipelineFacts({
+            now,
+            lastDispatchTs: 0.0001, // estampa fija: nunca volvió a despachar
+            cause: { declared: true, kind: kinds[i % 2], readable: true },
+            state,
+        }));
+        acciones.push(d.action);
+        state = d.nextState;
+    }
+    // 30 y 60 min están por debajo/encima del umbral de escalada (45).
+    assert.deepEqual(acciones.slice(0, 2), ['skip', 'alert'],
+        'a los 60 min sin despachar tiene que avisar aunque la causa haya rotado');
+    assert.ok(acciones.includes('escalate'), 'y seguir escalando pasado el cooldown');
+});
+
+test('B1: cambiar de causa NO reinicia el reloj de inactividad', () => {
     const t1 = wd.decide(pipelineFacts({
-        now: 120 * MIN,
+        now: 40 * MIN,
         cause: { declared: true, kind: 'wave-empty', readable: true },
     }));
+    assert.equal(t1.action, 'skip', '20 min sin despachar: todavía por debajo de la escalada');
+    // 26 min después con OTRA causa: el reloj de despacho siguió corriendo.
     const t2 = wd.decide(pipelineFacts({
-        now: 160 * MIN,
+        now: 66 * MIN,
         cause: { declared: true, kind: 'night-window', readable: true },
         state: t1.nextState,
     }));
-    assert.equal(t2.nextState.causeKind, 'night-window');
-    assert.equal(t2.nextState.causeSinceTs, 160 * MIN);
-    assert.equal(t2.action, 'skip');
+    assert.equal(t2.action, 'alert');
+    assert.equal(t2.reason, 'stale-declared-cause:night-window', 'la causa sólo NOMBRA el motivo');
+    assert.equal(t2.stalledMs, 46 * MIN, 'el reloj acumula entre causas distintas');
 });
 
 // ─── CA-4 · backoff verificable ──────────────────────────────────────────────
@@ -260,15 +330,82 @@ test('umbral de escalada 0, negativo, null o gigante cae al default y no desacti
     }
 });
 
-test('una estampa en el futuro (reloj corrido) no silencia el watchdog', () => {
+// ─── B2 · clock skew: una estampa futura es INVÁLIDA, no un "recién despaché" ─
+
+test('B2: una estampa en el futuro (reloj corrido) NO silencia el watchdog', () => {
+    // rev-0 la acotaba con Math.min(estampa, now) y se la asignaba al reloj de
+    // movimiento ⇒ stalledMs = 0 en CADA tick ⇒ un salto de reloj hacia atrás
+    // (NTP, resume de VM) apagaba el watchdog por horas. El test homónimo de
+    // rev-0 nunca asserteaba `action`; éste sí, que es lo que lo delata.
+    for (const min of [60, 120, 600]) {
+        const d = wd.decide(pipelineFacts({
+            now: min * MIN,
+            lastDispatchTs: 9999 * MIN, // futuro
+            state: { lastMovementTs: 20 * MIN, lastStampTs: 20 * MIN, lastSignature: 'x', lastAlertTs: 0, alertCount: 0 },
+        }));
+        assert.equal(d.action, 'alert', `con estampa futura y ${min} min de reloj debe disparar`);
+        assert.equal(d.lastDispatchTs, null, 'la estampa futura se descarta, no se acota');
+        assert.equal(d.stampState, 'future');
+        assert.equal(d.stampDegraded, true, 'y se reporta como reloj degradado (SEC-5)');
+        assert.ok(d.stalledMs >= 40 * MIN, 'el reloj sigue contando desde el último movimiento real');
+    }
+});
+
+test('B2: un adelanto de milisegundos NO se trata como skew (tolerancia)', () => {
     const d = wd.decide(pipelineFacts({
         now: 120 * MIN,
-        lastDispatchTs: 999 * MIN, // futuro
-        state: { lastMovementTs: 20 * MIN, lastSignature: 'x', lastAlertTs: 0, alertCount: 0 },
+        lastDispatchTs: 120 * MIN + 1000, // 1 s adelante: granularidad, no skew
+        state: { lastMovementTs: 20 * MIN, lastStampTs: 20 * MIN, lastSignature: 'x', lastAlertTs: 0, alertCount: 0 },
     }));
-    // Se acota a `now`: stalledMs nunca negativo y la estampa no vale "nunca stall".
-    assert.ok(d.stalledMs >= 0);
-    assert.equal(d.lastDispatchTs, 120 * MIN);
+    assert.equal(d.stampState, 'ok');
+    assert.equal(d.stalledMs, 0, 'se acota a now: el despacho es de recién');
+});
+
+// ─── B3 · perder la estampa no es "despacho reanudado" ──────────────────────
+
+test('B3: perder la estampa durante un episodio alertado NO emite recuperación falsa', () => {
+    // Episodio ya alertado con estampa presente.
+    const conEstampa = wd.decide(pipelineFacts({
+        now: 100 * MIN,
+        lastDispatchTs: 20 * MIN,
+        state: { lastMovementTs: 20 * MIN, lastStampTs: 20 * MIN, lastSignature: `0:42:${20 * MIN}`, lastAlertTs: 0, alertCount: 0 },
+    }));
+    assert.equal(conEstampa.action, 'alert');
+    assert.equal(conEstampa.nextState.alertCount, 1);
+
+    // El archivo se borra o se corrompe. rev-0: la firma pasaba de 3 segmentos a
+    // 2 ⇒ "movió ficha" ⇒ aviso de "despacho reanudado" sin que saliera un solo
+    // agente, Y el reloj de la detención volvía a cero.
+    const sinEstampa = wd.decide(pipelineFacts({
+        now: 120 * MIN,
+        lastDispatchTs: undefined,
+        state: conEstampa.nextState,
+    }));
+    assert.equal(sinEstampa.recovery, null, 'perder el archivo no es despachar');
+    assert.equal(sinEstampa.stalledMs, 100 * MIN, 'el reloj NO se reinicia');
+    assert.equal(sinEstampa.stampState, 'missing');
+    assert.equal(sinEstampa.stampDegraded, true);
+    assert.equal(sinEstampa.nextState.alertCount, 1, 'el episodio sigue abierto');
+});
+
+test('B3: con la estampa perdida el aviso aclara que el reloj está degradado', () => {
+    const d = wd.decide(pipelineFacts({
+        now: 200 * MIN,
+        lastDispatchTs: undefined,
+        state: { lastMovementTs: 20 * MIN, lastStampTs: 20 * MIN, lastSignature: 'x', lastAlertTs: 0, alertCount: 0 },
+    }));
+    assert.equal(d.action, 'alert');
+    assert.ok(/degradado/i.test(d.message), d.message);
+});
+
+test('B3: si la estampa vuelve con un valor NUEVO, ahí sí hay recuperación', () => {
+    const d = wd.decide(pipelineFacts({
+        now: 140 * MIN,
+        lastDispatchTs: 140 * MIN,
+        state: { lastMovementTs: 20 * MIN, lastStampTs: 20 * MIN, lastSignature: 'x', lastAlertTs: 100 * MIN, alertCount: 1 },
+    }));
+    assert.ok(d.recovery, 'una estampa nueva SÍ es un despacho');
+    assert.equal(d.recovery.outageMs, 120 * MIN);
 });
 
 // ─── SEC-2 · autoría ─────────────────────────────────────────────────────────
