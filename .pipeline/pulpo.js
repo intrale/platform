@@ -86,6 +86,12 @@ const fileLock = require('./lib/file-lock');
 const dispatchCause = require('./lib/dispatch-cause');
 // #5400 — traducción enum de causa → `kind` del watchdog (pura, testeable).
 const dispatchCauseKind = require('./lib/dispatch-cause-kind');
+// #5400 rev-3 — brazo de RECOLECCIÓN de hechos del watchdog de despacho.
+// Vive en lib/ y con dependencias inyectadas porque era el único tramo del
+// circuito sin test, y ahí se colaron los tres bloqueantes de la review rev-2
+// (causa siempre mal nombrada, elegibles sin cruzar con la allowlist, autoría
+// de la pausa total nunca resuelta).
+const dispatchFacts = require('./lib/dispatch-facts');
 // #4693 CA-0 — fuente de verdad única del repo destino (intake multi-repo,
 // allowlist fail-closed, repo de origen propagado). Reemplaza los literales
 // `intrale/platform` hardcodeados y el intake atado al remote del cwd.
@@ -1592,113 +1598,59 @@ function listWorkFiles(dir) {
 }
 
 /**
- * #4708 — Recolecta la "causa declarada" que explica legítimamente un no-despacho
- * de la ola, para que el wave-stall watchdog NO falsa-alarme (CA-2).
+ * #4708 / #5400 — Hechos del watchdog de inactividad de DESPACHO.
  *
- * Todas las causas se computan EN VIVO por el Pulpo (no se leen de un artefacto
- * arbitrario del FS que un agente pueda spoofear — SEC-1). Cada chequeo es
- * defensivo: si tira, se ignora (fail-closed: la ausencia de causa dispara). Al
- * ser cómputo en vivo, la causa es inherentemente vigente (no requiere TTL).
+ * rev-2 tenía TODA esta recolección inline acá, sin un solo test, y describía un
+ * pipeline idealizado en vez del que corre: la causa salía siempre
+ * `partial-pause` (porque desde #5060 ése es el modo NORMAL de operación) y
+ * "trabajo elegible" contaba los 241 workfiles de `pendiente/` sin cruzarlos con
+ * la allowlist (228 de ellos backlog parkeado). rev-3 mueve el brazo entero a
+ * `lib/dispatch-facts.js`, donde las dependencias entran inyectadas y se puede
+ * testear contra un filesystem real.
  *
- * Causas reconocidas (interino hasta #4709 unifique el registro):
- *   - halt humano (.paused / .partial-pause.json)   → kind 'human-halt'
- *   - sin ola vigente que acote el dispatch (#5060) → kind 'wave-empty'
- *   - ventana de reposo / night-window              → kind 'night-window'
- *   - cuota agotada                                 → kind 'quota'
- *   - presión de recursos (ORANGE/RED)              → kind 'resource-pressure'
- *   - gate de coherencia waiting-operator (#4578)   → kind 'waiting-operator'
+ * Acá queda SÓLO el cableado: qué módulo del Pulpo satisface cada dependencia.
  *
- * @returns {{declared:true, kind:string, readable:true}|null} null = sin causa.
+ * @returns {{alcance:object, conteo:object, cause:object|null}}
+ */
+function recolectarHechosDespacho(cfgRoot, waves) {
+  return dispatchFacts.recolectarHechos({
+    partialPause,
+    // Trabajo esperando: TODOS los workfiles de `pendiente/`. El cruce con la
+    // allowlist lo hace `contarElegibles` (no se filtra acá para que el módulo
+    // pueda reportar también el total y el backlog fuera de alcance).
+    listarPendientes: () => listarPendientesGlobal(cfgRoot),
+    // Issues abiertos de la ola activa. Sólo se usan si NO hay allowlist: es el
+    // desync fail-closed (la ola existe pero la allowlist no), y en ese caso el
+    // trabajo elegible se acota a la ola — nunca al backlog entero.
+    issuesOlaActiva: () => {
+      const activa = waves.getActiveWave();
+      if (!activa || !Array.isArray(activa.issues)) return [];
+      return activa.issues
+        .filter(i => i && i.status !== 'completed')
+        .map(i => i.number);
+    },
+    isNightWindow: () => isNightWindow(Date.now(), (cfgRoot.resource_limits || {}).night_window),
+    isQuotaExhausted: () => quotaExhausted.isQuotaExhausted(),
+    isResourcePressure: () => {
+      const level = getResourcePressure(cfgRoot).level;
+      return level === PRESSURE_LEVELS.ORANGE || level === PRESSURE_LEVELS.RED;
+    },
+    isWaveWaitingOperator: () => waves.isWaveWaitingOperator(),
+    // Fallback al artifact de causa declarada (#4709): cubre los gates del ciclo
+    // de despacho que no se computan en vivo acá (concurrencia llena, ventana de
+    // prioridad, cooldown, deadlock, cb-infra) sin duplicar su lógica, y unifica
+    // el vocabulario de los dos emisores (R-1). La ANOMALÍA se excluye dentro de
+    // `causeFromArtifact`: "no sé por qué no despacho" jamás silencia (SEC-1).
+    causaDesdeArtifact: () => dispatchCauseKind.causeFromArtifact(dispatchCause.readArtifact(PIPELINE)),
+  });
+}
+
+/**
+ * Compat: la causa declarada sola. Se conserva porque es la unidad que consume
+ * `wave-stall-watchdog.decide()` y porque hay tests que la ejercitan puntual.
  */
 function readDeclaredCauseForWave(cfgRoot, waves) {
-  // #5400 — la causa ahora viaja con dos datos extra que el watchdog necesita:
-  //   `sinceTs`         desde cuándo rige (para la escalada por antigüedad).
-  //   `authorDeclared`  quién la declaró, SEGÚN EL PROPIO REGISTRO.
-  //
-  // SEC-2: `authorDeclared` es display-only y se rotula siempre como DECLARADA.
-  // No es una prueba de autoría: el gate de autorización corre en GRACE MODE y
-  // la pausa total ni siquiera registra `source`. Sin dato se deja `null` y el
-  // mensaje dice "autoría no registrada" — jamás se defaultea a una persona.
-  const declare = (kind, extra) => Object.assign(
-    { declared: true, kind, readable: true, sinceTs: null, authorDeclared: null },
-    extra || {}
-  );
-
-  // 1. Halt humano (pausa total o parcial declarada por el operador).
-  try {
-    const modo = partialPause.getPipelineMode();
-    const mode = modo.mode;
-    // #5400 — pausa TOTAL y pausa PARCIAL son causas distintas para el operador
-    // (CA-2 pide nombrarlas por separado). Antes ambas caían en 'human-halt'.
-    if (mode === 'paused') {
-      // `getPipelineMode()` devuelve createdAt/source null para la pausa total:
-      // el `sinceTs` queda en null y el watchdog usa su propio reloj de causa.
-      return declare('human-halt', { authorDeclared: modo.source || null });
-    }
-    if (mode && mode !== 'running') {
-      return declare('partial-pause', {
-        sinceTs: Date.parse(modo.createdAt || '') || null,
-        authorDeclared: modo.source || null,
-      });
-    }
-    // #5060 — `running` ya no es barra libre: sin allowlist no hay ola vigente
-    // y el dispatch está fail-closed. Es una espera legítima (falta promover la
-    // ola siguiente), NO una ola estancada — declararla evita que el wave-stall
-    // watchdog (#4708/#4709) alerte por algo que el operador ya controla.
-    //
-    // #5400: "legítima" tiene fecha de vencimiento. La causa se sigue declarando
-    // igual, pero ya no silencia para siempre: pasado el umbral de escalada con
-    // trabajo elegible esperando, el watchdog avisa. Es exactamente el desync
-    // fail-closed que dejó el pipeline mudo 1h33 el 2026-08-02.
-    if (mode === 'running' && !partialPause.unscopedDispatchEnabled()) {
-      return declare('wave-empty');
-    }
-  } catch { /* fail-closed */ }
-
-  // 2. Ventana de reposo / madrugada — no alertar de noche (CA-2).
-  try {
-    const nw = (cfgRoot.resource_limits || {}).night_window;
-    if (isNightWindow(Date.now(), nw)) return declare('night-window');
-  } catch { /* fail-closed */ }
-
-  // 3. Cuota agotada (primary/fallbacks sin capacidad).
-  try {
-    if (quotaExhausted.isQuotaExhausted()) return declare('quota');
-  } catch { /* fail-closed */ }
-
-  // 4. Presión de recursos: ORANGE/RED suprimen despacho legítimamente.
-  try {
-    const level = getResourcePressure(cfgRoot).level;
-    if (level === PRESSURE_LEVELS.ORANGE || level === PRESSURE_LEVELS.RED) {
-      return declare('resource-pressure');
-    }
-  } catch { /* fail-closed */ }
-
-  // 5. Gate de coherencia (#4578): ola retenida esperando al operador.
-  try {
-    if (waves.isWaveWaitingOperator()) return declare('waiting-operator');
-  } catch { /* fail-closed */ }
-
-  // 6. #5400 — Fallback al artifact de causa declarada (#4709).
-  //
-  // Los chequeos de arriba se computan en vivo pero no cubren todos los gates
-  // del ciclo de despacho (concurrencia llena, ventana de prioridad, cooldown).
-  // En vez de duplicar esa lógica acá — y arriesgar que las dos copias se
-  // desincronicen — se reusa el artifact que el propio Pulpo publica cada ciclo.
-  // Eso además unifica el vocabulario de los dos emisores (R-1: una sola verdad
-  // sobre por qué no se despacha) y aporta un `sinceTs` real que sobrevive a un
-  // restart del Pulpo (`artifact.ts` = cuándo EMPEZÓ la causa).
-  //
-  // La ANOMALÍA se excluye a propósito: "no sé por qué no despacho" NO es una
-  // causa que pueda silenciar al watchdog (fail-closed, SEC-1).
-  // rev-1: la traducción vive en `lib/dispatch-cause-kind.js` (función pura y
-  // testeada). Era la única parte del circuito del watchdog sin un solo test.
-  try {
-    const desdeArtifact = dispatchCauseKind.causeFromArtifact(dispatchCause.readArtifact(PIPELINE));
-    if (desdeArtifact) return desdeArtifact;
-  } catch { /* fail-closed: sin artifact legible, no hay causa */ }
-
-  return null;
+  return recolectarHechosDespacho(cfgRoot, waves).cause;
 }
 
 /** Extraer issue number del nombre de archivo (ej: "1732.po" → "1732").
@@ -7156,6 +7108,15 @@ function countPendientesGlobal(config) {
     }
   } catch { /* config degradada */ }
   return n;
+}
+
+// #5400 rev-3 — Lista los pendientes globales CON su issue, no sólo el total.
+// `countPendientesGlobal` devuelve un número y por eso el watchdog no podía
+// cruzarlos con la allowlist: contaba los 228 workfiles de backlog parkeado como
+// si fueran trabajo despachable (bloqueante N2 de la review rev-2). Mismo
+// contrato barato y best-effort: jamás puede tirar.
+function listarPendientesGlobal(config) {
+  return dispatchFacts.listarPendientesFS(PIPELINE, config);
 }
 
 // #4709 — Cuenta agentes DESPACHADOS (archivos en `trabajando/`) en todas las
@@ -18757,18 +18718,21 @@ async function mainLoop() {
         } catch { /* sin ola: el watchdog igual vigila */ }
         const waveKey = active ? active.number : null;
 
-        // 1. Trabajo ELEGIBLE esperando = archivos en `pendiente/` de todas las
-        //    fases de todos los pipelines. Es la medida honesta de "hay trabajo
-        //    que debería estar saliendo y no sale":
+        // 1 + 3. Hechos del despacho: alcance vigente, trabajo ELEGIBLE esperando
+        //    y causa declarada. Todo sale de `lib/dispatch-facts` (rev-3), que es
+        //    donde vive ahora el brazo de recolección — inyectable y testeado.
+        //
+        //    "Elegible" = workfile en `pendiente/` CUYO ISSUE ESTÁ EN LA ALLOWLIST
+        //    de la ola. Contarlos todos (rev-2) sumaba los 228 workfiles de
+        //    backlog parkeado: CA-3 quedaba inalcanzable (nunca daba 0) y el gate
+        //    que hace ADITIVA la escalada era constante-verdadero, así que toda
+        //    pausa de despacho terminaba alertando.
         //      - los bloqueados viven en `bloqueado-*`, no en `pendiente/`;
         //      - una cola legítimamente vacía da 0 → skip, sin alerta (CA-3).
-        //    (#4708 usaba los issues habilitados de la ola. Un issue de la ola sin
-        //     workfile encolado no es despachable, así que contarlo producía
-        //     falsos positivos justo en el criterio que CA-3 quiere proteger.)
-        //    rev-1: reusa los contadores ya existentes en vez de reimplementar
-        //    el recorrido inline (dos copias del mismo barrido se desincronizan).
-        const pendientes = countPendientesGlobal(cfgRoot);
+        const hechos = recolectarHechosDespacho(cfgRoot, waves);
+        const pendientes = hechos.conteo.elegibles;
         const dispatching = countTrabajandoGlobal(cfgRoot);
+        const cause = hechos.cause;
 
         // 2. Serie de avance (avancePct) de la ola activa, si hay.
         let progressSeries = [];
@@ -18776,12 +18740,6 @@ async function mainLoop() {
           try { progressSeries = waveProgress.readSnapshots({ waveKey: active.number }); }
           catch { progressSeries = []; }
         }
-
-        // 3. Causa declarada. Computada EN VIVO por el Pulpo y, para los gates que
-        //    no se computan acá, leída del artifact de #4709 (mismo emisor, no una
-        //    fuente paralela). Cada chequeo es defensivo; si tira, NO se asume
-        //    causa (fail-closed: la ausencia de causa dispara).
-        const cause = readDeclaredCauseForWave(cfgRoot, waves);
 
         // 4. Estampa del último despacho EFECTIVO (#5400). Ausente ⇒ el watchdog
         //    lo trata como reloj degradado (nunca como "movió ficha").
@@ -18841,7 +18799,15 @@ async function mainLoop() {
           causeKind: decision.causeKind,
           lastDispatchTs: decision.lastDispatchTs,
           dispatching,
+          // rev-3 — `pendientes` es el conteo ELEGIBLE (el que gobierna la
+          // decisión). El total y el backlog fuera de alcance viajan aparte para
+          // que el dashboard pueda mostrar "13 elegibles / 241 en cola" en vez de
+          // un único número que mezcla ola con backlog parkeado.
           pendientes,
+          pendientesTotal: hechos.conteo.total,
+          pendientesFueraDeAlcance: hechos.conteo.fueraDeAlcance,
+          alcanceAplicado: hechos.conteo.alcanceAplicado,
+          modoPipeline: hechos.alcance.mode,
         });
 
         // --- Aviso de RECUPERACIÓN (CA-5) -----------------------------------

@@ -44,6 +44,13 @@ const MAX_STALL_MINUTES = 1440;
 const DEFAULT_COOLDOWN_MINUTES = 30;
 const DEFAULT_WINDOW_MINUTES = 60;
 
+// #5400 (rev-3, CA-4) — Tope del backoff exponencial entre re-alertas del MISMO
+// episodio. Con el cooldown default (30 min) el tope de 16 significa esperar
+// hasta 8 h antes de repetir: una detención de 14 h cuesta ~6 mensajes en vez de
+// los ~27 que producía el cooldown fijo de rev-2. No se apaga nunca — el aviso
+// sigue llegando, sólo que espaciado.
+const MAX_ALERT_BACKOFF_FACTOR = 16;
+
 // #5400 — Inactividad de despacho a partir de la cual una causa declarada DEJA
 // de silenciar la alarma. Es el corazón del issue: el 2026-08-02 una pausa
 // preservada por un restart calló al watchdog 1h33 porque `isCauseValid` cortaba
@@ -570,8 +577,19 @@ function decide(facts) {
     reason = `stale-declared-cause:${causeKind}`;
   }
 
-  // --- 5. Anti-flooding: dedup por cooldown dentro del episodio (SEC-4) -
-  if (state.lastAlertTs > 0 && now - state.lastAlertTs < cooldownMs) {
+  // --- 5. Anti-flooding: BACKOFF EXPONENCIAL dentro del episodio (SEC-4/CA-4)
+  // rev-2 usaba un cooldown FIJO: una detención larga (las hay de 8-14 h en el
+  // histórico de 7 días) producía una re-alerta cada 30 min, o sea decenas de
+  // mensajes idénticos por episodio. Un canal así deja de leerse, que es lo
+  // contrario del objetivo del issue. El backoff duplica la espera en cada
+  // re-alerta (30 → 60 → 120 → …) hasta el tope: el primer aviso llega igual de
+  // rápido y el episodio largo cuesta ~5 mensajes en vez de ~27.
+  const backoffFactor = Math.min(
+    2 ** Math.max(0, (state.alertCount || 0) - 1),
+    MAX_ALERT_BACKOFF_FACTOR
+  );
+  const cooldownEfectivoMs = cooldownMs * backoffFactor;
+  if (state.lastAlertTs > 0 && now - state.lastAlertTs < cooldownEfectivoMs) {
     return base('skip', 'cooldown', 'info');
   }
 
@@ -614,6 +632,7 @@ module.exports = {
   MAX_STALL_MINUTES,
   DEFAULT_COOLDOWN_MINUTES,
   DEFAULT_WINDOW_MINUTES,
+  MAX_ALERT_BACKOFF_FACTOR,
   DEFAULT_DECLARED_CAUSE_ESCALATE_MINUTES,
   DEFAULT_BUSY_GRACE_MINUTES,
   FUTURE_STAMP_TOLERANCE_MS,

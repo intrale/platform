@@ -406,7 +406,10 @@ wave_watchdog:
   enabled: true
   kill_switch: false             # corte de emergencia: true desactiva el brazo sin tocar `enabled`
   stall_minutes: 20              # 0 despacho más de esto (con trabajo elegible esperando) = detenido
-  alert_cooldown_minutes: 30     # SEC-4: mín. entre re-alertas del mismo episodio (anti-flood)
+  # SEC-4 / CA-4: mínimo entre re-alertas del mismo episodio (anti-flood). La
+  # espera se DUPLICA en cada re-alerta (30 → 60 → 120 …) hasta 16× — así una
+  # detención de 14 h cuesta ~6 mensajes y no ~27. El primer aviso no se demora.
+  alert_cooldown_minutes: 30
   window_minutes: 60             # ventana de referencia para la serie de avance/despacho
   tick_ms: 60000                 # cada cuánto corre el brazo (default 1 min)
   # #5400 — Antigüedad a partir de la cual una causa DECLARADA deja de silenciar
