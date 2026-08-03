@@ -431,6 +431,35 @@ admitir barras.** Aflojarlo rompería la allowlist —un `namespace` con `/` pod
 apuntar fuera del scope autorizado— y es exactamente la defensa anti-IDOR que el
 kernel ya tiene escrita.
 
+### Punto de entrada canónico para quien NO lee — #5464
+
+El tramo de provisión (#5425) resuelve el **mismo** nombre lógico que el runtime,
+pero corre en otro proceso, con otra identidad y con un port de escritura propio.
+Para que no termine copiando los regex ni concatenando el path a mano,
+`secret-vault.js` exporta `validateVaultNamespace(...)`:
+
+```js
+const { validateVaultNamespace } = require('.pipeline/lib/secret-vault');
+
+validateVaultNamespace({ prefix, projectId, hostId, scope, tier });
+// -> { tier, service: 'ssm'|'secretsmanager', path, root, prefix, projectId, hostId, scope }  (congelado)
+```
+
+- **No es una segunda implementación.** Es un envoltorio *puro* sobre
+  `buildParameterPath`, que sigue siendo el único lugar donde vive el esquema y
+  el único que corre `SEGMENT_RE` / `PREFIX_RE`. Mismos argumentos, mismos
+  errores (`VaultConfigError` con la clave de config) y misma semántica de
+  `root`; lo único que agrega es el descriptor enriquecido.
+- **`service` sale de `VAULT_TIER_SERVICE`**, declarado una sola vez y cubierto
+  por test contra `VAULT_TIERS`: un tier nuevo sin destino declarado rompe la
+  suite en vez de mandar el pedido al servicio equivocado.
+- **Los regex no se exportan a propósito.** Exportarlos habilitaría justamente la
+  copia que este punto de entrada viene a evitar.
+- **No amplía privilegios.** Es una función sin I/O, sin ambiente y sin driver:
+  `VAULT_READONLY_COMMANDS` queda idéntica y ningún driver de este módulo expone
+  escritura. Con qué verbo se escribe es decisión del provisionador, fuera de
+  `secret-vault.js`.
+
 ## Costo por escenario
 
 Precios de lista públicos de AWS para la región de referencia de precios

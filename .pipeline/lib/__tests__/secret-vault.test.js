@@ -20,8 +20,11 @@ const util = require('node:util');
 const {
     VAULT_READONLY_COMMANDS,
     VAULT_ERROR_CODES,
+    VAULT_TIERS,
+    VAULT_TIER_SERVICE,
     MAX_CACHE_TTL_SECONDS,
     buildParameterPath,
+    validateVaultNamespace,
     createInMemoryVaultDriver,
     createAwsCliVaultDriver,
     createAwsCliVaultRunner,
@@ -976,4 +979,192 @@ test('CA-24 · config.yaml trae la sección vault: con el gate cerrado y hostId 
         driver: createInMemoryVaultDriver({ parameters: {} }),
     });
     assert.match(util.inspect(vault), /enabled: false/);
+});
+
+// =============================================================================
+// #5464 (1/3 de #5425) — validación canónica del namespace, exportada
+// =============================================================================
+//
+// Estos tests fijan por regresión las dos mitades del split: que el helper
+// exportado construye por la implementación canónica (no por una copia), y que
+// exportarlo NO abrió la frontera read-only del runtime.
+
+test('5464-1 · shared y host se construyen con la implementación canónica', () => {
+    const base = { prefix: PREFIX, projectId: PROJECT, hostId: HOST_A };
+
+    const compartido = validateVaultNamespace({ ...base, scope: 'telegram', tier: 'shared' });
+    const porHost = validateVaultNamespace({ ...base, scope: 'aws', tier: 'host' });
+
+    // Mismo path que `buildParameterPath`: es EL MISMO constructor, no un gemelo.
+    assert.equal(compartido.path, buildParameterPath({ ...base, scope: 'telegram', tier: 'shared' }));
+    assert.equal(porHost.path, buildParameterPath({ ...base, scope: 'aws', tier: 'host' }));
+    assert.equal(compartido.path, '/intrale/intrale/shared/telegram');
+    assert.equal(porHost.path, '/intrale/intrale/hosts/hostA/aws');
+
+    // Descriptor completo: tier, destino y namespace explícitos.
+    assert.equal(compartido.service, 'ssm');
+    assert.equal(porHost.service, 'ssm');
+    assert.equal(compartido.tier, 'shared');
+    assert.equal(porHost.hostId, HOST_A);
+    assert.equal(compartido.hostId, null, 'shared no está segmentado por host');
+    assert.equal(compartido.scope, 'telegram');
+    assert.equal(compartido.root, false);
+    assert.ok(Object.isFrozen(compartido), 'el descriptor no se muta después de validar');
+
+    // Raíces recursivas: las mismas que usa el barrido batch del runtime.
+    const raizCompartida = validateVaultNamespace({ ...base, tier: 'shared', root: true });
+    const raizHost = validateVaultNamespace({ ...base, tier: 'host', root: true });
+    assert.equal(raizCompartida.path, '/intrale/intrale/shared/');
+    assert.equal(raizHost.path, `/intrale/intrale/hosts/${HOST_A}/`);
+    assert.equal(raizHost.scope, null, 'una raíz no tiene nombre lógico');
+    assert.equal(raizHost.root, true);
+
+    // SEC-3 — la raíz a nivel proyecto sigue siendo INCONSTRUIBLE por acá.
+    for (const p of [raizCompartida.path, raizHost.path, compartido.path, porHost.path]) {
+        assert.notEqual(p, `${PREFIX}/${PROJECT}/`);
+    }
+});
+
+test('5464-2 · prefijos, segmentos y nombres fuera del proyecto se rechazan antes de todo acceso remoto', () => {
+    const base = { prefix: PREFIX, projectId: PROJECT, hostId: HOST_A, tier: 'shared' };
+
+    // Testigos de que el rechazo es ANTERIOR a cualquier I/O: si el helper
+    // tocara el driver o la CLI, estos contadores dejarían de ser 0.
+    const driver = createInMemoryVaultDriver({ parameters: seedHostA() });
+    let spawns = 0;
+    const runner = createAwsCliVaultRunner(
+        { AWS_ACCESS_KEY_ID: 'k', AWS_SECRET_ACCESS_KEY: 's' },
+        'us-east-2',
+        { execFileSync: () => { spawns += 1; return '{}'; } },
+    );
+
+    const invalidos = [
+        // nombre lógico fuera del proyecto
+        ...['../otro', 'a/b', '', 'host.local', null, undefined, 'con espacio']
+            .map((scope) => [{ ...base, scope }, /vault\.scope/]),
+        // prefijo fuera del proyecto
+        ...['intrale', '/intrale/', '/', '', '/intrale/../etc', '/intra le', null]
+            .map((prefix) => [{ ...base, prefix, scope: 'telegram' }, /vault\.prefix/]),
+        // namespace fuera del proyecto
+        [{ ...base, projectId: 'pro/yecto', scope: 'telegram' }, /vault\.projectId/],
+        [{ ...base, projectId: '..', scope: 'telegram' }, /vault\.projectId/],
+        [{ ...base, tier: 'host', hostId: '../hostB', scope: 'telegram' }, /vault\.hostId/],
+        [{ ...base, tier: 'host', hostId: '', scope: 'telegram' }, /vault\.hostId/],
+        // tier inválido: nunca se infiere de la presencia de hostId
+        ...[undefined, null, '', 'SHARED', 'rotante', 42]
+            .map((tier) => [{ ...base, tier, scope: 'telegram' }, /vault\.tier/]),
+        // `root` ambiguo: la raíz recursiva se pide explícitamente
+        [{ ...base, root: 'true' }, /vault\.root/],
+        [{ ...base, root: 1, scope: 'telegram' }, /vault\.root/],
+    ];
+
+    for (const [args, clave] of invalidos) {
+        assert.throws(() => validateVaultNamespace(args), (e) => {
+            assert.equal(e.name, 'VaultConfigError', `no es error tipado: ${util.inspect(args)}`);
+            assert.equal(e.code, VAULT_ERROR_CODES.CONFIG_INVALID);
+            assert.match(e.message, clave);
+            // El mensaje nombra la CLAVE de config, nunca el regex crudo.
+            assert.ok(!e.message.includes('A-Za-z0-9'), 'el regex crudo no sale del módulo');
+            return true;
+        }, `entrada inválida no rechazada: ${util.inspect(args)}`);
+    }
+
+    // Sin argumentos tampoco devuelve un descriptor a medias: falla cerrado.
+    assert.throws(() => validateVaultNamespace(), /vault\.tier/);
+
+    assert.equal(driver.calls.length, 0, 'validar no leyó del driver');
+    assert.equal(spawns, 0, 'validar no spawneó la CLI');
+});
+
+test('5464-3 · rotating sigue reconocido por el runtime, sin incorporar escritura', async () => {
+    const rotativo = validateVaultNamespace({
+        prefix: PREFIX, projectId: PROJECT, scope: 'google_drive', tier: 'rotating',
+    });
+
+    assert.equal(rotativo.path, 'intrale/intrale/rotating/google_drive');
+    assert.ok(!rotativo.path.startsWith('/'), 'Secrets Manager: SIN barra inicial');
+    assert.equal(rotativo.service, 'secretsmanager');
+    assert.equal(rotativo.hostId, null);
+    // Secrets Manager se lee por nombre exacto: no hay raíz recursiva.
+    assert.throws(
+        () => validateVaultNamespace({ prefix: PREFIX, projectId: PROJECT, tier: 'rotating', root: true }),
+        /vault\.tier/,
+    );
+
+    // El destino por tier está declarado para TODOS los tiers y para ninguno
+    // más: un tier nuevo sin destino rompe acá en vez de mandar el pedido al
+    // servicio equivocado en producción.
+    assert.deepEqual(Object.keys(VAULT_TIER_SERVICE).sort(), [...VAULT_TIERS].sort());
+    assert.ok(Object.isFrozen(VAULT_TIER_SERVICE));
+    for (const service of Object.values(VAULT_TIER_SERVICE)) {
+        assert.ok(['ssm', 'secretsmanager'].includes(service));
+    }
+
+    // Y el camino de LECTURA de `rotating` sigue funcionando por Secrets Manager.
+    const vault = createSecretVault({
+        config: configVault({ required_scopes: ['google_drive'], shared_secrets: [] }),
+        driver: createInMemoryVaultDriver({
+            secrets: { [rotativo.path]: { refresh_token: 'CANARIO-GD' } },
+        }),
+    });
+    const res = await vault.resolveScope({ scopes: ['google_drive'], tier: 'rotating' });
+    assert.deepEqual(res.google_drive, { refresh_token: 'CANARIO-GD' });
+});
+
+test('5464-4 · exportar el validador no agregó verbos de escritura al runtime', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const fuente = fs.readFileSync(path.join(__dirname, '..', 'secret-vault.js'), 'utf8');
+    const escrituras = ['put-parameter', 'put-secret-value', 'create-secret',
+        'delete-parameter', 'update-secret', 'label-parameter-version'];
+
+    // La allowlist sigue siendo EXACTAMENTE la de #5352.
+    assert.deepEqual([...VAULT_READONLY_COMMANDS], [
+        'ssm get-parameters-by-path', 'ssm get-parameter', 'secretsmanager get-secret-value',
+    ]);
+    for (const verbo of escrituras) {
+        assert.ok(!VAULT_READONLY_COMMANDS.some((c) => c.includes(verbo)),
+            `la allowlist incorporó escritura: ${verbo}`);
+    }
+
+    // El runner los rechaza por COMPORTAMIENTO, sin spawnear.
+    let spawns = 0;
+    const runner = createAwsCliVaultRunner(
+        { AWS_ACCESS_KEY_ID: 'k', AWS_SECRET_ACCESS_KEY: 's' },
+        'us-east-2',
+        { execFileSync: () => { spawns += 1; return '{}'; } },
+    );
+    for (const verbo of escrituras) {
+        assert.throws(() => runner.run('ssm', [verbo, '--name', 'x']), /allowlist read-only/,
+            `verbo de escritura no rechazado: ${verbo}`);
+        assert.throws(() => runner.run('secretsmanager', [verbo]), /allowlist read-only/);
+    }
+    assert.equal(spawns, 0, 'ningún verbo de escritura llegó a spawnear');
+
+    // Los drivers del runtime siguen exponiendo SÓLO lectura.
+    for (const driver of [
+        createInMemoryVaultDriver({ parameters: seedHostA() }),
+        createAwsCliVaultDriver({ run: () => '{}' }),
+    ]) {
+        const metodos = Object.keys(driver).filter((k) => typeof driver[k] === 'function');
+        assert.deepEqual(metodos.sort(), [
+            'getParametersByPath', 'getParametersByPathSync', 'getSecretValue', 'getSecretValueSync',
+        ], `el driver ${driver.kind} expone métodos fuera del contrato de lectura`);
+    }
+
+    // Los regex NO se exportan: exportarlos habilitaría la copia que el helper
+    // viene a evitar (el consumidor debe pasar por `validateVaultNamespace`).
+    const exportado = require('../secret-vault');
+    for (const [clave, valor] of Object.entries(exportado)) {
+        assert.ok(!(valor instanceof RegExp), `se exportó un regex crudo: ${clave}`);
+    }
+
+    // El módulo tampoco nombra un verbo de escritura fuera de un comentario.
+    for (const linea of fuente.split('\n')) {
+        const codigo = linea.trim();
+        if (codigo.startsWith('//') || codigo.startsWith('*')) continue;
+        for (const verbo of escrituras) {
+            assert.ok(!codigo.includes(verbo), `verbo de escritura en el código: ${codigo}`);
+        }
+    }
 });

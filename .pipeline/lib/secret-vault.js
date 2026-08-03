@@ -13,7 +13,16 @@
 //   conductores"). La API async de #5352 no cambia — sigue declarada `async`,
 //   sigue devolviendo `Promise`, y su suite queda verde sin editarse (D1.5).
 //
+// AMPLIACIÓN DE #5464 (1/3 de #5425) — se EXPORTA la validación canónica del
+//   namespace (`validateVaultNamespace`) para que el tramo de provisión la
+//   reutilice en vez de copiar los regex. Es un envoltorio PURO sobre
+//   `buildParameterPath`: no agrega reglas, no agrega verbos y no amplía los
+//   privilegios del runtime — la allowlist read-only queda idéntica.
+//
 // LO QUE ESTE MÓDULO **NO** HACE (a propósito):
+//   - NO escribe en el vault. `VAULT_READONLY_COMMANDS` sigue siendo la lista
+//     congelada de #5352 (tres verbos de lectura) y ningún driver de acá expone
+//     escritura: escribir es del rol de provisión, no del runtime que lee.
 //   - NO escribe en el ambiente del proceso (CA-8). Esa decisión — precedencia y
 //     semántica de degradación de `loadIntoEnv` — vive en la hija 3 (#5353) y
 //     toca `credentials.js`. Acá no se importa nada que mute el ambiente.
@@ -360,6 +369,79 @@ function assertPrefix(clave, value) {
             `inválido (${describeTipo(value)}): debe empezar con "/" y no terminar en "/" `
             + '(ejemplo válido: `/intrale`)');
     }
+}
+
+// -----------------------------------------------------------------------------
+// #5464 (1/3 de #5425) — validación CANÓNICA del namespace, exportable
+// -----------------------------------------------------------------------------
+//
+// El tramo de provisión (#5425) necesita resolver y validar el mismo nombre
+// lógico que el runtime lee, pero vive en OTRO proceso, con OTRA identidad y
+// con un port de ESCRITURA propio. Sin un punto de entrada exportado, ese
+// tramo termina copiando `SEGMENT_RE` / `PREFIX_RE` o concatenando el path a
+// mano: dos copias del esquema que divergen en silencio el día que una cambia.
+//
+// Por eso esto NO es una segunda implementación: `validateVaultNamespace` es un
+// envoltorio fino sobre `buildParameterPath`, que sigue siendo el único lugar
+// donde vive el esquema y el único que corre los regex. Acá no hay un regex
+// nuevo, ni una concatenación de path, ni una regla de validación propia — si
+// la hubiera, sería exactamente la duplicación que este split viene a evitar.
+//
+// Y NO amplía privilegios: es una función PURA (sin I/O, sin ambiente, sin
+// driver). No toca `VAULT_READONLY_COMMANDS`, no agrega verbos, no expone los
+// regex crudos (exportarlos habilitaría justamente la copia que se quiere
+// impedir). El `service` que devuelve es el destino de LECTURA que el tier ya
+// implica en `buildParameterPath`; quién escribe y con qué verbo es decisión
+// del provisionador, fuera de este módulo.
+
+// Destino AWS por tier. Se declara UNA vez y se cubre por test contra
+// `VAULT_TIERS`: un tier nuevo sin destino declarado rompe la suite en vez de
+// devolver `undefined` y mandar el pedido a un servicio equivocado.
+const VAULT_TIER_SERVICE = Object.freeze({
+    shared: 'ssm',
+    host: 'ssm',
+    rotating: 'secretsmanager',
+});
+
+/**
+ * Valida prefijo, namespace (`projectId` / `hostId`), tier y nombre lógico, y
+ * devuelve el descriptor canónico del destino. Fail-closed: si algo no valida,
+ * lanza `VaultConfigError` y NO devuelve un descriptor a medias — el consumidor
+ * no llega a emitir la llamada remota.
+ *
+ * Mismos argumentos, mismos errores y mismas claves de config que
+ * `buildParameterPath`: es el mismo contrato, con la salida enriquecida.
+ *
+ * @param {object} args  igual que `buildParameterPath`
+ * @returns {Readonly<{tier:string, service:'ssm'|'secretsmanager', path:string,
+ *                     root:boolean, prefix:string, projectId:string,
+ *                     hostId:string|null, scope:string|null}>}
+ */
+function validateVaultNamespace({ prefix, projectId, hostId, scope, tier, root = false } = {}) {
+    // `root` decide si el nombre lógico es obligatorio, así que un truthy
+    // ambiguo (`'false'`, `1`) cambiaría la validación sin que nadie lo note.
+    if (typeof root !== 'boolean') {
+        throw new VaultConfigError('vault.root',
+            `debe ser booleano (recibido: ${describeTipo(root)}); `
+            + 'la raíz recursiva se pide EXPLÍCITAMENTE, nunca por un valor truthy');
+    }
+
+    // Única fuente del esquema y de los regex: si esto no lanza, el path es
+    // válido por construcción.
+    const path = buildParameterPath({ prefix, projectId, hostId, scope, tier, root });
+
+    return Object.freeze({
+        tier,
+        service: VAULT_TIER_SERVICE[tier],
+        path,
+        root,
+        prefix,
+        projectId,
+        // `hostId` sólo pertenece al descriptor si el tier lo usó: devolverlo
+        // en `shared` sugeriría que el path está segmentado por host y no lo está.
+        hostId: tier === 'host' ? hostId : null,
+        scope: root ? null : scope,
+    });
 }
 
 // -----------------------------------------------------------------------------
@@ -1126,6 +1208,11 @@ module.exports = {
     VAULT_ERROR_CODES,
     MAX_CACHE_TTL_SECONDS,
     buildParameterPath,
+    // #5464 — validación canónica reutilizable por el tramo de provisión
+    // (#5425). Los regex NO se exportan a propósito: exportarlos habilitaría
+    // la copia que este helper viene a evitar.
+    VAULT_TIER_SERVICE,
+    validateVaultNamespace,
     createInMemoryVaultDriver,
     createAwsCliVaultDriver,
     createAwsCliVaultRunner,
