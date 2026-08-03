@@ -201,7 +201,7 @@ function planReconciliation(ctx = {}) {
  * @param {Array} decisions  salida de planReconciliation
  * @param {object} deps
  *   @param {(pipeline,fase,skill,issue)=>void} deps.requeueWorkItem  (idempotente por nombre)
- *   @param {(issue,reason)=>void} deps.escalate  (agrega needs-human, idempotente)
+ *   @param {(issue,reason)=>boolean|void} deps.escalate  false si no pudo registrar needs-human
  *   @param {(msg)=>void} [deps.notify]
  *   @param {(record)=>void} [deps.audit]
  *   @param {(pipeline,fase,skill,issue)=>boolean} [deps.workItemExists] re-check idempotente
@@ -244,8 +244,22 @@ function executeDecisions(decisions, deps = {}) {
             // El escalate necesita `pipeline`/`fase` explícitos: sin ellos
             // `reportHumanBlock` buscaría el work-item activo y podría MOVER el
             // deliverable de `listo/`, destruyendo la evidencia (riesgo #1).
-            try { deps.escalate(d.issue, d.reason, { pipeline: d.pipeline, fase: d.fase }); }
-            catch (e) { audit({ ...d, error: String(e && e.message).slice(0, 120) }); }
+            let escalationSucceeded = false;
+            try {
+                // `false` es un fallo observable. Se conserva compatibilidad con
+                // deps anteriores que no retornaban valor; el cableado real de
+                // #5396 retorna true/false explícitamente.
+                escalationSucceeded = deps.escalate(d.issue, d.reason, {
+                    pipeline: d.pipeline, fase: d.fase,
+                }) !== false;
+            } catch (e) {
+                audit({ ...d, error: String(e && e.message).slice(0, 120) });
+            }
+            if (!escalationSucceeded) {
+                audit({ ...d, error: 'no se pudo registrar el bloqueo humano' });
+                skipped += 1;
+                continue;
+            }
             escalated += 1;
             audit({ action: 'escalate', issue: d.issue, fase: d.fase, reason: d.reason });
             notify(buildEscalationMessage(d, titleOf(d.issue)), {

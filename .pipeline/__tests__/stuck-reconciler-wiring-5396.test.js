@@ -441,6 +441,44 @@ test('CA-4 e2e: issue de la ola escala UNA vez; el segundo tick sobre el mismo e
     assert.deepEqual(fs.readdirSync(path.join(dir, 'desarrollo', 'verificacion', 'listo')), ['5209.qa']);
 });
 
+test('rebote review: reportHumanBlock fallido no contabiliza ni notifica una escalación inexistente', () => {
+    const dir = tmpPipeline();
+    fs.writeFileSync(
+        path.join(dir, 'desarrollo', 'verificacion', 'listo', '5209.qa'),
+        'issue: 5209\nfase: verificacion\npipeline: desarrollo\nresultado: rechazado\n',
+    );
+    fs.utimesSync(
+        path.join(dir, 'desarrollo', 'verificacion', 'listo', '5209.qa'),
+        new Date(NOW - HOUR), new Date(NOW - HOUR),
+    );
+    writeTitleCache(dir, {
+        5209: { title: 'bloqueo imposible', state: 'OPEN', labels: ['Ready'], fetchedAt: NOW - 60000 },
+    });
+    const sent = [];
+    const deps = buildStuckReconcilerDeps({
+        config: CONFIG, PIPELINE: dir, ROOT: dir,
+        pauseFile: path.join(dir, '.paused'),
+        ppMode: { mode: 'partial_pause', allowedIssues: [5209] }, nowMs: NOW,
+        parallelPhases: [{ pipeline: 'desarrollo', fase: 'verificacion' }],
+        deps: {
+            log: () => { },
+            sendTelegramWithMarkup: (...args) => sent.push(args),
+            humanBlock: {
+                buildBlockedActionMarkup: () => null,
+                reportHumanBlock: () => { throw new Error('filesystem sin escritura'); },
+            },
+        },
+    });
+
+    const res = runStuckPhaseReconciler(deps, {
+        maxRequeueAttempts: 2, capPerTick: 5, staleThresholdMs: 15 * 60 * 1000,
+    });
+    assert.equal(res.escalated, 0, 'no informa una escalación que no ocurrió');
+    assert.equal(res.skipped, 1);
+    assert.equal(sent.length, 0, 'sin marker/label no notifica al operador');
+    assert.deepEqual(fs.readdirSync(path.join(dir, 'desarrollo', 'verificacion', 'bloqueado-humano')), []);
+});
+
 test('CA-3 e2e: el mismo issue fuera de la ola no escala ni notifica nunca', () => {
     const dir = tmpPipeline();
     fs.writeFileSync(

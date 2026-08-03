@@ -280,7 +280,7 @@ function buildStuckReconcilerDeps(opts = {}) {
             // SEC-5.2 — validar ANTES del path.join que hace reportHumanBlock.
             if (!Number.isInteger(n) || n <= 0) {
                 log('reconciler', `escalate: issue inválido (${String(issue).slice(0, 40)}) — ignorado`);
-                return;
+                return false;
             }
             const phase = String(meta.fase || '').trim();
             const pipeline = String(meta.pipeline || '').trim();
@@ -288,7 +288,7 @@ function buildStuckReconcilerDeps(opts = {}) {
                 // Fail-closed: sin pipeline explícito, `reportHumanBlock` haría
                 // `findActiveMarker` y podría mover el deliverable de `listo/`.
                 log('reconciler', `escalate #${n}: falta pipeline/fase explícitos — no se escala (protege evidencia)`);
-                return;
+                return false;
             }
             try {
                 humanBlock.reportHumanBlock({
@@ -302,8 +302,10 @@ function buildStuckReconcilerDeps(opts = {}) {
                     // `precondition` omitido → normalizePrecondition ⇒ HUMAN_JUDGMENT
                     // (fail-closed, #4748): nunca auto-re-evaluable.
                 });
+                return true;
             } catch (e) {
                 log('reconciler', `error escalando #${n}: ${e && e.message}`);
+                return false;
             }
         },
 
