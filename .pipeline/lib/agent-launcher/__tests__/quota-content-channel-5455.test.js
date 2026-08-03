@@ -16,6 +16,8 @@
 //      y `maxDays: 1/24` — NO degrada al "default safe" `allowlist[0]`.
 //   4. Dispatcher: uso EXCLUSIVO de `setFlag`, sin escritura directa del JSON.
 //   5. Dispatcher: una mención embebida no activa el tipo dedicado.
+//   6. Dispatcher: SCOPE ANTHROPIC enforced — el tipo dedicado no aterriza
+//      sobre un provider no-Anthropic aunque el frame venga inyectado en su log.
 // =============================================================================
 'use strict';
 
@@ -111,14 +113,14 @@ test('#5455 adapter · el contrato de los matches ESTRUCTURALES queda intacto', 
 // 3-5. Dispatcher — dispatch-with-fallback.js
 // -----------------------------------------------------------------------------
 
-function runExit(rawOutput, pipelineDir, quotaModule) {
+function runExit(rawOutput, pipelineDir, quotaModule, provider = 'anthropic', exitCode = 0) {
     return dispatcher.onSpawnExit({
         skill: 'commander',
         issue: 5455,
-        provider: 'anthropic',
+        provider,
         transport: 'cli',
         rawOutput,
-        exitCode: 0,
+        exitCode,
         durationMs: 5000,
         firstByteAt: 100,
         pipelineDir,
@@ -191,4 +193,69 @@ test('#5455 dispatcher · el frame estructural conserva el selector genérico', 
     const call = spy._setCalls[0];
     assert.equal(call.errorType, 'usage_limit_error');
     assert.equal(call.maxDays, undefined, 'el clamp de 60 min es exclusivo del canal de contenido');
+});
+
+// -----------------------------------------------------------------------------
+// 6. SCOPE ANTHROPIC enforced en el dispatcher (fix del rechazo de #5455)
+//
+// El barrido corría SIN comprobar el provider del spawn y el errorType
+// resultante se persistía con el provider que realmente corrió. Un agente sobre
+// un provider no-Anthropic puede ser inducido a imprimir una línea con forma de
+// frame (el pipeline ingiere texto de GitHub hacia los agentes, y en los CLIs
+// no-Anthropic el log crudo es texto plano, así que la línea entra literal).
+// Si esa corrida además fallaba por cuota, la falla quedaba clasificada como el
+// corte semanal de Anthropic y su gate se acortaba a 60 min en vez de su TTL
+// real. `setFlag` no valida membresía de allowlist, así que el tipo espurio se
+// persistía tal cual.
+// -----------------------------------------------------------------------------
+
+// Ruido de cuota para que el veredicto sea quota_exhausted/rate_limit: el
+// barrido sólo corre bajo ese veredicto, así que el caso hay que construirlo.
+const RUIDO_CUOTA = [
+    'stream error: rate limit exceeded',
+    '429 Too Many Requests',
+    'quota exceeded for this org',
+].join('\n');
+
+test('#5455 dispatcher · el tipo dedicado NO aterriza sobre un provider no-Anthropic', () => {
+    const dir = tmpDir();
+    const spy = spyQuota();
+
+    // Log de un spawn de Codex con la línea del aviso semanal INYECTADA.
+    const raw = `${RUIDO_CUOTA}\n${contentFrame(AVISO)}`;
+    const res = runExit(raw, dir, spy, 'openai-codex', 1);
+
+    // Precondición: el veredicto es de cuota, o sea el barrido llegó a correr.
+    assert.ok(res.errorClass === 'quota_exhausted' || res.errorClass === 'rate_limit',
+        `precondición: el barrido sólo corre bajo veredicto de cuota (fue ${res.errorClass})`);
+    assert.equal(spy._setCalls.length, 1, 'debe persistir el flag genérico igual');
+
+    const call = spy._setCalls[0];
+    assert.equal(call.provider, 'openai-codex');
+    assert.notEqual(call.errorType, CONTENT_TYPE,
+        'el tipo dedicado de Anthropic no debe persistirse con otro provider');
+
+    // El tipo persistido debe pertenecer a la allowlist DEL provider que corrió.
+    const allowlist = quota.KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER['openai-codex'] || [];
+    assert.ok(allowlist.includes(call.errorType),
+        `el errorType debe salir del selector genérico (allowlist de openai-codex), fue: ${call.errorType}`);
+
+    // El clamp de 60 min es exclusivo del canal de contenido: no debe filtrarse
+    // y sub-gatear a Codex por debajo de su TTL real.
+    assert.equal(call.maxDays, undefined, 'no debe aplicar el clamp de 60 min de Anthropic');
+});
+
+test('#5455 dispatcher · el mismo log inyectado SÍ matchea cuando el provider es Anthropic', () => {
+    const dir = tmpDir();
+    const spy = spyQuota();
+
+    // Control del test anterior: el gate discrimina por provider, no rompe el
+    // canal de contenido legítimo.
+    const raw = `${RUIDO_CUOTA}\n${contentFrame(AVISO)}`;
+    runExit(raw, dir, spy, 'anthropic', 1);
+
+    assert.equal(spy._setCalls.length, 1);
+    assert.equal(spy._setCalls[0].provider, 'anthropic');
+    assert.equal(spy._setCalls[0].errorType, CONTENT_TYPE);
+    assert.equal(spy._setCalls[0].maxDays, quota.WEEKLY_LIMIT_CONTENT_MAX_DAYS);
 });

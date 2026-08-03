@@ -1532,15 +1532,31 @@ const _WEEKLY_LIMIT_SCAN_MAX_LINE_CHARS = 8192;
  * que NO es JSON re-parseable de forma confiable. La fuente correcta es el log
  * crudo.
  *
- * Anthropic-only por construcción: usa la allowlist canónica de `anthropic`.
+ * SCOPE ANTHROPIC — ENFORCED, no "por construcción" (fix del rechazo de #5455).
+ * Antes esta función forzaba `providerId: DEFAULT_PROVIDER` hardcodeado: eso
+ * sólo decidía QUÉ allowlist se consultaba, no SOBRE QUÉ PROVIDER aterrizaba el
+ * flag. El caller persistía el `errorType` devuelto con el provider que
+ * realmente corrió, así que un spawn de `openai-codex` podía terminar con
+ * `weekly_limit_content_channel` — un tipo ajeno a SU allowlist — vía una línea
+ * con forma de frame inyectada en el log (el pipeline ingiere texto de GitHub
+ * hacia los agentes, y en los CLIs no-Anthropic el log crudo es texto plano).
+ *
+ * Ahora el providerId REAL es obligatorio y se valida contra el canónico:
+ * fail-closed (sin provider, o provider != `anthropic` => `null`). El default
+ * implícito se eliminó a propósito: un caller que se olvide de declararlo debe
+ * obtener "no match", nunca un flag espurio de Anthropic.
  *
  * @param {string} rawText contenido crudo del log del spawn.
- * @param {object} [opts] `{ now }` reloj inyectable para el parseo del reset.
+ * @param {object} [opts] `{ now, providerId }`. `providerId` es OBLIGATORIO y
+ *                        debe canonicalizar a `anthropic`; `now` es el reloj
+ *                        inyectable para el parseo del reset.
  * @returns {{matched: true, errorType: string, resetsAt: string|null,
  *            source: string, rawExcerpt: string}|null}
  */
 function detectWeeklyLimitContentChannelFromLog(rawText, opts = {}) {
     if (typeof rawText !== 'string' || !rawText) return null;
+    // SCOPE ANTHROPIC enforced: el barrido no corre para ningún otro provider.
+    if (canonicalProvider(opts.providerId) !== DEFAULT_PROVIDER) return null;
     const allowlist = KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER[DEFAULT_PROVIDER] || [];
     if (!allowlist.includes(WEEKLY_LIMIT_CONTENT_ERROR_TYPE)) return null;
     const lines = rawText.split('\n');

@@ -299,7 +299,7 @@ test('#5455 · detectWeeklyLimitContentChannelFromLog encuentra el frame en el l
         JSON.stringify({ type: 'result', result: AVISO_SEMANAL }),
     ].join('\n');
 
-    const r = q.detectWeeklyLimitContentChannelFromLog(log, { now: NOW });
+    const r = q.detectWeeklyLimitContentChannelFromLog(log, { now: NOW, providerId: 'anthropic' });
     assert.ok(r, 'debe encontrar el frame final');
     assert.equal(r.errorType, 'weekly_limit_content_channel');
     assert.equal(r.source, q.WEEKLY_LIMIT_CONTENT_SOURCE);
@@ -317,13 +317,63 @@ test('#5455 · el barrido del log ignora menciones y frames que no son `result`'
         JSON.stringify({ type: 'result', result: `Te explico: "${AVISO_SEMANAL}" significa corte semanal.` }),
     ].join('\n');
 
-    assert.equal(q.detectWeeklyLimitContentChannelFromLog(log, { now: NOW }), null);
+    assert.equal(q.detectWeeklyLimitContentChannelFromLog(log, { now: NOW, providerId: 'anthropic' }), null);
 });
 
 test('#5455 · el barrido es defensivo ante entradas vacias o no-string', () => {
     const q = freshModule(newTmpDir());
 
     for (const raw of ['', null, undefined, 42, {}]) {
-        assert.equal(q.detectWeeklyLimitContentChannelFromLog(raw), null, `entrada: ${String(raw)}`);
+        assert.equal(
+            q.detectWeeklyLimitContentChannelFromLog(raw, { now: NOW, providerId: 'anthropic' }),
+            null,
+            `entrada: ${String(raw)}`,
+        );
     }
+});
+
+// -----------------------------------------------------------------------------
+// SCOPE ANTHROPIC enforced (fix del rechazo de #5455)
+//
+// El barrido forzaba `providerId: DEFAULT_PROVIDER` hardcodeado, así que
+// matcheaba con CUALQUIER provider y el caller persistía el tipo dedicado con el
+// provider que realmente corrió. Ahora el providerId real es obligatorio.
+// -----------------------------------------------------------------------------
+
+test('#5455 · el barrido NO matchea con un provider que no es Anthropic', () => {
+    const q = freshModule(newTmpDir());
+    const log = JSON.stringify({ type: 'result', result: AVISO_SEMANAL });
+
+    // Precondición: el MISMO log matchea con Anthropic.
+    assert.ok(q.detectWeeklyLimitContentChannelFromLog(log, { now: NOW, providerId: 'anthropic' }),
+        'precondición: el log es un match legítimo para Anthropic');
+
+    for (const p of ['openai-codex', 'openai', 'gemini', 'ollama']) {
+        assert.equal(
+            q.detectWeeklyLimitContentChannelFromLog(log, { now: NOW, providerId: p }),
+            null,
+            `el tipo dedicado de Anthropic no debe aterrizar sobre ${p}`,
+        );
+    }
+});
+
+test('#5455 · el barrido es fail-closed si no se declara el provider', () => {
+    const q = freshModule(newTmpDir());
+    const log = JSON.stringify({ type: 'result', result: AVISO_SEMANAL });
+
+    // Sin providerId no hay default implícito: un caller que se olvide de
+    // declararlo obtiene "no match", nunca un flag espurio de Anthropic.
+    for (const opts of [{ now: NOW }, { now: NOW, providerId: '' }, { now: NOW, providerId: null }]) {
+        assert.equal(q.detectWeeklyLimitContentChannelFromLog(log, opts), null,
+            `sin provider declarado debe fallar cerrado: ${JSON.stringify(opts)}`);
+    }
+});
+
+test('#5455 · el barrido acepta el alias de Anthropic ya canonicalizado', () => {
+    const q = freshModule(newTmpDir());
+    const log = JSON.stringify({ type: 'result', result: AVISO_SEMANAL });
+
+    const r = q.detectWeeklyLimitContentChannelFromLog(log, { now: NOW, providerId: 'anthropic-claude' });
+    assert.ok(r, 'el alias debe canonicalizar a `anthropic` y matchear');
+    assert.equal(r.errorType, 'weekly_limit_content_channel');
 });
