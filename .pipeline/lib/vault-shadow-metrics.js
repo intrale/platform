@@ -23,6 +23,12 @@
 //   {"ts":"...","name":"telegram.bot_token","host":"NOTEBOOK-01",
 //    "via":"vault","count":7,"first_ts":"...","last_ts":"..."}
 //
+// Los tres timestamps fechan la RESOLUCIÓN, nunca la escritura: en una fila de
+// la vía `vault` (agregada en memoria y volcada al salir el proceso) `ts` vale
+// `last_ts`, no el instante del volcado. Fecharla con el volcado haría entrar
+// cobertura anterior a t0 en una ventana ya reiniciada — fail-open. La ventana
+// se filtra por ese instante efectivo (ver `msEfectivo`).
+//
 // `name` es el NOMBRE LÓGICO (dot-path del descriptor), nunca la env var ni el
 // valor. Están PROHIBIDOS `value`, `prefix`, `suffix`, `len`, `hash`, `sample`
 // y cualquier derivado del valor: un hash sobre un espacio de valores chico se
@@ -150,6 +156,29 @@ function msDeIso(v) {
   if (!esTexto(v)) return null;
   const ms = Date.parse(v);
   return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Instante con el que una fila se ubica DENTRO o FUERA de la ventana.
+ *
+ * No es `ts` a secas y no es un detalle: la vía `vault` se agrega en memoria y
+ * se vuelca al salir el proceso, así que el instante del VOLCADO puede ser
+ * horas posterior al de la resolución que la fila documenta. Si la ventana se
+ * reinicia en el medio (CA-20 — evidencia negativa mueve t0), fechar la fila
+ * con el volcado mete cobertura ANTERIOR a t0 como si fuera posterior: la
+ * ventana cierra con `cumple` sin una sola resolución por vault después del
+ * reinicio y se habilita retirar el fallback de credenciales. Fail-open exacto
+ * que CA-18/CA-20 existen para impedir.
+ *
+ * Por eso manda `last_ts` (última resolución real agregada en esa fila) y `ts`
+ * queda sólo como respaldo para filas viejas escritas antes de este fix, que
+ * igual llevaban `last_ts` persistido. `last_ts` y no `first_ts`: alcanza con
+ * UNA resolución dentro de la ventana, y la última es la que efectivamente
+ * ocurrió en `last_ts`.
+ */
+function msEfectivo(r) {
+  const ms = msDeIso(r && r.last_ts);
+  return ms !== null ? ms : msDeIso(r && r.ts);
 }
 
 /**
@@ -471,6 +500,11 @@ function createVaultShadowMetrics(opts = {}) {
   /**
    * Vuelca el buffer de la vía `vault`. Best-effort a propósito: perder
    * cobertura positiva sólo puede dejar el gate CERRADO (fail-closed benigno).
+   *
+   * La fila se sella con el instante de la ÚLTIMA RESOLUCIÓN (`last_ts`), NO
+   * con el del volcado: entre una y otro pueden pasar horas y la ventana puede
+   * haberse reiniciado en el medio (CA-20). Fechar con el volcado haría contar
+   * cobertura previa a t0 como si fuera posterior — fail-open. Ver `msEfectivo`.
    */
   function flush() {
     if (buffer.size === 0) return { escritas: 0, error: null };
@@ -479,7 +513,7 @@ function createVaultShadowMetrics(opts = {}) {
     try {
       for (const f of filas) {
         appendFila({
-          ts: iso(now()),
+          ts: esTexto(f.last_ts) ? f.last_ts : iso(now()),
           name: f.name,
           host: f.host,
           via: f.via,
@@ -588,6 +622,11 @@ function createVaultShadowMetrics(opts = {}) {
     const tamanoAntes = tamanoJsonl();
 
     const rows = readRows();
+    // Acá se filtra por `ts` y no por el instante efectivo a propósito: `ts` es
+    // siempre >= `last_ts` (son iguales salvo en filas viejas, donde `ts` era el
+    // volcado), así que purgar por `ts` conserva TODO lo que `evaluate` podría
+    // llegar a contar. Al revés se podría borrar una fila que sigue siendo
+    // cobertura vigente. Ante la duda, se conserva.
     const conservadas = rows.filter((r) => msDeIso(r.ts) >= limite);
     if (conservadas.length === rows.length) return { purgadas: 0 };
 
@@ -713,8 +752,12 @@ function createVaultShadowMetrics(opts = {}) {
     // 5 · retención — nunca borra dentro de la ventana vigente ni mueve t0.
     purgar({ retentionDays: cfg.retention_days, t0Ms: t0.ms });
 
-    // 6 · sólo cuenta lo que pasó DESDE t0.
-    const rows = readRows().filter((r) => msDeIso(r.ts) >= t0.ms);
+    // 6 · sólo cuenta lo que pasó DESDE t0. Se filtra por el instante EFECTIVO
+    // (la resolución, no el volcado): una fila `vault` bufferada antes de que la
+    // evidencia negativa reiniciara la ventana queda AFUERA aunque se haya
+    // escrito después. Vale también para las filas viejas, que ya persistían
+    // `last_ts` aunque ningún consumidor lo leyera.
+    const rows = readRows().filter((r) => msEfectivo(r) >= t0.ms);
     base.horas_transcurridas = Math.max(0, (now() - t0.ms) / MS_HORA);
 
     // 7 · evidencia negativa dentro de la ventana.

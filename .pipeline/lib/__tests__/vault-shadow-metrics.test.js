@@ -555,6 +555,112 @@ test('la evidencia negativa reinicia la ventana justo despues de la fila que la 
   });
 });
 
+// -----------------------------------------------------------------------------
+// Sellado temporal de la cobertura bufferada — regresión de rev-1 de #5448.
+//
+// La vía `vault` se agrega en memoria y se vuelca al SALIR el proceso. Entre la
+// resolución y el volcado pueden pasar horas, y en el medio la ventana puede
+// haberse reiniciado por evidencia negativa (CA-20). Si la fila volcada se
+// fecha con el instante del VOLCADO, esa cobertura vieja entra en la ventana
+// nueva y la cierra con `cumple` sin una sola resolución por vault posterior al
+// reinicio: fail-open que habilita retirar el fallback de credenciales.
+// -----------------------------------------------------------------------------
+
+test('la cobertura bufferada ANTES del reinicio de la ventana no cuenta aunque se vuelque despues', () => {
+  conAuditDir((auditDir) => {
+    const r = reloj();
+    nuevo(auditDir, { now: r.now }).evaluate({ descriptors: DESCRIPTORES, hostsActivos: [HOST_A] });
+
+    // Proceso largo (el pulpo): resuelve TODO por vault y lo deja en el buffer.
+    const procesoLargo = nuevo(auditDir, { now: r.now });
+    procesoLargo.record(sourcesTodos(VIA.VAULT), { hostId: HOST_A, descriptors: DESCRIPTORES });
+    assert.deepEqual(leerJsonl(auditDir), [], 'la via vault todavia no se persistio');
+
+    // Tres horas después OTRO proceso cae al fallback: la ventana reinicia.
+    r.avanzar(3 * H);
+    nuevo(auditDir, { now: r.now })
+      .record({ TELEGRAM_BOT_TOKEN: VIA.FILE_BOOTSTRAP }, { hostId: HOST_A, descriptors: DESCRIPTORES });
+    const t0 = JSON.parse(fs.readFileSync(path.join(auditDir, 'vault-resolution.t0.json'), 'utf8')).t0;
+    assert.equal(t0, new Date(r.ms + 1).toISOString());
+
+    // Y RECIÉN AHÍ el proceso largo termina y vuelca su buffer.
+    r.avanzar(H);
+    procesoLargo.flush();
+
+    // La fila quedó sellada con la resolución real, no con el volcado.
+    const positivas = leerJsonl(auditDir).filter((f) => f.via === VIA.VAULT);
+    assert.equal(positivas.length, 3);
+    for (const f of positivas) {
+      assert.equal(f.ts, f.last_ts, 'la fila se fecha con la ultima resolucion, no con el volcado');
+      assert.ok(Date.parse(f.ts) < Date.parse(t0), 'la cobertura es anterior al reinicio de la ventana');
+    }
+
+    // Con la ventana cumplida de sobra, sigue sin cerrar: no hubo NI UNA
+    // resolución por vault después del reinicio.
+    r.avanzar(30 * H);
+    const ev = nuevo(auditDir, { now: r.now }).evaluate({ descriptors: DESCRIPTORES, hostsActivos: [HOST_A] });
+    assert.equal(ev.estado, ESTADO.NO_CUMPLE);
+    assert.equal(ev.motivo, 'cobertura_incompleta');
+    assert.equal(ev.no_verificados.length, 3, 'ningun par (secreto, host) quedo verificado');
+    assert.equal(ev.t0, t0, 'la evaluacion no movio la ventana');
+    assert.ok(ev.horas_transcurridas >= 24);
+  });
+});
+
+test('una fila vieja fechada con el volcado se ubica igual por last_ts (compat)', () => {
+  conAuditDir((auditDir) => {
+    const r = reloj();
+    nuevo(auditDir, { now: r.now }).evaluate({ descriptors: DESCRIPTORES, hostsActivos: [HOST_A] });
+    r.avanzar(3 * H);
+    nuevo(auditDir, { now: r.now })
+      .record({ TELEGRAM_BOT_TOKEN: VIA.FILE_BOOTSTRAP }, { hostId: HOST_A, descriptors: DESCRIPTORES });
+    const t0 = JSON.parse(fs.readFileSync(path.join(auditDir, 'vault-resolution.t0.json'), 'utf8')).t0;
+
+    // Formato previo al fix: `ts` = volcado (posterior a t0), `last_ts` = la
+    // resolución real (anterior). Estas filas ya existen en disco.
+    for (const name of Object.keys(DESCRIPTORES)) {
+      fs.appendFileSync(path.join(auditDir, 'vault-resolution.jsonl'), JSON.stringify({
+        ts: new Date(r.ms + H).toISOString(),
+        name,
+        host: HOST_A,
+        via: VIA.VAULT,
+        count: 4,
+        first_ts: new Date(T_BASE).toISOString(),
+        last_ts: new Date(T_BASE).toISOString(),
+      }) + '\n');
+    }
+
+    r.avanzar(30 * H);
+    const ev = nuevo(auditDir, { now: r.now }).evaluate({ descriptors: DESCRIPTORES, hostsActivos: [HOST_A] });
+    assert.equal(ev.estado, ESTADO.NO_CUMPLE);
+    assert.equal(ev.motivo, 'cobertura_incompleta');
+    assert.equal(ev.no_verificados.length, 3);
+    assert.equal(ev.t0, t0);
+  });
+});
+
+test('la cobertura resuelta DESPUES del reinicio si cierra la ventana aunque se vuelque mas tarde', () => {
+  conAuditDir((auditDir) => {
+    const r = reloj();
+    nuevo(auditDir, { now: r.now }).evaluate({ descriptors: DESCRIPTORES, hostsActivos: [HOST_A] });
+    nuevo(auditDir, { now: r.now })
+      .record({ TELEGRAM_BOT_TOKEN: VIA.FILE_BOOTSTRAP }, { hostId: HOST_A, descriptors: DESCRIPTORES });
+
+    // Resolución posterior al reinicio, volcada recién horas después.
+    r.avanzar(2 * H);
+    const procesoLargo = nuevo(auditDir, { now: r.now });
+    procesoLargo.record(sourcesTodos(VIA.VAULT), { hostId: HOST_A, descriptors: DESCRIPTORES });
+    r.avanzar(5 * H);
+    procesoLargo.flush();
+
+    r.avanzar(30 * H);
+    const ev = nuevo(auditDir, { now: r.now }).evaluate({ descriptors: DESCRIPTORES, hostsActivos: [HOST_A] });
+    assert.equal(ev.estado, ESTADO.CUMPLE, 'el sellado por last_ts no puede volverse fail-closed de mas');
+    assert.equal(ev.motivo, 'cobertura_completa');
+    assert.deepEqual(ev.no_verificados, []);
+  });
+});
+
 test('evidencia negativa dentro de la ventana vigente devuelve no_cumple', () => {
   conAuditDir((auditDir) => {
     const r = reloj();
