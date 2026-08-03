@@ -496,6 +496,17 @@ function writeHeartbeat() {
     /* fail-soft: un fallo de FS jamás tumba el loop principal (CA-1.1) */
   }
 }
+// #5400 — Estampa del último DESPACHO EFECTIVO.
+// La lógica (write atómico, allowlist de metadata, fail-soft) vive en
+// `lib/last-dispatch.js` para poder testearla; acá sólo queda el brazo.
+// Se estampa EXCLUSIVAMENTE donde consta que un agente salió de verdad — no en
+// "hubo trabajo en vuelo", que es justamente lo que enmascaraba el no-despacho.
+const lastDispatch = require('./lib/last-dispatch');
+const STATE_DIR = path.join(PIPELINE, 'state');
+function marcarDespachoEfectivo(meta) {
+  lastDispatch.writeLastDispatch(STATE_DIR, meta); // fail-soft por contrato
+}
+
 // Detector multi-capa del launcher de Claude Code.
 // La estructura del paquete cambió entre versiones (2.1.114 eliminó cli.js
 // y lo reemplazó con bin/claude.exe nativo + cli-wrapper.cjs fallback).
@@ -1570,16 +1581,45 @@ function listWorkFiles(dir) {
  * @returns {{declared:true, kind:string, readable:true}|null} null = sin causa.
  */
 function readDeclaredCauseForWave(cfgRoot, waves) {
-  const declare = (kind) => ({ declared: true, kind, readable: true });
+  // #5400 — la causa ahora viaja con dos datos extra que el watchdog necesita:
+  //   `sinceTs`         desde cuándo rige (para la escalada por antigüedad).
+  //   `authorDeclared`  quién la declaró, SEGÚN EL PROPIO REGISTRO.
+  //
+  // SEC-2: `authorDeclared` es display-only y se rotula siempre como DECLARADA.
+  // No es una prueba de autoría: el gate de autorización corre en GRACE MODE y
+  // la pausa total ni siquiera registra `source`. Sin dato se deja `null` y el
+  // mensaje dice "autoría no registrada" — jamás se defaultea a una persona.
+  const declare = (kind, extra) => Object.assign(
+    { declared: true, kind, readable: true, sinceTs: null, authorDeclared: null },
+    extra || {}
+  );
 
   // 1. Halt humano (pausa total o parcial declarada por el operador).
   try {
-    const mode = partialPause.getPipelineMode().mode;
-    if (mode && mode !== 'running') return declare('human-halt');
+    const modo = partialPause.getPipelineMode();
+    const mode = modo.mode;
+    // #5400 — pausa TOTAL y pausa PARCIAL son causas distintas para el operador
+    // (CA-2 pide nombrarlas por separado). Antes ambas caían en 'human-halt'.
+    if (mode === 'paused') {
+      // `getPipelineMode()` devuelve createdAt/source null para la pausa total:
+      // el `sinceTs` queda en null y el watchdog usa su propio reloj de causa.
+      return declare('human-halt', { authorDeclared: modo.source || null });
+    }
+    if (mode && mode !== 'running') {
+      return declare('partial-pause', {
+        sinceTs: Date.parse(modo.createdAt || '') || null,
+        authorDeclared: modo.source || null,
+      });
+    }
     // #5060 — `running` ya no es barra libre: sin allowlist no hay ola vigente
     // y el dispatch está fail-closed. Es una espera legítima (falta promover la
     // ola siguiente), NO una ola estancada — declararla evita que el wave-stall
     // watchdog (#4708/#4709) alerte por algo que el operador ya controla.
+    //
+    // #5400: "legítima" tiene fecha de vencimiento. La causa se sigue declarando
+    // igual, pero ya no silencia para siempre: pasado el umbral de escalada con
+    // trabajo elegible esperando, el watchdog avisa. Es exactamente el desync
+    // fail-closed que dejó el pipeline mudo 1h33 el 2026-08-02.
     if (mode === 'running' && !partialPause.unscopedDispatchEnabled()) {
       return declare('wave-empty');
     }
@@ -1609,8 +1649,49 @@ function readDeclaredCauseForWave(cfgRoot, waves) {
     if (waves.isWaveWaitingOperator()) return declare('waiting-operator');
   } catch { /* fail-closed */ }
 
+  // 6. #5400 — Fallback al artifact de causa declarada (#4709).
+  //
+  // Los chequeos de arriba se computan en vivo pero no cubren todos los gates
+  // del ciclo de despacho (concurrencia llena, ventana de prioridad, cooldown).
+  // En vez de duplicar esa lógica acá — y arriesgar que las dos copias se
+  // desincronicen — se reusa el artifact que el propio Pulpo publica cada ciclo.
+  // Eso además unifica el vocabulario de los dos emisores (R-1: una sola verdad
+  // sobre por qué no se despacha) y aporta un `sinceTs` real que sobrevive a un
+  // restart del Pulpo (`artifact.ts` = cuándo EMPEZÓ la causa).
+  //
+  // La ANOMALÍA se excluye a propósito: "no sé por qué no despacho" NO es una
+  // causa que pueda silenciar al watchdog (fail-closed, SEC-1).
+  try {
+    const art = dispatchCause.readArtifact(PIPELINE);
+    if (art && art.causa && art.causa !== dispatchCause.CAUSAS.ANOMALIA) {
+      const kind = DISPATCH_CAUSE_TO_WATCHDOG_KIND[art.causa];
+      if (kind) {
+        return declare(kind, {
+          sinceTs: Number.isFinite(art.ts) ? art.ts : null,
+        });
+      }
+    }
+  } catch { /* fail-closed: sin artifact legible, no hay causa */ }
+
   return null;
 }
+
+// #5400 — Traducción del enum de `lib/dispatch-cause.js` al vocabulario de
+// `kind` del watchdog. Mantener alineado con `CAUSE_LABELS` de
+// `lib/wave-stall-watchdog.js`: lo que no tenga label sale como slug crudo.
+// `ANOMALIA` NO se mapea a propósito (nunca debe silenciar la alarma).
+const DISPATCH_CAUSE_TO_WATCHDOG_KIND = Object.freeze({
+  [dispatchCause.CAUSAS.HALT_HUMANO]: 'human-halt',
+  [dispatchCause.CAUSAS.MODO_OLA]: 'wave-empty',
+  [dispatchCause.CAUSAS.SIN_AGENTES]: 'concurrency-limit',
+  [dispatchCause.CAUSAS.VENTANA_HORARIA]: 'priority-window',
+  [dispatchCause.CAUSAS.REST_MODE]: 'night-window',
+  [dispatchCause.CAUSAS.COOLDOWN]: 'cooldown',
+  [dispatchCause.CAUSAS.BLOQUEO_DEPENDENCIA]: 'blocked-dependencies',
+  [dispatchCause.CAUSAS.DEADLOCK]: 'deadlock',
+  [dispatchCause.CAUSAS.CB_INFRA]: 'cb-infra',
+  [dispatchCause.CAUSAS.PRESION_RECURSOS]: 'resource-pressure',
+});
 
 /** Extraer issue number del nombre de archivo (ej: "1732.po" → "1732").
  *  EP5-H1 (#3938): delega en `workfile-name.js` (comportamiento legacy exacto).
@@ -7077,16 +7158,20 @@ function countPendientesGlobal(config) {
 function publicarCausaPausa(config, causa, detalle) {
   try {
     const gates = new Map([[causa, detalle]]);
+    // #5400 — el conteo de pendientes alimenta la escalada por duración: una
+    // causa silenciosa sostenida CON trabajo esperando deja de ser silenciosa.
+    const pendientes = countPendientesGlobal(config);
     dispatchCause.publish({
       pipelineDir: PIPELINE,
       snapshot: {
         anyLaunched: false,
-        hayPendientes: countPendientesGlobal(config) > 0,
+        hayPendientes: pendientes > 0,
         progressInFlight: false,
         gatesActivos: new Set(gates.keys()),
         detalles: Object.fromEntries(gates),
       },
       now: Date.now(),
+      elegiblesEsperando: pendientes,
       alert: (m) => { try { sendTelegram(m); } catch { /* best-effort */ } },
       log: (m) => log('lanzamiento', m),
     });
@@ -7122,6 +7207,8 @@ function brazoLanzamiento(config) {
           detalles: Object.fromEntries(gates),
         },
         now: Date.now(),
+        // #5400 — habilita la escalada por duración de las causas silenciosas.
+        elegiblesEsperando: countPendientesGlobal(config),
         alert: (m) => { try { sendTelegram(m); } catch { /* best-effort */ } },
         log: (m) => log('lanzamiento', m),
       });
@@ -7607,6 +7694,9 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
     if (launched) {
       anyLaunched = true;
       _dcState.anyLaunched = true;
+      // #5400 — único punto del código donde consta que un agente salió de
+      // verdad. El watchdog de inactividad mide desde acá.
+      marcarDespachoEfectivo({ issue, skill, fase, pipeline: pipelineName });
     } else if (!slotErrored) {
       // El slot se llenó dentro de la sección crítica (otro proceso ganó la
       // admisión) — reintentar en el próximo ciclo. CA observabilidad (UX).
@@ -7679,6 +7769,10 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
         lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config);
         // #4709 — el breaker forzó un lanzamiento: hubo despacho este ciclo.
         _dcState.anyLaunched = true;
+        // #5400 — un lanzamiento forzado por el breaker también es despacho
+        // efectivo: si no se estampara, el watchdog seguiría contando un
+        // estancamiento que en realidad se destrabó.
+        marcarDespachoEfectivo({ issue, skill, fase, pipeline: pipelineName });
       } catch (e) {
         log('deadlock', `Error en lanzamiento forzado de ${archivo.name}: ${e.message}`);
       }
@@ -18525,20 +18619,41 @@ async function mainLoop() {
     log('anomaly', `No se pudo iniciar el detector: ${e.message}`);
   }
 
-  // #4708 — Wave-stall watchdog (dead-man's switch de la ola).
-  // Brazo periódico que detecta "trabajo habilitado + 0 despacho durante N min
-  // + sin causa declarada" y alerta a Telegram + marca la ola `stalled`
-  // (needs_attention). La lógica de decisión vive en lib/wave-stall-watchdog.js
-  // (función pura testeada). Este brazo SÓLO recolecta hechos del filesystem y
-  // la invoca. Es ACCESORIO: si tira, try/catch loguea y NO mata el loop (mismo
-  // criterio que el anomalyDetector). Rollout gradual: `wave_watchdog.enabled`
-  // default false.
+  // #4708 / #5400 — Watchdog de inactividad de DESPACHO.
+  //
+  // #4708 lo creó como dead-man's switch de la OLA. #5400 lo amplía al PIPELINE:
+  // el 2026-08-02 hubo 1h33 sin despachar y ninguna alerta, porque (a) el brazo
+  // estaba apagado, (b) sólo vigilaba si había ola activa, (c) una causa
+  // declarada lo callaba indefinidamente y (d) medía el movimiento con el conteo
+  // de `trabajando/`, que se congela con un agente clavado.
+  //
+  // La lógica de decisión sigue viviendo en lib/wave-stall-watchdog.js (función
+  // pura testeada). Este brazo SÓLO recolecta hechos del filesystem y la invoca:
+  // es READ-ONLY sobre el estado de despacho (SEC-3) — no toca `.paused`, ni la
+  // allowlist, ni la cola. Todo destrabe sigue siendo humano.
+  //
+  // Es ACCESORIO: si tira, try/catch loguea y NO mata el loop.
   try {
     const waveWatchdog = require('./lib/wave-stall-watchdog');
     const cfgRoot0 = loadConfig() || {};
     const wwCfg0 = cfgRoot0.wave_watchdog || {};
     const tickMs = waveWatchdog.parsePositiveInt(wwCfg0.tick_ms, 60000);
     const stateFile = path.join(PIPELINE, 'state', 'wave-stall-watchdog-state.json');
+    const statusFile = path.join(PIPELINE, 'state', 'dispatch-watchdog-status.json');
+
+    // #5400 / SEC-5 — "control apagado" NO puede ser indistinguible de "todo OK".
+    // El meta-bug de este issue fue justamente ese: el watchdog llevaba desde el
+    // merge en `enabled: false` y nada lo avisaba. Cada tick estampa su estado
+    // (incluso cuando sale temprano por estar apagado) para que el dashboard
+    // pueda mostrar OFF / degradado en vez de simplemente no mostrar nada.
+    const escribirStatus = (extra) => {
+      try {
+        fs.mkdirSync(path.dirname(statusFile), { recursive: true });
+        const tmp = `${statusFile}.${process.pid}.tmp`;
+        fs.writeFileSync(tmp, JSON.stringify({ lastTickTs: Date.now(), ...extra }));
+        fs.renameSync(tmp, statusFile);
+      } catch (_) { /* fail-soft: la observabilidad nunca tumba el brazo */ }
+    };
 
     const runWaveStallTick = () => {
       try {
@@ -18546,54 +18661,78 @@ async function mainLoop() {
         const cfg = cfgRoot.wave_watchdog || {};
         // Kill-switch / rollout gradual: leídos en cada tick para permitir
         // activar/desactivar en caliente sin reiniciar el Pulpo.
-        if (cfg.enabled !== true || cfg.kill_switch === true) return;
+        const habilitado = cfg.enabled === true && cfg.kill_switch !== true;
+        if (!habilitado) {
+          escribirStatus({
+            enabled: cfg.enabled === true,
+            killSwitch: cfg.kill_switch === true,
+            degraded: true,
+            reason: cfg.kill_switch === true ? 'kill-switch' : 'disabled',
+          });
+          return;
+        }
 
         const waves = require('./lib/waves');
         const waveProgress = require('./lib/wave-progress');
 
-        const active = waves.getActiveWave();
-        if (!active || !Number.isInteger(active.number)) return; // sin ola activa: nada que vigilar
+        // #5400 — SIN gate de ola. El alcance del issue es el PIPELINE: cualquier
+        // causa que frene el despacho produce el mismo silencio, haya ola o no.
+        // `active` queda como contexto OPCIONAL del mensaje (waveKey puede ser null).
+        let active = null;
+        try {
+          const a = waves.getActiveWave();
+          if (a && Number.isInteger(a.number)) active = a;
+        } catch { /* sin ola: el watchdog igual vigila */ }
+        const waveKey = active ? active.number : null;
 
-        // 1. Trabajo habilitado: issues no completados y sin bloqueo de dependencia.
-        //    (Un issue con TODOS sus bloqueantes abiertos NO cuenta como habilitado
-        //     → un estancamiento por dependencia queda como enabledCount=0 = skip.)
-        const enabled = (active.issues || []).filter((i) => {
-          if (!i || i.status === 'completed') return false;
-          try { return waves.getBlockingIssues(i.number).length === 0; }
-          catch { return true; }
-        });
-
-        // 2. Despacho: archivos en trabajando/ de TODAS las fases de TODOS los pipelines.
+        // 1. Trabajo ELEGIBLE esperando = archivos en `pendiente/` de todas las
+        //    fases de todos los pipelines. Es la medida honesta de "hay trabajo
+        //    que debería estar saliendo y no sale":
+        //      - los bloqueados viven en `bloqueado-*`, no en `pendiente/`;
+        //      - una cola legítimamente vacía da 0 → skip, sin alerta (CA-3).
+        //    (#4708 usaba los issues habilitados de la ola. Un issue de la ola sin
+        //     workfile encolado no es despachable, así que contarlo producía
+        //     falsos positivos justo en el criterio que CA-3 quiere proteger.)
+        let pendientes = 0;
         let dispatching = 0;
         for (const [pName, pConfig] of Object.entries(cfgRoot.pipelines || {})) {
           for (const fase of (pConfig.fases || [])) {
+            pendientes += listWorkFiles(path.join(PIPELINE, pName, fase, 'pendiente')).length;
             dispatching += listWorkFiles(path.join(PIPELINE, pName, fase, 'trabajando')).length;
           }
         }
 
-        // 3. Serie de avance (avancePct) de la ola activa.
+        // 2. Serie de avance (avancePct) de la ola activa, si hay.
         let progressSeries = [];
-        try { progressSeries = waveProgress.readSnapshots({ waveKey: active.number }); }
-        catch { progressSeries = []; }
+        if (active) {
+          try { progressSeries = waveProgress.readSnapshots({ waveKey: active.number }); }
+          catch { progressSeries = []; }
+        }
 
-        // 4. Causa declarada (interino hasta #4709 — markers dispersos, computados
-        //    EN VIVO por el Pulpo, no leídos de un artefacto spoofeable por agentes:
-        //    SEC-1). Cada chequeo es defensivo; si tira, NO se asume causa
-        //    (fail-closed: la ausencia de causa dispara). Al ser cómputo en vivo,
-        //    la causa es inherentemente vigente (no requiere TTL propio).
+        // 3. Causa declarada. Computada EN VIVO por el Pulpo y, para los gates que
+        //    no se computan acá, leída del artifact de #4709 (mismo emisor, no una
+        //    fuente paralela). Cada chequeo es defensivo; si tira, NO se asume
+        //    causa (fail-closed: la ausencia de causa dispara).
         const cause = readDeclaredCauseForWave(cfgRoot, waves);
+
+        // 4. Estampa del último despacho EFECTIVO (#5400). Ausente ⇒ el watchdog
+        //    cae a la proxy legacy de #4708 (conteo de `trabajando/`).
+        const stamp = lastDispatch.readLastDispatch(STATE_DIR);
 
         const state = waveWatchdog.loadState(stateFile);
         const decision = waveWatchdog.decide({
           now: Date.now(),
-          waveKey: active.number,
-          enabledCount: enabled.length,
+          waveKey,
+          enabledCount: pendientes,
           dispatching,
           progressSeries,
           cause,
+          authorDeclared: cause ? cause.authorDeclared : null,
+          lastDispatchTs: stamp ? stamp.ts : null,
           state,
           stallMinutes: cfg.stall_minutes,
           cooldownMinutes: cfg.alert_cooldown_minutes,
+          declaredCauseEscalateMinutes: cfg.declared_cause_escalate_minutes,
           windowMinutes: cfg.window_minutes,
         });
 
@@ -18601,19 +18740,53 @@ async function mainLoop() {
         try { waveWatchdog.saveStateAtomic(stateFile, decision.nextState); }
         catch (e) { log('wave-stall', `no pude persistir estado: ${e.message}`); }
 
-        if (decision.action === 'alert' || decision.action === 'escalate') {
-          log('wave-stall', `Ola ${active.number} estancada (${decision.action}): ${decision.reason}, ` +
-            `${enabled.length} habilitado(s), ${Math.round(decision.stalledMs / 60000)}min sin mover ficha`);
+        escribirStatus({
+          enabled: true,
+          killSwitch: false,
+          degraded: false,
+          action: decision.action,
+          reason: decision.reason,
+          stalledMs: decision.stalledMs,
+          causeKind: decision.causeKind,
+          lastDispatchTs: decision.lastDispatchTs,
+          pendientes,
+        });
 
-          // Alerta Telegram — SÓLO waveKey + motivo (SEC-2/CA-5). El mensaje ya
-          // viene sanitizado desde decide(): sin paths, tokens ni dumps.
+        // --- Aviso de RECUPERACIÓN (CA-5) -----------------------------------
+        // Se emite apenas el despacho se reanuda, cualquiera sea la decisión de
+        // este tick, y una sola vez por episodio (`decide` limpia el contador).
+        if (decision.recovery) {
+          log('wave-stall', `Despacho reanudado tras ${Math.round(decision.recovery.outageMs / 60000)}min ` +
+            `(${decision.recovery.alertCount} aviso(s) emitido(s) durante la detención)`);
+          try {
+            notifyTelegramFn({
+              level: 'info',
+              component: 'dispatch-watchdog',
+              message: decision.recovery.message,
+              context: waveKey != null ? { ola: waveKey } : {},
+            });
+          } catch (e) { log('wave-stall', `notify de recuperación falló: ${e.message}`); }
+        }
+
+        if (decision.action === 'alert' || decision.action === 'escalate') {
+          log('wave-stall', `Despacho detenido (${decision.action}): ${decision.reason}, ` +
+            `${pendientes} pendiente(s), ${Math.round(decision.stalledMs / 60000)}min sin despachar`);
+
+          // Alerta Telegram. El mensaje ya viene armado y sanitizado desde
+          // `decide()` (sin paths, tokens ni dumps) y `notifyTelegram` escapa los
+          // metacaracteres de Markdown antes de encolar (SEC-1), así que una causa
+          // con `_` o un `*` desbalanceado no puede tumbar la entrega.
           try {
             notifyTelegramFn({
               level: decision.level,
-              component: 'wave-stall-watchdog',
+              component: 'dispatch-watchdog',
               message: decision.message,
-              action: 'Revisá por qué la ola no despacha (dashboard needs_attention).',
-              context: { ola: active.number, habilitados: enabled.length },
+              action: 'Revisá por qué el pipeline no despacha (el destrabe es manual).',
+              context: {
+                ola: waveKey != null ? waveKey : 'sin ola activa',
+                pendientes,
+                causa: decision.causeKind || 'sin causa declarada',
+              },
             });
           } catch (e) { log('wave-stall', `notify falló: ${e.message}`); }
 
@@ -18621,16 +18794,21 @@ async function mainLoop() {
           // atención humana a NIVEL OLA — no bloquea los issues habilitados
           // (aplicar needs-human a issues sanos los sacaría del despacho y
           // agravaría el propio estancamiento que estamos alertando).
-          try {
-            waves.setWaveStalled(active.number, {
-              reason: decision.reason,
-              since: new Date(Date.now() - decision.stalledMs).toISOString(),
-              updated_by: 'wave-stall-watchdog',
-            });
-          } catch (e) { log('wave-stall', `setWaveStalled falló: ${e.message}`); }
-        } else if (decision.reason === 'dispatching' || decision.reason === 'no-enabled-work') {
-          // La ola volvió a moverse / no hay trabajo pendiente: limpiar la marca
-          // de estancamiento si estaba puesta (auto-clear del episodio).
+          // Sólo aplica si hay ola: sin ola, el aviso de Telegram es la escalada.
+          if (active) {
+            try {
+              waves.setWaveStalled(active.number, {
+                reason: decision.reason,
+                since: new Date(Date.now() - decision.stalledMs).toISOString(),
+                updated_by: 'wave-stall-watchdog',
+              });
+            } catch (e) { log('wave-stall', `setWaveStalled falló: ${e.message}`); }
+          }
+        } else if (active && (decision.recovery
+          || decision.reason === 'dispatching'
+          || decision.reason === 'no-enabled-work')) {
+          // El pipeline volvió a moverse / no hay trabajo pendiente: limpiar la
+          // marca de estancamiento si estaba puesta (auto-clear del episodio).
           try {
             if (waves.isWaveStalled()) {
               waves.clearWaveStalled(active.number, { note: 'ola volvió a despachar' });
@@ -18647,8 +18825,19 @@ async function mainLoop() {
     // impedir un shutdown limpio del proceso.
     const waveStallTimer = setInterval(runWaveStallTick, tickMs);
     if (typeof waveStallTimer.unref === 'function') waveStallTimer.unref();
-    log('wave-stall', `Watchdog de avance de ola iniciado: cada ${Math.round(tickMs / 1000)}s ` +
-      `(enabled=${wwCfg0.enabled === true}, kill_switch=${wwCfg0.kill_switch === true})`);
+    // #5400 / SEC-5 — estampar el estado YA al arrancar: si el watchdog quedó
+    // apagado, el dashboard tiene que poder decirlo desde el primer segundo, no
+    // recién después del primer tick.
+    escribirStatus({
+      enabled: wwCfg0.enabled === true,
+      killSwitch: wwCfg0.kill_switch === true,
+      degraded: !(wwCfg0.enabled === true && wwCfg0.kill_switch !== true),
+      reason: 'boot',
+    });
+    log('wave-stall', `Watchdog de inactividad de despacho iniciado: cada ${Math.round(tickMs / 1000)}s ` +
+      `(enabled=${wwCfg0.enabled === true}, kill_switch=${wwCfg0.kill_switch === true}, ` +
+      `stall=${waveWatchdog.parseStallMinutes(wwCfg0.stall_minutes)}min, ` +
+      `escalada_causa=${waveWatchdog.parseStallMinutes(wwCfg0.declared_cause_escalate_minutes, waveWatchdog.DEFAULT_DECLARED_CAUSE_ESCALATE_MINUTES)}min)`);
   } catch (e) {
     log('wave-stall', `No se pudo iniciar el watchdog de avance de ola: ${e.message}`);
   }

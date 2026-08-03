@@ -319,33 +319,51 @@ test('movementSignature: serie vacía o inválida => avance "na"', () => {
 
 // ─── Estado: load/save/normalize ────────────────────────────────────────────
 
+// #5400 — el estado creció con `causeKind`/`causeSinceTs` (reloj propio de la
+// causa declarada). Son ADITIVOS y opcionales: un archivo escrito por la versión
+// #4708 carga sin migración, con los campos nuevos en su default.
+const EMPTY_STATE = {
+  lastMovementTs: 0, lastSignature: null, lastAlertTs: 0, alertCount: 0,
+  causeKind: null, causeSinceTs: 0,
+};
+
 test('normalizeState: tolera basura y campos ausentes', () => {
-  assert.deepEqual(wd.normalizeState(null), {
-    lastMovementTs: 0, lastSignature: null, lastAlertTs: 0, alertCount: 0,
-  });
-  assert.deepEqual(wd.normalizeState({ lastMovementTs: -1, lastSignature: 5, lastAlertTs: 'x', alertCount: -2 }), {
-    lastMovementTs: 0, lastSignature: null, lastAlertTs: 0, alertCount: 0,
-  });
+  assert.deepEqual(wd.normalizeState(null), EMPTY_STATE);
+  assert.deepEqual(
+    wd.normalizeState({ lastMovementTs: -1, lastSignature: 5, lastAlertTs: 'x', alertCount: -2, causeKind: 9, causeSinceTs: -3 }),
+    EMPTY_STATE
+  );
   assert.deepEqual(wd.normalizeState({ lastMovementTs: 10, lastSignature: '0:1', lastAlertTs: 20, alertCount: 3 }), {
-    lastMovementTs: 10, lastSignature: '0:1', lastAlertTs: 20, alertCount: 3,
+    ...EMPTY_STATE, lastMovementTs: 10, lastSignature: '0:1', lastAlertTs: 20, alertCount: 3,
   });
+  assert.deepEqual(wd.normalizeState({ causeKind: 'human-halt', causeSinceTs: 42 }), {
+    ...EMPTY_STATE, causeKind: 'human-halt', causeSinceTs: 42,
+  });
+});
+
+test('normalizeState: un estado viejo (#4708) sin los campos nuevos carga sin migración', () => {
+  const viejo = { lastMovementTs: 10, lastSignature: '0:1', lastAlertTs: 20, alertCount: 3 };
+  const out = wd.normalizeState(viejo);
+  assert.equal(out.lastMovementTs, 10);
+  assert.equal(out.causeKind, null);
+  assert.equal(out.causeSinceTs, 0);
 });
 
 test('loadState/saveStateAtomic round-trip + fail-soft ante archivo ausente', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wave-wd-'));
   const file = path.join(dir, 'state.json');
   // Ausente → default
-  assert.deepEqual(wd.loadState(file), {
-    lastMovementTs: 0, lastSignature: null, lastAlertTs: 0, alertCount: 0,
+  assert.deepEqual(wd.loadState(file), EMPTY_STATE);
+  wd.saveStateAtomic(file, {
+    lastMovementTs: 5, lastSignature: '2:9', lastAlertTs: 7, alertCount: 1,
+    causeKind: 'wave-empty', causeSinceTs: 3,
   });
-  wd.saveStateAtomic(file, { lastMovementTs: 5, lastSignature: '2:9', lastAlertTs: 7, alertCount: 1 });
   assert.deepEqual(wd.loadState(file), {
     lastMovementTs: 5, lastSignature: '2:9', lastAlertTs: 7, alertCount: 1,
+    causeKind: 'wave-empty', causeSinceTs: 3,
   });
   // Corrupto → default (fail-soft)
   fs.writeFileSync(file, '{no json');
-  assert.deepEqual(wd.loadState(file), {
-    lastMovementTs: 0, lastSignature: null, lastAlertTs: 0, alertCount: 0,
-  });
+  assert.deepEqual(wd.loadState(file), EMPTY_STATE);
   fs.rmSync(dir, { recursive: true, force: true });
 });

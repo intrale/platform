@@ -27,6 +27,19 @@ function tmpDir() {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'dc-dash-'));
 }
 
+// #5400 — helpers para los artifacts de estado nuevos.
+function escribirEstado(dir, nombre, obj) {
+    const stateDir = path.join(dir, 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(stateDir, nombre), JSON.stringify(obj));
+}
+function escribirEstampa(dir, ts) {
+    escribirEstado(dir, 'last-dispatch.json', { ts, issue: '5400', skill: 'pipeline-dev' });
+}
+function escribirStatusWatchdog(dir, obj) {
+    escribirEstado(dir, 'dispatch-watchdog-status.json', obj);
+}
+
 // --- dispatchCauseSlice: detección -------------------------------------------
 
 test('slice inactivo cuando no hay artifact', () => {
@@ -126,4 +139,119 @@ test('render escapa también un label malicioso', () => {
     const html = renderDispatchCauseBanner({ active: true, causa: dc.CAUSAS.SIN_AGENTES, label: '<script>x</script>', anomalia: false });
     assert.doesNotMatch(html, /<script>x<\/script>/);
     assert.match(html, /&lt;script&gt;x&lt;\/script&gt;/);
+});
+
+// =============================================================================
+// #5400 — Visibilidad del no-despacho y del estado del propio watchdog.
+// =============================================================================
+
+test('#5400 el slice expone tiempo desde el último despacho, causa y estado del watchdog', () => {
+    const dir = tmpDir();
+    dc.writeArtifact(dir, {
+        causa: dc.CAUSAS.HALT_HUMANO, label: 'Detenido por humano',
+        detalle: 'pausa preservada por restart', ts: 1_000_000, anomalia: false,
+    });
+    escribirEstampa(dir, 1_000_000);
+    escribirStatusWatchdog(dir, { enabled: true, killSwitch: false, lastTickTs: 1_500_000 });
+
+    const s = slices.dispatchCauseSlice({}, { PIPELINE: dir, nowMs: 1_600_000 });
+    assert.strictEqual(s.active, true);
+    assert.strictEqual(s.causa, dc.CAUSAS.HALT_HUMANO);
+    // Tiempo desde el último despacho (CA-6).
+    assert.strictEqual(s.lastDispatchTs, 1_000_000);
+    assert.strictEqual(s.lastDispatchAgeMs, 600_000);
+    assert.strictEqual(s.lastDispatchRelTime, 'hace 10 min');
+    // Estado del watchdog (SEC-5).
+    assert.strictEqual(s.watchdogEnabled, true);
+    assert.strictEqual(s.watchdogDegraded, false);
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('#5400 un watchdog apagado se muestra explícitamente aunque no haya causa declarada', () => {
+    // El meta-bug: `enabled: false` desde el merge y nada lo avisaba. Ausencia
+    // de banner NO puede seguir significando "todo OK".
+    const dir = tmpDir();
+    escribirStatusWatchdog(dir, { enabled: false, killSwitch: false, lastTickTs: 1_500_000 });
+    const s = slices.dispatchCauseSlice({}, { PIPELINE: dir, nowMs: 1_600_000 });
+    assert.strictEqual(s.active, true, 'debe mostrarse aunque no haya causa');
+    assert.strictEqual(s.causa, null);
+    assert.strictEqual(s.watchdogDegraded, true);
+    assert.strictEqual(s.watchdogReason, 'apagado');
+
+    const html = renderDispatchCauseBanner(s);
+    assert.match(html, /Control de despacho degradado/);
+    assert.match(html, /watchdog de despacho apagado/);
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('#5400 un watchdog con kill-switch o sin latido cuenta como degradado', () => {
+    const dir = tmpDir();
+    escribirStatusWatchdog(dir, { enabled: true, killSwitch: true, lastTickTs: 1_500_000 });
+    let s = slices.dispatchCauseSlice({}, { PIPELINE: dir, nowMs: 1_600_000 });
+    assert.strictEqual(s.watchdogDegraded, true);
+    assert.strictEqual(s.watchdogReason, 'kill-switch');
+
+    // Brazo vivo por config pero sin latir hace más de 10 min → murió callado.
+    escribirStatusWatchdog(dir, { enabled: true, killSwitch: false, lastTickTs: 1_000_000 });
+    s = slices.dispatchCauseSlice({}, { PIPELINE: dir, nowMs: 1_000_000 + 11 * 60_000 });
+    assert.strictEqual(s.watchdogDegraded, true);
+    assert.strictEqual(s.watchdogReason, 'sin latido');
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('#5400 sin archivo de estado el watchdog reporta "no consta", no un OK inventado', () => {
+    const dir = tmpDir();
+    dc.writeArtifact(dir, {
+        causa: dc.CAUSAS.MODO_OLA, label: 'Modo de ejecución en olas',
+        detalle: '', ts: 1_000_000, anomalia: false,
+    });
+    const s = slices.dispatchCauseSlice({}, { PIPELINE: dir, nowMs: 1_600_000 });
+    assert.strictEqual(s.watchdogEnabled, null);
+    assert.strictEqual(s.watchdogDegraded, null);
+    assert.strictEqual(s.lastDispatchTs, null, 'sin estampa: no consta');
+
+    const html = renderDispatchCauseBanner(s);
+    assert.match(html, /estado no consta/);
+    assert.match(html, /Último despacho: sin registro/);
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('#5400 sin causa y con el watchdog sano NO se muestra banner (conducta #4709)', () => {
+    const dir = tmpDir();
+    escribirStatusWatchdog(dir, { enabled: true, killSwitch: false, lastTickTs: 1_600_000 });
+    escribirEstampa(dir, 1_590_000);
+    assert.deepStrictEqual(
+        slices.dispatchCauseSlice({}, { PIPELINE: dir, nowMs: 1_600_000 }),
+        { active: false }
+    );
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('#5400 causa y autoría se renderizan escapadas', () => {
+    const html = renderDispatchCauseBanner({
+        active: true,
+        causa: dc.CAUSAS.HALT_HUMANO,
+        label: '<img src=x onerror=alert(1)>',
+        detalle: '"><script>pwn()</script>',
+        lastDispatchRelTime: '<b>hace 2 h</b>',
+        watchdogDegraded: true,
+        watchdogReason: '<svg onload=alert(2)>',
+    });
+    assert.doesNotMatch(html, /<img src=x/);
+    assert.doesNotMatch(html, /<script>pwn/);
+    assert.doesNotMatch(html, /<svg onload/);
+    assert.doesNotMatch(html, /<b>hace 2 h<\/b>/);
+    assert.match(html, /&lt;svg onload=alert\(2\)&gt;/);
+    assert.match(html, /&lt;b&gt;hace 2 h&lt;\/b&gt;/);
+});
+
+test('#5400 una causa escalada por duración se destaca como grave', () => {
+    const normal = renderDispatchCauseBanner({
+        active: true, causa: dc.CAUSAS.MODO_OLA, label: 'Modo ola', escaladoPorDuracion: false,
+    });
+    assert.doesNotMatch(normal, /#f85149/);
+    const escalada = renderDispatchCauseBanner({
+        active: true, causa: dc.CAUSAS.MODO_OLA, label: 'Modo ola', escaladoPorDuracion: true,
+    });
+    assert.match(escalada, /#f85149/, 'una causa sostenida deja de ser un estado esperado');
 });

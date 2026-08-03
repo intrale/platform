@@ -351,3 +351,120 @@ test('CA-6: causa ausente/ilegible → anomalía SÍ alerta (fail-closed) aunque
     assert.strictEqual(alerts.length, 1, 'la anomalía nunca se silencia');
     assert.match(alerts[0], /ANOMAL/i);
 });
+
+// =============================================================================
+// #5400 — Dimensión DURACIÓN: una causa silenciosa sostenida escala a alertable.
+//
+// El agujero que cierra: el 2026-08-02 el pipeline estuvo 1h33 sin despachar con
+// una causa silenciosa declarada y no llegó ningún aviso. Una causa explica un
+// rato de no-despacho, no lo explica para siempre.
+// =============================================================================
+
+const ESCALATE_MS = dc.DEFAULT_SILENT_ESCALATE_MS;
+
+/** Publica la MISMA causa silenciosa dos veces, separadas por `deltaMs`. */
+function publicarSostenida(gate, deltaMs, extra = {}) {
+    const dir = tmpDir();
+    const alerts = [];
+    const comun = {
+        pipelineDir: dir,
+        snapshot: snap({ gatesActivos: new Set([gate]) }),
+        alert: (m) => alerts.push(m),
+        ...extra,
+    };
+    // t0: la causa aparece. Silenciosa → no alerta.
+    dc.publish({ ...comun, now: NOW });
+    // t0 + delta: la causa sigue vigente.
+    const out = dc.publish({ ...comun, now: NOW + deltaMs });
+    return { dir, alerts, out };
+}
+
+test('#5400: una causa silenciosa sostenida con elegibles esperando escala a alertable', () => {
+    const { alerts, out } = publicarSostenida(CAUSAS.MODO_OLA, ESCALATE_MS + 1, {
+        elegiblesEsperando: 7,
+    });
+    assert.strictEqual(alerts.length, 1, 'debe emitir el aviso por duración');
+    assert.strictEqual(out.escaladoPorDuracion, true);
+    // El aviso nombra la causa concreta y el trabajo que está esperando (CA-2).
+    assert.match(alerts[0], /Modo de ejecución en olas/);
+    assert.match(alerts[0], /7 elegible\(s\) esperando/);
+    assert.match(alerts[0], /min sin despachar/);
+});
+
+test('#5400: por debajo del umbral la causa silenciosa sigue muda (no-regresión #4751)', () => {
+    const { alerts, out } = publicarSostenida(CAUSAS.MODO_OLA, ESCALATE_MS - 60_000, {
+        elegiblesEsperando: 7,
+    });
+    assert.strictEqual(alerts.length, 0, 'modo ola reciente no debe hacer ruido');
+    assert.strictEqual(out.escaladoPorDuracion, false);
+});
+
+test('#5400: sin elegibles esperando una causa silenciosa NO escala por más vieja que sea', () => {
+    // Cola legítimamente vacía de trabajo habilitado → nada que reclamar (CA-3).
+    const { alerts, out } = publicarSostenida(CAUSAS.MODO_OLA, ESCALATE_MS * 10, {
+        elegiblesEsperando: 0,
+    });
+    assert.strictEqual(alerts.length, 0);
+    assert.strictEqual(out.escaladoPorDuracion, false);
+});
+
+test('#5400: un caller que no pasa los parámetros nuevos conserva la conducta de #4751', () => {
+    // Aditividad estricta: sin `elegiblesEsperando` no hay escalada posible.
+    const { alerts, out } = publicarSostenida(CAUSAS.MODO_OLA, ESCALATE_MS * 10);
+    assert.strictEqual(alerts.length, 0);
+    assert.strictEqual(out.escaladoPorDuracion, false);
+});
+
+test('#5400: la escalada por duración aplica a todas las causas silenciosas', () => {
+    for (const gate of [CAUSAS.MODO_OLA, CAUSAS.VENTANA_HORARIA, CAUSAS.COOLDOWN, CAUSAS.SIN_AGENTES]) {
+        const { alerts } = publicarSostenida(gate, ESCALATE_MS + 1, { elegiblesEsperando: 3 });
+        assert.strictEqual(alerts.length, 1, `${gate} sostenida debe escalar`);
+    }
+});
+
+test('#5400: el aviso por duración no se repite en cada ciclo: hay backoff verificable', () => {
+    const dir = tmpDir();
+    const alerts = [];
+    const comun = {
+        pipelineDir: dir,
+        snapshot: snap({ gatesActivos: new Set([CAUSAS.MODO_OLA]) }),
+        alert: (m) => alerts.push(m),
+        elegiblesEsperando: 4,
+    };
+    dc.publish({ ...comun, now: NOW });                       // aparece: muda
+    dc.publish({ ...comun, now: NOW + ESCALATE_MS + 1 });      // escala: 1 aviso
+    assert.strictEqual(alerts.length, 1);
+
+    // Ticks siguientes dentro del cooldown → mudos, aunque siga escalada.
+    for (const delta of [60_000, 5 * 60_000, 20 * 60_000]) {
+        dc.publish({ ...comun, now: NOW + ESCALATE_MS + 1 + delta });
+    }
+    assert.strictEqual(alerts.length, 1, 'no debe re-alertar dentro del cooldown');
+
+    // Pasado el cooldown → re-avisa una sola vez más.
+    dc.publish({ ...comun, now: NOW + ESCALATE_MS + 1 + dc.ANOMALY_REALERT_COOLDOWN_MS + 1 });
+    assert.strictEqual(alerts.length, 2, 'pasado el cooldown vuelve a avisar');
+});
+
+test('#5400: una causa YA alertable no cambia de conducta por la dimensión duración', () => {
+    // PRESION_RECURSOS ya alertaba en la transición; no debe duplicar avisos.
+    const { alerts, out } = publicarSostenida(CAUSAS.PRESION_RECURSOS, ESCALATE_MS + 1, {
+        elegiblesEsperando: 9,
+    });
+    assert.strictEqual(out.escaladoPorDuracion, false, 'no es una causa silenciosa');
+    assert.strictEqual(alerts.length, 1, 'sólo el aviso de transición de siempre');
+});
+
+test('#5400: la causa recién declarada nunca escala en la misma pasada', () => {
+    const dir = tmpDir();
+    const alerts = [];
+    const out = dc.publish({
+        pipelineDir: dir,
+        snapshot: snap({ gatesActivos: new Set([CAUSAS.MODO_OLA]) }),
+        now: NOW,
+        alert: (m) => alerts.push(m),
+        elegiblesEsperando: 50,
+    });
+    assert.strictEqual(out.escaladoPorDuracion, false, 'edad 0 no puede superar el umbral');
+    assert.strictEqual(alerts.length, 0);
+});

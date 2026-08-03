@@ -398,12 +398,23 @@ watchdog:
 # o absurdamente grande (> 1440 min = 24h) cae al default seguro — NUNCA
 # "nunca stall" ni deshabilita de facto el watchdog.
 wave_watchdog:
-  enabled: false                 # rollout gradual — activar tras smoke test post-restart
+  # #5400 — ACTIVADO. Este control estuvo en `enabled: false` desde su merge y
+  # nadie se enteró: el 2026-08-02 el pipeline estuvo 1h33 sin despachar y no
+  # llegó ninguna alerta. Dejarlo apagado es reproducir el bug original, así que
+  # el flip a true es entregable del issue, no un follow-up.
+  # Para desactivarlo en caliente usar `kill_switch: true` (no hace falta reiniciar).
+  enabled: true
   kill_switch: false             # corte de emergencia: true desactiva el brazo sin tocar `enabled`
-  stall_minutes: 20              # 0 despacho más de esto (con trabajo habilitado y sin causa) = estancada
+  stall_minutes: 20              # 0 despacho más de esto (con trabajo elegible esperando) = detenido
   alert_cooldown_minutes: 30     # SEC-4: mín. entre re-alertas del mismo episodio (anti-flood)
   window_minutes: 60             # ventana de referencia para la serie de avance/despacho
   tick_ms: 60000                 # cada cuánto corre el brazo (default 1 min)
+  # #5400 — Antigüedad a partir de la cual una causa DECLARADA deja de silenciar
+  # la alarma. Una pausa o un desync explican un rato de no-despacho; no lo
+  # explican para siempre. Escala sólo si además hay trabajo elegible esperando
+  # (aditivo: por debajo de este umbral el modo ola sigue mudo, #4751).
+  # Mismo clamp que stall_minutes: [1, 1440]; un valor inválido cae al default 45.
+  declared_cause_escalate_minutes: 45
 
 # Dashboard — opciones del dashboard del pipeline
 dashboard:

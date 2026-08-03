@@ -49,6 +49,10 @@ try { providerHealthLib = require('./provider-health'); } catch { /* opcional */
 let dispatchCause = null;
 try { dispatchCause = require('./dispatch-cause'); } catch { /* opcional */ }
 
+// #5400 — estampa del último despacho efectivo (para "hace cuánto no sale trabajo").
+let lastDispatchMod = null;
+try { lastDispatchMod = require('./last-dispatch'); } catch { /* opcional */ }
+
 // #4460 — Trust anchor del SHA vivo + detección de drift del modelo operativo.
 // Requires defensivos: si no cargan (checkout viejo), el slice degrada a
 // `{ items: [], unknown: true }` (estado desconocido) sin romper el dashboard.
@@ -2775,21 +2779,53 @@ function dispatchCauseSlice(state, ctx) {
     const inactivo = { active: false };
     if (!dispatchCause) return inactivo;
     const PIPELINE = (ctx && ctx.PIPELINE) || path.join(__dirname, '..');
+    const nowMs = (ctx && Number.isFinite(ctx.nowMs)) ? ctx.nowMs : Date.now();
+
+    // #5400 — Estado del propio watchdog (SEC-5 / C-1). El meta-bug de #5400 fue
+    // que el control estuvo apagado desde su merge y nada lo avisaba: la ausencia
+    // de banner se leía como "todo OK". Ahora un watchdog OFF o degradado se
+    // muestra explícitamente, aunque no haya ninguna causa declarada.
+    const wd = readWatchdogStatus(PIPELINE, nowMs);
+
+    // #5400 — Hace cuánto no sale trabajo (CA-6). Independiente de la causa:
+    // el artifact de causa se borra cuando hay despacho, la estampa no.
+    const disp = readLastDispatchInfo(PIPELINE, nowMs);
+
     let artifact;
     try {
         artifact = dispatchCause.readArtifact(PIPELINE);
     } catch {
-        return inactivo;
+        artifact = null;
     }
-    if (!artifact || typeof artifact !== 'object' || !artifact.causa) return inactivo;
 
     // Validación defensiva del enum: si el artifact trae una causa fuera del
-    // catálogo cerrado (corrupción / versión vieja), no lo renderizamos como
-    // causa válida — degradamos a inactivo (fail-safe, no confiar en el disco).
+    // catálogo cerrado (corrupción / versión vieja), no lo tratamos como causa
+    // válida — fail-safe, no confiar en el disco.
     const causasValidas = dispatchCause.CAUSAS_VALIDAS;
-    if (causasValidas && !causasValidas.has(artifact.causa)) return inactivo;
+    const causaOk = artifact && typeof artifact === 'object' && artifact.causa
+        && !(causasValidas && !causasValidas.has(artifact.causa));
 
-    const nowMs = (ctx && Number.isFinite(ctx.nowMs)) ? ctx.nowMs : Date.now();
+    // Sin causa declarada: el banner sólo aparece si el watchdog está caído o
+    // apagado (SEC-5). Con el watchdog sano y la cola despachando, no hay banner
+    // — se conserva la conducta de #4709.
+    if (!causaOk) {
+        if (wd.watchdogDegraded === true) {
+            return {
+                active: true,
+                causa: null,
+                label: null,
+                detalle: '',
+                anomalia: false,
+                ts: null,
+                ageMs: null,
+                relTime: null,
+                ...disp,
+                ...wd,
+            };
+        }
+        return inactivo;
+    }
+
     const ts = Number.isFinite(artifact.ts) ? artifact.ts : null;
     const ageMs = ts != null ? Math.max(0, nowMs - ts) : null;
 
@@ -2805,6 +2841,72 @@ function dispatchCauseSlice(state, ctx) {
         ageMs,
         // Tiempo relativo legible (UX-3): "hace 2 min", "hace 45 s".
         relTime: ageMs != null ? formatRelativeAge(ageMs) : null,
+        // #5400 — la causa sostenida demasiado tiempo ya escaló a alertable.
+        escaladoPorDuracion: artifact.escaladoPorDuracion === true,
+        elegiblesEsperando: Number.isInteger(artifact.elegiblesEsperando)
+            ? artifact.elegiblesEsperando
+            : null,
+        ...disp,
+        ...wd,
+    };
+}
+
+// #5400 — Lee la estampa del último despacho efectivo. Read-only y fail-safe:
+// cualquier problema degrada a "no consta" en vez de tumbar el dashboard.
+function readLastDispatchInfo(PIPELINE, nowMs) {
+    const vacio = { lastDispatchTs: null, lastDispatchAgeMs: null, lastDispatchRelTime: null };
+    if (!lastDispatchMod) return vacio;
+    try {
+        const stamp = lastDispatchMod.readLastDispatch(path.join(PIPELINE, 'state'));
+        if (!stamp) return vacio;
+        const ageMs = Math.max(0, nowMs - stamp.ts);
+        return {
+            lastDispatchTs: stamp.ts,
+            lastDispatchAgeMs: ageMs,
+            lastDispatchRelTime: formatRelativeAge(ageMs),
+        };
+    } catch {
+        return vacio;
+    }
+}
+
+// #5400 — Lee el estado del watchdog de inactividad de despacho.
+//
+// `degraded` es TRI-ESTADO a propósito:
+//   true   → apagado, kill-switch o brazo sin latir (hay que avisarlo).
+//   false  → corriendo y al día.
+//   null   → no consta (archivo ausente). NO se asume nada: reportar "degradado"
+//            sin evidencia sería una alarma falsa, y reportar "sano" sería el
+//            mismo error que este issue vino a arreglar.
+function readWatchdogStatus(PIPELINE, nowMs) {
+    const desconocido = {
+        watchdogEnabled: null, watchdogDegraded: null,
+        watchdogStaleTick: null, watchdogReason: null,
+    };
+    let raw;
+    try {
+        raw = JSON.parse(fs.readFileSync(
+            path.join(PIPELINE, 'state', 'dispatch-watchdog-status.json'), 'utf8'
+        ));
+    } catch {
+        return desconocido;
+    }
+    if (!raw || typeof raw !== 'object') return desconocido;
+
+    const enabled = raw.enabled === true && raw.killSwitch !== true;
+    // Brazo mudo: el tick corre cada minuto, así que 10 min sin latir es un
+    // watchdog que se murió sin avisar — exactamente lo que no puede pasar.
+    const lastTickTs = Number.isFinite(raw.lastTickTs) ? raw.lastTickTs : null;
+    const stale = lastTickTs == null || (nowMs - lastTickTs) > 10 * 60 * 1000;
+    const degraded = !enabled || stale;
+
+    return {
+        watchdogEnabled: enabled,
+        watchdogDegraded: degraded,
+        watchdogStaleTick: stale,
+        watchdogReason: !enabled
+            ? (raw.killSwitch === true ? 'kill-switch' : 'apagado')
+            : (stale ? 'sin latido' : null),
     };
 }
 

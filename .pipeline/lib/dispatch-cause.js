@@ -126,6 +126,17 @@ const ARTIFACT_FILENAME = 'dispatch-cause.json';
 // intervalo (no silencio permanente, pero tampoco spam por tick).
 const ANOMALY_REALERT_COOLDOWN_MS = 30 * 60 * 1000; // 30 min
 
+// #5400 — Dimensión DURACIÓN. Una causa SILENCIOSA (modo ola, ventana horaria,
+// cooldown, sin agentes) explica un rato de no-despacho; no lo explica para
+// siempre. Pasado este umbral, con trabajo elegible esperando, deja de ser una
+// explicación y pasa a ser el problema: escala a alertable.
+//
+// La escalada es ESTRICTAMENTE ADITIVA (R-3): requiere umbral alto Y elegibles
+// esperando. Por debajo de eso el comportamiento es idéntico al de #4751 — que
+// silenció `modo_ola` por pedido explícito del operador. Nada de lo que hoy
+// calla empieza a hablar por este cambio salvo que se sostenga demasiado.
+const DEFAULT_SILENT_ESCALATE_MS = 45 * 60 * 1000; // 45 min
+
 // ── Helpers ──
 
 function redactDetalle(detalle) {
@@ -283,9 +294,20 @@ function clearArtifact(pipelineDir) {
  */
 function publish(opts) {
     const { pipelineDir, snapshot, now, alert, log } = opts || {};
+    const o = opts || {};
     const nowMs = Number.isFinite(now) ? now : 0;
     const logFn = typeof log === 'function' ? log : () => {};
     const alertFn = typeof alert === 'function' ? alert : null;
+
+    // #5400 — parámetros de la escalada por duración. Ausentes ⇒ desactivada
+    // (`elegiblesEsperando` 0), o sea: un caller que no los pasa conserva el
+    // comportamiento exacto de #4751.
+    const silentEscalateMs = Number.isFinite(o.silentEscalateMs) && o.silentEscalateMs > 0
+        ? o.silentEscalateMs
+        : DEFAULT_SILENT_ESCALATE_MS;
+    const elegiblesEsperando = Number.isInteger(o.elegiblesEsperando) && o.elegiblesEsperando > 0
+        ? o.elegiblesEsperando
+        : 0;
 
     const resolved = resolveCause(snapshot, nowMs);
 
@@ -305,10 +327,26 @@ function publish(opts) {
     const ts = mismaCausa && Number.isFinite(prev.ts) ? prev.ts : nowMs;
     const prevAlertTs = mismaCausa && Number.isFinite(prev.lastAlertTs) ? prev.lastAlertTs : 0;
 
+    // #5400 — ¿esta causa silenciosa se sostuvo demasiado? `ts` es el instante en
+    // que la causa EMPEZÓ (se preserva mientras no cambie), así que su antigüedad
+    // es exactamente lo que hay que medir.
+    const causaEdadMs = Math.max(0, nowMs - ts);
+    const esSilenciosa = !resolved.anomalia && !CAUSAS_ALERTABLES.has(resolved.causa);
+    const escalaPorDuracion = esSilenciosa
+        && causaEdadMs >= silentEscalateMs
+        && elegiblesEsperando > 0;
+
     // ¿Alertar? En transición de causa siempre. Si la causa persiste y es
     // anomalía, re-alertar pasado el cooldown (no silencio permanente, AC-6).
     let debeAlertar = !mismaCausa;
     if (mismaCausa && resolved.anomalia && (nowMs - prevAlertTs) >= ANOMALY_REALERT_COOLDOWN_MS) {
+        debeAlertar = true;
+    }
+    // #5400 — la escalada por duración reusa el MISMO cooldown y el MISMO
+    // `lastAlertTs` del artifact (CA-4: backoff verificable, sin cadena de avisos
+    // paralela). Ojo con el orden: si la causa recién apareció (`!mismaCausa`) su
+    // edad es 0, así que no puede escalar en la misma pasada en que se declara.
+    if (escalaPorDuracion && (nowMs - prevAlertTs) >= ANOMALY_REALERT_COOLDOWN_MS) {
         debeAlertar = true;
     }
 
@@ -320,6 +358,9 @@ function publish(opts) {
         lastSeenTs: nowMs,
         anomalia: resolved.anomalia,
         lastAlertTs: debeAlertar ? nowMs : prevAlertTs,
+        // #5400 — visible para el dashboard: "esto ya lleva demasiado".
+        escaladoPorDuracion: escalaPorDuracion,
+        elegiblesEsperando,
     };
 
     try {
@@ -342,12 +383,24 @@ function publish(opts) {
     // fail-closed). El banner/artifact se publica SIEMPRE (writeArtifact arriba);
     // acá se filtra únicamente el envío al canal externo. Un estado esperado como
     // MODO_OLA se ve en el dashboard pero no genera ruido de notificación.
-    const esAlertable = resolved.anomalia || CAUSAS_ALERTABLES.has(resolved.causa);
+    // #5400 — se suma `escalaPorDuracion` como tercera vía de alertabilidad: una
+    // causa silenciosa sostenida con elegibles esperando SÍ amerita atención.
+    const esAlertable = resolved.anomalia
+        || CAUSAS_ALERTABLES.has(resolved.causa)
+        || escalaPorDuracion;
     if (debeAlertar && esAlertable && alertFn) {
         try {
-            const prefijo = resolved.anomalia ? '⚠ ANOMALÍA de despacho' : 'Cola ociosa';
+            let prefijo = 'Cola ociosa';
+            if (resolved.anomalia) prefijo = '⚠ ANOMALÍA de despacho';
+            else if (escalaPorDuracion) prefijo = '⏳ Sin despachar hace rato';
             const detTxt = resolved.detalle ? ` — ${resolved.detalle}` : '';
-            alertFn(`${prefijo}: ${resolved.label}${detTxt}`);
+            // El aviso por duración lleva el dato que lo justifica: cuánto lleva
+            // y cuánto trabajo elegible está esperando detrás.
+            const durTxt = escalaPorDuracion
+                ? ` — ${Math.round(causaEdadMs / 60000)} min sin despachar, `
+                  + `${elegiblesEsperando} elegible(s) esperando`
+                : '';
+            alertFn(`${prefijo}: ${resolved.label}${detTxt}${durTxt}`);
         } catch (e) {
             logFn(`dispatch-cause: alerta falló (${e.message})`);
         }
@@ -364,6 +417,7 @@ module.exports = {
     CAUSAS_VALIDAS,
     ARTIFACT_FILENAME,
     ANOMALY_REALERT_COOLDOWN_MS,
+    DEFAULT_SILENT_ESCALATE_MS,
     resolveCause,
     validateCause,
     readArtifact,

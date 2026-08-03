@@ -52,6 +52,33 @@ const path = require('path');
 
 const PIPELINE_DIR_DEFAULT = path.join(__dirname, '..');
 
+// #5400 / SEC-1 — Escape del Markdown legacy de Telegram.
+//
+// El comentario histórico de este módulo decía que pasar `parse_mode: 'Markdown'`
+// "no rompe nada — caracteres safe". Es FALSO en cuanto el mensaje interpola
+// datos del pipeline: causas, autorías, títulos de issues, nombres de skill. Un
+// `snake_case` mete un `_` impar y Telegram responde `400 can't parse entities`;
+// `servicio-telegram` reintenta con el MISMO parse_mode y termina archivando en
+// `fallido/`. Resultado: la alerta de "pipeline parado" nunca llega — que es
+// exactamente el modo de falla que este issue viene a cerrar (mismo agujero de
+// #5173).
+//
+// No alcanza con omitir `parse_mode`: el servicio hace `data.parse_mode ||
+// 'Markdown'`, así que un valor ausente o vacío cae igual en Markdown. La
+// solución local y completa es ESCAPAR el texto antes de encolarlo. Telegram
+// renderiza `\_` como `_`, así que el mensaje se lee idéntico.
+//
+// Import defensivo (mismo patrón que `redact` en dispatch-cause.js): si
+// `config-schema` no carga, se usa un escape local equivalente. Una alerta jamás
+// debe perderse por un problema de require.
+let escapeMarkdownLegacy;
+try {
+    ({ escapeMarkdownLegacy } = require('./config-schema'));
+} catch { /* fallback abajo */ }
+if (typeof escapeMarkdownLegacy !== 'function') {
+    escapeMarkdownLegacy = (s) => String(s).replace(/([_*`[])/g, '\\$1');
+}
+
 function pipelineDir() {
     if (process.env.PIPELINE_DIR_OVERRIDE) return process.env.PIPELINE_DIR_OVERRIDE;
     return PIPELINE_DIR_DEFAULT;
@@ -173,10 +200,11 @@ function notifyTelegram(payload) {
     const dropPath = path.join(dir, filename);
 
     const drop = {
-        text,
-        // El servicio default usa Markdown; nuestro texto no lleva sintaxis MD,
-        // se renderiza igual como texto plano. Pasamos 'Markdown' por consistencia
-        // con el resto del pipeline (no rompe nada — caracteres safe).
+        // #5400 / SEC-1 — `buildMessage` no produce sintaxis Markdown intencional:
+        // todo lo que parezca un metacarácter viene de datos interpolados y tiene
+        // que llegar literal. Escapamos el texto completo para que el envío no se
+        // caiga con `400 can't parse entities` y termine en `fallido/`.
+        text: escapeMarkdownLegacy(text),
         parse_mode: 'Markdown',
     };
 
