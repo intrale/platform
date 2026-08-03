@@ -98,6 +98,8 @@ const productControlDrainer = require('./lib/product-control-drainer'); // #4801
 const kernelScheduler = require('./lib/kernel-scheduler');
 // #2490 — Pausa parcial con allowlist explícita de issues
 const partialPause = require('./lib/partial-pause');
+// #5399 UX-1 — Copy de operador sobre el estado de la pausa total (funciones puras).
+const pauseNotice = require('./lib/pause-notice');
 // #3518 CA-6 — Detector de desync waves.json ↔ .partial-pause.json
 const desyncDetector = require('./lib/desync-detector');
 // #4439 CA-3 — Predicado de "origen legítimo y reciente" anclado en audit #3625
@@ -1400,9 +1402,15 @@ function loadConfig() {
   // Fail-closed: readFullPauseOrigin devuelve 'config-corruption-halt' SÓLO si
   // el marker es JSON válido con ese source; cualquier ambigüedad → 'manual'
   // → NO se auto-levanta (respeta CA-3 y la pausa deliberada del operador).
+  //
+  // #5399 — la decisión pasa por `isAutoLiftableSource`: pertenencia EXACTA a la
+  // allowlist positiva `AUTO_LIFTABLE_SOURCES` del módulo dueño del estado, en
+  // vez de una comparación literal duplicada acá. Prohibido ampliar el set por
+  // negación (`source !== 'human'`) — `kernel-cutover-degraded-halt` es
+  // automática pero su no-recuperación es deliberada (#5135).
   try {
     if (fs.existsSync(PAUSE_FILE) &&
-        partialPause.readFullPauseOrigin().source === 'config-corruption-halt') {
+        partialPause.isAutoLiftableSource(partialPause.readFullPauseOrigin().source)) {
       // #5174 · CA-5 — llegar acá significa que `configResolver.resolve()` NO
       // lanzó, y post-partición eso exige que los DOS archivos hayan parseado y
       // que el documento mergeado valide. Corregir uno solo no levanta la pausa:
@@ -11414,7 +11422,26 @@ function cmdIntake(args, config) {
 }
 
 function cmdPausar() {
-  fs.writeFileSync(PAUSE_FILE, new Date().toISOString());
+  // #5399 — antes escribía un ISO pelado, así que la pausa MÁS COMÚN del
+  // operador quedaba indistinguible de un marker legacy y se degradaba a
+  // autoría desconocida. Ruteamos por el dueño del estado para que la autoría
+  // humana quede EXPLÍCITA (y no meramente inferida por fail-closed). `telegram`
+  // no está en AUTO_LIFTABLE_SOURCES → sigue exigiendo destrabe explícito.
+  // La centralización de los escritores restantes (dashboard) es #5406.
+  try {
+    partialPause.setFullPause({
+      source: 'telegram',
+      authorizedBy: 'commander:leo',
+      justification: 'pausa total solicitada por el operador vía /pausar',
+    });
+  } catch (e) {
+    // Degradación segura: si el lock no se puede tomar, la pausa igual se
+    // aplica — el halt del operador nunca puede quedar sin efecto.
+    try { fs.writeFileSync(PAUSE_FILE, JSON.stringify({
+      source: 'telegram', ts: new Date().toISOString(),
+      detail: 'pausa total solicitada por el operador vía /pausar (fallback sin lock)',
+    })); } catch { /* best-effort */ }
+  }
   paused = true;
   return '⏸️ Pulpo PAUSADO. Usar /reanudar para continuar.';
 }
@@ -18542,9 +18569,39 @@ async function mainLoop() {
       const TWO_MINUTES = 2 * 60 * 1000;
       if (data.source === 'telegram' && !data.notified && ageMs < TWO_MINUTES) {
         const mode = data.mode || (data.paused ? 'pausado' : 'completo');
-        sendTelegram(`🚀 *Pipeline reiniciado y listo* (modo ${mode})\n_Todo en marcha para nuevas pruebas._`);
+        // #5399 · UX-1 — este es el ÚNICO canal que el operador lee de verdad:
+        // el `log()` de restart.js va a `logs/restart-spawn.log` (spawn detached
+        // con stdout redirigido), así que cumplir CA-7 sólo ahí no evita el
+        // incidente. El 2026-08-02 el mensaje que llegó fue "🚀 Pipeline
+        // reiniciado y listo — Todo en marcha" sobre un pipeline que no despachó
+        // durante 1h33: el sistema avisó que estaba todo bien.
+        //
+        // El estado se lee del FILESYSTEM (fuente de verdad), no de
+        // last-restart.json: si la pausa heredada ya se auto-levantó durante
+        // este arranque (loadConfig → clearFullPause), el marker ya no está y el
+        // operador tiene que enterarse de que SÍ está despachando.
+        let pauseActive = false;
+        try { pauseActive = fs.existsSync(PAUSE_FILE); } catch { /* fail-open al copy de pausa */ }
+        let origin = null;
+        if (pauseActive) {
+          try { origin = partialPause.readFullPauseOrigin(); } catch { /* copy degradado, nunca throw */ }
+        }
+        // `autoLiftable` se decide sobre `origin.source` (veredicto FAIL-CLOSED
+        // del lector), NUNCA sobre `rawSource`: el literal sólo alimenta el label
+        // humano. Así el copy no puede prometer un auto-levantado que el gate de
+        // CA-8 no va a hacer.
+        const notice = pauseNotice.buildRestartNotice({
+          mode,
+          pauseActive,
+          source: origin ? (origin.rawSource || origin.source) : null,
+          autoLiftable: !!(origin && partialPause.isAutoLiftableSource(origin.source)),
+          preserved: !!(origin && origin.preservedFrom),
+        });
+        sendTelegram(notice);
         fs.writeFileSync(lastRestartPath, JSON.stringify({ ...data, notified: true }, null, 2));
-        log('pulpo', `Restart ${mode} confirmado via Telegram (solicitado hace ${Math.round(ageMs / 1000)}s)`);
+        log('pulpo', `Restart ${mode} confirmado via Telegram (solicitado hace ${Math.round(ageMs / 1000)}s)`
+          + ` — pausa activa=${pauseActive}`
+          + (origin ? ` autoria=${origin.rawSource || origin.source} heredada=${!!origin.preservedFrom}` : ''));
       }
     }
   } catch (e) {

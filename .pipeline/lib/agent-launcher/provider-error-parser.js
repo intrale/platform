@@ -199,6 +199,13 @@ const CLI_QUOTA_PATTERNS = Object.freeze([
     // "You've hit your session limit" — Anthropic CLI cuando la sesión OAuth
     // del usuario tocó el techo semanal.
     /\bhit\s+your\s+session\s+limit\b/i,
+    // #5454 — "You've hit your weekly limit · resets 9pm (America/Buenos_Aires)"
+    // Aviso semanal real del CLI Anthropic (OAuth Max). El sufijo con horario y
+    // zona NO forma parte del patrón a propósito: el match por substring ya lo
+    // tolera y evita `.*`, cuantificadores anidados o grupos opcionales
+    // glotones (SR-4 ReDoS budget). Sólo matcheamos las palabras estables, que
+    // no dependen del separador `·` ni del locale del reset.
+    /\bhit\s+your\s+weekly\s+limit\b/i,
     // "You've hit your usage limit" — Codex CLI con cuenta ChatGPT (OAuth)
     // cuando el cap rolling de uso se agota. Viene por el canal de control del
     // CLI (turn.failed/error), no por el contenido del modelo.
