@@ -1435,3 +1435,224 @@ test('#4413 CA-1 — shape estricto (OFF) también expone weight/quotaPct/select
         cleanup(dir);
     }
 });
+
+// =============================================================================
+// #5456 — formatMidTurnQuotaResponse: respuesta REACTIVA del turno perdido por
+// cuota semanal (canal de contenido detectado por #5455).
+//
+// Cubre:
+//   CA-1 — el operador nunca ve payload crudo, `errorType`, TTL, reset ni ids
+//          internos de provider.
+//   CA-2 — la copy admite que el turno se perdió y pide reenviar el mensaje.
+//   CA-3 — dos turnos en `t` y `t+60s` reciben respuesta AMBOS; el dedup de 5
+//          min es exclusivo del aviso PROACTIVO.
+//   CA-5 — todo texto visible pasa por redacción.
+//   Controles negativos — nada fuera de la allowlist cerrada se interpola.
+// =============================================================================
+
+// Texto real del incidente (#5455). Es EXACTAMENTE lo que el operador recibía
+// crudo antes de #5456: sirve de control de fuga en las aserciones negativas.
+const AVISO_CRUDO_5456 = "You've hit your weekly limit · resets 9pm (America/Buenos_Aires)";
+
+// Metadata que la respuesta visible tiene PROHIBIDO contener en cualquier
+// capitalización (CA-1).
+const FUGAS_PROHIBIDAS_5456 = [
+    'weekly_limit_content_channel',   // errorType tipado
+    'usage_limit_error',              // cualquier otro errorType
+    'anthropic-result-content',       // `source` interno del detector
+    'openai-codex',                   // id interno del provider
+    'resets_at',
+    'resets',
+    'pattern_matched',
+    'errorType',
+    'error_type',
+    'ttl',
+    'America/Buenos_Aires',
+    'quota_exhausted_midturn',        // enum de audit: server-side, no visible
+    'hit your weekly limit',          // fragmento literal del crudo
+    '9pm',
+];
+
+// Ids INTERNOS de provider. Se chequean case-SENSITIVE a propósito: la etiqueta
+// pública `Anthropic` (capitalizada) es legítima y sale del mapping cerrado; el
+// que no puede aparecer es el id interno `anthropic` en minúscula, que es como
+// lo escriben `agent-models.json`, el flag de cuota y los logs.
+const IDS_INTERNOS_5456 = ['anthropic', 'openai-codex'];
+
+function assertSinFugas5456(text) {
+    assert.equal(typeof text, 'string');
+    assert.ok(text.length > 0, 'la respuesta reactiva nunca puede ser vacía');
+    const lower = text.toLowerCase();
+    for (const needle of FUGAS_PROHIBIDAS_5456) {
+        assert.ok(
+            !lower.includes(needle.toLowerCase()),
+            `la respuesta visible NO puede contener "${needle}" — salida: ${text}`,
+        );
+    }
+    for (const id of IDS_INTERNOS_5456) {
+        assert.ok(
+            !text.includes(id),
+            `la respuesta visible NO puede contener el id interno "${id}" — salida: ${text}`,
+        );
+    }
+    // Y lo que SÍ puede aparecer sale exclusivamente del mapping cerrado.
+    for (const token of text.match(/\b(?:Anthropic|Codex)\b/g) || []) {
+        assert.ok(['Anthropic', 'Codex'].includes(token),
+            `etiqueta fuera de la allowlist: ${token}`);
+    }
+}
+
+test('#5456 CA-1/CA-2 — la respuesta reactiva admite el turno perdido, anuncia Codex y pide reenviar', () => {
+    const text = cmp.formatMidTurnQuotaResponse({
+        primaryProvider: 'anthropic',
+        fallbackProvider: 'openai-codex',
+    });
+
+    // CA-1: sólo etiquetas públicas de la allowlist cerrada.
+    assert.match(text, /Anthropic/, 'debe nombrar al primario con su etiqueta pública');
+    assert.match(text, /Codex/, 'debe anunciar Codex para el próximo intento');
+    assertSinFugas5456(text);
+
+    // CA-2: admite la pérdida del turno y pide la acción concreta.
+    assert.match(text, /este turno se perdió/i, 'debe admitir que el turno no se completó');
+    assert.match(text, /no llegué a completarlo/i, 'debe ser explícito sobre el turno incompleto');
+    assert.match(text, /reenviame el mensaje/i, 'debe pedir reenviar el mensaje');
+});
+
+test('#5456 CA-1 — control negativo: un provider fuera de la allowlist NO filtra su id interno', () => {
+    // Providers reales del pipeline que NO están en el mapping público de pagos.
+    for (const desconocido of ['cerebras', 'google-gemini', 'nvidia-nim', 'proveedor-inventado']) {
+        const text = cmp.formatMidTurnQuotaResponse({
+            primaryProvider: desconocido,
+            fallbackProvider: desconocido,
+        });
+        assert.ok(
+            !text.toLowerCase().includes(desconocido.toLowerCase()),
+            `"${desconocido}" no puede aparecer en la respuesta visible — salida: ${text}`,
+        );
+        // Degrada a copy genérico, pero SIGUE siendo una respuesta útil (CA-2).
+        assert.match(text, /reenviame el mensaje/i);
+        assert.match(text, /este turno se perdió/i);
+    }
+});
+
+test('#5456 CA-1 — control negativo: sin argumentos degrada a genérico, nunca a undefined/null', () => {
+    for (const args of [undefined, {}, { primaryProvider: null, fallbackProvider: null }]) {
+        const text = cmp.formatMidTurnQuotaResponse(args);
+        assert.doesNotMatch(text, /undefined|null|\[object/i,
+            'el copy no puede filtrar valores JS crudos');
+        assertSinFugas5456(text);
+        assert.match(text, /reenviame el mensaje/i);
+    }
+});
+
+test('#5456 CA-1 — publicProviderLabel es fail-closed: sólo Anthropic y Codex salen del mapping', () => {
+    assert.equal(cmp.publicProviderLabel('anthropic'), 'Anthropic');
+    assert.equal(cmp.publicProviderLabel('ANTHROPIC'), 'Anthropic', 'case-insensitive');
+    assert.equal(cmp.publicProviderLabel('  openai-codex  '), 'Codex', 'trim del id');
+    // Fuera de la allowlist → el fallback declarado, jamás el id recibido.
+    assert.equal(cmp.publicProviderLabel('cerebras'), null);
+    assert.equal(cmp.publicProviderLabel('cerebras', 'otro proveedor'), 'otro proveedor');
+    assert.equal(cmp.publicProviderLabel(undefined), null);
+    assert.equal(cmp.publicProviderLabel(null), null);
+});
+
+test('#5456 CA-5 — el texto visible pasa por redacción (no filtra un secreto interpolado)', () => {
+    // El copy no interpola secretos por construcción; esto verifica el paso por
+    // `redactSecretValue` con un valor que el redactor central debe tapar.
+    const prev = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-secreto-de-prueba-5456';
+    try {
+        const text = cmp.formatMidTurnQuotaResponse({
+            primaryProvider: 'anthropic',
+            fallbackProvider: 'openai-codex',
+        });
+        assert.ok(!text.includes('sk-ant-secreto-de-prueba-5456'),
+            'ningún valor de credentials_env puede aparecer en la respuesta');
+        assertSinFugas5456(text);
+    } finally {
+        if (prev === undefined) delete process.env.ANTHROPIC_API_KEY;
+        else process.env.ANTHROPIC_API_KEY = prev;
+    }
+});
+
+test('#5456 CA-3 — dos turnos (t y t+60s) reciben respuesta AMBOS; el dedup es sólo del notice proactivo', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        const chatId = 'chat-5456';
+        const t = 1_800_000_000_000;
+        const t60 = t + 60_000; // dentro de la ventana de 5 min del dedup
+        assert.ok(t60 - t < cmp.DEDUP_WINDOW_MS,
+            'precondición: los dos turnos caen dentro de la MISMA ventana de dedup');
+
+        // --- Salida REACTIVA: una respuesta por cada turno afectado. ---
+        const reactivaT = cmp.formatMidTurnQuotaResponse({
+            primaryProvider: 'anthropic', fallbackProvider: 'openai-codex',
+        });
+        const reactivaT60 = cmp.formatMidTurnQuotaResponse({
+            primaryProvider: 'anthropic', fallbackProvider: 'openai-codex',
+        });
+        assert.ok(reactivaT && reactivaT.length > 0, 'turno en t debe recibir respuesta');
+        assert.ok(reactivaT60 && reactivaT60.length > 0, 'turno en t+60s TAMBIÉN debe recibir respuesta');
+        assert.equal(reactivaT60, reactivaT,
+            'el formatter es puro: mismo input → mismo output, sin estado acumulado');
+
+        // --- Salida PROACTIVA: dedupeada 5 min, sale sólo en el primero. ---
+        const noticeT = cmp.shouldEmitFallbackNotice({
+            pipelineDir: dir, chatId, fallbackProvider: 'openai-codex', now: t,
+        });
+        const noticeT60 = cmp.shouldEmitFallbackNotice({
+            pipelineDir: dir, chatId, fallbackProvider: 'openai-codex', now: t60,
+        });
+        assert.equal(noticeT, true, 'el aviso proactivo sale en el primer turno');
+        assert.equal(noticeT60, false, 'el aviso proactivo NO se repite dentro de los 5 min');
+
+        // --- El invariante que cierra el CA: el dedup no toca a la reactiva. ---
+        const reactivaPostDedup = cmp.formatMidTurnQuotaResponse({
+            primaryProvider: 'anthropic', fallbackProvider: 'openai-codex',
+        });
+        assert.equal(reactivaPostDedup, reactivaT,
+            'con el notice ya dedupeado, la respuesta del turno sigue saliendo completa');
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('#5456 — el formatter es PURO: no lee ni escribe el estado del dedup', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        const dedupFile = path.join(dir, 'commander-fallback-dedup.json');
+        assert.equal(fs.existsSync(dedupFile), false, 'precondición: sin estado previo');
+
+        for (let i = 0; i < 5; i++) {
+            cmp.formatMidTurnQuotaResponse({
+                primaryProvider: 'anthropic', fallbackProvider: 'openai-codex',
+            });
+        }
+        assert.equal(fs.existsSync(dedupFile), false,
+            'el formatter NO puede tocar el estado de deduplicación');
+
+        // Y tras 5 llamadas al formatter, el notice proactivo sigue disponible.
+        assert.equal(
+            cmp.shouldEmitFallbackNotice({
+                pipelineDir: dir, chatId: 'chat-puro', fallbackProvider: 'openai-codex', now: 1,
+            }),
+            true,
+            'el formatter no consumió la ventana del aviso proactivo',
+        );
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('#5456 — QUOTA_MIDTURN_ERROR_CODE es un enum estable y no filtra el errorType real', () => {
+    assert.equal(cmp.QUOTA_MIDTURN_ERROR_CODE, 'quota_exhausted_midturn');
+    assert.ok(!cmp.QUOTA_MIDTURN_ERROR_CODE.includes('weekly_limit_content_channel'),
+        'el enum de audit no puede replicar el errorType tipado');
+    // Y nunca se filtra a la salida visible.
+    const text = cmp.formatMidTurnQuotaResponse({
+        primaryProvider: 'anthropic', fallbackProvider: 'openai-codex',
+    });
+    assert.ok(!text.includes(cmp.QUOTA_MIDTURN_ERROR_CODE));
+    assert.notEqual(text, AVISO_CRUDO_5456, 'sanity: la respuesta no es el crudo');
+});
