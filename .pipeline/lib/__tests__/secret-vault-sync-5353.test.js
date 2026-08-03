@@ -146,14 +146,25 @@ test('D1.3 · los dos drivers exponen getParametersByPathSync / getSecretValueSy
         assert.ok(Array.isArray(res.parameters));
     }
 
-    // El de aws-cli se apoya en el runner que YA era sync: sin dep nueva.
+    // El de aws-cli se apoya en el runner que YA era sync: sin dep nueva. Ésta
+    // sigue siendo la garantía FUERTE del camino de LECTURA y no se toca: el
+    // módulo del runtime no menciona el SDK ni indirectamente.
     assert.equal(FUENTE_VAULT().includes('@aws-sdk'), false,
         'no se agregó ninguna dependencia @aws-sdk/*');
-    assert.equal(
-        Object.keys(require('../../../package.json').dependencies).some((d) => d.startsWith('@aws-sdk')),
-        false,
-        '`package.json` no gana ninguna dependencia @aws-sdk/*',
-    );
+
+    // #5465 (2/3 de #5425) incorpora `@aws-sdk/client-ssm` para el port de
+    // PROVISIÓN, que es otro módulo (`vault-provisioner.js`), otro proceso y
+    // otra identidad. La guarda original de #5353 se escribió contra TODO
+    // `package.json` para demostrar que la superficie sync de lectura no
+    // necesitaba SDK; esa intención se conserva ACOTANDO la aserción a una
+    // allowlist, en vez de prohibir el paquete a nivel repo. Así sigue fallando
+    // si alguien mete `client-secrets-manager` u otro cliente en el runtime.
+    const SDK_PERMITIDOS = ['@aws-sdk/client-ssm'];
+    const sdkDeclarados = Object.keys(require('../../../package.json').dependencies)
+        .filter((d) => d.startsWith('@aws-sdk'))
+        .sort();
+    assert.deepEqual(sdkDeclarados, [...SDK_PERMITIDOS].sort(),
+        'el único `@aws-sdk/*` admitido es el cliente SSM del port de provisión (#5465)');
 });
 
 test('D1.3 · el port sync del driver aws-cli consume NextToken igual que el async', async () => {
