@@ -36,6 +36,10 @@
 //    el `reason` interpola un `skill` derivado de un nombre de archivo.
 //  - SEC-5.2: `escalate` valida el issue como entero positivo ANTES del
 //    `path.join` que hace `reportHumanBlock`.
+//  - #5396 rev-1: el skill del marker SIEMPRE pertenece a
+//    `skills_por_fase[fase]` — la misma lista que valida el invariante de
+//    dispatch de `pulpo.js`. Un marker con skill no despachable convierte la
+//    vía de destrabe en un generador de spam de Telegram por tick.
 //  - Línea roja (PO): nada de esto resuelve la ambigüedad solo. El fix es sobre
 //    A QUIÉN se le avisa y CUÁNTAS VECES, nunca sobre auto-completar una fase.
 // =============================================================================
@@ -61,9 +65,23 @@ const DEFAULT_PARALLEL_PHASES = Object.freeze([
 ]);
 
 const NEEDS_HUMAN_LABEL = 'needs-human';
-// Skill sintético del marker que planta el reconciler. Nombre fijo y explícito
-// (riesgo #5): `listBlockedIssues()` y el dashboard parsean `<issue>.<skill>`.
-const RECONCILER_SKILL = 'reconciler';
+// #5396 rev-1 — El marker YA NO usa un skill sintético.
+//
+// Antes se plantaba `<issue>.reconciler`. Ese nombre no existe en
+// `skills_por_fase[fase]`, así que al destrabar (`unblockIssue`, o los botones
+// 'Aprobar (unblock)' / 'Priorizar' de la propia notificación) el marker caía en
+// `pendiente/` y entraba al despacho, donde el INVARIANTE skill∈fase de
+// `pulpo.js` lo rebotaba a `pendiente/` SIN registrar cooldown y mandaba un
+// Telegram "⛔ Pipeline bloqueó lanzamiento de reconciler:#N" en CADA tick.
+// O sea: la vía de salida del bloqueo generaba exactamente el spam que este
+// issue viene a eliminar.
+//
+// Ahora el skill sale de los skills REALES que motivaron la escalación (los
+// mismos que usa el carril `requeue`) y se valida contra `skills_por_fase[fase]`
+// antes de plantar el marker. La procedencia se conserva en el `reason` con el
+// prefijo `[self-healing]`, que es lo que el dashboard y `listBlockedIssues()`
+// muestran junto al `<issue>.<skill>`.
+const SELF_HEALING_REASON_PREFIX = '[self-healing]';
 const DEFAULT_SILENT_STREAK_THRESHOLD = 6; // ≈1h con ticks de 10 min
 
 function labelNameOf(l) {
@@ -129,6 +147,15 @@ function buildStuckReconcilerDeps(opts = {}) {
     const titleCachePath = path.join(PIPELINE, '.issue-title-cache.json');
     const stuckStateFile = path.join(PIPELINE, '.stuck-reconciler-state.json');
     const allPhasesOf = (p) => (config.pipelines && config.pipelines[p] && config.pipelines[p].fases) || [];
+    // MISMA fuente que el INVARIANTE skill∈fase de `pulpo.js:8596`
+    // (`config.pipelines[pipeline].skills_por_fase[fase]`). Que `escalate` valide
+    // contra esta lista es lo que garantiza que el marker sea despachable al
+    // destrabar: si acá entra, el invariante del Pulpo no lo puede rebotar.
+    const skillsOfPhase = (p, f) => {
+        const spf = config.pipelines && config.pipelines[p] && config.pipelines[p].skills_por_fase;
+        const list = spf && spf[f];
+        return Array.isArray(list) ? list : [];
+    };
 
     // ---- lectores del title-cache (hint, nunca autoridad — SEC-1) -----------
     const readTitleCache = () => {
@@ -172,9 +199,7 @@ function buildStuckReconcilerDeps(opts = {}) {
     return {
         nowMs,
         parallelPhases,
-        requiredSkillsFor: (p, f) => (config.pipelines && config.pipelines[p]
-            && config.pipelines[p].skills_por_fase
-            && config.pipelines[p].skills_por_fase[f]) || [],
+        requiredSkillsFor: skillsOfPhase,
         listPhaseFiles: (p, f, state) => {
             const dir = path.join(fasePath(p, f), state);
             return (listWorkFiles(dir) || []).map((wf) => {
@@ -290,14 +315,40 @@ function buildStuckReconcilerDeps(opts = {}) {
                 log('reconciler', `escalate #${n}: falta pipeline/fase explícitos — no se escala (protege evidencia)`);
                 return false;
             }
+
+            // #5396 rev-1 — ELEGIR UN SKILL CON CAMINO DE DISPATCH VÁLIDO.
+            //
+            // El marker termina en `pendiente/<issue>.<skill>` cuando el operador
+            // destraba (`unblockIssue` / quick-actions). Si ese `<skill>` no está
+            // en `skills_por_fase[fase]`, `pulpo.js` lo rebota contra el
+            // INVARIANTE y notifica por Telegram en cada tick, sin cooldown.
+            // Por eso el skill se valida contra la MISMA lista que usa el
+            // invariante, y si no hay ninguno válido NO se escala (fail-closed:
+            // mejor un log ruidoso que un bloqueo sin salida que spamea).
+            const permitidos = skillsOfPhase(pipeline, phase);
+            const candidatos = Array.isArray(meta.skills) ? meta.skills.map((s) => String(s || '').trim()) : [];
+            // 1º el skill ambiguo/agotado que motivó la escalación (re-corre justo
+            // el que quedó sin veredicto); 2º fallback determinista al primero de
+            // la fase, para el caso 'estado indeterminado' que no imputa skill.
+            const blockSkill = candidatos.find((s) => permitidos.includes(s)) || permitidos[0] || null;
+            if (!blockSkill) {
+                log('reconciler', `escalate #${n}: ${pipeline}/${phase} sin skills_por_fase — no se escala (el marker no tendría dispatch al destrabar)`);
+                return false;
+            }
+
             try {
                 humanBlock.reportHumanBlock({
                     issue: n,
-                    skill: RECONCILER_SKILL,
+                    // Skill REAL de la fase (no el sintético `reconciler`): al
+                    // destrabar, el work-item es despachable.
+                    skill: blockSkill,
                     phase,
                     pipeline,                 // explícito → no busca marker activo
                     moveFromActive: false,    // ⚠️ no mover el deliverable de `listo/`
-                    reason: String(reason || 'fase varada').slice(0, 500),
+                    // El prefijo conserva la PROCEDENCIA que antes daba el nombre
+                    // del skill sintético (riesgo #5): el dashboard y
+                    // `listBlockedIssues()` muestran el reason junto al marker.
+                    reason: `${SELF_HEALING_REASON_PREFIX} ${String(reason || 'fase varada')}`.slice(0, 500),
                     question: `¿Cómo destrabo #${n} en ${pipeline}/${phase}? (rechazo / cancelado / corrupto)`,
                     // `precondition` omitido → normalizePrecondition ⇒ HUMAN_JUDGMENT
                     // (fail-closed, #4748): nunca auto-re-evaluable.
@@ -380,5 +431,5 @@ module.exports = {
     evaluateSilenceHealth,
     DEFAULT_PARALLEL_PHASES,
     DEFAULT_SILENT_STREAK_THRESHOLD,
-    RECONCILER_SKILL,
+    SELF_HEALING_REASON_PREFIX,
 };

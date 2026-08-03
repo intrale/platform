@@ -204,7 +204,13 @@ test('CA-6: executeDecisions pasa pipeline y fase explícitos a escalate', () =>
     executeDecisions([d], deps);
 
     assert.equal(calls.escalate.length, 1);
-    assert.deepEqual(calls.escalate[0].meta, { pipeline: 'desarrollo', fase: 'verificacion' });
+    assert.equal(calls.escalate[0].meta.pipeline, 'desarrollo');
+    assert.equal(calls.escalate[0].meta.fase, 'verificacion');
+
+    // #5396 rev-1 — además viajan los skills REALES que motivaron la escalación.
+    // El cableado elige entre ellos el que planta en el marker, para que al
+    // destrabar el work-item tenga un camino de dispatch válido (skill∈fase).
+    assert.ok(Array.isArray(calls.escalate[0].meta.skills), 'meta.skills es un array');
 });
 
 // -----------------------------------------------------------------------------

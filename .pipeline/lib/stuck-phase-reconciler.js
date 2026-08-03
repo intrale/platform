@@ -32,13 +32,45 @@
 
 'use strict';
 
-const { analyzeStuckIssue } = require('./stuck-phase-detector');
+const { analyzeStuckIssue, classifySkill } = require('./stuck-phase-detector');
 
 const DEFAULT_MAX_REQUEUE_ATTEMPTS = 2;
 const DEFAULT_CAP_PER_TICK = 5;
 const MONO_SKILL_PHASES = new Set(['dev', 'build', 'entrega']);
 // #5396 CA-7 — causas de silencio que el tick reporta por separado.
 const SUPPRESSION_BUCKETS = new Set(['ola', 'cache', 'dedupe', 'cerrado', 'otro']);
+// #5396 rev-1 — estados que el detector considera AMBIGUOS y por los que escala.
+// Son los mismos que `analyzeStuckIssue` agrupa en su rama `escalate`.
+const AMBIGUOUS_STATUSES = new Set(['rejected', 'cancelled', 'corrupt']);
+
+/**
+ * #5396 rev-1 — skills REALES de la fase que motivaron la escalación.
+ *
+ * POR QUÉ EXISTE
+ * --------------
+ * El marker de bloqueo se plantaba con un skill sintético (`reconciler`) que no
+ * pertenece a `skills_por_fase[fase]`. Al destrabar (`unblockIssue` o los
+ * quick-actions de Telegram) el marker se mueve a `pendiente/` y entra al
+ * despacho del Pulpo, donde el INVARIANTE skill∈fase lo rebota y manda un
+ * Telegram POR TICK — exactamente el ruido que este issue viene a eliminar.
+ *
+ * Devolver los skills ambiguos reales (`rejected`/`cancelled`/`corrupt`) le da
+ * al marker un camino de dispatch válido: son los mismos que el carril
+ * `requeue` ya usa, y al destrabar re-corre el agente que quedó sin veredicto.
+ *
+ * Se reusa `classifySkill` (ya exportado por el detector) en vez de parsear el
+ * `reason`: CA-10 exige que `stuck-phase-detector.js` NO aparezca en el diff.
+ *
+ * @returns {string[]} subconjunto ORDENADO de `requiredSkills` (determinista)
+ */
+function ambiguousSkillsOf(it) {
+    const required = Array.isArray(it.requiredSkills) ? it.requiredSkills : [];
+    const deliverables = Array.isArray(it.deliverables) ? it.deliverables : [];
+    const live = it.liveSkills instanceof Set
+        ? it.liveSkills
+        : new Set(Array.isArray(it.liveSkills) ? it.liveSkills : []);
+    return required.filter((s) => AMBIGUOUS_STATUSES.has(classifySkill(s, deliverables, live).status));
+}
 
 /** Normaliza texto libre a una línea (el `reason` interpola nombres de archivo). */
 function oneLine(s, max = 220) {
@@ -122,7 +154,11 @@ function decideForIssue(it, cfg) {
 
     if (analysis.action === 'escalate') {
         if (it.hasNeedsHuman) return dedupe('ya-escalado');
-        return base('escalate', analysis.reason, { consumesTick: true });
+        // #5396 rev-1 — `skills` viaja hasta el dep `escalate` para que el marker
+        // se plante con un skill REAL de la fase (camino de dispatch válido al
+        // destrabar). Puede venir vacío en el caso 'estado indeterminado'; el
+        // cableado resuelve el fallback contra `skills_por_fase`.
+        return base('escalate', analysis.reason, { consumesTick: true, skills: ambiguousSkillsOf(it) });
     }
 
     // requeue
@@ -132,7 +168,10 @@ function decideForIssue(it, cfg) {
     if (capped.length > 0) {
         // Skill(s) agotaron reintentos → escalar (no re-encolar para siempre, Arq P0-3).
         if (it.hasNeedsHuman) return dedupe('tope-reintentos + ya-escalado');
-        return base('escalate', `tope de reintentos (${cfg.maxRequeueAttempts}) alcanzado para: ${capped.join(',')}`, { consumesTick: true });
+        // #5396 rev-1 — los skills que agotaron reintentos SON los del carril
+        // requeue: ya están en `skills_por_fase[fase]`, así que el marker que se
+        // planta con ellos es despachable al destrabar.
+        return base('escalate', `tope de reintentos (${cfg.maxRequeueAttempts}) alcanzado para: ${capped.join(',')}`, { consumesTick: true, skills: capped });
     }
     // #5396 — un issue con bloqueo humano vigente NO se re-encola. Antes de este
     // issue el dedupe sólo cubría el carril `escalate`, porque `escalate` encolaba
@@ -261,6 +300,10 @@ function executeDecisions(decisions, deps = {}) {
                 // #5396 retorna true/false explícitamente.
                 escalationSucceeded = deps.escalate(d.issue, d.reason, {
                     pipeline: d.pipeline, fase: d.fase,
+                    // #5396 rev-1 — skills reales que motivaron la escalación. El
+                    // cableado elige entre ellos el que planta en el marker, para
+                    // que al destrabar el work-item tenga dispatch válido.
+                    skills: d.skills || [],
                 }) !== false;
             } catch (e) {
                 audit({ ...d, error: String(e && e.message).slice(0, 120) });
@@ -291,6 +334,8 @@ module.exports = {
     executeDecisions,
     decideForIssue,
     buildEscalationMessage,
+    ambiguousSkillsOf,
+    AMBIGUOUS_STATUSES,
     SUPPRESSION_BUCKETS,
     MONO_SKILL_PHASES,
     DEFAULT_MAX_REQUEUE_ATTEMPTS,

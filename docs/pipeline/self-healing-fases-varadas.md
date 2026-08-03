@@ -89,7 +89,7 @@ cat .pipeline/.stuck-reconciler-health.json
 
 Cuando el reconciler escala, `humanBlock.reportHumanBlock()` deja:
 
-- el **marker** `<pipeline>/<fase>/bloqueado-humano/<issue>.reconciler`,
+- el **marker** `<pipeline>/<fase>/bloqueado-humano/<issue>.<skill>`,
 - su metadata `<marker>.reason.json` (motivo, pregunta, precondición),
 - una orden de label `needs-human` en la cola del servicio-github,
 - una notificación de Telegram **con botones de acción rápida**.
@@ -98,16 +98,46 @@ Cuando el reconciler escala, `humanBlock.reportHumanBlock()` deja:
 > deliverable de `listo/` **no se mueve**. Esa evidencia es lo que el detector
 > usa para decidir; moverla rompería el diagnóstico.
 
+### Qué `<skill>` lleva el marker (y por qué importa)
+
+El `<skill>` **no** es un nombre sintético: sale de los skills reales que
+motivaron la escalación y se valida contra `skills_por_fase[fase]` —
+exactamente la misma lista que usa el INVARIANTE de dispatch de `pulpo.js`.
+
+| Caso | `<skill>` elegido |
+|---|---|
+| Ambigüedad (`rechazado` / `cancelado` / ilegible) | El primer skill ambiguo de la fase (`tester`, `qa`, …) |
+| Tope de reintentos del carril `requeue` | El primer skill que agotó los reintentos |
+| `estado indeterminado` (no imputa skill) | Fallback determinista: primer skill de `skills_por_fase[fase]` |
+| La fase no declara `skills_por_fase` | **No se escala** (fail-closed) + log `sin skills_por_fase` |
+
+La procedencia self-healing viaja en el `reason`, con prefijo `[self-healing]`.
+
+> **Por qué no un skill sintético.** Una versión previa plantaba
+> `<issue>.reconciler`. Ese nombre no existe en `skills_por_fase`, así que al
+> destrabar el work-item entraba al despacho y el invariante skill∈fase lo
+> rebotaba a `pendiente/` **sin registrar cooldown**, emitiendo un Telegram
+> `⛔ Pipeline bloqueó lanzamiento de reconciler:#N` en **cada tick**. O sea: la
+> vía de salida del bloqueo generaba justo el spam que este mecanismo elimina.
+> Con un skill real, destrabar re-corre el agente que quedó sin veredicto.
+
 **El `needs-human` tiene dos dueños** (`escalate` lo pone, `servicio-reconciler`
 lo saca), y por eso importa quién lo quita y cuándo:
 
-| Vía | Quién la dispara | Efecto |
+| Vía | Quién la dispara | Efecto concreto al destrabar |
 |---|---|---|
-| Botones de la notificación (`buildBlockedActionMarkup`) | El operador, desde Telegram | Resuelve el bloqueo por el handler de quick-actions. |
-| `humanBlock.unblockIssue({ issue, guidance, unlocker })` | Operador / brazo de desbloqueo | Reactiva el work-item con la guía del humano. |
-| `humanBlock.dismissBlockedIssue({ issue })` | Operador | Descarta el bloqueo sin reactivar (el issue no va más). |
+| Botones de la notificación (`buildBlockedActionMarkup`) | El operador, desde Telegram | `executeQuickAction` → `reactivateAllBlocked` → `unblockIssue` (misma mecánica que la fila siguiente). |
+| `humanBlock.unblockIssue({ issue, guidance, unlocker })` | Operador / brazo de desbloqueo | **`rename`** del marker a `<pipeline>/<fase>/pendiente/<issue>.<skill>` + `<marker>.guidance.txt` con la guía, y borra el `.reason.json`. El Pulpo lo despacha en el tick siguiente: el `<skill>` está en `skills_por_fase[fase]`, así que **pasa el invariante** y el agente re-corre. |
+| `humanBlock.dismissBlockedIssue({ issue })` | Operador | Borra marker + `.reason.json`. **No** reactiva: el issue no vuelve a la cola. |
 | Archivado por TTL del servicio-reconciler (#3186) | Automático | Poda markers vencidos. |
 | `reconcileLabelToFilesystem` (#4222) | Automático | **Sólo si NO hay marker**: limpia labels `needs-human` fantasma. |
+
+> El `.guidance.txt` que deja `unblockIssue` **no** se despacha como work-item:
+> `listWorkFiles` lo filtra vía `isMarkerArtifact` (`pulpo.js:1548-1554`).
+
+> **Mientras el work-item destrabado está en `pendiente/`, el reconciler no lo
+> vuelve a tocar**: el runner lo cuenta como `liveSkills`, el detector devuelve
+> `trabajo-vivo` y la decisión es `none`. No hay ventana de doble escalado.
 
 Mientras el marker exista, `reconcileLabelToFilesystem` **saltea** el issue
 (`blockedByIssue.has(...) → continue`) y no encola `remove-label`. Ése es el

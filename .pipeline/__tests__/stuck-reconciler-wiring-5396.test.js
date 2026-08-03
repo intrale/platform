@@ -238,12 +238,19 @@ test('CA-5: escalate delega en reportHumanBlock (no encola el label a mano)', ()
     });
 
     deps.escalate(5209, 'ambigüedad (rechazo/cancelado/corrupto)', {
-        pipeline: 'desarrollo', fase: 'verificacion',
+        pipeline: 'desarrollo', fase: 'verificacion', skills: ['tester'],
     });
 
     assert.equal(calls.length, 1);
     assert.equal(calls[0].issue, 5209);
-    assert.equal(calls[0].skill, 'reconciler');
+    // #5396 rev-1 — skill REAL de la fase, no el sintético `reconciler`.
+    assert.equal(calls[0].skill, 'tester');
+    assert.ok(
+        CONFIG.pipelines.desarrollo.skills_por_fase.verificacion.includes(calls[0].skill),
+        'el skill del marker debe pertenecer a skills_por_fase[fase]',
+    );
+    // La procedencia self-healing ya no viaja en el nombre del skill: va en el reason.
+    assert.match(calls[0].reason, /^\[self-healing\] /);
     assert.equal(calls[0].phase, 'verificacion');
     assert.equal(calls[0].pipeline, 'desarrollo');
     assert.match(calls[0].question, /¿Cómo destrabo #5209 en desarrollo\/verificacion\?/);
@@ -570,4 +577,224 @@ test('CA-7: la señal vuelve a estar disponible tras una racha nueva', () => {
         prev = r.next;
     }
     assert.equal(reEmit, true, 'una racha nueva puede volver a avisar');
+});
+
+// -----------------------------------------------------------------------------
+// #5396 rev-1 — CICLO DE DESTRABE: el marker debe ser DESPACHABLE
+//
+// Rechazo de `aprobacion` (rev-1): el marker se plantaba con el skill sintético
+// `reconciler`, que no existe en `skills_por_fase[fase]`. Al destrabar
+// (`unblockIssue`, o los botones 'Aprobar (unblock)' / 'Priorizar' que agrega
+// este mismo PR), el work-item caía en `pendiente/` y entraba al despacho, donde
+// el INVARIANTE skill∈fase de `pulpo.js:8596` lo rebotaba a `pendiente/` SIN
+// registrar cooldown y mandaba un Telegram por tick.
+//
+// Estos tests recorren el ciclo COMPLETO contra el `human-block` real y aplican
+// el mismo predicado del invariante del Pulpo sobre el resultado.
+// -----------------------------------------------------------------------------
+
+/**
+ * Predicado del INVARIANTE de `pulpo.js:8596-8605`, replicado textualmente:
+ *   const permitidos = config.pipelines[pipeline].skills_por_fase[fase] || [];
+ *   if (!permitidos.includes(skill)) → rebote a pendiente/ + Telegram por tick
+ */
+function pulpoDispatchInvariant(config, pipeline, fase, skill) {
+    const spf = ((config.pipelines || {})[pipeline] || {}).skills_por_fase || {};
+    const permitidos = spf[fase] || [];
+    return permitidos.includes(skill);
+}
+
+/** Crea un REPO root aislado y carga un `human-block` fresco apuntado ahí. */
+function withRealHumanBlock(fn) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'stuck-unblock-5396-'));
+    const pipelineDir = path.join(root, '.pipeline');
+    for (const fase of CONFIG.pipelines.desarrollo.fases) {
+        for (const st of ['pendiente', 'trabajando', 'listo', 'bloqueado-humano']) {
+            fs.mkdirSync(path.join(pipelineDir, 'desarrollo', fase, st), { recursive: true });
+        }
+    }
+    fs.mkdirSync(path.join(pipelineDir, 'servicios', 'github', 'pendiente'), { recursive: true });
+    fs.mkdirSync(path.join(root, '.claude'), { recursive: true });
+
+    const prev = {
+        claude: process.env.CLAUDE_PROJECT_DIR,
+        repo: process.env.PIPELINE_REPO_ROOT,
+    };
+    process.env.CLAUDE_PROJECT_DIR = root;
+    process.env.PIPELINE_REPO_ROOT = root;
+    // `human-block` congela PIPELINE_DIR al requerirse → hay que cargarlo fresco.
+    const mods = ['../lib/human-block', '../lib/traceability'];
+    for (const m of mods) delete require.cache[require.resolve(m)];
+    const humanBlock = require('../lib/human-block');
+    try {
+        return fn({ root, pipelineDir, humanBlock });
+    } finally {
+        if (prev.claude === undefined) delete process.env.CLAUDE_PROJECT_DIR;
+        else process.env.CLAUDE_PROJECT_DIR = prev.claude;
+        if (prev.repo === undefined) delete process.env.PIPELINE_REPO_ROOT;
+        else process.env.PIPELINE_REPO_ROOT = prev.repo;
+        for (const m of mods) delete require.cache[require.resolve(m)];
+    }
+}
+
+test('rev-1: escalate -> unblockIssue -> el work-item pasa el invariante skill-en-fase', () => {
+    withRealHumanBlock(({ pipelineDir, humanBlock }) => {
+        const deps = buildStuckReconcilerDeps({
+            config: CONFIG,
+            PIPELINE: pipelineDir,
+            ROOT: pipelineDir,
+            pauseFile: path.join(pipelineDir, '.paused'),
+            ppMode: { mode: 'running' },
+            nowMs: NOW,
+            deps: { log: () => { }, humanBlock },
+        });
+
+        // 1) El reconciler escala: `tester` quedó `rechazado` (ambiguo).
+        const ok = deps.escalate(5209, 'ambiguedad (rechazo/cancelado/corrupto): tester:rejected', {
+            pipeline: 'desarrollo', fase: 'verificacion', skills: ['tester'],
+        });
+        assert.equal(ok, true, 'la escalacion debe registrarse');
+
+        const bloqDir = path.join(pipelineDir, 'desarrollo', 'verificacion', 'bloqueado-humano');
+        const bloqueados = fs.readdirSync(bloqDir);
+        assert.ok(bloqueados.includes('5209.tester'), `marker esperado 5209.tester, hay: ${bloqueados}`);
+        assert.ok(!bloqueados.includes('5209.reconciler'), 'el skill sintetico ya no se planta');
+
+        // 2) El operador destraba — es lo que hacen los quick-actions de Telegram
+        //    via executeQuickAction -> reactivateAllBlocked -> unblockIssue.
+        const r = humanBlock.unblockIssue({ issue: 5209, guidance: 're-corre tester', unlocker: 'test' });
+        assert.equal(r.ok, true);
+        assert.equal(r.to_phase, 'verificacion');
+
+        // 3) El work-item resultante ENTRA al despacho: el invariante lo acepta.
+        const skill = require('../lib/workfile-name').skillFromFile(path.basename(r.marker_path));
+        assert.equal(skill, 'tester');
+        assert.equal(
+            pulpoDispatchInvariant(CONFIG, 'desarrollo', 'verificacion', skill),
+            true,
+            'el invariante de pulpo.js debe aceptar el skill del marker destrabado',
+        );
+
+        const pendientes = fs.readdirSync(path.join(pipelineDir, 'desarrollo', 'verificacion', 'pendiente'));
+        assert.ok(pendientes.includes('5209.tester'));
+    });
+});
+
+test('rev-1: con el work-item ya destrabado en pendiente/, el tick NO re-escala', () => {
+    // Verifica la afirmacion de la doc (CA-9): el marker destrabado cuenta como
+    // `liveSkills` -> el detector dice `trabajo-vivo` -> decision `none`. Sin
+    // esto habria una ventana de doble escalado entre el unblock y el spawn.
+    const dir = tmpPipeline();
+    writeTitleCache(dir, {
+        5209: { state: 'OPEN', title: 'destrabado', labels: [], fetchedAt: new Date(NOW).toISOString() },
+    });
+    const fase = path.join(dir, 'desarrollo', 'verificacion');
+    fs.writeFileSync(path.join(fase, 'listo', '5209.tester'), 'resultado: rechazado\n');
+    const old = (NOW - HOUR) / 1000;
+    fs.utimesSync(path.join(fase, 'listo', '5209.tester'), old, old);
+    // Estado post-unblock: el work-item ya volvio a pendiente/.
+    fs.writeFileSync(path.join(fase, 'pendiente', '5209.tester'), '');
+    fs.writeFileSync(path.join(fase, 'pendiente', '5209.tester.guidance.txt'), 're-corre');
+
+    const escalations = [];
+    const sent = [];
+    const deps = buildDeps(dir, {
+        ppMode: { mode: 'running' },
+        deps: {
+            sendTelegramWithMarkup: (t) => sent.push(t),
+            humanBlock: { reportHumanBlock: (o) => { escalations.push(o); return {}; } },
+        },
+    });
+    deps.isAllowed = () => true;
+    deps.readYaml = () => ({ resultado: 'rechazado' });
+
+    const res = runStuckPhaseReconciler(deps, {});
+    assert.equal(res.escalated, 0, 'no re-escala sobre un work-item ya destrabado');
+    assert.equal(escalations.length, 0);
+    assert.equal(sent.length, 0, 'y por lo tanto no notifica');
+});
+
+test('rev-1 regresion: el skill sintetico "reconciler" habria rebotado contra el invariante', () => {
+    // Test de contraste — documenta EXACTAMENTE el defecto que motivo el rechazo.
+    assert.equal(
+        pulpoDispatchInvariant(CONFIG, 'desarrollo', 'verificacion', 'reconciler'),
+        false,
+        'precondicion del bug: `reconciler` nunca fue un skill despachable',
+    );
+    assert.equal(pulpoDispatchInvariant(CONFIG, 'desarrollo', 'verificacion', 'tester'), true);
+});
+
+test('rev-1: el skill del marker se valida contra skills_por_fase, no se cree el que le pasan', () => {
+    const dir = tmpPipeline();
+    const calls = [];
+    const deps = buildDeps(dir, {
+        deps: { humanBlock: { reportHumanBlock: (o) => { calls.push(o); return {}; } } },
+    });
+
+    // Un skill que NO pertenece a la fase (de otra fase, sintetico, o un nombre
+    // raro salido de un archivo) se descarta y cae al fallback determinista.
+    deps.escalate(5209, 'motivo', {
+        pipeline: 'desarrollo', fase: 'verificacion', skills: ['review', 'reconciler', '../../etc'],
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].skill, 'qa', 'fallback: primer skill de skills_por_fase[verificacion]');
+    assert.ok(pulpoDispatchInvariant(CONFIG, 'desarrollo', 'verificacion', calls[0].skill));
+});
+
+test('rev-1: "estado indeterminado" (sin skills imputados) igual planta un marker despachable', () => {
+    const dir = tmpPipeline();
+    const calls = [];
+    const deps = buildDeps(dir, {
+        deps: { humanBlock: { reportHumanBlock: (o) => { calls.push(o); return {}; } } },
+    });
+    deps.escalate(5209, 'estado indeterminado', { pipeline: 'desarrollo', fase: 'verificacion', skills: [] });
+    assert.equal(calls.length, 1);
+    assert.ok(pulpoDispatchInvariant(CONFIG, 'desarrollo', 'verificacion', calls[0].skill));
+});
+
+test('rev-1 fail-closed: fase sin skills_por_fase NO escala (marker sin salida seria spam)', () => {
+    const dir = tmpPipeline();
+    const calls = [];
+    const logs = [];
+    const deps = buildDeps(dir, {
+        deps: {
+            log: (_t, m) => logs.push(m),
+            humanBlock: { reportHumanBlock: (o) => calls.push(o) },
+        },
+    });
+    // `aprobacion` existe en `fases` pero CONFIG no le define skills_por_fase.
+    const ok = deps.escalate(5209, 'motivo', { pipeline: 'desarrollo', fase: 'aprobacion', skills: ['review'] });
+    assert.equal(ok, false);
+    assert.equal(calls.length, 0, 'mejor no escalar que dejar un bloqueo sin salida');
+    assert.ok(logs.some((m) => /sin skills_por_fase/.test(m)), 'el silencio queda logueado');
+});
+
+test('rev-1 e2e: el escalado del tick real deja un marker despachable', () => {
+    // Cierra el ciclo por el RUNNER (no llamando a `escalate` a mano): un
+    // deliverable `rechazado` de `tester` viejo -> escalate -> marker `5209.tester`.
+    const dir = tmpPipeline();
+    writeTitleCache(dir, {
+        5209: { state: 'OPEN', title: 'issue de la ola', labels: [], fetchedAt: new Date(NOW).toISOString() },
+    });
+    const listo = path.join(dir, 'desarrollo', 'verificacion', 'listo');
+    fs.writeFileSync(path.join(listo, '5209.tester'), 'resultado: rechazado\n');
+    const old = (NOW - HOUR) / 1000;
+    fs.utimesSync(path.join(listo, '5209.tester'), old, old);
+
+    const escalations = [];
+    const deps = buildDeps(dir, {
+        ppMode: { mode: 'running' },
+        deps: { humanBlock: { reportHumanBlock: (o) => { escalations.push(o); return {}; } } },
+    });
+    deps.isAllowed = () => true;                        // issue de la ola
+    deps.readYaml = () => ({ resultado: 'rechazado' }); // verdict del deliverable
+    deps.nowMs = NOW;
+
+    const res = runStuckPhaseReconciler(deps, {});
+    assert.equal(res.escalated, 1, `esperaba 1 escalacion, hubo ${JSON.stringify(res)}`);
+    assert.equal(escalations.length, 1);
+    assert.equal(escalations[0].skill, 'tester', 'el skill ambiguo real, no `reconciler`');
+    assert.ok(pulpoDispatchInvariant(CONFIG, 'desarrollo', 'verificacion', escalations[0].skill));
+    assert.equal(escalations[0].moveFromActive, false, 'CA-6: la evidencia de listo/ no se toca');
+    assert.ok(fs.existsSync(path.join(listo, '5209.tester')), 'el deliverable sigue en listo/');
 });
