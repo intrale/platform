@@ -70,20 +70,45 @@ function withTempPipeline(fn) {
     }
 }
 
+// Réplica del paso de RESOLUCIÓN del cierre de intento de `pulpo.js`: el
+// proveedor anunciado en el copy sale del resolver REAL, nunca de un literal.
+// Mismo helper, mismas opciones y mismo manejo de `gated` que producción.
+function resolverProximoProveedor(pipelineDir, excluido = 'anthropic') {
+    let nextProvider = null;
+    try {
+        const next = commanderMP.resolveCommanderProviderQuiet(excluido, {
+            pipelineDir,
+            log: () => {},
+        });
+        if (next && next.gated !== true) nextProvider = next.provider || null;
+    } catch { /* best-effort: el copy degrada a genérico, igual que en pulpo */ }
+    return nextProvider;
+}
+
 // Réplica de la decisión del cierre de intento de `pulpo.js`, armada con los
 // MISMOS módulos reales que usa producción. No re-implementa lógica: encadena
-// `detectQuotaError` → `isWeeklyLimitContentChannel` → `formatMidTurnQuotaResponse`.
-// Si alguno de esos contratos cambia, esto rompe (que es el punto).
-function cerrarIntento(evt, { nextProvider = 'openai-codex', lastText = '' } = {}) {
+// `detectQuotaError` → `isWeeklyLimitContentChannel` → resolución del próximo
+// proveedor → `formatMidTurnQuotaResponse`. Si alguno de esos contratos cambia,
+// esto rompe (que es el punto).
+//
+// `pipelineDir` ejercita la resolución REAL (la que pulpo hace en producción).
+// `nextProvider` sólo se pasa a mano en los tests de copy puro, que no montan
+// sandbox — nunca en los que verifican el wiring.
+function cerrarIntento(evt, { pipelineDir = null, nextProvider = 'openai-codex', lastText = '' } = {}) {
     const det = quotaExhausted.detectQuotaError(evt, anthropicProviderDef());
 
     const esCuotaSemanal = det.matched === true
         && quotaExhausted.isWeeklyLimitContentChannel('anthropic', det.errorType);
 
+    // Igual que en pulpo: la resolución sólo ocurre en la rama de cuota semanal.
+    const proveedorAnunciado = esCuotaSemanal && pipelineDir
+        ? resolverProximoProveedor(pipelineDir)
+        : nextProvider;
+
     const quotaMidTurnText = esCuotaSemanal
         ? commanderMP.formatMidTurnQuotaResponse({
             primaryProvider: 'anthropic',
-            fallbackProvider: nextProvider,
+            fallbackProvider: proveedorAnunciado,
         })
         : null;
 
@@ -98,7 +123,69 @@ function cerrarIntento(evt, { nextProvider = 'openai-codex', lastText = '' } = {
         ? commanderMP.QUOTA_MIDTURN_ERROR_CODE
         : (((evt && evt.result) || lastText) ? null : 'no_result');
 
-    return { det, esCuotaSemanal, resolvedText, errorCode };
+    return { det, esCuotaSemanal, resolvedText, errorCode, proveedorAnunciado };
+}
+
+// Deja `anthropic` gateado por cuota en el sandbox activo, que es la
+// precondición del turno perdido.
+function agotarAnthropic() {
+    quotaExhausted.setFlag({
+        errorType: quotaExhausted.WEEKLY_LIMIT_CONTENT_ERROR_TYPE,
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-6',
+        resetsAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        maxDays: 7,
+        agent: 'commander',
+        rawExcerpt: 'x',
+        auditLogEnabled: false,
+    });
+}
+
+const TELEGRAM_QUEUE = path.join('servicios', 'telegram', 'pendiente');
+
+function archivosEnCola(tmp) {
+    const dir = path.join(tmp, TELEGRAM_QUEUE);
+    if (!fs.existsSync(dir)) return [];
+    return fs.readdirSync(dir);
+}
+
+function auditsDeDispatch(tmp) {
+    const dir = path.join(tmp, 'logs');
+    if (!fs.existsSync(dir)) return [];
+    return fs.readdirSync(dir).filter((f) => f.startsWith('cross-provider-dispatch'));
+}
+
+// Escribe un `agent-models.json` donde las cadenas del Commander y de Sherlock
+// DIVERGEN en el primer fallback. En producción coinciden en orden y difieren
+// sólo en `model_override`, así que un test contra la config real no distingue
+// cuál de las dos se consultó.
+// Parte del `agent-models.json` REAL (tabla de `providers` incluida, que el
+// resolver necesita para validar handlers) y sólo reescribe las dos cadenas.
+function sembrarCadenasDivergentes(tmp) {
+    const real = JSON.parse(fs.readFileSync(
+        path.join(__dirname, '..', 'agent-models.json'), 'utf8'));
+
+    real.skills = {
+        ...real.skills,
+        [commanderMP.COMMANDER_SKILL]: {
+            provider: 'anthropic',
+            model_override: 'claude-sonnet-4-6',
+            fallbacks: [
+                { provider: 'openai-codex', model_override: 'gpt-5.4' },
+                { provider: 'cerebras', model_override: 'gpt-oss-120b' },
+            ],
+        },
+        [commanderMP.SHERLOCK_SKILL]: {
+            provider: 'anthropic',
+            model_override: 'claude-sonnet-4-6',
+            fallbacks: [
+                { provider: 'gemini-google', model_override: 'gemini-3-flash-preview' },
+                { provider: 'cerebras', model_override: 'gpt-oss-120b' },
+            ],
+        },
+    };
+
+    fs.writeFileSync(path.join(tmp, 'agent-models.json'), JSON.stringify(real, null, 2), 'utf8');
 }
 
 // -----------------------------------------------------------------------------
@@ -284,6 +371,136 @@ test('#5456 CA-8 — el audit del dispatch lleva el enum estable y NO el errorTy
 });
 
 // -----------------------------------------------------------------------------
+// CA-1 / CA-3 / CA-4 — RESOLUCIÓN REAL del proveedor anunciado
+//
+// El copy no puede nombrar un proveedor inventado ni uno sacado de otra cadena,
+// y la consulta que lo averigua no puede tener efectos observables: es una
+// lectura para armar texto, no un dispatch.
+// -----------------------------------------------------------------------------
+
+test('#5456 CA-4 — el proveedor anunciado sale del resolver REAL, no de un literal del test', () => {
+    withTempPipeline((tmp) => {
+        sembrarCadenasDivergentes(tmp);
+        agotarAnthropic();
+
+        const { esCuotaSemanal, resolvedText, proveedorAnunciado } = cerrarIntento(
+            { type: 'result', result: AVISO_SEMANAL },
+            { pipelineDir: tmp },
+        );
+
+        assert.equal(esCuotaSemanal, true);
+        assert.equal(proveedorAnunciado, 'openai-codex',
+            'con anthropic agotado, el próximo intento del Commander lo atiende Codex');
+        assert.match(resolvedText, /Codex/,
+            'el copy anuncia la etiqueta pública del proveedor resuelto');
+    });
+});
+
+test('#5456 CA-4 — se consulta la cadena del COMMANDER, no la de Sherlock', () => {
+    withTempPipeline((tmp) => {
+        // Cadenas divergentes en el primer fallback: commander→openai-codex,
+        // sherlock→gemini-google. El default del resolver crudo es Sherlock, así
+        // que si el wiring no fija el skill, esto devuelve gemini-google.
+        sembrarCadenasDivergentes(tmp);
+        agotarAnthropic();
+
+        assert.equal(resolverProximoProveedor(tmp), 'openai-codex',
+            'el proveedor anunciado debe salir de la cadena de telegram-commander');
+
+        // Contraprueba del fixture: la cadena de Sherlock resuelve DISTINTO, así
+        // que la aserción de arriba discrimina de verdad y no pasa por casualidad.
+        const sherlock = commanderMP.resolveCommanderProviderExcluding('anthropic', {
+            pipelineDir: tmp,
+            log: () => {},
+            notify: () => false,
+            auditLog: { appendChained: () => {} },
+        });
+        assert.equal(sherlock.provider, 'gemini-google',
+            'sanity del fixture: sin skill explícito el resolver cae en la cadena de Sherlock');
+    });
+});
+
+test('#5456 CA-1/CA-3 — la consulta del proveedor NO encola un mensaje al operador', () => {
+    withTempPipeline((tmp) => {
+        sembrarCadenasDivergentes(tmp);
+        agotarAnthropic();
+        const antes = archivosEnCola(tmp);
+
+        cerrarIntento({ type: 'result', result: AVISO_SEMANAL }, { pipelineDir: tmp });
+
+        const nuevos = archivosEnCola(tmp).filter((f) => !antes.includes(f));
+        assert.deepEqual(nuevos, [],
+            'la respuesta reactiva es la ÚNICA salida del turno: la consulta no puede '
+            + `agregar una tercera sin dedup — encoló: ${JSON.stringify(nuevos)}`);
+    });
+});
+
+test('#5456 CA-1 — ningún id interno de provider/model/skill llega a la cola de Telegram', () => {
+    withTempPipeline((tmp) => {
+        sembrarCadenasDivergentes(tmp);
+        agotarAnthropic();
+
+        cerrarIntento({ type: 'result', result: AVISO_SEMANAL }, { pipelineDir: tmp });
+
+        const dir = path.join(tmp, TELEGRAM_QUEUE);
+        const texto = archivosEnCola(tmp)
+            .map((f) => fs.readFileSync(path.join(dir, f), 'utf8'))
+            .join('\n');
+
+        for (const id of [
+            'openai-codex', 'gemini-google', 'cerebras', 'anthropic',
+            commanderMP.COMMANDER_SKILL, commanderMP.SHERLOCK_SKILL,
+            'sherlock-verify', 'gpt-5.4', 'gpt-oss-120b', 'Cross-provider fallback',
+        ]) {
+            assert.ok(!texto.includes(id),
+                `el operador nunca puede recibir el id interno "${id}" — cola: ${texto}`);
+        }
+    });
+});
+
+test('#5456 CA-8 — la consulta NO escribe una entrada de dispatch en el audit', () => {
+    withTempPipeline((tmp) => {
+        sembrarCadenasDivergentes(tmp);
+        agotarAnthropic();
+
+        cerrarIntento({ type: 'result', result: AVISO_SEMANAL }, { pipelineDir: tmp });
+
+        assert.deepEqual(auditsDeDispatch(tmp), [],
+            'no hubo spawn: un `fallback_selected` en el audit del dispatch sería falso');
+    });
+});
+
+test('#5456 CA-4 — cadena entera agotada: el copy degrada a genérico sin nombrar proveedor', () => {
+    withTempPipeline((tmp) => {
+        sembrarCadenasDivergentes(tmp);
+        for (const p of ['anthropic', 'openai-codex', 'cerebras']) {
+            quotaExhausted.setFlag({
+                errorType: 'usage_limit_error',
+                provider: p,
+                model: 'x',
+                resetsAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+                maxDays: 7,
+                agent: 'commander',
+                rawExcerpt: 'x',
+                auditLogEnabled: false,
+            });
+        }
+
+        const { resolvedText, proveedorAnunciado } = cerrarIntento(
+            { type: 'result', result: AVISO_SEMANAL },
+            { pipelineDir: tmp },
+        );
+
+        assert.equal(proveedorAnunciado, null, 'sin proveedor libre no se anuncia ninguno');
+        assert.doesNotMatch(resolvedText, /Codex/,
+            'el copy no puede prometer un proveedor que está gateado');
+        assert.match(resolvedText, /este turno se perdió/i, 'igual admite la pérdida del turno');
+        assert.match(resolvedText, /reenviame el mensaje/i, 'e igual pide el reenvío');
+        assert.notEqual(resolvedText, AVISO_SEMANAL, 'y jamás devuelve el crudo');
+    });
+});
+
+// -----------------------------------------------------------------------------
 // CA-6 — wiring del cierre de intento en pulpo.js
 // -----------------------------------------------------------------------------
 
@@ -342,6 +559,14 @@ test('#5456 CA-3 — el cierre de intento NO invoca el dedup del aviso proactivo
         'persistencia única: el cierre de intento no vuelve a escribir el flag');
     assert.ok(!/writeFileSync\s*\(/.test(codigo),
         'el cierre de intento no escribe estado propio');
+
+    // La consulta del próximo proveedor va por la variante SILENCIOSA. La cruda
+    // encola un aviso al operador con ids internos (tercera salida sin dedup) y
+    // resuelve sobre la cadena de Sherlock por default.
+    assert.ok(/commanderMP\.resolveCommanderProviderQuiet\s*\(/.test(codigo),
+        'el cierre de intento debe usar resolveCommanderProviderQuiet');
+    assert.ok(!/commanderMP\.resolveCommanderProviderExcluding\s*\(/.test(codigo),
+        'la variante cruda notifica y audita: no puede usarse para armar copy');
     // Sanity del recorte: el bloque de código sí contiene la llamada al formatter.
     assert.ok(/formatMidTurnQuotaResponse\s*\(/.test(codigo),
         'sanity: el recorte del bloque incluye el código del cierre de intento');

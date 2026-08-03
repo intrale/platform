@@ -751,7 +751,16 @@ function _buildBalancedResolution(args = {}) {
 //   - excludedProvider: string del provider del Commander a excluir. Si no
 //     coincide con ningún provider del chain, no excluye nada.
 //   - skill: nombre del skill alternativo (default 'telegram-sherlock').
+//     OJO: el default NO es neutro — resuelve sobre la cadena de Sherlock, que
+//     tiene sus propios `model_override`. Todo caller que necesite la cadena del
+//     Commander DEBE pasar `skill: COMMANDER_SKILL` explícitamente.
 //   - issue: para audit log (default 'sherlock-verify').
+//   - notify / auditLog: passthrough a `resolveSpawnWithFallback`. El resolver
+//     es puro respecto del ESTADO de cuota, pero NO respecto de sus EFECTOS de
+//     reporte: en el camino `fallback_selected` encola un aviso de Telegram con
+//     ids internos (`skill=`, `provider=`, `model=`) y escribe el audit del
+//     dispatch. Un caller que sólo CONSULTA la cadena (sin spawnear) debe
+//     neutralizar ambos — ver #5456.
 //
 // Devuelve el mismo shape que `resolveCommanderProvider`. Si la chain entera
 // queda gateada por la exclusión + cuotas reales, `source: 'all-gated'`,
@@ -769,6 +778,8 @@ function resolveCommanderProviderExcluding(excludedProvider, opts = {}) {
         fsImpl,
         now,
         issue,
+        notify,
+        auditLog,
     } = opts;
 
     const _dispatch = dispatchModule || require('../agent-launcher/dispatch-with-fallback');
@@ -804,6 +815,39 @@ function resolveCommanderProviderExcluding(excludedProvider, opts = {}) {
         quotaModule: wrappedQuota,
         onLog: typeof log === 'function' ? log : () => {},
         now,
+        notify,
+        auditLog,
+    });
+}
+
+// -----------------------------------------------------------------------------
+// #5456 — resolveCommanderProviderQuiet
+//
+// Consulta SÓLO-LECTURA de la cadena del Commander excluyendo un provider.
+// Pensada para los call sites que necesitan saber "quién atiende el próximo
+// intento" para armar copy visible, SIN que la consulta se confunda con un
+// dispatch real.
+//
+// Neutraliza los dos efectos de reporte de `resolveSpawnWithFallback`:
+//   - `notify`: evitaría una TERCERA salida al operador en el mismo turno, con
+//     ids internos de provider/model/skill (CA-1 y CA-3 de #5456).
+//   - `auditLog`: no hubo spawn, así que un `fallback_selected` en el audit del
+//     dispatch sería una entrada falsa.
+//
+// Y fija `skill`/`issue` en la cadena del COMMANDER: el default del resolver es
+// la de Sherlock, que tiene otros `model_override` y sólo coincide en orden por
+// casualidad.
+// -----------------------------------------------------------------------------
+const _AUDIT_NOOP = { appendChained: () => {} };
+const _NOTIFY_NOOP = () => false;
+
+function resolveCommanderProviderQuiet(excludedProvider, opts = {}) {
+    return resolveCommanderProviderExcluding(excludedProvider, {
+        ...opts,
+        skill: COMMANDER_SKILL,
+        issue: opts.issue || 'commander-chat',
+        notify: _NOTIFY_NOOP,
+        auditLog: _AUDIT_NOOP,
     });
 }
 
@@ -2001,6 +2045,7 @@ module.exports = {
     sanitizeUserPrompt,
     resolveCommanderProvider,
     resolveCommanderProviderExcluding,
+    resolveCommanderProviderQuiet,
     // #4565 (rebote rev-1) — gate de cuota read-only: ¿toda la cadena gateada?
     isCommanderChainGated,
     // #4870 — modo reducido read-only: pagos gateados pero free sano.

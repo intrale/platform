@@ -12995,9 +12995,21 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           // Proveedor del próximo intento: sale del resolver real (excluyendo el
           // agotado), NUNCA del texto de la respuesta. Si no hay uno resoluble,
           // el formatter degrada a copy genérico.
+          //
+          // `resolveCommanderProviderQuiet` (#5456) hace dos cosas que la
+          // variante cruda NO hace y que acá son obligatorias:
+          //   1. Consulta la cadena del COMMANDER (`telegram-commander`). El
+          //      default del resolver crudo es la de Sherlock, que tiene otros
+          //      `model_override`: anunciaríamos el proveedor de una cadena
+          //      distinta de la que va a atender el turno siguiente.
+          //   2. Silencia `notify` y el audit del dispatch. Esto es una CONSULTA
+          //      para armar copy, no un spawn: con la variante cruda encolaba un
+          //      tercer mensaje al operador con ids internos (viola CA-1) sin
+          //      pasar por ningún dedup (viola CA-3) y ensuciaba el audit con un
+          //      `fallback_selected` que nunca ocurrió.
           let nextProvider = null;
           try {
-            const next = commanderMP.resolveCommanderProviderExcluding(
+            const next = commanderMP.resolveCommanderProviderQuiet(
               weeklyQuotaMidTurn.provider,
               { pipelineDir: PIPELINE, log: () => {} },
             );
