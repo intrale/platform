@@ -134,6 +134,16 @@ function decideForIssue(it, cfg) {
         if (it.hasNeedsHuman) return dedupe('tope-reintentos + ya-escalado');
         return base('escalate', `tope de reintentos (${cfg.maxRequeueAttempts}) alcanzado para: ${capped.join(',')}`, { consumesTick: true });
     }
+    // #5396 — un issue con bloqueo humano vigente NO se re-encola. Antes de este
+    // issue el dedupe sólo cubría el carril `escalate`, porque `escalate` encolaba
+    // el label y casi nunca existía un marker físico. Ahora que `escalate` planta
+    // marker vía `reportHumanBlock` (con `moveFromActive: false`, o sea el
+    // deliverable sigue en `listo/` y el issue se sigue evaluando), el carril
+    // `requeue` pasó a ser alcanzable con un bloqueo vivo: spawnearía un agente
+    // sobre un issue que está esperando decisión humana. Eso viola la línea roja
+    // del issue ("ante duda: humano"), así que el bloqueo gana sobre el reintento.
+    if (it.hasNeedsHuman) return dedupe('bloqueado-humano');
+
     // Pausa: no re-encolar (no spawnear), PO SG-5. El escalate SÍ sigue permitido
     // para issues de la ola (ya filtrados por allowlist arriba).
     if (cfg.paused) return base('none', 'pipeline-en-pausa (no re-encola)', { suppression: 'otro' });

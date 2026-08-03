@@ -317,3 +317,60 @@ test('línea roja: ninguna supresión produce una acción de aprobación', () =>
         assert.ok(!('resultado' in d));
     }
 });
+
+// -----------------------------------------------------------------------------
+// #5396 — un bloqueo humano vigente gana sobre el re-encolado
+//
+// Antes de este issue el dedupe sólo cubría el carril `escalate`: `escalate`
+// encolaba el label y casi nunca existía un marker físico, así que el carril
+// `requeue` con bloqueo vivo era teórico. Ahora `escalate` planta marker vía
+// `reportHumanBlock` con `moveFromActive: false` — el deliverable sigue en
+// `listo/` y el issue se sigue evaluando tick a tick —, y `bloqueado-humano/`
+// no es ni deliverable-state ni live-state para el runner. Resultado: un issue
+// esperando decisión humana podía re-encolarse y spawnear un agente encima.
+// -----------------------------------------------------------------------------
+
+/**
+ * Issue varado cuyo análisis da `requeue` (no `escalate`): `qa` entregó aprobado
+ * hace rato y `tester` nunca corrió. Sin ambigüedad ⇒ el detector re-encola el
+ * faltante, que es el único caso de auto-remediación que la línea roja permite.
+ */
+function requeueIssue(over = {}) {
+    return stuckIssue({
+        deliverables: [
+            { skill: 'qa', state: 'listo', yaml: { resultado: 'aprobado' }, mtimeMs: NOW - HOUR },
+        ],
+        ...over,
+    });
+}
+
+test('sanity: sin bloqueo humano, el skill faltante SÍ se re-encola', () => {
+    const d = only([requeueIssue()]);
+    assert.equal(d.action, 'requeue', 'el carril requeue debe seguir vivo (si no, el test de abajo no prueba nada)');
+    assert.deepEqual(d.skills, ['tester']);
+});
+
+test('#5396: issue con marker de bloqueo humano NO se re-encola (none, dedupe)', () => {
+    const d = only([requeueIssue({ hasNeedsHuman: true, needsHumanSource: 'marker' })]);
+    assert.equal(d.action, 'none', 'un issue esperando decisión humana no se toca');
+    assert.equal(d.reason, 'bloqueado-humano (dedupe: marker)');
+    assert.equal(d.suppression, 'dedupe');
+});
+
+test('#5396: el bloqueo bloquea el requeue también con la caché desconocida (fail-closed)', () => {
+    const d = only([requeueIssue({ hasNeedsHuman: true, needsHumanSource: 'cache-desconocida' })]);
+    assert.equal(d.action, 'none');
+    assert.equal(d.reason, 'cache-desconocida');
+    assert.equal(d.suppression, 'cache');
+});
+
+test('#5396: ejecutar la decisión no escribe work-item ni notifica', () => {
+    const d = only([requeueIssue({ hasNeedsHuman: true, needsHumanSource: 'marker' })]);
+    const s = spyDeps();
+    const res = executeDecisions([d], s.deps);
+    assert.equal(s.calls.requeue.length, 0, 'no spawnea agente sobre un issue bloqueado');
+    assert.equal(s.calls.escalate.length, 0, 'ya estaba escalado: no re-escala');
+    assert.equal(s.calls.notify.length, 0, 'y sobre todo no re-notifica');
+    assert.equal(res.requeued, 0);
+    assert.equal((res.suppressed || {}).dedupe, 1, 'queda contabilizado como supresión por dedupe');
+});

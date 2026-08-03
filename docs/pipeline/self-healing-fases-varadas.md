@@ -114,6 +114,16 @@ Mientras el marker exista, `reconcileLabelToFilesystem` **saltea** el issue
 mecanismo que cortó la oscilación add/remove que se veía en `svc-github.log`
 como el par `Label "needs-human" → #N` / `removido de #N` cada ~30 s.
 
+> **El bloqueo también frena el re-encolado.** `bloqueado-humano/` no es ni
+> deliverable-state ni live-state para el runner, y el marker se planta sin
+> mover el deliverable de `listo/`: el issue **se sigue evaluando** en cada
+> tick. Por eso el guard de dedupe cubre los dos carriles, no sólo `escalate`
+> — un issue con bloqueo vigente decide `none` con razón
+> `bloqueado-humano (dedupe: <origen>)` en lugar de re-encolar el skill que
+> falta. Sin eso, el reconciler spawnearía un agente encima de un issue que
+> está esperando decisión humana, que es exactamente lo que la línea roja
+> ("ante duda: humano") prohíbe.
+
 Sin una de estas vías, el marker acumula bloqueo sin salida. Si ves un issue
 bloqueado que ya no corresponde:
 

@@ -16877,7 +16877,14 @@ function runStuckReconcilerTick() {
   _lastStuckReconcilerAt = Date.now();
   try {
     const config = loadConfig();
-    if (!config || !config.pipelines) return;
+    // #5396 CA-7 — este early-return NO puede ser mudo. Un `config.yaml` ilegible
+    // o corrupto dejaría el self-healing apagado para siempre y sin rastro, que es
+    // exactamente el modo de falla que CA-7 existe para hacer visible (pasó en
+    // producción y nadie se enteró). El log es la única señal de que el tick corrió.
+    if (!config || !config.pipelines) {
+      log('reconciler', '🔧 self-healing tick abortado: config sin `pipelines` (¿config.yaml ilegible?)');
+      return;
+    }
     const ppMode = partialPause.getPipelineMode();
     // Fases PARALELAS de `desarrollo` (todos los skills deben estar, modelo
     // `resultado: aprobado`). Mono-skill (dev/build/entrega) quedan afuera. Las
