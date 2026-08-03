@@ -207,6 +207,130 @@ test('#4541 Bug 2: stderr de texto plano legítimo (sin JSON) SIGUE clasificando
         'el stderr de texto plano real no debe verse afectado por el fix de contenido');
 });
 
+// -----------------------------------------------------------------------------
+// #5454 — Límite SEMANAL de Anthropic en el canal degradado (stderr/texto plano).
+//
+// Defensa en profundidad de #5424: el aviso real del CLI Anthropic
+// ("You've hit your weekly limit · resets 9pm (America/Buenos_Aires)") no
+// matcheaba ningún patrón de `CLI_QUOTA_PATTERNS` y caía a `unknown`, con lo
+// cual el launcher no marcaba cuota agotada ni habilitaba fallback.
+//
+// Contrato completo que fijamos acá:
+//   * weekly/session/usage sobre texto plano → quota_exhausted + fallback + no retriable.
+//   * la MISMA frase dentro de un frame estructurado (`tool_result`) NO clasifica cuota.
+//   * `Usage credits required for 1M context` conserva precedencia (cli_1m_context_glitch).
+//   * el patrón es acotado: entrada adversarial sin match queda `unknown` bajo SR-4.
+// -----------------------------------------------------------------------------
+
+// Texto REAL del aviso semanal, con el sufijo de reset tal cual lo emite el CLI.
+const WEEKLY_LIMIT_REAL_TEXT =
+    "You've hit your weekly limit · resets 9pm (America/Buenos_Aires)";
+
+// Matriz de límites por texto plano (canal degradado del CLI).
+const PLAIN_TEXT_QUOTA_CASES = [
+    {
+        nombre: 'weekly con el sufijo real de reset',
+        raw: WEEKLY_LIMIT_REAL_TEXT,
+        provider: 'anthropic',
+    },
+    {
+        nombre: 'weekly con prefijo de error del CLI',
+        raw: `API Error: ${WEEKLY_LIMIT_REAL_TEXT}`,
+        provider: 'anthropic',
+    },
+    {
+        nombre: 'session limit (sin regresión)',
+        raw: "API Error: You've hit your session limit. Try again later.",
+        provider: 'anthropic',
+    },
+    {
+        nombre: 'usage limit (sin regresión)',
+        raw: "API error: You've hit your usage limit. Upgrade to Pro.",
+        provider: 'openai-codex',
+    },
+];
+
+for (const caso of PLAIN_TEXT_QUOTA_CASES) {
+    test(`#5454 texto plano — ${caso.nombre} clasifica quota_exhausted`, () => {
+        const r = parseProviderError(caso.raw, {
+            provider: caso.provider,
+            transport: 'cli',
+        });
+        assert.equal(r.errorClass, 'quota_exhausted',
+            `"${caso.raw}" debía clasificar como cuota agotada`);
+        assert.equal(r.shouldFallback, true, 'debe habilitar fallback de provider');
+        assert.equal(r.retriable, false, 'una cuota agotada NO es reintentable');
+    });
+}
+
+test('#5454 el patrón weekly está en CLI_QUOTA_PATTERNS y es acotado (sin .* ni grupos opcionales)', () => {
+    const fuentes = parser._CLI_QUOTA_PATTERNS.map((re) => re.source);
+    const weekly = fuentes.filter((s) => /weekly\\s\+limit/.test(s));
+    assert.equal(weekly.length, 1,
+        `esperaba exactamente un patrón weekly en CLI_QUOTA_PATTERNS, encontré ${weekly.length}`);
+    const src = weekly[0];
+    assert.ok(!src.includes('.*'), 'el patrón no debe usar `.*`');
+    assert.ok(!src.includes('?'), 'el patrón no debe usar cuantificadores/grupos opcionales');
+    assert.ok(!/\(\?:.*[+*].*\)[+*]/.test(src), 'el patrón no debe anidar cuantificadores');
+});
+
+test('#5454 aislamiento: weekly dentro de un tool_result estructurado NO clasifica quota', () => {
+    // Mismo shape que INCIDENT_TOOL_RESULT_CONTENT (#4541): contenido del agente,
+    // no canal de control. Contenido controlado por la tarea NUNCA debe poder
+    // deshabilitar un provider por substring.
+    const frame =
+        '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_01TQ9E5H6kQaGL9GT7LKwPJE",' +
+        '"type":"tool_result","content":"Leí el reporte del incidente y decía: ' +
+        "You've hit your weekly limit · resets 9pm (America/Buenos_Aires).\"}]}}";
+    const r = parseProviderError(frame, { provider: 'anthropic', transport: 'cli' });
+    assert.notEqual(r.errorClass, 'quota_exhausted',
+        'la frase weekly dentro de un tool_result no es un error del provider');
+});
+
+test('#5454 aislamiento: weekly dentro de contenido del modelo (assistant) NO clasifica quota', () => {
+    const frame =
+        '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text",' +
+        '"text":"El CLI reporta cuando ' + "You've hit your weekly limit" + '."}]}}';
+    const r = parseProviderError(frame, { provider: 'anthropic', transport: 'cli' });
+    assert.notEqual(r.errorClass, 'quota_exhausted',
+        'el contenido del modelo no es el payload de error del CLI');
+});
+
+test('#5454 precedencia: "Usage credits required for 1M context" sigue siendo cli_1m_context_glitch', () => {
+    // El genérico `Usage credits required` de CLI_QUOTA_PATTERNS solapa con el
+    // glitch 1M (#3506). Con el workaround ACTIVO la rama del glitch se evalúa
+    // primero y el agregado de #5454 no debe alterar ese orden.
+    const previo = process.env.ANTHROPIC_1M_WORKAROUND_ENABLED;
+    process.env.ANTHROPIC_1M_WORKAROUND_ENABLED = '1';
+    try {
+        const r = parseProviderError(
+            'API Error: Usage credits required for 1M context',
+            { provider: 'anthropic', transport: 'cli' },
+        );
+        assert.equal(r.errorClass, 'cli_1m_context_glitch',
+            'el glitch 1M NO es cuota real: debe conservar precedencia');
+        assert.notEqual(r.errorClass, 'quota_exhausted');
+    } finally {
+        if (previo === undefined) delete process.env.ANTHROPIC_1M_WORKAROUND_ENABLED;
+        else process.env.ANTHROPIC_1M_WORKAROUND_ENABLED = previo;
+    }
+});
+
+test('#5454 SR-4: entrada larga adversarial con prefijos weekly parciales queda unknown en <50ms', () => {
+    // Peor caso para el patrón nuevo: muchísimas repeticiones del prefijo
+    // `hit your weekly ` sin la palabra final `limit`, más whitespace largo
+    // entre tokens (el separador `\s+` es el único cuantificador del regex).
+    const evil =
+        ('hit your weekly ' + ' '.repeat(200)).repeat(2000) + 'NOT_A_LIMIT_SUFFIX';
+    const start = process.hrtime.bigint();
+    const r = parseProviderError(evil, { provider: 'anthropic', transport: 'cli' });
+    const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
+    assert.equal(r.errorClass, 'unknown',
+        'sin la palabra `limit` no hay match: debe quedar unknown');
+    assert.notEqual(r.errorClass, 'quota_exhausted');
+    assert.ok(elapsedMs < 50, `Esperaba <50ms (SR-4), tardó ${elapsedMs.toFixed(2)}ms`);
+});
+
 test('CA-7 cross-skill: commander result event estructural clasifica quota_exhausted (mismo shape que skills)', () => {
     const fx = loadFixture('commander-anthropic-result-event.json');
     const r = parseProviderError(fx.raw, { provider: fx.provider, transport: fx.transport });
