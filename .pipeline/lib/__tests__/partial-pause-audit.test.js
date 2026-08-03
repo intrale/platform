@@ -494,3 +494,36 @@ test('partialPauseAuditSlice mapea entries a estados visuales correctos', () => 
     assert.ok(visuals.includes('subsystem'));
     assert.ok(visuals.includes('rejected'));
 });
+
+// -----------------------------------------------------------------------------
+// #5399 — `restart:preserve-pause`: sin este valor en el enum cerrado, la entry
+// de preservación de pausa quedaba como `action: 'reject'` y el CA de auditoría
+// fallaba en silencio.
+// -----------------------------------------------------------------------------
+
+test('restart:preserve-pause es un authorizedBy valido del enum cerrado', () => {
+    const r = audit.validateAuthorizedBy('restart:preserve-pause');
+    assert.equal(r.valid, true);
+    assert.equal(r.normalized, 'restart:preserve-pause');
+    assert.equal(audit.AUTHORIZED_BY_STATIC.includes('restart:preserve-pause'), true);
+});
+
+test('una mutacion con restart:preserve-pause se aplica y no se rechaza', () => {
+    const r = audit.appendMutation({
+        source: 'restart',
+        action: 'write',
+        previous: [5399],
+        current: [5399],
+        authorizedBy: 'restart:preserve-pause',
+        justification: 'restart preservo pausa heredada (source=config-corruption-halt)',
+        extra: { full_pause: true, preserved: true, inherited_source: 'config-corruption-halt' },
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.validation.valid, true);
+    const last = audit.tail(1)[0];
+    assert.equal(last.action, 'write');
+    assert.equal(last.authorized_by, 'restart:preserve-pause');
+    assert.equal(last.authorized_by_rejected_reason, undefined);
+    // Preservar la pausa NO toca la allowlist: sin removals, el gate no se ensancha.
+    assert.deepEqual(last.diff, { added: [], removed: [] });
+});
