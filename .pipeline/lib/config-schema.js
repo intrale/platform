@@ -472,6 +472,19 @@ const SCHEMA = {
                 // ventana se abriera sola.
                 bootstrap_fallback: { type: 'boolean' },
                 bootstrap_fallback_until: { type: 'string' },
+                // #5448 · CA-21 — misma razón que las dos de arriba. El núcleo
+                // igual valida y falla cerrado, pero un `hosts_activos` que es
+                // string en vez de lista se descubre acá, al arrancar, y no el
+                // día que alguien pregunte por qué la ventana no cierra.
+                shadow_window: {
+                    type: 'object',
+                    additionalProperties: true,
+                    properties: {
+                        duration_hours: { type: 'number', minimum: 1 },
+                        hosts_activos: { type: 'array', items: { type: 'string' } },
+                        retention_days: { type: 'number', minimum: 1 },
+                    },
+                },
             },
         },
 
