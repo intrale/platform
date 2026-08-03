@@ -158,6 +158,73 @@ const DEFAULT_ERROR_TYPES = Object.freeze([
     'snapshot_threshold_90',
 ]);
 
+// -----------------------------------------------------------------------------
+// #5455 — EXCEPCIÓN ACOTADA AL CANAL DE CONTENIDO (Anthropic-only)
+//
+// Este módulo documenta como invariante que está PROHIBIDO matchear contra
+// campos controlados por el modelo (canal de contenido). #5424 demostró que
+// existe UN caso real donde el CLI de Anthropic no tiene otro canal: al cortar
+// por límite SEMANAL emite el aviso como frame final `type:'result'` SIN
+// `is_error` ni `error_type`. Sin detectarlo, el flag nunca se persiste, el
+// fallback pre-spawn del Commander vuelve a elegir Anthropic y el operador
+// queda sin canal (incidente 2026-08-02, ~1h sin Commander).
+//
+// La excepción se abre con TODAS estas compensaciones simultáneas — quitar
+// cualquiera reabre el vector de DoS auto-infligido por contenido inducido
+// (prompt/comentario/handoff que imite el aviso):
+//
+//   1. SCOPE ANTHROPIC. El tipo vive SÓLO en `KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER
+//      .anthropic`; `agent-models-validate.js` hace fail-fast al boot si otro
+//      provider lo declara. Además `_detectAnthropic` acepta un `providerId`
+//      explícito y descarta el path si el canónico no es `anthropic`.
+//   2. FRAME COMPLETO. Sólo `evt.type === 'result'`, y el contenido COMPLETO
+//      normalizado debe coincidir con el aviso. Una mención embebida en una
+//      respuesta larga NO matchea (el regex está anclado `^...$`).
+//   3. SHAPES CERRADOS. `result` string, o array de bloques EXCLUSIVAMENTE
+//      `{type:'text', text:string}`. Cualquier bloque mixto/no textual falla
+//      cerrado.
+//   4. LÍMITE DE LONGITUD. Trim exterior y rechazo por encima de 200 chars —
+//      el regex NUNCA corre sobre más de 200 caracteres (garantía anti-ReDoS).
+//   5. REGEX ANCLADO con cuantificadores acotados, sin `.*` y sin construirse
+//      desde input externo.
+//   6. TIPO DEDICADO. Se persiste como `weekly_limit_content_channel`, jamás
+//      como un tipo estructural. El bypass del veto `provider_healthy_fresh`
+//      (ver `isWeeklyLimitContentChannel`) depende de provider Y tipo a la vez.
+//   7. TTL EFECTIVO ≤ 60 MIN. `setFlag` clampea este tipo a `maxDays = 1/24`
+//      aunque el texto anuncie un reset semanal y aunque el caller pase otro
+//      `maxDays`. Un falso positivo cuesta como máximo una hora de gate.
+//   8. PROCEDENCIA + REDACCIÓN. El resultado lleva `source` explícito y el
+//      excerpt pasa por `sanitizeRawExcerpt` (redact central) antes de
+//      persistirse o loguearse.
+// -----------------------------------------------------------------------------
+const WEEKLY_LIMIT_CONTENT_ERROR_TYPE = 'weekly_limit_content_channel';
+
+// Procedencia auditable del match (compensación 8).
+const WEEKLY_LIMIT_CONTENT_SOURCE = 'anthropic-result-content';
+
+// Compensación 4: cota dura del contenido normalizado. El regex sólo corre
+// sobre entradas ya validadas por debajo de este límite.
+const WEEKLY_LIMIT_CONTENT_MAX_CHARS = 200;
+
+// Compensación 3: cota de bloques del shape array (defensa anti-DoS de memoria
+// al concatenar). Un aviso real es 1 bloque; 8 es holgado y sigue acotado.
+const WEEKLY_LIMIT_CONTENT_MAX_BLOCKS = 8;
+
+// Compensación 7: TTL efectivo máximo, en días (1/24 == 60 minutos). Coincide
+// con MIN_TTL_DAYS, el piso del clamp de `resolveMaxDays`.
+const WEEKLY_LIMIT_CONTENT_MAX_DAYS = 1 / 24;
+
+// Compensación 5: regex ANCLADO al frame completo. Cuantificadores acotados,
+// sin `.*`, sin alternancias anidadas y sin construcción dinámica. Cubre el
+// texto real del incidente y sus variantes de apóstrofe/sufijo:
+//   "You've hit your weekly limit · resets 9pm (America/Buenos_Aires)"
+//   "You've hit your weekly limit · resets Aug 9, 9pm (America/Buenos_Aires)"
+//   "You've hit your weekly limit"
+// El grupo 1 captura el reset crudo (incluida la TZ entre paréntesis) para
+// delegarlo a `parseResetToIso`; NO se interpreta la TZ acá.
+const _ANTHROPIC_WEEKLY_LIMIT_CONTENT_PATTERN =
+    /^you['’]?ve\s{1,3}hit\s{1,3}your\s{1,3}weekly\s{1,3}limit(?:\s{0,3}[·•]?\s{0,3}resets\s{1,3}([a-z0-9][a-z0-9 ,:]{0,39}(?:\([a-z0-9_+\-/]{1,40}\))?))?\s{0,3}\.?$/i;
+
 // #3077 SEC-2: meta-allowlist hardcoded de tipos de error de cuota por
 // provider. Si agent-models.json declara un valor fuera de este set, el caller
 // (lib/agent-models-validate.js → validateCrossReferences) hace fail-fast al
@@ -173,6 +240,10 @@ const KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER = Object.freeze({
         'weekly_quota_exhausted',
         // Internos (#3013 snapshot integration)
         'snapshot_threshold_90',
+        // #5455 — Canal de CONTENIDO (excepción acotada documentada arriba).
+        // Anthropic-ONLY por diseño: ningún otro provider puede declararlo sin
+        // que `agent-models-validate.js` falle al boot.
+        WEEKLY_LIMIT_CONTENT_ERROR_TYPE,
         // Reservados para futuras extensiones documentadas
         'plan_max_reset_required',
     ]),
@@ -857,6 +928,39 @@ const RECONCILE_PROVIDER_ALIAS = Object.freeze({
     'anthropic-claude': 'anthropic',
 });
 
+/**
+ * #5455 — Normaliza un id de provider al canónico del adapter.
+ */
+function canonicalProvider(provider) {
+    const raw = typeof provider === 'string' ? provider.trim() : '';
+    if (!raw) return '';
+    return RECONCILE_PROVIDER_ALIAS[raw] || raw;
+}
+
+/**
+ * #5455 — PREDICADO EXACTO compartido por `setFlag` (SET) y `shouldGateSpawn`
+ * (GET) para la ÚNICA excepción al veto `provider_healthy_fresh` de #4865.
+ *
+ * Existe porque el adapter canónico reportó `ok/pct:3` DURANTE el incidente
+ * real: el corte semanal de Anthropic no se refleja en `/usage` a tiempo, así
+ * que el reconcile —correcto para señales por substring— vetaría la única
+ * señal fidedigna que existe para este corte. Exceptuar sólo el SET produciría
+ * un slot que el GET ignora (y el turno siguiente nunca caería a Codex), por
+ * eso el predicado es UNO SOLO y se aplica en ambos puntos.
+ *
+ * Requiere las DOS condiciones a la vez. Ningún otro tipo (incluido
+ * `usage_limit_error`) ni ningún otro provider evita el veto.
+ *
+ * @param {string} provider        id del provider (acepta alias).
+ * @param {string} patternMatched  `errorType` en SET / `pattern_matched` del
+ *                                 slot activo en GET.
+ * @returns {boolean}
+ */
+function isWeeklyLimitContentChannel(provider, patternMatched) {
+    return canonicalProvider(provider) === DEFAULT_PROVIDER
+        && patternMatched === WEEKLY_LIMIT_CONTENT_ERROR_TYPE;
+}
+
 function metricsDir() {
     return path.join(pipelineDir(), 'metrics');
 }
@@ -1010,7 +1114,24 @@ function setFlag(opts = {}) {
     // positivo → vetamos el set y auditamos la discrepancia (no fail-open: sólo
     // vetamos con dato fresco; sin dato, se persiste igual — fail-closed).
     const reconciliation = reconcileWithCanonicalSource(provider, opts);
-    if (reconciliation.veto) {
+    // #5455 — ÚNICA excepción al veto: el aviso del canal de contenido de
+    // Anthropic (ver `isWeeklyLimitContentChannel`). Se audita explícitamente
+    // para que el bypass quede trazable, y el TTL queda clampeado a 60 min más
+    // abajo, así un eventual falso positivo cuesta como máximo una hora.
+    const bypassVeto = reconciliation.veto
+        && isWeeklyLimitContentChannel(provider, errorType);
+    if (bypassVeto && opts.auditLogEnabled !== false) {
+        appendAudit({
+            event: 'flag_set_veto_bypassed',
+            agent: opts.agent || null,
+            provider,
+            model,
+            error_type: errorType,
+            raw_excerpt: `reconcile veto bypassed (#5455 content channel): adapter_status=${reconciliation.adapterStatus} pct=${reconciliation.pct}`,
+            flag_set: true,
+        }, { now });
+    }
+    if (reconciliation.veto && !bypassVeto) {
         if (opts.auditLogEnabled !== false) {
             appendAudit({
                 event: 'flag_set_vetoed',
@@ -1038,7 +1159,15 @@ function setFlag(opts = {}) {
         effectiveResetsAt = now + CODEX_USAGE_LIMIT_RESET_MS;
     }
     // #4731 — TTL configurable por proveedor (clampeado). Prioriza opts.maxDays.
-    const maxDays = resolveMaxDays(provider, opts);
+    let maxDays = resolveMaxDays(provider, opts);
+    // #5455 (compensación 7) — El tipo del canal de contenido tiene un TTL
+    // efectivo máximo de 60 minutos, INDEPENDIENTE de lo que anuncie el texto,
+    // de `config.yaml:ttl_by_provider` y de lo que pase el caller. El clamp vive
+    // acá (escritor único) y no en el caller: así ningún call-site futuro puede
+    // persistir este tipo con el default de 7 días por olvido.
+    if (isWeeklyLimitContentChannel(provider, errorType)) {
+        maxDays = Math.min(maxDays, WEEKLY_LIMIT_CONTENT_MAX_DAYS);
+    }
     const cap = capResetsAt(effectiveResetsAt, { maxDays, now });
     const slot = {
         exhausted: true,
@@ -1273,9 +1402,179 @@ function resolveMaxDays(provider, opts = {}) {
     return Math.min(MAX_TTL_DAYS, Math.max(MIN_TTL_DAYS, days));
 }
 
-function _detectAnthropic(evt, allowlist) {
+// #5455 — Cota dura de acumulación al concatenar bloques. Es una defensa de
+// MEMORIA, no un criterio de match: cualquier contenido que la supere ya está
+// muy por encima de `WEEKLY_LIMIT_CONTENT_MAX_CHARS` y sería rechazado igual
+// tras el `trim()`. Existe para no materializar un string gigante antes de
+// medirlo.
+const _WEEKLY_LIMIT_CONTENT_ACCUM_CAP = WEEKLY_LIMIT_CONTENT_MAX_CHARS * 8;
+
+/**
+ * #5455 — Normaliza el contenido de un frame `result` de Anthropic a string.
+ *
+ * SHAPES ACEPTADOS (compensación 3, fail-closed):
+ *   - `string` — el shape del incidente real.
+ *   - `Array` de bloques EXCLUSIVAMENTE `{ type: 'text', text: string }`.
+ *
+ * Cualquier otra cosa (número, objeto suelto, array vacío, array con un bloque
+ * `tool_use`/`image`/sin `text` string, o más de `WEEKLY_LIMIT_CONTENT_MAX_BLOCKS`
+ * bloques) devuelve `null`. Un solo bloque no textual invalida TODO el frame —
+ * no se filtran los textuales y se concatenan los que "sirven", porque eso
+ * permitiría esconder el aviso dentro de una respuesta con herramientas.
+ *
+ * @returns {string|null} contenido crudo concatenado (sin trim) o null.
+ */
+function _normalizeAnthropicResultContent(raw) {
+    if (typeof raw === 'string') return raw;
+    if (!Array.isArray(raw)) return null;
+    if (raw.length === 0 || raw.length > WEEKLY_LIMIT_CONTENT_MAX_BLOCKS) return null;
+    let out = '';
+    for (const block of raw) {
+        if (!block || typeof block !== 'object' || Array.isArray(block)) return null;
+        if (block.type !== 'text' || typeof block.text !== 'string') return null;
+        out += block.text;
+        if (out.length > _WEEKLY_LIMIT_CONTENT_ACCUM_CAP) return null;
+    }
+    return out;
+}
+
+/**
+ * #5455 — Delega el reset crudo del aviso en el ÚNICO parser del pipeline
+ * (`anthropic-usage.parseResetToIso`). Require perezoso + try/catch: el
+ * detector NUNCA debe tirar, y así evitamos cualquier ciclo de require.
+ *
+ * Un reset ausente o no interpretable devuelve `null` (fail-closed, sin
+ * inventar fecha); `setFlag` aplica entonces su fallback y, en cualquier caso,
+ * clampea el TTL efectivo a 60 minutos para este tipo.
+ *
+ * @param {string|undefined} rawReset texto capturado por el regex.
+ * @param {number} [nowMs] reloj inyectable (tests determinísticos).
+ * @returns {string|null} ISO o null.
+ */
+function _parseWeeklyLimitReset(rawReset, nowMs) {
+    if (typeof rawReset !== 'string' || !rawReset.trim()) return null;
+    try {
+        const { parseResetToIso } = require('./anthropic-usage');
+        if (typeof parseResetToIso !== 'function') return null;
+        return parseResetToIso(rawReset, Number.isFinite(nowMs) ? nowMs : undefined);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * #5455 — Detector del canal de CONTENIDO de Anthropic (excepción acotada).
+ *
+ * Devuelve el resultado DISCRIMINADO que consumen adapter/dispatcher, o `null`
+ * si no aplica (para que el caller siga con el path estructural de siempre).
+ * Nunca devuelve `{ matched: false }`: `null` significa "este path no opina".
+ *
+ * Todas las compensaciones del bloque de cabecera se aplican acá, en orden de
+ * costo creciente — el regex es lo ÚLTIMO y sólo corre sobre ≤200 caracteres.
+ *
+ * @param {object} evt        frame ya validado como `type === 'result'`.
+ * @param {string[]} allowlist quota_error_types del provider EN USO.
+ * @param {object} [opts]
+ * @param {string} [opts.providerId] provider explícito (refuerzo de scope).
+ * @param {number} [opts.now] reloj inyectable para el parseo del reset.
+ * @returns {{matched: true, errorType: string, resetsAt: string|null,
+ *            source: string, rawExcerpt: string}|null}
+ */
+function _detectAnthropicContentChannel(evt, allowlist, opts = {}) {
+    // Compensación 1 (scope por allowlist): el tipo dedicado debe estar
+    // declarado por el provider EN USO. Sólo `anthropic` puede declararlo sin
+    // que `agent-models-validate.js` falle al boot, así que esto ancla el path
+    // a Anthropic incluso cuando el caller no aporta el nombre del provider.
+    if (!Array.isArray(allowlist)) return null;
+    if (!allowlist.includes(WEEKLY_LIMIT_CONTENT_ERROR_TYPE)) return null;
+
+    // Compensación 1 (refuerzo explícito): si el caller SÍ sabe qué provider
+    // corrió y no es el canónico `anthropic`, el path no aplica. Defensa contra
+    // un provider mal configurado que copiara la allowlist de Anthropic.
+    if (opts.providerId != null
+        && canonicalProvider(opts.providerId) !== DEFAULT_PROVIDER) {
+        return null;
+    }
+
+    // Compensación 3: shapes cerrados.
+    const normalized = _normalizeAnthropicResultContent(evt.result);
+    if (normalized === null) return null;
+
+    // Compensación 2 + 4: frame COMPLETO, trim sólo exterior, cota de 200.
+    const content = normalized.trim();
+    if (!content || content.length > WEEKLY_LIMIT_CONTENT_MAX_CHARS) return null;
+
+    // Compensación 5: regex anclado, cuantificadores acotados, sobre ≤200 chars.
+    const m = _ANTHROPIC_WEEKLY_LIMIT_CONTENT_PATTERN.exec(content);
+    if (!m) return null;
+
+    return {
+        matched: true,
+        errorType: WEEKLY_LIMIT_CONTENT_ERROR_TYPE,        // compensación 6
+        resetsAt: _parseWeeklyLimitReset(m[1], opts.now),
+        source: WEEKLY_LIMIT_CONTENT_SOURCE,               // compensación 8
+        rawExcerpt: sanitizeRawExcerpt(content),           // compensación 8
+    };
+}
+
+// #5455 — Cotas del barrido de log (`detectWeeklyLimitContentChannelFromLog`).
+// El log crudo de un spawn puede ser grande; el barrido queda acotado para que
+// el detector no se vuelva un costo relevante ni un vector de DoS por tamaño.
+const _WEEKLY_LIMIT_SCAN_MAX_LINES = 5000;
+const _WEEKLY_LIMIT_SCAN_MAX_LINE_CHARS = 8192;
+
+/**
+ * #5455 — Barre un log crudo de CLI buscando el frame del canal de contenido.
+ *
+ * Existe para que adapter y dispatcher compartan UNA sola implementación y no
+ * tengan que re-parsear `verdict.evidence`: ese campo pasa por
+ * `sanitizeRawExcerpt` (redacción + truncado a `RAW_EXCERPT_MAX_CHARS`), así
+ * que NO es JSON re-parseable de forma confiable. La fuente correcta es el log
+ * crudo.
+ *
+ * Anthropic-only por construcción: usa la allowlist canónica de `anthropic`.
+ *
+ * @param {string} rawText contenido crudo del log del spawn.
+ * @param {object} [opts] `{ now }` reloj inyectable para el parseo del reset.
+ * @returns {{matched: true, errorType: string, resetsAt: string|null,
+ *            source: string, rawExcerpt: string}|null}
+ */
+function detectWeeklyLimitContentChannelFromLog(rawText, opts = {}) {
+    if (typeof rawText !== 'string' || !rawText) return null;
+    const allowlist = KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER[DEFAULT_PROVIDER] || [];
+    if (!allowlist.includes(WEEKLY_LIMIT_CONTENT_ERROR_TYPE)) return null;
+    const lines = rawText.split('\n');
+    const limit = Math.min(lines.length, _WEEKLY_LIMIT_SCAN_MAX_LINES);
+    for (let i = 0; i < limit; i++) {
+        const line = lines[i].trim();
+        // Sólo frames JSON del stream. `startsWith('{')` replica el criterio ya
+        // usado por `providers/anthropic.js`.
+        if (line.length === 0 || line.length > _WEEKLY_LIMIT_SCAN_MAX_LINE_CHARS) continue;
+        if (line.charCodeAt(0) !== 123 /* '{' */) continue;
+        let evt;
+        try { evt = JSON.parse(line); } catch { continue; }
+        if (!evt || typeof evt !== 'object' || evt.type !== 'result') continue;
+        const r = _detectAnthropicContentChannel(evt, allowlist, {
+            ...opts,
+            providerId: DEFAULT_PROVIDER,
+        });
+        if (r) return r;
+    }
+    return null;
+}
+
+function _detectAnthropic(evt, allowlist, opts = {}) {
     if (!evt || typeof evt !== 'object') return { matched: false };
     if (evt.type !== 'result') return { matched: false };
+
+    // #5455 — CANAL DE CONTENIDO (excepción acotada; ver bloque de compensaciones
+    // arriba). Corre ANTES del path estructural porque el frame real NO trae
+    // `is_error` ni `error_type` — el path estructural lo descartaría. No hay
+    // solapamiento: el regex está anclado al aviso semanal completo, así que un
+    // frame estructural legítimo nunca matchea acá y cae al path de siempre.
+    const contentMatch = _detectAnthropicContentChannel(evt, allowlist, opts);
+    if (contentMatch) return contentMatch;
+
     if (evt.is_error !== true) return { matched: false };
     const errorType = typeof evt.error_type === 'string' ? evt.error_type : null;
     if (!errorType) return { matched: false };
@@ -1471,14 +1770,37 @@ function shouldGateSpawn(skill, opts = {}) {
     // proveedores agotados, cada uno gatea sólo sus propios skills.
     if (opts.provider) {
         const slots = Array.isArray(flag.providers) ? flag.providers : [];
-        const hasSlot = slots.some((p) => p.provider === opts.provider);
-        if (!hasSlot) return false;
+        // #5455 — Seleccionamos el SLOT ACTIVO (no sólo su existencia) porque el
+        // bypass del veto depende de su `pattern_matched`.
+        const activeSlot = slots.find((p) => p && p.provider === opts.provider) || null;
+        if (!activeSlot) return false;
         // #4865 — antes de HONRAR el gate, reconciliar contra la fuente única.
         // Si el adapter canónico reporta el proveedor sano con dato fresco, el
         // slot activo es un remanente o falso positivo → NO gateamos y auditamos
         // la discrepancia. Fail-closed: sin dato fresco, honramos el flag (return
         // true), preservando el comportamiento conservador previo.
         const reconciliation = reconcileWithCanonicalSource(opts.provider, opts);
+        // #5455 — MISMO predicado exacto que en `setFlag` (SET). Sin esto, el
+        // subtipo se persistiría y el GET lo ignoraría con el adapter en
+        // `ok/pct:3`: el turno siguiente volvería a elegir Anthropic y el gate
+        // no serviría de nada. El bypass exige provider `anthropic` Y
+        // `pattern_matched === weekly_limit_content_channel` en el slot ACTIVO;
+        // cualquier otro tipo (incluido `usage_limit_error`) o cualquier otro
+        // provider conserva el veto de #4865 intacto.
+        const bypassVeto = reconciliation.veto
+            && isWeeklyLimitContentChannel(opts.provider, activeSlot.pattern_matched);
+        if (bypassVeto) {
+            appendAudit({
+                event: 'gate_veto_bypassed',
+                agent: skill || null,
+                provider: opts.provider,
+                model: null,
+                error_type: activeSlot.pattern_matched || null,
+                raw_excerpt: `reconcile veto bypassed (#5455 content channel): adapter_status=${reconciliation.adapterStatus} pct=${reconciliation.pct}`,
+                flag_set: false,
+            }, { now: Number.isFinite(opts.now) ? opts.now : undefined });
+            return true;
+        }
         if (reconciliation.veto) {
             appendAudit({
                 event: 'gate_vetoed',
@@ -1514,6 +1836,11 @@ module.exports = {
     appendAudit,
     // #4865 — reconciliación contra la fuente única de verdad por proveedor.
     reconcileWithCanonicalSource,
+    // #5455 — predicado exacto de la única excepción al veto (SET + GET).
+    isWeeklyLimitContentChannel,
+    canonicalProvider,
+    // #5455 — barrido compartido por adapter y dispatcher.
+    detectWeeklyLimitContentChannelFromLog,
 
     // Helpers expuestos para integración con pulpo.js
     capResetsAt,
@@ -1535,6 +1862,12 @@ module.exports = {
     DETERMINISTIC_SKILLS,
     KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER,
     CODEX_USAGE_LIMIT_RESET_MS,
+    // #5455 — canal de contenido (excepción acotada Anthropic-only).
+    WEEKLY_LIMIT_CONTENT_ERROR_TYPE,
+    WEEKLY_LIMIT_CONTENT_SOURCE,
+    WEEKLY_LIMIT_CONTENT_MAX_CHARS,
+    WEEKLY_LIMIT_CONTENT_MAX_BLOCKS,
+    WEEKLY_LIMIT_CONTENT_MAX_DAYS,
     MIN_TTL_DAYS,
     MAX_TTL_DAYS,
     RECONCILE_HEALTHY_MAX_PCT,
@@ -1550,4 +1883,8 @@ module.exports = {
     _detectOpenAI,
     _CLI_1M_CONTEXT_GLITCH_PATTERN,
     _CODEX_USAGE_LIMIT_PATTERN,
+    // #5455
+    _detectAnthropicContentChannel,
+    _normalizeAnthropicResultContent,
+    _ANTHROPIC_WEEKLY_LIMIT_CONTENT_PATTERN,
 };
