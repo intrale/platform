@@ -64,6 +64,12 @@
 // que una fila nunca se parte en dos: un lector que hace `split('\n')` obtiene
 // siempre filas completas y parseables.
 //
+// La ÚNICA operación que no es append-only es la purga por retención, y por eso
+// es fail-closed: escribe a un temporal y sólo reemplaza el JSONL si el archivo
+// no cambió de tamaño desde que lo leyó. Ante cualquier duda aborta y no purga
+// nada — perder una purga es inocuo, perder una fila negativa es fail-open. Ver
+// el comentario de `purgar()`.
+//
 // Sin red, sin timers, sin Telegram: `loadIntoEnv()` sigue siendo sync (CA-16).
 // =============================================================================
 
@@ -522,32 +528,103 @@ function createVaultShadowMetrics(opts = {}) {
     return rows;
   }
 
+  /** Tamaño en bytes del JSONL, o `null` si no se puede determinar. */
+  function tamanoJsonl() {
+    try {
+      return fs.statSync(jsonlPath).size;
+    } catch (e) {
+      // Inexistente o ilegible: no hay un tamaño con el que comparar. Devolver
+      // `null` (y no 0) obliga a ABORTAR la purga en vez de asumir "no cambió".
+      return null;
+    }
+  }
+
   /**
    * Purga por retención (CA-22d / [REQ-SEC-12]).
    *
    * El límite efectivo NUNCA supera t0: la evidencia de la ventana vigente no
    * se toca, y t0 no se mueve acá bajo ninguna circunstancia.
+   *
+   * Purga FAIL-CLOSED frente a la concurrencia — no es una precaución teórica
+   * --------------------------------------------------------------------------
+   * La purga es la única operación del módulo que NO es append-only: lee el
+   * JSONL entero y lo reemplaza. Otros procesos appendean ese mismo archivo en
+   * cualquier momento (`record()` de un boot concurrente), así que toda fila
+   * appendeada ENTRE la lectura y la reescritura desaparecería sin dejar señal:
+   * el append original tuvo éxito, así que tampoco se dispara el sidecar
+   * `.integrity`. Si la fila perdida es evidencia NEGATIVA, `evaluate()` pasa de
+   * `no_cumple`/`evidencia_negativa` a `cumple` y habilita retirar el fallback —
+   * exactamente el modo de falla fail-open que [H-2 de #5427] y la asimetría de
+   * persistencia por vía existen para evitar.
+   *
+   * Por eso la purga se hace en dos tiempos y se ABORTA ante la mínima duda:
+   *
+   *   1. se captura el tamaño del JSONL ANTES de leerlo;
+   *   2. las filas conservadas se escriben en un temporal propio del proceso;
+   *   3. JUSTO antes del `rename` se relee el tamaño: si cambió (o no se puede
+   *      leer), se descarta el temporal y NO se toca el JSONL.
+   *
+   * La asimetría de costos manda: perder una purga es inocuo (el archivo crece
+   * un poco más y se reintenta en la próxima evaluación); perder una fila
+   * negativa habilita retirar el fallback de credenciales. El `rename` además
+   * elimina la ventana en la que el JSONL quedaba truncado a medio escribir, y
+   * el temporal lleva el pid para que dos purgas simultáneas no se pisen (la
+   * segunda ve el tamaño ya cambiado por la primera y aborta).
+   *
+   * Alcance honesto de la guarda: cubre TODA la ventana de trabajo real — leer
+   * y parsear el JSONL, filtrar, serializar y escribir el temporal — y deja
+   * fuera sólo los dos syscalls adyacentes `statSync`/`renameSync`, entre los
+   * que no se ejecuta ni una línea de JS. Cerrar también ese resto exigiría un
+   * lock que los appendeadores tendrían que tomar en el camino de boot, lo que
+   * agrega un modo de falla (lock huérfano ⇒ boot bloqueado) peor que el que
+   * evita. Sin lock y en sync no existe un read-modify-write atómico.
    */
   function purgar({ retentionDays, t0Ms }) {
     const dias = Number.isFinite(retentionDays) && retentionDays > 0 ? retentionDays : DEFAULTS.retention_days;
     const limitePorRetencion = now() - dias * MS_DIA;
     const limite = Math.min(limitePorRetencion, t0Ms);
 
+    // ANTES de leer: cualquier append posterior a esta marca cambia el tamaño.
+    const tamanoAntes = tamanoJsonl();
+
     const rows = readRows();
     const conservadas = rows.filter((r) => msDeIso(r.ts) >= limite);
     if (conservadas.length === rows.length) return { purgadas: 0 };
 
+    const tmpPath = `${jsonlPath}.${process.pid}.tmp`;
     try {
       asegurarDir();
       const txt = conservadas.map((r) => JSON.stringify(r)).join('\n') + (conservadas.length ? '\n' : '');
-      fs.writeFileSync(jsonlPath, txt, { mode: 0o600 });
+      fs.writeFileSync(tmpPath, txt, { mode: 0o600 });
+
+      // Última comprobación, pegada al `rename`: nada puede ejecutarse entre
+      // esta guarda y el reemplazo del archivo.
+      const tamanoDespues = tamanoJsonl();
+      if (tamanoAntes === null || tamanoDespues === null || tamanoDespues !== tamanoAntes) {
+        borrarTmp(tmpPath);
+        logger('[vault-shadow] WARN: se aborto la purga del registro de la ventana sombra porque otro '
+          + 'proceso escribio el archivo mientras se purgaba. '
+          + 'Impacto: ninguno sobre la evaluacion; el archivo crece un poco mas y se reintenta en la '
+          + 'proxima evaluacion. Proximo paso: ninguno, es el comportamiento esperado');
+        return { purgadas: 0, abortada: 'archivo_modificado' };
+      }
+
+      fs.renameSync(tmpPath, jsonlPath);
       return { purgadas: rows.length - conservadas.length };
     } catch (e) {
+      borrarTmp(tmpPath);
       logger(`[vault-shadow] WARN: no se pudo purgar el registro de la ventana sombra (${errorSeguro(e)}). `
         + 'Impacto: el archivo crece mas de lo previsto; la evaluacion no se altera. '
         + `Proximo paso: revisar permisos de ${auditDir}`);
       return { purgadas: 0, error: errorSeguro(e) };
     }
+  }
+
+  /** Borra el temporal de la purga. Best-effort: su presencia no afecta a nadie. */
+  function borrarTmp(tmpPath) {
+    try {
+      if (typeof fs.unlinkSync === 'function') fs.unlinkSync(tmpPath);
+    } catch (e) { /* no existía o no se puede borrar: nadie lo lee */ }
   }
 
   // ---------------------------------------------------------------------------

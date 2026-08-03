@@ -723,6 +723,134 @@ test('la retencion nunca borra por debajo de t0 aunque la ventana sea mas larga 
   });
 });
 
+// -----------------------------------------------------------------------------
+// La purga es la ÚNICA operación que no es append-only: lee el JSONL entero y lo
+// reemplaza. Un append de otro proceso dentro de esa ventana desaparecería sin
+// dejar señal (el append tuvo éxito, así que tampoco hay sidecar `.integrity`) y
+// si la fila perdida es NEGATIVA, `evaluate()` pasa de `no_cumple` a `cumple` y
+// habilita retirar el fallback: fail-open, justo lo que [H-2 de #5427] evita.
+// -----------------------------------------------------------------------------
+
+/**
+ * `fs` inyectable que simula a otro proceso appendeando `filaAInyectar` DENTRO
+ * de la ventana de la purga: el hook cuelga de la escritura del temporal, que
+ * ocurre después de que la purga leyó el JSONL y antes de que lo reemplace.
+ */
+function fsConAppendConcurrente(jsonlPath, filaAInyectar) {
+  const proxy = Object.create(fs);
+  proxy.inyectada = false;
+  proxy.writeFileSync = (p, data, o) => {
+    if (String(p).startsWith(jsonlPath) && String(p).endsWith('.tmp') && !proxy.inyectada) {
+      proxy.inyectada = true;
+      fs.appendFileSync(jsonlPath, JSON.stringify(filaAInyectar) + '\n');
+    }
+    return fs.writeFileSync(p, data, o);
+  };
+  return proxy;
+}
+
+/** Escenario compartido: cobertura positiva completa + filas viejas purgables. */
+function escenarioPurgaConCoberturaCompleta(auditDir) {
+  const r = reloj();
+  cubrirTodo(auditDir, r, [HOST_A]);            // evidencia vieja → se va a purgar
+  r.avanzar(5 * D);
+  nuevo(auditDir, { now: r.now }).evaluate({ descriptors: DESCRIPTORES, hostsActivos: [HOST_A], retentionDays: 1 });
+  r.avanzar(H);
+  cubrirTodo(auditDir, r, [HOST_A]);            // cobertura positiva COMPLETA en ventana
+  r.avanzar(40 * H);
+  return r;
+}
+
+test('un append concurrente durante la purga no puede perder evidencia negativa', () => {
+  conAuditDir((auditDir) => {
+    const r = escenarioPurgaConCoberturaCompleta(auditDir);
+    const jsonlPath = path.join(auditDir, 'vault-resolution.jsonl');
+    const ts = new Date(r.ms).toISOString();
+    const negativa = {
+      ts, name: 'telegram.bot_token', host: HOST_A, via: VIA.MISSING, count: 1, first_ts: ts, last_ts: ts,
+    };
+
+    const fsProxy = fsConAppendConcurrente(jsonlPath, negativa);
+    const logger = capturarLogs();
+    const ev = nuevo(auditDir, { now: r.now, fs: fsProxy, logger })
+      .evaluate({ descriptors: DESCRIPTORES, hostsActivos: [HOST_A], retentionDays: 1 });
+
+    assert.equal(fsProxy.inyectada, true, 'el escenario tiene que haber ejercitado la ventana de la purga');
+
+    // 1 · la fila negativa SOBREVIVE en el archivo.
+    const negativasEnDisco = leerJsonl(auditDir).filter((f) => f.via === VIA.MISSING);
+    assert.equal(negativasEnDisco.length, 1, 'la purga se comio la evidencia negativa appendeada');
+
+    // 2 · y por lo tanto la evaluación NO aprueba (sin la carrera daria `cumple`).
+    assert.equal(ev.estado, ESTADO.NO_CUMPLE);
+    assert.equal(ev.motivo, 'evidencia_negativa');
+
+    // 3 · la purga se abortó con un WARN explicito y sin dejar temporales.
+    assert.match(logger.texto(), /se aborto la purga/i);
+    assert.equal(fs.readdirSync(auditDir).some((f) => f.endsWith('.tmp')), false, 'quedo un temporal colgado');
+  });
+});
+
+test('un append concurrente POSITIVO durante la purga tampoco se pierde', () => {
+  conAuditDir((auditDir) => {
+    const r = escenarioPurgaConCoberturaCompleta(auditDir);
+    const jsonlPath = path.join(auditDir, 'vault-resolution.jsonl');
+    const ts = new Date(r.ms).toISOString();
+    const fila = {
+      ts, name: 'telegram.chat_id', host: HOST_B, via: VIA.VAULT, count: 9, first_ts: ts, last_ts: ts,
+    };
+
+    const fsProxy = fsConAppendConcurrente(jsonlPath, fila);
+    const antes = leerJsonl(auditDir).length;
+    nuevo(auditDir, { now: r.now, fs: fsProxy })
+      .evaluate({ descriptors: DESCRIPTORES, hostsActivos: [HOST_A], retentionDays: 1 });
+
+    assert.equal(fsProxy.inyectada, true);
+    const despues = leerJsonl(auditDir);
+    // Se aborta la purga entera: no se pierde NADA, ni lo viejo ni lo appendeado.
+    assert.equal(despues.length, antes + 1, 'la purga no puede perder filas appendeadas en su ventana');
+    assert.equal(despues.filter((f) => f.count === 9).length, 1);
+  });
+});
+
+test('sin concurrencia la purga sigue reemplazando el archivo por rename y sin temporales', () => {
+  conAuditDir((auditDir) => {
+    const r = escenarioPurgaConCoberturaCompleta(auditDir);
+    const logger = capturarLogs();
+    const ev = nuevo(auditDir, { now: r.now, logger })
+      .evaluate({ descriptors: DESCRIPTORES, hostsActivos: [HOST_A], retentionDays: 1 });
+
+    assert.equal(ev.estado, ESTADO.CUMPLE, 'el camino feliz no puede haberse roto');
+    assert.equal(leerJsonl(auditDir).length, 3, 'las 3 filas viejas se purgaron');
+    assert.equal(fs.readdirSync(auditDir).some((f) => f.endsWith('.tmp')), false, 'el temporal no se limpio');
+    assert.doesNotMatch(logger.texto(), /se aborto la purga/i, 'no hubo concurrencia: no corresponde abortar');
+    // El JSONL conserva permisos restrictivos despues del rename (REQ-SEC-10).
+    if (process.platform !== 'win32') {
+      assert.equal(fs.statSync(path.join(auditDir, 'vault-resolution.jsonl')).mode & 0o777, 0o600);
+    }
+  });
+});
+
+test('si no se puede determinar el tamano del JSONL la purga aborta en vez de reescribir', () => {
+  conAuditDir((auditDir) => {
+    const r = escenarioPurgaConCoberturaCompleta(auditDir);
+    const antes = leerJsonl(auditDir).length;
+
+    // `statSync` roto ⇒ no hay con qué comparar ⇒ fail-closed: no se purga nada.
+    const fsProxy = Object.create(fs);
+    fsProxy.statSync = (p) => {
+      if (String(p).endsWith('vault-resolution.jsonl')) throw Object.assign(new Error('boom'), { code: 'EIO' });
+      return fs.statSync(p);
+    };
+
+    nuevo(auditDir, { now: r.now, fs: fsProxy })
+      .evaluate({ descriptors: DESCRIPTORES, hostsActivos: [HOST_A], retentionDays: 1 });
+
+    assert.equal(leerJsonl(auditDir).length, antes, 'sin tamano verificable no se puede tocar el archivo');
+    assert.equal(fs.readdirSync(auditDir).some((f) => f.endsWith('.tmp')), false);
+  });
+});
+
 // =============================================================================
 // Lectura tolerante y concurrencia
 // =============================================================================
