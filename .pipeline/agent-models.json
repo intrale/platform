@@ -21,7 +21,8 @@
       "quota_error_types": [
         "usage_limit_error",
         "weekly_quota_exhausted",
-        "snapshot_threshold_90"
+        "snapshot_threshold_90",
+        "weekly_limit_content_channel"
       ],
       "resets_at_cap_max_days": 7,
       "supports_tool_use": true,

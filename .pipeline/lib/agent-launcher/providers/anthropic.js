@@ -198,12 +198,23 @@ function detectQuotaExhausted(logPath, cfg, quotaExhaustedModule, fsImpl, parser
         const allowlist = (quotaExhaustedModule.KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER || {})['anthropic']
             || (cfg && cfg.error_types)
             || [];
-        const r = quotaExhaustedModule._detectAnthropic(evt, allowlist);
+        const r = quotaExhaustedModule._detectAnthropic(evt, allowlist, {
+            providerId: 'anthropic',
+        });
         if (r && r.matched) {
+            // #5455 — El canal de contenido devuelve un resultado DISCRIMINADO
+            // con `resetsAt` ya parseado desde el texto del aviso (el frame no
+            // trae `evt.resets_at`), más `source`/`rawExcerpt` redactado. Los
+            // propagamos para que el caller pueda persistir vía `setFlag` sin
+            // volver a parsear nada. Para los matches estructurales de siempre,
+            // `r.resetsAt` es `undefined` y cae a `evt.resets_at` (contrato
+            // previo intacto).
             return {
                 matched: true,
                 errorType: r.errorType,
-                resetsAt: evt.resets_at,
+                resetsAt: r.resetsAt != null ? r.resetsAt : evt.resets_at,
+                ...(r.source ? { source: r.source } : {}),
+                ...(r.rawExcerpt ? { rawExcerpt: r.rawExcerpt } : {}),
                 rawLine: line,
                 evt,
             };
