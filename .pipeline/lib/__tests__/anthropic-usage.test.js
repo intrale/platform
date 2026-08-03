@@ -194,3 +194,82 @@ test('getUsage con autoRefresh:true dispara el spawn cuando el cache está viejo
     assert.equal(spawned, 1);
     u._resetRefreshingForTesting();
 });
+
+// ---------------------------------------------------------------------------
+// #5455 — parseResetToIso: formatos reales del aviso semanal + fail-closed.
+//
+// Antes de #5455 el helper devolvía null para los DOS formatos reales
+// observados (hora sola "9pm" y mes/día "Aug 9, 9pm"), así que "reusar
+// parseResetToIso" no alcanzaba. Reloj fijo en todos los casos: el helper
+// resuelve en hora LOCAL (parse imperfecto por diseño, sin libs de timezone),
+// por eso las aserciones comparan contra Date locales construidos igual.
+// ---------------------------------------------------------------------------
+
+// 3-ago-2026, 12:00 hora local.
+const REF_MEDIODIA = new Date(2026, 7, 3, 12, 0, 0).getTime();
+
+function isoLocal(y, m, d, h, min) {
+    return new Date(y, m, d, h, min, 0, 0).toISOString();
+}
+
+test('#5455 · hora sola futura del mismo día → esa hora de hoy', () => {
+    const u = fresh();
+    // 21:00 aún no pasó respecto de las 12:00.
+    assert.equal(u.parseResetToIso('9pm', REF_MEDIODIA), isoLocal(2026, 7, 3, 21, 0));
+});
+
+test('#5455 · hora sola ya pasada → rollover al día siguiente', () => {
+    const u = fresh();
+    // 22:00 como referencia: las 21:00 ya pasaron → próxima ocurrencia mañana.
+    const ref = new Date(2026, 7, 3, 22, 0, 0).getTime();
+    assert.equal(u.parseResetToIso('9pm', ref), isoLocal(2026, 7, 4, 21, 0));
+});
+
+test('#5455 · hora sola en formato 24h ("21:00") también resuelve', () => {
+    const u = fresh();
+    assert.equal(u.parseResetToIso('21:00', REF_MEDIODIA), isoLocal(2026, 7, 3, 21, 0));
+});
+
+test('#5455 · mes/día futuro de /usage ("Aug 9, 9pm") → ese día del año en curso', () => {
+    const u = fresh();
+    assert.equal(u.parseResetToIso('Aug 9, 9pm', REF_MEDIODIA), isoLocal(2026, 7, 9, 21, 0));
+});
+
+test('#5455 · mes/día ya pasado → próxima ocurrencia (año siguiente)', () => {
+    const u = fresh();
+    // Jul 12 de 2026 ya pasó respecto del 3-ago-2026 → 2027.
+    assert.equal(u.parseResetToIso('Jul 12, 8:59pm', REF_MEDIODIA), isoLocal(2027, 6, 12, 20, 59));
+});
+
+test('#5455 · la TZ entre paréntesis y el prefijo "resets" se descartan', () => {
+    const u = fresh();
+    const esperado = isoLocal(2026, 7, 3, 21, 0);
+    assert.equal(u.parseResetToIso('9pm (America/Buenos_Aires)', REF_MEDIODIA), esperado);
+    assert.equal(u.parseResetToIso('resets 9pm (America/Buenos_Aires)', REF_MEDIODIA), esperado);
+});
+
+test('#5455 · reset inválido devuelve null, sin inventar fecha', () => {
+    const u = fresh();
+    for (const raw of ['banana', '', '   ', 'Feb 31, 9pm', '13pm', '25:00', '9pm x']) {
+        assert.equal(u.parseResetToIso(raw, REF_MEDIODIA), null, `debe ser null: ${JSON.stringify(raw)}`);
+    }
+});
+
+test('#5455 · REGRESIÓN: tokens numéricos sueltos NO se resuelven a fechas inventadas', () => {
+    // Date.parse es tan permisivo que resolvía estos tokens a fechas PASADAS
+    // ("9" → 2001-09-01, "2020" → 2020-01-01). Como el helper ahora recibe el
+    // reset capturado del canal de CONTENIDO (controlable por el modelo), un
+    // aviso truncado como "...· resets 9" habría producido un resetsAt en el
+    // pasado y, tras el clamp, un gate de 5 minutos en vez del gate corto
+    // esperado. El fallback legacy exige ahora un token de mes conocido.
+    const u = fresh();
+    for (const raw of ['9', '12', '99', '2020', '0', '00', '1 2', '9 9', 'x 9']) {
+        assert.equal(u.parseResetToIso(raw, REF_MEDIODIA), null, `debe ser null: ${JSON.stringify(raw)}`);
+    }
+});
+
+test('#5455 · refMs inválido no rompe: cae al reloj real y devuelve ISO o null', () => {
+    const u = fresh();
+    const out = u.parseResetToIso('Aug 9, 9pm', NaN);
+    assert.ok(out === null || !Number.isNaN(Date.parse(out)));
+});

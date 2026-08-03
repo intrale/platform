@@ -431,6 +431,35 @@ admitir barras.** Aflojarlo rompería la allowlist —un `namespace` con `/` pod
 apuntar fuera del scope autorizado— y es exactamente la defensa anti-IDOR que el
 kernel ya tiene escrita.
 
+### Punto de entrada canónico para quien NO lee — #5464
+
+El tramo de provisión (#5425) resuelve el **mismo** nombre lógico que el runtime,
+pero corre en otro proceso, con otra identidad y con un port de escritura propio.
+Para que no termine copiando los regex ni concatenando el path a mano,
+`secret-vault.js` exporta `validateVaultNamespace(...)`:
+
+```js
+const { validateVaultNamespace } = require('.pipeline/lib/secret-vault');
+
+validateVaultNamespace({ prefix, projectId, hostId, scope, tier });
+// -> { tier, service: 'ssm'|'secretsmanager', path, root, prefix, projectId, hostId, scope }  (congelado)
+```
+
+- **No es una segunda implementación.** Es un envoltorio *puro* sobre
+  `buildParameterPath`, que sigue siendo el único lugar donde vive el esquema y
+  el único que corre `SEGMENT_RE` / `PREFIX_RE`. Mismos argumentos, mismos
+  errores (`VaultConfigError` con la clave de config) y misma semántica de
+  `root`; lo único que agrega es el descriptor enriquecido.
+- **`service` sale de `VAULT_TIER_SERVICE`**, declarado una sola vez y cubierto
+  por test contra `VAULT_TIERS`: un tier nuevo sin destino declarado rompe la
+  suite en vez de mandar el pedido al servicio equivocado.
+- **Los regex no se exportan a propósito.** Exportarlos habilitaría justamente la
+  copia que este punto de entrada viene a evitar.
+- **No amplía privilegios.** Es una función sin I/O, sin ambiente y sin driver:
+  `VAULT_READONLY_COMMANDS` queda idéntica y ningún driver de este módulo expone
+  escritura. Con qué verbo se escribe es decisión del provisionador, fuera de
+  `secret-vault.js`.
+
 ## Costo por escenario
 
 Precios de lista públicos de AWS para la región de referencia de precios
@@ -767,3 +796,73 @@ La ventana de bootstrap (`vault.bootstrap_fallback` +
 encender el gate antes de terminar todas las altas. Nunca se activa por un error
 del driver, nunca alcanza al ancla, y caduca sola. No es un mecanismo de
 resiliencia — si el vault falla, el pipeline degrada fail-closed y lo narra.
+
+## Provisión (escritura) — `vault-provisioner.js`, #5465
+
+El módulo `secret-vault.js` **lee** y nada más. La **escritura** vive en
+`.pipeline/lib/vault-provisioner.js`: otro módulo, otro proceso y otra
+identidad. No es una separación estética — la policy del runtime tiene un
+`Deny` explícito sobre `ssm:PutParameter` (ver `vault-iam-policy.json`), así que
+el runtime no podría escribir aunque se lo pidieran.
+
+### Qué garantiza
+
+- Toda escritura es `SecureString`, con **CMK explícita** y `Overwrite: true`.
+  Sin CMK el provisionador **no se construye**: la clave administrada por
+  defecto de AWS no es una CMK del proyecto.
+- El nombre sale **exclusivamente** de `validateVaultNamespace` (#5464). Acá no
+  hay regex, ni concatenación de path, ni reglas propias.
+- La identidad efectiva se resuelve contra **STS** y se compara con
+  `config.provisioningPrincipal`. Ausente, no verificable o distinta ⇒ falla
+  **antes** de emitir una sola llamada a SSM. Declararse «provisioning» no
+  alcanza.
+- El tier `rotating` se rechaza: resuelve en Secrets Manager, que es otro flujo.
+
+### Autorización: no la firma el caller
+
+La CMK y el permiso de sobrescritura **no viajan en el payload**. Un
+`allowOverwrite: true` junto al secreto sería autoautorización. Son dos
+colaboradores inyectados por el composition root del operador:
+
+- `identity.resolveArn()` — principal efectivo, de fuente confiable.
+- `overwriteAuthority.authorize({ path })` — capability separada. Sólo `true`
+  estricto habilita sobrescribir.
+
+El payload es **cerrado** (`tier`, `scope`, `value`): una clave de más es
+rechazo, no un campo ignorado en silencio.
+
+### Estados e idempotencia
+
+| Estado | Cuándo | `PutParameter` |
+|---|---|---|
+| `creado` | el nombre no existía | sí |
+| `sin cambios` | mismo valor y ya era `SecureString` | **no** (la versión no sube) |
+| `sobrescrito` | valor distinto **y** capability autorizó | sí (la versión avanza) |
+
+Un parámetro preexistente en texto plano **no** cuenta como `sin cambios`:
+está expuesto y repararlo es sobrescribir, con capability.
+
+> **Concurrencia — leer antes de asumir idempotencia fuerte.** SSM
+> `PutParameter` **no** ofrece compare-and-swap por versión. La secuencia
+> `Get → comparar → Put` es idempotente para ejecución **serial** y nada más. El
+> provisionador serializa por nombre **dentro del proceso**; entre procesos
+> distintos no hay exclusión posible con la API de SSM. Si el composition root
+> abre varios provisionadores sobre el mismo nombre, la serialización es
+> responsabilidad suya. La verificación posterior exige que la versión **avance**
+> en una sobrescritura, así que un writer pisado falla cerrado en vez de
+> reportar un éxito falso.
+
+### Qué sale del módulo
+
+Sólo `{ estado, tier, scope, path, metadata: { Type, Version } }`, construido por
+allowlist campo por campo. Nunca el valor, su hash, la respuesta cruda de AWS,
+`$metadata`, `cause` ni el stack del SDK: el error del SDK puede arrastrar el
+request, y el request lleva el secreto. La verificación posterior lee metadata
+**sin descifrar** y comprueba `Type === 'SecureString'` y una `Version` entera.
+
+### Dependencia
+
+`@aws-sdk/client-ssm` entra fijado por lockfile y **sólo** para este port. Se
+carga en forma perezosa dentro del adapter real, así que la suite corre sin
+tenerlo instalado. El camino de lectura sigue sin SDK: usa la AWS CLI y
+`secret-vault-sync-5353.test.js` lo sigue verificando.
