@@ -53,6 +53,25 @@ function escalarEnSandbox() {
     return { res, tmpRoot, deliverable };
 }
 
+/**
+ * Nombre del marker que `escalate` DEBE plantar, DERIVADO del sandbox.
+ *
+ * #5396 rev-1 — el marker dejó de ser el skill sintético `<issue>.reconciler` y
+ * pasa a ser un skill DESPACHABLE, validado contra `skills_por_fase[fase]` (la
+ * misma lista que usa el invariante skill∈fase de `pulpo.js`). El worker escala
+ * SIN imputar skills (`meta.skills` vacío), así que la regla que aplica es el
+ * fallback determinista documentado en `escalate`: el PRIMER skill de la fase.
+ *
+ * Se deriva en vez de hardcodear para que el test exprese el CONTRATO y no un
+ * literal: si el sandbox cambia sus `skills_por_fase`, el test sigue siendo
+ * válido en lugar de romperse (o peor, pasar por casualidad).
+ */
+function markerEsperado(res) {
+    const permitidos = res.skillsPorFase || [];
+    assert.ok(permitidos.length > 0, 'el sandbox debe declarar skills_por_fase para la fase escalada');
+    return `5209.${permitidos[0]}`;
+}
+
 test('CA-6 (bloqueante): escalar NO destruye el deliverable de listo/', () => {
     // Riesgo #1 — `reportHumanBlock` mueve el work-item activo (y `listo` está
     // entre los estados activos) salvo que reciba `pipeline` explícito Y
@@ -64,7 +83,10 @@ test('CA-6 (bloqueante): escalar NO destruye el deliverable de listo/', () => {
 
 test('causa raíz 3: escalar planta el marker físico en bloqueado-humano/', () => {
     const { res } = escalarEnSandbox();
-    assert.ok(res.bloqueados.includes('5209.reconciler'), `marker ausente: ${JSON.stringify(res.bloqueados)}`);
+    assert.ok(
+        res.bloqueados.includes(markerEsperado(res)),
+        `marker ausente: se esperaba ${markerEsperado(res)} en ${JSON.stringify(res.bloqueados)}`,
+    );
 });
 
 test('CA-5: el label lo encola reportHumanBlock (un solo comando, sin doble)', () => {
@@ -134,7 +156,11 @@ test('anti-regresión: SIN marker el mismo escenario SÍ encola remove-label (el
     assert.equal(sinMarker[0].issue, 5209);
 
     const conMarker = [];
-    reconcileLabelToFilesystem(ghIssues, new Map([[5209, [{ issue: 5209, skill: 'reconciler' }]]]), {
+    // El `skill` acá es irrelevante para el guard (corta por PRESENCIA de entrada
+    // en el mapa), pero se usa `qa` —un skill real de `skills_por_fase`— para no
+    // contradecir lo que planta `escalate` desde #5396 rev-1. Un `reconciler`
+    // acá describiría un marker que el código ya no genera.
+    reconcileLabelToFilesystem(ghIssues, new Map([[5209, [{ issue: 5209, skill: 'qa' }]]]), {
         ...staleOpts,
         enqueueLabelRemove: (issue, label) => conMarker.push({ issue, label }),
     });
@@ -149,7 +175,7 @@ test('CA-4: el escalado es idempotente — el segundo tick no duplica el marker'
     const markers = res.segundaPasada.bloqueados.filter(
         (n) => n.startsWith('5209.') && !n.endsWith('.reason.json'),
     );
-    assert.deepEqual(markers, ['5209.reconciler'], 'un marker por (issue, skill), no uno por tick');
+    assert.deepEqual(markers, [markerEsperado(res)], 'un marker por (issue, skill), no uno por tick');
     assert.deepEqual(res.segundaPasada.listo, ['5209.qa'], 'el deliverable sobrevive a los dos escalados');
 });
 

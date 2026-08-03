@@ -62,6 +62,10 @@ try {
 
     out({
         ok: true,
+        // #5396 rev-1 — El test deriva de acá el skill que `escalate` DEBE elegir
+        // para el marker, en vez de hardcodearlo. Es la misma lista que valida el
+        // invariante skill∈fase de `pulpo.js`.
+        skillsPorFase: config.pipelines.desarrollo.skills_por_fase.verificacion,
         listo: rd(listoDir),
         listoContenido: (() => {
             try { return fs.readFileSync(path.join(listoDir, '5209.qa'), 'utf8'); } catch { return null; }
