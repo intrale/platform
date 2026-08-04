@@ -125,3 +125,37 @@ test('TTL, timeout y runbook usan defaults y rechazan valores fail-open', () => 
   assert.throws(() => resolvePolicy({ vault: { cut_fallback: { operation_timeout_ms: 60001 } } }), /timeout/);
   assert.throws(() => resolvePolicy({ vault: { cut_fallback: { runbook: '' } } }), /runbook/);
 });
+
+test('timeout cancela validaciones y no produce consumo, corte ni auditoría tardíos', async (t) => {
+  const fx = fixture({
+    cut_fallback: { authorization_ttl_seconds: 300, operation_timeout_ms: 100, runbook: 'docs/runbook.md' },
+  });
+  t.after(() => fs.rmSync(fx.dir, { recursive: true, force: true }));
+  const auditPath = path.join(fx.dir, 'audit', 'vault-cut-fallback.jsonl');
+  let consumed = 0;
+  let observedSignal;
+  const pending = executeVaultCutFallback({
+    configPath: fx.configPath,
+    auditPath,
+    validateAllowlist: async ({ signal }) => {
+      observedSignal = signal;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      return true;
+    },
+    evaluateCoverage: async () => true,
+    authorization: { issuedAt: new Date().toISOString(), consume: async () => { consumed += 1; return true; } },
+  });
+  const timedOut = assert.rejects(pending, (error) => error.code === 'timeout');
+
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  await assert.rejects(executeVaultCutFallback(validOptions(fx)), (error) => error.code === 'concurrent_execution');
+  await timedOut;
+  await new Promise((resolve) => setTimeout(resolve, 75));
+
+  assert.equal(observedSignal.aborted, true);
+  assert.equal(consumed, 0);
+  assert.equal(fx.read().vault.bootstrap_fallback, true);
+  const audit = fs.readFileSync(auditPath, 'utf8');
+  assert.doesNotMatch(audit, /fallback_cut/);
+  assert.match(audit, /"code":"timeout"/);
+});
