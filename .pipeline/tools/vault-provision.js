@@ -539,6 +539,12 @@ function leerDeTty({ stdin, salida, etiqueta, timeoutMs }) {
         const restaurar = () => {
             if (cerrado) return;
             cerrado = true;
+            // Scrub único para TODA salida del lector. Antes sólo limpiaban el
+            // camino feliz y el timeout, así que Ctrl-C y Ctrl-D dejaban los
+            // bytes del secreto en el array. Centralizarlo acá cierra esa
+            // asimetría: ninguna salida deja el valor en memoria viva.
+            // En el camino feliz el texto ya se extrajo antes de llamar acá.
+            buffer.length = 0;
             if (temporizador) clearTimeout(temporizador);
             stdin.removeListener('data', alRecibir);
             restaurarEco(stdin);

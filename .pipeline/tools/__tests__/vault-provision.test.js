@@ -514,6 +514,24 @@ test('el Ctrl-C durante la lectura del valor cancela y restaura el eco', async (
     assert.equal(stdin.modos.at(-1), false, 'el eco quedó apagado tras el Ctrl-C');
 });
 
+test('el Ctrl-C tras tipear un valor multibyte no escribe ni filtra el canario', async () => {
+    // Cierra la asimetría de scrub que detectó la auditoría: el camino feliz y
+    // el timeout limpiaban el buffer, pero Ctrl-C no. El scrub vive ahora en
+    // `restaurar()`, así que lo ejercita CUALQUIER salida del lector. Acá se
+    // afirma el contrato observable de esa salida: cero escrituras y cero
+    // apariciones del valor tipeado en las superficies de salida.
+    const CANARIO = 'CANARIO-SCRUB-5466-ñ😀';
+    const stdin = stdinTty(`${CANARIO}${ETX}`);
+    const r = await correr({ argv: argsBase(), stdin });
+
+    assert.equal(r.codigo, EXIT.CANCELLED);
+    assert.equal(r.ssm.calls.length, 0, 'se llamó a SSM pese a la cancelación');
+    assert.equal(r.ssm.escrituras.length, 0, 'se escribió pese a la cancelación');
+    assert.equal(stdin.modos.at(-1), false, 'el eco quedó apagado tras el Ctrl-C');
+    assert.ok(!r.stdout.includes(CANARIO), 'el valor tipeado se filtró a stdout');
+    assert.ok(!r.stderr.includes(CANARIO), 'el valor tipeado se filtró a stderr');
+});
+
 test('el tiempo de espera agotado en la confirmación aborta sin escribir', async () => {
     // Se tipea el valor pero nunca se responde la confirmación: vence el tope.
     const stdin = stdinTty('nuevo\r');
