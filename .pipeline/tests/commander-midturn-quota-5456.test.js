@@ -472,31 +472,42 @@ test('#5456 CA-8 — la consulta NO escribe una entrada de dispatch en el audit'
 
 test('#5456 CA-4 — cadena entera agotada: el copy degrada a genérico sin nombrar proveedor', () => {
     withTempPipeline((tmp) => {
-        sembrarCadenasDivergentes(tmp);
-        for (const p of ['anthropic', 'openai-codex', 'cerebras']) {
-            quotaExhausted.setFlag({
-                errorType: 'usage_limit_error',
-                provider: p,
-                model: 'x',
-                resetsAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-                maxDays: 7,
-                agent: 'commander',
-                rawExcerpt: 'x',
-                auditLogEnabled: false,
-            });
+        // Este escenario necesita forzar todos los slots agotados. La reconciliación
+        // canónica lee métricas externas mutables y puede vetar el fixture si justo
+        // reportan un provider sano; el kill-switch documentado hace determinista
+        // tanto el SET como el GET sin reemplazar el módulo real de cuota.
+        const prev = process.env.QUOTA_RECONCILE_DISABLED;
+        process.env.QUOTA_RECONCILE_DISABLED = '1';
+        try {
+            sembrarCadenasDivergentes(tmp);
+            for (const p of ['anthropic', 'openai-codex', 'cerebras']) {
+                quotaExhausted.setFlag({
+                    errorType: 'usage_limit_error',
+                    provider: p,
+                    model: 'x',
+                    resetsAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+                    maxDays: 7,
+                    agent: 'commander',
+                    rawExcerpt: 'x',
+                    auditLogEnabled: false,
+                });
+            }
+
+            const { resolvedText, proveedorAnunciado } = cerrarIntento(
+                { type: 'result', result: AVISO_SEMANAL },
+                { pipelineDir: tmp },
+            );
+
+            assert.equal(proveedorAnunciado, null, 'sin proveedor libre no se anuncia ninguno');
+            assert.doesNotMatch(resolvedText, /Codex/,
+                'el copy no puede prometer un proveedor que está gateado');
+            assert.match(resolvedText, /este turno se perdió/i, 'igual admite la pérdida del turno');
+            assert.match(resolvedText, /reenviame el mensaje/i, 'e igual pide el reenvío');
+            assert.notEqual(resolvedText, AVISO_SEMANAL, 'y jamás devuelve el crudo');
+        } finally {
+            if (prev === undefined) delete process.env.QUOTA_RECONCILE_DISABLED;
+            else process.env.QUOTA_RECONCILE_DISABLED = prev;
         }
-
-        const { resolvedText, proveedorAnunciado } = cerrarIntento(
-            { type: 'result', result: AVISO_SEMANAL },
-            { pipelineDir: tmp },
-        );
-
-        assert.equal(proveedorAnunciado, null, 'sin proveedor libre no se anuncia ninguno');
-        assert.doesNotMatch(resolvedText, /Codex/,
-            'el copy no puede prometer un proveedor que está gateado');
-        assert.match(resolvedText, /este turno se perdió/i, 'igual admite la pérdida del turno');
-        assert.match(resolvedText, /reenviame el mensaje/i, 'e igual pide el reenvío');
-        assert.notEqual(resolvedText, AVISO_SEMANAL, 'y jamás devuelve el crudo');
     });
 });
 
