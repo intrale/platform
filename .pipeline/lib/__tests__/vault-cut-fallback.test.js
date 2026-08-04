@@ -58,6 +58,40 @@ test('estado ya cortado es éxito idempotente y no consume autorización', async
   assert.equal(consumed, 0);
 });
 
+test('fallo de auditoría posterior al reemplazo queda explícito y se recupera sin consumir otra autorización', async (t) => {
+  const fx = fixture();
+  t.after(() => fs.rmSync(fx.dir, { recursive: true, force: true }));
+  const auditPath = path.join(fx.dir, 'audit', 'vault-cut-fallback.jsonl');
+  const fakeFs = Object.create(fs);
+  let failAudit = true;
+  fakeFs.appendFileSync = (file, ...args) => {
+    if (failAudit && path.resolve(file) === path.resolve(auditPath)) throw new Error('audit disk failure');
+    return fs.appendFileSync(file, ...args);
+  };
+  let consumed = 0;
+
+  await assert.rejects(executeVaultCutFallback(validOptions(fx, {
+    auditPath,
+    fsImpl: fakeFs,
+    authorization: { issuedAt: '2026-08-04T11:59:00Z', consume: async () => { consumed += 1; return true; } },
+  })), (error) => error.code === 'audit_pending' && error.stateApplied === true && error.recoverable === true);
+
+  assert.equal(fx.read().vault.bootstrap_fallback, false);
+  assert.equal(consumed, 1);
+  assert.equal(fs.existsSync(`${fx.configPath}.cut-fallback.pending-audit.json`), true);
+
+  failAudit = false;
+  const retry = await executeVaultCutFallback(validOptions(fx, {
+    auditPath,
+    fsImpl: fakeFs,
+    authorization: { issuedAt: '2026-08-04T11:59:00Z', consume: async () => { consumed += 1; return true; } },
+  }));
+  assert.deepEqual(retry, { ok: true, alreadyCut: true, auditRecovered: true });
+  assert.equal(consumed, 1);
+  assert.equal(fs.existsSync(`${fx.configPath}.cut-fallback.pending-audit.json`), false);
+  assert.match(fs.readFileSync(auditPath, 'utf8'), /"event":"fallback_cut"/);
+});
+
 test('firmante removido falla antes de consumir y conserva el fallback', async (t) => {
   const fx = fixture();
   t.after(() => fs.rmSync(fx.dir, { recursive: true, force: true }));
