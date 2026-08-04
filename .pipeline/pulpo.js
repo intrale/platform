@@ -382,6 +382,9 @@ const { removeWorktree: removeGuardedWorktree } = require('./lib/ghostbusters-wo
 const { resolveExistingWorktree } = require('./lib/worktree-resolver');
 const { appendWorktreeAudit } = require('./lib/worktree-audit');
 const worktreeNotifDedup = require('./lib/worktree-notif-dedup');
+// #5421 — política pura del guard de worktree (allowlist de motivos + textos
+// de operador). Módulo sin I/O para que los CA sean verificables por unit test.
+const worktreeGuardPolicy = require('./lib/worktree-guard-policy');
 // #4532 — Clasificación pura fase→workspace (needsWorktree / useExistingWorktree).
 // Extraída de este archivo para ser testeable y no olvidar fases al editarla.
 const { phaseNeedsWorktree, phaseUsesExistingWorktree } = require('./lib/phase-workspace');
@@ -8933,21 +8936,54 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       //   - Reasons transitorias (red, `worktree-add-failed`) → rebote infra,
       //     pero con un contador `worktree_recovery_intentos` con tope: al
       //     alcanzarlo también se escala a `needs-human` (no loop eterno).
+      //
+      // #5421 (Bloque C) — la regex por PREFIJO se reemplaza por una allowlist
+      // de motivos con igualdad exacta y default cerrado
+      // (`guardExceptionEligible`). Dos cambios de fondo:
+      //   - Un motivo futuro tipo `branch-origin-unverified-foo` YA NO matchea
+      //     por prefijo: motivo desconocido ⇒ el guard aplica.
+      //   - La ausencia de la copia LOCAL de la rama (path huérfano, con la
+      //     rama remota verificada) deja de escalar a `needs-human`: es un
+      //     problema de copia, no de confianza. El resolver ya recrea el
+      //     worktree en un path fresco `-r<N>` (D1) sin tocar el huérfano.
+      // La excepción NO autoriza confiar en el directorio preexistente (D2):
+      // decide únicamente si el aborto escala.
       const WORKTREE_RECOVERY_CAP = 3;
       const reasonStr = String(resolution.reason || 'desconocido');
-      const structural = /^(remote-branch-missing|branch-origin-unverified|worktree-path-exists|invalid-input)/.test(reasonStr);
+      // El reason trae el path absoluto del worktree en el sufijo — se redacta
+      // antes de que viaje a Telegram, al `.reason.json` y al YAML (S-4).
+      const reasonRedacted = redact(reasonStr);
+      const operation = worktreeGuardPolicy.resolveOperation({ fase, skill });
+      const { eligible: guardExcepcion, motivoNormalizado } = worktreeGuardPolicy.guardExceptionEligible(
+        reasonStr,
+        { operation, branchOriginVerified: resolution.branchOriginVerified },
+      );
 
       const prevData = readYamlSafe(trabajandoPath) || {};
       const intentos = (parseInt(prevData.worktree_recovery_intentos, 10) || 0) + 1;
-      const escalarNeedsHuman = structural || intentos >= WORKTREE_RECOVERY_CAP;
+      // CA-5: elegible ⇒ no escala POR MOTIVO. El tope de reintentos sigue vivo
+      // (`needs-human` sigue siendo el mecanismo fail-closed del pipeline: se
+      // acota el *cuándo*, no el *si*).
+      const escalarNeedsHuman = !guardExcepcion || intentos >= WORKTREE_RECOVERY_CAP;
+      // Se mantiene el nombre `structural` en el audit trail para no romper el
+      // JSONL histórico: es el complemento de la excepción del guard.
+      const structural = !guardExcepcion;
 
       const motivoMsg = (
         `Worktree del issue no encontrado — pulpo no puede ejecutar fase ${fase} sin worktree dedicado. ` +
-        `Detalle: ${reasonStr} (intento ${intentos}/${WORKTREE_RECOVERY_CAP})`
+        `Detalle: ${reasonRedacted} (intento ${intentos}/${WORKTREE_RECOVERY_CAP})`
       );
-      log('lanzamiento',
-        `⛔ #${issue}: NO se resolvió worktree/rama para fase ${fase} — abortando spawn (evita commit en rama ajena). ` +
-        `Motivo: ${reasonStr} | estructural=${structural} intentos=${intentos} escala_humano=${escalarNeedsHuman}`);
+      log('lanzamiento', worktreeGuardPolicy.buildAbortLogLine({
+        issue,
+        fase,
+        skill,
+        reasonStr,
+        operation,
+        intentos,
+        cap: WORKTREE_RECOVERY_CAP,
+        eligible: guardExcepcion,
+        escalar: escalarNeedsHuman,
+      }));
 
       // Audit trail persistente (CA-8).
       try {
@@ -8962,6 +8998,12 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
           branch_origin_verified: resolution.branchOriginVerified,
           worktree_recovery_intentos: intentos,
           structural,
+          // #5421 — el audit es el trail forense: guarda el motivo CRUDO (con
+          // el path) y además el veredicto de la política, para poder auditar
+          // por qué un aborto escaló o no sin releer el fuente.
+          motivo_normalizado: motivoNormalizado,
+          guard_excepcion: guardExcepcion,
+          operacion: operation,
         });
       } catch {}
 
@@ -8973,12 +9015,32 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         const blockedDir = path.join(fasePath(pipeline, fase), 'bloqueado-humano');
         try { fs.mkdirSync(blockedDir, { recursive: true }); } catch {}
 
-        const reasonTxt = structural
-          ? `Fase ${fase}: la rama del dev de #${issue} es irresoluble (${reasonStr}). No se arregla reintentando — requiere verificación humana.`
-          : `Fase ${fase}: no se pudo resolver el worktree/rama de #${issue} tras ${intentos} intentos (${reasonStr}). Se alcanzó el tope de reintentos.`;
-        const questionTxt = resolution.branchOriginVerified === false
-          ? `¿Podés inspeccionar el autor de la rama remota origin/agent/${issue}-* de #${issue}? La verificación de procedencia falló (posible rama ajena). Re-encolá o cerrá según corresponda.`
-          : `¿Podés verificar la rama del dev de #${issue} (patrón agent/${issue}-<slug>) y re-encolar el issue al inicio del pipeline, o cerrarlo si ya no aplica?`;
+        // #5421 CA-9 — registrar el skill afectado ANTES de consultar el dedup.
+        // El dedup colapsa por (issue, fase); sin esto, las escaladas de los
+        // otros skills se pierden en silencio. `recordSkill` NO marca como
+        // notificado (no toca el `ts`), así que no se come la primera alerta.
+        try { worktreeNotifDedup.recordSkill(issue, fase, skill); } catch {}
+        let skillsLine = '';
+        try {
+          skillsLine = worktreeGuardPolicy.buildAffectedSkillsLine(
+            worktreeNotifDedup.readSkills(issue, fase),
+          );
+        } catch {}
+
+        const reasonBase = structural
+          ? `Fase ${fase}: la rama del dev de #${issue} es irresoluble (${reasonRedacted}). No se arregla reintentando — requiere verificación humana.`
+          : `Fase ${fase}: no se pudo resolver el worktree/rama de #${issue} tras ${intentos} intentos (${reasonRedacted}). Se alcanzó el tope de reintentos.`;
+        const reasonTxt = skillsLine ? `${reasonBase} ${skillsLine}.` : reasonBase;
+        // #5421 CA-8 — el texto se elige por CAUSA REAL: un committer legítimo
+        // fuera de la allowlist es un problema de CONFIGURACIÓN y su alerta
+        // nombra el email, no "rama ajena". El lenguaje de procedencia
+        // sospechosa queda reservado para la rama que no es de ningún agente.
+        const questionTxt = worktreeGuardPolicy.buildOperatorQuestion({
+          issue,
+          reasonStr: reasonRedacted,
+          branchOriginVerified: resolution.branchOriginVerified,
+          unverifiedAuthors: resolution.unverifiedAuthors,
+        });
 
         // Limpiar markers infra (si venían de un rebote previo) para que el
         // sweep `reencolarInfraBloqueados` NO recicle este archivo.
@@ -9000,7 +9062,8 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
           worktree_recovery_intentos: intentos,
           worktree_branch_origin_verified: resolution.branchOriginVerified,
           bloqueado_por_humano: true,
-          bloqueo_humano_motivo: reasonStr,
+          // Redactado: el reason trae el path absoluto del worktree (S-4).
+          bloqueo_humano_motivo: reasonRedacted,
         };
         try { writeYaml(trabajandoPath, updated); }
         catch (e) { log('lanzamiento', `⚠️ #${issue}: no se pudo actualizar YAML antes de escalar: ${e.message.slice(0, 120)}`); }
@@ -9038,17 +9101,26 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
           }
         } catch {}
 
-        log('lanzamiento', `🚧 #${issue} escalado a needs-human (${reasonStr}, intentos=${intentos}) — movido a ${pipeline}/${fase}/bloqueado-humano/`);
+        log('lanzamiento', `🚧 #${issue} escalado a needs-human (${reasonRedacted}, intentos=${intentos}) — movido a ${pipeline}/${fase}/bloqueado-humano/`);
         return;
       }
 
       // ── REBOTE INFRA TRANSITORIO (no estructural, dentro del tope) ──────
-      // Notificación Telegram dedupeada (CA-4).
+      // Notificación Telegram dedupeada (CA-4 + CA-9: una alerta por
+      // (issue, fase) que lista todos los skills afectados).
       try {
+        try { worktreeNotifDedup.recordSkill(issue, fase, skill); } catch {}
         if (worktreeNotifDedup.shouldNotify(issue, fase)) {
+          let skillsLineInfra = '';
+          try {
+            skillsLineInfra = worktreeGuardPolicy.buildAffectedSkillsLine(
+              worktreeNotifDedup.readSkills(issue, fase),
+            );
+          } catch {}
           const msg = [
             `⛔ Aborté #${issue} en fase ${fase}: no resolví el worktree del dev (intento ${intentos}/${WORKTREE_RECOVERY_CAP}).`,
-            `Motivo: ${reasonStr}`,
+            `Motivo: ${reasonRedacted}`,
+            ...(skillsLineInfra ? [skillsLineInfra] : []),
             'Reintento automático cuando la infra se recupere.',
           ].join('\n');
           try { sendTelegram(msg); } catch {}
