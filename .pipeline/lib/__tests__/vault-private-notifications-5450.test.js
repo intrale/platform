@@ -59,6 +59,20 @@ test('drop privado se redacta antes de persistir y usa permisos restrictivos', (
   }));
 });
 
+test('context redacta valores de baja entropía bajo claves sensibles antes de persistir', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-private-low-entropy-'));
+  const canary = 'clave-corta-5450';
+  withEnv('PIPELINE_DIR_OVERRIDE', dir, () => withEnv('TELEGRAM_LEO_OPERATOR_CHAT_ID', '-777', () => {
+    const result = notifyTelegram({
+      chat_id: '-777', component: 'vault-shadow', message: 'evento',
+      context: { nested: { password: canary, token: canary, api_key: canary } },
+    });
+    assert.equal(result.ok, true);
+    const raw = fs.readFileSync(result.dropPath, 'utf8');
+    assert.equal(raw.includes(canary), false);
+  }));
+});
+
 test('sin ancla no crea drop ni degrada al destino grupal', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-private-'));
   withEnv('PIPELINE_DIR_OVERRIDE', dir, () => withEnv('TELEGRAM_LEO_OPERATOR_CHAT_ID', null, () => {
@@ -96,6 +110,18 @@ test('fallback avisa una vez por nombre y nunca incluye el valor', () => {
   assert.equal(JSON.stringify(sent).includes('OPENAI_API_KEY'), false);
 });
 
+test('fallback reintenta si el primer encolado falla', () => {
+  const auditDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-notify-retry-'));
+  let attempts = 0;
+  withEnv('TELEGRAM_LEO_OPERATOR_CHAT_ID', '-777', () => {
+    const metrics = createVaultShadowMetrics({ auditDir, notify: () => ({ ok: ++attempts > 1, reason: 'write_failed' }), autoFlushOnExit: false });
+    const descriptors = { 'providers.openai.api_key': { env: 'OPENAI_API_KEY' } };
+    metrics.record({ OPENAI_API_KEY: VIA.FILE_BOOTSTRAP }, { descriptors, hostId: 'host-a' });
+    metrics.record({ OPENAI_API_KEY: VIA.FILE_BOOTSTRAP }, { descriptors, hostId: 'host-a' });
+  });
+  assert.equal(attempts, 2);
+});
+
 test('cumplimiento avisa una vez por ciclo persistido', () => {
   const auditDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-compliance-'));
   const now = Date.parse('2026-08-03T12:00:00Z');
@@ -112,4 +138,22 @@ test('cumplimiento avisa una vez por ciclo persistido', () => {
     assert.equal(metrics.evaluate(params).estado, ESTADO.CUMPLE);
   });
   assert.equal(sent.length, 1);
+});
+
+test('cumplimiento reintenta si el primer encolado falla', () => {
+  const auditDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-compliance-retry-'));
+  const now = Date.parse('2026-08-03T12:00:00Z');
+  fs.writeFileSync(path.join(auditDir, 'vault-resolution.t0.json'), JSON.stringify({ t0: new Date(now - 2 * 3600_000).toISOString() }));
+  fs.writeFileSync(path.join(auditDir, 'vault-resolution.jsonl'), JSON.stringify({
+    ts: new Date(now - 1000).toISOString(), name: 'telegram.bot_token', host: 'host-a', via: 'vault', count: 1,
+    first_ts: new Date(now - 1000).toISOString(), last_ts: new Date(now - 1000).toISOString(),
+  }) + '\n');
+  let attempts = 0;
+  withEnv('TELEGRAM_LEO_OPERATOR_CHAT_ID', '-777', () => {
+    const metrics = createVaultShadowMetrics({ auditDir, now: () => now, notify: () => ({ ok: ++attempts > 1, reason: 'write_failed' }), autoFlushOnExit: false });
+    const params = { descriptors: { 'telegram.bot_token': { env: 'TELEGRAM_BOT_TOKEN' } }, hostsActivos: ['host-a'], durationHours: 1 };
+    metrics.evaluate(params);
+    metrics.evaluate(params);
+  });
+  assert.equal(attempts, 2);
 });

@@ -808,7 +808,9 @@ function loadIntoEnv(opts = {}) {
       // El `require` queda acá adentro para que el camino del gate cerrado ni
       // llegue a cargar el módulo.
       const metrics = opts.shadowMetrics
-        || (process.env.NODE_TEST_CONTEXT ? null : require('./vault-shadow-metrics').getVaultShadowMetrics());
+        || (process.env.NODE_TEST_CONTEXT ? null : require('./vault-shadow-metrics').getVaultShadowMetrics({
+            notify: require('./notify-telegram').notifyTelegram,
+        }));
       if (metrics) metrics.record(result.sources, {
         hostId: vaultEstado.cfg && vaultEstado.cfg.hostId,
         descriptors: ENV_DESCRIPTORS,

@@ -49,7 +49,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { redactSecretValue, redactSensitive } = require('./redact');
+const { redactSecretValue, redactSensitive, redactObject } = require('./redact');
 
 const PIPELINE_DIR_DEFAULT = path.join(__dirname, '..');
 
@@ -123,7 +123,8 @@ function buildMessage(payload) {
     for (const key of Object.keys(ctx)) {
         const val = ctx[key];
         if (val == null || val === '') continue;
-        ctxLines.push(`${redactFreeText(key)}: ${redactFreeText(typeof val === 'object' ? JSON.stringify(val) : val)}`);
+        const safeValue = typeof val === 'object' ? JSON.stringify(redactObject(val)) : val;
+        ctxLines.push(`${redactFreeText(key)}: ${redactFreeText(safeValue)}`);
     }
     ctxLines.push(`emisor: pid=${process.pid} host=${os.hostname()} ts=${ts}`);
     lines.push(...ctxLines);
