@@ -628,12 +628,16 @@ function classifyProvider(providerId, snapshot, nowMs, opts = {}) {
         const snapshotCause = row ? row.cause : CAUSE_TRANSITORIA;
         // Sólo `auth` y `cuota` (prioridad menor a la de reposo) lo desplazan.
         if (CAUSE_PRIORITY[snapshotCause] >= CAUSE_PRIORITY[CAUSE_REPOSO]) return restResult();
+        // `row` es null cuando el `reason_code` falta o cae fuera de la tabla
+        // cerrada: cae a `transitoria`, que NO llega al guard de arriba. Mismo
+        // default explícito que la rama no-reposo (SEC-1) — el snapshot es
+        // input no confiable (SEC-4) y una fila sin `reason_code` alcanza.
         return {
             id: providerId,
             label,
             cause: snapshotCause,
             reasonCode: entry.reasonCode,
-            text: row.text(entry),
+            text: row ? row.text(entry) : REASON_LABEL_DEFAULT,
             rest,
         };
     }

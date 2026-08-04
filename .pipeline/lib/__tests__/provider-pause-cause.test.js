@@ -450,6 +450,41 @@ test('un provider en reposo con motivo transitorio NO se titula pausa programada
     assert.equal(res.verdict.requiresAction, false);
 });
 
+test('REGRESIÓN — un provider en reposo con reason_code ausente no rompe la clasificación', () => {
+    // Cruce que faltaba: reposo + código NO reconocido. `row` queda null y la
+    // causa cae a `transitoria`, que no llega al guard de reposo — se llegaba a
+    // `row.text(entry)` con `row === null` y tiraba TypeError, degradando en
+    // silencio TODA la feature justo en la rama que corre todas las noches.
+    const sinCodigo = row('anthropic', 'timeout', { label: 'Anthropic' });
+    delete sinCodigo.reason_code;
+
+    const dir = withStateDir(snapshotJson([sinCodigo]));
+    const res = classifyPauseCause(['anthropic'], {
+        stateDir: dir, now: MONDAY_2100_ART, scheduleModule: fakeScheduleModule(['anthropic']),
+    });
+
+    assert.equal(res.degraded, false, 'no debe degradar por una fila sin reason_code');
+    assert.equal(res.dominantCause, CAUSE_TRANSITORIA);
+    assert.equal(res.providers[0].text, 'motivo desconocido');
+});
+
+test('REGRESIÓN — un provider en reposo con reason_code fuera de la tabla cae al default', () => {
+    // Misma raíz que el caso de arriba, pero con un código presente y no vacío:
+    // cualquier valor fuera de la tabla cerrada tiene que caer al default
+    // explícito (SEC-1) sin interpolar el crudo en el mensaje.
+    const dir = withStateDir(snapshotJson([
+        row('anthropic', 'codigo_inventado_xyz', { label: 'Anthropic' }),
+    ]));
+    const res = classifyPauseCause(['anthropic'], {
+        stateDir: dir, now: MONDAY_2100_ART, scheduleModule: fakeScheduleModule(['anthropic']),
+    });
+
+    assert.equal(res.degraded, false);
+    assert.equal(res.dominantCause, CAUSE_TRANSITORIA);
+    assert.equal(res.providers[0].text, 'motivo desconocido');
+    assert.doesNotMatch(res.providers[0].text, /codigo_inventado_xyz/);
+});
+
 test('un provider en reposo y verde muestra el reposo, no "disponible"', () => {
     // Único caso donde el reposo gana: está sano pero la ventana lo tiene
     // dormido. Decir "disponible" sería mentirle al operador.
