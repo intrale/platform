@@ -1116,3 +1116,107 @@ test('la API es sincrona: nada devuelve un thenable', () => {
     }
   });
 });
+
+
+// =============================================================================
+// CA-17 de #5427 — conteos por (secreto, host, vía) en el resultado
+// Ampliación aditiva pedida por #5449: el reporte no puede filtrar por la
+// ventana sin reimplementar `msEfectivo`, o sea sin duplicar la fuente de verdad.
+// =============================================================================
+
+test('evaluate devuelve conteos por secreto, host y via, agregados y ya filtrados por la ventana', () => {
+  conAuditDir((auditDir) => {
+    const r = reloj();
+
+    // Fuera de la ventana: una negativa vieja que despues reinicia t0.
+    const viejo = nuevo(auditDir, { now: r.now });
+    viejo.record({ TELEGRAM_BOT_TOKEN: VIA.MISSING }, { hostId: HOST_A, descriptors: DESCRIPTORES });
+
+    r.avanzar(H);
+    // Dentro de la ventana: dos boots del mismo host agregan sobre el mismo par.
+    for (let i = 0; i < 2; i += 1) {
+      const m = nuevo(auditDir, { now: r.now });
+      m.record(sourcesTodos(VIA.VAULT), { hostId: HOST_A, descriptors: DESCRIPTORES });
+      m.record(sourcesTodos(VIA.VAULT), { hostId: HOST_A, descriptors: DESCRIPTORES });
+      m.flush();
+    }
+
+    r.avanzar(30 * H);
+    const ev = nuevo(auditDir, { now: r.now }).evaluate({ descriptors: DESCRIPTORES, hostsActivos: [HOST_A] });
+
+    assert.ok(Array.isArray(ev.conteos));
+    // 3 descriptores x 1 host x via vault. La negativa quedo ANTES de t0.
+    assert.equal(ev.conteos.length, 3);
+    for (const c of ev.conteos) {
+      assert.equal(c.host, HOST_A);
+      assert.equal(c.via, VIA.VAULT);
+      assert.equal(c.resoluciones, 4, '2 boots x 2 resoluciones agregadas por boot');
+    }
+    assert.ok(!ev.conteos.some((c) => c.via === VIA.MISSING), 'la fila previa a t0 no cuenta');
+
+    // Orden ordinal por nombre, estable e independiente del orden del archivo.
+    const nombres = ev.conteos.map((c) => c.name);
+    assert.deepEqual(nombres, [...nombres].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
+
+    // Sólo metadatos: ni un campo que pueda arrastrar un valor (CA-15).
+    for (const c of ev.conteos) {
+      assert.deepEqual(Object.keys(c).sort(), ['host', 'name', 'resoluciones', 'via']);
+    }
+  });
+});
+
+test('los conteos separan por via y toleran filas sin count y sin host', () => {
+  conAuditDir((auditDir) => {
+    const r = reloj();
+    // Esta primera evaluacion PERSISTE t0 = T_BASE (y por eso no aprueba).
+    const t0 = nuevo(auditDir, { now: r.now })
+      .evaluate({ descriptors: DESCRIPTORES, hostsActivos: [HOST_A] });
+    assert.equal(t0.motivo, 't0_reiniciado');
+
+    // Filas escritas a mano: es la unica forma de poner evidencia NEGATIVA
+    // dentro de la ventana. Por `record()` no se puede — una negativa mueve t0
+    // 1 ms por delante de si misma (CA-20), asi que se autoexcluye.
+    const ts = new Date(r.ms + H).toISOString();
+    const filas = [
+      { ts, name: 'telegram.bot_token', host: HOST_A, via: 'file-bootstrap', count: 2, first_ts: ts, last_ts: ts },
+      { ts, name: 'telegram.bot_token', host: HOST_A, via: 'vault', count: 5, first_ts: ts, last_ts: ts },
+      // Sin `count` usable: vale 1, nunca 0 — descartarla subcontaria evidencia.
+      { ts, name: 'telegram.chat_id', host: HOST_A, via: 'vault', first_ts: ts, last_ts: ts },
+      // Sin `host`: no se puede atribuir a un host activo.
+      { ts, name: 'telegram.chat_id', via: 'missing', count: 3, first_ts: ts, last_ts: ts },
+    ];
+    fs.appendFileSync(path.join(auditDir, 'vault-resolution.jsonl'),
+      filas.map((f) => JSON.stringify(f)).join('\n') + '\n');
+
+    r.avanzar(2 * H);
+    const ev = nuevo(auditDir, { now: r.now }).evaluate({ descriptors: DESCRIPTORES, hostsActivos: [HOST_A] });
+    const clave = (c) => `${c.name}|${c.host}|${c.via}`;
+    const porClave = Object.fromEntries(ev.conteos.map((c) => [clave(c), c.resoluciones]));
+
+    assert.equal(porClave[`telegram.bot_token|${HOST_A}|file-bootstrap`], 2);
+    assert.equal(porClave[`telegram.bot_token|${HOST_A}|vault`], 5);
+    assert.equal(porClave[`telegram.chat_id|${HOST_A}|vault`], 1, 'fila sin count vale 1');
+    assert.equal(porClave['telegram.chat_id|?desconocido|missing'], 3, 'fila sin host no se atribuye');
+
+    // El mismo par con dos vias son DOS entradas, no una suma.
+    assert.equal(ev.conteos.filter((c) => c.name === 'telegram.bot_token').length, 2);
+  });
+});
+
+test('el campo conteos existe y es una lista vacia tambien en las salidas tempranas', () => {
+  conAuditDir((auditDir) => {
+    const r = reloj();
+    // Config invalida, descriptores ausentes y t0 reiniciado cortan antes de leer
+    // filas: el consumidor no puede tener que distinguir vacio de campo ausente.
+    const casos = [
+      nuevo(auditDir, { now: r.now }).evaluate({ descriptors: DESCRIPTORES, hostsActivos: [] }),
+      nuevo(auditDir, { now: r.now }).evaluate({ descriptors: {}, hostsActivos: [HOST_A] }),
+      nuevo(auditDir, { now: r.now }).evaluate({ descriptors: DESCRIPTORES, hostsActivos: [HOST_A] }),
+    ];
+    for (const ev of casos) {
+      assert.ok(Array.isArray(ev.conteos), `motivo ${ev.motivo}`);
+      assert.equal(ev.conteos.length, 0, `motivo ${ev.motivo}`);
+    }
+    assert.deepEqual(casos.map((e) => e.motivo), ['hosts_activos_vacio', 'descriptores_ausentes', 't0_reiniciado']);
+  });
+});
