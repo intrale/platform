@@ -112,7 +112,20 @@ function redactAjvErrors(ajvErrors) {
 // de workspace/estado (requisito #2 · A01).
 // -----------------------------------------------------------------------------
 const SAFE_ID_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;
-const RESERVED_PROJECT_IDS = Object.freeze(new Set(['intrale-platform']));
+
+// #5204 — Partición del CONTROL-PLANE del kernel. No es un tenant: es el
+// namespace propio del kernel donde viven el catálogo (`catalog#index`) y los
+// ítems `product#<id>` que el boot (`bootProducts`) enumera. El descriptor de
+// cada producto sigue viviendo en la partición de SU tenant.
+//
+// Vive acá (y no en `kernel-store.js`) porque es la misma autoridad que decide
+// qué ids están reservados: si el control-plane no fuera reservado, un alta con
+// `identity.projectId = 'kernel-control-plane'` obtendría un store ligado a la
+// partición del kernel y podría reescribir el catálogo entero desde el camino
+// de tenant. Reservarlo cierra esa puerta en el único lugar donde ya se decide
+// la política de ids.
+const CONTROL_PLANE_PROJECT_ID = 'kernel-control-plane';
+const RESERVED_PROJECT_IDS = Object.freeze(new Set(['intrale-platform', CONTROL_PLANE_PROJECT_ID]));
 
 function isSafeId(id) {
   if (typeof id !== 'string') return false;
@@ -828,6 +841,7 @@ module.exports = {
   canonicalize,
   isSafeId,
   RESERVED_PROJECT_IDS,
+  CONTROL_PLANE_PROJECT_ID,
   isReservedProjectId,
   isSafeWorktreePath,
   collectPathTraversalHits,

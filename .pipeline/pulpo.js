@@ -18197,12 +18197,16 @@ async function mainLoop() {
   try {
     const cfg = loadConfig();
     if (cfg && cfg.kernel && cfg.kernel.durable === true) {
+      // Require LAZY (igual que el resto del bloque): con `durable:false` no se
+      // carga Ajv ni el schema del store. Se sube acá porque la constante de
+      // partición del control-plane la necesitan el catálogo Y el log.
+      const kernelStoreLib = require('./lib/kernel-store');
       // Constructor LAZY del store durable: sólo se instancia con el flag ON, de
       // modo que con `durable:false` NO se construye ningún driver ni se toca AWS.
       const buildDurableStore = (contextProjectId, allowedNamespaces, onAlert) => {
         const { createAwsCliRunner, createAwsCliDynamoDriver } = require('./lib/provisioner-infra');
         const { buildAwsScopedEnv } = require('./lib/kernel-provision');
-        const { createKernelStore } = require('./lib/kernel-store');
+        const { createKernelStore } = kernelStoreLib;
         const env = buildAwsScopedEnv(process.env, cfg.kernel.region);
         const { run } = createAwsCliRunner(env);
         const driver = createAwsCliDynamoDriver({ run });
@@ -18279,7 +18283,14 @@ async function mainLoop() {
         },
         // Catálogo del control-plane: `listProducts()` lee el índice global (no una
         // partición de tenant), por eso usa un contextProjectId dedicado y seguro.
-        buildCatalogStore: () => buildDurableStore('kernel-control-plane', ['kernel-control-plane']),
+        // #5204 — la partición sale de la CONSTANTE compartida, nunca de un literal:
+        // el alta durable (`durableRegisterProduct`) escribe `product#`/`catalog#index`
+        // en esta misma partición. Cuando eran dos literales distintos, el catálogo se
+        // escribía en la partición del tenant y el boot lo leía acá: invisible.
+        buildCatalogStore: () => buildDurableStore(
+          kernelStoreLib.CONTROL_PLANE_PROJECT_ID,
+          [kernelStoreLib.CONTROL_PLANE_PROJECT_ID],
+        ),
         // Store por instancia: MISMO driver durable ligado a cada tenant con su
         // propio `projectId` derivado del registro (A01 — nunca en banda).
         buildStoreFactory: () => (o) => buildDurableStore(o.contextProjectId, o.allowedNamespaces, o.onAlert),
