@@ -140,17 +140,17 @@ línea. Valores de la columna **Lado**:
 | `_frozen/ios-dev` | adaptador | Stack del producto (Compose iOS); congelado. |
 | `_frozen/scrum` | kernel | Proceso de orquestación (zombi V3); congelado, genérico. |
 
-### 2.4. `config.yaml` — clasificación completa de las 59 secciones (#5173)
+### 2.4. `config.yaml` — clasificación completa de las 60 secciones (#5173)
 
 <!-- #5173 · Entrega B de #5111. Reemplaza la tabla parcial del inventario original,
      que clasificaba 6 de 57 secciones y dejaba 4 ítems sin decidir. -->
 
-Las **59** secciones top-level de `.pipeline/config.yaml`, una por una, con su forma real y su
+Las **60** secciones top-level de `.pipeline/config.yaml`, una por una, con su forma real y su
 lado. Es la expresión legible de `SIDE_MAP` en `.pipeline/lib/config-schema.js`: **si esta tabla
 y ese mapa divergen, falla el test** `#5173 toda sección top-level de config.yaml está declarada
 en el schema y tiene lado` **en el PR**, no en el arranque.
 
-Reparto: **38 kernel · 12 autoridad · 9 producto**.
+Reparto: **39 kernel · 12 autoridad · 9 producto**.
 
 > **Regla operativa (CA-1).** La raíz del schema está **cerrada**
 > (`additionalProperties: false`). Agregar una sección nueva a `config.yaml` exige declararla en
@@ -222,6 +222,7 @@ Reparto: **38 kernel · 12 autoridad · 9 producto**.
 | 57 | `telegram` (1800) | obj | producto | Verificado: en HEAD sólo `bot_username`, sin escalación. |
 | 58 | `commander_products` (1823) | obj | **autoridad** | D-2: incluye `default_product` y el alta de productos con sus operadores. |
 | 59 | `vault` (1318) | obj | kernel | #5352: direcciona secretos de infraestructura por host (`prefix`/`projectId`/`hostId`); es mecanismo, se muda al kernel sin conocer el producto. Reutiliza `kernel.region`. |
+| 60 | `worktree_provenance` | obj | kernel | Allowlist de identidades para verificar procedencia de ramas en auto-recovery; mecanismo de seguridad del motor. |
 
 #### 2.4.1. Matriz de precedencia
 

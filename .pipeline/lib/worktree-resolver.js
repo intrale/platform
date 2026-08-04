@@ -34,10 +34,10 @@
 //
 // **Procedencia de branches remotas** (security CA-2):
 //   Antes de auto-recovery, verificamos que `origin/agent/<issue>-<skill>`
-//   fue creada por el pipeline. Aceptamos la branch si CUALQUIERA de:
-//     - El autor del primer commit ∈ allowlist (`PIPELINE_COMMITTER_ALLOWLIST`).
-//     - Algún commit del rango contiene el marcador `pipeline-v2` en el message.
-//   Si ninguna condición se cumple → abortamos con `branchOriginVerified=false`
+//   fue creada por el pipeline. Aceptamos la branch solamente si el autor del
+//   primer commit pertenece a la allowlist resuelta desde defaults seguros y
+//   `worktree_provenance.committers` de la configuración validada.
+//   Si esa condición no se cumple → abortamos con `branchOriginVerified=false`
 //   para que el caller emita el flag `branch-origin-unverified` (UX CA-5).
 // =============================================================================
 'use strict';
@@ -56,19 +56,35 @@ const DEFAULT_EXEC_OPTS = { encoding: 'utf8', timeout: 15000, windowsHide: true 
 // Se compara contra `git log --format=%ae -1 <rev-list-root>`. Cualquier email
 // que NO esté en esta lista hace que la verificación de procedencia falle.
 // Si necesitamos agregar un nuevo committer (ej. nuevo bot del pipeline),
-// se actualiza acá + commit + smoke test.
+// se actualiza acá + commit + smoke test. Se enumeran identidades concretas:
+// no se aceptan patrones ni comodines.
 const PIPELINE_COMMITTER_ALLOWLIST = new Set([
     'noreply@anthropic.com',           // Co-Authored-By Claude
     'leito.larreta@gmail.com',         // Maintainer
     'pulpo@intrale.local',              // Pulpo bot
     'pipeline@intrale.local',           // Genérico pipeline
+    'bot@intrale.com',                  // Identidad histórica
+    'backend-dev-agent@intrale',        // Skills que generan commits
+    'android-dev-agent@intrale',
+    'web-dev-agent@intrale',
+    'pipeline-dev-agent@intrale',
     '41898282+github-actions[bot]@users.noreply.github.com', // GH Actions
 ]);
 
-// Marcador que el pipeline embeb en commits para auto-recovery seguro.
-// Si una branch remota contiene este marker en algún commit del rango,
-// se considera creada por el pipeline (regardless del email del autor).
-const PIPELINE_COMMIT_MARKER = 'pipeline-v2';
+function normalizeCommitterEmail(value) {
+    return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function loadCommitterAllowlist({ config } = {}) {
+    const resolved = new Set([...PIPELINE_COMMITTER_ALLOWLIST].map(normalizeCommitterEmail));
+    const configured = config?.worktree_provenance?.committers;
+    if (!Array.isArray(configured)) return resolved;
+    for (const value of configured) {
+        const email = normalizeCommitterEmail(value);
+        if (email) resolved.add(email);
+    }
+    return resolved;
+}
 
 class WorktreeResolutionError extends Error {
     constructor(message, code, cause) {
@@ -304,7 +320,7 @@ function parseLsRemoteRefs(out) {
  *       · `false` → había candidatas pero NINGUNA pasó la verificación de
  *                   procedencia (`branch-origin-unverified`) → posible adversario.
  */
-function resolveDevBranch(ROOT, issue, { spawnImpl = spawnSync, log } = {}) {
+function resolveDevBranch(ROOT, issue, { spawnImpl = spawnSync, log, config } = {}) {
     // A03 — validación dura del issue antes de tocar el remoto.
     if (!/^\d+$/.test(String(issue))) {
         throw new WorktreeResolutionError(
@@ -333,7 +349,7 @@ function resolveDevBranch(ROOT, issue, { spawnImpl = spawnSync, log } = {}) {
     }
 
     // (3) Filtrar por procedencia ANTES de desambiguar (orden de seguridad).
-    const verified = branches.filter((b) => verifyRemoteBranchOrigin(ROOT, b, { spawnImpl }).ok);
+    const verified = branches.filter((b) => verifyRemoteBranchOrigin(ROOT, b, { spawnImpl, config }).ok);
     if (verified.length === 0) {
         return { ok: false, reason: `branch-origin-unverified:${prefix}*`, branchOriginVerified: false };
     }
@@ -370,15 +386,14 @@ function remoteBranchExists(ROOT, branchName, { spawnImpl = spawnSync } = {}) {
 
 /**
  * Validación de procedencia de una branch remota antes del auto-recovery.
- * Acepta la branch si CUALQUIERA es verdadera:
- *   1. Autor del PRIMER commit (cronológicamente) ∈ allowlist.
- *   2. Algún commit del rango contiene el marker `pipeline-v2` en el message.
+ * Acepta la branch si el autor del PRIMER commit (cronológicamente) pertenece
+ * a la allowlist resuelta. El contenido del mensaje no acredita procedencia.
  *
  * Retorna `{ ok, reason }`. `ok=true` significa que es seguro auto-recovery.
  *
  * Sin red o branch sin commits → `ok=false` (conservador).
  */
-function verifyRemoteBranchOrigin(ROOT, branchName, { spawnImpl = spawnSync } = {}) {
+function verifyRemoteBranchOrigin(ROOT, branchName, { spawnImpl = spawnSync, config } = {}) {
     // Aseguramos tener refs locales actualizadas para el cálculo de rev-list.
     try {
         gitSpawn(['fetch', '--quiet', '--no-tags', 'origin', `refs/heads/${branchName}:refs/remotes/origin/${branchName}`], {
@@ -399,27 +414,14 @@ function verifyRemoteBranchOrigin(ROOT, branchName, { spawnImpl = spawnSync } = 
             'log', '--reverse', '--format=%ae',
             `origin/main..${remoteRef}`,
         ], { cwd: ROOT, spawnImpl, timeout: 10000 });
-        const lines = stdout.split('\n').map(s => s.trim()).filter(Boolean);
+        const lines = stdout.split('\n').map(normalizeCommitterEmail).filter(Boolean);
         firstAuthor = lines[0] || null;
     } catch (e) {
         return { ok: false, reason: `log-author-failed: ${e.message.slice(0, 120)}` };
     }
 
-    if (firstAuthor && PIPELINE_COMMITTER_ALLOWLIST.has(firstAuthor)) {
+    if (firstAuthor && loadCommitterAllowlist({ config }).has(firstAuthor)) {
         return { ok: true, reason: `author-allowlisted:${firstAuthor}` };
-    }
-
-    // (2) Marcador en algún commit del rango (case-insensitive).
-    try {
-        const stdout = gitSpawn([
-            'log', '--format=%B',
-            `origin/main..${remoteRef}`,
-        ], { cwd: ROOT, spawnImpl, timeout: 10000 });
-        if (stdout.toLowerCase().includes(PIPELINE_COMMIT_MARKER.toLowerCase())) {
-            return { ok: true, reason: 'pipeline-marker-found' };
-        }
-    } catch (e) {
-        return { ok: false, reason: `log-marker-failed: ${e.message.slice(0, 120)}` };
     }
 
     return {
@@ -446,7 +448,7 @@ function verifyRemoteBranchOrigin(ROOT, branchName, { spawnImpl = spawnSync } = 
  * no se usa — preferimos `add` con `-B` que reescribe la branch local sin
  * preguntar. Backup tag previo para preservar el SHA.
  */
-function attemptAutoRecovery(ROOT, issue, skill, { spawnImpl = spawnSync, fsImpl = fs, log } = {}) {
+function attemptAutoRecovery(ROOT, issue, skill, { spawnImpl = spawnSync, fsImpl = fs, log, config } = {}) {
     // #4653 — Resolver la rama REAL del dev (`agent/<issue>-<slug>`) en vez de
     // asumir `agent/<issue>-<skill>`. Para fases como `build`/`linteo` el skill
     // NO nombra ninguna rama (la rama la nombró el dev con su slug), así que la
@@ -454,7 +456,7 @@ function attemptAutoRecovery(ROOT, issue, skill, { spawnImpl = spawnSync, fsImpl
     // `resolveDevBranch` ya aplica la verificación de procedencia
     // (`verifyRemoteBranchOrigin`) sobre cada candidata ANTES de elegir — el gate
     // de seguridad sigue en el camino de toda rama resuelta (no bypass).
-    const rd = resolveDevBranch(ROOT, issue, { spawnImpl, log });
+    const rd = resolveDevBranch(ROOT, issue, { spawnImpl, log, config });
     if (!rd.ok) {
         if (rd.branchOriginVerified === false) {
             log?.(`⛔ auto-recovery rechazado: branch-origin-unverified (${rd.reason})`);
@@ -545,6 +547,7 @@ function resolveExistingWorktree({
     spawnImpl = spawnSync,
     fsImpl = fs,
     allowAutoRecovery = true,
+    config,
 }) {
     // (1) Validación dura. Reusamos validateInputs del launcher → única fuente
     // de verdad. Si rompe acá, NO seguimos al spawn.
@@ -574,7 +577,7 @@ function resolveExistingWorktree({
         return { found: false, reason: 'no-worktree-and-recovery-disabled', branchOriginVerified: null };
     }
 
-    const rec = attemptAutoRecovery(ROOT, issue, skill, { spawnImpl, fsImpl, log });
+    const rec = attemptAutoRecovery(ROOT, issue, skill, { spawnImpl, fsImpl, log, config });
     if (rec.ok) {
         return {
             found: true,
@@ -602,9 +605,9 @@ module.exports = {
     remoteBranchExists,
     verifyRemoteBranchOrigin,
     attemptAutoRecovery,
+    loadCommitterAllowlist,
     DEV_BRANCH_RE,
     WorktreeResolutionError,
     // Exports auxiliares para tests / herramientas operativas.
     PIPELINE_COMMITTER_ALLOWLIST,
-    PIPELINE_COMMIT_MARKER,
 };
