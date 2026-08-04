@@ -738,6 +738,28 @@ test('resolveExistingWorktree — auto-recovery rechazado por procedencia → fo
     assert.match(result.reason, /branch-origin-unverified/);
 });
 
+test('resolveExistingWorktree — propaga config hasta verificar y recuperar la rama', () => {
+    const spawnImpl = makeFakeSpawn([
+        { match: 'git worktree list --porcelain', stdout: 'worktree /repo\nbranch refs/heads/main\n\n' },
+        { match: 'git ls-remote', stdout: 'abc\trefs/heads/agent/2505-custom\n' },
+        { match: 'git fetch', stdout: '' },
+        { match: 'git log --reverse --format=%ae', stdout: 'config-only-agent@intrale\n' },
+        { match: 'git worktree prune', stdout: '' },
+        { match: 'git worktree add', stdout: '' },
+    ]);
+    const result = resolveExistingWorktree({
+        ROOT: '/repo', issue: 2505, skill: 'delivery',
+        spawnImpl,
+        fsImpl: fakeFs((p) => p === '/repo'),
+        config: { worktree_provenance: { committers: ['config-only-agent@intrale'] } },
+    });
+
+    assert.equal(result.found, true);
+    assert.equal(result.recovered, true);
+    assert.equal(result.branchOriginVerified, true);
+    assert.match(result.worktreePath, /platform\.agent-2505-custom$/);
+});
+
 // ---- Adversariales: command injection ---------------------------------------
 
 test('resolveExistingWorktree — issue con `;rm -rf /` es rechazado sin spawn', () => {

@@ -78,6 +78,12 @@ test('#5419 worktree_provenance acepta una lista de committers', () => {
     assert.strictEqual(validateConfig(cfg).valid, true);
 });
 
+test('#5419 worktree_provenance rechaza un tipo de sección inválido', () => {
+    const cfg = validConfig();
+    cfg.worktree_provenance = [];
+    assert.strictEqual(validateConfig(cfg).valid, false);
+});
+
 test('#5419 worktree_provenance rechaza tipos y entradas inválidas', () => {
     for (const value of ['backend-dev-agent@intrale', [42], [''], ['   ']]) {
         const cfg = validConfig();

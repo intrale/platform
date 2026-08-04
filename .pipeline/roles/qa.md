@@ -171,31 +171,6 @@ evidencia: "Validación estructural — archivos modificados verificados"
 modo: structural
 ```
 
-Antes de aprobar, identificar el reporte Markdown/YAML que contiene la evidencia
-estructural y encolarlo en Drive con el schema canónico exento de video:
-
-```json
-{
-  "action": "upload",
-  "issue": 1234,
-  "file": ".pipeline/desarrollo/verificacion/procesado/1234.qa",
-  "folder": "QA/evidence/1234",
-  "description": "Evidencia QA estructural #1234",
-  "title": "Título del issue",
-  "verdict": "aprobado",
-  "passed": 7,
-  "total": 7,
-  "mode": "structural",
-  "source": "qa-structural"
-}
-```
-
-El job va en `.pipeline/servicios/drive/pendiente/qa-<issue>-structural.json`.
-`source: qa-structural` es obligatorio: permite que `servicio-drive.js` archive
-la evidencia sin intentar tratar el reporte como video. Verificar que el job
-quedó en alguna carpeta del lifecycle de Drive antes de emitir
-`resultado: aprobado`.
-
 ---
 
 ## QA-Android (UI con emulador)
