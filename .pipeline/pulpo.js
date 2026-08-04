@@ -9216,9 +9216,8 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // Resolver env del child:
   //   - Flag `pipeline.env_isolation_enabled: true` → filtrado por
   //     buildChildEnv (allowlist mínima + scope del skill + provider key).
-  //   - Flag false (default rollout) → comportamiento previo: heredar TODO
-  //     `process.env`. Preserva regresión cero hasta que validemos en
-  //     producción que ningún hook/skill rompa por falta de credencial.
+  //   - Flag false (default rollout) → comportamiento previo salvo secretos
+  //     reservados, que nunca se heredan por nombre ni alias de valor.
   let childEnv;
   let envIsolationEnabled = false;
   try {
@@ -9254,7 +9253,12 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       throw e;
     }
   } else {
-    childEnv = { ...process.env, ...pipelineExtras };
+    // Aun durante el rollout legado, el material de firma de Telegram nunca
+    // cruza al child por nombre ni por alias con el mismo valor.
+    childEnv = buildChildEnvLib.stripReservedChildSecrets(
+      { ...process.env, ...pipelineExtras },
+      process.env,
+    );
   }
 
   // #3198 — si el dispatcher resolvió un fallback, pasamos un `resolveImpl`
