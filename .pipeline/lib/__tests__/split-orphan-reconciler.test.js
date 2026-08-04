@@ -26,6 +26,23 @@ const assert = require('node:assert/strict');
 
 const sor = require('../split-orphan-reconciler');
 
+// SO-7 — Autor CONFIABLE por defecto en las fixtures. Los hijos de split reales
+// los abre el pipeline con el token del operador: verificado en vivo sobre los
+// huérfanos del incidente 2026-08-03 (#5458/#5459/#5460, #5419, #5203), todos
+// `author_association: MEMBER`, `user.login: leitolarreta`. Sin estos campos el
+// default-deny de SO-7 excluiría cada fixture y los tests dejarían de ejercitar
+// la lógica de padre/ola que en realidad quieren cubrir.
+const TRUSTED_AUTHOR = Object.freeze({
+    author_association: 'MEMBER',
+    user: Object.freeze({ login: 'leitolarreta' }),
+});
+
+// Autor SIN relación con el repo: el caso que SO-7 tiene que frenar.
+const UNTRUSTED_AUTHOR = Object.freeze({
+    author_association: 'NONE',
+    user: Object.freeze({ login: 'randomuser' }),
+});
+
 // Helper: issue de GitHub con formato canónico de `/planner split`.
 function child(number, parent, over = {}) {
     return {
@@ -33,12 +50,20 @@ function child(number, parent, over = {}) {
         title: `[Split de #${parent}] parte de la historia madre`,
         body: `Historia madre: #${parent}\n\n## Criterios\n- algo`,
         state: 'OPEN',
+        ...TRUSTED_AUTHOR,
         ...over,
     };
 }
 
 function plain(number, over = {}) {
-    return { number, title: 'Un issue cualquiera', body: 'sin referencias', state: 'OPEN', ...over };
+    return {
+        number,
+        title: 'Un issue cualquiera',
+        body: 'sin referencias',
+        state: 'OPEN',
+        ...TRUSTED_AUTHOR,
+        ...over,
+    };
 }
 
 // Atajo: sólo los pares child/parent del resultado.
@@ -298,6 +323,175 @@ test('findSplitOrphans: ciclo padre↔hijo declarado no cuelga', () => {
 });
 
 // -----------------------------------------------------------------------------
+// SO-7 — origen confiable (el repo es público: los issues son input hostil)
+// -----------------------------------------------------------------------------
+
+test('SO-7: autor SIN relación con el repo → NO se incorpora aunque el padre esté en la ola', () => {
+    // El ataque que cierra SO-7: `#N` es público, así que cualquiera puede abrir
+    // "[Split de #N]" y hacerse meter en la allowlist, que es el gate de dispatch.
+    const res = sor.findSplitOrphans([child(9001, 5452, UNTRUSTED_AUTHOR)], { activeWaveIssues: [5452] });
+    assert.deepEqual(res.orphans, [], 'un tercero no puede auto-incorporarse al alcance del pipeline');
+});
+
+test('SO-7: el candidato excluido se REPORTA, nunca se descarta en silencio', () => {
+    const res = sor.findSplitOrphans([child(9001, 5452, UNTRUSTED_AUTHOR)], { activeWaveIssues: [5452] });
+    assert.deepEqual(res.rejectedUntrusted, [
+        { child: 9001, parent: 5452, login: 'randomuser', association: 'NONE' },
+    ]);
+});
+
+test('SO-7: sólo se reporta quien DECLARA un padre, no los issues normales del repo', () => {
+    // Si reportáramos antes de parsear el padre, la alerta traería cientos de
+    // issues comunes por ciclo y dejaría de leerse.
+    const issues = [plain(9100, UNTRUSTED_AUTHOR), plain(9101, UNTRUSTED_AUTHOR)];
+    const res = sor.findSplitOrphans(issues, { activeWaveIssues: [5452] });
+    assert.deepEqual(res.rejectedUntrusted, [], 'sin padre declarado no hay intento de entrada');
+});
+
+test('SO-7: padre fuera de la ola + autor no confiable → excluido y sin ruido de alerta', () => {
+    const res = sor.findSplitOrphans([child(9001, 4200, UNTRUSTED_AUTHOR)], { activeWaveIssues: [5452] });
+    assert.deepEqual(res.orphans, []);
+    // Declara padre, así que se reporta: es un intento, aunque falle igual por SO-2.
+    assert.equal(res.rejectedUntrusted.length, 1);
+});
+
+test('SO-7: OWNER, MEMBER y COLLABORATOR son confiables', () => {
+    for (const assoc of ['OWNER', 'MEMBER', 'COLLABORATOR']) {
+        const res = sor.findSplitOrphans(
+            [child(5458, 5452, { author_association: assoc })],
+            { activeWaveIssues: [5452] }
+        );
+        assert.deepEqual(pairs(res), [[5458, 5452]], `${assoc} debe ser confiable`);
+    }
+});
+
+test('SO-7: CONTRIBUTOR / FIRST_TIMER / MANNEQUIN / NONE NO son confiables', () => {
+    // Exactamente los valores que puede tener alguien sin permisos sobre el repo.
+    for (const assoc of ['NONE', 'CONTRIBUTOR', 'FIRST_TIMER', 'FIRST_TIME_CONTRIBUTOR', 'MANNEQUIN']) {
+        const res = sor.findSplitOrphans(
+            [child(5458, 5452, { author_association: assoc })],
+            { activeWaveIssues: [5452] }
+        );
+        assert.deepEqual(res.orphans, [], `${assoc} NO debe ser confiable`);
+    }
+});
+
+test('SO-7: campo de autor ausente o inválido → excluido (fail-closed, no fail-open)', () => {
+    const sinAutor = { number: 5458, title: '[Split de #5452] x', body: '', state: 'OPEN' };
+    assert.deepEqual(sor.findSplitOrphans([sinAutor], { activeWaveIssues: [5452] }).orphans, []);
+
+    const raros = [
+        child(5459, 5452, { author_association: undefined, user: undefined }),
+        child(5460, 5452, { author_association: '', user: undefined }),
+        child(5461, 5452, { author_association: 42, user: undefined }),
+        child(5462, 5452, { author_association: 'ADMIN_INVENTADO', user: undefined }),
+    ];
+    assert.deepEqual(sor.findSplitOrphans(raros, { activeWaveIssues: [5452] }).orphans, []);
+});
+
+test('SO-7: acepta la forma GraphQL (authorAssociation + author.login), no sólo REST', () => {
+    const issue = {
+        number: 5458,
+        title: '[Split de #5452] x',
+        body: '',
+        state: 'OPEN',
+        authorAssociation: 'MEMBER',
+        author: { login: 'leitolarreta' },
+    };
+    assert.deepEqual(pairs(sor.findSplitOrphans([issue], { activeWaveIssues: [5452] })), [[5458, 5452]]);
+});
+
+test('SO-7: allowlist de logins habilita cuentas de bot sin asociación con el repo', () => {
+    const bot = child(5458, 5452, { author_association: 'NONE', user: { login: 'intrale-bot' } });
+    const sinAllow = sor.findSplitOrphans([bot], { activeWaveIssues: [5452] });
+    assert.deepEqual(sinAllow.orphans, [], 'sin allowlist manda la asociación');
+
+    const conAllow = sor.findSplitOrphans([bot], {
+        activeWaveIssues: [5452],
+        trustedLogins: ['intrale-bot'],
+    });
+    assert.deepEqual(pairs(conAllow), [[5458, 5452]]);
+});
+
+test('SO-7: la allowlist de logins normaliza mayúsculas, espacios y "@"', () => {
+    const bot = child(5458, 5452, { author_association: 'NONE', user: { login: 'Intrale-Bot' } });
+    const res = sor.findSplitOrphans([bot], {
+        activeWaveIssues: [5452],
+        trustedLogins: ['  @INTRALE-BOT '],
+    });
+    assert.deepEqual(pairs(res), [[5458, 5452]]);
+});
+
+test('SO-7: allowlist con basura no rompe ni abre la puerta', () => {
+    const bot = child(5458, 5452, { author_association: 'NONE', user: { login: 'intrale-bot' } });
+    const res = sor.findSplitOrphans([bot], {
+        activeWaveIssues: [5452],
+        trustedLogins: [null, 42, '', '   ', {}],
+    });
+    assert.deepEqual(res.orphans, []);
+});
+
+test('SO-7: predicado inyectado por el wire-up manda sobre el criterio default', () => {
+    const issue = child(5458, 5452, UNTRUSTED_AUTHOR);
+    const res = sor.findSplitOrphans([issue], {
+        activeWaveIssues: [5452],
+        isTrustedAuthor: () => true,
+    });
+    assert.deepEqual(pairs(res), [[5458, 5452]]);
+});
+
+test('SO-7: un predicado inyectado que TIRA no tumba el tick del Pulpo → excluye', () => {
+    const res = sor.findSplitOrphans([child(5458, 5452)], {
+        activeWaveIssues: [5452],
+        isTrustedAuthor: () => { throw new Error('boom'); },
+    });
+    assert.deepEqual(res.orphans, [], 'excepción del predicado = no confiable');
+});
+
+test('SO-7: un retorno truthy que no es `true` NO cuenta como confianza probada', () => {
+    for (const truthy of ['si', 1, {}, []]) {
+        const res = sor.findSplitOrphans([child(5458, 5452, UNTRUSTED_AUTHOR)], {
+            activeWaveIssues: [5452],
+            isTrustedAuthor: () => truthy,
+        });
+        assert.deepEqual(res.orphans, [], `retorno ${JSON.stringify(truthy)} no debe habilitar`);
+    }
+});
+
+test('SO-7: la expansión transitiva también exige origen confiable en el nieto', () => {
+    // El hijo es confiable, el nieto no: el nieto NO puede colarse por herencia.
+    const issues = [child(5458, 5452), child(5470, 5458, UNTRUSTED_AUTHOR)];
+    const res = sor.findSplitOrphans(issues, { activeWaveIssues: [5452] });
+    assert.deepEqual(pairs(res), [[5458, 5452]], 'la confianza no se hereda del padre');
+});
+
+test('isTrustedAuthor: unidad del predicado default', () => {
+    assert.equal(sor.isTrustedAuthor({ author_association: 'OWNER' }), true);
+    assert.equal(sor.isTrustedAuthor({ authorAssociation: 'member' }), true, 'normaliza a mayúsculas');
+    assert.equal(sor.isTrustedAuthor({ author_association: 'NONE' }), false);
+    assert.equal(sor.isTrustedAuthor({}), false);
+    assert.equal(sor.isTrustedAuthor(null), false);
+    assert.equal(
+        sor.isTrustedAuthor({ user: { login: 'bot' } }, { trustedLogins: ['bot'] }),
+        true
+    );
+});
+
+test('authorAssociationOf / authorLoginOf: extracción tolerante a la fuente', () => {
+    assert.equal(sor.authorAssociationOf({ author_association: ' member ' }), 'MEMBER');
+    assert.equal(sor.authorAssociationOf({ authorAssociation: 'OWNER' }), 'OWNER');
+    assert.equal(sor.authorAssociationOf({ author_association: '' }), null);
+    assert.equal(sor.authorAssociationOf({}), null);
+    assert.equal(sor.authorAssociationOf(null), null);
+
+    assert.equal(sor.authorLoginOf({ author: { login: 'Leito' } }), 'leito');
+    assert.equal(sor.authorLoginOf({ user: { login: 'Leito' } }), 'leito');
+    assert.equal(sor.authorLoginOf({ author: 'Leito' }), 'leito');
+    assert.equal(sor.authorLoginOf({}), null);
+    assert.equal(sor.authorLoginOf(null), null);
+});
+
+// -----------------------------------------------------------------------------
 // groupByParent
 // -----------------------------------------------------------------------------
 
@@ -339,6 +533,27 @@ test('#5516 estructural: pulpo.js cablea el reconciliador en el ciclo periódico
     assert.match(PULPO_SRC, /source:\s*'split-github-reconcile'/);
     // No debe existir un write directo a los archivos de estado en este camino.
     assert.doesNotMatch(PULPO_SRC, /writeFileSync\([^)]*partial-pause\.json/);
+});
+
+test('#5516 estructural: SO-7 — el wire-up trae el autor y filtra PRs', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const PULPO_SRC = fs.readFileSync(path.join(__dirname, '..', '..', 'pulpo.js'), 'utf8');
+
+    // `gh issue list --json` NO expone authorAssociation: el descubrimiento debe
+    // ir por REST, que sí trae author_association + user.login. Si alguien vuelve
+    // al camino viejo, SO-7 degradaría a excluir todo (o peor, a fail-open).
+    assert.match(PULPO_SRC, /repos\/intrale\/platform\/issues\?state=open/);
+    assert.doesNotMatch(
+        PULPO_SRC,
+        /issue list --repo intrale\/platform --state open/,
+        'el camino viejo sin dato de autor no debe volver'
+    );
+    // La REST /issues devuelve también PRs: un PR "[Split de #N]" no es un hijo.
+    assert.match(PULPO_SRC, /pull_request === undefined/);
+    // Los candidatos excluidos por SO-7 se alertan, no se tragan en silencio.
+    assert.match(PULPO_SRC, /rejectedUntrusted/);
+    assert.match(PULPO_SRC, /splitOrphanTrustedLogins\(\)/);
 });
 
 test('#5516 estructural: el boot NO dispara la consulta a GitHub', () => {

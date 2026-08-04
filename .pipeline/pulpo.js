@@ -16557,6 +16557,38 @@ function resyncActiveWaveFromLegitAllowlist(issues) {
 //
 // @returns {{ok: boolean, incorporated: number[], reason?: string}}
 // =============================================================================
+// SO-7 — Parámetros de la consulta REST. `gh issue list --json` NO expone
+// `authorAssociation` (sólo `author`), así que el descubrimiento va por la API
+// REST, que sí trae `author_association` + `user.login`. Alcance equivalente al
+// `--limit 300` anterior: 3 páginas de 100, ordenadas por creación descendente
+// (los hijos de split recién creados son, por definición, los más nuevos).
+const SPLIT_ORPHAN_PAGE_SIZE = 100;
+const SPLIT_ORPHAN_MAX_PAGES = 3;
+
+// SO-7 — Dedupe de la alerta de candidatos NO confiables. El reconciliador corre
+// cada ciclo periódico (~5 min); sin esto, un issue de un tercero que quede
+// abierto dispararía una alerta por ciclo (fatiga → la alerta deja de leerse).
+// Vive en memoria del proceso: tras un restart se vuelve a alertar una vez, que
+// es el comportamiento deseado (el operador nuevo debe enterarse).
+const _splitOrphanUntrustedAlerted = new Set();
+
+/**
+ * SO-7 — Allowlist explícita de logins confiables desde `config.yaml`
+ * (`desync.split_orphan_trusted_logins`). Sirve para cuentas de bot que no son
+ * OWNER/MEMBER/COLLABORATOR de la organización. Ausente/inválida → lista vacía,
+ * y entonces manda sólo la asociación con el repo (fail-closed, nunca fail-open).
+ * @returns {string[]}
+ */
+function splitOrphanTrustedLogins() {
+  try {
+    const raw = loadConfig().desync?.split_orphan_trusted_logins;
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((l) => typeof l === 'string' && l.trim() !== '');
+  } catch {
+    return [];                                                 // config ilegible → sin allowlist
+  }
+}
+
 function reconcileSplitOrphansFromGithub(context) {
   const waves = require('./lib/waves');
 
@@ -16572,18 +16604,44 @@ function reconcileSplitOrphansFromGithub(context) {
   }
 
   // --- 1. Descubrimiento desde GitHub -----------------------------------------
-  // `--state open` ya filtra cerrados, pero pedimos `state` igual: el módulo
-  // puro exige el campo y descarta lo que no sea `open` (SO-3, default-deny).
-  // maxBuffer amplio: 300 issues con body completo superan el default de 1 MB.
-  let issues;
+  // `state=open` ya filtra cerrados, pero pedimos `state` igual: el módulo puro
+  // exige el campo y descarta lo que no sea `open` (SO-3, default-deny).
+  //
+  // SO-7 — El payload DEBE traer el origen del issue. `intrale/platform` es un
+  // repo PÚBLICO con issues habilitados y el Admission Gate etiqueta
+  // `needs-definition` automáticamente a issues de CUALQUIER autor; como este
+  // reconciliador escribe en la allowlist de pausa parcial (que es el gate de
+  // dispatch real), sin el dato de autor cualquiera podría abrir un
+  // `[Split de #N]` y hacerse ejecutar trabajo autónomo. `gh issue list --json`
+  // NO expone `authorAssociation`, así que vamos por REST (`author_association`
+  // + `user.login`). La asociación se consulta EN VIVO: no reintroduce
+  // `authorization_ttls` ni su TTL de 48 h (CA-2 sigue cumplido).
+  //
+  // El comando es ESTÁTICO (sólo constantes del módulo, cero interpolación de
+  // input externo) → sin superficie de command injection.
+  //
+  // maxBuffer amplio: 100 issues con body completo superan el default de 1 MB.
+  const issues = [];
   try {
-    ghThrottle();
-    const out = _ghExecSyncGuarded(
-      `"${GH_BIN}" issue list --repo intrale/platform --state open ` +
-      `--json number,title,body,state --limit 300`,
-      { encoding: 'utf8', timeout: 20000, windowsHide: true, maxBuffer: 32 * 1024 * 1024 }
-    );
-    issues = JSON.parse(out);
+    for (let page = 1; page <= SPLIT_ORPHAN_MAX_PAGES; page++) {
+      ghThrottle();
+      const out = _ghExecSyncGuarded(
+        `"${GH_BIN}" api "repos/intrale/platform/issues?state=open&sort=created&direction=desc` +
+        `&per_page=${SPLIT_ORPHAN_PAGE_SIZE}&page=${page}"`,
+        { encoding: 'utf8', timeout: 20000, windowsHide: true, maxBuffer: 32 * 1024 * 1024 }
+      );
+      const batch = JSON.parse(out);
+      if (!Array.isArray(batch)) {
+        return { ok: false, incorporated: [], reason: 'gh_bad_payload' };
+      }
+      // OJO: la REST `/issues` devuelve TAMBIÉN pull requests (se distinguen por
+      // la clave `pull_request`). Un PR titulado `[Split de #N]` no es un hijo
+      // de split y no debe entrar a la ola ni a la allowlist.
+      for (const it of batch) {
+        if (it && typeof it === 'object' && it.pull_request === undefined) issues.push(it);
+      }
+      if (batch.length < SPLIT_ORPHAN_PAGE_SIZE) break;        // última página
+    }
   } catch (e) {
     // Degradación de gh (breaker abierto, timeout, red) → no-op. NUNCA derivar
     // "no hay huérfanos" como una conclusión con efectos: simplemente no
@@ -16591,18 +16649,46 @@ function reconcileSplitOrphansFromGithub(context) {
     log('pulpo', `WARN split-orphan-reconciler: gh degradado (${context}): ${e.message}. Sin incorporación este ciclo.`);
     return { ok: false, incorporated: [], reason: 'gh_unavailable' };
   }
-  if (!Array.isArray(issues)) {
-    return { ok: false, incorporated: [], reason: 'gh_bad_payload' };
-  }
 
   // --- 2. Clasificación pura ---------------------------------------------------
   let found;
   try {
-    found = splitOrphanReconciler.findSplitOrphans(issues, { activeWaveIssues });
+    found = splitOrphanReconciler.findSplitOrphans(issues, {
+      activeWaveIssues,
+      trustedLogins: splitOrphanTrustedLogins(),               // SO-7
+    });
   } catch (e) {
     log('pulpo', `WARN split-orphan-reconciler: clasificador falló: ${e.message}. Sin incorporación.`);
     return { ok: false, incorporated: [], reason: 'classifier_error' };
   }
+
+  // --- 2b. SO-7: candidatos de ORIGEN NO CONFIABLE -----------------------------
+  // Nunca se descartan en silencio. Un issue que declara un padre de la ola pero
+  // viene de un autor sin relación con el repo es, potencialmente, un intento de
+  // hacerse incorporar al alcance del pipeline. Se loguea siempre y se alerta una
+  // vez por issue (dedupe por proceso) para que quede trazado sin fatigar.
+  const rejected = (found && Array.isArray(found.rejectedUntrusted)) ? found.rejectedUntrusted : [];
+  if (rejected.length > 0) {
+    log('pulpo', `split-orphan-reconciler: ${rejected.length} candidato(s) EXCLUIDO(S) por SO-7 ` +
+      `(origen no confiable): ${rejected.map((r) => `#${r.child}→padre #${r.parent} ` +
+        `[login=${r.login || 'n/a'} assoc=${r.association || 'n/a'}]`).join(' | ')}`);
+    const nuevos = rejected.filter((r) => !_splitOrphanUntrustedAlerted.has(r.child));
+    if (nuevos.length > 0) {
+      for (const r of nuevos) _splitOrphanUntrustedAlerted.add(r.child);
+      try {
+        sendTelegramPlain(
+          `🛡️ Auto-incorporación BLOQUEADA por origen no confiable (#5516, SO-7).\n` +
+          `Estos issues declaran un padre de la ola activa pero su autor no es ` +
+          `OWNER/MEMBER/COLLABORATOR del repo, así que NO entran a la ola ni a la allowlist:\n` +
+          nuevos.map((r) => `• #${r.child} (dice ser hijo de #${r.parent}) — autor ` +
+            `${r.login || 'desconocido'} [${r.association || 'sin asociación'}]`).join('\n') +
+          `\nSi alguno es legítimo, sumalo a mano o agregá el login a ` +
+          `desync.split_orphan_trusted_logins en config.yaml.`
+        );
+      } catch { /* best-effort */ }
+    }
+  }
+
   const orphans = (found && Array.isArray(found.orphans)) ? found.orphans : [];
   if (orphans.length === 0) {
     // Camino idempotente: sin huérfanos nuevos NO se escribe nada ni se notifica.
