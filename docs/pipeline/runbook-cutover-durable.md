@@ -275,6 +275,43 @@ habilitá la rotación antes de avanzar.
 
 ---
 
+### Trail persistente para el uso de la CMK
+
+El trail regional `intrale-kernel-kms` guarda management events en un bucket S3
+privado y exclusivo de la cuenta. La retención es de **365 días**: cubre una
+revisión anual completa y ventanas de investigación mayores a los 90 días del
+Event history, sin conservar indefinidamente evidencia operativa. El lifecycle
+del bucket aplica esa decisión automáticamente.
+
+El aprovisionador es dry-run por defecto. Requiere una sesión AWS administrativa
+vigente y deriva el account id en runtime:
+
+```bash
+node .pipeline/lib/kernel-cloudtrail-provision.js
+node .pipeline/lib/kernel-cloudtrail-provision.js --apply
+node .pipeline/lib/kernel-cloudtrail-provision.js --apply --verify
+```
+
+`--verify` escribe, lee y borra un ítem efímero en la tabla de coordinación
+(nunca en la tabla append-only de no-repudio) y exige encontrar tanto `Decrypt`
+como `GenerateDataKey` asociados a `alias/intrale-kernel-store`. CloudTrail puede
+demorar la entrega; un exit code `2` indica que se debe repetir la verificación,
+no recrear el trail.
+
+Durante una reconciliación, consultar la ventana y luego inspeccionar el JSON de
+cada evento para confirmar la CMK, el principal y el contexto de DynamoDB:
+
+```bash
+aws cloudtrail lookup-events --region us-east-2 \
+  --lookup-attributes AttributeKey=EventName,AttributeValue=Decrypt \
+  --start-time <UTC-INICIO> --end-time <UTC-FIN>
+aws cloudtrail lookup-events --region us-east-2 \
+  --lookup-attributes AttributeKey=EventName,AttributeValue=GenerateDataKey \
+  --start-time <UTC-INICIO> --end-time <UTC-FIN>
+```
+
+---
+
 ## 4 · Orden de bloques: CA-0 → Bloque A → Bloque B
 
 El orden **no es negociable**, y cada bloque tiene una puerta de salida:
