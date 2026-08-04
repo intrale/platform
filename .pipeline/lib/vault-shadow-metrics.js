@@ -181,6 +181,53 @@ function msEfectivo(r) {
   return ms !== null ? ms : msDeIso(r && r.ts);
 }
 
+/** Comparación ORDINAL de strings. Nada de `localeCompare`: el orden no puede depender del locale. */
+function ordinal(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * Conteos de resoluciones por (secreto, host, vía) dentro de la ventana.
+ * Ampliación aditiva para CA-17 de #5427, consumida por el reporte de #5449.
+ *
+ * Vive acá y no en el comando A PROPÓSITO: ubicar una fila dentro de la ventana
+ * exige la regla `msEfectivo` (`last_ts || ts`), que es interna y existe para
+ * cerrar un fail-open concreto. Reimplementarla del lado del reporte crearía una
+ * SEGUNDA fuente de verdad sobre la misma evidencia con la que se decide retirar
+ * el fallback de credenciales, y las dos podrían divergir sin que nadie lo note.
+ * El comando sólo renderiza lo que sale de esta función.
+ *
+ * `count` cuenta EVALUACIONES DE PRECEDENCIA agregadas en la fila, no usos del
+ * secreto (de ahí la leyenda obligatoria del reporte). Una fila sin `count`
+ * usable cuenta 1: documenta al menos una resolución, y descartarla subcontaría
+ * evidencia — incluida la negativa.
+ *
+ * @param {Array<object>} rows filas YA filtradas por la ventana.
+ * @returns {Array<{name:string, host:string, via:string, resoluciones:number}>}
+ *          ordenado por name, host y vía con comparación ordinal.
+ */
+function contarResoluciones(rows) {
+  const acc = new Map();
+  for (const r of Array.isArray(rows) ? rows : []) {
+    if (!r || !esTexto(r.name) || !VIAS_REGISTRADAS.includes(r.via)) continue;
+    // `readRows` no valida `host`: una fila vieja o incompleta no puede
+    // atribuirse a un host activo, así que cae en el host que ningún
+    // `hosts_activos` válido puede igualar.
+    const host = esTexto(r.host) ? r.host : HOST_DESCONOCIDO;
+    const n = Number(r.count);
+    const suma = Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;
+    // Clave INYECTIVA: una interpolacion con separador podria fusionar dos
+    // pares distintos si ese separador aparece dentro de un nombre o un host.
+    const clave = JSON.stringify([r.name, host, r.via]);
+    const prev = acc.get(clave);
+    if (prev) prev.resoluciones += suma;
+    else acc.set(clave, { name: r.name, host, via: r.via, resoluciones: suma });
+  }
+  return Array.from(acc.values()).sort((a, b) => (
+    ordinal(a.name, b.name) || ordinal(a.host, b.host) || ordinal(a.via, b.via)
+  ));
+}
+
 /**
  * Normaliza y valida `vault.shadow_window`.
  *
@@ -682,6 +729,7 @@ function createVaultShadowMetrics(opts = {}) {
    *            horas_transcurridas:number, secretos:number, hosts:string[],
    *            no_verificados:Array<{name:string,host:string}>,
    *            negativos:Array<{name:string,host:string,via:string,ts:string}>,
+   *            conteos:Array<{name:string,host:string,via:string,resoluciones:number}>,
    *            error:string|null}}
    */
   function evaluate(params = {}) {
@@ -701,6 +749,10 @@ function createVaultShadowMetrics(opts = {}) {
       hosts: cfg.hosts_activos,
       no_verificados: [],
       negativos: [],
+      // Ampliación aditiva para CA-17 de #5427 (reporte de #5449). Arranca
+      // vacío para que TODA salida temprana lo traiga presente y tipado: un
+      // consumidor nunca tiene que distinguir "sin conteos" de "campo ausente".
+      conteos: [],
       error: null,
     };
 
@@ -759,6 +811,10 @@ function createVaultShadowMetrics(opts = {}) {
     // `last_ts` aunque ningún consumidor lo leyera.
     const rows = readRows().filter((r) => msEfectivo(r) >= t0.ms);
     base.horas_transcurridas = Math.max(0, (now() - t0.ms) / MS_HORA);
+
+    // Conteos sobre ESAS filas (las de la ventana), no sobre el archivo entero:
+    // el reporte no puede volver a filtrar por su cuenta sin duplicar la regla.
+    base.conteos = contarResoluciones(rows);
 
     // 7 · evidencia negativa dentro de la ventana.
     base.negativos = rows
