@@ -60,16 +60,23 @@ elif [ "$EXIT" != "0" ]; then
 fi
 
 # =============================================================================
-# Issue #3310 CA-5 — Secret-scan defensivo sobre archivos de estado del pipeline.
+# Issue #3310 CA-5 — Secret-scan defensivo · inventario alineado en #5463.
 #
-# Aunque `.pipeline/commander-session.json`, `commander-history.jsonl` y
-# `.pipeline/servicios/**/*.json` están en `.gitignore`, si alguien los
-# des-ignora por error este escáner bloquea el commit antes de que el secreto
-# llegue a la rama. Reusa el mismo `sanitizer.js` del runtime.
+# Segunda capa de contención de paths sensibles. La primera es `.gitignore`;
+# este escáner cubre el caso de que alguien (humano o agente) des-ignore un path
+# o lo fuerce al índice con `git add -f`.
+#
+# ⚠️ El inventario NO se declara acá ni en `.gitignore`: los tres consumidores
+# derivan de `.pipeline/lib/sensitive-paths.js` (#5463). Antes esta capa cubría
+# sólo el estado del Commander (#3310) mientras `.gitignore` cubría otro
+# conjunto, y los dos stores de credenciales del pipeline
+# (`.pipeline/credentials.json`, `.pipeline/telegram-config.json`) no estaban en
+# ninguno. Alta nueva → editar el módulo, no esta lista.
 #
 # El helper Node devuelve:
-#   - exit 0 → OK (no hay secretos detectados)
-#   - exit 1 → BLOQUEAR (secretos encontrados o sanitizer falló — fail-closed)
+#   - exit 0 → OK (ni paths del inventario en el índice ni secretos detectados)
+#   - exit 1 → BLOQUEAR (path sensible staged, secretos encontrados, o el
+#              sanitizer falló — fail-closed)
 # =============================================================================
 if [ -f ".pipeline/lib/precommit-secret-scan.js" ]; then
   node .pipeline/lib/precommit-secret-scan.js
