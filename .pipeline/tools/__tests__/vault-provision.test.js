@@ -101,6 +101,7 @@ function stdinPipe(...trozos) {
 // fuente (un ESC literal vuelve el archivo "binario" para grep y diff).
 const ETX = String.fromCharCode(3);    // Ctrl-C
 const ESC = String.fromCharCode(27);
+const BACKSPACE = String.fromCharCode(127);
 
 /**
  * stdin de TERMINAL. Registra las transiciones de `setRawMode` para poder
@@ -328,6 +329,39 @@ test('el valor leído por TTY se escribe con el eco deshabilitado y restaurado',
     assert.equal(r.ssm.escrituras[0].Value, canario);
     // ...y no salió por ninguna superficie.
     sinCanario(r, canario, 'lectura por TTY');
+});
+
+test('backspace borra un carácter ASCII completo', async () => {
+    const r = await correr({ stdin: stdinTty(`clave-x${BACKSPACE}\r`) });
+
+    assert.equal(r.codigo, EXIT.OK);
+    assert.equal(r.ssm.guardado.Value, 'clave-');
+});
+
+test('backspace borra un carácter multibyte completo', async (t) => {
+    for (const caracter of ['ñ', '😀']) {
+        await t.test(JSON.stringify(caracter), async () => {
+            const r = await correr({ stdin: stdinTty(`clave-${caracter}${BACKSPACE}\r`) });
+
+            assert.equal(r.codigo, EXIT.OK);
+            assert.equal(r.ssm.guardado.Value, 'clave-');
+            assert.ok(!r.ssm.guardado.Value.includes('\uFFFD'));
+        });
+    }
+});
+
+test('backspace repetido borra un carácter completo por pulsación', async () => {
+    const r = await correr({ stdin: stdinTty(`clave-ñ${BACKSPACE}${BACKSPACE}\r`) });
+
+    assert.equal(r.codigo, EXIT.OK);
+    assert.equal(r.ssm.guardado.Value, 'clave');
+});
+
+test('backspace con el buffer vacío es inocuo', async () => {
+    const r = await correr({ stdin: stdinTty(`${BACKSPACE}clave-${BACKSPACE}\r`) });
+
+    assert.equal(r.codigo, EXIT.OK);
+    assert.equal(r.ssm.guardado.Value, 'clave');
 });
 
 test('sin terminal y sin `--stdin` no hay forma de ingresar el valor', async () => {

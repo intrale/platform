@@ -569,7 +569,14 @@ function leerDeTty({ stdin, salida, etiqueta, timeoutMs }) {
                     return;
                 }
                 if (byte === 0x7f || byte === 0x08) {       // Backspace
-                    buffer.pop();
+                    // El buffer contiene bytes UTF-8: una pulsación debe quitar
+                    // todos los bytes del último code point, no sólo el último.
+                    // Se descartan continuaciones (10xxxxxx) hasta incluir el
+                    // byte líder; sobre un buffer vacío, pop() sigue siendo inocuo.
+                    let eliminado;
+                    do {
+                        eliminado = buffer.pop();
+                    } while (eliminado !== undefined && (eliminado & 0xc0) === 0x80);
                     continue;
                 }
                 buffer.push(byte);
