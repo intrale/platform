@@ -125,4 +125,3 @@ test('TTL, timeout y runbook usan defaults y rechazan valores fail-open', () => 
   assert.throws(() => resolvePolicy({ vault: { cut_fallback: { operation_timeout_ms: 60001 } } }), /timeout/);
   assert.throws(() => resolvePolicy({ vault: { cut_fallback: { runbook: '' } } }), /runbook/);
 });
-
