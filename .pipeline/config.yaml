@@ -205,6 +205,13 @@ timeouts:
     linter: 5                     # Determinístico — sólo lee diff/git log, debería durar segundos
     delivery: 90                  # Espera CI completo (OWASP ~28min, check-app ~15min) + gate de review + merge + reporte
 
+# Procedencia de ramas para auto-recovery. Agregar una identidad confiable es
+# una decisión de seguridad y requiere review humana; nunca usar comodines.
+worktree_provenance:
+  committers:
+    - backend-dev-agent@intrale
+    - bot@intrale.com
+
 # Desync waves.json ↔ .partial-pause.json (#4439)
 # Ventana de validez de la "traza de origen legítimo" que habilita el auto-resync
 # aditivo de una divergencia ambigua (CA-3). Una suma a la allowlist con
