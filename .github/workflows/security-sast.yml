@@ -7,6 +7,8 @@ name: Security SAST
 on:
   pull_request:
     branches: [ main, develop ]
+  push:
+    branches: [ main ]
 
 permissions:
   contents: read
@@ -16,6 +18,7 @@ permissions:
 jobs:
   # ── OWASP Dependency Check (vulnerabilidades en dependencias) ─────
   dependency-check:
+    if: github.event_name == 'pull_request'
     name: OWASP Dependency Check
     runs-on: ubuntu-latest
     continue-on-error: true  # Modo warning — no bloquea el PR
@@ -72,6 +75,7 @@ jobs:
 
   # ── Semgrep — análisis estático de código Kotlin ─────────────────
   semgrep:
+    if: github.event_name == 'pull_request'
     name: Semgrep Static Analysis
     runs-on: ubuntu-latest
     continue-on-error: true  # Modo warning — no bloquea el PR
@@ -130,6 +134,7 @@ jobs:
 
   # ── detect-secrets — secretos hardcodeados ───────────────────────
   detect-secrets:
+    if: github.event_name == 'pull_request'
     name: detect-secrets Scan
     runs-on: ubuntu-latest
     continue-on-error: true  # Modo warning — no bloquea el PR
@@ -186,6 +191,173 @@ jobs:
           if-no-files-found: ignore
 
   # ── Reporte consolidado como PR comment ──────────────────────────
+  secret-scan:
+    name: Secret scan (blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: false
+    permissions:
+      contents: read
+    steps:
+      # #5244 rev-6 — actions pineadas al SHA de 40 chars (no al tag mutable):
+      # un tag puede ser repunteado en silencio por el dueño de la action
+      # (trivy-action / kics-github-action). Dejar el tag mutable en el ÚNICO job
+      # bloqueante del workflow contradice el alcance del propio issue.
+      # Regla: yaml.github-actions.security.github-actions-mutable-action-tag.
+      - name: Checkout head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      # Tres salidas distintas a propósito:
+      #   `sha`       → base DECLARADA del PR. Sólo informativa/log: es la
+      #                 merge-base de la rama con main, NO el tip de main.
+      #   `diff_base` → extremo izquierdo del rango a escanear (lo que ESTE PR agrega).
+      #   `decider`   → ref del árbol base que provee scanner/sanitizer/allowlist
+      #                 (cadena de confianza D-3). Es el tip REAL de la rama base.
+      #
+      # #5244 rev-8 — `sha` NO puede gobernar el árbol que decide. Es la merge-base
+      # del PR, así que está bajo control del autor: alcanza con no mergear main (o
+      # ramificar desde un commit viejo) para que el árbol base quede en una época
+      # anterior a este control, caer en bootstrap y correr el scanner del HEAD.
+      # Ése es exactamente el bypass que CA-9 cierra. Verificado contra la API:
+      # PR 5278 base.sha=ecb552459fb8 ≠ tip de main c0200429504b.
+      # `decider` sale de BASE_TIP, que es el tip de la base y no lo mueve el autor
+      # del PR. En la vía normal (merge commit efímero) `decider` == `diff_base`,
+      # que es lo pedido por el rechazo; en la vía de fallback —sin merge efímero,
+      # donde `diff_base` degrada al punto de fork— `decider` sigue siendo el tip.
+      # El bloque es shell puro — las expresiones ${{ }} van en env: — para que
+      # .pipeline/tests/ci-secret-scan-range.test.js lo extraiga y lo ejecute tal cual.
+      - name: Resolver rango del diff
+        id: base
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          # #5244 rev-5 — el rango tiene que ser "lo que ESTE PR agrega", nada más.
+          # En eventos pull_request, GITHUB_SHA es el merge commit efímero
+          # (refs/pull/N/merge): parent1 = tip de la rama base (main ACTUAL),
+          # parent2 = head del PR. Por eso el rango PR_BASE_SHA..GITHUB_SHA
+          # arrastra todo lo que main avanzó desde que se abrió el PR y el gate
+          # bloquea por hallazgos ajenos (PR #5280 frenado por fb03a6b8e, de #5304).
+          # Se acota con merge-base contra el tip REAL de la base: main queda a
+          # ambos lados del rango y sale del diff.
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BASE_TIP=""
+            # parent1 sólo se usa si GITHUB_SHA es de verdad el merge efímero:
+            # si el checkout fuera el head del PR, `^1` sería el commit anterior
+            # de la propia rama y el rango se achicaría (fail-open).
+            if [ -n "$PR_HEAD_SHA" ] && [ "$GITHUB_SHA" != "$PR_HEAD_SHA" ] \
+               && git rev-parse -q --verify "$GITHUB_SHA^2" >/dev/null 2>&1; then
+              BASE_TIP="$(git rev-parse "$GITHUB_SHA^1")"
+            elif [ -n "$PR_BASE_REF" ]; then
+              BASE_TIP="$(git rev-parse -q --verify "origin/$PR_BASE_REF" 2>/dev/null || true)"
+            fi
+            [ -n "$BASE_TIP" ] || BASE_TIP="$PR_BASE_SHA"
+
+            DIFF_BASE="$(git merge-base "$BASE_TIP" "$GITHUB_SHA" 2>/dev/null || true)"
+            if [ -z "$DIFF_BASE" ]; then
+              # Sin ancestro común no hay forma de acotar. Se cae a la base
+              # declarada del PR: escanea de más, nunca de menos (fail-closed),
+              # y queda declarado en el log en vez de degradar en silencio.
+              DIFF_BASE="$PR_BASE_SHA"
+              echo "::warning::secret-scan: sin merge-base entre $BASE_TIP y $GITHUB_SHA; se escanea desde la base declarada del PR"
+            fi
+
+            echo "sha=$PR_BASE_SHA" >> "$GITHUB_OUTPUT"
+            echo "diff_base=$DIFF_BASE" >> "$GITHUB_OUTPUT"
+            echo "decider=$BASE_TIP" >> "$GITHUB_OUTPUT"
+            echo "secret-scan: rango $DIFF_BASE..$GITHUB_SHA (árbol que decide: $BASE_TIP; base declarada del PR: $PR_BASE_SHA)"
+          else
+            B="$PUSH_BEFORE"
+            case "$B" in ''|0000000*) B="$(git rev-parse HEAD~1)" ;; esac
+            echo "sha=$B" >> "$GITHUB_OUTPUT"
+            echo "diff_base=$B" >> "$GITHUB_OUTPUT"
+            echo "decider=$B" >> "$GITHUB_OUTPUT"
+            echo "secret-scan: rango $B..$GITHUB_SHA"
+          fi
+
+      - name: Checkout base completo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ steps.base.outputs.decider }}
+          path: .base
+          fetch-depth: 0
+
+      - name: Setup Node 20
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+
+      # Todo lo que decide (scanner, sanitizer, allowlist) sale del árbol base.
+      # Del head sólo salen los datos: el diff. El bloque es shell puro —
+      # las expresiones ${{ }} van arriba, en env — para que
+      # .pipeline/tests/ci-secret-scan-step.test.js lo extraiga y lo ejecute tal cual.
+      - name: Secret scan del diff
+        env:
+          # Rango acotado por merge-base (#5244 rev-5), NO la base declarada:
+          # ésta última sólo gobierna de qué árbol sale el scanner.
+          BASE_SHA: ${{ steps.base.outputs.diff_base }}
+        run: |
+          BASE_TREE="$GITHUB_WORKSPACE/.base"
+          BASE_SCANNER="$BASE_TREE/.pipeline/lib/precommit-secret-scan.js"
+
+          # #5244 CA-9 — el scanner que decide viene del BASE, no del head: si
+          # corriera el del head, un PR que neutraliza el scanner en su propio
+          # diff pasaría en verde con un secreto adentro (`.pipeline/` está
+          # fuera de CODEOWNERS por D-4, así que nadie lo frena a mano).
+          # "El archivo existe" no alcanza: el scanner viejo ignora los flags y
+          # sale 0 sin mirar el rango. Se exige el protocolo declarado.
+          SCANNER="$BASE_SCANNER"
+          BASE_CAPS=""
+          if [ -f "$BASE_SCANNER" ]; then
+            BASE_CAPS="$(node "$BASE_SCANNER" --capabilities 2>/dev/null || true)"
+          fi
+          case "$BASE_CAPS" in
+            *secret-scan-protocol=range-v1*)
+              echo "secret-scan: scanner del árbol base (fail-closed)" ;;
+            *)
+              # Bootstrap: el ref base es anterior a este control. Único caso en
+              # el que correría el scanner del head — y es justo el que un PR
+              # hostil busca alcanzar.
+              #
+              # #5244 rev-8 — FAIL-CLOSED sobre paths de CONTROL. Si el diff toca
+              # el propio mecanismo de detección, el head no puede auto-habilitarse:
+              # no queda ningún árbol confiable que pueda juzgarlo, así que se
+              # bloquea sin ejecutar nada suyo. Cubre la vía de fallback de
+              # BASE_TIP (PR sin merge commit efímero), donde el árbol que decide
+              # puede seguir siendo anterior a este control.
+              CONTROL_HITS="$(git -C "$GITHUB_WORKSPACE" diff --name-only "$BASE_SHA" "$GITHUB_SHA" 2>/dev/null \
+                | grep -E '^(\.pipeline/lib/[^/]*secret[^/]*|\.pipeline/sanitizer\.js|\.pipeline/secret-scan-allowlist\.json|\.claude/hooks/telegram-sanitizer\.js|\.husky/pre-commit|\.github/workflows/security-sast\.yml)$' \
+                || true)"
+              if [ -n "$CONTROL_HITS" ]; then
+                echo "::error::secret-scan BLOQUEADO (bootstrap sobre paths de control): el ref base no expone secret-scan-protocol=range-v1 y este diff modifica el propio control de secretos, así que no existe scanner confiable para juzgarlo. Paths: $(echo "$CONTROL_HITS" | tr '\n' ' ')"
+                echo "::error::Remediación: el control tiene que estar en la rama base ANTES de tocarlo desde un PR. Una vez que main expone secret-scan-protocol=range-v1, el árbol base decide y este camino deja de tomarse."
+                exit 1
+              fi
+              SCANNER="$GITHUB_WORKSPACE/.pipeline/lib/precommit-secret-scan.js"
+              echo "::warning::secret-scan bootstrap: el ref base no expone secret-scan-protocol=range-v1; corre el scanner de HEAD" ;;
+          esac
+
+          BASE_ALLOWLIST="$BASE_TREE/.pipeline/secret-scan-allowlist.json"
+          if [ ! -f "$BASE_ALLOWLIST" ]; then
+            BASE_ALLOWLIST="$RUNNER_TEMP/secret-scan-bootstrap-allowlist.json"
+            # Política bootstrap confiable: el base aún no tiene allowlist.
+            # Sin excepciones — los fixtures de test arman sus tokens en
+            # runtime, así que no necesitan una exención permanente sobre un
+            # path escribible y fuera de CODEOWNERS (#5244 rev-1).
+            printf '{"paths":[],"globs":[]}\n' > "$BASE_ALLOWLIST"
+          fi
+
+          node "$SCANNER" \
+            --mode=range --base="$BASE_SHA" --head="$GITHUB_SHA" \
+            --cwd="$GITHUB_WORKSPACE" \
+            --sanitizer="$BASE_TREE/.pipeline/sanitizer.js" \
+            --allowlist="$BASE_ALLOWLIST" \
+            --format=github
+
   sast-report:
     name: Publicar reporte SAST en PR
     runs-on: ubuntu-latest

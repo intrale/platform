@@ -1,215 +1,404 @@
 #!/usr/bin/env node
-// =============================================================================
-// precommit-secret-scan.js — Issue #3310 CA-5
-//
-// Red de seguridad para evitar que estado interno del pipeline con secretos
-// llegue al repo. Hoy estos archivos están en `.gitignore`, pero si alguien
-// (humano o agente) los des-ignora por error, este script bloquea el commit
-// antes de que la fuga toque la rama.
-//
-// Cubre los paths donde el commander persiste mensajes de Telegram en disco:
-//
-//   - `.pipeline/commander-session.json`
-//   - `.pipeline/commander-history.jsonl`
-//   - `.pipeline/servicios/**/*.json`
-//
-// Estrategia: lee cada archivo staged que matchee el glob y lo pasa por
-// `sanitizer.sanitize()`. Si la salida difiere del input, hay al menos un
-// patrón redactado → aborta el commit con mensaje accionable que indica:
-//
-//   1. QUÉ archivo gatilló la detección (path absoluto + relativo al repo).
-//   2. QUÉ patrón (o cantidad de patrones) cazó el sanitizer.
-//   3. CÓMO salir (un-stage el archivo + agregar a .gitignore + revisar
-//      manualmente antes de commitear).
-//
-// Diseño:
-//   - **Sin dependencias externas** (solo `fs`, `path`, `child_process`).
-//   - **Reusa el mismo sanitizer del runtime** — single source of truth para
-//     los patrones (Anthropic, OpenAI, Groq (legacy, defense-in-depth post
-//     #3353), Cerebras, NVIDIA NIM, Google, AWS, GitHub, JWT, etc.).
-//   - **Robusto al escaping** de Windows / MINGW / Git Bash (no regex en
-//     bash).
-//   - **Fail-closed**: si el sanitizer tira, bloquea el commit (preferimos un
-//     falso positivo al leak silencioso).
-//
-// Exit codes:
-//   - 0 → OK (no se detectaron secretos en archivos sensibles).
-//   - 1 → BLOQUEAR commit (secretos detectados o error del sanitizer).
-// =============================================================================
 'use strict';
 
-const fs = require('fs');
+// Escanea líneas agregadas, agrupadas por hunk para conservar secretos
+// multilínea. El mismo entrypoint sirve al pre-commit y a CI.
+//
+// #5244 rev-2 — el criterio de bloqueo NO es `sanitize()` completo. `sanitize()`
+// es modo REDACCIÓN (sobre-redactar cuesta cero); acá es modo LINT (sobre-redactar
+// frena al dev). `secret-scan-lint.js` separa los dos conjuntos de patrones y
+// agrega el escape por línea `secret-scan:ignore`. Ver su cabecera.
 const path = require('path');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
+const { isControlPath, loadAllowlist, whichAllowlistEntry } = require('./secret-allowlist');
+const { IGNORE_MARKER, createLintSanitizer, markedLines, stripIgnoredLines } = require('./secret-scan-lint');
 
-const { sanitize } = require('../sanitizer');
-
-// Paths sensibles relativos al root del repo. Los matcheamos con startsWith
-// + endsWith para evitar dependencias de globbing externo.
+const DEFAULT_ALLOWLIST = path.join(__dirname, '..', 'secret-scan-allowlist.json');
+const DEFAULT_SANITIZER = path.join(__dirname, '..', 'sanitizer.js');
+// Protocolo declarado por `--capabilities`. CI lo usa para decidir si el
+// scanner del árbol base entiende `--mode=range`: un scanner viejo ignora los
+// flags y termina en 0 sin mirar nada, así que "el archivo existe" no alcanza.
+// Bumpear sólo si cambia el contrato de flags de forma incompatible.
+const SCAN_PROTOCOL = 'range-v1';
+const CAPABILITIES_LINE = `secret-scan-protocol=${SCAN_PROTOCOL}`;
 const SENSITIVE_PATTERNS = [
-    { name: 'commander-session', test: (p) => p === '.pipeline/commander-session.json' },
-    { name: 'commander-history', test: (p) => p === '.pipeline/commander-history.jsonl' },
-    { name: 'servicios-state',    test: (p) => p.startsWith('.pipeline/servicios/') && p.endsWith('.json') },
+  { name: 'commander-session', test: (p) => p === '.pipeline/commander-session.json' },
+  { name: 'commander-history', test: (p) => p === '.pipeline/commander-history.jsonl' },
+  { name: 'servicios-state', test: (p) => p.startsWith('.pipeline/servicios/') && p.endsWith('.json') },
 ];
 
-function listStagedFiles() {
-    // Lista archivos staged en el commit (added/copied/modified/renamed).
-    // `-z` para tolerar paths con espacios; lo splitteamos por NUL.
+function isSensitive(filePath) {
+  return SENSITIVE_PATTERNS.find(({ test }) => test(filePath))?.name || 'contenido staged';
+}
+
+function countRedactions(text) {
+  const tally = {};
+  for (const hit of String(text).match(/\[REDACTED:[A-Z_]+\]/g) || []) {
+    tally[hit] = (tally[hit] || 0) + 1;
+  }
+  return tally;
+}
+
+function unquoteDiffPath(raw) {
+  const value = raw.trim();
+  if (!value.startsWith('"')) return value;
+  try { return JSON.parse(value); } catch { throw new Error(`diff: path C-quoted inválido: ${raw}`); }
+}
+
+// `@@ -viejo[,borradas] +nuevo[,agregadas] @@`. Los conteos delimitan el cuerpo.
+const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+
+// #5244 — el contenido NO se clasifica por su prefijo de texto, se consume por
+// el conteo que declara el encabezado @@. Con -U0 una línea agregada cuyo
+// contenido empieza con "++ " se emite como "+++ ...": si se la lee como
+// encabezado de archivo, el hunk se descarta y el resto del contenido nunca se
+// escanea. El cuerpo del hunk es una región cerrada: mientras queden líneas por
+// consumir, ninguna línea puede reinterpretarse como encabezado.
+function parseHunks(diff) {
+  const hunks = [];
+  let filePath = null;
+  let current = null;
+  let pendingAdds = 0;
+  let pendingDeletions = 0;
+  const flush = () => {
+    if (current && current.lines.length) {
+      hunks.push({ path: current.path, startLine: current.startLine, text: current.lines.join('\n') });
+    }
+    current = null;
+  };
+  for (const line of String(diff).split(/\r?\n/)) {
+    if (pendingAdds > 0 || pendingDeletions > 0) {
+      const marker = line.charAt(0);
+      if (marker === '+') {
+        if (current) current.lines.push(line.slice(1));
+        pendingAdds -= 1;
+      } else if (marker === '-') {
+        pendingDeletions -= 1;
+      } else if (marker === '\\' || marker === ' ') {
+        // `\ No newline at end of file` y contexto: no consumen cuota del hunk.
+      } else {
+        // Un diff bien formado no llega acá. Si llega, el conteo se
+        // desincronizó y no sabemos qué quedó sin mirar: fail-closed.
+        throw new Error(`diff: cuerpo de hunk inesperado en ${filePath || '<sin path>'}`);
+      }
+      continue;
+    }
+    const header = line.match(HUNK_HEADER);
+    if (header) {
+      flush();
+      pendingDeletions = header[2] === undefined ? 1 : Number(header[2]);
+      pendingAdds = header[4] === undefined ? 1 : Number(header[4]);
+      if (filePath && pendingAdds > 0) current = { path: filePath, startLine: Number(header[3]), lines: [] };
+    } else if (line.startsWith('+++ ')) {
+      flush();
+      const raw = line.slice(4);
+      if (raw === '/dev/null') filePath = null;
+      else {
+        const decoded = unquoteDiffPath(raw);
+        filePath = decoded.startsWith('b/') ? decoded.slice(2) : decoded;
+      }
+    } else if (line.startsWith('Binary files ') || line.startsWith('GIT binary patch')) {
+      // El marcador no trae el path en forma parseable sin ambigüedad (renames,
+      // espacios). El path binario lo aporta `--numstat -z` y lo resuelve
+      // `resolveBinaryEntries`: acá sólo se cierra el archivo en curso. Este
+      // `flush()` NO es un descarte silencioso — ver rev-4 más abajo.
+      flush();
+      filePath = null;
+    }
+  }
+  flush();
+  return hunks;
+}
+
+const GIT_BUFFER = 256 * 1024 * 1024;
+
+// #5244 rev-7 — el filtro es por EXCLUSIÓN (`d` minúscula = "todo menos
+// borrados"), no por lista blanca. La lista blanca `ACMR` dejaba afuera la letra
+// `T` (typechange: symlink<->regular, gitlink<->regular) y ese path desaparecía
+// de las DOS salidas de git a la vez —del `-U0` y del `--numstat`—, así que el
+// fail-closed de `unexplained` tampoco lo veía: daba VERDE. El vector era real
+// hoy: el repo tiene entradas tracked en modo 160000 y pisar una con un archivo
+// regular es un `T`, no un alta. Afectaba los dos modos (pre-commit y CI).
+// Se invierte el criterio para que el gate no dependa de mantener al día una
+// lista de tipos (quedaban afuera también `U`, `X`, `B`). Sólo se excluye `D`:
+// un borrado no agrega contenido y, si es binario, `resolveBinaryEntries` no
+// podría releer su blob en el head y bloquearía todo PR que borre un binario.
+// La mitad de borrado de un typechange sale con `+++ /dev/null` y la descarta
+// `parseHunks` sola; la mitad de alta sale con su `@@` y se escanea.
+function gitDiff({ mode, base, head = 'HEAD', cwd = process.cwd() }, extraArgs) {
+  const range = mode === 'range' ? [`${base}..${head}`] : ['--cached'];
+  return execFileSync('git', [
+    '-c', 'core.quotePath=false', 'diff', ...range, ...extraArgs, '--diff-filter=d',
+    '--no-color', '--no-ext-diff', '--no-textconv',
+  ], {
+    cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: GIT_BUFFER,
+  });
+}
+
+// `added\tdeleted\tpath`; en binarios los conteos son `-`.
+const NUMSTAT_RECORD = /^(-|\d+)\t(-|\d+)\t([\s\S]*)$/;
+
+// #5244 rev-4 — `--numstat -z` es la fuente confiable de "qué considera binario
+// git": separa los campos con NUL, así que no hay C-quoting ni ambigüedad con
+// paths que tienen espacios. En renames/copias el path del registro viene vacío
+// y los DOS campos siguientes son origen y destino.
+function parseNumstat(output) {
+  const fields = String(output).split('\0');
+  const records = [];
+  for (let index = 0; index < fields.length; index += 1) {
+    const field = fields[index];
+    if (!field) continue;
+    const match = field.match(NUMSTAT_RECORD);
+    if (!match) throw new Error(`numstat: registro inesperado ${JSON.stringify(field)}`);
+    let filePath = match[3];
+    if (filePath === '') {
+      filePath = fields[index + 2];
+      index += 2;
+      if (filePath === undefined) throw new Error('numstat: rename sin path destino');
+    }
+    const binary = match[1] === '-';
+    records.push({ path: filePath, binary, added: binary ? 0 : Number(match[1]) });
+  }
+  return records;
+}
+
+function readBlob({ mode, head = 'HEAD', cwd = process.cwd() }, filePath) {
+  // `<rev>:<path>` y `:0:<path>` resuelven contra la raíz del árbol mientras el
+  // path no empiece con `./`, así que no depende del cwd del proceso.
+  const spec = mode === 'range' ? `${head}:${filePath}` : `:0:${filePath}`;
+  return execFileSync('git', ['show', spec], {
+    cwd, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: GIT_BUFFER,
+  });
+}
+
+// #5244 rev-4 — un path que git reporta como binario NO se descarta más.
+// "Binario" no es un hecho del contenido: git lo decide leyendo el atributo
+// `diff` del `.gitattributes` del ÁRBOL DE TRABAJO, y en CI ese árbol es el
+// checkout del head, o sea el MISMO commit que trae el secreto. Una línea
+// `* -diff` agregada al `.gitattributes` de la raíz apagaba el gate entero, en
+// silencio y en los dos modos.
+//
+// Se decide por CONTENIDO REAL: se relee el blob y, si no tiene NUL, se escanea
+// igual (es texto disfrazado). Si tiene NUL es un binario de verdad: se saltea
+// —expandirlo con `git diff -a` sólo lo haría chocar contra la guarda NUL de
+// `findingFor` y trabaría todo PR con un binario legítimo— pero se ANUNCIA. Un
+// salteo nunca puede quedar indistinguible de un PR limpio.
+function resolveBinaryEntries(options, records) {
+  const entries = [];
+  for (const record of records) {
+    if (!record.binary) continue;
+    let blob;
     try {
-        const out = execSync('git diff --cached --name-only --diff-filter=ACMR -z', {
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'pipe'],
-        });
-        return out.split('\0').filter(Boolean).map((p) => p.replace(/\\/g, '/'));
-    } catch (_e) {
-        // Si git rompe (no estamos en repo, etc.), no bloqueamos.
-        return [];
+      blob = readBlob(options, record.path);
+    } catch (error) {
+      entries.push({
+        path: record.path,
+        startLine: 1,
+        error: `declarado binario y no se pudo releer el blob: ${error?.message || error}`,
+      });
+      continue;
     }
+    if (blob.includes(0)) {
+      entries.push({ path: record.path, skippedBinary: true, bytes: blob.length });
+      continue;
+    }
+    entries.push({
+      path: record.path, startLine: 1, text: blob.toString('utf8'), fromBinary: true,
+    });
+  }
+  return entries;
 }
 
-function isSensitive(stagedPath) {
-    for (const pat of SENSITIVE_PATTERNS) {
-        if (pat.test(stagedPath)) return pat.name;
-    }
-    return null;
+function collectAddedHunks({ mode = 'staged', base, head = 'HEAD', cwd = process.cwd() } = {}) {
+  if (mode === 'range' && !base) throw new Error('secret-scan: falta --base en modo range');
+  const options = { mode, base, head, cwd };
+  const hunks = parseHunks(gitDiff(options, ['-U0']));
+  const records = parseNumstat(gitDiff(options, ['--numstat', '-z']));
+  // Invariante "ningún path queda sin mirar en silencio": si numstat declara
+  // líneas agregadas y el parser no produjo un solo hunk para ese path, el diff
+  // no se entendió. Fail-closed en vez de verde silencioso.
+  const scanned = new Set(hunks.map((hunk) => hunk.path));
+  const unexplained = records
+    .filter((record) => !record.binary && record.added > 0 && !scanned.has(record.path))
+    .map((record) => ({
+      path: record.path,
+      startLine: 1,
+      error: `git declara ${record.added} linea(s) agregada(s) y el diff no produjo hunks: no escaneable (fail-closed)`,
+    }));
+  return [...hunks, ...resolveBinaryEntries(options, records), ...unexplained];
 }
 
-/**
- * Cuenta cuántos placeholders distintos de redacción aparecen en el output
- * — sólo para reportar al operador "qué patrones cazaste".
- */
-function countRedactions(sanitizedText) {
-    const placeholderRe = /\[REDACTED:[A-Z_]+\]/g;
-    const matches = sanitizedText.match(placeholderRe) || [];
-    const tally = {};
-    for (const m of matches) tally[m] = (tally[m] || 0) + 1;
-    return tally;
+function defaultLintSanitizer(sanitizerPath = DEFAULT_SANITIZER) {
+  return createLintSanitizer(require(sanitizerPath));
 }
 
-function readStagedContent(stagedPath) {
-    // Leemos el contenido staged (`:0:<path>`) en vez del worktree, porque
-    // alguien podría haber unstaged el secreto después de stagearlo.
-    try {
-        return execSync(`git show :0:${shellQuote(stagedPath)}`, {
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'pipe'],
-            maxBuffer: 50 * 1024 * 1024,
-        });
-    } catch (e) {
-        // Si falla (binario, archivo deleted desde el index, etc.), caemos al
-        // contenido del worktree como mejor esfuerzo.
-        try {
-            return fs.readFileSync(stagedPath, 'utf8');
-        } catch {
-            return null;
-        }
-    }
+function findingFor(hunk, sanitizer = defaultLintSanitizer()) {
+  // #5244 — git detecta binarios mirando los primeros ~8000 bytes: un \0 más
+  // allá de ese umbral llega acá como texto. Descartar el hunk dejaba el
+  // archivo entero sin escanear (con -U0 un alta es un solo hunk), así que un
+  // \0 tardío alcanzaba para colar un secreto. Un hunk no escaneable BLOQUEA;
+  // los binarios reales ya salen antes por el marcador `Binary files`.
+  if (String(hunk.text).includes('\0')) {
+    return { path: hunk.path, line: hunk.startLine, error: 'NUL en el contenido agregado: no es escaneable (fail-closed)' };
+  }
+  // #5244 rev-2 — escape por línea. Se aplica antes de sanitizar para que el
+  // delta de redacciones no vea lo que el dev marcó explícitamente.
+  // rev-3 — sobre un path de control la marca NO se honra: el hunk se escanea
+  // entero. Las supresiones que sí se honran las anuncia `suppressionsFor`.
+  const scannable = isControlPath(hunk.path)
+    ? hunk.text
+    : stripIgnoredLines(hunk.text, { startLine: hunk.startLine }).text;
+  let sanitized;
+  try { sanitized = sanitizer(scannable, hunk.path); } catch (error) {
+    return { path: hunk.path, line: hunk.startLine, error: error?.message || 'sanitize falló' };
+  }
+  if (typeof sanitized !== 'string') {
+    return { path: hunk.path, line: hunk.startLine, error: 'sanitize devolvió un valor inválido' };
+  }
+  if (sanitized.startsWith('[SANITIZER_ERROR:')) {
+    return { path: hunk.path, line: hunk.startLine, error: 'SANITIZER_ERROR' };
+  }
+  const before = countRedactions(scannable);
+  const after = countRedactions(sanitized);
+  const redactions = {};
+  for (const [placeholder, count] of Object.entries(after)) {
+    const delta = count - (before[placeholder] || 0);
+    if (delta > 0) redactions[placeholder] = delta;
+  }
+  return Object.keys(redactions).length ? { path: hunk.path, line: hunk.startLine, redactions } : null;
 }
 
-function shellQuote(p) {
-    // git show acepta paths sin quoting si no tienen caracteres especiales.
-    // Para paths con espacio o `'`, los escapamos.
-    if (/^[A-Za-z0-9_./-]+$/.test(p)) return p;
-    return `'${p.replace(/'/g, `'\\''`)}'`;
+// #5244 rev-3 — supresiones del hunk, con `honored` según si la marca aplica.
+// Existe para que el escape deje de ser invisible: un PR que suprime líneas y
+// uno limpio ya no son indistinguibles en el log del job bloqueante de CI.
+function suppressionsFor(hunk) {
+  const honored = !isControlPath(hunk.path);
+  return markedLines(hunk.text, hunk.startLine || 1)
+    .map((line) => ({ path: hunk.path, line, honored }));
 }
 
-function main() {
-    const staged = listStagedFiles();
-    const findings = [];
+function formatSuppressions(suppressions, format) {
+  // CA-UX-4: sin supresiones no se emite un solo byte.
+  if (!suppressions.length) return '';
+  const detail = ({ honored }) => (honored
+    ? `secret-scan: linea suprimida con ${IGNORE_MARKER}`
+    : `secret-scan: marca ${IGNORE_MARKER} IGNORADA en path de control; la linea se escanea igual`);
+  if (format === 'github') {
+    return `${suppressions
+      .map((s) => `::warning file=${s.path},line=${s.line}::${detail(s)}`)
+      .join('\n')}\n`;
+  }
+  return `${suppressions.map((s) => `${s.path}:${s.line} — ${detail(s)}`).join('\n')}\n`;
+}
 
-    for (const rel of staged) {
-        const kind = isSensitive(rel);
-        if (!kind) continue;
+// #5244 rev-4 — un binario legítimo se saltea, pero queda anunciado por la
+// misma vía que las supresiones. CA-UX-4: sin binarios no se emite un byte.
+function formatSkippedBinaries(skipped, format) {
+  if (!skipped.length) return '';
+  const detail = ({ bytes }) => `secret-scan: binario real (NUL en el contenido, ${bytes} bytes), no escaneado`;
+  if (format === 'github') {
+    return `${skipped
+      .map((s) => `::warning file=${s.path},line=1::${detail(s)}`)
+      .join('\n')}\n`;
+  }
+  return `${skipped.map((s) => `${s.path} — ${detail(s)}`).join('\n')}\n`;
+}
 
-        const content = readStagedContent(rel);
-        if (content == null || content.length === 0) continue;
+function parseArgs(argv = process.argv.slice(2)) {
+  const options = {
+    mode: 'staged', cwd: process.cwd(), allowlist: DEFAULT_ALLOWLIST,
+    sanitizer: DEFAULT_SANITIZER, format: 'text', head: 'HEAD',
+  };
+  for (const arg of argv) {
+    const [flag, ...rest] = arg.split('=');
+    const value = rest.join('=');
+    if (flag === '--mode') options.mode = value;
+    else if (flag === '--base') options.base = value;
+    else if (flag === '--head') options.head = value;
+    else if (flag === '--cwd') options.cwd = path.resolve(value);
+    else if (flag === '--allowlist') options.allowlist = path.resolve(value);
+    else if (flag === '--sanitizer') options.sanitizer = path.resolve(value);
+    else if (flag === '--format') options.format = value;
+    else throw new Error(`secret-scan: argumento desconocido ${arg}`);
+  }
+  if (!['staged', 'range'].includes(options.mode)) throw new Error(`secret-scan: modo inválido ${options.mode}`);
+  if (!['text', 'github'].includes(options.format)) throw new Error(`secret-scan: formato inválido ${options.format}`);
+  return options;
+}
 
-        let sanitized;
-        try {
-            sanitized = sanitize(content);
-        } catch (e) {
-            // Fail-closed: si el sanitizer tira, asumimos que hay algo raro
-            // que justifica bloquear el commit.
-            findings.push({
-                path: rel,
-                kind,
-                error: (e && e.message) || 'unknown',
-                redactions: {},
-            });
-            continue;
-        }
+function formatFindings(findings, format) {
+  if (format === 'github') {
+    return `${findings.map((finding) => {
+      const detail = finding.error || Object.entries(finding.redactions)
+        .map(([placeholder, count]) => `${placeholder} x${count}`).join(', ');
+      return `::error file=${finding.path},line=${finding.line || 1}::BLOQUEADO: secreto detectado (${detail})`;
+    }).join('\n')}\n`;
+  }
+  const lines = findings.map((finding) => {
+    const detail = finding.error || Object.entries(finding.redactions)
+      .map(([placeholder, count]) => `${placeholder} x${count}`).join(', ');
+    return `${finding.path}:${finding.line || 1} — BLOQUEADO: ${detail} (${isSensitive(finding.path)})`;
+  });
+  lines.push('',
+    `Revisá el contenido agregado. Si esa línea es un falso positivo, marcala`,
+    `con "${IGNORE_MARKER}" en la misma línea. Si es un archivo entero`,
+    'sin secretos, agregá ese path o un glob específico a',
+    '.pipeline/secret-scan-allowlist.json.',
+    'El mismo control corre de forma bloqueante en CI; --no-verify no lo evita.');
+  return `${lines.join('\n')}\n`;
+}
 
-        if (sanitized !== content) {
-            findings.push({
-                path: rel,
-                kind,
-                redactions: countRedactions(sanitized),
-            });
-        }
+function run(options, dependencies = {}) {
+  const collect = dependencies.collectAddedHunks || collectAddedHunks;
+  const sanitizer = dependencies.sanitize || defaultLintSanitizer(options.sanitizer || DEFAULT_SANITIZER);
+  const allowlist = loadAllowlist(options.allowlist, { strict: true });
+  const findings = [];
+  const suppressions = [];
+  const skippedBinaries = [];
+  for (const hunk of collect(options)) {
+    if (whichAllowlistEntry(hunk.path, allowlist)) continue;
+    if (hunk.skippedBinary) { skippedBinaries.push(hunk); continue; }
+    if (hunk.error) {
+      findings.push({ path: hunk.path, line: hunk.startLine || 1, error: hunk.error });
+      continue;
     }
-
-    if (findings.length === 0) return 0;
-
-    // ── Formato accionable de error (UX-friendly) ──────────────────────────
-    const lines = [];
-    lines.push('');
-    lines.push('━'.repeat(72));
-    lines.push('🚨 pre-commit BLOQUEADO: secretos detectados en archivos sensibles');
-    lines.push('━'.repeat(72));
-    lines.push('');
-    lines.push('Issue #3310: el commit toca archivos de estado del pipeline que');
-    lines.push('NO deberían vivir en git (están en .gitignore por una razón) y');
-    lines.push('encima contienen lo que parecen ser credenciales en plaintext.');
-    lines.push('');
-
-    for (const f of findings) {
-        lines.push(`  ✗ ${f.path}`);
-        lines.push(`      tipo: ${f.kind}`);
-        if (f.error) {
-            lines.push(`      sanitizer falló: ${f.error}`);
-        } else {
-            const tally = Object.entries(f.redactions);
-            if (tally.length === 0) {
-                lines.push('      patrones: (sanitizer redactó algo pero no se identificó)');
-            } else {
-                lines.push('      patrones detectados:');
-                for (const [placeholder, count] of tally) {
-                    lines.push(`        · ${placeholder} × ${count}`);
-                }
-            }
-        }
-        lines.push('');
+    suppressions.push(...suppressionsFor(hunk));
+    const finding = findingFor(hunk, sanitizer);
+    if (finding) findings.push(finding);
+  }
+  // Ni las supresiones ni los binarios salteados cambian el exit code (CA-8d: un
+  // lint que frena por un escape legítimo se desactiva). Sí cambian la salida:
+  // quedan anunciados.
+  const warnings = `${formatSuppressions(suppressions, options.format)}${formatSkippedBinaries(skippedBinaries, options.format)}`;
+  const common = { findings: [], suppressions, skippedBinaries, warnings };
+  return findings.length
+    ? {
+      ...common, exitCode: 1, output: formatFindings(findings, options.format), findings,
     }
+    : { ...common, exitCode: 0, output: '' };
+}
 
-    lines.push('Cómo salir:');
-    lines.push('');
-    lines.push('  1. Sacá los archivos del stage:');
-    for (const f of findings) {
-        lines.push(`       git restore --staged ${shellQuote(f.path)}`);
+function main(argv = process.argv.slice(2)) {
+  try {
+    if (argv.includes('--capabilities')) {
+      process.stdout.write(`${CAPABILITIES_LINE}\n`);
+      return 0;
     }
-    lines.push('');
-    lines.push('  2. Si estos paths NO deberían estar en git, asegurate de que');
-    lines.push('     sigan en .gitignore. Si los des-ignoraste a propósito,');
-    lines.push('     pensá si realmente querés exponer ese estado.');
-    lines.push('');
-    lines.push('  3. Si el contenido legítimo del archivo coincidentemente');
-    lines.push('     matchea un patrón de secret (falso positivo), reportalo en');
-    lines.push('     #3310 con el patrón concreto para ajustar la heurística.');
-    lines.push('');
-    lines.push('━'.repeat(72));
-    lines.push('');
-
-    process.stderr.write(lines.join('\n'));
+    const result = run(parseArgs(argv));
+    if (result.warnings) process.stderr.write(result.warnings);
+    if (result.output) process.stderr.write(result.output);
+    return result.exitCode;
+  } catch (error) {
+    process.stderr.write(`secret-scan BLOQUEADO: ${error?.message || error}\n`);
     return 1;
+  }
 }
 
-if (require.main === module) {
-    process.exit(main());
-}
-
+if (require.main === module) process.exit(main());
 module.exports = {
-    SENSITIVE_PATTERNS,
-    isSensitive,
-    countRedactions,
-    __forTestsOnly__: { listStagedFiles, readStagedContent, shellQuote },
+  CAPABILITIES_LINE, DEFAULT_ALLOWLIST, DEFAULT_SANITIZER, IGNORE_MARKER, SCAN_PROTOCOL,
+  SENSITIVE_PATTERNS, collectAddedHunks, countRedactions, defaultLintSanitizer, findingFor,
+  formatFindings, formatSkippedBinaries, formatSuppressions, isSensitive, main, parseArgs,
+  parseHunks, parseNumstat, readBlob, resolveBinaryEntries, run, suppressionsFor,
+  unquoteDiffPath,
 };

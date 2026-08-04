@@ -1,0 +1,50 @@
+=== rev-8 · prueba de que el test (c) es regresion real ===
+--- workflow en el estado RECHAZADO (rev-7, git checkout HEAD -- security-sast.yml):
+✖ CA-9: bootstrap alcanzable + scanner del head HOSTIL queda BLOQUEADO (4471.0276ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 4924.4675
+
+✖ failing tests:
+
+test at .pipeline\tests\ci-secret-scan-step.test.js:246:1
+✖ CA-9: bootstrap alcanzable + scanner del head HOSTIL queda BLOQUEADO (4471.0276ms)
+  AssertionError [ERR_ASSERTION]: el cruce bootstrap + head hostil debía bloquear:
+  ::warning::secret-scan bootstrap: el ref base no expone secret-scan-protocol=range-v1; corre el scanner de HEAD
+  
+  
+  0 !== 1
+  
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 0,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+--- workflow CON el fix rev-8:
+✔ el step de rango es shell puro: las expresiones de Actions van en env: (4.2166ms)
+✔ el rango se acota al tip real de la base, no a la base declarada del PR (3526.8513ms)
+✔ el árbol que decide es el tip de main aunque el PR no haya mergeado main (3214.9821ms)
+✔ sin merge commit efímero el rango degrada al fork pero el árbol que decide no (2590.831ms)
+✔ regresión #5280: el PR benigno NO hereda los hallazgos del commit ajeno (7044.4274ms)
+✔ acotar el rango no afloja el gate: el secreto propio del PR sigue bloqueando (6409.6048ms)
+✔ sin merge commit efímero cae a origin/<base ref>, nunca al padre del head (4201.884ms)
+✔ sin ancestro común el rango degrada a la base declarada y lo declara (4729.5528ms)
+✔ en push el rango sigue siendo before..sha (3601.5095ms)
+✔ el step no depende de expresiones de Actions: es shell puro y ejecutable (4.641ms)
+✔ CA-9: el scanner por defecto sale del árbol base y el head es sólo bootstrap (1.8717ms)
+✔ CA-9: un PR que neutraliza el scanner en su propio diff queda BLOQUEADO (2893.9969ms)
+✔ bootstrap + diff que toca un path de control: FAIL-CLOSED sin correr el head (2481.6152ms)
+✔ CA-9: bootstrap alcanzable + scanner del head HOSTIL queda BLOQUEADO (2176.6252ms)
+✔ bootstrap benigno: sin paths de control corre el head, lo declara y bloquea el secreto (1957.4561ms)
+✔ el probe de capacidades distingue al scanner nuevo del viejo (371.9641ms)
+ℹ tests 16
+ℹ pass 16
+ℹ fail 0
