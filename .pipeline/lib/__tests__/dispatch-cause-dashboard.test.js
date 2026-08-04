@@ -127,12 +127,12 @@ test('render ESCAPA payload XSS en detalle (texto y atributo)', () => {
 
 test('render de anomalía usa el color de alerta (destacado, UX-2)', () => {
     const html = renderDispatchCauseBanner({ active: true, causa: dc.CAUSAS.ANOMALIA, label: '⚠ Anomalía', anomalia: true });
-    assert.match(html, /#f85149/, 'la anomalía debe usar el borde de alerta');
+    assert.match(html, /var\(--danger, #F85149\)/, 'la anomalía debe consumir el token de alerta');
 });
 
 test('render de causa normal NO usa el color de alerta', () => {
     const html = renderDispatchCauseBanner({ active: true, causa: dc.CAUSAS.REST_MODE, label: 'Modo descanso', anomalia: false });
-    assert.doesNotMatch(html, /#f85149/);
+    assert.doesNotMatch(html, /var\(--danger, #F85149\)/);
 });
 
 test('render escapa también un label malicioso', () => {
@@ -269,11 +269,22 @@ test('#5400 una causa escalada por duración se destaca como grave', () => {
     const normal = renderDispatchCauseBanner({
         active: true, causa: dc.CAUSAS.MODO_OLA, label: 'Modo ola', escaladoPorDuracion: false,
     });
-    assert.doesNotMatch(normal, /#f85149/);
+    assert.doesNotMatch(normal, /var\(--danger, #F85149\)/);
     const escalada = renderDispatchCauseBanner({
         active: true, causa: dc.CAUSAS.MODO_OLA, label: 'Modo ola', escaladoPorDuracion: true,
     });
-    assert.match(escalada, /#f85149/, 'una causa sostenida deja de ser un estado esperado');
+    assert.match(escalada, /var\(--danger, #F85149\)/, 'una causa sostenida usa el token de peligro');
+});
+
+test('#5400 el banner consume el sistema de tokens visuales', () => {
+    const html = renderDispatchCauseBanner({
+        active: true, causa: dc.CAUSAS.ANOMALIA, label: 'Anomalía', anomalia: true,
+        watchdogDegraded: false,
+    });
+    assert.match(html, /var\(--danger, #F85149\)/);
+    assert.match(html, /var\(--danger-bg, rgba\(248, 81, 73, 0\.14\)\)/);
+    assert.match(html, /var\(--success, #3FB950\)/);
+    assert.match(html, /var\(--text-secondary, #B1BAC4\)/);
 });
 
 test('#5400 el banner usa los iconos del sprite y no emojis', () => {
