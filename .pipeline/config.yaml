@@ -1373,6 +1373,12 @@ vault:
   # `true`. Sin esto, "bootstrap temporal" se vuelve permanente por olvido, que
   # es exactamente el modo de falla que la ventana existe para evitar.
   bootstrap_fallback_until: ""
+  # Corte operacional del fallback (#5459). Los defaults son deliberadamente
+  # acotados y fail-closed; el ejecutor vuelve a validar estas cotas al usarlo.
+  cut_fallback:
+    authorization_ttl_seconds: 300
+    operation_timeout_ms: 10000
+    runbook: "docs/pipeline/vault-secretos-aws.md"
   # ---------------------------------------------------------------------------
   # #5427 · #5448 — ventana SOMBRA: criterio de salida del fallback
   # ---------------------------------------------------------------------------
