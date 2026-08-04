@@ -541,3 +541,24 @@ test('CA-11 — el clasificador no expone ninguna vía de chequeo en línea', ()
     assert.ok(!/\bfetch\s*\(/.test(src), 'sin fetch');
     assert.ok(!src.includes("require('node:https')") && !src.includes("require('https')"));
 });
+
+// ─── SEC-5 · Tope de largo del label (rechazo rev-1) ─────────────────────────
+
+test('SEC-5 — el label del snapshot se acota al entrar al módulo', () => {
+    // El `label` es texto libre de un archivo que escribe otro proceso. Sin tope
+    // entra al veredicto —que va primero en el mensaje— y empuja fuera del corte
+    // de Telegram el link del issue y el comando de destrabe manual.
+    const dir = withStateDir(snapshotJson([row('anthropic', 'timeout', { label: 'X'.repeat(5000) })]));
+    const snap = readHealthSnapshot({ stateDir: dir, now: MONDAY_2100_ART });
+
+    assert.equal(snap.byProvider.anthropic.label.length, mod.MAX_LABEL_CHARS);
+    assert.ok(mod.MAX_LABEL_CHARS > 0 && mod.MAX_LABEL_CHARS <= 80, 'tope razonable');
+});
+
+test('SEC-5 — un label de largo normal no se toca', () => {
+    // Los labels reales (`MANAGED_KEYS`) son del estilo `Gemini (Antigravity CLI)`.
+    const dir = withStateDir(snapshotJson([row('anthropic', 'timeout', { label: 'Gemini (Antigravity CLI)' })]));
+    const snap = readHealthSnapshot({ stateDir: dir, now: MONDAY_2100_ART });
+
+    assert.equal(snap.byProvider.anthropic.label, 'Gemini (Antigravity CLI)');
+});

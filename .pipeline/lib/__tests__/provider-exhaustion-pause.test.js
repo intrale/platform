@@ -327,7 +327,12 @@ test('CA-7 + CA-14 — snapshot de formatExhaustionMessage para los 5 providers 
         // identidad, cola técnica y pie literales.
         assert.ok(text.includes('🟧 *Pipeline pausado — sin proveedor disponible*'), `header presente para ${primary}`);
         assert.ok(!text.includes('cuota agotada'), `CA-2: sin quota_exhausted_real el mensaje no habla de cuota agotada (${primary})`);
-        assert.ok(text.includes('Issue: [#9999 — test]'), `link al issue presente para ${primary}`);
+        // #5467 rev-1 · el título salió de la posición de texto-de-link (era
+        // inyección de link Markdown): ahora el texto del link es fijo `#N` y el
+        // título va afuera. La capacidad operativa —link al issue y título
+        // visible— se conserva; sólo cambia dónde está el título.
+        assert.ok(text.includes('Issue: [#9999](https://github.com/intrale/platform/issues/9999) — test'),
+            `link al issue presente para ${primary}`);
         assert.ok(text.includes('Skill: `guru`'), `skill line presente para ${primary}`);
         assert.ok(text.includes(`Primary: \`${primary}\``), `primary line presente para ${primary}`);
         assert.ok(text.includes('Cadena intentada: `anthropic -> openai-codex`'), `chain line presente para ${primary}`);
@@ -581,7 +586,9 @@ test('#5467 CA-7 — snapshot ausente: sin desglose, sin veredicto, titular NEUT
         'sin snapshot no hay causa: afirmar un veredicto sería inventar (UX-V2)');
 
     // La estructura de #3498 se preserva íntegra.
-    assert.ok(text.includes('Issue: [#5467 — El aviso de pipeline pausado]'));
+    // #5467 rev-1 · título fuera del texto-de-link (ver test SEC de más abajo).
+    assert.ok(text.includes(
+        'Issue: [#5467](https://github.com/intrale/platform/issues/5467) — El aviso de pipeline pausado'));
     assert.ok(text.includes('Skill: `ux`'));
     assert.ok(text.includes('Primary: `anthropic`'));
     assert.ok(text.includes('Cadena intentada: `anthropic -> openai-codex`'));
@@ -835,4 +842,144 @@ test('#5467 CA-11 — armar el mensaje no dispara ningún chequeo en línea', ()
     const src = fsNode.readFileSync(require.resolve('../provider-exhaustion-pause'), 'utf8');
     assert.ok(!src.includes("require('./multi-provider/live-ping')"));
     assert.ok(!src.includes("require('./multi-provider/completion-client')"));
+});
+
+// =============================================================================
+// #5467 rev-1 · Inyección de link Markdown (OWASP A03) — regresión de seguridad
+//
+// El mensaje va a Telegram con `parse_mode: 'Markdown'`. Dos campos de entrada
+// no confiable se interpolaban en posición peligrosa:
+//   CLAIM 1 · el título del issue (GitHub, repo público) iba como TEXTO DE LINK.
+//             `escapeMarkdownLegacy` escapa `[` pero no `]`, así que un título
+//             con `](` cerraba el link de la plantilla y rebindeaba el destino
+//             a un sitio arbitrario → phishing en el canal de madrugada.
+//   CLAIM 2 · el `label` del snapshot de salud entraba CRUDO al veredicto,
+//             mientras `breakdownLine` sí lo escapaba. Además sin tope de largo,
+//             lo que empujaba fuera del truncado el link y el destrabe manual.
+// =============================================================================
+
+/** Destinos de los links Markdown REALES de una línea (ignora `\[` escapado). */
+function linkTargets(line) {
+    const re = new RegExp('(?<!\\\\)\\[([^\\]]*)\\]\\(([^)]*)\\)', 'g');
+    return [...String(line).matchAll(re)].map(m => m[2]);
+}
+
+const ISSUE_URL_5467 = 'https://github.com/intrale/platform/issues/5467';
+const NO_STATE_5467 = pathNode.join(osNode.tmpdir(), 'no-existe-5467-sec');
+
+test('#5467 SEC · un título con `](` no puede rebindear el destino del link', () => {
+    // Repro exacto del rechazo rev-1.
+    const text = render5467({ stateDir: NO_STATE_5467 }, {
+        title: 'Bug](https://evil.example.com/phish)',
+    });
+    const line = text.split('\n').find(l => l.startsWith('Issue:'));
+
+    assert.deepEqual(linkTargets(line), [ISSUE_URL_5467],
+        `el único link debe apuntar al issue, salió: ${line}`);
+});
+
+test('#5467 SEC · ningún payload en el título produce un link al sitio del atacante', () => {
+    const BS = String.fromCharCode(92);
+    const payloads = [
+        'Bug](https://evil.example.com/phish)',
+        '](http://evil.test)',
+        '[x](http://evil.test)',
+        '](http://evil.test) y sigue](http://evil.test)',
+        'trailing backslash ' + BS,
+        BS + '](http://evil.test)',
+    ];
+    for (const title of payloads) {
+        const text = render5467({ stateDir: NO_STATE_5467 }, { title });
+        const line = text.split('\n').find(l => l.startsWith('Issue:'));
+        assert.deepEqual(linkTargets(line), [ISSUE_URL_5467],
+            `payload ${JSON.stringify(title)} generó links de más: ${line}`);
+    }
+});
+
+test('#5467 SEC · el título legítimo sigue siendo legible y va fuera del link', () => {
+    // El fix no puede costarle al operador el contexto del issue.
+    const text = render5467({ stateDir: NO_STATE_5467 }, {
+        title: 'El aviso de pipeline pausado',
+    });
+    assert.ok(
+        text.includes(`Issue: [#5467](${ISSUE_URL_5467}) — El aviso de pipeline pausado`),
+        `salió: ${text.split('\n').find(l => l.startsWith('Issue:'))}`,
+    );
+});
+
+test('#5467 SEC · los metacaracteres del título se escapan (no rompen el parse)', () => {
+    const text = render5467({ stateDir: NO_STATE_5467 }, {
+        title: 'under_score *bold* `code` [link',
+    });
+    const line = text.split('\n').find(l => l.startsWith('Issue:'));
+    assert.ok(
+        line.includes('under\\_score \\*bold\\* \\`code\\` \\[link'),
+        `salió: ${line}`,
+    );
+});
+
+test('#5467 SEC · el label del veredicto se escapa igual que en el desglose', () => {
+    // Asimetría del rechazo rev-1: `breakdownLine` escapaba, el veredicto no.
+    const stateDir = stateDirWith([
+        healthRow('anthropic', 'Anthropic_Claude *beta*', 'invalid_credentials'),
+    ]);
+    const text = render5467({ stateDir, scheduleModule: scheduleFor([]) },
+        { chain_tried: ['anthropic'] });
+    const verdict = text.split('\n').find(l => l.includes('Requiere acción'));
+
+    assert.ok(verdict.includes('Anthropic\\_Claude \\*beta\\*'),
+        `el veredicto no escapó el label: ${verdict}`);
+});
+
+test('#5467 SEC · un label con sintaxis de link no genera un link en el veredicto', () => {
+    const stateDir = stateDirWith([
+        healthRow('anthropic', 'Anthro[pic](http://evil.test)', 'invalid_credentials'),
+        healthRow('openai-codex', 'OpenAI', 'forbidden'),
+    ]);
+    const text = render5467({ stateDir, scheduleModule: scheduleFor([]) });
+    const verdict = text.split('\n').find(l => l.includes('Requiere acción'));
+
+    assert.deepEqual(linkTargets(verdict), [], `el veredicto formó un link: ${verdict}`);
+});
+
+test('#5467 SEC-5 · un label enorme no se come el link del issue ni el destrabe manual', () => {
+    // El veredicto va PRIMERO y `sanitizeForTelegram` trunca por el final: sin
+    // tope de largo en el label, el operador perdía justo lo accionable.
+    const stateDir = stateDirWith([
+        healthRow('anthropic', 'X'.repeat(5000), 'invalid_credentials'),
+    ]);
+    const text = render5467({ stateDir, scheduleModule: scheduleFor([]) },
+        { chain_tried: ['anthropic'] });
+
+    assert.ok(text.includes(`Issue: [#5467](${ISSUE_URL_5467})`), 'se perdió el link del issue');
+    assert.ok(text.includes('Para destrabe manual'), 'se perdió el comando de destrabe manual');
+    assert.ok(!text.includes('X'.repeat(41)), 'el label no quedó acotado');
+});
+
+test('#5467 SEC · el escape del veredicto no altera los literales propios (INVARIANTE)', () => {
+    // El veredicto se escapa ENTERO porque el label ya viene interpolado y no es
+    // separable. Eso es seguro SÓLO mientras `buildVerdict` no use metacaracteres
+    // Markdown en sus literales. Si alguien agrega uno, este test cae y hay que
+    // segmentar el veredicto en vez de relajar el escape.
+    const codes = [
+        'invalid_credentials', 'no_key_configured', 'forbidden',
+        'cli_license_unavailable', 'cli_unavailable', 'cli_binary_undeclared',
+        'unknown_provider', 'quota_exhausted_real', 'quota_exhausted',
+        'rate_limited', 'timeout', 'network_error', 'unknown',
+    ];
+    const ids = ['anthropic', 'openai-codex', 'gemini-google'];
+    const labels = ['Anthropic', 'OpenAI / Codex', 'Gemini (Antigravity CLI)'];
+
+    for (const code of codes) {
+        for (let n = 1; n <= 3; n++) {
+            const chain = ids.slice(0, n);
+            const stateDir = stateDirWith(chain.map((id, i) => healthRow(id, labels[i], code)));
+            const text = render5467({ stateDir, scheduleModule: scheduleFor([]) },
+                { chain_tried: chain });
+            const verdict = text.split('\n').find(l => l.startsWith('⚠️') || l.startsWith('✅'));
+            if (!verdict) continue;
+            assert.ok(!verdict.includes('\\'),
+                `con labels limpios el escape debe ser no-op; ${code} x${n} dio: ${verdict}`);
+        }
+    }
 });

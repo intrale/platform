@@ -699,11 +699,28 @@ function formatExhaustionMessage(payload, opts = {}) {
     // JSON no carga. Nunca tira.
     const hint = getQuotaHint(primary, opts);
     const retrySec = Math.max(60, Math.round(Number(payload.retry_interval_ms || DEFAULT_RETRY_INTERVAL_MS) / 1000));
-    // CA-9 · el título viene de GitHub (repo público): se escapa antes de ir al
-    // link Markdown.
-    const safeTitle = title ? escapeMarkdownLegacy(title.slice(0, 80)) : '';
+    // CA-9 · el título viene de GitHub (repo público: cualquiera abre un issue),
+    // así que es INPUT EXTERNO y NO puede ir en posición de texto-de-link.
+    //
+    // El bug que esto cierra: `escapeMarkdownLegacy` escapa `_ * \` [` pero NO
+    // `]`. Con el título adentro de `[#N — <title>](url)`, un título que trajera
+    // `](` cerraba el link de la plantilla antes de tiempo y rebindeaba el
+    // destino — Telegram (parse_mode 'Markdown') renderizaba "#N — Bug"
+    // apuntando al sitio del atacante. Phishing en el mismo canal que el
+    // operador usa de madrugada para destrabar el pipeline.
+    //
+    // Fix: el texto del link es FIJO (`#N`, sólo dígitos validados por
+    // `isValidIssue`) y el título sale AFUERA del link. Ahí `]` es inerte:
+    // formar un link nuevo necesita un `[` de apertura, y ese sí lo escapa
+    // `escapeMarkdownLegacy`.
+    //
+    // El `\` se saca ANTES de escapar (si se sacara después borraría los
+    // backslashes que el propio escape acaba de poner): un `\` al final del
+    // título se comería el escape del carácter siguiente.
+    const rawTitle = title ? title.slice(0, 80).replace(/\\/g, '') : '';
+    const safeTitle = rawTitle ? escapeMarkdownLegacy(rawTitle) : '';
     const issueLink = issue
-        ? `[#${issue}${safeTitle ? ' — ' + safeTitle : ''}](https://github.com/${GH_REPO}/issues/${issue})`
+        ? `[#${issue}](https://github.com/${GH_REPO}/issues/${issue})${safeTitle ? ' — ' + safeTitle : ''}`
         : '(sin issue)';
 
     const cause = resolvePauseCause(payload, opts);
@@ -726,7 +743,23 @@ function formatExhaustionMessage(payload, opts = {}) {
     // este issue viene a matar — el mismo defecto, en el caso donde el sistema
     // MENOS sabe (UX-V2 / R2).
     if (cause.verdict && cause.verdict.text) {
-        lines.push(``, `${cause.verdict.requiresAction ? '⚠️' : '✅'} ${cause.verdict.text}`);
+        // SEC-2 · el veredicto interpola `p.label`, que sale del snapshot de
+        // salud — un archivo que escribe OTRO proceso, o sea input no confiable
+        // (el propio `readHealthSnapshot` lo trata así). `breakdownLine` ya
+        // escapaba ese mismo campo; el veredicto no, y quedaba asimétrico: un
+        // label con `[x](url)` formaba un link en la línea que el operador lee
+        // primero.
+        //
+        // Se escapa el texto ENTERO en vez de sólo el label porque acá el label
+        // ya viene interpolado y no es separable. Es seguro: `buildVerdict` no
+        // usa metacaracteres Markdown en NINGUNO de sus literales, así que el
+        // escape es no-op para ellos.
+        //
+        // INVARIANTE (lo bloquea el test "el veredicto no altera los literales
+        // propios al escapar"): si algún literal de `buildVerdict` llegara a
+        // necesitar formato Markdown propio, este escape se lo comería — en ese
+        // caso hay que segmentar el veredicto y escapar sólo el label.
+        lines.push(``, `${cause.verdict.requiresAction ? '⚠️' : '✅'} ${escapeMarkdownLegacy(cause.verdict.text)}`);
     }
 
     // 3 · IDENTIDAD (literal de #3498).

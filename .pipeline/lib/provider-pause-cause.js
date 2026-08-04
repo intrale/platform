@@ -92,6 +92,20 @@ const STALE_TICKS = 3;
 const PROVIDER_ID_RE = /^[a-z][a-z0-9-]{0,32}$/;
 
 /**
+ * Tope de largo del `label` del snapshot (SEC-5).
+ *
+ * El id ya está acotado por `PROVIDER_ID_RE`, pero el `label` es texto libre de
+ * un archivo que escribe otro proceso. Sin tope, un label de miles de caracteres
+ * entra al veredicto —que va PRIMERO en el mensaje— y empuja fuera del corte de
+ * `sanitizeForTelegram` el link del issue y el comando de destrabe manual,
+ * anulando justamente el orden por urgencia que SEC-5 pide preservar.
+ *
+ * 40 es holgado: los labels reales (`MANAGED_KEYS`, `secrets-rw.js`) son del
+ * estilo `Anthropic` / `Gemini (Antigravity CLI)`.
+ */
+const MAX_LABEL_CHARS = 40;
+
+/**
  * Alias id-de-salud → id-canónico-de-cadena.
  *
  * El cron de salud persiste `openai`; `agent-models.json` y las cadenas usan
@@ -349,7 +363,9 @@ function readHealthSnapshot(opts = {}) {
         const id = canonicalProviderId(rawId);
         if (!id) continue; // id fuera del patrón seguro → fila descartada (SEC-4)
 
-        const label = typeof entry.label === 'string' ? entry.label : '';
+        // Tope de largo acá, en el ÚNICO punto por donde el label entra al
+        // módulo: cubre de una vez el desglose y el veredicto (SEC-5).
+        const label = typeof entry.label === 'string' ? entry.label.slice(0, MAX_LABEL_CHARS) : '';
         const state = typeof entry.state === 'string' ? entry.state : '';
         const reasonCode = typeof entry.reason_code === 'string' ? entry.reason_code : '';
 
@@ -825,6 +841,7 @@ module.exports = {
     ACTION_FULL,
     PROVIDER_ALIAS,
     PROVIDER_ID_RE,
+    MAX_LABEL_CHARS,
     STALE_TICKS,
     DEFAULT_TICK_INTERVAL_MS,
 };
