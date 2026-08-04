@@ -49,8 +49,9 @@ test('2 · un freeze con logServe publicado queda nombrado (no "ninguno-inflight
     getInflight: () => ({ logServe }),
   });
   try {
-    // Dejar que el worker tome un baseline con logServe=false.
-    await new Promise(r => setTimeout(r, 150));
+    // Esperar el baseline real del worker. Bajo carga de suite su arranque puede
+    // tardar mas que un timeout fijo y ocultar por completo el freeze simulado.
+    await wd.ready;
 
     // Handler entra: marca el flag y lo PUBLICA sincrónicamente al SAB, luego
     // "lee un log grande" que clava el loop por encima del umbral.
