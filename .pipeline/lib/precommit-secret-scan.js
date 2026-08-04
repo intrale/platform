@@ -150,9 +150,20 @@ function main() {
         const content = readStagedContent(rel);
         if (content == null || content.length === 0) continue;
 
+        // El sanitizer normaliza CRLF→LF como efecto colateral. Comparar el
+        // contenido crudo contra el sanitizado marcaba como "secreto detectado"
+        // a CUALQUIER archivo con finales de línea de Windows — sin un solo
+        // patrón redactado, y en este repo el CRLF es el caso por default. El
+        // operador veía "(sanitizer redactó algo pero no se identificó)" sobre
+        // un archivo limpio, y el camino de salida obvio pasaba a ser
+        // `--no-verify`, que desactiva las DOS capas. Normalizamos ANTES de
+        // comparar para que la señal sea "el sanitizer redactó algo", no "el
+        // archivo venía en CRLF".
+        const normalizado = content.replace(/\r\n/g, '\n');
+
         let sanitized;
         try {
-            sanitized = sanitize(content);
+            sanitized = sanitize(normalizado);
         } catch (e) {
             // Fail-closed: si el sanitizer tira, asumimos que hay algo raro
             // que justifica bloquear el commit.
@@ -165,7 +176,7 @@ function main() {
             continue;
         }
 
-        if (sanitized !== content) {
+        if (sanitized !== normalizado) {
             findings.push({
                 path: rel,
                 kind,

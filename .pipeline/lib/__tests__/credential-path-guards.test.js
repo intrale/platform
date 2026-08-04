@@ -181,7 +181,7 @@ test('el inventario no clasifica archivos legítimos del repo como sensibles', (
         'docs/pipeline/inventario-credenciales.md',
         '.pipeline/lib/sensitive-paths.js',
         '.pipeline/agent-models.json',
-        '.claude/hooks/telegram-config.json',
+        '.claude/hooks/telegram-sanitizer.js',
         'app/composeApp/build.gradle.kts',
     ];
 
@@ -190,6 +190,97 @@ test('el inventario no clasifica archivos legítimos del repo como sensibles', (
             inventario.clasificarPath(p), null,
             `"${p}" fue clasificado como sensible — el inventario está de más`,
         );
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CA-3 (regresión) · `.claude/hooks/telegram-config.json`
+//
+// Este path estuvo fuera del inventario y, peor, la suite lo fijaba como
+// "legítimo" afirmando `clasificarPath(p) === null`. Es portador de credenciales
+// (`bot_token`/`chat_id`/`openai_api_key`), está TRACKEADO, NO está ignorado, y
+// es el único path del repo donde el re-commit de una credencial ya ocurrió (11
+// commits del historial con un bot_token de formato real; #5226 registró además
+// valores reales de Google OAuth en su working copy). Con `isSensitive()`
+// devolviendo null, restaurar el token y hacer `git add` pasaba por las DOS
+// capas sin bloqueo.
+//
+// Como el archivo debe seguir versionado hasta el destrackeo de #5226, la
+// entrada usa `requiereIgnore: false` + `escaneaContenido: true` (mismo patrón
+// que `servicios-state`): la contención es el sanitizer, no el ignore.
+// ─────────────────────────────────────────────────────────────────────────────
+test('el config de Telegram de los hooks está en el inventario y se cubre por contenido', () => {
+    const rel = '.claude/hooks/telegram-config.json';
+
+    const clase = inventario.clasificarPath(rel);
+    assert.ok(clase, `"${rel}" no está en el inventario — el scanner nunca lo mira (ver #5226)`);
+    assert.strictEqual(clase.id, 'claude-hooks-telegram-config');
+    assert.strictEqual(clase.clase, 'credencial');
+    assert.strictEqual(
+        clase.escaneaContenido, true,
+        'sin escaneo de contenido no queda ninguna capa cubriendo el path',
+    );
+    assert.strictEqual(
+        clase.requiereIgnore, false,
+        'el archivo está trackeado a propósito: exigir ignore taparía un archivo versionado',
+    );
+
+    // La capa que efectivamente lo cubre: el scanner de pre-commit.
+    assert.strictEqual(
+        scanner.isSensitive(rel), 'claude-hooks-telegram-config',
+        'el scanner de pre-commit no reconoce el path',
+    );
+
+    // El matcher es exacto: no se lleva puesto el resto de `.claude/hooks/`.
+    assert.strictEqual(inventario.clasificarPath('.claude/hooks/telegram-sanitizer.js'), null);
+    assert.strictEqual(inventario.clasificarPath('.claude/hooks/activity-logger.js'), null);
+});
+
+test('el scanner corre el sanitizer sobre el config de Telegram de los hooks staged', () => {
+    // Canario con la FORMA de un bot token (para que el sanitizer lo cace) pero
+    // transparentemente falso: no aporta un valor ni un patrón útil a nadie.
+    const CANARIO = '000000:CANARIO-5463-NO-ES-UN-TOKEN-REAL-XXX';
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'guardas-5463-hooks-'));
+
+    try {
+        assert.strictEqual(git(['init', '-q'], { cwd: tmp }).rc, 0, 'no se pudo iniciar el repo temporal');
+        git(['config', 'user.email', 'test@intrale'], { cwd: tmp });
+        git(['config', 'user.name', 'test'], { cwd: tmp });
+        git(['config', 'commit.gpgsign', 'false'], { cwd: tmp });
+        git(['commit', '-q', '--allow-empty', '--no-verify', '-m', 'init'], { cwd: tmp });
+
+        fs.mkdirSync(path.join(tmp, '.claude', 'hooks'), { recursive: true });
+        fs.writeFileSync(
+            path.join(tmp, '.claude', 'hooks', 'telegram-config.json'),
+            JSON.stringify({ bot_token: CANARIO, chat_id: '12345' }, null, 2),
+        );
+        // Sin `-f`: el path NO está ignorado (ese es justamente el agujero), así
+        // que un `git add` común lo stagea. Es el escenario real del defecto.
+        git(['add', '.claude/hooks/telegram-config.json'], { cwd: tmp });
+
+        const r = spawnSync('node', [path.join(REPO_ROOT, '.pipeline', 'lib', 'precommit-secret-scan.js')], {
+            cwd: tmp,
+            encoding: 'utf8',
+        });
+
+        assert.strictEqual(
+            r.status, 1,
+            'el scanner dejó pasar una credencial restaurada en .claude/hooks/telegram-config.json',
+        );
+
+        const salida = (r.stdout || '') + (r.stderr || '');
+        assert.ok(salida.includes('.claude/hooks/telegram-config.json'), 'el bloqueo no nombra el path ofensor');
+        assert.ok(salida.includes('claude-hooks-telegram-config'), 'el bloqueo no atribuye la entrada del inventario');
+        // Prueba de que pasó por el sanitizer (nivel 2) y no por el bloqueo seco
+        // de path staged (nivel 1, que no aplica porque requiereIgnore es false).
+        assert.ok(
+            salida.includes('[REDACTED:TELEGRAM_BOT_TOKEN]'),
+            'el sanitizer no corrió sobre el archivo: no hay placeholder de redacción',
+        );
+        // CA-5: el bloqueo nombra el path y el patrón, nunca el valor.
+        assert.ok(!salida.includes(CANARIO), 'el bloqueo volcó el contenido del archivo sensible');
+    } finally {
+        try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best effort */ }
     }
 });
 
@@ -268,6 +359,44 @@ test('el scanner bloquea un path sensible staged sin volcar su contenido', () =>
         assert.ok(salida.includes('.pipeline/credentials.json'), 'el bloqueo no nombra el path ofensor');
         assert.ok(!salida.includes(CANARIO), 'el bloqueo volcó contenido del archivo sensible');
         assert.ok(salida.includes('sensitive-paths.js'), 'el bloqueo no orienta al inventario');
+    } finally {
+        try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+});
+
+// Regresión: `sanitize()` normaliza CRLF→LF. El scanner comparaba el contenido
+// crudo contra el sanitizado, así que un archivo del inventario con finales de
+// línea de Windows — el caso por default en este repo — se reportaba como
+// "secreto detectado" sin un solo patrón redactado. Un bloqueo falso sobre un
+// archivo limpio empuja al operador a `--no-verify`, que apaga las dos capas.
+test('el scanner no bloquea un archivo del inventario limpio con finales de línea CRLF', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'guardas-5463-crlf-'));
+
+    try {
+        git(['init', '-q'], { cwd: tmp });
+        git(['config', 'user.email', 'test@intrale'], { cwd: tmp });
+        git(['config', 'user.name', 'test'], { cwd: tmp });
+        git(['config', 'core.autocrlf', 'false'], { cwd: tmp });
+        git(['commit', '-q', '--allow-empty', '--no-verify', '-m', 'init'], { cwd: tmp });
+
+        fs.mkdirSync(path.join(tmp, '.claude', 'hooks'), { recursive: true });
+        // Config legítima, sin credenciales, escrita con CRLF.
+        const limpio = JSON.stringify(
+            { bot_token: '', chat_id: '', permission_timeout_min: 30 }, null, 2,
+        ).replace(/\n/g, '\r\n');
+        fs.writeFileSync(path.join(tmp, '.claude', 'hooks', 'telegram-config.json'), limpio);
+        git(['add', '.claude/hooks/telegram-config.json'], { cwd: tmp });
+
+        const r = spawnSync('node', [path.join(REPO_ROOT, '.pipeline', 'lib', 'precommit-secret-scan.js')], {
+            cwd: tmp,
+            encoding: 'utf8',
+        });
+
+        assert.strictEqual(
+            r.status, 0,
+            'el scanner bloqueó un archivo limpio sólo por venir en CRLF: ' +
+            ((r.stdout || '') + (r.stderr || '')),
+        );
     } finally {
         try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best effort */ }
     }

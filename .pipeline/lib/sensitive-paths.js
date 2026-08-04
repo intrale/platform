@@ -44,8 +44,12 @@
  *   - `reglas`          → strings que DEBEN existir como línea de `.gitignore`.
  *   - `muestras`        → paths concretos con los que se verifica `check-ignore`.
  *   - `pathspecs`       → pathspecs para `git ls-files` (verificación de no-trackeo).
- *   - `requiereIgnore`  → si `.gitignore` debe cubrirlo (siempre true salvo caso
- *                         documentado).
+ *   - `requiereIgnore`  → si `.gitignore` debe cubrirlo. `false` SÓLO para paths
+ *                         hoy trackeados legítimamente, donde un ignore taparía
+ *                         un archivo versionado: ahí la contención es el escaneo
+ *                         de contenido. Cada caso lleva su comentario y el issue
+ *                         que se ocupa del destrackeo (`servicios-state`,
+ *                         `claude-hooks-telegram-config` → #5226).
  *   - `escaneaContenido`→ si el scanner de pre-commit debe pasarlo por el sanitizer.
  *   - `test(rel)`       → matcher explícito sobre el path relativo al root del repo
  *                         (con `/` como separador). Explícito a propósito: nada de
@@ -132,6 +136,33 @@ const SENSITIVE_PATHS = Object.freeze([
         escaneaContenido: true,
         motivo: 'Config de Telegram del runner de QA (SEC-3, #4173).',
         test: (p) => p === 'qa/scripts/telegram-config.json',
+    },
+    {
+        id: 'claude-hooks-telegram-config',
+        clase: 'credencial',
+        // Sin `reglas` / `requiereIgnore: false`: este archivo ESTÁ TRACKEADO hoy
+        // y los hooks de Telegram lo leen del repo, así que un ignore acá taparía
+        // un archivo versionado (mismo antipatrón que evita `servicios-state`).
+        // El destrackeo + la regla de ignore son responsabilidad de #5226; hasta
+        // que eso ocurra la contención de esta entrada es el escaneo de contenido
+        // del pre-commit, que es justamente la capa que faltaba.
+        //
+        // Por qué entra igual al inventario: es portador de credenciales
+        // (`bot_token`, `chat_id`, `openai_api_key`) y es el ÚNICO path del repo
+        // donde el re-commit de una credencial ya ocurrió — 11 commits del
+        // historial llevan un `bot_token` de formato real. El propio archivo lo
+        // documenta en `_secrets_note` ("NO restaurar credenciales aquí - quedan
+        // trackeadas en git") y #5226 registró que su working copy llegó a tener
+        // valores reales de Google OAuth. Dejarlo fuera del inventario hacía que
+        // `isSensitive()` devolviera null y que NINGUNA de las dos capas mirara
+        // el archivo: restaurar el token real + `git add` pasaba limpio.
+        reglas: [],
+        muestras: ['.claude/hooks/telegram-config.json'],
+        pathspecs: [],
+        requiereIgnore: false,
+        escaneaContenido: true,
+        motivo: 'Config de Telegram de los hooks de Claude Code: bot_token + chat_id + openai_api_key. Trackeado a la espera del destrackeo de #5226; cobertura por contenido, no por ignore (ver comentario).',
+        test: (p) => p === '.claude/hooks/telegram-config.json' || p.endsWith('/.claude/hooks/telegram-config.json'),
     },
     {
         id: 'api-keys-backup',
