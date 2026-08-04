@@ -8899,8 +8899,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     //   1. Validación dura de issue (`/^\d+$/`) y skill (regex segura).
     //   2. `git worktree list --porcelain` vía spawnSync (sin shell parsing).
     //   3. Si no encuentra → intenta auto-recovery desde `origin/agent/<n>-<skill>`
-    //      validando procedencia de la branch remota (autor allowlisted o
-    //      marker `pipeline-v2` en commits).
+    //      validando procedencia de la branch remota por autor allowlisted.
     //   4. Si recovery falla → retorna `{ found: false, reason, branchOriginVerified }`.
     let resolution;
     try {
@@ -8908,6 +8907,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         ROOT,
         issue,
         skill,
+        config,
         log: (msg) => log('lanzamiento', msg),
       });
     } catch (e) {
