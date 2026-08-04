@@ -9,7 +9,7 @@ const rolePath = path.join(__dirname, '..', 'roles', 'qa.md');
 
 test('QA estructural exige encolar su reporte con el schema canónico de Drive', () => {
   const role = fs.readFileSync(rolePath, 'utf8');
-  const structuralSection = role.match(/## QA Estructural[\s\S]*?\n---\n/);
+  const structuralSection = role.match(/## QA Estructural[\s\S]*?\r?\n---\r?\n/);
 
   assert.ok(structuralSection, 'debe existir la sección QA Estructural');
   assert.match(structuralSection[0], /servicios\/drive\/pendiente\/qa-<issue>-structural\.json/);
