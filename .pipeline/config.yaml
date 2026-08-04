@@ -205,6 +205,13 @@ timeouts:
     linter: 5                     # Determinístico — sólo lee diff/git log, debería durar segundos
     delivery: 90                  # Espera CI completo (OWASP ~28min, check-app ~15min) + gate de review + merge + reporte
 
+# Procedencia de ramas para auto-recovery. Agregar una identidad confiable es
+# una decisión de seguridad y requiere review humana; nunca usar comodines.
+worktree_provenance:
+  committers:
+    - backend-dev-agent@intrale
+    - bot@intrale.com
+
 # Desync waves.json ↔ .partial-pause.json (#4439)
 # Ventana de validez de la "traza de origen legítimo" que habilita el auto-resync
 # aditivo de una divergencia ambigua (CA-3). Una suma a la allowlist con
@@ -1373,6 +1380,32 @@ vault:
   # `true`. Sin esto, "bootstrap temporal" se vuelve permanente por olvido, que
   # es exactamente el modo de falla que la ventana existe para evitar.
   bootstrap_fallback_until: ""
+  # ---------------------------------------------------------------------------
+  # #5427 · #5448 — ventana SOMBRA: criterio de salida del fallback
+  # ---------------------------------------------------------------------------
+  # Mide, con evidencia persistida bajo `.pipeline/audit/`, cuándo se puede
+  # retirar la vía vieja de resolución. El criterio NO es "cero fallbacks en
+  # 24 h" — eso se cumple trivialmente si un host estuvo apagado o si un secreto
+  # nunca se pidió. Es COBERTURA POSITIVA (CA-18): cada descriptor de
+  # `ENV_DESCRIPTORS`, en cada host activo, con al menos una resolución por
+  # `vault`, y cero evidencia negativa, desde un t0 persistido.
+  #
+  # Con `enabled: false` esta sección no hace absolutamente nada: el hook vive
+  # detrás del gate y no se crea un solo archivo bajo `.pipeline/audit/`.
+  shadow_window:
+    # Tiempo de RELOJ desde t0, no uptime acumulado: la garantía de "operación
+    # real" la da la cobertura positiva, no la unidad de tiempo.
+    duration_hours: 24
+    # CA-21 — se commitea VACÍA, nunca con placeholders (mismo criterio que
+    # `hostId: ""`). Vacía, ausente, no-lista o con un valor fuera de
+    # `^[A-Za-z0-9._-]+$` ⇒ el evaluador devuelve `no_verificado` y BLOQUEA el
+    # cierre: con la lista vacía la condición "en cada host activo" se cumpliría
+    # vacuamente y la ventana cerraría con un solo host, que es justo el modo de
+    # falla que CA-18 existe para evitar.
+    hosts_activos: []
+    # Purga de filas viejas del JSONL. El límite efectivo nunca supera t0: la
+    # retención no puede borrar evidencia de la ventana vigente ni moverlo.
+    retention_days: 30
 
 # =============================================================================
 # #5067 — Entrega cross-repo: el entregable puede vivir en un repo hermano

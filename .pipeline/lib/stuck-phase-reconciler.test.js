@@ -171,6 +171,15 @@ test('execute escalate: llama escalate + notifica', () => {
     assert.equal(res.escalated, 1);
     assert.equal(deps.calls.notify.length, 1);
 });
+test('execute escalate: si no registra el bloqueo, no contabiliza ni notifica', () => {
+    const deps = mockDeps();
+    deps.escalate = () => false;
+    const res = executeDecisions([{ action: 'escalate', issue: 4534, pipeline: 'desarrollo', fase: 'validacion', reason: 'ambiguo' }], deps);
+    assert.equal(res.escalated, 0);
+    assert.equal(res.skipped, 1);
+    assert.equal(deps.calls.notify.length, 0);
+    assert.ok(deps.calls.audit.some((a) => a.error === 'no se pudo registrar el bloqueo humano'));
+});
 test('execute none: audita pero NO notifica', () => {
     const deps = mockDeps();
     executeDecisions([{ action: 'none', issue: 1, fase: 'validacion', reason: 'reciente' }], deps);

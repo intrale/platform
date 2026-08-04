@@ -170,7 +170,7 @@ const AUTHORITY_PREFIXES = Object.freeze([
     'architect.go_live_date',
 ]);
 
-// Clasificación completa de las 58 secciones top-level de `config.yaml`
+// Clasificación completa de las secciones top-level de `config.yaml`
 // (#5173 CA-6). Clave = path punteado (admite `*` como comodín de un segmento);
 // valor = 'kernel' | 'producto' | 'autoridad'. El match MÁS ESPECÍFICO gana, así
 // una sub-clave puede partirse del lado opuesto a su sección.
@@ -183,6 +183,7 @@ const SIDE_MAP = Object.freeze({
     intake: 'kernel',
     resource_limits: 'kernel',
     timeouts: 'kernel',
+    worktree_provenance: 'kernel',
     desync: 'kernel',
     precheck: 'kernel',
     anomaly_detector: 'kernel',
@@ -350,6 +351,18 @@ const SCHEMA = {
         routing: OBJ(),
         intake: OBJ(),
 
+        worktree_provenance: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['committers'],
+            properties: {
+                committers: {
+                    type: 'array',
+                    items: { type: 'string', minLength: 1, pattern: '\\S' },
+                },
+            },
+        },
+
         // --- resource_limits: umbrales de presión + priority windows ---------
         resource_limits: {
             type: 'object',
@@ -472,6 +485,19 @@ const SCHEMA = {
                 // ventana se abriera sola.
                 bootstrap_fallback: { type: 'boolean' },
                 bootstrap_fallback_until: { type: 'string' },
+                // #5448 · CA-21 — misma razón que las dos de arriba. El núcleo
+                // igual valida y falla cerrado, pero un `hosts_activos` que es
+                // string en vez de lista se descubre acá, al arrancar, y no el
+                // día que alguien pregunte por qué la ventana no cierra.
+                shadow_window: {
+                    type: 'object',
+                    additionalProperties: true,
+                    properties: {
+                        duration_hours: { type: 'number', minimum: 1 },
+                        hosts_activos: { type: 'array', items: { type: 'string' } },
+                        retention_days: { type: 'number', minimum: 1 },
+                    },
+                },
             },
         },
 

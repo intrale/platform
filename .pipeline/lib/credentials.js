@@ -539,6 +539,7 @@ const LEGACY_KEY_BY_ENV = Object.freeze(Object.fromEntries(
  *                                             el ENTORNO no elige la autoridad (B2.7).
  * @param {object}   [opts.vaultDriver]        Driver del vault inyectado (tests).
  * @param {function} [opts.now]                Reloj inyectable en ms (tests de la ventana B1.5).
+ * @param {object}   [opts.shadowMetrics]      Núcleo de la ventana sombra inyectado (#5448, tests).
  * @returns {{source: string, hydrated: string[], skipped_existing: string[],
  *           skipped_empty: string[], missing: string[], sources: object, vault: object}}
  */
@@ -772,6 +773,53 @@ function loadIntoEnv(opts = {}) {
   // variable, está en `result.sources` (UX-2).
   if (huboVault) result.source = SOURCE.VAULT;
   else if (huboBootstrap) result.source = SOURCE.FILE_BOOTSTRAP;
+
+  // ---------------------------------------------------------------------------
+  // #5427 · CA-14/CA-16 — hook ÚNICO de la ventana sombra (#5448)
+  // ---------------------------------------------------------------------------
+  //
+  // Un solo call site = una sola superficie de regresión: no se re-instrumenta
+  // ninguna rama del bucle de precedencia ni cambia la forma de `result`.
+  //
+  // CA-25 — sólo con el gate ABIERTO. Las salidas tempranas (`!vaultEstado.enabled`)
+  // quedan sin instrumentar a propósito: con el gate cerrado no existe la
+  // dicotomía vault/fallback y esas filas ensuciarían el denominador de CA-18.
+  //
+  // CA-16 — sync y sin I/O de red. Append a archivo sí; HTTP/Telegram no.
+  // El `require` es perezoso para que el camino del gate cerrado ni cargue el
+  // módulo. Todo el hook va en `try/catch`: la observabilidad NUNCA puede
+  // tumbar el arranque de credenciales.
+  //
+  // `opts.shadowMetrics` inyecta el núcleo: es lo que usan los tests para no
+  // escribir en el `.pipeline/audit/` real. En producción nadie lo pasa y se
+  // usa el singleton del proceso.
+  //
+  // GUARDA DE INTEGRIDAD DE LA AUDITORÍA — a nivel de módulo, un boot de prueba
+  // es indistinguible de uno real: mismo `loadIntoEnv`, mismo gate, mismo
+  // singleton. Sin esta guarda, cualquier test que bootee con el gate abierto
+  // (y hay decenas en credentials-vault-5353.test.js) inyecta filas sintéticas
+  // en la evidencia sobre la que #5427 decide retirar el fallback, y —peor— una
+  // vía negativa sintética REINICIA el t0 real, así que la ventana no cerraría
+  // nunca mientras alguien corra la suite. Bajo `node --test` y sin inyección
+  // explícita, entonces, no se instrumenta. `NODE_TEST_CONTEXT` lo pone el
+  // runner de Node en el proceso hijo; no es configuración que alguien elija.
+  if (vaultEstado.enabled) {
+    try {
+      // El `require` queda acá adentro para que el camino del gate cerrado ni
+      // llegue a cargar el módulo.
+      const metrics = opts.shadowMetrics
+        || (process.env.NODE_TEST_CONTEXT ? null : require('./vault-shadow-metrics').getVaultShadowMetrics());
+      if (metrics) metrics.record(result.sources, {
+        hostId: vaultEstado.cfg && vaultEstado.cfg.hostId,
+        descriptors: ENV_DESCRIPTORS,
+      });
+    } catch (e) {
+      // Sólo el nombre del error: una excepción cruda podría arrastrar datos.
+      logger(`[credentials] WARN: no se pudo registrar la ventana sombra del vault (${(e && e.name) || 'Error'}). `
+        + 'Impacto: se subcuenta la cobertura y la ventana tarda mas en cerrar (fail-closed). '
+        + 'Proximo paso: revisar permisos de .pipeline/audit/');
+    }
+  }
 
   return result;
 }
