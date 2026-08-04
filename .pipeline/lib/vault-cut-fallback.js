@@ -94,13 +94,33 @@ function acquireLock(configPath, fsImpl = fs) {
 }
 
 async function withTimeout(operation, timeoutMs) {
-  let timer;
+  const controller = new AbortController();
+  const deadline = Date.now() + timeoutMs;
+  let timedOut = false;
+  const timeoutError = () => new VaultCutError('timeout', 'El corte excedió el timeout operacional');
+  const assertActive = () => {
+    if (timedOut || controller.signal.aborted || Date.now() >= deadline) {
+      timedOut = true;
+      if (!controller.signal.aborted) controller.abort(timeoutError());
+      throw timeoutError();
+    }
+  };
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort(timeoutError());
+  }, timeoutMs);
   try {
-    return await Promise.race([
-      Promise.resolve().then(operation),
-      new Promise((_, reject) => { timer = setTimeout(() => reject(new VaultCutError('timeout', 'El corte excedió el timeout operacional')), timeoutMs); }),
-    ]);
-  } finally { clearTimeout(timer); }
+    // Esperar siempre la terminación real mantiene el lock mientras una
+    // dependencia que todavía no soporta AbortSignal completa su trabajo.
+    const result = await operation({ signal: controller.signal, assertActive });
+    assertActive();
+    return result;
+  } catch (error) {
+    if (timedOut || controller.signal.aborted || Date.now() >= deadline) throw timeoutError();
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function accepted(result) {
@@ -123,13 +143,15 @@ async function executeVaultCutFallback(opts = {}) {
     }
     if (initial.document.vault.bootstrap_fallback !== true) throw new VaultCutError('state_invalid', 'El estado del fallback es inválido');
 
-    return await withTimeout(async () => {
-      if (typeof opts.validateAllowlist !== 'function' || !accepted(await opts.validateAllowlist())) {
+    return await withTimeout(async ({ signal, assertActive }) => {
+      if (typeof opts.validateAllowlist !== 'function' || !accepted(await opts.validateAllowlist({ signal }))) {
         throw new VaultCutError('allowlist_invalid', 'La allowlist vault-only no autoriza el corte');
       }
-      if (typeof opts.evaluateCoverage !== 'function' || !accepted(await opts.evaluateCoverage())) {
+      assertActive();
+      if (typeof opts.evaluateCoverage !== 'function' || !accepted(await opts.evaluateCoverage({ signal }))) {
         throw new VaultCutError('coverage_incomplete', 'La cobertura positiva del vault no habilita el corte');
       }
+      assertActive();
       if (!opts.authorization || typeof opts.authorization.consume !== 'function') {
         throw new VaultCutError('authorization_missing', 'Falta una autorización consumible para el corte');
       }
@@ -138,7 +160,9 @@ async function executeVaultCutFallback(opts = {}) {
       if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > policy.authorizationTtlSeconds * 1000) {
         throw new VaultCutError('authorization_expired', 'La autorización del corte expiró');
       }
-      if (!accepted(await opts.authorization.consume())) {
+      // Gate irreversible: una operación vencida jamás inicia el consumo.
+      assertActive();
+      if (!accepted(await opts.authorization.consume({ signal }))) {
         throw new VaultCutError('authorization_consumed', 'La autorización del corte ya fue consumida');
       }
 
@@ -146,6 +170,8 @@ async function executeVaultCutFallback(opts = {}) {
       // documento cambiado desde la evaluación inicial.
       const current = readDocument(configPath, fsImpl);
       if (current.raw !== initial.raw) throw new VaultCutError('config_changed', 'La configuración cambió durante el corte');
+      // Segundo gate irreversible, inmediatamente antes de persistir.
+      assertActive();
       atomicWrite(configPath, renderCutDocument(current.raw), fsImpl);
       const persisted = readDocument(configPath, fsImpl);
       if (persisted.document.vault.bootstrap_fallback !== false) {
