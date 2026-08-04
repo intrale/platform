@@ -1,17 +1,26 @@
 #!/usr/bin/env node
 // =============================================================================
-// precommit-secret-scan.js — Issue #3310 CA-5
+// precommit-secret-scan.js — Issue #3310 CA-5 · ampliado por #5463
 //
 // Red de seguridad para evitar que estado interno del pipeline con secretos
-// llegue al repo. Hoy estos archivos están en `.gitignore`, pero si alguien
+// llegue al repo. Estos archivos están en `.gitignore`, pero si alguien
 // (humano o agente) los des-ignora por error, este script bloquea el commit
 // antes de que la fuga toque la rama.
 //
-// Cubre los paths donde el commander persiste mensajes de Telegram en disco:
+// #5463 — el inventario dejó de vivir acá: ahora sale de
+// `.pipeline/lib/sensitive-paths.js`, la MISMA fuente que alimenta `.gitignore`
+// y la suite `credential-path-guards.test.js`. Antes esta lista y la de
+// `.gitignore` divergían en silencio (los dos stores de credenciales del
+// pipeline no estaban en ninguna de las dos).
 //
-//   - `.pipeline/commander-session.json`
-//   - `.pipeline/commander-history.jsonl`
-//   - `.pipeline/servicios/**/*.json`
+// Dos niveles de bloqueo:
+//
+//   1. **Path del inventario staged** (`requiereIgnore: true`) → bloquea SIEMPRE,
+//      haya o no secretos detectables. Que el archivo esté en el índice ya es
+//      el defecto: significa que alguien des-ignoró un path sensible.
+//   2. **Contenido con secretos** → bloquea si el sanitizer redacta algo. Cubre
+//      también las entradas de sólo-contenido (`.pipeline/servicios/**/*.json`,
+//      que mezcla estado efímero con artefactos trackeados legítimos).
 //
 // Estrategia: lee cada archivo staged que matchee el glob y lo pasa por
 // `sanitizer.sanitize()`. Si la salida difiere del input, hay al menos un
@@ -43,14 +52,15 @@ const path = require('path');
 const { execSync } = require('child_process');
 
 const { sanitize } = require('../sanitizer');
+const { SENSITIVE_PATHS, clasificarPath } = require('./sensitive-paths');
 
-// Paths sensibles relativos al root del repo. Los matcheamos con startsWith
-// + endsWith para evitar dependencias de globbing externo.
-const SENSITIVE_PATTERNS = [
-    { name: 'commander-session', test: (p) => p === '.pipeline/commander-session.json' },
-    { name: 'commander-history', test: (p) => p === '.pipeline/commander-history.jsonl' },
-    { name: 'servicios-state',    test: (p) => p.startsWith('.pipeline/servicios/') && p.endsWith('.json') },
-];
+// Inventario derivado (#5463): la forma `{ name, test }` se conserva por compat
+// con los consumidores previos, pero las entradas salen del módulo compartido.
+// Agregar un path acá NO es el camino: se agrega en `sensitive-paths.js` y las
+// tres capas (ignore / pre-commit / test) lo heredan juntas.
+const SENSITIVE_PATTERNS = SENSITIVE_PATHS
+    .filter((e) => e.escaneaContenido)
+    .map((e) => ({ name: e.id, test: e.test }));
 
 function listStagedFiles() {
     // Lista archivos staged en el commit (added/copied/modified/renamed).
@@ -121,6 +131,22 @@ function main() {
         const kind = isSensitive(rel);
         if (!kind) continue;
 
+        // ── Nivel 1 (#5463): el path pertenece al inventario que DEBE estar
+        // ignorado. Que aparezca staged ya es el defecto — no hace falta que el
+        // sanitizer encuentre nada. Fail-closed sin leer el contenido: el
+        // mensaje nombra el path y la razón, nunca lo que hay adentro.
+        const clase = clasificarPath(rel);
+        if (clase && clase.requiereIgnore) {
+            findings.push({
+                path: rel,
+                kind,
+                staged_sensible: true,
+                motivo: clase.motivo,
+                redactions: {},
+            });
+            continue;
+        }
+
         const content = readStagedContent(rel);
         if (content == null || content.length === 0) continue;
 
@@ -154,18 +180,22 @@ function main() {
     const lines = [];
     lines.push('');
     lines.push('━'.repeat(72));
-    lines.push('🚨 pre-commit BLOQUEADO: secretos detectados en archivos sensibles');
+    lines.push('🚨 pre-commit BLOQUEADO: paths sensibles en el commit');
     lines.push('━'.repeat(72));
     lines.push('');
-    lines.push('Issue #3310: el commit toca archivos de estado del pipeline que');
-    lines.push('NO deberían vivir en git (están en .gitignore por una razón) y');
-    lines.push('encima contienen lo que parecen ser credenciales en plaintext.');
+    lines.push('El commit toca archivos del inventario cerrado de paths sensibles');
+    lines.push('(.pipeline/lib/sensitive-paths.js): o están en el índice cuando');
+    lines.push('deberían estar ignorados (#5463), o su contenido matchea patrones');
+    lines.push('de credencial en plaintext (#3310).');
     lines.push('');
 
     for (const f of findings) {
         lines.push(`  ✗ ${f.path}`);
         lines.push(`      tipo: ${f.kind}`);
-        if (f.error) {
+        if (f.staged_sensible) {
+            lines.push('      causa: path del inventario sensible presente en el índice');
+            lines.push(`      motivo: ${f.motivo}`);
+        } else if (f.error) {
             lines.push(`      sanitizer falló: ${f.error}`);
         } else {
             const tally = Object.entries(f.redactions);
@@ -188,11 +218,18 @@ function main() {
         lines.push(`       git restore --staged ${shellQuote(f.path)}`);
     }
     lines.push('');
-    lines.push('  2. Si estos paths NO deberían estar en git, asegurate de que');
-    lines.push('     sigan en .gitignore. Si los des-ignoraste a propósito,');
-    lines.push('     pensá si realmente querés exponer ese estado.');
+    lines.push('  2. Si alguno YA estaba trackeado, sacalo también del índice:');
+    for (const f of findings) {
+        if (f.staged_sensible) lines.push(`       git rm --cached ${shellQuote(f.path)}`);
+    }
     lines.push('');
-    lines.push('  3. Si el contenido legítimo del archivo coincidentemente');
+    lines.push('  3. Verificá que la regla de ignore exista y aplique:');
+    lines.push('       git check-ignore -v --no-index <path>');
+    lines.push('     El inventario y sus reglas viven en');
+    lines.push('     .pipeline/lib/sensitive-paths.js — un alta se hace ahí y');
+    lines.push('     .gitignore + este scanner + los tests la heredan juntos.');
+    lines.push('');
+    lines.push('  4. Si el contenido legítimo del archivo coincidentemente');
     lines.push('     matchea un patrón de secret (falso positivo), reportalo en');
     lines.push('     #3310 con el patrón concreto para ajustar la heurística.');
     lines.push('');
