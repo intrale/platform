@@ -2809,9 +2809,10 @@ function dispatchCauseSlice(state, ctx) {
     // apagado (SEC-5). Con el watchdog sano y la cola despachando, no hay banner
     // — se conserva la conducta de #4709.
     if (!causaOk) {
-        if (wd.watchdogDegraded === true) {
+        if (wd.watchdogEnabled !== null || wd.watchdogDegraded !== null) {
             return {
                 active: true,
+                healthySilence: wd.watchdogDegraded === false,
                 causa: null,
                 label: null,
                 detalle: '',

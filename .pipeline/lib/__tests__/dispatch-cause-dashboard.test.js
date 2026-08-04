@@ -179,8 +179,8 @@ test('#5400 un watchdog apagado se muestra explícitamente aunque no haya causa 
     assert.strictEqual(s.watchdogReason, 'apagado');
 
     const html = renderDispatchCauseBanner(s);
-    assert.match(html, /Control de despacho degradado/);
-    assert.match(html, /watchdog de despacho apagado/);
+    assert.match(html, /watchdog OFF — nadie vigila el despacho/);
+    assert.match(html, /href="#ic-watchdog-off"/);
     fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -233,14 +233,17 @@ test('#5400 sin archivo de estado el watchdog reporta "no consta", no un OK inve
     fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('#5400 sin causa y con el watchdog sano NO se muestra banner (conducta #4709)', () => {
+test('#5400 sin causa y con el watchdog sano muestra el estado esperado y el chip activo', () => {
     const dir = tmpDir();
     escribirStatusWatchdog(dir, { enabled: true, killSwitch: false, lastTickTs: 1_600_000 });
     escribirEstampa(dir, 1_590_000);
-    assert.deepStrictEqual(
-        slices.dispatchCauseSlice({}, { PIPELINE: dir, nowMs: 1_600_000 }),
-        { active: false }
-    );
+    const s = slices.dispatchCauseSlice({}, { PIPELINE: dir, nowMs: 1_600_000 });
+    assert.strictEqual(s.active, true);
+    assert.strictEqual(s.healthySilence, true);
+    const html = renderDispatchCauseBanner(s);
+    assert.match(html, /Cola sin trabajo elegible/);
+    assert.match(html, /watchdog activo/);
+    assert.match(html, /href="#ic-health-ok"/);
     fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -271,4 +274,21 @@ test('#5400 una causa escalada por duración se destaca como grave', () => {
         active: true, causa: dc.CAUSAS.MODO_OLA, label: 'Modo ola', escaladoPorDuracion: true,
     });
     assert.match(escalada, /#f85149/, 'una causa sostenida deja de ser un estado esperado');
+});
+
+test('#5400 el banner usa los iconos del sprite y no emojis', () => {
+    const html = renderDispatchCauseBanner({
+        active: true,
+        causa: dc.CAUSAS.HALT_HUMANO,
+        label: 'Pausa total del pipeline',
+        detalle: '7 issues elegibles esperando',
+        relTime: 'hace 1 h',
+        lastDispatchRelTime: 'hace 1 h',
+        watchdogDegraded: false,
+        escaladoPorDuracion: true,
+    });
+    assert.match(html, /href="#ic-dispatch-stalled"/);
+    assert.match(html, /href="#ic-health-ok"/);
+    assert.doesNotMatch(html, /⚠️|⏸️|▶️/u);
+    assert.match(html, /dispatch-watchdog-chip/);
 });
