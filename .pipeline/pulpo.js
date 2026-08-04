@@ -106,6 +106,9 @@ const desyncDetector = require('./lib/desync-detector');
 const legitAddTrace = require('./lib/legit-add-trace');
 // #4525 — Predicado estructural de "hijo verificable de un split del pipeline"
 const splitProvenance = require('./lib/split-provenance');
+// #5516 — Clasificador puro de hijos de split huérfanos descubiertos DESDE GitHub
+// (cubre los splits que no pasan por el hook del Commander).
+const splitOrphanReconciler = require('./lib/split-orphan-reconciler');
 
 const quotaExhausted = require('./lib/quota-exhausted'); // #2974
 // #3508 — feature flag + ciclo de vida del workaround Anthropic CLI 1M (#3506).
@@ -16524,6 +16527,205 @@ function resyncActiveWaveFromLegitAllowlist(issues) {
   return { ok: added.length > 0, added, skipped };
 }
 
+// =============================================================================
+// #5516 — Reconciliación de hijos de split HUÉRFANOS, descubiertos DESDE GITHUB.
+//
+// Diferencia esencial con #3625/#4439/#4525: los tres arrancan leyendo la
+// ALLOWLIST (`probe.added` del desync-detector). Este arranca leyendo GITHUB.
+// Cubre el caso que ninguno cubre: un split hecho por un agente `/planner` que
+// lanzó el Pulpo NO pasa por el hook post-skill-success del Commander, así que
+// sus hijos nunca entran a la allowlist ni registran provenance en
+// `authorization_ttls` — son invisibles para toda la cadena existente.
+//
+// Incidente 2026-08-03: Ola 9.4 frenada por 13 huérfanos (#5458–#5463,
+// #5419–#5421, #5203–#5205, #4890) que trancaban en cascada a #5451, #5452,
+// #5453, #5428, #5401, #5126 y #5112. En ese estado waves.json y
+// `.partial-pause.json` estaban EN SYNC (`desync:false`): los huérfanos no
+// estaban en NINGUNO de los dos. Por eso este paso corre SIEMPRE, no sólo
+// cuando hay divergencia.
+//
+// Clasificación PURA en `lib/split-orphan-reconciler.js` (default-deny,
+// sanitización del padre, sólo abiertos, padre ∈ ola). Acá va sólo el I/O:
+// consulta a GitHub, mutación atómica vía las APIs de waves/partial-pause y
+// notificación. NO se escriben los JSON a mano.
+//
+// Orden ola → allowlist (indicado por el issue): si falla la escritura de la
+// allowlist, la divergencia resultante es REDUCTIVA (la ola tiene de más) y la
+// reconcilia el realign del propio Pulpo en el ciclo siguiente. Al revés
+// quedaría un extra en la allowlist sin respaldo en la ola → ambiguo →
+// human-block, justo lo que queremos evitar.
+//
+// @returns {{ok: boolean, incorporated: number[], reason?: string}}
+// =============================================================================
+function reconcileSplitOrphansFromGithub(context) {
+  const waves = require('./lib/waves');
+
+  const active = waves.getActiveWave();
+  if (!active || !Number.isInteger(active.number)) {
+    return { ok: false, incorporated: [], reason: 'no_active_wave' };
+  }
+  const activeWaveIssues = Array.isArray(active.issues)
+    ? active.issues.map((i) => i && i.number).filter((n) => Number.isInteger(n))
+    : [];
+  if (activeWaveIssues.length === 0) {
+    return { ok: false, incorporated: [], reason: 'empty_active_wave' };
+  }
+
+  // --- 1. Descubrimiento desde GitHub -----------------------------------------
+  // `--state open` ya filtra cerrados, pero pedimos `state` igual: el módulo
+  // puro exige el campo y descarta lo que no sea `open` (SO-3, default-deny).
+  // maxBuffer amplio: 300 issues con body completo superan el default de 1 MB.
+  let issues;
+  try {
+    ghThrottle();
+    const out = _ghExecSyncGuarded(
+      `"${GH_BIN}" issue list --repo intrale/platform --state open ` +
+      `--json number,title,body,state --limit 300`,
+      { encoding: 'utf8', timeout: 20000, windowsHide: true, maxBuffer: 32 * 1024 * 1024 }
+    );
+    issues = JSON.parse(out);
+  } catch (e) {
+    // Degradación de gh (breaker abierto, timeout, red) → no-op. NUNCA derivar
+    // "no hay huérfanos" como una conclusión con efectos: simplemente no
+    // incorporamos nada en este ciclo y reintentamos en el siguiente.
+    log('pulpo', `WARN split-orphan-reconciler: gh degradado (${context}): ${e.message}. Sin incorporación este ciclo.`);
+    return { ok: false, incorporated: [], reason: 'gh_unavailable' };
+  }
+  if (!Array.isArray(issues)) {
+    return { ok: false, incorporated: [], reason: 'gh_bad_payload' };
+  }
+
+  // --- 2. Clasificación pura ---------------------------------------------------
+  let found;
+  try {
+    found = splitOrphanReconciler.findSplitOrphans(issues, { activeWaveIssues });
+  } catch (e) {
+    log('pulpo', `WARN split-orphan-reconciler: clasificador falló: ${e.message}. Sin incorporación.`);
+    return { ok: false, incorporated: [], reason: 'classifier_error' };
+  }
+  const orphans = (found && Array.isArray(found.orphans)) ? found.orphans : [];
+  if (orphans.length === 0) {
+    // Camino idempotente: sin huérfanos nuevos NO se escribe nada ni se notifica.
+    return { ok: true, incorporated: [], reason: 'no_orphans' };
+  }
+  if (found.truncated) {
+    // Nunca truncar en silencio: el remanente entra en el ciclo siguiente.
+    log('pulpo', `split-orphan-reconciler: descubrimiento TRUNCADO (${found.reason}) — ` +
+      `se incorpora un subconjunto; el resto queda para el próximo ciclo.`);
+  }
+
+  // --- 3. Incorporación a la OLA (primero) -------------------------------------
+  const incorporated = [];
+  const parentOf = new Map();
+  for (const { child, parent } of orphans) {
+    try {
+      const r = waves.addIssueToWave(active.number, { number: child }, {
+        updated_by: 'wave-promote',
+        source: 'split-github-reconcile',
+        note: `auto-incorporación de hijo de split #${parent} -> #${child} ` +
+          `(#5516, descubierto desde GitHub, padre ∈ ola ${active.number})`,
+      });
+      // `added:false` === ya estaba en la ola (idempotente). Sólo notificamos y
+      // declaramos dependencia por los que agregamos DE VERDAD en esta corrida.
+      if (r && r.added === true) {
+        incorporated.push(child);
+        parentOf.set(child, parent);
+      }
+    } catch (e) {
+      // EWAVES_DUPLICATE_ISSUE (el hijo ya vive en OTRA ola) u otro conflicto:
+      // no forzamos. Queda fuera y se reporta.
+      log('pulpo', `WARN split-orphan-reconciler: #${child} (padre #${parent}) omitido: ${e.message}`);
+    }
+  }
+  if (incorporated.length === 0) {
+    return { ok: true, incorporated: [], reason: 'nothing_added' };
+  }
+
+  // --- 4. Dependencia padre→hijos (trazable en el audit encadenado) ------------
+  const grouped = splitOrphanReconciler.groupByParent(
+    incorporated.map((c) => ({ child: c, parent: parentOf.get(c) }))
+  );
+  for (const { parent, children } of grouped) {
+    try {
+      waves.addDependency(parent, children, {
+        updated_by: 'split-orphan-5516',
+        source: 'split-github-reconcile',
+        note: `dependencia declarada por reconciliación desde GitHub: ` +
+          `#${parent} -> ${children.map((c) => `#${c}`).join(', ')} (#5516)`,
+      });
+    } catch (e) {
+      log('pulpo', `WARN split-orphan-reconciler: no se pudo declarar dependencia ${parent}->${JSON.stringify(children)}: ${e.message}`);
+    }
+  }
+
+  // --- 5. Allowlist de pausa parcial (después de la ola) -----------------------
+  // GUARD CRÍTICO: sólo tocamos la allowlist si el pipeline YA está en
+  // `partial_pause`. Si está en `running` (archivo ausente/vacío), escribirlo
+  // acá lo METERÍA en pausa parcial con SÓLO estos hijos permitidos — un corte
+  // total de dispatch para el resto del backlog. La ola es la fuente de verdad;
+  // en `running` no hace falta allowlist.
+  let allowlistUpdated = false;
+  try {
+    const mode = partialPause.getPipelineMode();
+    const current = Array.isArray(mode.allowedIssues) ? mode.allowedIssues : [];
+    if (mode.mode === 'partial_pause' && current.length > 0) {
+      const union = [...new Set([...current, ...incorporated])].sort((a, b) => a - b);
+      if (union.length !== current.length) {
+        // OJO: `setPartialPause` NO hace merge — reconstruye el JSON entero
+        // desde `opts`. Todo campo aditivo que no repasemos acá se PIERDE en el
+        // write (`allowed_skills`, `accepted_dep_risk`, `dep_sources`). Perder
+        // `allowed_skills` cambiaría en silencio qué skills puede correr el
+        // pipeline. `authorization_ttls` sí lo hereda solo el módulo.
+        // La metadata de ola se re-deriva de la ola activa (más fidedigna que
+        // conservar la vieja); `sanitizeWaveMetaForWrite` es fail-closed y
+        // simplemente la omite si no valida.
+        //
+        // Unión estrictamente ADITIVA → el gate de removals de #3625 no aplica.
+        const r = partialPause.setPartialPause(union, {
+          authorizedBy: 'wave-promote',
+          source: 'split-github-reconcile',
+          justification: `Hijos de split descubiertos desde GitHub con padre en la ola ` +
+            `${active.number}: ${incorporated.map((c) => `#${c}`).join(', ')} (#5516)`,
+          allowedSkills: Array.isArray(mode.allowedSkills) ? mode.allowedSkills : undefined,
+          acceptedDepRisk: mode.acceptedDepRisk === true,
+          depSources: mode.depSources || undefined,
+          waveNumber: active.number,
+          waveName: active.name,
+          waveGoal: active.goal,
+        });
+        allowlistUpdated = !!(r && r.ok);
+        if (!allowlistUpdated) {
+          log('pulpo', `WARN split-orphan-reconciler: allowlist NO actualizada (${r && r.msg}). ` +
+            `Divergencia REDUCTIVA (ola tiene de más) — la reconcilia el realign del Pulpo.`);
+        }
+      }
+    } else {
+      log('pulpo', `split-orphan-reconciler: pipeline en modo '${mode.mode}' — allowlist no se toca (la ola manda).`);
+    }
+  } catch (e) {
+    log('pulpo', `WARN split-orphan-reconciler: fallo al actualizar allowlist: ${e.message}. ` +
+      `Divergencia reductiva, la reconcilia el realign.`);
+  }
+
+  // --- 6. Notificación ---------------------------------------------------------
+  const detalle = grouped
+    .map(({ parent, children }) => `#${parent} → ${children.map((c) => `#${c}`).join(', ')}`)
+    .join(' | ');
+  log('pulpo', `split-orphan-reconciler: auto-incorporación DESDE GITHUB OK — ` +
+    `hijos=${JSON.stringify(incorporated)} allowlist_actualizada=${allowlistUpdated} (#5516)`);
+  try {
+    sendTelegramPlain(
+      `♻️ Auto-incorporación a la ola activa (#5516).\n` +
+      `Hijos de split descubiertos en GitHub (el split no pasó por el Commander): ${detalle}\n` +
+      `Sumados a la ola ${active.number}` +
+      `${allowlistUpdated ? ' y a la allowlist' : ''}. Dependencia padre→hijos declarada.` +
+      `${found.truncated ? `\n⚠️ Descubrimiento truncado (${found.reason}): el resto entra en el próximo ciclo.` : ''}`
+    );
+  } catch { /* best-effort */ }
+
+  return { ok: true, incorporated };
+}
+
 /**
  * Evalúa la divergencia waves↔allowlist y actúa según la clasificación:
  *   - `resoluble_reductivo` → realinea reductivamente + limpia flag + traza.
@@ -16532,6 +16734,38 @@ function resyncActiveWaveFromLegitAllowlist(issues) {
  * Best-effort: nunca lanza (envuelto por el caller). Usado al boot y periódico.
  */
 function evaluateDesyncAndMaybeRealign(context, opts = {}) {
+  // #5516 — Reconciliación de huérfanos de split ANTES de cualquier probe.
+  //
+  // Va acá arriba, y NO dentro del bloque de desync, por una razón concreta: en
+  // el incidente que motiva el issue la ola y la allowlist estaban EN SYNC
+  // (`desync:false`) — los huérfanos no figuraban en ninguno de los dos. Si
+  // colgáramos este paso del camino `mid.desync` (como #4439/#4525), el early
+  // return de `!probe.desync` lo saltearía siempre y el bug seguiría vivo.
+  //
+  // Corriendo primero, además, el probe posterior ve el estado YA incorporado:
+  // la ola y la allowlist quedan sincronizadas en la misma pasada y no se
+  // dispara un human-block espurio por la escritura intermedia.
+  //
+  // OPT-IN EXPLÍCITO (`opts.reconcileSplitOrphans`), no derivado de `context`,
+  // por dos razones:
+  //   - Nunca en el ciclo de BOOT: la consulta a `gh` es síncrona (busy-wait del
+  //     throttle + execSync) y meterla en el arranque puede bloquear el Pulpo
+  //     ~22 s antes de levantar el loop. El primer tick periódico llega a los
+  //     ~5 min; esa demora es preferible a arriesgar el boot.
+  //   - Los tests existentes de #4439/#4525 invocan esta función con
+  //     `'periodic'` y sin opts. Si el disparo colgara del `context`, esos unit
+  //     tests empezarían a pegarle a la red. El flag lo pasa SÓLO el loop de
+  //     producción.
+  //
+  // Best-effort y aislado: si falla, sigue toda la evaluación de desync normal.
+  if (opts.reconcileSplitOrphans === true) {
+    try {
+      reconcileSplitOrphansFromGithub(context);
+    } catch (e) {
+      log('pulpo', `WARN split-orphan-reconciler (${context}): ${e.message}`);
+    }
+  }
+
   // #4753 — seam de test: permitir inyectar `isClosed` (predicado de cierre).
   // Producción (`'boot'`/`'periodic'`) no pasa opts → usa el title-cache local.
   let isClosed = null;
@@ -18934,7 +19168,10 @@ async function mainLoop() {
       // Telegram. Best-effort: nunca rompe el loop.
       desyncEvalTick = (desyncEvalTick + 1) % DESYNC_EVAL_EVERY_TICKS;
       if (desyncEvalTick === 0) {
-        try { evaluateDesyncAndMaybeRealign('periodic'); }
+        // #5516 — `reconcileSplitOrphans` sólo acá: es el único punto donde
+        // queremos la consulta síncrona a GitHub (cada ~5 min). Ni el boot ni
+        // los unit tests la disparan.
+        try { evaluateDesyncAndMaybeRealign('periodic', { reconcileSplitOrphans: true }); }
         catch (e) { log('pulpo', `WARN desync periódico: ${e.message}`); }
       }
 
@@ -19259,6 +19496,7 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // aditivo legítimo (CA-3), expuestos para tests de integración.
     evaluateDesyncAndMaybeRealign,
     resyncActiveWaveFromLegitAllowlist,
+    reconcileSplitOrphansFromGithub,
     realignAllowlistToActiveWave,
     // #4753 — auto-resolución del desync reductivo por cierre (expuesto para tests).
     autoResolveReductiveDesyncByClosure,
