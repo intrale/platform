@@ -83,6 +83,7 @@
 
 const nodeFs = require('fs');
 const path = require('path');
+const { notifyTelegram, _internal: notifyTelegramInternal } = require('./notify-telegram');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const DEFAULT_AUDIT_DIR = path.join(REPO_ROOT, '.pipeline', 'audit');
@@ -287,6 +288,23 @@ function createVaultShadowMetrics(opts = {}) {
   const auditDir = opts.auditDir ? path.resolve(opts.auditDir) : DEFAULT_AUDIT_DIR;
   const now = typeof opts.now === 'function' ? opts.now : Date.now;
   const logger = typeof opts.logger === 'function' ? opts.logger : console.log;
+  const notify = typeof opts.notify === 'function' ? opts.notify : notifyTelegram;
+
+  function notifyPrivate(payload) {
+    const chatId = process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+    const result = notify({ ...payload, chat_id: chatId == null ? '' : chatId });
+    if (!result || result.ok !== true) {
+      logger(`[vault-shadow] aviso privado omitido: ${(result && result.reason) || 'notify_failed'}`);
+    }
+    return result;
+  }
+
+  function canNotifyPrivate() {
+    const chatId = process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+    const destination = notifyTelegramInternal.resolvePrivateChatId(chatId == null ? '' : chatId);
+    if (!destination.ok) logger(`[vault-shadow] aviso privado omitido: ${destination.reason}`);
+    return destination.ok;
+  }
 
   const jsonlPath = path.join(auditDir, JSONL_FILE);
   const t0Path = path.join(auditDir, T0_FILE);
@@ -524,6 +542,15 @@ function createVaultShadowMetrics(opts = {}) {
         out.registradas += 1;
         out.negativas += 1;
         if (ultimaNegativaMs === null || ahora > ultimaNegativaMs) ultimaNegativaMs = ahora;
+        if (canNotifyPrivate() && shouldNotifyFallback(name)) {
+          notifyPrivate({
+            level: 'warn',
+            component: 'vault-shadow',
+            message: `Fallback confirmado: ${name}`,
+            context: { secreto: name, host, via, timestamp: ts },
+            action: 'La ventana sombra se reinició; el fallback continúa vigente.',
+          });
+        }
       } catch (e) {
         out.integridad = ESTADO.NO_VERIFICADO;
         // El mensaje nombra el SECRETO (nombre lógico), nunca el valor.
@@ -850,6 +877,20 @@ function createVaultShadowMetrics(opts = {}) {
 
     base.estado = ESTADO.CUMPLE;
     base.motivo = 'cobertura_completa';
+    if (canNotifyPrivate() && shouldNotifyCumplimiento(base.t0)) {
+      notifyPrivate({
+        level: 'info',
+        component: 'vault-shadow',
+        message: 'Ventana sombra cumplida',
+        context: {
+          secretos: base.secretos,
+          hosts: base.hosts.length,
+          ventana_horas: base.ventana_horas,
+          timestamp: iso(now()),
+        },
+        action: 'La cobertura requerida está completa y sin fallbacks en la ventana vigente.',
+      });
+    }
     return base;
   }
 

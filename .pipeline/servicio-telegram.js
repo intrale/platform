@@ -86,7 +86,7 @@ const health = require('./lib/telegram-health');
 // pendiente/ → reintento infinito y silencioso. Ahora acotamos los reintentos,
 // movemos a fallido/ y emitimos una alerta a Telegram con el error redactado
 // (espeja `notifyDriveFailure` de servicio-drive.js).
-const { notifyTelegram } = require('./lib/notify-telegram');
+const { notifyTelegram, _internal: notifyTelegramInternal } = require('./lib/notify-telegram');
 const { redactSensitive, redactSecretValue } = require('./lib/redact');
 // #4082 — Bus de recibos cross-proceso. svc-telegram escribe un recibo `enviado`
 // (con los message_id que prueban la entrega) o `fallido` ligado por
@@ -113,6 +113,10 @@ const MAX_SEND_RETRIES = 5;
 const { OUTBOUND_DEFAULTS, resolveOutboundConfig } = require('./lib/telegram-outbound-config');
 function loadOutboundConfig() {
   return resolveOutboundConfig(loadPipelineConfig());
+}
+
+function resolvePrivateDestination(requested) {
+  return notifyTelegramInternal.resolvePrivateChatId(requested);
 }
 
 // #4082 — SEC-2 fail-closed: sin prueba de entrega (`ok:true` + `message_id`) un
@@ -839,6 +843,12 @@ async function processQueue() {
         // #4586 (Palanca 2a) — hilo/topic separado para el firehose de
         // entregables. Se aplica a todos los chunks del mismo mensaje.
         const textThreadId = normalizeThreadId(data.message_thread_id);
+        const privateDestination = resolvePrivateDestination(data.chat_id);
+        if (!privateDestination.ok) {
+          log(`Aviso privado omitido: ${privateDestination.reason}`);
+          fs.renameSync(trabajandoPath, path.join(LISTO, file.name));
+          continue;
+        }
         // #4082 — SEC-2 fail-closed: validar ok:true + message_id por chunk y
         // acumular los ids (multi-chunk → N ids). Si algún chunk no confirma,
         // `assertDelivered` lanza → cae a handleSendFailure (entrega parcial =
@@ -846,6 +856,7 @@ async function processQueue() {
         const messageIds = [];
         for (let i = 0; i < chunks.length; i++) {
           const params = { text: chunks[i], parse_mode: parseMode };
+          if (privateDestination.chatId != null) params.chat_id = privateDestination.chatId;
           if (textThreadId != null) params.message_thread_id = textThreadId;
           if (hasReplyMarkup && i === chunks.length - 1) {
             params.reply_markup = data.reply_markup;
@@ -935,6 +946,7 @@ module.exports = {
   editMessageText,
   // #4586 (Palanca 2a) — normalizador de message_thread_id, expuesto para tests.
   normalizeThreadId,
+  resolvePrivateDestination,
   // #4796 — helpers de normalización/allowlist de rutas de adjunto + guarda
   // fail-closed del solo-audio. Puros (o I/O acotado sobre disco); no arrancan el
   // servicio ni tocan red. Expuestos para `node --test`.
