@@ -5,6 +5,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { appendChained } = require('./audit-log');
+const { redactAwsEvidence } = require('./kernel-table-verify');
+const { buildAwsScopedEnv } = require('./kernel-provision');
 
 const ACCESS_EVENT_NAMES = Object.freeze([
   'GetSecretValue',
@@ -19,6 +21,7 @@ const CAUSAS = Object.freeze({
   RAFAGA_DE_LECTURAS: 'El volumen de lecturas superó el umbral de la ventana.',
 });
 const UNKNOWN_SCOPE = 'desconocido';
+const UNKNOWN_PRINCIPAL = 'desconocido';
 const DEFAULT_AUTH_FAILURE_THRESHOLD = 3;
 
 function asMillis(value) {
@@ -34,6 +37,21 @@ function normalizePrincipal(value) {
 
 function hashPrincipal(value) {
   return crypto.createHash('sha256').update(String(value || 'unknown')).digest('hex');
+}
+
+/**
+ * Identidad LÓGICA para el registro consultable (CA-3): tipo + nombre del
+ * principal, sin account id ni ARN. La unidad es el rol por host (D-3): la
+ * sesión ya viene colapsada al rol por `normalizePrincipal`.
+ * Lo que no se puede nombrar con seguridad queda `desconocido` — nunca inferido.
+ */
+function logicalPrincipal(value) {
+  if (typeof value !== 'string' || !value) return UNKNOWN_PRINCIPAL;
+  const typed = /:(role|user|assumed-role|group)\/([^/]+)/.exec(value);
+  const candidate = typed ? typed[2] : value.split(/[/:]/).filter(Boolean).pop();
+  if (!candidate || /^\d{12}$/.test(candidate)) return UNKNOWN_PRINCIPAL;
+  if (!/^[A-Za-z0-9_.@-]{1,80}$/.test(candidate)) return UNKNOWN_PRINCIPAL;
+  return typed ? `${typed[1] === 'assumed-role' ? 'role' : typed[1]}/${candidate}` : candidate;
 }
 
 function parseCloudTrailEvent(event) {
@@ -71,10 +89,22 @@ function normalizeEvent(event) {
       .update(JSON.stringify([event.EventName, event.EventTime, principal, errorCode])).digest('hex'),
     timestamp: event.EventTime || detail.eventTime || null,
     principal,
+    principal_logico: logicalPrincipal(principal),
     event_name: event.EventName || detail.eventName || 'Unknown',
     scope_logico: logicalScope(event, detail),
     resultado: errorCode ? 'denied' : 'ok',
+    error_code: errorCode,
   };
+}
+
+/**
+ * De qué almacén salió la lectura. Se deriva del nombre del evento porque es
+ * lo único que el rastro informa: el *tier* del vault (`rotating`/`static`) NO
+ * es observable desde CloudTrail y por eso no se registra — inventarlo sería
+ * el mismo error que completar el scope de un `AccessDenied`.
+ */
+function almacenFor(eventName) {
+  return String(eventName || '').includes('Secret') ? 'secrets-manager' : 'parameter-store';
 }
 
 function findingKey(finding) {
@@ -102,12 +132,16 @@ function evaluateAccessEvents({ now, events, state, config }) {
     if (!ev.principal || !expected.has(ev.principal)) causa = 'IDENTIDAD_NO_ESPERADA';
     records.push({
       timestamp: ev.timestamp,
+      // Identidad en dos formas: la lógica hace consultable el registro (CA-3),
+      // el hash permite correlacionar sin conservar la topología de la cuenta.
+      principal_logico: ev.principal_logico,
       principal_hash: principalHash,
       scope_logico: ev.scope_logico,
-      tier: ev.event_name.includes('Secret') ? 'rotating' : 'standard',
+      almacen: almacenFor(ev.event_name),
       event_name: ev.event_name,
       resultado: ev.resultado,
       causa,
+      evidencia: ev.error_code ? redactAwsEvidence(ev.error_code) : null,
     });
     if (causa) candidates.push({ causa, principal_hash: principalHash, scope_logico: ev.scope_logico });
   }
@@ -136,30 +170,81 @@ function evaluateAccessEvents({ now, events, state, config }) {
   return { records, notifications, nextState: { seen_events: seen, last_notified: lastNotified } };
 }
 
+// -----------------------------------------------------------------------------
+// Copy del operador. Texto 100% FIJO (UX-1/UX-4). Las únicas partes variables
+// son el TOKEN del enum, el nombre LÓGICO del scope y el correlationId, y los
+// tres los produce el pipeline — nunca el driver de AWS. Glifo ⚠️ (UX-2): el
+// pipeline sigue operativo, no quedó pausado. El sujeto es la superficie
+// ("acceso al vault"), no el módulo (UX-3).
+// -----------------------------------------------------------------------------
+const HEADER_ALERTA = '⚠️ *Acceso al vault fuera de lo esperado* — el pipeline sigue operativo';
+
+const CONSECUENCIA = Object.freeze({
+  IDENTIDAD_NO_ESPERADA: 'alguien que no está en la lista de identidades autorizadas leyó credenciales '
+    + 'del vault: hay que asumir que esas credenciales quedaron expuestas hasta demostrar lo contrario',
+  AUTORIZACION_RECHAZADA: 'se acumularon rechazos de permisos contra el vault: o hay una identidad '
+    + 'probando accesos que no le corresponden, o un host quedó con permisos incompletos y sus agentes '
+    + 'van a fallar al arrancar',
+  RAFAGA_DE_LECTURAS: 'el volumen de lecturas se salió del patrón normal de la ventana: puede ser un '
+    + 'lazo de reintentos del propio pipeline o un uso que no debería estar ocurriendo',
+});
+
+const ACCION = Object.freeze({
+  IDENTIDAD_NO_ESPERADA: 'revisá el Event history de CloudTrail para la ventana informada y confirmá si '
+    + 'ese acceso era legítimo. Si no lo era, rotá los secretos del scope afectado siguiendo '
+    + '`docs/pipeline/vault-rotacion-auditoria.md`. Si lo era, sumá el rol a '
+    + '`vault.access_audit.expected_principals` en `.pipeline/config.yaml`.',
+  AUTORIZACION_RECHAZADA: 'revisá en el Event history quién recibió los rechazos y contrastá la policy '
+    + 'del rol del host contra `docs/pipeline/vault-rotacion-auditoria.md`.',
+  RAFAGA_DE_LECTURAS: 'revisá el detalle del rastro antes de subir `vault.access_audit.burst_threshold`: '
+    + 'si el volumen viene del propio pipeline, el umbral está mal calibrado y hay que recalibrarlo, no silenciarlo.',
+});
+
+/**
+ * Arma la alerta desde un template FIJO, en el orden de UX-1:
+ * (1) severidad · (2) consecuencia en criollo · (3) causa como TOKEN + glosa ·
+ * (4) qué hacer · y recién al final el diagnóstico. El diagnóstico NUNCA va
+ * antes de la acción.
+ *
+ * @param {Array<{causa: string, scope_logico?: string}>} findings
+ * @param {string} correlationId handle que liga alerta ↔ registro ↔ pulpo.log.
+ * @returns {string}
+ */
 function formatAccessAlert(findings, correlationId) {
-  const unique = [...new Set(findings.map((f) => f.causa))];
-  const scopes = [...new Set(findings.map((f) => f.scope_logico || UNKNOWN_SCOPE))].slice(0, 5);
-  return [
-    '⚠️ *Acceso anómalo al vault* — el pipeline sigue operativo',
-    '',
-    ...unique.map((cause) => `Causa: \`${cause}\` — ${CAUSAS[cause]}`),
-    '',
-    `Scopes lógicos: ${scopes.join(', ') || UNKNOWN_SCOPE}`,
-    `id: ${correlationId}`,
-    '',
-    'Qué hacer: consultar CloudTrail Event history y validar el rol del host.',
-  ].join('\n');
+  const causas = [...new Set((Array.isArray(findings) ? findings : [])
+    .map((f) => f && f.causa).filter((c) => Object.hasOwn(CAUSAS, c)))];
+  const scopes = [...new Set((Array.isArray(findings) ? findings : [])
+    .map((f) => (f && f.scope_logico) || UNKNOWN_SCOPE))].slice(0, 5);
+  const lines = [HEADER_ALERTA, ''];
+  for (const causa of causas) {
+    lines.push(CONSECUENCIA[causa], '', `Causa: \`${causa}\` — ${CAUSAS[causa]}`, '',
+      `Qué hacer: ${ACCION[causa]}`, '');
+  }
+  // Diagnóstico al final (UX-1). Sólo nombres lógicos: nada de ARN, account id,
+  // IP, path completo ni salida de la CLI.
+  lines.push(`Scopes afectados: ${scopes.join(', ') || UNKNOWN_SCOPE}`);
+  lines.push(`id: ${correlationId}`);
+  lines.push('El detalle completo está en el Event history de CloudTrail y en '
+    + '`.pipeline/logs/vault-access-audit.jsonl`.');
+  return lines.join('\n');
 }
 
+/**
+ * Runner de sólo lectura sobre el Event history. Sin shell (así que la trampa
+ * de MSYS no aplica al runtime, sí a los comandos manuales del runbook) y con
+ * el env armado por ALLOWLIST: el proceso hijo NO hereda las API keys de los
+ * proveedores que viven en `process.env`.
+ */
 function createCloudTrailRunner(sourceEnv, region, deps = {}) {
   const runFile = deps.execFileSync || execFileSync;
+  const env = buildAwsScopedEnv(sourceEnv, region);
   return (eventName, startTime, endTime) => {
     const args = ['cloudtrail', 'lookup-events', '--lookup-attributes',
       `AttributeKey=EventName,AttributeValue=${eventName}`,
       '--start-time', startTime, '--end-time', endTime,
       '--region', region, '--output', 'json', '--no-cli-pager'];
     return runFile('aws', args, {
-      env: sourceEnv,
+      env,
       shell: false,
       timeout: 20_000,
       maxBuffer: 4 * 1024 * 1024,
@@ -184,14 +269,23 @@ function runAccessAuditTick(opts = {}) {
     return { skipped: true, reason: 'empty-allowlist', records: [], notifications: [], errors: [] };
   }
 
+  const region = opts.region || process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION;
+  // Sin región no se consulta nada: `--region undefined` devolvería un error de
+  // la CLI que se leería como "no hubo accesos", o sea un control apagado que
+  // aparenta estar prendido. Se prefiere no correr y decirlo (R-H).
+  if (!opts.lookupEvents && !region) {
+    log('[vault-access-audit] tick omitido: falta kernel.region');
+    return { skipped: true, reason: 'sin-region', records: [], notifications: [], errors: [] };
+  }
+
   const now = opts.now instanceof Date ? opts.now : new Date();
   const pipelineDir = opts.pipelineDir || path.resolve(__dirname, '..');
   const statePath = opts.statePath || path.join(pipelineDir, 'vault-access-audit-state.json');
   const auditPath = opts.auditPath || path.join(pipelineDir, 'logs', 'vault-access-audit.jsonl');
   const lookbackMin = Math.max(1, Number(config.lookback_min || 30));
   const start = new Date(now.getTime() - lookbackMin * 60 * 1000).toISOString();
-  const runner = opts.lookupEvents || createCloudTrailRunner(opts.sourceEnv || process.env,
-    opts.region || process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION, opts);
+  const runner = opts.lookupEvents
+    || createCloudTrailRunner(opts.sourceEnv || process.env, region, opts);
   const events = [];
   const errors = [];
 
@@ -216,8 +310,27 @@ function runAccessAuditTick(opts = {}) {
     const correlationId = `vault-${now.getTime().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
     try { opts.sendTelegramFn(formatAccessAlert(result.notifications, correlationId)); }
     catch (_err) {
+      // R-D · El canal de la alerta depende del propio vault que la alerta
+      // vigila. Fail-SOFT en la notificación, fail-CLOSED en el rastro: si no
+      // se pudo avisar, el silencio del canal no puede leerse como "todo bien"
+      // (UX-5), así que la falla queda como entrada encadenada.
       errors.push({ stage: 'send-telegram', message: 'no se pudo notificar al operador' });
       log('[vault-access-audit] WARN no se pudo notificar al operador');
+      const failure = {
+        timestamp: now.toISOString(),
+        principal_logico: 'pipeline',
+        principal_hash: hashPrincipal('pipeline'),
+        scope_logico: 'telegram',
+        almacen: 'pipeline',
+        event_name: 'VaultAuditNotification',
+        resultado: 'error',
+        causa: null,
+        // Nunca el error del canal: sólo un marcador cerrado del pipeline.
+        evidencia: 'NOTIFICACION_NO_ENVIADA',
+      };
+      try { appendChained({ file: auditPath, entry: failure, fsImpl }); }
+      catch (_e) { errors.push({ stage: 'append-audit', message: 'no se pudo registrar la falla de notificación' }); }
+      result.records.push(failure);
     }
   }
 
@@ -233,7 +346,10 @@ module.exports = {
   ACCESS_EVENT_NAMES,
   CAUSAS,
   UNKNOWN_SCOPE,
+  UNKNOWN_PRINCIPAL,
   normalizePrincipal,
+  logicalPrincipal,
+  almacenFor,
   normalizeEvent,
   evaluateAccessEvents,
   formatAccessAlert,
