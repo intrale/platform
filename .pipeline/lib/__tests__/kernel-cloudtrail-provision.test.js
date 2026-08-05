@@ -34,7 +34,7 @@ test('apply configura retención, management events KMS y logging', () => {
     assert.ok(calls.some((c) => c[1] === 'start-logging'));
 });
 
-const KEY_ARN = 'arn:aws:kms:us-east-2:123456789012:key/9d18ba4b-f8ca-4b48-add3-12edf72569f8';
+const KEY_ARN = 'arn:aws:kms:us-east-2:123456789012:key/00000000-0000-4000-8000-000000000000';
 
 function trailRecord(eventName, overrides = {}) {
     return {
@@ -113,7 +113,7 @@ test('un evento denegado no cuenta como evidencia de uso real de la CMK', () => 
     // fail-open: daba la auditoría por probada sin que la clave se hubiera usado.
     const usage = cloudtrail.extractCmkUsage([
         trailRecord('Decrypt'),
-        trailRecord('GenerateDataKey', { errorCode: 'AccessDenied', sourceIPAddress: '186.22.225.149' }),
+        trailRecord('GenerateDataKey', { errorCode: 'AccessDenied', sourceIPAddress: '203.0.113.10' }),
     ], KEY_ARN);
     assert.equal(usage.GenerateDataKey.length, 1, 'el evento denegado se reporta...');
     assert.equal(cloudtrail.successfulCmkUsage(usage, 'GenerateDataKey').length, 0,
