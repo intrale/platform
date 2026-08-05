@@ -52,7 +52,83 @@ const TRIGGERS = Object.freeze({
     DECISION_REQUESTED: 'decision-requested',
     REPEATED_REJECTION: 'repeated-rejection',
     DESIGN_DECISION: 'design-decision',
+    // Agregado por el rebote del review de #5337: `BLOCKED` con un check
+    // requerido en rojo NO es una review pendiente. Ver `classifyChecks`.
+    CHECKS_FAILING: 'checks-failing',
 });
+
+// -----------------------------------------------------------------------------
+// Estado de los checks del PR (corrección del review de #5337)
+//
+// EL DEFECTO QUE ARREGLA: `mergeStateStatus === 'BLOCKED'` se reportaba como
+// "sólo falta la review", y el mensaje al operador afirmaba textualmente "El PR
+// no tiene conflictos ni checks en rojo". GitHub también devuelve BLOCKED
+// cuando un check REQUERIDO está fallando o pendiente. Medido sobre los PRs
+// abiertos del repo el 2026-08-05:
+//
+//     PR #5277  BLOCKED  checks: SUCCESS,...,FAILURE   <- check en rojo
+//     PR #5278  BLOCKED  checks: SUCCESS,...,FAILURE   <- check en rojo
+//     PR #5202  BLOCKED  checks: SUCCESS,...,SUCCESS   <- CODEOWNERS real
+//
+// Para #5277 el pipeline le decía al operador que no había checks en rojo
+// habiendo uno en FAILURE, y lo invitaba a aprobar un merge a `main`. Una
+// recomendación activamente engañosa sobre la rama protegida.
+//
+// El dato para desambiguar ya viajaba gratis: `statusCheckRollup` está en
+// `FIELDS` de `pr-info-fetcher.js` desde antes de #5337 y llega en el mismo
+// `prInfo`. No cuesta una request extra.
+//
+// `statusCheckRollup` mezcla dos formas según el proveedor del check:
+//   - CheckRun     → `{name, status, conclusion}`
+//   - StatusContext→ `{context, state}`
+// `classifyChecks` normaliza ambas.
+// -----------------------------------------------------------------------------
+const CHECK_FAIL_CONCLUSIONS = Object.freeze([
+    'FAILURE', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE', 'CANCELLED', 'STALE',
+]);
+const CHECK_FAIL_STATES = Object.freeze(['FAILURE', 'ERROR']);
+const CHECK_PENDING_STATUSES = Object.freeze(['QUEUED', 'IN_PROGRESS', 'WAITING', 'PENDING', 'REQUESTED']);
+const CHECK_PENDING_STATES = Object.freeze(['PENDING', 'EXPECTED']);
+
+/**
+ * Normaliza `statusCheckRollup` a un veredicto sobre los checks.
+ *
+ * @param {Array} [rollup] — `prInfo.statusCheckRollup`.
+ * @returns {{state:'failing'|'pending'|'green'|'unknown', failing:string[], pending:string[], total:number}}
+ *
+ * `unknown` es un estado de primera clase a propósito: si no se puede leer el
+ * rollup, el mensaje NO debe afirmar que los checks están en verde. Ése fue
+ * exactamente el defecto — afirmar un hecho no verificado.
+ */
+function classifyChecks(rollup) {
+    if (!Array.isArray(rollup) || rollup.length === 0) {
+        return { state: 'unknown', failing: [], pending: [], total: 0 };
+    }
+    const failing = [];
+    const pending = [];
+    let indeterminados = 0;
+    for (const chk of rollup) {
+        if (!chk || typeof chk !== 'object') { indeterminados++; continue; }
+        const nombre = String(chk.name || chk.context || 'check sin nombre');
+        const conclusion = String(chk.conclusion || '').toUpperCase();
+        const status = String(chk.status || '').toUpperCase();
+        const state = String(chk.state || '').toUpperCase();
+
+        if (CHECK_FAIL_CONCLUSIONS.includes(conclusion) || CHECK_FAIL_STATES.includes(state)) {
+            failing.push(nombre);
+        } else if (CHECK_PENDING_STATUSES.includes(status) || CHECK_PENDING_STATES.includes(state)) {
+            pending.push(nombre);
+        } else if (!conclusion && !state) {
+            // Ni conclusión ni estado: el check existe pero todavía no dijo nada.
+            indeterminados++;
+        }
+        // El resto (SUCCESS / NEUTRAL / SKIPPED) cuenta como no-bloqueante.
+    }
+    if (failing.length) return { state: 'failing', failing, pending, total: rollup.length };
+    if (pending.length) return { state: 'pending', failing, pending, total: rollup.length };
+    if (indeterminados) return { state: 'unknown', failing, pending, total: rollup.length };
+    return { state: 'green', failing, pending, total: rollup.length };
+}
 
 // -----------------------------------------------------------------------------
 // 1. Hallazgos de seguridad sin resolver (CA-3)
@@ -136,9 +212,11 @@ function detectSecurityFindingBlock({ prNumber, headRefName, alerts } = {}) {
  * @param {string} [args.mergeable]         — MERGEABLE | CONFLICTING | UNKNOWN
  * @param {string} [args.mergeStateStatus]  — CLEAN | DIRTY | BLOCKED | UNKNOWN | ...
  * @param {string} [args.reviewDecision]    — APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | ''
+ * @param {Array}  [args.statusCheckRollup] — checks del PR. BLOCKED sin esto no
+ *   permite afirmar nada sobre el estado de los checks (ver `classifyChecks`).
  * @returns {object|null} veredicto, `{inconclusive:true}`, o `null` si está limpio.
  */
-function detectMergeStateBlock({ prNumber, mergeable, mergeStateStatus, reviewDecision } = {}) {
+function detectMergeStateBlock({ prNumber, mergeable, mergeStateStatus, reviewDecision, statusCheckRollup } = {}) {
     const estado = String(mergeStateStatus || '').toUpperCase();
     const merg = String(mergeable || '').toUpperCase();
     const review = String(reviewDecision || '').toUpperCase();
@@ -159,13 +237,53 @@ function detectMergeStateBlock({ prNumber, mergeable, mergeStateStatus, reviewDe
     }
 
     if (estado === 'BLOCKED') {
-        // CODEOWNERS / ruleset: el PR está sano pero exige una firma humana.
+        // BLOCKED es ambiguo: puede ser "falta la firma humana" o "hay un check
+        // requerido en rojo/pendiente". Antes de hablarle al operador de review,
+        // hay que LEER los checks — no suponerlos.
+        const checks = classifyChecks(statusCheckRollup);
+
+        // (a) Checks en rojo → esto NO es una firma que el operador deba dar.
+        // Invitarlo a aprobar sería empujar un merge roto a `main`. Se notifica
+        // igual (el silencio es el bug que #5337 arregla) pero con el encuadre
+        // correcto: lo que corresponde es volver a desarrollo, no firmar.
+        if (checks.state === 'failing') {
+            const lista = checks.failing.slice(0, 5).join(', ');
+            const extra = checks.failing.length > 5 ? ` y ${checks.failing.length - 5} más` : '';
+            return {
+                trigger: TRIGGERS.CHECKS_FAILING,
+                reason: `PR #${prNumber} está BLOCKED con ${checks.failing.length} check(s) requerido(s) en rojo: ${lista}${extra}. El ruleset de main no lo deja mergear hasta que pasen — no es una review pendiente.`,
+                question: `El PR #${prNumber} tiene checks en rojo. ¿Lo devolvemos a desarrollo para que los arregle, o los mirás vos?`,
+                recommendation: 'NO aprobar el PR para destrabarlo: la firma no arregla un check en rojo y el ruleset lo va a seguir frenando. Lo que corresponde es devolver el issue a desarrollo.',
+                checks: { state: checks.state, failing: checks.failing },
+            };
+        }
+
+        // (b) Checks todavía corriendo → no concluyente (mismo criterio que R2).
+        // Si en el barrido siguiente terminan en verde, recién ahí es CODEOWNERS.
+        if (checks.state === 'pending') {
+            return {
+                inconclusive: true,
+                trigger: null,
+                prNumber,
+                mergeStateStatus: estado,
+                checks: { state: checks.state, pending: checks.pending },
+            };
+        }
+
+        // (c) Checks verdes (o rollup ilegible) → recién acá es review humana.
+        // La recomendación sólo afirma el estado de los checks si se pudo LEER;
+        // si no, lo dice explícitamente en vez de inventarlo.
         const porReview = review === 'REVIEW_REQUIRED' || review === '' || review === 'CHANGES_REQUESTED';
+        const checksVerdes = checks.state === 'green';
+        const recommendation = checksVerdes
+            ? `El PR no tiene conflictos y sus ${checks.total} checks están en verde: sólo falta la review. Si el diff te cierra, aprobarlo destraba el issue.`
+            : 'El PR no tiene conflictos de merge, pero no pude leer el estado de sus checks: miralos en GitHub antes de aprobar.';
         return {
             trigger: TRIGGERS.CODEOWNERS_REVIEW,
             reason: `PR #${prNumber} está mergeable pero BLOCKED: el ruleset de main exige una aprobación humana${porReview ? ` (reviewDecision=${review || 'sin review'})` : ''}. CODEOWNERS cubre las rutas tocadas.`,
             question: `¿Podés revisar y aprobar el PR #${prNumber}? Sin tu firma el merge no avanza y el pipeline queda esperando.`,
-            recommendation: 'El PR no tiene conflictos ni checks en rojo: sólo falta la review. Si el diff te cierra, aprobarlo destraba el issue.',
+            recommendation,
+            checks: { state: checks.state },
         };
     }
 
@@ -330,6 +448,10 @@ function detectPrHumanBlock(prState = {}, opts = {}) {
         mergeable: prState.mergeable,
         mergeStateStatus: prState.mergeStateStatus,
         reviewDecision: prState.reviewDecision,
+        // Viene en el MISMO `prInfo` (ya está en FIELDS de pr-info-fetcher):
+        // sin esto, BLOCKED no se puede desambiguar y el mensaje afirmaría el
+        // estado de los checks sin haberlo leído.
+        statusCheckRollup: prState.statusCheckRollup,
     });
 }
 
@@ -338,7 +460,10 @@ module.exports = {
     DECISION_SKILLS,
     DECISION_REQUEST_PATTERNS,
     CODE_FIX_PATTERNS,
+    CHECK_FAIL_CONCLUSIONS,
+    CHECK_PENDING_STATUSES,
     alertBelongsToPr,
+    classifyChecks,
     normalizeCause,
     detectSecurityFindingBlock,
     detectMergeStateBlock,

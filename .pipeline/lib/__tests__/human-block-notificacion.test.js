@@ -282,6 +282,299 @@ test('CA-4b: input basura no frena el pipeline', () => {
 });
 
 // =============================================================================
+// CA-4 — REGRESIÓN DEL REBOTE DEL REVIEW (2026-08-05)
+//
+// La primera versión evaluaba `re` y `qualifier` sueltos sobre `title + body`
+// concatenado y frenaba el 36% del intake real de definición (18 de 50). Los
+// fixtures de abajo son los 5 falsos positivos que el review documentó, con
+// bodies LARGOS y multi-sección — que es justo lo que los fixtures originales
+// de una línea no cubrían y por eso el defecto pasó con la suite en verde.
+// =============================================================================
+
+// Falsos positivos reales del intake de definición. La estructura importa: el
+// tema aparece en una sección y el qualifier en otra, a decenas de líneas.
+const FALSOS_POSITIVOS_REALES = [
+    {
+        issue: 5322,
+        title: 'Rotar el bot token de Telegram sha8 760e3f4b y ejecutar la purga',
+        body: [
+            '## Objetivo',
+            'Rotar el bot token de Telegram que quedó expuesto y purgar el historial.',
+            '',
+            '## Contexto',
+            'El token vive hoy en el store canónico de credenciales del pipeline.',
+            'La rotación es mecánica: generar uno nuevo con BotFather y reemplazarlo.',
+            '',
+            '## Cambios requeridos',
+            '- Generar el token nuevo.',
+            '- Actualizar el store con el valor nuevo.',
+            '- Purgar el historial del repo.',
+        ].join('\n'),
+        porque: 'rotación mecánica: menciona token y store, pero no plantea ninguna decisión',
+    },
+    {
+        issue: 5292,
+        title: 'El guardrail de procedencia de ramas rechaza las ramas legítimas de agente',
+        body: [
+            '## Síntoma',
+            'El guardrail compara contra el ref local en vez del remoto y rechaza ramas sanas.',
+            '',
+            '## Causa',
+            'La verificación toma el ref local del worktree, que puede estar desfasado',
+            'respecto de la rama remota publicada en origin.',
+            '',
+            '## Fix propuesto',
+            'Comparar siempre contra el ref remoto.',
+        ].join('\n'),
+        porque: '"local" y "remoto" hablan de refs de git, no de topología de hosts',
+    },
+    {
+        issue: 5283,
+        title: "[Pipeline] El worktree de agente nace de un ref local 'main' desfasado",
+        body: [
+            '## Síntoma',
+            'El worktree se crea desde un ref local desactualizado.',
+            '',
+            '## Detalle',
+            '`default_base_ref` no está definido en `config.yaml` ni en `pipeline.config.json`,',
+            'así que el default es `main` local en vez del remoto `origin/main`.',
+            '',
+            '## Criterios',
+            '- [ ] El base ref efectivo es un ref **remoto**, no un ref local.',
+        ].join('\n'),
+        porque: '"no está definido" habla de un default de config dentro de backticks, no de una decisión',
+    },
+    {
+        issue: 4817,
+        title: 'Idempotencia en la creación de historias del pipeline',
+        body: [
+            '## Objetivo',
+            'Que crear dos veces la misma historia no genere issues duplicados.',
+            '',
+            '## Contexto',
+            'Hoy la clave de deduplicación se calcula sobre el título normalizado.',
+            '',
+            '## Notas técnicas',
+            'La persistencia del índice de dedup vive en el estado operativo del pipeline.',
+        ].join('\n'),
+        porque: '"clave" y "persistencia" caen en secciones distintas y nadie plantea alternativas',
+    },
+    {
+        issue: 5205,
+        title: '[security] Crear CloudTrail para el rastro de Decrypt/GenerateDataKey',
+        body: [
+            '## Objetivo',
+            'Tener rastro de auditoría de las operaciones de KMS.',
+            '',
+            '## Contexto',
+            'Las claves de KMS se usan para cifrar el material del store del pipeline.',
+            '',
+            '## Cambios requeridos',
+            '- Habilitar CloudTrail sobre la región correspondiente.',
+        ].join('\n'),
+        porque: '"claves" y "store" están a varias secciones de distancia; no hay decisión planteada',
+    },
+];
+
+for (const fx of FALSOS_POSITIVOS_REALES) {
+    test(`CA-4b regresión: #${fx.issue} NO frena (${fx.porque})`, () => {
+        const v = design.detectDesignDecision({
+            issue: fx.issue, title: fx.title, body: fx.body, labels: [],
+        });
+        assert.equal(
+            v.escalate, false,
+            `#${fx.issue} es un falso positivo documentado por el review: ${fx.porque}`
+        );
+        assert.equal(v.signals.length, 0, 'no debería reconocer ninguna señal estructural');
+        assert.match(v.note, /se deja pasar/, 'CA-4b: el no-escalado queda registrado');
+    });
+}
+
+test('CA-4: el gate de marco decisorio es lo que separa el 36% del 0%', () => {
+    // Mismo texto, dos veces: sin marco decisorio y con él. Aísla exactamente la
+    // corrección 1 del review.
+    const cuerpoBase = 'Las credenciales del pipeline hoy se resuelven desde el store canónico.';
+    const sinMarco = design.detectDesignDecision({ issue: 1, title: 'Credenciales', body: cuerpoBase });
+    assert.equal(sinMarco.escalate, false, 'sin marco decisorio no se evalúa ninguna señal');
+    assert.match(sinMarco.note, /marco decisorio/);
+
+    const conMarco = design.detectDesignDecision({
+        issue: 2,
+        title: 'Credenciales',
+        body: `Hay que definir dónde se almacenan las credenciales del pipeline. ${cuerpoBase}`,
+    });
+    assert.equal(conMarco.escalate, true, 'con marco decisorio explícito sí escala');
+    assert.ok(conMarco.signals.includes('dato-critico'));
+});
+
+test('CA-4: co-ocurrencia acotada — tema y qualifier lejos NO cuentan', () => {
+    // Hay marco decisorio (para aislar la corrección 2 de la 1), pero el tema y
+    // el qualifier viven en oraciones distintas y separadas.
+    const relleno = 'Texto de relleno que describe el contexto del issue. '.repeat(12);
+    const v = design.detectDesignDecision({
+        issue: 3,
+        title: 'Refactor del barrido',
+        body: `Hay que decidir si lo hacemos en dos pasos. Acá hablamos de tokens del bot. ${relleno} En otra sección aparece la palabra persistencia.`,
+    });
+    assert.equal(v.escalate, false, 'el qualifier lejano no puede activar la señal');
+});
+
+test('CA-4: el código entre backticks no es prosa de decisión', () => {
+    const v = design.detectDesignDecision({
+        issue: 4,
+        title: 'Ajustar el resolver',
+        body: 'Hay que definir si migramos el resolver.\n```js\nconst credenciales = store.vault.persistencia;\n```\nNada más.',
+    });
+    assert.equal(v.escalate, false, 'las señales dentro de un bloque de código se ignoran');
+});
+
+test('CA-4c: #5217 con su BODY REAL (largo y multi-sección) sigue escalando', () => {
+    // El fixture original era de 3 líneas. El body real de #5217 tiene secciones
+    // obsoletas, <details> y tablas — y tiene que seguir escalando igual.
+    const v = design.detectDesignDecision({
+        issue: 5217,
+        title: 'Extender el store unificado de credenciales a Drive OAuth, R2, AWS y GitHub',
+        body: [
+            '## Objetivo',
+            'Que todos los secretos del pipeline se resuelvan desde el store canónico fuera del repo.',
+            '',
+            '## Contexto',
+            'Hay que definir dónde viven las credenciales de Drive, R2, AWS y GitHub:',
+            'hoy el store es un archivo JSON en disco local, pero la ejecución tiene que',
+            'poder ser distribuida multi-host.',
+            '',
+            '## Notas técnicas',
+            'Alinear con #4917 para no duplicar la lógica de resolución.',
+        ].join('\n'),
+    });
+    assert.equal(v.escalate, true, '#5217 es el caso que originó CA-4: tiene que escalar');
+    assert.ok(v.signals.includes('dato-critico'));
+    assert.ok(v.recommendation, 'CA-2: con recomendación');
+});
+
+// =============================================================================
+// CA-3 — REGRESIÓN DEL REBOTE: `BLOCKED` no es siempre "falta la review"
+//
+// El defecto: el mensaje al operador afirmaba "El PR no tiene conflictos ni
+// checks en rojo" sin haber leído los checks. Medido el 2026-08-05, los PRs
+// #5277 y #5278 estaban BLOCKED con un check en FAILURE — el pipeline los
+// habría invitado a aprobar un merge roto a `main`.
+// =============================================================================
+
+test('classifyChecks distingue rojo / pendiente / verde / ilegible', () => {
+    assert.equal(triggers.classifyChecks([
+        { name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS' },
+        { name: 'Semgrep OSS', status: 'COMPLETED', conclusion: 'FAILURE' },
+    ]).state, 'failing');
+
+    assert.equal(triggers.classifyChecks([
+        { name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS' },
+        { name: 'e2e', status: 'IN_PROGRESS', conclusion: '' },
+    ]).state, 'pending');
+
+    assert.equal(triggers.classifyChecks([
+        { name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS' },
+        { name: 'lint', status: 'COMPLETED', conclusion: 'SKIPPED' },
+    ]).state, 'green');
+
+    // Sin rollup no se puede afirmar nada: `unknown`, nunca `green`.
+    assert.equal(triggers.classifyChecks(undefined).state, 'unknown');
+    assert.equal(triggers.classifyChecks([]).state, 'unknown');
+
+    // StatusContext (la otra forma que devuelve GitHub) también se normaliza.
+    assert.equal(triggers.classifyChecks([{ context: 'ci/legacy', state: 'FAILURE' }]).state, 'failing');
+    assert.equal(triggers.classifyChecks([{ context: 'ci/legacy', state: 'PENDING' }]).state, 'pending');
+});
+
+test('CA-3 regresión: BLOCKED con check en rojo NO se reporta como review pendiente', () => {
+    // Fixture del PR #5277 real: BLOCKED, mergeable, con Semgrep OSS en FAILURE.
+    const v = triggers.detectMergeStateBlock({
+        prNumber: 5277,
+        mergeable: 'MERGEABLE',
+        mergeStateStatus: 'BLOCKED',
+        reviewDecision: '',
+        statusCheckRollup: [
+            { name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS' },
+            { name: 'Semgrep OSS', status: 'COMPLETED', conclusion: 'FAILURE' },
+        ],
+    });
+    assert.equal(v.trigger, triggers.TRIGGERS.CHECKS_FAILING, 'no es codeowners-review');
+    assert.match(v.reason, /Semgrep OSS/, 'nombra el check que está en rojo');
+    // El defecto exacto que reportó el review: afirmar que no hay checks en rojo.
+    assert.doesNotMatch(
+        v.recommendation, /ni checks en rojo|checks están en verde/,
+        'NUNCA puede afirmar que los checks están sanos habiendo uno en FAILURE'
+    );
+    assert.match(v.recommendation, /NO aprobar/, 'no puede invitar a firmar un merge roto');
+});
+
+test('CA-3 regresión: BLOCKED con checks corriendo es NO CONCLUYENTE, no un bloqueo', () => {
+    const v = triggers.detectMergeStateBlock({
+        prNumber: 5300,
+        mergeable: 'MERGEABLE',
+        mergeStateStatus: 'BLOCKED',
+        reviewDecision: '',
+        statusCheckRollup: [
+            { name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS' },
+            { name: 'e2e', status: 'IN_PROGRESS', conclusion: '' },
+        ],
+    });
+    assert.equal(v.inconclusive, true, 'se reevalúa en el barrido siguiente (igual que R2)');
+    assert.equal(v.trigger, null, 'no inventa un bloqueo con los checks a medio correr');
+});
+
+test('CA-3: BLOCKED con checks verdes SÍ es CODEOWNERS y recién ahí lo afirma', () => {
+    // Fixture del PR #5202 real: BLOCKED, todos los checks en verde.
+    const v = triggers.detectMergeStateBlock({
+        prNumber: 5202,
+        mergeable: 'MERGEABLE',
+        mergeStateStatus: 'BLOCKED',
+        reviewDecision: 'REVIEW_REQUIRED',
+        statusCheckRollup: [
+            { name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS' },
+            { name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' },
+        ],
+    });
+    assert.equal(v.trigger, triggers.TRIGGERS.CODEOWNERS_REVIEW);
+    assert.match(v.recommendation, /checks están en verde/, 'lo afirma porque LO LEYÓ');
+    assert.match(v.recommendation, /aprobarlo destraba el issue/);
+});
+
+test('CA-3: BLOCKED sin rollup legible no afirma el estado de los checks', () => {
+    const v = triggers.detectMergeStateBlock({
+        prNumber: 5400,
+        mergeable: 'MERGEABLE',
+        mergeStateStatus: 'BLOCKED',
+        reviewDecision: 'REVIEW_REQUIRED',
+        // sin statusCheckRollup: gh falló, o el PR no tiene checks.
+    });
+    assert.equal(v.trigger, triggers.TRIGGERS.CODEOWNERS_REVIEW, 'sigue siendo review pendiente');
+    assert.doesNotMatch(
+        v.recommendation, /ni checks en rojo|checks están en verde/,
+        'no puede afirmar un estado que no leyó'
+    );
+    assert.match(v.recommendation, /no pude leer el estado de sus checks/);
+});
+
+test('CA-3 anti-código-muerto: detectPrHumanBlock PASA el rollup a detectMergeStateBlock', () => {
+    // Sin este cableado la corrección no sirve de nada: el rollup viaja en el
+    // mismo `prInfo` (ya está en FIELDS de pr-info-fetcher) pero hay que
+    // enhebrarlo. Este test falla si alguien lo desconecta.
+    const v = triggers.detectPrHumanBlock({
+        number: 5277,
+        headRefName: 'agent/5277-x',
+        mergeable: 'MERGEABLE',
+        mergeStateStatus: 'BLOCKED',
+        reviewDecision: '',
+        statusCheckRollup: [{ name: 'Semgrep OSS', status: 'COMPLETED', conclusion: 'FAILURE' }],
+    }, { securityAlerts: [] });
+    assert.equal(
+        v.trigger, triggers.TRIGGERS.CHECKS_FAILING,
+        'si el rollup no llega, esto vuelve a decir codeowners-review'
+    );
+});
+
+// =============================================================================
 // CA-5 — Recordatorio escalado que NUNCA auto-resuelve
 // =============================================================================
 

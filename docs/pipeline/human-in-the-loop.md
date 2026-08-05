@@ -254,10 +254,20 @@ sin detectar.
 | 1 | **Hallazgos de seguridad** sin resolver que el ruleset de `main` exige | `detectSecurityFindingBlock` (`lib/human-block-triggers.js`) | Resolver los hallazgos o descartarlos como falso positivo | Telegram + botonera + audio |
 | 2 | **Conflicto de merge** real contra la base (`mergeStateStatus: DIRTY`) | `detectMergeStateBlock` | Resolver a mano o devolver a desarrollo | Telegram + botonera + audio |
 | 3 | **PO/UX/QA devuelven pidiendo una decisión** (no una corrección de código) | `detectDecisionRequestBlock` + `HUMAN_BLOCK_PATTERNS` | La decisión concreta que traba al agente | Telegram + botonera + audio |
-| 4 | **Review manual exigida por CODEOWNERS / ruleset** (`mergeStateStatus: BLOCKED`) | `detectMergeStateBlock` | Revisar y aprobar el PR | Telegram + botonera + audio |
+| 4 | **Review manual exigida por CODEOWNERS / ruleset** (`BLOCKED` **con los checks verdes**) | `detectMergeStateBlock` | Revisar y aprobar el PR | Telegram + botonera + audio |
+| 4b | **Check requerido en rojo** (`BLOCKED` con un check en `FAILURE`) | `detectMergeStateBlock` + `classifyChecks` | Devolver a desarrollo — **no** firmar | Telegram + botonera + audio |
 | 5 | **Rebotado N veces por la misma causa** | `detectRepeatedRejectionBlock` | Cómo destrabar: el pipeline no converge solo | Telegram + botonera + audio |
 | 6 | **Decisión de arquitectura no tomada** en definición | `detectDesignDecision` (`lib/design-decision-detect.js`) | Elegir entre las alternativas antes de que definición elija por default | Telegram + botonera |
 | 7 | **Bloqueo sin responder** (cualquiera de los anteriores) | `runReminderTick` (`lib/human-block-reminder.js`) | Recordatorio agrupado y espaciado | Telegram (un mensaje por tick) |
+
+> **`BLOCKED` no significa "sólo falta la review".** GitHub también lo devuelve
+> cuando un check **requerido** está fallando o corriendo. Por eso el trigger 4
+> se partió en dos: `classifyChecks` lee `statusCheckRollup` (que ya viajaba en
+> el mismo `prInfo`, sin request extra) y recién entonces decide. Checks en rojo
+> → trigger 4b, que le dice al operador que **no apruebe**; checks corriendo →
+> `inconclusive`, se reevalúa en el barrido siguiente; checks verdes → trigger 4.
+> Si el rollup no se puede leer, el mensaje **lo dice** en vez de afirmar que
+> está todo en verde.
 
 Dónde se emite cada uno en `pulpo.js`:
 
@@ -305,12 +315,29 @@ clasifica texto libre, y el costo de su falso positivo es el **inverso exacto**
 del problema que #5337 arregla: un issue sano parado esperando a un humano que
 no tiene nada que decidir. De ahí que sea deliberadamente estrecho:
 
+- Hay un **gate previo de marco decisorio** (`DECISION_FRAME_PATTERNS`): el issue
+  tiene que *plantear* una decisión ("hay que definir dónde", "elegir entre",
+  "opción A", "trade-off"). Sin eso no se evalúa ni una señal.
 - Las señales están **enumeradas en el código**, en `DESIGN_DECISION_SIGNALS`, y
   en ningún otro lado.
-- Cada señal exige **dos** coincidencias (el tema + un calificador). "Rotar las
-  credenciales de Telegram" menciona credenciales pero no plantea ninguna
-  decisión; "dónde se almacenan las credenciales: ¿local o distribuido?" sí.
+- Cada señal exige **dos** coincidencias (el tema + un calificador) **en el mismo
+  segmento y a menos de `PROXIMITY_WINDOW` caracteres**. "Rotar las credenciales
+  de Telegram" menciona credenciales pero no plantea ninguna decisión; "dónde se
+  almacenan las credenciales: ¿local o distribuido?" sí.
+- El **código entre backticks se ignora**: un nombre de símbolo o un path no es
+  prosa donde se plantee una decisión.
 - Ante duda o señal no reconocida: **dejar pasar y registrar**, nunca frenar.
+
+> **Por qué la proximidad no es un detalle.** La primera versión evaluaba el tema
+> y el calificador sueltos sobre `title + body` concatenado. En bodies reales de
+> 100+ líneas el calificador aparece siempre en *alguna* sección, así que el
+> detector frenaba **18 de 50** issues del intake real de definición (36%) — y el
+> falso positivo es terminal: como el query de intake filtra `-label:needs-human`,
+> el issue frenado por error queda fuera del intake hasta destrabe manual. Con el
+> gate + la ventana de proximidad + el descarte de código: **0 de 50**, sin perder
+> el positivo real (#5217). Los 5 falsos positivos que lo destaparon (#5322,
+> #5292, #5283, #4817, #5205) quedaron como fixtures de regresión en
+> `human-block-notificacion.test.js`.
 
 ### Recordatorios: el silencio nunca aprueba
 
