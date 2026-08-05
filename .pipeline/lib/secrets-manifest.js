@@ -146,8 +146,16 @@ const READER_SCAN_ROOTS = Object.freeze(['.pipeline', 'qa']);
 // no la consume. Contarlo como lector haria que toda entrada eager se viera
 // "leida" y el candado pasaria a ser trivialmente cierto (verde por vacuidad).
 const READER_SCAN_EXCLUDED_FILES = Object.freeze(['.pipeline/lib/credentials.js']);
+// `_tmp` es el scratchpad de los agentes: scripts de verificacion ad-hoc que
+// quedan commiteados por otros issues (p. ej. `.pipeline/_tmp/5353-sec-*.js`,
+// "prueba empirica" del rechazo de seguridad de #5353). Leen env vars para
+// SIMULAR escenarios, no para consumirlas en produccion, y su vida es efimera:
+// contarlos como lectores obligaria al manifiesto PUBLICO a nombrar rutas
+// descartables como `consumers`, y el candado pasaria a rojo o verde segun que
+// scratch dejo el ultimo agente. Es la misma clase de no-produccion que `logs`
+// y `sessions`.
 const READER_SCAN_EXCLUDED_DIRS = Object.freeze([
-  'node_modules', '__tests__', 'tests', 'fixtures', 'logs', 'sessions',
+  'node_modules', '__tests__', 'tests', 'fixtures', 'logs', 'sessions', '_tmp',
 ]);
 
 /** Quita comentarios de linea y de bloque: una mencion en prosa no es una lectura. */

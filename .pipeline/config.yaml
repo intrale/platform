@@ -205,6 +205,13 @@ timeouts:
     linter: 5                     # Determinístico — sólo lee diff/git log, debería durar segundos
     delivery: 90                  # Espera CI completo (OWASP ~28min, check-app ~15min) + gate de review + merge + reporte
 
+# Procedencia de ramas para auto-recovery. Agregar una identidad confiable es
+# una decisión de seguridad y requiere review humana; nunca usar comodines.
+worktree_provenance:
+  committers:
+    - backend-dev-agent@intrale
+    - bot@intrale.com
+
 # Desync waves.json ↔ .partial-pause.json (#4439)
 # Ventana de validez de la "traza de origen legítimo" que habilita el auto-resync
 # aditivo de una divergencia ambigua (CA-3). Una suma a la allowlist con
@@ -1301,6 +1308,104 @@ kernel:
   # con más activos saltea el excedente y lo audita. Default conservador: la RAM
   # del host es crítica (ver umbrales de presión del Pulpo).
   max_concurrent_instances: 2
+
+# =============================================================================
+# #5352 — Vault de secretos (LECTURA). Split 2/3 de #5338, épico #5215.
+# =============================================================================
+# Driver: `.pipeline/lib/secret-vault.js`. Lee secretos desde SSM Parameter
+# Store / Secrets Manager por scope declarado, con allowlist de verbos
+# read-only, caché en memoria por namespace y fail-closed explícito.
+#
+# Adyacente a `kernel:` a propósito: REUTILIZA `kernel.region` (arriba). No se
+# duplica `region` acá — dos regiones que pueden divergir es un modo de falla
+# que no aporta nada.
+#
+# El módulo NO está integrado al boot todavía: la escritura en `process.env`
+# (precedencia y degradación de `loadIntoEnv`) es la hija 3, #5353.
+vault:
+  # D4 — Gate de rollout. Con el gate CERRADO no se emite ni una llamada AWS y
+  # el boot queda idéntico al actual. Fail-closed: sólo el booleano `true`
+  # exacto lo abre; `"true"`, `1` o cualquier otra cosa lo dejan cerrado.
+  enabled: false
+  # SEC-5 — validado contra ^(/[A-Za-z0-9_-]+)+$: empieza con "/" y NO termina
+  # en "/" (`/intrale/` se rechaza, y en el YAML eso no tiene nada de obvio).
+  prefix: "/intrale"
+  projectId: "intrale"
+  # CA-29 — se commitea VACÍO, nunca como placeholder tipo "<host>": un
+  # placeholder no pasa la validación de segmento y, como con el gate cerrado
+  # nunca se valida, el defecto explotaría recién el día del rollout.
+  # El valor real es el `os.hostname()` de la máquina — el mismo criterio de
+  # identidad que ya usan `file-lock.js:145` y `notify-telegram.js:106`.
+  # Al ENCENDER el gate, un hostId vacío o inválido falla con un mensaje que
+  # nombra esta clave (`vault.hostId`), no el regex.
+  hostId: ""
+  # SEC-6 — TTL de la caché en memoria. Tope DURO de 300 s: un valor mayor se
+  # RECHAZA (no se recorta en silencio), porque una credencial rotada seguiría
+  # sirviéndose de la caché hasta que expire.
+  cache_ttl_seconds: 300
+  # D5 — El vault resuelve SÓLO los scopes declarados acá. No existe un camino
+  # que hidrate de una las 13 vars de `ENV_MAPPING`.
+  # Vocabulario (G-1): las claves top-level del namespace de credenciales
+  # (`resolveScopedRefs`, credentials.js:209) — telegram · providers ·
+  # multimedia · aws · google_drive. Vacío hasta el rollout de #5353.
+  required_scopes: []
+  # Membresía ENUMERADA de los scopes que viven en `<prefix>/<projectId>/shared/`.
+  # `shared/` NO es el default: lo que no esté acá se busca en el namespace del
+  # host (`hosts/<hostId>/`), que es lo que mantiene el aislamiento entre hosts.
+  shared_secrets: []
+  # ---------------------------------------------------------------------------
+  # #5353 · B1 — ventana de bootstrap sobre el archivo de credenciales
+  # ---------------------------------------------------------------------------
+  # Con el gate del vault ABIERTO, la única puerta que queda al archivo
+  # (`~/.claude/secrets/credentials.json`). Existe para que una migración al
+  # vault no obligue a subir los 13 secretos en el mismo minuto en que se
+  # enciende el gate. NO es un fallback de resiliencia:
+  #
+  #   - B1.2 · Un error del driver (red, timeout, credenciales, permisos,
+  #     secreto ausente) NUNCA la habilita. Un fallback disparado por error de
+  #     red es fail-open disfrazado: cualquiera que degrade la red desactiva el
+  #     control entero.
+  #   - B1.7/B2.4 · Nunca alcanza a las anclas de autorización
+  #     (`auth_anchor: true`), ni encendida ni dentro de la ventana.
+  #   - B1.4 · Si el archivo resuelve DENTRO del árbol del repo, se rechaza
+  #     igual (coherente con #5218, que no se relaja por esto).
+  #   - B1.6 · Cada valor que resuelve por acá emite WARN con el NOMBRE de la
+  #     variable (jamás el valor) y reporta `source: file-bootstrap`, nunca
+  #     `vault`.
+  #
+  # Fail-closed: sólo el booleano `true` exacto la abre.
+  bootstrap_fallback: false
+  # B1.5 — OBLIGATORIA cuando `bootstrap_fallback: true`. Fecha ISO-8601 de
+  # caducidad: pasada esa fecha la ventana NO se aplica aunque el flag siga en
+  # `true`. Sin esto, "bootstrap temporal" se vuelve permanente por olvido, que
+  # es exactamente el modo de falla que la ventana existe para evitar.
+  bootstrap_fallback_until: ""
+  # ---------------------------------------------------------------------------
+  # #5427 · #5448 — ventana SOMBRA: criterio de salida del fallback
+  # ---------------------------------------------------------------------------
+  # Mide, con evidencia persistida bajo `.pipeline/audit/`, cuándo se puede
+  # retirar la vía vieja de resolución. El criterio NO es "cero fallbacks en
+  # 24 h" — eso se cumple trivialmente si un host estuvo apagado o si un secreto
+  # nunca se pidió. Es COBERTURA POSITIVA (CA-18): cada descriptor de
+  # `ENV_DESCRIPTORS`, en cada host activo, con al menos una resolución por
+  # `vault`, y cero evidencia negativa, desde un t0 persistido.
+  #
+  # Con `enabled: false` esta sección no hace absolutamente nada: el hook vive
+  # detrás del gate y no se crea un solo archivo bajo `.pipeline/audit/`.
+  shadow_window:
+    # Tiempo de RELOJ desde t0, no uptime acumulado: la garantía de "operación
+    # real" la da la cobertura positiva, no la unidad de tiempo.
+    duration_hours: 24
+    # CA-21 — se commitea VACÍA, nunca con placeholders (mismo criterio que
+    # `hostId: ""`). Vacía, ausente, no-lista o con un valor fuera de
+    # `^[A-Za-z0-9._-]+$` ⇒ el evaluador devuelve `no_verificado` y BLOQUEA el
+    # cierre: con la lista vacía la condición "en cada host activo" se cumpliría
+    # vacuamente y la ventana cerraría con un solo host, que es justo el modo de
+    # falla que CA-18 existe para evitar.
+    hosts_activos: []
+    # Purga de filas viejas del JSONL. El límite efectivo nunca supera t0: la
+    # retención no puede borrar evidencia de la ventana vigente ni moverlo.
+    retention_days: 30
 
 # =============================================================================
 # #5067 — Entrega cross-repo: el entregable puede vivir en un repo hermano

@@ -9,6 +9,12 @@
 //   { ok: true,  text: string, confidence?: {avgLogprob, noSpeechProb} }
 //   { ok: false, text: '', errorKind: string, raw: string }
 //
+// #5336 (CA-1): el corte por duracion dejo de ser mecanismo de falla. Se mata por
+// AUSENCIA DE PROGRESO (`stalled`), no por tardar. `timeout` queda solo como
+// guarda absoluta de ultimo recurso. Ver el bloque de constantes mas abajo.
+// errorKind nuevo: 'stalled'. Los consumidores que no lo conozcan caen en el
+// `default` de transcriptionFailureMessage (degradacion segura).
+//
 // #3918/#3995 (EP1-H3, CA-2): `whisper_fw.py` emite JSON con
 // `segments[].avg_logprob` y `no_speech_prob`, que alimentan el gate de
 // confirmación por baja confianza. La extensión es ADITIVA: `confidence` sólo
@@ -53,7 +59,42 @@ function normalizeLanguage(lang) {
 const DEFAULT_LANGUAGE = normalizeLanguage(process.env.WHISPER_LOCAL_LANGUAGE || 'es');
 
 const DEFAULT_THREADS = Number(process.env.WHISPER_LOCAL_THREADS || 4);
-const DEFAULT_TIMEOUT_MS = Number(process.env.WHISPER_LOCAL_TIMEOUT_MS || 300000); // 5 min
+
+// Issue #5336 (CA-1) — El corte por DURACION deja de ser un mecanismo de falla.
+//
+// Antes: 5 min de reloj de pared y SIGKILL. Con la maquina cargada de agentes,
+// un audio normal de ~2 min superaba ese tope y se perdia trabajo perfectamente
+// valido (incidente del 2026-08-01: dos audios del operador descartados que al
+// reprocesarlos con la maquina libre salieron completos).
+//
+// Ahora hay dos relojes con roles distintos:
+//
+//  1. IDLE (el que realmente decide): matamos solo si el motor dejo de dar
+//     senales de vida durante esta ventana. Mientras emita latidos por stderr
+//     (`[fw-progress]` de whisper_fw.py) el proceso sigue vivo sin importar
+//     cuanto lleve. Distingue "lento" de "colgado", que es la distincion que
+//     el reloj de pared no podia hacer.
+//     La ventana cubre el peor caso de carga del modelo, que es la etapa mas
+//     larga sin latidos posibles (llamada nativa bloqueante).
+//
+//  2. GUARDA ABSOLUTA: red de seguridad de ultimo recurso contra un proceso que
+//     late pero nunca termina. Deliberadamente un orden de magnitud sobre el
+//     peor caso medido, para no volver a ser el que descarta trabajo valido.
+//
+// Ambos pisables por env. `timeoutMs` (parametro) sigue mapeando a la guarda
+// absoluta por compat con los callers historicos.
+const DEFAULT_TIMEOUT_MS = Number(process.env.WHISPER_LOCAL_TIMEOUT_MS || 6 * 60 * 60 * 1000); // 6 h (guarda)
+const DEFAULT_IDLE_TIMEOUT_MS = Number(process.env.WHISPER_LOCAL_IDLE_TIMEOUT_MS || 15 * 60 * 1000); // 15 min sin latidos
+
+// Latidos que emite whisper_fw.py. NO son errores: se excluyen del `raw` que se
+// le muestra al usuario/log ante exit != 0 para que el tail muestre la causa real
+// y no las ultimas 3 lineas de progreso. Contrato acoplado a PROGRESS_PREFIX.
+const PROGRESS_LINE_RE = /^\s*\[fw-progress\]/;
+
+// Frecuencia de chequeo del watchdog. Las ventanas son de minutos/horas, asi que
+// 5 s sobra y el costo es despreciable. Pisable solo para que los tests no tengan
+// que esperar segundos reales.
+const WATCHDOG_TICK_MS = Number(process.env.WHISPER_LOCAL_WATCHDOG_TICK_MS || 5000);
 // R3 (security): cap de tamaño del audio de entrada antes de spawnear el motor.
 // Telegram limita las voice notes, pero el módulo acepta audioPath/audioBuffer
 // arbitrarios de otros consumidores. Default ~25 MB.
@@ -153,7 +194,7 @@ function parseWhisperJson(raw) {
 
 // Transcribe un audio offline. Acepta tanto un path en disco como un buffer.
 // Si recibe buffer, lo escribe a un .ogg temporal antes de invocar el motor.
-async function transcribeLocal({ audioPath, audioBuffer, model, language, threads, timeoutMs, maxBytes, logger } = {}) {
+async function transcribeLocal({ audioPath, audioBuffer, model, language, threads, timeoutMs, idleTimeoutMs, maxBytes, logger, onProgress } = {}) {
   const log = logger || (() => {});
   const bin = resolveBinary();
   if (bin !== 'python' && !fs.existsSync(bin)) {
@@ -230,30 +271,81 @@ async function transcribeLocal({ audioPath, audioBuffer, model, language, thread
         return;
       }
 
-      let stderr = '';
-      proc.stderr.on('data', (c) => { stderr += c.toString(); });
-      proc.stdout.on('data', () => {});
+      const guardMs = Number(timeoutMs || DEFAULT_TIMEOUT_MS);
+      const idleMs = Number(idleTimeoutMs || DEFAULT_IDLE_TIMEOUT_MS);
 
-      const timer = setTimeout(() => {
-        try { proc.kill('SIGKILL'); } catch {}
-        resolve({ ok: false, text: '', errorKind: 'timeout', raw: `superó ${timeoutMs || DEFAULT_TIMEOUT_MS}ms` });
-      }, timeoutMs || DEFAULT_TIMEOUT_MS);
+      let stderr = '';
+      // Cualquier byte del motor cuenta como senal de vida, no solo los latidos
+      // con prefijo: un traceback a medio escribir tambien prueba que el proceso
+      // esta vivo. El prefijo solo sirve para separar progreso de error real.
+      let lastProgressAt = Date.now();
+      let settled = false;
+
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        clearInterval(watchdog);
+        resolve(value);
+      };
+
+      proc.stderr.on('data', (c) => {
+        lastProgressAt = Date.now();
+        const chunk = c.toString();
+        // Los latidos NO se acumulan en `stderr`: una transcripcion larga emite
+        // miles y harian crecer el buffer sin cota (y taparian el error real en
+        // el tail de 3 lineas).
+        const meaningful = chunk
+          .split(/\r?\n/)
+          .filter((ln) => ln.trim() && !PROGRESS_LINE_RE.test(ln))
+          .join('\n');
+        if (meaningful) stderr += meaningful + '\n';
+        if (onProgress) {
+          for (const ln of chunk.split(/\r?\n/)) {
+            if (PROGRESS_LINE_RE.test(ln)) {
+              try { onProgress(ln.trim()); } catch { /* nunca romper por el callback */ }
+            }
+          }
+        }
+      });
+      proc.stdout.on('data', () => { lastProgressAt = Date.now(); });
+
+      // Un solo timer periodico cubre los dos relojes. Se chequea cada 5 s: no
+      // hace falta mas precision para ventanas de minutos/horas y es barato.
+      const watchdog = setInterval(() => {
+        const now = Date.now();
+        if (now - lastProgressAt >= idleMs) {
+          try { proc.kill('SIGKILL'); } catch {}
+          finish({
+            ok: false, text: '', errorKind: 'stalled',
+            raw: `el motor dejó de dar señales de vida por ${Math.round(idleMs / 1000)}s`,
+          });
+          return;
+        }
+        if (now - t0 >= guardMs) {
+          try { proc.kill('SIGKILL'); } catch {}
+          finish({
+            ok: false, text: '', errorKind: 'timeout',
+            raw: `superó la guarda absoluta de ${Math.round(guardMs / 1000)}s`,
+          });
+        }
+      }, WATCHDOG_TICK_MS);
+      // No mantener vivo el event loop del proceso Node por este interval.
+      if (typeof watchdog.unref === 'function') watchdog.unref();
 
       proc.on('error', (e) => {
-        clearTimeout(timer);
-        resolve({ ok: false, text: '', errorKind: 'spawn_error', raw: e.message });
+        finish({ ok: false, text: '', errorKind: 'spawn_error', raw: e.message });
       });
 
       proc.on('close', (code) => {
-        clearTimeout(timer);
+        if (settled) return; // ya lo mato el watchdog; no pisar el errorKind real
         if (code !== 0) {
           const tail = stderr.split(/\r?\n/).filter(Boolean).slice(-3).join(' | ').slice(0, 400);
-          resolve({ ok: false, text: '', errorKind: 'cli_error', raw: `exit ${code}: ${tail}` });
+          finish({ ok: false, text: '', errorKind: 'cli_error', raw: `exit ${code}: ${tail}` });
           return;
         }
         try {
           if (!fs.existsSync(outputPath)) {
-            resolve({ ok: false, text: '', errorKind: 'no_output', raw: `no se generó ${path.basename(outputPath)}` });
+            finish({ ok: false, text: '', errorKind: 'no_output', raw: `no se generó ${path.basename(outputPath)}` });
             return;
           }
           const raw = fs.readFileSync(outputPath, 'utf8');
@@ -261,14 +353,14 @@ async function transcribeLocal({ audioPath, audioBuffer, model, language, thread
           if (parsed.text === null) {
             // No pudimos siquiera extraer texto → salida vacía. No inventamos
             // confianza (RS-6).
-            resolve({ ok: false, text: '', errorKind: 'no_output', raw: 'JSON de whisper sin campo `text` utilizable' });
+            finish({ ok: false, text: '', errorKind: 'no_output', raw: 'JSON de whisper sin campo `text` utilizable' });
             return;
           }
           const out = { ok: true, text: parsed.text };
           if (parsed.confidence) out.confidence = parsed.confidence; // aditivo
-          resolve(out);
+          finish(out);
         } catch (e) {
-          resolve({ ok: false, text: '', errorKind: 'read_error', raw: e.message });
+          finish({ ok: false, text: '', errorKind: 'read_error', raw: e.message });
         }
       });
     });
@@ -295,4 +387,8 @@ module.exports = {
   normalizeLanguage,
   parseWhisperJson,
   DEFAULT_MODEL,
+  // #5336 (CA-1): expuestos para que los tests y el orquestador (multimedia.js)
+  // razonen sobre los relojes sin duplicar los defaults.
+  DEFAULT_TIMEOUT_MS,
+  DEFAULT_IDLE_TIMEOUT_MS,
 };

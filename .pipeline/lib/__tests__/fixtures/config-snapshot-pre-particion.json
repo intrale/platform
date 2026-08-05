@@ -1,7 +1,7 @@
 {
   "_doc": "#5174 · CA-2 — snapshot REDACTADO (path -> tipo, NUNCA el valor) de la configuracion resuelta ANTES de partir config.yaml en kernel + producto. Generado desde .pipeline/config.yaml en el commit 14a454441 (entrega B, pre-particion). Sirve para demostrar que la particion no perdio ni cambio ninguna clave. Si un cambio LEGITIMO agrega o quita una clave top-level, regenerar con: node .pipeline/lib/__tests__/fixtures/regen-config-snapshot.js",
-  "_generadoDesde": "14a454441",
-  "_claves": 429,
+  "_generadoDesde": "1d1ca5493",
+  "_claves": 445,
   "snapshot": [
     "admission_gate: object(3)",
     "admission_gate.bootstrap_cap: number",
@@ -408,6 +408,20 @@
     "timeouts.intake_interval_seconds: number",
     "timeouts.orphan_timeout_minutes: number",
     "timeouts.poll_interval_seconds: number",
+    "vault: object(10)",
+    "vault.bootstrap_fallback: boolean",
+    "vault.bootstrap_fallback_until: string",
+    "vault.cache_ttl_seconds: number",
+    "vault.enabled: boolean",
+    "vault.hostId: string",
+    "vault.prefix: string",
+    "vault.projectId: string",
+    "vault.required_scopes: array[0]",
+    "vault.shadow_window: object(3)",
+    "vault.shadow_window.duration_hours: number",
+    "vault.shadow_window.hosts_activos: array[0]",
+    "vault.shadow_window.retention_days: number",
+    "vault.shared_secrets: array[0]",
     "watchdog: object(5)",
     "watchdog.pulpo_liveness_kill_seconds: number",
     "watchdog.stale_minutes: number",
@@ -431,6 +445,8 @@
     "wave_watchdog.window_minutes: number",
     "waves: object(2)",
     "waves.capacity: number",
-    "waves.max_horizon: number"
+    "waves.max_horizon: number",
+    "worktree_provenance: object(1)",
+    "worktree_provenance.committers: array[2]"
   ]
 }

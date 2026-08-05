@@ -170,7 +170,7 @@ const AUTHORITY_PREFIXES = Object.freeze([
     'architect.go_live_date',
 ]);
 
-// Clasificación completa de las 58 secciones top-level de `config.yaml`
+// Clasificación completa de las secciones top-level de `config.yaml`
 // (#5173 CA-6). Clave = path punteado (admite `*` como comodín de un segmento);
 // valor = 'kernel' | 'producto' | 'autoridad'. El match MÁS ESPECÍFICO gana, así
 // una sub-clave puede partirse del lado opuesto a su sección.
@@ -183,6 +183,7 @@ const SIDE_MAP = Object.freeze({
     intake: 'kernel',
     resource_limits: 'kernel',
     timeouts: 'kernel',
+    worktree_provenance: 'kernel',
     desync: 'kernel',
     precheck: 'kernel',
     anomaly_detector: 'kernel',
@@ -215,6 +216,9 @@ const SIDE_MAP = Object.freeze({
     'deliverable_notifications.attachments_per_skill': 'producto',
     cua: 'kernel',
     kernel: 'kernel',
+    // #5352 — el vault direcciona secretos de INFRAESTRUCTURA por host: es
+    // mecanismo de orquestación, se muda al kernel sin conocer el producto.
+    vault: 'kernel',
     waves: 'kernel',
     architect: 'kernel',
     'architect.poll_cap_min': 'producto',        // calibración, no gate
@@ -347,6 +351,18 @@ const SCHEMA = {
         routing: OBJ(),
         intake: OBJ(),
 
+        worktree_provenance: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['committers'],
+            properties: {
+                committers: {
+                    type: 'array',
+                    items: { type: 'string', minLength: 1, pattern: '\\S' },
+                },
+            },
+        },
+
         // --- resource_limits: umbrales de presión + priority windows ---------
         resource_limits: {
             type: 'object',
@@ -442,6 +458,49 @@ const SCHEMA = {
         deliverable_notifications: OBJ(),
         cua: OBJ(),
         kernel: OBJ(),
+
+        // --- #5352 · vault de secretos (lectura) ------------------------------
+        // La raíz está CERRADA desde #5173: agregar `vault:` a config.yaml SIN
+        // declararlo acá deja el pipeline arrancando pausado. Por eso esta
+        // declaración va en el MISMO commit que la sección nueva.
+        // Se tipa (en vez de `OBJ()`) porque el gate y el tope de TTL son
+        // fail-closed: un `enabled: "false"` string o un TTL de 3600 pasarían
+        // como `additionalProperties: true` y sólo se descubrirían en runtime.
+        vault: {
+            type: 'object',
+            additionalProperties: true,
+            properties: {
+                enabled: { type: 'boolean' },
+                prefix: { type: 'string' },
+                projectId: { type: 'string' },
+                hostId: { type: 'string' },
+                // Tope DURO de SEC-6: el módulo también lo rechaza, pero acá el
+                // operador se entera al arrancar y no al encender el gate.
+                cache_ttl_seconds: { type: 'number', minimum: 1, maximum: 300 },
+                required_scopes: { type: 'array', items: { type: 'string' } },
+                shared_secrets: { type: 'array', items: { type: 'string' } },
+                // #5353 · B1 — se tipan por el mismo motivo que `enabled`: son
+                // fail-closed. Un `bootstrap_fallback: "false"` string sería
+                // truthy para el YAML y sólo se descubriría el día que la
+                // ventana se abriera sola.
+                bootstrap_fallback: { type: 'boolean' },
+                bootstrap_fallback_until: { type: 'string' },
+                // #5448 · CA-21 — misma razón que las dos de arriba. El núcleo
+                // igual valida y falla cerrado, pero un `hosts_activos` que es
+                // string en vez de lista se descubre acá, al arrancar, y no el
+                // día que alguien pregunte por qué la ventana no cierra.
+                shadow_window: {
+                    type: 'object',
+                    additionalProperties: true,
+                    properties: {
+                        duration_hours: { type: 'number', minimum: 1 },
+                        hosts_activos: { type: 'array', items: { type: 'string' } },
+                        retention_days: { type: 'number', minimum: 1 },
+                    },
+                },
+            },
+        },
+
         waves: OBJ(),
 
         // --- architect: el GATE es autoridad, la cadencia es calibración -----
