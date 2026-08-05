@@ -33,9 +33,10 @@ Un concepto, un identificador literal, un término en criollo. Sin sinónimos.
 | `kernel.cutover_window` | *la ventana de cutover* | Clave que declara la ventana de mantenimiento del cutover. **Todavía no existe** (la crea #5135). |
 | `kernel.tableName` | *la tabla de no-repudio* | Tabla con `descriptor#self`, `product#<id>`, `catalog#index`, `signature#` y `audit#`. |
 | `kernel.coordinationTableName` | *la tabla de coordinación* | Segunda tabla, donde viven los `claim#` desde #5124. Es la única que admite `DeleteItem`. |
-| `descriptor#self` | *el descriptor propio* | SK fija: **uno solo por partición de proyecto**. |
-| `product#<id>` | *el producto* | Uno por producto registrado. Relación **1:N** con los archivos de `.pipeline/descriptors/`. |
-| `catalog#index` | *el índice del catálogo* | SK fija y única. |
+| `descriptor#self` | *el descriptor propio* | SK fija: **uno solo por partición de proyecto**. Vive en la **partición del tenant**. |
+| `product#<id>` | *el producto* | Uno por producto registrado. Relación **1:N** con los archivos de `.pipeline/descriptors/`. Vive en la **partición del control-plane**. |
+| `catalog#index` | *el índice del catálogo* | SK fija y única. Vive en la **partición del control-plane**. |
+| `kernel-control-plane` | *la partición del control-plane* | PK reservada del kernel (no es un tenant). Ahí viven `product#<id>` y `catalog#index`: es **la única partición que enumera el boot**. |
 | `durableRegisterProduct` | *el poblador* | Función de `.pipeline/lib/project-bootstrap.js` (#4821). Es lo único que puebla descriptores y catálogo. |
 | *fuentes de coordinación* | — | Los 4 JSON operativos: `waves.json`, `blocked-issues.json`, `blocked-by-infra.json`, `infra-health.json`. |
 
