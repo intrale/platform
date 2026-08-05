@@ -23,6 +23,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { seedPipelineConfig } = require('./_test-helpers');
 
 let opState; // se re-requiere con PIPELINE_DIR_OVERRIDE seteado
 
@@ -30,6 +31,11 @@ const MODULE_PATHS = ['../operational-state', '../waves', '../partial-pause', '.
 
 function setupTmp() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opstate-test-'));
+    // #5172 — el sandbox ES el pipelineDir: sin `config.yaml` la lectura de
+    // config ahora falla cerrado (`ConfigParseViolation`) en vez de degradar en
+    // silencio. Se siembra el documento MÍNIMO para conservar los mismos
+    // valores efectivos (sección ausente ⇒ default seguro del consumidor).
+    seedPipelineConfig(dir);
     process.env.PIPELINE_DIR_OVERRIDE = dir;
     // Reset del module cache: los módulos base resuelven el pipelineDir en cada
     // llamada, pero la caché in-memory de waves vive en el módulo.

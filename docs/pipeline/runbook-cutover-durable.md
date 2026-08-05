@@ -33,9 +33,10 @@ Un concepto, un identificador literal, un término en criollo. Sin sinónimos.
 | `kernel.cutover_window` | *la ventana de cutover* | Clave que declara la ventana de mantenimiento del cutover. **Todavía no existe** (la crea #5135). |
 | `kernel.tableName` | *la tabla de no-repudio* | Tabla con `descriptor#self`, `product#<id>`, `catalog#index`, `signature#` y `audit#`. |
 | `kernel.coordinationTableName` | *la tabla de coordinación* | Segunda tabla, donde viven los `claim#` desde #5124. Es la única que admite `DeleteItem`. |
-| `descriptor#self` | *el descriptor propio* | SK fija: **uno solo por partición de proyecto**. |
-| `product#<id>` | *el producto* | Uno por producto registrado. Relación **1:N** con los archivos de `.pipeline/descriptors/`. |
-| `catalog#index` | *el índice del catálogo* | SK fija y única. |
+| `descriptor#self` | *el descriptor propio* | SK fija: **uno solo por partición de proyecto**. Vive en la **partición del tenant**. |
+| `product#<id>` | *el producto* | Uno por producto registrado. Relación **1:N** con los archivos de `.pipeline/descriptors/`. Vive en la **partición del control-plane**. |
+| `catalog#index` | *el índice del catálogo* | SK fija y única. Vive en la **partición del control-plane**. |
+| `kernel-control-plane` | *la partición del control-plane* | PK reservada del kernel (no es un tenant). Ahí viven `product#<id>` y `catalog#index`: es **la única partición que enumera el boot**. |
 | `durableRegisterProduct` | *el poblador* | Función de `.pipeline/lib/project-bootstrap.js` (#4821). Es lo único que puebla descriptores y catálogo. |
 | *fuentes de coordinación* | — | Los 4 JSON operativos: `waves.json`, `blocked-issues.json`, `blocked-by-infra.json`, `infra-health.json`. |
 
@@ -272,6 +273,142 @@ Salida esperada:
 El `0` es el que importa: **cero principals comodín**. Cualquier número mayor a
 cero es un bloqueante duro del cutover. Si `KeyRotationEnabled` es `false`,
 habilitá la rotación antes de avanzar.
+
+---
+
+### Trail persistente para el uso de la CMK
+
+El trail regional `intrale-kernel-kms` guarda management events en un bucket S3
+privado y exclusivo de la cuenta. La retención es de **365 días**: cubre una
+revisión anual completa y ventanas de investigación mayores a los 90 días del
+Event history, sin conservar indefinidamente evidencia operativa. El lifecycle
+del bucket aplica esa decisión automáticamente.
+
+El aprovisionador es dry-run por defecto. Requiere una sesión AWS administrativa
+vigente y deriva el account id en runtime:
+
+```bash
+node .pipeline/lib/kernel-cloudtrail-provision.js            # dry-run: imprime el plan
+node .pipeline/lib/kernel-cloudtrail-provision.js --apply    # crea bucket + trail (admin)
+```
+
+La verificación está partida en **dos comandos con dos identidades distintas**,
+porque ninguna identidad puede (ni debe) hacer las dos cosas:
+
+```bash
+# 1) Emitir uso real de la CMK — identidad con kms:Decrypt (NO la del pipeline).
+AWS_PROFILE=<perfil-runtime> node .pipeline/lib/kernel-cloudtrail-provision.js --emit-usage
+
+# 2) Leer el trail y confirmar la evidencia — identidad con lectura del bucket.
+AWS_PROFILE=<perfil-pipeline> node .pipeline/lib/kernel-cloudtrail-provision.js \
+  --verify --since <UTC-INICIO> --wait 900
+```
+
+`--emit-usage` escribe, lee y borra un ítem efímero en la tabla de coordinación
+(nunca en la tabla append-only de no-repudio). `--verify` **lee los objetos del
+trail en S3** —no el Event history— y exige `Decrypt` y `GenerateDataKey`
+asociados a `alias/intrale-kernel-store`. CloudTrail entrega en lotes de ~5
+minutos: un exit code `2` significa *todavía no llegó la evidencia*, se repite la
+verificación; **no** se recrea el trail. `--wait <segundos>` reintenta solo.
+
+#### Identidades: quién puede aprovisionar y quién puede consultar
+
+Verificado empíricamente al aprovisionar el trail (2026-08-05):
+
+| Acción | Identidad requerida | `claude-code` (pipeline) | `intrale-kernel-runtime` |
+|---|---|---|---|
+| Crear bucket + trail (`--apply`) | Sesión **administrativa** | ❌ `s3:CreateBucket` denegado | ❌ |
+| Ver que el trail existe y loguea | `cloudtrail:DescribeTrails`, `GetTrailStatus` | ✅ permitido | — |
+| **Leer el trail en S3** (`--verify`) | `s3:ListBucket`, `s3:GetObject` | ✅ **permitido** | — |
+| Emitir uso de la CMK (`--emit-usage`) | `kms:Decrypt` vía DynamoDB | ❌ **denegado** | ✅ permitido |
+| Consultar Event history (`lookup-events`) | `cloudtrail:LookupEvents` | ❌ denegado | ❌ |
+
+El aprovisionamiento es un **paso admin de una sola vez**: la identidad del
+pipeline no puede crear el bucket ni el trail, y eso es deseable (el pipeline no
+debe poder alterar su propia auditoría).
+
+**La separación es intencional y hay que respetarla**: el pipeline (`claude-code`)
+**lee** la auditoría pero no puede descifrar el store; el runtime
+(`intrale-kernel-runtime`) **descifra** el store pero no puede leer ni alterar la
+auditoría. Ninguna de las dos puede provisionar. Por eso la verificación son dos
+comandos y no uno: quien genera la evidencia no es quien la lee.
+
+Verificado empíricamente (2026-08-05): `claude-code` recibe `AccessDenied` en
+`kms:Decrypt`, y `intrale-kernel-runtime` recibe un **explicit deny** en
+`dynamodb:CreateTable` desde la policy `IntraleKernelStore`. Ambas denegaciones
+quedan registradas en el trail, que es exactamente para lo que sirve.
+
+`lookup-events` sigue denegado para el pipeline, pero **ya no bloquea la
+reconciliación**: el procedimiento de abajo lee el trail desde S3, que es la
+fuente con retención de 365 días.
+
+#### Consultar el rastro durante una reconciliación
+
+⚠️ **`lookup-events` NO consulta este trail.** Lee el *Event history* de
+CloudTrail, que existe con trail o sin él y **sólo cubre 90 días**. Sirve para
+una reconciliación reciente, pero **no** es la evidencia persistente que este
+trail conserva 365 días. Confundir ambos es el error que deja una investigación
+sin respaldo justo cuando pasa la barrera de los 90 días.
+
+Ventana **menor a 90 días** — consulta rápida por Event history:
+
+```bash
+aws cloudtrail lookup-events --region us-east-2 \
+  --lookup-attributes AttributeKey=EventName,AttributeValue=Decrypt \
+  --start-time <UTC-INICIO> --end-time <UTC-FIN>
+aws cloudtrail lookup-events --region us-east-2 \
+  --lookup-attributes AttributeKey=EventName,AttributeValue=GenerateDataKey \
+  --start-time <UTC-INICIO> --end-time <UTC-FIN>
+```
+
+Ventana **mayor a 90 días** (o si hace falta evidencia con validación de
+integridad) — leer los objetos del trail en S3:
+
+```bash
+BUCKET=intrale-kernel-cloudtrail-<ACCOUNT_ID>-us-east-2
+aws s3 ls s3://$BUCKET/AWSLogs/<ACCOUNT_ID>/CloudTrail/us-east-2/<AAAA>/<MM>/<DD>/
+aws s3 cp s3://$BUCKET/<objeto>.json.gz - | gunzip | \
+  jq '.Records[] | select(.eventName=="Decrypt" or .eventName=="GenerateDataKey")
+      | select(.resources[]?.ARN | test("alias-o-id-de-la-CMK"))
+      | {eventTime, eventName, userIdentity, sourceIPAddress, resources}'
+```
+
+En ambos casos, confirmar en el JSON de cada evento la **CMK** (`resources[].ARN`),
+el **principal** (`userIdentity`) y que el origen sea DynamoDB
+(`sourceIPAddress: dynamodb.amazonaws.com`) — un `Decrypt` de la CMK con otro
+origen es exactamente lo que el `kms:ViaService` debería estar impidiendo.
+
+##### Camino scriptado (el mismo, sin armar el `jq` a mano)
+
+El aprovisionador ya implementa la lectura del trail en S3, así que una
+reconciliación no necesita reconstruir el pipeline de comandos de arriba:
+
+```bash
+node .pipeline/lib/kernel-cloudtrail-provision.js --verify --since <UTC-INICIO>
+```
+
+Devuelve por cada operación (`Decrypt`, `GenerateDataKey`) la lista de eventos con
+`eventTime`, `principal`, `invokedBy` y `errorCode`, más un `complete` que es
+`true` sólo si **cada** operación tiene al menos un evento **exitoso**.
+
+Dos cosas que importan al leer la salida:
+
+- **Un `errorCode` no es evidencia de uso.** Los intentos denegados aparecen en la
+  lista —el trail los captura, que para eso está— pero no cuentan para `complete`.
+  Contarlos dejaría la verificación fail-open: un `AccessDenied` daría por probada
+  una postura de auditoría que nunca se ejerció.
+- **Exit code `2` significa "todavía no llegó la evidencia"**, no que el trail esté
+  mal. CloudTrail entrega en lotes de ~5 minutos; se repite la consulta (o se usa
+  `--wait <segundos>`), **no** se recrea el trail.
+
+El trail tiene `--enable-log-file-validation`, así que la integridad de los
+archivos se puede probar contra los digest de
+`AWSLogs/<ACCOUNT_ID>/CloudTrail-Digest/`:
+
+```bash
+aws cloudtrail validate-logs --trail-arn <TRAIL_ARN> \
+  --start-time <UTC-INICIO> --region us-east-2
+```
 
 ---
 

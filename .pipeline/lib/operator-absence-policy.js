@@ -63,9 +63,24 @@ const REASONS = Object.freeze({
 });
 
 // -----------------------------------------------------------------------------
-// Carga de config.yaml (lazy, defensiva). NUNCA throw: ante cualquier error
-// devolvemos `{}` y caemos a los defaults fail-closed. Mismo criterio que
-// `kernel-action-policy.loadGate3Config`.
+// #5172 — Carga de config.yaml vía el punto ÚNICO (`lib/config-resolver.js`).
+//
+// Acá vivía un `yaml.load(config.yaml)` propio con `catch { return {} }`. Que el
+// default de este módulo sea fail-closed NO vuelve inocuo ese catch: hace
+// INDISTINGUIBLE "el operador dejó el kill-switch puesto" de "la configuración
+// está rota y nadie se enteró". El bloqueo se ve igual, pero en el segundo caso
+// la allowlist real, el kill-switch real y el resto del pipeline están operando
+// sobre una config que nadie pudo leer.
+//
+// Ahora el error tipado (`ConfigParseViolation` / `ConfigSchemaViolation`, ya
+// redactados) se PROPAGA en vez de degradar a `{}`.
+//
+// Lo que NO cambia:
+//   - `configOverride` / `params.config` (inyección por firma) cortocircuita la
+//     lectura: `resolveAbsenceDecision` sigue siendo pura cuando se le pasa config.
+//   - La AUSENCIA de `gates.operator_absence` NO es error: `{}` ⇒ defaults
+//     fail-closed (kill-switch `true`, allowlist vacía).
+//   - `PIPELINE_DIR_OVERRIDE` se sigue honrando (regla de raíz única del resolver).
 // -----------------------------------------------------------------------------
 function pipelineDir() {
     if (process.env.PIPELINE_DIR_OVERRIDE) return process.env.PIPELINE_DIR_OVERRIDE;
@@ -87,14 +102,11 @@ function loadAbsenceConfig(configOverride) {
     if (configOverride && typeof configOverride === 'object') {
         return extractAbsenceConfig(configOverride);
     }
-    try {
-        const yaml = require('js-yaml');
-        const file = path.join(pipelineDir(), 'config.yaml');
-        const doc = yaml.load(fs.readFileSync(file, 'utf8')) || {};
-        return extractAbsenceConfig(doc);
-    } catch {
-        return {};
-    }
+    // `require` lazy a propósito (el resolver arrastra `js-yaml` + `ajv`): mismo
+    // criterio que tenía el `require('js-yaml')` que reemplaza.
+    // eslint-disable-next-line global-require
+    const configResolver = require('./config-resolver');
+    return extractAbsenceConfig(configResolver.resolve());
 }
 
 /**

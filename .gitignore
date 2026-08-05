@@ -1,13 +1,65 @@
-# Secrets — defensa en profundidad. La ubicacion oficial de credenciales es
+# =============================================================================
+# Secrets — inventario cerrado de paths sensibles (#5463, split de #5451).
+#
+# Defensa en profundidad. La ubicacion oficial de credenciales es
 # ~/.claude/secrets/ (home del usuario, fuera del repo); estos patrones
 # bloquean cualquier intento accidental de crear esos paths dentro del repo.
+#
+# ⚠️ Fuente unica de verdad: `.pipeline/lib/sensitive-paths.js`. Este bloque, el
+# scanner de `.husky/pre-commit` y la suite
+# `.pipeline/lib/__tests__/credential-path-guards.test.js` derivan del MISMO
+# inventario. Un alta se hace en el modulo; el test falla si esta lista no lo
+# refleja. No editar solo aca.
+#
+# `.gitignore` NO desindexa lo ya trackeado: el test verifica ademas, con
+# `git ls-files`, que ninguno de estos paths este en el indice.
+# =============================================================================
+
+# -- Stores de credenciales -------------------------------------------------
 .claude/secrets/
 **/.claude/secrets/
+.claude/.credentials.json
+**/.claude/.credentials.json
 secrets.json
 **/secrets.json
 .env
 .env.*
 !.env.example
+# Copias dentro del repo de los stores del pipeline (bot_token + chat_id y las
+# API keys de providers). Detectadas por el inventario del spike #5216 — son la
+# via mas corta de fuga porque el pipeline escribe en el root donde corre.
+.pipeline/credentials.json
+.pipeline/telegram-config.json
+# Cuarto almacen (respaldo ad-hoc) relevado por #5216.
+.intrale-api-keys.json
+**/.intrale-api-keys.json
+# Perfiles del AWS CLI: el vault no reemplaza ~/.aws, pero una copia adentro del
+# arbol es fuga directa de access key + secret.
+.aws/credentials
+**/.aws/credentials
+# Config de npm: suele traer `_authToken` del registry.
+.npmrc
+**/.npmrc
+# Configs de Firebase/Google con API keys de la app (hoy no existen — preventivo).
+**/google-services.json
+**/GoogleService-Info.plist
+
+# -- Material criptografico -------------------------------------------------
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.ppk
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+
+# -- Estado del Commander (puede arrastrar secretos pegados por el operador) --
+# (#3310) El scanner de pre-commit ya los pasaba por el sanitizer, pero la regla
+# de ignore faltaba: la segunda capa no puede ser la unica.
+.pipeline/commander-session.json
 
 # Build outputs
 build/
@@ -183,6 +235,14 @@ scripts/planner-plan.json
 # #4900 — `.dur` es el scratch de duracion que dejan los wrappers de timing del
 # runtime en la raiz del worktree. Se colo al diff del PR #4902; no es codigo.
 .dur
+# #5216 (R-1, hallazgo bloqueante de `security`) — el flag `sensible: true` de
+# `writeDeliverable` SOLO excluye el entregable del canal Drive; NO lo excluye de
+# git. Los .md de `.pipeline/assets/docs/` estan trackeados y este repo es PUBLICO,
+# asi que un entregable sensible se publicaria igual. Esta regla es la unica
+# contencion real. El inventario detallado de credenciales de #5216 mapea
+# `archivo:linea` de cada consumidor y su cadena de resolucion: es un mapa de
+# ataque, no documentacion. NO commitear.
+.pipeline/assets/docs/5216/
 .pipeline/definicion/*/pendiente/*
 .pipeline/definicion/*/trabajando/*
 .pipeline/definicion/*/listo/*

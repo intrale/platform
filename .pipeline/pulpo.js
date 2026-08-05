@@ -32,7 +32,11 @@ const precheck = require('./connectivity-precheck');
 const { sanitize: sanitizePipelineText } = require('./sanitizer');
 // #3941 (EP5-H4): validación de schema de config.yaml + clasificación de
 // excepciones (infra transitoria vs corrupción de estado).
-const { validateConfig, formatErrors } = require('./lib/config-schema');
+const { validateConfig, formatErrors, formatErrorsForHuman } = require('./lib/config-schema');
+const configSchema = require('./lib/config-schema');
+// #5172 — punto ÚNICO de lectura y validación de config.yaml. El pulpo delega
+// acá el "leer y validar" y conserva la POLÍTICA (halt + lastGood + #4832).
+const configResolver = require('./lib/config-resolver');
 const { classify: classifyError } = require('./lib/error-classifier');
 const connectivityState = require('./connectivity-state'); // #2335
 const retryingState = require('./retrying-state');         // #2337 CA7/CA8
@@ -94,6 +98,8 @@ const productControlDrainer = require('./lib/product-control-drainer'); // #4801
 const kernelScheduler = require('./lib/kernel-scheduler');
 // #2490 — Pausa parcial con allowlist explícita de issues
 const partialPause = require('./lib/partial-pause');
+// #5399 UX-1 — Copy de operador sobre el estado de la pausa total (funciones puras).
+const pauseNotice = require('./lib/pause-notice');
 // #3518 CA-6 — Detector de desync waves.json ↔ .partial-pause.json
 const desyncDetector = require('./lib/desync-detector');
 // #4439 CA-3 — Predicado de "origen legítimo y reciente" anclado en audit #3625
@@ -221,6 +227,9 @@ const { resolveReboteDestino } = require('./lib/rebote-destino');
 const partialPauseDeps = require('./lib/partial-pause-deps');
 // #4614 — self-healing de fases varadas (reconciler).
 const { runStuckPhaseReconciler } = require('./lib/stuck-phase-reconciler-runner');
+// #5396 — el cableado de deps del reconciler vive en su propio módulo para que
+// el test pueda verificarlo SIN cargar pulpo.js (16k líneas con side-effects).
+const { buildStuckReconcilerDeps, evaluateSilenceHealth } = require('./lib/stuck-reconciler-deps');
 // #4622 — liveness real del pid + identidad (anti-heartbeat-zombi). Fuente única
 // compartida con canonical-facts y el hook activity-logger.
 const processLiveness = require('./lib/process-liveness');
@@ -250,7 +259,13 @@ const telegramReceipt = require('./lib/telegram-receipt');
 // reenvía (tope N reintentos + backoff); avisa al usuario si se agotan. Reutiliza
 // la política de reintentos de salientes de #4082 (módulo puro compartido).
 const voiceParts = require('./lib/voice-parts');
-const { resolveOutboundConfig: resolveTelegramOutboundConfig } = require('./lib/telegram-outbound-config');
+// #5573 — traza append-only de entrega de partes de voz (duplicados + latencia).
+const voiceDeliveryAudit = require('./lib/voice-delivery-audit');
+const {
+  resolveOutboundConfig: resolveTelegramOutboundConfig,
+  // #5573 — política de reenvío PROPIA de las partes de audio (no la de texto).
+  resolveVoiceOutboundConfig: resolveTelegramVoiceOutboundConfig,
+} = require('./lib/telegram-outbound-config');
 // #3414 — Notificación Telegram de entregables del pipeline (human-in-the-loop
 // opcional). Se invoca desde `brazoBarrido` cuando un skill notificable cierra
 // fase OK. Default OFF (rollout gradual via config.yaml → deliverable_notifications.enabled).
@@ -461,6 +476,16 @@ const PIPELINE = process.env.PIPELINE_DIR_OVERRIDE
   : path.resolve(__dirname);
 const CONFIG_PATH = path.join(PIPELINE, 'config.yaml');
 const LOG_DIR = path.join(PIPELINE, 'logs');
+
+// #5172 · CA-13 / SEC-3b — la traza del resolver ("qué config estoy enforzando y
+// por qué mecanismo") va al log del pulpo, no sólo a stderr: es la respuesta que
+// el operador necesita poder buscar en `logs/pulpo.log`. Los overrides por env
+// var que DEBILITAN un gate salen por el mismo canal con nivel de alerta.
+configResolver.setTraceSink((linea, nivel) => {
+  const prefijo = nivel === 'alerta' ? '⚠️ ' : '';
+  const msg = `[${new Date().toISOString()}] [pulpo] ${prefijo}${linea}\n`;
+  try { fs.appendFileSync(path.join(LOG_DIR, 'pulpo.log'), msg); } catch { /* best-effort */ }
+});
 
 // #4154 — Heartbeat de liveness del Pulpo.
 // Persiste el timestamp de la última iteración del loop principal en
@@ -1222,16 +1247,37 @@ let lastConfigCorruptionAlertMs = 0;
 const CONFIG_CORRUPTION_ALERT_THROTTLE_MS = 5 * 60 * 1000;
 
 /**
- * Reacción fail-fast ante corrupción de `config.yaml` (estado compartido del
- * que dependen >30 módulos). ÚNICA ruta que justifica `.paused` GLOBAL (SEC-3).
+ * Reacción fail-fast ante configuración inválida (estado compartido del que
+ * dependen >30 módulos). ÚNICA ruta que justifica `.paused` GLOBAL (SEC-3).
  * Escribe `.paused` (idempotente) + alerta Telegram REDACTADA (SEC-2: sólo
  * path + tipo esperado, jamás el valor crudo). NO hace process.exit — deja el
- * loop vivo y pausado para que un humano corrija y reanude.
+ * loop vivo y pausado para que un humano corrija y reanude (CA-5).
  *
- * @param {string} reason - etiqueta corta ('config.yaml parse-error' | 'config.yaml schema')
- * @param {string} redactedDetail - detalle YA redactado (sin valores crudos)
+ * #5172 · CA-15 / CA-UX-1..CA-UX-3 — el copy al operador:
+ *   - nombra el ARCHIVO CONCRETO resuelto y POR QUÉ MECANISMO (`vía …`). Desde
+ *     que existe la precedencia de D-1, decir sólo "config.yaml" es ambiguo: el
+ *     operador puede estar editando un archivo distinto del que el proceso
+ *     enforza (*wrong-file trap*).
+ *   - tiene DOS variantes. Si la pausa activa NO la generó esta corrupción (un
+ *     marker preexistente que el halt no pisó, por diseño idempotente), NO se
+ *     puede prometer auto-recovery: el paso inverso de #4832 sólo levanta
+ *     markers con `source: 'config-corruption-halt'`.
+ *   - NUNCA instruye borrar `.paused`. Ese texto era stale desde #4832 (el
+ *     operador no tiene que borrar nada) y, peor, es destructivo: si el marker
+ *     activo es una pausa MANUAL deliberada, quien siga la instrucción reanuda
+ *     dispatch que quería detenido, sin ninguna señal.
+ *
+ * @param {string} reason - etiqueta corta, contrato de máquina para el log/marker.
+ * @param {string} redactedDetail - detalle YA redactado (sin valores crudos).
+ * @param {Error} [err] - error tipado del resolver (`ConfigParseViolation` /
+ *        `ConfigSchemaViolation`), del que sale la tríada de copy.
  */
-function haltOnConfigCorruption(reason, redactedDetail) {
+function haltOnConfigCorruption(reason, redactedDetail, err) {
+  // ¿La pausa que va a quedar activa la generó ESTA corrupción, o ya había otra?
+  // Se decide ANTES de escribir, leyendo el marker: es lo que elige la variante
+  // de copy (CA-UX-3).
+  let pausaPreexistente = false;
+  try { pausaPreexistente = fs.existsSync(PAUSE_FILE); } catch { /* best-effort */ }
   // PAUSE_FILE se declara más abajo en el módulo; al ejecutarse esta función
   // (sólo en runtime, nunca en carga) ya está inicializado.
   try {
@@ -1253,7 +1299,32 @@ function haltOnConfigCorruption(reason, redactedDetail) {
   } catch (e) {
     // Si no podemos ni escribir el flag, al menos logueamos.
   }
-  const safeMsg = `[${new Date().toISOString()}] [pulpo] CORRUPCIÓN config.yaml (${reason}) → .paused global. Detalle: ${redactedDetail || '(sin detalle)'}`;
+  // CA-UX-6 — un ÚNICO generador de texto (lib/config-schema). Log, Telegram y
+  // el estado de error del dashboard consumen la MISMA tríada; re-redactar por
+  // superficie es como divergen al primer cambio.
+  // El CONTEXTO decide la variante: sólo se puede prometer que "la pausa se
+  // levanta sola" cuando la pausa activa es la que acabamos de generar.
+  const contexto = pausaPreexistente ? 'halt-preexistente' : 'halt-auto';
+  const fallback = {
+    archivo: configSchema.formatConfigPath(CONFIG_PATH),
+    via: 'default',
+    detalle: redactedDetail || reason || 'configuración inválida',
+    accion: 'corregí el archivo',
+  };
+  const describir = (opts) => (err
+    ? configSchema.describeConfigFailure(err, { contexto, archivo: err.archivo || CONFIG_PATH, ...opts })
+    : fallback);
+  // #5173 CA-11 — MISMO generador, dos calibres. El log en disco va SIN recortar
+  // (es la vía de diagnóstico); la alerta va acotada porque Telegram corta en
+  // 4096 chars y, con la raíz del schema cerrada y `allErrors: true`, un config
+  // muy roto genera decenas de errores. Acotar es del generador, no del
+  // call-site: re-redactar acá es exactamente como divergen las superficies.
+  const copia = describir({});
+  const copiaBreve = describir({ maxErrores: 5 });
+  // Una sola línea, grep-friendly: el visor de logs del dashboard sirve por
+  // línea y un bloque multilínea rompe el filtrado.
+  const safeMsg = `[${new Date().toISOString()}] [pulpo] `
+    + configSchema.formatConfigFailureLog(copia, { titulo: 'CONFIG INVÁLIDA — dispatch pausado' });
   try { fs.appendFileSync(path.join(__dirname, 'logs', 'pulpo.log'), safeMsg + '\n'); } catch {}
   console.error(safeMsg);
   // Alerta Telegram throttleada y redactada.
@@ -1261,37 +1332,65 @@ function haltOnConfigCorruption(reason, redactedDetail) {
   if (now - lastConfigCorruptionAlertMs > CONFIG_CORRUPTION_ALERT_THROTTLE_MS) {
     lastConfigCorruptionAlertMs = now;
     try {
-      sendTelegram(
-        `🛑 *Pipeline PAUSADO* — corrupción de \`config.yaml\` (${reason}).\n` +
-        `Detalle (redactado): ${redactedDetail || '(sin detalle)'}\n` +
-        `Corregí el archivo y borrá \`.pipeline/.paused\` para reanudar.`
-      );
+      // #5173 CA-11 — a Telegram va la variante ACOTADA; el detalle completo ya
+      // quedó en `pulpo.log` (línea de arriba), que es a donde apunta el copy.
+      sendTelegram(configSchema.formatConfigFailureTelegram(copiaBreve, { pausaPreexistente }));
     } catch { /* best-effort */ }
   }
 }
 
+// #5172 — «¿este error lo tiró el resolver de configuración?». El predicado es
+// del resolver (dueño de los dos errores tipados); acá sólo se le pone alias en
+// castellano para leer los puntos de decisión de este archivo. NO se
+// reimplementa: una segunda copia de la lista de names se desactualiza en
+// silencio y rompe el fail-closed justo cuando tiene que actuar.
+const esViolacionDeConfig = configResolver.isConfigViolation;
+
+// #5172 — `loadConfig()` delega la LECTURA y la VALIDACIÓN en el punto único
+// (`lib/config-resolver`), y conserva acá la POLÍTICA, que es propia del pulpo y
+// de nadie más (D-3 / SEC-2): `haltOnConfigCorruption` + `lastGoodConfig` +
+// auto-recovery de #4832. Centralizar el last-good en el resolver habría
+// reinstalado la degradación silenciosa en los 22 módulos, esta vez sin el
+// `.paused` que la hace visible.
+//
+// `reload: true` es obligatorio: el pulpo hot-recarga cada ~30s y un caché sin
+// invalidación rompería el auto-recovery — el config arreglado nunca se
+// re-leería y la pausa no se levantaría sola (RIESGO BAJO de la receta).
+//
+// CA-5: fail-closed ≠ crash. Se suspende el dispatch, NUNCA `process.exit`.
+//
+// #5173 — la validación de schema NO se repite acá: `configResolver.resolve()`
+// ya corre `validateConfig` y tira `ConfigSchemaViolation` con los `errors`
+// crudos de ajv. Duplicarla sería una segunda copia que se desactualiza en
+// silencio. El chequeo de LADO (`{ origin: 'producto' }`) va SIN activar a
+// propósito: en esta entrega todas las claves siguen viviendo legítimamente en
+// `config.yaml`, así que sólo corre el schema. Lo enciende la Entrega C (#5174),
+// cuando el archivo efectivamente se parta.
 function loadConfig() {
   let raw;
   try {
-    raw = yaml.load(fs.readFileSync(CONFIG_PATH, 'utf8')); // js-yaml v4 safe-by-default (SEC-1)
+    raw = configResolver.resolve({ pipelineDir: PIPELINE, reload: true });
   } catch (e) {
-    // Parse-error de config.yaml = corrupción de estado compartido.
-    // Redactamos: NO incluir el snippet del error (puede volcar líneas del
-    // archivo → SEC-2). Sólo el tipo + posición (línea/col son metadata segura).
-    const pos = (e && e.mark && typeof e.mark.line === 'number')
-      ? ` (línea ${e.mark.line + 1}, col ${(e.mark.column || 0) + 1})`
-      : '';
-    const redacted = `YAML inválido${pos}`;
-    haltOnConfigCorruption('config.yaml parse-error', redacted);
+    // El error ya viene tipado y REDACTADO por el resolver: `{archivo, causa,
+    // linea, columna}`, jamás el `.message` de js-yaml (que trae el snippet
+    // crudo del archivo → SEC-1). Acá sólo se aplica la política.
+    const esSchema = e && e.name === 'ConfigSchemaViolation';
+    // #5174 · CA-5 / CA-14 — post-partición hay DOS archivos, así que `reason`
+    // (contrato de máquina que va al marker y al log) tiene que nombrar CUÁL
+    // falló. Un `reason: 'config schema'` genérico duplica el espacio de búsqueda
+    // del operador justo cuando el pipeline está parado. El nombre sale del
+    // `archivo` que el resolver ya adjunta al error tipado — no se adivina.
+    const cual = e && e.archivo ? path.basename(e.archivo) : 'config';
+    const reason = `${cual} ${esSchema ? 'schema' : 'parse-error'}`;
+    const redacted = esSchema
+      ? formatErrors(e.errors)
+      : `${e && e.causa === 'yaml-invalido' ? 'YAML inválido'
+        : e && e.causa === 'json-invalido' ? 'JSON inválido' : 'configuración ilegible'}`
+        + (e && typeof e.linea === 'number' ? ` (línea ${e.linea}, col ${e.columna})` : '');
+    haltOnConfigCorruption(reason, redacted, e);
     // Fail-fast = suspender dispatch (`.paused`), NO matar el proceso. Devolvemos
     // la última config buena (o {} en el primer boot) para que el loop siga vivo
-    // y pausado: un hot-fix de config.yaml se recarga y reanuda sin restart.
-    return lastGoodConfig || {};
-  }
-  const { valid, errors } = validateConfig(raw);
-  if (!valid) {
-    const redacted = formatErrors(errors);
-    haltOnConfigCorruption('config.yaml schema', redacted);
+    // y pausado: un hot-fix del archivo se recarga y reanuda sin restart.
     return lastGoodConfig || {};
   }
   lastGoodConfig = raw;
@@ -1301,22 +1400,31 @@ function loadConfig() {
   // Fail-closed: readFullPauseOrigin devuelve 'config-corruption-halt' SÓLO si
   // el marker es JSON válido con ese source; cualquier ambigüedad → 'manual'
   // → NO se auto-levanta (respeta CA-3 y la pausa deliberada del operador).
+  //
+  // #5399 — la decisión pasa por `isAutoLiftableSource`: pertenencia EXACTA a la
+  // allowlist positiva `AUTO_LIFTABLE_SOURCES` del módulo dueño del estado, en
+  // vez de una comparación literal duplicada acá. Prohibido ampliar el set por
+  // negación (`source !== 'human'`) — `kernel-cutover-degraded-halt` es
+  // automática pero su no-recuperación es deliberada (#5135).
   try {
     if (fs.existsSync(PAUSE_FILE) &&
-        partialPause.readFullPauseOrigin().source === 'config-corruption-halt') {
+        partialPause.isAutoLiftableSource(partialPause.readFullPauseOrigin().source)) {
+      // #5174 · CA-5 — llegar acá significa que `configResolver.resolve()` NO
+      // lanzó, y post-partición eso exige que los DOS archivos hayan parseado y
+      // que el documento mergeado valide. Corregir uno solo no levanta la pausa:
+      // el fail-closed es total por construcción, no por un chequeo extra.
       partialPause.clearFullPause({
         source: 'config-auto-recovery',
-        justification: 'config.yaml volvió a parsear OK — halt por corrupción levantado',
+        justification: 'la configuración (kernel + producto) volvió a parsear OK — halt por corrupción levantado',
       });
       paused = false;
       // Log auditable (CA-4): qué disparó el halt / config sano detectado / reanudación.
-      log('pulpo', '[#4832] Auto-recovery: config.yaml sano → pausa config-corruption-halt levantada → dispatch reanudado');
+      // #5172 · CA-15 — nombra el archivo concreto que se recuperó, no un genérico.
+      const archivoOk = configSchema.formatConfigPath(CONFIG_PATH);
+      log('pulpo', `[#4832] Auto-recovery: ${archivoOk} volvió a ser válida → pausa config-corruption-halt levantada → dispatch reanudado`);
       // Alerta Telegram redactada (sin volcar contenido del marker, SEC-2/A09).
       try {
-        sendTelegram(
-          '✅ *Pipeline REANUDADO* — `config.yaml` volvió a parsear OK.\n' +
-          'La pausa automática por corrupción se levantó sola (auto-recovery #4832).'
-        );
+        sendTelegram(configSchema.formatConfigRecoveryTelegram(archivoOk));
       } catch { /* best-effort */ }
     }
   } catch (e) {
@@ -6162,10 +6270,49 @@ function brazoBarrido(config) {
  * que cambios del pulpo/dashboard caigan en backend-dev (Kotlin/Gradle) que no
  * puede validarlos.
  */
+// #5174 · CA-6 — El riesgo MÁS GRAVE de la partición no es que el arranque
+// falle: es que NO falle. Estas cuatro claves viven ahora en
+// `pipeline.config.json`; si un lector siguiera viendo sólo el kernel, el `|| {}`
+// / `|| []` que tenían estos call-sites convertía *"la clave no llegó"* en
+// *"no hay mapeo"*, y el ruteo degradaba en silencio: todos los issues al
+// `default` hardcodeado, `pipeline_scope_keywords` vacío ⇒ el override de
+// contenido apagado, y ningún test sobre `resolveForDiff()` lo detecta (ejercita
+// el resolver, no los call-sites).
+//
+// Por eso el default permisivo pasa a ser un ERROR EXPLÍCITO para las claves
+// migradas. No es defensa contra un config mal escrito — el schema ya cubre eso
+// — es defensa contra un lector que se quedó fuera del resolver.
+const CLAVES_DE_PRODUCTO_REQUERIDAS = Object.freeze({
+  dev_skill_mapping: 'object',
+  dev_routing_priority: 'array',
+  dev_skill_partitions: 'object',
+  pipeline_scope_keywords: 'array',
+});
+
+/**
+ * Devuelve `config[clave]` o LANZA nombrando el archivo donde vive.
+ * @param {object} config - configuración RESUELTA (los dos lados mergeados).
+ * @param {string} clave
+ */
+function requerirClaveDeProducto(config, clave) {
+  const esperado = CLAVES_DE_PRODUCTO_REQUERIDAS[clave];
+  const v = config ? config[clave] : undefined;
+  const ok = esperado === 'array' ? Array.isArray(v) : (v !== null && typeof v === 'object' && !Array.isArray(v));
+  if (!ok) {
+    throw new Error(
+      `[config partida #5174] falta '${clave}' en la configuración resuelta. `
+      + 'Vive del lado PRODUCTO (pipeline.config.json → productConfig). '
+      + 'Si llegaste acá con un config leído a mano, el lector quedó fuera de '
+      + 'lib/config-resolver: el ruteo NO se degrada en silencio.'
+    );
+  }
+  return v;
+}
+
 function determinarDevSkill(issue, config) {
-  const mapping = config.dev_skill_mapping || {};
+  const mapping = requerirClaveDeProducto(config, 'dev_skill_mapping');
   const labels = getIssueLabels(issue);
-  const priority = config.dev_routing_priority || [];
+  const priority = requerirClaveDeProducto(config, 'dev_routing_priority');
 
   // 0) Override por contenido: area:infra + keywords del pipeline → pipeline-dev
   if (labels.includes('area:infra') && !labels.includes('area:pipeline') && mapping['area:pipeline']) {
@@ -6196,15 +6343,11 @@ function determinarDevSkill(issue, config) {
 }
 
 function getDevSkillPartitions(config) {
-  const raw = config && config.dev_skill_partitions;
-  if (!raw || typeof raw !== 'object') {
-    return {
-      backend: ['backend-dev'],
-      frontend: ['android-dev', 'web-dev'],
-      pipeline: ['pipeline-dev'],
-      generic: ['dev'],
-    };
-  }
+  // #5174 · CA-6 — el objeto hardcodeado que había acá era el default más
+  // peligroso de los cinco: no fallaba, devolvía la partición de Intrale. Si la
+  // clave migrada no llegaba, `isDeclaredStackDevSkill` seguía diciendo que sí
+  // y el problema no se veía hasta mirar a qué agente se lanzó.
+  const raw = requerirClaveDeProducto(config, 'dev_skill_partitions');
 
   const out = {};
   for (const [partition, skills] of Object.entries(raw)) {
@@ -6283,7 +6426,11 @@ function getIssueTitleCached(issueNum) {
 }
 
 function issueMentionsPipelineScope(issueNum, config) {
-  const keywords = config.pipeline_scope_keywords || [];
+  // #5174 · CA-6 — el `|| []` con early-return `false` era indistinguible de
+  // "ninguna keyword matcheó". Con la clave del lado producto, no llegar tiene
+  // que ser ruidoso: apaga el override que manda los issues de infra del
+  // pipeline a `pipeline-dev` en vez de a `backend-dev` (stack Kotlin).
+  const keywords = requerirClaveDeProducto(config, 'pipeline_scope_keywords');
   if (keywords.length === 0) return false;
   const text = getIssueText(issueNum);
   if (!text) return false;
@@ -8758,8 +8905,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     //   1. Validación dura de issue (`/^\d+$/`) y skill (regex segura).
     //   2. `git worktree list --porcelain` vía spawnSync (sin shell parsing).
     //   3. Si no encuentra → intenta auto-recovery desde `origin/agent/<n>-<skill>`
-    //      validando procedencia de la branch remota (autor allowlisted o
-    //      marker `pipeline-v2` en commits).
+    //      validando procedencia de la branch remota por autor allowlisted.
     //   4. Si recovery falla → retorna `{ found: false, reason, branchOriginVerified }`.
     let resolution;
     try {
@@ -8767,6 +8913,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         ROOT,
         issue,
         skill,
+        config,
         log: (msg) => log('lanzamiento', msg),
       });
     } catch (e) {
@@ -10467,6 +10614,27 @@ function reconcileTelegramReceipts(opts = {}) {
       // El sweep (más abajo) cierra la respuesta cuando todas las partes confirman.
       if (voiceParts.isVoicePartReceipt(receipt)) {
         if (receipt.status === telegramReceipt.STATUS_ENVIADO) {
+          // #5573 (cambio 4) — muestra de LATENCIA REAL de entrega del chunk. Se
+          // lee el estado ANTES de confirmar porque `firstEnqueuedAt` (el ancla
+          // inmutable del primer encolado) y `retries` viven ahí. Esta serie es la
+          // que permite recalibrar `telegram_voice_outbound.backoff_base_ms`, hoy
+          // provisional (~62-74s medidos a mano). Best-effort: si algo falla acá,
+          // la confirmación igual ocurre.
+          let latencySample = null;
+          try {
+            const st = voiceParts.readState(voiceParts.voicePartsDir(pipelineDir), receipt.correlationId);
+            const part = st && st.parts ? st.parts[String(receipt.partIndex)] : null;
+            if (part) {
+              const firstMs = Date.parse(part.firstEnqueuedAt || part.enqueuedAt);
+              const atMs = Date.parse(receipt.at);
+              latencySample = {
+                latencyMs: (Number.isFinite(firstMs) && Number.isFinite(atMs)) ? (atMs - firstMs) : undefined,
+                retries: Number.isInteger(part.retries) ? part.retries : 0,
+                partTotal: st.partTotal,
+              };
+            }
+          } catch { /* best-effort */ }
+
           try {
             voiceParts.recordPartConfirmation({
               pipelineDir,
@@ -10475,6 +10643,18 @@ function reconcileTelegramReceipts(opts = {}) {
             });
           } catch (e) {
             log('telegram', `[reconcile] no se pudo confirmar chunk (${receipt.correlationId} p${receipt.partIndex}): ${e.message}`);
+          }
+
+          if (latencySample) {
+            voiceDeliveryAudit.appendVoiceDeliveryEvent(pipelineDir, {
+              ts: receipt.at,
+              event: voiceDeliveryAudit.EVENT_CONFIRMED,
+              correlationId: receipt.correlationId,
+              partIndex: receipt.partIndex,
+              partTotal: latencySample.partTotal != null ? latencySample.partTotal : receipt.partTotal,
+              latencyMs: latencySample.latencyMs,
+              retries: latencySample.retries,
+            });
           }
         }
         // Un recibo `fallido` de chunk se archiva sin confirmar: el sweep reintenta
@@ -10513,11 +10693,17 @@ function reconcileTelegramReceipts(opts = {}) {
     log('telegram', `[reconcile] error (best-effort): ${e.message}`);
   }
   // #4750 — Sweep de contabilidad de chunks de audio: SIEMPRE (aun sin recibos
-  // nuevos). Detecta partes que no confirmaron dentro del timeout y las reenvía
-  // (tope N reintentos + backoff, misma política que texto — #4082); si se agotan
-  // los reintentos avisa al usuario en el chat del padre (nunca hueco silencioso).
+  // nuevos). Detecta partes que no confirmaron dentro del timeout y las reenvía;
+  // si se agotan los reintentos avisa al usuario en el chat del padre (nunca
+  // hueco silencioso).
+  //
+  // #5573 — Política PROPIA de voz (`telegram_voice_outbound`), NO la de texto.
+  // La latencia real de un `.ogg` es ~62-74s contra los 5s de base del texto:
+  // reusar la política de texto disparaba reenvíos sobre envíos todavía en vuelo
+  // y el operador recibía el mismo audio 2-4 veces. El sweep además consulta qué
+  // partes siguen vivas en la cola (`scanInFlightParts`) y no las reencola.
   try {
-    const outboundCfg = resolveTelegramOutboundConfig(loadConfig());
+    const outboundCfg = resolveTelegramVoiceOutboundConfig(loadConfig());
     voiceParts.sweepVoiceStates({
       pipelineDir,
       now: Date.now(),
@@ -10529,6 +10715,9 @@ function reconcileTelegramReceipts(opts = {}) {
       notify: (text) => { try { sendTelegramPlain(text); } catch { /* best-effort */ } },
       logFn: (m) => log('telegram', `[voice-sweep] ${m}`),
     });
+    // #5573 (SEC-E) — retención de 30 días de los `.gz` rotados de la traza de
+    // entrega. Mismo tick del sweep, best-effort.
+    voiceDeliveryAudit.cleanupVoiceDeliveryArchives(pipelineDir);
   } catch (e) {
     log('telegram', `[voice-sweep] error (best-effort): ${e.message}`);
   }
@@ -11190,7 +11379,26 @@ function cmdIntake(args, config) {
 }
 
 function cmdPausar() {
-  fs.writeFileSync(PAUSE_FILE, new Date().toISOString());
+  // #5399 — antes escribía un ISO pelado, así que la pausa MÁS COMÚN del
+  // operador quedaba indistinguible de un marker legacy y se degradaba a
+  // autoría desconocida. Ruteamos por el dueño del estado para que la autoría
+  // humana quede EXPLÍCITA (y no meramente inferida por fail-closed). `telegram`
+  // no está en AUTO_LIFTABLE_SOURCES → sigue exigiendo destrabe explícito.
+  // La centralización de los escritores restantes (dashboard) es #5406.
+  try {
+    partialPause.setFullPause({
+      source: 'telegram',
+      authorizedBy: 'commander:leo',
+      justification: 'pausa total solicitada por el operador vía /pausar',
+    });
+  } catch (e) {
+    // Degradación segura: si el lock no se puede tomar, la pausa igual se
+    // aplica — el halt del operador nunca puede quedar sin efecto.
+    try { fs.writeFileSync(PAUSE_FILE, JSON.stringify({
+      source: 'telegram', ts: new Date().toISOString(),
+      detail: 'pausa total solicitada por el operador vía /pausar (fallback sin lock)',
+    })); } catch { /* best-effort */ }
+  }
   paused = true;
   return '⏸️ Pulpo PAUSADO. Usar /reanudar para continuar.';
 }
@@ -13819,7 +14027,27 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
   // --- PREPROCESAR TODOS los mensajes (transcribir audios, etc.) ---
   for (const m of mensajes) {
     log('commander', `Preprocesando msg de ${m.from}: "${(m.text || '').slice(0, 50)}"`);
-    const processed = await preprocessMessage(m, botToken);
+    // #5336 (CA-2/CA-8) — Aviso de progreso cuando la transcripción se hace larga.
+    // Sin esto el operador ve silencio y asume que se lo está ignorando.
+    //
+    // Dos estados DISTINGUIBLES: 'queue' (hay otro audio adelante) y 'engine' (el
+    // suyo se está transcribiendo). El dedup por (chatId, tipo) reusa el mecanismo
+    // de #3919, así que un solo aviso por estado y por ventana — nada de heartbeat.
+    // Literal plano por la ruta autorizada (SEC-3/SEC-5).
+    //
+    // Best-effort absoluto: el aviso JAMÁS puede tumbar la transcripción, así que
+    // todo va envuelto en try/catch y un fallo sólo se loguea.
+    const notifyProgress = (texto, stage) => {
+      if (!chatId) return;
+      try {
+        if (!noteDegradationAndShouldNotify(String(chatId), `stt-progress-${stage}`, Date.now())) return;
+        sendTelegramPlain(texto);
+        log('commander', `[stt-progreso] aviso "${stage}" enviado`);
+      } catch (e) {
+        log('commander', `[stt-progreso] aviso no enviado (no bloqueante): ${e.message}`);
+      }
+    };
+    const processed = await preprocessMessage(m, botToken, { notify: notifyProgress });
     m._textoFinal = processed.text + (processed.extras.length > 0 ? ' ' + processed.extras.join(' ') : '');
     m._esAudio = !!(m.voice || m.voice_path);
     m._audio = processed.audio || null;
@@ -13860,7 +14088,21 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
   for (const m of mensajes) {
     const intent = commanderDet.classify(m._textoFinal);
     m._intent = intent;
-    if (intent.class === 'deterministic' || intent.class === 'unknown') {
+    // #5336 (CA-4/CA-5) — Audio que NO se pudo transcribir y sin texto propio.
+    //
+    // ANTES caía acá como `unknown` y el dispatcher respondía la plantilla
+    // `error-unknown` ("🤔 No te entendí, Leito"), que le miente al operador: el
+    // mensaje nunca llegó a escucharse, no es que no se entendió. El fallback de
+    // audio que YA existía más abajo (y que sí usa `transcriptionFailureMessage`)
+    // nunca se alcanzaba, porque sólo mira `textoLibre` y estos mensajes se iban
+    // a `comandos`.
+    //
+    // Mandándolos a `textoLibre` se enrutan al fallback correcto sin duplicar copy
+    // ni tocar el enum de `class`.
+    if (intent.audioFailed) {
+      log('commander', `[audio-fallido] "${(m._textoFinal || '').slice(0, 60)}" (kind=${intent.audioErrorKind}) → fallback de transcripción, no "no te entendí"`);
+      textoLibre.push(m);
+    } else if (intent.class === 'deterministic' || intent.class === 'unknown') {
       comandos.push({ m, intent });
     } else {
       // class === 'llm' → emitimos audit-log explícitamente (camino que
@@ -15499,7 +15741,12 @@ function enqueueTelegramVoice(audioPath, opts = {}) {
   const pi = telegramReceipt.coercePartInt(partIndex);
   const pt = telegramReceipt.coercePartInt(partTotal);
   const svcDir = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
-  const filename = `${Date.now()}-voice-p${pi}.json`;
+  // #5573 — el `correlationId` va EN EL NOMBRE del dropfile para que el sweep
+  // (`voiceParts.scanInFlightParts`) sepa qué partes siguen vivas en la cola sin
+  // abrir y parsear cada JSON en cada tick. `correlationId` ya pasó por
+  // `isValidCorrelationId` arriba (regex `[A-Za-z0-9._-]{6,128}` + anti `..`), así
+  // que componer un nombre de archivo con él es seguro.
+  const filename = `${Date.now()}-voice-${correlationId}-p${pi}.json`;
   // #4796 — Fix de ORIGEN: normalizar a forward-slashes ANTES de serializar. En
   // Windows los `\` pueden perderse si la ruta atraviesa una segunda ronda de
   // parse/serialize (incidente 2026-07-19: `C:\…\tts.ogg` → `C:WorkspacesIntrale…ogg`,
@@ -16092,23 +16339,57 @@ function realignAllowlistToActiveWave(desync, opts = {}) {
   // #4577 GATE 3 — INVARIANTE log-antes-de-mutar (RS-2): registrar el realign
   // de la allowlist a la ola activa ANTES de delegar la mutación (incidente
   // #4566, cambio de cohorte de la ola). Best-effort: el audit nunca bloquea el
-  // realign. La politica wait-confirmation se evalua aca mismo antes de mutar.
+  // realign.
   try {
     require('./lib/kernel-actions-audit').safeAppendAction({
       action: 'realign-allowlist', impact: 'alto',
       reason: `realignAllowlistToActiveWave: converger allowlist ← ola activa (desync=${desync && desync.classification ? desync.classification : 'n/a'})`,
       authorizedBy: 'wave-promote',
     });
-    const gate3 = require('./lib/kernel-action-policy').enforceActionPolicy('realign-allowlist', {
+  } catch { /* best-effort: el audit nunca bloquea el realign */ }
+
+  // #5172 — La política wait-confirmation se evalúa ACÁ, antes de mutar, y en su
+  // PROPIO try/catch — separado del audit.
+  //
+  // Acá había un único `catch {}` MUDO que envolvía audit + gate. Mientras
+  // `enforceActionPolicy` se comía sus errores de config puertas adentro
+  // (`catch { return {} }` → DEFAULT_POLICY) el catch mudo no se notaba; desde
+  // que el gate PROPAGA el error tipado del resolver, ese catch se lo tragaba y
+  // el flujo seguía derecho hasta `realignActiveWaveDispatch`: con config.yaml
+  // corrupto GATE 3 quedaba BYPASSEADO y la allowlist se mutaba igual. Es
+  // exactamente la clase de fallo silencioso que #5172 existe para eliminar.
+  //
+  // Ahora: SIN política legible NO se muta. Fail-closed ≠ crash (D-3) — se
+  // devuelve veredicto negativo, el pulpo sigue vivo, y cuando el operador
+  // corrige el archivo el auto-recovery de #4832 reanuda solo.
+  let gate3;
+  try {
+    gate3 = require('./lib/kernel-action-policy').enforceActionPolicy('realign-allowlist', {
       impact: 'alto',
       reason: `realignAllowlistToActiveWave: converger allowlist a ola activa (desync=${desync && desync.classification ? desync.classification : 'n/a'})`,
       confirmerChatId: opts.confirmerChatId,
       operatorAllowlist: opts.operatorAllowlist,
     });
-    if (!gate3.proceed) {
-      return { ok: false, reason: 'gate3_confirmation_required', policy: gate3 };
+  } catch (e) {
+    if (esViolacionDeConfig(e)) {
+      // Copy por el generador ÚNICO (CA-UX-6): archivo + causa + acción, ya
+      // redactados. Nunca el contenido crudo del config (SEC-1).
+      const copia = configSchema.describeConfigFailure(e, { archivo: e.archivo || CONFIG_PATH });
+      log('pulpo', configSchema.formatConfigFailureLog(copia, {
+        titulo: 'GATE 3 realign-allowlist no enforzable — realign ABORTADO (allowlist sin mutar)',
+      }));
+      return { ok: false, reason: 'gate3_config_unreadable', config_error: copia };
     }
-  } catch {}
+    // Error ajeno al config: `enforceActionPolicy` ya es defensivo puertas
+    // adentro (notify/append tienen su propio catch), así que esto sólo puede
+    // ser un bug. Se preserva la tolerancia previa hacia disponibilidad (RS-5),
+    // pero deja de ser MUDO: queda traza de que el gate no rindió veredicto.
+    log('pulpo', `GATE 3 realign-allowlist: error inesperado al enforzar política (${(e && e.name) || 'Error'}) — se continúa por disponibilidad`);
+    gate3 = null;
+  }
+  if (gate3 && !gate3.proceed) {
+    return { ok: false, reason: 'gate3_confirmation_required', policy: gate3 };
+  }
   // #4436 — el algoritmo de realineación se extrajo a `lib/wave-dispatch.js`
   // para reusarlo desde el dashboard (relanzar despacho de la ola activa) sin
   // duplicar lógica. El Pulpo delega manteniendo su `authorizedBy:'wave-promote'`
@@ -16168,7 +16449,16 @@ function autoResolveReductiveDesyncByClosure(probe, opts = {}) {
       classification: 'reductivo-por-cierre',
       issues: issuesCtx,
     });
-  } catch { /* best-effort: fail-open hacia disponibilidad para esta acción segura */ }
+  } catch (e) {
+    // #5172 — dejó de ser mudo. A diferencia de `realign-allowlist`, acá NO hay
+    // gate que bypassear: `desync-autoresolve` es notify-and-proceed y el
+    // default explícito (`policy = { proceed: true }`, l.16259) ya declara el
+    // fail-open hacia disponibilidad para esta acción segura. El control de
+    // flujo se preserva tal cual; lo único que cambia es que la pérdida del
+    // aviso al operador deja traza en vez de desaparecer.
+    require('./lib/kernel-action-policy').logPolicyEnforcementFailure(
+      'pulpo', 'desync-autoresolve', e);
+  }
   if (policy && policy.proceed === false) {
     return { ok: false, reason: 'policy_block' };
   }
@@ -16631,14 +16921,50 @@ function pollQuotaFlag() {
 let _lastStuckReconcilerAt = 0;
 const STUCK_RECONCILER_INTERVAL_MS = 10 * 60 * 1000;
 const STUCK_STALE_MS = 15 * 60 * 1000;
+// #5396 CA-7 / riesgo #2 — señal de vida del self-healing. El fix compone tres
+// silencios legítimos (fail-closed por caché, filtro de ola siempre activo,
+// allowlist vacía entre olas) que juntos pueden dejar al reconciler 100% mudo
+// *por diseño*. Sin esta señal, "apagarlo del todo" satisface CA-1…CA-4 y nadie
+// se entera — que es exactamente lo que venía pasando.
+//
+// La racha vive en su PROPIO archivo: `.stuck-reconciler-state.json` está
+// indexado por `issue|fase` y mezclar acá un contador global lo corrompería.
+// CA-UX-4: los contadores por tick van al log, NO a Telegram; sólo la señal de
+// vida (una vez por racha) notifica.
+const STUCK_HEALTH_FILE = path.join(PIPELINE, '.stuck-reconciler-health.json');
+function emitStuckReconcilerLiveness(agg) {
+  try {
+    let prev = null;
+    try { prev = JSON.parse(fs.readFileSync(STUCK_HEALTH_FILE, 'utf8')); } catch { /* primera vez */ }
+    const { next, emitSignal } = evaluateSilenceHealth(prev, agg);
+    try { fs.writeFileSync(STUCK_HEALTH_FILE, JSON.stringify(next, null, 2)); } catch { /* best-effort */ }
+    if (!emitSignal) return;
+    // Texto plano (SEC-4) y sin audio TTS (CA-UX-5: el audio queda reservado al
+    // circuit breaker; esto es una señal de diagnóstico, no una emergencia).
+    sendTelegramPlain(
+      `🔇 Self-healing mudo hace ${next.streak} ticks seguidos\n`
+      + `Evaluó ${agg.evaluados} issue(s) varado(s) y no actuó en ninguno.\n`
+      + `Supresiones: ola=${agg.suprimidos_por_ola} cache=${agg.suprimidos_por_cache} dedupe=${agg.suprimidos_por_dedupe}\n`
+      + `Revisá .pipeline/logs/pulpo.log (canal "reconciler") si no lo esperabas.`
+    );
+  } catch (e) {
+    log('reconciler', `señal de vida (best-effort) falló: ${e && e.message}`);
+  }
+}
+
 function runStuckReconcilerTick() {
   if (Date.now() - _lastStuckReconcilerAt < STUCK_RECONCILER_INTERVAL_MS) return;
   _lastStuckReconcilerAt = Date.now();
   try {
     const config = loadConfig();
-    if (!config || !config.pipelines) return;
-    const STUCK_STATE_FILE = path.join(PIPELINE, '.stuck-reconciler-state.json');
-    const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+    // #5396 CA-7 — este early-return NO puede ser mudo. Un `config.yaml` ilegible
+    // o corrupto dejaría el self-healing apagado para siempre y sin rastro, que es
+    // exactamente el modo de falla que CA-7 existe para hacer visible (pasó en
+    // producción y nadie se enteró). El log es la única señal de que el tick corrió.
+    if (!config || !config.pipelines) {
+      log('reconciler', '🔧 self-healing tick abortado: config sin `pipelines` (¿config.yaml ilegible?)');
+      return;
+    }
     const ppMode = partialPause.getPipelineMode();
     // Fases PARALELAS de `desarrollo` (todos los skills deben estar, modelo
     // `resultado: aprobado`). Mono-skill (dev/build/entrega) quedan afuera. Las
@@ -16650,106 +16976,36 @@ function runStuckReconcilerTick() {
       { pipeline: 'desarrollo', fase: 'verificacion' },
       { pipeline: 'desarrollo', fase: 'aprobacion' },
     ];
-    const allPhasesOf = (p) => (config.pipelines?.[p]?.fases) || [];
 
-    const deps = {
-      nowMs: Date.now(),
-      parallelPhases,
-      requiredSkillsFor: (p, f) => (config.pipelines?.[p]?.skills_por_fase?.[f]) || [],
-      listPhaseFiles: (p, f, state) => {
-        const dir = path.join(fasePath(p, f), state);
-        return (listWorkFiles(dir) || []).map((wf) => {
-          let mtimeMs = 0;
-          try { mtimeMs = fs.statSync(wf.path).mtimeMs; } catch { /* ausente */ }
-          return { name: wf.name, mtimeMs };
-        });
+    // #5396 (SEC-0) — el cableado vive en `lib/stuck-reconciler-deps.js` para que
+    // un test pueda verificar la POLÍTICA REAL (allowlist de ola, dedupe por
+    // marker/caché, escalado vía human-block) sin cargar este archivo.
+    const deps = buildStuckReconcilerDeps({
+      config, PIPELINE, ROOT, pauseFile: PAUSE_FILE, ppMode,
+      nowMs: Date.now(), staleMs: STUCK_STALE_MS, parallelPhases,
+      deps: {
+        fs, partialPause, humanBlock, processLiveness,
+        fasePath, listWorkFiles, readYamlSafe, log, sendTelegramWithMarkup,
       },
-      readYaml: (p, f, state, name) => readYamlSafe(path.join(fasePath(p, f), state, name)),
-      issueLiveElsewhere: (issue, p, currentFase) => {
-        for (const f of allPhasesOf(p)) {
-          if (f === currentFase) continue;
-          for (const st of ['pendiente', 'trabajando']) {
-            try {
-              if (fs.readdirSync(path.join(fasePath(p, f), st)).some((n) => n.startsWith(issue + '.'))) return true;
-            } catch { /* dir ausente */ }
-          }
-        }
-        return false;
-      },
-      hasNeedsHuman: (issue) => {
-        try {
-          if (fs.readdirSync(ghQueueDir).some((n) => n.startsWith(issue + '-needs-human'))) return true;
-        } catch { /* ausente */ }
-        for (const p of Object.keys(config.pipelines || {})) {
-          for (const f of allPhasesOf(p)) {
-            try {
-              if (fs.readdirSync(path.join(fasePath(p, f), 'bloqueado-humano')).some((n) => n.startsWith(issue + '.'))) return true;
-            } catch { /* ausente */ }
-          }
-        }
-        return false;
-      },
-      isAllowed: (issue) => ppMode.mode !== 'partial_pause' || (ppMode.allowed_issues || []).includes(Number(issue)),
-      // Solo actuar sobre issues confirmados OPEN (el title-cache trae el estado
-      // real de GitHub). Cerrado/notFound/desconocido → no tocar (residuo).
-      isIssueOpen: (issue) => {
-        try {
-          const cache = JSON.parse(fs.readFileSync(path.join(PIPELINE, '.issue-title-cache.json'), 'utf8'));
-          const e = cache[String(issue)];
-          return !!(e && e.state === 'OPEN');
-        } catch { return false; }
-      },
-      isPaused: () => { try { return fs.existsSync(PAUSE_FILE); } catch { return false; } },
-      // #4622 (CA-4): un `trabajando/` reciente ya NO alcanza como prueba de vida.
-      // Cruzamos el latido `agent-<issue>.heartbeat`: si su pid está muerto (o su
-      // identidad no matchea por reuso de PID), el skill NO cuenta como vivo → el
-      // reconciler lo trata como fase varada y decide requeue/escalate. Si no hay
-      // latido legible, caemos al criterio de mtime (compat: work-item recién
-      // creado que todavía no escribió su primer heartbeat).
-      livenessOk: (name, mtimeMs) => {
-        const recent = (Date.now() - mtimeMs) < STUCK_STALE_MS;
-        if (!recent) return false; // viejo → muerto, sin importar el latido
-        const issue = String(name).split('.')[0];
-        const hbPath = path.join(ROOT, '.claude', 'hooks', `agent-${issue}.heartbeat`);
-        let hb;
-        try { hb = JSON.parse(fs.readFileSync(hbPath, 'utf8')); }
-        catch { return recent; } // sin latido legible → mtime manda (compat)
-        return processLiveness.isAgentAlive(hb && hb.pid, {
-          startedAt: hb && hb.pid_started_at,
-          branch: hb && hb.branch,
-          session: hb && hb.session,
-        });
-      },
-      loadRetryState: () => { try { return JSON.parse(fs.readFileSync(STUCK_STATE_FILE, 'utf8')); } catch { return {}; } },
-      saveRetryState: (s) => { try { fs.writeFileSync(STUCK_STATE_FILE, JSON.stringify(s, null, 2)); } catch { /* best-effort */ } },
-      requeueWorkItem: (p, f, skill, issue) => {
-        const dir = path.join(fasePath(p, f), 'pendiente');
-        fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(path.join(dir, `${issue}.${skill}`), `issue: ${issue}\nfase: ${f}\npipeline: ${p}\n`);
-      },
-      escalate: (issue, reason) => {
-        try {
-          fs.mkdirSync(ghQueueDir, { recursive: true });
-          fs.writeFileSync(
-            path.join(ghQueueDir, `${issue}-needs-human-stuck-${Date.now()}.json`),
-            JSON.stringify({ action: 'label', issue: parseInt(issue, 10), label: 'needs-human' })
-          );
-        } catch (e) { log('reconciler', `error encolando needs-human #${issue}: ${e.message}`); }
-      },
-      workItemExists: (p, f, skill, issue) => {
-        for (const st of ['pendiente', 'trabajando']) {
-          try { if (fs.existsSync(path.join(fasePath(p, f), st, `${issue}.${skill}`))) return true; } catch { /* no-op */ }
-        }
-        return false;
-      },
-      notify: (msg) => { try { sendTelegram(msg); } catch { /* best-effort */ } },
-      audit: (rec) => log('reconciler', typeof rec === 'string' ? rec : JSON.stringify(rec)),
-    };
+    });
 
     const res = runStuckPhaseReconciler(deps, { maxRequeueAttempts: 2, capPerTick: 5, staleThresholdMs: STUCK_STALE_MS });
-    if (res.requeued || res.escalated) {
-      log('reconciler', `🔧 self-healing tick: requeue=${res.requeued} escalate=${res.escalated} skip=${res.skipped}`);
-    }
+
+    // #5396 CA-7 — el agregado se loguea SIEMPRE, no sólo cuando hubo acción.
+    // Un tick silencioso puede significar "todo sano" o "el self-healing está
+    // muerto"; sin estas tres causas de supresión desglosadas son indistinguibles
+    // (fue exactamente lo que pasó en producción y nadie se enteró).
+    const sup = res.suppressed || {};
+    const agg = {
+      evaluados: res.evaluados || 0,
+      suprimidos_por_ola: sup.ola || 0,
+      suprimidos_por_cache: sup.cache || 0,
+      suprimidos_por_dedupe: sup.dedupe || 0,
+      escalados: res.escalated || 0,
+      requeued: res.requeued || 0,
+    };
+    log('reconciler', `🔧 self-healing tick: ${JSON.stringify(agg)}`);
+    emitStuckReconcilerLiveness(agg);
   } catch (e) {
     log('reconciler', `tick error (no tumba el loop): ${e && e.message}`);
   }
@@ -17994,12 +18250,16 @@ async function mainLoop() {
   try {
     const cfg = loadConfig();
     if (cfg && cfg.kernel && cfg.kernel.durable === true) {
+      // Require LAZY (igual que el resto del bloque): con `durable:false` no se
+      // carga Ajv ni el schema del store. Se sube acá porque la constante de
+      // partición del control-plane la necesitan el catálogo Y el log.
+      const kernelStoreLib = require('./lib/kernel-store');
       // Constructor LAZY del store durable: sólo se instancia con el flag ON, de
       // modo que con `durable:false` NO se construye ningún driver ni se toca AWS.
       const buildDurableStore = (contextProjectId, allowedNamespaces, onAlert) => {
         const { createAwsCliRunner, createAwsCliDynamoDriver } = require('./lib/provisioner-infra');
         const { buildAwsScopedEnv } = require('./lib/kernel-provision');
-        const { createKernelStore } = require('./lib/kernel-store');
+        const { createKernelStore } = kernelStoreLib;
         const env = buildAwsScopedEnv(process.env, cfg.kernel.region);
         const { run } = createAwsCliRunner(env);
         const driver = createAwsCliDynamoDriver({ run });
@@ -18076,7 +18336,14 @@ async function mainLoop() {
         },
         // Catálogo del control-plane: `listProducts()` lee el índice global (no una
         // partición de tenant), por eso usa un contextProjectId dedicado y seguro.
-        buildCatalogStore: () => buildDurableStore('kernel-control-plane', ['kernel-control-plane']),
+        // #5204 — la partición sale de la CONSTANTE compartida, nunca de un literal:
+        // el alta durable (`durableRegisterProduct`) escribe `product#`/`catalog#index`
+        // en esta misma partición. Cuando eran dos literales distintos, el catálogo se
+        // escribía en la partición del tenant y el boot lo leía acá: invisible.
+        buildCatalogStore: () => buildDurableStore(
+          kernelStoreLib.CONTROL_PLANE_PROJECT_ID,
+          [kernelStoreLib.CONTROL_PLANE_PROJECT_ID],
+        ),
         // Store por instancia: MISMO driver durable ligado a cada tenant con su
         // propio `projectId` derivado del registro (A01 — nunca en banda).
         buildStoreFactory: () => (o) => buildDurableStore(o.contextProjectId, o.allowedNamespaces, o.onAlert),
@@ -18241,9 +18508,39 @@ async function mainLoop() {
       const TWO_MINUTES = 2 * 60 * 1000;
       if (data.source === 'telegram' && !data.notified && ageMs < TWO_MINUTES) {
         const mode = data.mode || (data.paused ? 'pausado' : 'completo');
-        sendTelegram(`🚀 *Pipeline reiniciado y listo* (modo ${mode})\n_Todo en marcha para nuevas pruebas._`);
+        // #5399 · UX-1 — este es el ÚNICO canal que el operador lee de verdad:
+        // el `log()` de restart.js va a `logs/restart-spawn.log` (spawn detached
+        // con stdout redirigido), así que cumplir CA-7 sólo ahí no evita el
+        // incidente. El 2026-08-02 el mensaje que llegó fue "🚀 Pipeline
+        // reiniciado y listo — Todo en marcha" sobre un pipeline que no despachó
+        // durante 1h33: el sistema avisó que estaba todo bien.
+        //
+        // El estado se lee del FILESYSTEM (fuente de verdad), no de
+        // last-restart.json: si la pausa heredada ya se auto-levantó durante
+        // este arranque (loadConfig → clearFullPause), el marker ya no está y el
+        // operador tiene que enterarse de que SÍ está despachando.
+        let pauseActive = false;
+        try { pauseActive = fs.existsSync(PAUSE_FILE); } catch { /* fail-open al copy de pausa */ }
+        let origin = null;
+        if (pauseActive) {
+          try { origin = partialPause.readFullPauseOrigin(); } catch { /* copy degradado, nunca throw */ }
+        }
+        // `autoLiftable` se decide sobre `origin.source` (veredicto FAIL-CLOSED
+        // del lector), NUNCA sobre `rawSource`: el literal sólo alimenta el label
+        // humano. Así el copy no puede prometer un auto-levantado que el gate de
+        // CA-8 no va a hacer.
+        const notice = pauseNotice.buildRestartNotice({
+          mode,
+          pauseActive,
+          source: origin ? (origin.rawSource || origin.source) : null,
+          autoLiftable: !!(origin && partialPause.isAutoLiftableSource(origin.source)),
+          preserved: !!(origin && origin.preservedFrom),
+        });
+        sendTelegram(notice);
         fs.writeFileSync(lastRestartPath, JSON.stringify({ ...data, notified: true }, null, 2));
-        log('pulpo', `Restart ${mode} confirmado via Telegram (solicitado hace ${Math.round(ageMs / 1000)}s)`);
+        log('pulpo', `Restart ${mode} confirmado via Telegram (solicitado hace ${Math.round(ageMs / 1000)}s)`
+          + ` — pausa activa=${pauseActive}`
+          + (origin ? ` autoria=${origin.rawSource || origin.source} heredada=${!!origin.preservedFrom}` : ''));
       }
     }
   } catch (e) {

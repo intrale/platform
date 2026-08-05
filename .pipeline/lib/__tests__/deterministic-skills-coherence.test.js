@@ -24,6 +24,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const yaml = require('js-yaml');
+const { readEffectiveConfig } = require('./_test-helpers');
 
 const PIPELINE_DIR = path.resolve(__dirname, '..', '..');
 const REPO_ROOT = path.resolve(PIPELINE_DIR, '..');
@@ -36,9 +37,11 @@ function loadAgentModels() {
     return JSON.parse(fs.readFileSync(p, 'utf8'));
 }
 
+// #5174 — `skills_por_fase` es lado PRODUCTO: post-partición vive en
+// `pipeline.config.json`, no en el `config.yaml`. Leer sólo el kernel dejaba el
+// set de skills VACÍO y el test acusaba a todos los skills de huérfanos.
 function loadConfigYaml() {
-    const p = path.join(PIPELINE_DIR, 'config.yaml');
-    return yaml.load(fs.readFileSync(p, 'utf8'));
+    return readEffectiveConfig();
 }
 
 function listSkillsInConfig(cfg) {

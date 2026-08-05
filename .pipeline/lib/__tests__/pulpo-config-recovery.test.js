@@ -43,6 +43,12 @@ fs.mkdirSync(TG_QUEUE, { recursive: true });
 // validateConfig — es el mismo schema con el que corre el pipeline).
 const REAL_CONFIG = path.join(__dirname, '..', '..', 'config.yaml');
 const GOOD_YAML = fs.readFileSync(REAL_CONFIG, 'utf8');
+// #5174 — el fixture sano es una COPIA del kernel real, que post-partición ya no
+// es un documento completo: sin el manifiesto de producto al lado, "config sano"
+// seguiría siendo inválido y el auto-recovery de #4832 no levantaría nunca la
+// pausa. El sandbox tiene que reproducir los DOS archivos, como producción.
+const { seedRealProductManifest } = require('./_test-helpers');
+seedRealProductManifest(TMP_DIR);
 const BAD_YAML = 'foo: : : bad\n  : indentacion rota\n :nope';
 
 process.env.PULPO_NO_AUTOSTART = '1';

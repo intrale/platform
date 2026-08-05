@@ -6,8 +6,9 @@
 // rechazo (shape, bounds, nombre duplicado, issue ya en otra ola).
 //
 // Aislamiento: cada test arranca con su propio PIPELINE_DIR (PIPELINE_DIR_OVERRIDE)
-// — mismo patrón que wave-promote-atomic.test.js. Sin config.yaml en el tmp →
-// el techo de concurrencia cae al default seguro (10).
+// — mismo patrón que wave-promote-atomic.test.js. El tmp lleva un config.yaml
+// mínimo (#5172): sin sección `waves:` el techo de concurrencia sigue siendo el
+// default seguro (10).
 //
 // Ejecutar:  node --test .pipeline/lib/__tests__/create-planned-wave.test.js
 // =============================================================================
@@ -18,9 +19,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { seedPipelineConfig } = require('./_test-helpers');
 
 function setupTmp() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'create-planned-wave-'));
+    // #5172: un pipelineDir sin config.yaml ahora es fallo tipado, no default
+    // silencioso. Se siembra el documento mínimo para conservar el techo por
+    // default (10) contra el que estos tests rechazan `concurrency_max: 999`.
+    seedPipelineConfig(dir);
     process.env.PIPELINE_DIR_OVERRIDE = dir;
     delete require.cache[require.resolve('../waves')];
     const waves = require('../waves');

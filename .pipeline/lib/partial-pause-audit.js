@@ -71,6 +71,13 @@ const AUTHORIZED_BY_STATIC = Object.freeze([
     'resume:dashboard',      // /dashboard/wave/resume → resumeAll
     'dispatch:dashboard',    // /dashboard/wave/dispatch → realign de la ola activa
     'dashboard:roadmap:allowlist', // #4437: editor de allowlist en la ventana Roadmap
+    // #5399 — restart.js preservando la pausa total (`.paused`) a través de un
+    // reinicio. NO habilita removals de allowlist: `preserveFullPause` audita con
+    // `previous === current`, así que su diff nunca tiene `removed`. Sin este
+    // valor en el enum, `validateAuthorizedBy` devolvía `authorized_by_not_in_enum`
+    // y la entry de preservación quedaba como `action: 'reject'` — el CA-13
+    // fallaba en silencio. Prohibido usarlo en un call-site que mute la allowlist.
+    'restart:preserve-pause',
 ]);
 
 // `recursive-deps:from-<N>` donde N es el número del issue padre (>0).

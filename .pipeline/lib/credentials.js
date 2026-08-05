@@ -21,6 +21,29 @@
 //   1. process.env ya seteado → respetar, no sobrescribir
 //   2. credentials.json (canonical)
 //   3. telegram-config.json (legacy, fallback con warning)
+//
+// -----------------------------------------------------------------------------
+// #5353 — el vault de AWS pasa a ser la FUENTE PRIMARIA (gate `vault.enabled`)
+// -----------------------------------------------------------------------------
+//
+// Con `vault.enabled: false` (default commiteado en `config.yaml`) todo lo de
+// arriba sigue EXACTAMENTE igual y no se emite una sola llamada AWS: el módulo
+// `secret-vault.js` ni siquiera se carga. Con el gate abierto, la precedencia
+// pasa a ser:
+//
+//   1. `process.env` preseteado → gana, SALVO para las anclas de autorización
+//      (B2.2: ahí gana el vault, sin excepción, y el shadowing se loguea).
+//   2. El **vault** (`secret-vault.js`, camino SYNC — D-SYNC-1/D1.6).
+//   3. La ventana de bootstrap sobre el archivo, SÓLO si el operador la
+//      encendió a mano y no caducó (B1.3/B1.5). Jamás automática ante un error
+//      del driver (B1.2), jamás para un ancla (B1.7/B2.4).
+//   4. Nada más: **fail-closed** nombrando el secreto faltante. La variable
+//      queda SIN SETEAR — nunca cadena vacía, nunca un default (B1.1).
+//
+// `loadIntoEnv()` sigue siendo **sync** (D-SYNC-1). No es cosmética: sus dos
+// call-sites de arranque (`pulpo.js:18`, `restart.js:47`) son de nivel de
+// módulo y su razón de ser es el ORDEN (#3311); CommonJS no tiene top-level
+// `await`, así que volverla async destruiría la garantía, no la firma.
 // =============================================================================
 
 'use strict';
@@ -32,29 +55,131 @@ const path = require('path');
 const CANONICAL_PATH = path.join(os.homedir(), '.claude', 'secrets', 'credentials.json');
 const LEGACY_PATH = path.join(os.homedir(), '.claude', 'secrets', 'telegram-config.json');
 
-// Mapeo canónico: dot-path en credentials.json → env var que esperan los CLIs.
-// Mantener ordenado por categoría para facilitar el code-review.
-const ENV_MAPPING = Object.freeze({
+// Raíz del repo — se usa para B1.4 (el archivo de la ventana de bootstrap tiene
+// que estar FUERA del árbol versionado, coherente con #5218).
+const REPO_ROOT = path.resolve(__dirname, '..', '..');
+
+// -----------------------------------------------------------------------------
+// Descriptor de credenciales (#5353) — ENV_MAPPING se DERIVA de acá
+// -----------------------------------------------------------------------------
+//
+// Cada entrada describe de dónde sale el valor y qué tratamiento merece:
+//
+//   env         nombre de la env var que esperan los CLIs.
+//   backend     'ssm' → Parameter Store · 'secretsmanager' → Secrets Manager
+//               (tier `rotating`) · 'file-only' → nunca va al vault.
+//               La clasificación NO la inventa este módulo: sale de la tabla
+//               firmada en `docs/pipeline/vault-secretos-aws.md` (#5351), que
+//               manda a Secrets Manager sólo lo que rota FUERA del rol de
+//               provisión. Hoy eso es un único valor.
+//   shared      tier de provisión declarado: `shared/` (común a todos los
+//               hosts) vs `hosts/<hostId>/`. Es la INTENCIÓN de alta; en
+//               runtime la membresía autoritativa es `vault.shared_secrets`
+//               (secret-vault.js), que es enumerada a propósito.
+//   auth_anchor el valor no es un secreto: es la fuente de una decisión de
+//               AUTORIZACIÓN. Cambia la precedencia (B2) — ver más abajo.
+//
+// El scope del vault es el primer segmento del dot-path (`telegram`,
+// `providers`, `google_drive`): las claves top-level del namespace de
+// credenciales, mismo vocabulario que `resolveScopedRefs` (G-1 de #5352).
+const VAULT_BACKENDS = Object.freeze(['ssm', 'secretsmanager', 'file-only']);
+
+const ENV_DESCRIPTORS = Object.freeze({
   // Telegram bot
-  'telegram.bot_token':            'TELEGRAM_BOT_TOKEN',
-  'telegram.chat_id':              'TELEGRAM_CHAT_ID',
+  'telegram.bot_token': {
+    env: 'TELEGRAM_BOT_TOKEN', backend: 'ssm', shared: true, auth_anchor: false,
+  },
+  'telegram.chat_id': {
+    env: 'TELEGRAM_CHAT_ID', backend: 'ssm', shared: true, auth_anchor: false,
+  },
   // Chat del operador (Leo) para handlers proactivos (mockup UX, etc. — #3384).
   // Si no está configurada, el handler correspondiente se autodeshabilita.
-  'telegram.leo_operator_chat_id': 'TELEGRAM_LEO_OPERATOR_CHAT_ID',
+  //
+  // B2.1 — ÚNICA ancla de autorización del inventario. No es una API key: es la
+  // única fuente de `resolveOperatorAllowlist()` (`operator-gate.js:78-85`), que
+  // alimenta `authorizedSigners` en `pulpo.js`. Quien pueda escribir esta var en
+  // el ambiente del Pulpo se auto-agrega a la allowlist de firmantes; por eso
+  // con el gate abierto se resuelve EXCLUSIVAMENTE desde el vault (B2.2) y no
+  // tiene fallback de ningún tipo (B2.4).
+  'telegram.leo_operator_chat_id': {
+    env: 'TELEGRAM_LEO_OPERATOR_CHAT_ID', backend: 'ssm', shared: true, auth_anchor: true,
+  },
   // Providers IA (allowlist en agent-models-validate.js:ALLOWED_CREDENTIAL_ENV_VARS)
-  'providers.openai.api_key':      'OPENAI_API_KEY',
-  'providers.anthropic.api_key':   'ANTHROPIC_API_KEY',
-  'providers.google.api_key':      'GEMINI_API_KEY',
+  'providers.openai.api_key': {
+    env: 'OPENAI_API_KEY', backend: 'ssm', shared: true, auth_anchor: false,
+  },
+  'providers.anthropic.api_key': {
+    env: 'ANTHROPIC_API_KEY', backend: 'ssm', shared: true, auth_anchor: false,
+  },
+  'providers.google.api_key': {
+    env: 'GEMINI_API_KEY', backend: 'ssm', shared: true, auth_anchor: false,
+  },
   // providers.groq.api_key se removió en #3353 — Groq descontinuado.
-  'providers.cerebras.api_key':    'CEREBRAS_API_KEY',
-  'providers.nvidia.api_key':      'NVIDIA_NIM_API_KEY',
+  'providers.cerebras.api_key': {
+    env: 'CEREBRAS_API_KEY', backend: 'ssm', shared: true, auth_anchor: false,
+  },
+  'providers.nvidia.api_key': {
+    env: 'NVIDIA_NIM_API_KEY', backend: 'ssm', shared: true, auth_anchor: false,
+  },
   // #4880 — Kimi (Moonshot). Drop-in de Claude Code contra el endpoint
   // Anthropic-compat: autentica con su token en `ANTHROPIC_AUTH_TOKEN` (var
   // distinta de `ANTHROPIC_API_KEY`, la OAuth/Max real). Fuente única en
   // credentials.json; jamás por Telegram (SEC-5). El valor nunca se loguea (el
   // loader sólo lista nombres de var).
-  'providers.moonshot.api_key':    'ANTHROPIC_AUTH_TOKEN',
+  'providers.moonshot.api_key': {
+    env: 'ANTHROPIC_AUTH_TOKEN', backend: 'ssm', shared: true, auth_anchor: false,
+  },
+  // #5172 — Google Drive (persistencia de evidencia de QA).
+  //
+  // Hasta ahora estas credenciales vivían SÓLO en el archivo versionado
+  // `.claude/hooks/telegram-config.json`, que es tracked por git: la copia
+  // commiteada NO tiene las claves `google_*`, así que cada respawn con
+  // `git reset --hard` las borraba y `qa-video-share` quedaba con
+  // "Google Drive no configurado" hasta que el operador las recargaba a mano.
+  // Migradas al store externo (que sobrevive al reset) para cerrar ese ciclo.
+  // El refresh_token es un secreto: el loader sólo lista NOMBRES de var.
+  'google_drive.oauth_client_id': {
+    env: 'GOOGLE_OAUTH_CLIENT_ID', backend: 'ssm', shared: true, auth_anchor: false,
+  },
+  'google_drive.oauth_client_secret': {
+    env: 'GOOGLE_OAUTH_CLIENT_SECRET', backend: 'ssm', shared: true, auth_anchor: false,
+  },
+  // El ÚNICO ocupante de Secrets Manager hoy: lo emite un tercero con su propio
+  // ciclo de refresh (Google lo renueva y puede invalidarlo sin que nadie lo
+  // escriba desde el rol de provisión) — regla (a) de la tabla de #5351.
+  'google_drive.oauth_refresh_token': {
+    env: 'GOOGLE_OAUTH_REFRESH_TOKEN', backend: 'secretsmanager', shared: true, auth_anchor: false,
+  },
+  'google_drive.drive_folder_id': {
+    env: 'GOOGLE_DRIVE_FOLDER_ID', backend: 'ssm', shared: true, auth_anchor: false,
+  },
 });
+
+// Retrocompat OBLIGATORIA (G1): el mapa plano `dotPath -> envVar` se DERIVA del
+// descriptor, nunca se duplica a mano. Sigue siendo un objeto plano CONGELADO
+// —no un `Proxy`, no un getter lazy— porque sus consumidores lo recorren con
+// `Object.entries()` / `Object.values()` / `Object.keys()` directo:
+//
+//   .pipeline/lib/wizards/providers/index.js:73  ← PRODUCCIÓN. `listProviders()`
+//        filtra `providers.*.api_key` sobre este mapa. Si desapareciera,
+//        devolvería `[]` SIN lanzar excepción y el wizard de providers del
+//        dashboard quedaría vacío: falla silenciosa, por eso tiene test propio.
+//   .pipeline/lib/__tests__/credentials.test.js, credentials-google-drive.test.js,
+//   kimi-provider-4880.test.js, .pipeline/tests/dashboard/wizard-providers-flow.test.js
+//
+// (Ojo: `hydrate-provider-env.js:35` declara OTRO `ENV_MAPPING` local y
+// homónimo, sin relación con éste. Un `grep` lo trae; no es parte de esto.)
+const ENV_MAPPING = Object.freeze(Object.fromEntries(
+  Object.entries(ENV_DESCRIPTORS).map(([dotPath, d]) => [dotPath, d.env]),
+));
+
+// B2.7 — nombres de las env vars que son anclas de autorización, derivados del
+// descriptor (no se duplica el inventario). Es un Set por NOMBRE porque el
+// camino del mapping legacy itera sin `dotPath`, y ahí no hay descriptor del que
+// leer `auth_anchor`: sin esto, el fail-closed del ancla tendría un agujero.
+const ANCHOR_ENV_VARS = Object.freeze(new Set(
+  Object.values(ENV_DESCRIPTORS).filter((d) => d.auth_anchor).map((d) => d.env),
+));
 
 // Mapeo legacy: telegram-config.json usa flat keys (no nested). Solo cubre las
 // que existían en ese formato — providers nuevos (google/cerebras/nvidia) no
@@ -90,15 +215,333 @@ function readJsonFile(filePath) {
   return JSON.parse(raw);
 }
 
+// =============================================================================
+// Integración con el vault (#5353) — fuente primaria, sync, memoizada
+// =============================================================================
+
+// UX-2 — el origen se reporta POR VARIABLE. Un único `source` global no permite
+// diagnosticar la ventana de bootstrap: con 13 vars y 4 orígenes posibles,
+// "source: canonical" no dice cuál vino de dónde. `result.source` se conserva
+// igual (retrocompat), pero la respuesta fina vive en `result.sources`.
+const SOURCE = Object.freeze({
+  VAULT:           'vault',
+  FILE_BOOTSTRAP:  'file-bootstrap',
+  CANONICAL:       'canonical',
+  LEGACY:          'legacy',
+  ENV_PREEXISTING: 'env-preexisting',
+  EMPTY:           'empty',    // UX-3: presente en la fuente, pero vacía o placeholder
+  MISSING:         'missing',  // UX-3: no configurada en ninguna fuente
+});
+
+// D-SYNC-7 — memoización por namespace A NIVEL DE MÓDULO. No es una
+// optimización: `loadIntoEnv` NO se llama sólo en el boot. `action-token.js:77`
+// la llama por resolución de token y `cerebras-runner.js:96` /
+// `nvidia-nim-runner.js:90` POR LANZAMIENTO DE AGENTE. Sin esto, cada launch
+// pagaría el arranque de un proceso Python de la AWS CLI (~1-2 s).
+//
+// El TTL sale de `vault.cache_ttl_seconds` (tope duro de 300 s en el módulo del
+// vault, SEC-6): un caché sin vencimiento en un proceso que vive días
+// convertiría una revocación en el vault en algo que no surte efecto hasta el
+// restart — y para el ancla de autorización eso significa seguir aceptando a un
+// firmante des-autorizado.
+//
+// Sin negative caching: un fallo NO se memoiza, para que `aws login` surta
+// efecto sin reiniciar el Pulpo.
+let _vaultMemo = null;   // { clave, expiraEn, payload }
+
+/** Invalidación explícita. Exportada SÓLO para los tests. */
+function _resetVaultCache() {
+  _vaultMemo = null;
+}
+
+/** `providers.openai.api_key` → `{ scope: 'providers', subPath: 'openai.api_key' }`. */
+function splitDotPath(dotPath) {
+  const i = dotPath.indexOf('.');
+  return i < 0
+    ? { scope: dotPath, subPath: '' }
+    : { scope: dotPath.slice(0, i), subPath: dotPath.slice(i + 1) };
+}
+
 /**
- * Lee credentials.json y popula `env` con las credenciales mapeadas.
+ * Agrupa los scopes que hay que pedirle al vault, por backend. Es una función
+ * pura para que el test la ejerza sin tocar red ni config.
+ *
+ * D5 (#5352) — el vault resuelve SÓLO los scopes declarados, y `scopes` es un
+ * puñado (3), no 13: no existe un camino que hidrate variable por variable.
+ *
+ * @returns {{ssm: string[], secretsmanager: string[]}}
+ */
+function vaultScopePlan(descriptors = ENV_DESCRIPTORS) {
+  const plan = { ssm: [], secretsmanager: [] };
+  for (const [dotPath, d] of Object.entries(descriptors)) {
+    if (!VAULT_BACKENDS.includes(d.backend)) {
+      throw new Error(`[credentials] descriptor "${dotPath}": backend desconocido "${d.backend}"`);
+    }
+    // `file-only` nunca va al vault: se resuelve por el camino del archivo.
+    if (d.backend === 'file-only') continue;
+    const { scope } = splitDotPath(dotPath);
+    if (!plan[d.backend].includes(scope)) plan[d.backend].push(scope);
+  }
+  return plan;
+}
+
+/** ¿El path cae DENTRO del árbol del repo? (B1.4, coherente con #5218) */
+function estaDentroDelRepo(p) {
+  const rel = path.relative(REPO_ROOT, path.resolve(p));
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+/**
+ * Lee la sección `vault:` de config.yaml (+ `kernel.region`, que el vault
+ * REUTILIZA por diseño de #5352).
+ *
+ * B2.7 (rev-1) — DOS decisiones de seguridad viven acá:
+ *
+ * 1. La RAÍZ de la config se fija en código (`REPO_ROOT`), igual que hace el
+ *    Pulpo (`pulpo.js`, `resolve({pipelineDir: PIPELINE})`). `resolve({})` deja
+ *    que el ENTORNO elija qué `config.yaml` es la autoridad
+ *    (`PIPELINE_DIR_OVERRIDE` / `PIPELINE_STATE_DIR` / `PIPELINE_REPO_ROOT`), y
+ *    esa es exactamente la capacidad que B2 asume en el adversario: quien puede
+ *    escribir `TELEGRAM_LEO_OPERATOR_CHAT_ID` puede escribir `PIPELINE_REPO_ROOT`,
+ *    desviar la lectura a una carpeta suya y apagar el gate del vault desde
+ *    afuera — con el gate apagado el ancla vuelve al régimen de `process.env` y
+ *    el atacante queda como firmante del gate del operador. Fijar la raíz cierra
+ *    el vector entero. `opts.pipelineDir` sigue disponible porque es un
+ *    ARGUMENTO (código), no entorno — la misma distinción que documenta
+ *    `config-resolver.js` para su propio orden de precedencia.
+ *
+ * 2. "No pude leer la config" NO es "vault apagado". Son estados distintos con
+ *    políticas opuestas: `enabled: false` es una decisión deliberada y commiteada;
+ *    un error de lectura es una condición NO gobernada. Colapsarlos es fail-open
+ *    disfrazado — el mismo razonamiento que el código ya aplica a B1.2 para el
+ *    error de red del driver. Por eso el retorno es un TRI-estado y el
+ *    indeterminado se propaga hasta la precedencia del ancla.
+ *
+ * @returns {{cfg: object|null, indeterminado: boolean, causa: string|null}}
+ */
+function readVaultConfig(opts, logger) {
+  // Inyección de tests: una config provista por firma es una decisión conocida,
+  // nunca un indeterminado.
+  if (opts.vaultConfig !== undefined) {
+    return { cfg: opts.vaultConfig, indeterminado: false, causa: null };
+  }
+  const pipelineDir = opts.pipelineDir
+    ? path.resolve(opts.pipelineDir)
+    : path.join(REPO_ROOT, '.pipeline');
+  try {
+    const cfg = require('./config-resolver').resolve({ pipelineDir });
+    // Config LEÍDA y sin sección `vault:` es una decisión conocida (el vault no
+    // está configurado), no un indeterminado: gate cerrado y nada más.
+    if (!cfg || !cfg.vault) return { cfg: null, indeterminado: false, causa: null };
+    return {
+      cfg: { ...cfg.vault, region: cfg.kernel && cfg.kernel.region },
+      indeterminado: false,
+      causa: null,
+    };
+  } catch (e) {
+    const causa = (e && e.name) || 'error';
+    logger(`[credentials] WARN: no se pudo leer config.yaml para el vault (${causa}). `
+      + 'Impacto: el gate del vault queda CERRADO para los 12 secretos (se usa el archivo), '
+      + 'pero las anclas de autorizacion fallan CERRADAS: no se puede probar que el vault este '
+      + 'apagado a proposito, y un error de lectura no puede devolverle el ancla al ambiente (B2.7). '
+      + `Proximo paso: reparar ${path.join(pipelineDir, 'config.yaml')}`);
+    return { cfg: null, indeterminado: true, causa };
+  }
+}
+
+/**
+ * Evalúa la ventana de bootstrap de B1 sobre el archivo de credenciales.
+ *
+ * Es la ÚNICA puerta al archivo cuando el gate del vault está abierto, y está
+ * cerrada por default. Todas las condiciones tienen que darse a la vez.
+ */
+function evaluarVentanaBootstrap(cfg, { canonicalPath, legacyPath, ahora, logger }) {
+  // B1.3 — flag deliberado. Fail-closed: sólo el booleano `true` exacto.
+  if (!cfg || cfg.bootstrap_fallback !== true) {
+    return { activo: false, motivo: 'flag-apagado' };
+  }
+
+  // B1.5 — `until` OBLIGATORIO. Sin fecha, "bootstrap temporal" se vuelve
+  // permanente por olvido, que es justo lo que la ventana existe para evitar.
+  const hasta = typeof cfg.bootstrap_fallback_until === 'string'
+    ? cfg.bootstrap_fallback_until.trim() : '';
+  if (!hasta) {
+    logger('[credentials] ERROR: `vault.bootstrap_fallback: true` sin '
+      + '`vault.bootstrap_fallback_until`. Impacto: la ventana de bootstrap NO se '
+      + 'aplica y las variables que falten en el vault quedan sin setear. '
+      + 'Proximo paso: poner una fecha ISO-8601 de caducidad o apagar el flag');
+    return { activo: false, motivo: 'until-ausente' };
+  }
+  const vence = Date.parse(hasta);
+  if (!Number.isFinite(vence)) {
+    logger(`[credentials] ERROR: \`vault.bootstrap_fallback_until\` no es una fecha ISO-8601 valida ("${hasta}"). `
+      + 'Impacto: la ventana de bootstrap NO se aplica. Proximo paso: corregir la fecha en config.yaml');
+    return { activo: false, motivo: 'until-invalido' };
+  }
+  if (ahora > vence) {
+    // B1.5 — caduca sola, aunque el flag siga en `true`.
+    logger(`[credentials] WARN: la ventana de bootstrap del vault CADUCO el ${hasta}. `
+      + 'Impacto: el fallback al archivo ya no se aplica y lo que falte en el vault queda sin setear. '
+      + 'Proximo paso: subir los secretos faltantes al vault y apagar `vault.bootstrap_fallback`');
+    return { activo: false, motivo: 'caducada' };
+  }
+
+  // B1.4 — el archivo del fallback tiene que estar FUERA del árbol del repo,
+  // aunque el flag esté encendido. No relajamos #5218 por la ventana.
+  for (const p of [canonicalPath, legacyPath]) {
+    if (estaDentroDelRepo(p)) {
+      logger(`[credentials] ERROR: el archivo de credenciales resuelve DENTRO del arbol del repo (${p}). `
+        + 'Impacto: la ventana de bootstrap se RECHAZA aunque el flag este encendido (#5218). '
+        + 'Proximo paso: mover el store fuera del repo (~/.claude/secrets/)');
+      return { activo: false, motivo: 'archivo-en-repo' };
+    }
+  }
+
+  // UX-4 — avisa MIENTRAS está activa, y avisa ANTES de caducar (no después de
+  // que el arranque falle).
+  const diasRestantes = Math.floor((vence - ahora) / 86400000);
+  logger(`[credentials] WARN: ventana de bootstrap del vault ACTIVA hasta ${hasta} `
+    + `(quedan ${diasRestantes} dia/s). Impacto: las variables ausentes del vault se leen del archivo `
+    + 'y se reportan con source `file-bootstrap`, nunca `vault`. '
+    + 'Proximo paso: subir esos secretos al vault antes de la fecha');
+  if (diasRestantes <= 3) {
+    logger('[credentials] WARN: la ventana de bootstrap del vault esta POR CADUCAR. '
+      + 'Impacto: al vencer, toda variable que siga faltando en el vault quedara sin setear '
+      + 'y el componente que la necesite fallara. Proximo paso: completar la migracion al vault YA');
+  }
+  return { activo: true, vence, hasta };
+}
+
+/**
+ * Resuelve el namespace del vault por el camino SYNC, memoizado por namespace.
+ *
+ * @returns {{enabled:boolean, indeterminado:boolean, namespace:string|null,
+ *            payload:object|null, error:object|null}}
+ */
+function resolverVault(opts, logger) {
+  const { cfg, indeterminado, causa } = readVaultConfig(opts, logger);
+
+  // D-SYNC-8 — con el gate cerrado no se construye el vault, no se carga
+  // `secret-vault.js` y no se toca el driver ni una vez. El comportamiento
+  // productivo queda IDÉNTICO al de antes de #5353.
+  //
+  // B2.7 — `indeterminado` viaja aparte de `enabled`. Para los 12 no-ancla el
+  // camino es el mismo que con el gate cerrado (por eso `enabled: false`); lo
+  // que cambia es SÓLO la precedencia del ancla, que falla cerrada.
+  if (!cfg || cfg.enabled !== true) {
+    return {
+      enabled: false,
+      indeterminado: !!indeterminado,
+      causaIndeterminado: causa || null,
+      namespace: null,
+      payload: null,
+      error: null,
+      cfg,
+    };
+  }
+
+  const ahora = typeof opts.now === 'function' ? opts.now() : Date.now();
+  const clave = `${cfg.prefix}/${cfg.projectId}#${cfg.hostId}`;
+  if (_vaultMemo && _vaultMemo.clave === clave && _vaultMemo.expiraEn > ahora) {
+    return { enabled: true, namespace: clave, payload: _vaultMemo.payload, error: null, cfg };
+  }
+
+  const sv = require('./secret-vault');
+  try {
+    const driver = opts.vaultDriver || (() => {
+      // SEC-2 — el ambiente de origen del runner es EXPLÍCITO y es el del
+      // proceso padre. `opts.env` es el ambiente DESTINO (los scripts de QA
+      // pasan un scratch descartable); la identidad AWS no sale de ahí.
+      const runner = sv.createAwsCliVaultRunner(process.env, cfg.region);
+      return sv.createAwsCliVaultDriver({ run: runner.run });
+    })();
+
+    // B3-A.1/B3-A.3 — el namespace se construye desde config y `validateVaultConfig`
+    // rechaza un `hostId` vacío o inválido NOMBRANDO `vault.hostId`.
+    const vault = sv.createSecretVault({
+      config: cfg,
+      driver,
+      // CA-23 — al logger del vault sólo llegan NOMBRES de scope.
+      logger: {
+        info: (msg, meta) => logger(`[credentials] ${msg} ${JSON.stringify(meta || {})}`),
+        warn: (msg, meta) => logger(`[credentials] WARN: ${msg} ${JSON.stringify(meta || {})}`),
+      },
+    });
+
+    const plan = vaultScopePlan(ENV_DESCRIPTORS);
+    const payload = { ssm: {}, secretsmanager: {} };
+    // D1.6 — sólo el camino SYNC. Dos llamadas batch como máximo para `ssm`
+    // (SEC-3) y una por scope para `rotating`.
+    if (plan.ssm.length) {
+      payload.ssm = vault.resolveScopeSync({ scopes: plan.ssm });
+    }
+    if (plan.secretsmanager.length) {
+      payload.secretsmanager = vault.resolveScopeSync({
+        scopes: plan.secretsmanager, tier: 'rotating',
+      });
+    }
+
+    const ttlMs = (typeof cfg.cache_ttl_seconds === 'number' ? cfg.cache_ttl_seconds : 300) * 1000;
+    _vaultMemo = { clave, expiraEn: ahora + ttlMs, payload };
+    return { enabled: true, namespace: clave, payload, error: null, cfg };
+  } catch (err) {
+    // CA-22 — un fallo del vault se PROPAGA como fallo, jamás se degrada a
+    // vacío ni habilita el fallback al archivo (B1.2). El mensaje ya viene
+    // redactado por `secret-vault.js` (SEC-1/SEC-5: nombra el path lógico y la
+    // remediación, nunca el ARN, el account id ni el stdout de la CLI).
+    //
+    // UX-5 — se narra causa + impacto + próximo paso, no un stack trace.
+    logger(`[credentials] ERROR: el vault no pudo resolverse (${(err && err.code) || (err && err.name) || 'error'}). `
+      + `Causa: ${(err && err.message) || 'desconocida'}. `
+      + 'Impacto: las credenciales respaldadas por el vault quedan SIN SETEAR (fail-closed); '
+      + 'NO se cae al archivo. Proximo paso: revisar la remediacion que nombra la causa y reintentar');
+    return {
+      enabled: true,
+      namespace: clave,
+      payload: null,
+      error: { name: (err && err.name) || 'Error', code: (err && err.code) || null, message: (err && err.message) || '' },
+      cfg,
+    };
+  }
+}
+
+/** Extrae el valor de una variable del payload ya resuelto del vault. */
+function valorDelVault(estado, dotPath, desc) {
+  if (!estado.payload) return undefined;
+  const { scope, subPath } = splitDotPath(dotPath);
+  const porBackend = estado.payload[desc.backend];
+  const scopeObj = porBackend && porBackend[scope];
+  if (!scopeObj) return undefined;
+  return subPath ? getNested(scopeObj, subPath) : scopeObj;
+}
+
+// Índice inverso del mapping legacy (`TELEGRAM_BOT_TOKEN` → `bot_token`), para
+// poder leer del archivo legacy aun cuando la iteración va por el descriptor.
+const LEGACY_KEY_BY_ENV = Object.freeze(Object.fromEntries(
+  Object.entries(LEGACY_MAPPING).map(([flat, envVar]) => [envVar, flat]),
+));
+
+/**
+ * Popula `env` con las credenciales mapeadas. **Sync** (D-SYNC-1): el retorno
+ * es el objeto de resultado, nunca una `Promise`.
+ *
+ * Fuentes, en orden: `process.env` preexistente (salvo anclas) → vault →
+ * ventana de bootstrap sobre el archivo → fail-closed.
  *
  * @param {object} [opts]
  * @param {function} [opts.logger=console.log] Logger para warnings/errors.
  * @param {string}   [opts.canonicalPath]      Path del archivo canónico (override para tests).
  * @param {string}   [opts.legacyPath]         Path del archivo legacy (override para tests).
  * @param {object}   [opts.env=process.env]    Env target (override para tests).
- * @returns {{source: 'canonical'|'legacy'|'none', hydrated: string[], skipped_existing: string[], skipped_empty: string[]}}
+ * @param {object}   [opts.vaultConfig]        Sección `vault:` inyectada (tests).
+ * @param {string}   [opts.pipelineDir]        Raíz de `.pipeline` para resolver config.yaml.
+ *                                             Por default se fija en código (`REPO_ROOT`):
+ *                                             el ENTORNO no elige la autoridad (B2.7).
+ * @param {object}   [opts.vaultDriver]        Driver del vault inyectado (tests).
+ * @param {function} [opts.now]                Reloj inyectable en ms (tests de la ventana B1.5).
+ * @param {object}   [opts.shadowMetrics]      Núcleo de la ventana sombra inyectado (#5448, tests).
+ * @returns {{source: string, hydrated: string[], skipped_existing: string[],
+ *           skipped_empty: string[], missing: string[], sources: object, vault: object}}
  */
 function loadIntoEnv(opts = {}) {
   const logger = typeof opts.logger === 'function' ? opts.logger : console.log;
@@ -106,7 +549,54 @@ function loadIntoEnv(opts = {}) {
   const legacyPath = opts.legacyPath || LEGACY_PATH;
   const env = opts.env || process.env;
 
-  const result = { source: 'none', hydrated: [], skipped_existing: [], skipped_empty: [] };
+  const result = {
+    source: 'none',
+    hydrated: [], skipped_existing: [], skipped_empty: [],
+    // Campos NUEVOS (#5353). `hydrated` / `skipped_existing` / `skipped_empty`
+    // no cambian de forma: siguen siendo arrays de NOMBRES de env var.
+    missing: [],   // B1.1 — fail-closed: quedaron SIN SETEAR
+    sources: {},   // UX-2 — origen por variable
+    vault: { enabled: false, namespace: null, error: null },
+  };
+
+  const vaultEstado = resolverVault(opts, logger);
+  result.vault = {
+    enabled: vaultEstado.enabled,
+    // B2.7 — visible para quien audite el arranque: `enabled:false` con
+    // `indeterminado:true` NO es "el operador apagó el vault", es "no se pudo
+    // leer la config", y las anclas se trataron como fail-closed.
+    indeterminado: !!vaultEstado.indeterminado,
+    namespace: vaultEstado.namespace,
+    error: vaultEstado.error,
+  };
+
+  // B2.7 — fail-closed de las anclas cuando el gate quedó INDETERMINADO (no se
+  // pudo leer config.yaml). Va ACÁ, antes de cualquier salida temprana: los
+  // caminos "no hay archivo de credenciales" y "el legacy es JSON inválido"
+  // retornan sin llegar al loop de precedencia, y ahí el ancla preseteada
+  // sobreviviría intacta — que es exactamente el bypass que hay que cerrar.
+  //
+  // No se puede probar que el vault esté apagado a propósito, así que el ancla
+  // NO vuelve al régimen de `process.env`: se descarta y se cuenta como
+  // faltante, igual que cuando el gate está abierto y el vault no la tiene
+  // (B2.4). Las 12 no-ancla no se tocan: su camino sigue siendo el del gate
+  // cerrado, idéntico al de antes de #5353.
+  const anclasCerradas = new Set();
+  if (vaultEstado.indeterminado) {
+    for (const envVar of ANCHOR_ENV_VARS) {
+      if (env[envVar] && String(env[envVar]).length > 0) {
+        delete env[envVar];
+        logger(`[credentials] WARN: ${envVar} estaba preseteada en el ambiente y se DESCARTO. `
+          + 'Causa: no se pudo leer config.yaml, asi que no hay forma de probar que el vault este '
+          + 'apagado a proposito, y un ancla de autorizacion no puede venir del ambiente (B2.7). '
+          + 'Impacto: el gate del operador queda con cero firmantes (fail-closed). '
+          + 'Proximo paso: reparar config.yaml y, si el vault esta encendido, subir el ancla al vault');
+      }
+      result.missing.push(envVar);
+      result.sources[envVar] = SOURCE.MISSING;
+      anclasCerradas.add(envVar);
+    }
+  }
 
   let data = null;
   let usingMapping = null;
@@ -129,29 +619,206 @@ function loadIntoEnv(opts = {}) {
       logger(`[credentials] WARN: usando archivo legacy ${legacyPath}. Migrar a ${canonicalPath} (ver docs/runbooks/credential-rotation.md)`);
     } catch (e) {
       logger(`[credentials] ERROR: legacy ${legacyPath} es JSON invalido (${e.message}); process.env queda como esta`);
-      return result;
+      if (!vaultEstado.enabled) return result;
     }
   }
 
   if (!data) {
-    logger(`[credentials] WARN: no se encontro ${canonicalPath} ni ${legacyPath}; process.env queda como esta`);
-    return result;
+    if (!vaultEstado.enabled) {
+      // Con el gate cerrado, sin archivo no hay nada que hacer: exactamente el
+      // mismo mensaje y el mismo camino de salida que antes de #5353.
+      logger(`[credentials] WARN: no se encontro ${canonicalPath} ni ${legacyPath}; process.env queda como esta`);
+      return result;
+    }
+    // Con el gate abierto la ausencia del archivo es el estado ESPERADO
+    // (Gherkin 1 / B1.8): la fuente primaria es el vault. Decir "process.env
+    // queda como esta" acá sería falso — el vault sí va a hidratar.
+    logger('[credentials] no hay archivo de credenciales local; se resuelve todo contra el vault '
+      + '(estado esperado con `vault.enabled: true`)');
   }
 
-  for (const [sourceKey, envVar] of Object.entries(usingMapping)) {
-    if (env[envVar] && String(env[envVar]).length > 0) {
+  // B1.2 — la ventana de bootstrap sólo se evalúa con el gate del vault
+  // ABIERTO, y NUNCA se evalúa si el vault falló: un error de red, de sesión o
+  // de permisos no puede habilitar la lectura del archivo (sería fail-open
+  // disfrazado, activable por cualquiera que degrade la red).
+  const bootstrap = (vaultEstado.enabled && !vaultEstado.error)
+    ? evaluarVentanaBootstrap(vaultEstado.cfg, {
+        canonicalPath, legacyPath, logger,
+        ahora: typeof opts.now === 'function' ? opts.now() : Date.now(),
+      })
+    : { activo: false, motivo: vaultEstado.error ? 'vault-fallido' : 'gate-cerrado' };
+
+  /** Valor de la variable en el archivo, con el mapping que corresponda. */
+  const leerDelArchivo = (dotPath, envVar) => {
+    if (!data) return undefined;
+    if (usingMapping === LEGACY_MAPPING) {
+      const flat = LEGACY_KEY_BY_ENV[envVar];
+      return flat === undefined ? undefined : data[flat];
+    }
+    return dotPath ? getNested(data, dotPath) : undefined;
+  };
+
+  // Con el gate cerrado y archivo legacy se itera el mapping legacy, igual que
+  // antes de #5353. En cualquier otro caso manda el descriptor.
+  const entradas = (!vaultEstado.enabled && usingMapping === LEGACY_MAPPING)
+    ? Object.values(LEGACY_MAPPING).map((envVar) => ({ dotPath: null, envVar }))
+    : Object.entries(ENV_MAPPING).map(([dotPath, envVar]) => ({ dotPath, envVar }));
+
+  let huboVault = false;
+  let huboBootstrap = false;
+
+  for (const { dotPath, envVar } of entradas) {
+    const desc = dotPath ? ENV_DESCRIPTORS[dotPath] : null;
+    // B2.1 — el ancla sólo cambia de régimen con el gate ABIERTO.
+    const esAncla = vaultEstado.enabled && !!(desc && desc.auth_anchor);
+    const preexistente = !!(env[envVar] && String(env[envVar]).length > 0);
+
+    // B2.7 — el ancla ya se cerró arriba, antes de las salidas tempranas.
+    if (anclasCerradas.has(envVar)) continue;
+
+    // B2.6 — para las 12 no-ancla la precedencia NO cambia: `process.env`
+    // preseteado sigue ganando. Esta hija no es el lugar para reordenar la
+    // precedencia de las API keys.
+    if (preexistente && !esAncla) {
       result.skipped_existing.push(envVar);
+      result.sources[envVar] = SOURCE.ENV_PREEXISTING;
       continue;
     }
-    const raw = (usingMapping === ENV_MAPPING)
-      ? getNested(data, sourceKey)
-      : data[sourceKey];
+
+    // ---- Fuente primaria: el vault ----
+    if (vaultEstado.enabled && desc && desc.backend !== 'file-only') {
+      const valor = valorDelVault(vaultEstado, dotPath, desc);
+      if (!isPlaceholderOrEmpty(valor)) {
+        // B2.3 — el shadowing se ve en el log. SÓLO el nombre de la variable:
+        // prohibido el valor, un prefijo, un sufijo o un hash. Es un chat_id, y
+        // un hash sobre un espacio de valores chico se revierte por fuerza bruta.
+        if (esAncla && preexistente && String(env[envVar]) !== String(valor)) {
+          logger(`[credentials] WARN: ${envVar} venia preseteada en el ambiente con un valor DISTINTO `
+            + 'al del vault y fue SOBRESCRITA. Causa: es un ancla de autorizacion y se resuelve solo '
+            + 'desde el vault (B2.2). Impacto: la allowlist de firmantes del gate del operador '
+            + 'queda definida por el vault. Proximo paso: quitar esa variable del ambiente del host');
+        }
+        env[envVar] = String(valor);
+        result.hydrated.push(envVar);
+        result.sources[envVar] = SOURCE.VAULT;
+        huboVault = true;
+        continue;
+      }
+
+      // SEC-5 — el mensaje nombra el PATH LÓGICO del secreto
+      // (`providers/openai/api_key`), nunca el ARN, el account id ni el valor.
+      const faltante = dotPath.replace(/\./g, '/');
+
+      // B1.7 / B2.4 — las anclas NO tienen fallback: ni a archivo (ni con el
+      // flag encendido ni dentro de la ventana), ni a `process.env`, ni default.
+      if (esAncla) {
+        if (preexistente) {
+          // Sin esto, cerrar el shadowing no cerraría nada: el valor del
+          // ambiente seguiría sosteniendo la allowlist de firmantes.
+          delete env[envVar];
+          logger(`[credentials] WARN: ${envVar} estaba preseteada en el ambiente y se DESCARTO. `
+            + 'Causa: el vault no tiene el ancla de autorizacion, y un ancla no puede venir del ambiente (B2.4). '
+            + 'Impacto: el gate del operador queda con cero firmantes (fail-closed). '
+            + `Proximo paso: subir "${faltante}" al vault`);
+        }
+        result.missing.push(envVar);
+        result.sources[envVar] = SOURCE.MISSING;
+        logger(`[credentials] ERROR: falta el ancla de autorizacion "${faltante}" en el vault. `
+          + `Impacto: ${envVar} queda SIN SETEAR y el gate del operador no autoriza a nadie. `
+          + `Proximo paso: subir "${faltante}" al vault (ver docs/pipeline/vault-secretos-aws.md)`);
+        continue;
+      }
+
+      // B1.3 / B1.5 — la ventana de bootstrap es la única puerta al archivo, y
+      // sólo si el operador la encendió a mano y no caducó.
+      if (bootstrap.activo) {
+        const raw = leerDelArchivo(dotPath, envVar);
+        if (!isPlaceholderOrEmpty(raw)) {
+          env[envVar] = String(raw);
+          result.hydrated.push(envVar);
+          // B1.6 — el source del fallback es `file-bootstrap`. NUNCA `vault`.
+          result.sources[envVar] = SOURCE.FILE_BOOTSTRAP;
+          huboBootstrap = true;
+          logger(`[credentials] WARN: ${envVar} se resolvio por la ventana de bootstrap, no por el vault. `
+            + `Proximo paso: subir "${faltante}" al vault antes de que la ventana caduque`);
+          continue;
+        }
+      }
+
+      // B1.1 — fail-closed NOMBRANDO el secreto faltante. La variable queda SIN
+      // SETEAR: nunca cadena vacía, nunca un default.
+      result.missing.push(envVar);
+      result.sources[envVar] = SOURCE.MISSING;
+      logger(`[credentials] ERROR: falta el secreto "${faltante}" en el vault. `
+        + `Impacto: ${envVar} queda SIN SETEAR (fail-closed) y el componente que la use fallara. `
+        + `Proximo paso: subir "${faltante}" al vault (ver docs/pipeline/vault-secretos-aws.md)`);
+      continue;
+    }
+
+    // ---- Camino del archivo (gate cerrado, o backend `file-only`) ----
+    const raw = leerDelArchivo(dotPath, envVar);
     if (isPlaceholderOrEmpty(raw)) {
       result.skipped_empty.push(envVar);
+      // UX-3 — "no configurada" y "vacia a proposito" dejan de ser lo mismo.
+      result.sources[envVar] = (raw === undefined || raw === null) ? SOURCE.MISSING : SOURCE.EMPTY;
       continue;
     }
     env[envVar] = String(raw);
     result.hydrated.push(envVar);
+    result.sources[envVar] = (usingMapping === LEGACY_MAPPING) ? SOURCE.LEGACY : SOURCE.CANONICAL;
+  }
+
+  // `result.source` conserva su forma de siempre y gana el valor `'vault'`
+  // cuando alguna variable salió efectivamente del vault. La respuesta fina, por
+  // variable, está en `result.sources` (UX-2).
+  if (huboVault) result.source = SOURCE.VAULT;
+  else if (huboBootstrap) result.source = SOURCE.FILE_BOOTSTRAP;
+
+  // ---------------------------------------------------------------------------
+  // #5427 · CA-14/CA-16 — hook ÚNICO de la ventana sombra (#5448)
+  // ---------------------------------------------------------------------------
+  //
+  // Un solo call site = una sola superficie de regresión: no se re-instrumenta
+  // ninguna rama del bucle de precedencia ni cambia la forma de `result`.
+  //
+  // CA-25 — sólo con el gate ABIERTO. Las salidas tempranas (`!vaultEstado.enabled`)
+  // quedan sin instrumentar a propósito: con el gate cerrado no existe la
+  // dicotomía vault/fallback y esas filas ensuciarían el denominador de CA-18.
+  //
+  // CA-16 — sync y sin I/O de red. Append a archivo sí; HTTP/Telegram no.
+  // El `require` es perezoso para que el camino del gate cerrado ni cargue el
+  // módulo. Todo el hook va en `try/catch`: la observabilidad NUNCA puede
+  // tumbar el arranque de credenciales.
+  //
+  // `opts.shadowMetrics` inyecta el núcleo: es lo que usan los tests para no
+  // escribir en el `.pipeline/audit/` real. En producción nadie lo pasa y se
+  // usa el singleton del proceso.
+  //
+  // GUARDA DE INTEGRIDAD DE LA AUDITORÍA — a nivel de módulo, un boot de prueba
+  // es indistinguible de uno real: mismo `loadIntoEnv`, mismo gate, mismo
+  // singleton. Sin esta guarda, cualquier test que bootee con el gate abierto
+  // (y hay decenas en credentials-vault-5353.test.js) inyecta filas sintéticas
+  // en la evidencia sobre la que #5427 decide retirar el fallback, y —peor— una
+  // vía negativa sintética REINICIA el t0 real, así que la ventana no cerraría
+  // nunca mientras alguien corra la suite. Bajo `node --test` y sin inyección
+  // explícita, entonces, no se instrumenta. `NODE_TEST_CONTEXT` lo pone el
+  // runner de Node en el proceso hijo; no es configuración que alguien elija.
+  if (vaultEstado.enabled) {
+    try {
+      // El `require` queda acá adentro para que el camino del gate cerrado ni
+      // llegue a cargar el módulo.
+      const metrics = opts.shadowMetrics
+        || (process.env.NODE_TEST_CONTEXT ? null : require('./vault-shadow-metrics').getVaultShadowMetrics());
+      if (metrics) metrics.record(result.sources, {
+        hostId: vaultEstado.cfg && vaultEstado.cfg.hostId,
+        descriptors: ENV_DESCRIPTORS,
+      });
+    } catch (e) {
+      // Sólo el nombre del error: una excepción cruda podría arrastrar datos.
+      logger(`[credentials] WARN: no se pudo registrar la ventana sombra del vault (${(e && e.name) || 'Error'}). `
+        + 'Impacto: se subcuenta la cobertura y la ventana tarda mas en cerrar (fail-closed). '
+        + 'Proximo paso: revisar permisos de .pipeline/audit/');
+    }
   }
 
   return result;
@@ -246,6 +913,7 @@ function redactScoped(resolved) {
 }
 
 module.exports = {
+  // Los 10 símbolos históricos — ninguno se quita ni cambia de forma.
   loadIntoEnv,
   CANONICAL_PATH,
   LEGACY_PATH,
@@ -256,17 +924,35 @@ module.exports = {
   parseSecretRef,
   resolveScopedRefs,
   redactScoped,
+  // Agregados por #5353.
+  ENV_DESCRIPTORS,
+  VAULT_BACKENDS,
+  SOURCE,
+  vaultScopePlan,
+  _resetVaultCache,
+  // B2.7 — expuesto SÓLO para el test que verifica que la raíz de la config la
+  // fija el código y no el entorno. No tiene call-site productivo fuera de
+  // `resolverVault`.
+  _readVaultConfig: readVaultConfig,
 };
 
 // CLI: dry-run que imprime resumen sin valores. Útil para diagnóstico operativo.
 //   node .pipeline/lib/credentials.js
+//
+// UX-3 — `sources` distingue "no configurada" (`missing`) de "vacia a
+// proposito" (`empty`), que antes caían las dos en `skipped_empty` y eran
+// indistinguibles. Sigue sin imprimir un solo VALOR: sólo nombres de variable y
+// etiquetas de origen (SEC-5).
 if (require.main === module) {
   const result = loadIntoEnv({ logger: (m) => process.stderr.write(m + '\n') });
   process.stdout.write(JSON.stringify({
     source: result.source,
+    vault: result.vault,
     hydrated_count: result.hydrated.length,
     hydrated: result.hydrated,
     skipped_existing: result.skipped_existing,
     skipped_empty: result.skipped_empty,
+    missing: result.missing,
+    sources: result.sources,
   }, null, 2) + '\n');
 }
