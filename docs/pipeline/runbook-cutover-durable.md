@@ -288,36 +288,59 @@ El aprovisionador es dry-run por defecto. Requiere una sesión AWS administrativ
 vigente y deriva el account id en runtime:
 
 ```bash
-node .pipeline/lib/kernel-cloudtrail-provision.js
-node .pipeline/lib/kernel-cloudtrail-provision.js --apply
-node .pipeline/lib/kernel-cloudtrail-provision.js --apply --verify
+node .pipeline/lib/kernel-cloudtrail-provision.js            # dry-run: imprime el plan
+node .pipeline/lib/kernel-cloudtrail-provision.js --apply    # crea bucket + trail (admin)
 ```
 
-`--verify` escribe, lee y borra un ítem efímero en la tabla de coordinación
-(nunca en la tabla append-only de no-repudio) y exige encontrar tanto `Decrypt`
-como `GenerateDataKey` asociados a `alias/intrale-kernel-store`. CloudTrail puede
-demorar la entrega; un exit code `2` indica que se debe repetir la verificación,
-no recrear el trail.
+La verificación está partida en **dos comandos con dos identidades distintas**,
+porque ninguna identidad puede (ni debe) hacer las dos cosas:
+
+```bash
+# 1) Emitir uso real de la CMK — identidad con kms:Decrypt (NO la del pipeline).
+AWS_PROFILE=<perfil-runtime> node .pipeline/lib/kernel-cloudtrail-provision.js --emit-usage
+
+# 2) Leer el trail y confirmar la evidencia — identidad con lectura del bucket.
+AWS_PROFILE=<perfil-pipeline> node .pipeline/lib/kernel-cloudtrail-provision.js \
+  --verify --since <UTC-INICIO> --wait 900
+```
+
+`--emit-usage` escribe, lee y borra un ítem efímero en la tabla de coordinación
+(nunca en la tabla append-only de no-repudio). `--verify` **lee los objetos del
+trail en S3** —no el Event history— y exige `Decrypt` y `GenerateDataKey`
+asociados a `alias/intrale-kernel-store`. CloudTrail entrega en lotes de ~5
+minutos: un exit code `2` significa *todavía no llegó la evidencia*, se repite la
+verificación; **no** se recrea el trail. `--wait <segundos>` reintenta solo.
 
 #### Identidades: quién puede aprovisionar y quién puede consultar
 
 Verificado empíricamente al aprovisionar el trail (2026-08-05):
 
-| Acción | Identidad requerida | Estado del usuario `claude-code` |
-|---|---|---|
-| Crear bucket + trail (`--apply`) | Sesión **administrativa** | ❌ `s3:CreateBucket` denegado |
-| Ver que el trail existe y loguea | `cloudtrail:DescribeTrails`, `GetTrailStatus` | ✅ permitido |
-| Consultar eventos (`lookup-events`) | `cloudtrail:LookupEvents` | ❌ **denegado** |
+| Acción | Identidad requerida | `claude-code` (pipeline) | `intrale-kernel-runtime` |
+|---|---|---|---|
+| Crear bucket + trail (`--apply`) | Sesión **administrativa** | ❌ `s3:CreateBucket` denegado | ❌ |
+| Ver que el trail existe y loguea | `cloudtrail:DescribeTrails`, `GetTrailStatus` | ✅ permitido | — |
+| **Leer el trail en S3** (`--verify`) | `s3:ListBucket`, `s3:GetObject` | ✅ **permitido** | — |
+| Emitir uso de la CMK (`--emit-usage`) | `kms:Decrypt` vía DynamoDB | ❌ **denegado** | ✅ permitido |
+| Consultar Event history (`lookup-events`) | `cloudtrail:LookupEvents` | ❌ denegado | ❌ |
 
 El aprovisionamiento es un **paso admin de una sola vez**: la identidad del
 pipeline no puede crear el bucket ni el trail, y eso es deseable (el pipeline no
 debe poder alterar su propia auditoría).
 
-Lo que **sí** hay que resolver antes de una reconciliación real: el usuario
-`claude-code` **no puede correr `lookup-events`**. Si una reconciliación se
-intenta con la credencial del pipeline, falla con `AccessDeniedException` en el
-peor momento posible. Reconciliar con una identidad administrativa o de
-auditoría, o adjuntarle `cloudtrail:LookupEvents` antes de necesitarla.
+**La separación es intencional y hay que respetarla**: el pipeline (`claude-code`)
+**lee** la auditoría pero no puede descifrar el store; el runtime
+(`intrale-kernel-runtime`) **descifra** el store pero no puede leer ni alterar la
+auditoría. Ninguna de las dos puede provisionar. Por eso la verificación son dos
+comandos y no uno: quien genera la evidencia no es quien la lee.
+
+Verificado empíricamente (2026-08-05): `claude-code` recibe `AccessDenied` en
+`kms:Decrypt`, y `intrale-kernel-runtime` recibe un **explicit deny** en
+`dynamodb:CreateTable` desde la policy `IntraleKernelStore`. Ambas denegaciones
+quedan registradas en el trail, que es exactamente para lo que sirve.
+
+`lookup-events` sigue denegado para el pipeline, pero **ya no bloquea la
+reconciliación**: el procedimiento de abajo lee el trail desde S3, que es la
+fuente con retención de 365 días.
 
 #### Consultar el rastro durante una reconciliación
 
@@ -354,6 +377,29 @@ En ambos casos, confirmar en el JSON de cada evento la **CMK** (`resources[].ARN
 el **principal** (`userIdentity`) y que el origen sea DynamoDB
 (`sourceIPAddress: dynamodb.amazonaws.com`) — un `Decrypt` de la CMK con otro
 origen es exactamente lo que el `kms:ViaService` debería estar impidiendo.
+
+##### Camino scriptado (el mismo, sin armar el `jq` a mano)
+
+El aprovisionador ya implementa la lectura del trail en S3, así que una
+reconciliación no necesita reconstruir el pipeline de comandos de arriba:
+
+```bash
+node .pipeline/lib/kernel-cloudtrail-provision.js --verify --since <UTC-INICIO>
+```
+
+Devuelve por cada operación (`Decrypt`, `GenerateDataKey`) la lista de eventos con
+`eventTime`, `principal`, `invokedBy` y `errorCode`, más un `complete` que es
+`true` sólo si **cada** operación tiene al menos un evento **exitoso**.
+
+Dos cosas que importan al leer la salida:
+
+- **Un `errorCode` no es evidencia de uso.** Los intentos denegados aparecen en la
+  lista —el trail los captura, que para eso está— pero no cuentan para `complete`.
+  Contarlos dejaría la verificación fail-open: un `AccessDenied` daría por probada
+  una postura de auditoría que nunca se ejerció.
+- **Exit code `2` significa "todavía no llegó la evidencia"**, no que el trail esté
+  mal. CloudTrail entrega en lotes de ~5 minutos; se repite la consulta (o se usa
+  `--wait <segundos>`), **no** se recrea el trail.
 
 El trail tiene `--enable-log-file-validation`, así que la integridad de los
 archivos se puede probar contra los digest de
