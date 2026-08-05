@@ -205,6 +205,13 @@ timeouts:
     linter: 5                     # Determinístico — sólo lee diff/git log, debería durar segundos
     delivery: 90                  # Espera CI completo (OWASP ~28min, check-app ~15min) + gate de review + merge + reporte
 
+# Procedencia de ramas para auto-recovery. Agregar una identidad confiable es
+# una decisión de seguridad y requiere review humana; nunca usar comodines.
+worktree_provenance:
+  committers:
+    - backend-dev-agent@intrale
+    - bot@intrale.com
+
 # Desync waves.json ↔ .partial-pause.json (#4439)
 # Ventana de validez de la "traza de origen legítimo" que habilita el auto-resync
 # aditivo de una divergencia ambigua (CA-3). Una suma a la allowlist con
@@ -1020,6 +1027,30 @@ telegram_outbound:
   backoff_max_ms: 300000    # Tope del backoff por intento (5 min)
   stale_ttl_ms: 86400000    # TTL de descarte de salientes viejos (24h) — SEC-4
   sweep_stagger_ms: 3000    # Escalonado entre fallidos reencolados por el barredor — SEC-3
+
+# =============================================================================
+# #5573 — Política de reenvío de PARTES DE AUDIO (sweep de chunks TTS, #4750)
+# =============================================================================
+# SEPARADA de `telegram_outbound` (texto) a propósito. La latencia real de
+# entrega de un `.ogg` medida en producción es ~62-74s (upload multipart +
+# procesamiento serial de la cola + sleep anti rate-limit de 1200ms por
+# adjunto), contra los 5s de base que usa el texto. Reusar la política de texto
+# es lo que produjo el bug: reenvíos disparados sobre envíos todavía en vuelo →
+# el operador recibía el mismo audio 2-4 veces, y cada reenvío alargaba la cola
+# de las partes que faltaban (bola de nieve).
+#
+# `backoff_base_ms` es PROVISIONAL: se recalibra con el p50/p95 real que emite
+# `audit/telegram-voice-delivery.jsonl`. No es una constante mágica.
+#
+# Valores fuera de rango caen al default — nunca rompen el sweep.
+telegram_voice_outbound:
+  max_retries: 3            # Menos agresivo que texto: cada reenvío alarga la cola
+  backoff_base_ms: 150000   # 2.5 min > p95 observado (~74s), con margen bajo carga
+  backoff_max_ms: 900000    # Tope del backoff por intento (15 min)
+  stale_ttl_ms: 86400000    # TTL de descarte del estado de contabilidad (24h)
+  in_flight_max_ms: 600000  # SEC-A: techo absoluto de la supresión por "en vuelo" (10 min).
+                            # Sin este techo, un job atascado en trabajando/ suprimiría
+                            # el reenvío para siempre → hueco silencioso (rompe #4750).
 
 # =============================================================================
 # Notificación de entregables del pipeline (#3414)

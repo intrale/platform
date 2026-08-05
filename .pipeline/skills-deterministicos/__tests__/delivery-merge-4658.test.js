@@ -28,15 +28,36 @@ test('#4658 CA-2 — classifyMergeFailure: HTTP 405 (not mergeable) = conflicto 
     assert.equal(c.httpStatus, 405);
 });
 
-test('#4658 CA-2 — classifyMergeFailure: HTTP 409 (head changed) = conflicto real', () => {
+// #5420 — reclasificado: con el `sha` pinneado en el PUT, un 409 "head branch
+// was modified" ya no es un conflicto terminal sino la protección funcionando.
+// Sigue frenando el merge (conflict=true → nunca se mergea a ciegas), pero ahora
+// es REINTENTABLE: el gate vuelve a tomar snapshot y reevalúa todo. El escalado
+// llega recién si el head sigue moviéndose tras el retry.
+test('#4658/#5420 CA-2 — classifyMergeFailure: HTTP 409 (head changed) frena el merge y es REINTENTABLE', () => {
     const c = delivery.classifyMergeFailure({ exit_code: 1, stderr: 'HTTP 409: Head branch was modified. Review and try the merge again.' });
     assert.equal(c.conflict, true);
     assert.equal(c.httpStatus, 409);
+    assert.equal(c.retryable, true);
+    assert.equal(c.kind, 'head-changed');
+});
+
+test('#5420 — classifyMergeFailure: HTTP 409 de conflicto REAL sigue siendo terminal (no reintentable)', () => {
+    const c = delivery.classifyMergeFailure({ exit_code: 1, stderr: 'HTTP 409: Merge conflict' });
+    assert.equal(c.conflict, true);
+    assert.equal(c.retryable, false);
+    assert.equal(c.kind, 'not-mergeable');
+});
+
+test('#5420 — classifyMergeFailure: 405 not-mergeable NUNCA es reintentable', () => {
+    const c = delivery.classifyMergeFailure({ exit_code: 1, stderr: 'gh: Pull Request is not mergeable (HTTP 405)' });
+    assert.equal(c.retryable, false);
+    assert.equal(c.kind, 'not-mergeable');
 });
 
 test('#4658 — classifyMergeFailure: deteccion textual sin codigo HTTP explicito', () => {
     const c = delivery.classifyMergeFailure({ exit_code: 1, stdout: '{"message":"Merge conflict"}' });
     assert.equal(c.conflict, true);
+    assert.equal(c.retryable, false);
 });
 
 test('#4658 — classifyMergeFailure: fallo generico (5xx/red) NO es conflicto -> rebote tecnico normal', () => {
